@@ -484,8 +484,8 @@ fn play_bench(c: &mut Criterion) {
 
 /// The plays of a streamed clip (the OGG, else the MP3), one a frame at
 /// 60 Hz, each stopped the frame after and timed alone: the median held to
-/// 100 µs. The last one must still be playing ten frames on, so the streams
-/// did decode
+/// 100 µs. The last one must still be playing ten frames on: none of the
+/// streams failed
 fn streamed_play_guard(fixtures: &Fixtures) {
   let Some(file) = fixtures.streamed() else {
     return;
@@ -547,7 +547,7 @@ fn streamed_play_guard(fixtures: &Fixtures) {
   if !streams || refused > 0 || !played {
     guards::miss(format!(
       "play_cost_streamed: {} streamed: {streams}; {refused} plays refused; the last one \
-       played on: {played}",
+       played on, no stream failing: {played}",
       file.name
     ));
   }

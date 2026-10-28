@@ -5,6 +5,8 @@
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::ops::Range;
+#[cfg(test)]
+use std::sync::Arc;
 use std::time::Duration;
 
 use crossbeam_channel::{Receiver, Sender};
@@ -1072,6 +1074,9 @@ pub struct AudioEngine {
   reloads: Reloads,
   #[cfg(test)]
   injected_stream_errors: Vec<String>,
+  /// Where the streams started count the frames they decode (tests)
+  #[cfg(test)]
+  stream_decoding: Option<Arc<std::sync::atomic::AtomicUsize>>,
   /// Plays kira refused for want of room: none should ever be
   #[cfg(test)]
   kira_full: usize,
@@ -1220,6 +1225,8 @@ impl AudioEngine {
       #[cfg(test)]
       injected_stream_errors: Vec::new(),
       #[cfg(test)]
+      stream_decoding: None,
+      #[cfg(test)]
       kira_full: 0,
     };
     // master's gain goes on kira's main track
@@ -1275,6 +1282,14 @@ impl AudioEngine {
       + self.undecodable.len()
       + self.music.warned.len()
       + self.music.warned_buses.len()
+  }
+
+  /// Count the frames every stream started from now on decodes (tests)
+  #[cfg(test)]
+  pub(crate) fn count_stream_decoding(&mut self) -> Arc<std::sync::atomic::AtomicUsize> {
+    let decoded = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    self.stream_decoding = Some(Arc::clone(&decoded));
+    decoded
   }
 
   /// How many plays kira refused for want of room (tests: it never should)
@@ -2067,7 +2082,9 @@ impl AudioEngine {
 
   /// Warn, once for live voice `index`, that its loop could not move to the
   /// rebuilt buses. It plays on where it was: a retired tree keeps the
-  /// volumes it had, so the sliders no longer reach it (hot reload only)
+  /// volumes it had, so the sliders no longer reach it (hot reload only).
+  /// Natively only a bus whose track has no room gets here: a stream that
+  /// cannot open fails on its decoder thread instead
   fn warn_stuck(&mut self, index: usize, why: &str, server: Option<&AssetServer>) {
     let Some(live) = self.voices.live.get_mut(index) else {
       return;
@@ -2300,7 +2317,8 @@ impl AudioEngine {
   }
 
   /// Warn that live voice `index` could not switch to what was reloaded: it
-  /// plays on as it was
+  /// plays on as it was. Natively only a bus whose track has no room gets
+  /// here: a stream that cannot open fails on its decoder thread instead
   fn warn_unswitched(&mut self, index: usize, why: &str, server: Option<&AssetServer>) {
     let Some(live) = self.voices.live.get(index) else {
       return;
@@ -3100,9 +3118,17 @@ impl AudioEngine {
     let frames = clip.frames;
     let span = Span::of(start, rate, frames);
     let position = span.wrap(start.position, rate, frames);
-    let mut data = StreamingSoundData::from_decoder(ClipDecoder::new(clip.bytes, rate, frames));
-    data.slice = span.slice;
-    let data = data
+    // The region is the decoder's whole stream, so kira's frames, the loop
+    // and the position all count from its start, as a decoded clip's slice
+    // does. kira's own slice would seek the decoder from the file's start
+    let (from, to) = span.slice.unwrap_or((0, frames));
+    let decoder = ClipDecoder::new(clip.bytes, rate, from..to);
+    #[cfg(test)]
+    let decoder = match &self.stream_decoding {
+      Some(decoded) => decoder.counting(Arc::clone(decoded)),
+      None => decoder,
+    };
+    let data = StreamingSoundData::from_decoder(decoder)
       .volume(Decibels(start.gain_db))
       .panning(Panning(start.pan))
       .playback_rate(PlaybackRate(start.rate))
@@ -4184,7 +4210,6 @@ fn chunks_due(owed: &mut u128, real_delta: Duration) -> u128 {
 
 #[cfg(test)]
 mod tests {
-  use std::sync::Arc;
   use std::time::Duration;
 
   use super::*;
@@ -4364,14 +4389,38 @@ mod tests {
     assert!(AudioView::new(&mut world).play(&clip).is_playing());
   }
 
-  /// A surround file forced to stream loads (only its header is read) and
-  /// fails as it plays. kira cuts the stream at its next chunk, with no fade
-  /// (it cannot be smoothed), and the log says so; the clip is warned about
+  /// A world over `path`, a WAV loaded to stream whose bytes are then
+  /// replaced in code by `bytes` (of 22,050 frames at 22,050 Hz, it says),
+  /// and the files it reads
+  fn gone_bad(path: &str, bytes: &[u8]) -> (World, MemorySource, Handle<AudioClip>) {
+    let files = MemorySource::new();
+    files.insert(path, fixture("tone.wav"));
+    let mut world = audio_world_over(files.clone());
+    let clip = streamed(&mut world, path);
+    if let Some(clip) = world.resource_mut::<Assets<AudioClip>>().get_mut(&clip) {
+      let encoded = EncodedClip {
+        bytes: Arc::from(bytes),
+        frames: 22_050,
+      };
+      *clip = AudioClip::new(ClipData::Encoded(encoded), Duration::from_secs(1), 22_050);
+    }
+    (world, files, clip)
+  }
+
+  /// A world over `path`, a WAV loaded to stream whose bytes then go bad,
+  /// so its stream cannot open
+  fn garbled(path: &str) -> (World, Handle<AudioClip>) {
+    let (world, _, clip) = gone_bad(path, b"not audio at all");
+    (world, clip)
+  }
+
+  /// A surround clip streamed (made in code: the loader refuses one) fails
+  /// as it plays. kira cuts the stream at its next chunk, with no fade (it
+  /// cannot be smoothed), and the log says so; the clip is warned about
   /// once, by its path
   #[test]
   fn a_streamed_clip_that_cannot_decode_stops_and_warns_once() {
-    let mut world = audio_world_over(files(&["surround.wav"]));
-    let clip = streamed(&mut world, "surround.wav");
+    let (mut world, _, clip) = gone_bad("surround-in-code.wav", &fixture("surround.wav"));
     let voice = AudioView::new(&mut world).play(&clip);
     // It starts: the stream decodes on its own thread, and fails there
     assert!(voice.is_playing(), "{voice:?}");
@@ -4384,17 +4433,14 @@ mod tests {
       .collect();
     assert_eq!(stops, [Duration::ZERO], "{log:#?}");
     assert_eq!(AudioView::new(&mut world).voices_on("sfx"), 0);
-    assert_eq!(undecodable_warnings("surround.wav"), 1);
+    assert_eq!(undecodable_warnings("surround-in-code.wav"), 1);
   }
 
   /// Once a clip's stream has failed to decode, it is not played again (no
   /// decoder thread is started for it) until it reloads
   #[test]
   fn a_clip_known_undecodable_is_refused_until_it_reloads() {
-    let files = MemorySource::new();
-    files.insert("surround-reloaded.wav", fixture("surround.wav"));
-    let mut world = audio_world_over(files.clone());
-    let clip = streamed(&mut world, "surround-reloaded.wav");
+    let (mut world, files, clip) = gone_bad("undecodable-reloaded.wav", b"not audio at all");
     let first = AudioView::new(&mut world).play(&clip);
     wait_until_stopped(&mut world, &first);
     let again = AudioView::new(&mut world).play(&clip);
@@ -4407,15 +4453,15 @@ mod tests {
     );
     assert_eq!(
       last.map(|entry| entry.source).as_deref(),
-      Some("surround-reloaded.wav")
+      Some("undecodable-reloaded.wav")
     );
-    // A reload (here, to a stereo file) clears the mark
+    // A reload (of the file, a stereo WAV) clears the mark
     let version = |world: &World| world.resource::<Assets<AudioClip>>().version(&clip);
     let before = version(&world);
-    files.insert("surround-reloaded.wav", fixture("tone.wav"));
+    files.insert("undecodable-reloaded.wav", fixture("tone.wav"));
     world
       .resource::<AssetServer>()
-      .reload("surround-reloaded.wav");
+      .reload("undecodable-reloaded.wav");
     for _ in 0..500 {
       if version(&world) != before {
         break;
@@ -4427,25 +4473,7 @@ mod tests {
     let reloaded = AudioView::new(&mut world).play(&clip);
     assert!(reloaded.is_playing(), "{reloaded:?}");
     wait_until_stopped(&mut world, &reloaded);
-    assert_eq!(undecodable_warnings("surround-reloaded.wav"), 1);
-  }
-
-  /// A world over `path`, a WAV loaded to stream whose bytes then go bad,
-  /// so its stream cannot open
-  fn garbled(path: &str) -> (World, Handle<AudioClip>) {
-    let files = MemorySource::new();
-    files.insert(path, fixture("tone.wav"));
-    let mut world = audio_world_over(files);
-    let clip = streamed(&mut world, path);
-    if let Some(clip) = world.resource_mut::<Assets<AudioClip>>().get_mut(&clip) {
-      let garbage: Arc<[u8]> = Arc::from(&b"not audio at all"[..]);
-      let encoded = EncodedClip {
-        bytes: garbage,
-        frames: 22_050,
-      };
-      *clip = AudioClip::new(ClipData::Encoded(encoded), Duration::from_secs(1), 22_050);
-    }
-    (world, clip)
+    assert_eq!(undecodable_warnings("undecodable-reloaded.wav"), 1);
   }
 
   /// A stream opens on its decoder thread, so one that cannot open starts
@@ -4493,41 +4521,38 @@ mod tests {
     }
   }
 
-  /// Step `seconds` of game time in frames, leaving the decoder threads
-  /// time between them
-  fn run_for(world: &mut World, seconds: f64) {
-    let frames = (seconds / FRAME.as_secs_f64()).round() as usize;
-    for _ in 0..frames {
+  /// Step frames of game time, leaving the decoder threads time, until
+  /// `voice` is `seconds` in. A stream advances only once its decoder thread
+  /// has given it frames, so this waits for that however long it takes (at
+  /// most 2,000 frames)
+  fn advance_to(world: &mut World, voice: &Voice, seconds: f64) {
+    for _ in 0..2000 {
+      if position(world, voice) >= seconds {
+        return;
+      }
       audio_step(world, FRAME);
       std::thread::sleep(Duration::from_millis(1));
     }
-  }
-
-  /// `voice` is at `seconds`, or a few ms behind (its stream waited for its
-  /// first frames)
-  fn assert_at(world: &World, voice: &Voice, seconds: f64) {
-    let at = position(world, voice);
-    assert!(
-      at <= seconds && at > seconds - 0.05,
-      "{at} s in, not {seconds}"
-    );
+    panic!("{voice:?} did not reach {seconds} s");
   }
 
   /// A Vorbis stream started partway in plays to the end of the file and
-  /// ends. Here a one-shot is started again where it is, as a reload
-  /// switches a loop
+  /// ends. Here a one-shot is started again where it is, 2 s in, as a
+  /// reload switches a loop
   #[test]
   fn a_streamed_vorbis_one_shot_started_partway_finishes() {
     let mut world = audio_world_over(files(&["tone-3s.ogg"]));
     let clip = streamed(&mut world, "tone-3s.ogg");
     let voice = AudioView::new(&mut world).play(&clip);
-    run_for(&mut world, 2.5);
-    assert_at(&world, &voice, 2.5);
+    advance_to(&mut world, &voice, 2.0);
     let restarted = world.resource_scope(|world, mut engine: Mut<AudioEngine>| {
       let index = engine.voices.index_of(voice.id());
       index.map(|index| engine.restart(world, index, world.get_resource::<AssetServer>()))
     });
     assert!(matches!(restarted, Some(Ok(()))), "{restarted:?}");
+    let started = position(&world, &voice);
+    // Once the new stream has frames, about a second of the file is left
+    advance_to(&mut world, &voice, started + 0.01);
     for _ in 0..90 {
       if voice.is_stopped() {
         break;
@@ -4539,7 +4564,7 @@ mod tests {
   }
 
   /// A Vorbis loop started partway in (a reload switches it to the saved
-  /// file where it is) wraps to its start at the end of the file
+  /// file where it is, 2 s in) wraps to its start at the end of the file
   #[test]
   fn a_streamed_vorbis_loop_started_partway_wraps() {
     let files = files(&["tone-3s.ogg"]);
@@ -4551,7 +4576,7 @@ mod tests {
       ..Default::default()
     });
     let voice = AudioView::new(&mut world).play(&sound);
-    run_for(&mut world, 2.5);
+    advance_to(&mut world, &voice, 2.0);
     let version = |world: &World| world.resource::<Assets<AudioClip>>().version(&clip);
     let before = version(&world);
     files.insert("tone-3s.ogg", fixture("tone-3s.ogg"));
@@ -4564,11 +4589,90 @@ mod tests {
       std::thread::sleep(Duration::from_millis(1));
     }
     assert_ne!(version(&world), before, "the clip reloaded");
-    assert_at(&world, &voice, 2.5);
-    run_for(&mut world, 1.5);
+    let switched = position(&world, &voice);
+    assert!(switched >= 2.0, "it switched {switched} s in");
+    // Once the new stream has frames, 1.5 s takes it past the end (about
+    // 1 s on) and about half a second into the loop
+    advance_to(&mut world, &voice, switched + 0.01);
+    for _ in 0..90 {
+      audio_step(&mut world, FRAME);
+      std::thread::sleep(Duration::from_millis(2));
+    }
     assert!(voice.is_playing(), "{voice:?}");
     let at = position(&world, &voice);
     assert!(at < 1.0, "it wrapped: {at} s in after 1.5 s");
+  }
+
+  /// A streamed clip's region is its decoder's whole stream: a region late
+  /// in the file is decoded from there, not from the file's start
+  #[test]
+  fn a_streamed_region_decodes_only_itself() {
+    let mut world = audio_world_over(files(&["tone-3s.ogg"]));
+    let clip = streamed(&mut world, "tone-3s.ogg");
+    let decoded = world.resource_mut::<AudioEngine>().count_stream_decoding();
+    let mut late = SoundClip::new(clip);
+    // From frame 110,250 of the file's 132,352
+    late.region = Some(2.5..3.0);
+    let sound = world.resource_mut::<Assets<Sound>>().add(Sound {
+      clips: vec![late],
+      ..Default::default()
+    });
+    let voice = AudioView::new(&mut world).play(&sound);
+    advance_to(&mut world, &voice, 0.01);
+    let count = decoded.load(std::sync::atomic::Ordering::Relaxed);
+    assert!(
+      count < 55_125,
+      "{count} frames decoded by the time the region played, which starts at frame 110,250"
+    );
+  }
+
+  /// A streamed region plays only its part: a one-shot ends at the region's
+  /// end, and a loop wraps inside it, its position counted from the
+  /// region's start
+  #[test]
+  fn a_streamed_region_plays_its_part_and_loops_inside_it() {
+    let mut world = audio_world_over(files(&["tone-3s.ogg"]));
+    let clip = streamed(&mut world, "tone-3s.ogg");
+    let mut part = SoundClip::new(clip);
+    part.region = Some(2.0..2.25);
+    let sounds = [false, true].map(|looping| {
+      world.resource_mut::<Assets<Sound>>().add(Sound {
+        clips: vec![part.clone()],
+        looping,
+        ..Default::default()
+      })
+    });
+    let once = AudioView::new(&mut world).play(&sounds[0]);
+    let looped = AudioView::new(&mut world).play(&sounds[1]);
+    advance_to(&mut world, &looped, 0.2);
+    let (mut highest, mut wrapped) = (0.0f64, false);
+    for _ in 0..2000 {
+      audio_step(&mut world, FRAME);
+      std::thread::sleep(Duration::from_millis(1));
+      let at = position(&world, &looped);
+      highest = highest.max(at);
+      if at < 0.1 {
+        wrapped = true;
+        break;
+      }
+    }
+    assert!(wrapped, "the loop wrapped");
+    assert!(
+      highest < 0.26,
+      "it stayed in its 0.25 s region: {highest} s in"
+    );
+    assert!(looped.is_playing(), "{looped:?}");
+    for _ in 0..60 {
+      if once.is_stopped() {
+        break;
+      }
+      audio_step(&mut world, FRAME);
+      std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(
+      once.is_stopped(),
+      "the one-shot ended with its region: {once:?}"
+    );
   }
 
   #[test]

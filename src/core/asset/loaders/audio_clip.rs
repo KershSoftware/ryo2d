@@ -34,9 +34,10 @@ pub struct AudioClipSettings {
 
 /// Loads [`AudioClip`]s from `.wav`, `.ogg`, `.mp3` and `.flac` files. Only
 /// mono and stereo files load; any other layout, or a corrupt file, is
-/// `AssetError::Decode`. A clip that streams is only probed (its header and
-/// length): its channel layout is read as it plays, so a surround file too
-/// long to decode loads and fails when played. Every registry has it.
+/// `AssetError::Decode`. A clip that streams is only probed: its header
+/// gives its sample rate, length, codec and channels, so a surround file is
+/// refused whether it decodes or streams, and a corrupt packet past the
+/// header is found as it plays (and skipped). Every registry has it.
 #[derive(Debug, Clone, Copy)]
 pub struct AudioClipLoader {
   threshold: Duration,
@@ -209,9 +210,8 @@ mod tests {
   #[test]
   fn a_surround_file_is_a_decode_error_naming_its_path() {
     let mut world = clips_over(&["surround.wav"], AudioClipLoader::default());
-    // A streamed clip's channels are only read as it plays, so a forced
-    // stream is not checked here (see the loader's docs)
-    for mode in [ClipMode::Auto, ClipMode::Decode] {
+    // A clip to stream is probed: its header gives its channels
+    for mode in [ClipMode::Auto, ClipMode::Decode, ClipMode::Stream] {
       let Err(error) = load(&mut world, "surround.wav", mode) else {
         panic!("{mode:?}: six channels loaded");
       };
