@@ -35,10 +35,11 @@ pub struct PlayOptions {
   /// Where in the world it plays, for 2D spatial sound
   pub position: Option<Vec2>,
   /// It belongs to the engine and outlives the scene that played it. It
-  /// matters for loops: a scene's loop stops with its fade when the scene
-  /// exits, while a one-shot always plays to its end (a click just before
-  /// a switch is heard out). A loop meant to carry on into the next scene
-  /// (rain, say) needs it
+  /// matters for loops, and for one-shots paused or held by the game's
+  /// pause: when the scene exits, those stop with their fade, while a
+  /// one-shot playing then plays to its end (a click just before a switch
+  /// is heard out). A loop meant to carry on into the next scene (rain,
+  /// say) needs it
   pub persist: bool,
   /// Added to the sound's gain, in dB (-6 is about half as loud)
   pub volume_db: f32,
@@ -84,8 +85,9 @@ impl<'w> AudioView<'w> {
   }
 
   /// Play `sound` (`&handle`, of a [`Sound`] or an [`AudioClip`]) and return
-  /// its [`Voice`], which belongs to the scene playing it (a loop stops as
-  /// the scene exits; see [`PlayOptions::persist`]). A sound that has not
+  /// its [`Voice`], which belongs to the scene playing it (a loop, or a
+  /// paused one-shot, stops as the scene exits; see
+  /// [`PlayOptions::persist`]). A sound that has not
   /// loaded yet, or failed to (warned about once), plays nothing, and a play
   /// its cooldown or a voice limit refuses starts nothing: the voice
   /// returned is already stopped

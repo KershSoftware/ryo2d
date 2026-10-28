@@ -911,17 +911,19 @@ impl AudioEngine {
     std::mem::replace(&mut self.scope, scope)
   }
 
-  /// Scene `scope` exited: stop the loops it played, each with its fade
-  /// (its sound's `fade_out`, at least [`MIN_FADE`]), and let its one-shots
-  /// finish (a confirm click just before a switch is heard out), but any it
-  /// paused itself, which would never finish. The voices played with
-  /// `persist`, and the engine's own, play on
+  /// Scene `scope` exited: stop the loops it played, and the one-shots
+  /// paused (by their own call) or held (by the game's pause, or time
+  /// standing still), each with its fade (its sound's `fade_out`, at least
+  /// [`MIN_FADE`]). Only its one-shots playing now finish (a confirm click
+  /// just before a switch is heard out): a paused one would otherwise play
+  /// its rest over the next scene once the clock resumes. The voices played
+  /// with `persist`, and the engine's own, play on
   pub(crate) fn release_scope(&mut self, world: &World, scope: u64) {
     let server = world.get_resource::<AssetServer>();
     for index in 0..self.voices.live.len() {
       let live = &mut self.voices.live[index];
       let state = live.voice.state();
-      let lingers = live.looping || state == VoiceState::Paused;
+      let lingers = live.looping || live.held || state == VoiceState::Paused;
       if live.scope != Some(scope)
         || !lingers
         || !matches!(state, VoiceState::Playing | VoiceState::Paused)
@@ -2188,8 +2190,9 @@ impl Drop for AudioEngine {
 }
 
 /// Run `f` as scene `scope`'s code (a callback, one of its systems, or its
-/// UI nodes' observers): the voices it plays belong to that scene, and its
-/// loops stop as it exits. A world without an audio engine just runs `f`
+/// UI nodes' observers): the voices it plays belong to that scene, and all
+/// but its playing one-shots stop as it exits. A world without an audio
+/// engine just runs `f`
 pub(crate) fn in_scene<R>(world: &mut World, scope: u64, f: impl FnOnce(&mut World) -> R) -> R {
   let previous = world
     .get_resource_mut::<AudioEngine>()
@@ -2201,8 +2204,8 @@ pub(crate) fn in_scene<R>(world: &mut World, scope: u64, f: impl FnOnce(&mut Wor
   result
 }
 
-/// Scene `scope` exited: stop the loops it played, each with its fade, and
-/// let its one-shots finish
+/// Scene `scope` exited: stop the loops it played and its one-shots paused
+/// or held, each with its fade, and let its playing one-shots finish
 pub(crate) fn release_scene(world: &mut World, scope: u64) {
   world.try_resource_scope(|world: &mut World, mut engine: Mut<'_, AudioEngine>| {
     engine.release_scope(world, scope);

@@ -141,8 +141,9 @@ enum TransitionPhase {
 }
 
 /// Drop what a scene that exited owned in the world: the console handlers
-/// it registered, and the loops it played (stopped with their fades; its
-/// one-shots play to their end).
+/// it registered, and the voices it played: its loops and its paused or
+/// held one-shots stop with their fades, its playing one-shots play to
+/// their end.
 fn release_scope(world: &mut World, scope_id: u64) {
   if let Some(mut registry) = world.get_resource_mut::<CommandRegistry>() {
     registry.clear_scope(scope_id);
@@ -1478,6 +1479,55 @@ mod tests {
       let voice = ctx.audio().play(&self.0);
       self.1.lock().unwrap().push(voice);
     }
+  }
+
+  /// Plays a one-shot as it enters
+  struct PlaysShot(
+    crate::core::asset::Handle<crate::core::audio::AudioClip>,
+    Voices,
+  );
+
+  impl Scene for PlaysShot {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
+      let voice = ctx.audio().play(&self.0);
+      self.1.lock().unwrap().push(voice);
+    }
+  }
+
+  /// "Quit to menu" from a pause: the switch's cleanup resumes the clock,
+  /// but the old scene's one-shot, held mid-play, is stopped as it exits,
+  /// never resumed over the menu
+  #[test]
+  fn a_scene_exit_stops_its_one_shots_the_game_pause_holds() {
+    use crate::core::audio::{AudioClip, AudioEngine, AudioLogKind};
+    use crate::core::testing::audio_step;
+    let (mut world, mut audio, _) = audio_scene_world();
+    let clip = world
+      .resource_mut::<crate::core::asset::Assets<AudioClip>>()
+      .add(AudioClip::from_frames(48_000, &vec![[0.1, 0.1]; 48_000]));
+    let played: Voices = Arc::default();
+    let mut m = SceneManager::with_scene(Box::new(PlaysShot(clip, played.clone())));
+    m.enter_initial(&mut world, &mut audio);
+    let [shot] = voices(&played);
+    audio_step(&mut world, Duration::from_millis(50));
+    world.resource_mut::<Time>().game.pause();
+    audio_step(&mut world, Duration::from_nanos(16_666_667));
+    m.switch(rec(&Arc::default(), "menu"), &mut world, &mut audio);
+    assert!(!world.resource::<Time>().game.is_paused());
+    assert_eq!(
+      audio_stops(&world),
+      [(shot.id(), Duration::from_millis(10))]
+    );
+    for _ in 0..3 {
+      audio_step(&mut world, Duration::from_nanos(16_666_667));
+    }
+    assert!(shot.is_stopped(), "{shot:?}");
+    let resumed = world
+      .resource::<AudioEngine>()
+      .log()
+      .iter()
+      .any(|entry| entry.voice == shot.id() && entry.kind == AudioLogKind::Resume);
+    assert!(!resumed, "it was never heard again");
   }
 
   /// A reset and a clear exit every scene: each one's loops stop
