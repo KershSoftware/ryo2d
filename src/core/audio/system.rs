@@ -8,8 +8,9 @@ use crate::core::time::Time;
 
 /// `PostUpdate`, after the cameras: applies the voices' commands queued this
 /// frame (the scene's update has run), builds the bus tree from the mixer
-/// when it lands or changes, follows the game clock (its pause, time scale
-/// and hitstop), reports the device's stream errors, advances the mock
+/// when it lands or changes, follows the game clock (its pause and time
+/// scale; hitstop leaves audio alone), reports the device's stream errors,
+/// advances the mock
 /// backend by the frame's real time, and retires the voices that ended. A
 /// world without an [`AudioEngine`] is left alone
 #[doc(hidden)]
@@ -274,12 +275,40 @@ mod tests {
     );
   }
 
+  /// Hitstop is a visual freeze: the hit's sound plays through it, and no
+  /// bus holds or slows
   #[test]
-  fn hitstop_pauses_following_buses() {
+  fn hitstop_leaves_audio_playing() {
+    let mut world = audio_world();
+    let voices = play_on_each_bus(&mut world);
+    let hit_clip = clip(&mut world, 1.0);
+    audio_step(&mut world, FRAME);
+    time(&mut world).game.hitstop(0.1);
+    let hit = AudioView::new(&mut world).play(&hit_clip);
+    audio_step(&mut world, FRAME);
+    assert!(world.resource::<Time>().game.is_hitstop());
+    let log = log(&world);
+    assert_eq!(bus_entries(&log, AudioLogKind::Pause), [], "{log:#?}");
+    assert!(log.iter().all(|entry| entry.kind != AudioLogKind::Rate));
+    for (bus, voice) in &voices {
+      assert_eq!(
+        playback(&world, voice),
+        Some(PlaybackState::Playing),
+        "{bus}"
+      );
+    }
+    assert_eq!(playback(&world, &hit), Some(PlaybackState::Playing));
+    assert!(position(&world, &hit) > 0.01, "the hit sounds at once");
+  }
+
+  /// A time scale at or below 0.01 stands time still: the buses that
+  /// follow it hold, and no rate kira cannot play is sent
+  #[test]
+  fn a_time_scale_at_or_below_0_01_holds_following_buses() {
     let mut world = audio_world();
     let voices = play_on_each_bus(&mut world);
     audio_step(&mut world, FRAME);
-    time(&mut world).game.hitstop(0.1);
+    time(&mut world).game.set_speed(0.01);
     audio_step(&mut world, FRAME);
     let following = ["sfx", "ambience"];
     assert_eq!(
@@ -295,44 +324,116 @@ mod tests {
       };
       assert_eq!(playback(&world, voice), Some(expected), "{bus}");
     }
-    // No rate kira cannot play is ever sent
-    let rate_entries = |world: &World| {
-      log(world)
+    assert!(
+      log(&world)
         .iter()
-        .filter(|entry| entry.kind == AudioLogKind::Rate)
-        .count()
-    };
-    assert_eq!(rate_entries(&world), 0);
-    for _ in 0..6 {
-      audio_step(&mut world, FRAME);
-    }
-    assert!(!world.resource::<Time>().game.is_hitstop());
+        .all(|entry| entry.kind != AudioLogKind::Rate)
+    );
+    time(&mut world).game.set_speed(0.02);
+    audio_step(&mut world, FRAME);
     assert_eq!(
       bus_entries(&log(&world), AudioLogKind::Resume),
       with_fade(&following, MIN_FADE)
     );
-    for (bus, voice) in &voices {
-      assert_eq!(
-        playback(&world, voice),
-        Some(PlaybackState::Playing),
-        "{bus}"
-      );
-    }
-    // A time scale at or below 0.01 stops time as hitstop does
-    time(&mut world).game.set_speed(0.01);
-    audio_step(&mut world, FRAME);
-    assert_eq!(bus_entries(&log(&world), AudioLogKind::Pause).len(), 4);
-    assert_eq!(rate_entries(&world), 0);
     let sfx = &voices[1].1;
-    assert_eq!(playback(&world, sfx), Some(PlaybackState::Paused));
-    time(&mut world).game.set_speed(0.02);
-    audio_step(&mut world, FRAME);
-    assert_eq!(bus_entries(&log(&world), AudioLogKind::Resume).len(), 4);
+    assert_eq!(playback(&world, sfx), Some(PlaybackState::Playing));
     assert!(
       close(&rates(&world, sfx), &[1.0, 0.02]),
       "{:?}",
       rates(&world, sfx)
     );
+  }
+
+  /// The game clock runs up to 100 times as fast; audio follows it up to
+  /// 8 times
+  #[test]
+  fn the_time_scale_audio_follows_is_capped_at_8x() {
+    let mut world = audio_world();
+    let clip = clip(&mut world, 2.0);
+    let octave_up = PlayOptions {
+      pitch: 12.0,
+      ..Default::default()
+    };
+    let sfx = AudioView::new(&mut world).play_with(&clip, octave_up);
+    time(&mut world).game.set_speed(20.0);
+    audio_step(&mut world, FRAME);
+    time(&mut world).game.set_speed(4.0);
+    audio_step(&mut world, FRAME);
+    assert!(
+      close(&rates(&world, &sfx), &[2.0, 16.0, 8.0]),
+      "{:?}",
+      rates(&world, &sfx)
+    );
+  }
+
+  /// A voice that starts held keeps its fade-in: played as the game
+  /// resumes (its bus is still held until the frame's audio runs) or
+  /// while the game is paused, it fades in over its own fade-in when its
+  /// bus lets it go, not over 10 ms. Its start, silent and paused, logs no
+  /// fade; its first resume logs the fade-in
+  #[test]
+  fn a_voice_that_starts_held_keeps_its_fade_in() {
+    let mut world = audio_world();
+    let clip = clip(&mut world, 2.0);
+    let fade_in = Duration::from_millis(500);
+    let bed = world.resource_mut::<Assets<Sound>>().add(Sound {
+      clips: vec![SoundClip::new(clip)],
+      looping: true,
+      fade_in,
+      ..Default::default()
+    });
+    time(&mut world).game.pause();
+    audio_step(&mut world, FRAME);
+    let waiting = AudioView::new(&mut world).play(&bed);
+    audio_step(&mut world, FRAME);
+    time(&mut world).game.resume();
+    let late = AudioView::new(&mut world).play(&bed);
+    for _ in 0..3 {
+      audio_step(&mut world, FRAME);
+    }
+    for voice in [&waiting, &late] {
+      // Still fading in after 50 ms
+      assert_eq!(playback(&world, voice), Some(PlaybackState::Resuming));
+      let entries: Vec<(AudioLogKind, Duration)> = log(&world)
+        .iter()
+        .filter(|entry| entry.voice == voice.id())
+        .map(|entry| (entry.kind, entry.fade))
+        .collect();
+      assert_eq!(
+        entries,
+        [
+          (AudioLogKind::Start, Duration::ZERO),
+          (AudioLogKind::Resume, fade_in)
+        ]
+      );
+    }
+    for _ in 0..30 {
+      audio_step(&mut world, FRAME);
+    }
+    for voice in [&waiting, &late] {
+      assert_eq!(playback(&world, voice), Some(PlaybackState::Playing));
+    }
+  }
+
+  /// A voice's own resume in the frame its bus starts holding does not
+  /// play it through the hold
+  #[test]
+  fn a_voice_resumed_as_its_bus_starts_holding_stays_held() {
+    let mut world = audio_world();
+    let clip = clip(&mut world, 2.0);
+    let voice = AudioView::new(&mut world).play(&clip);
+    voice.pause();
+    audio_step(&mut world, FRAME);
+    voice.resume();
+    time(&mut world).game.pause();
+    for _ in 0..3 {
+      audio_step(&mut world, FRAME);
+    }
+    assert!(voice.is_playing(), "{voice:?}");
+    assert_eq!(playback(&world, &voice), Some(PlaybackState::Paused));
+    time(&mut world).game.resume();
+    audio_step(&mut world, FRAME);
+    assert_eq!(playback(&world, &voice), Some(PlaybackState::Playing));
   }
 
   /// A voice played while its bus is held starts held, unheard, and plays

@@ -76,26 +76,29 @@ const DEFAULT_BUS: &str = "sfx";
 const HOLD_SCALE: f32 = 0.01;
 /// A time scale change smaller than this is not sent to the voices
 const SCALE_EPSILON: f64 = 1e-6;
+/// The fastest time scale audio follows: the game clock runs up to 100
+/// times as fast, which would swamp kira's mixing thread
+const MAX_SCALE: f32 = 8.0;
 
 /// The game's clock as audio follows it, read from `Time` each frame
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct GameTime {
   /// The game is paused (`time.game.pause()`)
   pub(crate) paused: bool,
-  /// The time scale: 0 while paused or in hitstop, the game's speed
-  /// otherwise
+  /// The time scale: 0 while paused, the game's speed otherwise, at most
+  /// [`MAX_SCALE`]
   pub(crate) scale: f32,
 }
 
 impl GameTime {
-  /// `time`'s game clock: hitstop counts as a time scale of 0, as it does
-  /// not change the speed
+  /// `time`'s game clock. Hitstop is not in it: it is a visual freeze, and
+  /// the hit's sound plays through it
   pub(crate) fn of(time: &crate::core::time::Time) -> GameTime {
     let paused = time.game.is_paused();
-    let scale = if paused || time.game.is_hitstop() {
+    let scale = if paused {
       0.0
     } else {
-      time.game.speed()
+      time.game.speed().min(MAX_SCALE)
     };
     GameTime { paused, scale }
   }
@@ -422,9 +425,15 @@ struct LiveVoice {
   /// The time scale its rate carries: the game's for a voice on a bus that
   /// follows time scale, 1 otherwise
   scale: f64,
-  /// Its bus holds it: kira's sound is paused while the game is (or time
-  /// stands still), apart from any pause of its own
+  /// Its bus holds it: paused while the game is (or time stands still),
+  /// apart from any pause of its own
   held: bool,
+  /// kira's sound is paused, as kira was last told: it paused itself, or
+  /// its bus holds it. At most one pause or resume goes to kira a frame
+  kira_paused: bool,
+  /// It started held and has not sounded yet: the fade-in it plays when it
+  /// first does (its own, at least [`MIN_FADE`])
+  unheard: Option<Duration>,
   /// The scene that played it, which stops it as it exits; `None` for the
   /// engine's own (`persist`, or played outside any scene)
   scope: Option<u64>,
@@ -902,15 +911,21 @@ impl AudioEngine {
     std::mem::replace(&mut self.scope, scope)
   }
 
-  /// Scene `scope` exited: stop the voices it played, each with its fade
-  /// (its sound's `fade_out`, at least [`MIN_FADE`]). The voices played with
+  /// Scene `scope` exited: stop the loops it played, each with its fade
+  /// (its sound's `fade_out`, at least [`MIN_FADE`]), and let its one-shots
+  /// finish (a confirm click just before a switch is heard out), but any it
+  /// paused itself, which would never finish. The voices played with
   /// `persist`, and the engine's own, play on
   pub(crate) fn release_scope(&mut self, world: &World, scope: u64) {
     let server = world.get_resource::<AssetServer>();
     for index in 0..self.voices.live.len() {
       let live = &mut self.voices.live[index];
       let state = live.voice.state();
-      if live.scope != Some(scope) || !matches!(state, VoiceState::Playing | VoiceState::Paused) {
+      let lingers = live.looping || state == VoiceState::Paused;
+      if live.scope != Some(scope)
+        || !lingers
+        || !matches!(state, VoiceState::Playing | VoiceState::Paused)
+      {
         continue;
       }
       let fade = live.fade_out.max(MIN_FADE);
@@ -1403,11 +1418,14 @@ impl AudioEngine {
       Err(Refusal::Full) => return Err("its new bus has no room".into()),
     };
     let live = &mut self.voices.live[index];
+    live.kira_paused = start.held;
     let mut old = std::mem::replace(&mut live.playback, playback);
     old.stop(tween(MIN_FADE));
     live.generation = self.generation;
+    // A paused or held one starts silent: its resume fades it in
+    let fade_in = if start.held { Duration::ZERO } else { MIN_FADE };
     self.record(index, AudioLogKind::Stop, MIN_FADE, server);
-    self.record(index, AudioLogKind::Start, MIN_FADE, server);
+    self.record(index, AudioLogKind::Start, fade_in, server);
     Ok(())
   }
 
@@ -1564,6 +1582,8 @@ impl AudioEngine {
       pitch,
       scale,
       held,
+      kira_paused: held,
+      unheard: held.then_some(request.fade_in),
       scope: if request.persist { None } else { self.scope },
       priority: request.priority,
       position: request.position,
@@ -1575,10 +1595,16 @@ impl AudioEngine {
       generation: self.generation,
       stuck_warned: false,
     });
+    // A held start is silent and paused: its fade-in waits for its resume
+    let fade_in = if held {
+      Duration::ZERO
+    } else {
+      request.fade_in
+    };
     self.record(
       self.voices.live.len() - 1,
       AudioLogKind::Start,
-      request.fade_in,
+      fade_in,
       server,
     );
     if let Some(id) = request.sound {
@@ -1848,12 +1874,16 @@ impl AudioEngine {
 
   /// Follow the game's clock. A bus that pauses with the game holds its
   /// voices while the game is paused, and one that follows time scale
-  /// while time stands still (a scale at or below [`HOLD_SCALE`]: hitstop,
-  /// pause, or a speed of about 0): held, a voice is paused in kira where
-  /// it is, over [`MIN_FADE`], and resumes from there. A voice on a bus that
-  /// follows time scale plays at its pitch's rate times the scale, gliding
-  /// over the frame; held, it keeps its rate. Each bus held or let go is
-  /// logged (`Pause`, `Resume`), and each rate change
+  /// while time stands still (a scale at or below [`HOLD_SCALE`]: the game
+  /// paused, or a speed of about 0; hitstop does not hold): held, a voice
+  /// is paused in kira where it is, over [`MIN_FADE`], and resumes from
+  /// there (a voice held from its start, over its own fade-in). A voice on
+  /// a bus that follows time scale plays at its pitch's rate times the
+  /// scale, gliding over the frame; held, it keeps its rate. Each bus held
+  /// or let go is logged (`Pause`, `Resume`), each voice's first resume
+  /// after a held start, and each rate change. The voices' own pauses and
+  /// resumes, applied this frame, reach kira here too, so each voice gets
+  /// at most one pause or resume a frame
   fn follow_game(&mut self, game: GameTime, real_delta: Duration, server: Option<&AssetServer>) {
     let still = game.scale <= HOLD_SCALE;
     let scale = f64::from(game.scale);
@@ -1892,13 +1922,24 @@ impl AudioEngine {
       let Some(bus) = self.buses.buses.get(live.bus) else {
         continue;
       };
-      if bus.held != live.held {
-        live.held = bus.held;
-        // A voice paused itself stays paused
-        match (state, bus.held) {
-          (VoiceState::Playing, true) => live.playback.pause(tween(MIN_FADE)),
-          (VoiceState::Playing, false) => live.playback.resume(tween(MIN_FADE)),
-          _ => {}
+      let let_go = live.held && !bus.held;
+      live.held = bus.held;
+      // Paused itself, or held: kira reads a pause before a resume sent in
+      // the same frame, so only where it ends up is sent
+      let paused = state == VoiceState::Paused || live.held;
+      let mut first_heard = None;
+      if paused != live.kira_paused {
+        live.kira_paused = paused;
+        if paused {
+          live.playback.pause(tween(MIN_FADE));
+        } else {
+          let unheard = live.unheard.take();
+          let fade = unheard.map_or(MIN_FADE, |fade| fade.max(MIN_FADE));
+          live.playback.resume(tween(fade));
+          // Its own resume logged itself
+          if let_go && unheard.is_some() {
+            first_heard = Some(fade);
+          }
         }
       }
       let scale = if bus.follows_time_scale {
@@ -1906,14 +1947,19 @@ impl AudioEngine {
       } else {
         1.0
       };
-      if (scale - live.scale).abs() <= SCALE_EPSILON {
-        continue;
+      let rescaled = (scale - live.scale).abs() > SCALE_EPSILON;
+      if rescaled {
+        live.scale = scale;
+        live
+          .playback
+          .set_rate(rate_of(live.pitch) * scale, tween(glide));
       }
-      live.scale = scale;
-      live
-        .playback
-        .set_rate(rate_of(live.pitch) * scale, tween(glide));
-      self.record(index, AudioLogKind::Rate, glide, server);
+      if let Some(fade) = first_heard {
+        self.record(index, AudioLogKind::Resume, fade, server);
+      }
+      if rescaled {
+        self.record(index, AudioLogKind::Rate, glide, server);
+      }
     }
   }
 
@@ -1951,27 +1997,29 @@ impl AudioEngine {
         live.voice.set_state(VoiceState::Stopping);
         (AudioLogKind::Stop, fade)
       }
-      // A voice its bus holds is paused in kira already, and stays so until
-      // the bus lets it go
+      // kira hears of a pause or resume in the frame's `follow_game`, with
+      // the bus's hold: a voice its bus holds stays paused until the bus
+      // lets it go
       VoiceChange::Pause => {
         if state == VoiceState::Paused {
           return;
         }
-        if !live.held {
-          live.playback.pause(smooth);
-        }
         live.voice.set_state(VoiceState::Paused);
+        self.voices_dirty = true;
         (AudioLogKind::Pause, MIN_FADE)
       }
       VoiceChange::Resume => {
         if state != VoiceState::Paused {
           return;
         }
-        if !live.held {
-          live.playback.resume(smooth);
-        }
         live.voice.set_state(VoiceState::Playing);
-        (AudioLogKind::Resume, MIN_FADE)
+        self.voices_dirty = true;
+        // Its first sounding takes its fade-in
+        let fade = match live.unheard {
+          Some(fade) if !live.held => fade.max(MIN_FADE),
+          _ => MIN_FADE,
+        };
+        (AudioLogKind::Resume, fade)
       }
       VoiceChange::Volume(db) => {
         live.gain_db = clamp_gain(db);
@@ -2139,9 +2187,9 @@ impl Drop for AudioEngine {
   }
 }
 
-/// Run `f` as scene `scope`'s code (a callback, or one of its systems):
-/// the voices it plays belong to that scene, and stop as it exits. A world
-/// without an audio engine just runs `f`
+/// Run `f` as scene `scope`'s code (a callback, one of its systems, or its
+/// UI nodes' observers): the voices it plays belong to that scene, and its
+/// loops stop as it exits. A world without an audio engine just runs `f`
 pub(crate) fn in_scene<R>(world: &mut World, scope: u64, f: impl FnOnce(&mut World) -> R) -> R {
   let previous = world
     .get_resource_mut::<AudioEngine>()
@@ -2153,7 +2201,8 @@ pub(crate) fn in_scene<R>(world: &mut World, scope: u64, f: impl FnOnce(&mut Wor
   result
 }
 
-/// Scene `scope` exited: stop the voices it played, each with its fade
+/// Scene `scope` exited: stop the loops it played, each with its fade, and
+/// let its one-shots finish
 pub(crate) fn release_scene(world: &mut World, scope: u64) {
   world.try_resource_scope(|world: &mut World, mut engine: Mut<'_, AudioEngine>| {
     engine.release_scope(world, scope);

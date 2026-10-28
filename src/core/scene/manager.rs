@@ -141,7 +141,8 @@ enum TransitionPhase {
 }
 
 /// Drop what a scene that exited owned in the world: the console handlers
-/// it registered, and the voices it played (stopped with their fades).
+/// it registered, and the loops it played (stopped with their fades; its
+/// one-shots play to their end).
 fn release_scope(world: &mut World, scope_id: u64) {
   if let Some(mut registry) = world.get_resource_mut::<CommandRegistry>() {
     registry.clear_scope(scope_id);
@@ -1382,9 +1383,19 @@ mod tests {
 
   type Voices = Arc<Mutex<Vec<crate::core::audio::Voice>>>;
 
-  /// Plays its sound as it enters: once its own, once persistent
+  /// The voices `played` holds, in the order they were played
+  fn voices<const N: usize>(played: &Voices) -> [crate::core::audio::Voice; N] {
+    match <[_; N]>::try_from(played.lock().unwrap().clone()) {
+      Ok(voices) => voices,
+      Err(voices) => panic!("{} voices played, not {N}", voices.len()),
+    }
+  }
+
+  /// Plays as it enters: its loop, the loop again persistent, a short
+  /// one-shot, and a one-shot it pauses
   struct Player {
     sound: crate::core::asset::Handle<crate::core::audio::Sound>,
+    shot: crate::core::asset::Handle<crate::core::audio::AudioClip>,
     played: Voices,
   }
 
@@ -1396,38 +1407,224 @@ mod tests {
       };
       let own = ctx.audio().play(&self.sound);
       let kept = ctx.audio().play_with(&self.sound, persist);
-      self.played.lock().unwrap().extend([own, kept]);
+      let shot = ctx.audio().play(&self.shot);
+      let paused = ctx.audio().play(&self.shot);
+      paused.pause();
+      self
+        .played
+        .lock()
+        .unwrap()
+        .extend([own, kept, shot, paused]);
     }
   }
 
+  /// A scene's exit stops its loops with their fade and lets its one-shots
+  /// finish (a confirm click just before a switch is heard out), but a
+  /// one-shot it paused, which would never finish; a persistent voice and
+  /// one played outside every scene play on
   #[test]
-  fn a_scene_exit_stops_its_voices_with_their_fade_and_keeps_persistent_ones() {
-    use crate::core::audio::AudioView;
+  fn a_scene_exit_stops_its_loops_with_their_fade_and_lets_its_one_shots_finish() {
+    use crate::core::audio::{AudioClip, AudioView};
     use crate::core::testing::audio_step;
     let (mut world, mut audio, sound) = audio_scene_world();
+    let shot = world
+      .resource_mut::<crate::core::asset::Assets<AudioClip>>()
+      .add(AudioClip::from_frames(48_000, &vec![[0.1, 0.1]; 14_400]));
     let played: Voices = Arc::default();
     let mut m = SceneManager::with_scene(Box::new(Player {
       sound: sound.clone(),
+      shot,
       played: played.clone(),
     }));
     m.enter_initial(&mut world, &mut audio);
     // A voice played outside every scene is the engine's
     let engine_owned = AudioView::new(&mut world).play(&sound);
-    let [own, kept] = <[_; 2]>::try_from(played.lock().unwrap().clone()).unwrap();
+    let [own, kept, shot, paused] = voices(&played);
     audio_step(&mut world, Duration::from_millis(20));
     m.switch(rec(&Arc::default(), "next"), &mut world, &mut audio);
     assert_eq!(
       audio_stops(&world),
-      [(own.id(), Duration::from_millis(250))]
+      [
+        (own.id(), Duration::from_millis(250)),
+        (paused.id(), Duration::from_millis(10))
+      ]
     );
-    // kira fades it out over its fade
+    // kira fades the loop out over its fade
     audio_step(&mut world, Duration::from_millis(100));
     assert!(!own.is_stopped() && !own.is_playing(), "fading: {own:?}");
+    assert!(shot.is_playing(), "the one-shot plays on: {shot:?}");
     audio_step(&mut world, Duration::from_millis(200));
     audio_step(&mut world, Duration::from_millis(20));
     assert!(own.is_stopped(), "{own:?}");
+    assert!(shot.is_stopped(), "it played to its end: {shot:?}");
+    assert!(
+      audio_stops(&world)
+        .iter()
+        .all(|(voice, _)| *voice != shot.id()),
+      "it was never stopped"
+    );
     assert!(kept.is_playing(), "{kept:?}");
     assert!(engine_owned.is_playing(), "{engine_owned:?}");
+  }
+
+  /// Plays its loop as it enters
+  struct PlaysLoop(
+    crate::core::asset::Handle<crate::core::audio::Sound>,
+    Voices,
+  );
+
+  impl Scene for PlaysLoop {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
+      let voice = ctx.audio().play(&self.0);
+      self.1.lock().unwrap().push(voice);
+    }
+  }
+
+  /// A reset and a clear exit every scene: each one's loops stop
+  #[test]
+  fn a_reset_or_a_clear_stops_the_loops_of_every_scene_it_exits() {
+    let (mut world, mut audio, sound) = audio_scene_world();
+    let played: Voices = Arc::default();
+    let plays = || Box::new(PlaysLoop(sound.clone(), played.clone()));
+    let mut m = SceneManager::with_scene(plays());
+    m.enter_initial(&mut world, &mut audio);
+    m.push(plays(), &mut world, &mut audio);
+    m.reset(rec(&Arc::default(), "next"), &mut world, &mut audio);
+    let [below, above] = voices(&played);
+    let fade = Duration::from_millis(250);
+    assert_eq!(
+      audio_stops(&world),
+      [(above.id(), fade), (below.id(), fade)],
+      "top to bottom"
+    );
+    played.lock().unwrap().clear();
+    m.push(plays(), &mut world, &mut audio);
+    let [last] = voices(&played);
+    m.clear(&mut world, &mut audio);
+    assert_eq!(audio_stops(&world).last(), Some(&(last.id(), fade)));
+  }
+
+  /// A loop that fades in over 500 ms
+  fn bed(world: &mut World) -> crate::core::asset::Handle<crate::core::audio::Sound> {
+    use crate::core::audio::{AudioClip, Sound, SoundClip};
+    let clip = world
+      .resource_mut::<crate::core::asset::Assets<AudioClip>>()
+      .add(AudioClip::from_frames(48_000, &vec![[0.1, 0.1]; 96_000]));
+    world
+      .resource_mut::<crate::core::asset::Assets<Sound>>()
+      .add(Sound {
+        clips: vec![SoundClip::new(clip)],
+        looping: true,
+        fade_in: Duration::from_millis(500),
+        ..Default::default()
+      })
+  }
+
+  /// Plays its bed as it enters, or as it resumes
+  struct Bed {
+    sound: crate::core::asset::Handle<crate::core::audio::Sound>,
+    played: Voices,
+    on_resume: bool,
+  }
+
+  impl Scene for Bed {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
+      if !self.on_resume {
+        let voice = ctx.audio().play(&self.sound);
+        self.played.lock().unwrap().push(voice);
+      }
+    }
+    fn on_resume(&mut self, ctx: &mut SceneContext, _r: Option<Box<dyn std::any::Any>>) {
+      if self.on_resume {
+        let voice = ctx.audio().play(&self.sound);
+        self.played.lock().unwrap().push(voice);
+      }
+    }
+  }
+
+  /// A pause menu: the game clock resumes as it exits
+  struct Unpauses;
+
+  impl Scene for Unpauses {
+    fn on_exit(&mut self, ctx: &mut SceneContext) {
+      ctx.time.game.resume();
+    }
+  }
+
+  /// Three frames on (50 ms), `voice` is still fading in over the bed's
+  /// 500 ms: it started held (its bus was still held from the paused frame
+  /// before) and its first resume took its fade-in
+  fn assert_fades_in(world: &mut World, voice: &crate::core::audio::Voice) {
+    use crate::core::audio::{AudioEngine, AudioLogKind};
+    use crate::core::testing::audio_step;
+    use kira::sound::PlaybackState;
+    for _ in 0..3 {
+      audio_step(world, Duration::from_nanos(16_666_667));
+    }
+    let engine = world.resource::<AudioEngine>();
+    assert_eq!(
+      engine.voice_playback(voice.id()),
+      Some(PlaybackState::Resuming)
+    );
+    let entries: Vec<(AudioLogKind, Duration)> = engine
+      .log()
+      .iter()
+      .filter(|entry| entry.voice == voice.id())
+      .map(|entry| (entry.kind, entry.fade))
+      .collect();
+    assert_eq!(
+      entries,
+      [
+        (AudioLogKind::Start, Duration::ZERO),
+        (AudioLogKind::Resume, Duration::from_millis(500))
+      ]
+    );
+  }
+
+  /// A reset from a pause menu: its cleanup (`TIME`) resumes the clock
+  /// before the next scene enters and plays
+  #[test]
+  fn a_loop_played_as_a_reset_resumes_the_clock_keeps_its_fade_in() {
+    use crate::core::testing::audio_step;
+    let (mut world, mut audio, _) = audio_scene_world();
+    let sound = bed(&mut world);
+    let mut m = SceneManager::with_scene(rec(&Arc::default(), "game"));
+    m.enter_initial(&mut world, &mut audio);
+    world.resource_mut::<Time>().game.pause();
+    audio_step(&mut world, Duration::from_nanos(16_666_667));
+    let played: Voices = Arc::default();
+    let next = Box::new(Bed {
+      sound,
+      played: played.clone(),
+      on_resume: false,
+    });
+    m.reset(next, &mut world, &mut audio);
+    assert!(!world.resource::<Time>().game.is_paused());
+    let [voice] = voices(&played);
+    assert_fades_in(&mut world, &voice);
+  }
+
+  /// A pause overlay pops, resuming the clock, and the scene below plays
+  /// in `on_resume`
+  #[test]
+  fn a_loop_played_in_on_resume_as_the_clock_resumes_keeps_its_fade_in() {
+    use crate::core::testing::audio_step;
+    let (mut world, mut audio, _) = audio_scene_world();
+    let sound = bed(&mut world);
+    let played: Voices = Arc::default();
+    let mut m = SceneManager::with_scene(Box::new(Bed {
+      sound,
+      played: played.clone(),
+      on_resume: true,
+    }));
+    m.enter_initial(&mut world, &mut audio);
+    m.push(Box::new(Unpauses), &mut world, &mut audio);
+    world.resource_mut::<Time>().game.pause();
+    audio_step(&mut world, Duration::from_nanos(16_666_667));
+    m.pop(&mut world, &mut audio, None);
+    assert!(!world.resource::<Time>().game.is_paused());
+    let [voice] = voices(&played);
+    assert_fades_in(&mut world, &voice);
   }
 
   /// A voice a scene's system plays is the scene's too; a scene pushed

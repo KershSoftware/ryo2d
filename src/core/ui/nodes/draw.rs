@@ -2209,6 +2209,30 @@ mod tests {
     assert!(heard.lock().unwrap().contains(&UiEventKind::Clicked));
   }
 
+  /// The commands an observer queues apply as its event is delivered,
+  /// before the scene's `ui` runs, as in the engine's UI pass
+  #[test]
+  fn an_observer_s_commands_apply_before_the_scene_s_ui() {
+    #[derive(crate::core::ecs::Resource)]
+    struct Clicked;
+
+    let mut h = UiHarness::new(300.0, 300.0);
+    let root = h.spawn_ui(menu());
+    let play = kids(h.world(), root)[0];
+    h.world_mut().entity_mut(play).observe(
+      |event: On<UiEvent>, mut commands: crate::core::ecs::Commands| {
+        if event.kind == UiEventKind::Clicked {
+          commands.insert_resource(Clicked);
+        }
+      },
+    );
+    h.frame(|_| {});
+    h.frame(|_| {});
+    h.action("ui.confirm");
+    let seen = h.frame_with_world(|_, world| world.contains_resource::<Clicked>());
+    assert!(seen, "the observer's command had applied");
+  }
+
   #[test]
   fn ui_id_is_known_once_drawn_and_focus_ui_moves_the_focus() {
     let mut h = UiHarness::new(300.0, 300.0);

@@ -76,7 +76,7 @@ pub struct Sound {
   /// Each play fades in over this
   pub fade_in: Duration,
   /// Its fade when the engine stops it: to make room under a voice limit,
-  /// or when the scene that played it exits. At least 10 ms
+  /// or, for a loop, when the scene that played it exits. At least 10 ms
   pub fade_out: Duration,
   /// Played at a position in the world, it is heard from there: quieter
   /// with distance from the listener, panned by its offset

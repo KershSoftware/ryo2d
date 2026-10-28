@@ -72,19 +72,23 @@ struct VoiceShared {
 ///
 /// A voice belongs to the scene that played it, from a callback, one of its
 /// systems or an observer of its UI nodes: when that scene exits (popped,
-/// switched away or reset), the voice stops with its sound's `fade_out`.
-/// One played with [`PlayOptions::persist`](super::PlayOptions::persist),
-/// or outside every scene, belongs to the engine and plays on.
+/// switched away or reset), a loop stops with its sound's `fade_out`, and a
+/// one-shot plays to its end (one it paused itself, which would never end,
+/// stops). One played with
+/// [`PlayOptions::persist`](super::PlayOptions::persist), or outside every
+/// scene, belongs to the engine and plays on.
 ///
 /// It follows the game's clock through its bus. On a bus that pauses with
 /// the game (by default `sfx`, `voice` and `ambience`) it pauses where it
 /// is while the game is paused, and resumes from there. On a bus that
 /// follows time scale (`sfx` and `ambience`) it plays at its pitch's rate
-/// times the game's speed, and pauses while time stands still (the game
-/// paused, hitstop, or a speed of 0.01 or less). These holds are the
-/// engine's and leave the voice's own [`pause`](Self::pause) alone: a held
-/// voice still reports playing, and one paused itself stays paused when the
-/// game resumes.
+/// times the game's speed (up to 8 times), and pauses while time stands
+/// still (the game paused, or a speed of 0.01 or less). Hitstop does not
+/// hold it: a hit's sound plays through the freeze. A voice played while
+/// its bus is held waits, unheard, and fades in over its own fade-in when
+/// the bus lets it go. These holds are the engine's and leave the voice's
+/// own [`pause`](Self::pause) alone: a held voice still reports playing,
+/// and one paused itself stays paused when the game resumes.
 ///
 /// ```
 /// use std::time::Duration;
@@ -183,8 +187,8 @@ impl Voice {
   }
 
   /// Whether it is playing: started, not paused, not stopping or stopped.
-  /// A voice its bus holds while the game is paused (or in hitstop) still
-  /// counts as playing
+  /// A voice its bus holds while the game is paused still counts as
+  /// playing
   pub fn is_playing(&self) -> bool {
     self.state() == VoiceState::Playing
   }

@@ -120,10 +120,10 @@ pub struct BusDef {
   /// goes by its own: one that does not pause under one that does plays on
   pub pauses_with_game: Option<bool>,
   /// Whether its voices follow the game's time scale: they play at their
-  /// pitch's rate times the game's speed, and pause while time stands
-  /// still (paused, in hitstop, or at a speed of 0.01 or less); `None`
-  /// keeps the standard bus's default (sfx and ambience do), or its
-  /// parent's
+  /// pitch's rate times the game's speed (up to 8 times), and pause while
+  /// time stands still (the game paused, or a speed of 0.01 or less;
+  /// hitstop does not hold them); `None` keeps the standard bus's default
+  /// (sfx and ambience do), or its parent's
   pub follows_time_scale: Option<bool>,
   /// The most voices playing on it and the buses under it
   pub limit: Option<u16>,
@@ -1538,7 +1538,7 @@ pub struct BusReport {
   pub pauses_with_game: bool,
   pub follows_time_scale: bool,
   /// Its voices are held where they are: by the game's pause, or by time
-  /// standing still (hitstop, or a time scale of 0.01 or less)
+  /// standing still (a time scale of 0.01 or less)
   pub held: bool,
   pub limit: Option<u16>,
 }
@@ -1915,6 +1915,17 @@ mod tests {
       engine.voice_playback(voice.id()),
       Some(PlaybackState::Paused),
       "kira's new sound is paused too"
+    );
+    let restarted = engine
+      .log()
+      .iter()
+      .rev()
+      .find(|entry| entry.voice == voice.id() && entry.kind == AudioLogKind::Start)
+      .map(|entry| entry.fade);
+    assert_eq!(
+      restarted,
+      Some(Duration::ZERO),
+      "it starts silent and paused"
     );
     voice.resume();
     audio_step(&mut world, FRAME);

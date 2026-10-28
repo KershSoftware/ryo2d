@@ -18,7 +18,9 @@ pub enum AudioLogKind {
   /// It was paused. With `voice` 0, a bus held its voices where they are:
   /// the game paused, or time stood still on a bus that follows time scale
   Pause,
-  /// It was resumed. With `voice` 0, a bus let its voices go
+  /// It was resumed. With `voice` 0, a bus let its voices go. A voice that
+  /// started held (its start logs no fade) logs its first resume, with
+  /// its fade-in
   Resume,
   /// Its gain changed to `gain_db`. With `voice` 0 and no `source`, a
   /// bus's gain changed: `gain_db` is the volume its kira track was given

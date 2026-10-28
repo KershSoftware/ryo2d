@@ -719,9 +719,13 @@ impl UiHarness {
       nodes::begin_pass(&mut self.world);
       let events = nodes::draw_nodes(&mut self.world, &mut context, self.scene);
       self.last_events.clone_from(&events);
+      // The commands the observers queue apply as their events are
+      // delivered, as in the engine's UI pass
       nodes::deliver(&mut self.world, events);
+      self.world.flush();
       let result = ui(&mut context, &mut self.world);
       let late = nodes::deliver_pending(&mut self.world);
+      self.world.flush();
       self.last_events.extend(late);
       context.end_scene();
       self.rebinds = context.take_rebinds();
