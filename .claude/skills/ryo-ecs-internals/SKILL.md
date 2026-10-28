@@ -2,7 +2,7 @@
 name: ryo-ecs-internals
 description: Working on Ryo2D's ECS (bevy_ecs presented as ryo2d::ecs) - kernel re-exports, components, propagation, interpolation, pooling and engine systems.
 metadata:
-  version: 2.1.0
+  version: 2.1.1
 ---
 
 # Ryo2D ECS Internals
@@ -78,7 +78,7 @@ Patterns the engine uses:
 | Written by networking | `Component<Mutability = Mutable>` (the default derive) | `Replicated` |
 | Resource with `ResMut` / `resource_mut` | `Resource<Mutability = Mutable>` (the default derive) | `Time`, `Input` |
 
-A resource must be `Send + Sync`. The scene stack and audio are not, so they live in the non-send `SceneHost` (`engine/mod.rs`).
+A resource must be `Send + Sync`. The scene stack is not (its scenes are not `Send`), so it lives in the non-send `SceneHost` (`engine/mod.rs`); the audio engine is an ordinary resource (`AudioEngine`).
 
 ## Transform Internals
 
@@ -112,7 +112,7 @@ In `bevy_ecs` 0.20 a resource is a component on a hidden entity marked `IsResour
 
 - `Disabled` is the kernel's entity-disabling component: every query skips it unless it includes `Allow<Disabled>` (or names `Disabled`). Systems need no filter of their own for pooled entities.
 - Bookkeeping that must see disabled entities asks for them: physics' `(With<RigidBody>, Added<Disabled>, Allow<Disabled>)` unregisters a body as it is disabled.
-- `Pool<B: Bundle>` spawns its batches disabled; `acquire` removes `Disabled`, `release`/`release_all` insert it. `acquire` does not reset components and skips the entity's interpolation for this step. Acquire, release and `is_active` are O(1) plus the entity's children (release disables descendants, acquire restores the ones it disabled: `pooling::disable_descendants` / `enable_descendants`, which a respawning pickup uses too); a pool forgets entities the world no longer has (a cleanup sweep) when it meets them, and refills.
+- `Pool<B: Bundle>` spawns its batches disabled; `acquire` removes `Disabled`, `release`/`release_all` insert it. `acquire` does not reset components and skips the entity's interpolation for this step. Acquire, release and `is_active` are O(1) plus the entity's children (release disables descendants, acquire restores the ones it disabled: `pooling::disable_descendants` / `enable_descendants`, which a respawning pickup uses too); a pool forgets entities the world no longer has (a cleanup sweep) when it meets them, and refills. A `RecycleOldest` pool puts its oldest entity back (disabled) before handing it out again (enabled), so whatever watches `Disabled` sees a recycle as a release and an acquire: physics and joints register it again, and an `AudioEmitter` on it stops its loops and plays again.
 
 ## Engine Systems
 

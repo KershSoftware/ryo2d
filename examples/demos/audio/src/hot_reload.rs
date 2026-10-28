@@ -6,7 +6,6 @@
 //! mixer rebuilds the buses with the loop carrying on
 
 use demo_kit::prelude::*;
-use ryo2d::core::audio::MIXER_PATH;
 
 use crate::shared::{BAD, DIM, HOT, bus_meters, load, load_mixer};
 

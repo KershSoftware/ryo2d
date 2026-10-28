@@ -2,7 +2,7 @@
 name: ryo-engine-dev
 description: Working on the Ryo2D engine - the frame's phases, module map, resources, public API, crates and testing.
 metadata:
-  version: 2.3.0
+  version: 2.4.0
 ---
 
 # Ryo2D Engine Developer
@@ -56,7 +56,9 @@ Engine::frame
 │   └─ Trails         trail point recording; later debug shapes last one frame
 ├─ Update             UpdateSet::Game: the scenes' own Update schedules; builder systems by default
 ├─ PostUpdate         Transforms (propagation) → Camera (shake on real time, every CameraView)
-│                     → Extract (parallax auto-scroll, timed effects, text reveals)
+│                     → Extract (parallax auto-scroll, timed effects, text reveals); after Camera,
+│                     audio_system: voice commands, mixer rebuilds, reloads, music, the listener
+│                     and emitters, the game clock's holds and rates, the mock backend's render
 ├─ render             present_frame (engine/extract.rs): Scene::render (GPU batches), queries
 │                     the world into the draw list (world space, sorted once: sprites, entities,
 │                     trails and lines as polylines, world text; parallax and debug shapes per camera),
@@ -80,11 +82,11 @@ Engine::frame
 
 | In the world (resources) | Engine-owned (fields of `Engine`) |
 |--------------------------|-----------------------------------|
-| `Time`, `Input`, `ScreenMapping`, `AssetServer` and one `Assets<T>` per asset type, `EffectsManager`, `LightingSettings`, `Look`, `TilemapManager`, `WindowRequest`, `CursorRequest`, `WindowInfo`, `RenderPipeline`, `RenderTargets`, `Fonts`, `TextIcons`, `TextEffects`, `Gpu` (after GPU init), `PhysicsPaused`, `PhysicsConfig`, `Physics`, `CommandRegistry`, `FallbackErrorHandler`, `Messages<T>` per type | The window, the wgpu renderer (with the camera images), the sprite textures, the 2D batch and the lighting renderer, the camera uniforms, the draw list, the text engine (layout cache), the UI's image sizes (`ImageSizes`, the image store's follower) and the frame's UI commands, console state, debug config and overlays, dev windows, gilrs, capture state |
-| Non-send `SceneHost` (scene stack + Kira `Audio`), taken out by the scene systems while they run | |
+| `Time`, `Input`, `ScreenMapping`, `AssetServer` and one `Assets<T>` per asset type, `AudioEngine` (kira's manager, the buses and the voices; `ctx.audio()`), `EffectsManager`, `LightingSettings`, `Look`, `TilemapManager`, `WindowRequest`, `CursorRequest`, `WindowInfo`, `RenderPipeline`, `RenderTargets`, `Fonts`, `TextIcons`, `TextEffects`, `Gpu` (after GPU init), `PhysicsPaused`, `PhysicsConfig`, `Physics`, `CommandRegistry`, `FallbackErrorHandler`, `Messages<T>` per type | The window, the wgpu renderer (with the camera images), the sprite textures, the 2D batch and the lighting renderer, the camera uniforms, the draw list, the text engine (layout cache), the UI's image sizes (`ImageSizes`, the image store's follower) and the frame's UI commands, console state, debug config and overlays, dev windows, gilrs, capture state |
+| Non-send `SceneHost` (the scene stack), taken out by the scene systems while they run | |
 
 - `init_world_resources` (`engine/mod.rs`) inserts the resources when the engine is built, windowed or headless; `Gpu` follows in `init_gpu`.
-- Scene callbacks get `Time` and `Input` as `SceneContext` fields, taken out of the world for the callback (`SceneContext::scoped`); `ctx.assets()` is an `AssetsView` borrowing the world (the `AssetServer` and the stores stay resources). Systems always see them as resources. Cameras are entities (`Camera2d`); the main one (`MainCamera`) is spawned with the world and survives world cleanup, and `ctx.camera()` edits it.
+- Scene callbacks get `Time` and `Input` as `SceneContext` fields, taken out of the world for the callback (`SceneContext::scoped`); `ctx.assets()` is an `AssetsView` borrowing the world (the `AssetServer` and the stores stay resources), and `ctx.audio()` an `AudioView` over the `AudioEngine` resource. Systems always see them as resources. Cameras are entities (`Camera2d`); the main one (`MainCamera`) is spawned with the world and survives world cleanup, and `ctx.camera()` edits it.
 - Per-frame requests from scenes to the window go through resources (`WindowRequest`, `CursorRequest`) applied in `about_to_wait` (`engine/window.rs`), never by borrowing the window during a callback. The window's cursor is resolved there too (`CursorResolver`): the console's per-frame override (`Engine::console_cursor`, `None` = no opinion), else the game's last cursor, applied only when it changes and once more when the left button is released.
 
 ## Module Map (`src/core/`)
@@ -110,7 +112,7 @@ Engine::frame
 | `ui/` | `UiContext` and absolute drawing (`immediate/`); ids (`id.rs`), `UiMemory` (records, widget state, focus memory), layout over Taffy (`layout/`, the only Taffy code), the subtree and its resolution (`tree.rs`), containers, widgets (`widgets/`), popups and modals, the pointer and wheel resolve (`interact.rs`), focus and navigation (`nav.rs`), the theme (`theme/`), node trees (`nodes/`) and their cache (`nodes/cache.rs`, the records and the dirty set; `tape.rs`, what a build pushed and its replay; `fragment.rs`, the unchanged subtrees kept and copied), UI files (`file/`), virtual lists (`widgets/list.rs`, `nodes/list.rs`), the `debug:ui` and `debug:ui-rebuilds` overlays (`debug.rs`) |
 | `hash.rs` | The engine's fast hasher (`FastHasher`, `FastMap`, `FastSet`, `fast_hash`) for keys it makes itself: ids, the UI's memory and layout maps, the text caches; never SipHash, never saved |
 | `asset/` | The asset registry: `AssetId` and `Handle`, the `Assets<T>` stores, `AssetServer` (keys, loaders, sources, worker threads), the pump (`pump.rs`), the watcher and its debounce (`watch.rs`), the engine's loaders (`loaders/`); `src/core/asset/AGENTS.md` |
-| `audio.rs` | Kira audio (`Audio`, `AudioManager`) |
+| `audio/` | The audio engine on kira: `AudioEngine` (device or mock backend, the voice table, limits, holds, reloads, the web's unlock), the bus tree and mixer, snapshots and ducks, spatial sound, the music player, the streamed clips' decoder (`stream.rs`), `audio_system`; `src/core/audio/AGENTS.md` |
 | `config/` | `Ryo.toml` workspace, user preferences (`system.json`), saves |
 | `console/` | Developer console and commands |
 | `capture/` | Frame capture to PNG (`RYO_CAPTURE_*`) |
@@ -153,7 +155,7 @@ See `ryo-ecs-internals` and `src/core/systems/AGENTS.md`. In short: derive `Comp
 | Integration | `tests/integration/` (target `integration`) | `cargo test --test integration` |
 | End-to-end, GPU | `tests/e2e/` with `HeadlessEngine` (target `e2e`) | `cargo test --test e2e`, `./dev.sh test:e2e` |
 | Demo tour | every page of every demo, headless | `./dev.sh demos:tour [demo...]` → `target/demo-tour/<demo>/page-N.png` |
-| Benchmarks | `benches/` (criterion): `foundation`, `physics`, `text` (the HUD frame, GPU), `ui` (a 200-widget settings screen under 60 µs and its node version within the larger of 10% or 10 µs of it, the node version unchanged under 35 µs, a 2,000-node static tree, an embedded node tree, the node cache's dirty check, a 1,000-row list, 10,000- and 100-row virtual lists and a 10,000-row node list, an empty frame; no GPU), `ui_render`, `assets` (a scene's start with `load_now` and with `load`, and a guard on the frame time of large hot reloads) | `cargo bench --bench ui` |
+| Benchmarks | `benches/` (criterion): `foundation`, `physics`, `text` (the HUD frame, GPU), `ui` (a 200-widget settings screen under 60 µs and its node version within the larger of 10% or 10 µs of it, the node version unchanged under 35 µs, a 2,000-node static tree, an embedded node tree, the node cache's dirty check, a 1,000-row list, 10,000- and 100-row virtual lists and a 10,000-row node list, an empty frame; no GPU), `ui_render`, `assets` (a scene's start with `load_now` and with `load`, and a guard on the frame time of large hot reloads), `audio` (guards on 64 voices' main-thread time, `play`, a streamed `play` and reload landings, in an audio world) | `cargo bench --bench ui` |
 
 - Rendering regressions: write the failing pixel assertion in `tests/e2e/` first (see `src/core/testing/AGENTS.md`).
 - UI behaviour: unit tests drive frames with `ui::test_util::UiDriver` (a `UiHarness` plus keys, pad buttons, held directions and scenes); games use the public `ryo2d::testing::UiHarness`.

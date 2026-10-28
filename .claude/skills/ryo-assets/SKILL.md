@@ -1,13 +1,13 @@
 ---
 name: ryo-assets
-description: "Assets - loading images, SVG, shaders, fonts, UI files and themes through the registry (load_now and load), asset paths, handles and what keeps an asset alive, load states and loading screens, embedded assets with add, hot reload and AssetEvent, custom asset types and loaders, and the debug checker."
+description: "Assets - loading images, SVG, shaders, fonts, UI files, themes and audio (clips, sound and music definitions, the mixer) through the registry (load_now and load), asset paths, handles and what keeps an asset alive, load states and loading screens, embedded assets with add, hot reload and AssetEvent, custom asset types and loaders, and the debug checker."
 metadata:
-  version: 1.1.7
+  version: 1.2.0
 ---
 
 # Ryo2D Assets
 
-Everything a game reads from its `assets/` folder goes through one registry, reached as `ctx.assets()` in scenes. Every type below is in the prelude; complete signatures are in `ryo-api` (Assets). Audio is not in the registry: see `ryo-audio`.
+Everything a game reads from its `assets/` folder goes through one registry, reached as `ctx.assets()` in scenes. Every type below is in the prelude; complete signatures are in `ryo-api` (Assets). Audio files and their definitions are assets like any other; playing them is `ryo-audio`.
 
 ## 1. Loading: `load_now` and `load`
 
@@ -42,7 +42,7 @@ fn on_enter(&mut self, ctx: &mut SceneContext) {
 
 ### Paths
 
-Asset paths are relative to the project's `assets/` folder (an example's own `assets/`): `"player.png"` is `assets/player.png`, `"ui/menu.ui.ron"` is `assets/ui/menu.ui.ron`. Paths inside asset files (a UI file's imports and images, a theme's skin images, a bitmap font's sheet) are asset paths too, except a theme's `sounds`: audio is not in the registry yet, so they are relative to the working directory, as `ryo-audio` loads them (`"assets/ui/click.wav"`). `\` becomes `/`, `.` segments go and `..` resolves within the path; an absolute path, or one that leaves `assets/`, fails with `AssetError::InvalidPath`.
+Asset paths are relative to the project's `assets/` folder (an example's own `assets/`): `"player.png"` is `assets/player.png`, `"ui/menu.ui.ron"` is `assets/ui/menu.ui.ron`. Paths inside asset files (a UI file's imports and images, a theme's skin images and sounds, a bitmap font's sheet, a sound definition's clips, a music definition's intro and loop) are asset paths too. `\` becomes `/`, `.` segments go and `..` resolves within the path; an absolute path, or one that leaves `assets/`, fails with `AssetError::InvalidPath`.
 
 ### Types and files
 
@@ -54,12 +54,16 @@ Asset paths are relative to the project's `assets/` folder (an example's own `as
 | `BitmapFont` | `bitmap.ron`: `(sheet: "fonts/pixel.png", cell: (8, 8), chars: " !\"#..", family: "Pixel")`, its sheet loaded with it | |
 | `UiFile` | `ui.ron` (`ryo-ui`, Files) | |
 | `Theme` | `theme.ron` (`ryo-ui`, Theme) | |
+| `AudioClip` | `wav`, `ogg`, `mp3`, `flac`, mono or stereo (`ryo-audio`). Up to 10 s decodes to memory as it loads; longer keeps its bytes and streams as it plays (the web decodes every clip) | `AudioClipSettings { mode: ClipMode }` (`Auto`, `Decode`, `Stream`) |
+| `Sound` | `sound.ron`: how a sound plays (clips and their weights, bus, level, pitch, limits, fades, spatial settings), its clips loaded with it (`ryo-audio`) | |
+| `Music` | `music.ron`: an intro and a loop, or one clip with a loop region (`ryo-audio`) | |
+| `Mixer` | `mixer.ron`: the buses, effects, sends, snapshots and ducking; the engine loads `audio/mixer.mixer.ron` (`MIXER_PATH`) at start if the game has one (`ryo-audio`) | |
 
-The loader is picked by the longest extension, so `menu.ui.ron` is a UI file and `night.theme.ron` a theme. Asking for a type no loader makes from the file (`load::<Image>("menu.ui.ron")`) fails with `AssetError::NoLoader`.
+The loader is picked by the longest extension, so `menu.ui.ron` is a UI file, `night.theme.ron` a theme and `step.sound.ron` a sound definition. Asking for a type no loader makes from the file (`load::<Image>("menu.ui.ron")`) fails with `AssetError::NoLoader`.
 
 ## 2. Using an asset
 
-Pass the handle to what draws or uses it: `Renderable::image(handle)`, `ParticleEmitter::new(handle)`, `ui.image(&handle)`, `SpriteShader::custom(handle)`, `ctx.fonts().set_role(FontRole::Ui, handle)`, `ctx.follow_ui_theme(handle)`. Read the value through the registry:
+Pass the handle to what draws or uses it: `Renderable::image(handle)`, `ParticleEmitter::new(handle)`, `ui.image(&handle)`, `SpriteShader::custom(handle)`, `ctx.fonts().set_role(FontRole::Ui, handle)`, `ctx.follow_ui_theme(handle)`, `ctx.audio().play(&sound)`, `ctx.audio().play_music(&music)`. Read the value through the registry:
 
 ```rust
 let assets = ctx.assets();
@@ -197,6 +201,8 @@ fn embed(ctx: &mut SceneContext) -> Result<(), Box<dyn std::error::Error>> {
   }
   ```
 
+  Audio goes in the same source: the clips, the definitions, and the mixer at `MIXER_PATH` (the engine asks the source whether it has one). On the web every clip decodes in the pump, so a long one is a hitch when it lands (`ryo-audio`, The web).
+
 ## 6. SVG
 
 An SVG is rasterised when it loads, at the size its settings ask for, and each size is an image of its own:
@@ -215,7 +221,8 @@ In debug builds with a window the engine watches `assets/`: a saved file reloads
 
 - A reload keeps the asset's id and moves its version on: an image's texture uploads again, trees from a `.ui.ron` file are brought in line (`UiReloaded`), a followed theme applies again, a shader compiles again, text in a font lays out again.
 - **A saved shader keeps drawing its last version until the new one is compiled.** A shader already drawn compiles its new version on a thread of the renderer's own (about 70 to 130 ms of GPU compile on Metal for new WGSL) and draws it from the start of the frame after, so a save brings no hitch (frames cost about 0.1 ms more while it compiles, as measured) and nothing draws plain meanwhile. A shader first drawn after the save, or one with no version that ever drew, compiles in its first frame. On the web there are no threads to compile on, so there the next frame compiles it.
-- The assets that hold a reloaded one are checked again: a UI file importing the saved file, a theme whose skin image changed, a bitmap font whose sheet did.
+- The assets that hold a reloaded one are checked again: a UI file importing the saved file, a theme whose skin image changed, a bitmap font whose sheet did, a sound definition whose clip did.
+- **Audio reloads into what is playing:** a saved clip switches its loops and the music playing it where they are, a saved definition retunes its playing loops, and a saved mixer rebuilds the buses with the loops carrying on (`ryo-audio`, Hot reload).
 - A reload that fails (a typo in a file) keeps the last good value and warns once, naming the file and, where its format gives one, the line and column: ``could not load "shaders/glow.wgsl": 16:3: expected `;`, found "let"``. Fix the file and save again. A shader is compiled as its file loads, so a `.wgsl` file that does not compile fails as any other file does. A removed file keeps its asset as it was.
 - `ctx.assets().server().reload(path)` asks for the same reload by hand (a headless test, a console command).
 - **A large image shows its new pixels after its `Modified`.** An image whose texture's levels are more than a frame's upload budget (2 MiB; a square image over about 610 px) is written into a new texture over frames, about a frame per 2 MiB (11 frames at 2048 x 2048, about 22 at 3840 x 2160), while its old pixels draw, and the new ones replace them whole. `Modified` is sent when the new value lands, at the start, so a count of reloads moves first and the picture follows a few hundred milliseconds later. A smaller image draws its new pixels in the frame it lands.

@@ -2,7 +2,7 @@
 name: ryo-cli
 description: Using the ryo2d CLI for building, running, and developing games.
 metadata:
-  version: 1.2.0
+  version: 1.2.1
 ---
 
 # Ryo2D CLI Specialist
@@ -199,7 +199,7 @@ Save frames as PNGs to check rendering without watching the window. Works with `
 | `RYO_CAPTURE_DIR=captures` | Output directory (default `captures/`) |
 | `RYO_CAPTURE_EXIT=1` | Quit after the last capture; exit code 1 if one failed |
 | `RYO_INPUT="60:Digit2 200-260:ArrowUp 300:Click@320x180"` | Dev builds: tap a key on a frame (`N:Key`), hold it from frame A until just before B (`A-B:Key`), move or click the mouse, turn the wheel, press pad buttons and hold sticks |
-| `RYO_HEADLESS=1` | Dev builds: no window; render offscreen one fixed timestep per frame, as fast as possible rather than paced to the clock, with no audio, real gamepads (`RYO_INPUT`'s pad entries drive a virtual one), saved preferences, debug keys (F1, F9, F10, F12) or timing overlays |
+| `RYO_HEADLESS=1` | Dev builds: no window; render offscreen one fixed timestep per frame, as fast as possible rather than paced to the clock, with sound played silently on kira's mock backend (picks seeded, so runs repeat), and no real gamepads (`RYO_INPUT`'s pad entries drive a virtual one), saved preferences, debug keys (F1, F9, F10, F12) or timing overlays |
 
 Files are named `frame-000060.png` at game resolution (no letterboxing). In dev builds, F12 or the console command `debug:capture [path]` saves the next frame.
 

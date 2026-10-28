@@ -112,8 +112,9 @@ pub mod prelude {
   };
   pub use crate::core::audio::{
     AudioClip, AudioEmitter, AudioListener, AudioView, BusDef, DistortionKind, EffectDef, EqKind,
-    Falloff, FocusLoss, LimitRule, Mixer, Music, MusicJoinError, PlayOptions, Sound, SoundClip,
-    Spatial, Voice, VoiceLimit, VoicePick, VolumeKind, falloff_gain_db, pan_for, volume_to_db,
+    Falloff, FocusLoss, LimitRule, MIXER_PATH, Mixer, Music, MusicJoinError, PlayOptions, Sound,
+    SoundClip, Spatial, Voice, VoiceLimit, VoicePick, VolumeKind, falloff_gain_db, pan_for,
+    volume_to_db,
   };
 
   // Graphics

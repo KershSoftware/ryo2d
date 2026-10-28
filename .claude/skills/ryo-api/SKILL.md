@@ -2,7 +2,7 @@
 name: ryo-api
 description: Complete API reference for ryo2d::prelude - every exported type with its signatures and use, organised by area.
 metadata:
-  version: 2.9.4
+  version: 2.10.0
 ---
 
 # Ryo2D API Reference
@@ -288,6 +288,7 @@ pool.active(&self) -> impl Iterator<Item = Entity> /* oldest first */; pool.is_a
 - `enum PoolExhaustedPolicy { Expand, ReturnNone, RecycleOldest }`; `PoolStats { total_spawned, active, available }`.
 - Pooled entities are `Disabled`, so queries skip them. After `acquire`, set every field you rely on; an `Interpolated` entity draws where you put it this step (acquire skips its interpolation).
 - `acquire`, `release` and `is_active` are O(1) plus the entity's children: releasing disables its descendants too, and acquiring brings back the ones it disabled (and skips their interpolation). Entities a scene cleanup despawned are dropped when the pool meets them.
+- A `RecycleOldest` pool puts its oldest entity back (disabled) before handing it out again (enabled), so whatever watches `Disabled` sees a release and an acquire: physics and joints register it again, and an `AudioEmitter` on it stops its loops and plays again.
 
 ---
 
@@ -381,7 +382,6 @@ pub struct SceneContext<'a> {
   pub world: &'a mut World,
   pub time: &'a mut Time,
   pub input: &'a mut Input,
-  pub audio: &'a mut Audio,
   /* the scene's schedules, message cursors, console scope */
 }
 ```
@@ -391,6 +391,7 @@ pub struct SceneContext<'a> {
 | Helper | |
 |---|---|
 | `assets(&mut self) -> AssetsView<'_>` | the asset registry: load, add and read assets (see [Assets](#assets)); it borrows the world, so take it, use it and let it go |
+| `audio(&mut self) -> AudioView<'_>` | the audio engine: play sounds and music, the player's volume settings, snapshots (see [Audio](#audio)); it borrows the world like `assets()` |
 | `add_systems<M>(&mut self, phase: Phase, systems: impl IntoScheduleConfigs<ScheduleSystem, M>) -> Result<(), SceneScheduleError>` | scene-owned systems; `FixedUpdate` and `Update` only (other phases: `SceneScheduleError::UnsupportedPhase`; `SceneScheduleError` is in the prelude) |
 | `messages<T: Message + Clone>(&mut self) -> Vec<T>` | messages written since this scene last read `T` |
 | `write_message<T: Message>(&mut self, message: T)` | registers `T` on first use |
@@ -600,22 +601,39 @@ Engine messages (all `Message + Clone`):
 
 ## Audio
 
-`ctx.audio: &mut Audio` works with or without a device (without one, `Result` methods return `AudioError::Unavailable`). `AudioManager` is the device-backed implementation; `Audio::manager()` exposes it.
+A mixer on kira 0.12. Clips, sound definitions, music and the mixer are registry assets (see [Assets](#assets)); the engine's `AudioEngine` resource plays them, reached as `ctx.audio() -> AudioView<'_>`, which borrows the world. With no device (headless, or a device that failed to open) the same mixer runs silently on kira's mock backend. Every change to a voice or bus is smoothed by at least 10 ms. The guide is `ryo-audio`.
 
-| `Audio` / `AudioManager` | |
+| `AudioView` (`ctx.audio()`; `AudioView::new(&mut World)` in an exclusive system or a test) | |
 |---|---|
-| `load_sound(name: &str, path: impl AsRef<Path>) -> AudioResult<()>` | cache a sound by name |
-| `play_sound(name) -> AudioResult<SoundHandle>`, `play_sound_with(name, SoundOptions)` | |
-| `play_music(path) -> AudioResult<MusicHandle>`, `play_music_with(path, MusicOptions)`, `play_music_once(path, MusicOptions) -> AudioResult<bool>` (only if none playing) | |
-| `crossfade_music(&mut MusicHandle, new_path, Duration)`, `crossfade_music_with(.., MusicOptions)` | |
-| `set_master_volume`, `set_sfx_volume`, `set_music_volume` (0..1) and getters | categories |
-| `has_sound`, `unload_sound`, `clear_sounds`, `is_music_playing`, `stop_music`, `stop_music_fade(Duration)`, `current_music() -> Option<&mut MusicHandle>` | |
-| `Audio::new(Option<AudioManager>)`, `is_available()`, `manager() -> Option<&mut AudioManager>`; `AudioManager::new() -> AudioResult<Self>` | |
+| `play<'a>(&mut self, sound: impl Into<Playable<'a>>) -> Voice` | a `&Handle<Sound>` (played as the definition says) or a `&Handle<AudioClip>` (the empty definition: `sfx`, 0 dB, no limit, priority 128). Not loaded, failed (warned once), cooling down or refused by a limit: the voice returned is already stopped |
+| `play_at<'a>(&mut self, sound, position: Vec2) -> Voice` | heard from `position` by the sound's `spatial`; a one-shot at or beyond its maximum distance is culled, a loop there starts silent |
+| `play_with<'a>(&mut self, sound, options: PlayOptions) -> Voice` | with a place, `persist`, extra gain or pitch |
+| `play_emitter(&mut self, entity: Entity) -> Voice` | the entity's `AudioEmitter`, following it; stopped voice if it has none or is disabled |
+| `play_music(&mut self, music: &Handle<Music>)` | the one music player: crossfades over the new track's `crossfade` (fades in over `fade_in` from silence); the track already playing plays on (a paused one resumes); a loading track takes over once loaded; a failed one warns once and changes nothing |
+| `stop_music(&mut self, fade: Duration)`, `pause_music(&mut self)`, `resume_music(&mut self)`, `current_music(&self) -> Option<AssetId<Music>>` | `stop_music` also forgets a track still loading; `current_music` is the track playing, paused or waiting to load |
+| `set_volume_setting(&mut self, kind: VolumeKind, value: f32)`, `volume_setting(&self, kind: VolumeKind) -> f32` | the player's settings, 0 to 1 on the curve `volume_to_db`; playing sounds follow at once. Clamped; NaN is the kind's default |
+| `set_bus_volume(&mut self, bus: &str, db: f32)` | in place of the mixer's volume for the session, through reloads (at most +24); the setting, snapshot and duck still apply |
+| `snapshot(&mut self, name: &str)`, `clear_snapshot(&mut self)` | blend to the mixer's snapshot over its `blend`, or back; an unknown name warns once |
+| `set_mixer(&mut self, mixer: Mixer)` | build the buses from a mixer made in code, at the end of the frame; one that fails its check is warned about and changes nothing |
+| `seed(&mut self, seed: u64)` | the same plays pick and draw the same from the same seed (replays, tests, captures); headless runs start seeded |
+| `waiting_for_gesture(&self) -> bool` | on the web, until the first click, tap or key (not Escape; never a pad) opens the device: one-shots are refused, loops and music wait. False natively |
+| `voices_on(&self, bus: &str) -> usize` | voices playing on `bus` and every bus under it (0 for no such bus) |
 
-- `SoundOptions { volume, panning, playback_rate }`: `new()`, `volume(f32)`, `panning(-1..1)`, `playback_rate(f32)`.
-- `MusicOptions { volume, panning, playback_rate, looping: true, fade_in, fade_out_on_drop }`: `new()`, `volume`, `panning`, `playback_rate`, `looping(bool)`, `once()`, `fade_in(Duration)`, `fade_out_on_drop(Duration)`.
-- `SoundHandle`: `stop`, `pause`, `resume`, `set_volume`, `set_panning`, `set_playback_rate`, `is_playing`, `is_finished`.
-- `MusicHandle`: the same plus `fade_to(volume, Duration)`, `fade_out(Duration)`, `fade_out_and_stop(Duration)`, `update_category_volume(f32)`. Dropping it leaves the music playing, unless `fade_out_on_drop` was set, which fades it out and stops it; stop music with `stop`, `fade_out_and_stop` or `ctx.audio.stop_music()`.
+- `Playable<'a>` (`ryo2d::core::audio`; only the signatures name it): `Sound(&Handle<Sound>)`, `Clip(&Handle<AudioClip>)`, `From` both, so pass `&handle`.
+- `PlayOptions { position: Option<Vec2>, persist: bool, volume_db: f32, pitch: f32 }` (`Copy`, `Default`: changes nothing): `persist` makes the voice the engine's, so the scene's exit leaves it playing; `volume_db` and `pitch` (semitones) add to the definition's.
+- `Voice` (`Clone`, `Default` = never started, `Debug`): `stop(&self, fade: Duration)` (at least 10 ms), `pause(&self)`, `resume(&self)`, `set_volume(&self, db: f32)` (its own gain, -60 to +24), `set_pitch(&self, semitones: f32)` (-48 to 48; changes speed too), `is_playing(&self) -> bool` (a voice the game's pause holds still counts), `is_stopped(&self) -> bool` (ended or never started), `pick(&self) -> Option<VoicePick>`. Changes apply in the frame's `audio_system` (`PostUpdate`). Dropping it never stops it. It belongs to the scene that played it (its loops and its paused or held one-shots stop with their `fade_out` as the scene exits; its playing one-shots finish), to the engine (`persist`, or played outside every scene), or to its emitter's entity.
+- `VoicePick { clip_index: usize, clip: AssetId<AudioClip>, volume_db: f32, pitch: f32 }`: what the play picked and drew.
+- `Sound` (`Clone`, `Default` = the empty definition; an asset from `.sound.ron`): `clips: Vec<SoundClip>`, `bus: String` (`"sfx"`), `volume_db`, `volume_range_db`, `pitch`, `pitch_range` (semitones), `no_repeat: u8`, `limit: Option<VoiceLimit>`, `priority: u8` (0 to 255, higher more important; `Sound::DEFAULT_PRIORITY` = 128), `cooldown: Duration`, `looping: bool`, `fade_in: Duration`, `fade_out: Duration` (at least 10 ms is used), `spatial: Option<Spatial>`.
+- `SoundClip { clip: Handle<AudioClip>, weight: f32, region: Option<Range<f64>>, loop_region: Option<Range<f64>> }`: `new(clip)` (all of it, weight 1). `region` is seconds of the clip; `loop_region` seconds from the region's start.
+- `VoiceLimit { max: u16, rule: LimitRule }`; `enum LimitRule { PreventNew, StopOldest (default), StopQuietest, StopFarthest, StopLowestPriority }`. No rule stops a more important voice, or an equally important one started in the same frame. Past 96 voices on a bus's track the least important, then quietest, voice is stolen over 10 ms.
+- `Spatial { min_distance: f32, max_distance: f32, curve: Falloff, pan_width: f32, low_pass_at_max: Option<f64> }`; `enum Falloff { Linear, Inverse (default), Log }` (-6, about -25 and -30 dB halfway). `falloff_gain_db(&Spatial, distance: f32) -> f32`, `pan_for(&Spatial, dx: f32) -> f32` (-1 left to 1 right). At most 32 voices carry a distance low-pass.
+- `AudioListener` (component, requires `Transform`): the entity that hears; the main camera without one. `AudioEmitter { sound: Handle<Sound>, play_on_spawn: bool }` (component, requires `Transform`): plays as added and as its entity is enabled (with `play_on_spawn`), its voices following the entity and stopping (loops) as it is despawned, disabled or loses the emitter.
+- `Music` (`Clone`; an asset from `.music.ron`): `volume_db`, `fade_in: Duration` (0), `crossfade: Duration` (`Music::DEFAULT_CROSSFADE`, 1 s), `tempo: Option<f32>`, `meter: Option<(u8, u8)>` (recorded, unused by the player), `bus: String` (`"music"` or under it). `Music::looping(clip: Handle<AudioClip>, loop_start: f64, loop_end: Option<f64>) -> Music`, `Music::intro_and_loop(intro: &AudioClip, looped: &AudioClip) -> Result<Music, MusicJoinError>` (joined into one sound, gapless; both decoded, one sample rate). `MusicJoinError` (`#[non_exhaustive]`): `StreamedIntro`, `StreamedLoop`, `Rates { intro, looped }`, `EmptyLoop`.
+- `Mixer { buses: Vec<BusDef>, snapshots: Vec<SnapshotDef>, ducks: Vec<DuckDef>, on_focus_loss: FocusLoss }` (`Default` = the standard layout; an asset from `.mixer.ron`). The standard buses always exist: `master`, and under it `music`, `sfx`, `ui`, `voice`, `ambience` (`sfx`, `voice`, `ambience` pause with the game; `sfx`, `ambience` follow time scale). `MIXER_PATH` = `"audio/mixer.mixer.ron"`, loaded at start if present.
+- `BusDef { name, volume_db, effects: Vec<EffectDef>, sends: Vec<(String, f32)>, pauses_with_game: Option<bool>, follows_time_scale: Option<bool>, limit: Option<u16> }`: `new(name)`. `enum EffectDef { LowPass { cutoff, resonance }, HighPass { cutoff, resonance }, Eq { kind: EqKind, frequency, gain_db, q }, Reverb { feedback, damping, stereo_width, mix }, Delay { seconds, feedback_db, mix }, Compressor { threshold_db, ratio, attack, release, makeup_db, mix }, Distortion { kind: DistortionKind, drive_db, mix } }`; `enum EqKind { Bell, LowShelf, HighShelf }`, `enum DistortionKind { HardClip (default), SoftClip }`; `enum FocusLoss { Keep (default), Duck(f32), Mute }`.
+- `ryo2d::core::audio::{SnapshotDef, SnapshotBus, DuckDef}` (not in the prelude; for a mixer made in code): `SnapshotDef { name, blend: f32, buses: Vec<(String, SnapshotBus)> }`, `SnapshotBus { volume_db: f32, low_pass: Option<f32> }`, `DuckDef { trigger, target, by_db: f32, attack: f32, release: f32 }`.
+- `enum VolumeKind { Master, Music, Sfx, Ui, Voice, Ambience }`: `ALL`, `bus() -> &'static str`, `default_value() -> f32` (0.89 for master, 1 for the rest). `volume_to_db(v: f32) -> f32`: 40·log10(v) (amplitude v²): 1 is 0 dB, 0.5 about -12 dB, 0 silent (-60).
+- `AudioClip` (`Clone`; `.wav`, `.ogg`, `.mp3`, `.flac`, mono or stereo): `duration() -> Duration`, `sample_rate() -> u32`, `is_streamed() -> bool`, `from_frames(sample_rate: u32, frames: &[[f32; 2]]) -> AudioClip`. `AudioClipSettings { mode: ClipMode }`, `enum ClipMode { Auto (default: decode up to 10 s, stream longer), Decode, Stream }` (the web decodes every clip). Loaders: `AudioClipLoader`, `SoundLoader`, `MusicLoader`, `MixerLoader`.
 
 See `ryo-audio`.
 
@@ -899,7 +917,7 @@ One registry for every asset type. `AssetServer` (a resource; systems take `Res<
 - `Progress { loaded, failed, pending }` (`Copy`, `Eq`, `Default`): `is_done()` (nothing pending), `fraction()` (the share loaded or failed; 1 for an empty group). `AssetStats { types: Vec<TypeStats> }`, `TypeStats { name, loaded, loading, failed }`, one per registered type.
 - `enum AssetEvent<T: Asset> { Added { id }, Modified { id }, Removed { id }, Failed { id, error: Arc<AssetError> }, ReloadFailed { id, error } }` (`Clone`, `Debug`): a message per asset type (`ctx.messages::<AssetEvent<Image>>()`, `MessageReader<AssetEvent<T>>`). The pump sends them in `PreUpdate`, `load_now` its own at once; an asset's events come in the order its changes happened, `Removed` last, and only for an asset that was `Added` (a load dropped before it landed, or a failed one, is freed with no event).
 - `AssetPath` (`Clone`, `Eq`, `Hash`, `Ord`, `Display`): `parse(&str) -> Result<AssetPath, AssetError>` (`\` to `/`, `.` dropped, `..` resolved; absolute or leaving the root is `InvalidPath`), `as_str()`, `extensions()` (longest first: `"ui.ron"`, `"ron"`), `parent()`.
-- The engine's types and loaders, in every registry: `Image` (`ImageLoader`: `png`, `jpg`, `jpeg`, `bmp`, `gif`, `webp`, `tga`, `tif`, `tiff`, `qoi`, `ico`, `svg`; settings `ImageSettings { svg: SvgSize }`, `enum SvgSize { Native (default), Scale(f32), Fit { width: u32, height: u32 } }`), `Shader` (`ShaderLoader`: `wgsl`), `Font` (`FontLoader`: `ttf`, `otf`, `ttc`; `FontSettings { face: u32 }`), `BitmapFont` (`BitmapFontLoader`: `bitmap.ron`), `UiFile` (`UiFileLoader`: `ui.ron`) and `Theme` (`ThemeLoader`: `theme.ron`). A path's loader is the one taking its longest extension.
+- The engine's types and loaders, in every registry: `Image` (`ImageLoader`: `png`, `jpg`, `jpeg`, `bmp`, `gif`, `webp`, `tga`, `tif`, `tiff`, `qoi`, `ico`, `svg`; settings `ImageSettings { svg: SvgSize }`, `enum SvgSize { Native (default), Scale(f32), Fit { width: u32, height: u32 } }`), `Shader` (`ShaderLoader`: `wgsl`), `Font` (`FontLoader`: `ttf`, `otf`, `ttc`; `FontSettings { face: u32 }`), `BitmapFont` (`BitmapFontLoader`: `bitmap.ron`), `UiFile` (`UiFileLoader`: `ui.ron`), `Theme` (`ThemeLoader`: `theme.ron`), `AudioClip` (`AudioClipLoader`: `wav`, `ogg`, `mp3`, `flac`; settings `AudioClipSettings { mode: ClipMode }`), `Sound` (`SoundLoader`: `sound.ron`), `Music` (`MusicLoader`: `music.ron`) and `Mixer` (`MixerLoader`: `mixer.ron`); see [Audio](#audio). A path's loader is the one taking its longest extension.
 - A type of your own: `trait Asset: Send + Sync + 'static {}`, and for files a loader registered with `EngineBuilder::asset_loader(loader)`:
 
   ```rust
@@ -914,7 +932,7 @@ One registry for every asset type. `AssetServer` (a resource; systems take `Res<
   ```
 
   `AssetSettings` is any `Default + Clone + Hash + Eq + Send + Sync + 'static` type. `LoadContext`: `path() -> &AssetPath`, `load::<T>(path) -> Result<Handle<T>, AssetError>`, `load_with::<T, S>(path, settings)`: a dependency, kept by keeping its handle in the asset; the asset is inserted once its dependencies are loaded. `CheckContext`: `path() -> &AssetPath` (to name the asset in its error: `AssetError::decode(cx.path(), ..)`), `world() -> &World` (the dependencies' stores). A panic in a loader fails its asset in native builds; the web build aborts on a panic, so return an error for a bad file.
-- `trait AssetSource: Send + Sync + 'static { fn read(&self, path: &AssetPath) -> Result<Vec<u8>, AssetError>; fn watch(&self, changes: AssetChanges) -> Result<(), AssetError> { Ok(()) } }`: `watch` is asked once, when hot reload is on; keep `changes` (`Clone`, any thread) and call `changes.send(path: AssetPath) -> bool` for each path whose bytes changed (false once the server is gone). `DiskSource::new(root)` (`root()`; the engine's reads `assets/`), `MemorySource` (`new()`, `insert(path, bytes)`, `remove(path)`; clones share their files, and an `insert` over a path tells a watcher it changed). `EngineBuilder::asset_source(source)` reads from another source.
+- `trait AssetSource: Send + Sync + 'static { fn read(&self, path: &AssetPath) -> Result<Vec<u8>, AssetError>; fn exists(&self, path: &AssetPath) -> bool { /* reads it */ } fn watch(&self, changes: AssetChanges) -> Result<(), AssetError> { Ok(()) } }`: `exists` answers for an optional file the engine loads only if present (the mixer at `MIXER_PATH`), and the default reads the file; `watch` is asked once, when hot reload is on; keep `changes` (`Clone`, any thread) and call `changes.send(path: AssetPath) -> bool` for each path whose bytes changed (false once the server is gone). `DiskSource::new(root)` (`root()`; the engine's reads `assets/`), `MemorySource` (`new()`, `insert(path, bytes)`, `remove(path)`; clones share their files, and an `insert` over a path tells a watcher it changed). `EngineBuilder::asset_source(source)` reads from another source.
 - `AssetError` (`#[non_exhaustive]`; `Display` is one line, the causes its `source()` chain): `NotFound { path }`, `Io { path, source: io::Error }` (`ErrorKind::Unsupported` on the web, which has no files; noted at debug level, not warned), `Decode { path, source }`, `NoLoader { path, extension }`, `Dependency { path, dependency, error: Arc<AssetError> }`, `Cycle { path, chain }`, `InvalidPath { path: String, reason }`; `AssetError::decode(&AssetPath, impl Into<Box<dyn Error + Send + Sync>>)` makes a `Decode` in a loader or its check; `report() -> String` is the error and every cause on one line, as the dev log prints it. Each failure is warned once in the dev log.
 - Hot reload (`EngineBuilder::hot_reload`, default on in debug builds with a window): a file saved in `assets/` reloads under the same handle about 100 ms after its last write, and the assets that hold it are checked again; a reload that fails keeps the last good value.
 
@@ -1079,12 +1097,12 @@ Two persistence tiers: player settings in `system.json` (`SystemState`) and game
 | `save_raw(filename, &T)`, `load_raw(filename)` | arbitrary files |
 | `save_dir()`, `set_save_dir(path)`, `set_compression_level(0..9)` | |
 
-- `SystemState { master_volume, music_volume, sfx_volume, width, height, display_mode, vsync: Option<bool>, show_fps: Option<bool>, bindings: BTreeMap<String, Vec<String>>, env }` (`bindings`: action name to binding texts such as `"Key:Space"`, only those the player changed): `new()`, `from_defaults(&SystemDefaults)`, `merge_defaults(..)`, `set_env(key, value)`, `get_env`, `get_env_str`, `get_env_bool`, `get_env_i64`, `get_env_f64`.
+- `SystemState { master_volume, music_volume, sfx_volume, ui_volume, voice_volume, ambience_volume, width, height, display_mode, vsync: Option<bool>, show_fps: Option<bool>, bindings: BTreeMap<String, Vec<String>>, env }` (the volumes are the player's settings, 0 to 1 on the audio curve; see [Audio](#audio)) (`bindings`: action name to binding texts such as `"Key:Space"`, only those the player changed): `new()`, `from_defaults(&SystemDefaults)`, `merge_defaults(..)`, `set_env(key, value)`, `get_env`, `get_env_str`, `get_env_bool`, `get_env_i64`, `get_env_f64`.
 - `GameSaveData<T> { data, timestamp, name, play_time, metadata }`: `new(data)`, `with_name`, `with_play_time(secs)`, `with_metadata(k, v)`.
-- `enum UserPreference { MasterVolume, MusicVolume, SfxVolume, Resolution, DisplayMode, Vsync, ShowFps, Bindings }` (`all()`; with `Bindings` enabled the engine loads the saved bindings at startup and saves them when they change); `UserPreferenceFilter`: `all()`, `none()`, `only(iter)`, `contains`, `is_empty`, `len`.
+- `enum UserPreference { MasterVolume, MusicVolume, SfxVolume, UiVolume, VoiceVolume, AmbienceVolume, Resolution, DisplayMode, Vsync, ShowFps, Bindings }` (`all()`; the saved volumes are applied to the audio engine at startup; with `Bindings` enabled the engine loads the saved bindings at startup and saves them when they change); `UserPreferenceFilter`: `all()`, `none()`, `only(iter)`, `contains`, `is_empty`, `len`.
 - `enum DisplayMode { Windowed, ExclusiveFullscreen, BorderlessFullscreen }` (`all()`, `display_name()`); `Resolution { width, height }` (`new`, `common()`, `display_name()`); `parse_resolution("1280x720") -> Option<(u32, u32)>`; `compress_data(&[u8])`, `decompress_data(&[u8])`.
 - `Workspace` (`Ryo.toml` project): `discover()`, `discover_from(dir)`, `from_path(root)`, `root()`, `name()`, `config() -> &WorkspaceConfig`, `entry_point()`, `assets_dir()`, `save_location()`, `save_data_dir()`, `set_save_data_path(p)`, `create_save_manager()`, `env_str/env_bool/env_int/env_float(key)`, `has_env(key)`, `has_config_file()`.
-- `WorkspaceConfig { name, title, description, version, entry_point, save_data, assets, debug, system: SystemDefaults, release, env }`; `SystemDefaults { resolution, vsync, display_mode, master_volume, music_volume, sfx_volume, show_fps, dev_console, target_background_fps, background_rendering, env }`.
+- `WorkspaceConfig { name, title, description, version, entry_point, save_data, assets, debug, system: SystemDefaults, release, env }`; `SystemDefaults { resolution, pixel_art, vsync, display_mode, master_volume, music_volume, sfx_volume, ui_volume, voice_volume, ambience_volume, audio_buffer_frames: Option<u32>, show_fps, dev_console, target_background_fps, background_rendering, env }` (`audio_buffer_frames`: the audio device's buffer, `None` for the device's own; smaller is lower latency, larger safer).
 
 ```rust
 let saves = Workspace::discover()?.create_save_manager()?;
@@ -1250,7 +1268,8 @@ Built each frame in `Scene::ui` with `UiContext`: widgets are builders laid out 
 | `LookPatch` (each field an `Option`) | `fill(Color)`, `border(Color)`, `text(Color)`, `radius(f32)`, `skin(&str)` |
 | `Variant { base: WidgetKind, normal, hovered, pressed, focused, disabled: LookPatch }` | `of(WidgetKind)`, `normal(LookPatch)`, `hovered(..)`, `pressed(..)`, `focused(..)`, `disabled(..)` (without one, a disabled widget takes its kind's disabled look); built in: `danger`, `accent`, `tab` (buttons), `selected` (tabs) |
 | `Skin { path: Option<String>, insets: [f32; 4], filter: Filter, image: Option<Handle<Image>> }` | `from_path(&str, insets, Filter)`, `from_image(Handle<Image>, insets, Filter)`: a nine-slice drawn in place of a look's fill and border, the fill tinting it |
-| `UiSounds { focus, confirm, back, tick, error: Option<String>, volume: f32 }` | files the engine plays (one of each per frame at most); none by default |
+| `UiSounds { focus, confirm, back, tick, error: ThemeSound, volume: f32 }` | what the UI plays per event, through the audio engine on the `ui` bus (one of each per frame at most; `volume` an amplitude, 0.5 about -6 dB); none by default |
+| `ThemeSound { path: Option<String>, sound: Option<ThemeSoundSource> }` | `from_path(&str)` (a `.sound.ron` definition, or a clip), `from_sound(Handle<Sound>)`, `from_clip(Handle<AudioClip>)`; a theme file's are its dependencies (one that fails fails the theme); `enum ThemeSoundSource { Sound(Handle<Sound>), Clip(Handle<AudioClip>) }` |
 | `enum WidgetKind` | `Button`, `Panel`, `Checkbox`, `Toggle`, `Radio`, `Slider`, `TextInput`, `Dropdown`, `Tab`, `Choice`, `Tooltip`, `Scroll`, `Slot`, `Progress`, `Rebind`, `Modal`, `Prompt` |
 | `enum WidgetState` | `Normal`, `Hovered`, `Pressed`, `Focused` (ring showing), `Disabled` |
 | `ThemeError` | why `Theme::save` could not write a theme: `Io` (names the path) or `Serialize` |
@@ -1343,7 +1362,7 @@ A screen written in a `.ui.ron` file loads into the same `UiNode`. The guide is 
 | `GpuError` | `NoAdapter`, `RequestDevice`, `CreateSurface`, `DeviceLost` (`String`) | |
 | `AssetError` | `NotFound`, `Io`, `Decode`, `NoLoader`, `Dependency`, `Cycle`, `InvalidPath` (see [Assets](#assets)); shared as `Arc<AssetError>` | |
 | `ImageError` | `Decode(image::ImageError)` (from `Image::decode`) | |
-| `AudioError` | `InitError`, `LoadError`, `PlayError`, `NotFound` (all `String`), `Unavailable` | `AudioResult<T>` |
+| `MusicJoinError` | `StreamedIntro`, `StreamedLoop`, `Rates { intro, looped }`, `EmptyLoop` (from `Music::intro_and_loop`; a failed audio file is an `AssetError`) | |
 | `SaveError` | `Serialization`, `Deserialization`, `Compression`, `Decompression` (`String`), `Io(io::Error)`, `NotFound(PathBuf)`, `InvalidSlot(String)` | `SaveResult<T>` |
 | `NetworkError` | `InitError`, `ConnectionError`, `SendError`, `ReceiveError`, `TransportError` (`String`) | `NetworkResult<T>` |
 | `ReplicationError` | `SerializationError`, `DeserializationError` (`String`), `TypeMismatch { expected, found }`, `UnknownComponent(ComponentTypeId)`, `EntityNotFound(u64)` | `ReplicationResult<T>` |
@@ -1454,6 +1473,8 @@ See the `ryo-procgen` skill and `crates/ryo2d-procgen/AGENTS.md`, `crates/ryo2d-
 | `StepOutcome` | `Running` \| `Quit` |
 | `HeadlessError` | `NoGpu` \| `Render(String)` \| `Capture(CaptureError)` |
 | `shared_gpu()` | one GPU device shared across tests |
+| `HeadlessEngine::audio_log() -> Vec<AudioLogEntry>` | doc-hidden, for tests: what the engine did with each voice and bus (the latest 4096); `AudioLogEntry { kind: AudioLogKind, voice: u32, sound, source, bus: String, gain_db: f32, pan: f32, rate: f64, fade: Duration }`, `AudioLogKind { Start, Stop, Pause, Resume, Gain, Pan, Rate, Refused, Culled, Stolen }` (`ryo2d::core::audio`; `voice` 0 is a refused play or a bus's change). Headless audio plays silently on kira's mock backend, its picks seeded |
+| `ryo2d::testing::audio_world() -> World`, `audio_world_over(files: MemorySource) -> World`, `audio_step(world: &mut World, dt: Duration)` | free functions: `asset_world()` plus a clock and the audio engine on the mock backend, its log on (`world.resource::<ryo2d::core::audio::AudioEngine>().log()`, doc-hidden); `_over` reads the test's `MemorySource`, to save over a file and reload it; `audio_step` is one frame (clock, pump, audio). Not seeded: `AudioView::new(&mut world).seed(n)` |
 | `ryo2d::testing::asset_world() -> World` (a free function, not a method) | a world with the asset registry and no engine (every engine store, over an empty `MemorySource`), for a test that needs handles: `world.resource_mut::<Assets<Image>>().add(image)` |
 | `UiHarness::new(width, height)` | a UI with no window or GPU (built-in fonts, scale 1, the dark theme) for unit-testing game UI; `with_theme(Theme)` |
 | `UiHarness::frame(\|ui\| ..) -> R` | one 60 fps frame: resolve the scripted input against the last frame, run the closure as the top scene's `ui`, finish the frame |

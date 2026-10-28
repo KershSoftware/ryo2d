@@ -2,7 +2,7 @@
 name: ryo-config-save
 description: Project configuration (Ryo.toml), player settings (system.json, SystemState) and game saves (SaveManager, GameSaveData).
 metadata:
-  version: 2.1.0
+  version: 2.2.0
 ---
 
 # Ryo2D Configuration and Saves
@@ -41,7 +41,7 @@ EngineBuilder::new()
   .run()
 ```
 
-`UserPreferenceFilter::all()`, `none()`, `only(..)`, or an array/`Vec`/slice of `UserPreference` (`MasterVolume`, `MusicVolume`, `SfxVolume`, `Resolution`, `DisplayMode`, `Vsync`, `ShowFps`, `Bindings`). A saved `Resolution` sizes the window; the game's own resolution (the pixel-art target or design area) comes from `Ryo.toml` and the builder. Repeated calls combine.
+`UserPreferenceFilter::all()`, `none()`, `only(..)`, or an array/`Vec`/slice of `UserPreference` (`MasterVolume`, `MusicVolume`, `SfxVolume`, `UiVolume`, `VoiceVolume`, `AmbienceVolume`, `Resolution`, `DisplayMode`, `Vsync`, `ShowFps`, `Bindings`). Saved volumes are applied to the audio engine at startup; a saved `Resolution` sizes the window; the game's own resolution (the pixel-art target or design area) comes from `Ryo.toml` and the builder. Repeated calls combine.
 
 The fixed update rate is builder-only: `EngineBuilder::fixed_hz(hz)` (default 60). There is no Ryo.toml key for it.
 
@@ -63,9 +63,13 @@ resolution = "1280x720"    # the game's canvas, scaled to fit the window
 pixel_art = false           # true: resolution is a pixel-art target, scaled by whole numbers
 vsync = true
 display_mode = "windowed"   # windowed | exclusive_fullscreen | borderless_fullscreen
-master_volume = 0.8
+master_volume = 0.89        # the player's volume settings, 0 to 1 on the audio curve
 music_volume = 1.0
 sfx_volume = 1.0
+ui_volume = 1.0
+voice_volume = 1.0          # dialogue
+ambience_volume = 1.0
+# audio_buffer_frames = 256 # the audio device's buffer: smaller is lower latency, larger safer
 show_fps = false
 console = false             # developer console (backtick), debug and release
 target_background_fps = 0   # unfocused frame rate, 0 = target_fps
@@ -122,7 +126,7 @@ let saves = workspace.create_save_manager()?;  // SaveManager over the save fold
 
 ## System State
 
-`SystemState` holds `master_volume`, `music_volume`, `sfx_volume`, `width`, `height`, `display_mode: DisplayMode`, `vsync: Option<bool>`, `show_fps: Option<bool>`, `bindings` (the player's input bindings, below) and `env` (typed JSON values). In the file the resolution is one `"1280x720"` key.
+`SystemState` holds the six volume settings (`master_volume`, `music_volume`, `sfx_volume`, `ui_volume`, `voice_volume`, `ambience_volume`), `width`, `height`, `display_mode: DisplayMode`, `vsync: Option<bool>`, `show_fps: Option<bool>`, `bindings` (the player's input bindings, below) and `env` (typed JSON values). In the file the resolution is one `"1280x720"` key.
 
 ```rust
 let mut settings = saves.load_or_create_system(&workspace.config().system)?;
@@ -135,7 +139,8 @@ saves.save_system(&settings)?;
 - `load_or_create_system(&defaults)` creates the file from `[system]` when missing and merges new default keys into an existing one; `load_or_create_system_filtered(&defaults, &filter)` writes only the filtered keys to a new file.
 - `save_system` updates keys already in the file and adds a missing key only when its value differs, so a narrow file keeps its shape.
 - `DisplayMode::all()` and `display_name()`, `Resolution::common()` and `display_name()` feed settings menus.
-- Applying a change at runtime is separate from saving it: `ctx.request_display_mode(mode)`, `ctx.request_resolution(w, h)` (resizes the window), `ctx.request_display_change(w, h, mode)`, `ctx.request_ui_scale(..)` (applied after the frame), and `ctx.audio.set_master_volume(v)` / `set_music_volume` / `set_sfx_volume`.
+- Applying a change at runtime is separate from saving it: `ctx.request_display_mode(mode)`, `ctx.request_resolution(w, h)` (resizes the window), `ctx.request_display_change(w, h, mode)`, `ctx.request_ui_scale(..)` (applied after the frame), and `ctx.audio().set_volume_setting(VolumeKind::Master, v)` for each volume (playing sounds follow at once).
+- **The volume settings are points on a curve**, from 0 (silent) to 1 (the mix as designed): the gain is 40·log10(v) dB, so 0.5 is about -12 dB and 0.89 about -2 dB (`ryo-audio`, The player's volume settings). A saved value is read as written and never rescaled, so a `system.json` written for a linear volume scale plays its settings below 1 quieter than it was written for. `audio_buffer_frames` is a `[system]` key read from `Ryo.toml` only (the player does not save it).
 
 ## Saved Bindings
 
@@ -209,7 +214,7 @@ impl Scene for Settings {
         }
       });
     if volume_changed {
-      ctx.audio.set_master_volume(self.state.master_volume);
+      ctx.audio().set_volume_setting(VolumeKind::Master, self.state.master_volume);
       self.saves.save_system(&self.state).ok();
     }
     if let Some(mode) = picked {

@@ -3,7 +3,6 @@
 //! draws its state with
 
 use demo_kit::prelude::*;
-use ryo2d::core::audio::MIXER_PATH;
 
 /// Background of a bar
 pub(crate) const TRACK: Color = Color::new(255, 255, 255, 26);

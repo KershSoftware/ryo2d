@@ -47,12 +47,12 @@ const EMBEDDED_SKILLS: &[(&str, &str, &str)] = &[
   ),
   (
     "ryo-assets",
-    "Assets - loading images, SVG, shaders, fonts, UI files and themes through the registry (load_now and load), asset paths, handles and what keeps an asset alive, load states and loading screens, embedded assets with add, hot reload and AssetEvent, custom asset types and loaders, and the debug checker.",
+    "Assets - loading images, SVG, shaders, fonts, UI files, themes and audio (clips, sound and music definitions, the mixer) through the registry (load_now and load), asset paths, handles and what keeps an asset alive, load states and loading screens, embedded assets with add, hot reload and AssetEvent, custom asset types and loaders, and the debug checker.",
     include_str!("../skills/ryo-assets.md"),
   ),
   (
     "ryo-audio",
-    "Sound effects and music with Kira audio backend.",
+    "Audio - the workflow from a DAW export through assets/ and a .sound.ron definition to ctx.audio().play, voices and voice limits, the mixer file (buses, effects, sends, snapshots, ducking), the player's volume settings and their curve, 2D spatial sound with listeners and emitters, pause and time scale, music with intros, loops and crossfades, hot reload, the web's first-gesture unlock, latency, and testing with audio_world and the audio log.",
     include_str!("../skills/ryo-audio.md"),
   ),
   (

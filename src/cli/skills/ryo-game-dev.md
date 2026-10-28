@@ -2,14 +2,14 @@
 name: ryo-game-dev
 description: Building games with Ryo2D - scenes, entities, queries, systems, resources, messages, time and input.
 metadata:
-  version: 2.3.0
+  version: 2.4.0
 ---
 
 # Ryo2D Game Developer
 
 You help users build complete games with Ryo2D: scenes on a stack, entities in one shared ECS world, systems in the engine's phases.
 
-**Complete signatures: the `ryo-api` skill.** Feature skills: `ryo-physics`, `ryo-character` (players, enemies, movement presets, pickups, kill zones, checkpoints, tile levels), `ryo-assets` (loading images, fonts, shaders, UI files and themes; handles and hot reload), `ryo-animation`, `ryo-ui`, `ryo-text` (fonts, rich text, world text), `ryo-audio`, `ryo-particles`, `ryo-lighting`, `ryo-messages`, `ryo-config-save`, `ryo-console`, `ryo-controller`, `ryo-procgen`, `ryo-cli`.
+**Complete signatures: the `ryo-api` skill.** Feature skills: `ryo-physics`, `ryo-character` (players, enemies, movement presets, pickups, kill zones, checkpoints, tile levels), `ryo-assets` (loading images, fonts, shaders, UI files, themes and audio; handles and hot reload), `ryo-animation`, `ryo-ui`, `ryo-text` (fonts, rich text, world text), `ryo-audio` (sound definitions, the mixer, volume settings, spatial sound, music), `ryo-particles`, `ryo-lighting`, `ryo-messages`, `ryo-config-save`, `ryo-console`, `ryo-controller`, `ryo-procgen`, `ryo-cli`.
 
 ## Project Setup
 
@@ -138,9 +138,8 @@ Entities are not drawn by `render`: anything with `Transform` + `Renderable` is 
 | `ctx.world` | `&mut World` | Entities, components, queries, resources |
 | `ctx.time` | `&mut Time` | `real`, `game` and `fixed` clocks |
 | `ctx.input` | `&mut Input` | Keyboard, mouse, gamepad, text |
-| `ctx.audio` | `&mut Audio` | Sounds and music (calls return `AudioError::Unavailable` without a device) |
 
-Helpers: `assets()` (the asset registry: `load_now`, `load`, `add`, `get`; `ryo-assets`), `camera()` (the main camera: position, zoom, rotation, shake, screen/world conversion), `actions()` (bind and rebind input actions), `ui_theme()` (the UI theme), `follow_ui_theme(handle)` (follow a `.theme.ron` asset), `render_targets()`, `add_systems`, `messages::<T>()`, `write_message`, `resource`, `resource_mut`, `resource_or_default`, `insert_resource`, `effects()`, `lighting()`, `look()`, `tilemaps()`, `render_pipeline()`, `window()`, `cursor()`, `console()`, `spawn_child`, `skip_interpolation`, `screen_size()`, `request_display_mode`, `request_resolution`, `set_cursor*`. The accessors return `Mut<..>`; bind one for several calls: `let mut fx = ctx.effects();`.
+Helpers: `assets()` (the asset registry: `load_now`, `load`, `add`, `get`; `ryo-assets`), `audio()` (play sounds and music, volume settings, snapshots; `ryo-audio`), `camera()` (the main camera: position, zoom, rotation, shake, screen/world conversion), `actions()` (bind and rebind input actions), `ui_theme()` (the UI theme), `follow_ui_theme(handle)` (follow a `.theme.ron` asset), `render_targets()`, `add_systems`, `messages::<T>()`, `write_message`, `resource`, `resource_mut`, `resource_or_default`, `insert_resource`, `effects()`, `lighting()`, `look()`, `tilemaps()`, `render_pipeline()`, `window()`, `cursor()`, `console()`, `spawn_child`, `skip_interpolation`, `screen_size()`, `request_display_mode`, `request_resolution`, `set_cursor*`. The accessors return `Mut<..>`; bind one for several calls: `let mut fx = ctx.effects();`.
 
 **`time` and `input` are taken out of the world for the length of a callback.** Use the fields; `ctx.world.resource::<Time>()` panics inside a callback. Systems see them as resources (`Res<Time>`) as usual.
 
@@ -283,6 +282,7 @@ for picked in ctx.messages::<PickedUp>() {
 
 - The step rate is `EngineBuilder::fixed_hz(hz)` (default 60). Slow motion runs fewer steps, pause and hitstop run none; `dt` never changes. Physics follows all of it.
 - While the game clock is paused or in hitstop **no `update` runs anywhere**; `ui` still runs every frame, so unpause from `ui`.
+- Audio follows the game clock: a pause holds the buses that pause with the game, and slow motion lowers the pitch of those that follow time scale (`ryo-audio`, Pause, time scale and focus). Hitstop leaves audio alone, so a hit's sound plays through the freeze.
 
 ## Input
 
@@ -340,10 +340,10 @@ return SceneAction::SwitchWith(
 
 - Transitions run on real time, once a frame, so a fade finishes even with the game clock paused or slowed.
 - While one runs, `update` is not called and a scene change returned from `ui` is ignored (only `Quit` applies): a second click during a fade does not start another.
-- A pushed scene that does not `updates_below` stops the scenes below and pauses physics; engine animation and tweens keep running (pause the game clock to freeze them too).
+- A pushed scene that does not `updates_below` stops the scenes below and pauses physics; engine animation, tweens and sound keep running (pause the game clock to freeze them too: the `sfx`, `voice` and `ambience` buses hold while it is paused, `ui` and `music` play on).
 - A pause menu: a transparent pushed scene whose `ui` draws a focus-scoped menu and returns `SceneAction::Pop` on Resume or `ui.back()` (`ryo-ui`'s pause menu recipe). Scenes under it still draw, but only the top scene's widgets take input, so its buttons win the clicks.
-- Cleanup on `Switch`/`Reset` (not on `Push`/`Pop`): `SceneCleanup` flags `WORLD`, `CAMERA`, `EFFECTS`, `LIGHTING`, `TIME`, `MUSIC`, `MESSAGES`; `DEFAULT` is all but `MUSIC`, plus `NONE` and `ALL`. Combine with `|`, remove with `-`: `SceneCleanup::DEFAULT - SceneCleanup::WORLD` keeps the entities.
-- A scene's console commands and systems leave with it.
+- Cleanup on `Switch`/`Reset` (not on `Push`/`Pop`): `SceneCleanup` flags `WORLD`, `CAMERA`, `EFFECTS`, `LIGHTING`, `TIME`, `MUSIC`, `MESSAGES`; `DEFAULT` is all but `MUSIC` (so a track carries on from menu to game), plus `NONE` and `ALL`. Combine with `|`, remove with `-`: `SceneCleanup::DEFAULT - SceneCleanup::WORLD` keeps the entities.
+- A scene's console commands and systems leave with it, and so do its sounds as it exits by any action (`Pop` too): its loops stop with their fade, its one-shots playing finish (`ryo-audio`, Voices).
 
 ## Sprites and Anchors
 
@@ -408,12 +408,15 @@ use ryo2d::prelude::*;
 #[derive(Default)]
 struct Level {
   player: Option<Entity>,
+  jump: Option<Handle<Sound>>,
 }
 
 impl Scene for Level {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
     // A bare collider is a fixed floor; a one-way shelf to jump up through
     ctx.world.spawn((Transform::from_xy(400.0, 580.0), Collider::rect(800.0, 40.0)));
+    // A sound definition (its clips, bus and variations): ryo-audio
+    self.jump = ctx.assets().load_now::<Sound>("sfx/jump.sound.ron").ok();
     ctx.world.spawn((Transform::from_xy(400.0, 500.0), Collider::rect(160.0, 12.0).one_way()));
     let player = ctx
       .world
@@ -436,7 +439,9 @@ impl Scene for Level {
     // What the preset did in the last step
     for event in ctx.messages::<MovementEvent>() {
       if event.entity == player && event.kind == MovementEventKind::Jumped {
-        ctx.audio.play_sound("jump").ok();
+        if let Some(jump) = &self.jump {
+          ctx.audio().play(jump);
+        }
       }
     }
     if let Some(at) = ctx.world.get::<Transform>(player).map(|t| t.translation) {
@@ -748,7 +753,7 @@ fn player_is_drawn_at_spawn() {
 
 - Same scene, steps and input give identical frames: seed your RNG and use `ParticleSystem::with_seed(n)`.
 - Pads and menus: `tap_pad(GamepadButton::DPadDown)`, `press_pad`, `set_stick(Stick::Left, x, y)`, `wheel(dx, dy)`, `trackpad(dx, dy)` (logical pixels); `ui_focused()`, `ui_focusables()` and `focus_ui(id)` check pad navigation. `ryo2d::testing::UiHarness` tests a UI function without a GPU (`ryo-ui`, Testing UI).
-- Headless runs have no audio device, real gamepads (the pad methods drive a virtual one) or user preferences; `Ryo.toml` is honoured. `engine.world()` / `world_mut()` reach the world between steps.
+- Headless runs play sound silently on kira's mock backend (everything works; `ryo-audio`, Testing), and have no real gamepads (the pad methods drive a virtual one) or user preferences; `Ryo.toml` is honoured. `engine.world()` / `world_mut()` reach the world between steps.
 
 ## Pitfalls
 

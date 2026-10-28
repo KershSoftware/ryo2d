@@ -173,7 +173,12 @@ fn main() -> EngineResult<()> {
 - **Juice** — Knockback, squash and stretch, camera shake
 
 ### Audio
-- **Kira Backend** — Music and sound effects with volume control
+- **Sound definitions** — Variations, no-repeat, volume and pitch ranges, cooldowns, fades and voice limits with priorities, in `.sound.ron` files beside the DAW's exports
+- **Mixer** — Buses with effects and sends, snapshots and ducking, from one `.mixer.ron` file; the player's volume settings on a perceptual curve, heard on sounds already playing
+- **2D spatial sound** — Listeners and emitters with distance falloff, panning and a distance low-pass
+- **Music** — An intro into a gapless loop, crossfades, carried across scene changes
+- **Game clock** — Buses pause with the game and slow with time scale; no clicks on any start, stop or change
+- **Hot reload, web and tests** — Saved files change what plays, the web starts at the first click or tap, and headless runs play silently on a mock backend for tests
 
 ### UI
 - **Builders in `Scene::ui`** — Widgets drawn each frame from the game's own values, with absolute drawing for HUDs

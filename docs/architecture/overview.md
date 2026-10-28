@@ -32,7 +32,7 @@ The world is Ryo2D's ECS: `bevy_ecs` 0.20, exposed through `ryo2d::ecs` and the 
 
 | Resources (in the world) | Engine-owned |
 |---|---|
-| `Time`, `Input`, `ScreenMapping`, `AssetServer` and one `Assets<T>` per asset type, `EffectsManager`, `LightingSettings`, `Look`, `TilemapManager`, `WindowRequest`, `CursorRequest`, `WindowInfo`, `RenderPipeline`, `RenderTargets`, `Gpu` (once the GPU is up), `Physics`, `PhysicsConfig`, `PhysicsPaused`, the console's `CommandRegistry`, one `Messages<T>` per message type, and the game's own resources | the window, the renderers (sprite, lighting, trail, compositor, post-process), gilrs, the dev windows, frame capture, the console overlay and the debug flags; the scene stack and the Kira audio manager sit in the world as one non-send value that only the scene systems take out |
+| `Time`, `Input`, `ScreenMapping`, `AssetServer` and one `Assets<T>` per asset type, `AudioEngine`, `EffectsManager`, `LightingSettings`, `Look`, `TilemapManager`, `WindowRequest`, `CursorRequest`, `WindowInfo`, `RenderPipeline`, `RenderTargets`, `Gpu` (once the GPU is up), `Physics`, `PhysicsConfig`, `PhysicsPaused`, the console's `CommandRegistry`, one `Messages<T>` per message type, and the game's own resources | the window, the renderers (sprite, lighting, trail, compositor, post-process), gilrs, the dev windows, frame capture, the console overlay and the debug flags; the scene stack sits in the world as a non-send value that only the scene systems take out |
 
 In 0.20 a resource is a component on a hidden entity marked `IsResource`, so engine sweeps over "every entity" filter it out. Cameras are entities too (`Camera2d` + `Transform`); the main one (`MainCamera`) is spawned with the world and survives world cleanup.
 
@@ -68,7 +68,8 @@ Engine::frame()
  │        Transforms ... propagate GlobalTransform
  │        Trails ....... record trail points
  ├─ Update ....... UpdateSet::Game: the scenes' own per-frame systems; builder ones by default
- ├─ PostUpdate ... Transforms (propagation), Camera (shake, every camera's view), Extract (timed effects)
+ ├─ PostUpdate ... Transforms (propagation), Camera (shake, every camera's view), Extract (timed effects);
+ │                 audio_system after Camera (voices, buses, music, listener and emitters, game clock)
  ├─ render ....... Scene::render, query the world into the draw list, plan the cameras, run the RenderPipeline
  └─ Last ......... physics removal and re-enable bookkeeping, forget despawned tilemaps, clear change trackers
 ```
@@ -85,7 +86,7 @@ Engine::frame()
 | Clock | Delta | Used by |
 |-------|-------|---------|
 | `time.real` | wall clock, never scaled or paused | camera shake, UI animation (`ui.dt()`), console, timed post-process effects, the hitstop countdown, lighting and trail animation |
-| `time.game` | real delta times `speed`, capped at `max_delta` (250 ms, or one fixed timestep if longer) per frame, zero while paused or in hitstop | feeds the fixed clock; sprite effects animate on its elapsed time |
+| `time.game` | real delta times `speed`, capped at `max_delta` (250 ms, or one fixed timestep if longer) per frame, zero while paused or in hitstop | feeds the fixed clock; sprite effects animate on its elapsed time; audio buses pause with it and follow its speed (not its hitstop) |
 | `time.fixed` | constant `timestep` (`1 / fixed_hz`, default 60 Hz) | `FixedUpdate`: juice, `Scene::update`, scene fixed systems, gameplay, physics |
 
 - Slow motion runs fewer fixed steps, pause and hitstop run none; the step length never changes, so physics and tweens behave the same at any speed.
@@ -121,7 +122,7 @@ SceneManager (engine-owned stack over the one shared world)
 
 - A `Scene` implements any of `on_enter`, `on_exit`, `on_pause`, `on_resume`, `update` (each fixed step), `ui` (once a frame, before the steps) and `render` (GPU-batched sprites), plus the flags `is_transparent`, `updates_below`, `is_physics_paused`.
 - `SceneAction`: `Continue`, `Push`, `Pop`, `Switch`, `Reset`, `PopReturn`, `Quit`, each with a `*With(Transition)` form (fade or slide).
-- `SceneContext` has the fields `world`, `time`, `input`, `audio` and helpers for everything else (`assets()`, `camera()`, `render_targets()`, `effects()`, `lighting()`, `render_pipeline()`, `window()`, `cursor()`, `tilemaps()`, `console()`, `messages::<T>()`, `write_message`, `resource*`, `add_systems`). `time` and `input` are taken out of the world for the length of the callback; `assets()` borrows the world for as long as it is used.
+- `SceneContext` has the fields `world`, `time`, `input` and helpers for everything else (`assets()`, `audio()`, `camera()`, `render_targets()`, `effects()`, `lighting()`, `render_pipeline()`, `window()`, `cursor()`, `tilemaps()`, `console()`, `messages::<T>()`, `write_message`, `resource*`, `add_systems`). `time` and `input` are taken out of the world for the length of the callback; `assets()` and `audio()` borrow the world for as long as they are used.
 - On `Switch` and `Reset` the leaving scene's `cleanup_on_exit()` (`SceneCleanup` flags: world, camera, effects, lighting, time, music, messages) resets engine state; `Push` and `Pop` keep it.
 
 ## Messages
@@ -254,7 +255,7 @@ PreUpdate pump: lands finished loads (once their dependencies have, and the load
 - One registry for every asset type: `AssetServer` (a resource) loads by asset path, relative to the project's `assets/` folder, through `AssetLoader`s chosen by extension, and each type's values are in its `Assets<T>` resource. Scenes reach both through `ctx.assets()`; systems take `Res<AssetServer>` and `Res<Assets<T>>`.
 - A `Handle<T>` keeps its asset alive, and the pump frees an asset at its first run after the last handle drops. The engine's caches (textures, compiled shaders, text layouts) key by `AssetId`, so the renderer never keeps alive what the game let go.
 - An asset is its type, its path and its loader's settings (`load_with`): asking again gives the same handle, and one file at two SVG sizes is two images. Each value has a content version, and what is built from an asset (a texture, a UI tree, a text layout) is built again when it moves.
-- The engine's types are `Image` (raster formats and SVG), `Shader` (WGSL), `Font` and `BitmapFont`, `UiFile` and `Theme`; a game adds its own (`impl Asset`, an `AssetLoader`, `EngineBuilder::asset_loader`). A UI file's imports and images, a theme's skin images and a bitmap font's sheet are dependencies: the asset is inserted once they have loaded and its loader's `check` passes.
+- The engine's types are `Image` (raster formats and SVG), `Shader` (WGSL), `Font` and `BitmapFont`, `UiFile`, `Theme`, `AudioClip` (WAV, OGG Vorbis, MP3, FLAC), `Sound` and `Music` (definitions) and `Mixer`; a game adds its own (`impl Asset`, an `AssetLoader`, `EngineBuilder::asset_loader`). A UI file's imports and images, a theme's skin images and sounds, a bitmap font's sheet and a sound definition's clips are dependencies: the asset is inserted once they have loaded and its loader's `check` passes.
 - An image that is not loaded draws a magenta checker in debug builds and nothing in release ones.
 - **Hot reload** is on in debug builds with a window (`EngineBuilder::hot_reload`): the asset folder is watched, a saved file reloads under the same handle about 100 ms after its last write, the assets that hold it are checked again, and a reload that fails keeps the last good value.
 
@@ -262,11 +263,25 @@ Details: `src/core/asset/AGENTS.md`; usage: the `ryo-assets` skill.
 
 ## Audio
 
-[Kira](https://github.com/tesselode/kira), reached as `ctx.audio`.
+A mixer on [kira](https://github.com/tesselode/kira) 0.12, built for sound authored in a DAW and shaped in data files, reached as `ctx.audio()`.
 
-- Volume is multiplicative: master × category (SFX or music) × the sound's own.
-- SFX are loaded by name and cached (`load_sound`, `play_sound_with(SoundOptions)`: volume, panning, playback rate); music streams from disk (`play_music_with(MusicOptions)`: looping, fade in, `fade_to`, `fade_out`, `crossfade_music`).
-- `SceneCleanup::MUSIC` stops music on a scene change; the default cleanup keeps it playing.
+```
+AudioClip  .wav .ogg .mp3 .flac: decoded (up to 10 s) or streamed   ┐
+Sound      .sound.ron: clips, bus, level, pitch, limits, spatial    │ registry assets,
+Music      .music.ron: an intro into a gapless loop, or a loop      │ hot reload
+Mixer      audio/mixer.mixer.ron: buses, effects, sends, snapshots  ┘
+
+ctx.audio().play(&sound) -> Voice -> its bus's track -> .. -> master -> device (or mock backend)
+```
+
+- **Assets.** Clips, sound definitions, music and the mixer load through the registry by asset path, with dependencies and hot reload. A clip up to 10 s decodes to memory on a worker; a longer one keeps its bytes and streams through the engine's own decoder, which opens the file on kira's decoder thread so a play costs the main thread microseconds. The web decodes every clip.
+- **The mixer.** The standard buses always exist (`master`, then `music`, `sfx`, `ui`, `voice`, `ambience`); the mixer file adjusts them and adds a game's own under them, each a kira track with its effects, sends, limit and whether it pauses with the game or follows time scale. A bus's gain is layers added in dB: the mixer's (or the game's) volume, the player's volume setting (amplitude = setting², so dB = 40·log10(v)), the active snapshot and any duck. Snapshots blend the mix to named presets; ducking rules dip one bus while another plays.
+- **Voices.** `play` picks a clip by weight (avoiding recent picks), draws gain and pitch, applies the cooldown and the voice limits (per sound, per bus, and a cap of 96 a bus track below kira's 128, stealing the least important voice; priority is 0 to 255, higher more important; nothing stops a more important voice or an equal one started that frame) and returns a `Voice` handle, which never stops when dropped. A voice belongs to the scene that played it (its loops stop as the scene exits; its playing one-shots finish), to the engine (`persist`), or to an `AudioEmitter`'s entity. Every change is smoothed by at least 10 ms, so nothing clicks.
+- **The game clock.** `audio_system` (`PostUpdate`) holds the buses that pause with the game while it is paused, plays the buses that follow time scale at the game's speed (up to 8x), and leaves hitstop alone. 2D spatial sound (falloff, pan, a distance low-pass) follows the listener (an `AudioListener`, else the main camera) and the emitters there.
+- **Music** is the engine's one player: crossfades, carries on across scene changes, and joins an intro to its loop into one sound so the loop is sample-exact.
+- **No device** (headless, or a device that failed to open): the same mixer runs silently on kira's mock backend, rendered by the frame's time; headless runs are seeded, so tests repeat and assert on the audio log. **The web** opens the device at the player's first click, tap or key.
+
+Details: `src/core/audio/AGENTS.md`; usage: the `ryo-audio` skill; measurements: `docs/backlog/audio.md`.
 
 ## UI
 
@@ -406,7 +421,8 @@ Client-server multiplayer with listen-server support. See [the network architect
 | `gameplay/` | Movement input and presets, knockback, trigger behaviours |
 | `navigation/` | Grids, A* pathfinding, agents, steering |
 | `state_machine/` | Generic state machines and stacks |
-| `asset/`, `audio.rs` | The asset registry (handles, stores, the server, loaders, worker threads, the pump, hot reload); audio |
+| `asset/` | The asset registry (handles, stores, the server, loaders, worker threads, the pump, hot reload) |
+| `audio/` | The audio engine: the device or mock backend, the bus tree and mix, voices and limits, spatial sound, music, the streamed clips' decoder |
 | `text/` | Fonts, text styles, rich text and markup, layout, glyph rasterization, effects and reveal, world text (`Text2d`), `CpuText` for the dev windows |
 | `ui/` | `UiContext` and absolute drawing, ids, memory, layout (Taffy), containers and widgets, popups and modals, the pointer and focus resolve, the theme, UI tweens |
 | `config/` | Workspace (`Ryo.toml`), settings, saves |
@@ -425,7 +441,8 @@ Client-server multiplayer with listen-server support. See [the network architect
 | `winit` | Windowing and input (also on the web) |
 | `web-time` | Clocks on native and the web |
 | `rapier2d` | Physics simulation |
-| `kira` | Audio |
+| `kira` | Audio: the mixer, tracks, effects, the device (through cpal) and the mock backend |
+| `symphonia` | Decoding streamed clips (the engine's own kira decoder, `src/core/audio/stream.rs`; kira's version and formats) |
 | `gilrs` | Gamepads |
 | `renet` | Networking transport |
 | `puffin` | Profiling (optional) |
