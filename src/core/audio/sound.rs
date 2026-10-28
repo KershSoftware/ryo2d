@@ -754,6 +754,37 @@ mod tests {
     assert_eq!(last(&world).kind, AudioLogKind::Refused);
   }
 
+  /// When voices fading out hold all of kira's room on a bus, the plays it
+  /// refuses warn once, naming the bus, not only in the audio log
+  #[test]
+  fn a_full_track_warns_once_naming_its_bus() {
+    let mut world = audio_world();
+    let long = clip(&mut world, 2.0);
+    let rain = add(
+      &mut world,
+      Sound {
+        bus: "ambience".to_string(),
+        ..of(&[&long])
+      },
+    );
+    for _ in 0..96 {
+      play(&mut world, &rain);
+    }
+    // Each frame after, 32 plays steal older voices, whose fades fill
+    // kira's room, and the rest are refused for want of it
+    for _ in 0..2 {
+      audio_step(&mut world, FRAME);
+      for _ in 0..100 {
+        play(&mut world, &rain);
+      }
+    }
+    assert_eq!(stolen(&world).len(), 64);
+    let about_it = warnings(|message| {
+      message.contains("\"ambience\" bus is full") && message.contains("fading")
+    });
+    assert_eq!(about_it, 1);
+  }
+
   /// The cap takes the least important voice first, however loud, and
   /// only then the quietest of the rest
   #[test]

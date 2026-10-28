@@ -128,6 +128,8 @@ struct Bus {
   track: Option<TrackHandle>,
   /// The most voices playing on it and the buses under it
   limit: Option<u16>,
+  /// A play was refused for want of kira's room on its track: warned once
+  full_warned: bool,
 }
 
 /// The buses, `master` first, in the standard layout (`master`, and under
@@ -146,6 +148,7 @@ impl BusTree {
       parent: None,
       track: master,
       limit: None,
+      full_warned: false,
     });
     for name in STANDARD_BUSES {
       let track = buses[0]
@@ -157,6 +160,7 @@ impl BusTree {
         parent: Some(0),
         track,
         limit: None,
+        full_warned: false,
       });
     }
     BusTree { buses }
@@ -701,7 +705,7 @@ impl AudioEngine {
     // a voice: a stopped voice holds its room until it has faded out
     let refused = self.undecodable.get(&request.clip.id()) == Some(&version)
       || self.cooling(request)
-      || !self.buses.has_room(bus)
+      || !self.room_on(bus)
       || !self.make_room(bus, request);
     if refused {
       return self.refuse(&subject, server);
@@ -725,7 +729,10 @@ impl AudioEngine {
           Refusal::Undecodable(error) => {
             self.warn_undecodable(request.clip, version, error, server)
           }
-          Refusal::Full => self.count_kira_full(),
+          Refusal::Full => {
+            self.count_kira_full();
+            self.warn_full(bus);
+          }
         }
         self.victims.clear();
         return self.refuse(&subject, server);
@@ -832,6 +839,33 @@ impl AudioEngine {
       self.record(index, AudioLogKind::Stolen, fade, server);
     }
     self.victims.clear();
+  }
+
+  /// Whether kira has room for one more sound on `bus`'s track, warning
+  /// once for the bus when it has none
+  fn room_on(&mut self, bus: usize) -> bool {
+    if self.buses.has_room(bus) {
+      return true;
+    }
+    self.warn_full(bus);
+    false
+  }
+
+  /// Warn, once for `bus`, that kira's room on its track is full. Only the
+  /// voices still fading out fill it past the cap: a stopped sound holds its
+  /// room until its fade ends
+  fn warn_full(&mut self, bus: usize) {
+    let Some(this) = self.buses.buses.get_mut(bus) else {
+      return;
+    };
+    if this.track.is_none() || std::mem::replace(&mut this.full_warned, true) {
+      return;
+    }
+    crate::engine_warn!(
+      module: "Audio",
+      "the {:?} bus is full: voices still fading out hold all of kira's room on its track, so plays on it are refused until they end (shorter fade_outs on the sounds stopped there keep room free)",
+      this.name
+    );
   }
 
   /// A refused play: logged, and a voice that never started
