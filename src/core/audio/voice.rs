@@ -76,7 +76,9 @@ struct VoiceShared {
 /// does a one-shot paused (by its own call, or held by the game's pause),
 /// and a one-shot playing then plays to its end. One played with
 /// [`PlayOptions::persist`](super::PlayOptions::persist), or outside every
-/// scene, belongs to the engine and plays on.
+/// scene, belongs to the engine and plays on. One played from an
+/// [`AudioEmitter`](super::AudioEmitter) belongs to its entity instead, and
+/// stops, by the same rule, as the entity is despawned.
 ///
 /// It follows the game's clock through its bus. On a bus that pauses with
 /// the game (by default `sfx`, `voice` and `ambience`) it pauses where it

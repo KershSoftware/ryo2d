@@ -22,6 +22,8 @@ pub(crate) use bevy_ecs::error::{ErrorContext, FallbackErrorHandler};
 pub use bevy_ecs::event::{EntityEvent, Event};
 pub use bevy_ecs::hierarchy::{ChildOf, Children};
 pub(crate) use bevy_ecs::lifecycle::HookContext;
+// A component's removal, observed (an entity enabled: its `Disabled` removed)
+pub(crate) use bevy_ecs::lifecycle::Remove;
 pub use bevy_ecs::lifecycle::RemovedComponents;
 // A removal message, read through a `MessageCursor` outside a system
 pub(crate) use bevy_ecs::lifecycle::RemovedComponentEntity;

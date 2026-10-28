@@ -22,17 +22,20 @@ pub enum AudioLogKind {
   /// started held (its start logs no fade) logs its first resume, with
   /// its fade-in
   Resume,
-  /// Its gain changed to `gain_db`. With `voice` 0 and no `source`, a
-  /// bus's gain changed: `gain_db` is the volume its kira track was given
+  /// Its gain changed to `gain_db`: its own (`Voice::set_volume`), or its
+  /// place's falloff as it or the listener moved. With `voice` 0 and no
+  /// `source`, a bus's gain changed: `gain_db` is the volume its kira track
+  /// was given
   Gain,
-  /// Its pan changed to `pan`
+  /// Its pan changed to `pan`, as it or the listener moved
   Pan,
   /// Its playback rate changed to `rate`: its pitch, or the time scale
   /// its bus follows
   Rate,
   /// A play was refused, so no voice started (`voice` is 0)
   Refused,
-  /// A play was culled before it started (out of range)
+  /// A play was culled before it started: a one-shot at or beyond its
+  /// maximum distance from the listener (`voice` is 0)
   Culled,
   /// It was stopped to make room for another voice
   Stolen,
@@ -54,7 +57,8 @@ pub struct AudioLogEntry {
   pub source: String,
   /// Its bus
   pub bus: String,
-  /// Its own gain in dB
+  /// Its gain in dB as heard: its own, plus its place's falloff for a
+  /// voice heard from a place
   pub gain_db: f32,
   /// Its pan, -1 (left) to 1 (right)
   pub pan: f32,

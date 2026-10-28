@@ -19,8 +19,8 @@ use kira::sound::streaming::{StreamingSoundData, StreamingSoundHandle};
 use kira::sound::{EndPosition, PlaybackPosition, PlaybackState, Region};
 use kira::track::{SendTrackBuilder, SendTrackHandle, TrackBuilder, TrackHandle};
 use kira::{
-  AudioManager, AudioManagerSettings, Capacities, Decibels, PlaybackRate, ResourceLimitReached,
-  Semitones, StartTime, Tween,
+  AudioManager, AudioManagerSettings, Capacities, Decibels, Panning, PlaybackRate,
+  ResourceLimitReached, Semitones, StartTime, Tween,
 };
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
@@ -32,15 +32,19 @@ use super::mixer::{
   Tracks, plan,
 };
 use super::settings::{SILENCE_DB, VolumeSettings};
+use super::spatial::{
+  AudioEmitter, Hearing, Listener, ListenerQuery, MAX_FILTERED, SpatialVoice, VoiceFilter,
+  emitter_position, heard_db,
+};
 use super::view::{PlayOptions, Playable};
 use super::voice::{Voice, VoiceChange, VoiceCommand, VoiceState};
 use super::{
-  AudioClip, ClipData, FocusLoss, LimitRule, Mixer, SnapshotDef, Sound, SoundClip, VoiceLimit,
-  VolumeKind, volume_to_db,
+  AudioClip, ClipData, FocusLoss, LimitRule, Mixer, SnapshotDef, Sound, SoundClip, Spatial,
+  VoiceLimit, VolumeKind, volume_to_db,
 };
-use crate::core::asset::{AssetId, AssetServer, Assets, Handle};
+use crate::core::asset::{AssetId, AssetServer, Assets, Handle, LoadState, UntypedAssetId};
 use crate::core::ecs::kernel::Mut;
-use crate::core::ecs::{Resource, Vec2, World};
+use crate::core::ecs::{Disabled, Entity, Resource, Vec2, World};
 use crate::core::hash::{FastMap, FastSet};
 
 /// The shortest smoothing of any change to a voice (volume, pitch, pause,
@@ -374,6 +378,14 @@ impl Playback {
     }
   }
 
+  fn set_panning(&mut self, pan: f32, tween: Tween) {
+    match self {
+      Playback::Static(sound) => sound.set_panning(Panning(pan), tween),
+      #[cfg(not(target_arch = "wasm32"))]
+      Playback::Stream(sound) => sound.set_panning(Panning(pan), tween),
+    }
+  }
+
   /// Where it is, in seconds from the start of what plays
   fn position(&self) -> f64 {
     match self {
@@ -441,6 +453,11 @@ struct LiveVoice {
   priority: u8,
   /// Where it plays in the world, if it was given a position
   position: Option<Vec2>,
+  /// The entity it was played from, which it follows and belongs to: its
+  /// loops stop when the entity goes
+  emitter: Option<Entity>,
+  /// How it is heard from its place, if its sound has spatial settings
+  spatial: Option<SpatialVoice>,
   /// Its fade when the engine stops it under a limit
   fade_out: Duration,
   /// The engine frame it started in
@@ -453,6 +470,26 @@ struct LiveVoice {
   generation: u32,
   /// As a loop, it could not move to a rebuilt tree: warned once
   stuck_warned: bool,
+}
+
+impl LiveVoice {
+  /// Its gain as heard: its own, plus its place's falloff
+  fn heard_db(&self) -> f32 {
+    heard_db(
+      self.gain_db,
+      self.spatial.as_ref().map_or(0.0, |spatial| spatial.gain_db),
+    )
+  }
+
+  /// Its pan, from its place (0 without one)
+  fn pan(&self) -> f32 {
+    self.spatial.as_ref().map_or(0.0, |spatial| spatial.pan)
+  }
+
+  /// Its distance low-pass, if it has one
+  fn filter(&self) -> Option<&VoiceFilter> {
+    self.spatial.as_ref()?.filter.as_ref()
+  }
 }
 
 /// The live voices, in the order they started (a retired voice's removal
@@ -518,6 +555,10 @@ struct Request<'a> {
   fade_in: Duration,
   fade_out: Duration,
   position: Option<Vec2>,
+  /// How it is heard from `position`
+  spatial: Option<Spatial>,
+  /// The entity it is played from
+  emitter: Option<Entity>,
   /// The engine's, not the playing scene's
   persist: bool,
 }
@@ -542,6 +583,8 @@ impl<'a> Request<'a> {
       fade_in: Duration::ZERO,
       fade_out: Duration::ZERO,
       position: options.position,
+      spatial: None,
+      emitter: None,
       persist: options.persist,
     }
   }
@@ -573,6 +616,8 @@ impl<'a> Request<'a> {
       fade_in: sound.fade_in,
       fade_out: sound.fade_out,
       position: options.position,
+      spatial: sound.spatial,
+      emitter: None,
       persist: options.persist,
     })
   }
@@ -580,7 +625,9 @@ impl<'a> Request<'a> {
 
 /// How a voice starts in kira
 struct Start<'a> {
+  /// Its gain as heard (its own and its place's)
   gain_db: f32,
+  pan: f32,
   /// Its playback rate: its pitch's, times the time scale it carries
   rate: f64,
   /// It starts held: silent, and paused before it plays (its fade-in is
@@ -624,7 +671,9 @@ struct Subject<'a> {
   sound: Option<AssetId<Sound>>,
   clip: &'a Handle<AudioClip>,
   bus: usize,
+  /// Its gain as heard (its own and its place's)
   gain_db: f32,
+  pan: f32,
   /// Its playback rate, the time scale's included
   rate: f64,
 }
@@ -676,9 +725,18 @@ pub struct AudioEngine {
   warned_sounds: FastSet<AssetId<Sound>>,
   /// Bus names warned about once (a bus there is not)
   warned_buses: FastSet<String>,
-  /// Where the listener is: nowhere until spatial sound places it, so every
-  /// voice is at distance 0
-  listener: Option<Vec2>,
+  /// The listener as last found: none (every voice is heard as if at it)
+  /// without an `AudioListener` or a main camera
+  listener: Option<Listener>,
+  /// Finds the listener; made from the world the engine is in
+  listener_query: Option<ListenerQuery>,
+  /// Emitters added to entities, to play on spawn once their sounds load
+  spawned: Vec<Entity>,
+  /// The world's entities being enabled are watched, for their emitters
+  watching_enabled: bool,
+  /// Sounds and clips played at a place without spatial settings, warned
+  /// about once
+  warned_flat: FastSet<UntypedAssetId>,
   /// The voices one play stops to make room, kept to reuse
   victims: Vec<Victim>,
   /// The player's six volume settings
@@ -791,6 +849,10 @@ impl AudioEngine {
       warned_sounds: FastSet::default(),
       warned_buses: FastSet::default(),
       listener: None,
+      listener_query: None,
+      spawned: Vec::new(),
+      watching_enabled: false,
+      warned_flat: FastSet::default(),
       victims: Vec::new(),
       settings,
       bus_volumes: FastMap::default(),
@@ -839,12 +901,6 @@ impl AudioEngine {
   #[doc(hidden)]
   pub fn seed(&mut self, seed: u64) {
     self.rng = SmallRng::seed_from_u64(seed);
-  }
-
-  /// Put the listener at `position` (tests, until spatial sound places it)
-  #[cfg(test)]
-  pub(crate) fn set_listener(&mut self, position: Option<Vec2>) {
-    self.listener = position;
   }
 
   /// Limit the voices on `bus` and the buses under it (tests, until the
@@ -921,20 +977,62 @@ impl AudioEngine {
   pub(crate) fn release_scope(&mut self, world: &World, scope: u64) {
     let server = world.get_resource::<AssetServer>();
     for index in 0..self.voices.live.len() {
-      let live = &mut self.voices.live[index];
-      let state = live.voice.state();
-      let lingers = live.looping || live.held || state == VoiceState::Paused;
-      if live.scope != Some(scope)
-        || !lingers
-        || !matches!(state, VoiceState::Playing | VoiceState::Paused)
-      {
-        continue;
+      if self.voices.live[index].scope == Some(scope) {
+        self.release_voice(index, server);
       }
-      let fade = live.fade_out.max(MIN_FADE);
-      live.playback.stop(tween(fade));
-      live.voice.set_state(VoiceState::Stopping);
-      self.record(index, AudioLogKind::Stop, fade, server);
     }
+  }
+
+  /// Live voice `index`'s owner is gone (its scene exited, or its emitter's
+  /// entity): stop it with its fade (its sound's `fade_out`, at least
+  /// [`MIN_FADE`]) if it is a loop, or a one-shot paused or held; a one-shot
+  /// playing plays on to its end
+  fn release_voice(&mut self, index: usize, server: Option<&AssetServer>) {
+    let Some(live) = self.voices.live.get_mut(index) else {
+      return;
+    };
+    let state = live.voice.state();
+    let lingers = live.looping || live.held || state == VoiceState::Paused;
+    if !lingers || !matches!(state, VoiceState::Playing | VoiceState::Paused) {
+      return;
+    }
+    let fade = live.fade_out.max(MIN_FADE);
+    live.playback.stop(tween(fade));
+    live.voice.set_state(VoiceState::Stopping);
+    self.record(index, AudioLogKind::Stop, fade, server);
+  }
+
+  /// Make ready to find the listener in `world` (once; again for another
+  /// world)
+  pub(crate) fn prepare(&mut self, world: &mut World) {
+    if !self
+      .listener_query
+      .as_ref()
+      .is_some_and(|query| query.is_of(world))
+    {
+      self.listener_query = Some(ListenerQuery::new(world));
+    }
+  }
+
+  /// Find the listener in `world`, if [`prepare`](Self::prepare)d for it
+  fn find_listener(&mut self, world: &World) {
+    if let Some(query) = &mut self.listener_query
+      && query.is_of(world)
+    {
+      self.listener = query.find(world);
+    }
+  }
+
+  /// An emitter that plays on spawn was added to `entity`: it plays in the
+  /// frame's update, once its sound has loaded
+  pub(crate) fn emitter_spawned(&mut self, entity: Entity) {
+    self.spawned.push(entity);
+  }
+
+  /// True the first time it is asked: the world's first emitter is being
+  /// added, and the engine should start watching for entities being enabled
+  pub(crate) fn watch_enabling(&mut self) -> bool {
+    !std::mem::replace(&mut self.watching_enabled, true)
   }
 
   /// Each bus as it stands, `master` first and parents before children
@@ -1208,6 +1306,26 @@ impl AudioEngine {
     Some(self.voices.live[index].playback.state())
   }
 
+  /// The cutoff voice `id`'s distance low-pass was last given; `None` for a
+  /// voice without one (tests)
+  #[cfg(test)]
+  pub(crate) fn voice_cutoff(&self, id: u32) -> Option<f64> {
+    let index = self.voices.index_of(id)?;
+    self.voices.live[index]
+      .filter()
+      .map(|filter| filter.applied)
+  }
+
+  /// kira's tracks under `bus`'s own (tests)
+  #[cfg(test)]
+  pub(crate) fn sub_tracks_on(&self, bus: &str) -> usize {
+    self
+      .buses
+      .find(bus)
+      .and_then(|bus| self.buses.track(bus))
+      .map_or(0, TrackHandle::num_sub_tracks)
+  }
+
   /// The sounds kira holds on `bus`'s own track (tests)
   #[cfg(test)]
   pub(crate) fn sounds_on(&self, bus: &str) -> usize {
@@ -1394,8 +1512,10 @@ impl AudioEngine {
     let (region, loop_region) = (live.region.clone(), live.loop_region.clone());
     // A paused or held voice starts paused, unheard
     let paused = live.voice.state() == VoiceState::Paused;
+    let cutoff = live.filter().map(|filter| filter.applied);
     let start = Start {
-      gain_db: live.gain_db,
+      gain_db: live.heard_db(),
+      pan: live.pan(),
       rate: rate_of(live.pitch) * live.scale,
       held: paused || live.held,
       fade_in: Some(tween(MIN_FADE)),
@@ -1405,9 +1525,13 @@ impl AudioEngine {
       position: live.playback.position(),
     };
     let bus = live.bus;
+    // A filtered voice's filter moves with it, on a track of its own under
+    // its new bus (unfiltered if kira has no room for one)
+    let mut filter = cutoff.and_then(|hz| self.filter_track(bus, hz));
+    let track = filter.as_mut().map(|filter| &mut filter.track);
     let started = match ClipSource::of(clip) {
-      ClipSource::Decoded(data) => self.start_static(bus, data, &start),
-      ClipSource::Encoded(bytes) => self.start_stream(bus, bytes, &start),
+      ClipSource::Decoded(data) => self.start_static(bus, track, data, &start),
+      ClipSource::Encoded(bytes) => self.start_stream(bus, track, bytes, &start),
     };
     let playback = match started {
       Ok(playback) => playback,
@@ -1423,6 +1547,10 @@ impl AudioEngine {
     live.kira_paused = start.held;
     let mut old = std::mem::replace(&mut live.playback, playback);
     old.stop(tween(MIN_FADE));
+    // The old filter's track plays the old sound's fade out, then goes
+    if let Some(spatial) = &mut live.spatial {
+      spatial.filter = filter;
+    }
     live.generation = self.generation;
     // A paused or held one starts silent: its resume fades it in
     let fade_in = if start.held { Duration::ZERO } else { MIN_FADE };
@@ -1476,9 +1604,52 @@ impl AudioEngine {
     playable: Playable<'_>,
     options: &PlayOptions,
   ) -> Voice {
+    self.play_from(world, playable, options, None)
+  }
+
+  /// Play the sound of `entity`'s [`AudioEmitter`] where the entity is, the
+  /// voice following it and belonging to it. An entity that is not an
+  /// emitter plays nothing
+  pub(crate) fn play_emitter(&mut self, world: &World, entity: Entity) -> Voice {
+    let Some(position) = emitter_position(world, entity) else {
+      return Voice::stopped();
+    };
+    let Some(emitter) = world.get::<AudioEmitter>(entity) else {
+      return Voice::stopped();
+    };
+    let options = PlayOptions {
+      position: Some(position),
+      ..Default::default()
+    };
+    self.play_from(
+      world,
+      Playable::Sound(&emitter.sound),
+      &options,
+      Some(entity),
+    )
+  }
+
+  /// [`play`](Self::play), from `emitter` when given
+  fn play_from(
+    &mut self,
+    world: &World,
+    playable: Playable<'_>,
+    options: &PlayOptions,
+    emitter: Option<Entity>,
+  ) -> Voice {
     let server = world.get_resource::<AssetServer>();
+    // Heard from a place: from where the listener is now
+    if options.position.is_some() {
+      self.find_listener(world);
+    }
     match playable {
-      Playable::Clip(clip) => self.start(world, &Request::clip(clip, options), server),
+      Playable::Clip(clip) => {
+        let request = Request {
+          emitter,
+          ..Request::clip(clip, options)
+        };
+        self.start(world, &request, server)
+      }
       Playable::Sound(handle) => {
         let id = handle.id();
         let Some(sound) = world
@@ -1499,7 +1670,8 @@ impl AudioEngine {
           .get(&id)
           .map_or(&[][..], |state| state.recent.as_slice());
         let request = pick_clip(&mut self.rng, &sound.clips, recent, sound.no_repeat)
-          .and_then(|pick| Request::sound(id, sound, pick, &mut self.rng, options));
+          .and_then(|pick| Request::sound(id, sound, pick, &mut self.rng, options))
+          .map(|request| Request { emitter, ..request });
         match request {
           Some(request) => self.start(world, &request, server),
           None => {
@@ -1512,17 +1684,30 @@ impl AudioEngine {
   }
 
   /// Start `request`'s voice, unless its clip is not loaded (a stopped
-  /// voice, not logged) or it is refused (a stopped voice, logged)
+  /// voice, not logged), or it is a one-shot out of range (culled) or
+  /// refused (a stopped voice, logged)
   fn start(&mut self, world: &World, request: &Request<'_>, server: Option<&AssetServer>) -> Voice {
     let bus = self.resolve_bus(request.bus, request.sound, server);
     let pitch = clamp_pitch(request.pitch);
     let scale = self.scale_on(bus);
     let held = self.buses.buses.get(bus).is_some_and(|bus| bus.held);
+    let own_db = clamp_gain(request.gain_db);
+    // How it is heard from its place, if its sound says
+    let heard = request
+      .position
+      .zip(request.spatial)
+      .map(|(position, spatial)| {
+        (
+          spatial,
+          Hearing::of(&spatial, position, self.listener.as_ref()),
+        )
+      });
     let subject = Subject {
       sound: request.sound,
       clip: request.clip,
       bus,
-      gain_db: clamp_gain(request.gain_db),
+      gain_db: heard_db(own_db, heard.map_or(0.0, |(_, hearing)| hearing.gain_db)),
+      pan: heard.map_or(0.0, |(_, hearing)| hearing.pan),
       rate: rate_of(pitch) * scale,
     };
     let Some((clip, version)) = world
@@ -1531,6 +1716,16 @@ impl AudioEngine {
     else {
       return Voice::stopped();
     };
+    if request.position.is_some() && request.spatial.is_none() {
+      self.warn_flat(request, server);
+    }
+    // A one-shot out of range would not be heard; a loop plays on, silent,
+    // to be heard as it comes in range
+    if heard.is_some_and(|(_, hearing)| hearing.out_of_range) && !request.looping {
+      let entry = self.entry(AudioLogKind::Culled, 0, &subject, server);
+      self.log.push(entry);
+      return Voice::stopped();
+    }
     // A clip whose stream failed to decode would only fail the same way on
     // another decoder thread. Kira's room is asked before any limit stops
     // a voice: a stopped voice holds its room until it has faded out
@@ -1541,8 +1736,13 @@ impl AudioEngine {
     if refused {
       return self.refuse(&subject, server);
     }
+    // Its distance low-pass, on a track of its own while there is room
+    let mut filter = heard
+      .and_then(|(_, hearing)| hearing.cutoff)
+      .and_then(|hz| self.voice_filter(bus, hz));
     let start = Start {
       gain_db: subject.gain_db,
+      pan: subject.pan,
       rate: subject.rate,
       held,
       fade_in: (!request.fade_in.is_zero()).then(|| tween(request.fade_in)),
@@ -1551,9 +1751,10 @@ impl AudioEngine {
       looping: request.looping,
       position: 0.0,
     };
+    let track = filter.as_mut().map(|filter| &mut filter.track);
     let started = match ClipSource::of(clip) {
-      ClipSource::Decoded(data) => self.start_static(bus, data, &start),
-      ClipSource::Encoded(bytes) => self.start_stream(bus, bytes, &start),
+      ClipSource::Decoded(data) => self.start_static(bus, track, data, &start),
+      ClipSource::Encoded(bytes) => self.start_stream(bus, track, bytes, &start),
     };
     let playback = match started {
       Ok(playback) => playback,
@@ -1580,15 +1781,27 @@ impl AudioEngine {
       clip_version: version,
       sound: request.sound,
       bus,
-      gain_db: subject.gain_db,
+      gain_db: own_db,
       pitch,
       scale,
       held,
       kira_paused: held,
       unheard: held.then_some(request.fade_in),
-      scope: if request.persist { None } else { self.scope },
+      // An emitter's voice belongs to its entity
+      scope: if request.persist || request.emitter.is_some() {
+        None
+      } else {
+        self.scope
+      },
       priority: request.priority,
       position: request.position,
+      emitter: request.emitter,
+      spatial: heard.map(|(settings, hearing)| SpatialVoice {
+        settings,
+        gain_db: hearing.gain_db,
+        pan: hearing.pan,
+        filter,
+      }),
       fade_out: request.fade_out,
       frame: self.frame,
       looping: request.looping,
@@ -1622,6 +1835,50 @@ impl AudioEngine {
     voice
   }
 
+  /// A distance low-pass at `hz` for a new voice on `bus`, unless
+  /// [`MAX_FILTERED`] voices have one already (it then plays unfiltered)
+  fn voice_filter(&mut self, bus: usize, hz: f64) -> Option<VoiceFilter> {
+    let filtered = self
+      .voices
+      .live
+      .iter()
+      .filter(|live| live.filter().is_some())
+      .count();
+    if filtered >= MAX_FILTERED {
+      return None;
+    }
+    self.filter_track(bus, hz)
+  }
+
+  /// A low-pass at `hz` on a kira track of its own under `bus`'s, if kira
+  /// has room
+  fn filter_track(&mut self, bus: usize, hz: f64) -> Option<VoiceFilter> {
+    match self.buses.buses.get_mut(bus).map(|bus| &mut bus.output) {
+      Some(Output::Track(Some(track))) => VoiceFilter::new(track, hz),
+      _ => None,
+    }
+  }
+
+  /// Warn, once for its sound (or its clip, played directly), that
+  /// `request` was played at a place but has no spatial settings, so is
+  /// heard as if at the listener
+  fn warn_flat(&mut self, request: &Request<'_>, server: Option<&AssetServer>) {
+    let id = request
+      .sound
+      .map_or_else(|| request.clip.id().untyped(), AssetId::untyped);
+    if !self.warned_flat.insert(id) {
+      return;
+    }
+    let name = request.sound.map_or_else(
+      || source_name(request.clip, server),
+      |sound| sound_name(sound, server),
+    );
+    crate::engine_warn!(
+      module: "Audio",
+      "{name}: it is played at a place, but has no spatial settings, so it is heard as if at the listener (a sound definition's `spatial` sets how it falls off with distance)"
+    );
+  }
+
   /// Whether `request`'s definition played too recently for its cooldown
   fn cooling(&self, request: &Request<'_>) -> bool {
     let Some(id) = request.sound else {
@@ -1648,7 +1905,7 @@ impl AudioEngine {
       buses,
       victims: &mut self.victims,
       frame: self.frame,
-      listener: self.listener,
+      listener: self.listener.as_ref(),
       priority: request.priority,
     };
     let mut fits = match (request.sound, request.limit) {
@@ -1771,11 +2028,12 @@ impl AudioEngine {
     }
   }
 
-  /// Start decoded frames on `bus`. A static sound cannot fail to start but
-  /// for room
+  /// Start decoded frames on `bus` (or `track`, a voice's own under it). A
+  /// static sound cannot fail to start but for room
   fn start_static(
     &mut self,
     bus: usize,
+    track: Option<&mut TrackHandle>,
     mut data: StaticSoundData,
     start: &Start<'_>,
   ) -> Result<Playback, Refusal> {
@@ -1783,23 +2041,26 @@ impl AudioEngine {
     data.slice = span.slice;
     data.settings.loop_region = span.loop_region.map(region);
     data.settings.volume = Decibels(start.gain_db).into();
+    data.settings.panning = Panning(start.pan).into();
     data.settings.playback_rate = PlaybackRate(start.rate).into();
     data.settings.fade_in_tween = start.fade_in();
     data.settings.start_position = PlaybackPosition::Seconds(start.position);
-    let playback = self
-      .buses
-      .play(bus, data)
-      .map(Playback::Static)
-      .map_err(|_| Refusal::Full)?;
+    let played = match track {
+      Some(track) => track.play(data),
+      None => self.buses.play(bus, data),
+    };
+    let playback = played.map(Playback::Static).map_err(|_| Refusal::Full)?;
     Ok(start.hold(playback))
   }
 
-  /// Open a stream over a clip's bytes and start it. The web has no
-  /// streaming, and decodes every clip, so never gets here
+  /// Open a stream over a clip's bytes and start it on `bus` (or `track`,
+  /// a voice's own under it). The web has no streaming, and decodes every
+  /// clip, so never gets here
   #[cfg(not(target_arch = "wasm32"))]
   fn start_stream(
     &mut self,
     bus: usize,
+    track: Option<&mut TrackHandle>,
     bytes: Arc<[u8]>,
     start: &Start<'_>,
   ) -> Result<Playback, Refusal> {
@@ -1816,11 +2077,16 @@ impl AudioEngine {
     data.slice = span.slice;
     let data = data
       .volume(Decibels(start.gain_db))
+      .panning(Panning(start.pan))
       .playback_rate(PlaybackRate(start.rate))
       .fade_in_tween(start.fade_in())
       .start_position(start.position)
       .loop_region(span.loop_region.map(region));
-    match self.buses.play(bus, data) {
+    let played = match track {
+      Some(track) => track.play(data),
+      None => self.buses.play(bus, data),
+    };
+    match played {
       Ok(sound) => Ok(start.hold(Playback::Stream(sound))),
       Err(kira::PlaySoundError::SoundLimitReached) => Err(Refusal::Full),
       Err(kira::PlaySoundError::IntoSoundError(error)) => {
@@ -1833,6 +2099,7 @@ impl AudioEngine {
   fn start_stream(
     &mut self,
     _bus: usize,
+    _track: Option<&mut TrackHandle>,
     _bytes: Arc<[u8]>,
     _start: &Start<'_>,
   ) -> Result<Playback, Refusal> {
@@ -1843,6 +2110,7 @@ impl AudioEngine {
 
   /// The frame's audio work: count the frame, apply the voices' queued
   /// commands, build the bus tree from the mixer if it landed or changed,
+  /// follow the listener and the emitters (and play the emitters spawned),
   /// follow the `game` clock (pause and time scale), report the device's
   /// stream errors, advance the mock backend by `real_delta`, and retire
   /// the voices that ended (and a retired tree's send tracks once its
@@ -1855,6 +2123,8 @@ impl AudioEngine {
       self.apply(command, server);
     }
     self.apply_mixer(world, server);
+    self.follow_listener(world, real_delta, server);
+    self.play_spawned(world, server);
     self.follow_game(game, real_delta, server);
     self.report_stream_errors();
     if let Some(Manager::Mock(manager)) = &mut self.manager {
@@ -1965,6 +2235,95 @@ impl AudioEngine {
     }
   }
 
+  /// Follow the listener (the first `AudioListener`, else the main camera)
+  /// and the emitters. Each voice played from an emitter moves to where its
+  /// entity is now; one whose entity is gone (or no longer an emitter) is
+  /// released, as its scene's exit would release it: a loop stops with its
+  /// fade, and a one-shot playing plays out where the entity was. Each
+  /// voice heard from a place then takes the gain, pan and low-pass cutoff
+  /// its place now gives, where they moved enough to hear, gliding over the
+  /// frame (each gain and pan change logged). Nothing is looked up while no
+  /// voice has a place
+  fn follow_listener(&mut self, world: &World, real_delta: Duration, server: Option<&AssetServer>) {
+    let placed = self.voices.live.iter().any(|live| live.position.is_some());
+    if !placed && self.spawned.is_empty() {
+      return;
+    }
+    self.find_listener(world);
+    let glide = real_delta.max(MIN_FADE);
+    for index in 0..self.voices.live.len() {
+      let live = &mut self.voices.live[index];
+      if !matches!(live.voice.state(), VoiceState::Playing | VoiceState::Paused) {
+        continue;
+      }
+      if let Some(entity) = live.emitter {
+        match emitter_position(world, entity) {
+          Some(position) => live.position = Some(position),
+          None => {
+            live.emitter = None;
+            self.release_voice(index, server);
+          }
+        }
+      }
+      let live = &mut self.voices.live[index];
+      let own_db = live.gain_db;
+      let (Some(spatial), Some(position)) = (&mut live.spatial, live.position) else {
+        continue;
+      };
+      if live.voice.state() == VoiceState::Stopping {
+        continue;
+      }
+      let hearing = Hearing::of(&spatial.settings, position, self.listener.as_ref());
+      let gain = spatial.follow_gain(&hearing);
+      if gain {
+        let heard = heard_db(own_db, spatial.gain_db);
+        live.playback.set_volume(heard, tween(glide));
+      }
+      let pan = spatial.follow_pan(&hearing);
+      if pan {
+        live.playback.set_panning(spatial.pan, tween(glide));
+      }
+      spatial.follow_cutoff(&hearing, tween(glide));
+      if gain {
+        self.record(index, AudioLogKind::Gain, glide, server);
+      }
+      if pan {
+        self.record(index, AudioLogKind::Pan, glide, server);
+      }
+    }
+  }
+
+  /// Play the emitters added to entities (or enabled) this frame, or before
+  /// while their sounds loaded, that play on spawn, where their entities
+  /// are. One whose sound is still loading waits for it; one gone, disabled
+  /// (it plays again when enabled), or no longer an emitter is forgotten
+  fn play_spawned(&mut self, world: &World, server: Option<&AssetServer>) {
+    if self.spawned.is_empty() {
+      return;
+    }
+    // Taken out to play from, and put back with its room kept
+    let mut spawned = std::mem::take(&mut self.spawned);
+    let sounds = world.get_resource::<Assets<Sound>>();
+    spawned.retain(|&entity| {
+      let Some(emitter) = world.get::<AudioEmitter>(entity) else {
+        return false;
+      };
+      if world.get::<Disabled>(entity).is_some() {
+        return false;
+      }
+      let id = emitter.sound.id();
+      let loading = sounds.is_none_or(|sounds| sounds.get(id).is_none())
+        && server.is_some_and(|server| matches!(server.state(id), LoadState::Loading));
+      if loading {
+        return true;
+      }
+      self.play_emitter(world, entity);
+      false
+    });
+    spawned.append(&mut self.spawned);
+    self.spawned = spawned;
+  }
+
   /// The time scale a voice on `bus` carries: the game's, if the bus
   /// follows time scale
   fn scale_on(&self, bus: usize) -> f64 {
@@ -2025,7 +2384,8 @@ impl AudioEngine {
       }
       VoiceChange::Volume(db) => {
         live.gain_db = clamp_gain(db);
-        live.playback.set_volume(live.gain_db, smooth);
+        let heard = live.heard_db();
+        live.playback.set_volume(heard, smooth);
         (AudioLogKind::Gain, MIN_FADE)
       }
       VoiceChange::Pitch(semitones) => {
@@ -2117,7 +2477,8 @@ impl AudioEngine {
       sound: live.sound,
       clip: &live.clip,
       bus: live.bus,
-      gain_db: live.gain_db,
+      gain_db: live.heard_db(),
+      pan: live.pan(),
       rate: rate_of(live.pitch) * live.scale,
     };
     let mut entry = self.entry(kind, live.voice.id(), &subject, server);
@@ -2153,7 +2514,7 @@ impl AudioEngine {
         String::new()
       },
       gain_db: subject.gain_db,
-      pan: 0.0,
+      pan: subject.pan,
       rate: subject.rate,
       fade: Duration::ZERO,
     }
@@ -2275,7 +2636,7 @@ struct Room<'a> {
   buses: &'a BusTree,
   victims: &'a mut Vec<Victim>,
   frame: u64,
-  listener: Option<Vec2>,
+  listener: Option<&'a Listener>,
   /// The new play's priority
   priority: u8,
 }
@@ -2343,12 +2704,13 @@ impl Room<'_> {
         None => true,
         Some(best) => match rule {
           Some(LimitRule::StopOldest | LimitRule::PreventNew) => false,
-          Some(LimitRule::StopQuietest) => live.gain_db < best.gain_db,
+          // As heard: its place's falloff counts
+          Some(LimitRule::StopQuietest) => live.heard_db() < best.heard_db(),
           Some(LimitRule::StopFarthest) => self.distance(live) > self.distance(best),
           Some(LimitRule::StopLowestPriority) => live.priority < best.priority,
           None => {
             live.priority < best.priority
-              || (live.priority == best.priority && live.gain_db < best.gain_db)
+              || (live.priority == best.priority && live.heard_db() < best.heard_db())
           }
         },
       };
@@ -2363,7 +2725,7 @@ impl Room<'_> {
   /// there is no listener
   fn distance(&self, live: &LiveVoice) -> f32 {
     match (live.position, self.listener) {
-      (Some(position), Some(listener)) => position.distance(listener),
+      (Some(position), Some(listener)) => listener.hear(position).0,
       _ => 0.0,
     }
   }

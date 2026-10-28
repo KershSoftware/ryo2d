@@ -79,8 +79,12 @@ pub struct Sound {
   /// or, for a loop or a paused one-shot, when the scene that played it
   /// exits. At least 10 ms
   pub fade_out: Duration,
-  /// Played at a position in the world, it is heard from there: quieter
-  /// with distance from the listener, panned by its offset
+  /// Played at a place in the world (`ctx.audio().play_at(..)`, or from an
+  /// [`AudioEmitter`](super::AudioEmitter)), it is heard from there:
+  /// quieter with distance from the listener, panned by its offset, and
+  /// muffled with distance if it has a distance low-pass. A one-shot out of
+  /// range is culled. Without it, a sound is heard as if at the listener
+  /// wherever it plays
   pub spatial: Option<Spatial>,
 }
 
@@ -171,21 +175,28 @@ pub enum LimitRule {
   /// The quietest voice stops (the oldest of equals)
   StopQuietest,
   /// The voice farthest from the listener stops (the oldest of equals). A
-  /// voice played without a position counts as at the listener
+  /// voice played without a position counts as at the listener, as does
+  /// every voice while there is no listener (no `AudioListener`, and no main
+  /// camera)
   StopFarthest,
   /// The least important voice stops (the oldest of equals)
   StopLowestPriority,
 }
 
-/// How a sound played at a position is heard from the listener
+/// How a sound played at a place is heard from the listener
 /// (`spatial: (min_distance: 50.0, max_distance: 800.0)` in a `.sound.ron`
-/// file, with `curve`, `pan_width` and `low_pass_at_max` optional)
+/// file, with `curve`, `pan_width` and `low_pass_at_max` optional). The
+/// listener is the entity with an `AudioListener`, or else the main camera;
+/// [`falloff_gain_db`](super::falloff_gain_db) and
+/// [`pan_for`](super::pan_for) give what it hears
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
 #[serde(from = "SpatialFile")]
 pub struct Spatial {
   /// Within this distance it plays at full volume
   pub min_distance: f32,
-  /// At this distance and beyond it is silent
+  /// At this distance and beyond it is silent: a one-shot played there is
+  /// culled (it never starts), and a loop plays on unheard until the
+  /// listener comes near
   pub max_distance: f32,
   /// How its volume falls between the two (`Inverse` when left out)
   pub curve: Falloff,
@@ -193,7 +204,10 @@ pub struct Spatial {
   /// (`max_distance` when left out)
   pub pan_width: f32,
   /// A low-pass filter that closes with distance, to this cutoff in Hz at
-  /// `max_distance`; none when `None`
+  /// `max_distance`; none when `None`. It is open within `min_distance`,
+  /// and closes in even steps of octaves between. Each voice with one plays
+  /// on a kira track of its own, so at most 32 have one at once: a voice
+  /// past them plays unfiltered
   pub low_pass_at_max: Option<f64>,
 }
 
@@ -227,12 +241,15 @@ impl From<SpatialFile> for Spatial {
 /// silence at its maximum
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 pub enum Falloff {
-  /// Evenly over the distance
+  /// Its amplitude falls evenly over the distance: -6 dB halfway, then fast
+  /// to silence near the maximum
   Linear,
   /// Fast near the source and slowly far from it, as sound does in the open
+  /// (the inverse-distance law, tapered to silence at the maximum): about
+  /// -25 dB halfway
   #[default]
   Inverse,
-  /// Evenly in decibels over the distance
+  /// Evenly in decibels over the distance: -30 dB halfway
   Log,
 }
 
@@ -244,7 +261,7 @@ mod tests {
   use crate::core::asset::{AssetServer, Assets, AssetsView, MemorySource};
   use crate::core::audio::engine::MIN_FADE;
   use crate::core::audio::{
-    AudioEngine, AudioLogEntry, AudioLogKind, AudioView, PlayOptions, Voice,
+    AudioEngine, AudioListener, AudioLogEntry, AudioLogKind, AudioView, PlayOptions, Voice,
   };
   use crate::core::dev_log::{self, LogLevel};
   use crate::core::ecs::{Vec2, World};
@@ -595,9 +612,7 @@ mod tests {
   #[test]
   fn stop_farthest_stops_the_farthest_and_treats_no_position_as_zero() {
     let mut world = audio_world();
-    world
-      .resource_mut::<AudioEngine>()
-      .set_listener(Some(Vec2::ZERO));
+    world.spawn(AudioListener);
     let sound = limited(&mut world, LimitRule::StopFarthest);
     let at = |x: f32| PlayOptions {
       position: Some(Vec2::new(x, 0.0)),

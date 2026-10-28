@@ -114,8 +114,9 @@ pub mod prelude {
     Audio, AudioManager, MusicHandle, MusicOptions, SoundHandle, SoundOptions,
   };
   pub use crate::core::audio::{
-    AudioClip, AudioView, BusDef, DistortionKind, EffectDef, EqKind, Falloff, FocusLoss, LimitRule,
-    Mixer, PlayOptions, Sound, SoundClip, Spatial, Voice, VoiceLimit, VolumeKind, volume_to_db,
+    AudioClip, AudioEmitter, AudioListener, AudioView, BusDef, DistortionKind, EffectDef, EqKind,
+    Falloff, FocusLoss, LimitRule, Mixer, PlayOptions, Sound, SoundClip, Spatial, Voice,
+    VoiceLimit, VolumeKind, falloff_gain_db, pan_for, volume_to_db,
   };
 
   // Graphics

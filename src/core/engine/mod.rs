@@ -487,7 +487,7 @@ fn register_engine_systems(schedules: &mut EngineSchedules) {
       (advance_parallax, advance_text_reveal, update_effects_system)
         .chain()
         .in_set(PostUpdateSet::Extract),
-      // After the scene's update and the cameras (the listener, later)
+      // After the scene's update and the cameras (the listener)
       audio_system.after(PostUpdateSet::Camera),
     ),
   );

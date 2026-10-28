@@ -4,7 +4,7 @@ use super::engine::AudioEngine;
 use super::{AudioClip, Mixer, Sound, Voice, VolumeKind};
 use crate::core::asset::{Assets, Handle};
 use crate::core::ecs::kernel::Mut;
-use crate::core::ecs::{Vec2, World};
+use crate::core::ecs::{Entity, Vec2, World};
 
 /// What [`AudioView::play`] takes: a sound definition's handle or a clip's
 /// (`&handle`)
@@ -32,7 +32,9 @@ impl<'a> From<&'a Handle<AudioClip>> for Playable<'a> {
 /// [`AudioView::play_with`]. The default changes nothing
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PlayOptions {
-  /// Where in the world it plays, for 2D spatial sound
+  /// Where in the world it plays, heard from there by its sound's spatial
+  /// settings (see [`AudioView::play_at`]); as if at the listener without
+  /// them
   pub position: Option<Vec2>,
   /// It belongs to the engine and outlives the scene that played it. It
   /// matters for loops, and for one-shots paused or held by the game's
@@ -95,6 +97,49 @@ impl<'w> AudioView<'w> {
     self.play_with(sound, PlayOptions::default())
   }
 
+  /// Play `sound` at `position` in the world, heard from there by the
+  /// listener (an [`AudioListener`](super::AudioListener), or else the main
+  /// camera) as its sound's spatial settings ([`Sound::spatial`]) say:
+  /// quieter with distance, panned by its offset to the listener's right,
+  /// and muffled with distance if it has a distance low-pass. A one-shot at
+  /// or beyond its maximum distance is culled: it never starts, and the
+  /// voice returned is already stopped. A loop there starts silent, to be
+  /// heard as the listener comes near. The place stays where it was played;
+  /// for a sound that follows an entity, see
+  /// [`play_emitter`](Self::play_emitter)
+  ///
+  /// ```
+  /// use ryo2d::prelude::*;
+  ///
+  /// fn explode(ctx: &mut SceneContext<'_>, boom: &Handle<Sound>, at: Vec2) {
+  ///   ctx.audio().play_at(boom, at);
+  /// }
+  /// ```
+  pub fn play_at<'a>(&mut self, sound: impl Into<Playable<'a>>, position: Vec2) -> Voice {
+    let options = PlayOptions {
+      position: Some(position),
+      ..Default::default()
+    };
+    self.play_with(sound, options)
+  }
+
+  /// Play the sound of `entity`'s [`AudioEmitter`](super::AudioEmitter)
+  /// where the entity is, as [`play_at`](Self::play_at) does, its voice
+  /// following the entity as it moves. The voice belongs to the entity, not
+  /// to the scene: it stops (a loop, or a one-shot paused) when the entity
+  /// is despawned, disabled or loses its emitter. An entity that is not an
+  /// emitter, or is disabled, plays nothing (the voice returned is already
+  /// stopped)
+  pub fn play_emitter(&mut self, entity: Entity) -> Voice {
+    self
+      .world
+      .try_resource_scope(|world: &mut World, mut engine: Mut<'_, AudioEngine>| {
+        engine.prepare(world);
+        engine.play_emitter(world, entity)
+      })
+      .unwrap_or_default()
+  }
+
   /// [`play`](Self::play) with [`PlayOptions`]: louder or quieter, higher or
   /// lower than the sound's own settings
   pub fn play_with<'a>(&mut self, sound: impl Into<Playable<'a>>, options: PlayOptions) -> Voice {
@@ -103,6 +148,7 @@ impl<'w> AudioView<'w> {
     self
       .world
       .try_resource_scope(|world: &mut World, mut engine: Mut<'_, AudioEngine>| {
+        engine.prepare(world);
         engine.play(world, playable, &options)
       })
       .unwrap_or_default()
