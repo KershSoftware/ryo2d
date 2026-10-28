@@ -20,7 +20,7 @@ use kira::sound::{EndPosition, PlaybackPosition, PlaybackState, Region};
 use kira::track::{SendTrackBuilder, SendTrackHandle, TrackBuilder, TrackHandle};
 use kira::{
   AudioManager, AudioManagerSettings, Capacities, Decibels, PlaybackRate, ResourceLimitReached,
-  Semitones, Tween,
+  Semitones, StartTime, Tween,
 };
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
@@ -35,10 +35,11 @@ use super::settings::{SILENCE_DB, VolumeSettings};
 use super::view::{PlayOptions, Playable};
 use super::voice::{Voice, VoiceChange, VoiceCommand, VoiceState};
 use super::{
-  AudioClip, ClipData, LimitRule, Mixer, SnapshotDef, Sound, SoundClip, VoiceLimit, VolumeKind,
-  volume_to_db,
+  AudioClip, ClipData, FocusLoss, LimitRule, Mixer, SnapshotDef, Sound, SoundClip, VoiceLimit,
+  VolumeKind, volume_to_db,
 };
 use crate::core::asset::{AssetId, AssetServer, Assets, Handle};
+use crate::core::ecs::kernel::Mut;
 use crate::core::ecs::{Resource, Vec2, World};
 use crate::core::hash::{FastMap, FastSet};
 
@@ -70,6 +71,45 @@ const GAIN_EPSILON: f32 = 1e-4;
 const CUTOFF_EPSILON: f32 = 0.01;
 /// Where a clip played directly goes
 const DEFAULT_BUS: &str = "sfx";
+/// A time scale at or below this stands time still for the buses that
+/// follow it: their voices are held, as kira cannot play a rate of 0
+const HOLD_SCALE: f32 = 0.01;
+/// A time scale change smaller than this is not sent to the voices
+const SCALE_EPSILON: f64 = 1e-6;
+
+/// The game's clock as audio follows it, read from `Time` each frame
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct GameTime {
+  /// The game is paused (`time.game.pause()`)
+  pub(crate) paused: bool,
+  /// The time scale: 0 while paused or in hitstop, the game's speed
+  /// otherwise
+  pub(crate) scale: f32,
+}
+
+impl GameTime {
+  /// `time`'s game clock: hitstop counts as a time scale of 0, as it does
+  /// not change the speed
+  pub(crate) fn of(time: &crate::core::time::Time) -> GameTime {
+    let paused = time.game.is_paused();
+    let scale = if paused || time.game.is_hitstop() {
+      0.0
+    } else {
+      time.game.speed()
+    };
+    GameTime { paused, scale }
+  }
+}
+
+/// A game clock that runs at normal speed (a world without `Time`)
+impl Default for GameTime {
+  fn default() -> Self {
+    GameTime {
+      paused: false,
+      scale: 1.0,
+    }
+  }
+}
 
 /// The error the failing-device seam reports
 #[cfg(test)]
@@ -379,6 +419,15 @@ struct LiveVoice {
   gain_db: f32,
   /// Its own pitch in semitones
   pitch: f32,
+  /// The time scale its rate carries: the game's for a voice on a bus that
+  /// follows time scale, 1 otherwise
+  scale: f64,
+  /// Its bus holds it: kira's sound is paused while the game is (or time
+  /// stands still), apart from any pause of its own
+  held: bool,
+  /// The scene that played it, which stops it as it exits; `None` for the
+  /// engine's own (`persist`, or played outside any scene)
+  scope: Option<u64>,
   /// How important it is (0 to 255)
   priority: u8,
   /// Where it plays in the world, if it was given a position
@@ -460,6 +509,8 @@ struct Request<'a> {
   fade_in: Duration,
   fade_out: Duration,
   position: Option<Vec2>,
+  /// The engine's, not the playing scene's
+  persist: bool,
 }
 
 impl<'a> Request<'a> {
@@ -482,6 +533,7 @@ impl<'a> Request<'a> {
       fade_in: Duration::ZERO,
       fade_out: Duration::ZERO,
       position: options.position,
+      persist: options.persist,
     }
   }
 
@@ -512,6 +564,7 @@ impl<'a> Request<'a> {
       fade_in: sound.fade_in,
       fade_out: sound.fade_out,
       position: options.position,
+      persist: options.persist,
     })
   }
 }
@@ -519,7 +572,11 @@ impl<'a> Request<'a> {
 /// How a voice starts in kira
 struct Start<'a> {
   gain_db: f32,
-  pitch: f32,
+  /// Its playback rate: its pitch's, times the time scale it carries
+  rate: f64,
+  /// It starts held: silent, and paused before it plays (its fade-in is
+  /// the resume's)
+  held: bool,
   fade_in: Option<Tween>,
   region: Option<&'a Range<f64>>,
   loop_region: Option<&'a Range<f64>>,
@@ -528,13 +585,39 @@ struct Start<'a> {
   position: f64,
 }
 
+impl Start<'_> {
+  /// Its fade-in. A held start's waits, so it is silent until its resume
+  /// fades it in, even if kira renders a chunk before its pause arrives
+  fn fade_in(&self) -> Option<Tween> {
+    if self.held {
+      Some(Tween {
+        start_time: StartTime::Delayed(Duration::MAX),
+        duration: MIN_FADE,
+        ..Default::default()
+      })
+    } else {
+      self.fade_in
+    }
+  }
+
+  /// `playback`, just started, paused at once if it starts held: kira
+  /// reads the pause before it renders the sound, so it never moves
+  fn hold(&self, mut playback: Playback) -> Playback {
+    if self.held {
+      playback.pause(tween(Duration::ZERO));
+    }
+    playback
+  }
+}
+
 /// Who a log entry is about
 struct Subject<'a> {
   sound: Option<AssetId<Sound>>,
   clip: &'a Handle<AudioClip>,
   bus: usize,
   gain_db: f32,
-  pitch: f32,
+  /// Its playback rate, the time scale's included
+  rate: f64,
 }
 
 /// Why a play did not start
@@ -620,6 +703,18 @@ pub struct AudioEngine {
   /// A retired tree's send tracks, by its generation, held while voices on
   /// it play so their sends still reach them
   retired_sends: Vec<(u32, Vec<SendTrackHandle>)>,
+  /// The time scale the following voices' rates carry: the latest above
+  /// [`HOLD_SCALE`] (a held voice keeps the rate it had)
+  rate_scale: f64,
+  /// The holds or the time scale changed, or the tree was rebuilt: the
+  /// voices are brought in line in the frame's update
+  voices_dirty: bool,
+  /// Whether the game's window has focus
+  focused: bool,
+  /// What the mix does while it has not: the mixer's rule
+  focus_loss: FocusLoss,
+  /// The scene whose code runs now: the voices it plays are its own
+  scope: Option<u64>,
   #[cfg(test)]
   injected_stream_errors: Vec<String>,
   /// Plays kira refused for want of room: none should ever be
@@ -664,6 +759,7 @@ impl AudioEngine {
           &FastMap::default(),
           &Blend::default(),
           &[],
+          0.0,
         )
       },
     );
@@ -701,6 +797,11 @@ impl AudioEngine {
       mixer_pending: false,
       generation: 0,
       retired_sends: Vec::new(),
+      rate_scale: 1.0,
+      voices_dirty: false,
+      focused: true,
+      focus_loss: FocusLoss::Keep,
+      scope: None,
       #[cfg(test)]
       injected_stream_errors: Vec::new(),
       #[cfg(test)]
@@ -771,6 +872,52 @@ impl AudioEngine {
     self.mixer_pending = mixer.is_some();
     self.mixer = mixer;
     self.mixer_version = None;
+  }
+
+  /// The game's window gained (`true`) or lost focus: `master` follows the
+  /// mixer's `on_focus_loss` (`Keep` by default, or `Duck`, or `Mute`),
+  /// smoothed over [`MIN_FADE`]
+  pub(crate) fn set_focused(&mut self, focused: bool) {
+    if self.focused == focused {
+      return;
+    }
+    self.focused = focused;
+    self.refresh_focus();
+  }
+
+  /// Put the focus loss's layer on `master`, as the window's focus and the
+  /// mixer's rule now say
+  fn refresh_focus(&mut self) {
+    let db = focus_db(self.focused, self.focus_loss);
+    if let Some(master) = self.buses.buses.first_mut() {
+      master.layers.focus = db;
+    }
+    self.refresh_gains();
+  }
+
+  /// Make `scope` (a scene's) the one whose code runs, returning the one
+  /// before: the voices played until the next change are its own, and
+  /// stop when it exits. `None` is the engine's own code
+  pub(crate) fn set_scope(&mut self, scope: Option<u64>) -> Option<u64> {
+    std::mem::replace(&mut self.scope, scope)
+  }
+
+  /// Scene `scope` exited: stop the voices it played, each with its fade
+  /// (its sound's `fade_out`, at least [`MIN_FADE`]). The voices played with
+  /// `persist`, and the engine's own, play on
+  pub(crate) fn release_scope(&mut self, world: &World, scope: u64) {
+    let server = world.get_resource::<AssetServer>();
+    for index in 0..self.voices.live.len() {
+      let live = &mut self.voices.live[index];
+      let state = live.voice.state();
+      if live.scope != Some(scope) || !matches!(state, VoiceState::Playing | VoiceState::Paused) {
+        continue;
+      }
+      let fade = live.fade_out.max(MIN_FADE);
+      live.playback.stop(tween(fade));
+      live.voice.set_state(VoiceState::Stopping);
+      self.record(index, AudioLogKind::Stop, fade, server);
+    }
   }
 
   /// Each bus as it stands, `master` first and parents before children
@@ -854,19 +1001,7 @@ impl AudioEngine {
         Output::Send(Some(send)) => send.set_volume(Decibels(volume), smooth),
         Output::Track(None) | Output::Send(None) => {}
       }
-      if self.log.is_on() {
-        self.log.push(AudioLogEntry {
-          kind: AudioLogKind::Gain,
-          voice: 0,
-          sound: String::new(),
-          source: String::new(),
-          bus: self.buses.name(index).to_string(),
-          gain_db: volume,
-          pan: 0.0,
-          rate: 1.0,
-          fade: self.glide,
-        });
-      }
+      self.record_bus(index, AudioLogKind::Gain, self.glide);
     }
     // The send routes, which carry the gains above their senders
     for index in 0..self.buses.buses.len() {
@@ -979,8 +1114,11 @@ impl AudioEngine {
     let mut moved = false;
     for duck in &mut self.ducks {
       let trigger = duck.trigger;
+      // A voice its bus holds is not heard, so it ducks nothing
       let playing = self.voices.live.iter().any(|live| {
-        live.voice.state() == VoiceState::Playing && self.buses.within(live.bus, trigger)
+        live.voice.state() == VoiceState::Playing
+          && !live.held
+          && self.buses.within(live.bus, trigger)
       });
       moved |= duck.step(playing, seconds);
     }
@@ -1127,6 +1265,8 @@ impl AudioEngine {
           .map_or(0.0, |old| old.depth),
       })
       .collect();
+    self.focus_loss = mixer.on_focus_loss;
+    let focus = focus_db(self.focused, self.focus_loss);
     let (settings, volumes) = (&self.settings, &self.bus_volumes);
     let (blend, ducks) = (&self.blend, &self.ducks);
     let mut tree = BusTree::build(
@@ -1135,7 +1275,7 @@ impl AudioEngine {
         .as_mut()
         .map(|manager| manager as &mut dyn Tracks),
       &planned,
-      |planned| layers_of(planned, settings, volumes, blend, ducks),
+      |planned| layers_of(planned, settings, volumes, blend, ducks, focus),
     );
     // The main track keeps master's gain until the refresh below
     tree.buses[0].applied = self.buses.buses[0].applied;
@@ -1156,6 +1296,9 @@ impl AudioEngine {
     if !sends.is_empty() {
       self.retired_sends.push((retired, sends));
     }
+    // The new buses hold nothing yet: the frame's update holds the voices
+    // their buses hold, and gives each the time scale its bus follows
+    self.voices_dirty = true;
     // Dropping its handles retires the old tree: kira removes each track
     // once its sounds have finished
     drop(old);
@@ -1232,21 +1375,24 @@ impl AudioEngine {
       return Err("its clip is not in the store".into());
     };
     let (region, loop_region) = (live.region.clone(), live.loop_region.clone());
+    // A paused or held voice starts paused, unheard
+    let paused = live.voice.state() == VoiceState::Paused;
     let start = Start {
       gain_db: live.gain_db,
-      pitch: live.pitch,
+      rate: rate_of(live.pitch) * live.scale,
+      held: paused || live.held,
       fade_in: Some(tween(MIN_FADE)),
       region: region.as_ref(),
       loop_region: loop_region.as_ref(),
       looping: live.looping,
       position: live.playback.position(),
     };
-    let (bus, paused) = (live.bus, live.voice.state() == VoiceState::Paused);
+    let bus = live.bus;
     let started = match ClipSource::of(clip) {
       ClipSource::Decoded(data) => self.start_static(bus, data, &start),
       ClipSource::Encoded(bytes) => self.start_stream(bus, bytes, &start),
     };
-    let mut playback = match started {
+    let playback = match started {
       Ok(playback) => playback,
       Err(Refusal::Undecodable(error)) => {
         let live = &self.voices.live[index];
@@ -1256,9 +1402,6 @@ impl AudioEngine {
       }
       Err(Refusal::Full) => return Err("its new bus has no room".into()),
     };
-    if paused {
-      playback.pause(tween(MIN_FADE));
-    }
     let live = &mut self.voices.live[index];
     let mut old = std::mem::replace(&mut live.playback, playback);
     old.stop(tween(MIN_FADE));
@@ -1352,12 +1495,15 @@ impl AudioEngine {
   /// voice, not logged) or it is refused (a stopped voice, logged)
   fn start(&mut self, world: &World, request: &Request<'_>, server: Option<&AssetServer>) -> Voice {
     let bus = self.resolve_bus(request.bus, request.sound, server);
+    let pitch = clamp_pitch(request.pitch);
+    let scale = self.scale_on(bus);
+    let held = self.buses.buses.get(bus).is_some_and(|bus| bus.held);
     let subject = Subject {
       sound: request.sound,
       clip: request.clip,
       bus,
       gain_db: clamp_gain(request.gain_db),
-      pitch: clamp_pitch(request.pitch),
+      rate: rate_of(pitch) * scale,
     };
     let Some((clip, version)) = world
       .get_resource::<Assets<AudioClip>>()
@@ -1377,7 +1523,8 @@ impl AudioEngine {
     }
     let start = Start {
       gain_db: subject.gain_db,
-      pitch: subject.pitch,
+      rate: subject.rate,
+      held,
       fade_in: (!request.fade_in.is_zero()).then(|| tween(request.fade_in)),
       region: request.region,
       loop_region: request.loop_region,
@@ -1414,7 +1561,10 @@ impl AudioEngine {
       sound: request.sound,
       bus,
       gain_db: subject.gain_db,
-      pitch: subject.pitch,
+      pitch,
+      scale,
+      held,
+      scope: if request.persist { None } else { self.scope },
       priority: request.priority,
       position: request.position,
       fade_out: request.fade_out,
@@ -1605,14 +1755,15 @@ impl AudioEngine {
     data.slice = span.slice;
     data.settings.loop_region = span.loop_region.map(region);
     data.settings.volume = Decibels(start.gain_db).into();
-    data.settings.playback_rate = PlaybackRate(rate_of(start.pitch)).into();
-    data.settings.fade_in_tween = start.fade_in;
+    data.settings.playback_rate = PlaybackRate(start.rate).into();
+    data.settings.fade_in_tween = start.fade_in();
     data.settings.start_position = PlaybackPosition::Seconds(start.position);
-    self
+    let playback = self
       .buses
       .play(bus, data)
       .map(Playback::Static)
-      .map_err(|_| Refusal::Full)
+      .map_err(|_| Refusal::Full)?;
+    Ok(start.hold(playback))
   }
 
   /// Open a stream over a clip's bytes and start it. The web has no
@@ -1637,12 +1788,12 @@ impl AudioEngine {
     data.slice = span.slice;
     let data = data
       .volume(Decibels(start.gain_db))
-      .playback_rate(PlaybackRate(rate_of(start.pitch)))
-      .fade_in_tween(start.fade_in)
+      .playback_rate(PlaybackRate(start.rate))
+      .fade_in_tween(start.fade_in())
       .start_position(start.position)
       .loop_region(span.loop_region.map(region));
     match self.buses.play(bus, data) {
-      Ok(sound) => Ok(Playback::Stream(sound)),
+      Ok(sound) => Ok(start.hold(Playback::Stream(sound))),
       Err(kira::PlaySoundError::SoundLimitReached) => Err(Refusal::Full),
       Err(kira::PlaySoundError::IntoSoundError(error)) => {
         Err(Refusal::Undecodable(error.to_string()))
@@ -1664,10 +1815,11 @@ impl AudioEngine {
 
   /// The frame's audio work: count the frame, apply the voices' queued
   /// commands, build the bus tree from the mixer if it landed or changed,
-  /// report the device's stream errors, advance the mock backend by
-  /// `real_delta`, and retire the voices that ended (and a retired tree's
-  /// send tracks once its voices have)
-  pub(crate) fn update(&mut self, world: &World, real_delta: Duration) {
+  /// follow the `game` clock (pause and time scale), report the device's
+  /// stream errors, advance the mock backend by `real_delta`, and retire
+  /// the voices that ended (and a retired tree's send tracks once its
+  /// voices have)
+  pub(crate) fn update(&mut self, world: &World, real_delta: Duration, game: GameTime) {
     let server = world.get_resource::<AssetServer>();
     self.frame = self.frame.wrapping_add(1);
     self.clock = self.clock.saturating_add(real_delta);
@@ -1675,6 +1827,7 @@ impl AudioEngine {
       self.apply(command, server);
     }
     self.apply_mixer(world, server);
+    self.follow_game(game, real_delta, server);
     self.report_stream_errors();
     if let Some(Manager::Mock(manager)) = &mut self.manager {
       let backend = manager.backend_mut();
@@ -1690,6 +1843,92 @@ impl AudioEngine {
       self
         .retired_sends
         .retain(|(generation, _)| live.iter().any(|voice| voice.generation == *generation));
+    }
+  }
+
+  /// Follow the game's clock. A bus that pauses with the game holds its
+  /// voices while the game is paused, and one that follows time scale
+  /// while time stands still (a scale at or below [`HOLD_SCALE`]: hitstop,
+  /// pause, or a speed of about 0): held, a voice is paused in kira where
+  /// it is, over [`MIN_FADE`], and resumes from there. A voice on a bus that
+  /// follows time scale plays at its pitch's rate times the scale, gliding
+  /// over the frame; held, it keeps its rate. Each bus held or let go is
+  /// logged (`Pause`, `Resume`), and each rate change
+  fn follow_game(&mut self, game: GameTime, real_delta: Duration, server: Option<&AssetServer>) {
+    let still = game.scale <= HOLD_SCALE;
+    let scale = f64::from(game.scale);
+    if !still && (scale - self.rate_scale).abs() > SCALE_EPSILON {
+      self.rate_scale = scale;
+      self.voices_dirty = true;
+    }
+    for index in 0..self.buses.buses.len() {
+      let bus = &mut self.buses.buses[index];
+      // A send bus plays no voices
+      let held = !matches!(bus.output, Output::Send(_))
+        && ((bus.pauses_with_game && game.paused) || (bus.follows_time_scale && still));
+      if held == bus.held {
+        continue;
+      }
+      bus.held = held;
+      self.voices_dirty = true;
+      let kind = if held {
+        AudioLogKind::Pause
+      } else {
+        AudioLogKind::Resume
+      };
+      self.record_bus(index, kind, MIN_FADE);
+    }
+    if !std::mem::take(&mut self.voices_dirty) {
+      return;
+    }
+    let glide = real_delta.max(MIN_FADE);
+    for index in 0..self.voices.live.len() {
+      let live = &mut self.voices.live[index];
+      let state = live.voice.state();
+      // A stopping voice fades out as it is: a resume would undo its stop
+      if !matches!(state, VoiceState::Playing | VoiceState::Paused) {
+        continue;
+      }
+      let Some(bus) = self.buses.buses.get(live.bus) else {
+        continue;
+      };
+      if bus.held != live.held {
+        live.held = bus.held;
+        // A voice paused itself stays paused
+        match (state, bus.held) {
+          (VoiceState::Playing, true) => live.playback.pause(tween(MIN_FADE)),
+          (VoiceState::Playing, false) => live.playback.resume(tween(MIN_FADE)),
+          _ => {}
+        }
+      }
+      let scale = if bus.follows_time_scale {
+        self.rate_scale
+      } else {
+        1.0
+      };
+      if (scale - live.scale).abs() <= SCALE_EPSILON {
+        continue;
+      }
+      live.scale = scale;
+      live
+        .playback
+        .set_rate(rate_of(live.pitch) * scale, tween(glide));
+      self.record(index, AudioLogKind::Rate, glide, server);
+    }
+  }
+
+  /// The time scale a voice on `bus` carries: the game's, if the bus
+  /// follows time scale
+  fn scale_on(&self, bus: usize) -> f64 {
+    if self
+      .buses
+      .buses
+      .get(bus)
+      .is_some_and(|bus| bus.follows_time_scale)
+    {
+      self.rate_scale
+    } else {
+      1.0
     }
   }
 
@@ -1712,11 +1951,15 @@ impl AudioEngine {
         live.voice.set_state(VoiceState::Stopping);
         (AudioLogKind::Stop, fade)
       }
+      // A voice its bus holds is paused in kira already, and stays so until
+      // the bus lets it go
       VoiceChange::Pause => {
         if state == VoiceState::Paused {
           return;
         }
-        live.playback.pause(smooth);
+        if !live.held {
+          live.playback.pause(smooth);
+        }
         live.voice.set_state(VoiceState::Paused);
         (AudioLogKind::Pause, MIN_FADE)
       }
@@ -1724,7 +1967,9 @@ impl AudioEngine {
         if state != VoiceState::Paused {
           return;
         }
-        live.playback.resume(smooth);
+        if !live.held {
+          live.playback.resume(smooth);
+        }
         live.voice.set_state(VoiceState::Playing);
         (AudioLogKind::Resume, MIN_FADE)
       }
@@ -1735,7 +1980,9 @@ impl AudioEngine {
       }
       VoiceChange::Pitch(semitones) => {
         live.pitch = clamp_pitch(semitones);
-        live.playback.set_rate(rate_of(live.pitch), smooth);
+        live
+          .playback
+          .set_rate(rate_of(live.pitch) * live.scale, smooth);
         (AudioLogKind::Rate, MIN_FADE)
       }
     };
@@ -1821,7 +2068,7 @@ impl AudioEngine {
       clip: &live.clip,
       bus: live.bus,
       gain_db: live.gain_db,
-      pitch: live.pitch,
+      rate: rate_of(live.pitch) * live.scale,
     };
     let mut entry = self.entry(kind, live.voice.id(), &subject, server);
     entry.fade = fade;
@@ -1857,9 +2104,28 @@ impl AudioEngine {
       },
       gain_db: subject.gain_db,
       pan: 0.0,
-      rate: rate_of(subject.pitch),
+      rate: subject.rate,
       fade: Duration::ZERO,
     }
+  }
+
+  /// Log `kind` for `bus` (a voice 0 entry: its volume, and `fade`), if the
+  /// log is on
+  fn record_bus(&mut self, bus: usize, kind: AudioLogKind, fade: Duration) {
+    if !self.log.is_on() {
+      return;
+    }
+    self.log.push(AudioLogEntry {
+      kind,
+      voice: 0,
+      sound: String::new(),
+      source: String::new(),
+      bus: self.buses.name(bus).to_string(),
+      gain_db: self.buses.buses.get(bus).map_or(0.0, |bus| bus.applied),
+      pan: 0.0,
+      rate: 1.0,
+      fade,
+    });
   }
 }
 
@@ -1873,15 +2139,37 @@ impl Drop for AudioEngine {
   }
 }
 
+/// Run `f` as scene `scope`'s code (a callback, or one of its systems):
+/// the voices it plays belong to that scene, and stop as it exits. A world
+/// without an audio engine just runs `f`
+pub(crate) fn in_scene<R>(world: &mut World, scope: u64, f: impl FnOnce(&mut World) -> R) -> R {
+  let previous = world
+    .get_resource_mut::<AudioEngine>()
+    .map(|mut engine| engine.set_scope(Some(scope)));
+  let result = f(world);
+  if let (Some(previous), Some(mut engine)) = (previous, world.get_resource_mut::<AudioEngine>()) {
+    engine.set_scope(previous);
+  }
+  result
+}
+
+/// Scene `scope` exited: stop the voices it played, each with its fade
+pub(crate) fn release_scene(world: &mut World, scope: u64) {
+  world.try_resource_scope(|world: &mut World, mut engine: Mut<'_, AudioEngine>| {
+    engine.release_scope(world, scope);
+  });
+}
+
 /// A planned bus's gain layers: the game's volume for it, or the mixer's,
-/// the player's setting it carries, and the active snapshot's and ducks'
-/// levels now
+/// the player's setting it carries, the active snapshot's and ducks'
+/// levels now, and on `master` the focus loss's `focus_db`
 fn layers_of(
   planned: &PlannedBus<'_>,
   settings: &VolumeSettings,
   volumes: &FastMap<String, f32>,
   blend: &Blend,
   ducks: &[DuckState],
+  focus_db: f32,
 ) -> GainLayers {
   GainLayers {
     base: volumes
@@ -1897,6 +2185,23 @@ fn layers_of(
       .filter(|duck| duck.def.target == planned.name)
       .map(|duck| duck.depth)
       .sum(),
+    focus: if planned.parent.is_none() {
+      focus_db
+    } else {
+      0.0
+    },
+  }
+}
+
+/// `master`'s focus layer in dB: what `rule` does while the window is not
+/// `focused` (a duck that is not a cut in dB does nothing)
+fn focus_db(focused: bool, rule: FocusLoss) -> f32 {
+  match rule {
+    _ if focused => 0.0,
+    FocusLoss::Keep => 0.0,
+    FocusLoss::Duck(db) if db.is_nan() => 0.0,
+    FocusLoss::Duck(db) => db.clamp(SILENCE_DB, 0.0),
+    FocusLoss::Mute => SILENCE_DB,
   }
 }
 

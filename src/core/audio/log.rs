@@ -6,7 +6,8 @@ use std::time::Duration;
 /// How many entries the log keeps: the latest, older ones dropping off
 pub(crate) const LOG_CAPACITY: usize = 4096;
 
-/// What happened to a voice (or, for `Gain`, to a bus)
+/// What happened to a voice (or, for `Gain`, `Pause` and `Resume` with
+/// `voice` 0, to a bus)
 #[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AudioLogKind {
@@ -14,16 +15,18 @@ pub enum AudioLogKind {
   Start,
   /// It was told to stop, fading out over `fade`
   Stop,
-  /// It was paused
+  /// It was paused. With `voice` 0, a bus held its voices where they are:
+  /// the game paused, or time stood still on a bus that follows time scale
   Pause,
-  /// It was resumed
+  /// It was resumed. With `voice` 0, a bus let its voices go
   Resume,
   /// Its gain changed to `gain_db`. With `voice` 0 and no `source`, a
   /// bus's gain changed: `gain_db` is the volume its kira track was given
   Gain,
   /// Its pan changed to `pan`
   Pan,
-  /// Its playback rate changed to `rate`
+  /// Its playback rate changed to `rate`: its pitch, or the time scale
+  /// its bus follows
   Rate,
   /// A play was refused, so no voice started (`voice` is 0)
   Refused,
@@ -34,7 +37,8 @@ pub enum AudioLogKind {
 }
 
 /// One thing the engine did with a voice, and the voice as it stood then;
-/// or a change to a bus (`voice` 0, `sound` and `source` empty)
+/// or a change to a bus (`voice` 0, `sound` and `source` empty, `gain_db`
+/// the volume its kira track was given)
 #[doc(hidden)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct AudioLogEntry {
@@ -52,7 +56,8 @@ pub struct AudioLogEntry {
   pub gain_db: f32,
   /// Its pan, -1 (left) to 1 (right)
   pub pan: f32,
-  /// Its playback rate (1 is normal; pitch in semitones `s` is `2^(s/12)`)
+  /// Its playback rate (1 is normal; pitch in semitones `s` is `2^(s/12)`),
+  /// times the time scale on a bus that follows it
   pub rate: f64,
   /// How long the change takes: a stop's fade-out, the smoothing of any
   /// other change, zero for a start without a fade-in

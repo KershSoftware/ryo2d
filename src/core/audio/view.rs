@@ -35,7 +35,9 @@ pub struct PlayOptions {
   /// Where in the world it plays, for 2D spatial sound
   pub position: Option<Vec2>,
   /// It belongs to the engine and outlives the scene that played it,
-  /// instead of stopping when that scene exits
+  /// instead of stopping with its fade when that scene exits. A sound a
+  /// scene plays as it leaves (in `on_exit`, or a click before a switch)
+  /// needs it to be heard out
   pub persist: bool,
   /// Added to the sound's gain, in dB (-6 is about half as loud)
   pub volume_db: f32,
@@ -81,9 +83,11 @@ impl<'w> AudioView<'w> {
   }
 
   /// Play `sound` (`&handle`, of a [`Sound`] or an [`AudioClip`]) and return
-  /// its [`Voice`]. A sound that has not loaded yet, or failed to (warned
-  /// about once), plays nothing, and a play its cooldown or a voice limit
-  /// refuses starts nothing: the voice returned is already stopped
+  /// its [`Voice`], which belongs to the scene playing it (it stops as the
+  /// scene exits; see [`PlayOptions::persist`]). A sound that has not
+  /// loaded yet, or failed to (warned about once), plays nothing, and a play
+  /// its cooldown or a voice limit refuses starts nothing: the voice
+  /// returned is already stopped
   pub fn play<'a>(&mut self, sound: impl Into<Playable<'a>>) -> Voice {
     self.play_with(sound, PlayOptions::default())
   }

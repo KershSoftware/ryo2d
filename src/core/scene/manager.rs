@@ -3,7 +3,7 @@
 use std::any::Any;
 use std::time::Duration;
 
-use crate::core::audio::Audio;
+use crate::core::audio::{Audio, in_scene, release_scene};
 use crate::core::console::CommandRegistry;
 use crate::core::ecs::World;
 use crate::core::ecs::kernel::CheckChangeTicks;
@@ -54,7 +54,8 @@ impl SceneSlot {
     );
   }
 
-  /// Run `f` with this slot's scene and a context built for it.
+  /// Run `f` with this slot's scene and a context built for it. The voices
+  /// it plays are the scene's.
   fn call<R>(
     &mut self,
     world: &mut World,
@@ -68,8 +69,11 @@ impl SceneSlot {
       scope_id,
       ..
     } = self;
-    SceneContext::scoped_parts(world, audio, schedules, messages, *scope_id, |ctx| {
-      f(scene.as_mut(), ctx)
+    let scope_id = *scope_id;
+    in_scene(world, scope_id, |world| {
+      SceneContext::scoped_parts(world, audio, schedules, messages, scope_id, |ctx| {
+        f(scene.as_mut(), ctx)
+      })
     })
   }
 }
@@ -136,11 +140,13 @@ enum TransitionPhase {
   In,
 }
 
-/// Drop the console handlers a scene registered.
-fn clear_console_scope(world: &mut World, scope_id: u64) {
+/// Drop what a scene that exited owned in the world: the console handlers
+/// it registered, and the voices it played (stopped with their fades).
+fn release_scope(world: &mut World, scope_id: u64) {
   if let Some(mut registry) = world.get_resource_mut::<CommandRegistry>() {
     registry.clear_scope(scope_id);
   }
+  release_scene(world, scope_id);
 }
 
 impl SceneManager {
@@ -282,7 +288,7 @@ impl SceneManager {
   ) -> Option<Box<dyn Scene>> {
     let mut slot = self.scenes.pop()?;
     slot.call(world, audio, |scene, ctx| scene.on_exit(ctx));
-    clear_console_scope(world, slot.scope_id);
+    release_scope(world, slot.scope_id);
     self.exited.push(slot.scope_id);
     if let Some(top) = self.scenes.last_mut() {
       top.call(world, audio, |scene, ctx| scene.on_resume(ctx, returned));
@@ -296,7 +302,7 @@ impl SceneManager {
     if let Some(mut current) = self.scenes.pop() {
       let cleanup = current.scene.cleanup_on_exit();
       current.call(world, audio, |scene, ctx| scene.on_exit(ctx));
-      clear_console_scope(world, current.scope_id);
+      release_scope(world, current.scope_id);
       self.exited.push(current.scope_id);
       drop(current);
       execute_cleanup(cleanup, world, audio);
@@ -310,7 +316,7 @@ impl SceneManager {
   pub fn clear(&mut self, world: &mut World, audio: &mut Audio) {
     while let Some(mut slot) = self.scenes.pop() {
       slot.call(world, audio, |scene, ctx| scene.on_exit(ctx));
-      clear_console_scope(world, slot.scope_id);
+      release_scope(world, slot.scope_id);
       self.exited.push(slot.scope_id);
     }
   }
@@ -542,9 +548,17 @@ impl SceneManager {
       // The scene's node trees draw first, so its `ui` draws above them and
       // reads their events this frame
       let events = crate::core::ui::nodes::draw_nodes(world, ui, slot.scope_id);
-      crate::core::ui::nodes::deliver(world, events);
+      // The observers of its nodes' events are its code: what they play,
+      // the commands they queue included, is the scene's
+      in_scene(world, slot.scope_id, |world| {
+        crate::core::ui::nodes::deliver(world, events);
+        world.flush();
+      });
       let result = slot.call(world, audio, |scene, ctx| scene.ui(ui, ctx));
-      crate::core::ui::nodes::deliver_pending(world);
+      in_scene(world, slot.scope_id, |world| {
+        crate::core::ui::nodes::deliver_pending(world);
+        world.flush();
+      });
       ui.end_scene();
       if i == top {
         action = result;
@@ -576,7 +590,9 @@ impl SceneManager {
     }
     let from = self.update_from();
     for slot in &mut self.scenes[from..] {
-      slot.schedules.run_fixed(world);
+      in_scene(world, slot.scope_id, |world| {
+        slot.schedules.run_fixed(world)
+      });
     }
   }
 
@@ -587,7 +603,9 @@ impl SceneManager {
     }
     let from = self.update_from();
     for slot in &mut self.scenes[from..] {
-      slot.schedules.run_update(world);
+      in_scene(world, slot.scope_id, |world| {
+        slot.schedules.run_update(world)
+      });
     }
   }
 
@@ -1324,5 +1342,190 @@ mod tests {
       world.resource::<crate::core::time::Time>().game.speed(),
       0.5
     );
+  }
+
+  /// What the audio tests share: a world with its audio log on, and a
+  /// two-second loop that fades out over 250 ms when the engine stops it
+  fn audio_scene_world() -> (
+    World,
+    Audio,
+    crate::core::asset::Handle<crate::core::audio::Sound>,
+  ) {
+    use crate::core::audio::{AudioClip, AudioEngine, Sound, SoundClip};
+    let (mut world, audio) = world();
+    world.resource_mut::<AudioEngine>().set_logging(true);
+    let clip = world
+      .resource_mut::<crate::core::asset::Assets<AudioClip>>()
+      .add(AudioClip::from_frames(48_000, &vec![[0.1, 0.1]; 96_000]));
+    let sound = world
+      .resource_mut::<crate::core::asset::Assets<Sound>>()
+      .add(Sound {
+        clips: vec![SoundClip::new(clip)],
+        looping: true,
+        fade_out: Duration::from_millis(250),
+        ..Default::default()
+      });
+    (world, audio, sound)
+  }
+
+  /// The voices the audio log says were stopped, with their fades
+  fn audio_stops(world: &World) -> Vec<(u32, Duration)> {
+    use crate::core::audio::{AudioEngine, AudioLogKind};
+    world
+      .resource::<AudioEngine>()
+      .log()
+      .iter()
+      .filter(|entry| entry.kind == AudioLogKind::Stop)
+      .map(|entry| (entry.voice, entry.fade))
+      .collect()
+  }
+
+  type Voices = Arc<Mutex<Vec<crate::core::audio::Voice>>>;
+
+  /// Plays its sound as it enters: once its own, once persistent
+  struct Player {
+    sound: crate::core::asset::Handle<crate::core::audio::Sound>,
+    played: Voices,
+  }
+
+  impl Scene for Player {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
+      let persist = crate::core::audio::PlayOptions {
+        persist: true,
+        ..Default::default()
+      };
+      let own = ctx.audio().play(&self.sound);
+      let kept = ctx.audio().play_with(&self.sound, persist);
+      self.played.lock().unwrap().extend([own, kept]);
+    }
+  }
+
+  #[test]
+  fn a_scene_exit_stops_its_voices_with_their_fade_and_keeps_persistent_ones() {
+    use crate::core::audio::AudioView;
+    use crate::core::testing::audio_step;
+    let (mut world, mut audio, sound) = audio_scene_world();
+    let played: Voices = Arc::default();
+    let mut m = SceneManager::with_scene(Box::new(Player {
+      sound: sound.clone(),
+      played: played.clone(),
+    }));
+    m.enter_initial(&mut world, &mut audio);
+    // A voice played outside every scene is the engine's
+    let engine_owned = AudioView::new(&mut world).play(&sound);
+    let [own, kept] = <[_; 2]>::try_from(played.lock().unwrap().clone()).unwrap();
+    audio_step(&mut world, Duration::from_millis(20));
+    m.switch(rec(&Arc::default(), "next"), &mut world, &mut audio);
+    assert_eq!(
+      audio_stops(&world),
+      [(own.id(), Duration::from_millis(250))]
+    );
+    // kira fades it out over its fade
+    audio_step(&mut world, Duration::from_millis(100));
+    assert!(!own.is_stopped() && !own.is_playing(), "fading: {own:?}");
+    audio_step(&mut world, Duration::from_millis(200));
+    audio_step(&mut world, Duration::from_millis(20));
+    assert!(own.is_stopped(), "{own:?}");
+    assert!(kept.is_playing(), "{kept:?}");
+    assert!(engine_owned.is_playing(), "{engine_owned:?}");
+  }
+
+  /// A voice a scene's system plays is the scene's too; a scene pushed
+  /// above leaves it playing, and it stops when its scene pops
+  #[test]
+  fn a_scene_s_systems_play_its_voices_and_a_scene_above_leaves_them_alone() {
+    use crate::core::audio::{AudioView, Voice};
+    use crate::core::testing::audio_step;
+
+    #[derive(Resource, Default)]
+    struct Played(Option<Voice>);
+
+    struct Looper(crate::core::asset::Handle<crate::core::audio::Sound>);
+
+    impl Scene for Looper {
+      fn on_enter(&mut self, ctx: &mut SceneContext) {
+        let sound = self.0.clone();
+        ctx
+          .add_systems(Phase::Update, move |world: &mut World| {
+            if world.resource::<Played>().0.is_none() {
+              let voice = AudioView::new(world).play(&sound);
+              world.resource_mut::<Played>().0 = Some(voice);
+            }
+          })
+          .unwrap();
+      }
+    }
+
+    let (mut world, mut audio, sound) = audio_scene_world();
+    world.init_resource::<Played>();
+    let mut m = SceneManager::with_scene(rec(&Arc::default(), "below"));
+    m.enter_initial(&mut world, &mut audio);
+    m.push(Box::new(Looper(sound)), &mut world, &mut audio);
+    m.run_update_systems(&mut world);
+    let Some(voice) = world.resource::<Played>().0.clone() else {
+      panic!("the system played");
+    };
+    assert!(voice.is_playing());
+    m.push(rec(&Arc::default(), "above"), &mut world, &mut audio);
+    m.pop(&mut world, &mut audio, None);
+    audio_step(&mut world, Duration::from_millis(20));
+    assert_eq!(audio_stops(&world), [], "the looper has not exited");
+    assert!(voice.is_playing(), "{voice:?}");
+    m.pop(&mut world, &mut audio, None);
+    assert_eq!(
+      audio_stops(&world),
+      [(voice.id(), Duration::from_millis(250))]
+    );
+  }
+
+  /// What the observers of a scene's UI nodes play is the scene's
+  #[test]
+  fn a_scene_s_ui_nodes_play_its_voices() {
+    use crate::core::audio::{AudioEngine, AudioView, Sound};
+    use crate::core::ecs::{Commands, Entity, On};
+    use crate::core::ui::{UiEvent, UiEventKind, UiInteraction, UiNode};
+
+    type Node = Arc<Mutex<Option<Entity>>>;
+
+    /// A button that plays its sound when clicked
+    struct Clicky(crate::core::asset::Handle<Sound>, Node);
+
+    impl Scene for Clicky {
+      fn on_enter(&mut self, ctx: &mut SceneContext) {
+        let node = ctx.spawn_ui(UiNode::button("Go").action("go"));
+        let sound = self.0.clone();
+        ctx
+          .world
+          .entity_mut(node)
+          .observe(move |event: On<UiEvent>, mut commands: Commands| {
+            if event.kind == UiEventKind::Clicked {
+              let sound = sound.clone();
+              commands.queue(move |world: &mut World| {
+                AudioView::new(world).play(&sound);
+              });
+            }
+          });
+        *self.1.lock().unwrap() = Some(node);
+      }
+    }
+
+    let (mut world, mut audio, sound) = audio_scene_world();
+    let node: Node = Arc::default();
+    let mut m = SceneManager::with_scene(Box::new(Clicky(sound, node.clone())));
+    m.enter_initial(&mut world, &mut audio);
+    let mut memory = crate::core::ui::memory::UiMemory::new();
+    let none = crate::core::ui::UiId::NONE;
+    ui_frame(&mut m, (&mut world, &mut audio), &mut memory, none);
+    let button = node.lock().unwrap().unwrap();
+    let Some(id) = world
+      .get::<UiInteraction>(button)
+      .and_then(UiInteraction::id)
+    else {
+      panic!("the button is drawn");
+    };
+    ui_frame(&mut m, (&mut world, &mut audio), &mut memory, id);
+    assert_eq!(world.resource::<AudioEngine>().voices_on("sfx"), 1);
+    m.pop(&mut world, &mut audio, None);
+    assert_eq!(audio_stops(&world).len(), 1, "the click's loop stops");
   }
 }

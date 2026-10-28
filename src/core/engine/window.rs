@@ -13,6 +13,7 @@ use winit::window::{Window, WindowAttributes, WindowId};
 
 use super::frame::should_pace_frames;
 use super::{Engine, EngineEvent, FrameOutcome, SceneHost};
+use crate::core::audio::AudioEngine;
 use crate::core::config::DisplayMode;
 use crate::core::cursor::{CursorRequest, CursorShape};
 use crate::core::graphics::WgpuRenderer;
@@ -679,6 +680,10 @@ impl ApplicationHandler<EngineEvent> for Engine {
         self.game_window_focused = *focused;
         if !*focused {
           self.drop_hidden_slow_frame();
+        }
+        // The mix follows the mixer's `on_focus_loss`
+        if let Some(mut audio) = self.world.get_resource_mut::<AudioEngine>() {
+          audio.set_focused(*focused);
         }
         // Release the grab on Alt-Tab and restore it on return
         if let Some((grab, visible)) = cursor_grab_for_focus(self.cursor_locked, *focused)

@@ -19,6 +19,7 @@ mod voice;
 pub use clip::AudioClip;
 pub(crate) use clip::{ClipData, DECODE_THRESHOLD};
 pub use engine::AudioEngine;
+pub(crate) use engine::{in_scene, release_scene};
 pub use legacy::*;
 #[doc(hidden)]
 pub use log::{AudioLogEntry, AudioLogKind};

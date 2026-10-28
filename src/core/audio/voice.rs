@@ -70,6 +70,22 @@ struct VoiceShared {
 /// clip not loaded yet, say) returns a voice that is already stopped, on
 /// which every method does nothing.
 ///
+/// A voice belongs to the scene that played it, from a callback, one of its
+/// systems or an observer of its UI nodes: when that scene exits (popped,
+/// switched away or reset), the voice stops with its sound's `fade_out`.
+/// One played with [`PlayOptions::persist`](super::PlayOptions::persist),
+/// or outside every scene, belongs to the engine and plays on.
+///
+/// It follows the game's clock through its bus. On a bus that pauses with
+/// the game (by default `sfx`, `voice` and `ambience`) it pauses where it
+/// is while the game is paused, and resumes from there. On a bus that
+/// follows time scale (`sfx` and `ambience`) it plays at its pitch's rate
+/// times the game's speed, and pauses while time stands still (the game
+/// paused, hitstop, or a speed of 0.01 or less). These holds are the
+/// engine's and leave the voice's own [`pause`](Self::pause) alone: a held
+/// voice still reports playing, and one paused itself stays paused when the
+/// game resumes.
+///
 /// ```
 /// use std::time::Duration;
 /// use ryo2d::prelude::*;
@@ -142,7 +158,8 @@ impl Voice {
     self.send(VoiceChange::Stop(fade));
   }
 
-  /// Fade out and pause, keeping the position
+  /// Fade out and pause, keeping the position, until [`resume`](Self::resume)
+  /// (the game resuming does not resume it)
   pub fn pause(&self) {
     self.send(VoiceChange::Pause);
   }
@@ -159,12 +176,15 @@ impl Voice {
   }
 
   /// Set the voice's own pitch in semitones (-48 to 48), replacing the
-  /// pitch it was played with. Pitch changes speed too, as on a turntable
+  /// pitch it was played with. Pitch changes speed too, as on a turntable.
+  /// On a bus that follows time scale, the game's speed still multiplies it
   pub fn set_pitch(&self, semitones: f32) {
     self.send(VoiceChange::Pitch(semitones));
   }
 
-  /// Whether it is playing: started, not paused, not stopping or stopped
+  /// Whether it is playing: started, not paused, not stopping or stopped.
+  /// A voice its bus holds while the game is paused (or in hitstop) still
+  /// counts as playing
   pub fn is_playing(&self) -> bool {
     self.state() == VoiceState::Playing
   }

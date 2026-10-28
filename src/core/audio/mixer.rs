@@ -54,7 +54,8 @@ pub struct Mixer {
   pub snapshots: Vec<SnapshotDef>,
   /// Rules that dip one bus while another plays
   pub ducks: Vec<DuckDef>,
-  /// What the mix does while the game's window is not focused
+  /// What the mix does while the game's window is not focused: `Keep` (the
+  /// default), or turn `master` down or off, smoothed over 10 ms
   pub on_focus_loss: FocusLoss,
 }
 
@@ -113,11 +114,16 @@ pub struct BusDef {
   /// with the gains of the buses above it). A bus another sends to is a send
   /// bus: it plays no voices of its own
   pub sends: Vec<(String, f32)>,
-  /// Whether its voices pause with the game; `None` keeps the standard
-  /// bus's default (sfx, ambience and voice do), or its parent's
+  /// Whether its voices pause where they are while the game is paused
+  /// (`time.game.pause()`), resuming from there; `None` keeps the standard
+  /// bus's default (sfx, ambience and voice do), or its parent's. Each bus
+  /// goes by its own: one that does not pause under one that does plays on
   pub pauses_with_game: Option<bool>,
-  /// Whether its voices slow with the game's time scale; `None` keeps the
-  /// standard bus's default (sfx and ambience do), or its parent's
+  /// Whether its voices follow the game's time scale: they play at their
+  /// pitch's rate times the game's speed, and pause while time stands
+  /// still (paused, in hitstop, or at a speed of 0.01 or less); `None`
+  /// keeps the standard bus's default (sfx and ambience do), or its
+  /// parent's
   pub follows_time_scale: Option<bool>,
   /// The most voices playing on it and the buses under it
   pub limit: Option<u16>,
@@ -1043,13 +1049,22 @@ pub(crate) struct GainLayers {
   pub(crate) snapshot: f32,
   /// Ducking's
   pub(crate) duck: f32,
+  /// The mixer's `on_focus_loss` while the window is not focused
+  /// (`master`'s; 0 on every other bus)
+  pub(crate) focus: f32,
 }
 
 impl GainLayers {
   /// The layers added, from silence to +[`MAX_BUS_DB`]; silence if any
   /// layer is silent, as a setting of 0 must be whatever the others add
   pub(crate) fn total(&self) -> f32 {
-    let layers = [self.base, self.setting, self.snapshot, self.duck];
+    let layers = [
+      self.base,
+      self.setting,
+      self.snapshot,
+      self.duck,
+      self.focus,
+    ];
     if layers.iter().any(|&layer| layer <= SILENCE_DB) {
       return SILENCE_DB;
     }
@@ -1112,6 +1127,9 @@ pub(crate) struct Bus {
   pub(crate) applied: f32,
   pub(crate) pauses_with_game: bool,
   pub(crate) follows_time_scale: bool,
+  /// Its voices are held, paused where they are: the game is paused and it
+  /// pauses with the game, or time stands still and it follows time scale
+  pub(crate) held: bool,
   /// The most voices playing on it and the buses under it
   pub(crate) limit: Option<u16>,
   /// A play was refused for want of kira's room on its track: warned once
@@ -1191,6 +1209,7 @@ impl BusTree {
           applied: 0.0,
           pauses_with_game: planned.pauses_with_game,
           follows_time_scale: planned.follows_time_scale,
+          held: false,
           limit: def.and_then(|def| def.limit),
           full_warned: false,
         }
@@ -1471,11 +1490,13 @@ impl BusTree {
         setting_db: bus.layers.setting,
         snapshot_db: bus.layers.snapshot,
         duck_db: bus.layers.duck,
+        focus_db: bus.layers.focus,
         cutoff_hz: bus.cutoff.as_ref().map(|cutoff| cutoff.applied),
         gain_db: bus.layers.total(),
         effective_db: self.effective_db(index),
         pauses_with_game: bus.pauses_with_game,
         follows_time_scale: bus.follows_time_scale,
+        held: bus.held,
         limit: bus.limit,
       })
       .collect()
@@ -1500,11 +1521,13 @@ pub struct BusReport {
   /// gains of the buses above this one, but `master`'s
   pub send_gains: Vec<(String, f32)>,
   /// Its gain layers in dB: the mixer's volume (or the game's,
-  /// `set_bus_volume`), the player's setting, the snapshot's and the duck's
+  /// `set_bus_volume`), the player's setting, the snapshot's, the duck's
+  /// and, on `master`, the focus loss's
   pub base_db: f32,
   pub setting_db: f32,
   pub snapshot_db: f32,
   pub duck_db: f32,
+  pub focus_db: f32,
   /// The cutoff in Hz of the low-pass snapshots close on it (20000 is
   /// open), for a bus a snapshot names a `low_pass` for
   pub cutoff_hz: Option<f32>,
@@ -1514,6 +1537,9 @@ pub struct BusReport {
   pub effective_db: f32,
   pub pauses_with_game: bool,
   pub follows_time_scale: bool,
+  /// Its voices are held where they are: by the game's pause, or by time
+  /// standing still (hitstop, or a time scale of 0.01 or less)
+  pub held: bool,
   pub limit: Option<u16>,
 }
 
@@ -1893,6 +1919,45 @@ mod tests {
     voice.resume();
     audio_step(&mut world, FRAME);
     assert!(voice.is_playing(), "{voice:?}");
+  }
+
+  /// The game's pause holds each voice, so it reaches a one-shot still
+  /// finishing on the buses a mixer reload retired
+  #[test]
+  fn a_game_pause_reaches_a_one_shot_finishing_on_a_retired_tree() {
+    let (mut world, files) = world_with_mixer(MIXER);
+    let long = clip(&mut world, 2.0);
+    let shot = AudioView::new(&mut world).play(&long);
+    audio_step(&mut world, FRAME);
+    files.insert(MIXER_PATH, MIXER.replace("volume: -6.0", "volume: -9.0"));
+    world.resource::<AssetServer>().reload(MIXER_PATH);
+    let start = Instant::now();
+    while bus(&world, "sfx").base_db != -9.0 {
+      assert!(start.elapsed() < Duration::from_secs(5), "the reload lands");
+      audio_step(&mut world, Duration::from_millis(1));
+      std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(
+      world.resource::<AudioEngine>().sounds_on("sfx"),
+      0,
+      "it plays on the retired tree"
+    );
+    world.resource_mut::<crate::core::time::Time>().game.pause();
+    audio_step(&mut world, FRAME);
+    let engine = world.resource::<AudioEngine>();
+    assert_eq!(
+      engine.voice_playback(shot.id()),
+      Some(PlaybackState::Paused)
+    );
+    let at_pause = engine.voice_position(shot.id()).unwrap_or_default();
+    for _ in 0..5 {
+      audio_step(&mut world, FRAME);
+    }
+    let held = world
+      .resource::<AudioEngine>()
+      .voice_position(shot.id())
+      .unwrap_or_default();
+    assert_eq!(held, at_pause);
   }
 
   #[test]
