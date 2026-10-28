@@ -1368,7 +1368,9 @@ pub struct AudioEngine {
   /// The byte from which the files of streams started fail to read (tests)
   #[cfg(test)]
   stream_reads_fail_at: Option<u64>,
-  /// Plays kira refused for want of room: none should ever be
+  /// Plays kira refused for want of room though the engine's own check
+  /// found some: only a race of nanoseconds, as a stopped sound's slot is
+  /// freed, gets here, so none in normal play
   #[cfg(test)]
   kira_full: usize,
 }
@@ -1611,7 +1613,8 @@ impl AudioEngine {
     self.stream_reads_fail_at = Some(at);
   }
 
-  /// How many plays kira refused for want of room (tests: it never should)
+  /// How many plays kira refused for want of room though the engine's own
+  /// check found some (tests: none in normal play)
   #[cfg(test)]
   pub(crate) fn kira_full(&self) -> usize {
     self.kira_full
@@ -3373,8 +3376,19 @@ impl AudioEngine {
     };
     let old = self.music.live().map(|track| track.voice.id());
     let crossfade = music.crossfade;
+    // Stop the old track over the crossfade, unless a limit already stopped
+    // it to make room for the new one
     let stop_old = |engine: &mut AudioEngine| {
-      if let Some(voice) = old {
+      let Some(voice) = old else {
+        return;
+      };
+      let live = engine.voices.index_of(voice).is_some_and(|index| {
+        matches!(
+          engine.voices.live[index].voice.state(),
+          VoiceState::Playing | VoiceState::Paused
+        )
+      });
+      if live {
         let change = VoiceChange::Stop(crossfade);
         engine.apply(VoiceCommand { voice, change }, server);
       }

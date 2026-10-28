@@ -1084,8 +1084,9 @@ fn snapshot_filter() -> FilterBuilder {
     .cutoff(f64::from(OPEN_HZ))
 }
 
-/// Warn that kira had no room for `bus`'s track (it never runs out with the
-/// capacities the engine sets and a mixer's limits on buses)
+/// Warn that kira had no room for `bus`'s track: the capacities the engine
+/// sets and a mixer's limits on buses leave room, so this is only a
+/// safeguard
 fn warn_no_room(bus: &str) {
   crate::engine_warn!(
     module: "Audio",
