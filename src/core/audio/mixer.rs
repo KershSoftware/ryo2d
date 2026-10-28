@@ -63,7 +63,10 @@ impl Asset for Mixer {}
 /// A snapshot of a [`Mixer`]: the volumes and low-pass cutoffs some buses
 /// blend to. A bus it does not name blends back to its own. Its volumes
 /// are a layer over the mixer's and the player's, in dB; a bus it names a
-/// `low_pass` for gets a filter, open at 20 kHz otherwise
+/// `low_pass` for gets a filter, open at 20 kHz otherwise.
+///
+/// A snapshot is a full preset: a bus it names without a `low_pass` opens to
+/// 20 kHz, like a bus it does not name, when it is blended to
 #[derive(Debug, Clone, PartialEq)]
 pub struct SnapshotDef {
   pub name: String,
@@ -84,7 +87,7 @@ pub struct SnapshotBus {
 /// A ducking rule: while any voice plays on `trigger` (or a bus under it),
 /// `target` is `by_db` quieter. The engine moves the dip each frame, over
 /// `attack` seconds in and `release` seconds out: it is gain, not audio-rate
-/// side-chaining
+/// side-chaining. Two rules on one target add their dips in dB
 #[derive(Debug, Clone, PartialEq)]
 pub struct DuckDef {
   pub trigger: String,
@@ -2280,6 +2283,59 @@ mod tests {
     );
     run(&mut world, 0.1);
     assert_eq!(bus(&world, "music").cutoff_hz, Some(800.0));
+  }
+
+  #[test]
+  fn a_snapshot_the_reload_drops_blends_back_to_open() {
+    let (mut world, _files) = world_with_mixer(SNAPSHOTS);
+    AudioView::new(&mut world).snapshot("pause");
+    run(&mut world, 0.4);
+    let text = SNAPSHOTS.replace("\"pause\"", "\"vanishing-unique\"");
+    let renamed =
+      Mixer::parse(&text.replace("\"vanishing-unique\"", "\"other\"")).unwrap_or_default();
+    // The active snapshot is "pause": the new mixer has only "other"
+    AudioView::new(&mut world).set_mixer(renamed);
+    audio_step(&mut world, FRAME);
+    run(&mut world, 0.5);
+    let music = bus(&world, "music");
+    assert!(music.snapshot_db.abs() < 0.01, "{music:?}");
+    assert_eq!(music.cutoff_hz, Some(20_000.0));
+    assert!(bus(&world, "sfx").snapshot_db.abs() < 0.01);
+    assert_eq!(
+      warnings(|message| message.contains("\"pause\" is not in the reloaded mixer")),
+      1
+    );
+  }
+
+  #[test]
+  fn a_rebuild_mid_blend_keeps_the_blends_remaining_time() {
+    let (mut world, _files) = world_with_mixer(SNAPSHOTS);
+    AudioView::new(&mut world).snapshot("pause");
+    run(&mut world, 0.15);
+    let mixer = Mixer::parse(SNAPSHOTS).unwrap_or_default();
+    AudioView::new(&mut world).set_mixer(mixer);
+    audio_step(&mut world, FRAME);
+    run(&mut world, 0.17);
+    let music = bus(&world, "music");
+    assert!((music.snapshot_db + 6.0).abs() < 0.1, "{music:?}");
+    assert_eq!(music.cutoff_hz, Some(800.0));
+  }
+
+  #[test]
+  fn a_blend_glides_over_a_slow_frame() {
+    let (mut world, _files) = world_with_mixer(SNAPSHOTS);
+    AudioView::new(&mut world).snapshot("pause");
+    audio_step(&mut world, Duration::from_millis(100));
+    let gains = bus_gains(&world, "music");
+    let last = gains.last().map(|entry| entry.fade);
+    assert_eq!(last, Some(Duration::from_millis(100)), "{gains:?}");
+    // Back on fast frames the smoothing is the minimum again
+    run(&mut world, 0.4);
+    AudioView::new(&mut world).set_volume_setting(VolumeKind::Music, 0.5);
+    assert_eq!(
+      bus_gains(&world, "music").last().map(|e| e.fade),
+      Some(MIN_FADE)
+    );
   }
 
   #[test]

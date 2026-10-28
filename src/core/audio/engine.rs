@@ -606,6 +606,9 @@ pub struct AudioEngine {
   warned_snapshots: FastSet<String>,
   /// The mixer's ducking rules, as of its last build
   ducks: Vec<DuckState>,
+  /// The smoothing of bus gain and cutoff changes: [`MIN_FADE`], or a slow
+  /// frame's length while the mix steps
+  glide: Duration,
   /// The mixer the bus tree is built from: `None` is the standard layout
   mixer: Option<Handle<Mixer>>,
   /// The mixer's content version the tree was last built from
@@ -692,6 +695,7 @@ impl AudioEngine {
       pending_snapshot: None,
       warned_snapshots: FastSet::default(),
       ducks: Vec::new(),
+      glide: MIN_FADE,
       mixer: None,
       mixer_version: None,
       mixer_pending: false,
@@ -839,7 +843,7 @@ impl AudioEngine {
         continue;
       }
       bus.applied = volume;
-      let smooth = tween(MIN_FADE);
+      let smooth = tween(self.glide);
       match &mut bus.output {
         _ if index == 0 => {
           if let Some(manager) = &mut self.manager {
@@ -860,7 +864,7 @@ impl AudioEngine {
           gain_db: volume,
           pan: 0.0,
           rate: 1.0,
-          fade: MIN_FADE,
+          fade: self.glide,
         });
       }
     }
@@ -877,7 +881,7 @@ impl AudioEngine {
         bus.sends[route].applied = volume;
         if let (Some(to), Output::Track(Some(track))) = (to, &mut bus.output) {
           // Every route was built with the track, so it exists
-          let _ = track.set_send(to, Decibels(volume), tween(MIN_FADE));
+          let _ = track.set_send(to, Decibels(volume), tween(self.glide));
         }
       }
     }
@@ -964,6 +968,13 @@ impl AudioEngine {
   /// voice plays on its trigger bus or under it
   fn step_mix(&mut self, delta: Duration) {
     let seconds = delta.as_secs_f32();
+    // A slow frame glides over the whole frame, so a blend does not step
+    self.glide = delta.max(MIN_FADE);
+    self.step_mix_by(seconds);
+    self.glide = MIN_FADE;
+  }
+
+  fn step_mix_by(&mut self, seconds: f32) {
     self.step_blend(seconds);
     let mut moved = false;
     for duck in &mut self.ducks {
@@ -993,6 +1004,7 @@ impl AudioEngine {
   /// Give each snapshot filter the cutoff the snapshot blend is at, where
   /// it changed, smoothed over [`MIN_FADE`]
   fn refresh_cutoffs(&mut self) {
+    let glide = self.glide;
     for bus in &mut self.buses.buses {
       let Some(cutoff) = &mut bus.cutoff else {
         continue;
@@ -1003,7 +1015,7 @@ impl AudioEngine {
       }
       cutoff.applied = hz;
       if let Some(handle) = &mut cutoff.handle {
-        handle.set_cutoff(f64::from(hz), tween(MIN_FADE));
+        handle.set_cutoff(f64::from(hz), tween(glide));
       }
     }
   }
@@ -1167,7 +1179,24 @@ impl AudioEngine {
     // The active snapshot blends to the new mixer's version of it, or
     // clears if the new mixer has none
     if let Some(active) = self.blend.active.clone() {
-      self.activate(Some(&active));
+      // The blend carries on from where it is, with the time it has left
+      let remaining = self.blend.running().then(|| self.blend.remaining());
+      if self
+        .snapshots
+        .iter()
+        .any(|snapshot| snapshot.name == active)
+      {
+        self.activate(Some(&active));
+      } else {
+        crate::engine_warn!(
+          module: "Audio",
+          "snapshot {active:?} is not in the reloaded mixer; the mix blends back to open"
+        );
+        self.activate(None);
+      }
+      if let Some(remaining) = remaining {
+        self.blend.shorten_to(remaining);
+      }
     }
     if let Some(pending) = self.pending_snapshot.take() {
       self.activate(pending.as_deref());

@@ -101,6 +101,24 @@ impl Blend {
     self.running = true;
   }
 
+  pub(crate) fn running(&self) -> bool {
+    self.running
+  }
+
+  /// Seconds the running blend has left (0 when none runs)
+  pub(crate) fn remaining(&self) -> f32 {
+    if self.running {
+      (self.duration - self.elapsed).max(0.0)
+    } else {
+      0.0
+    }
+  }
+
+  /// Make the blend just begun take `seconds` instead of its full time
+  pub(crate) fn shorten_to(&mut self, seconds: f32) {
+    self.duration = seconds;
+  }
+
   /// Move the blend on by `seconds`; whether it did anything (the engine
   /// then puts the levels on the buses)
   pub(crate) fn step(&mut self, seconds: f32) -> bool {
