@@ -4473,12 +4473,14 @@ impl AudioEngine {
         live.voice.set_state(VoiceState::Playing);
         live.own_fade = Some(fade);
         self.voices_dirty = true;
-        // Its first sounding takes its fade-in, if that is longer
-        let fade = match live.unheard {
-          Some(fade_in) if !live.held => fade_in.max(fade),
-          _ => fade,
-        };
-        (AudioLogKind::Resume, fade)
+        match live.unheard {
+          // Not heard yet, and held: it is logged once, as its bus or owner
+          // lets it go and it is first heard (in the frame's update)
+          Some(_) if live.held => return,
+          // Its first sounding takes its fade-in, if that is longer
+          Some(fade_in) => (AudioLogKind::Resume, fade_in.max(fade)),
+          None => (AudioLogKind::Resume, fade),
+        }
       }
       VoiceChange::Volume(db, fade) => {
         let fade = change_over(fade);
@@ -6387,6 +6389,36 @@ mod tests {
       warnings(|message| message.starts_with(&name) && message.contains("could not switch")),
       1
     );
+  }
+
+  /// The web's unlock is not a pause: it logs no bus's Pause, whether the
+  /// game runs or is paused as it comes (a bus held by the game's pause was
+  /// logged once, as the game paused)
+  #[test]
+  fn the_unlock_logs_no_bus_pause() {
+    for paused in [false, true] {
+      let mut world = locked_world();
+      let clip = second(&mut world);
+      let rain = hum(&mut world, &clip, "ambience", Duration::ZERO);
+      AudioView::new(&mut world).play(&rain);
+      if paused {
+        world.resource_mut::<Time>().game.pause();
+      }
+      for _ in 0..3 {
+        audio_step(&mut world, FRAME);
+      }
+      let before = entries(&world, AudioLogKind::Pause).len();
+      unlock(&mut world);
+      for _ in 0..3 {
+        audio_step(&mut world, FRAME);
+      }
+      let pauses: Vec<(u32, String)> = entries(&world, AudioLogKind::Pause)
+        .into_iter()
+        .skip(before)
+        .map(|entry| (entry.voice, entry.bus))
+        .collect();
+      assert!(pauses.is_empty(), "paused {paused}: {pauses:?}");
+    }
   }
 
   /// A mixer that lands before the first gesture is built on kira at it,

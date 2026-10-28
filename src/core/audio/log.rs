@@ -22,7 +22,10 @@ pub enum AudioLogKind {
   Pause,
   /// It was resumed: by its own call, or let go by its owner. With `voice`
   /// 0, a bus let its voices go. A voice that started held (its start logs
-  /// no fade) logs its first resume, with its fade-in
+  /// no fade) logs its first resume once, as it is first heard, with its
+  /// fade-in, whether its own resume or its bus's letting go (or both, in
+  /// one frame) brought it. The web's first-gesture unlock is not a pause
+  /// and logs no bus's `Pause` or `Resume`
   Resume,
   /// Its gain changed to `gain_db`: its own (`Voice::set_volume`), or its
   /// place's falloff as it or the listener moved. With `voice` 0 and no

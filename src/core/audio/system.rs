@@ -424,6 +424,38 @@ mod tests {
     }
   }
 
+  /// A voice that started held (unheard) and that the game paused
+  /// meanwhile, resumed in the frame its bus lets go, is heard once,
+  /// fading in over its fade-in, and the log says so once
+  #[test]
+  fn a_resume_as_its_bus_lets_go_is_logged_once() {
+    let mut world = audio_world();
+    let clip = clip(&mut world, 2.0);
+    let fade_in = Duration::from_millis(200);
+    let bed = world.resource_mut::<Assets<Sound>>().add(Sound {
+      clips: vec![SoundClip::new(clip)],
+      looping: true,
+      fade_in,
+      ..Default::default()
+    });
+    time(&mut world).game.pause();
+    audio_step(&mut world, FRAME);
+    let voice = AudioView::new(&mut world).play(&bed);
+    audio_step(&mut world, FRAME);
+    voice.pause();
+    audio_step(&mut world, FRAME);
+    voice.resume();
+    time(&mut world).game.resume();
+    audio_step(&mut world, FRAME);
+    let resumes: Vec<Duration> = log(&world)
+      .iter()
+      .filter(|entry| entry.voice == voice.id() && entry.kind == AudioLogKind::Resume)
+      .map(|entry| entry.fade)
+      .collect();
+    assert_eq!(resumes, [fade_in], "{:#?}", log(&world));
+    assert_eq!(playback(&world, &voice), Some(PlaybackState::Resuming));
+  }
+
   /// A voice's own resume in the frame its bus starts holding does not
   /// play it through the hold
   #[test]
