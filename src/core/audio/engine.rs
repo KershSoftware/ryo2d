@@ -4038,8 +4038,9 @@ impl AudioEngine {
 
   /// Apply one queued change, over its fade (at least [`MIN_FADE`]). A
   /// voice already stopping or gone takes no more changes. A volume or
-  /// pitch change to a voice started this frame, which kira has yet to
-  /// render, applies at once, so its first audio is at the level set
+  /// pitch change of 10 ms or less to a voice started this frame, which
+  /// kira has yet to render, applies at once, so its first audio is at the
+  /// level set; a longer fade ramps from the level the play started at
   fn apply(&mut self, command: VoiceCommand, server: Option<&AssetServer>) {
     let Some(index) = self.voices.index_of(command.voice) else {
       self.change_pending(command);
@@ -4053,7 +4054,7 @@ impl AudioEngine {
     }
     let fresh = live.frame == frame;
     let change_over = |fade: Duration| {
-      if fresh {
+      if fresh && fade <= MIN_FADE {
         Duration::ZERO
       } else {
         fade.max(MIN_FADE)

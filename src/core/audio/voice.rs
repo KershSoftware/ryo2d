@@ -96,9 +96,10 @@ struct VoiceShared {
 ///
 /// A change to a playing voice ramps from where it is over at least 10 ms,
 /// so nothing clicks. The level and pitch a sound starts at belong in its
-/// play ([`PlayOptions`](super::PlayOptions)): a change made in the frame a
-/// voice started, which nothing has heard yet, applies at once, but on an
-/// audio device the first few milliseconds may already be playing. The
+/// play ([`PlayOptions`](super::PlayOptions)): a plain change made in the
+/// frame a voice started, which nothing has heard yet, applies at once, but
+/// on an audio device the first few milliseconds may already be playing. An
+/// `_over` change made then ramps from the level the play started at. The
 /// engine applies changes as the scene code that made them (a callback,
 /// one of its systems, an observer of its UI nodes) ends, and the rest
 /// once a frame after the scenes' updates, so what
@@ -387,6 +388,40 @@ mod tests {
       (first / settled - 1.0).abs() < 0.01,
       "the first audio is at the level set: {first} against {settled}"
     );
+  }
+
+  /// A fade longer than 10 ms asked for as a voice starts is kept: it ramps
+  /// from the level the play started at, so a bed faded up from silence
+  /// starts silent
+  #[test]
+  fn a_fade_asked_as_a_voice_starts_ramps_from_its_start() {
+    let (mut world, meter) = crate::core::testing::metered_audio_world();
+    let clip = clip(&mut world, 3.0);
+    let voice = crate::core::audio::in_scene(&mut world, 1, |world| {
+      let options = PlayOptions {
+        volume_db: -60.0,
+        ..Default::default()
+      };
+      let voice = AudioView::new(world).play_with(&clip, options);
+      voice.set_volume_over(60.0, Duration::from_secs(1));
+      voice.set_pitch_over(3.0, Duration::from_millis(500));
+      voice
+    });
+    let fades: Vec<(AudioLogKind, Duration)> = log(&world)
+      .iter()
+      .filter(|entry| entry.voice == voice.id() && entry.kind != AudioLogKind::Start)
+      .map(|entry| (entry.kind, entry.fade))
+      .collect();
+    assert_eq!(
+      fades,
+      [
+        (AudioLogKind::Gain, Duration::from_secs(1)),
+        (AudioLogKind::Rate, Duration::from_millis(500)),
+      ]
+    );
+    audio_step(&mut world, FRAME);
+    let first = meter.frames()[0].left;
+    assert!(first.abs() < 0.001, "it starts near silent: {first}");
   }
 
   /// The `_over` forms change a playing voice over the fade they are given
