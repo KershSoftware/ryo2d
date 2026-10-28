@@ -58,6 +58,9 @@ pub trait AssetLoader: Send + Sync + 'static {
 pub struct LoadContext<'a> {
   path: &'a AssetPath,
   server: &'a AssetServer,
+  /// The asset being loaded and the job loading it, which the files it
+  /// reads are noted against
+  job: (UntypedAssetId, u64),
   dependencies: Vec<UntypedAssetId>,
   mode: LoadMode<'a>,
   /// The load replaces a loaded value
@@ -77,10 +80,16 @@ pub(crate) enum LoadMode<'a> {
 }
 
 impl<'a> LoadContext<'a> {
-  pub(crate) fn new(path: &'a AssetPath, server: &'a AssetServer, mode: LoadMode<'a>) -> Self {
+  pub(crate) fn new(
+    path: &'a AssetPath,
+    server: &'a AssetServer,
+    mode: LoadMode<'a>,
+    job: (UntypedAssetId, u64),
+  ) -> Self {
     Self {
       path,
       server,
+      job,
       dependencies: Vec::new(),
       mode,
       reload: false,
@@ -126,10 +135,12 @@ impl<'a> LoadContext<'a> {
 
   /// Reads the file at `path` on the loader's thread, without making an
   /// asset of it: for a loader that builds its asset from other files'
-  /// contents (music joining its intro and loop). It is not a dependency,
-  /// so a change to that file does not reload this asset
+  /// contents (music joining its intro and loop). It is not a dependency
+  /// (nothing waits on it, and nothing holds it), but a change to that file
+  /// reloads this asset, as one would; so does the file coming, after a read
+  /// that found none failed the load
   pub(crate) fn read(&self, path: &AssetPath) -> Result<Vec<u8>, AssetError> {
-    self.server.read(path)
+    self.server.read_for(self.job, path)
   }
 
   /// Loads a dependency: the asset being loaded holds the handle and is ready

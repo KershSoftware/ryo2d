@@ -48,8 +48,9 @@ use crate::core::audio::{AudioClip, Music, MusicData, MusicJoinError, check_bus_
 ///   starts sounds on its 128-frame chunks). Both must be at one sample
 ///   rate (a mismatch fails the load, naming both files) and are held
 ///   decoded, so they do not stream; `mode: Stream` is refused for them.
-///   They are read, not loaded as dependencies: saving one does not reload
-///   the music (saving the music file does).
+///   They are read, not loaded as dependencies (nothing else can use them as
+///   assets), but saving one reloads the music, as saving the music file
+///   does.
 /// - **One clip** loops from `loop_start` to `loop_end` (seconds; what comes
 ///   before `loop_start` plays once), on kira's loop region. The clip is a
 ///   dependency, loaded as `mode` says ([`ClipMode`]: `Auto` decodes a clip

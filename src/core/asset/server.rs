@@ -97,6 +97,10 @@ struct Info {
   dependencies: Vec<UntypedAssetId>,
   /// The loaded assets whose values hold this one
   dependents: Vec<UntypedAssetId>,
+  /// The files its current job read through its `LoadContext` without
+  /// loading them (`read`): a change to one reloads it, as a dependency's
+  /// reload would
+  reads: Vec<AssetPath>,
   /// A hash of the last error it warned about, so an error warns once
   warned: Option<u64>,
 }
@@ -732,7 +736,12 @@ impl AssetServer {
         reload,
       } = load;
       let outcome = server
-        .run_load(&path, (&*loader, &*settings), LoadMode::Queued, reload)
+        .run_load(
+          (id, job, &path),
+          (&*loader, &*settings),
+          LoadMode::Queued,
+          reload,
+        )
         .map_err(Arc::new);
       let _ = server.inner.finished.send(Finished { id, job, outcome });
     }));
@@ -824,7 +833,7 @@ impl AssetServer {
       world: &mut *world,
       stack: &mut *stack,
     };
-    let outcome = self.run_load(&path, (&*loader, &*settings), mode, false);
+    let outcome = self.run_load((id, job, &path), (&*loader, &*settings), mode, false);
     stack.pop();
     let arrived = Arrived {
       id,
@@ -895,13 +904,13 @@ impl AssetServer {
   /// native builds: the web build aborts on a panic)
   fn run_load(
     &self,
-    path: &AssetPath,
+    (id, job, path): (UntypedAssetId, u64, &AssetPath),
     (loader, settings): (&dyn ErasedLoader, &(dyn Any + Send + Sync)),
     mode: LoadMode<'_>,
     reload: bool,
   ) -> Result<Loaded, AssetError> {
     let bytes = self.read(path)?;
-    let mut cx = LoadContext::new(path, self, mode).reloading(reload);
+    let mut cx = LoadContext::new(path, self, mode, (id, job)).reloading(reload);
     let value = catch_unwind(AssertUnwindSafe(|| loader.load(bytes, settings, &mut cx)))
       .map_err(|_| AssetError::decode(path, "the loader panicked"))??;
     Ok(Loaded {
@@ -916,6 +925,25 @@ impl AssetServer {
   pub(crate) fn read(&self, path: &AssetPath) -> Result<Vec<u8>, AssetError> {
     catch_unwind(AssertUnwindSafe(|| self.inner.source.read(path)))
       .map_err(|_| AssetError::decode(path, "the source panicked"))?
+  }
+
+  /// [`read`](Self::read) for `job` of asset `id`, which then reloads when
+  /// the file at `path` changes. Noted before the read, so a change during
+  /// it loads the asset again; a job no longer current notes nothing
+  pub(crate) fn read_for(
+    &self,
+    (id, job): (UntypedAssetId, u64),
+    path: &AssetPath,
+  ) -> Result<Vec<u8>, AssetError> {
+    {
+      let mut table = self.inner.table();
+      if let Some(info) = table.infos.get_mut(&id).filter(|info| info.job == job)
+        && !info.reads.contains(path)
+      {
+        info.reads.push(path.clone());
+      }
+    }
+    self.read(path)
   }
 
   // The pump's side
@@ -941,16 +969,23 @@ impl AssetServer {
     }
   }
 
-  /// [`AssetServer::reload`] of a normalised path
+  /// [`AssetServer::reload`] of a normalised path: the assets loaded from
+  /// it, and those whose loaders read it (`LoadContext::read`)
   fn reload_normal(&self, path: &str) {
     let mut jobs = Vec::new();
     {
       let mut table = self.inner.table();
-      let ids: Vec<UntypedAssetId> = table
+      let mut ids: Vec<UntypedAssetId> = table
         .keys
         .values()
         .filter_map(|paths| paths.get(path).copied())
         .collect();
+      // Few assets read files, and a reload is rare: a scan, not an index
+      for (&id, info) in &table.infos {
+        if info.reads.iter().any(|read| read.as_str() == path) && !ids.contains(&id) {
+          ids.push(id);
+        }
+      }
       for id in ids {
         let Some(info) = table.infos.get_mut(&id) else {
           continue;
@@ -1253,6 +1288,7 @@ impl Table {
         again: false,
         dependencies: Vec::new(),
         dependents,
+        reads: Vec::new(),
         warned: None,
       },
     );
@@ -1288,6 +1324,8 @@ impl Table {
     info.job = job;
     info.in_flight = true;
     info.again = false;
+    // The new job reads what its load needs now
+    info.reads.clear();
     if !info.state.is_loaded() {
       info.state = LoadState::Loading;
     }
@@ -1319,6 +1357,7 @@ impl Table {
         again: false,
         dependencies: Vec::new(),
         dependents: Vec::new(),
+        reads: Vec::new(),
         warned: None,
       },
     );
@@ -1718,6 +1757,26 @@ mod tests {
     }
   }
 
+  /// A file of paths, one a line, each read (not loaded) and joined into
+  /// one `Text`, as music joins its intro and loop
+  struct JoinLoader;
+  impl AssetLoader for JoinLoader {
+    type Asset = Text;
+    type Settings = ();
+    fn extensions(&self) -> &[&'static str] {
+      &["join"]
+    }
+    fn load(&self, bytes: Vec<u8>, _: &(), cx: &mut LoadContext<'_>) -> Result<Text, AssetError> {
+      let text = String::from_utf8(bytes).map_err(|e| AssetError::decode(cx.path(), e))?;
+      let mut joined = String::new();
+      for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        let bytes = cx.read(&AssetPath::parse(line)?)?;
+        joined.push_str(&String::from_utf8(bytes).map_err(|e| AssetError::decode(cx.path(), e))?);
+      }
+      Ok(Text(joined))
+    }
+  }
+
   /// `world_with`, its pool held to one worker as on a one- or two-core
   /// machine: a test that holds a read must not need a second worker while
   /// it does
@@ -1738,6 +1797,7 @@ mod tests {
     server.register_loader(UpperLoader);
     server.register_loader(LinkLoader);
     server.register_loader(BundleLoader);
+    server.register_loader(JoinLoader);
     world.insert_resource(server.clone());
     // A `MemorySource` tells a watching server when a file is replaced
     server.start_watching();
@@ -3231,6 +3291,89 @@ mod tests {
     );
     assert_eq!(text(&world, &handle), Some("fixed"));
     assert!(server.state(&handle).is_loaded());
+  }
+
+  /// A file a loader read (`LoadContext::read`) reloads the asset that read
+  /// it when it changes, as a dependency would, without becoming an asset
+  #[test]
+  fn a_file_a_loader_read_reloads_its_reader_when_it_changes() {
+    let source = MemorySource::new();
+    source.insert("x.join", "a.txt\nb.txt");
+    source.insert("a.txt", "a");
+    source.insert("b.txt", "b");
+    let (mut world, server) = world_with(source.clone());
+    let joined = server
+      .load_now::<Text>(&mut world, "x.join")
+      .expect("loads");
+    assert_eq!(text(&world, &joined), Some("ab"));
+    let mut texts = cursor::<Text>(&world);
+    source.insert("b.txt", "B");
+    let sent = pump_until_sent(&mut world, &mut texts, |e| {
+      matches!(e, AssetEvent::Modified { .. })
+    });
+    assert!(
+      matches!(sent.as_slice(), [AssetEvent::Modified { id }] if *id == joined.id()),
+      "{sent:?}"
+    );
+    assert_eq!(text(&world, &joined), Some("aB"));
+    assert_eq!(
+      world.resource::<Assets<Text>>().len(),
+      1,
+      "read, not loaded"
+    );
+  }
+
+  /// A reader that failed for want of the file it read loads anew when
+  /// that file comes (here, told of it by hand)
+  #[test]
+  fn a_reader_that_failed_loads_when_the_file_it_read_comes() {
+    let source = MemorySource::new();
+    source.insert("x.join", "a.txt");
+    let (mut world, server) = world_with(source.clone());
+    let joined: Handle<Text> = server.load("x.join");
+    pump_until(&mut world, |_| server.state(&joined).is_failed());
+    let mut texts = cursor::<Text>(&world);
+    source.insert("a.txt", "a");
+    server.reload("a.txt");
+    let sent = pump_until_sent(&mut world, &mut texts, |e| {
+      matches!(e, AssetEvent::Added { .. })
+    });
+    assert!(
+      matches!(sent.as_slice(), [AssetEvent::Added { id }] if *id == joined.id()),
+      "{sent:?}"
+    );
+    assert_eq!(text(&world, &joined), Some("a"));
+  }
+
+  /// What an asset read for its last load counts, not what it read before
+  #[test]
+  fn a_file_the_reader_no_longer_reads_does_not_reload_it() {
+    let source = MemorySource::new();
+    source.insert("x.join", "a.txt");
+    source.insert("a.txt", "a");
+    source.insert("b.txt", "b");
+    let (mut world, server) = world_with(source.clone());
+    let joined = server
+      .load_now::<Text>(&mut world, "x.join")
+      .expect("loads");
+    let mut texts = cursor::<Text>(&world);
+    source.insert("x.join", "b.txt");
+    pump_until_sent(&mut world, &mut texts, |e| {
+      matches!(e, AssetEvent::Modified { .. })
+    });
+    assert_eq!(text(&world, &joined), Some("b"));
+    let in_flight = |server: &AssetServer| {
+      server
+        .inner
+        .table()
+        .infos
+        .get(&joined.id().untyped())
+        .is_some_and(|info| info.in_flight)
+    };
+    server.reload("a.txt");
+    assert!(!in_flight(&server), "a.txt is not read any more");
+    server.reload("b.txt");
+    assert!(in_flight(&server), "b.txt is");
   }
 
   #[test]
