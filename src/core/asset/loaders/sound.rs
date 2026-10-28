@@ -671,6 +671,37 @@ mod tests {
     assert!(load("sfx/inside.sound.ron", inside, &["sfx/short.wav"]).is_ok());
   }
 
+  /// A definition that streams its clips (`mode: Stream`) naming one that
+  /// cannot be probed fails as it loads, with the probe's error, naming the
+  /// definition and the clip, rather than at its first play
+  #[cfg(not(target_arch = "wasm32"))]
+  #[test]
+  fn a_streamed_clip_that_cannot_be_probed_fails_the_load() {
+    let garbage = b"OggS this is not a vorbis stream at all";
+    let files = MemorySource::new();
+    files.insert(
+      "sfx/unprobed.sound.ron",
+      r#"(clips: [(path: "sfx/unprobed.ogg")], mode: Stream)"#,
+    );
+    files.insert("sfx/unprobed.ogg", garbage.to_vec());
+    let mut world = registry_over(files);
+    let Err(error) = AssetsView::new(&mut world).load_now::<Sound>("sfx/unprobed.sound.ron") else {
+      panic!("an unprobed stream loaded");
+    };
+    let report = error.report();
+    let probed = match crate::core::audio::probe_stream(&std::sync::Arc::from(&garbage[..])) {
+      Ok(info) => panic!("garbage probed: {info:?}"),
+      Err(error) => error.to_string(),
+    };
+    for named in [
+      "sfx/unprobed.sound.ron",
+      "sfx/unprobed.ogg",
+      probed.as_str(),
+    ] {
+      assert!(report.contains(named), "{named:?} in {report}");
+    }
+  }
+
   #[test]
   fn a_missing_clip_fails_the_sound_naming_both() {
     let error = failure(
