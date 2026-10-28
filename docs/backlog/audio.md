@@ -24,8 +24,8 @@ Measured on 2026-10-28 on an Apple M5 Pro (18 cores, Metal, macOS 27.0.1), a sha
 | Idle frame: empty frame, whole step (`empty_frame`) | 188.8 µs (187.5, 188.8, 189.2) | 187.9 µs (187.9, 188.5, 187.4) | within 3%: **met**, -0.5% |
 | Idle frame: idle settings screen, whole step (`settings_idle`) | 187.3 µs (185.0, 187.3, 187.3) | 186.1 µs (187.1, 185.9, 186.1) | within 3%: **met**, -0.6% |
 | Idle frame: 10,000 sprites, whole step (`foundation`) | 1,023.1 µs (1,022.8, 1,024.5, 1,023.1) | 1,045.0 µs (1,037.2, 1,045.0, 1,051.5) | within 3%: **met**, +2.1% |
-| 64 voices, 32 of them spatial: `audio_system`'s main-thread time | | median 3.6 µs (runs 3.2, 3.7, 3.6) | median at most 50 µs: **met** |
-| `play` of a decoded clip | | median 0.71 µs (0.71, 0.71, 0.71) | median at most 5 µs: **met** |
+| 64 voices, 32 of them spatial: `audio_system`'s main-thread time | | median 3.6 µs (runs 3.2, 3.7, 3.6); after the final fixes 4.2 µs (4.0, 4.2, 5.4) | median at most 50 µs: **met** |
+| `play` of a decoded clip | | median 0.71 µs (0.71, 0.71, 0.71); after the final fixes 0.75 µs (0.75, 0.75, 0.75) | median at most 5 µs: **met** |
 | `play` of a streamed clip (the 48 s OGG): the main thread's part | | median 23.9 µs (23.6, 23.9, 24.2) | median at most 100 µs: **met** |
 | No allocation for audio on an idle frame | | 0 in 100 frames, fresh and after sounds played (`tests/audio_alloc.rs`) | **met** |
 | A reload: a 1 s WAV playing as a loop (decoded) | | the slowest landing +19.4 to +87.0 µs; median +12.5 to +13.1 µs | every landing at most 0.5 ms: **met** |
@@ -87,6 +87,24 @@ The load guard plays three files from a `MemorySource`: a 1 s WAV as a decoded l
 | 3 | +12.7 µs (7.2; 8.0), +19.4 | +45.2 µs (7.1; 41.4), +57.3; +45.5, +57.3 | +46.1 µs (7.5; 40.7), +62.4; +44.7, +62.4 |
 
 Every save landed: 39 WAV, 40 OGG and 40 MP3 reloads in each run. Mid-file means landings 20 s or more into the stream, 17 of each a run.
+
+### After the final fixes (`benches/audio.rs`, beside the branch before them)
+
+The final fix wave (ed340557 to a7959c3a) changed the play path and the frame: a play builds a mixer that landed first, counts its start against its sound's `per_frame`, and can start a voice that waited for its sound; the frame starts the loops that waited, and keeps the fade of a voice's own pause or resume. Changes queued in a scene's code are now applied as that code ends. The guards ran again on 2026-10-28 beside the branch before the wave (7d72b6b7, exported with `git archive` and built into the workspace's `target/`), in the order below: three runs before and two after, then one of each. Ableton Live again took about a core, and the 1-minute load was 3.1 to 4.7 across the runs. `play_cost` now plays eight 50 ms clips, one of each a frame, since a clip starts once a frame; the branch before played one clip eight times a frame.
+
+| Run | Build | Idle audio frame | 64 voices: median | `play`: median; a definition's | Streamed `play` | Back to back: `voices_64`, `play_cost`, `load_hitch` |
+|---|---|---|---|---|---|---|
+| 1 | before | 1.08 µs | 3.3 µs | 0.71; 0.79 µs | 23.8 µs | 1.68, 0.88, 31.0 µs |
+| 2 | before | 1.12 µs | 3.7 µs | 0.71; 0.75 µs | 25.6 µs | 1.68, 0.88, 31.0 µs |
+| 3 | before | 1.12 µs | 3.5 µs | 0.71; 0.79 µs | 24.6 µs | 1.69, 0.88, 30.5 µs |
+| 4 | after | 1.50 µs | 4.0 µs | 0.75; 0.79 µs | 25.4 µs | 1.75, 0.92, 32.2 µs |
+| 5 | after | 1.62 µs | 4.2 µs | 0.75; 0.79 µs | 24.9 µs | 1.74, 0.92, 35.9 µs |
+| 6 | before | 1.79 µs | 4.8 µs | 0.71; 0.79 µs | 34.3 µs | 1.70, 0.89, 32.0 µs |
+| 7 | after | 1.67 µs | 5.4 µs | 0.75; 0.79 µs | 25.5 µs | 1.73, 0.91, 33.3 µs |
+
+- **What moved:** a play of a decoded clip, by about 0.04 µs (0.71 to 0.75 µs paced, 0.88 to 0.91 or 0.92 µs back to back), in every run: the per-frame count and the other checks it now makes. `voices_64` back to back, by about 0.05 µs (1.68 to 1.74 µs). Both are far inside their targets.
+- **Within the runs' spread:** the paced idle frame and 64 voices (each build's runs overlap), the streamed play, a definition's play, and every reload landing: the WAV's median +11.5 to +14.0 µs after against +11.7 to +14.0 before, the OGG's +45.6 to +46.8 against +46.2 to +48.5, the MP3's +45.9 to +48.4 against +46.2 to +47.9. The slowest landing of any file in the runs after was +148.5 µs (one MP3 landing in run 4; the next slowest +69.3), against the 0.5 ms each must stay under.
+- An earlier pair at load 10 to 12 read every paced median 2 to 4 times higher on both builds (idle 5.5 after and 6.1 before; 64 voices 8.4 and 11.7), and is left out of the table.
 
 ### The reload hitch
 
