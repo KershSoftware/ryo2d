@@ -41,10 +41,10 @@ impl Scene for MenuScene {
     // The backdrop carries on from the shared parallax time
     shared::spawn_background(ctx);
 
-    // Start background music (only if not already playing - persists across scenes)
-    let _ = ctx
-      .audio
-      .play_music_once("assets/music.mp3", MusicOptions::new().volume(0.4));
+    // The music: it carries on across scenes, and the track already
+    // playing plays on
+    let music = ctx.assets().load::<Music>("music.music.ron");
+    ctx.audio().play_music(&music);
   }
 
   fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {

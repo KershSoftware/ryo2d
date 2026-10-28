@@ -1,0 +1,7 @@
+// A turret's burst, heard from the turret as the enemy spawn is; a rocket's
+// launch plays it louder and unplaced
+(
+  clips: [(path: "bullet.wav")],
+  volume: -20.0,
+  spatial: (min_distance: 1200.0, max_distance: 2400.0, pan_width: 1180.0),
+)

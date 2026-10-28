@@ -30,6 +30,29 @@ pub(super) type BulletBundle = (
   Trail2D,
 );
 
+/// The game's sounds, as definitions under `assets/`
+pub(super) struct Sounds {
+  /// Heard from the enemy that spawned (`play_at`)
+  pub(super) enemy_spawn: Handle<Sound>,
+  pub(super) laser: Handle<Sound>,
+  pub(super) hurt: Handle<Sound>,
+  /// Heard from the turret that fires (`play_at`); a rocket's launch plays
+  /// it unplaced
+  pub(super) bullet: Handle<Sound>,
+}
+
+impl Sounds {
+  fn load(ctx: &mut SceneContext) -> Self {
+    let assets = ctx.assets();
+    Self {
+      enemy_spawn: assets.load("enemy-spawn.sound.ron"),
+      laser: assets.load("laser.sound.ron"),
+      hurt: assets.load("hurt.sound.ron"),
+      bullet: assets.load("bullet.sound.ron"),
+    }
+  }
+}
+
 /// Marker component for nebula orb child entities
 #[derive(Component, Debug, Clone)]
 pub(super) struct NebulaOrbMarker {
@@ -79,6 +102,8 @@ pub struct GameScene {
   pub(super) screen_height: f32,
   // Object pool for bullets (high-frequency spawning)
   pub(super) bullet_pool: Option<Pool<BulletBundle>>,
+  /// The game's sounds, loaded as it enters
+  pub(super) sounds: Option<Sounds>,
 }
 
 impl Default for GameScene {
@@ -190,6 +215,7 @@ impl GameScene {
       screen_height: DESIGN_HEIGHT,
       // Bullet pool initialized in on_enter
       bullet_pool: None,
+      sounds: None,
     }
   }
 }
@@ -210,13 +236,7 @@ impl Scene for GameScene {
       CommandResult::Ok
     });
 
-    // Load sound effects
-    let _ = ctx
-      .audio
-      .load_sound("enemy-spawn", "assets/enemy-spawn.wav");
-    let _ = ctx.audio.load_sound("laser", "assets/laser.mp3");
-    let _ = ctx.audio.load_sound("hurt", "assets/hurt.mp3");
-    let _ = ctx.audio.load_sound("bullet", "assets/bullet.wav");
+    self.sounds = Some(Sounds::load(ctx));
 
     // The backdrop carries on from the shared parallax time
     shared::spawn_background(ctx);
@@ -514,7 +534,9 @@ impl GameScene {
         renderable.shader = Some(SpriteShader::flash(Color::rgb(255, 100, 100), 1.0));
       }
       ctx.camera().add_trauma(0.5);
-      let _ = ctx.audio.play_sound("hurt");
+      if let Some(sounds) = &self.sounds {
+        ctx.audio().play(&sounds.hurt);
+      }
     }
     !was_invincible
   }

@@ -1,0 +1,4 @@
+// The player taking damage
+(
+  clips: [(path: "hurt.mp3")],
+)

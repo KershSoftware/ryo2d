@@ -58,7 +58,6 @@ impl GameScene {
       if turret.is_spawning() {
         let just_finished = turret.update_spawn(dt);
         let spawn_progress = turret.spawn_progress();
-        let turret_side = turret.side;
         if let Some(mut stored) = ctx.world.get_mut::<Turret>(turret_entity) {
           *stored = turret;
         }
@@ -66,15 +65,8 @@ impl GameScene {
         // Apply dissolve shader for spawn effect (reverse progress for spawn-in)
         if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(turret_entity) {
           if just_finished {
-            // Finished spawning - restore normal outline shader and play sound with panning
+            // Finished spawning - restore normal outline shader
             renderable.shader = Some(SpriteShader::outline(Color::rgb(255, 140, 140), 2));
-            let pan = match turret_side {
-              TurretSide::Left => -0.8,
-              TurretSide::Right => 0.8,
-            };
-            let _ = ctx
-              .audio
-              .play_sound_with("enemy-spawn", SoundOptions::new().volume(0.15).panning(pan));
           } else {
             // Still spawning - dissolve from invisible to visible with cyan edge glow
             let dissolve_progress = 1.0 - spawn_progress;
@@ -83,6 +75,12 @@ impl GameScene {
               Color::rgb(100, 200, 255),
             ));
           }
+        }
+        // Heard from the turret
+        if just_finished && let Some(sounds) = &self.sounds {
+          ctx
+            .audio()
+            .play_at(&sounds.enemy_spawn, transform.translation);
         }
         continue; // Skip movement and shooting while spawning
       }
@@ -168,15 +166,11 @@ impl GameScene {
       if shoot {
         self.shoot_bullet(ctx, turret_x, turret_y, turret_side);
       }
-      if burst_started {
-        // Play burst sound with panning based on turret side
-        let pan = match turret_side {
-          TurretSide::Left => -0.8,
-          TurretSide::Right => 0.8,
-        };
-        let _ = ctx
-          .audio
-          .play_sound_with("bullet", SoundOptions::new().volume(0.1).panning(pan));
+      if burst_started && let Some(sounds) = &self.sounds {
+        // Heard from the turret
+        ctx
+          .audio()
+          .play_at(&sounds.bullet, Vec2::new(turret_x, turret_y));
       }
     }
   }

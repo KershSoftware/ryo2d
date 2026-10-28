@@ -1,0 +1,5 @@
+// A drone's laser firing
+(
+  clips: [(path: "laser.mp3")],
+  volume: -10.5,
+)

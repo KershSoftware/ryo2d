@@ -63,23 +63,11 @@ impl GameScene {
         let just_finished = drone.update_spawn(dt);
         let spawn_progress = drone.spawn_progress();
 
-        // Get drone position for panning
-        let drone_x = ctx
-          .world
-          .get::<Transform>(drone_entity)
-          .map(|t| t.translation.x)
-          .unwrap_or(self.screen_width / 2.0);
-
         // Apply dissolve shader for spawn effect
         if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(drone_entity) {
           if just_finished {
-            // Finished spawning - restore normal outline shader (purple) and play sound with panning
+            // Finished spawning - restore normal outline shader (purple)
             renderable.shader = Some(SpriteShader::outline(Color::rgb(200, 140, 255), 2));
-            // Pan based on screen position (-1 left, 0 center, 1 right)
-            let pan = ((drone_x / self.screen_width) * 2.0 - 1.0).clamp(-1.0, 1.0);
-            let _ = ctx
-              .audio
-              .play_sound_with("enemy-spawn", SoundOptions::new().volume(0.15).panning(pan));
           } else {
             // Still spawning - dissolve from invisible to visible
             let dissolve_progress = 1.0 - spawn_progress;
@@ -88,6 +76,16 @@ impl GameScene {
               Color::rgb(0, 0, 0),
             ));
           }
+        }
+        // Heard from the drone
+        if just_finished
+          && let Some(at) = ctx
+            .world
+            .get::<Transform>(drone_entity)
+            .map(|t| t.translation)
+          && let Some(sounds) = &self.sounds
+        {
+          ctx.audio().play_at(&sounds.enemy_spawn, at);
         }
         continue; // Skip behavior while spawning
       }
@@ -225,9 +223,9 @@ impl GameScene {
             if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(drone_entity) {
               renderable.shader = Some(SpriteShader::outline(Color::rgb(255, 50, 50), 2));
             }
-            let _ = ctx
-              .audio
-              .play_sound_with("laser", SoundOptions::new().volume(0.3));
+            if let Some(sounds) = &self.sounds {
+              ctx.audio().play(&sounds.laser);
+            }
           }
         }
 
@@ -798,10 +796,14 @@ impl GameScene {
 
     self.rockets.push(entity);
 
-    // Play launch sound
-    let _ = ctx
-      .audio
-      .play_sound_with("bullet", SoundOptions::new().volume(0.2));
+    // The launch: the turrets' burst, twice as loud (+6 dB) and unplaced
+    if let Some(sounds) = &self.sounds {
+      let launch = PlayOptions {
+        volume_db: 6.0,
+        ..Default::default()
+      };
+      ctx.audio().play_with(&sounds.bullet, launch);
+    }
   }
 
   pub(super) fn update_rockets(&mut self, ctx: &mut SceneContext, dt: f32) {

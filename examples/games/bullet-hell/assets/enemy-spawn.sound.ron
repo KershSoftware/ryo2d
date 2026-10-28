@@ -1,0 +1,8 @@
+// A turret or drone finishing its spawn, heard from where it is: panned by
+// its offset from the camera (a turret at either wall pans 0.8), at full
+// volume anywhere on screen
+(
+  clips: [(path: "enemy-spawn.wav")],
+  volume: -16.5,
+  spatial: (min_distance: 1200.0, max_distance: 2400.0, pan_width: 1180.0),
+)
