@@ -40,7 +40,7 @@ Game systems: `EngineBuilder::add_systems(phase, systems)` for the whole run (an
 
 ## The Resource-Scope Rule
 
-`SceneContext::scoped_parts` (`scene/context.rs`) takes `Time` and `Input` out of the world with nested `resource_scope`s for the length of a scene callback and hands them over as `ctx.time` and `ctx.input`; `ctx.audio` is engine-owned (the non-send `SceneHost`). Cameras are entities, so `ctx.camera()` works on `ctx.world` directly. So:
+`SceneContext::scoped_parts` (`scene/context.rs`) takes `Time` and `Input` out of the world with nested `resource_scope`s for the length of a scene callback and hands them over as `ctx.time` and `ctx.input`; the audio engine is a resource too (`AudioEngine`, reached by `ctx.audio()`). Cameras are entities, so `ctx.camera()` works on `ctx.world` directly. So:
 
 - Inside a callback those two are not in `ctx.world`: `ctx.world.resource::<Time>()` panics, and a system run on `ctx.world` that takes `Res<Time>` fails. Use the fields.
 - Systems run outside callbacks and always see them as resources.

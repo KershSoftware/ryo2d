@@ -3,7 +3,7 @@
 use std::any::Any;
 use std::time::Duration;
 
-use crate::core::audio::{Audio, in_scene, release_scene};
+use crate::core::audio::{in_scene, release_scene};
 use crate::core::console::CommandRegistry;
 use crate::core::ecs::World;
 use crate::core::ecs::kernel::CheckChangeTicks;
@@ -59,7 +59,6 @@ impl SceneSlot {
   fn call<R>(
     &mut self,
     world: &mut World,
-    audio: &mut Audio,
     f: impl FnOnce(&mut dyn Scene, &mut SceneContext<'_>) -> R,
   ) -> R {
     let SceneSlot {
@@ -71,7 +70,7 @@ impl SceneSlot {
     } = self;
     let scope_id = *scope_id;
     in_scene(world, scope_id, |world| {
-      SceneContext::scoped_parts(world, audio, schedules, messages, scope_id, |ctx| {
+      SceneContext::scoped_parts(world, schedules, messages, scope_id, |ctx| {
         f(scene.as_mut(), ctx)
       })
     })
@@ -199,11 +198,11 @@ impl SceneManager {
 
   /// Call `on_enter` for the initial scene. The engine calls this once the
   /// GPU and every resource exist.
-  pub fn enter_initial(&mut self, world: &mut World, audio: &mut Audio) {
-    self.enter_top(world, audio);
+  pub fn enter_initial(&mut self, world: &mut World) {
+    self.enter_top(world);
   }
 
-  fn enter_top(&mut self, world: &mut World, audio: &mut Audio) {
+  fn enter_top(&mut self, world: &mut World) {
     let Some(top) = self.scenes.last_mut() else {
       return;
     };
@@ -211,7 +210,7 @@ impl SceneManager {
     self.entries += 1;
     #[cfg(debug_assertions)]
     let start = web_time::Instant::now();
-    top.call(world, audio, |scene, ctx| scene.on_enter(ctx));
+    top.call(world, |scene, ctx| scene.on_enter(ctx));
     #[cfg(debug_assertions)]
     {
       let elapsed = start.elapsed();
@@ -269,14 +268,14 @@ impl SceneManager {
   }
 
   /// Push a new scene: the current top pauses, the new one enters.
-  pub fn push(&mut self, scene: Box<dyn Scene>, world: &mut World, audio: &mut Audio) {
+  pub fn push(&mut self, scene: Box<dyn Scene>, world: &mut World) {
     profile_scope!("cpu:scene_push");
     if let Some(current) = self.scenes.last_mut() {
-      current.call(world, audio, |scene, ctx| scene.on_pause(ctx));
+      current.call(world, |scene, ctx| scene.on_pause(ctx));
     }
     let slot = self.slot(scene);
     self.scenes.push(slot);
-    self.enter_top(world, audio);
+    self.enter_top(world);
   }
 
   /// Pop the top scene: it exits, the new top resumes with `returned`.
@@ -285,55 +284,54 @@ impl SceneManager {
   pub fn pop(
     &mut self,
     world: &mut World,
-    audio: &mut Audio,
     returned: Option<Box<dyn Any>>,
   ) -> Option<Box<dyn Scene>> {
     let mut slot = self.scenes.pop()?;
-    slot.call(world, audio, |scene, ctx| scene.on_exit(ctx));
+    slot.call(world, |scene, ctx| scene.on_exit(ctx));
     release_scope(world, slot.scope_id);
     self.exited.push(slot.scope_id);
     if let Some(top) = self.scenes.last_mut() {
-      top.call(world, audio, |scene, ctx| scene.on_resume(ctx, returned));
+      top.call(world, |scene, ctx| scene.on_resume(ctx, returned));
     }
     Some(slot.scene)
   }
 
   /// Replace the top scene: it exits, its cleanup runs, the new one enters.
-  pub fn switch(&mut self, scene: Box<dyn Scene>, world: &mut World, audio: &mut Audio) {
+  pub fn switch(&mut self, scene: Box<dyn Scene>, world: &mut World) {
     profile_scope!("cpu:scene_switch");
     if let Some(mut current) = self.scenes.pop() {
       let cleanup = current.scene.cleanup_on_exit();
-      current.call(world, audio, |scene, ctx| scene.on_exit(ctx));
+      current.call(world, |scene, ctx| scene.on_exit(ctx));
       release_scope(world, current.scope_id);
       self.exited.push(current.scope_id);
       drop(current);
-      execute_cleanup(cleanup, world, audio);
+      execute_cleanup(cleanup, world);
     }
     let slot = self.slot(scene);
     self.scenes.push(slot);
-    self.enter_top(world, audio);
+    self.enter_top(world);
   }
 
   /// Exit every scene, top to bottom.
-  pub fn clear(&mut self, world: &mut World, audio: &mut Audio) {
+  pub fn clear(&mut self, world: &mut World) {
     while let Some(mut slot) = self.scenes.pop() {
-      slot.call(world, audio, |scene, ctx| scene.on_exit(ctx));
+      slot.call(world, |scene, ctx| scene.on_exit(ctx));
       release_scope(world, slot.scope_id);
       self.exited.push(slot.scope_id);
     }
   }
 
   /// Exit every scene, run the top scene's cleanup, then enter `scene`.
-  pub fn reset(&mut self, scene: Box<dyn Scene>, world: &mut World, audio: &mut Audio) {
+  pub fn reset(&mut self, scene: Box<dyn Scene>, world: &mut World) {
     let cleanup = self
       .scenes
       .last()
       .map_or(SceneCleanup::NONE, |slot| slot.scene.cleanup_on_exit());
-    self.clear(world, audio);
-    execute_cleanup(cleanup, world, audio);
+    self.clear(world);
+    execute_cleanup(cleanup, world);
     let slot = self.slot(scene);
     self.scenes.push(slot);
-    self.enter_top(world, audio);
+    self.enter_top(world);
   }
 
   /// The lowest scene that updates: the top, and below it while each scene
@@ -359,7 +357,7 @@ impl SceneManager {
   /// One fixed step: advance any transition, then `Scene::update` the
   /// updating scenes bottom-up. Returns the top scene's action (`Quit` once
   /// the stack is empty); scenes do not update while a transition runs.
-  pub fn update(&mut self, world: &mut World, audio: &mut Audio) -> SceneAction {
+  pub fn update(&mut self, world: &mut World) -> SceneAction {
     let dt = world.resource::<Time>().fixed.timestep();
     if self.scenes.is_empty() {
       return SceneAction::Quit;
@@ -371,7 +369,7 @@ impl SceneManager {
     let mut action = SceneAction::Continue;
     for i in self.update_from()..=top {
       let slot = &mut self.scenes[i];
-      let result = slot.call(world, audio, |scene, ctx| scene.update(ctx, dt));
+      let result = slot.call(world, |scene, ctx| scene.update(ctx, dt));
       if i == top {
         action = result;
       } else {
@@ -382,32 +380,27 @@ impl SceneManager {
   }
 
   /// Apply a scene action. Returns `false` when the game should quit.
-  pub fn handle_action(
-    &mut self,
-    action: SceneAction,
-    world: &mut World,
-    audio: &mut Audio,
-  ) -> bool {
+  pub fn handle_action(&mut self, action: SceneAction, world: &mut World) -> bool {
     match action {
       SceneAction::Continue => true,
       SceneAction::Push(scene) => {
-        self.push(scene, world, audio);
+        self.push(scene, world);
         true
       }
       SceneAction::Pop => {
-        self.pop(world, audio, None);
+        self.pop(world, None);
         !self.scenes.is_empty()
       }
       SceneAction::PopReturn(data) => {
-        self.pop(world, audio, Some(data));
+        self.pop(world, Some(data));
         !self.scenes.is_empty()
       }
       SceneAction::Switch(scene) => {
-        self.switch(scene, world, audio);
+        self.switch(scene, world);
         true
       }
       SceneAction::Reset(scene) => {
-        self.reset(scene, world, audio);
+        self.reset(scene, world);
         true
       }
       SceneAction::PushWith(scene, transition) => {
@@ -449,7 +442,7 @@ impl SceneManager {
   /// Advance a running transition by `dt`, performing its scene change at
   /// the midpoint (fades) or start (slides). Returns `false` once the stack
   /// is empty.
-  pub fn update_transition(&mut self, dt: f32, world: &mut World, audio: &mut Audio) -> bool {
+  pub fn update_transition(&mut self, dt: f32, world: &mut World) -> bool {
     let dt = Duration::from_secs_f32(dt.max(0.0));
     let action_to_execute = if let Some(state) = &mut self.transition_state {
       state.elapsed += dt;
@@ -499,27 +492,22 @@ impl SceneManager {
     };
 
     if let Some(action) = action_to_execute {
-      self.execute_pending_action(action, world, audio);
+      self.execute_pending_action(action, world);
     }
     !self.scenes.is_empty()
   }
 
-  fn execute_pending_action(
-    &mut self,
-    action: PendingAction,
-    world: &mut World,
-    audio: &mut Audio,
-  ) {
+  fn execute_pending_action(&mut self, action: PendingAction, world: &mut World) {
     match action {
-      PendingAction::Push(scene) => self.push(scene, world, audio),
+      PendingAction::Push(scene) => self.push(scene, world),
       PendingAction::Pop => {
-        self.pop(world, audio, None);
+        self.pop(world, None);
       }
       PendingAction::PopReturn(data) => {
-        self.pop(world, audio, Some(data));
+        self.pop(world, Some(data));
       }
-      PendingAction::Switch(scene) => self.switch(scene, world, audio),
-      PendingAction::Reset(scene) => self.reset(scene, world, audio),
+      PendingAction::Switch(scene) => self.switch(scene, world),
+      PendingAction::Reset(scene) => self.reset(scene, world),
     }
   }
 
@@ -527,12 +515,7 @@ impl SceneManager {
   /// scene's action, except a scene change while a transition runs: the
   /// UI still draws during a fade, and a second click there would restart
   /// the transition with a new change, so only `Quit` gets through.
-  pub fn ui_pass(
-    &mut self,
-    world: &mut World,
-    audio: &mut Audio,
-    ui: &mut UiContext,
-  ) -> SceneAction {
+  pub fn ui_pass(&mut self, world: &mut World, ui: &mut UiContext) -> SceneAction {
     if self.scenes.is_empty() {
       return SceneAction::Continue;
     }
@@ -556,7 +539,7 @@ impl SceneManager {
         crate::core::ui::nodes::deliver(world, events);
         world.flush();
       });
-      let result = slot.call(world, audio, |scene, ctx| scene.ui(ui, ctx));
+      let result = slot.call(world, |scene, ctx| scene.ui(ui, ctx));
       in_scene(world, slot.scope_id, |world| {
         crate::core::ui::nodes::deliver_pending(world);
         world.flush();
@@ -747,12 +730,12 @@ mod tests {
     }
   }
 
-  fn world() -> (World, Audio) {
+  fn world() -> World {
     let mut world = World::new();
     crate::core::scene::init_world_resources_for_tests(&mut world);
     world.init_resource::<Log>();
     register_message::<Ping>(&mut world);
-    (world, Audio::new(None))
+    world
   }
 
   fn rec(log: &Shared, name: &'static str) -> Box<Rec> {
@@ -776,25 +759,25 @@ mod tests {
   #[test]
   fn each_manager_counts_its_own_scope_ids() {
     let log: Shared = Arc::default();
-    let (mut world, mut audio) = world();
+    let mut world = world();
     let mut a = SceneManager::with_scene(rec(&log, "a"));
     let b = SceneManager::with_scene(rec(&log, "b"));
     // So two engines run the same way give their UI the same ids
     assert_eq!(a.top_scope(), Some(1));
     assert_eq!(b.top_scope(), Some(1));
-    a.push(rec(&log, "c"), &mut world, &mut audio);
-    a.switch(rec(&log, "d"), &mut world, &mut audio);
+    a.push(rec(&log, "c"), &mut world);
+    a.switch(rec(&log, "d"), &mut world);
     assert_eq!(a.top_scope(), Some(3), "a new id for each scene entered");
-    a.reset(rec(&log, "e"), &mut world, &mut audio);
+    a.reset(rec(&log, "e"), &mut world);
     assert_eq!(a.top_scope(), Some(4));
   }
 
   #[test]
   fn a_pushed_scene_reads_only_messages_written_after_it_entered() {
     let log: Shared = Arc::default();
-    let (mut world, mut audio) = world();
+    let mut world = world();
     let mut m = SceneManager::with_scene(rec(&log, "a"));
-    m.enter_initial(&mut world, &mut audio);
+    m.enter_initial(&mut world);
     world
       .resource_mut::<crate::core::ecs::Messages<Ping>>()
       .write(Ping);
@@ -802,14 +785,13 @@ mod tests {
     m.handle_action(
       SceneAction::Push(Box::new(Listener(heard.clone()))),
       &mut world,
-      &mut audio,
     );
-    m.update(&mut world, &mut audio);
+    m.update(&mut world);
     assert_eq!(*heard.lock().unwrap(), 0, "written before it entered");
     world
       .resource_mut::<crate::core::ecs::Messages<Ping>>()
       .write(Ping);
-    m.update(&mut world, &mut audio);
+    m.update(&mut world);
     assert_eq!(*heard.lock().unwrap(), 1);
   }
 
@@ -824,14 +806,14 @@ mod tests {
   #[test]
   fn a_lower_scene_s_dropped_action_is_warned_about_once() {
     let log: Shared = Arc::default();
-    let (mut world, mut audio) = world();
+    let mut world = world();
     let mut m = SceneManager::with_scene(Box::new(DroppedQuitter));
-    m.enter_initial(&mut world, &mut audio);
+    m.enter_initial(&mut world);
     let mut overlay = rec(&log, "overlay");
     overlay.updates_below = true;
-    m.push(overlay, &mut world, &mut audio);
+    m.push(overlay, &mut world);
     for _ in 0..3 {
-      let action = m.update(&mut world, &mut audio);
+      let action = m.update(&mut world);
       assert!(
         matches!(action, SceneAction::Continue),
         "only the top's action applies"
@@ -862,17 +844,17 @@ mod tests {
 
   #[test]
   fn a_lower_scene_s_dropped_ui_action_is_warned_about_once() {
-    let (mut world, mut audio) = world();
+    let mut world = world();
     let mut m = SceneManager::with_scene(Box::new(UiQuitter));
-    m.enter_initial(&mut world, &mut audio);
-    m.push(Box::new(Glass), &mut world, &mut audio);
+    m.enter_initial(&mut world);
+    m.push(Box::new(Glass), &mut world);
     let (mut commands, mut text) = (
       Default::default(),
       crate::core::ui::test_util::text_engine(),
     );
     let mut ui = crate::core::ui::test_util::context(&mut commands, &mut text, (16.0, 16.0));
     for _ in 0..3 {
-      let action = m.ui_pass(&mut world, &mut audio, &mut ui);
+      let action = m.ui_pass(&mut world, &mut ui);
       assert!(matches!(action, SceneAction::Continue));
     }
     let warnings = crate::core::dev_log::get_entries()
@@ -916,7 +898,7 @@ mod tests {
   /// `activate` would see it; its commands
   fn ui_frame(
     m: &mut SceneManager,
-    (world, audio): (&mut World, &mut Audio),
+    world: &mut World,
     memory: &mut crate::core::ui::memory::UiMemory,
     activate: crate::core::ui::UiId,
   ) -> crate::core::ui::immediate::UiCommands {
@@ -943,7 +925,7 @@ mod tests {
         0,
         crate::core::ui::image_sizes::ImageSizes::none(),
       );
-      m.ui_pass(world, audio, &mut ui);
+      m.ui_pass(world, &mut ui);
     }
     memory.interact.activated = crate::core::ui::UiId::NONE;
     memory.end_frame();
@@ -965,15 +947,15 @@ mod tests {
 
   #[test]
   fn a_top_scene_s_open_dropdown_list_draws_on_the_popup_layer() {
-    let (mut world, mut audio) = world();
+    let mut world = world();
     let trigger = Arc::default();
     let mut m = SceneManager::with_scene(OpensDropdown::new(&trigger));
-    m.enter_initial(&mut world, &mut audio);
+    m.enter_initial(&mut world);
     let mut memory = crate::core::ui::memory::UiMemory::new();
     let none = crate::core::ui::UiId::NONE;
-    ui_frame(&mut m, (&mut world, &mut audio), &mut memory, none);
+    ui_frame(&mut m, &mut world, &mut memory, none);
     let id = *trigger.lock().unwrap();
-    let commands = ui_frame(&mut m, (&mut world, &mut audio), &mut memory, id);
+    let commands = ui_frame(&mut m, &mut world, &mut memory, id);
     assert!(
       texts(&commands).contains(&"two".to_string()),
       "the list opened"
@@ -1001,18 +983,18 @@ mod tests {
 
   #[test]
   fn a_lower_scene_s_popups_stay_below_an_upper_scene() {
-    let (mut world, mut audio) = world();
+    let mut world = world();
     let trigger = Arc::default();
     let mut m = SceneManager::with_scene(OpensDropdown::new(&trigger));
-    m.enter_initial(&mut world, &mut audio);
+    m.enter_initial(&mut world);
     let mut memory = crate::core::ui::memory::UiMemory::new();
     let none = crate::core::ui::UiId::NONE;
     // Opened while it is the top scene, then covered by another
-    ui_frame(&mut m, (&mut world, &mut audio), &mut memory, none);
+    ui_frame(&mut m, &mut world, &mut memory, none);
     let id = *trigger.lock().unwrap();
-    ui_frame(&mut m, (&mut world, &mut audio), &mut memory, id);
-    m.push(Box::new(DrawsRect), &mut world, &mut audio);
-    let commands = ui_frame(&mut m, (&mut world, &mut audio), &mut memory, none);
+    ui_frame(&mut m, &mut world, &mut memory, id);
+    m.push(Box::new(DrawsRect), &mut world);
+    let commands = ui_frame(&mut m, &mut world, &mut memory, none);
     assert!(
       texts(&commands).contains(&"two".to_string()),
       "the lower scene drew its open list"
@@ -1045,19 +1027,19 @@ mod tests {
 
   #[test]
   fn each_scene_draws_its_ui_under_its_own_scope() {
-    let (mut world, mut audio) = world();
+    let mut world = world();
     let ids = Arc::new(Mutex::new(Vec::new()));
     let mut m = SceneManager::with_scene(Box::new(PanelScene(ids.clone())));
-    m.enter_initial(&mut world, &mut audio);
+    m.enter_initial(&mut world);
     let lower = m.top_scope().unwrap();
-    m.push(Box::new(PanelScene(ids.clone())), &mut world, &mut audio);
+    m.push(Box::new(PanelScene(ids.clone())), &mut world);
     let upper = m.top_scope().unwrap();
     let (mut commands, mut text) = (
       crate::core::ui::immediate::UiCommands::default(),
       crate::core::ui::test_util::text_engine(),
     );
     let mut ui = crate::core::ui::test_util::context(&mut commands, &mut text, (64.0, 64.0));
-    m.ui_pass(&mut world, &mut audio, &mut ui);
+    m.ui_pass(&mut world, &mut ui);
     let ids = ids.lock().unwrap().clone();
     assert_eq!(ids.len(), 2);
     assert_ne!(ids[0], ids[1], "the same code in two scenes");
@@ -1089,17 +1071,17 @@ mod tests {
 
   #[test]
   fn only_the_top_scenes_widgets_report_the_pointer() {
-    let (mut world, mut audio) = world();
+    let mut world = world();
     let seen = Arc::new(Mutex::new(Vec::new()));
     let mut m = SceneManager::with_scene(Box::new(ButtonScene(seen.clone())));
-    m.enter_initial(&mut world, &mut audio);
-    m.push(Box::new(ButtonScene(seen.clone())), &mut world, &mut audio);
+    m.enter_initial(&mut world);
+    m.push(Box::new(ButtonScene(seen.clone())), &mut world);
     let (mut commands, mut text) = (
       crate::core::ui::immediate::UiCommands::default(),
       crate::core::ui::test_util::text_engine(),
     );
     let mut ui = crate::core::ui::test_util::context(&mut commands, &mut text, (64.0, 64.0));
-    m.ui_pass(&mut world, &mut audio, &mut ui);
+    m.ui_pass(&mut world, &mut ui);
     let ids: Vec<_> = seen.lock().unwrap().drain(..).map(|(id, _)| id).collect();
     assert_eq!(ids.len(), 2);
     // As if the pointer had clicked each scene's button in turn
@@ -1108,7 +1090,7 @@ mod tests {
       ui.memory.interact.hot = *id;
       ui.memory.interact.hovered = *id;
       ui.memory.interact.clicked = *id;
-      m.ui_pass(&mut world, &mut audio, &mut ui);
+      m.ui_pass(&mut world, &mut ui);
       let touched: Vec<bool> = seen.lock().unwrap().drain(..).map(|(_, t)| t).collect();
       let expected = if i == 0 {
         vec![false, false]
@@ -1125,38 +1107,38 @@ mod tests {
   #[test]
   fn scenes_that_exit_are_reported_once() {
     let log: Shared = Arc::default();
-    let (mut world, mut audio) = world();
+    let mut world = world();
     let mut m = SceneManager::with_scene(rec(&log, "a"));
-    m.enter_initial(&mut world, &mut audio);
+    m.enter_initial(&mut world);
     let a = m.top_scope().unwrap();
-    m.push(rec(&log, "b"), &mut world, &mut audio);
+    m.push(rec(&log, "b"), &mut world);
     let b = m.top_scope().unwrap();
     assert!(m.take_exited().is_empty(), "a push exits nothing");
-    m.pop(&mut world, &mut audio, None);
+    m.pop(&mut world, None);
     assert_eq!(m.take_exited(), vec![b]);
     assert!(m.take_exited().is_empty(), "taken once");
-    m.switch(rec(&log, "c"), &mut world, &mut audio);
+    m.switch(rec(&log, "c"), &mut world);
     let c = m.top_scope().unwrap();
-    m.push(rec(&log, "d"), &mut world, &mut audio);
+    m.push(rec(&log, "d"), &mut world);
     let d = m.top_scope().unwrap();
-    m.reset(rec(&log, "e"), &mut world, &mut audio);
+    m.reset(rec(&log, "e"), &mut world);
     let e = m.top_scope().unwrap();
-    m.clear(&mut world, &mut audio);
+    m.clear(&mut world);
     assert_eq!(m.take_exited(), vec![a, d, c, e]);
   }
 
   #[test]
   fn push_pop_lifecycle_and_scene_systems() {
     let log: Shared = Arc::default();
-    let (mut world, mut audio) = world();
+    let mut world = world();
     let mut m = SceneManager::with_scene(rec(&log, "a"));
-    m.enter_initial(&mut world, &mut audio);
+    m.enter_initial(&mut world);
     m.run_fixed_systems(&mut world);
     assert_eq!(world.resource::<Log>().0, ["a"]);
 
-    let action = m.update(&mut world, &mut audio);
+    let action = m.update(&mut world);
     assert!(matches!(action, SceneAction::Continue));
-    assert!(m.handle_action(SceneAction::Push(rec(&log, "b")), &mut world, &mut audio));
+    assert!(m.handle_action(SceneAction::Push(rec(&log, "b")), &mut world));
     m.run_fixed_systems(&mut world);
     assert_eq!(
       world.resource::<Log>().0,
@@ -1164,7 +1146,7 @@ mod tests {
       "only the top scene's systems run"
     );
 
-    assert!(m.handle_action(SceneAction::Pop, &mut world, &mut audio));
+    assert!(m.handle_action(SceneAction::Pop, &mut world));
     m.run_fixed_systems(&mut world);
     assert_eq!(
       world.resource::<Log>().0,
@@ -1180,12 +1162,12 @@ mod tests {
   #[test]
   fn updates_below_runs_lower_scenes_too() {
     let log: Shared = Arc::default();
-    let (mut world, mut audio) = world();
+    let mut world = world();
     let mut m = SceneManager::with_scene(rec(&log, "a"));
-    m.enter_initial(&mut world, &mut audio);
+    m.enter_initial(&mut world);
     let mut top = rec(&log, "b");
     top.updates_below = true;
-    m.handle_action(SceneAction::Push(top), &mut world, &mut audio);
+    m.handle_action(SceneAction::Push(top), &mut world);
     m.run_fixed_systems(&mut world);
     assert_eq!(world.resource::<Log>().0, ["a", "b"]);
     assert!(
@@ -1197,9 +1179,9 @@ mod tests {
   #[test]
   fn switch_cleans_the_world_and_messages_but_not_resources() {
     let log: Shared = Arc::default();
-    let (mut world, mut audio) = world();
+    let mut world = world();
     let mut m = SceneManager::with_scene(rec(&log, "a"));
-    m.enter_initial(&mut world, &mut audio);
+    m.enter_initial(&mut world);
     world.spawn((Transform::IDENTITY, Thing, Disabled));
     world
       .resource_mut::<crate::core::ecs::Messages<Ping>>()
@@ -1212,7 +1194,7 @@ mod tests {
         .count(),
       2
     );
-    m.handle_action(SceneAction::Switch(rec(&log, "b")), &mut world, &mut audio);
+    m.handle_action(SceneAction::Switch(rec(&log, "b")), &mut world);
     assert_eq!(
       world
         .query_filtered::<&Thing, Allow<Disabled>>()
@@ -1240,14 +1222,10 @@ mod tests {
   #[test]
   fn stacked_opaque_scene_pauses_physics() {
     let log: Shared = Arc::default();
-    let (mut world, mut audio) = world();
+    let mut world = world();
     let mut m = SceneManager::with_scene(rec(&log, "a"));
-    m.enter_initial(&mut world, &mut audio);
-    m.handle_action(
-      SceneAction::Push(rec(&log, "pause-menu")),
-      &mut world,
-      &mut audio,
-    );
+    m.enter_initial(&mut world);
+    m.handle_action(SceneAction::Push(rec(&log, "pause-menu")), &mut world);
     assert!(m.is_physics_paused());
   }
 
@@ -1264,46 +1242,35 @@ mod tests {
   #[test]
   fn a_scene_s_console_handlers_leave_with_it() {
     let log: Shared = Arc::default();
-    let (mut world, mut audio) = world();
+    let mut world = world();
     let mut m = SceneManager::with_scene(rec(&log, "a"));
-    m.enter_initial(&mut world, &mut audio);
+    m.enter_initial(&mut world);
     let active = |world: &World| {
       world
         .resource::<CommandRegistry>()
         .get_command_info("game:jump")
         .is_some_and(|info| info.is_active)
     };
-    m.handle_action(
-      SceneAction::Push(Box::new(Commander)),
-      &mut world,
-      &mut audio,
-    );
+    m.handle_action(SceneAction::Push(Box::new(Commander)), &mut world);
     assert!(active(&world));
-    m.handle_action(SceneAction::Pop, &mut world, &mut audio);
+    m.handle_action(SceneAction::Pop, &mut world);
     assert!(!active(&world), "the handler went with the scene");
   }
 
   #[test]
   fn a_fade_switches_at_its_midpoint_and_scenes_wait_for_it() {
     let log: Shared = Arc::default();
-    let (mut world, mut audio) = world();
+    let mut world = world();
     let mut m = SceneManager::with_scene(rec(&log, "a"));
-    m.enter_initial(&mut world, &mut audio);
+    m.enter_initial(&mut world);
     let fade = Transition::fade(Duration::from_millis(50));
-    assert!(m.handle_action(
-      SceneAction::SwitchWith(rec(&log, "b"), fade),
-      &mut world,
-      &mut audio
-    ));
+    assert!(m.handle_action(SceneAction::SwitchWith(rec(&log, "b"), fade), &mut world,));
     assert_eq!(m.transition_overlay_color(), Some([0, 0, 0, 255]));
     let mut steps = 0;
     while m.is_transitioning() {
       // The engine advances transitions once a frame on real time
-      m.update_transition(0.02, &mut world, &mut audio);
-      assert!(matches!(
-        m.update(&mut world, &mut audio),
-        SceneAction::Continue
-      ));
+      m.update_transition(0.02, &mut world);
+      assert!(matches!(m.update(&mut world), SceneAction::Continue));
       steps += 1;
       assert!(steps < 20, "the fade ends");
     }
@@ -1318,7 +1285,7 @@ mod tests {
 
   #[test]
   fn scoped_context_puts_resources_back() {
-    let (mut world, mut audio) = world();
+    let mut world = world();
     let mut slot = SceneSlot::new(
       Box::new(Rec {
         log: Arc::default(),
@@ -1328,7 +1295,7 @@ mod tests {
       }),
       1,
     );
-    SceneContext::scoped(&mut world, &mut audio, &mut slot, |ctx| {
+    SceneContext::scoped(&mut world, &mut slot, |ctx| {
       ctx.camera().set_zoom(2.0);
       ctx.time.game.set_speed(0.5);
       assert!(
@@ -1348,13 +1315,9 @@ mod tests {
 
   /// What the audio tests share: a world with its audio log on, and a
   /// two-second loop that fades out over 250 ms when the engine stops it
-  fn audio_scene_world() -> (
-    World,
-    Audio,
-    crate::core::asset::Handle<crate::core::audio::Sound>,
-  ) {
+  fn audio_scene_world() -> (World, crate::core::asset::Handle<crate::core::audio::Sound>) {
     use crate::core::audio::{AudioClip, AudioEngine, Sound, SoundClip};
-    let (mut world, audio) = world();
+    let mut world = world();
     world.resource_mut::<AudioEngine>().set_logging(true);
     let clip = world
       .resource_mut::<crate::core::asset::Assets<AudioClip>>()
@@ -1367,7 +1330,7 @@ mod tests {
         fade_out: Duration::from_millis(250),
         ..Default::default()
       });
-    (world, audio, sound)
+    (world, sound)
   }
 
   /// The voices the audio log says were stopped, with their fades
@@ -1427,7 +1390,7 @@ mod tests {
   fn a_scene_exit_stops_its_loops_with_their_fade_and_lets_its_one_shots_finish() {
     use crate::core::audio::{AudioClip, AudioView};
     use crate::core::testing::audio_step;
-    let (mut world, mut audio, sound) = audio_scene_world();
+    let (mut world, sound) = audio_scene_world();
     let shot = world
       .resource_mut::<crate::core::asset::Assets<AudioClip>>()
       .add(AudioClip::from_frames(48_000, &vec![[0.1, 0.1]; 14_400]));
@@ -1437,12 +1400,12 @@ mod tests {
       shot,
       played: played.clone(),
     }));
-    m.enter_initial(&mut world, &mut audio);
+    m.enter_initial(&mut world);
     // A voice played outside every scene is the engine's
     let engine_owned = AudioView::new(&mut world).play(&sound);
     let [own, kept, shot, paused] = voices(&played);
     audio_step(&mut world, Duration::from_millis(20));
-    m.switch(rec(&Arc::default(), "next"), &mut world, &mut audio);
+    m.switch(rec(&Arc::default(), "next"), &mut world);
     assert_eq!(
       audio_stops(&world),
       [
@@ -1501,18 +1464,18 @@ mod tests {
   fn a_scene_exit_stops_its_one_shots_the_game_pause_holds() {
     use crate::core::audio::{AudioClip, AudioEngine, AudioLogKind};
     use crate::core::testing::audio_step;
-    let (mut world, mut audio, _) = audio_scene_world();
+    let (mut world, _) = audio_scene_world();
     let clip = world
       .resource_mut::<crate::core::asset::Assets<AudioClip>>()
       .add(AudioClip::from_frames(48_000, &vec![[0.1, 0.1]; 48_000]));
     let played: Voices = Arc::default();
     let mut m = SceneManager::with_scene(Box::new(PlaysShot(clip, played.clone())));
-    m.enter_initial(&mut world, &mut audio);
+    m.enter_initial(&mut world);
     let [shot] = voices(&played);
     audio_step(&mut world, Duration::from_millis(50));
     world.resource_mut::<Time>().game.pause();
     audio_step(&mut world, Duration::from_nanos(16_666_667));
-    m.switch(rec(&Arc::default(), "menu"), &mut world, &mut audio);
+    m.switch(rec(&Arc::default(), "menu"), &mut world);
     assert!(!world.resource::<Time>().game.is_paused());
     assert_eq!(
       audio_stops(&world),
@@ -1533,13 +1496,13 @@ mod tests {
   /// A reset and a clear exit every scene: each one's loops stop
   #[test]
   fn a_reset_or_a_clear_stops_the_loops_of_every_scene_it_exits() {
-    let (mut world, mut audio, sound) = audio_scene_world();
+    let (mut world, sound) = audio_scene_world();
     let played: Voices = Arc::default();
     let plays = || Box::new(PlaysLoop(sound.clone(), played.clone()));
     let mut m = SceneManager::with_scene(plays());
-    m.enter_initial(&mut world, &mut audio);
-    m.push(plays(), &mut world, &mut audio);
-    m.reset(rec(&Arc::default(), "next"), &mut world, &mut audio);
+    m.enter_initial(&mut world);
+    m.push(plays(), &mut world);
+    m.reset(rec(&Arc::default(), "next"), &mut world);
     let [below, above] = voices(&played);
     let fade = Duration::from_millis(250);
     assert_eq!(
@@ -1548,9 +1511,9 @@ mod tests {
       "top to bottom"
     );
     played.lock().unwrap().clear();
-    m.push(plays(), &mut world, &mut audio);
+    m.push(plays(), &mut world);
     let [last] = voices(&played);
-    m.clear(&mut world, &mut audio);
+    m.clear(&mut world);
     assert_eq!(audio_stops(&world).last(), Some(&(last.id(), fade)));
   }
 
@@ -1636,10 +1599,10 @@ mod tests {
   #[test]
   fn a_loop_played_as_a_reset_resumes_the_clock_keeps_its_fade_in() {
     use crate::core::testing::audio_step;
-    let (mut world, mut audio, _) = audio_scene_world();
+    let (mut world, _) = audio_scene_world();
     let sound = bed(&mut world);
     let mut m = SceneManager::with_scene(rec(&Arc::default(), "game"));
-    m.enter_initial(&mut world, &mut audio);
+    m.enter_initial(&mut world);
     world.resource_mut::<Time>().game.pause();
     audio_step(&mut world, Duration::from_nanos(16_666_667));
     let played: Voices = Arc::default();
@@ -1648,7 +1611,7 @@ mod tests {
       played: played.clone(),
       on_resume: false,
     });
-    m.reset(next, &mut world, &mut audio);
+    m.reset(next, &mut world);
     assert!(!world.resource::<Time>().game.is_paused());
     let [voice] = voices(&played);
     assert_fades_in(&mut world, &voice);
@@ -1659,7 +1622,7 @@ mod tests {
   #[test]
   fn a_loop_played_in_on_resume_as_the_clock_resumes_keeps_its_fade_in() {
     use crate::core::testing::audio_step;
-    let (mut world, mut audio, _) = audio_scene_world();
+    let (mut world, _) = audio_scene_world();
     let sound = bed(&mut world);
     let played: Voices = Arc::default();
     let mut m = SceneManager::with_scene(Box::new(Bed {
@@ -1667,11 +1630,11 @@ mod tests {
       played: played.clone(),
       on_resume: true,
     }));
-    m.enter_initial(&mut world, &mut audio);
-    m.push(Box::new(Unpauses), &mut world, &mut audio);
+    m.enter_initial(&mut world);
+    m.push(Box::new(Unpauses), &mut world);
     world.resource_mut::<Time>().game.pause();
     audio_step(&mut world, Duration::from_nanos(16_666_667));
-    m.pop(&mut world, &mut audio, None);
+    m.pop(&mut world, None);
     assert!(!world.resource::<Time>().game.is_paused());
     let [voice] = voices(&played);
     assert_fades_in(&mut world, &voice);
@@ -1703,22 +1666,22 @@ mod tests {
       }
     }
 
-    let (mut world, mut audio, sound) = audio_scene_world();
+    let (mut world, sound) = audio_scene_world();
     world.init_resource::<Played>();
     let mut m = SceneManager::with_scene(rec(&Arc::default(), "below"));
-    m.enter_initial(&mut world, &mut audio);
-    m.push(Box::new(Looper(sound)), &mut world, &mut audio);
+    m.enter_initial(&mut world);
+    m.push(Box::new(Looper(sound)), &mut world);
     m.run_update_systems(&mut world);
     let Some(voice) = world.resource::<Played>().0.clone() else {
       panic!("the system played");
     };
     assert!(voice.is_playing());
-    m.push(rec(&Arc::default(), "above"), &mut world, &mut audio);
-    m.pop(&mut world, &mut audio, None);
+    m.push(rec(&Arc::default(), "above"), &mut world);
+    m.pop(&mut world, None);
     audio_step(&mut world, Duration::from_millis(20));
     assert_eq!(audio_stops(&world), [], "the looper has not exited");
     assert!(voice.is_playing(), "{voice:?}");
-    m.pop(&mut world, &mut audio, None);
+    m.pop(&mut world, None);
     assert_eq!(
       audio_stops(&world),
       [(voice.id(), Duration::from_millis(250))]
@@ -1756,13 +1719,13 @@ mod tests {
       }
     }
 
-    let (mut world, mut audio, sound) = audio_scene_world();
+    let (mut world, sound) = audio_scene_world();
     let node: Node = Arc::default();
     let mut m = SceneManager::with_scene(Box::new(Clicky(sound, node.clone())));
-    m.enter_initial(&mut world, &mut audio);
+    m.enter_initial(&mut world);
     let mut memory = crate::core::ui::memory::UiMemory::new();
     let none = crate::core::ui::UiId::NONE;
-    ui_frame(&mut m, (&mut world, &mut audio), &mut memory, none);
+    ui_frame(&mut m, &mut world, &mut memory, none);
     let button = node.lock().unwrap().unwrap();
     let Some(id) = world
       .get::<UiInteraction>(button)
@@ -1770,9 +1733,9 @@ mod tests {
     else {
       panic!("the button is drawn");
     };
-    ui_frame(&mut m, (&mut world, &mut audio), &mut memory, id);
+    ui_frame(&mut m, &mut world, &mut memory, id);
     assert_eq!(world.resource::<AudioEngine>().voices_on("sfx"), 1);
-    m.pop(&mut world, &mut audio, None);
+    m.pop(&mut world, None);
     assert_eq!(audio_stops(&world).len(), 1, "the click's loop stops");
   }
 
@@ -1848,20 +1811,20 @@ mod tests {
   fn music_survives_a_scene_change() {
     use crate::core::audio::{AudioLogKind, AudioView};
     use crate::core::testing::audio_step;
-    let (mut world, mut audio, _) = audio_scene_world();
+    let (mut world, _) = audio_scene_world();
     let track = theme(&mut world);
     let mut m = SceneManager::with_scene(PlaysMusic::new(&track));
-    m.enter_initial(&mut world, &mut audio);
+    m.enter_initial(&mut world);
     let frame = Duration::from_nanos(16_666_667);
     audio_step(&mut world, frame);
-    m.switch(rec(&Arc::default(), "next"), &mut world, &mut audio);
+    m.switch(rec(&Arc::default(), "next"), &mut world);
     audio_step(&mut world, frame);
-    m.push(rec(&Arc::default(), "pause"), &mut world, &mut audio);
-    m.pop(&mut world, &mut audio, None);
+    m.push(rec(&Arc::default(), "pause"), &mut world);
+    m.pop(&mut world, None);
     audio_step(&mut world, frame);
-    m.reset(PlaysMusic::new(&track), &mut world, &mut audio);
+    m.reset(PlaysMusic::new(&track), &mut world);
     audio_step(&mut world, frame);
-    m.switch(PlaysMusic::new(&track), &mut world, &mut audio);
+    m.switch(PlaysMusic::new(&track), &mut world);
     for _ in 0..30 {
       audio_step(&mut world, frame);
     }
@@ -1878,14 +1841,14 @@ mod tests {
   fn scene_cleanup_music_stops_it() {
     use crate::core::audio::{AudioEngine, AudioLogKind, AudioView};
     use crate::core::testing::audio_step;
-    let (mut world, mut audio, _) = audio_scene_world();
+    let (mut world, _) = audio_scene_world();
     let track = theme(&mut world);
     let mut scene = PlaysMusic::new(&track);
     scene.cleanup = SceneCleanup::ALL;
     let mut m = SceneManager::with_scene(scene);
-    m.enter_initial(&mut world, &mut audio);
+    m.enter_initial(&mut world);
     audio_step(&mut world, Duration::from_millis(20));
-    m.switch(rec(&Arc::default(), "menu"), &mut world, &mut audio);
+    m.switch(rec(&Arc::default(), "menu"), &mut world);
     let stops: Vec<Duration> = voice_entries(&world, "music", AudioLogKind::Stop)
       .iter()
       .map(|entry| entry.fade)
@@ -1907,7 +1870,7 @@ mod tests {
   fn fifty_scene_switches_leak_no_voice_and_keep_one_music() {
     use crate::core::audio::{AudioClip, AudioEngine, AudioLogKind, AudioView};
     use crate::core::testing::audio_step;
-    let (mut world, mut audio, sound) = audio_scene_world();
+    let (mut world, sound) = audio_scene_world();
     let track = theme(&mut world);
     let shot = world
       .resource_mut::<crate::core::asset::Assets<AudioClip>>()
@@ -1922,10 +1885,10 @@ mod tests {
     };
     let frame = Duration::from_nanos(16_666_667);
     let mut m = SceneManager::with_scene(level());
-    m.enter_initial(&mut world, &mut audio);
+    m.enter_initial(&mut world);
     for _ in 0..50 {
       audio_step(&mut world, frame);
-      m.switch(level(), &mut world, &mut audio);
+      m.switch(level(), &mut world);
     }
     // The last level's loop and shot play on; the rest fade out and end
     for _ in 0..30 {

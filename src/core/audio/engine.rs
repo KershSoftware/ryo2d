@@ -78,6 +78,16 @@ const GAIN_EPSILON: f32 = 1e-4;
 const CUTOFF_EPSILON: f32 = 0.01;
 /// Where a clip played directly goes
 const DEFAULT_BUS: &str = "sfx";
+
+/// The bus a UI sound plays on: `bus` if it is `ui` or one under it, and
+/// `ui` if not
+fn ui_bus(bus: &str) -> &str {
+  if bus == "ui" || bus.starts_with("ui/") {
+    bus
+  } else {
+    "ui"
+  }
+}
 /// Where music plays, or under it
 const MUSIC_BUS: &str = "music";
 /// A music voice's priority: the highest, so no other voice takes its room
@@ -2308,7 +2318,19 @@ impl AudioEngine {
     playable: Playable<'_>,
     options: &PlayOptions,
   ) -> Voice {
-    self.play_from(world, playable, options, None)
+    self.play_from(world, playable, options, None, false)
+  }
+
+  /// Play one of the UI theme's sounds, `volume_db` louder or quieter: a
+  /// clip as it is, and a definition as it says, on the `ui` bus, or on the
+  /// bus under `ui` a definition names (so the game's pause never holds a
+  /// UI sound, and the player's ui setting applies to it)
+  pub(crate) fn play_ui(&mut self, world: &World, playable: Playable<'_>, volume_db: f32) -> Voice {
+    let options = PlayOptions {
+      volume_db,
+      ..Default::default()
+    };
+    self.play_from(world, playable, &options, None, true)
   }
 
   /// Play the sound of `entity`'s [`AudioEmitter`] where the entity is, the
@@ -2330,16 +2352,19 @@ impl AudioEngine {
       Playable::Sound(&emitter.sound),
       &options,
       Some(entity),
+      false,
     )
   }
 
-  /// [`play`](Self::play), from `emitter` when given
+  /// [`play`](Self::play), from `emitter` when given; on the `ui` bus (or
+  /// the definition's bus under it) when `ui`
   fn play_from(
     &mut self,
     world: &World,
     playable: Playable<'_>,
     options: &PlayOptions,
     emitter: Option<Entity>,
+    ui: bool,
   ) -> Voice {
     let server = world.get_resource::<AssetServer>();
     // Heard from a place: from where the listener is now
@@ -2348,10 +2373,13 @@ impl AudioEngine {
     }
     match playable {
       Playable::Clip(clip) => {
-        let request = Request {
+        let mut request = Request {
           emitter,
           ..Request::clip(clip, options)
         };
+        if ui {
+          request.bus = ui_bus(request.bus);
+        }
         self.start(world, &request, server)
       }
       Playable::Sound(handle) => {
@@ -2375,7 +2403,11 @@ impl AudioEngine {
           .map_or(&[][..], |state| state.recent.as_slice());
         let request = pick_clip(&mut self.rng, &sound.clips, recent, sound.no_repeat)
           .and_then(|pick| Request::sound(id, sound, pick, &mut self.rng, options))
-          .map(|request| Request { emitter, ..request });
+          .map(|request| Request {
+            emitter,
+            bus: if ui { ui_bus(request.bus) } else { request.bus },
+            ..request
+          });
         match request {
           Some(request) => self.start(world, &request, server),
           None => {

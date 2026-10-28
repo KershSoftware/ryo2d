@@ -3,12 +3,10 @@
 //! player's volume settings, heard from places in the world by an
 //! [`AudioListener`], and [`Music`] on its one music player), the registry
 //! assets it plays ([`Sound`] definitions, [`Music`] tracks, and the
-//! [`AudioClip`]s they are made of), and the old player (`legacy`, until the
-//! games move over)
+//! [`AudioClip`]s they are made of)
 
 mod clip;
 mod engine;
-mod legacy;
 mod log;
 mod mix;
 mod mixer;
@@ -24,7 +22,6 @@ pub use clip::AudioClip;
 pub(crate) use clip::{ClipData, DECODE_THRESHOLD};
 pub use engine::AudioEngine;
 pub(crate) use engine::{in_scene, release_scene, stop_scene_music, unlock};
-pub use legacy::*;
 #[doc(hidden)]
 pub use log::{AudioLogEntry, AudioLogKind};
 pub(crate) use mix::OPEN_HZ;

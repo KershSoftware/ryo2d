@@ -540,11 +540,8 @@ mod tests {
     assert_eq!(scene.cleanup_on_exit(), SceneCleanup::DEFAULT);
     let mut world = crate::core::ecs::World::new();
     init_world_resources_for_tests(&mut world);
-    let mut audio = crate::core::audio::Audio::new(None);
     let mut slot = SceneSlot::new(Box::new(TestScene), 1);
-    let action = SceneContext::scoped(&mut world, &mut audio, &mut slot, |ctx| {
-      scene.update(ctx, 1.0 / 60.0)
-    });
+    let action = SceneContext::scoped(&mut world, &mut slot, |ctx| scene.update(ctx, 1.0 / 60.0));
     assert!(matches!(action, SceneAction::Continue));
   }
 

@@ -97,7 +97,8 @@ pub use nodes::{
 // Re-export theme types
 pub use theme::{
   FocusRing, Look, LookPatch, Looks, Metrics, Palette, Sizes, Skin, TextLook, TextRoles, Theme,
-  ThemeError, ThemeFont, UiSounds, UiTheme, Variant, WidgetKind, WidgetLooks, WidgetState,
+  ThemeError, ThemeFont, ThemeSound, ThemeSoundSource, UiSounds, UiTheme, Variant, WidgetKind,
+  WidgetLooks, WidgetState,
 };
 
 // Re-export tween types

@@ -804,7 +804,13 @@ fn headless_build_has_no_audio_gamepads_or_wall_clock_overlays() {
     .start_scene(EmptyScene)
     .build_headless();
 
-  assert!(!engine.world.non_send::<SceneHost>().audio.is_available());
+  assert!(
+    engine
+      .world
+      .resource::<crate::core::audio::AudioEngine>()
+      .is_mock(),
+    "silent, on kira's mock backend"
+  );
   assert!(engine.gilrs.is_none());
   assert!(!engine.config.debug.show_fps);
   assert!(!engine.config.debug.show_frame_timing);

@@ -34,6 +34,7 @@ use serde::{Deserialize, Serialize};
 use super::Color;
 use super::memory::UiSound;
 use crate::core::asset::{Asset, Assets, AssetsView, Handle};
+use crate::core::audio::{AudioClip, Playable, Sound};
 use crate::core::ecs::Resource;
 use crate::core::ecs::kernel::{Mut, World};
 use crate::core::graphics::Image;
@@ -491,29 +492,37 @@ impl Skin {
   }
 }
 
-/// The sound files the UI plays, by event: focus moved by navigation, a
-/// confirm or click, back, a slider step (at most every 0.05 s) and an error
-/// (a refused drop, a cancelled rebind). The engine loads them when the
-/// theme changes and plays at most one of each kind per frame at `volume`.
-/// The default names none, so a game is silent until it sets some; a file
-/// that will not load (or no audio device) leaves that sound silent. The
-/// paths are audio paths, relative to the working directory as
-/// `Audio::load_sound` takes them (`"assets/ui/click.wav"`), not asset paths,
-/// in a `.theme.ron` file too.
+/// The sounds the UI plays, by event: focus moved by navigation, a confirm
+/// or click, back, a slider step (at most every 0.05 s) and an error (a
+/// refused drop, a cancelled rebind). The engine plays at most one of each
+/// kind per frame, through the audio engine on the `ui` bus (so the game's
+/// pause never holds them, and the player's ui volume setting applies),
+/// scaled by `volume`. The default names none, so a game is silent until it
+/// sets some.
+///
+/// ```ron
+/// sounds: (
+///   confirm: (path: "ui/click.sound.ron"),
+///   back: (path: "ui/back.wav"),
+///   volume: 0.8,
+/// ),
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UiSounds {
-  pub focus: Option<String>,
-  pub confirm: Option<String>,
-  pub back: Option<String>,
-  pub tick: Option<String>,
-  pub error: Option<String>,
+  pub focus: ThemeSound,
+  pub confirm: ThemeSound,
+  pub back: ThemeSound,
+  pub tick: ThemeSound,
+  pub error: ThemeSound,
+  /// Scales every UI sound, from 0 (silent) to 1 (as the sound is): an
+  /// amplitude, so 0.5 is about -6 dB
   pub volume: f32,
 }
 
 impl UiSounds {
-  /// The file named for `sound`
-  pub(crate) fn path(&self, sound: UiSound) -> Option<&str> {
+  /// The sound for the event `sound`
+  pub(crate) fn get(&self, sound: UiSound) -> &ThemeSound {
     match sound {
       UiSound::Focus => &self.focus,
       UiSound::Confirm => &self.confirm,
@@ -521,20 +530,120 @@ impl UiSounds {
       UiSound::Tick => &self.tick,
       UiSound::Error => &self.error,
     }
-    .as_deref()
+  }
+
+  /// Each event's sound, with its event
+  pub(crate) fn each_mut(&mut self) -> [(UiSound, &mut ThemeSound); 5] {
+    let UiSounds {
+      focus,
+      confirm,
+      back,
+      tick,
+      error,
+      ..
+    } = self;
+    [
+      (UiSound::Focus, focus),
+      (UiSound::Confirm, confirm),
+      (UiSound::Back, back),
+      (UiSound::Tick, tick),
+      (UiSound::Error, error),
+    ]
+  }
+
+  /// `volume` as a gain in dB; `None` when it is silent
+  pub(crate) fn volume_db(&self) -> Option<f32> {
+    let volume = if self.volume.is_nan() {
+      1.0
+    } else {
+      self.volume.min(1.0)
+    };
+    (volume > 0.0).then(|| 20.0 * volume.log10())
   }
 }
 
 impl Default for UiSounds {
   fn default() -> UiSounds {
     UiSounds {
-      focus: None,
-      confirm: None,
-      back: None,
-      tick: None,
-      error: None,
+      focus: ThemeSound::default(),
+      confirm: ThemeSound::default(),
+      back: ThemeSound::default(),
+      tick: ThemeSound::default(),
+      error: ThemeSound::default(),
       volume: 1.0,
     }
+  }
+}
+
+/// One of the UI's sounds ([`UiSounds`]): a sound definition (`.sound.ron`),
+/// played as it says but on the `ui` bus unless it names a bus under `ui`,
+/// or a clip (`.wav`, `.ogg`, `.mp3`, `.flac`), played as it is on the `ui`
+/// bus. A theme file's are loaded with the theme, and are its dependencies
+/// like its skins' images: a theme is ready once they are, one that does not
+/// load fails it (`AssetError::Dependency`), and saving one reloads it. A
+/// theme made in code names a file with [`ThemeSound::from_path`], which the
+/// engine loads when the theme is set (warning once about a file that does
+/// not load, and leaving that sound silent), or gives what to play with
+/// [`ThemeSound::from_sound`] or [`ThemeSound::from_clip`]. A sound still
+/// loading plays nothing.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ThemeSound {
+  /// Its file, an asset path; none for a silent event
+  pub path: Option<String>,
+  /// What it plays, once loaded
+  #[serde(skip)]
+  pub sound: Option<ThemeSoundSource>,
+}
+
+/// What a [`ThemeSound`] plays
+#[derive(Debug, Clone, PartialEq)]
+pub enum ThemeSoundSource {
+  /// A sound definition
+  Sound(Handle<Sound>),
+  /// A clip, played as it is
+  Clip(Handle<AudioClip>),
+}
+
+impl ThemeSoundSource {
+  /// What the audio engine plays
+  pub(crate) fn playable(&self) -> Playable<'_> {
+    match self {
+      ThemeSoundSource::Sound(sound) => Playable::Sound(sound),
+      ThemeSoundSource::Clip(clip) => Playable::Clip(clip),
+    }
+  }
+}
+
+impl ThemeSound {
+  /// The file `path` (an asset path): a sound definition if it ends in
+  /// `.sound.ron`, and a clip if not. The engine loads it
+  pub fn from_path(path: &str) -> ThemeSound {
+    ThemeSound {
+      path: Some(path.to_string()),
+      sound: None,
+    }
+  }
+
+  /// The sound definition `sound`
+  pub fn from_sound(sound: Handle<Sound>) -> ThemeSound {
+    ThemeSound {
+      path: None,
+      sound: Some(ThemeSoundSource::Sound(sound)),
+    }
+  }
+
+  /// The clip `clip`
+  pub fn from_clip(clip: Handle<AudioClip>) -> ThemeSound {
+    ThemeSound {
+      path: None,
+      sound: Some(ThemeSoundSource::Clip(clip)),
+    }
+  }
+
+  /// Whether `path` names a sound definition, not a clip
+  pub(crate) fn is_definition(path: &str) -> bool {
+    path.ends_with(".sound.ron")
   }
 }
 

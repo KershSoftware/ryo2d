@@ -1,7 +1,7 @@
 //! The context scene callbacks receive.
 
 use crate::core::asset::{Assets, AssetsView, Handle};
-use crate::core::audio::{Audio, AudioView};
+use crate::core::audio::AudioView;
 use crate::core::console::{CommandContext, CommandRegistry, CommandResult};
 use crate::core::cursor::{CursorRequest, CursorStyle, CustomCursorData};
 use crate::core::ecs::{
@@ -39,7 +39,6 @@ pub struct SceneContext<'a> {
   pub world: &'a mut World,
   pub time: &'a mut Time,
   pub input: &'a mut Input,
-  pub audio: &'a mut Audio,
   schedules: &'a mut SceneSchedules,
   messages: &'a mut SceneMessages,
   scope_id: u64,
@@ -53,13 +52,11 @@ impl SceneContext<'_> {
   #[cfg(test)]
   pub(crate) fn scoped<R>(
     world: &mut World,
-    audio: &mut Audio,
     slot: &mut SceneSlot,
     f: impl FnOnce(&mut SceneContext<'_>) -> R,
   ) -> R {
     Self::scoped_parts(
       world,
-      audio,
       &mut slot.schedules,
       &mut slot.messages,
       slot.scope_id,
@@ -70,7 +67,6 @@ impl SceneContext<'_> {
   /// `scoped` over a slot's parts, so the caller can hold the slot's scene too.
   pub(super) fn scoped_parts<R>(
     world: &mut World,
-    audio: &mut Audio,
     schedules: &mut SceneSchedules,
     messages: &mut SceneMessages,
     scope_id: u64,
@@ -82,7 +78,6 @@ impl SceneContext<'_> {
           world,
           time: &mut time,
           input: &mut input,
-          audio,
           schedules,
           messages,
           scope_id,

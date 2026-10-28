@@ -133,14 +133,14 @@ impl UiSound {
     UiSound::Error,
   ];
 
-  /// The name its sound is loaded and played under
+  /// Its name: the theme's field for its sound (`UiSounds`)
   pub(crate) fn name(self) -> &'static str {
     match self {
-      UiSound::Focus => "ryo2d.ui.focus",
-      UiSound::Confirm => "ryo2d.ui.confirm",
-      UiSound::Back => "ryo2d.ui.back",
-      UiSound::Tick => "ryo2d.ui.tick",
-      UiSound::Error => "ryo2d.ui.error",
+      UiSound::Focus => "focus",
+      UiSound::Confirm => "confirm",
+      UiSound::Back => "back",
+      UiSound::Tick => "tick",
+      UiSound::Error => "error",
     }
   }
 }

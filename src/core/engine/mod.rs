@@ -21,9 +21,7 @@ use winit::event_loop::EventLoopProxy;
 use winit::window::Window;
 
 use crate::core::asset::{AssetLoader, AssetServer, AssetSource, DiskSource, insert_registry};
-use crate::core::audio::{
-  Audio, AudioEngine, AudioManager, VolumeKind, audio_system, default_mixer,
-};
+use crate::core::audio::{AudioEngine, VolumeKind, audio_system, default_mixer};
 use crate::core::capture::{AutoCaptureConfig, CaptureReport, CaptureState};
 use crate::core::config::{
   DebugConfig, DebugStats, DisplayMode, FrameTimings, OverlayMode, SmoothedDebugStats,
@@ -143,12 +141,10 @@ impl Default for EngineConfig {
   }
 }
 
-/// The scene stack and the audio device. Neither is `Send`, so they live in
-/// the world as a non-send resource that the scene systems take out while
-/// they run.
+/// The scene stack. Its scenes are not `Send`, so it lives in the world as
+/// a non-send resource that the scene systems take out while they run.
 pub(crate) struct SceneHost {
   pub(crate) scenes: SceneManager,
-  pub(crate) audio: Audio,
 }
 
 /// A resource or message registration the builder defers to engine start.
@@ -264,8 +260,8 @@ pub struct Engine {
   theme_generation: Option<u64>,
   /// The `UiTheme` generation whose sounds are loaded
   sounds_generation: Option<u64>,
-  /// UI sound paths that failed to load (each warned about once)
-  sounds_warned: std::collections::HashSet<String>,
+  /// What the theme's UI sounds play, by event (`UiSound::ALL`'s order)
+  ui_sounds: [Option<crate::core::ui::ThemeSoundSource>; 5],
   /// How many of this frame's UI sounds were played already (a rerun pass
   /// appends to the frame's list)
   sounds_played: usize,
@@ -554,28 +550,6 @@ impl Engine {
       registry.start_watching();
     }
 
-    // Try to initialize audio (gracefully handle no audio device)
-    let mut audio = if headless {
-      None
-    } else {
-      match AudioManager::new() {
-        Ok(manager) => Some(manager),
-        Err(e) => {
-          engine_warn!(
-            module: "Audio",
-            "Could not initialize audio: {}. Continuing without sound.",
-            e
-          );
-          None
-        }
-      }
-    };
-    if let Some(audio_manager) = &mut audio {
-      audio_manager.set_master_volume(master_volume);
-      audio_manager.set_music_volume(music_volume);
-      audio_manager.set_sfx_volume(sfx_volume);
-    }
-
     // Initialize gamepad input (gracefully handle no gamepad support)
     let gilrs = if headless {
       None
@@ -675,7 +649,6 @@ impl Engine {
     }
     world.insert_non_send(SceneHost {
       scenes: SceneManager::with_scene(initial_scene),
-      audio: Audio::new(audio),
     });
     register_engine_systems(&mut schedules);
 
@@ -726,7 +699,7 @@ impl Engine {
       // None: the starting theme's skins load on the first pass
       theme_generation: None,
       sounds_generation: None,
-      sounds_warned: Default::default(),
+      ui_sounds: Default::default(),
       sounds_played: 0,
       ui_pass_index: 0,
       #[cfg(not(target_arch = "wasm32"))]
@@ -1204,7 +1177,7 @@ impl Engine {
     crate::core::profiler::init(self.config.debug.enable_profiler);
 
     frame::with_host(&mut self.world, |world, host| {
-      host.scenes.enter_initial(world, &mut host.audio);
+      host.scenes.enter_initial(world);
       host.scenes.sync_physics_paused(world);
     });
 

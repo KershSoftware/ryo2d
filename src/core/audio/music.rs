@@ -431,8 +431,8 @@ mod tests {
     assert_eq!(current(&mut world), Some(a.id()));
   }
 
-  /// The old player's `stop_music` dropped its handle, which never stops a
-  /// kira sound: this one stops it, with its fade, and kira lets it go
+  /// Dropping a kira handle never stops its sound: `stop_music` stops it,
+  /// with its fade, and kira lets it go
   #[test]
   fn stop_music_really_stops() {
     let mut world = world_with(&[("music/a.music.ron", r#"(clip: "music/tone.wav")"#)]);

@@ -73,3 +73,6 @@ mod console;
 
 #[path = "integration/tilemap.rs"]
 mod tilemap;
+
+#[path = "integration/audio_files.rs"]
+mod audio_files;

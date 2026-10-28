@@ -111,9 +111,6 @@ pub mod prelude {
     AudioClipLoader, AudioClipSettings, ClipMode, MixerLoader, MusicLoader, SoundLoader,
   };
   pub use crate::core::audio::{
-    Audio, AudioManager, MusicHandle, MusicOptions, SoundHandle, SoundOptions,
-  };
-  pub use crate::core::audio::{
     AudioClip, AudioEmitter, AudioListener, AudioView, BusDef, DistortionKind, EffectDef, EqKind,
     Falloff, FocusLoss, LimitRule, Mixer, Music, MusicJoinError, PlayOptions, Sound, SoundClip,
     Spatial, Voice, VoiceLimit, VolumeKind, falloff_gain_db, pan_for, volume_to_db,
@@ -239,18 +236,16 @@ pub mod prelude {
   pub use crate::core::ui::{
     Align, Anchor, BindValue, Color, Edges, FocusRing, Justify, Length, ListResponse, LookPatch,
     Looks, Metrics, Painter, Palette, Rect, Response, Sense, Sizes, Skin, TextLook, TextRole,
-    TextRoles, Theme, ThemeError, ThemeFont, TweenColor, TweenFloat, TweenRect, TweenVec2, UiArg,
-    UiArgs, UiChecked, UiContext, UiDisabled, UiEvent, UiEventKind, UiFile, UiFileError,
-    UiFileIssue, UiHidden, UiId, UiImage, UiIndex, UiInput, UiInteraction, UiLabel, UiListBind,
-    UiListRow, UiName, UiNode, UiNodeKind, UiOptions, UiReloaded, UiRoot, UiSlot, UiSounds, UiText,
-    UiTextValue, UiTheme, UiTooltip, UiTween, UiTweenLoop, UiValue, Variant, WidgetKind,
-    WidgetLooks, WidgetState,
+    TextRoles, Theme, ThemeError, ThemeFont, ThemeSound, ThemeSoundSource, TweenColor, TweenFloat,
+    TweenRect, TweenVec2, UiArg, UiArgs, UiChecked, UiContext, UiDisabled, UiEvent, UiEventKind,
+    UiFile, UiFileError, UiFileIssue, UiHidden, UiId, UiImage, UiIndex, UiInput, UiInteraction,
+    UiLabel, UiListBind, UiListRow, UiName, UiNode, UiNodeKind, UiOptions, UiReloaded, UiRoot,
+    UiSlot, UiSounds, UiText, UiTextValue, UiTheme, UiTooltip, UiTween, UiTweenLoop, UiValue,
+    Variant, WidgetKind, WidgetLooks, WidgetState,
   };
 
   // Errors
-  pub use crate::core::error::{
-    AudioError, AudioResult, EngineError, EngineResult, ImageError, SaveError, SaveResult,
-  };
+  pub use crate::core::error::{EngineError, EngineResult, ImageError, SaveError, SaveResult};
   pub use crate::core::graphics::GpuError;
 
   // Navigation and pathfinding

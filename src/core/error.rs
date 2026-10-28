@@ -2,10 +2,10 @@
 //!
 //! This module provides a hierarchy of error types:
 //! - `EngineError` - Top-level engine errors
-//! - `AudioError` - Audio system errors
 //! - `ImageError` - Image decoding errors
 //!
-//! Assets that do not load give the registry's `asset::AssetError`.
+//! Assets that do not load, audio among them, give the registry's
+//! `asset::AssetError`.
 //!
 //! All error types implement `std::error::Error` and use `thiserror` for
 //! ergonomic error handling.
@@ -50,33 +50,6 @@ pub enum ImageError {
   #[error(transparent)]
   Decode(#[from] image::ImageError),
 }
-
-/// Audio system errors
-#[derive(Error, Debug)]
-pub enum AudioError {
-  /// Failed to initialize the audio backend
-  #[error("Audio initialization failed: {0}")]
-  InitError(String),
-
-  /// Failed to load a sound file
-  #[error("Failed to load audio: {0}")]
-  LoadError(String),
-
-  /// Failed to play a sound
-  #[error("Failed to play audio: {0}")]
-  PlayError(String),
-
-  /// Sound not found in cache
-  #[error("Sound not found: {0}")]
-  NotFound(String),
-
-  /// No audio output device, so nothing can play
-  #[error("no audio device")]
-  Unavailable,
-}
-
-/// Result type for audio operations
-pub type AudioResult<T> = Result<T, AudioError>;
 
 /// Save/load system errors
 #[derive(Error, Debug)]

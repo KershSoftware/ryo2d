@@ -10,7 +10,7 @@ use winit::keyboard::KeyCode;
 
 use super::{Engine, FrameOutcome, PresentOutcome, QuitRequested, SceneHost};
 use crate::core::asset::AssetsView;
-use crate::core::audio::SoundOptions;
+use crate::core::audio::AudioEngine;
 use crate::core::capture::CaptureTarget;
 use crate::core::config::debug as overlays;
 use crate::core::console::{CommandContext, CommandRegistry, CommandResult};
@@ -30,7 +30,7 @@ use crate::core::ui::memory::UiSound;
 use crate::core::ui::nav::{NavInput, resolve_focus};
 use crate::core::ui::theme::{Theme, load_skin, refresh_skins, use_followed};
 use crate::core::ui::widgets::rebind::note_swap;
-use crate::core::ui::{UiContext, UiInput, UiTheme};
+use crate::core::ui::{ThemeSound, ThemeSoundSource, UiContext, UiInput, UiTheme};
 use crate::{engine_warn, profile_scope};
 
 /// The UI's direction actions: Up, Down, Left, Right
@@ -340,9 +340,9 @@ impl Engine {
         break;
       }
       let (keep_running, top_changed) = with_host(&mut self.world, |world, host| {
-        let SceneHost { scenes, audio } = host;
+        let scenes = &mut host.scenes;
         let before = scenes.top_scope();
-        let keep_running = scenes.handle_action(action, world, audio);
+        let keep_running = scenes.handle_action(action, world);
         scenes.sync_physics_paused(world);
         (keep_running, scenes.top_scope() != before)
       });
@@ -482,48 +482,60 @@ impl Engine {
       })
   }
 
-  /// Load the theme's UI sounds when its generation changed (so a starting
-  /// theme's load on the first pass). Audio that is missing or a file that
-  /// will not load leaves that sound silent, warned about once per path.
+  /// What the theme's UI sounds play, found again when its generation
+  /// changes (so a starting theme's on the first pass): what a theme file's
+  /// loader gave, or the file a theme made in code names, loaded through
+  /// the registry, which warns once about one that does not load (that
+  /// sound stays silent)
   fn load_ui_sounds(&mut self, theme: &Theme) {
     let generation = self.world.resource::<UiTheme>().generation();
     if self.sounds_generation == Some(generation) {
       return;
     }
     self.sounds_generation = Some(generation);
-    let warned = &mut self.sounds_warned;
-    with_host(&mut self.world, |_, host| {
-      for sound in UiSound::ALL {
-        let Some(path) = theme.sounds.path(sound) else {
-          continue;
-        };
-        if let Err(error) = host.audio.load_sound(sound.name(), path)
-          && warned.insert(path.to_string())
-        {
-          engine_warn!(module: "ui", "could not load UI sound {path}: {error}");
+    let assets = AssetsView::new(&mut self.world);
+    for (slot, event) in self.ui_sounds.iter_mut().zip(UiSound::ALL) {
+      let sound = theme.sounds.get(event);
+      *slot = match (&sound.sound, sound.path.as_deref()) {
+        (Some(source), _) => Some(source.clone()),
+        (None, Some(path)) if ThemeSound::is_definition(path) => {
+          Some(ThemeSoundSource::Sound(assets.load(path)))
         }
-      }
-    });
+        (None, Some(path)) => Some(ThemeSoundSource::Clip(assets.load(path))),
+        (None, None) => None,
+      };
+    }
   }
 
-  /// Play the theme's sound for each event this frame's UI raised, at the
-  /// theme's volume; errors (no device, not loaded) are ignored
+  /// Play the theme's sound for each event this frame's UI raised, through
+  /// the audio engine on the `ui` bus at the theme's volume. One still
+  /// loading plays nothing
   fn play_ui_sounds(&mut self, theme: &Theme) {
     let raised = &self.ui_memory.interact.sounds;
     let from = self.sounds_played.min(raised.len());
-    let options = SoundOptions::new().volume(theme.sounds.volume);
     let fresh = &raised[from..];
     self.sounds_played = raised.len();
+    let Some(volume_db) = theme.sounds.volume_db() else {
+      return;
+    };
     if fresh.is_empty() {
       return;
     }
-    with_host(&mut self.world, |_, host| {
-      for &sound in fresh {
-        if theme.sounds.path(sound).is_some() {
-          let _ = host.audio.play_sound_with(sound.name(), options.clone());
+    let sounds = &self.ui_sounds;
+    self
+      .world
+      .try_resource_scope(|world, mut engine: crate::core::ecs::Mut<AudioEngine>| {
+        for &event in fresh {
+          let source = UiSound::ALL
+            .iter()
+            .zip(sounds)
+            .find_map(|(kind, source)| (*kind == event).then_some(source.as_ref()))
+            .flatten();
+          if let Some(source) = source {
+            engine.play_ui(world, source.playable(), volume_db);
+          }
         }
-      }
-    });
+      });
   }
 
   /// Bring what prompts read up to date: the last device and pad family,
@@ -642,7 +654,7 @@ impl Engine {
       ui.set_dt(real_dt);
       ui.set_prompts(Arc::clone(&self.prompts));
       let action = with_host(&mut self.world, |world, host| {
-        host.scenes.ui_pass(world, &mut host.audio, &mut ui)
+        host.scenes.ui_pass(world, &mut ui)
       });
 
       // Overlays draw over game UI, its open lists included: stats (top),
@@ -898,7 +910,7 @@ pub(crate) fn clear_trackers_system(world: &mut World) {
   }
 }
 
-/// Run `f` with the scene stack and audio taken out of the world.
+/// Run `f` with the scene stack taken out of the world.
 pub(crate) fn with_host<R>(
   world: &mut World,
   f: impl FnOnce(&mut World, &mut SceneHost) -> R,
@@ -914,9 +926,9 @@ pub(crate) fn with_host<R>(
 /// `FixedSet::Scene`: transitions, `Scene::update`, then the action.
 pub(crate) fn scene_update_system(world: &mut World) {
   with_host(world, |world, host| {
-    let SceneHost { scenes, audio } = host;
-    let action = scenes.update(world, audio);
-    if !scenes.handle_action(action, world, audio) {
+    let scenes = &mut host.scenes;
+    let action = scenes.update(world);
+    if !scenes.handle_action(action, world) {
       world.insert_resource(QuitRequested);
     }
     scenes.sync_physics_paused(world);
@@ -928,11 +940,11 @@ pub(crate) fn scene_update_system(world: &mut World) {
 pub(crate) fn scene_transition_system(world: &mut World) {
   let dt = world.resource::<Time>().real.delta();
   with_host(world, |world, host| {
-    let SceneHost { scenes, audio } = host;
+    let scenes = &mut host.scenes;
     if !scenes.is_transitioning() {
       return;
     }
-    scenes.update_transition(dt, world, audio);
+    scenes.update_transition(dt, world);
     scenes.sync_physics_paused(world);
     if scenes.is_empty() {
       world.insert_resource(QuitRequested);
@@ -2028,13 +2040,10 @@ mod tests {
       .build_headless();
     e.init_gpu(WgpuRenderer::new_offscreen(device, queue, 64, 64), 1.0);
     with_host(&mut e.world, |world, host| {
-      let SceneHost { scenes, audio } = host;
       // Draws once, then pops itself in its first fixed step
-      scenes.push(
-        Box::new(panel(&ids, None, || SceneAction::Pop)),
-        world,
-        audio,
-      );
+      host
+        .scenes
+        .push(Box::new(panel(&ids, None, || SceneAction::Pop)), world);
     });
     e.frame(Some(Duration::from_millis(20)));
     let id = ids.lock().unwrap()[0];
@@ -2359,7 +2368,7 @@ mod tests {
     use crate::core::ui::theme::{Theme, UiTheme};
     let mut e = engine();
     let mut theme = Theme::dark();
-    theme.sounds.confirm = Some("sounds/missing-confirm.ogg".to_string());
+    theme.sounds.confirm = crate::core::ui::ThemeSound::from_path("sounds/missing-confirm.ogg");
     e.world_mut().resource_mut::<UiTheme>().set(theme);
     for _ in 0..3 {
       e.frame(Some(Duration::from_millis(16)));
@@ -2369,6 +2378,78 @@ mod tests {
       .filter(|w| w.message.contains("missing-confirm.ogg"))
       .count();
     assert_eq!(warnings, 1, "a warning naming the sound, once");
+  }
+
+  #[test]
+  fn a_theme_ui_sound_plays_on_the_ui_bus() {
+    use crate::core::asset::MemorySource;
+    use crate::core::audio::AudioLogKind;
+    use crate::core::testing::HeadlessEngine;
+    use crate::core::ui::{Rect, Theme, UiContext};
+    use winit::event::MouseButton;
+
+    struct Themed;
+    impl Scene for Themed {
+      fn on_enter(&mut self, ctx: &mut SceneContext) {
+        if let Ok(theme) = ctx.assets().load_now::<Theme>("ui/sounds.theme.ron") {
+          ctx.follow_ui_theme(theme);
+        }
+      }
+      fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
+        ui.button("Ok").at(Rect::new(20.0, 20.0, 80.0, 30.0));
+        ui.back();
+        SceneAction::Continue
+      }
+    }
+    let files = MemorySource::new();
+    files.insert(
+      "ui/click.wav",
+      crate::core::testing::wav(22_050, 2_205, 4_000),
+    );
+    // A definition naming no bus, which alone would play on `sfx`
+    files.insert("ui/back.sound.ron", r#"(clips: [(path: "ui/click.wav")])"#);
+    files.insert(
+      "ui/sounds.theme.ron",
+      r#"(sounds: (
+        confirm: (path: "ui/click.wav"),
+        back: (path: "ui/back.sound.ron"),
+        volume: 0.5,
+      ))"#,
+    );
+    let Some(mut e) = HeadlessEngine::new_or_skip(
+      EngineBuilder::new()
+        .resolution(320, 240)
+        .asset_source(files)
+        .start_scene(Themed),
+    ) else {
+      return;
+    };
+    e.step_frames(2).unwrap();
+    // A click on the button confirms, and Escape goes back
+    e.mouse_move(40.0, 30.0);
+    e.step_frames(1).unwrap();
+    e.press_mouse(MouseButton::Left);
+    e.step_frames(1).unwrap();
+    e.release_mouse(MouseButton::Left);
+    e.step_frames(1).unwrap();
+    e.tap_key(KeyCode::Escape);
+    e.step_frames(2).unwrap();
+    let starts: Vec<(String, String, f32)> = e
+      .audio_log()
+      .into_iter()
+      .filter(|entry| entry.kind == AudioLogKind::Start)
+      .map(|entry| (entry.source, entry.bus, entry.gain_db))
+      .collect();
+    assert_eq!(starts.len(), 2, "the confirm and the back: {starts:?}");
+    for (source, bus, gain_db) in &starts {
+      assert_eq!(
+        (source.as_str(), bus.as_str()),
+        ("ui/click.wav", "ui"),
+        "{starts:?}"
+      );
+      // The theme's volume of 0.5 is an amplitude: about -6 dB
+      assert!((gain_db + 6.02).abs() < 0.01, "{starts:?}");
+    }
   }
 
   #[test]
