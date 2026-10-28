@@ -1,0 +1,5 @@
+// A ball lost
+(
+  clips: [(path: "audio/life-lost.wav")],
+  volume: -6.0,
+)

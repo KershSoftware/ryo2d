@@ -41,7 +41,7 @@ fn the_hud_shows_the_score_through_its_bindings() {
   let Some(mut engine) = HeadlessEngine::new_or_skip(
     EngineBuilder::new()
       .resolution(800, 600)
-      .start_scene(GameScene::new(0, None)),
+      .start_scene(GameScene::new(0)),
   ) else {
     return;
   };
@@ -76,7 +76,7 @@ fn the_hud_shows_where_there_is_no_folder_to_read_as_on_the_web() {
     EngineBuilder::new()
       .resolution(800, 600)
       .asset_source(NoFolder)
-      .start_scene(GameScene::new(0, None)),
+      .start_scene(GameScene::new(0)),
   ) else {
     return;
   };

@@ -68,7 +68,7 @@ fn the_main_menu_looks_the_same_retained() {
 
 #[test]
 fn the_pause_menu_and_the_hud_look_the_same_retained() {
-  let Some(mut pair) = pair(|| GameScene::new(0, None)) else {
+  let Some(mut pair) = pair(|| GameScene::new(0)) else {
     return;
   };
   pair.each(|engine| engine.tap_key(KeyCode::Space));

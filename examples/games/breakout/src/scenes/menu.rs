@@ -13,12 +13,14 @@ use crate::save::load_high_score;
 
 const MENU: &str = "ui/menu.ui.ron";
 const MENU_EMBEDDED: &str = include_str!("../../assets/ui/menu.ui.ron");
+const MUSIC: &str = "audio/bgm-main-menu.music.ron";
+const INTRO: &str = "audio/intro-sfx.sound.ron";
 
 /// Main menu scene
 pub struct MenuScene {
   high_score: u32,
-  /// Background music
-  music: Option<MusicHandle>,
+  /// The intro played as the game starts
+  intro: Option<Handle<Sound>>,
   /// The game is starting: the menu still shows while it fades out, and a
   /// second press then must not play the intro again
   starting: bool,
@@ -31,25 +33,23 @@ impl MenuScene {
   pub fn new() -> Self {
     Self {
       high_score: load_high_score(),
-      music: None,
+      intro: None,
       starting: false,
       root: None,
     }
   }
 
-  /// Play the intro and switch to the game, handing it the music to
-  /// crossfade
+  /// Play the intro and switch to the game, whose music takes over
   fn start_game(&mut self, ctx: &mut SceneContext) -> SceneAction {
     if self.starting {
       return SceneAction::Continue;
     }
     self.starting = true;
-    let _ = ctx
-      .audio
-      .play_sound_with("intro_sfx", SoundOptions::new().volume(0.5));
-    let music = self.music.take();
+    if let Some(intro) = &self.intro {
+      ctx.audio().play(intro);
+    }
     SceneAction::SwitchWith(
-      Box::new(GameScene::new(self.high_score, music)),
+      Box::new(GameScene::new(self.high_score)),
       Transition::fade(Duration::from_millis(300)),
     )
   }
@@ -77,28 +77,10 @@ impl Scene for MenuScene {
       .camera()
       .set_position(SCREEN_WIDTH as f32 / 2.0, SCREEN_HEIGHT as f32 / 2.0);
 
-    // Load and start menu background music
-    let audio = &mut *ctx.audio;
-    let _ = audio.load_sound("intro_sfx", "assets/audio/intro-sfx.wav");
-
-    // If we have music from previous scene (game), crossfade to menu music
-    if let Some(mut prev_music) = self.music.take() {
-      if let Ok(music) = audio.crossfade_music(
-        &mut prev_music,
-        "assets/audio/bgm-main-menu.mp3",
-        Duration::from_millis(1000),
-      ) {
-        self.music = Some(music);
-      }
-    } else {
-      // No previous music, just start menu music with auto-fade on scene exit
-      if let Ok(music) = audio.play_music_with(
-        "assets/audio/bgm-main-menu.mp3",
-        MusicOptions::new().fade_out_on_drop(Duration::from_millis(500)),
-      ) {
-        self.music = Some(music);
-      }
-    }
+    // The menu's music, taking over from the game's
+    let music = ctx.assets().load::<Music>(MUSIC);
+    ctx.audio().play_music(&music);
+    self.intro = Some(ctx.assets().load(INTRO));
 
     self.spawn_nodes(ctx);
   }

@@ -36,7 +36,7 @@ fn a_brick_sends_the_ball_back_down() {
     EngineBuilder::new()
       .resolution(SCREEN_WIDTH, SCREEN_HEIGHT)
       .fixed_hz(120)
-      .start_scene(GameScene::new(0, None)),
+      .start_scene(GameScene::new(0)),
   ) else {
     return;
   };

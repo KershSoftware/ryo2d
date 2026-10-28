@@ -1,0 +1,5 @@
+// The ball off the paddle
+(
+  clips: [(path: "audio/bounce.wav")],
+  volume: -16.5,
+)

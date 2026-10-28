@@ -1,0 +1,5 @@
+// A block breaking
+(
+  clips: [(path: "audio/break.wav")],
+  volume: -16.5,
+)

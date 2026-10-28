@@ -1,0 +1,5 @@
+// The game starting, from the menu
+(
+  clips: [(path: "audio/intro-sfx.wav")],
+  volume: -6.0,
+)

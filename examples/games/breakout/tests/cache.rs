@@ -285,7 +285,7 @@ fn the_main_menu_looks_the_same_cached() {
 
 #[test]
 fn the_pause_menu_looks_the_same_cached() {
-  let Some(mut pair) = both(|| GameScene::new(0, None)) else {
+  let Some(mut pair) = both(|| GameScene::new(0)) else {
     return;
   };
   pair.run(&[
@@ -339,7 +339,7 @@ fn the_pause_menu_looks_the_same_cached() {
 
 #[test]
 fn the_hud_during_play_looks_the_same_cached() {
-  let Some(mut pair) = both(|| GameScene::new(0, None)) else {
+  let Some(mut pair) = both(|| GameScene::new(0)) else {
     return;
   };
   let mut script = vec![

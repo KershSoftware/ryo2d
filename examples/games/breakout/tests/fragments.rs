@@ -92,7 +92,7 @@ fn the_main_menu_and_its_quit_confirm_draw_as_a_rebuild() {
 
 #[test]
 fn play_the_hud_the_pause_menu_and_the_way_back_draw_as_a_rebuild() {
-  let Some(mut pair) = pair(|| GameScene::new(0, None)) else {
+  let Some(mut pair) = pair(|| GameScene::new(0)) else {
     return;
   };
   pair.each(|engine| engine.tap_key(KeyCode::Space));

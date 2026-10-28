@@ -1,0 +1,5 @@
+// The game's music, taking over from the menu's over a second
+(
+  clip: "audio/bgm.mp3",
+  crossfade: 1.0,
+)

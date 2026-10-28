@@ -117,20 +117,21 @@ impl Scene for PauseScene {
           let Some(value) = ctx.ui_get::<f32>(root, name).map(|v| v / 100.0) else {
             continue;
           };
-          match name {
+          let kind = match name {
             "master" => {
               self.settings.master_volume = value;
-              ctx.audio.set_master_volume(value);
+              VolumeKind::Master
             }
             "music" => {
               self.settings.music_volume = value;
-              ctx.audio.set_music_volume(value);
+              VolumeKind::Music
             }
             _ => {
               self.settings.sfx_volume = value;
-              ctx.audio.set_sfx_volume(value);
+              VolumeKind::Sfx
             }
-          }
+          };
+          ctx.audio().set_volume_setting(kind, value);
           self.settings_changed = true;
         }
         (UiEventKind::Clicked, _, Some("resume")) => action = Some(Choice::Resume),

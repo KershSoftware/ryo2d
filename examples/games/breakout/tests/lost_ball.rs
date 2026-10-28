@@ -37,7 +37,7 @@ fn a_ball_leaving_past_a_bottom_corner_is_lost() {
     EngineBuilder::new()
       .resolution(SCREEN_WIDTH, SCREEN_HEIGHT)
       .fixed_hz(120)
-      .start_scene(GameScene::new(0, None)),
+      .start_scene(GameScene::new(0)),
   ) else {
     return;
   };
