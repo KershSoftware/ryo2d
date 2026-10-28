@@ -8,12 +8,14 @@ use std::time::Duration;
 use kira::sound::static_sound::StaticSoundData;
 #[cfg(not(target_arch = "wasm32"))]
 use kira::sound::streaming::StreamingSoundData;
+use serde::Deserialize;
 
 use crate::core::asset::{AssetError, AssetLoader, LoadContext};
 use crate::core::audio::{AudioClip, ClipData, DECODE_THRESHOLD};
 
-/// Whether a clip is decoded to memory or kept encoded for streaming
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+/// Whether a clip is decoded to memory or kept encoded for streaming (a
+/// sound definition's `mode: Stream` names it)
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Deserialize)]
 pub enum ClipMode {
   /// Decode a clip of up to 10 s, stream a longer one
   #[default]

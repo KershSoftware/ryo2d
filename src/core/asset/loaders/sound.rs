@@ -6,7 +6,10 @@ use std::time::Duration;
 use ron::extensions::Extensions;
 use serde::Deserialize;
 
-use crate::core::asset::{AssetError, AssetLoader, AssetServer, Assets, CheckContext, LoadContext};
+use crate::core::asset::{
+  AssetError, AssetLoader, AssetServer, Assets, AudioClipSettings, CheckContext, ClipMode,
+  LoadContext,
+};
 use crate::core::audio::{AudioClip, STANDARD_BUSES, Sound, SoundClip, Spatial, VoiceLimit};
 
 /// Loads [`Sound`]s from `.sound.ron` files. Every field but `clips` may be
@@ -31,6 +34,7 @@ use crate::core::audio::{AudioClip, STANDARD_BUSES, Sound, SoundClip, Spatial, V
 ///   fade_in: 0.0,                         // 0.0 s
 ///   fade_out: 0.05,                       // 0.0 s (at least 10 ms is used)
 ///   spatial: (min_distance: 50.0, max_distance: 800.0, curve: Inverse), // none
+///   mode: Stream,                         // Auto
 /// )
 /// ```
 ///
@@ -38,7 +42,10 @@ use crate::core::audio::{AudioClip, STANDARD_BUSES, Sound, SoundClip, Spatial, V
 /// and `loop_region` (seconds from the region's start, for a looping sound)
 /// are optional. `spatial`'s `curve` (`Linear`, `Inverse`, `Log`) is
 /// `Inverse` when left out, `pan_width` is `max_distance`, and
-/// `low_pass_at_max` (a cutoff in Hz) is off. An option is written without
+/// `low_pass_at_max` (a cutoff in Hz) is off. `mode` loads every clip as
+/// [`ClipMode`] says: `Auto` decodes a clip of up to 10 s and streams a
+/// longer one, `Decode` and `Stream` force one or the other (the web decodes
+/// every clip). An option is written without
 /// `Some(..)`. The bus is `master`, a standard bus (`music`, `sfx`, `ui`,
 /// `voice`, `ambience`) or a bus of the mixer's under one (`"sfx/footsteps"`).
 ///
@@ -70,17 +77,18 @@ impl AssetLoader for SoundLoader {
       .map_err(|error| AssetError::decode(&path, error))?;
     let mut clips = Vec::with_capacity(file.clips.len());
     for clip in file.clips {
-      let handle = cx
-        .load::<AudioClip>(&clip.path)
-        .map_err(|error| match error {
-          AssetError::Dependency { .. } => error,
-          // A path the registry refused (one that leaves the asset root, or
-          // no loader for it) is the definition's mistake
-          refused => AssetError::decode(
-            &path,
-            format!("the clip {:?}: {}", clip.path, refused.report()),
-          ),
-        })?;
+      let settings = AudioClipSettings { mode: file.mode };
+      let handle =
+        cx.load_with::<AudioClip, _>(&clip.path, settings)
+          .map_err(|error| match error {
+            AssetError::Dependency { .. } => error,
+            // A path the registry refused (one that leaves the asset root, or
+            // no loader for it) is the definition's mistake
+            refused => AssetError::decode(
+              &path,
+              format!("the clip {:?}: {}", clip.path, refused.report()),
+            ),
+          })?;
       clips.push(SoundClip {
         clip: handle,
         weight: clip.weight,
@@ -191,6 +199,8 @@ struct SoundFile {
   fade_out: f64,
   #[serde(default)]
   spatial: Option<Spatial>,
+  #[serde(default)]
+  mode: ClipMode,
 }
 
 /// One of a file's clips
@@ -358,7 +368,8 @@ mod tests {
   use std::time::{Duration, Instant};
 
   use crate::core::asset::{
-    AssetPath, AssetServer, AssetSource, Assets, AssetsView, MemorySource, insert_registry, pump,
+    AssetPath, AssetServer, AssetSource, Assets, AssetsView, AudioClipSettings, ClipMode,
+    MemorySource, insert_registry, pump,
   };
   use crate::core::audio::{AudioClip, Falloff, LimitRule, Sound, Spatial, VoiceLimit};
   use crate::core::ecs::kernel::World;
@@ -504,6 +515,45 @@ mod tests {
     );
   }
 
+  /// A definition's `mode` loads its clips with that mode: the same clip
+  /// assets as loading the files with those settings
+  #[test]
+  fn a_definition_can_force_its_clips_to_decode_or_stream() {
+    let cases = [
+      ("", ClipMode::Auto),
+      (", mode: Auto", ClipMode::Auto),
+      (", mode: Decode", ClipMode::Decode),
+      (", mode: Stream", ClipMode::Stream),
+    ];
+    for (field, mode) in cases {
+      let files = MemorySource::new();
+      let text = format!(r#"(clips: [(path: "sfx/forced.wav")]{field})"#);
+      files.insert("sfx/forced.sound.ron", text);
+      files.insert("sfx/forced.wav", tone());
+      let mut world = registry_over(files);
+      let sound = match AssetsView::new(&mut world).load_now::<Sound>("sfx/forced.sound.ron") {
+        Ok(sound) => sound,
+        Err(error) => panic!("{field}: {}", error.report()),
+      };
+      let clip = world
+        .resource::<Assets<Sound>>()
+        .get(&sound)
+        .map(|sound| sound.clips[0].clip.clone());
+      let settings = AudioClipSettings { mode };
+      let direct = world
+        .resource::<AssetServer>()
+        .load_with::<AudioClip, _>("sfx/forced.wav", settings);
+      assert_eq!(clip.as_ref(), Some(&direct), "{field}");
+      // The tone is 250 ms: only Stream streams it (and the web decodes all)
+      let streamed = world
+        .resource::<Assets<AudioClip>>()
+        .get(&direct)
+        .map(AudioClip::is_streamed);
+      let expected = mode == ClipMode::Stream && !cfg!(target_arch = "wasm32");
+      assert_eq!(streamed, Some(expected), "{field}");
+    }
+  }
+
   #[test]
   fn spatial_settings_read_with_their_defaults() {
     let sound = loaded(
@@ -563,6 +613,7 @@ mod tests {
       ),
       (r#"(clips: [(path: "m.wav")], pitch: NaN)"#, "pitch"),
       (r#"(clips: [(path: "m.wav")], limit: (max: 0))"#, "max"),
+      (r#"(clips: [(path: "m.wav")], mode: Streamed)"#, "Streamed"),
       (
         r#"(clips: [(path: "m.wav")], spatial: (min_distance: 50.0, max_distance: 10.0))"#,
         "max_distance",
