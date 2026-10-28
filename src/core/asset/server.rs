@@ -98,8 +98,8 @@ struct Info {
   /// The loaded assets whose values hold this one
   dependents: Vec<UntypedAssetId>,
   /// The files its current job read through its `LoadContext` without
-  /// loading them (`read`): a change to one reloads it, as a dependency's
-  /// reload would
+  /// loading them (`read`): a change to one reloads it, running its loader
+  /// again
   reads: Vec<AssetPath>,
   /// A hash of the last error it warned about, so an error warns once
   warned: Option<u64>,

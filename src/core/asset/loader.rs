@@ -137,8 +137,9 @@ impl<'a> LoadContext<'a> {
   /// asset of it: for a loader that builds its asset from other files'
   /// contents (music joining its intro and loop). It is not a dependency
   /// (nothing waits on it, and nothing holds it), but a change to that file
-  /// reloads this asset, as one would; so does the file coming, after a read
-  /// that found none failed the load
+  /// reloads this asset: its loader runs again (a dependency's change only
+  /// checks it again). So does the file coming, after a read that found
+  /// none failed the load
   pub(crate) fn read(&self, path: &AssetPath) -> Result<Vec<u8>, AssetError> {
     self.server.read_for(self.job, path)
   }

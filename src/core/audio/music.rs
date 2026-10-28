@@ -30,7 +30,10 @@ use crate::core::hash::FastSet;
 /// Saved while it plays (hot reload: its file, its clip, or its intro or
 /// loop file), the track switches to what it now says where it is,
 /// crossfading over 10 ms: its new clips, loop, volume, bus and crossfade.
-/// A save that does not load changes nothing.
+/// A save that does not load changes nothing. Changed in code
+/// (`Assets::get_mut`), the track playing it switches the same way, as a
+/// save does: each change starts it again where it is, so change it when it
+/// should switch, not every frame.
 ///
 /// ```
 /// use ryo2d::prelude::*;
@@ -253,6 +256,9 @@ pub(super) struct Track {
   pub(super) voice: Voice,
   /// Its crossfade, which a scene's cleanup fades it out over
   pub(super) crossfade: Duration,
+  /// The definition's content version it plays: as it started, or as a
+  /// reload last switched it
+  pub(super) version: u64,
 }
 
 impl Track {

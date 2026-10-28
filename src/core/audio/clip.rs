@@ -32,7 +32,8 @@ pub(crate) enum ClipData {
 /// Saved while it plays (hot reload), its loops and the music playing it
 /// switch to the new file where they are, crossfading over 10 ms, and its
 /// one-shots finish on the old one; a save that does not decode changes
-/// nothing.
+/// nothing. Changed in code (`Assets::get_mut`), it switches them the same
+/// way, as a save does.
 pub struct AudioClip {
   data: ClipData,
   duration: Duration,

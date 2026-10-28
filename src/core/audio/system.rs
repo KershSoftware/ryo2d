@@ -1010,4 +1010,194 @@ mod tests {
     audio_step(&mut world, FRAME);
     assert_eq!(world.resource::<AudioEngine>().remembered(), 0);
   }
+
+  /// The Stop and Start of a switch to new data where it is
+  const SWITCH: [(AudioLogKind, Duration); 2] = [
+    (AudioLogKind::Stop, MIN_FADE),
+    (AudioLogKind::Start, MIN_FADE),
+  ];
+
+  /// Replace `clip`'s data in code: the same `Modified` a save sends, at the
+  /// next pump
+  fn replace_clip(world: &mut World, clip: &Handle<AudioClip>, seconds: f32) {
+    let frames = vec![[0.2, 0.2]; (48_000.0 * seconds) as usize];
+    if let Some(clip) = world.resource_mut::<Assets<AudioClip>>().get_mut(clip) {
+      *clip = AudioClip::from_frames(48_000, &frames);
+    }
+  }
+
+  /// A loop moved to rebuilt buses in the frame its clip changes switches
+  /// once, onto the new clip
+  #[test]
+  fn a_mixer_rebuild_and_a_clip_reload_in_one_frame_switch_a_loop_once() {
+    let mut world = audio_world();
+    let clip = clip(&mut world, 2.0);
+    let sound = looping(&mut world, &clip, "sfx");
+    let voice = AudioView::new(&mut world).play(&sound);
+    steps(&mut world, 6);
+    AudioView::new(&mut world).set_mixer(Mixer::default());
+    replace_clip(&mut world, &clip, 0.5);
+    audio_step(&mut world, Duration::ZERO);
+    let mut once = vec![(AudioLogKind::Start, Duration::ZERO)];
+    once.extend(SWITCH);
+    assert_eq!(entries(&world, voice.id()), once, "{:#?}", log(&world));
+    // On the new half-second clip: it wraps there
+    steps(&mut world, 30);
+    assert!(
+      position(&world, &voice) < 0.5,
+      "{}",
+      position(&world, &voice)
+    );
+  }
+
+  /// A track moved to rebuilt buses in the frame its definition changes
+  /// switches once, to what it now says
+  #[test]
+  fn a_mixer_rebuild_and_a_music_change_in_one_frame_switch_the_track_once() {
+    let mut world = audio_world();
+    let clip = clip(&mut world, 2.0);
+    let track = world
+      .resource_mut::<Assets<Music>>()
+      .add(Music::looping(clip, 0.0, None));
+    AudioView::new(&mut world).play_music(&track);
+    steps(&mut world, 6);
+    let voice = started_on(&world, "music");
+    AudioView::new(&mut world).set_mixer(Mixer::default());
+    if let Some(track) = world.resource_mut::<Assets<Music>>().get_mut(&track) {
+      track.volume_db = -6.0;
+    }
+    audio_step(&mut world, Duration::ZERO);
+    let mut once = vec![(AudioLogKind::Start, Duration::ZERO)];
+    once.extend(SWITCH);
+    assert_eq!(entries(&world, voice), once, "{:#?}", log(&world));
+    assert_eq!(log(&world).pop().map(|entry| entry.gain_db), Some(-6.0));
+  }
+
+  /// A track played in the frame its change lands starts on it, and does
+  /// not switch again
+  #[test]
+  fn a_track_played_as_its_change_lands_starts_once() {
+    let mut world = audio_world();
+    let clip = clip(&mut world, 2.0);
+    let track = world
+      .resource_mut::<Assets<Music>>()
+      .add(Music::looping(clip, 0.0, None));
+    audio_step(&mut world, FRAME);
+    if let Some(track) = world.resource_mut::<Assets<Music>>().get_mut(&track) {
+      track.volume_db = -6.0;
+    }
+    AudioView::new(&mut world).play_music(&track);
+    audio_step(&mut world, Duration::ZERO);
+    let voice = started_on(&world, "music");
+    assert_eq!(
+      entries(&world, voice),
+      [(AudioLogKind::Start, Duration::ZERO)],
+      "{:#?}",
+      log(&world)
+    );
+    assert_eq!(log(&world).pop().map(|entry| entry.gain_db), Some(-6.0));
+  }
+
+  /// A volume or pitch the game set on a voice replaces the one it was
+  /// played with: a reload of its definition leaves that one alone
+  #[test]
+  fn a_reload_leaves_a_volume_the_game_set() {
+    let hum = wav_of(2.0, 3_000);
+    let (mut world, files) = world_over(&[
+      ("sfx/hum.wav", &hum),
+      (
+        "sfx/hum.sound.ron",
+        br#"(clips: [(path: "sfx/hum.wav")], looping: true, volume: -6.0)"#,
+      ),
+    ]);
+    let sound = load::<Sound>(&mut world, "sfx/hum.sound.ron");
+    let voice = AudioView::new(&mut world).play(&sound);
+    voice.set_volume(-60.0);
+    steps(&mut world, 3);
+    let louder = r#"(clips: [(path: "sfx/hum.wav")], looping: true, volume: 0.0, pitch: 2.0)"#;
+    save::<Sound>(&mut world, &files, "sfx/hum.sound.ron", louder);
+    assert_eq!(
+      entries(&world, voice.id()),
+      [
+        (AudioLogKind::Start, Duration::ZERO),
+        (AudioLogKind::Gain, MIN_FADE),
+        (AudioLogKind::Rate, MIN_FADE)
+      ],
+      "the pitch moves, the muted volume does not: {:#?}",
+      log(&world)
+    );
+    assert_eq!(log(&world).pop().map(|entry| entry.gain_db), Some(-60.0));
+    // A pitch it set stays too
+    voice.set_pitch(-1.0);
+    audio_step(&mut world, FRAME);
+    let higher = r#"(clips: [(path: "sfx/hum.wav")], looping: true, volume: 0.0, pitch: 5.0)"#;
+    save::<Sound>(&mut world, &files, "sfx/hum.sound.ron", higher);
+    assert_eq!(entries(&world, voice.id()).len(), 4, "{:#?}", log(&world));
+  }
+
+  /// A loop paused through its clip's switch stays paused where it was,
+  /// and resumes from there on the new clip
+  #[test]
+  fn a_paused_loop_stays_paused_through_a_clip_switch() {
+    let hum = wav_of(2.0, 3_000);
+    let (mut world, files) =
+      world_over(&[("sfx/hum.wav", &hum), ("sfx/hum.sound.ron", HUM.as_bytes())]);
+    let sound = load::<Sound>(&mut world, "sfx/hum.sound.ron");
+    let voice = AudioView::new(&mut world).play(&sound);
+    steps(&mut world, 12);
+    voice.pause();
+    steps(&mut world, 3);
+    let paused_at = position(&world, &voice);
+    save::<AudioClip>(&mut world, &files, "sfx/hum.wav", wav_of(1.0, 6_000));
+    assert_eq!(
+      entries(&world, voice.id()),
+      [
+        (AudioLogKind::Start, Duration::ZERO),
+        (AudioLogKind::Pause, MIN_FADE),
+        (AudioLogKind::Stop, MIN_FADE),
+        (AudioLogKind::Start, Duration::ZERO)
+      ],
+      "it starts again silent and paused: {:#?}",
+      log(&world)
+    );
+    steps(&mut world, 6);
+    assert_eq!(playback(&world, &voice), Some(PlaybackState::Paused));
+    let held = position(&world, &voice);
+    assert!((held - paused_at).abs() <= CHUNK, "{paused_at} then {held}");
+    voice.resume();
+    steps(&mut world, 6);
+    assert_eq!(playback(&world, &voice), Some(PlaybackState::Playing));
+    assert!(
+      position(&world, &voice) > held + 0.05,
+      "it plays on from there"
+    );
+  }
+
+  /// A loop past the end of its clip saved shorter goes on from the same
+  /// place in its loop
+  #[test]
+  fn a_loop_past_its_clip_s_new_end_wraps_into_it() {
+    let hum = wav_of(2.0, 3_000);
+    let (mut world, files) =
+      world_over(&[("sfx/hum.wav", &hum), ("sfx/hum.sound.ron", HUM.as_bytes())]);
+    let sound = load::<Sound>(&mut world, "sfx/hum.sound.ron");
+    let voice = AudioView::new(&mut world).play(&sound);
+    steps(&mut world, 18);
+    let before = position(&world, &voice);
+    assert!(before > 0.25 && before < 0.35, "{before}");
+    save::<AudioClip>(&mut world, &files, "sfx/hum.wav", wav_of(0.2, 6_000));
+    let after = position(&world, &voice);
+    let wrapped = before - 0.2;
+    assert!(
+      (after - wrapped).abs() <= CHUNK,
+      "{before} wraps to {after}, not {wrapped}"
+    );
+    steps(&mut world, 3);
+    assert!(voice.is_playing(), "{voice:?}");
+    assert!(
+      position(&world, &voice) < 0.2,
+      "{}",
+      position(&world, &voice)
+    );
+  }
 }

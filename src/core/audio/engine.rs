@@ -528,10 +528,9 @@ struct LiveVoice {
   version: u64,
   /// The definition it plays; `None` for a clip played directly, or music
   sound: Option<AssetId<Sound>>,
-  /// Its definition's volume (dB) and pitch (semitones) as its own gain and
-  /// pitch last took them, so a reload of the definition moves them by the
-  /// change; `None` without a definition
-  tuning: Option<(f32, f32)>,
+  /// Its definition's volume and pitch as its own gain and pitch last took
+  /// them
+  tuning: Tuning,
   /// The music it plays, if it is the music player's
   music: Option<AssetId<Music>>,
   bus: usize,
@@ -624,6 +623,27 @@ impl VoiceTable {
   }
 }
 
+/// A definition's volume (dB) and pitch (semitones) as a voice's own gain
+/// and pitch last took them: a reload of the definition moves each by its
+/// change, keeping the spread the voice drew and its play's options. A part
+/// the game set on the voice (`Voice::set_volume`, `set_pitch`) replaced
+/// what it was played with, so is the game's from then on: `None`, as for a
+/// voice with no definition
+#[derive(Debug, Clone, Copy, Default)]
+struct Tuning {
+  volume_db: Option<f32>,
+  pitch: Option<f32>,
+}
+
+/// How far a voice's `part` of its definition (its volume or pitch, as it
+/// last took it) moves to the definition's value `now`, which it takes; 0
+/// for a part the game set (`None`), which stays the game's
+fn follow_change(part: &mut Option<f32>, now: f32) -> f32 {
+  part
+    .as_mut()
+    .map_or(0.0, |was| now - std::mem::replace(was, now))
+}
+
 /// What a definition that has played remembers between its plays
 #[derive(Debug, Default)]
 struct SoundState {
@@ -646,7 +666,7 @@ struct Request<'a> {
   sound: Option<AssetId<Sound>>,
   /// The definition's volume and pitch, which its gain and pitch were drawn
   /// around
-  tuning: Option<(f32, f32)>,
+  tuning: Tuning,
   /// The music it plays, for the music player
   music: Option<AssetId<Music>>,
   source: SourceRef<'a>,
@@ -678,7 +698,7 @@ impl<'a> Request<'a> {
   fn clip(clip: &'a Handle<AudioClip>, options: &PlayOptions) -> Self {
     Self {
       sound: None,
-      tuning: None,
+      tuning: Tuning::default(),
       music: None,
       source: SourceRef::Clip(clip),
       pick: 0,
@@ -713,7 +733,10 @@ impl<'a> Request<'a> {
     let clip = sound.clips.get(pick)?;
     Some(Self {
       sound: Some(id),
-      tuning: Some((sound.volume_db, sound.pitch)),
+      tuning: Tuning {
+        volume_db: Some(sound.volume_db),
+        pitch: Some(sound.pitch),
+      },
       music: None,
       source: SourceRef::Clip(&clip.clip),
       pick,
@@ -1635,15 +1658,24 @@ impl AudioEngine {
     // once its sounds have finished
     drop(old);
     // Every loop on a retired tree moves: this rebuild's, and any that
-    // could not move at an earlier one
+    // could not move at an earlier one. The music moves to what its
+    // definition now says, if that changed, so it switches once a frame
     for index in 0..self.voices.live.len() {
       let live = &self.voices.live[index];
       let live_loop =
         live.looping && matches!(live.voice.state(), VoiceState::Playing | VoiceState::Paused);
-      if live.generation != self.generation
-        && live_loop
-        && let Err(why) = self.restart(world, index, server)
-      {
+      if live.generation == self.generation || !live_loop {
+        continue;
+      }
+      let mut moved = if live.music.is_some() {
+        self.switch_music(world, server)
+      } else {
+        Ok(())
+      };
+      if moved.is_ok() && self.voices.live[index].generation != self.generation {
+        moved = self.restart(world, index, server);
+      }
+      if let Err(why) = moved {
         self.warn_stuck(index, &why, server);
       }
     }
@@ -1863,7 +1895,7 @@ impl AudioEngine {
     }
     // The music first: a clip it plays switches with it, once
     if music_changed {
-      self.switch_music(world, server);
+      self.follow_music(world, server);
     }
     if !clips.is_empty() {
       self.switch_clips(world, &clips, music_changed, server);
@@ -1879,14 +1911,15 @@ impl AudioEngine {
 
   /// Switch each loop playing one of `clips` (reloaded) to the clip's new
   /// data where it is, crossfading over [`MIN_FADE`] (music, with its
-  /// definition's loop over the new clip, unless it switched this frame:
-  /// `music_switched`). Its one-shots play out on the old data, which kira
-  /// holds; one that cannot switch plays on as it was, with a warning
+  /// definition's loop over the new clip, unless it was tried this frame:
+  /// `music_tried`, so a track that cannot switch warns once). Its
+  /// one-shots play out on the old data, which kira holds; one that cannot
+  /// switch plays on as it was, with a warning
   fn switch_clips(
     &mut self,
     world: &World,
     clips: &[AssetId<AudioClip>],
-    music_switched: bool,
+    music_tried: bool,
     server: Option<&AssetServer>,
   ) {
     for index in 0..self.voices.live.len() {
@@ -1899,7 +1932,8 @@ impl AudioEngine {
       if !live_loop || !clips.contains(&clip.id()) {
         continue;
       }
-      // One on the new data already (moved to rebuilt buses this frame) stays
+      // One on the new data already (moved to rebuilt buses, or the music
+      // switched, this frame) stays
       if live
         .source
         .as_ref()
@@ -1909,8 +1943,8 @@ impl AudioEngine {
         continue;
       }
       if live.music.is_some() {
-        if !music_switched {
-          self.switch_music(world, server);
+        if !music_tried {
+          self.follow_music(world, server);
         }
       } else if let Err(why) = self.restart(world, index, server) {
         self.warn_unswitched(index, &why, server);
@@ -1921,22 +1955,28 @@ impl AudioEngine {
   /// Switch the track playing to its definition as the store now has it
   /// (reloaded, or its clip, intro or loop file): its voice starts again
   /// where it is on the new data, with its loop, volume and bus, crossfading
-  /// over [`MIN_FADE`], and takes its new crossfade. One that cannot start
-  /// plays on as it was, with a warning
-  fn switch_music(&mut self, world: &World, server: Option<&AssetServer>) {
+  /// over [`MIN_FADE`], and takes its new crossfade. A track already on what
+  /// the store has (its definition's version and its source's) is left
+  /// alone, so it switches at most once a frame. One that cannot start
+  /// plays on as it was, and why is returned
+  fn switch_music(&mut self, world: &World, server: Option<&AssetServer>) -> Result<(), String> {
     let Some(track) = self.music.live() else {
-      return;
+      return Ok(());
     };
-    let (handle, voice) = (track.music.clone(), track.voice.id());
+    let (handle, voice, was) = (track.music.clone(), track.voice.id(), track.version);
     let Some(index) = self.voices.index_of(voice) else {
-      return;
+      return Ok(());
     };
-    let Some(music) = world
-      .get_resource::<Assets<Music>>()
-      .and_then(|musics| musics.get(&handle))
+    let musics = world.get_resource::<Assets<Music>>();
+    let Some((music, version)) =
+      musics.and_then(|musics| Some((musics.get(&handle)?, musics.version(&handle)?)))
     else {
-      return;
+      return Ok(());
     };
+    let live = &self.voices.live[index];
+    if version == was && live.source.as_ref().version(world) == Some(live.version) {
+      return Ok(());
+    }
     let (source, loop_region) = music_source(world, &handle, music);
     let bus = self.music_bus(&handle, music, server);
     let bus = self.resolve_bus(bus, || music_name(handle.id(), server));
@@ -1947,20 +1987,30 @@ impl AudioEngine {
       gain_db: clamp_gain(music.volume_db),
       bus,
     };
-    match self.replay(world, index, replay, server) {
-      Ok(()) => {
-        self.voices.live[index].fade_out = music.crossfade;
-        if let Some(track) = &mut self.music.current {
-          track.crossfade = music.crossfade;
-        }
+    self.replay(world, index, replay, server)?;
+    self.voices.live[index].fade_out = music.crossfade;
+    if let Some(track) = &mut self.music.current {
+      track.crossfade = music.crossfade;
+      track.version = version;
+    }
+    Ok(())
+  }
+
+  /// [`switch_music`](Self::switch_music), warning if the track could not
+  /// switch
+  fn follow_music(&mut self, world: &World, server: Option<&AssetServer>) {
+    if let Err(why) = self.switch_music(world, server) {
+      let voice = self.music.live().map(|track| track.voice.id());
+      if let Some(index) = voice.and_then(|voice| self.voices.index_of(voice)) {
+        self.warn_unswitched(index, &why, server);
       }
-      Err(why) => self.warn_unswitched(index, &why, server),
     }
   }
 
   /// Move each loop playing one of `sounds` (reloaded) by the change in its
-  /// definition's volume and pitch, over [`MIN_FADE`]: the spread it drew,
-  /// its play's options and its own changes since stay
+  /// definition's volume and pitch, over [`MIN_FADE`]: the spread it drew
+  /// and its play's options stay, and a volume or pitch the game set on the
+  /// voice is left alone
   fn retune(&mut self, world: &World, sounds: &[AssetId<Sound>], server: Option<&AssetServer>) {
     let Some(defs) = world.get_resource::<Assets<Sound>>() else {
       return;
@@ -1969,7 +2019,7 @@ impl AudioEngine {
       let live = &mut self.voices.live[index];
       let live_loop =
         live.looping && matches!(live.voice.state(), VoiceState::Playing | VoiceState::Paused);
-      let (Some(id), Some((was_db, was_pitch))) = (live.sound, live.tuning) else {
+      let Some(id) = live.sound else {
         continue;
       };
       if !live_loop || !sounds.contains(&id) {
@@ -1978,8 +2028,8 @@ impl AudioEngine {
       let Some(def) = defs.get(id) else {
         continue;
       };
-      live.tuning = Some((def.volume_db, def.pitch));
-      let (louder, higher) = (def.volume_db - was_db, def.pitch - was_pitch);
+      let louder = follow_change(&mut live.tuning.volume_db, def.volume_db);
+      let higher = follow_change(&mut live.tuning.pitch, def.pitch);
       let gain = louder != 0.0;
       if gain {
         live.gain_db = clamp_gain(live.gain_db + louder);
@@ -2224,9 +2274,9 @@ impl AudioEngine {
   /// this one's crossfade. With none playing it fades in over its fade-in.
   /// A track that cannot start leaves the one playing alone
   fn start_music(&mut self, world: &World, handle: &Handle<Music>, server: Option<&AssetServer>) {
-    let Some(music) = world
-      .get_resource::<Assets<Music>>()
-      .and_then(|musics| musics.get(handle))
+    let musics = world.get_resource::<Assets<Music>>();
+    let Some((music, version)) =
+      musics.and_then(|musics| Some((musics.get(handle)?, musics.version(handle)?)))
     else {
       return;
     };
@@ -2247,7 +2297,7 @@ impl AudioEngine {
     let bus = self.music_bus(handle, music, server);
     let request = Request {
       sound: None,
-      tuning: None,
+      tuning: Tuning::default(),
       music: Some(handle.id()),
       source,
       pick: 0,
@@ -2291,6 +2341,7 @@ impl AudioEngine {
       music: handle.clone(),
       voice,
       crossfade,
+      version,
     });
   }
 
@@ -2800,11 +2851,11 @@ impl AudioEngine {
   /// The frame's audio work: count the frame, apply the voices' queued
   /// commands, build the bus tree from the mixer if it landed or changed,
   /// switch what plays to the clips, definitions and music reloaded (and
-  /// forget what was remembered of those freed), follow the listener and the emitters (and play the emitters spawned),
-  /// follow the `game` clock (pause and time scale), report the device's
-  /// stream errors, advance the mock backend by `real_delta`, and retire
-  /// the voices that ended (and a retired tree's send tracks once its
-  /// voices have)
+  /// forget what was remembered of those freed), follow the listener and
+  /// the emitters (and play the emitters spawned), follow the `game` clock
+  /// (pause and time scale), report the device's stream errors, advance the
+  /// mock backend by `real_delta`, and retire the voices that ended (and a
+  /// retired tree's send tracks once its voices have)
   pub(crate) fn update(&mut self, world: &World, real_delta: Duration, game: GameTime) {
     let server = world.get_resource::<AssetServer>();
     self.frame = self.frame.wrapping_add(1);
@@ -3093,12 +3144,15 @@ impl AudioEngine {
       }
       VoiceChange::Volume(db) => {
         live.gain_db = clamp_gain(db);
+        // The game's from now on: a reload of its definition leaves it
+        live.tuning.volume_db = None;
         let heard = live.heard_db();
         live.playback.set_volume(heard, smooth);
         (AudioLogKind::Gain, MIN_FADE)
       }
       VoiceChange::Pitch(semitones) => {
         live.pitch = clamp_pitch(semitones);
+        live.tuning.pitch = None;
         live
           .playback
           .set_rate(rate_of(live.pitch) * live.scale, smooth);
