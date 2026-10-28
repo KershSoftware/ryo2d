@@ -1835,7 +1835,7 @@ mod tests {
     }
     assert_eq!(voice_entries(&world, "music", AudioLogKind::Start).len(), 1);
     assert_eq!(voice_entries(&world, "music", AudioLogKind::Stop), []);
-    let view = AudioView::new(&mut world);
+    let mut view = AudioView::new(&mut world);
     assert_eq!(view.current_music(), Some(track.id()));
     assert_eq!(view.voices_on("music"), 1);
   }
@@ -1907,7 +1907,7 @@ mod tests {
       50,
       "each exited level's loop stopped once"
     );
-    let view = AudioView::new(&mut world);
+    let mut view = AudioView::new(&mut world);
     assert_eq!(view.current_music(), Some(track.id()));
     assert_eq!(view.voices_on("music"), 1);
     assert_eq!(view.voices_on("sfx"), 1, "the last level's loop");

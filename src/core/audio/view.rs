@@ -189,9 +189,7 @@ impl<'w> AudioView<'w> {
   /// still apply on top. It lasts for the session, through mixer reloads,
   /// and applies to a bus the mixer adds later
   pub fn set_bus_volume(&mut self, bus: &str, db: f32) {
-    if let Some(mut engine) = self.world.get_resource_mut::<AudioEngine>() {
-      engine.set_bus_volume(bus, db);
-    }
+    self.with_mixer(|engine| engine.set_bus_volume(bus, db));
   }
 
   /// Blend the mix to the mixer's snapshot `name` over the snapshot's
@@ -200,33 +198,45 @@ impl<'w> AudioView<'w> {
   /// snapshot is active at a time. A name the mixer has none of is warned
   /// about once and changes nothing
   pub fn snapshot(&mut self, name: &str) {
-    if let Some(mut engine) = self.world.get_resource_mut::<AudioEngine>() {
-      engine.snapshot(name);
-    }
+    self.with_mixer(|engine| engine.snapshot(name));
   }
 
   /// Blend back from the active snapshot, over its blend time
   pub fn clear_snapshot(&mut self) {
-    if let Some(mut engine) = self.world.get_resource_mut::<AudioEngine>() {
-      engine.clear_snapshot();
-    }
+    self.with_mixer(AudioEngine::clear_snapshot);
+  }
+
+  /// Run `f` on the engine with the bus tree built from the mixer, if it
+  /// landed or changed since: a mixer loaded with `load_now` is there at
+  /// once
+  fn with_mixer<R: Default>(&mut self, f: impl FnOnce(&mut AudioEngine) -> R) -> R {
+    self
+      .world
+      .try_resource_scope(|world: &mut World, mut engine: Mut<'_, AudioEngine>| {
+        engine.mixer_now(world);
+        f(&mut engine)
+      })
+      .unwrap_or_default()
   }
 
   /// Build the buses from `mixer`, made in code, in place of the game's
   /// mixer file (a game with no file, or a test; on the web, one whose own
   /// asset source does not hold it).
-  /// It applies at the end of the frame as a saved file would: loops carry
-  /// on, at their position, on the new buses, and one-shots finish where
-  /// they are. A mixer that fails its check (a bus named twice, say) is
-  /// warned about and the buses stay as they are
+  /// It is built at once, as a saved file is: loops carry on, at their
+  /// position, on the new buses, and one-shots finish where they are. A
+  /// mixer that fails its check (a bus named twice, say) is warned about and
+  /// the buses stay as they are
   pub fn set_mixer(&mut self, mixer: Mixer) {
     let Some(mut mixers) = self.world.get_resource_mut::<Assets<Mixer>>() else {
       return;
     };
     let mixer = mixers.add(mixer);
-    if let Some(mut engine) = self.world.get_resource_mut::<AudioEngine>() {
-      engine.set_mixer(Some(mixer));
-    }
+    self
+      .world
+      .try_resource_scope(|world: &mut World, mut engine: Mut<'_, AudioEngine>| {
+        engine.set_mixer(Some(mixer));
+        engine.mixer_now(world);
+      });
   }
 
   /// Play `music` on the engine's one music player, on its bus (`music`, or
@@ -338,10 +348,7 @@ impl<'w> AudioView<'w> {
 
   /// How many voices play on `bus` and every bus under it (`master` counts
   /// them all); 0 for a bus that does not exist
-  pub fn voices_on(&self, bus: &str) -> usize {
-    self
-      .world
-      .get_resource::<AudioEngine>()
-      .map_or(0, |engine| engine.voices_on(bus))
+  pub fn voices_on(&mut self, bus: &str) -> usize {
+    self.with_mixer(|engine| engine.voices_on(bus))
   }
 }

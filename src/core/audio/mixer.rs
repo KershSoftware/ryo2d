@@ -1643,6 +1643,62 @@ mod tests {
     })
   }
 
+  /// A mixer loaded at once is built before what is asked of the engine
+  /// next, in the same frame: a one-shot played as a scene enters plays on
+  /// the bus the mixer adds (it could never move there later), `voices_on`
+  /// counts it, a snapshot and a bus volume reach it, and a mixer set in
+  /// code is built as it is set
+  #[test]
+  fn a_one_shot_played_as_the_mixer_loads_plays_on_its_bus() {
+    let files = MemorySource::new();
+    files.insert(
+      MIXER_PATH,
+      r#"(
+        buses: { "sfx/steps-at-once": (volume: -3.0) },
+        snapshots: { "hushed-at-once": (blend: 0.0, buses: { "sfx": (volume: -12.0) }) },
+      )"#,
+    );
+    let mut world = audio_world_over(files);
+    // As the engine starts: the mixer queued to load
+    let queued = AssetsView::new(&mut world).load::<Mixer>(MIXER_PATH);
+    world.resource_mut::<AudioEngine>().set_mixer(Some(queued));
+    let step_clip = clip(&mut world, 1.0);
+    let step = world.resource_mut::<Assets<Sound>>().add(Sound {
+      clips: vec![SoundClip::new(step_clip)],
+      bus: "sfx/steps-at-once".to_string(),
+      ..Default::default()
+    });
+    // A scene's `on_enter` loads it at once and plays on its bus
+    if let Err(error) = AssetsView::new(&mut world).load_now::<Mixer>(MIXER_PATH) {
+      panic!("the mixer loads: {}", error.report());
+    }
+    let voice = AudioView::new(&mut world).play(&step);
+    let start = log(&world)
+      .into_iter()
+      .find(|entry| entry.kind == AudioLogKind::Start && entry.voice == voice.id());
+    assert_eq!(
+      start.map(|entry| entry.bus).as_deref(),
+      Some("sfx/steps-at-once")
+    );
+    assert_eq!(AudioView::new(&mut world).voices_on("sfx/steps-at-once"), 1);
+    AudioView::new(&mut world).set_bus_volume("sfx/steps-at-once", -9.0);
+    assert_eq!(bus(&world, "sfx/steps-at-once").base_db, -9.0);
+    AudioView::new(&mut world).snapshot("hushed-at-once");
+    assert_eq!(bus(&world, "sfx").snapshot_db, -12.0);
+    // A mixer made in code is built as it is set
+    AudioView::new(&mut world).set_mixer(Mixer {
+      buses: vec![BusDef::new("ui/menu-at-once")],
+      ..Default::default()
+    });
+    assert!(
+      buses(&world)
+        .iter()
+        .any(|bus| bus.name == "ui/menu-at-once"),
+      "{:#?}",
+      buses(&world)
+    );
+  }
+
   #[test]
   fn the_standard_layout_exists_without_a_mixer_file() {
     let files = MemorySource::new();

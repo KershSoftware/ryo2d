@@ -27,7 +27,7 @@ use rand::{Rng, SeedableRng};
 use super::log::{AudioLog, AudioLogEntry, AudioLogKind};
 use super::mix::{Blend, DuckState, Level, OPEN_HZ};
 use super::mixer::{
-  BusReport, BusTree, GainLayers, MAX_BUS_DB, Output, PlannedBus, Route, SEND_TRACK_CAPACITY,
+  Bus, BusReport, BusTree, GainLayers, MAX_BUS_DB, Output, PlannedBus, Route, SEND_TRACK_CAPACITY,
   Tracks, plan,
 };
 use super::music::{MusicPlayer, Track};
@@ -100,6 +100,16 @@ const SCALE_EPSILON: f64 = 1e-6;
 /// The fastest time scale audio follows: the game clock runs up to 100
 /// times as fast, which would swamp kira's mixing thread
 const MAX_SCALE: f32 = 8.0;
+
+/// Whether `bus` holds its voices under `game`: one that pauses with the
+/// game while it is paused, or one that follows time scale while time
+/// stands still (a scale at or below [`HOLD_SCALE`]). A send bus plays no
+/// voices
+fn holds(bus: &Bus, game: GameTime) -> bool {
+  let still = game.scale <= HOLD_SCALE;
+  !matches!(bus.output, Output::Send(_))
+    && ((bus.pauses_with_game && game.paused) || (bus.follows_time_scale && still))
+}
 
 /// The bus a UI sound plays on: `bus` if it is `ui` or one under it, and
 /// `ui` if not
@@ -1184,6 +1194,9 @@ pub struct AudioEngine {
   /// The time scale the following voices' rates carry: the latest above
   /// [`HOLD_SCALE`] (a held voice keeps the rate it had)
   rate_scale: f64,
+  /// The game's clock as the last update followed it: a tree rebuilt
+  /// between updates holds its buses by it at once
+  game: GameTime,
   /// The holds or the time scale changed, or the tree was rebuilt: the
   /// voices are brought in line in the frame's update
   voices_dirty: bool,
@@ -1353,6 +1366,7 @@ impl AudioEngine {
       generation: 0,
       retired_sends: Vec::new(),
       rate_scale: 1.0,
+      game: GameTime::default(),
       voices_dirty: false,
       focused: true,
       focus_loss: FocusLoss::Keep,
@@ -1893,6 +1907,14 @@ impl AudioEngine {
       .map_or(0, TrackHandle::num_sounds)
   }
 
+  /// Build the bus tree from the mixer now if it landed or changed since it
+  /// was last built (its version gates it, so this mostly does nothing):
+  /// what is asked of the engine next sees its buses
+  pub(crate) fn mixer_now(&mut self, world: &World) {
+    let server = world.get_resource::<AssetServer>();
+    self.apply_mixer(world, server);
+  }
+
   /// Rebuild the bus tree once the mixer lands or changes. A mixer that
   /// fails its check (one made in code; a file's failed to load) keeps the
   /// tree as it is, with a warning
@@ -1971,6 +1993,12 @@ impl AudioEngine {
     );
     // The main track keeps master's gain until the refresh below
     tree.buses[0].applied = self.buses.buses[0].applied;
+    // Built between updates, its buses hold as the clock last stood, so a
+    // voice played on one before the next update starts held if it should
+    let game = self.game;
+    for bus in &mut tree.buses {
+      bus.held = holds(bus, game);
+    }
     let mut old = std::mem::replace(&mut self.buses, tree);
     let retired = self.generation;
     self.generation = self.generation.wrapping_add(1);
@@ -2555,6 +2583,9 @@ impl AudioEngine {
     ui: bool,
   ) -> Voice {
     let server = world.get_resource::<AssetServer>();
+    // A mixer that landed or changed is built first: a one-shot cannot move
+    // to a bus built after it starts
+    self.apply_mixer(world, server);
     // Heard from a place: from where the listener is now
     if options.position.is_some() {
       self.find_listener(world);
@@ -3681,6 +3712,7 @@ impl AudioEngine {
   /// resumes, applied this frame, reach kira here too, so each voice gets
   /// at most one pause or resume a frame
   fn follow_game(&mut self, game: GameTime, real_delta: Duration, server: Option<&AssetServer>) {
+    self.game = game;
     let still = game.scale <= HOLD_SCALE;
     let scale = f64::from(game.scale);
     if !still && (scale - self.rate_scale).abs() > SCALE_EPSILON {
@@ -3689,9 +3721,7 @@ impl AudioEngine {
     }
     for index in 0..self.buses.buses.len() {
       let bus = &mut self.buses.buses[index];
-      // A send bus plays no voices
-      let held = !matches!(bus.output, Output::Send(_))
-        && ((bus.pauses_with_game && game.paused) || (bus.follows_time_scale && still));
+      let held = holds(bus, game);
       if held == bus.held {
         continue;
       }

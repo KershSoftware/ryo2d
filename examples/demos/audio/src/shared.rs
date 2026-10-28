@@ -16,7 +16,7 @@ pub(crate) const BAD: Color = Color::rgb(255, 110, 100);
 /// The game's mixer, loaded at once. The engine loads it by itself, on a
 /// worker; a scene that plays on the mixer's own buses (the limits page's
 /// rows) or reads its snapshots from its first frame loads it at once, so
-/// its buses are built at the end of that frame. Every page here does, so
+/// its buses are built before its first play. Every page here does, so
 /// the tour's captures do not wait on a worker. The handle keeps it for the
 /// page to read
 pub(crate) fn load_mixer(ctx: &mut SceneContext) -> Option<Handle<Mixer>> {
@@ -159,7 +159,7 @@ pub(crate) fn bus_meters(
 ) -> f32 {
   const ROW: f32 = 22.0;
   ui.draw_text("voices_on", x, y, DIM);
-  let audio = ctx.audio();
+  let mut audio = ctx.audio();
   for (i, &bus) in buses.iter().enumerate() {
     let row_y = y + ROW * (i as f32 + 1.0);
     let voices = audio.voices_on(bus);

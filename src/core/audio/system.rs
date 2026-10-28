@@ -1038,6 +1038,13 @@ mod tests {
     }
   }
 
+  /// A mixer that lands in the frame's update, as a file loaded or saved
+  /// does (one set in code is built at once)
+  fn land_mixer(world: &mut World) {
+    let mixer = world.resource_mut::<Assets<Mixer>>().add(Mixer::default());
+    world.resource_mut::<AudioEngine>().set_mixer(Some(mixer));
+  }
+
   /// A loop moved to rebuilt buses in the frame its clip changes switches
   /// once, onto the new clip
   #[test]
@@ -1047,7 +1054,7 @@ mod tests {
     let sound = looping(&mut world, &clip, "sfx");
     let voice = AudioView::new(&mut world).play(&sound);
     steps(&mut world, 6);
-    AudioView::new(&mut world).set_mixer(Mixer::default());
+    land_mixer(&mut world);
     replace_clip(&mut world, &clip, 0.5);
     audio_step(&mut world, Duration::ZERO);
     let mut once = vec![(AudioLogKind::Start, Duration::ZERO)];
@@ -1074,7 +1081,7 @@ mod tests {
     AudioView::new(&mut world).play_music(&track);
     steps(&mut world, 6);
     let voice = started_on(&world, "music");
-    AudioView::new(&mut world).set_mixer(Mixer::default());
+    land_mixer(&mut world);
     if let Some(track) = world.resource_mut::<Assets<Music>>().get_mut(&track) {
       track.volume_db = -6.0;
     }

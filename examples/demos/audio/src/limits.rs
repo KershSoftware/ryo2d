@@ -33,8 +33,7 @@ const DISTANCES: [f32; 7] = [60.0, 480.0, 180.0, 360.0, 30.0, 270.0, 420.0];
 /// The priority row's bells, in turn: indexes into its sounds (low, mid,
 /// high)
 const PRIORITY_TURNS: [usize; 7] = [1, 0, 2, 0, 1, 0, 2];
-/// The first frame a row plays on: the mixer's buses are built at the end
-/// of the first
+/// The first frame a row plays on, a moment after the page opens
 const FIRST_PLAY: u32 = 10;
 
 /// A row's rule

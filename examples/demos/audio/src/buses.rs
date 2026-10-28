@@ -137,7 +137,7 @@ impl DemoPage for BusesPage {
     ui.draw_text("voices_on", voices_x, y, DIM);
     y += 28.0;
 
-    let audio = ctx.audio();
+    let mut audio = ctx.audio();
     let master_db = volume_to_db(audio.volume_setting(VolumeKind::Master));
     for kind in VolumeKind::ALL {
       let setting = audio.volume_setting(kind);
