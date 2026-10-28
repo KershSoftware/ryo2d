@@ -86,8 +86,8 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use super::resolve::{
-  DEFAULT_MASTER_VOLUME, DEFAULT_MUSIC_VOLUME, DEFAULT_RESOLUTION, DEFAULT_SFX_VOLUME,
-  StoredPreferences,
+  DEFAULT_AMBIENCE_VOLUME, DEFAULT_MASTER_VOLUME, DEFAULT_MUSIC_VOLUME, DEFAULT_RESOLUTION,
+  DEFAULT_SFX_VOLUME, DEFAULT_UI_VOLUME, DEFAULT_VOICE_VOLUME, StoredPreferences,
 };
 use crate::core::error::{SaveError, SaveResult};
 
@@ -111,6 +111,12 @@ pub enum UserPreference {
   MusicVolume,
   /// Sound effects volume (0.0 - 1.0)
   SfxVolume,
+  /// Interface sounds volume (0.0 - 1.0)
+  UiVolume,
+  /// Dialogue volume (0.0 - 1.0)
+  VoiceVolume,
+  /// Ambience volume (0.0 - 1.0)
+  AmbienceVolume,
   /// Display resolution (width + height together)
   Resolution,
   /// Display mode (windowed, exclusive_fullscreen, borderless_fullscreen)
@@ -130,6 +136,9 @@ impl UserPreference {
       UserPreference::MasterVolume,
       UserPreference::MusicVolume,
       UserPreference::SfxVolume,
+      UserPreference::UiVolume,
+      UserPreference::VoiceVolume,
+      UserPreference::AmbienceVolume,
       UserPreference::Resolution,
       UserPreference::DisplayMode,
       UserPreference::Vsync,
@@ -291,7 +300,8 @@ fn system_state_map(state: &SystemState) -> SaveResult<serde_json::Map<String, s
 ///
 /// # Contents
 ///
-/// - Audio volume levels (master, music, sfx)
+/// - Audio volume levels (master, music, sfx, ui, voice, ambience): the
+///   player's settings, from 0 to 1 (`ctx.audio().set_volume_setting`)
 /// - Display settings (resolution, display mode, vsync)
 /// - Optional engine overrides (show_fps)
 /// - Custom key-value storage for game-specific env variables
@@ -305,6 +315,12 @@ pub struct SystemState {
   pub music_volume: f32,
   /// Sound effects volume (0.0 - 1.0)
   pub sfx_volume: f32,
+  /// Interface sounds volume (0.0 - 1.0)
+  pub ui_volume: f32,
+  /// Dialogue volume (0.0 - 1.0)
+  pub voice_volume: f32,
+  /// Ambience volume (0.0 - 1.0)
+  pub ambience_volume: f32,
 
   /// Window width
   pub width: u32,
@@ -442,11 +458,13 @@ pub fn parse_resolution(s: &str) -> Option<(u32, u32)> {
 impl Serialize for SystemState {
   fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
     use serde::ser::SerializeMap;
-    // Count fields: volumes(3) + resolution + display_mode + vsync + show_fps + env
     let mut map = serializer.serialize_map(None)?;
     map.serialize_entry("master_volume", &clean_f32(self.master_volume))?;
     map.serialize_entry("music_volume", &clean_f32(self.music_volume))?;
     map.serialize_entry("sfx_volume", &clean_f32(self.sfx_volume))?;
+    map.serialize_entry("ui_volume", &clean_f32(self.ui_volume))?;
+    map.serialize_entry("voice_volume", &clean_f32(self.voice_volume))?;
+    map.serialize_entry("ambience_volume", &clean_f32(self.ambience_volume))?;
     map.serialize_entry("resolution", &format!("{}x{}", self.width, self.height))?;
     map.serialize_entry("display_mode", &self.display_mode)?;
     map.serialize_entry("vsync", &self.vsync)?;
@@ -469,6 +487,9 @@ struct RawSystemFile {
   master_volume: Option<f32>,
   music_volume: Option<f32>,
   sfx_volume: Option<f32>,
+  ui_volume: Option<f32>,
+  voice_volume: Option<f32>,
+  ambience_volume: Option<f32>,
   resolution: Option<String>,
   width: Option<u32>,
   height: Option<u32>,
@@ -538,6 +559,9 @@ impl RawSystemFile {
       master_volume: self.master_volume,
       music_volume: self.music_volume,
       sfx_volume: self.sfx_volume,
+      ui_volume: self.ui_volume,
+      voice_volume: self.voice_volume,
+      ambience_volume: self.ambience_volume,
       show_fps: self.show_fps,
       bindings: self.bindings.clone(),
     }
@@ -552,6 +576,9 @@ impl RawSystemFile {
       master_volume: self.master_volume.unwrap_or(DEFAULT_MASTER_VOLUME),
       music_volume: self.music_volume.unwrap_or(DEFAULT_MUSIC_VOLUME),
       sfx_volume: self.sfx_volume.unwrap_or(DEFAULT_SFX_VOLUME),
+      ui_volume: self.ui_volume.unwrap_or(DEFAULT_UI_VOLUME),
+      voice_volume: self.voice_volume.unwrap_or(DEFAULT_VOICE_VOLUME),
+      ambience_volume: self.ambience_volume.unwrap_or(DEFAULT_AMBIENCE_VOLUME),
       width,
       height,
       display_mode,
@@ -577,6 +604,9 @@ impl Default for SystemState {
       master_volume: DEFAULT_MASTER_VOLUME,
       music_volume: DEFAULT_MUSIC_VOLUME,
       sfx_volume: DEFAULT_SFX_VOLUME,
+      ui_volume: DEFAULT_UI_VOLUME,
+      voice_volume: DEFAULT_VOICE_VOLUME,
+      ambience_volume: DEFAULT_AMBIENCE_VOLUME,
       width: DEFAULT_RESOLUTION.0,
       height: DEFAULT_RESOLUTION.1,
       display_mode: DisplayMode::Windowed,
@@ -602,6 +632,9 @@ impl SystemState {
       master_volume: defaults.master_volume,
       music_volume: defaults.music_volume,
       sfx_volume: defaults.sfx_volume,
+      ui_volume: defaults.ui_volume,
+      voice_volume: defaults.voice_volume,
+      ambience_volume: defaults.ambience_volume,
       width: defaults.resolution.map(|(w, _)| w).unwrap_or(1280),
       height: defaults.resolution.map(|(_, h)| h).unwrap_or(720),
       display_mode: defaults.display_mode,
@@ -942,6 +975,9 @@ impl SaveManager {
         "master_volume" => filter.contains(UserPreference::MasterVolume),
         "music_volume" => filter.contains(UserPreference::MusicVolume),
         "sfx_volume" => filter.contains(UserPreference::SfxVolume),
+        "ui_volume" => filter.contains(UserPreference::UiVolume),
+        "voice_volume" => filter.contains(UserPreference::VoiceVolume),
+        "ambience_volume" => filter.contains(UserPreference::AmbienceVolume),
         "resolution" => filter.contains(UserPreference::Resolution),
         "display_mode" => filter.contains(UserPreference::DisplayMode),
         "vsync" => filter.contains(UserPreference::Vsync),
@@ -1478,6 +1514,10 @@ mod tests {
       master_volume: 0.5,
       music_volume: 0.7,
       sfx_volume: 0.9,
+      ui_volume: 0.4,
+      voice_volume: 0.3,
+      ambience_volume: 0.2,
+      audio_buffer_frames: Some(512),
       show_fps: true,
       dev_console: false,
       target_background_fps: 30,
@@ -1494,6 +1534,9 @@ mod tests {
     assert_eq!(state.master_volume, 0.5);
     assert_eq!(state.music_volume, 0.7);
     assert_eq!(state.sfx_volume, 0.9);
+    assert_eq!(state.ui_volume, 0.4);
+    assert_eq!(state.voice_volume, 0.3);
+    assert_eq!(state.ambience_volume, 0.2);
     assert_eq!(state.show_fps, Some(true));
     assert_eq!(state.get_env_str("difficulty"), Some("hard"));
   }
@@ -1589,6 +1632,10 @@ mod tests {
       master_volume: 0.9,
       music_volume: 0.8,
       sfx_volume: 0.7,
+      ui_volume: 0.6,
+      voice_volume: 0.5,
+      ambience_volume: 0.4,
+      audio_buffer_frames: None,
       show_fps: true,
       dev_console: false,
       target_background_fps: 30,
@@ -2269,12 +2316,15 @@ mod tests {
     assert!(filter.contains(UserPreference::MasterVolume));
     assert!(filter.contains(UserPreference::MusicVolume));
     assert!(filter.contains(UserPreference::SfxVolume));
+    assert!(filter.contains(UserPreference::UiVolume));
+    assert!(filter.contains(UserPreference::VoiceVolume));
+    assert!(filter.contains(UserPreference::AmbienceVolume));
     assert!(filter.contains(UserPreference::Resolution));
     assert!(filter.contains(UserPreference::DisplayMode));
     assert!(filter.contains(UserPreference::Vsync));
     assert!(filter.contains(UserPreference::ShowFps));
     assert!(filter.contains(UserPreference::Bindings));
-    assert_eq!(filter.len(), 8);
+    assert_eq!(filter.len(), 11);
     assert!(!filter.is_empty());
   }
 
@@ -2337,7 +2387,7 @@ mod tests {
   fn user_preference_filter_default_is_all() {
     let filter = UserPreferenceFilter::default();
 
-    assert_eq!(filter.len(), 8);
+    assert_eq!(filter.len(), 11);
     assert!(filter.contains(UserPreference::MasterVolume));
     assert!(filter.contains(UserPreference::Resolution));
   }
@@ -2346,10 +2396,13 @@ mod tests {
   fn user_preference_all_returns_all_variants() {
     let all = UserPreference::all();
 
-    assert_eq!(all.len(), 8);
+    assert_eq!(all.len(), 11);
     assert!(all.contains(&UserPreference::MasterVolume));
     assert!(all.contains(&UserPreference::MusicVolume));
     assert!(all.contains(&UserPreference::SfxVolume));
+    assert!(all.contains(&UserPreference::UiVolume));
+    assert!(all.contains(&UserPreference::VoiceVolume));
+    assert!(all.contains(&UserPreference::AmbienceVolume));
     assert!(all.contains(&UserPreference::Resolution));
     assert!(all.contains(&UserPreference::DisplayMode));
     assert!(all.contains(&UserPreference::Vsync));

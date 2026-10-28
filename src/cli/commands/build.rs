@@ -171,6 +171,17 @@ fn embedded_config_env(
     ("RYO_EMBED_MASTER_VOLUME", system.master_volume.to_string()),
     ("RYO_EMBED_MUSIC_VOLUME", system.music_volume.to_string()),
     ("RYO_EMBED_SFX_VOLUME", system.sfx_volume.to_string()),
+    ("RYO_EMBED_UI_VOLUME", system.ui_volume.to_string()),
+    ("RYO_EMBED_VOICE_VOLUME", system.voice_volume.to_string()),
+    (
+      "RYO_EMBED_AMBIENCE_VOLUME",
+      system.ambience_volume.to_string(),
+    ),
+    // 0 is the device's own buffer
+    (
+      "RYO_EMBED_AUDIO_BUFFER_FRAMES",
+      system.audio_buffer_frames.unwrap_or(0).to_string(),
+    ),
     ("RYO_EMBED_CONSOLE", system.dev_console.to_string()),
     ("RYO_EMBED_TITLE", config.title.clone()),
     ("RYO_EMBED_SHOW_FPS", system.show_fps.to_string()),
@@ -613,6 +624,10 @@ mod tests {
     config.system.master_volume = 0.3;
     config.system.music_volume = 0.4;
     config.system.sfx_volume = 0.5;
+    config.system.ui_volume = 0.6;
+    config.system.voice_volume = 0.7;
+    config.system.ambience_volume = 0.8;
+    config.system.audio_buffer_frames = Some(256);
 
     let env = embedded_config_env(&config, None);
     let layer = ProjectLayer::from_embedded(|name| {
@@ -629,6 +644,24 @@ mod tests {
     assert_eq!(layer.master_volume, Some(0.3));
     assert_eq!(layer.music_volume, Some(0.4));
     assert_eq!(layer.sfx_volume, Some(0.5));
+    assert_eq!(layer.ui_volume, Some(0.6));
+    assert_eq!(layer.voice_volume, Some(0.7));
+    assert_eq!(layer.ambience_volume, Some(0.8));
+    assert_eq!(layer.audio_buffer_frames, Some(256));
+    // Unset, it ships as 0: the device's own buffer
+    config.system.audio_buffer_frames = None;
+    let env = embedded_config_env(&config, None);
+    let workspace =
+      crate::core::config::Workspace::from_embedded(std::path::Path::new("."), |name| {
+        env
+          .iter()
+          .find(|(key, _)| *key == name)
+          .map(|(_, value)| value.as_str())
+      });
+    assert_eq!(
+      workspace.map(|ws| ws.config().system.audio_buffer_frames),
+      Some(None)
+    );
   }
 
   #[test]

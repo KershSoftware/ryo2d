@@ -917,6 +917,16 @@ impl AssetServer {
     self.inner.workers.run_inline(INLINE_BUDGET);
   }
 
+  /// Whether the source has a file at `path` (false for a path that is not
+  /// one, or a source that panics): for an optional file the engine loads
+  /// only if the game has it, so a game without it gets no warning
+  pub(crate) fn exists(&self, path: &str) -> bool {
+    let Ok(path) = AssetPath::parse(path) else {
+      return false;
+    };
+    catch_unwind(AssertUnwindSafe(|| self.inner.source.exists(&path))).unwrap_or(false)
+  }
+
   /// Reloads each path the source says changed
   pub(crate) fn reload_changed(&self) {
     while let Ok(path) = self.inner.changed.try_recv() {

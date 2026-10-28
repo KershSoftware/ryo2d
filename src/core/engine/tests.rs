@@ -159,6 +159,100 @@ fn saved_720p_survives_a_different_ryo_toml_resolution() {
 }
 
 #[test]
+fn an_old_system_json_without_the_new_volumes_takes_the_defaults() {
+  // Written before the ui, voice and ambience volumes existed
+  let old = r#"{"master_volume": 0.4, "music_volume": 0.6, "sfx_volume": 0.7}"#;
+  let resolve = |ryo_toml: &str, system_json: &str| {
+    let (_dir, ws) = temp_workspace(ryo_toml, Some(system_json));
+    EngineBuilder::new()
+      .with_user_preferences(crate::core::config::UserPreferenceFilter::all())
+      .start_scene(EmptyScene)
+      .resolve_in(Some(&ws), false)
+  };
+  let r = resolve("[system]\nui_volume = 0.5\n", old);
+  assert_eq!(
+    (r.master_volume, r.music_volume, r.sfx_volume),
+    (0.4, 0.6, 0.7)
+  );
+  assert_eq!(r.ui_volume, 0.5, "Ryo.toml's default");
+  assert_eq!(
+    (r.voice_volume, r.ambience_volume),
+    (1.0, 1.0),
+    "the engine's, with none in Ryo.toml"
+  );
+  // Saved, they win over Ryo.toml, and corrupted ones are cleaned
+  let r = resolve(
+    "[system]\nui_volume = 0.5\n",
+    r#"{"ui_volume": 0.2, "voice_volume": 7.0, "ambience_volume": -1.0}"#,
+  );
+  assert_eq!(
+    (r.ui_volume, r.voice_volume, r.ambience_volume),
+    (0.2, 1.0, 0.0)
+  );
+}
+
+#[test]
+fn the_audio_buffer_setting_resolves_from_ryo_toml() {
+  let resolve = |ryo_toml: &str| {
+    let (_dir, ws) = temp_workspace(ryo_toml, None);
+    EngineBuilder::new()
+      .start_scene(EmptyScene)
+      .resolve_in(Some(&ws), true)
+      .audio_buffer_frames
+  };
+  assert_eq!(resolve("[system]\naudio_buffer_frames = 256\n"), Some(256));
+  assert_eq!(resolve(""), None, "unset: cpal's default");
+  assert_eq!(resolve("[system]\naudio_buffer_frames = 0\n"), None);
+}
+
+#[test]
+fn the_engine_applies_the_six_volume_settings_at_start() {
+  use crate::core::audio::{AudioEngine, VolumeKind};
+  let (_dir, ws) = temp_workspace(
+    "[system]\nmaster_volume = 0.3\nmusic_volume = 0.4\nsfx_volume = 0.5\nui_volume = 0.6\nvoice_volume = 0.7\nambience_volume = 0.9\n",
+    None,
+  );
+  let resolved = EngineBuilder::new()
+    .start_scene(EmptyScene)
+    .resolve_in(Some(&ws), true);
+  let engine = Engine::new(resolved, true);
+  let audio = engine.world.resource::<AudioEngine>();
+  let settings: Vec<f32> = VolumeKind::ALL
+    .iter()
+    .map(|&kind| audio.volume_setting(kind))
+    .collect();
+  assert_eq!(settings, [0.3, 0.4, 0.5, 0.6, 0.7, 0.9]);
+}
+
+#[test]
+fn the_engine_loads_the_game_s_mixer_when_it_has_one() {
+  use std::time::{Duration, Instant};
+
+  use crate::core::asset::MemorySource;
+  use crate::core::audio::{AudioEngine, MIXER_PATH, audio_system};
+
+  let files = MemorySource::new();
+  files.insert(MIXER_PATH, r#"(buses: { "sfx/steps": (volume: -6.0) })"#);
+  let resolved = EngineBuilder::new()
+    .asset_source(files)
+    .start_scene(EmptyScene)
+    .resolve_in(None, true);
+  let mut engine = Engine::new(resolved, true);
+  let start = Instant::now();
+  loop {
+    crate::core::asset::pump(&mut engine.world);
+    audio_system(&mut engine.world);
+    let buses = engine.world.resource::<AudioEngine>().buses();
+    if let Some(steps) = buses.iter().find(|bus| bus.name == "sfx/steps") {
+      assert_eq!(steps.base_db, -6.0);
+      break;
+    }
+    assert!(start.elapsed() < Duration::from_secs(5), "the mixer lands");
+    std::thread::sleep(Duration::from_millis(1));
+  }
+}
+
+#[test]
 fn first_run_seeds_system_json_from_builder_and_project() {
   let (dir, ws) = temp_workspace("[system]\nmaster_volume = 0.3\n", None);
   let r = EngineBuilder::new()

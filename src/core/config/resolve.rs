@@ -28,6 +28,12 @@ pub(crate) const DEFAULT_MASTER_VOLUME: f32 = 0.8;
 pub(crate) const DEFAULT_MUSIC_VOLUME: f32 = 1.0;
 /// Engine default sound effects volume.
 pub(crate) const DEFAULT_SFX_VOLUME: f32 = 1.0;
+/// Engine default interface sounds volume.
+pub(crate) const DEFAULT_UI_VOLUME: f32 = 1.0;
+/// Engine default dialogue volume.
+pub(crate) const DEFAULT_VOICE_VOLUME: f32 = 1.0;
+/// Engine default ambience volume.
+pub(crate) const DEFAULT_AMBIENCE_VOLUME: f32 = 1.0;
 const DEFAULT_TITLE: &str = "Ryo2D";
 
 /// Settings set through `EngineBuilder` calls; `None` = not set.
@@ -60,6 +66,11 @@ pub(crate) struct ProjectLayer {
   pub master_volume: Option<f32>,
   pub music_volume: Option<f32>,
   pub sfx_volume: Option<f32>,
+  pub ui_volume: Option<f32>,
+  pub voice_volume: Option<f32>,
+  pub ambience_volume: Option<f32>,
+  /// The audio device's buffer in frames (0: the device's default)
+  pub audio_buffer_frames: Option<u32>,
   pub show_fps: Option<bool>,
   pub show_colliders: Option<bool>,
   pub show_velocities: Option<bool>,
@@ -85,6 +96,9 @@ pub(crate) struct StoredPreferences {
   pub master_volume: Option<f32>,
   pub music_volume: Option<f32>,
   pub sfx_volume: Option<f32>,
+  pub ui_volume: Option<f32>,
+  pub voice_volume: Option<f32>,
+  pub ambience_volume: Option<f32>,
   pub show_fps: Option<bool>,
   /// The player's changed input bindings (action name to binding texts)
   pub bindings: Option<std::collections::BTreeMap<String, Vec<String>>>,
@@ -108,6 +122,11 @@ pub(crate) struct ResolvedSettings {
   pub master_volume: f32,
   pub music_volume: f32,
   pub sfx_volume: f32,
+  pub ui_volume: f32,
+  pub voice_volume: f32,
+  pub ambience_volume: f32,
+  /// The audio device's buffer in frames; `None`: the device's default
+  pub audio_buffer_frames: Option<u32>,
   pub show_fps: bool,
   pub show_colliders: bool,
   pub show_velocities: bool,
@@ -137,6 +156,10 @@ impl ResolvedSettings {
       master_volume: DEFAULT_MASTER_VOLUME,
       music_volume: DEFAULT_MUSIC_VOLUME,
       sfx_volume: DEFAULT_SFX_VOLUME,
+      ui_volume: DEFAULT_UI_VOLUME,
+      voice_volume: DEFAULT_VOICE_VOLUME,
+      ambience_volume: DEFAULT_AMBIENCE_VOLUME,
+      audio_buffer_frames: None,
       show_fps: debug.show_fps,
       show_colliders: debug.show_colliders,
       show_velocities: debug.show_velocities,
@@ -175,6 +198,9 @@ impl ResolvedSettings {
       master_volume: self.master_volume,
       music_volume: self.music_volume,
       sfx_volume: self.sfx_volume,
+      ui_volume: self.ui_volume,
+      voice_volume: self.voice_volume,
+      ambience_volume: self.ambience_volume,
       width,
       height,
       display_mode: self.display_mode,
@@ -202,6 +228,11 @@ pub(crate) fn resolve_settings(
   set(&mut s.master_volume, project.master_volume);
   set(&mut s.music_volume, project.music_volume);
   set(&mut s.sfx_volume, project.sfx_volume);
+  set(&mut s.ui_volume, project.ui_volume);
+  set(&mut s.voice_volume, project.voice_volume);
+  set(&mut s.ambience_volume, project.ambience_volume);
+  // 0 frames is no fixed buffer
+  s.audio_buffer_frames = project.audio_buffer_frames.filter(|&frames| frames > 0);
   set(&mut s.show_fps, project.show_fps);
   set(&mut s.show_colliders, project.show_colliders);
   set(&mut s.show_velocities, project.show_velocities);
@@ -257,6 +288,15 @@ pub(crate) fn resolve_settings(
     if filter.contains(UserPreference::SfxVolume) {
       set(&mut s.sfx_volume, prefs.sfx_volume);
     }
+    if filter.contains(UserPreference::UiVolume) {
+      set(&mut s.ui_volume, prefs.ui_volume);
+    }
+    if filter.contains(UserPreference::VoiceVolume) {
+      set(&mut s.voice_volume, prefs.voice_volume);
+    }
+    if filter.contains(UserPreference::AmbienceVolume) {
+      set(&mut s.ambience_volume, prefs.ambience_volume);
+    }
     if filter.contains(UserPreference::ShowFps) {
       set(&mut s.show_fps, prefs.show_fps);
     }
@@ -265,6 +305,9 @@ pub(crate) fn resolve_settings(
   s.master_volume = sanitize_volume(s.master_volume, DEFAULT_MASTER_VOLUME);
   s.music_volume = sanitize_volume(s.music_volume, DEFAULT_MUSIC_VOLUME);
   s.sfx_volume = sanitize_volume(s.sfx_volume, DEFAULT_SFX_VOLUME);
+  s.ui_volume = sanitize_volume(s.ui_volume, DEFAULT_UI_VOLUME);
+  s.voice_volume = sanitize_volume(s.voice_volume, DEFAULT_VOICE_VOLUME);
+  s.ambience_volume = sanitize_volume(s.ambience_volume, DEFAULT_AMBIENCE_VOLUME);
 
   s
 }
@@ -300,6 +343,10 @@ impl ProjectLayer {
       master_volume: Some(system.master_volume),
       music_volume: Some(system.music_volume),
       sfx_volume: Some(system.sfx_volume),
+      ui_volume: Some(system.ui_volume),
+      voice_volume: Some(system.voice_volume),
+      ambience_volume: Some(system.ambience_volume),
+      audio_buffer_frames: system.audio_buffer_frames,
       show_fps: Some(system.show_fps),
       show_colliders: Some(debug.show_colliders),
       show_velocities: Some(debug.show_velocities),
@@ -341,6 +388,10 @@ impl ProjectLayer {
       master_volume: parse_embedded(&lookup, "RYO_EMBED_MASTER_VOLUME"),
       music_volume: parse_embedded(&lookup, "RYO_EMBED_MUSIC_VOLUME"),
       sfx_volume: parse_embedded(&lookup, "RYO_EMBED_SFX_VOLUME"),
+      ui_volume: parse_embedded(&lookup, "RYO_EMBED_UI_VOLUME"),
+      voice_volume: parse_embedded(&lookup, "RYO_EMBED_VOICE_VOLUME"),
+      ambience_volume: parse_embedded(&lookup, "RYO_EMBED_AMBIENCE_VOLUME"),
+      audio_buffer_frames: parse_embedded(&lookup, "RYO_EMBED_AUDIO_BUFFER_FRAMES"),
       show_fps: parse_embedded(&lookup, "RYO_EMBED_SHOW_FPS"),
       show_colliders: parse_embedded(&lookup, "RYO_EMBED_SHOW_COLLIDERS"),
       show_velocities: parse_embedded(&lookup, "RYO_EMBED_SHOW_VELOCITIES"),
@@ -376,6 +427,10 @@ pub(crate) const COMPILED_EMBEDDED: &[(&str, Option<&str>)] = compiled_embedded!
   "RYO_EMBED_MASTER_VOLUME",
   "RYO_EMBED_MUSIC_VOLUME",
   "RYO_EMBED_SFX_VOLUME",
+  "RYO_EMBED_UI_VOLUME",
+  "RYO_EMBED_VOICE_VOLUME",
+  "RYO_EMBED_AMBIENCE_VOLUME",
+  "RYO_EMBED_AUDIO_BUFFER_FRAMES",
   "RYO_EMBED_CONSOLE",
   "RYO_EMBED_TITLE",
   "RYO_EMBED_SHOW_FPS",
@@ -427,6 +482,9 @@ mod tests {
       master_volume: Some(f32::NAN),
       music_volume: Some(3.0),
       sfx_volume: Some(-1.0),
+      ui_volume: Some(f32::INFINITY),
+      voice_volume: Some(f32::NAN),
+      ambience_volume: Some(0.25),
       ..ProjectLayer::default()
     };
 
@@ -435,6 +493,9 @@ mod tests {
     assert_eq!(s.master_volume, DEFAULT_MASTER_VOLUME);
     assert_eq!(s.music_volume, 1.0);
     assert_eq!(s.sfx_volume, 0.0);
+    assert_eq!(s.ui_volume, DEFAULT_UI_VOLUME);
+    assert_eq!(s.voice_volume, DEFAULT_VOICE_VOLUME);
+    assert_eq!(s.ambience_volume, 0.25);
   }
 
   fn builder_with_everything() -> BuilderOverrides {
@@ -465,6 +526,10 @@ mod tests {
       master_volume: Some(0.3),
       music_volume: Some(0.4),
       sfx_volume: Some(0.5),
+      ui_volume: Some(0.6),
+      voice_volume: Some(0.7),
+      ambience_volume: Some(0.8),
+      audio_buffer_frames: Some(256),
       show_fps: Some(false),
       show_colliders: Some(false),
       show_velocities: Some(false),
@@ -489,6 +554,9 @@ mod tests {
       master_volume: Some(0.1),
       music_volume: Some(0.2),
       sfx_volume: Some(0.9),
+      ui_volume: Some(0.15),
+      voice_volume: Some(0.25),
+      ambience_volume: Some(0.35),
       show_fps: Some(false),
       bindings: None,
     }
@@ -524,6 +592,11 @@ mod tests {
       (s.master_volume, s.music_volume, s.sfx_volume),
       (0.3, 0.4, 0.5)
     );
+    assert_eq!(
+      (s.ui_volume, s.voice_volume, s.ambience_volume),
+      (0.6, 0.7, 0.8)
+    );
+    assert_eq!(s.audio_buffer_frames, Some(256));
     assert!(s.show_frame_timing && s.enable_profiler && s.disable_debug_keys);
     assert!(s.logger_window && !s.dev_window_keys && s.dev_console);
     assert_eq!((s.background_fps, s.background_rendering), (15, true));
@@ -564,6 +637,10 @@ mod tests {
     assert_eq!(
       (s.master_volume, s.music_volume, s.sfx_volume),
       (0.1, 0.2, 0.9)
+    );
+    assert_eq!(
+      (s.ui_volume, s.voice_volume, s.ambience_volume),
+      (0.15, 0.25, 0.35)
     );
     assert!(!s.show_fps);
   }
@@ -636,6 +713,10 @@ display_mode = "borderless_fullscreen"
 master_volume = 0.3
 music_volume = 0.4
 sfx_volume = 0.5
+ui_volume = 0.6
+voice_volume = 0.7
+ambience_volume = 0.8
+audio_buffer_frames = 512
 show_fps = true
 console = true
 target_background_fps = 15
@@ -667,6 +748,10 @@ logo = "art/logo.png"
     assert_eq!(layer.master_volume, Some(0.3));
     assert_eq!(layer.music_volume, Some(0.4));
     assert_eq!(layer.sfx_volume, Some(0.5));
+    assert_eq!(layer.ui_volume, Some(0.6));
+    assert_eq!(layer.voice_volume, Some(0.7));
+    assert_eq!(layer.ambience_volume, Some(0.8));
+    assert_eq!(layer.audio_buffer_frames, Some(512));
     assert_eq!(layer.show_fps, Some(true));
     assert_eq!(layer.dev_console, Some(true));
     assert_eq!(layer.background_fps, Some(15));
@@ -690,6 +775,10 @@ logo = "art/logo.png"
       "RYO_EMBED_MASTER_VOLUME" => Some("0.3"),
       "RYO_EMBED_MUSIC_VOLUME" => Some("0.4"),
       "RYO_EMBED_SFX_VOLUME" => Some("0.5"),
+      "RYO_EMBED_UI_VOLUME" => Some("0.6"),
+      "RYO_EMBED_VOICE_VOLUME" => Some("0.7"),
+      "RYO_EMBED_AMBIENCE_VOLUME" => Some("0.8"),
+      "RYO_EMBED_AUDIO_BUFFER_FRAMES" => Some("256"),
       "RYO_EMBED_CONSOLE" => Some("true"),
       "RYO_EMBED_TITLE" => Some("Shipped"),
       "RYO_EMBED_SHOW_FPS" => Some("true"),
@@ -717,6 +806,10 @@ logo = "art/logo.png"
     assert_eq!(layer.master_volume, Some(0.3));
     assert_eq!(layer.music_volume, Some(0.4));
     assert_eq!(layer.sfx_volume, Some(0.5));
+    assert_eq!(layer.ui_volume, Some(0.6));
+    assert_eq!(layer.voice_volume, Some(0.7));
+    assert_eq!(layer.ambience_volume, Some(0.8));
+    assert_eq!(layer.audio_buffer_frames, Some(256));
     assert_eq!(layer.dev_console, Some(true));
     assert_eq!(layer.show_fps, Some(true));
     assert_eq!(layer.show_colliders, Some(true));
@@ -757,7 +850,7 @@ logo = "art/logo.png"
   fn compiled_table_has_unique_embed_keys() {
     let keys: Vec<&str> = COMPILED_EMBEDDED.iter().map(|(key, _)| *key).collect();
     let unique: std::collections::HashSet<&str> = keys.iter().copied().collect();
-    assert_eq!(keys.len(), 23);
+    assert_eq!(keys.len(), 27);
     assert_eq!(unique.len(), keys.len());
     assert!(keys.iter().all(|key| key.starts_with("RYO_EMBED_")));
     assert_eq!(compiled_embedded_value("RYO_EMBED_NOT_A_KEY"), None);
@@ -778,6 +871,10 @@ logo = "art/logo.png"
     assert_eq!(
       (state.master_volume, state.music_volume, state.sfx_volume),
       (0.3, 0.4, 0.5)
+    );
+    assert_eq!(
+      (state.ui_volume, state.voice_volume, state.ambience_volume),
+      (0.6, 0.7, 0.8)
     );
     assert_eq!(state.get_env_str("difficulty"), Some("hard"));
   }

@@ -116,6 +116,61 @@ fn system_state_malformed_resolution_uses_engine_defaults() {
   assert_eq!(state.height, 720);
 }
 
+#[test]
+fn an_old_system_json_loads_the_new_volumes_at_one() {
+  // Written before the ui, voice and ambience volumes existed
+  let json = serde_json::json!({
+    "master_volume": 0.4,
+    "music_volume": 0.6,
+    "sfx_volume": 0.7,
+    "resolution": "1280x720"
+  });
+  let state: SystemState = serde_json::from_value(json).unwrap();
+  assert_eq!(
+    (state.master_volume, state.music_volume, state.sfx_volume),
+    (0.4, 0.6, 0.7)
+  );
+  assert_eq!(
+    (state.ui_volume, state.voice_volume, state.ambience_volume),
+    (1.0, 1.0, 1.0)
+  );
+}
+
+#[test]
+fn the_new_volumes_round_trip_through_system_json() {
+  let state = SystemState {
+    ui_volume: 0.25,
+    voice_volume: 0.5,
+    ambience_volume: 0.75,
+    ..SystemState::default()
+  };
+  let json = serde_json::to_value(&state).unwrap();
+  assert_eq!(json["ui_volume"], 0.25);
+  assert_eq!(json["voice_volume"], 0.5);
+  assert_eq!(json["ambience_volume"], 0.75);
+  let back: SystemState = serde_json::from_value(json).unwrap();
+  assert_eq!(
+    (back.ui_volume, back.voice_volume, back.ambience_volume),
+    (0.25, 0.5, 0.75)
+  );
+}
+
+#[test]
+fn system_state_from_defaults_carries_the_new_volumes() {
+  let defaults = SystemDefaults {
+    ui_volume: 0.3,
+    voice_volume: 0.6,
+    ambience_volume: 0.9,
+    ..SystemDefaults::default()
+  };
+  let state = SystemState::from_defaults(&defaults);
+  assert_eq!(
+    (state.ui_volume, state.voice_volume, state.ambience_volume),
+    (0.3, 0.6, 0.9)
+  );
+  assert_eq!(SystemDefaults::default().audio_buffer_frames, None);
+}
+
 // ==========================================================================
 // SystemDefaults resolution field
 // ==========================================================================

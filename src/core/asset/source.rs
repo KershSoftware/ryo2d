@@ -46,6 +46,13 @@ pub trait AssetSource: Send + Sync + 'static {
   /// The bytes at `path`
   fn read(&self, path: &AssetPath) -> Result<Vec<u8>, AssetError>;
 
+  /// Whether there is a file at `path`, for an optional file the engine
+  /// loads only if the game has it (the mixer). The default reads it; a
+  /// source that can ask more cheaply says so
+  fn exists(&self, path: &AssetPath) -> bool {
+    self.read(path).is_ok()
+  }
+
   /// Starts telling `changes` about paths whose bytes changed, from any
   /// thread; a source that cannot watch returns Ok and never sends. The
   /// engine's server asks once, when hot reload is on
@@ -141,6 +148,16 @@ impl AssetSource for DiskSource {
     })
   }
 
+  #[cfg(not(target_arch = "wasm32"))]
+  fn exists(&self, path: &AssetPath) -> bool {
+    self.root.join(path.as_str()).is_file()
+  }
+
+  #[cfg(target_arch = "wasm32")]
+  fn exists(&self, _path: &AssetPath) -> bool {
+    false
+  }
+
   /// Watches the folder. A missing folder (noted at debug level), or one
   /// that cannot be watched (warned about), is watched by no one; that is
   /// no error
@@ -210,6 +227,10 @@ impl AssetSource for MemorySource {
     bytes
       .map(|bytes| bytes.to_vec())
       .ok_or_else(|| AssetError::NotFound { path: path.clone() })
+  }
+
+  fn exists(&self, path: &AssetPath) -> bool {
+    self.files().bytes.contains_key(path)
   }
 
   fn watch(&self, changes: AssetChanges) -> Result<(), AssetError> {

@@ -10,7 +10,7 @@ use crate::core::asset::{
   AssetError, AssetLoader, AssetServer, Assets, AudioClipSettings, CheckContext, ClipMode,
   LoadContext,
 };
-use crate::core::audio::{AudioClip, STANDARD_BUSES, Sound, SoundClip, Spatial, VoiceLimit};
+use crate::core::audio::{AudioClip, Sound, SoundClip, Spatial, VoiceLimit, check_bus_name};
 
 /// Loads [`Sound`]s from `.sound.ron` files. Every field but `clips` may be
 /// left out:
@@ -243,7 +243,7 @@ impl SoundFile {
     if self.clips.iter().all(|clip| clip.weight == 0.0) {
       return Err("every clip's weight is 0, so none would ever play".into());
     }
-    check_bus(&self.bus)?;
+    check_bus_name(&self.bus)?;
     finite("volume", self.volume)?;
     at_least_zero("volume_range", self.volume_range)?;
     finite("pitch", self.pitch)?;
@@ -295,23 +295,6 @@ fn check_span(field: &str, span: &Range<f64>) -> Result<(), String> {
     Err(format!(
       "its {field} {}..{} is not a span of seconds (from 0 or later, ending after it starts)",
       span.start, span.end
-    ))
-  }
-}
-
-/// `master`, a standard bus, or a bus under one, with no empty part
-fn check_bus(bus: &str) -> Result<(), String> {
-  if bus == "master" {
-    return Ok(());
-  }
-  let mut parts = bus.split('/');
-  let root = parts.next().unwrap_or_default();
-  if STANDARD_BUSES.contains(&root) && parts.all(|part| !part.is_empty()) {
-    Ok(())
-  } else {
-    Err(format!(
-      "the bus {bus:?} is not master, a standard bus ({}) or a bus under one, such as \"sfx/footsteps\"",
-      STANDARD_BUSES.join(", ")
     ))
   }
 }

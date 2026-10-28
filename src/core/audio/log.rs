@@ -1,12 +1,12 @@
-//! The audio log: what the engine did with each voice, for tests and debug
-//! tooling. Off by default, so a game pays nothing for it
+//! The audio log: what the engine did with each voice and bus, for tests
+//! and debug tooling. Off by default, so a game pays nothing for it
 
 use std::time::Duration;
 
 /// How many entries the log keeps: the latest, older ones dropping off
 pub(crate) const LOG_CAPACITY: usize = 4096;
 
-/// What happened to a voice
+/// What happened to a voice (or, for `Gain`, to a bus)
 #[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AudioLogKind {
@@ -18,7 +18,8 @@ pub enum AudioLogKind {
   Pause,
   /// It was resumed
   Resume,
-  /// Its gain changed to `gain_db`
+  /// Its gain changed to `gain_db`. With `voice` 0 and no `source`, a
+  /// bus's gain changed: `gain_db` is the volume its kira track was given
   Gain,
   /// Its pan changed to `pan`
   Pan,
@@ -32,7 +33,8 @@ pub enum AudioLogKind {
   Stolen,
 }
 
-/// One thing the engine did with a voice, and the voice as it stood then
+/// One thing the engine did with a voice, and the voice as it stood then;
+/// or a change to a bus (`voice` 0, `sound` and `source` empty)
 #[doc(hidden)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct AudioLogEntry {

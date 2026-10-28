@@ -21,7 +21,9 @@ use winit::event_loop::EventLoopProxy;
 use winit::window::Window;
 
 use crate::core::asset::{AssetLoader, AssetServer, AssetSource, DiskSource, insert_registry};
-use crate::core::audio::{Audio, AudioEngine, AudioManager, audio_system};
+use crate::core::audio::{
+  Audio, AudioEngine, AudioManager, VolumeKind, audio_system, default_mixer,
+};
 use crate::core::capture::{AutoCaptureConfig, CaptureReport, CaptureState};
 use crate::core::config::{
   DebugConfig, DebugStats, DisplayMode, FrameTimings, OverlayMode, SmoothedDebugStats,
@@ -515,6 +517,10 @@ impl Engine {
       master_volume,
       music_volume,
       sfx_volume,
+      ui_volume,
+      voice_volume,
+      ambience_volume,
+      audio_buffer_frames,
       disable_debug_keys,
       game_name,
       game_version,
@@ -630,8 +636,19 @@ impl Engine {
 
     let mut world = World::new();
     // On the device, or silently on kira's mock backend when headless or
-    // when the device fails to open
-    let audio_engine = AudioEngine::new(!headless);
+    // when the device fails to open, at the player's volume settings
+    let mut audio_engine = AudioEngine::open(!headless, audio_buffer_frames);
+    let volumes = [
+      master_volume,
+      music_volume,
+      sfx_volume,
+      ui_volume,
+      voice_volume,
+      ambience_volume,
+    ];
+    for (kind, volume) in VolumeKind::ALL.into_iter().zip(volumes) {
+      audio_engine.set_volume_setting(kind, volume);
+    }
     init_world_resources(
       &mut world,
       &config,
@@ -639,6 +656,10 @@ impl Engine {
       command_registry,
       audio_engine,
     );
+    // The game's mixer builds the bus tree once it loads; without one, the
+    // standard layout plays
+    let mixer = default_mixer(world.resource::<AssetServer>());
+    world.resource_mut::<AudioEngine>().set_mixer(mixer);
     // Drawn in place of an image that is not loaded (debug builds); held,
     // so it lives as long as the engine
     let missing_image =
@@ -1707,6 +1728,10 @@ impl EngineBuilder {
       master_volume: settings.master_volume,
       music_volume: settings.music_volume,
       sfx_volume: settings.sfx_volume,
+      ui_volume: settings.ui_volume,
+      voice_volume: settings.voice_volume,
+      ambience_volume: settings.ambience_volume,
+      audio_buffer_frames: settings.audio_buffer_frames,
       disable_debug_keys: settings.disable_debug_keys,
       game_name,
       game_version,
@@ -1732,6 +1757,11 @@ struct ResolvedBuild {
   master_volume: f32,
   music_volume: f32,
   sfx_volume: f32,
+  ui_volume: f32,
+  voice_volume: f32,
+  ambience_volume: f32,
+  /// The audio device's buffer in frames; `None`: the device's default
+  audio_buffer_frames: Option<u32>,
   disable_debug_keys: bool,
   game_name: Option<String>,
   game_version: Option<String>,

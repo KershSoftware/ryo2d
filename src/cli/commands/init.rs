@@ -265,6 +265,10 @@ display_mode = "windowed"
 master_volume = 0.8
 music_volume = 1.0
 sfx_volume = 1.0
+ui_volume = 1.0
+voice_volume = 1.0
+ambience_volume = 1.0
+# audio_buffer_frames = 256   # the audio device's buffer: smaller is lower latency, larger safer
 show_fps = false
 console = false
 

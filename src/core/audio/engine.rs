@@ -16,19 +16,25 @@ use kira::backend::mock::{MockBackend, MockBackendSettings};
 use kira::sound::static_sound::{StaticSoundData, StaticSoundHandle};
 #[cfg(not(target_arch = "wasm32"))]
 use kira::sound::streaming::{StreamingSoundData, StreamingSoundHandle};
-use kira::sound::{EndPosition, PlaybackPosition, PlaybackState, Region, SoundData};
-use kira::track::{TrackBuilder, TrackHandle};
+use kira::sound::{EndPosition, PlaybackPosition, PlaybackState, Region};
+use kira::track::{SendTrackBuilder, SendTrackHandle, TrackBuilder, TrackHandle};
 use kira::{
-  AudioManager, AudioManagerSettings, Decibels, PlaySoundError, PlaybackRate, ResourceLimitReached,
+  AudioManager, AudioManagerSettings, Capacities, Decibels, PlaybackRate, ResourceLimitReached,
   Semitones, Tween,
 };
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
 use super::log::{AudioLog, AudioLogEntry, AudioLogKind};
+use super::mixer::{
+  BusReport, BusTree, GainLayers, MAX_BUS_DB, Output, PlannedBus, SEND_TRACK_CAPACITY, Tracks, plan,
+};
+use super::settings::{SILENCE_DB, VolumeSettings};
 use super::view::{PlayOptions, Playable};
 use super::voice::{Voice, VoiceChange, VoiceCommand, VoiceState};
-use super::{AudioClip, ClipData, LimitRule, Sound, SoundClip, VoiceLimit};
+use super::{
+  AudioClip, ClipData, LimitRule, Mixer, Sound, SoundClip, VoiceLimit, VolumeKind, volume_to_db,
+};
 use crate::core::asset::{AssetId, AssetServer, Assets, Handle};
 use crate::core::ecs::{Resource, Vec2, World};
 use crate::core::hash::{FastMap, FastSet};
@@ -55,8 +61,8 @@ const VOICE_CAPACITY: usize = 128;
 const GAIN_RANGE: (f32, f32) = (-60.0, 24.0);
 /// A voice's own pitch, in semitones either way
 const PITCH_RANGE: f32 = 48.0;
-/// The standard buses under `master`, in order
-pub(crate) const STANDARD_BUSES: [&str; 5] = ["music", "sfx", "ui", "voice", "ambience"];
+/// A bus gain change smaller than this (dB) is not sent to kira
+const GAIN_EPSILON: f32 = 1e-4;
 /// Where a clip played directly goes
 const DEFAULT_BUS: &str = "sfx";
 
@@ -81,6 +87,7 @@ impl Manager {
       backend_settings: MockBackendSettings {
         sample_rate: MOCK_SAMPLE_RATE,
       },
+      capacities: capacities(),
       internal_buffer_size: CHUNK_FRAMES,
       ..Default::default()
     };
@@ -89,13 +96,29 @@ impl Manager {
       .map(Manager::Mock)
   }
 
-  /// The default output device, or the mock backend with one warning
-  fn device() -> Option<Manager> {
-    let settings = AudioManagerSettings {
+  /// The default output device, or the mock backend with one warning.
+  /// `buffer_frames` fixes the device's buffer size (cut to what it
+  /// supports); a device that will not open with it opens with its default,
+  /// with a warning
+  fn device(buffer_frames: Option<u32>) -> Option<Manager> {
+    let settings = || AudioManagerSettings::<CpalBackend> {
+      capacities: capacities(),
       internal_buffer_size: CHUNK_FRAMES,
       ..Default::default()
     };
-    match AudioManager::<CpalBackend>::new(settings) {
+    if let Some(config) = buffer_frames.and_then(fixed_buffer_config) {
+      let mut fixed = settings();
+      let frames = config.buffer_size;
+      fixed.backend_settings.config = Some(config);
+      match AudioManager::<CpalBackend>::new(fixed) {
+        Ok(manager) => return Some(Manager::Device(manager)),
+        Err(error) => crate::engine_warn!(
+          module: "Audio",
+          "the audio device would not open with a buffer of {frames:?} ({error}); it opens with its default buffer"
+        ),
+      }
+    }
+    match AudioManager::<CpalBackend>::new(settings()) {
       Ok(manager) => Some(Manager::Device(manager)),
       Err(error) => Manager::fallback(&error),
     }
@@ -110,102 +133,87 @@ impl Manager {
     Manager::mock()
   }
 
+  /// Set kira's main track's volume: `master`'s gain, over every track and
+  /// send track
+  fn set_main_volume(&mut self, db: f32, tween: Tween) {
+    match self {
+      Manager::Device(manager) => manager.main_track().set_volume(Decibels(db), tween),
+      Manager::Mock(manager) => manager.main_track().set_volume(Decibels(db), tween),
+    }
+  }
+
+  /// kira's tracks under its main track, and its send tracks (tests)
+  #[cfg(test)]
+  fn track_counts(&self) -> (usize, usize) {
+    match self {
+      Manager::Device(manager) => (manager.num_sub_tracks(), manager.num_send_tracks()),
+      Manager::Mock(manager) => (manager.num_sub_tracks(), manager.num_send_tracks()),
+    }
+  }
+}
+
+impl Tracks for Manager {
   fn add_sub_track(&mut self, builder: TrackBuilder) -> Result<TrackHandle, ResourceLimitReached> {
     match self {
       Manager::Device(manager) => manager.add_sub_track(builder),
       Manager::Mock(manager) => manager.add_sub_track(builder),
     }
   }
-}
 
-/// One bus: a kira track under its parent's
-struct Bus {
-  /// Its full name, such as `sfx` or `sfx/footsteps`
-  name: String,
-  parent: Option<usize>,
-  /// `None` if kira had no room for it (never with the standard layout):
-  /// plays on it are refused
-  track: Option<TrackHandle>,
-  /// The most voices playing on it and the buses under it
-  limit: Option<u16>,
-  /// A play was refused for want of kira's room on its track: warned once
-  full_warned: bool,
-}
-
-/// The buses, `master` first, in the standard layout (`master`, and under
-/// it `music`, `sfx`, `ui`, `voice` and `ambience`)
-struct BusTree {
-  buses: Vec<Bus>,
-}
-
-impl BusTree {
-  /// `master` under kira's main track, and the standard five under it
-  fn standard(manager: Option<&mut Manager>) -> BusTree {
-    let master = manager.and_then(|manager| manager.add_sub_track(TrackBuilder::new()).ok());
-    let mut buses = Vec::with_capacity(1 + STANDARD_BUSES.len());
-    buses.push(Bus {
-      name: "master".to_string(),
-      parent: None,
-      track: master,
-      limit: None,
-      full_warned: false,
-    });
-    for name in STANDARD_BUSES {
-      let track = buses[0]
-        .track
-        .as_mut()
-        .and_then(|master| master.add_sub_track(TrackBuilder::new()).ok());
-      buses.push(Bus {
-        name: name.to_string(),
-        parent: Some(0),
-        track,
-        limit: None,
-        full_warned: false,
-      });
-    }
-    BusTree { buses }
-  }
-
-  fn find(&self, name: &str) -> Option<usize> {
-    self.buses.iter().position(|bus| bus.name == name)
-  }
-
-  fn name(&self, bus: usize) -> &str {
-    self.buses.get(bus).map_or("", |bus| bus.name.as_str())
-  }
-
-  /// Whether `bus` is `ancestor` or under it
-  fn within(&self, bus: usize, ancestor: usize) -> bool {
-    let mut at = Some(bus);
-    while let Some(index) = at {
-      if index == ancestor {
-        return true;
-      }
-      at = self.buses.get(index).and_then(|bus| bus.parent);
-    }
-    false
-  }
-
-  /// Whether kira has room for one more sound on `bus`'s track. Counting
-  /// kira's sounds, not the voices, takes in the ones it has yet to free
-  fn has_room(&self, bus: usize) -> bool {
-    self
-      .buses
-      .get(bus)
-      .and_then(|bus| bus.track.as_ref())
-      .is_some_and(|track| track.num_sounds() < track.sound_capacity())
-  }
-
-  /// Start `data` on `bus`. A bus without a track has no room
-  fn play<D: SoundData>(
+  fn add_send_track(
     &mut self,
-    bus: usize,
-    data: D,
-  ) -> Result<D::Handle, PlaySoundError<D::Error>> {
-    match self.buses.get_mut(bus).and_then(|bus| bus.track.as_mut()) {
-      Some(track) => track.play(data),
-      None => Err(PlaySoundError::SoundLimitReached),
+    builder: SendTrackBuilder,
+  ) -> Result<SendTrackHandle, ResourceLimitReached> {
+    match self {
+      Manager::Device(manager) => manager.add_send_track(builder),
+      Manager::Mock(manager) => manager.add_send_track(builder),
     }
+  }
+}
+
+/// kira's room for tracks: its defaults, with room for the send tracks of
+/// a retired tree beside the live one's
+fn capacities() -> Capacities {
+  Capacities {
+    send_track_capacity: SEND_TRACK_CAPACITY,
+    ..Default::default()
+  }
+}
+
+/// The default output device's stream config with its buffer fixed at
+/// `frames`, cut to the range the device reports; `None` for 0 frames, or
+/// with no device (the open that follows warns)
+#[cfg(not(target_arch = "wasm32"))]
+fn fixed_buffer_config(frames: u32) -> Option<kira::backend::cpal::cpal::StreamConfig> {
+  use kira::backend::cpal::cpal::traits::{DeviceTrait, HostTrait};
+  if frames == 0 {
+    return None;
+  }
+  let device = kira::backend::cpal::cpal::default_host().default_output_device()?;
+  let supported = device.default_output_config().ok()?;
+  let mut config = supported.config();
+  config.buffer_size = fixed_buffer(frames, supported.buffer_size());
+  Some(config)
+}
+
+/// The web's stream takes no buffer size
+#[cfg(target_arch = "wasm32")]
+fn fixed_buffer_config(_frames: u32) -> Option<kira::backend::cpal::cpal::StreamConfig> {
+  None
+}
+
+/// A fixed buffer of `frames`, cut to `supported`'s range when it has one
+#[cfg(not(target_arch = "wasm32"))]
+fn fixed_buffer(
+  frames: u32,
+  supported: &kira::backend::cpal::cpal::SupportedBufferSize,
+) -> kira::backend::cpal::cpal::BufferSize {
+  use kira::backend::cpal::cpal::{BufferSize, SupportedBufferSize};
+  match *supported {
+    SupportedBufferSize::Range { min, max } if min <= max => {
+      BufferSize::Fixed(frames.clamp(min, max))
+    }
+    _ => BufferSize::Fixed(frames),
   }
 }
 
@@ -276,6 +284,15 @@ impl Playback {
     }
   }
 
+  /// Where it is, in seconds from the start of what plays
+  fn position(&self) -> f64 {
+    match self {
+      Playback::Static(sound) => sound.position(),
+      #[cfg(not(target_arch = "wasm32"))]
+      Playback::Stream(sound) => sound.position(),
+    }
+  }
+
   fn set_rate(&mut self, rate: f64, tween: Tween) {
     match self {
       Playback::Static(sound) => sound.set_playback_rate(PlaybackRate(rate), tween),
@@ -323,6 +340,12 @@ struct LiveVoice {
   fade_out: Duration,
   /// The engine frame it started in
   frame: u64,
+  /// It loops until stopped, over `loop_region` of `region`, as it started
+  looping: bool,
+  region: Option<Range<f64>>,
+  loop_region: Option<Range<f64>>,
+  /// The bus tree it plays on: the live one's, or a retired one's
+  generation: u32,
 }
 
 /// The live voices, in the order they started (a retired voice's removal
@@ -452,6 +475,8 @@ struct Start<'a> {
   region: Option<&'a Range<f64>>,
   loop_region: Option<&'a Range<f64>>,
   looping: bool,
+  /// Where it starts, in seconds from the start of what plays
+  position: f64,
 }
 
 /// Who a log entry is about
@@ -515,6 +540,24 @@ pub struct AudioEngine {
   listener: Option<Vec2>,
   /// The voices one play stops to make room, kept to reuse
   victims: Vec<Victim>,
+  /// The player's six volume settings
+  settings: VolumeSettings,
+  /// The volumes the game set on buses (`set_bus_volume`), in dB, by name:
+  /// kept through mixer reloads, and given to a bus the mixer adds later
+  bus_volumes: FastMap<String, f32>,
+  /// Bus names whose game volume was warned about once (no such bus)
+  warned_volumes: FastSet<String>,
+  /// The mixer the bus tree is built from: `None` is the standard layout
+  mixer: Option<Handle<Mixer>>,
+  /// The mixer's content version the tree was last built from
+  mixer_version: Option<u64>,
+  /// The mixer has not landed yet: a bus it may add is not warned about
+  mixer_pending: bool,
+  /// The bus tree's generation, counted at each rebuild
+  generation: u32,
+  /// A retired tree's send tracks, by its generation, held while voices on
+  /// it play so their sends still reach them
+  retired_sends: Vec<(u32, Vec<SendTrackHandle>)>,
   #[cfg(test)]
   injected_stream_errors: Vec<String>,
   /// Plays kira refused for want of room: none should ever be
@@ -526,9 +569,16 @@ impl AudioEngine {
   /// The engine on the default audio device (`device`), falling back to the
   /// mock backend with one warning if it fails to open; on the mock
   /// backend at 48 kHz otherwise
+  #[cfg(any(test, not(target_arch = "wasm32")))]
   pub(crate) fn new(device: bool) -> AudioEngine {
+    Self::open(device, None)
+  }
+
+  /// [`AudioEngine::new`], the device's buffer fixed at `buffer_frames`
+  /// when given (`Ryo.toml`'s `audio_buffer_frames`)
+  pub(crate) fn open(device: bool, buffer_frames: Option<u32>) -> AudioEngine {
     let manager = if device {
-      Manager::device()
+      Manager::device(buffer_frames)
     } else {
       Manager::mock()
     };
@@ -542,9 +592,13 @@ impl AudioEngine {
   }
 
   fn with_manager(mut manager: Option<Manager>) -> AudioEngine {
-    let buses = BusTree::standard(manager.as_mut());
+    let settings = VolumeSettings::default();
+    let buses = BusTree::standard(
+      manager.as_mut().map(|manager| manager as &mut dyn Tracks),
+      |planned| layers_of(planned, &settings, &FastMap::default()),
+    );
     let (commands, inbox) = crossbeam_channel::unbounded();
-    AudioEngine {
+    let mut engine = AudioEngine {
       manager,
       buses,
       voices: VoiceTable::new(),
@@ -563,11 +617,22 @@ impl AudioEngine {
       warned_buses: FastSet::default(),
       listener: None,
       victims: Vec::new(),
+      settings,
+      bus_volumes: FastMap::default(),
+      warned_volumes: FastSet::default(),
+      mixer: None,
+      mixer_version: None,
+      mixer_pending: false,
+      generation: 0,
+      retired_sends: Vec::new(),
       #[cfg(test)]
       injected_stream_errors: Vec::new(),
       #[cfg(test)]
       kira_full: 0,
-    }
+    };
+    // master's gain goes on kira's main track
+    engine.refresh_gains();
+    engine
   }
 
   /// Record each voice's start, stop and changes in the audio log (off by
@@ -621,6 +686,297 @@ impl AudioEngine {
   #[cfg(test)]
   pub(crate) fn inject_stream_error(&mut self, error: &str) {
     self.injected_stream_errors.push(error.to_string());
+  }
+
+  /// Build the bus tree from `mixer` once it lands, and again each time it
+  /// changes (a reload); `None` builds nothing more (the engine sets it once,
+  /// at start)
+  pub(crate) fn set_mixer(&mut self, mixer: Option<Handle<Mixer>>) {
+    self.mixer_pending = mixer.is_some();
+    self.mixer = mixer;
+    self.mixer_version = None;
+  }
+
+  /// Each bus as it stands, `master` first and parents before children
+  #[doc(hidden)]
+  pub fn buses(&self) -> Vec<BusReport> {
+    self.buses.report()
+  }
+
+  /// Set the player's volume setting `kind` (sanitized: NaN is its
+  /// default, the rest clamped to 0..=1), its bus following at once
+  pub(crate) fn set_volume_setting(&mut self, kind: VolumeKind, value: f32) {
+    let value = self.settings.set(kind, value);
+    if let Some(bus) = self.buses.buses.get_mut(kind.index()) {
+      bus.layers.setting = volume_to_db(value);
+    }
+    self.refresh_gains();
+  }
+
+  pub(crate) fn volume_setting(&self, kind: VolumeKind) -> f32 {
+    self.settings.get(kind)
+  }
+
+  /// Set `bus`'s volume in dB in place of the mixer's (NaN is 0 dB, the
+  /// rest clamped from silence to +24), for the session: a bus the mixer
+  /// adds later takes it too. A bus there is not is warned about once,
+  /// unless the mixer has yet to land
+  pub(crate) fn set_bus_volume(&mut self, bus: &str, db: f32) {
+    let db = if db.is_nan() {
+      0.0
+    } else {
+      db.clamp(SILENCE_DB, MAX_BUS_DB)
+    };
+    match self.bus_volumes.get_mut(bus) {
+      Some(volume) => *volume = db,
+      None => {
+        self.bus_volumes.insert(bus.to_string(), db);
+      }
+    }
+    match self.buses.find(bus) {
+      Some(index) => {
+        self.buses.buses[index].layers.base = db;
+        self.refresh_gains();
+      }
+      None if !self.mixer_pending => self.warn_volume(bus),
+      None => {}
+    }
+  }
+
+  /// Warn, once for `bus`, that the game set the volume of a bus there is
+  /// not
+  fn warn_volume(&mut self, bus: &str) {
+    if self.warned_volumes.contains(bus) {
+      return;
+    }
+    self.warned_volumes.insert(bus.to_string());
+    crate::engine_warn!(
+      module: "Audio",
+      "set_bus_volume: there is no bus {bus:?}; its volume applies if the mixer adds it"
+    );
+  }
+
+  /// Give each bus's kira track the volume its gain layers add up to, if it
+  /// changed, smoothed over [`MIN_FADE`], logging each change
+  fn refresh_gains(&mut self) {
+    for index in 0..self.buses.buses.len() {
+      let volume = self.buses.kira_volume(index);
+      let bus = &mut self.buses.buses[index];
+      if (volume - bus.applied).abs() < GAIN_EPSILON {
+        continue;
+      }
+      bus.applied = volume;
+      let smooth = tween(MIN_FADE);
+      match &mut bus.output {
+        _ if index == 0 => {
+          if let Some(manager) = &mut self.manager {
+            manager.set_main_volume(volume, smooth);
+          }
+        }
+        Output::Track(Some(track)) => track.set_volume(Decibels(volume), smooth),
+        Output::Send(Some(send)) => send.set_volume(Decibels(volume), smooth),
+        Output::Track(None) | Output::Send(None) => {}
+      }
+      if self.log.is_on() {
+        self.log.push(AudioLogEntry {
+          kind: AudioLogKind::Gain,
+          voice: 0,
+          sound: String::new(),
+          source: String::new(),
+          bus: self.buses.name(index).to_string(),
+          gain_db: volume,
+          pan: 0.0,
+          rate: 1.0,
+          fade: MIN_FADE,
+        });
+      }
+    }
+  }
+
+  /// Set `bus`'s snapshot and duck layers (tests, until snapshots and
+  /// ducking set them)
+  #[cfg(test)]
+  pub(crate) fn set_bus_layers(&mut self, bus: &str, snapshot_db: f32, duck_db: f32) {
+    if let Some(index) = self.buses.find(bus) {
+      let layers = &mut self.buses.buses[index].layers;
+      layers.snapshot = snapshot_db;
+      layers.duck = duck_db;
+      self.refresh_gains();
+    }
+  }
+
+  /// kira's tracks under its main track, and its send tracks (tests)
+  #[cfg(test)]
+  pub(crate) fn kira_tracks(&self) -> (usize, usize) {
+    self.manager.as_ref().map_or((0, 0), Manager::track_counts)
+  }
+
+  /// Where voice `id` is, in seconds from the start of what it plays
+  /// (tests)
+  #[cfg(test)]
+  pub(crate) fn voice_position(&self, id: u32) -> Option<f64> {
+    let index = self.voices.index_of(id)?;
+    Some(self.voices.live[index].playback.position())
+  }
+
+  /// What kira says voice `id`'s playback is doing (tests)
+  #[cfg(test)]
+  pub(crate) fn voice_playback(&self, id: u32) -> Option<PlaybackState> {
+    let index = self.voices.index_of(id)?;
+    Some(self.voices.live[index].playback.state())
+  }
+
+  /// The sounds kira holds on `bus`'s own track (tests)
+  #[cfg(test)]
+  pub(crate) fn sounds_on(&self, bus: &str) -> usize {
+    self
+      .buses
+      .find(bus)
+      .and_then(|bus| self.buses.track(bus))
+      .map_or(0, TrackHandle::num_sounds)
+  }
+
+  /// Rebuild the bus tree once the mixer lands or changes. A mixer that
+  /// fails its check (one made in code; a file's failed to load) keeps the
+  /// tree as it is, with a warning
+  fn apply_mixer(&mut self, world: &World, server: Option<&AssetServer>) {
+    let Some(id) = self.mixer.as_ref().map(Handle::id) else {
+      return;
+    };
+    let mixers = world.get_resource::<Assets<Mixer>>();
+    let Some((mixer, version)) =
+      mixers.and_then(|mixers| Some((mixers.get(id)?, mixers.version(id)?)))
+    else {
+      // A mixer that failed to load leaves the standard layout, and the
+      // buses it would have added are warned about from now on
+      if self.mixer_pending && server.is_some_and(|server| server.state(id).is_failed()) {
+        self.mixer_pending = false;
+      }
+      return;
+    };
+    if self.mixer_version == Some(version) {
+      return;
+    }
+    self.mixer_version = Some(version);
+    self.mixer_pending = false;
+    if let Err(error) = mixer.check() {
+      let name = server
+        .and_then(|server| server.path(id))
+        .map_or_else(|| format!("{id:?}"), |path| path.to_string());
+      crate::engine_warn!(
+        module: "Audio",
+        "{name}: the mixer is not used ({error}); the buses stay as they were"
+      );
+      return;
+    }
+    self.rebuild(world, mixer, server);
+  }
+
+  /// Build a new bus tree from `mixer` and retire the old one: voices move
+  /// to the new tree's bus their definition names, or a clip's to the bus
+  /// of its old bus's name (or the nearest above either);
+  /// one-shots play out on the old tracks, which kira keeps until their
+  /// sounds finish, and loops restart on the new ones at their position,
+  /// crossfading over [`MIN_FADE`] (kira cannot move a sound between tracks,
+  /// and fixes a track's effects and sends when it builds it)
+  fn rebuild(&mut self, world: &World, mixer: &Mixer, server: Option<&AssetServer>) {
+    let planned = plan(mixer);
+    let (settings, volumes) = (&self.settings, &self.bus_volumes);
+    let mut tree = BusTree::build(
+      self
+        .manager
+        .as_mut()
+        .map(|manager| manager as &mut dyn Tracks),
+      &planned,
+      |planned| layers_of(planned, settings, volumes),
+    );
+    // The main track keeps master's gain until the refresh below
+    tree.buses[0].applied = self.buses.buses[0].applied;
+    let mut old = std::mem::replace(&mut self.buses, tree);
+    let retired = self.generation;
+    self.generation = self.generation.wrapping_add(1);
+    // A definition's voice goes to the bus it names (one the mixer had yet
+    // to add when it started, say), a clip's to its bus's namesake
+    let sounds = world.get_resource::<Assets<Sound>>();
+    for live in &mut self.voices.live {
+      let named = live
+        .sound
+        .and_then(|id| sounds.and_then(|sounds| sounds.get(id)))
+        .map_or_else(|| old.name(live.bus), |sound| sound.bus.as_str());
+      live.bus = self.buses.playable(named);
+    }
+    let sends = old.take_send_tracks();
+    if !sends.is_empty() {
+      self.retired_sends.push((retired, sends));
+    }
+    // Dropping its handles retires the old tree: kira removes each track
+    // once its sounds have finished
+    drop(old);
+    for index in 0..self.voices.live.len() {
+      let live = &self.voices.live[index];
+      let live_loop =
+        live.looping && matches!(live.voice.state(), VoiceState::Playing | VoiceState::Paused);
+      if live.generation == retired && live_loop {
+        self.restart(world, index, server);
+      }
+    }
+    self.refresh_gains();
+    let missing: Vec<String> = self
+      .bus_volumes
+      .keys()
+      .filter(|name| self.buses.find(name).is_none())
+      .cloned()
+      .collect();
+    for name in missing {
+      self.warn_volume(&name);
+    }
+  }
+
+  /// Start live voice `index` again on its bus's track, where it is, and
+  /// crossfade from the old playback over [`MIN_FADE`]; a paused voice
+  /// stays paused. If it cannot start, it plays on where it was
+  fn restart(&mut self, world: &World, index: usize, server: Option<&AssetServer>) {
+    let Some(clips) = world.get_resource::<Assets<AudioClip>>() else {
+      return;
+    };
+    let live = &self.voices.live[index];
+    let Some(clip) = clips.get(&live.clip) else {
+      return;
+    };
+    let (region, loop_region) = (live.region.clone(), live.loop_region.clone());
+    let start = Start {
+      gain_db: live.gain_db,
+      pitch: live.pitch,
+      fade_in: Some(tween(MIN_FADE)),
+      region: region.as_ref(),
+      loop_region: loop_region.as_ref(),
+      looping: live.looping,
+      position: live.playback.position(),
+    };
+    let (bus, paused) = (live.bus, live.voice.state() == VoiceState::Paused);
+    let started = match ClipSource::of(clip) {
+      ClipSource::Decoded(data) => self.start_static(bus, data, &start),
+      ClipSource::Encoded(bytes) => self.start_stream(bus, bytes, &start),
+    };
+    let mut playback = match started {
+      Ok(playback) => playback,
+      Err(Refusal::Undecodable(error)) => {
+        let live = &self.voices.live[index];
+        let (clip, version) = (live.clip.clone(), live.clip_version);
+        self.warn_undecodable(&clip, version, &error, server);
+        return;
+      }
+      Err(Refusal::Full) => return,
+    };
+    if paused {
+      playback.pause(tween(MIN_FADE));
+    }
+    let live = &mut self.voices.live[index];
+    let mut old = std::mem::replace(&mut live.playback, playback);
+    old.stop(tween(MIN_FADE));
+    live.generation = self.generation;
+    self.record(index, AudioLogKind::Stop, MIN_FADE, server);
+    self.record(index, AudioLogKind::Start, MIN_FADE, server);
   }
 
   /// The live voices on `bus` and every bus under it (0 for no such bus)
@@ -717,6 +1073,7 @@ impl AudioEngine {
       region: request.region,
       loop_region: request.loop_region,
       looping: request.looping,
+      position: 0.0,
     };
     let started = match ClipSource::of(clip) {
       ClipSource::Decoded(data) => self.start_static(bus, data, &start),
@@ -753,6 +1110,10 @@ impl AudioEngine {
       position: request.position,
       fade_out: request.fade_out,
       frame: self.frame,
+      looping: request.looping,
+      region: request.region.cloned(),
+      loop_region: request.loop_region.cloned(),
+      generation: self.generation,
     });
     self.record(
       self.voices.live.len() - 1,
@@ -858,7 +1219,8 @@ impl AudioEngine {
     let Some(this) = self.buses.buses.get_mut(bus) else {
       return;
     };
-    if this.track.is_none() || std::mem::replace(&mut this.full_warned, true) {
+    let has_track = matches!(this.output, Output::Track(Some(_)));
+    if !has_track || std::mem::replace(&mut this.full_warned, true) {
       return;
     }
     crate::engine_warn!(
@@ -883,37 +1245,34 @@ impl AudioEngine {
   #[cfg(not(test))]
   fn count_kira_full(&mut self) {}
 
-  /// The bus named `name`, or the nearest bus above it (`sfx` for
-  /// `sfx/steps`), or `sfx`, warning once per name
+  /// The bus named `name`, or the nearest bus above it that plays voices
+  /// (`sfx` for `sfx/steps`; a send bus's parent), or `sfx`, warning once
+  /// per name, unless the mixer that may add it has yet to land
   fn resolve_bus(
     &mut self,
     name: &str,
     sound: Option<AssetId<Sound>>,
     server: Option<&AssetServer>,
   ) -> usize {
-    if let Some(bus) = self.buses.find(name) {
+    let bus = self.buses.playable(name);
+    if self.buses.name(bus) == name || self.mixer_pending || self.warned_buses.contains(name) {
       return bus;
     }
-    let mut at = name;
-    let fallback = loop {
-      match at.rsplit_once('/') {
-        Some((parent, _)) => match self.buses.find(parent) {
-          Some(bus) => break bus,
-          None => at = parent,
-        },
-        None => break self.buses.find(DEFAULT_BUS).unwrap_or(0),
-      }
-    };
-    if !self.warned_buses.contains(name) {
-      self.warned_buses.insert(name.to_string());
-      let who = sound.map_or_else(String::new, |id| sound_name(id, server));
+    self.warned_buses.insert(name.to_string());
+    let who = sound.map_or_else(String::new, |id| sound_name(id, server));
+    let on = self.buses.name(bus);
+    if self.buses.find(name).is_some() {
       crate::engine_warn!(
         module: "Audio",
-        "{who}: there is no bus {name:?}, so it plays on {:?} (a game's own buses are added in the mixer)",
-        self.buses.name(fallback)
+        "{who}: the bus {name:?} is a send bus, which plays no voices of its own, so it plays on {on:?}"
+      );
+    } else {
+      crate::engine_warn!(
+        module: "Audio",
+        "{who}: there is no bus {name:?}, so it plays on {on:?} (a game's own buses are added in the mixer)"
       );
     }
-    fallback
+    bus
   }
 
   /// Warn about definition `id` once, with `why`
@@ -938,6 +1297,7 @@ impl AudioEngine {
     data.settings.volume = Decibels(start.gain_db).into();
     data.settings.playback_rate = PlaybackRate(rate_of(start.pitch)).into();
     data.settings.fade_in_tween = start.fade_in;
+    data.settings.start_position = PlaybackPosition::Seconds(start.position);
     self
       .buses
       .play(bus, data)
@@ -969,11 +1329,14 @@ impl AudioEngine {
       .volume(Decibels(start.gain_db))
       .playback_rate(PlaybackRate(rate_of(start.pitch)))
       .fade_in_tween(start.fade_in)
+      .start_position(start.position)
       .loop_region(span.loop_region.map(region));
     match self.buses.play(bus, data) {
       Ok(sound) => Ok(Playback::Stream(sound)),
-      Err(PlaySoundError::SoundLimitReached) => Err(Refusal::Full),
-      Err(PlaySoundError::IntoSoundError(error)) => Err(Refusal::Undecodable(error.to_string())),
+      Err(kira::PlaySoundError::SoundLimitReached) => Err(Refusal::Full),
+      Err(kira::PlaySoundError::IntoSoundError(error)) => {
+        Err(Refusal::Undecodable(error.to_string()))
+      }
     }
   }
 
@@ -990,14 +1353,18 @@ impl AudioEngine {
   }
 
   /// The frame's audio work: count the frame, apply the voices' queued
-  /// commands, report the device's stream errors, advance the mock backend
-  /// by `real_delta`, and retire the voices that ended
-  pub(crate) fn update(&mut self, real_delta: Duration, server: Option<&AssetServer>) {
+  /// commands, build the bus tree from the mixer if it landed or changed,
+  /// report the device's stream errors, advance the mock backend by
+  /// `real_delta`, and retire the voices that ended (and a retired tree's
+  /// send tracks once its voices have)
+  pub(crate) fn update(&mut self, world: &World, real_delta: Duration) {
+    let server = world.get_resource::<AssetServer>();
     self.frame = self.frame.wrapping_add(1);
     self.clock = self.clock.saturating_add(real_delta);
     while let Ok(command) = self.inbox.try_recv() {
       self.apply(command, server);
     }
+    self.apply_mixer(world, server);
     self.report_stream_errors();
     if let Some(Manager::Mock(manager)) = &mut self.manager {
       let backend = manager.backend_mut();
@@ -1007,6 +1374,12 @@ impl AudioEngine {
       }
     }
     self.retire_ended(server);
+    if !self.retired_sends.is_empty() {
+      let live = &self.voices.live;
+      self
+        .retired_sends
+        .retain(|(generation, _)| live.iter().any(|voice| voice.generation == *generation));
+    }
   }
 
   /// Apply one queued change, smoothed over at least [`MIN_FADE`]. A voice
@@ -1186,6 +1559,26 @@ impl Drop for AudioEngine {
     for live in &self.voices.live {
       live.voice.set_state(VoiceState::Stopped);
     }
+  }
+}
+
+/// A planned bus's gain layers: the game's volume for it, or the mixer's,
+/// and the player's setting it carries
+fn layers_of(
+  planned: &PlannedBus<'_>,
+  settings: &VolumeSettings,
+  volumes: &FastMap<String, f32>,
+) -> GainLayers {
+  GainLayers {
+    base: volumes
+      .get(planned.name)
+      .copied()
+      .unwrap_or_else(|| planned.def.map_or(0.0, |def| def.volume_db)),
+    setting: planned
+      .setting
+      .map_or(0.0, |kind| volume_to_db(settings.get(kind))),
+    snapshot: 0.0,
+    duck: 0.0,
   }
 }
 
@@ -1798,6 +2191,20 @@ mod tests {
     // A frame after a long stall renders at most a second
     let mut owed = 0;
     assert_eq!(chunks_due(&mut owed, Duration::from_secs(5)), 375);
+  }
+
+  #[test]
+  fn a_fixed_buffer_is_cut_to_what_the_device_supports() {
+    use kira::backend::cpal::cpal::{BufferSize, SupportedBufferSize};
+    let range = SupportedBufferSize::Range { min: 64, max: 4096 };
+    assert_eq!(fixed_buffer(256, &range), BufferSize::Fixed(256));
+    assert_eq!(fixed_buffer(16, &range), BufferSize::Fixed(64));
+    assert_eq!(fixed_buffer(9000, &range), BufferSize::Fixed(4096));
+    assert_eq!(
+      fixed_buffer(256, &SupportedBufferSize::Unknown),
+      BufferSize::Fixed(256),
+      "a device that does not say takes it as given"
+    );
   }
 
   #[test]

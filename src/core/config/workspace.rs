@@ -38,6 +38,10 @@
 //! master_volume = 1.0
 //! music_volume = 0.8
 //! sfx_volume = 1.0
+//! ui_volume = 1.0
+//! voice_volume = 1.0
+//! ambience_volume = 1.0
+//! # audio_buffer_frames = 256  # the audio device's buffer (default: the device's)
 //! show_fps = false
 //! console = true  # Enable developer console (works in debug and release)
 //!
@@ -218,6 +222,15 @@ pub struct SystemDefaults {
   pub music_volume: f32,
   /// Default SFX volume (0.0 - 1.0)
   pub sfx_volume: f32,
+  /// Default interface sounds volume (0.0 - 1.0)
+  pub ui_volume: f32,
+  /// Default dialogue volume (0.0 - 1.0)
+  pub voice_volume: f32,
+  /// Default ambience volume (0.0 - 1.0)
+  pub ambience_volume: f32,
+  /// The audio device's buffer, in frames; `None` leaves the device's
+  /// default (a smaller buffer is lower latency, a larger one safer)
+  pub audio_buffer_frames: Option<u32>,
   /// Default show FPS setting (from the `[system]` section)
   pub show_fps: bool,
   /// Whether to enable the developer console (toggled with backtick key).
@@ -242,6 +255,10 @@ impl Default for SystemDefaults {
       master_volume: super::resolve::DEFAULT_MASTER_VOLUME,
       music_volume: super::resolve::DEFAULT_MUSIC_VOLUME,
       sfx_volume: super::resolve::DEFAULT_SFX_VOLUME,
+      ui_volume: super::resolve::DEFAULT_UI_VOLUME,
+      voice_volume: super::resolve::DEFAULT_VOICE_VOLUME,
+      ambience_volume: super::resolve::DEFAULT_AMBIENCE_VOLUME,
+      audio_buffer_frames: None,
       show_fps: false,
       dev_console: false, // Disabled by default, enable in Ryo.toml [system] section
       target_background_fps: 0,
@@ -315,6 +332,11 @@ struct SystemSection {
   master_volume: Option<f32>,
   music_volume: Option<f32>,
   sfx_volume: Option<f32>,
+  ui_volume: Option<f32>,
+  voice_volume: Option<f32>,
+  ambience_volume: Option<f32>,
+  /// The audio device's buffer in frames (0 or absent: the device's)
+  audio_buffer_frames: Option<u32>,
   /// Whether to display FPS counter (user preference)
   show_fps: Option<bool>,
   /// Whether to enable the developer console (toggled with backtick key)
@@ -372,6 +394,10 @@ impl Workspace {
     set(&mut system.master_volume, layer.master_volume);
     set(&mut system.music_volume, layer.music_volume);
     set(&mut system.sfx_volume, layer.sfx_volume);
+    set(&mut system.ui_volume, layer.ui_volume);
+    set(&mut system.voice_volume, layer.voice_volume);
+    set(&mut system.ambience_volume, layer.ambience_volume);
+    system.audio_buffer_frames = layer.audio_buffer_frames.filter(|&frames| frames > 0);
     set(&mut system.show_fps, layer.show_fps);
     set(&mut system.dev_console, layer.dev_console);
     set(&mut system.target_background_fps, layer.background_fps);
@@ -614,6 +640,19 @@ impl Workspace {
       sfx_volume: system_section
         .sfx_volume
         .unwrap_or(engine_defaults.sfx_volume),
+      ui_volume: system_section
+        .ui_volume
+        .unwrap_or(engine_defaults.ui_volume),
+      voice_volume: system_section
+        .voice_volume
+        .unwrap_or(engine_defaults.voice_volume),
+      ambience_volume: system_section
+        .ambience_volume
+        .unwrap_or(engine_defaults.ambience_volume),
+      // 0 frames is no fixed buffer
+      audio_buffer_frames: system_section
+        .audio_buffer_frames
+        .filter(|&frames| frames > 0),
       // show_fps is a user preference, stored in [system] section
       show_fps: system_section.show_fps.unwrap_or(engine_defaults.show_fps),
       // console is in [system] section so it works in both debug and release builds
@@ -1044,10 +1083,14 @@ mod tests {
     // VSync on, windowed
     assert!(defaults.vsync);
     assert_eq!(defaults.display_mode, DisplayMode::Windowed);
-    // Audio: master=0.8, music=1.0, sfx=1.0
+    // Audio: master=0.8, the rest 1.0, the device's own buffer
     assert_eq!(defaults.master_volume, 0.8);
     assert_eq!(defaults.music_volume, 1.0);
     assert_eq!(defaults.sfx_volume, 1.0);
+    assert_eq!(defaults.ui_volume, 1.0);
+    assert_eq!(defaults.voice_volume, 1.0);
+    assert_eq!(defaults.ambience_volume, 1.0);
+    assert_eq!(defaults.audio_buffer_frames, None);
     // FPS off by default
     assert!(!defaults.show_fps);
   }
