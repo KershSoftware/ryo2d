@@ -177,6 +177,16 @@ pub(crate) fn wav(rate: u32, frames: usize, value: i16) -> Vec<u8> {
   bytes
 }
 
+/// [`audio_world`] with a meter on what the mock backend renders
+#[cfg(test)]
+pub(crate) fn metered_audio_world() -> (World, crate::core::audio::Meter) {
+  let mut world = audio_world();
+  let (mut audio, meter) = AudioEngine::new_metered();
+  audio.set_logging(true);
+  world.insert_resource(audio);
+  (world, meter)
+}
+
 fn add_audio(world: &mut World) {
   world.insert_resource(Time::new(60));
   let mut audio = AudioEngine::new(false);

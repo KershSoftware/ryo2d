@@ -415,6 +415,40 @@ mod tests {
     assert_eq!(voices_on_music(&mut world), 1, "{:#?}", log(&world));
   }
 
+  /// A switch keeps the music at its level: halfway through a 1 s
+  /// crossfade, the two tracks' summed power is within 1.5 dB of one
+  /// track's. Each track plays in one channel, so the meter reads each
+  #[test]
+  fn a_crossfade_holds_its_level_at_the_midpoint() {
+    let (mut world, meter) = crate::core::testing::metered_audio_world();
+    let mut track = |frame: [f32; 2]| {
+      let frames = vec![frame; 4 * 48_000];
+      let clip = world
+        .resource_mut::<Assets<AudioClip>>()
+        .add(AudioClip::from_frames(48_000, &frames));
+      world
+        .resource_mut::<Assets<Music>>()
+        .add(Music::looping(clip, 0.0, None))
+    };
+    let (left, right) = (track([0.1, 0.0]), track([0.0, 0.1]));
+    AudioView::new(&mut world).play_music(&left);
+    steps(&mut world, 30);
+    let alone = meter.last().left;
+    assert!(alone > 0.01, "the first track is heard: {alone}");
+    AudioView::new(&mut world).play_music(&right);
+    // Half of the crossfade, to within a chunk
+    steps(&mut world, 30);
+    let mid = meter.last();
+    let power = mid.left * mid.left + mid.right * mid.right;
+    let db = 10.0 * (power / (alone * alone)).log10();
+    assert!(
+      db.abs() <= 1.5,
+      "{db:.2} dB at the midpoint (left {}, right {})",
+      mid.left,
+      mid.right
+    );
+  }
+
   #[test]
   fn playing_the_track_already_playing_does_nothing() {
     let mut world = world_with(&[("music/a.music.ron", r#"(clip: "music/tone.wav")"#)]);

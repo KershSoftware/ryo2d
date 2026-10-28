@@ -16,9 +16,9 @@ use kira::sound::static_sound::{StaticSoundData, StaticSoundHandle};
 #[cfg(not(target_arch = "wasm32"))]
 use kira::sound::streaming::{StreamingSoundData, StreamingSoundHandle};
 use kira::sound::{EndPosition, PlaybackPosition, PlaybackState, Region};
-use kira::track::{SendTrackBuilder, SendTrackHandle, TrackBuilder, TrackHandle};
+use kira::track::{MainTrackBuilder, SendTrackBuilder, SendTrackHandle, TrackBuilder, TrackHandle};
 use kira::{
-  AudioManager, AudioManagerSettings, Capacities, Decibels, Panning, PlaybackRate,
+  AudioManager, AudioManagerSettings, Capacities, Decibels, Easing, Panning, PlaybackRate,
   ResourceLimitReached, Semitones, StartTime, Tween,
 };
 use rand::rngs::SmallRng;
@@ -144,6 +144,38 @@ impl Default for GameTime {
 #[cfg(test)]
 pub(crate) const FAILING_DEVICE: &str = "no output device (the failing-device seam)";
 
+/// What the mock backend renders: the last frame of each chunk of kira's
+/// main track, before master's gain (tests)
+#[cfg(test)]
+#[derive(Clone, Default)]
+pub(crate) struct Meter(Arc<std::sync::Mutex<Vec<kira::Frame>>>);
+
+#[cfg(test)]
+impl Meter {
+  /// Each chunk's last frame so far, oldest first
+  pub(crate) fn frames(&self) -> Vec<kira::Frame> {
+    self
+      .0
+      .lock()
+      .map(|frames| frames.clone())
+      .unwrap_or_default()
+  }
+
+  /// The latest chunk's last frame (silence before any)
+  pub(crate) fn last(&self) -> kira::Frame {
+    self.frames().last().copied().unwrap_or(kira::Frame::ZERO)
+  }
+}
+
+#[cfg(test)]
+impl kira::effect::Effect for Meter {
+  fn process(&mut self, input: &mut [kira::Frame], _dt: f64, _info: &kira::info::Info) {
+    if let (Some(frame), Ok(mut frames)) = (input.last(), self.0.lock()) {
+      frames.push(*frame);
+    }
+  }
+}
+
 /// The kira manager, on the audio device or on the mock backend. There is
 /// one per engine, so the variants' sizes do not matter
 #[allow(clippy::large_enum_variant)]
@@ -157,12 +189,18 @@ impl Manager {
   /// `audio_system`. `None` only if kira's mock fails to start, which it
   /// never does
   fn mock() -> Option<Manager> {
+    Self::mock_with(MainTrackBuilder::default())
+  }
+
+  /// [`mock`](Self::mock), its main track built by `main`
+  fn mock_with(main: MainTrackBuilder) -> Option<Manager> {
     let settings = AudioManagerSettings {
       backend_settings: MockBackendSettings {
         sample_rate: MOCK_SAMPLE_RATE,
       },
       capacities: capacities(),
       internal_buffer_size: CHUNK_FRAMES,
+      main_track_builder: main,
       ..Default::default()
     };
     AudioManager::<MockBackend>::new(settings)
@@ -525,7 +563,9 @@ impl Playback {
     }
   }
 
-  fn stop(&mut self, tween: Tween) {
+  /// Fade out over `fade` and stop
+  fn stop(&mut self, fade: Duration) {
+    let tween = fade_to_silence(fade);
     match self {
       Playback::Static(sound) => sound.stop(tween),
       #[cfg(not(target_arch = "wasm32"))]
@@ -534,7 +574,9 @@ impl Playback {
     }
   }
 
-  fn pause(&mut self, tween: Tween) {
+  /// Fade out over `fade` and pause where it is
+  fn pause(&mut self, fade: Duration) {
+    let tween = fade_to_silence(fade);
     match self {
       Playback::Static(sound) => sound.pause(tween),
       #[cfg(not(target_arch = "wasm32"))]
@@ -543,7 +585,9 @@ impl Playback {
     }
   }
 
-  fn resume(&mut self, tween: Tween) {
+  /// Resume where it paused, fading in over `fade`
+  fn resume(&mut self, fade: Duration) {
+    let tween = fade_from_silence(fade);
     match self {
       Playback::Static(sound) => sound.resume(tween),
       #[cfg(not(target_arch = "wasm32"))]
@@ -899,7 +943,7 @@ impl Start<'_> {
   /// reads the pause before it renders the sound, so it never moves
   fn hold(&self, mut playback: Playback) -> Playback {
     if self.held {
-      playback.pause(tween(Duration::ZERO));
+      playback.pause(Duration::ZERO);
     }
     playback
   }
@@ -1106,6 +1150,15 @@ impl AudioEngine {
   #[cfg(test)]
   pub(crate) fn new_failing_device() -> AudioEngine {
     Self::with_manager(Manager::fallback(&FAILING_DEVICE))
+  }
+
+  /// The engine on the mock backend, with a meter on what it renders
+  /// (tests)
+  #[cfg(test)]
+  pub(crate) fn new_metered() -> (AudioEngine, Meter) {
+    let meter = Meter::default();
+    let main = MainTrackBuilder::new().with_built_effect(Box::new(meter.clone()));
+    (Self::with_manager(Manager::mock_with(main)), meter)
   }
 
   /// The engine as the web starts it, waiting for the first user gesture,
@@ -1377,7 +1430,7 @@ impl AudioEngine {
       return;
     }
     let fade = live.fade_out.max(MIN_FADE);
-    live.playback.stop(tween(fade));
+    live.playback.stop(fade);
     live.voice.set_state(VoiceState::Stopping);
     self.record(index, AudioLogKind::Stop, fade, server);
   }
@@ -2020,7 +2073,7 @@ impl AudioEngine {
     let live = &mut self.voices.live[index];
     live.kira_paused = held;
     let mut old = std::mem::replace(&mut live.playback, playback);
-    old.stop(tween(MIN_FADE));
+    old.stop(MIN_FADE);
     // The old filter's track plays the old sound's fade out, then goes
     if let Some(spatial) = &mut live.spatial {
       spatial.filter = filter;
@@ -2076,7 +2129,7 @@ impl AudioEngine {
     );
     self.log.push(entry);
     let live = &mut self.voices.live[index];
-    live.playback.stop(tween(MIN_FADE));
+    live.playback.stop(MIN_FADE);
     live.voice.set_state(VoiceState::Stopping);
   }
 
@@ -2990,7 +3043,7 @@ impl AudioEngine {
     for at in 0..self.victims.len() {
       let Victim { index, fade } = self.victims[at];
       if let Some(live) = self.voices.live.get_mut(index) {
-        live.playback.stop(tween(fade));
+        live.playback.stop(fade);
         live.voice.set_state(VoiceState::Stopping);
       }
       self.record(index, AudioLogKind::Stolen, fade, server);
@@ -3276,14 +3329,14 @@ impl AudioEngine {
       if paused != live.kira_paused {
         live.kira_paused = paused;
         if paused {
-          live.playback.pause(tween(MIN_FADE));
+          live.playback.pause(MIN_FADE);
         } else if live.playback.waiting_fade().is_some() {
           // Not heard yet: it starts at the web's unlock, fading in there
-          live.playback.resume(tween(MIN_FADE));
+          live.playback.resume(MIN_FADE);
         } else {
           let unheard = live.unheard.take();
           let fade = unheard.map_or(MIN_FADE, |fade| fade.max(MIN_FADE));
-          live.playback.resume(tween(fade));
+          live.playback.resume(fade);
           // Its own resume logged itself
           if let_go && unheard.is_some() {
             first_heard = Some(fade);
@@ -3437,7 +3490,7 @@ impl AudioEngine {
     let (kind, fade) = match command.change {
       VoiceChange::Stop(fade) => {
         let fade = fade.max(MIN_FADE);
-        live.playback.stop(tween(fade));
+        live.playback.stop(fade);
         live.voice.set_state(VoiceState::Stopping);
         (AudioLogKind::Stop, fade)
       }
@@ -4187,10 +4240,42 @@ fn rate_of(semitones: f32) -> f64 {
 /// A voice's fade-in as kira starts it: none for no time, as a sound
 /// starting at its beginning does not click
 fn fade_in_of(duration: Duration) -> Option<Tween> {
-  (!duration.is_zero()).then(|| tween(duration))
+  (!duration.is_zero()).then(|| fade_from_silence(duration))
 }
 
-/// A linear tween over `duration`, starting now
+/// The curve of a fade to or from silence: kira fades a sound between -60
+/// and 0 dB in a line of dB, which stays near silence for most of a fade in
+/// and drops most of the way at once in a fade out, so a crossfade dips
+/// about 27 dB in its middle. A fade out eased in (and a fade in eased out)
+/// at this power is about -3.75 dB halfway, so two crossfading hold their
+/// level as an equal-power crossfade does
+const FADE_POWER: i32 = 4;
+
+/// A fade from silence over `duration`: eased out at [`FADE_POWER`], or a
+/// line for one of [`MIN_FADE`] or less, too short to hear its curve
+fn fade_from_silence(duration: Duration) -> Tween {
+  shaped(duration, Easing::OutPowi(FADE_POWER))
+}
+
+/// A fade to silence over `duration`: eased in at [`FADE_POWER`], or a line
+/// for one of [`MIN_FADE`] or less
+fn fade_to_silence(duration: Duration) -> Tween {
+  shaped(duration, Easing::InPowi(FADE_POWER))
+}
+
+fn shaped(duration: Duration, easing: Easing) -> Tween {
+  if duration <= MIN_FADE {
+    return tween(duration);
+  }
+  Tween {
+    duration,
+    easing,
+    ..Default::default()
+  }
+}
+
+/// A linear tween over `duration`, starting now: a change between two
+/// heard levels, even in dB
 fn tween(duration: Duration) -> Tween {
   Tween {
     duration,

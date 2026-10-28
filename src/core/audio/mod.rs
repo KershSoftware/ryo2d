@@ -23,6 +23,8 @@ mod voice;
 pub use clip::AudioClip;
 pub(crate) use clip::{ClipData, DECODE_THRESHOLD, EncodedClip};
 pub use engine::AudioEngine;
+#[cfg(test)]
+pub(crate) use engine::Meter;
 pub(crate) use engine::{HEADLESS_SEED, in_scene, release_scene, stop_scene_music, unlock};
 #[doc(hidden)]
 pub use log::{AudioLogEntry, AudioLogKind};
