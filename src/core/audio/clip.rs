@@ -28,6 +28,11 @@ pub(crate) enum ClipData {
 /// bytes and streams when played, so music does not sit decoded in memory;
 /// [`AudioClipSettings`](crate::core::asset::AudioClipSettings) can force
 /// either. The web has no streaming: every clip decodes there.
+///
+/// Saved while it plays (hot reload), its loops and the music playing it
+/// switch to the new file where they are, crossfading over 10 ms, and its
+/// one-shots finish on the old one; a save that does not decode changes
+/// nothing.
 pub struct AudioClip {
   data: ClipData,
   duration: Duration,

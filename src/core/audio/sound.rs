@@ -22,6 +22,11 @@ use crate::core::asset::{Asset, Handle};
 /// returns a voice that is already stopped. A sound is ready once every clip
 /// is loaded.
 ///
+/// Saved while it plays (hot reload), it applies to the plays after; its
+/// loops playing take the change in its volume and pitch at once (each
+/// keeps the spread it drew), and stay on their bus. A save that does not
+/// load changes nothing.
+///
 /// ```
 /// use std::time::Duration;
 /// use ryo2d::prelude::*;

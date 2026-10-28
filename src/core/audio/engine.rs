@@ -43,8 +43,10 @@ use super::{
   AudioClip, ClipData, FocusLoss, LimitRule, Mixer, Music, MusicData, SnapshotDef, Sound,
   SoundClip, Spatial, VoiceLimit, VolumeKind, volume_to_db,
 };
-use crate::core::asset::{AssetId, AssetServer, Assets, Handle, LoadState, UntypedAssetId};
-use crate::core::ecs::kernel::{EntityHashSet, Mut};
+use crate::core::asset::{
+  AssetEvent, AssetId, AssetServer, Assets, Handle, LoadState, UntypedAssetId,
+};
+use crate::core::ecs::kernel::{EntityHashSet, MessageCursor, Messages, Mut};
 use crate::core::ecs::{Disabled, Entity, Resource, Vec2, World};
 use crate::core::hash::{FastMap, FastSet};
 
@@ -521,10 +523,15 @@ struct LiveVoice {
   /// Held, so the registry never frees a clip (or a joined music) under
   /// playback
   source: Source,
-  /// Its source's content version when the voice started
+  /// The content version of its source that it plays: as it started, or
+  /// as a reload last switched it
   version: u64,
   /// The definition it plays; `None` for a clip played directly, or music
   sound: Option<AssetId<Sound>>,
+  /// Its definition's volume (dB) and pitch (semitones) as its own gain and
+  /// pitch last took them, so a reload of the definition moves them by the
+  /// change; `None` without a definition
+  tuning: Option<(f32, f32)>,
   /// The music it plays, if it is the music player's
   music: Option<AssetId<Music>>,
   bus: usize,
@@ -637,6 +644,9 @@ struct Victim {
 /// One play, resolved from a definition (or a bare clip's empty one)
 struct Request<'a> {
   sound: Option<AssetId<Sound>>,
+  /// The definition's volume and pitch, which its gain and pitch were drawn
+  /// around
+  tuning: Option<(f32, f32)>,
   /// The music it plays, for the music player
   music: Option<AssetId<Music>>,
   source: SourceRef<'a>,
@@ -668,6 +678,7 @@ impl<'a> Request<'a> {
   fn clip(clip: &'a Handle<AudioClip>, options: &PlayOptions) -> Self {
     Self {
       sound: None,
+      tuning: None,
       music: None,
       source: SourceRef::Clip(clip),
       pick: 0,
@@ -702,6 +713,7 @@ impl<'a> Request<'a> {
     let clip = sound.clips.get(pick)?;
     Some(Self {
       sound: Some(id),
+      tuning: Some((sound.volume_db, sound.pitch)),
       music: None,
       source: SourceRef::Clip(&clip.clip),
       pick,
@@ -787,6 +799,29 @@ enum Refusal {
   Full,
   /// A stream could not be opened
   Undecodable(String),
+}
+
+/// The engine's place in the registry's events for the assets it plays:
+/// reloads switch what plays, and removals drop what it remembers
+#[derive(Default)]
+struct Reloads {
+  clips: MessageCursor<AssetEvent<AudioClip>>,
+  sounds: MessageCursor<AssetEvent<Sound>>,
+  musics: MessageCursor<AssetEvent<Music>>,
+  /// The clips and definitions a frame's events changed, kept to reuse
+  changed_clips: Vec<AssetId<AudioClip>>,
+  changed_sounds: Vec<AssetId<Sound>>,
+}
+
+/// What a voice starts again on: what it played (a move to rebuilt buses,
+/// or its clip reloaded), or its music's definition as it now is
+struct Replay {
+  source: Source,
+  region: Option<Range<f64>>,
+  loop_region: Option<Range<f64>>,
+  /// Its own gain in dB
+  gain_db: f32,
+  bus: usize,
 }
 
 /// The engine's audio: kira's manager, the bus tree and the live voices, a
@@ -894,6 +929,8 @@ pub struct AudioEngine {
   scope: Option<u64>,
   /// The one music player: the track playing, and one waiting to load
   music: MusicPlayer,
+  /// Where it is in the registry's events for what it plays
+  reloads: Reloads,
   #[cfg(test)]
   injected_stream_errors: Vec<String>,
   /// Plays kira refused for want of room: none should ever be
@@ -988,6 +1025,7 @@ impl AudioEngine {
       focus_loss: FocusLoss::Keep,
       scope: None,
       music: MusicPlayer::default(),
+      reloads: Reloads::default(),
       #[cfg(test)]
       injected_stream_errors: Vec::new(),
       #[cfg(test)]
@@ -1025,6 +1063,19 @@ impl AudioEngine {
     if let Some(bus) = self.buses.find(bus) {
       self.buses.buses[bus].limit = max;
     }
+  }
+
+  /// How many entries the engine keeps about assets: definitions' recent
+  /// picks and cooldowns, clips' failed decodes, and the warnings it gave
+  /// once (tests)
+  #[cfg(test)]
+  pub(crate) fn remembered(&self) -> usize {
+    self.sounds.len()
+      + self.warned_sounds.len()
+      + self.warned_flat.len()
+      + self.undecodable.len()
+      + self.music.warned.len()
+      + self.music.warned_buses.len()
   }
 
   /// How many plays kira refused for want of room (tests: it never should)
@@ -1640,8 +1691,8 @@ impl AudioEngine {
 
   /// Start live voice `index` again on its bus's track, where it is, and
   /// crossfade from the old playback over [`MIN_FADE`]; a paused voice
-  /// stays paused. If it cannot start, it plays on where it was, and why is
-  /// returned
+  /// stays paused. It plays its source's data as the store now has it. If
+  /// it cannot start, it plays on where it was, and why is returned
   fn restart(
     &mut self,
     world: &World,
@@ -1649,25 +1700,48 @@ impl AudioEngine {
     server: Option<&AssetServer>,
   ) -> Result<(), String> {
     let live = &self.voices.live[index];
-    let Some((samples, _)) = live.source.as_ref().samples(world) else {
+    let replay = Replay {
+      source: live.source.as_ref().held(),
+      region: live.region.clone(),
+      loop_region: live.loop_region.clone(),
+      gain_db: live.gain_db,
+      bus: live.bus,
+    };
+    self.replay(world, index, replay, server)
+  }
+
+  /// [`restart`](Self::restart) live voice `index` on `replay`: its source's
+  /// data as the store now has it, its regions, its gain and its bus, which
+  /// the voice takes once it has started. If it cannot start, it plays on
+  /// as it was, and why is returned
+  fn replay(
+    &mut self,
+    world: &World,
+    index: usize,
+    replay: Replay,
+    server: Option<&AssetServer>,
+  ) -> Result<(), String> {
+    let live = &self.voices.live[index];
+    let Some((samples, version)) = replay.source.as_ref().samples(world) else {
       return Err("its clip is not in the store".into());
     };
-    let (region, loop_region) = (live.region.clone(), live.loop_region.clone());
     // A paused or held voice starts paused, unheard
     let paused = live.voice.state() == VoiceState::Paused;
+    let held = paused || live.held;
     let cutoff = live.filter().map(|filter| filter.applied);
+    let place_db = live.spatial.as_ref().map_or(0.0, |spatial| spatial.gain_db);
     let start = Start {
-      gain_db: live.heard_db(),
+      gain_db: heard_db(replay.gain_db, place_db),
       pan: live.pan(),
       rate: rate_of(live.pitch) * live.scale,
-      held: paused || live.held,
+      held,
       fade_in: Some(tween(MIN_FADE)),
-      region: region.as_ref(),
-      loop_region: loop_region.as_ref(),
+      region: replay.region.as_ref(),
+      loop_region: replay.loop_region.as_ref(),
       looping: live.looping,
       position: live.playback.position(),
     };
-    let bus = live.bus;
+    let bus = replay.bus;
     // A filtered voice's filter moves with it, on a track of its own under
     // its new bus (unfiltered if kira has no room for one)
     let mut filter = cutoff.and_then(|hz| self.filter_track(bus, hz));
@@ -1679,17 +1753,15 @@ impl AudioEngine {
     let playback = match started {
       Ok(playback) => playback,
       Err(Refusal::Undecodable(error)) => {
-        let live = &self.voices.live[index];
-        if let Source::Clip(clip) = &live.source {
-          let (clip, version) = (clip.clone(), live.version);
-          self.warn_undecodable(&clip, version, &error, server);
+        if let Source::Clip(clip) = &replay.source {
+          self.warn_undecodable(clip, version, &error, server);
         }
         return Err(format!("its clip could not be opened again: {error}"));
       }
-      Err(Refusal::Full) => return Err("its new bus has no room".into()),
+      Err(Refusal::Full) => return Err("its bus has no room".into()),
     };
     let live = &mut self.voices.live[index];
-    live.kira_paused = start.held;
+    live.kira_paused = held;
     let mut old = std::mem::replace(&mut live.playback, playback);
     old.stop(tween(MIN_FADE));
     // The old filter's track plays the old sound's fade out, then goes
@@ -1697,8 +1769,18 @@ impl AudioEngine {
       spatial.filter = filter;
     }
     live.generation = self.generation;
+    live.version = version;
+    live.source = replay.source;
+    live.region = replay.region;
+    live.loop_region = replay.loop_region;
+    live.gain_db = replay.gain_db;
+    if live.bus != bus {
+      live.bus = bus;
+      // Its new bus's hold and time scale reach it in the frame's update
+      self.voices_dirty = true;
+    }
     // A paused or held one starts silent: its resume fades it in
-    let fade_in = if start.held { Duration::ZERO } else { MIN_FADE };
+    let fade_in = if held { Duration::ZERO } else { MIN_FADE };
     self.record(index, AudioLogKind::Stop, MIN_FADE, server);
     self.record(index, AudioLogKind::Start, fade_in, server);
     Ok(())
@@ -1714,19 +1796,222 @@ impl AudioEngine {
     if std::mem::replace(&mut live.stuck_warned, true) {
       return;
     }
-    // Its definition's path, or else its clip's (or joined music's)
-    let path = match (live.sound, live.music) {
-      (Some(sound), _) => server.and_then(|server| server.path(sound)),
-      (None, Some(music)) => server.and_then(|server| server.path(music)),
-      (None, None) => None,
-    };
-    let name = path.map_or_else(
-      || live.source.as_ref().name(server),
-      |path| path.to_string(),
-    );
+    let name = voice_name(live, server);
     crate::engine_warn!(
       module: "Audio",
       "{name}: the loop could not move to the rebuilt buses ({why}); it plays on as it was, at the old buses' volumes, until it stops"
+    );
+  }
+
+  /// Bring what plays in line with the registry's reloads, read from its
+  /// events. A reloaded music (its definition, its clip, or its intro or
+  /// loop file) switches the track playing; a reloaded clip switches each
+  /// loop playing it to the new data where it is, crossfading over
+  /// [`MIN_FADE`], and lets its one-shots finish on the old; a reloaded
+  /// definition retunes its playing loops by the change in its volume and
+  /// pitch (the rest of it is for new plays). A reload that failed
+  /// (`ReloadFailed`) kept the last good value, so nothing changes. An
+  /// asset removed takes with it what the engine remembered of it: a
+  /// definition's recent picks and cooldown, a clip's failed decode, and
+  /// the warnings given once
+  fn follow_reloads(&mut self, world: &World, server: Option<&AssetServer>) {
+    let mut music_changed = false;
+    if let Some(events) = world.get_resource::<Messages<AssetEvent<Music>>>() {
+      for event in self.reloads.musics.read(events) {
+        match event {
+          AssetEvent::Modified { id } => {
+            music_changed |= self
+              .music
+              .live()
+              .is_some_and(|track| track.music.id() == *id);
+          }
+          AssetEvent::Removed { id } => {
+            self.music.warned.remove(id);
+            self.music.warned_buses.remove(id);
+          }
+          _ => {}
+        }
+      }
+    }
+    // Taken out to read into, and put back with their room kept
+    let mut clips = std::mem::take(&mut self.reloads.changed_clips);
+    if let Some(events) = world.get_resource::<Messages<AssetEvent<AudioClip>>>() {
+      for event in self.reloads.clips.read(events) {
+        match event {
+          AssetEvent::Modified { id } => clips.push(*id),
+          AssetEvent::Removed { id } => {
+            self.undecodable.remove(id);
+            self.warned_flat.remove(&id.untyped());
+          }
+          _ => {}
+        }
+      }
+    }
+    let mut sounds = std::mem::take(&mut self.reloads.changed_sounds);
+    if let Some(events) = world.get_resource::<Messages<AssetEvent<Sound>>>() {
+      for event in self.reloads.sounds.read(events) {
+        match event {
+          AssetEvent::Modified { id } => sounds.push(*id),
+          AssetEvent::Removed { id } => {
+            self.sounds.remove(id);
+            self.warned_sounds.remove(id);
+            self.warned_flat.remove(&id.untyped());
+          }
+          _ => {}
+        }
+      }
+    }
+    // The music first: a clip it plays switches with it, once
+    if music_changed {
+      self.switch_music(world, server);
+    }
+    if !clips.is_empty() {
+      self.switch_clips(world, &clips, music_changed, server);
+      clips.clear();
+    }
+    if !sounds.is_empty() {
+      self.retune(world, &sounds, server);
+      sounds.clear();
+    }
+    self.reloads.changed_clips = clips;
+    self.reloads.changed_sounds = sounds;
+  }
+
+  /// Switch each loop playing one of `clips` (reloaded) to the clip's new
+  /// data where it is, crossfading over [`MIN_FADE`] (music, with its
+  /// definition's loop over the new clip, unless it switched this frame:
+  /// `music_switched`). Its one-shots play out on the old data, which kira
+  /// holds; one that cannot switch plays on as it was, with a warning
+  fn switch_clips(
+    &mut self,
+    world: &World,
+    clips: &[AssetId<AudioClip>],
+    music_switched: bool,
+    server: Option<&AssetServer>,
+  ) {
+    for index in 0..self.voices.live.len() {
+      let live = &self.voices.live[index];
+      let Source::Clip(clip) = &live.source else {
+        continue;
+      };
+      let live_loop =
+        live.looping && matches!(live.voice.state(), VoiceState::Playing | VoiceState::Paused);
+      if !live_loop || !clips.contains(&clip.id()) {
+        continue;
+      }
+      // One on the new data already (moved to rebuilt buses this frame) stays
+      if live
+        .source
+        .as_ref()
+        .version(world)
+        .is_none_or(|version| version == live.version)
+      {
+        continue;
+      }
+      if live.music.is_some() {
+        if !music_switched {
+          self.switch_music(world, server);
+        }
+      } else if let Err(why) = self.restart(world, index, server) {
+        self.warn_unswitched(index, &why, server);
+      }
+    }
+  }
+
+  /// Switch the track playing to its definition as the store now has it
+  /// (reloaded, or its clip, intro or loop file): its voice starts again
+  /// where it is on the new data, with its loop, volume and bus, crossfading
+  /// over [`MIN_FADE`], and takes its new crossfade. One that cannot start
+  /// plays on as it was, with a warning
+  fn switch_music(&mut self, world: &World, server: Option<&AssetServer>) {
+    let Some(track) = self.music.live() else {
+      return;
+    };
+    let (handle, voice) = (track.music.clone(), track.voice.id());
+    let Some(index) = self.voices.index_of(voice) else {
+      return;
+    };
+    let Some(music) = world
+      .get_resource::<Assets<Music>>()
+      .and_then(|musics| musics.get(&handle))
+    else {
+      return;
+    };
+    let (source, loop_region) = music_source(world, &handle, music);
+    let bus = self.music_bus(&handle, music, server);
+    let bus = self.resolve_bus(bus, || music_name(handle.id(), server));
+    let replay = Replay {
+      source: source.held(),
+      region: None,
+      loop_region: Some(loop_region),
+      gain_db: clamp_gain(music.volume_db),
+      bus,
+    };
+    match self.replay(world, index, replay, server) {
+      Ok(()) => {
+        self.voices.live[index].fade_out = music.crossfade;
+        if let Some(track) = &mut self.music.current {
+          track.crossfade = music.crossfade;
+        }
+      }
+      Err(why) => self.warn_unswitched(index, &why, server),
+    }
+  }
+
+  /// Move each loop playing one of `sounds` (reloaded) by the change in its
+  /// definition's volume and pitch, over [`MIN_FADE`]: the spread it drew,
+  /// its play's options and its own changes since stay
+  fn retune(&mut self, world: &World, sounds: &[AssetId<Sound>], server: Option<&AssetServer>) {
+    let Some(defs) = world.get_resource::<Assets<Sound>>() else {
+      return;
+    };
+    for index in 0..self.voices.live.len() {
+      let live = &mut self.voices.live[index];
+      let live_loop =
+        live.looping && matches!(live.voice.state(), VoiceState::Playing | VoiceState::Paused);
+      let (Some(id), Some((was_db, was_pitch))) = (live.sound, live.tuning) else {
+        continue;
+      };
+      if !live_loop || !sounds.contains(&id) {
+        continue;
+      }
+      let Some(def) = defs.get(id) else {
+        continue;
+      };
+      live.tuning = Some((def.volume_db, def.pitch));
+      let (louder, higher) = (def.volume_db - was_db, def.pitch - was_pitch);
+      let gain = louder != 0.0;
+      if gain {
+        live.gain_db = clamp_gain(live.gain_db + louder);
+        let heard = live.heard_db();
+        live.playback.set_volume(heard, tween(MIN_FADE));
+      }
+      let rate = higher != 0.0;
+      if rate {
+        live.pitch = clamp_pitch(live.pitch + higher);
+        live
+          .playback
+          .set_rate(rate_of(live.pitch) * live.scale, tween(MIN_FADE));
+      }
+      if gain {
+        self.record(index, AudioLogKind::Gain, MIN_FADE, server);
+      }
+      if rate {
+        self.record(index, AudioLogKind::Rate, MIN_FADE, server);
+      }
+    }
+  }
+
+  /// Warn that live voice `index` could not switch to what was reloaded: it
+  /// plays on as it was
+  fn warn_unswitched(&mut self, index: usize, why: &str, server: Option<&AssetServer>) {
+    let Some(live) = self.voices.live.get(index) else {
+      return;
+    };
+    let name = voice_name(live, server);
+    crate::engine_warn!(
+      module: "Audio",
+      "{name}: the loop could not switch to what was reloaded ({why}); it plays on as it was"
     );
   }
 
@@ -1958,31 +2243,11 @@ impl AudioEngine {
     } else {
       music.fade_in
     };
-    let (source, loop_region) = match music.data() {
-      MusicData::Concatenated(data) => (SourceRef::Joined(handle), joined_loop(data)),
-      MusicData::Looping {
-        clip,
-        loop_start,
-        loop_end,
-      } => {
-        let length = world
-          .get_resource::<Assets<AudioClip>>()
-          .and_then(|clips| clips.get(clip))
-          .map_or(0.0, |clip| clip.duration().as_secs_f64());
-        (
-          SourceRef::Clip(clip),
-          clip_loop(*loop_start, *loop_end, length),
-        )
-      }
-    };
-    let bus = if music.bus == MUSIC_BUS || music.bus.starts_with("music/") {
-      music.bus.as_str()
-    } else {
-      self.warn_music_bus(handle.id(), &music.bus, server);
-      MUSIC_BUS
-    };
+    let (source, loop_region) = music_source(world, handle, music);
+    let bus = self.music_bus(handle, music, server);
     let request = Request {
       sound: None,
+      tuning: None,
       music: Some(handle.id()),
       source,
       pick: 0,
@@ -2071,6 +2336,22 @@ impl AudioEngine {
         module: "Audio",
         "{name}: the music did not load, so it does not play (the asset warning for it says why)"
       );
+    }
+  }
+
+  /// The bus `music` (`handle`'s) plays on: its own, if it is `music` or a
+  /// bus under it, else `music`, warned about once
+  fn music_bus<'a>(
+    &mut self,
+    handle: &Handle<Music>,
+    music: &'a Music,
+    server: Option<&AssetServer>,
+  ) -> &'a str {
+    if music.bus == MUSIC_BUS || music.bus.starts_with("music/") {
+      music.bus.as_str()
+    } else {
+      self.warn_music_bus(handle.id(), &music.bus, server);
+      MUSIC_BUS
     }
   }
 
@@ -2187,6 +2468,7 @@ impl AudioEngine {
       source: request.source.held(),
       version,
       sound: request.sound,
+      tuning: request.tuning,
       music: request.music,
       bus,
       gain_db: own_db,
@@ -2449,7 +2731,8 @@ impl AudioEngine {
     data.settings.panning = Panning(start.pan).into();
     data.settings.playback_rate = PlaybackRate(start.rate).into();
     data.settings.fade_in_tween = start.fade_in();
-    data.settings.start_position = PlaybackPosition::Seconds(start.position);
+    let position = span.wrap(start.position, data.sample_rate, data.frames.len());
+    data.settings.start_position = PlaybackPosition::Seconds(position);
     let played = match track {
       Some(track) => track.play(data),
       None => self.buses.play(bus, data),
@@ -2480,12 +2763,13 @@ impl AudioEngine {
     };
     let span = Span::of(start, rate, frames);
     data.slice = span.slice;
+    let position = span.wrap(start.position, rate, frames);
     let data = data
       .volume(Decibels(start.gain_db))
       .panning(Panning(start.pan))
       .playback_rate(PlaybackRate(start.rate))
       .fade_in_tween(start.fade_in())
-      .start_position(start.position)
+      .start_position(position)
       .loop_region(span.loop_region.map(region));
     let played = match track {
       Some(track) => track.play(data),
@@ -2515,7 +2799,8 @@ impl AudioEngine {
 
   /// The frame's audio work: count the frame, apply the voices' queued
   /// commands, build the bus tree from the mixer if it landed or changed,
-  /// follow the listener and the emitters (and play the emitters spawned),
+  /// switch what plays to the clips, definitions and music reloaded (and
+  /// forget what was remembered of those freed), follow the listener and the emitters (and play the emitters spawned),
   /// follow the `game` clock (pause and time scale), report the device's
   /// stream errors, advance the mock backend by `real_delta`, and retire
   /// the voices that ended (and a retired tree's send tracks once its
@@ -2528,6 +2813,7 @@ impl AudioEngine {
       self.apply(command, server);
     }
     self.apply_mixer(world, server);
+    self.follow_reloads(world, server);
     self.step_music(world, server);
     self.release_orphans(server);
     self.follow_listener(world, real_delta, server);
@@ -3052,6 +3338,32 @@ fn readiness(world: &World, music: &Handle<Music>, server: Option<&AssetServer>)
   }
 }
 
+/// What `music` (`handle`'s) plays, and its loop in seconds of that: its
+/// joined intro and loop, or its clip over its loop region
+fn music_source<'a>(
+  world: &World,
+  handle: &'a Handle<Music>,
+  music: &'a Music,
+) -> (SourceRef<'a>, Range<f64>) {
+  match music.data() {
+    MusicData::Concatenated(data) => (SourceRef::Joined(handle), joined_loop(data)),
+    MusicData::Looping {
+      clip,
+      loop_start,
+      loop_end,
+    } => {
+      let length = world
+        .get_resource::<Assets<AudioClip>>()
+        .and_then(|clips| clips.get(clip))
+        .map_or(0.0, |clip| clip.duration().as_secs_f64());
+      (
+        SourceRef::Clip(clip),
+        clip_loop(*loop_start, *loop_end, length),
+      )
+    }
+  }
+}
+
 /// A joined track's loop, in seconds of it: from its loop region's start
 /// (the intro's end) to its end
 fn joined_loop(data: &StaticSoundData) -> Range<f64> {
@@ -3335,6 +3647,22 @@ impl Span {
     });
     Span { slice, loop_region }
   }
+
+  /// `position` (seconds from the start of what plays, at `rate`), kept in
+  /// what plays of a clip of `frames` frames: past its end it wraps into
+  /// the loop (a loop moved to a clip reloaded shorter), or else is the end
+  fn wrap(&self, position: f64, rate: u32, frames: usize) -> f64 {
+    let rate = f64::from(rate.max(1));
+    let played = self.slice.map_or(frames, |(from, to)| to - from);
+    let at = (position.max(0.0) * rate) as usize;
+    if at < played {
+      return position;
+    }
+    match self.loop_region {
+      Some((start, end)) if end > start => (start + (at - start) % (end - start)) as f64 / rate,
+      _ => played as f64 / rate,
+    }
+  }
 }
 
 /// `span`, in seconds, as frames at `rate` cut to the first `frames`;
@@ -3393,6 +3721,20 @@ fn owner_name(
     (None, Some(music)) => music_name(music, server),
     (None, None) => String::new(),
   }
+}
+
+/// A live voice by name in a warning: its definition's path, or its music's,
+/// or else its clip's (or joined music's, made in code)
+fn voice_name(live: &LiveVoice, server: Option<&AssetServer>) -> String {
+  let path = match (live.sound, live.music) {
+    (Some(sound), _) => server.and_then(|server| server.path(sound)),
+    (None, Some(music)) => server.and_then(|server| server.path(music)),
+    (None, None) => None,
+  };
+  path.map_or_else(
+    || live.source.as_ref().name(server),
+    |path| path.to_string(),
+  )
 }
 
 /// Warn about `error` unless a stream error was warned about already
@@ -3806,5 +4148,23 @@ mod tests {
     assert_eq!(clamp_pitch(f32::NAN), 0.0);
     assert_eq!(clamp_pitch(-100.0), -48.0);
     assert!((rate_of(12.0) - 2.0).abs() < 1e-12);
+  }
+
+  /// A position past what plays (a loop moved to a clip reloaded shorter)
+  /// wraps into the loop, or else is the end
+  #[test]
+  fn a_position_past_what_plays_wraps_into_the_loop() {
+    let looped = Span {
+      slice: None,
+      loop_region: Some((100, 400)),
+    };
+    assert_eq!(looped.wrap(0.25, 1_000, 400), 0.25);
+    assert_eq!(looped.wrap(0.5, 1_000, 400), 0.2);
+    assert_eq!(looped.wrap(1.25, 1_000, 400), 0.35);
+    let sliced = Span {
+      slice: Some((50, 350)),
+      loop_region: None,
+    };
+    assert_eq!(sliced.wrap(0.5, 1_000, 400), 0.3);
   }
 }

@@ -27,6 +27,11 @@ use crate::core::hash::FastSet;
 /// across scene changes until it is stopped, replaced, or a scene's
 /// `SceneCleanup::MUSIC` stops it.
 ///
+/// Saved while it plays (hot reload: its file, its clip, or its intro or
+/// loop file), the track switches to what it now says where it is,
+/// crossfading over 10 ms: its new clips, loop, volume, bus and crossfade.
+/// A save that does not load changes nothing.
+///
 /// ```
 /// use ryo2d::prelude::*;
 ///

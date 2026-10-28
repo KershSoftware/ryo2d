@@ -8,7 +8,9 @@ use crate::core::time::Time;
 
 /// `PostUpdate`, after the cameras: applies the voices' commands queued this
 /// frame (the scene's update has run), builds the bus tree from the mixer
-/// when it lands or changes, follows the listener and the emitters (their
+/// when it lands or changes, switches what plays to the clips, sound
+/// definitions and music the registry reloaded (read from its
+/// `AssetEvent`s), follows the listener and the emitters (their
 /// `GlobalTransform`s as this frame left them) and plays the emitters
 /// spawned to play, follows the game clock (its pause and time scale;
 /// hitstop leaves audio alone), reports the device's stream errors,
@@ -29,18 +31,22 @@ pub fn audio_system(world: &mut World) {
 
 #[cfg(test)]
 mod tests {
-  use std::time::Duration;
+  use std::time::{Duration, Instant};
 
   use kira::sound::PlaybackState;
 
-  use crate::core::asset::{Assets, Handle};
+  use crate::core::asset::{
+    Asset, AssetEvent, AssetServer, Assets, AssetsView, Handle, MemorySource,
+  };
   use crate::core::audio::engine::MIN_FADE;
   use crate::core::audio::{
-    AudioClip, AudioEngine, AudioLogEntry, AudioLogKind, AudioView, BusDef, DuckDef, FocusLoss,
-    Mixer, PlayOptions, Sound, SoundClip, Voice,
+    AudioClip, AudioEngine, AudioLogEntry, AudioLogKind, AudioView, BusDef, ClipData, DuckDef,
+    FocusLoss, Mixer, Music, PlayOptions, Sound, SoundClip, Voice,
   };
+  use crate::core::dev_log::{self, LogLevel};
   use crate::core::ecs::World;
-  use crate::core::testing::{audio_step, audio_world};
+  use crate::core::ecs::kernel::Messages;
+  use crate::core::testing::{audio_step, audio_world, audio_world_over, wav};
   use crate::core::time::Time;
 
   const FRAME: Duration = Duration::from_nanos(16_666_667);
@@ -614,5 +620,394 @@ mod tests {
     assert!((master(&world) - (open - 12.0)).abs() < 1e-4);
     set_focused(&mut world, true);
     assert_eq!(master(&world), open);
+  }
+
+  // Hot reload
+
+  /// A mono WAV file at 48 kHz, `seconds` long, every sample `value`
+  fn wav_of(seconds: f64, value: i16) -> Vec<u8> {
+    wav(48_000, (48_000.0 * seconds) as usize, value)
+  }
+
+  /// An audio world whose files are `files`, kept to save over
+  fn world_over(files: &[(&str, &[u8])]) -> (World, MemorySource) {
+    let source = MemorySource::new();
+    for (path, bytes) in files {
+      source.insert(path, *bytes);
+    }
+    (audio_world_over(source.clone()), source)
+  }
+
+  fn load<T: Asset>(world: &mut World, path: &str) -> Handle<T> {
+    match AssetsView::new(world).load_now::<T>(path) {
+      Ok(handle) => handle,
+      Err(error) => panic!("{path}: {}", error.report()),
+    }
+  }
+
+  /// Save `bytes` over `path` and reload it, stepping with no time passing
+  /// (so nothing plays on) until the registry has applied the reload to a
+  /// `T`: `Modified`, or `ReloadFailed`. Gives the `T` events sent
+  fn save<T: Asset>(
+    world: &mut World,
+    files: &MemorySource,
+    path: &str,
+    bytes: impl Into<Vec<u8>>,
+  ) -> Vec<AssetEvent<T>> {
+    let mut cursor = world
+      .resource::<Messages<AssetEvent<T>>>()
+      .get_cursor_current();
+    files.insert(path, bytes);
+    world.resource::<AssetServer>().reload(path);
+    let start = Instant::now();
+    let mut sent = Vec::new();
+    loop {
+      audio_step(world, Duration::ZERO);
+      sent.extend(
+        cursor
+          .read(world.resource::<Messages<AssetEvent<T>>>())
+          .cloned(),
+      );
+      let applied = sent.iter().any(|event| {
+        matches!(
+          event,
+          AssetEvent::Modified { .. } | AssetEvent::ReloadFailed { .. }
+        )
+      });
+      if applied {
+        return sent;
+      }
+      assert!(start.elapsed() < Duration::from_secs(5), "{path}: {sent:?}");
+      std::thread::sleep(Duration::from_millis(1));
+    }
+  }
+
+  /// What the log says happened to voice `id`: each entry's kind and fade
+  fn entries(world: &World, id: u32) -> Vec<(AudioLogKind, Duration)> {
+    log(world)
+      .iter()
+      .filter(|entry| entry.voice == id)
+      .map(|entry| (entry.kind, entry.fade))
+      .collect()
+  }
+
+  fn steps(world: &mut World, count: usize) {
+    for _ in 0..count {
+      audio_step(world, FRAME);
+    }
+  }
+
+  /// The voice playing on `bus`, by the log's latest start there
+  fn started_on(world: &World, bus: &str) -> u32 {
+    log(world)
+      .iter()
+      .rev()
+      .find(|entry| entry.kind == AudioLogKind::Start && entry.bus == bus)
+      .map_or(0, |entry| entry.voice)
+  }
+
+  const HUM: &str = r#"(clips: [(path: "sfx/hum.wav")], looping: true)"#;
+
+  #[test]
+  fn a_reloaded_clip_switches_a_playing_loop_at_its_position() {
+    let hum = wav_of(2.0, 3_000);
+    let (mut world, files) =
+      world_over(&[("sfx/hum.wav", &hum), ("sfx/hum.sound.ron", HUM.as_bytes())]);
+    let sound = load::<Sound>(&mut world, "sfx/hum.sound.ron");
+    let voice = AudioView::new(&mut world).play(&sound);
+    steps(&mut world, 18);
+    let before = position(&world, &voice);
+    assert!(before > 0.25, "it has played: {before}");
+    save::<AudioClip>(&mut world, &files, "sfx/hum.wav", wav_of(0.5, 6_000));
+    assert_eq!(
+      entries(&world, voice.id()),
+      [
+        (AudioLogKind::Start, Duration::ZERO),
+        (AudioLogKind::Stop, MIN_FADE),
+        (AudioLogKind::Start, MIN_FADE)
+      ],
+      "{:#?}",
+      log(&world)
+    );
+    let after = position(&world, &voice);
+    assert!((after - before).abs() <= CHUNK, "{before} then {after}");
+    // The new clip is half a second: the loop wraps there, not at 2 s
+    steps(&mut world, 18);
+    let later = position(&world, &voice);
+    assert!(later < 0.5, "it loops the new clip: {later}");
+    assert!(voice.is_playing(), "{voice:?}");
+    assert_eq!(AudioView::new(&mut world).voices_on("sfx"), 1);
+  }
+
+  #[test]
+  fn a_reloaded_clip_lets_one_shots_finish() {
+    let beep = wav_of(0.5, 3_000);
+    let (mut world, files) = world_over(&[("sfx/beep.wav", &beep)]);
+    let clip = load::<AudioClip>(&mut world, "sfx/beep.wav");
+    let voice = AudioView::new(&mut world).play(&clip);
+    steps(&mut world, 6);
+    let before = position(&world, &voice);
+    save::<AudioClip>(&mut world, &files, "sfx/beep.wav", wav_of(2.0, 6_000));
+    assert_eq!(
+      entries(&world, voice.id()),
+      [(AudioLogKind::Start, Duration::ZERO)]
+    );
+    steps(&mut world, 6);
+    assert!(position(&world, &voice) > before + 0.05, "it plays on");
+    // The old clip's half second is over well before the new one's 2 s
+    steps(&mut world, 30);
+    assert!(voice.is_stopped(), "{voice:?}");
+    assert_eq!(
+      entries(&world, voice.id()),
+      [(AudioLogKind::Start, Duration::ZERO)],
+      "it ended, not stopped"
+    );
+    // A new play is the new clip
+    let fresh = AudioView::new(&mut world).play(&clip);
+    steps(&mut world, 60);
+    assert!(fresh.is_playing(), "{fresh:?}");
+  }
+
+  #[test]
+  fn a_reloaded_sound_retunes_its_playing_loops() {
+    let hum = wav_of(2.0, 3_000);
+    let (mut world, files) = world_over(&[
+      ("sfx/hum.wav", &hum),
+      (
+        "sfx/hum.sound.ron",
+        br#"(clips: [(path: "sfx/hum.wav")], looping: true, volume: -6.0)"#,
+      ),
+    ]);
+    let sound = load::<Sound>(&mut world, "sfx/hum.sound.ron");
+    let voice = AudioView::new(&mut world).play(&sound);
+    steps(&mut world, 3);
+    let retuned = r#"(clips: [(path: "sfx/hum.wav")], looping: true, volume: -12.0, pitch: 2.0, bus: "ambience")"#;
+    save::<Sound>(&mut world, &files, "sfx/hum.sound.ron", retuned);
+    assert_eq!(
+      entries(&world, voice.id()),
+      [
+        (AudioLogKind::Start, Duration::ZERO),
+        (AudioLogKind::Gain, MIN_FADE),
+        (AudioLogKind::Rate, MIN_FADE)
+      ],
+      "{:#?}",
+      log(&world)
+    );
+    let octave_sixth = 2f64.powf(2.0 / 12.0);
+    let last = log(&world);
+    let (gain, rate) = (&last[last.len() - 2], &last[last.len() - 1]);
+    assert_eq!(gain.gain_db, -12.0);
+    assert!((rate.rate - octave_sixth).abs() < 1e-9, "{}", rate.rate);
+    // It stays on its bus; a new play takes everything new
+    assert_eq!(rate.bus, "sfx");
+    let fresh = AudioView::new(&mut world).play(&sound);
+    let start = log(&world)
+      .into_iter()
+      .find(|entry| entry.voice == fresh.id())
+      .map(|entry| (entry.gain_db, entry.rate, entry.bus));
+    assert_eq!(start, Some((-12.0, octave_sixth, "ambience".to_string())));
+  }
+
+  #[test]
+  fn a_broken_save_keeps_everything_playing() {
+    let (hum, theme) = (wav_of(2.0, 3_000), wav_of(2.0, 2_000));
+    let (mut world, files) = world_over(&[
+      ("sfx/hum.wav", &hum),
+      ("sfx/hum.sound.ron", HUM.as_bytes()),
+      ("music/theme.wav", &theme),
+      ("music/theme.music.ron", br#"(clip: "music/theme.wav")"#),
+    ]);
+    let sound = load::<Sound>(&mut world, "sfx/hum.sound.ron");
+    let track = load::<Music>(&mut world, "music/theme.music.ron");
+    let hum = AudioView::new(&mut world).play(&sound);
+    AudioView::new(&mut world).play_music(&track);
+    steps(&mut world, 6);
+    let music = started_on(&world, "music");
+    let before = (position(&world, &hum), music_position(&world, music));
+    let failed = |sent: &[AssetEvent<Sound>]| {
+      sent
+        .iter()
+        .any(|event| matches!(event, AssetEvent::ReloadFailed { .. }))
+    };
+    let sent = save::<Sound>(&mut world, &files, "sfx/hum.sound.ron", "(clips: [");
+    assert!(failed(&sent), "{sent:?}");
+    let sent = save::<AudioClip>(&mut world, &files, "sfx/hum.wav", "not audio");
+    assert!(matches!(sent.as_slice(), [AssetEvent::ReloadFailed { .. }]));
+    let sent = save::<Music>(&mut world, &files, "music/theme.music.ron", "(clip: ");
+    assert!(matches!(sent.as_slice(), [AssetEvent::ReloadFailed { .. }]));
+    let sent = save::<AudioClip>(&mut world, &files, "music/theme.wav", "RIFF no");
+    assert!(matches!(sent.as_slice(), [AssetEvent::ReloadFailed { .. }]));
+    for id in [hum.id(), music] {
+      assert_eq!(
+        entries(&world, id),
+        [(AudioLogKind::Start, Duration::ZERO)],
+        "{:#?}",
+        log(&world)
+      );
+    }
+    steps(&mut world, 6);
+    let after = (position(&world, &hum), music_position(&world, music));
+    assert!(
+      after.0 > before.0 + 0.05 && after.1 > before.1 + 0.05,
+      "{before:?} then {after:?}"
+    );
+    assert!(hum.is_playing());
+    assert_eq!(AudioView::new(&mut world).current_music(), Some(track.id()));
+  }
+
+  fn music_position(world: &World, id: u32) -> f64 {
+    world
+      .resource::<AudioEngine>()
+      .voice_position(id)
+      .unwrap_or_default()
+  }
+
+  /// A saved intro or loop file (read, not loaded, by the music) reloads
+  /// the music, and the track switches to it where it was
+  #[test]
+  fn a_saved_intro_or_loop_switches_the_playing_music() {
+    let (intro, looped) = (wav_of(0.1, 1_000), wav_of(0.2, 2_000));
+    let (mut world, files) = world_over(&[
+      ("music/intro.wav", &intro),
+      ("music/loop.wav", &looped),
+      (
+        "music/theme.music.ron",
+        br#"(intro: "music/intro.wav", loop: "music/loop.wav")"#,
+      ),
+    ]);
+    let track = load::<Music>(&mut world, "music/theme.music.ron");
+    AudioView::new(&mut world).play_music(&track);
+    steps(&mut world, 9);
+    let voice = started_on(&world, "music");
+    let before = music_position(&world, voice);
+    save::<Music>(&mut world, &files, "music/loop.wav", wav_of(0.4, 4_000));
+    let switch = [
+      (AudioLogKind::Start, Duration::ZERO),
+      (AudioLogKind::Stop, MIN_FADE),
+      (AudioLogKind::Start, MIN_FADE),
+    ];
+    assert_eq!(entries(&world, voice), switch, "{:#?}", log(&world));
+    let after = music_position(&world, voice);
+    assert!((after - before).abs() <= CHUNK, "{before} then {after}");
+    assert_eq!(AudioView::new(&mut world).current_music(), Some(track.id()));
+    // It loops over the new loop: on past the old track's end at 0.3 s
+    steps(&mut world, 12);
+    let later = music_position(&world, voice);
+    assert!(later > 0.3 && later < 0.5, "{later}");
+    save::<Music>(&mut world, &files, "music/intro.wav", wav_of(0.2, 1_000));
+    assert_eq!(entries(&world, voice).len(), 5, "{:#?}", log(&world));
+  }
+
+  /// A saved music definition switches the track where it is to what it
+  /// now says; its clip saved does too, once
+  #[test]
+  fn a_saved_music_definition_switches_the_playing_music() {
+    let theme = wav_of(2.0, 2_000);
+    let (mut world, files) = world_over(&[
+      ("music/theme.wav", &theme),
+      ("music/theme.music.ron", br#"(clip: "music/theme.wav")"#),
+    ]);
+    let track = load::<Music>(&mut world, "music/theme.music.ron");
+    AudioView::new(&mut world).play_music(&track);
+    steps(&mut world, 6);
+    let voice = started_on(&world, "music");
+    let before = music_position(&world, voice);
+    let quieter = r#"(clip: "music/theme.wav", volume: -6.0, crossfade: 0.5)"#;
+    save::<Music>(&mut world, &files, "music/theme.music.ron", quieter);
+    assert_eq!(
+      entries(&world, voice),
+      [
+        (AudioLogKind::Start, Duration::ZERO),
+        (AudioLogKind::Stop, MIN_FADE),
+        (AudioLogKind::Start, MIN_FADE)
+      ],
+      "{:#?}",
+      log(&world)
+    );
+    let restarted = log(&world).pop().map(|entry| entry.gain_db);
+    assert_eq!(restarted, Some(-6.0));
+    let after = music_position(&world, voice);
+    assert!((after - before).abs() <= CHUNK, "{before} then {after}");
+    // Its clip saved switches it once, though the music reloads with it
+    save::<AudioClip>(&mut world, &files, "music/theme.wav", wav_of(1.0, 3_000));
+    assert_eq!(entries(&world, voice).len(), 5, "{:#?}", log(&world));
+    // Its new crossfade is what a scene's cleanup fades it out over
+    crate::core::audio::stop_scene_music(&mut world);
+    audio_step(&mut world, Duration::ZERO);
+    assert_eq!(
+      entries(&world, voice).last(),
+      Some(&(AudioLogKind::Stop, Duration::from_millis(500)))
+    );
+  }
+
+  /// A streamed loop switches to its reloaded clip as a decoded one does
+  #[test]
+  fn a_reloaded_clip_switches_a_streamed_loop() {
+    let drone = wav_of(1.0, 3_000);
+    let (mut world, files) = world_over(&[
+      ("sfx/drone.wav", &drone),
+      (
+        "sfx/drone.sound.ron",
+        br#"(clips: [(path: "sfx/drone.wav")], looping: true, mode: Stream)"#,
+      ),
+    ]);
+    let sound = load::<Sound>(&mut world, "sfx/drone.sound.ron");
+    let voice = AudioView::new(&mut world).play(&sound);
+    steps(&mut world, 3);
+    save::<AudioClip>(&mut world, &files, "sfx/drone.wav", wav_of(0.5, 6_000));
+    assert_eq!(
+      entries(&world, voice.id()),
+      [
+        (AudioLogKind::Start, Duration::ZERO),
+        (AudioLogKind::Stop, MIN_FADE),
+        (AudioLogKind::Start, MIN_FADE)
+      ],
+      "{:#?}",
+      log(&world)
+    );
+    steps(&mut world, 3);
+    assert!(voice.is_playing(), "{voice:?}");
+    let about_it = dev_log::get_entries()
+      .iter()
+      .filter(|entry| entry.level == LogLevel::Warn && entry.message.starts_with("sfx/drone"))
+      .count();
+    assert_eq!(about_it, 0, "it opened and switched");
+  }
+
+  /// What the engine keeps about an asset (a definition's picks and
+  /// cooldown, a clip's failed decode, a warning given once) goes when the
+  /// asset is freed
+  #[test]
+  fn a_freed_asset_leaves_nothing_remembered() {
+    let mut world = audio_world();
+    let clip = clip(&mut world, 0.1);
+    // Played at a place with no spatial settings: warned about once
+    let sound = world.resource_mut::<Assets<Sound>>().add(Sound {
+      clips: vec![SoundClip::new(clip.clone())],
+      cooldown: Duration::from_millis(50),
+      ..Default::default()
+    });
+    AudioView::new(&mut world).play_at(&sound, crate::core::ecs::Vec2::new(10.0, 0.0));
+    // A track made for a bus outside music: warned about once
+    let mut track = Music::looping(clip.clone(), 0.0, None);
+    track.bus = "sfx".into();
+    let track = world.resource_mut::<Assets<Music>>().add(track);
+    AudioView::new(&mut world).play_music(&track);
+    AudioView::new(&mut world).stop_music(Duration::ZERO);
+    // A clip whose stream will not open: marked
+    let garbage: std::sync::Arc<[u8]> = std::sync::Arc::from(&b"not audio at all"[..]);
+    let broken = world
+      .resource_mut::<Assets<AudioClip>>()
+      .add(AudioClip::new(
+        ClipData::Encoded(garbage),
+        Duration::from_secs(1),
+        22_050,
+      ));
+    AudioView::new(&mut world).play(&broken);
+    audio_step(&mut world, FRAME);
+    assert_eq!(world.resource::<AudioEngine>().remembered(), 4);
+    drop((sound, track, broken));
+    audio_step(&mut world, FRAME);
+    assert_eq!(world.resource::<AudioEngine>().remembered(), 0);
   }
 }

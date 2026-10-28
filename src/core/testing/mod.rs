@@ -132,6 +132,32 @@ pub(crate) fn audio_world_over(files: MemorySource) -> World {
   world
 }
 
+/// A mono 16-bit WAV file of `frames` frames at `rate`, every sample
+/// `value`
+#[cfg(test)]
+pub(crate) fn wav(rate: u32, frames: usize, value: i16) -> Vec<u8> {
+  let data = u32::try_from(frames * 2).unwrap_or(u32::MAX);
+  let mut bytes = Vec::with_capacity(44 + frames * 2);
+  bytes.extend_from_slice(b"RIFF");
+  bytes.extend_from_slice(&(36 + data).to_le_bytes());
+  bytes.extend_from_slice(b"WAVEfmt ");
+  bytes.extend_from_slice(&16u32.to_le_bytes());
+  // PCM, one channel
+  bytes.extend_from_slice(&1u16.to_le_bytes());
+  bytes.extend_from_slice(&1u16.to_le_bytes());
+  bytes.extend_from_slice(&rate.to_le_bytes());
+  bytes.extend_from_slice(&(rate * 2).to_le_bytes());
+  // Two bytes a frame, 16 bits a sample
+  bytes.extend_from_slice(&2u16.to_le_bytes());
+  bytes.extend_from_slice(&16u16.to_le_bytes());
+  bytes.extend_from_slice(b"data");
+  bytes.extend_from_slice(&data.to_le_bytes());
+  for _ in 0..frames {
+    bytes.extend_from_slice(&value.to_le_bytes());
+  }
+  bytes
+}
+
 fn add_audio(world: &mut World) {
   world.insert_resource(Time::new(60));
   let mut audio = AudioEngine::new(false);
