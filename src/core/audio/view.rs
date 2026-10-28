@@ -39,11 +39,12 @@ pub struct PlayOptions {
   /// them
   pub position: Option<Vec2>,
   /// It belongs to the engine and outlives the scene that played it. It
-  /// matters for loops, and for one-shots paused or held by the game's
-  /// pause: when the scene exits, those stop with their fade, while a
-  /// one-shot playing then plays to its end (a click just before a switch
-  /// is heard out). A loop meant to carry on into the next scene (rain,
-  /// say) needs it
+  /// matters for loops, for one-shots paused or held by the game's pause,
+  /// and for one-shots with more than 2 s left: when the scene exits, those
+  /// stop with their fade, while a one-shot nearly over, or one on `ui`,
+  /// plays to its end (a click just before a switch is heard out). A loop
+  /// meant to carry on into the next scene (rain, say), or a long line of
+  /// dialogue meant to, needs it
   pub persist: bool,
   /// Added to the sound's gain, in dB (-6 is about half as loud)
   pub volume_db: f32,
@@ -89,9 +90,9 @@ impl<'w> AudioView<'w> {
   }
 
   /// Play `sound` (`&handle`, of a [`Sound`] or an [`AudioClip`]) and return
-  /// its [`Voice`], which belongs to the scene playing it (a loop, or a
-  /// paused one-shot, stops as the scene exits; see
-  /// [`PlayOptions::persist`]).
+  /// its [`Voice`], which belongs to the scene playing it (a loop, a paused
+  /// one-shot, or one with more than 2 s left that is not on `ui`, stops as
+  /// the scene exits; see [`PlayOptions::persist`]).
   ///
   /// A loop played while its sound loads waits for it: its voice reports
   /// playing, takes what the game does to it, and starts with its fade-in

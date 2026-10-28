@@ -73,6 +73,11 @@ const CHUNK_FRAMES: usize = 128;
 const MAX_MOCK_STEP: Duration = Duration::from_secs(1);
 /// Voices the table holds before it grows
 const VOICE_CAPACITY: usize = 128;
+/// The most a one-shot playing as its scene exits may have left to finish:
+/// a click or a stinger is heard out, while a longer one (a voice-over, a
+/// long streamed clip) stops with its fade rather than run on into the next
+/// scene. One on `ui` finishes whatever it has left
+const FINISH_AT_EXIT: Duration = Duration::from_secs(2);
 /// A voice's own gain, in dB: kira is silent at -60 and below
 const GAIN_RANGE: (f32, f32) = (-60.0, 24.0);
 /// A voice's own pitch, in semitones either way
@@ -723,6 +728,9 @@ struct LiveVoice {
   frame: u64,
   /// It loops until stopped, over `loop_region` of `region`, as it started
   looping: bool,
+  /// How long what it plays lasts at its normal rate, in seconds: its
+  /// region of its clip, or all of it
+  length: f64,
   region: Option<Range<f64>>,
   loop_region: Option<Range<f64>>,
   /// The bus tree it plays on: the live one's, or a retired one's
@@ -758,6 +766,19 @@ impl LiveVoice {
   /// Its playback rate: its own pitch's, times the time scale it carries
   fn rate(&self) -> f64 {
     rate_of(self.own_pitch()) * self.scale
+  }
+
+  /// How long it has left to play, in seconds, at its rate: from where it
+  /// is to the end of what it plays (a stream's position counts from its
+  /// region's start, as its length does)
+  fn remaining(&self) -> f64 {
+    let left = (self.length - self.playback.position()).max(0.0);
+    let rate = self.rate();
+    if rate > 0.0 {
+      left / rate
+    } else {
+      f64::INFINITY
+    }
   }
 
   /// Its gain as heard: its own, plus its place's falloff
@@ -1499,18 +1520,20 @@ impl AudioEngine {
     std::mem::replace(&mut self.scope, scope)
   }
 
-  /// Scene `scope` exited: stop the loops it played, and the one-shots
-  /// paused (by their own call) or held (by the game's pause, or time
-  /// standing still), each with its fade (its sound's `fade_out`, at least
-  /// [`MIN_FADE`]). Only its one-shots playing now finish (a confirm click
-  /// just before a switch is heard out): a paused one would otherwise play
-  /// its rest over the next scene once the clock resumes. The voices played
-  /// with `persist`, and the engine's own, play on
+  /// Scene `scope` exited: stop the loops it played, the one-shots paused
+  /// (by their own call) or held (by the game's pause, or time standing
+  /// still), and the one-shots playing with more than [`FINISH_AT_EXIT`]
+  /// left (but on `ui`), each with its fade (its sound's `fade_out`, at
+  /// least [`MIN_FADE`]). Its one-shots nearly over, and those on `ui`,
+  /// finish (a confirm click just before a switch is heard out): a paused
+  /// one would otherwise play its rest over the next scene once the clock
+  /// resumes, and a long one run on into it. The voices played with
+  /// `persist`, and the engine's own, play on
   pub(crate) fn release_scope(&mut self, world: &World, scope: u64) {
     let server = world.get_resource::<AssetServer>();
     for index in 0..self.voices.live.len() {
       if self.voices.live[index].scope == Some(scope) {
-        self.release_voice(index, server);
+        self.release_voice(index, true, server);
       }
     }
     // Its plays still waiting for their sounds never start
@@ -1526,13 +1549,23 @@ impl AudioEngine {
   /// Live voice `index`'s owner is gone (its scene exited, or its emitter's
   /// entity): stop it with its fade (its sound's `fade_out`, at least
   /// [`MIN_FADE`]) if it is a loop, or a one-shot paused or held; a one-shot
-  /// playing plays on to its end
-  fn release_voice(&mut self, index: usize, server: Option<&AssetServer>) {
+  /// playing plays on to its end, but at a `scene_exit` only one with at
+  /// most [`FINISH_AT_EXIT`] left, or one on `ui`. An emitter's one-shot
+  /// plays out where it was (a death cry as its entity despawns)
+  fn release_voice(&mut self, index: usize, scene_exit: bool, server: Option<&AssetServer>) {
+    let ui = self.buses.find("ui");
+    let Some(live) = self.voices.live.get(index) else {
+      return;
+    };
+    let long = scene_exit
+      && !live.looping
+      && ui.is_none_or(|ui| !self.buses.within(live.bus, ui))
+      && live.remaining() > FINISH_AT_EXIT.as_secs_f64();
     let Some(live) = self.voices.live.get_mut(index) else {
       return;
     };
     let state = live.voice.state();
-    let lingers = live.looping || live.held || state == VoiceState::Paused;
+    let lingers = live.looping || live.held || state == VoiceState::Paused || long;
     if !lingers || !matches!(state, VoiceState::Playing | VoiceState::Paused) {
       return;
     }
@@ -1599,7 +1632,7 @@ impl AudioEngine {
     let mut orphans = std::mem::take(&mut self.orphans);
     for &id in &orphans {
       if let Some(index) = self.voices.index_of(id) {
-        self.release_voice(index, server);
+        self.release_voice(index, false, server);
       }
     }
     orphans.clear();
@@ -3192,6 +3225,17 @@ impl AudioEngine {
     if let Some(reason) = refusal {
       return self.refuse(&subject, reason, server);
     }
+    let length = {
+      let (rate, frames) = match &samples {
+        ClipSource::Decoded(data) => (data.sample_rate, data.frames.len()),
+        ClipSource::Encoded { clip, rate } => (*rate, clip.frames),
+      };
+      let played = request
+        .region
+        .and_then(|region| within(region, rate, frames))
+        .map_or(frames, |(from, to)| to - from);
+      played as f64 / f64::from(rate.max(1))
+    };
     let (playback, filter) = if waits {
       (
         Playback::Waiting(Waiting::new(request.fade_in, starts_held)),
@@ -3289,6 +3333,7 @@ impl AudioEngine {
       fade_out: request.fade_out,
       frame: self.frame,
       looping: request.looping,
+      length,
       region: request.region.cloned(),
       loop_region: request.loop_region.cloned(),
       generation: self.generation,
@@ -3829,7 +3874,7 @@ impl AudioEngine {
           Some(position) => live.position = Some(position),
           None => {
             live.emitter = None;
-            self.release_voice(index, server);
+            self.release_voice(index, false, server);
           }
         }
       }
@@ -4141,9 +4186,10 @@ impl Drop for AudioEngine {
 
 /// Run `f` as scene `scope`'s code (a callback, one of its systems, or its
 /// UI nodes' observers): the voices it plays belong to that scene, and all
-/// but its playing one-shots stop as it exits. The changes it made to
-/// voices are applied as it ends, so those made to a voice it started reach
-/// kira with the start. A world without an audio engine just runs `f`
+/// but its one-shots nearly over (or on `ui`) stop as it exits. The
+/// changes it made to voices are applied as it ends, so those made to a
+/// voice it started reach kira with the start. A world without an audio
+/// engine just runs `f`
 pub(crate) fn in_scene<R>(world: &mut World, scope: u64, f: impl FnOnce(&mut World) -> R) -> R {
   let previous = world
     .get_resource_mut::<AudioEngine>()
@@ -4172,8 +4218,9 @@ fn apply_queued(world: &mut World) {
   }
 }
 
-/// Scene `scope` exited: stop the loops it played and its one-shots paused
-/// or held, each with its fade, and let its playing one-shots finish
+/// Scene `scope` exited: stop the loops it played, its one-shots paused or
+/// held, and its one-shots with more than 2 s left (but on `ui`), each with
+/// its fade, and let the rest of its playing one-shots finish
 pub(crate) fn release_scene(world: &mut World, scope: u64) {
   world.try_resource_scope(|world: &mut World, mut engine: Mut<'_, AudioEngine>| {
     engine.release_scope(world, scope);

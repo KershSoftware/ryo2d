@@ -106,12 +106,14 @@ struct VoiceShared {
 /// A voice belongs to the scene that played it, from a callback, one of its
 /// systems or an observer of its UI nodes: when that scene exits (popped,
 /// switched away or reset), a loop stops with its sound's `fade_out`, as
-/// does a one-shot paused (by its own call, or held by the game's pause),
-/// and a one-shot playing then plays to its end. One played with
+/// does a one-shot paused (by its own call, or held by the game's pause)
+/// and a one-shot with more than 2 s left; a one-shot nearly over, or one
+/// on `ui`, plays to its end. One played with
 /// [`PlayOptions::persist`](super::PlayOptions::persist), or outside every
 /// scene, belongs to the engine and plays on. One played from an
-/// [`AudioEmitter`](super::AudioEmitter) belongs to its entity instead, and
-/// stops, by the same rule, as the entity is despawned.
+/// [`AudioEmitter`](super::AudioEmitter) belongs to its entity instead: as
+/// the entity is despawned its loops and paused one-shots stop, and its
+/// one-shots playing play out.
 ///
 /// It follows the game's clock through its bus. On a bus that pauses with
 /// the game (by default `sfx`, `voice` and `ambience`) it pauses where it

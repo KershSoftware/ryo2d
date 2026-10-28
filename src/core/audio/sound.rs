@@ -91,8 +91,8 @@ pub struct Sound {
   /// Each play fades in over this
   pub fade_in: Duration,
   /// Its fade when the engine stops it: to make room under a voice limit,
-  /// or, for a loop or a paused one-shot, when the scene that played it
-  /// exits. At least 10 ms
+  /// or when the scene that played it exits (a loop, a paused one-shot, or
+  /// a one-shot with more than 2 s left, but on `ui`). At least 10 ms
   pub fade_out: Duration,
   /// Played at a place in the world (`ctx.audio().play_at(..)`, or from an
   /// [`AudioEmitter`](super::AudioEmitter)), it is heard from there:

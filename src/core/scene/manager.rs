@@ -140,9 +140,10 @@ enum TransitionPhase {
 }
 
 /// Drop what a scene that exited owned in the world: the console handlers
-/// it registered, and the voices it played: its loops and its paused or
-/// held one-shots stop with their fades, its playing one-shots play to
-/// their end.
+/// it registered, and the voices it played: its loops, its paused or held
+/// one-shots and its one-shots with more than 2 s left (but on `ui`) stop
+/// with their fades, and the rest of its playing one-shots play to their
+/// end.
 fn release_scope(world: &mut World, scope_id: u64) {
   if let Some(mut registry) = world.get_resource_mut::<CommandRegistry>() {
     registry.clear_scope(scope_id);
@@ -1434,6 +1435,90 @@ mod tests {
     );
     assert!(kept.is_playing(), "{kept:?}");
     assert!(engine_owned.is_playing(), "{engine_owned:?}");
+  }
+
+  /// Plays each of its sounds as it enters
+  struct PlaysEach(
+    Vec<crate::core::asset::Handle<crate::core::audio::Sound>>,
+    Voices,
+  );
+
+  impl Scene for PlaysEach {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
+      let voices: Vec<_> = self.0.iter().map(|sound| ctx.audio().play(sound)).collect();
+      self.1.lock().unwrap().extend(voices);
+    }
+  }
+
+  /// At a scene's exit a one-shot playing finishes only if it is nearly
+  /// over (2 s or less left) or plays on `ui`: a long voice-over stops with
+  /// its fade-out rather than running on into the next scene. A stream
+  /// counts what it has left from its position the same way
+  #[test]
+  fn a_scene_exit_stops_its_long_one_shots_and_lets_its_short_ones_finish() {
+    use crate::core::asset::Assets;
+    use crate::core::audio::{AudioClip, ClipData, EncodedClip, Sound, SoundClip};
+    use crate::core::testing::{audio_step, wav};
+    let (mut world, _) = audio_scene_world();
+    let rate = 8_000;
+    let mut clips = world.resource_mut::<Assets<AudioClip>>();
+    let long = clips.add(AudioClip::from_frames(rate, &vec![[0.1, 0.1]; 20 * 8_000]));
+    let short = clips.add(AudioClip::from_frames(rate, &vec![[0.1, 0.1]; 8_000]));
+    let streamed = clips.add(AudioClip::new(
+      ClipData::Encoded(EncodedClip {
+        bytes: wav(rate, 20 * 8_000, 3_000).into(),
+        frames: 20 * 8_000,
+      }),
+      Duration::from_secs(20),
+      rate,
+    ));
+    let fade = Duration::from_millis(300);
+    let mut sounds = world.resource_mut::<Assets<Sound>>();
+    let mut sound = |clip: &crate::core::asset::Handle<AudioClip>, bus: &str| {
+      sounds.add(Sound {
+        clips: vec![SoundClip::new(clip.clone())],
+        bus: bus.to_string(),
+        fade_out: fade,
+        ..Default::default()
+      })
+    };
+    let each = vec![
+      sound(&long, "voice"),
+      sound(&short, "sfx"),
+      sound(&long, "ui"),
+      sound(&streamed, "voice"),
+    ];
+    let played: Voices = Arc::default();
+    let mut m = SceneManager::with_scene(Box::new(PlaysEach(each, played.clone())));
+    m.enter_initial(&mut world);
+    let [narration, click, menu_music, streamed] = voices(&played);
+    audio_step(&mut world, Duration::from_millis(50));
+    m.switch(rec(&Arc::default(), "next"), &mut world);
+    assert_eq!(
+      audio_stops(&world),
+      [(narration.id(), fade), (streamed.id(), fade)],
+      "the long ones stop with their fade-out"
+    );
+    for _ in 0..70 {
+      audio_step(&mut world, Duration::from_nanos(16_666_667));
+    }
+    assert!(narration.is_stopped(), "{narration:?}");
+    assert!(streamed.is_stopped(), "{streamed:?}");
+    assert!(
+      click.is_stopped(),
+      "the short one played to its end: {click:?}"
+    );
+    assert!(
+      menu_music.is_playing(),
+      "the ui one plays on: {menu_music:?}"
+    );
+    assert!(
+      audio_stops(&world)
+        .iter()
+        .all(|(voice, _)| *voice != click.id() && *voice != menu_music.id()),
+      "{:?}",
+      audio_stops(&world)
+    );
   }
 
   /// Plays its loop as it enters
