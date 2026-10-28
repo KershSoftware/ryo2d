@@ -56,14 +56,11 @@ fn allocations(f: impl FnOnce()) -> usize {
 /// A 60 Hz frame
 const FRAME: Duration = Duration::from_nanos(16_666_667);
 
-/// A frame of real time: the clock, the registry's pump and the audio
-/// engine's frame, which renders it on the mock backend; then the change
-/// trackers cleared, as the engine's `Last` clears them each frame (the
-/// audio frame takes its engine out of the world and puts it back, which
-/// writes a removal message into a buffer only clearing reuses)
+/// A frame of real time (`audio_step`): the clock, the registry's pump and
+/// the audio engine's frame, which renders it on the mock backend, and the
+/// change trackers cleared, as the engine's `Last` clears them
 fn frame(world: &mut World) {
   audio_step(world, FRAME);
-  world.clear_trackers();
 }
 
 /// A hundred frames' allocations
@@ -78,11 +75,22 @@ fn hundred_frames(world: &mut World) -> usize {
 #[test]
 fn idle_frame_audio_allocates_nothing() {
   let mut world = audio_world();
-  // As a game runs it: the audio log is off but for headless engines
+  // As a game runs it: the audio log is off but for headless engines, and
+  // a mixer is set (every engine sets the game's), which each frame looks
+  // up and checks for a change
   world.resource_mut::<AudioEngine>().set_logging(false);
+  AudioView::new(&mut world).set_mixer(Mixer {
+    buses: vec![BusDef::new("sfx/footsteps")],
+    ..Default::default()
+  });
   for _ in 0..10 {
     frame(&mut world);
   }
+  let buses = world.resource::<AudioEngine>().buses();
+  assert!(
+    buses.iter().any(|bus| bus.name == "sfx/footsteps"),
+    "the mixer was applied"
+  );
 
   let idle = hundred_frames(&mut world);
   assert_eq!(

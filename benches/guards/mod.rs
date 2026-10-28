@@ -1,8 +1,10 @@
-//! What the UI benches' guards share: whether criterion's arguments ask for
-//! a guarded bench, the targets missed, and the run's verdict once every
-//! bench has run
+//! What the benches' guards share: whether criterion's arguments ask for a
+//! guarded bench, the targets missed, the run's verdict once every bench has
+//! run, and criterion's medians read back from where it writes them
 
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::SystemTime;
 
 /// The targets missed so far: the run fails once every bench has run
 static MISSED: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -99,5 +101,48 @@ pub fn verdict(bench: &str, profile: &str) {
   if !missed.is_empty() {
     eprintln!("{bench} guards missed: {}. {profile}", missed.join("; "));
     std::process::exit(1);
+  }
+}
+
+/// Where criterion writes its results, and the medians are read from:
+/// `$CRITERION_HOME`, else `$CARGO_TARGET_DIR/criterion`, else the
+/// workspace's `target/criterion`
+// Only the benches that print criterion's medians use it
+#[allow(dead_code)]
+pub fn results_dir() -> PathBuf {
+  if let Some(home) = std::env::var_os("CRITERION_HOME") {
+    return PathBuf::from(home);
+  }
+  std::env::var_os("CARGO_TARGET_DIR")
+    .map(PathBuf::from)
+    .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("target"))
+    .join("criterion")
+}
+
+/// Print the median of `bench` (of `of`) from the run criterion just wrote
+/// to `results`, in microseconds to `decimals` places; nothing for results
+/// an earlier run left (this run skipped the bench, as a filter or `--list`
+/// does)
+// Only the benches that print criterion's medians use it
+#[allow(dead_code)]
+pub fn print_median(results: &Path, bench: &str, of: &str, started: SystemTime, decimals: usize) {
+  let path = results.join(bench).join("new/estimates.json");
+  let written = std::fs::metadata(&path)
+    .and_then(|meta| meta.modified())
+    .is_ok_and(|modified| modified >= started);
+  if !written {
+    println!("{bench} median: not measured in this run");
+    return;
+  }
+  let median = std::fs::read_to_string(&path).ok().and_then(|text| {
+    let at = text.find("\"median\"")?;
+    let rest = &text[at..];
+    let from = rest.find("\"point_estimate\":")? + "\"point_estimate\":".len();
+    let to = rest[from..].find([',', '}'])? + from;
+    rest[from..to].trim().parse::<f64>().ok()
+  });
+  match median {
+    Some(ns) => println!("{bench} median, of {of}: {:.*} us", decimals, ns / 1000.0),
+    None => println!("{bench} median: unavailable ({})", path.display()),
   }
 }

@@ -8,10 +8,12 @@ Measured on 2026-10-28 on an Apple M5 Pro (18 cores, Metal, macOS 27.0.1), a sha
 
 **Method.**
 - **Before** is Task 1's commit (64271e9a: kira 0.12.5 under the old audio player). It was exported with `git archive` into a scratch folder, not a worktree, and built into the workspace's own `target/`.
-- **The idle and empty frames:** the build before and the branch ran `benches/ui_render.rs` and `benches/foundation.rs` (the same sources on both sides) in three alternated rounds, the build before first in each. Each run waited until the 1-minute load was 4 or less; the loads at the runs' starts were 3.40 to 4.00.
-- **The audio guards** (`benches/audio.rs`) ran three times on the branch, at loads 3.90, 3.25 and 3.62.
-- **What a headless frame does now.** The build before ran headless engines with no audio at all. The branch runs the audio engine there, on kira's mock backend, which renders the mix inside `audio_system` on the frame's thread (6.7 to 6.9 µs an idle frame), where a device renders it on its own thread. A headless whole step on the branch therefore holds work that a game's main thread does not do. The idle audio frame's own main-thread time is 0.92 to 1.00 µs.
-- The numbers are criterion's medians, and the guards' medians from their own output.
+- **The idle and empty frames:** the build before and the branch (at 8faa9486, kira 0.12.5; an idle frame starts no stream, so the stream decoder and kira 0.12.6 do not touch it) ran `benches/ui_render.rs` and `benches/foundation.rs` (the same sources on both sides) in three alternated rounds, the build before first in each. Each run waited until the 1-minute load was 4 or less; the loads at the runs' starts were 3.40 to 4.00.
+- **The audio guards** (`benches/audio.rs`) ran three times on the branch, at loads 3.85, 3.23 and 3.27.
+- **Their frames are paced at 60 Hz with a spin wait,** so the numbers are taken on a core kept busy: best case for a game whose main thread sleeps in present or vsync.
+- **What a headless frame does on the branch.** The build before ran headless engines with no audio at all. The branch runs the audio engine there, on kira's mock backend, which renders the mix inside `audio_system` on the frame's thread (7.1 to 7.2 µs an idle frame), where a device renders it on its own thread. A headless whole step on the branch therefore holds work that a game's main thread does not do. The idle audio frame's own main-thread time is 1.13 to 1.25 µs.
+- **The rules the guards hold:** `voices_64`, `play_cost` and `play_cost_streamed` hold their median; `load_hitch` holds every landing, as the spec's "adds at most 0.5 ms to any frame" says: each file's slowest landing frame, less the run's median ordinary frame, and a stream's slowest mid-file landing the same way. A run with a file over the limit is measured again once, and each file's better run is held, so that one preemption on a shared machine cannot fail it. No run needed the second measurement.
+- The numbers are criterion's medians, and the guards' figures from their own output.
 
 ### The targets
 
@@ -22,16 +24,15 @@ Measured on 2026-10-28 on an Apple M5 Pro (18 cores, Metal, macOS 27.0.1), a sha
 | Idle frame: empty frame, whole step (`empty_frame`) | 188.8 µs (187.5, 188.8, 189.2) | 187.9 µs (187.9, 188.5, 187.4) | within 3%: **met**, -0.5% |
 | Idle frame: idle settings screen, whole step (`settings_idle`) | 187.3 µs (185.0, 187.3, 187.3) | 186.1 µs (187.1, 185.9, 186.1) | within 3%: **met**, -0.6% |
 | Idle frame: 10,000 sprites, whole step (`foundation`) | 1,023.1 µs (1,022.8, 1,024.5, 1,023.1) | 1,045.0 µs (1,037.2, 1,045.0, 1,051.5) | within 3%: **met**, +2.1% |
-| 64 voices, 32 of them spatial: `audio_system`'s main-thread time | | 2.5 µs (runs 2.5, 2.3, 2.5) | at most 50 µs: **met** |
-| `play` of a decoded clip | | 0.71 µs (0.71, 0.71, 0.71) | at most 5 µs: **met** |
+| 64 voices, 32 of them spatial: `audio_system`'s main-thread time | | median 3.6 µs (runs 3.2, 3.7, 3.6) | median at most 50 µs: **met** |
+| `play` of a decoded clip | | median 0.71 µs (0.71, 0.71, 0.71) | median at most 5 µs: **met** |
+| `play` of a streamed clip (the 48 s OGG): the main thread's part | | median 23.9 µs (23.6, 23.9, 24.2) | median at most 100 µs: **met** |
 | No allocation for audio on an idle frame | | 0 in 100 frames, fresh and after sounds played (`tests/audio_alloc.rs`) | **met** |
-| A reload: a 1 s WAV playing as a loop (decoded) | | +11.2 to +11.7 µs on its landing frame | at most 0.5 ms: **met** |
-| A reload: a 48 s OGG playing as a loop (streamed) | | +445.5 to +459.3 µs; mid-file +433.3 to +449.8 µs; the slowest landing +505 to +565 µs | at most 0.5 ms: **met** by the median, with about 40 µs to spare; the slowest landing in each run is over |
-| A reload: a 48 s MP3 playing as music (streamed) | | +74.6 to +79.0 µs; mid-file +83.7 to +85.6 µs; the slowest +96 to +104 µs | at most 0.5 ms: **met** |
+| A reload: a 1 s WAV playing as a loop (decoded) | | the slowest landing +19.4 to +87.0 µs; median +12.5 to +13.1 µs | every landing at most 0.5 ms: **met** |
+| A reload: a 48 s OGG playing as a loop (streamed) | | the slowest landing +57.3 to +118.6 µs, mid-file +57.3 to +118.6 µs; median +45.2 to +51.5 µs | every landing at most 0.5 ms: **met** |
+| A reload: a 48 s MP3 playing as music (streamed) | | the slowest landing +62.4 to +64.8 µs, mid-file +56.4 to +64.8 µs; median +46.1 to +51.3 µs | every landing at most 0.5 ms: **met** |
 | Output latency, the default desktop configuration | | 512 frames at 48 kHz: 10.67 ms a buffer, heard 12.9 ms after its callback | reported |
 | Output latency, `audio_buffer_frames = 256` | | 256 frames at 48 kHz: 5.33 ms a buffer, heard 7.6 ms after its callback | reported |
-
-The guards hold the reload's median landing frame, as 5a's reload guard held the median hitch. The spec says a reload adds at most 0.5 ms to any frame. The OGG's slowest landing missed that in every run. "The reload hitch" below shows where that time goes, and why a long, high-bitrate OGG would miss the median too.
 
 ### Idle and empty frames (`benches/ui_render.rs` and `benches/foundation.rs`, three rounds)
 
@@ -56,86 +57,59 @@ Criterion's other medians from the same rounds:
 | propagate 10k, every root moved | 74.3 µs (74.2, 74.3, 75.2) | 78.6 µs (86.9, 78.6, 77.8) | +5.8% |
 | propagate 10k, nothing moved | 7.1 µs (5.9, 7.7, 7.1) | 7.0 µs (7.0, 9.5, 6.8) | -1.2% |
 
-- **The unretained idle screen** read slower on the branch in every round. Two more alternated runs of it alone read 171.8 and 172.3 µs before, and 182.7 and 180.1 µs after (+5 to +6%).
-  - Its work is the same on both builds. The `ui_render` guard read its render step at +69.2 to +71.5 µs over an empty frame after, and +70.2 to +73.3 µs before. Its UI pass read 24.0 to 24.3 µs after, and 24.1 to 24.9 µs before.
-  - The branch's headless frame also renders the mock's mix and runs the audio frame, about 8 µs that the build before skipped. The rest of the gap is not accounted for.
-  - Stepped back to back, an unretained screen is paced by the GPU, as `settings_label` and `settings_scrolling` are: each of those two reads one of two values a run on either build. It is not one of the targets' frames, but it is the one bench here that moved by more than 3%.
-- **The 10,000-sprite frame** is 22 µs slower. About 8 µs of that is the headless audio frame (the mock's 6.7 to 6.9 µs and the frame's 1 µs).
+- **The unretained idle screen** read slower on the branch in every round (+12.0%; two more alternated runs of it alone read 171.8 and 172.3 µs before, and 182.7 and 180.1 µs after, +5 to +6%), and **the 10,000-sprite frame** read 22 µs slower. Their work is the same on both builds: the `ui_render` guard read the unretained screen's render step at +69.2 to +71.5 µs over an empty frame after and +70.2 to +73.3 µs before, and its UI pass at 24.0 to 24.3 µs after and 24.1 to 24.9 µs before. The branch's headless frame does add the mock's rendering and the audio frame, about 8 µs, but the whole-step empty frame and idle settings screen carry the same 8 µs and read 0.9 and 1.2 µs faster on the branch. The pattern across these benches is unexplained; GPU pacing is the likely cause (stepped back to back, `settings_label` and `settings_scrolling` each read one of two values a run on either build). The unretained screen is not one of the targets' frames, but it is the one bench here that moved by more than 3%.
 - **Propagation** ran the same source on both sides, and its rounds swing as much as its change.
 
 ### The audio guards (`benches/audio.rs`, three runs)
 
-Each guard runs in an audio world (`testing::audio_world`) on the mock backend (48 kHz, 128-frame chunks). Frames are paced at 60 Hz, with a spin wait, for 2,000 frames. A frame's main-thread time is `audio_system`'s wall time less the mock's rendering (`AudioEngine::mock_render_time`). Each frame ends with the change trackers cleared, as the engine's `Last` clears them, and the audio log is off, as in a game.
+Each guard runs in an audio world (`testing::audio_world`) on the mock backend (48 kHz, 128-frame chunks). Frames are paced at 60 Hz, with a spin wait. A frame's main-thread time is `audio_system`'s wall time less the mock's rendering (`AudioEngine::mock_render_time`). Each frame ends with the change trackers cleared, as the engine's `Last` clears them (`testing::audio_step` does the same), and the audio log is off, as in a game.
 
-| Run (load) | Idle audio frame (no voices); the mock's rendering | 64 voices: median, 95th percentile, max; the mock's rendering | `play`: median, 95th percentile, max; a definition's play |
-|---|---|---|---|
-| 1 (3.90) | 1.00 µs; 6.71 µs | 2.5, 7.8, 279.4 µs; 453.8 µs | 0.71, 2.00, 31.2 µs; 0.79 µs |
-| 2 (3.25) | 0.92 µs; 6.92 µs | 2.3, 7.3, 19.5 µs; 455.5 µs | 0.71, 2.00, 33.2 µs; 0.79 µs |
-| 3 (3.62) | 0.92 µs; 6.71 µs | 2.5, 7.6, 21.3 µs; 451.0 µs | 0.71, 2.00, 20.6 µs; 0.79 µs |
+| Run (load) | Idle audio frame (no voices); the mock's rendering | 64 voices: median, 95th percentile, max; the mock's rendering | `play`: median, 95th percentile, max; a definition's play | A streamed `play`: median, 95th percentile, max |
+|---|---|---|---|---|
+| 1 (3.85) | 1.25 µs; 7.21 µs | 3.2, 9.0, 18.5 µs; 448.0 µs | 0.71, 2.00, 16.1 µs; 0.75 µs | 23.6, 38.4, 46.5 µs |
+| 2 (3.23) | 1.25 µs; 7.12 µs | 3.7, 8.8, 56.0 µs; 448.8 µs | 0.71, 2.00, 11.1 µs; 0.75 µs | 23.9, 35.5, 46.7 µs |
+| 3 (3.27) | 1.13 µs; 7.17 µs | 3.6, 8.2, 13.9 µs; 453.6 µs | 0.71, 2.04, 32.6 µs; 0.79 µs | 24.2, 39.3, 77.0 µs |
 
-- **64 voices.** There are 32 plain loops on `sfx` and `ambience`, and 32 loops heard from `AudioEmitter`s that circle the listener, each with a distance low-pass (the most that carry one). The emitters move nearer and further by turns, so every frame changes each one's gain, pan and cutoff by more than the least change sent. The guard checks this from the audio log for one frame: 32 gains and 32 pans. kira's handles take a parameter change as a write to a triple buffer, so a frame that moves all 32 costs about 2 µs.
+- **64 voices.** There are 32 plain loops on `sfx` and `ambience`, and 32 loops heard from `AudioEmitter`s that circle the listener, each with a distance low-pass (the most that carry one). The emitters move nearer and further by turns, so every frame changes each one's gain, pan and cutoff by more than the least change sent. The guard checks this from the audio log for one frame: 32 gains and 32 pans. kira's handles take a parameter change as a write to a triple buffer, so a frame that moves all 32 costs a few µs.
 - **`play`.** These are 10,000 plays of a decoded 50 ms clip, eight a frame (16 voices playing at the end of a frame), each timed alone. The definition has three clips, a volume and pitch spread, and no repeats.
-- **Criterion's medians** (back to back, for profiles): `voices_64` 1.70, 1.69 and 1.69 µs; `play_cost` 0.89 µs in each run; `load_hitch` (an OGG reload's landing frame, from 20 s in) 409, 403 and 406 µs.
+- **A streamed `play`.** These are 300 plays of the 48 s OGG loaded to stream, one a frame, each stopped the frame after; the last is still playing ten frames on, so the streams decode. The main thread makes the engine's decoder (it stores the clip's bytes, rate and length), and kira's `into_sound` allocates the stream's buffers and spawns its decoder thread; the file is opened, and seeked to its start position, on that thread.
+- **The paced medians move with the machine.** Criterion's back-to-back medians, which do not pace, read the same as on Task 14's head: `voices_64` 1.70, 1.68 and 1.67 µs; `play_cost` 0.89, 0.88 and 0.88 µs. `load_hitch` (an OGG reload's landing frame, from 20 s in) reads 30.4, 29.3 and 33.0 µs.
 
 The load guard plays three files from a `MemorySource`: a 1 s WAV as a decoded loop, a 48 s OGG as a streamed loop on `ambience`, and breakout's 48 s MP3 as streamed music. Every 50 frames each is saved over with its other version and reloaded, the three a third of 50 frames apart.
-- The OGG is breakout's music, made with `ffmpeg`'s own Vorbis encoder at about 160 kbps. Its other version is the same at 90% of the level.
+- The OGG is breakout's music (48 s), made with `ffmpeg`'s own Vorbis encoder at about 160 kbps. Its other version is the same at 90% of the level. Without `ffmpeg` the OGG is left out, and the run's last lines say it was not measured.
 - The MP3's other version is breakout's menu track (46 s).
-- A frame's time is the pump's and `audio_system`'s. An ordinary frame's median is 1.7 µs (1.8 in the first run).
+- A frame's time is the pump's and `audio_system`'s. A landing's cost is its frame's time less the run's median ordinary frame (2.0, 2.5 and 2.5 µs; the 95th percentile of ordinary frames is +5.5 to +6.0 µs).
 
-| Run | WAV: landing frame, median (pump; audio), max | OGG: median (pump; audio), max; mid-file median and max | MP3: median, max; mid-file median and max |
+| Run | WAV: landing, median (pump; audio), the slowest | OGG: median (pump; audio), the slowest; mid-file median, the slowest | MP3: median (pump; audio), the slowest; mid-file median, the slowest |
 |---|---|---|---|
-| 1 | +11.7 µs (6.2; 7.0), +19.0 | +459.3 µs (6.7; 455.7), +564.5; +449.8, +517.5 | +79.0 µs, +103.8; +85.6, +103.8 |
-| 2 | +11.6 µs (6.2; 6.9), +19.6 | +446.5 µs (6.5; 443.1), +511.2; +433.3, +511.2 | +78.8 µs, +102.8; +85.6, +102.8 |
-| 3 | +11.2 µs (6.0; 6.7), +20.6 | +445.5 µs (6.2; 439.1), +505.2; +437.2, +505.2 | +74.6 µs, +96.0; +83.7, +96.0 |
+| 1 | +12.5 µs (6.9; 8.0), +87.0 | +51.5 µs (7.3; 46.4), +118.6; +51.5, +118.6 | +51.3 µs (8.0; 45.6), +64.8; +50.7, +64.8 |
+| 2 | +13.1 µs (7.3; 8.2), +41.8 | +48.9 µs (6.8; 44.7), +80.4; +48.2, +62.9 | +48.0 µs (7.7; 43.4), +64.2; +48.0, +56.4 |
+| 3 | +12.7 µs (7.2; 8.0), +19.4 | +45.2 µs (7.1; 41.4), +57.3; +45.5, +57.3 | +46.1 µs (7.5; 40.7), +62.4; +44.7, +62.4 |
 
 Every save landed: 39 WAV, 40 OGG and 40 MP3 reloads in each run. Mid-file means landings 20 s or more into the stream, 17 of each a run.
 
 ### The reload hitch
 
-**What the landing frame does.** A reloaded clip lands in the pump: the workers loaded it, and the swap costs about 6 to 7 µs. In the same frame `audio_system` switches each loop playing the clip to the new data where it is, crossfading over 10 ms.
-- A decoded clip starts at once (+7 µs).
-- A streamed clip is opened again on the main thread, then started at the old position. kira's `StreamingSoundData::from_cursor` probes the file and builds its decoder. `TrackHandle::play` then runs `DecodeScheduler::new`, which seeks the decoder there, and spawns the decoder's thread.
+**What the landing frame does.** A reloaded clip lands in the pump: the workers loaded it, and the swap costs about 7 µs. In the same frame `audio_system` switches each loop playing the clip to the new data where it is, crossfading over 10 ms.
+- A decoded clip starts at once (+8 µs).
+- A streamed clip starts a new stream at the old position (about 41 to 46 µs, the same for the OGG and the MP3). The engine's decoder (`src/core/audio/stream.rs`) takes only the clip's bytes, rate and length on the main thread; kira allocates the stream's buffers and spawns its decoder thread, and the file is probed, its codec set up and the seek made there, on the first frames that thread decodes. kira pauses a stream until its first frames are decoded, so the open delays the new stream's start by the open's time, well under the 10 ms crossfade, and does not glitch it.
 
-**A profile of the OGG's landings.** `sample` took 1 ms samples of the main thread for 12 s, while the criterion `load_hitch` bench reloaded the OGG at 60 Hz. Of the samples in `AudioEngine::start_stream`:
+**Why the open is the decoder thread's.** On the calling thread, kira's own decoder made a play of these OGGs cost 0.3 to 0.45 ms and a reload's landing 0.45 to 0.56 ms (55% of it the Vorbis setup header and codebooks, 15% the probe, 23% the seek), and a 5 min 20 s, 376 kbps track 0.9 to 1.2 ms. The main thread's part does not depend on the file.
 
-| Where | Share |
-|---|---|
-| symphonia's `VorbisDecoder::try_new` (the Vorbis setup header and its codebooks) | 55% |
-| symphonia's `OggReader::try_new` (the probe) | 15% |
-| `DecodeScheduler::new`'s seek (symphonia's OGG seek) | 23% |
-| the decoder thread's spawn, and the rest | 7% |
+**Every start of a streamed clip costs the same,** not only a reload: `play` of a streamed loop, `play_music` of a streamed track, a mixer rebuild moving a loop. That is the streamed `play` above, about 24 µs.
 
-The MP3 opens in about 6 µs, and its start (the seek and the spawn) takes about 60 µs.
+### Streams and kira
 
-**A longer, higher-bitrate OGG would miss.** A 5 min 20 s libvorbis track at 376 kbps (15 MB, a shipped game's soundtrack, read locally and not kept) was measured alone with kira's API. Opening it took 331 µs, and kira's start took 590 to 880 µs (the seek grows with the file), so a reload switch would cost about 0.9 to 1.2 ms. The 30 s and 48 s OGGs here are short and modest by comparison.
-
-**The remedy in the plan was not applied.** The plan's remedy for a miss was to start the new stream at 0, silent, `seek_to` the position (kira seeks on the decoder's thread), and fade in. The guard met its median, so the remedy was not triggered. It also could not reach the cost that matters:
-- kira 0.12.5's `DecodeScheduler::new` seeks on the calling thread even to position 0, which is the 590 µs above.
-- `seek_to` discards the frames already buffered only for a sound that is paused, not one pausing or playing. A stream started at 0 and then seeked would play its first frames from the start, unless it waited a frame before fading in.
-- Opening the file is 70% of the OGG's landing, and the remedy does not touch it.
-
-What would remove it is opening the stream off the main thread. The loader already opens one on a worker to probe the clip, and drops it; a clip could keep it for the next start. Starting a stream partway without the calling thread's seek needs kira's help, or a decoder of the engine's own (kira takes custom decoders).
-
-**Every start of a streamed clip pays the same open,** not only a reload: `play` of a streamed loop, `play_music` of a streamed track. That is about 0.3 to 0.45 ms on the main thread for these OGGs, 0.08 ms for the MP3, and over a millisecond for a long, high-bitrate OGG. The `play` target was measured on a decoded clip, as the plan says.
-
-### Found while measuring: kira 0.12.5's decoder threads that never end
-
-1. **A Vorbis stream started partway in spins its decoder thread forever at the end of the file.**
-   - This happens to a stream started at a position: the loop a clip reload switches, or one a mixer rebuild moves to the new buses.
-   - Its decoder thread loops at 100% of a core in `DecodeScheduler::frame_at_index`, calling a decoder that has nothing left. It never looks at the sound's state again, so stopping the voice does not end it. By kira's code, the stream also gets no more frames, so the loop falls silent there instead of wrapping.
-   - Seen with `ffmpeg`'s Vorbis and with libvorbis files. MP3, FLAC, a stream started at 0, and a music loop wrapping to its `loop_start` all loop correctly.
-   - kira likely loses the first packet after seeking a fresh Vorbis decoder (its Vorbis decoder gives no samples for that packet), so its frame count runs short of the file's.
-   - The load guard's OGG is 48 s so that no stream reaches its end in the 34 s run. The criterion bench, stepped back to back at first, ran its streams to their ends and left a thread spinning per reload, hundreds within seconds. It is now paced at 60 Hz.
-   - Not fixed here.
-2. **A streaming sound dropped without being stopped keeps its decoder thread forever, waking every millisecond.** This happens when an `AudioEngine` (or an audio world) is dropped with a stream playing, or when kira refuses a sound for want of room after its decoder started. kira 0.12.6 fixes this: `StreamingSound`'s `Drop` marks it stopped. Not fixed here: kira is pinned at 0.12.5.
+1. **kira 0.12.6 ends a stream dropped without being stopped:** `StreamingSound`'s `Drop` marks it stopped, so its decoder thread ends, as when an `AudioEngine` (or an audio world) is dropped with a stream playing, or kira refuses a sound for want of room after its decoder started. The engine uses kira 0.12.6.
+2. **A Vorbis stream started partway in ends, and loops, at the end of the file.** kira's own decoder miscounts frames after a Vorbis seek: the first packet after the seek decodes to nothing, while it counts from that packet's start, so its stream runs a packet ahead and never gives the file's last frames, and its decoder thread spins there instead of ending or looping. The engine's decoder places each packet's frames by the packet's timestamp, drops those before the seek's target, and pads a file that ends early with silence to the length its header gives, so a stream started anywhere (a reload switch, a mixer rebuild) is frame-exact and reaches the end of the file: a one-shot ends and a loop wraps. The decoder's tests compare a stream started partway with the whole file decoded at once, for OGG, MP3 and FLAC.
 
 ### The web: a long clip decodes in one job
 
 On the web every clip decodes, in the asset pump on the main thread. A long clip is therefore a one-off hitch of its whole decode. Natively, decoding in one job (`ClipMode::Decode`, the median of five, each run):
-- the first 30 s of breakout's music as OGG: 15.6, 15.7 and 15.7 ms;
-- breakout's 48 s MP3: 21.1, 21.3 and 21.5 ms.
+- the first 30 s of breakout's music as OGG: 15.6, 15.3 and 15.5 ms;
+- breakout's 48 s MP3: 20.8, 20.7 and 21.4 ms.
 
-wasm runs slower than native, so on the web a 30 s OGG is a hitch of one frame at 60 Hz at best, and two or three on a slower machine. A web game should load its long clips (music, ambience) behind a loading screen, or before the scene's first frame, rather than mid-play. Each decoded minute also holds about 23 MB (48 kHz stereo, 8 bytes a frame).
+An estimate, not measured on the web: wasm runs slower than native, so there a 30 s OGG is likely a hitch of one frame at 60 Hz at best, and two or three on a slower machine. A web game should load its long clips (music, ambience) behind a loading screen, or before the scene's first frame, rather than mid-play. Each decoded minute also holds about 23 MB (48 kHz stereo, 8 bytes a frame).
 
 ### Output latency
 
@@ -152,6 +126,5 @@ The default output device here is the MacBook Pro's speakers, through CoreAudio:
 
 ### The idle frame's allocations (`tests/audio_alloc.rs`)
 
-A counting global allocator counts the test thread's allocations: the frame runs there, and so does the mock's rendering. It reads 0 over 100 idle frames of a fresh engine, and 0 over 100 idle frames after a one-shot, a spatial one-shot and a loop stopped with a fade have played and ended.
-- The first version of the test read 3 in 100 fresh frames. `audio_system` takes the engine out of the world each frame, and bevy writes a removal message for it into a buffer. A world that never clears its change trackers grows that buffer; the engine's `Last` clears them every frame.
-- The test's frame now clears them as the engine does, and reads 0 with no engine change.
+A counting global allocator counts the test thread's allocations: the frame runs there, and so does the mock's rendering. It reads 0 over 100 idle frames of a fresh engine with a mixer set (as every engine sets the game's, which each frame looks up and checks for a change), and 0 over 100 idle frames after a one-shot, a spatial one-shot and a loop stopped with a fade have played and ended.
+- An audio world's frame must clear the change trackers, as the engine's `Last` does, and `testing::audio_step` does: `audio_system` takes the engine out of the world each frame, and bevy writes a removal message for it into a buffer that only clearing reuses. Without it, 100 frames allocate 3 times.

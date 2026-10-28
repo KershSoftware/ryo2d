@@ -5,9 +5,11 @@
 //! the wall time of `audio_system` less the time the mock spent rendering
 //! (`AudioEngine::mock_render_time`). Each frame advances the clock by a
 //! 60 Hz frame and ends with the change trackers cleared, as the engine's
-//! `Last` clears them; the audio log is off, as in a game.
+//! `Last` clears them; the audio log is off, as in a game. The guards pace
+//! their frames at 60 Hz with a spin wait, so they measure a core kept busy:
+//! best case for a game whose main thread sleeps between frames.
 //!
-//! Before criterion runs, three guards (the first printing an idle frame's
+//! Before criterion runs, four guards (the first printing an idle frame's
 //! audio time beside it, with no target):
 //! - `voices_64`: 64 looping voices, 32 of them heard from emitters
 //!   circling the listener, each with a distance low-pass (the most that
@@ -20,6 +22,11 @@
 //!   held to 5 µs (the spec). The median play of a sound definition (three
 //!   clips, a volume and pitch spread, no repeats) is printed beside it,
 //!   with no target;
+//! - `play_cost_streamed`: 300 `play` calls of a streamed clip (the 48 s
+//!   OGG below, the MP3 without `ffmpeg`), one a frame at 60 Hz, each
+//!   stopped the frame after; the median main-thread time of a play is held
+//!   to 100 µs. The stream's decoder opens the file on kira's decoder
+//!   thread, so the play pays for kira's buffers and the thread's spawn;
 //! - `load_hitch`: three files played while they reload, read from a
 //!   `MemorySource`: a 1 s WAV (decoded) as a loop, a 48 s OGG (streamed)
 //!   as a loop, and a 46 to 48 s MP3 (streamed) as music. Over 2,000 frames
@@ -27,37 +34,39 @@
 //!   (the three a third of that apart) and reloaded: a worker loads it,
 //!   and the pump swaps it in some frames later, in which frame
 //!   `audio_system` switches what plays it to the new data where it is (a
-//!   stream is opened anew and seeked there, on the main thread). A frame's
-//!   time here is the pump's and `audio_system`'s. Each file's median
-//!   landing frame is held to within 0.5 ms of an ordinary frame (the
-//!   spec), as are a stream's landings 20 s or more into it (mid-file,
-//!   where a seek could cost most). The OGG is made by `ffmpeg` from
-//!   breakout's music as the guard starts; without `ffmpeg` it is left out,
-//!   with a line saying so. The MP3s are breakout's two tracks. No stream
-//!   reaches its end in the run (34 s): kira 0.12.5 spins a Vorbis stream's
-//!   decoder thread at the end of the file once the stream was started
-//!   partway in, as a reload starts it (`docs/backlog/audio.md`). The guard
-//!   also prints how long decoding a long file (a 30 s OGG, the MP3) takes
-//!   in one job, as the web does in its asset pump (it has no streaming, so
-//!   a long clip there is a hitch of that length), with no target.
+//!   stream starts again there, its decoder opening the file on kira's
+//!   decoder thread). A frame's time here is the pump's and
+//!   `audio_system`'s, and a landing's cost is its frame's time less the
+//!   run's median ordinary frame. Every landing is held to 0.5 ms (the
+//!   spec: a reload adds at most that to any frame): each file's slowest
+//!   landing, and a stream's slowest landing 20 s or more into it
+//!   (mid-file, where a seek could cost most). So that one preemption on a
+//!   shared machine cannot fail it, a run with a file over the limit is
+//!   measured again once, and each file's better run is held. The OGG is
+//!   made by `ffmpeg` from breakout's music as the guard starts; without
+//!   `ffmpeg` it is left out, and the run's last lines say the OGG was not
+//!   measured. The MP3s are breakout's two tracks. The guard also prints
+//!   how long decoding a long file (a 30 s OGG, the MP3) takes in one job,
+//!   as the web does in its asset pump (it has no streaming, so a long clip
+//!   there is a hitch of that length), with no target.
 //!
-//! A miss fails the run once criterion's benches have run, printing the
-//! command to profile it with. Each guard runs only where criterion
-//! measures the bench of its name: with no filter or one naming it, and not
-//! for `--list`, `--test` or `--profile-time`. The criterion benches, for
-//! the profiles: `voices_64` times `audio_system` over the same 64 voices
-//! back to back, `play_cost` one play of the clip, and `load_hitch` the
-//! frame each reload of the OGG lands in (the MP3's without `ffmpeg`),
-//! from 20 s in, at 60 Hz (keep `--profile-time` under 25 s, or the stream
-//! reaches its end).
+//! `voices_64`, `play_cost` and `play_cost_streamed` hold the median;
+//! `load_hitch` holds the slowest landing. A miss fails the run once
+//! criterion's benches have run, printing the command to profile it with.
+//! Each guard runs only where criterion measures the bench of its name: with
+//! no filter or one naming it, and not for `--list`, `--test` or
+//! `--profile-time`. The criterion benches, for the profiles: `voices_64`
+//! times `audio_system` over the same 64 voices back to back, `play_cost`
+//! one play of the decoded clip, and `load_hitch` the frame each reload of
+//! the OGG lands in (the MP3's without `ffmpeg`), from 20 s in, at 60 Hz.
 //!
-//! Medians are read from where criterion writes its results:
-//! `$CRITERION_HOME`, else `$CARGO_TARGET_DIR/criterion`, else the
-//! workspace's `target/criterion`.
+//! Medians are read from where criterion writes its results
+//! (`guards::results_dir`): `$CRITERION_HOME`, else
+//! `$CARGO_TARGET_DIR/criterion`, else the workspace's `target/criterion`.
 
 mod guards;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -65,7 +74,7 @@ use criterion::Criterion;
 use ryo2d::core::asset::pump;
 use ryo2d::core::audio::{AudioEngine, AudioLogKind, audio_system};
 use ryo2d::prelude::*;
-use ryo2d::testing::{audio_world, audio_world_over};
+use ryo2d::testing::{audio_step, audio_world, audio_world_over};
 
 /// A 60 Hz frame: the clock's step, and the guards' pace
 const FRAME: Duration = Duration::from_nanos(16_666_667);
@@ -75,7 +84,13 @@ const FRAMES: usize = 2000;
 const VOICES_TARGET: Duration = Duration::from_micros(50);
 /// The spec's play
 const PLAY_TARGET: Duration = Duration::from_micros(5);
-/// The spec's load or reload: a landing frame within this of an ordinary one
+/// A streamed play: its main thread's part (the open is the decoder
+/// thread's)
+const STREAMED_PLAY_TARGET: Duration = Duration::from_micros(100);
+/// The plays `play_cost_streamed` times, one a frame
+const STREAMED_PLAYS: usize = 300;
+/// The spec's load or reload: every landing frame within this of an
+/// ordinary one
 const HITCH_TARGET: Duration = Duration::from_micros(500);
 /// The plays `play_cost` times
 const PLAYS: usize = 10_000;
@@ -145,17 +160,14 @@ fn timed_audio(world: &mut World) -> (Duration, Duration) {
   (wall.saturating_sub(mock), mock)
 }
 
-/// End a frame, as the engine's `Last` does
+/// End a timed frame, as `audio_step` and the engine's `Last` do
 fn end(world: &mut World) {
   world.clear_trackers();
 }
 
-/// An untimed frame: the clock, the pump and the audio
+/// An untimed frame: the clock, the pump and the audio (`audio_step`)
 fn step(world: &mut World) {
-  tick(world);
-  pump(world);
-  audio_system(world);
-  end(world);
+  audio_step(world, FRAME);
 }
 
 /// `seconds` of stereo noise at 48 kHz, quiet, from `seed`
@@ -468,6 +480,79 @@ fn play_bench(c: &mut Criterion) {
   });
 }
 
+// play_cost_streamed
+
+/// The plays of a streamed clip (the OGG, else the MP3), one a frame at
+/// 60 Hz, each stopped the frame after and timed alone: the median held to
+/// 100 µs. The last one must still be playing ten frames on, so the streams
+/// did decode
+fn streamed_play_guard(fixtures: &Fixtures) {
+  let Some(file) = fixtures.streamed() else {
+    return;
+  };
+  let files = MemorySource::new();
+  files.insert(file.path, file.versions[0].clone());
+  let mut world = quiet(audio_world_over(files));
+  let clip = load_now::<AudioClip>(&mut world, file.path);
+  let streams = world
+    .resource::<Assets<AudioClip>>()
+    .get(&clip)
+    .is_some_and(AudioClip::is_streamed);
+  // Warm: the first ten plays are not counted
+  const WARM: usize = 10;
+  let mut times = Vec::with_capacity(STREAMED_PLAYS);
+  let mut refused = 0;
+  let mut last: Option<Voice> = None;
+  let mut next = Instant::now();
+  for i in 0..WARM + STREAMED_PLAYS {
+    pace(next);
+    next = Instant::now() + FRAME;
+    if let Some(voice) = last.take() {
+      voice.stop(Duration::ZERO);
+    }
+    let started = Instant::now();
+    let voice = AudioView::new(&mut world).play(&clip);
+    let time = started.elapsed();
+    if i >= WARM {
+      times.push(time);
+      refused += usize::from(voice.is_stopped());
+    }
+    step(&mut world);
+    last = Some(voice);
+  }
+  for _ in 0..10 {
+    pace(next);
+    next = Instant::now() + FRAME;
+    step(&mut world);
+  }
+  let played = last.as_ref().is_some_and(Voice::is_playing);
+  let Some((median, p95, max)) = spread(times) else {
+    return;
+  };
+  let met = median <= STREAMED_PLAY_TARGET;
+  eprintln!(
+    "play_cost_streamed guard, {STREAMED_PLAYS} plays of {} streamed, one a frame at 60 Hz: \
+     the main thread's part, median {:.1} µs, 95th percentile {:.1}, max {:.1}; median within \
+     {} µs: {}",
+    file.name,
+    us(median),
+    us(p95),
+    us(max),
+    STREAMED_PLAY_TARGET.as_micros(),
+    if met { "met" } else { "missed" },
+  );
+  if !met {
+    guards::miss(format!("play_cost_streamed: median {:.1} µs", us(median)));
+  }
+  if !streams || refused > 0 || !played {
+    guards::miss(format!(
+      "play_cost_streamed: {} streamed: {streams}; {refused} plays refused; the last one \
+       played on: {played}",
+      file.name
+    ));
+  }
+}
+
 // load_hitch
 
 /// A mono 16-bit WAV at 48 kHz, `seconds` long: a tone of `hz`
@@ -560,6 +645,21 @@ struct Fixtures {
   ogg_30: Option<Vec<u8>>,
 }
 
+impl Fixtures {
+  /// Whether `ffmpeg` made the OGGs, so every file was measured
+  fn has_ogg(&self) -> bool {
+    self.ogg_30.is_some() && self.load.iter().any(|file| file.path.ends_with(".ogg"))
+  }
+
+  /// The streamed file `play_cost_streamed` plays: the OGG, else the MP3
+  fn streamed(&self) -> Option<&LoadFile> {
+    let streamed = || self.load.iter().filter(|file| file.stream);
+    streamed()
+      .find(|file| file.path.ends_with(".ogg"))
+      .or_else(|| streamed().next())
+  }
+}
+
 /// The files, with the OGGs when `ffmpeg` made them
 fn fixtures() -> Fixtures {
   let mut files = vec![LoadFile {
@@ -578,8 +678,7 @@ fn fixtures() -> Fixtures {
       stream: true,
     }),
     _ => eprintln!(
-      "load_hitch guard: ffmpeg could not make the OGG (is it installed?): the OGG is not \
-       measured"
+      "audio bench: ffmpeg could not make the OGG (is it installed?): the OGG is not measured"
     ),
   }
   files.push(LoadFile {
@@ -606,9 +705,10 @@ struct LoadRig {
   clips: Vec<Handle<AudioClip>>,
   /// Saves of each file so far
   saves: Vec<usize>,
-  /// What plays them
+  /// What plays them, and the loops' voices
   _sounds: Vec<Handle<Sound>>,
   _music: Option<Handle<Music>>,
+  voices: Vec<Voice>,
 }
 
 impl LoadRig {
@@ -639,7 +739,7 @@ impl LoadRig {
         clip
       })
       .collect();
-    let (mut sounds, mut music) = (Vec::new(), None);
+    let (mut sounds, mut music, mut voices) = (Vec::new(), None, Vec::new());
     for file in load {
       if file.path == "music/theme.mp3" {
         let theme = load_now::<Music>(&mut world, "music/theme.music.ron");
@@ -649,8 +749,7 @@ impl LoadRig {
         let (stem, _) = file.path.rsplit_once('.').unwrap_or((file.path, ""));
         let path = format!("{stem}.sound.ron");
         let sound = load_now::<Sound>(&mut world, &path);
-        // A voice let go plays on
-        AudioView::new(&mut world).play(&sound);
+        voices.push(AudioView::new(&mut world).play(&sound));
         sounds.push(sound);
       }
     }
@@ -661,6 +760,22 @@ impl LoadRig {
       saves: vec![0; load.len()],
       _sounds: sounds,
       _music: music,
+      voices,
+    }
+  }
+
+  /// Stop what plays and let it end, so no stream's decoder thread outlives
+  /// the rig
+  fn stop(&mut self) {
+    for voice in &self.voices {
+      voice.stop(Duration::ZERO);
+    }
+    AudioView::new(&mut self.world).stop_music(Duration::ZERO);
+    for _ in 0..10 {
+      if AudioView::new(&mut self.world).voices_on("master") == 0 {
+        break;
+      }
+      step(&mut self.world);
     }
   }
 
@@ -723,15 +838,48 @@ impl LoadFrame {
   }
 }
 
-/// The reloads' frames at 60 Hz: each file's median landing frame (and a
-/// stream's mid-file landings) held to within 0.5 ms of an ordinary frame
-fn load_guard(load: &[LoadFile]) {
+/// One file's landings in one run of the load guard, each as its frame's
+/// time less the run's median ordinary frame (µs, and below 0 for a landing
+/// faster than that)
+struct FileLandings {
+  saves: usize,
+  count: usize,
+  median: f64,
+  slowest: f64,
+  /// The landing frames' median pump and audio time (µs)
+  pump: f64,
+  audio: f64,
+  /// A stream's landings 20 s or more in: how many, their median and the
+  /// slowest
+  mid: Option<(usize, f64, f64)>,
+}
+
+/// One run of the load guard
+struct LoadRun {
+  /// The median ordinary frame, its 95th percentile and maximum (µs), and
+  /// how many there were
+  ordinary: (f64, f64, f64, usize),
+  files: Vec<FileLandings>,
+  /// Voices playing at the end
+  playing: usize,
+}
+
+impl LoadRun {
+  /// Whether file `index`'s slowest landing is within the target
+  fn held(&self, index: usize) -> bool {
+    self.files[index].slowest <= us(HITCH_TARGET)
+  }
+}
+
+/// The reloads' frames at 60 Hz, once: every file's landing frames, and the
+/// ordinary frames between them. `None` with no ordinary frame
+fn load_run(load: &[LoadFile]) -> Option<LoadRun> {
   let mut rig = LoadRig::new(load);
   // Warm: the streams have started, and played a second
-  for _ in 0..60 {
+  let warm = 60;
+  for _ in 0..warm {
     step(&mut rig.world);
   }
-  let warm = 60;
   let mut frames = Vec::with_capacity(FRAMES);
   let mut next = Instant::now();
   for frame in 0..FRAMES {
@@ -746,103 +894,152 @@ fn load_guard(load: &[LoadFile]) {
     frames.push(rig.frame());
   }
   let playing = AudioView::new(&mut rig.world).voices_on("master");
-  let ordinary_frames: Vec<&LoadFrame> = frames
+  let ordinary_times: Vec<Duration> = frames
     .iter()
     .filter(|frame| !frame.landed.contains(&true))
+    .map(LoadFrame::time)
     .collect();
-  let Some((ordinary, ordinary_p95, ordinary_max)) =
-    spread(ordinary_frames.iter().map(|frame| frame.time()).collect())
-  else {
-    guards::miss("load_hitch: no ordinary frame".into());
-    return;
-  };
+  let count = ordinary_times.len();
+  let (ordinary, ordinary_p95, ordinary_max) = spread(ordinary_times)?;
   let over = |time: Duration| us(time) - us(ordinary);
-  let held = |time: Duration| time.saturating_sub(ordinary) <= HITCH_TARGET;
-  let mut lines = Vec::new();
-  for (index, file) in load.iter().enumerate() {
-    let landings: Vec<(usize, &LoadFrame)> = frames
-      .iter()
-      .enumerate()
-      .filter(|(_, frame)| frame.landed[index])
-      .collect();
-    let saves = rig.saves[index];
-    if landings.len() + 1 < saves {
-      guards::miss(format!(
-        "load_hitch: of {saves} saves of {} {} landed",
-        file.name,
-        landings.len()
-      ));
-    }
-    let Some((landing, _, landing_max)) =
-      spread(landings.iter().map(|(_, frame)| frame.time()).collect())
-    else {
-      continue;
-    };
-    let pump = median(landings.iter().map(|(_, frame)| frame.pump).collect()).unwrap_or_default();
-    let audio = median(landings.iter().map(|(_, frame)| frame.audio).collect()).unwrap_or_default();
-    let met = held(landing);
-    let mut line = format!(
-      "{}: {} landings of {saves} saves, the landing frame median {:.1} µs ({:+.1}; pump \
-       {:.1}, audio {:.1}), max {:+.1}; within {} µs: {}",
-      file.name,
-      landings.len(),
-      us(landing),
-      over(landing),
-      us(pump),
-      us(audio),
-      over(landing_max),
-      HITCH_TARGET.as_micros(),
-      if met { "met" } else { "missed" },
-    );
-    if !met {
-      guards::miss(format!("load_hitch, {line}"));
-    }
-    if file.stream {
+  let files = load
+    .iter()
+    .enumerate()
+    .map(|(index, file)| {
+      let landings: Vec<(usize, &LoadFrame)> = frames
+        .iter()
+        .enumerate()
+        .filter(|(_, frame)| frame.landed[index])
+        .collect();
+      let times = |pick: fn(&LoadFrame) -> Duration| -> Vec<Duration> {
+        landings.iter().map(|(_, frame)| pick(frame)).collect()
+      };
+      let (median, _, slowest) = spread(times(LoadFrame::time)).unwrap_or_default();
       // Where in the file each landing came: the stream has played since
       // the warm-up began, looping at its end
       let duration = rig.duration(index);
-      let mid: Vec<Duration> = landings
-        .iter()
-        .filter(|(at, _)| ((warm + at) as f64 * FRAME.as_secs_f64()) % duration >= MID_FILE)
-        .map(|(_, frame)| frame.time())
-        .collect();
-      let count = mid.len();
-      match spread(mid) {
-        Some((mid, _, mid_max)) => {
-          let met = held(mid);
-          let part = format!(
-            "; mid-file ({MID_FILE} s or more in, {count} of them): median {:+.1} µs, max \
-             {:+.1}: {}",
-            over(mid),
-            over(mid_max),
-            if met { "met" } else { "missed" },
-          );
-          if !met {
-            guards::miss(format!("load_hitch, {}{part}", file.name));
-          }
-          line.push_str(&part);
-        }
-        None => guards::miss(format!("load_hitch: {} never landed mid-file", file.name)),
+      let mid = file.stream.then(|| {
+        let mid: Vec<Duration> = landings
+          .iter()
+          .filter(|(at, _)| ((warm + at) as f64 * FRAME.as_secs_f64()) % duration >= MID_FILE)
+          .map(|(_, frame)| frame.time())
+          .collect();
+        let count = mid.len();
+        spread(mid).map(|(median, _, slowest)| (count, over(median), over(slowest)))
+      });
+      FileLandings {
+        saves: rig.saves[index],
+        count: landings.len(),
+        median: over(median),
+        slowest: over(slowest),
+        pump: us(median_of(times(|frame| frame.pump))),
+        audio: us(median_of(times(|frame| frame.audio))),
+        mid: mid.flatten(),
       }
-    }
-    lines.push(line);
+    })
+    .collect();
+  rig.stop();
+  Some(LoadRun {
+    ordinary: (us(ordinary), over(ordinary_p95), over(ordinary_max), count),
+    files,
+    playing,
+  })
+}
+
+fn median_of(times: Vec<Duration>) -> Duration {
+  median(times).unwrap_or_default()
+}
+
+/// The load guard: every landing frame (each file's slowest, and a
+/// stream's slowest mid-file) held to within 0.5 ms of the run's median
+/// ordinary frame. A run with a file over that is measured again once, and
+/// each file's better run (the faster slowest landing) is held
+fn load_guard(load: &[LoadFile]) {
+  let Some(first) = load_run(load) else {
+    guards::miss("load_hitch: no ordinary frame".into());
+    return;
+  };
+  let again = (0..load.len()).any(|index| !first.held(index));
+  let second = if again { load_run(load) } else { None };
+  let runs: Vec<&LoadRun> = [Some(&first), second.as_ref()]
+    .into_iter()
+    .flatten()
+    .collect();
+  for (number, run) in runs.iter().enumerate() {
+    let (ordinary, p95, max, count) = run.ordinary;
+    eprintln!(
+      "load_hitch guard, run {}: the pump and audio_system's main-thread time (less the mock's \
+       rendering), {FRAMES} frames at 60 Hz, each file saved and reloaded every \
+       {RELOAD_EVERY}th ({} voices playing at the end). Ordinary frames ({count} of them): \
+       median {ordinary:.1} µs, 95th percentile {p95:+.1}, max {max:+.1}",
+      number + 1,
+      run.playing,
+    );
   }
-  eprintln!(
-    "load_hitch guard, the pump and audio_system's main-thread time (less the mock's \
-     rendering), {FRAMES} frames at 60 Hz, each file saved and reloaded every {RELOAD_EVERY}th \
-     ({playing} voices playing at the end). Ordinary frames ({} of them): median {:.1} µs, 95th \
-     percentile {:+.1}, max {:+.1}. {}",
-    ordinary_frames.len(),
-    us(ordinary),
-    over(ordinary_p95),
-    over(ordinary_max),
-    lines.join("; "),
-  );
-  if playing != load.len() {
-    guards::miss(format!(
-      "load_hitch: {playing} voices playing at the end, not {}",
-      load.len()
+  for (index, file) in load.iter().enumerate() {
+    // The run whose slowest landing for this file is faster
+    let (number, run) = runs
+      .iter()
+      .enumerate()
+      .min_by(|(_, a), (_, b)| a.files[index].slowest.total_cmp(&b.files[index].slowest))
+      .map_or((0, &first), |(number, run)| (number, *run));
+    let landings = &run.files[index];
+    let met = run.held(index);
+    let mut line = format!(
+      "{}, run {}: {} landings of {} saves, each over the median ordinary frame: median \
+       {:+.1} µs (the landing frame's pump {:.1}, audio {:.1}), the slowest {:+.1}",
+      file.name,
+      number + 1,
+      landings.count,
+      landings.saves,
+      landings.median,
+      landings.pump,
+      landings.audio,
+      landings.slowest,
+    );
+    if let Some((count, median, slowest)) = landings.mid {
+      line.push_str(&format!(
+        "; mid-file ({MID_FILE} s or more in, {count} of them): median {median:+.1} µs, the \
+         slowest {slowest:+.1}"
+      ));
+    }
+    if runs.len() > 1 {
+      let slowest: Vec<String> = runs
+        .iter()
+        .map(|run| format!("{:+.1}", run.files[index].slowest))
+        .collect();
+      line.push_str(&format!(
+        " (the slowest in each run: {} µs)",
+        slowest.join(", ")
+      ));
+    }
+    line.push_str(&format!(
+      "; every landing within {} µs: {}",
+      HITCH_TARGET.as_micros(),
+      if met { "met" } else { "missed" }
     ));
+    eprintln!("load_hitch: {line}");
+    if !met {
+      guards::miss(format!("load_hitch, {line}"));
+    }
+    if landings.count + 1 < landings.saves {
+      guards::miss(format!(
+        "load_hitch: of {} saves of {} {} landed",
+        landings.saves, file.name, landings.count
+      ));
+    }
+    if file.stream && landings.mid.is_none() {
+      guards::miss(format!("load_hitch: {} never landed mid-file", file.name));
+    }
+  }
+  for run in &runs {
+    if run.playing != load.len() {
+      guards::miss(format!(
+        "load_hitch: {} voices playing at the end, not {}",
+        run.playing,
+        load.len()
+      ));
+    }
   }
 }
 
@@ -901,7 +1098,8 @@ fn web_decode(fixtures: &Fixtures) {
 /// The load bench: the rig is made once, on the bench's first call (not
 /// for a filter that skips it), and its frames paced at 60 Hz as the
 /// guard's are: stepped back to back, the mock plays the streams hundreds
-/// of times faster than their decoders' threads can keep up
+/// of times faster than their decoders' threads can keep up. What it plays
+/// is stopped once criterion is done with it
 fn load_bench(c: &mut Criterion, fixtures: &mut Option<Fixtures>) {
   let mut made: Option<(LoadRig, usize)> = None;
   c.bench_function("load_hitch", |b| {
@@ -949,17 +1147,9 @@ fn load_bench(c: &mut Criterion, fixtures: &mut Option<Fixtures>) {
       total
     });
   });
-}
-
-/// Where criterion writes its results, and the median is read from
-fn results_dir() -> PathBuf {
-  if let Some(home) = std::env::var_os("CRITERION_HOME") {
-    return PathBuf::from(home);
+  if let Some((rig, _)) = &mut made {
+    rig.stop();
   }
-  std::env::var_os("CARGO_TARGET_DIR")
-    .map(PathBuf::from)
-    .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("target"))
-    .join("criterion")
 }
 
 fn main() {
@@ -969,8 +1159,8 @@ fn main() {
     .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
     .unwrap_or_else(|_| "uptime unavailable".into());
   println!("machine: {load}");
-  println!("audio bench: 64 voices, a play and the load hitch");
-  let results = results_dir();
+  println!("audio bench: 64 voices, a play, a streamed play and the load hitch");
+  let results = guards::results_dir();
   let mut criterion = Criterion::default()
     .sample_size(20)
     .output_directory(&results)
@@ -985,6 +1175,9 @@ fn main() {
   // Made only for what runs: the files of a filter that skips them all are
   // not
   let mut made = None;
+  if guards::runs(&["play_cost_streamed"]) {
+    streamed_play_guard(made.get_or_insert_with(fixtures));
+  }
   if guards::runs(&["load_hitch"]) {
     let fixtures = made.get_or_insert_with(fixtures);
     load_guard(&fixtures.load);
@@ -995,40 +1188,33 @@ fn main() {
   load_bench(&mut criterion, &mut made);
   criterion.final_summary();
   for (bench, of) in BENCHES {
-    print_median(&results, bench, of, started);
+    guards::print_median(&results, bench, of, started, 2);
+  }
+  // Without ffmpeg the OGG, the costliest file, was not measured: not a
+  // full pass
+  let unmeasured = made.as_ref().is_some_and(|fixtures| !fixtures.has_ogg());
+  if unmeasured {
+    eprintln!(
+      "the OGG was not measured (ffmpeg could not make it): play_cost_streamed plays the MP3 \
+       instead, and load_hitch leaves the OGG out"
+    );
   }
   guards::verdict(
     "audio",
-    "Profile a miss (the bench binary is the one `cargo bench --bench audio --no-run` names; \
-     voices_64, play_cost or load_hitch) with\n  xcrun xctrace record --template 'Time \
-     Profiler' --output audio.trace --launch -- target/release/deps/audio-<hash> --bench \
-     --profile-time 20 '^load_hitch$'\nand charge each sample's time to the nearest ryo2d \
-     function from the leaf up (kira's and symphonia's under the ryo2d call that reached \
-     them).",
+    "Profile a miss (the bench binary is the one `cargo bench --bench audio --no-run` names) \
+     with\n  xcrun xctrace record --template 'Time Profiler' --output audio.trace --launch -- \
+     target/release/deps/audio-<hash> --bench --profile-time 20 '^load_hitch$'\n(voices_64, \
+     play_cost or load_hitch; for play_cost_streamed, which has no criterion bench, launch \
+     `--bench play_cost_streamed` to profile its guard) and charge each sample's time to the \
+     nearest ryo2d function from the leaf up (kira's and symphonia's under the ryo2d call that \
+     reached them).",
   );
-}
-
-/// The median of `bench` (of `of`) from the run criterion just wrote to
-/// `results`, in microseconds; nothing for results an earlier run left
-/// (this run skipped the bench, as a filter or `--list` does)
-fn print_median(results: &Path, bench: &str, of: &str, started: SystemTime) {
-  let path = results.join(bench).join("new/estimates.json");
-  let written = std::fs::metadata(&path)
-    .and_then(|meta| meta.modified())
-    .is_ok_and(|modified| modified >= started);
-  if !written {
-    println!("{bench} median: not measured in this run");
-    return;
-  }
-  let median = std::fs::read_to_string(&path).ok().and_then(|text| {
-    let at = text.find("\"median\"")?;
-    let rest = &text[at..];
-    let from = rest.find("\"point_estimate\":")? + "\"point_estimate\":".len();
-    let to = rest[from..].find([',', '}'])? + from;
-    rest[from..to].trim().parse::<f64>().ok()
-  });
-  match median {
-    Some(ns) => println!("{bench} median, of {of}: {:.2} us", ns / 1000.0),
-    None => println!("{bench} median: unavailable ({})", path.display()),
-  }
+  eprintln!(
+    "audio guards: every guard that ran met its target{}",
+    if unmeasured {
+      ", but the OGG was not measured"
+    } else {
+      ""
+    }
+  );
 }

@@ -187,11 +187,15 @@ fn add_audio(world: &mut World) {
 /// One frame of an [`audio_world`] lasting `dt` of real time: the clock
 /// advances, the asset registry pumps, and the audio engine applies the
 /// voices' commands and renders `dt` on the mock backend (in whole chunks
-/// of 128 frames at 48 kHz, the rest carried to the next step)
+/// of 128 frames at 48 kHz, the rest carried to the next step); then the
+/// change trackers are cleared, as the engine's `Last` clears them, so the
+/// removal message `audio_system` writes as it takes its engine out of the
+/// world does not pile up
 pub fn audio_step(world: &mut World, dt: Duration) {
   if let Some(mut time) = world.get_resource_mut::<Time>() {
     time.advance(dt);
   }
   crate::core::asset::pump(world);
   audio_system(world);
+  world.clear_trackers();
 }

@@ -74,7 +74,7 @@
 mod guards;
 
 use std::cell::OnceCell;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime};
@@ -1230,17 +1230,6 @@ fn pump_waiting() {
   );
 }
 
-/// Where criterion writes its results, and the median is read from
-fn results_dir() -> PathBuf {
-  if let Some(home) = std::env::var_os("CRITERION_HOME") {
-    return PathBuf::from(home);
-  }
-  std::env::var_os("CARGO_TARGET_DIR")
-    .map(PathBuf::from)
-    .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("target"))
-    .join("criterion")
-}
-
 fn main() {
   let started = SystemTime::now();
   let load = Command::new("uptime")
@@ -1249,7 +1238,7 @@ fn main() {
     .unwrap_or_else(|_| "uptime unavailable".into());
   println!("machine: {load}");
   println!("assets bench: scene start, the reload hitch and the waiting pump");
-  let results = results_dir();
+  let results = guards::results_dir();
   let mut criterion = Criterion::default()
     .sample_size(20)
     .output_directory(&results)
@@ -1269,7 +1258,7 @@ fn main() {
   }
   criterion.final_summary();
   for (bench, of) in BENCHES {
-    print_median(&results, bench, of, started);
+    guards::print_median(&results, bench, of, started, 0);
   }
   guards::verdict(
     "assets",
@@ -1279,29 +1268,4 @@ fn main() {
      '^reload_hitch$'\nand charge each sample's time to the nearest ryo2d function from the \
      leaf up; the frames between reloads are the baseline.",
   );
-}
-
-/// The median of `bench` (of `of`) from the run criterion just wrote to
-/// `results`, in microseconds; nothing for results an earlier run left
-/// (this run skipped the bench, as a filter or `--list` does)
-fn print_median(results: &Path, bench: &str, of: &str, started: SystemTime) {
-  let path = results.join(bench).join("new/estimates.json");
-  let written = std::fs::metadata(&path)
-    .and_then(|meta| meta.modified())
-    .is_ok_and(|modified| modified >= started);
-  if !written {
-    println!("{bench} median: not measured in this run");
-    return;
-  }
-  let median = std::fs::read_to_string(&path).ok().and_then(|text| {
-    let at = text.find("\"median\"")?;
-    let rest = &text[at..];
-    let from = rest.find("\"point_estimate\":")? + "\"point_estimate\":".len();
-    let to = rest[from..].find([',', '}'])? + from;
-    rest[from..to].trim().parse::<f64>().ok()
-  });
-  match median {
-    Some(ns) => println!("{bench} median, of {of}: {:.0} us", ns / 1000.0),
-    None => println!("{bench} median: unavailable ({})", path.display()),
-  }
 }
