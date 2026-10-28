@@ -5779,7 +5779,7 @@ mod tests {
     let clip = streamed(&mut world, path);
     if let Some(clip) = world.resource_mut::<Assets<AudioClip>>().get_mut(&clip) {
       let encoded = EncodedClip {
-        bytes: Arc::from(bytes),
+        bytes: crate::core::audio::ClipBytes::from(bytes),
         frames: 22_050,
       };
       *clip = AudioClip::new(ClipData::Encoded(encoded), Duration::from_secs(1), 22_050);

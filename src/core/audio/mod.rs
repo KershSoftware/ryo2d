@@ -20,6 +20,8 @@ mod system;
 mod view;
 mod voice;
 
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use clip::ClipBytes;
 pub use clip::{AudioClip, AudioClipError};
 pub(crate) use clip::{ClipData, DECODE_THRESHOLD, EncodedClip};
 pub use engine::AudioEngine;
@@ -44,7 +46,7 @@ pub use settings::{VolumeKind, volume_to_db};
 pub use sound::{Falloff, LimitRule, Sound, SoundClip, Spatial, VoiceLimit};
 pub use spatial::{AudioEmitter, AudioListener, falloff_gain_db, pan_for};
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) use stream::{StreamError, probe as probe_stream};
+pub(crate) use stream::{StreamInfo, open_probed};
 #[doc(hidden)]
 pub use system::audio_system;
 pub use view::{AudioView, PlayOptions, Playable};

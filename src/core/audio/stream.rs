@@ -34,6 +34,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use kira::Frame;
+use kira::sound::static_sound::{StaticSoundData, StaticSoundSettings};
 use kira::sound::streaming::Decoder;
 use symphonia::core::audio::conv::{FromSample, IntoSample};
 use symphonia::core::audio::sample::Sample;
@@ -45,6 +46,8 @@ use symphonia::core::formats::probe::Hint;
 use symphonia::core::formats::{FormatReader, SeekMode, SeekTo, Track, TrackType};
 use symphonia::core::io::{MediaSource, MediaSourceStream};
 use symphonia::core::units::Timestamp;
+
+use super::ClipBytes;
 
 /// The most frames of silence one `decode` gives past the file's end
 const SILENCE_CHUNK: usize = 4096;
@@ -126,8 +129,27 @@ pub(crate) struct StreamInfo {
 
 /// Read `bytes`' header: its sample rate and length, and whether its codec
 /// is one the decoder has and its channels one or two. Nothing is decoded
-pub(crate) fn probe(bytes: &Arc<[u8]>) -> Result<StreamInfo, StreamError> {
-  let reader = open_reader(bytes)?;
+#[cfg(test)]
+pub(crate) fn probe(bytes: &ClipBytes) -> Result<StreamInfo, StreamError> {
+  open_probed(bytes).map(|probed| probed.info)
+}
+
+/// The most frames a whole decode sets room aside for before it starts
+/// (10 s at 192 kHz): a header's length can be wrong, so it is a hint
+const DECODE_HINT: usize = 1_920_000;
+
+/// A file whose header [`open_probed`] read: what it gave, and its reader
+/// past the header, to decode the whole file without reading it again
+pub(crate) struct Probed {
+  pub(crate) info: StreamInfo,
+  reader: Box<dyn FormatReader>,
+  track: u32,
+}
+
+/// Read `bytes`' header, as [`probe`] does, keeping the reader: a clip
+/// short enough to decode is decoded from it ([`Probed::decode`])
+pub(crate) fn open_probed(bytes: &ClipBytes) -> Result<Probed, StreamError> {
+  let reader = open_source(Box::new(Cursor::new(bytes.clone())))?;
   let (track, params) = audio_track(reader.as_ref())?;
   check_channels(params)?;
   if symphonia::default::get_codecs()
@@ -143,15 +165,41 @@ pub(crate) fn probe(bytes: &Arc<[u8]>) -> Result<StreamInfo, StreamError> {
     .num_frames
     .and_then(|frames| usize::try_from(frames).ok())
     .ok_or_else(|| StreamError::new("the file does not give its length"))?;
-  Ok(StreamInfo {
-    sample_rate,
-    frames,
+  let track = track.id;
+  Ok(Probed {
+    info: StreamInfo {
+      sample_rate,
+      frames,
+    },
+    reader,
+    track,
   })
 }
 
-/// A format reader over `bytes`, past the file's header
-fn open_reader(bytes: &Arc<[u8]>) -> Result<Box<dyn FormatReader>, StreamError> {
-  open_source(Box::new(Cursor::new(Arc::clone(bytes))))
+impl Probed {
+  /// Decode the whole file from where the probe left its reader, as kira's
+  /// `StaticSoundData::from_cursor` decodes it (each packet's frames in
+  /// order, converted as kira converts them; an error decoding or reading
+  /// fails it), but without reading its header again
+  pub(crate) fn decode(mut self) -> Result<StaticSoundData, StreamError> {
+    let (_, params) = audio_track(self.reader.as_ref())?;
+    let mut decoder = symphonia::default::get_codecs()
+      .make_audio_decoder(params, &AudioDecoderOptions::default())?;
+    let mut frames = Vec::with_capacity(self.info.frames.min(DECODE_HINT));
+    while let Some(packet) = self.reader.next_packet()? {
+      if packet.track_id != self.track {
+        continue;
+      }
+      let buffer = decoder.decode(&packet)?;
+      push_frames(&buffer, 0, buffer.frames(), &mut frames)?;
+    }
+    Ok(StaticSoundData {
+      sample_rate: self.info.sample_rate,
+      frames: frames.into(),
+      settings: StaticSoundSettings::default(),
+      slice: None,
+    })
+  }
 }
 
 /// A format reader over `source`, past the file's header
@@ -189,7 +237,7 @@ fn check_channels(params: &AudioCodecParameters) -> Result<(), StreamError> {
 
 /// A streamed clip's decoder: see the module docs
 pub(crate) struct ClipDecoder {
-  bytes: Arc<[u8]>,
+  bytes: ClipBytes,
   sample_rate: u32,
   /// The file's frames it plays (a clip's region, or all of it): kira's
   /// frame `i` is the file's `start + i`
@@ -232,7 +280,7 @@ impl ClipDecoder {
   /// A decoder over a clip's `bytes`, at `sample_rate` as the loader's probe
   /// read it, playing the file's frames `window` as its whole stream.
   /// Nothing is opened
-  pub(crate) fn new(bytes: Arc<[u8]>, sample_rate: u32, window: Range<usize>) -> Self {
+  pub(crate) fn new(bytes: ClipBytes, sample_rate: u32, window: Range<usize>) -> Self {
     let end = window.end;
     let start = window.start.min(end);
     Self {
@@ -295,11 +343,11 @@ impl ClipDecoder {
     #[cfg(test)]
     if let Some(at) = self.fail_reading_at {
       return Box::new(FailingSource {
-        bytes: Cursor::new(Arc::clone(&self.bytes)),
+        bytes: Cursor::new(self.bytes.clone()),
         at,
       });
     }
-    Box::new(Cursor::new(Arc::clone(&self.bytes)))
+    Box::new(Cursor::new(self.bytes.clone()))
   }
 
   /// The stream failed with `error`: report it, and give silence from here
@@ -503,7 +551,7 @@ fn skips_packet(error: &SymphoniaError) -> bool {
 /// The file's bytes, every read from byte `at` on failing (tests)
 #[cfg(test)]
 struct FailingSource {
-  bytes: Cursor<Arc<[u8]>>,
+  bytes: Cursor<ClipBytes>,
   at: u64,
 }
 
@@ -607,16 +655,16 @@ mod tests {
 
   const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/audio");
 
-  fn fixture(name: &str) -> Arc<[u8]> {
+  fn fixture(name: &str) -> ClipBytes {
     match std::fs::read(format!("{FIXTURES}/{name}")) {
-      Ok(bytes) => Arc::from(bytes),
+      Ok(bytes) => ClipBytes::new(bytes),
       Err(error) => panic!("{name}: {error}"),
     }
   }
 
   /// A decoder over `bytes`, with the rate and length the loader's probe
   /// reads
-  fn decoder_over(name: &str, bytes: Arc<[u8]>) -> ClipDecoder {
+  fn decoder_over(name: &str, bytes: ClipBytes) -> ClipDecoder {
     match probe(&bytes) {
       Ok(info) => ClipDecoder::new(bytes, info.sample_rate, 0..info.frames),
       Err(error) => panic!("{name} probes: {error}"),
@@ -766,7 +814,7 @@ mod tests {
     // still says 22,050 frames
     const KEPT: usize = 11_520;
     let wav = crate::core::testing::wav(22_050, 22_050, 8_000);
-    let cut: Arc<[u8]> = Arc::from(&wav[..44 + KEPT * 2]);
+    let cut = ClipBytes::from(&wav[..44 + KEPT * 2]);
     let mut decoder = decoder_over("cut.wav", cut);
     assert_eq!(decoder.num_frames(), 22_050);
     seek(&mut decoder, 5_000);
@@ -792,7 +840,8 @@ mod tests {
   /// cutting it
   #[test]
   fn opening_waits_for_the_first_decode() {
-    let mut decoder = ClipDecoder::new(Arc::from(&b"not audio at all"[..]), 44_100, 0..44_100);
+    let mut decoder =
+      ClipDecoder::new(ClipBytes::from(&b"not audio at all"[..]), 44_100, 0..44_100);
     let failure = decoder.failure();
     assert_eq!(decoder.sample_rate(), 44_100);
     assert_eq!(decoder.num_frames(), 44_100);
@@ -951,8 +1000,8 @@ mod tests {
 
   /// The first packet `bytes`' codec fails on, read with symphonia itself:
   /// its first frame, its length, and the error
-  fn first_failure(bytes: &Arc<[u8]>) -> (usize, usize, SymphoniaError) {
-    let Ok(mut opened) = Opened::new(Box::new(Cursor::new(Arc::clone(bytes)))) else {
+  fn first_failure(bytes: &ClipBytes) -> (usize, usize, SymphoniaError) {
+    let Ok(mut opened) = Opened::new(Box::new(Cursor::new(bytes.clone()))) else {
       panic!("the file opens");
     };
     loop {
@@ -977,7 +1026,7 @@ mod tests {
     // (182) and six frames of 104 or 105 bytes; its 9 bytes of side
     // information follow its 4-byte header
     mp3[853 + 4..853 + 13].fill(0xff);
-    let bytes: Arc<[u8]> = Arc::from(mp3);
+    let bytes = ClipBytes::new(mp3);
     let (failed, length, error) = first_failure(&bytes);
     assert!(matches!(error, SymphoniaError::DecodeError(_)), "{error}");
     let file = decoded("tone.mp3");
@@ -1021,7 +1070,7 @@ mod tests {
     let ends = i64::from_le_bytes(granule);
     pages[3].header[6..14].copy_from_slice(&(ends + 10_000).to_le_bytes());
     let file = decoded("tone-3s.ogg");
-    let mut decoder = decoder_over("jump.ogg", Arc::from(ogg_bytes(&pages)));
+    let mut decoder = decoder_over("jump.ogg", ClipBytes::new(ogg_bytes(&pages)));
     let (mut frames, mut largest) = (Vec::new(), 0);
     loop {
       let chunk = decode(&mut decoder);

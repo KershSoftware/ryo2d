@@ -18,6 +18,8 @@ pub(crate) enum ClipData {
   /// All its frames, ready to play; cheap to clone
   Decoded(Box<StaticSoundData>),
   /// The file's bytes, decoded as they play: a stream is made for each play
+  // The web never streams
+  #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
   Encoded(EncodedClip),
 }
 
@@ -27,8 +29,48 @@ pub(crate) enum ClipData {
 // The web never streams, so it never reads one
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) struct EncodedClip {
-  pub(crate) bytes: Arc<[u8]>,
+  pub(crate) bytes: ClipBytes,
   pub(crate) frames: usize,
+}
+
+/// A clip file's bytes, as the loader read them, shared by the clip and
+/// each stream of it: the file is kept where it was read, never copied
+#[derive(Clone)]
+// The web never streams, so it never keeps a file
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub(crate) struct ClipBytes(Arc<Vec<u8>>);
+
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+impl ClipBytes {
+  pub(crate) fn new(bytes: Vec<u8>) -> Self {
+    Self(Arc::new(bytes))
+  }
+}
+
+impl AsRef<[u8]> for ClipBytes {
+  fn as_ref(&self) -> &[u8] {
+    &self.0
+  }
+}
+
+impl std::ops::Deref for ClipBytes {
+  type Target = [u8];
+
+  fn deref(&self) -> &[u8] {
+    &self.0
+  }
+}
+
+impl From<Vec<u8>> for ClipBytes {
+  fn from(bytes: Vec<u8>) -> Self {
+    Self::new(bytes)
+  }
+}
+
+impl From<&[u8]> for ClipBytes {
+  fn from(bytes: &[u8]) -> Self {
+    Self::new(bytes.to_vec())
+  }
 }
 
 /// Why [`AudioClip::from_frames`] cannot make a clip

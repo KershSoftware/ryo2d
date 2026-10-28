@@ -302,7 +302,7 @@ mod tests {
   use super::*;
   use crate::core::asset::{AssetServer, Assets, AssetsView, MemorySource};
   use crate::core::audio::{
-    AudioEngine, AudioLogEntry, AudioLogKind, AudioView, EncodedClip, MusicJoinError,
+    AudioEngine, AudioLogEntry, AudioLogKind, AudioView, ClipBytes, EncodedClip, MusicJoinError,
   };
   use crate::core::dev_log::{self, LogLevel};
   use crate::core::ecs::World;
@@ -840,9 +840,8 @@ mod tests {
   #[cfg(not(target_arch = "wasm32"))]
   #[test]
   fn a_refused_track_leaves_the_old_one_playing() {
-    use std::sync::Arc;
     let mut world = world_with(&[("music/a.music.ron", r#"(clip: "music/tone.wav")"#)]);
-    let garbage: Arc<[u8]> = Arc::from(&b"not audio at all"[..]);
+    let garbage = ClipBytes::from(&b"not audio at all"[..]);
     let encoded = EncodedClip {
       bytes: garbage,
       frames: 22_050,
@@ -918,11 +917,10 @@ mod tests {
   /// Review M4: why an intro and a loop cannot be joined is a typed error
   #[test]
   fn a_join_that_fails_says_why_in_its_error() {
-    use std::sync::Arc;
     let clip =
       |rate: u32, frames: usize| AudioClip::from_frames(rate, &vec![[0.1, 0.1]; frames]).unwrap();
     let encoded = EncodedClip {
-      bytes: Arc::from(&b"bytes"[..]),
+      bytes: ClipBytes::from(&b"bytes"[..]),
       frames: 48_000,
     };
     let streamed = AudioClip::new(ClipData::Encoded(encoded), Duration::from_secs(1), 48_000);

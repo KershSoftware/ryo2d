@@ -2,14 +2,15 @@
 //! decoded to memory or kept encoded to stream
 
 use std::io::Cursor;
-use std::sync::Arc;
 use std::time::Duration;
 
 use kira::sound::static_sound::StaticSoundData;
 use serde::Deserialize;
 
-use crate::core::asset::{AssetError, AssetLoader, LoadContext};
-use crate::core::audio::{AudioClip, ClipData, DECODE_THRESHOLD, EncodedClip};
+use crate::core::asset::{AssetError, AssetLoader, AssetPath, LoadContext};
+use crate::core::audio::{AudioClip, ClipData, DECODE_THRESHOLD};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::core::audio::{ClipBytes, EncodedClip, StreamInfo, open_probed};
 
 /// Whether a clip is decoded to memory or kept encoded for streaming (a
 /// sound definition's `mode: Stream` names it)
@@ -40,6 +41,8 @@ pub struct AudioClipSettings {
 /// header is found as it plays (and skipped). Every registry has it.
 #[derive(Debug, Clone, Copy)]
 pub struct AudioClipLoader {
+  // The web decodes every clip, whatever its length
+  #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
   threshold: Duration,
 }
 
@@ -62,6 +65,7 @@ impl AudioClipLoader {
 /// Whether a clip of `duration` is decoded: `Decode` always, `Stream` never,
 /// `Auto` up to `threshold`; on the web (`wasm`) there is no streaming, so all
 /// decode
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn decodes(mode: ClipMode, duration: Duration, threshold: Duration, wasm: bool) -> bool {
   wasm
     || match mode {
@@ -71,27 +75,17 @@ pub(crate) fn decodes(mode: ClipMode, duration: Duration, threshold: Duration, w
     }
 }
 
-fn decode(bytes: Arc<[u8]>) -> Result<AudioClip, kira::sound::FromFileError> {
-  let data = StaticSoundData::from_cursor(Cursor::new(bytes))?;
+/// The file `bytes` decoded whole by kira, which reads its header itself
+fn decode(bytes: Vec<u8>) -> Result<AudioClip, kira::sound::FromFileError> {
+  #[cfg(test)]
+  tests::count_header_read();
+  StaticSoundData::from_cursor(Cursor::new(bytes)).map(decoded)
+}
+
+/// A clip of the frames `data` holds
+fn decoded(data: StaticSoundData) -> AudioClip {
   let (duration, rate) = (data.duration(), data.sample_rate);
-  Ok(AudioClip::new(
-    ClipData::Decoded(Box::new(data)),
-    duration,
-    rate,
-  ))
-}
-
-/// A file's sample rate and length in frames, read from its header without
-/// decoding it
-#[cfg(not(target_arch = "wasm32"))]
-fn probe(bytes: &Arc<[u8]>) -> Result<(u32, usize), crate::core::audio::StreamError> {
-  crate::core::audio::probe_stream(bytes).map(|info| (info.sample_rate, info.frames))
-}
-
-/// The web has no streaming, so nothing is probed: every clip decodes
-#[cfg(target_arch = "wasm32")]
-fn probe(_bytes: &Arc<[u8]>) -> Result<(u32, usize), kira::sound::FromFileError> {
-  Ok((0, 0))
+  AudioClip::new(ClipData::Decoded(Box::new(data)), duration, rate)
 }
 
 impl AssetLoader for AudioClipLoader {
@@ -108,26 +102,75 @@ impl AssetLoader for AudioClipLoader {
     settings: &AudioClipSettings,
     cx: &mut LoadContext<'_>,
   ) -> Result<AudioClip, AssetError> {
-    let path = cx.path();
-    let wasm = cfg!(target_arch = "wasm32");
-    let bytes: Arc<[u8]> = Arc::from(bytes);
-    // A clip that decodes anyway needs no probe
-    let (rate, frames) = if wasm || settings.mode == ClipMode::Decode {
-      (0, 0)
-    } else {
-      probe(&bytes).map_err(|error| AssetError::decode(path, error))?
-    };
-    let duration = Duration::from_secs_f64(frames as f64 / f64::from(rate.max(1)));
-    if decodes(settings.mode, duration, self.threshold, wasm) {
+    self.clip_from(bytes, settings, cx.path())
+  }
+}
+
+impl AudioClipLoader {
+  /// The clip in the file `bytes` read from `path`. Its header is read
+  /// once: a clip that decodes anyway (`Decode`, and every clip on the web)
+  /// by kira's decoder alone; any other by the probe, whose length decides,
+  /// and a short one is then decoded from the probe's reader. A streamed
+  /// clip keeps the file's bytes where they were read
+  fn clip_from(
+    &self,
+    bytes: Vec<u8>,
+    settings: &AudioClipSettings,
+    path: &AssetPath,
+  ) -> Result<AudioClip, AssetError> {
+    if cfg!(target_arch = "wasm32") || settings.mode == ClipMode::Decode {
       return decode(bytes).map_err(|error| AssetError::decode(path, error));
     }
+    self.probed(bytes, settings, path)
+  }
+
+  /// A clip `clip_from` probes: decoded from the probe's reader if short
+  /// enough for its mode, kept encoded to stream otherwise
+  #[cfg(not(target_arch = "wasm32"))]
+  fn probed(
+    &self,
+    bytes: Vec<u8>,
+    settings: &AudioClipSettings,
+    path: &AssetPath,
+  ) -> Result<AudioClip, AssetError> {
+    let bytes = ClipBytes::new(bytes);
+    #[cfg(test)]
+    tests::count_header_read();
+    let probed = open_probed(&bytes).map_err(|error| AssetError::decode(path, error))?;
+    let StreamInfo {
+      sample_rate,
+      frames,
+    } = probed.info;
+    let duration = Duration::from_secs_f64(frames as f64 / f64::from(sample_rate.max(1)));
+    if decodes(settings.mode, duration, self.threshold, false) {
+      return probed
+        .decode()
+        .map(decoded)
+        .map_err(|error| AssetError::decode(path, error));
+    }
     let encoded = EncodedClip { bytes, frames };
-    Ok(AudioClip::new(ClipData::Encoded(encoded), duration, rate))
+    Ok(AudioClip::new(
+      ClipData::Encoded(encoded),
+      duration,
+      sample_rate,
+    ))
+  }
+
+  /// The web has no streaming: every clip decodes, read by kira alone
+  #[cfg(target_arch = "wasm32")]
+  fn probed(
+    &self,
+    bytes: Vec<u8>,
+    _settings: &AudioClipSettings,
+    path: &AssetPath,
+  ) -> Result<AudioClip, AssetError> {
+    decode(bytes).map_err(|error| AssetError::decode(path, error))
   }
 }
 
 #[cfg(test)]
 mod tests {
+  use std::sync::Arc;
   use std::time::Duration;
 
   use super::*;
@@ -136,6 +179,102 @@ mod tests {
   use crate::core::ecs::kernel::World;
 
   const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/audio");
+
+  thread_local! {
+    /// The times a clip file's header was read on this thread
+    static HEADER_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+  }
+
+  /// A clip file's header is being read (by the probe or a decoder)
+  pub(super) fn count_header_read() {
+    HEADER_READS.with(|reads| reads.set(reads.get() + 1));
+  }
+
+  fn header_reads() -> usize {
+    HEADER_READS.with(std::cell::Cell::get)
+  }
+
+  /// A clip's file is read once: a short clip under `Auto` is decoded from
+  /// the probe that measured it, a forced one by the decoder alone and a
+  /// streamed one by the probe alone
+  #[test]
+  fn a_clip_s_header_is_read_once() {
+    let names = ["tone.wav", "tone.ogg", "tone.mp3", "tone.flac"];
+    let mut world = clips_over(&names, AudioClipLoader::default());
+    for name in names {
+      for mode in [ClipMode::Auto, ClipMode::Decode, ClipMode::Stream] {
+        let before = header_reads();
+        let clip = loaded(&mut world, name, mode);
+        assert_eq!(header_reads() - before, 1, "{name}, {mode:?}");
+        assert_eq!(
+          clip.is_streamed(),
+          mode == ClipMode::Stream,
+          "{name}, {mode:?}"
+        );
+      }
+    }
+  }
+
+  /// A decoded `Auto` clip has the frames kira's own decoding gives
+  #[test]
+  fn an_auto_clip_decodes_as_a_forced_one_does() {
+    let names = [
+      "tone.wav",
+      "tone.ogg",
+      "tone.mp3",
+      "tone.flac",
+      "tone8.wav",
+      "tonef32.wav",
+    ];
+    let mut world = clips_over(&names, AudioClipLoader::default());
+    for name in names {
+      let auto = loaded(&mut world, name, ClipMode::Auto);
+      let forced = loaded(&mut world, name, ClipMode::Decode);
+      let (ClipData::Decoded(auto_data), ClipData::Decoded(forced_data)) =
+        (auto.data(), forced.data())
+      else {
+        panic!("{name}: both decoded");
+      };
+      assert_eq!(auto_data.sample_rate, forced_data.sample_rate, "{name}");
+      assert_eq!(auto_data.frames.len(), forced_data.frames.len(), "{name}");
+      assert!(
+        auto_data
+          .frames
+          .iter()
+          .zip(forced_data.frames.iter())
+          .all(|(a, b)| a == b),
+        "{name}: the same frames"
+      );
+      assert!(
+        auto_data.frames.iter().any(|frame| frame.left.abs() > 0.01),
+        "{name}: audible"
+      );
+      assert_eq!(auto.duration(), forced.duration(), "{name}");
+    }
+  }
+
+  /// A streamed clip holds the very bytes the loader read: the file is not
+  /// copied
+  #[cfg(not(target_arch = "wasm32"))]
+  #[test]
+  fn a_streamed_clip_keeps_the_file_s_bytes_without_a_copy() {
+    let bytes = fixture("tone.ogg");
+    let read = bytes.as_ptr();
+    let settings = AudioClipSettings {
+      mode: ClipMode::Stream,
+    };
+    let Ok(path) = AssetPath::parse("tone.ogg") else {
+      panic!("a path");
+    };
+    let clip = match AudioClipLoader::default().clip_from(bytes, &settings, &path) {
+      Ok(clip) => clip,
+      Err(error) => panic!("{}", error.report()),
+    };
+    let ClipData::Encoded(encoded) = clip.data() else {
+      panic!("streamed");
+    };
+    assert_eq!(encoded.bytes.as_ptr(), read);
+  }
 
   fn fixture(name: &str) -> Vec<u8> {
     match std::fs::read(format!("{FIXTURES}/{name}")) {

@@ -2267,7 +2267,7 @@ mod tests {
     audio_step(&mut world, FRAME);
     assert!(voice.is_playing(), "{voice:?}");
     if let Some(clip) = world.resource_mut::<Assets<AudioClip>>().get_mut(&clip) {
-      let garbage: std::sync::Arc<[u8]> = std::sync::Arc::from(&b"not audio at all"[..]);
+      let garbage = crate::core::audio::ClipBytes::from(&b"not audio at all"[..]);
       let encoded = EncodedClip {
         bytes: garbage,
         frames: 22_050,

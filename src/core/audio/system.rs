@@ -1028,7 +1028,7 @@ mod tests {
     AudioView::new(&mut world).play_music(&track);
     AudioView::new(&mut world).stop_music(Duration::ZERO);
     // A clip whose stream will not open: marked
-    let garbage: std::sync::Arc<[u8]> = std::sync::Arc::from(&b"not audio at all"[..]);
+    let garbage = crate::core::audio::ClipBytes::from(&b"not audio at all"[..]);
     let broken = world
       .resource_mut::<Assets<AudioClip>>()
       .add(AudioClip::new(
@@ -1537,7 +1537,7 @@ mod tests {
     assert!(AudioView::new(&mut world).play(&sound).is_stopped());
     AudioView::new(&mut world).play_music(&track);
     if let Some(clip) = world.resource_mut::<Assets<AudioClip>>().get_mut(&clip) {
-      let garbage: std::sync::Arc<[u8]> = std::sync::Arc::from(&b"not audio at all"[..]);
+      let garbage = crate::core::audio::ClipBytes::from(&b"not audio at all"[..]);
       *clip = AudioClip::new(
         ClipData::Encoded(EncodedClip {
           bytes: garbage,

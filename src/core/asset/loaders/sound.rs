@@ -689,7 +689,8 @@ mod tests {
       panic!("an unprobed stream loaded");
     };
     let report = error.report();
-    let probed = match crate::core::audio::probe_stream(&std::sync::Arc::from(&garbage[..])) {
+    let garbage_bytes = crate::core::audio::ClipBytes::from(&garbage[..]);
+    let probed = match crate::core::audio::open_probed(&garbage_bytes).map(|probed| probed.info) {
       Ok(info) => panic!("garbage probed: {info:?}"),
       Err(error) => error.to_string(),
     };
