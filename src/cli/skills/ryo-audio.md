@@ -7,7 +7,7 @@ metadata:
 
 # Ryo2D Audio
 
-Sound is authored outside the engine, in a DAW (Logic, Ableton, Reaper), and handed over as files. The audio designer describes how each sound plays in a small RON file, balances the mix in one mixer file, and hears every save while the game runs; the game developer plays a sound with one call and never manages voices, buses or cleanup. Underneath is a mixer on kira 0.12.
+Sound is authored outside the engine, in a DAW (Logic, Ableton, Reaper), and handed over as files. The audio designer describes how each sound plays in a small RON file, balances the mix in one mixer file, and hears every save while the game runs; the game developer plays a sound with one call, and the engine handles its voice, its bus and its cleanup as scenes change. Underneath is a mixer on kira 0.12.
 
 Four registry assets do the work, each loaded by asset path like an image (`ryo-assets`):
 
@@ -18,7 +18,7 @@ Four registry assets do the work, each loaded by asset path like an image (`ryo-
 | `Music` | `.music.ron` | A track: an intro into a gapless loop, or one clip with a loop region |
 | `Mixer` | `audio/mixer.mixer.ron` | The bus tree, its effects and sends, snapshots, ducking and focus loss |
 
-Every type here is in the prelude unless a path is given; complete signatures are in `ryo-api` (Audio). The worked example is the audio demo, `examples/demos/audio` (`./dev.sh audio`), a page per section below; its `assets/` folder is a small complete project.
+Every type here is in the prelude unless a path is given; complete signatures are in `ryo-api` (Audio). The worked example is the audio demo, `examples/demos/audio` (`./dev.sh audio`), in seven pages (the buses and volume settings, variations, voice limits, spatial sound, the mix, music, hot reload); its `assets/` folder is a small complete project.
 
 ## 1. From the DAW to a play
 
@@ -26,7 +26,7 @@ Every type here is in the prelude unless a path is given; complete signatures ar
    - **Effects and UI sounds:** WAV (or FLAC). A clip of up to 10 s decodes to memory when it loads (on a worker thread, or the calling thread under `load_now`), so a play costs nothing to decode.
    - **Music and long ambience:** OGG Vorbis. A clip over 10 s keeps its compressed bytes and streams as it plays, so a five-minute track does not sit decoded in memory (about 23 MB a minute at 48 kHz stereo).
    - **Loops:** cut the loop to the sample in the DAW, and export it as WAV, OGG or FLAC. An MP3 without a Xing, Info or VBRI header has only an estimated length, so a streamed MP3 loop can wrap after a short gap or cut its end; a FLAC without its total sample count cannot stream, so load it with `ClipMode::Decode`.
-   - **Edges:** start and end each one-shot at a zero crossing, or give its definition a short `fade_in`. The engine smooths every change it makes (at least 10 ms) so nothing it does clicks, but a click inside the file plays as recorded.
+   - **Edges:** start and end each one-shot at a zero crossing, or give its definition a short `fade_in`. The engine smooths every stop, pause and change it makes over at least 10 ms, but a start plays the file's first sample at once unless the definition has a `fade_in`, so a file (or a `region`) that starts away from a zero crossing clicks, as does a click inside the file.
 2. **Put the files under `assets/`**, for example `assets/sfx/step-1.wav`. Asset paths are relative to `assets/` (`"sfx/step-1.wav"`), inside RON files too.
 3. **Describe the sound** in a definition next to them (section 2):
 
@@ -135,7 +135,7 @@ let over = engine.is_stopped();            // ended, or never started
 | From a scene's callbacks, systems or UI node observers | That scene | The scene exits (popped, switched away, reset): its loops stop with their `fade_out`, as do its one-shots paused or held by the game's pause; its one-shots playing finish, so a click just before a switch is heard out |
 | With `PlayOptions { persist: true, .. }`, or from a global system | The engine | Never: stop it yourself. Rain that carries on into the next scene needs `persist` |
 | From an `AudioEmitter` | Its entity | The entity is despawned, disabled (a pool putting it back) or loses its emitter, by the scene rule |
-| `play_music` | The engine's music player | It is replaced or stopped, or a scene with `SceneCleanup::MUSIC` exits |
+| `play_music` | The engine's music player | It is replaced or stopped, or a scene whose `cleanup_on_exit` includes `SceneCleanup::MUSIC` is switched away from or reset (cleanup does not run on `Pop`) |
 
 A system plays through the world: an exclusive system takes `&mut World` and calls `AudioView::new(world).play(&handle)`; an observer queues the same with `commands.queue(move |world: &mut World| { AudioView::new(world).play(&handle); })`.
 
@@ -193,7 +193,7 @@ The engine loads `audio/mixer.mixer.ron` (`MIXER_PATH`) at start if the game has
 )
 ```
 
-- **A bus** is named by its path (`"sfx/footsteps"`; its parent must exist, so a bus under a game's bus names that bus first). Each has `volume` (dB, at most +24), `effects` in order, `sends`, `pauses_with_game` and `follows_time_scale` (the parent's when left out) and `limit`. A mixer adds at most 64 buses, 16 of them send buses.
+- **A bus** is named by its path (`"sfx/footsteps"`; its parent must exist, so a bus under a game's bus needs that bus in the file too, in any order). Each has `volume` (dB, at most +24), `effects` in order, `sends`, `pauses_with_game` and `follows_time_scale` (the parent's when left out) and `limit`. A mixer adds at most 64 buses, 16 of them send buses.
 - **Effects:** `LowPass(cutoff, resonance)`, `HighPass(cutoff, resonance)`, `Eq(kind: Bell | LowShelf | HighShelf, frequency, gain_db, q)`, `Reverb(feedback, damping, stereo_width, mix)`, `Delay(seconds, feedback_db, mix)`, `Compressor(threshold_db, ratio, attack, release, makeup_db, mix)`, `Distortion(kind: HardClip | SoftClip, drive_db, mix)`. Each parameter's range and default are in `EffectDef`'s rustdoc; one out of range fails the load naming it.
 - **Sends** feed send buses (a bus another sends to) at a level in dB, after the sender's own volume. A send carries the gains of the buses above its sender, so a return follows its sender's sliders: `voice/npc`'s reverb goes quiet with the voice slider, not the sfx one. A send bus plays no voices of its own (a sound on it plays on its parent, warned), has no buses under it and sends nowhere. kira mixes send buses beside `master`'s track rather than through it, so `master`'s effects (a compressor or limiter) do not process returns; the returns are still under `master`'s volume.
 - **There is no limiter on the output** unless the mixer adds one: voices that sum past full scale clip at the device. Leave headroom in the mix, or put a `Compressor` on `master` (and on loud send buses).
@@ -201,7 +201,7 @@ The engine loads `audio/mixer.mixer.ron` (`MIXER_PATH`) at start if the game has
 - **Gain layers add in dB:** the mixer's (or the game's) volume, the player's setting, the active snapshot and the duck (and the focus loss, on `master`). A snapshot never overrides a slider, and a slider moved under a snapshot is heard at once.
 - **`on_focus_loss`** is `Keep` (the default), `Duck(dB)` or `Mute`: what `master` does while the window is not focused, smoothed over 10 ms.
 - **A mixer made in code**, for a game with no file: `ctx.audio().set_mixer(Mixer { buses: vec![BusDef { volume_db: -3.0, ..BusDef::new("sfx") }], ..Default::default() })`. The snapshot and duck types are `ryo2d::core::audio::{SnapshotDef, SnapshotBus, DuckDef}`.
-- The engine loads the mixer on a worker, so its buses exist a few frames after start. A scene that plays on a game bus, or calls a snapshot, from its first frame loads it at once: `ctx.assets().load_now::<Mixer>(MIXER_PATH)` (the demo's pages do).
+- The engine loads the mixer on a worker, so its buses exist a few frames after start. A scene that plays on a game bus, or calls a snapshot, from its first frame loads it at once with `ctx.assets().load_now::<Mixer>(MIXER_PATH)` (the demo's pages do). The buses are then built at the end of that first frame, in the frame's audio update: a loop started before then moves onto its bus there, while a one-shot played before then plays out on the nearest bus above it (its parent), and a snapshot asked for before then applies there.
 
 ## 6. The player's volume settings
 
@@ -218,7 +218,7 @@ let music = ctx.audio().volume_setting(VolumeKind::Music);
 |---|---|---|---|---|---|---|---|
 | Gain | 0 dB | -2 dB | -6 dB | -12 dB | -24 dB | -40 dB | silent |
 
-A linear slider puts 50% at -6 dB, which sounds barely quieter, and crams everything audible into its bottom quarter; on this curve 50% is about -12 dB, near half as loud (loudness halves at about -10 dB), and the travel spreads evenly. 0 is exact silence; a value outside 0 to 1 is clamped, and one that is not a number is the kind's default.
+A linear slider leaves 50% at only -6 dB and puts everything below -12 dB in its bottom quarter; on this curve 50% is about -12 dB, near half as loud (loudness halves at about -10 dB), and each halving of the setting is the same 12 dB step. 0 is exact silence; a value outside 0 to 1 is clamped, and one that is not a number is the kind's default.
 
 - **Defaults** come from `Ryo.toml` (`[system] master_volume = 0.89`, `music_volume`, `sfx_volume`, `ui_volume`, `voice_volume`, `ambience_volume`); without them master is 0.89, about -2 dB (the gain a linear 0.8 gives), and the rest 1.
 - **Saving:** `SystemState` keeps the six as `master_volume`, `music_volume`, `sfx_volume`, `ui_volume`, `voice_volume` and `ambience_volume` (`ryo-config-save`). With `EngineBuilder::with_user_preferences` allowing them (`UserPreference::MasterVolume` .. `AmbienceVolume`), the engine applies the saved values at start. A saved value is read as a point on this curve and never rescaled, so a `system.json` written for a linear volume scale plays its settings below 1 quieter than it was written for.
@@ -354,7 +354,7 @@ fn on_enter(&mut self, ctx: &mut SceneContext) {
 }
 ```
 
-- **The engine has one music player**, and the music belongs to it, not to a scene: it carries on across scene changes until replaced or stopped, so every scene can ask for its track as it enters without restarting it. `SceneCleanup::MUSIC` (not in `SceneCleanup::DEFAULT`) stops it as a scene exits, over its crossfade.
+- **The engine has one music player**, and the music belongs to it, not to a scene: it carries on across scene changes until replaced or stopped, so every scene can ask for its track as it enters without restarting it. `SceneCleanup::MUSIC` (not in `SceneCleanup::DEFAULT`) stops it, over its crossfade, when a scene whose `cleanup_on_exit` includes it is switched away from or reset. Cleanup does not run on `Pop`, so a pushed scene that plays a track of its own (a boss fight over the level) stops it in its `on_exit` with `ctx.audio().stop_music(fade)`, or the scene below asks for its own track again in `on_resume`, which crossfades back to it.
 - A track still loading takes over once it has loaded, while the current one plays on; one that fails to load warns once and changes nothing.
 - `stop_music(fade)`, `pause_music()`, `resume_music()` and `current_music() -> Option<AssetId<Music>>` (compare with `handle.id()`).
 - **An intro and its loop are joined into one sound as they load**, so the loop starts on the sample after the intro's last: kira starts separate sounds only on its 128-frame boundaries, which would leave a gap or overlap. Both are decoded (they cannot stream) and must share a sample rate (a mismatch fails the load naming both files). A track longer than a few minutes is better as one streamed clip with a loop region, as a joined track holds its decoded frames (about 23 MB a minute).
@@ -415,7 +415,7 @@ In debug builds with a window, saving a file in `assets/` changes what is playin
 
 ## 14. Testing
 
-- **`HeadlessEngine`** plays on the mock backend, rendered by each step's time, its picks seeded so runs repeat. `engine.audio_log()` (doc-hidden, for tests) lists what the engine did with each voice: `AudioLogEntry { kind, voice, sound, source, bus, gain_db, pan, rate, fade }`, with `kind` one of `AudioLogKind::{Start, Stop, Pause, Resume, Gain, Pan, Rate, Refused, Culled, Stolen}` (`use ryo2d::core::audio::{AudioLogEntry, AudioLogKind}`).
+- **`ryo2d::testing::HeadlessEngine`** plays on the mock backend, rendered by each step's time, its picks seeded so runs repeat. `engine.audio_log()` (doc-hidden, for tests) lists what the engine did with each voice: `AudioLogEntry { kind, voice, sound, source, bus, gain_db, pan, rate, fade }`, with `kind` one of `AudioLogKind::{Start, Stop, Pause, Resume, Gain, Pan, Rate, Refused, Culled, Stolen}` (`use ryo2d::core::audio::{AudioLogEntry, AudioLogKind}`).
 - **A test without an engine** takes `ryo2d::testing::audio_world()`: the asset registry, a clock and the audio engine on the mock backend with its log on. `audio_world_over(files)` reads a `MemorySource` the test keeps (to save over a file and `reload` it); `audio_step(&mut world, dt)` is one frame. `audio_world()` is not seeded: call `AudioView::new(&mut world).seed(n)` before plays whose picks the test checks.
 
 ```rust
@@ -460,7 +460,8 @@ fn a_fourth_step_is_refused_and_the_pause_holds_sfx() {
 | Plays refused on a busy bus with "the bus is full" | Long `fade_out`s holding kira's room on that bus |
 | Loops keep playing under the pause menu | The menu did not pause the game clock (section 8) |
 | A rain loop stops at a scene change | It belonged to the scene: play it with `persist` |
-| Music restarts on a scene change | Something called `stop_music` or the scene's cleanup includes `SceneCleanup::MUSIC`; `play_music` of the track already playing changes nothing |
+| Music restarts on a scene change | Something called `stop_music`, or the scene switched away from (or reset) has `SceneCleanup::MUSIC` in its cleanup; `play_music` of the track already playing changes nothing |
+| A pushed scene's music plays on after it pops | Cleanup does not run on `Pop`: stop the track in the pushed scene's `on_exit` (`stop_music(fade)`), or play the level's own track again in the level's `on_resume` |
 | A loop has a gap or seam | The file's loop points (cut to the sample), an MP3 without a length header, or an intro and loop at different rates (fails at load) |
 | Crackle | Clipping past full scale (headroom, or a `Compressor` on `master`), or underruns from too small an `audio_buffer_frames` |
 | No sound in a web build | No gesture yet (`waiting_for_gesture`), or the files are not in its asset source |

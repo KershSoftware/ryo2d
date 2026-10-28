@@ -29,8 +29,8 @@ use crate::core::audio::Mixer;
 /// - **Buses** are `master`, the standard buses (`music`, `sfx`, `ui`,
 ///   `voice`, `ambience`) and a game's own under them, named by their path
 ///   (`"sfx/footsteps"`, whose parent `sfx` must exist: a bus under a game's
-///   bus names that bus first). The standard buses are always there; the
-///   file only adjusts them.
+///   bus needs that bus in the file too, in any order). The standard buses
+///   are always there; the file only adjusts them.
 /// - **Volume** is in dB, at most +24.
 /// - **Effects** run in order: `LowPass(cutoff, resonance)`,
 ///   `HighPass(cutoff, resonance)`, `Eq(kind: Bell | LowShelf | HighShelf,
