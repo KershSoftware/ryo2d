@@ -100,7 +100,9 @@ pub fn asset_world() -> World {
 
 /// [`asset_world`] with a clock and the audio engine on kira's mock backend
 /// (silent, advanced by [`audio_step`]), its audio log on: a world to test
-/// what plays, with no engine or audio device.
+/// what plays, with no engine or audio device. Its picks and draws start
+/// from the headless engine's fixed seed, so a test's variations repeat run
+/// to run; `AudioView::seed` picks another sequence.
 ///
 /// ```
 /// use std::time::Duration;
@@ -183,6 +185,7 @@ pub(crate) fn metered_audio_world() -> (World, crate::core::audio::Meter) {
   let mut world = audio_world();
   let (mut audio, meter) = AudioEngine::new_metered();
   audio.set_logging(true);
+  audio.seed(crate::core::audio::HEADLESS_SEED);
   world.insert_resource(audio);
   (world, meter)
 }
@@ -191,6 +194,7 @@ fn add_audio(world: &mut World) {
   world.insert_resource(Time::new(60));
   let mut audio = AudioEngine::new(false);
   audio.set_logging(true);
+  audio.seed(crate::core::audio::HEADLESS_SEED);
   world.insert_resource(audio);
 }
 

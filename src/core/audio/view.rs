@@ -325,8 +325,9 @@ impl<'w> AudioView<'w> {
   /// Seed what picks a sound's clips and draws its gains and pitches: from
   /// the same seed, the same plays in the same order pick and draw the same.
   /// For replays, tests and captures. Headless runs (`HeadlessEngine`,
-  /// `RYO_HEADLESS`) start seeded, so they repeat without it; a game's
-  /// otherwise starts from the system's randomness
+  /// `RYO_HEADLESS`) and test worlds (`testing::audio_world`) start seeded,
+  /// so they repeat without it; a game's otherwise starts from the system's
+  /// randomness
   ///
   /// ```
   /// use ryo2d::prelude::*;

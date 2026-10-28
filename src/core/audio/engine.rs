@@ -59,8 +59,9 @@ pub(crate) const MIN_FADE: Duration = Duration::from_millis(10);
 /// track, so the voices stolen past the cap have room to fade out
 pub(crate) const VOICE_CAP: usize = 96;
 
-/// The seed a headless engine (`HeadlessEngine`, `RYO_HEADLESS`) starts
-/// its picks and draws from, so its runs repeat
+/// The seed a headless engine (`HeadlessEngine`, `RYO_HEADLESS`) and a test
+/// world (`testing::audio_world`) start their picks and draws from, so
+/// their runs repeat
 pub(crate) const HEADLESS_SEED: u64 = 0x5EED_A0D1;
 
 /// The mock backend's sample rate
@@ -1568,7 +1569,7 @@ impl AudioEngine {
 
   /// Seed the generator that picks clips and draws gains and pitches, so a
   /// run picks the same way each time (`AudioView::seed`; headless engines
-  /// start at [`HEADLESS_SEED`])
+  /// and test worlds start at [`HEADLESS_SEED`])
   pub(crate) fn seed(&mut self, seed: u64) {
     self.rng = SmallRng::seed_from_u64(seed);
   }
@@ -5508,6 +5509,36 @@ mod tests {
       .iter()
       .filter(|entry| entry.level == LogLevel::Warn && matching(&entry.message))
       .count()
+  }
+
+  /// `testing::audio_world` starts seeded, as a headless engine does: the
+  /// same plays pick the same clips and draw the same gains and pitches in
+  /// every test world, and `AudioView::seed` still picks another sequence
+  #[test]
+  fn audio_worlds_pick_the_same_variations() {
+    let picks = |seed: Option<u64>| {
+      let mut world = audio_world();
+      if let Some(seed) = seed {
+        AudioView::new(&mut world).seed(seed);
+      }
+      let clips: Vec<Handle<AudioClip>> = (0..4).map(|_| second(&mut world)).collect();
+      let sound = world.resource_mut::<Assets<Sound>>().add(Sound {
+        clips: clips.iter().cloned().map(SoundClip::new).collect(),
+        volume_range_db: 3.0,
+        pitch_range: 2.0,
+        per_frame: 32,
+        ..Default::default()
+      });
+      (0..32)
+        .map(|_| AudioView::new(&mut world).play(&sound).pick())
+        .map(|pick| pick.map(|pick| (pick.clip_index, pick.volume_db, pick.pitch)))
+        .collect::<Vec<_>>()
+    };
+    let first = picks(None);
+    assert!(first.iter().all(Option::is_some), "{first:?}");
+    assert_eq!(first, picks(None), "a second world picks the same");
+    assert_ne!(first, picks(Some(7)), "a seed picks another sequence");
+    assert_eq!(picks(Some(7)), picks(Some(7)));
   }
 
   /// The mock backend renders on the main thread, where a device renders on

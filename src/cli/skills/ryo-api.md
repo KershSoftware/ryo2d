@@ -2,7 +2,7 @@
 name: ryo-api
 description: Complete API reference for ryo2d::prelude - every exported type with its signatures and use, organised by area.
 metadata:
-  version: 2.11.2
+  version: 2.11.3
 ---
 
 # Ryo2D API Reference
@@ -616,7 +616,7 @@ A mixer on kira 0.12. Clips, sound definitions, music and the mixer are registry
 | `set_bus_volume(&mut self, bus: &str, db: f32)` | in place of the mixer's volume for the session, through reloads (at most +24); the setting, snapshot and duck still apply |
 | `snapshot(&mut self, name: &str)`, `clear_snapshot(&mut self)` | blend to the mixer's snapshot over its `blend`, or back; an unknown name warns once |
 | `set_mixer(&mut self, mixer: Mixer)` | build the buses from a mixer made in code, at once; one that fails its check is warned about and changes nothing |
-| `seed(&mut self, seed: u64)` | the same plays pick and draw the same from the same seed (replays, tests, captures); headless runs start seeded |
+| `seed(&mut self, seed: u64)` | the same plays pick and draw the same from the same seed (replays, tests, captures); headless runs and `testing::audio_world` start seeded |
 | `waiting_for_gesture(&self) -> bool` | on the web, until the first click, tap or key (not Escape; never a pad) opens the device: one-shots are refused, loops and music wait. False natively |
 | `voices_on(&mut self, bus: &str) -> usize` | voices playing on `bus` and every bus under it (0 for no such bus); builds a mixer that has landed first |
 
@@ -1476,7 +1476,7 @@ See the `ryo-procgen` skill and `crates/ryo2d-procgen/AGENTS.md`, `crates/ryo2d-
 | `HeadlessError` | `NoGpu` \| `Render(String)` \| `Capture(CaptureError)` |
 | `shared_gpu()` | one GPU device shared across tests |
 | `HeadlessEngine::audio_log() -> Vec<AudioLogEntry>` | doc-hidden, for tests: what the engine did with each voice and bus (the latest 4096); `AudioLogEntry { kind: AudioLogKind, voice: u32, sound, source, bus: String, gain_db: f32, pan: f32, rate: f64, fade: Duration, reason: &'static str }`, `AudioLogKind { Start, Stop, Pause, Resume, Gain, Pan, Rate, Refused, Culled, Stolen }` (`ryo2d::core::audio`; `voice` 0 is a refused play or a bus's change; `reason`, on `Refused` only, names the rule first: `per_frame`, `cooldown`, `limit`, `full`, `undecodable`, `locked`, `unlock` or `loading`). Headless audio plays silently on kira's mock backend, its picks seeded |
-| `ryo2d::testing::audio_world() -> World`, `audio_world_over(files: MemorySource) -> World`, `audio_step(world: &mut World, dt: Duration)` | free functions: `asset_world()` plus a clock and the audio engine on the mock backend, its log on (`world.resource::<ryo2d::core::audio::AudioEngine>().log()`, doc-hidden); `_over` reads the test's `MemorySource`, to save over a file and reload it; `audio_step` is one frame (clock, pump, audio). Not seeded: `AudioView::new(&mut world).seed(n)` |
+| `ryo2d::testing::audio_world() -> World`, `audio_world_over(files: MemorySource) -> World`, `audio_step(world: &mut World, dt: Duration)` | free functions: `asset_world()` plus a clock and the audio engine on the mock backend, its log on (`world.resource::<ryo2d::core::audio::AudioEngine>().log()`, doc-hidden); `_over` reads the test's `MemorySource`, to save over a file and reload it; `audio_step` is one frame (clock, pump, audio). Seeded as a headless engine is; `AudioView::new(&mut world).seed(n)` for another sequence |
 | `ryo2d::testing::asset_world() -> World` (a free function, not a method) | a world with the asset registry and no engine (every engine store, over an empty `MemorySource`), for a test that needs handles: `world.resource_mut::<Assets<Image>>().add(image)` |
 | `UiHarness::new(width, height)` | a UI with no window or GPU (built-in fonts, scale 1, the dark theme) for unit-testing game UI; `with_theme(Theme)` |
 | `UiHarness::frame(\|ui\| ..) -> R` | one 60 fps frame: resolve the scripted input against the last frame, run the closure as the top scene's `ui`, finish the frame |
