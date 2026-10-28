@@ -30,7 +30,7 @@ The loaders are the asset module's: `asset/loaders/audio_clip.rs` (`AudioClipLoa
 1. adds the real delta to the engine's clock (cooldowns run on it, so a paused game still cools down);
 2. applies the voices' queued commands (stop, pause, resume, volume, pitch) that scene code did not apply as it ended, in the order they were sent;
 3. builds the bus tree again if the mixer landed or changed and no play built it first (and applies a snapshot asked for before it landed);
-4. follows the registry's `AssetEvent`s for clips, sound definitions and music through its own `MessageCursor`s: switches what plays to reloaded data, and forgets what it remembered of a freed asset;
+4. follows the registry's `AssetEvent`s for clips, sound definitions and music through its own `MessageCursor`s: switches what plays to reloaded data (a definition saved onto another bus moves its loops there), forgets what it remembered of a failed asset whose file changed, and all it remembered of a freed one;
 5. steps the music player: a track that finished loading takes over;
 6. starts the plays that waited for their sounds (`start_waiting`): a loop starts as it was played, counting against its `per_frame`, a one-shot is refused, and a sound that failed ends its plays;
 7. releases the voices whose emitter went (despawned, disabled, taken away or put over);
