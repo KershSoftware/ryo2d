@@ -158,10 +158,17 @@ impl UserPreference {
 /// ```rust,ignore
 /// use ryo2d::prelude::*;
 ///
-/// // Load only volume settings from system.json
+/// // Load only the six volume settings from system.json
 /// EngineBuilder::new()
 ///     .title("My Game")
-///     .with_user_preferences([UserPreference::MasterVolume, UserPreference::MusicVolume, UserPreference::SfxVolume])
+///     .with_user_preferences([
+///         UserPreference::MasterVolume,
+///         UserPreference::MusicVolume,
+///         UserPreference::SfxVolume,
+///         UserPreference::UiVolume,
+///         UserPreference::VoiceVolume,
+///         UserPreference::AmbienceVolume,
+///     ])
 ///     .start_scene(GameScene::new())
 ///     .build()
 ///     .run()?;
@@ -1008,8 +1015,9 @@ impl SaveManager {
   /// Behaves like [`load_or_create_system`](Self::load_or_create_system) when
   /// system.json already exists. When creating a new file, only the JSON keys
   /// in `filter` are written (plus `env` when `defaults.env` isn't empty) - so a
-  /// volume-only filter produces a system.json with just `master_volume`,
-  /// `music_volume`, and `sfx_volume`.
+  /// filter of the six volumes produces a system.json with just
+  /// `master_volume`, `music_volume`, `sfx_volume`, `ui_volume`,
+  /// `voice_volume` and `ambience_volume`.
   ///
   /// Returns the state as it loads from disk: keys the file doesn't hold get
   /// engine defaults.

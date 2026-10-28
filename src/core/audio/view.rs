@@ -1,8 +1,8 @@
 //! [`AudioView`]: the audio engine as a scene reaches it (`ctx.audio()`)
 
 use super::engine::AudioEngine;
-use super::{AudioClip, Sound, Voice, VolumeKind};
-use crate::core::asset::Handle;
+use super::{AudioClip, Mixer, Sound, Voice, VolumeKind};
+use crate::core::asset::{Assets, Handle};
 use crate::core::ecs::kernel::Mut;
 use crate::core::ecs::{Vec2, World};
 
@@ -126,6 +126,22 @@ impl<'w> AudioView<'w> {
   pub fn set_bus_volume(&mut self, bus: &str, db: f32) {
     if let Some(mut engine) = self.world.get_resource_mut::<AudioEngine>() {
       engine.set_bus_volume(bus, db);
+    }
+  }
+
+  /// Build the buses from `mixer`, made in code, in place of the game's
+  /// mixer file (a game with no file, such as one on the web, or a test).
+  /// It applies at the end of the frame as a saved file would: loops carry
+  /// on, at their position, on the new buses, and one-shots finish where
+  /// they are. A mixer that fails its check (a bus named twice, say) is
+  /// warned about and the buses stay as they are
+  pub fn set_mixer(&mut self, mixer: Mixer) {
+    let Some(mut mixers) = self.world.get_resource_mut::<Assets<Mixer>>() else {
+      return;
+    };
+    let mixer = mixers.add(mixer);
+    if let Some(mut engine) = self.world.get_resource_mut::<AudioEngine>() {
+      engine.set_mixer(Some(mixer));
     }
   }
 

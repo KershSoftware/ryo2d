@@ -42,11 +42,15 @@ use crate::core::audio::Mixer;
 ///   and default.
 /// - **Sends** go to send buses: a game's bus that another bus sends to.
 ///   A send bus plays no voices (a sound on it plays on its parent), has no
-///   buses under it, sends nowhere and takes no limit or pause settings. A
-///   bus cannot send to a bus under itself, and `master` sends nowhere. The
-///   send is taken after the bus's volume, and the send bus's return is
-///   heard at its own gain and that of every bus above it (their effects do
-///   not apply to it).
+///   buses under it, sends nowhere and takes no limit or pause settings;
+///   `master` sends nowhere. A send is taken after the sending bus's volume
+///   and carries the gains of the buses above the sender, so a return
+///   follows its sender's sliders: `voice/npc` sending to `sfx/reverb` goes
+///   quiet with the voice slider, not the sfx one. The return is heard at
+///   the send bus's own gain, then `master`'s. Only the send bus's own
+///   effects process it: kira mixes send buses into its output beside
+///   `master`'s track, not through it, so `master`'s effects (a limiter or
+///   compressor, say) do not reach returns.
 /// - **Pause and time scale**: `sfx`, `ambience` and `voice` pause with the
 ///   game, and `sfx` and `ambience` follow time scale; a game's bus does as
 ///   its parent unless it says.
@@ -56,8 +60,12 @@ use crate::core::audio::Mixer;
 /// A mistake fails the load with `AssetError::Decode`, naming the file and
 /// what is wrong; a reload that fails keeps the mix playing as it was. A
 /// saved mixer rebuilds the bus tree: one-shots finish on the old buses,
-/// and loops carry on, at their position, on the new ones. Every registry
-/// has it
+/// and loops carry on, at their position, on the new ones (a loop that
+/// cannot move is warned about once, and plays on where it was). The old
+/// buses keep the volumes they had, so a slider moved while a one-shot
+/// finishes there does not reach it; this is only while a reload is
+/// played out. A game with no file can build one in code with
+/// `ctx.audio().set_mixer(..)`. Every registry has it
 #[derive(Debug, Default, Clone, Copy)]
 pub struct MixerLoader;
 
@@ -242,10 +250,6 @@ mod tests {
       (
         r#"(buses: { "sfx/a": (sends: { "sfx/a": -6.0 }) })"#,
         "itself",
-      ),
-      (
-        r#"(buses: { "sfx": (sends: { "sfx/verb": -6.0 }), "sfx/verb": () })"#,
-        "under itself",
       ),
       (
         r#"(buses: { "sfx/a": (sends: { "sfx/verb": -6.0 }), "sfx/verb": (limit: 4) })"#,

@@ -27,7 +27,8 @@ use rand::{Rng, SeedableRng};
 
 use super::log::{AudioLog, AudioLogEntry, AudioLogKind};
 use super::mixer::{
-  BusReport, BusTree, GainLayers, MAX_BUS_DB, Output, PlannedBus, SEND_TRACK_CAPACITY, Tracks, plan,
+  BusReport, BusTree, GainLayers, MAX_BUS_DB, Output, PlannedBus, Route, SEND_TRACK_CAPACITY,
+  Tracks, plan,
 };
 use super::settings::{SILENCE_DB, VolumeSettings};
 use super::view::{PlayOptions, Playable};
@@ -106,17 +107,25 @@ impl Manager {
       internal_buffer_size: CHUNK_FRAMES,
       ..Default::default()
     };
-    if let Some(config) = buffer_frames.and_then(fixed_buffer_config) {
-      let mut fixed = settings();
-      let frames = config.buffer_size;
-      fixed.backend_settings.config = Some(config);
-      match AudioManager::<CpalBackend>::new(fixed) {
-        Ok(manager) => return Some(Manager::Device(manager)),
-        Err(error) => crate::engine_warn!(
-          module: "Audio",
-          "the audio device would not open with a buffer of {frames:?} ({error}); it opens with its default buffer"
-        ),
+    // kira restarts the stream with the same buffer when the default
+    // device changes; a new device that refuses it stops the sound
+    let fixed = buffer_frames
+      .filter(|&frames| frames > 0)
+      .map(fixed_buffer_config);
+    match fixed {
+      Some(Ok(Some((config, frames)))) => {
+        let mut fixed = settings();
+        fixed.backend_settings.config = Some(config);
+        match AudioManager::<CpalBackend>::new(fixed) {
+          Ok(manager) => return Some(Manager::Device(manager)),
+          Err(error) => {
+            crate::engine_warn!(module: "Audio", "{}", buffer_refused(frames, &error))
+          }
+        }
       }
+      Some(Err(message)) => crate::engine_warn!(module: "Audio", "{message}"),
+      // No device: the open below warns about that
+      Some(Ok(None)) | None => {}
     }
     match AudioManager::<CpalBackend>::new(settings()) {
       Ok(manager) => Some(Manager::Device(manager)),
@@ -180,26 +189,60 @@ fn capacities() -> Capacities {
   }
 }
 
-/// The default output device's stream config with its buffer fixed at
-/// `frames`, cut to the range the device reports; `None` for 0 frames, or
-/// with no device (the open that follows warns)
+/// A fixed buffer and its frames (cut to what the device supports)
 #[cfg(not(target_arch = "wasm32"))]
-fn fixed_buffer_config(frames: u32) -> Option<kira::backend::cpal::cpal::StreamConfig> {
+type FixedBuffer = (kira::backend::cpal::cpal::StreamConfig, u32);
+
+/// The default output device's stream config with its buffer fixed at
+/// `frames`; `Ok(None)` with no device (the open that follows warns), and
+/// the warning to give when its config cannot be read
+#[cfg(not(target_arch = "wasm32"))]
+fn fixed_buffer_config(frames: u32) -> Result<Option<FixedBuffer>, String> {
   use kira::backend::cpal::cpal::traits::{DeviceTrait, HostTrait};
-  if frames == 0 {
-    return None;
-  }
-  let device = kira::backend::cpal::cpal::default_host().default_output_device()?;
-  let supported = device.default_output_config().ok()?;
-  let mut config = supported.config();
-  config.buffer_size = fixed_buffer(frames, supported.buffer_size());
-  Some(config)
+  let Some(device) = kira::backend::cpal::cpal::default_host().default_output_device() else {
+    return Ok(None);
+  };
+  let supported = device
+    .default_output_config()
+    .map_err(|error| error.to_string());
+  buffer_config(frames, supported).map(Some)
 }
 
 /// The web's stream takes no buffer size
 #[cfg(target_arch = "wasm32")]
-fn fixed_buffer_config(_frames: u32) -> Option<kira::backend::cpal::cpal::StreamConfig> {
-  None
+fn fixed_buffer_config(
+  _frames: u32,
+) -> Result<Option<(kira::backend::cpal::cpal::StreamConfig, u32)>, String> {
+  Ok(None)
+}
+
+/// `supported` with its buffer fixed at `frames`, cut to its range, and the
+/// frames it holds; the warning to give when `supported` could not be read
+#[cfg(not(target_arch = "wasm32"))]
+fn buffer_config(
+  frames: u32,
+  supported: Result<kira::backend::cpal::cpal::SupportedStreamConfig, String>,
+) -> Result<FixedBuffer, String> {
+  use kira::backend::cpal::cpal::BufferSize;
+  let supported = supported.map_err(|error| {
+    format!(
+      "audio_buffer_frames = {frames} is not used: the audio device's configuration could not be read ({error}); it opens with its default buffer"
+    )
+  })?;
+  let mut config = supported.config();
+  config.buffer_size = fixed_buffer(frames, supported.buffer_size());
+  let held = match config.buffer_size {
+    BufferSize::Fixed(held) => held,
+    BufferSize::Default => frames,
+  };
+  Ok((config, held))
+}
+
+/// The warning when the device will not open with a buffer of `frames`
+fn buffer_refused(frames: u32, error: &dyn Display) -> String {
+  format!(
+    "the audio device would not open with a buffer of {frames} frames ({error}); it opens with its default buffer"
+  )
 }
 
 /// A fixed buffer of `frames`, cut to `supported`'s range when it has one
@@ -346,6 +389,8 @@ struct LiveVoice {
   loop_region: Option<Range<f64>>,
   /// The bus tree it plays on: the live one's, or a retired one's
   generation: u32,
+  /// As a loop, it could not move to a rebuilt tree: warned once
+  stuck_warned: bool,
 }
 
 /// The live voices, in the order they started (a retired voice's removal
@@ -756,8 +801,9 @@ impl AudioEngine {
     );
   }
 
-  /// Give each bus's kira track the volume its gain layers add up to, if it
-  /// changed, smoothed over [`MIN_FADE`], logging each change
+  /// Give each bus's kira track the volume its gain layers add up to, and
+  /// each send route the gains above its sender, where they changed,
+  /// smoothed over [`MIN_FADE`]; each bus's change is logged
   fn refresh_gains(&mut self) {
     for index in 0..self.buses.buses.len() {
       let volume = self.buses.kira_volume(index);
@@ -789,6 +835,23 @@ impl AudioEngine {
           rate: 1.0,
           fade: MIN_FADE,
         });
+      }
+    }
+    // The send routes, which carry the gains above their senders
+    for index in 0..self.buses.buses.len() {
+      for route in 0..self.buses.buses[index].sends.len() {
+        let Route { to, level, applied } = self.buses.buses[index].sends[route];
+        let volume = self.buses.route_volume(index, level);
+        if (volume - applied).abs() < GAIN_EPSILON {
+          continue;
+        }
+        let to = self.buses.send_id(to);
+        let bus = &mut self.buses.buses[index];
+        bus.sends[route].applied = volume;
+        if let (Some(to), Output::Track(Some(track))) = (to, &mut bus.output) {
+          // Every route was built with the track, so it exists
+          let _ = track.set_send(to, Decibels(volume), tween(MIN_FADE));
+        }
       }
     }
   }
@@ -878,7 +941,9 @@ impl AudioEngine {
   /// one-shots play out on the old tracks, which kira keeps until their
   /// sounds finish, and loops restart on the new ones at their position,
   /// crossfading over [`MIN_FADE`] (kira cannot move a sound between tracks,
-  /// and fixes a track's effects and sends when it builds it)
+  /// and fixes a track's effects and sends when it builds it). A retired
+  /// tree keeps the volumes it had: only `master`, on kira's main track,
+  /// still reaches what plays out there
   fn rebuild(&mut self, world: &World, mixer: &Mixer, server: Option<&AssetServer>) {
     let planned = plan(mixer);
     let (settings, volumes) = (&self.settings, &self.bus_volumes);
@@ -912,12 +977,17 @@ impl AudioEngine {
     // Dropping its handles retires the old tree: kira removes each track
     // once its sounds have finished
     drop(old);
+    // Every loop on a retired tree moves: this rebuild's, and any that
+    // could not move at an earlier one
     for index in 0..self.voices.live.len() {
       let live = &self.voices.live[index];
       let live_loop =
         live.looping && matches!(live.voice.state(), VoiceState::Playing | VoiceState::Paused);
-      if live.generation == retired && live_loop {
-        self.restart(world, index, server);
+      if live.generation != self.generation
+        && live_loop
+        && let Err(why) = self.restart(world, index, server)
+      {
+        self.warn_stuck(index, &why, server);
       }
     }
     self.refresh_gains();
@@ -934,14 +1004,20 @@ impl AudioEngine {
 
   /// Start live voice `index` again on its bus's track, where it is, and
   /// crossfade from the old playback over [`MIN_FADE`]; a paused voice
-  /// stays paused. If it cannot start, it plays on where it was
-  fn restart(&mut self, world: &World, index: usize, server: Option<&AssetServer>) {
-    let Some(clips) = world.get_resource::<Assets<AudioClip>>() else {
-      return;
-    };
+  /// stays paused. If it cannot start, it plays on where it was, and why is
+  /// returned
+  fn restart(
+    &mut self,
+    world: &World,
+    index: usize,
+    server: Option<&AssetServer>,
+  ) -> Result<(), String> {
     let live = &self.voices.live[index];
-    let Some(clip) = clips.get(&live.clip) else {
-      return;
+    let Some(clip) = world
+      .get_resource::<Assets<AudioClip>>()
+      .and_then(|clips| clips.get(&live.clip))
+    else {
+      return Err("its clip is not in the store".into());
     };
     let (region, loop_region) = (live.region.clone(), live.loop_region.clone());
     let start = Start {
@@ -964,9 +1040,9 @@ impl AudioEngine {
         let live = &self.voices.live[index];
         let (clip, version) = (live.clip.clone(), live.clip_version);
         self.warn_undecodable(&clip, version, &error, server);
-        return;
+        return Err(format!("its clip could not be opened again: {error}"));
       }
-      Err(Refusal::Full) => return,
+      Err(Refusal::Full) => return Err("its new bus has no room".into()),
     };
     if paused {
       playback.pause(tween(MIN_FADE));
@@ -977,6 +1053,27 @@ impl AudioEngine {
     live.generation = self.generation;
     self.record(index, AudioLogKind::Stop, MIN_FADE, server);
     self.record(index, AudioLogKind::Start, MIN_FADE, server);
+    Ok(())
+  }
+
+  /// Warn, once for live voice `index`, that its loop could not move to the
+  /// rebuilt buses. It plays on where it was: a retired tree keeps the
+  /// volumes it had, so the sliders no longer reach it (hot reload only)
+  fn warn_stuck(&mut self, index: usize, why: &str, server: Option<&AssetServer>) {
+    let Some(live) = self.voices.live.get_mut(index) else {
+      return;
+    };
+    if std::mem::replace(&mut live.stuck_warned, true) {
+      return;
+    }
+    let name = live
+      .sound
+      .and_then(|id| server.and_then(|server| server.path(id)))
+      .map_or_else(|| source_name(&live.clip, server), |path| path.to_string());
+    crate::engine_warn!(
+      module: "Audio",
+      "{name}: the loop could not move to the rebuilt buses ({why}); it plays on as it was, at the old buses' volumes, until it stops"
+    );
   }
 
   /// The live voices on `bus` and every bus under it (0 for no such bus)
@@ -1114,6 +1211,7 @@ impl AudioEngine {
       region: request.region.cloned(),
       loop_region: request.loop_region.cloned(),
       generation: self.generation,
+      stuck_warned: false,
     });
     self.record(
       self.voices.live.len() - 1,
@@ -2204,6 +2302,28 @@ mod tests {
       fixed_buffer(256, &SupportedBufferSize::Unknown),
       BufferSize::Fixed(256),
       "a device that does not say takes it as given"
+    );
+  }
+
+  /// Review M4: the buffer setting's warnings name the frames asked for
+  #[test]
+  fn the_buffer_setting_s_warnings_name_its_frames() {
+    use kira::backend::cpal::cpal::{SampleFormat, SupportedBufferSize, SupportedStreamConfig};
+    let supported =
+      SupportedStreamConfig::new(2, 48_000, SupportedBufferSize::Unknown, SampleFormat::F32);
+    let config = buffer_config(256, Ok(supported));
+    let fixed = kira::backend::cpal::cpal::BufferSize::Fixed(256);
+    assert!(config.is_ok_and(|(config, frames)| config.buffer_size == fixed && frames == 256));
+    let unread = buffer_config(256, Err("the device is busy".to_string()));
+    let Err(message) = unread else {
+      panic!("a config that cannot be read is not used");
+    };
+    assert!(message.contains("audio_buffer_frames = 256"), "{message}");
+    assert!(message.contains("the device is busy"), "{message}");
+    let refused = buffer_refused(512, &"unsupported");
+    assert!(
+      refused.contains("512 frames") && !refused.contains("Fixed"),
+      "{refused}"
     );
   }
 

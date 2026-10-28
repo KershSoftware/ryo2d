@@ -13,7 +13,7 @@ use kira::effect::filter::{FilterBuilder, FilterMode};
 use kira::effect::reverb::ReverbBuilder;
 use kira::effect::{Effect, EffectBuilder};
 use kira::sound::SoundData;
-use kira::track::{SendTrackBuilder, SendTrackHandle, TrackBuilder, TrackHandle};
+use kira::track::{SendTrackBuilder, SendTrackHandle, SendTrackId, TrackBuilder, TrackHandle};
 use kira::{Decibels, PlaySoundError, ResourceLimitReached};
 use ron::extensions::Extensions;
 use serde::Deserialize;
@@ -37,6 +37,13 @@ pub const MIXER_PATH: &str = "audio/mixer.mixer.ron";
 /// effects, its sends to send buses, whether it pauses with the game and
 /// follows time scale, and its voice limit. With no buses it is the
 /// standard layout.
+///
+/// A send's return follows its sender's sliders (the send carries the
+/// gains of the buses above the sender), plays at the send bus's own gain
+/// and `master`'s, and passes only through the send bus's effects: kira
+/// mixes send buses beside `master`'s track, so `master`'s effects do not
+/// process returns. A mixer made in code is applied with
+/// `ctx.audio().set_mixer(mixer)`.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Mixer {
   /// The buses it adjusts or adds, in any order
@@ -56,8 +63,9 @@ pub struct BusDef {
   pub volume_db: f32,
   /// Its effects, applied in order to everything on it
   pub effects: Vec<EffectDef>,
-  /// The send buses it feeds, each at a level in dB, after its volume. A
-  /// bus another sends to is a send bus: it plays no voices of its own
+  /// The send buses it feeds, each at a level in dB, after its volume (and
+  /// with the gains of the buses above it). A bus another sends to is a send
+  /// bus: it plays no voices of its own
   pub sends: Vec<(String, f32)>,
   /// Whether its voices pause with the game; `None` keeps the standard
   /// bus's default (sfx, ambience and voice do), or its parent's
@@ -346,9 +354,6 @@ impl Mixer {
       if !self.has(target) {
         return Err(format!("it sends to {target:?}, which is not in the mixer"));
       }
-      if is_under(target, &bus.name) {
-        return Err(format!("it sends to {target:?}, a bus under itself"));
-      }
       if !(level.is_finite() && *level <= MAX_BUS_DB) {
         return Err(format!(
           "its send to {target:?} is at {level}, not a level in dB of at most +{MAX_BUS_DB}"
@@ -617,13 +622,6 @@ fn is_standard(name: &str) -> bool {
   name == "master" || STANDARD_BUSES.contains(&name)
 }
 
-/// Whether `bus` is under `ancestor` (not `ancestor` itself)
-fn is_under(bus: &str, ancestor: &str) -> bool {
-  bus
-    .strip_prefix(ancestor)
-    .is_some_and(|rest| rest.starts_with('/'))
-}
-
 /// `master`, a standard bus, or a bus under one, with no empty part
 pub(crate) fn check_bus_name(bus: &str) -> Result<(), String> {
   if bus == "master" {
@@ -873,8 +871,8 @@ pub(crate) struct Bus {
   pub(crate) output: Output,
   /// How many effects its track has
   pub(crate) effects: usize,
-  /// The send buses it feeds (their indices) and the levels in dB
-  pub(crate) sends: Vec<(usize, f32)>,
+  /// The send buses it feeds
+  pub(crate) sends: Vec<Route>,
   pub(crate) layers: GainLayers,
   /// The volume its kira track was last given, in dB (`master`'s goes to
   /// kira's main track)
@@ -885,6 +883,15 @@ pub(crate) struct Bus {
   pub(crate) limit: Option<u16>,
   /// A play was refused for want of kira's room on its track: warned once
   pub(crate) full_warned: bool,
+}
+
+/// One of a bus's sends: to send bus `to`, at the mixer's `level` in dB
+pub(crate) struct Route {
+  pub(crate) to: usize,
+  pub(crate) level: f32,
+  /// The volume kira's route was last given, in dB: `level` plus the
+  /// gains of the buses above the sender (see [`BusTree::route_volume`])
+  pub(crate) applied: f32,
 }
 
 /// Where a tree's tracks are made: kira's manager
@@ -945,12 +952,22 @@ impl BusTree {
         .sends
         .iter()
         .filter_map(|(target, level)| {
-          let target = plan.iter().position(|bus| bus.name == target)?;
-          plan[target].send.then_some((target, *level))
+          let to = plan.iter().position(|bus| bus.name == target)?;
+          plan[to].send.then_some(Route {
+            to,
+            level: *level,
+            applied: *level,
+          })
         })
         .collect();
     }
     let mut tree = BusTree { buses };
+    for index in 0..tree.buses.len() {
+      for route in 0..tree.buses[index].sends.len() {
+        let level = tree.buses[index].sends[route].level;
+        tree.buses[index].sends[route].applied = tree.route_volume(index, level);
+      }
+    }
     let Some(tracks) = tracks else {
       return tree;
     };
@@ -986,9 +1003,9 @@ impl BusTree {
       for effect in planned.def.map_or(&[][..], |def| &def.effects) {
         builder.add_built_effect(effect.build());
       }
-      for &(target, level) in &tree.buses[index].sends {
-        if let Some(Output::Send(Some(send))) = tree.buses.get(target).map(|bus| &bus.output) {
-          builder = builder.with_send(send.id(), Decibels(level));
+      for route in &tree.buses[index].sends {
+        if let Some(to) = tree.send_id(route.to) {
+          builder = builder.with_send(to, Decibels(route.applied));
         }
       }
       let track = match planned.parent {
@@ -1091,8 +1108,18 @@ impl BusTree {
     }
   }
 
-  /// What a voice on `bus` plays at: its gain and every bus's above it
+  /// What a voice on `bus` plays at: its gain and every bus's above it. A
+  /// send bus's return is at its own gain and `master`'s (kira mixes it into
+  /// its main track), after its senders' routes
   pub(crate) fn effective_db(&self, bus: usize) -> f32 {
+    if self.is_send(bus) {
+      let own = self.buses.get(bus).map_or(0.0, |bus| bus.layers.total());
+      let master = self
+        .buses
+        .first()
+        .map_or(0.0, |master| master.layers.total());
+      return add_db(own, master);
+    }
     let mut total = 0.0;
     let mut at = Some(bus);
     while let Some(index) = at {
@@ -1105,26 +1132,41 @@ impl BusTree {
     total
   }
 
-  /// The volume kira's track for `bus` takes: its gain, on `master` kira's
-  /// main track's. A send bus adds the gains of the buses above it but
-  /// `master`, as kira mixes its return into the main track, not under its
-  /// parent's track
+  /// The volume kira's track for `bus` takes: its gain (`master`'s goes on
+  /// kira's main track). A send bus's track takes only its own: what is
+  /// above its senders rides on their routes
   pub(crate) fn kira_volume(&self, bus: usize) -> f32 {
-    let Some(this) = self.buses.get(bus) else {
-      return 0.0;
+    self.buses.get(bus).map_or(0.0, |bus| bus.layers.total())
+  }
+
+  /// The volume of a send route from `sender` at `level` dB. kira takes a
+  /// send after the sender's own volume and before its parent's, so the
+  /// route carries the gains of the buses above the sender, but `master`'s,
+  /// which is on kira's main track and so over every return. A return thus
+  /// follows its sender's sliders, whichever send bus it reaches
+  pub(crate) fn route_volume(&self, sender: usize, level: f32) -> f32 {
+    let mut volume = if level <= SILENCE_DB {
+      SILENCE_DB
+    } else {
+      level
     };
-    let mut volume = this.layers.total();
-    if matches!(this.output, Output::Send(_)) {
-      let mut at = this.parent;
-      while let Some(index) = at.filter(|&index| index > 0) {
-        let Some(above) = self.buses.get(index) else {
-          break;
-        };
-        volume = add_db(volume, above.layers.total());
-        at = above.parent;
-      }
+    let mut at = self.buses.get(sender).and_then(|bus| bus.parent);
+    while let Some(index) = at.filter(|&index| index > 0) {
+      let Some(above) = self.buses.get(index) else {
+        break;
+      };
+      volume = add_db(volume, above.layers.total());
+      at = above.parent;
     }
     volume
+  }
+
+  /// The id of `bus`'s send track, if it is a send bus kira made
+  pub(crate) fn send_id(&self, bus: usize) -> Option<SendTrackId> {
+    match self.buses.get(bus).map(|bus| &bus.output) {
+      Some(Output::Send(Some(send))) => Some(send.id()),
+      _ => None,
+    }
   }
 
   /// The send tracks, taken out: a retired tree's are kept while its
@@ -1154,7 +1196,12 @@ impl BusTree {
         sends: bus
           .sends
           .iter()
-          .map(|&(target, level)| (self.name(target).to_string(), level))
+          .map(|route| (self.name(route.to).to_string(), route.level))
+          .collect(),
+        send_gains: bus
+          .sends
+          .iter()
+          .map(|route| (self.name(route.to).to_string(), route.applied))
           .collect(),
         base_db: bus.layers.base,
         setting_db: bus.layers.setting,
@@ -1184,6 +1231,9 @@ pub struct BusReport {
   pub effects: usize,
   /// The send buses it feeds, and at what level in dB
   pub sends: Vec<(String, f32)>,
+  /// Each send's route gain in dB, as kira was given it: its level plus the
+  /// gains of the buses above this one, but `master`'s
+  pub send_gains: Vec<(String, f32)>,
   /// Its gain layers in dB: the mixer's volume (or the game's,
   /// `set_bus_volume`), the player's setting, the snapshot's and the duck's
   pub base_db: f32,
@@ -1206,7 +1256,8 @@ mod tests {
   use kira::sound::PlaybackState;
 
   use super::*;
-  use crate::core::asset::{Assets, AssetsView, MemorySource};
+  use crate::core::asset::{Assets, AssetsView, AudioClipSettings, ClipMode, MemorySource};
+  use crate::core::audio::ClipData;
   use crate::core::audio::engine::MIN_FADE;
   use crate::core::audio::{
     AudioClip, AudioEngine, AudioLogEntry, AudioLogKind, AudioView, Sound, SoundClip, Voice,
@@ -1339,10 +1390,13 @@ mod tests {
       close(footsteps.effective_db, -3.0 + sfx + master),
       "{footsteps:?}"
     );
-    // A send bus under sfx takes it too, though kira's send tracks are not
-    // under sfx's track
-    let reverb = bus(&world, "sfx/reverb");
-    assert!(close(reverb.effective_db, sfx + master), "{reverb:?}");
+    // Its send to the reverb is taken after its own volume, so the route
+    // carries the gains above it: sfx's (master's is on the main track)
+    assert_eq!(footsteps.send_gains.len(), 1);
+    assert!(
+      close(footsteps.send_gains[0].1, -12.0 + sfx),
+      "{footsteps:?}"
+    );
     // And a sound on the custom bus plays there
     let clip = clip(&mut world, 1.0);
     let sound = looping(&mut world, clip, "sfx/footsteps");
@@ -1639,6 +1693,163 @@ mod tests {
       0,
       "nothing was warned about"
     );
+  }
+
+  /// Review I1: kira takes a send after the sender's own volume, before its
+  /// parent's, so a return follows the sender's buses, not the send bus's
+  #[test]
+  fn a_send_return_follows_its_senders_buses() {
+    let text = r#"(buses: {
+      "voice/npc": (sends: { "sfx/reverb": -6.0 }),
+      "sfx/steps": (sends: { "sfx/reverb": -3.0 }),
+      "sfx/reverb": (volume: -2.0, effects: [Reverb(mix: 1.0)]),
+    })"#;
+    let (mut world, _files) = world_with_mixer(text);
+    let send_gain = |world: &World, from: &str| {
+      let sender = bus(world, from);
+      match sender.send_gains.as_slice() {
+        [(to, gain)] if to == "sfx/reverb" => *gain,
+        other => panic!("{from}: {other:?}"),
+      }
+    };
+    // The voice slider reaches the NPC's reverb
+    AudioView::new(&mut world).set_volume_setting(VolumeKind::Voice, 0.5);
+    assert!(close(send_gain(&world, "voice/npc"), -6.0 - 12.04));
+    AudioView::new(&mut world).set_volume_setting(VolumeKind::Voice, 0.0);
+    assert_eq!(send_gain(&world, "voice/npc"), -60.0, "silent");
+    // The sfx slider does not scale it: the reverb's track has only its
+    // own gain
+    AudioView::new(&mut world).set_volume_setting(VolumeKind::Voice, 1.0);
+    AudioView::new(&mut world).set_volume_setting(VolumeKind::Sfx, 0.5);
+    assert!(close(send_gain(&world, "voice/npc"), -6.0));
+    let reverb = bus(&world, "sfx/reverb");
+    assert_eq!(reverb.gain_db, -2.0);
+    let master = volume_to_db(VolumeKind::Master.default_value());
+    assert!(close(reverb.effective_db, -2.0 + master), "{reverb:?}");
+    // A sibling's send still follows the parent they share
+    assert!(close(send_gain(&world, "sfx/steps"), -3.0 - 12.04));
+    // The game's volume on a bus above the sender reaches its route too
+    AudioView::new(&mut world).set_bus_volume("sfx", -4.0);
+    assert!(close(send_gain(&world, "sfx/steps"), -3.0 - 4.0 - 12.04));
+    // A bus may send to a send bus under itself: its own volume is in the
+    // signal once, and nothing above it is added twice
+    let text = r#"(buses: {
+      "sfx": (volume: -5.0, sends: { "sfx/room": -6.0 }),
+      "sfx/room": (),
+    })"#;
+    let (world, _files) = world_with_mixer(text);
+    let sfx = bus(&world, "sfx");
+    assert_eq!(sfx.send_gains, [("sfx/room".to_string(), -6.0)], "{sfx:?}");
+  }
+
+  /// Review M5: a mixer made in code, for a game with no file (the web)
+  #[test]
+  fn a_mixer_made_in_code_rebuilds_the_buses_as_a_reload_would() {
+    let mut world = audio_world();
+    let long = clip(&mut world, 2.0);
+    let sound = looping(&mut world, long, "sfx");
+    let short = clip(&mut world, 2.0);
+    let (looped, shot) = {
+      let mut audio = AudioView::new(&mut world);
+      (audio.play(&sound), audio.play(&short))
+    };
+    audio_step(&mut world, FRAME);
+    let before = log(&world).len();
+    let sfx = BusDef {
+      volume_db: -2.0,
+      ..BusDef::new("sfx")
+    };
+    let coded = BusDef {
+      volume_db: -4.0,
+      ..BusDef::new("sfx/coded")
+    };
+    AudioView::new(&mut world).set_mixer(Mixer {
+      buses: vec![sfx, coded],
+      ..Default::default()
+    });
+    audio_step(&mut world, FRAME);
+    assert_eq!(bus(&world, "sfx").base_db, -2.0);
+    assert_eq!(bus(&world, "sfx/coded").base_db, -4.0);
+    let after = log(&world).split_off(before);
+    let of = |voice: &Voice| -> Vec<(AudioLogKind, Duration)> {
+      after
+        .iter()
+        .filter(|entry| entry.voice == voice.id())
+        .map(|entry| (entry.kind, entry.fade))
+        .collect()
+    };
+    assert_eq!(
+      of(&looped),
+      [
+        (AudioLogKind::Stop, MIN_FADE),
+        (AudioLogKind::Start, MIN_FADE)
+      ]
+    );
+    assert_eq!(of(&shot), []);
+    // One that fails its check is warned about, and changes nothing
+    AudioView::new(&mut world).set_mixer(Mixer {
+      buses: vec![
+        BusDef::new("sfx/coded-twice-unique"),
+        BusDef::new("sfx/coded-twice-unique"),
+      ],
+      ..Default::default()
+    });
+    audio_step(&mut world, FRAME);
+    assert_eq!(bus(&world, "sfx/coded").base_db, -4.0);
+    assert_eq!(
+      warnings(|message| message.contains("\"sfx/coded-twice-unique\" twice")),
+      1
+    );
+  }
+
+  /// Review M3: a loop that cannot start on the rebuilt buses (its clip's
+  /// bytes went bad after it started) plays on where it was, warned about
+  /// once, and is tried again at the next rebuild
+  #[test]
+  fn a_loop_that_cannot_move_to_the_rebuilt_buses_warns_once_and_plays_on() {
+    let tone = match std::fs::read(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/tests/fixtures/audio/tone.wav"
+    )) {
+      Ok(bytes) => bytes,
+      Err(error) => panic!("tone.wav: {error}"),
+    };
+    let (mut world, files) = world_with_mixer(MIXER);
+    files.insert("stuck-loop-unique.wav", tone);
+    let settings = AudioClipSettings {
+      mode: ClipMode::Stream,
+    };
+    let clip = match AssetsView::new(&mut world)
+      .load_now_with::<AudioClip, _>("stuck-loop-unique.wav", settings)
+    {
+      Ok(clip) => clip,
+      Err(error) => panic!("{}", error.report()),
+    };
+    let sound = looping(&mut world, clip.clone(), "sfx");
+    let voice = AudioView::new(&mut world).play(&sound);
+    audio_step(&mut world, FRAME);
+    assert!(voice.is_playing(), "{voice:?}");
+    if let Some(clip) = world.resource_mut::<Assets<AudioClip>>().get_mut(&clip) {
+      let garbage: std::sync::Arc<[u8]> = std::sync::Arc::from(&b"not audio at all"[..]);
+      *clip = AudioClip::new(ClipData::Encoded(garbage), Duration::from_secs(1), 22_050);
+    }
+    for volume in ["-9.0", "-10.0"] {
+      let text = MIXER.replace("volume: -6.0", &format!("volume: {volume}"));
+      files.insert(MIXER_PATH, text);
+      world.resource::<AssetServer>().reload(MIXER_PATH);
+      let wanted: f32 = volume.parse().unwrap_or_default();
+      let start = Instant::now();
+      while bus(&world, "sfx").base_db != wanted {
+        assert!(start.elapsed() < Duration::from_secs(5), "the reload lands");
+        audio_step(&mut world, Duration::from_millis(1));
+        std::thread::sleep(Duration::from_millis(1));
+      }
+    }
+    assert!(voice.is_playing(), "it plays on: {voice:?}");
+    let stuck = warnings(|message| {
+      message.starts_with("stuck-loop-unique.wav:") && message.contains("rebuilt buses")
+    });
+    assert_eq!(stuck, 1);
   }
 
   fn warnings(matching: impl Fn(&str) -> bool) -> usize {
