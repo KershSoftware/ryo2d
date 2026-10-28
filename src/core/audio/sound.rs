@@ -85,7 +85,8 @@ pub struct Sound {
   /// to layer in one frame
   pub per_frame: u8,
   /// It loops until stopped: over each clip's `loop_region`, or the whole
-  /// clip (its `region`)
+  /// clip (its `region`). A loop played while it is still loading waits for
+  /// it, and starts once it is ready
   pub looping: bool,
   /// Each play fades in over this
   pub fade_in: Duration,
@@ -1213,27 +1214,214 @@ mod tests {
     );
   }
 
+  /// Step, letting the workers load, until `done`
+  fn step_until(world: &mut World, done: impl Fn(&World) -> bool) {
+    for _ in 0..500 {
+      if done(world) {
+        return;
+      }
+      audio_step(world, Duration::from_millis(10));
+      std::thread::sleep(Duration::from_millis(2));
+    }
+    assert!(done(world), "it never happened");
+  }
+
+  fn ready(world: &World, sound: &Handle<Sound>) -> bool {
+    world.resource::<AssetServer>().is_ready(sound)
+  }
+
+  /// A loop played while its sound loads waits as a voice that reports
+  /// playing, with what the game does to it meanwhile, and starts with its
+  /// fade-in once the sound is ready
   #[test]
-  fn playing_an_unready_sound_is_a_stopped_voice() {
+  fn a_loop_played_while_loading_starts_when_ready() {
+    let files = MemorySource::new();
+    files.insert(
+      "sfx/rain-waits.sound.ron",
+      r#"(clips: [(path: "sfx/rain-waits.wav")], looping: true, volume: -6.0, fade_in: 0.2)"#,
+    );
+    files.insert("sfx/rain-waits.wav", tone());
+    let mut world = audio_world_over(files);
+    let sound = AssetsView::new(&mut world).load::<Sound>("sfx/rain-waits.sound.ron");
+    let rain = play(&mut world, &sound);
+    assert!(rain.is_playing(), "it waits, playing: {rain:?}");
+    assert_ne!(rain.id(), 0);
+    rain.set_volume(-3.0);
+    assert!(of_kind(&world, AudioLogKind::Start).is_empty());
+    step_until(&mut world, |world| ready(world, &sound));
+    audio_step(&mut world, FRAME);
+    let starts = of_kind(&world, AudioLogKind::Start);
+    let [start] = &starts[..] else {
+      panic!("one start: {:#?}", log(&world));
+    };
+    assert_eq!(start.voice, rain.id(), "its voice is the one played");
+    assert_eq!(start.sound, "sfx/rain-waits.sound.ron");
+    assert_eq!(start.fade, Duration::from_millis(200), "with its fade-in");
+    assert_eq!(start.gain_db, -9.0, "with the game's change on top");
+    assert!(rain.is_playing(), "{rain:?}");
+    assert_eq!(rain.pick().map(|pick| pick.clip_index), Some(0));
+    for _ in 0..10 {
+      audio_step(&mut world, FRAME);
+    }
+    assert!(rain.is_playing(), "it loops: {rain:?}");
+    assert_eq!(AudioView::new(&mut world).voices_on("sfx"), 1);
+  }
+
+  /// A waiting loop paused by the game starts paused, silent, and its
+  /// resume takes its fade-in; one that starts while the game is paused is
+  /// held as any voice on its bus is
+  #[test]
+  fn a_waiting_loop_keeps_its_pause_and_the_game_s() {
+    let files = MemorySource::new();
+    files.insert(
+      "sfx/hum-waits.sound.ron",
+      r#"(clips: [(path: "sfx/hum-waits.wav")], looping: true, fade_in: 0.1)"#,
+    );
+    files.insert("sfx/hum-waits.wav", tone());
+    let mut world = audio_world_over(files);
+    let sound = AssetsView::new(&mut world).load::<Sound>("sfx/hum-waits.sound.ron");
+    let paused = play(&mut world, &sound);
+    paused.pause();
+    audio_step(&mut world, Duration::ZERO);
+    assert!(!paused.is_playing() && !paused.is_stopped(), "{paused:?}");
+    let held = play(&mut world, &sound);
+    world.resource_mut::<crate::core::time::Time>().game.pause();
+    step_until(&mut world, |world| ready(world, &sound));
+    audio_step(&mut world, FRAME);
+    let engine = world.resource::<AudioEngine>();
+    use kira::sound::PlaybackState;
+    assert_eq!(
+      engine.voice_playback(paused.id()),
+      Some(PlaybackState::Paused)
+    );
+    assert_eq!(
+      engine.voice_playback(held.id()),
+      Some(PlaybackState::Paused)
+    );
+    assert!(held.is_playing(), "a hold leaves it playing: {held:?}");
+    world
+      .resource_mut::<crate::core::time::Time>()
+      .game
+      .resume();
+    paused.resume();
+    audio_step(&mut world, FRAME);
+    let resumes: Vec<(u32, Duration)> = of_kind(&world, AudioLogKind::Resume)
+      .iter()
+      .filter(|entry| entry.voice != 0)
+      .map(|entry| (entry.voice, entry.fade))
+      .collect();
+    let fade = Duration::from_millis(100);
+    assert!(resumes.contains(&(paused.id(), fade)), "{resumes:?}");
+    assert!(resumes.contains(&(held.id(), fade)), "{resumes:?}");
+  }
+
+  /// A loop whose sound fails to load ends, with one warning, which a play
+  /// after does not repeat
+  #[test]
+  fn a_loop_whose_load_fails_ends_with_one_warning() {
+    let files = MemorySource::new();
+    files.insert(
+      "sfx/never-waits.sound.ron",
+      r#"(clips: [(path: "sfx/never-there.wav")], looping: true)"#,
+    );
+    let mut world = audio_world_over(files);
+    let sound = AssetsView::new(&mut world).load::<Sound>("sfx/never-waits.sound.ron");
+    let waiting = play(&mut world, &sound);
+    assert!(waiting.is_playing(), "it waits: {waiting:?}");
+    step_until(&mut world, |world| {
+      world.resource::<AssetServer>().state(&sound).is_failed()
+    });
+    audio_step(&mut world, FRAME);
+    assert!(waiting.is_stopped(), "{waiting:?}");
+    assert!(play(&mut world, &sound).is_stopped());
+    audio_step(&mut world, FRAME);
+    assert!(of_kind(&world, AudioLogKind::Start).is_empty());
+    // The registry's, saying why: the engine adds none
+    let about_it = warnings(|message| message.contains("sfx/never-waits.sound.ron"));
+    assert_eq!(about_it, 1);
+  }
+
+  /// A waiting loop belongs to the scene that played it: the scene's exit
+  /// ends it, and it never starts
+  #[test]
+  fn a_waiting_loop_leaves_with_its_scene() {
+    let files = MemorySource::new();
+    files.insert(
+      "sfx/bed-waits.sound.ron",
+      r#"(clips: [(path: "sfx/bed-waits.wav")], looping: true)"#,
+    );
+    files.insert("sfx/bed-waits.wav", tone());
+    let mut world = audio_world_over(files);
+    let sound = AssetsView::new(&mut world).load::<Sound>("sfx/bed-waits.sound.ron");
+    let (bed, kept) = crate::core::audio::in_scene(&mut world, 7, |world| {
+      let persist = PlayOptions {
+        persist: true,
+        ..Default::default()
+      };
+      let bed = play(world, &sound);
+      audio_step(world, Duration::ZERO);
+      (bed, play_with(world, &sound, persist))
+    });
+    crate::core::audio::release_scene(&mut world, 7);
+    assert!(bed.is_stopped(), "{bed:?}");
+    step_until(&mut world, |world| ready(world, &sound));
+    audio_step(&mut world, FRAME);
+    let starts: Vec<u32> = of_kind(&world, AudioLogKind::Start)
+      .iter()
+      .map(|entry| entry.voice)
+      .collect();
+    assert_eq!(starts, [kept.id()], "only the persistent one starts");
+    assert!(bed.is_stopped(), "{bed:?}");
+  }
+
+  /// A one-shot played while its sound loads would only be late: it is
+  /// refused (a clip at once, a definition once it is known to be a
+  /// one-shot), logged with why, and warned about once per sound
+  #[test]
+  fn a_one_shot_played_while_loading_is_refused_and_logged() {
     let files = MemorySource::new();
     files.insert(
       "sfx/later.sound.ron",
       r#"(clips: [(path: "sfx/later.wav")])"#,
     );
     files.insert("sfx/later.wav", tone());
+    files.insert("sfx/later-bare.wav", tone());
     let mut world = audio_world_over(files);
     let sound = AssetsView::new(&mut world).load::<Sound>("sfx/later.sound.ron");
+    let bare = AssetsView::new(&mut world).load::<AudioClip>("sfx/later-bare.wav");
     let early = play(&mut world, &sound);
-    assert!(early.is_stopped());
-    assert_eq!(early.id(), 0);
-    assert!(log(&world).is_empty(), "{:#?}", log(&world));
-    for _ in 0..500 {
-      if world.resource::<AssetServer>().is_ready(&sound) {
-        break;
-      }
-      audio_step(&mut world, Duration::from_millis(10));
-      std::thread::sleep(Duration::from_millis(2));
-    }
+    let (clip_early, clip_again) = {
+      let mut audio = AudioView::new(&mut world);
+      (audio.play(&bare), audio.play(&bare))
+    };
+    assert!(clip_early.is_stopped() && clip_again.is_stopped());
+    let refused = of_kind(&world, AudioLogKind::Refused);
+    assert_eq!(refused.len(), 2, "{refused:#?}");
+    assert!(
+      refused
+        .iter()
+        .all(|entry| entry.source == "sfx/later-bare.wav" && entry.reason.contains("loading")),
+      "{refused:#?}"
+    );
+    step_until(&mut world, |world| ready(world, &sound));
+    audio_step(&mut world, FRAME);
+    assert!(early.is_stopped(), "{early:?}");
+    let refused = of_kind(&world, AudioLogKind::Refused);
+    let about_sound: Vec<&AudioLogEntry> = refused
+      .iter()
+      .filter(|entry| entry.sound == "sfx/later.sound.ron")
+      .collect();
+    assert_eq!(about_sound.len(), 1, "{refused:#?}");
+    assert!(about_sound[0].reason.contains("loading"));
+    assert!(of_kind(&world, AudioLogKind::Start).is_empty());
+    let warned = |path: &str| {
+      let named = format!("{path}:");
+      warnings(|message| message.starts_with(&named) && message.contains("still loading"))
+    };
+    let once = usize::from(cfg!(debug_assertions));
+    assert_eq!(warned("sfx/later-bare.wav"), once);
+    assert_eq!(warned("sfx/later.sound.ron"), once);
+    // Loaded, it plays
     let voice = play(&mut world, &sound);
     assert!(voice.is_playing(), "{voice:?}");
     let start = last(&world);

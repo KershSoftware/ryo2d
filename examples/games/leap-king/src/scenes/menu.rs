@@ -19,41 +19,27 @@ fn generate_room_code() -> String {
 /// The rain, from the menu on: a looping sound on the ambience bus that
 /// outlives the menu (`persist`). Its definition is held for the session, so
 /// a saved `rain.sound.ron` retunes the loop, and it loads off the main
-/// thread (the clip is 24 MB): the menu starts the loop once it has loaded,
-/// once a session. One that does not load stays silent (the registry warns)
+/// thread (the clip is 24 MB): the loop is played once a session, as the
+/// menu first enters, and starts once it has loaded. One that does not load
+/// stays silent (the registry warns)
 #[derive(Resource)]
 struct Rain {
-  sound: Handle<Sound>,
-  started: bool,
+  _sound: Handle<Sound>,
 }
 
 impl Rain {
-  /// Start loading the rain, once a session
-  fn load(ctx: &mut SceneContext) {
-    if !ctx.world.contains_resource::<Rain>() {
-      let sound = ctx.assets().load::<Sound>("rain.sound.ron");
-      ctx.world.insert_resource(Rain {
-        sound,
-        started: false,
-      });
-    }
-  }
-
-  /// Start the loop once the rain has loaded, unless it has started
+  /// Load the rain and play it, once a session
   fn start(ctx: &mut SceneContext) {
-    let sound = match ctx.world.get_resource::<Rain>() {
-      Some(rain) if !rain.started => rain.sound.clone(),
-      _ => return,
-    };
-    if !ctx.assets().is_ready(&sound) {
+    if ctx.world.contains_resource::<Rain>() {
       return;
     }
+    let sound = ctx.assets().load::<Sound>("rain.sound.ron");
     let persist = PlayOptions {
       persist: true,
       ..Default::default()
     };
     ctx.audio().play_with(&sound, persist);
-    ctx.world.resource_mut::<Rain>().started = true;
+    ctx.world.insert_resource(Rain { _sound: sound });
   }
 }
 
@@ -283,12 +269,11 @@ impl Scene for MenuScene {
     self.spawn_rain(ctx);
 
     // The rain starts once it has loaded
-    Rain::load(ctx);
+    Rain::start(ctx);
   }
 
   fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
     self.elapsed_time += dt;
-    Rain::start(ctx);
 
     // Animate fairy lights
     let t = self.elapsed_time;

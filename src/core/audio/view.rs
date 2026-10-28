@@ -69,7 +69,7 @@ pub struct PlayOptions {
 ///
 ///   fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
 ///     if ctx.input.key_pressed(KeyCode::Space) {
-///       // A sound still loading plays nothing
+///       // A one-shot still loading plays nothing
 ///       ctx.audio().play(&self.0);
 ///     }
 ///     SceneAction::Continue
@@ -91,10 +91,20 @@ impl<'w> AudioView<'w> {
   /// Play `sound` (`&handle`, of a [`Sound`] or an [`AudioClip`]) and return
   /// its [`Voice`], which belongs to the scene playing it (a loop, or a
   /// paused one-shot, stops as the scene exits; see
-  /// [`PlayOptions::persist`]). A sound that has not
-  /// loaded yet, or failed to (warned about once), plays nothing, and a play
-  /// its cooldown, its [`per_frame`](Sound::per_frame) or a voice limit
-  /// refuses starts nothing: the voice returned is already stopped
+  /// [`PlayOptions::persist`]).
+  ///
+  /// A loop played while its sound loads waits for it: its voice reports
+  /// playing, takes what the game does to it, and starts with its fade-in
+  /// once the sound is ready (or ends if it fails to load, which the
+  /// registry warns about once), and its scene's exit ends it as it does
+  /// any loop. A definition
+  /// still loading is not known to loop until it lands, so its play waits
+  /// either way, and a one-shot is refused then. A one-shot played while its
+  /// sound loads would only be late, so it is refused (logged, and warned
+  /// about once in a debug build), as is a play of a sound that failed to
+  /// load (warned about once). A play its cooldown, its
+  /// [`per_frame`](Sound::per_frame) or a voice limit refuses starts
+  /// nothing. A refused play's voice is already stopped
   pub fn play<'a>(&mut self, sound: impl Into<Playable<'a>>) -> Voice {
     self.play_with(sound, PlayOptions::default())
   }

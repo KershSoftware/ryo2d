@@ -77,6 +77,11 @@ const VOICE_CAPACITY: usize = 128;
 const GAIN_RANGE: (f32, f32) = (-60.0, 24.0);
 /// A voice's own pitch, in semitones either way
 const PITCH_RANGE: f32 = 48.0;
+/// The most the game's change to a voice's gain may be, either way: the
+/// whole of its range
+const GAIN_SPAN: f32 = GAIN_RANGE.1 - GAIN_RANGE.0;
+/// The most the game's change to a voice's pitch may be, either way
+const PITCH_SPAN: f32 = 2.0 * PITCH_RANGE;
 /// A bus gain change smaller than this (dB) is not sent to kira
 const GAIN_EPSILON: f32 = 1e-4;
 /// A cutoff change smaller than this (Hz) is not sent to kira
@@ -827,6 +832,24 @@ struct Victim {
   fade: Duration,
 }
 
+/// A play of a sound definition still loading. Until it lands it is not
+/// known to loop, so every such play waits as a voice that reports playing:
+/// once the sound is ready, a loop starts as it was played and a one-shot
+/// is refused
+struct Pending {
+  voice: Voice,
+  sound: Handle<Sound>,
+  options: PlayOptions,
+  /// The scene that played it, which ends it as it exits; `None` for the
+  /// engine's own
+  scope: Option<u64>,
+  /// Played as one of the UI theme's sounds
+  ui: bool,
+  /// What the game set on it meanwhile (`Voice::set_volume`, `set_pitch`)
+  game_db: f32,
+  game_pitch: f32,
+}
+
 /// One play, resolved from a definition (or a bare clip's empty one)
 struct Request<'a> {
   sound: Option<AssetId<Sound>>,
@@ -859,6 +882,12 @@ struct Request<'a> {
   emitter: Option<Entity>,
   /// The engine's, not the playing scene's
   persist: bool,
+  /// The voice it starts as: one that waited for its sound to load (it is
+  /// not counted against its `per_frame` again); a new one when `None`
+  voice: Option<Voice>,
+  /// The game's changes to its gain and pitch, made while it waited
+  game_db: f32,
+  game_pitch: f32,
 }
 
 impl<'a> Request<'a> {
@@ -887,6 +916,9 @@ impl<'a> Request<'a> {
       spatial: None,
       emitter: None,
       persist: options.persist,
+      voice: None,
+      game_db: 0.0,
+      game_pitch: 0.0,
     }
   }
 
@@ -926,6 +958,9 @@ impl<'a> Request<'a> {
       spatial: sound.spatial,
       emitter: None,
       persist: options.persist,
+      voice: None,
+      game_db: 0.0,
+      game_pitch: 0.0,
     })
   }
 }
@@ -996,6 +1031,8 @@ const REFUSED_UNDECODABLE: &str = "undecodable: the clip's stream could not be d
 const REFUSED_LOCKED: &str =
   "locked: the audio waits for the player's first gesture, and a one-shot does not wait";
 const REFUSED_UNLOCK: &str = "unlock: the loop could not start at the player's first gesture";
+const REFUSED_LOADING: &str =
+  "loading: a one-shot played while its sound loads would only be late (a loop waits for it)";
 
 /// Why a play did not start
 enum Refusal {
@@ -1108,6 +1145,11 @@ pub struct AudioEngine {
   /// The voices each definition (or clip played directly) started this
   /// frame, for their `per_frame`. Kept to reuse
   frame_starts: Vec<(UntypedAssetId, u8)>,
+  /// Plays of definitions still loading, waiting to start
+  pending: Vec<Pending>,
+  /// Definitions and clips a one-shot was played of while they loaded,
+  /// warned about once (debug builds)
+  warned_loading: FastSet<UntypedAssetId>,
   /// The player's six volume settings
   settings: VolumeSettings,
   /// The volumes the game set on buses (`set_bus_volume`), in dB, by name:
@@ -1294,6 +1336,8 @@ impl AudioEngine {
       warned_flat: FastSet::default(),
       victims: Vec::new(),
       frame_starts: Vec::new(),
+      pending: Vec::new(),
+      warned_loading: FastSet::default(),
       settings,
       bus_volumes: FastMap::default(),
       warned_volumes: FastSet::default(),
@@ -1375,6 +1419,7 @@ impl AudioEngine {
       + self.undecodable.len()
       + self.music.warned.len()
       + self.music.warned_buses.len()
+      + self.warned_loading.len()
   }
 
   /// Count the frames every stream started from now on decodes (tests)
@@ -1454,6 +1499,14 @@ impl AudioEngine {
         self.release_voice(index, server);
       }
     }
+    // Its plays still waiting for their sounds never start
+    self.pending.retain(|pending| {
+      let leaves = pending.scope == Some(scope);
+      if leaves {
+        pending.voice.set_state(VoiceState::Stopped);
+      }
+      !leaves
+    });
   }
 
   /// Live voice `index`'s owner is gone (its scene exited, or its emitter's
@@ -2233,6 +2286,7 @@ impl AudioEngine {
           AssetEvent::Removed { id } => {
             self.undecodable.remove(id);
             self.warned_flat.remove(&id.untyped());
+            self.warned_loading.remove(&id.untyped());
           }
           _ => {}
         }
@@ -2247,6 +2301,7 @@ impl AudioEngine {
             self.sounds.remove(id);
             self.warned_sounds.remove(id);
             self.warned_flat.remove(&id.untyped());
+            self.warned_loading.remove(&id.untyped());
           }
           _ => {}
         }
@@ -2437,11 +2492,14 @@ impl AudioEngine {
   }
 
   /// Play `playable`, its clips and definitions read from `world`'s stores.
-  /// A definition or clip not loaded yet (or that failed: warned about once)
-  /// plays nothing; a play its `per_frame`, its cooldown, a voice limit or
+  /// A loop whose sound is still loading (and any play of a definition
+  /// still loading, not yet known to loop) waits as a voice, to start once
+  /// it is ready ([`start_waiting`](Self::start_waiting)). A one-shot still
+  /// loading, or a play its `per_frame`, its cooldown, a voice limit or
   /// kira's room refuses, a stream that cannot open, or a clip whose stream
   /// already failed to decode (until it reloads) is refused and logged with
-  /// why. Either way the voice returned is already stopped
+  /// why; one of a sound that failed to load plays nothing, warned about
+  /// once. A refused play's voice is already stopped
   pub(crate) fn play(
     &mut self,
     world: &World,
@@ -2514,10 +2572,22 @@ impl AudioEngine {
       }
       Playable::Sound(handle) => {
         let id = handle.id();
-        let Some(sound) = world
+        let sound = world
           .get_resource::<Assets<Sound>>()
-          .and_then(|sounds| sounds.get(id))
-        else {
+          .and_then(|sounds| sounds.get(id));
+        // A loop played while its sound loads waits for it, as music and
+        // emitters do. A definition still loading is not known to loop yet,
+        // so a play of one waits too, until it lands (an emitter waits on
+        // its own, in `play_spawned`)
+        let waits = emitter.is_none()
+          && match sound {
+            None => server.is_some_and(|server| matches!(server.state(id), LoadState::Loading)),
+            Some(sound) => sound.looping && clips_loading(world, sound, server),
+          };
+        if waits {
+          return self.wait_for(handle, sound, options, ui, server);
+        }
+        let Some(sound) = sound else {
           if server.is_some_and(|server| server.state(id).is_failed()) {
             self.warn_sound(
               id,
@@ -2548,6 +2618,192 @@ impl AudioEngine {
       }
     }
   }
+
+  /// A play of `handle` (its definition `sound`, if it has landed) that
+  /// waits for it to load: a voice that reports playing, started once the
+  /// sound is ready ([`start_waiting`](Self::start_waiting)). It counts
+  /// against the sound's `per_frame` now (the default while the definition
+  /// is not known); past it, it is refused
+  fn wait_for(
+    &mut self,
+    handle: &Handle<Sound>,
+    sound: Option<&Sound>,
+    options: &PlayOptions,
+    ui: bool,
+    server: Option<&AssetServer>,
+  ) -> Voice {
+    let key = handle.id().untyped();
+    let per_frame = sound.map_or(Sound::DEFAULT_PER_FRAME, |sound| sound.per_frame);
+    if self.per_frame_full(key, per_frame) {
+      return self.refuse_unknown(handle.id(), REFUSED_PER_FRAME, server);
+    }
+    self.count_start(key);
+    let voice = Voice::new(self.voices.next_id(), self.commands.clone(), None);
+    self.pending.push(Pending {
+      voice: voice.clone(),
+      sound: handle.clone(),
+      options: *options,
+      scope: if options.persist { None } else { self.scope },
+      ui,
+      game_db: 0.0,
+      game_pitch: 0.0,
+    });
+    voice
+  }
+
+  /// A refused play of definition `sound`, not loaded yet, so known only
+  /// by its name: logged with `reason`, and a voice that never started
+  fn refuse_unknown(
+    &mut self,
+    sound: AssetId<Sound>,
+    reason: &'static str,
+    server: Option<&AssetServer>,
+  ) -> Voice {
+    if self.log.is_on() {
+      self.log.push(AudioLogEntry {
+        kind: AudioLogKind::Refused,
+        voice: 0,
+        sound: sound_name(sound, server),
+        source: String::new(),
+        bus: String::new(),
+        gain_db: 0.0,
+        pan: 0.0,
+        rate: 1.0,
+        fade: Duration::ZERO,
+        reason,
+      });
+    }
+    Voice::stopped()
+  }
+
+  /// Each frame: start the plays that waited for their sounds, once each
+  /// sound is ready. A loop starts as it was played, with its fade-in, in
+  /// its scene, with what the game did to its voice meanwhile; a one-shot
+  /// is refused (it would only be late); a sound that did not load ends
+  /// its plays, with the registry's one warning about it
+  fn start_waiting(&mut self, world: &World, server: Option<&AssetServer>) {
+    let mut index = 0;
+    while index < self.pending.len() {
+      let pending = &self.pending[index];
+      if pending.voice.is_stopped() {
+        self.pending.remove(index);
+      } else if sound_loading(world, &pending.sound, server) {
+        index += 1;
+      } else {
+        let pending = self.pending.remove(index);
+        self.start_pending(world, pending, server);
+      }
+    }
+  }
+
+  /// Start `pending`, its sound done loading (or failed)
+  fn start_pending(&mut self, world: &World, pending: Pending, server: Option<&AssetServer>) {
+    let id = pending.sound.id();
+    let Some(sound) = world
+      .get_resource::<Assets<Sound>>()
+      .and_then(|sounds| sounds.get(id))
+    else {
+      // The registry warned once that it did not load, saying why: that is
+      // its one warning, which a later play of it does not repeat
+      pending.voice.set_state(VoiceState::Stopped);
+      self.warned_sounds.insert(id);
+      return;
+    };
+    if !sound.looping {
+      pending.voice.set_state(VoiceState::Stopped);
+      let Some(clip) = sound.clips.first() else {
+        self.warn_sound(id, "it has no clips, so it plays nothing", server);
+        return;
+      };
+      let subject = Subject {
+        sound: Some(id),
+        music: None,
+        source: SourceRef::Clip(&clip.clip),
+        bus: self.buses.playable(&sound.bus),
+        gain_db: clamp_gain(sound.volume_db),
+        pan: 0.0,
+        rate: rate_of(clamp_pitch(sound.pitch)),
+      };
+      self.warn_loading(id.untyped(), || sound_name(id, server));
+      self.refuse(&subject, REFUSED_LOADING, server);
+      return;
+    }
+    let recent = self
+      .sounds
+      .get(&id)
+      .map_or(&[][..], |state| state.recent.as_slice());
+    let request = pick_clip(&mut self.rng, &sound.clips, recent, sound.no_repeat)
+      .and_then(|pick| Request::sound(id, sound, pick, &mut self.rng, &pending.options))
+      .map(|request| Request {
+        bus: if pending.ui {
+          ui_bus(request.bus)
+        } else {
+          request.bus
+        },
+        voice: Some(pending.voice.clone()),
+        game_db: pending.game_db,
+        game_pitch: pending.game_pitch,
+        ..request
+      });
+    let Some(request) = request else {
+      pending.voice.set_state(VoiceState::Stopped);
+      self.warn_sound(id, "it has no clips, so it plays nothing", server);
+      return;
+    };
+    // It belongs to the scene that played it, not to the code running now
+    let previous = self.set_scope(pending.scope);
+    let started = self.start(world, &request, server);
+    self.set_scope(previous);
+    if started.id() == 0 {
+      pending.voice.set_state(VoiceState::Stopped);
+    }
+  }
+
+  /// Apply `command` to a play waiting for its sound, if it is one: what
+  /// it does is kept, to start with
+  fn change_pending(&mut self, command: VoiceCommand) {
+    let Some(index) = self
+      .pending
+      .iter()
+      .position(|pending| pending.voice.id() == command.voice)
+    else {
+      return;
+    };
+    let pending = &mut self.pending[index];
+    let state = pending.voice.state();
+    match command.change {
+      VoiceChange::Stop(_) => {
+        pending.voice.set_state(VoiceState::Stopped);
+        self.pending.remove(index);
+      }
+      VoiceChange::Pause if state == VoiceState::Playing => {
+        pending.voice.set_state(VoiceState::Paused);
+      }
+      VoiceChange::Resume if state == VoiceState::Paused => {
+        pending.voice.set_state(VoiceState::Playing);
+      }
+      VoiceChange::Pause | VoiceChange::Resume => {}
+      VoiceChange::Volume(db) => pending.game_db = clamp_offset(db, GAIN_SPAN),
+      VoiceChange::Pitch(semitones) => pending.game_pitch = clamp_offset(semitones, PITCH_SPAN),
+    }
+  }
+
+  /// Warn, once for `id` (a definition, or a clip played directly), that a
+  /// one-shot was played while it was still loading. Debug builds only:
+  /// the refusal is the game's to fix, and a shipped game says nothing
+  #[cfg(debug_assertions)]
+  fn warn_loading(&mut self, id: UntypedAssetId, name: impl FnOnce() -> String) {
+    if self.warned_loading.insert(id) {
+      crate::engine_warn!(
+        module: "Audio",
+        "{}: a one-shot was played while it was still loading, so it plays nothing (a loop waits for its sound; load a one-shot ahead with load_now, or play it once is_ready says so)",
+        name()
+      );
+    }
+  }
+
+  #[cfg(not(debug_assertions))]
+  fn warn_loading(&mut self, _id: UntypedAssetId, _name: impl FnOnce() -> String) {}
 
   /// Play `music` on the music player. If a track is playing, it fades
   /// out and `music` fades in, both over `music`'s crossfade; with none, it
@@ -2699,6 +2955,9 @@ impl AudioEngine {
       spatial: None,
       emitter: None,
       persist: true,
+      voice: None,
+      game_db: 0.0,
+      game_pitch: 0.0,
     };
     // The old track stops first, so a limit on the music bus counts it as
     // fading out and leaves the crossfade alone; but only once the new one
@@ -2800,9 +3059,10 @@ impl AudioEngine {
     }
   }
 
-  /// Start `request`'s voice, unless its clip is not loaded (a stopped
-  /// voice, not logged), or it is a one-shot out of range (culled) or
-  /// refused (a stopped voice, logged)
+  /// Start `request`'s voice (as its waiting voice, if it has one), unless
+  /// its clip is not loaded (a stopped voice: refused and logged if the
+  /// clip still loads, not logged if it failed), or it is a one-shot out of
+  /// range (culled) or refused (a stopped voice, logged)
   fn start(&mut self, world: &World, request: &Request<'_>, server: Option<&AssetServer>) -> Voice {
     let bus = self.resolve_bus(request.bus, || {
       owner_name(request.sound, request.music, server)
@@ -2811,6 +3071,16 @@ impl AudioEngine {
     let scale = self.scale_on(bus);
     let held = self.buses.buses.get(bus).is_some_and(|bus| bus.held);
     let own_db = clamp_gain(request.gain_db);
+    // As played: with the changes the game made to a voice that waited
+    let played_db = clamp_gain(own_db + request.game_db);
+    let played_pitch = clamp_pitch(pitch + request.game_pitch);
+    // A voice paused while it waited starts as a held one does: silent,
+    // its fade-in kept for its resume
+    let paused = request
+      .voice
+      .as_ref()
+      .is_some_and(|voice| voice.state() == VoiceState::Paused);
+    let starts_held = held || paused;
     // How it is heard from its place, if its sound says
     let heard = request
       .position
@@ -2826,12 +3096,26 @@ impl AudioEngine {
       music: request.music,
       source: request.source,
       bus,
-      gain_db: heard_db(own_db, heard.map_or(0.0, |(_, hearing)| hearing.gain_db)),
+      gain_db: heard_db(played_db, heard.map_or(0.0, |(_, hearing)| hearing.gain_db)),
       pan: heard.map_or(0.0, |(_, hearing)| hearing.pan),
-      rate: rate_of(pitch) * scale,
+      rate: rate_of(played_pitch) * scale,
     };
     let Some((samples, version)) = request.source.samples(world) else {
-      return Voice::stopped();
+      // A one-shot whose clip still loads would only be late (a loop waits
+      // for its clips before it gets here)
+      let loading = request.source.clip().is_some_and(|clip| {
+        server.is_some_and(|server| matches!(server.state(clip), LoadState::Loading))
+      });
+      if !loading {
+        return Voice::stopped();
+      }
+      self.warn_loading(start_key(request), || {
+        request.sound.map_or_else(
+          || request.source.name(server),
+          |sound| sound_name(sound, server),
+        )
+      });
+      return self.refuse(&subject, REFUSED_LOADING, server);
     };
     if request.position.is_some() && request.spatial.is_none() {
       self.warn_flat(request, server);
@@ -2846,7 +3130,7 @@ impl AudioEngine {
     // Copies started in one frame play in step and add up: a sound starts
     // as often as its `per_frame` allows a frame, wherever it plays. The
     // music player's one track is not counted
-    let counted = request.music.is_none().then(|| start_key(request));
+    let counted = (request.music.is_none() && request.voice.is_none()).then(|| start_key(request));
     if counted.is_some_and(|key| self.per_frame_full(key, request.per_frame)) {
       return self.refuse(&subject, REFUSED_PER_FRAME, server);
     }
@@ -2878,7 +3162,10 @@ impl AudioEngine {
       return self.refuse(&subject, reason, server);
     }
     let (playback, filter) = if waits {
-      (Playback::Waiting(Waiting::new(request.fade_in, held)), None)
+      (
+        Playback::Waiting(Waiting::new(request.fade_in, starts_held)),
+        None,
+      )
     } else {
       // Its distance low-pass, on a track of its own while there is room
       let mut filter = heard
@@ -2888,7 +3175,7 @@ impl AudioEngine {
         gain_db: subject.gain_db,
         pan: subject.pan,
         rate: subject.rate,
-        held,
+        held: starts_held,
         fade_in: fade_in_of(request.fade_in),
         region: request.region,
         loop_region: request.loop_region,
@@ -2929,7 +3216,13 @@ impl AudioEngine {
       volume_db: own_db,
       pitch,
     });
-    let voice = Voice::new(self.voices.next_id(), self.commands.clone(), pick);
+    let voice = match &request.voice {
+      Some(voice) => {
+        voice.set_pick(pick);
+        voice.clone()
+      }
+      None => Voice::new(self.voices.next_id(), self.commands.clone(), pick),
+    };
     self.voices.live.push(LiveVoice {
       voice: voice.clone(),
       playback,
@@ -2941,12 +3234,12 @@ impl AudioEngine {
       bus,
       gain_db: own_db,
       pitch,
-      game_db: 0.0,
-      game_pitch: 0.0,
+      game_db: request.game_db,
+      game_pitch: request.game_pitch,
       scale,
       held,
-      kira_paused: held,
-      unheard: held.then_some(request.fade_in),
+      kira_paused: starts_held,
+      unheard: starts_held.then_some(request.fade_in),
       // An emitter's voice belongs to its entity
       scope: if request.persist || request.emitter.is_some() {
         None
@@ -2972,7 +3265,7 @@ impl AudioEngine {
     });
     // A held start is silent and paused: its fade-in waits for its resume.
     // One waiting for the unlock is logged as it starts there
-    let fade_in = if held {
+    let fade_in = if starts_held {
       Duration::ZERO
     } else {
       request.fade_in
@@ -3321,6 +3614,7 @@ impl AudioEngine {
     self.apply_mixer(world, server);
     self.follow_reloads(world, server);
     self.step_music(world, server);
+    self.start_waiting(world, server);
     self.release_orphans(server);
     self.follow_listener(world, real_delta, server);
     self.play_spawned(world, server);
@@ -3562,8 +3856,7 @@ impl AudioEngine {
         return false;
       }
       let id = emitter.sound.id();
-      let loading = sounds.is_none_or(|sounds| sounds.get(id).is_none())
-        && server.is_some_and(|server| matches!(server.state(id), LoadState::Loading));
+      let loading = sound_loading(world, &emitter.sound, server);
       // One past its sound's starts this frame waits its turn
       let turn = sounds
         .and_then(|sounds| sounds.get(id))
@@ -3600,6 +3893,7 @@ impl AudioEngine {
   /// applies at once, so its first audio is at the level set
   fn apply(&mut self, command: VoiceCommand, server: Option<&AssetServer>) {
     let Some(index) = self.voices.index_of(command.voice) else {
+      self.change_pending(command);
       return;
     };
     let frame = self.frame;
@@ -3646,13 +3940,13 @@ impl AudioEngine {
         (AudioLogKind::Resume, fade)
       }
       VoiceChange::Volume(db) => {
-        live.game_db = clamp_offset(db, GAIN_RANGE.1 - GAIN_RANGE.0);
+        live.game_db = clamp_offset(db, GAIN_SPAN);
         let heard = live.heard_db();
         live.playback.set_volume(heard, smooth);
         (AudioLogKind::Gain, change_fade)
       }
       VoiceChange::Pitch(semitones) => {
-        live.game_pitch = clamp_offset(semitones, 2.0 * PITCH_RANGE);
+        live.game_pitch = clamp_offset(semitones, PITCH_SPAN);
         live.playback.set_rate(live.rate(), smooth);
         (AudioLogKind::Rate, change_fade)
       }
@@ -3809,6 +4103,9 @@ impl Drop for AudioEngine {
     for live in &self.voices.live {
       live.voice.set_state(VoiceState::Stopped);
     }
+    for pending in &self.pending {
+      pending.voice.set_state(VoiceState::Stopped);
+    }
   }
 }
 
@@ -3941,6 +4238,31 @@ fn readiness(world: &World, music: &Handle<Music>, server: Option<&AssetServer>)
         Readiness::Failed
       }
     }
+  }
+}
+
+/// Whether a clip of `sound` is still loading (a definition made in code may
+/// name clips still loading)
+fn clips_loading(world: &World, sound: &Sound, server: Option<&AssetServer>) -> bool {
+  let Some(server) = server else {
+    return false;
+  };
+  let clips = world.get_resource::<Assets<AudioClip>>();
+  sound.clips.iter().any(|clip| {
+    clips.is_none_or(|clips| clips.get(&clip.clip).is_none())
+      && matches!(server.state(&clip.clip), LoadState::Loading)
+  })
+}
+
+/// Whether `sound` is still loading: the definition, or once it has landed
+/// a clip of its
+fn sound_loading(world: &World, sound: &Handle<Sound>, server: Option<&AssetServer>) -> bool {
+  match world
+    .get_resource::<Assets<Sound>>()
+    .and_then(|sounds| sounds.get(sound))
+  {
+    Some(def) => clips_loading(world, def, server),
+    None => server.is_some_and(|server| matches!(server.state(sound), LoadState::Loading)),
   }
 }
 

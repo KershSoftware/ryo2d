@@ -81,9 +81,10 @@ struct VoiceShared {
   state: AtomicU8,
   /// `None` for a voice that never started
   commands: Option<Sender<VoiceCommand>>,
-  /// `None` for a voice that never started, or one that plays no clip of
-  /// its own (music joined from an intro and a loop)
-  pick: Option<VoicePick>,
+  /// Empty for a voice that never started, one waiting for its sound to
+  /// load, or one that plays no clip of its own (music joined from an
+  /// intro and a loop)
+  pick: OnceLock<VoicePick>,
 }
 
 /// One playing sound, returned by `ctx.audio().play(..)`. Keep it to stop,
@@ -142,12 +143,22 @@ pub struct Voice(Arc<VoiceShared>);
 
 impl Voice {
   pub(crate) fn new(id: u32, commands: Sender<VoiceCommand>, pick: Option<VoicePick>) -> Voice {
-    Voice(Arc::new(VoiceShared {
+    let voice = Voice(Arc::new(VoiceShared {
       id,
       state: AtomicU8::new(VoiceState::Playing as u8),
       commands: Some(commands),
-      pick,
-    }))
+      pick: OnceLock::new(),
+    }));
+    voice.set_pick(pick);
+    voice
+  }
+
+  /// What its play picked, once it starts (a voice that waited for its
+  /// sound to load picks as it starts)
+  pub(crate) fn set_pick(&self, pick: Option<VoicePick>) {
+    if let Some(pick) = pick {
+      let _ = self.0.pick.set(pick);
+    }
   }
 
   /// A voice that never started: shared, so returning one allocates nothing
@@ -159,7 +170,7 @@ impl Voice {
           id: 0,
           state: AtomicU8::new(VoiceState::Stopped as u8),
           commands: None,
-          pick: None,
+          pick: OnceLock::new(),
         }))
       })
       .clone()
@@ -242,8 +253,9 @@ impl Voice {
   }
 
   /// Which clip the play picked and the gain and pitch it drew, as it
-  /// started; `None` for a play that never started (refused, or a sound not
-  /// loaded yet). A subtitle for a line picked at random, say:
+  /// started; `None` for a play that never started (refused), and for a
+  /// loop waiting for its sound to load until it starts. A subtitle for a
+  /// line picked at random, say:
   ///
   /// ```
   /// use ryo2d::prelude::*;
@@ -254,7 +266,7 @@ impl Voice {
   /// }
   /// ```
   pub fn pick(&self) -> Option<VoicePick> {
-    self.0.pick
+    self.0.pick.get().copied()
   }
 }
 
@@ -442,7 +454,9 @@ mod tests {
     voice.set_volume(-3.0);
     voice.stop(Duration::ZERO);
     audio_step(&mut world, FRAME);
-    assert!(log(&world).is_empty(), "{:#?}", log(&world));
+    // Its refusal is all the log says
+    let kinds: Vec<AudioLogKind> = log(&world).iter().map(|entry| entry.kind).collect();
+    assert_eq!(kinds, [AudioLogKind::Refused], "{:#?}", log(&world));
     assert!(Voice::default().is_stopped());
   }
 }
