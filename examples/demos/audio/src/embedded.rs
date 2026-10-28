@@ -1,0 +1,167 @@
+//! The demo's assets built into it, for the web build: the web has no file
+//! system, so `main` gives the engine these as its asset source there
+
+use demo_kit::prelude::*;
+
+/// Each file in `assets/`, by its asset path, with its bytes
+pub static EMBEDDED: &[(&str, &[u8])] = &[
+  (
+    "audio/mixer.mixer.ron",
+    include_bytes!("../assets/audio/mixer.mixer.ron"),
+  ),
+  (
+    "hot/beep.sound.ron",
+    include_bytes!("../assets/hot/beep.sound.ron"),
+  ),
+  (
+    "hot/drone.sound.ron",
+    include_bytes!("../assets/hot/drone.sound.ron"),
+  ),
+  (
+    "limits/farthest.sound.ron",
+    include_bytes!("../assets/limits/farthest.sound.ron"),
+  ),
+  (
+    "limits/oldest.sound.ron",
+    include_bytes!("../assets/limits/oldest.sound.ron"),
+  ),
+  (
+    "limits/prevent.sound.ron",
+    include_bytes!("../assets/limits/prevent.sound.ron"),
+  ),
+  (
+    "limits/priority-high.sound.ron",
+    include_bytes!("../assets/limits/priority-high.sound.ron"),
+  ),
+  (
+    "limits/priority-low.sound.ron",
+    include_bytes!("../assets/limits/priority-low.sound.ron"),
+  ),
+  (
+    "limits/priority-mid.sound.ron",
+    include_bytes!("../assets/limits/priority-mid.sound.ron"),
+  ),
+  (
+    "limits/quietest.sound.ron",
+    include_bytes!("../assets/limits/quietest.sound.ron"),
+  ),
+  (
+    "music/night.music.ron",
+    include_bytes!("../assets/music/night.music.ron"),
+  ),
+  (
+    "music/night.wav",
+    include_bytes!("../assets/music/night.wav"),
+  ),
+  (
+    "music/theme-intro.wav",
+    include_bytes!("../assets/music/theme-intro.wav"),
+  ),
+  (
+    "music/theme-loop.wav",
+    include_bytes!("../assets/music/theme-loop.wav"),
+  ),
+  (
+    "music/theme.music.ron",
+    include_bytes!("../assets/music/theme.music.ron"),
+  ),
+  (
+    "sounds/beep.wav",
+    include_bytes!("../assets/sounds/beep.wav"),
+  ),
+  (
+    "sounds/bell.wav",
+    include_bytes!("../assets/sounds/bell.wav"),
+  ),
+  (
+    "sounds/buzz.wav",
+    include_bytes!("../assets/sounds/buzz.wav"),
+  ),
+  (
+    "sounds/chirp.wav",
+    include_bytes!("../assets/sounds/chirp.wav"),
+  ),
+  (
+    "sounds/click.sound.ron",
+    include_bytes!("../assets/sounds/click.sound.ron"),
+  ),
+  (
+    "sounds/click.wav",
+    include_bytes!("../assets/sounds/click.wav"),
+  ),
+  (
+    "sounds/drone.wav",
+    include_bytes!("../assets/sounds/drone.wav"),
+  ),
+  (
+    "sounds/footstep.sound.ron",
+    include_bytes!("../assets/sounds/footstep.sound.ron"),
+  ),
+  ("sounds/hum.wav", include_bytes!("../assets/sounds/hum.wav")),
+  (
+    "sounds/step-1.wav",
+    include_bytes!("../assets/sounds/step-1.wav"),
+  ),
+  (
+    "sounds/step-2.wav",
+    include_bytes!("../assets/sounds/step-2.wav"),
+  ),
+  (
+    "sounds/step-3.wav",
+    include_bytes!("../assets/sounds/step-3.wav"),
+  ),
+  (
+    "sounds/step-4.wav",
+    include_bytes!("../assets/sounds/step-4.wav"),
+  ),
+  (
+    "sounds/tick.sound.ron",
+    include_bytes!("../assets/sounds/tick.sound.ron"),
+  ),
+  (
+    "sounds/tick.wav",
+    include_bytes!("../assets/sounds/tick.wav"),
+  ),
+  (
+    "sounds/voice.sound.ron",
+    include_bytes!("../assets/sounds/voice.sound.ron"),
+  ),
+  (
+    "sounds/voice.wav",
+    include_bytes!("../assets/sounds/voice.wav"),
+  ),
+  (
+    "sounds/wind.sound.ron",
+    include_bytes!("../assets/sounds/wind.sound.ron"),
+  ),
+  (
+    "sounds/wind.wav",
+    include_bytes!("../assets/sounds/wind.wav"),
+  ),
+  (
+    "spatial/buzz.sound.ron",
+    include_bytes!("../assets/spatial/buzz.sound.ron"),
+  ),
+  (
+    "spatial/chirp.sound.ron",
+    include_bytes!("../assets/spatial/chirp.sound.ron"),
+  ),
+  (
+    "spatial/hum.sound.ron",
+    include_bytes!("../assets/spatial/hum.sound.ron"),
+  ),
+  (
+    "spatial/ping.sound.ron",
+    include_bytes!("../assets/spatial/ping.sound.ron"),
+  ),
+];
+
+/// The demo's assets in memory, as the engine's asset source: the web
+/// build's, and the tests' that change a file
+pub fn embedded() -> MemorySource {
+  let files = MemorySource::new();
+  for (path, bytes) in EMBEDDED {
+    files.insert(path, *bytes);
+  }
+  files
+}

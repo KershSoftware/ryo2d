@@ -1,0 +1,16 @@
+// A bird heard from its emitter: falling off as sound does in the open,
+// and muffled with distance
+(
+  clips: [(path: "sounds/chirp.wav")],
+  volume: -8.0,
+  looping: true,
+  fade_in: 0.2,
+  fade_out: 0.2,
+  spatial: (
+    min_distance: 20.0,
+    max_distance: 260.0,
+    curve: Inverse,
+    pan_width: 150.0,
+    low_pass_at_max: 1200.0,
+  ),
+)

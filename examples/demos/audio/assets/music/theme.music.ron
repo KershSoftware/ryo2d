@@ -1,0 +1,11 @@
+// The theme: a bar of intro played once, then a four-bar loop, joined so
+// the loop follows the intro with no gap. Both files are at 44.1 kHz
+(
+  intro: "music/theme-intro.wav",
+  loop: "music/theme-loop.wav",
+  volume: -6.0,
+  fade_in: 0.5,
+  crossfade: 2.0,
+  tempo: 120.0,
+  meter: (4, 4),
+)

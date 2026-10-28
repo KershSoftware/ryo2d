@@ -1,0 +1,24 @@
+[package]
+name = "audio-demo"
+version = "0.1.0"
+edition = "2024"
+description = "Audio demo - buses, variations, voice limits, spatial sound, the mix, music and hot reload"
+# The tour and `cargo run -p audio-demo` run the demo, not make-sounds
+default-run = "audio-demo"
+
+[lib]
+name = "audio_demo"
+path = "src/lib.rs"
+
+[[bin]]
+name = "audio-demo"
+path = "src/main.rs"
+
+# Writes the demo's WAV files from code: `cargo run -p audio-demo --bin make-sounds`
+[[bin]]
+name = "make-sounds"
+path = "src/bin/make-sounds.rs"
+
+[dependencies]
+ryo2d = { path = "../../.." }
+demo-kit = { path = "../../demo-kit" }

@@ -1,0 +1,9 @@
+// A bell on the voice limits page, played at different volumes: three at
+// most, a play past them stopping the quietest
+(
+  clips: [(path: "sounds/bell.wav")],
+  bus: "sfx/quietest",
+  volume: -14.0,
+  pitch: 4.0,
+  limit: (max: 3, rule: StopQuietest),
+)

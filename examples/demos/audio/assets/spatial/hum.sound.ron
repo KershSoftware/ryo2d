@@ -1,0 +1,10 @@
+// An engine hum heard from its emitter: full within 20 px, fading in a
+// straight line to silence at 180 px
+(
+  clips: [(path: "sounds/hum.wav")],
+  volume: -6.0,
+  looping: true,
+  fade_in: 0.2,
+  fade_out: 0.2,
+  spatial: (min_distance: 20.0, max_distance: 180.0, curve: Linear, pan_width: 150.0),
+)

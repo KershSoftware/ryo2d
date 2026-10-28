@@ -1,0 +1,14 @@
+// A footstep: four takes, the fourth picked twice as often, never the same
+// take twice in a row, each a little louder or quieter, higher or lower
+(
+  clips: [
+    (path: "sounds/step-1.wav"),
+    (path: "sounds/step-2.wav"),
+    (path: "sounds/step-3.wav"),
+    (path: "sounds/step-4.wav", weight: 2.0),
+  ],
+  volume: -4.0,
+  volume_range: 2.0,
+  pitch_range: 1.0,
+  no_repeat: 1,
+)

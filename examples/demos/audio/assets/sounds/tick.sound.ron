@@ -1,0 +1,5 @@
+// A tick on the sfx bus
+(
+  clips: [(path: "sounds/tick.wav")],
+  volume: -8.0,
+)

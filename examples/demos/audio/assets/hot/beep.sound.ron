@@ -1,0 +1,6 @@
+// The hot reload page's beep (Space). Save a change: the next beep has it
+(
+  clips: [(path: "sounds/beep.wav")],
+  volume: -6.0,
+  pitch: 0.0,
+)

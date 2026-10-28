@@ -1,0 +1,6 @@
+// An interface click on the ui bus
+(
+  clips: [(path: "sounds/click.wav")],
+  bus: "ui",
+  volume: -6.0,
+)

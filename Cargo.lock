@@ -574,6 +574,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "audio-demo"
+version = "0.1.0"
+dependencies = [
+ "demo-kit",
+ "ryo2d",
+]
+
+[[package]]
 name = "audio_thread_priority"
 version = "0.35.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -1,0 +1,7 @@
+// A ping where the pointer clicks, heard from there
+(
+  clips: [(path: "sounds/bell.wav")],
+  volume: -8.0,
+  pitch: 7.0,
+  spatial: (min_distance: 40.0, max_distance: 400.0, pan_width: 150.0),
+)

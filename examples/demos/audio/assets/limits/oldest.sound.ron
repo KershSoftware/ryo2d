@@ -1,0 +1,9 @@
+// A bell on the voice limits page: three at most, a play past them stopping
+// the oldest
+(
+  clips: [(path: "sounds/bell.wav")],
+  bus: "sfx/oldest",
+  volume: -14.0,
+  pitch: 2.0,
+  limit: (max: 3, rule: StopOldest),
+)

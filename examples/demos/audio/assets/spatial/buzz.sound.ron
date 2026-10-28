@@ -1,0 +1,9 @@
+// A buzzing heard from its emitter, on the log curve
+(
+  clips: [(path: "sounds/buzz.wav")],
+  volume: -10.0,
+  looping: true,
+  fade_in: 0.2,
+  fade_out: 0.2,
+  spatial: (min_distance: 20.0, max_distance: 320.0, curve: Log, pan_width: 150.0),
+)

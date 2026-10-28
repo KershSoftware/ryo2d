@@ -1,0 +1,11 @@
+// The hot reload page's drone, a loop. Save a change to its volume or
+// pitch while it plays: the loop takes it at once
+(
+  clips: [(path: "sounds/drone.wav")],
+  bus: "ambience",
+  volume: -12.0,
+  pitch: 0.0,
+  looping: true,
+  fade_in: 0.3,
+  fade_out: 0.3,
+)

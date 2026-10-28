@@ -1,0 +1,10 @@
+// A line of mumbled dialogue on the voice bus, one at a time; the mixer's
+// duck dips the music while it plays
+(
+  clips: [(path: "sounds/voice.wav")],
+  bus: "voice",
+  volume: -2.0,
+  pitch_range: 1.0,
+  limit: (max: 1, rule: StopOldest),
+  fade_out: 0.05,
+)

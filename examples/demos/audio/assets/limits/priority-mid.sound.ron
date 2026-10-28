@@ -1,0 +1,11 @@
+// A bell on the voice limits page at priority 128. The three bells
+// share the sfx/priority bus and its limit of three (the mixer's): a play
+// past it stops the least important voice, never a more important one
+(
+  clips: [(path: "sounds/bell.wav")],
+  bus: "sfx/priority",
+  volume: -14.0,
+  pitch: -5.0,
+  priority: 128,
+  limit: (max: 3, rule: StopLowestPriority),
+)

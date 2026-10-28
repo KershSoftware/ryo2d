@@ -1,0 +1,10 @@
+// A bell on the voice limits page, heard from where it plays: three at
+// most, a play past them stopping the one farthest from the listener
+(
+  clips: [(path: "sounds/bell.wav")],
+  bus: "sfx/farthest",
+  volume: -12.0,
+  pitch: -3.0,
+  limit: (max: 3, rule: StopFarthest),
+  spatial: (min_distance: 0.0, max_distance: 600.0, curve: Linear),
+)

@@ -1,0 +1,9 @@
+// Wind, a loop on the ambience bus
+(
+  clips: [(path: "sounds/wind.wav")],
+  bus: "ambience",
+  volume: -10.0,
+  looping: true,
+  fade_in: 0.5,
+  fade_out: 0.5,
+)

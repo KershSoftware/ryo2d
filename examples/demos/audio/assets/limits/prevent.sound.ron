@@ -1,0 +1,9 @@
+// A bell on the voice limits page: three at most, and a play past them is
+// refused
+(
+  clips: [(path: "sounds/bell.wav")],
+  bus: "sfx/prevent",
+  volume: -14.0,
+  pitch: 0.0,
+  limit: (max: 3, rule: PreventNew),
+)

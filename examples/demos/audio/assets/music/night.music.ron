@@ -1,0 +1,8 @@
+// The night track: one clip, its first second played once and the rest
+// looped
+(
+  clip: "music/night.wav",
+  loop_start: 1.0,
+  volume: -4.0,
+  crossfade: 2.0,
+)
