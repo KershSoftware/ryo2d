@@ -93,8 +93,8 @@ impl<'w> AudioView<'w> {
   /// paused one-shot, stops as the scene exits; see
   /// [`PlayOptions::persist`]). A sound that has not
   /// loaded yet, or failed to (warned about once), plays nothing, and a play
-  /// its cooldown or a voice limit refuses starts nothing: the voice
-  /// returned is already stopped
+  /// its cooldown, its [`per_frame`](Sound::per_frame) or a voice limit
+  /// refuses starts nothing: the voice returned is already stopped
   pub fn play<'a>(&mut self, sound: impl Into<Playable<'a>>) -> Voice {
     self.play_with(sound, PlayOptions::default())
   }

@@ -276,6 +276,7 @@ fn headless_engines_pick_the_same_variations() {
       clips: clips.iter().cloned().map(SoundClip::new).collect(),
       volume_range_db: 3.0,
       pitch_range: 2.0,
+      per_frame: 32,
       ..Default::default()
     };
     let sound = engine.world.resource_mut::<Assets<Sound>>().add(sound);

@@ -63,7 +63,9 @@ pub struct AudioListener;
 /// ([`Sound::spatial`]).
 ///
 /// It plays as it is added to an entity when `play_on_spawn` is set (a sound
-/// still loading plays once it has), again each time a disabled entity is
+/// still loading plays once it has; emitters of one sound spawned together
+/// start as many a frame as its [`Sound::per_frame`] allows, the rest in the
+/// frames after), again each time a disabled entity is
 /// enabled (a [`Pool`](crate::core::ecs::Pool) handing it out, recycled
 /// included), or when the game asks (`ctx.audio().play_emitter(entity)`).
 /// Its voices belong to the entity, not to the scene: despawning it,
@@ -711,6 +713,8 @@ mod tests {
     assert!(distant.is_playing(), "{distant:?}");
     let start = &entries(&world, distant.id(), AudioLogKind::Start)[0];
     assert_eq!(start.gain_db, SILENCE);
+    // The sound has started once this frame: its emitter plays in the next
+    audio_step(&mut world, FRAME);
     let entity = emitter(&mut world, &hum, 300.0);
     audio_step(&mut world, FRAME);
     let voice = started(&world)[1];
@@ -769,9 +773,10 @@ mod tests {
     world.spawn(AudioListener);
     let hum = placed(&mut world, settings(Falloff::Linear), true);
     let shot = placed(&mut world, settings(Falloff::Linear), false);
+    let drone = placed(&mut world, settings(Falloff::Linear), true);
     let looping = emitter(&mut world, &hum, 50.0);
     let once = emitter(&mut world, &shot, 50.0);
-    let kept = emitter(&mut world, &hum, 50.0);
+    let kept = emitter(&mut world, &drone, 50.0);
     audio_step(&mut world, FRAME);
     let [loop_voice, shot_voice, kept_voice] = started(&world)[..] else {
       panic!("three voices: {:#?}", log(&world));
@@ -796,6 +801,30 @@ mod tests {
     assert_eq!(playback(&world, loop_voice), None, "gone");
   }
 
+  /// Emitters of one sound spawned in one frame start as its `per_frame`
+  /// allows, one a frame by default: the rest wait their turn rather than
+  /// being dropped
+  #[test]
+  fn emitters_of_one_sound_take_turns_to_start() {
+    let mut world = audio_world();
+    world.spawn(AudioListener);
+    let hum = placed(&mut world, settings(Falloff::Linear), true);
+    for x in [0.0, 50.0, 100.0] {
+      emitter(&mut world, &hum, x);
+    }
+    let mut counts = Vec::new();
+    for _ in 0..5 {
+      audio_step(&mut world, FRAME);
+      counts.push(started(&world).len());
+    }
+    assert_eq!(counts, [1, 2, 3, 3, 3], "{:#?}", log(&world));
+    let refused = log(&world)
+      .iter()
+      .filter(|entry| entry.kind == AudioLogKind::Refused)
+      .count();
+    assert_eq!(refused, 0, "a turn waited for is not a refusal");
+  }
+
   #[test]
   fn the_33rd_filtered_voice_plays_unfiltered() {
     let mut world = audio_world();
@@ -803,6 +832,9 @@ mod tests {
     let mut spatial = settings(Falloff::Linear);
     spatial.low_pass_at_max = Some(500.0);
     let hum = placed(&mut world, spatial, true);
+    if let Some(hum) = world.resource_mut::<Assets<Sound>>().get_mut(&hum) {
+      hum.per_frame = u8::MAX;
+    }
     let voices: Vec<Voice> = (0..33).map(|_| play_at(&mut world, &hum, 300.0)).collect();
     // Halfway, halfway down in octaves from 20 kHz to 500 Hz
     let halfway = 20_000.0 * (500.0f64 / 20_000.0).sqrt();
@@ -1068,6 +1100,7 @@ mod tests {
     let shot = world.resource_mut::<Assets<Sound>>().add(Sound {
       clips: vec![SoundClip::new(blip)],
       spatial: Some(spatial),
+      per_frame: 4,
       ..Default::default()
     });
     let mut filtered = 0;
@@ -1137,6 +1170,7 @@ mod tests {
       assert!(voice.is_playing(), "not culled: {voice:?}");
       let start = &entries(&world, voice.id(), AudioLogKind::Start)[0];
       assert_eq!((start.gain_db, start.pan), (0.0, 0.0));
+      audio_step(&mut world, FRAME);
     }
     let named = |message: &str| {
       message.starts_with("sfx/flat-at-a-place.sound.ron:") && message.contains("no spatial")

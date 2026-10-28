@@ -32,6 +32,7 @@ use crate::core::audio::{
 ///   limit: (max: 4, rule: StopOldest),    // none; the rule is StopOldest when left out
 ///   priority: 64,                         // 128
 ///   cooldown: 0.03,                       // 0.0 s
+///   per_frame: 2,                         // 1
 ///   looping: false,                       // false
 ///   fade_in: 0.0,                         // 0.0 s
 ///   fade_out: 0.05,                       // 0.0 s (at least 10 ms is used)
@@ -109,6 +110,7 @@ impl AssetLoader for SoundLoader {
       limit: file.limit,
       priority: file.priority,
       cooldown: seconds(file.cooldown),
+      per_frame: file.per_frame,
       looping: file.looping,
       fade_in: seconds(file.fade_in),
       fade_out: seconds(file.fade_out),
@@ -193,6 +195,8 @@ struct SoundFile {
   priority: u8,
   #[serde(default)]
   cooldown: f64,
+  #[serde(default = "default_per_frame")]
+  per_frame: u8,
   #[serde(default)]
   looping: bool,
   #[serde(default)]
@@ -224,6 +228,10 @@ fn default_bus() -> String {
 
 fn default_priority() -> u8 {
   Sound::DEFAULT_PRIORITY
+}
+
+fn default_per_frame() -> u8 {
+  Sound::DEFAULT_PER_FRAME
 }
 
 fn default_weight() -> f32 {
@@ -260,6 +268,12 @@ impl SoundFile {
           "{field}: {value} is not a time in seconds (0 or more)"
         ));
       }
+    }
+    if self.per_frame == 0 {
+      return Err(
+        "per_frame: 0 would never start the sound (it is how many of its voices start in one frame: 1 or more)"
+          .into(),
+      );
     }
     if self.limit.is_some_and(|limit| limit.max == 0) {
       return Err("limit: its max is 0, so the sound would never play (it is 1 or more)".into());
@@ -420,6 +434,7 @@ mod tests {
       limit: (max: 4, rule: StopQuietest),
       priority: 64,
       cooldown: 0.03,
+      per_frame: 3,
       looping: false,
       fade_in: 0.01,
       fade_out: 0.05,
@@ -449,6 +464,7 @@ mod tests {
     );
     assert_eq!(sound.priority, 64);
     assert_eq!(sound.cooldown, Duration::from_millis(30));
+    assert_eq!(sound.per_frame, 3);
     assert!(!sound.looping);
     assert_eq!(sound.fade_in, Duration::from_millis(10));
     assert_eq!(sound.fade_out, Duration::from_millis(50));
@@ -480,6 +496,8 @@ mod tests {
     assert_eq!(sound.limit, None);
     assert_eq!(sound.priority, Sound::DEFAULT_PRIORITY);
     assert_eq!(sound.cooldown, Duration::ZERO);
+    assert_eq!(sound.per_frame, 1);
+    assert_eq!(sound.per_frame, empty.per_frame);
     assert!(!sound.looping);
     assert_eq!(
       (sound.fade_in, sound.fade_out),
@@ -599,6 +617,7 @@ mod tests {
       ),
       (r#"(clips: [(path: "m.wav")], pitch: NaN)"#, "pitch"),
       (r#"(clips: [(path: "m.wav")], limit: (max: 0))"#, "max"),
+      (r#"(clips: [(path: "m.wav")], per_frame: 0)"#, "per_frame"),
       (r#"(clips: [(path: "m.wav")], mode: Streamed)"#, "Streamed"),
       (
         r#"(clips: [(path: "m.wav")], spatial: (min_distance: 50.0, max_distance: 10.0))"#,

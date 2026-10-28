@@ -76,6 +76,13 @@ pub struct Sound {
   pub priority: u8,
   /// The least time between two of its plays: a play sooner is refused
   pub cooldown: Duration,
+  /// The most of its voices that start in one frame, counted across every
+  /// bus and place it plays at (1 by default, and at least 1). Copies
+  /// started together play in step and add up, ten of them 20 dB over one,
+  /// so a burst (a volley of shots in one frame) is heard as one start and
+  /// the plays past it that frame are refused. Raise it for a sound meant
+  /// to layer in one frame
+  pub per_frame: u8,
   /// It loops until stopped: over each clip's `loop_region`, or the whole
   /// clip (its `region`)
   pub looping: bool,
@@ -98,13 +105,18 @@ impl Sound {
   /// The priority of a sound that does not set one, and of a clip played
   /// directly: the middle of 0 to 255
   pub const DEFAULT_PRIORITY: u8 = 128;
+
+  /// How many of its voices start in one frame when it does not say, and a
+  /// clip played directly
+  pub const DEFAULT_PER_FRAME: u8 = 1;
 }
 
 impl Asset for Sound {}
 
 /// The empty definition: no clips, on `sfx`, at 0 dB and pitch 0 with no
 /// ranges, no repeat avoidance, no limit, the default priority, no cooldown,
-/// not looping and no fades. A clip played directly plays with it
+/// one start a frame, not looping and no fades. A clip played directly
+/// plays with it
 impl Default for Sound {
   fn default() -> Self {
     Self {
@@ -118,6 +130,7 @@ impl Default for Sound {
       limit: None,
       priority: Self::DEFAULT_PRIORITY,
       cooldown: Duration::ZERO,
+      per_frame: Self::DEFAULT_PER_FRAME,
       looping: false,
       fade_in: Duration::ZERO,
       fade_out: Duration::ZERO,
@@ -306,6 +319,14 @@ mod tests {
         .map(|&clip| SoundClip::new(clip.clone()))
         .collect(),
       ..Default::default()
+    }
+  }
+
+  /// [`of`], every play in a frame starting (up to 255)
+  fn burst(clips: &[&Handle<AudioClip>]) -> Sound {
+    Sound {
+      per_frame: u8::MAX,
+      ..of(clips)
     }
   }
 
@@ -801,17 +822,57 @@ mod tests {
     assert!(third.is_playing());
   }
 
-  /// Review focus 1: a sound asked for hundreds of times in one frame stays
-  /// within its limit and the cap, and kira never runs out of room. A voice
-  /// is not stolen in the frame it started by an equally important play, so
-  /// a burst never stacks copies of itself
+  /// Review focus 1: a sound asked for a thousand times in one frame starts
+  /// as often as its `per_frame` allows (once by default), and the rest
+  /// are refused, saying why: copies started together play in step and
+  /// add up, so a burst would stack into distortion
   #[test]
   fn a_thousand_plays_in_one_frame_stay_within_the_limit() {
+    let mut world = audio_world();
+    let long = clip(&mut world, 2.0);
+    let shot = add(&mut world, of(&[&long]));
+    for _ in 0..1000 {
+      play(&mut world, &shot);
+    }
+    assert_eq!(AudioView::new(&mut world).voices_on("sfx"), 1);
+    assert_eq!(of_kind(&world, AudioLogKind::Start).len(), 1);
+    let refused = of_kind(&world, AudioLogKind::Refused);
+    assert_eq!(refused.len(), 999);
+    assert!(
+      refused
+        .iter()
+        .all(|entry| entry.reason.contains("per_frame")),
+      "{:#?}",
+      refused.first()
+    );
+    audio_step(&mut world, FRAME);
+    assert_eq!(AudioView::new(&mut world).voices_on("sfx"), 1);
+
+    // Raised, exactly that many start
+    let mut world = audio_world();
+    let long = clip(&mut world, 2.0);
+    let layered = add(
+      &mut world,
+      Sound {
+        per_frame: 5,
+        ..of(&[&long])
+      },
+    );
+    for _ in 0..1000 {
+      play(&mut world, &layered);
+    }
+    assert_eq!(of_kind(&world, AudioLogKind::Start).len(), 5);
+    assert_eq!(of_kind(&world, AudioLogKind::Refused).len(), 995);
+
+    // Raised past them, a voice limit still holds, and the cap of 96 a bus
+    // holds: a voice is not stolen in the frame it started by an equally
+    // important play, so a burst never stops its own starts
     let mut world = audio_world();
     let long = clip(&mut world, 2.0);
     let limited = add(
       &mut world,
       Sound {
+        per_frame: u8::MAX,
         limit: Some(VoiceLimit {
           max: 4,
           rule: LimitRule::StopOldest,
@@ -827,10 +888,15 @@ mod tests {
     audio_step(&mut world, FRAME);
     assert_eq!(AudioView::new(&mut world).voices_on("sfx"), 4);
 
-    // With no limit, the cap of 96 voices a bus holds
     let mut world = audio_world();
     let long = clip(&mut world, 2.0);
-    let unlimited = add(&mut world, of(&[&long]));
+    let unlimited = add(
+      &mut world,
+      Sound {
+        per_frame: u8::MAX,
+        ..of(&[&long])
+      },
+    );
     for _ in 0..1000 {
       play(&mut world, &unlimited);
     }
@@ -855,13 +921,91 @@ mod tests {
     assert_eq!(world.resource::<AudioEngine>().kira_full(), 0);
   }
 
+  /// A definition's `per_frame` is how many of its voices start in one
+  /// frame, counted across its buses and places; a clip played directly
+  /// starts once a frame, however it is played
+  #[test]
+  fn per_frame_raises_the_starts_in_one_frame() {
+    let mut world = audio_world();
+    let long = clip(&mut world, 2.0);
+    let three = add(
+      &mut world,
+      Sound {
+        per_frame: 3,
+        ..of(&[&long])
+      },
+    );
+    for index in 0..10 {
+      let options = PlayOptions {
+        position: (index % 2 == 0).then(|| Vec2::new(index as f32 * 10.0, 0.0)),
+        volume_db: -(index as f32),
+        ..Default::default()
+      };
+      play_with(&mut world, &three, options);
+    }
+    assert_eq!(of_kind(&world, AudioLogKind::Start).len(), 3);
+    let refused = of_kind(&world, AudioLogKind::Refused);
+    assert_eq!(refused.len(), 7);
+    assert!(
+      refused
+        .iter()
+        .all(|entry| entry.reason.contains("per_frame")),
+      "{refused:#?}"
+    );
+    // A clip played directly, on its own and as a UI sound, at a place
+    let bare = clip(&mut world, 2.0);
+    let mut audio = AudioView::new(&mut world);
+    let first = audio.play(&bare);
+    let again = audio.play_at(&bare, Vec2::new(40.0, 0.0));
+    let louder = audio.play_with(
+      &bare,
+      PlayOptions {
+        volume_db: 6.0,
+        ..Default::default()
+      },
+    );
+    assert!(first.is_playing(), "{first:?}");
+    assert!(again.is_stopped() && louder.is_stopped());
+    assert_eq!(of_kind(&world, AudioLogKind::Start).len(), 4);
+  }
+
+  /// The count is a frame's: the next frame the sound starts again
+  #[test]
+  fn a_sound_starts_again_on_the_next_frame() {
+    let mut world = audio_world();
+    let long = clip(&mut world, 2.0);
+    let shot = add(&mut world, of(&[&long]));
+    let bare = clip(&mut world, 2.0);
+    let mut starts = Vec::new();
+    for _ in 0..3 {
+      let (first, second, clip_first, clip_second) = {
+        let mut audio = AudioView::new(&mut world);
+        (
+          audio.play(&shot),
+          audio.play(&shot),
+          audio.play(&bare),
+          audio.play(&bare),
+        )
+      };
+      starts.push((
+        first.is_playing(),
+        second.is_playing(),
+        clip_first.is_playing(),
+        clip_second.is_playing(),
+      ));
+      audio_step(&mut world, FRAME);
+    }
+    assert_eq!(starts, [(true, false, true, false); 3]);
+    assert_eq!(AudioView::new(&mut world).voices_on("sfx"), 6);
+  }
+
   /// Past the cap, the least important voice goes, then the quietest; a
   /// less important play is refused
   #[test]
   fn the_cap_steals_the_least_important_then_the_quietest() {
     let mut world = audio_world();
     let long = clip(&mut world, 2.0);
-    let sound = add(&mut world, of(&[&long]));
+    let sound = add(&mut world, burst(&[&long]));
     let mut voices = Vec::new();
     for index in 0..96 {
       let options = PlayOptions {
@@ -890,7 +1034,7 @@ mod tests {
       &mut world,
       Sound {
         bus: "ambience".to_string(),
-        ..of(&[&long])
+        ..burst(&[&long])
       },
     );
     for _ in 0..96 {
@@ -917,12 +1061,12 @@ mod tests {
   fn the_cap_takes_the_least_important_before_the_quietest() {
     let mut world = audio_world();
     let long = clip(&mut world, 2.0);
-    let normal = add(&mut world, of(&[&long]));
+    let normal = add(&mut world, burst(&[&long]));
     let minor = add(
       &mut world,
       Sound {
         priority: 64,
-        ..of(&[&long])
+        ..burst(&[&long])
       },
     );
     for _ in 0..94 {

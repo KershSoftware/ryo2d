@@ -476,10 +476,10 @@ mod tests {
   #[test]
   fn a_voice_s_own_pause_outlasts_the_game_s() {
     let mut world = audio_world();
-    let clip = clip(&mut world, 2.0);
+    let (one, other) = (clip(&mut world, 2.0), clip(&mut world, 2.0));
     let (own, resumed) = {
       let mut audio = AudioView::new(&mut world);
-      (audio.play(&clip), audio.play(&clip))
+      (audio.play(&one), audio.play(&other))
     };
     own.pause();
     audio_step(&mut world, FRAME);

@@ -828,6 +828,8 @@ struct Request<'a> {
   limit: Option<VoiceLimit>,
   priority: u8,
   cooldown: Duration,
+  /// The most of its voices that start in a frame
+  per_frame: u8,
   fade_in: Duration,
   fade_out: Duration,
   position: Option<Vec2>,
@@ -858,6 +860,7 @@ impl<'a> Request<'a> {
       limit: None,
       priority: Sound::DEFAULT_PRIORITY,
       cooldown: Duration::ZERO,
+      per_frame: Sound::DEFAULT_PER_FRAME,
       fade_in: Duration::ZERO,
       fade_out: Duration::ZERO,
       position: options.position,
@@ -896,6 +899,7 @@ impl<'a> Request<'a> {
       limit: sound.limit,
       priority: sound.priority,
       cooldown: sound.cooldown,
+      per_frame: sound.per_frame,
       fade_in: sound.fade_in,
       fade_out: sound.fade_out,
       position: options.position,
@@ -961,6 +965,17 @@ struct Subject<'a> {
   /// Its playback rate, the time scale's included
   rate: f64,
 }
+
+/// What the log says refused a play: the rule, and why
+const REFUSED_PER_FRAME: &str =
+  "per_frame: the sound started as many voices this frame as its per_frame allows";
+const REFUSED_COOLDOWN: &str = "cooldown: the sound played too recently";
+const REFUSED_LIMIT: &str = "limit: a voice limit is full, with no voice the play may stop";
+const REFUSED_FULL: &str = "full: voices fading out hold kira's room on the bus's track";
+const REFUSED_UNDECODABLE: &str = "undecodable: the clip's stream could not be decoded";
+const REFUSED_LOCKED: &str =
+  "locked: the audio waits for the player's first gesture, and a one-shot does not wait";
+const REFUSED_UNLOCK: &str = "unlock: the loop could not start at the player's first gesture";
 
 /// Why a play did not start
 enum Refusal {
@@ -1069,6 +1084,9 @@ pub struct AudioEngine {
   warned_flat: FastSet<UntypedAssetId>,
   /// The voices one play stops to make room, kept to reuse
   victims: Vec<Victim>,
+  /// The voices each definition (or clip played directly) started this
+  /// frame, for their `per_frame`. Kept to reuse
+  frame_starts: Vec<(UntypedAssetId, u8)>,
   /// The player's six volume settings
   settings: VolumeSettings,
   /// The volumes the game set on buses (`set_bus_volume`), in dB, by name:
@@ -1254,6 +1272,7 @@ impl AudioEngine {
       watching_enabled: false,
       warned_flat: FastSet::default(),
       victims: Vec::new(),
+      frame_starts: Vec::new(),
       settings,
       bus_volumes: FastMap::default(),
       warned_volumes: FastSet::default(),
@@ -2121,7 +2140,8 @@ impl AudioEngine {
     let Some(live) = self.voices.live.get(index) else {
       return;
     };
-    let entry = self.entry(AudioLogKind::Refused, 0, &live.subject(), server);
+    let mut entry = self.entry(AudioLogKind::Refused, 0, &live.subject(), server);
+    entry.reason = REFUSED_UNLOCK;
     let name = voice_name(live, server);
     crate::engine_warn!(
       module: "Audio",
@@ -2398,10 +2418,10 @@ impl AudioEngine {
 
   /// Play `playable`, its clips and definitions read from `world`'s stores.
   /// A definition or clip not loaded yet (or that failed: warned about once)
-  /// plays nothing; a play its cooldown, a voice limit or kira's room
-  /// refuses, a stream that cannot open, or a clip whose stream already
-  /// failed to decode (until it reloads) is refused and logged. Either way
-  /// the voice returned is already stopped
+  /// plays nothing; a play its `per_frame`, its cooldown, a voice limit or
+  /// kira's room refuses, a stream that cannot open, or a clip whose stream
+  /// already failed to decode (until it reloads) is refused and logged with
+  /// why. Either way the voice returned is already stopped
   pub(crate) fn play(
     &mut self,
     world: &World,
@@ -2651,6 +2671,8 @@ impl AudioEngine {
       limit: None,
       priority: MUSIC_PRIORITY,
       cooldown: Duration::ZERO,
+      // The music player starts one track at a time
+      per_frame: u8::MAX,
       fade_in,
       fade_out: music.crossfade,
       position: None,
@@ -2801,6 +2823,13 @@ impl AudioEngine {
       self.log.push(entry);
       return Voice::stopped();
     }
+    // Copies started in one frame play in step and add up: a sound starts
+    // as often as its `per_frame` allows a frame, wherever it plays. The
+    // music player's one track is not counted
+    let counted = request.music.is_none().then(|| start_key(request));
+    if counted.is_some_and(|key| self.per_frame_full(key, request.per_frame)) {
+      return self.refuse(&subject, REFUSED_PER_FRAME, server);
+    }
     // A clip whose stream failed to decode would only fail the same way on
     // another decoder thread. Kira's room is asked before any limit stops
     // a voice: a stopped voice holds its room until it has faded out
@@ -2812,14 +2841,21 @@ impl AudioEngine {
     // a loop waits, to start at the unlock
     let waits = self.is_locked();
     if waits && !request.looping {
-      return self.refuse(&subject, server);
+      return self.refuse(&subject, REFUSED_LOCKED, server);
     }
-    let refused = undecodable
-      || self.cooling(request)
-      || (!waits && !self.room_on(bus))
-      || !self.make_room(bus, request);
-    if refused {
-      return self.refuse(&subject, server);
+    let refusal = if undecodable {
+      Some(REFUSED_UNDECODABLE)
+    } else if self.cooling(request) {
+      Some(REFUSED_COOLDOWN)
+    } else if !waits && !self.room_on(bus) {
+      Some(REFUSED_FULL)
+    } else if !self.make_room(bus, request) {
+      Some(REFUSED_LIMIT)
+    } else {
+      None
+    };
+    if let Some(reason) = refusal {
+      return self.refuse(&subject, reason, server);
     }
     let (playback, filter) = if waits {
       (Playback::Waiting(Waiting::new(request.fade_in, held)), None)
@@ -2847,20 +2883,22 @@ impl AudioEngine {
       match started {
         Ok(playback) => (playback, filter),
         Err(refusal) => {
-          match &refusal {
+          let reason = match &refusal {
             Refusal::Undecodable(error) => {
               // Only a clip streams
               if let Some(clip) = request.source.clip() {
                 self.warn_undecodable(clip, version, error, server);
               }
+              REFUSED_UNDECODABLE
             }
             Refusal::Full => {
               self.count_kira_full();
               self.warn_full(bus);
+              REFUSED_FULL
             }
-          }
+          };
           self.victims.clear();
-          return self.refuse(&subject, server);
+          return self.refuse(&subject, reason, server);
         }
       }
     };
@@ -2924,6 +2962,9 @@ impl AudioEngine {
         fade_in,
         server,
       );
+    }
+    if let Some(key) = counted {
+      self.count_start(key);
     }
     if let Some(id) = request.sound {
       let state = self.sounds.entry(id).or_default();
@@ -3079,11 +3120,39 @@ impl AudioEngine {
     );
   }
 
-  /// A refused play: logged, and a voice that never started
-  fn refuse(&mut self, subject: &Subject<'_>, server: Option<&AssetServer>) -> Voice {
-    let entry = self.entry(AudioLogKind::Refused, 0, subject, server);
+  /// A refused play: logged with `reason`, and a voice that never started
+  fn refuse(
+    &mut self,
+    subject: &Subject<'_>,
+    reason: &'static str,
+    server: Option<&AssetServer>,
+  ) -> Voice {
+    let mut entry = self.entry(AudioLogKind::Refused, 0, subject, server);
+    entry.reason = reason;
     self.log.push(entry);
     Voice::stopped()
+  }
+
+  /// Whether `key` (a definition, or a clip played directly) started
+  /// `per_frame` voices this frame already (at least one may start)
+  fn per_frame_full(&self, key: UntypedAssetId, per_frame: u8) -> bool {
+    self
+      .frame_starts
+      .iter()
+      .find(|(started, _)| *started == key)
+      .is_some_and(|&(_, count)| count >= per_frame.max(1))
+  }
+
+  /// Count a start of `key` this frame
+  fn count_start(&mut self, key: UntypedAssetId) {
+    match self
+      .frame_starts
+      .iter_mut()
+      .find(|(started, _)| *started == key)
+    {
+      Some((_, count)) => *count = count.saturating_add(1),
+      None => self.frame_starts.push((key, 1)),
+    }
   }
 
   #[cfg(test)]
@@ -3268,6 +3337,8 @@ impl AudioEngine {
         .retired_sends
         .retain(|(generation, _)| live.iter().any(|voice| voice.generation == *generation));
     }
+    // The next frame's starts count afresh
+    self.frame_starts.clear();
   }
 
   /// Follow the game's clock. A bus that pauses with the game holds its
@@ -3449,7 +3520,11 @@ impl AudioEngine {
       let id = emitter.sound.id();
       let loading = sounds.is_none_or(|sounds| sounds.get(id).is_none())
         && server.is_some_and(|server| matches!(server.state(id), LoadState::Loading));
-      if loading {
+      // One past its sound's starts this frame waits its turn
+      let turn = sounds
+        .and_then(|sounds| sounds.get(id))
+        .is_some_and(|sound| self.per_frame_full(id.untyped(), sound.per_frame));
+      if loading || turn {
         return true;
       }
       self.play_emitter(world, entity);
@@ -3655,6 +3730,7 @@ impl AudioEngine {
       pan: subject.pan,
       rate: subject.rate,
       fade: Duration::ZERO,
+      reason: "",
     }
   }
 
@@ -3674,6 +3750,7 @@ impl AudioEngine {
       pan: 0.0,
       rate: 1.0,
       fade,
+      reason: "",
     });
   }
 }
@@ -4015,6 +4092,14 @@ impl Room<'_> {
       _ => 0.0,
     }
   }
+}
+
+/// What a play counts against its `per_frame`: its definition, or the clip
+/// played directly
+fn start_key(request: &Request<'_>) -> UntypedAssetId {
+  request
+    .sound
+    .map_or_else(|| request.source.untyped(), AssetId::untyped)
 }
 
 /// Which of `clips` a play picks: by weight, avoiding the latest
@@ -4417,16 +4502,18 @@ mod tests {
   #[test]
   fn voices_on_counts_a_bus() {
     let mut world = audio_world();
-    let clip = second(&mut world);
-    let voices: Vec<Voice> = (0..3)
-      .map(|_| AudioView::new(&mut world).play(&clip))
+    // A clip starts once a frame: one each
+    let clips: Vec<Handle<AudioClip>> = (0..4).map(|_| second(&mut world)).collect();
+    let voices: Vec<Voice> = clips[..3]
+      .iter()
+      .map(|clip| AudioView::new(&mut world).play(clip))
       .collect();
     let mut audio = AudioView::new(&mut world);
     assert_eq!(audio.voices_on("sfx"), 3);
     assert_eq!(audio.voices_on("master"), 3, "master counts its subtree");
     assert_eq!(audio.voices_on("music"), 0);
     assert_eq!(audio.voices_on("no such bus"), 0);
-    audio.play(&clip);
+    audio.play(&clips[3]);
     assert_eq!(audio.voices_on("sfx"), 4);
     voices[0].stop(Duration::ZERO);
     audio_step(&mut world, Duration::from_millis(50));
@@ -4763,9 +4850,11 @@ mod tests {
   #[test]
   fn the_voice_table_keeps_the_order_voices_started_in() {
     let mut world = audio_world();
-    let clip = second(&mut world);
     let voices: Vec<Voice> = (0..4)
-      .map(|_| AudioView::new(&mut world).play(&clip))
+      .map(|_| {
+        let clip = second(&mut world);
+        AudioView::new(&mut world).play(&clip)
+      })
       .collect();
     voices[0].stop(Duration::ZERO);
     voices[2].stop(Duration::ZERO);
@@ -4784,10 +4873,10 @@ mod tests {
   #[test]
   fn dropping_the_engine_stops_its_voices() {
     let mut world = audio_world();
-    let clip = second(&mut world);
+    let (one, other) = (second(&mut world), second(&mut world));
     let (playing, paused) = {
       let mut audio = AudioView::new(&mut world);
-      (audio.play(&clip), audio.play(&clip))
+      (audio.play(&one), audio.play(&other))
     };
     paused.pause();
     audio_step(&mut world, FRAME);
@@ -5031,9 +5120,10 @@ mod tests {
     let clip = second(&mut world);
     let fade = Duration::from_millis(300);
     let rain = hum(&mut world, &clip, "ambience", fade);
+    let wind = hum(&mut world, &clip, "ambience", fade);
     let (stopped, paused) = {
       let mut audio = AudioView::new(&mut world);
-      (audio.play(&rain), audio.play(&rain))
+      (audio.play(&rain), audio.play(&wind))
     };
     stopped.stop(Duration::ZERO);
     paused.pause();

@@ -68,6 +68,9 @@ pub struct AudioLogEntry {
   /// How long the change takes: a stop's fade-out, the smoothing of any
   /// other change, zero for a start without a fade-in
   pub fade: Duration,
+  /// Why a play was refused (`Refused`), naming the rule that refused it;
+  /// empty for every other kind
+  pub reason: &'static str,
 }
 
 /// The log: a ring of the latest [`LOG_CAPACITY`] entries, recorded only
@@ -120,6 +123,7 @@ mod tests {
       pan: 0.0,
       rate: 1.0,
       fade: Duration::ZERO,
+      reason: "",
     }
   }
 

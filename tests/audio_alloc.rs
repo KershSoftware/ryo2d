@@ -112,6 +112,8 @@ fn idle_frame_audio_allocates_nothing() {
     ..Default::default()
   });
   AudioView::new(&mut world).play(&blip);
+  // A clip starts once a frame
+  frame(&mut world);
   AudioView::new(&mut world).play_at(&blip, Vec2::new(40.0, 0.0));
   let looped = AudioView::new(&mut world).play(&hum);
   for _ in 0..10 {

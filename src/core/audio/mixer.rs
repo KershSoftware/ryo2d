@@ -1989,6 +1989,7 @@ mod tests {
         .into_iter()
         .find(|entry| entry.kind == AudioLogKind::Start && entry.voice == voice.id());
       assert_eq!(start.map(|entry| entry.bus).as_deref(), Some("ambience"));
+      audio_step(&mut world, FRAME);
     }
     let warned =
       warnings(|message| message.contains("\"ambience/cave-echo-unique\" is a send bus"));

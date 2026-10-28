@@ -317,10 +317,10 @@ mod tests {
   #[test]
   fn every_change_uses_at_least_the_minimum_fade() {
     let mut world = audio_world();
-    let clip = clip(&mut world, 1.0);
+    let (one, other) = (clip(&mut world, 1.0), clip(&mut world, 1.0));
     let (changed, stopped) = {
       let mut audio = AudioView::new(&mut world);
-      (audio.play(&clip), audio.play(&clip))
+      (audio.play(&one), audio.play(&other))
     };
     changed.set_volume(-6.0);
     changed.set_pitch(12.0);

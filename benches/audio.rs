@@ -17,11 +17,12 @@
 //!   change every frame; the other 32 plain loops on `sfx` and `ambience`.
 //!   Over 2,000 frames paced at 60 Hz, the median main-thread time of
 //!   `audio_system` is held to 50 µs (the spec);
-//! - `play_cost`: 10,000 `play` calls of a decoded 50 ms clip, eight a
-//!   frame (so about sixteen voices play), each timed alone; the median is
-//!   held to 5 µs (the spec). The median play of a sound definition (three
-//!   clips, a volume and pitch spread, no repeats) is printed beside it,
-//!   with no target;
+//! - `play_cost`: 10,000 `play` calls of decoded 50 ms clips, eight a
+//!   frame, one of each of eight clips (a clip starts once a frame), so
+//!   about sixteen voices play, each timed alone; the median is held to
+//!   5 µs (the spec). The median play of a sound definition (three clips, a
+//!   volume and pitch spread, no repeats, eight starts a frame) is printed
+//!   beside it, with no target;
 //! - `play_cost_streamed`: 300 `play` calls of a streamed clip (the 48 s
 //!   OGG below, the MP3 without `ffmpeg`), one a frame at 60 Hz, each
 //!   stopped the frame after; the median main-thread time of a play is held
@@ -57,7 +58,7 @@
 //! no filter or one naming it, and not for `--list`, `--test` or
 //! `--profile-time`. The criterion benches, for the profiles: `voices_64`
 //! times `audio_system` over the same 64 voices back to back, `play_cost`
-//! one play of the decoded clip, and `load_hitch` the frame each reload of
+//! one play of a decoded clip, and `load_hitch` the frame each reload of
 //! the OGG lands in (the MP3's without `ffmpeg`), from 20 s in, at 60 Hz.
 //!
 //! Medians are read from where criterion writes its results
@@ -197,17 +198,20 @@ fn voices_world() -> (World, Vec<Entity>) {
   world.spawn((AudioListener, Transform::default()));
   let clip = add_clip(&mut world, 2.0, 1);
   let mut sounds = world.resource_mut::<Assets<Sound>>();
+  // Each starts its voices in the first frame
   let plain = ["sfx", "ambience"].map(|bus| {
     sounds.add(Sound {
       clips: vec![SoundClip::new(clip.clone())],
       bus: bus.to_string(),
       looping: true,
+      per_frame: 16,
       ..Default::default()
     })
   });
   let placed = sounds.add(Sound {
     clips: vec![SoundClip::new(clip.clone())],
     looping: true,
+    per_frame: 32,
     spatial: Some(Spatial {
       min_distance: 50.0,
       max_distance: 900.0,
@@ -380,31 +384,35 @@ fn voices_bench(c: &mut Criterion) {
 
 // play_cost
 
-/// A world with the 50 ms clip to play, and a definition of three clips
-fn play_world() -> (World, Handle<AudioClip>, Handle<Sound>) {
+/// A world with eight 50 ms clips to play, one of each a frame, and a
+/// definition of three clips that starts eight voices a frame
+fn play_world() -> (World, Vec<Handle<AudioClip>>, Handle<Sound>) {
   let mut world = quiet(audio_world());
-  let clip = add_clip(&mut world, 0.05, 2);
-  let clips = (3..6)
+  let clips = (0..PLAYS_A_FRAME as u32)
+    .map(|seed| add_clip(&mut world, 0.05, 10 + seed))
+    .collect();
+  let picked = (3..6)
     .map(|seed| SoundClip::new(add_clip(&mut world, 0.05, seed)))
     .collect();
   let sound = world.resource_mut::<Assets<Sound>>().add(Sound {
-    clips,
+    clips: picked,
     volume_range_db: 2.0,
     pitch_range: 1.0,
     no_repeat: 1,
+    per_frame: PLAYS_A_FRAME as u8,
     ..Default::default()
   });
-  (world, clip, sound)
+  (world, clips, sound)
 }
 
-/// `PLAYS` plays (`play`), eight a frame, each timed alone; with the plays
-/// refused
-fn plays(world: &mut World, play: impl Fn(&mut World) -> Voice) -> (Vec<Duration>, usize) {
+/// `PLAYS` plays (`play`, given the play's number), eight a frame, each
+/// timed alone; with the plays refused
+fn plays(world: &mut World, play: impl Fn(&mut World, usize) -> Voice) -> (Vec<Duration>, usize) {
   let mut times = Vec::with_capacity(PLAYS);
   let mut refused = 0;
   for i in 0..PLAYS {
     let started = Instant::now();
-    let voice = play(world);
+    let voice = play(world, i);
     times.push(started.elapsed());
     refused += usize::from(voice.is_stopped());
     drop(voice);
@@ -417,13 +425,13 @@ fn plays(world: &mut World, play: impl Fn(&mut World) -> Voice) -> (Vec<Duration
 
 /// The plays: each one's median, held to the spec's 5 µs for the clip
 fn play_guard() {
-  let (mut world, clip, sound) = play_world();
-  let clip = |world: &mut World| AudioView::new(world).play(&clip);
+  let (mut world, clips, sound) = play_world();
+  let clip = |world: &mut World, i: usize| AudioView::new(world).play(&clips[i % PLAYS_A_FRAME]);
   // Warm: kira's tracks have held a frame's worth of sounds
   plays(&mut world, clip);
   let (times, refused) = plays(&mut world, clip);
   let voices = AudioView::new(&mut world).voices_on("master");
-  let (sound_times, sound_refused) = plays(&mut world, |world: &mut World| {
+  let (sound_times, sound_refused) = plays(&mut world, |world: &mut World, _| {
     AudioView::new(world).play(&sound)
   });
   let (Some((median, p95, max)), Some(by_sound)) = (spread(times), median(sound_times)) else {
@@ -431,7 +439,7 @@ fn play_guard() {
   };
   let met = median <= PLAY_TARGET;
   eprintln!(
-    "play_cost guard, {PLAYS} plays of a decoded 50 ms clip, {PLAYS_A_FRAME} a frame ({voices} \
+    "play_cost guard, {PLAYS} plays of decoded 50 ms clips, {PLAYS_A_FRAME} a frame ({voices} \
      voices playing after the last frame): median {:.2} µs, 95th percentile {:.2}, max {:.1}; \
      within {} µs: {}. A definition of three clips (spread, no repeats): median {:.2} µs",
     us(median),
@@ -451,23 +459,24 @@ fn play_guard() {
   }
 }
 
-/// One play of the clip at a time, eight a frame; the world is made once,
-/// on the bench's first call
+/// One play of a clip at a time, eight a frame (one of each clip); the
+/// world is made once, on the bench's first call
 fn play_bench(c: &mut Criterion) {
   let mut made = None;
   c.bench_function("play_cost", |b| {
-    let (world, clip, played) = made.get_or_insert_with(|| {
-      let (mut world, clip, _) = play_world();
-      plays(&mut world, |world: &mut World| {
-        AudioView::new(world).play(&clip)
+    let (world, clips, played) = made.get_or_insert_with(|| {
+      let (mut world, clips, _) = play_world();
+      plays(&mut world, |world: &mut World, i: usize| {
+        AudioView::new(world).play(&clips[i % PLAYS_A_FRAME])
       });
-      (world, clip, 0usize)
+      (world, clips, 0usize)
     });
     b.iter_custom(|iters| {
       let mut total = Duration::ZERO;
       for _ in 0..iters {
+        let clip = &clips[*played % PLAYS_A_FRAME];
         let started = Instant::now();
-        let voice = AudioView::new(world).play(&*clip);
+        let voice = AudioView::new(world).play(clip);
         total += started.elapsed();
         drop(voice);
         *played += 1;

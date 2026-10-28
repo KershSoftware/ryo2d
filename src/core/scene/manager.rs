@@ -1314,7 +1314,8 @@ mod tests {
   }
 
   /// What the audio tests share: a world with its audio log on, and a
-  /// two-second loop that fades out over 250 ms when the engine stops it
+  /// two-second loop that fades out over 250 ms when the engine stops it,
+  /// every play of it in a frame starting
   fn audio_scene_world() -> (World, crate::core::asset::Handle<crate::core::audio::Sound>) {
     use crate::core::audio::{AudioClip, AudioEngine, Sound, SoundClip};
     let mut world = world();
@@ -1328,6 +1329,7 @@ mod tests {
         clips: vec![SoundClip::new(clip)],
         looping: true,
         fade_out: Duration::from_millis(250),
+        per_frame: u8::MAX,
         ..Default::default()
       });
     (world, sound)
@@ -1356,10 +1358,12 @@ mod tests {
   }
 
   /// Plays as it enters: its loop, the loop again persistent, a short
-  /// one-shot, and a one-shot it pauses
+  /// one-shot, and a one-shot it pauses (a clip starts once a frame: the
+  /// two are clips of their own)
   struct Player {
     sound: crate::core::asset::Handle<crate::core::audio::Sound>,
     shot: crate::core::asset::Handle<crate::core::audio::AudioClip>,
+    held: crate::core::asset::Handle<crate::core::audio::AudioClip>,
     played: Voices,
   }
 
@@ -1372,7 +1376,7 @@ mod tests {
       let own = ctx.audio().play(&self.sound);
       let kept = ctx.audio().play_with(&self.sound, persist);
       let shot = ctx.audio().play(&self.shot);
-      let paused = ctx.audio().play(&self.shot);
+      let paused = ctx.audio().play(&self.held);
       paused.pause();
       self
         .played
@@ -1391,13 +1395,14 @@ mod tests {
     use crate::core::audio::{AudioClip, AudioView};
     use crate::core::testing::audio_step;
     let (mut world, sound) = audio_scene_world();
-    let shot = world
-      .resource_mut::<crate::core::asset::Assets<AudioClip>>()
-      .add(AudioClip::from_frames(48_000, &vec![[0.1, 0.1]; 14_400]));
+    let mut clips = world.resource_mut::<crate::core::asset::Assets<AudioClip>>();
+    let shot = clips.add(AudioClip::from_frames(48_000, &vec![[0.1, 0.1]; 14_400]));
+    let held = clips.add(AudioClip::from_frames(48_000, &vec![[0.1, 0.1]; 14_400]));
     let played: Voices = Arc::default();
     let mut m = SceneManager::with_scene(Box::new(Player {
       sound: sound.clone(),
       shot,
+      held,
       played: played.clone(),
     }));
     m.enter_initial(&mut world);
