@@ -1,0 +1,942 @@
+//! [`Sound`]: a sound definition (`.sound.ron`). It says how one sound
+//! plays: the clips it picks from and how, its bus, level and pitch, how many
+//! of its voices may play at once, its priority and cooldown, looping and
+//! fades, and where in the world it is heard from
+
+use std::ops::Range;
+use std::time::Duration;
+
+use serde::Deserialize;
+
+use super::AudioClip;
+use crate::core::asset::{Asset, Handle};
+
+/// A sound definition: how one sound plays, loaded from a `.sound.ron` file
+/// (`ctx.assets().load::<Sound>("sfx/step.sound.ron")`, see
+/// [`SoundLoader`](crate::core::asset::SoundLoader) for the file) or made in
+/// code, and played with `ctx.audio().play(&handle)`.
+///
+/// Each play picks one of its clips by weight, avoiding the latest picks
+/// (`no_repeat`), draws its gain and pitch from their ranges, and starts on
+/// its bus, unless its cooldown or a voice limit refuses it. A refused play
+/// returns a voice that is already stopped. A sound is ready once every clip
+/// is loaded.
+///
+/// ```
+/// use std::time::Duration;
+/// use ryo2d::prelude::*;
+///
+/// fn footstep(clips: &[Handle<AudioClip>]) -> Sound {
+///   Sound {
+///     clips: clips.iter().cloned().map(SoundClip::new).collect(),
+///     volume_db: -6.0,
+///     pitch_range: 1.0,
+///     no_repeat: 1,
+///     limit: Some(VoiceLimit { max: 4, rule: LimitRule::StopOldest }),
+///     cooldown: Duration::from_millis(30),
+///     ..Default::default()
+///   }
+/// }
+/// ```
+#[derive(Debug, Clone)]
+pub struct Sound {
+  /// The clips a play picks from. A sound with none plays nothing
+  pub clips: Vec<SoundClip>,
+  /// The bus it plays on: `"sfx"` (the default), another standard bus
+  /// (`"music"`, `"ui"`, `"voice"`, `"ambience"`, or `"master"`), or one of
+  /// the mixer's under them, such as `"sfx/footsteps"`. A bus the mixer
+  /// does not have plays on the nearest bus above it, with a warning
+  pub bus: String,
+  /// Its gain in dB: 0 is the clips as recorded, -6 about half as loud
+  pub volume_db: f32,
+  /// Each play's gain is drawn up to this many dB either side of
+  /// `volume_db`
+  pub volume_range_db: f32,
+  /// Its pitch in semitones: 12 is an octave up, and twice as fast
+  pub pitch: f32,
+  /// Each play's pitch is drawn up to this many semitones either side of
+  /// `pitch`
+  pub pitch_range: f32,
+  /// How many of the latest picks a play avoids, so a variation does not
+  /// repeat: 1 never plays the same clip twice in a row. A sound always has
+  /// one clip left to pick, so it avoids at most one fewer than its clips
+  pub no_repeat: u8,
+  /// How many of its voices play at once, and what a play past that does
+  pub limit: Option<VoiceLimit>,
+  /// How important its voices are, from 0 to 255 (higher is more
+  /// important; [`Sound::DEFAULT_PRIORITY`] by default). A voice is never
+  /// stopped to make room for a less important one, nor for an equally
+  /// important one started in the same frame
+  pub priority: u8,
+  /// The least time between two of its plays: a play sooner is refused
+  pub cooldown: Duration,
+  /// It loops until stopped: over each clip's `loop_region`, or the whole
+  /// clip (its `region`)
+  pub looping: bool,
+  /// Each play fades in over this
+  pub fade_in: Duration,
+  /// Its fade when the engine stops it: to make room under a voice limit,
+  /// or when the scene that played it exits. At least 10 ms
+  pub fade_out: Duration,
+  /// Played at a position in the world, it is heard from there: quieter
+  /// with distance from the listener, panned by its offset
+  pub spatial: Option<Spatial>,
+}
+
+impl Sound {
+  /// The priority of a sound that does not set one, and of a clip played
+  /// directly: the middle of 0 to 255
+  pub const DEFAULT_PRIORITY: u8 = 128;
+}
+
+impl Asset for Sound {}
+
+/// The empty definition: no clips, on `sfx`, at 0 dB and pitch 0 with no
+/// ranges, no repeat avoidance, no limit, the default priority, no cooldown,
+/// not looping and no fades. A clip played directly plays with it
+impl Default for Sound {
+  fn default() -> Self {
+    Self {
+      clips: Vec::new(),
+      bus: "sfx".to_string(),
+      volume_db: 0.0,
+      volume_range_db: 0.0,
+      pitch: 0.0,
+      pitch_range: 0.0,
+      no_repeat: 0,
+      limit: None,
+      priority: Self::DEFAULT_PRIORITY,
+      cooldown: Duration::ZERO,
+      looping: false,
+      fade_in: Duration::ZERO,
+      fade_out: Duration::ZERO,
+      spatial: None,
+    }
+  }
+}
+
+/// One of a [`Sound`]'s clips, with how often it is picked and what part of
+/// it plays
+#[derive(Debug, Clone)]
+pub struct SoundClip {
+  pub clip: Handle<AudioClip>,
+  /// How often it is picked against the others: 2 is twice as often as 1,
+  /// and 0 never
+  pub weight: f32,
+  /// The part of the clip that plays, in seconds from its start; all of it
+  /// when `None`
+  pub region: Option<Range<f64>>,
+  /// The part a looping sound repeats, in seconds from the start of
+  /// `region`; the whole region when `None`. Before it, the region plays
+  /// once, as an intro
+  pub loop_region: Option<Range<f64>>,
+}
+
+impl SoundClip {
+  /// `clip`, all of it, at weight 1
+  pub fn new(clip: Handle<AudioClip>) -> Self {
+    Self {
+      clip,
+      weight: 1.0,
+      region: None,
+      loop_region: None,
+    }
+  }
+}
+
+/// How many voices of a sound play at once, and what a play past that does
+/// (`limit: (max: 4, rule: StopOldest)` in a `.sound.ron` file; the rule is
+/// `StopOldest` when left out)
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VoiceLimit {
+  /// The most voices playing at once (a voice fading out after a stop is
+  /// no longer counted)
+  pub max: u16,
+  #[serde(default)]
+  pub rule: LimitRule,
+}
+
+/// What a play past a voice limit does. Whichever voice a rule picks, it is
+/// never one more important than the new play, nor an equally important one
+/// started in the same frame: with none left to pick, the play is refused
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+pub enum LimitRule {
+  /// The new play is refused
+  PreventNew,
+  /// The voice that started first stops
+  #[default]
+  StopOldest,
+  /// The quietest voice stops (the oldest of equals)
+  StopQuietest,
+  /// The voice farthest from the listener stops (the oldest of equals). A
+  /// voice played without a position counts as at the listener
+  StopFarthest,
+  /// The least important voice stops (the oldest of equals)
+  StopLowestPriority,
+}
+
+/// How a sound played at a position is heard from the listener
+/// (`spatial: (min_distance: 50.0, max_distance: 800.0)` in a `.sound.ron`
+/// file, with `curve`, `pan_width` and `low_pass_at_max` optional)
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(from = "SpatialFile")]
+pub struct Spatial {
+  /// Within this distance it plays at full volume
+  pub min_distance: f32,
+  /// At this distance and beyond it is silent
+  pub max_distance: f32,
+  /// How its volume falls between the two (`Inverse` when left out)
+  pub curve: Falloff,
+  /// The horizontal offset at which it is panned fully to one side
+  /// (`max_distance` when left out)
+  pub pan_width: f32,
+  /// A low-pass filter that closes with distance, to this cutoff in Hz at
+  /// `max_distance`; none when `None`
+  pub low_pass_at_max: Option<f64>,
+}
+
+/// [`Spatial`] as a file writes it
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SpatialFile {
+  min_distance: f32,
+  max_distance: f32,
+  #[serde(default)]
+  curve: Falloff,
+  #[serde(default)]
+  pan_width: Option<f32>,
+  #[serde(default)]
+  low_pass_at_max: Option<f64>,
+}
+
+impl From<SpatialFile> for Spatial {
+  fn from(file: SpatialFile) -> Self {
+    Self {
+      min_distance: file.min_distance,
+      max_distance: file.max_distance,
+      curve: file.curve,
+      pan_width: file.pan_width.unwrap_or(file.max_distance),
+      low_pass_at_max: file.low_pass_at_max,
+    }
+  }
+}
+
+/// How a spatial sound's volume falls from full at its minimum distance to
+/// silence at its maximum
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+pub enum Falloff {
+  /// Evenly over the distance
+  Linear,
+  /// Fast near the source and slowly far from it, as sound does in the open
+  #[default]
+  Inverse,
+  /// Evenly in decibels over the distance
+  Log,
+}
+
+#[cfg(test)]
+mod tests {
+  use std::time::Duration;
+
+  use super::*;
+  use crate::core::asset::{AssetServer, Assets, AssetsView, MemorySource};
+  use crate::core::audio::engine::MIN_FADE;
+  use crate::core::audio::{
+    AudioEngine, AudioLogEntry, AudioLogKind, AudioView, PlayOptions, Voice,
+  };
+  use crate::core::dev_log::{self, LogLevel};
+  use crate::core::ecs::{Vec2, World};
+  use crate::core::testing::{audio_step, audio_world, audio_world_over};
+
+  const FRAME: Duration = Duration::from_nanos(16_666_667);
+  const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/audio");
+
+  /// The 250 ms tone, at 22.05 kHz
+  fn tone() -> Vec<u8> {
+    match std::fs::read(format!("{FIXTURES}/tone.wav")) {
+      Ok(bytes) => bytes,
+      Err(error) => panic!("tone.wav: {error}"),
+    }
+  }
+
+  /// A clip `seconds` long, made in code
+  fn clip(world: &mut World, seconds: f32) -> Handle<AudioClip> {
+    let frames = vec![[0.1, 0.1]; (48_000.0 * seconds) as usize];
+    world
+      .resource_mut::<Assets<AudioClip>>()
+      .add(AudioClip::from_frames(48_000, &frames))
+  }
+
+  /// How the log names a clip made in code
+  fn name(clip: &Handle<AudioClip>) -> String {
+    format!("{:?}", clip.id())
+  }
+
+  /// The empty definition over `clips`
+  fn of(clips: &[&Handle<AudioClip>]) -> Sound {
+    Sound {
+      clips: clips
+        .iter()
+        .map(|&clip| SoundClip::new(clip.clone()))
+        .collect(),
+      ..Default::default()
+    }
+  }
+
+  fn add(world: &mut World, sound: Sound) -> Handle<Sound> {
+    world.resource_mut::<Assets<Sound>>().add(sound)
+  }
+
+  fn play(world: &mut World, sound: &Handle<Sound>) -> Voice {
+    AudioView::new(world).play(sound)
+  }
+
+  fn play_with(world: &mut World, sound: &Handle<Sound>, options: PlayOptions) -> Voice {
+    AudioView::new(world).play_with(sound, options)
+  }
+
+  fn log(world: &World) -> Vec<AudioLogEntry> {
+    world.resource::<AudioEngine>().log().to_vec()
+  }
+
+  fn last(world: &World) -> AudioLogEntry {
+    match world.resource::<AudioEngine>().log().last() {
+      Some(entry) => entry.clone(),
+      None => panic!("the log is empty"),
+    }
+  }
+
+  fn of_kind(world: &World, kind: AudioLogKind) -> Vec<AudioLogEntry> {
+    log(world)
+      .into_iter()
+      .filter(|entry| entry.kind == kind)
+      .collect()
+  }
+
+  fn warnings(matching: impl Fn(&str) -> bool) -> usize {
+    dev_log::get_entries()
+      .iter()
+      .filter(|entry| entry.level == LogLevel::Warn && matching(&entry.message))
+      .count()
+  }
+
+  /// A sound over one 2 s clip limited to two voices by `rule`, fading out
+  /// over 30 ms when stopped
+  fn limited(world: &mut World, rule: LimitRule) -> Handle<Sound> {
+    let long = clip(world, 2.0);
+    let sound = Sound {
+      limit: Some(VoiceLimit { max: 2, rule }),
+      fade_out: Duration::from_millis(30),
+      ..of(&[&long])
+    };
+    add(world, sound)
+  }
+
+  /// `count` plays of `sound`, each in a frame of its own
+  fn plays_over_frames(world: &mut World, sound: &Handle<Sound>, count: usize) -> Vec<Voice> {
+    (0..count)
+      .map(|_| {
+        let voice = play(world, sound);
+        audio_step(world, FRAME);
+        voice
+      })
+      .collect()
+  }
+
+  fn stolen(world: &World) -> Vec<(u32, Duration)> {
+    of_kind(world, AudioLogKind::Stolen)
+      .iter()
+      .map(|entry| (entry.voice, entry.fade))
+      .collect()
+  }
+
+  #[test]
+  fn weights_pick_in_proportion() {
+    let mut world = audio_world();
+    world.resource_mut::<AudioEngine>().seed(7);
+    let (three, one) = (clip(&mut world, 0.001), clip(&mut world, 0.001));
+    let mut sound = of(&[&three, &one]);
+    sound.clips[0].weight = 3.0;
+    sound.clips[1].weight = 1.0;
+    let sound = add(&mut world, sound);
+    let mut threes = 0;
+    for _ in 0..4000 {
+      let voice = play(&mut world, &sound);
+      assert!(voice.is_playing(), "{voice:?}");
+      let start = last(&world);
+      assert_eq!(start.kind, AudioLogKind::Start);
+      if start.source == name(&three) {
+        threes += 1;
+      }
+      audio_step(&mut world, Duration::from_millis(5));
+    }
+    assert!((2850..=3150).contains(&threes), "{threes} of 4000");
+  }
+
+  #[test]
+  fn no_repeat_never_plays_a_clip_twice_in_a_row() {
+    let mut world = audio_world();
+    world.resource_mut::<AudioEngine>().seed(11);
+    let (a, b) = (clip(&mut world, 0.001), clip(&mut world, 0.001));
+    let sound = add(
+      &mut world,
+      Sound {
+        no_repeat: 1,
+        ..of(&[&a, &b])
+      },
+    );
+    let mut picks = Vec::new();
+    for _ in 0..200 {
+      assert!(play(&mut world, &sound).is_playing());
+      picks.push(last(&world).source);
+      audio_step(&mut world, Duration::from_millis(5));
+    }
+    for pair in picks.windows(2) {
+      assert_ne!(pair[0], pair[1], "{picks:?}");
+    }
+  }
+
+  /// `no_repeat` avoids that many of the latest picks, and never so many
+  /// that nothing is left
+  #[test]
+  fn no_repeat_avoids_its_count_of_recent_picks_and_leaves_one() {
+    for (no_repeat, distinct) in [(2, 3), (9, 3)] {
+      let mut world = audio_world();
+      world.resource_mut::<AudioEngine>().seed(5);
+      let clips = [
+        clip(&mut world, 0.001),
+        clip(&mut world, 0.001),
+        clip(&mut world, 0.001),
+      ];
+      let sound = add(
+        &mut world,
+        Sound {
+          no_repeat,
+          ..of(&[&clips[0], &clips[1], &clips[2]])
+        },
+      );
+      let mut picks = Vec::new();
+      for _ in 0..90 {
+        assert!(
+          play(&mut world, &sound).is_playing(),
+          "no_repeat {no_repeat}"
+        );
+        picks.push(last(&world).source);
+        audio_step(&mut world, Duration::from_millis(5));
+      }
+      for window in picks.windows(distinct) {
+        let mut seen = window.to_vec();
+        seen.sort();
+        seen.dedup();
+        assert_eq!(seen.len(), distinct, "no_repeat {no_repeat}: {picks:?}");
+      }
+    }
+  }
+
+  #[test]
+  fn volume_and_pitch_ranges_stay_inside_their_ranges() {
+    let mut world = audio_world();
+    world.resource_mut::<AudioEngine>().seed(3);
+    let short = clip(&mut world, 0.001);
+    let sound = add(
+      &mut world,
+      Sound {
+        volume_db: -6.0,
+        volume_range_db: 2.0,
+        pitch: 0.0,
+        pitch_range: 1.0,
+        ..of(&[&short])
+      },
+    );
+    let semitone = 2f64.powf(1.0 / 12.0);
+    let (mut gains, mut rates) = (Vec::new(), Vec::new());
+    for _ in 0..300 {
+      assert!(play(&mut world, &sound).is_playing());
+      let start = last(&world);
+      gains.push(start.gain_db);
+      rates.push(start.rate);
+      audio_step(&mut world, Duration::from_millis(5));
+    }
+    for &gain in &gains {
+      assert!((-8.0..=-4.0).contains(&gain), "{gain}");
+    }
+    for &rate in &rates {
+      assert!(
+        rate >= 1.0 / semitone - 1e-9 && rate <= semitone + 1e-9,
+        "{rate}"
+      );
+    }
+    // Spread across both sides of the range, not stuck at one value
+    let (low, high) = gains
+      .iter()
+      .fold((f32::MAX, f32::MIN), |(lo, hi), &g| (lo.min(g), hi.max(g)));
+    assert!(low < -7.5 && high > -4.5, "{low}..{high}");
+    let (low, high) = rates
+      .iter()
+      .fold((f64::MAX, f64::MIN), |(lo, hi), &r| (lo.min(r), hi.max(r)));
+    assert!(low < 0.96 && high > 1.04, "{low}..{high}");
+    // A play's options add to what is drawn
+    let options = PlayOptions {
+      volume_db: -10.0,
+      pitch: 12.0,
+      ..Default::default()
+    };
+    assert!(play_with(&mut world, &sound, options).is_playing());
+    let start = last(&world);
+    assert!(
+      (-18.0..=-14.0).contains(&start.gain_db),
+      "{}",
+      start.gain_db
+    );
+    assert!(start.rate > 1.8 && start.rate < 2.2, "{}", start.rate);
+  }
+
+  #[test]
+  fn cooldown_refuses_a_play_too_soon() {
+    let mut world = audio_world();
+    let long = clip(&mut world, 1.0);
+    let sound = add(
+      &mut world,
+      Sound {
+        cooldown: Duration::from_millis(30),
+        ..of(&[&long])
+      },
+    );
+    let other = add(&mut world, of(&[&long]));
+    assert!(play(&mut world, &sound).is_playing());
+    let again = play(&mut world, &sound);
+    assert!(again.is_stopped(), "{again:?}");
+    assert_eq!(last(&world).kind, AudioLogKind::Refused);
+    assert_eq!(last(&world).sound, format!("{:?}", sound.id()));
+    // Another sound has a cooldown of its own
+    assert!(play(&mut world, &other).is_playing());
+    audio_step(&mut world, Duration::from_millis(20));
+    assert!(play(&mut world, &sound).is_stopped(), "20 ms is too soon");
+    assert_eq!(last(&world).kind, AudioLogKind::Refused);
+    audio_step(&mut world, Duration::from_millis(20));
+    assert!(play(&mut world, &sound).is_playing(), "40 ms is not");
+  }
+
+  #[test]
+  fn prevent_new_refuses_the_third() {
+    let mut world = audio_world();
+    let sound = limited(&mut world, LimitRule::PreventNew);
+    let voices = plays_over_frames(&mut world, &sound, 3);
+    assert!(voices[0].is_playing() && voices[1].is_playing());
+    assert!(voices[2].is_stopped(), "{:?}", voices[2]);
+    assert_eq!(of_kind(&world, AudioLogKind::Refused).len(), 1);
+    assert!(stolen(&world).is_empty());
+  }
+
+  #[test]
+  fn stop_oldest_stops_the_first() {
+    let mut world = audio_world();
+    let sound = limited(&mut world, LimitRule::StopOldest);
+    let voices = plays_over_frames(&mut world, &sound, 3);
+    // Stopped with the sound's fade-out
+    assert_eq!(
+      stolen(&world),
+      [(voices[0].id(), Duration::from_millis(30))]
+    );
+    assert!(voices[1].is_playing() && voices[2].is_playing());
+    audio_step(&mut world, Duration::from_millis(50));
+    assert!(voices[0].is_stopped(), "{:?}", voices[0]);
+    assert_eq!(AudioView::new(&mut world).voices_on("sfx"), 2);
+  }
+
+  #[test]
+  fn stop_quietest_stops_the_quietest() {
+    let mut world = audio_world();
+    let sound = limited(&mut world, LimitRule::StopQuietest);
+    let mut voices = Vec::new();
+    for volume_db in [-3.0, -12.0, 0.0] {
+      let options = PlayOptions {
+        volume_db,
+        ..Default::default()
+      };
+      voices.push(play_with(&mut world, &sound, options));
+      audio_step(&mut world, FRAME);
+    }
+    assert_eq!(
+      stolen(&world),
+      [(voices[1].id(), Duration::from_millis(30))]
+    );
+    assert!(voices[0].is_playing() && voices[2].is_playing());
+  }
+
+  #[test]
+  fn stop_lowest_priority_stops_the_lowest() {
+    let mut world = audio_world();
+    let sound = limited(&mut world, LimitRule::StopLowestPriority);
+    let mut voices = Vec::new();
+    for priority in [100, 50, 200] {
+      if let Some(sound) = world.resource_mut::<Assets<Sound>>().get_mut(&sound) {
+        sound.priority = priority;
+      }
+      voices.push(play(&mut world, &sound));
+      audio_step(&mut world, FRAME);
+    }
+    assert_eq!(
+      stolen(&world),
+      [(voices[1].id(), Duration::from_millis(30))]
+    );
+    assert!(voices[0].is_playing() && voices[2].is_playing());
+    // A less important play cuts neither: it is refused
+    if let Some(sound) = world.resource_mut::<Assets<Sound>>().get_mut(&sound) {
+      sound.priority = 10;
+    }
+    assert!(play(&mut world, &sound).is_stopped());
+    assert_eq!(last(&world).kind, AudioLogKind::Refused);
+    assert_eq!(stolen(&world).len(), 1);
+  }
+
+  #[test]
+  fn stop_farthest_stops_the_farthest_and_treats_no_position_as_zero() {
+    let mut world = audio_world();
+    world
+      .resource_mut::<AudioEngine>()
+      .set_listener(Some(Vec2::ZERO));
+    let sound = limited(&mut world, LimitRule::StopFarthest);
+    let at = |x: f32| PlayOptions {
+      position: Some(Vec2::new(x, 0.0)),
+      ..Default::default()
+    };
+    let nowhere = play(&mut world, &sound);
+    audio_step(&mut world, FRAME);
+    let far = play_with(&mut world, &sound, at(100.0));
+    audio_step(&mut world, FRAME);
+    let near = play_with(&mut world, &sound, at(10.0));
+    audio_step(&mut world, FRAME);
+    assert_eq!(stolen(&world), [(far.id(), Duration::from_millis(30))]);
+    // The voice with no position counts as at the listener, so the one 10
+    // away goes, though the other is older
+    let last_one = play(&mut world, &sound);
+    audio_step(&mut world, FRAME);
+    assert_eq!(
+      stolen(&world),
+      [
+        (far.id(), Duration::from_millis(30)),
+        (near.id(), Duration::from_millis(30))
+      ]
+    );
+    assert!(nowhere.is_playing() && last_one.is_playing());
+
+    // With every voice at distance 0 (no listener yet), the oldest goes
+    let mut world = audio_world();
+    let sound = limited(&mut world, LimitRule::StopFarthest);
+    let voices: Vec<Voice> = [10.0, 500.0, 20.0]
+      .into_iter()
+      .map(|x| {
+        let voice = play_with(&mut world, &sound, at(x));
+        audio_step(&mut world, FRAME);
+        voice
+      })
+      .collect();
+    assert_eq!(
+      stolen(&world),
+      [(voices[0].id(), Duration::from_millis(30))]
+    );
+  }
+
+  #[test]
+  fn a_bus_limit_counts_its_subtree() {
+    let mut world = audio_world();
+    world
+      .resource_mut::<AudioEngine>()
+      .set_bus_limit("master", Some(2));
+    let long = clip(&mut world, 2.0);
+    let effect = add(&mut world, of(&[&long]));
+    let button = add(
+      &mut world,
+      Sound {
+        bus: "ui".to_string(),
+        ..of(&[&long])
+      },
+    );
+    let first = play(&mut world, &effect);
+    audio_step(&mut world, FRAME);
+    let click = play(&mut world, &button);
+    audio_step(&mut world, FRAME);
+    // master holds the sfx voice and the ui voice: the oldest goes
+    let third = play(&mut world, &effect);
+    audio_step(&mut world, FRAME);
+    assert_eq!(stolen(&world), [(first.id(), MIN_FADE)]);
+    assert!(click.is_playing() && third.is_playing());
+    audio_step(&mut world, Duration::from_millis(50));
+    assert_eq!(AudioView::new(&mut world).voices_on("master"), 2);
+    // A limit on ui counts only ui's voices
+    world
+      .resource_mut::<AudioEngine>()
+      .set_bus_limit("ui", Some(1));
+    let again = play(&mut world, &button);
+    assert!(again.is_playing());
+    assert_eq!(stolen(&world)[1], (click.id(), MIN_FADE));
+    assert!(third.is_playing());
+  }
+
+  /// Review focus 1: a sound asked for hundreds of times in one frame stays
+  /// within its limit and the cap, and kira never runs out of room. A voice
+  /// is not stolen in the frame it started by an equally important play, so
+  /// a burst never stacks copies of itself
+  #[test]
+  fn a_thousand_plays_in_one_frame_stay_within_the_limit() {
+    let mut world = audio_world();
+    let long = clip(&mut world, 2.0);
+    let limited = add(
+      &mut world,
+      Sound {
+        limit: Some(VoiceLimit {
+          max: 4,
+          rule: LimitRule::StopOldest,
+        }),
+        ..of(&[&long])
+      },
+    );
+    for _ in 0..1000 {
+      play(&mut world, &limited);
+    }
+    assert_eq!(AudioView::new(&mut world).voices_on("sfx"), 4);
+    assert_eq!(of_kind(&world, AudioLogKind::Start).len(), 4);
+    audio_step(&mut world, FRAME);
+    assert_eq!(AudioView::new(&mut world).voices_on("sfx"), 4);
+
+    // With no limit, the cap of 96 voices a bus holds
+    let mut world = audio_world();
+    let long = clip(&mut world, 2.0);
+    let unlimited = add(&mut world, of(&[&long]));
+    for _ in 0..1000 {
+      play(&mut world, &unlimited);
+    }
+    assert_eq!(AudioView::new(&mut world).voices_on("sfx"), 96);
+    assert_eq!(of_kind(&world, AudioLogKind::Refused).len(), 904);
+    audio_step(&mut world, FRAME);
+    // A frame later, the new plays steal the older voices while kira has
+    // room for the stolen ones to fade out: its 128 a track, less the 96
+    for _ in 0..1000 {
+      play(&mut world, &unlimited);
+    }
+    let stolen = stolen(&world);
+    assert_eq!(stolen.len(), 32);
+    assert!(
+      stolen.iter().all(|&(_, fade)| fade == MIN_FADE),
+      "{stolen:?}"
+    );
+    assert_eq!(of_kind(&world, AudioLogKind::Start).len(), 96 + 32);
+    assert_eq!(of_kind(&world, AudioLogKind::Refused).len(), 904 + 968);
+    audio_step(&mut world, FRAME);
+    assert_eq!(AudioView::new(&mut world).voices_on("sfx"), 96);
+    assert_eq!(world.resource::<AudioEngine>().kira_full(), 0);
+  }
+
+  /// Past the cap, the least important voice goes, then the quietest; a
+  /// less important play is refused
+  #[test]
+  fn the_cap_steals_the_least_important_then_the_quietest() {
+    let mut world = audio_world();
+    let long = clip(&mut world, 2.0);
+    let sound = add(&mut world, of(&[&long]));
+    let mut voices = Vec::new();
+    for index in 0..96 {
+      let options = PlayOptions {
+        volume_db: if index == 40 { -20.0 } else { 0.0 },
+        ..Default::default()
+      };
+      voices.push(play_with(&mut world, &sound, options));
+    }
+    audio_step(&mut world, FRAME);
+    assert!(play(&mut world, &sound).is_playing());
+    assert_eq!(stolen(&world), [(voices[40].id(), MIN_FADE)]);
+    if let Some(sound) = world.resource_mut::<Assets<Sound>>().get_mut(&sound) {
+      sound.priority = 0;
+    }
+    assert!(play(&mut world, &sound).is_stopped());
+    assert_eq!(last(&world).kind, AudioLogKind::Refused);
+  }
+
+  #[test]
+  fn a_region_plays_its_part_and_a_loop_loops() {
+    let mut world = audio_world();
+    let long = clip(&mut world, 1.0);
+    let mut part = of(&[&long]);
+    part.clips[0].region = Some(0.2..0.25);
+    let part = add(&mut world, part);
+    let looped = add(
+      &mut world,
+      Sound {
+        looping: true,
+        fade_in: Duration::from_millis(20),
+        ..of(&[&long])
+      },
+    );
+    let short = play(&mut world, &part);
+    let forever = play(&mut world, &looped);
+    assert_eq!(last(&world).fade, Duration::from_millis(20), "the fade-in");
+    for _ in 0..6 {
+      audio_step(&mut world, FRAME);
+    }
+    assert!(short.is_stopped(), "50 ms of the clip: {short:?}");
+    for _ in 0..90 {
+      audio_step(&mut world, FRAME);
+    }
+    assert!(forever.is_playing(), "a 1 s clip looping: {forever:?}");
+  }
+
+  /// kira reads past a slice that runs off its clip, and loops forever on
+  /// an empty loop: a definition made in code with such regions plays
+  /// inside the clip instead
+  #[test]
+  fn regions_are_kept_inside_the_clip() {
+    let mut world = audio_world();
+    let long = clip(&mut world, 0.25);
+    let mut wild = Sound {
+      looping: true,
+      ..of(&[&long, &long, &long])
+    };
+    wild.clips[0].region = Some(0.1..10.0);
+    wild.clips[1].loop_region = Some(0.1..0.1);
+    wild.clips[2].region = Some(f64::NAN..-1.0);
+    wild.clips[2].loop_region = Some(5.0..9.0);
+    let wild = add(&mut world, wild);
+    let empty = clip(&mut world, 0.0);
+    let silent = add(
+      &mut world,
+      Sound {
+        looping: true,
+        ..of(&[&empty])
+      },
+    );
+    let voices: Vec<Voice> = (0..6).map(|_| play(&mut world, &wild)).collect();
+    let nothing = play(&mut world, &silent);
+    for _ in 0..30 {
+      audio_step(&mut world, FRAME);
+    }
+    assert!(voices.iter().all(Voice::is_playing), "{voices:?}");
+    assert!(
+      nothing.is_stopped(),
+      "an empty clip does not loop: {nothing:?}"
+    );
+  }
+
+  #[test]
+  fn playing_an_unready_sound_is_a_stopped_voice() {
+    let files = MemorySource::new();
+    files.insert(
+      "sfx/later.sound.ron",
+      r#"(clips: [(path: "sfx/later.wav")])"#,
+    );
+    files.insert("sfx/later.wav", tone());
+    let mut world = audio_world_over(files);
+    let sound = AssetsView::new(&mut world).load::<Sound>("sfx/later.sound.ron");
+    let early = play(&mut world, &sound);
+    assert!(early.is_stopped());
+    assert_eq!(early.id(), 0);
+    assert!(log(&world).is_empty(), "{:#?}", log(&world));
+    for _ in 0..500 {
+      if world.resource::<AssetServer>().is_ready(&sound) {
+        break;
+      }
+      audio_step(&mut world, Duration::from_millis(10));
+      std::thread::sleep(Duration::from_millis(2));
+    }
+    let voice = play(&mut world, &sound);
+    assert!(voice.is_playing(), "{voice:?}");
+    let start = last(&world);
+    assert_eq!(start.sound, "sfx/later.sound.ron");
+    assert_eq!(start.source, "sfx/later.wav");
+    assert_eq!(start.bus, "sfx");
+  }
+
+  #[test]
+  fn a_failed_sound_warns_once() {
+    let files = MemorySource::new();
+    files.insert(
+      "sfx/broken-for-warning.sound.ron",
+      r#"(clips: [(path: "sfx/nowhere-for-warning.wav")])"#,
+    );
+    let mut world = audio_world_over(files);
+    let sound = AssetsView::new(&mut world).load::<Sound>("sfx/broken-for-warning.sound.ron");
+    for _ in 0..500 {
+      if world.resource::<AssetServer>().state(&sound).is_failed() {
+        break;
+      }
+      audio_step(&mut world, Duration::from_millis(10));
+      std::thread::sleep(Duration::from_millis(2));
+    }
+    assert!(world.resource::<AssetServer>().state(&sound).is_failed());
+    for _ in 0..3 {
+      assert!(play(&mut world, &sound).is_stopped());
+      audio_step(&mut world, FRAME);
+    }
+    let about_it = warnings(|message| {
+      message.starts_with("sfx/broken-for-warning.sound.ron:") && message.contains("plays nothing")
+    });
+    assert_eq!(about_it, 1);
+  }
+
+  #[test]
+  fn a_reload_keeps_a_voice_valid() {
+    let files = MemorySource::new();
+    files.insert(
+      "sfx/hum.sound.ron",
+      r#"(clips: [(path: "sfx/hum.wav")], looping: true)"#,
+    );
+    files.insert("sfx/hum.wav", tone());
+    let mut world = audio_world_over(files.clone());
+    let sound = match AssetsView::new(&mut world).load_now::<Sound>("sfx/hum.sound.ron") {
+      Ok(sound) => sound,
+      Err(error) => panic!("{}", error.report()),
+    };
+    let voice = play(&mut world, &sound);
+    assert!(voice.is_playing());
+    audio_step(&mut world, FRAME);
+    // The definition reloads, then its clip
+    let reloads = [
+      (
+        "sfx/hum.sound.ron",
+        br#"(clips: [(path: "sfx/hum.wav")], looping: true, volume: -6.0)"#.to_vec(),
+      ),
+      ("sfx/hum.wav", tone()),
+    ];
+    for (path, bytes) in reloads {
+      let version = |world: &World| {
+        if path.ends_with(".wav") {
+          world
+            .resource::<Assets<Sound>>()
+            .get(&sound)
+            .and_then(|sound| {
+              world
+                .resource::<Assets<AudioClip>>()
+                .version(&sound.clips[0].clip)
+            })
+        } else {
+          world.resource::<Assets<Sound>>().version(&sound)
+        }
+      };
+      let before = version(&world);
+      files.insert(path, bytes);
+      world.resource::<AssetServer>().reload(path);
+      for _ in 0..500 {
+        if version(&world) != before {
+          break;
+        }
+        audio_step(&mut world, Duration::from_millis(10));
+        std::thread::sleep(Duration::from_millis(2));
+      }
+      assert_ne!(version(&world), before, "{path} reloaded");
+      assert!(voice.is_playing(), "after {path} reloaded: {voice:?}");
+      voice.set_volume(-3.0);
+      audio_step(&mut world, FRAME);
+      let gain = last(&world);
+      assert_eq!((gain.kind, gain.voice), (AudioLogKind::Gain, voice.id()));
+      assert_eq!(AudioView::new(&mut world).voices_on("sfx"), 1);
+    }
+    assert_eq!(
+      world
+        .resource::<Assets<Sound>>()
+        .get(&sound)
+        .map(|sound| sound.volume_db),
+      Some(-6.0)
+    );
+  }
+}

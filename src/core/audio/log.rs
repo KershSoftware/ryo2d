@@ -39,7 +39,10 @@ pub struct AudioLogEntry {
   pub kind: AudioLogKind,
   /// The voice's id (from 1; 0 when no voice started)
   pub voice: u32,
-  /// What it plays: the clip's asset path
+  /// The sound definition it plays: its asset path (its id for one made in
+  /// code); empty for a clip played directly
+  pub sound: String,
+  /// What it plays: the clip's asset path (its id for one made in code)
   pub source: String,
   /// Its bus
   pub bus: String,
@@ -97,6 +100,7 @@ mod tests {
     AudioLogEntry {
       kind: AudioLogKind::Start,
       voice,
+      sound: String::new(),
       source: String::new(),
       bus: "sfx".into(),
       gain_db: 0.0,

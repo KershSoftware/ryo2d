@@ -1,14 +1,25 @@
 //! [`AudioView`]: the audio engine as a scene reaches it (`ctx.audio()`)
 
-use super::engine::{AudioEngine, ClipSource};
-use super::{AudioClip, Voice};
-use crate::core::asset::{AssetServer, Assets, Handle};
+use super::engine::AudioEngine;
+use super::{AudioClip, Sound, Voice};
+use crate::core::asset::Handle;
+use crate::core::ecs::kernel::Mut;
 use crate::core::ecs::{Vec2, World};
 
-/// What [`AudioView::play`] takes: a clip's handle (`&handle`)
+/// What [`AudioView::play`] takes: a sound definition's handle or a clip's
+/// (`&handle`)
 pub enum Playable<'a> {
-  /// A clip, played on the `sfx` bus at its recorded level and pitch
+  /// A sound definition, played as it says
+  Sound(&'a Handle<Sound>),
+  /// A clip, played with the empty definition: on the `sfx` bus at its
+  /// recorded level and pitch, with no limit
   Clip(&'a Handle<AudioClip>),
+}
+
+impl<'a> From<&'a Handle<Sound>> for Playable<'a> {
+  fn from(sound: &'a Handle<Sound>) -> Self {
+    Playable::Sound(sound)
+  }
 }
 
 impl<'a> From<&'a Handle<AudioClip>> for Playable<'a> {
@@ -35,21 +46,22 @@ pub struct PlayOptions {
 
 /// The audio engine seen from a scene: plays sounds and reports on the
 /// buses. A scene gets one from `ctx.audio()`; it borrows the world, so take
-/// it, use it and let it go:
+/// it, use it and let it go. It plays a [`Sound`] definition as the
+/// definition says, or a clip directly:
 ///
 /// ```
 /// use ryo2d::prelude::*;
 ///
-/// struct Coin(Handle<AudioClip>);
+/// struct Coin(Handle<Sound>);
 ///
 /// impl Scene for Coin {
 ///   fn on_enter(&mut self, ctx: &mut SceneContext) {
-///     self.0 = ctx.assets().load("sfx/coin.ogg");
+///     self.0 = ctx.assets().load("sfx/coin.sound.ron");
 ///   }
 ///
 ///   fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
 ///     if ctx.input.key_pressed(KeyCode::Space) {
-///       // A clip still loading plays nothing
+///       // A sound still loading plays nothing
 ///       ctx.audio().play(&self.0);
 ///     }
 ///     SceneAction::Continue
@@ -68,9 +80,10 @@ impl<'w> AudioView<'w> {
     Self { world }
   }
 
-  /// Play `sound` (`&handle`) and return its [`Voice`]. A sound that has not
-  /// loaded yet, or failed to, plays nothing: the voice returned is already
-  /// stopped
+  /// Play `sound` (`&handle`, of a [`Sound`] or an [`AudioClip`]) and return
+  /// its [`Voice`]. A sound that has not loaded yet, or failed to (warned
+  /// about once), plays nothing, and a play its cooldown or a voice limit
+  /// refuses starts nothing: the voice returned is already stopped
   pub fn play<'a>(&mut self, sound: impl Into<Playable<'a>>) -> Voice {
     self.play_with(sound, PlayOptions::default())
   }
@@ -78,22 +91,14 @@ impl<'w> AudioView<'w> {
   /// [`play`](Self::play) with [`PlayOptions`]: louder or quieter, higher or
   /// lower than the sound's own settings
   pub fn play_with<'a>(&mut self, sound: impl Into<Playable<'a>>, options: PlayOptions) -> Voice {
-    let Playable::Clip(clip) = sound.into();
-    let Some((source, version)) = self
+    let playable = sound.into();
+    // The engine is taken out of the world while it reads the stores
+    self
       .world
-      .get_resource::<Assets<AudioClip>>()
-      .and_then(|clips| Some((ClipSource::of(clips.get(clip)?), clips.version(clip)?)))
-    else {
-      return Voice::stopped();
-    };
-    // Names clips in the log and in warnings; a clone shares the server
-    let server = self.world.get_resource::<AssetServer>().cloned();
-    match self.world.get_resource_mut::<AudioEngine>() {
-      Some(mut engine) => {
-        engine.play_clip(clip.clone(), version, source, &options, server.as_ref())
-      }
-      None => Voice::stopped(),
-    }
+      .try_resource_scope(|world: &mut World, mut engine: Mut<'_, AudioEngine>| {
+        engine.play(world, playable, &options)
+      })
+      .unwrap_or_default()
   }
 
   /// How many voices play on `bus` and every bus under it (`master` counts

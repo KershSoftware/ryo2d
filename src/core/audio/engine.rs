@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::fmt::Display;
 #[cfg(not(target_arch = "wasm32"))]
 use std::io::Cursor;
+use std::ops::Range;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -15,23 +16,30 @@ use kira::backend::mock::{MockBackend, MockBackendSettings};
 use kira::sound::static_sound::{StaticSoundData, StaticSoundHandle};
 #[cfg(not(target_arch = "wasm32"))]
 use kira::sound::streaming::{StreamingSoundData, StreamingSoundHandle};
-use kira::sound::{PlaybackState, SoundData};
+use kira::sound::{EndPosition, PlaybackPosition, PlaybackState, Region, SoundData};
 use kira::track::{TrackBuilder, TrackHandle};
 use kira::{
   AudioManager, AudioManagerSettings, Decibels, PlaySoundError, PlaybackRate, ResourceLimitReached,
   Semitones, Tween,
 };
+use rand::rngs::SmallRng;
+use rand::{Rng, SeedableRng};
 
 use super::log::{AudioLog, AudioLogEntry, AudioLogKind};
-use super::view::PlayOptions;
+use super::view::{PlayOptions, Playable};
 use super::voice::{Voice, VoiceChange, VoiceCommand, VoiceState};
-use super::{AudioClip, ClipData};
-use crate::core::asset::{AssetId, AssetServer, Handle};
-use crate::core::ecs::Resource;
+use super::{AudioClip, ClipData, LimitRule, Sound, SoundClip, VoiceLimit};
+use crate::core::asset::{AssetId, AssetServer, Assets, Handle};
+use crate::core::ecs::{Resource, Vec2, World};
+use crate::core::hash::{FastMap, FastSet};
 
 /// The shortest smoothing of any change to a voice (volume, pitch, pause,
 /// stop): shorter jumps click
 pub(crate) const MIN_FADE: Duration = Duration::from_millis(10);
+
+/// The most voices playing on one bus's own track. kira holds 128 sounds a
+/// track, so the voices stolen past the cap have room to fade out
+pub(crate) const VOICE_CAP: usize = 96;
 
 /// The mock backend's sample rate
 const MOCK_SAMPLE_RATE: u32 = 48_000;
@@ -48,7 +56,7 @@ const GAIN_RANGE: (f32, f32) = (-60.0, 24.0);
 /// A voice's own pitch, in semitones either way
 const PITCH_RANGE: f32 = 48.0;
 /// The standard buses under `master`, in order
-const STANDARD_BUSES: [&str; 5] = ["music", "sfx", "ui", "voice", "ambience"];
+pub(crate) const STANDARD_BUSES: [&str; 5] = ["music", "sfx", "ui", "voice", "ambience"];
 /// Where a clip played directly goes
 const DEFAULT_BUS: &str = "sfx";
 
@@ -118,6 +126,8 @@ struct Bus {
   /// `None` if kira had no room for it (never with the standard layout):
   /// plays on it are refused
   track: Option<TrackHandle>,
+  /// The most voices playing on it and the buses under it
+  limit: Option<u16>,
 }
 
 /// The buses, `master` first, in the standard layout (`master`, and under
@@ -135,6 +145,7 @@ impl BusTree {
       name: "master".to_string(),
       parent: None,
       track: master,
+      limit: None,
     });
     for name in STANDARD_BUSES {
       let track = buses[0]
@@ -145,6 +156,7 @@ impl BusTree {
         name: name.to_string(),
         parent: Some(0),
         track,
+        limit: None,
       });
     }
     BusTree { buses }
@@ -170,6 +182,16 @@ impl BusTree {
     false
   }
 
+  /// Whether kira has room for one more sound on `bus`'s track. Counting
+  /// kira's sounds, not the voices, takes in the ones it has yet to free
+  fn has_room(&self, bus: usize) -> bool {
+    self
+      .buses
+      .get(bus)
+      .and_then(|bus| bus.track.as_ref())
+      .is_some_and(|track| track.num_sounds() < track.sound_capacity())
+  }
+
   /// Start `data` on `bus`. A bus without a track has no room
   fn play<D: SoundData>(
     &mut self,
@@ -186,7 +208,7 @@ impl BusTree {
 /// A clip's samples, taken from its store to play. It lives on the stack for
 /// one play, and boxing the decoded variant would allocate on every play
 #[allow(clippy::large_enum_variant)]
-pub(crate) enum ClipSource {
+enum ClipSource {
   /// Decoded frames (an `Arc` inside: cheap to clone)
   Decoded(StaticSoundData),
   /// The file's bytes, to stream from
@@ -194,7 +216,7 @@ pub(crate) enum ClipSource {
 }
 
 impl ClipSource {
-  pub(crate) fn of(clip: &AudioClip) -> ClipSource {
+  fn of(clip: &AudioClip) -> ClipSource {
     match clip.data() {
       ClipData::Decoded(data) => ClipSource::Decoded(StaticSoundData::clone(data)),
       ClipData::Encoded(bytes) => ClipSource::Encoded(Arc::clone(bytes)),
@@ -282,11 +304,21 @@ struct LiveVoice {
   clip: Handle<AudioClip>,
   /// The clip's content version when the voice started
   clip_version: u64,
+  /// The definition it plays; `None` for a clip played directly
+  sound: Option<AssetId<Sound>>,
   bus: usize,
   /// Its own gain in dB
   gain_db: f32,
   /// Its own pitch in semitones
   pitch: f32,
+  /// How important it is (0 to 255)
+  priority: u8,
+  /// Where it plays in the world, if it was given a position
+  position: Option<Vec2>,
+  /// Its fade when the engine stops it under a limit
+  fade_out: Duration,
+  /// The engine frame it started in
+  frame: u64,
 }
 
 /// The live voices, in the order they started (a retired voice's removal
@@ -314,6 +346,117 @@ impl VoiceTable {
   fn index_of(&self, id: u32) -> Option<usize> {
     self.live.iter().position(|live| live.voice.id() == id)
   }
+}
+
+/// What a definition that has played remembers between its plays
+#[derive(Debug, Default)]
+struct SoundState {
+  /// Its latest picks (indices into its clips), oldest first, as many as
+  /// its `no_repeat`
+  recent: Vec<usize>,
+  /// When it last started a voice, on the engine's clock
+  last_start: Option<Duration>,
+}
+
+/// A voice a play stops to make room, and its fade
+#[derive(Debug, Clone, Copy)]
+struct Victim {
+  index: usize,
+  fade: Duration,
+}
+
+/// One play, resolved from a definition (or a bare clip's empty one)
+struct Request<'a> {
+  sound: Option<AssetId<Sound>>,
+  clip: &'a Handle<AudioClip>,
+  /// Which of the definition's clips it is, for no-repeat
+  pick: usize,
+  no_repeat: u8,
+  region: Option<&'a Range<f64>>,
+  loop_region: Option<&'a Range<f64>>,
+  looping: bool,
+  bus: &'a str,
+  gain_db: f32,
+  pitch: f32,
+  limit: Option<VoiceLimit>,
+  priority: u8,
+  cooldown: Duration,
+  fade_in: Duration,
+  fade_out: Duration,
+  position: Option<Vec2>,
+}
+
+impl<'a> Request<'a> {
+  /// `clip` played directly: the empty definition, plus `options`
+  fn clip(clip: &'a Handle<AudioClip>, options: &PlayOptions) -> Self {
+    Self {
+      sound: None,
+      clip,
+      pick: 0,
+      no_repeat: 0,
+      region: None,
+      loop_region: None,
+      looping: false,
+      bus: DEFAULT_BUS,
+      gain_db: options.volume_db,
+      pitch: options.pitch,
+      limit: None,
+      priority: Sound::DEFAULT_PRIORITY,
+      cooldown: Duration::ZERO,
+      fade_in: Duration::ZERO,
+      fade_out: Duration::ZERO,
+      position: options.position,
+    }
+  }
+
+  /// The definition `sound` (`id`), its clip `pick` chosen, its gain and
+  /// pitch drawn, plus `options`
+  fn sound(
+    id: AssetId<Sound>,
+    sound: &'a Sound,
+    pick: usize,
+    rng: &mut SmallRng,
+    options: &PlayOptions,
+  ) -> Option<Self> {
+    let clip = sound.clips.get(pick)?;
+    Some(Self {
+      sound: Some(id),
+      clip: &clip.clip,
+      pick,
+      no_repeat: sound.no_repeat,
+      region: clip.region.as_ref(),
+      loop_region: clip.loop_region.as_ref(),
+      looping: sound.looping,
+      bus: &sound.bus,
+      gain_db: sound.volume_db + spread(rng, sound.volume_range_db) + options.volume_db,
+      pitch: sound.pitch + spread(rng, sound.pitch_range) + options.pitch,
+      limit: sound.limit,
+      priority: sound.priority,
+      cooldown: sound.cooldown,
+      fade_in: sound.fade_in,
+      fade_out: sound.fade_out,
+      position: options.position,
+    })
+  }
+}
+
+/// How a voice starts in kira
+struct Start<'a> {
+  gain_db: f32,
+  pitch: f32,
+  fade_in: Option<Tween>,
+  region: Option<&'a Range<f64>>,
+  loop_region: Option<&'a Range<f64>>,
+  looping: bool,
+}
+
+/// Who a log entry is about
+struct Subject<'a> {
+  sound: Option<AssetId<Sound>>,
+  clip: &'a Handle<AudioClip>,
+  bus: usize,
+  gain_db: f32,
+  pitch: f32,
 }
 
 /// Why a play did not start
@@ -350,8 +493,29 @@ pub struct AudioEngine {
   /// Clips whose stream failed to decode, with the content version that
   /// failed: warned about once, and refused until they change (reload)
   undecodable: HashMap<AssetId<AudioClip>, u64>,
+  /// Picks clips and draws gains and pitches
+  rng: SmallRng,
+  /// The real time its frames have counted, for cooldowns
+  clock: Duration,
+  /// Its frames so far: a voice is not stolen in the frame it started by an
+  /// equally important play
+  frame: u64,
+  /// What each definition played remembers
+  sounds: FastMap<AssetId<Sound>, SoundState>,
+  /// Definitions warned about once (one that did not load, or has no clips)
+  warned_sounds: FastSet<AssetId<Sound>>,
+  /// Bus names warned about once (a bus there is not)
+  warned_buses: FastSet<String>,
+  /// Where the listener is: nowhere until spatial sound places it, so every
+  /// voice is at distance 0
+  listener: Option<Vec2>,
+  /// The voices one play stops to make room, kept to reuse
+  victims: Vec<Victim>,
   #[cfg(test)]
   injected_stream_errors: Vec<String>,
+  /// Plays kira refused for want of room: none should ever be
+  #[cfg(test)]
+  kira_full: usize,
 }
 
 impl AudioEngine {
@@ -387,8 +551,18 @@ impl AudioEngine {
       #[cfg(any(test, not(target_arch = "wasm32")))]
       stream_error_warned: false,
       undecodable: HashMap::new(),
+      rng: SmallRng::from_entropy(),
+      clock: Duration::ZERO,
+      frame: 0,
+      sounds: FastMap::default(),
+      warned_sounds: FastSet::default(),
+      warned_buses: FastSet::default(),
+      listener: None,
+      victims: Vec::new(),
       #[cfg(test)]
       injected_stream_errors: Vec::new(),
+      #[cfg(test)]
+      kira_full: 0,
     }
   }
 
@@ -403,6 +577,34 @@ impl AudioEngine {
   #[doc(hidden)]
   pub fn log(&self) -> &[AudioLogEntry] {
     self.log.entries()
+  }
+
+  /// Seed the generator that picks clips and draws gains and pitches, so a
+  /// run picks the same way each time
+  #[doc(hidden)]
+  pub fn seed(&mut self, seed: u64) {
+    self.rng = SmallRng::seed_from_u64(seed);
+  }
+
+  /// Put the listener at `position` (tests, until spatial sound places it)
+  #[cfg(test)]
+  pub(crate) fn set_listener(&mut self, position: Option<Vec2>) {
+    self.listener = position;
+  }
+
+  /// Limit the voices on `bus` and the buses under it (tests, until the
+  /// mixer sets bus limits)
+  #[cfg(test)]
+  pub(crate) fn set_bus_limit(&mut self, bus: &str, max: Option<u16>) {
+    if let Some(bus) = self.buses.find(bus) {
+      self.buses.buses[bus].limit = max;
+    }
+  }
+
+  /// How many plays kira refused for want of room (tests: it never should)
+  #[cfg(test)]
+  pub(crate) fn kira_full(&self) -> usize {
+    self.kira_full
   }
 
   /// Whether it runs on the mock backend (tests)
@@ -430,69 +632,283 @@ impl AudioEngine {
       .count()
   }
 
-  /// Start `clip` (whose samples are `source`, at content `version`) on the
-  /// default bus. A play kira has no room for, a stream that cannot open,
-  /// or a clip whose stream already failed to decode (until it reloads) is
-  /// refused: the voice returned is already stopped. `server` names clips
-  /// in the log and in warnings
-  pub(crate) fn play_clip(
+  /// Play `playable`, its clips and definitions read from `world`'s stores.
+  /// A definition or clip not loaded yet (or that failed: warned about once)
+  /// plays nothing; a play its cooldown, a voice limit or kira's room
+  /// refuses, a stream that cannot open, or a clip whose stream already
+  /// failed to decode (until it reloads) is refused and logged. Either way
+  /// the voice returned is already stopped
+  pub(crate) fn play(
     &mut self,
-    clip: Handle<AudioClip>,
-    version: u64,
-    source: ClipSource,
+    world: &World,
+    playable: Playable<'_>,
     options: &PlayOptions,
-    server: Option<&AssetServer>,
   ) -> Voice {
-    let bus = self.buses.find(DEFAULT_BUS).unwrap_or(0);
-    let gain_db = clamp_gain(options.volume_db);
-    let pitch = clamp_pitch(options.pitch);
-    // Another decoder thread would only fail the same way
-    if self.undecodable.get(&clip.id()) == Some(&version) {
-      let entry = self.entry(AudioLogKind::Refused, 0, &clip, bus, gain_db, pitch, server);
-      self.log.push(entry);
-      return Voice::stopped();
-    }
-    let started = match source {
-      ClipSource::Decoded(mut data) => {
-        data.settings.volume = Decibels(gain_db).into();
-        data.settings.playback_rate = PlaybackRate(rate_of(pitch)).into();
-        // A static sound cannot fail to start but for room
-        self
-          .buses
-          .play(bus, data)
-          .map(Playback::Static)
-          .map_err(|_| Refusal::Full)
+    let server = world.get_resource::<AssetServer>();
+    match playable {
+      Playable::Clip(clip) => self.start(world, &Request::clip(clip, options), server),
+      Playable::Sound(handle) => {
+        let id = handle.id();
+        let Some(sound) = world
+          .get_resource::<Assets<Sound>>()
+          .and_then(|sounds| sounds.get(id))
+        else {
+          if server.is_some_and(|server| server.state(id).is_failed()) {
+            self.warn_sound(
+              id,
+              "it did not load, so it plays nothing (the asset warning for it says why)",
+              server,
+            );
+          }
+          return Voice::stopped();
+        };
+        let recent = self
+          .sounds
+          .get(&id)
+          .map_or(&[][..], |state| state.recent.as_slice());
+        let request = pick_clip(&mut self.rng, &sound.clips, recent, sound.no_repeat)
+          .and_then(|pick| Request::sound(id, sound, pick, &mut self.rng, options));
+        match request {
+          Some(request) => self.start(world, &request, server),
+          None => {
+            self.warn_sound(id, "it has no clips, so it plays nothing", server);
+            Voice::stopped()
+          }
+        }
       }
-      ClipSource::Encoded(bytes) => self.start_stream(bus, bytes, gain_db, pitch),
+    }
+  }
+
+  /// Start `request`'s voice, unless its clip is not loaded (a stopped
+  /// voice, not logged) or it is refused (a stopped voice, logged)
+  fn start(&mut self, world: &World, request: &Request<'_>, server: Option<&AssetServer>) -> Voice {
+    let bus = self.resolve_bus(request.bus, request.sound, server);
+    let subject = Subject {
+      sound: request.sound,
+      clip: request.clip,
+      bus,
+      gain_db: clamp_gain(request.gain_db),
+      pitch: clamp_pitch(request.pitch),
+    };
+    let Some((clip, version)) = world
+      .get_resource::<Assets<AudioClip>>()
+      .and_then(|clips| Some((clips.get(request.clip)?, clips.version(request.clip)?)))
+    else {
+      return Voice::stopped();
+    };
+    // A clip whose stream failed to decode would only fail the same way on
+    // another decoder thread. Kira's room is asked before any limit stops
+    // a voice: a stopped voice holds its room until it has faded out
+    let refused = self.undecodable.get(&request.clip.id()) == Some(&version)
+      || self.cooling(request)
+      || !self.buses.has_room(bus)
+      || !self.make_room(bus, request);
+    if refused {
+      return self.refuse(&subject, server);
+    }
+    let start = Start {
+      gain_db: subject.gain_db,
+      pitch: subject.pitch,
+      fade_in: (!request.fade_in.is_zero()).then(|| tween(request.fade_in)),
+      region: request.region,
+      loop_region: request.loop_region,
+      looping: request.looping,
+    };
+    let started = match ClipSource::of(clip) {
+      ClipSource::Decoded(data) => self.start_static(bus, data, &start),
+      ClipSource::Encoded(bytes) => self.start_stream(bus, bytes, &start),
     };
     let playback = match started {
       Ok(playback) => playback,
       Err(refusal) => {
-        if let Refusal::Undecodable(error) = &refusal {
-          self.warn_undecodable(&clip, version, error, server);
+        match &refusal {
+          Refusal::Undecodable(error) => {
+            self.warn_undecodable(request.clip, version, error, server)
+          }
+          Refusal::Full => self.count_kira_full(),
         }
-        let entry = self.entry(AudioLogKind::Refused, 0, &clip, bus, gain_db, pitch, server);
-        self.log.push(entry);
-        return Voice::stopped();
+        self.victims.clear();
+        return self.refuse(&subject, server);
       }
     };
+    self.steal_victims(server);
     let voice = Voice::new(self.voices.next_id(), self.commands.clone());
     self.voices.live.push(LiveVoice {
       voice: voice.clone(),
       playback,
-      clip,
+      clip: request.clip.clone(),
       clip_version: version,
+      sound: request.sound,
       bus,
-      gain_db,
-      pitch,
+      gain_db: subject.gain_db,
+      pitch: subject.pitch,
+      priority: request.priority,
+      position: request.position,
+      fade_out: request.fade_out,
+      frame: self.frame,
     });
     self.record(
       self.voices.live.len() - 1,
       AudioLogKind::Start,
-      Duration::ZERO,
+      request.fade_in,
       server,
     );
+    if let Some(id) = request.sound {
+      let state = self.sounds.entry(id).or_default();
+      state.last_start = Some(self.clock);
+      state.recent.push(request.pick);
+      let excess = state
+        .recent
+        .len()
+        .saturating_sub(usize::from(request.no_repeat));
+      state.recent.drain(..excess);
+    }
     voice
+  }
+
+  /// Whether `request`'s definition played too recently for its cooldown
+  fn cooling(&self, request: &Request<'_>) -> bool {
+    let Some(id) = request.sound else {
+      return false;
+    };
+    !request.cooldown.is_zero()
+      && self
+        .sounds
+        .get(&id)
+        .and_then(|state| state.last_start)
+        .is_some_and(|last| self.clock.saturating_sub(last) < request.cooldown)
+  }
+
+  /// Plan the voices a play on `bus` stops, into `victims`, to keep within
+  /// its definition's limit (its voices on the bus's subtree), each bus
+  /// limit from `bus` up (every voice on that bus's subtree, by the
+  /// definition's rule, or the cap's without one) and the cap on `bus`'s own
+  /// track. False, with nothing planned, if a limit refuses the play
+  fn make_room(&mut self, bus: usize, request: &Request<'_>) -> bool {
+    self.victims.clear();
+    let buses = &self.buses;
+    let mut room = Room {
+      live: &self.voices.live,
+      buses,
+      victims: &mut self.victims,
+      frame: self.frame,
+      listener: self.listener,
+      priority: request.priority,
+    };
+    let mut fits = match (request.sound, request.limit) {
+      (Some(id), Some(limit)) => room.fit(
+        Scope::Sound(id, bus),
+        usize::from(limit.max),
+        Some(limit.rule),
+      ),
+      _ => true,
+    };
+    let mut at = Some(bus);
+    while let (true, Some(index)) = (fits, at) {
+      let Some(this) = buses.buses.get(index) else {
+        break;
+      };
+      if let Some(max) = this.limit {
+        let rule = request.limit.map(|limit| limit.rule);
+        fits = room.fit(Scope::Subtree(index), usize::from(max), rule);
+      }
+      at = this.parent;
+    }
+    fits = fits && room.fit(Scope::Track(bus), VOICE_CAP, None);
+    if !fits {
+      self.victims.clear();
+    }
+    fits
+  }
+
+  /// Stop the planned victims, each with its fade, logged as stolen
+  fn steal_victims(&mut self, server: Option<&AssetServer>) {
+    for at in 0..self.victims.len() {
+      let Victim { index, fade } = self.victims[at];
+      if let Some(live) = self.voices.live.get_mut(index) {
+        live.playback.stop(tween(fade));
+        live.voice.set_state(VoiceState::Stopping);
+      }
+      self.record(index, AudioLogKind::Stolen, fade, server);
+    }
+    self.victims.clear();
+  }
+
+  /// A refused play: logged, and a voice that never started
+  fn refuse(&mut self, subject: &Subject<'_>, server: Option<&AssetServer>) -> Voice {
+    let entry = self.entry(AudioLogKind::Refused, 0, subject, server);
+    self.log.push(entry);
+    Voice::stopped()
+  }
+
+  #[cfg(test)]
+  fn count_kira_full(&mut self) {
+    self.kira_full += 1;
+  }
+
+  #[cfg(not(test))]
+  fn count_kira_full(&mut self) {}
+
+  /// The bus named `name`, or the nearest bus above it (`sfx` for
+  /// `sfx/steps`), or `sfx`, warning once per name
+  fn resolve_bus(
+    &mut self,
+    name: &str,
+    sound: Option<AssetId<Sound>>,
+    server: Option<&AssetServer>,
+  ) -> usize {
+    if let Some(bus) = self.buses.find(name) {
+      return bus;
+    }
+    let mut at = name;
+    let fallback = loop {
+      match at.rsplit_once('/') {
+        Some((parent, _)) => match self.buses.find(parent) {
+          Some(bus) => break bus,
+          None => at = parent,
+        },
+        None => break self.buses.find(DEFAULT_BUS).unwrap_or(0),
+      }
+    };
+    if !self.warned_buses.contains(name) {
+      self.warned_buses.insert(name.to_string());
+      let who = sound.map_or_else(String::new, |id| sound_name(id, server));
+      crate::engine_warn!(
+        module: "Audio",
+        "{who}: there is no bus {name:?}, so it plays on {:?} (a game's own buses are added in the mixer)",
+        self.buses.name(fallback)
+      );
+    }
+    fallback
+  }
+
+  /// Warn about definition `id` once, with `why`
+  fn warn_sound(&mut self, id: AssetId<Sound>, why: &str, server: Option<&AssetServer>) {
+    if self.warned_sounds.insert(id) {
+      let name = sound_name(id, server);
+      crate::engine_warn!(module: "Audio", "{name}: {why}");
+    }
+  }
+
+  /// Start decoded frames on `bus`. A static sound cannot fail to start but
+  /// for room
+  fn start_static(
+    &mut self,
+    bus: usize,
+    mut data: StaticSoundData,
+    start: &Start<'_>,
+  ) -> Result<Playback, Refusal> {
+    let span = Span::of(start, data.sample_rate, data.frames.len());
+    data.slice = span.slice;
+    data.settings.loop_region = span.loop_region.map(region);
+    data.settings.volume = Decibels(start.gain_db).into();
+    data.settings.playback_rate = PlaybackRate(rate_of(start.pitch)).into();
+    data.settings.fade_in_tween = start.fade_in;
+    self
+      .buses
+      .play(bus, data)
+      .map(Playback::Static)
+      .map_err(|_| Refusal::Full)
   }
 
   /// Open a stream over a clip's bytes and start it. The web has no
@@ -502,13 +918,24 @@ impl AudioEngine {
     &mut self,
     bus: usize,
     bytes: Arc<[u8]>,
-    gain_db: f32,
-    pitch: f32,
+    start: &Start<'_>,
   ) -> Result<Playback, Refusal> {
-    let data = StreamingSoundData::from_cursor(Cursor::new(bytes))
-      .map_err(|error| Refusal::Undecodable(error.to_string()))?
-      .volume(Decibels(gain_db))
-      .playback_rate(PlaybackRate(rate_of(pitch)));
+    let mut data = StreamingSoundData::from_cursor(Cursor::new(bytes))
+      .map_err(|error| Refusal::Undecodable(error.to_string()))?;
+    let frames = data.num_frames();
+    let seconds = data.duration().as_secs_f64();
+    let rate = if seconds > 0.0 {
+      (frames as f64 / seconds).round() as u32
+    } else {
+      0
+    };
+    let span = Span::of(start, rate, frames);
+    data.slice = span.slice;
+    let data = data
+      .volume(Decibels(start.gain_db))
+      .playback_rate(PlaybackRate(rate_of(start.pitch)))
+      .fade_in_tween(start.fade_in)
+      .loop_region(span.loop_region.map(region));
     match self.buses.play(bus, data) {
       Ok(sound) => Ok(Playback::Stream(sound)),
       Err(PlaySoundError::SoundLimitReached) => Err(Refusal::Full),
@@ -521,18 +948,19 @@ impl AudioEngine {
     &mut self,
     _bus: usize,
     _bytes: Arc<[u8]>,
-    _gain_db: f32,
-    _pitch: f32,
+    _start: &Start<'_>,
   ) -> Result<Playback, Refusal> {
     Err(Refusal::Undecodable(
       "the web cannot stream audio".to_string(),
     ))
   }
 
-  /// The frame's audio work: apply the voices' queued commands, report the
-  /// device's stream errors, advance the mock backend by `real_delta`, and
-  /// retire the voices that ended
+  /// The frame's audio work: count the frame, apply the voices' queued
+  /// commands, report the device's stream errors, advance the mock backend
+  /// by `real_delta`, and retire the voices that ended
   pub(crate) fn update(&mut self, real_delta: Duration, server: Option<&AssetServer>) {
+    self.frame = self.frame.wrapping_add(1);
+    self.clock = self.clock.saturating_add(real_delta);
     while let Ok(command) = self.inbox.try_recv() {
       self.apply(command, server);
     }
@@ -670,49 +1098,48 @@ impl AudioEngine {
     let Some(live) = self.voices.live.get(index) else {
       return;
     };
-    let mut entry = self.entry(
-      kind,
-      live.voice.id(),
-      &live.clip,
-      live.bus,
-      live.gain_db,
-      live.pitch,
-      server,
-    );
+    let subject = Subject {
+      sound: live.sound,
+      clip: &live.clip,
+      bus: live.bus,
+      gain_db: live.gain_db,
+      pitch: live.pitch,
+    };
+    let mut entry = self.entry(kind, live.voice.id(), &subject, server);
     entry.fade = fade;
     self.log.push(entry);
   }
 
-  /// A log entry for a voice of `clip` on `bus` (an empty one when the log
-  /// is off: nothing is pushed then)
-  #[allow(clippy::too_many_arguments)]
+  /// A log entry about `subject` (an empty one when the log is off: nothing
+  /// is pushed then)
   fn entry(
     &self,
     kind: AudioLogKind,
     voice: u32,
-    clip: &Handle<AudioClip>,
-    bus: usize,
-    gain_db: f32,
-    pitch: f32,
+    subject: &Subject<'_>,
     server: Option<&AssetServer>,
   ) -> AudioLogEntry {
     let on = self.log.is_on();
     AudioLogEntry {
       kind,
       voice,
+      sound: match subject.sound {
+        Some(id) if on => sound_name(id, server),
+        _ => String::new(),
+      },
       source: if on {
-        source_name(clip, server)
+        source_name(subject.clip, server)
       } else {
         String::new()
       },
       bus: if on {
-        self.buses.name(bus).to_string()
+        self.buses.name(subject.bus).to_string()
       } else {
         String::new()
       },
-      gain_db,
+      gain_db: subject.gain_db,
       pan: 0.0,
-      rate: rate_of(pitch),
+      rate: rate_of(subject.pitch),
       fade: Duration::ZERO,
     }
   }
@@ -728,11 +1155,247 @@ impl Drop for AudioEngine {
   }
 }
 
+/// Which voices a limit counts
+#[derive(Debug, Clone, Copy)]
+enum Scope {
+  /// A definition's voices on a bus's subtree
+  Sound(AssetId<Sound>, usize),
+  /// Every voice on a bus's subtree
+  Subtree(usize),
+  /// Every voice on a bus's own track
+  Track(usize),
+}
+
+/// The voices one play may stop to make room, planned before any is
+/// stopped, so a play a later limit refuses stops none
+struct Room<'a> {
+  live: &'a [LiveVoice],
+  buses: &'a BusTree,
+  victims: &'a mut Vec<Victim>,
+  frame: u64,
+  listener: Option<Vec2>,
+  /// The new play's priority
+  priority: u8,
+}
+
+impl Room<'_> {
+  /// Keep `scope` within `max` with one more voice, planning stops by
+  /// `rule` (or, with none, the cap's: the least important voice, then the
+  /// quietest, then the oldest) until there is room. False if `rule` is
+  /// `PreventNew`, or no voice may be stopped
+  fn fit(&mut self, scope: Scope, max: usize, rule: Option<LimitRule>) -> bool {
+    loop {
+      let count = (0..self.live.len())
+        .filter(|&index| self.counts(index, scope))
+        .count();
+      if count < max {
+        return true;
+      }
+      if rule == Some(LimitRule::PreventNew) {
+        return false;
+      }
+      let Some(index) = self.victim(scope, rule) else {
+        return false;
+      };
+      let fade = match rule {
+        Some(_) => self.live[index].fade_out.max(MIN_FADE),
+        None => MIN_FADE,
+      };
+      self.victims.push(Victim { index, fade });
+    }
+  }
+
+  /// Whether voice `index` counts against `scope`'s limit: in it, playing or
+  /// paused, and not already planned to stop
+  fn counts(&self, index: usize, scope: Scope) -> bool {
+    let Some(live) = self.live.get(index) else {
+      return false;
+    };
+    let in_scope = match scope {
+      Scope::Sound(id, bus) => live.sound == Some(id) && self.buses.within(live.bus, bus),
+      Scope::Subtree(bus) => self.buses.within(live.bus, bus),
+      Scope::Track(bus) => live.bus == bus,
+    };
+    in_scope
+      && !matches!(
+        live.voice.state(),
+        VoiceState::Stopping | VoiceState::Stopped
+      )
+      && !self.victims.iter().any(|victim| victim.index == index)
+  }
+
+  /// The voice `rule` stops in `scope`, among those the new play may stop:
+  /// never a more important one, nor an equally important one started this
+  /// frame (stopping it would only stack two starts of a burst). Voices are
+  /// in start order, so the oldest of equals wins
+  fn victim(&self, scope: Scope, rule: Option<LimitRule>) -> Option<usize> {
+    let mut chosen: Option<usize> = None;
+    for index in 0..self.live.len() {
+      let live = &self.live[index];
+      let may_stop = live.priority < self.priority
+        || (live.priority == self.priority && live.frame != self.frame);
+      if !may_stop || !self.counts(index, scope) {
+        continue;
+      }
+      let better = match chosen.map(|at| &self.live[at]) {
+        None => true,
+        Some(best) => match rule {
+          Some(LimitRule::StopOldest | LimitRule::PreventNew) => false,
+          Some(LimitRule::StopQuietest) => live.gain_db < best.gain_db,
+          Some(LimitRule::StopFarthest) => self.distance(live) > self.distance(best),
+          Some(LimitRule::StopLowestPriority) => live.priority < best.priority,
+          None => {
+            live.priority < best.priority
+              || (live.priority == best.priority && live.gain_db < best.gain_db)
+          }
+        },
+      };
+      if better {
+        chosen = Some(index);
+      }
+    }
+    chosen
+  }
+
+  /// A voice's distance from the listener: 0 without a position, or while
+  /// there is no listener
+  fn distance(&self, live: &LiveVoice) -> f32 {
+    match (live.position, self.listener) {
+      (Some(position), Some(listener)) => position.distance(listener),
+      _ => 0.0,
+    }
+  }
+}
+
+/// Which of `clips` a play picks: by weight, avoiding the latest
+/// `no_repeat` picks in `recent` (never every clip). A weight that is not a
+/// number, or is below 0, counts as 0. If the clips left all weigh 0, the
+/// avoidance gives way (a clip of weight 0 never plays); if every clip
+/// weighs 0, each is as likely. `None` with no clips
+fn pick_clip(
+  rng: &mut SmallRng,
+  clips: &[SoundClip],
+  recent: &[usize],
+  no_repeat: u8,
+) -> Option<usize> {
+  let last = clips.len().checked_sub(1)?;
+  let avoid = usize::from(no_repeat).min(last);
+  let avoided = &recent[recent.len().saturating_sub(avoid)..];
+  let left = |index: usize| !avoided.contains(&index);
+  weighted(rng, clips, left)
+    .or_else(|| weighted(rng, clips, |_| true))
+    .or_else(|| {
+      let count = (0..clips.len()).filter(|&index| left(index)).count();
+      let nth = rng.gen_range(0..count.max(1));
+      (0..clips.len()).filter(|&index| left(index)).nth(nth)
+    })
+}
+
+/// A pick by weight among the clips `allowed`; `None` if they weigh nothing
+fn weighted(
+  rng: &mut SmallRng,
+  clips: &[SoundClip],
+  allowed: impl Fn(usize) -> bool,
+) -> Option<usize> {
+  let weight = |index: usize| -> f64 {
+    let weight = clips[index].weight;
+    if allowed(index) && weight.is_finite() && weight > 0.0 {
+      f64::from(weight)
+    } else {
+      0.0
+    }
+  };
+  let total: f64 = (0..clips.len()).map(weight).sum();
+  if !(total > 0.0 && total.is_finite()) {
+    return None;
+  }
+  let mut at = rng.gen_range(0.0..total);
+  let mut chosen = None;
+  for index in 0..clips.len() {
+    let weight = weight(index);
+    if weight <= 0.0 {
+      continue;
+    }
+    chosen = Some(index);
+    if at < weight {
+      break;
+    }
+    at -= weight;
+  }
+  chosen
+}
+
+/// A random offset up to `range` either side of 0 (0 for a range that is
+/// not a number above 0)
+fn spread(rng: &mut SmallRng, range: f32) -> f32 {
+  if range.is_finite() && range > 0.0 {
+    rng.gen_range(-1.0f32..=1.0) * range
+  } else {
+    0.0
+  }
+}
+
+/// What part of a clip plays, and what part of that loops, in frames
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Span {
+  /// The frames played, `start..end` of the clip; all of it when `None`
+  slice: Option<(usize, usize)>,
+  /// The frames looped, from the start of what plays; no loop when `None`
+  loop_region: Option<(usize, usize)>,
+}
+
+impl Span {
+  /// `start`'s region and loop of a clip of `frames` frames at `rate`. kira
+  /// reads past the end of a slice that runs off its clip, and loops
+  /// forever on an empty loop, so each part is cut to what holds it and is
+  /// never empty: a region that is not a span plays the whole clip, a loop
+  /// region that is not loops all that plays, and nothing empty loops
+  fn of(start: &Start<'_>, rate: u32, frames: usize) -> Span {
+    let slice = start.region.and_then(|region| within(region, rate, frames));
+    let played = slice.map_or(frames, |(from, to)| to - from);
+    let loop_region = (start.looping && played > 0).then(|| {
+      start
+        .loop_region
+        .and_then(|looped| within(looped, rate, played))
+        .unwrap_or((0, played))
+    });
+    Span { slice, loop_region }
+  }
+}
+
+/// `span`, in seconds, as frames at `rate` cut to the first `frames`;
+/// `None` if it is not a span, or nothing of it is left
+fn within(span: &Range<f64>, rate: u32, frames: usize) -> Option<(usize, usize)> {
+  let is_span = span.start.is_finite() && span.end.is_finite() && span.start >= 0.0;
+  if !is_span || span.end <= span.start {
+    return None;
+  }
+  let at = |seconds: f64| ((seconds * f64::from(rate)).round() as usize).min(frames);
+  let (from, to) = (at(span.start), at(span.end));
+  (to > from).then_some((from, to))
+}
+
+/// Frames `start..end` as kira's region
+fn region((start, end): (usize, usize)) -> Region {
+  Region {
+    start: PlaybackPosition::Samples(start),
+    end: EndPosition::Custom(PlaybackPosition::Samples(end)),
+  }
+}
+
 /// A clip's asset path, or its id for a clip made in code
 fn source_name(clip: &Handle<AudioClip>, server: Option<&AssetServer>) -> String {
   match server.and_then(|server| server.path(clip)) {
     Some(path) => path.to_string(),
     None => format!("{:?}", clip.id()),
+  }
+}
+
+/// A definition's asset path, or its id for one made in code
+fn sound_name(sound: AssetId<Sound>, server: Option<&AssetServer>) -> String {
+  match server.and_then(|server| server.path(sound)) {
+    Some(path) => path.to_string(),
+    None => format!("{sound:?}"),
   }
 }
 
