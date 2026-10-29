@@ -658,15 +658,26 @@ mod tests {
   #[test]
   fn an_emitter_played_then_despawned_by_one_system_is_heard() {
     use crate::core::audio::engine::MIN_FADE;
+    use crate::core::audio::{AudioListener, Falloff, Spatial};
     use crate::core::ecs::{Commands, Component, Query, With};
     #[derive(Component)]
     struct Exploding;
     let mut world = world();
     let shot = world.resource::<Sounds>().shot.clone();
     let bed = world.resource::<Sounds>().bed.clone();
+    // The blast is heard from its place: full within 50 px, fully to one
+    // side 100 px across
+    world.spawn((AudioListener, Transform::IDENTITY));
     let boom = world.resource_mut::<Assets<Sound>>().add(Sound {
       clips: vec![SoundClip::new(shot)],
       fade_out: Duration::from_millis(40),
+      spatial: Some(Spatial {
+        min_distance: 50.0,
+        max_distance: 500.0,
+        curve: Falloff::Linear,
+        pan_width: 100.0,
+        low_pass_at_max: None,
+      }),
       ..Default::default()
     });
     for (sound, x) in [(boom, 30.0), (bed, 60.0)] {
@@ -694,6 +705,12 @@ mod tests {
       panic!("two voices played: {voices:?}");
     };
     assert_eq!((starts(&world, boom), starts(&world, bed)), (1, 1));
+    // Where the barrel was: 30 px to the listener's right
+    let start = log(&world)
+      .into_iter()
+      .find(|entry| entry.voice == boom.id() && entry.kind == AudioLogKind::Start)
+      .unwrap_or_else(|| panic!("the blast started"));
+    assert_eq!((start.gain_db, start.pan), (0.0, 0.3), "{start:?}");
     audio_step(&mut world, FRAME);
     assert!(boom.is_playing(), "the one-shot plays out: {boom:?}");
     let stopped: Vec<(u32, Duration)> = log(&world)

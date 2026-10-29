@@ -941,6 +941,105 @@ mod tests {
     assert!((level - quieter).abs() < 0.01 * quieter, "heard: {level}");
   }
 
+  /// A streamed loop comes back by room, its decoder slow to start (`delay`):
+  /// returns it, waiting, and where the meter was as it came back
+  fn waiting_comeback(delay: Duration) -> (World, crate::core::audio::Meter, Voice, Handle<Sound>) {
+    let (mut world, meter, bed) = streamed_bed();
+    let comeback = play(&mut world, &bed);
+    streamed_frame(&mut world, FRAME);
+    let thief = play(&mut world, &bed);
+    assert!(comeback.is_virtual(), "{comeback:?}");
+    world
+      .resource_mut::<AudioEngine>()
+      .delay_stream_starts(delay);
+    for _ in 0..16 {
+      streamed_frame(&mut world, FRAME);
+    }
+    thief.stop(MIN_FADE);
+    streamed_frame(&mut world, FRAME);
+    assert!(!comeback.is_virtual(), "{comeback:?}");
+    (world, meter, comeback, bed)
+  }
+
+  /// A streamed comeback paused while it waits for its decoder stays
+  /// silent, and fades in from silence once resumed
+  #[test]
+  fn a_streamed_comeback_paused_while_it_waits_stays_silent() {
+    let (mut world, meter, comeback, _) = waiting_comeback(Duration::from_millis(80));
+    comeback.pause();
+    for _ in 0..60 {
+      streamed_frame(&mut world, FRAME);
+    }
+    let quiet = meter.rendered(48_000);
+    assert!(
+      quiet.iter().all(|frame| frame.left == 0.0),
+      "silent while paused"
+    );
+    let from = meter.rendered_count();
+    comeback.resume();
+    for _ in 0..10 {
+      streamed_frame(&mut world, FRAME);
+    }
+    let heard = meter.rendered(meter.rendered_count() - from);
+    let level = 3_277.0 / 32_768.0;
+    let Some(sounding) = heard.iter().position(|frame| frame.left.abs() > 1e-6) else {
+      panic!("it resumed");
+    };
+    let onset = heard[sounding].left.abs();
+    assert!(onset < 0.05 * level, "it fades in: {onset}");
+    let settled = heard[heard.len() - 1].left;
+    assert!((settled - level).abs() < 0.01 * level, "{settled}");
+  }
+
+  /// A streamed comeback stolen again while it waits goes virtual, leaving
+  /// no kira sound of its own behind
+  #[test]
+  fn a_streamed_comeback_stolen_while_it_waits_leaves_no_sound() {
+    let (mut world, _meter, comeback, bed) = waiting_comeback(Duration::from_millis(300));
+    // A frame on (it may not be taken in the frame it came back), louder
+    streamed_frame(&mut world, FRAME);
+    let louder = AudioView::new(&mut world).play_with(
+      &bed,
+      PlayOptions {
+        volume_db: 6.0,
+        ..Default::default()
+      },
+    );
+    assert!(
+      comeback.is_virtual() && !louder.is_virtual(),
+      "{comeback:?} {louder:?}"
+    );
+    for _ in 0..10 {
+      streamed_frame(&mut world, FRAME);
+    }
+    assert_eq!(sounds_on(&world, "sfx"), 1, "only the louder one's");
+  }
+
+  /// A streamed comeback whose clip is reloaded while it waits comes back
+  /// on the new clip
+  #[test]
+  fn a_streamed_comeback_reloaded_while_it_waits_comes_back_on_the_new_clip() {
+    let (mut world, meter, comeback, bed) = waiting_comeback(Duration::from_millis(300));
+    let clip = world
+      .resource::<Assets<Sound>>()
+      .get(&bed)
+      .map(|sound| sound.clips[0].clip.clone())
+      .unwrap_or_else(|| panic!("the bed is in the store"));
+    let louder = AudioClip::from_frames(48_000, &vec![[0.3, 0.3]; 48_000]).unwrap();
+    if let Some(stored) = world.resource_mut::<Assets<AudioClip>>().get_mut(&clip) {
+      *stored = louder;
+    }
+    for _ in 0..10 {
+      streamed_frame(&mut world, FRAME);
+    }
+    assert!(
+      comeback.is_playing() && !comeback.is_virtual(),
+      "{comeback:?}"
+    );
+    let level = meter.last().left;
+    assert!((level - 0.3).abs() < 1e-3, "the new clip: {level}");
+  }
+
   /// A streamed loop's comeback fades in once its decoder has frames, not
   /// while its decoder starts: with a decoder slow to start, the first
   /// audio rendered after the comeback ramps from silence
@@ -1367,10 +1466,11 @@ mod tests {
       limit: Some(VoiceLimit { max: 1, rule }),
       ..looping(&long)
     };
-    let oldest = add(&mut world, shot(LimitRule::StopQuietest));
-    let first = play(&mut world, &oldest);
+    // A rule that ranks, under which a loop would go virtual
+    let quietest = add(&mut world, shot(LimitRule::StopQuietest));
+    let first = play(&mut world, &quietest);
     audio_step(&mut world, FRAME);
-    let second = play(&mut world, &oldest);
+    let second = play(&mut world, &quietest);
     assert!(second.is_playing());
     assert!(!first.is_virtual(), "{first:?}");
     assert_eq!(entries(&world, &first, AudioLogKind::Stolen).len(), 1);
@@ -1762,6 +1862,59 @@ mod tests {
         }
       }
     }
+  }
+
+  /// Under a rule that ends loops, a returning loop takes no voice's place:
+  /// a `StopOldest` loop played out of range on a bus whose limit a
+  /// limitless loop fills (that loop not one its rule ends) is virtual, and
+  /// in range, however much louder, waits for room rather than displace it
+  #[test]
+  fn a_stop_oldest_loop_comes_back_only_with_room() {
+    let mut world = audio_world();
+    let listener = world
+      .spawn((AudioListener, Transform::from_xy(0.0, 0.0)))
+      .id();
+    AudioView::new(&mut world).set_mixer(Mixer {
+      buses: vec![BusDef {
+        limit: Some(1),
+        ..BusDef::new("sfx/yard")
+      }],
+      ..Default::default()
+    });
+    let dc = clip(&mut world, 2.0);
+    let wind = add(
+      &mut world,
+      Sound {
+        bus: "sfx/yard".to_string(),
+        volume_db: -20.0,
+        ..looping(&dc)
+      },
+    );
+    let bell = add(
+      &mut world,
+      Sound {
+        bus: "sfx/yard".to_string(),
+        limit: Some(VoiceLimit {
+          max: 4,
+          rule: LimitRule::StopOldest,
+        }),
+        ..placed(&dc)
+      },
+    );
+    let wind = play(&mut world, &wind);
+    audio_step(&mut world, FRAME);
+    let bell = AudioView::new(&mut world).play_at(&bell, Vec2::new(900.0, 0.0));
+    assert!(bell.is_virtual() && !wind.is_virtual(), "{bell:?} {wind:?}");
+    // Next to it: 20 dB louder than the wind, it waits
+    move_to(&mut world, listener, 900.0);
+    steps(&mut world, 30);
+    assert!(bell.is_virtual() && !wind.is_virtual(), "{bell:?} {wind:?}");
+    wind.stop(MIN_FADE);
+    audio_step(&mut world, FRAME);
+    assert!(
+      bell.is_playing() && !bell.is_virtual(),
+      "with room: {bell:?}"
+    );
   }
 
   /// `StopQuietest` (as `StopFarthest` and `StopLowestPriority`) ranks:
