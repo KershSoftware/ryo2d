@@ -2960,6 +2960,52 @@ mod tests {
     assert!(error.contains("itself"), "{error}");
   }
 
+  /// A rebuild's move logs the loop's old copy stopping on the bus it
+  /// played on, at the gain it played at, as a reload's switch does, and
+  /// the new copy starting on its new bus: a bus the new mixer drops, and
+  /// one it adds
+  #[test]
+  fn a_rebuild_s_stop_names_the_old_copy_s_bus() {
+    let (mut world, _files) = world_with_mixer(r#"(buses: { "sfx/steps": (volume: -3.0) })"#);
+    let long = clip(&mut world, 2.0);
+    let sound = world.resource_mut::<Assets<Sound>>().add(Sound {
+      clips: vec![SoundClip::new(long)],
+      bus: "sfx/steps".to_string(),
+      volume_db: -6.0,
+      looping: true,
+      ..Default::default()
+    });
+    let voice = AudioView::new(&mut world).play(&sound);
+    audio_step(&mut world, FRAME);
+    let moves = |world: &World| -> Vec<(AudioLogKind, String, f32)> {
+      log(world)
+        .into_iter()
+        .filter(|entry| entry.voice == voice.id())
+        .skip(1)
+        .map(|entry| (entry.kind, entry.bus, entry.gain_db))
+        .collect()
+    };
+    // The bus goes: the loop moves to the nearest above it
+    set_mixer(&mut world, "()");
+    assert_eq!(
+      moves(&world),
+      [
+        (AudioLogKind::Stop, "sfx/steps".to_string(), -6.0),
+        (AudioLogKind::Start, "sfx".to_string(), -6.0),
+      ]
+    );
+    // The bus comes back: the loop moves onto it
+    audio_step(&mut world, FRAME);
+    set_mixer(&mut world, r#"(buses: { "sfx/steps": (volume: -3.0) })"#);
+    assert_eq!(
+      moves(&world)[2..],
+      [
+        (AudioLogKind::Stop, "sfx".to_string(), -6.0),
+        (AudioLogKind::Start, "sfx/steps".to_string(), -6.0),
+      ]
+    );
+  }
+
   /// `text` parsed, set in code and built at once
   fn set_mixer(world: &mut World, text: &str) {
     match Mixer::parse(text) {

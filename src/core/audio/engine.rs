@@ -2462,6 +2462,14 @@ impl EngineState {
     let old = std::mem::replace(&mut self.buses, tree);
     let retired = self.generation;
     self.generation = self.generation.wrapping_add(1);
+    // Each voice's bus on the tree it leaves, by id: a moved loop's old copy
+    // is logged stopping there
+    let left: Vec<(u32, usize)> = self
+      .voices
+      .live
+      .iter()
+      .map(|live| (live.voice.id(), live.bus))
+      .collect();
     // A definition's voice goes to the bus it names (one the mixer had yet
     // to add when it started, say), a clip's to its bus's namesake
     let sounds = world.get_resource::<Assets<Sound>>();
@@ -2485,8 +2493,13 @@ impl EngineState {
       if live.generation == self.generation || !live_loop {
         continue;
       }
+      let id = live.voice.id();
+      let was = left
+        .iter()
+        .find(|(left, _)| *left == id)
+        .map(|&(_, bus)| old.name(bus));
       let mut moved = if live.music.is_some() {
-        self.switch_music(world, server)
+        self.switch_music(world, was, server)
       } else {
         Ok(())
       };
@@ -2499,7 +2512,7 @@ impl EngineState {
         moved = Ok(());
       }
       if moved.is_ok() && self.voices.live[index].generation != self.generation {
-        moved = self.restart(world, index, server);
+        moved = self.restart(world, index, was, server);
       }
       if let Err(why) = moved {
         if self.voices.live[index].playback.waiting_fade().is_some() {
@@ -2619,11 +2632,14 @@ impl EngineState {
   /// Start live voice `index` again on its bus's track, where it is, and
   /// crossfade from the old playback over [`MIN_FADE`]; a paused voice
   /// stays paused. It plays its source's data as the store now has it. If
-  /// it cannot start, it plays on where it was, and why is returned
+  /// it cannot start, it plays on where it was, and why is returned. `was`
+  /// is the bus its old copy plays on, if not its bus on the live tree (a
+  /// rebuild's move), for the log
   fn restart(
     &mut self,
     world: &World,
     index: usize,
+    was: Option<&str>,
     server: Option<&AssetServer>,
   ) -> Result<(), String> {
     let live = &self.voices.live[index];
@@ -2635,13 +2651,14 @@ impl EngineState {
       pitch: live.pitch,
       bus: live.bus,
     };
-    self.replay(world, index, replay, server)
+    self.replay(world, index, replay, was, server)
   }
 
   /// [`restart`](Self::restart) live voice `index` on `replay`: its source's
   /// data as the store now has it, its regions, its gain, pitch and bus,
   /// which the voice takes once it has started (the old sound's stop is
-  /// logged as it played). One partway through a fade-in carries on with
+  /// logged as it played: its gain, and its bus, or `was` for a rebuild's
+  /// move, whose old copy plays on the retired tree). One partway through a fade-in carries on with
   /// what is left of it. If it cannot start, it plays on as it was, and why
   /// is returned. A loop waiting for the web's unlock takes them and waits
   /// on before the unlock, and at it starts on them, fading in over its own
@@ -2651,6 +2668,7 @@ impl EngineState {
     world: &World,
     index: usize,
     replay: Replay,
+    was: Option<&str>,
     server: Option<&AssetServer>,
   ) -> Result<(), String> {
     let live = &self.voices.live[index];
@@ -2745,7 +2763,7 @@ impl EngineState {
     };
     // The old sound's stop, as it played; then the new one's start
     if waiting.is_none() {
-      self.record(index, AudioLogKind::Stop, MIN_FADE, server);
+      self.record_on(index, AudioLogKind::Stop, MIN_FADE, was, server);
     }
     self.take_replay(index, replay, version);
     // A paused or held one starts silent: its resume fades it in. One that
@@ -2966,7 +2984,7 @@ impl EngineState {
       }
       let asset = clip.id().untyped();
       let version = live.source.as_ref().version(world).unwrap_or_default();
-      if let Err(why) = self.restart(world, index, server) {
+      if let Err(why) = self.restart(world, index, None, server) {
         let name = voice_source_name(&self.voices.live[index], server);
         count_unswitched(&mut failed, asset, version, name, why);
       }
@@ -2981,7 +2999,14 @@ impl EngineState {
   /// the store has (its definition's version and its source's) is left
   /// alone, so it switches at most once a frame. One that cannot start
   /// plays on as it was, and why is returned
-  fn switch_music(&mut self, world: &World, server: Option<&AssetServer>) -> Result<(), String> {
+  /// (`from_bus`: the bus the track's old copy plays on, at a rebuild's
+  /// move)
+  fn switch_music(
+    &mut self,
+    world: &World,
+    from_bus: Option<&str>,
+    server: Option<&AssetServer>,
+  ) -> Result<(), String> {
     let Some(track) = self.music.live() else {
       return Ok(());
     };
@@ -3010,7 +3035,7 @@ impl EngineState {
       pitch: 0.0,
       bus,
     };
-    self.replay(world, index, replay, server)?;
+    self.replay(world, index, replay, from_bus, server)?;
     self.voices.live[index].fade_out = music.crossfade;
     if let Some(track) = &mut self.music.current {
       track.crossfade = music.crossfade;
@@ -3022,7 +3047,7 @@ impl EngineState {
   /// [`switch_music`](Self::switch_music), warning (once for the music's
   /// version) if the track could not switch
   fn follow_music(&mut self, world: &World, server: Option<&AssetServer>) {
-    if let Err(why) = self.switch_music(world, server)
+    if let Err(why) = self.switch_music(world, None, server)
       && let Some(failed) = self.unswitched_music(world, why, server)
     {
       self.warn_unswitched(&[failed]);
@@ -3089,7 +3114,7 @@ impl EngineState {
           pitch,
           bus,
         };
-        match self.replay(world, index, replay, server) {
+        match self.replay(world, index, replay, None, server) {
           Ok(()) => continue,
           Err(why) => {
             let version = defs.version(id).unwrap_or_default();
@@ -5014,6 +5039,19 @@ impl EngineState {
     fade: Duration,
     server: Option<&AssetServer>,
   ) {
+    self.record_on(index, kind, fade, None, server);
+  }
+
+  /// [`record`](Self::record), naming bus `on` when given (a sound on a
+  /// retired tree) in place of the voice's bus on the live tree
+  fn record_on(
+    &mut self,
+    index: usize,
+    kind: AudioLogKind,
+    fade: Duration,
+    on: Option<&str>,
+    server: Option<&AssetServer>,
+  ) {
     if !self.log.is_on() {
       return;
     }
@@ -5022,6 +5060,9 @@ impl EngineState {
     };
     let mut entry = self.entry(kind, live.voice.id(), &live.subject(), server);
     entry.fade = fade;
+    if let Some(bus) = on {
+      entry.bus = bus.to_string();
+    }
     self.log.push(entry);
   }
 
@@ -6327,7 +6368,7 @@ mod tests {
     advance_to(&mut world, &voice, 2.0);
     let restarted = world.resource_scope(|world, mut engine: Mut<AudioEngine>| {
       let index = engine.voices.index_of(voice.id());
-      index.map(|index| engine.restart(world, index, world.get_resource::<AssetServer>()))
+      index.map(|index| engine.restart(world, index, None, world.get_resource::<AssetServer>()))
     });
     assert!(matches!(restarted, Some(Ok(()))), "{restarted:?}");
     let started = position(&world, &voice);
