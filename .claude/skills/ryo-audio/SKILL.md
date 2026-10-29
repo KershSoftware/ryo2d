@@ -2,7 +2,7 @@
 name: ryo-audio
 description: "Audio - the workflow from a DAW export through assets/ and a .sound.ron definition to ctx.audio().play, voices and voice limits, the mixer file (buses, effects, sends, snapshots, ducking), the player's volume settings and their curve, 2D spatial sound with listeners and emitters, pause and time scale, music with intros, loops and crossfades, hot reload, the web's first-gesture unlock, latency, and testing with audio_world and the audio log."
 metadata:
-  version: 2.5.0
+  version: 2.5.1
 ---
 
 # Ryo2D Audio
@@ -178,26 +178,28 @@ fn footsteps(mut audio: Audio, time: Res<Time>, mut walkers: Query<(&mut Footste
 
 **Priority runs from 0 to 255, and higher is more important.** This is the opposite of Unity's convention, where 0 is the most important. The default is 128; music plays at 255.
 
-| `rule` | A play past `max` stops |
-|---|---|
-| `StopOldest` (the default) | the voice that started first |
-| `StopQuietest` | the quietest as heard (its distance falloff counts), the oldest of equals |
-| `StopFarthest` | the farthest from the listener, the oldest of equals; a voice played without a position counts as at the listener |
-| `StopLowestPriority` | the least important, the oldest of equals |
-| `PreventNew` | nothing: the new play is refused |
+| `rule` | A play past `max` stops | A loop it stops or refuses |
+|---|---|---|
+| `StopOldest` (the default) | the voice that started first | stops for good |
+| `StopQuietest` | the quietest as heard (its distance falloff counts), the oldest of equals | goes virtual |
+| `StopFarthest` | the farthest from the listener, the oldest of equals; a voice played without a position counts as at the listener | goes virtual |
+| `StopLowestPriority` | the least important, the oldest of equals | goes virtual |
+| `PreventNew` | nothing: the new play is refused | is refused (its voice reports stopped) |
+
+`StopOldest` and `PreventNew` end loops as they end one-shots, for the idioms that need it: one bed at a time on a bus (`StopOldest`: the newest replaces the last, which does not come back), one alarm at a time (`PreventNew`: a second play is refused, so the voice a game keeps is the one heard). The rules that rank keep a loop they stop or refuse as a virtual voice, to come back when it ranks again (below).
 
 - **Three layers of limits** apply to each play, in order: its definition's `limit` (its voices on its bus and the buses under it), each bus `limit` in the mixer from its bus up to `master` (every voice on that bus's subtree), and the engine's cap of 96 voices on a bus's own track. A bus limit uses the playing sound's rule (the cap's order when the sound has no limit); the cap stops the least important voice, then the quietest, then the oldest.
 - **A sound starts at most `per_frame` voices a frame** (1 by default), counted across every bus and place it plays at, before any limit. Copies started together play in step and add up (ten are 20 dB over one), so a hundred identical plays in one frame start one voice and the rest are refused, logged `Refused` with the reason `per_frame`. A bare clip counts as its own sound. Raise `per_frame` for a sound meant to layer in one frame (a shotgun's pellets). Plays that waited for their sound to load count as they land. Emitters of one sound spawned together take turns instead, starting as many a frame as it allows.
-- **A voice is never stopped for a less important play, nor for an equally important one in the frame it started**, so many starts in one frame fill a limit and refuse the rest, instead of stopping their own starts in turn. With nothing it may stop, the play is refused. Only music stops music. A loop stopped or refused this way goes virtual instead (below).
+- **A voice is never stopped for a less important play, nor for an equally important one in the frame it started**, so many starts in one frame fill a limit and refuse the rest, instead of stopping their own starts in turn. With nothing it may stop, the play is refused. Only music stops music. Under a rule that ranks (and the cap), a loop stopped or refused this way goes virtual instead (below).
 - A voice a rule stops fades over its own `fade_out` (at least 10 ms); one the cap stops fades over 10 ms.
 - **A stopped voice holds no room** under its sound's `limit`, the bus limits or its `per_frame`, from the `stop` call on, so a `PreventNew` sound stopped and played again in the same frame starts the new voice. It still holds its place on kira's track (128 sounds a track, which the cap of 96 leaves room in) until its fade ends. Many long `fade_out`s on one busy bus can fill it; plays there are then refused, with one warning naming the bus. Keep the `fade_out`s of sounds stopped by limits short.
 - `cooldown` refuses a repeat sooner than its time, before any limit: a coin pickup triggered by two colliders in one step plays once.
 
 **Virtual voices (loops only).** A loop that has no room, or is out of range, does not stop: it goes virtual, keeping its place silently with no voice, and comes back when it can be heard.
 
-- **What goes virtual:** a loop (played plainly, at a place, or from an emitter; decoded or streamed) that a voice limit or its bus's cap of 96 would stop or refuse (a play past a `limit`, or a more important play taking its place), that finds kira's room on its track held by voices fading out, or that is at or beyond its `max_distance`, where it takes no voice at all: a field of a hundred crickets costs the few near the listener. One-shots are stopped, refused or culled as before, and music is never virtual. `per_frame` and `cooldown` still refuse a loop.
+- **What goes virtual:** a loop (played plainly, at a place, or from an emitter; decoded or streamed) that its bus's cap of 96, or a limit whose rule ranks (`StopQuietest`, `StopFarthest`, `StopLowestPriority`, or a bus `limit` on a sound with no limit of its own, which takes the cap's order), would stop or refuse; that finds kira's room on its track held by voices fading out; or that is at or beyond its `max_distance`, where it takes no voice at all: a field of a hundred crickets costs the few near the listener. `PreventNew` and `StopOldest` end loops (above). One-shots are stopped, refused or culled as before, and music is never virtual. `per_frame` and `cooldown` still refuse a loop.
 - **While virtual** its `Voice` reports playing (`voice.is_virtual()` is true) and takes every change: `set_volume`, `set_pitch`, `pause` and `resume` are kept for when it is heard, and `stop` ends it without its coming back. It moves on through its clip as if heard, at its pitch and its bus's time scale, so it comes back where it would be. The game's pause, its bus's hold and its scene's hold freeze it, as they freeze a heard voice, and its owner's rules apply: its scene's exit and its emitter's despawn end it, `persist` keeps it. It counts against no limit or cap.
-- **Coming back:** each frame with a virtual voice, the engine weighs each virtual loop against the voices heard under each limit it is under (its sound's `limit`, the bus limits above it, its bus's cap): by priority, then by gain as heard (its distance falloff included). It comes back when there is room, or in place of the weakest voice heard that it outranks (more important, or 3 dB louder at equal priority; never under `PreventNew`, and never in place of music), starting where it has got to and fading in over 50 ms. The voice it takes the place of goes virtual if it loops (fading out over the same 50 ms) and stops with its `fade_out` if not. A loop out of range comes back once the listener is inside 95% of its `max_distance`.
+- **Coming back:** each frame with a virtual voice, the engine weighs each virtual loop against the voices heard under each limit it is under (its sound's `limit`, the bus limits above it, its bus's cap): by priority, then by gain as heard (its distance falloff included). It comes back when there is room, or in place of the weakest voice heard that it outranks (more important, or 3 dB louder at equal priority; never under `PreventNew` or `StopOldest`, which take no voice's place for it, and never in place of music), starting where it has got to and fading in over 50 ms. The voice it takes the place of goes virtual if it loops (fading out over the same 50 ms) and stops with its `fade_out` if not. A loop out of range comes back once the listener is inside 95% of its `max_distance`.
 - **No flapping:** besides the 3 dB, a voice that started, went virtual or came back stays so for at least 250 ms, and the 95% keeps a loop at the edge of its range from coming and going.
 - **At most 1024 are virtual**; past them a loop that would go virtual is refused (logged with the reason `virtual`), and one a play takes the place of stops.
 - Beds and emitter loops still give way to more important plays: give them a higher priority than one-shots to keep them heard. A play's limits look at every voice, virtual ones too, so plays cost a little more with hundreds virtual.
@@ -509,6 +511,7 @@ fn a_fourth_step_is_refused_and_the_pause_holds_sfx() {
 | A sound plays on the wrong bus | A bus name the mixer lacks plays on the nearest bus above it, warned once; a send bus plays on its parent |
 | A burst sounds like one sound | Its `per_frame` (1 by default) starts one copy a frame; raise it for a sound meant to layer |
 | A sound cuts out | Its `limit`, a bus `limit`, or the cap of 96 per bus stopping it (a loop goes virtual and comes back when there is room); check `priority` (higher is more important) |
+| I stopped a loop and it keeps playing | Another play of it was virtual (a limit whose rule ranks kept it out, or the cap) and came back in its place. Stop every voice you played, or give the sound `PreventNew` (a second play is refused) or `StopOldest` (the newest replaces the last for good) |
 | A loop is silent, though `is_playing` | It is virtual (`voice.is_virtual()`; `virtual_voices_on` counts them): a limit or its bus's cap has no room for it, more important or louder voices holding it, or it is at or beyond its `max_distance`. The log's `Virtual` entry says why; it comes back in range, with room |
 | A long line stops at a scene change | A one-shot with more than 2 s left stops at its scene's exit (on `ui` it finishes); play it with `persist` to keep it |
 | Plays refused on a busy bus with "the bus is full" | Long `fade_out`s holding kira's room on that bus |

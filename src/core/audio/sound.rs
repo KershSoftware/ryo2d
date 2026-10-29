@@ -70,9 +70,11 @@ pub struct Sound {
   /// one clip left to pick, so it avoids at most one fewer than its clips
   pub no_repeat: u8,
   /// How many of its voices play at once, and what a play past that does.
-  /// A loop past it goes virtual instead of stopping or being refused
-  /// ([`Voice::is_virtual`](super::Voice::is_virtual)), and comes back when
-  /// there is room
+  /// Under a rule that ranks (`StopQuietest`, `StopFarthest`,
+  /// `StopLowestPriority`) a loop it stops or refuses goes virtual
+  /// ([`Voice::is_virtual`](super::Voice::is_virtual)) and comes back when
+  /// it ranks again; `PreventNew` and `StopOldest` end loops as they end
+  /// one-shots ([`LimitRule`])
   pub limit: Option<VoiceLimit>,
   /// How important its voices are, from 0 to 255 (higher is more
   /// important; [`Sound::DEFAULT_PRIORITY`] by default). A voice is never
@@ -94,9 +96,10 @@ pub struct Sound {
   pub per_frame: u8,
   /// It loops until stopped: over each clip's `loop_region`, or the whole
   /// clip (its `region`). A loop played while it is still loading waits for
-  /// it, and starts once it is ready. A loop a voice limit has no room for,
-  /// or out of range, goes virtual: it keeps its place silently and comes
-  /// back when it can be heard ([`Voice::is_virtual`](super::Voice::is_virtual))
+  /// it, and starts once it is ready. A loop out of range, or one its bus's
+  /// cap or a ranking limit has no room for, goes virtual: it keeps its
+  /// place silently and comes back when it can be heard
+  /// ([`Voice::is_virtual`](super::Voice::is_virtual))
   pub looping: bool,
   /// Each play fades in over this
   pub fade_in: Duration,
@@ -197,25 +200,32 @@ pub struct VoiceLimit {
 /// What a play past a voice limit does. Whichever voice a rule picks, it is
 /// never one more important than the new play, nor an equally important one
 /// started in the same frame: with none left to pick, the play is refused.
-/// A loop picked, or refused, goes virtual instead: it keeps its place
-/// silently and comes back when there is room, or in place of a voice it
-/// outranks (but under `PreventNew`, which takes no voice's place)
-/// ([`Voice::is_virtual`](super::Voice::is_virtual))
+///
+/// `PreventNew` and `StopOldest` end loops as they end one-shots: a loop
+/// `PreventNew` refuses reports stopped, and one `StopOldest` stops does not
+/// come back (one bed at a time on a bus; one alarm at a time). The rules
+/// that rank (`StopQuietest`, `StopFarthest`, `StopLowestPriority`) make a
+/// loop they stop or refuse virtual instead: it keeps its place silently
+/// and comes back when there is room, or in place of a voice it outranks
+/// ([`Voice::is_virtual`](super::Voice::is_virtual)). A loop that went
+/// virtual another way (its bus's cap, its distance) comes back under
+/// `PreventNew` or `StopOldest` only when there is room
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 pub enum LimitRule {
-  /// The new play is refused
+  /// The new play is refused, a loop too
   PreventNew,
-  /// The voice that started first stops
+  /// The voice that started first stops, a loop too, for good
   #[default]
   StopOldest,
-  /// The quietest voice stops (the oldest of equals)
+  /// The quietest voice stops (the oldest of equals); a loop goes virtual
   StopQuietest,
   /// The voice farthest from the listener stops (the oldest of equals). A
   /// voice played without a position counts as at the listener, as does
   /// every voice while there is no listener (no `AudioListener`, and no main
-  /// camera)
+  /// camera); a loop goes virtual
   StopFarthest,
-  /// The least important voice stops (the oldest of equals)
+  /// The least important voice stops (the oldest of equals); a loop goes
+  /// virtual
   StopLowestPriority,
 }
 

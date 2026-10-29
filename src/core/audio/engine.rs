@@ -1078,6 +1078,21 @@ struct SoundState {
 struct Victim {
   index: usize,
   fade: Duration,
+  /// The rule that picked it ends a loop rather than making it virtual
+  /// ([`ends_loops`])
+  ends: bool,
+}
+
+/// Whether a limit's `rule` ends the loops it stops or refuses, as it does
+/// one-shots: `PreventNew` (a play past the limit is not wanted) and
+/// `StopOldest` (the newest replaces the oldest). The rules that rank
+/// (`StopQuietest`, `StopFarthest`, `StopLowestPriority`) and the cap's
+/// order (`None`: the cap, or a bus limit for a sound with no limit) make a
+/// loop virtual, to come back when it ranks again. The rule decides for a
+/// returning loop too: under a rule that ends loops it takes no voice's
+/// place
+fn ends_loops(rule: Option<LimitRule>) -> bool {
+  matches!(rule, Some(LimitRule::PreventNew | LimitRule::StopOldest))
 }
 
 /// A play of a sound definition still loading. Until it lands it is not
@@ -4294,7 +4309,8 @@ impl EngineState {
     }
     // A loop (never music) out of range, or with no room where a one-shot
     // is refused, goes virtual: it keeps its place silently, to come back
-    // when it is in range and has room
+    // when it is in range and has room. A limit whose rule ends loops
+    // (`PreventNew`, `StopOldest`) refuses it instead
     let virtualizes = request.looping && request.music.is_none();
     let mut goes_virtual = if virtualizes && out_of_range {
       Some(VIRTUAL_RANGE)
@@ -4304,8 +4320,9 @@ impl EngineState {
         return self.refuse(&subject, REFUSED_FULL, server);
       }
       Some(VIRTUAL_FULL)
-    } else if !self.make_room(bus, request) {
-      if !virtualizes {
+    } else if let Err(rule) = self.make_room(bus, request) {
+      // A limit that ends loops refuses one as it does a one-shot
+      if !virtualizes || ends_loops(rule) {
         return self.refuse(&subject, REFUSED_LIMIT, server);
       }
       Some(VIRTUAL_LIMIT)
@@ -4545,8 +4562,9 @@ impl EngineState {
   /// its definition's limit (its voices on the bus's subtree), each bus
   /// limit from `bus` up (every voice on that bus's subtree, by the
   /// definition's rule, or the cap's without one) and the cap on `bus`'s own
-  /// track. False, with nothing planned, if a limit refuses the play
-  fn make_room(&mut self, bus: usize, request: &Request<'_>) -> bool {
+  /// track. If a limit refuses the play, nothing is planned, and the rule of
+  /// the limit that refused it is returned (`None` for the cap's order)
+  fn make_room(&mut self, bus: usize, request: &Request<'_>) -> Result<(), Option<LimitRule>> {
     self.victims.clear();
     let buses = &self.buses;
     let mut room = Room {
@@ -4558,44 +4576,50 @@ impl EngineState {
       priority: request.priority,
       music: request.music.is_some(),
     };
-    let mut fits = match (request.sound, request.limit) {
-      (Some(id), Some(limit)) => room.fit(
-        Scope::Sound(id, bus),
-        usize::from(limit.max),
-        Some(limit.rule),
-      ),
-      _ => true,
+    let rule = request.limit.map(|limit| limit.rule);
+    let mut refused = match (request.sound, request.limit) {
+      (Some(id), Some(limit)) => {
+        (!room.fit(Scope::Sound(id, bus), usize::from(limit.max), rule)).then_some(rule)
+      }
+      _ => None,
     };
     let mut at = Some(bus);
-    while let (true, Some(index)) = (fits, at) {
+    while let (None, Some(index)) = (refused, at) {
       let Some(this) = buses.buses.get(index) else {
         break;
       };
-      if let Some(max) = this.limit {
-        let rule = request.limit.map(|limit| limit.rule);
-        fits = room.fit(Scope::Subtree(index), usize::from(max), rule);
+      if let Some(max) = this.limit
+        && !room.fit(Scope::Subtree(index), usize::from(max), rule)
+      {
+        refused = Some(rule);
       }
       at = this.parent;
     }
-    fits = fits && room.fit(Scope::Track(bus), VOICE_CAP, None);
-    if !fits {
-      self.victims.clear();
+    if refused.is_none() && !room.fit(Scope::Track(bus), VOICE_CAP, None) {
+      refused = Some(None);
     }
-    fits
+    match refused {
+      Some(rule) => {
+        self.victims.clear();
+        Err(rule)
+      }
+      None => Ok(()),
+    }
   }
 
   /// Stop the planned victims, each with its fade, logged as stolen. A
-  /// loop (never music) goes virtual instead, its kira sound fading out
-  /// with that fade, while fewer than [`MAX_VIRTUAL`] are
+  /// loop (never music) a rule that ranks picked goes virtual instead, its
+  /// kira sound fading out with that fade, while fewer than [`MAX_VIRTUAL`]
+  /// are; one `StopOldest` picked stops ([`ends_loops`])
   fn steal_victims(&mut self, server: Option<&AssetServer>) {
     for at in 0..self.victims.len() {
-      let Victim { index, fade } = self.victims[at];
+      let Victim { index, fade, ends } = self.victims[at];
       let loops = self
         .voices
         .live
         .get(index)
         .is_some_and(|live| live.looping && live.music.is_none());
-      if loops && self.virtual_count < MAX_VIRTUAL {
+      if loops && !ends && self.virtual_count < MAX_VIRTUAL {
         self.virtualize(index, fade, VIRTUAL_STOLEN, server);
         continue;
       }
@@ -5822,7 +5846,11 @@ impl Room<'_> {
         Some(_) => self.live[index].fade_out.max(MIN_FADE),
         None => MIN_FADE,
       };
-      self.victims.push(Victim { index, fade });
+      self.victims.push(Victim {
+        index,
+        fade,
+        ends: ends_loops(rule),
+      });
     }
   }
 

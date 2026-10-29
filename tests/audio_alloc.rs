@@ -141,7 +141,7 @@ fn idle_frame_audio_allocates_nothing() {
     per_frame: 8,
     limit: Some(VoiceLimit {
       max: 2,
-      rule: LimitRule::StopOldest,
+      rule: LimitRule::StopQuietest,
     }),
     ..Default::default()
   });

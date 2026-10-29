@@ -309,10 +309,12 @@ impl Voice {
   }
 
   /// Whether it is virtual: a loop that keeps its place silently, taking no
-  /// voice, until it can be heard again. A loop goes virtual when a voice
-  /// limit or its bus's cap of 96 has no room for it (a play past the limit,
-  /// or a more important play taking its place), and when it is at or
-  /// beyond its sound's `max_distance` from the listener. While virtual it
+  /// voice, until it can be heard again. A loop goes virtual when its bus's
+  /// cap of 96, or a voice limit whose rule ranks (`StopQuietest`,
+  /// `StopFarthest`, `StopLowestPriority`), has no room for it (a play past
+  /// the limit, or another play taking its place), and when it is at or
+  /// beyond its sound's `max_distance` from the listener; `PreventNew` and
+  /// `StopOldest` refuse or stop a loop for good. While virtual it
   /// still reports playing, takes every change (volume, pitch, pause,
   /// resume, stop), is held by the game's pause and its scene's hold as a
   /// heard voice is, and moves on through its clip as if heard; each frame

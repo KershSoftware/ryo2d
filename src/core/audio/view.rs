@@ -109,10 +109,12 @@ impl<'w> AudioView<'w> {
   /// refused (logged, and warned about once in a debug build), as is a play
   /// of a sound that failed to load (warned about once). A play its
   /// cooldown, its `per_frame` or a voice limit refuses starts nothing. A
-  /// refused play's voice is already stopped. A loop a voice limit has no
-  /// room for is not refused but virtual: it reports playing, keeps its
-  /// place silently, and comes back when there is room
-  /// ([`Voice::is_virtual`])
+  /// refused play's voice is already stopped. A loop its bus's cap, or a
+  /// limit whose rule ranks (`StopQuietest`, `StopFarthest`,
+  /// `StopLowestPriority`), has no room for is not refused but virtual: it
+  /// reports playing, keeps its place silently, and comes back when there is
+  /// room ([`Voice::is_virtual`]); `PreventNew` and `StopOldest` refuse a
+  /// loop as they do a one-shot
   pub fn play<'a>(&mut self, sound: impl Into<Playable<'a>>) -> Voice {
     self.play_with(sound, PlayOptions::default())
   }

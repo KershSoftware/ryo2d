@@ -794,15 +794,9 @@ mod tests {
     let second = AudioView::new(&mut world).play(&loud);
     assert!(second.is_playing(), "{second:?}");
     let music = log(&world)[0].voice;
-    // The loop goes virtual, keeping its place for when there is room
     let stopped: Vec<u32> = log(&world)
       .iter()
-      .filter(|entry| {
-        matches!(
-          entry.kind,
-          AudioLogKind::Stolen | AudioLogKind::Stop | AudioLogKind::Virtual
-        )
-      })
+      .filter(|entry| matches!(entry.kind, AudioLogKind::Stolen | AudioLogKind::Stop))
       .map(|entry| entry.voice)
       .collect();
     assert_eq!(
@@ -810,7 +804,6 @@ mod tests {
       [first.id()],
       "the oldest sound gives way, not the music {music}"
     );
-    assert!(first.is_virtual(), "{first:?}");
     assert_eq!(current(&mut world), Some(track.id()));
   }
 

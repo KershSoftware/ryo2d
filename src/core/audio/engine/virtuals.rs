@@ -122,7 +122,8 @@ impl Ranking {
   /// Whether virtual voice `live` of `voices` may come back now: in each
   /// scope it competes in there is room, or a voice it outranks may give up
   /// its place (planned into `displaced`), and kira has room on its bus's
-  /// track. `PreventNew` takes no voice's place
+  /// track. Under a rule that ends loops (`PreventNew`, `StopOldest`) it
+  /// takes no voice's place, finding room only
   fn fits(&mut self, live: &LiveVoice, voices: &[LiveVoice], buses: &BusTree) -> bool {
     let (tallies, displaced) = (&self.tallies, &mut self.displaced);
     displaced.clear();
@@ -144,11 +145,7 @@ impl Ranking {
         return false;
       };
       let outranks = priority > least || (priority == least && heard >= quietest + SWAP_DB);
-      if rule == Some(LimitRule::PreventNew)
-        || count > max
-        || displaced.contains(&index)
-        || !outranks
-      {
+      if ends_loops(rule) || count > max || displaced.contains(&index) || !outranks {
         return false;
       }
       displaced.push(index);
@@ -600,7 +597,7 @@ mod tests {
   fn a_loop_stolen_by_a_limit_comes_back_where_it_would_be() {
     let mut world = audio_world();
     let half = clip(&mut world, 0.5);
-    let hum = limited(&mut world, &half, 1, LimitRule::StopOldest);
+    let hum = limited(&mut world, &half, 1, LimitRule::StopQuietest);
     let first = play(&mut world, &hum);
     steps(&mut world, 30);
     let second = play(&mut world, &hum);
@@ -657,7 +654,7 @@ mod tests {
       .get(&half)
       .is_some_and(AudioClip::is_streamed);
     assert!(streamed, "the clip streams");
-    let hum = limited(&mut world, &half, 1, LimitRule::StopOldest);
+    let hum = limited(&mut world, &half, 1, LimitRule::StopQuietest);
     // A stream decodes on its own thread: each frame gives it a moment
     let frames = |world: &mut World, count: usize| {
       for _ in 0..count {
@@ -786,7 +783,7 @@ mod tests {
   fn two_loops_a_decibel_apart_do_not_swap_back_and_forth() {
     let mut world = audio_world();
     let long = clip(&mut world, 2.0);
-    let hum = limited(&mut world, &long, 1, LimitRule::StopOldest);
+    let hum = limited(&mut world, &long, 1, LimitRule::StopQuietest);
     let a = play(&mut world, &hum);
     audio_step(&mut world, FRAME);
     let b = play(&mut world, &hum);
@@ -834,7 +831,7 @@ mod tests {
   fn a_virtual_loop_takes_the_game_s_changes() {
     let mut world = audio_world();
     let long = clip(&mut world, 2.0);
-    let hum = limited(&mut world, &long, 1, LimitRule::StopOldest);
+    let hum = limited(&mut world, &long, 1, LimitRule::StopQuietest);
     let a = play(&mut world, &hum);
     audio_step(&mut world, FRAME);
     let b = play(&mut world, &hum);
@@ -888,7 +885,7 @@ mod tests {
     for by_scene in [false, true] {
       let mut world = audio_world();
       let long = clip(&mut world, 2.0);
-      let hum = limited(&mut world, &long, 1, LimitRule::StopOldest);
+      let hum = limited(&mut world, &long, 1, LimitRule::StopQuietest);
       world.resource_mut::<AudioEngine>().set_scope(Some(7));
       let a = play(&mut world, &hum);
       audio_step(&mut world, FRAME);
@@ -945,7 +942,7 @@ mod tests {
     let mut world = audio_world();
     world.spawn(AudioListener);
     let long = clip(&mut world, 2.0);
-    let hum = limited(&mut world, &long, 1, LimitRule::StopOldest);
+    let hum = limited(&mut world, &long, 1, LimitRule::StopQuietest);
     world.resource_mut::<AudioEngine>().set_scope(Some(3));
     let heard = play(&mut world, &hum);
     // Played in the same frame, the limit has no room for them
@@ -999,7 +996,7 @@ mod tests {
       limit: Some(VoiceLimit { max: 1, rule }),
       ..looping(&long)
     };
-    let oldest = add(&mut world, shot(LimitRule::StopOldest));
+    let oldest = add(&mut world, shot(LimitRule::StopQuietest));
     let first = play(&mut world, &oldest);
     audio_step(&mut world, FRAME);
     let second = play(&mut world, &oldest);
@@ -1167,29 +1164,89 @@ mod tests {
     );
   }
 
-  /// `PreventNew` keeps a heard voice from being taken: a loop it keeps
-  /// out goes virtual, and comes back only once there is room, however
-  /// loud
+  /// "One bed at a time": a bus that holds one bed, each area's played on
+  /// it as the player walks in, under `StopOldest`. The bed a later one
+  /// replaces is stopped for good, not virtual, whatever their levels
   #[test]
-  fn a_loop_prevent_new_keeps_out_comes_back_only_with_room() {
+  fn stop_oldest_ends_the_loop_it_replaces() {
+    let mut world = audio_world();
+    AudioView::new(&mut world).set_mixer(Mixer {
+      buses: vec![BusDef {
+        limit: Some(1),
+        ..BusDef::new("ambience/bed")
+      }],
+      ..Default::default()
+    });
+    let long = clip(&mut world, 2.0);
+    let bed = |volume_db| Sound {
+      bus: "ambience/bed".to_string(),
+      volume_db,
+      limit: Some(VoiceLimit {
+        max: 4,
+        rule: LimitRule::StopOldest,
+      }),
+      fade_out: Duration::from_millis(30),
+      ..looping(&long)
+    };
+    let (forest, cave) = (bed(-6.0), bed(-14.0));
+    let forest = add(&mut world, forest);
+    let cave = add(&mut world, cave);
+    let forest = play(&mut world, &forest);
+    audio_step(&mut world, FRAME);
+    let cave = play(&mut world, &cave);
+    assert!(cave.is_playing() && !cave.is_virtual(), "{cave:?}");
+    assert!(!forest.is_virtual(), "{forest:?}");
+    assert_eq!(entries(&world, &forest, AudioLogKind::Stolen).len(), 1);
+    steps(&mut world, 60);
+    assert!(forest.is_stopped(), "{forest:?}");
+    assert!(cave.is_playing() && !cave.is_virtual(), "{cave:?}");
+    assert!(swaps(&world).is_empty(), "{:#?}", swaps(&world));
+  }
+
+  /// "Keep one alarm": `PreventNew` refuses a second play of a loop, whose
+  /// voice reports stopped, so the voice a game keeps is the one heard, and
+  /// stopping it leaves nothing playing
+  #[test]
+  fn prevent_new_refuses_a_loop() {
     let mut world = audio_world();
     let long = clip(&mut world, 2.0);
-    let hum = limited(&mut world, &long, 1, LimitRule::PreventNew);
+    let alarm = limited(&mut world, &long, 1, LimitRule::PreventNew);
+    let first = play(&mut world, &alarm);
+    audio_step(&mut world, FRAME);
+    let second = play(&mut world, &alarm);
+    assert!(second.is_stopped() && !second.is_virtual(), "{second:?}");
+    let refused = log(&world)
+      .into_iter()
+      .filter(|entry| entry.kind == AudioLogKind::Refused)
+      .collect::<Vec<_>>();
+    assert_eq!(refused.len(), 1, "{refused:#?}");
+    assert!(refused[0].reason.starts_with("limit"), "{refused:#?}");
+    first.stop(MIN_FADE);
+    steps(&mut world, 30);
+    let mut audio = AudioView::new(&mut world);
+    assert_eq!(
+      (audio.voices_on("sfx"), audio.virtual_voices_on("sfx")),
+      (0, 0)
+    );
+    assert!(swaps(&world).is_empty(), "{:#?}", swaps(&world));
+  }
+
+  /// `StopQuietest` (as `StopFarthest` and `StopLowestPriority`) ranks:
+  /// the loop it stops goes virtual, and comes back once it is the louder
+  #[test]
+  fn stop_quietest_makes_the_loop_it_stops_virtual() {
+    let mut world = audio_world();
+    let long = clip(&mut world, 2.0);
+    let hum = limited(&mut world, &long, 1, LimitRule::StopQuietest);
     let a = play(&mut world, &hum);
     audio_step(&mut world, FRAME);
     let b = play(&mut world, &hum);
-    assert!(!a.is_virtual() && b.is_virtual());
-    b.set_volume(20.0);
-    steps(&mut world, 30);
-    assert!(b.is_virtual());
-    a.stop(MIN_FADE);
-    audio_step(&mut world, FRAME);
-    assert!(!b.is_virtual(), "{b:?}");
-    assert!(
-      entries(&world, &b, AudioLogKind::Real)[0]
-        .reason
-        .starts_with("room")
-    );
+    assert!(a.is_virtual() && !b.is_virtual(), "{a:?} {b:?}");
+    let went = entries(&world, &a, AudioLogKind::Virtual);
+    assert!(went[0].reason.starts_with("stolen"), "{went:#?}");
+    a.set_volume(6.0);
+    steps(&mut world, 20);
+    assert!(!a.is_virtual() && b.is_virtual(), "{a:?} {b:?}");
   }
 
   /// A virtual loop moves with a rebuild and takes a reload as a heard one
@@ -1208,7 +1265,7 @@ mod tests {
         bus: "sfx/beds".to_string(),
         limit: Some(VoiceLimit {
           max: 1,
-          rule: LimitRule::StopOldest,
+          rule: LimitRule::StopQuietest,
         }),
         ..looping(&long)
       },
@@ -1252,7 +1309,7 @@ mod tests {
   fn a_virtual_loop_comes_back_on_its_reloaded_clip() {
     let (mut world, meter) = metered_audio_world();
     let quiet = clip(&mut world, 1.0);
-    let hum = limited(&mut world, &quiet, 1, LimitRule::StopOldest);
+    let hum = limited(&mut world, &quiet, 1, LimitRule::StopQuietest);
     let a = play(&mut world, &hum);
     audio_step(&mut world, FRAME);
     let b = play(&mut world, &hum);
@@ -1282,7 +1339,7 @@ mod tests {
   fn a_frame_without_virtual_voices_ranks_nothing() {
     let mut world = audio_world();
     let long = clip(&mut world, 2.0);
-    let hum = limited(&mut world, &long, 2, LimitRule::StopOldest);
+    let hum = limited(&mut world, &long, 2, LimitRule::StopQuietest);
     let oldest = play(&mut world, &hum);
     play(&mut world, &hum);
     steps(&mut world, 10);
