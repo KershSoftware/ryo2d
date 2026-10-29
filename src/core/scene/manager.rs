@@ -2283,6 +2283,34 @@ mod tests {
     assert_eq!(kira_of(&world, orphan), Some(Playing));
   }
 
+  /// A pause menu's emitter that outlives it, as the menu switches to
+  /// another that holds the same scenes below, belongs to no scene at once:
+  /// it is held while any scene is, though the held scenes did not change
+  #[test]
+  fn a_menu_s_emitter_is_held_as_the_menu_switches_to_another() {
+    use crate::core::testing::audio_step;
+    use kira::sound::PlaybackState::{Paused, Playing};
+    let (mut world, sound) = audio_scene_world();
+    let placed = placed_loop(&mut world, &sound);
+    let mut m = SceneManager::with_scene(PauseMenu::new(true));
+    m.enter_initial(&mut world);
+    audio_step(&mut world, FRAME);
+    m.push(Box::new(SpawnsEmitter(placed)), &mut world);
+    audio_step(&mut world, FRAME);
+    audio_step(&mut world, FRAME);
+    let [menu] = emitter_voices(&world)[..] else {
+      panic!("one emitter started: {:?}", emitter_voices(&world));
+    };
+    assert_eq!(kira_of(&world, menu), Some(Playing), "the menu's own");
+    m.switch(PauseMenu::new(true), &mut world);
+    audio_step(&mut world, FRAME);
+    assert_eq!(
+      kira_of(&world, menu),
+      Some(Paused),
+      "held once its scene has gone"
+    );
+  }
+
   /// A track of a two-second loop that crossfades over 300 ms
   fn theme(world: &mut World) -> crate::core::asset::Handle<crate::core::audio::Music> {
     use crate::core::audio::{AudioClip, Music};

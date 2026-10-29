@@ -1856,8 +1856,13 @@ impl EngineState {
   /// resumes, and a long one run on into it. The voices played with
   /// `persist`, and the engine's own, play on
   pub(crate) fn release_scope(&mut self, world: &World, scope: u64) {
-    // Its emitters' entities that outlive it belong to no scene now
+    // Its emitters' entities that outlive it belong to no scene now, held
+    // while any scene is: with scenes held, their voices change hold
+    let emitters = self.emitter_scopes.len();
     self.emitter_scopes.retain(|_, emitter| *emitter != scope);
+    if self.emitter_scopes.len() != emitters && !self.held_scopes.is_empty() {
+      self.voices_dirty = true;
+    }
     let server = world.get_resource::<AssetServer>();
     for index in 0..self.voices.live.len() {
       if self.voices.live[index].scope == Some(scope) {
