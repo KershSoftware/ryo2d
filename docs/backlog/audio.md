@@ -25,7 +25,8 @@ Measured on 2026-10-28 on an Apple M5 Pro (18 cores, Metal, macOS 27.0.1), a sha
 | Idle frame: idle settings screen, whole step (`settings_idle`) | 187.3 µs (185.0, 187.3, 187.3) | 186.1 µs (187.1, 185.9, 186.1) | within 3%: **met**, -0.6% |
 | Idle frame: 10,000 sprites, whole step (`foundation`) | 1,023.1 µs (1,022.8, 1,024.5, 1,023.1) | 1,045.0 µs (1,037.2, 1,045.0, 1,051.5) | within 3%: **met**, +2.1% |
 | 64 voices, 32 of them spatial: `audio_system`'s main-thread time | | median 3.6 µs (runs 3.2, 3.7, 3.6); after the final fixes 4.2 µs (4.0, 4.2, 5.4) | median at most 50 µs: **met** |
-| 256 virtual loops ranked against 64 heard (`virtual_256`): `audio_system`'s main-thread time | | median 8.4 µs (runs 8.4, 8.4, 8.4) | median at most 20 µs: **met** |
+| 256 virtual loops ranked against 64 heard (`virtual_256`): `audio_system`'s main-thread time | | median 8.4 µs (runs 8.4, 8.4, 8.4); after the review C fix round 7.1 µs (7.5, 7.1, 7.1) | median at most 20 µs: **met** |
+| 1,024 virtual loops in three scopes each against 64 heard (`virtual_1024`) | | median 37.6 µs (runs 38.2, 37.6, 37.3) | no target (printed beside the guards) |
 | `play` of a decoded clip | | median 0.71 µs (0.71, 0.71, 0.71); after the final fixes 0.75 µs (0.75, 0.75, 0.75); after the deferrals' second wave 0.50 µs (0.50, 0.50, 0.50) | median at most 5 µs: **met** |
 | `play` of a streamed clip (the 48 s OGG): the main thread's part | | median 23.9 µs (23.6, 23.9, 24.2) | the spec's `play` at most 5 µs: **not met, an exception** (below); guarded at 100 µs |
 | No allocation for audio on an idle frame | | 0 in 100 frames, fresh and after sounds played (`tests/audio_alloc.rs`) | **met** |
@@ -177,6 +178,25 @@ The fourth wave added virtual voices: a frame with a virtual voice ranks them an
 - **What moved:** `voices_64` back to back, by about 0.11 µs (1.32 to 1.33 µs before, 1.42 to 1.46 µs after, +8%), in every run, and paced by about as much (1.8 µs before, 1.9 to 2.0 after). With no voice virtual the frame ranks nothing and moves nothing on; what is left is per voice: for each of the 32 placed voices whether it is near enough to come back (one more distance test) and whether its loop has left its range, and for each of the 64 a virtual check where voices are counted and as ended voices go. Far inside 50 µs.
 - **Within the runs' spread:** the paced idle frame, `play` paced (0.46 to 0.50 µs on both builds; a definition's 0.50 to 0.54) and back to back (0.63 to 0.64 µs on both), and the streamed play.
 - **`virtual_256`** sits at 8.4 µs paced in every run (back to back 7.1 µs), well inside its 20 µs; at a load of 11 (the first run, before this record's) it read 8.5 µs paced and 6.96 µs back to back. A play beside the 256 virtual loops read 0.67 to 0.75 µs: the limit checks' scan of 320 more voices costs about a quarter of a microsecond.
+
+### After the review C fix round (`benches/audio.rs`, beside e76308a1)
+
+The round ended loops under `PreventNew` and `StopOldest` (none of the benches' limits uses them), let a loop never heard come back at once, started a streamed comeback paused until its decoder has frames, kept a discarded emitter's place for the frame, and kept the trees of copies still fading out; it added `virtual_1024`, printed beside the guards with no target: 1,088 placed loops of eight sounds (each limited to 12, `StopQuietest`, two a bus) on four buses the mixer limits to 16, all in range, so 64 are heard and 1,024 virtual, each ranked each frame in three scopes (its sound's limit, its bus's, its track's cap); 120 settling frames, then 2,000 paced at 60 Hz, and a criterion bench back to back. Its line checks 64 heard and 1,024 virtual at its start and end, and that a frame moves none.
+
+`voices_64`, `virtual_256` and `play_cost` (with `play_cost_streamed`) ran on 2026-10-29 beside the branch before the round (e76308a1, exported with `git archive`), each built into its own scratch target directory outside the workspace's, sources touched first, binaries kept aside and checked (the base holds the export's path and has no `virtual_1024`; they differ), `CRITERION_HOME` a scratch directory per build. Alternated base, head, head, base, base, head, the first once the 1-minute load had fallen below 5; the head's runs also ran `virtual_1024`. The loads at the runs' starts were 4.1, 1.4, 1.7, 1.5, 1.5 and 1.6.
+
+| Build (runs) | Idle audio frame, paced | 64 voices, paced | `play` paced; a definition's | Back to back: `voices_64`; `play_cost` | Streamed `play` | `virtual_256`: paced; back to back; a play beside |
+|---|---|---|---|---|---|---|
+| before (1, 4, 5) | 0.50, 0.46, 0.46 µs | 2.0, 2.0, 1.8 µs | 0.50, 0.50, 0.46; 0.54, 0.54, 0.50 µs | 1.46, 1.47, 1.45; 0.64, 0.64, 0.63 µs | 23.5, 23.5, 23.9 µs | 8.3, 8.2, 8.4; 7.13, 7.08, 7.12; 0.71, 0.75, 0.75 µs |
+| after (2, 3, 6) | 0.46, 0.46, 0.46 µs | 3.0, 2.0, 1.9 µs | 0.50, 0.50, 0.50; 0.50, 0.50, 0.50 µs | 1.50, 1.46, 1.46; 0.64, 0.64, 0.63 µs | 23.7, 23.8, 23.9 µs | 7.5, 7.1, 7.1; 6.65, 6.63, 6.62; 0.75, 0.75, 0.75 µs |
+
+| `virtual_1024` (head runs 2, 3, 6) | Paced: median; 95th percentile; max | Back to back |
+|---|---|---|
+| | 38.2, 37.6, 37.3 µs; 51.5, 46.2, 48.1 µs; 657.8, 113.0, 91.0 µs | 38.01, 38.11, 38.11 µs |
+
+- **What moved:** `virtual_256`, down about 0.45 µs back to back (7.08 to 7.13 µs before, 6.62 to 6.65 after) and about 1 µs paced, in every run. Its virtual loops were never heard (virtual from their plays), so the ranking's stay-put test now stops at that, before the clock's; the code's layout may account for the rest. Not measured further.
+- **Within the spread:** the idle frame, `voices_64` (run 2's paced 3.0 µs the one apart, its back to back 1.50), `play` paced and back to back, the streamed play, and a play beside the 256.
+- **`virtual_1024`** reads 37.3 to 38.2 µs paced and 38.0 to 38.1 back to back: under the 40 µs at which the round's brief asked for the ranking's tallies to be updated incrementally after a comeback, so they are counted again after each comeback, as before. A probe build with the ranking switched off (an environment check, not committed) read 16.2 µs paced and 15.8 back to back: the ranking is about 22 µs of the frame (about 22 ns a virtual loop: its scopes found among the tallies twice, and its rank tested), the rest the 1,088 placed voices' hearing, the advance and the table's passes. A frame that brings back K loops counts the heard voices again K times; not measured.
 
 ### The reload hitch
 
