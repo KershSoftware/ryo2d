@@ -2,7 +2,7 @@
 name: ryo-config-save
 description: Project configuration (Ryo.toml), player settings (system.json, SystemState) and game saves (SaveManager, GameSaveData).
 metadata:
-  version: 2.4.1
+  version: 2.4.2
 ---
 
 # Ryo2D Configuration and Saves
@@ -30,6 +30,7 @@ Each layer overrides only what it sets, lowest first:
 
 Without `with_user_preferences`, `system.json` is never read or written. With it, a missing file is seeded from layers 1-3 holding only the filtered keys (plus `env` when `[env]` exists); after that the file wins over later builder or `[system]` changes, so delete it in dev to re-seed. Headless builds never touch it.
 
+<!-- with: struct Menu; impl Menu { fn new() -> Self { Self } } impl Scene for Menu {} -->
 ```rust
 EngineBuilder::new()
   .title("My Game")
@@ -128,6 +129,7 @@ let saves = workspace.create_save_manager()?;  // SaveManager over the save fold
 
 `SystemState` holds the six volume settings (`master_volume`, `music_volume`, `sfx_volume`, `ui_volume`, `voice_volume`, `ambience_volume`), `width`, `height`, `display_mode: DisplayMode`, `vsync: Option<bool>`, `show_fps: Option<bool>`, `bindings` (the player's input bindings, below) and `env` (typed JSON values). In the file the resolution is one `"1280x720"` key.
 
+<!-- given: saves: SaveManager, workspace: Workspace -->
 ```rust
 let mut settings = saves.load_or_create_system(&workspace.config().system)?;
 settings.master_volume = 0.5;
@@ -147,6 +149,7 @@ saves.save_system(&settings)?;
 
 Input actions (`ctx.actions().bind(..)`, `ryo-controller`) are rebound by the player with `ui.rebind(action)` rows in a settings screen (`ryo-ui`) or `ctx.actions().rebind(..)`. To keep them between runs, enable `UserPreference::Bindings`:
 
+<!-- with: struct Menu; impl Menu { fn new() -> Self { Self } } impl Scene for Menu {} -->
 ```rust
 EngineBuilder::new()
   .with_user_preferences([UserPreference::MasterVolume, UserPreference::Bindings])
@@ -162,6 +165,8 @@ EngineBuilder::new()
 
 ## Game Data
 
+<!-- with: use serde::{Deserialize, Serialize}; -->
+<!-- given: saves: SaveManager -->
 ```rust
 #[derive(Serialize, Deserialize)]
 struct Progress {
@@ -170,6 +175,7 @@ struct Progress {
   unlocked: Vec<String>,
 }
 
+let progress = Progress { level: 3, score: 1200, unlocked: vec!["dash".to_string()] };
 saves.save_game("slot1", &progress)?;                        // slot1.ryo-save
 let progress: Progress = saves.load_game("slot1")?.data;    // GameSaveData<Progress>
 let slots = saves.list_game_saves()?;
@@ -237,6 +243,8 @@ A tabbed settings screen with rebinding rows is `ryo-ui`'s settings recipe.
 
 `update` runs every fixed step with the constant timestep, so a timer in it counts game time (it stops while paused).
 
+<!-- with: #[derive(serde::Serialize)] struct Progress { level: u32 } -->
+<!-- self: autosave_timer: f32, saves: SaveManager, progress: Progress -->
 ```rust
 fn update(&mut self, _ctx: &mut SceneContext, dt: f32) -> SceneAction {
   self.autosave_timer += dt;
@@ -252,12 +260,17 @@ fn update(&mut self, _ctx: &mut SceneContext, dt: f32) -> SceneAction {
 
 Save what you need to recreate entities (positions, health, ids) in your own struct and spawn from it in `on_enter`:
 
+<!-- with: use serde::{Deserialize, Serialize}; -->
 ```rust
 #[derive(Serialize, Deserialize)]
 struct LevelSave {
   enemies: Vec<(f32, f32, i32)>,
 }
+```
 
+<!-- with: #[derive(serde::Deserialize)] struct LevelSave { enemies: Vec<(f32, f32, i32)> } #[derive(Component)] struct Enemy { health: i32 } -->
+<!-- self: saves: SaveManager -->
+```rust
 fn on_enter(&mut self, ctx: &mut SceneContext) {
   if let Ok(save) = self.saves.load_game::<LevelSave>("level") {
     for (x, y, health) in save.data.enemies {

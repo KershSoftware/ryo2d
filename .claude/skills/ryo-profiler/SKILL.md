@@ -2,7 +2,7 @@
 name: ryo-profiler
 description: Profiling Ryo2D games and engine - puffin integration, profiler window, performance analysis.
 metadata:
-  version: 1.0.0
+  version: 1.0.1
 ---
 
 # Ryo2D Profiler Specialist
@@ -32,9 +32,9 @@ The built-in profiler window (`windows/profiler_window.rs`) provides:
 
 ## Instrumenting Code
 
-```rust
-use ryo2d::prelude::*;
+The macros are in the prelude:
 
+```rust
 fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
     profile_function!();  // Profile entire function
 
@@ -134,7 +134,7 @@ This compiles with the profiler feature but doesn't auto-open. Press **F10** to 
 
 ### Adding New Engine Scopes
 
-```rust
+```rust,ignore
 // In an engine system
 pub fn my_system(time: Res<Time>, mut query: Query<&mut Transform>) {
   crate::profile_scope!("cpu:my_system");

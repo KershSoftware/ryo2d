@@ -2,7 +2,7 @@
 name: ryo-assets
 description: "Assets - loading images, SVG, shaders, fonts, UI files, themes and audio (clips, sound and music definitions, the mixer) through the registry (load_now and load), asset paths, handles and what keeps an asset alive, load states and loading screens, embedded assets with add, hot reload and AssetEvent, custom asset types and loaders, and the debug checker."
 metadata:
-  version: 1.2.0
+  version: 1.2.1
 ---
 
 # Ryo2D Assets
@@ -11,6 +11,7 @@ Everything a game reads from its `assets/` folder goes through one registry, rea
 
 ## 1. Loading: `load_now` and `load`
 
+<!-- self: backdrop: Option<Handle<Image>> -->
 ```rust
 fn on_enter(&mut self, ctx: &mut SceneContext) {
   // At once, on this thread, dependencies too: it draws this frame
@@ -65,6 +66,7 @@ The loader is picked by the longest extension, so `menu.ui.ron` is a UI file, `n
 
 Pass the handle to what draws or uses it: `Renderable::image(handle)`, `ParticleEmitter::new(handle)`, `ui.image(&handle)`, `SpriteShader::custom(handle)`, `ctx.fonts().set_role(FontRole::Ui, handle)`, `ctx.follow_ui_theme(handle)`, `ctx.audio().play(&sound)`, `ctx.audio().play_music(&music)`. Read the value through the registry:
 
+<!-- self: backdrop: Option<Handle<Image>> -->
 ```rust
 let assets = ctx.assets();
 if let Some(backdrop) = &self.backdrop
@@ -92,7 +94,7 @@ if let Some(backdrop) = &self.backdrop
     font: Handle<Font>,
   }
 
-  fn on_enter(&mut self, ctx: &mut SceneContext) {
+  fn load_art(ctx: &mut SceneContext) {
     let mut assets = ctx.assets();
     if let (Ok(coin), Ok(font)) = (
       assets.load_now::<Image>("coin.png"),
@@ -108,6 +110,7 @@ if let Some(backdrop) = &self.backdrop
 
 ## 4. Load states and loading screens
 
+<!-- with: struct Level { art: Vec<Handle<Image>> } impl Scene for Level {} -->
 ```rust
 #[derive(Default)]
 struct Loading {
@@ -146,7 +149,8 @@ impl Scene for Loading {
 
 `add` puts an asset you made in the registry and gives its handle. It lives while the handle does, like a loaded one, and is never reloaded (it has no file):
 
-```rust
+```rust,ignore
+// Embeds files from the game's assets/ folder
 const LOGO: &[u8] = include_bytes!("../assets/logo.png");
 const GAME_FONT: &[u8] = include_bytes!("../assets/fonts/Game.ttf");
 const GLOW: &str = include_str!("../assets/shaders/glow.wgsl");
@@ -190,7 +194,8 @@ fn embed(ctx: &mut SceneContext) -> Result<(), Box<dyn std::error::Error>> {
 
 - Or give the web build its files as its source, so every asset path loads as it would from `assets/`, imports and images included:
 
-  ```rust
+  ```rust,ignore
+  // Embeds files from the game's assets/ folder
   /// The web build's assets, embedded in the binary
   #[cfg(target_arch = "wasm32")]
   fn web_assets(builder: EngineBuilder) -> EngineBuilder {
@@ -252,6 +257,7 @@ fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
 
 A level format, say: a name on the first line, its background image's path on the second.
 
+<!-- with: struct Title; impl Scene for Title {} -->
 ```rust
 struct Level {
   name: String,
@@ -292,6 +298,7 @@ Then `ctx.assets().load_now::<Level>("levels/one.level")`, or `load` it.
 - `load` runs on a worker thread, or on the calling thread under `load_now`: it turns the bytes into the asset and loads dependencies, nothing more. A dependency loaded through `cx.load` (or `cx.load_with`) is kept by the value, as its handle in a field; the asset is inserted only once its dependencies have loaded, a dependency that fails fails it (`AssetError::Dependency`), and one that reloads makes it `Modified`.
 - `check(&self, asset: &Level, cx: &CheckContext<'_>) -> Result<(), AssetError>` (optional) runs on the main thread once the dependencies are loaded, and again whenever one reloads: check the asset against them there (`cx.world().resource::<Assets<Image>>()`), and fail it with `AssetError::decode(cx.path(), error)`. An error fails the load, or keeps the last good value after a reload:
 
+  <!-- with: struct Level { background: Handle<Image> } -->
   ```rust
   fn check(&self, level: &Level, cx: &CheckContext<'_>) -> Result<(), AssetError> {
     let images = cx.world().resource::<Assets<Image>>();

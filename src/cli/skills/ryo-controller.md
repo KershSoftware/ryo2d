@@ -2,7 +2,7 @@
 name: ryo-controller
 description: Gamepad/controller input with gilrs - buttons, sticks, triggers, actions and stick directions, pad families and button prompts, the last-used device, and scripted or headless pad input.
 metadata:
-  version: 2.1.0
+  version: 2.1.1
 ---
 
 # Ryo2D Gamepad/Controller Specialist
@@ -45,6 +45,8 @@ Uses positional naming that works across controllers:
 
 Bind an action once and read it, instead of checking keys and buttons side by side. The player can rebind it (`ui.rebind` in a settings screen, see `ryo-ui`), and prompts show the binding for the device in use.
 
+<!-- with: impl Example { fn jump(&self) {} } #[derive(Default)] struct PauseMenu; impl Scene for PauseMenu {} -->
+<!-- self: on_ground: bool -->
 ```rust
 fn on_enter(&mut self, ctx: &mut SceneContext) {
     use Binding::{Key, Pad};
@@ -75,6 +77,7 @@ fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
 
 ## Prompts and Pad Families
 
+<!-- given: ui: &mut UiContext -->
 ```rust
 ui.prompt("jump");                                        // a chip or glyph for the action on the last device
 ui.text(RichText::markup("Press [prompt=jump] to jump")); // the same inside text (world text too)
@@ -105,6 +108,8 @@ if ctx.input.gamepad_connected() {
 
 Same pattern as keyboard - `down`, `pressed`, `released`:
 
+<!-- with: impl Example { fn jump(&self) {} fn release_charge_attack(&self) {} } -->
+<!-- self: ready: bool -->
 ```rust
 // Button held down (continuous)
 if ctx.input.gamepad_button_down(GamepadButton::South) {
@@ -142,6 +147,7 @@ let (aim_x, aim_y) = ctx.input.right_stick();
 
 Values range from 0.0 (released) to 1.0 (fully pressed):
 
+<!-- given: mut player_speed: f32, base_speed: f32, boost_speed: f32 -->
 ```rust
 let left = ctx.input.left_trigger();   // 0.0 to 1.0
 let right = ctx.input.right_trigger(); // 0.0 to 1.0
@@ -165,6 +171,8 @@ let (raw_rx, raw_ry) = ctx.input.right_stick_raw();
 
 For a character, `MoveBindings` does this for you (keys, the left stick and the d-pad into a `MoveIntent` the movement presets read; see `ryo-character`). By hand:
 
+<!-- with: const PLAYER_SPEED: f32 = 200.0; -->
+<!-- self: player: Entity -->
 ```rust
 fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
     let mut move_x = 0.0;
@@ -209,6 +217,7 @@ Use actions (above): `ctx.input.action_pressed("jump")` covers Space and A, and 
 
 ### Analog Aim Direction
 
+<!-- self: aim_direction: f32 -->
 ```rust
 // Get aim direction from right stick
 let (aim_x, aim_y) = ctx.input.right_stick();
@@ -222,6 +231,8 @@ if aim_x.abs() > 0.1 || aim_y.abs() > 0.1 {
 
 ### Trigger-Based Actions
 
+<!-- with: const BASE_SPEED: f32 = 200.0; const BOOST_SPEED: f32 = 100.0; impl Example { fn fire_weapon(&self) {} } -->
+<!-- self: was_firing: bool -->
 ```rust
 // Gradual speed based on trigger
 let speed = BASE_SPEED + ctx.input.right_trigger() * BOOST_SPEED;
@@ -262,16 +273,21 @@ The deadzone is applied radially (to the combined x,y magnitude), not per-axis, 
 
 Controllers can be connected/disconnected during gameplay:
 
+<!-- with: impl Example { fn show_notification(&self, _message: &str) {} } struct ReconnectPrompt; impl ReconnectPrompt { fn new() -> Self { Self } } impl Scene for ReconnectPrompt {} -->
+<!-- self: was_using_gamepad: bool -->
 ```rust
-// Check whether a controller is connected (poll each frame; it is state, not an event)
-if ctx.input.gamepad_connected() {
-    // Show "Controller connected" message
-    self.show_notification(&format!("Controller: {}", ctx.input.gamepad_name()));
-}
+fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    // Check whether a controller is connected (poll each frame; it is state, not an event)
+    if ctx.input.gamepad_connected() {
+        // Show "Controller connected" message
+        self.show_notification(&format!("Controller: {}", ctx.input.gamepad_name()));
+    }
 
-// If controller disconnected, pause and show message
-if !ctx.input.gamepad_connected() && self.was_using_gamepad {
-    return SceneAction::Push(Box::new(ReconnectPrompt::new()));
+    // If controller disconnected, pause and show message
+    if !ctx.input.gamepad_connected() && self.was_using_gamepad {
+        return SceneAction::Push(Box::new(ReconnectPrompt::new()));
+    }
+    SceneAction::Continue
 }
 ```
 
@@ -279,6 +295,7 @@ if !ctx.input.gamepad_connected() && self.was_using_gamepad {
 
 Headless tests and scripted runs drive a **virtual pad** ("Virtual pad"), connected on first use when no real pad is (`InputEvent::PadButton` and `InputEvent::PadStick`, which carry no gilrs id).
 
+<!-- given: builder: EngineBuilder -->
 ```rust
 use ryo2d::testing::HeadlessEngine;
 

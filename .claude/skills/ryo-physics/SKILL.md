@@ -2,7 +2,7 @@
 name: ryo-physics
 description: Rapier2D physics integration - bodies, colliders, one-way colliders, triggers, joints, queries, contact state and collision messages.
 metadata:
-  version: 3.2.0
+  version: 3.2.1
 ---
 
 # Ryo2D Physics Specialist
@@ -86,17 +86,18 @@ Moving bodies:
 
 ## Colliders and shapes
 
+<!-- given: a: Vec2, b: Vec2, c: Vec2, d: Vec2 -->
 ```rust
-Collider::rect(32.0, 64.0)                       // width, height
-Collider::circle(16.0)                           // radius
-Collider::capsule(40.0, 10.0)                    // total height (ends included), radius; upright
-Collider::polygon([Vec2::new(0.0, -20.0), Vec2::new(20.0, 20.0), Vec2::new(-20.0, 20.0)]) // convex hull
-Collider::segment(Vec2::ZERO, Vec2::new(100.0, 0.0))
-Collider::polyline([a, b, c, d])                 // open chain: terrain, outlines
-Collider::circle(32.0).as_trigger()              // detects overlaps, never pushes
-Collider::rect(96.0, 8.0).one_way()              // solid only from above (its own up); bodies pass up through it
-Collider::rect(8.0, 96.0).one_way_towards(Vec2::NEG_X) // solid only from the left; the direction turns with the collider
-Collider::rect(20.0, 8.0).with_offset(12.0, 0.0) // hitbox to the right of the origin
+Collider::rect(32.0, 64.0);                       // width, height
+Collider::circle(16.0);                           // radius
+Collider::capsule(40.0, 10.0);                    // total height (ends included), radius; upright
+Collider::polygon([Vec2::new(0.0, -20.0), Vec2::new(20.0, 20.0), Vec2::new(-20.0, 20.0)]); // convex hull
+Collider::segment(Vec2::ZERO, Vec2::new(100.0, 0.0));
+Collider::polyline([a, b, c, d]);                 // open chain: terrain, outlines
+Collider::circle(32.0).as_trigger();              // detects overlaps, never pushes
+Collider::rect(96.0, 8.0).one_way();              // solid only from above (its own up); bodies pass up through it
+Collider::rect(8.0, 96.0).one_way_towards(Vec2::NEG_X); // solid only from the left; the direction turns with the collider
+Collider::rect(20.0, 8.0).with_offset(12.0, 0.0); // hitbox to the right of the origin
 Collider::rect(40.0, 8.0).with_rotation(0.3)     // turned relative to the entity
 ```
 
@@ -114,6 +115,7 @@ Collider::rect(40.0, 8.0).with_rotation(0.3)     // turned relative to the entit
 
 `CompositeTileBuilder::build_with_collider(images)` returns the tile and a rect `Collider` already offset to cover all the parts. It reads the parts' sizes from the image store (a part not loaded counts as zero), so load its images with `load_now` first:
 
+<!-- given: cap_sprite: Handle<Image>, body_sprite: Handle<Image> -->
 ```rust
 let (composite, collider) = CompositeTileBuilder::new()
   .cap(cap_sprite, 0.0, 0.0)
@@ -171,6 +173,8 @@ Read with `ctx.messages::<T>()` in a scene (`MessageReader<T>` in systems); a co
 - `ContactForce { a, b, body_a, body_b, force, direction, started }`: sent every step a contact pushes above its collider's `with_force_events(threshold)`. Breakables, impact sounds.
 - `JointBroken { joint, a, b }`: a joint exceeded its break force and was removed (its `Joint` component too).
 
+<!-- with: #[derive(Component)] struct Hazard { damage: f32 } -->
+<!-- self: player: Entity, health: f32 -->
 ```rust
 for hit in ctx.messages::<CollisionStarted>() {
   if let Some(other) = hit.other(self.player)
@@ -194,6 +198,7 @@ On `CollisionStopped` either entity may already be despawned: check before you q
 
 Methods on `Physics` (`ctx.physics_mut()`), for dynamic bodies only (others ignore them):
 
+<!-- given: body: Entity, impulse: Vec2, force: Vec2, world_point: Vec2 -->
 ```rust
 ctx.physics_mut().apply_impulse(body, Vec2::new(0.0, -300.0));        // instant, mass * px/s
 ctx.physics_mut().apply_impulse_at(body, impulse, world_point);        // off-centre also spins
@@ -209,7 +214,8 @@ Forces last one step: call them every step for a steady push (a thruster in `upd
 
 All on `&Physics` (`ctx.physics()`), in pixels, and they see the world as the last step left it (a body spawned this tick is not in them yet).
 
-```rust
+```rust,ignore
+// Signatures
 let filter = QueryFilter::new().excluding(looker); // skips a body (all its colliders) or one collider
 let filter = QueryFilter::new().with_mask(WALL | ENEMY).with_triggers();
 
@@ -230,6 +236,7 @@ physics.nearest(point, max_distance, &filter) -> Option<PointHit>
 
 For "am I on the ground", "is anything in this zone":
 
+<!-- given: player: Entity, zone: Entity, platform: Entity, crate_entity: Entity -->
 ```rust
 let physics = ctx.physics();
 // Solid contacts after the last step; the entity is a body (all its colliders) or one collider
@@ -249,6 +256,7 @@ let asleep = physics.is_sleeping(crate_entity);
 
 A `Joint` is its own component on any entity (usually a fresh one); it names two body entities `a` and `b`. Both must be simulated; until then the joint waits (logged once). Despawning a body leaves its joints inert; despawning the joint entity removes the joint.
 
+<!-- given: post: Entity, door: Entity, car: Entity, wheel: Entity, rail: Entity, cart: Entity, hull: Entity, turret: Entity, anchor: Entity, weight: Entity, a: Entity, b: Entity -->
 ```rust
 // Hinge at a world point (b's origin by default)
 ctx.world.spawn(Joint::revolute(post, door).at(Vec2::new(300.0, 200.0)).with_limits(-1.2, 1.2));
@@ -302,6 +310,9 @@ F2 draws Rapier's geometry: green dynamic, orange kinematic, blue fixed (and bar
 
 `Pickup` on a trigger does this for you (`ryo-character`). By hand:
 
+<!-- given: x: f32, y: f32, coin_sprite: Handle<Image> -->
+<!-- with: #[derive(Component)] struct Coin { value: u32 } -->
+<!-- self: player: Entity, score: u32 -->
 ```rust
 ctx.world.spawn((
   Transform::from_xy(x, y),
@@ -326,6 +337,7 @@ for entered in ctx.messages::<TriggerEntered>() {
 
 A player is best a character (`PlatformerMovement`, `ryo-character`). A dynamic body jumps by its velocity:
 
+<!-- self: player: Entity -->
 ```rust
 let grounded = ctx.physics().contacts(self.player).iter().any(|t| t.normal.y > 0.7);
 if grounded

@@ -2,7 +2,7 @@
 name: ryo-text
 description: "Text: fonts, styles, rich text and markup, inline icons, typewriter reveal and glyph effects, world text (Text2d) and the damage-number recipe."
 metadata:
-  version: 1.3.0
+  version: 1.3.1
 ---
 
 # Ryo2D Text Specialist
@@ -54,7 +54,8 @@ They cover Latin, Latin Extended, Greek and Cyrillic (m5x7: ASCII only).
 
 ### Adding fonts
 
-```rust
+```rust,ignore
+// Needs the game's font files
 let font: Handle<Font> = ctx.assets().load_now::<Font>("fonts/Game.ttf")?;      // a file in assets/
 let font = ctx.assets().add(Font::from_bytes(include_bytes!("../assets/fonts/Game.ttf").as_slice())?); // embedded: anywhere, the web included
 let bold = ctx.assets().load_now_with::<Font, _>("fonts/Family.ttc", FontSettings { face: 1 })?;    // face 1 of a .ttc collection
@@ -82,6 +83,7 @@ let face: Option<FontId> = ctx.fonts().face_of(&font);   // the face it register
 
 Render modes and `prewarm` act on a face: `let id = ctx.fonts().face_of(&font)` (or `find`, `find_face`, `role`).
 
+<!-- given: id: FontId -->
 ```rust
 ctx.fonts().set_render(id, FontRender::Raster);
 ctx.fonts().set_render(id, FontRender::pixel(16.0));                       // Pixel { design_size: 16.0 }
@@ -207,6 +209,7 @@ let parsed = RichText::markup("Deal [b][color=#f44]20[/color][/b] damage[pause=0
 
 `[prompt=jump]` (or `RichText::prompt("jump")`) shows what triggers the action `jump` right now: the first keyboard or mouse binding while the player uses the keyboard or mouse, the first pad or stick binding on a gamepad (labelled for the pad's family: South is "A" on Xbox, "×" on PlayStation, "B" on Nintendo).
 
+<!-- given: ui: &mut UiContext -->
 ```rust
 ui.text(RichText::markup("Press [prompt=jump] to jump, [prompt=ui.back] to go back"));
 ctx.world.spawn((Transform::from_xy(0.0, -40.0), Text2d::markup("[prompt=interact] Open")));
@@ -221,6 +224,7 @@ let hint = RichText::new("Hold ").prompt("dash").plain(" to dash");
 
 `TextIcons` is a resource mapping names to images (it holds them). Markup (`[icon=jump]`) and `RichText::icon_named` look the name up when the text is drawn.
 
+<!-- given: key_z_image: Handle<Image>, icon_sheet: Handle<Image> -->
 ```rust
 let mut icons = ctx.world.resource_mut::<TextIcons>();
 icons.insert("jump", key_z_image);                                               // a whole image (a Handle<Image>)
@@ -274,6 +278,8 @@ Reveal counts character clusters and holds at `[pause=..]` tags and after punctu
 
 `ui.text(..).typewriter(&mut TextReveal)` is the UI typewriter. When the text is drawn, the reveal advances by the UI's real time (`ui.dt()`) over the text's own layout, so `[pause]` and the punctuation pause hold it and a fade ends at full opacity.
 
+<!-- given: ui: &mut UiContext -->
+<!-- self: reveal: TextReveal -->
 ```rust
 // field: reveal: TextReveal = TextReveal::new(30.0).with_punctuation_pause(0.15).with_fade(0.1)
 ui.text(RichText::markup("Hello.[pause=0.5] Welcome!"))
@@ -496,9 +502,11 @@ fn clean_up(ctx: &mut SceneContext, numbers: &mut Vec<Entity>) {
 
 ### Pixel-art text
 
+<!-- given: ui: &mut UiContext -->
+<!-- with: #[derive(Default)] struct Level; impl Scene for Level {} -->
 ```rust
 // Pixel-art game: the UI is drawn at the low-res target, so text is pixel art too
-EngineBuilder::new().pixel_art(320, 180).start_scene(Level::default())
+EngineBuilder::new().pixel_art(320, 180).start_scene(Level::default());
 
 // The pixel font snaps to whole multiples of its 16 px design size
 let style = TextStyle::new().role(FontRole::Pixel).size(16.0).color(Color::WHITE).outline(1.0, Color::BLACK);

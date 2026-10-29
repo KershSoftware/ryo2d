@@ -2,7 +2,7 @@
 name: ryo-particles
 description: Particle system - emitters, attractors, collisions, presets for visual effects.
 metadata:
-  version: 2.1.0
+  version: 2.1.1
 ---
 
 # Ryo2D Particle System Specialist
@@ -74,6 +74,7 @@ An emitter is an entity with `Transform` + `ParticleEmitter`. It emits at its `G
 
 ### Custom emitters
 
+<!-- given: sprite: Handle<Image> -->
 ```rust
 ParticleEmitter::new(sprite)
   .with_mode(EmissionMode::Continuous { rate: 30.0 })
@@ -91,15 +92,15 @@ ParticleEmitter::new(sprite)
 Also `with_rotation(min, max)`, `with_angular_velocity(min, max)`, `with_effect(SpriteEffect)`, `with_layer(bits)`, `with_collision(CollisionConfig)`, and `one_shot()` (turns any mode into a single burst). Ranges whose min is above the max sample the min.
 
 ```rust
-EmissionMode::Continuous { rate: 30.0 } // particles per second
-EmissionMode::Burst { count: 50 } // one burst
-EmissionMode::BurstRepeating { count: 20, interval: 0.5, repeats: Some(5) }
+EmissionMode::Continuous { rate: 30.0 }; // particles per second
+EmissionMode::Burst { count: 50 }; // one burst
+EmissionMode::BurstRepeating { count: 20, interval: 0.5, repeats: Some(5) };
 
-EmissionShape::Point
-EmissionShape::Line { start_x: -50.0, start_y: 0.0, end_x: 50.0, end_y: 0.0 }
-EmissionShape::Circle { radius: 20.0, hollow: true } // hollow = edge only
-EmissionShape::Rectangle { width: 800.0, height: 10.0 }
-EmissionShape::Cone { direction: -std::f32::consts::FRAC_PI_2, spread: 0.6, min_speed: 50.0, max_speed: 120.0 }
+EmissionShape::Point;
+EmissionShape::Line { start_x: -50.0, start_y: 0.0, end_x: 50.0, end_y: 0.0 };
+EmissionShape::Circle { radius: 20.0, hollow: true }; // hollow = edge only
+EmissionShape::Rectangle { width: 800.0, height: 10.0 };
+EmissionShape::Cone { direction: -std::f32::consts::FRAC_PI_2, spread: 0.6, min_speed: 50.0, max_speed: 120.0 };
 ```
 
 Runtime control on the component: `set_enabled(bool)`, `reset()` (lets a burst fire again), `burst(count)`, `is_finished()`.
@@ -108,6 +109,8 @@ Runtime control on the component: `set_enabled(bool)`, `reset()` (lets a burst f
 
 Nothing despawns finished emitters; check `is_finished()`:
 
+<!-- given: x: f32, y: f32 -->
+<!-- self: spark: Handle<Image>, bursts: Vec<Entity>, particles: ParticleSystem -->
 ```rust
 let boom = ctx
   .world
@@ -136,13 +139,14 @@ An emitter on a `Disabled` entity (or with `enabled = false`) stops emitting, an
 
 An attractor is an entity with `Transform` + `ParticleAttractor`; forces from several attractors add up.
 
+<!-- given: x: f32, y: f32 -->
 ```rust
 ctx.world.spawn((Transform::from_xy(x, y), ParticleAttractor::point(200.0, 100.0))); // strength, radius; negative repels
-ParticleAttractor::gravity_well(300.0, 150.0)
-ParticleAttractor::vortex(150.0, 80.0)
-ParticleAttractor::spiral(150.0, 80.0, 40.0) // strength, radius, inward pull
-ParticleAttractor::line(-100.0, 0.0, 100.0, 0.0, 120.0, 60.0)
-ParticleAttractor::area(800.0, 600.0, 50.0, 0.0) // width, height, force x, force y
+ParticleAttractor::gravity_well(300.0, 150.0);
+ParticleAttractor::vortex(150.0, 80.0);
+ParticleAttractor::spiral(150.0, 80.0, 40.0); // strength, radius, inward pull
+ParticleAttractor::line(-100.0, 0.0, 100.0, 0.0, 120.0, 60.0);
+ParticleAttractor::area(800.0, 600.0, 50.0, 0.0); // width, height, force x, force y
 ParticleAttractor::turbulence(30.0, 50.0, 1.0) // strength, scale, speed
 ```
 
@@ -150,6 +154,7 @@ ParticleAttractor::turbulence(30.0, 50.0, 1.0) // strength, scale, speed
 
 Following the mouse:
 
+<!-- self: attractor: Entity -->
 ```rust
 let (mx, my) = ctx.input.mouse_position();
 let target = ctx.camera().screen_to_world(Vec2::new(mx, my));
@@ -160,17 +165,15 @@ if let Some(mut transform) = ctx.world.get_mut::<Transform>(self.attractor) {
 
 ## Collisions
 
-`with_collision(CollisionConfig)` makes an emitter's particles collide with entities that have `Collider` (no `RigidBody` needed). Geometry is the collider as physics simulates it: centred on the entity's origin plus `offset`, unscaled (`Collider::world_bounds`). Trigger colliders, `Disabled` entities and the emitter's own collider are skipped. Each particle is a circle of the config's radius.
+`with_collision(CollisionConfig)` makes an emitter's particles collide with entities that have `Collider` (no `RigidBody` needed); the examples build the configs it takes. Geometry is the collider as physics simulates it: centred on the entity's origin plus `offset`, unscaled (`Collider::world_bounds`). Trigger colliders, `Disabled` entities and the emitter's own collider are skipped. Each particle is a circle of the config's radius.
 
 ```rust
-.with_collision(CollisionConfig::bouncy(2.0, 0.7)) // radius, restitution
-.with_collision(CollisionConfig::sticky(2.0)) // frozen until its lifetime ends
-.with_collision(CollisionConfig::die_on_hit(2.0).with_events())
-.with_collision(
-  CollisionConfig::new(2.0)
-    .with_mask(0b10) // matched against Collider::layer
-    .with_response(CollisionResponse::Event),
-)
+CollisionConfig::bouncy(2.0, 0.7); // radius, restitution
+CollisionConfig::sticky(2.0); // frozen until its lifetime ends
+CollisionConfig::die_on_hit(2.0).with_events();
+CollisionConfig::new(2.0)
+  .with_mask(0b10) // matched against Collider::layer
+  .with_response(CollisionResponse::Event);
 ```
 
 | Response | Behaviour | `ParticleCollision` messages |
@@ -184,6 +187,7 @@ Contact entry is tracked per particle, not per collider: sliding from a floor in
 
 `ParticleCollision` is a message; read it after `update`:
 
+<!-- self: particles: ParticleSystem -->
 ```rust
 self.particles.update(ctx.world, dt);
 for hit in ctx.messages::<ParticleCollision>() {
@@ -196,12 +200,14 @@ for hit in ctx.messages::<ParticleCollision>() {
 
 ## Visual effects
 
+<!-- given: sprite: Handle<Image> -->
 ```rust
-.with_effect(SpriteEffect::glow_with_intensity(Color::new(100, 150, 255, 255), 6.0, 1.0))
+ParticleEmitter::new(sprite).with_effect(SpriteEffect::glow_with_intensity(Color::new(100, 150, 255, 255), 6.0, 1.0));
 ```
 
 How particles draw (fields `blend`, `filter`, `lighting` on the emitter):
 
+<!-- given: spark: Handle<Image> -->
 ```rust
 ParticleEmitter::sparks(spark)
   .with_blend(BlendMode::Additive)   // fire, sparks, magic: overlapping particles add up to bright cores

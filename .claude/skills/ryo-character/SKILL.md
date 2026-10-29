@@ -2,7 +2,7 @@
 name: ryo-character
 description: Characters - the character controller, platformer and top-down movement presets, MoveIntent and key bindings, one-way platforms, triggers with pickups, kill zones, checkpoints and respawns, tile colliders and knockback.
 metadata:
-  version: 1.1.0
+  version: 1.1.1
 ---
 
 # Ryo2D Characters
@@ -95,9 +95,9 @@ Writing a character's `Transform` teleports it: it is put there without a sweep,
 ## One-way platforms
 
 ```rust
-Collider::rect(96.0, 8.0).one_way()                     // solid only from above
-Collider::segment(Vec2::ZERO, Vec2::new(96.0, 0.0)).one_way()
-Collider::rect(8.0, 96.0).one_way_towards(Vec2::NEG_X)  // stops what comes from the left
+Collider::rect(96.0, 8.0).one_way();                     // solid only from above
+Collider::segment(Vec2::ZERO, Vec2::new(96.0, 0.0)).one_way();
+Collider::rect(8.0, 96.0).one_way_towards(Vec2::NEG_X);  // stops what comes from the left
 ```
 
 - The direction is in the collider's own space, so it turns with the collider. A zero direction is solid from every side (logged once).
@@ -173,6 +173,7 @@ Brings `MoveIntent`, `TopDownState` and `CharacterController::top_down()`. It wr
 
 `MovementEvent { entity, kind }`, `kind` one of `MovementEventKind::{Jumped, AirJumped, WallJumped, Dashed, Landed}` (non-exhaustive: match with a `_` arm). The presets write it in `FixedSet::Movement`, after `update`, so `update` reads it on the next step. Use it for sounds, dust and squash.
 
+<!-- given: player: Entity, sprite: Entity -->
 ```rust
 for event in ctx.messages::<MovementEvent>() {
   if event.entity == player && event.kind == MovementEventKind::Landed {
@@ -190,6 +191,7 @@ A trigger collider (any shape with `.as_trigger()`) detects overlaps without pus
 - What can set a trigger off is the usual layer and mask test, both ways.
 - Messages are written after the physics step, so `update` reads them on the next step.
 
+<!-- given: plate: Entity -->
 ```rust
 // A pressure plate: open the door while anything stands on it
 let pressed = ctx.world.get::<TriggerContents>(plate).is_some_and(|inside| !inside.is_empty());

@@ -2,7 +2,7 @@
 name: ryo-api
 description: Complete API reference for ryo2d::prelude - every exported type with its signatures and use, organised by area.
 metadata:
-  version: 2.13.3
+  version: 2.13.4
 ---
 
 # Ryo2D API Reference
@@ -73,6 +73,8 @@ fn count_coins(mut coins: MessageReader<CoinCollected>, mut score: ResMut<Score>
 
 World idioms (scene code works on `ctx.world` directly):
 
+<!-- given: world: &mut World, image: Handle<Image> -->
+<!-- with: #[derive(Component)] struct Player { speed: f32 } -->
 ```rust
 let e = world.spawn((Transform::from_xy(100.0, 50.0), Renderable::image(image))).id();
 world.entity_mut(e).insert(Velocity::new(10.0, 0.0));
@@ -90,7 +92,8 @@ let all = world.query_filtered::<Entity, (Allow<Disabled>, Without<IsResource>)>
 
 ## Transform and hierarchy
 
-```rust
+```rust,ignore
+// Definition
 #[derive(Component)] #[require(GlobalTransform)]
 pub struct Transform { pub translation: Vec2, pub rotation: f32, pub scale: Vec2 } // local to the parent
 ```
@@ -138,7 +141,8 @@ Engine systems for tests and tools, outside the prelude: `ryo2d::ecs::propagate:
 
 An image, or a tiled run of one, on an entity with a `Transform`.
 
-```rust
+```rust,ignore
+// Fields
 pub struct Renderable {
   pub image: Handle<Image>, pub style: RenderStyle, pub visible: bool, pub z_order: i32,
   pub flip_x: bool, pub flip_y: bool, pub alpha: f32, pub tint: Color,
@@ -215,7 +219,8 @@ Tweens and squash and stretch run in `FixedSet::Juice` (before `Scene::update`),
 
 ### Tween (component, Transform plus Renderable or Text2d alpha/tint)
 
-```rust
+```rust,ignore
+// Fields
 pub struct Tween {
   pub target_x: Option<f32>, pub target_y: Option<f32>, pub target_rotation: Option<f32>,
   pub target_scale_x: Option<f32>, pub target_scale_y: Option<f32>,
@@ -239,6 +244,7 @@ pub struct Tween {
 - `TweenSequence { pub playing, pub just_finished, pub loop_sequence, pub speed }`: `new()`, `then(Tween)`, `then_all(iter)`, `with_loop()`, `with_speed(f32)`, `set_speed`, `current()`, `current_mut()`, `current_index()`, `len()`, `is_empty()`, `is_finished()`, `pause`, `resume`, `stop`, `restart`, `advance`. Engine-driven.
 - `PropertyTween<T: Lerp>` (component): `new(start, end, duration)`, `with_easing`, `with_delay`, `with_loop(TweenLoop)`, `with_speed`, `on_start`, `on_update`, `on_complete`, `value() -> T`, `progress()`, `playing()`, `is_finished()`, `just_started()`, `just_finished()`, `pause`, `resume`, `stop`, `restart`, `retarget(new_end)`, `update(dt)`. The engine drives `PropertyTween<f32>`, `<Vec2>` and `<Color>`; call `update(dt)` yourself for other types.
 
+<!-- given: player: Entity -->
 ```rust
 ctx.world.entity_mut(player).insert(
   Tween::to_position(400.0, 180.0, 0.5).with_easing(Ease::OutBack).with_loop(TweenLoop::PingPong),
@@ -275,7 +281,8 @@ A character (`CharacterController`) is swept by the push, so surfaces stop it an
 
 ## Pooling
 
-```rust
+```rust,ignore
+// Signatures
 pub struct Pool<B: Bundle>;
 Pool::new(factory: impl Fn() -> B + Send + Sync + 'static, config: PoolConfig) -> Self
 pool.acquire(&mut self, world: &mut World) -> Option<Entity>   // enabled, interpolation skipped; components keep old values
@@ -296,7 +303,8 @@ pool.active(&self) -> impl Iterator<Item = Entity> /* oldest first */; pool.is_a
 
 `Time` is a resource and `ctx.time`:
 
-```rust
+```rust,ignore
+// Fields
 pub struct Time { pub real: RealClock, pub game: GameClock, pub fixed: FixedClock, /* .. */ }
 ```
 
@@ -336,7 +344,8 @@ pub struct Time { pub real: RealClock, pub game: GameClock, pub fixed: FixedCloc
 
 ## Scenes
 
-```rust
+```rust,ignore
+// Signatures, with their defaults
 pub trait Scene: 'static {
   fn on_enter(&mut self, ctx: &mut SceneContext) {}
   fn on_exit(&mut self, ctx: &mut SceneContext) {}
@@ -378,7 +387,8 @@ Only the top scene's action applies; a lower scene's (from `update` or `ui`) is 
 
 ## SceneContext
 
-```rust
+```rust,ignore
+// Fields
 pub struct SceneContext<'a> {
   pub world: &'a mut World,
   pub time: &'a mut Time,
@@ -440,6 +450,7 @@ Helpers that return `Mut<..>` borrow the context: chain one call (`ctx.effects()
 
 A complete scene:
 
+<!-- with: #[derive(Component)] struct Player { speed: f32 } fn move_players(time: Res<Time>, mut players: Query<(&Player, &mut Transform)>) {} -->
 ```rust
 #[derive(Default)]
 struct Level { player: Option<Entity>, particles: ParticleSystem }
@@ -490,6 +501,7 @@ impl Scene for Level {
 
 ## EngineBuilder
 
+<!-- with: #[derive(Resource, Default)] struct Score(u32); #[derive(Message, Clone)] struct CoinCollected { value: u32 } #[derive(Component)] struct Player { speed: f32 } fn move_players(time: Res<Time>, mut players: Query<(&Player, &mut Transform)>) {} #[derive(Default)] struct Level; impl Scene for Level {} -->
 ```rust
 EngineBuilder::new()
   .title("Game")
@@ -653,7 +665,8 @@ See `ryo-audio`.
 
 Cameras are entities: a `Camera2d` with a `Transform` (its position is the view's centre in world space, its rotation turns the view). The engine spawns the main camera (`MainCamera`, `Interpolated`) at the centre of the design area with `Projection::Fit` over it; it survives world cleanup, and `SceneCleanup::CAMERA` resets its position, zoom, rotation, projection and shake. Spawn more cameras for split screen, minimaps or render-to-texture.
 
-```rust
+```rust,ignore
+// Fields, and the types they use
 pub struct Camera2d {
   pub zoom: f32,              // default 1.0 (clamped to 0.01..=100)
   pub projection: Projection, // default ScreenUnits
@@ -742,7 +755,8 @@ An image that is not loaded (not yet, failed or freed) draws a magenta-and-black
 
 `Scene::render(&mut self, gpu: &mut GpuRenderContext)` adds batched sprites for the frame; they sort with entities by `z_order`.
 
-```rust
+```rust,ignore
+// Fields
 pub struct GpuRenderContext<'a> { pub batch: &'a mut BatchCollector, pub world: &'a World, /* .. */ }
 ```
 
@@ -1079,7 +1093,8 @@ Tile data, coordinates, collision and Tiled import; the renderer does not draw t
 
 `pass_ids`: per camera `CLEAR`, `WORLD` (entities, sprites, lit trails and lines in z order), `LIGHTING`, `UNLIT_WORLD`; per frame `CAMERAS` (window cameras' images into their viewports), `HDR_EFFECTS` (bloom, god rays, ambient occlusion on the scene image), `TONEMAP` (the look: the scene image into the display image), `TRANSITION`, `POST_PROCESS` (display effects), `UI`, `COMPOSITE`, `CAPTURE`. `enum RenderPipelineError { DuplicatePass(String), UnknownPass(String) }`.
 
-```rust
+```rust,ignore
+// Signatures
 pub trait RenderPass: Send + Sync {
   fn id(&self) -> &str;
   fn should_run(&self, frame: &FrameInfo) -> bool { true }
@@ -1114,6 +1129,7 @@ Two persistence tiers: player settings in `system.json` (`SystemState`) and game
 - `Workspace` (`Ryo.toml` project): `discover()`, `discover_from(dir)`, `from_path(root)`, `root()`, `name()`, `config() -> &WorkspaceConfig`, `entry_point()`, `assets_dir()`, `save_location()`, `save_data_dir()`, `set_save_data_path(p)`, `create_save_manager()`, `env_str/env_bool/env_int/env_float(key)`, `has_env(key)`, `has_config_file()`.
 - `WorkspaceConfig { name, title, description, version, entry_point, save_data, assets, debug, system: SystemDefaults, release, env }`; `SystemDefaults { resolution, pixel_art, vsync, display_mode, master_volume, music_volume, sfx_volume, ui_volume, voice_volume, ambience_volume, audio_buffer_frames: Option<u32>, show_fps, dev_console, target_background_fps, background_rendering, env }` (`audio_buffer_frames`: the audio device's buffer, `None` for the device's own; smaller is lower latency, larger safer).
 
+<!-- with: #[derive(serde::Serialize, serde::Deserialize)] struct Progress { level: u32 } -->
 ```rust
 let saves = Workspace::discover()?.create_save_manager()?;
 saves.save_game("slot1", &Progress { level: 3 })?;

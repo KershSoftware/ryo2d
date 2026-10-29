@@ -2,7 +2,7 @@
 name: ryo-console
 description: Developer console system - commands, registration, debugging overlays.
 metadata:
-  version: 1.3.6
+  version: 1.3.7
 ---
 
 # Ryo2D Developer Console
@@ -64,6 +64,7 @@ Game commands use a declare-then-register pattern for clean lifecycle management
 
 Declare game-wide commands on the engine builder (recommended):
 
+<!-- with: struct MenuScene; impl MenuScene { fn new() -> Self { Self } } impl Scene for MenuScene {} -->
 ```rust
 EngineBuilder::new()
   .title("My Game")
@@ -92,6 +93,7 @@ Parameters:
 
 Register handlers where they make sense (e.g., in GameScene). `ctx.console()` returns a `ConsoleScope` tied to the calling scene; `register` returns `false` if the command was never declared:
 
+<!-- with: mod shared { pub fn request_reset() {} } -->
 ```rust
 fn on_enter(&mut self, ctx: &mut SceneContext) {
   // Register handler - command becomes active
@@ -117,7 +119,8 @@ Command 'game:reset' has no effect in the current context
 
 ## Command Handler Signature
 
-```rust
+```rust,ignore
+// The engine's type
 type CommandFn = Box<dyn Fn(&[&str], &mut CommandContext) -> CommandResult + Send + Sync>;
 ```
 
@@ -141,7 +144,8 @@ type CommandFn = Box<dyn Fn(&[&str], &mut CommandContext) -> CommandResult + Sen
 
 ### CommandResult
 
-```rust
+```rust,ignore
+// The engine's definition
 pub enum CommandResult {
   Ok,            // Command succeeded
   Error(String), // Command failed with message
@@ -151,6 +155,7 @@ pub enum CommandResult {
 
 ### Console Output Methods
 
+<!-- given: cmd_ctx: &mut CommandContext -->
 ```rust
 cmd_ctx.console.print("Normal text");           // White
 cmd_ctx.console.print_command("> echoed cmd");  // Light blue
@@ -160,7 +165,8 @@ cmd_ctx.console.print_system("System info");    // Gray
 
 ## Complete Example
 
-```rust
+```rust,ignore
+// Three files: shared.rs, main.rs and game.rs
 // shared.rs - Cross-scene communication
 use std::sync::atomic::{AtomicBool, Ordering};
 static RESET_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -276,7 +282,8 @@ src/core/console/
 **ConsoleScope** - what `ctx.console()` returns: `declare`, `register` and `remove_builtin` against the registry, with the calling scene's scope id
 
 **DeclaredCommand** - Game command with optional handler:
-```rust
+```rust,ignore
+// The engine's definition
 pub struct DeclaredCommand {
   pub name: String,
   pub description: String,

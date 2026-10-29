@@ -2,7 +2,7 @@
 name: ryo-lighting
 description: 2D lighting - Light2D and LightOccluder2D entities, ctx.lighting() for ambient, atmosphere and on/off, shadows, volumetric beams, sprite shadows and ambient occlusion.
 metadata:
-  version: 2.1.0
+  version: 2.1.1
 ---
 
 # Ryo2D Lighting Specialist
@@ -42,24 +42,26 @@ Bind `let mut lighting = ctx.lighting();` for several calls; it borrows `ctx` un
 
 ## Lights
 
+<!-- given: color: Color -->
 ```rust
 // Point: color, radius (px)
-Light2D::point(Color::WHITE, 200.0).with_intensity(1.3).with_falloff(2.0)
+Light2D::point(Color::WHITE, 200.0).with_intensity(1.3).with_falloff(2.0);
 
 // Spot: color, radius, cone angle (degrees), direction (degrees)
-Light2D::spot(Color::WHITE, 200.0, 45.0, 270.0).with_intensity(1.5)
+Light2D::spot(Color::WHITE, 200.0, 45.0, 270.0).with_intensity(1.5);
 
 // Presets
-Light2D::torch(150.0)            // warm orange
-Light2D::moonlight(150.0)        // cool blue
-Light2D::lamp(150.0)             // bright white
-Light2D::warning(100.0)          // red
-Light2D::magic(120.0, color)     // custom colour, soft falloff
-Light2D::flashlight(200.0, 270.0)
+Light2D::torch(150.0);            // warm orange
+Light2D::moonlight(150.0);        // cool blue
+Light2D::lamp(150.0);             // bright white
+Light2D::warning(100.0);          // red
+Light2D::magic(120.0, color);     // custom colour, soft falloff
+Light2D::flashlight(200.0, 270.0);
 ```
 
 Change a light at runtime through a query or `get_mut`: `set_color`, `set_radius`, `set_intensity`, `set_direction` (spot), `set_cast_shadows`, `set_shadow_softness`, `set_shadow_color`, `set_volumetric`.
 
+<!-- self: torch: Entity -->
 ```rust
 if let Some(mut light) = ctx.world.get_mut::<Light2D>(self.torch) {
   light.set_intensity(1.0 + (ctx.time.game.elapsed() * 8.0).sin() * 0.1);
@@ -70,22 +72,24 @@ Lights are placed at their entity's `GlobalTransform` translation (a child entit
 
 ## Shadows
 
+<!-- given: color: Color, radius: f32 -->
 ```rust
-Light2D::point(color, radius).with_shadows()                 // hard (shadow volumes)
-Light2D::point(color, radius).with_soft_shadows(0.5)         // fades with distance, 0.0-1.0
-Light2D::point(color, radius).with_shadows().with_shadow_color(Color::new(50, 30, 80, 255))
+Light2D::point(color, radius).with_shadows();                 // hard (shadow volumes)
+Light2D::point(color, radius).with_soft_shadows(0.5);         // fades with distance, 0.0-1.0
+Light2D::point(color, radius).with_shadows().with_shadow_color(Color::new(50, 30, 80, 255));
 ```
 
 Each shadow darkens only the light that casts it, never another light's. A soft shadow starts whole at the light and fades with distance from it, letting `softness` of the light through past a distance of `softness / 2` of the radius; its outline stays sharp. The old ray-marched shadows (`with_raymarched_shadows`) are gone: use `with_soft_shadows`. A shadow colour is the light that gets through: black blocks it, a tinted colour lets that colour through (stained glass), and its alpha is the shadow's strength.
 
 ## Occluders
 
+<!-- given: width: f32, height: f32, x: f32, y: f32, radius: f32, segments: u32, start: Vec2, end: Vec2, thickness: f32 -->
 ```rust
-LightOccluder2D::rect(width, height)                  // centred on the entity
-LightOccluder2D::rect_offset(x, y, width, height)
-LightOccluder2D::circle(radius, segments)
-LightOccluder2D::line(start, end, thickness)          // Vec2 points
-LightOccluder2D::polygon(vec![Vec2::new(0.0, 0.0), ..])   // CCW winding
+LightOccluder2D::rect(width, height);                  // centred on the entity
+LightOccluder2D::rect_offset(x, y, width, height);
+LightOccluder2D::circle(radius, segments);
+LightOccluder2D::line(start, end, thickness);          // Vec2 points
+LightOccluder2D::polygon(vec![Vec2::ZERO, Vec2::new(64.0, 0.0), Vec2::new(32.0, 48.0)]);   // CCW winding
 ```
 
 Vertices are local to the entity and follow its `GlobalTransform` (rotation included). `with_enabled(false)` / `set_enabled(..)` turns one off without removing it.
@@ -96,24 +100,25 @@ Vertices are local to the entity and follow its `GlobalTransform` (rotation incl
 ctx.lighting().set_ambient(AmbientLight::new(Color::new(20, 20, 40, 255), 0.15));
 let current = *ctx.lighting().ambient();
 
-AmbientLight::dark()      // 0 intensity: pitch-black shadows
-AmbientLight::night()
-AmbientLight::moonlit()
-AmbientLight::indoor()
-AmbientLight::daylight()
-AmbientLight::sunset()
-AmbientLight::with_intensity(0.25)   // default colour
+AmbientLight::dark();      // 0 intensity: pitch-black shadows
+AmbientLight::night();
+AmbientLight::moonlit();
+AmbientLight::indoor();
+AmbientLight::daylight();
+AmbientLight::sunset();
+AmbientLight::with_intensity(0.25);   // default colour
 ```
 
 ## Volumetric Light and Atmosphere
 
 Volumetric beams are per light:
 
+<!-- given: color: Color, radius: f32 -->
 ```rust
-Light2D::flashlight(250.0, 0.0).with_volumetric()              // default beam
-Light2D::point(color, radius).with_volumetric_and_god_rays()
+Light2D::flashlight(250.0, 0.0).with_volumetric();              // default beam
+Light2D::point(color, radius).with_volumetric_and_god_rays();
 Light2D::point(color, radius)
-  .with_volumetric_settings(VolumetricSettings::new(0.3, 0.5, 0.2).with_god_rays())   // intensity, density, scattering
+  .with_volumetric_settings(VolumetricSettings::new(0.3, 0.5, 0.2).with_god_rays());   // intensity, density, scattering
 // Presets: VolumetricSettings::enabled(), subtle_beam(), strong_beam(), flashlight(), god_rays_only()
 ```
 
@@ -132,17 +137,18 @@ ctx.lighting().set_atmosphere(
 
 Drawn with the sprite, independent of lights:
 
+<!-- given: handle: Handle<Image> -->
 ```rust
-Renderable::image(handle).with_drop_shadow(DropShadow::below(8.0))
-Renderable::image(handle).with_drop_shadow(DropShadow::diagonal(6.0))
-Renderable::image(handle).with_drop_shadow(DropShadow::squashed(12.0, 0.3))
-Renderable::image(handle).with_drop_shadow(
+Renderable::image(handle.clone()).with_drop_shadow(DropShadow::below(8.0));
+Renderable::image(handle.clone()).with_drop_shadow(DropShadow::diagonal(6.0));
+Renderable::image(handle.clone()).with_drop_shadow(DropShadow::squashed(12.0, 0.3));
+Renderable::image(handle.clone()).with_drop_shadow(
   DropShadow::new().offset(4.0, 8.0).color(Color::new(0, 0, 0, 100)).scale(1.0, 0.6),
-)
-Renderable::image(handle).with_blob_shadow(
+);
+Renderable::image(handle.clone()).with_blob_shadow(
   BlobShadow::ellipse(20.0, 10.0).offset(48.0).with_height_scale(true).max_height(150.0),
-)
-Renderable::image(handle).with_contact_shadow(ContactShadow::new().radius(8.0).intensity(0.6).falloff(2.0))
+);
+Renderable::image(handle.clone()).with_contact_shadow(ContactShadow::new().radius(8.0).intensity(0.6).falloff(2.0));
 ```
 
 ## Ambient Occlusion

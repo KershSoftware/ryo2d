@@ -2,7 +2,7 @@
 name: ryo-network
 description: Multiplayer networking with Ryo2D - client-server, replication, RPCs.
 metadata:
-  version: 1.0.0
+  version: 1.0.1
 ---
 
 # Ryo2D Networking
@@ -72,6 +72,8 @@ let client = NetworkClient::connect(NetworkClientConfig::udp(
 
 **Critical:** Both server and client need `update()` called every frame.
 
+<!-- self: server: Option<ListenServer>, client: Option<NetworkClient>, connected: bool -->
+<!-- with: use std::time::Duration; impl Example { fn spawn_player(&mut self, ctx: &mut SceneContext, client_id: ClientId) {} fn remove_player(&mut self, ctx: &mut SceneContext, client_id: ClientId) {} } -->
 ```rust
 fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
     // Update network
@@ -124,6 +126,7 @@ fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
 | `ReplicationReliable` | Delivery + FIFO order | Reserved for replication; don't send game messages on it |
 | `ReplicationUnreliable` | Best-effort | Reserved for replication; don't send game messages on it |
 
+<!-- given: mut server: ListenServer, mut client: NetworkClient, client_id: ClientId, position_bytes: Vec<u8>, rpc_bytes: Vec<u8>, state_bytes: Vec<u8> -->
 ```rust
 // Send unreliable (position updates)
 server.send(client_id, Channel::Unreliable, &position_bytes);
@@ -137,6 +140,7 @@ server.broadcast(Channel::Unreliable, &state_bytes);
 
 ## Receiving Messages
 
+<!-- given: mut server: ListenServer, mut client: NetworkClient, client_id: ClientId -->
 ```rust
 // Server receives from specific client
 while let Some(data) = server.receive(client_id, Channel::ReliableOrdered) {
@@ -183,6 +187,7 @@ impl Replicated for PlayerPosition {
 
 ### 2. Setup ReplicationManager
 
+<!-- with: #[derive(Component, Clone, serde::Serialize, serde::Deserialize)] struct PlayerPosition { x: f32, y: f32 } impl Replicated for PlayerPosition { fn component_id() -> ComponentTypeId { ComponentTypeId::from_name("PlayerPosition") } fn component_name() -> &'static str { "PlayerPosition" } } -->
 ```rust
 // Server
 let mut replication = ReplicationManager::new_server();
@@ -197,6 +202,8 @@ replication.register::<PlayerPosition>();
 
 ### 3. Spawn Networked Entities
 
+<!-- given: mut replication: ReplicationManager, mut world: World, mut server: NetworkServer, client_id: ClientId, x: f32, y: f32 -->
+<!-- with: #[derive(Component, Clone, serde::Serialize, serde::Deserialize)] struct PlayerPosition { x: f32, y: f32 } impl Replicated for PlayerPosition { fn component_id() -> ComponentTypeId { ComponentTypeId::from_name("PlayerPosition") } fn component_name() -> &'static str { "PlayerPosition" } } -->
 ```rust
 let entity = replication.spawn_networked(
     &mut world,
@@ -218,6 +225,8 @@ Spawn messages (and full-state syncs) carry the current value of every registere
 
 ### 4. Broadcast Updates
 
+<!-- given: mut replication: ReplicationManager, mut world: World, entity: Entity, mut server: NetworkServer, mut client: NetworkClient -->
+<!-- with: #[derive(Component, Clone, serde::Serialize, serde::Deserialize)] struct PlayerPosition { x: f32, y: f32 } impl Replicated for PlayerPosition { fn component_id() -> ComponentTypeId { ComponentTypeId::from_name("PlayerPosition") } fn component_name() -> &'static str { "PlayerPosition" } } -->
 ```rust
 // After modifying replicated components
 replication.mark_dirty::<PlayerPosition>(entity);
@@ -239,6 +248,7 @@ Call `broadcast_updates()` every frame. `process_incoming()` takes any `ClientLi
 
 ### 1. Define RPC
 
+<!-- with: use serde::{Deserialize, Serialize}; -->
 ```rust
 #[derive(Clone, Serialize, Deserialize)]
 struct PlayerInputRpc {
@@ -258,6 +268,8 @@ impl Rpc for PlayerInputRpc {
 
 ### 2. Send RPC
 
+<!-- given: mut client: NetworkClient, mut server: NetworkServer, score_rpc: ScoreRpc -->
+<!-- with: use serde::{Deserialize, Serialize}; #[derive(Clone, Serialize, Deserialize)] struct PlayerInputRpc { move_x: f32, jump: bool } impl Rpc for PlayerInputRpc { fn rpc_id() -> RpcTypeId { RpcTypeId::from_name("PlayerInputRpc") } fn rpc_name() -> &'static str { "PlayerInputRpc" } } #[derive(Clone, Serialize, Deserialize)] struct ScoreRpc { points: u32 } impl Rpc for ScoreRpc { fn rpc_id() -> RpcTypeId { RpcTypeId::from_name("ScoreRpc") } fn rpc_name() -> &'static str { "ScoreRpc" } } -->
 ```rust
 // Client sends to server
 let rpc = PlayerInputRpc { move_x: 1.0, jump: true };
@@ -279,6 +291,8 @@ server.broadcast(Channel::ReliableOrdered, &serialized.to_bytes()?);
 
 ### 3. Receive and Process RPC
 
+<!-- given: mut server: NetworkServer -->
+<!-- with: use serde::{Deserialize, Serialize}; #[derive(Clone, Serialize, Deserialize)] struct PlayerInputRpc { move_x: f32, jump: bool } impl Rpc for PlayerInputRpc { fn rpc_id() -> RpcTypeId { RpcTypeId::from_name("PlayerInputRpc") } fn rpc_name() -> &'static str { "PlayerInputRpc" } } fn apply_input(client: ClientId, input: &PlayerInputRpc) {} -->
 ```rust
 // Server processes client RPCs
 for client_id in server.clients().collect::<Vec<_>>() {
@@ -296,6 +310,7 @@ for client_id in server.clients().collect::<Vec<_>>() {
 
 ## ListenServer Specifics
 
+<!-- given: config: NetworkServerConfig, client_id: ClientId -->
 ```rust
 let server = ListenServer::new(config)?;
 
@@ -325,30 +340,38 @@ server.player_count()  // Includes host
 
 ### Avoiding Borrow Issues
 
-```rust
+```rust,ignore
 // BAD: Borrows server twice
 for client_id in server.clients() {  // Borrows server
-    server.send(client_id, ...);     // Can't borrow again!
+    server.send(client_id, Channel::Unreliable, &bytes);  // Can't borrow again!
 }
+```
 
+<!-- given: mut server: ListenServer, bytes: Vec<u8> -->
+```rust
 // GOOD: Collect first
 let clients: Vec<_> = server.clients().collect();
 for client_id in clients {
-    server.send(client_id, ...);
+    server.send(client_id, Channel::Unreliable, &bytes);
 }
 
 // Also for events
 let events: Vec<_> = server.events().collect();
 for event in events {
-    match event { ... }
+    match event {
+        NetworkEvent::ClientConnected { client_id } => {}
+        _ => {}
+    }
 }
 ```
 
 ### Position Sync (Simple Approach)
 
+<!-- self: players: std::collections::HashMap<ClientId, Entity>, world: World, server: ListenServer -->
+<!-- with: use std::collections::HashMap; #[derive(Clone)] struct PositionUpdate { client_id: ClientId, x: f32, y: f32 } fn serialize(updates: &[PositionUpdate]) -> Result<Vec<u8>, Box<dyn std::error::Error>> { Ok(Vec::new()) } -->
 ```rust
 // Server broadcasts positions every frame
-fn broadcast_positions(&mut self) {
+fn broadcast_positions(&mut self) -> Result<(), Box<dyn std::error::Error>> {
     let mut updates = Vec::new();
     for (&client_id, &entity) in &self.players {
         if let Some(t) = self.world.get::<Transform>(entity) {
@@ -360,8 +383,14 @@ fn broadcast_positions(&mut self) {
     for client_id in self.server.remote_clients().collect::<Vec<_>>() {
         self.server.send(client_id, Channel::Unreliable, &bytes);
     }
+    Ok(())
 }
+```
 
+<!-- self: players: std::collections::HashMap<ClientId, Entity> -->
+<!-- given: client: &mut NetworkClient, world: &mut World -->
+<!-- with: use std::collections::HashMap; struct PositionUpdate { client_id: ClientId, x: f32, y: f32 } fn deserialize(data: &[u8]) -> Result<Vec<PositionUpdate>, Box<dyn std::error::Error>> { Ok(Vec::new()) } -->
+```rust
 // Client applies received positions
 while let Some(data) = client.receive(Channel::Unreliable) {
     let updates: Vec<PositionUpdate> = deserialize(&data)?;
@@ -377,6 +406,7 @@ while let Some(data) = client.receive(Channel::Unreliable) {
 
 ## Error Handling
 
+<!-- given: config: NetworkServerConfig -->
 ```rust
 // Network operations return Result<_, NetworkError>
 match ListenServer::new(config) {
@@ -422,7 +452,7 @@ let client = NetworkClient::connect(config)?;
 
 ### WebRTC (Internet - requires `matchbox` feature)
 
-```rust
+```rust,ignore
 // Enable in Cargo.toml: ryo2d = { features = ["matchbox"] }
 
 // Server

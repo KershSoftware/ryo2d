@@ -2,7 +2,7 @@
 name: ryo-audio
 description: "Audio - the workflow from a DAW export through assets/ and a .sound.ron definition to ctx.audio().play, voices and voice limits, the mixer file (buses, effects, sends, snapshots, ducking), the player's volume settings and their curve, 2D spatial sound with listeners and emitters, pause and time scale, music with intros, loops and crossfades, hot reload, the web's first-gesture unlock, latency, and testing with audio_world and the audio log."
 metadata:
-  version: 2.5.3
+  version: 2.5.4
 ---
 
 # Ryo2D Audio
@@ -116,6 +116,8 @@ Every field but `clips` may be left out; an option is written without `Some(..)`
 
 `play`, `play_at`, `play_with` and `play_emitter` return a `Voice`, a handle to that playback:
 
+<!-- self: engine_loop: Handle<Sound> -->
+<!-- with: use std::time::Duration; -->
 ```rust
 let engine = ctx.audio().play_with(&self.engine_loop, PlayOptions { volume_db: -3.0, ..Default::default() });
 engine.set_pitch(2.0);                     // semitones above the sound's pitch
@@ -401,6 +403,7 @@ or one file looping over a region, which streams when long:
 (clip: "music/boss.ogg", loop_start: 12.5, loop_end: None, mode: Stream)
 ```
 
+<!-- self: theme: Handle<Music> -->
 ```rust
 fn on_enter(&mut self, ctx: &mut SceneContext) {
   self.theme = ctx.assets().load("music/level.music.ron");

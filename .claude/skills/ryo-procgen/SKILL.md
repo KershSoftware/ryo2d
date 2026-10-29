@@ -2,7 +2,7 @@
 name: ryo-procgen
 description: The optional ryo2d-procgen crate - dungeons (BSP), caves (cellular), noise terrain, random walks, Poisson sampling, WFC and MST corridors.
 metadata:
-  version: 2.1.0
+  version: 2.1.1
 ---
 
 # Ryo2D Procedural Generation Specialist
@@ -66,6 +66,7 @@ let nav_grid = grid.to_navigation_grid(16.0);
 
 Binary Space Partitioning creates structured dungeons with rooms and corridors:
 
+<!-- with: use ryo2d_procgen::prelude::*; -->
 ```rust
 let result = ProcgenBuilder::new(64, 64)
     .with_seed(12345)
@@ -86,6 +87,7 @@ let result = ProcgenBuilder::new(64, 64)
 
 Creates organic cave systems using neighbor-counting rules:
 
+<!-- with: use ryo2d_procgen::prelude::*; -->
 ```rust
 let result = ProcgenBuilder::new(64, 64)
     .with_seed(12345)
@@ -106,6 +108,7 @@ let result = ProcgenBuilder::new(64, 64)
 
 Perlin/Simplex noise for terrain and heightmaps:
 
+<!-- with: use ryo2d_procgen::prelude::*; -->
 ```rust
 let result = ProcgenBuilder::new(128, 128)
     .with_seed(12345)
@@ -127,6 +130,7 @@ let result = ProcgenBuilder::new(128, 128)
 - `NoiseConfig::cave_preset()` - Binary floor/wall noise
 
 **Heightmap generation** (`generate_heightmap` is not in the prelude; import it from `ryo2d_procgen`):
+<!-- with: use ryo2d_procgen::prelude::*; -->
 ```rust
 use ryo2d_procgen::generate_heightmap;
 
@@ -139,6 +143,7 @@ let heightmap = generate_heightmap(128, 128, &NoiseConfig::default(), &mut rng);
 
 Creates organic paths and caves:
 
+<!-- with: use ryo2d_procgen::prelude::*; -->
 ```rust
 let result = ProcgenBuilder::new(64, 64)
     .with_seed(12345)
@@ -155,6 +160,7 @@ let result = ProcgenBuilder::new(64, 64)
 
 Even point distribution for spawning objects:
 
+<!-- with: use ryo2d_procgen::prelude::*; -->
 ```rust
 // Standalone function (not in builder)
 let points = poisson_points(
@@ -171,6 +177,8 @@ for (x, y) in points.iter() {
 `poisson_points` returns a `PoissonResult`: `.points` (`Vec<(f32, f32)>`), `.iter()`, `.len()`, `.to_grid_coords(cell_size)`.
 
 **Variants** (`poisson_circle` and `poisson_masked` are not in the prelude; import them from `ryo2d_procgen`):
+<!-- with: use ryo2d_procgen::prelude::*; -->
+<!-- given: center_x: f32, center_y: f32, radius: f32, width: f32, height: f32, config: ryo2d_procgen::PoissonConfig -->
 ```rust
 use ryo2d_procgen::{poisson_circle, poisson_masked};
 
@@ -190,6 +198,7 @@ let points = poisson_masked(width, height, &config, &mut rng, |x, y| {
 
 Constraint-based tile pattern generation:
 
+<!-- with: use ryo2d_procgen::prelude::*; -->
 ```rust
 let result = ProcgenBuilder::new(32, 32)
     .with_seed(12345)
@@ -198,6 +207,7 @@ let result = ProcgenBuilder::new(32, 32)
 ```
 
 **Custom tile rules:**
+<!-- with: use ryo2d_procgen::prelude::*; -->
 ```rust
 const FLOOR: u32 = 0;
 const WALL: u32 = 1;
@@ -224,6 +234,7 @@ Collapse grows outward from one cell, which suits connected structures. `.with_s
 
 Combine multiple algorithms in a pipeline:
 
+<!-- with: use ryo2d_procgen::prelude::*; -->
 ```rust
 let result = ProcgenBuilder::new(64, 64)
     .with_seed(12345)
@@ -249,6 +260,7 @@ let result = ProcgenBuilder::new(64, 64)
 
 ### TileType
 
+<!-- with: use ryo2d_procgen::prelude::*; -->
 ```rust
 pub enum TileType {
     Empty,
@@ -262,15 +274,19 @@ pub enum TileType {
 
 ### GenerationGrid
 
+<!-- with: use ryo2d_procgen::prelude::*; -->
+<!-- given: result: ryo2d_procgen::GenerationResult, x: i32, y: i32, cell_size: f32 -->
 ```rust
-let grid = result.grid();
+let mut grid = result.into_grid();
 
 // Access tiles
 let tile = grid.get(x, y);
 grid.set(x, y, TileType::Floor);
 
 // Iterate
-for (x, y, tile) in grid.iter() { ... }
+for (x, y, tile) in grid.iter() {
+    // ...
+}
 
 // Count tiles
 let floor_count = grid.count_type(TileType::Floor);
@@ -289,6 +305,7 @@ let nav_grid = grid.to_navigation_grid(cell_size);
 
 Deterministic random number generator:
 
+<!-- with: use ryo2d_procgen::prelude::*; -->
 ```rust
 let mut rng = SeededRng::new(12345);
 
@@ -312,6 +329,7 @@ let mut rng = SeededRng::from_entropy();
 
 All algorithms are deterministic - same seed produces same output. Without `with_seed()`, `build()` picks a random seed; read it back from `result.seed` to reproduce a run.
 
+<!-- with: use ryo2d_procgen::prelude::*; -->
 ```rust
 // These produce identical results
 let grid1 = ProcgenBuilder::new(64, 64)
@@ -329,6 +347,8 @@ let grid2 = ProcgenBuilder::new(64, 64)
 
 `GenerationGrid::to_navigation_grid(cell_size)` builds the core's `NavigationGrid`: `Floor`, `Door` and `Custom` cells are walkable, `Water` is difficult (cost 2), `Wall` and `Empty` are blocked.
 
+<!-- with: use ryo2d_procgen::prelude::*; -->
+<!-- given: start_x: f32, start_y: f32, goal_x: f32, goal_y: f32 -->
 ```rust
 let result = ProcgenBuilder::new(64, 64)
     .with_seed(12345)
@@ -346,6 +366,8 @@ let path = Pathfinder::new().find_path(&nav_grid, start_x, start_y, goal_x, goal
 
 Grid cells are integer coordinates; multiply by your tile size for world positions. Sprites are centred on their `Transform` by default, so a tile drawn by its centre sits half a tile in:
 
+<!-- with: use ryo2d_procgen::prelude::*; -->
+<!-- given: result: ryo2d_procgen::GenerationResult, wall: Handle<Image> -->
 ```rust
 const TILE: f32 = 16.0;
 
@@ -361,6 +383,7 @@ Use `.with_anchor(Anchor::TopLeft)` on the `Renderable` to place tiles by their 
 
 ### Dungeon with Connected Rooms
 
+<!-- with: use ryo2d_procgen::prelude::*; -->
 ```rust
 let result = ProcgenBuilder::new(64, 64)
     .with_seed(12345)
@@ -371,6 +394,7 @@ let result = ProcgenBuilder::new(64, 64)
 
 ### Cave System
 
+<!-- with: use ryo2d_procgen::prelude::*; -->
 ```rust
 let result = ProcgenBuilder::new(64, 64)
     .with_seed(12345)
@@ -382,6 +406,7 @@ let result = ProcgenBuilder::new(64, 64)
 
 ### Island Terrain
 
+<!-- with: use ryo2d_procgen::prelude::*; -->
 ```rust
 use ryo2d_procgen::apply_island_gradient;
 
@@ -395,6 +420,8 @@ apply_island_gradient(&mut grid, 0.3);  // Water at edges
 
 ### Spawn Points with Minimum Distance
 
+<!-- with: use ryo2d_procgen::prelude::*; #[derive(Component, Default)] struct Enemy; -->
+<!-- given: level_width: f32, level_height: f32, seed: u64 -->
 ```rust
 let spawn_points = poisson_points(
     level_width, level_height,
@@ -409,6 +436,7 @@ for &(x, y) in spawn_points.iter() {
 
 ### Custom Tile Transformation
 
+<!-- with: use ryo2d_procgen::prelude::*; -->
 ```rust
 let result = ProcgenBuilder::new(64, 64)
     .with_seed(12345)
@@ -426,6 +454,7 @@ let result = ProcgenBuilder::new(64, 64)
 
 ## GenerationResult
 
+<!-- with: use ryo2d_procgen::prelude::*; -->
 ```rust
 let result = ProcgenBuilder::new(64, 64)
     .with_seed(12345)
@@ -434,10 +463,10 @@ let result = ProcgenBuilder::new(64, 64)
 
 // Access result data
 let grid = result.grid();           // &GenerationGrid
-let grid = result.into_grid();      // GenerationGrid (consumes result)
 let seed = result.seed;             // u64
 let algorithm = &result.algorithm;  // String
 let duration = result.duration_ms;  // u64
+let grid = result.into_grid();      // GenerationGrid (consumes result)
 ```
 
 ## Performance Tips

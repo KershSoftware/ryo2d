@@ -2,7 +2,7 @@
 name: ryo-animation
 description: Sprite animations (Animator, AnimationController), tweens, knockback and squash/stretch.
 metadata:
-  version: 2.1.0
+  version: 2.1.1
 ---
 
 # Ryo2D Animation Specialist
@@ -32,6 +32,7 @@ Every animation component here is driven by the engine once per fixed step with 
 
 ### Animation: frames and timing
 
+<!-- given: walk_frames: Vec<Handle<Image>>, attack_frames: Vec<Handle<Image>> -->
 ```rust
 // Uniform frame duration; loops by default
 let walk = Animation::new("walk", walk_frames, 0.1);
@@ -45,6 +46,7 @@ let attack = Animation::with_frame_durations("attack", attack_frames, vec![0.1, 
 
 ### Animator: one animation
 
+<!-- given: coin_frames: Vec<Handle<Image>> -->
 ```rust
 let coin = ctx
   .world
@@ -68,6 +70,7 @@ Read: `is_playing()`, `just_finished()`, `current_frame_index()`, `animation_nam
 
 ### AnimationController: named states
 
+<!-- given: idle: Animation, walk: Animation, attack: Animation, idle_frames: Vec<Handle<Image>> -->
 ```rust
 let mut controller = AnimationController::new();
 controller.add_animation("idle", idle);
@@ -87,6 +90,7 @@ let player = ctx
 
 State names are `AnimationId` (`&'static str`). Setting the current state again does not restart it.
 
+<!-- self: player: Entity -->
 ```rust
 fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
   if let Some(mut anim) = ctx.world.get_mut::<AnimationController>(self.player) {
@@ -113,6 +117,8 @@ An `AnimationController` behind a `StateMachine` that only allows declared trans
 
 Flip instead of drawing left/right variants:
 
+<!-- given: dx: f32 -->
+<!-- self: player: Entity -->
 ```rust
 if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(self.player) {
   if dx < 0.0 {
@@ -127,6 +133,7 @@ if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(self.player) {
 
 `Tween` animates `Transform` translation, rotation (radians) and scale, and `Renderable` alpha and tint. Its alpha target (`to_alpha`, `fade_to`, `fade_out`, `fade_in`) also drives a `Text2d`'s `opacity`. Start values are captured when the tween starts.
 
+<!-- given: sprite: Handle<Image>, ghost: Entity -->
 ```rust
 use std::f32::consts::PI;
 
@@ -185,6 +192,7 @@ Tween::to_position(100.0, 100.0, 1.0)
 
 Read the messages; `finished` is `false` for the end of one loop iteration and `true` when the tween is done (`Once`, or the last of `Times(n)`):
 
+<!-- self: door: Entity, door_open: bool -->
 ```rust
 for done in ctx.messages::<TweenCompleted>() {
   if done.entity == self.door && done.finished {
@@ -208,6 +216,7 @@ for done in ctx.messages::<TweenCompleted>() {
 
 ### TweenSequence: one after another
 
+<!-- given: sprite: Handle<Image> -->
 ```rust
 ctx.world.spawn((
   Transform::from_xy(100.0, 100.0),
@@ -225,6 +234,7 @@ ctx.world.spawn((
 
 Interpolates any `Lerp` type (`f32`, `(f32, f32)`, `Vec2`, `Color`, `Rect`, or your own) and stores the value; read it with `value()`.
 
+<!-- self: health_shown: f32 -->
 ```rust
 let bar = ctx
   .world
@@ -241,6 +251,7 @@ Control: `pause`, `resume`, `stop`, `restart`, `retarget(new_end)`; read `progre
 
 ## Knockback
 
+<!-- given: enemy_pos: Vec2, player_pos: Vec2, enemy: Entity -->
 ```rust
 // Push an enemy away from the player (adds a Knockback if it has none)
 let dir = enemy_pos - player_pos;
@@ -257,6 +268,7 @@ The direction is normalised; force is pixels per second at full strength and dec
 
 ## Squash and stretch
 
+<!-- given: player: Entity -->
 ```rust
 SquashStretch::apply(ctx.world, player, 0.3); // land: squash on Y
 SquashStretch::apply_x(ctx.world, player, 0.25); // wall hit: squash on X

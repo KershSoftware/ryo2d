@@ -2,7 +2,7 @@
 name: ryo-renderer
 description: Working on the wgpu renderer, shaders, and GPU batching.
 metadata:
-  version: 2.2.3
+  version: 2.2.4
 ---
 
 # Ryo2D Renderer Specialist
@@ -81,7 +81,8 @@ Gotchas:
 
 ### RenderPass Trait
 
-```rust
+```rust,ignore
+// The trait's signatures
 pub trait RenderPass: Send + Sync {
     fn id(&self) -> &str;                                   // unique
     fn should_run(&self, _frame: &FrameInfo) -> bool { true } // only asked while enabled
@@ -96,6 +97,7 @@ pub trait RenderPass: Send + Sync {
 
 `ctx.render_pipeline()` returns the engine's `RenderPipeline` resource (`Mut<RenderPipeline>`), so changes persist across scenes. Ids and anchors are checked: duplicates or unknown ids return `RenderPipelineError`.
 
+<!-- with: struct Flash; impl RenderPass for Flash { fn id(&self) -> &str { "flash" } fn execute(&mut self, _ctx: &mut RenderContext<'_>) {} } -->
 ```rust
 let mut pipeline = ctx.render_pipeline();
 
@@ -118,7 +120,8 @@ Build a pass's pipelines for `RenderContext::format()`, the format of `current_v
 
 A game pass draws on the latest image:
 
-```rust
+```rust,ignore
+// A sketch: the descriptor's fields depend on the pass
 fn execute(&mut self, ctx: &mut RenderContext<'_>) {
     let (encoder, view) = ctx.encoder_and_current_view();
     let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor { /* attach `view` */ });
@@ -167,6 +170,7 @@ A custom shader's pipeline is checked by the GPU without waiting on it: a versio
 
 Parallax layers are components, one entity per layer, laid out for every camera on their layers from its own view:
 
+<!-- given: sky: Handle<Image>, hills: Handle<Image> -->
 ```rust
 ctx.world.spawn(ParallaxLayer::new(&sky).with_z_order(-100));
 ctx.world.spawn(
@@ -184,6 +188,8 @@ Give parallax layers a negative z (e.g. -100..-20) so they sit behind entities a
 
 Games use `Scene::render`, called once per frame for every visible scene, bottom-up:
 
+<!-- with: struct Particle { x: f32, y: f32, rotation: f32, size: f32, z_order: i32 } -->
+<!-- self: particles: Vec<Particle>, particle_sprite: Handle<Image> -->
 ```rust
 fn render(&mut self, gpu: &mut GpuRenderContext) {
   // A texture uploads the first time a frame draws it, and lives while its image does
@@ -275,6 +281,7 @@ WGSL alignment applies: a `vec3<f32>` member takes 16 bytes of alignment, so `{ 
 
 Without a `Params` struct the engine supplies `struct Params { unused: f32 }`. The function works in the sprite's sRGB values (straight alpha); the engine applies the tint, rounding, linear conversion and premultiplication afterwards. Custom shaders draw within the sprite's quad. Shadows and tiled tiles draw plain.
 
+<!-- given: sprite: Handle<Image> -->
 ```rust
 if let Ok(handle) = ctx.assets().load_now::<Shader>("shaders/dissolve.wgsl") {
     // Params are set by name; a Color is sRGB/255 (rgb into a vec3, rgba into a vec4).
@@ -322,6 +329,7 @@ In debug builds with a window the engine watches the game's `assets/` folder, wi
 
 Built-in effects on the `EffectsManager` resource, reached with `ctx.effects()` (`Mut<EffectsManager>`; bind it for several calls). Timed effects (flash) run on real time.
 
+<!-- with: use std::time::Duration; -->
 ```rust
 let mut fx = ctx.effects();
 fx.set_fade(0.5);

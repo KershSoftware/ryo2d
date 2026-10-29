@@ -2,7 +2,7 @@
 name: ryo-game-dev
 description: Building games with Ryo2D - scenes, entities, queries, systems, resources, messages, time and input.
 metadata:
-  version: 2.5.1
+  version: 2.5.2
 ---
 
 # Ryo2D Game Developer
@@ -146,6 +146,7 @@ Helpers: `assets()` (the asset registry: `load_now`, `load`, `add`, `get`; `ryo-
 
 ## Entities and Components
 
+<!-- given: sprite: Handle<Image> -->
 ```rust
 #[derive(Component)]
 struct Enemy;
@@ -174,6 +175,7 @@ ctx.world.despawn(e); // bool; despawns its children too
 
 ## Queries
 
+<!-- with: #[derive(Component)] struct Enemy; -->
 ```rust
 // Read
 for (transform, velocity) in ctx.world.query::<(&Transform, &Velocity)>().iter(ctx.world) {}
@@ -242,6 +244,8 @@ Resources outlive scene changes (`SceneCleanup::WORLD` despawns entities, not re
 
 ## Messages
 
+<!-- self: score: u32 -->
+<!-- with: #[derive(Resource, Default)] struct Score(u32); -->
 ```rust
 #[derive(Message, Clone)]
 struct CoinCollected {
@@ -264,6 +268,8 @@ fn add_score(mut coins: MessageReader<CoinCollected>, mut score: ResMut<Score>) 
 - A message stays readable until two fixed steps have run after it was written, so per-frame and fixed-step readers both see it; each scene and each reader sees it once. Read a type in one place per scene.
 - Engine messages: `CollisionStarted`/`CollisionStopped` and `TriggerEntered`/`TriggerExited` (physics), `MovementEvent`, `PickedUp`, `Killed`, `CheckpointReached` (gameplay), `TweenStarted`/`TweenCompleted`, `KnockbackStarted`/`KnockbackFinished`, `SquashStretchStarted`/`SquashStretchFinished`, `ParticleCollision`, and an `AssetEvent<T>` per asset type (`ryo-assets`). Details: `ryo-messages`.
 
+<!-- self: score: u32 -->
+<!-- given: player: Entity -->
 ```rust
 // A coin is a trigger with a Pickup: the engine collects and despawns it
 for picked in ctx.messages::<PickedUp>() {
@@ -289,6 +295,7 @@ for picked in ctx.messages::<PickedUp>() {
 
 Bind **actions** and read them, rather than raw keys: one name covers the keyboard, the mouse and the pad, the player can rebind it, and prompts show the right key or button.
 
+<!-- with: #[derive(Default)] struct PauseMenu; impl Scene for PauseMenu {} -->
 ```rust
 fn on_enter(&mut self, ctx: &mut SceneContext) {
   use Binding::{Key, Pad};
@@ -332,11 +339,14 @@ fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
 
 `PushWith`, `PopWith`, `PopReturnWith`, `SwitchWith`, `ResetWith` take a `Transition`: `Transition::fade(Duration::from_millis(400))`, `fade_white`, `fade_color(duration, r, g, b)`, `slide(duration, SlideDirection::Left)`.
 
+<!-- with: use std::time::Duration; #[derive(Default)] struct Level; impl Scene for Level {} -->
 ```rust
-return SceneAction::SwitchWith(
-  Box::new(Level::default()),
-  Transition::fade(Duration::from_millis(400)),
-);
+fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+  SceneAction::SwitchWith(
+    Box::new(Level::default()),
+    Transition::fade(Duration::from_millis(400)),
+  )
+}
 ```
 
 - Transitions run on real time, once a frame, so a fade finishes even with the game clock paused or slowed.
@@ -357,6 +367,7 @@ return SceneAction::SwitchWith(
 
 Additive particles and trails:
 
+<!-- given: x: f32, y: f32, spark: Handle<Image> -->
 ```rust
 ctx.world.spawn((
   Transform::from_xy(x, y),
@@ -367,6 +378,7 @@ ctx.world.spawn((Transform::from_xy(x, y), Trail2D::laser(Color::CYAN, 3.0).with
 
 Parallax: one entity per layer; every camera (split screen, minimap) lays it out from its own view.
 
+<!-- given: sky: Handle<Image>, hills: Handle<Image> -->
 ```rust
 ctx.world.spawn(ParallaxLayer::new(&sky).with_z_order(-100));
 ctx.world.spawn(
@@ -376,20 +388,23 @@ ctx.world.spawn(
 
 Debug drawing (one screen pixel wide at any zoom; from `update` it lasts until the next step):
 
+<!-- given: player: Vec2, target: Vec2, enemy: Vec2, sight_range: f32 -->
+<!-- with: #[derive(Component)] struct Route { points: Vec<Vec2> } -->
 ```rust
 ctx.debug_draw().line(player, target, Color::RED);
 ctx.debug_draw().width(2.0).circle(enemy, sight_range, Color::YELLOW);
 
 // From a system
-fn show_paths(mut debug: ResMut<DebugDraw>, agents: Query<&Path>) {
-  for path in &agents {
-    debug.polyline(&path.points, Color::GREEN);
+fn show_paths(mut debug: ResMut<DebugDraw>, agents: Query<&Route>) {
+  for route in &agents {
+    debug.polyline(&route.points, Color::GREEN);
   }
 }
 ```
 
 ## Physics in Brief
 
+<!-- given: sprite: Handle<Image> -->
 ```rust
 ctx.world.spawn((
   Transform::from_xy(200.0, 100.0),
@@ -523,6 +538,7 @@ The behaviours go on trigger colliders and act a step after the overlap; `Picked
 
 ### Recipe: a stack of crates on a fixed floor
 
+<!-- self: crate_sprite: Handle<Image> -->
 ```rust
 fn on_enter(&mut self, ctx: &mut SceneContext) {
   // A bare collider is a fixed floor
@@ -593,6 +609,7 @@ Queries see the world as the last step left it, so a wall spawned this tick does
 
 ## Hierarchy and Interpolation
 
+<!-- given: ship: Entity, sprite: Handle<Image> -->
 ```rust
 let turret = ctx.spawn_child(ship, (Transform::from_xy(0.0, -12.0), Renderable::image(sprite)));
 ctx.world.detach_keep_world(turret); // leave the parent, stay where it is
@@ -604,6 +621,7 @@ ctx.world.detach_keep_world(turret); // leave the parent, stay where it is
 
 ## Pooling
 
+<!-- given: sprite: Handle<Image>, at: Vec2, spent: Entity -->
 ```rust
 #[derive(Component, Clone)]
 struct Bullet;
@@ -636,6 +654,7 @@ Released entities carry `Disabled`: every query, physics and rendering skip them
 
 Split screen: two cameras, each with half the window.
 
+<!-- given: p2: Vec2 -->
 ```rust
 ctx.camera().set_viewport(Viewport::new(0.0, 0.0, 0.5, 1.0));
 let right = ctx.world.spawn((
@@ -648,6 +667,7 @@ let right = ctx.world.spawn((
 
 Minimap: a small camera on top that does not clear, seeing only what is on its layer.
 
+<!-- given: x: f32, y: f32, dot: Handle<Image> -->
 ```rust
 ctx.world.spawn((
   Transform::from_xy(0.0, 0.0),
@@ -685,6 +705,7 @@ Choose a resolution (fit) for most games: one fixed canvas, laid out once, filli
 
 The world renders in linear HDR and `ctx.look()` (a `Mut<Look>`) decides how it reaches the screen. All colours are sRGB; light above 1 is kept until the look rolls it off. A scene switch resets effects and the look (`SceneCleanup::EFFECTS`). Details in `ryo-renderer` and `ryo-api`.
 
+<!-- given: x: f32, y: f32, gem: Handle<Image> -->
 ```rust
 // A glowing pickup: emission above 1, unlit so it glows in the dark, and bloom
 ctx.world.spawn((
@@ -731,6 +752,7 @@ let grid = NavigationBuilder::new(800.0, 600.0)
 
 `ryo2d::testing::HeadlessEngine` runs a scene without a window, one fixed step and one render per `step`, and returns frames as pixels:
 
+<!-- with: #[derive(Default)] struct Level; impl Scene for Level {} -->
 ```rust
 use ryo2d::prelude::*;
 use ryo2d::testing::HeadlessEngine;

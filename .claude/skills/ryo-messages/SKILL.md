@@ -2,7 +2,7 @@
 name: ryo-messages
 description: Messages - typed, buffered notifications between scenes and systems; the engine's message types and how to define, write and read your own.
 metadata:
-  version: 2.3.1
+  version: 2.3.2
 ---
 
 # Ryo2D Messages
@@ -33,6 +33,7 @@ struct EnemyDefeated {
 
 Register it before anything uses it:
 
+<!-- with: #[derive(Message, Clone, Debug)] struct EnemyDefeated { enemy: Entity, points: u32 } -->
 ```rust
 EngineBuilder::new()
   .add_message::<EnemyDefeated>()
@@ -43,6 +44,8 @@ A scene's first `ctx.write_message` also registers the type, so a type only scen
 
 ## In scenes
 
+<!-- with: #[derive(Message, Clone, Debug)] struct EnemyDefeated { enemy: Entity, points: u32 } struct Victory; impl Victory { fn new() -> Self { Self } } impl Scene for Victory {} -->
+<!-- self: combo: u32, boss: Option<Entity> -->
 ```rust
 fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
   // Everything written since this scene last read
@@ -69,6 +72,7 @@ fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
 
 ## In systems
 
+<!-- with: #[derive(Message, Clone, Debug)] struct EnemyDefeated { enemy: Entity, points: u32 } #[derive(Component)] struct Enemy { health: i32, points: u32 } #[derive(Resource)] struct Score(u32); -->
 ```rust
 fn defeat_enemies(
   mut commands: Commands,
@@ -148,6 +152,8 @@ All are in the prelude and registered at engine build; `AssetEvent<T>` is regist
 | `UiListBind` | `list` (the list node), `row` (the pooled row), `index` (the item) | a UI list node gave one of its pooled rows an item (a new row, a row reused for another item, or `ctx.ui_list_refresh`), at the start of the UI pass, before any tree is drawn. The game fills the row (`ctx.ui_set(row, ..)`) in `ui`, and the row is drawn from the next frame. Every list's binds reach every scene: keep to your list's `list`. Also triggered on the row as an entity event (see `ryo-ui`, Virtual Lists) |
 | `UiReloaded` | `root: Entity`, `replaced: Option<Entity>` | a UI node tree was brought in line with its changed `.ui.ron` file (saved while hot reload is on, debug builds with a window, or reloaded with `ctx.assets().server().reload(path)`), once per root, before that frame's UI pass. `replaced` is the old root when the file gave the root a new kind, so a game holding it swaps in `root`. Nodes the file gave a new kind are new entities, so a game that filled a placeholder fills it again here (see `ryo-ui`, Files) |
 
+<!-- with: #[derive(Component)] struct Coin; #[derive(Component)] struct Spikes; -->
+<!-- self: player: Entity, health: i32 -->
 ```rust
 // A coin is a trigger: who entered is `actor()`, the coin is `trigger`
 for entered in ctx.messages::<TriggerEntered>() {
@@ -173,6 +179,8 @@ Modules define no message they do not write. Navigation, procgen, inventory and 
 
 The ECS's immediate events are available too: a `#[derive(Event)]` type, `ctx.world.add_observer(|event: On<Explode>| ..)` and `ctx.world.trigger(Explode { .. })` run the observer at once. The engine triggers only two of its own, on UI nodes: `UiEvent` on its node and `UiListBind` on its row, during the UI pass (an observer there must not change scenes; see `ryo-ui`). Observers are entities that `SceneCleanup::WORLD` keeps, so a scene that adds one despawns it in `on_exit`:
 
+<!-- with: #[derive(Event)] struct Explode { radius: f32 } -->
+<!-- self: observer: Option<Entity> -->
 ```rust
 fn on_enter(&mut self, ctx: &mut SceneContext) {
   let observer = ctx

@@ -2,7 +2,7 @@
 name: ryo-ecs-internals
 description: Working on Ryo2D's ECS (bevy_ecs presented as ryo2d::ecs) - kernel re-exports, components, propagation, interpolation, pooling and engine systems.
 metadata:
-  version: 2.1.1
+  version: 2.1.2
 ---
 
 # Ryo2D ECS Internals
@@ -118,7 +118,8 @@ In `bevy_ecs` 0.20 a resource is a component on a hidden entity marked `IsResour
 
 Engine systems are plain functions over `Query`, `Res`, `ResMut`, `MessageWriter`, `Commands`, or exclusive `fn(&mut World)` when they need the whole world (the scene systems, message updates, tracker clearing).
 
-```rust
+```rust,ignore
+// An engine system
 /// Decay every active `Knockback` by one fixed step and apply it.
 pub fn update_knockback(
   time: Res<Time>,
@@ -139,7 +140,8 @@ pub fn update_knockback(
 
 Test a system through a real `Schedule` with `systems::test_util`:
 
-```rust
+```rust,ignore
+// An engine test
 use crate::core::systems::test_util::{messages, run, world};
 
 #[test]
@@ -168,6 +170,7 @@ fn knockback_moves_an_entity_without_velocity() {
 
 `World::query` returns a `QueryState`; iterate with the world:
 
+<!-- given: world: &mut World -->
 ```rust
 let mut q = world.query::<(Entity, &GlobalTransform, &Renderable)>();
 for (entity, global, renderable) in q.iter(world) {}

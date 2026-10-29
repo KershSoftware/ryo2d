@@ -2,7 +2,7 @@
 name: ryo-ui
 description: Build game UI - widgets as builders in the Scene::ui hook, or node trees (UiNode) spawned once as entities - laid out in rows, columns and grids, with focus scopes for keyboard and gamepad navigation, scroll areas, popups and modals, drag and drop, themes, UI events and the input the UI consumes. Use when creating HUDs, menus, settings screens, inventories, dialogue or any in-game interface.
 metadata:
-  version: 4.8.0
+  version: 4.8.1
 ---
 
 # Ryo2D UI Specialist
@@ -15,6 +15,7 @@ There are two styles. **Closures** (sections 1 to 14) call the builders every fr
 
 ## 1. The `ui` Hook
 
+<!-- with: struct Hud; #[derive(Resource)] struct Score(u32); #[derive(Default)] struct PauseMenu; impl Scene for PauseMenu {} -->
 ```rust
 impl Scene for Hud {
   fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction {
@@ -44,6 +45,8 @@ impl Scene for Hud {
 
 ## 3. Widgets Are Builders
 
+<!-- given: ui: &mut UiContext -->
+<!-- self: volume: f32 -->
 ```rust
 if ui.button("Play").clicked() { /* .. */ }      // shorthand: draw it, say whether it was clicked
 let r = ui.slider(&mut self.volume, 0.0..=1.0).step(0.05).show();   // .show() gives the Response
@@ -53,6 +56,9 @@ ui.button("Delete").variant("danger");           // a statement: a builder recor
 - **Ids come from the call site**: the line a builder is called on, how often that line ran in the enclosing container this frame, and the container. A helper called in a loop gets one id per call. Skipping an earlier call (a conditional widget) shifts the later ones by one, so their state (focus, an open list) moves with them.
 - **Lists that reorder or filter use `.id(key)`**: the key replaces the count, so a row keeps its focus and state when the list is sorted. Keys are per container; a duplicate key is suffixed and warned once, never shared.
 
+  <!-- given: ui: &mut UiContext -->
+  <!-- self: items: Vec<Item>, selected: Option<u32> -->
+  <!-- with: struct Item { id: u32, name: String } -->
   ```rust
   for item in &self.items {
     if ui.button(item.name.as_str()).id(item.id).clicked() { self.selected = Some(item.id); }
@@ -61,6 +67,9 @@ ui.button("Delete").variant("danger");           // a statement: a builder recor
 
 - **`ui.scope(key, |ui| ..)`** keys everything inside without adding a layout node: a component drawn twice, or a helper drawing several widgets per item.
 
+  <!-- given: ui: &mut UiContext -->
+  <!-- self: items: Vec<Item> -->
+  <!-- with: struct Item { id: u32, name: String } fn item_row(ui: &mut UiContext, item: &Item) {} -->
   ```rust
   for item in &self.items {
     ui.scope(item.id, |ui| item_row(ui, item));
@@ -85,6 +94,8 @@ ui.button("Delete").variant("danger");           // a statement: a builder recor
 
 Containers lay their children out with flexbox and grid. A top-level container (one with no container open around it) is laid out when its `.show()` returns, so its `Response` has this frame's rect; a container inside another has last frame's.
 
+<!-- given: ui: &mut UiContext -->
+<!-- self: volume: f32 -->
 ```rust
 ui.panel()                       // a column with the panel look and padding; it blocks the pointer
   .anchor(Anchor::Center)        // top level: placed in the UI by its anchor (default TopLeft)...
@@ -148,6 +159,8 @@ ui.panel()                       // a column with the panel look and padding; it
 
 **Custom widgets** paint in their own units: (0, 0) is their top-left wherever layout puts them, and `painter.size()` their size. The closure runs inside `ui`, so it may borrow the scene.
 
+<!-- given: ui: &mut UiContext -->
+<!-- self: charge: f32 -->
 ```rust
 let gauge = ui.custom(120.0, 24.0).sense(Sense::click()).paint(|p, response| {
   let size = p.size();
@@ -159,6 +172,9 @@ let gauge = ui.custom(120.0, 24.0).sense(Sense::click()).paint(|p, response| {
 
 `Painter`: `size()`, `rect`, `rounded_rect`, `bordered_rect(rect, fill, radius, border_width, border_color)`, `text(text, x, y, &style)`, `sprite(&sprite, rect, tint)`, `line(&points, width, color)`. `Sense::hover()` (the default: clicks pass through to what is under it), `click()`, `drag()`, `click_and_drag()`. A custom widget is not focusable unless `.focusable(true)`; then `.takes_vertical()` / `.takes_horizontal()` keep those directions for it, read with `ui.nav_step(response.id)`, and `.takes_confirm(false)` leaves Space, Enter and A to gameplay while it is focused.
 
+<!-- given: ui: &mut UiContext -->
+<!-- self: rows: Vec<String>, row: usize -->
+<!-- with: fn draw_rows(p: &mut Painter, rows: &[String]) {} -->
 ```rust
 let list = ui.custom(200.0, 120.0).focusable(true).takes_vertical().paint(|p, _| draw_rows(p, &self.rows));
 match ui.nav_step(list.id) {
@@ -170,6 +186,8 @@ match ui.nav_step(list.id) {
 
 ## 6. Scroll Areas
 
+<!-- given: ui: &mut UiContext -->
+<!-- self: log: Vec<String> -->
 ```rust
 let area = ui.scroll().height(300.0).fill_width().gap(4.0).show(|ui| {
   for line in &self.log {
@@ -187,6 +205,7 @@ let area = ui.scroll().height(300.0).fill_width().gap(4.0).show(|ui| {
 
 ## 7. Focus and Navigation
 
+<!-- given: ui: &mut UiContext -->
 ```rust
 ui.panel().focus_scope().wrap_focus().anchor(Anchor::Center).show(|ui| {
   ui.button("New Game").default_focus();
@@ -209,35 +228,41 @@ ui.panel().focus_scope().wrap_focus().anchor(Anchor::Center).show(|ui| {
 
 All three are built where you call them and drawn above the page when the scene's UI ends, on the popup layer.
 
+<!-- self: options_open: bool, subtitles: bool, quitting: bool, menu_open: bool -->
 ```rust
-// A modal: dims the UI, blocks the pointer, traps the focus, gives it back when it goes.
-// It never closes itself: the game closes it, on a button or ui.back().
-if self.options_open {
-  let mut done = false;
-  ui.modal().width(320.0).gap(12.0).show(|ui| {
-    ui.text("Options").style(&heading);
-    ui.toggle(&mut self.subtitles, "Subtitles");
-    done = ui.button("Done").default_focus().clicked();
-  });
-  if done || ui.back() { self.options_open = false; }
-}
+fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
+  let heading = ui.theme().text.heading.style();
 
-// A yes/no question: opens on No, Back answers No. Keyed by its texts, so one dialog wherever it is called.
-match ui.confirm("Quit to desktop?", "Unsaved progress is lost.") {   // or confirm_with(title, message, yes, no)
-  Some(true) => return SceneAction::Quit,
-  Some(false) => self.quitting = false,
-  None => {}                                                           // still open
-}
+  // A modal: dims the UI, blocks the pointer, traps the focus, gives it back when it goes.
+  // It never closes itself: the game closes it, on a button or ui.back().
+  if self.options_open {
+    let mut done = false;
+    ui.modal().width(320.0).gap(12.0).show(|ui| {
+      ui.text("Options").style(&heading);
+      ui.toggle(&mut self.subtitles, "Subtitles");
+      done = ui.button("Done").default_focus().clicked();
+    });
+    if done || ui.back() { self.options_open = false; }
+  }
 
-// A popup below a widget: a context menu. The game decides when it shows.
-let more = ui.button("More").show();
-if more.clicked() { self.menu_open = !self.menu_open; }
-if self.menu_open {
-  ui.popup(more.id).show(|ui| {
-    if ui.button("Rename").default_focus().clicked() { self.menu_open = false; }
-    if ui.button("Delete").variant("danger").clicked() { self.menu_open = false; }
-  });
-  if ui.back() { self.menu_open = false; }
+  // A yes/no question: opens on No, Back answers No. Keyed by its texts, so one dialog wherever it is called.
+  match ui.confirm("Quit to desktop?", "Unsaved progress is lost.") {   // or confirm_with(title, message, yes, no)
+    Some(true) => return SceneAction::Quit,
+    Some(false) => self.quitting = false,
+    None => {}                                                           // still open
+  }
+
+  // A popup below a widget: a context menu. The game decides when it shows.
+  let more = ui.button("More").show();
+  if more.clicked() { self.menu_open = !self.menu_open; }
+  if self.menu_open {
+    ui.popup(more.id).show(|ui| {
+      if ui.button("Rename").default_focus().clicked() { self.menu_open = false; }
+      if ui.button("Delete").variant("danger").clicked() { self.menu_open = false; }
+    });
+    if ui.back() { self.menu_open = false; }
+  }
+  SceneAction::Continue
 }
 ```
 
@@ -251,6 +276,9 @@ if self.menu_open {
 
 Any widget or container can be a source and a target. Payloads are typed and the game decides what a drop means (a move, a swap, a merge): the UI only carries a clone of the source's payload to the target.
 
+<!-- given: ui: &mut UiContext, i: usize, icon: Handle<Image> -->
+<!-- self: bag: Vec<Option<Handle<Image>>> -->
+<!-- with: impl Example { fn move_item<P>(&mut self, from: P, to: P) {} } -->
 ```rust
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Place { Bag(usize), Equip(usize) }
@@ -268,6 +296,7 @@ if let Some(from) = r.dropped::<Place>() { self.move_item(from, Place::Bag(i)); 
 
 The theme is the `UiTheme` world resource: a palette, metrics (radius, timings, widget sizes, the focus ring), text roles (`body`, `heading`, `button`, `caption`, `mono`), a look per widget kind and state, named variants, nine-slice skins and sounds. `UiContext` takes it once per pass, so a change applies from the next frame.
 
+<!-- given: ui: &mut UiContext -->
 ```rust
 EngineBuilder::new().ui_theme(Theme::pixel());               // or Theme::dark() (the default), Theme::light()
 if let Ok(file) = ctx.assets().load_now::<Theme>("ui/game.theme.ron") {   // merged over dark
@@ -281,6 +310,7 @@ let heading = ui.theme().text.heading.style();               // a text role as a
 - **Looks per kind and state.** `theme.widgets.button` (and `panel`, `checkbox`, `toggle`, `radio`, `slider`, `text_input`, `dropdown`, `tab`, `choice`, `tooltip`, `scroll`, `slot`, `progress`, `rebind`, `modal`, `prompt`) is a `Looks`: a `normal` `Look` (fill, border, border width, radius, text colour, padding, offset, skin) and `LookPatch`es for `hovered`, `pressed`, `focused` (with the ring showing) and `disabled`, each changing only what it names.
 - **Variants** are named changes to a kind's looks, picked per widget with `.variant(name)`. The built-ins carry `danger`, `accent` and `tab` for buttons and `selected` for tabs. `Variant::disabled(..)` styles a disabled widget of the variant; without it, a disabled variant widget takes its kind's disabled look. An unknown name warns once and draws the plain look.
 
+  <!-- given: ui: &mut UiContext -->
   ```rust
   ctx.ui_theme().modify(|t| {
     t.variants.insert("gold".into(), Variant::of(WidgetKind::Button)
@@ -341,6 +371,7 @@ The UI pass runs before gameplay and consumes what it uses. What it consumed rea
 
 For HUD bars, markers, debug overlays and shapes no widget covers. These draw at once, at the position given, outside layout.
 
+<!-- given: ui: &mut UiContext, rect: Rect, fill: Color, border_color: Color, handle: Handle<Image>, x: f32, y: f32, style: TextStyle -->
 ```rust
 ui.draw_rect(rect, Color::RED);
 ui.draw_rect_outline(rect, Color::WHITE, 2.0);                          // thickness inside the rect
@@ -368,6 +399,8 @@ let size: Vec2 = ui.measure_text("Hello", &style);
 
 `UiTween<T>` (`TweenFloat`, `TweenVec2`, `TweenColor`, `TweenRect`) is owned and advanced by your scene. Advance it in `ui` with `ui.dt()` so it keeps playing during pause.
 
+<!-- given: ui: &mut UiContext -->
+<!-- self: slide: TweenFloat -->
 ```rust
 // field: slide: TweenFloat = TweenFloat::new(-300.0, 0.0, 0.4).with_ease(Ease::OutBack)
 self.slide.update(ui.dt());
@@ -382,6 +415,7 @@ Each compiles as written. They name each other's scenes (`Level`, `PauseMenu`, `
 
 ### Main menu
 
+<!-- with: #[derive(Default)] struct Level; impl Scene for Level {} #[derive(Default)] struct SettingsScreen; impl Scene for SettingsScreen {} struct QuitConfirm; impl Scene for QuitConfirm {} -->
 ```rust
 /// The title screen: one menu the mouse, the keys and the pad all play
 #[derive(Default)]
@@ -443,6 +477,7 @@ impl Scene for MainMenu {
 
 ### Pause menu with a settings modal
 
+<!-- with: struct MainMenu { has_save: bool } impl Scene for MainMenu {} -->
 ```rust
 /// Pushed over the level, which draws under it, not updated and not heard
 struct PauseMenu {
@@ -1007,6 +1042,7 @@ Choices also take the number keys 1-9. A confirm opened over the choices traps t
 
 ### HUD with no focus scope
 
+<!-- with: #[derive(Default)] struct PauseMenu; impl Scene for PauseMenu {} -->
 ```rust
 struct Level {
   health: f32,
@@ -1169,6 +1205,8 @@ Constructors and options use the closure builders' names: `UiNode::column()`, `r
 
 Every node also has `UiInteraction`, kept current by the walk: `hovered()`, `focused()`, and `id() -> Option<UiId>` once drawn.
 
+<!-- given: slider: Entity -->
+<!-- self: gold: u32 -->
 ```rust
 // Game to UI: write a component, and the next UI pass draws it
 if let Some(gold) = ctx.find_ui("gold")
@@ -1242,6 +1280,7 @@ pub struct UiEvent {
 
 Spawn a root with `.embedded()` and draw it inside a closure container with `ui.node(root, ctx.world)`. It takes the closure's flow, focus scope and clip, so one focus path runs through both. An embedded root is not drawn on its own. Drawing it twice in a frame draws it once and warns.
 
+<!-- self: grid: Option<Entity> -->
 ```rust
 // on_enter: self.grid = Some(ctx.spawn_ui(UiNode::grid(4).gap(6.0).embedded().children(cells)));
 fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction {
@@ -1287,6 +1326,7 @@ fn shop_row(name: &str, price: u32, index: usize) -> UiNode {
 - **`UiNode::confirm(title, message, yes, no)`** builds `ui.confirm_with`'s dialog as a modal tree whose buttons have the actions `"yes"` and `"no"`. It opens on No, and Back answers as No: a `Clicked` with action `"no"`. The game despawns it on either answer.
 - **`UiNode::popup(name)`** opens below the node called `name` in the same tree, as `ui.popup` does. Put it in the anchor's tree and show it by removing `UiHidden`, or spawn it there with `spawn_ui_in`. Close it on its `Back` event.
 
+<!-- self: options: Option<Entity>, subtitles: bool -->
 ```rust
 // An options dialog: Done or Back closes it
 self.options = Some(ctx.spawn_ui(
@@ -1339,6 +1379,7 @@ Each compiles as written beside section 14's. They name its `Level`.
 
 #### Menu with a confirm
 
+<!-- with: #[derive(Default)] struct Level; impl Scene for Level {} -->
 ```rust
 /// The title screen as a node tree: spawned once, its clicks read as events
 #[derive(Default)]
@@ -1988,6 +2029,7 @@ In debug builds with a window (never headless; `EngineBuilder::hot_reload` chang
 
 A game that holds a root or a node of a file's tree follows what a reload replaced:
 
+<!-- self: hud: Option<Entity>, extras: Option<Entity> -->
 ```rust
 // In `ui` or `update`: follow what a reload replaced
 for reloaded in ctx.messages::<UiReloaded>() {
@@ -2032,6 +2074,7 @@ Read held nodes with `ctx.world.get_mut::<C>(node)` or `ctx.world.get_entity_mut
 )
 ```
 
+<!-- with: #[derive(Default)] struct Level; impl Scene for Level {} -->
 ```rust
 const MENU: &str = "ui/main_menu.ui.ron"; // assets/ui/main_menu.ui.ron
 
@@ -2100,6 +2143,7 @@ The file's buttons carry `action` strings; the game matches them, as for any nod
 )
 ```
 
+<!-- self: hud: Option<Entity>, lives: u32, score: u32 -->
 ```rust
 // on_enter
 self.hud = ctx.spawn_ui_file("ui/hud.ui.ron").ok();
@@ -2254,6 +2298,9 @@ A **virtual list** shows thousands of items for the cost of a screenful. It is a
 
 ### Closure lists: `ui.list`
 
+<!-- given: ui: &mut UiContext -->
+<!-- self: scores: Vec<Score> -->
+<!-- with: struct Score { name: String } -->
 ```rust
 let list = ui
   .list(self.scores.len())
@@ -2482,6 +2529,7 @@ The same board (`Entry` above) as a node list. The file holds the row as a templ
 )
 ```
 
+<!-- with: struct Entry { name: String, score: u32 } -->
 ```rust
 const LEADERBOARD: &str = "ui/leaderboard.ui.ron";
 
@@ -2684,6 +2732,7 @@ fn the_slider_steps_with_the_pad() {
 - A click is a press frame then a release frame over the widget. A frame that draws nothing leaves the UI as the last frame that drew left it.
 - **Node trees:** `spawn_ui(tree) -> Entity` spawns a tree as a root of the harness's scene, and each `frame` draws the harness's trees before its closure, as a scene's are drawn before its `ui`. `events() -> &[UiEvent]` lists the last frame's node events in walk order. `find_ui(name)` and `ui_id(node)` work as on `SceneContext`, and `world()` / `world_mut()` reach the components. `frame_with_world(|ui, world| ..)` gives the closure the world as well, for `ui.node(root, world)`.
 
+  <!-- with: use ryo2d::testing::UiHarness; -->
   ```rust
   let mut ui = UiHarness::new(320.0, 240.0);
   ui.spawn_ui(UiNode::column().focus_scope().child(UiNode::checkbox("Sound", false).name("sound")));
@@ -2698,6 +2747,7 @@ fn the_slider_steps_with_the_pad() {
 - **UI files in a test:** `UiHarness::new(w, h).with_asset_source(DiskSource::new(dir))` loads files and images from `dir` (asset paths are relative to it), or `with_asset_source(files)` from a `MemorySource` the test fills (`files.insert("ui/menu.ui.ron", text)`); `spawn_ui_file(path) -> Result<Entity, UiFileError>` spawns one; `update_ui(node, tree)`, `ui_set(node, name, value)` and `ui_get::<T>(node, name)` work as on `SceneContext`. After changing the file, `reload_ui(path)` reads it again and waits until the reload lands, so the next `frame` brings the trees in line, and `messages::<UiReloaded>()` lists the roots it touched. `UiFile::parse(name, text)` checks text alone, for asserting a file's errors.
 - **Lists in a test:** `frame` draws a closure list like any widget. A node list's binds are in `messages::<UiListBind>()` after the frame that sent them: fill the rows there with `ui_set`, as a scene's `ui` would, and they are drawn from the next `frame`. `ui_list_count`, `ui_list_refresh`, `ui_list_refresh_row`, `ui_list_scroll_to`, `ui_list_focus` and `ui_list_index` work as on `SceneContext`.
 
+  <!-- with: use ryo2d::testing::UiHarness; -->
   ```rust
   let mut ui = UiHarness::new(320.0, 240.0);
   ui.spawn_ui(UiNode::column().focus_scope().child(
@@ -2720,6 +2770,7 @@ fn the_slider_steps_with_the_pad() {
 
 - **The node cache in a test:** caching is on in the harness, as in a game. `ui_cache_stats() -> UiCacheStats` says what the last frame's walk did: `built` and `rebuilt` (the nodes built, in walk order), `replayed`, `records`, and of the unchanged subtrees `reused` (copied), `resolved_again` and `captured` (kept for the next frame). `set_ui_cache(false)` builds every node every frame; `set_ui_fragments(false)` replays the unchanged subtrees instead of copying them; `set_ui_spot_check(true)` turns on the debug spot check, which the harness leaves off so the counts stay exact. `set_theme(theme)`, `resize(w, h)` and `type_text(text)` change the theme, the UI's size and the typed text from the next frame.
 
+  <!-- with: use ryo2d::testing::UiHarness; -->
   ```rust
   let mut ui = UiHarness::new(320.0, 240.0);
   let hud = ui.spawn_ui(UiNode::column().child(UiNode::text("Gold 0").name("gold")).child(UiNode::text("Lives 3")));
