@@ -142,6 +142,11 @@ impl StreamFailure {
     self.sample_rate
   }
 
+  /// Whether its decoder has reported a failure not yet taken
+  pub(crate) fn has_failed(&self) -> bool {
+    self.slot.failed.load(Ordering::Acquire)
+  }
+
   /// Whether its decoder has given its first frames (kira's decoder thread
   /// opens the file, seeks and decodes after the stream starts)
   pub(crate) fn has_frames(&self) -> bool {

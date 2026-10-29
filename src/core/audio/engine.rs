@@ -697,6 +697,16 @@ impl Playback {
     }
   }
 
+  /// Whether a stream's decoder has reported a failure the engine has yet
+  /// to take (it plays silence from there)
+  fn has_failed(&self) -> bool {
+    match self {
+      #[cfg(not(target_arch = "wasm32"))]
+      Playback::Stream(_, failure) => failure.has_failed(),
+      _ => false,
+    }
+  }
+
   /// Whether kira has audio to play: a stream's once its decoder has given
   /// its first frames (it opens, seeks and decodes on kira's decoder thread
   /// after the stream starts)
@@ -865,6 +875,10 @@ struct LiveVoice {
   /// is resumed then with this fade (`resume_started`), so the fade does
   /// not run out while kira plays the silence of its decoder's start
   starting: Option<Duration>,
+  /// The streamed comeback (its id) whose place this voice gives up as that
+  /// comeback's audio starts, so the two crossfade: it sounds, and counts,
+  /// until then, and plays on if the comeback never sounds
+  displaced_by: Option<u32>,
   /// Its fade from silence (its fade-in, or a resume's) as it last began,
   /// while it may still run: a restart (a reload, a rebuild) carries on with
   /// what is left of it rather than jumping to its level
@@ -1522,6 +1536,8 @@ pub struct EngineState {
   virtual_count: usize,
   /// How many streamed comebacks wait for their decoders (`starting`)
   starting_count: usize,
+  /// How many voices wait to give up their place to one (`displaced_by`)
+  displaced_count: usize,
   /// The virtual voices' ranking's lists, kept to reuse
   ranking: Ranking,
   /// The voices each definition (or clip played directly) started this
@@ -1786,6 +1802,7 @@ impl EngineState {
       victims: Vec::new(),
       virtual_count: 0,
       starting_count: 0,
+      displaced_count: 0,
       ranking: Ranking::with_room(),
       frame_starts: Vec::new(),
       pending: Vec::new(),
@@ -4556,6 +4573,7 @@ impl EngineState {
       unheard: (starts_held || heard_later).then_some(request.fade_in),
       own_fade: None,
       starting: None,
+      displaced_by: None,
       fade_in: if starts_held || waits || heard_later {
         None
       } else {
@@ -4975,7 +4993,7 @@ impl EngineState {
     self.play_awaited(world, server);
     self.follow_game(game, real_delta, server);
     self.rank_virtual(world, server);
-    self.resume_started();
+    self.resume_started(server);
     self.report_stream_errors();
     // The virtual loops move on as kira renders the frame
     self.advance_virtual(real_delta);
@@ -5482,15 +5500,17 @@ impl EngineState {
         }
       }
     }
-    let (mut virtualized, mut starting) = (0, 0);
+    let (mut virtualized, mut starting, mut displaced) = (0, 0, 0);
     self.voices.live.retain(|live| {
       let kept = !live.voice.is_stopped();
       virtualized += usize::from(kept && live.is_virtual());
       starting += usize::from(kept && live.starting.is_some());
+      displaced += usize::from(kept && live.displaced_by.is_some());
       kept
     });
     self.virtual_count = virtualized;
     self.starting_count = starting;
+    self.displaced_count = displaced;
   }
 
   /// Mark `clip` at content `version` undecodable, so it is refused until it

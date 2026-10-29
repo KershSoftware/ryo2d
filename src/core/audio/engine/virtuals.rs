@@ -103,7 +103,11 @@ impl Ranking {
         continue;
       }
       let (priority, heard) = (voice.priority, voice.heard_db());
-      let movable = voice.music.is_none() && clock.saturating_sub(voice.changed) >= STAY_PUT;
+      // One already giving up its place to a streamed comeback is not
+      // taken twice
+      let movable = voice.music.is_none()
+        && voice.displaced_by.is_none()
+        && clock.saturating_sub(voice.changed) >= STAY_PUT;
       for tally in &mut self.tallies {
         if !tally.scope.holds(voice, buses) {
           continue;
@@ -389,6 +393,13 @@ impl EngineState {
     let Some(live) = self.voices.live.get_mut(index) else {
       return;
     };
+    // Stopped, ended or made virtual meanwhile (one waiting on a streamed
+    // comeback), it has no place left to give up
+    live.displaced_by = None;
+    if live.is_virtual() || !matches!(live.voice.state(), VoiceState::Playing | VoiceState::Paused)
+    {
+      return;
+    }
     if live.looping && live.music.is_none() && self.virtual_count < MAX_VIRTUAL {
       self.virtualize(index, VIRTUAL_FADE, VIRTUAL_DISPLACED, server);
       return;
@@ -467,9 +478,20 @@ impl EngineState {
       if !self.realize(world, index, reason, server) {
         continue;
       }
+      // A streamed comeback's victims give up their place as its audio
+      // starts (`resume_started`), so the two crossfade; a decoded one's at
+      // once, as it fades in at once
+      let comeback = &self.voices.live[index];
+      let waiting = comeback.starting.is_some().then(|| comeback.voice.id());
       for taken in 0..ranking.displaced.len() {
         let victim = ranking.displaced[taken];
-        self.displace(victim, server);
+        match waiting {
+          Some(by) => {
+            self.voices.live[victim].displaced_by = Some(by);
+            self.displaced_count += 1;
+          }
+          None => self.displace(victim, server),
+        }
       }
       ranking.count(&self.voices.live, &self.buses, clock);
     }
@@ -478,18 +500,27 @@ impl EngineState {
 
   /// Resume each streamed comeback whose decoder now has frames, fading in
   /// over its comeback's fade from silence, as its audio starts: playing,
-  /// not held (one paused or held waits for both, and its decoder). Nothing
-  /// is looked at while none waits
-  pub(super) fn resume_started(&mut self) {
-    if self.starting_count == 0 {
+  /// not held (one paused or held waits for both, and its decoder), and
+  /// its decoder not failed (`retire_ended` stops it). The voices it takes
+  /// the place of give it up now ([`displace`](Self::displace)), so the two
+  /// crossfade; a voice waiting on a comeback that will not sound (stopped,
+  /// virtual again, gone, or failed) plays on. Nothing is looked at while
+  /// none waits
+  pub(super) fn resume_started(&mut self, server: Option<&AssetServer>) {
+    if self.starting_count == 0 && self.displaced_count == 0 {
       return;
     }
     let clock = self.clock;
-    for live in &mut self.voices.live {
+    for index in 0..self.voices.live.len() {
+      let live = &mut self.voices.live[index];
       let Some(fade) = live.starting else {
         continue;
       };
-      if live.held || live.voice.state() != VoiceState::Playing || !live.playback.has_frames() {
+      if live.held
+        || live.voice.state() != VoiceState::Playing
+        || live.playback.has_failed()
+        || !live.playback.has_frames()
+      {
         continue;
       }
       live.starting = None;
@@ -497,6 +528,34 @@ impl EngineState {
       live.playback.resume(fade);
       live.fade_in = FadeIn::begin(clock, fade);
       self.starting_count = self.starting_count.saturating_sub(1);
+      let by = live.voice.id();
+      if self.displaced_count > 0 {
+        for victim in 0..self.voices.live.len() {
+          if self.voices.live[victim].displaced_by == Some(by) {
+            self.displace(victim, server);
+          }
+        }
+      }
+    }
+    if self.displaced_count == 0 {
+      return;
+    }
+    for victim in 0..self.voices.live.len() {
+      let Some(by) = self.voices.live[victim].displaced_by else {
+        continue;
+      };
+      let waits = self.voices.index_of(by).is_some_and(|at| {
+        let comeback = &self.voices.live[at];
+        comeback.starting.is_some()
+          && matches!(
+            comeback.voice.state(),
+            VoiceState::Playing | VoiceState::Paused
+          )
+          && !comeback.playback.has_failed()
+      });
+      if !waits {
+        self.voices.live[victim].displaced_by = None;
+      }
     }
   }
 
@@ -741,6 +800,145 @@ mod tests {
       at <= played + 0.003 && at >= started,
       "at {at}: from {place}, at most {played}, less its stream's start"
     );
+  }
+
+  /// A metered world whose clip `bed.wav` (1 s of DC at 0.1) streams, and
+  /// a loop of it limited to one voice by `StopQuietest`
+  fn streamed_bed() -> (World, crate::core::audio::Meter, Handle<Sound>) {
+    let files = crate::core::asset::MemorySource::new();
+    files.insert("bed.wav", crate::core::testing::wav(48_000, 48_000, 3_277));
+    let (mut world, meter) = crate::core::testing::metered_audio_world_over(files);
+    let settings = crate::core::asset::AudioClipSettings {
+      mode: crate::core::asset::ClipMode::Stream,
+    };
+    let clip = crate::core::asset::AssetsView::new(&mut world)
+      .load_now_with::<AudioClip, _>("bed.wav", settings)
+      .unwrap_or_else(|error| panic!("{}", error.report()));
+    let bed = limited(&mut world, &clip, 1, LimitRule::StopQuietest);
+    (world, meter, bed)
+  }
+
+  /// One frame of `step`, with a moment for the streams' decoder threads
+  fn streamed_frame(world: &mut World, step: Duration) {
+    audio_step(world, step);
+    std::thread::sleep(Duration::from_millis(2));
+  }
+
+  /// A heard loop at -6 dB and a virtual one, never heard, at 0 dB, both
+  /// streamed: the virtual one comes back in the heard one's place once
+  /// the heard one may be moved (250 ms after it started), its decoder
+  /// slow to start. Frames are `step` long; returns the two voices and
+  /// where the meter was as the comeback was made
+  fn displacing(step: Duration) -> (World, crate::core::audio::Meter, Voice, Voice, usize) {
+    let (mut world, meter, bed) = streamed_bed();
+    // Played first and silenced, then taken by the quieter-made heard one
+    let comeback = play(&mut world, &bed);
+    comeback.set_volume(-60.0);
+    streamed_frame(&mut world, step);
+    let heard = AudioView::new(&mut world).play_with(
+      &bed,
+      PlayOptions {
+        volume_db: -6.0,
+        ..Default::default()
+      },
+    );
+    assert!(comeback.is_virtual(), "{comeback:?}");
+    comeback.set_volume(0.0);
+    world
+      .resource_mut::<AudioEngine>()
+      .delay_stream_starts(Duration::from_millis(80));
+    let mut from = meter.rendered_count();
+    for _ in 0..60 {
+      from = meter.rendered_count();
+      streamed_frame(&mut world, step);
+      if !comeback.is_virtual() {
+        break;
+      }
+    }
+    assert!(!comeback.is_virtual(), "{comeback:?}");
+    (world, meter, comeback, heard, from)
+  }
+
+  /// A streamed comeback that takes a heard loop's place crossfades with
+  /// it: the heard loop sounds on until the comeback's audio starts, and
+  /// the two fades run together, so the sum never falls more than 3 dB
+  /// below the quieter of the two, at 60 and at 30 frames a second, with
+  /// its decoder slow to start
+  #[test]
+  fn a_streamed_comeback_crossfades_with_the_loop_it_displaces() {
+    for step in [FRAME, Duration::from_nanos(33_333_333)] {
+      let (mut world, meter, comeback, heard, from) = displacing(step);
+      // Until the swap, however long its decoder takes, and its fades
+      for _ in 0..300 {
+        streamed_frame(&mut world, step);
+        if heard.is_virtual() {
+          break;
+        }
+      }
+      for _ in 0..6 {
+        streamed_frame(&mut world, step);
+      }
+      assert!(
+        heard.is_virtual() && !comeback.is_virtual(),
+        "{heard:?} {comeback:?}"
+      );
+      let rendered = meter.rendered(meter.rendered_count() - from);
+      let quieter = 0.1 * kira::Decibels(-6.0).as_amplitude();
+      let floor = quieter * kira::Decibels(-3.0).as_amplitude();
+      let lowest = rendered
+        .iter()
+        .map(|frame| frame.left)
+        .fold(f32::MAX, f32::min);
+      assert!(
+        lowest > floor,
+        "at {:?} frames, the sum falls to {lowest} (below {floor})",
+        step
+      );
+    }
+  }
+
+  /// A streamed comeback stopped while it waits for its decoder takes
+  /// nothing's place: the loop it would have displaced plays on, heard
+  #[test]
+  fn a_streamed_comeback_stopped_while_it_waits_displaces_nothing() {
+    let (mut world, _meter, comeback, heard, _) = displacing(FRAME);
+    comeback.stop(MIN_FADE);
+    for _ in 0..30 {
+      streamed_frame(&mut world, FRAME);
+    }
+    assert!(comeback.is_stopped(), "{comeback:?}");
+    assert!(heard.is_playing() && !heard.is_virtual(), "{heard:?}");
+    let went = entries(&world, &heard, AudioLogKind::Virtual);
+    assert!(went.is_empty(), "it was never displaced: {went:#?}");
+  }
+
+  /// A streamed comeback whose decoder fails while it waits takes
+  /// nothing's place: the loop it would have displaced plays on, heard
+  #[test]
+  fn a_streamed_comeback_whose_decoder_fails_displaces_nothing() {
+    let (mut world, meter, bed) = streamed_bed();
+    let comeback = play(&mut world, &bed);
+    comeback.set_volume(-60.0);
+    streamed_frame(&mut world, FRAME);
+    let heard = AudioView::new(&mut world).play_with(
+      &bed,
+      PlayOptions {
+        volume_db: -6.0,
+        ..Default::default()
+      },
+    );
+    comeback.set_volume(0.0);
+    let mut engine = world.resource_mut::<AudioEngine>();
+    engine.delay_stream_starts(Duration::from_millis(40));
+    engine.fail_stream_reads_at(0);
+    for _ in 0..80 {
+      streamed_frame(&mut world, FRAME);
+    }
+    assert!(comeback.is_stopped(), "its stream failed: {comeback:?}");
+    assert!(heard.is_playing() && !heard.is_virtual(), "{heard:?}");
+    let level = meter.last().left;
+    let quieter = 0.1 * kira::Decibels(-6.0).as_amplitude();
+    assert!((level - quieter).abs() < 0.01 * quieter, "heard: {level}");
   }
 
   /// A streamed loop's comeback fades in once its decoder has frames, not
