@@ -6075,6 +6075,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "skill-examples"
+version = "0.0.0"
+dependencies = [
+ "ryo2d",
+ "ryo2d-inventory",
+ "ryo2d-procgen",
+ "serde",
+]
+
+[[package]]
 name = "skrifa"
 version = "0.44.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

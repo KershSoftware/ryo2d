@@ -1,0 +1,13 @@
+[package]
+name = "skill-examples"
+version = "0.0.0"
+edition = "2024"
+description = "Compiles every Rust example in the agent skills, so a changed API cannot leave a stale one"
+publish = false
+
+[dependencies]
+ryo2d = { path = "../.." }
+ryo2d-procgen = { path = "../../crates/ryo2d-procgen" }
+ryo2d-inventory = { path = "../../crates/ryo2d-inventory" }
+# What a game adds to derive its saved or networked types
+serde = { version = "1.0", features = ["derive"] }

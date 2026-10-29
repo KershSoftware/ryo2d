@@ -292,4 +292,3 @@ Items from 4f to 5b were copied from their execution records. Items from earlier
 
 - Scene systems run during transitions; nested scroll views (the outer one takes the wheel); the mouse wheel is read in every fixed step of a frame; the prelude glob also exposes the `propagate`, `interpolate` and `kernel` module names.
 - Three glam versions are built: the engine's 0.31, parry2d's 0.33 (through glamx) and kira's 0.34 (0.30 under kira 0.11 before 5b). Moving the engine to kira's glam would drop one.
-- The skills' code blocks are not compiled in CI, so a renamed API can leave a stale example (seen during 5b).

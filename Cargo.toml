@@ -24,6 +24,7 @@ members = [
   "examples/demo-kit",
   "examples/demos/*",
   "examples/games/*",
+  "tests/skill-examples",
 ]
 
 # Run demos/games with: cargo run -p <name> or ./dev demos:run-all
