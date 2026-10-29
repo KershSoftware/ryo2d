@@ -1110,6 +1110,16 @@ struct Victim {
   ends: bool,
 }
 
+/// Which of a play's limits [`EngineState::make_room`] asks
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Limits {
+  /// Its definition's alone: what a loop under a rule that ends loops meets
+  /// before its range and kira's room
+  Own,
+  /// Its definition's, each bus limit up from its bus, and its track's cap
+  All,
+}
+
 /// Whether a limit's `rule` ends the loops it stops or refuses, as it does
 /// one-shots: `PreventNew` (a play past the limit is not wanted) and
 /// `StopOldest` (the newest replaces the oldest). The rules that rank
@@ -4445,20 +4455,34 @@ impl EngineState {
     // when it is in range and has room. A limit whose rule ends loops
     // (`PreventNew`, `StopOldest`) refuses it instead
     let virtualizes = request.looping && request.music.is_none();
-    // A loop whose own rule ends loops meets its own limit first, its
-    // virtual loops counted, whatever its place or kira's room: PreventNew
-    // refuses, StopOldest ends the oldest
+    // A loop whose own rule ends loops meets its own sound's limit first,
+    // its virtual loops counted, whatever its place or kira's room:
+    // PreventNew refuses, StopOldest ends the oldest. Out of range or with
+    // no room on its track it goes virtual cutting nothing else; the bus
+    // limits and the cap are asked only of one that would be heard
     let own_ends = virtualizes
       && request
         .limit
         .is_some_and(|limit| ends_loops(Some(limit.rule)));
     let mut goes_virtual = if own_ends {
-      match self.make_room(bus, request) {
-        Err(rule) if ends_loops(rule) => return self.refuse(&subject, REFUSED_LIMIT, server),
-        Err(_) => Some(VIRTUAL_LIMIT),
-        Ok(()) if out_of_range => Some(VIRTUAL_RANGE),
-        Ok(()) if !waits && !self.buses.has_room(bus) => Some(VIRTUAL_FULL),
-        Ok(()) => None,
+      if self.make_room(bus, request, Limits::Own).is_err() {
+        return self.refuse(&subject, REFUSED_LIMIT, server);
+      }
+      if out_of_range {
+        Some(VIRTUAL_RANGE)
+      } else if !waits && !self.buses.has_room(bus) {
+        Some(VIRTUAL_FULL)
+      } else {
+        match self.make_room(bus, request, Limits::All) {
+          Err(rule) if ends_loops(rule) => return self.refuse(&subject, REFUSED_LIMIT, server),
+          Err(_) => {
+            // The cap has no voice to give: virtual, ending what its own
+            // limit asks, so its sound stays within that limit
+            let _ = self.make_room(bus, request, Limits::Own);
+            Some(VIRTUAL_LIMIT)
+          }
+          Ok(()) => None,
+        }
       }
     } else if virtualizes && out_of_range {
       Some(VIRTUAL_RANGE)
@@ -4468,7 +4492,7 @@ impl EngineState {
         return self.refuse(&subject, REFUSED_FULL, server);
       }
       Some(VIRTUAL_FULL)
-    } else if let Err(rule) = self.make_room(bus, request) {
+    } else if let Err(rule) = self.make_room(bus, request, Limits::All) {
       // A limit that ends loops refuses one as it does a one-shot
       if !virtualizes || ends_loops(rule) {
         return self.refuse(&subject, REFUSED_LIMIT, server);
@@ -4480,11 +4504,9 @@ impl EngineState {
     if goes_virtual.is_some() && self.virtual_count >= MAX_VIRTUAL {
       return self.refuse(&subject, REFUSED_VIRTUAL, server);
     }
-    // Going virtual, it takes only the steals its rule asks for (StopOldest's
-    // oldest ends); those that would go virtual made room it does not take
-    if goes_virtual.is_some() {
-      self.victims.retain(|victim| victim.ends);
-    }
+    // Going virtual, it takes only its own limit's steals (StopOldest's
+    // oldest, which ends)
+    debug_assert!(goes_virtual.is_none() || self.victims.iter().all(|victim| victim.ends));
     let length = {
       let (rate, frames) = match &samples {
         ClipSource::Decoded(data) => (data.sample_rate, data.frames.len()),
@@ -4716,9 +4738,15 @@ impl EngineState {
   /// its definition's limit (its voices on the bus's subtree), each bus
   /// limit from `bus` up (every voice on that bus's subtree, by the
   /// definition's rule, or the cap's without one) and the cap on `bus`'s own
-  /// track. If a limit refuses the play, nothing is planned, and the rule of
-  /// the limit that refused it is returned (`None` for the cap's order)
-  fn make_room(&mut self, bus: usize, request: &Request<'_>) -> Result<(), Option<LimitRule>> {
+  /// track (only its definition's under [`Limits::Own`]). If a limit
+  /// refuses the play, nothing is planned, and the rule of the limit that
+  /// refused it is returned (`None` for the cap's order)
+  fn make_room(
+    &mut self,
+    bus: usize,
+    request: &Request<'_>,
+    limits: Limits,
+  ) -> Result<(), Option<LimitRule>> {
     self.victims.clear();
     let buses = &self.buses;
     let mut room = Room {
@@ -4737,7 +4765,7 @@ impl EngineState {
       }
       _ => None,
     };
-    let mut at = Some(bus);
+    let mut at = (limits == Limits::All).then_some(bus);
     while let (None, Some(index)) = (refused, at) {
       let Some(this) = buses.buses.get(index) else {
         break;
@@ -4749,7 +4777,7 @@ impl EngineState {
       }
       at = this.parent;
     }
-    if refused.is_none() && !room.fit(Scope::Track(bus), VOICE_CAP, None) {
+    if refused.is_none() && limits == Limits::All && !room.fit(Scope::Track(bus), VOICE_CAP, None) {
       refused = Some(None);
     }
     match refused {

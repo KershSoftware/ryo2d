@@ -1924,6 +1924,146 @@ mod tests {
     );
   }
 
+  /// Only a loop's own sound's limit is asked before its range: six beds
+  /// started in one frame fill the `ambience` bus's limit of 6, and a far
+  /// river (`StopOldest`, its own limit free) started with them goes
+  /// virtual, not refused, and comes back once in range and the bus has room
+  #[test]
+  fn a_far_stop_oldest_loop_goes_virtual_past_a_full_bus_limit() {
+    let mut world = audio_world();
+    let listener = world
+      .spawn((AudioListener, Transform::from_xy(0.0, 0.0)))
+      .id();
+    AudioView::new(&mut world).set_mixer(Mixer {
+      buses: vec![BusDef {
+        limit: Some(6),
+        ..BusDef::new("ambience")
+      }],
+      ..Default::default()
+    });
+    let dc = clip(&mut world, 1.0);
+    let bed = add(
+      &mut world,
+      Sound {
+        bus: "ambience".to_string(),
+        limit: Some(VoiceLimit {
+          max: 8,
+          rule: LimitRule::StopOldest,
+        }),
+        ..placed(&dc)
+      },
+    );
+    let river = add(
+      &mut world,
+      Sound {
+        bus: "ambience".to_string(),
+        limit: Some(VoiceLimit {
+          max: 1,
+          rule: LimitRule::StopOldest,
+        }),
+        ..placed(&dc)
+      },
+    );
+    let beds: Vec<Voice> = (0..6)
+      .map(|_| AudioView::new(&mut world).play_at(&bed, Vec2::ZERO))
+      .collect();
+    let river = AudioView::new(&mut world).play_at(&river, Vec2::new(900.0, 0.0));
+    assert!(river.is_playing() && river.is_virtual(), "{river:?}");
+    assert!(
+      beds.iter().all(|bed| bed.is_playing() && !bed.is_virtual()),
+      "{beds:?}"
+    );
+    // Halfway, both in range: the bus is full, and its rule takes no place
+    move_to(&mut world, listener, 450.0);
+    steps(&mut world, 30);
+    assert!(river.is_virtual(), "it waits for room: {river:?}");
+    beds[0].stop(MIN_FADE);
+    steps(&mut world, 2);
+    assert!(river.is_playing() && !river.is_virtual(), "back: {river:?}");
+  }
+
+  /// A `StopOldest` loop the cap keeps virtual still ends its sound's
+  /// oldest: with its first bed virtual out of range and the track's 96
+  /// voices all started this frame, a second bed in range finds the cap with
+  /// none to give, goes virtual, and the first ends, so its sound stays
+  /// within its limit
+  #[test]
+  fn a_stop_oldest_loop_the_cap_keeps_virtual_ends_the_oldest() {
+    let mut world = audio_world();
+    world.spawn((AudioListener, Transform::from_xy(0.0, 0.0)));
+    let dc = clip(&mut world, 1.0);
+    let bed = add(
+      &mut world,
+      Sound {
+        limit: Some(VoiceLimit {
+          max: 1,
+          rule: LimitRule::StopOldest,
+        }),
+        ..placed(&dc)
+      },
+    );
+    let filler = add(&mut world, looping(&dc));
+    let first = AudioView::new(&mut world).play_at(&bed, Vec2::new(900.0, 0.0));
+    assert!(first.is_virtual(), "{first:?}");
+    audio_step(&mut world, FRAME);
+    for _ in 0..96 {
+      play(&mut world, &filler);
+    }
+    let second = AudioView::new(&mut world).play_at(&bed, Vec2::ZERO);
+    assert!(second.is_playing() && second.is_virtual(), "{second:?}");
+    assert_eq!(entries(&world, &first, AudioLogKind::Stolen).len(), 1);
+    audio_step(&mut world, FRAME);
+    assert!(first.is_stopped(), "{first:?}");
+  }
+
+  /// A loop going virtual cuts nothing past its own limit: a `StopOldest`
+  /// loop played out of range on a bus whose limit two footsteps fill
+  /// (their sound under a `StopOldest` limit of its own) leaves both
+  #[test]
+  fn a_loop_going_virtual_cuts_no_one_shot_on_its_bus() {
+    let mut world = audio_world();
+    world.spawn((AudioListener, Transform::from_xy(0.0, 0.0)));
+    AudioView::new(&mut world).set_mixer(Mixer {
+      buses: vec![BusDef {
+        limit: Some(2),
+        ..BusDef::new("sfx/yard")
+      }],
+      ..Default::default()
+    });
+    let long = clip(&mut world, 2.0);
+    let step = add(
+      &mut world,
+      Sound {
+        bus: "sfx/yard".to_string(),
+        looping: false,
+        limit: Some(VoiceLimit {
+          max: 3,
+          rule: LimitRule::StopOldest,
+        }),
+        ..looping(&long)
+      },
+    );
+    let bed = add(
+      &mut world,
+      Sound {
+        bus: "sfx/yard".to_string(),
+        limit: Some(VoiceLimit {
+          max: 1,
+          rule: LimitRule::StopOldest,
+        }),
+        ..placed(&long)
+      },
+    );
+    let footsteps: Vec<Voice> = (0..2).map(|_| play(&mut world, &step)).collect();
+    audio_step(&mut world, FRAME);
+    let far = AudioView::new(&mut world).play_at(&bed, Vec2::new(900.0, 0.0));
+    assert!(far.is_playing() && far.is_virtual(), "{far:?}");
+    for footstep in &footsteps {
+      assert!(footstep.is_playing(), "{footstep:?}");
+      assert!(entries(&world, footstep, AudioLogKind::Stolen).is_empty());
+    }
+  }
+
   /// `StopQuietest` (as `StopFarthest` and `StopLowestPriority`) ranks:
   /// the loop it stops goes virtual, and comes back once it is the louder
   #[test]
