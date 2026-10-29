@@ -86,6 +86,10 @@ const MAX_MOCK_STEP: Duration = Duration::from_secs(1);
 const MAX_GLIDE: Duration = Duration::from_millis(100);
 /// Voices the table holds before it grows
 const VOICE_CAPACITY: usize = 128;
+/// The most retired bus trees kept ringing out their effects' tails: a
+/// rebuild past them drops the oldest at once (rebuilds come from saves
+/// while a designer tunes the mixer)
+const MAX_RINGING: usize = 4;
 /// The most a one-shot playing as its scene exits may have left to finish:
 /// a click or a stinger is heard out, while a longer one (a voice-over, a
 /// long streamed clip) stops with its fade rather than run on into the next
@@ -1243,6 +1247,23 @@ struct Replay {
   bus: usize,
 }
 
+/// A bus tree a rebuild retired whose effects ring on after its sounds (a
+/// reverb, a delay): kept, so kira keeps its tracks and what rings in them,
+/// until its last voice has ended and its tail has rung out
+struct RingingTree {
+  generation: u32,
+  /// Its tracks, send tracks included: dropping them lets kira remove them
+  tree: BusTree,
+  /// How long its longest chain of effects rings after its last sound
+  tail: Duration,
+  /// The engine's clock its rebuild's moved loops have faded out by: their
+  /// old copies fade over [`MIN_FADE`] on it
+  quiet_from: Duration,
+  /// When the engine first found no voice on it (no sooner than
+  /// `quiet_from`); `None` while voices play on it
+  quiet_since: Option<Duration>,
+}
+
 /// Loops one reload could not switch to what it changed (a clip, a sound
 /// definition, or the music), warned about once after it, with how many
 struct Unswitched {
@@ -1402,6 +1423,9 @@ pub struct EngineState {
   /// A retired tree's send tracks, by its generation, held while voices on
   /// it play so their sends still reach them
   retired_sends: Vec<(u32, Vec<SendTrackHandle>)>,
+  /// The retired trees whose effects ring after their sounds, oldest
+  /// first, at most [`MAX_RINGING`]
+  ringing: Vec<RingingTree>,
   /// The time scale the following voices' rates carry: the latest above
   /// [`HOLD_SCALE`] (a held voice keeps the rate it had)
   rate_scale: f64,
@@ -1618,6 +1642,7 @@ impl EngineState {
       mixer_pending: false,
       generation: 0,
       retired_sends: Vec::new(),
+      ringing: Vec::new(),
       rate_scale: 1.0,
       game: GameTime::default(),
       voices_dirty: false,
@@ -2230,6 +2255,25 @@ impl EngineState {
     }
   }
 
+  /// How long the live tree's effects ring after its last sound (tests)
+  #[cfg(test)]
+  pub(crate) fn tree_tail(&self) -> Duration {
+    self.buses.tail()
+  }
+
+  /// The generations of the retired trees ringing out their tails, oldest
+  /// first (tests)
+  #[cfg(test)]
+  pub(crate) fn ringing_generations(&self) -> Vec<u32> {
+    self.ringing.iter().map(|tree| tree.generation).collect()
+  }
+
+  /// The live tree's generation (tests)
+  #[cfg(test)]
+  pub(crate) fn generation(&self) -> u32 {
+    self.generation
+  }
+
   /// kira's tracks under its main track, and its send tracks (tests)
   #[cfg(test)]
   pub(crate) fn kira_tracks(&self) -> (usize, usize) {
@@ -2385,7 +2429,7 @@ impl EngineState {
     for bus in &mut tree.buses {
       bus.held = holds(bus, game);
     }
-    let mut old = std::mem::replace(&mut self.buses, tree);
+    let old = std::mem::replace(&mut self.buses, tree);
     let retired = self.generation;
     self.generation = self.generation.wrapping_add(1);
     // A definition's voice goes to the bus it names (one the mixer had yet
@@ -2398,16 +2442,9 @@ impl EngineState {
         .map_or_else(|| old.name(live.bus), |sound| sound.bus.as_str());
       live.bus = self.buses.playable(named);
     }
-    let sends = old.take_send_tracks();
-    if !sends.is_empty() {
-      self.retired_sends.push((retired, sends));
-    }
     // The new buses hold nothing yet: the frame's update holds the voices
     // their buses hold, and gives each the time scale its bus follows
     self.voices_dirty = true;
-    // Dropping its handles retires the old tree: kira removes each track
-    // once its sounds have finished
-    drop(old);
     // Every loop on a retired tree moves: this rebuild's, and any that
     // could not move at an earlier one. The music moves to what its
     // definition now says, if that changed, so it switches once a frame
@@ -2442,6 +2479,9 @@ impl EngineState {
         }
       }
     }
+    // The loops have moved: the old tree retires, ringing out what its
+    // effects hold
+    self.retire(old, retired);
     for duck in &mut self.ducks {
       duck.trigger = self.buses.find(&duck.def.trigger).unwrap_or(0);
       duck.target = self.buses.find(&duck.def.target).unwrap_or(0);
@@ -2492,6 +2532,58 @@ impl EngineState {
     for name in missing {
       self.warn_volume(&name);
     }
+  }
+
+  /// Retire bus tree `old` (of `generation`). One whose effects ring (a
+  /// reverb, a delay; [`BusTree::tail`]) is kept until its last voice has
+  /// ended and its tail has rung out ([`ring_out`](Self::ring_out)), so a
+  /// save cuts no tail mid-ring, the moved loops' old copies included; past
+  /// [`MAX_RINGING`] of them, the oldest is dropped at once. One that does
+  /// not ring is dropped now
+  fn retire(&mut self, old: BusTree, generation: u32) {
+    let tail = old.tail();
+    if tail.is_zero() {
+      self.drop_retired(old, generation);
+      return;
+    }
+    self.ringing.push(RingingTree {
+      generation,
+      tree: old,
+      tail,
+      quiet_from: self.clock.saturating_add(MIN_FADE),
+      quiet_since: None,
+    });
+    if self.ringing.len() > MAX_RINGING {
+      let oldest = self.ringing.remove(0);
+      self.drop_retired(oldest.tree, oldest.generation);
+    }
+  }
+
+  /// Drop retired tree `old`'s handles (of `generation`): kira removes each
+  /// track once its sounds have finished, and its send tracks are held
+  /// while voices on it play (`retired_sends`), so their sends still reach
+  /// them
+  fn drop_retired(&mut self, mut old: BusTree, generation: u32) {
+    let sends = old.take_send_tracks();
+    if !sends.is_empty() {
+      self.retired_sends.push((generation, sends));
+    }
+    drop(old);
+  }
+
+  /// Drop each ringing tree whose voices have all ended and whose tail has
+  /// rung out since: from the frame the engine first found it quiet, and
+  /// no sooner than its rebuild's moved loops faded out on it
+  fn ring_out(&mut self) {
+    let (clock, live) = (self.clock, &self.voices.live);
+    self.ringing.retain_mut(|tree| {
+      if live.iter().any(|voice| voice.generation == tree.generation) {
+        tree.quiet_since = None;
+        return true;
+      }
+      let since = *tree.quiet_since.get_or_insert(clock.max(tree.quiet_from));
+      clock < since.saturating_add(tree.tail)
+    });
   }
 
   /// Start live voice `index` again on its bus's track, where it is, and
@@ -4436,6 +4528,9 @@ impl EngineState {
       self
         .retired_sends
         .retain(|(generation, _)| live.iter().any(|voice| voice.generation == *generation));
+    }
+    if !self.ringing.is_empty() {
+      self.ring_out();
     }
     // Changes held for a voice that never started (it ended first)
     if !self.held.is_empty() {

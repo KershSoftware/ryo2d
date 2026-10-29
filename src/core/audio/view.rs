@@ -232,7 +232,8 @@ impl<'w> AudioView<'w> {
   /// mixer file (a game with no file, or a test; on the web, one whose own
   /// asset source does not hold it).
   /// It is built at once, as a saved file is: loops carry on, at their
-  /// position, on the new buses, and one-shots finish where they are. A
+  /// position, on the new buses, and one-shots finish where they are, the
+  /// old buses' reverbs and delays ringing out after them (up to 10 s). A
   /// mixer that fails its check (a bus named twice, say) is warned about and
   /// the buses stay as they are
   pub fn set_mixer(&mut self, mixer: Mixer) {

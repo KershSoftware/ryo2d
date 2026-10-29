@@ -48,6 +48,11 @@ pub const MIXER_PATH: &str = "audio/mixer.mixer.ron";
 /// mixes send buses beside `master`'s track, so `master`'s effects do not
 /// process returns. A mixer made in code is applied with
 /// `ctx.audio().set_mixer(mixer)`.
+///
+/// A save (or `set_mixer`) builds a new tree: loops move to it where they
+/// are, and one-shots play out on the old one, which is kept until its last
+/// sound has ended and its effects have rung out (a `Reverb`'s or a
+/// `Delay`'s tail, up to 10 s), so tuning a reverb cuts nothing mid-ring.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Mixer {
   /// The buses it adjusts or adds, in any order
@@ -658,6 +663,40 @@ impl EffectDef {
     }
   }
 
+  /// How long it rings after what reaches it falls silent: the time its
+  /// output takes to fall 60 dB, at most [`MAX_TAIL`]. A delay's echoes
+  /// fall `feedback_db` each `seconds`, so `seconds × 60 / |feedback_db|`.
+  /// A reverb (kira's is Freeverb) falls by its slowest comb filter, which
+  /// loses `20·log10(feedback)` dB each pass of its loop, and then its
+  /// all-pass filters in series, each losing 6 dB a pass:
+  /// `3·REVERB_COMB / -log10(feedback) + 3·REVERB_ALL_PASS / log10(2)`
+  /// (a feedback comb filter's 60 dB time; one of 1 never falls). The
+  /// filters, the EQ, the compressor and the distortion do not ring
+  pub(crate) fn tail(&self) -> Duration {
+    let seconds = match *self {
+      EffectDef::Delay {
+        seconds,
+        feedback_db,
+        ..
+      } => seconds * 60.0 / f64::from(feedback_db.abs()),
+      EffectDef::Reverb { feedback, .. } if feedback >= 1.0 => f64::INFINITY,
+      EffectDef::Reverb { feedback, .. } => {
+        let combs = if feedback > 0.0 {
+          3.0 * REVERB_COMB / -feedback.log10()
+        } else {
+          REVERB_COMB
+        };
+        combs + 3.0 * REVERB_ALL_PASS / 2f64.log10()
+      }
+      _ => 0.0,
+    };
+    if seconds.is_nan() || seconds <= 0.0 {
+      Duration::ZERO
+    } else {
+      Duration::from_secs_f64(seconds.min(MAX_TAIL.as_secs_f64()))
+    }
+  }
+
   /// kira's effect, built
   fn build(&self) -> Box<dyn Effect> {
     match *self {
@@ -946,14 +985,27 @@ const STANDARD: [(&str, bool, bool); 6] = [
 /// The most buses a mixer adds to the standard six
 const MAX_BUSES: usize = 64;
 /// The most send buses in a mixer (kira's room for send tracks is
-/// [`SEND_TRACK_CAPACITY`], so a retired tree's can wait out its voices)
+/// [`SEND_TRACK_CAPACITY`], so retired trees' can wait out their voices
+/// and tails)
 const MAX_SEND_BUSES: usize = 16;
-/// kira's room for send tracks, set on the manager
-pub(crate) const SEND_TRACK_CAPACITY: usize = 64;
+/// kira's room for send tracks, set on the manager: the live tree's, the
+/// four retired trees ringing out their tails, and one more tree's whose
+/// voices play out, each with up to [`MAX_SEND_BUSES`]
+pub(crate) const SEND_TRACK_CAPACITY: usize = 6 * MAX_SEND_BUSES;
 /// The loudest a bus's volume, a send level or a gain layer sum is, in dB
 pub(crate) const MAX_BUS_DB: f32 = 24.0;
 /// The longest delay or compressor time, in seconds
 const MAX_DELAY: f64 = 10.0;
+/// The longest a retired bus tree is kept after its last sound for its
+/// effects to ring out (`EffectDef::tail`, `BusTree::tail`)
+pub(crate) const MAX_TAIL: Duration = Duration::from_secs(10);
+/// The loop of kira's reverb's longest comb filter, in seconds: 1640
+/// samples at its reference rate of 44.1 kHz (kira scales its filters'
+/// lengths with the sample rate, so the time holds at any rate)
+const REVERB_COMB: f64 = 1640.0 / 44_100.0;
+/// The loops of kira's reverb's four all-pass filters, in series, in
+/// seconds: 1655 samples at 44.1 kHz on its longer side
+const REVERB_ALL_PASS: f64 = 1655.0 / 44_100.0;
 /// The longest a snapshot's blend or a duck's attack or release is, in
 /// seconds
 const MAX_SECONDS: f32 = 60.0;
@@ -1123,6 +1175,9 @@ pub(crate) struct Bus {
   pub(crate) output: Output,
   /// How many effects its track has
   pub(crate) effects: usize,
+  /// How long its effects ring after what reaches them falls silent, each
+  /// effect's tail added (`EffectDef::tail`)
+  pub(crate) tail: Duration,
   /// The send buses it feeds
   pub(crate) sends: Vec<Route>,
   pub(crate) layers: GainLayers,
@@ -1209,6 +1264,9 @@ impl BusTree {
             Output::Track(None)
           },
           effects: def.map_or(0, |def| def.effects.len()),
+          tail: def.map_or(Duration::ZERO, |def| {
+            def.effects.iter().map(EffectDef::tail).sum()
+          }),
           sends: Vec::new(),
           layers: layers(planned),
           cutoff: planned.low_pass.then(|| Cutoff::open(None)),
@@ -1456,6 +1514,46 @@ impl BusTree {
       Some(Output::Send(Some(send))) => Some(send.id()),
       _ => None,
     }
+  }
+
+  /// How long the tree rings after its last sound: its longest chain of
+  /// effects, each effect's tail added (`EffectDef::tail`), at most
+  /// [`MAX_TAIL`]. A chain runs from a bus voices play on through each bus
+  /// above it to `master`, and from any of those into a send bus (kira
+  /// mixes a send bus's return beside `master`). Only the tracks kira made
+  /// ring
+  pub(crate) fn tail(&self) -> Duration {
+    let ringing = |bus: &Bus| match bus.output {
+      Output::Track(Some(_)) | Output::Send(Some(_)) => bus.tail,
+      _ => Duration::ZERO,
+    };
+    let mut longest = Duration::ZERO;
+    for start in 0..self.buses.len() {
+      if self.is_send(start) {
+        continue;
+      }
+      // Up from `start`: the effects below and on each bus, then at each
+      // bus its sends' returns
+      let mut below = Duration::ZERO;
+      let mut at = Some(start);
+      while let Some(index) = at {
+        let Some(bus) = self.buses.get(index) else {
+          break;
+        };
+        let through = below + ringing(bus);
+        let send = bus
+          .sends
+          .iter()
+          .filter_map(|route| self.buses.get(route.to))
+          .map(ringing)
+          .max()
+          .unwrap_or_default();
+        longest = longest.max(through + send);
+        below = through;
+        at = bus.parent;
+      }
+    }
+    longest.min(MAX_TAIL)
   }
 
   /// The send tracks, taken out: a retired tree's are kept while its
@@ -1967,7 +2065,8 @@ mod tests {
       "the new sfx track holds the loop"
     );
     assert_eq!(engine.voices_on("sfx"), 2);
-    // The one-shot plays out on the retired tree, which then goes
+    // The one-shot plays out on the retired tree, which rings out its
+    // reverb (fed by footsteps' send: 1.525 s) and then goes
     for _ in 0..200 {
       if shot.is_stopped() {
         break;
@@ -1977,6 +2076,10 @@ mod tests {
     assert!(shot.is_stopped(), "{shot:?}");
     audio_step(&mut world, FRAME);
     assert!(looped.is_playing(), "{looped:?}");
+    assert_eq!(world.resource::<AudioEngine>().kira_tracks(), (2, 2));
+    for _ in 0..95 {
+      audio_step(&mut world, FRAME);
+    }
     assert_eq!(world.resource::<AudioEngine>().kira_tracks(), (1, 1));
   }
 
@@ -2855,6 +2958,208 @@ mod tests {
     let error =
       bad(r#"(ducks: [(trigger: "music", target: "music", by: -3.0, attack: 0.1, release: 0.1)])"#);
     assert!(error.contains("itself"), "{error}");
+  }
+
+  /// `text` parsed, set in code and built at once
+  fn set_mixer(world: &mut World, text: &str) {
+    match Mixer::parse(text) {
+      Ok(mixer) => AudioView::new(world).set_mixer(mixer),
+      Err(error) => panic!("{text}: {error}"),
+    }
+  }
+
+  /// kira's tracks under its main track: one `master` for the live tree,
+  /// and one for each retired tree kira still keeps
+  fn masters(world: &World) -> usize {
+    world.resource::<AudioEngine>().kira_tracks().0
+  }
+
+  fn secs_close(actual: Duration, expected: f64) -> bool {
+    (actual.as_secs_f64() - expected).abs() < 0.005
+  }
+
+  /// Each effect rings for its tail after its input falls silent: a delay
+  /// for its echoes to fall 60 dB, a reverb by its feedback, the rest not
+  /// at all; at most 10 s
+  #[test]
+  fn each_effect_rings_for_its_tail() {
+    let delay = |seconds: f64, feedback_db: f32| EffectDef::Delay {
+      seconds,
+      feedback_db,
+      mix: 0.5,
+    };
+    assert!(secs_close(delay(0.5, -12.0).tail(), 2.5));
+    // 2 s apart at -6 dB is 20 s of echoes: capped
+    assert_eq!(delay(2.0, -6.0).tail(), MAX_TAIL);
+    let reverb = |feedback: f64| EffectDef::Reverb {
+      feedback,
+      damping: 0.1,
+      stereo_width: 1.0,
+      mix: 0.5,
+    };
+    // Its slowest comb filter's 60 dB fall (1.15 s at 0.8, 2.44 s at
+    // 0.9), and its all-pass filters' (0.37 s)
+    assert!(
+      secs_close(reverb(0.8).tail(), 1.525),
+      "{:?}",
+      reverb(0.8).tail()
+    );
+    assert!(
+      secs_close(reverb(0.9).tail(), 2.814),
+      "{:?}",
+      reverb(0.9).tail()
+    );
+    assert_eq!(reverb(1.0).tail(), MAX_TAIL, "it never falls silent");
+    let filter = EffectDef::LowPass {
+      cutoff: 800.0,
+      resonance: 0.0,
+    };
+    assert_eq!(filter.tail(), Duration::ZERO);
+  }
+
+  /// A tree rings for its longest chain of effects: a voice's bus, the
+  /// buses above it, and from any of them a send bus, each effect's tail
+  /// added
+  #[test]
+  fn a_tree_rings_for_its_longest_chain_of_effects() {
+    let (world, _files) = world_with_mixer(
+      r#"(
+        buses: {
+          "sfx": (effects: [Delay(seconds: 0.5, feedback_db: -12.0)]),
+          "sfx/steps": (effects: [Reverb(feedback: 0.8)], sends: { "sfx/room": -6.0 }),
+          "sfx/room": (effects: [Reverb(feedback: 0.9)]),
+          "ui": (effects: [LowPass(cutoff: 900.0)]),
+        },
+      )"#,
+    );
+    // sfx/steps (1.525 s), then the room (2.814 s) beats sfx (2.5 s)
+    let tail = world.resource::<AudioEngine>().tree_tail();
+    assert!(secs_close(tail, 1.525 + 2.814), "{tail:?}");
+    let (plain, _files) =
+      world_with_mixer(r#"(buses: { "ui": (effects: [LowPass(cutoff: 900.0)]) })"#);
+    assert_eq!(plain.resource::<AudioEngine>().tree_tail(), Duration::ZERO);
+  }
+
+  /// 2 s echoes, each 6 dB down: 20 s of them, held for 10
+  const ECHOES: &str =
+    r#"(buses: { "sfx": (effects: [Delay(seconds: 2.0, feedback_db: -6.0, mix: 0.5)]) })"#;
+
+  /// A one-shot on a tree that a save retires: the tree is kept after its
+  /// last sound while its delay rings (its first echo is heard), for the
+  /// tail of 10 s, and then goes
+  #[test]
+  fn a_retired_tree_rings_out_its_tail_after_its_last_sound() {
+    let (mut world, meter) = crate::core::testing::metered_audio_world();
+    set_mixer(&mut world, ECHOES);
+    let shot = clip(&mut world, 0.5);
+    let voice = AudioView::new(&mut world).play(&shot);
+    let mut clock = Duration::ZERO;
+    let step = |world: &mut World, clock: &mut Duration| {
+      audio_step(world, FRAME);
+      *clock += FRAME;
+    };
+    for _ in 0..6 {
+      step(&mut world, &mut clock);
+    }
+    set_mixer(
+      &mut world,
+      &ECHOES.replace("(effects", "(volume: -3.0, effects"),
+    );
+    while !voice.is_stopped() {
+      assert!(clock < Duration::from_secs(1), "the one-shot ends");
+      step(&mut world, &mut clock);
+    }
+    let ended = clock;
+    assert_eq!(masters(&world), 2, "kept after its last sound");
+    // Its first echo, 2 s after the one-shot's start, from the old tree:
+    // kira's delay feeds its echoes back at -6 dB (an amplitude of half)
+    // and mixes them in at the square root of its mix
+    while clock < Duration::from_millis(2_250) {
+      step(&mut world, &mut clock);
+    }
+    let echo = meter.last().left;
+    let expected = 0.1 * kira::Decibels(-6.0).as_amplitude() * 0.5f32.sqrt();
+    assert!((echo - expected).abs() < 0.001, "the echo is heard: {echo}");
+    while clock < ended + Duration::from_millis(9_900) {
+      step(&mut world, &mut clock);
+    }
+    assert_eq!(masters(&world), 2, "ringing until 10 s after");
+    while clock < ended + Duration::from_millis(10_100) {
+      step(&mut world, &mut clock);
+    }
+    step(&mut world, &mut clock);
+    assert_eq!(masters(&world), 1, "then dropped");
+  }
+
+  /// A loop that moves to the new tree leaves its old copy's tail ringing
+  /// on the retired one, though no voice plays there
+  #[test]
+  fn a_moved_loop_s_old_tree_rings_out_its_tail() {
+    let reverb = r#"(buses: { "sfx": (effects: [Reverb(feedback: 0.8, mix: 0.5)]) })"#;
+    let (mut world, _files) = world_with_mixer(reverb);
+    let long = clip(&mut world, 2.0);
+    let sound = looping(&mut world, long, "sfx");
+    let voice = AudioView::new(&mut world).play(&sound);
+    audio_step(&mut world, FRAME);
+    set_mixer(
+      &mut world,
+      &reverb.replace("(effects", "(volume: -3.0, effects"),
+    );
+    audio_step(&mut world, FRAME);
+    assert!(voice.is_playing(), "{voice:?}");
+    assert_eq!(masters(&world), 2, "the old copy's reverb rings on");
+    // 1.525 s of reverb after the old copy's 10 ms fade
+    for _ in 0..85 {
+      audio_step(&mut world, FRAME);
+    }
+    assert_eq!(masters(&world), 2, "ringing {:?} on", FRAME * 86);
+    for _ in 0..10 {
+      audio_step(&mut world, FRAME);
+    }
+    assert_eq!(masters(&world), 1, "then it goes");
+  }
+
+  /// A tree with no tail (no effects, or only filters) goes with its last
+  /// sound, as kira keeps a dropped track only while it plays
+  #[test]
+  fn a_tree_without_a_tail_goes_with_its_last_sound() {
+    for text in [
+      "()",
+      r#"(buses: { "sfx": (effects: [LowPass(cutoff: 900.0)]) })"#,
+    ] {
+      let (mut world, _files) = world_with_mixer(text);
+      let shot = clip(&mut world, 0.2);
+      let voice = AudioView::new(&mut world).play(&shot);
+      audio_step(&mut world, FRAME);
+      set_mixer(&mut world, r#"(buses: { "sfx": (volume: -3.0) })"#);
+      for _ in 0..60 {
+        if voice.is_stopped() {
+          break;
+        }
+        assert_eq!(masters(&world), 2, "{text}: kept while it plays");
+        audio_step(&mut world, FRAME);
+      }
+      assert!(voice.is_stopped(), "{voice:?}");
+      audio_step(&mut world, FRAME);
+      assert_eq!(masters(&world), 1, "{text}: gone with its sound");
+    }
+  }
+
+  /// At most four retired trees wait for their tails: a fifth drops the
+  /// oldest at once
+  #[test]
+  fn a_fifth_retired_tree_drops_the_oldest() {
+    let reverb = r#"(buses: { "sfx": (volume: -1.0, effects: [Reverb(feedback: 0.8)]) })"#;
+    let (mut world, _files) = world_with_mixer(reverb);
+    for volume in 2..=6 {
+      set_mixer(&mut world, &reverb.replace("-1.0", &format!("-{volume}.0")));
+      audio_step(&mut world, FRAME);
+    }
+    // The live tree and the four latest retired, each with its master
+    assert_eq!(masters(&world), 5);
+    let ringing = world.resource::<AudioEngine>().ringing_generations();
+    let live = world.resource::<AudioEngine>().generation();
+    assert_eq!(ringing, (live - 4..live).collect::<Vec<u32>>());
   }
 
   fn warnings(matching: impl Fn(&str) -> bool) -> usize {
