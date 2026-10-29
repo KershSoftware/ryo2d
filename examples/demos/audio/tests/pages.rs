@@ -3,8 +3,8 @@
 //! the files the web build embeds; the limits page keeps each rule's row
 //! within its voices while each rule acts; a slider sets its volume
 //! setting; the variations page takes a saved fifth take; the spatial page
-//! solos each emitter; the music page crossfades; and the hot reload page
-//! counts a saved definition
+//! solos each emitter, and its hint follows the ping's `pan_width`; the
+//! music page crossfades; and the hot reload page counts a saved definition
 
 use std::time::{Duration, Instant};
 
@@ -321,4 +321,29 @@ fn the_hot_reload_page_counts_a_saved_definition() {
   }
   assert_eq!(modified(&engine, "sounds/drone.wav"), Some(0));
   assert!(warnings().is_empty(), "{:#?}", warnings());
+}
+
+/// The Spatial page's hint and marks give the ping's `pan_width` as the
+/// store has it: a saved (here, changed) width moves them
+#[test]
+fn the_spatial_page_s_hint_follows_the_ping_s_pan_width() {
+  let Some(mut engine) = engine_on(SPATIAL) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  let hint = |engine: &HeadlessEngine, width: &str| {
+    engine
+      .ui_snapshot()
+      .contains(&format!("A ping clicked {width} px left or right"))
+  };
+  assert!(hint(&engine, "150"), "the file's width");
+  let ping = engine.assets().load::<Sound>("spatial/ping.sound.ron");
+  let mut assets = engine.assets();
+  let Some(spatial) = assets.get_mut(&ping).and_then(|ping| ping.spatial.as_mut()) else {
+    panic!("the ping is heard from a place");
+  };
+  spatial.pan_width = 90.0;
+  drop(assets);
+  engine.step_frames(2).unwrap();
+  assert!(hint(&engine, "90"), "the width as the store has it");
 }

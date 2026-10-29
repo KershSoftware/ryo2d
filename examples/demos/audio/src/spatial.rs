@@ -2,8 +2,9 @@
 //! at, each a loop heard from where it is, on one of the three falloff
 //! curves. Walk the listener (an `AudioListener`) towards and away from
 //! them: each gets quieter with distance and pans by its offset. Solo one
-//! (1, 2, 3; 0 for all three) to hear it alone, and click 150 px to one
-//! side of the listener for a ping heard fully on that side. The page uses
+//! (1, 2, 3; 0 for all three) to hear it alone, and click as far to one
+//! side of the listener as the ping's `pan_width` (150 px, marked) for a
+//! ping heard fully on that side. The page uses
 //! UI units as world units, so what it draws is where the sounds are; a game
 //! with a camera turns a screen position (the pointer's, say) into a world
 //! one with `ctx.camera().screen_to_world` before playing there
@@ -20,9 +21,6 @@ const CENTRE: Vec2 = Vec2::new(430.0, 380.0);
 const FIELD: Vec2 = Vec2::new(250.0, 150.0);
 /// The listener's speed, in units a fixed step
 const WALK: f32 = 3.0;
-/// How far to the listener's side a sound is heard fully on that side: the
-/// ping's (and the emitters') `pan_width`
-const FULL_SIDE: f32 = 150.0;
 /// How long a solo takes to fade the others out, or back in
 const SOLO_FADE: Duration = Duration::from_millis(80);
 /// The keys that solo each emitter, in order, and the key for all three
@@ -305,13 +303,25 @@ impl DemoPage for SpatialPage {
       }
       y += 22.0;
     }
+    // How far to the listener's side the ping is heard fully on that side:
+    // its `pan_width`, as the store has it (a saved ping moves it)
+    let full_side = self
+      .ping
+      .as_ref()
+      .and_then(|ping| assets.get(ping))
+      .and_then(|ping| ping.spatial)
+      .map(|spatial| spatial.pan_width);
     drop(assets);
-    ui.draw_text(
-      "A ping clicked 150 px left or right of the listener (the marks) is heard fully on that side",
-      x,
-      y + 6.0,
-      DIM,
-    );
+    if let Some(width) = full_side {
+      ui.draw_text(
+        &format!(
+          "A ping clicked {width:.0} px left or right of the listener (the marks) is heard fully on that side"
+        ),
+        x,
+        y + 6.0,
+        DIM,
+      );
+    }
 
     // The orbits, and a line from the listener to each emitter as bright
     // as it is heard
@@ -348,9 +358,11 @@ impl DemoPage for SpatialPage {
       }
     }
     // Where a ping is heard fully to one side: the pan width either way
-    for side in [-FULL_SIDE, FULL_SIDE] {
-      let mark = Rect::new(self.at.x + side - 1.0, self.at.y - 8.0, 2.0, 16.0);
-      ui.draw_rect(mark, Color::WHITE.with_alpha(90));
+    if let Some(width) = full_side {
+      for side in [-width, width] {
+        let mark = Rect::new(self.at.x + side - 1.0, self.at.y - 8.0, 2.0, 16.0);
+        ui.draw_rect(mark, Color::WHITE.with_alpha(90));
+      }
     }
     // The listener: a head, its right ear marked
     let head = Rect::new(self.at.x - 11.0, self.at.y - 11.0, 22.0, 22.0);
