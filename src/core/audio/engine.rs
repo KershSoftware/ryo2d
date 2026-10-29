@@ -129,16 +129,43 @@ fn holds(bus: &Bus, game: GameTime) -> bool {
     && ((bus.pauses_with_game && game.paused) || (bus.follows_time_scale && still))
 }
 
-/// Whether a voice owned by `scope` (a scene's; `None` for the engine's),
-/// or played from an emitter, is held by its owner while the scene stack
-/// holds the scenes in `held`: a scene's voice while its scene is there,
-/// and an emitter's while any is (the world's entities stop with the
-/// scenes below the top, as physics does). Only on a bus that pauses with
-/// the game
-fn owner_holds(held: &[u64], scope: Option<u64>, emitter: bool) -> bool {
-  match scope {
-    Some(scope) => held.contains(&scope),
-    None => emitter && !held.is_empty(),
+/// Who a voice belongs to, as the scene holds see it
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Owner {
+  /// The engine's (`persist`, or played outside every scene): no scene
+  /// holds it
+  Engine,
+  /// The scene's whose code played it
+  Scene(u64),
+  /// An emitter's, and the scene that added the emitter: `None` for one
+  /// added outside every scene, or whose scene has left the stack
+  Emitter(Option<u64>),
+}
+
+/// Whether a voice of `owner` is held by it while the scene stack holds
+/// the scenes in `held`: a scene's voice while its scene is there, an
+/// emitter's while the scene that added it is, and an emitter's of no scene
+/// while any is (the world's entities stop with the scenes below the top,
+/// as physics does). Only on a bus that pauses with the game
+fn owner_holds(held: &[u64], owner: Owner) -> bool {
+  match owner {
+    Owner::Engine => false,
+    Owner::Scene(scope) | Owner::Emitter(Some(scope)) => held.contains(&scope),
+    Owner::Emitter(None) => !held.is_empty(),
+  }
+}
+
+/// The owner of a voice of `scope` played from `emitter`, the emitters'
+/// scenes being `emitter_scopes`
+fn owner_of(
+  scope: Option<u64>,
+  emitter: Option<Entity>,
+  emitter_scopes: &EntityHashMap<u64>,
+) -> Owner {
+  match (scope, emitter) {
+    (Some(scope), _) => Owner::Scene(scope),
+    (None, Some(entity)) => Owner::Emitter(emitter_scopes.get(&entity).copied()),
+    (None, None) => Owner::Engine,
   }
 }
 
@@ -1319,6 +1346,10 @@ pub struct EngineState {
   /// played, by id, so letting an entity's voices go finds them without
   /// looking at any other voice, and an entity with none costs a lookup
   emitter_voices: EntityHashMap<Vec<u32>>,
+  /// The scene that added each entity's emitter (the scope current as it
+  /// was inserted), whose hold holds the emitter's voices; one added
+  /// outside every scene has none, and a scene's leave as it exits
+  emitter_scopes: EntityHashMap<u64>,
   /// The voices and waiting plays `emitter_gone` has looked at (tests)
   #[cfg(test)]
   pub(crate) emitter_examined: usize,
@@ -1387,8 +1418,8 @@ pub struct EngineState {
   /// The scene whose code runs now: the voices it plays are its own
   scope: Option<u64>,
   /// The scenes the scene stack does not update, under a top scene that
-  /// holds them: their voices, and the emitters', are held
-  /// ([`hold_scopes`](Self::hold_scopes))
+  /// holds them: their voices, and the voices of the emitters they added,
+  /// are held ([`hold_scopes`](Self::hold_scopes))
   held_scopes: Vec<u64>,
   /// The one music player: the track playing, and one waiting to load
   music: MusicPlayer,
@@ -1563,6 +1594,7 @@ impl EngineState {
       spawned_seen: EntityHashSet::default(),
       orphans: Vec::new(),
       emitter_voices: EntityHashMap::default(),
+      emitter_scopes: EntityHashMap::default(),
       #[cfg(test)]
       emitter_examined: 0,
       watching_enabled: false,
@@ -1734,9 +1766,9 @@ impl EngineState {
   }
 
   /// Hold the voices of the scenes in `scopes` (those the scene stack does
-  /// not update, under a top scene that holds them), and the emitters'
-  /// while there are any, on the buses that pause with the game; let go of
-  /// the rest. Each held voice pauses where it is over [`MIN_FADE`] in the
+  /// not update, under a top scene that holds them), and of the emitters
+  /// they added (an emitter of no scene's while there are any), on the
+  /// buses that pause with the game; let go of the rest. Each held voice pauses where it is over [`MIN_FADE`] in the
   /// frame's update, and resumes from there once its owner lets go and its
   /// bus does too. A voice its owner holds as it starts starts held
   pub(crate) fn hold_scopes(&mut self, scopes: impl Iterator<Item = u64> + Clone) {
@@ -1758,6 +1790,8 @@ impl EngineState {
   /// resumes, and a long one run on into it. The voices played with
   /// `persist`, and the engine's own, play on
   pub(crate) fn release_scope(&mut self, world: &World, scope: u64) {
+    // Its emitters' entities that outlive it belong to no scene now
+    self.emitter_scopes.retain(|_, emitter| *emitter != scope);
     let server = world.get_resource::<AssetServer>();
     for index in 0..self.voices.live.len() {
       if self.voices.live[index].scope == Some(scope) {
@@ -1846,6 +1880,29 @@ impl EngineState {
   /// frame's update, once its sound has loaded
   pub(crate) fn emitter_spawned(&mut self, entity: Entity) {
     self.spawned.push(entity);
+  }
+
+  /// An emitter was added to `entity` (or put over another): it belongs to
+  /// the scene whose code runs now, whose hold holds its voices, or to no
+  /// scene if none does
+  pub(crate) fn emitter_added(&mut self, entity: Entity) {
+    match self.scope {
+      Some(scope) => {
+        self.emitter_scopes.insert(entity, scope);
+      }
+      None => {
+        self.emitter_scopes.remove(&entity);
+      }
+    }
+  }
+
+  /// `entity`'s emitter is going (taken away, put over by another, or
+  /// despawned with its entity): its voices are let go
+  /// ([`emitter_gone`](Self::emitter_gone)), and the scene it belonged to
+  /// is forgotten
+  pub(crate) fn emitter_discarded(&mut self, entity: Entity) {
+    self.emitter_scopes.remove(&entity);
+    self.emitter_gone(entity);
   }
 
   /// True the first time it is asked: the world's first emitter is being
@@ -3751,7 +3808,11 @@ impl EngineState {
     let (bus_held, owner_held) = self.buses.buses.get(bus).map_or((false, false), |bus| {
       (
         bus.held,
-        bus.pauses_with_game && owner_holds(&self.held_scopes, scope, request.emitter.is_some()),
+        bus.pauses_with_game
+          && owner_holds(
+            &self.held_scopes,
+            owner_of(scope, request.emitter, &self.emitter_scopes),
+          ),
       )
     });
     let held = bus_held || owner_held;
@@ -4455,8 +4516,11 @@ impl EngineState {
       };
       // Held by its bus, or by its owner (a scene not updated), or both:
       // it plays again once neither holds it
-      let owner =
-        bus.pauses_with_game && owner_holds(&self.held_scopes, live.scope, live.emitter.is_some());
+      let owner = bus.pauses_with_game
+        && owner_holds(
+          &self.held_scopes,
+          owner_of(live.scope, live.emitter, &self.emitter_scopes),
+        );
       let owner_changed = owner != live.owner_held;
       live.owner_held = owner;
       let held = bus.held || owner;
@@ -4950,8 +5014,9 @@ pub(crate) fn release_scene(world: &mut World, scope: u64) {
 }
 
 /// The scene stack holds the scenes `scopes` (those it does not update,
-/// under a top scene that holds them): their voices, and the emitters',
-/// are held on the buses that pause with the game until they update again
+/// under a top scene that holds them): their voices, and the voices of the
+/// emitters they added, are held on the buses that pause with the game
+/// until they update again
 /// ([`AudioEngine::hold_scopes`]). Called as the stack changes and after
 /// each step; the engine is touched only when the scenes held change
 pub(crate) fn hold_scenes(world: &mut World, scopes: impl Iterator<Item = u64> + Clone) {

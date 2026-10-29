@@ -402,11 +402,12 @@ pub trait Scene: 'static {
 
   /// Whether the scenes this one does not update are held silent while it
   /// is on top. A scene that is not updated is not heard: the voices those
-  /// scenes played, and the emitters' (the world's entities stop with
-  /// them, as physics does), are held with a 10 ms fade on the buses that
-  /// pause with the game (`sfx`, `ambience` and `voice` by default), and
-  /// resume where they were when those scenes update again (after a `Pop`,
-  /// say). This scene's own voices, the engine's (music, and voices played
+  /// scenes played, and the voices of the emitters they added (the world's
+  /// entities stop with them, as physics does), are held with a 10 ms fade
+  /// on the buses that pause with the game (`sfx`, `ambience` and `voice`
+  /// by default), and resume where they were when those scenes update again
+  /// (after a `Pop`, say). An emitter added outside every scene, or whose
+  /// scene has gone, is held while any scene is. This scene's own voices, the engine's (music, and voices played
   /// with `persist`) and voices on buses that do not pause with the game
   /// (`ui`, `music`) play on.
   ///

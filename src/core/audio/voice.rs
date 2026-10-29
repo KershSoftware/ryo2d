@@ -131,8 +131,9 @@ struct VoiceShared {
 /// A scene that is not updated is not heard: while a scene above it does
 /// not update it (a pause menu pushed over the level, say), its voices on
 /// buses that pause with the game are held the same way, and so are the
-/// emitters' (the world's entities stop with it, as physics does); they
-/// resume when it updates again. The top scene can leave the scenes below
+/// voices of the emitters it added (the world's entities stop with it, as
+/// physics does; an emitter added outside every scene, or whose scene has
+/// gone, is held while any scene is); they resume when it updates again. The top scene can leave the scenes below
 /// audible ([`Scene::holds_audio_below`](crate::core::scene::Scene::holds_audio_below)).
 /// A voice held both by its scene and by the game's pause resumes once
 /// both let it go.

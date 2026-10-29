@@ -2152,6 +2152,137 @@ mod tests {
     assert_eq!(engine.voice_playback(start.voice), Some(Playing));
   }
 
+  /// `sound`, the scene world's loop, heard from where it plays
+  fn placed_loop(
+    world: &mut World,
+    sound: &crate::core::asset::Handle<crate::core::audio::Sound>,
+  ) -> crate::core::asset::Handle<crate::core::audio::Sound> {
+    use crate::core::audio::{Falloff, Sound, Spatial};
+    let mut sounds = world.resource_mut::<crate::core::asset::Assets<Sound>>();
+    let Some(mut placed) = sounds.get(sound).cloned() else {
+      panic!("the loop is in the store");
+    };
+    placed.spatial = Some(Spatial {
+      min_distance: 100.0,
+      max_distance: 500.0,
+      curve: Falloff::Linear,
+      pan_width: 200.0,
+      low_pass_at_max: None,
+    });
+    sounds.add(placed)
+  }
+
+  /// Spawns an emitter of its sound as it enters, which plays on spawn; it
+  /// holds the scenes below it, and leaves the world as it was when it
+  /// exits (its emitter outlives it)
+  struct SpawnsEmitter(crate::core::asset::Handle<crate::core::audio::Sound>);
+
+  impl Scene for SpawnsEmitter {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
+      let emitter = crate::core::audio::AudioEmitter {
+        sound: self.0.clone(),
+        play_on_spawn: true,
+      };
+      ctx.world.spawn((emitter, Transform::IDENTITY));
+    }
+
+    fn cleanup_on_exit(&self) -> SceneCleanup {
+      SceneCleanup::NONE
+    }
+  }
+
+  /// The emitters' voices, in the order they started
+  fn emitter_voices(world: &World) -> Vec<u32> {
+    voice_entries(world, "sfx", crate::core::audio::AudioLogKind::Start)
+      .iter()
+      .map(|entry| entry.voice)
+      .collect()
+  }
+
+  /// What kira is doing with voice `id`'s sound
+  fn kira_of(world: &World, id: u32) -> Option<kira::sound::PlaybackState> {
+    world
+      .resource::<crate::core::audio::AudioEngine>()
+      .voice_playback(id)
+  }
+
+  /// An emitter belongs to the scene that added it: the pause menu's own
+  /// emitter plays on while the menu holds the level below, and the
+  /// level's is held
+  #[test]
+  fn an_emitter_spawned_by_the_pause_scene_plays_on_under_it() {
+    use crate::core::testing::audio_step;
+    use kira::sound::PlaybackState::{Paused, Playing};
+    let (mut world, sound) = audio_scene_world();
+    let placed = placed_loop(&mut world, &sound);
+    let mut m = SceneManager::with_scene(Box::new(SpawnsEmitter(placed.clone())));
+    m.enter_initial(&mut world);
+    audio_step(&mut world, FRAME);
+    m.push(Box::new(SpawnsEmitter(placed)), &mut world);
+    audio_step(&mut world, FRAME);
+    audio_step(&mut world, FRAME);
+    let [level, menu] = emitter_voices(&world)[..] else {
+      panic!("two emitters started: {:?}", emitter_voices(&world));
+    };
+    assert_eq!(kira_of(&world, menu), Some(Playing), "the menu's plays on");
+    assert_eq!(kira_of(&world, level), Some(Paused), "the level's is held");
+    m.pop(&mut world, None);
+    audio_step(&mut world, FRAME);
+    assert_eq!(kira_of(&world, level), Some(Playing), "let go at the pop");
+  }
+
+  /// The level's emitter is held under a pause menu that spawns none
+  #[test]
+  fn the_level_s_emitter_is_held_under_a_pause_menu() {
+    use crate::core::testing::audio_step;
+    use kira::sound::PlaybackState::Paused;
+    let (mut world, sound) = audio_scene_world();
+    let placed = placed_loop(&mut world, &sound);
+    let mut m = SceneManager::with_scene(Box::new(SpawnsEmitter(placed)));
+    m.enter_initial(&mut world);
+    audio_step(&mut world, FRAME);
+    m.push(PauseMenu::new(true), &mut world);
+    audio_step(&mut world, FRAME);
+    let [level] = emitter_voices(&world)[..] else {
+      panic!("one emitter started: {:?}", emitter_voices(&world));
+    };
+    assert_eq!(kira_of(&world, level), Some(Paused));
+  }
+
+  /// An emitter whose scene was switched away (an entity that outlived its
+  /// scene) belongs to no scene: as one added outside every scene, it is
+  /// held while any scene is
+  #[test]
+  fn an_emitter_whose_scene_was_switched_away_is_held_under_a_later_pause() {
+    use crate::core::testing::audio_step;
+    use kira::sound::PlaybackState::{Paused, Playing};
+    let (mut world, sound) = audio_scene_world();
+    let placed = placed_loop(&mut world, &sound);
+    let mut m = SceneManager::with_scene(Box::new(SpawnsEmitter(placed)));
+    m.enter_initial(&mut world);
+    audio_step(&mut world, FRAME);
+    m.switch(PauseMenu::new(true), &mut world);
+    audio_step(&mut world, FRAME);
+    let [orphan] = emitter_voices(&world)[..] else {
+      panic!("one emitter started: {:?}", emitter_voices(&world));
+    };
+    assert_eq!(
+      kira_of(&world, orphan),
+      Some(Playing),
+      "it outlived its scene"
+    );
+    m.push(PauseMenu::new(true), &mut world);
+    audio_step(&mut world, FRAME);
+    assert_eq!(
+      kira_of(&world, orphan),
+      Some(Paused),
+      "held under the pause"
+    );
+    m.pop(&mut world, None);
+    audio_step(&mut world, FRAME);
+    assert_eq!(kira_of(&world, orphan), Some(Playing));
+  }
+
   /// A track of a two-second loop that crossfades over 300 ms
   fn theme(world: &mut World) -> crate::core::asset::Handle<crate::core::audio::Music> {
     use crate::core::audio::{AudioClip, Music};

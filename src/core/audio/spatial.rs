@@ -74,7 +74,14 @@ pub struct AudioListener;
 /// one-shot paused or held by the game's pause), and lets its one-shots
 /// playing finish where it was. An emitter put over another then plays its
 /// own sound if it plays on spawn; one put back and handed out in the same
-/// frame plays once
+/// frame plays once.
+///
+/// It belongs to the scene whose code or systems added it: while the scene
+/// stack does not update that scene (a pause menu pushed over the level),
+/// its voices are held with the scene's own, and a pause menu's own emitter
+/// plays on above the level it holds. One added outside every scene, or
+/// whose scene has left the stack while its entity lives on, is held while
+/// any scene is
 ///
 /// ```
 /// use ryo2d::prelude::*;
@@ -109,6 +116,8 @@ fn emitter_inserted(mut world: DeferredWorld, context: HookContext) {
   let Some(mut engine) = world.get_resource_mut::<AudioEngine>() else {
     return;
   };
+  // It belongs to the scene whose code or systems add it
+  engine.emitter_added(entity);
   if plays {
     engine.emitter_spawned(entity);
   }
@@ -125,7 +134,7 @@ fn emitter_inserted(mut world: DeferredWorld, context: HookContext) {
 /// with them
 fn emitter_discarded(mut world: DeferredWorld, context: HookContext) {
   if let Some(mut engine) = world.get_resource_mut::<AudioEngine>() {
-    engine.emitter_gone(context.entity);
+    engine.emitter_discarded(context.entity);
   }
 }
 

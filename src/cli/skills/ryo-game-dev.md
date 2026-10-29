@@ -2,7 +2,7 @@
 name: ryo-game-dev
 description: Building games with Ryo2D - scenes, entities, queries, systems, resources, messages, time and input.
 metadata:
-  version: 2.5.0
+  version: 2.5.1
 ---
 
 # Ryo2D Game Developer
@@ -341,7 +341,7 @@ return SceneAction::SwitchWith(
 
 - Transitions run on real time, once a frame, so a fade finishes even with the game clock paused or slowed.
 - While one runs, `update` is not called and a scene change returned from `ui` is ignored (only `Quit` applies): a second click during a fade does not start another.
-- A pushed scene that does not `updates_below` stops the scenes below, pauses physics and holds their sounds: their voices on the buses that pause with the game (`sfx`, `voice`, `ambience`), and the emitters', wait where they are until a `Pop` (`holds_audio_below` returning `false` leaves them audible). The pushed scene's own sounds, the music, `persist` voices and `ui` play on. Engine animation and tweens keep running: pause the game clock to freeze them too.
+- A pushed scene that does not `updates_below` stops the scenes below, pauses physics and holds their sounds: their voices on the buses that pause with the game (`sfx`, `voice`, `ambience`), and the voices of the emitters they added, wait where they are until a `Pop` (`holds_audio_below` returning `false` leaves them audible). The pushed scene's own sounds, the music, `persist` voices and `ui` play on. Engine animation and tweens keep running: pause the game clock to freeze them too.
 - A pause menu: a transparent pushed scene whose `ui` draws a focus-scoped menu and returns `SceneAction::Pop` on Resume or `ui.back()` (`ryo-ui`'s pause menu recipe). Scenes under it still draw, but only the top scene's widgets take input, so its buttons win the clicks.
 - Cleanup on `Switch`/`Reset` (not on `Push`/`Pop`): `SceneCleanup` flags `WORLD`, `CAMERA`, `EFFECTS`, `LIGHTING`, `TIME`, `MUSIC`, `MESSAGES`; `DEFAULT` is all but `MUSIC` (so a track carries on from menu to game), plus `NONE` and `ALL`. Combine with `|`, remove with `-`: `SceneCleanup::DEFAULT - SceneCleanup::WORLD` keeps the entities.
 - A scene's console commands and systems leave with it, and so do its sounds as it exits by any action (`Pop` too): its loops stop with their fade, as do its one-shots with more than 2 s left (not on `ui`), and its shorter one-shots finish (`ryo-audio`, Voices).
