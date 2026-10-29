@@ -529,10 +529,12 @@ impl EngineState {
       let Some(fade) = live.starting else {
         continue;
       };
+      // Frames first: the decoder stores a failure before its frames, so
+      // frames seen mean a failure with them is seen too
       if live.held
         || live.voice.state() != VoiceState::Playing
-        || live.playback.has_failed()
         || !live.playback.has_frames()
+        || live.playback.has_failed()
       {
         continue;
       }
@@ -950,6 +952,59 @@ mod tests {
     let level = meter.last().left;
     let quieter = 0.1 * kira::Decibels(-6.0).as_amplitude();
     assert!((level - quieter).abs() < 0.01 * quieter, "heard: {level}");
+  }
+
+  /// A streamed comeback whose decoder has given its frames and failed
+  /// before the update that would resume it takes nothing's place: frames
+  /// are read before the failure, so a failure stored with them is seen
+  #[test]
+  fn a_streamed_comeback_with_frames_and_a_failure_displaces_nothing() {
+    let (mut world, _meter, bed) = streamed_bed();
+    let comeback = play(&mut world, &bed);
+    comeback.set_volume(-60.0);
+    streamed_frame(&mut world, FRAME);
+    let heard = AudioView::new(&mut world).play_with(
+      &bed,
+      PlayOptions {
+        volume_db: -6.0,
+        ..Default::default()
+      },
+    );
+    comeback.set_volume(0.0);
+    let mut engine = world.resource_mut::<AudioEngine>();
+    engine.delay_stream_starts(Duration::from_millis(40));
+    engine.fail_stream_reads_at(0);
+    for _ in 0..300 {
+      streamed_frame(&mut world, FRAME);
+      if !comeback.is_virtual() {
+        break;
+      }
+    }
+    assert!(!comeback.is_virtual(), "it came back: {comeback:?}");
+    // Its decoder's first decode fails and gives silence, before the update
+    let flags = |world: &World| {
+      let engine = world.resource::<AudioEngine>();
+      engine.voices.index_of(comeback.id()).map(|at| {
+        let playback = &engine.voices.live[at].playback;
+        (playback.has_frames(), playback.has_failed())
+      })
+    };
+    for _ in 0..2_000 {
+      if flags(&world) == Some((true, true)) {
+        break;
+      }
+      std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(flags(&world), Some((true, true)));
+    audio_step(&mut world, FRAME);
+    assert!(heard.is_playing() && !heard.is_virtual(), "{heard:?}");
+    assert!(entries(&world, &heard, AudioLogKind::Virtual).is_empty());
+    // Stopped with its fade
+    for _ in 0..30 {
+      audio_step(&mut world, FRAME);
+    }
+    assert!(comeback.is_stopped(), "its stream failed: {comeback:?}");
+    assert!(heard.is_playing() && !heard.is_virtual(), "{heard:?}");
   }
 
   /// A streamed loop comes back by room, its decoder slow to start (`delay`):
@@ -2176,6 +2231,53 @@ mod tests {
       !bird.is_virtual() && alarm.is_virtual(),
       "{bird:?} {alarm:?}"
     );
+  }
+
+  /// A play refused at the virtual voices' bound steals nothing, then or
+  /// later: with 1,024 virtual, a far `StopOldest` bed whose oldest is heard
+  /// is refused (`virtual`), and a loop going virtual once there is room
+  /// stops nothing
+  #[test]
+  fn a_play_refused_at_the_virtual_bound_steals_nothing() {
+    let mut world = audio_world();
+    world.spawn((AudioListener, Transform::from_xy(0.0, 0.0)));
+    let dc = clip(&mut world, 1.0);
+    let bed = add(
+      &mut world,
+      Sound {
+        limit: Some(VoiceLimit {
+          max: 1,
+          rule: LimitRule::StopOldest,
+        }),
+        ..placed(&dc)
+      },
+    );
+    let crowd = add(&mut world, placed(&dc));
+    let heard = AudioView::new(&mut world).play_at(&bed, Vec2::ZERO);
+    let far = Vec2::new(900.0, 0.0);
+    let mut crowds = Vec::with_capacity(MAX_VIRTUAL);
+    // In frames of 128, within the crowd's starts a frame
+    for _ in 0..MAX_VIRTUAL / 128 {
+      for _ in 0..128 {
+        crowds.push(AudioView::new(&mut world).play_at(&crowd, far));
+      }
+      audio_step(&mut world, FRAME);
+    }
+    assert!(crowds.iter().all(Voice::is_virtual));
+    let refused = AudioView::new(&mut world).play_at(&bed, far);
+    assert!(refused.is_stopped() && !refused.is_virtual(), "{refused:?}");
+    let reasons: Vec<&str> = log(&world)
+      .iter()
+      .filter(|entry| entry.kind == AudioLogKind::Refused)
+      .map(|entry| entry.reason)
+      .collect();
+    assert_eq!(reasons, [REFUSED_VIRTUAL]);
+    crowds[0].stop(MIN_FADE);
+    audio_step(&mut world, FRAME);
+    let late = AudioView::new(&mut world).play_at(&crowd, far);
+    assert!(late.is_playing() && late.is_virtual(), "{late:?}");
+    assert!(heard.is_playing() && !heard.is_virtual(), "{heard:?}");
+    assert!(entries(&world, &heard, AudioLogKind::Stolen).is_empty());
   }
 
   /// `StopQuietest` (as `StopFarthest` and `StopLowestPriority`) ranks:

@@ -4575,7 +4575,6 @@ impl EngineState {
               REFUSED_FULL
             }
           };
-          self.victims.clear();
           return self.refuse(&subject, reason, server);
         }
       }
@@ -4840,6 +4839,9 @@ impl EngineState {
     reason: &'static str,
     server: Option<&AssetServer>,
   ) -> Voice {
+    // It steals nothing: a limit may have planned victims before the play
+    // was refused (its own limit's, before the virtual voices' bound)
+    self.victims.clear();
     let mut entry = self.entry(AudioLogKind::Refused, 0, subject, server);
     entry.reason = reason;
     self.log.push(entry);
