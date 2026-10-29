@@ -2,7 +2,7 @@
 name: ryo-api
 description: Complete API reference for ryo2d::prelude - every exported type with its signatures and use, organised by area.
 metadata:
-  version: 2.12.0
+  version: 2.12.1
 ---
 
 # Ryo2D API Reference
@@ -622,7 +622,7 @@ A mixer on kira 0.12. Clips, sound definitions, music and the mixer are registry
 
 | `Audio<'w, 's>` (a `SystemParam`: `mut audio: Audio` in a system) | |
 |---|---|
-| `play<'a>(&mut self, sound: impl Into<Playable<'a>>) -> Voice`, `play_at<'a>(&mut self, sound, position: Vec2) -> Voice`, `play_with<'a>(&mut self, sound, options: PlayOptions) -> Voice`, `play_emitter(&mut self, entity: Entity) -> Voice` | as `AudioView`'s, deferred: queued in the system's buffer and applied where its commands apply (in a scene's section: the scene's voice; from a phase's system: the engine's). The voice returned reports playing until then, takes changes that apply after its start (a plain one is heard from its first audio), and is stopped from then if the play is refused |
+| `play<'a>(&mut self, sound: impl Into<Playable<'a>>) -> Voice`, `play_at<'a>(&mut self, sound, position: Vec2) -> Voice`, `play_with<'a>(&mut self, sound, options: PlayOptions) -> Voice`, `play_emitter(&mut self, entity: Entity) -> Voice` | as `AudioView`'s, deferred: queued in the system's buffer and applied where its commands apply (in a scene's section: the scene's voice; from a phase's system: the engine's). The voice returned reports playing until then, takes changes that apply after its start (a plain one is heard from its first audio), and is stopped from then if the play is refused. A `play_emitter` whose entity is not an emitter yet as it applies (spawned by the same system's `Commands`, declared after `Audio`) waits for the next audio update, and is refused there if it still is not |
 | `snapshot(&mut self, name: &str)`, `clear_snapshot(&mut self)`, `set_bus_volume(&mut self, bus: &str, db: f32)`, `set_volume_setting(&mut self, kind: VolumeKind, value: f32)` | as `AudioView`'s, as the buffer applies |
 | `volume_setting(&self, kind: VolumeKind) -> f32` | the last this system set (clamped), else the engine's |
 

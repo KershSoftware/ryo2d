@@ -75,8 +75,8 @@ pub struct AudioLogEntry {
   pub fade: Duration,
   /// Why a play was refused (`Refused`): the rule that refused it, first
   /// (`per_frame`, `cooldown`, `limit`, `full`, `undecodable`, `locked`,
-  /// `unlock` or `loading`), then a few words on what it means; empty for
-  /// every other kind
+  /// `unlock`, `loading` or `emitter`), then a few words on what it means;
+  /// empty for every other kind
   pub reason: &'static str,
 }
 

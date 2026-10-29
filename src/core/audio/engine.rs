@@ -1250,6 +1250,7 @@ const REFUSED_LOCKED: &str =
 const REFUSED_UNLOCK: &str = "unlock: the loop could not start at the player's first gesture";
 const REFUSED_LOADING: &str =
   "loading: a one-shot played while its sound loads would only be late (a loop waits for it)";
+const REFUSED_NO_EMITTER: &str = "emitter: a system's play_emitter found no emitter to play by the update after its buffer applied (the entity gone, disabled or without an AudioEmitter)";
 
 /// Why a play did not start
 enum Refusal {
@@ -1396,6 +1397,14 @@ pub struct EngineState {
   listener_query: Option<ListenerQuery>,
   /// Emitters added to entities, to play on spawn once their sounds load
   spawned: Vec<Entity>,
+  /// Emitter plays systems queued for entities that were not emitters as
+  /// their buffers applied (bevy applies a system's `Audio` before the
+  /// `Commands` declared after it, which may spawn the entity), played in
+  /// the next update. Kept to reuse
+  awaited: Vec<(Voice, Entity)>,
+  /// A system's emitter play found no emitter by the update after it was
+  /// queued: warned once, in debug builds
+  warned_no_emitter: bool,
   /// The entities played from `spawned` in a frame: one queued twice (an
   /// emitter spawned and a pool's put back and handed out in one frame, say)
   /// plays once. Kept to reuse
@@ -1655,6 +1664,8 @@ impl EngineState {
       listener: None,
       listener_query: None,
       spawned: Vec::new(),
+      awaited: Vec::new(),
+      warned_no_emitter: false,
       spawned_seen: EntityHashSet::default(),
       orphans: Vec::new(),
       emitter_voices: EntityHashMap::default(),
@@ -3334,6 +3345,11 @@ impl EngineState {
           let started = self.play_from(world, playable, &options, None, false, Some(voice.clone()));
           self.settle_queued(&voice, &started, server);
         }
+        // The system's own `Commands`, applied after its `Audio` when
+        // declared after it, may spawn the entity: it waits for the update
+        Queued::Emitter { voice, entity } if emitter_position(world, entity).is_none() => {
+          self.awaited.push((voice, entity));
+        }
         Queued::Emitter { voice, entity } => {
           let started = self.play_emitter_as(world, entity, Some(voice.clone()));
           self.settle_queued(&voice, &started, server);
@@ -3375,6 +3391,54 @@ impl EngineState {
     held.retain(|(_, command)| command.voice != id);
     held.append(&mut self.held);
     self.held = held;
+  }
+
+  /// Play the emitters systems queued whose entities were not emitters as
+  /// their buffers applied (`awaited`): each plays as its queued voice, or,
+  /// still no emitter, is refused, logged and (in debug builds, once)
+  /// warned about
+  fn play_awaited(&mut self, world: &World, server: Option<&AssetServer>) {
+    if self.awaited.is_empty() {
+      return;
+    }
+    // Taken out to play from, and put back with its room kept
+    let mut awaited = std::mem::take(&mut self.awaited);
+    for (voice, entity) in awaited.drain(..) {
+      let started = if emitter_position(world, entity).is_some() {
+        self.play_emitter_as(world, entity, Some(voice.clone()))
+      } else {
+        self.refuse_emitter(entity)
+      };
+      self.settle_queued(&voice, &started, server);
+    }
+    self.awaited = awaited;
+  }
+
+  /// Refuse a system's play of `entity`'s emitter, which it is not: log
+  /// it, and warn once in debug builds
+  fn refuse_emitter(&mut self, entity: Entity) -> Voice {
+    if cfg!(debug_assertions) && !self.warned_no_emitter {
+      self.warned_no_emitter = true;
+      crate::engine_warn!(
+        module: "Audio",
+        "a system's play_emitter({entity}) found no emitter there by the next audio update (the entity was never spawned, was despawned or disabled, or has no AudioEmitter), so it plays nothing (warned once)"
+      );
+    }
+    if self.log.is_on() {
+      self.log.push(AudioLogEntry {
+        kind: AudioLogKind::Refused,
+        voice: 0,
+        sound: String::new(),
+        source: String::new(),
+        bus: String::new(),
+        gain_db: 0.0,
+        pan: 0.0,
+        rate: 1.0,
+        fade: Duration::ZERO,
+        reason: REFUSED_NO_EMITTER,
+      });
+    }
+    Voice::stopped()
   }
 
   /// Play the sound of `entity`'s [`AudioEmitter`] where the entity is, the
@@ -4625,6 +4689,7 @@ impl EngineState {
     self.release_orphans(server);
     self.follow_listener(world, real_delta, server);
     self.play_spawned(world, server);
+    self.play_awaited(world, server);
     self.follow_game(game, real_delta, server);
     self.report_stream_errors();
     self.mock_render = Duration::ZERO;

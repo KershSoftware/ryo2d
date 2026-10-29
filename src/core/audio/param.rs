@@ -114,9 +114,16 @@ impl Audio<'_, '_> {
   /// Play the sound of `entity`'s [`AudioEmitter`](super::AudioEmitter)
   /// where the entity is when the buffer applies, its voice following the
   /// entity and belonging to it, as
-  /// [`AudioView::play_emitter`](super::AudioView::play_emitter) does. An
-  /// entity that is not an emitter then, or is disabled, plays nothing (the
-  /// voice stops)
+  /// [`AudioView::play_emitter`](super::AudioView::play_emitter) does.
+  ///
+  /// An entity that is not an emitter yet as the buffer applies is played
+  /// at the engine's next audio update, by when the system's commands have
+  /// applied: bevy applies a system's buffers in the order of its
+  /// parameters, so an emitter spawned with the system's own `Commands`
+  /// declared after `Audio` does not exist yet. One that is still no
+  /// emitter then (never spawned, despawned, disabled, or without an
+  /// `AudioEmitter`) plays nothing: the voice stops, and the refusal is
+  /// logged (and warned about once in debug builds)
   pub fn play_emitter(&mut self, entity: Entity) -> Voice {
     let Some(engine) = &self.engine else {
       return Voice::stopped();
@@ -586,6 +593,83 @@ mod tests {
     audio_step(&mut world, FRAME);
     audio_step(&mut world, FRAME);
     assert!(!voice.is_playing(), "its entity went: {voice:?}");
+  }
+
+  /// An emitter a system spawns with its `Commands` and plays through its
+  /// `Audio` is heard whichever parameter comes first: bevy applies a
+  /// system's buffers in their order, so with `Audio` first its play
+  /// applies before the entity exists, and waits for the next update
+  #[test]
+  fn an_emitter_spawned_and_played_by_one_system_is_heard() {
+    use crate::core::ecs::Commands;
+    let mut world = world();
+    let mut schedule = schedule();
+    schedule.add_systems(
+      |mut audio: Audio,
+       mut commands: Commands,
+       sounds: Res<Sounds>,
+       mut played: ResMut<Played>| {
+        let entity = commands
+          .spawn((
+            AudioEmitter {
+              sound: sounds.bed.clone(),
+              play_on_spawn: false,
+            },
+            Transform::from_xy(10.0, 0.0),
+          ))
+          .id();
+        let voice = audio.play_emitter(entity);
+        voice.set_volume(-6.0);
+        played.0.push(voice);
+      },
+    );
+    schedule.run(&mut world);
+    let [voice] = &played(&world)[..] else {
+      panic!("one voice played");
+    };
+    assert!(voice.is_playing(), "it waits for the update: {voice:?}");
+    audio_step(&mut world, FRAME);
+    assert!(voice.is_playing(), "{voice:?}");
+    assert_eq!(starts(&world, voice), 1);
+    assert_eq!(
+      changes(&world, voice),
+      [(AudioLogKind::Gain, -6.0, Duration::ZERO)],
+      "its change applies with its start"
+    );
+  }
+
+  /// A system's emitter play whose entity is still no emitter by the
+  /// next update (never spawned) is refused there and logged
+  #[test]
+  fn an_emitter_play_with_no_emitter_by_the_next_update_is_refused() {
+    let mut world = world();
+    let gone = world.spawn_empty().id();
+    world.despawn(gone);
+    #[derive(Resource)]
+    struct Target(Entity);
+    world.insert_resource(Target(gone));
+    let mut schedule = schedule();
+    schedule.add_systems(
+      |mut audio: Audio, target: Res<Target>, mut played: ResMut<Played>| {
+        played.0.push(audio.play_emitter(target.0));
+      },
+    );
+    schedule.run(&mut world);
+    let [voice] = &played(&world)[..] else {
+      panic!("one voice played");
+    };
+    assert!(voice.is_playing(), "it waits for the update: {voice:?}");
+    audio_step(&mut world, FRAME);
+    assert!(voice.is_stopped(), "{voice:?}");
+    let refused: Vec<&str> = log(&world)
+      .iter()
+      .filter(|entry| entry.kind == AudioLogKind::Refused)
+      .map(|entry| entry.reason)
+      .collect();
+    let [reason] = refused[..] else {
+      panic!("one refusal: {refused:?}");
+    };
+    assert!(reason.starts_with("emitter:"), "{reason}");
   }
 
   /// The mix through `Audio`: a volume setting reads back at once, and the
