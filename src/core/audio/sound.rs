@@ -203,13 +203,25 @@ pub struct VoiceLimit {
 ///
 /// `PreventNew` and `StopOldest` end loops as they end one-shots: a loop
 /// `PreventNew` refuses reports stopped, and one `StopOldest` stops does not
-/// come back (one bed at a time on a bus; one alarm at a time). The rules
-/// that rank (`StopQuietest`, `StopFarthest`, `StopLowestPriority`) make a
-/// loop they stop or refuse virtual instead: it keeps its place silently
-/// and comes back when there is room, or in place of a voice it outranks
-/// ([`Voice::is_virtual`](super::Voice::is_virtual)). A loop that went
-/// virtual another way (its bus's cap, its distance) comes back under
-/// `PreventNew` or `StopOldest` only when there is room
+/// come back (one bed at a time on a bus; one alarm at a time). Under them a
+/// sound's virtual loops count against its limit, as heard ones do, and the
+/// limit is asked before the loop's distance and kira's room: `PreventNew`
+/// refuses a play while its limit is full of loops, virtual or heard, and
+/// `StopOldest` ends the oldest of them (a virtual one simply stops). A loop
+/// that went virtual another way (its bus's cap, its distance) comes back
+/// under them only when there is room.
+///
+/// The rules that rank (`StopQuietest`, `StopFarthest`, `StopLowestPriority`)
+/// make a loop they stop or refuse virtual instead: it keeps its place
+/// silently and comes back when there is room, or in place of a voice it
+/// outranks ([`Voice::is_virtual`](super::Voice::is_virtual)); its virtual
+/// loops count against no limit.
+///
+/// A loop is cut by its own sound's rule: one a bus limit picks for another
+/// sound's play ends only if its own sound's rule is `PreventNew` or
+/// `StopOldest`, and one with no limit of its own, or under a rule that
+/// ranks, goes virtual. A footstep under a default `StopOldest` limit that
+/// fills its bus does not end the fire loop on it for good
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 pub enum LimitRule {
   /// The new play is refused, a loop too
