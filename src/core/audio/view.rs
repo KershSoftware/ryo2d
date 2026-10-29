@@ -56,8 +56,9 @@ pub struct PlayOptions {
 
 /// The audio engine seen from a scene: plays sounds and reports on the
 /// buses. A scene gets one from `ctx.audio()`; it borrows the world, so take
-/// it, use it and let it go. It plays a [`Sound`] definition as the
-/// definition says, or a clip directly:
+/// it, use it and let it go (a system takes [`Audio`](super::Audio)
+/// instead, and an exclusive system `AudioView::new(world)`). It plays a
+/// [`Sound`] definition as the definition says, or a clip directly:
 ///
 /// ```
 /// use ryo2d::prelude::*;

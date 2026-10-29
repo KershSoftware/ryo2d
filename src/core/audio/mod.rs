@@ -11,6 +11,7 @@ mod log;
 mod mix;
 mod mixer;
 mod music;
+mod param;
 mod settings;
 mod sound;
 mod spatial;
@@ -42,6 +43,7 @@ pub use mixer::{
 pub(crate) use mixer::{check_bus_name, default_mixer};
 pub use music::{Music, MusicJoinError};
 pub(crate) use music::{MusicData, join};
+pub use param::Audio;
 pub use settings::{VolumeKind, volume_to_db};
 pub use sound::{Falloff, LimitRule, Sound, SoundClip, Spatial, VoiceLimit};
 pub use spatial::{AudioEmitter, AudioListener, falloff_gain_db, pan_for};

@@ -2,7 +2,7 @@
 name: ryo-audio
 description: "Audio - the workflow from a DAW export through assets/ and a .sound.ron definition to ctx.audio().play, voices and voice limits, the mixer file (buses, effects, sends, snapshots, ducking), the player's volume settings and their curve, 2D spatial sound with listeners and emitters, pause and time scale, music with intros, loops and crossfades, hot reload, the web's first-gesture unlock, latency, and testing with audio_world and the audio log."
 metadata:
-  version: 2.3.0
+  version: 2.4.0
 ---
 
 # Ryo2D Audio
@@ -130,7 +130,7 @@ let over = engine.is_stopped();            // ended, or never started
 - **`set_volume` and `set_pitch` are relative to the sound's level**: a game layer added to its definition's volume, the spread its play drew and its `PlayOptions`, as `PlayOptions` are. `set_volume(0.0)` puts it back at the sound's level, and a reload of its definition still moves the sound's level beneath the game's change, so a designer's balance survives game code.
 - **Every change is smoothed by at least 10 ms**, so no change clicks: the plain forms over 10 ms, and `set_volume_over(db, fade)`, `set_pitch_over(semitones, fade)`, `pause_over(fade)` and `resume_over(fade)` over a fade of their own (at least 10 ms), as `stop(fade)` takes one. A change to a playing voice ramps from where it is.
 - **Fades to and from silence are shaped** (a `fade_in`, a stop, a pause or resume, a music crossfade): a fade-out eases in and a fade-in eases out, each about -3.75 dB halfway, so two sounds crossfading hold their level as an equal-power crossfade does (a fade in a line of dB would dip about 27 dB in its middle). A 10 ms smoothing stays a line, too short to hear its curve, and a change between two levels (`set_volume`, a bus's gain) moves in a line of dB.
-- **When changes apply:** as the scene code that made them ends (a callback, one of its systems, an observer of its UI nodes), and the rest once a frame after the scenes' updates, so `is_playing` reflects them by the next update. A plain change made in the frame a voice started, which nothing has heard yet, applies at once, and an `_over` change made then ramps from the level its play started at; still, the level and pitch it starts at belong in its `PlayOptions`, as on a device its first milliseconds may already be playing.
+- **When changes apply:** as the scene code that made them ends (a callback, one of its systems, an observer of its UI nodes), and the rest once a frame after the scenes' updates, so `is_playing` reflects them by the next update. A change to a voice a system's `Audio` played, made before that play applies, applies with its start. A plain change made in the frame a voice started, which nothing has heard yet, applies at once, and an `_over` change made then ramps from the level its play started at; still, the level and pitch it starts at belong in its `PlayOptions`, as on a device its first milliseconds may already be playing.
 - **Dropping a `Voice` never stops it**; clones control the same playback, and `Voice::default()` is a voice that never started (for a field). A play refused by its `per_frame`, a limit, a cooldown, a one-shot's sound still loading or distance returns a voice that is already stopped, on which every method does nothing: no error to handle.
 - `PlayOptions { position, persist, volume_db, pitch }` changes one play: a place in the world, ownership by the engine, and gain and pitch added to the definition's.
 - `voice.pick()` says what a play picked and drew: `VoicePick { clip_index, clip, volume_db, pitch }` (a subtitle for a line picked at random, say). `ctx.audio().seed(n)` makes the picks and draws repeat from the same seed, for replays and captures; headless runs and test worlds (`audio_world`) start seeded.
@@ -145,7 +145,33 @@ let over = engine.is_stopped();            // ended, or never started
 | From an `AudioEmitter` | Its entity | The entity is despawned, disabled (a pool putting it back) or loses its emitter: its loops and its paused or held one-shots stop with their `fade_out`, and its one-shots playing play out whatever their length (a death cry as it despawns) |
 | `play_music` | The engine's music player | It is replaced or stopped, or a scene whose `cleanup_on_exit` includes `SceneCleanup::MUSIC` is switched away from or reset (cleanup does not run on `Pop`) |
 
-A system plays through the world: an exclusive system takes `&mut World` and calls `AudioView::new(world).play(&handle)`; an observer queues the same with `commands.queue(move |world: &mut World| { AudioView::new(world).play(&handle); })`.
+**From a system**, take `Audio` as a parameter. It has `play`, `play_with`, `play_at` and `play_emitter`, and `snapshot`, `clear_snapshot`, `set_bus_volume`, `set_volume_setting` and `volume_setting`:
+
+```rust
+#[derive(Component)]
+struct Footsteps {
+  sound: Handle<Sound>,
+  next: f32,
+}
+
+/// Each walker steps every 0.4 s, heard from where it is
+fn footsteps(mut audio: Audio, time: Res<Time>, mut walkers: Query<(&mut Footsteps, &Transform)>) {
+  for (mut steps, transform) in &mut walkers {
+    steps.next -= time.delta();
+    if steps.next <= 0.0 {
+      steps.next += 0.4;
+      audio.play_at(&steps.sound, transform.translation);
+    }
+  }
+}
+
+// In the level's on_enter: ctx.add_systems(Phase::FixedUpdate, footsteps).ok();
+```
+
+- **Its plays are deferred.** `Audio` reads the engine without borrowing it mutably, so systems that play sound run beside each other with no conflict. Each play is queued and applied where the system's commands apply (the end of its schedule, or a sync point before a system ordered after it).
+- **Each play returns its `Voice` at once.** Until the play applies, the voice reports playing. Changes made to it meanwhile apply after its start, so a plain `set_volume` in the same system is heard from its first audio. A play refused as it applies leaves the voice stopped.
+- **Ownership is the scene rule:** a play applied in a scene's section (a system the scene added with `ctx.add_systems`) belongs to that scene; one from a system added to a phase on the `EngineBuilder` is the engine's. `volume_setting` reads back what the system set at once.
+- An exclusive system (`&mut World`) plays at once with `AudioView::new(world).play(&handle)`; music, `set_mixer` and `seed` are `AudioView`'s.
 
 ## 4. Voice limits and priority
 

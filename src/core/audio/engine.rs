@@ -7,6 +7,7 @@ use std::fmt::Display;
 use std::ops::Range;
 #[cfg(test)]
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use crossbeam_channel::{Receiver, Sender};
@@ -31,6 +32,7 @@ use super::mixer::{
   Tracks, plan,
 };
 use super::music::{MusicPlayer, Track};
+use super::param::{Queued, QueuedSound};
 use super::settings::{SILENCE_DB, VolumeSettings};
 use super::spatial::{
   AudioEmitter, Hearing, Listener, ListenerQuery, MAX_FILTERED, SpatialVoice, VoiceFilter,
@@ -69,6 +71,10 @@ const MOCK_SAMPLE_RATE: u32 = 48_000;
 /// kira renders in chunks of this many frames (its internal buffer size,
 /// set on both managers), applying changes once per chunk
 const CHUNK_FRAMES: usize = 128;
+/// How many frames the changes to a voice not in the table are held for its
+/// start: a system's queued play applies at the latest at the end of the
+/// schedule that ran it, in the frame it was played
+const HELD_FRAMES: u64 = 2;
 /// The most real time the mock backend renders in one frame: a frame after
 /// a stall (the machine slept, say) renders a second, not the whole stall
 const MAX_MOCK_STEP: Duration = Duration::from_secs(1);
@@ -896,22 +902,28 @@ impl FadeIn {
 /// keeps the others' order)
 struct VoiceTable {
   live: Vec<LiveVoice>,
-  next_id: u32,
+  /// The next voice id. An atomic, so a system's `Audio`, which reads the
+  /// engine without borrowing it mutably, takes its queued plays' ids from
+  /// the same count as the plays made at once: no two voices share one
+  next_id: AtomicU32,
 }
 
 impl VoiceTable {
   fn new() -> Self {
     Self {
       live: Vec::with_capacity(VOICE_CAPACITY),
-      next_id: 1,
+      next_id: AtomicU32::new(1),
     }
   }
 
   /// A fresh id, never 0
-  fn next_id(&mut self) -> u32 {
-    let id = self.next_id;
-    self.next_id = self.next_id.wrapping_add(1).max(1);
-    id
+  fn next_id(&self) -> u32 {
+    loop {
+      let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+      if id != 0 {
+        return id;
+      }
+    }
   }
 
   fn index_of(&self, id: u32) -> Option<usize> {
@@ -1254,6 +1266,13 @@ pub struct EngineState {
   /// Cloned into each voice
   commands: Sender<VoiceCommand>,
   inbox: Receiver<VoiceCommand>,
+  /// Changes to voices not in the table, with the frame they came in: a
+  /// play a system's `Audio` queued has its voice, and the changes made to
+  /// it, before its system's buffer applies, and a play made at once in
+  /// between applies the queued changes first. They apply as that play
+  /// starts ([`run_queued`](Self::run_queued)); any left after two frames
+  /// (a voice that ended) are dropped. Kept to reuse
+  held: Vec<(u64, VoiceCommand)>,
   /// Mock frames owed, in frame-nanoseconds (frames times 10^9), so no
   /// fraction of a frame is lost between frames
   mock_owed: u128,
@@ -1525,6 +1544,7 @@ impl EngineState {
       log: AudioLog::default(),
       commands,
       inbox,
+      held: Vec::new(),
       mock_owed: 0,
       mock_render: Duration::ZERO,
       #[cfg(any(test, not(target_arch = "wasm32")))]
@@ -2989,7 +3009,7 @@ impl EngineState {
     playable: Playable<'_>,
     options: &PlayOptions,
   ) -> Voice {
-    self.play_from(world, playable, options, None, false)
+    self.play_from(world, playable, options, None, false, None)
   }
 
   /// Play one of the UI theme's sounds, `volume_db` louder or quieter: a
@@ -3004,7 +3024,80 @@ impl EngineState {
       volume_db,
       ..Default::default()
     };
-    self.play_from(world, playable, &options, None, true)
+    self.play_from(world, playable, &options, None, true, None)
+  }
+
+  /// A voice for a play a system's `Audio` queues: its id taken now, from
+  /// the count the plays made at once share, so no two voices share one.
+  /// It reports playing until the play applies
+  /// ([`run_queued`](Self::run_queued))
+  pub(crate) fn queued_voice(&self) -> Voice {
+    Voice::new(self.voices.next_id(), self.commands.clone(), None)
+  }
+
+  /// Apply what systems' `Audio`s queued, in order, emptying `queued`
+  /// (its room kept): each play starts as its queued voice, in the scope
+  /// running now (a scene's, as its systems' buffers apply in its
+  /// section), and the changes made to the voice meanwhile apply after its
+  /// start, so a plain one is heard from its first audio. A play refused
+  /// leaves its voice stopped
+  pub(crate) fn run_queued(&mut self, world: &World, queued: &mut Vec<Queued>) {
+    let server = world.get_resource::<AssetServer>();
+    for queued in queued.drain(..) {
+      match queued {
+        Queued::Play {
+          voice,
+          sound,
+          options,
+        } => {
+          let playable = match &sound {
+            QueuedSound::Sound(sound) => Playable::Sound(sound),
+            QueuedSound::Clip(clip) => Playable::Clip(clip),
+          };
+          let started = self.play_from(world, playable, &options, None, false, Some(voice.clone()));
+          self.settle_queued(&voice, &started, server);
+        }
+        Queued::Emitter { voice, entity } => {
+          let started = self.play_emitter_as(world, entity, Some(voice.clone()));
+          self.settle_queued(&voice, &started, server);
+        }
+        Queued::Snapshot(name) => {
+          self.apply_mixer(world, server);
+          self.snapshot(&name);
+        }
+        Queued::ClearSnapshot => {
+          self.apply_mixer(world, server);
+          self.clear_snapshot();
+        }
+        Queued::BusVolume(bus, db) => {
+          self.apply_mixer(world, server);
+          self.set_bus_volume(&bus, db);
+        }
+        Queued::Setting(kind, value) => self.set_volume_setting(kind, value),
+      }
+    }
+  }
+
+  /// A queued play of `voice` came to `started`: refused (a voice that
+  /// never started), its voice stops; the changes held for it apply now,
+  /// after its start, or go with its refusal
+  fn settle_queued(&mut self, voice: &Voice, started: &Voice, server: Option<&AssetServer>) {
+    if started.id() == 0 {
+      voice.set_state(VoiceState::Stopped);
+    }
+    if self.held.is_empty() {
+      return;
+    }
+    let id = voice.id();
+    let mut held = std::mem::take(&mut self.held);
+    for &(_, command) in &held {
+      if command.voice == id && !voice.is_stopped() {
+        self.apply(command, server);
+      }
+    }
+    held.retain(|(_, command)| command.voice != id);
+    held.append(&mut self.held);
+    self.held = held;
   }
 
   /// Play the sound of `entity`'s [`AudioEmitter`] where the entity is, the
@@ -3012,6 +3105,12 @@ impl EngineState {
   /// [`play`](Self::play)'s does, to play where the entity is once it lands.
   /// An entity that is not an emitter plays nothing
   pub(crate) fn play_emitter(&mut self, world: &World, entity: Entity) -> Voice {
+    self.play_emitter_as(world, entity, None)
+  }
+
+  /// [`play_emitter`](Self::play_emitter) as `voice` when given (a play a
+  /// system queued)
+  fn play_emitter_as(&mut self, world: &World, entity: Entity, voice: Option<Voice>) -> Voice {
     let Some(position) = emitter_position(world, entity) else {
       return Voice::stopped();
     };
@@ -3028,11 +3127,13 @@ impl EngineState {
       &options,
       Some(entity),
       false,
+      voice,
     )
   }
 
   /// [`play`](Self::play), from `emitter` when given; on the `ui` bus (or
-  /// the definition's bus under it) when `ui`
+  /// the definition's bus under it) when `ui`; as `voice` when given (a
+  /// play a system queued, whose voice it returned then)
   fn play_from(
     &mut self,
     world: &World,
@@ -3040,6 +3141,7 @@ impl EngineState {
     options: &PlayOptions,
     emitter: Option<Entity>,
     ui: bool,
+    voice: Option<Voice>,
   ) -> Voice {
     let server = world.get_resource::<AssetServer>();
     // The voices' changes queued so far apply first: a voice whose stop is
@@ -3057,6 +3159,7 @@ impl EngineState {
         let mut request = Request {
           emitter,
           ui,
+          voice,
           ..Request::clip(clip, options)
         };
         if ui {
@@ -3081,7 +3184,7 @@ impl EngineState {
             Some(sound) => sound.looping && clips_loading(world, sound, server),
           };
         if waits {
-          return self.wait_for(handle, sound, options, emitter, server);
+          return self.wait_for(handle, sound, options, emitter, voice, server);
         }
         let Some(sound) = sound else {
           if loading {
@@ -3107,6 +3210,7 @@ impl EngineState {
           .map(|request| Request {
             emitter,
             ui,
+            voice,
             bus: if ui { ui_bus(request.bus) } else { request.bus },
             ..request
           });
@@ -3124,15 +3228,17 @@ impl EngineState {
   /// A play of `handle` (its definition `sound`, if it has landed), from
   /// `emitter` when given, that waits for it to load: a voice that reports
   /// playing, started once the sound is ready
-  /// ([`start_waiting`](Self::start_waiting)). It counts against the
-  /// sound's `per_frame` now (the default while the definition is not
-  /// known), and again as it lands in a later frame; past it, it is refused
+  /// ([`start_waiting`](Self::start_waiting)), as `voice` when given. It
+  /// counts against the sound's `per_frame` now (the default while the
+  /// definition is not known), and again as it lands in a later frame; past
+  /// it, it is refused
   fn wait_for(
     &mut self,
     handle: &Handle<Sound>,
     sound: Option<&Sound>,
     options: &PlayOptions,
     emitter: Option<Entity>,
+    voice: Option<Voice>,
     server: Option<&AssetServer>,
   ) -> Voice {
     let key = handle.id().untyped();
@@ -3141,7 +3247,8 @@ impl EngineState {
       return self.refuse_unknown(handle.id(), REFUSED_PER_FRAME, server);
     }
     self.count_start(key);
-    let voice = Voice::new(self.voices.next_id(), self.commands.clone(), None);
+    let voice =
+      voice.unwrap_or_else(|| Voice::new(self.voices.next_id(), self.commands.clone(), None));
     // An emitter's voice belongs to its entity, a persistent one to the
     // engine
     let scope = if options.persist || emitter.is_some() {
@@ -3300,15 +3407,15 @@ impl EngineState {
     }
   }
 
-  /// Apply `command` to a play waiting for its sound, if it is one: what
-  /// it does is kept, to start with
-  fn change_pending(&mut self, command: VoiceCommand) {
+  /// Apply `command` to a play waiting for its sound, if it is one (false
+  /// if not): what it does is kept, to start with
+  fn change_pending(&mut self, command: VoiceCommand) -> bool {
     let Some(index) = self
       .pending
       .iter()
       .position(|pending| pending.voice.id() == command.voice)
     else {
-      return;
+      return false;
     };
     let pending = &mut self.pending[index];
     let state = pending.voice.state();
@@ -3337,6 +3444,7 @@ impl EngineState {
         pending.game_pitch = clamp_offset(semitones, PITCH_SPAN);
       }
     }
+    true
   }
 
   /// Warn, once for `id` (a definition, or a clip played directly), that a
@@ -4268,6 +4376,13 @@ impl EngineState {
         .retired_sends
         .retain(|(generation, _)| live.iter().any(|voice| voice.generation == *generation));
     }
+    // Changes held for a voice that never started (it ended first)
+    if !self.held.is_empty() {
+      let frame = self.frame;
+      self
+        .held
+        .retain(|(held, _)| frame.wrapping_sub(*held) < HELD_FRAMES);
+    }
     // The next frame's starts count afresh, and its voices are new to
     // kira until it renders them
     self.frame_starts.clear();
@@ -4540,7 +4655,11 @@ impl EngineState {
   /// level set; a longer fade ramps from the level the play started at
   fn apply(&mut self, command: VoiceCommand, server: Option<&AssetServer>) {
     let Some(index) = self.voices.index_of(command.voice) else {
-      self.change_pending(command);
+      // A voice a system queued that has yet to start keeps its changes
+      // for its start
+      if !self.change_pending(command) {
+        self.held.push((self.frame, command));
+      }
       return;
     };
     let frame = self.frame;

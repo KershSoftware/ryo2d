@@ -36,6 +36,12 @@ pub use bevy_ecs::query::{Added, Allow, Changed, Has, Or, With, Without};
 pub(crate) use bevy_ecs::query::{ReleaseStateQueryData, SingleEntityQueryData};
 pub use bevy_ecs::system::Local;
 pub(crate) use bevy_ecs::system::{ParamSet, SystemChangeTick, SystemIdMarker};
+// A system parameter of the engine's own (`audio::Audio`), and the buffer
+// it queues into, applied where the system's commands apply
+pub(crate) use bevy_ecs::system::{Deferred, SystemBuffer, SystemMeta, SystemParam};
+// A schedule that fails to build on conflicting systems (tests)
+#[cfg(test)]
+pub(crate) use bevy_ecs::schedule::{LogLevel, ScheduleBuildSettings};
 // Named apart from the public player-settings `SystemState` (config/save.rs)
 pub(crate) use bevy_ecs::system::SystemState as EcsSystemState;
 // Resources live on hidden entities; `IsResource` marks them so world-wide
