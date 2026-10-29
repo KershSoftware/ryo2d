@@ -221,11 +221,19 @@ impl Default for GameTime {
 #[cfg(test)]
 pub(crate) const FAILING_DEVICE: &str = "no output device (the failing-device seam)";
 
-/// What the mock backend renders: the last frame of each chunk of kira's
-/// main track, before master's gain (tests)
+/// What the mock backend renders on kira's main track, before master's
+/// gain (tests): each chunk's last frame, and every frame
 #[cfg(test)]
 #[derive(Clone, Default)]
-pub(crate) struct Meter(Arc<std::sync::Mutex<Vec<kira::Frame>>>);
+pub(crate) struct Meter(Arc<std::sync::Mutex<Metered>>);
+
+/// What a [`Meter`] has seen so far, oldest first
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct Metered {
+  chunks: Vec<kira::Frame>,
+  rendered: Vec<kira::Frame>,
+}
 
 #[cfg(test)]
 impl Meter {
@@ -234,7 +242,7 @@ impl Meter {
     self
       .0
       .lock()
-      .map(|frames| frames.clone())
+      .map(|metered| metered.chunks.clone())
       .unwrap_or_default()
   }
 
@@ -242,13 +250,35 @@ impl Meter {
   pub(crate) fn last(&self) -> kira::Frame {
     self.frames().last().copied().unwrap_or(kira::Frame::ZERO)
   }
+
+  /// The last `count` frames rendered (fewer if fewer were), oldest first
+  pub(crate) fn rendered(&self, count: usize) -> Vec<kira::Frame> {
+    self
+      .0
+      .lock()
+      .map(|metered| {
+        let from = metered.rendered.len().saturating_sub(count);
+        metered.rendered[from..].to_vec()
+      })
+      .unwrap_or_default()
+  }
+
+  /// How many frames have been rendered
+  pub(crate) fn rendered_count(&self) -> usize {
+    self
+      .0
+      .lock()
+      .map(|metered| metered.rendered.len())
+      .unwrap_or_default()
+  }
 }
 
 #[cfg(test)]
 impl kira::effect::Effect for Meter {
   fn process(&mut self, input: &mut [kira::Frame], _dt: f64, _info: &kira::info::Info) {
-    if let (Some(frame), Ok(mut frames)) = (input.last(), self.0.lock()) {
-      frames.push(*frame);
+    if let (Some(frame), Ok(mut metered)) = (input.last(), self.0.lock()) {
+      metered.chunks.push(*frame);
+      metered.rendered.extend_from_slice(input);
     }
   }
 }

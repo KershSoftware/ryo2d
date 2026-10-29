@@ -157,6 +157,13 @@ pub fn audio_world_over(files: MemorySource) -> World {
 /// `value`
 #[cfg(test)]
 pub(crate) fn wav(rate: u32, frames: usize, value: i16) -> Vec<u8> {
+  wav_samples(rate, &vec![value; frames])
+}
+
+/// A mono 16-bit WAV file at `rate` of `samples`
+#[cfg(test)]
+pub(crate) fn wav_samples(rate: u32, samples: &[i16]) -> Vec<u8> {
+  let frames = samples.len();
   let data = u32::try_from(frames * 2).unwrap_or(u32::MAX);
   let mut bytes = Vec::with_capacity(44 + frames * 2);
   bytes.extend_from_slice(b"RIFF");
@@ -173,8 +180,8 @@ pub(crate) fn wav(rate: u32, frames: usize, value: i16) -> Vec<u8> {
   bytes.extend_from_slice(&16u16.to_le_bytes());
   bytes.extend_from_slice(b"data");
   bytes.extend_from_slice(&data.to_le_bytes());
-  for _ in 0..frames {
-    bytes.extend_from_slice(&value.to_le_bytes());
+  for sample in samples {
+    bytes.extend_from_slice(&sample.to_le_bytes());
   }
   bytes
 }
@@ -182,7 +189,13 @@ pub(crate) fn wav(rate: u32, frames: usize, value: i16) -> Vec<u8> {
 /// [`audio_world`] with a meter on what the mock backend renders
 #[cfg(test)]
 pub(crate) fn metered_audio_world() -> (World, crate::core::audio::Meter) {
-  let mut world = audio_world();
+  metered_audio_world_over(MemorySource::new())
+}
+
+/// [`audio_world_over`] with a meter on what the mock backend renders
+#[cfg(test)]
+pub(crate) fn metered_audio_world_over(files: MemorySource) -> (World, crate::core::audio::Meter) {
+  let mut world = audio_world_over(files);
   let (mut audio, meter) = AudioEngine::new_metered();
   audio.set_logging(true);
   audio.seed(crate::core::audio::HEADLESS_SEED);

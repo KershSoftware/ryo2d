@@ -440,7 +440,9 @@ mod tests {
   use kira::sound::PlaybackState;
 
   use super::*;
-  use crate::core::asset::{AssetServer, Assets, AssetsView, MemorySource};
+  use crate::core::asset::{
+    AssetServer, Assets, AssetsView, AudioClipSettings, ClipMode, MemorySource,
+  };
   use crate::core::audio::{
     AudioClip, AudioEngine, AudioLogEntry, AudioLogKind, AudioView, LimitRule, Mixer, SoundClip,
     Voice, VoiceLimit,
@@ -1380,5 +1382,322 @@ mod tests {
     let start = entries(&world, voice.id(), AudioLogKind::Start);
     assert_eq!(start.len(), 2, "restarted: {start:#?}");
     assert_eq!((start[1].gain_db, start[1].pan), (SILENCE, 1.0));
+  }
+
+  // What the mock backend renders from a placed voice: the gain, pan and
+  // low-pass a listener hears, not only what the engine sends kira
+
+  /// How a rendered test's clip plays
+  #[derive(Debug, Clone, Copy, PartialEq)]
+  enum Mode {
+    Decoded,
+    Streamed,
+  }
+
+  /// How a rendered test's voice is played
+  #[derive(Debug, Clone, Copy, PartialEq)]
+  enum Via {
+    PlayAt,
+    Emitter,
+  }
+
+  /// Every clip mode with every way of playing
+  const COVERAGE: [(Mode, Via); 4] = [
+    (Mode::Decoded, Via::PlayAt),
+    (Mode::Decoded, Via::Emitter),
+    (Mode::Streamed, Via::PlayAt),
+    (Mode::Streamed, Via::Emitter),
+  ];
+
+  /// The mock backend's rate, and the rendered clips'
+  const RATE: u32 = 48_000;
+  /// A rendered clip's constant sample, and its level as kira reads it
+  const DC: i16 = 3_277;
+  const LEVEL: f32 = DC as f32 / 32_768.0;
+
+  /// Two seconds of [`DC`], a mono file's samples
+  fn steady() -> Vec<i16> {
+    vec![DC; 2 * RATE as usize]
+  }
+
+  /// A voice of a looping sound heard from a place, in a metered world
+  struct Rendered {
+    world: World,
+    meter: crate::core::audio::Meter,
+    listener: Entity,
+    emitter: Option<Entity>,
+    mode: Mode,
+  }
+
+  /// `samples` as a mono 48 kHz file, decoded or streamed, looped by a
+  /// sound heard by `spatial`, played at `at` (or from an emitter there,
+  /// which plays as the first step spawns it), the listener at the origin
+  fn rendered(samples: &[i16], mode: Mode, via: Via, spatial: Spatial, at: Vec2) -> Rendered {
+    let files = MemorySource::new();
+    files.insert("clip.wav", crate::core::testing::wav_samples(RATE, samples));
+    let (mut world, meter) = crate::core::testing::metered_audio_world_over(files);
+    let settings = AudioClipSettings {
+      mode: match mode {
+        Mode::Decoded => ClipMode::Decode,
+        Mode::Streamed => ClipMode::Stream,
+      },
+    };
+    let clip = match AssetsView::new(&mut world).load_now_with::<AudioClip, _>("clip.wav", settings)
+    {
+      Ok(clip) => clip,
+      Err(error) => panic!("{}", error.report()),
+    };
+    assert_eq!(
+      world
+        .resource::<Assets<AudioClip>>()
+        .get(&clip)
+        .map(AudioClip::is_streamed),
+      Some(mode == Mode::Streamed)
+    );
+    let sound = world.resource_mut::<Assets<Sound>>().add(Sound {
+      clips: vec![SoundClip::new(clip)],
+      looping: true,
+      spatial: Some(spatial),
+      ..Default::default()
+    });
+    let listener = world.spawn((AudioListener, Transform::IDENTITY)).id();
+    let emitter = match via {
+      Via::PlayAt => {
+        AudioView::new(&mut world).play_at(&sound, at);
+        None
+      }
+      Via::Emitter => {
+        let emitter = AudioEmitter {
+          sound,
+          play_on_spawn: true,
+        };
+        Some(world.spawn((emitter, Transform::from_xy(at.x, at.y))).id())
+      }
+    };
+    Rendered {
+      world,
+      meter,
+      listener,
+      emitter,
+      mode,
+    }
+  }
+
+  impl Rendered {
+    /// `frames` frames, a stream given time to decode between them
+    fn step(&mut self, frames: usize) {
+      for _ in 0..frames {
+        audio_step(&mut self.world, FRAME);
+        if self.mode == Mode::Streamed {
+          std::thread::sleep(Duration::from_millis(2));
+        }
+      }
+    }
+
+    /// The listener moved to `at`
+    fn listen_from(&mut self, at: Vec2) {
+      move_to(&mut self.world, self.listener, at.x, at.y);
+    }
+
+    /// The last `count` frames rendered
+    fn last(&self, count: usize) -> Vec<kira::Frame> {
+      self.meter.rendered(count)
+    }
+  }
+
+  /// Each side's level over `frames` in dB (a constant's RMS is its level;
+  /// silence is -inf)
+  fn levels_db(frames: &[kira::Frame]) -> (f32, f32) {
+    let rms = |side: fn(&kira::Frame) -> f32| {
+      let power = frames.iter().map(|frame| side(frame).powi(2)).sum::<f32>();
+      (power / frames.len() as f32).sqrt()
+    };
+    (db(rms(|frame| frame.left)), db(rms(|frame| frame.right)))
+  }
+
+  /// The pan `frames` were rendered at, by kira's constant-power law: left
+  /// is `a·√(1 - p)` and right `a·√(1 + p)`, so `p` is `(R² - L²) / (R² +
+  /// L²)`
+  fn pan_of(frames: &[kira::Frame]) -> f32 {
+    let (left, right) = frames.iter().fold((0.0, 0.0), |(left, right), frame| {
+      (left + frame.left.powi(2), right + frame.right.powi(2))
+    });
+    (right - left) / (right + left)
+  }
+
+  /// The amplitude of the `hz` sine in `frames`' left side: its correlation
+  /// with a sine and a cosine there (exact for a whole number of periods)
+  fn amplitude(frames: &[kira::Frame], hz: f64) -> f32 {
+    let step = std::f64::consts::TAU * hz / f64::from(RATE);
+    let (cos, sin) = frames
+      .iter()
+      .enumerate()
+      .fold((0.0, 0.0), |(cos, sin), (n, frame)| {
+        let phase = step * n as f64;
+        let x = f64::from(frame.left);
+        (cos + x * phase.cos(), sin + x * phase.sin())
+      });
+    let n = frames.len() as f64;
+    (2.0 / n * (cos * cos + sin * sin).sqrt()) as f32
+  }
+
+  /// A spatial loop renders at its curve's gain on each curve, within its
+  /// minimum distance, between, and near its maximum, decoded or streamed,
+  /// played at a place or from an emitter
+  #[test]
+  fn a_placed_loop_renders_at_its_curve_s_gain() {
+    for curve in [Falloff::Linear, Falloff::Log, Falloff::Inverse] {
+      let spatial = settings(curve);
+      for (mode, via) in COVERAGE {
+        let mut voice = rendered(&steady(), mode, via, spatial, Vec2::ZERO);
+        voice.step(10);
+        // Straight ahead, so it is not panned
+        for distance in [50.0, 300.0, 480.0] {
+          voice.listen_from(Vec2::new(0.0, distance));
+          voice.step(6);
+          let expected = db(LEVEL) + falloff_gain_db(&spatial, distance);
+          let (left, right) = levels_db(&voice.last(400));
+          assert!(
+            (left - expected).abs() < 0.5 && (right - expected).abs() < 0.5,
+            "{curve:?}, {mode:?} {via:?}, at {distance}: {left:.2} and {right:.2} dB, not {expected:.2}"
+          );
+        }
+      }
+    }
+  }
+
+  /// Full volume within 200, and fully to one side 150 to it
+  fn sides() -> Spatial {
+    Spatial {
+      min_distance: 200.0,
+      max_distance: 800.0,
+      curve: Falloff::Linear,
+      pan_width: 150.0,
+      low_pass_at_max: None,
+    }
+  }
+
+  /// A voice a full pan width to the listener's right renders near silence
+  /// on the left and about +3 dB on the right (kira's constant-power pan,
+  /// `Frame::panned`, gives the side √2); mirrored on the left; equal ahead
+  #[test]
+  fn a_full_pan_width_to_one_side_renders_on_that_side() {
+    let (level, sided) = (db(LEVEL), db(LEVEL * std::f32::consts::SQRT_2));
+    for (mode, via) in COVERAGE {
+      for at in [
+        Vec2::new(150.0, 0.0),
+        Vec2::new(-150.0, 0.0),
+        Vec2::new(0.0, 100.0),
+      ] {
+        let mut voice = rendered(&steady(), mode, via, sides(), at);
+        voice.step(10);
+        let (left, right) = levels_db(&voice.last(400));
+        let case = format!("{mode:?} {via:?} at {at}: {left:.2} and {right:.2} dB");
+        if at.x > 0.0 {
+          assert!(left < level - 60.0, "{case}");
+          assert!((right - sided).abs() < 0.5, "{case}: +3 dB is {sided:.2}");
+        } else if at.x < 0.0 {
+          assert!(right < level - 60.0, "{case}");
+          assert!((left - sided).abs() < 0.5, "{case}: +3 dB is {sided:.2}");
+        } else {
+          assert!((left - right).abs() < 0.01, "{case}");
+          assert!((left - level).abs() < 0.5, "{case}");
+        }
+      }
+    }
+  }
+
+  /// An emitter crossing from the listener's left to its right moves the
+  /// balance each frame to where it now is, within the frame's glide: each
+  /// frame starts where the last ended and ends at its place's pan
+  #[test]
+  fn an_emitter_crossing_moves_the_balance_within_each_frame() {
+    for mode in [Mode::Decoded, Mode::Streamed] {
+      let mut voice = rendered(
+        &steady(),
+        mode,
+        Via::Emitter,
+        sides(),
+        Vec2::new(-150.0, 0.0),
+      );
+      voice.step(10);
+      let Some(entity) = voice.emitter else {
+        panic!("an emitter");
+      };
+      let mut was = pan_of(&voice.last(64));
+      assert!(
+        (was + 1.0).abs() < 0.01,
+        "{mode:?}: it starts on the left: {was}"
+      );
+      for step in 1..=10 {
+        let x = -150.0 + 30.0 * step as f32;
+        move_to(&mut voice.world, entity, x, 0.0);
+        let before = voice.meter.rendered_count();
+        voice.step(1);
+        let frame = voice.last(voice.meter.rendered_count() - before);
+        let expected = pan_for(&sides(), x);
+        let (first, last) = (pan_of(&frame[..64]), pan_of(&frame[frame.len() - 64..]));
+        assert!(
+          first >= was - 0.02 && first <= expected + 0.02,
+          "{mode:?} to {x}: the frame starts at {first}, between {was} and {expected}"
+        );
+        assert!(
+          (last - expected).abs() < 0.03,
+          "{mode:?} to {x}: the frame ends at {last}, not {expected}"
+        );
+        was = last;
+      }
+      assert!(
+        (was - 1.0).abs() < 0.03,
+        "{mode:?}: it ends on the right: {was}"
+      );
+    }
+  }
+
+  /// With `low_pass_at_max`, a pair of tones (200 Hz and 8 kHz) loses its
+  /// high one with distance as the cutoff closes: near the maximum the high
+  /// tone has fallen at least 12 dB more than the low one
+  #[test]
+  fn the_distance_low_pass_takes_the_high_band_first() {
+    let spatial = Spatial {
+      low_pass_at_max: Some(500.0),
+      ..settings(Falloff::Linear)
+    };
+    let tau = std::f64::consts::TAU;
+    let pair: Vec<i16> = (0..2 * RATE)
+      .map(|n| {
+        let t = f64::from(n) / f64::from(RATE);
+        let sample = 0.05 * (tau * 200.0 * t).sin() + 0.05 * (tau * 8_000.0 * t).sin();
+        (sample * 32_767.0).round() as i16
+      })
+      .collect();
+    for (mode, via) in COVERAGE {
+      let mut voice = rendered(&pair, mode, via, spatial, Vec2::ZERO);
+      voice.step(10);
+      let mut bands = Vec::new();
+      for distance in [50.0, 300.0, 480.0] {
+        voice.listen_from(Vec2::new(0.0, distance));
+        voice.step(12);
+        // A tenth of a second: whole periods of both tones
+        let frames = voice.last(4_800);
+        bands.push((amplitude(&frames, 200.0), amplitude(&frames, 8_000.0)));
+      }
+      let (low, high) = bands[0];
+      assert!(
+        low > 0.04 && high > 0.03,
+        "{mode:?} {via:?}: open: {bands:?}"
+      );
+      let fall = |(l, h): (f32, f32)| (db(l / low), db(h / high));
+      let (low_mid, high_mid) = fall(bands[1]);
+      let (low_far, high_far) = fall(bands[2]);
+      assert!(
+        high_mid < low_mid - 3.0,
+        "{mode:?} {via:?}: between, the highs fall more: {low_mid:.1} and {high_mid:.1} dB"
+      );
+      assert!(
+        low_far - high_far >= 12.0,
+        "{mode:?} {via:?}: near the maximum, the highs fall 12 dB more: {low_far:.1} and {high_far:.1} dB"
+      );
+    }
   }
 }
