@@ -496,7 +496,7 @@ fn a_fourth_step_is_refused_and_the_pause_holds_sfx() {
 | Symptom | Look at |
 |---|---|
 | Nothing plays | A one-shot played while its sound loads (refused; use `load_now` or check `is_ready`), a load failure (warned once with its path), a volume setting at 0, a bus held by the game's pause, its scene held under a pushed scene, a one-shot culled beyond its `max_distance`, its `per_frame`, a cooldown or a limit refusing it (`Refused` in the audio log, with the reason), or on the web the first gesture not yet given |
-| A streamed file is silent or stops early | A bad streamed file shows up when it plays, not at `play`: its voice fades out (its `fade_out`, at least 10 ms) and the failure is warned once, naming the file, and the clip is refused until it is saved again. A packet that will not decode plays as silence |
+| A streamed file is silent or stops early | A bad streamed file shows up when it plays, not at `play`: its voice fades out (its `fade_out`, at least 10 ms, but ending before the silence the failure leaves reaches playback: about 0.3 s at most at 48 kHz, as the stream is decoded that far ahead) and the failure is warned once, naming the file, and the clip is refused until it is saved again. A packet that will not decode plays as silence |
 | A sound plays on the wrong bus | A bus name the mixer lacks plays on the nearest bus above it, warned once; a send bus plays on its parent |
 | A burst sounds like one sound | Its `per_frame` (1 by default) starts one copy a frame; raise it for a sound meant to layer |
 | A sound cuts out | Its `limit`, a bus `limit`, or the cap of 96 per bus stopping it; check `priority` (higher is more important) |

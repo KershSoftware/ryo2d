@@ -750,6 +750,16 @@ impl Playback {
   /// Why a stream failed, if its decoder reported it since the last call:
   /// it plays silence from there (kira's own errors, which cut a stream
   /// with no fade, are read too, the rest dropped)
+  /// A stream's sample rate, which says how far ahead of playback kira
+  /// decodes it; `None` for what does not stream
+  fn stream_rate(&self) -> Option<u32> {
+    match self {
+      Playback::Static(_) | Playback::Waiting(_) => None,
+      #[cfg(not(target_arch = "wasm32"))]
+      Playback::Stream(_, failure) => Some(failure.sample_rate()),
+    }
+  }
+
   fn take_error(&mut self) -> Option<String> {
     match self {
       Playback::Static(_) | Playback::Waiting(_) => None,
@@ -4705,7 +4715,7 @@ impl EngineState {
         self.mock_render = started.elapsed();
       }
     }
-    self.retire_ended(server);
+    self.retire_ended(real_delta, server);
     // A track whose voice ended lets its definition go
     if self
       .music
@@ -5109,11 +5119,15 @@ impl EngineState {
   /// Drop the voices kira reports stopped (played out, or faded out after a
   /// stop), marking their handles stopped, and keep the rest in start
   /// order. A stream that failed as it played (its file could not open, or
-  /// its reader failed partway), which its decoder fills with silence, is
-  /// stopped with its sound's `fade_out` (at least [`MIN_FADE`]; a bare
-  /// clip's and the music's over [`MIN_FADE`], the music's crossfade being
-  /// for a track replaced) and its clip warned about once
-  fn retire_ended(&mut self, server: Option<&AssetServer>) {
+  /// its reader failed partway), which its decoder fills with silence from
+  /// the failure, is stopped with its sound's `fade_out` (at least
+  /// [`MIN_FADE`]; a bare clip's and the music's over [`MIN_FADE`], the
+  /// music's crossfade being for a track replaced), cut to end before that
+  /// silence reaches playback ([`failure_fade`]: kira decodes up to
+  /// [`DECODE_AHEAD`] of its frames ahead, and `seen`, the frame just ended,
+  /// is how long the engine may have taken to see it), and its clip warned
+  /// about once
+  fn retire_ended(&mut self, seen: Duration, server: Option<&AssetServer>) {
     for index in 0..self.voices.live.len() {
       let live = &mut self.voices.live[index];
       // The state first: an error kira reports is queued before it stops
@@ -5129,6 +5143,10 @@ impl EngineState {
           let fade = match live.sound {
             Some(_) => live.fade_out.max(MIN_FADE),
             None => MIN_FADE,
+          };
+          let fade = match live.playback.stream_rate() {
+            Some(sample_rate) => fade.min(failure_fade(sample_rate, live.rate(), seen)),
+            None => fade,
           };
           live.playback.stop(fade);
           live.voice.set_state(VoiceState::Stopping);
@@ -5974,6 +5992,31 @@ fn fade_to_silence(duration: Duration) -> Tween {
   shaped(duration, Easing::InPowi(FADE_POWER))
 }
 
+/// How far kira's decoder thread decodes a stream ahead of playback, in the
+/// stream's own frames (its `decode_scheduler.rs`'s `BUFFER_SIZE`): a
+/// stream's decoder reaches a failure, and reports it, about this far ahead
+/// of where it plays
+const DECODE_AHEAD: f64 = 16_384.0;
+
+/// The longest fade a stream failing now can take, at least [`MIN_FADE`]:
+/// the silence its decoder gives from the failure reaches playback
+/// [`DECODE_AHEAD`] of its frames (at `sample_rate`, played at
+/// `playback_rate`) after where it played as the decoder failed, and the
+/// fade must end before it, less `seen`, which the engine may have taken
+/// to see the failure, and [`MIN_FADE`] for kira to apply the stop (a
+/// device's buffer). About 315 ms at 48 kHz and 60 frames a second
+fn failure_fade(sample_rate: u32, playback_rate: f64, seen: Duration) -> Duration {
+  let playback_rate = if playback_rate.is_finite() && playback_rate > 0.0 {
+    playback_rate
+  } else {
+    1.0
+  };
+  let frames_a_second = (f64::from(sample_rate) * playback_rate).max(1.0);
+  Duration::from_secs_f64(DECODE_AHEAD / frames_a_second)
+    .saturating_sub(seen.saturating_add(MIN_FADE))
+    .max(MIN_FADE)
+}
+
 fn shaped(duration: Duration, easing: Easing) -> Tween {
   if duration <= MIN_FADE {
     return tween(duration);
@@ -6432,6 +6475,48 @@ mod tests {
       last.map(|entry| (entry.kind, entry.reason)),
       Some((AudioLogKind::Refused, REFUSED_UNDECODABLE))
     );
+  }
+
+  /// A failing stream's fade ends before the silence its decoder gives from
+  /// the failure reaches playback: kira decodes up to 16,384 of the
+  /// stream's frames ahead of where it plays, so an ambience bed's 1 s
+  /// `fade_out` is cut to end within them, less the frame the engine took
+  /// to see it and 10 ms for kira to apply the stop
+  #[test]
+  fn a_failing_stream_s_fade_ends_before_its_silence() {
+    let files = MemorySource::new();
+    files.insert("fails-under-a-long-fade.ogg", fixture("tone-3s.ogg"));
+    let mut world = audio_world_over(files);
+    world
+      .resource_mut::<AudioEngine>()
+      .fail_stream_reads_at(6_828);
+    let clip = streamed(&mut world, "fails-under-a-long-fade.ogg");
+    let sound = world.resource_mut::<Assets<Sound>>().add(Sound {
+      clips: vec![SoundClip::new(clip.clone())],
+      looping: true,
+      fade_out: Duration::from_secs(1),
+      ..Default::default()
+    });
+    let voice = AudioView::new(&mut world).play(&sound);
+    wait_until_stopped(&mut world, &voice);
+    let rate = world
+      .resource::<Assets<AudioClip>>()
+      .get(&clip)
+      .map(AudioClip::sample_rate);
+    let Some(rate) = rate else {
+      panic!("the clip is in the store");
+    };
+    let ahead = Duration::from_secs_f64(16_384.0 / f64::from(rate));
+    let stops: Vec<Duration> = log(&world)
+      .iter()
+      .filter(|entry| entry.kind == AudioLogKind::Stop && entry.voice == voice.id())
+      .map(|entry| entry.fade)
+      .collect();
+    let [fade] = stops[..] else {
+      panic!("one stop: {stops:?}");
+    };
+    // wait_until_stopped steps 10 ms frames
+    assert_eq!(fade, ahead - Duration::from_millis(20), "within {ahead:?}");
   }
 
   /// A stream opens on its decoder thread, so one that cannot open starts

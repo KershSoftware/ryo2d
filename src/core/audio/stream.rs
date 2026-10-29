@@ -17,7 +17,9 @@
 //! file, or the codec's that is not one packet's), never fails the stream:
 //! the decoder reports why through its [`StreamFailure`] and gives silence
 //! to the window's end, so the engine stops the voice with its fade (kira
-//! cuts a stream whose decoder returns an error, with no fade).
+//! cuts a stream whose decoder returns an error, with no fade), ended
+//! before that silence reaches playback, which kira's decode-ahead puts up
+//! to 16,384 of the stream's frames after where it plays.
 //!
 //! kira's own decoder opens the file on the thread that calls `play`, 0.3 to
 //! 1.2 ms for an OGG, and miscounts frames after a Vorbis seek (the first
@@ -89,9 +91,14 @@ impl From<SymphoniaError> for StreamError {
 }
 
 /// Where a stream's decoder reports that it failed, for the engine to read:
-/// shared by the decoder (on kira's decoder thread) and the engine's voice
-#[derive(Debug, Clone, Default)]
-pub(crate) struct StreamFailure(Arc<FailureSlot>);
+/// shared by the decoder (on kira's decoder thread) and the engine's voice.
+/// It knows the stream's sample rate, which says how long before playback
+/// reaches the failure the decoder reports it
+#[derive(Debug, Clone)]
+pub(crate) struct StreamFailure {
+  slot: Arc<FailureSlot>,
+  sample_rate: u32,
+}
 
 #[derive(Debug, Default)]
 struct FailureSlot {
@@ -101,22 +108,34 @@ struct FailureSlot {
 }
 
 impl StreamFailure {
+  fn new(sample_rate: u32) -> Self {
+    Self {
+      slot: Arc::default(),
+      sample_rate,
+    }
+  }
+
   /// Report `error`, unless one waits to be taken
   fn report(&self, error: StreamError) {
-    if let Ok(mut slot) = self.0.error.lock()
+    if let Ok(mut slot) = self.slot.error.lock()
       && slot.is_none()
     {
       *slot = Some(error);
-      self.0.failed.store(true, Ordering::Release);
+      self.slot.failed.store(true, Ordering::Release);
     }
   }
 
   /// The error reported since the last call, if any
   pub(crate) fn take(&self) -> Option<StreamError> {
-    if !self.0.failed.swap(false, Ordering::AcqRel) {
+    if !self.slot.failed.swap(false, Ordering::AcqRel) {
       return None;
     }
-    self.0.error.lock().ok()?.take()
+    self.slot.error.lock().ok()?.take()
+  }
+
+  /// The stream's sample rate, in its own frames a second
+  pub(crate) fn sample_rate(&self) -> u32 {
+    self.sample_rate
   }
 }
 
@@ -292,7 +311,7 @@ impl ClipDecoder {
       ended: false,
       pending: None,
       state: State::Closed,
-      failure: StreamFailure::default(),
+      failure: StreamFailure::new(sample_rate),
       #[cfg(test)]
       decoded: None,
       #[cfg(test)]
