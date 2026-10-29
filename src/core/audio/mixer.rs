@@ -175,8 +175,9 @@ pub enum EffectDef {
     resonance: f64,
   },
   /// Raises or lowers a band (`Bell`) or everything below or above a
-  /// frequency (`LowShelf`, `HighShelf`) by `gain_db`; a higher `q` is a
-  /// narrower band (default 1)
+  /// frequency (`LowShelf`, `HighShelf`; 20 to 20,000 Hz) by `gain_db` (-24
+  /// to +24); a higher `q` is a narrower band (0.01 or more, kira's widest;
+  /// default 1)
   Eq {
     kind: EqKind,
     frequency: f64,
@@ -197,9 +198,9 @@ pub enum EffectDef {
     #[serde(default = "half")]
     mix: f32,
   },
-  /// Echoes `seconds` apart (more than 0, at most 10; default 0.5), each
-  /// `feedback_db` quieter than the last (below 0, default -6), at `mix`
-  /// (default 0.5)
+  /// Echoes `seconds` apart (0.001 to 10, as kira's delay holds at least a
+  /// frame; default 0.5), each `feedback_db` quieter than the last (below 0,
+  /// default -6), at `mix` (0 to 1, default 0.5)
   Delay {
     #[serde(default = "half_f64")]
     seconds: f64,
@@ -208,10 +209,11 @@ pub enum EffectDef {
     #[serde(default = "half")]
     mix: f32,
   },
-  /// Turns down what is louder than `threshold_db` (default 0) by `ratio`
-  /// (1 or more, default 1), reacting over `attack` (default 0.01 s) and
-  /// recovering over `release` (default 0.1 s), then adds `makeup_db`
-  /// (default 0), at `mix` (default 1)
+  /// Turns down what is louder than `threshold_db` (-60, silence, to +24;
+  /// default 0) by `ratio` (1 or more, default 1), reacting over `attack`
+  /// (0 to 10 s, default 0.01 s) and recovering over `release` (0 to 10 s,
+  /// default 0.1 s), then adds `makeup_db` (-24 to +24, default 0), at
+  /// `mix` (0 to 1, default 1)
   Compressor {
     #[serde(default)]
     threshold_db: f64,
@@ -592,10 +594,12 @@ impl EffectDef {
       } => {
         frequency("Eq", "frequency", hz)?;
         gain("Eq", "gain_db", gain_db)?;
-        if q.is_finite() && q > 0.0 {
+        if q.is_finite() && q >= MIN_Q {
           Ok(())
         } else {
-          Err(format!("Eq: its q {q} is not more than 0"))
+          Err(format!(
+            "Eq: its q {q} is not {MIN_Q} or more (kira takes a lower one as {MIN_Q})"
+          ))
         }
       }
       EffectDef::Reverb {
@@ -614,9 +618,9 @@ impl EffectDef {
         feedback_db,
         mix,
       } => {
-        if !(seconds.is_finite() && seconds > 0.0 && seconds <= MAX_DELAY) {
+        if !(seconds.is_finite() && (MIN_DELAY..=MAX_DELAY).contains(&seconds)) {
           return Err(format!(
-            "Delay: its seconds {seconds} is not a time of more than 0 and at most {MAX_DELAY}"
+            "Delay: its seconds {seconds} is not a time from {MIN_DELAY} to {MAX_DELAY} (kira's delay holds at least a frame)"
           ));
         }
         if !(feedback_db.is_finite() && feedback_db < 0.0) {
@@ -634,9 +638,10 @@ impl EffectDef {
         makeup_db,
         mix,
       } => {
-        if !threshold_db.is_finite() {
+        let levels = f64::from(SILENCE_DB)..=f64::from(MAX_BUS_DB);
+        if !levels.contains(&threshold_db) {
           return Err(format!(
-            "Compressor: its threshold_db {threshold_db} is not a number"
+            "Compressor: its threshold_db {threshold_db} is not a level from {SILENCE_DB} (silence) to +{MAX_BUS_DB} dB"
           ));
         }
         if !(ratio.is_finite() && ratio >= 1.0) {
@@ -998,6 +1003,13 @@ pub(crate) const SEND_TRACK_CAPACITY: usize = 7 * MAX_SEND_BUSES;
 pub(crate) const MAX_BUS_DB: f32 = 24.0;
 /// The longest delay or compressor time, in seconds
 const MAX_DELAY: f64 = 10.0;
+/// The shortest delay, in seconds: kira's delay holds `seconds × rate`
+/// whole frames and splits what it processes by that many, which panics on
+/// the mixing thread at none (a delay shorter than a frame). A millisecond
+/// is a frame at any rate from 1 kHz
+const MIN_DELAY: f64 = 0.001;
+/// The smallest EQ `q`: kira takes any lower one as this
+const MIN_Q: f64 = 0.01;
 /// The longest a retired bus tree is kept after its last sound for its
 /// effects to ring out (`EffectDef::tail`, `BusTree::tail`)
 pub(crate) const MAX_TAIL: Duration = Duration::from_secs(10);
@@ -3314,6 +3326,37 @@ mod tests {
     assert!(level > 0.02, "still ringing at 10 s: {level}");
     let step = largest_step(&after);
     assert!(step < 0.05 * level, "a step of {step} from {level}");
+  }
+
+  /// A mixer made in code with a delay shorter than a frame, which kira's
+  /// delay would panic on as it renders, is refused by the check: the
+  /// buses stay as they are and what plays renders
+  #[test]
+  fn a_delay_shorter_than_a_frame_is_refused_and_nothing_panics() {
+    let mut world = audio_world();
+    let mut sfx = BusDef::new("sfx");
+    sfx.effects.push(EffectDef::Delay {
+      seconds: 0.000_01,
+      feedback_db: -6.0,
+      mix: 0.5,
+    });
+    AudioView::new(&mut world).set_mixer(Mixer {
+      buses: vec![sfx],
+      ..Default::default()
+    });
+    let shot = clip(&mut world, 0.2);
+    let voice = AudioView::new(&mut world).play(&shot);
+    for _ in 0..3 {
+      audio_step(&mut world, FRAME);
+    }
+    assert!(voice.is_playing(), "{voice:?}");
+    let effects = world
+      .resource::<AudioEngine>()
+      .buses()
+      .into_iter()
+      .find(|bus| bus.name == "sfx")
+      .map(|bus| bus.effects);
+    assert_eq!(effects, Some(0), "the buses stay as they were");
   }
 
   /// A mixer with the most send buses a mixer may have, each with a delay

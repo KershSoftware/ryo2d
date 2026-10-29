@@ -340,6 +340,54 @@ mod tests {
     }
   }
 
+  /// A value kira's effects would panic or misbehave on fails the load: a
+  /// delay shorter than a frame (an empty buffer kira splits its input by,
+  /// which panics on the mixing thread), an EQ `q` below the 0.01 kira
+  /// quietly raises it to, and a compressor threshold kira's `f32` maths
+  /// turns into NaN (or that is below its silence); the edges load
+  #[test]
+  fn values_kira_cannot_take_fail_the_load() {
+    let cases = [
+      (
+        r#"(buses: { "sfx": (effects: [Delay(seconds: 0.00001)]) })"#,
+        "seconds",
+      ),
+      (
+        r#"(buses: { "sfx": (effects: [Delay(seconds: 0.0009)]) })"#,
+        "seconds",
+      ),
+      (
+        r#"(buses: { "sfx": (effects: [Eq(kind: Bell, frequency: 1000.0, gain_db: 3.0, q: 0.005)]) })"#,
+        "q",
+      ),
+      (
+        r#"(buses: { "sfx": (effects: [Compressor(threshold_db: -1e39)]) })"#,
+        "threshold_db",
+      ),
+      (
+        r#"(buses: { "sfx": (effects: [Compressor(threshold_db: -61.0)]) })"#,
+        "threshold_db",
+      ),
+      (
+        r#"(buses: { "sfx": (effects: [Compressor(threshold_db: 25.0)]) })"#,
+        "threshold_db",
+      ),
+    ];
+    for (text, names) in cases {
+      let error = failure(text);
+      assert!(error.contains(PATH), "{text}: {error}");
+      assert!(error.contains(names), "{text}: {error} (wanted {names:?})");
+    }
+    loaded(
+      r#"(buses: { "sfx": (effects: [
+        Delay(seconds: 0.001),
+        Eq(kind: Bell, frequency: 1000.0, gain_db: 3.0, q: 0.01),
+        Compressor(threshold_db: -60.0),
+        Compressor(threshold_db: 24.0),
+      ]) })"#,
+    );
+  }
+
   #[test]
   fn a_mixer_made_in_code_is_checked_the_same_way() {
     let mut mixer = Mixer::default();
