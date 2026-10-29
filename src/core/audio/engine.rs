@@ -87,9 +87,16 @@ const MAX_GLIDE: Duration = Duration::from_millis(100);
 /// Voices the table holds before it grows
 const VOICE_CAPACITY: usize = 128;
 /// The most retired bus trees kept ringing out their effects' tails: a
-/// rebuild past them drops the oldest at once (rebuilds come from saves
-/// while a designer tunes the mixer)
+/// rebuild past them lets the oldest go, fading it out over [`MIN_FADE`]
+/// with whatever still plays on it (rebuilds come from saves while a
+/// designer tunes the mixer)
 const MAX_RINGING: usize = 4;
+/// How long a ringing tree let go is kept from the start of its fade: the
+/// fade's [`MIN_FADE`], and time for kira to have rendered it before its
+/// tracks go (a device renders a buffer at a time, and kira removes a
+/// dropped track before it reads the commands that came with it, so a
+/// buffer of up to 40 ms is covered)
+const FADING_KEPT: Duration = Duration::from_millis(50);
 /// The most a one-shot playing as its scene exits may have left to finish:
 /// a click or a stinger is heard out, while a longer one (a voice-over, a
 /// long streamed clip) stops with its fade rather than run on into the next
@@ -1292,6 +1299,9 @@ struct RingingTree {
   /// When the engine first found no voice on it (no sooner than
   /// `quiet_from`); `None` while voices play on it
   quiet_since: Option<Duration>,
+  /// Once it is let go (rung out, or past [`MAX_RINGING`]): the engine's
+  /// clock it goes at, its tracks fading out until then
+  fading: Option<Duration>,
 }
 
 /// Loops one reload could not switch to what it changed (a clip, a sound
@@ -1454,7 +1464,7 @@ pub struct EngineState {
   /// it play so their sends still reach them
   retired_sends: Vec<(u32, Vec<SendTrackHandle>)>,
   /// The retired trees whose effects ring after their sounds, oldest
-  /// first, at most [`MAX_RINGING`]
+  /// first: at most [`MAX_RINGING`], and those let go fading out
   ringing: Vec<RingingTree>,
   /// The time scale the following voices' rates carry: the latest above
   /// [`HOLD_SCALE`] (a held voice keeps the rate it had)
@@ -2293,16 +2303,33 @@ impl EngineState {
   }
 
   /// The generations of the retired trees ringing out their tails, oldest
-  /// first (tests)
+  /// first, but those let go and fading out (tests)
   #[cfg(test)]
   pub(crate) fn ringing_generations(&self) -> Vec<u32> {
-    self.ringing.iter().map(|tree| tree.generation).collect()
+    self
+      .ringing
+      .iter()
+      .filter(|tree| tree.fading.is_none())
+      .map(|tree| tree.generation)
+      .collect()
   }
 
   /// The live tree's generation (tests)
   #[cfg(test)]
   pub(crate) fn generation(&self) -> u32 {
     self.generation
+  }
+
+  /// The live tree's send buses kira made a track for, and its send buses
+  /// (tests)
+  #[cfg(test)]
+  pub(crate) fn send_tracks_made(&self) -> (usize, usize) {
+    let sends = (0..self.buses.buses.len()).filter(|&bus| self.buses.is_send(bus));
+    let made = sends
+      .clone()
+      .filter(|&bus| self.buses.send_id(bus).is_some())
+      .count();
+    (made, sends.count())
   }
 
   /// kira's tracks under its main track, and its send tracks (tests)
@@ -2525,7 +2552,7 @@ impl EngineState {
     }
     // The loops have moved: the old tree retires, ringing out what its
     // effects hold
-    self.retire(old, retired);
+    self.retire(old, retired, server);
     for duck in &mut self.ducks {
       duck.trigger = self.buses.find(&duck.def.trigger).unwrap_or(0);
       duck.target = self.buses.find(&duck.def.target).unwrap_or(0);
@@ -2582,9 +2609,9 @@ impl EngineState {
   /// reverb, a delay; [`BusTree::tail`]) is kept until its last voice has
   /// ended and its tail has rung out ([`ring_out`](Self::ring_out)), so a
   /// save cuts no tail mid-ring, the moved loops' old copies included; past
-  /// [`MAX_RINGING`] of them, the oldest is dropped at once. One that does
-  /// not ring is dropped now
-  fn retire(&mut self, old: BusTree, generation: u32) {
+  /// [`MAX_RINGING`] of them, the oldest is let go ([`let_go`](Self::let_go)),
+  /// what still plays on it with it. One that does not ring is dropped now
+  fn retire(&mut self, old: BusTree, generation: u32, server: Option<&AssetServer>) {
     let tail = old.tail();
     if tail.is_zero() {
       self.drop_retired(old, generation);
@@ -2596,10 +2623,41 @@ impl EngineState {
       tail,
       quiet_from: self.clock.saturating_add(MIN_FADE),
       quiet_since: None,
+      fading: None,
     });
-    if self.ringing.len() > MAX_RINGING {
-      let oldest = self.ringing.remove(0);
-      self.drop_retired(oldest.tree, oldest.generation);
+    let kept = self.ringing.iter().filter(|tree| tree.fading.is_none());
+    if kept.count() > MAX_RINGING
+      && let Some(oldest) = self.ringing.iter().position(|tree| tree.fading.is_none())
+    {
+      self.let_go(oldest, server);
+    }
+  }
+
+  /// Let ringing tree `at` go: stop what still plays on it and fade its
+  /// tracks out, each over [`MIN_FADE`], and drop it once kira has
+  /// rendered the fade ([`FADING_KEPT`]), so what it rings goes without a
+  /// click. Its send tracks go with it, as nothing is left to reach them
+  fn let_go(&mut self, at: usize, server: Option<&AssetServer>) {
+    let Some(tree) = self.ringing.get(at) else {
+      return;
+    };
+    let generation = tree.generation;
+    for index in 0..self.voices.live.len() {
+      let live = &mut self.voices.live[index];
+      if live.generation != generation
+        || !matches!(live.voice.state(), VoiceState::Playing | VoiceState::Paused)
+      {
+        continue;
+      }
+      live.playback.stop(MIN_FADE);
+      live.voice.set_state(VoiceState::Stopping);
+      self.uncount(index);
+      self.record(index, AudioLogKind::Stop, MIN_FADE, server);
+    }
+    let gone = self.clock.saturating_add(FADING_KEPT);
+    if let Some(tree) = self.ringing.get_mut(at) {
+      tree.tree.fade_out(fade_to_silence(MIN_FADE));
+      tree.fading = Some(gone);
     }
   }
 
@@ -2615,18 +2673,27 @@ impl EngineState {
     drop(old);
   }
 
-  /// Drop each ringing tree whose voices have all ended and whose tail has
-  /// rung out since: from the frame the engine first found it quiet, and
-  /// no sooner than its rebuild's moved loops faded out on it
+  /// Let go each ringing tree whose voices have all ended and whose tail
+  /// has rung out since (from the frame the engine first found it quiet,
+  /// and no sooner than its rebuild's moved loops faded out on it), fading
+  /// it out over [`MIN_FADE`]: a tail capped at 10 s still rings.
+  /// Drop each let go whose fade kira has rendered
   fn ring_out(&mut self) {
     let (clock, live) = (self.clock, &self.voices.live);
     self.ringing.retain_mut(|tree| {
+      if let Some(gone) = tree.fading {
+        return clock < gone;
+      }
       if live.iter().any(|voice| voice.generation == tree.generation) {
         tree.quiet_since = None;
         return true;
       }
       let since = *tree.quiet_since.get_or_insert(clock.max(tree.quiet_from));
-      clock < since.saturating_add(tree.tail)
+      if clock >= since.saturating_add(tree.tail) {
+        tree.tree.fade_out(fade_to_silence(MIN_FADE));
+        tree.fading = Some(clock.saturating_add(FADING_KEPT));
+      }
+      true
     });
   }
 

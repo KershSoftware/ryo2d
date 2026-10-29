@@ -14,7 +14,7 @@ use kira::effect::reverb::ReverbBuilder;
 use kira::effect::{Effect, EffectBuilder};
 use kira::sound::SoundData;
 use kira::track::{SendTrackBuilder, SendTrackHandle, SendTrackId, TrackBuilder, TrackHandle};
-use kira::{Decibels, PlaySoundError, ResourceLimitReached};
+use kira::{Decibels, PlaySoundError, ResourceLimitReached, Tween};
 use ron::extensions::Extensions;
 use serde::Deserialize;
 use serde::de::{MapAccess, Visitor};
@@ -988,10 +988,12 @@ const MAX_BUSES: usize = 64;
 /// [`SEND_TRACK_CAPACITY`], so retired trees' can wait out their voices
 /// and tails)
 const MAX_SEND_BUSES: usize = 16;
-/// kira's room for send tracks, set on the manager: the live tree's, the
-/// four retired trees ringing out their tails, and one more tree's whose
-/// voices play out, each with up to [`MAX_SEND_BUSES`]
-pub(crate) const SEND_TRACK_CAPACITY: usize = 6 * MAX_SEND_BUSES;
+/// kira's room for send tracks, set on the manager, each tree's up to
+/// [`MAX_SEND_BUSES`]: the live tree's and the one a rebuild builds beside
+/// it (the old tree retires only after the new one is built), the four
+/// retired trees kept for their voices and tails, and one more: a tree let
+/// go and fading out, or one with no tail whose one-shots still play
+pub(crate) const SEND_TRACK_CAPACITY: usize = 7 * MAX_SEND_BUSES;
 /// The loudest a bus's volume, a send level or a gain layer sum is, in dB
 pub(crate) const MAX_BUS_DB: f32 = 24.0;
 /// The longest delay or compressor time, in seconds
@@ -1554,6 +1556,21 @@ impl BusTree {
       }
     }
     longest.min(MAX_TAIL)
+  }
+
+  /// Fade what the tree gives kira's main track to silence with `tween`:
+  /// `master`'s track and each send track (kira mixes send tracks' returns
+  /// beside `master`, so `master`'s fade does not reach them)
+  pub(crate) fn fade_out(&mut self, tween: Tween) {
+    for bus in &mut self.buses {
+      match &mut bus.output {
+        Output::Track(Some(track)) if bus.parent.is_none() => {
+          track.set_volume(Decibels::SILENCE, tween);
+        }
+        Output::Send(Some(send)) => send.set_volume(Decibels::SILENCE, tween),
+        _ => {}
+      }
+    }
   }
 
   /// The send tracks, taken out: a retired tree's are kept while its
@@ -3159,7 +3176,8 @@ mod tests {
       audio_step(&mut world, FRAME);
     }
     assert_eq!(masters(&world), 2, "ringing {:?} on", FRAME * 86);
-    for _ in 0..10 {
+    // Then it fades out over 10 ms, and kira's tracks go 50 ms after
+    for _ in 0..15 {
       audio_step(&mut world, FRAME);
     }
     assert_eq!(masters(&world), 1, "then it goes");
@@ -3191,14 +3209,19 @@ mod tests {
     }
   }
 
-  /// At most four retired trees wait for their tails: a fifth drops the
-  /// oldest at once
+  /// At most four retired trees wait for their tails: a fifth lets the
+  /// oldest go, which fades out and goes
   #[test]
-  fn a_fifth_retired_tree_drops_the_oldest() {
+  fn a_fifth_retired_tree_lets_the_oldest_go() {
     let reverb = r#"(buses: { "sfx": (volume: -1.0, effects: [Reverb(feedback: 0.8)]) })"#;
     let (mut world, _files) = world_with_mixer(reverb);
     for volume in 2..=6 {
       set_mixer(&mut world, &reverb.replace("-1.0", &format!("-{volume}.0")));
+      audio_step(&mut world, FRAME);
+    }
+    // The oldest fades out, kept 50 ms
+    assert_eq!(masters(&world), 6);
+    for _ in 0..4 {
       audio_step(&mut world, FRAME);
     }
     // The live tree and the four latest retired, each with its master
@@ -3206,6 +3229,148 @@ mod tests {
     let ringing = world.resource::<AudioEngine>().ringing_generations();
     let live = world.resource::<AudioEngine>().generation();
     assert_eq!(ringing, (live - 4..live).collect::<Vec<u32>>());
+  }
+
+  /// A delay that hardly falls (0.1 dB an echo), on `sfx` and on a send
+  /// bus `sfx` feeds: a one-shot as long as its delay leaves it ringing a
+  /// steady level
+  const STEADY: [&str; 2] = [
+    r#"(buses: { "sfx": (volume: -1.0, effects: [Delay(seconds: 0.1, feedback_db: -0.1, mix: 1.0)]) })"#,
+    r#"(buses: {
+      "sfx": (volume: -1.0, sends: { "sfx/steady-room": 0.0 }),
+      "sfx/steady-room": (effects: [Delay(seconds: 0.1, feedback_db: -0.1, mix: 1.0)]),
+    })"#,
+  ];
+
+  /// The largest change from one rendered frame to the next
+  fn largest_step(frames: &[kira::Frame]) -> f32 {
+    frames
+      .windows(2)
+      .map(|pair| (pair[1].left - pair[0].left).abs())
+      .fold(0.0, f32::max)
+  }
+
+  /// An audio world on `text`, a one-shot played into it and ended, its
+  /// echoes ringing: the meter, and the level they ring at
+  fn ringing_world(text: &str) -> (World, crate::core::audio::Meter, f32) {
+    let (mut world, meter) = crate::core::testing::metered_audio_world();
+    set_mixer(&mut world, text);
+    let shot = clip(&mut world, 0.1);
+    let voice = AudioView::new(&mut world).play(&shot);
+    for _ in 0..15 {
+      audio_step(&mut world, FRAME);
+    }
+    assert!(voice.is_stopped(), "{voice:?}");
+    let level = meter.last().left;
+    assert!(level > 0.05, "{text}: it rings: {level}");
+    (world, meter, level)
+  }
+
+  /// A ringing tree let go past the four kept fades out over at least
+  /// [`MIN_FADE`] before kira removes its tracks: what rings on `master`
+  /// and on its send buses (whose returns kira mixes beside `master`) never
+  /// falls to silence in one step
+  #[test]
+  fn a_ringing_tree_let_go_fades_out_before_it_goes() {
+    for text in STEADY {
+      let (mut world, meter, level) = ringing_world(text);
+      let from = meter.rendered_count();
+      // Four saves keep it ringing; the fifth lets it go
+      for volume in 2..=6 {
+        set_mixer(&mut world, &text.replace("-1.0", &format!("-{volume}.0")));
+        audio_step(&mut world, FRAME);
+      }
+      for _ in 0..10 {
+        audio_step(&mut world, FRAME);
+      }
+      assert_eq!(masters(&world), 5, "{text}: the live tree and four kept");
+      let after = meter.rendered(meter.rendered_count() - from);
+      let last = after.last().map_or(1.0, |frame| frame.left);
+      assert!(last.abs() < 1e-4, "{text}: silent once it has gone: {last}");
+      // A 10 ms fade from 0 to -60 dB falls at most 1.5% a frame
+      let step = largest_step(&after);
+      assert!(step < 0.05 * level, "{text}: a step of {step} from {level}");
+    }
+  }
+
+  /// A ringing tree whose tail is capped at 10 s fades out as it goes,
+  /// though it still rings
+  #[test]
+  fn a_ringing_tree_capped_at_its_tail_fades_out() {
+    let (mut world, meter, _) = ringing_world(STEADY[0]);
+    set_mixer(&mut world, &STEADY[0].replace("-1.0", "-2.0"));
+    for _ in 0..590 {
+      audio_step(&mut world, FRAME);
+    }
+    assert_eq!(masters(&world), 2, "ringing near its 10 s");
+    let from = meter.rendered_count();
+    for _ in 0..30 {
+      audio_step(&mut world, FRAME);
+    }
+    assert_eq!(masters(&world), 1, "gone after its 10 s");
+    let after = meter.rendered(meter.rendered_count() - from);
+    // 10 echoes a second, each 0.1 dB down: 10 dB down by then
+    let level = after.first().map_or(0.0, |frame| frame.left);
+    assert!(level > 0.02, "still ringing at 10 s: {level}");
+    let step = largest_step(&after);
+    assert!(step < 0.05 * level, "a step of {step} from {level}");
+  }
+
+  /// A mixer with the most send buses a mixer may have, each with a delay
+  /// that rings, at `volume` dB on `sfx` (each save changes it)
+  fn sixteen_sends(volume: usize) -> String {
+    let routes: String = (0..16)
+      .map(|send| format!(r#""sfx/send-room-{send}": -6.0, "#))
+      .collect();
+    let rooms: String = (0..16)
+      .map(|send| {
+        format!(r#""sfx/send-room-{send}": (effects: [Delay(seconds: 0.5, feedback_db: -6.0)]), "#)
+      })
+      .collect();
+    format!(r#"(buses: {{ "sfx": (volume: -{volume}.0, sends: {{ {routes} }}), {rooms} }})"#)
+  }
+
+  /// kira's send-track room holds every rebuild's send tracks: with the
+  /// most send buses a mixer may have, a long one-shot holding its tree
+  /// past the four kept, saves past them, and then two saves in one frame
+  /// (the tree let go before still fading out), every tree is built with
+  /// a track for each send bus. The one-shot on the tree let go stops with
+  /// the tree's fade
+  #[test]
+  fn every_rebuild_has_room_for_its_send_tracks() {
+    let room_warnings =
+      || warnings(|message| message.contains("kira has no room for the \"sfx/send-room-"));
+    let warned = room_warnings();
+    let (mut world, _files) = world_with_mixer(&sixteen_sends(1));
+    let long = clip(&mut world, 20.0);
+    let voice_over = AudioView::new(&mut world).play(&long);
+    let made = |world: &World| world.resource::<AudioEngine>().send_tracks_made();
+    assert_eq!(made(&world), (16, 16));
+    for save in 2..=9 {
+      for _ in 0..12 {
+        audio_step(&mut world, FRAME);
+      }
+      set_mixer(&mut world, &sixteen_sends(save));
+      assert_eq!(made(&world), (16, 16), "save {save}");
+    }
+    // The fifth save let the voice-over's tree go, and the voice-over
+    // with it
+    assert!(voice_over.is_stopped(), "{voice_over:?}");
+    let stops: Vec<Duration> = world
+      .resource::<AudioEngine>()
+      .log()
+      .iter()
+      .filter(|entry| entry.voice == voice_over.id() && entry.kind == AudioLogKind::Stop)
+      .map(|entry| entry.fade)
+      .collect();
+    assert_eq!(stops, [MIN_FADE]);
+    for _ in 0..12 {
+      audio_step(&mut world, FRAME);
+    }
+    set_mixer(&mut world, &sixteen_sends(10));
+    set_mixer(&mut world, &sixteen_sends(11));
+    assert_eq!(made(&world), (16, 16), "the second save in a frame");
+    assert_eq!(room_warnings(), warned, "no send bus without a track");
   }
 
   fn warnings(matching: impl Fn(&str) -> bool) -> usize {
