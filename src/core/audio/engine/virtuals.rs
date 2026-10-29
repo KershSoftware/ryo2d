@@ -1246,6 +1246,37 @@ mod tests {
     assert_eq!(sounds_on(&world, "sfx"), 1);
   }
 
+  /// A clip reloaded while its loop is virtual starts nothing for it, and
+  /// the loop comes back playing the new data, as rendered
+  #[test]
+  fn a_virtual_loop_comes_back_on_its_reloaded_clip() {
+    let (mut world, meter) = metered_audio_world();
+    let quiet = clip(&mut world, 1.0);
+    let hum = limited(&mut world, &quiet, 1, LimitRule::StopOldest);
+    let a = play(&mut world, &hum);
+    audio_step(&mut world, FRAME);
+    let b = play(&mut world, &hum);
+    assert!(a.is_virtual());
+    // The clip saved louder: 0.3 where it was 0.1
+    let louder = AudioClip::from_frames(48_000, &vec![[0.3, 0.3]; 48_000]).unwrap();
+    if let Some(clip) = world.resource_mut::<Assets<AudioClip>>().get_mut(&quiet) {
+      *clip = louder;
+    }
+    let before = log(&world).len();
+    steps(&mut world, 20);
+    let moved: Vec<AudioLogKind> = log(&world)[before..]
+      .iter()
+      .filter(|entry| entry.voice == a.id())
+      .map(|entry| entry.kind)
+      .collect();
+    assert!(moved.is_empty(), "nothing starts for it: {moved:?}");
+    b.stop(MIN_FADE);
+    steps(&mut world, 6);
+    assert!(!a.is_virtual(), "{a:?}");
+    let level = meter.last().left;
+    assert!((level - 0.3).abs() < 1e-3, "the new data: {level}");
+  }
+
   /// The ranking runs only in frames with a virtual voice
   #[test]
   fn a_frame_without_virtual_voices_ranks_nothing() {
