@@ -198,6 +198,28 @@ The round ended loops under `PreventNew` and `StopOldest` (none of the benches' 
 - **Within the spread:** the idle frame, `voices_64` (run 2's paced 3.0 µs the one apart, its back to back 1.50), `play` paced and back to back, the streamed play, and a play beside the 256.
 - **`virtual_1024`** reads 37.3 to 38.2 µs paced and 38.0 to 38.1 back to back: under the 40 µs at which the round's brief asked for the ranking's tallies to be updated incrementally after a comeback, so they are counted again after each comeback, as before. A probe build with the ranking switched off (an environment check, not committed) read 16.2 µs paced and 15.8 back to back: the ranking is about 22 µs of the frame (about 22 ns a virtual loop: its scopes found among the tallies twice, and its rank tested), the rest the 1,088 placed voices' hearing, the advance and the table's passes. A frame that brings back K loops counts the heard voices again K times; not measured.
 
+### After review D's fix round (`benches/audio.rs`, beside 66f432a2)
+
+The round made a streamed comeback's displacements wait for its resume, and made `PreventNew` and `StopOldest` count their own sound's virtual loops in a play's limits (the play path; none of the benches' limits uses them). The pending displacements are pairs of voice ids in a list beside the voice table (`displacing`), read only while it holds one.
+
+The benches ran on 2026-10-29 beside 66f432a2 (exported with `git archive`), each build in its own scratch target directory, sources touched first, binaries kept aside and checked (the base holds the export's path; they differ), `CRITERION_HOME` a scratch directory per build.
+- **Set aside:** a first pair of runs at a load near 5, falling from 22, read every paced number 3 to 10 times the record (the idle frame 5.4 µs).
+- **The round's first build was slower:** six alternated runs (base, head, head, base, base, head, each once the 1-minute load had fallen below 4; loads at the starts 1.9, 1.5, 1.8, 2.3, 1.9, 2.2) read:
+  - `virtual_256`: 7.2 µs paced in every base run and 8.4 in every head run; back to back, 6.65 to 6.70 before and 7.08 to 7.20 after.
+  - `virtual_1024`: 37.6 to 38.0 µs paced before and 41.0 to 41.2 after; back to back, 38.1 to 38.6 before and 40.5 to 40.8 after. That is over the 40 µs at which the last round's brief asked for the ranking's tallies to be updated incrementally.
+  - `voices_64` and `play_cost` read the same.
+- **The cause:** that build kept a pending displacement on each voice, an `Option<u32>` field. `retire_ended`'s every-frame pass read it for every voice, about 1.5 to 2 ns a voice, and the ranking's tally read it for every heard voice.
+- **The fix:** recounting it only while marks existed recovered about half (a probe of four runs: `virtual_256` 8.2 µs paced and 6.81 to 6.89 back to back; `virtual_1024` 39.9 to 40.3 paced and 39.2 to 39.3 back to back). Keeping the marks in the list beside the table recovered the rest (da746110). The final build's six alternated runs are below; the loads at their starts were 3.6, 1.4, 1.7, 1.3, 1.7 and 1.5.
+
+| Build (runs) | Idle audio frame, paced | 64 voices: paced; back to back | `play` paced; a definition's; back to back | Streamed `play` | `virtual_256`: paced (95th percentile); back to back; a play beside | `virtual_1024`: paced (95th percentile); back to back |
+|---|---|---|---|---|---|---|
+| before (1, 4, 5) | 0.54, 0.50, 0.50 µs | 2.0, 2.0, 2.1; 1.47, 1.51, 1.47 µs | 0.54, 0.54, 0.50; 0.54, 0.54, 0.50; 0.63, 0.65, 0.64 µs | 23.3, 23.6, 23.6 µs | 7.2, 7.2, 7.2 (14.1, 13.1, 12.5); 6.63, 6.69, 6.67; 0.75, 0.75, 0.75 µs | 38.0, 37.8, 37.8 (51.5, 50.5, 50.3); 38.81, 38.41, 38.40 µs |
+| after (2, 3, 6) | 0.50, 0.50, 0.50 µs | 2.0, 2.0, 2.0; 1.47, 1.51, 1.46 µs | 0.54, 0.54, 0.54; 0.54, 0.54, 0.54; 0.64, 0.65, 0.64 µs | 24.8, 24.1, 24.0 µs | 7.2, 7.2, 7.2 (12.3, 14.8, 12.1); 6.67, 6.66, 6.65; 0.83, 0.79, 0.83 µs | 37.7, 37.3, 37.9 (51.6, 52.2, 54.0); 38.30, 38.13, 38.37 µs |
+
+- **Within the spread:** the idle frame, `voices_64`, `play`, `virtual_256` and `virtual_1024`, paced and back to back. Every run's crowds held 64 heard and 256 or 1,024 virtual at their start and end, and a frame moved none.
+- **A play beside the 256** reads 0.79 to 0.83 µs against 0.75: one or two ticks of the 41.7 ns timer. A play's limits now ask each voice's scope and rule whether a virtual voice counts (`Room::counts`).
+- **The streamed play** reads 24.0 to 24.8 µs against 23.3 to 23.6 (the last record read 23.5 to 23.9 on both sides). The stream's start, kira's buffers and its decoder thread, is most of it; the round added a check of the play's own rule (`own_ends`). Not looked into further.
+
 ### The reload hitch
 
 **What the landing frame does.** A reloaded clip lands in the pump: the workers loaded it, and the swap costs about 7 µs. In the same frame `audio_system` switches each loop playing the clip to the new data where it is, crossfading over 10 ms.
