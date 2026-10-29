@@ -324,7 +324,8 @@ impl Voice {
   /// louder as heard at equal priority). One-shots and music are never
   /// virtual. A voice that went virtual or came back stays so for at least
   /// 250 ms, so two loops of about the same level do not swap back and
-  /// forth
+  /// forth; a loop never heard (virtual from its play) comes back as soon
+  /// as it may, over its own fade-in if that is longer than 50 ms
   pub fn is_virtual(&self) -> bool {
     self.0.virtualized.load(Ordering::Acquire)
   }

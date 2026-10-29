@@ -843,8 +843,9 @@ struct LiveVoice {
   /// kira's sound is paused, as kira was last told: it paused itself, or
   /// its bus holds it. At most one pause or resume goes to kira a frame
   kira_paused: bool,
-  /// It started held and has not sounded yet: the fade-in it plays when it
-  /// first does (its own, at least [`MIN_FADE`])
+  /// It has not sounded yet (it started held, or virtual): the fade-in it
+  /// plays when it first does (its own; at least [`MIN_FADE`] as it is let
+  /// go, at least 50 ms as it comes back from virtual)
   unheard: Option<Duration>,
   /// The fade of the pause or resume the game asked of it this frame, for
   /// kira to hear in the frame's update
@@ -4438,7 +4439,7 @@ impl EngineState {
       held,
       owner_held,
       kira_paused: starts_held,
-      unheard: (starts_held && !heard_later).then_some(request.fade_in),
+      unheard: (starts_held || heard_later).then_some(request.fade_in),
       own_fade: None,
       fade_in: if starts_held || waits || heard_later {
         None
@@ -4992,7 +4993,19 @@ impl EngineState {
       if paused != live.kira_paused {
         live.kira_paused = paused;
         let by_owner = owner_changed && own_fade.is_none();
-        if paused {
+        if live.is_virtual() {
+          // No kira sound to pause or resume: its owner's hold is logged as
+          // a heard voice's, and a voice never heard keeps its first fade
+          // for when it comes back
+          if by_owner {
+            let kind = if paused {
+              AudioLogKind::Pause
+            } else {
+              AudioLogKind::Resume
+            };
+            owner_hold = Some((kind, own));
+          }
+        } else if paused {
           live.playback.pause(own);
           live.fade_in = None;
           if by_owner {

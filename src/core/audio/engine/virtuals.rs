@@ -187,12 +187,15 @@ fn each_scope(
 
 impl LiveVoice {
   /// Whether, virtual, it may come back at `clock`: playing (not paused by
-  /// the game, nor held), in range, and virtual for [`STAY_PUT`]
+  /// the game, nor held), in range, and virtual for [`STAY_PUT`], or never
+  /// heard (the stay-put is against flapping, and one never heard has not
+  /// flapped: a loop judged out of range from a listener a frame stale, or
+  /// kept out by a limit at its play, is heard as soon as it may be)
   fn may_come_back(&self, clock: Duration) -> bool {
     self.is_virtual()
       && self.voice.state() == VoiceState::Playing
       && !self.held
-      && clock.saturating_sub(self.changed) >= STAY_PUT
+      && (self.unheard.is_some() || clock.saturating_sub(self.changed) >= STAY_PUT)
       && self.spatial.as_ref().is_none_or(|spatial| spatial.near)
   }
 
@@ -247,8 +250,8 @@ impl EngineState {
     if let Some(spatial) = &mut live.spatial {
       spatial.filter = None;
     }
+    // One never heard stays so: it comes back with its own fade-in
     live.fade_in = None;
-    live.unheard = None;
     live.generation = generation;
     live.changed = clock;
     live.voice.set_virtual(true);
@@ -258,8 +261,9 @@ impl EngineState {
 
   /// Virtual voice `index` comes back for `reason`: its kira sound starts
   /// where it has got to, at its level as heard now (the game's changes and
-  /// its place's), fading in over 50 ms, with its distance low-pass while
-  /// there is room for one. False if it could not start (kira's room taken
+  /// its place's), fading in over 50 ms (one never heard over its own
+  /// fade-in, if longer), with its distance low-pass while there is room for
+  /// one. False if it could not start (kira's room taken
   /// in a race): it stays virtual. One whose clip cannot be decoded ends
   fn realize(
     &mut self,
@@ -293,12 +297,16 @@ impl EngineState {
         Hearing::of(&spatial.settings, position, self.listener.as_ref()).cutoff
       });
     let (region, loop_region) = (live.region.clone(), live.loop_region.clone());
+    // Its first sounding takes its own fade-in, as a held start's does
+    let fade = live
+      .unheard
+      .map_or(VIRTUAL_FADE, |fade_in| fade_in.max(VIRTUAL_FADE));
     let start = Start {
       gain_db: live.heard_db(),
       pan: live.pan(),
       rate: live.rate(),
       held: false,
-      fade_in: Some(fade_from_silence(VIRTUAL_FADE)),
+      fade_in: Some(fade_from_silence(fade)),
       region: region.as_ref(),
       loop_region: loop_region.as_ref(),
       looping: true,
@@ -334,13 +342,14 @@ impl EngineState {
     if let Some(spatial) = &mut live.spatial {
       spatial.filter = filter;
     }
-    live.fade_in = FadeIn::begin(clock, VIRTUAL_FADE);
+    live.unheard = None;
+    live.fade_in = FadeIn::begin(clock, fade);
     live.generation = generation;
     live.version = version;
     live.changed = clock;
     live.voice.set_virtual(false);
     self.virtual_count = self.virtual_count.saturating_sub(1);
-    self.record_why(index, AudioLogKind::Real, VIRTUAL_FADE, reason, server);
+    self.record_why(index, AudioLogKind::Real, fade, reason, server);
     true
   }
 
@@ -775,6 +784,67 @@ mod tests {
     );
   }
 
+  /// A loop never heard comes back at once, with its own fade-in: a
+  /// campfire played as a level enters, judged from a listener whose place
+  /// is a frame stale (far away), is heard on the next update, swelling in
+  /// over its 1.5 s, as rendered. So is a loop a limit kept out at its play
+  /// once room frees a frame later
+  #[test]
+  fn a_loop_never_heard_comes_back_at_once_with_its_own_fade_in() {
+    let (mut world, meter) = metered_audio_world();
+    let listener = world
+      .spawn((AudioListener, Transform::from_xy(5000.0, 0.0)))
+      .id();
+    let dc = clip(&mut world, 2.0);
+    let swell = Duration::from_millis(1500);
+    let campfire = add(
+      &mut world,
+      Sound {
+        fade_in: swell,
+        ..placed(&dc)
+      },
+    );
+    let fire = AudioView::new(&mut world).play_at(&campfire, Vec2::ZERO);
+    assert!(fire.is_virtual(), "{fire:?}");
+    move_to(&mut world, listener, 0.0);
+    audio_step(&mut world, FRAME);
+    assert!(
+      fire.is_playing() && !fire.is_virtual(),
+      "heard at once: {fire:?}"
+    );
+    let back = entries(&world, &fire, AudioLogKind::Real);
+    assert_eq!(back.len(), 1, "{back:#?}");
+    assert_eq!(back[0].fade, swell);
+    // 100 ms into a 1.5 s swell it is still near silence (about -45 dB)
+    steps(&mut world, 5);
+    let level = meter.last().left;
+    assert!(level > 0.0 && level < 0.01 * 0.1, "swelling: {level}");
+
+    // A loop a limit kept out at its play: room frees a frame later, and it
+    // comes back then, fading in over its own fade-in (at least 50 ms)
+    let mut world = audio_world();
+    let long = clip(&mut world, 2.0);
+    let bed = add(
+      &mut world,
+      Sound {
+        limit: Some(VoiceLimit {
+          max: 1,
+          rule: LimitRule::StopQuietest,
+        }),
+        fade_in: Duration::from_millis(400),
+        ..looping(&long)
+      },
+    );
+    let heard = play(&mut world, &bed);
+    let kept = play(&mut world, &bed);
+    assert!(kept.is_virtual(), "{kept:?}");
+    heard.stop(MIN_FADE);
+    audio_step(&mut world, FRAME);
+    assert!(!kept.is_virtual(), "{kept:?}");
+    let back = entries(&world, &kept, AudioLogKind::Real);
+    assert_eq!(back[0].fade, Duration::from_millis(400));
+  }
+
   /// Hysteresis: a virtual loop takes a heard one's place only 3 dB louder
   /// (at equal priority), and a voice that went virtual or came back stays
   /// so for 250 ms however loud the other gets, so two loops of about the
@@ -963,9 +1033,11 @@ mod tests {
     assert!(scenes.is_stopped(), "{scenes:?}");
     assert_eq!(entries(&world, &scenes, AudioLogKind::Stop).len(), 1);
     assert!(!heard.is_playing());
-    assert!(persistent.is_playing() && persistent.is_virtual());
-    steps(&mut world, 20);
-    assert!(persistent.is_playing() && !persistent.is_virtual());
+    // Never heard, it comes back in the update its room frees
+    assert!(
+      persistent.is_playing() && !persistent.is_virtual(),
+      "{persistent:?}"
+    );
 
     // An emitter's: its despawn ends it
     let dc = clip(&mut world, 1.0);
