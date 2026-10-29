@@ -246,6 +246,9 @@ impl EngineState {
     });
     let mut old = std::mem::replace(&mut live.playback, place);
     old.stop(fade);
+    // Its copy fades on its tree, which it no longer marks: a rebuild
+    // during the fade keeps that tree's sends and ring for it
+    let old_generation = live.generation;
     // Its filter's track plays the old sound's fade out, then goes
     if let Some(spatial) = &mut live.spatial {
       spatial.filter = None;
@@ -257,6 +260,9 @@ impl EngineState {
     live.changed = clock;
     live.voice.set_virtual(true);
     self.virtual_count += 1;
+    self
+      .fading_copies
+      .push((old_generation, clock.saturating_add(fade)));
     self.record_why(index, AudioLogKind::Virtual, fade, reason, server);
   }
 
@@ -1499,6 +1505,80 @@ mod tests {
     assert!(!a.is_virtual(), "{a:?}");
     let level = meter.last().left;
     assert!((level - 0.3).abs() < 1e-3, "the new data: {level}");
+  }
+
+  /// A rebuild while a loop that went virtual still fades out its kira copy
+  /// on the old buses keeps what the copy needs until its fade has played:
+  /// a tree without a tail its send tracks, a ringing tree its ring
+  #[test]
+  fn a_rebuild_keeps_the_old_buses_while_a_virtual_loop_s_copy_fades() {
+    for ringing in [false, true] {
+      let mut world = audio_world();
+      let effects = if ringing {
+        vec![crate::core::audio::EffectDef::Delay {
+          seconds: 0.05,
+          feedback_db: -60.0,
+          mix: 0.5,
+        }]
+      } else {
+        Vec::new()
+      };
+      let mixer = Mixer {
+        buses: vec![
+          BusDef {
+            effects,
+            ..BusDef::new("sfx/verb")
+          },
+          BusDef {
+            sends: vec![("sfx/verb".to_string(), -6.0)],
+            ..BusDef::new("sfx/beds")
+          },
+        ],
+        ..Default::default()
+      };
+      AudioView::new(&mut world).set_mixer(mixer.clone());
+      let long = clip(&mut world, 2.0);
+      let bed = add(
+        &mut world,
+        Sound {
+          bus: "sfx/beds".to_string(),
+          limit: Some(VoiceLimit {
+            max: 1,
+            rule: LimitRule::StopQuietest,
+          }),
+          fade_out: Duration::from_millis(500),
+          ..looping(&long)
+        },
+      );
+      let a = play(&mut world, &bed);
+      audio_step(&mut world, FRAME);
+      play(&mut world, &bed);
+      assert!(a.is_virtual(), "{a:?}");
+      let old = world.resource::<AudioEngine>().generation();
+      AudioView::new(&mut world).set_mixer(mixer);
+      steps(&mut world, 10);
+      let engine = world.resource::<AudioEngine>();
+      if ringing {
+        assert!(
+          engine.ringing_generations().contains(&old),
+          "it rings while the copy fades: {:?}",
+          engine.ringing_generations()
+        );
+      } else {
+        assert_eq!(
+          engine.kira_tracks().1,
+          2,
+          "its send track is kept while the copy fades"
+        );
+      }
+      steps(&mut world, 30);
+      let engine = world.resource::<AudioEngine>();
+      if ringing {
+        assert!(!engine.ringing_generations().contains(&old));
+      } else {
+        assert_eq!(engine.kira_tracks().1, 1, "then it goes");
+      }
+    }
   }
 
   /// The ranking runs only in frames with a virtual voice

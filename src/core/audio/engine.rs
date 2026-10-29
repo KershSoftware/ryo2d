@@ -1566,6 +1566,12 @@ pub struct EngineState {
   /// A retired tree's send tracks, by its generation, held while voices on
   /// it play so their sends still reach them
   retired_sends: Vec<(u32, Vec<SendTrackHandle>)>,
+  /// The kira copies still fading out after their voices left them (a loop
+  /// gone virtual, a voice restarted elsewhere): each copy's bus tree
+  /// generation and the engine's clock its fade ends at. A retired tree
+  /// keeps its send tracks and its ring while one fades on it, as no voice
+  /// of its marks it sounding. Kept to reuse
+  fading_copies: Vec<(u32, Duration)>,
   /// The retired trees whose effects ring after their sounds, oldest
   /// first: at most [`MAX_RINGING`], and those let go fading out
   ringing: Vec<RingingTree>,
@@ -1799,6 +1805,7 @@ impl EngineState {
       mixer_pending: false,
       generation: 0,
       retired_sends: Vec::new(),
+      fading_copies: Vec::new(),
       ringing: Vec::new(),
       rate_scale: 1.0,
       game: GameTime::default(),
@@ -2871,12 +2878,12 @@ impl EngineState {
   /// it out over [`MIN_FADE`]: a tail capped at 10 s still rings.
   /// Drop each let go whose fade kira has rendered
   fn ring_out(&mut self) {
-    let (clock, live) = (self.clock, &self.voices.live);
+    let (clock, live, copies) = (self.clock, &self.voices.live, &self.fading_copies);
     self.ringing.retain_mut(|tree| {
       if let Some(gone) = tree.fading {
         return clock < gone;
       }
-      if live.iter().any(|voice| voice.generation == tree.generation) {
+      if sounds_on(live, copies, tree.generation, clock) {
         tree.quiet_since = None;
         return true;
       }
@@ -3016,6 +3023,13 @@ impl EngineState {
     live.kira_paused = held;
     let mut old = std::mem::replace(&mut live.playback, playback);
     old.stop(MIN_FADE);
+    // The old copy fades on the tree it played on (a retired one, at a
+    // rebuild's move), which the voice no longer marks
+    let old_generation = live.generation;
+    self
+      .fading_copies
+      .push((old_generation, clock.saturating_add(MIN_FADE)));
+    let live = &mut self.voices.live[index];
     // The old filter's track plays the old sound's fade out, then goes
     if let Some(spatial) = &mut live.spatial {
       spatial.filter = filter;
@@ -4990,13 +5004,17 @@ impl EngineState {
     }
     self.step_mix(real_delta);
     if !self.retired_sends.is_empty() {
-      let live = &self.voices.live;
+      let (clock, live, copies) = (self.clock, &self.voices.live, &self.fading_copies);
       self
         .retired_sends
-        .retain(|(generation, _)| live.iter().any(|voice| voice.generation == *generation));
+        .retain(|&(generation, _)| sounds_on(live, copies, generation, clock));
     }
     if !self.ringing.is_empty() {
       self.ring_out();
+    }
+    if !self.fading_copies.is_empty() {
+      let clock = self.clock;
+      self.fading_copies.retain(|&(_, ends)| ends > clock);
     }
     // The emitters discarded this frame are no longer played where they were
     if !self.discarded.is_empty() {
@@ -5867,6 +5885,20 @@ fn count_unswitched(
       why,
     }),
   }
+}
+
+/// Whether something sounds on the bus tree of `generation` at `clock`: a
+/// voice of `live`, or a kira copy in `copies` still fading out on it
+fn sounds_on(
+  live: &[LiveVoice],
+  copies: &[(u32, Duration)],
+  generation: u32,
+  clock: Duration,
+) -> bool {
+  live.iter().any(|voice| voice.generation == generation)
+    || copies
+      .iter()
+      .any(|&(on, ends)| on == generation && ends > clock)
 }
 
 /// A planned bus's gain layers: the game's volume for it, or the mixer's,
