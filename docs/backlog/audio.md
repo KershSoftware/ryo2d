@@ -25,6 +25,7 @@ Measured on 2026-10-28 on an Apple M5 Pro (18 cores, Metal, macOS 27.0.1), a sha
 | Idle frame: idle settings screen, whole step (`settings_idle`) | 187.3 µs (185.0, 187.3, 187.3) | 186.1 µs (187.1, 185.9, 186.1) | within 3%: **met**, -0.6% |
 | Idle frame: 10,000 sprites, whole step (`foundation`) | 1,023.1 µs (1,022.8, 1,024.5, 1,023.1) | 1,045.0 µs (1,037.2, 1,045.0, 1,051.5) | within 3%: **met**, +2.1% |
 | 64 voices, 32 of them spatial: `audio_system`'s main-thread time | | median 3.6 µs (runs 3.2, 3.7, 3.6); after the final fixes 4.2 µs (4.0, 4.2, 5.4) | median at most 50 µs: **met** |
+| 256 virtual loops ranked against 64 heard (`virtual_256`): `audio_system`'s main-thread time | | median 8.4 µs (runs 8.4, 8.4, 8.4) | median at most 20 µs: **met** |
 | `play` of a decoded clip | | median 0.71 µs (0.71, 0.71, 0.71); after the final fixes 0.75 µs (0.75, 0.75, 0.75); after the deferrals' second wave 0.50 µs (0.50, 0.50, 0.50) | median at most 5 µs: **met** |
 | `play` of a streamed clip (the 48 s OGG): the main thread's part | | median 23.9 µs (23.6, 23.9, 24.2) | the spec's `play` at most 5 µs: **not met, an exception** (below); guarded at 100 µs |
 | No allocation for audio on an idle frame | | 0 in 100 frames, fresh and after sounds played (`tests/audio_alloc.rs`) | **met** |
@@ -158,6 +159,25 @@ The fix round changed the frame: it plays the emitter plays systems queued for e
 
 Nothing moved beyond the runs' spread, and every guard met its target in every run.
 
+### After the features' fourth wave (`benches/audio.rs`, beside 1bb76590)
+
+The fourth wave added virtual voices: a frame with a virtual voice ranks them and moves them on, and every frame does a little more for its placed voices (whether each is near enough to come back, whether a loop has left its range) and its voice table (each voice's virtual state where voices are counted, and the virtual ones counted again as ended voices go). A new guard, `virtual_256`, holds a frame with 256 virtual loops ranked against 64 heard to 20 µs: 320 loops at 60 to 1,500 px from the listener, all in range, on a bus the mixer limits to 64 voices, so the 64 nearest are heard and 256 virtual, each weighed each frame and none the 3 dB louder that would move it (the guard checks that a frame moves none, and that 64 and 256 hold from start to end). Beside it the guard prints the median `play` of a decoded clip on `sfx` with the 256 virtual loops in the voice table, whose limit checks look at every voice.
+
+`voices_64` and `play_cost` (with `play_cost_streamed`) ran on 2026-10-29 beside the branch before the wave (1bb76590, exported with `git archive`), each built into its own scratch target directory outside the workspace's, each tree's sources touched before its build, each binary kept aside and checked to come from its tree (the base binary holds the export's path and has no `virtual_256`; they differ), with `CRITERION_HOME` set to a scratch directory per build. They ran alternated base, head, head, base, base, head, the first once the 1-minute load had fallen below 5; the head's runs also ran `virtual_256`. The loads at the runs' starts were 4.8, 2.1, 1.5, 1.5, 1.5 and 1.6.
+
+| Build (runs) | Idle audio frame, paced | 64 voices, paced | `play` paced; a definition's | Back to back: `voices_64`; `play_cost` | Streamed `play` |
+|---|---|---|---|---|---|
+| before (1, 4, 5) | 0.50, 0.42, 0.46 µs | 1.8, 1.8, 1.8 µs | 0.50, 0.46, 0.50; 0.50, 0.50, 0.50 µs | 1.33, 1.32, 1.33; 0.64, 0.64, 0.63 µs | 25.0, 23.6, 22.8 µs |
+| after (2, 3, 6) | 0.50, 0.50, 0.50 µs | 2.0, 1.9, 2.0 µs | 0.50, 0.50, 0.46; 0.50, 0.50, 0.54 µs | 1.46, 1.42, 1.44; 0.64, 0.63, 0.63 µs | 24.7, 23.2, 24.0 µs |
+
+| `virtual_256` (head runs 2, 3, 6) | Paced: median, 95th percentile, max | Back to back | A play beside them, paced |
+|---|---|---|---|
+| | 8.4, 8.4, 8.4 µs; 10.7, 10.8, 11.1 µs; 29.8, 28.6, 31.2 µs | 7.11, 7.15, 7.09 µs | 0.67, 0.75, 0.75 µs |
+
+- **What moved:** `voices_64` back to back, by about 0.11 µs (1.32 to 1.33 µs before, 1.42 to 1.46 µs after, +8%), in every run, and paced by about as much (1.8 µs before, 1.9 to 2.0 after). With no voice virtual the frame ranks nothing and moves nothing on; what is left is per voice: for each of the 32 placed voices whether it is near enough to come back (one more distance test) and whether its loop has left its range, and for each of the 64 a virtual check where voices are counted and as ended voices go. Far inside 50 µs.
+- **Within the runs' spread:** the paced idle frame, `play` paced (0.46 to 0.50 µs on both builds; a definition's 0.50 to 0.54) and back to back (0.63 to 0.64 µs on both), and the streamed play.
+- **`virtual_256`** sits at 8.4 µs paced in every run (back to back 7.1 µs), well inside its 20 µs; at a load of 11 (the first run, before this record's) it read 8.5 µs paced and 6.96 µs back to back. A play beside the 256 virtual loops read 0.67 to 0.75 µs: the limit checks' scan of 320 more voices costs about a quarter of a microsecond.
+
 ### The reload hitch
 
 **What the landing frame does.** A reloaded clip lands in the pump: the workers loaded it, and the swap costs about 7 µs. In the same frame `audio_system` switches each loop playing the clip to the new data where it is, crossfading over 10 ms.
@@ -205,5 +225,6 @@ The default output device here is the MacBook Pro's speakers, through CoreAudio:
 
 ### The idle frame's allocations (`tests/audio_alloc.rs`)
 
-A counting global allocator counts the test thread's allocations: the frame runs there, and so does the mock's rendering. It reads 0 over 100 idle frames of a fresh engine with a mixer set (as every engine sets the game's, which each frame looks up and checks for a change), and 0 over 100 idle frames after a one-shot, a spatial one-shot and a loop stopped with a fade have played and ended.
+A counting global allocator counts the test thread's allocations: the frame runs there, and so does the mock's rendering. It reads 0 over 100 idle frames of a fresh engine with a mixer set (as every engine sets the game's, which each frame looks up and checks for a change), 0 over 100 idle frames after a one-shot, a spatial one-shot and a loop stopped with a fade have played and ended, and 0 over 100 frames with four loops virtual (three a limit keeps out, one out of range), ranked and moved on each frame.
+- The ranking's lists are taken out of the engine while it runs; what stands in for them must be empty lists (`Vec::new` allocates nothing): with lists made with room, 100 frames allocated 400 times.
 - An audio world's frame must clear the change trackers, as the engine's `Last` does, and `testing::audio_step` does: `audio_system` takes the engine out of the world each frame, and bevy writes a removal message for it into a buffer that only clearing reuses. Without it, 100 frames allocate 3 times.
