@@ -147,6 +147,17 @@ The third wave changed the play path and the frame: a play can start as a voice 
 - **Within the runs' spread:** the paced idle frame and 64 voices, `play` paced (0.50 µs on both builds; a definition's 0.50 to 0.54 µs on both) and back to back (0.63 to 0.64 µs on both), and the streamed play (the base's first run, at 19.0 µs, the one apart). Every guard met its target in every run.
 - At this load the paced medians are back at the first wave's (the idle frame 0.42 to 0.54 µs, the mock's rendering 6.4 to 6.6 µs), and the idle frame reads 0.42 to 0.54 µs against 1.00 to 1.08 µs in the first wave's runs, consistent with the second wave's box of the engine state (0.36 µs a frame in its tight loop).
 
+### After the fix round (`benches/audio.rs`, beside f72595b4)
+
+The fix round changed the frame: it plays the emitter plays systems queued for entities not yet emitters (`play_awaited`, one check of an empty list in these benches), a stream that fails is stopped with a fade worked out from its rate, and ringing trees fade out before they go. `play_from` did not change. `voices_64` and `play_cost` (with `play_cost_streamed`) ran on 2026-10-28 beside the branch before the round (f72595b4, exported with `git archive`), each built into its own scratch target directory outside the workspace's (one shared target directory would have kept the base's build for both: cargo hashes a path package relative to its workspace, so the two trees' units share names, and the fingerprint checks the files the first build read), each binary kept aside and checked to come from its tree (the base binary holds the export's path; they differ). They ran alternated base, head, head, base, base, head, then one more base, the first once the 1-minute load had fallen below 5; the fourth run's log was written over by the fifth's under the same name (a fault in the run script), so the extra base run replaces it. The loads at the kept runs' starts were 4.4, 2.6, 2.5, 1.6, 1.5 and 1.4.
+
+| Build (runs) | Idle audio frame, paced | 64 voices, paced | `play` paced; a definition's | Back to back: `voices_64`; `play_cost` | Streamed `play` |
+|---|---|---|---|---|---|
+| before (1, 5, 7) | 0.54, 0.42, 0.50 µs | 1.9, 1.7, 1.8 µs | 0.50, 0.50, 0.46; 0.50, 0.54, 0.50 µs | 1.37, 1.34, 1.37; 0.64, 0.64, 0.63 µs | 23.6, 24.9, 23.7 µs |
+| after (2, 3, 6) | 0.54, 0.50, 0.46 µs | 1.7, 2.0, 1.7 µs | 0.50, 0.50, 0.50; 0.50, 0.50, 0.50 µs | 1.36, 1.32, 1.33; 0.63, 0.63, 0.63 µs | 25.1, 23.7, 24.4 µs |
+
+Nothing moved beyond the runs' spread, and every guard met its target in every run.
+
 ### The reload hitch
 
 **What the landing frame does.** A reloaded clip lands in the pump: the workers loaded it, and the swap costs about 7 µs. In the same frame `audio_system` switches each loop playing the clip to the new data where it is, crossfading over 10 ms.
