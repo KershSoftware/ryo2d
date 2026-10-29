@@ -203,13 +203,22 @@ pub struct VoiceLimit {
 ///
 /// `PreventNew` and `StopOldest` end loops as they end one-shots: a loop
 /// `PreventNew` refuses reports stopped, and one `StopOldest` stops does not
-/// come back (one bed at a time on a bus; one alarm at a time). Under them a
-/// sound's virtual loops count against its limit, as heard ones do, and the
-/// limit is asked before the loop's distance and kira's room: `PreventNew`
-/// refuses a play while its limit is full of loops, virtual or heard, and
-/// `StopOldest` ends the oldest of them (a virtual one simply stops). A loop
-/// that went virtual another way (its bus's cap, its distance) comes back
-/// under them only when there is room.
+/// come back. Under them a sound's virtual loops count against its limit, as
+/// heard ones do, and a loop meets its own sound's limit before its distance
+/// and kira's room (the bus limits and the cap only once it would be heard;
+/// one that goes virtual cuts nothing else):
+/// - `StopOldest` ends the oldest of its sound's loops, virtual or heard (a
+///   virtual one simply stops): the newest wins, for one bed, or one alarm,
+///   at a time where the new one should be heard.
+/// - `PreventNew` refuses a play while its limit is full of loops, virtual
+///   or heard: a `PreventNew` loop that is virtual (out of range, say) still
+///   holds its limit, silent, and new plays of its sound are refused until
+///   it ends. Stop it, or use `StopOldest`, for the new one to be heard.
+///
+/// Loops under these two are outside the loudness ranking both ways: one
+/// that went virtual another way (its distance, kira's room, the cap) comes
+/// back only when there is room, and no returning loop takes the place of
+/// one through a limit (only the cap's order still ranks them).
 ///
 /// The rules that rank (`StopQuietest`, `StopFarthest`, `StopLowestPriority`)
 /// make a loop they stop or refuse virtual instead: it keeps its place

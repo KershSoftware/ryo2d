@@ -1126,9 +1126,11 @@ enum Limits {
 /// (`StopQuietest`, `StopFarthest`, `StopLowestPriority`) and the cap's
 /// order (`None`: the cap, or a bus limit for a sound with no limit) make a
 /// loop virtual, to come back when it ranks again. Under a rule that ends
-/// loops a sound's virtual loops count against its own limit, and a
-/// returning loop takes no voice's place. A loop another sound's play cuts
-/// through a bus limit goes by its own sound's rule
+/// loops a sound's virtual loops count against its own limit, and its loops
+/// are outside the ranking both ways: a returning one takes no voice's
+/// place, and none gives up its place to one through a limit (only the
+/// cap's order ranks it). A loop another sound's play cuts through a bus
+/// limit goes by its own sound's rule
 fn ends_loops(rule: Option<LimitRule>) -> bool {
   matches!(rule, Some(LimitRule::PreventNew | LimitRule::StopOldest))
 }
