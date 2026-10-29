@@ -1844,7 +1844,18 @@ mod tests {
     first.stop(MIN_FADE);
     steps(&mut world, 30);
     assert!(second.is_stopped());
-    assert!(entries(&world, &second, AudioLogKind::Real).is_empty());
+    // None was kept to come back: every alarm entry but the refusal is the
+    // first's
+    let name = entries(&world, &first, AudioLogKind::Start)[0]
+      .sound
+      .clone();
+    let others: Vec<AudioLogEntry> = log(&world)
+      .into_iter()
+      .filter(|entry| {
+        entry.sound == name && entry.voice != first.id() && entry.kind != AudioLogKind::Refused
+      })
+      .collect();
+    assert!(others.is_empty(), "{others:?}");
   }
 
   /// Under `PreventNew` a sound's virtual loops count against its limit: a
