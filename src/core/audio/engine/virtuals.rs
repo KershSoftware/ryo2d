@@ -944,9 +944,15 @@ mod tests {
     let mut engine = world.resource_mut::<AudioEngine>();
     engine.delay_stream_starts(Duration::from_millis(40));
     engine.fail_stream_reads_at(0);
-    for _ in 0..80 {
+    // Until it comes back, its stream fails and it stops, however long its
+    // decoder takes
+    for _ in 0..300 {
       streamed_frame(&mut world, FRAME);
+      if comeback.is_stopped() {
+        break;
+      }
     }
+    streamed_frame(&mut world, FRAME);
     assert!(comeback.is_stopped(), "its stream failed: {comeback:?}");
     assert!(heard.is_playing() && !heard.is_virtual(), "{heard:?}");
     let level = meter.last().left;
@@ -1033,17 +1039,46 @@ mod tests {
   fn a_streamed_comeback_paused_while_it_waits_stays_silent() {
     let (mut world, meter, comeback, _) = waiting_comeback(Duration::from_millis(80));
     comeback.pause();
-    for _ in 0..60 {
+    let paused = meter.rendered_count();
+    // Until its decoder has frames, however long it takes, and on a little
+    let has_frames = |world: &World| {
+      let engine = world.resource::<AudioEngine>();
+      engine
+        .voices
+        .index_of(comeback.id())
+        .is_some_and(|at| engine.voices.live[at].playback.has_frames())
+    };
+    for _ in 0..300 {
+      streamed_frame(&mut world, FRAME);
+      if has_frames(&world) {
+        break;
+      }
+    }
+    assert!(has_frames(&world), "its decoder gave frames");
+    for _ in 0..10 {
       streamed_frame(&mut world, FRAME);
     }
-    let quiet = meter.rendered(48_000);
+    let quiet = meter.rendered(meter.rendered_count() - paused);
     assert!(
       quiet.iter().all(|frame| frame.left == 0.0),
       "silent while paused"
     );
     let from = meter.rendered_count();
     comeback.resume();
-    for _ in 0..10 {
+    // Until it sounds, then its fade
+    let sounding = |meter: &crate::core::audio::Meter| {
+      meter
+        .rendered(meter.rendered_count() - from)
+        .iter()
+        .any(|frame| frame.left.abs() > 1e-6)
+    };
+    for _ in 0..300 {
+      streamed_frame(&mut world, FRAME);
+      if sounding(&meter) {
+        break;
+      }
+    }
+    for _ in 0..6 {
       streamed_frame(&mut world, FRAME);
     }
     let heard = meter.rendered(meter.rendered_count() - from);
