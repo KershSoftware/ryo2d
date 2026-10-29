@@ -2,7 +2,72 @@
 
 Small issues found while building each sub-project and left for later: deferred review findings, known limits and pre-existing bugs seen along the way. Each line names where it came from. Remove a line when it is fixed.
 
-Items from 4f to 5a were copied from their execution records. Items from earlier sub-projects come from notes kept at the time, and some may have been fixed since: check before working on one.
+Items from 4f to 5b were copied from their execution records. Items from earlier sub-projects come from notes kept at the time, and some may have been fixed since: check before working on one.
+
+## Audio (5b)
+
+- Owner decisions (2026-10-24 to 2026-10-29):
+  - Virtual voices are for loops only. A loop goes virtual, keeping its place silently, when it is out of range, cut by a ranking rule (`StopQuietest`, `StopFarthest`, `StopLowestPriority`) or cut by the bus cap.
+  - Settings saved before 5b are converted once to the new volume curve (v_new = √v_old, same dB), with a `format_version` in `system.json`. Files written while the branch was being hand-tested are converted too.
+- Rulings the owner may revisit:
+  - **I1:** `PreventNew` and `StopOldest` end loops as before: refused or stopped, never virtual. This keeps patterns like "one bed at a time" and "keep one alarm" working, and departs partly from the approved "a loop cut by a limit keeps its place". Making those two rules virtualize loops too is a single mapping (`ends_loops` in `engine.rs`).
+  - A bus `limit` on sounds that have no limit of their own ranks like the cap, so their loops go virtual. "One bed at a time" therefore needs the beds to carry `StopOldest`.
+  - Under `PreventNew` or `StopOldest`, a returning loop takes only free room, never another voice's place.
+  - When a limit cuts a loop, the loop's own sound's rule decides whether it ends or goes virtual, not the rule of the play that cut it. A footstep with a default `StopOldest` limit therefore sends the fire loop on its bus virtual instead of ending it.
+  - Under `PreventNew` and `StopOldest`, a sound's virtual loops count against its own limit; under the ranking rules they count against nothing.
+  - **P11:** a scene's exit stops its loops with their fade and lets its one-shots finish. A long stream played as a one-shot outlives its scene until it ends.
+  - A play from a system through `Audio` is deferred to the system's sync point, so a refusal shows one sync point later.
+  - A streamed `play` costs about 24 µs against the spec's 5 µs (guarded at 100 µs). The extra time is the decoder's lazy open (minor 10, accepted as an exception).
+- Limits:
+  - **Virtual voices.**
+    - Under `PreventNew` or `StopOldest`, a sound's virtual loops count against its own limit. So a `PreventNew` loop that is out of range refuses a new play of that sound elsewhere; `StopOldest` is the idiom for "the newest wins".
+    - A streamed comeback waits paused for its decoder, so it lands a few ms late (a frame or two on the mock).
+    - Comebacks bypass `per_frame`.
+    - A louder returning loop can still displace a one-shot under `PreventNew` or `StopOldest`. Wave 4's design displaces one-shots of any rule, and the "outside the ranking" ruling names only loops.
+    - A stale displacement mark can displace a victim that came back while its comeback waited paused. `virtual_count` is one over until the next recount.
+    - A clip reloaded while a loop is virtual uses the old clip's length for that loop's place until it comes back.
+  - **Reloads and rebuilds.**
+    - A loop moved by a reload or rebuild skips the target bus's limits and the 96-voice cap. It is held only to kira's room.
+    - Reloading a clip that very many loops on one bus play can fill kira's 128-sound track. The refused loops play on the old data, with one warning.
+    - A reload's switch or a rebuild's move of a playing stream steps in once its decoder starts (dev-time). Closing the gap means keeping the old copy playing until the new stream has frames.
+    - A failed music switch during a rebuild whose definition changed tries no plain restart. The voice stays on the retired tree, with a warning, until a retry.
+  - **Mixer tails.**
+    - Send room holds only for rebuilds about 50 ms apart. Three rebuilds inside 50 ms, with four trees ringing, can leave a send bus without a track (warned).
+    - A retired tree is dropped 50 ms after its fade starts. That covers device callback periods under 50 ms; a longer one could cut the fade.
+    - Ringing trees keep the route volumes they had when retired; sliders don't reach them (documented, B12).
+    - A loop left on an older retired tree logs its Stop under the just-retired tree's bus name. The two differ only if the mixer renamed that bus.
+    - A 10 s delay tail moves about 3.8 MB per chunk while it rings.
+  - **Streams.**
+    - The failure-fade cap assumes kira's decoder had a full 16,384 frames ahead. A stream that fails just after a partway start, or just after a loop's wrap, can still be cut.
+  - **Emitters.**
+    - An emitter belongs to the scene that inserted its `AudioEmitter`, even when a pool later hands the entity out in another scene.
+    - A play-on-spawn emitter whose definition failed is not restarted when its file is fixed. It plays on its next spawn or enable.
+    - The `Disabled` observer's flush follows the ECS's observer order (documented, B5).
+  - **Settings.**
+    - `save_system` compares a missing key against the engine's defaults, so a game's first save writes keys equal to the game's own defaults (for example `master_volume: 0.89`), pinning them in the player's file.
+    - `system.json` is written non-atomically (`File::create`, then write), so a crash mid-write loses the player's settings (pre-existing).
+  - **Devices.**
+    - kira restarts a changed device with the same fixed buffer size and unwraps the restart, which can silence the session (Task 5 M4, kira's; filing upstream is the owner's call).
+- Pre-existing, seen during 5b:
+  - leap-king's quit dialog is not a pushed scene, so scene holds don't apply under it. Nothing plays there today.
+- Speed:
+  - `virtual_1024` takes 37-38 µs, of which the ranking is about 22 µs. A frame that brings back K loops recounts the heard voices K times (not measured). Grouping candidates by scope, or keeping incremental tallies, would cut this.
+  - A play's limit check scans virtual voices too: 0.46-0.50 µs rises to 0.67-0.75 µs beside 256 virtual (target 5 µs).
+  - `voices_64` back to back rose about 8% over 5b's later waves, from the engine state's layout and per-voice range checks. It is far inside its 50 µs target.
+  - A streamed `play` read 0.4-1.2 µs slower after review D's fix round (24.0-24.8 µs against 23.3-23.6; guard 100 µs).
+- Tests:
+  - The streamed crossfade test (`a_streamed_comeback_crossfades_with_the_loop_it_displaces`) waits on kira's real decoder thread, with an 80 ms delay and up to about 600 ms of waiting. A heavily loaded CI could still flake.
+  - A streamed-to-streamed reload while a comeback waits is untested. The frames-before-failure order in `resume_started` relies on the decoder's store order, and its test pins the outcome, not the race.
+  - The reloaded waiting-comeback test was not shown to catch a regression by mutation.
+  - The music arm of the code-change warn-once guard has no test of its own.
+  - A Task 4 test counts warnings in the process-global dev log; it should match on unique text.
+  - Check whether a zero-length streamed file still gets sample rate 0 silently (`clip.rs` now rejects rate 0 for decoded clips).
+- Demo:
+  - The Virtual voices page's six calls are dealt out in play order, so the six birds heard often repeat a call. Making neighbouring birds always sing different calls would need the page to order its plays by a colouring of the field.
+- Closed with no change:
+  - A refusal of a clip known to be undecodable stays quiet in the warning log.
+  - `VoicePick` holds the gain and pitch as heard (clamped).
+  - The demo's tests import the doc-hidden `AudioLogKind`.
 
 ## Asset registry (5a)
 
@@ -226,3 +291,5 @@ Items from 4f to 5a were copied from their execution records. Items from earlier
 ## Engine-wide
 
 - Scene systems run during transitions; nested scroll views (the outer one takes the wheel); the mouse wheel is read in every fixed step of a frame; the prelude glob also exposes the `propagate`, `interpolate` and `kernel` module names.
+- Three glam versions are built: the engine's 0.31, parry2d's 0.33 (through glamx) and kira's 0.34 (0.30 under kira 0.11 before 5b). Moving the engine to kira's glam would drop one.
+- The skills' code blocks are not compiled in CI, so a renamed API can leave a stale example (seen during 5b).
