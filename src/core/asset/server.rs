@@ -521,6 +521,16 @@ impl AssetServer {
     }
   }
 
+  /// Which load of its file the asset's value is from: a number the server
+  /// gives each load and reload of a file, so it moves when the file
+  /// loads again and not when code changes the value (`Assets::get_mut`);
+  /// `None` for an asset not loaded from a file
+  pub(crate) fn load_job(&self, id: UntypedAssetId) -> Option<u64> {
+    let table = self.inner.table();
+    let info = table.infos.get(&id)?;
+    matches!(info.key, Key::Path(..)).then_some(info.job)
+  }
+
   /// How far a group of assets has loaded: its handles (`&handles`,
   /// `[&a, &b]`) or ids, or untyped ids for a group across types. An id
   /// neither loaded nor loading (freed, or never asked for) is not counted

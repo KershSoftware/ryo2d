@@ -1398,6 +1398,12 @@ pub struct EngineState {
   /// Definitions that did not load, warned about once (by the registry,
   /// and by a play of one): forgotten once the file loads afresh
   failed_sounds: FastSet<AssetId<Sound>>,
+  /// The load of its file each definition and music loaded from one was
+  /// last seen at (`AssetServer::load_job`, at its `Added` or `Modified`):
+  /// a `Modified` at the same load is a change made in code, which forgets
+  /// none of the warnings given once about it, as only its file changing
+  /// may fix what they were about (`file_reloaded`)
+  file_loads: FastMap<UntypedAssetId, u64>,
   /// Bus names warned about once (a bus there is not)
   warned_buses: FastSet<String>,
   /// The listener as last found: none (every voice is heard as if at it)
@@ -1670,6 +1676,7 @@ impl EngineState {
       sounds: FastMap::default(),
       warned_sounds: FastSet::default(),
       failed_sounds: FastSet::default(),
+      file_loads: FastMap::default(),
       warned_buses: FastSet::default(),
       listener: None,
       listener_query: None,
@@ -2937,12 +2944,15 @@ impl EngineState {
   /// definition retunes its playing loops by the change in its volume and
   /// pitch, and moves them to its new bus (the rest of it is for new
   /// plays). A reload that failed (`ReloadFailed`) kept the last good
-  /// value, so nothing changes. An asset whose file changed (`Modified`,
-  /// or `Added` as it loads afresh after it failed) is no longer known to
-  /// have failed: its failed decode and the warnings given once about it
-  /// go, so a fixed file plays and is warned about again should it fail
-  /// again. An asset removed takes with it all the engine remembered of
-  /// it: a definition's recent picks and cooldown too
+  /// value, so nothing changes. An asset whose file changed (`Modified` as
+  /// its file loads again, or `Added` as it loads afresh after it failed)
+  /// is no longer known to have failed: its failed decode and the warnings
+  /// given once about it go, so a fixed file plays and is warned about
+  /// again should it fail again. A change made in code (`Assets::get_mut`,
+  /// `Modified` with no new load of its file: [`file_reloaded`]) forgets
+  /// none of them, so a definition ramped in code each frame is warned
+  /// about once. An asset removed takes with it all the engine remembered
+  /// of it: a definition's recent picks and cooldown too
   fn follow_reloads(&mut self, world: &World, server: Option<&AssetServer>) {
     let mut music_changed = false;
     if let Some(events) = world.get_resource::<Messages<AssetEvent<Music>>>() {
@@ -2953,10 +2963,15 @@ impl EngineState {
           // which may have found its clip failed)
           AssetEvent::Added { id } if from_file(server, *id) => {
             self.music.warned.remove(id);
+            file_reloaded(&mut self.file_loads, server, id.untyped());
           }
-          // Its file changed: what was warned about it may be fixed
+          // Its file changed: what was warned about it may be fixed. A
+          // change made in code fixes nothing, and the track switches
+          // either way
           AssetEvent::Modified { id } => {
-            self.music.forget(*id);
+            if file_reloaded(&mut self.file_loads, server, id.untyped()) {
+              self.music.forget(*id);
+            }
             music_changed |= self
               .music
               .live()
@@ -2965,6 +2980,7 @@ impl EngineState {
           AssetEvent::Removed { id } => {
             self.music.forget(*id);
             self.warned_unswitched.remove(&id.untyped());
+            self.file_loads.remove(&id.untyped());
           }
           _ => {}
         }
@@ -2997,12 +3013,17 @@ impl EngineState {
           // Loaded afresh from its file after it failed: no longer failed
           AssetEvent::Added { id } => {
             self.failed_sounds.remove(id);
+            file_reloaded(&mut self.file_loads, server, id.untyped());
           }
-          // Its file changed: what was warned about it may be fixed
+          // Its file changed: what was warned about it may be fixed. A
+          // change made in code (`get_mut`, a ramp each frame, say) fixes
+          // nothing, and its loops take it either way
           AssetEvent::Modified { id } => {
-            self.failed_sounds.remove(id);
-            self.warned_sounds.remove(id);
-            self.warned_flat.remove(&id.untyped());
+            if file_reloaded(&mut self.file_loads, server, id.untyped()) {
+              self.failed_sounds.remove(id);
+              self.warned_sounds.remove(id);
+              self.warned_flat.remove(&id.untyped());
+            }
             sounds.push(*id);
           }
           AssetEvent::Removed { id } => {
@@ -3012,6 +3033,7 @@ impl EngineState {
             self.warned_flat.remove(&id.untyped());
             self.warned_loading.remove(&id.untyped());
             self.warned_unswitched.remove(&id.untyped());
+            self.file_loads.remove(&id.untyped());
           }
           _ => {}
         }
@@ -5840,6 +5862,22 @@ fn region((start, end): (usize, usize)) -> Region {
     start: PlaybackPosition::Samples(start),
     end: EndPosition::Custom(PlaybackPosition::Samples(end)),
   }
+}
+
+/// Whether `id`'s file loaded again since `loads` last saw it (at its
+/// `Added`, or a `Modified` of it), noting the load it is at: a `Modified`
+/// of an asset made in code, or one changed in code (`Assets::get_mut`), is
+/// not. One whose `Added` was not seen counts as reloaded at its first
+/// `Modified`
+fn file_reloaded(
+  loads: &mut FastMap<UntypedAssetId, u64>,
+  server: Option<&AssetServer>,
+  id: UntypedAssetId,
+) -> bool {
+  let Some(load) = server.and_then(|server| server.load_job(id)) else {
+    return false;
+  };
+  loads.insert(id, load) != Some(load)
 }
 
 /// Whether `id` was loaded from a file, so its `Added` means it loaded

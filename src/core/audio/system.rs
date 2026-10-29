@@ -1503,6 +1503,64 @@ mod tests {
     assert_eq!(named("rebuilt buses"), 0);
   }
 
+  /// A definition changed in code every frame (`Assets::get_mut`, ramping
+  /// its volume) is not its file changing: played at a place without
+  /// spatial settings each frame, it is warned about once, loaded from a
+  /// file or made in code. Its file saved warns again
+  #[test]
+  fn a_definition_changed_in_code_every_frame_warns_once() {
+    let (mut world, files) = world_over(&[
+      ("sfx/ramped-in-code.wav", &wav_of(0.5, 3_000)),
+      (
+        "sfx/ramped-in-code.sound.ron",
+        br#"(clips: [(path: "sfx/ramped-in-code.wav")])"#,
+      ),
+    ]);
+    let loaded = load::<Sound>(&mut world, "sfx/ramped-in-code.sound.ron");
+    let made = {
+      let clip = clip(&mut world, 0.5);
+      world.resource_mut::<Assets<Sound>>().add(Sound {
+        clips: vec![SoundClip::new(clip)],
+        ..Default::default()
+      })
+    };
+    let flat = || {
+      warnings(|message| {
+        message.starts_with("sfx/ramped-in-code.sound.ron:")
+          && message.contains("no spatial settings")
+      })
+    };
+    let at = crate::core::ecs::Vec2::new(10.0, 0.0);
+    let mut remembered = Vec::new();
+    for frame in 0..5 {
+      for sound in [&loaded, &made] {
+        if let Some(sound) = world.resource_mut::<Assets<Sound>>().get_mut(sound) {
+          sound.volume_db = -(frame as f32);
+        }
+      }
+      audio_step(&mut world, FRAME);
+      AudioView::new(&mut world).play_at(&loaded, at);
+      AudioView::new(&mut world).play_at(&made, at);
+      remembered.push(world.resource::<AudioEngine>().remembered());
+    }
+    assert_eq!(flat(), 1, "warned once");
+    // Each definition's picks and its warning, kept through the changes
+    assert_eq!(remembered, [4; 5]);
+    let saved = save::<Sound>(
+      &mut world,
+      &files,
+      "sfx/ramped-in-code.sound.ron",
+      r#"(clips: [(path: "sfx/ramped-in-code.wav")], volume: -3.0)"#,
+    );
+    assert!(
+      matches!(saved[..], [AssetEvent::Modified { .. }]),
+      "{saved:?}"
+    );
+    audio_step(&mut world, FRAME);
+    AudioView::new(&mut world).play_at(&loaded, at);
+    assert_eq!(flat(), 2, "its file saved: warned again");
+  }
+
   /// What the engine remembers about an asset that failed (a definition or
   /// a music that did not load, a clip whose stream failed) is forgotten
   /// when its file changes: fixed, it loads afresh (`Added`) or reloads
