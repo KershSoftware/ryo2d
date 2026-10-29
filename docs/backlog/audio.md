@@ -220,6 +220,19 @@ The benches ran on 2026-10-29 beside 66f432a2 (exported with `git archive`), eac
 - **A play beside the 256** reads 0.79 to 0.83 µs against 0.75: one or two ticks of the 41.7 ns timer. A play's limits now ask each voice's scope and rule whether a virtual voice counts (`Room::counts`).
 - **The streamed play** reads 24.0 to 24.8 µs against 23.3 to 23.6 (the last record read 23.5 to 23.9 on both sides). The stream's start, kira's buffers and its decoder thread, is most of it; the round added a check of the play's own rule (`own_ends`). Not looked into further.
 
+### After review E's fix round (`benches/audio.rs`, beside e26b61b1)
+
+The round changed the ranking's tally: in a limit's scope, a heard loop whose own rule is `PreventNew` or `StopOldest` is not movable, a test of each heard voice's loop flag and rule. The rest of the round is in the play path (a loop under those rules meets only its own limit before its range, a refusal clears its planned victims) or runs only while a streamed comeback waits. A short run, as the brief asked: `virtual_256` and `virtual_1024` on 2026-10-29, alternated base, head, head, base. The method was as before: separate scratch targets, binaries checked, `CRITERION_HOME` per build. The owner's release demo was running, and the loads at the starts were 3.9, 3.9, 3.6 and 4.0.
+
+| Build (runs) | `virtual_256`: paced (95th percentile); back to back; a play beside | `virtual_1024`: paced (95th percentile); back to back |
+|---|---|---|
+| before (1, 4) | 8.1, 8.4 (18.1, 18.2); 6.69, 6.76; 0.83, 0.83 µs | 39.3, 40.5 (65.1, 65.0); 38.60, 38.58 µs |
+| after (2, 3) | 8.0, 8.3 (17.0, 21.3); 6.74, 6.80; 0.75, 0.79 µs | 39.1, 39.5 (62.7, 63.7); 38.82, 39.09 µs |
+
+- **Within the spread:** both paced. Back to back, `virtual_1024` reads 0.2 to 0.5 µs (about 1%) higher after, inside the 0.4 µs its base runs spread over in the last round; `virtual_256` reads 0.05 µs higher.
+- **Guards:** every run met the `virtual_256` guard. Each crowd held 64 heard and 256 or 1,024 virtual at its start and end, and a frame moved none.
+- **The load:** the paced numbers read about 1 µs above the last round's (7.2 and 37.8 µs at loads near 1.5) on both builds.
+
 ### The reload hitch
 
 **What the landing frame does.** A reloaded clip lands in the pump: the workers loaded it, and the swap costs about 7 µs. In the same frame `audio_system` switches each loop playing the clip to the new data where it is, crossfading over 10 ms.
