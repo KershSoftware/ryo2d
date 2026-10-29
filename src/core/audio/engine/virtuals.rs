@@ -87,8 +87,15 @@ struct Tally {
 
 impl Ranking {
   /// Count the real voices of `live` in each tally's scope, and find each
-  /// one's weakest that may be moved at `clock`
-  fn count(&mut self, live: &[LiveVoice], buses: &BusTree, clock: Duration) {
+  /// one's weakest that may be moved at `clock`, none of those `displacing`
+  /// marks
+  fn count(
+    &mut self,
+    live: &[LiveVoice],
+    buses: &BusTree,
+    clock: Duration,
+    displacing: &[(u32, u32)],
+  ) {
     for tally in &mut self.tallies {
       tally.count = 0;
       tally.weakest = None;
@@ -106,8 +113,11 @@ impl Ranking {
       // One already giving up its place to a streamed comeback is not
       // taken twice
       let movable = voice.music.is_none()
-        && voice.displaced_by.is_none()
-        && clock.saturating_sub(voice.changed) >= STAY_PUT;
+        && clock.saturating_sub(voice.changed) >= STAY_PUT
+        && (displacing.is_empty()
+          || !displacing
+            .iter()
+            .any(|&(victim, _)| victim == voice.voice.id()));
       for tally in &mut self.tallies {
         if !tally.scope.holds(voice, buses) {
           continue;
@@ -395,7 +405,6 @@ impl EngineState {
     };
     // Stopped, ended or made virtual meanwhile (one waiting on a streamed
     // comeback), it has no place left to give up
-    live.displaced_by = None;
     if live.is_virtual() || !matches!(live.voice.state(), VoiceState::Playing | VoiceState::Paused)
     {
       return;
@@ -450,7 +459,7 @@ impl EngineState {
       });
     }
     if !ranking.waiting.is_empty() {
-      ranking.count(&self.voices.live, &self.buses, clock);
+      ranking.count(&self.voices.live, &self.buses, clock, &self.displacing);
       for at in 0..ranking.waiting.len() {
         let index = ranking.waiting[at];
         let live = &self.voices.live[index];
@@ -487,13 +496,13 @@ impl EngineState {
         let victim = ranking.displaced[taken];
         match waiting {
           Some(by) => {
-            self.voices.live[victim].displaced_by = Some(by);
-            self.displaced_count += 1;
+            let id = self.voices.live[victim].voice.id();
+            self.displacing.push((id, by));
           }
           None => self.displace(victim, server),
         }
       }
-      ranking.count(&self.voices.live, &self.buses, clock);
+      ranking.count(&self.voices.live, &self.buses, clock, &self.displacing);
     }
     self.ranking = ranking;
   }
@@ -507,7 +516,7 @@ impl EngineState {
   /// virtual again, gone, or failed) plays on. Nothing is looked at while
   /// none waits
   pub(super) fn resume_started(&mut self, server: Option<&AssetServer>) {
-    if self.starting_count == 0 && self.displaced_count == 0 {
+    if self.starting_count == 0 && self.displacing.is_empty() {
       return;
     }
     let clock = self.clock;
@@ -529,34 +538,32 @@ impl EngineState {
       live.fade_in = FadeIn::begin(clock, fade);
       self.starting_count = self.starting_count.saturating_sub(1);
       let by = live.voice.id();
-      if self.displaced_count > 0 {
-        for victim in 0..self.voices.live.len() {
-          if self.voices.live[victim].displaced_by == Some(by) {
-            self.displace(victim, server);
-          }
+      let mut at = 0;
+      while at < self.displacing.len() {
+        let (victim, comeback) = self.displacing[at];
+        if comeback != by {
+          at += 1;
+          continue;
+        }
+        self.displacing.swap_remove(at);
+        if let Some(victim) = self.voices.index_of(victim) {
+          self.displace(victim, server);
         }
       }
     }
-    if self.displaced_count == 0 {
-      return;
-    }
-    for victim in 0..self.voices.live.len() {
-      let Some(by) = self.voices.live[victim].displaced_by else {
-        continue;
-      };
-      let waits = self.voices.index_of(by).is_some_and(|at| {
-        let comeback = &self.voices.live[at];
-        comeback.starting.is_some()
-          && matches!(
-            comeback.voice.state(),
-            VoiceState::Playing | VoiceState::Paused
-          )
-          && !comeback.playback.has_failed()
-      });
-      if !waits {
-        self.voices.live[victim].displaced_by = None;
-      }
-    }
+    let voices = &self.voices;
+    self.displacing.retain(|&(victim, by)| {
+      voices.index_of(victim).is_some()
+        && voices.index_of(by).is_some_and(|at| {
+          let comeback = &voices.live[at];
+          comeback.starting.is_some()
+            && matches!(
+              comeback.voice.state(),
+              VoiceState::Playing | VoiceState::Paused
+            )
+            && !comeback.playback.has_failed()
+        })
+    });
   }
 
   /// Move each virtual loop on through what it plays by `delta` at its rate
