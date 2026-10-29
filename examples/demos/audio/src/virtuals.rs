@@ -4,10 +4,11 @@
 //! the loudest as heard; the rest are virtual: each keeps its place
 //! silently, taking no voice, and comes back as the listener nears it,
 //! taking the place of a heard one 3 dB quieter. A bird beyond the range
-//! ring takes no voice at all. The page draws each bird by what its
-//! `Voice` says (`is_virtual`), and counts them with `voices_on` and
-//! `virtual_voices_on`. UI units are world units here, as on the Spatial
-//! page
+//! ring takes no voice at all. Each bird sings one of the sound's six calls
+//! (its clips), so the six heard can be told apart. The page draws each
+//! bird by what its `Voice` says (`is_virtual`, and `pick` for its call),
+//! and counts them with `voices_on` and `virtual_voices_on`. UI units are
+//! world units here, as on the Spatial page
 
 use demo_kit::prelude::*;
 
@@ -46,6 +47,8 @@ const FAR_COLOR: Color = Color::rgb(110, 110, 125);
 struct Bird {
   at: Vec2,
   voice: Voice,
+  /// The call it sings: its clip's file name, once the play has picked it
+  call: Option<String>,
 }
 
 /// What a bird is doing, as the page draws it
@@ -183,7 +186,11 @@ impl DemoPage for VirtualPage {
         .spawn((emitter, Transform::from_xy(at.x, at.y)))
         .id();
       let voice = ctx.audio().play_emitter(entity);
-      self.birds.push(Bird { at, voice });
+      self.birds.push(Bird {
+        at,
+        voice,
+        call: None,
+      });
     }
   }
 
@@ -217,6 +224,18 @@ impl DemoPage for VirtualPage {
     {
       *transform = Transform::from_xy(self.at.x, self.at.y);
     }
+    // Each bird's call, by the clip its play picked
+    let assets = ctx.assets();
+    for bird in self.birds.iter_mut().filter(|bird| bird.call.is_none()) {
+      bird.call = bird
+        .voice
+        .pick()
+        .and_then(|pick| assets.server().path(pick.clip))
+        .and_then(|path| {
+          let name = path.as_str().rsplit('/').next()?;
+          Some(name.split('.').next()?.to_string())
+        });
+    }
   }
 
   fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) {
@@ -239,7 +258,7 @@ impl DemoPage for VirtualPage {
     // What a bird's mark means
     let mut key_x = x;
     for (color, label) in [
-      (HEARD_COLOR, "heard"),
+      (HEARD_COLOR, "heard, labelled with its call"),
       (WAITING_COLOR, "virtual, in range: waiting for room"),
       (FAR_COLOR, "virtual, out of range"),
     ] {
@@ -259,6 +278,8 @@ impl DemoPage for VirtualPage {
     ui.push_clip(field);
     ui.draw_line(&ring(self.at, range), 1.0, Color::WHITE.with_alpha(70));
     let mut counts = [0usize; 3];
+    // The heard birds' calls, drawn over the rest
+    let mut calls = Vec::new();
     for bird in &self.birds {
       let state = self.state(bird, range);
       counts[state as usize] += 1;
@@ -271,6 +292,9 @@ impl DemoPage for VirtualPage {
             7.0,
             HEARD_COLOR,
           );
+          if let Some(call) = &bird.call {
+            calls.push((call, at));
+          }
         }
         State::Waiting => {
           ui.draw_line(&ring(at, 6.0), 2.0, WAITING_COLOR);
@@ -284,6 +308,16 @@ impl DemoPage for VirtualPage {
     let head = Rect::new(self.at.x - 9.0, self.at.y - 9.0, 18.0, 18.0);
     ui.draw_rounded_rect(head, 9.0, Color::WHITE);
     ui.draw_text("listener", self.at.x - 26.0, self.at.y + 12.0, DIM);
+    for (call, at) in calls {
+      let (width, height) = ui.text_size(call);
+      let (x, y) = (at.x + 10.0, at.y - 9.0);
+      ui.draw_rounded_rect(
+        Rect::new(x - 3.0, y, width as f32 + 6.0, height as f32),
+        3.0,
+        Color::new(0, 0, 0, 150),
+      );
+      ui.draw_text(call, x, y, HEARD_COLOR);
+    }
     ui.pop_clip();
     ui.draw_text(
       &format!("the ring: {range:.0} px, the birds' max_distance"),
@@ -328,6 +362,18 @@ impl DemoPage for VirtualPage {
       "than the quietest heard, after 250 ms",
       column,
       row + 30.0,
+      DIM,
+    );
+    ui.draw_text(
+      "Each bird sings the call its play picked",
+      column,
+      row + 60.0,
+      DIM,
+    );
+    ui.draw_text(
+      "from the sound's six clips (Voice::pick)",
+      column,
+      row + 80.0,
       DIM,
     );
   }

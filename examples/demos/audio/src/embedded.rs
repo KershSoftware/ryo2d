@@ -89,6 +89,7 @@ pub static EMBEDDED: &[(&str, &[u8])] = &[
     "sounds/click.wav",
     include_bytes!("../assets/sounds/click.wav"),
   ),
+  ("sounds/coo.wav", include_bytes!("../assets/sounds/coo.wav")),
   (
     "sounds/drone.wav",
     include_bytes!("../assets/sounds/drone.wav"),
@@ -123,12 +124,28 @@ pub static EMBEDDED: &[(&str, &[u8])] = &[
     include_bytes!("../assets/sounds/tick.wav"),
   ),
   (
+    "sounds/trill.wav",
+    include_bytes!("../assets/sounds/trill.wav"),
+  ),
+  (
+    "sounds/tseep.wav",
+    include_bytes!("../assets/sounds/tseep.wav"),
+  ),
+  (
     "sounds/voice.sound.ron",
     include_bytes!("../assets/sounds/voice.sound.ron"),
   ),
   (
     "sounds/voice.wav",
     include_bytes!("../assets/sounds/voice.wav"),
+  ),
+  (
+    "sounds/warble.wav",
+    include_bytes!("../assets/sounds/warble.wav"),
+  ),
+  (
+    "sounds/whistle.wav",
+    include_bytes!("../assets/sounds/whistle.wav"),
   ),
   (
     "sounds/wind.sound.ron",

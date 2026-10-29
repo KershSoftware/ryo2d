@@ -211,7 +211,7 @@ The rules that rank keep a loop they stop or refuse as a virtual voice, to come 
 - **No flapping:** besides the 3 dB, a voice that started, went virtual or came back stays so for at least 250 ms, and the 95% keeps a loop at the edge of its range from coming and going. A loop never heard is exempt: one played as a level enters, judged out of range from a camera that has not moved there yet, or kept out by a limit for a frame, is heard as soon as it may be, with its own swell.
 - **At most 1024 are virtual**; past them a loop that would go virtual is refused (logged with the reason `virtual`), and one a play takes the place of stops.
 - Beds and emitter loops still give way to more important plays: give them a higher priority than one-shots to keep them heard. A play's limits look at every voice, virtual ones too, so plays cost a little more with hundreds virtual.
-- **See it:** the audio demo's Virtual voices page has thirty birds singing in a field under a limit of six, and draws each by its `Voice` (heard, virtual waiting for room, virtual out of range) as the listener wanders among them.
+- **See it:** the audio demo's Virtual voices page has thirty birds singing six calls in a field under a limit of six, and draws each by its `Voice` (heard, labelled with its call from `pick`; virtual waiting for room; virtual out of range) as the listener wanders among them.
 
 ## 5. The mixer (`audio/mixer.mixer.ron`)
 

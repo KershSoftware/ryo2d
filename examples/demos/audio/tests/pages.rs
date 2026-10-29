@@ -6,7 +6,8 @@
 //! solos each emitter, and its hint follows the ping's `pan_width`; the
 //! music page crossfades; the hot reload page counts a saved definition;
 //! and the virtual voices page hears six birds of thirty, the rest
-//! virtual, and brings others back as the listener wanders
+//! virtual, brings others back as the listener wanders, and sings six
+//! calls
 
 use std::time::{Duration, Instant};
 
@@ -379,4 +380,25 @@ fn the_virtual_voices_page_hears_six_and_keeps_the_rest() {
   assert!(moved(AudioLogKind::Real) > 0, "a bird came back");
   assert!(moved(AudioLogKind::Virtual) > virtuals::BIRDS - virtuals::HEARD);
   assert!(warnings().is_empty(), "{:#?}", warnings());
+}
+
+/// The Virtual voices page's birds sing six calls, five birds each, so the
+/// six heard can be told apart
+#[test]
+fn the_virtual_voices_page_sings_six_calls() {
+  let Some(mut engine) = engine_on(VIRTUAL) else {
+    return;
+  };
+  engine.step_frames(3).unwrap();
+  let mut calls = std::collections::BTreeMap::<String, Vec<u32>>::new();
+  for entry in engine.audio_log() {
+    if entry.sound == "virtual/bird.sound.ron" && entry.voice != 0 {
+      let birds = calls.entry(entry.source.clone()).or_default();
+      if !birds.contains(&entry.voice) {
+        birds.push(entry.voice);
+      }
+    }
+  }
+  let birds: Vec<usize> = calls.values().map(Vec::len).collect();
+  assert_eq!(birds, [5; 6], "{calls:?}");
 }

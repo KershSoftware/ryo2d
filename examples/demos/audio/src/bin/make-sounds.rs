@@ -14,7 +14,7 @@ const RATE: u32 = 44_100;
 
 fn main() {
   let assets = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets");
-  let files: [(&str, Vec<f32>); 17] = [
+  let files: [(&str, Vec<f32>); 22] = [
     ("sounds/tick.wav", tick()),
     ("sounds/click.wav", click()),
     ("sounds/voice.wav", voice()),
@@ -25,6 +25,11 @@ fn main() {
     ("sounds/bell.wav", bell()),
     ("sounds/hum.wav", hum()),
     ("sounds/chirp.wav", chirp()),
+    ("sounds/whistle.wav", whistle()),
+    ("sounds/trill.wav", trill()),
+    ("sounds/warble.wav", warble()),
+    ("sounds/coo.wav", coo()),
+    ("sounds/tseep.wav", tseep()),
     ("sounds/buzz.wav", buzz()),
     ("sounds/wind.wav", wind()),
     ("sounds/drone.wav", drone()),
@@ -258,6 +263,136 @@ fn chirp() -> Vec<f32> {
         return 0.0;
       }
       let hz = 2200.0 + 1400.0 * u;
+      phase = (phase + hz / RATE as f32).fract();
+      (TAU * phase).sin() * (PI * u).sin().powi(2)
+    })
+    .collect();
+  normalized(samples, 0.5)
+}
+
+/// A whistled "fee-bee": a high note sliding a little down, then a lower
+/// one, with a slight vibrato, once in a 2.2 s loop
+fn whistle() -> Vec<f32> {
+  // Each note: its start and length in seconds, and the Hz it slides from
+  // and to
+  const NOTES: [(f32, f32, f32, f32); 2] =
+    [(0.4, 0.3, 3100.0, 2950.0), (0.75, 0.32, 2450.0, 2400.0)];
+  let mut phase = 0.0f32;
+  let samples: Vec<f32> = (0..len(2.2))
+    .map(|i| {
+      let t = i as f32 / RATE as f32;
+      let Some(&(start, length, from, to)) = NOTES
+        .iter()
+        .find(|&&(start, length, ..)| (start..start + length).contains(&t))
+      else {
+        return 0.0;
+      };
+      let u = (t - start) / length;
+      let hz = (from + (to - from) * u) * (1.0 + 0.008 * sine(6.0, t));
+      phase = (phase + hz / RATE as f32).fract();
+      (TAU * phase).sin() * (PI * u).sin()
+    })
+    .collect();
+  normalized(samples, 0.5)
+}
+
+/// A trill: fourteen quick pips falling a little in pitch, once in a 2.6 s
+/// loop
+fn trill() -> Vec<f32> {
+  const START: f32 = 0.9;
+  const PIPS: usize = 14;
+  // A pip every 45 ms, each 26 ms long
+  const EVERY: f32 = 0.045;
+  const PIP: f32 = 0.026;
+  let samples = render(2.6, |t| {
+    let since = t - START;
+    if since < 0.0 {
+      return 0.0;
+    }
+    let pip = (since / EVERY) as usize;
+    let u = (since - pip as f32 * EVERY) / PIP;
+    if pip >= PIPS || u >= 1.0 {
+      return 0.0;
+    }
+    let hz = 4600.0 - 500.0 * pip as f32 / PIPS as f32;
+    sine(hz, since) * (PI * u).sin().powi(2)
+  });
+  normalized(samples, 0.5)
+}
+
+/// A warble: a tone wavering fast and slow about 2.8 kHz for 0.8 s, once
+/// in a 3 s loop
+fn warble() -> Vec<f32> {
+  const START: f32 = 1.6;
+  const LENGTH: f32 = 0.8;
+  let mut phase = 0.0f32;
+  let samples: Vec<f32> = (0..len(3.0))
+    .map(|i| {
+      let t = i as f32 / RATE as f32;
+      let u = (t - START) / LENGTH;
+      if !(0.0..1.0).contains(&u) {
+        return 0.0;
+      }
+      let hz = 2800.0 + 500.0 * sine(17.0, t) + 250.0 * sine(5.0, t);
+      phase = (phase + hz / RATE as f32).fract();
+      (TAU * phase).sin() * (PI * u).sin()
+    })
+    .collect();
+  normalized(samples, 0.5)
+}
+
+/// A dove's coo: three low, soft notes with a breath of noise, once in a
+/// 3.4 s loop. Its peak is higher than the others', as a low note sounds
+/// quieter than a high one at the same level
+fn coo() -> Vec<f32> {
+  // Each note: its start and length in seconds, and the Hz it slides from
+  // and to
+  const NOTES: [(f32, f32, f32, f32); 3] = [
+    (0.2, 0.32, 500.0, 560.0),
+    (0.62, 0.55, 600.0, 520.0),
+    (1.3, 0.38, 520.0, 480.0),
+  ];
+  let mut noise = Noise(31);
+  let mut breath = 0.0f32;
+  let mut phase = 0.0f32;
+  let samples: Vec<f32> = (0..len(3.4))
+    .map(|i| {
+      let t = i as f32 / RATE as f32;
+      breath += 0.05 * (noise.next() - breath);
+      let Some(&(start, length, from, to)) = NOTES
+        .iter()
+        .find(|&&(start, length, ..)| (start..start + length).contains(&t))
+      else {
+        return 0.0;
+      };
+      let u = (t - start) / length;
+      let hz = from + (to - from) * u;
+      phase = (phase + hz / RATE as f32).fract();
+      let tone =
+        (TAU * phase).sin() + 0.3 * (2.0 * TAU * phase).sin() + 0.1 * (3.0 * TAU * phase).sin();
+      (tone + 0.6 * breath) * (PI * u).sin().powf(1.5)
+    })
+    .collect();
+  normalized(samples, 0.7)
+}
+
+/// Three thin "tseep"s: quick sweeps falling from 6.5 to 4 kHz, once in a
+/// 1.7 s loop
+fn tseep() -> Vec<f32> {
+  const STARTS: [f32; 3] = [1.1, 1.22, 1.34];
+  const LENGTH: f32 = 0.07;
+  let mut phase = 0.0f32;
+  let samples: Vec<f32> = (0..len(1.7))
+    .map(|i| {
+      let t = i as f32 / RATE as f32;
+      let Some(start) = STARTS
+        .into_iter()
+        .find(|&start| (start..start + LENGTH).contains(&t))
+      else {
+        return 0.0;
+      };
+      let u = (t - start) / LENGTH;
+      let hz = 6500.0 - 2500.0 * u;
       phase = (phase + hz / RATE as f32).fract();
       (TAU * phase).sin() * (PI * u).sin().powi(2)
     })

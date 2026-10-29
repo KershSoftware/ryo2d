@@ -2,12 +2,22 @@
 // Thirty sing at once, and six at most are heard: the loudest as heard,
 // which are the nearest. The rest are virtual, keeping their place with
 // no voice, and come back as the listener nears them; those beyond the
-// range take no voice at all
+// range take no voice at all. Each bird sings one of six calls, each a
+// loop of its own length: no_repeat avoids the last five picks, so every
+// six plays take each call once, and the thirty birds sing five of each
 (
-  clips: [(path: "sounds/chirp.wav")],
+  clips: [
+    (path: "sounds/chirp.wav"),
+    (path: "sounds/whistle.wav"),
+    (path: "sounds/trill.wav"),
+    (path: "sounds/warble.wav"),
+    (path: "sounds/coo.wav"),
+    (path: "sounds/tseep.wav"),
+  ],
   bus: "ambience",
   volume: -10.0,
   pitch_range: 3.0,
+  no_repeat: 5,
   looping: true,
   per_frame: 30,
   fade_out: 0.2,
