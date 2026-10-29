@@ -225,6 +225,18 @@ impl AudioQueue {
   }
 }
 
+/// A queue dropped before it applied (its system gone from its schedule)
+/// played nothing: its voices stop
+impl Drop for AudioQueue {
+  fn drop(&mut self) {
+    for queued in self.0.drain(..) {
+      if let Some(voice) = queued.voice() {
+        voice.set_state(VoiceState::Stopped);
+      }
+    }
+  }
+}
+
 impl SystemBuffer for AudioQueue {
   fn apply(&mut self, _system: &SystemMeta, world: &mut World) {
     run(&mut self.0, world);
@@ -616,6 +628,28 @@ mod tests {
     let buses = world.resource::<AudioEngine>().buses();
     let music = buses.iter().find(|bus| bus.name == "music");
     assert_eq!(music.map(|bus| bus.snapshot_db), Some(0.0));
+  }
+
+  /// A play whose buffer never applies (its schedule dropped first) plays
+  /// nothing, and its voice stops as the buffer goes
+  #[test]
+  fn a_play_whose_buffer_never_applies_stops() {
+    let mut world = world();
+    let mut schedule = schedule();
+    schedule.set_apply_final_deferred(false);
+    schedule.add_systems(
+      |mut audio: Audio, sounds: Res<Sounds>, mut played: ResMut<Played>| {
+        played.0.push(audio.play(&sounds.shot));
+      },
+    );
+    schedule.run(&mut world);
+    let [voice] = &played(&world)[..] else {
+      panic!("one voice played");
+    };
+    assert!(voice.is_playing(), "waiting for its buffer: {voice:?}");
+    drop(schedule);
+    assert!(voice.is_stopped(), "{voice:?}");
+    assert_eq!(starts(&world, voice), 0);
   }
 
   /// In a world without an audio engine every play returns a stopped
