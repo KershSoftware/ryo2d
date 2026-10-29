@@ -80,8 +80,9 @@ struct Tally {
   scope: Scope,
   count: usize,
   /// The least important real voice in it, then the quietest as heard, then
-  /// the oldest, of those that may be moved (not music, and as they are for
-  /// [`STAY_PUT`]): its index, priority and gain as heard
+  /// the oldest, of those that may be moved (not music, as they are for
+  /// [`STAY_PUT`], and in a limit's scope not a loop whose own rule ends
+  /// loops): its index, priority and gain as heard
   weakest: Option<(usize, u8, f32)>,
 }
 
@@ -118,6 +119,9 @@ impl Ranking {
           || !displacing
             .iter()
             .any(|&(victim, _)| victim == voice.voice.id()));
+      // A loop under PreventNew or StopOldest is outside the ranking: no
+      // returning loop takes its place through a limit, only the cap's order
+      let ranked = !(voice.looping && ends_loops(voice.limit.map(|limit| limit.rule)));
       for tally in &mut self.tallies {
         if !tally.scope.holds(voice, buses) {
           continue;
@@ -126,7 +130,7 @@ impl Ranking {
         let weaker = tally.weakest.is_none_or(|(_, least, quietest)| {
           priority < least || (priority == least && heard < quietest)
         });
-        if movable && weaker {
+        if movable && weaker && (ranked || matches!(tally.scope, Scope::Track(_))) {
           tally.weakest = Some((index, priority, heard));
         }
       }
@@ -2062,6 +2066,116 @@ mod tests {
       assert!(footstep.is_playing(), "{footstep:?}");
       assert!(entries(&world, footstep, AudioLogKind::Stolen).is_empty());
     }
+  }
+
+  /// Loops under `PreventNew` or `StopOldest` are outside the ranking both
+  /// ways: a `StopQuietest` bird returning through a bus limit a heard
+  /// `PreventNew` alarm fills, 20 dB louder, does not send the alarm
+  /// virtual, and comes back once the alarm stops
+  #[test]
+  fn a_returning_loop_takes_no_place_of_a_prevent_new_loop() {
+    let mut world = audio_world();
+    let listener = world
+      .spawn((AudioListener, Transform::from_xy(0.0, 0.0)))
+      .id();
+    AudioView::new(&mut world).set_mixer(Mixer {
+      buses: vec![BusDef {
+        limit: Some(1),
+        ..BusDef::new("sfx/yard")
+      }],
+      ..Default::default()
+    });
+    let dc = clip(&mut world, 2.0);
+    let alarm = add(
+      &mut world,
+      Sound {
+        bus: "sfx/yard".to_string(),
+        volume_db: -20.0,
+        limit: Some(VoiceLimit {
+          max: 1,
+          rule: LimitRule::PreventNew,
+        }),
+        ..looping(&dc)
+      },
+    );
+    let bird = add(
+      &mut world,
+      Sound {
+        bus: "sfx/yard".to_string(),
+        limit: Some(VoiceLimit {
+          max: 4,
+          rule: LimitRule::StopQuietest,
+        }),
+        ..placed(&dc)
+      },
+    );
+    let alarm = play(&mut world, &alarm);
+    audio_step(&mut world, FRAME);
+    let bird = AudioView::new(&mut world).play_at(&bird, Vec2::new(900.0, 0.0));
+    assert!(
+      bird.is_virtual() && !alarm.is_virtual(),
+      "{bird:?} {alarm:?}"
+    );
+    move_to(&mut world, listener, 900.0);
+    steps(&mut world, 30);
+    assert!(
+      bird.is_virtual() && !alarm.is_virtual(),
+      "{bird:?} {alarm:?}"
+    );
+    assert!(entries(&world, &alarm, AudioLogKind::Virtual).is_empty());
+    alarm.stop(MIN_FADE);
+    steps(&mut world, 2);
+    assert!(bird.is_playing() && !bird.is_virtual(), "back: {bird:?}");
+  }
+
+  /// The cap's order still ranks every loop: a `PreventNew` alarm 30 dB
+  /// under the 95 other loops filling its track's cap gives its place to a
+  /// returning bird louder than it, and goes virtual
+  #[test]
+  fn the_cap_still_ranks_a_prevent_new_loop() {
+    let mut world = audio_world();
+    let listener = world
+      .spawn((AudioListener, Transform::from_xy(0.0, 0.0)))
+      .id();
+    let dc = clip(&mut world, 2.0);
+    let alarm = add(
+      &mut world,
+      Sound {
+        volume_db: -30.0,
+        limit: Some(VoiceLimit {
+          max: 1,
+          rule: LimitRule::PreventNew,
+        }),
+        ..looping(&dc)
+      },
+    );
+    let filler = add(&mut world, looping(&dc));
+    let bird = add(
+      &mut world,
+      Sound {
+        limit: Some(VoiceLimit {
+          max: 4,
+          rule: LimitRule::StopQuietest,
+        }),
+        ..placed(&dc)
+      },
+    );
+    let alarm = play(&mut world, &alarm);
+    for _ in 0..95 {
+      play(&mut world, &filler);
+    }
+    audio_step(&mut world, FRAME);
+    let bird = AudioView::new(&mut world).play_at(&bird, Vec2::new(900.0, 0.0));
+    assert!(
+      bird.is_virtual() && !alarm.is_virtual(),
+      "{bird:?} {alarm:?}"
+    );
+    move_to(&mut world, listener, 900.0);
+    steps(&mut world, 30);
+    assert!(
+      !bird.is_virtual() && alarm.is_virtual(),
+      "{bird:?} {alarm:?}"
+    );
   }
 
   /// `StopQuietest` (as `StopFarthest` and `StopLowestPriority`) ranks:
