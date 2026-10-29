@@ -50,7 +50,11 @@ use crate::core::ecs::{Entity, Vec2, World};
 /// }
 ///
 /// /// Each walker steps every 0.4 s, heard from where it is
-/// fn footsteps(mut audio: Audio, time: Res<Time>, mut walkers: Query<(&mut Footsteps, &Transform)>) {
+/// fn footsteps(
+///   mut audio: Audio,
+///   time: Res<Time>,
+///   mut walkers: Query<(&mut Footsteps, &Transform)>,
+/// ) {
 ///   for (mut steps, transform) in &mut walkers {
 ///     steps.next -= time.delta();
 ///     if steps.next <= 0.0 {

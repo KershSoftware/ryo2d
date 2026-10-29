@@ -1823,9 +1823,10 @@ impl EngineState {
   /// Hold the voices of the scenes in `scopes` (those the scene stack does
   /// not update, under a top scene that holds them), and of the emitters
   /// they added (an emitter of no scene's while there are any), on the
-  /// buses that pause with the game; let go of the rest. Each held voice pauses where it is over [`MIN_FADE`] in the
-  /// frame's update, and resumes from there once its owner lets go and its
-  /// bus does too. A voice its owner holds as it starts starts held
+  /// buses that pause with the game; let go of the rest. Each held voice
+  /// pauses where it is over [`MIN_FADE`] in the frame's update, and
+  /// resumes from there once its owner lets go and its bus does too. A
+  /// voice its owner holds as it starts starts held
   pub(crate) fn hold_scopes(&mut self, scopes: impl Iterator<Item = u64> + Clone) {
     if self.held_scopes.iter().copied().eq(scopes.clone()) {
       return;
@@ -2658,11 +2659,11 @@ impl EngineState {
   /// data as the store now has it, its regions, its gain, pitch and bus,
   /// which the voice takes once it has started (the old sound's stop is
   /// logged as it played: its gain, and its bus, or `was` for a rebuild's
-  /// move, whose old copy plays on the retired tree). One partway through a fade-in carries on with
-  /// what is left of it. If it cannot start, it plays on as it was, and why
-  /// is returned. A loop waiting for the web's unlock takes them and waits
-  /// on before the unlock, and at it starts on them, fading in over its own
-  /// fade-in
+  /// move, whose old copy plays on the retired tree). One partway through
+  /// a fade-in carries on with what is left of it. If it cannot start, it
+  /// plays on as it was, and why is returned. A loop waiting for the web's
+  /// unlock takes them and waits on before the unlock, and at it starts on
+  /// them, fading in over its own fade-in
   fn replay(
     &mut self,
     world: &World,
