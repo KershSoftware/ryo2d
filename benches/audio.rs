@@ -23,7 +23,11 @@
 //!   louder that would move it). Over 2,000 frames paced at 60 Hz, the
 //!   median main-thread time of `audio_system` is held to 20 µs. The median
 //!   `play` of a decoded clip on `sfx` beside them is printed, with no
-//!   target (a play's limits look at every voice, virtual ones included);
+//!   target (a play's limits look at every voice, virtual ones included).
+//!   Beside it, with no target, `virtual_1024`: 1,088 loops of eight sounds
+//!   (each with a limit of its own, `StopQuietest`) on four buses limited to
+//!   16 each, so 64 are heard and 1,024 virtual, each ranked each frame in
+//!   three scopes (its sound's limit, its bus's limit, its track's cap);
 //! - `play_cost`: 10,000 `play` calls of decoded 50 ms clips, eight a
 //!   frame, one of each of eight clips (a clip starts once a frame), so
 //!   about sixteen voices play, each timed alone; the median is held to
@@ -99,6 +103,10 @@ const CROWD_BUS: &str = "sfx/crowd";
 const CROWD_HEARD: usize = 64;
 /// The loops on it
 const CROWD: usize = 320;
+/// The crowds' buses, at most 16 heard on each, and the loops on all four
+const CROWDS: [&str; 4] = ["sfx/crowd-a", "sfx/crowd-b", "sfx/crowd-c", "sfx/crowd-d"];
+const CROWDS_HEARD: usize = 64;
+const CROWDS_LOOPS: usize = 1088;
 /// The spec's play
 const PLAY_TARGET: Duration = Duration::from_micros(5);
 /// A streamed play: its main thread's part (the open is the decoder
@@ -119,7 +127,7 @@ const RELOAD_EVERY: usize = 50;
 const MID_FILE: f64 = 20.0;
 /// The criterion benches whose medians are printed, with what each median
 /// is of
-const BENCHES: [(&str, &str); 4] = [
+const BENCHES: [(&str, &str); 5] = [
   (
     "voices_64",
     "a frame's audio_system less the mock's rendering, back to back",
@@ -127,6 +135,10 @@ const BENCHES: [(&str, &str); 4] = [
   (
     "virtual_256",
     "a frame's audio_system less the mock's rendering with 256 virtual loops, back to back",
+  ),
+  (
+    "virtual_1024",
+    "a frame's audio_system less the mock's rendering with 1,024 virtual loops in three scopes each, back to back",
   ),
   ("play_cost", "a play of a decoded clip"),
   (
@@ -531,6 +543,146 @@ fn virtual_guard() {
        frame, not {crowded:?} and none"
     ));
   }
+}
+
+/// The crowds' world: 1,088 loops of eight sounds, two a bus, each limited
+/// to 12 voices (`StopQuietest`), on four buses the mixer limits to 16, all
+/// in range of the listener at every angle and 60 to 1,800 px away. Played
+/// nearest first in one frame, 64 are heard (16 a bus) and 1,024 virtual;
+/// the ranking sorts the heard into the loudest in their first frames, and
+/// then weighs every virtual loop each frame in its three scopes
+fn crowds_world() -> World {
+  let mut world = quiet(audio_world());
+  world.spawn((AudioListener, Transform::default()));
+  AudioView::new(&mut world).set_mixer(Mixer {
+    buses: CROWDS
+      .iter()
+      .map(|&bus| BusDef {
+        limit: Some((CROWDS_HEARD / CROWDS.len()) as u16),
+        ..BusDef::new(bus)
+      })
+      .collect(),
+    ..Default::default()
+  });
+  let clip = add_clip(&mut world, 2.0, 9);
+  let sounds: Vec<Handle<Sound>> = (0..2 * CROWDS.len())
+    .map(|i| {
+      world.resource_mut::<Assets<Sound>>().add(Sound {
+        clips: vec![SoundClip::new(clip.clone())],
+        bus: CROWDS[i / 2].to_string(),
+        looping: true,
+        per_frame: u8::MAX,
+        limit: Some(VoiceLimit {
+          max: 12,
+          rule: LimitRule::StopQuietest,
+        }),
+        spatial: Some(Spatial {
+          min_distance: 50.0,
+          max_distance: 4000.0,
+          curve: Falloff::Inverse,
+          pan_width: 1000.0,
+          low_pass_at_max: None,
+        }),
+        ..Default::default()
+      })
+    })
+    .collect();
+  for i in 0..CROWDS_LOOPS {
+    let distance = 60.0 + i as f32 * 1.6;
+    let angle = i as f32 * 2.4;
+    let at = Vec2::new(distance * angle.cos(), distance * angle.sin());
+    AudioView::new(&mut world).play_at(&sounds[i % sounds.len()], at);
+  }
+  world
+}
+
+/// How many of the crowds' loops are heard, and how many virtual
+fn crowds(world: &mut World) -> (usize, usize) {
+  let mut audio = AudioView::new(world);
+  CROWDS.iter().fold((0, 0), |(heard, kept), bus| {
+    (
+      heard + audio.voices_on(bus),
+      kept + audio.virtual_voices_on(bus),
+    )
+  })
+}
+
+/// The crowds' frames at 60 Hz, printed with no target: the median
+/// main-thread time of `audio_system` with 1,024 virtual loops ranked in
+/// three scopes each
+fn crowds_line() {
+  let mut world = crowds_world();
+  // The ranking settles the heard on the loudest, then each frame weighs
+  for _ in 0..120 {
+    step(&mut world);
+  }
+  let before = crowds(&mut world);
+  world.resource_mut::<AudioEngine>().set_logging(true);
+  step(&mut world);
+  let moved = world
+    .resource::<AudioEngine>()
+    .log()
+    .iter()
+    .filter(|entry| matches!(entry.kind, AudioLogKind::Virtual | AudioLogKind::Real))
+    .count();
+  world.resource_mut::<AudioEngine>().set_logging(false);
+  let mut times = Vec::with_capacity(FRAMES);
+  let mut next = Instant::now();
+  for _ in 0..FRAMES {
+    pace(next);
+    next = Instant::now() + FRAME;
+    tick(&mut world);
+    pump(&mut world);
+    times.push(timed_audio(&mut world).0);
+    end(&mut world);
+  }
+  let after = crowds(&mut world);
+  let Some((median, p95, max)) = spread(times) else {
+    return;
+  };
+  eprintln!(
+    "virtual_1024, {FRAMES} frames at 60 Hz, {} loops heard and {} virtual on four buses \
+     ({} and {} at the end; a frame moves {moved}): audio_system's main-thread time, median \
+     {:.1} µs, 95th percentile {:.1}, max {:.1} (no target)",
+    before.0,
+    before.1,
+    after.0,
+    after.1,
+    us(median),
+    us(p95),
+    us(max),
+  );
+  let crowded = (CROWDS_HEARD, CROWDS_LOOPS - CROWDS_HEARD);
+  if before != crowded || after != crowded {
+    guards::miss(format!(
+      "virtual_1024: {before:?} heard and virtual, {after:?} at the end, not {crowded:?}"
+    ));
+  }
+}
+
+/// The crowds' frames back to back; the world is made once, on the bench's
+/// first call
+fn crowds_bench(c: &mut Criterion) {
+  let mut made = None;
+  c.bench_function("virtual_1024", |b| {
+    let world = made.get_or_insert_with(|| {
+      let mut world = crowds_world();
+      for _ in 0..120 {
+        step(&mut world);
+      }
+      world
+    });
+    b.iter_custom(|iters| {
+      let mut total = Duration::ZERO;
+      for _ in 0..iters {
+        tick(world);
+        pump(world);
+        total += timed_audio(world).0;
+        end(world);
+      }
+      total
+    });
+  });
 }
 
 /// The crowd's frames back to back; the world is made once, on the bench's
@@ -1344,7 +1496,9 @@ fn main() {
     .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
     .unwrap_or_else(|_| "uptime unavailable".into());
   println!("machine: {load}");
-  println!("audio bench: 64 voices, 256 virtual loops, a play, a streamed play and the load hitch");
+  println!(
+    "audio bench: 64 voices, 256 and 1,024 virtual loops, a play, a streamed play and the load hitch"
+  );
   let results = guards::results_dir();
   let mut criterion = Criterion::default()
     .sample_size(20)
@@ -1356,6 +1510,9 @@ fn main() {
   }
   if guards::runs(&["virtual_256"]) {
     virtual_guard();
+  }
+  if guards::runs(&["virtual_1024"]) {
+    crowds_line();
   }
   if guards::runs(&["play_cost"]) {
     play_guard();
@@ -1373,6 +1530,7 @@ fn main() {
   }
   voices_bench(&mut criterion);
   virtual_bench(&mut criterion);
+  crowds_bench(&mut criterion);
   play_bench(&mut criterion);
   load_bench(&mut criterion, &mut made);
   criterion.final_summary();
