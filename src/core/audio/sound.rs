@@ -69,12 +69,17 @@ pub struct Sound {
   /// repeat: 1 never plays the same clip twice in a row. A sound always has
   /// one clip left to pick, so it avoids at most one fewer than its clips
   pub no_repeat: u8,
-  /// How many of its voices play at once, and what a play past that does
+  /// How many of its voices play at once, and what a play past that does.
+  /// A loop past it goes virtual instead of stopping or being refused
+  /// ([`Voice::is_virtual`](super::Voice::is_virtual)), and comes back when
+  /// there is room
   pub limit: Option<VoiceLimit>,
   /// How important its voices are, from 0 to 255 (higher is more
   /// important; [`Sound::DEFAULT_PRIORITY`] by default). A voice is never
   /// stopped to make room for a less important one, nor for an equally
-  /// important one started in the same frame
+  /// important one started in the same frame. A virtual loop comes back in
+  /// place of a less important voice, or of an equally important one 3 dB
+  /// quieter
   pub priority: u8,
   /// The least time between two of its plays: a play sooner is refused
   pub cooldown: Duration,
@@ -89,7 +94,9 @@ pub struct Sound {
   pub per_frame: u8,
   /// It loops until stopped: over each clip's `loop_region`, or the whole
   /// clip (its `region`). A loop played while it is still loading waits for
-  /// it, and starts once it is ready
+  /// it, and starts once it is ready. A loop a voice limit has no room for,
+  /// or out of range, goes virtual: it keeps its place silently and comes
+  /// back when it can be heard ([`Voice::is_virtual`](super::Voice::is_virtual))
   pub looping: bool,
   /// Each play fades in over this
   pub fade_in: Duration,
@@ -101,8 +108,8 @@ pub struct Sound {
   /// [`AudioEmitter`](super::AudioEmitter)), it is heard from there:
   /// quieter with distance from the listener, panned by its offset, and
   /// muffled with distance if it has a distance low-pass. A one-shot out of
-  /// range is culled. Without it, a sound is heard as if at the listener
-  /// wherever it plays
+  /// range is culled, and a loop is virtual. Without it, a sound is heard
+  /// as if at the listener wherever it plays
   pub spatial: Option<Spatial>,
 }
 
@@ -189,7 +196,11 @@ pub struct VoiceLimit {
 
 /// What a play past a voice limit does. Whichever voice a rule picks, it is
 /// never one more important than the new play, nor an equally important one
-/// started in the same frame: with none left to pick, the play is refused
+/// started in the same frame: with none left to pick, the play is refused.
+/// A loop picked, or refused, goes virtual instead: it keeps its place
+/// silently and comes back when there is room, or in place of a voice it
+/// outranks (but under `PreventNew`, which takes no voice's place)
+/// ([`Voice::is_virtual`](super::Voice::is_virtual))
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 pub enum LimitRule {
   /// The new play is refused
@@ -220,8 +231,9 @@ pub struct Spatial {
   /// Within this distance it plays at full volume
   pub min_distance: f32,
   /// At this distance and beyond it is silent: a one-shot played there is
-  /// culled (it never starts), and a loop plays on unheard until the
-  /// listener comes near
+  /// culled (it never starts), and a loop is virtual, taking no voice, until
+  /// the listener comes within 95% of it
+  /// ([`Voice::is_virtual`](super::Voice::is_virtual))
   pub max_distance: f32,
   /// How its volume falls between the two (`Inverse` when left out)
   pub curve: Falloff,

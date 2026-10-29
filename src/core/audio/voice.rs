@@ -2,7 +2,7 @@
 //! the frame's `audio_system` applies, so a `Voice` can be kept anywhere
 
 use std::fmt;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -83,6 +83,8 @@ struct VoiceShared {
   /// From 1; 0 is a voice that never started
   id: u32,
   state: AtomicU8,
+  /// It is virtual: a loop keeping its place silently, with no kira sound
+  virtualized: AtomicBool,
   /// `None` for a voice that never started
   commands: Option<Sender<VoiceCommand>>,
   /// Empty for a voice that never started, one waiting for its sound to
@@ -165,6 +167,7 @@ impl Voice {
     let voice = Voice(Arc::new(VoiceShared {
       id,
       state: AtomicU8::new(VoiceState::Playing as u8),
+      virtualized: AtomicBool::new(false),
       commands: Some(commands),
       pick: OnceLock::new(),
     }));
@@ -188,6 +191,7 @@ impl Voice {
         Voice(Arc::new(VoiceShared {
           id: 0,
           state: AtomicU8::new(VoiceState::Stopped as u8),
+          virtualized: AtomicBool::new(false),
           commands: None,
           pick: OnceLock::new(),
         }))
@@ -207,6 +211,11 @@ impl Voice {
 
   pub(crate) fn set_state(&self, state: VoiceState) {
     self.0.state.store(state as u8, Ordering::Release);
+  }
+
+  /// It went virtual (`true`), or came back
+  pub(crate) fn set_virtual(&self, virtualized: bool) {
+    self.0.virtualized.store(virtualized, Ordering::Release);
   }
 
   fn send(&self, change: VoiceChange) {
@@ -299,6 +308,25 @@ impl Voice {
     self.state() == VoiceState::Stopped
   }
 
+  /// Whether it is virtual: a loop that keeps its place silently, taking no
+  /// voice, until it can be heard again. A loop goes virtual when a voice
+  /// limit or its bus's cap of 96 has no room for it (a play past the limit,
+  /// or a more important play taking its place), and when it is at or
+  /// beyond its sound's `max_distance` from the listener. While virtual it
+  /// still reports playing, takes every change (volume, pitch, pause,
+  /// resume, stop), is held by the game's pause and its scene's hold as a
+  /// heard voice is, and moves on through its clip as if heard; each frame
+  /// the engine brings it back, fading in over 50 ms where it has got to,
+  /// once it is in range (inside 95% of `max_distance`) and there is room,
+  /// or it outranks the weakest voice in its way (more important, or 3 dB
+  /// louder as heard at equal priority). One-shots and music are never
+  /// virtual. A voice that went virtual or came back stays so for at least
+  /// 250 ms, so two loops of about the same level do not swap back and
+  /// forth
+  pub fn is_virtual(&self) -> bool {
+    self.0.virtualized.load(Ordering::Acquire)
+  }
+
   /// Which clip the play picked and the gain and pitch it drew, as it
   /// started; `None` for a play that never started (refused), for a loop
   /// waiting for its sound to load until it starts, and for a play a
@@ -332,6 +360,7 @@ impl fmt::Debug for Voice {
     f.debug_struct("Voice")
       .field("id", &self.0.id)
       .field("state", &self.state())
+      .field("virtual", &self.is_virtual())
       .finish()
   }
 }

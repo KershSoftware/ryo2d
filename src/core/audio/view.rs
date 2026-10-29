@@ -109,7 +109,10 @@ impl<'w> AudioView<'w> {
   /// refused (logged, and warned about once in a debug build), as is a play
   /// of a sound that failed to load (warned about once). A play its
   /// cooldown, its `per_frame` or a voice limit refuses starts nothing. A
-  /// refused play's voice is already stopped
+  /// refused play's voice is already stopped. A loop a voice limit has no
+  /// room for is not refused but virtual: it reports playing, keeps its
+  /// place silently, and comes back when there is room
+  /// ([`Voice::is_virtual`])
   pub fn play<'a>(&mut self, sound: impl Into<Playable<'a>>) -> Voice {
     self.play_with(sound, PlayOptions::default())
   }
@@ -120,8 +123,9 @@ impl<'w> AudioView<'w> {
   /// quieter with distance, panned by its offset to the listener's right,
   /// and muffled with distance if it has a distance low-pass. A one-shot at
   /// or beyond its maximum distance is culled: it never starts, and the
-  /// voice returned is already stopped. A loop there starts silent, to be
-  /// heard as the listener comes near. The place stays where it was played;
+  /// voice returned is already stopped. A loop there is virtual: it takes no
+  /// voice, and comes back as the listener comes within 95% of that
+  /// distance ([`Voice::is_virtual`]). The place stays where it was played;
   /// for a sound that follows an entity, see
   /// [`play_emitter`](Self::play_emitter)
   ///
@@ -358,8 +362,28 @@ impl<'w> AudioView<'w> {
   }
 
   /// How many voices play on `bus` and every bus under it (`master` counts
-  /// them all); 0 for a bus that does not exist
+  /// them all), each taking a voice on its track: the virtual ones
+  /// ([`virtual_voices_on`](Self::virtual_voices_on)) are not counted; 0
+  /// for a bus that does not exist
   pub fn voices_on(&mut self, bus: &str) -> usize {
     self.with_mixer(|engine| engine.voices_on(bus))
+  }
+
+  /// How many loops on `bus` and every bus under it are virtual: keeping
+  /// their place silently, taking no voice, until there is room for them
+  /// and they are in range ([`Voice::is_virtual`]); 0 for a bus that does
+  /// not exist
+  ///
+  /// ```
+  /// use ryo2d::prelude::*;
+  ///
+  /// fn crickets(ctx: &mut SceneContext<'_>) -> String {
+  ///   let mut audio = ctx.audio();
+  ///   let (heard, kept) = (audio.voices_on("ambience"), audio.virtual_voices_on("ambience"));
+  ///   format!("{heard} crickets heard, {kept} waiting their turn")
+  /// }
+  /// ```
+  pub fn virtual_voices_on(&mut self, bus: &str) -> usize {
+    self.with_mixer(|engine| engine.virtual_on(bus))
   }
 }

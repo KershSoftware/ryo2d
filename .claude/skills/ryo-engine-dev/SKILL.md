@@ -2,7 +2,7 @@
 name: ryo-engine-dev
 description: Working on the Ryo2D engine - the frame's phases, module map, resources, public API, crates and testing.
 metadata:
-  version: 2.4.0
+  version: 2.4.1
 ---
 
 # Ryo2D Engine Developer
@@ -155,7 +155,7 @@ See `ryo-ecs-internals` and `src/core/systems/AGENTS.md`. In short: derive `Comp
 | Integration | `tests/integration/` (target `integration`) | `cargo test --test integration` |
 | End-to-end, GPU | `tests/e2e/` with `HeadlessEngine` (target `e2e`) | `cargo test --test e2e`, `./dev.sh test:e2e` |
 | Demo tour | every page of every demo, headless | `./dev.sh demos:tour [demo...]` → `target/demo-tour/<demo>/page-N.png` |
-| Benchmarks | `benches/` (criterion): `foundation`, `physics`, `text` (the HUD frame, GPU), `ui` (a 200-widget settings screen under 60 µs and its node version within the larger of 10% or 10 µs of it, the node version unchanged under 35 µs, a 2,000-node static tree, an embedded node tree, the node cache's dirty check, a 1,000-row list, 10,000- and 100-row virtual lists and a 10,000-row node list, an empty frame; no GPU), `ui_render`, `assets` (a scene's start with `load_now` and with `load`, and a guard on the frame time of large hot reloads), `audio` (guards on 64 voices' main-thread time, `play`, a streamed `play` and reload landings, in an audio world) | `cargo bench --bench ui` |
+| Benchmarks | `benches/` (criterion): `foundation`, `physics`, `text` (the HUD frame, GPU), `ui` (a 200-widget settings screen under 60 µs and its node version within the larger of 10% or 10 µs of it, the node version unchanged under 35 µs, a 2,000-node static tree, an embedded node tree, the node cache's dirty check, a 1,000-row list, 10,000- and 100-row virtual lists and a 10,000-row node list, an empty frame; no GPU), `ui_render`, `assets` (a scene's start with `load_now` and with `load`, and a guard on the frame time of large hot reloads), `audio` (guards on 64 voices' main-thread time, 256 virtual loops ranked against 64 heard, `play`, a streamed `play` and reload landings, in an audio world) | `cargo bench --bench ui` |
 
 - Rendering regressions: write the failing pixel assertion in `tests/e2e/` first (see `src/core/testing/AGENTS.md`).
 - UI behaviour: unit tests drive frames with `ui::test_util::UiDriver` (a `UiHarness` plus keys, pad buttons, held directions and scenes); games use the public `ryo2d::testing::UiHarness`.

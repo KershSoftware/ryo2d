@@ -53,6 +53,13 @@ use crate::core::ecs::kernel::{EntityHashMap, EntityHashSet, MessageCursor, Mess
 use crate::core::ecs::{Disabled, Entity, Resource, Vec2, World};
 use crate::core::hash::{FastMap, FastSet};
 
+mod virtuals;
+
+use virtuals::{
+  MAX_VIRTUAL, REFUSED_VIRTUAL, Ranking, STAY_PUT, VIRTUAL_FULL, VIRTUAL_LIMIT, VIRTUAL_RANGE,
+  VIRTUAL_STOLEN,
+};
+
 /// The shortest smoothing of any change to a voice (volume, pitch, pause,
 /// stop): shorter jumps click
 pub(crate) const MIN_FADE: Duration = Duration::from_millis(10);
@@ -626,6 +633,16 @@ enum Playback {
   /// A loop played before the web's unlock: nothing sounds until it starts
   /// there
   Waiting(Waiting),
+  /// A virtual loop: no kira sound, its place kept
+  Virtual(Virtual),
+}
+
+/// A virtual loop's place, moved on each frame as kira would have played it
+#[derive(Debug, Clone, Copy)]
+struct Virtual {
+  /// Where it is, in seconds from the start of what plays
+  position: f64,
+  stopped: bool,
 }
 
 /// A loop waiting for the web's unlock, as the game left it
@@ -666,6 +683,9 @@ impl Playback {
       #[cfg(not(target_arch = "wasm32"))]
       Playback::Stream(sound, _) => sound.state(),
       Playback::Waiting(waiting) => waiting.state(),
+      // Its voice's state says whether it is paused
+      Playback::Virtual(state) if state.stopped => PlaybackState::Stopped,
+      Playback::Virtual(_) => PlaybackState::Playing,
     }
   }
 
@@ -685,6 +705,7 @@ impl Playback {
       #[cfg(not(target_arch = "wasm32"))]
       Playback::Stream(sound, _) => sound.stop(tween),
       Playback::Waiting(waiting) => waiting.stopped = true,
+      Playback::Virtual(state) => state.stopped = true,
     }
   }
 
@@ -696,6 +717,7 @@ impl Playback {
       #[cfg(not(target_arch = "wasm32"))]
       Playback::Stream(sound, _) => sound.pause(tween),
       Playback::Waiting(waiting) => waiting.paused = true,
+      Playback::Virtual(_) => {}
     }
   }
 
@@ -707,6 +729,7 @@ impl Playback {
       #[cfg(not(target_arch = "wasm32"))]
       Playback::Stream(sound, _) => sound.resume(tween),
       Playback::Waiting(waiting) => waiting.paused = false,
+      Playback::Virtual(_) => {}
     }
   }
 
@@ -715,7 +738,7 @@ impl Playback {
       Playback::Static(sound) => sound.set_volume(Decibels(db), tween),
       #[cfg(not(target_arch = "wasm32"))]
       Playback::Stream(sound, _) => sound.set_volume(Decibels(db), tween),
-      Playback::Waiting(_) => {}
+      Playback::Waiting(_) | Playback::Virtual(_) => {}
     }
   }
 
@@ -724,7 +747,7 @@ impl Playback {
       Playback::Static(sound) => sound.set_panning(Panning(pan), tween),
       #[cfg(not(target_arch = "wasm32"))]
       Playback::Stream(sound, _) => sound.set_panning(Panning(pan), tween),
-      Playback::Waiting(_) => {}
+      Playback::Waiting(_) | Playback::Virtual(_) => {}
     }
   }
 
@@ -735,6 +758,7 @@ impl Playback {
       #[cfg(not(target_arch = "wasm32"))]
       Playback::Stream(sound, _) => sound.position(),
       Playback::Waiting(_) => 0.0,
+      Playback::Virtual(state) => state.position,
     }
   }
 
@@ -743,7 +767,7 @@ impl Playback {
       Playback::Static(sound) => sound.set_playback_rate(PlaybackRate(rate), tween),
       #[cfg(not(target_arch = "wasm32"))]
       Playback::Stream(sound, _) => sound.set_playback_rate(PlaybackRate(rate), tween),
-      Playback::Waiting(_) => {}
+      Playback::Waiting(_) | Playback::Virtual(_) => {}
     }
   }
 
@@ -754,7 +778,7 @@ impl Playback {
   /// decodes it; `None` for what does not stream
   fn stream_rate(&self) -> Option<u32> {
     match self {
-      Playback::Static(_) | Playback::Waiting(_) => None,
+      Playback::Static(_) | Playback::Waiting(_) | Playback::Virtual(_) => None,
       #[cfg(not(target_arch = "wasm32"))]
       Playback::Stream(_, failure) => Some(failure.sample_rate()),
     }
@@ -762,7 +786,7 @@ impl Playback {
 
   fn take_error(&mut self) -> Option<String> {
     match self {
-      Playback::Static(_) | Playback::Waiting(_) => None,
+      Playback::Static(_) | Playback::Waiting(_) | Playback::Virtual(_) => None,
       #[cfg(not(target_arch = "wasm32"))]
       Playback::Stream(sound, failure) => {
         let error = failure
@@ -834,6 +858,12 @@ struct LiveVoice {
   scope: Option<u64>,
   /// How important it is (0 to 255)
   priority: u8,
+  /// Its definition's voice limit, as it played (or a reload last set it):
+  /// the virtual voices' ranking reads it
+  limit: Option<VoiceLimit>,
+  /// The engine's clock when it last started, went virtual or came back:
+  /// the ranking moves it again only [`STAY_PUT`] after
+  changed: Duration,
   /// Where it plays in the world, if it was given a position
   position: Option<Vec2>,
   /// The entity it was played from, which it follows and belongs to: its
@@ -916,6 +946,11 @@ impl LiveVoice {
   /// Its distance low-pass, if it has one
   fn filter(&self) -> Option<&VoiceFilter> {
     self.spatial.as_ref()?.filter.as_ref()
+  }
+
+  /// It is virtual: a loop keeping its place with no kira sound
+  fn is_virtual(&self) -> bool {
+    matches!(self.playback, Playback::Virtual(_))
   }
 
   /// The tween of a change the engine makes to its gain at `clock`:
@@ -1446,6 +1481,11 @@ pub struct EngineState {
   warned_flat: FastSet<UntypedAssetId>,
   /// The voices one play stops to make room, kept to reuse
   victims: Vec<Victim>,
+  /// How many voices are virtual (loops keeping their place with no kira
+  /// sound), at most [`MAX_VIRTUAL`]: none, and no frame ranks them
+  virtual_count: usize,
+  /// The virtual voices' ranking's lists, kept to reuse
+  ranking: Ranking,
   /// The voices each definition (or clip played directly) started this
   /// frame, for their `per_frame`. Kept to reuse
   frame_starts: Vec<(UntypedAssetId, u8)>,
@@ -1527,6 +1567,9 @@ pub struct EngineState {
   /// freed, gets here, so none in normal play
   #[cfg(test)]
   kira_full: usize,
+  /// The frames whose update ranked virtual voices (tests)
+  #[cfg(test)]
+  pub(crate) ranked: usize,
 }
 
 impl AudioEngine {
@@ -1692,6 +1735,8 @@ impl EngineState {
       watching_enabled: false,
       warned_flat: FastSet::default(),
       victims: Vec::new(),
+      virtual_count: 0,
+      ranking: Ranking::with_room(),
       frame_starts: Vec::new(),
       pending: Vec::new(),
       warned_loading: FastSet::default(),
@@ -1728,6 +1773,8 @@ impl EngineState {
       stream_reads_fail_at: None,
       #[cfg(test)]
       kira_full: 0,
+      #[cfg(test)]
+      ranked: 0,
     };
     // master's gain goes on kira's main track
     engine.refresh_gains();
@@ -2273,10 +2320,12 @@ impl EngineState {
     let mut moved = false;
     for duck in &mut self.ducks {
       let trigger = duck.trigger;
-      // A voice its bus holds is not heard, so it ducks nothing
+      // A voice its bus holds, or a virtual one, is not heard, so it ducks
+      // nothing
       let playing = self.voices.live.iter().any(|live| {
         live.voice.state() == VoiceState::Playing
           && !live.held
+          && !live.is_virtual()
           && self.buses.within(live.bus, trigger)
       });
       moved |= duck.step(playing, seconds);
@@ -2775,6 +2824,16 @@ impl EngineState {
     server: Option<&AssetServer>,
   ) -> Result<(), String> {
     let live = &self.voices.live[index];
+    // A virtual one has no kira sound: it takes them, to come back on them
+    if live.is_virtual() {
+      let version = replay
+        .source
+        .as_ref()
+        .version(world)
+        .unwrap_or(live.version);
+      self.take_replay(index, replay, version);
+      return Ok(());
+    }
     let Some((samples, version)) = replay.source.as_ref().samples(world) else {
       return Err("its clip is not in the store".into());
     };
@@ -3216,6 +3275,10 @@ impl EngineState {
       let Some(def) = defs.get(id) else {
         continue;
       };
+      // Its limit and priority as they are now: a virtual loop is ranked by
+      // them, and its next limits count it by them
+      live.limit = def.limit;
+      live.priority = def.priority;
       // Its level moves from where it was, unclamped: the clamp applies to
       // the sum, once
       let louder = follow_change(&mut live.tuning.volume_db, def.volume_db);
@@ -3303,7 +3366,8 @@ impl EngineState {
     }
   }
 
-  /// The live voices on `bus` and every bus under it (0 for no such bus)
+  /// The live voices on `bus` and every bus under it, but the virtual ones
+  /// (0 for no such bus)
   pub(crate) fn voices_on(&self, bus: &str) -> usize {
     let Some(bus) = self.buses.find(bus) else {
       return 0;
@@ -3312,7 +3376,7 @@ impl EngineState {
       .voices
       .live
       .iter()
-      .filter(|live| self.buses.within(live.bus, bus))
+      .filter(|live| !live.is_virtual() && self.buses.within(live.bus, bus))
       .count()
   }
 
@@ -4189,9 +4253,10 @@ impl EngineState {
     if request.position.is_some() && request.spatial.is_none() {
       self.warn_flat(request, server);
     }
-    // A one-shot out of range would not be heard; a loop plays on, silent,
-    // to be heard as it comes in range
-    if heard.is_some_and(|(_, hearing)| hearing.out_of_range) && !request.looping {
+    // A one-shot out of range would not be heard: it is culled. A loop
+    // there goes virtual, to come back as the listener comes near
+    let out_of_range = heard.is_some_and(|(_, hearing)| hearing.out_of_range);
+    if out_of_range && !request.looping {
       let entry = self.entry(AudioLogKind::Culled, 0, &subject, server);
       self.log.push(entry);
       return Voice::stopped();
@@ -4199,7 +4264,7 @@ impl EngineState {
     // Copies started in one frame play in step and add up: a sound starts
     // as often as its `per_frame` allows a frame, wherever it plays, plays
     // that waited for it landing included. The music player's one track is
-    // not counted
+    // not counted. A loop that goes virtual starts too
     let counted = (request.music.is_none() && !request.counted).then(|| start_key(request));
     if counted.is_some_and(|key| self.per_frame_full(key, request.per_frame)) {
       return self.refuse(&subject, REFUSED_PER_FRAME, server);
@@ -4221,15 +4286,34 @@ impl EngineState {
       Some(REFUSED_UNDECODABLE)
     } else if self.cooling(request) {
       Some(REFUSED_COOLDOWN)
-    } else if !waits && !self.room_on(bus) {
-      Some(REFUSED_FULL)
-    } else if !self.make_room(bus, request) {
-      Some(REFUSED_LIMIT)
     } else {
       None
     };
     if let Some(reason) = refusal {
       return self.refuse(&subject, reason, server);
+    }
+    // A loop (never music) out of range, or with no room where a one-shot
+    // is refused, goes virtual: it keeps its place silently, to come back
+    // when it is in range and has room
+    let virtualizes = request.looping && request.music.is_none();
+    let mut goes_virtual = if virtualizes && out_of_range {
+      Some(VIRTUAL_RANGE)
+    } else if !waits && !self.buses.has_room(bus) {
+      if !virtualizes {
+        self.warn_full(bus);
+        return self.refuse(&subject, REFUSED_FULL, server);
+      }
+      Some(VIRTUAL_FULL)
+    } else if !self.make_room(bus, request) {
+      if !virtualizes {
+        return self.refuse(&subject, REFUSED_LIMIT, server);
+      }
+      Some(VIRTUAL_LIMIT)
+    } else {
+      None
+    };
+    if goes_virtual.is_some() && self.virtual_count >= MAX_VIRTUAL {
+      return self.refuse(&subject, REFUSED_VIRTUAL, server);
     }
     let length = {
       let (rate, frames) = match &samples {
@@ -4242,7 +4326,13 @@ impl EngineState {
         .map_or(frames, |(from, to)| to - from);
       played as f64 / f64::from(rate.max(1))
     };
-    let (playback, filter) = if waits {
+    let unstarted = Playback::Virtual(Virtual {
+      position: 0.0,
+      stopped: false,
+    });
+    let (playback, filter) = if goes_virtual.is_some() {
+      (unstarted, None)
+    } else if waits {
       (
         Playback::Waiting(Waiting::new(request.fade_in, starts_held)),
         None,
@@ -4270,6 +4360,14 @@ impl EngineState {
       };
       match started {
         Ok(playback) => (playback, filter),
+        // kira found no room after all (a race of nanoseconds as a stopped
+        // sound's slot frees): a loop goes virtual, stopping nothing
+        Err(Refusal::Full) if virtualizes && self.virtual_count < MAX_VIRTUAL => {
+          self.count_kira_full();
+          self.victims.clear();
+          goes_virtual = Some(VIRTUAL_FULL);
+          (unstarted, None)
+        }
         Err(refusal) => {
           let reason = match &refusal {
             Refusal::Undecodable(error) => {
@@ -4304,6 +4402,8 @@ impl EngineState {
       }
       None => Voice::new(self.voices.next_id(), self.commands.clone(), pick),
     };
+    // A virtual one is first heard as it comes back, fading in there
+    let heard_later = goes_virtual.is_some();
     self.voices.live.push(LiveVoice {
       voice: voice.clone(),
       playback,
@@ -4321,21 +4421,24 @@ impl EngineState {
       held,
       owner_held,
       kira_paused: starts_held,
-      unheard: starts_held.then_some(request.fade_in),
+      unheard: (starts_held && !heard_later).then_some(request.fade_in),
       own_fade: None,
-      fade_in: if starts_held || waits {
+      fade_in: if starts_held || waits || heard_later {
         None
       } else {
         FadeIn::begin(self.clock, request.fade_in)
       },
       scope,
       priority: request.priority,
+      limit: request.limit,
+      changed: self.clock,
       position: request.position,
       emitter: request.emitter,
       spatial: heard.map(|(settings, hearing)| SpatialVoice {
         settings,
         gain_db: hearing.gain_db,
         pan: hearing.pan,
+        near: hearing.near,
         filter,
       }),
       fade_out: request.fade_out,
@@ -4350,20 +4453,20 @@ impl EngineState {
     if let Some(entity) = request.emitter {
       self.track_emitter_voice(entity, voice.id());
     }
-    // A held start is silent and paused: its fade-in waits for its resume.
-    // One waiting for the unlock is logged as it starts there
-    let fade_in = if starts_held {
-      Duration::ZERO
-    } else {
-      request.fade_in
-    };
-    if !waits {
-      self.record(
-        self.voices.live.len() - 1,
-        AudioLogKind::Start,
-        fade_in,
-        server,
-      );
+    let index = self.voices.live.len() - 1;
+    if let Some(reason) = goes_virtual {
+      voice.set_virtual(true);
+      self.virtual_count += 1;
+      self.record_why(index, AudioLogKind::Virtual, Duration::ZERO, reason, server);
+    } else if !waits {
+      // A held start is silent and paused: its fade-in waits for its
+      // resume. One waiting for the unlock is logged as it starts there
+      let fade_in = if starts_held {
+        Duration::ZERO
+      } else {
+        request.fade_in
+      };
+      self.record(index, AudioLogKind::Start, fade_in, server);
     }
     if let Some(key) = counted {
       self.count_start(key);
@@ -4481,10 +4584,21 @@ impl EngineState {
     fits
   }
 
-  /// Stop the planned victims, each with its fade, logged as stolen
+  /// Stop the planned victims, each with its fade, logged as stolen. A
+  /// loop (never music) goes virtual instead, its kira sound fading out
+  /// with that fade, while fewer than [`MAX_VIRTUAL`] are
   fn steal_victims(&mut self, server: Option<&AssetServer>) {
     for at in 0..self.victims.len() {
       let Victim { index, fade } = self.victims[at];
+      let loops = self
+        .voices
+        .live
+        .get(index)
+        .is_some_and(|live| live.looping && live.music.is_none());
+      if loops && self.virtual_count < MAX_VIRTUAL {
+        self.virtualize(index, fade, VIRTUAL_STOLEN, server);
+        continue;
+      }
       if let Some(live) = self.voices.live.get_mut(index) {
         live.playback.stop(fade);
         live.voice.set_state(VoiceState::Stopping);
@@ -4493,16 +4607,6 @@ impl EngineState {
       self.record(index, AudioLogKind::Stolen, fade, server);
     }
     self.victims.clear();
-  }
-
-  /// Whether kira has room for one more sound on `bus`'s track, warning
-  /// once for the bus when it has none
-  fn room_on(&mut self, bus: usize) -> bool {
-    if self.buses.has_room(bus) {
-      return true;
-    }
-    self.warn_full(bus);
-    false
   }
 
   /// Warn, once for `bus`, that kira's room on its track is full. Only the
@@ -4725,7 +4829,10 @@ impl EngineState {
     self.play_spawned(world, server);
     self.play_awaited(world, server);
     self.follow_game(game, real_delta, server);
+    self.rank_virtual(world, server);
     self.report_stream_errors();
+    // The virtual loops move on as kira renders the frame
+    self.advance_virtual(real_delta);
     self.mock_render = Duration::ZERO;
     if let Some(Manager::Mock(manager)) = &mut self.manager {
       let chunks = chunks_due(&mut self.mock_owed, real_delta);
@@ -4951,6 +5058,11 @@ impl EngineState {
       let live = &mut self.voices.live[index];
       let own_db = live.own_db();
       let fade_in = live.fade_in;
+      let virtualized = live.is_virtual();
+      // A loop out of range takes no voice, once it has stayed as it is
+      // long enough
+      let may_leave =
+        live.looping && live.music.is_none() && clock.saturating_sub(live.changed) >= STAY_PUT;
       let (Some(spatial), Some(position)) = (&mut live.spatial, live.position) else {
         continue;
       };
@@ -4958,6 +5070,18 @@ impl EngineState {
         continue;
       }
       let hearing = Hearing::of(&spatial.settings, position, self.listener.as_ref());
+      spatial.near = hearing.near;
+      if virtualized {
+        // Nothing is sent or logged: it starts as its place then gives
+        // when it comes back
+        spatial.gain_db = hearing.gain_db;
+        spatial.pan = hearing.pan;
+        continue;
+      }
+      if hearing.out_of_range && may_leave && self.virtual_count < MAX_VIRTUAL {
+        self.virtualize(index, MIN_FADE, VIRTUAL_RANGE, server);
+        continue;
+      }
       let gain = spatial.follow_gain(&hearing);
       if gain {
         let heard = heard_db(own_db, spatial.gain_db);
@@ -5184,13 +5308,20 @@ impl EngineState {
       if ended {
         let live = &self.voices.live[index];
         live.voice.set_state(VoiceState::Stopped);
+        live.voice.set_virtual(false);
         if let Some(entity) = live.emitter {
           let id = live.voice.id();
           self.forget_emitter_voice(entity, id);
         }
       }
     }
-    self.voices.live.retain(|live| !live.voice.is_stopped());
+    let mut virtualized = 0;
+    self.voices.live.retain(|live| {
+      let kept = !live.voice.is_stopped();
+      virtualized += usize::from(kept && live.is_virtual());
+      kept
+    });
+    self.virtual_count = virtualized;
   }
 
   /// Mark `clip` at content `version` undecodable, so it is refused until it
@@ -5220,6 +5351,28 @@ impl EngineState {
     server: Option<&AssetServer>,
   ) {
     self.record_on(index, kind, fade, None, server);
+  }
+
+  /// [`record`](Self::record) with `reason`: why it went virtual or came
+  /// back
+  fn record_why(
+    &mut self,
+    index: usize,
+    kind: AudioLogKind,
+    fade: Duration,
+    reason: &'static str,
+    server: Option<&AssetServer>,
+  ) {
+    if !self.log.is_on() {
+      return;
+    }
+    let Some(live) = self.voices.live.get(index) else {
+      return;
+    };
+    let mut entry = self.entry(kind, live.voice.id(), &live.subject(), server);
+    entry.fade = fade;
+    entry.reason = reason;
+    self.log.push(entry);
   }
 
   /// [`record`](Self::record), naming bus `on` when given (a sound on a
@@ -5309,6 +5462,7 @@ impl Drop for EngineState {
   fn drop(&mut self) {
     for live in &self.voices.live {
       live.voice.set_state(VoiceState::Stopped);
+      live.voice.set_virtual(false);
     }
     for pending in &self.pending {
       pending.voice.set_state(VoiceState::Stopped);
@@ -5610,7 +5764,7 @@ fn focus_db(focused: bool, rule: FocusLoss) -> f32 {
 }
 
 /// Which voices a limit counts
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum Scope {
   /// A definition's voices on a bus's subtree
   Sound(AssetId<Sound>, usize),
@@ -5618,6 +5772,17 @@ enum Scope {
   Subtree(usize),
   /// Every voice on a bus's own track
   Track(usize),
+}
+
+impl Scope {
+  /// Whether `live` is in it, on `buses`
+  fn holds(self, live: &LiveVoice, buses: &BusTree) -> bool {
+    match self {
+      Scope::Sound(id, bus) => live.sound == Some(id) && buses.within(live.bus, bus),
+      Scope::Subtree(bus) => buses.within(live.bus, bus),
+      Scope::Track(bus) => live.bus == bus,
+    }
+  }
 }
 
 /// The voices one play may stop to make room, planned before any is
@@ -5662,17 +5827,13 @@ impl Room<'_> {
   }
 
   /// Whether voice `index` counts against `scope`'s limit: in it, playing or
-  /// paused, and not already planned to stop
+  /// paused, not virtual, and not already planned to stop
   fn counts(&self, index: usize, scope: Scope) -> bool {
     let Some(live) = self.live.get(index) else {
       return false;
     };
-    let in_scope = match scope {
-      Scope::Sound(id, bus) => live.sound == Some(id) && self.buses.within(live.bus, bus),
-      Scope::Subtree(bus) => self.buses.within(live.bus, bus),
-      Scope::Track(bus) => live.bus == bus,
-    };
-    in_scope
+    scope.holds(live, self.buses)
+      && !live.is_virtual()
       && !matches!(
         live.voice.state(),
         VoiceState::Stopping | VoiceState::Stopped

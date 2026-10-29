@@ -794,9 +794,15 @@ mod tests {
     let second = AudioView::new(&mut world).play(&loud);
     assert!(second.is_playing(), "{second:?}");
     let music = log(&world)[0].voice;
+    // The loop goes virtual, keeping its place for when there is room
     let stopped: Vec<u32> = log(&world)
       .iter()
-      .filter(|entry| matches!(entry.kind, AudioLogKind::Stolen | AudioLogKind::Stop))
+      .filter(|entry| {
+        matches!(
+          entry.kind,
+          AudioLogKind::Stolen | AudioLogKind::Stop | AudioLogKind::Virtual
+        )
+      })
       .map(|entry| entry.voice)
       .collect();
     assert_eq!(
@@ -804,11 +810,13 @@ mod tests {
       [first.id()],
       "the oldest sound gives way, not the music {music}"
     );
+    assert!(first.is_virtual(), "{first:?}");
     assert_eq!(current(&mut world), Some(track.id()));
   }
 
-  /// When only the music could give way, a play that is not music is
-  /// refused, however important: the track plays on
+  /// When only the music could give way, a one-shot that is not music is
+  /// refused, however important, and a loop goes virtual and stays so: the
+  /// track plays on
   #[test]
   fn a_play_whose_only_victim_is_the_music_is_refused() {
     use crate::core::audio::{Sound, SoundClip};
@@ -820,6 +828,11 @@ mod tests {
       .resource_mut::<Assets<Music>>()
       .add(Music::looping(clip.clone(), 0.0, None));
     let loud = world.resource_mut::<Assets<Sound>>().add(Sound {
+      clips: vec![SoundClip::new(clip.clone())],
+      priority: u8::MAX,
+      ..Default::default()
+    });
+    let bed = world.resource_mut::<Assets<Sound>>().add(Sound {
       clips: vec![SoundClip::new(clip)],
       looping: true,
       priority: u8::MAX,
@@ -841,6 +854,12 @@ mod tests {
     };
     assert!(reason.starts_with("limit"), "{reason}");
     steps(&mut world, 2);
+    assert_eq!(current(&mut world), Some(track.id()));
+    assert_eq!(voices_on_music(&mut world), 1, "the track plays on");
+    let kept = AudioView::new(&mut world).play(&bed);
+    assert!(kept.is_playing() && kept.is_virtual(), "{kept:?}");
+    steps(&mut world, 30);
+    assert!(kept.is_virtual(), "it never takes the music's place");
     assert_eq!(current(&mut world), Some(track.id()));
     assert_eq!(voices_on_music(&mut world), 1, "the track plays on");
   }

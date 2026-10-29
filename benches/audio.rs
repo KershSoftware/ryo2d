@@ -9,7 +9,7 @@
 //! their frames at 60 Hz with a spin wait, so they measure a core kept busy:
 //! best case for a game whose main thread sleeps between frames.
 //!
-//! Before criterion runs, four guards (the first printing an idle frame's
+//! Before criterion runs, five guards (the first printing an idle frame's
 //! audio time beside it, with no target):
 //! - `voices_64`: 64 looping voices, 32 of them heard from emitters
 //!   circling the listener, each with a distance low-pass (the most that
@@ -17,6 +17,13 @@
 //!   change every frame; the other 32 plain loops on `sfx` and `ambience`.
 //!   Over 2,000 frames paced at 60 Hz, the median main-thread time of
 //!   `audio_system` is held to 50 µs (the spec);
+//! - `virtual_256`: 320 loops heard from places in range of the listener
+//!   on a bus limited to 64 voices, so 64 are heard and 256 virtual, each
+//!   frame weighed against the heard by the ranking (none is the 3 dB
+//!   louder that would move it). Over 2,000 frames paced at 60 Hz, the
+//!   median main-thread time of `audio_system` is held to 20 µs. The median
+//!   `play` of a decoded clip on `sfx` beside them is printed, with no
+//!   target (a play's limits look at every voice, virtual ones included);
 //! - `play_cost`: 10,000 `play` calls of decoded 50 ms clips, eight a
 //!   frame, one of each of eight clips (a clip starts once a frame), so
 //!   about sixteen voices play, each timed alone; the median is held to
@@ -51,13 +58,15 @@
 //!   as the web does in its asset pump (it has no streaming, so a long clip
 //!   there is a hitch of that length), with no target.
 //!
-//! `voices_64`, `play_cost` and `play_cost_streamed` hold the median;
+//! `voices_64`, `virtual_256`, `play_cost` and `play_cost_streamed` hold
+//! the median;
 //! `load_hitch` holds the slowest landing. A miss fails the run once
 //! criterion's benches have run, printing the command to profile it with.
 //! Each guard runs only where criterion measures the bench of its name: with
 //! no filter or one naming it, and not for `--list`, `--test` or
 //! `--profile-time`. The criterion benches, for the profiles: `voices_64`
-//! times `audio_system` over the same 64 voices back to back, `play_cost`
+//! times `audio_system` over the same 64 voices back to back, `virtual_256`
+//! over the 64 heard and 256 virtual loops back to back, `play_cost`
 //! one play of a decoded clip, and `load_hitch` the frame each reload of
 //! the OGG lands in (the MP3's without `ffmpeg`), from 20 s in, at 60 Hz.
 //!
@@ -83,6 +92,13 @@ const FRAME: Duration = Duration::from_nanos(16_666_667);
 const FRAMES: usize = 2000;
 /// The spec's frame with 64 voices
 const VOICES_TARGET: Duration = Duration::from_micros(50);
+/// A frame with 256 virtual loops ranked against 64 heard
+const VIRTUAL_TARGET: Duration = Duration::from_micros(20);
+/// The bus the virtual loops crowd, and its limit
+const CROWD_BUS: &str = "sfx/crowd";
+const CROWD_HEARD: usize = 64;
+/// The loops on it
+const CROWD: usize = 320;
 /// The spec's play
 const PLAY_TARGET: Duration = Duration::from_micros(5);
 /// A streamed play: its main thread's part (the open is the decoder
@@ -103,10 +119,14 @@ const RELOAD_EVERY: usize = 50;
 const MID_FILE: f64 = 20.0;
 /// The criterion benches whose medians are printed, with what each median
 /// is of
-const BENCHES: [(&str, &str); 3] = [
+const BENCHES: [(&str, &str); 4] = [
   (
     "voices_64",
     "a frame's audio_system less the mock's rendering, back to back",
+  ),
+  (
+    "virtual_256",
+    "a frame's audio_system less the mock's rendering with 256 virtual loops, back to back",
   ),
   ("play_cost", "a play of a decoded clip"),
   (
@@ -376,6 +396,162 @@ fn voices_bench(c: &mut Criterion) {
         total += timed_audio(world).0;
         end(world);
         *frame += 1;
+      }
+      total
+    });
+  });
+}
+
+// virtual_256
+
+/// The crowd's world: 320 loops heard from places 60 to 1,500 px from the
+/// listener (all in range, at every angle) on a bus the mixer limits to 64
+/// voices. Played nearest first in one frame, the 64 nearest are heard and
+/// the 256 beyond are virtual: the limit has no room, and takes no voice
+/// started in that frame. Each frame after, the ranking weighs every
+/// virtual loop against the heard, none being the 3 dB louder than the
+/// quietest heard that would move it
+fn crowd_world() -> World {
+  let mut world = quiet(audio_world());
+  world.spawn((AudioListener, Transform::default()));
+  AudioView::new(&mut world).set_mixer(Mixer {
+    buses: vec![BusDef {
+      limit: Some(CROWD_HEARD as u16),
+      ..BusDef::new(CROWD_BUS)
+    }],
+    ..Default::default()
+  });
+  let clip = add_clip(&mut world, 2.0, 7);
+  // Two sounds, as one starts at most 255 voices a frame
+  let sounds = [0, 1].map(|_| {
+    world.resource_mut::<Assets<Sound>>().add(Sound {
+      clips: vec![SoundClip::new(clip.clone())],
+      bus: CROWD_BUS.to_string(),
+      looping: true,
+      per_frame: u8::MAX,
+      spatial: Some(Spatial {
+        min_distance: 50.0,
+        max_distance: 2000.0,
+        curve: Falloff::Inverse,
+        pan_width: 1000.0,
+        low_pass_at_max: None,
+      }),
+      ..Default::default()
+    })
+  });
+  for i in 0..CROWD {
+    let distance = 60.0 + i as f32 * 4.5;
+    let angle = i as f32 * 2.4;
+    let at = Vec2::new(distance * angle.cos(), distance * angle.sin());
+    AudioView::new(&mut world).play_at(&sounds[i % 2], at);
+  }
+  world
+}
+
+/// How many loops on the crowd's bus are heard, and how many virtual
+fn crowd(world: &mut World) -> (usize, usize) {
+  let mut audio = AudioView::new(world);
+  (
+    audio.voices_on(CROWD_BUS),
+    audio.virtual_voices_on(CROWD_BUS),
+  )
+}
+
+/// The crowd's frames at 60 Hz: the median main-thread time of
+/// `audio_system`, held to 20 µs; then the median play of a decoded clip on
+/// `sfx` beside the crowd, printed with no target
+fn virtual_guard() {
+  let mut world = crowd_world();
+  // Past the 250 ms a voice stays as it is: every virtual loop is weighed
+  for _ in 0..30 {
+    step(&mut world);
+  }
+  let before = crowd(&mut world);
+  // What a frame moves, read from the audio log for one frame
+  world.resource_mut::<AudioEngine>().set_logging(true);
+  step(&mut world);
+  let moved = world
+    .resource::<AudioEngine>()
+    .log()
+    .iter()
+    .filter(|entry| matches!(entry.kind, AudioLogKind::Virtual | AudioLogKind::Real))
+    .count();
+  world.resource_mut::<AudioEngine>().set_logging(false);
+  let mut times = Vec::with_capacity(FRAMES);
+  let mut mocks = Vec::with_capacity(FRAMES);
+  let mut next = Instant::now();
+  for _ in 0..FRAMES {
+    pace(next);
+    next = Instant::now() + FRAME;
+    tick(&mut world);
+    pump(&mut world);
+    let (time, mock) = timed_audio(&mut world);
+    end(&mut world);
+    times.push(time);
+    mocks.push(mock);
+  }
+  let after = crowd(&mut world);
+  // A play beside the crowd, on sfx: its limits look at every voice
+  let clips: Vec<Handle<AudioClip>> = (0..PLAYS_A_FRAME as u32)
+    .map(|seed| add_clip(&mut world, 0.05, 20 + seed))
+    .collect();
+  let play = |world: &mut World, i: usize| AudioView::new(world).play(&clips[i % PLAYS_A_FRAME]);
+  plays(&mut world, play);
+  let (play_times, _) = plays(&mut world, play);
+  let (Some((median, p95, max)), Some(mock), Some(play)) =
+    (spread(times), median(mocks), median(play_times))
+  else {
+    return;
+  };
+  let met = median <= VIRTUAL_TARGET;
+  eprintln!(
+    "virtual_256 guard, {FRAMES} frames at 60 Hz, {} loops heard and {} virtual on {CROWD_BUS} \
+     ({} and {} at the end; a frame moves {moved}): audio_system's main-thread time, median \
+     {:.1} µs, 95th percentile {:.1}, max {:.1} (the mock's rendering, left out: median {:.1} \
+     µs); within {} µs: {}. A play of a decoded clip beside them: median {:.2} µs (no target)",
+    before.0,
+    before.1,
+    after.0,
+    after.1,
+    us(median),
+    us(p95),
+    us(max),
+    us(mock),
+    VIRTUAL_TARGET.as_micros(),
+    if met { "met" } else { "missed" },
+    us(play),
+  );
+  if !met {
+    guards::miss(format!("virtual_256: median {:.1} µs", us(median)));
+  }
+  let crowded = (CROWD_HEARD, CROWD - CROWD_HEARD);
+  if before != crowded || after != crowded || moved > 0 {
+    guards::miss(format!(
+      "virtual_256: {before:?} heard and virtual, {after:?} at the end, {moved} moved in a \
+       frame, not {crowded:?} and none"
+    ));
+  }
+}
+
+/// The crowd's frames back to back; the world is made once, on the bench's
+/// first call
+fn virtual_bench(c: &mut Criterion) {
+  let mut made = None;
+  c.bench_function("virtual_256", |b| {
+    let world = made.get_or_insert_with(|| {
+      let mut world = crowd_world();
+      for _ in 0..30 {
+        step(&mut world);
+      }
+      world
+    });
+    b.iter_custom(|iters| {
+      let mut total = Duration::ZERO;
+      for _ in 0..iters {
+        tick(world);
+        pump(world);
+        total += timed_audio(world).0;
+        end(world);
       }
       total
     });
@@ -1168,7 +1344,7 @@ fn main() {
     .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
     .unwrap_or_else(|_| "uptime unavailable".into());
   println!("machine: {load}");
-  println!("audio bench: 64 voices, a play, a streamed play and the load hitch");
+  println!("audio bench: 64 voices, 256 virtual loops, a play, a streamed play and the load hitch");
   let results = guards::results_dir();
   let mut criterion = Criterion::default()
     .sample_size(20)
@@ -1177,6 +1353,9 @@ fn main() {
   if guards::runs(&["voices_64"]) {
     idle_line();
     voices_guard();
+  }
+  if guards::runs(&["virtual_256"]) {
+    virtual_guard();
   }
   if guards::runs(&["play_cost"]) {
     play_guard();
@@ -1193,6 +1372,7 @@ fn main() {
     web_decode(fixtures);
   }
   voices_bench(&mut criterion);
+  virtual_bench(&mut criterion);
   play_bench(&mut criterion);
   load_bench(&mut criterion, &mut made);
   criterion.final_summary();
@@ -1213,7 +1393,7 @@ fn main() {
     "Profile a miss (the bench binary is the one `cargo bench --bench audio --no-run` names) \
      with\n  xcrun xctrace record --template 'Time Profiler' --output audio.trace --launch -- \
      target/release/deps/audio-<hash> --bench --profile-time 20 '^load_hitch$'\n(voices_64, \
-     play_cost or load_hitch; for play_cost_streamed, which has no criterion bench, launch \
+     virtual_256, play_cost or load_hitch; for play_cost_streamed, which has no criterion bench, launch \
      `--bench play_cost_streamed` to profile its guard) and charge each sample's time to the \
      nearest ryo2d function from the leaf up (kira's and symphonia's under the ryo2d call that \
      reached them).",

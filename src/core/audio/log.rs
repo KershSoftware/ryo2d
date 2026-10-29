@@ -44,6 +44,14 @@ pub enum AudioLogKind {
   Culled,
   /// It was stopped to make room for another voice
   Stolen,
+  /// It went virtual: a loop that a voice limit or its bus's cap had no
+  /// room for, or that is at or beyond its maximum distance, keeps its place
+  /// silently with no kira sound (`reason` says why; `fade` is its kira
+  /// sound's fade out, if it had one)
+  Virtual,
+  /// It came back from virtual: its kira sound starts where it is, fading
+  /// in over `fade` (50 ms; `reason` says why)
+  Real,
 }
 
 /// One thing the engine did with a voice, and the voice as it stood then;
@@ -75,8 +83,10 @@ pub struct AudioLogEntry {
   pub fade: Duration,
   /// Why a play was refused (`Refused`): the rule that refused it, first
   /// (`per_frame`, `cooldown`, `limit`, `full`, `undecodable`, `locked`,
-  /// `unlock`, `loading` or `emitter`), then a few words on what it means;
-  /// empty for every other kind
+  /// `unlock`, `loading`, `emitter` or `virtual`), then a few words on what
+  /// it means. Why a voice went virtual (`Virtual`: `range`, `limit`,
+  /// `full`, `stolen` or `displaced`) or came back (`Real`: `room` or
+  /// `outranks`), the same way. Empty for every other kind
   pub reason: &'static str,
 }
 

@@ -33,6 +33,11 @@ pub(crate) const MAX_FILTERED: usize = 32;
 /// tapered to silence at the maximum
 const INVERSE_SHARPNESS: f32 = 15.0;
 
+/// How near the listener a virtual loop out of range comes back: inside
+/// this fraction of its maximum distance, so one at the edge does not go
+/// virtual and come back by turns
+pub(crate) const RETURN_RANGE: f32 = 0.95;
+
 /// The least change of a voice's falloff gain sent to kira, in dB: smaller
 /// ones are not heard
 const GAIN_STEP: f32 = 0.1;
@@ -336,6 +341,9 @@ pub(crate) struct Hearing {
   pub(crate) cutoff: Option<f64>,
   /// It is at or beyond its maximum distance
   pub(crate) out_of_range: bool,
+  /// It is inside [`RETURN_RANGE`] of its maximum distance (or within its
+  /// minimum): a virtual loop there may come back
+  pub(crate) near: bool,
 }
 
 impl Hearing {
@@ -348,6 +356,7 @@ impl Hearing {
       pan: pan_for(spatial, right),
       cutoff: low_pass(spatial).map(|closed| cutoff_hz(spatial, closed, distance)),
       out_of_range: reach(spatial, distance) >= 1.0,
+      near: reach(spatial, distance / RETURN_RANGE) < 1.0,
     }
   }
 }
@@ -359,7 +368,10 @@ pub(crate) struct SpatialVoice {
   /// Its falloff gain in dB, added to its own
   pub(crate) gain_db: f32,
   pub(crate) pan: f32,
-  /// Its distance low-pass, if its sound has one and there was room
+  /// It is near enough to come back if it is virtual ([`Hearing::near`])
+  pub(crate) near: bool,
+  /// Its distance low-pass, if its sound has one and there was room (none
+  /// while it is virtual)
   pub(crate) filter: Option<VoiceFilter>,
 }
 
@@ -716,37 +728,55 @@ mod tests {
     assert_eq!(start.pan, 1.0);
   }
 
+  /// A loop that starts out of range is virtual, taking no voice; an
+  /// emitter's loop that leaves its range goes virtual once it has played
+  /// 250 ms, and comes back where it has got to, at its place's gain, as it
+  /// returns inside 95% of its range
   #[test]
-  fn a_loop_out_of_range_runs_silent_and_returns() {
+  fn a_loop_out_of_range_is_virtual_and_returns() {
     let mut world = audio_world();
     world.spawn(AudioListener);
     let hum = placed(&mut world, settings(Falloff::Linear), true);
-    // A loop that starts out of range starts, silent
     let distant = play_at(&mut world, &hum, 900.0);
-    assert!(distant.is_playing(), "{distant:?}");
-    let start = &entries(&world, distant.id(), AudioLogKind::Start)[0];
-    assert_eq!(start.gain_db, SILENCE);
+    assert!(distant.is_playing() && distant.is_virtual(), "{distant:?}");
+    assert!(started(&world).is_empty());
     // The sound has started once this frame: its emitter plays in the next
     audio_step(&mut world, FRAME);
     let entity = emitter(&mut world, &hum, 300.0);
     audio_step(&mut world, FRAME);
-    let voice = started(&world)[1];
-    for x in [900.0, 900.0, 900.0, 100.0] {
-      move_to(&mut world, entity, x, 0.0);
+    let voice = only_voice(&world);
+    move_to(&mut world, entity, 900.0, 0.0);
+    for _ in 0..14 {
       audio_step(&mut world, FRAME);
     }
-    assert!(
-      close(&gains(&world, voice), &[SILENCE, 0.0]),
-      "{:?}",
-      gains(&world, voice)
-    );
-    // It kept playing out of range, and plays on
+    assert!(entries(&world, voice, AudioLogKind::Virtual).is_empty());
+    // Away for 250 ms after it started, and virtual for 250 ms
+    for _ in 0..16 {
+      audio_step(&mut world, FRAME);
+    }
+    let went = entries(&world, voice, AudioLogKind::Virtual);
+    assert_eq!(went.len(), 1, "{went:#?}");
+    assert!(went[0].reason.starts_with("range"), "{went:#?}");
+    assert_eq!(world.resource::<AudioEngine>().sounds_on("sfx"), 0);
+    let away = world
+      .resource::<AudioEngine>()
+      .voice_position(voice)
+      .unwrap_or_default();
+    move_to(&mut world, entity, 100.0, 0.0);
+    audio_step(&mut world, FRAME);
+    let back = entries(&world, voice, AudioLogKind::Real);
+    assert_eq!(back.len(), 1, "{back:#?}");
+    assert_eq!((back[0].gain_db, back[0].pan), (0.0, 0.5));
     assert_eq!(playback(&world, voice), Some(PlaybackState::Playing));
+    // It ran on while virtual, and plays on
     let position = world
       .resource::<AudioEngine>()
       .voice_position(voice)
       .unwrap_or_default();
-    assert!(position > 0.06, "it ran on: {position}");
+    assert!(
+      position > away && position > 0.27,
+      "it ran on: {away} then {position}"
+    );
   }
 
   #[test]
@@ -1372,16 +1402,21 @@ mod tests {
     let mut spatial = settings(Falloff::Linear);
     spatial.low_pass_at_max = Some(500.0);
     let hum = placed(&mut world, spatial, true);
-    let voice = play_at(&mut world, &hum, 500.0);
+    // Near its maximum (at it, a loop is virtual and has no filter)
+    let voice = play_at(&mut world, &hum, 490.0);
     audio_step(&mut world, FRAME);
-    assert_eq!(cutoff(&world, &voice), Some(500.0));
+    let closed = cutoff(&world, &voice);
+    assert!(closed.is_some_and(|hz| hz < 600.0), "{closed:?}");
     AudioView::new(&mut world).set_mixer(Mixer::default());
     audio_step(&mut world, FRAME);
-    assert_eq!(cutoff(&world, &voice), Some(500.0));
+    assert_eq!(cutoff(&world, &voice), closed);
     assert_eq!(world.resource::<AudioEngine>().sub_tracks_on("sfx"), 1);
     let start = entries(&world, voice.id(), AudioLogKind::Start);
     assert_eq!(start.len(), 2, "restarted: {start:#?}");
-    assert_eq!((start[1].gain_db, start[1].pan), (SILENCE, 1.0));
+    assert_eq!(
+      (start[1].gain_db, start[1].pan),
+      (start[0].gain_db, start[0].pan)
+    );
   }
 
   // What the mock backend renders from a placed voice: the gain, pan and

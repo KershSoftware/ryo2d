@@ -1321,8 +1321,11 @@ mod tests {
       (audio.voices_on("ambience"), audio.voices_on("sfx")),
       (1, 1)
     );
-    // Its limit counts the loop on its new bus
-    assert!(audio.play(&sound).is_stopped(), "{:#?}", log(&world));
+    // Its limit counts the loop on its new bus: a second is kept out, and
+    // waits virtual
+    let kept_out = audio.play(&sound);
+    assert!(kept_out.is_virtual(), "{:#?}", log(&world));
+    assert_eq!(AudioView::new(&mut world).voices_on("ambience"), 1);
   }
 
   /// The Stop logged for the old voice at a switch is the old voice as it

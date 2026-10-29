@@ -131,4 +131,46 @@ fn idle_frame_audio_allocates_nothing() {
     after, 0,
     "100 idle frames after sounds played allocated {after} times"
   );
+
+  // Idle with virtual voices: loops a limit keeps out and one out of
+  // range, each frame moved on through their clips and ranked against the
+  // loops heard (none moves: they are as loud)
+  let beds = world.resource_mut::<Assets<Sound>>().add(Sound {
+    clips: vec![SoundClip::new(blip.clone())],
+    looping: true,
+    per_frame: 8,
+    limit: Some(VoiceLimit {
+      max: 2,
+      rule: LimitRule::StopOldest,
+    }),
+    ..Default::default()
+  });
+  let far = world.resource_mut::<Assets<Sound>>().add(Sound {
+    clips: vec![SoundClip::new(blip)],
+    looping: true,
+    spatial: Some(Spatial {
+      min_distance: 10.0,
+      max_distance: 100.0,
+      curve: Falloff::Linear,
+      pan_width: 100.0,
+      low_pass_at_max: None,
+    }),
+    ..Default::default()
+  });
+  let mut audio = AudioView::new(&mut world);
+  let played: Vec<Voice> = (0..5).map(|_| audio.play(&beds)).collect();
+  let distant = audio.play_at(&far, Vec2::new(500.0, 0.0));
+  // Past the 250 ms a voice stays as it is, so each frame weighs them all
+  for _ in 0..30 {
+    frame(&mut world);
+  }
+  let kept = played.iter().filter(|voice| voice.is_virtual()).count();
+  assert_eq!(kept, 3, "{played:?}");
+  assert!(distant.is_virtual(), "{distant:?}");
+  let virtuals = hundred_frames(&mut world);
+  assert_eq!(
+    virtuals, 0,
+    "100 idle frames with virtual voices allocated {virtuals} times"
+  );
+  assert_eq!(AudioView::new(&mut world).virtual_voices_on("sfx"), 4);
 }

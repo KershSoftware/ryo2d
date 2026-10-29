@@ -2125,9 +2125,11 @@ mod tests {
     let Some(mut placed) = sounds.get(&sound).cloned() else {
       panic!("the loop is in the store");
     };
+    // Heard from the world's origin: the main camera, the listener, is
+    // 500 px away
     placed.spatial = Some(crate::core::audio::Spatial {
       min_distance: 100.0,
-      max_distance: 500.0,
+      max_distance: 1000.0,
       curve: crate::core::audio::Falloff::Linear,
       pan_width: 200.0,
       low_pass_at_max: None,
@@ -2162,9 +2164,11 @@ mod tests {
     let Some(mut placed) = sounds.get(sound).cloned() else {
       panic!("the loop is in the store");
     };
+    // Heard from the world's origin, where its emitters spawn: the main
+    // camera, the listener, is 500 px away
     placed.spatial = Some(Spatial {
       min_distance: 100.0,
-      max_distance: 500.0,
+      max_distance: 1000.0,
       curve: Falloff::Linear,
       pan_width: 200.0,
       low_pass_at_max: None,
