@@ -128,10 +128,14 @@ impl Audio<'_, '_> {
   /// at the engine's next audio update, by when the system's commands have
   /// applied: bevy applies a system's buffers in the order of its
   /// parameters, so an emitter spawned with the system's own `Commands`
-  /// declared after `Audio` does not exist yet. One that is still no
-  /// emitter then (never spawned, despawned, disabled, or without an
-  /// `AudioEmitter`) plays nothing: the voice stops, and the refusal is
-  /// logged (and warned about once in debug builds)
+  /// declared after `Audio` does not exist yet. An emitter the system's own
+  /// `Commands`, declared before `Audio`, took away or despawned (a barrel
+  /// that plays its blast and despawns) plays where it last was, unfollowed:
+  /// a one-shot plays out there, and a loop ends with its fade, as an
+  /// emitter's loop does as its entity goes. One that is still no emitter
+  /// by the next update (never spawned, despawned before the frame,
+  /// disabled, or without an `AudioEmitter`) plays nothing: the voice stops,
+  /// and the refusal is logged (and warned about once in debug builds)
   pub fn play_emitter(&mut self, entity: Entity) -> Voice {
     let Some(engine) = &self.engine else {
       return Voice::stopped();
@@ -644,6 +648,60 @@ mod tests {
       [(AudioLogKind::Gain, -6.0, Duration::ZERO)],
       "its change applies with its start"
     );
+  }
+
+  /// A system that plays an emitter and despawns its entity hears it
+  /// whichever parameter comes first: with `Commands` first the despawn
+  /// applies before the play, which plays where the emitter last was,
+  /// unfollowed. A one-shot plays out there; a loop ends with its fade, as
+  /// an emitter's loop does when its entity goes
+  #[test]
+  fn an_emitter_played_then_despawned_by_one_system_is_heard() {
+    use crate::core::audio::engine::MIN_FADE;
+    use crate::core::ecs::{Commands, Component, Query, With};
+    #[derive(Component)]
+    struct Exploding;
+    let mut world = world();
+    let shot = world.resource::<Sounds>().shot.clone();
+    let bed = world.resource::<Sounds>().bed.clone();
+    let boom = world.resource_mut::<Assets<Sound>>().add(Sound {
+      clips: vec![SoundClip::new(shot)],
+      fade_out: Duration::from_millis(40),
+      ..Default::default()
+    });
+    for (sound, x) in [(boom, 30.0), (bed, 60.0)] {
+      let emitter = AudioEmitter {
+        sound,
+        play_on_spawn: false,
+      };
+      world.spawn((emitter, Transform::from_xy(x, 0.0), Exploding));
+    }
+    let mut schedule = schedule();
+    schedule.add_systems(
+      |mut commands: Commands,
+       mut audio: Audio,
+       barrels: Query<Entity, With<Exploding>>,
+       mut played: ResMut<Played>| {
+        for barrel in &barrels {
+          played.0.push(audio.play_emitter(barrel));
+          commands.entity(barrel).despawn();
+        }
+      },
+    );
+    schedule.run(&mut world);
+    let voices = played(&world);
+    let [boom, bed] = &voices[..] else {
+      panic!("two voices played: {voices:?}");
+    };
+    assert_eq!((starts(&world, boom), starts(&world, bed)), (1, 1));
+    audio_step(&mut world, FRAME);
+    assert!(boom.is_playing(), "the one-shot plays out: {boom:?}");
+    let stopped: Vec<(u32, Duration)> = log(&world)
+      .iter()
+      .filter(|entry| entry.kind == AudioLogKind::Stop)
+      .map(|entry| (entry.voice, entry.fade))
+      .collect();
+    assert_eq!(stopped, [(bed.id(), MIN_FADE)], "the loop ends");
   }
 
   /// A system's emitter play whose entity is still no emitter by the

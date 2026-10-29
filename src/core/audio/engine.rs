@@ -1498,6 +1498,11 @@ pub struct EngineState {
   /// played, by id, so letting an entity's voices go finds them without
   /// looking at any other voice, and an entity with none costs a lookup
   emitter_voices: EntityHashMap<Vec<u32>>,
+  /// The emitters discarded this frame (taken away, put over, or despawned
+  /// with their entities): each entity, where it was and what it played,
+  /// for a system's play of it applied after (`play_discarded`). Emptied at
+  /// the frame's end, kept to reuse
+  discarded: Vec<(Entity, Vec2, Handle<Sound>)>,
   /// The scene that added each entity's emitter (the scope current as it
   /// was inserted), whose hold holds the emitter's voices; one added
   /// outside every scene has none, and a scene's leave as it exits
@@ -1766,6 +1771,7 @@ impl EngineState {
       spawned_seen: EntityHashSet::default(),
       orphans: Vec::new(),
       emitter_voices: EntityHashMap::default(),
+      discarded: Vec::new(),
       emitter_scopes: EntityHashMap::default(),
       #[cfg(test)]
       emitter_examined: 0,
@@ -2092,10 +2098,65 @@ impl EngineState {
   /// `entity`'s emitter is going (taken away, put over by another, or
   /// despawned with its entity): its voices are let go
   /// ([`emitter_gone`](Self::emitter_gone)), and the scene it belonged to
-  /// is forgotten
-  pub(crate) fn emitter_discarded(&mut self, entity: Entity) {
+  /// is forgotten. Where it was and what it plays (`last`) are kept for the
+  /// frame, for a system's play of it that applies after
+  /// ([`play_discarded`](Self::play_discarded))
+  pub(crate) fn emitter_discarded(&mut self, entity: Entity, last: Option<(Vec2, Handle<Sound>)>) {
     self.emitter_scopes.remove(&entity);
     self.emitter_gone(entity);
+    if let Some((place, sound)) = last {
+      self.discarded.push((entity, place, sound));
+    }
+  }
+
+  /// Play, as `voice`, the sound of `entity`'s emitter discarded this frame
+  /// where it last was, unfollowed and the engine's (a system that plays
+  /// an emitter and despawns its entity, its `Commands` declared before its
+  /// `Audio`, so the despawn applies first). A one-shot plays out there; a
+  /// loop ends with its fade, and a play waiting for its sound ends, as an
+  /// emitter's do as its entity goes. `None` if no emitter of `entity` was
+  /// discarded this frame
+  fn play_discarded(
+    &mut self,
+    world: &World,
+    entity: Entity,
+    voice: Voice,
+    server: Option<&AssetServer>,
+  ) -> Option<Voice> {
+    let (_, place, sound) = self
+      .discarded
+      .iter()
+      .find(|(gone, _, _)| *gone == entity)?
+      .clone();
+    let options = PlayOptions {
+      position: Some(place),
+      persist: true,
+      ..Default::default()
+    };
+    let started = self.play_from(
+      world,
+      Playable::Sound(&sound),
+      &options,
+      None,
+      false,
+      Some(voice),
+    );
+    match self.voices.index_of(started.id()) {
+      Some(index) if self.voices.live[index].looping => self.release_voice(index, false, server),
+      Some(_) => {}
+      None if !started.is_stopped() => {
+        let change = VoiceChange::Stop(MIN_FADE);
+        self.apply(
+          VoiceCommand {
+            voice: started.id(),
+            change,
+          },
+          server,
+        );
+      }
+      None => {}
+    }
+    Some(started)
   }
 
   /// True the first time it is asked: the world's first emitter is being
@@ -3492,9 +3553,14 @@ impl EngineState {
           self.settle_queued(&voice, &started, server);
         }
         // The system's own `Commands`, applied after its `Audio` when
-        // declared after it, may spawn the entity: it waits for the update
+        // declared after it, may spawn the entity: it waits for the update.
+        // Applied before it, they may have despawned it: it plays where its
+        // emitter was
         Queued::Emitter { voice, entity } if emitter_position(world, entity).is_none() => {
-          self.awaited.push((voice, entity));
+          match self.play_discarded(world, entity, voice.clone(), server) {
+            Some(started) => self.settle_queued(&voice, &started, server),
+            None => self.awaited.push((voice, entity)),
+          }
         }
         Queued::Emitter { voice, entity } => {
           let started = self.play_emitter_as(world, entity, Some(voice.clone()));
@@ -3552,6 +3618,8 @@ impl EngineState {
     for (voice, entity) in awaited.drain(..) {
       let started = if emitter_position(world, entity).is_some() {
         self.play_emitter_as(world, entity, Some(voice.clone()))
+      } else if let Some(started) = self.play_discarded(world, entity, voice.clone(), server) {
+        started
       } else {
         self.refuse_emitter(entity)
       };
@@ -4929,6 +4997,10 @@ impl EngineState {
     }
     if !self.ringing.is_empty() {
       self.ring_out();
+    }
+    // The emitters discarded this frame are no longer played where they were
+    if !self.discarded.is_empty() {
+      self.discarded.clear();
     }
     // Changes held for a voice that never started (it ended first)
     if !self.held.is_empty() {

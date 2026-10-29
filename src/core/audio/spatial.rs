@@ -136,10 +136,21 @@ fn emitter_inserted(mut world: DeferredWorld, context: HookContext) {
 /// An emitter is going (taken away, put over by another, or despawned with
 /// its entity): the voices it played are let go at once, to be released in
 /// the frame's audio update, so the next emitter's voices are not taken
-/// with them
+/// with them. Where it was and what it plays are kept for the frame: a
+/// system's `play_emitter` of it that applies after (its `Commands`, which
+/// despawned it, declared before its `Audio`) plays there
 fn emitter_discarded(mut world: DeferredWorld, context: HookContext) {
+  let entity = context.entity;
+  let last = world
+    .get::<GlobalTransform>(entity)
+    .map(GlobalTransform::translation)
+    .zip(
+      world
+        .get::<AudioEmitter>(entity)
+        .map(|emitter| emitter.sound.clone()),
+    );
   if let Some(mut engine) = world.get_resource_mut::<AudioEngine>() {
-    engine.emitter_discarded(context.entity);
+    engine.emitter_discarded(entity, last);
   }
 }
 
