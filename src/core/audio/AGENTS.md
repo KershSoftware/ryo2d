@@ -17,7 +17,7 @@ The audio engine: kira 0.12.6's manager on the audio device (or on kira's mock b
 | `spatial.rs` | `AudioListener`, `AudioEmitter` and their hooks and observers, the falloff, pan and cutoff maths, `ListenerQuery`, `SpatialVoice`, `VoiceFilter` (a voice's own low-pass track) |
 | `voice.rs` | `Voice` (the game's handle), `VoicePick`, and the state and commands it shares with the engine |
 | `view.rs` | `AudioView` (`ctx.audio()`), `PlayOptions`, `Playable` |
-| `engine.rs` | `AudioEngine`, the resource: the kira `Manager` (device or mock) and the web's `Unlock`, the voice table, the play path and its limits (`Room`), the plays waiting for their sounds (`Pending`), the holds (the clock's and the scenes', `hold_scenes`), reloads, scene release (`in_scene`, `release_scene`, `stop_scene_music`) and `unlock` |
+| `engine.rs` | `AudioEngine`, the resource (a box of its `EngineState`, doc-hidden, reached by `Deref`): the kira `Manager` (device or mock) and the web's `Unlock`, the voice table, the play path and its limits (`Room`), the plays waiting for their sounds (`Pending`), the holds (the clock's and the scenes', `hold_scenes`), reloads, scene release (`in_scene`, `release_scene`, `stop_scene_music`) and `unlock` |
 | `system.rs` | `audio_system` (doc-hidden), the frame's audio work |
 | `log.rs` | The audio log: `AudioLogEntry` (with the `reason` a play was refused), `AudioLogKind` (doc-hidden, for tests and debug tooling) |
 
@@ -25,7 +25,7 @@ The loaders are the asset module's: `asset/loaders/audio_clip.rs` (`AudioClipLoa
 
 ## The frame's audio work
 
-`audio_system` runs in `PostUpdate`, after `PostUpdateSet::Camera`: the scenes' updates and their systems have queued their plays and voice commands, and the cameras (the default listener) and transforms are where this frame leaves them. It takes the `AudioEngine` out of the world (`try_resource_scope`) while it reads the stores, and in order:
+`audio_system` runs in `PostUpdate`, after `PostUpdateSet::Camera`: the scenes' updates and their systems have queued their plays and voice commands, and the cameras (the default listener) and transforms are where this frame leaves them. It takes the `AudioEngine` out of the world (`try_resource_scope`) while it reads the stores, as each play does; the resource is a box, so that moves a pointer (moving the whole state, about 4 KB, took most of an idle frame's audio time). In order:
 
 1. adds the real delta to the engine's clock (cooldowns run on it, so a paused game still cools down);
 2. applies the voices' queued commands (stop, pause, resume, volume, pitch) that scene code did not apply as it ended, in the order they were sent;

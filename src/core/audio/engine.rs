@@ -1234,7 +1234,14 @@ struct Unswitched {
 ///
 /// [`AudioView::waiting_for_gesture`]: super::AudioView::waiting_for_gesture
 #[derive(Resource)]
-pub struct AudioEngine {
+pub struct AudioEngine(Box<EngineState>);
+
+/// What [`AudioEngine`] holds, boxed: the frame's update and each play take
+/// the engine out of the world while they read the stores, and a box moves
+/// as a pointer where the whole state is about 4 KB (moving it took most of
+/// an idle frame's audio time)
+#[doc(hidden)]
+pub struct EngineState {
   /// `None` before the web's unlock (while `locked`), or if even the mock
   /// backend failed to start (it never does): every play is then refused
   manager: Option<Manager>,
@@ -1394,19 +1401,17 @@ impl AudioEngine {
 
   /// [`AudioEngine::new`], the device's buffer fixed at `buffer_frames`
   /// when given (`Ryo.toml`'s `audio_buffer_frames`). The web opens its
-  /// device at the first user gesture instead ([`unlock`](Self::unlock))
+  /// device at the first user gesture instead (`unlock`)
   pub(crate) fn open(device: bool, buffer_frames: Option<u32>) -> AudioEngine {
-    match (device, cfg!(target_arch = "wasm32")) {
-      (false, _) => Self::with_manager(Manager::mock()),
-      (true, false) => Self::with_manager(Manager::device(buffer_frames)),
-      (true, true) => Self::locked_until(Unlock::Device(buffer_frames)),
-    }
+    AudioEngine(Box::new(EngineState::open(device, buffer_frames)))
   }
 
   /// The engine as it is when the device fails to open (tests)
   #[cfg(test)]
   pub(crate) fn new_failing_device() -> AudioEngine {
-    Self::with_manager(Manager::fallback(&FAILING_DEVICE))
+    AudioEngine(Box::new(EngineState::with_manager(Manager::fallback(
+      &FAILING_DEVICE,
+    ))))
   }
 
   /// The engine on the mock backend, with a meter on what it renders
@@ -1415,19 +1420,47 @@ impl AudioEngine {
   pub(crate) fn new_metered() -> (AudioEngine, Meter) {
     let meter = Meter::default();
     let main = MainTrackBuilder::new().with_built_effect(Box::new(meter.clone()));
-    (Self::with_manager(Manager::mock_with(main)), meter)
+    let state = EngineState::with_manager(Manager::mock_with(main));
+    (AudioEngine(Box::new(state)), meter)
   }
 
   /// The engine as the web starts it, waiting for the first user gesture,
   /// whose unlock opens the mock backend (tests)
   #[cfg(test)]
   pub(crate) fn new_locked() -> AudioEngine {
-    Self::locked_until(Unlock::Mock)
+    AudioEngine(Box::new(EngineState::locked_until(Unlock::Mock)))
+  }
+}
+
+#[doc(hidden)]
+impl std::ops::Deref for AudioEngine {
+  type Target = EngineState;
+
+  fn deref(&self) -> &EngineState {
+    &self.0
+  }
+}
+
+#[doc(hidden)]
+impl std::ops::DerefMut for AudioEngine {
+  fn deref_mut(&mut self) -> &mut EngineState {
+    &mut self.0
+  }
+}
+
+impl EngineState {
+  /// See [`AudioEngine::open`]
+  fn open(device: bool, buffer_frames: Option<u32>) -> EngineState {
+    match (device, cfg!(target_arch = "wasm32")) {
+      (false, _) => Self::with_manager(Manager::mock()),
+      (true, false) => Self::with_manager(Manager::device(buffer_frames)),
+      (true, true) => Self::locked_until(Unlock::Device(buffer_frames)),
+    }
   }
 
   /// The engine with nothing open, locked until the web's first user
   /// gesture opens `unlock`'s manager
-  fn locked_until(unlock: Unlock) -> AudioEngine {
+  fn locked_until(unlock: Unlock) -> EngineState {
     let mut engine = Self::with_manager(None);
     engine.locked = Some(unlock);
     engine
@@ -1468,7 +1501,7 @@ impl AudioEngine {
     }
   }
 
-  fn with_manager(mut manager: Option<Manager>) -> AudioEngine {
+  fn with_manager(mut manager: Option<Manager>) -> EngineState {
     let settings = VolumeSettings::default();
     let buses = BusTree::standard(
       manager.as_mut().map(|manager| manager as &mut dyn Tracks),
@@ -1484,7 +1517,7 @@ impl AudioEngine {
       },
     );
     let (commands, inbox) = crossbeam_channel::unbounded();
-    let mut engine = AudioEngine {
+    let mut engine = EngineState {
       manager,
       locked: None,
       buses,
@@ -3438,7 +3471,7 @@ impl AudioEngine {
     let crossfade = music.crossfade;
     // Stop the old track over the crossfade, unless a limit already stopped
     // it to make room for the new one
-    let stop_old = |engine: &mut AudioEngine| {
+    let stop_old = |engine: &mut EngineState| {
       let Some(voice) = old else {
         return;
       };
@@ -4743,7 +4776,7 @@ impl AudioEngine {
 
 /// The engine's voices outlive it as handles: with kira's manager gone,
 /// nothing plays, so they report stopped
-impl Drop for AudioEngine {
+impl Drop for EngineState {
   fn drop(&mut self) {
     for live in &self.voices.live {
       live.voice.set_state(VoiceState::Stopped);
@@ -4778,7 +4811,7 @@ pub(crate) fn in_scene<R>(world: &mut World, scope: u64, f: impl FnOnce(&mut Wor
 fn apply_queued(world: &mut World) {
   if !world
     .get_resource::<AudioEngine>()
-    .is_some_and(AudioEngine::has_queued)
+    .is_some_and(|engine| engine.has_queued())
   {
     return;
   }
@@ -4818,7 +4851,7 @@ pub(crate) fn hold_scenes(world: &mut World, scopes: impl Iterator<Item = u64> +
 pub(crate) fn unlock(world: &mut World) {
   let locked = world
     .get_resource::<AudioEngine>()
-    .is_some_and(AudioEngine::is_locked);
+    .is_some_and(|engine| engine.is_locked());
   if !locked || !user_activated() {
     return;
   }
@@ -5578,6 +5611,18 @@ mod tests {
       .iter()
       .filter(|entry| entry.level == LogLevel::Warn && matching(&entry.message))
       .count()
+  }
+
+  /// The engine is taken out of the world for each frame's update and each
+  /// play, so the resource stays a pointer: moving its whole state (about
+  /// 4 KB) took most of an idle frame's audio time
+  #[test]
+  fn the_engine_resource_moves_as_a_pointer() {
+    assert!(
+      std::mem::size_of::<AudioEngine>() <= std::mem::size_of::<usize>(),
+      "{} bytes",
+      std::mem::size_of::<AudioEngine>()
+    );
   }
 
   /// `testing::audio_world` starts seeded, as a headless engine does: the

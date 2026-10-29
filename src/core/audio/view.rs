@@ -211,7 +211,7 @@ impl<'w> AudioView<'w> {
 
   /// Blend back from the active snapshot, over its blend time
   pub fn clear_snapshot(&mut self) {
-    self.with_mixer(AudioEngine::clear_snapshot);
+    self.with_mixer(|engine| engine.clear_snapshot());
   }
 
   /// Run `f` on the engine with the bus tree built from the mixer, if it
@@ -319,7 +319,7 @@ impl<'w> AudioView<'w> {
     self
       .world
       .get_resource::<AudioEngine>()
-      .and_then(AudioEngine::current_music)
+      .and_then(|engine| engine.current_music())
   }
 
   /// Seed what picks a sound's clips and draws its gains and pitches: from
@@ -352,7 +352,7 @@ impl<'w> AudioView<'w> {
     self
       .world
       .get_resource::<AudioEngine>()
-      .is_some_and(AudioEngine::is_locked)
+      .is_some_and(|engine| engine.is_locked())
   }
 
   /// How many voices play on `bus` and every bus under it (`master` counts
