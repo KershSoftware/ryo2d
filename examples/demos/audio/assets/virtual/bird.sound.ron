@@ -1,0 +1,16 @@
+// A bird in the virtual voices page's field, heard from its emitter.
+// Thirty sing at once, and six at most are heard: the loudest as heard,
+// which are the nearest. The rest are virtual, keeping their place with
+// no voice, and come back as the listener nears them; those beyond the
+// range take no voice at all
+(
+  clips: [(path: "sounds/chirp.wav")],
+  bus: "ambience",
+  volume: -10.0,
+  pitch_range: 3.0,
+  looping: true,
+  per_frame: 30,
+  fade_out: 0.2,
+  limit: (max: 6, rule: StopQuietest),
+  spatial: (min_distance: 20.0, max_distance: 150.0, curve: Inverse, pan_width: 150.0),
+)

@@ -154,6 +154,10 @@ pub static EMBEDDED: &[(&str, &[u8])] = &[
     "spatial/ping.sound.ron",
     include_bytes!("../assets/spatial/ping.sound.ron"),
   ),
+  (
+    "virtual/bird.sound.ron",
+    include_bytes!("../assets/virtual/bird.sound.ron"),
+  ),
 ];
 
 /// The demo's assets in memory, as the engine's asset source: the web

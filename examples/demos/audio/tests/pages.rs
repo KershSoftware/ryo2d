@@ -4,11 +4,13 @@
 //! within its voices while each rule acts; a slider sets its volume
 //! setting; the variations page takes a saved fifth take; the spatial page
 //! solos each emitter, and its hint follows the ping's `pan_width`; the
-//! music page crossfades; and the hot reload page counts a saved definition
+//! music page crossfades; the hot reload page counts a saved definition;
+//! and the virtual voices page hears six birds of thirty, the rest
+//! virtual, and brings others back as the listener wanders
 
 use std::time::{Duration, Instant};
 
-use audio_demo::{Reloads, demo, embedded, limits};
+use audio_demo::{Reloads, demo, embedded, limits, virtuals};
 use ryo2d::core::audio::AudioLogKind;
 use ryo2d::core::dev_log::{self, LogLevel};
 use ryo2d::prelude::*;
@@ -21,7 +23,8 @@ const LIMITS: usize = 2;
 const SPATIAL: usize = 3;
 const MUSIC: usize = 5;
 const HOT_RELOAD: usize = 6;
-const PAGES: usize = 7;
+const VIRTUAL: usize = 7;
+const PAGES: usize = 8;
 
 /// Two seconds at the demo's 60 Hz
 const FRAMES: u32 = 120;
@@ -346,4 +349,34 @@ fn the_spatial_page_s_hint_follows_the_ping_s_pan_width() {
   drop(assets);
   engine.step_frames(2).unwrap();
   assert!(hint(&engine, "90"), "the width as the store has it");
+}
+
+/// The Virtual voices page hears six birds at once (its sound's limit),
+/// keeps the other twenty-four virtual, and as the listener wanders brings
+/// some back in place of others
+#[test]
+fn the_virtual_voices_page_hears_six_and_keeps_the_rest() {
+  let Some(mut engine) = engine_on(VIRTUAL) else {
+    return;
+  };
+  let mut most = 0;
+  for frame in 0..4 * FRAMES {
+    engine.step().unwrap();
+    let mut audio = audio(&mut engine);
+    let (heard, kept) = (
+      audio.voices_on(virtuals::BUS),
+      audio.virtual_voices_on(virtuals::BUS),
+    );
+    assert!(heard <= virtuals::HEARD, "frame {frame}: {heard} heard");
+    if frame > 2 {
+      assert_eq!(heard + kept, virtuals::BIRDS, "frame {frame}");
+    }
+    most = most.max(heard);
+  }
+  assert_eq!(most, virtuals::HEARD, "the limit is reached");
+  let log = engine.audio_log();
+  let moved = |kind: AudioLogKind| log.iter().filter(|entry| entry.kind == kind).count();
+  assert!(moved(AudioLogKind::Real) > 0, "a bird came back");
+  assert!(moved(AudioLogKind::Virtual) > virtuals::BIRDS - virtuals::HEARD);
+  assert!(warnings().is_empty(), "{:#?}", warnings());
 }

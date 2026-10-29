@@ -18,7 +18,7 @@ Four registry assets do the work, each loaded by asset path like an image (`ryo-
 | `Music` | `.music.ron` | A track: an intro into a gapless loop, or one clip with a loop region |
 | `Mixer` | `audio/mixer.mixer.ron` | The bus tree, its effects and sends, snapshots, ducking and focus loss |
 
-Every type here is in the prelude unless a path is given; complete signatures are in `ryo-api` (Audio). The worked example is the audio demo, `examples/demos/audio` (`./dev.sh audio`), in seven pages (the buses and volume settings, variations, voice limits, spatial sound, the mix, music, hot reload); its `assets/` folder is a small complete project.
+Every type here is in the prelude unless a path is given; complete signatures are in `ryo-api` (Audio). The worked example is the audio demo, `examples/demos/audio` (`./dev.sh audio`), in eight pages (the buses and volume settings, variations, voice limits, spatial sound, the mix, music, hot reload, virtual voices); its `assets/` folder is a small complete project.
 
 ## 1. From the DAW to a play
 
@@ -201,6 +201,7 @@ fn footsteps(mut audio: Audio, time: Res<Time>, mut walkers: Query<(&mut Footste
 - **No flapping:** besides the 3 dB, a voice that started, went virtual or came back stays so for at least 250 ms, and the 95% keeps a loop at the edge of its range from coming and going.
 - **At most 1024 are virtual**; past them a loop that would go virtual is refused (logged with the reason `virtual`), and one a play takes the place of stops.
 - Beds and emitter loops still give way to more important plays: give them a higher priority than one-shots to keep them heard. A play's limits look at every voice, virtual ones too, so plays cost a little more with hundreds virtual.
+- **See it:** the audio demo's Virtual voices page has thirty birds singing in a field under a limit of six, and draws each by its `Voice` (heard, virtual waiting for room, virtual out of range) as the listener wanders among them.
 
 ## 5. The mixer (`audio/mixer.mixer.ron`)
 

@@ -12,6 +12,7 @@ cargo run -p audio-demo --bin make-sounds
 | `sounds/` | The clips, and the definitions the Buses, Variations and Mix pages play |
 | `limits/` | The Voice limits page's bells, one definition per limit rule |
 | `spatial/` | The Spatial page's emitters and its ping |
+| `virtual/` | The Virtual voices page's bird, thirty of which sing in its field |
 | `music/` | The theme (`theme.music.ron`: intro and loop) and the night track (`night.music.ron`: one clip with a loop region) |
 | `hot/` | The Hot reload page's drone and beep; save one while the demo runs |
 
