@@ -2,8 +2,9 @@
 //! plays for two seconds without a warning, from the demo's folder and from
 //! the files the web build embeds; the limits page keeps each rule's row
 //! within its voices while each rule acts; a slider sets its volume
-//! setting; the variations page takes a saved fifth take; the music page
-//! crossfades; and the hot reload page counts a saved definition
+//! setting; the variations page takes a saved fifth take; the spatial page
+//! solos each emitter; the music page crossfades; and the hot reload page
+//! counts a saved definition
 
 use std::time::{Duration, Instant};
 
@@ -17,6 +18,7 @@ use ryo2d::testing::HeadlessEngine;
 const BUSES: usize = 0;
 const VARIATIONS: usize = 1;
 const LIMITS: usize = 2;
+const SPATIAL: usize = 3;
 const MUSIC: usize = 5;
 const HOT_RELOAD: usize = 6;
 const PAGES: usize = 7;
@@ -196,6 +198,41 @@ fn a_slider_sets_its_volume_setting() {
   engine.tap_key(KeyCode::PageDown);
   engine.step_frames(3).unwrap();
   assert_eq!(master(&mut engine), 0.89);
+}
+
+/// Each emitter's gain as last logged (its own and its distance's; -60 is
+/// silent), by its sound, in the page's order
+fn emitter_gains(engine: &HeadlessEngine) -> [f32; 3] {
+  ["hum", "chirp", "buzz"].map(|name| {
+    let sound = format!("spatial/{name}.sound.ron");
+    engine
+      .audio_log()
+      .iter()
+      .rev()
+      .find(|entry| entry.sound == sound && entry.voice != 0)
+      .map_or_else(|| panic!("{sound} played"), |entry| entry.gain_db)
+  })
+}
+
+#[test]
+fn the_spatial_page_solos_each_emitter() {
+  let Some(mut engine) = engine_on(SPATIAL) else {
+    return;
+  };
+  engine.step_frames(10).unwrap();
+  assert!(emitter_gains(&engine).iter().all(|&gain| gain > -60.0));
+  engine.tap_key(KeyCode::Digit2);
+  engine.step_frames(10).unwrap();
+  let [hum, chirp, buzz] = emitter_gains(&engine);
+  assert_eq!((hum, buzz), (-60.0, -60.0), "the others are silent");
+  assert!(chirp > -60.0, "the chirp is heard: {chirp}");
+  engine.tap_key(KeyCode::Digit0);
+  engine.step_frames(10).unwrap();
+  let gains = emitter_gains(&engine);
+  assert!(
+    gains.iter().all(|&gain| gain > -60.0),
+    "all three: {gains:?}"
+  );
 }
 
 #[test]

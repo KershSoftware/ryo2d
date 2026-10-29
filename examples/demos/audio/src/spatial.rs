@@ -1,10 +1,14 @@
 //! The Spatial page: three emitters circle the point the listener starts
 //! at, each a loop heard from where it is, on one of the three falloff
 //! curves. Walk the listener (an `AudioListener`) towards and away from
-//! them: each gets quieter with distance and pans by its offset. The page
-//! uses UI units as world units, so what it draws is where the sounds are;
-//! a game with a camera turns a screen position (the pointer's, say) into a
-//! world one with `ctx.camera().screen_to_world` before playing there
+//! them: each gets quieter with distance and pans by its offset. Solo one
+//! (1, 2, 3; 0 for all three) to hear it alone, and click 150 px to one
+//! side of the listener for a ping heard fully on that side. The page uses
+//! UI units as world units, so what it draws is where the sounds are; a game
+//! with a camera turns a screen position (the pointer's, say) into a world
+//! one with `ctx.camera().screen_to_world` before playing there
+
+use std::time::Duration;
 
 use demo_kit::prelude::*;
 
@@ -16,6 +20,14 @@ const CENTRE: Vec2 = Vec2::new(430.0, 380.0);
 const FIELD: Vec2 = Vec2::new(250.0, 150.0);
 /// The listener's speed, in units a fixed step
 const WALK: f32 = 3.0;
+/// How far to the listener's side a sound is heard fully on that side: the
+/// ping's (and the emitters') `pan_width`
+const FULL_SIDE: f32 = 150.0;
+/// How long a solo takes to fade the others out, or back in
+const SOLO_FADE: Duration = Duration::from_millis(80);
+/// The keys that solo each emitter, in order, and the key for all three
+const SOLO_KEYS: [KeyCode; 3] = [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3];
+const ALL_KEY: KeyCode = KeyCode::Digit0;
 
 struct Emitter {
   entity: Entity,
@@ -29,6 +41,8 @@ struct Emitter {
   phase: f32,
   color: Color,
   position: Vec2,
+  /// Its loop, played as it spawned
+  voice: Voice,
 }
 
 pub(crate) struct SpatialPage {
@@ -42,6 +56,8 @@ pub(crate) struct SpatialPage {
   orbiting: bool,
   /// How far round the orbits have come, in seconds at speed 1
   orbit: f32,
+  /// The emitter heard alone; all three when `None`
+  solo: Option<usize>,
   frame: u32,
   _mixer: Option<Handle<Mixer>>,
 }
@@ -57,6 +73,7 @@ impl SpatialPage {
       orbit_speed: 1.0,
       orbiting: true,
       orbit: 0.0,
+      solo: None,
       frame: 0,
       _mixer: None,
     }
@@ -65,13 +82,35 @@ impl SpatialPage {
   /// Move each emitter to its place on its circle
   fn place_emitters(&mut self, ctx: &mut SceneContext) {
     for emitter in &mut self.emitters {
-      let angle = std::f32::consts::TAU * (emitter.phase + emitter.turns * self.orbit);
-      emitter.position = CENTRE + emitter.radius * Vec2::new(angle.cos(), angle.sin());
+      emitter.position = orbit_point(emitter.radius, emitter.turns, emitter.phase, self.orbit);
       if let Some(mut transform) = ctx.world.get_mut::<Transform>(emitter.entity) {
         *transform = Transform::from_xy(emitter.position.x, emitter.position.y);
       }
     }
   }
+
+  /// Hear emitter `solo` alone, or all three (`None`): the others fade to
+  /// silence (-60 dB) on their voices, and back
+  fn solo(&mut self, solo: Option<usize>) {
+    self.solo = solo;
+    for (index, emitter) in self.emitters.iter().enumerate() {
+      let heard = solo.is_none_or(|solo| solo == index);
+      let db = if heard { 0.0 } else { -60.0 };
+      emitter.voice.set_volume_over(db, SOLO_FADE);
+    }
+  }
+
+  /// Whether emitter `index` is heard: soloed, or nothing is
+  fn heard(&self, index: usize) -> bool {
+    self.solo.is_none_or(|solo| solo == index)
+  }
+}
+
+/// Where on its circle an emitter of `radius` is, `orbit` seconds round at
+/// `turns` a second from `phase` (in turns)
+fn orbit_point(radius: f32, turns: f32, phase: f32, orbit: f32) -> Vec2 {
+  let angle = std::f32::consts::TAU * (phase + turns * orbit);
+  CENTRE + radius * Vec2::new(angle.cos(), angle.sin())
 }
 
 impl DemoPage for SpatialPage {
@@ -96,6 +135,8 @@ impl DemoPage for SpatialPage {
         "Walk the listener",
       ),
       Control::key(KeyCode::Space, "Back to the centre"),
+      Control::keys("1 2 3", &SOLO_KEYS, "Solo hum, chirp or buzz"),
+      Control::key(ALL_KEY, "All three"),
       Control::mouse("Click: a ping there"),
     ]
   }
@@ -142,13 +183,18 @@ impl DemoPage for SpatialPage {
       let Some(sound) = load::<Sound>(ctx, path) else {
         continue;
       };
-      // Plays as it spawns; its voice follows it, and stops as the page
-      // closes and despawns it
+      // Spawned where it starts, and played: its voice follows it (kept
+      // to solo it), and stops as the page closes and despawns it
       let emitter = AudioEmitter {
         sound: sound.clone(),
-        play_on_spawn: true,
+        play_on_spawn: false,
       };
-      let entity = ctx.world.spawn((emitter, Transform::default())).id();
+      let at = orbit_point(radius, turns, phase, self.orbit);
+      let entity = ctx
+        .world
+        .spawn((emitter, Transform::from_xy(at.x, at.y)))
+        .id();
+      let voice = ctx.audio().play_emitter(entity);
       self.emitters.push(Emitter {
         entity,
         name,
@@ -158,10 +204,10 @@ impl DemoPage for SpatialPage {
         turns,
         phase,
         color,
-        position: CENTRE,
+        position: at,
+        voice,
       });
     }
-    self.place_emitters(ctx);
   }
 
   fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
@@ -183,6 +229,11 @@ impl DemoPage for SpatialPage {
     if input.key_pressed(KeyCode::Space) {
       self.at = CENTRE;
     }
+    let soloed = SOLO_KEYS.iter().position(|&key| input.key_pressed(key));
+    let solo = match soloed {
+      Some(index) => Some(Some(index)),
+      None => input.key_pressed(ALL_KEY).then_some(None),
+    };
     let click = input
       .mouse_pressed(MouseButton::Left)
       .then(|| Vec2::from(input.mouse_position()));
@@ -190,6 +241,9 @@ impl DemoPage for SpatialPage {
       && let Some(mut transform) = ctx.world.get_mut::<Transform>(listener)
     {
       *transform = Transform::from_xy(self.at.x, self.at.y);
+    }
+    if let Some(solo) = solo {
+      self.solo(solo);
     }
     // Screen and world units are one here; a game converts the pointer with
     // `ctx.camera().screen_to_world`
@@ -214,7 +268,7 @@ impl DemoPage for SpatialPage {
     y += 24.0;
     let assets = ctx.assets();
     let mut heard = Vec::with_capacity(self.emitters.len());
-    for emitter in &self.emitters {
+    for (index, emitter) in self.emitters.iter().enumerate() {
       let Some(spatial) = assets.get(&emitter.sound).and_then(|sound| sound.spatial) else {
         continue;
       };
@@ -222,8 +276,13 @@ impl DemoPage for SpatialPage {
       let distance = offset.length();
       let gain = falloff_gain_db(&spatial, distance);
       let pan = pan_for(&spatial, offset.x);
-      heard.push((emitter.position, gain, emitter.color));
-      ui.draw_text(emitter.name, x, y, emitter.color);
+      // A muted one is drawn but not heard
+      let audible = self.heard(index);
+      if audible {
+        heard.push((emitter.position, gain, emitter.color));
+      }
+      let name_color = if audible { emitter.color } else { DIM };
+      ui.draw_text(emitter.name, x, y, name_color);
       ui.draw_text(emitter.curve, curve_x, y, Color::WHITE);
       ui.draw_text(&format!("{distance:.0}"), distance_x, y, Color::WHITE);
       bar(
@@ -239,9 +298,20 @@ impl DemoPage for SpatialPage {
       let mark = pan_x + (pan + 1.0) * 0.5 * 80.0;
       ui.draw_rect(Rect::new(mark - 2.0, y + 2.0, 4.0, 14.0), emitter.color);
       ui.draw_text(&format!("{pan:+.2}"), pan_x + 90.0, y, Color::WHITE);
+      match self.solo {
+        Some(solo) if solo == index => ui.draw_text("solo", pan_x + 150.0, y, emitter.color),
+        Some(_) => ui.draw_text("muted", pan_x + 150.0, y, DIM),
+        None => {}
+      }
       y += 22.0;
     }
     drop(assets);
+    ui.draw_text(
+      "A ping clicked 150 px left or right of the listener (the marks) is heard fully on that side",
+      x,
+      y + 6.0,
+      DIM,
+    );
 
     // The orbits, and a line from the listener to each emitter as bright
     // as it is heard
@@ -276,6 +346,11 @@ impl DemoPage for SpatialPage {
           1.0,
         );
       }
+    }
+    // Where a ping is heard fully to one side: the pan width either way
+    for side in [-FULL_SIDE, FULL_SIDE] {
+      let mark = Rect::new(self.at.x + side - 1.0, self.at.y - 8.0, 2.0, 16.0);
+      ui.draw_rect(mark, Color::WHITE.with_alpha(90));
     }
     // The listener: a head, its right ear marked
     let head = Rect::new(self.at.x - 11.0, self.at.y - 11.0, 22.0, 22.0);

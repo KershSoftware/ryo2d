@@ -314,6 +314,7 @@ A definition with `spatial` is heard from a place: quieter with distance from th
 - At most 32 voices carry a distance low-pass at once (each needs a kira track of its own); a voice past them plays unfiltered, its gain and pan still following.
 - A sound without `spatial` played at a place is heard as if at the listener, warned once.
 - Positions are read after the frame's fixed steps and cameras, without interpolation. `falloff_gain_db(&spatial, distance)` and `pan_for(&spatial, dx)` give what the listener hears, for a meter or a test.
+- **Hear it on headphones or speakers:** the audio demo's Spatial page solos each circling emitter (1, 2, 3; 0 for all three) and marks the two points, 150 px (its `pan_width`) either side of the listener, where a clicked ping is heard fully on that side. A sound panned fully to one side is silent on the other and 3 dB louder on its own (kira's constant-power pan); headphones make the balance easiest to judge.
 
 ## 8. Pause, time scale and focus
 
