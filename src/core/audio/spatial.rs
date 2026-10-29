@@ -1608,8 +1608,12 @@ mod tests {
   }
 
   /// An emitter crossing from the listener's left to its right moves the
-  /// balance each frame to where it now is, within the frame's glide: each
-  /// frame starts where the last ended and ends at its place's pan
+  /// balance each frame to where it now is, gliding over the frame: each
+  /// frame's first 64 frames are within 0.03 of where the last frame ended
+  /// (the glide has moved about 0.017 of the frame's 0.2 step by then; a
+  /// change sent without it is 0.05 along, as kira eases a change only
+  /// across its first 128-frame chunk), and its last 64 are at its place's
+  /// pan
   #[test]
   fn an_emitter_crossing_moves_the_balance_within_each_frame() {
     for mode in [Mode::Decoded, Mode::Streamed] {
@@ -1638,8 +1642,8 @@ mod tests {
         let expected = pan_for(&sides(), x);
         let (first, last) = (pan_of(&frame[..64]), pan_of(&frame[frame.len() - 64..]));
         assert!(
-          first >= was - 0.02 && first <= expected + 0.02,
-          "{mode:?} to {x}: the frame starts at {first}, between {was} and {expected}"
+          (first - was).abs() < 0.03,
+          "{mode:?} to {x}: the frame starts at {first}, not gliding from {was} to {expected}"
         );
         assert!(
           (last - expected).abs() < 0.03,
