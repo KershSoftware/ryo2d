@@ -134,6 +134,19 @@ The first wave of 5b's deferrals changed the play path and the frame: a play app
 - **What moved:** a play of a decoded clip, 0.75 to 0.79 µs paced before and 0.50 µs after in every run (a definition's 0.79 to 0.83 to 0.54 µs; back to back 0.94 to 1.02 to 0.66 to 0.71 µs): the play no longer moves the engine's 4 KB twice. `voices_64` back to back read lower after (1.61 to 1.92 µs against 1.95 to 2.73 µs), the same saving once a frame.
 - **Within the runs' spread at this load:** the paced idle frame and 64 voices, and the streamed play. The tight loop above is the idle frame's measure here. Every guard met its target in every run.
 
+### After the features' third wave (`benches/audio.rs`, beside c84a11d9)
+
+The third wave changed the play path and the frame: a play can start as a voice a system's `Audio` queued (`play_from` takes it), voice ids come from an atomic, a change for a voice not in the table is held for its start, the frame checks two lists (held changes, retired trees ringing out their effects' tails) that are empty in these benches, and an emitter's hold looks up the scene that added it. `voices_64` and `play_cost` (with `play_cost_streamed`) ran on 2026-10-28 beside the branch before the wave (c84a11d9, exported with `git archive`), both built into a scratch target directory outside the workspace's (the owner's release build is in `target/release`), each tree's sources touched before its build, each binary kept aside and checked to come from its tree (the base binary holds the export's path, the head's does not; they differ). They ran alternated base, head, head, base, base, head, the first once the 1-minute load had fallen below 5 after the gate's builds; the loads at the runs' starts were 3.9, 4.0, 1.9, 1.9, 1.4 and 1.6.
+
+| Build (runs) | Idle audio frame, paced | 64 voices, paced | `play` paced; a definition's | Back to back: `voices_64`; `play_cost` | Streamed `play` |
+|---|---|---|---|---|---|
+| before (1, 4, 5) | 0.54, 0.46, 0.42 µs | 2.1, 1.7, 1.7 µs | 0.50, 0.50, 0.50; 0.54, 0.50, 0.50 µs | 1.28, 1.25, 1.26; 0.64, 0.63, 0.63 µs | 19.0, 24.0, 23.9 µs |
+| after (2, 3, 6) | 0.46, 0.42, 0.46 µs | 1.8, 1.8, 1.7 µs | 0.50, 0.50, 0.50; 0.54, 0.54, 0.54 µs | 1.36, 1.35, 1.31; 0.64, 0.63, 0.64 µs | 23.9, 24.5, 23.9 µs |
+
+- **What moved:** `voices_64` back to back, by about 0.07 µs (1.25 to 1.28 µs before, 1.31 to 1.36 µs after, +5%), in every run. With 64 voices playing and none queued, held, ringing or held by a scene, the frame's new work is two checks of empty lists; the engine state's layout changed (three new fields), the likely cause, not measured further. It is far inside its 50 µs target.
+- **Within the runs' spread:** the paced idle frame and 64 voices, `play` paced (0.50 µs on both builds; a definition's 0.50 to 0.54 µs on both) and back to back (0.63 to 0.64 µs on both), and the streamed play (the base's first run, at 19.0 µs, the one apart). Every guard met its target in every run.
+- At this load the paced medians are back at the first wave's (the idle frame 0.42 to 0.54 µs, the mock's rendering 6.4 to 6.6 µs), and the idle frame reads 0.42 to 0.54 µs against 1.00 to 1.08 µs in the first wave's runs, consistent with the second wave's box of the engine state (0.36 µs a frame in its tight loop).
+
 ### The reload hitch
 
 **What the landing frame does.** A reloaded clip lands in the pump: the workers loaded it, and the swap costs about 7 µs. In the same frame `audio_system` switches each loop playing the clip to the new data where it is, crossfading over 10 ms.
