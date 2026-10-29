@@ -84,6 +84,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::resolve::{
   DEFAULT_AMBIENCE_VOLUME, DEFAULT_MASTER_VOLUME, DEFAULT_MUSIC_VOLUME, DEFAULT_RESOLUTION,
@@ -968,7 +969,8 @@ impl SaveManager {
   /// `defaults` (the game's, not the engine's), as the engine plays them; the file
   /// keeps its shape. A file from before the format version (an older engine's) has
   /// its volumes converted once to today's curve, keeping their loudness, and is
-  /// saved with the version.
+  /// saved with the version; one that cannot be written (read-only) loads converted
+  /// all the same, with a warning once a run.
   ///
   /// # Arguments
   ///
@@ -999,7 +1001,8 @@ impl SaveManager {
   /// Load an existing `system.json` over `defaults`: absent settings take the
   /// game's defaults; a file in an older format is converted, and one that
   /// changed (converted, or new `env` keys) is saved as it loads with the
-  /// engine's defaults, so the save adds no key the file didn't hold.
+  /// engine's defaults, so the save adds no key the file didn't hold. The
+  /// save is best effort ([`save_loaded_system`](Self::save_loaded_system)).
   fn load_existing_system(
     &self,
     defaults: &super::workspace::SystemDefaults,
@@ -1009,7 +1012,7 @@ impl SaveManager {
     let upgraded = raw.upgrade();
     let mut stored = raw.clone().into_state();
     if stored.merge_defaults(defaults) || upgraded {
-      self.save_system(&stored)?;
+      self.save_loaded_system(&stored);
     }
     let mut state = raw.into_state_over(defaults);
     state.env = stored.env;
@@ -1042,14 +1045,25 @@ impl SaveManager {
     let upgraded = raw.upgrade();
     let prefs = raw.stored_preferences();
     let mut state = raw.into_state();
-    // Best effort: the preferences are already loaded, so a failed write
-    // (e.g. a read-only file) mustn't discard them.
-    if (state.merge_defaults(defaults) || upgraded)
-      && let Err(e) = self.save_system(&state)
-    {
-      eprintln!("[ryo2d] Warning: Couldn't update system.json ({e})");
+    if state.merge_defaults(defaults) || upgraded {
+      self.save_loaded_system(&state);
     }
     Ok(Some(prefs))
+  }
+
+  /// Save `state`, a loaded `system.json` converted or given new `env` keys,
+  /// as best it can: the settings are already loaded, so a file that cannot
+  /// be written (read-only, say) keeps them, converted again at each load,
+  /// with a warning given once a run.
+  fn save_loaded_system(&self, state: &SystemState) {
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if let Err(e) = self.save_system(state)
+      && !WARNED.swap(true, Ordering::Relaxed)
+    {
+      eprintln!(
+        "[ryo2d] Warning: Couldn't update system.json ({e}); its settings are used as loaded"
+      );
+    }
   }
 
   /// Write a new `system.json` holding only the keys in `filter` (plus `env` when `include_env`).
@@ -2004,6 +2018,40 @@ mod tests {
       .unwrap();
 
     assert_eq!(prefs.and_then(|p| p.master_volume), Some(0.5));
+  }
+
+  /// A player's settings from before the format version that cannot be
+  /// rewritten (a read-only file) still load, converted, for the game's
+  /// own load as for the engine's: the conversion's save is best effort
+  #[test]
+  fn a_read_only_legacy_file_loads_converted() {
+    let dir = tempdir().unwrap();
+    let manager = SaveManager::new(dir.path()).unwrap();
+    let old = r#"{"master_volume": 0.25, "music_volume": 0.64}"#;
+    write_system_json(dir.path(), old);
+    let path = dir.path().join("system.json");
+    let mut perms = std::fs::metadata(&path).unwrap().permissions();
+    perms.set_readonly(true);
+    std::fs::set_permissions(&path, perms).unwrap();
+    if std::fs::OpenOptions::new().write(true).open(&path).is_ok() {
+      return; // running as a user the read-only flag doesn't bind (e.g. root)
+    }
+    let defaults = super::super::workspace::SystemDefaults::default();
+    let volumes = |state: &SystemState| (state.master_volume, state.music_volume);
+
+    let state = manager.load_or_create_system(&defaults);
+    assert_eq!(
+      state.as_ref().map(volumes).ok(),
+      Some((0.5, 0.8)),
+      "{state:?}"
+    );
+    let filtered = manager.load_or_create_system_filtered(&defaults, &UserPreferenceFilter::all());
+    assert_eq!(filtered.as_ref().map(volumes).ok(), Some((0.5, 0.8)));
+    assert_eq!(
+      std::fs::read_to_string(&path).unwrap(),
+      old,
+      "left as it was"
+    );
   }
 
   #[test]

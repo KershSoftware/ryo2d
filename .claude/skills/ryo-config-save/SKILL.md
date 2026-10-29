@@ -2,7 +2,7 @@
 name: ryo-config-save
 description: Project configuration (Ryo.toml), player settings (system.json, SystemState) and game saves (SaveManager, GameSaveData).
 metadata:
-  version: 2.4.0
+  version: 2.4.1
 ---
 
 # Ryo2D Configuration and Saves
@@ -138,7 +138,7 @@ saves.save_system(&settings)?;
 
 - `load_or_create_system(&defaults)` creates the file from `[system]` when missing and merges new `env` keys into an existing one; `load_or_create_system_filtered(&defaults, &filter)` writes only the filtered keys to a new file. Both return the volumes and display mode the file doesn't hold as `defaults` gives them (the game's `[system]`, as the engine plays them), not the engine's 1.0; `load_system()` takes no defaults and gives the engine's.
 - `save_system` updates keys already in the file and adds a missing key only when its value differs from the engine's default, so a narrow file keeps its shape (a game default that differs from the engine's is written by the first save).
-- The file carries `"format_version": 2`. A file without it (an engine before 5b, whose volumes were amplitudes, heard at 20·log10(v) dB) has each saved volume converted once as it loads to √v, the value heard at the same dB on today's curve; `load_or_create_system*` and the engine's startup read save it with the version, and `load_system()` converts what it returns and leaves the file until it is saved.
+- The file carries `"format_version": 2`. A file without it (an engine before 5b, whose volumes were amplitudes, heard at 20·log10(v) dB) has each saved volume converted once as it loads to √v, the value heard at the same dB on today's curve; `load_or_create_system*` and the engine's startup read save it with the version (a file they cannot write, such as a read-only one, loads converted all the same, warned once a run), and `load_system()` converts what it returns and leaves the file until it is saved.
 - `DisplayMode::all()` and `display_name()`, `Resolution::common()` and `display_name()` feed settings menus.
 - Applying a change at runtime is separate from saving it: `ctx.request_display_mode(mode)`, `ctx.request_resolution(w, h)` (resizes the window), `ctx.request_display_change(w, h, mode)`, `ctx.request_ui_scale(..)` (applied after the frame), and `ctx.audio().set_volume_setting(VolumeKind::Master, v)` for each volume (playing sounds follow at once).
 - **The volume settings are points on a curve**, from 0 (silent) to 1 (the mix as designed): the gain is 40·log10(v) dB, so 0.5 is about -12 dB and 0.89 about -2 dB (`ryo-audio`, The player's volume settings). A file from before the format version is converted to it (above), so a player's saved settings keep their loudness. `audio_buffer_frames` is a `[system]` key read from `Ryo.toml` only (the player does not save it).
