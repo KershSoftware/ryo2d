@@ -133,8 +133,9 @@ struct VoiceShared {
 /// buses that pause with the game are held the same way, and so are the
 /// voices of the emitters it added (the world's entities stop with it, as
 /// physics does; an emitter added outside every scene, or whose scene has
-/// gone, is held while any scene is); they resume when it updates again. The top scene can leave the scenes below
-/// audible ([`Scene::holds_audio_below`](crate::core::scene::Scene::holds_audio_below)).
+/// gone, is held while any scene is); they resume when it updates again.
+/// The top scene can leave the scenes below audible
+/// ([`Scene::holds_audio_below`](crate::core::scene::Scene::holds_audio_below)).
 /// A voice held both by its scene and by the game's pause resumes once
 /// both let it go.
 ///
@@ -299,9 +300,11 @@ impl Voice {
   }
 
   /// Which clip the play picked and the gain and pitch it drew, as it
-  /// started; `None` for a play that never started (refused), and for a
-  /// loop waiting for its sound to load until it starts. A subtitle for a
-  /// line picked at random, say:
+  /// started; `None` for a play that never started (refused), for a loop
+  /// waiting for its sound to load until it starts, and for a play a
+  /// system's [`Audio`](super::Audio) queued until its buffer applies (the
+  /// pick is made then: read it in a later system or frame). A subtitle for
+  /// a line picked at random, say:
   ///
   /// ```
   /// use ryo2d::prelude::*;

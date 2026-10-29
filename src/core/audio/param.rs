@@ -23,7 +23,10 @@ use crate::core::ecs::{Entity, Vec2, World};
 /// or at a sync point before a system ordered after it), and each returns
 /// its [`Voice`] at once:
 ///
-/// - until the play applies, the voice reports playing;
+/// - until the play applies, the voice reports playing, and
+///   [`Voice::pick`] is `None` (the clip is picked, and the gain and pitch
+///   drawn, as it applies: a subtitle for the line picked is read in a
+///   later system, or the next frame);
 /// - the changes made to it meanwhile apply after its start, so a plain
 ///   change made in the system that played it (`set_volume`, say) is heard
 ///   from its first audio, as one made in the frame a voice starts is;
@@ -34,7 +37,12 @@ use crate::core::ecs::{Entity, Vec2, World};
 /// schedule, added with `ctx.add_systems`) belongs to that scene, as a play
 /// from its callbacks does; one from a system added to a phase
 /// (`EngineBuilder::add_systems`) is the engine's, and plays on across
-/// scenes. Music is a scene's call (`ctx.audio().play_music`), as is
+/// scenes. An observer that takes `Audio` puts its queue in the world's
+/// commands, which apply at the world's next flush: one triggered from
+/// scene code (`ctx.world.trigger(..)`) may apply its plays outside the
+/// scene's section, so they need not be the scene's, and a loop among them
+/// can outlive the scene (play it from the scene's own code, or stop it in
+/// `on_exit`). Music is a scene's call (`ctx.audio().play_music`), as is
 /// loading; an exclusive system (`&mut World`) plays at once with
 /// `AudioView::new(world)`. A world without an audio engine plays nothing:
 /// every voice returned is already stopped.

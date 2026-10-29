@@ -407,9 +407,9 @@ pub trait Scene: 'static {
   /// on the buses that pause with the game (`sfx`, `ambience` and `voice`
   /// by default), and resume where they were when those scenes update again
   /// (after a `Pop`, say). An emitter added outside every scene, or whose
-  /// scene has gone, is held while any scene is. This scene's own voices, the engine's (music, and voices played
-  /// with `persist`) and voices on buses that do not pause with the game
-  /// (`ui`, `music`) play on.
+  /// scene has gone, is held while any scene is. This scene's own voices,
+  /// the engine's (music, and voices played with `persist`) and voices on
+  /// buses that do not pause with the game (`ui`, `music`) play on.
   ///
   /// Only the top scene's answer counts. Return `false` to leave the scenes
   /// below audible (a dialogue box over a level whose ambience should carry

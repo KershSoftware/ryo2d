@@ -2480,7 +2480,9 @@ impl EngineState {
   /// crossfading over [`MIN_FADE`] (kira cannot move a sound between tracks,
   /// and fixes a track's effects and sends when it builds it). A retired
   /// tree keeps the volumes it had: only `master`, on kira's main track,
-  /// still reaches what plays out there
+  /// still reaches what plays out there, and what its effects ring after
+  /// (the player's other sliders and the snapshots do not, for up to its
+  /// 10 s tail)
   fn rebuild(&mut self, world: &World, mixer: &Mixer, server: Option<&AssetServer>) {
     let planned = plan(mixer);
     // The new rules first: the tree is built with the dips the old ones

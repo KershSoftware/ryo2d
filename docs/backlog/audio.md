@@ -157,6 +157,13 @@ The third wave changed the play path and the frame: a play can start as a voice 
 
 **Every start of a streamed clip costs the same,** not only a reload: `play` of a streamed loop, `play_music` of a streamed track, a mixer rebuild moving a loop. That is the streamed `play` above, about 24 µs.
 
+### A retired tree ringing out
+
+A rebuild (a mixer saved while it is tuned, or `set_mixer`) keeps the old tree while its effects ring, up to 10 s after its last sound, and at most four such trees at once, beside the live one (`src/core/audio/AGENTS.md`, The bus tree and the mix). kira processes every kept track each 128-frame chunk, as it does the live tree's, so what a ringing tree costs is what its effects cost. Worked out from kira 0.12.6's sources, not measured:
+- **A `Reverb`** holds eight pairs of comb filters and four of all-pass filters, about 100 KB at 48 kHz, and does a few dozen operations a frame on them: negligible.
+- **A `Delay`** holds `seconds × rate` frames of 8 bytes, and shifts its whole buffer by the chunk's length each chunk (`copy_within`, in its `process`). A 10 s delay at 48 kHz holds 3.84 MB and moves it 375 times a second: about 1.4 GB/s of memmove on the mixing thread. The live tree and four ringing copies of it, after rapid saves, come to about 7 GB/s for up to 10 s, which risks underruns on a slower machine. A delay under a second costs a tenth of that or less.
+- **Not done:** counting long delays against the four ringing trees (a 10 s delay as several), or a delay of the engine's own over a ring buffer. A designer tuning a long delay hears the cost only while saving it repeatedly; a game's `set_mixer` rebuilds rarely.
+
 ### Streams and kira
 
 1. **kira 0.12.6 ends a stream dropped without being stopped:** `StreamingSound`'s `Drop` marks it stopped, so its decoder thread ends, as when an `AudioEngine` (or an audio world) is dropped with a stream playing, or kira refuses a sound for want of room after its decoder started. The engine uses kira 0.12.6.
