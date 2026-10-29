@@ -1602,6 +1602,168 @@ mod tests {
     assert!(swaps(&world).is_empty(), "{:#?}", swaps(&world));
   }
 
+  /// `PreventNew` asks its limit before kira's room: a second alarm played
+  /// while the track is full of voices fading out is refused (`limit`), not
+  /// kept virtual, so nothing comes back as the heard one stops
+  #[test]
+  fn prevent_new_refuses_a_loop_whatever_kira_s_room() {
+    let mut world = audio_world();
+    let long = clip(&mut world, 2.0);
+    let alarm = add(
+      &mut world,
+      Sound {
+        priority: 200,
+        limit: Some(VoiceLimit {
+          max: 1,
+          rule: LimitRule::PreventNew,
+        }),
+        ..looping(&long)
+      },
+    );
+    let filler = add(&mut world, looping(&long));
+    let first = play(&mut world, &alarm);
+    for _ in 0..95 {
+      play(&mut world, &filler);
+    }
+    audio_step(&mut world, FRAME);
+    // Each takes an older filler's place, whose fade holds kira's room
+    for _ in 0..32 {
+      play(&mut world, &filler);
+    }
+    assert_eq!(sounds_on(&world, "sfx"), 128, "kira's track is full");
+    let second = play(&mut world, &alarm);
+    assert!(second.is_stopped() && !second.is_virtual(), "{second:?}");
+    let refused: Vec<&str> = log(&world)
+      .iter()
+      .filter(|entry| entry.kind == AudioLogKind::Refused)
+      .map(|entry| entry.reason)
+      .collect();
+    assert_eq!(refused.len(), 1, "{refused:?}");
+    assert!(refused[0].starts_with("limit"), "{refused:?}");
+    first.stop(MIN_FADE);
+    steps(&mut world, 30);
+    assert!(second.is_stopped());
+    assert!(entries(&world, &second, AudioLogKind::Real).is_empty());
+  }
+
+  /// Under `PreventNew` a sound's virtual loops count against its limit: a
+  /// second alarm is refused while the first is virtual out of range
+  #[test]
+  fn prevent_new_counts_a_virtual_loop() {
+    let mut world = audio_world();
+    world.spawn(AudioListener);
+    let dc = clip(&mut world, 1.0);
+    let alarm = add(
+      &mut world,
+      Sound {
+        limit: Some(VoiceLimit {
+          max: 1,
+          rule: LimitRule::PreventNew,
+        }),
+        ..placed(&dc)
+      },
+    );
+    let far = AudioView::new(&mut world).play_at(&alarm, Vec2::new(900.0, 0.0));
+    assert!(far.is_virtual(), "{far:?}");
+    audio_step(&mut world, FRAME);
+    let near = AudioView::new(&mut world).play_at(&alarm, Vec2::ZERO);
+    assert!(near.is_stopped() && !near.is_virtual(), "{near:?}");
+    assert!(far.is_playing() && far.is_virtual(), "{far:?}");
+  }
+
+  /// Under `StopOldest` a sound's virtual loops count against its limit: a
+  /// second bed ends the first, virtual out of range, which never comes
+  /// back, and is heard
+  #[test]
+  fn stop_oldest_ends_a_virtual_loop() {
+    let mut world = audio_world();
+    let listener = world
+      .spawn((AudioListener, Transform::from_xy(0.0, 0.0)))
+      .id();
+    let dc = clip(&mut world, 1.0);
+    let bed = add(
+      &mut world,
+      Sound {
+        limit: Some(VoiceLimit {
+          max: 1,
+          rule: LimitRule::StopOldest,
+        }),
+        ..placed(&dc)
+      },
+    );
+    let first = AudioView::new(&mut world).play_at(&bed, Vec2::new(900.0, 0.0));
+    assert!(first.is_virtual(), "{first:?}");
+    audio_step(&mut world, FRAME);
+    let second = AudioView::new(&mut world).play_at(&bed, Vec2::ZERO);
+    assert!(second.is_playing() && !second.is_virtual(), "{second:?}");
+    assert_eq!(entries(&world, &first, AudioLogKind::Stolen).len(), 1);
+    audio_step(&mut world, FRAME);
+    assert!(first.is_stopped(), "{first:?}");
+    // In range of where it was, it does not come back
+    move_to(&mut world, listener, 800.0);
+    steps(&mut world, 30);
+    assert!(entries(&world, &first, AudioLogKind::Real).is_empty());
+  }
+
+  /// A loop's fate under a bus limit follows its own sound's rule: a
+  /// one-shot under a default `StopOldest` limit that fills the bus takes a
+  /// limitless loop's place, and the loop goes virtual and comes back when
+  /// the one-shots end; a loop whose own sound is under `StopOldest` ends
+  #[test]
+  fn a_loop_cut_by_a_bus_limit_goes_by_its_own_rule() {
+    for own_rule in [None, Some(LimitRule::StopOldest)] {
+      let mut world = audio_world();
+      AudioView::new(&mut world).set_mixer(Mixer {
+        buses: vec![BusDef {
+          limit: Some(2),
+          ..BusDef::new("ambience/yard")
+        }],
+        ..Default::default()
+      });
+      let long = clip(&mut world, 2.0);
+      let short = clip(&mut world, 0.2);
+      let fire = add(
+        &mut world,
+        Sound {
+          bus: "ambience/yard".to_string(),
+          limit: own_rule.map(|rule| VoiceLimit { max: 4, rule }),
+          ..looping(&long)
+        },
+      );
+      let step = add(
+        &mut world,
+        Sound {
+          bus: "ambience/yard".to_string(),
+          looping: false,
+          limit: Some(VoiceLimit {
+            max: 3,
+            rule: LimitRule::default(),
+          }),
+          ..looping(&short)
+        },
+      );
+      let fire = play(&mut world, &fire);
+      audio_step(&mut world, FRAME);
+      play(&mut world, &step);
+      audio_step(&mut world, FRAME);
+      // The bus is full: the step's rule picks the oldest, the fire
+      play(&mut world, &step);
+      match own_rule {
+        None => {
+          assert!(fire.is_playing() && fire.is_virtual(), "{fire:?}");
+          steps(&mut world, 30);
+          assert!(fire.is_playing() && !fire.is_virtual(), "back: {fire:?}");
+        }
+        Some(_) => {
+          assert!(!fire.is_virtual(), "{fire:?}");
+          assert_eq!(entries(&world, &fire, AudioLogKind::Stolen).len(), 1);
+          steps(&mut world, 30);
+          assert!(fire.is_stopped(), "{fire:?}");
+        }
+      }
+    }
+  }
+
   /// `StopQuietest` (as `StopFarthest` and `StopLowestPriority`) ranks:
   /// the loop it stops goes virtual, and comes back once it is the louder
   #[test]

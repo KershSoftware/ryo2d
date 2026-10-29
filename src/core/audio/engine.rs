@@ -1108,8 +1108,9 @@ struct SoundState {
 struct Victim {
   index: usize,
   fade: Duration,
-  /// The rule that picked it ends a loop rather than making it virtual
-  /// ([`ends_loops`])
+  /// It ends rather than going virtual, if it loops: picked by its own
+  /// sound's limit under a rule that ends loops, or by a bus limit while its
+  /// own sound's rule ends loops ([`ends_loops`]); never the cap's
   ends: bool,
 }
 
@@ -1118,9 +1119,10 @@ struct Victim {
 /// `StopOldest` (the newest replaces the oldest). The rules that rank
 /// (`StopQuietest`, `StopFarthest`, `StopLowestPriority`) and the cap's
 /// order (`None`: the cap, or a bus limit for a sound with no limit) make a
-/// loop virtual, to come back when it ranks again. The rule decides for a
-/// returning loop too: under a rule that ends loops it takes no voice's
-/// place
+/// loop virtual, to come back when it ranks again. Under a rule that ends
+/// loops a sound's virtual loops count against its own limit, and a
+/// returning loop takes no voice's place. A loop another sound's play cuts
+/// through a bus limit goes by its own sound's rule
 fn ends_loops(rule: Option<LimitRule>) -> bool {
   matches!(rule, Some(LimitRule::PreventNew | LimitRule::StopOldest))
 }
@@ -4444,7 +4446,22 @@ impl EngineState {
     // when it is in range and has room. A limit whose rule ends loops
     // (`PreventNew`, `StopOldest`) refuses it instead
     let virtualizes = request.looping && request.music.is_none();
-    let mut goes_virtual = if virtualizes && out_of_range {
+    // A loop whose own rule ends loops meets its own limit first, its
+    // virtual loops counted, whatever its place or kira's room: PreventNew
+    // refuses, StopOldest ends the oldest
+    let own_ends = virtualizes
+      && request
+        .limit
+        .is_some_and(|limit| ends_loops(Some(limit.rule)));
+    let mut goes_virtual = if own_ends {
+      match self.make_room(bus, request) {
+        Err(rule) if ends_loops(rule) => return self.refuse(&subject, REFUSED_LIMIT, server),
+        Err(_) => Some(VIRTUAL_LIMIT),
+        Ok(()) if out_of_range => Some(VIRTUAL_RANGE),
+        Ok(()) if !waits && !self.buses.has_room(bus) => Some(VIRTUAL_FULL),
+        Ok(()) => None,
+      }
+    } else if virtualizes && out_of_range {
       Some(VIRTUAL_RANGE)
     } else if !waits && !self.buses.has_room(bus) {
       if !virtualizes {
@@ -4463,6 +4480,11 @@ impl EngineState {
     };
     if goes_virtual.is_some() && self.virtual_count >= MAX_VIRTUAL {
       return self.refuse(&subject, REFUSED_VIRTUAL, server);
+    }
+    // Going virtual, it takes only the steals its rule asks for (StopOldest's
+    // oldest ends); those that would go virtual made room it does not take
+    if goes_virtual.is_some() {
+      self.victims.retain(|victim| victim.ends);
     }
     let length = {
       let (rate, frames) = match &samples {
@@ -6010,7 +6032,7 @@ impl Room<'_> {
   fn fit(&mut self, scope: Scope, max: usize, rule: Option<LimitRule>) -> bool {
     loop {
       let count = (0..self.live.len())
-        .filter(|&index| self.counts(index, scope))
+        .filter(|&index| self.counts(index, scope, rule))
         .count();
       if count < max {
         return true;
@@ -6021,26 +6043,35 @@ impl Room<'_> {
       let Some(index) = self.victim(scope, rule) else {
         return false;
       };
+      let victim = &self.live[index];
+      // A virtual one has no kira sound to fade
       let fade = match rule {
-        Some(_) => self.live[index].fade_out.max(MIN_FADE),
+        _ if victim.is_virtual() => Duration::ZERO,
+        Some(_) => victim.fade_out.max(MIN_FADE),
         None => MIN_FADE,
       };
-      self.victims.push(Victim {
-        index,
-        fade,
-        ends: ends_loops(rule),
-      });
+      // Its own sound's rule decides whether a loop ends or goes virtual: the
+      // play's when its own limit picked it, its own when a bus limit did
+      let ends = match scope {
+        Scope::Sound(..) => ends_loops(rule),
+        Scope::Subtree(_) => ends_loops(victim.limit.map(|limit| limit.rule)),
+        Scope::Track(_) => false,
+      };
+      self.victims.push(Victim { index, fade, ends });
     }
   }
 
-  /// Whether voice `index` counts against `scope`'s limit: in it, playing or
-  /// paused, not virtual, and not already planned to stop
-  fn counts(&self, index: usize, scope: Scope) -> bool {
+  /// Whether voice `index` counts against `scope`'s limit (under `rule`):
+  /// in it, playing or paused, not virtual (but against its own sound's
+  /// limit under a rule that ends loops, where a virtual loop counts), and
+  /// not already planned to stop
+  fn counts(&self, index: usize, scope: Scope, rule: Option<LimitRule>) -> bool {
     let Some(live) = self.live.get(index) else {
       return false;
     };
+    let virtual_counts = matches!(scope, Scope::Sound(..)) && ends_loops(rule);
     scope.holds(live, self.buses)
-      && !live.is_virtual()
+      && (virtual_counts || !live.is_virtual())
       && !matches!(
         live.voice.state(),
         VoiceState::Stopping | VoiceState::Stopped
@@ -6060,7 +6091,7 @@ impl Room<'_> {
       let may_stop = (self.music || live.music.is_none())
         && (live.priority < self.priority
           || (live.priority == self.priority && live.frame != self.frame));
-      if !may_stop || !self.counts(index, scope) {
+      if !may_stop || !self.counts(index, scope, rule) {
         continue;
       }
       let better = match chosen.map(|at| &self.live[at]) {
