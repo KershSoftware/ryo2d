@@ -697,6 +697,17 @@ impl Playback {
     }
   }
 
+  /// Whether kira has audio to play: a stream's once its decoder has given
+  /// its first frames (it opens, seeks and decodes on kira's decoder thread
+  /// after the stream starts)
+  fn has_frames(&self) -> bool {
+    match self {
+      #[cfg(not(target_arch = "wasm32"))]
+      Playback::Stream(_, failure) => failure.has_frames(),
+      _ => true,
+    }
+  }
+
   /// Fade out over `fade` and stop
   fn stop(&mut self, fade: Duration) {
     let tween = fade_to_silence(fade);
@@ -850,6 +861,10 @@ struct LiveVoice {
   /// The fade of the pause or resume the game asked of it this frame, for
   /// kira to hear in the frame's update
   own_fade: Option<Duration>,
+  /// A streamed comeback, started paused until its decoder has frames: it
+  /// is resumed then with this fade (`resume_started`), so the fade does
+  /// not run out while kira plays the silence of its decoder's start
+  starting: Option<Duration>,
   /// Its fade from silence (its fade-in, or a resume's) as it last began,
   /// while it may still run: a restart (a reload, a rebuild) carries on with
   /// what is left of it rather than jumping to its level
@@ -1500,6 +1515,8 @@ pub struct EngineState {
   /// How many voices are virtual (loops keeping their place with no kira
   /// sound), at most [`MAX_VIRTUAL`]: none, and no frame ranks them
   virtual_count: usize,
+  /// How many streamed comebacks wait for their decoders (`starting`)
+  starting_count: usize,
   /// The virtual voices' ranking's lists, kept to reuse
   ranking: Ranking,
   /// The voices each definition (or clip played directly) started this
@@ -1578,6 +1595,10 @@ pub struct EngineState {
   /// The byte from which the files of streams started fail to read (tests)
   #[cfg(test)]
   stream_reads_fail_at: Option<u64>,
+  /// How long the decoders of streams started wait before their first
+  /// decode (tests)
+  #[cfg(test)]
+  stream_delay: Option<Duration>,
   /// Plays kira refused for want of room though the engine's own check
   /// found some: only a race of nanoseconds, as a stopped sound's slot is
   /// freed, gets here, so none in normal play
@@ -1752,6 +1773,7 @@ impl EngineState {
       warned_flat: FastSet::default(),
       victims: Vec::new(),
       virtual_count: 0,
+      starting_count: 0,
       ranking: Ranking::with_room(),
       frame_starts: Vec::new(),
       pending: Vec::new(),
@@ -1787,6 +1809,8 @@ impl EngineState {
       stream_decoding: None,
       #[cfg(test)]
       stream_reads_fail_at: None,
+      #[cfg(test)]
+      stream_delay: None,
       #[cfg(test)]
       kira_full: 0,
       #[cfg(test)]
@@ -1863,6 +1887,13 @@ impl EngineState {
   #[cfg(test)]
   pub(crate) fn fail_stream_reads_at(&mut self, at: u64) {
     self.stream_reads_fail_at = Some(at);
+  }
+
+  /// Make the decoders of the streams started from now on wait `delay`
+  /// before their first decode (tests): decoders slow to start
+  #[cfg(test)]
+  pub(crate) fn delay_stream_starts(&mut self, delay: Duration) {
+    self.stream_delay = Some(delay);
   }
 
   /// How many plays kira refused for want of room though the engine's own
@@ -2858,9 +2889,10 @@ impl EngineState {
       return Ok(());
     }
     let waiting = live.playback.waiting_fade();
-    // A paused or held voice starts paused, unheard
+    // A paused or held voice starts paused, unheard, as does a streamed
+    // comeback still waiting for its decoder (its new stream waits instead)
     let paused = live.voice.state() == VoiceState::Paused;
-    let held = paused || live.held;
+    let held = paused || live.held || live.starting.is_some();
     // A filtered voice's filter moves with it. One that waited for the
     // unlock never had one: it gets the one its place gives now
     let cutoff = match waiting {
@@ -4441,6 +4473,7 @@ impl EngineState {
       kira_paused: starts_held,
       unheard: (starts_held || heard_later).then_some(request.fade_in),
       own_fade: None,
+      starting: None,
       fade_in: if starts_held || waits || heard_later {
         None
       } else {
@@ -4799,6 +4832,11 @@ impl EngineState {
       Some(at) => decoder.failing_at(at),
       None => decoder,
     };
+    #[cfg(test)]
+    let decoder = match self.stream_delay {
+      Some(delay) => decoder.delaying(delay),
+      None => decoder,
+    };
     let data = StreamingSoundData::from_decoder(decoder)
       .volume(Decibels(start.gain_db))
       .panning(Panning(start.pan))
@@ -4855,6 +4893,7 @@ impl EngineState {
     self.play_awaited(world, server);
     self.follow_game(game, real_delta, server);
     self.rank_virtual(world, server);
+    self.resume_started();
     self.report_stream_errors();
     // The virtual loops move on as kira renders the frame
     self.advance_virtual(real_delta);
@@ -4980,10 +5019,11 @@ impl EngineState {
       let held = bus.held || owner;
       let let_go = live.held && !held;
       live.held = held;
-      // Paused itself, or held: kira reads a pause before a resume sent in
-      // the same frame, so only where it ends up is sent. Its own pause or
-      // resume this frame gives the fade; a hold's is the shortest
-      let paused = state == VoiceState::Paused || live.held;
+      // Paused itself, or held (or a streamed comeback waiting for its
+      // decoder): kira reads a pause before a resume sent in the same frame,
+      // so only where it ends up is sent. Its own pause or resume this frame
+      // gives the fade; a hold's is the shortest
+      let paused = state == VoiceState::Paused || live.held || live.starting.is_some();
       let own_fade = live.own_fade.take();
       let own = own_fade.unwrap_or(MIN_FADE);
       let mut first_heard = None;
@@ -5352,13 +5392,15 @@ impl EngineState {
         }
       }
     }
-    let mut virtualized = 0;
+    let (mut virtualized, mut starting) = (0, 0);
     self.voices.live.retain(|live| {
       let kept = !live.voice.is_stopped();
       virtualized += usize::from(kept && live.is_virtual());
+      starting += usize::from(kept && live.starting.is_some());
       kept
     });
     self.virtual_count = virtualized;
+    self.starting_count = starting;
   }
 
   /// Mark `clip` at content `version` undecodable, so it is refused until it

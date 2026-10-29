@@ -90,10 +90,11 @@ impl From<SymphoniaError> for StreamError {
   }
 }
 
-/// Where a stream's decoder reports that it failed, for the engine to read:
-/// shared by the decoder (on kira's decoder thread) and the engine's voice.
-/// It knows the stream's sample rate, which says how long before playback
-/// reaches the failure the decoder reports it
+/// Where a stream's decoder reports that it failed, and that it has decoded
+/// its first frames, for the engine to read: shared by the decoder (on
+/// kira's decoder thread) and the engine's voice. It knows the stream's
+/// sample rate, which says how long before playback reaches the failure the
+/// decoder reports it
 #[derive(Debug, Clone)]
 pub(crate) struct StreamFailure {
   slot: Arc<FailureSlot>,
@@ -105,6 +106,9 @@ struct FailureSlot {
   /// Set while an error waits in `error`, so a frame's check is one load
   failed: AtomicBool,
   error: Mutex<Option<StreamError>>,
+  /// Set once a `decode` has given frames (silence after a failure
+  /// included): kira has audio to play from then
+  decoded: AtomicBool,
 }
 
 impl StreamFailure {
@@ -136,6 +140,19 @@ impl StreamFailure {
   /// The stream's sample rate, in its own frames a second
   pub(crate) fn sample_rate(&self) -> u32 {
     self.sample_rate
+  }
+
+  /// Whether its decoder has given its first frames (kira's decoder thread
+  /// opens the file, seeks and decodes after the stream starts)
+  pub(crate) fn has_frames(&self) -> bool {
+    self.slot.decoded.load(Ordering::Acquire)
+  }
+
+  /// Note that its decoder gave frames
+  fn decoded(&self) {
+    if !self.slot.decoded.load(Ordering::Relaxed) {
+      self.slot.decoded.store(true, Ordering::Release);
+    }
   }
 }
 
@@ -278,6 +295,10 @@ pub(crate) struct ClipDecoder {
   /// The byte of the file from which reading it fails (tests)
   #[cfg(test)]
   fail_reading_at: Option<u64>,
+  /// How long its first `decode` waits before it opens the file, as a slow
+  /// disk or a loaded machine makes it (tests)
+  #[cfg(test)]
+  delay: Option<std::time::Duration>,
 }
 
 enum State {
@@ -316,6 +337,8 @@ impl ClipDecoder {
       decoded: None,
       #[cfg(test)]
       fail_reading_at: None,
+      #[cfg(test)]
+      delay: None,
     }
   }
 
@@ -336,6 +359,14 @@ impl ClipDecoder {
   #[cfg(test)]
   pub(crate) fn failing_at(mut self, at: u64) -> Self {
     self.fail_reading_at = Some(at);
+    self
+  }
+
+  /// Wait `delay` on kira's decoder thread before the first `decode` opens
+  /// the file (tests): a decoder slow to start
+  #[cfg(test)]
+  pub(crate) fn delaying(mut self, delay: std::time::Duration) -> Self {
+    self.delay = Some(delay);
     self
   }
 
@@ -524,14 +555,20 @@ impl Decoder for ClipDecoder {
 
   /// Never an error: a stream that fails reports it and gives silence
   fn decode(&mut self) -> Result<Vec<Frame>, StreamError> {
+    #[cfg(test)]
+    if let Some(delay) = self.delay.take() {
+      std::thread::sleep(delay);
+    }
     self.open();
-    match self.next_frames() {
-      Ok(frames) => Ok(frames),
+    let frames = match self.next_frames() {
+      Ok(frames) => frames,
       Err(error) => {
         self.fail(error);
-        Ok(self.silence(self.end))
+        self.silence(self.end)
       }
-    }
+    };
+    self.failure.decoded();
+    Ok(frames)
   }
 
   /// Exact, in the window's frames: an open file seeks now, one not yet

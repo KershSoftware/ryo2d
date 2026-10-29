@@ -252,6 +252,7 @@ impl EngineState {
     }
     // One never heard stays so: it comes back with its own fade-in
     live.fade_in = None;
+    live.starting = None;
     live.generation = generation;
     live.changed = clock;
     live.voice.set_virtual(true);
@@ -263,8 +264,11 @@ impl EngineState {
   /// where it has got to, at its level as heard now (the game's changes and
   /// its place's), fading in over 50 ms (one never heard over its own
   /// fade-in, if longer), with its distance low-pass while there is room for
-  /// one. False if it could not start (kira's room taken
-  /// in a race): it stays virtual. One whose clip cannot be decoded ends
+  /// one. A stream starts paused, and fades in once its decoder has frames
+  /// ([`resume_started`](Self::resume_started)), as kira plays silence
+  /// until then and its fade would run out over it. False if it could not
+  /// start (kira's room taken in a race): it stays virtual. One whose clip
+  /// cannot be decoded ends
   fn realize(
     &mut self,
     world: &World,
@@ -301,11 +305,12 @@ impl EngineState {
     let fade = live
       .unheard
       .map_or(VIRTUAL_FADE, |fade_in| fade_in.max(VIRTUAL_FADE));
+    let streamed = matches!(samples, ClipSource::Encoded { .. });
     let start = Start {
       gain_db: live.heard_db(),
       pan: live.pan(),
       rate: live.rate(),
-      held: false,
+      held: streamed,
       fade_in: Some(fade_from_silence(fade)),
       region: region.as_ref(),
       loop_region: loop_region.as_ref(),
@@ -337,13 +342,20 @@ impl EngineState {
     let (clock, generation) = (self.clock, self.generation);
     let live = &mut self.voices.live[index];
     live.playback = playback;
-    live.kira_paused = false;
+    live.kira_paused = streamed;
     live.own_fade = None;
     if let Some(spatial) = &mut live.spatial {
       spatial.filter = filter;
     }
     live.unheard = None;
-    live.fade_in = FadeIn::begin(clock, fade);
+    if streamed {
+      live.starting = Some(fade);
+      live.fade_in = None;
+      self.starting_count += 1;
+    } else {
+      live.fade_in = FadeIn::begin(clock, fade);
+    }
+    let live = &mut self.voices.live[index];
     live.generation = generation;
     live.version = version;
     live.changed = clock;
@@ -456,6 +468,30 @@ impl EngineState {
       ranking.count(&self.voices.live, &self.buses, clock);
     }
     self.ranking = ranking;
+  }
+
+  /// Resume each streamed comeback whose decoder now has frames, fading in
+  /// over its comeback's fade from silence, as its audio starts: playing,
+  /// not held (one paused or held waits for both, and its decoder). Nothing
+  /// is looked at while none waits
+  pub(super) fn resume_started(&mut self) {
+    if self.starting_count == 0 {
+      return;
+    }
+    let clock = self.clock;
+    for live in &mut self.voices.live {
+      let Some(fade) = live.starting else {
+        continue;
+      };
+      if live.held || live.voice.state() != VoiceState::Playing || !live.playback.has_frames() {
+        continue;
+      }
+      live.starting = None;
+      live.kira_paused = false;
+      live.playback.resume(fade);
+      live.fade_in = FadeIn::begin(clock, fade);
+      self.starting_count = self.starting_count.saturating_sub(1);
+    }
   }
 
   /// Move each virtual loop on through what it plays by `delta` at its rate
@@ -698,6 +734,65 @@ mod tests {
     assert!(
       at <= played + 0.003 && at >= started,
       "at {at}: from {place}, at most {played}, less its stream's start"
+    );
+  }
+
+  /// A streamed loop's comeback fades in once its decoder has frames, not
+  /// while its decoder starts: with a decoder slow to start, the first
+  /// audio rendered after the comeback ramps from silence
+  #[test]
+  fn a_streamed_comeback_fades_in_once_its_decoder_has_frames() {
+    let files = crate::core::asset::MemorySource::new();
+    files.insert("bed.wav", crate::core::testing::wav(48_000, 48_000, 3_277));
+    let (mut world, meter) = crate::core::testing::metered_audio_world_over(files);
+    let settings = crate::core::asset::AudioClipSettings {
+      mode: crate::core::asset::ClipMode::Stream,
+    };
+    let bed = crate::core::asset::AssetsView::new(&mut world)
+      .load_now_with::<AudioClip, _>("bed.wav", settings)
+      .unwrap_or_else(|error| panic!("{}", error.report()));
+    let hum = limited(&mut world, &bed, 1, LimitRule::StopQuietest);
+    let frames = |world: &mut World, count: usize| {
+      for _ in 0..count {
+        audio_step(world, FRAME);
+        std::thread::sleep(Duration::from_millis(2));
+      }
+    };
+    let first = play(&mut world, &hum);
+    frames(&mut world, 30);
+    // The second takes its place, silent: the first comes back in its
+    // place 250 ms on, its decoder slow to start
+    let second = play(&mut world, &hum);
+    second.set_volume(-60.0);
+    assert!(first.is_virtual(), "{first:?}");
+    world
+      .resource_mut::<AudioEngine>()
+      .delay_stream_starts(Duration::from_millis(80));
+    // From the frame it comes back in
+    let mut from = meter.rendered_count();
+    for _ in 0..60 {
+      from = meter.rendered_count();
+      frames(&mut world, 1);
+      if !first.is_virtual() {
+        break;
+      }
+    }
+    assert!(!first.is_virtual(), "{first:?}");
+    frames(&mut world, 60);
+    let heard = meter.rendered(meter.rendered_count() - from);
+    let level = 3_277.0 / 32_768.0;
+    let Some(sounding) = heard.iter().position(|frame| frame.left.abs() > 1e-6) else {
+      panic!("nothing sounded");
+    };
+    let onset = heard[sounding].left.abs();
+    assert!(
+      onset < 0.05 * level,
+      "its first audio ramps from silence: {onset} of {level}"
+    );
+    let settled = heard[sounding + 3_000].left;
+    assert!(
+      (settled - level).abs() < 0.01 * level,
+      "{settled} of {level}"
     );
   }
 
