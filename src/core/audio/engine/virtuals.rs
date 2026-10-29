@@ -639,6 +639,62 @@ mod tests {
     assert_eq!(sounds_on(&world, "sfx"), 1);
   }
 
+  /// A streamed loop goes virtual and comes back the same way: its stream
+  /// starts again where it would be, its decoder seeking there
+  #[test]
+  fn a_streamed_loop_stolen_by_a_limit_comes_back_where_it_would_be() {
+    let files = crate::core::asset::MemorySource::new();
+    files.insert("half.wav", crate::core::testing::wav(48_000, 24_000, 3_277));
+    let mut world = crate::core::testing::audio_world_over(files);
+    let settings = crate::core::asset::AudioClipSettings {
+      mode: crate::core::asset::ClipMode::Stream,
+    };
+    let half = crate::core::asset::AssetsView::new(&mut world)
+      .load_now_with::<AudioClip, _>("half.wav", settings)
+      .unwrap_or_else(|error| panic!("{}", error.report()));
+    let streamed = world
+      .resource::<Assets<AudioClip>>()
+      .get(&half)
+      .is_some_and(AudioClip::is_streamed);
+    assert!(streamed, "the clip streams");
+    let hum = limited(&mut world, &half, 1, LimitRule::StopOldest);
+    // A stream decodes on its own thread: each frame gives it a moment
+    let frames = |world: &mut World, count: usize| {
+      for _ in 0..count {
+        audio_step(world, FRAME);
+        std::thread::sleep(Duration::from_millis(2));
+      }
+    };
+    let first = play(&mut world, &hum);
+    frames(&mut world, 30);
+    let second = play(&mut world, &hum);
+    assert!(first.is_virtual(), "{first:?}");
+    // Where its stream was as it went virtual (behind the clock by as long
+    // as its decoder took to start: the mock renders faster than that)
+    let stolen = position(&world, &first);
+    frames(&mut world, 42);
+    // It comes back where it would be: 42 frames on, in the 0.5 s loop
+    let place = position(&world, &first);
+    let expected = (stolen + 42.0 * FRAME.as_secs_f64()) % 0.5;
+    assert!(
+      (place - expected).abs() < 1e-6,
+      "at {place}, expected {expected}"
+    );
+    second.stop(MIN_FADE);
+    frames(&mut world, 1);
+    assert!(!first.is_virtual(), "{first:?}");
+    // Its stream plays on from there, once its decoder has sought it: the
+    // mock renders a frame at once, faster than a decoder thread starts
+    frames(&mut world, 10);
+    let at = position(&world, &first);
+    let played = place + 11.0 * FRAME.as_secs_f64();
+    let started = place + 6.0 * FRAME.as_secs_f64();
+    assert!(
+      at <= played + 0.003 && at >= started,
+      "at {at}: from {place}, at most {played}, less its stream's start"
+    );
+  }
+
   /// A placed loop at or beyond its maximum distance takes no voice: it is
   /// virtual, so kira holds no sound for it and nothing renders. Past the
   /// maximum but short of 95% of it, it stays virtual; inside that it comes
