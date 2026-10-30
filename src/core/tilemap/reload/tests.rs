@@ -304,25 +304,37 @@ fn new_and_removed_objects_spawn_and_despawn() {
   assert_eq!(id_of(&maps.world, map, "1"), Some(a), "kept");
   assert!(maps.world.get_entity(b).is_err(), "removed from the file");
   assert_eq!(id_of(&maps.world, map, "2"), None);
-  // A new object spawns in its layer, and one the game took away comes
-  // back: the file wins
+  // A new object spawns in its layer; one the game took away stays away,
+  // the save having left it as it was
   let (d, d_object) = object_named(&mut maps.world, map, "d");
   assert_eq!(d_object.id, "4");
   assert_eq!(id_of(&maps.world, map, "4"), Some(d));
   assert_eq!(maps.world.get::<ChildOf>(d).map(ChildOf::parent), layer);
+  assert_eq!(id_of(&maps.world, map, "3"), None, "c stays despawned");
+  let count = |world: &mut World| {
+    world
+      .query::<&MapObject>()
+      .iter(world)
+      .filter(|o| o.map == map)
+      .count()
+  };
+  assert_eq!(count(&mut maps.world), 2);
+  let arrived = std::mem::take(&mut maps.world.resource_mut::<Arrived>().0);
+  assert_eq!(arrived, ["4"], "only the new object arrives");
+
+  // A save that changes it brings it back
+  let mut watch = Watch::new(&maps.world);
+  let moved_c = object(3, "c", (48, 32), "");
+  files.insert("r/m.tmj", small(ground, &[at(1, "a"), moved_c, at(4, "d")]));
+  watch.until_reloaded(&mut maps, map);
   let (again, _) = object_named(&mut maps.world, map, "c");
   assert_ne!(again, c);
   assert_eq!(id_of(&maps.world, map, "3"), Some(again));
-  let mut arrived = std::mem::take(&mut maps.world.resource_mut::<Arrived>().0);
-  arrived.sort();
-  assert_eq!(arrived, ["3", "4"], "only the new objects arrive");
-  let count = maps
-    .world
-    .query::<&MapObject>()
-    .iter(&maps.world)
-    .filter(|o| o.map == map)
-    .count();
-  assert_eq!(count, 3);
+  assert_eq!(translation(&maps.world, again), Vec2::new(56.0, 40.0));
+  assert_eq!(id_of(&maps.world, map, "4"), Some(d));
+  let arrived = std::mem::take(&mut maps.world.resource_mut::<Arrived>().0);
+  assert_eq!(arrived, ["3"]);
+  assert_eq!(count(&mut maps.world), 3);
 }
 
 #[test]
@@ -382,8 +394,9 @@ fn objects_reconcile_by_id() {
     ("2".to_string(), e2),
     ("3".to_string(), e3),
   ];
-  let new = [data("1"), data("3"), data("4")];
-  let matched = reconcile(&existing, &new, |i| i == 0);
+  // "5" has no live entity (the game despawned it) and the file left it
+  let new = [data("1"), data("3"), data("4"), data("5")];
+  let matched = reconcile(&existing, &new, |i| i == 0 || i == 3);
   assert_eq!(
     matched,
     Reconcile {
@@ -435,6 +448,131 @@ fn class_tiles_reconcile_by_layer_and_cell() {
     grid_of(&maps.world, ground),
     cells(&[0, 0, 1, 0, 0, 0, 0, 0, 1, 1, 1, 1])
   );
+
+  // The game collects the new coin and marks the kept one's tile taken; a
+  // save of another cell leaves both as the game has them
+  let collected = after[1].1;
+  maps.world.despawn(collected);
+  if let Some(mut tile) = maps.world.get_mut::<MapTile>(kept) {
+    tile
+      .properties
+      .insert("taken", crate::core::tilemap::PropertyValue::Bool(true));
+  }
+  let elsewhere = [0, 6, 1, 0, 0, 0, 0, 6, 1, 1, 1, 0];
+  let mut watch = Watch::new(&maps.world);
+  files.insert("r/m.tmj", small(elsewhere, &[]));
+  watch.until_reloaded(&mut maps, map);
+  let now = coins(&mut maps.world);
+  assert_eq!(
+    now,
+    [(IVec2::new(1, 0), kept)],
+    "the collected coin stays away"
+  );
+  let taken = maps
+    .world
+    .get::<MapTile>(kept)
+    .map(|t| t.properties.clone());
+  assert!(taken.is_some_and(|p| p.get("taken").is_some()));
+  assert_eq!(
+    grid_of(&maps.world, ground),
+    cells(&[0, 0, 1, 0, 0, 0, 0, 0, 1, 1, 1, 0])
+  );
+
+  // A save that changes the collected coin's cell (the coin flipped) brings
+  // it back
+  let flipped = 6 | 0x8000_0000;
+  let changed = [0, 6, 1, 0, 0, 0, 0, flipped, 1, 1, 1, 0];
+  let mut watch = Watch::new(&maps.world);
+  files.insert("r/m.tmj", small(changed, &[]));
+  watch.until_reloaded(&mut maps, map);
+  let now = coins(&mut maps.world);
+  assert_eq!(now.len(), 2);
+  assert_eq!(now[0], (IVec2::new(1, 0), kept));
+  assert_eq!(now[1].0, IVec2::new(3, 1));
+  let back = maps.world.get::<MapTile>(now[1].1).map(|t| t.tile.flip);
+  assert_eq!(back, Some(crate::core::tilemap::TileFlip::HORIZONTAL));
+}
+
+#[test]
+fn a_tile_layer_spawned_afresh_keeps_away_the_class_tiles_the_game_took() {
+  let level = |offset: &str| {
+    let ground = [6, 6, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1];
+    map_of((4, 3), &[tiles(1, "ground", (4, 3), &ground, offset)])
+  };
+  let files = files_with(&[("r/set.tsj", SET), ("r/m.tmj", &level(""))]);
+  let (mut maps, map) = spawned(&files, "r/m.tmj", |h| {
+    MapRoot::new(h).with_entity_tiles(&["coin"])
+  });
+  let coins = |world: &mut World| -> Vec<IVec2> {
+    let mut found: Vec<IVec2> = world
+      .query::<&MapTile>()
+      .iter(world)
+      .filter(|t| t.map == map)
+      .map(|t| t.cell)
+      .collect();
+    found.sort_by_key(|cell| (cell.y, cell.x));
+    found
+  };
+  let collected = maps
+    .world
+    .query::<(Entity, &MapTile)>()
+    .iter(&maps.world)
+    .find(|(_, t)| t.cell == IVec2::new(1, 0))
+    .map(|(e, _)| e)
+    .expect("a coin at (1, 0)");
+  maps.world.despawn(collected);
+
+  // The layer moves (a new entity); its coins come with it, but not the
+  // one collected
+  let mut watch = Watch::new(&maps.world);
+  files.insert("r/m.tmj", level(r#","offsetx":8"#));
+  watch.until_reloaded(&mut maps, map);
+  let ground = layers_of(&mut maps.world, map)[0];
+  assert_eq!(translation(&maps.world, ground), Vec2::new(8.0, 0.0));
+  assert_eq!(coins(&mut maps.world), [IVec2::new(0, 0)]);
+}
+
+#[test]
+fn kept_object_and_image_layers_move_with_a_saved_offset() {
+  let level = |objects_at: (u32, u32), sky_at: (u32, u32)| {
+    let things = things(2, &[object(1, "a", (16, 0), "")]).replace(
+      r#""type":"objectgroup""#,
+      &format!(
+        r#""type":"objectgroup","offsetx":{},"offsety":{}"#,
+        objects_at.0, objects_at.1
+      ),
+    );
+    let sky = format!(
+      r#"{{"id":4,"name":"sky","type":"imagelayer","image":"../tiled/images/bg.png",
+        "offsetx":{},"offsety":{}}}"#,
+      sky_at.0, sky_at.1
+    );
+    map_of((4, 3), &[things, sky])
+  };
+  let files = files_with(&[("r/set.tsj", SET), ("r/m.tmj", &level((0, 0), (0, 0)))]);
+  let (mut maps, map) = spawned(&files, "r/m.tmj", MapRoot::new);
+  let before = layers_of(&mut maps.world, map);
+  let (a, _) = object_named(&mut maps.world, map, "a");
+  maps.world.entity_mut(a).insert(Marker(6));
+
+  // A Tiled group holding both moved: its offset lands on each layer
+  let mut watch = Watch::new(&maps.world);
+  files.insert("r/m.tmj", level((40, 8), (12, 2)));
+  watch.until_reloaded(&mut maps, map);
+
+  assert_eq!(layers_of(&mut maps.world, map), before, "both kept");
+  assert_eq!(
+    (
+      translation(&maps.world, before[0]),
+      translation(&maps.world, before[1])
+    ),
+    (Vec2::new(40.0, 8.0), Vec2::new(12.0, 2.0)),
+    "the object layer and the image layer"
+  );
+  // The object moves with its layer, keeping its entity and place in it
+  assert_eq!(id_of(&maps.world, map, "1"), Some(a));
+  assert_eq!(translation(&maps.world, a), Vec2::new(24.0, 8.0));
+  assert_eq!(maps.world.get::<Marker>(a), Some(&Marker(6)));
 }
 
 #[test]

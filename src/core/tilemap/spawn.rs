@@ -90,8 +90,9 @@ pub(crate) enum MapSource {
 /// in the frame the save lands ([`MapEvent::Reloaded`]): its layers keep
 /// their entities and only the chunks the save changed redraw, collide and
 /// occlude again; objects and class tiles the save left alone keep their
-/// entities and everything the game put on them. The file wins over what
-/// the game changed since (dug tiles come back).
+/// entities and everything the game put on them, and those the game
+/// despawned stay despawned unless the save changed them. The file wins
+/// over the game's tile edits (dug tiles come back).
 ///
 /// ```
 /// use ryo2d::prelude::*;
@@ -786,12 +787,17 @@ impl LandingJob {
     if self.collision.properties.get(PANICKING_LANDING).is_some() {
       panic!("a test's landing that always panics");
     }
-    let applied = MapApplied::new(self.stamp, &self.layers);
+    let mut applied = MapApplied::new(self.stamp, &self.layers);
     let layers: Vec<PlannedLayer> = self
       .layers
       .into_iter()
       .map(|layer| plan_layer(layer, &self.classes))
       .collect();
+    for layer in &layers {
+      if let Content::Tiles(_, found) = &layer.content {
+        applied.note_class_tiles(layer.info.id, found);
+      }
+    }
     let views: Vec<LayerView<'_>> = layers
       .iter()
       .enumerate()

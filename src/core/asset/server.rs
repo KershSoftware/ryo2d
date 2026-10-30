@@ -2867,6 +2867,26 @@ mod tests {
     }
     pump(&mut world);
     assert_eq!(job(&server, &handle), second);
+
+    // Nor is a dependency's reload, which only checks it again
+    let source = MemorySource::new();
+    source.insert("x.bundle", "a.txt\nb.txt");
+    source.insert("a.txt", "a");
+    source.insert("b.txt", "b");
+    let (mut world, server) = world_with(source.clone());
+    let bundle = server
+      .load_now::<Bundle>(&mut world, "x.bundle")
+      .expect("loads");
+    let part: Handle<Text> = server.load("a.txt");
+    let bundle_job = server.load_job(bundle.id().untyped());
+    let part_job = job(&server, &part);
+    let mut bundles = cursor::<Bundle>(&world);
+    source.insert("a.txt", "changed");
+    pump_until_sent(&mut world, &mut bundles, |e| {
+      matches!(e, AssetEvent::Modified { .. })
+    });
+    assert!(job(&server, &part) > part_job, "the part loaded again");
+    assert_eq!(server.load_job(bundle.id().untyped()), bundle_job);
   }
 
   #[test]

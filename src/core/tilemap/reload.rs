@@ -13,26 +13,28 @@
 //! tiles or IntGrid values differ move their versions, so only they draw,
 //! collide and occlude again, each in place (a chunk collider keeps its
 //! entity and handle, so contacts and a character's floor carry through).
-//! A layer new to the file, or whose kind, size, cell size or offset
-//! changed, spawns afresh, and one gone despawns. Objects reconcile by id
-//! (`reconcile`) and class tiles by layer and cell: one the file left as it
-//! was keeps its entity untouched, one it changed is updated in place
-//! (its components put over, so it keeps what the game added), a new one
-//! spawns and a removed one despawns. The file wins over what the game
-//! changed since: dug tiles come back, and an object or class tile the
-//! game despawned spawns again.
+//! A kept object or image layer whose offset changed moves (a Tiled
+//! group's offset lands on its layers). A layer new to the file, or whose
+//! kind changed, or a tile layer whose size, cell size or offset changed,
+//! spawns afresh, and one gone despawns. Objects reconcile by id
+//! (`reconcile`) and class tiles by layer and cell, each judged against
+//! what the file said before (`MapApplied`): one the file left as it was
+//! keeps its entity untouched, one it changed is updated in place (its
+//! components put over, so it keeps what the game added), a new one spawns
+//! and a removed one despawns. The file wins over the game's tile edits
+//! (dug tiles come back), but an object or class tile the game despawned
+//! stays despawned until a save adds or changes it.
 
 use glam::{IVec2, UVec2, Vec2};
 
 use super::spawn::{
   ClassTile, ClassTiles, LayerRest, LayerTiles, MapLayers, MapSource, child_of, class_tiles,
-  map_asset, object_parts, plan_layer, send, spawn_class_tile, spawn_class_tiles, spawn_layer,
-  take_class_tiles,
+  map_asset, object_parts, plan_layer, send, spawn_class_tile, spawn_layer, take_class_tiles,
 };
 use super::{
   CHUNK_SIZE, ImageLayer, IntGrid, LayerInfo, LayerKind, LdtkProject, MapEvent, MapIds, MapLayer,
-  MapLayerRef, MapObject, MapObjectData, MapRoot, MapTile, TileGrid, TileLayerData, TileMap,
-  Tileset, TilesetSource,
+  MapLayerRef, MapObject, MapObjectData, MapRoot, MapTile, Properties, Tile, TileGrid,
+  TileLayerData, TileMap, Tileset, TilesetSource,
 };
 use crate::core::asset::{Asset, AssetEvent, AssetServer, UntypedAssetId};
 use crate::core::ecs::kernel::{MessageCursor, Messages, QueryState};
@@ -67,7 +69,8 @@ fn source_id(root: &MapRoot) -> UntypedAssetId {
 }
 
 /// What keeps a layer's entity through a reload: the same kind, and for a
-/// tile layer the same size, cell size and offset
+/// tile layer the same size, cell size and offset (an object or image
+/// layer keeps its entity through an offset change, and moves)
 #[derive(Clone, Debug, PartialEq)]
 enum LayerShape {
   Tiles {
@@ -84,6 +87,9 @@ enum LayerShape {
 struct FileLayer {
   id: u32,
   shape: LayerShape,
+  /// A kept object or image layer whose offset changed moves (a Tiled
+  /// group's offset lands on its layers); a tile layer's is in its shape
+  offset: Vec2,
 }
 
 impl FileLayer {
@@ -102,9 +108,13 @@ impl FileLayer {
     FileLayer {
       id: layer.info.id,
       shape,
+      offset: layer.info.offset,
     }
   }
 }
+
+/// A class tile as the file had it: its tile, class and properties
+type FileClassTile = (Tile, String, Properties);
 
 /// What a spawned map was last made from, on the map entity: the loads of
 /// its files, and its layers and objects as the files had them, so a
@@ -115,15 +125,21 @@ pub(crate) struct MapApplied {
   layers: Vec<FileLayer>,
   /// Each object by id: its layer's editor id and its data
   objects: FastMap<String, (u32, MapObjectData)>,
+  /// Each class tile by its layer's editor id and its cell
+  class_tiles: FastMap<(u32, IVec2), FileClassTile>,
 }
 
 impl MapApplied {
   /// Of a map's layers as its files give them, at the loads `stamp`
+  /// (its class tiles are noted as they are taken out, `note_class_tiles`)
   pub(crate) fn new(stamp: Vec<Option<u64>>, layers: &[MapLayer]) -> MapApplied {
     let mut objects = FastMap::default();
     for layer in layers {
       if let LayerKind::Objects(list) = &layer.kind {
         for object in list {
+          // Ids are unique in a map that Tiled or LDtk wrote. Of a repeated
+          // one the first is noted here, while a landing's `MapIds` names
+          // the last spawned and a reload counts the id once
           objects
             .entry(object.id.clone())
             .or_insert_with(|| (layer.info.id, object.clone()));
@@ -134,6 +150,15 @@ impl MapApplied {
       stamp,
       layers: layers.iter().map(FileLayer::of).collect(),
       objects,
+      class_tiles: FastMap::default(),
+    }
+  }
+
+  /// Notes `found`, the class tiles of the layer of editor id `layer`
+  pub(crate) fn note_class_tiles(&mut self, layer: u32, found: &[ClassTile]) {
+    for tile in found {
+      let file = (tile.tile, tile.class.clone(), tile.properties.clone());
+      self.class_tiles.insert((layer, tile.cell), file);
     }
   }
 
@@ -151,7 +176,9 @@ pub(crate) struct Reconcile {
   /// Entities whose object the file changed, with the index of its new
   /// data: they take a new `Transform` and `MapObject`, keeping the rest
   pub(crate) update: Vec<(Entity, usize)>,
-  /// Indices of the objects the map has no live entity for
+  /// Indices of the objects the map has no live entity for that the file
+  /// added or changed: one the game despawned stays despawned while the
+  /// file leaves it as it was
   pub(crate) spawn: Vec<usize>,
   /// Entities whose object the file no longer has
   pub(crate) despawn: Vec<Entity>,
@@ -160,7 +187,7 @@ pub(crate) struct Reconcile {
 /// Matches the map's live objects (`existing`, by id) with the file's
 /// (`new`). `unchanged(i)` says whether the file left `new[i]` as it was
 /// (its data and its layer): an entity's own components cannot tell, as
-/// the game may have moved it
+/// the game may have moved it, and an object the game despawned has none
 pub(crate) fn reconcile(
   existing: &[(String, Entity)],
   new: &[MapObjectData],
@@ -175,6 +202,7 @@ pub(crate) fn reconcile(
     match by_id.remove(object.id.as_str()) {
       Some(entity) if unchanged(index) => matched.keep.push(entity),
       Some(entity) => matched.update.push((entity, index)),
+      None if unchanged(index) => {}
       None => matched.spawn.push(index),
     }
   }
@@ -253,8 +281,12 @@ pub(crate) fn reload_maps(world: &mut World, mut changes: Local<Changes>, maps: 
 enum Pending {
   Tiles {
     layer: (Entity, usize),
+    id: u32,
     cell_size: Vec2,
     found: Vec<ClassTile>,
+    /// The class tiles alive on the layer's entity before (on the old one,
+    /// for a layer spawned afresh), by cell
+    live: FastMap<IVec2, Entity>,
     kept: bool,
   },
   Objects {
@@ -304,9 +336,9 @@ pub(crate) fn apply_reload(world: &mut World, map: Entity) {
     .get::<MapLayers>(map)
     .map(|layers| layers.0.clone())
     .unwrap_or_default();
-  let mut old: FastMap<u32, (Entity, &LayerShape)> = FastMap::default();
+  let mut old: FastMap<u32, (Entity, &FileLayer)> = FastMap::default();
   for (file, &entity) in applied.layers.iter().zip(&old_layers) {
-    old.entry(file.id).or_insert((entity, &file.shape));
+    old.entry(file.id).or_insert((entity, file));
   }
 
   // The layers: kept ones brought up to the file, new or reshaped ones
@@ -319,28 +351,35 @@ pub(crate) fn apply_reload(world: &mut World, map: Entity) {
       return;
     }
     let file = FileLayer::of(&layer);
-    let kept = old
-      .remove(&file.id)
-      .filter(|(entity, shape)| {
-        **shape == file.shape
-          && world
-            .get::<MapLayerRef>(*entity)
-            .is_some_and(|layer| layer.map == map)
-      })
-      .map(|(entity, _)| entity);
+    let was = old.remove(&file.id).filter(|(entity, _)| {
+      world
+        .get::<MapLayerRef>(*entity)
+        .is_some_and(|layer| layer.map == map)
+    });
+    let live = was.map_or_else(FastMap::default, |(entity, _)| {
+      live_class_tiles(world, entity)
+    });
+    let kept = was.filter(|(_, then)| then.shape == file.shape);
     let (entity, rest) = match kept {
-      Some(entity) => (
-        entity,
-        update_layer(world, map, (entity, index), layer, &classes),
-      ),
+      Some((entity, then)) => {
+        if then.offset != file.offset
+          && let Some(mut transform) = world.get_mut::<Transform>(entity)
+        {
+          transform.translation = file.offset;
+        }
+        let rest = update_layer(world, map, (entity, index), layer, &classes);
+        (entity, rest)
+      }
       None => spawn_layer(world, map, index, plan_layer(layer, &classes)),
     };
     let kept = kept.is_some();
     match rest {
       LayerRest::Tiles(cell_size, found) => pending.push(Pending::Tiles {
         layer: (entity, index),
+        id: file.id,
         cell_size,
         found,
+        live,
         kept,
       }),
       LayerRest::Objects(objects) => pending.push(Pending::Objects {
@@ -378,10 +417,12 @@ pub(crate) fn apply_reload(world: &mut World, map: Entity) {
       }
       Pending::Tiles {
         layer,
+        id,
         cell_size,
         found,
+        live,
         kept,
-      } => tiles.push((layer, cell_size, found, kept)),
+      } => tiles.push((layer, id, cell_size, found, live, kept)),
     }
   }
   let mut existing: Vec<(String, Entity)> = world
@@ -456,15 +497,23 @@ pub(crate) fn apply_reload(world: &mut World, map: Entity) {
   }
 
   // The class tiles, by layer and cell
-  for (layer, cell_size, found, kept) in tiles {
+  let mut class_tiles = FastMap::default();
+  for (layer, id, cell_size, found, live, kept) in tiles {
     if world.get_entity(map).is_err() {
       return;
     }
-    if kept {
-      reconcile_class_tiles(world, map, layer, cell_size, found);
-    } else {
-      spawn_class_tiles(world, map, layer, cell_size, found);
+    for tile in &found {
+      let file = (tile.tile, tile.class.clone(), tile.properties.clone());
+      class_tiles.insert((id, tile.cell), file);
     }
+    let was = |cell: IVec2| applied.class_tiles.get(&(id, cell));
+    let layer = ClassLayer {
+      layer,
+      cell_size,
+      live,
+      kept,
+    };
+    reconcile_class_tiles(world, map, layer, found, was);
   }
 
   let objects = objects
@@ -479,6 +528,7 @@ pub(crate) fn apply_reload(world: &mut World, map: Entity) {
     stamp,
     layers: files,
     objects,
+    class_tiles,
   });
   send(world, MapEvent::Reloaded { map });
 }
@@ -570,19 +620,9 @@ fn values_differ(old: Option<&IntGrid>, new: Option<&IntGrid>, chunk: UVec2) -> 
   }
 }
 
-/// The class tiles of the kept tile layer `layer` (its entity and index)
-/// meet the file's (`found`) by cell: one the file left as it was keeps its
-/// entity untouched (its `MapTile` told its layer's new index), one it
-/// changed takes a new `MapTile` and `Transform`, a new one spawns, and one
-/// gone (or placed by an edit since) despawns
-fn reconcile_class_tiles(
-  world: &mut World,
-  map: Entity,
-  (layer, index): (Entity, usize),
-  cell_size: Vec2,
-  found: Vec<ClassTile>,
-) {
-  let mut live: FastMap<IVec2, Entity> = world
+/// The class tiles alive on the layer entity `layer`, by cell
+fn live_class_tiles(world: &World, layer: Entity) -> FastMap<IVec2, Entity> {
+  world
     .get::<LayerTiles>(layer)
     .map(|table| {
       table
@@ -592,45 +632,87 @@ fn reconcile_class_tiles(
         .map(|(&cell, &entity)| (cell, entity))
         .collect()
     })
-    .unwrap_or_default();
+    .unwrap_or_default()
+}
+
+/// A tile layer whose class tiles a reload reconciles
+struct ClassLayer {
+  /// Its entity and index
+  layer: (Entity, usize),
+  cell_size: Vec2,
+  /// The class tiles alive on it before, by cell (on its old entity, for a
+  /// layer spawned afresh: those went with it)
+  live: FastMap<IVec2, Entity>,
+  /// Whether it kept its entity
+  kept: bool,
+}
+
+/// The class tiles of a reloaded tile layer meet the file's (`found`) by
+/// cell, each judged against the file's last value (`was`), not its live
+/// `MapTile`, which the game may have changed. On a kept layer, one the
+/// file left as it was keeps its entity untouched (its `MapTile` told its
+/// layer's new index) and one it changed takes a new `MapTile` and
+/// `Transform`; any other live one (a cell the file emptied, or one an
+/// edit placed) despawns. A tile without a live one spawns if the file
+/// added or changed it, or if one lived on the layer's old entity; one the
+/// game despawned (or an edit took away) stays away while the file leaves
+/// it as it was
+fn reconcile_class_tiles<'a>(
+  world: &mut World,
+  map: Entity,
+  ClassLayer {
+    layer: (layer, index),
+    cell_size,
+    mut live,
+    kept,
+  }: ClassLayer,
+  found: Vec<ClassTile>,
+  was: impl Fn(IVec2) -> Option<&'a FileClassTile>,
+) {
   let mut table = FastMap::default();
   for tile in found {
     if world.get_entity(layer).is_err() {
       return;
     }
     let cell = tile.cell;
-    let Some(entity) = live.remove(&cell) else {
-      let entity = spawn_class_tile(world, map, (layer, index), cell_size, tile);
-      table.insert(cell, entity);
-      continue;
-    };
-    let same = world.get::<MapTile>(entity).is_some_and(|t| {
-      t.tile == tile.tile && t.class == tile.class && t.properties == tile.properties
+    let unchanged = was(cell).is_some_and(|(then, class, properties)| {
+      *then == tile.tile && *class == tile.class && *properties == tile.properties
     });
-    if same {
-      if let Some(mut held) = world.get_mut::<MapTile>(entity)
-        && held.layer != index
-      {
-        held.layer = index;
+    match live.remove(&cell) {
+      Some(entity) if kept => {
+        if unchanged {
+          if let Some(mut held) = world.get_mut::<MapTile>(entity)
+            && held.layer != index
+          {
+            held.layer = index;
+          }
+        } else if let Ok(mut held) = world.get_entity_mut(entity) {
+          let centre = (cell.as_vec2() + 0.5) * cell_size;
+          held.insert((
+            MapTile {
+              map,
+              layer: index,
+              cell,
+              tile: tile.tile,
+              class: tile.class,
+              properties: tile.properties,
+            },
+            Transform::from_translation(centre),
+          ));
+        }
+        table.insert(cell, entity);
       }
-    } else if let Ok(mut held) = world.get_entity_mut(entity) {
-      let centre = (cell.as_vec2() + 0.5) * cell_size;
-      held.insert((
-        MapTile {
-          map,
-          layer: index,
-          cell,
-          tile: tile.tile,
-          class: tile.class,
-          properties: tile.properties,
-        },
-        Transform::from_translation(centre),
-      ));
+      lived if lived.is_some() || !unchanged => {
+        let entity = spawn_class_tile(world, map, (layer, index), cell_size, tile);
+        table.insert(cell, entity);
+      }
+      _ => {}
     }
-    table.insert(cell, entity);
   }
-  for entity in live.into_values() {
-    let _ = world.try_despawn(entity);
+  if kept {
+    for entity in live.into_values() {
+      let _ = world.try_despawn(entity);
+    }
   }
   if let Some(mut tiles) = world.get_mut::<LayerTiles>(layer) {
     tiles.0 = table;
