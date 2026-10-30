@@ -44,7 +44,7 @@ impl TiledTilesetLoader {
 }
 
 /// The file's JSON as `T`; the error reads `line L, column C: what`
-fn parse<T: DeserializeOwned>(path: &AssetPath, bytes: &[u8]) -> Result<T, AssetError> {
+pub(crate) fn parse<T: DeserializeOwned>(path: &AssetPath, bytes: &[u8]) -> Result<T, AssetError> {
   let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
   serde_json::from_slice(bytes).map_err(|e| {
     let text = e.to_string();

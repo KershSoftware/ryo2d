@@ -25,18 +25,18 @@ use glam::{IVec2, UVec2, Vec2};
 /// Most cells a layer or a map holds (8192 x 8192), as for `TileColliders`
 const MAX_CELLS: u64 = 1 << 26;
 /// Most tiles a tileset holds: what a cell's 20 bits can name
-pub(super) const MAX_TILES: u32 = 1_048_575;
+pub(crate) const MAX_TILES: u32 = 1_048_575;
 const MAX_TILESETS: usize = 256;
 pub(super) const MAX_DEPTH: usize = 64;
 /// Points an ellipse is cut into
 const ELLIPSE_POINTS: usize = 16;
 
-pub(super) fn fail(path: &AssetPath, place: &str, what: impl Display) -> AssetError {
+pub(crate) fn fail(path: &AssetPath, place: &str, what: impl Display) -> AssetError {
   AssetError::decode(path, format!("{place}: {what}"))
 }
 
 /// `written`, a path in the file at `path`, as a path from the asset root
-pub(super) fn join(path: &AssetPath, place: &str, written: &str) -> Result<String, AssetError> {
+pub(crate) fn join(path: &AssetPath, place: &str, written: &str) -> Result<String, AssetError> {
   if written.starts_with(['/', '\\']) {
     return Err(fail(
       path,
@@ -51,7 +51,7 @@ pub(super) fn join(path: &AssetPath, place: &str, written: &str) -> Result<Strin
 }
 
 /// Loads the file `written` names as a dependency of the one being loaded
-fn load_dep<T: Asset>(
+pub(crate) fn load_dep<T: Asset>(
   cx: &mut LoadContext<'_>,
   path: &AssetPath,
   place: &str,
@@ -70,7 +70,7 @@ fn multiply(a: Color, b: Color) -> Color {
 }
 
 /// A cell count that is within the limit
-fn cell_count(w: u32, h: u32) -> Option<usize> {
+pub(crate) fn cell_count(w: u32, h: u32) -> Option<usize> {
   // each side too: a zero side would let the other be anything
   if u64::from(w) > MAX_CELLS || u64::from(h) > MAX_CELLS {
     return None;
@@ -690,6 +690,11 @@ pub(crate) fn check_map(map: &TileMap, cx: &CheckContext<'_>) -> Result<(), Asse
       check_tileset(set, cx)?;
     }
   }
+  check_used_ids(map, cx)
+}
+
+/// Whether the tilesets hold the ids the map's layers use
+pub(crate) fn check_used_ids(map: &TileMap, cx: &CheckContext<'_>) -> Result<(), AssetError> {
   let sets = cx.world().get_resource::<Assets<Tileset>>();
   for &(layer, tileset, max) in &map.used_ids {
     let count = match map.tilesets.get(tileset as usize) {

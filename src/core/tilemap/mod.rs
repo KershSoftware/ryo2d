@@ -3,6 +3,7 @@
 //! level. Tiles live in dense [`TileGrid`]s whose edits mark chunks dirty.
 
 mod grid;
+mod ldtk;
 mod map;
 mod property;
 mod tile;
@@ -10,6 +11,9 @@ mod tiled;
 mod tileset;
 
 pub use grid::{CHUNK_SIZE, TileGrid};
+pub use ldtk::{
+  LdtkLevel, LdtkLoader, LdtkProject, Neighbour, NeighbourDirection, WorldLayout, WorldLevel,
+};
 pub use map::{
   ImageLayer, IntGrid, LayerInfo, LayerKind, MapLayer, MapObjectData, ObjectShape, TileMap,
   TilesetSource,

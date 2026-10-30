@@ -1,8 +1,8 @@
 //! Tiled's maps and tilesets as registry assets.
 
-mod build;
+pub(crate) mod build;
 mod data;
-mod json;
+pub(crate) mod json;
 mod objects;
 mod project;
 pub(crate) mod raw;
