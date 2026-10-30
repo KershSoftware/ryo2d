@@ -134,15 +134,26 @@ pub struct WangTile {
   pub probability: f32,
 }
 
-/// A set of tiles joined by edge or corner colors, for auto-tiling
+/// A set of tiles joined by edge or corner colors, for auto-tiling. A set is
+/// built whole ([`new`](Self::new), or by the Tiled loaders) and read
+/// through its accessors: the tile picking works out its candidates once, so
+/// nothing may change the fields after.
+///
+/// ```compile_fail
+/// use ryo2d::prelude::*;
+///
+/// fn clear(set: &mut WangSet) {
+///   set.tiles.clear();
+/// }
+/// ```
 #[derive(Clone, Debug)]
 pub struct WangSet {
-  pub name: String,
-  pub kind: WangKind,
-  pub colors: Vec<WangColor>,
-  pub tiles: Vec<WangTile>,
+  pub(crate) name: String,
+  pub(crate) kind: WangKind,
+  pub(crate) colors: Vec<WangColor>,
+  pub(crate) tiles: Vec<WangTile>,
   /// The transformations the set's tileset allows, copied from it at load
-  pub transformations: TileTransformations,
+  pub(crate) transformations: TileTransformations,
   /// What picking tiles works out once from the fields above
   pub(crate) cache: super::wang::WangCache,
 }

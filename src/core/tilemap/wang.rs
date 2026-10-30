@@ -360,8 +360,8 @@ impl Matcher {
 
 impl WangSet {
   /// A set of `kind` over `colors` and `tiles`, with the tileset's
-  /// `transformations`. Its fields are read once the set is first used to
-  /// pick tiles, so build it whole
+  /// `transformations`. A set is read-only once built, so the candidates the
+  /// first pick works out stay true
   pub fn new(
     name: impl Into<String>,
     kind: WangKind,
@@ -386,6 +386,31 @@ impl WangSet {
 
   /// In a wanted wangid: any color goes at this position
   pub const ANY: u8 = u8::MAX;
+
+  /// The set's name
+  pub fn name(&self) -> &str {
+    &self.name
+  }
+
+  /// Which parts of a tile the set's colors touch
+  pub fn kind(&self) -> WangKind {
+    self.kind
+  }
+
+  /// The set's colors; a wangid's color indices count from 1 into this
+  pub fn colors(&self) -> &[WangColor] {
+    &self.colors
+  }
+
+  /// The set's tiles with their wangids and probabilities
+  pub fn tiles(&self) -> &[WangTile] {
+    &self.tiles
+  }
+
+  /// What the set's tileset lets it do to a tile
+  pub fn transformations(&self) -> TileTransformations {
+    self.transformations
+  }
 
   /// The 1-based index of the color called `name`, as a wangid holds it
   pub fn color_index(&self, name: &str) -> Option<u8> {
@@ -866,6 +891,26 @@ mod tests {
       "mix",
       IVec2::new(2, 2),
       Some("b"),
+    );
+  }
+
+  #[test]
+  fn a_correction_stops_two_cells_out_in_a_set_of_two_colours() {
+    // b at the corner of a layer of a: the column of b carries two cells down
+    // and no further, where Tiled leaves it
+    assert_as_tiled(
+      "wang-mix-a.tmj",
+      "wang-mix-corner.tmj",
+      "mix",
+      IVec2::ZERO,
+      Some("b"),
+    );
+    let (cells, _) = recorded(&mut MapWorld::new(), "wang-mix-corner.tmj");
+    let tile = |x: usize, y: usize| cells[y * 5 + x].map(|t| t.id);
+    assert_eq!(
+      (tile(0, 2), tile(0, 3)),
+      (Some(1), Some(0)),
+      "the fixture stops at row 2"
     );
   }
 
