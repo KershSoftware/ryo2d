@@ -13,6 +13,7 @@ use super::jobs::Worker;
 use super::kinds::{sources, stamps};
 use super::occluders;
 use super::reload::{MapApplied, content_stamp};
+use super::world::{WorldRef, resolve_world_levels};
 use super::{
   ImageLayer, IntGrid, LayerInfo, LayerKind, LdtkProject, MapLayer, MapObjectData, ObjectShape,
   Properties, PropertyValue, Tile, TileData, TileGrid, TileMap, Tileset, TilesetSource,
@@ -53,6 +54,11 @@ pub(crate) enum MapSource {
   Ldtk {
     project: Handle<LdtkProject>,
     level: String,
+  },
+  /// A level of a world, standing for its map once the world has loaded
+  WorldLevel {
+    world: WorldRef,
+    level: usize,
   },
 }
 
@@ -131,7 +137,7 @@ impl MapRoot {
     })
   }
 
-  fn from_source(source: MapSource) -> MapRoot {
+  pub(crate) fn from_source(source: MapSource) -> MapRoot {
     MapRoot {
       source,
       entity_tiles: Vec::new(),
@@ -355,6 +361,8 @@ pub(crate) fn root_map<'a>(
   match &root.source {
     MapSource::Map(handle) => maps?.get(handle),
     MapSource::Ldtk { project, level } => Some(&projects?.get(project)?.level(level)?.map),
+    // Not yet standing for its map: `spawn_maps` resolves it
+    MapSource::WorldLevel { .. } => None,
   }
 }
 
@@ -401,6 +409,7 @@ pub(crate) fn spawn_maps(
   waiting: &mut WaitingMaps,
   mut worker: Local<Worker<Landed>>,
 ) {
+  resolve_world_levels(world, waiting);
   let decided: Vec<(Entity, Ready)> = waiting
     .iter(world)
     .filter(|(.., landing)| landing.is_none())
@@ -504,6 +513,7 @@ fn landing_failed(world: &mut World, map: Entity) {
   let path = match &root.source {
     MapSource::Map(handle) => server.and_then(|s| s.path(handle)),
     MapSource::Ldtk { project, .. } => server.and_then(|s| s.path(project)),
+    MapSource::WorldLevel { world, .. } => server.and_then(|s| world.path(s)),
   }
   .unwrap_or_else(|| AssetPath::from_normal(Cow::Borrowed("map")));
   let error = Arc::new(AssetError::decode(
@@ -529,6 +539,7 @@ fn landing_stamp(world: &World, root: &MapRoot) -> Vec<Option<u64>> {
     MapSource::Ldtk { project, .. } => world
       .get_resource::<Assets<LdtkProject>>()
       .and_then(|projects| projects.version(project)),
+    MapSource::WorldLevel { world: source, .. } => source.version(world),
   }];
   let tilesets = world.get_resource::<Assets<Tileset>>();
   if let Some(map) = map_asset(world, root) {
@@ -596,6 +607,30 @@ fn readiness(world: &World, root: &MapRoot, failed: Option<&MapFailed>) -> Optio
           .path(project)
           .unwrap_or_else(|| AssetPath::from_normal(Cow::Borrowed("ldtk")));
         let error = AssetError::decode(&path, format!("the project has no level {level:?}"));
+        Some(Ready::Failed(MapFailed {
+          error: Arc::new(error),
+          version,
+          landing: None,
+        }))
+      }
+      LoadState::Loading | LoadState::NotLoaded => None,
+    },
+    // `resolve_world_levels` already stood in for a level the world has
+    MapSource::WorldLevel {
+      world: source,
+      level,
+    } => match source.state(server) {
+      LoadState::Failed(error) => unreported(error),
+      LoadState::Loaded => {
+        // Reported once per version of the world
+        let version = source.version(world);
+        if failed.is_some_and(|f| f.version.is_some() && f.version == version) {
+          return None;
+        }
+        let path = source
+          .path(server)
+          .unwrap_or_else(|| AssetPath::from_normal(Cow::Borrowed("world")));
+        let error = AssetError::decode(&path, format!("the world has no level {level}"));
         Some(Ready::Failed(MapFailed {
           error: Arc::new(error),
           version,

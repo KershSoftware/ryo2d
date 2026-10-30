@@ -4,8 +4,10 @@ use glam::{IVec2, Vec2};
 
 use super::edit::{self, LayerRef};
 use super::spawn::{self, MapIds, MapRoot};
+use super::world::{self, WorldRef};
 use super::{Tile, TileData, wang};
 use crate::core::ecs::{Entity, World};
+use crate::core::ui::Rect;
 
 /// The spawned maps of a world: read and edit their tiles, read their
 /// IntGrids and tile data, and convert between world positions and cells.
@@ -149,5 +151,20 @@ impl<'w> MapsView<'w> {
     cell: IVec2,
   ) -> Option<Vec2> {
     edit::cell_to_world(self.world, map, layer.into(), cell)
+  }
+
+  /// Spawns the levels of `world` (a Tiled world's handle, or a
+  /// [`WorldRef`] for an LDtk world) that overlap `area`, in world pixels,
+  /// and returns the root entities it spawned this call. Each root is a
+  /// [`MapRoot`] for its level, at the level's position, carrying a
+  /// [`WorldLevelOf`](super::WorldLevelOf). A level already spawned for
+  /// that world (a live root with that marker) is skipped, so calling this
+  /// every frame with the area around the player spawns each level once;
+  /// despawn a level's root to unload it, and it spawns again when the area
+  /// reaches it. Nothing spawns until the world's asset is loaded. Saving
+  /// the world's file leaves spawned levels where they are, and the next
+  /// call uses the new layout
+  pub fn spawn_levels_in(&mut self, world: impl Into<WorldRef>, area: Rect) -> Vec<Entity> {
+    world::spawn_levels_in(self.world, world.into(), area)
   }
 }

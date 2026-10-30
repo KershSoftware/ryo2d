@@ -66,7 +66,8 @@ pub trait Asset: Send + Sync + 'static {}
 /// [`crate::core::tilemap::Tileset`] with
 /// [`crate::core::tilemap::TiledTilesetLoader`], and
 /// [`crate::core::tilemap::LdtkProject`] with
-/// [`crate::core::tilemap::LdtkLoader`], are registered too. A game's
+/// [`crate::core::tilemap::LdtkLoader`], and [`crate::core::tilemap::TileWorld`]
+/// with [`crate::core::tilemap::TileWorldLoader`], are registered too. A game's
 /// loaders are added after, so for an extension both take, the game's wins
 pub(crate) fn insert_registry(world: &mut crate::core::ecs::World, server: AssetServer) {
   server.register_asset::<crate::core::graphics::Image>(world);
@@ -93,6 +94,8 @@ pub(crate) fn insert_registry(world: &mut crate::core::ecs::World, server: Asset
   server.register_asset::<crate::core::tilemap::Tileset>(world);
   server.register_loader(crate::core::tilemap::TiledMapLoader::default());
   server.register_loader(crate::core::tilemap::TiledTilesetLoader::default());
+  server.register_asset::<crate::core::tilemap::TileWorld>(world);
+  server.register_loader(crate::core::tilemap::TileWorldLoader);
   server.register_asset::<crate::core::tilemap::LdtkProject>(world);
   server.register_loader(crate::core::tilemap::LdtkLoader);
   world.insert_resource(server);

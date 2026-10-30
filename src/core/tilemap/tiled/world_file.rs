@@ -1,0 +1,271 @@
+//! Tiled's world files (`.world`): maps with positions, listed or named by
+//! a numbered pattern, read into a [`TileWorld`].
+
+use std::collections::HashSet;
+
+use glam::Vec2;
+use serde::Deserialize;
+
+use super::build::{join, load_dep};
+use super::json::parse;
+use super::raw::RawMap;
+use super::xml::parse_tmx;
+use crate::core::asset::{AssetError, AssetLoader, AssetPath, LoadContext};
+use crate::core::tilemap::world::{TileWorld, layout_of_rects};
+use crate::core::tilemap::{TileMap, WorldLevel};
+
+/// Most files a pattern's search tries before it stops
+const MAX_PROBES: usize = 1024;
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+struct RawWorld {
+  maps: Vec<RawWorldMap>,
+  patterns: Vec<RawPattern>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+struct RawWorldMap {
+  file_name: String,
+  x: i32,
+  y: i32,
+  width: Option<u32>,
+  height: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+struct RawPattern {
+  regexp: String,
+  multiplier_x: i32,
+  multiplier_y: i32,
+  offset_x: i32,
+  offset_y: i32,
+}
+
+impl Default for RawPattern {
+  fn default() -> Self {
+    RawPattern {
+      regexp: String::new(),
+      multiplier_x: 1,
+      multiplier_y: 1,
+      offset_x: 0,
+      offset_y: 0,
+    }
+  }
+}
+
+/// A piece of a supported pattern
+#[derive(Debug, PartialEq)]
+enum Part {
+  Text(String),
+  /// A number: `(\d+)`, or `(-?\d+)`
+  Number,
+}
+
+/// A pattern's text and number groups, or why it is not supported
+fn parse_pattern(regexp: &str) -> Result<Vec<Part>, String> {
+  let unsupported = |what: &str| format!("pattern \"{regexp}\" is not supported: {what}");
+  let body = regexp.strip_prefix('^').unwrap_or(regexp);
+  let body = body.strip_suffix('$').unwrap_or(body);
+  let mut parts: Vec<Part> = Vec::new();
+  let mut text = String::new();
+  let mut numbers = 0;
+  let mut rest = body;
+  while let Some(c) = rest.chars().next() {
+    if let Some(after) = ["(\\d+)", "(-?\\d+)", "(\\-?\\d+)"]
+      .iter()
+      .find_map(|group| rest.strip_prefix(group))
+    {
+      numbers += 1;
+      if numbers > 2 {
+        return Err(unsupported("more than two numbers"));
+      }
+      if !text.is_empty() {
+        parts.push(Part::Text(std::mem::take(&mut text)));
+      }
+      parts.push(Part::Number);
+      rest = after;
+      continue;
+    }
+    let mut chars = rest.chars();
+    chars.next();
+    match c {
+      '\\' => match chars.next() {
+        Some(escaped) if !escaped.is_ascii_alphanumeric() => text.push(escaped),
+        _ => return Err(unsupported("an escape that is not a punctuation mark")),
+      },
+      '.' => {
+        return Err(unsupported(
+          "`.` matches any character; write `\\.` for a dot",
+        ));
+      }
+      '(' | ')' | '[' | ']' | '{' | '}' | '|' | '*' | '+' | '?' | '^' | '$' => {
+        return Err(unsupported(&format!(
+          "`{c}` (only literal text and up to two `(\\d+)` numbers are)"
+        )));
+      }
+      _ => text.push(c),
+    }
+    rest = chars.as_str();
+  }
+  if !text.is_empty() {
+    parts.push(Part::Text(text));
+  }
+  Ok(parts)
+}
+
+/// The file name with `numbers` put in the pattern's groups, in order
+fn name_with(parts: &[Part], numbers: &[i32]) -> String {
+  let mut numbers = numbers.iter();
+  let mut name = String::new();
+  for part in parts {
+    match part {
+      Part::Text(text) => name.push_str(text),
+      Part::Number => name.push_str(&numbers.next().copied().unwrap_or(0).to_string()),
+    }
+  }
+  name
+}
+
+/// A map's size in pixels, from its file's header
+fn map_size(path: &AssetPath, bytes: &[u8]) -> Result<Vec2, AssetError> {
+  let raw: RawMap = if path.as_str().to_ascii_lowercase().ends_with(".tmx") {
+    let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
+    let text = std::str::from_utf8(bytes)
+      .map_err(|e| AssetError::decode(path, format!("the file is not UTF-8: {e}")))?;
+    parse_tmx(text).map_err(|e| AssetError::decode(path, e))?
+  } else {
+    parse(path, bytes)?
+  };
+  Ok(Vec2::new(
+    raw.width.saturating_mul(raw.tilewidth) as f32,
+    raw.height.saturating_mul(raw.tileheight) as f32,
+  ))
+}
+
+/// Loads Tiled world files (`.world`) as [`TileWorld`]s: the maps they list
+/// or number are dependencies, so the world is ready when they are
+#[derive(Default)]
+pub struct TileWorldLoader;
+
+impl AssetLoader for TileWorldLoader {
+  type Asset = TileWorld;
+  type Settings = ();
+
+  fn extensions(&self) -> &[&'static str] {
+    &["world"]
+  }
+
+  fn load(
+    &self,
+    bytes: Vec<u8>,
+    _: &(),
+    cx: &mut LoadContext<'_>,
+  ) -> Result<TileWorld, AssetError> {
+    let path = cx.path().clone();
+    let raw: RawWorld = parse(&path, &bytes)?;
+    let mut levels: Vec<(String, Vec2, Vec2)> = Vec::new();
+    let mut maps = Vec::new();
+    let mut taken: HashSet<String> = HashSet::new();
+
+    for (i, entry) in raw.maps.iter().enumerate() {
+      let place = format!("map {i} ({:?})", entry.file_name);
+      let joined = join(&path, &place, &entry.file_name)?;
+      let handle = load_dep::<TileMap>(cx, &path, &place, &entry.file_name)?;
+      let size = match (entry.width, entry.height) {
+        (Some(w), Some(h)) => Vec2::new(w as f32, h as f32),
+        _ => {
+          let file = AssetPath::parse(&joined)
+            .map_err(|e| AssetError::decode(&path, format!("{place}: {}", e.report())))?;
+          let bytes = cx
+            .read(&file)
+            .map_err(|e| AssetError::decode(&path, format!("{place}: {}", e.report())))?;
+          map_size(&file, &bytes)
+            .map_err(|e| AssetError::decode(&path, format!("{place}: {}", e.report())))?
+        }
+      };
+      taken.insert(joined);
+      levels.push((
+        entry.file_name.clone(),
+        Vec2::new(entry.x as f32, entry.y as f32),
+        size,
+      ));
+      maps.push(handle);
+    }
+
+    for pattern in &raw.patterns {
+      let place = format!("pattern \"{}\"", pattern.regexp);
+      let parts = parse_pattern(&pattern.regexp).map_err(|e| AssetError::decode(&path, e))?;
+      let numbers = parts.iter().filter(|p| **p == Part::Number).count();
+      let mut probes = 0;
+      let mut found = 0;
+      // Rows from y = 0, each from x = 0 to the first missing file; the
+      // first row without an x = 0 file ends the search
+      'rows: for y in 0.. {
+        for x in 0.. {
+          if probes >= MAX_PROBES {
+            break 'rows;
+          }
+          probes += 1;
+          let counters = match numbers {
+            0 => &[][..],
+            1 => &[x][..],
+            _ => &[x, y][..],
+          };
+          let written = name_with(&parts, counters);
+          let joined = join(&path, &place, &written)?;
+          let file = AssetPath::parse(&joined)
+            .map_err(|e| AssetError::decode(&path, format!("{place}: {}", e.report())))?;
+          let bytes = match cx.read(&file) {
+            Ok(bytes) => bytes,
+            Err(AssetError::NotFound { .. }) if x == 0 => break 'rows,
+            Err(AssetError::NotFound { .. }) => break,
+            Err(error) => {
+              return Err(AssetError::decode(
+                &path,
+                format!("{place}: {}", error.report()),
+              ));
+            }
+          };
+          found += 1;
+          if taken.insert(joined) {
+            let size = map_size(&file, &bytes)
+              .map_err(|e| AssetError::decode(&path, format!("{place}: {}", e.report())))?;
+            let handle = load_dep::<TileMap>(cx, &path, &place, &written)?;
+            let position = Vec2::new(
+              (x * pattern.multiplier_x + pattern.offset_x) as f32,
+              (y * pattern.multiplier_y + pattern.offset_y) as f32,
+            );
+            levels.push((written, position, size));
+            maps.push(handle);
+          }
+          if numbers == 0 {
+            break 'rows;
+          }
+        }
+        if numbers < 2 {
+          break;
+        }
+      }
+      if found == 0 {
+        return Err(AssetError::decode(
+          &path,
+          format!("{place}: no map matches it (it names files by number from 0, 0)"),
+        ));
+      }
+    }
+
+    let levels: Vec<WorldLevel> = levels
+      .into_iter()
+      .map(|(name, position, size)| WorldLevel {
+        name,
+        position,
+        size,
+        neighbours: Vec::new(),
+      })
+      .collect();
+    Ok(TileWorld::new(layout_of_rects(path.as_str(), levels), maps))
+  }
+}

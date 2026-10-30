@@ -23,6 +23,7 @@ mod tiled;
 mod tileset;
 mod view;
 mod wang;
+mod world;
 
 use crate::core::ecs::IntoScheduleConfigs;
 use crate::core::schedule::{EngineSchedules, FixedSet, Phase, PostUpdateSet};
@@ -44,12 +45,13 @@ pub use spawn::{
 };
 pub(crate) use spawn::{MapLayers, map_asset, spawn_maps};
 pub use tile::{Tile, TileFlip};
-pub use tiled::{TiledMapLoader, TiledTilesetLoader};
+pub use tiled::{TileWorldLoader, TiledMapLoader, TiledTilesetLoader};
 pub use tileset::{
   TileData, TileFrame, TileShape, TileTransformations, Tileset, TilesetImage, URect, WangColor,
   WangKind, WangSet, WangTile,
 };
 pub use view::MapsView;
+pub use world::{TileWorld, WorldLevelOf, WorldRef};
 
 /// The map systems that run each frame and step: collision kept in step
 /// with the tiles before the tile colliders rebuild (so an edit made in

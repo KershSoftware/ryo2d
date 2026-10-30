@@ -7,9 +7,11 @@ mod objects;
 mod project;
 pub(crate) mod raw;
 mod wang;
+mod world_file;
 mod xml;
 
 pub use json::{TiledMapLoader, TiledTilesetLoader};
+pub use world_file::TileWorldLoader;
 
 #[cfg(test)]
 mod tests {

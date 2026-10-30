@@ -1,0 +1,12 @@
+{
+  "patterns": [
+    {
+      "regexp": "grid_(\\d+)_(\\d+)\\.tmj",
+      "multiplierX": 32,
+      "multiplierY": 32,
+      "offsetX": 0,
+      "offsetY": 0
+    }
+  ],
+  "type": "world"
+}

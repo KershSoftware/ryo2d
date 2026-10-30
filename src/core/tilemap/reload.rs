@@ -65,6 +65,7 @@ fn source_id(root: &MapRoot) -> UntypedAssetId {
   match &root.source {
     MapSource::Map(map) => map.id().untyped(),
     MapSource::Ldtk { project, .. } => project.id().untyped(),
+    MapSource::WorldLevel { world, .. } => world.asset_id(),
   }
 }
 
