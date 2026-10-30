@@ -81,7 +81,7 @@ impl Out {
 /// A part of the boundary that one or two cells decide: an edit to a cell
 /// changes only its own units (its inside and its four borders).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum Unit {
+pub(super) enum Unit {
   /// A cell's edges inside it
   Inside(i32, i32),
   /// The border on the left of a cell
@@ -132,7 +132,7 @@ fn border(first: &[(i32, i32)], second: &[(i32, i32)], mut emit: impl FnMut(i32,
 }
 
 /// The boundary edges of `unit`, the cells read through `at`, pushed onto `out`.
-fn unit_edges(
+pub(super) fn unit_edges(
   unit: Unit,
   cells: &Cells,
   at: &impl Fn(i32, i32) -> TileCell,

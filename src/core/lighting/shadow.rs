@@ -53,10 +53,16 @@ pub(crate) fn push_shadow_volumes(
       continue;
     }
     let corners = occluder.transform_vertices(center.x, center.y, transform.rotation());
-    if corners.len() < 3 || !corners.iter().all(|corner| corner.is_finite()) {
+    // A polygon's last edge returns to its first vertex; a chain's does not
+    let (least, edges) = if occluder.is_closed() {
+      (3, corners.len())
+    } else {
+      (2, corners.len().saturating_sub(1))
+    };
+    if corners.len() < least || !corners.iter().all(|corner| corner.is_finite()) {
       continue;
     }
-    for i in 0..corners.len() {
+    for i in 0..edges {
       let (v0, v1) = (corners[i], corners[(i + 1) % corners.len()]);
       if !casts(v0, v1, position, spot) {
         continue;
@@ -164,5 +170,84 @@ mod tests {
     let at = GlobalTransform::from_transform(&crate::core::ecs::Transform::from_xy(40.0, 0.0));
     let mut triangles = Triangles::default();
     assert!(push_shadow_volumes(Vec2::ZERO, &light, &[(at, &occluder)], &mut triangles).is_empty());
+  }
+
+  /// The shadow quads `occluders` (each at its position) cast from a light
+  /// at `from`, each as its four corners, sorted
+  fn quads(from: Vec2, occluders: &[(Vec2, &LightOccluder2D)]) -> Vec<[[u32; 2]; 4]> {
+    let light = Light2D::point(crate::core::ui::Color::WHITE, 200.0).with_shadows();
+    let placed: Vec<(GlobalTransform, &LightOccluder2D)> = occluders
+      .iter()
+      .map(|(at, occluder)| {
+        let transform = crate::core::ecs::Transform::from_translation(*at);
+        (GlobalTransform::from_transform(&transform), *occluder)
+      })
+      .collect();
+    let mut triangles = Triangles::default();
+    push_shadow_volumes(from, &light, &placed, &mut triangles);
+    let bits = |v: &crate::core::render::batch::Vertex2D| v.position.map(f32::to_bits);
+    let mut quads: Vec<[[u32; 2]; 4]> = triangles
+      .vertices
+      .chunks(4)
+      .map(|quad| {
+        [
+          bits(&quad[0]),
+          bits(&quad[1]),
+          bits(&quad[2]),
+          bits(&quad[3]),
+        ]
+      })
+      .collect();
+    quads.sort();
+    quads
+  }
+
+  #[test]
+  fn a_chain_occluder_casts_like_the_polygon_it_bounds() {
+    // An L, counter-clockwise on screen as polygons are
+    let ring = [
+      Vec2::new(0.0, 0.0),
+      Vec2::new(0.0, 30.0),
+      Vec2::new(30.0, 30.0),
+      Vec2::new(30.0, 20.0),
+      Vec2::new(10.0, 20.0),
+      Vec2::new(10.0, 0.0),
+    ];
+    let polygon = LightOccluder2D::polygon(ring.to_vec());
+    let mut closed = ring.to_vec();
+    closed.push(ring[0]);
+    let whole = LightOccluder2D::chain(closed);
+    // The same ring as two chains meeting at their ends
+    let first = LightOccluder2D::chain(ring[..4].to_vec());
+    let second = LightOccluder2D::chain(vec![ring[3], ring[4], ring[5], ring[0]]);
+    let at = Vec2::new(40.0, 10.0);
+    for from in [
+      Vec2::ZERO,
+      Vec2::new(-60.0, 15.0),
+      Vec2::new(100.0, 100.0),
+      Vec2::new(55.0, -40.0),
+      Vec2::new(45.0, 22.0),
+    ] {
+      let expected = quads(from, &[(at, &polygon)]);
+      assert!(!expected.is_empty(), "from {from}");
+      assert_eq!(
+        quads(from, &[(at, &whole)]),
+        expected,
+        "closed by its last vertex, from {from}"
+      );
+      assert_eq!(
+        quads(from, &[(at, &first), (at, &second)]),
+        expected,
+        "in two pieces, from {from}"
+      );
+    }
+    // An open chain casts no edge from its last vertex back to its first:
+    // the floor's top lit from above casts nothing, its bottom edge being
+    // another chain's
+    let top = LightOccluder2D::chain(vec![Vec2::new(10.0, 0.0), Vec2::new(-10.0, 0.0)]);
+    assert!(quads(Vec2::new(0.0, -50.0), &[(Vec2::ZERO, &top)]).is_empty());
+    assert_eq!(quads(Vec2::new(0.0, 50.0), &[(Vec2::ZERO, &top)]).len(), 1);
+    assert_eq!(top.edges().count(), 1);
+    assert!(!top.is_closed() && polygon.is_closed());
   }
 }

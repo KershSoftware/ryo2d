@@ -31,12 +31,17 @@ use crate::core::ecs::Vec2;
 
 /// A light occluder component that blocks light and creates shadows.
 ///
-/// Occluders are defined as closed polygons. The vertices should be in
-/// counter-clockwise order for correct shadow casting.
+/// Occluders are closed polygons, or open chains of edges (`chain`): part
+/// of a boundary whose other parts are elsewhere. The vertices should be in
+/// counter-clockwise order on screen for correct shadow casting: an edge
+/// casts when it faces away from the light, its outside being on its right
+/// as it runs on screen (y down).
 #[derive(Component, Debug, Clone, PartialEq)]
 pub struct LightOccluder2D {
   /// The vertices of the occluder polygon (local space, relative to entity transform)
   vertices: Vec<Vec2>,
+  /// Whether the last vertex joins the first (a polygon), or not (a chain)
+  closed: bool,
   /// Whether this occluder is currently active
   enabled: bool,
 }
@@ -56,8 +61,37 @@ impl LightOccluder2D {
     );
     Self {
       vertices,
+      closed: true,
       enabled: true,
     }
+  }
+
+  /// An open chain of edges, each from a vertex to the next and none from
+  /// the last back to the first: a stretch of a boundary, such as a tile
+  /// map's, whose other stretches are other chains. Each edge casts exactly
+  /// as it would as an edge of the polygon the boundary closes, so its
+  /// vertices run the way that polygon's would (counter-clockwise on
+  /// screen), and chains that together close a ring cast as that polygon
+  /// does. A chain whose last vertex repeats its first is closed.
+  ///
+  /// # Panics
+  /// Panics if fewer than 2 vertices are provided.
+  pub fn chain(vertices: Vec<Vec2>) -> Self {
+    assert!(
+      vertices.len() >= 2,
+      "a LightOccluder2D chain requires at least 2 vertices"
+    );
+    Self {
+      vertices,
+      closed: false,
+      enabled: true,
+    }
+  }
+
+  /// Whether the last vertex joins the first: true for a polygon, false
+  /// for a chain
+  pub fn is_closed(&self) -> bool {
+    self.closed
   }
 
   /// Create a rectangular occluder centered on the entity.
@@ -147,15 +181,18 @@ impl LightOccluder2D {
     &self.vertices
   }
 
-  /// Get the edges of this occluder as (start, end) pairs.
+  /// Get the edges of this occluder as (start, end) pairs: a polygon's
+  /// last edge returns to its first vertex, a chain's does not.
   pub fn edges(&self) -> impl Iterator<Item = (Vec2, Vec2)> + '_ {
-    self.vertices.windows(2).map(|w| (w[0], w[1])).chain(
-      // Close the polygon
-      std::iter::once((
-        *self.vertices.last().unwrap(),
-        *self.vertices.first().unwrap(),
-      )),
-    )
+    let closing = match (self.closed, self.vertices.first(), self.vertices.last()) {
+      (true, Some(first), Some(last)) => Some((*last, *first)),
+      _ => None,
+    };
+    self
+      .vertices
+      .windows(2)
+      .map(|w| (w[0], w[1]))
+      .chain(closing)
   }
 
   /// Check if this occluder is enabled.
@@ -222,6 +259,12 @@ mod tests {
     let occluder = LightOccluder2D::rect(100.0, 100.0);
     let edges: Vec<_> = occluder.edges().collect();
     assert_eq!(edges.len(), 4); // Rectangle has 4 edges
+  }
+
+  #[test]
+  #[should_panic(expected = "at least 2 vertices")]
+  fn chain_requires_min_vertices() {
+    LightOccluder2D::chain(vec![Vec2::new(0.0, 0.0)]);
   }
 
   #[test]

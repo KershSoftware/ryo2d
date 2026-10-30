@@ -44,7 +44,7 @@ use crate::core::ecs::{
   Allow, Commands, Component, DetectChanges, Disabled, Entity, Has, Local, Query, Ref, Res, Without,
 };
 use crate::core::hash::{FastMap, FastSet};
-use crate::core::physics::{CellShape, SlopeCorner, TileCell, TileColliders};
+use crate::core::physics::{Boundary, CellShape, SlopeCorner, TileCell, TileColliders};
 
 /// The most cells a `TileColliders` holds a side
 const MAX_SIDE: u32 = 8192;
@@ -294,7 +294,7 @@ fn slope_corner(polygon: &[Vec2]) -> Option<SlopeCorner> {
 
 /// A shape's geometry on a fine grid, so equal shapes share an index
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-struct ShapeKey {
+pub(super) struct ShapeKey {
   one_way: bool,
   polygons: Vec<Vec<(i64, i64)>>,
 }
@@ -313,7 +313,7 @@ impl ShapeKey {
 }
 
 /// Where new shapes go: the grid being built's list, or the grid itself
-trait ShapeSink {
+pub(super) trait ShapeSink {
   fn add(&mut self, shape: CellShape) -> u16;
 }
 
@@ -333,6 +333,26 @@ impl ShapeSink for TileColliders {
   fn add(&mut self, shape: CellShape) -> u16 {
     self.add_shape(shape)
   }
+}
+
+impl ShapeSink for Boundary {
+  fn add(&mut self, shape: CellShape) -> u16 {
+    self.add_shape(shape)
+  }
+}
+
+/// What a tile's shapes are read for
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum Purpose {
+  /// Its collision shapes (those not marked `occluder`): its solid ones,
+  /// else its one-way ones
+  Collision,
+  /// What blocks light: its shapes marked `occluder`, else its collision
+  /// shapes, one-way ones too (light does not care which way a platform
+  /// lets bodies through), all as one solid shape; an IntGrid cell occludes
+  /// if it is solid or a slope (a one-way cell is solid only along its top,
+  /// which has no area)
+  Occlusion,
 }
 
 /// The cell kind of `polygons` (tiles, already placed), solid or one-way
@@ -362,30 +382,39 @@ fn classify(
   TileCell::Shape(index)
 }
 
-/// The cell kind `tile` collides as on cells of `cell` pixels
+/// The cell kind `tile` is on cells of `cell` pixels, for `purpose`
 fn tile_kind(
   tileset: Option<&Tileset>,
   tile: Tile,
   cell: Vec2,
+  purpose: Purpose,
   ids: &mut FastMap<ShapeKey, u16>,
   sink: &mut dyn ShapeSink,
 ) -> TileCell {
   let Some((tileset, data)) = tileset.and_then(|t| Some((t, t.tile(tile.id)?))) else {
     return TileCell::Empty;
   };
-  let collected = |one_way: bool| -> Vec<Vec<Vec2>> {
+  let collected = |keep: &dyn Fn(&TileShape) -> bool| -> Vec<Vec<Vec2>> {
     data
       .shapes
       .iter()
-      .filter(|s: &&TileShape| !s.occluder && s.one_way == one_way)
+      .filter(|s| keep(s))
       .map(|s| placed(tileset, tile, &s.points, cell))
       .collect()
   };
-  let solid = collected(false);
+  let (solid, one_way) = match purpose {
+    Purpose::Collision => (
+      collected(&|s| !s.occluder && !s.one_way),
+      collected(&|s| !s.occluder && s.one_way),
+    ),
+    Purpose::Occlusion => {
+      let marked = data.shapes.iter().any(|s| s.occluder);
+      (collected(&|s| s.occluder == marked), Vec::new())
+    }
+  };
   if !solid.is_empty() {
     return classify(solid, false, ids, sink);
   }
-  let one_way = collected(true);
   if !one_way.is_empty() {
     return classify(one_way, true, ids, sink);
   }
@@ -468,15 +497,16 @@ fn rank(kind: TileCell) -> u8 {
 
 /// A layer of a group: the chunk versions it was last read at
 #[derive(Debug)]
-struct Tracked {
-  entity: Entity,
+pub(super) struct Tracked {
+  pub(super) entity: Entity,
   versions: Vec<u64>,
   grid_version: u64,
-  /// The kind of each value, for a layer that collides by its IntGrid
+  /// The kind of each value, for a layer read by its IntGrid
   intgrid: Option<FastMap<i32, TileCell>>,
 }
 
 impl Tracked {
+  /// A layer read as its tiles are now
   fn new(entity: Entity, data: &TileLayerData, overrides: &[(IntGridKey, TileCell)]) -> Tracked {
     let grid = &data.grid;
     let chunks = grid.chunks();
@@ -494,6 +524,85 @@ impl Tracked {
         .map(|intgrid| intgrid_table(&intgrid.names, overrides)),
     }
   }
+
+  /// A layer not read yet: every chunk that ever changed counts as changed
+  pub(super) fn unread(
+    entity: Entity,
+    data: &TileLayerData,
+    overrides: &[(IntGridKey, TileCell)],
+  ) -> Tracked {
+    let chunks = data.grid.chunks();
+    Tracked {
+      entity,
+      versions: vec![0; chunks.x as usize * chunks.y as usize],
+      grid_version: 0,
+      intgrid: data
+        .intgrid
+        .as_ref()
+        .map(|intgrid| intgrid_table(&intgrid.names, overrides)),
+    }
+  }
+}
+
+/// The chunks of the layers of a group whose version moved since each was
+/// last read (all of a layer's, when its IntGrid's names now name other
+/// kinds), sorted, each once; the layers are marked read
+pub(super) fn changed_chunks(
+  group: &mut [Tracked],
+  layers: &Layers,
+  overrides: &[(IntGridKey, TileCell)],
+) -> Vec<UVec2> {
+  let mut changed: Vec<UVec2> = Vec::new();
+  for tracked in group {
+    let Ok((_, data, _)) = layers.get(tracked.entity) else {
+      continue;
+    };
+    // An IntGrid's names may have changed with its layer
+    let mut all = false;
+    if data.is_changed()
+      && let (Some(table), Some(intgrid)) = (&mut tracked.intgrid, &data.intgrid)
+    {
+      let now = intgrid_table(&intgrid.names, overrides);
+      if now != *table {
+        *table = now;
+        all = true;
+      }
+    }
+    let grid = &data.grid;
+    if !all && grid.version() == tracked.grid_version {
+      continue;
+    }
+    let chunks = grid.chunks();
+    tracked
+      .versions
+      .resize(chunks.x as usize * chunks.y as usize, 0);
+    for y in 0..chunks.y {
+      for x in 0..chunks.x {
+        let chunk = UVec2::new(x, y);
+        let version = grid.chunk_version(chunk);
+        let seen = &mut tracked.versions[(y * chunks.x + x) as usize];
+        if all || *seen != version {
+          *seen = version;
+          changed.push(chunk);
+        }
+      }
+    }
+    tracked.grid_version = grid.version();
+  }
+  changed.sort_unstable_by_key(|c| (c.y, c.x));
+  changed.dedup();
+  changed
+}
+
+/// The tile data of a group's layers, in its order (`None` for one gone)
+pub(super) fn layer_data<'w>(
+  group: &[Tracked],
+  layers: &'w Layers,
+) -> Vec<Option<Ref<'w, TileLayerData>>> {
+  group
+    .iter()
+    .map(|t| layers.get(t.entity).ok().map(|(_, data, _)| data))
+    .collect()
 }
 
 /// Layers sharing a cell size and offset, and the grid they collide in
@@ -616,8 +725,8 @@ impl MapCollision {
   }
 }
 
-/// The asset stores a map's collision reads
-type Stores<'w> = (
+/// The asset stores a map's collision and occluders read
+pub(super) type Stores<'w> = (
   Option<Res<'w, Assets<TileMap>>>,
   Option<Res<'w, Assets<LdtkProject>>>,
   Option<Res<'w, Assets<Tileset>>>,
@@ -637,7 +746,7 @@ type Maps<'w, 's> = Query<
 >;
 type Unrooted<'w, 's> =
   Query<'w, 's, (Entity, &'static mut MapCollision), (Without<MapRoot>, Allow<Disabled>)>;
-type Layers<'w, 's> = Query<
+pub(super) type Layers<'w, 's> = Query<
   'w,
   's,
   (
@@ -650,14 +759,15 @@ type Layers<'w, 's> = Query<
 type Grids<'w, 's> = Query<'w, 's, &'static mut TileColliders, Allow<Disabled>>;
 
 /// What classifying a map's cells reads
-struct Context<'a> {
-  tile_map: &'a TileMap,
-  tilesets: Option<&'a Assets<Tileset>>,
-  overrides: &'a [(IntGridKey, TileCell)],
+pub(super) struct Context<'a> {
+  pub(super) tile_map: &'a TileMap,
+  pub(super) tilesets: Option<&'a Assets<Tileset>>,
+  pub(super) overrides: &'a [(IntGridKey, TileCell)],
+  pub(super) purpose: Purpose,
 }
 
-/// The kind `cell` of a layer collides as
-fn layer_kind(
+/// The kind `cell` of a layer is, for the context's purpose
+pub(super) fn layer_kind(
   tracked: &Tracked,
   data: &TileLayerData,
   cell: IVec2,
@@ -666,24 +776,37 @@ fn layer_kind(
   context: &Context<'_>,
 ) -> TileCell {
   match &tracked.intgrid {
-    Some(table) => data
-      .intgrid
-      .as_ref()
-      .and_then(|intgrid| intgrid.get(cell))
-      .and_then(|value| table.get(&value).copied())
-      .unwrap_or(TileCell::Empty),
+    Some(table) => {
+      let kind = data
+        .intgrid
+        .as_ref()
+        .and_then(|intgrid| intgrid.get(cell))
+        .and_then(|value| table.get(&value).copied())
+        .unwrap_or(TileCell::Empty);
+      match (context.purpose, kind) {
+        (Purpose::Occlusion, TileCell::OneWay) => TileCell::Empty,
+        (_, kind) => kind,
+      }
+    }
     None => match data.grid.get(cell) {
       None => TileCell::Empty,
       Some(tile) => *kinds.entry(tile).or_insert_with(|| {
         let tileset = tileset_of(&context.tile_map.tilesets, tile.tileset, context.tilesets);
-        tile_kind(tileset, tile, data.cell_size.as_vec2(), shapes, sink)
+        tile_kind(
+          tileset,
+          tile,
+          data.cell_size.as_vec2(),
+          context.purpose,
+          shapes,
+          sink,
+        )
       }),
     },
   }
 }
 
 /// `kind` over `below` in a group's union: the stronger, the upper on a tie
-fn over(below: TileCell, kind: TileCell) -> TileCell {
+pub(super) fn over(below: TileCell, kind: TileCell) -> TileCell {
   if kind != TileCell::Empty && rank(kind) >= rank(below) {
     kind
   } else {
@@ -798,54 +921,11 @@ fn build(
 /// whose version moved since it last looked, setting only those whose kind
 /// changed
 fn update(group: &mut Group, tiles: &mut TileColliders, layers: &Layers, context: &Context<'_>) {
-  let mut changed: Vec<UVec2> = Vec::new();
-  for tracked in &mut group.layers {
-    let Ok((_, data, _)) = layers.get(tracked.entity) else {
-      continue;
-    };
-    // An IntGrid's names may have changed with its layer: its cells all
-    // count as changed if what they name did
-    let mut all = false;
-    if data.is_changed()
-      && let (Some(table), Some(intgrid)) = (&mut tracked.intgrid, &data.intgrid)
-    {
-      let now = intgrid_table(&intgrid.names, context.overrides);
-      if now != *table {
-        *table = now;
-        all = true;
-      }
-    }
-    let grid = &data.grid;
-    if !all && grid.version() == tracked.grid_version {
-      continue;
-    }
-    let chunks = grid.chunks();
-    tracked
-      .versions
-      .resize(chunks.x as usize * chunks.y as usize, 0);
-    for y in 0..chunks.y {
-      for x in 0..chunks.x {
-        let chunk = UVec2::new(x, y);
-        let version = grid.chunk_version(chunk);
-        let seen = &mut tracked.versions[(y * chunks.x + x) as usize];
-        if all || *seen != version {
-          *seen = version;
-          changed.push(chunk);
-        }
-      }
-    }
-    tracked.grid_version = grid.version();
-  }
+  let changed = changed_chunks(&mut group.layers, layers, context.overrides);
   if changed.is_empty() {
     return;
   }
-  changed.sort_unstable_by_key(|c| (c.y, c.x));
-  changed.dedup();
-  let data: Vec<Option<Ref<TileLayerData>>> = group
-    .layers
-    .iter()
-    .map(|t| layers.get(t.entity).ok().map(|(_, data, _)| data))
-    .collect();
+  let data = layer_data(&group.layers, layers);
   let Group {
     layers: tracked,
     kinds,
@@ -963,6 +1043,7 @@ pub(crate) fn sync_map_colliders(
       tile_map,
       tilesets,
       overrides: &root.intgrid_collision,
+      purpose: Purpose::Collision,
     };
     let same = state.as_ref().is_some_and(|s| {
       !s.torn

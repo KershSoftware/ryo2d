@@ -16,9 +16,9 @@ mod outline;
 mod runs;
 mod shape;
 
-use outline::Outlines;
 #[cfg(test)]
 use outline::outlines;
+use outline::{Outlines, Unit, unit_edges};
 use runs::Runs;
 #[cfg(test)]
 use runs::one_way_runs;
@@ -793,6 +793,78 @@ impl TileColliders {
   }
 }
 
+/// Cells and authored shapes whose boundary is read a block at a time, by
+/// the outline code's units without its loops or colliders: what a tile
+/// map's light occluders are built from, so their edges meet and cancel as
+/// the outlines' do, across blocks too.
+#[derive(Debug, Default)]
+pub(crate) struct Boundary {
+  shapes: Vec<(CellShape, ShapeBuild)>,
+}
+
+impl Boundary {
+  /// Adds a shape for `TileCell::Shape` cells to name, as
+  /// `TileColliders::add_shape` does (at most 65,535; past that it logs
+  /// and returns `u16::MAX`, which names none).
+  pub(crate) fn add_shape(&mut self, shape: CellShape) -> u16 {
+    let index = self.shapes.len();
+    if index >= usize::from(u16::MAX) {
+      crate::engine_warn!(
+        module: "Physics",
+        "a tile boundary holds at most 65,535 shapes; this one is dropped"
+      );
+      return u16::MAX;
+    }
+    let build = ShapeBuild::of(&shape);
+    self.shapes.push((shape, build));
+    index as u16
+  }
+
+  /// Pushes onto `out` the boundary edges the cells from `min` to `max`
+  /// (exclusive) of a grid `size` cells own: each one's inside, the border
+  /// on its left and the border above it, and, where the block reaches the
+  /// grid's right or bottom, the borders there. So every border belongs to
+  /// one block, and blocks laid side by side give the grid's boundary with
+  /// nothing twice. `at` gives a cell by its place in the grid (a border
+  /// reads the cell across it, outside the block, and every cell outside the
+  /// grid is empty). Points are on the outline grid (`GRID` a tile) from
+  /// `min`'s top-left; edges run clockwise on screen round what they bound.
+  pub(crate) fn edges(
+    &self,
+    at: impl Fn(i32, i32) -> TileCell,
+    min: (i32, i32),
+    max: (i32, i32),
+    size: (i32, i32),
+    out: &mut Vec<(Point, Point)>,
+  ) {
+    let cells = Cells::new(0, 0, &[], &self.shapes);
+    let local = |x: i32, y: i32| {
+      let (gx, gy) = (min.0 + x, min.1 + y);
+      if gx < 0 || gy < 0 || gx >= size.0 || gy >= size.1 {
+        TileCell::Empty
+      } else {
+        at(gx, gy)
+      }
+    };
+    let (w, h) = (max.0 - min.0, max.1 - min.1);
+    for y in 0..h {
+      for x in 0..w {
+        unit_edges(Unit::Inside(x, y), &cells, &local, out);
+        unit_edges(Unit::Left(x, y), &cells, &local, out);
+        unit_edges(Unit::Above(x, y), &cells, &local, out);
+      }
+      if max.0 == size.0 {
+        unit_edges(Unit::Left(w, y), &cells, &local, out);
+      }
+    }
+    if max.1 == size.1 {
+      for x in 0..w {
+        unit_edges(Unit::Above(x, h), &cells, &local, out);
+      }
+    }
+  }
+}
+
 /// Marks a collider a `TileColliders` built; its parent owns it.
 #[derive(Component, Debug, Clone, Copy)]
 pub(crate) struct TilePart;
@@ -970,6 +1042,68 @@ mod tests {
   /// A loop as a set of directed edges, so tests do not depend on where it starts.
   fn edges(outline: &[Corner]) -> std::collections::BTreeSet<(Corner, Corner)> {
     outline.windows(2).map(|w| (w[0], w[1])).collect()
+  }
+
+  #[test]
+  fn boundary_blocks_side_by_side_give_the_grid_s_boundary() {
+    use SlopeCorner::{BottomLeft, TopRight};
+    // A grid of every kind, an authored shape among them, read in blocks
+    // of 4 that do not divide it
+    let (width, height) = (11u32, 9u32);
+    let mut tiles = TileColliders::new(width, height, Vec2::ONE);
+    let half = tiles.add_shape(CellShape {
+      polygons: vec![vec![
+        Vec2::new(0.0, 0.5),
+        Vec2::new(1.0, 0.5),
+        Vec2::new(1.0, 1.0),
+        Vec2::new(0.0, 1.0),
+      ]],
+      one_way: false,
+    });
+    let mut boundary = Boundary::default();
+    let same = boundary.add_shape(tiles.shape(half).cloned().unwrap_or_default());
+    assert_eq!(same, half);
+    let kinds = [
+      S,
+      S,
+      E,
+      O,
+      TileCell::Slope(BottomLeft),
+      TileCell::Shape(half),
+      S,
+      TileCell::Slope(TopRight),
+      E,
+    ];
+    let mut seed = 0x2545_f491_u32;
+    for y in 0..height {
+      for x in 0..width {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        tiles.set(x, y, kinds[seed as usize % kinds.len()]);
+      }
+    }
+    let mut whole = outline::boundary_edges(tiles.cells_view());
+    let at = |x: i32, y: i32| tiles.get(x as u32, y as u32);
+    let mut pieced = Vec::new();
+    let size = (width as i32, height as i32);
+    for by in (0..size.1).step_by(4) {
+      for bx in (0..size.0).step_by(4) {
+        let max = ((bx + 4).min(size.0), (by + 4).min(size.1));
+        let mut block = Vec::new();
+        boundary.edges(at, (bx, by), max, size, &mut block);
+        let origin = (bx * GRID, by * GRID);
+        pieced.extend(
+          block
+            .into_iter()
+            .map(|(a, b)| (sides::plus(origin, a), sides::plus(origin, b))),
+        );
+      }
+    }
+    whole.sort_unstable();
+    pieced.sort_unstable();
+    assert!(!whole.is_empty());
+    assert_eq!(pieced, whole);
   }
 
   #[test]

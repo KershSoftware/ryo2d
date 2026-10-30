@@ -29,7 +29,8 @@ Scenes control lighting through the `LightingSettings` resource (`ctx.lighting()
 - **Artist-friendly units**: colors use 0-255 sRGB, not 0.0-1.0. Radius is in pixels. Intensity above 1 shows (the look rolls it off).
 - **Placed by `GlobalTransform`**: lights draw at their entity's world translation; occluders use its world translation and rotation (not its scale). On an interpolated entity both are blended with its sprite (`render_global`).
 - **Coordinate space**: occluder vertices are local space (relative to the entity), CCW winding: CCW on screen, which with y down is a negative signed area, so `casts`' normal `(-edge.y, edge.x)` faces out.
-- **Reach test by entity**: a light skips an occluder whose entity sits more than twice its radius away, so an occluder's entity should sit at its geometry's centre (as tile maps place theirs: `tilemap/occluders.rs`, `MapOccluder`, one entity per merged rectangle or shape of a chunk).
+- **Chains**: `LightOccluder2D::chain` is an open run of edges (no edge from the last vertex back to the first; `is_closed` is false), wound as a polygon's: each edge casts exactly as it would as an edge of the polygon its boundary closes, so chains that together close a ring cast as that polygon does (`a_chain_occluder_casts_like_the_polygon_it_bounds`). Occluders that touch, each a closed polygon, cast their touching edges' shadows through each other; tile maps build their occluders as chains of their boundary for that reason (`tilemap/occluders.rs`).
+- **Reach test by entity**: a light skips an occluder whose entity sits more than twice its radius away, so an occluder's entity should sit at its geometry's centre (as tile maps place theirs: one chain entity per run of a chunk's boundary).
 
 ## Notes for AI Agents
 
