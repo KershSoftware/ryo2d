@@ -274,6 +274,8 @@ struct Builder<'p, 'a> {
   objects: ObjectState,
   path: AssetPath,
   size: UVec2,
+  /// The map's cell size, which every tile layer uses
+  tile_size: UVec2,
   /// Each tileset's first gid and its index, by first gid
   first_gids: Vec<(u32, u16)>,
   /// The id for a layer the file gave none; `None` once the ids ran out
@@ -504,6 +506,7 @@ impl Builder<'_, '_> {
       LayerKind::Tiles {
         grid,
         intgrid: None,
+        cell_size: self.tile_size,
       },
       used,
     ))
@@ -618,6 +621,7 @@ pub(crate) fn build_map(
     objects: ObjectState::new(entries),
     path: path.clone(),
     size: map.size,
+    tile_size: map.tile_size,
     first_gids,
     next_id: max_layer_id(&raw.layers).checked_add(1),
     layers: Vec::new(),

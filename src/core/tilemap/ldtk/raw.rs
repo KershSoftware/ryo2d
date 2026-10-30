@@ -23,6 +23,8 @@ pub(super) struct RawProject {
   pub world_layout: Option<String>,
   #[serde(rename = "defaultGridSize", default)]
   pub default_grid_size: Option<i64>,
+  #[serde(rename = "defaultLevelBgColor", default)]
+  pub default_level_bg_color: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -100,6 +102,8 @@ pub(super) struct RawLevel {
   pub px_hei: i64,
   #[serde(default, rename = "__bgColor")]
   pub bg_color: Option<String>,
+  #[serde(default, rename = "bgColor")]
+  pub own_bg_color: Option<String>,
   #[serde(default, rename = "externalRelPath")]
   pub external_rel_path: Option<String>,
   #[serde(default, rename = "fieldInstances")]

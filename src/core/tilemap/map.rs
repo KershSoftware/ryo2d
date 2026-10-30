@@ -141,6 +141,10 @@ pub enum LayerKind {
   Tiles {
     grid: TileGrid,
     intgrid: Option<IntGrid>,
+    /// A cell's size in pixels on this layer: the map's `tile_size` unless
+    /// the file gave the layer a grid of its own (LDtk does). The grid and
+    /// the int grid then count cells of this size
+    cell_size: UVec2,
   },
   Objects(Vec<MapObjectData>),
   Image(ImageLayer),
@@ -214,6 +218,7 @@ impl TileMap {
       kind: LayerKind::Tiles {
         grid: TileGrid::new(self.size),
         intgrid: None,
+        cell_size: self.tile_size,
       },
     });
     self.layers.len() - 1
@@ -275,6 +280,10 @@ mod tests {
       map.tiles(ground).and_then(|g| g.get(IVec2::new(1, 1))),
       Some(Tile::new(0, 4))
     );
+    assert!(matches!(
+      map.layers[ground].kind,
+      LayerKind::Tiles { cell_size, .. } if cell_size == UVec2::splat(16)
+    ));
     let info = &map.layers[ground].info;
     assert!(info.collides && info.lit && info.visible && !info.y_sorted);
     assert_eq!(info.occludes, None);

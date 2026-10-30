@@ -137,6 +137,19 @@ mod tests {
   }
 
   #[test]
+  fn tiled_tile_layers_use_the_map_s_cell_size() {
+    let map = load("maps/mixed.tmj");
+    let mut tile_layers = 0;
+    for l in &map.layers {
+      if let LayerKind::Tiles { cell_size, .. } = &l.kind {
+        tile_layers += 1;
+        assert_eq!(*cell_size, map.tile_size, "{}", l.info.name);
+      }
+    }
+    assert!(tile_layers > 0);
+  }
+
+  #[test]
   fn flipped_tiles_keep_their_flips() {
     let map = load("maps/mixed.tmj");
     let (h, v, d) = (TileFlip::HORIZONTAL, TileFlip::VERTICAL, TileFlip::DIAGONAL);

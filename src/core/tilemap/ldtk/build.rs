@@ -41,6 +41,7 @@ struct Defs<'a> {
   tilesets: FastMap<i64, TilesetRef>,
   layers: FastMap<i64, &'a RawLayerDef>,
   default_grid: i64,
+  default_bg: Option<String>,
 }
 
 fn to_u32(path: &AssetPath, place: &str, what: &str, v: i64) -> Result<u32, AssetError> {
@@ -388,7 +389,7 @@ struct LayerOut {
   used: Option<(u16, u32)>,
 }
 
-fn build_layer(defs: &Defs<'_>, size: UVec2, raw: &RawLayer) -> Result<LayerOut, AssetError> {
+fn build_layer(defs: &Defs<'_>, size_px: UVec2, raw: &RawLayer) -> Result<LayerOut, AssetError> {
   let place = format!("layer {:?}", raw.identifier);
   let def = defs
     .layers
@@ -413,6 +414,37 @@ fn build_layer(defs: &Defs<'_>, size: UVec2, raw: &RawLayer) -> Result<LayerOut,
   // LDtk's factor is 0 for a layer that scrolls with the world
   info.parallax = Vec2::new((1.0 - def.parallax_x) as f32, (1.0 - def.parallax_y) as f32);
   info.collides = false;
+  // each layer counts cells of its own grid
+  let (size, cell_size) = if raw.ty == "Entities" {
+    (UVec2::ZERO, UVec2::ZERO)
+  } else {
+    let g = to_u32(defs.path, &place, "__gridSize", raw.grid_size)?;
+    if g == 0 {
+      return Err(fail(defs.path, &place, "the grid size is 0"));
+    }
+    let size = UVec2::new(ceil_div(size_px.x, g), ceil_div(size_px.y, g));
+    if cell_count(size.x, size.y).is_none() {
+      return Err(fail(
+        defs.path,
+        &place,
+        format!(
+          "{} x {} cells is past the cells a layer holds",
+          size.x, size.y
+        ),
+      ));
+    }
+    if raw.c_wid != i64::from(size.x) || raw.c_hei != i64::from(size.y) {
+      return Err(fail(
+        defs.path,
+        &place,
+        format!(
+          "it is {} x {} cells but the level's {} x {} px make {} x {} of {g} px",
+          raw.c_wid, raw.c_hei, size_px.x, size_px.y, size.x, size.y
+        ),
+      ));
+    }
+    (size, UVec2::splat(g))
+  };
   let tileset = raw
     .override_tileset_uid
     .or(raw.tileset_uid)
@@ -455,6 +487,7 @@ fn build_layer(defs: &Defs<'_>, size: UVec2, raw: &RawLayer) -> Result<LayerOut,
           values: raw.int_grid_csv.clone(),
           names,
         }),
+        cell_size,
       }
     }
     "AutoLayer" => {
@@ -462,6 +495,7 @@ fn build_layer(defs: &Defs<'_>, size: UVec2, raw: &RawLayer) -> Result<LayerOut,
       LayerKind::Tiles {
         grid: tiled(&auto, &mut used)?,
         intgrid: None,
+        cell_size,
       }
     }
     "Tiles" => {
@@ -469,6 +503,7 @@ fn build_layer(defs: &Defs<'_>, size: UVec2, raw: &RawLayer) -> Result<LayerOut,
       LayerKind::Tiles {
         grid: tiled(&tiles, &mut used)?,
         intgrid: None,
+        cell_size,
       }
     }
     "Entities" => {
@@ -494,6 +529,30 @@ fn build_layer(defs: &Defs<'_>, size: UVec2, raw: &RawLayer) -> Result<LayerOut,
 
 // ---- levels ---------------------------------------------------------------
 
+/// The level's background colour: `__bgColor` is the one LDtk resolved; the
+/// level's own `bgColor` and the project's default are the fallbacks
+fn background(defs: &Defs<'_>, place: &str, raw: &RawLevel) -> Result<Option<Color>, AssetError> {
+  let written = [
+    raw.bg_color.as_deref(),
+    raw.own_bg_color.as_deref(),
+    defs.default_bg.as_deref(),
+  ]
+  .into_iter()
+  .flatten()
+  .find(|t| !t.is_empty());
+  written
+    .map(|text| {
+      parse_color(text).ok_or_else(|| {
+        fail(
+          defs.path,
+          place,
+          format!("the background colour {text:?} is not a color like \"#6E6F8B\""),
+        )
+      })
+    })
+    .transpose()
+}
+
 /// A level's map, from its layers (LDtk lists the top one first)
 fn build_map(
   defs: &Defs<'_>,
@@ -504,39 +563,22 @@ fn build_map(
   fields: Properties,
 ) -> Result<TileMap, AssetError> {
   let place = format!("level {:?}", raw.identifier);
-  // one grid for the whole map: every layer that has cells shares its size
-  let mut grid_size = None;
-  for layer in layers.iter().filter(|l| l.ty != "Entities") {
-    let this = to_u32(
-      defs.path,
-      &format!("layer {:?}", layer.identifier),
-      "__gridSize",
-      layer.grid_size,
-    )?;
-    if this == 0 {
-      return Err(fail(
+  // the map's own cell is the bottom tile layer's; each layer keeps its grid
+  let grid_size = layers
+    .iter()
+    .rev()
+    .find(|l| l.ty != "Entities")
+    .map(|l| {
+      to_u32(
         defs.path,
-        &format!("layer {:?}", layer.identifier),
-        "the grid size is 0",
-      ));
-    }
-    match grid_size {
-      None => grid_size = Some((this, layer.identifier.as_str())),
-      Some((first, first_name)) if first != this => {
-        return Err(fail(
-          defs.path,
-          &place,
-          format!(
-            "layer {:?} has a grid of {this} px but layer {first_name:?} one of {first} px: a map has a single cell size, so levels mixing grid sizes are not supported",
-            layer.identifier
-          ),
-        ));
-      }
-      Some(_) => {}
-    }
-  }
+        &format!("layer {:?}", l.identifier),
+        "__gridSize",
+        l.grid_size,
+      )
+    })
+    .transpose()?;
   let tile = match grid_size {
-    Some((g, _)) => g,
+    Some(g) => g,
     None => to_u32(defs.path, &place, "defaultGridSize", defs.default_grid)?,
   };
   if tile == 0 {
@@ -557,22 +599,10 @@ fn build_map(
   for set in tilesets {
     map.tilesets.push(TilesetSource::Embedded(set.clone()));
   }
-  map.background = raw.bg_color.as_deref().and_then(parse_color);
+  map.background = background(defs, &place, raw)?;
   map.properties = fields;
   for layer in layers.iter().rev() {
-    if layer.ty != "Entities"
-      && (layer.c_wid != i64::from(size.x) || layer.c_hei != i64::from(size.y))
-    {
-      return Err(fail(
-        defs.path,
-        &format!("layer {:?}", layer.identifier),
-        format!(
-          "it is {} x {} cells but the level's {} x {} px make {} x {}",
-          layer.c_wid, layer.c_hei, size_px.x, size_px.y, size.x, size.y
-        ),
-      ));
-    }
-    let out = build_layer(defs, size, layer)?;
+    let out = build_layer(defs, size_px, layer)?;
     if let Some((tileset, max)) = out.used {
       map.used_ids.push((map.layers.len(), tileset, max));
     }
@@ -783,6 +813,7 @@ pub(super) fn build_project(
       .collect(),
     layers: raw.defs.layers.iter().map(|l| (l.uid, l)).collect(),
     default_grid: raw.default_grid_size.unwrap_or(16),
+    default_bg: raw.default_level_bg_color.clone(),
   };
   let multi = !raw.worlds.is_empty();
   let sources: Vec<(String, Option<String>, Vec<RawLevel>)> = if multi {

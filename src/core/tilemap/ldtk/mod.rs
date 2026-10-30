@@ -267,7 +267,12 @@ mod tests {
     for l in &level.map.layers {
       out += &format!("{:?}\n", l.info);
       match &l.kind {
-        LayerKind::Tiles { grid, intgrid } => {
+        LayerKind::Tiles {
+          grid,
+          intgrid,
+          cell_size,
+        } => {
+          out += &format!("cell {cell_size:?}\n");
           for y in 0..grid.size().y as i32 {
             for x in 0..grid.size().x as i32 {
               out += &format!("{:?};", grid.get(IVec2::new(x, y)));
@@ -772,19 +777,124 @@ mod tests {
     );
   }
 
+  /// Level_0 with its Collision layer on an 8 px grid under the 16 px art
+  fn mixed_grid_project() -> LdtkProject {
+    load_json(|v| {
+      let layers = v["levels"][0]["layerInstances"]
+        .as_array_mut()
+        .expect("layers");
+      let col = layers
+        .iter_mut()
+        .find(|l| l["__identifier"] == "Collision")
+        .expect("collision");
+      col["__gridSize"] = 8.into();
+      col["__cWid"] = 8.into();
+      col["__cHei"] = 6.into();
+      let mut csv = vec![0; 48];
+      csv[0] = 1;
+      csv[9] = 2;
+      csv[47] = 1;
+      col["intGridCsv"] = csv.into();
+      col["autoLayerTiles"] = serde_json::json!([
+        {"px": [8, 8], "src": [16, 0], "f": 0, "t": 1, "d": [0], "a": 1},
+        {"px": [56, 40], "src": [0, 16], "f": 1, "t": 4, "d": [0], "a": 1}
+      ]);
+    })
+    .expect("loads")
+  }
+
   #[test]
-  fn a_level_mixing_grid_sizes_fails_naming_the_layers() {
+  fn a_level_mixing_grid_sizes_keeps_each_layer_s_cell_size() {
+    let project = mixed_grid_project();
+    let level = &project.levels[0];
+    let cell_size = |name: &str| match &layer(level, name).kind {
+      LayerKind::Tiles { cell_size, .. } => *cell_size,
+      _ => panic!("{name} is no tile layer"),
+    };
+    assert_eq!(cell_size("Collision"), UVec2::splat(8));
+    assert_eq!(cell_size("Decor"), UVec2::splat(16));
+    assert_eq!(cell_size("Props"), UVec2::splat(16));
+    // the 8 px layer has twice the cells across and down
+    let LayerKind::Tiles { grid, intgrid, .. } = &layer(level, "Collision").kind else {
+      panic!("no tiles")
+    };
+    assert_eq!(grid.size(), UVec2::new(8, 6));
+    assert_eq!(intgrid.as_ref().map(|g| g.size), Some(UVec2::new(8, 6)));
+    assert_eq!(
+      intgrid.as_ref().and_then(|g| g.get(IVec2::new(1, 1))),
+      Some(2)
+    );
+    assert_eq!(cell(level, "Collision", 1, 1), Some(Tile::new(0, 1)));
+    assert_eq!(
+      cell(level, "Collision", 7, 5),
+      Some(Tile::new(0, 4).with_flip(TileFlip::HORIZONTAL))
+    );
+    let LayerKind::Tiles { grid, .. } = &layer(level, "Decor").kind else {
+      panic!("no tiles")
+    };
+    assert_eq!(grid.size(), UVec2::new(4, 3));
+    // the map's own cell is the bottom layer's
+    assert_eq!(level.map.tile_size, UVec2::splat(16));
+    assert_eq!(level.map.size, UVec2::new(4, 3));
+    // a layer whose cell count disagrees with its grid size still fails
     let error = json_failure(|v| {
       let layers = v["levels"][0]["layerInstances"]
         .as_array_mut()
         .expect("layers");
-      for l in layers.iter_mut().filter(|l| l["__identifier"] == "Props") {
-        l["__gridSize"] = 8.into();
-      }
+      let col = layers
+        .iter_mut()
+        .find(|l| l["__identifier"] == "Collision")
+        .expect("collision");
+      col["__gridSize"] = 8.into();
     });
-    assert!(error.contains("level \"Level_0\""), "{error}");
     assert!(
-      error.contains("\"Props\"") && error.contains("8 px") && error.contains("16 px"),
+      error.contains("layer \"Collision\"") && error.contains("cells"),
+      "{error}"
+    );
+  }
+
+  #[test]
+  fn a_level_s_background_colour_loads() {
+    let project = load("internal.ldtk");
+    assert_eq!(
+      project.levels[0].map.background,
+      Some(Color::rgb(0x39, 0x86, 0x66))
+    );
+    // the default colour, which LDtk fills in for a level of none
+    assert_eq!(
+      project.levels[1].map.background,
+      Some(Color::rgb(0x6E, 0x6F, 0x8B))
+    );
+    // without `__bgColor`: the level's own, then the project's default
+    let own = load_json(|v| {
+      v["levels"][1]
+        .as_object_mut()
+        .expect("level")
+        .remove("__bgColor");
+      v["levels"][1]["bgColor"] = "#102030".into();
+    })
+    .expect("loads");
+    assert_eq!(
+      own.levels[1].map.background,
+      Some(Color::rgb(0x10, 0x20, 0x30))
+    );
+    let default = load_json(|v| {
+      v["levels"][1]
+        .as_object_mut()
+        .expect("level")
+        .remove("__bgColor");
+      v["defaultLevelBgColor"] = "#405060".into();
+    })
+    .expect("loads");
+    assert_eq!(
+      default.levels[1].map.background,
+      Some(Color::rgb(0x40, 0x50, 0x60))
+    );
+    let error = json_failure(|v| {
+      v["levels"][1]["__bgColor"] = "red".into();
+    });
+    assert!(
+      error.contains("level \"Level_1\"") && error.contains("red"),
       "{error}"
     );
   }
