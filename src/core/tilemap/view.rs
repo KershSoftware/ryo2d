@@ -4,7 +4,7 @@ use glam::{IVec2, Vec2};
 
 use super::edit::{self, LayerRef};
 use super::spawn::{self, MapIds, MapRoot};
-use super::{Tile, TileData};
+use super::{Tile, TileData, wang};
 use crate::core::ecs::{Entity, World};
 
 /// The spawned maps of a world: read and edit their tiles, read their
@@ -78,6 +78,27 @@ impl<'w> MapsView<'w> {
     tile: Option<Tile>,
   ) -> usize {
     edit::fill(self.world, map, layer.into(), min, max, tile)
+  }
+
+  /// Paints `cell` of a tile layer with the color `color` of the Wang set
+  /// `wang_set` (named in one of the map's tilesets; `None` paints no color),
+  /// as Tiled's terrain brush paints one cell: the cell's corners (a corner
+  /// set), edges (an edge set) or both (a mixed set) take the color, then it
+  /// and every cell sharing one of them that holds a tile of the set pick the
+  /// tile whose wangid fits. Among equal fits the pick weighs tile
+  /// probabilities and is the same for the same cell every time. A cell with
+  /// no fitting tile keeps its tile, and the set warns once. False if
+  /// nothing changed, the map, layer, set or color is not there, or the cell
+  /// is outside the layer
+  pub fn set_terrain<'a>(
+    &mut self,
+    map: Entity,
+    layer: impl Into<LayerRef<'a>>,
+    cell: IVec2,
+    wang_set: &str,
+    color: Option<&str>,
+  ) -> bool {
+    wang::set_terrain(self.world, map, layer.into(), cell, wang_set, color)
   }
 
   /// The IntGrid value at `cell` of a tile layer; `None` where it is 0

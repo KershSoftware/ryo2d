@@ -703,7 +703,7 @@ mod tests {
     panic!("{name}: one has more lines than the other");
   }
 
-  const MAP_PAIRS: [&str; 10] = [
+  const MAP_PAIRS: [&str; 12] = [
     "mixed",
     "mixed-embedded",
     "nested",
@@ -714,14 +714,17 @@ mod tests {
     "enc-zlib",
     "enc-zstd",
     "level",
+    "wang-dirt",
+    "wang-grass",
   ];
-  const SET_PAIRS: [&str; 6] = [
+  const SET_PAIRS: [&str; 7] = [
     "tiles",
     "items",
     "offset",
     "aligned",
     "terrain",
     "collision",
+    "wang",
   ];
 
   #[test]

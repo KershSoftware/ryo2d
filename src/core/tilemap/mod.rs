@@ -21,6 +21,7 @@ mod tile;
 mod tiled;
 mod tileset;
 mod view;
+mod wang;
 
 use crate::core::ecs::IntoScheduleConfigs;
 use crate::core::schedule::{EngineSchedules, FixedSet, Phase, PostUpdateSet};
@@ -44,6 +45,7 @@ pub use tile::{Tile, TileFlip};
 pub use tiled::{TiledMapLoader, TiledTilesetLoader};
 pub use tileset::{
   TileData, TileFrame, TileShape, Tileset, TilesetImage, URect, WangColor, WangKind, WangSet,
+  WangTile,
 };
 pub use view::MapsView;
 

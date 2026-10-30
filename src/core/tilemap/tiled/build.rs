@@ -236,7 +236,6 @@ pub(crate) fn build_tileset(
   }
   let mut count = declared;
   set.properties = px.read(&place, &raw.properties, raw.class.as_deref())?;
-  set.wang_sets = build_wang_sets(px, &place, raw.wangsets)?;
   for tile in raw.tiles {
     let id = tile.id;
     let tile_place = format!("{place}, tile {id}");
@@ -253,6 +252,11 @@ pub(crate) fn build_tileset(
     set.insert_tile(id, data);
   }
   set.tile_count = count;
+  // after the tiles, whose probabilities the sets' tiles carry
+  let wang_sets = build_wang_sets(px, &place, raw.wangsets, |id| {
+    set.tile(id).map_or(1.0, |data| data.probability)
+  })?;
+  set.wang_sets = wang_sets;
   Ok(set)
 }
 

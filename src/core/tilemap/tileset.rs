@@ -109,15 +109,24 @@ pub struct WangColor {
   pub properties: Properties,
 }
 
+/// A tile of a Wang set with the color at each of its eight positions
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct WangTile {
+  pub tile: u32,
+  /// The color index (1-based, 0 for none) at the top edge, top-right corner,
+  /// right edge and on clockwise
+  pub wangid: [u8; 8],
+  /// The tile's own probability, copied from its [`TileData`] at load
+  pub probability: f32,
+}
+
 /// A set of tiles joined by edge or corner colors, for auto-tiling
 #[derive(Clone, Debug)]
 pub struct WangSet {
   pub name: String,
   pub kind: WangKind,
   pub colors: Vec<WangColor>,
-  /// Each tile with the color index at its eight positions (0 for none),
-  /// clockwise from the top edge
-  pub tiles: Vec<(u32, [u8; 8])>,
+  pub tiles: Vec<WangTile>,
 }
 
 /// A set of tiles: an atlas or a collection of images, with the data tiles

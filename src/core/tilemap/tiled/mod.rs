@@ -755,6 +755,7 @@ mod tests {
 
   use crate::core::tilemap::{
     MapObjectData, ObjectShape, Properties, TiledMapLoader, TiledTilesetLoader, WangKind, WangSet,
+    WangTile,
   };
 
   fn objects<'a>(map: &'a TileMap, name: &str) -> &'a [MapObjectData] {
@@ -1069,6 +1070,11 @@ mod tests {
       .resource::<Assets<Tileset>>()
       .get(&handle)
       .expect("stored");
+    let wang_tile = |tile, wangid| WangTile {
+      tile,
+      wangid,
+      probability: 1.0,
+    };
     let by_name = |name: &str| -> &WangSet {
       match set.wang_sets.iter().find(|w| w.name == name) {
         Some(w) => w,
@@ -1089,22 +1095,22 @@ mod tests {
     assert_eq!(
       ground.tiles,
       [
-        (0, [0, 1, 0, 1, 0, 1, 0, 1]),
-        (1, [0, 2, 0, 1, 0, 1, 0, 1]),
-        (2, [0, 2, 0, 2, 0, 2, 0, 2])
+        wang_tile(0, [0, 1, 0, 1, 0, 1, 0, 1]),
+        wang_tile(1, [0, 2, 0, 1, 0, 1, 0, 1]),
+        wang_tile(2, [0, 2, 0, 2, 0, 2, 0, 2])
       ]
     );
 
     let walls = by_name("walls");
     assert_eq!(walls.kind, WangKind::Edge);
     assert_eq!(walls.colors[0].tile, Some(3));
-    assert_eq!(walls.tiles[1], (4, [1, 0, 0, 0, 1, 0, 0, 0]));
+    assert_eq!(walls.tiles[1], wang_tile(4, [1, 0, 0, 0, 1, 0, 0, 0]));
 
     let mix = by_name("mix");
     assert_eq!(mix.kind, WangKind::Mixed);
     assert_eq!(mix.colors.len(), 2);
     assert_eq!(mix.colors[1].color, Color::rgb(0, 0, 255));
-    assert_eq!(mix.tiles[1], (6, [2, 2, 1, 1, 0, 0, 0, 1]));
+    assert_eq!(mix.tiles[1], wang_tile(6, [2, 2, 1, 1, 0, 0, 0, 1]));
   }
 
   #[test]

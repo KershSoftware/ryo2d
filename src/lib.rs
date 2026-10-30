@@ -214,7 +214,7 @@ pub mod prelude {
     MapOccluder, MapRoot, MapTile, MapsView, Neighbour, NeighbourDirection, ObjectShape,
     Properties, PropertyValue, Tile, TileData, TileFlip, TileFrame, TileGrid, TileLayerData,
     TileMap, TileShape, TiledMapLoader, TiledTilesetLoader, Tileset, TilesetImage, TilesetSource,
-    URect, WangColor, WangKind, WangSet, WorldLayout, WorldLevel,
+    URect, WangColor, WangKind, WangSet, WangTile, WorldLayout, WorldLevel,
   };
 
   // Render pipeline

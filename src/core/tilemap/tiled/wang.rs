@@ -4,14 +4,16 @@ use super::build::MAX_TILES;
 use super::project::{Props, parse_color};
 use super::raw::RawWangSet;
 use crate::core::asset::AssetError;
-use crate::core::tilemap::{WangColor, WangKind, WangSet};
+use crate::core::tilemap::{WangColor, WangKind, WangSet, WangTile};
 use crate::core::ui::Color;
 
-/// The Wang sets of the tileset `place` names
+/// The Wang sets of the tileset `place` names; `probability` is each tile's
+/// own, which the set carries
 pub(super) fn build_wang_sets(
   px: &mut Props<'_>,
   place: &str,
   raw: Vec<RawWangSet>,
+  probability: impl Fn(u32) -> f32,
 ) -> Result<Vec<WangSet>, AssetError> {
   let mut sets = Vec::with_capacity(raw.len());
   for set in raw {
@@ -93,7 +95,11 @@ pub(super) fn build_wang_sets(
             )
           })?;
       }
-      tiles.push((tile.tileid, wangid));
+      tiles.push(WangTile {
+        tile: tile.tileid,
+        wangid,
+        probability: probability(tile.tileid),
+      });
     }
     sets.push(WangSet {
       name: set.name,
