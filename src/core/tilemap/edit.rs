@@ -2,8 +2,11 @@
 
 use glam::{Affine2, IVec2, Vec2};
 
-use super::spawn::{MapLayerRef, MapLayers, TileLayerData};
-use super::{Tile, TileGrid};
+use super::spawn::{
+  ClassTile, LayerTiles, MapLayerRef, MapLayers, MapTile, TileLayerData, registered_class,
+  spawn_class_tile,
+};
+use super::{Properties, Tile, TileGrid};
 use crate::core::ecs::{ChildOf, DetectChangesMut, Entity, Transform, World};
 
 /// How many ancestors a layer's world transform walks up before giving up:
@@ -63,22 +66,173 @@ fn tile_layer<'w>(world: &'w World, map: Entity, layer: LayerRef<'_>) -> Option<
   world.get::<TileLayerData>(layer_entity(world, map, layer)?)
 }
 
-/// Runs `edit` on a tile layer's grid; the layer is marked changed only
-/// when `changed` says the edit changed something
-pub(crate) fn edit_tiles<R>(
+/// Runs `edit` on the grid of the tile layer entity `layer`; the layer is
+/// marked changed only when `changed` says the edit changed something
+fn edit_grid<R>(
   world: &mut World,
-  map: Entity,
-  layer: LayerRef<'_>,
+  layer: Entity,
   edit: impl FnOnce(&mut TileGrid) -> R,
   changed: impl FnOnce(&R) -> bool,
 ) -> Option<R> {
-  let entity = layer_entity(world, map, layer)?;
-  let mut data = world.get_mut::<TileLayerData>(entity)?;
+  let mut data = world.get_mut::<TileLayerData>(layer)?;
   let result = edit(&mut data.bypass_change_detection().grid);
   if changed(&result) {
     data.set_changed();
   }
   Some(result)
+}
+
+/// A tile layer's entity and grid size
+fn tile_layer_size(world: &World, map: Entity, layer: LayerRef<'_>) -> Option<(Entity, IVec2)> {
+  let entity = layer_entity(world, map, layer)?;
+  let size = world.get::<TileLayerData>(entity)?.grid.size().as_ivec2();
+  Some((entity, size))
+}
+
+/// The class tile living at `cell` of the layer entity `layer`
+fn class_tile_at(world: &World, layer: Entity, cell: IVec2) -> Option<Entity> {
+  let entity = *world.get::<LayerTiles>(layer)?.0.get(&cell)?;
+  world
+    .get::<MapTile>(entity)
+    .is_some_and(|tile| tile.cell == cell)
+    .then_some(entity)
+}
+
+/// Puts `tile` (or nothing) at `cell`, inside the layer entity `layer` of
+/// `map`. A class tile at the cell goes first; a tile whose class the root
+/// registers (`class`) spawns as a class tile and leaves the grid. True if
+/// anything changed
+fn set_cell(
+  world: &mut World,
+  map: Entity,
+  layer: Entity,
+  cell: IVec2,
+  tile: Option<Tile>,
+  class: Option<&(String, Properties)>,
+) -> bool {
+  // A game's observer of an earlier cell's class tile may have taken the layer
+  let Some(cell_size) = world
+    .get::<TileLayerData>(layer)
+    .map(|data| data.cell_size.as_vec2())
+  else {
+    return false;
+  };
+  let existing = class_tile_at(world, layer, cell);
+  if let (Some(entity), Some(tile), Some(_)) = (existing, tile, class)
+    && world.get::<MapTile>(entity).is_some_and(|t| t.tile == tile)
+  {
+    return false;
+  }
+  if let Some(mut table) = world.get_mut::<LayerTiles>(layer) {
+    table.0.remove(&cell);
+  }
+  let mut changed = false;
+  if let Some(entity) = existing {
+    let _ = world.try_despawn(entity);
+    changed = true;
+  }
+  match (tile, class) {
+    (Some(tile), Some((class, properties))) => {
+      edit_grid(world, layer, |grid| grid.set(cell, None), |c| *c);
+      let index = world.get::<MapLayerRef>(layer).map_or(0, |l| l.index);
+      let class_tile = ClassTile {
+        cell,
+        tile,
+        class: class.clone(),
+        properties: properties.clone(),
+      };
+      let entity = spawn_class_tile(world, map, (layer, index), cell_size, class_tile);
+      if let Some(mut table) = world.get_mut::<LayerTiles>(layer) {
+        table.0.insert(cell, entity);
+      }
+      true
+    }
+    _ => edit_grid(world, layer, |grid| grid.set(cell, tile), |c| *c).unwrap_or(false) || changed,
+  }
+}
+
+/// Puts `tile` (or nothing) at `cell` of a tile layer; see [`set_cell`]
+pub(crate) fn set_tile(
+  world: &mut World,
+  map: Entity,
+  layer: LayerRef<'_>,
+  cell: IVec2,
+  tile: Option<Tile>,
+) -> bool {
+  let Some((layer, size)) = tile_layer_size(world, map, layer) else {
+    return false;
+  };
+  if cell.x < 0 || cell.y < 0 || cell.x >= size.x || cell.y >= size.y {
+    return false;
+  }
+  let class = tile.and_then(|tile| registered_class(world, map, tile));
+  set_cell(world, map, layer, cell, tile, class.as_ref())
+}
+
+/// Puts `tile` (or nothing) in every cell from `min` to `max`, both
+/// included, clipped to the layer; returns how many cells changed
+pub(crate) fn fill(
+  world: &mut World,
+  map: Entity,
+  layer: LayerRef<'_>,
+  min: IVec2,
+  max: IVec2,
+  tile: Option<Tile>,
+) -> usize {
+  let Some((layer, size)) = tile_layer_size(world, map, layer) else {
+    return 0;
+  };
+  let (lo, hi) = (min.max(IVec2::ZERO), max.min(size - IVec2::ONE));
+  if lo.x > hi.x || lo.y > hi.y {
+    return 0;
+  }
+  let class = tile.and_then(|tile| registered_class(world, map, tile));
+  if class.is_some() {
+    // Each cell spawns its own entity
+    let mut changed = 0;
+    for y in lo.y..=hi.y {
+      for x in lo.x..=hi.x {
+        changed += usize::from(set_cell(
+          world,
+          map,
+          layer,
+          IVec2::new(x, y),
+          tile,
+          class.as_ref(),
+        ));
+      }
+    }
+    return changed;
+  }
+  // The class tiles in the region go; a cell whose grid already holds the
+  // tile changed only by losing its class tile
+  let inside = |cell: &IVec2| cell.cmpge(lo).all() && cell.cmple(hi).all();
+  let taken: Vec<(IVec2, Entity)> = world
+    .get::<LayerTiles>(layer)
+    .map(|table| {
+      table
+        .0
+        .iter()
+        .filter(|(cell, _)| inside(cell))
+        .map(|(cell, entity)| (*cell, *entity))
+        .collect()
+    })
+    .unwrap_or_default();
+  let mut changed = 0;
+  for (cell, entity) in taken {
+    if let Some(mut table) = world.get_mut::<LayerTiles>(layer) {
+      table.0.remove(&cell);
+    }
+    let live = world.get::<MapTile>(entity).is_some_and(|t| t.cell == cell);
+    let unchanged = world
+      .get::<TileLayerData>(layer)
+      .is_some_and(|data| data.grid.get(cell) == tile);
+    if live {
+      let _ = world.try_despawn(entity);
+      changed += usize::from(unchanged);
+    }
+  }
+  changed + edit_grid(world, layer, |grid| grid.fill(lo, hi, tile), |n| *n > 0).unwrap_or(0)
 }
 
 /// The tile at `cell` of a tile layer

@@ -3,9 +3,8 @@
 use glam::{IVec2, Vec2};
 
 use super::edit::{self, LayerRef};
-use super::spawn::{MapIds, MapRoot, map_asset};
-use super::{Tile, TileData, Tileset, TilesetSource};
-use crate::core::asset::Assets;
+use super::spawn::{self, MapIds, MapRoot};
+use super::{Tile, TileData};
 use crate::core::ecs::{Entity, World};
 
 /// The spawned maps of a world: read and edit their tiles, read their
@@ -46,13 +45,17 @@ impl<'w> MapsView<'w> {
     edit::layer_entity(self.world, map, layer.into())
   }
 
-  /// The tile at `cell` of a tile layer
+  /// The tile at `cell` of a tile layer's grid: a cell holding a class
+  /// tile ([`MapTile`](super::MapTile)) reads `None`, the tile being its entity
   pub fn tile<'a>(&self, map: Entity, layer: impl Into<LayerRef<'a>>, cell: IVec2) -> Option<Tile> {
     edit::tile_at(self.world, map, layer.into(), cell)
   }
 
   /// Puts `tile` at `cell` of a tile layer (`None` clears it); false if
-  /// nothing changed
+  /// nothing changed. A tile whose class the map's root registers
+  /// ([`MapRoot::with_entity_tiles`]) spawns as a [`MapTile`](super::MapTile)
+  /// there instead of going in the grid, as the map's own do; a class tile
+  /// already on the cell is despawned first
   pub fn set_tile<'a>(
     &mut self,
     map: Entity,
@@ -60,18 +63,12 @@ impl<'w> MapsView<'w> {
     cell: IVec2,
     tile: Option<Tile>,
   ) -> bool {
-    edit::edit_tiles(
-      self.world,
-      map,
-      layer.into(),
-      |grid| grid.set(cell, tile),
-      |changed| *changed,
-    )
-    .unwrap_or(false)
+    edit::set_tile(self.world, map, layer.into(), cell, tile)
   }
 
   /// Puts `tile` in every cell from `min` to `max`, both included, clipped
-  /// to the layer; returns how many cells changed
+  /// to the layer, as [`set_tile`](Self::set_tile) puts one; returns how
+  /// many cells changed
   pub fn fill<'a>(
     &mut self,
     map: Entity,
@@ -80,14 +77,7 @@ impl<'w> MapsView<'w> {
     max: IVec2,
     tile: Option<Tile>,
   ) -> usize {
-    edit::edit_tiles(
-      self.world,
-      map,
-      layer.into(),
-      |grid| grid.fill(min, max, tile),
-      |changed| *changed > 0,
-    )
-    .unwrap_or(0)
+    edit::fill(self.world, map, layer.into(), min, max, tile)
   }
 
   /// The IntGrid value at `cell` of a tile layer; `None` where it is 0
@@ -103,12 +93,7 @@ impl<'w> MapsView<'w> {
   /// What `tile` carries in its tileset (class, properties, shapes,
   /// animation), if anything
   pub fn tile_data(&self, map: Entity, tile: Tile) -> Option<TileData> {
-    let asset = map_asset(self.world, self.world.get::<MapRoot>(map)?)?;
-    let tileset = match asset.tilesets.get(tile.tileset as usize)? {
-      TilesetSource::Asset(handle) => self.world.get_resource::<Assets<Tileset>>()?.get(handle)?,
-      TilesetSource::Embedded(tileset) => tileset,
-    };
-    tileset.tile(tile.id).cloned()
+    spawn::tile_data(self.world, self.world.get::<MapRoot>(map)?, tile).cloned()
   }
 
   /// The cell of a tile layer under the world position `world`, whether or

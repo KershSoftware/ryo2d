@@ -10,7 +10,7 @@ use glam::{IVec2, UVec2, Vec2};
 
 use super::{
   ImageLayer, IntGrid, LayerInfo, LayerKind, LdtkProject, MapObjectData, ObjectShape, Properties,
-  PropertyValue, Tile, TileGrid, TileMap, Tileset, TilesetSource,
+  PropertyValue, Tile, TileData, TileGrid, TileMap, Tileset, TilesetSource,
 };
 use crate::core::asset::{AssetError, AssetPath, AssetServer, Assets, Handle, LoadState};
 use crate::core::ecs::kernel::{DeferredWorld, HookContext, QueryState};
@@ -178,6 +178,9 @@ pub struct MapObject {
   pub size: Vec2,
   /// The tile shown, for a tile object
   pub tile: Option<Tile>,
+  /// False for an object the editor hides: it spawns all the same (games
+  /// use hidden markers), and is not drawn
+  pub visible: bool,
   pub properties: Properties,
 }
 
@@ -199,8 +202,11 @@ impl MapObject {
 }
 
 /// A tile whose class the map's root registered
-/// ([`MapRoot::with_entity_tiles`]), spawned as an entity: a child of its
-/// layer, its `Transform` at the cell's centre
+/// ([`MapRoot::with_entity_tiles`]), spawned as an entity instead of going
+/// in its layer's grid: a child of its layer, its `Transform` at the cell's
+/// centre. The map spawns one for each such tile in the file, and
+/// `ctx.maps()` one for each it places; placing another tile on the cell,
+/// or clearing it, despawns it
 #[derive(Component, Clone, Debug)]
 pub struct MapTile {
   pub map: Entity,
@@ -230,6 +236,11 @@ impl MapIds {
 /// A spawned map's layer entities, bottom first, on the map entity
 #[derive(Component, Clone, Debug, Default)]
 pub(crate) struct MapLayers(pub(crate) Vec<Entity>);
+
+/// A tile layer's class tiles by cell, on the layer entity. An entry may
+/// name an entity a game has since despawned; readers check
+#[derive(Component, Clone, Debug, Default)]
+pub(crate) struct LayerTiles(pub(crate) FastMap<IVec2, Entity>);
 
 /// What happened to a map entity's asset
 #[derive(Message, Clone, Debug)]
@@ -268,6 +279,35 @@ pub(crate) fn map_asset<'w>(world: &'w World, root: &MapRoot) -> Option<&'w Tile
   }
 }
 
+/// What `tile` carries in the root's map's tileset
+pub(crate) fn tile_data<'w>(world: &'w World, root: &MapRoot, tile: Tile) -> Option<&'w TileData> {
+  let map = map_asset(world, root)?;
+  let tileset = match map.tilesets.get(tile.tileset as usize)? {
+    TilesetSource::Asset(handle) => world.get_resource::<Assets<Tileset>>()?.get(handle)?,
+    TilesetSource::Embedded(tileset) => tileset,
+  };
+  tileset.tile(tile.id)
+}
+
+/// The class and properties of `tile`, if `map`'s root registers its class
+/// to spawn as entities
+pub(crate) fn registered_class(
+  world: &World,
+  map: Entity,
+  tile: Tile,
+) -> Option<(String, Properties)> {
+  let root = world.get::<MapRoot>(map)?;
+  if root.entity_tiles.is_empty() {
+    return None;
+  }
+  let data = tile_data(world, root, tile)?;
+  let class = data
+    .class
+    .as_ref()
+    .filter(|c| root.entity_tiles.contains(c))?;
+  Some((class.clone(), data.properties.clone()))
+}
+
 /// `PreUpdate`, after the asset pump: each map whose asset is ready spawns
 /// its layers, objects and class tiles (so a map whose asset lands this
 /// frame spawns this frame), and each whose asset failed reports it once.
@@ -280,10 +320,13 @@ pub(crate) fn spawn_maps(world: &mut World, waiting: &mut WaitingMaps) {
   for (map, ready) in decided {
     match ready {
       Ready::Spawn => spawn_map(world, map),
+      // A game's observer, as another map spawned, may have despawned it
       Ready::Failed(failure) => {
         let error = Arc::clone(&failure.error);
-        world.entity_mut(map).insert(failure);
-        send(world, MapEvent::Failed { map, error });
+        if let Ok(mut entity) = world.get_entity_mut(map) {
+          entity.insert(failure);
+          send(world, MapEvent::Failed { map, error });
+        }
       }
     }
   }
@@ -355,11 +398,45 @@ fn readiness(world: &World, root: &MapRoot, failed: Option<&MapFailed>) -> Optio
 }
 
 /// A tile to spawn as an entity
-struct ClassTile {
-  cell: IVec2,
-  tile: Tile,
-  class: String,
-  properties: Properties,
+pub(crate) struct ClassTile {
+  pub(crate) cell: IVec2,
+  pub(crate) tile: Tile,
+  pub(crate) class: String,
+  pub(crate) properties: Properties,
+}
+
+/// Spawns `tile` as a child of `layer` (the map's layer `index`, of cells
+/// `cell_size` pixels) at its cell's centre
+pub(crate) fn spawn_class_tile(
+  world: &mut World,
+  map: Entity,
+  (layer, index): (Entity, usize),
+  cell_size: Vec2,
+  tile: ClassTile,
+) -> Entity {
+  let centre = (tile.cell.as_vec2() + 0.5) * cell_size;
+  let component = MapTile {
+    map,
+    layer: index,
+    cell: tile.cell,
+    tile: tile.tile,
+    class: tile.class,
+    properties: tile.properties,
+  };
+  let entity = child_of(world, layer, Transform::from_translation(centre));
+  if let Ok(mut spawned) = world.get_entity_mut(entity) {
+    spawned.insert(component);
+  }
+  entity
+}
+
+/// A child of `parent` at `transform`, linked into `parent`'s `Children`
+/// before anything a game observes goes on it. bevy runs `Add` observers
+/// before `ChildOf`'s insert hook, so an observer of a component spawned
+/// with the `ChildOf` that despawned the parent would leave the child
+/// orphaned and the hook's queued update failing on the gone parent
+fn child_of(world: &mut World, parent: Entity, transform: Transform) -> Entity {
+  world.spawn((transform, ChildOf(parent))).id()
 }
 
 /// A layer as it spawns: its info and what it holds
@@ -491,6 +568,7 @@ fn object_parts(map: Entity, object: MapObjectData) -> (MapObject, Transform) {
     shape,
     size: object.size,
     tile: object.tile,
+    visible: object.visible,
     properties: object.properties,
   };
   (component, transform)
@@ -514,34 +592,41 @@ fn spawn_map(world: &mut World, map: Entity) {
     return;
   };
 
+  // A game's observers run as each part arrives, and may despawn the map, a
+  // layer or an object before its turn: what is gone is skipped, and a map
+  // gone takes all of it with it
+  let alive = |world: &World, entity: Entity| world.get_entity(entity).is_ok();
   let mut layers = Vec::with_capacity(planned.len());
   let mut object_layers = Vec::new();
   let mut tile_layers = Vec::new();
   for (index, PlannedLayer { info, content }) in planned.into_iter().enumerate() {
-    let base = (
-      MapLayerRef {
-        map,
-        index,
-        name: info.name.clone(),
-      },
-      Transform::from_translation(info.offset),
-      ChildOf(map),
-    );
-    let layer = match content {
+    if !alive(world, map) {
+      return;
+    }
+    let layer = child_of(world, map, Transform::from_translation(info.offset));
+    layers.push(layer);
+    let layer_ref = MapLayerRef {
+      map,
+      index,
+      name: info.name.clone(),
+    };
+    let Ok(mut entity) = world.get_entity_mut(layer) else {
+      continue;
+    };
+    match content {
       Content::Tiles(data, found) => {
         let cell_size = data.cell_size.as_vec2();
-        let layer = world.spawn((base, info, data)).id();
+        entity.insert((layer_ref, info, data, LayerTiles::default()));
         tile_layers.push((layer, index, cell_size, found));
-        layer
       }
       Content::Objects(objects) => {
-        let layer = world.spawn((base, info)).id();
+        entity.insert((layer_ref, info));
         object_layers.push((layer, objects));
-        layer
       }
-      Content::Image(image) => world.spawn((base, info, image)).id(),
-    };
-    layers.push(layer);
+      Content::Image(image) => {
+        entity.insert((layer_ref, info, image));
+      }
+    }
   }
 
   // The objects' entities first, so the id table is whole by the time their
@@ -550,43 +635,43 @@ fn spawn_map(world: &mut World, map: Entity) {
   let mut objects = Vec::new();
   for (layer, list) in object_layers {
     for object in list {
+      if !alive(world, layer) {
+        break;
+      }
       let (component, transform) = object_parts(map, object);
-      let entity = world.spawn((transform, ChildOf(layer))).id();
+      let entity = child_of(world, layer, transform);
       ids.insert(component.id.clone(), entity);
       objects.push((entity, component));
     }
   }
-  world
-    .entity_mut(map)
+  let Ok(mut root) = world.get_entity_mut(map) else {
+    return;
+  };
+  root
     .insert((MapIds { objects: ids }, MapLayers(layers)))
     .remove::<MapFailed>();
   for (entity, component) in objects {
-    world.entity_mut(entity).insert(component);
-  }
-  for (layer, index, cell_size, found) in tile_layers {
-    for ClassTile {
-      cell,
-      tile,
-      class,
-      properties,
-    } in found
-    {
-      let centre = (cell.as_vec2() + 0.5) * cell_size;
-      world.spawn((
-        MapTile {
-          map,
-          layer: index,
-          cell,
-          tile,
-          class,
-          properties,
-        },
-        Transform::from_translation(centre),
-        ChildOf(layer),
-      ));
+    if let Ok(mut object) = world.get_entity_mut(entity) {
+      object.insert(component);
     }
   }
-  send(world, MapEvent::Spawned { map });
+  for (layer, index, cell_size, found) in tile_layers {
+    let mut spawned = FastMap::default();
+    for tile in found {
+      if !alive(world, layer) {
+        break;
+      }
+      let cell = tile.cell;
+      let entity = spawn_class_tile(world, map, (layer, index), cell_size, tile);
+      spawned.insert(cell, entity);
+    }
+    if let Some(mut table) = world.get_mut::<LayerTiles>(layer) {
+      table.0.extend(spawned);
+    }
+  }
+  if alive(world, map) {
+    send(world, MapEvent::Spawned { map });
+  }
 }
 
 /// A root going (put over by another, taken away, or despawned with its
@@ -618,15 +703,20 @@ fn send(world: &mut World, event: MapEvent) {
 mod tests {
   use std::f32::consts::FRAC_PI_2;
   use std::path::Path;
+  use std::sync::Mutex;
+  use std::sync::atomic::{AtomicBool, Ordering};
   use std::time::{Duration, Instant};
 
   use glam::{IVec2, UVec2, Vec2};
 
   use super::*;
   use crate::core::asset::{AssetServer, AssetsView, MemorySource, insert_registry, pump};
-  use crate::core::ecs::kernel::{MessageCursor, Messages, Schedule};
+  use crate::core::ecs::kernel::{Add, MessageCursor, Messages, Schedule};
   use crate::core::ecs::world_ext::despawn_game_entities;
-  use crate::core::ecs::{ChildOf, GlobalTransform};
+  use crate::core::ecs::{ChildOf, Commands, GlobalTransform, On, Query, Res, Resource};
+  use crate::core::engine::EngineBuilder;
+  use crate::core::scene::{Scene, SceneAction, SceneContext};
+  use crate::core::testing::HeadlessEngine;
   use crate::core::tilemap::{
     LayerKind, LayerRef, MapLayer, MapObjectData, MapsView, PropertyValue, TileData, TileFlip,
     Tileset, TilesetImage, TilesetSource,
@@ -1552,5 +1642,406 @@ mod tests {
     assert_eq!(root.z, -4);
     let fresh = MapRoot::new(handle);
     assert!(fresh.collision && fresh.z == 0 && fresh.entity_tiles.is_empty());
+  }
+
+  #[test]
+  fn hidden_objects_spawn_marked_hidden() {
+    let mut world = world_over(files_with(&[]));
+    let handle = AssetsView::new(&mut world)
+      .load_now::<TileMap>("tiled/maps/objects.tmj")
+      .expect("objects.tmj loads");
+    let map = world.spawn(MapRoot::new(handle)).id();
+    Frames::new().run(&mut world);
+    let (_, hidden) = object(&mut world, map, "hidden");
+    assert!(!hidden.visible);
+    let (_, shown) = object(&mut world, map, "crate");
+    assert!(shown.visible);
+  }
+
+  /// A level's maps for the observer tests: which to cancel as its first
+  /// layer arrives (with another map), and which layer to drop as it arrives
+  #[derive(Resource)]
+  struct Cancel {
+    map: Entity,
+    victim: Entity,
+    layer: &'static str,
+  }
+
+  fn despawn_later(commands: &mut Commands, entity: Entity) {
+    commands.queue(move |world: &mut World| {
+      let _ = world.try_despawn(entity);
+    });
+  }
+
+  /// A turret takes its waypoint marker away as it arrives
+  fn take_waypoint(
+    add: On<Add<MapObject>>,
+    objects: Query<&MapObject>,
+    ids: Query<&MapIds>,
+    mut commands: Commands,
+  ) {
+    let Ok(object) = objects.get(add.entity) else {
+      return;
+    };
+    let Some(PropertyValue::Object(id)) = object.properties.get("waypoint") else {
+      return;
+    };
+    if let Some(marker) = ids.get(object.map).ok().and_then(|ids| ids.get(id)) {
+      despawn_later(&mut commands, marker);
+    }
+  }
+
+  /// A level cancelled as its first layer arrives, taking another map with
+  /// it; and a layer dropped as it arrives
+  fn cancel_level(
+    add: On<Add<MapLayerRef>>,
+    layers: Query<&MapLayerRef>,
+    cancel: Option<Res<Cancel>>,
+    mut commands: Commands,
+  ) {
+    let (Ok(layer), Some(cancel)) = (layers.get(add.entity), cancel) else {
+      return;
+    };
+    if layer.map == cancel.map {
+      despawn_later(&mut commands, cancel.map);
+      despawn_later(&mut commands, cancel.victim);
+    }
+    if layer.name == cancel.layer {
+      despawn_later(&mut commands, add.entity);
+    }
+  }
+
+  #[test]
+  fn an_observer_despawning_a_sibling_mid_spawn_does_not_panic() {
+    let mut world = crate::core::testing::asset_world();
+    world.add_observer(take_waypoint);
+    world.add_observer(cancel_level);
+    let mut frames = Frames::new();
+    // A map that will have failed by the time the others spawn
+    let missing = world
+      .resource::<AssetServer>()
+      .load::<TileMap>("missing.tmj");
+    frames.until(&mut world, |world| {
+      matches!(
+        world.resource::<AssetServer>().state(&missing),
+        LoadState::Failed(_)
+      )
+    });
+
+    // A turret whose waypoint (the next object) is taken away as it arrives
+    let mut turrets = code_map();
+    if let LayerKind::Objects(objects) = &mut turrets.layers[1].kind {
+      let waypoint = [("waypoint", PropertyValue::Object("2".into()))];
+      objects.push(object_data("1", "turret", &waypoint));
+      objects.push(object_data("2", "marker", &[]));
+      objects.push(object_data("3", "crate", &[]));
+    }
+    let turrets = spawn_code_map(&mut world, turrets, MapRoot::new);
+    // An object layer dropped as it arrives, under a class tile layer
+    let mut dropping = code_map();
+    dropping.add_tileset(TilesetSource::Embedded(Arc::new(classed_tileset())));
+    dropping.layers[1].info.name = "dropped".into();
+    if let LayerKind::Objects(objects) = &mut dropping.layers[1].kind {
+      objects.push(object_data("1", "lost", &[]));
+    }
+    if let Some(grid) = dropping.tiles_mut(0) {
+      grid.set(IVec2::new(1, 1), Some(Tile::new(0, 1)));
+    }
+    let dropping = spawn_code_map(&mut world, dropping, |h| {
+      MapRoot::new(h).with_entity_tiles(&["brick"])
+    });
+    // A level cancelled as its first layer arrives, taking the failed map with it
+    let cancelled = spawn_code_map(&mut world, code_map(), MapRoot::new);
+    let victim = world.spawn(MapRoot::new(missing.clone())).id();
+    world.insert_resource(Cancel {
+      map: cancelled,
+      victim,
+      layer: "dropped",
+    });
+    let mut cursor = MessageCursor::<MapEvent>::default();
+    frames.run(&mut world);
+
+    // The turret's map spawned, the marker went, the objects after it spawned
+    let (_, turret) = object(&mut world, turrets, "turret");
+    assert_eq!(turret.reference("waypoint", &world), None);
+    let markers = world
+      .query::<&MapObject>()
+      .iter(&world)
+      .filter(|o| o.name == "marker")
+      .count();
+    assert_eq!(markers, 0);
+    object(&mut world, turrets, "crate");
+    // The dropped layer took its objects with it; the class tile spawned
+    assert!(MapsView::new(&mut world).is_ready(dropping));
+    assert_eq!(layer_names(&mut world, dropping), ["ground"]);
+    let lost = world
+      .query::<&MapObject>()
+      .iter(&world)
+      .filter(|o| o.map == dropping)
+      .count();
+    assert_eq!(lost, 0);
+    assert_eq!(count::<MapTile>(&mut world), 1);
+    // The cancelled level and the map it took: gone, nothing left behind
+    assert!(world.get_entity(cancelled).is_err() && world.get_entity(victim).is_err());
+    let orphans = world
+      .query::<&MapLayerRef>()
+      .iter(&world)
+      .filter(|l| world.get_entity(l.map).is_err())
+      .count();
+    assert_eq!(orphans, 0);
+    let sent = events(&world, &mut cursor);
+    let mut maps = spawned(&sent);
+    maps.sort();
+    let mut expected = vec![turrets, dropping];
+    expected.sort();
+    assert_eq!(maps, expected);
+    assert!(failed(&sent).is_empty(), "{sent:?}");
+  }
+
+  /// A map built in code with the classed tileset and a brick at (1, 0), whose
+  /// root registers bricks, at (100, 0) with its ground offset by (2, 0)
+  fn brick_map(world: &mut World) -> Entity {
+    let mut map = code_map();
+    map.add_tileset(TilesetSource::Embedded(Arc::new(classed_tileset())));
+    map.layers[0].info.offset = Vec2::new(2.0, 0.0);
+    if let Some(grid) = map.tiles_mut(0) {
+      grid.set(IVec2::new(1, 0), Some(Tile::new(0, 1)));
+    }
+    let handle = world.resource_mut::<Assets<TileMap>>().add(map);
+    world
+      .spawn((
+        MapRoot::new(handle).with_entity_tiles(&["brick"]),
+        Transform::from_xy(100.0, 0.0),
+      ))
+      .id()
+  }
+
+  /// The map's class tiles by cell
+  fn class_tiles_of(world: &mut World, map: Entity) -> Vec<(IVec2, Entity, MapTile)> {
+    let mut found: Vec<(IVec2, Entity, MapTile)> = world
+      .query::<(Entity, &MapTile)>()
+      .iter(world)
+      .filter(|(_, t)| t.map == map)
+      .map(|(e, t)| (t.cell, e, t.clone()))
+      .collect();
+    found.sort_by_key(|(cell, _, _)| (cell.y, cell.x));
+    found
+  }
+
+  #[test]
+  fn setting_a_class_tile_at_runtime_spawns_its_entity() {
+    let mut world = crate::core::testing::asset_world();
+    let map = brick_map(&mut world);
+    Frames::new().run(&mut world);
+    let ground = layers_of(&mut world, map)[0];
+    let brick = Tile::new(0, 1);
+    let flipped = brick.with_flip(TileFlip::VERTICAL);
+    let plain = Tile::new(0, 0);
+
+    let mut maps = MapsView::new(&mut world);
+    assert!(maps.set_tile(map, "ground", IVec2::new(2, 1), Some(plain)));
+    // Over a plain tile, and on an empty cell
+    assert!(maps.set_tile(map, "ground", IVec2::new(2, 1), Some(brick)));
+    assert!(maps.set_tile(map, 0, IVec2::new(3, 2), Some(flipped)));
+    // The same again changes nothing
+    assert!(!maps.set_tile(map, "ground", IVec2::new(2, 1), Some(brick)));
+    // Outside the layer, nothing
+    assert!(!maps.set_tile(map, "ground", IVec2::new(4, 0), Some(brick)));
+    assert!(!maps.set_tile(map, "ground", IVec2::new(-1, 0), Some(brick)));
+    // A class the root does not register is a plain tile
+    let spike = Some(Tile::new(0, 2));
+    assert!(maps.set_tile(map, "ground", IVec2::new(0, 2), spike));
+    assert_eq!(maps.tile(map, "ground", IVec2::new(0, 2)), spike);
+    // They leave the grid
+    assert_eq!(maps.tile(map, "ground", IVec2::new(2, 1)), None);
+    assert_eq!(maps.tile(map, "ground", IVec2::new(3, 2)), None);
+
+    let tiles = class_tiles_of(&mut world, map);
+    let cells: Vec<(IVec2, Tile)> = tiles.iter().map(|(c, _, t)| (*c, t.tile)).collect();
+    assert_eq!(
+      cells,
+      [
+        (IVec2::new(1, 0), brick),
+        (IVec2::new(2, 1), brick),
+        (IVec2::new(3, 2), flipped),
+      ]
+    );
+    let (_, entity, tile) = &tiles[1];
+    assert_eq!((tile.map, tile.layer), (map, 0));
+    assert_eq!(tile.class, "brick");
+    assert_eq!(tile.properties.int("hits"), Some(2));
+    assert_eq!(parent(&world, *entity), Some(ground));
+    // The cell's centre in the layer (offset 2, 0) of the map at (100, 0)
+    assert_eq!(translation(&world, *entity), Vec2::new(40.0, 24.0));
+    assert_eq!(global(&world, *entity), Vec2::new(142.0, 24.0));
+
+    // A fill of bricks spawns one in each cell that had none
+    let mut maps = MapsView::new(&mut world);
+    assert_eq!(
+      maps.fill(
+        map,
+        "ground",
+        IVec2::new(-3, 0),
+        IVec2::new(2, 0),
+        Some(brick)
+      ),
+      2
+    );
+    assert_eq!(
+      maps.fill(
+        map,
+        "ground",
+        IVec2::new(0, 0),
+        IVec2::new(2, 0),
+        Some(brick)
+      ),
+      0
+    );
+    let cells: Vec<IVec2> = class_tiles_of(&mut world, map)
+      .iter()
+      .map(|(c, _, _)| *c)
+      .collect();
+    assert_eq!(
+      cells,
+      [
+        IVec2::new(0, 0),
+        IVec2::new(1, 0),
+        IVec2::new(2, 0),
+        IVec2::new(2, 1),
+        IVec2::new(3, 2),
+      ]
+    );
+  }
+
+  #[test]
+  fn replacing_a_class_tile_despawns_its_entity() {
+    let mut world = crate::core::testing::asset_world();
+    let map = brick_map(&mut world);
+    Frames::new().run(&mut world);
+    let brick = Tile::new(0, 1);
+    let plain = Some(Tile::new(0, 0));
+    let spawned_brick = class_tiles_of(&mut world, map)[0].1;
+
+    // A plain tile over the brick from the file
+    let mut maps = MapsView::new(&mut world);
+    assert!(maps.set_tile(map, "ground", IVec2::new(1, 0), plain));
+    assert_eq!(maps.tile(map, "ground", IVec2::new(1, 0)), plain);
+    assert!(world.get_entity(spawned_brick).is_err());
+
+    // Cleared: the entity goes, the cell stays empty; again, nothing
+    let mut maps = MapsView::new(&mut world);
+    assert!(maps.set_tile(map, "ground", IVec2::new(2, 0), Some(brick)));
+    assert!(maps.set_tile(map, "ground", IVec2::new(2, 0), None));
+    assert!(!maps.set_tile(map, "ground", IVec2::new(2, 0), None));
+    assert_eq!(maps.tile(map, "ground", IVec2::new(2, 0)), None);
+    assert!(class_tiles_of(&mut world, map).is_empty());
+
+    // A brick over a brick, flipped: the old entity goes, a new one comes
+    let mut maps = MapsView::new(&mut world);
+    assert!(maps.set_tile(map, "ground", IVec2::new(3, 0), Some(brick)));
+    let first = class_tiles_of(&mut world, map)[0].1;
+    let flipped = brick.with_flip(TileFlip::HORIZONTAL);
+    let mut maps = MapsView::new(&mut world);
+    assert!(maps.set_tile(map, "ground", IVec2::new(3, 0), Some(flipped)));
+    let tiles = class_tiles_of(&mut world, map);
+    assert_eq!(tiles.len(), 1);
+    assert_eq!(tiles[0].2.tile, flipped);
+    assert!(world.get_entity(first).is_err());
+
+    // A fill clearing a region takes the bricks in it, counting each
+    let mut maps = MapsView::new(&mut world);
+    assert_eq!(
+      maps.fill(
+        map,
+        "ground",
+        IVec2::new(0, 1),
+        IVec2::new(1, 1),
+        Some(brick)
+      ),
+      2
+    );
+    // (1, 0)'s plain tile, (3, 0)'s brick and the two just filled
+    assert_eq!(
+      maps.fill(map, "ground", IVec2::new(0, 0), IVec2::new(3, 1), None),
+      4
+    );
+    assert!(class_tiles_of(&mut world, map).is_empty());
+
+    // A brick the game despawned itself leaves nothing to clear
+    let mut maps = MapsView::new(&mut world);
+    assert!(maps.set_tile(map, "ground", IVec2::new(0, 2), Some(brick)));
+    let gone = class_tiles_of(&mut world, map)[0].1;
+    world.despawn(gone);
+    let mut maps = MapsView::new(&mut world);
+    assert!(!maps.set_tile(map, "ground", IVec2::new(0, 2), None));
+    assert!(maps.set_tile(map, "ground", IVec2::new(0, 2), Some(brick)));
+    assert_eq!(class_tiles_of(&mut world, map).len(), 1);
+  }
+
+  /// Loads `m.tmj` at once and spawns it as it enters; records the map
+  /// events it reads and whether `ctx.maps()` finds the map ready
+  struct Level {
+    map: Arc<Mutex<Option<Entity>>>,
+    seen: Arc<Mutex<Vec<MapEvent>>>,
+    ready: Arc<AtomicBool>,
+  }
+
+  impl Scene for Level {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
+      let handle = ctx
+        .assets()
+        .load_now::<TileMap>("m.tmj")
+        .expect("m.tmj loads");
+      let map = ctx.world.spawn(MapRoot::new(handle)).id();
+      if let Ok(mut held) = self.map.lock() {
+        *held = Some(map);
+      }
+    }
+
+    fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+      let events = ctx.messages::<MapEvent>();
+      if let Ok(mut seen) = self.seen.lock() {
+        seen.extend(events);
+      }
+      let map = self.map.lock().ok().and_then(|m| *m);
+      if let Some(map) = map {
+        self.ready.store(ctx.maps().is_ready(map), Ordering::SeqCst);
+      }
+      SceneAction::Continue
+    }
+  }
+
+  #[test]
+  fn a_map_spawns_through_the_engine_s_frame() {
+    let map = Arc::new(Mutex::new(None));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let ready = Arc::new(AtomicBool::new(false));
+    let scene = Level {
+      map: map.clone(),
+      seen: seen.clone(),
+      ready: ready.clone(),
+    };
+    let Some(mut engine) = HeadlessEngine::new_or_skip(
+      EngineBuilder::new()
+        .resolution(160, 120)
+        .asset_source(files_with(&[("m.tmj", THREE_LAYERS)]))
+        .start_scene(scene),
+    ) else {
+      return;
+    };
+    engine.step().expect("a frame");
+    let map = map
+      .lock()
+      .ok()
+      .and_then(|m| *m)
+      .expect("the scene spawned a map");
+    assert_eq!(
+      layer_names(engine.world_mut(), map),
+      ["ground", "things", "sky"]
+    );
+    engine.step().expect("a frame");
+    assert!(ready.load(Ordering::SeqCst));
+    let seen = seen.lock().map(|s| s.clone()).unwrap_or_default();
+    assert_eq!(spawned(&seen), [map]);
   }
 }
