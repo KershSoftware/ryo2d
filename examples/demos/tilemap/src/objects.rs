@@ -5,14 +5,15 @@
 //! class `spikes`, spawned as entities (`MapRoot::with_entity_tiles`):
 //! taken out of their layer, they are the game's to draw, and each gets its
 //! tile's art and a kill zone that sends the hero back to the start. The
-//! door is a
-//! rectangle object whose `switch` property refers to the lever object:
-//! touching the lever clears the door's tiles from the colliding `doors`
-//! layer, and the way to the prize is open
+//! door is a rectangle object whose `switch` property refers to the lever
+//! object: touching the lever clears the door's tiles from the colliding
+//! `doors` layer, and the way to the prize is open
 
 use demo_kit::prelude::*;
 
-use crate::shared::{DIM, GOOD, HOT, SideLevel, View, hud, sheet_tile, wasd};
+use crate::shared::{
+  DIM, GOOD, HOT, PLATFORMER_CELL as CELL, SideLevel, View, hud, hud_height, sheet_tile, wasd,
+};
 
 /// The lever's tile when pulled (the file's lever is tile 64, leaning left)
 const LEVER_PULLED: u32 = 66;
@@ -20,8 +21,6 @@ const LEVER_PULLED: u32 = 66;
 const SHEET: &str = "kenney-pixel-platformer/tilemap_packed.png";
 /// The spikes draw at their layer's z (the root's is 0, `hazards` is 5)
 const SPIKES_Z: i32 = 5;
-/// The platformer's cell side
-const CELL: f32 = 18.0;
 
 /// The objects page's tally, kept as a resource while the page is open so a
 /// test (or another system) can read it
@@ -70,7 +69,7 @@ impl ObjectsPage {
     let mut objects = ctx.world.query::<(Entity, &MapObject)>();
     for (entity, object) in objects.iter(ctx.world) {
       match object.class.as_deref() {
-        Some("coin") => coins.push((entity, object.properties.int("value").unwrap_or(1))),
+        Some("coin") => coins.push((entity, coin_value(object))),
         Some("door") => doors.push((entity, object.reference("switch", ctx.world))),
         _ => {}
       }
@@ -124,14 +123,17 @@ impl ObjectsPage {
     let (Some(root), Some(door)) = (self.level.root, self.door) else {
       return;
     };
+    // The door's rectangle in the world (it is a child of its layer, which
+    // is a child of the map), and each cell under it opens
     let (Some(size), Some(centre)) = (
       ctx.world.get::<MapObject>(door).map(|object| object.size),
-      ctx.world.get::<Transform>(door).map(|t| t.translation),
+      ctx
+        .world
+        .get::<GlobalTransform>(door)
+        .map(GlobalTransform::translation),
     ) else {
       return;
     };
-    // The door object is a child of its layer, at the origin like the map:
-    // its centre is a world point, and each cell under it opens
     let mut maps = ctx.maps();
     let top_left = centre - size / 2.0;
     let mut y = top_left.y + CELL / 2.0;
@@ -153,6 +155,18 @@ impl ObjectsPage {
     }
     self.open = true;
   }
+}
+
+/// A coin's `value`: its own, or the Tiled project's class default (1),
+/// which the loader fills in. A coin with neither is worth nothing, warned
+fn coin_value(coin: &MapObject) -> i64 {
+  coin.properties.int("value").unwrap_or_else(|| {
+    game_warn!(
+      "coin {} has no value: is project.tiled-project loaded?",
+      coin.id
+    );
+    0
+  })
 }
 
 impl DemoPage for ObjectsPage {
@@ -249,7 +263,7 @@ impl DemoPage for ObjectsPage {
         DIM,
       ),
     ];
-    let height = lines.len() as f32 * 18.0 + 8.0;
+    let height = hud_height(lines.len());
     hud(ui, area.x + 4.0, area.bottom() - height - 4.0, &lines);
   }
 }

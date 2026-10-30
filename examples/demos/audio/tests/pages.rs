@@ -94,6 +94,13 @@ fn every_page_plays_from_the_files_the_web_build_embeds() {
   every_page_plays(|page| engine_over(page, embedded()));
 }
 
+/// What the system and the editors leave in the assets folder, which the
+/// web build does not embed: dotfiles (macOS's `.DS_Store`) and Tiled's
+/// session files
+fn is_left_beside_the_assets(name: &str) -> bool {
+  name.starts_with('.') || name.ends_with(".tiled-session")
+}
+
 #[test]
 fn the_web_build_embeds_every_asset_file() {
   let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets");
@@ -102,9 +109,13 @@ fn the_web_build_embeds_every_asset_file() {
   while let Some(folder) = folders.pop() {
     for entry in std::fs::read_dir(&folder).unwrap() {
       let path = entry.unwrap().path();
+      let name = path.file_name().unwrap_or_default().to_string_lossy();
+      if is_left_beside_the_assets(&name) {
+        continue;
+      }
       if path.is_dir() {
         folders.push(path);
-      } else if path.file_name().is_some_and(|name| name != "README.md") {
+      } else if name != "README.md" {
         let relative = path.strip_prefix(&root).unwrap();
         on_disk.push(relative.to_string_lossy().replace('\\', "/"));
       }

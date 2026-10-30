@@ -3,11 +3,13 @@
 //! props and animated drains) built in code, added to the assets and
 //! spawned with `MapRoot`. The camera flies over it. Drawing costs what is
 //! on screen, not the map's size: each frame draws only the 32 x 32-cell
-//! chunks in view, built once and kept. The page shows the frame time the
-//! engine's real clock measures (`Time::real`), which counts the wait for
-//! the display too; F1 swaps the engine's FPS counter (on in this demo) for
-//! its frame timing overlay, which splits the work into update, render and
-//! present.
+//! chunks in view, built once and kept. The page shows what a frame costs
+//! the CPU from the engine's `FrameCost` (smoothed; the vsync wait left
+//! out), once with the map on and once with it off, so the difference is
+//! the map's: its total, and the render, present and update it splits into
+//! (the map's draws are encoded as the render passes run, in present). F1
+//! swaps the engine's FPS counter (on in this demo) for its frame timing
+//! overlay, which draws the same split.
 //!
 //! The layers neither collide nor cast shadows: nothing on the page touches
 //! them, and a colliding map this size costs about 75 ms of colliders in
@@ -18,7 +20,10 @@ use std::f32::consts::TAU;
 
 use demo_kit::prelude::*;
 
-use crate::shared::{DIM, DUNGEON, DUNGEON_TERRAIN, HOT, View, asset, hud_beside_panel, load};
+use crate::shared::{DIM, DUNGEON_TERRAIN, HOT, View, asset, hud_beside_panel, load};
+
+/// Tiny Dungeon's sheet as a tileset: sand, props and the animated drain
+const DUNGEON: &str = "tilesets/dungeon.tsj";
 
 /// Cells a side, and a cell's side in pixels
 const SIZE: u32 = 1024;
@@ -29,6 +34,10 @@ const SIDE: f32 = (SIZE * CELL) as f32;
 const CHUNK_SIDE: f32 = (CHUNK_SIZE * CELL) as f32;
 /// The settings rows, for the notes under the panel
 const ROWS: usize = 4;
+/// Frames after the map is turned on or off before its cost is read: the
+/// engine's average spans about 50, so this leaves a few percent of the
+/// other state's
+const SETTLE: u32 = 150;
 
 /// Tiny Dungeon (tileset 0): sand, sand with specks, stones on sand, the
 /// drain (animated), and props
@@ -50,8 +59,12 @@ pub(crate) struct BigMapPage {
   path: f32,
   /// The camera's centre
   at: Vec2,
-  /// The real frame time, smoothed, in milliseconds
-  frame_ms: f32,
+  /// What a frame cost, settled, with the map off and on
+  cost: [Option<FrameCost>; 2],
+  /// Frames since the map was last turned on or off (or the page opened)
+  settling: u32,
+  /// The map's state the last frame
+  was_shown: bool,
   cells: u64,
 }
 
@@ -67,7 +80,9 @@ impl BigMapPage {
       speed: 600.0,
       path: 0.0,
       at: Vec2::splat(SIDE / 2.0),
-      frame_ms: 0.0,
+      cost: [None; 2],
+      settling: 0,
+      was_shown: true,
       cells: 0,
     }
   }
@@ -132,17 +147,26 @@ fn build(dungeon: Handle<Tileset>, terrain: Handle<Tileset>, set: &WangSet) -> T
   // rock: top-left, top-right, bottom-right, bottom-left), a few variants
   // each, picked once rather than per cell
   let mut table: Vec<Vec<(u32, TileFlip)>> = vec![Vec::new(); 16];
-  for (mix, variants) in table.iter_mut().enumerate().skip(1) {
-    let color = |bit: usize| if mix & (1 << bit) != 0 { 1 } else { 2 };
-    let any = WangSet::ANY;
-    let wanted = [any, color(1), any, color(2), any, color(3), any, color(0)];
-    for k in 0..4 {
-      if let Some(pick) = set.best_tile(wanted, IVec2::new(k * 7, k * 13))
-        && !variants.contains(&pick)
-      {
-        variants.push(pick);
+  let colors = set.color_index("wall").zip(set.color_index("floor"));
+  match colors {
+    Some((wall, floor)) => {
+      for (mix, variants) in table.iter_mut().enumerate().skip(1) {
+        let color = |bit: usize| if mix & (1 << bit) != 0 { wall } else { floor };
+        let any = WangSet::ANY;
+        let wanted = [any, color(1), any, color(2), any, color(3), any, color(0)];
+        for k in 0..4 {
+          if let Some(pick) = set.best_tile(wanted, IVec2::new(k * 7, k * 13))
+            && !variants.contains(&pick)
+          {
+            variants.push(pick);
+          }
+        }
       }
     }
+    None => game_warn!(
+      "the Wang set \"{}\" has no wall or no floor colour: the big map has no walls",
+      set.name()
+    ),
   }
 
   if let Some(floor) = map.tiles_mut(layers[0]) {
@@ -282,12 +306,18 @@ impl DemoPage for BigMapPage {
 
   fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) {
     self.view.measure(ui);
-    let real = ctx.time.real.delta() * 1000.0;
-    self.frame_ms = if self.frame_ms == 0.0 {
-      real
-    } else {
-      self.frame_ms + (real - self.frame_ms) * 0.05
-    };
+    // The engine's smoothed cost, read into the slot of the map's state
+    // once the average has settled after a change
+    if self.shown != self.was_shown {
+      self.was_shown = self.shown;
+      self.settling = 0;
+    }
+    self.settling = self.settling.saturating_add(1);
+    let live = ctx.resource::<FrameCost>().copied();
+    if self.settling >= SETTLE && live.is_some() {
+      self.cost[usize::from(self.shown)] = live;
+    }
+    let settled = self.settling >= SETTLE;
     let view = ctx.camera().visible_bounds();
     let chunk = |v: f32| {
       (v / CHUNK_SIDE)
@@ -297,16 +327,44 @@ impl DemoPage for BigMapPage {
     let columns = chunk(view.right) - chunk(view.left) + 1.0;
     let rows = chunk(view.bottom) - chunk(view.top) + 1.0;
     let per_layer = (SIZE / CHUNK_SIZE).pow(2);
-    let fps = if self.frame_ms > 0.0 {
-      1000.0 / self.frame_ms
-    } else {
-      0.0
+    // The map's state now: what the engine reads now, marked until its
+    // average settles; the other state: what it last settled at
+    // The map's draws are encoded as the render passes run, so most of its
+    // cost is in present, and the total is the number to compare
+    let state = |label: &str, slot: usize| {
+      let now = usize::from(self.shown) == slot;
+      let shown = if now && !settled {
+        live
+      } else {
+        self.cost[slot]
+      };
+      match shown {
+        Some(cost) => vec![
+          (
+            format!(
+              "{label}: total {:.3} ms{}",
+              cost.total_ms(),
+              if now && !settled { " (settling)" } else { "" }
+            ),
+            if now { Color::WHITE } else { DIM },
+          ),
+          (
+            format!(
+              "  render {:.3}, present {:.3}, update {:.3}",
+              cost.render_ms(),
+              cost.present_ms(),
+              cost.update_ms()
+            ),
+            DIM,
+          ),
+        ],
+        None => vec![(format!("{label}: not measured yet"), DIM)],
+      }
     };
-    let lines = vec![
-      (
-        format!("Frame {:.1} ms ({fps:.0} fps), Time::real", self.frame_ms),
-        HOT,
-      ),
+    let mut lines = vec![("CPU a frame (FrameCost, smoothed)".to_string(), HOT)];
+    lines.extend(state("Map on", 1));
+    lines.extend(state("Map off", 0));
+    lines.extend([
       (
         format!(
           "Chunks in view: {:.0} of {per_layer} a layer, 4 layers",
@@ -315,13 +373,9 @@ impl DemoPage for BigMapPage {
         Color::WHITE,
       ),
       (format!("{} cells in all", group(self.cells)), DIM),
-      ("F1: the engine's frame timing".to_string(), DIM),
-      (
-        "(update, render, present); Map off to compare".to_string(),
-        DIM,
-      ),
+      ("F1: the engine's frame timing overlay".to_string(), DIM),
       (format!("Camera at {:.0}, {:.0}", self.at.x, self.at.y), DIM),
-    ];
+    ]);
     hud_beside_panel(ui, ROWS, &lines);
   }
 }

@@ -8,7 +8,7 @@
 
 use demo_kit::prelude::*;
 
-use crate::shared::{DIM, GOOD, HOT, PLATFORMER, View, asset, clear_to, hud, load, map_rect};
+use crate::shared::{DIM, GOOD, HOT, View, hud, spawn_platformer};
 
 /// The hot reload page's count of `MapEvent::Reloaded` for its map, kept as
 /// a resource while the page is open so a test can read it
@@ -17,7 +17,6 @@ pub struct MapReloads(pub u32);
 
 pub(crate) struct HotReloadPage {
   view: View,
-  map: Option<Handle<TileMap>>,
   root: Option<Entity>,
   bounds: Rect,
   reloads: u32,
@@ -27,7 +26,6 @@ impl HotReloadPage {
   pub(crate) fn new() -> Self {
     Self {
       view: View::new(false),
-      map: None,
       root: None,
       bounds: Rect::new(0.0, 0.0, 864.0, 288.0),
       reloads: 0,
@@ -45,20 +43,10 @@ impl DemoPage for HotReloadPage {
   }
 
   fn enter(&mut self, ctx: &mut SceneContext) {
-    self.map = load::<TileMap>(ctx, PLATFORMER);
-    let Some(map) = self.map.clone() else {
-      return;
-    };
-    if let Some(data) = asset(ctx, &map) {
-      self.bounds = map_rect(&data, Vec2::ZERO);
-      clear_to(ctx, data.background.unwrap_or(Color::rgb(127, 240, 165)));
+    if let Some(level) = spawn_platformer(ctx, MapRoot::new) {
+      self.root = Some(level.root);
+      self.bounds = level.bounds;
     }
-    self.root = Some(
-      ctx
-        .world
-        .spawn((Transform::IDENTITY, MapRoot::new(map)))
-        .id(),
-    );
     ctx.world.insert_resource(MapReloads(0));
   }
 

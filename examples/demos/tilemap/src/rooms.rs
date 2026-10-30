@@ -8,10 +8,12 @@
 use demo_kit::prelude::*;
 
 use crate::shared::{
-  DIM, GOOD, HOT, ROOMS, View, asset, hero, hud_right, load, object_point, place_of,
+  DIM, GOOD, HOT, View, asset, hero, hud, hud_height, load, object_point, place_of,
   spawn_top_down_player, wasd,
 };
 
+/// Three rooms side by side
+const ROOMS: &str = "rooms/rooms.world";
 /// How far round the hero rooms spawn, in world pixels
 const REACH: f32 = 64.0;
 /// How much farther a room must be before it goes
@@ -198,7 +200,16 @@ impl DemoPage for RoomsPage {
       format!("{} arrivals, {} departures", self.arrivals, self.departures),
       DIM,
     ));
-    let height = lines.len() as f32 * 18.0 + 8.0;
+    let height = hud_height(lines.len());
     hud_right(ui, area.right() - 4.0, area.bottom() - height - 4.0, &lines);
   }
+}
+
+/// [`hud`] with its right edge at `right`
+fn hud_right(ui: &mut UiContext, right: f32, y: f32, lines: &[(String, Color)]) -> f32 {
+  let width = lines
+    .iter()
+    .map(|(text, _)| ui.text_size(text).0 as f32)
+    .fold(0.0, f32::max);
+  hud(ui, right - width - 12.0, y, lines)
 }

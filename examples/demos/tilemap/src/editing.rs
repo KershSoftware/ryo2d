@@ -10,7 +10,7 @@
 
 use demo_kit::prelude::*;
 
-use crate::shared::{DIM, HOT, PLATFORMER, View, asset, clear_to, hud, label_at, load, map_rect};
+use crate::shared::{DIM, HOT, PLATFORMER_CELL as CELL, View, hud, label_at, spawn_platformer};
 
 /// The Wang set, its colour and the layer it paints
 const SET: &str = "ground";
@@ -20,26 +20,32 @@ const LAYER: &str = "ground";
 /// (rows 0-6, columns 0-40), as a painted cell's corners reach them
 const BRUSH_MIN: IVec2 = IVec2::new(0, 0);
 const BRUSH_MAX: IVec2 = IVec2::new(39, 5);
-/// A cell's side
-const CELL: f32 = 18.0;
 /// What the page paints as it opens, to show what a brush does: one cell,
 /// and a row of six
 const ONE: IVec2 = IVec2::new(3, 2);
 const ROW: (IVec2, IVec2) = (IVec2::new(22, 3), IVec2::new(27, 3));
 
+/// A Shift drag: its corners (cells of the map) and whether it paints
+#[derive(Clone, Copy)]
+struct Drag {
+  start: IVec2,
+  end: IVec2,
+  paint: bool,
+}
+
 pub(crate) struct EditingPage {
   view: View,
-  map: Option<Handle<TileMap>>,
   root: Option<Entity>,
   bounds: Rect,
+  /// The map's size in cells
+  size: IVec2,
   /// The examples are painted
   ready: bool,
-  /// The cell under the pointer
+  /// The cell under the pointer, when it is over the map
   hover: Option<IVec2>,
   /// The last cell a held button painted or erased
   last: Option<IVec2>,
-  /// A Shift drag: where it started, and whether it paints
-  drag: Option<(IVec2, bool)>,
+  drag: Option<Drag>,
   painted: u32,
   erased: u32,
   filled: u32,
@@ -49,9 +55,9 @@ impl EditingPage {
   pub(crate) fn new() -> Self {
     Self {
       view: View::new(false),
-      map: None,
       root: None,
       bounds: Rect::new(0.0, 0.0, 864.0, 288.0),
+      size: IVec2::new(48, 16),
       ready: false,
       hover: None,
       last: None,
@@ -116,20 +122,13 @@ impl DemoPage for EditingPage {
   }
 
   fn enter(&mut self, ctx: &mut SceneContext) {
-    self.map = load::<TileMap>(ctx, PLATFORMER);
-    let Some(map) = self.map.clone() else {
-      return;
-    };
-    if let Some(data) = asset(ctx, &map) {
-      self.bounds = map_rect(&data, Vec2::ZERO);
-      clear_to(ctx, data.background.unwrap_or(Color::rgb(127, 240, 165)));
+    if let Some(level) = spawn_platformer(ctx, MapRoot::new) {
+      self.root = Some(level.root);
+      self.bounds = level.bounds;
+      self.size = (Vec2::new(level.bounds.width, level.bounds.height) / CELL)
+        .round()
+        .as_ivec2();
     }
-    self.root = Some(
-      ctx
-        .world
-        .spawn((Transform::IDENTITY, MapRoot::new(map)))
-        .id(),
-    );
     self.view.fit(ctx, self.bounds);
   }
 
@@ -147,9 +146,14 @@ impl DemoPage for EditingPage {
       }
       self.ready = true;
     }
+    // The cell under the pointer (a cell off the map too), and the map's
+    // cell nearest it, which a drag uses
     let (mx, my) = ctx.input.mouse_position();
     let at = ctx.camera().screen_to_world(Vec2::new(mx, my));
-    self.hover = ctx.maps().world_to_cell(root, LAYER, at);
+    let pointer = ctx.maps().world_to_cell(root, LAYER, at);
+    let last_cell = self.size - IVec2::ONE;
+    self.hover = pointer.filter(|cell| *cell == cell.clamp(IVec2::ZERO, last_cell));
+    let nearest = pointer.map(|cell| cell.clamp(IVec2::ZERO, last_cell));
     let input = &*ctx.input;
     let shift = input.key_down(KeyCode::ShiftLeft) || input.key_down(KeyCode::ShiftRight);
     let (left, right) = (
@@ -160,15 +164,27 @@ impl DemoPage for EditingPage {
     let released =
       input.mouse_released(MouseButton::Left) || input.mouse_released(MouseButton::Right);
 
-    if let Some((start, paint)) = self.drag {
-      if released || !(left || right) {
-        if let Some(end) = self.hover {
-          self.fill(ctx, start, end, paint);
-        }
-        self.drag = None;
+    if let Some(mut drag) = self.drag {
+      // Its far corner follows the pointer, kept to the map
+      if let Some(cell) = nearest {
+        drag.end = cell;
       }
-    } else if shift && pressed {
-      self.drag = self.hover.map(|cell| (cell, left));
+      if released || !(left || right) {
+        self.drag = None;
+        self.fill(ctx, drag.start, drag.end, drag.paint);
+      } else {
+        self.drag = Some(drag);
+      }
+    } else if shift {
+      // Shift held: a press starts a drag wherever the pointer is, and the
+      // buttons paint no single cells
+      if pressed && let Some(cell) = nearest {
+        self.drag = Some(Drag {
+          start: cell,
+          end: cell,
+          paint: left,
+        });
+      }
     } else if (left || right)
       && let Some(cell) = self.hover
       && in_sky(cell)
@@ -200,14 +216,18 @@ impl DemoPage for EditingPage {
       };
       let (centre, size) = cells_rect(cell, cell);
       debug.width(2.0).rect(centre, size, color);
-      if let Some((start, paint)) = self.drag {
-        let (centre, size) = cells_rect(
-          start.max(BRUSH_MIN).min(BRUSH_MAX),
-          cell.max(BRUSH_MIN).min(BRUSH_MAX),
-        );
-        let color = if paint { HOT } else { Color::rgb(255, 90, 90) };
-        debug.width(2.0).rect(centre, size, color);
-      }
+    }
+    if let Some(drag) = self.drag {
+      let (centre, size) = cells_rect(
+        drag.start.clamp(BRUSH_MIN, BRUSH_MAX),
+        drag.end.clamp(BRUSH_MIN, BRUSH_MAX),
+      );
+      let color = if drag.paint {
+        HOT
+      } else {
+        Color::rgb(255, 90, 90)
+      };
+      debug.width(2.0).rect(centre, size, color);
     }
   }
 

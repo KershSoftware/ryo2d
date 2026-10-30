@@ -16,8 +16,27 @@ use tilemap_demo::{Coins, MapReloads, Player, demo, embedded};
 const OBJECTS: usize = 5;
 const EDITING: usize = 6;
 const WORLD: usize = 8;
+const BIG_MAP: usize = 9;
 const HOT_RELOAD: usize = 10;
 const PAGES: usize = 11;
+
+/// The maps each page lands within two seconds, each named by a layer only
+/// it has: the platformer's `ground`, the vault's `Collisions`, the
+/// garden's `trees`, the procgen map's `tiles`, a room's `terrain` (the
+/// first room only, at the start), the big map's `walls`
+const LANDS: [&[&str]; PAGES] = [
+  &["ground", "Collisions"],
+  &["ground"],
+  &["ground"],
+  &["trees"],
+  &["ground"],
+  &["ground"],
+  &["ground"],
+  &["tiles"],
+  &["terrain"],
+  &["walls"],
+  &["ground"],
+];
 
 /// Two seconds at the demo's 60 Hz
 const FRAMES: u32 = 120;
@@ -54,10 +73,33 @@ fn map_events(engine: &HeadlessEngine, cursor: &mut MessageCursor<MapEvent>) -> 
     .unwrap_or_default()
 }
 
-/// Step every page for two seconds, checking each spawns a map, none fails
-/// and none warns
+/// The layer names of each map that has landed, and how many roots there are
+fn landed_maps(engine: &mut HeadlessEngine) -> (Vec<Vec<String>>, usize) {
+  let world = engine.world_mut();
+  let mut roots = world.query::<(Entity, Has<MapIds>, &MapRoot)>();
+  let roots: Vec<(Entity, bool)> = roots
+    .iter(world)
+    .map(|(entity, landed, _)| (entity, landed))
+    .collect();
+  let mut layers = world.query::<&MapLayerRef>();
+  let landed = roots
+    .iter()
+    .filter(|(_, landed)| *landed)
+    .map(|(root, _)| {
+      layers
+        .iter(world)
+        .filter(|layer| layer.map == *root)
+        .map(|layer| layer.name.clone())
+        .collect()
+    })
+    .collect();
+  (landed, roots.len())
+}
+
+/// Step every page for two seconds, checking each lands the maps it should
+/// and only those, none fails and none warns
 fn every_page_plays(mut engine_on: impl FnMut(usize) -> Option<HeadlessEngine>) {
-  for page in 0..PAGES {
+  for (page, expected) in LANDS.iter().enumerate() {
     let Some(mut engine) = engine_on(page) else {
       return;
     };
@@ -73,7 +115,23 @@ fn every_page_plays(mut engine_on: impl FnMut(usize) -> Option<HeadlessEngine>) 
         }
       }
     }
-    assert!(spawned > 0, "page {} spawns no map", page + 1);
+    let (landed, roots) = landed_maps(&mut engine);
+    assert_eq!(
+      (landed.len(), roots),
+      (expected.len(), expected.len()),
+      "page {}: maps landed {landed:?} of {roots} roots",
+      page + 1
+    );
+    for name in *expected {
+      assert!(
+        landed
+          .iter()
+          .any(|layers| layers.iter().any(|layer| layer == name)),
+        "page {}: no landed map has a layer {name:?}: {landed:?}",
+        page + 1
+      );
+    }
+    assert_eq!(spawned, expected.len(), "page {}: Spawned events", page + 1);
     let warned = warnings();
     assert!(warned.is_empty(), "page {}: {warned:#?}", page + 1);
   }
@@ -89,6 +147,13 @@ fn every_page_plays_from_the_files_the_web_build_embeds() {
   every_page_plays(|page| engine_over(page, embedded()));
 }
 
+/// What the system and the editors leave in the assets folder, which the
+/// web build does not embed: dotfiles (macOS's `.DS_Store`) and Tiled's
+/// session files
+fn is_left_beside_the_assets(name: &str) -> bool {
+  name.starts_with('.') || name.ends_with(".tiled-session")
+}
+
 #[test]
 fn the_web_build_embeds_every_asset_file() {
   let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets");
@@ -97,9 +162,13 @@ fn the_web_build_embeds_every_asset_file() {
   while let Some(folder) = folders.pop() {
     for entry in std::fs::read_dir(&folder).unwrap() {
       let path = entry.unwrap().path();
+      let name = path.file_name().unwrap_or_default().to_string_lossy();
+      if is_left_beside_the_assets(&name) {
+        continue;
+      }
       if path.is_dir() {
         folders.push(path);
-      } else if path.file_name().is_some_and(|name| name != "README.md") {
+      } else if name != "README.md" {
         let relative = path.strip_prefix(&root).unwrap();
         on_disk.push(relative.to_string_lossy().replace('\\', "/"));
       }
@@ -138,14 +207,15 @@ fn wait_for_player(engine: &mut HeadlessEngine) -> (Entity, Vec2) {
   panic!("the page never spawned its player: {:#?}", warnings());
 }
 
-/// The coins of the platformer map still in the world
-fn coins_left(engine: &mut HeadlessEngine) -> usize {
+/// The coins of the platformer map still in the world, with their `value`
+fn coins(engine: &mut HeadlessEngine) -> Vec<(Entity, Option<i64>)> {
   let world = engine.world_mut();
-  let mut objects = world.query::<&MapObject>();
+  let mut objects = world.query::<(Entity, &MapObject)>();
   objects
     .iter(world)
-    .filter(|object| object.class.as_deref() == Some("coin"))
-    .count()
+    .filter(|(_, object)| object.class.as_deref() == Some("coin"))
+    .map(|(entity, object)| (entity, object.properties.int("value")))
+    .collect()
 }
 
 #[test]
@@ -154,8 +224,13 @@ fn the_objects_page_collects_a_coin() {
     return;
   };
   wait_for_player(&mut engine);
-  let before = coins_left(&mut engine);
-  assert_eq!(before, 13, "the map's thirteen coins spawned");
+  let before = coins(&mut engine);
+  // Twelve take the project's class default, one is worth 10
+  let mut values: Vec<Option<i64>> = before.iter().map(|(_, value)| *value).collect();
+  values.sort_unstable();
+  let mut wanted = vec![Some(1); 12];
+  wanted.push(Some(10));
+  assert_eq!(values, wanted, "the map's thirteen coins and their values");
   assert_eq!(
     engine.world().get_resource::<Coins>().map(|c| c.collected),
     Some(0)
@@ -180,12 +255,22 @@ fn the_objects_page_collects_a_coin() {
   engine.release_key(KeyCode::KeyD);
   engine.step_frames(2).unwrap();
   assert!(collected > 0, "no coin was collected");
-  let coins = *engine.world().get_resource::<Coins>().unwrap();
-  assert!(coins.score >= i64::from(coins.collected), "{coins:?}");
+  let tally = *engine.world().get_resource::<Coins>().unwrap();
+  let left: Vec<Entity> = coins(&mut engine).iter().map(|(coin, _)| *coin).collect();
+  let gone: Vec<i64> = before
+    .iter()
+    .filter(|(coin, _)| !left.contains(coin))
+    .map(|(_, value)| value.unwrap_or_default())
+    .collect();
   assert_eq!(
-    coins_left(&mut engine),
-    before - coins.collected as usize,
-    "each coin collected is gone"
+    gone.len(),
+    tally.collected as usize,
+    "each coin collected is gone: {tally:?}"
+  );
+  assert_eq!(
+    tally.score,
+    gone.iter().sum::<i64>(),
+    "the score is the gone coins' values"
   );
   assert!(warnings().is_empty(), "{:#?}", warnings());
 }
@@ -299,6 +384,60 @@ fn the_editing_page_paints_terrain() {
   assert!(warnings().is_empty(), "{:#?}", warnings());
 }
 
+/// Where cell `cell` of the editing page's ground layer is on screen; a
+/// cell off the map too
+fn cell_on_screen(engine: &mut HeadlessEngine, map: Entity, cell: IVec2) -> Vec2 {
+  let origin = MapsView::new(engine.world_mut())
+    .cell_to_world(map, "ground", IVec2::ZERO)
+    .expect("the ground layer");
+  let at = origin + cell.as_vec2() * 18.0;
+  CameraMut::main(engine.world_mut())
+    .expect("the main camera")
+    .world_to_screen(at)
+}
+
+#[test]
+fn the_editing_page_fills_a_drag_begun_off_the_map_and_reads_only_its_cells() {
+  let Some(mut engine) = engine_on(EDITING) else {
+    return;
+  };
+  let map = spawned_map(&mut engine);
+  engine.step_frames(3).unwrap();
+
+  // Off the map the readout names no cell
+  let above = cell_on_screen(&mut engine, map, IVec2::new(6, -3));
+  engine.mouse_move(above.x, above.y);
+  engine.step_frames(2).unwrap();
+  assert!(
+    engine.ui_snapshot().contains("Cell -   painted"),
+    "a cell off the map is not shown"
+  );
+
+  // Shift and a drag from there into the sky paints the rectangle's part
+  // on the map, rows 0-2 of columns 6-9
+  engine.press_key(KeyCode::ShiftLeft);
+  engine.step().unwrap();
+  engine.press_mouse(MouseButton::Left);
+  engine.step_frames(2).unwrap();
+  let inside = cell_on_screen(&mut engine, map, IVec2::new(9, 2));
+  engine.mouse_move(inside.x, inside.y);
+  engine.step_frames(2).unwrap();
+  engine.release_mouse(MouseButton::Left);
+  engine.step_frames(2).unwrap();
+  engine.release_key(KeyCode::ShiftLeft);
+  engine.step().unwrap();
+  let view = MapsView::new(engine.world_mut());
+  for y in 0..=2 {
+    for x in 6..=9 {
+      assert!(
+        view.tile(map, "ground", IVec2::new(x, y)).is_some(),
+        "({x}, {y}) is filled"
+      );
+    }
+  }
+  assert!(warnings().is_empty(), "{:#?}", warnings());
+}
+
 /// The world levels spawned now, by their index in the world
 fn rooms(engine: &mut HeadlessEngine) -> Vec<usize> {
   let world = engine.world_mut();
@@ -380,5 +519,40 @@ fn the_hot_reload_page_counts_a_saved_map() {
     }
   }
   assert_eq!(reloads(&engine), Some(1), "the reload was counted");
+  assert!(warnings().is_empty(), "{:#?}", warnings());
+}
+
+/// The number after `label` in the page's UI, up to " ms"
+fn ms_after(snapshot: &str, label: &str) -> Option<f64> {
+  let start = snapshot.find(label)? + label.len();
+  let rest = &snapshot[start..];
+  rest[..rest.find(" ms")?].trim().parse().ok()
+}
+
+#[test]
+fn the_big_map_page_shows_what_a_frame_costs_with_the_map_on_and_off() {
+  let Some(mut engine) = engine_on(BIG_MAP) else {
+    return;
+  };
+  engine.step_frames(240).unwrap();
+  let shown = engine.ui_snapshot();
+  let on = ms_after(&shown, "Map on: total");
+  assert!(on.is_some_and(|ms| ms > 0.0), "map on: {on:?}");
+  assert!(shown.contains("  render "), "the split is shown");
+  assert!(
+    shown.contains("Map off: not measured yet"),
+    "the map has not been off"
+  );
+
+  // Map is the panel's first row, which has the focus
+  engine.tap_key(KeyCode::ArrowRight);
+  engine.step_frames(240).unwrap();
+  let shown = engine.ui_snapshot();
+  let off = ms_after(&shown, "Map off: total");
+  assert!(off.is_some_and(|ms| ms > 0.0), "map off: {off:?}");
+  assert!(
+    ms_after(&shown, "Map on: total").is_some(),
+    "the map on's numbers stay"
+  );
   assert!(warnings().is_empty(), "{:#?}", warnings());
 }

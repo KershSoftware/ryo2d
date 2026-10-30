@@ -6,9 +6,14 @@
 //! The outlines are the map's colliders as physics has them: an outline
 //! per chunk of solid and slope cells, and the one-way runs on their own
 
+use std::f32::consts::{PI, TAU};
+
 use demo_kit::prelude::*;
 
-use crate::shared::{DIM, HOT, ONE_WAY, SideLevel, View, draw_colliders, hud_beside_panel, wasd};
+use crate::shared::{DIM, HOT, Player, SideLevel, View, hud_beside_panel, wasd};
+
+/// One-way colliders' outlines
+const ONE_WAY: Color = Color::rgb(255, 110, 200);
 
 pub(crate) struct CollisionPage {
   view: View,
@@ -122,4 +127,92 @@ impl DemoPage for CollisionPage {
     }
     hud_beside_panel(ui, 3, &lines);
   }
+}
+
+/// Outlines every collider: the map's (its packed chunk outlines and
+/// one-way runs) in blue, one-way in pink, triggers in gold, the player in
+/// white. In entity index order, so overlapping outlines keep their colours
+fn draw_colliders(ctx: &mut SceneContext) {
+  let mut query = ctx
+    .world
+    .query::<(Entity, &GlobalTransform, &Collider, Has<Player>)>();
+  let mut lines: Vec<(Entity, Vec<Vec<Vec2>>, Color)> = query
+    .iter(ctx.world)
+    .map(|(entity, global, collider, player)| {
+      let color = if player {
+        Color::WHITE
+      } else if collider.is_trigger {
+        HOT
+      } else if collider.one_way.is_some() {
+        ONE_WAY
+      } else {
+        Color::rgb(110, 160, 255)
+      };
+      (entity, outline(global, collider), color)
+    })
+    .collect();
+  lines.sort_unstable_by_key(|(entity, ..)| entity.index_u32());
+  let mut debug = ctx.debug_draw();
+  let mut pen = debug.width(2.0);
+  for (_, outline, color) in lines {
+    for points in outline {
+      pen.polyline(&points, color);
+    }
+  }
+}
+
+/// `collider`'s outline on an entity at `global`, in world space, as lines
+/// to draw (a tile map packs a chunk's outlines into one collider of
+/// separate segments)
+fn outline(global: &GlobalTransform, collider: &Collider) -> Vec<Vec<Vec2>> {
+  let arc = |centre: Vec2, radius: f32, from: f32, to: f32| {
+    (0..=12).map(move |i| centre + Vec2::from_angle(from + (to - from) * i as f32 / 12.0) * radius)
+  };
+  let local: Vec<Vec2> = match &collider.shape {
+    ColliderShape::Segments { points, segments } => {
+      return segments
+        .iter()
+        .filter_map(|&[a, b]| Some([*points.get(a as usize)?, *points.get(b as usize)?]))
+        .map(|ends| place(global, collider, ends.to_vec()))
+        .collect();
+    }
+    ColliderShape::Rect { size } => {
+      let h = *size / 2.0;
+      vec![
+        Vec2::new(-h.x, -h.y),
+        Vec2::new(h.x, -h.y),
+        h,
+        Vec2::new(-h.x, h.y),
+        Vec2::new(-h.x, -h.y),
+      ]
+    }
+    ColliderShape::Circle { radius } => arc(Vec2::ZERO, *radius, 0.0, TAU).collect(),
+    ColliderShape::Capsule { height, radius } => {
+      let h = (height / 2.0 - radius).max(0.0);
+      let mut points: Vec<Vec2> = arc(Vec2::new(0.0, h), *radius, 0.0, PI)
+        .chain(arc(Vec2::new(0.0, -h), *radius, PI, TAU))
+        .collect();
+      points.push(points[0]);
+      points
+    }
+    ColliderShape::Polygon { points } => points
+      .iter()
+      .copied()
+      .chain(points.first().copied())
+      .collect(),
+    ColliderShape::Segment { a, b } => vec![*a, *b],
+    ColliderShape::Polyline { points } => points.clone(),
+    _ => Vec::new(),
+  };
+  vec![place(global, collider, local)]
+}
+
+/// Points in `collider`'s own space, in world space
+fn place(global: &GlobalTransform, collider: &Collider, local: Vec<Vec2>) -> Vec<Vec2> {
+  let affine = global.affine();
+  let turn = Vec2::from_angle(collider.rotation);
+  local
+    .into_iter()
+    .map(|p| affine.transform_point2(collider.offset + turn.rotate(p)))
+    .collect()
 }

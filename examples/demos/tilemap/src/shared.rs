@@ -3,22 +3,16 @@
 //! moved with WASD or a pad), an object's place in a map, the colliders'
 //! outlines, and the HUD's boxes and labels
 
-use std::f32::consts::{PI, TAU};
-
 use demo_kit::prelude::*;
 
 /// The side-view level: two tilesets, Wang ground, objects and a door
 pub(crate) const PLATFORMER: &str = "maps/platformer.tmx";
-/// The garden: y-sorted trees, parallax clouds and an image layer
-pub(crate) const TOPDOWN: &str = "maps/topdown.tmj";
-/// Three rooms side by side
-pub(crate) const ROOMS: &str = "rooms/rooms.world";
-/// The LDtk project: levels `Platformer` and `Vault`
-pub(crate) const LDTK: &str = "ldtk/dungeon.ldtk";
+/// The platformer's cells, in pixels (its file's `tilewidth`)
+pub(crate) const PLATFORMER_CELL: f32 = 18.0;
+/// The platformer's background, should its file give none
+pub(crate) const SKY: Color = Color::rgb(127, 240, 165);
 /// Tiny Dungeon's walls and floors as the Wang set `dungeon`
 pub(crate) const DUNGEON_TERRAIN: &str = "tilesets/dungeon-terrain.tsj";
-/// Tiny Dungeon's sheet as a tileset: props, statues, the animated gargoyle
-pub(crate) const DUNGEON: &str = "tilesets/dungeon.tsj";
 /// Tiny Dungeon's sheet, where the player's sprite comes from
 const HEROES: &str = "kenney-tiny-dungeon/tilemap_packed.png";
 
@@ -28,8 +22,6 @@ pub(crate) const DIM: Color = Color::rgb(170, 170, 185);
 pub(crate) const HOT: Color = Color::XP_GOLD;
 /// Something that went well
 pub(crate) const GOOD: Color = Color::rgb(120, 230, 140);
-/// One-way colliders' outlines
-pub(crate) const ONE_WAY: Color = Color::rgb(255, 110, 200);
 /// The HUD's backing
 const BACKING: Color = Color::new(16, 16, 28, 235);
 
@@ -303,7 +295,7 @@ pub(crate) fn sheet_tile(
 /// The hero on the platformer controller, its feet at `feet`, drawn at `z`
 /// over the map's layers. Its collider is 10 x 14 (it fits the door's two
 /// cells and under the ledges); `Respawn::here` sends it back to `feet`
-pub(crate) fn spawn_platformer_player(
+fn spawn_platformer_player(
   ctx: &mut SceneContext,
   feet: Vec2,
   sprite: Option<Handle<Image>>,
@@ -370,6 +362,35 @@ pub(crate) fn spawn_top_down_player(
   player
 }
 
+/// The platformer as a page spawned it
+pub(crate) struct Platformer {
+  pub(crate) root: Entity,
+  /// Its rectangle in world pixels
+  pub(crate) bounds: Rect,
+  /// Its `player_start`
+  pub(crate) start: Vec2,
+}
+
+/// The platformer, loaded at once and spawned at the origin with `root` (a
+/// `MapRoot` of it), the view cleared to its background; `None` if it did
+/// not load (the registry warns)
+pub(crate) fn spawn_platformer(
+  ctx: &mut SceneContext,
+  root: impl FnOnce(Handle<TileMap>) -> MapRoot,
+) -> Option<Platformer> {
+  let map = load::<TileMap>(ctx, PLATFORMER)?;
+  let data = asset(ctx, &map)?;
+  let bounds = map_rect(&data, Vec2::ZERO);
+  let start = object_point(&data, "player_start").unwrap_or(Vec2::ZERO);
+  clear_to(ctx, data.background.unwrap_or(SKY));
+  let root = ctx.world.spawn((Transform::IDENTITY, root(map))).id();
+  Some(Platformer {
+    root,
+    bounds,
+    start,
+  })
+}
+
 /// The hero's sprite on the side-view pages: a Tiny Dungeon adventurer
 const SIDE_HERO: u32 = 88;
 /// The hero draws over the platformer's layers (the root's z is 0, its
@@ -380,7 +401,6 @@ const SIDE_HERO_Z: i32 = 10;
 /// pages. The hero spawns at the map's `player_start` once the map has
 /// landed, when its colliders are there for the hero's first step
 pub(crate) struct SideLevel {
-  pub(crate) map: Option<Handle<TileMap>>,
   pub(crate) root: Option<Entity>,
   pub(crate) player: Option<Entity>,
   pub(crate) bounds: Rect,
@@ -392,7 +412,6 @@ pub(crate) struct SideLevel {
 impl SideLevel {
   pub(crate) fn new() -> Self {
     Self {
-      map: None,
       root: None,
       player: None,
       bounds: Rect::new(0.0, 0.0, 864.0, 288.0),
@@ -401,22 +420,19 @@ impl SideLevel {
     }
   }
 
-  /// Loads the platformer and spawns it with `root` (a `MapRoot` of it)
+  /// Loads the platformer and spawns it with `root` (a `MapRoot` of it),
+  /// fenced: its ground runs off its sides
   pub(crate) fn enter(
     &mut self,
     ctx: &mut SceneContext,
     root: impl FnOnce(Handle<TileMap>) -> MapRoot,
   ) {
-    self.map = load::<TileMap>(ctx, PLATFORMER);
-    let Some(map) = self.map.clone() else {
+    let Some(level) = spawn_platformer(ctx, root) else {
       return;
     };
-    if let Some(data) = asset(ctx, &map) {
-      self.bounds = map_rect(&data, Vec2::ZERO);
-      self.start = object_point(&data, "player_start").unwrap_or(self.start);
-      clear_to(ctx, data.background.unwrap_or(Color::rgb(127, 240, 165)));
-    }
-    self.root = Some(ctx.world.spawn((Transform::IDENTITY, root(map))).id());
+    self.root = Some(level.root);
+    self.bounds = level.bounds;
+    self.start = level.start;
     fence(ctx, self.bounds);
   }
 
@@ -462,11 +478,22 @@ pub(crate) fn place_of(ctx: &SceneContext, entity: Option<Entity>) -> Option<Vec
     .map(|transform| transform.translation)
 }
 
+/// A HUD line's height, and the box's padding
+const LINE: f32 = 18.0;
+const PAD: f32 = 6.0;
+
+/// How tall [`hud`] draws `lines` lines
+pub(crate) fn hud_height(lines: usize) -> f32 {
+  if lines == 0 {
+    0.0
+  } else {
+    lines as f32 * LINE + 2.0 * PAD - 4.0
+  }
+}
+
 /// A dark box behind `lines` from (`x`, `y`), one line each; returns the
 /// height it took
 pub(crate) fn hud(ui: &mut UiContext, x: f32, y: f32, lines: &[(String, Color)]) -> f32 {
-  const LINE: f32 = 18.0;
-  const PAD: f32 = 6.0;
   if lines.is_empty() {
     return 0.0;
   }
@@ -474,21 +501,12 @@ pub(crate) fn hud(ui: &mut UiContext, x: f32, y: f32, lines: &[(String, Color)])
     .iter()
     .map(|(text, _)| ui.text_size(text).0 as f32)
     .fold(0.0, f32::max);
-  let height = lines.len() as f32 * LINE + 2.0 * PAD - 4.0;
+  let height = hud_height(lines.len());
   ui.draw_rect(Rect::new(x, y, width + 2.0 * PAD, height), BACKING);
   for (i, (text, color)) in lines.iter().enumerate() {
     ui.draw_text(text, x + PAD, y + PAD + i as f32 * LINE, *color);
   }
   height
-}
-
-/// [`hud`] with its right edge at `right`
-pub(crate) fn hud_right(ui: &mut UiContext, right: f32, y: f32, lines: &[(String, Color)]) -> f32 {
-  let width = lines
-    .iter()
-    .map(|(text, _)| ui.text_size(text).0 as f32)
-    .fold(0.0, f32::max);
-  hud(ui, right - width - 12.0, y, lines)
 }
 
 /// [`hud`] in the settings column, under a panel of `rows` rows: the room
@@ -520,92 +538,4 @@ pub(crate) fn label_at(
   );
   ui.draw_rect(rect, BACKING);
   ui.draw_text(text, rect.x + 3.0, rect.y + 1.0, color);
-}
-
-/// Outlines every collider: the map's (its packed chunk outlines and
-/// one-way runs) in blue, one-way in pink, triggers in gold, the player in
-/// white. In entity index order, so overlapping outlines keep their colours
-pub(crate) fn draw_colliders(ctx: &mut SceneContext) {
-  let mut query = ctx
-    .world
-    .query::<(Entity, &GlobalTransform, &Collider, Has<Player>)>();
-  let mut lines: Vec<(Entity, Vec<Vec<Vec2>>, Color)> = query
-    .iter(ctx.world)
-    .map(|(entity, global, collider, player)| {
-      let color = if player {
-        Color::WHITE
-      } else if collider.is_trigger {
-        HOT
-      } else if collider.one_way.is_some() {
-        ONE_WAY
-      } else {
-        Color::rgb(110, 160, 255)
-      };
-      (entity, outline(global, collider), color)
-    })
-    .collect();
-  lines.sort_unstable_by_key(|(entity, ..)| entity.index_u32());
-  let mut debug = ctx.debug_draw();
-  let mut pen = debug.width(2.0);
-  for (_, outline, color) in lines {
-    for points in outline {
-      pen.polyline(&points, color);
-    }
-  }
-}
-
-/// `collider`'s outline on an entity at `global`, in world space, as lines
-/// to draw (a tile map packs a chunk's outlines into one collider of
-/// separate segments)
-fn outline(global: &GlobalTransform, collider: &Collider) -> Vec<Vec<Vec2>> {
-  let arc = |centre: Vec2, radius: f32, from: f32, to: f32| {
-    (0..=12).map(move |i| centre + Vec2::from_angle(from + (to - from) * i as f32 / 12.0) * radius)
-  };
-  let local: Vec<Vec2> = match &collider.shape {
-    ColliderShape::Segments { points, segments } => {
-      return segments
-        .iter()
-        .filter_map(|&[a, b]| Some([*points.get(a as usize)?, *points.get(b as usize)?]))
-        .map(|ends| place(global, collider, ends.to_vec()))
-        .collect();
-    }
-    ColliderShape::Rect { size } => {
-      let h = *size / 2.0;
-      vec![
-        Vec2::new(-h.x, -h.y),
-        Vec2::new(h.x, -h.y),
-        h,
-        Vec2::new(-h.x, h.y),
-        Vec2::new(-h.x, -h.y),
-      ]
-    }
-    ColliderShape::Circle { radius } => arc(Vec2::ZERO, *radius, 0.0, TAU).collect(),
-    ColliderShape::Capsule { height, radius } => {
-      let h = (height / 2.0 - radius).max(0.0);
-      let mut points: Vec<Vec2> = arc(Vec2::new(0.0, h), *radius, 0.0, PI)
-        .chain(arc(Vec2::new(0.0, -h), *radius, PI, TAU))
-        .collect();
-      points.push(points[0]);
-      points
-    }
-    ColliderShape::Polygon { points } => points
-      .iter()
-      .copied()
-      .chain(points.first().copied())
-      .collect(),
-    ColliderShape::Segment { a, b } => vec![*a, *b],
-    ColliderShape::Polyline { points } => points.clone(),
-    _ => Vec::new(),
-  };
-  vec![place(global, collider, local)]
-}
-
-/// Points in `collider`'s own space, in world space
-fn place(global: &GlobalTransform, collider: &Collider, local: Vec<Vec2>) -> Vec<Vec2> {
-  let affine = global.affine();
-  let turn = Vec2::from_angle(collider.rotation);
-  local
-    .into_iter()
-    .map(|p| affine.transform_point2(collider.offset + turn.rotate(p)))
-    .collect()
 }

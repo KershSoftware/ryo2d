@@ -9,7 +9,10 @@
 
 use demo_kit::prelude::*;
 
-use crate::shared::{DIM, HOT, LDTK, PLATFORMER, View, asset, backdrop, hud, load, map_rect};
+use crate::shared::{DIM, HOT, PLATFORMER, SKY, View, asset, backdrop, hud, load, map_rect};
+
+/// The LDtk project: levels `Platformer` and `Vault`
+const LDTK: &str = "ldtk/dungeon.ldtk";
 
 /// The LDtk level the page shows
 const LEVEL: &str = "Vault";
@@ -101,7 +104,7 @@ impl DemoPage for SourcesPage {
           ),
           layer_list(&data),
         ];
-        let color = data.background.unwrap_or(Color::rgb(127, 240, 165));
+        let color = data.background.unwrap_or(SKY);
         backdrop(ctx, self.tiled_rect, color, -100);
       }
       ctx.world.spawn((Transform::IDENTITY, MapRoot::new(map)));

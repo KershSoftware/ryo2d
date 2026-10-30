@@ -14,10 +14,6 @@ use crate::shared::{DIM, DUNGEON_TERRAIN, HOT, View, asset, hud_beside_panel, lo
 /// The grid, in 16 px cells
 const WIDTH: u32 = 32;
 const HEIGHT: u32 = 30;
-/// `ProcgenBuilder::build` times itself with `std::time::Instant`, which
-/// panics on the web (wasm32 has no std clock, and the panic ends the
-/// demo), so until procgen reads a web clock the web build makes no dungeon
-const NO_PROCGEN: bool = cfg!(target_arch = "wasm32");
 /// BSP rooms joined by corridors, or cellular caves
 const GENERATORS: [&str; 2] = ["Rooms", "Caves"];
 
@@ -56,10 +52,6 @@ impl DungeonPage {
     };
     if let Some(root) = self.root.take() {
       ctx.world.despawn(root);
-    }
-    if NO_PROCGEN {
-      self.built = Some((self.generator, self.seed));
-      return;
     }
     let builder = ProcgenBuilder::new(WIDTH, HEIGHT).with_seed(self.seed as u64);
     let result = match self.generator {
@@ -121,7 +113,6 @@ impl DemoPage for DungeonPage {
       .clone()
       .and_then(|terrain| asset(ctx, &terrain))
       .and_then(|tileset| tileset.wang_set("dungeon").cloned());
-    ctx.camera().set_zoom(1.0);
     self.generate(ctx);
   }
 
@@ -138,30 +129,22 @@ impl DemoPage for DungeonPage {
     self.view.measure(ui);
     let world = Rect::new(0.0, 0.0, (WIDTH * 16) as f32, (HEIGHT * 16) as f32);
     self.view.fit(ctx, world);
-    let lines = if NO_PROCGEN {
-      vec![
-        ("Not on the web yet: procgen's builder".to_string(), HOT),
-        ("reads std::time::Instant, which the web".to_string(), DIM),
-        ("lacks. The native demo shows this page.".to_string(), DIM),
-      ]
-    } else {
-      vec![
-        (
-          format!(
-            "Seed {}: {} regions, {} floor cells of {}",
-            self.seed,
-            self.rooms,
-            self.floor,
-            WIDTH * HEIGHT
-          ),
-          HOT,
+    let lines = vec![
+      (
+        format!(
+          "Seed {}: {} regions, {} floor cells of {}",
+          self.seed,
+          self.rooms,
+          self.floor,
+          WIDTH * HEIGHT
         ),
-        (
-          "Floor is the higher colour: one-cell corridors keep it".to_string(),
-          DIM,
-        ),
-      ]
-    };
+        HOT,
+      ),
+      (
+        "Floor is the higher colour: one-cell corridors keep it".to_string(),
+        DIM,
+      ),
+    ];
     hud_beside_panel(ui, 2, &lines);
   }
 }

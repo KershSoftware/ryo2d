@@ -5,9 +5,7 @@
 
 use demo_kit::prelude::*;
 
-use crate::shared::{
-  DIM, HOT, PLATFORMER, View, asset, clear_to, hud_beside_panel, load, main_action,
-};
+use crate::shared::{DIM, HOT, View, hud_beside_panel, load, main_action, spawn_platformer};
 
 /// The platformer's tileset, whose tiles carry the frames
 const TILESET: &str = "tilesets/platformer.tsx";
@@ -18,7 +16,6 @@ const FRAMED: Rect = Rect::new(324.0, 126.0, 252.0, 162.0);
 
 pub(crate) struct AnimatedPage {
   view: View,
-  map: Option<Handle<TileMap>>,
   /// Each read-out tile's frames, from its tileset
   frames: Vec<(&'static str, u32, Vec<TileFrame>)>,
   paused: bool,
@@ -29,7 +26,6 @@ impl AnimatedPage {
   pub(crate) fn new() -> Self {
     Self {
       view: View::new(true),
-      map: None,
       frames: Vec::new(),
       paused: false,
       speed: 1.0,
@@ -74,7 +70,7 @@ impl DemoPage for AnimatedPage {
   }
 
   fn enter(&mut self, ctx: &mut SceneContext) {
-    self.map = load::<TileMap>(ctx, PLATFORMER);
+    spawn_platformer(ctx, MapRoot::new);
     if let Some(tileset) = load::<Tileset>(ctx, TILESET) {
       let assets = ctx.assets();
       for (name, id) in SHOWN {
@@ -86,13 +82,6 @@ impl DemoPage for AnimatedPage {
         self.frames.push((name, id, frames));
       }
     }
-    let Some(map) = self.map.clone() else {
-      return;
-    };
-    if let Some(data) = asset(ctx, &map) {
-      clear_to(ctx, data.background.unwrap_or(Color::rgb(127, 240, 165)));
-    }
-    ctx.world.spawn((Transform::IDENTITY, MapRoot::new(map)));
   }
 
   // The game clock is set here, in the UI pass: while it is paused no fixed

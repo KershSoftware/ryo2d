@@ -8,7 +8,8 @@
 use demo_kit::prelude::*;
 
 use crate::shared::{
-  DIM, HOT, PLATFORMER, View, asset, clear_to, hud_beside_panel, label_at, load,
+  DIM, HOT, PLATFORMER, PLATFORMER_CELL as CELL, View, hud_beside_panel, label_at, load,
+  main_action, spawn_platformer,
 };
 
 /// The eight orientations as Tiled stores them (horizontal, vertical and
@@ -41,7 +42,7 @@ const SIGN_ROW: i32 = 3;
 const SLOPE_ROW: i32 = 5;
 /// What the page frames: columns 0-18, the map's whole height, at 1.5x (2x
 /// would leave the strips' last slot out of the area)
-const FRAMED: Rect = Rect::new(0.0, 0.0, 342.0, 288.0);
+const FRAMED: Rect = Rect::new(0.0, 0.0, 19.0 * CELL, 16.0 * CELL);
 const ZOOM: f32 = 1.5;
 /// Each tileset's mark
 const MARKS: [Color; 2] = [Color::rgb(255, 150, 60), Color::rgb(90, 220, 255)];
@@ -91,7 +92,6 @@ fn bits(flip: TileFlip) -> String {
 
 pub(crate) struct FlipsPage {
   view: View,
-  map: Option<Handle<TileMap>>,
   root: Option<Entity>,
   placed: bool,
   marks: bool,
@@ -107,7 +107,6 @@ impl FlipsPage {
   pub(crate) fn new() -> Self {
     Self {
       view: View::new(true),
-      map: None,
       root: None,
       placed: false,
       marks: true,
@@ -163,42 +162,41 @@ impl DemoPage for FlipsPage {
 
   fn controls(&self) -> Vec<Control> {
     vec![
-      Control::key(KeyCode::Space, "Turn the strips 90 degrees clockwise"),
+      Control::key(
+        KeyCode::Space,
+        "Turn the strips 90 degrees clockwise (pad: A)",
+      ),
       Control::key(KeyCode::KeyF, "Mirror the strips"),
     ]
   }
 
   fn enter(&mut self, ctx: &mut SceneContext) {
-    self.map = load::<TileMap>(ctx, PLATFORMER);
-    let Some(map) = self.map.clone() else {
+    self.root = spawn_platformer(ctx, MapRoot::new).map(|level| level.root);
+    // What the file's layers hold, by tileset
+    let Some(map) = load::<TileMap>(ctx, PLATFORMER) else {
       return;
     };
-    if let Some(data) = asset(ctx, &map) {
-      clear_to(ctx, data.background.unwrap_or(Color::rgb(127, 240, 165)));
-      for layer in &data.layers {
-        if let LayerKind::Tiles { grid, .. } = &layer.kind {
-          let size = grid.size().as_ivec2();
-          for y in 0..size.y {
-            for x in 0..size.x {
-              if let Some(tile) = grid.get(IVec2::new(x, y)) {
-                if let Some(count) = self.counts.get_mut(usize::from(tile.tileset)) {
-                  *count += 1;
-                }
-                if tile.flip != TileFlip::NONE {
-                  self.flipped += 1;
-                }
+    let assets = ctx.assets();
+    let Some(data) = assets.get(&map) else {
+      return;
+    };
+    for layer in &data.layers {
+      if let LayerKind::Tiles { grid, .. } = &layer.kind {
+        let size = grid.size().as_ivec2();
+        for y in 0..size.y {
+          for x in 0..size.x {
+            if let Some(tile) = grid.get(IVec2::new(x, y)) {
+              if let Some(count) = self.counts.get_mut(usize::from(tile.tileset)) {
+                *count += 1;
+              }
+              if tile.flip != TileFlip::NONE {
+                self.flipped += 1;
               }
             }
           }
         }
       }
     }
-    self.root = Some(
-      ctx
-        .world
-        .spawn((Transform::IDENTITY, MapRoot::new(map)))
-        .id(),
-    );
   }
 
   fn update(&mut self, ctx: &mut SceneContext, _dt: f32) {
@@ -227,7 +225,7 @@ impl DemoPage for FlipsPage {
       }
       self.placed = true;
     }
-    if self.placed && ctx.input.key_pressed(KeyCode::Space) {
+    if self.placed && main_action(ctx.input) {
       self.turn_all(ctx, TileFlip::rotated_cw);
       self.turns += 1;
     }
@@ -257,7 +255,7 @@ impl DemoPage for FlipsPage {
       let mut debug = ctx.debug_draw();
       for (at, tile) in marks {
         let color = MARKS[usize::from(tile.tileset).min(1)];
-        debug.rect(at, Vec2::splat(15.0), color);
+        debug.rect(at, Vec2::splat(CELL - 3.0), color);
         if tile.flip != TileFlip::NONE {
           debug.cross(at, 6.0, Color::rgb(255, 90, 200));
         }
@@ -273,11 +271,11 @@ impl DemoPage for FlipsPage {
     // Each column's flips as the map has them now (both strips turn alike)
     let strip = self.strip(ctx);
     for (cell, tile) in strip.iter().filter(|(cell, _)| cell.y == SIGN_ROW) {
-      let x = cell.x as f32 * 18.0 + 9.0;
+      let x = (cell.x as f32 + 0.5) * CELL;
       label_at(
         ui,
         ctx,
-        Vec2::new(x, SIGN_ROW as f32 * 18.0 - 1.0),
+        Vec2::new(x, SIGN_ROW as f32 * CELL - 1.0),
         &bits(tile.flip),
         HOT,
       );

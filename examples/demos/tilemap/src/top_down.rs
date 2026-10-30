@@ -7,10 +7,12 @@
 use demo_kit::prelude::*;
 
 use crate::shared::{
-  DIM, HOT, TOPDOWN, View, asset, backdrop, fence, hero, hud_beside_panel, load, map_rect,
-  object_point, place_of, spawn_top_down_player, wasd,
+  DIM, HOT, View, asset, backdrop, fence, hero, hud_beside_panel, load, map_rect, object_point,
+  place_of, spawn_top_down_player, wasd,
 };
 
+/// The garden: y-sorted trees, parallax clouds and an image layer
+const TOPDOWN: &str = "maps/topdown.tmj";
 /// The hero's sprite: a Tiny Dungeon knight
 const HERO: u32 = 97;
 
