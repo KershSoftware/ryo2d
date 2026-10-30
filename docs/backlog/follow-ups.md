@@ -152,7 +152,6 @@ Items from 4f to 5b were copied from their execution records. Items from earlier
   - R7 narrows plan difference 3: in debug builds a spot capture equal to last frame's fragment survives `restart_pass`, proven equal;
   - the spec puts an `at` node in "the area's parent slot"; the code keeps it in slot 0, as before 4i.
 - Pre-existing:
-  - `tests/e2e/ui_retain.rs`'s `glyph_pressure_from_the_ui_matches` flakes (main failed 3 of 85 runs). Retention on and off differ by pixels under UI glyph pressure, likely the scaled-glyph atlas limit (unverified);
   - release builds ignore `RYO_INPUT` and `RYO_HEADLESS`, and `RYO_INPUT` has no trackpad event.
 - Speed:
   - `Scratch::capture_of` is a linear search, so a frame capturing C fragments costs O(C²): about 1 ms, once, for 1,000;
@@ -291,4 +290,5 @@ Items from 4f to 5b were copied from their execution records. Items from earlier
 ## Engine-wide
 
 - Scene systems run during transitions; nested scroll views (the outer one takes the wheel); the mouse wheel is read in every fixed step of a frame; the prelude glob also exposes the `propagate`, `interpolate` and `kernel` module names.
+- Glyph uploads cover whole 16x16 blocks (`glyph_atlas::BLOCK`): on Apple GPUs an upload over part of a block was sampled wrong in the frame drawing it, though it read back right afterwards. The cause is below wgpu and not understood; a minimal wgpu reproduction could go upstream. The sprite atlas places slots on an 8-pixel grid, so its uploads can cover parts of 16-texel blocks: check whether image uploads and reloads show the same fault.
 - Three glam versions are built: the engine's 0.31, parry2d's 0.33 (through glamx) and kira's 0.34 (0.30 under kira 0.11 before 5b). Moving the engine to kira's glam would drop one.

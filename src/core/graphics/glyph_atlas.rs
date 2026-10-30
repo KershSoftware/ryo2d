@@ -1,14 +1,15 @@
 //! Glyph images in their own pages beside the sprite atlas: R8 coverage
 //! (raster glyphs), RGBA (colour glyphs, sRGB bytes) and RGBA distances
 //! (MSDF). Glyphs are placed on first use and evicted a page at a time,
-//! least recently used first, never one drawn this frame. A face that is
-//! freed or whose data changes loses its glyphs, and a page that leaves
-//! empty is freed with its texture.
+//! least recently used first, never one drawn this frame. Each glyph takes
+//! whole 16x16 blocks of texels and is written whole ([`BLOCK`]). A face
+//! that is freed or whose data changes loses its glyphs, and a page that
+//! leaves empty is freed with its texture.
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use etagere::{AllocId, BucketedAtlasAllocator, size2};
+use etagere::{AllocId, AllocatorOptions, BucketedAtlasAllocator, DEFAULT_OPTIONS, size2};
 
 use crate::core::graphics::atlas::PageBindGroups;
 use crate::core::hash::{FastMap, FastSet};
@@ -22,6 +23,25 @@ pub(crate) const GLYPH_PAGE_SIZE: u32 = 1024;
 pub(crate) const GLYPH_PAGES: usize = 8;
 /// Transparent texels around each glyph
 const PADDING: u32 = 1;
+/// Each glyph takes whole blocks of this many texels a side: placed on a
+/// grid of them and written whole, transparent around the glyph and its
+/// border. An upload over part of a block was seen on Apple GPUs to leave
+/// the block sampled wrong in the frame drawing it (UI text under glyph
+/// page pressure: tiles of a glyph missing, or of the glyph placed there
+/// before), though it read back right afterwards; uploads of whole blocks
+/// never showed it
+const BLOCK: u32 = 16;
+
+/// The texels written to upload the glyph at `rect`: x, y, width, height,
+/// whole blocks from the corner of its border
+fn upload_region(rect: TexelRect) -> (u32, u32, u32, u32) {
+  (
+    rect.x - PADDING,
+    rect.y - PADDING,
+    (rect.width + 2 * PADDING).div_ceil(BLOCK) * BLOCK,
+    (rect.height + 2 * PADDING).div_ceil(BLOCK) * BLOCK,
+  )
+}
 /// Keys without an image (spaces) remembered at most
 const MAX_NO_IMAGE: usize = 4096;
 
@@ -147,7 +167,14 @@ impl GlyphShelves {
   pub(crate) fn add_page(&mut self, format: GlyphFormat) -> usize {
     let side = self.size as i32;
     let page = ShelfPage {
-      allocator: BucketedAtlasAllocator::new(size2(side, side)),
+      // Sizes rounded to whole blocks, so every place is on the block grid
+      allocator: BucketedAtlasAllocator::with_options(
+        size2(side, side),
+        &AllocatorOptions {
+          alignment: size2(BLOCK as i32, BLOCK as i32),
+          ..DEFAULT_OPTIONS
+        },
+      ),
       keys: FastSet::default(),
       generation: next_page_generation(),
       pinned: 0,
@@ -624,15 +651,17 @@ impl GlyphAtlas {
     };
     let texture = &self.pages.get(&format)?.get(page)?.as_ref()?.texture;
 
-    // One write of the image inside its transparent border
+    // One write of the image's whole blocks, transparent around it
     let bpp = if format == GlyphFormat::Mask { 1 } else { 4 };
     let (w, h) = (image.width as usize, image.height as usize);
-    let stride = (w + 2) * bpp;
-    let mut padded = vec![0u8; stride * (h + 2)];
+    let (x, y, width, height) = upload_region(rect);
+    let stride = width as usize * bpp;
+    let border = PADDING as usize;
+    let mut padded = vec![0u8; stride * height as usize];
     if image.data.len() >= w * h * bpp {
       for row in 0..h {
         let from = row * w * bpp;
-        let to = (row + 1) * stride + bpp;
+        let to = (row + border) * stride + border * bpp;
         padded[to..to + w * bpp].copy_from_slice(&image.data[from..from + w * bpp]);
       }
     }
@@ -640,22 +669,18 @@ impl GlyphAtlas {
       wgpu::TexelCopyTextureInfo {
         texture,
         mip_level: 0,
-        origin: wgpu::Origin3d {
-          x: rect.x - PADDING,
-          y: rect.y - PADDING,
-          z: 0,
-        },
+        origin: wgpu::Origin3d { x, y, z: 0 },
         aspect: wgpu::TextureAspect::All,
       },
       &padded,
       wgpu::TexelCopyBufferLayout {
         offset: 0,
         bytes_per_row: Some(stride as u32),
-        rows_per_image: Some(h as u32 + 2),
+        rows_per_image: Some(height),
       },
       wgpu::Extent3d {
-        width: image.width + 2,
-        height: image.height + 2,
+        width,
+        height,
         depth_or_array_layers: 1,
       },
     );
@@ -742,6 +767,42 @@ mod tests {
     assert_ne!(shelves.page_generation(GlyphFormat::Mask, 0), before.0);
     assert_eq!(shelves.page_generation(GlyphFormat::Mask, 1), before.1);
     assert_eq!(shelves.page_generation(GlyphFormat::Mask, 2), None);
+  }
+
+  #[test]
+  fn glyphs_are_placed_in_whole_blocks() {
+    let mut shelves = GlyphShelves::new(GLYPH_PAGE_SIZE, 1);
+    shelves.add_page(GlyphFormat::Mask);
+    for (glyph, size) in [(5, 7), (13, 13), (14, 30), (1, 1), (40, 9), (254, 195)]
+      .into_iter()
+      .enumerate()
+    {
+      let placed = shelves.place(&key(glyph as u16), GlyphFormat::Mask, size, 1);
+      let Placement::Placed { rect, .. } = placed else {
+        panic!("{placed:?}")
+      };
+      let (x, y, ..) = upload_region(rect);
+      assert_eq!((x % BLOCK, y % BLOCK), (0, 0), "{size:?} at {rect:?}");
+    }
+  }
+
+  #[test]
+  fn an_upload_covers_whole_blocks_around_its_glyph() {
+    // 254x195 and its border: 256x197, so 256x208
+    let rect = TexelRect {
+      x: 721,
+      y: 737,
+      width: 254,
+      height: 195,
+    };
+    assert_eq!(upload_region(rect), (720, 736, 256, 208));
+    let small = TexelRect {
+      x: 17,
+      y: 1,
+      width: 5,
+      height: 7,
+    };
+    assert_eq!(upload_region(small), (16, 0, 16, 16));
   }
 
   #[test]
