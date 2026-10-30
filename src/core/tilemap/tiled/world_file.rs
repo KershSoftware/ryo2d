@@ -58,17 +58,21 @@ impl Default for RawPattern {
 
 /// A piece of a supported pattern
 #[derive(Debug, PartialEq)]
-enum Part {
+pub(crate) enum Part {
   Text(String),
   /// A number: `(\d+)`, or `(-?\d+)`
   Number,
 }
 
 /// A pattern's text and number groups, or why it is not supported
-fn parse_pattern(regexp: &str) -> Result<Vec<Part>, String> {
+pub(crate) fn parse_pattern(regexp: &str) -> Result<Vec<Part>, String> {
   let unsupported = |what: &str| format!("pattern \"{regexp}\" is not supported: {what}");
   let body = regexp.strip_prefix('^').unwrap_or(regexp);
-  let body = body.strip_suffix('$').unwrap_or(body);
+  // only an unescaped `$` anchors; `\$` is a dollar sign
+  let body = match body.strip_suffix('$') {
+    Some(rest) if (rest.len() - rest.trim_end_matches('\\').len()) % 2 == 0 => rest,
+    _ => body,
+  };
   let mut parts: Vec<Part> = Vec::new();
   let mut text = String::new();
   let mut numbers = 0;
@@ -96,11 +100,6 @@ fn parse_pattern(regexp: &str) -> Result<Vec<Part>, String> {
         Some(escaped) if !escaped.is_ascii_alphanumeric() => text.push(escaped),
         _ => return Err(unsupported("an escape that is not a punctuation mark")),
       },
-      '.' => {
-        return Err(unsupported(
-          "`.` matches any character; write `\\.` for a dot",
-        ));
-      }
       '(' | ')' | '[' | ']' | '{' | '}' | '|' | '*' | '+' | '?' | '^' | '$' => {
         return Err(unsupported(&format!(
           "`{c}` (only literal text and up to two `(\\d+)` numbers are)"
@@ -234,9 +233,20 @@ impl AssetLoader for TileWorldLoader {
             let size = map_size(&file, &bytes)
               .map_err(|e| AssetError::decode(&path, format!("{place}: {}", e.report())))?;
             let handle = load_dep::<TileMap>(cx, &path, &place, &written)?;
+            let place_on = |n: i32, multiplier: i32, offset: i32| {
+              n.checked_mul(multiplier)
+                .and_then(|n| n.checked_add(offset))
+                .map(|n| n as f32)
+                .ok_or_else(|| {
+                  AssetError::decode(
+                    &path,
+                    format!("{place}: the position of {written:?} does not fit (multiplier or offset too large)"),
+                  )
+                })
+            };
             let position = Vec2::new(
-              (x * pattern.multiplier_x + pattern.offset_x) as f32,
-              (y * pattern.multiplier_y + pattern.offset_y) as f32,
+              place_on(x, pattern.multiplier_x, pattern.offset_x)?,
+              place_on(y, pattern.multiplier_y, pattern.offset_y)?,
             );
             levels.push((written, position, size));
             maps.push(handle);

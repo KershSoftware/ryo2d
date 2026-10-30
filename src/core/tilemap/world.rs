@@ -25,10 +25,14 @@ use crate::core::ui::Rect;
 /// until the first missing file, stopping at the first row whose x = 0 file
 /// is missing, in at most 1,024 tries. Each map sits at
 /// (x * multiplierX + offsetX, y * multiplierY + offsetY). Other regular
-/// expression features are a load error, and a pattern no file matches
+/// expression features are a load error (a bare `.` is a dot, since names
+/// are built, never matched; `.*` fails on its `*`), and a pattern no file matches
 /// fails the load; negative numbers and gaps in the numbering are not
 /// reached, so a world that uses them lists its maps. A listed map without
-/// a `width` and `height` has them read from its file.
+/// a `width` and `height`, and every pattern's map, has its size read from
+/// its file as width x tilewidth by height x tileheight (isometric, hexagonal
+/// and infinite maps are load errors until 6b anyway). A pattern's probe
+/// reads each map, which then loads again as a dependency.
 ///
 /// Spawn the levels near the player with
 /// [`MapsView::spawn_levels_in`](super::MapsView::spawn_levels_in).
@@ -615,6 +619,172 @@ mod tests {
         .world
         .get::<crate::core::tilemap::spawn::MapFailed>(bad)
         .is_some()
+    );
+  }
+
+  const MAP: &str = r#"{"type":"map","orientation":"orthogonal","width":2,"height":2,"tilewidth":16,"tileheight":16,"tilesets":[],"layers":[]}"#;
+
+  fn world_from(
+    extra: &[(&str, &str)],
+    path: &str,
+  ) -> (crate::core::ecs::World, Result<Handle<TileWorld>, String>) {
+    let mut world = world_over(files_with(extra));
+    let loaded = load_world(&mut world, path);
+    (world, loaded)
+  }
+
+  fn positions(layout: &WorldLayout) -> Vec<(String, Vec2)> {
+    layout
+      .levels
+      .iter()
+      .map(|l| (l.name.clone(), l.position))
+      .collect()
+  }
+
+  #[test]
+  fn huge_multipliers_and_offsets_fail_the_load_instead_of_panicking() {
+    for fields in [
+      r#""multiplierX":2000000000,"offsetX":2000000000"#,
+      r#""multiplierY":2000000000,"multiplierX":1,"offsetY":2000000000"#,
+      r#""multiplierX":-2000000000,"offsetX":-2000000000"#,
+    ] {
+      let json = format!(r#"{{"patterns":[{{"regexp":"grid_(\\d+)_(\\d+)\\.tmj",{fields}}}]}}"#);
+      let (_, loaded) = world_from(
+        &[("tiled/worlds/huge.world", &json)],
+        "tiled/worlds/huge.world",
+      );
+      let error = loaded.expect_err("fails");
+      assert!(
+        error.contains("huge.world") && error.contains("grid_(\\d+)_(\\d+)"),
+        "{error}"
+      );
+    }
+  }
+
+  #[test]
+  fn a_bare_dot_in_a_pattern_is_a_dot() {
+    let json =
+      r#"{"patterns":[{"regexp":"grid_(\\d+)_(\\d+).tmj","multiplierX":32,"multiplierY":32}]}"#;
+    let (world, loaded) = world_from(
+      &[("tiled/worlds/dot.world", json)],
+      "tiled/worlds/dot.world",
+    );
+    let layout = layout_of(&world, &loaded.expect("loads"));
+    assert_eq!(layout.levels.len(), 3);
+    for regexp in [r"grid_.*", r"grid_.+"] {
+      let json = format!(r#"{{"patterns":[{{"regexp":"{regexp}"}}]}}"#);
+      let (_, loaded) = world_from(&[("tiled/worlds/q.world", &json)], "tiled/worlds/q.world");
+      assert!(loaded.expect_err("fails").contains("not supported"));
+    }
+  }
+
+  #[test]
+  fn a_trailing_escaped_dollar_is_a_dollar() {
+    use crate::core::tilemap::tiled::world_file::{Part, parse_pattern};
+    assert_eq!(parse_pattern(r"foo\$"), Ok(vec![Part::Text("foo$".into())]));
+    assert_eq!(parse_pattern("^foo$"), Ok(vec![Part::Text("foo".into())]));
+  }
+
+  #[test]
+  fn a_one_number_pattern_runs_along_x() {
+    let json = r#"{"patterns":[{"regexp":"one_(\\d+)\\.tmj","multiplierX":40,"multiplierY":99,"offsetX":5,"offsetY":7}]}"#;
+    let (world, loaded) = world_from(
+      &[
+        ("tiled/worlds/one.world", json),
+        ("tiled/worlds/one_0.tmj", MAP),
+        ("tiled/worlds/one_1.tmj", MAP),
+        ("tiled/worlds/one_2.tmj", MAP),
+        ("tiled/worlds/one_4.tmj", MAP),
+      ],
+      "tiled/worlds/one.world",
+    );
+    let layout = layout_of(&world, &loaded.expect("loads"));
+    // one row (y = 0), stopping at the gap
+    assert_eq!(
+      positions(&layout),
+      [
+        ("one_0.tmj".to_string(), Vec2::new(5.0, 7.0)),
+        ("one_1.tmj".to_string(), Vec2::new(45.0, 7.0)),
+        ("one_2.tmj".to_string(), Vec2::new(85.0, 7.0)),
+      ]
+    );
+  }
+
+  #[test]
+  fn a_pattern_without_numbers_is_one_file() {
+    let json = r#"{"patterns":[{"regexp":"only\\.tmj","offsetX":3,"offsetY":4}]}"#;
+    let (world, loaded) = world_from(
+      &[
+        ("tiled/worlds/zero.world", json),
+        ("tiled/worlds/only.tmj", MAP),
+      ],
+      "tiled/worlds/zero.world",
+    );
+    let layout = layout_of(&world, &loaded.expect("loads"));
+    assert_eq!(
+      positions(&layout),
+      [("only.tmj".to_string(), Vec2::new(3.0, 4.0))]
+    );
+  }
+
+  #[test]
+  fn north_east_and_south_west_neighbours() {
+    use NeighbourDirection::*;
+    let json = r#"{"maps":[{"fileName":"a.tmj","x":0,"y":32,"width":32,"height":32},
+      {"fileName":"b.tmj","x":32,"y":0,"width":32,"height":32}]}"#;
+    let (world, loaded) = world_from(
+      &[("tiled/worlds/diag.world", json)],
+      "tiled/worlds/diag.world",
+    );
+    let layout = layout_of(&world, &loaded.expect("loads"));
+    assert_eq!(neighbours(&layout, "a.tmj"), [("b.tmj".into(), NorthEast)]);
+    assert_eq!(neighbours(&layout, "b.tmj"), [("a.tmj".into(), SouthWest)]);
+  }
+
+  #[test]
+  fn a_broken_map_reached_by_a_probe_fails_the_world_naming_it() {
+    let json = r#"{"patterns":[{"regexp":"bad_(\\d+)\\.tmj"}]}"#;
+    let (_, loaded) = world_from(
+      &[
+        ("tiled/worlds/bad.world", json),
+        ("tiled/worlds/bad_0.tmj", "{"),
+      ],
+      "tiled/worlds/bad.world",
+    );
+    let error = loaded.expect_err("fails");
+    assert!(
+      error.contains("bad.world") && error.contains("bad_0.tmj"),
+      "{error}"
+    );
+  }
+
+  #[test]
+  fn two_tiled_worlds_keep_their_levels_apart() {
+    let rooms = std::fs::read_to_string(format!(
+      "{}/tiled/worlds/rooms.world",
+      crate::core::tilemap::test_util::FIXTURES
+    ))
+    .expect("fixture");
+    let mut maps = MapWorld::over(files_with(&[("tiled/worlds/copy.world", &rooms)]));
+    let first = load_world(&mut maps.world, "tiled/worlds/rooms.world").expect("loads");
+    let second = load_world(&mut maps.world, "tiled/worlds/copy.world").expect("loads");
+    let area = Rect::new(0.0, 0.0, 10.0, 10.0);
+    assert_eq!(
+      MapsView::new(&mut maps.world)
+        .spawn_levels_in(&first, area)
+        .len(),
+      1
+    );
+    assert_eq!(
+      MapsView::new(&mut maps.world)
+        .spawn_levels_in(&second, area)
+        .len(),
+      1
+    );
+    assert!(
+      MapsView::new(&mut maps.world)
+        .spawn_levels_in(&first, area)
+        .is_empty()
     );
   }
 }

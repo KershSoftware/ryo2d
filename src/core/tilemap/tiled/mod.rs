@@ -7,7 +7,7 @@ mod objects;
 mod project;
 pub(crate) mod raw;
 mod wang;
-mod world_file;
+pub(crate) mod world_file;
 mod xml;
 
 pub use json::{TiledMapLoader, TiledTilesetLoader};
