@@ -31,6 +31,6 @@ pub use joint::{Joint, JointAnchor, JointKind, JointMotor};
 pub use query::{Hit, Overlap, PointHit, QueryFilter, Touch};
 pub(crate) use sync::physics_enabled;
 pub(crate) use tiles::TilePart;
-pub use tiles::{SlopeCorner, TileCell, TileColliders};
+pub use tiles::{CellShape, SlopeCorner, TileCell, TileColliders};
 pub use triggers::TriggerContents;
 pub use world::Physics;

@@ -289,9 +289,10 @@ impl NavigationGrid {
     }
   }
 
-  /// Block the cells under a tile grid's solid and slope cells, its cell
-  /// (0, 0)'s top-left at `origin` (its entity's position). One-way cells
-  /// stay walkable.
+  /// Block the cells under a tile grid's solid and slope cells, and its
+  /// shape cells whose shape covers the cell's centre, its cell (0, 0)'s
+  /// top-left at `origin` (its entity's position). One-way cells and
+  /// one-way shapes stay walkable.
   pub fn block_tiles(&mut self, tiles: &TileColliders, origin: Vec2) {
     let size = tiles.tile_size;
     if !(size.is_finite() && size.min_element() > 0.0) {
@@ -309,7 +310,12 @@ impl NavigationGrid {
     };
     for y in 0..tiles.height() {
       for x in 0..tiles.width() {
-        if !matches!(tiles.get(x, y), TileCell::Solid | TileCell::Slope(_)) {
+        let blocks = match tiles.get(x, y) {
+          TileCell::Solid | TileCell::Slope(_) => true,
+          TileCell::Shape(shape) => tiles.shape_blocks(shape),
+          TileCell::Empty | TileCell::OneWay => false,
+        };
+        if !blocks {
           continue;
         }
         let min_x =
@@ -329,8 +335,9 @@ impl NavigationGrid {
   /// Rebuild the grid from entities with Collider components
   ///
   /// Every solid (non-trigger) collider blocks the cells it covers. Tile
-  /// grids block exactly their solid and slope cells: their outline
-  /// colliders would block their whole bounding boxes, so those are skipped.
+  /// grids block exactly their solid and slope cells (and the shape cells
+  /// `block_tiles` blocks): their outline colliders would block their whole
+  /// bounding boxes, so those are skipped.
   pub fn rebuild_from_world(&mut self, world: &mut World) {
     self.clear();
     let mut colliders =
@@ -477,6 +484,40 @@ mod tests {
         .collect();
       assert_eq!(blocked, [GridCoord::new(2, 2)], "at {base}");
     }
+  }
+
+  #[test]
+  fn block_tiles_blocks_shape_cells_that_cover_their_centre() {
+    use crate::core::physics::{CellShape, TileCell, TileColliders};
+    let polygon = |points: &[(f32, f32)]| points.iter().map(|&(x, y)| Vec2::new(x, y)).collect();
+    let mut tiles = TileColliders::new(4, 1, Vec2::splat(10.0));
+    // Most of the cell, then a corner of it, then a one-way slab over it all
+    let most = tiles.add_shape(CellShape {
+      polygons: vec![polygon(&[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.2, 1.0)])],
+      one_way: false,
+    });
+    let corner = tiles.add_shape(CellShape {
+      polygons: vec![polygon(&[(0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)])],
+      one_way: false,
+    });
+    let slab = tiles.add_shape(CellShape {
+      polygons: vec![polygon(&[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])],
+      one_way: true,
+    });
+    tiles.set(0, 0, TileCell::Shape(most));
+    tiles.set(1, 0, TileCell::Shape(corner));
+    tiles.set(2, 0, TileCell::Shape(slab));
+    tiles.set(3, 0, TileCell::Shape(9));
+    let mut grid = NavigationGrid::new(40.0, 10.0, 10.0);
+    grid.block_tiles(&tiles, Vec2::ZERO);
+    let walkable: Vec<bool> = (0..4)
+      .map(|x| grid.is_walkable(GridCoord::new(x, 0)))
+      .collect();
+    assert_eq!(
+      walkable,
+      [false, true, true, true],
+      "covers the centre, misses it, one-way, no such shape"
+    );
   }
 
   #[test]
