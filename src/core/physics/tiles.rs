@@ -70,16 +70,17 @@ impl SlopeCorner {
 /// are). A one-way shape's top edges (those facing within 45° of up) join
 /// the one-way runs, merged with the one-way cells and shapes they line up
 /// with. In `solid_rects` mode a solid shape is convex polygons instead (a
-/// concave polygon split). Points are clipped to the cell and snapped to
-/// 1/11520 of a tile, which holds any whole or half pixel of the usual tile
-/// sizes exactly.
+/// concave polygon split). Points are snapped to 1/11520 of a tile, which
+/// holds any whole pixel of the usual tile sizes exactly, and a polygon
+/// reaching past its cell is clipped to it (into pieces, if the cell cuts
+/// it apart).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct CellShape {
   /// Polygons in tile units ((0, 0) the cell's top-left, (1, 1) its
   /// bottom-right, y down), wound either way. Repeated and straight-through
   /// points are dropped and a polygon left with no area builds nothing; one
-  /// that crosses itself, or polygons that overlap one another, collide as
-  /// their convex hull
+  /// that is not simple (it crosses or touches itself), or polygons that
+  /// overlap one another in the cell, collide as their convex hull (logged)
   pub polygons: Vec<Vec<Vec2>>,
   /// Solid only from above, as `TileCell::OneWay` is
   pub one_way: bool,

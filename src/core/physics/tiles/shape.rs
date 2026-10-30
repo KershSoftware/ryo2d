@@ -1,14 +1,18 @@
-//! Authored cell shapes. Each polygon is clipped to its cell, snapped to
-//! the outline grid (`GRID` points a tile), cleaned (no repeated or
-//! straight-through points; nothing left with no area) and wound as cells
-//! are, clockwise on screen. A polygon that crosses itself, and a shape
-//! whose polygons overlap, collide as their hull. The shape's edges, those
-//! two of its polygons share cancelled, join the grid's outlines (a solid
-//! shape), or its top edges join its one-way runs (a one-way shape). For
-//! `solid_rects` mode a solid shape is also split into convex parts, as
-//! Rapier's polygons are convex: ear clipping into triangles, merged back
-//! across their diagonals while the merge stays convex (Hertel and
-//! Mehlhorn), so no polygon edge is cut.
+//! Authored cell shapes. Each polygon is snapped to the outline grid
+//! (`GRID` points a tile) as authored and cleaned (no repeated or
+//! straight-through points); there it must be simple, or it collides as its
+//! hull. Then it is wound as cells are, clockwise on screen, and clipped to
+//! its cell: where it leaves the cell and comes back, the clip runs along
+//! the side and back, and that cancels, so a polygon the cell cuts apart is
+//! its pieces. A shape whose polygons overlap in the cell, or whose edges do
+//! not bound a region (the last check, `well_formed`), collides as the hull
+//! of them all. The shape's edges, those two of its polygons share
+//! cancelled, join the grid's outlines (a solid shape), or its top edges
+//! join its one-way runs (a one-way shape). For `solid_rects` mode a solid
+//! shape is also convex parts, as Rapier's polygons are convex: each
+//! polygon split by ear clipping into triangles, merged back across their
+//! diagonals while the merge stays convex (Hertel and Mehlhorn), so no
+//! polygon edge is cut, and each part clipped to the cell.
 
 use glam::DVec2;
 
@@ -35,16 +39,19 @@ pub(crate) struct ShapeBuild {
   pub(crate) parts: Vec<Vec<Vec2>>,
   /// A solid shape covering the cell's centre: navigation blocks the cell
   pub(crate) blocks: bool,
+  /// It fell back to the hull of its points (logged)
+  pub(crate) hulled: bool,
 }
 
 impl ShapeBuild {
   pub(crate) fn of(shape: &CellShape) -> Self {
     let mut tangled = false;
+    // Each polygon as authored, on the grid: simple, or its hull
     let mut rings: Vec<Vec<Point>> = shape
       .polygons
       .iter()
       .filter_map(|polygon| {
-        let mut ring = snapped(polygon)?;
+        let mut ring = authored(polygon)?;
         if !simple(&ring) {
           tangled = true;
           return hull(&ring);
@@ -55,25 +62,31 @@ impl ShapeBuild {
         Some(ring)
       })
       .collect();
-    if overlap(&rings) {
+    // Each fitted to the cell: the cell's sides may cut it into pieces
+    let mut pieces: Vec<Vec<(Point, Point)>> = rings.iter().map(|ring| fitted(ring)).collect();
+    if overlap(&pieces) {
       tangled = true;
       rings = hull(&rings.concat()).into_iter().collect();
+      pieces = rings.iter().map(|ring| fitted(ring)).collect();
     }
-    let mut edges = cancelled(&rings);
+    let mut edges = cancelled(pieces.concat());
     // Belt and braces: what reaches the outlines must be a region's
     // boundary inside the cell, or they could meet an edge twice
     if !well_formed(&edges) {
       tangled = true;
       rings = hull(&rings.concat()).into_iter().collect();
-      edges = cancelled(&rings);
+      edges = cancelled(rings.iter().flat_map(|ring| fitted(ring)).collect());
     }
+    let mut build = Self {
+      hulled: tangled,
+      ..Self::default()
+    };
     if tangled {
       crate::engine_warn!(
         module: "Physics",
         "a CellShape polygon touches or crosses itself or another of its polygons; it collides as their convex hull"
       );
     }
-    let mut build = Self::default();
     if shape.one_way {
       // A top edge runs left to right (the ring is clockwise on screen) no
       // steeper than 45°
@@ -84,11 +97,12 @@ impl ShapeBuild {
       build.tops.sort_unstable();
       return build;
     }
-    build.edges = edges;
     let centre = (GRID / 2, GRID / 2);
-    build.blocks = rings
-      .iter()
-      .any(|ring| inside(ring, centre) || on_boundary(ring, centre));
+    build.blocks =
+      edges.iter().any(|&(a, b)| on_segment(a, b, centre)) || winding(&edges, centre) != 0;
+    build.edges = edges;
+    // Convex parts of each polygon as authored, each fitted to the cell
+    // (what of a convex part is inside is one convex piece)
     let mut large = false;
     for ring in &rings {
       let ring: Vec<DVec2> = ring
@@ -104,14 +118,16 @@ impl ShapeBuild {
       } else if let Some(triangles) = triangulate(&ring) {
         merge_convex(&ring, triangles)
       } else {
-        // Not simple after all (it touches itself): its hull
         vec![(0..n).collect()]
       };
-      build.parts.extend(
-        parts
-          .into_iter()
-          .map(|part| part.into_iter().map(|i| ring[i].as_vec2()).collect()),
-      );
+      for part in parts {
+        let part = clip(part.into_iter().map(|i| ring[i]).collect(), 1.0);
+        let n = part.len();
+        let area: f64 = (0..n).map(|i| part[i].perp_dot(part[(i + 1) % n])).sum();
+        if n >= 3 && area.abs() > EPSILON {
+          build.parts.push(part.iter().map(|p| p.as_vec2()).collect());
+        }
+      }
     }
     if large {
       crate::engine_warn!(
@@ -121,6 +137,76 @@ impl ShapeBuild {
     }
     build
   }
+}
+
+/// How far past its cell an authored point is read, in tiles: farther is
+/// brought in to this (it can only nudge where an edge enters the cell by
+/// a hair), so the grid's sums stay well inside an `i64`.
+const REACH: f64 = 1024.0;
+
+/// `polygon` as authored, snapped to the grid (it may reach past the cell)
+/// and cleaned; None when a point is not finite or fewer than three
+/// corners are left.
+fn authored(polygon: &[Vec2]) -> Option<Vec<Point>> {
+  if polygon.iter().any(|p| !p.is_finite()) {
+    return None;
+  }
+  let grid = f64::from(GRID);
+  let at = |v: f32| (f64::from(v).clamp(-REACH, 1.0 + REACH) * grid).round() as i32;
+  let mut ring: Vec<Point> = polygon.iter().map(|p| (at(p.x), at(p.y))).collect();
+  clean(&mut ring);
+  (ring.len() >= 3).then_some(ring)
+}
+
+/// `points` clipped to the square from 0 to `side` on each axis (Sutherland
+/// and Hodgman): where a polygon leaves the square and comes back in, the
+/// result runs along the square's side and back.
+fn clip(mut points: Vec<DVec2>, side: f64) -> Vec<DVec2> {
+  // Kept where `facing · p >= at_least`
+  let sides = [
+    (DVec2::X, 0.0),
+    (DVec2::NEG_X, -side),
+    (DVec2::Y, 0.0),
+    (DVec2::NEG_Y, -side),
+  ];
+  for (facing, at_least) in sides {
+    let n = points.len();
+    let mut kept = Vec::with_capacity(n + 2);
+    for i in 0..n {
+      let (a, b) = (points[i], points[(i + 1) % n]);
+      let (da, db) = (facing.dot(a) - at_least, facing.dot(b) - at_least);
+      if da >= 0.0 {
+        kept.push(a);
+      }
+      if (da >= 0.0) != (db >= 0.0) {
+        kept.push(a + (b - a) * (da / (da - db)));
+      }
+    }
+    points = kept;
+  }
+  points
+}
+
+/// The edges of what of a simple, clockwise `ring` is inside the cell: the
+/// clip's runs along a side and back cancel, so a ring the cell cuts into
+/// pieces gives each piece's boundary.
+fn fitted(ring: &[Point]) -> Vec<(Point, Point)> {
+  let points = ring
+    .iter()
+    .map(|&(x, y)| DVec2::new(f64::from(x), f64::from(y)))
+    .collect();
+  let mut clipped: Vec<Point> = clip(points, f64::from(GRID))
+    .iter()
+    .map(|p| {
+      let at = |v: f64| (v.round() as i32).clamp(0, GRID);
+      (at(p.x), at(p.y))
+    })
+    .collect();
+  clean(&mut clipped);
+  if clipped.len() < 3 {
+    return Vec::new();
+  }
+  cancelled(ring_edges(&clipped).collect())
 }
 
 fn sub(a: Point, b: Point) -> (i64, i64) {
@@ -150,49 +236,6 @@ fn doubled_area(ring: &[Point]) -> i64 {
       i64::from(a.0) * i64::from(b.1) - i64::from(b.0) * i64::from(a.1)
     })
     .sum()
-}
-
-/// `polygon` clipped to the cell, snapped to the grid and cleaned (either
-/// winding, maybe not simple); None when a point is not finite or fewer
-/// than three corners are left.
-fn snapped(polygon: &[Vec2]) -> Option<Vec<Point>> {
-  if polygon.iter().any(|p| !p.is_finite()) {
-    return None;
-  }
-  let mut points: Vec<DVec2> = polygon.iter().map(|p| p.as_dvec2()).collect();
-  // Clipped to each side of the cell in turn (Sutherland and Hodgman): kept
-  // where `facing · p >= at_least`
-  let sides = [
-    (DVec2::X, 0.0),
-    (DVec2::NEG_X, -1.0),
-    (DVec2::Y, 0.0),
-    (DVec2::NEG_Y, -1.0),
-  ];
-  for (facing, at_least) in sides {
-    let n = points.len();
-    let mut kept = Vec::with_capacity(n + 2);
-    for i in 0..n {
-      let (a, b) = (points[i], points[(i + 1) % n]);
-      let (da, db) = (facing.dot(a) - at_least, facing.dot(b) - at_least);
-      if da >= 0.0 {
-        kept.push(a);
-      }
-      if (da >= 0.0) != (db >= 0.0) {
-        kept.push(a + (b - a) * (da / (da - db)));
-      }
-    }
-    points = kept;
-  }
-  let grid = f64::from(GRID);
-  let mut ring: Vec<Point> = points
-    .iter()
-    .map(|p| {
-      let at = |v: f64| ((v * grid).round() as i32).clamp(0, GRID);
-      (at(p.x), at(p.y))
-    })
-    .collect();
-  clean(&mut ring);
-  (ring.len() >= 3).then_some(ring)
 }
 
 /// Drop repeated points and points that go straight on or turn straight
@@ -277,8 +320,11 @@ fn simple(ring: &[Point]) -> bool {
 }
 
 /// Whether edges from `cancelled` bound a region inside the cell: none
-/// repeated, and those along a side of the cell run its way round (inside
-/// on their right), as `sides::along` reads them.
+/// repeated, those along a side of the cell running its way round (inside
+/// on their right, as `sides::along` reads them), no two crossing, and
+/// round every point the edges leaving and arriving taking turns. Then a
+/// loop's way on from any point is the same whichever loop comes first, and
+/// no neighbour's border edge is met twice.
 fn well_formed(edges: &[(Point, Point)]) -> bool {
   let mut sorted = edges.to_vec();
   sorted.sort_unstable();
@@ -291,28 +337,38 @@ fn well_formed(edges: &[(Point, Point)]) -> bool {
     ];
     (sides::TOP..=sides::LEFT).all(|side| !on[side] || sides::along((a, b), side).is_some())
   };
-  sorted.windows(2).all(|w| w[0] != w[1]) && edges.iter().all(|&edge| along_a_side(edge))
+  let crossing = edges.iter().enumerate().any(|(i, e)| {
+    edges[i + 1..]
+      .iter()
+      .any(|f| cross_properly(e.0, e.1, f.0, f.1))
+  });
+  sorted.windows(2).all(|w| w[0] != w[1])
+    && edges.iter().all(|&edge| along_a_side(edge))
+    && !crossing
+    && taking_turns(edges)
 }
 
-/// Whether `p` is strictly inside `ring` (on its boundary is not).
-fn inside(ring: &[Point], p: Point) -> bool {
-  if on_boundary(ring, p) {
-    return false;
+/// Whether round every point the edges leaving it and those arriving take
+/// turns, no two along one line from it.
+fn taking_turns(edges: &[(Point, Point)]) -> bool {
+  // Each point's rays: the way to the other end, and whether it leaves
+  type Ray = ((i64, i64), bool);
+  let mut rays: std::collections::BTreeMap<Point, Vec<Ray>> = Default::default();
+  for &(a, b) in edges {
+    rays.entry(a).or_default().push((sub(b, a), true));
+    rays.entry(b).or_default().push((sub(a, b), false));
   }
-  let mut inside = false;
-  for (a, b) in ring_edges(ring) {
-    if (a.1 > p.1) != (b.1 > p.1) {
-      // p is left of the edge where it crosses p's row
-      let (num, den) = (
-        i64::from(p.0 - a.0) * i64::from(b.1 - a.1),
-        i64::from(p.1 - a.1) * i64::from(b.0 - a.0),
-      );
-      if (b.1 > a.1 && num < den) || (b.1 < a.1 && num > den) {
-        inside = !inside;
-      }
-    }
-  }
-  inside
+  // Round the point: one half-turn, then the other, each in order
+  let half = |d: (i64, i64)| d.1 < 0 || (d.1 == 0 && d.0 < 0);
+  rays.into_values().all(|mut round| {
+    round.sort_by(|&(u, _), &(v, _)| half(u).cmp(&half(v)).then_with(|| 0.cmp(&cross(u, v))));
+    let n = round.len();
+    (0..n).all(|i| {
+      let (u, v) = (round[i], round[(i + 1) % n]);
+      let together = half(u.0) == half(v.0) && cross(u.0, v.0) == 0;
+      u.1 != v.1 && !together
+    })
+  })
 }
 
 fn on_segment(a: Point, b: Point, p: Point) -> bool {
@@ -323,38 +379,52 @@ fn on_segment(a: Point, b: Point, p: Point) -> bool {
     && p.1 <= a.1.max(b.1)
 }
 
-fn on_boundary(ring: &[Point], p: Point) -> bool {
-  ring_edges(ring).any(|(a, b)| on_segment(a, b, p))
+/// The winding number of `edges` (closed) round `p`: not zero inside.
+fn winding(edges: &[(Point, Point)], p: Point) -> i32 {
+  edges
+    .iter()
+    .map(|&(a, b)| match (a.1 <= p.1, b.1 <= p.1) {
+      (true, false) if side(a, b, p) > 0 => 1,
+      (false, true) if side(a, b, p) < 0 => -1,
+      _ => 0,
+    })
+    .sum()
 }
 
-/// Whether any two rings (each simple and clockwise) overlap: their edges
-/// cross or run along each other the same way, or a piece of one's edge
-/// (split at the other's corners on it) lies strictly inside the other.
-/// Rings that only touch do not.
-fn overlap(rings: &[Vec<Point>]) -> bool {
-  let doubled =
-    |ring: &[Point]| -> Vec<Point> { ring.iter().map(|&(x, y)| (2 * x, 2 * y)).collect() };
-  (0..rings.len()).any(|i| {
-    (0..rings.len()).any(|j| {
+/// Whether any two pieces' edge sets (each a region's boundary in the cell)
+/// overlap: their edges cross or run along each other the same way, or a
+/// piece of one's edge (split at the other's corners on it) lies strictly
+/// inside the other. Regions that only touch do not.
+fn overlap(pieces: &[Vec<(Point, Point)>]) -> bool {
+  let doubled = |edges: &[(Point, Point)]| -> Vec<(Point, Point)> {
+    edges
+      .iter()
+      .map(|&(a, b)| ((2 * a.0, 2 * a.1), (2 * b.0, 2 * b.1)))
+      .collect()
+  };
+  (0..pieces.len()).any(|i| {
+    (0..pieces.len()).any(|j| {
       if i == j {
         return false;
       }
-      let (a, b) = (&rings[i], &rings[j]);
-      let edges_meet = ring_edges(a).any(|e| {
-        ring_edges(b).any(|f| cross_properly(e.0, e.1, f.0, f.1) || overlap_same_way(e, f))
+      let (a, b) = (&pieces[i], &pieces[j]);
+      let edges_meet = a.iter().any(|&e| {
+        b.iter()
+          .any(|&f| cross_properly(e.0, e.1, f.0, f.1) || overlap_same_way(e, f))
       });
       let b2 = doubled(b);
-      let within = ring_edges(a).any(|(p, q)| {
+      let within = a.iter().any(|&(p, q)| {
         let mut cuts: Vec<Point> = b
           .iter()
-          .copied()
+          .flat_map(|&(c, d)| [c, d])
           .filter(|&c| on_segment(p, q, c))
           .chain([p, q])
           .collect();
         cuts.sort_by_key(|&c| dot(sub(q, p), sub(c, p)));
-        cuts
-          .windows(2)
-          .any(|w| inside(&b2, (w[0].0 + w[1].0, w[0].1 + w[1].1)))
+        cuts.windows(2).any(|w| {
+          let middle = (w[0].0 + w[1].0, w[0].1 + w[1].1);
+          !b2.iter().any(|&(c, d)| on_segment(c, d, middle)) && winding(&b2, middle) != 0
+        })
       });
       edges_meet || within
     })
@@ -399,11 +469,11 @@ fn hull(points: &[Point]) -> Option<Vec<Point>> {
   Some(ring)
 }
 
-/// Every ring's edges, split at each corner lying inside another edge, then
-/// with each edge run both ways (where two rings touch) cancelled.
-fn cancelled(rings: &[Vec<Point>]) -> Vec<(Point, Point)> {
-  let mut edges: Vec<(Point, Point)> = rings.iter().flat_map(|ring| ring_edges(ring)).collect();
-  let corners: Vec<Point> = rings.concat();
+/// Edges split at each corner (an edge's end) lying inside another edge,
+/// then with each edge run both ways (where two rings touch, or a clip ran
+/// along a side and back) cancelled in pairs.
+fn cancelled(mut edges: Vec<(Point, Point)>) -> Vec<(Point, Point)> {
+  let corners: Vec<Point> = edges.iter().flat_map(|&(a, b)| [a, b]).collect();
   let mut i = 0;
   while i < edges.len() {
     let (a, b) = edges[i];
@@ -654,6 +724,182 @@ mod tests {
     // 75 teeth: 302 corners
     assert_eq!(ShapeBuild::of(&shape(&comb(75), false)).parts.len(), 1);
     assert!(ShapeBuild::of(&shape(&comb(10), false)).parts.len() > 1);
+  }
+
+  /// Twice the area inside an edge set (clockwise on screen, so positive).
+  fn doubled_area_of(edges: &[(Point, Point)]) -> i64 {
+    edges
+      .iter()
+      .map(|&(a, b)| i64::from(a.0) * i64::from(b.1) - i64::from(b.0) * i64::from(a.1))
+      .sum()
+  }
+
+  /// Twice the area of what of `points` is inside the cell, clipped in
+  /// floating point, in grid points squared.
+  fn clipped_area(points: &[(f32, f32)]) -> f64 {
+    let mut ring: Vec<DVec2> = points
+      .iter()
+      .map(|&(x, y)| DVec2::new(x.into(), y.into()))
+      .collect();
+    for (facing, at_least) in [
+      (DVec2::X, 0.0),
+      (DVec2::NEG_X, -1.0),
+      (DVec2::Y, 0.0),
+      (DVec2::NEG_Y, -1.0),
+    ] {
+      let n = ring.len();
+      let mut kept = Vec::new();
+      for i in 0..n {
+        let (a, b) = (ring[i], ring[(i + 1) % n]);
+        let (da, db) = (facing.dot(a) - at_least, facing.dot(b) - at_least);
+        if da >= 0.0 {
+          kept.push(a);
+        }
+        if (da >= 0.0) != (db >= 0.0) {
+          kept.push(a + (b - a) * (da / (da - db)));
+        }
+      }
+      ring = kept;
+    }
+    let n = ring.len();
+    let area: f64 = (0..n).map(|i| ring[i].perp_dot(ring[(i + 1) % n])).sum();
+    area.abs() * f64::from(GRID) * f64::from(GRID)
+  }
+
+  // A simple polygon reaching past its cell is fitted to it, however the
+  // cell's sides cut it: never its hull, and with what of it is inside
+  #[test]
+  fn clipping_never_turns_a_simple_shape_into_its_hull() {
+    let shapes: [&[(f32, f32)]; 6] = [
+      // An arch whose bar is above the cell, and one past each other side
+      &[
+        (0.1, -0.5),
+        (0.9, -0.5),
+        (0.9, 0.8),
+        (0.7, 0.8),
+        (0.7, -0.2),
+        (0.3, -0.2),
+        (0.3, 0.8),
+        (0.1, 0.8),
+      ],
+      &[
+        (1.5, 0.1),
+        (1.5, 0.9),
+        (0.2, 0.9),
+        (0.2, 0.7),
+        (1.2, 0.7),
+        (1.2, 0.3),
+        (0.2, 0.3),
+        (0.2, 0.1),
+      ],
+      &[
+        (0.1, 1.5),
+        (0.1, 0.2),
+        (0.3, 0.2),
+        (0.3, 1.2),
+        (0.7, 1.2),
+        (0.7, 0.2),
+        (0.9, 0.2),
+        (0.9, 1.5),
+      ],
+      &[
+        (-0.5, 0.1),
+        (0.8, 0.1),
+        (0.8, 0.3),
+        (-0.2, 0.3),
+        (-0.2, 0.7),
+        (0.8, 0.7),
+        (0.8, 0.9),
+        (-0.5, 0.9),
+      ],
+      // A comb whose teeth cross the top and come back in
+      &[
+        (0.0, 0.5),
+        (0.1, 0.5),
+        (0.1, -0.5),
+        (0.3, -0.5),
+        (0.3, 0.5),
+        (0.5, 0.5),
+        (0.5, -0.5),
+        (0.7, -0.5),
+        (0.7, 0.5),
+        (1.5, 0.5),
+        (1.5, 1.5),
+        (0.0, 1.5),
+      ],
+      // A zigzag across the whole cell, out and in on both sides
+      &[
+        (-0.5, 0.0),
+        (1.5, 0.2),
+        (-0.5, 0.4),
+        (1.5, 0.6),
+        (-0.5, 0.8),
+        (-0.5, 0.9),
+        (1.6, 0.6),
+        (-0.4, 0.4),
+        (1.6, 0.2),
+        (-0.6, -0.1),
+      ],
+    ];
+    for points in shapes {
+      for reversed in [false, true] {
+        let mut points = points.to_vec();
+        if reversed {
+          points.reverse();
+        }
+        let built = ShapeBuild::of(&shape(&points, false));
+        assert!(!built.hulled, "{points:?}");
+        let area = doubled_area_of(&built.edges) as f64;
+        assert!(
+          (area - clipped_area(&points)).abs()
+            < 1e-3 * clipped_area(&points) + 4.0 * f64::from(GRID),
+          "{points:?}: {area} against {}",
+          clipped_area(&points)
+        );
+        assert!(well_formed(&built.edges), "{points:?}");
+      }
+    }
+  }
+
+  // What reaches the outlines must bound a region: besides no edge twice
+  // and sides run their way, no two edges cross, and round every point the
+  // edges leaving and arriving take turns (so a loop's way on from a point
+  // never depends on which loop came first)
+  #[test]
+  fn well_formed_refuses_crossings_and_points_where_edges_do_not_take_turns() {
+    let g = GRID;
+    let square = |x: i32, y: i32, side: i32| {
+      vec![
+        ((x, y), (x + side, y)),
+        ((x + side, y), (x + side, y + side)),
+        ((x + side, y + side), (x, y + side)),
+        ((x, y + side), (x, y)),
+      ]
+    };
+    // Two squares touching at a corner: they take turns there
+    let touching = [square(0, 0, g / 2), square(g / 2, g / 2, g / 2)].concat();
+    assert!(well_formed(&touching));
+    // A bow tie: its diagonals cross
+    let crossed = vec![
+      ((g / 4, g / 4), (3 * g / 4, 3 * g / 4)),
+      ((3 * g / 4, 3 * g / 4), (3 * g / 4, g / 4)),
+      ((3 * g / 4, g / 4), (g / 4, 3 * g / 4)),
+      ((g / 4, 3 * g / 4), (g / 4, g / 4)),
+    ];
+    assert!(!well_formed(&crossed));
+    // A triangle inside a square, both clockwise, touching at the square's
+    // corner: round it two edges leave, then two arrive
+    let q = g / 4;
+    let triangle = vec![
+      ((0, 0), (q, q / 2)),
+      ((q, q / 2), (q / 2, q)),
+      ((q / 2, q), (0, 0)),
+    ];
+    let inside = [square(0, 0, g / 2), triangle.clone()].concat();
+    assert!(!well_formed(&inside));
+    // Wound the other way it is a hole touching the corner: they take turns
+    let hole: Vec<_> = triangle.iter().map(|&(a, b)| (b, a)).collect();
+    assert!(well_formed(&[square(0, 0, g / 2), hole].concat()));
   }
 
   #[test]

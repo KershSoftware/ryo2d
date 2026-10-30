@@ -857,9 +857,11 @@ mod tests {
     };
     let hair = 0.1 / GRID as f32;
     let mut shapes = Vec::new();
-    for _ in 0..count {
+    for shape in 0..count {
       let mut polygons = Vec::new();
-      for _ in 0..1 + next(2) {
+      // A third are one polygon reaching past the cell (the star below)
+      let reaching = shape % 3 == 0;
+      for _ in 0..if reaching { 1 } else { 1 + next(2) } {
         let point = |next: &mut dyn FnMut(u32) -> u32| {
           let mut p = Vec2::new(next(5) as f32 / 4.0, next(5) as f32 / 4.0);
           if next(3) == 0 {
@@ -869,7 +871,45 @@ mod tests {
         };
         let count = 3 + next(5);
         let mut points: Vec<Vec2> = (0..count).map(|_| point(&mut next)).collect();
-        match next(3) {
+        match if reaching { 3 } else { next(3) } {
+          // Reaching past the cell, and simple: a comb whose base is past
+          // one side and whose teeth come in, so the cell cuts it into a
+          // piece a tooth
+          3 => {
+            let teeth = 2 + next(3);
+            let width = 1.0 / (2 * teeth) as f32;
+            let mut comb = vec![
+              Vec2::new(-0.2, -0.5),
+              Vec2::new(1.2, -0.5),
+              Vec2::new(1.2, -0.2),
+            ];
+            for tooth in (0..teeth).rev() {
+              let x = (2 * tooth) as f32 * width + next(3) as f32 * width / 4.0;
+              let depth = 0.2 + next(4) as f32 * 0.2;
+              comb.extend([
+                Vec2::new(x + width, -0.2),
+                Vec2::new(x + width, depth),
+                Vec2::new(x, depth),
+                Vec2::new(x, -0.2),
+              ]);
+            }
+            comb.push(Vec2::new(-0.2, -0.2));
+            if next(3) == 0 {
+              let i = next(comb.len() as u32) as usize;
+              comb[i] += Vec2::new(next(9) as f32 - 4.0, next(9) as f32 - 4.0) * hair;
+            }
+            // Past the top, the bottom, the left or the right
+            let side = next(4);
+            points = comb
+              .into_iter()
+              .map(|p| match side {
+                0 => p,
+                1 => Vec2::new(p.x, 1.0 - p.y),
+                2 => Vec2::new(p.y, p.x),
+                _ => Vec2::new(1.0 - p.y, p.x),
+              })
+              .collect();
+          }
           // Pinched: through a point inside twice, between two lobes each
           // with an edge along a side of the cell, wound opposite ways
           0 => {
@@ -958,6 +998,53 @@ mod tests {
     tiles.take_changes();
     let state = Outlines::build(tiles.cells_view());
     assert_eq!(traced(&state).len(), 1, "one loop round the four cells");
+  }
+
+  // An arch with its bar above the cell: the cell's top cuts it into two
+  // legs, which collide as two legs, with no warning (the clip runs along
+  // the top both ways between them, and that cancels)
+  #[test]
+  fn a_shape_cut_into_pieces_by_its_cell_collides_as_the_pieces() {
+    let arch = [
+      (0.1, -0.5),
+      (0.9, -0.5),
+      (0.9, 0.8),
+      (0.7, 0.8),
+      (0.7, -0.2),
+      (0.3, -0.2),
+      (0.3, 0.8),
+      (0.1, 0.8),
+    ];
+    let mut tiles = TileColliders::new(3, 2, Vec2::ONE);
+    let (solid, one_way) = (add(&mut tiles, &arch, false), add(&mut tiles, &arch, true));
+    for (_, build) in &tiles.shapes {
+      assert!(!build.hulled, "no hull, no warning");
+    }
+    tiles.set(1, 1, solid);
+    let legs = [
+      expect(&[(1.1, 1.0), (1.3, 1.0), (1.3, 1.8), (1.1, 1.8)]),
+      expect(&[(1.7, 1.0), (1.9, 1.0), (1.9, 1.8), (1.7, 1.8)]),
+    ];
+    assert_eq!(traced(&Outlines::build(tiles.cells_view())), legs);
+    // Beside solid cells, edited round
+    tiles.take_changes();
+    let mut state = Outlines::build(tiles.cells_view());
+    walk(
+      &mut state,
+      &mut tiles,
+      &[E, S, solid, solid],
+      0x0a7c_4e55,
+      300,
+    );
+    // A one-way arch is two one-way legs' tops
+    let TileCell::Shape(index) = one_way else {
+      unreachable!()
+    };
+    let g = |v: f32| (v * GRID as f32).round() as i32;
+    assert_eq!(
+      tiles.shapes[usize::from(index)].1.tops,
+      [((g(0.1), 0), (g(0.3), 0)), ((g(0.7), 0), (g(0.9), 0))]
+    );
   }
 
   #[test]
