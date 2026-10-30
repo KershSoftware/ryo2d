@@ -7,6 +7,7 @@ The renderers the render passes call (`WgpuRenderer`, `SpriteGpuRenderer` (textu
 ```
 World (queried each frame):
   Renderable / CompositeTile ─→ EntityDrawer ────────┐
+  MapRoot tile layers ─→ TileDrawer (kept chunks) ───┤
   Scene::render(gpu) ─→ BatchCollector ──────────────┤
   ParallaxLayer ─→ laid out per camera ──────────────┼→ DrawList (z-sorted, world space)
   Trail2D / Line2D ─→ polylines (triangles) ─────────┤        │

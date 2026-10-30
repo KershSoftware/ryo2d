@@ -12,6 +12,18 @@ pub(crate) struct Draw {
   pub(crate) state: DrawState,
   /// Instances for quads, indices for triangles
   pub(crate) range: Range<u32>,
+  /// Which buffer the range is of
+  pub(crate) source: DrawSource,
+}
+
+/// Where a draw's instances or indices are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DrawSource {
+  /// The frame's own buffers
+  Frame,
+  /// A tile chunk's range of the chunk arena, placed through tile slot
+  /// `slot`
+  Chunk { slot: u32 },
 }
 
 /// Where one drawable went, as `place` reports it to [`plan_draws`].
@@ -24,6 +36,13 @@ pub(crate) enum Placed {
     state: DrawState,
     indices: Range<u32>,
   },
+  /// A tile chunk's instances, already in the chunk arena, drawn through
+  /// tile slot `slot`
+  Chunk {
+    state: DrawState,
+    instances: Range<u32>,
+    slot: u32,
+  },
 }
 
 /// Split sorted `items` into draw calls, into `out` (cleared first).
@@ -32,7 +51,9 @@ pub(crate) enum Placed {
 /// stream and says where, or returns `None` to drop it. Quads are numbered
 /// from `first_quad` in the order placed. Consecutive quads with equal
 /// states merge into one draw, as do consecutive triangle items with equal
-/// states and adjacent index ranges; anything else starts a new draw.
+/// states and adjacent index ranges; anything else starts a new draw. A
+/// chunk is a draw of its own (its instances are in the chunk arena, under
+/// a slot of its own) and takes no quad number.
 /// Returns the number the next quad would get.
 pub(crate) fn plan_draws<'i>(
   items: impl IntoIterator<Item = &'i DrawItem>,
@@ -50,10 +71,26 @@ pub(crate) fn plan_draws<'i>(
         (Stream::Quads, state, next_quad - 1..next_quad)
       }
       Some(Placed::Triangles { state, indices }) => (Stream::Triangles, state, indices),
+      Some(Placed::Chunk {
+        state,
+        instances,
+        slot,
+      }) => {
+        out.push(Draw {
+          stream: Stream::Quads,
+          state,
+          range: instances,
+          source: DrawSource::Chunk { slot },
+        });
+        continue;
+      }
     };
     match out.last_mut() {
       Some(draw)
-        if draw.stream == stream && draw.state == state && draw.range.end == range.start =>
+        if draw.source == DrawSource::Frame
+          && draw.stream == stream
+          && draw.state == state
+          && draw.range.end == range.start =>
       {
         draw.range.end = range.end;
       }
@@ -61,6 +98,7 @@ pub(crate) fn plan_draws<'i>(
         stream,
         state,
         range,
+        source: DrawSource::Frame,
       }),
     }
   }
@@ -181,5 +219,45 @@ mod tests {
         (Stream::Triangles, 18..24)
       ]
     );
+  }
+
+  #[test]
+  fn chunks_are_draws_of_their_own_and_take_no_quad_number() {
+    let tile = DrawState {
+      shader: BatchShader::Tile,
+      ..state(0, BlendMode::Alpha)
+    };
+    let sprite = state(0, BlendMode::Alpha);
+    let chunk = |instances: std::ops::Range<u32>, slot| Placed::Chunk {
+      state: tile,
+      instances,
+      slot,
+    };
+    // Equal states and adjacent arena ranges, even in one slot, never merge
+    let placed = [
+      Placed::Quad(sprite),
+      chunk(0..4, 0),
+      chunk(4..9, 0),
+      chunk(9..10, 1),
+      Placed::Quad(sprite),
+    ];
+    let mut out = Vec::new();
+    let mut i = 0;
+    let next = plan_draws(list(5).items(), &mut out, 10, |_| {
+      i += 1;
+      Some(placed[i - 1].clone())
+    });
+    let draws: Vec<_> = out.iter().map(|d| (d.range.clone(), d.source)).collect();
+    assert_eq!(
+      draws,
+      [
+        (10..11, DrawSource::Frame),
+        (0..4, DrawSource::Chunk { slot: 0 }),
+        (4..9, DrawSource::Chunk { slot: 0 }),
+        (9..10, DrawSource::Chunk { slot: 1 }),
+        (11..12, DrawSource::Frame),
+      ]
+    );
+    assert_eq!(next, 12);
   }
 }

@@ -28,6 +28,7 @@ use crate::core::render::scratch::recycle;
 use crate::core::render::text::{
   TextSources, TextTargets, WorldTextFrame, emit_world_text, layout_world_text, prewarm,
 };
+use crate::core::render::tiles::TileLayerFrame;
 use crate::core::render::ui::{UI_CAMERA, ui_view};
 use crate::core::render::ui_retain::{StampSources, UiRenderEnv, shown_version};
 use crate::core::render::{
@@ -260,6 +261,19 @@ impl Engine {
         &mut gpu,
         rend.device(),
         rend.queue(),
+        &mut self.draw_list,
+      );
+      // Spawned maps' tile layers: their visible chunks, built into the
+      // batch's chunk store when they change
+      let tile_frame = TileLayerFrame {
+        cameras: &self.camera_draws,
+        alpha,
+      };
+      self.tile_drawer.collect(
+        &mut self.world,
+        &tile_frame,
+        &mut gpu,
+        batch.chunks_mut(),
         &mut self.draw_list,
       );
       self.parallax = quads;

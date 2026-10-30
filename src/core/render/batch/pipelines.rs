@@ -153,6 +153,8 @@ struct Built {
 pub(crate) struct Pipelines {
   /// Camera, then texture
   layout: wgpu::PipelineLayout,
+  /// Camera, texture, then the tile slot (tile chunks)
+  tile_layout: wgpu::PipelineLayout,
   /// Camera only (untextured lines, lights and shadows)
   camera_only: wgpu::PipelineLayout,
   sprite: wgpu::ShaderModule,
@@ -167,10 +169,16 @@ impl Pipelines {
     device: &wgpu::Device,
     camera: &wgpu::BindGroupLayout,
     textures: &wgpu::BindGroupLayout,
+    tile_slots: &wgpu::BindGroupLayout,
   ) -> Self {
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
       label: Some("Batch Pipeline Layout"),
       bind_group_layouts: &[Some(camera), Some(textures)],
+      immediate_size: 0,
+    });
+    let tile_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+      label: Some("Batch Tile Pipeline Layout"),
+      bind_group_layouts: &[Some(camera), Some(textures), Some(tile_slots)],
       immediate_size: 0,
     });
     let camera_only = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -186,6 +194,7 @@ impl Pipelines {
     };
     Self {
       layout,
+      tile_layout,
       camera_only,
       sprite: module("Sprite Shader", crate::core::shaders::compose::SPRITE),
       line: module("Line Shader", crate::core::shaders::compose::LINE),
@@ -226,6 +235,16 @@ impl Pipelines {
       }
       (BatchShader::SpriteEffect, Stream::Quads, true, false) => {
         (&self.sprite, &self.layout, "fs_effect_premultiplied")
+      }
+      // Tile chunks are placed by `vs_tile` and shaded as sprites
+      (BatchShader::Tile, Stream::Quads, _, true) => {
+        (&self.sprite, &self.tile_layout, "fs_base_linear")
+      }
+      (BatchShader::Tile, Stream::Quads, false, false) => {
+        (&self.sprite, &self.tile_layout, "fs_base")
+      }
+      (BatchShader::Tile, Stream::Quads, true, false) => {
+        (&self.sprite, &self.tile_layout, "fs_base_premultiplied")
       }
       (BatchShader::Line, Stream::Triangles, _, _) => (&self.line, &self.camera_only, "fs_main"),
       (BatchShader::LineTextured, Stream::Triangles, _, _) => {
@@ -379,7 +398,8 @@ pub(crate) fn custom_pipeline(
 }
 
 /// A pipeline drawing `key`'s stream (instanced quads or indexed triangles)
-/// with `module`'s `vs_main` and `fragment`, blended and formatted for `key`.
+/// with `module`'s `vs_main` (`vs_tile` for tile chunks) and `fragment`,
+/// blended and formatted for `key`.
 fn batch_pipeline(
   device: &wgpu::Device,
   layout: &wgpu::PipelineLayout,
@@ -404,7 +424,10 @@ fn batch_pipeline(
     layout: Some(layout),
     vertex: wgpu::VertexState {
       module,
-      entry_point: Some("vs_main"),
+      entry_point: Some(match key.shader {
+        BatchShader::Tile => "vs_tile",
+        _ => "vs_main",
+      }),
       buffers: match key.stream {
         Stream::Quads => &[Some(QUAD_LAYOUT), Some(INSTANCE_LAYOUT)],
         Stream::Triangles => &[Some(VERTEX2D_LAYOUT)],
@@ -424,8 +447,11 @@ fn batch_pipeline(
         ..Default::default()
       },
     }),
+    // No culling: a diagonally flipped tile's quad has its axes swapped,
+    // which turns it over
     primitive: wgpu::PrimitiveState {
       topology: wgpu::PrimitiveTopology::TriangleList,
+      cull_mode: None,
       ..Default::default()
     },
     depth_stencil: None,

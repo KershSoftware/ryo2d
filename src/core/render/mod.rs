@@ -57,7 +57,6 @@ mod passes;
 mod pipeline;
 pub(crate) mod scratch;
 pub(crate) mod text;
-#[allow(dead_code)] // drawn by the chunk renderer
 pub(crate) mod tiles;
 pub(crate) mod ui;
 pub(crate) mod ui_renderer;
@@ -68,8 +67,8 @@ pub(crate) use context::{EffectStages, FrameTargets};
 pub use debug_draw::{DebugDraw, DebugPen};
 pub(crate) use debug_draw::{begin_debug_fixed_step, end_debug_fixed_step};
 pub(crate) use draw_list::{
-  DrawGlyph, DrawItem, DrawKind, DrawLight, DrawList, DrawPayload, DrawTriangles, SpriteLook,
-  SpriteShading, reach,
+  DrawChunk, DrawGlyph, DrawItem, DrawKind, DrawLight, DrawList, DrawPayload, DrawTriangles,
+  SpriteLook, SpriteShading, reach,
 };
 pub(crate) use entities::EntityDrawer;
 pub use frame::FrameInfo;

@@ -492,6 +492,18 @@ impl Scene for Busy {
       Transform::from_xy(0.0, 0.0),
       Line2D::horizontal(50.0, 5.0, 100.0, Color::WHITE, 2.0),
     ));
+    // A map over two tilesets, the second layer unlit, on screen
+    let first = solid_tiles(ctx, &[RED, [30, 200, 60, 255]]);
+    let second = solid_tiles(ctx, &[[30, 60, 230, 255]]);
+    let mut map = filled_map(UVec2::new(16, 12), vec![first, second], |cell| {
+      (cell.y % 3 == 0).then(|| Tile::new((cell.x % 2) as u16, 0))
+    });
+    let top = map.add_tile_layer("top");
+    if let Some(grid) = map.tiles_mut(top) {
+      grid.set(IVec2::new(3, 4), Some(Tile::new(0, 1)));
+    }
+    map.layers[top].info.lit = false;
+    spawn_map(ctx, map, Vec2::new(-4.0, 2.0));
     ctx.effects().set_vignette(0.4);
     ctx.effects().set_bloom(0.6);
     let lut = ctx.assets().add(ColorLut::identity_strip(16));
@@ -543,6 +555,7 @@ fn steady_frames_create_no_bind_groups() {
     return;
   };
   engine.step_frames(3).unwrap();
+  assert!(chunks(&engine).chunk_count() > 0, "a map on screen");
   let before = created_on_this_thread();
   engine.step_frames(3).unwrap();
   assert_eq!(created_on_this_thread() - before, 0);
@@ -814,6 +827,7 @@ fn the_batch_pipelines_build_in_both_formats() {
     (BatchShader::TextColor, Stream::Quads),
     (BatchShader::TextMsdf, Stream::Quads),
     (BatchShader::Sprite, Stream::Quads),
+    (BatchShader::Tile, Stream::Quads),
     (BatchShader::Line, Stream::Triangles),
     (BatchShader::Light(LightStep::Add), Stream::Quads),
     (BatchShader::Light(LightStep::Shadow), Stream::Triangles),
@@ -845,4 +859,285 @@ fn the_batch_pipelines_build_in_both_formats() {
   }
   let error = pollster::block_on(scope.pop());
   assert!(error.is_none(), "{error:?}");
+}
+
+// Tile chunks: what they build, upload and draw. Their pixels are checked in
+// `tests/e2e/tilemap.rs`
+
+/// A tileset of one solid 8 px tile per colour, in a row
+fn solid_tiles(ctx: &mut SceneContext, colours: &[[u8; 4]]) -> Tileset {
+  tile_row(ctx, 8, colours)
+}
+
+/// A tileset of one solid `side` px tile per colour, in a row
+fn tile_row(ctx: &mut SceneContext, side: u32, colours: &[[u8; 4]]) -> Tileset {
+  let count = colours.len() as u32;
+  let (width, height) = (side * count, side);
+  let mut data = Vec::with_capacity((width * height * 4) as usize);
+  for _ in 0..height {
+    for x in 0..width {
+      data.extend_from_slice(&colours[(x / side) as usize]);
+    }
+  }
+  let image = ctx.assets().add(Image::from_rgba(data, width, height));
+  let size = UVec2::new(width, height);
+  let mut set = Tileset::new(
+    "tiles",
+    UVec2::splat(side),
+    TilesetImage::Atlas { image, size },
+  );
+  set.columns = count;
+  set.tile_count = count;
+  set
+}
+
+/// A map of `cells` 8 px cells over `tilesets` with a tile layer "ground"
+/// holding `tile(cell)` in every cell
+fn filled_map(
+  cells: UVec2,
+  tilesets: Vec<Tileset>,
+  tile: impl Fn(IVec2) -> Option<Tile>,
+) -> TileMap {
+  let mut map = TileMap::new(cells, UVec2::splat(8));
+  for set in tilesets {
+    map.add_tileset(TilesetSource::Embedded(std::sync::Arc::new(set)));
+  }
+  let layer = map.add_tile_layer("ground");
+  if let Some(grid) = map.tiles_mut(layer) {
+    for y in 0..cells.y as i32 {
+      for x in 0..cells.x as i32 {
+        let cell = IVec2::new(x, y);
+        grid.set(cell, tile(cell));
+      }
+    }
+  }
+  map
+}
+
+fn spawn_map(ctx: &mut SceneContext, map: TileMap, at: Vec2) -> Entity {
+  let handle = ctx.assets().add(map);
+  ctx
+    .world
+    .spawn((MapRoot::new(handle), Transform::from_translation(at)))
+    .id()
+}
+
+/// The world's one map entity
+fn the_map(engine: &mut HeadlessEngine) -> Entity {
+  let world = engine.world_mut();
+  let maps: Vec<Entity> = world
+    .query_filtered::<Entity, With<MapRoot>>()
+    .iter(world)
+    .collect();
+  assert_eq!(maps.len(), 1, "one map");
+  maps[0]
+}
+
+fn chunks(engine: &HeadlessEngine) -> &crate::core::render::batch::ChunkStore {
+  engine.engine.batch.as_ref().unwrap().chunks()
+}
+
+/// A pixel-art engine `size` px square over `setup`, read back exactly
+fn tile_engine(size: u32, setup: fn(&mut SceneContext)) -> Option<HeadlessEngine> {
+  struct Tiles(fn(&mut SceneContext));
+  impl Scene for Tiles {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
+      ctx.look().tonemap = Tonemap::Clamp;
+      (self.0)(ctx);
+    }
+  }
+  engine(
+    EngineBuilder::new()
+      .pixel_art(size, size)
+      .start_scene(Tiles(setup)),
+  )
+}
+
+#[test]
+fn a_moving_map_draws_where_it_is_without_rebuilding_chunks() {
+  let Some(mut engine) = tile_engine(64, |ctx| {
+    let set = solid_tiles(ctx, &[RED]);
+    let map = filled_map(UVec2::splat(8), vec![set], |cell| {
+      (cell == IVec2::ZERO).then_some(Tile::new(0, 0))
+    });
+    spawn_map(ctx, map, Vec2::ZERO);
+  }) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  assert_eq!(engine.frame().unwrap().get_pixel(4, 4).0, RED);
+  let built = chunks(&engine).rebuilds();
+  assert_eq!(built, 1, "one chunk built");
+  let map = the_map(&mut engine);
+  for step in 1..=4 {
+    let at = Vec2::new(9.0 * step as f32, 5.0 * step as f32);
+    engine
+      .world_mut()
+      .get_mut::<Transform>(map)
+      .unwrap()
+      .translation = at;
+    engine.step().unwrap();
+    let frame = engine.frame().unwrap();
+    let (x, y) = (at.x as u32, at.y as u32);
+    assert_eq!(frame.get_pixel(x + 4, y + 4).0, RED, "drawn at {at}");
+    assert_ne!(frame.get_pixel(x - 1, y + 4).0, RED, "not left of {at}");
+    assert_eq!(chunks(&engine).rebuilds(), built, "rebuilt at {at}");
+  }
+}
+
+#[test]
+fn an_interpolated_map_draws_between_its_last_two_steps() {
+  use std::time::Duration;
+  /// Moves its map 20 px right every fixed step
+  struct Mover;
+  impl Scene for Mover {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
+      ctx.look().tonemap = Tonemap::Clamp;
+      let set = solid_tiles(ctx, &[RED]);
+      let map = filled_map(UVec2::splat(4), vec![set], |cell| {
+        (cell == IVec2::ZERO).then_some(Tile::new(0, 0))
+      });
+      let map = spawn_map(ctx, map, Vec2::new(0.0, 8.0));
+      ctx.world.entity_mut(map).insert(Interpolated);
+    }
+    fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+      let mut maps = ctx.world.query_filtered::<&mut Transform, With<MapRoot>>();
+      for mut transform in maps.iter_mut(ctx.world) {
+        transform.translation.x += 20.0;
+      }
+      SceneAction::Continue
+    }
+  }
+  let builder = EngineBuilder::new()
+    .pixel_art(120, 30)
+    .fixed_hz(50)
+    .start_scene(Mover);
+  let Some(mut engine) = engine(builder) else {
+    return;
+  };
+  // Two whole steps: the map is at x = 40 and was at 20
+  engine.step_frames(2).unwrap();
+  // One more step (to 60, from 40) and half a step left over: x = 50
+  engine.engine.frame(Some(Duration::from_millis(30)));
+  let frame = engine.frame().unwrap();
+  assert_eq!(frame.get_pixel(51, 11).0, RED, "drawn at x = 50");
+  assert_ne!(frame.get_pixel(61, 11).0, RED, "not at the stepped x = 60");
+}
+
+/// A 128 x 128 map (4 x 4 chunks of 256 px) full of tiles from two
+/// tilesets in a checkerboard, with its corner up and left of the view so
+/// the view's 64 px meet the corners of four chunks
+fn big_map(ctx: &mut SceneContext) {
+  let first = solid_tiles(ctx, &[RED, [240, 220, 20, 255]]);
+  let second = solid_tiles(ctx, &[[30, 60, 230, 255]]);
+  let map = filled_map(UVec2::splat(128), vec![first, second], |cell| {
+    Some(Tile::new(((cell.x + cell.y) % 2) as u16, 0))
+  });
+  spawn_map(ctx, map, Vec2::splat(-224.0));
+}
+
+#[test]
+fn only_visible_chunks_draw() {
+  let Some(mut engine) = tile_engine(64, big_map) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  // Four chunks, each a draw per tileset
+  assert_eq!(engine.engine.debug_stats().draw_calls, 8);
+  assert_eq!(
+    chunks(&engine).chunk_count(),
+    4,
+    "only those seen are built"
+  );
+  // Inside chunk (1, 1) alone
+  let map = the_map(&mut engine);
+  engine
+    .world_mut()
+    .get_mut::<Transform>(map)
+    .unwrap()
+    .translation = Vec2::splat(-300.0);
+  engine.step().unwrap();
+  assert_eq!(engine.engine.debug_stats().draw_calls, 2);
+  assert_eq!(chunks(&engine).rebuilds(), 4, "nothing built again");
+}
+
+#[test]
+fn an_edit_rebuilds_one_chunk() {
+  let Some(mut engine) = tile_engine(64, big_map) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  let built = chunks(&engine).rebuilds();
+  let map = the_map(&mut engine);
+  // Cell (30, 30) is in chunk (0, 0), at (16, 16) on screen
+  let yellow = Tile::new(0, 1);
+  let mut maps = MapsView::new(engine.world_mut());
+  assert!(maps.set_tile(map, "ground", IVec2::new(30, 30), Some(yellow)));
+  engine.step().unwrap();
+  assert_eq!(chunks(&engine).rebuilds(), built + 1);
+  assert_eq!(
+    engine.frame().unwrap().get_pixel(20, 20).0,
+    [240, 220, 20, 255]
+  );
+  // A chunk nothing draws is not built for an edit
+  let mut maps = MapsView::new(engine.world_mut());
+  assert!(maps.set_tile(map, "ground", IVec2::new(100, 100), Some(yellow)));
+  engine.step_frames(2).unwrap();
+  assert_eq!(chunks(&engine).rebuilds(), built + 1);
+}
+
+#[test]
+fn a_despawned_map_frees_its_chunks() {
+  let Some(mut engine) = tile_engine(64, big_map) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  assert!(chunks(&engine).instances_in_use() > 0);
+  assert!(engine.engine.batch.as_ref().unwrap().has_chunk_buffer());
+  assert_eq!(engine.engine.tile_drawer.padded_count(), 2);
+  let map = the_map(&mut engine);
+  engine.world_mut().despawn(map);
+  engine.step().unwrap();
+  assert_eq!(chunks(&engine).chunk_count(), 0);
+  assert_eq!(chunks(&engine).instances_in_use(), 0);
+  assert!(
+    !engine.engine.batch.as_ref().unwrap().has_chunk_buffer(),
+    "the arena's buffer goes"
+  );
+  assert_eq!(
+    engine.engine.tile_drawer.padded_count(),
+    0,
+    "the padded tilesets go"
+  );
+}
+
+#[test]
+fn a_large_tileset_draws_from_its_own_texture() {
+  // 100 tiles of 16 px pad into 32 px cells, ten a row: 320 px, over the
+  // atlas's 256 px, so the padded image is a texture of its own (mips too)
+  let Some(mut engine) = tile_engine(64, |ctx| {
+    let colours: Vec<[u8; 4]> = (0..100u8)
+      .map(|i| [i * 2 + 20, 250 - i * 2, 90, 255])
+      .collect();
+    let set = tile_row(ctx, 16, &colours);
+    let mut map = TileMap::new(UVec2::splat(4), UVec2::splat(16));
+    map.add_tileset(TilesetSource::Embedded(std::sync::Arc::new(set)));
+    let layer = map.add_tile_layer("ground");
+    if let Some(grid) = map.tiles_mut(layer) {
+      grid.set(IVec2::new(0, 0), Some(Tile::new(0, 0)));
+      grid.set(IVec2::new(1, 0), Some(Tile::new(0, 57)));
+      grid.set(IVec2::new(2, 1), Some(Tile::new(0, 99)));
+    }
+    spawn_map(ctx, map, Vec2::ZERO);
+  }) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  let frame = engine.frame().unwrap();
+  let colour = |i: u8| [i * 2 + 20, 250 - i * 2, 90, 255];
+  assert_eq!(frame.get_pixel(8, 8).0, colour(0));
+  assert_eq!(frame.get_pixel(24, 8).0, colour(57));
+  assert_eq!(frame.get_pixel(40, 24).0, colour(99));
+  let gpu = engine.engine.sprite_gpu.as_ref().unwrap();
+  assert_eq!(gpu.standalone_entity_count(), 1, "a texture of its own");
 }

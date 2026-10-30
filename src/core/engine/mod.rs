@@ -182,6 +182,7 @@ pub struct Engine {
   ui_renderer: Option<UiRenderer>,
   lighting: Option<LightingRenderer>,
   entity_drawer: EntityDrawer,
+  pub(crate) tile_drawer: crate::core::render::tiles::TileDrawer,
   // Text layout (synced with `Fonts`), the glyph rasterizer for that
   // registry and the text warnings already given
   text: TextEngine,
@@ -682,6 +683,7 @@ impl Engine {
       ui_renderer: None,
       lighting: None,
       entity_drawer: EntityDrawer::default(),
+      tile_drawer: Default::default(),
       text: TextEngine::new(),
       glyph_raster: GlyphRasterizer::new(),
       text_warned: Default::default(),

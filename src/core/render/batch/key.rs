@@ -98,6 +98,8 @@ pub(crate) enum BatchShader {
   TextColor,
   /// An MSDF glyph, with outline or as a soft shadow or glow layer
   TextMsdf,
+  /// A tile chunk's instances, placed through its slot (`tile.wgsl`)
+  Tile,
 }
 
 /// One draw of a light into a light buffer. A shadowed light draws, inside

@@ -80,3 +80,6 @@ mod ui_renderer;
 
 #[path = "e2e/ui_fragments.rs"]
 mod ui_fragments;
+
+#[path = "e2e/tilemap.rs"]
+mod tilemap;

@@ -7,11 +7,12 @@ use std::sync::Arc;
 
 use wgpu::util::DeviceExt;
 
+use super::chunks::{ChunkBuffers, ChunkStore, SLOT_STRIDE};
 use super::pipelines::{self, PipelineKey, Pipelines};
 use super::polyline::{Triangles, Vertex2D};
 use super::{
-  BatchShader, BlendMode, Draw, DrawState, LightStep, PageKind, Placed, Sampling, Stream,
-  plan_draws,
+  BatchShader, BlendMode, Draw, DrawSource, DrawState, LightStep, PageKind, Placed, Sampling,
+  Stream, plan_draws,
 };
 use crate::core::ecs::Entity;
 use crate::core::graphics::camera_gpu::CameraUniforms;
@@ -45,6 +46,10 @@ pub(crate) struct Batch2D {
   // This frame's trails and lines, in world space for every camera; built
   // while the frame is gathered and uploaded once
   triangles: Triangles,
+  // Tile chunks: built while the frame is gathered, written when they
+  // change, drawn through the frame's tile slots
+  chunks: ChunkStore,
+  chunk_buffers: ChunkBuffers,
   vertices: GrowingBuffer,
   indices: GrowingBuffer,
   // Makes the new versions of game sprite shaders already drawn, while the
@@ -121,10 +126,17 @@ impl Batch2D {
   ) -> Self {
     let camera_layout = pipelines::camera_layout(device);
     let texture_layout = pipelines::texture_layout(device);
+    let chunk_buffers = ChunkBuffers::new(device);
+    let pipelines = Pipelines::new(
+      device,
+      &camera_layout,
+      &texture_layout,
+      chunk_buffers.slot_layout(),
+    );
     Self {
       format,
       presentation,
-      pipelines: Pipelines::new(device, &camera_layout, &texture_layout),
+      pipelines,
       camera_layout,
       camera_groups: HashMap::new(),
       quad: unit_quad(device, "Batch Quad"),
@@ -133,6 +145,8 @@ impl Batch2D {
       placed: Vec::new(),
       draws: Vec::new(),
       triangles: Triangles::default(),
+      chunks: ChunkStore::default(),
+      chunk_buffers,
       vertices: GrowingBuffer::new(
         device,
         "Batch Vertices",
@@ -263,6 +277,23 @@ impl Batch2D {
     &mut self.triangles
   }
 
+  /// The tile chunks, for gathering the frame's
+  pub(crate) fn chunks_mut(&mut self) -> &mut ChunkStore {
+    &mut self.chunks
+  }
+
+  /// The tile chunks (tests)
+  #[cfg(test)]
+  pub(crate) fn chunks(&self) -> &ChunkStore {
+    &self.chunks
+  }
+
+  /// Whether the chunk arena has a GPU buffer (tests)
+  #[cfg(test)]
+  pub(crate) fn has_chunk_buffer(&self) -> bool {
+    self.chunk_buffers.instances().is_some()
+  }
+
   /// The layout cameras' uniforms are bound with (group 0)
   pub(crate) fn camera_layout(&self) -> &wgpu::BindGroupLayout {
     &self.camera_layout
@@ -305,12 +336,14 @@ impl Batch2D {
   /// Lay out the sorted `list` for each of `cameras` and upload it once.
   ///
   /// Makes the list's textures resident, and `extra_textures` (the UI
-  /// renderer's sprites) with them; then, per camera, remaps the sprites it
-  /// sees into their atlas slots in draw order, in a range of the instance
-  /// buffer of its own, and merges consecutive drawables with equal draw
-  /// states into draws (trails and lines by their index ranges). Call once
-  /// per frame, after [`sync_cameras`](Self::sync_cameras) and after the
-  /// frame's triangles are built.
+  /// renderer's sprites) with them, and writes the tile chunks built while
+  /// the frame was gathered and the frame's tile slots; then, per camera,
+  /// remaps the sprites it sees into their atlas slots in draw order, in a
+  /// range of the instance buffer of its own, and merges consecutive
+  /// drawables with equal draw states into draws (trails and lines by their
+  /// index ranges; each chunk a draw of its own, from the chunk arena).
+  /// Call once per frame, after [`sync_cameras`](Self::sync_cameras) and
+  /// after the frame's triangles and chunks are built.
   pub(crate) fn prepare(
     &mut self,
     device: &wgpu::Device,
@@ -321,6 +354,11 @@ impl Batch2D {
     extra_textures: &[TextureId],
   ) {
     textures.prepare_textures(device, queue, list, extra_textures);
+    // The chunks built while the frame was gathered, and the frame's tile
+    // slots with their images' places
+    self
+      .chunk_buffers
+      .upload(device, queue, &mut self.chunks, textures);
     // A game shader whose pipeline the GPU rejected draws its last good
     // version from the next frame
     self
@@ -340,8 +378,10 @@ impl Batch2D {
       placed,
       draws,
       triangles,
+      chunks,
       ..
     } = self;
+    let chunks: &ChunkStore = chunks;
     placed.clear();
     draws.resize_with(cameras.len(), CameraDraws::default);
     // The previous sprite's texture and where it lives, reused while
@@ -356,6 +396,36 @@ impl Batch2D {
       let mut place = |item: &DrawItem| {
         let index = match item.payload {
           DrawPayload::Sprite(index) => index,
+          DrawPayload::Chunk(index) => {
+            // Its instances are in the chunk arena; its slot places them
+            // and maps their UVs into the image's place
+            let chunk = list.chunk(index)?;
+            let instances = chunks
+              .range(chunk.key)
+              .filter(|range| range.len() == chunk.count as usize)?;
+            let (slot, _) = textures.slot(chunk.texture)?;
+            let key = PipelineKey {
+              shader: BatchShader::Tile,
+              blend: chunk.blend,
+              stream: Stream::Quads,
+              page: PageKind::of(Some(slot.page)),
+              format,
+            };
+            if ensured.is_none_or(|(last, _)| last != key) {
+              pipelines.ensure(device, key, None);
+              ensured = Some((key, BatchShader::Tile));
+            }
+            return Some(Placed::Chunk {
+              state: DrawState {
+                page: Some(slot.page),
+                shader: BatchShader::Tile,
+                blend: chunk.blend,
+                sampling: chunk.filter.resolve(presentation),
+              },
+              instances,
+              slot: chunk.slot,
+            });
+          }
           DrawPayload::Glyph(index) => {
             let glyph = list.glyph(index)?;
             let key = PipelineKey {
@@ -602,6 +672,19 @@ impl Batch2D {
     else {
       return;
     };
+    // A chunk's instances are in the chunk arena, placed by its slot
+    let (instances, slot) = match draw.source {
+      DrawSource::Frame => (&self.instances, None),
+      DrawSource::Chunk { slot } => {
+        let (Some(instances), Some(group)) = (
+          self.chunk_buffers.instances(),
+          self.chunk_buffers.slot_group(),
+        ) else {
+          return;
+        };
+        (instances, Some((group, slot * SLOT_STRIDE)))
+      }
+    };
     // Untextured lines and lights bind no texture; everything else samples
     // a page
     let texture_group = match draw.state.page {
@@ -623,12 +706,15 @@ impl Batch2D {
     if let Some(group) = texture_group {
       pass.set_bind_group(1, group, &[]);
     }
+    if let Some((group, offset)) = slot {
+      pass.set_bind_group(2, group, &[offset]);
+    }
     match draw.stream {
       Stream::Quads => {
         pass.set_vertex_buffer(0, self.quad.slice(..));
         let size = std::mem::size_of::<SpriteInstance>() as u64;
         let (start, end) = (u64::from(draw.range.start), u64::from(draw.range.end));
-        pass.set_vertex_buffer(1, self.instances.slice(start * size..end * size));
+        pass.set_vertex_buffer(1, instances.slice(start * size..end * size));
         pass.draw(0..6, 0..draw.range.len() as u32);
       }
       Stream::Triangles => {
@@ -704,6 +790,7 @@ fn light_key(step: LightStep, format: wgpu::TextureFormat) -> PipelineKey {
 /// A light-buffer draw of `range` (instances or indices, by the step's stream).
 fn light_draw(step: LightStep, range: std::ops::Range<u32>) -> Draw {
   Draw {
+    source: DrawSource::Frame,
     stream: step.stream(),
     state: DrawState {
       page: None,

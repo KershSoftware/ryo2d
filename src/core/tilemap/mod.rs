@@ -8,7 +8,6 @@ mod edit;
 mod grid;
 mod ldtk;
 mod map;
-#[allow(dead_code)] // drawn by the chunk renderer
 pub(crate) mod padded;
 mod property;
 mod spawn;
@@ -27,10 +26,10 @@ pub use map::{
   TilesetSource,
 };
 pub use property::{Properties, PropertyValue};
-pub(crate) use spawn::spawn_maps;
 pub use spawn::{
   IntGridKey, MapEvent, MapIds, MapLayerRef, MapObject, MapRoot, MapTile, TileLayerData,
 };
+pub(crate) use spawn::{MapLayers, map_asset, spawn_maps};
 pub use tile::{Tile, TileFlip};
 pub use tiled::{TiledMapLoader, TiledTilesetLoader};
 pub use tileset::{

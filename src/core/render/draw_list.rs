@@ -6,7 +6,7 @@
 //! apart, for the lighting pass.
 
 use super::CameraDraw;
-use super::batch::{BatchShader, BlendMode, Filter, Sampling};
+use super::batch::{BatchShader, BlendMode, ChunkKey, Filter, Sampling};
 use crate::core::ecs::Entity;
 use crate::core::ecs::Vec2;
 use std::ops::Range;
@@ -36,6 +36,8 @@ pub(crate) enum DrawPayload {
   Triangles(usize),
   /// Index into the list's glyph items
   Glyph(usize),
+  /// Index into the list's tile chunks
+  Chunk(usize),
 }
 
 /// One drawable and where it sorts.
@@ -139,6 +141,29 @@ pub(crate) struct DrawGlyph {
   pub(crate) max: Vec2,
 }
 
+/// One tileset's tiles of a chunk of a tile layer, waiting to be drawn:
+/// its instances wait in the batch's chunk store under `key`, built once,
+/// and its slot places them (the layer's transform, the camera's parallax,
+/// the tileset's place on its page).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DrawChunk {
+  pub(crate) key: ChunkKey,
+  /// The tileset's padded image
+  pub(crate) texture: TextureId,
+  /// How many instances it has
+  pub(crate) count: u32,
+  pub(crate) blend: BlendMode,
+  pub(crate) filter: Filter,
+  /// The cameras on these layers draw it
+  pub(crate) layers: RenderLayers,
+  /// The world box its tiles stay inside, under the slot's transform and
+  /// parallax
+  pub(crate) min: Vec2,
+  pub(crate) max: Vec2,
+  /// Its slot this frame
+  pub(crate) slot: u32,
+}
+
 /// A light waiting to be drawn into the light buffers of the lit cameras
 /// that see it.
 #[derive(Debug, Clone)]
@@ -166,6 +191,7 @@ pub(crate) struct DrawList {
   sprites: Vec<DrawSprite>,
   triangles: Vec<DrawTriangles>,
   glyphs: Vec<DrawGlyph>,
+  chunks: Vec<DrawChunk>,
   lights: Vec<DrawLight>,
   next_sequence: u32,
   sorted: bool,
@@ -179,6 +205,7 @@ impl DrawList {
     self.sprites.clear();
     self.triangles.clear();
     self.glyphs.clear();
+    self.chunks.clear();
     self.lights.clear();
     self.next_sequence = 0;
     self.sorted = true;
@@ -253,6 +280,20 @@ impl DrawList {
     let payload = DrawPayload::Glyph(self.glyphs.len());
     self.glyphs.push(glyph);
     self.push_item(lit, z, kind, payload, only_camera);
+  }
+
+  /// Add a tile chunk at `z` (among the entities), for `only_camera` or
+  /// every camera on its layers; `lit` ones draw before lighting.
+  pub(crate) fn push_chunk(
+    &mut self,
+    lit: bool,
+    z: i32,
+    only_camera: Option<Entity>,
+    chunk: DrawChunk,
+  ) {
+    let payload = DrawPayload::Chunk(self.chunks.len());
+    self.chunks.push(chunk);
+    self.push_item(lit, z, DrawKind::Entity, payload, only_camera);
   }
 
   /// How many glyphs the frame holds
@@ -342,6 +383,16 @@ impl DrawList {
     self.glyphs.get(index)
   }
 
+  /// The tile chunk a [`DrawPayload::Chunk`] index refers to.
+  pub(crate) fn chunk(&self, index: usize) -> Option<&DrawChunk> {
+    self.chunks.get(index)
+  }
+
+  /// The textures the frame's tile chunks draw.
+  pub(crate) fn chunk_textures(&self) -> impl Iterator<Item = TextureId> + '_ {
+    self.chunks.iter().map(|chunk| chunk.texture)
+  }
+
   /// The textures the frame's trails and lines draw.
   pub(crate) fn triangle_textures(&self) -> impl Iterator<Item = TextureId> + '_ {
     self
@@ -396,6 +447,9 @@ impl DrawList {
       }),
       DrawPayload::Glyph(index) => self.glyphs.get(index).is_some_and(|glyph| {
         glyph.layers.intersects(&camera.layers) && camera.view.is_visible(glyph.min, glyph.max)
+      }),
+      DrawPayload::Chunk(index) => self.chunks.get(index).is_some_and(|chunk| {
+        chunk.layers.intersects(&camera.layers) && camera.view.is_visible(chunk.min, chunk.max)
       }),
     }
   }
@@ -622,6 +676,67 @@ mod tests {
     assert!(list.triangles(0).is_none());
     push(&mut list, DrawKind::Sprite, 0, 1);
     assert_eq!(list.sorted()[0].sequence, 0);
+  }
+
+  fn chunk_item(layers: RenderLayers, min: Vec2, max: Vec2) -> DrawChunk {
+    use crate::core::ecs::World;
+    let layer = World::new().spawn_empty().id();
+    DrawChunk {
+      key: ChunkKey {
+        layer,
+        chunk: glam::UVec2::ZERO,
+        tileset: 0,
+      },
+      texture: TextureId::for_test(1),
+      count: 4,
+      blend: BlendMode::Alpha,
+      filter: Filter::Default,
+      layers,
+      min,
+      max,
+      slot: 0,
+    }
+  }
+
+  #[test]
+  fn a_camera_sees_the_chunks_on_its_layers_in_its_view() {
+    use crate::core::ecs::World;
+    let mut world = World::new();
+    let (one, other) = (world.spawn_empty().id(), world.spawn_empty().id());
+    let camera = test_camera(one);
+    let inside = (Vec2::new(40.0, 40.0), Vec2::new(60.0, 60.0));
+    let mut list = DrawList::default();
+    let seen = chunk_item(RenderLayers::default(), inside.0, inside.1);
+    list.push_chunk(true, 2, None, seen);
+    // Off its layers, outside its view, and for another camera
+    let off_layers = chunk_item(RenderLayers::layer(1), inside.0, inside.1);
+    list.push_chunk(true, 2, None, off_layers);
+    let outside = chunk_item(
+      RenderLayers::default(),
+      Vec2::splat(200.0),
+      Vec2::splat(300.0),
+    );
+    list.push_chunk(true, 2, None, outside);
+    list.push_chunk(false, 2, Some(other), seen);
+    list.push_chunk(false, 2, Some(one), seen);
+    list.sorted();
+    let lit: Vec<_> = list.items_for(&camera).map(|item| item.payload).collect();
+    assert_eq!(lit, [DrawPayload::Chunk(0)]);
+    let unlit: Vec<_> = list
+      .unlit_items_for(&camera)
+      .map(|item| item.payload)
+      .collect();
+    assert_eq!(unlit, [DrawPayload::Chunk(4)]);
+    // Chunks sort among the entities
+    assert!(
+      list
+        .items()
+        .iter()
+        .all(|item| item.kind == DrawKind::Entity)
+    );
+    assert_eq!(list.chunk_textures().count(), 5);
+    list.clear();
+    assert!(list.chunk(0).is_none());
   }
 
   #[test]

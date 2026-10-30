@@ -1,4 +1,6 @@
-//! Tile drawing, CPU half: a chunk of a tile layer becomes `SpriteInstance`s.
+//! Tile drawing, CPU half: a chunk of a tile layer becomes `SpriteInstance`s,
+//! and [`TileDrawer`] puts the frame's visible chunks of every spawned map in
+//! the draw list, building those that changed into the batch's chunk store.
 //!
 //! The instances are independent of where the map is, how the camera moves
 //! and where the tileset's image sits in the atlas: they hold layer-local
@@ -26,11 +28,25 @@
 //!   `columns`: its offset from the first frame is `((c0 + k) % columns -
 //!   c0, (c0 + k) / columns)` cells, `c0` being `u / step_u`.
 
-use glam::{IVec2, UVec2, Vec2};
+use std::hash::{DefaultHasher, Hash, Hasher};
 
-use crate::core::graphics::SpriteInstance;
-use crate::core::tilemap::padded::{PaddedLayout, PaddedTile};
-use crate::core::tilemap::{CHUNK_SIZE, TileFlip, TileGrid};
+use glam::{Affine2, IVec2, UVec2, Vec2};
+
+use super::batch::{BlendMode, ChunkKey, ChunkPart, ChunkStamp, ChunkStore, Filter, TileSlot};
+use super::{CameraDraw, DrawChunk, DrawList};
+use crate::core::asset::Assets;
+use crate::core::ecs::interpolate::render_global;
+use crate::core::ecs::kernel::QueryState;
+use crate::core::ecs::{
+  Allow, DetectChangesMut, Disabled, Entity, GlobalTransform, Has, Mut, PreviousGlobalTransform,
+  World,
+};
+use crate::core::graphics::{Image, RenderLayers, SpriteGpuRenderer, SpriteInstance, TextureId};
+use crate::core::tilemap::padded::{PaddedLayout, PaddedTile, PaddedTilesets};
+use crate::core::tilemap::{
+  CHUNK_SIZE, LayerInfo, MapLayerRef, MapLayers, MapRoot, TileFlip, TileGrid, TileLayerData,
+  Tileset, map_asset,
+};
 use crate::core::ui::Color;
 
 /// What a layer paints every tile with
@@ -151,6 +167,358 @@ fn instance(
     instance.effect_extra = [cell_min.x, cell_min.y, layout.columns as f32, 0.0];
   }
   instance
+}
+
+/// A spawned map, disabled ones too (their tilesets stay padded)
+type MapItem = (
+  &'static MapRoot,
+  &'static MapLayers,
+  &'static GlobalTransform,
+  Option<&'static PreviousGlobalTransform>,
+  Option<&'static RenderLayers>,
+  Has<Disabled>,
+);
+
+/// A layer of a spawned map
+type LayerItem = (
+  &'static MapLayerRef,
+  &'static LayerInfo,
+  &'static TileLayerData,
+  &'static GlobalTransform,
+  Option<&'static PreviousGlobalTransform>,
+);
+
+/// What a frame's tile layers are drawn for
+pub(crate) struct TileLayerFrame<'a> {
+  pub cameras: &'a [CameraDraw],
+  /// Render interpolation factor
+  pub alpha: f32,
+}
+
+/// Puts the tile layers of spawned maps in the frame's draw list: for each
+/// view of a layer (every camera at once, or each camera for a layer with
+/// parallax), the chunks its cameras can see, each tileset's tiles of a
+/// chunk one [`DrawChunk`] through the view's slot for that tileset.
+/// Chunks are built into the batch's [`ChunkStore`] when first seen and
+/// again when their tiles or what they are drawn from change.
+#[derive(Default)]
+pub(crate) struct TileDrawer {
+  padded: PaddedTilesets,
+  maps: Option<QueryState<MapItem, Allow<Disabled>>>,
+  layers: Option<QueryState<LayerItem>>,
+  /// The map being drawn: each tileset's padded layout and texture
+  layouts: Vec<Option<PaddedLayout>>,
+  textures: Vec<Option<TextureId>>,
+  /// The view being drawn: each tileset's slot, once it has one
+  slots: Vec<Option<u32>>,
+  /// A chunk's parts, copied out of the store
+  parts: Vec<ChunkPart>,
+}
+
+/// One tile layer as a frame draws it
+struct LayerDraw<'a> {
+  layer: Entity,
+  data: &'a TileLayerData,
+  look: LayerLook,
+  /// What its chunks are built from besides their tiles
+  stamp: u64,
+  z: i32,
+  lit: bool,
+  blend: BlendMode,
+  /// The map's render layers
+  layers: RenderLayers,
+  /// How far past its cell a tile may draw, in the layer's pixels
+  margin: f32,
+}
+
+impl TileDrawer {
+  /// Pushes the frame's visible chunks onto `list`, building into `store`
+  /// those that changed, then frees the chunks of layers that are gone and
+  /// those long undrawn, and the padded images no map asked for
+  pub(crate) fn collect(
+    &mut self,
+    world: &mut World,
+    frame: &TileLayerFrame<'_>,
+    gpu: &mut SpriteGpuRenderer,
+    store: &mut ChunkStore,
+    list: &mut DrawList,
+  ) {
+    store.begin_frame();
+    // With no map left, the round frees every padded image
+    self.padded.begin_round();
+    self.layers.get_or_insert_with(|| world.query());
+    let maps = self.maps.get_or_insert_with(|| world.query_filtered());
+    if maps.iter(world).next().is_some() {
+      world.try_resource_scope(|world, mut images: Mut<Assets<Image>>| {
+        let images = images.bypass_change_detection();
+        let Some(tilesets) = world.get_resource::<Assets<Tileset>>() else {
+          return;
+        };
+        let world: &World = world;
+        let Self {
+          padded,
+          maps,
+          layers,
+          layouts,
+          textures,
+          slots,
+          parts,
+        } = self;
+        let (Some(maps), Some(layers)) = (maps.as_mut(), layers.as_mut()) else {
+          return;
+        };
+        for (root, map_layers, global, previous, render_layers, disabled) in maps.iter(world) {
+          let Some(asset) = map_asset(world, root) else {
+            continue;
+          };
+          // Each tileset's padded image and its texture
+          layouts.clear();
+          textures.clear();
+          let mut paddings = DefaultHasher::new();
+          let mut margin = 0.0f32;
+          for source in &asset.tilesets {
+            let Some((handle, layout)) = padded.get(source, tilesets, images) else {
+              layouts.push(None);
+              textures.push(None);
+              0u64.hash(&mut paddings);
+              continue;
+            };
+            let texture = gpu
+              .shown_image(handle.id(), images)
+              .map(|shown| gpu.shown_texture(shown));
+            let reach = layout.offset.abs().max_element() as f32 + layout.cell as f32;
+            margin = margin.max(reach);
+            layout.serial.hash(&mut paddings);
+            layouts.push(Some(layout));
+            textures.push(texture);
+          }
+          // A disabled map keeps its tilesets padded and draws nothing
+          if disabled {
+            continue;
+          }
+          let paddings = paddings.finish();
+          let map_layers_mask = render_layers.copied().unwrap_or_default();
+          let map_affine = render_global(global, previous, frame.alpha).affine();
+          let sees = |camera: &&CameraDraw| camera.layers.intersects(&map_layers_mask);
+          if !frame.cameras.iter().any(|camera| sees(&camera)) {
+            continue;
+          }
+          for &entity in &map_layers.0 {
+            let Ok((layer_ref, info, data, layer_global, layer_previous)) =
+              layers.get(world, entity)
+            else {
+              continue;
+            };
+            if !info.visible || data.cell_size.min_element() == 0 {
+              continue;
+            }
+            let look = LayerLook {
+              tint: info.tint,
+              opacity: info.opacity,
+            };
+            let mut stamp = DefaultHasher::new();
+            (paddings, info.tint, info.opacity.to_bits(), data.cell_size).hash(&mut stamp);
+            let index = i32::try_from(layer_ref.index).unwrap_or(i32::MAX);
+            let draw = LayerDraw {
+              layer: entity,
+              data,
+              look,
+              stamp: stamp.finish(),
+              z: root.z.saturating_add(index),
+              lit: info.lit,
+              blend: info.blend,
+              layers: map_layers_mask,
+              margin,
+            };
+            let layer_affine = render_global(layer_global, layer_previous, frame.alpha).affine();
+            let mut view = View {
+              store: &mut *store,
+              list: &mut *list,
+              layouts,
+              textures,
+              slots,
+              parts,
+            };
+            if info.parallax == Vec2::ONE {
+              // One view for every camera
+              let cameras = frame.cameras.iter().filter(sees);
+              view.draw(&draw, layer_affine, Vec2::ZERO, cameras, None);
+            } else {
+              // A view per camera: each moves the layer by its own offset
+              for camera in frame.cameras.iter().filter(sees) {
+                let Some(offset) = parallax(map_affine, info.parallax, camera.view.center) else {
+                  continue;
+                };
+                let one = std::iter::once(camera);
+                view.draw(&draw, layer_affine, offset, one, Some(camera.entity));
+              }
+            }
+          }
+        }
+      });
+    }
+    self.padded.end_round();
+    store.end_frame(|layer| world.get::<TileLayerData>(layer).is_some());
+  }
+}
+
+impl TileDrawer {
+  /// How many padded tileset images are kept (tests)
+  #[cfg(test)]
+  pub(crate) fn padded_count(&self) -> usize {
+    self.padded.len()
+  }
+}
+
+/// The world offset a layer of parallax `factor` draws at for a camera
+/// centred on `center`, on a map placed by `map`: the part of the camera's
+/// position from the map's origin the layer does not follow (Tiled's rule,
+/// its parallax origin being the map's top-left corner). `None` for a map
+/// scaled to nothing
+fn parallax(map: Affine2, factor: Vec2, center: Vec2) -> Option<Vec2> {
+  let det = map.matrix2.determinant();
+  if !det.is_finite() || det.abs() < 1e-12 {
+    return None;
+  }
+  let local = map.inverse().transform_point2(center);
+  Some(map.transform_vector2((Vec2::ONE - factor) * local))
+}
+
+/// What one view of a layer draws with
+struct View<'s> {
+  store: &'s mut ChunkStore,
+  list: &'s mut DrawList,
+  layouts: &'s [Option<PaddedLayout>],
+  textures: &'s [Option<TextureId>],
+  slots: &'s mut Vec<Option<u32>>,
+  parts: &'s mut Vec<ChunkPart>,
+}
+
+impl View<'_> {
+  /// Pushes the chunks of `layer` that `cameras` may see, the layer placed
+  /// by `affine` moved by `offset`; `only` is the camera the draws are for,
+  /// if one alone
+  fn draw<'c>(
+    &mut self,
+    layer: &LayerDraw<'_>,
+    affine: Affine2,
+    offset: Vec2,
+    cameras: impl Iterator<Item = &'c CameraDraw>,
+    only: Option<Entity>,
+  ) {
+    let placed = Affine2::from_mat2_translation(affine.matrix2, affine.translation + offset);
+    let det = placed.matrix2.determinant();
+    if !det.is_finite() || det.abs() < 1e-12 {
+      return;
+    }
+    let to_layer = placed.inverse();
+    let grid = &layer.data.grid;
+    let chunks = grid.chunks();
+    if chunks.min_element() == 0 {
+      return;
+    }
+    let cell = layer.data.cell_size.as_vec2();
+    let chunk_px = cell * CHUNK_SIZE as f32;
+    let view = self.store.begin_view();
+    self.slots.clear();
+    self.slots.resize(self.layouts.len(), None);
+    let slot = TileSlot {
+      x_axis: affine.matrix2.x_axis.to_array(),
+      y_axis: affine.matrix2.y_axis.to_array(),
+      origin: affine.translation.to_array(),
+      parallax: offset.to_array(),
+      uv: [0.0, 0.0, 1.0, 1.0],
+    };
+    for camera in cameras {
+      // The camera's view in the layer's pixels, widened by how far a tile
+      // may draw past its cell; then the chunks it meets
+      let b = camera.view.bounds;
+      let corners = [
+        Vec2::new(b.left, b.top),
+        Vec2::new(b.right, b.top),
+        Vec2::new(b.left, b.bottom),
+        Vec2::new(b.right, b.bottom),
+      ]
+      .map(|corner| to_layer.transform_point2(corner));
+      let low = corners.iter().fold(Vec2::MAX, |m, c| m.min(*c)) - layer.margin;
+      let high = corners.iter().fold(Vec2::MIN, |m, c| m.max(*c)) + layer.margin;
+      let first = (low / chunk_px).floor().max(Vec2::ZERO);
+      let last = (high / chunk_px).floor().min(chunks.as_vec2() - 1.0);
+      // Not finite, or off the layer
+      if !(first.x <= last.x && first.y <= last.y) {
+        continue;
+      }
+      let (first, last) = (first.as_uvec2(), last.as_uvec2());
+      for y in first.y..=last.y {
+        for x in first.x..=last.x {
+          self.chunk(layer, UVec2::new(x, y), view, (&placed, slot), only);
+        }
+      }
+    }
+  }
+
+  /// Pushes `chunk` of `layer` for `view` (built first if it changed),
+  /// each tileset's tiles through the view's slot for it
+  fn chunk(
+    &mut self,
+    layer: &LayerDraw<'_>,
+    chunk: UVec2,
+    view: u64,
+    (placed, slot): (&Affine2, TileSlot),
+    only: Option<Entity>,
+  ) {
+    let grid = &layer.data.grid;
+    let stamp = ChunkStamp {
+      version: grid.chunk_version(chunk),
+      look: layer.stamp,
+    };
+    let cell = layer.data.cell_size.as_vec2();
+    let layouts = self.layouts;
+    let build = |out: &mut Vec<(u16, SpriteInstance)>| {
+      chunk_instances(grid, chunk, cell, layouts, &layer.look, out);
+    };
+    let Some(parts) = self.store.chunk(layer.layer, chunk, stamp, view, build) else {
+      return;
+    };
+    self.parts.clear();
+    self.parts.extend_from_slice(parts);
+    for part in self.parts.iter() {
+      let tileset = usize::from(part.tileset);
+      let Some(&Some(texture)) = self.textures.get(tileset) else {
+        continue;
+      };
+      let Some(entry) = self.slots.get_mut(tileset) else {
+        continue;
+      };
+      let slot = *entry.get_or_insert_with(|| self.store.push_slot(slot, texture));
+      let (min, max) = world_box(placed, part.min, part.max);
+      let draw = DrawChunk {
+        key: ChunkKey {
+          layer: layer.layer,
+          chunk,
+          tileset: part.tileset,
+        },
+        texture,
+        count: part.count,
+        blend: layer.blend,
+        filter: Filter::Default,
+        layers: layer.layers,
+        min,
+        max,
+        slot,
+      };
+      self.list.push_chunk(layer.lit, layer.z, only, draw);
+    }
+  }
+}
+
+/// The world box `min..max` (in a layer's pixels) covers under `affine`
+fn world_box(affine: &Affine2, min: Vec2, max: Vec2) -> (Vec2, Vec2) {
+  let corners = [min, Vec2::new(max.x, min.y), Vec2::new(min.x, max.y), max]
+    .map(|corner| affine.transform_point2(corner));
+  let low = corners.iter().fold(Vec2::MAX, |m, c| m.min(*c));
+  let high = corners.iter().fold(Vec2::MIN, |m, c| m.max(*c));
+  (low, high)
 }
 
 #[cfg(test)]

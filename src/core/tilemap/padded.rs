@@ -12,6 +12,7 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use glam::{IVec2, UVec2};
 
@@ -43,6 +44,10 @@ pub(crate) struct PaddedLayout {
   /// The tileset's `tile_offset`: where every tile draws from its cell's
   /// bottom-left corner, in pixels, x right and y down
   pub offset: IVec2,
+  /// Which padding this is: [`PaddedTilesets`] gives each image it makes a
+  /// number never given before (0 until then), so what was built from a
+  /// layout can tell it was padded again
+  pub serial: u64,
   tiles: Arc<Vec<Option<PaddedTile>>>,
 }
 
@@ -227,6 +232,7 @@ pub(crate) fn pad_tileset(
     columns,
     size,
     offset: tileset.tile_offset,
+    serial: 0,
     tiles: Arc::new(tiles),
   };
   Some((Image::from_rgba(data, size.x, size.y), layout))
@@ -268,6 +274,9 @@ struct Entry {
   layout: PaddedLayout,
   asked: bool,
 }
+
+/// The next [`PaddedLayout::serial`]
+static SERIALS: AtomicU64 = AtomicU64::new(1);
 
 /// The padded image of each tileset a map draws, made once and made again
 /// when the tileset or an image of it changes
@@ -335,11 +344,12 @@ impl PaddedTilesets {
       return Some((entry.handle.clone(), entry.layout.clone()));
     }
     let made = pad_tileset(tileset, images);
-    let Some((image, layout)) = made else {
+    let Some((image, mut layout)) = made else {
       // Nothing to draw (yet): what was made before is stale
       self.entries.remove(&key);
       return None;
     };
+    layout.serial = SERIALS.fetch_add(1, Ordering::Relaxed);
     // Made again in place, so the draw keeps its texture's identity
     let handle = match self.entries.remove(&key) {
       Some(old) => match images.get_mut(&old.handle) {
@@ -366,6 +376,12 @@ impl PaddedTilesets {
   /// Frees what the round's `get`s did not ask for
   pub fn end_round(&mut self) {
     self.entries.retain(|_, e| e.asked);
+  }
+
+  /// How many padded images are kept (tests)
+  #[cfg(test)]
+  pub fn len(&self) -> usize {
+    self.entries.len()
   }
 }
 
@@ -590,16 +606,18 @@ pub(crate) mod tests {
     let count = images.len();
 
     padded.begin_round();
-    let (first, _) = padded.get(&source, &tilesets, &mut images).expect("padded");
+    let (first, made) = padded.get(&source, &tilesets, &mut images).expect("padded");
     padded.end_round();
     assert_eq!(images.len(), count + 1);
     let v1 = images.version(&first).expect("loaded");
+    assert_ne!(made.serial, 0);
 
     padded.begin_round();
-    let (again, _) = padded.get(&source, &tilesets, &mut images).expect("padded");
+    let (again, kept) = padded.get(&source, &tilesets, &mut images).expect("padded");
     padded.end_round();
     assert_eq!(first, again);
     assert_eq!(images.version(&again), Some(v1));
+    assert_eq!(kept.serial, made.serial, "the same padding");
 
     // The atlas image changes: the padded image is made again, in place
     images.get_mut(&src).expect("image").data_mut()[2] = 99;
@@ -608,6 +626,7 @@ pub(crate) mod tests {
     padded.end_round();
     assert_eq!(first, third);
     assert_ne!(images.version(&third), Some(v1));
+    assert!(layout.serial > made.serial, "a new padding");
     let o = layout.cell_origin(layout.tile(0).expect("tile").slot);
     let img = images.get(&third).expect("padded image");
     assert_eq!(texel(img, o.x, o.y)[2], 99);

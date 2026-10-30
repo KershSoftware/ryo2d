@@ -10,7 +10,7 @@ pub(crate) const CAMERA: &str = include_str!("include/camera.wgsl");
 /// The fullscreen vertex stage (game post-process effects compose it at runtime)
 pub(crate) const FULLSCREEN: &str = include_str!("include/fullscreen.wgsl");
 
-/// The sprite shader
+/// The sprite shader, with the tile chunks' vertex stage
 pub(crate) const SPRITE: &str = concat!(
   include_str!("include/camera.wgsl"),
   "\n",
@@ -29,6 +29,8 @@ pub(crate) const SPRITE: &str = concat!(
   include_str!("core/sprite.wgsl"),
   "\n",
   include_str!("core/text.wgsl"),
+  "\n",
+  include_str!("core/tile.wgsl"),
 );
 
 /// The UI pipeline: every UI instance kind through one vertex and one
