@@ -8,7 +8,7 @@ use serde_json::Value;
 
 /// One property as written: its Tiled type, its custom type name if any,
 /// and the value as JSON
-#[derive(Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub(crate) struct RawProperty {
   pub name: String,
@@ -58,11 +58,50 @@ pub(crate) struct RawTileset {
   pub tilecount: Option<u32>,
   pub columns: u32,
   pub tileoffset: RawOffset,
+  /// Where tile objects sit against their position (`bottomleft`, `center`...)
+  pub objectalignment: Option<String>,
   pub image: Option<String>,
   pub imagewidth: u32,
   pub imageheight: u32,
   pub tiles: Vec<RawTile>,
+  pub wangsets: Vec<RawWangSet>,
   pub properties: Vec<RawProperty>,
+}
+
+/// A Wang set of a tileset
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub(crate) struct RawWangSet {
+  pub name: String,
+  pub class: Option<String>,
+  /// `corner`, `edge` or `mixed`
+  #[serde(rename = "type")]
+  pub ty: String,
+  pub colors: Vec<RawWangColor>,
+  pub wangtiles: Vec<RawWangTile>,
+  pub properties: Vec<RawProperty>,
+}
+
+/// A color of a Wang set
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub(crate) struct RawWangColor {
+  pub name: String,
+  pub class: Option<String>,
+  pub color: String,
+  /// The tile standing for the color; -1 or absent for none
+  pub tile: Option<i64>,
+  pub probability: Option<f32>,
+  pub properties: Vec<RawProperty>,
+}
+
+/// A tile of a Wang set with the color index at each of its eight positions,
+/// clockwise from the top edge
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub(crate) struct RawWangTile {
+  pub tileid: u32,
+  pub wangid: Vec<u32>,
 }
 
 /// A tileset's `tileoffset`, in pixels
@@ -144,7 +183,7 @@ pub(crate) enum RawData {
 }
 
 /// A point of a polygon or polyline
-#[derive(Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub(crate) struct RawPoint {
   pub x: f64,
@@ -152,34 +191,45 @@ pub(crate) struct RawPoint {
 }
 
 /// The text of a text object
-#[derive(Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub(crate) struct RawText {
   pub text: String,
 }
 
-/// An object of an object group
-#[derive(Debug, Default, Deserialize)]
+/// An object of an object group. Everything an instance of a template can
+/// override is an `Option`, so an absent field takes the template's value
+#[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub(crate) struct RawObject {
   pub id: u32,
-  pub name: String,
+  pub name: Option<String>,
   #[serde(alias = "type")]
   pub class: Option<String>,
-  pub x: f64,
-  pub y: f64,
-  pub width: f64,
-  pub height: f64,
-  pub rotation: f64,
+  pub x: Option<f64>,
+  pub y: Option<f64>,
+  pub width: Option<f64>,
+  pub height: Option<f64>,
+  /// In degrees, clockwise
+  pub rotation: Option<f64>,
   pub visible: Option<bool>,
   /// Set for a tile object
   pub gid: Option<u32>,
   pub ellipse: bool,
   pub point: bool,
+  pub capsule: bool,
   pub polygon: Option<Vec<RawPoint>>,
   pub polyline: Option<Vec<RawPoint>>,
   pub text: Option<RawText>,
   /// The template file, if the object comes from one
   pub template: Option<String>,
   pub properties: Vec<RawProperty>,
+}
+
+/// A template file: an object, and the tileset its tile comes from
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub(crate) struct RawTemplate {
+  pub tileset: Option<RawTilesetRef>,
+  pub object: RawObject,
 }

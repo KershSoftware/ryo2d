@@ -112,9 +112,13 @@ pub struct MapObjectData {
   pub id: String,
   pub name: String,
   pub class: Option<String>,
+  /// The top-left corner of the object's rectangle in map pixels (the origin
+  /// of the points, for a polygon or polyline). A tile object loaded from
+  /// Tiled, whose own position is its alignment point, is moved here
   pub position: Vec2,
   pub size: Vec2,
-  /// Degrees clockwise
+  /// Radians, positive clockwise on screen (y down), turning the object about
+  /// `position`
   pub rotation: f32,
   pub shape: ObjectShape,
   /// The tile drawn, for a tile object

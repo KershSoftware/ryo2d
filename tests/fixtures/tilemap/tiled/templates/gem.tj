@@ -1,0 +1,19 @@
+{ "type":"template",
+  "tileset":
+    {
+     "firstgid":1,
+     "source":"..\/tilesets\/items.tsj"
+    },
+  "object":
+    {
+     "gid":1,
+     "height":16,
+     "id":1,
+     "name":"template gem",
+     "rotation":0,
+     "visible":true,
+     "width":16,
+     "x":0,
+     "y":0
+    }
+}

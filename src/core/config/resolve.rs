@@ -53,6 +53,7 @@ pub(crate) struct BuilderOverrides {
   pub background_fps: Option<u32>,
   pub background_rendering: Option<bool>,
   pub icon: Option<PathBuf>,
+  pub tiled_project: Option<String>,
 }
 
 /// Settings from the project: `Ryo.toml` in dev, embedded values in release.
@@ -85,6 +86,8 @@ pub(crate) struct ProjectLayer {
   pub background_fps: Option<u32>,
   pub background_rendering: Option<bool>,
   pub icon: Option<PathBuf>,
+  /// The Tiled project's asset path (empty: none)
+  pub tiled_project: Option<String>,
 }
 
 /// Player preferences present in `system.json`; `None` = key absent or malformed.
@@ -141,6 +144,9 @@ pub(crate) struct ResolvedSettings {
   pub background_fps: u32,
   pub background_rendering: bool,
   pub icon: Option<PathBuf>,
+  /// The Tiled project's asset path; `None`: `project.tiled-project` at the
+  /// asset root
+  pub tiled_project: Option<String>,
 }
 
 impl ResolvedSettings {
@@ -174,6 +180,7 @@ impl ResolvedSettings {
       background_fps: 0,
       background_rendering: true,
       icon: None,
+      tiled_project: None,
     }
   }
 
@@ -249,6 +256,10 @@ pub(crate) fn resolve_settings(
   if project.icon.is_some() {
     s.icon = project.icon.clone();
   }
+  s.tiled_project = project
+    .tiled_project
+    .clone()
+    .filter(|path| !path.is_empty());
 
   set(&mut s.title, builder.title.clone());
   set(&mut s.resolution, builder.resolution);
@@ -267,6 +278,9 @@ pub(crate) fn resolve_settings(
   set(&mut s.background_rendering, builder.background_rendering);
   if builder.icon.is_some() {
     s.icon = builder.icon.clone();
+  }
+  if builder.tiled_project.is_some() {
+    s.tiled_project = builder.tiled_project.clone();
   }
 
   if let Some((prefs, filter)) = prefs {
@@ -365,6 +379,7 @@ impl ProjectLayer {
         .logo
         .as_ref()
         .map(|logo| workspace.root().join(logo)),
+      tiled_project: config.tiled_project.clone(),
     }
   }
 
@@ -406,6 +421,9 @@ impl ProjectLayer {
       background_fps: parse_embedded(&lookup, "RYO_EMBED_BACKGROUND_FPS"),
       background_rendering: parse_embedded(&lookup, "RYO_EMBED_BACKGROUND_RENDERING"),
       icon: None,
+      tiled_project: lookup("RYO_EMBED_TILED_PROJECT")
+        .filter(|path| !path.is_empty())
+        .map(str::to_string),
     })
   }
 }
@@ -445,6 +463,7 @@ pub(crate) const COMPILED_EMBEDDED: &[(&str, Option<&str>)] = compiled_embedded!
   "RYO_EMBED_LOGGER_WINDOW",
   "RYO_EMBED_BACKGROUND_FPS",
   "RYO_EMBED_BACKGROUND_RENDERING",
+  "RYO_EMBED_TILED_PROJECT",
   "RYO_EMBED_PORTABLE",
   "RYO_EMBED_SAVE_FOLDER",
   "RYO_EMBED_ENV",
@@ -514,6 +533,7 @@ mod tests {
       background_fps: Some(30),
       background_rendering: Some(false),
       icon: Some(PathBuf::from("builder.png")),
+      tiled_project: Some("builder.tiled-project".to_string()),
     }
   }
 
@@ -544,6 +564,7 @@ mod tests {
       background_fps: Some(15),
       background_rendering: Some(true),
       icon: Some(PathBuf::from("project.png")),
+      tiled_project: Some("project.tiled-project".to_string()),
     }
   }
 
@@ -577,6 +598,7 @@ mod tests {
     assert!(!s.disable_debug_keys);
     assert_eq!((s.background_fps, s.background_rendering), (0, true));
     assert_eq!(s.icon, None);
+    assert_eq!(s.tiled_project, None);
   }
 
   #[test]
@@ -602,6 +624,7 @@ mod tests {
     assert!(s.logger_window && !s.dev_window_keys && s.dev_console);
     assert_eq!((s.background_fps, s.background_rendering), (15, true));
     assert_eq!(s.icon, Some(PathBuf::from("project.png")));
+    assert_eq!(s.tiled_project.as_deref(), Some("project.tiled-project"));
   }
 
   #[test]
@@ -614,6 +637,7 @@ mod tests {
     assert!(s.show_fps && s.show_colliders && s.show_velocities && s.show_origins);
     assert_eq!((s.background_fps, s.background_rendering), (30, false));
     assert_eq!(s.icon, Some(PathBuf::from("builder.png")));
+    assert_eq!(s.tiled_project.as_deref(), Some("builder.tiled-project"));
     // The builder has no volume setters, so the project's volumes stay
     assert_eq!(s.master_volume, 0.3);
   }
@@ -735,6 +759,9 @@ dev_window_keys = false
 
 [release]
 logo = "art/logo.png"
+
+[tilemap]
+tiled_project = "maps/game.tiled-project"
 "#,
     )
     .unwrap();
@@ -766,6 +793,10 @@ logo = "art/logo.png"
     assert_eq!(layer.logger_window, Some(true));
     assert_eq!(layer.dev_window_keys, Some(false));
     assert_eq!(layer.icon, Some(dir.path().join("art/logo.png")));
+    assert_eq!(
+      layer.tiled_project.as_deref(),
+      Some("maps/game.tiled-project")
+    );
   }
 
   fn embedded(name: &str) -> Option<&'static str> {
@@ -793,6 +824,7 @@ logo = "art/logo.png"
       "RYO_EMBED_LOGGER_WINDOW" => Some("true"),
       "RYO_EMBED_BACKGROUND_FPS" => Some("15"),
       "RYO_EMBED_BACKGROUND_RENDERING" => Some("false"),
+      "RYO_EMBED_TILED_PROJECT" => Some("maps/game.tiled-project"),
       _ => None,
     }
   }
@@ -823,6 +855,10 @@ logo = "art/logo.png"
     assert_eq!(layer.logger_window, Some(true));
     assert_eq!(layer.background_fps, Some(15));
     assert_eq!(layer.background_rendering, Some(false));
+    assert_eq!(
+      layer.tiled_project.as_deref(),
+      Some("maps/game.tiled-project")
+    );
     assert_eq!(layer.icon, None);
   }
 
@@ -851,7 +887,7 @@ logo = "art/logo.png"
   fn compiled_table_has_unique_embed_keys() {
     let keys: Vec<&str> = COMPILED_EMBEDDED.iter().map(|(key, _)| *key).collect();
     let unique: std::collections::HashSet<&str> = keys.iter().copied().collect();
-    assert_eq!(keys.len(), 27);
+    assert_eq!(keys.len(), 28);
     assert_eq!(unique.len(), keys.len());
     assert!(keys.iter().all(|key| key.starts_with("RYO_EMBED_")));
     assert_eq!(compiled_embedded_value("RYO_EMBED_NOT_A_KEY"), None);

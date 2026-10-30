@@ -2,7 +2,7 @@
 name: ryo-api
 description: Complete API reference for ryo2d::prelude - every exported type with its signatures and use, organised by area.
 metadata:
-  version: 2.13.6
+  version: 2.13.7
 ---
 
 # Ryo2D API Reference
@@ -526,6 +526,7 @@ EngineBuilder::new()
 | `ui_theme(Theme)` | the starting UI theme (default `Theme::dark()`) |
 | `asset_loader(impl AssetLoader)` | a loader for the game's own asset type, registering the type too; for an extension an engine loader of the same type takes, the game's wins |
 | `asset_source(impl AssetSource)` | read assets from this source instead of the project's `assets/` folder (a test's `MemorySource`) |
+| `tiled_project(&str)` | the Tiled project (an asset path) whose class and enum types Tiled maps use; over `[tilemap] tiled_project`, default `project.tiled-project` at the asset root |
 | `hot_reload(bool)` | whether a saved asset file reloads while the game runs; default on in debug builds with a window, off in release and headless ones |
 | `ui_cache(bool)` | whether node trees replay their unchanged nodes instead of building them (default `true`); `false` builds every node every frame, the same UI slower, to rule caching out of a UI bug (also `DebugConfig::ui_cache`, the console's `ui:cache on\|off`) |
 | `ui_fragments(bool)` | whether node trees keep the layout and resolved output of their unchanged subtrees and copy them (default `true`; only while `ui_cache` is on); `false` replays and resolves every unchanged subtree every frame, the same UI slower, to rule the copies out of a UI bug (also `DebugConfig::ui_fragments`, the console's `ui:fragments on\|off`) |
@@ -1064,7 +1065,7 @@ See `ryo-particles`.
 
 ## Tilemaps
 
-The data model and the Tiled JSON loaders; drawing and collision arrive with the rest of 6a (`ryo-tilemap`, to come). `.tmj` maps and `.tsj` tilesets load through the registry (`TiledMapLoader`, `TiledTilesetLoader`, in the prelude): `assets.load::<TileMap>("maps/level.tmj")`. Tilesets and images are dependencies, so a map is ready when they are. Layers of every encoding load (CSV, base64, gzip, zlib, zstd); group layers flatten; the layer properties `collides`, `occludes`, `y_sort` and `lit` fill `LayerInfo`; isometric, hexagonal, staggered and infinite maps fail naming 6b. Replaced in 6a: the old `TilemapManager`, `ctx.tilemaps()`, `Tilemap`, auto-tiling, collision rectangles and `load_tiled_map` are gone.
+The data model and the Tiled JSON loaders; drawing and collision arrive with the rest of 6a (`ryo-tilemap`, to come). `.tmj` maps and `.tsj` tilesets load through the registry (`TiledMapLoader`, `TiledTilesetLoader`, in the prelude): `assets.load::<TileMap>("maps/level.tmj")`. Tilesets and images are dependencies, so a map is ready when they are. Layers of every encoding load (CSV, base64, gzip, zlib, zstd); group layers flatten; the layer properties `collides`, `occludes`, `y_sort` and `lit` fill `LayerInfo`; isometric, hexagonal, staggered and infinite maps fail naming 6b. Object layers load their objects (`MapObjectData`: every shape, tile objects, instances of `.tj` templates, object-reference properties as `PropertyValue::Object(id)`), and a tileset's Wang sets load on `Tileset::wang_sets`. A Tiled project file (`.tiled-project`) gives the class and enum types: a class member a map omits takes the project's default, nested classes and enums resolve (flags as a `List`). The project is `[tilemap] tiled_project` in Ryo.toml, `EngineBuilder::tiled_project(path)` over it, else `project.tiled-project` at the asset root if there is one; without one a class's members keep what the file wrote and a warning names the class once per file. Replaced in 6a: the old `TilemapManager`, `ctx.tilemaps()`, `Tilemap`, auto-tiling, collision rectangles and `load_tiled_map` are gone.
 
 - `TileMap { size, tile_size, tilesets, layers, class, background, properties }` (an `Asset`): `new(size, tile_size)`, `add_tileset(TilesetSource) -> u16`, `add_tile_layer(name) -> usize`, `add_object_layer(name) -> usize`, `layer_index(name)`, `tiles(layer) -> Option<&TileGrid>`, `tiles_mut(layer)`. `TilesetSource::{Asset(Handle<Tileset>), Embedded(Arc<Tileset>)}`.
 - `MapLayer { info: LayerInfo, kind: LayerKind }`; `LayerKind::{Tiles { grid, intgrid }, Objects(Vec<MapObjectData>), Image(ImageLayer)}`; `LayerInfo { id, name, class, offset, opacity, tint, parallax, visible, blend, collides, occludes, y_sorted, lit, properties }`.
@@ -1072,7 +1073,7 @@ The data model and the Tiled JSON loaders; drawing and collision arrive with the
 - `Tile { tileset: u16, id: u32, flip: TileFlip }`: `new(tileset, id)`, `with_flip`; `TileFlip::{NONE, HORIZONTAL, VERTICAL, DIAGONAL}` with `contains`, `|` and `rotated_cw()`.
 - `Tileset` (an `Asset`): `new(name, tile_size, TilesetImage)`, `tile(id) -> Option<&TileData>`, `tile_rect(id) -> Option<URect>`, `insert_tile`; `TileData { class, properties, shapes: Vec<TileShape>, animation: Vec<TileFrame>, probability, image }`; `WangSet`, `WangKind`, `WangColor`.
 - `Properties` (insertion-ordered): `get`, `bool`, `int`, `float`, `string`, `color`, `insert`, `iter`; `PropertyValue` is `Bool`, `Int`, `Float`, `String`, `Color`, `File`, `Object`, `Enum`, `Class` or `List`.
-- `IntGrid { size, values, names }`: `get(IVec2)` (`None` for 0 or outside). `ObjectShape`, `MapObjectData`, `ImageLayer`, `URect`.
+- `IntGrid { size, values, names }`: `get(IVec2)` (`None` for 0 or outside). `ObjectShape::{Rect, Ellipse, Point, Capsule, Polygon(Vec<Vec2>), Polyline(Vec<Vec2>), Text(String)}`; `MapObjectData { id, name, class, position, size, rotation, shape, tile, visible, properties }` (`id` is the Tiled id as a string; `position` is the top-left corner in map pixels, a tile object moved there from its tileset's alignment point; `rotation` is radians, clockwise on screen, about `position`); `ImageLayer`, `URect`.
 
 ---
 

@@ -216,6 +216,11 @@ fn embedded_config_env(
       "RYO_EMBED_BACKGROUND_RENDERING",
       system.background_rendering.to_string(),
     ),
+    // empty is no project: the default one
+    (
+      "RYO_EMBED_TILED_PROJECT",
+      config.tiled_project.clone().unwrap_or_default(),
+    ),
     ("RYO_EMBED_PORTABLE", config.release.portable.to_string()),
     ("RYO_EMBED_SAVE_FOLDER", release_save_folder(config)),
     (
@@ -628,6 +633,7 @@ mod tests {
     config.system.voice_volume = 0.7;
     config.system.ambience_volume = 0.8;
     config.system.audio_buffer_frames = Some(256);
+    config.tiled_project = Some("maps/game.tiled-project".to_string());
 
     let env = embedded_config_env(&config, None);
     let layer = ProjectLayer::from_embedded(|name| {
@@ -648,6 +654,10 @@ mod tests {
     assert_eq!(layer.voice_volume, Some(0.7));
     assert_eq!(layer.ambience_volume, Some(0.8));
     assert_eq!(layer.audio_buffer_frames, Some(256));
+    assert_eq!(
+      layer.tiled_project.as_deref(),
+      Some("maps/game.tiled-project")
+    );
     // Unset, it ships as 0: the device's own buffer
     config.system.audio_buffer_frames = None;
     let env = embedded_config_env(&config, None);
@@ -660,6 +670,25 @@ mod tests {
       });
     assert_eq!(
       workspace.map(|ws| ws.config().system.audio_buffer_frames),
+      Some(None)
+    );
+    // Unset, the Tiled project ships empty: none
+    config.tiled_project = None;
+    let env = embedded_config_env(&config, None);
+    let lookup = |name: &str| {
+      env
+        .iter()
+        .find(|(key, _)| *key == name)
+        .map(|(_, value)| value.as_str())
+    };
+    assert_eq!(
+      ProjectLayer::from_embedded(lookup).map(|layer| layer.tiled_project),
+      Some(None)
+    );
+    let workspace =
+      crate::core::config::Workspace::from_embedded(std::path::Path::new("."), lookup);
+    assert_eq!(
+      workspace.map(|ws| ws.config().tiled_project.clone()),
       Some(None)
     );
   }

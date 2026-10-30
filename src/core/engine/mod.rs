@@ -515,6 +515,7 @@ impl Engine {
       voice_volume,
       ambience_volume,
       audio_buffer_frames,
+      tiled_project,
       disable_debug_keys,
       game_name,
       game_version,
@@ -633,6 +634,15 @@ impl Engine {
       command_registry,
       audio_engine,
     );
+    if let Some(project) = tiled_project {
+      let server = world.resource::<AssetServer>();
+      server.register_loader(crate::core::tilemap::TiledMapLoader::with_project(
+        project.clone(),
+      ));
+      server.register_loader(crate::core::tilemap::TiledTilesetLoader::with_project(
+        project,
+      ));
+    }
     // The game's mixer builds the bus tree once it loads; without one, the
     // standard layout plays
     let mixer = default_mixer(world.resource::<AssetServer>());
@@ -1536,6 +1546,17 @@ impl EngineBuilder {
     self
   }
 
+  /// Reads the class and enum types of Tiled maps from the Tiled project
+  /// at `path`, an asset path (for example `"tiled/game.tiled-project"`).
+  /// Without it the project is the one named by `[tilemap] tiled_project` in
+  /// Ryo.toml, or `project.tiled-project` at the asset root if there is one.
+  /// A project lets a map's objects, layers and tiles take their class's
+  /// default for every member the file leaves out
+  pub fn tiled_project(mut self, path: &str) -> Self {
+    self.overrides.tiled_project = Some(path.to_string());
+    self
+  }
+
   /// Loads assets from `source` instead of the project's asset folder
   /// (`Workspace::assets_dir`); a test gives a `MemorySource`
   pub fn asset_source(mut self, source: impl AssetSource) -> Self {
@@ -1709,6 +1730,7 @@ impl EngineBuilder {
       voice_volume: settings.voice_volume,
       ambience_volume: settings.ambience_volume,
       audio_buffer_frames: settings.audio_buffer_frames,
+      tiled_project: settings.tiled_project,
       disable_debug_keys: settings.disable_debug_keys,
       game_name,
       game_version,
@@ -1739,6 +1761,8 @@ struct ResolvedBuild {
   ambience_volume: f32,
   /// The audio device's buffer in frames; `None`: the device's default
   audio_buffer_frames: Option<u32>,
+  /// The Tiled project's asset path (`None`: the default)
+  tiled_project: Option<String>,
   disable_debug_keys: bool,
   game_name: Option<String>,
   game_version: Option<String>,

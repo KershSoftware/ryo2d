@@ -45,6 +45,9 @@
 //! show_fps = false
 //! console = true  # Enable developer console (works in debug and release)
 //!
+//! [tilemap]
+//! # tiled_project = "tiled/game.tiled-project"  # class and enum types for Tiled maps (default: project.tiled-project at the asset root)
+//!
 //! [debug]  # Developer debug flags (NOT in system.json)
 //! show_colliders = false
 //! show_velocities = false
@@ -127,6 +130,10 @@ pub struct WorkspaceConfig {
   pub system: SystemDefaults,
   /// Release/distribution configuration (from the `[release]` section)
   pub release: ReleaseConfig,
+  /// The Tiled project (an asset path) naming the class and enum types of
+  /// Tiled maps, from `[tilemap] tiled_project`; `None`: look for
+  /// `project.tiled-project` at the asset root
+  pub tiled_project: Option<String>,
   /// Game-specific environment variables from [env] section
   pub env: std::collections::HashMap<String, toml::Value>,
 }
@@ -276,6 +283,7 @@ struct RyoToml {
   system: Option<SystemSection>,
   debug: Option<DebugSection>,
   release: Option<ReleaseSection>,
+  tilemap: Option<TilemapSection>,
   /// Game-specific environment variables (arbitrary key-value pairs)
   #[serde(default)]
   env: std::collections::HashMap<String, toml::Value>,
@@ -308,6 +316,13 @@ struct DebugSection {
   enable_profiler: Option<bool>,
   logger_window: Option<bool>,
   dev_window_keys: Option<bool>,
+}
+
+/// Raw TOML [tilemap] section
+#[derive(Debug, Deserialize, Default)]
+struct TilemapSection {
+  /// Asset path of the Tiled project file (empty or absent: the default)
+  tiled_project: Option<String>,
 }
 
 /// Raw TOML [release] section for build/distribution settings
@@ -416,6 +431,7 @@ impl Workspace {
 
     config.release.portable = lookup("RYO_EMBED_PORTABLE") == Some("true");
     config.release.save_folder = lookup("RYO_EMBED_SAVE_FOLDER").map(str::to_string);
+    config.tiled_project = layer.tiled_project;
 
     let env = embedded_env(lookup("RYO_EMBED_ENV"));
     config.env = env
@@ -678,6 +694,11 @@ impl Workspace {
       save_folder: release_section.save_folder,
     };
 
+    let tiled_project = raw
+      .tilemap
+      .and_then(|section| section.tiled_project)
+      .filter(|path| !path.is_empty());
+
     Ok(WorkspaceConfig {
       name,
       title,
@@ -689,6 +710,7 @@ impl Workspace {
       debug,
       system,
       release,
+      tiled_project,
       env,
     })
   }
@@ -821,6 +843,7 @@ impl Default for WorkspaceConfig {
       debug: DebugConfig::default(),
       system: SystemDefaults::default(),
       release: ReleaseConfig::default(),
+      tiled_project: None,
       env: std::collections::HashMap::new(),
     }
   }

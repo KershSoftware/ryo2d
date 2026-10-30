@@ -2,7 +2,7 @@
 name: ryo-config-save
 description: Project configuration (Ryo.toml), player settings (system.json, SystemState) and game saves (SaveManager, GameSaveData).
 metadata:
-  version: 2.4.2
+  version: 2.4.3
 ---
 
 # Ryo2D Configuration and Saves
@@ -76,6 +76,9 @@ console = false             # developer console (backtick), debug and release
 target_background_fps = 0   # unfocused frame rate, 0 = target_fps
 background_rendering = true # keep presenting while unfocused
 
+[tilemap]
+# tiled_project = "tiled/game.tiled-project"  # class and enum types of Tiled maps (default: project.tiled-project at the asset root)
+
 [debug]                     # developer only, never in system.json
 show_colliders = false
 show_velocities = false
@@ -99,6 +102,7 @@ difficulty = "normal"
 |---------|----------------|--------------|
 | `[project]`, `[paths]` | No | `workspace.config().name`, `.title`, `.assets`, ... |
 | `[system]` | Yes (seeds it) | `workspace.config().system` (`SystemDefaults`) |
+| `[tilemap]` | No | `workspace.config().tiled_project` |
 | `[debug]` | No | `workspace.config().debug` |
 | `[release]` | No | `workspace.config().release` |
 | `[env]` | Seeds its `env` | `config.env_str/env_bool/env_int/env_float(key)`, `has_env` |

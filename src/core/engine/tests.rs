@@ -208,6 +208,73 @@ fn the_audio_buffer_setting_resolves_from_ryo_toml() {
 }
 
 #[test]
+fn the_tiled_project_path_comes_from_the_builder_then_ryo_toml_then_the_default() {
+  let resolve = |ryo_toml: &str, builder: Option<&str>| {
+    let (_dir, ws) = temp_workspace(ryo_toml, None);
+    let mut b = EngineBuilder::new().start_scene(EmptyScene);
+    if let Some(path) = builder {
+      b = b.tiled_project(path);
+    }
+    b.resolve_in(Some(&ws), true).tiled_project
+  };
+  let toml = "[tilemap]\ntiled_project = \"maps/game.tiled-project\"\n";
+  assert_eq!(
+    resolve("", None),
+    None,
+    "unset: project.tiled-project at the asset root"
+  );
+  assert_eq!(
+    resolve(toml, None).as_deref(),
+    Some("maps/game.tiled-project")
+  );
+  assert_eq!(
+    resolve(toml, Some("other.tiled-project")).as_deref(),
+    Some("other.tiled-project"),
+    "the builder wins"
+  );
+  assert_eq!(resolve("[tilemap]\ntiled_project = \"\"\n", None), None);
+}
+
+#[test]
+fn the_engine_s_loaders_read_the_configured_tiled_project() {
+  use crate::core::asset::{AssetsView, MemorySource};
+  let files = MemorySource::new();
+  files.insert("kit/game.tiled-project", PROJECT);
+  files.insert("m.tmj", MAP_WITH_CRATE);
+  let engine = |configured: bool| {
+    let mut b = EngineBuilder::new()
+      .start_scene(EmptyScene)
+      .asset_source(files.clone());
+    if configured {
+      b = b.tiled_project("kit/game.tiled-project");
+    }
+    let resolved = b.resolve_in(None, true);
+    Engine::new(resolved, true)
+  };
+  let hp = |mut engine: Engine| {
+    let mut assets = AssetsView::new(&mut engine.world);
+    let map = assets
+      .load_now::<crate::core::tilemap::TileMap>("m.tmj")
+      .ok()?;
+    let map = assets.get(&map)?;
+    let crate::core::tilemap::LayerKind::Objects(objects) = &map.layers.first()?.kind else {
+      return None;
+    };
+    objects.first()?.properties.int("hp")
+  };
+  assert_eq!(
+    hp(engine(true)),
+    Some(10),
+    "the project's default fills the member"
+  );
+  assert_eq!(hp(engine(false)), None, "no project: nothing to fill from");
+}
+
+const PROJECT: &str = r#"{"propertyTypes":[{"id":1,"name":"Crate","type":"class","members":[{"name":"hp","type":"int","value":10}]}]}"#;
+
+const MAP_WITH_CRATE: &str = r#"{"type":"map","orientation":"orthogonal","width":1,"height":1,"tilewidth":16,"tileheight":16,"tilesets":[],"layers":[{"id":1,"name":"o","type":"objectgroup","objects":[{"id":1,"name":"c","type":"Crate","x":0,"y":0,"width":1,"height":1}]}]}"#;
+
+#[test]
 fn the_engine_applies_the_six_volume_settings_at_start() {
   use crate::core::audio::{AudioEngine, VolumeKind};
   let (_dir, ws) = temp_workspace(

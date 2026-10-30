@@ -1,0 +1,113 @@
+{
+    "automappingRulesFile": "",
+    "commands": [
+    ],
+    "compatibilityVersion": 1100,
+    "extensionsPath": "extensions",
+    "folders": [
+        "."
+    ],
+    "properties": [
+    ],
+    "propertyTypes": [
+        {
+            "id": 1,
+            "name": "Material",
+            "storageType": "string",
+            "type": "enum",
+            "values": [
+                "wood",
+                "metal"
+            ],
+            "valuesAsFlags": false
+        },
+        {
+            "id": 2,
+            "name": "Elements",
+            "storageType": "int",
+            "type": "enum",
+            "values": [
+                "fire",
+                "ice",
+                "poison"
+            ],
+            "valuesAsFlags": true
+        },
+        {
+            "id": 3,
+            "name": "Drop",
+            "type": "class",
+            "color": "#ffa0a0a4",
+            "drawFill": true,
+            "members": [
+                {
+                    "name": "count",
+                    "type": "int",
+                    "value": 1
+                },
+                {
+                    "name": "rare",
+                    "type": "bool",
+                    "value": false
+                }
+            ],
+            "useAs": [
+                "property"
+            ]
+        },
+        {
+            "id": 4,
+            "name": "Crate",
+            "type": "class",
+            "color": "#ffa0a0a4",
+            "drawFill": true,
+            "members": [
+                {
+                    "name": "hp",
+                    "type": "int",
+                    "value": 10
+                },
+                {
+                    "name": "speed",
+                    "type": "float",
+                    "value": 1.5
+                },
+                {
+                    "name": "label",
+                    "type": "string",
+                    "value": "plain"
+                },
+                {
+                    "name": "tint",
+                    "type": "color",
+                    "value": "#ff336699"
+                },
+                {
+                    "name": "material",
+                    "type": "string",
+                    "propertyType": "Material",
+                    "value": "wood"
+                },
+                {
+                    "name": "resist",
+                    "type": "int",
+                    "propertyType": "Elements",
+                    "value": 0
+                },
+                {
+                    "name": "loot",
+                    "type": "class",
+                    "propertyType": "Drop",
+                    "value": {
+                        "count": 3
+                    }
+                }
+            ],
+            "useAs": [
+                "property",
+                "object",
+                "tile"
+            ]
+        }
+    ]
+}

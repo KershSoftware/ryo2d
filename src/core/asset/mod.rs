@@ -89,7 +89,7 @@ pub(crate) fn insert_registry(world: &mut crate::core::ecs::World, server: Asset
   server.register_loader(MixerLoader);
   server.register_asset::<crate::core::tilemap::TileMap>(world);
   server.register_asset::<crate::core::tilemap::Tileset>(world);
-  server.register_loader(crate::core::tilemap::TiledMapLoader);
-  server.register_loader(crate::core::tilemap::TiledTilesetLoader);
+  server.register_loader(crate::core::tilemap::TiledMapLoader::default());
+  server.register_loader(crate::core::tilemap::TiledTilesetLoader::default());
   world.insert_resource(server);
 }

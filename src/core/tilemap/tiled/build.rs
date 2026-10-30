@@ -5,37 +5,38 @@ use std::fmt::Display;
 use std::sync::Arc;
 use std::time::Duration;
 
-use glam::{IVec2, UVec2, Vec2};
-use serde_json::Value;
-
 use super::data::{decode_gid, decode_layer_data};
-use super::raw::{RawLayer, RawMap, RawObject, RawProperty, RawTile, RawTileset};
+use super::objects::{Alignment, ObjectState, TilesetEntry, build_objects};
+use super::project::{Props, parse_color};
+use super::raw::{RawLayer, RawMap, RawObject, RawTile, RawTileset};
+use super::wang::build_wang_sets;
 use crate::core::asset::{
   Asset, AssetError, AssetPath, AssetServer, Assets, CheckContext, Handle, LoadContext,
 };
 use crate::core::graphics::Image;
 use crate::core::render::batch::BlendMode;
 use crate::core::tilemap::{
-  ImageLayer, LayerKind, MapLayer, Properties, PropertyValue, Tile, TileData, TileFrame, TileGrid,
-  TileMap, TileShape, Tileset, TilesetImage, TilesetSource,
+  ImageLayer, LayerKind, MapLayer, Tile, TileData, TileFrame, TileGrid, TileMap, TileShape,
+  Tileset, TilesetImage, TilesetSource,
 };
 use crate::core::ui::Color;
+use glam::{IVec2, UVec2, Vec2};
 
 /// Most cells a layer or a map holds (8192 x 8192), as for `TileColliders`
 const MAX_CELLS: u64 = 1 << 26;
 /// Most tiles a tileset holds: what a cell's 20 bits can name
-const MAX_TILES: u32 = 1_048_575;
+pub(super) const MAX_TILES: u32 = 1_048_575;
 const MAX_TILESETS: usize = 256;
 const MAX_DEPTH: usize = 64;
 /// Points an ellipse is cut into
 const ELLIPSE_POINTS: usize = 16;
 
-fn fail(path: &AssetPath, place: &str, what: impl Display) -> AssetError {
+pub(super) fn fail(path: &AssetPath, place: &str, what: impl Display) -> AssetError {
   AssetError::decode(path, format!("{place}: {what}"))
 }
 
 /// `written`, a path in the file at `path`, as a path from the asset root
-fn join(path: &AssetPath, place: &str, written: &str) -> Result<String, AssetError> {
+pub(super) fn join(path: &AssetPath, place: &str, written: &str) -> Result<String, AssetError> {
   if written.starts_with(['/', '\\']) {
     return Err(fail(
       path,
@@ -63,138 +64,9 @@ fn load_dep<T: Asset>(
   })
 }
 
-/// A color as Tiled writes it: `#AARRGGBB`, or `#RRGGBB`
-fn parse_color(text: &str) -> Option<Color> {
-  let hex = text.strip_prefix('#').unwrap_or(text);
-  if !hex.is_ascii() {
-    return None;
-  }
-  let value = u32::from_str_radix(hex, 16).ok()?;
-  match hex.len() {
-    6 => Some(Color::rgb(
-      (value >> 16) as u8,
-      (value >> 8) as u8,
-      value as u8,
-    )),
-    8 => Some(Color::new(
-      (value >> 16) as u8,
-      (value >> 8) as u8,
-      value as u8,
-      (value >> 24) as u8,
-    )),
-    _ => None,
-  }
-}
-
 fn multiply(a: Color, b: Color) -> Color {
   let m = |x: u8, y: u8| ((x as u16 * y as u16 + 127) / 255) as u8;
   Color::new(m(a.r, b.r), m(a.g, b.g), m(a.b, b.b), m(a.a, b.a))
-}
-
-/// The value of a class member, whose type the file does not give
-fn infer(value: &Value) -> PropertyValue {
-  match value {
-    Value::Bool(b) => PropertyValue::Bool(*b),
-    Value::Number(n) => match n.as_i64() {
-      Some(i) => PropertyValue::Int(i),
-      None => PropertyValue::Float(n.as_f64().unwrap_or(0.0)),
-    },
-    Value::String(s) => PropertyValue::String(s.clone()),
-    Value::Array(items) => PropertyValue::List(items.iter().map(infer).collect()),
-    Value::Object(members) => {
-      let mut fields = Properties::default();
-      for (name, value) in members {
-        fields.insert(name.clone(), infer(value));
-      }
-      PropertyValue::Class {
-        ty: String::new(),
-        fields,
-      }
-    }
-    Value::Null => PropertyValue::String(String::new()),
-  }
-}
-
-/// The typed properties of `raw`. The error says what is wrong, naming the
-/// property
-pub(crate) fn convert_properties(raw: &[RawProperty]) -> Result<Properties, String> {
-  let mut out = Properties::default();
-  for p in raw {
-    let bad = |what: &str| format!("property {:?}: {what}", p.name);
-    let value = match p.ty.as_str() {
-      "bool" => PropertyValue::Bool(p.value.as_bool().ok_or_else(|| bad("not a bool"))?),
-      "int" => match (&p.value, &p.propertytype) {
-        (Value::Number(n), Some(ty)) => PropertyValue::Enum {
-          ty: ty.clone(),
-          value: n.to_string(),
-        },
-        (Value::Number(n), None) => PropertyValue::Int(
-          n.as_i64()
-            .or_else(|| n.as_f64().filter(|f| f.fract() == 0.0).map(|f| f as i64))
-            .ok_or_else(|| bad("not an int"))?,
-        ),
-        _ => return Err(bad("not an int")),
-      },
-      "float" => PropertyValue::Float(p.value.as_f64().ok_or_else(|| bad("not a float"))?),
-      "" | "string" => {
-        let text = match &p.value {
-          Value::String(s) => s.clone(),
-          Value::Null => String::new(),
-          _ => return Err(bad("not a string")),
-        };
-        match &p.propertytype {
-          Some(ty) => PropertyValue::Enum {
-            ty: ty.clone(),
-            value: text,
-          },
-          None => PropertyValue::String(text),
-        }
-      }
-      "color" => {
-        let text = p.value.as_str().ok_or_else(|| bad("not a color"))?;
-        // an unset color property is written as an empty string
-        if text.is_empty() {
-          continue;
-        }
-        PropertyValue::Color(parse_color(text).ok_or_else(|| bad("not a color"))?)
-      }
-      "file" => PropertyValue::File(
-        p.value
-          .as_str()
-          .ok_or_else(|| bad("not a path"))?
-          .to_string(),
-      ),
-      "object" => PropertyValue::Object(match &p.value {
-        Value::Number(n) => n.to_string(),
-        Value::String(s) => s.clone(),
-        _ => return Err(bad("not an object id")),
-      }),
-      "class" => {
-        let Value::Object(members) = &p.value else {
-          return Err(bad("not a class"));
-        };
-        let mut fields = Properties::default();
-        for (name, value) in members {
-          fields.insert(name.clone(), infer(value));
-        }
-        PropertyValue::Class {
-          ty: p.propertytype.clone().unwrap_or_default(),
-          fields,
-        }
-      }
-      other => return Err(bad(&format!("unknown type {other:?}"))),
-    };
-    out.insert(p.name.clone(), value);
-  }
-  Ok(out)
-}
-
-fn properties(
-  path: &AssetPath,
-  place: &str,
-  raw: &[RawProperty],
-) -> Result<Properties, AssetError> {
-  convert_properties(raw).map_err(|e| fail(path, place, e))
 }
 
 /// A cell count that is within the limit
@@ -212,18 +84,19 @@ fn cell_count(w: u32, h: u32) -> Option<usize> {
 /// The polygon of a collision object, in tile pixels; `None` for objects that
 /// are no closed shape (points, polylines, text, tile objects)
 fn collision_shape(
-  path: &AssetPath,
+  px: &mut Props<'_>,
   place: &str,
   o: &RawObject,
 ) -> Result<Option<TileShape>, AssetError> {
-  if o.point || o.polyline.is_some() || o.text.is_some() || o.gid.is_some() {
+  if o.point || o.capsule || o.polyline.is_some() || o.text.is_some() || o.gid.is_some() {
     return Ok(None);
   }
+  let (width, height) = (o.width.unwrap_or(0.0), o.height.unwrap_or(0.0));
   let place = format!("{place}, object {}", o.id);
   // points relative to the object's position, before it is turned
   let local: Vec<(f64, f64)> = if let Some(points) = &o.polygon {
     if points.len() < 3 {
-      return Err(fail(path, &place, "a polygon needs 3 points or more"));
+      return Err(px.fail(&place, "a polygon needs 3 points or more"));
     }
     points.iter().map(|p| (p.x, p.y)).collect()
   } else if o.ellipse {
@@ -231,34 +104,30 @@ fn collision_shape(
       .map(|i| {
         let t = std::f64::consts::TAU * i as f64 / ELLIPSE_POINTS as f64;
         (
-          o.width / 2.0 * (1.0 + t.cos()),
-          o.height / 2.0 * (1.0 + t.sin()),
+          width / 2.0 * (1.0 + t.cos()),
+          height / 2.0 * (1.0 + t.sin()),
         )
       })
       .collect()
   } else {
-    if o.width <= 0.0 || o.height <= 0.0 {
+    if width <= 0.0 || height <= 0.0 {
       return Ok(None);
     }
-    vec![
-      (0.0, 0.0),
-      (o.width, 0.0),
-      (o.width, o.height),
-      (0.0, o.height),
-    ]
+    vec![(0.0, 0.0), (width, 0.0), (width, height), (0.0, height)]
   };
-  let (sin, cos) = o.rotation.to_radians().sin_cos();
+  let (sin, cos) = o.rotation.unwrap_or(0.0).to_radians().sin_cos();
+  let (ox, oy) = (o.x.unwrap_or(0.0), o.y.unwrap_or(0.0));
   let points = local
     .into_iter()
     .map(|(x, y)| {
       // clockwise on screen, with y down
       Vec2::new(
-        (o.x + x * cos - y * sin) as f32,
-        (o.y + x * sin + y * cos) as f32,
+        (ox + x * cos - y * sin) as f32,
+        (oy + x * sin + y * cos) as f32,
       )
     })
     .collect();
-  let properties = properties(path, &place, &o.properties)?;
+  let properties = px.read(&place, &o.properties, o.class.as_deref())?;
   Ok(Some(TileShape {
     points,
     one_way: properties.bool("one_way").unwrap_or(false),
@@ -269,19 +138,20 @@ fn collision_shape(
 
 fn tile_data(
   cx: &mut LoadContext<'_>,
+  px: &mut Props<'_>,
   path: &AssetPath,
   place: &str,
   raw: RawTile,
 ) -> Result<TileData, AssetError> {
   let mut data = TileData {
-    class: raw.class.filter(|c| !c.is_empty()),
-    properties: properties(path, place, &raw.properties)?,
+    class: raw.class.clone().filter(|c| !c.is_empty()),
+    properties: px.read(place, &raw.properties, raw.class.as_deref())?,
     probability: raw.probability.unwrap_or(1.0),
     ..TileData::default()
   };
   if let Some(group) = &raw.objectgroup {
     for object in &group.objects {
-      if let Some(shape) = collision_shape(path, place, object)? {
+      if let Some(shape) = collision_shape(px, place, object)? {
         data.shapes.push(shape);
       }
     }
@@ -314,6 +184,7 @@ fn tile_data(
 pub(crate) fn build_tileset(
   raw: RawTileset,
   cx: &mut LoadContext<'_>,
+  px: &mut Props<'_>,
 ) -> Result<Tileset, AssetError> {
   let path = cx.path().clone();
   let place = format!("tileset {:?}", raw.name);
@@ -350,7 +221,7 @@ pub(crate) fn build_tileset(
     None => TilesetImage::Collection,
   };
   let mut set = Tileset::new(raw.name.clone(), tile_size, image);
-  set.class = raw.class.filter(|c| !c.is_empty());
+  set.class = raw.class.clone().filter(|c| !c.is_empty());
   set.spacing = raw.spacing;
   set.margin = raw.margin;
   set.columns = columns;
@@ -364,7 +235,8 @@ pub(crate) fn build_tileset(
     ));
   }
   let mut count = declared;
-  set.properties = properties(&path, &place, &raw.properties)?;
+  set.properties = px.read(&place, &raw.properties, raw.class.as_deref())?;
+  set.wang_sets = build_wang_sets(px, &place, raw.wangsets)?;
   for tile in raw.tiles {
     let id = tile.id;
     let tile_place = format!("{place}, tile {id}");
@@ -377,7 +249,7 @@ pub(crate) fn build_tileset(
     }
     // a collection's ids may skip, and its gid range runs to its highest
     count = count.max(id + 1);
-    let data = tile_data(cx, &path, &tile_place, tile)?;
+    let data = tile_data(cx, px, &path, &tile_place, tile)?;
     set.insert_tile(id, data);
   }
   set.tile_count = count;
@@ -397,7 +269,9 @@ struct Inherit {
   blend: BlendMode,
 }
 
-struct Builder {
+struct Builder<'p, 'a> {
+  px: &'p mut Props<'a>,
+  objects: ObjectState,
   path: AssetPath,
   size: UVec2,
   /// Each tileset's first gid and its index, by first gid
@@ -430,7 +304,7 @@ fn blend_of(path: &AssetPath, place: &str, mode: Option<&str>) -> Result<BlendMo
   }
 }
 
-impl Builder {
+impl Builder<'_, '_> {
   fn layer_id(&mut self, raw: &RawLayer, place: &str) -> Result<u32, AssetError> {
     if let Some(id) = raw.id {
       return Ok(id);
@@ -461,7 +335,7 @@ impl Builder {
 
   fn layer(
     &mut self,
-    raw: RawLayer,
+    mut raw: RawLayer,
     inherit: Inherit,
     depth: usize,
     cx: &mut LoadContext<'_>,
@@ -494,7 +368,9 @@ impl Builder {
       return self.layers(raw.layers, here, depth + 1, cx);
     }
     let id = self.layer_id(&raw, &place)?;
-    let props = properties(&path, &place, &raw.properties)?;
+    let props = self
+      .px
+      .read(&place, &raw.properties, raw.class.as_deref())?;
     let is_tiles = raw.ty == "tilelayer";
     let mut used = Vec::new();
     let kind = match raw.ty.as_str() {
@@ -503,7 +379,24 @@ impl Builder {
         used = highest;
         kind
       }
-      "objectgroup" => LayerKind::Objects(Vec::new()),
+      "objectgroup" => {
+        let mut highest = vec![None; self.first_gids.len()];
+        let objects = build_objects(
+          &mut self.objects,
+          &self.first_gids,
+          cx,
+          self.px,
+          &place,
+          std::mem::take(&mut raw.objects),
+          &mut highest,
+        )?;
+        used = highest
+          .into_iter()
+          .enumerate()
+          .filter_map(|(tileset, max)| Some((tileset as u16, max?)))
+          .collect();
+        LayerKind::Objects(objects)
+      }
       "imagelayer" => {
         let Some(written) = raw.image.as_deref().filter(|i| !i.is_empty()) else {
           return Err(fail(&path, &place, "the image layer has no image"));
@@ -619,7 +512,11 @@ impl Builder {
 
 /// A map from what its file says. Tilesets named by `source` and images load
 /// as dependencies of the file being loaded, resolved against its folder
-pub(crate) fn build_map(raw: RawMap, cx: &mut LoadContext<'_>) -> Result<TileMap, AssetError> {
+pub(crate) fn build_map(
+  raw: RawMap,
+  cx: &mut LoadContext<'_>,
+  px: &mut Props<'_>,
+) -> Result<TileMap, AssetError> {
   let path = cx.path().clone();
   let place = "map";
   match raw.orientation.as_str() {
@@ -652,8 +549,8 @@ pub(crate) fn build_map(raw: RawMap, cx: &mut LoadContext<'_>) -> Result<TileMap
     UVec2::new(raw.width, raw.height),
     UVec2::new(raw.tilewidth, raw.tileheight),
   );
-  map.class = raw.class.filter(|c| !c.is_empty());
-  map.properties = properties(&path, place, &raw.properties)?;
+  map.class = raw.class.clone().filter(|c| !c.is_empty());
+  map.properties = px.read(place, &raw.properties, raw.class.as_deref())?;
   if let Some(text) = raw.backgroundcolor.as_deref().filter(|t| !t.is_empty()) {
     map.background = Some(parse_color(text).ok_or_else(|| {
       fail(
@@ -674,6 +571,7 @@ pub(crate) fn build_map(raw: RawMap, cx: &mut LoadContext<'_>) -> Result<TileMap
     ));
   }
   let mut first_gids = Vec::with_capacity(raw.tilesets.len());
+  let mut entries = Vec::with_capacity(raw.tilesets.len());
   for (index, entry) in raw.tilesets.into_iter().enumerate() {
     let place = format!("tileset {index}");
     if entry.firstgid == 0 {
@@ -685,8 +583,25 @@ pub(crate) fn build_map(raw: RawMap, cx: &mut LoadContext<'_>) -> Result<TileMap
     }
     first_gids.push((entry.firstgid, index as u16));
     let source = match &entry.source {
-      Some(written) => TilesetSource::Asset(load_dep::<Tileset>(cx, &path, &place, written)?),
-      None => TilesetSource::Embedded(Arc::new(build_tileset(entry.inline, cx)?)),
+      Some(written) => {
+        let joined = join(&path, &place, written)?;
+        entries.push(TilesetEntry {
+          path: AssetPath::parse(&joined)
+            .ok()
+            .map(|p| p.as_str().to_string()),
+          alignment: None,
+        });
+        TilesetSource::Asset(load_dep::<Tileset>(cx, &path, &place, written)?)
+      }
+      None => {
+        let alignment = Alignment::parse(entry.inline.objectalignment.as_deref())
+          .ok_or_else(|| fail(&path, &place, "objectalignment is not one Tiled has"))?;
+        entries.push(TilesetEntry {
+          path: None,
+          alignment: Some(alignment),
+        });
+        TilesetSource::Embedded(Arc::new(build_tileset(entry.inline, cx, px)?))
+      }
     };
     map.tilesets.push(source);
   }
@@ -699,6 +614,8 @@ pub(crate) fn build_map(raw: RawMap, cx: &mut LoadContext<'_>) -> Result<TileMap
     ));
   }
   let mut builder = Builder {
+    px,
+    objects: ObjectState::new(entries),
     path: path.clone(),
     size: map.size,
     first_gids,

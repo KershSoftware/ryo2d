@@ -3,7 +3,10 @@
 mod build;
 mod data;
 mod json;
+mod objects;
+mod project;
 pub(crate) mod raw;
+mod wang;
 
 pub use json::{TiledMapLoader, TiledTilesetLoader};
 
@@ -730,5 +733,503 @@ mod tests {
       let error = failure(&json);
       assert!(error.contains("cells"), "{error}");
     }
+  }
+
+  // ---- objects, templates, Wang sets and the project ----------------------
+
+  use std::f32::consts::FRAC_PI_2;
+
+  use crate::core::tilemap::{
+    MapObjectData, ObjectShape, Properties, TiledMapLoader, TiledTilesetLoader, WangKind, WangSet,
+  };
+
+  fn objects<'a>(map: &'a TileMap, name: &str) -> &'a [MapObjectData] {
+    match &layer(map, name).kind {
+      LayerKind::Objects(objects) => objects,
+      _ => panic!("{name} is not an object layer"),
+    }
+  }
+
+  fn object<'a>(map: &'a TileMap, id: &str) -> &'a MapObjectData {
+    match objects(map, "things").iter().find(|o| o.id == id) {
+      Some(o) => o,
+      None => panic!("no object {id}"),
+    }
+  }
+
+  fn enum_of(ty: &str, value: &str) -> PropertyValue {
+    PropertyValue::Enum {
+      ty: ty.into(),
+      value: value.into(),
+    }
+  }
+
+  /// The fixture map with its project, unless `project` says otherwise
+  fn objects_map() -> TileMap {
+    load("maps/objects.tmj")
+  }
+
+  /// Loads `json` as `m.tmj` over the fixtures and a `project.tiled-project`
+  /// holding `project`
+  fn load_with_project(json: &str, project: &str) -> Result<TileMap, String> {
+    let mut world = world_over(files_with(&[
+      ("m.tmj", json),
+      ("project.tiled-project", project),
+    ]));
+    load_in(&mut world, "m.tmj")
+  }
+
+  fn objects_json(objects: &str) -> String {
+    map_json(
+      "",
+      &format!(r#"{{"id":1,"name":"things","type":"objectgroup","objects":[{objects}]}}"#),
+      SET_REF,
+    )
+  }
+
+  #[test]
+  fn objects_of_every_shape_load_with_class_and_typed_properties() {
+    let map = objects_map();
+    assert_eq!(objects(&map, "things").len(), 17);
+
+    let crate_ = object(&map, "1");
+    assert_eq!(crate_.shape, ObjectShape::Rect);
+    assert_eq!(crate_.name, "crate");
+    assert_eq!(crate_.class.as_deref(), Some("Crate"));
+    assert_eq!(crate_.position, Vec2::new(16.0, 32.0));
+    assert_eq!(crate_.size, Vec2::new(32.0, 16.0));
+    assert_eq!(crate_.rotation, 0.0);
+    assert!(crate_.visible && crate_.tile.is_none());
+    assert_eq!(crate_.properties.int("hp"), Some(25));
+    assert_eq!(
+      crate_.properties.get("target"),
+      Some(&PropertyValue::Object("3".into()))
+    );
+
+    assert_eq!(object(&map, "2").shape, ObjectShape::Ellipse);
+    assert_eq!(object(&map, "2").size, Vec2::new(20.0, 10.0));
+    assert_eq!(object(&map, "3").shape, ObjectShape::Point);
+    assert_eq!(object(&map, "3").position, Vec2::new(5.0, 6.0));
+    assert_eq!(
+      object(&map, "4").shape,
+      ObjectShape::Polygon(vec![
+        Vec2::new(0.0, 0.0),
+        Vec2::new(16.0, 0.0),
+        Vec2::new(8.0, 12.0)
+      ])
+    );
+    assert_eq!(object(&map, "4").position, Vec2::new(40.0, 60.0));
+    assert_eq!(
+      object(&map, "5").shape,
+      ObjectShape::Polyline(vec![
+        Vec2::new(0.0, 0.0),
+        Vec2::new(10.0, 5.0),
+        Vec2::new(20.0, 0.0)
+      ])
+    );
+    assert_eq!(object(&map, "6").shape, ObjectShape::Capsule);
+    assert_eq!(object(&map, "6").size, Vec2::new(12.0, 30.0));
+    let sign = object(&map, "7");
+    assert_eq!(sign.shape, ObjectShape::Text("Hello there".into()));
+    assert_eq!(
+      (sign.position, sign.size),
+      (Vec2::new(2.0, 2.0), Vec2::new(60.0, 20.0))
+    );
+    assert!(!object(&map, "13").visible);
+    let gem = object(&map, "8");
+    assert_eq!(gem.tile, Some(Tile::new(1, 0)));
+    assert_eq!(gem.shape, ObjectShape::Rect);
+    let flipped = object(&map, "12");
+    assert_eq!(
+      flipped.tile,
+      Some(Tile::new(1, 0).with_flip(TileFlip::HORIZONTAL))
+    );
+  }
+
+  #[test]
+  fn a_class_member_left_at_its_default_reads_the_project_default() {
+    let map = objects_map();
+    // the crate wrote only hp and target; every other member of Crate is the project's
+    let p = &object(&map, "1").properties;
+    assert_eq!(p.float("speed"), Some(1.5));
+    assert_eq!(p.string("label"), Some("plain"));
+    assert_eq!(p.color("tint"), Some(Color::new(0x33, 0x66, 0x99, 0xff)));
+    assert_eq!(p.get("material"), Some(&enum_of("Material", "wood")));
+    assert_eq!(p.get("resist"), Some(&PropertyValue::List(vec![])));
+    assert_eq!(p.int("hp"), Some(25), "what the file wrote still wins");
+
+    // the barrel wrote a metal material, some resistances and half a Drop
+    let barrel = &object(&map, "14").properties;
+    assert_eq!(barrel.int("hp"), Some(10));
+    assert_eq!(barrel.get("material"), Some(&enum_of("Material", "metal")));
+    assert_eq!(
+      barrel.get("resist"),
+      Some(&PropertyValue::List(vec![
+        enum_of("Elements", "fire"),
+        enum_of("Elements", "poison")
+      ]))
+    );
+    let Some(PropertyValue::Class { ty, fields }) = barrel.get("loot") else {
+      panic!("loot is not a class")
+    };
+    assert_eq!(ty, "Drop");
+    assert_eq!(fields.bool("rare"), Some(true));
+    // count is not in the file: the Crate member's own default (3) beats Drop's (1)
+    assert_eq!(fields.int("count"), Some(3));
+  }
+
+  #[test]
+  fn nested_class_and_enum_properties_resolve() {
+    let project = r#"{"propertyTypes":[
+      {"name":"Dir","type":"enum","storageType":"int","values":["up","down","left"],"valuesAsFlags":false},
+      {"name":"Tags","type":"enum","storageType":"string","values":["a","b","c"],"valuesAsFlags":true},
+      {"name":"Leaf","type":"class","members":[{"name":"n","type":"int","value":7},{"name":"dir","type":"int","propertyType":"Dir","value":1}]},
+      {"name":"Mid","type":"class","members":[{"name":"leaf","type":"class","propertyType":"Leaf","value":{"n":8}},{"name":"on","type":"bool","value":true}]},
+      {"name":"Top","type":"class","members":[{"name":"mid","type":"class","propertyType":"Mid","value":{}},{"name":"tags","type":"string","propertyType":"Tags","value":"a"}]}
+    ]}"#;
+    let objects = r#"{"id":1,"name":"o","type":"Top","x":0,"y":0,"properties":[
+      {"name":"mid","type":"class","propertytype":"Mid","value":{"leaf":{"dir":2}}},
+      {"name":"tags","type":"string","propertytype":"Tags","value":"b, c"}]}"#;
+    let map = load_with_project(&objects_json(objects), project).expect("loads");
+    let p = &object(&map, "1").properties;
+    let Some(PropertyValue::Class { ty, fields: mid }) = p.get("mid") else {
+      panic!("mid")
+    };
+    assert_eq!(ty, "Mid");
+    assert_eq!(mid.bool("on"), Some(true));
+    let Some(PropertyValue::Class { fields: leaf, .. }) = mid.get("leaf") else {
+      panic!("leaf")
+    };
+    assert_eq!(
+      leaf.int("n"),
+      Some(8),
+      "Mid's default for leaf beats Leaf's own"
+    );
+    assert_eq!(
+      leaf.get("dir"),
+      Some(&enum_of("Dir", "left")),
+      "an int enum reads by name"
+    );
+    assert_eq!(
+      p.get("tags"),
+      Some(&PropertyValue::List(vec![
+        enum_of("Tags", "b"),
+        enum_of("Tags", "c")
+      ]))
+    );
+
+    // nothing written: the class fills every member, nested ones included
+    let bare = r#"{"id":2,"name":"b","type":"Top","x":0,"y":0}"#;
+    let map = load_with_project(&objects_json(bare), project).expect("loads");
+    let p = &object(&map, "2").properties;
+    assert_eq!(
+      p.get("tags"),
+      Some(&PropertyValue::List(vec![enum_of("Tags", "a")]))
+    );
+    let Some(PropertyValue::Class { fields: mid, .. }) = p.get("mid") else {
+      panic!("mid")
+    };
+    let Some(PropertyValue::Class { fields: leaf, .. }) = mid.get("leaf") else {
+      panic!("leaf")
+    };
+    assert_eq!(
+      (leaf.int("n"), leaf.get("dir")),
+      (Some(8), Some(&enum_of("Dir", "down")))
+    );
+  }
+
+  #[test]
+  fn without_a_project_class_typed_properties_keep_what_is_written_and_warn_once() {
+    let files = files_with(&[]);
+    files.remove("project.tiled-project");
+    let mut world = world_over(files);
+    let map = load_in(&mut world, "maps/objects.tmj").expect("loads without a project");
+    let barrel = &object(&map, "14").properties;
+    assert_eq!(barrel.int("hp"), None, "no project: no defaults");
+    let Some(PropertyValue::Class { ty, fields }) = barrel.get("loot") else {
+      panic!("loot is not a class")
+    };
+    assert_eq!(ty, "Drop");
+    assert_eq!(fields.bool("rare"), Some(true));
+    assert_eq!(fields.len(), 1);
+    // an enum keeps the written value
+    assert_eq!(barrel.get("material"), Some(&enum_of("Material", "metal")));
+    assert_eq!(barrel.get("resist"), Some(&enum_of("Elements", "5")));
+  }
+
+  #[test]
+  fn a_template_instance_overrides_only_what_it_sets() {
+    let map = objects_map();
+    // all from the template but the position
+    let plain = object(&map, "15");
+    assert_eq!(plain.name, "template crate");
+    assert_eq!(plain.class.as_deref(), Some("Crate"));
+    assert_eq!(plain.position, Vec2::new(20.0, 20.0));
+    assert_eq!(plain.size, Vec2::new(16.0, 16.0));
+    assert_eq!(plain.properties.int("hp"), Some(50));
+    assert_eq!(
+      plain.properties.float("speed"),
+      Some(1.5),
+      "the class default fills the rest"
+    );
+    // a name and a size of its own
+    let own = object(&map, "16");
+    assert_eq!(own.name, "renamed");
+    assert_eq!(own.size, Vec2::new(24.0, 24.0));
+    assert_eq!(own.position, Vec2::new(30.0, 20.0));
+    assert_eq!(own.properties.int("hp"), Some(50));
+    // a template with a tile: its tileset is the map's items tileset
+    let gem = object(&map, "17");
+    assert_eq!(gem.name, "template gem");
+    assert_eq!(gem.tile, Some(Tile::new(1, 0)));
+    assert_eq!(
+      gem.position,
+      Vec2::new(48.0, 32.0),
+      "bottom left at (48, 48)"
+    );
+  }
+
+  #[test]
+  fn a_template_instance_overrides_a_property_and_keeps_the_others() {
+    let files = files_with(&[
+      (
+        "t.tj",
+        r#"{"type":"template","object":{"id":1,"name":"t","type":"Crate","x":0,"y":0,"width":4,"height":4,"properties":[{"name":"hp","type":"int","value":50},{"name":"label","type":"string","value":"tmpl"}]}}"#,
+      ),
+      (
+        "m.tmj",
+        &objects_json(
+          r#"{"id":5,"template":"t.tj","x":1,"y":2,"properties":[{"name":"hp","type":"int","value":9}]}"#,
+        ),
+      ),
+    ]);
+    let mut world = world_over(files);
+    let map = load_in(&mut world, "m.tmj").expect("loads");
+    let p = &object(&map, "5").properties;
+    assert_eq!((p.int("hp"), p.string("label")), (Some(9), Some("tmpl")));
+    assert_eq!(object(&map, "5").size, Vec2::splat(4.0));
+  }
+
+  #[test]
+  fn a_tile_object_sits_by_its_tileset_alignment() {
+    let map = objects_map();
+    // items has no alignment: Tiled's bottom-left, so the position is the bottom-left corner
+    assert_eq!(object(&map, "8").position, Vec2::new(64.0, 48.0));
+    // aligned.tsj says center
+    assert_eq!(object(&map, "9").position, Vec2::new(92.0, 32.0));
+    assert_eq!(object(&map, "9").tile, Some(Tile::new(2, 0)));
+    // a rectangle's position is its top-left corner already; it turns about it
+    let turned = object(&map, "10");
+    assert_eq!(turned.position, Vec2::new(50.0, 50.0));
+    assert!((turned.rotation - FRAC_PI_2).abs() < 1e-6);
+    // a tile object turned 90 degrees about its bottom-left corner (30, 30):
+    // its top-left corner ends up at (46, 30)
+    let gem = object(&map, "11");
+    assert!(
+      (gem.position - Vec2::new(46.0, 30.0)).length() < 1e-4,
+      "{:?}",
+      gem.position
+    );
+    assert!((gem.rotation - FRAC_PI_2).abs() < 1e-6);
+
+    // an embedded tileset carries its alignment in the map
+    let inline = r#"{"firstgid":1,"name":"e","tilewidth":16,"tileheight":16,"tilecount":16,"columns":4,
+        "objectalignment":"bottomright","image":"images/tiles.png","imagewidth":64,"imageheight":64}"#;
+    let json = map_json(
+      "",
+      r#"{"id":1,"name":"things","type":"objectgroup","objects":[{"id":1,"gid":2,"x":100,"y":100,"width":10,"height":20}]}"#,
+      inline,
+    );
+    let map = load_json(&json).expect("loads");
+    assert_eq!(object(&map, "1").position, Vec2::new(90.0, 80.0));
+    assert_eq!(object(&map, "1").tile, Some(Tile::new(0, 1)));
+  }
+
+  #[test]
+  fn wang_sets_load_with_their_colours_and_tile_ids() {
+    let mut world = world_over(files_with(&[]));
+    let handle = AssetsView::new(&mut world)
+      .load_now::<Tileset>("tilesets/terrain.tsj")
+      .expect("loads");
+    let set = world
+      .resource::<Assets<Tileset>>()
+      .get(&handle)
+      .expect("stored");
+    let by_name = |name: &str| -> &WangSet {
+      match set.wang_sets.iter().find(|w| w.name == name) {
+        Some(w) => w,
+        None => panic!("no wang set {name}"),
+      }
+    };
+    assert_eq!(set.wang_sets.len(), 3);
+
+    let ground = by_name("ground");
+    assert_eq!(ground.kind, WangKind::Corner);
+    assert_eq!(ground.colors.len(), 2);
+    assert_eq!(ground.colors[0].name, "grass");
+    assert_eq!(ground.colors[0].color, Color::rgb(0x00, 0xaa, 0x00));
+    assert_eq!(ground.colors[0].tile, Some(0));
+    assert_eq!(ground.colors[1].tile, None);
+    assert_eq!(ground.colors[1].probability, 0.5);
+    assert_eq!(ground.colors[1].properties.float("speed"), Some(0.5));
+    assert_eq!(
+      ground.tiles,
+      [
+        (0, [0, 1, 0, 1, 0, 1, 0, 1]),
+        (1, [0, 2, 0, 1, 0, 1, 0, 1]),
+        (2, [0, 2, 0, 2, 0, 2, 0, 2])
+      ]
+    );
+
+    let walls = by_name("walls");
+    assert_eq!(walls.kind, WangKind::Edge);
+    assert_eq!(walls.colors[0].tile, Some(3));
+    assert_eq!(walls.tiles[1], (4, [1, 0, 0, 0, 1, 0, 0, 0]));
+
+    let mix = by_name("mix");
+    assert_eq!(mix.kind, WangKind::Mixed);
+    assert_eq!(mix.colors.len(), 2);
+    assert_eq!(mix.colors[1].color, Color::rgb(0, 0, 255));
+    assert_eq!(mix.tiles[1], (6, [2, 2, 1, 1, 0, 0, 0, 1]));
+  }
+
+  #[test]
+  fn the_project_path_comes_from_the_loader_then_the_default() {
+    let project = r#"{"propertyTypes":[{"name":"Crate","type":"class","members":[{"name":"hp","type":"int","value":77}]}]}"#;
+    let json = objects_json(r#"{"id":1,"name":"c","type":"Crate","x":0,"y":0}"#);
+    // the default project at the asset root
+    let map = load_with_project(&json, project).expect("loads");
+    assert_eq!(object(&map, "1").properties.int("hp"), Some(77));
+    // a loader told another file reads that one, not the default
+    let files = files_with(&[("m.tmj", &json), ("kit/other.tiled-project", project)]);
+    files.remove("project.tiled-project");
+    let mut world = world_over(files);
+    let server = world.resource::<AssetServer>().clone();
+    server.register_loader(TiledMapLoader::with_project("kit/other.tiled-project"));
+    server.register_loader(TiledTilesetLoader::with_project("kit/other.tiled-project"));
+    let map = load_in(&mut world, "m.tmj").expect("loads");
+    assert_eq!(object(&map, "1").properties.int("hp"), Some(77));
+    // and one that names a file that is not there fails, naming it
+    let files = files_with(&[("m.tmj", &json)]);
+    let mut world = world_over(files);
+    let server = world.resource::<AssetServer>().clone();
+    server.register_loader(TiledMapLoader::with_project("kit/missing.tiled-project"));
+    let error = load_in(&mut world, "m.tmj").expect_err("loaded");
+    assert!(error.contains("kit/missing.tiled-project"), "{error}");
+  }
+
+  #[test]
+  fn a_saved_project_loads_its_maps_again() {
+    let project = |hp: i32| {
+      format!(
+        r#"{{"propertyTypes":[{{"name":"Crate","type":"class","members":[{{"name":"hp","type":"int","value":{hp}}}]}}]}}"#
+      )
+    };
+    let json = objects_json(r#"{"id":1,"name":"c","type":"Crate","x":0,"y":0}"#);
+    let files = files_with(&[("m.tmj", &json), ("project.tiled-project", &project(1))]);
+    let mut world = world_over(files.clone());
+    let handle = AssetsView::new(&mut world)
+      .load_now::<TileMap>("m.tmj")
+      .expect("loads");
+    let hp = |world: &World| {
+      let map = world
+        .resource::<Assets<TileMap>>()
+        .get(&handle)
+        .expect("stored");
+      object(map, "1").properties.int("hp")
+    };
+    assert_eq!(hp(&world), Some(1));
+    files.insert("project.tiled-project", project(2));
+    let server = world.resource::<AssetServer>().clone();
+    server.reload("m.tmj");
+    pump_until(&mut world, |w| hp(w) == Some(2));
+    assert_eq!(hp(&world), Some(2));
+  }
+
+  #[test]
+  fn project_and_object_errors_name_their_place() {
+    let json = objects_json(r#"{"id":1,"name":"c","x":0,"y":0}"#);
+    let error = load_with_project(&json, "{ nope").expect_err("loaded");
+    assert!(
+      error.contains("project.tiled-project") && error.contains("line 1"),
+      "{error}"
+    );
+
+    let after_first = map_json(
+      "",
+      r#"{"id":1,"name":"things","type":"objectgroup","objects":[{"id":4,"gid":2,"x":0,"y":0}]}"#,
+      r#"{"firstgid":5,"source":"tilesets/tiles.tsj"}"#,
+    );
+    let error = failure(&after_first);
+    assert!(
+      error.contains(r#"layer "things""#) && error.contains("object 4"),
+      "{error}"
+    );
+    // a tile id past its tileset is found once the tileset is in
+    let error = failure(&objects_json(r#"{"id":4,"gid":99,"x":0,"y":0}"#));
+    assert!(
+      error.contains(r#"layer "things""#) && error.contains("tile id 98"),
+      "{error}"
+    );
+    let error = failure(&objects_json(
+      r#"{"id":4,"template":"nope.tj","x":0,"y":0}"#,
+    ));
+    assert!(
+      error.contains("object 4") && error.contains("nope.tj"),
+      "{error}"
+    );
+    let error = failure(&objects_json(
+      r#"{"id":4,"template":"../../x.tj","x":0,"y":0}"#,
+    ));
+    assert!(error.contains("object 4"), "{error}");
+
+    let files = files_with(&[
+      (
+        "t.tj",
+        r#"{"type":"template","tileset":{"firstgid":1,"source":"tilesets/items.tsj"},"object":{"id":1,"gid":1,"width":1,"height":1}}"#,
+      ),
+      (
+        "m.tmj",
+        &objects_json(r#"{"id":4,"template":"t.tj","x":0,"y":0}"#),
+      ),
+    ]);
+    let mut world = world_over(files);
+    let error = load_in(&mut world, "m.tmj").expect_err("loaded");
+    assert!(
+      error.contains("object 4") && error.contains("not one of the map's tilesets"),
+      "{error}"
+    );
+
+    let bad_wang = |wang: &str| {
+      format!(
+        r#"{{"name":"w","tilewidth":16,"tileheight":16,"tilecount":4,"columns":2,"image":"images/tiles.png","imagewidth":32,"imageheight":32,"wangsets":[{wang}]}}"#
+      )
+    };
+    for (wang, what) in [
+      (
+        r#"{"name":"s","type":"hex","colors":[],"wangtiles":[]}"#,
+        "corner, edge or mixed",
+      ),
+      (
+        r##"{"name":"s","type":"edge","colors":[{"name":"a","color":"#ff0000"}],"wangtiles":[{"tileid":0,"wangid":[1,0,0]}]}"##,
+        "not 8",
+      ),
+      (
+        r##"{"name":"s","type":"edge","colors":[{"name":"a","color":"#ff0000"}],"wangtiles":[{"tileid":0,"wangid":[2,0,0,0,0,0,0,0]}]}"##,
+        "color 2",
+      ),
+    ] {
+      let files = files_with(&[("w.tsj", &bad_wang(wang))]);
+      let mut world = world_over(files);
+      let error = AssetsView::new(&mut world)
+        .load_now::<Tileset>("w.tsj")
+        .expect_err("loaded")
+        .report();
+      assert!(
+        error.contains(what) && error.contains("wang set"),
+        "{error}"
+      );
+    }
+    let _ = Properties::default();
   }
 }

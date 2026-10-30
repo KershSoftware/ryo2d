@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<map version="1.10" tiledversion="1.12.2" orientation="orthogonal" renderorder="right-down" width="8" height="6" tilewidth="16" tileheight="16" infinite="0" nextlayerid="3" nextobjectid="20">
+ <tileset firstgid="1" source="../tilesets/tiles.tsx"/>
+ <tileset firstgid="17" source="../tilesets/items.tsx"/>
+ <tileset firstgid="19" source="../tilesets/aligned.tsx"/>
+ <objectgroup id="2" name="things">
+  <object id="1" name="crate" type="Crate" x="16" y="32" width="32" height="16">
+   <properties>
+    <property name="hp" type="int" value="25"/>
+    <property name="target" type="object" value="3"/>
+   </properties>
+  </object>
+  <object id="2" name="pond" x="64" y="8" width="20" height="10">
+   <ellipse/>
+  </object>
+  <object id="3" name="spawn" x="5" y="6">
+   <point/>
+  </object>
+  <object id="4" name="wedge" x="40" y="60">
+   <polygon points="0,0 16,0 8,12"/>
+  </object>
+  <object id="5" name="path" x="10" y="80">
+   <polyline points="0,0 10,5 20,0"/>
+  </object>
+  <object id="6" name="pill" x="90" y="20" width="12" height="30">
+   <capsule/>
+  </object>
+  <object id="7" name="sign" x="2" y="2" width="60" height="20">
+   <text fontfamily="sans-serif" pixelsize="12" wrap="1">Hello there</text>
+  </object>
+  <object id="8" name="gem" gid="17" x="64" y="64" width="16" height="16"/>
+  <object id="9" name="centred" gid="19" x="100" y="40" width="16" height="16"/>
+  <object id="10" name="turned" x="50" y="50" width="20" height="10" rotation="90"/>
+  <object id="11" name="turned gem" gid="17" x="30" y="30" width="16" height="16" rotation="90"/>
+  <object id="12" name="flipped gem" gid="2147483665" x="60" y="20" width="16" height="16"/>
+  <object id="13" name="hidden" x="1" y="1" width="2" height="2" visible="0"/>
+  <object id="14" name="barrel" type="Crate" x="70" y="70" width="8" height="8">
+   <properties>
+    <property name="material" propertytype="Material" value="metal"/>
+    <property name="resist" type="int" propertytype="Elements" value="5"/>
+    <property name="loot" type="class" propertytype="Drop">
+     <properties>
+      <property name="rare" type="bool" value="true"/>
+     </properties>
+    </property>
+   </properties>
+  </object>
+  <object id="15" template="../templates/crate.tj" x="20" y="20"/>
+  <object id="16" template="../templates/crate.tj" name="renamed" x="30" y="20" width="24" height="24"/>
+  <object id="17" template="../templates/gem.tj" x="48" y="48"/>
+ </objectgroup>
+</map>
