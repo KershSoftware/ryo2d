@@ -28,7 +28,8 @@ Scenes control lighting through the `LightingSettings` resource (`ctx.lighting()
 
 - **Artist-friendly units**: colors use 0-255 sRGB, not 0.0-1.0. Radius is in pixels. Intensity above 1 shows (the look rolls it off).
 - **Placed by `GlobalTransform`**: lights draw at their entity's world translation; occluders use its world translation and rotation (not its scale). On an interpolated entity both are blended with its sprite (`render_global`).
-- **Coordinate space**: occluder vertices are local space (relative to the entity), CCW winding.
+- **Coordinate space**: occluder vertices are local space (relative to the entity), CCW winding: CCW on screen, which with y down is a negative signed area, so `casts`' normal `(-edge.y, edge.x)` faces out.
+- **Reach test by entity**: a light skips an occluder whose entity sits more than twice its radius away, so an occluder's entity should sit at its geometry's centre (as tile maps place theirs: `tilemap/occluders.rs`, `MapOccluder`, one entity per merged rectangle or shape of a chunk).
 
 ## Notes for AI Agents
 

@@ -57,6 +57,20 @@ pub(crate) enum MapSource {
 /// entity despawns all of it; putting another root over it, or taking the
 /// root away, takes its layers down first.
 ///
+/// The map collides: its colliding tile layers ([`LayerInfo::collides`])
+/// keep a [`TileColliders`](crate::core::physics::TileColliders) in step
+/// with their tiles, on the map entity for the layers of the map's own tile
+/// size and no offset (a cell taking the strongest kind across them:
+/// solid, then a shape, then a slope, then one-way; of two shapes the upper
+/// layer's), and on a layer's entity for a layer of another cell size or
+/// offset. A layer with an IntGrid collides by its values' names, any other
+/// by its tiles' collision shapes, placed where each tile draws. The map's
+/// properties `collision_layer`, `collision_mask`, `friction` and
+/// `restitution` give the colliders' material. Its occluding layers
+/// ([`LayerInfo::occludes`], else as they collide) cast 2D shadows through
+/// [`MapOccluder`](super::MapOccluder) children. Edits re-collide and
+/// re-shadow only the chunks they touch; a disabled map has neither.
+///
 /// ```
 /// use ryo2d::prelude::*;
 ///
@@ -116,7 +130,13 @@ impl MapRoot {
   }
 
   /// Cells holding the IntGrid value `key` collide as `cell`, over the
-  /// defaults the value's name gives and any earlier call for the same key
+  /// defaults the value's name gives and any earlier call for the same key.
+  /// By default the names `solid`, `one_way`, `slope_bottom_left`,
+  /// `slope_bottom_right`, `slope_top_left` and `slope_top_right` collide as
+  /// they say and every other value as nothing; names compare ignoring ASCII
+  /// case (LDtk capitalises identifiers), and a value's own override wins
+  /// over its name's. A `TileCell::Shape` here names no shape and collides
+  /// as nothing
   pub fn with_intgrid_collision(mut self, key: impl Into<IntGridKey>, cell: TileCell) -> MapRoot {
     let key = key.into();
     match self.intgrid_collision.iter_mut().find(|(k, _)| *k == key) {
@@ -126,7 +146,8 @@ impl MapRoot {
     self
   }
 
-  /// The map collides with nothing
+  /// The map collides with nothing; its layers still cast shadows, as
+  /// their `occludes` (else `collides`) says
   pub fn without_collision(mut self) -> MapRoot {
     self.collision = false;
     self
@@ -267,15 +288,22 @@ pub(crate) type WaitingMaps =
 
 /// The map a root names, once its asset is in its store
 pub(crate) fn map_asset<'w>(world: &'w World, root: &MapRoot) -> Option<&'w TileMap> {
+  root_map(
+    root,
+    world.get_resource::<Assets<TileMap>>(),
+    world.get_resource::<Assets<LdtkProject>>(),
+  )
+}
+
+/// The map a root names, from the stores a system holds
+pub(crate) fn root_map<'a>(
+  root: &MapRoot,
+  maps: Option<&'a Assets<TileMap>>,
+  projects: Option<&'a Assets<LdtkProject>>,
+) -> Option<&'a TileMap> {
   match &root.source {
-    MapSource::Map(handle) => world.get_resource::<Assets<TileMap>>()?.get(handle),
-    MapSource::Ldtk { project, level } => Some(
-      &world
-        .get_resource::<Assets<LdtkProject>>()?
-        .get(project)?
-        .level(level)?
-        .map,
-    ),
+    MapSource::Map(handle) => maps?.get(handle),
+    MapSource::Ldtk { project, level } => Some(&projects?.get(project)?.level(level)?.map),
   }
 }
 
@@ -702,7 +730,6 @@ fn send(world: &mut World, event: MapEvent) {
 #[cfg(test)]
 mod tests {
   use std::f32::consts::FRAC_PI_2;
-  use std::path::Path;
   use std::sync::Mutex;
   use std::sync::atomic::{AtomicBool, Ordering};
   use std::time::{Duration, Instant};
@@ -710,53 +737,18 @@ mod tests {
   use glam::{IVec2, UVec2, Vec2};
 
   use super::*;
-  use crate::core::asset::{AssetServer, AssetsView, MemorySource, insert_registry, pump};
+  use crate::core::asset::{AssetsView, pump};
   use crate::core::ecs::kernel::{Add, MessageCursor, Messages, Schedule};
   use crate::core::ecs::world_ext::despawn_game_entities;
   use crate::core::ecs::{ChildOf, Commands, GlobalTransform, On, Query, Res, Resource};
   use crate::core::engine::EngineBuilder;
   use crate::core::scene::{Scene, SceneAction, SceneContext};
   use crate::core::testing::HeadlessEngine;
+  use crate::core::tilemap::test_util::{files_with, world_over};
   use crate::core::tilemap::{
     LayerKind, LayerRef, MapLayer, MapObjectData, MapsView, PropertyValue, TileData, TileFlip,
     Tileset, TilesetImage, TilesetSource,
   };
-
-  const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tilemap");
-
-  /// Every file under `dir` at its path relative to `root`, the XML twins left out
-  fn read_tree(root: &Path, dir: &Path, files: &MemorySource) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-      panic!("{dir:?} is not readable")
-    };
-    for entry in entries.flatten() {
-      let path = entry.path();
-      if path.is_dir() {
-        if path.file_name().is_some_and(|n| n == "xml") {
-          continue;
-        }
-        read_tree(root, &path, files);
-      } else if let (Ok(rel), Ok(bytes)) = (path.strip_prefix(root), std::fs::read(&path)) {
-        files.insert(&rel.to_string_lossy().replace('\\', "/"), bytes);
-      }
-    }
-  }
-
-  /// The tilemap fixtures (under `tiled/` and `ldtk/`) plus `extra` files
-  fn files_with(extra: &[(&str, &str)]) -> MemorySource {
-    let files = MemorySource::new();
-    read_tree(Path::new(FIXTURES), Path::new(FIXTURES), &files);
-    for (path, text) in extra {
-      files.insert(path, *text);
-    }
-    files
-  }
-
-  fn world_over(files: MemorySource) -> World {
-    let mut world = World::new();
-    insert_registry(&mut world, AssetServer::new(files));
-    world
-  }
 
   /// A frame's map work: the asset pump, then the spawn system
   struct Frames(Schedule);

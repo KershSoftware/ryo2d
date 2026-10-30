@@ -703,7 +703,7 @@ mod tests {
     panic!("{name}: one has more lines than the other");
   }
 
-  const MAP_PAIRS: [&str; 9] = [
+  const MAP_PAIRS: [&str; 10] = [
     "mixed",
     "mixed-embedded",
     "nested",
@@ -713,8 +713,16 @@ mod tests {
     "enc-gzip",
     "enc-zlib",
     "enc-zstd",
+    "level",
   ];
-  const SET_PAIRS: [&str; 5] = ["tiles", "items", "offset", "aligned", "terrain"];
+  const SET_PAIRS: [&str; 6] = [
+    "tiles",
+    "items",
+    "offset",
+    "aligned",
+    "terrain",
+    "collision",
+  ];
 
   #[test]
   fn every_fixture_loads_the_same_from_xml_and_json() {

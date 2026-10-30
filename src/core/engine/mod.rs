@@ -468,6 +468,7 @@ fn register_engine_systems(schedules: &mut EngineSchedules) {
   );
   register_physics_systems(schedules);
   register_gameplay_systems(schedules);
+  crate::core::tilemap::register_tilemap_systems(schedules);
   schedules.add_systems(
     Phase::FixedUpdate,
     propagate_transforms.in_set(FixedSet::Transforms),

@@ -4,17 +4,24 @@
 //! entity spawns a map's layers, objects and class tiles as its children,
 //! read and edited through [`MapsView`] (`ctx.maps()`).
 
+mod collision;
 mod edit;
 mod grid;
 mod ldtk;
 mod map;
+mod occluders;
 pub(crate) mod padded;
 mod property;
 mod spawn;
+#[cfg(test)]
+pub(crate) mod test_util;
 mod tile;
 mod tiled;
 mod tileset;
 mod view;
+
+use crate::core::ecs::IntoScheduleConfigs;
+use crate::core::schedule::{EngineSchedules, FixedSet, Phase, PostUpdateSet};
 
 pub use edit::LayerRef;
 pub use grid::{CHUNK_SIZE, TileGrid};
@@ -25,6 +32,7 @@ pub use map::{
   ImageLayer, IntGrid, LayerInfo, LayerKind, MapLayer, MapObjectData, ObjectShape, TileMap,
   TilesetSource,
 };
+pub use occluders::MapOccluder;
 pub use property::{Properties, PropertyValue};
 pub use spawn::{
   IntGridKey, MapEvent, MapIds, MapLayerRef, MapObject, MapRoot, MapTile, TileLayerData,
@@ -36,3 +44,20 @@ pub use tileset::{
   TileData, TileFrame, TileShape, Tileset, TilesetImage, URect, WangColor, WangKind, WangSet,
 };
 pub use view::MapsView;
+
+/// The map systems that run each frame and step: collision kept in step
+/// with the tiles before the tile colliders rebuild (so an edit made in
+/// `update` collides in that step), and occluders before transforms
+/// propagate (so an edit casts its shadow that frame)
+pub(crate) fn register_tilemap_systems(schedules: &mut EngineSchedules) {
+  schedules.add_systems(
+    Phase::FixedUpdate,
+    collision::sync_map_colliders
+      .in_set(FixedSet::Movement)
+      .before(crate::core::physics::rebuild_tile_colliders),
+  );
+  schedules.add_systems(
+    Phase::PostUpdate,
+    occluders::sync_map_occluders.before(PostUpdateSet::Transforms),
+  );
+}
