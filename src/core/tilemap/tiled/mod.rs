@@ -693,4 +693,42 @@ mod tests {
     let error = failure("{\n \"width\": }");
     assert!(error.contains("line 2, column"), "{error}");
   }
+
+  #[test]
+  fn a_tileset_s_tile_offset_loads() {
+    let mut world = world_over(files_with(&[]));
+    let handle = AssetsView::new(&mut world)
+      .load_now::<Tileset>("tilesets/offset.tsj")
+      .expect("loads");
+    let set = world
+      .resource::<Assets<Tileset>>()
+      .get(&handle)
+      .expect("stored");
+    assert_eq!(set.tile_offset, IVec2::new(3, -5));
+    let inline = r#"{"firstgid":1,"name":"o","tilewidth":16,"tileheight":16,"tilecount":16,"columns":4,
+        "tileoffset":{"x":-2,"y":7},"image":"images/tiles.png","imagewidth":64,"imageheight":64}"#;
+    let map = load_json(&map_json("", &tile_layer(""), inline)).expect("loads");
+    let TilesetSource::Embedded(set) = &map.tilesets[0] else {
+      panic!("not inline")
+    };
+    assert_eq!(set.tile_offset, IVec2::new(-2, 7));
+    let mut other = world_over(files_with(&[]));
+    let plain = load_in(&mut other, "maps/mixed.tmj").expect("loads");
+    assert_eq!(tileset_of(&plain, 0, &other).tile_offset, IVec2::ZERO);
+  }
+
+  #[test]
+  fn a_zero_dimension_with_a_huge_one_is_an_error_not_an_overflow() {
+    let layer =
+      r#"{"id":1,"name":"thin","type":"tilelayer","width":4294967295,"height":0,"data":[]}"#;
+    let error = failure(&map_json("", layer, ""));
+    assert!(error.contains(r#"layer "thin""#), "{error}");
+    for (w, h) in [(4294967295u64, 0u64), (0, 4294967295)] {
+      let json = format!(
+        r#"{{"type":"map","orientation":"orthogonal","width":{w},"height":{h},"tilewidth":16,"tileheight":16,"tilesets":[],"layers":[]}}"#
+      );
+      let error = failure(&json);
+      assert!(error.contains("cells"), "{error}");
+    }
+  }
 }

@@ -1,0 +1,19 @@
+{ "columns":4,
+ "image":"..\/images\/tiles.png",
+ "imageheight":64,
+ "imagewidth":64,
+ "margin":0,
+ "name":"offset",
+ "spacing":0,
+ "tilecount":16,
+ "tiledversion":"1.12.2",
+ "tileheight":16,
+ "tileoffset":
+    {
+     "x":3,
+     "y":-5
+    },
+ "tilewidth":16,
+ "type":"tileset",
+ "version":"1.10"
+}

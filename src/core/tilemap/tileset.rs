@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use glam::{UVec2, Vec2};
+use glam::{IVec2, UVec2, Vec2};
 
 use super::property::Properties;
 use crate::core::asset::{Asset, Handle};
@@ -131,6 +131,8 @@ pub struct Tileset {
   pub tile_count: u32,
   pub spacing: u32,
   pub margin: u32,
+  /// Where Tiled draws each tile from its cell, in pixels
+  pub tile_offset: IVec2,
   pub image: TilesetImage,
   pub wang_sets: Vec<WangSet>,
   pub properties: Properties,
@@ -151,6 +153,7 @@ impl Tileset {
       tile_count: 0,
       spacing: 0,
       margin: 0,
+      tile_offset: IVec2::ZERO,
       image,
       wang_sets: Vec::new(),
       properties: Properties::default(),

@@ -50,8 +50,9 @@ pub struct TileGrid {
 impl TileGrid {
   /// An empty grid of `size` cells, no chunk dirty
   pub fn new(size: UVec2) -> TileGrid {
-    let chunks = (size + UVec2::splat(CHUNK_SIZE - 1)) / CHUNK_SIZE;
-    let n = (chunks.x * chunks.y) as usize;
+    // div_ceil cannot overflow the way adding to the size can
+    let chunks = UVec2::new(size.x.div_ceil(CHUNK_SIZE), size.y.div_ceil(CHUNK_SIZE));
+    let n = chunks.x as usize * chunks.y as usize;
     TileGrid {
       size,
       cells: vec![0; (size.x as usize) * (size.y as usize)],
@@ -80,7 +81,7 @@ impl TileGrid {
 
   fn mark(&mut self, cell: IVec2) {
     let c = cell.as_uvec2() / CHUNK_SIZE;
-    let i = (c.y * self.chunks.x + c.x) as usize;
+    let i = c.y as usize * self.chunks.x as usize + c.x as usize;
     if !self.dirty[i] {
       self.dirty[i] = true;
       self.dirty_count += 1;
@@ -146,8 +147,8 @@ impl TileGrid {
       if *d {
         *d = false;
         out.push(UVec2::new(
-          i as u32 % self.chunks.x,
-          i as u32 / self.chunks.x,
+          (i % self.chunks.x as usize) as u32,
+          (i / self.chunks.x as usize) as u32,
         ));
       }
     }
@@ -240,6 +241,14 @@ mod tests {
     let mut out = Vec::new();
     g.drain_dirty(&mut out);
     assert!(out.is_empty());
+  }
+
+  #[test]
+  fn a_grid_of_absurd_size_does_not_overflow() {
+    let g = TileGrid::new(UVec2::new(u32::MAX, 0));
+    assert_eq!(g.chunks(), UVec2::new(u32::MAX / CHUNK_SIZE + 1, 0));
+    let g = TileGrid::new(UVec2::new(0, u32::MAX));
+    assert_eq!(g.size(), UVec2::new(0, u32::MAX));
   }
 
   #[test]

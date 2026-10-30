@@ -17,5 +17,5 @@ Sub-project 6a replaces the old tilemap module. Design: `docs/specs/2026-10-29-t
 - External tilesets are dependencies and are not loaded while the map loads, so a gid is matched to a tileset by `firstgid` alone. The ids each tile layer uses are noted in `TileMap::used_ids` and measured against the tilesets in the map's `check`; the atlas image against the declared tiles in the tileset's `check`.
 - Group layers flatten: offset adds, opacity and tint multiply, parallax multiplies, visibility ands, a non-normal blend passes down. Layer ids stay as written; a layer without one gets the next free id.
 - Limits, each a load error naming the place: 1<<26 cells a layer or map, 256 tilesets a map, 1,048,575 tiles a tileset. Unsupported until 6b: isometric, staggered, hexagonal and oblique maps and infinite maps; layer blend modes other than normal, add, multiply and screen.
-- Object layers load as empty `LayerKind::Objects` for now; the tileset's tile offset is not kept.
+- Object layers load as empty `LayerKind::Objects` for now; a tileset's `tileoffset` is kept as `Tileset::tile_offset`.
 - `LayerInfo::occludes: None` means "as `collides`"; `lit` defaults to true.

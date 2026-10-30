@@ -199,6 +199,10 @@ fn properties(
 
 /// A cell count that is within the limit
 fn cell_count(w: u32, h: u32) -> Option<usize> {
+  // each side too: a zero side would let the other be anything
+  if u64::from(w) > MAX_CELLS || u64::from(h) > MAX_CELLS {
+    return None;
+  }
   let n = u64::from(w) * u64::from(h);
   (n <= MAX_CELLS).then_some(n as usize)
 }
@@ -350,6 +354,7 @@ pub(crate) fn build_tileset(
   set.spacing = raw.spacing;
   set.margin = raw.margin;
   set.columns = columns;
+  set.tile_offset = IVec2::new(raw.tileoffset.x, raw.tileoffset.y);
   let declared = raw.tilecount.unwrap_or(computed_count);
   if declared > MAX_TILES {
     return Err(fail(

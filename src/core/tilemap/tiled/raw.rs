@@ -57,11 +57,20 @@ pub(crate) struct RawTileset {
   pub margin: u32,
   pub tilecount: Option<u32>,
   pub columns: u32,
+  pub tileoffset: RawOffset,
   pub image: Option<String>,
   pub imagewidth: u32,
   pub imageheight: u32,
   pub tiles: Vec<RawTile>,
   pub properties: Vec<RawProperty>,
+}
+
+/// A tileset's `tileoffset`, in pixels
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub(crate) struct RawOffset {
+  pub x: i32,
+  pub y: i32,
 }
 
 /// One tile's extra data
