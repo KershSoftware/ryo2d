@@ -2,7 +2,7 @@
 name: ryo-procgen
 description: The optional ryo2d-procgen crate - dungeons (BSP), caves (cellular), noise terrain, random walks, Poisson sampling, WFC and MST corridors.
 metadata:
-  version: 2.1.1
+  version: 2.2.0
 ---
 
 # Ryo2D Procedural Generation Specialist
@@ -362,9 +362,49 @@ let nav_grid = result.grid().to_navigation_grid(16.0);
 let path = Pathfinder::new().find_path(&nav_grid, start_x, start_y, goal_x, goal_y);
 ```
 
-## Spawning the Result
+## Tile Maps
 
-Grid cells are integer coordinates; multiply by your tile size for world positions. Sprites are centred on their `Transform` by default, so a tile drawn by its centre sits half a tile in:
+`GenerationGrid::to_tile_map` turns a result into a `TileMap` of one tile layer, `"tiles"`, as big as the grid. Spawn it with `MapRoot` and it draws, collides and edits like a map a designer made. `tile_of` gives each `TileType` a tile id in the tileset (`None` leaves the cell empty); row 0 of the grid is the map's top row:
+
+<!-- with: use ryo2d_procgen::prelude::*; -->
+<!-- given: result: ryo2d_procgen::GenerationResult, tileset: Handle<Tileset> -->
+```rust
+let map = result.grid().to_tile_map(
+  UVec2::splat(16),
+  TilesetSource::Asset(tileset.clone()),
+  |tile| match tile {
+    TileType::Wall => Some(0),
+    TileType::Floor => Some(1),
+    _ => None,
+  },
+);
+let map = ctx.assets().add(map);
+ctx.world.spawn(MapRoot::new(map));
+```
+
+`to_terrain_map` picks edge and corner tiles from a Wang set the designer made in Tiled, so a cave's rim or a coast joins up. The caller passes the set (`Tileset::wang_set(name)` on the loaded tileset), so generating stays a plain function of the grid. `color_of` names the set's colour each type is drawn as; `None`, or a name the set lacks, is empty:
+
+<!-- with: use ryo2d_procgen::prelude::*; -->
+<!-- given: result: ryo2d_procgen::GenerationResult, tileset: Handle<Tileset>, loaded: Tileset -->
+```rust
+let Some(ground) = loaded.wang_set("ground") else { return };
+let map = result.grid().to_terrain_map(
+  UVec2::splat(16),
+  TilesetSource::Asset(tileset.clone()),
+  ground,
+  |tile| match tile {
+    TileType::Floor => Some("floor"),
+    TileType::Water => Some("water"),
+    _ => None,
+  },
+);
+```
+
+A Wang position sits between cells, so it must pick one of their colours: a corner takes the highest-precedence colour of the up to four cells that meet there, an edge the higher of its two. Precedence is the set's colour order in Tiled (a higher colour covers a lower one, and every colour covers empty); outside the grid is empty. Adjacent cells then agree on what they share, so the tiling has no seams wherever the set has tiles. The visible effect: the higher colour grows half a cell into the lower one, and a one-cell strip of a lower colour between two higher ones is covered. Order the colours in Tiled to choose. A cell the set has no tile for is left empty. A corner set is asked only for corners, an edge set only for edges.
+
+## Spawning Sprites
+
+To place sprites instead of a map: grid cells are integer coordinates; multiply by your tile size for world positions. Sprites are centred on their `Transform` by default, so a tile drawn by its centre sits half a tile in:
 
 <!-- with: use ryo2d_procgen::prelude::*; -->
 <!-- given: result: ryo2d_procgen::GenerationResult, wall: Handle<Image> -->

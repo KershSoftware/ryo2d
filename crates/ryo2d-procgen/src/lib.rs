@@ -160,6 +160,7 @@ mod mst;
 mod noise;
 mod poisson;
 mod random_walk;
+mod tilemap;
 mod wfc;
 
 // Re-export public API

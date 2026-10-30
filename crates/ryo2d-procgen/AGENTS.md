@@ -15,7 +15,7 @@ use ryo2d::prelude::*;
 use ryo2d_procgen::prelude::*;
 ```
 
-Inside this repository a demo uses `{ path = "../../../crates/ryo2d-procgen" }`. The crate's prelude exports only its own types; `GenerationGrid::to_navigation_grid(cell_size)` converts a result into the core's `NavigationGrid`.
+Inside this repository a demo uses `{ path = "../../../crates/ryo2d-procgen" }`. The crate's prelude exports only its own types; `GenerationGrid::to_navigation_grid(cell_size)` converts a result into the core's `NavigationGrid`, and `to_tile_map` / `to_terrain_map` (in `src/tilemap.rs`) into a `TileMap` (the latter picks Wang edge tiles, a corner or edge taking the highest-precedence colour of the cells that share it).
 
 ## Gotchas
 

@@ -207,6 +207,11 @@ impl Tileset {
     self.tiles.get(&id)
   }
 
+  /// The Wang set called `name`, if the tileset has one
+  pub fn wang_set(&self, name: &str) -> Option<&WangSet> {
+    self.wang_sets.iter().find(|s| s.name == name)
+  }
+
   /// Sets the data of tile `id`
   pub fn insert_tile(&mut self, id: u32, data: TileData) {
     self.tiles.insert(id, data);
@@ -253,6 +258,20 @@ mod tests {
     t.margin = 1;
     t.spacing = 2;
     t
+  }
+
+  #[test]
+  fn wang_set_finds_a_set_by_name() {
+    let mut t = sheet();
+    t.wang_sets.push(WangSet::new(
+      "ground",
+      WangKind::Corner,
+      Vec::new(),
+      Vec::new(),
+      TileTransformations::default(),
+    ));
+    assert_eq!(t.wang_set("ground").map(|s| s.name()), Some("ground"));
+    assert!(t.wang_set("missing").is_none());
   }
 
   #[test]
