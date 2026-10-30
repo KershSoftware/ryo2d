@@ -16,7 +16,7 @@ use rapier2d::prelude::{
   EventHandler, Group, ImpulseJointHandle, ImpulseJointSet, IntegrationParameters,
   InteractionGroups, InteractionTestMode, IslandManager, MultibodyJointSet, NarrowPhase,
   PhysicsPipeline, Pose, Real, RigidBodyActivation, RigidBodyBuilder, RigidBodyHandle,
-  RigidBodySet, RigidBodyType, SoftBodySet, SoftBodyTearEvent,
+  RigidBodySet, RigidBodyType, SharedShape, SoftBodySet, SoftBodyTearEvent,
 };
 
 use super::body::{BodyKind, RigidBody};
@@ -650,6 +650,7 @@ impl Physics {
     body: Option<(Entity, RigidBodyHandle)>,
     placement: Placement,
     collider: &Collider,
+    prebuilt: Option<&SharedShape>,
   ) {
     if !placement.is_finite() {
       self.warn_once(
@@ -658,7 +659,7 @@ impl Physics {
       );
       return;
     }
-    let Some(builder) = self.collider_builder(collider, placement.map) else {
+    let Some(builder) = self.collider_builder(collider, placement.map, prebuilt) else {
       self.warn_once(
         entity,
         "a degenerate collider shape (zero scale included) is not simulated",
@@ -693,10 +694,20 @@ impl Physics {
     );
   }
 
-  /// Rapier's collider for `collider` with `map` applied to its shape, or
-  /// `None` when the shape is degenerate.
-  fn collider_builder(&self, collider: &Collider, map: Mat2) -> Option<ColliderBuilder> {
-    let shape = shape::build(&collider.shape, map)?;
+  /// Rapier's collider for `collider` with `map` applied to its shape (the
+  /// shape built ahead, `prebuilt`, when `map` applies nothing), or `None`
+  /// when the shape is degenerate.
+  fn collider_builder(
+    &self,
+    collider: &Collider,
+    map: Mat2,
+    prebuilt: Option<&SharedShape>,
+  ) -> Option<ColliderBuilder> {
+    let identity = map.abs_diff_eq(Mat2::IDENTITY, 1e-6);
+    let shape = match prebuilt.filter(|_| identity) {
+      Some(shape) => shape.clone(),
+      None => shape::build(&collider.shape, map)?,
+    };
     let builder = ColliderBuilder::new(shape)
       .friction(finite_or(collider.friction, 0.5).max(0.0))
       .friction_combine_rule(CoefficientCombineRule::GeometricMean)
@@ -715,18 +726,33 @@ impl Physics {
     })
   }
 
-  /// Bring a collider in line with its component, its body and its
-  /// placement: register it, move it to another body (or none), rebuild its
-  /// shape when the shape or scale changed, move it, and apply material
-  /// edits. A collider whose body is not simulated yet waits out of the
-  /// simulation (retried every step), leaving any body it was on; a shape
-  /// that becomes degenerate leaves the simulation until it is valid again.
+  /// `sync_collider_with` with no shape built ahead.
+  #[cfg(test)]
   pub(crate) fn sync_collider(
     &mut self,
     entity: Entity,
     body: Option<Entity>,
     placement: Placement,
     collider: &Collider,
+  ) {
+    self.sync_collider_with(entity, body, placement, collider, None);
+  }
+
+  /// Bring a collider in line with its component, its body and its
+  /// placement: register it, move it to another body (or none), rebuild its
+  /// shape when the shape or scale changed, move it, and apply material
+  /// edits. A collider whose body is not simulated yet waits out of the
+  /// simulation (retried every step), leaving any body it was on; a shape
+  /// that becomes degenerate leaves the simulation until it is valid again.
+  /// A collider registering takes `prebuilt` for its shape when given (its
+  /// `PrebuiltShape`) and its placement applies no scale or mirroring.
+  pub(crate) fn sync_collider_with(
+    &mut self,
+    entity: Entity,
+    body: Option<Entity>,
+    placement: Placement,
+    collider: &Collider,
+    prebuilt: Option<&SharedShape>,
   ) {
     if collider
       .one_way
@@ -750,7 +776,7 @@ impl Physics {
     };
     self.waiting.remove(&entity);
     let Some(entry) = self.collider_entries.get(&entity) else {
-      self.add_collider(entity, parent, placement, collider);
+      self.add_collider(entity, parent, placement, collider, prebuilt);
       if let Some(entry) = self.collider_entries.get(&entity) {
         let handle = entry.handle;
         self.follow_body(handle);

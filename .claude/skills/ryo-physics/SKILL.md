@@ -94,6 +94,7 @@ Collider::capsule(40.0, 10.0);                    // total height (ends included
 Collider::polygon([Vec2::new(0.0, -20.0), Vec2::new(20.0, 20.0), Vec2::new(-20.0, 20.0)]); // convex hull
 Collider::segment(Vec2::ZERO, Vec2::new(100.0, 0.0));
 Collider::polyline([a, b, c, d]);                 // open chain: terrain, outlines
+Collider::segments([a, b, c, d], [[0, 1], [2, 3]]); // edges by point index, joined or not
 Collider::circle(32.0).as_trigger();              // detects overlaps, never pushes
 Collider::rect(96.0, 8.0).one_way();              // solid only from above (its own up); bodies pass up through it
 Collider::rect(8.0, 96.0).one_way_towards(Vec2::NEG_X); // solid only from the left; the direction turns with the collider
@@ -102,7 +103,7 @@ Collider::rect(40.0, 8.0).with_rotation(0.3)     // turned relative to the entit
 ```
 
 - A collider is centred on its entity's origin plus `offset`, turned by `rotation`. With the default `Anchor::Center` that is the sprite's centre, so a 32x32 sprite takes `Collider::rect(32.0, 32.0)` with no offset; a top-left-anchored sprite needs the offset of half its size.
-- `ColliderShape` is the data (`Rect { size }`, `Circle { radius }`, `Capsule { height, radius }`, `Polygon { points }`, `Segment { a, b }`, `Polyline { points }`); `Collider::shape` holds it and queries take it.
+- `ColliderShape` is the data (`Rect { size }`, `Circle { radius }`, `Capsule { height, radius }`, `Polygon { points }`, `Segment { a, b }`, `Polyline { points }`, `Segments { points, segments }`); `Collider::shape` holds it and queries take it.
 - Concave shapes are several colliders. **Compound shapes**: give a body child entities that each carry a `Collider`; every collider attaches to the nearest body at or above it, and the body's mass is their sum. (Walls of a room: a fixed body with a collider child per wall.)
 - A degenerate shape (zero or negative size, a polygon with fewer than three points, a zero-length segment) or a zero scale takes the collider out of the simulation (logged once); it comes back when fixed or when the scale grows.
 - `Collider::world_bounds(&GlobalTransform) -> (min, max)` gives the box where physics simulates it.

@@ -40,13 +40,21 @@ const ORIGIN: Vec2 = Vec2::new(20.0, 90.0);
 #[derive(Component)]
 struct Player;
 
-/// `collider`'s outline on an entity at `global`, in world space (a circle
-/// gets a spoke so its spin shows).
-fn outline(global: &GlobalTransform, collider: &Collider) -> Vec<Vec2> {
+/// `collider`'s outline on an entity at `global`, in world space, as lines
+/// to draw (a circle gets a spoke so its spin shows; a tile map packs a
+/// chunk's outlines into one collider of separate segments).
+fn outline(global: &GlobalTransform, collider: &Collider) -> Vec<Vec<Vec2>> {
   let arc = |centre: Vec2, radius: f32, from: f32, to: f32| {
     (0..=12).map(move |i| centre + Vec2::from_angle(from + (to - from) * i as f32 / 12.0) * radius)
   };
   let local: Vec<Vec2> = match &collider.shape {
+    ColliderShape::Segments { points, segments } => {
+      return segments
+        .iter()
+        .filter_map(|&[a, b]| Some([*points.get(a as usize)?, *points.get(b as usize)?]))
+        .map(|ends| place(global, collider, ends.to_vec()))
+        .collect();
+    }
     ColliderShape::Rect { size } => {
       let h = *size / 2.0;
       vec![
@@ -77,6 +85,11 @@ fn outline(global: &GlobalTransform, collider: &Collider) -> Vec<Vec2> {
     ColliderShape::Polyline { points } => points.clone(),
     _ => Vec::new(),
   };
+  vec![place(global, collider, local)]
+}
+
+/// Points in `collider`'s own space, in world space.
+fn place(global: &GlobalTransform, collider: &Collider, local: Vec<Vec2>) -> Vec<Vec2> {
   let affine = global.affine();
   let turn = Vec2::from_angle(collider.rotation);
   local
@@ -143,7 +156,7 @@ fn floor_name(world: &World, floor: Option<Entity>) -> &'static str {
 /// colours.
 fn draw_colliders(ctx: &mut SceneContext) {
   let mut query = ctx.world.query::<(Entity, &GlobalTransform, &Collider)>();
-  let mut lines: Vec<(Entity, Vec<Vec2>, Color)> = query
+  let mut lines: Vec<(Entity, Vec<Vec<Vec2>>, Color)> = query
     .iter(ctx.world)
     .map(|(entity, global, collider)| {
       (
@@ -156,8 +169,10 @@ fn draw_colliders(ctx: &mut SceneContext) {
   lines.sort_unstable_by_key(|(entity, ..)| entity.index_u32());
   let mut debug = ctx.debug_draw();
   let mut pen = debug.width(2.0);
-  for (_, points, color) in lines {
-    pen.polyline(&points, color);
+  for (_, outline, color) in lines {
+    for points in outline {
+      pen.polyline(&points, color);
+    }
   }
 }
 

@@ -149,6 +149,29 @@ pub(crate) fn build(shape: &ColliderShape, map: Mat2) -> Option<SharedShape> {
       (mapped.len() >= 2)
         .then(|| SharedShape::polyline(mapped.into_iter().map(to_rapier).collect(), None))
     }
+    ColliderShape::Segments { points, segments } => {
+      let mut mapped = Vec::with_capacity(points.len());
+      for p in points {
+        let p = map * *p;
+        if !p.is_finite() {
+          return None;
+        }
+        mapped.push(p);
+      }
+      // An edge naming a point that is not there, or of no length, goes
+      let kept: Vec<[u32; 2]> = segments
+        .iter()
+        .copied()
+        .filter(
+          |&[a, b]| match (mapped.get(a as usize), mapped.get(b as usize)) {
+            (Some(a), Some(b)) => a.distance(*b) > f32::EPSILON,
+            _ => false,
+          },
+        )
+        .collect();
+      (!kept.is_empty())
+        .then(|| SharedShape::polyline(mapped.into_iter().map(to_rapier).collect(), Some(kept)))
+    }
   }
 }
 

@@ -818,7 +818,9 @@ mod tests {
   /// The one part with a point in `min..=max` (px)
   fn part_in(parts: &[(Entity, Collider)], min: Vec2, max: Vec2) -> Entity {
     let points = |c: &Collider| match &c.shape {
-      ColliderShape::Polyline { points } | ColliderShape::Polygon { points } => points.clone(),
+      ColliderShape::Polyline { points }
+      | ColliderShape::Polygon { points }
+      | ColliderShape::Segments { points, .. } => points.clone(),
       ColliderShape::Segment { a, b } => vec![*a, *b],
       _ => Vec::new(),
     };
@@ -1098,10 +1100,11 @@ mod tests {
     assert_eq!(count_parts(&mut maps.world), 1);
   }
 
-  /// A floor 40 cells long on row 3 and an island at (20, 0), on 16 px cells
+  /// A floor 40 cells long on row 3 and an island at (36, 0), on 16 px
+  /// cells: the floor's outline is chunk 0's collider, the island's chunk 1's
   fn floor_and_island(maps: &mut MapWorld) -> Entity {
     let mut tiles: Vec<(IVec2, u32)> = (0..40).map(|x| (IVec2::new(x, 3), SOLID)).collect();
-    tiles.push((IVec2::new(20, 0), SOLID));
+    tiles.push((IVec2::new(36, 0), SOLID));
     let map = code_map(UVec2::new(40, 4), &[("ground", &tiles)]);
     let handle = add(&mut maps.world, map);
     maps.spawn(MapRoot::new(handle))
@@ -1112,7 +1115,7 @@ mod tests {
     let mut maps = MapWorld::new();
     let map = floor_and_island(&mut maps);
     let parts = parts_of(&mut maps.world, map);
-    let island_area = (Vec2::new(320.0, 0.0), Vec2::new(336.0, 16.0));
+    let island_area = (Vec2::new(576.0, 0.0), Vec2::new(592.0, 16.0));
     let island = part_in(&parts, island_area.0, island_area.1);
     let mut view = MapsView::new(&mut maps.world);
     assert!(view.set_tile(map, "ground", IVec2::new(10, 1), Some(Tile::new(0, SOLID))));
@@ -1129,7 +1132,9 @@ mod tests {
       .iter()
       .find(|(e, _)| *e == floor)
       .map(|(_, c)| match &c.shape {
-        ColliderShape::Polyline { points } => points.iter().map(|p| p.x).fold(0.0, f32::max),
+        ColliderShape::Polyline { points } | ColliderShape::Segments { points, .. } => {
+          points.iter().map(|p| p.x).fold(0.0, f32::max)
+        }
         _ => 0.0,
       });
     assert_eq!(right, Some(39.0 * 16.0), "the floor lost its last cell");
@@ -1290,9 +1295,15 @@ mod tests {
     assert_eq!(count_parts(&mut maps.world), 0);
     maps.world.entity_mut(map).remove::<Disabled>();
     maps.frame();
-    assert_eq!(count_parts(&mut maps.world), 3);
+    assert_eq!(count_parts(&mut maps.world), 2);
     let shifted = layers_of(&mut maps.world, map)[1];
     assert_eq!(colliders(&maps.world, shifted).get(0, 0), TileCell::Solid);
+    // The shifted layer's two islands, in one chunk, are one collider
+    let parts = parts_of(&mut maps.world, shifted);
+    assert!(
+      matches!(&parts[..], [(_, c)] if matches!(&c.shape, ColliderShape::Segments { segments, .. } if segments.len() == 8)),
+      "{parts:?}"
+    );
   }
 
   #[test]
@@ -1430,7 +1441,7 @@ mod tests {
     let tiles = colliders(&maps.world, map);
     assert_eq!(tiles.get(7, 1), TileCell::Solid);
     assert_eq!(
-      tiles.get(20, 0),
+      tiles.get(36, 0),
       TileCell::Empty,
       "the island went with the old grid"
     );
@@ -1445,7 +1456,7 @@ mod tests {
     maps.step();
     maps.step();
     let tiles = colliders(&maps.world, map);
-    assert_eq!(tiles.get(20, 0), TileCell::Solid);
+    assert_eq!(tiles.get(36, 0), TileCell::Solid);
     assert_eq!(parts_of(&mut maps.world, map).len(), 2);
   }
 
@@ -1475,6 +1486,109 @@ mod tests {
     maps.step();
     let tiles = colliders(&maps.world, map);
     assert!((0..4).all(|x| matches!(tiles.get(x, 0), TileCell::Shape(_))));
+  }
+
+  /// The map's parts with the chunks their loops start in (a part's
+  /// outline loops or one-way runs, by their first point, 32 cells a chunk)
+  fn parts_by_chunk(world: &mut World, map: Entity) -> Vec<(Entity, Vec<IVec2>, bool)> {
+    parts_of(world, map)
+      .into_iter()
+      .map(|(part, collider)| {
+        let chunk = |p: Vec2| (p / (16.0 * 32.0)).floor().as_ivec2();
+        let mut chunks: Vec<IVec2> = match &collider.shape {
+          ColliderShape::Polyline { points } => {
+            points.first().map(|&p| chunk(p)).into_iter().collect()
+          }
+          ColliderShape::Segments { points, segments } => {
+            let mut last = None;
+            let mut starts = Vec::new();
+            for &[a, b] in segments {
+              if last != Some(a) {
+                starts.push(chunk(points[a as usize]));
+              }
+              last = Some(b);
+            }
+            starts
+          }
+          ColliderShape::Segment { a, .. } => vec![chunk(*a)],
+          _ => Vec::new(),
+        };
+        chunks.sort_by_key(|c| (c.y, c.x));
+        chunks.dedup();
+        (part, chunks, collider.one_way.is_some())
+      })
+      .collect()
+  }
+
+  #[test]
+  fn a_map_registers_one_collider_per_chunk_not_per_island() {
+    let mut maps = MapWorld::new();
+    let handle = add(&mut maps.world, landing_map(true, true));
+    let map = maps.spawn(MapRoot::new(handle));
+    let parts = parts_by_chunk(&mut maps.world, map);
+    // 1,024 islands in 64 chunks: a loop collider a chunk, each holding its
+    // chunk's islands only
+    let loops: Vec<&(Entity, Vec<IVec2>, bool)> = parts.iter().filter(|p| !p.2).collect();
+    assert_eq!(loops.len(), 64, "one loop collider per chunk");
+    let mut chunks: Vec<IVec2> = Vec::new();
+    for (part, held, _) in &loops {
+      assert_eq!(held.len(), 1, "{part:?} holds loops of chunks {held:?}");
+      chunks.push(held[0]);
+    }
+    chunks.sort_by_key(|c| (c.y, c.x));
+    chunks.dedup();
+    assert_eq!(chunks.len(), 64, "a collider for each chunk");
+    assert!(parts.iter().filter(|p| p.2).count() <= 64);
+  }
+
+  #[test]
+  fn an_edit_re_registers_only_its_chunk() {
+    use crate::core::physics::Physics;
+    let mut maps = MapWorld::new();
+    let handle = add(&mut maps.world, landing_map(true, true));
+    let map = maps.spawn(MapRoot::new(handle));
+    let handles = |world: &mut World| -> Vec<(Entity, Vec<IVec2>, String)> {
+      let parts = parts_by_chunk(world, map);
+      let physics = world.resource::<Physics>();
+      parts
+        .into_iter()
+        .map(|(part, chunks, _)| {
+          let handle = format!(
+            "{:?}",
+            physics.collider_entries.get(&part).map(|e| e.handle)
+          );
+          (part, chunks, handle)
+        })
+        .collect()
+    };
+    let before = handles(&mut maps.world);
+    assert!(before.len() <= 64, "{} colliders", before.len());
+    // An island of chunk (5, 5) grows
+    assert!(MapsView::new(&mut maps.world).set_tile(
+      map,
+      "ground",
+      IVec2::new(5 * 32 + 5, 5 * 32 + 3),
+      Some(Tile::new(0, SOLID))
+    ));
+    maps.step();
+    let after = handles(&mut maps.world);
+    let edited = IVec2::splat(5);
+    for (part, chunks, handle) in &before {
+      if chunks.contains(&edited) {
+        assert!(
+          after.iter().all(|(p, ..)| p != part),
+          "the edited chunk's collider went"
+        );
+      } else {
+        assert!(
+          after
+            .iter()
+            .any(|(p, c, h)| p == part && c == chunks && h == handle),
+          "chunk {chunks:?}'s collider kept its entity and handle"
+        );
+      }
+    }
+    assert_eq!(after.len(), before.len());
   }
 
   #[test]
@@ -1623,14 +1737,16 @@ mod tests {
       times.sort();
       (times[times.len() / 2], times[times.len() - 1])
     };
-    let (mut colliders, mut occluders) = (Vec::new(), Vec::new());
+    let (mut colliders, mut steps, mut occluders) = (Vec::new(), Vec::new(), Vec::new());
     for i in 0..400 {
       let tile = (i % 2 == 0).then_some(Tile::new(0, SOLID));
       MapsView::new(&mut maps.world).set_tile(map, "ground", IVec2::new(517, 517), tile);
       let start = Instant::now();
       sync.run(&mut maps.world);
       colliders.push(start.elapsed());
+      let start = Instant::now();
       maps.step();
+      steps.push(start.elapsed());
       let start = Instant::now();
       maps.post_update();
       occluders.push(start.elapsed());
@@ -1640,6 +1756,12 @@ mod tests {
       let start = Instant::now();
       sync.run(&mut maps.world);
       idle.push(start.elapsed());
+    }
+    let mut idle_steps = Vec::new();
+    for _ in 0..400 {
+      let start = Instant::now();
+      maps.step();
+      idle_steps.push(start.elapsed());
     }
     let mut idle_occluders = Vec::new();
     for _ in 0..400 {
@@ -1651,6 +1773,11 @@ mod tests {
       "an edit's collision sync (median, max): {:?}",
       median(colliders)
     );
+    println!(
+      "an edit's fixed step, its chunk's collider rebuilt and registered: {:?}",
+      median(steps)
+    );
+    println!("an idle fixed step: {:?}", median(idle_steps));
     println!(
       "an edit's occluder sync, commands applied: {:?}",
       median(occluders)
@@ -1835,8 +1962,9 @@ mod tests {
   /// The time of each frame around the one a 256 x 256 map lands in (its
   /// landing is worked out off the main thread, so that frame comes a few
   /// after the spawn): `BEFORE` frames, the landing frame, `AFTER` frames;
-  /// each the median of `rounds` spawns
-  fn landing_frames(dense: bool, collide: bool, rounds: usize) -> Option<Vec<f64>> {
+  /// each the median of `rounds` spawns, or none for a frame before the
+  /// spawn (a map that lands sooner)
+  fn landing_frames(dense: bool, collide: bool, rounds: usize) -> Option<Vec<Option<f64>>> {
     use std::time::Instant;
     let builder = EngineBuilder::new().resolution(320, 180).start_scene(Empty);
     let mut engine = HeadlessEngine::new_or_skip(builder)?;
@@ -1882,10 +2010,89 @@ mod tests {
         .into_iter()
         .map(|mut t| {
           t.sort_by(f64::total_cmp);
-          t.get(t.len() / 2).copied().unwrap_or(0.0)
+          t.get(t.len() / 2).copied()
         })
         .collect(),
     )
+  }
+
+  /// Prints a landed dense 256 x 256 map's steady frame and physics step,
+  /// with collision and shadows and without, alone and with 256 bouncing
+  /// balls dropped on it. Run it in release: `cargo test --release -p ryo2d
+  /// --lib a_landed_dense_map_s_steady_frame -- --ignored --nocapture`
+  #[test]
+  #[ignore = "timing; run in release by hand"]
+  fn a_landed_dense_map_s_steady_frame_timing() {
+    use std::time::Instant;
+
+    use crate::core::physics::{Physics, RigidBody};
+    let measure = |collide: bool, boxes: bool| -> Option<(f64, f64)> {
+      let builder = EngineBuilder::new().resolution(320, 180).start_scene(Empty);
+      let mut engine = HeadlessEngine::new_or_skip(builder)?;
+      engine.step_frames(10).expect("frames");
+      let handle = engine
+        .world_mut()
+        .resource_mut::<Assets<TileMap>>()
+        .add(landing_map(true, collide));
+      let root = MapRoot::new(handle);
+      let root = if collide {
+        root
+      } else {
+        root.without_collision()
+      };
+      let map = engine.world_mut().spawn(root).id();
+      while !MapsView::new(engine.world_mut()).is_ready(map) {
+        engine.step().expect("a frame");
+      }
+      if boxes {
+        for i in 0..256 {
+          let at = Vec2::new(
+            40.0 + (i % 16) as f32 * 256.0,
+            20.0 + (i / 16) as f32 * 256.0,
+          );
+          engine.world_mut().spawn((
+            Transform::from_xy(at.x, at.y),
+            RigidBody::dynamic().never_sleep(),
+            Collider::circle(5.0)
+              .with_restitution(1.0)
+              .with_friction(0.0),
+          ));
+        }
+      }
+      engine.step_frames(120).expect("frames");
+      let (mut frames, mut steps) = (Vec::new(), Vec::new());
+      for _ in 0..600 {
+        let at = Instant::now();
+        engine.step().expect("a frame");
+        frames.push(at.elapsed().as_secs_f64() * 1000.0);
+        let world = engine.world_mut();
+        let at = Instant::now();
+        world.resource_scope(|_, mut physics: crate::core::ecs::Mut<Physics>| {
+          physics.step(1.0 / 60.0);
+        });
+        steps.push(at.elapsed().as_secs_f64() * 1000.0);
+      }
+      let median = |mut t: Vec<f64>| {
+        t.sort_by(f64::total_cmp);
+        t[t.len() / 2]
+      };
+      Some((median(frames), median(steps)))
+    };
+    for boxes in [false, true] {
+      let (Some(on), Some(off)) = (measure(true, boxes), measure(false, boxes)) else {
+        return;
+      };
+      let name = if boxes { "with 256 balls" } else { "alone" };
+      println!(
+        "dense map {name}: frame {:.3} vs {:.3} ms ({:+.3}), physics step {:.3} vs {:.3} ms ({:+.3})",
+        on.0,
+        off.0,
+        on.0 - off.0,
+        on.1,
+        off.1,
+        on.1 - off.1
+      );
+    }
   }
 
   /// Prints what collision and shadows add to each frame from the one a
@@ -1895,6 +2102,15 @@ mod tests {
   #[test]
   #[ignore = "timing; run in release by hand"]
   fn spawning_a_256_map_adds_under_half_a_millisecond_to_any_frame() {
+    // The frames a process runs first are slow (about twice as slow for
+    // the first second or two here, collision or not): warmed up, the maps
+    // with and without collision are timed alike
+    let warming = std::time::Instant::now();
+    while warming.elapsed().as_secs_f32() < 2.0 {
+      if landing_frames(true, false, 7).is_none() {
+        return;
+      }
+    }
     let mut worst: f64 = 0.0;
     for dense in [true, false] {
       let (Some(on), Some(off)) = (
@@ -1906,10 +2122,18 @@ mod tests {
       let name = if dense { "dense islands" } else { "terrain" };
       println!("{name}: frame (0 lands), with collision and shadows, without, added (ms)");
       for (k, (with, without)) in on.iter().zip(&off).enumerate() {
-        let added = with - without;
-        worst = worst.max(added);
         let frame = k as i64 - BEFORE as i64;
-        println!("  {frame:>+3}: {with:.3} {without:.3} {added:+.3}");
+        match (with, without) {
+          (Some(with), Some(without)) => {
+            let added = with - without;
+            worst = worst.max(added);
+            println!("  {frame:>+3}: {with:.3} {without:.3} {added:+.3}");
+          }
+          (with, without) => {
+            let show = |t: &Option<f64>| t.map_or("none".to_string(), |t| format!("{t:.3}"));
+            println!("  {frame:>+3}: {} {}", show(with), show(without));
+          }
+        }
       }
     }
     println!("worst frame added {worst:.3} ms");

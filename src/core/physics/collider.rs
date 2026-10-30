@@ -1,6 +1,21 @@
 //! Collision shapes and their material.
 
+use rapier2d::prelude::SharedShape;
+
 use crate::core::ecs::{Component, GlobalTransform, Transform, Vec2};
+
+/// A `Collider`'s Rapier shape built ahead (on another thread, as a tile
+/// map's landing does), for its registration on the step it arrives to take
+/// instead of building it; used only when the collider's world transform
+/// applies no scale or mirroring to its shape. Crate-internal.
+#[derive(Component, Clone)]
+pub(crate) struct PrebuiltShape(pub(crate) SharedShape);
+
+impl std::fmt::Debug for PrebuiltShape {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.write_str("PrebuiltShape")
+  }
+}
 
 /// The geometry of a collider, in its own space: centred on its origin
 /// (the entity's origin plus `Collider::offset`, turned by `rotation`).
@@ -32,6 +47,13 @@ pub enum ColliderShape {
   /// An open chain of edges: terrain and level outlines.
   Polyline {
     points: Vec<Vec2>,
+  },
+  /// Edges between listed points, each a pair of indices into `points`,
+  /// joined or not: several outlines in one collider (a tile map packs a
+  /// chunk's outlines so).
+  Segments {
+    points: Vec<Vec2>,
+    segments: Vec<[u32; 2]>,
   },
 }
 
@@ -129,6 +151,18 @@ impl Collider {
   pub fn polyline(points: impl IntoIterator<Item = Vec2>) -> Self {
     Self::new(ColliderShape::Polyline {
       points: points.into_iter().collect(),
+    })
+  }
+
+  /// Edges from `points[a]` to `points[b]` for each `[a, b]` of `segments`,
+  /// joined or not (an index past `points` drops its edge).
+  pub fn segments(
+    points: impl IntoIterator<Item = Vec2>,
+    segments: impl IntoIterator<Item = [u32; 2]>,
+  ) -> Self {
+    Self::new(ColliderShape::Segments {
+      points: points.into_iter().collect(),
+      segments: segments.into_iter().collect(),
     })
   }
 
@@ -241,9 +275,9 @@ impl Collider {
         );
         Some((a.0.min(b.0), a.1.max(b.1)))
       }
-      ColliderShape::Polygon { points } | ColliderShape::Polyline { points } => {
-        bounds_of(points.iter().map(|p| place(*p)))
-      }
+      ColliderShape::Polygon { points }
+      | ColliderShape::Polyline { points }
+      | ColliderShape::Segments { points, .. } => bounds_of(points.iter().map(|p| place(*p))),
       ColliderShape::Segment { a, b } => bounds_of([place(*a), place(*b)]),
     };
     bounds.unwrap_or_else(|| {

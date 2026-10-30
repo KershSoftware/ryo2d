@@ -22,7 +22,7 @@ use glam::{Affine2, Mat2};
 
 use super::body::{AngularVelocity, BodyKind, RigidBody};
 use super::character::{CharacterController, move_characters};
-use super::collider::Collider;
+use super::collider::{Collider, PrebuiltShape};
 use super::config::PhysicsConfig;
 use super::convert::angle_delta;
 use super::events::{
@@ -497,7 +497,7 @@ pub(crate) fn sync_colliders(
   children: Query<&Children, Allow<Disabled>>,
   parents: Query<&ChildOf, Allow<Disabled>>,
   bodies: Query<BodyPlace, (With<RigidBody>, Allow<Disabled>)>,
-  colliders: Query<(&GlobalTransform, &Collider)>,
+  colliders: Query<(&GlobalTransform, Ref<Collider>, Option<&PrebuiltShape>)>,
   globals: Globals,
 ) {
   // Buffers kept between steps: this runs every step over every moving
@@ -537,7 +537,7 @@ pub(crate) fn sync_colliders(
   todo.sort_unstable_by_key(entity_order);
   todo.dedup();
   for &entity in &todo {
-    let Ok((global, collider)) = colliders.get(entity) else {
+    let Ok((global, collider, prebuilt)) = colliders.get(entity) else {
       continue;
     };
     #[cfg(test)]
@@ -549,11 +549,16 @@ pub(crate) fn sync_colliders(
       Ok(place) => body_pose(place, &globals),
       Err(_) => (Vec2::ZERO, 0.0),
     });
-    physics.sync_collider(
+    // A shape built ahead is taken only on the step its collider arrives:
+    // by a later first registration (waiting on its body) the collider may
+    // have changed
+    let prebuilt = prebuilt.filter(|_| collider.is_added()).map(|p| &p.0);
+    physics.sync_collider_with(
       entity,
       body,
-      placement(global, collider, body_pose),
-      collider,
+      placement(global, &collider, body_pose),
+      &collider,
+      prebuilt,
     );
   }
   todo.clear();

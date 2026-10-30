@@ -172,6 +172,10 @@ impl Runs {
       .filter_map(|(id, run)| run.as_ref().map(|r| (id as u32, r)))
   }
 
+  pub(crate) fn get(&self, id: u32) -> Option<&Run> {
+    self.runs.get(id as usize).and_then(Option::as_ref)
+  }
+
   pub(crate) fn get_mut(&mut self, id: u32) -> Option<&mut Run> {
     self.runs.get_mut(id as usize).and_then(Option::as_mut)
   }

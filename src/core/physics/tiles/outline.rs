@@ -373,6 +373,10 @@ impl Outlines {
       .filter_map(|(id, outline)| outline.as_ref().map(|o| (id as u32, o)))
   }
 
+  pub(crate) fn get(&self, id: u32) -> Option<&Outline> {
+    self.loops.get(id as usize).and_then(Option::as_ref)
+  }
+
   pub(crate) fn get_mut(&mut self, id: u32) -> Option<&mut Outline> {
     self.loops.get_mut(id as usize).and_then(Option::as_mut)
   }

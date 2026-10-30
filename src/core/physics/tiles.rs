@@ -5,20 +5,26 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use super::collider::Collider;
+use glam::Mat2;
+use rapier2d::prelude::SharedShape;
+
+use super::collider::{Collider, PrebuiltShape};
 use super::world::Physics;
 use crate::core::ecs::{
   Allow, Changed, ChildOf, Children, Commands, Component, DetectChangesMut, Disabled, Entity,
   EntityHashSet, Has, Or, Query, RemovedComponents, ResMut, Transform, Vec2, With,
 };
+use crate::core::hash::FastMap;
 
 mod outline;
+mod pack;
 mod runs;
 mod shape;
 
 #[cfg(test)]
 use outline::outlines;
 use outline::{Outlines, Unit, unit_edges};
+use pack::{Geometry, PackKey, Packs, ends, loop_key, ring, run_key};
 use runs::Runs;
 #[cfg(test)]
 use runs::one_way_runs;
@@ -427,9 +433,13 @@ const MAX_CHANGES: usize = 1 << 16;
 /// one-way segments along runs of one-way cells and shapes. Its `Transform`
 /// places cell (0, 0)'s top-left; +Y is down. The colliders are child
 /// entities, brought up to date before the next physics step after a
-/// change: an edit rebuilds the outlines and runs through the cells it
-/// changed and leaves every other collider as it was. With no body they are
-/// fixed; with a kinematic `RigidBody` the whole map moves.
+/// change. The outlines are packed by area: the loops starting in a chunk of
+/// 32 by 32 cells are one collider, and so are the flat one-way runs
+/// starting in a chunk along one row (a sloped run is a collider of its
+/// own). An edit retraces the outlines and runs through the cells it
+/// changed and rebuilds the colliders of only the chunks whose outlines or
+/// runs changed, leaving every other collider as it was. With no body they
+/// are fixed; with a kinematic `RigidBody` the whole map moves.
 ///
 /// Disabling the map entity (`Disabled`) removes its colliders and enabling
 /// it builds them again from the cells as they then are; so does removing
@@ -672,29 +682,9 @@ impl TileColliders {
     )
   }
 
-  /// The part of an outline loop.
-  fn spawn_outline(
-    &self,
-    commands: &mut Commands,
-    map: Entity,
-    id: u32,
-    corners: &[Point],
-  ) -> Entity {
-    let line = Collider::polyline(merge_straight_runs(corners).into_iter().map(|p| self.at(p)));
-    let line = self.material(line);
-    commands
-      .spawn((
-        Transform::IDENTITY,
-        line,
-        TilePart,
-        TileLoop(id),
-        ChildOf(map),
-      ))
-      .id()
-  }
-
-  /// The part of a one-way run: a segment from its first point to its last,
-  /// solid from the side it faces (up, for a flat run).
+  /// A one-way run as a part of its own (`solid_rects` mode): a segment
+  /// from its first point to its last, solid from the side it faces (up,
+  /// for a flat run).
   fn spawn_run(&self, commands: &mut Commands, map: Entity, points: &[Point]) -> Entity {
     let (a, b) = (self.at(points[0]), self.at(points[points.len() - 1]));
     let along = b - a;
@@ -709,8 +699,8 @@ impl TileColliders {
   /// Every part of the map; what an edit can rebuild in place is kept
   /// (none in `solid_rects` mode).
   fn spawn_all(&self, commands: &mut Commands, map: Entity) -> Option<Kept> {
-    let mut runs = Runs::build(self.cells_view());
     if self.solid_rects {
+      let runs = Runs::build(self.cells_view());
       let (cols, rows) = extent(self.width, self.height, &self.cells);
       for (min, cells) in solid_rects(self.width, self.height, &self.cells) {
         let extent = self.px(cells);
@@ -747,57 +737,127 @@ impl TileColliders {
       }
       return None;
     }
-    let mut outlines = Outlines::build(self.cells_view());
-    let loops: Vec<u32> = outlines.loops().map(|(id, _)| id).collect();
-    for id in loops {
-      if let Some(outline) = outlines.get_mut(id) {
-        outline.part = Some(self.spawn_outline(commands, map, id, &outline.corners));
-      }
+    let mut kept = Kept {
+      outlines: Outlines::build(self.cells_view()),
+      runs: Runs::build(self.cells_view()),
+      ..Kept::default()
+    };
+    for (key, collider) in self.pack_all(&mut kept) {
+      self.spawn_pack(&mut kept, key, collider, None, commands, map);
     }
-    let ids: Vec<u32> = runs.runs().map(|(id, _)| id).collect();
-    for id in ids {
-      if let Some(run) = runs.get_mut(id) {
-        run.part = Some(self.spawn_run(commands, map, &run.points));
-      }
-    }
-    Some(Kept { outlines, runs })
+    Some(kept)
   }
 
-  /// The outlines and one-way runs traced now, for the build to spawn
-  /// without tracing (`Traced`); pure, so any thread can do it. None in
-  /// `solid_rects` mode.
+  /// Puts every loop and run of `kept` in its pack; each pack's collider
+  /// (without the grid's material), in the order the packs were met.
+  fn pack_all(&self, kept: &mut Kept) -> Vec<(PackKey, Collider)> {
+    let mut gathered: FastMap<PackKey, Geometry> = FastMap::default();
+    let mut order = Vec::new();
+    let mut dirty = Vec::new();
+    for (id, outline) in kept.outlines.loops() {
+      let ring = ring(&outline.corners);
+      let key = loop_key(&ring);
+      kept.loop_packs.place(id, key, &mut dirty);
+      dirty.clear();
+      gathered
+        .entry(key)
+        .or_insert_with(|| {
+          order.push(key);
+          Geometry::default()
+        })
+        .add_ring(ring.into_iter().map(|p| self.at(p)));
+    }
+    for (id, run) in kept.runs.runs() {
+      let key = run_key(id, &run.points);
+      kept.run_packs.place(id, key, &mut dirty);
+      dirty.clear();
+      let (a, b) = ends(&run.points);
+      gathered
+        .entry(key)
+        .or_insert_with(|| {
+          order.push(key);
+          Geometry::default()
+        })
+        .add_segment(self.at(a), self.at(b));
+    }
+    order
+      .into_iter()
+      .map(|key| {
+        let geometry = gathered.remove(&key).unwrap_or_default();
+        let collider = match key {
+          PackKey::Loops(..) => geometry.loops(),
+          _ => geometry.runs(),
+        };
+        (key, collider)
+      })
+      .collect()
+  }
+
+  /// Spawns pack `key`'s part, `collider` with the grid's material (and its
+  /// shape built ahead, if any), as the part of the pack's members.
+  fn spawn_pack(
+    &self,
+    kept: &mut Kept,
+    key: PackKey,
+    collider: Collider,
+    shape: Option<SharedShape>,
+    commands: &mut Commands,
+    map: Entity,
+  ) {
+    let collider = self.material(collider);
+    let part = (Transform::IDENTITY, collider, TilePart, ChildOf(map));
+    let part = match shape {
+      Some(shape) => commands.spawn((part, PrebuiltShape(shape))).id(),
+      None => commands.spawn(part).id(),
+    };
+    if let PackKey::Loops(..) = key {
+      kept.loop_packs.set_part(key, part);
+      for &id in kept.loop_packs.members(key) {
+        if let Some(outline) = kept.outlines.get_mut(id) {
+          outline.part = Some(part);
+        }
+      }
+    } else {
+      kept.run_packs.set_part(key, part);
+      for &id in kept.run_packs.members(key) {
+        if let Some(run) = kept.runs.get_mut(id) {
+          run.part = Some(part);
+        }
+      }
+    }
+  }
+
+  /// The outlines and one-way runs traced now and packed, each pack's
+  /// collider with its Rapier shape built, for the build to spawn without
+  /// tracing or building shapes (`Traced`); pure, so any thread can do it.
+  /// None in `solid_rects` mode.
   pub(crate) fn trace(&self) -> Option<Traced> {
     if self.solid_rects {
       return None;
     }
+    let mut kept = Kept {
+      outlines: Outlines::build(self.cells_view()),
+      runs: Runs::build(self.cells_view()),
+      ..Kept::default()
+    };
+    let built = self
+      .pack_all(&mut kept)
+      .into_iter()
+      .map(|(key, collider)| {
+        let shape = super::shape::build(&collider.shape, Mat2::IDENTITY);
+        (key, collider, shape)
+      })
+      .collect();
     Some(Traced {
       generation: self.generation,
-      kept: Some(Kept {
-        outlines: Outlines::build(self.cells_view()),
-        runs: Runs::build(self.cells_view()),
-      }),
+      tile_size: self.tile_size,
+      content: Some((kept, built)),
     })
   }
 
-  /// Spawns every part of a trace (`trace`), as `spawn_all` does those it
-  /// traces itself.
-  fn spawn_traced(&self, kept: &mut Kept, commands: &mut Commands, map: Entity) {
-    let ids: Vec<u32> = kept.outlines.loops().map(|(id, _)| id).collect();
-    for id in ids {
-      if let Some(outline) = kept.outlines.get_mut(id) {
-        outline.part = Some(self.spawn_outline(commands, map, id, &outline.corners));
-      }
-    }
-    let ids: Vec<u32> = kept.runs.runs().map(|(id, _)| id).collect();
-    for id in ids {
-      if let Some(run) = kept.runs.get_mut(id) {
-        run.part = Some(self.spawn_run(commands, map, &run.points));
-      }
-    }
-  }
-
   /// Rebuild what the cells at `changed` touch (sorted by index, each with
-  /// its value before): the outline loops and one-way runs through them.
+  /// its value before): the outline loops and one-way runs through them,
+  /// and the colliders of the packs they leave or join.
   fn respawn(
     &self,
     kept: &mut Kept,
@@ -805,23 +865,64 @@ impl TileColliders {
     commands: &mut Commands,
     map: Entity,
   ) {
+    let mut dirty = Vec::new();
     let retraced = kept.outlines.apply(self.cells_view(), changed);
-    for part in retraced.dropped.into_iter().flatten() {
-      commands.entity(part).try_despawn();
+    let parts = retraced.dropped.into_iter().flatten();
+    for stray in kept.loop_packs.dropped(parts, &mut dirty) {
+      commands.entity(stray).try_despawn();
     }
     for id in retraced.traced {
-      if let Some(outline) = kept.outlines.get_mut(id) {
-        outline.part = Some(self.spawn_outline(commands, map, id, &outline.corners));
+      if let Some(outline) = kept.outlines.get(id) {
+        let key = loop_key(&ring(&outline.corners));
+        kept.loop_packs.place(id, key, &mut dirty);
       }
     }
     let rechained = kept.runs.apply(self.cells_view(), changed);
-    for part in rechained.dropped.into_iter().flatten() {
-      commands.entity(part).try_despawn();
+    let parts = rechained.dropped.into_iter().flatten();
+    for stray in kept.run_packs.dropped(parts, &mut dirty) {
+      commands.entity(stray).try_despawn();
     }
     for id in rechained.traced {
-      if let Some(run) = kept.runs.get_mut(id) {
-        run.part = Some(self.spawn_run(commands, map, &run.points));
+      if let Some(run) = kept.runs.get(id) {
+        kept
+          .run_packs
+          .place(id, run_key(id, &run.points), &mut dirty);
       }
+    }
+    dirty.sort_unstable();
+    dirty.dedup();
+    for key in dirty {
+      self.repack(kept, key, commands, map);
+    }
+  }
+
+  /// Builds pack `key`'s collider again from its members as they now are;
+  /// a pack left with none goes.
+  fn repack(&self, kept: &mut Kept, key: PackKey, commands: &mut Commands, map: Entity) {
+    let mut geometry = Geometry::default();
+    let (old, collider) = if let PackKey::Loops(..) = key {
+      let outlines = &kept.outlines;
+      let members = kept.loop_packs.settle(key, |id| outlines.get(id).is_some());
+      for outline in members.iter().filter_map(|&id| outlines.get(id)) {
+        geometry.add_ring(ring(&outline.corners).into_iter().map(|p| self.at(p)));
+      }
+      let old = kept.loop_packs.take_part(key);
+      (old, (!members.is_empty()).then(|| geometry.loops()))
+    } else {
+      let runs = &kept.runs;
+      let members = kept.run_packs.settle(key, |id| runs.get(id).is_some());
+      for run in members.iter().filter_map(|&id| runs.get(id)) {
+        let (a, b) = ends(&run.points);
+        geometry.add_segment(self.at(a), self.at(b));
+      }
+      let old = kept.run_packs.take_part(key);
+      (old, (!members.is_empty()).then(|| geometry.runs()))
+    };
+    if let Some(old) = old {
+      commands.entity(old).try_despawn();
+    }
+    if let Some(collider) = collider {
+      self.spawn_pack(kept, key, collider, None, commands, map);
     }
   }
 }
@@ -902,10 +1003,6 @@ impl Boundary {
 #[derive(Component, Debug, Clone, Copy)]
 pub(crate) struct TilePart;
 
-/// Marks the part built from an outline loop, by the loop's id.
-#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct TileLoop(pub(crate) u32);
-
 /// What the colliders of a map were last built from. Floats compare by
 /// bits, so a NaN size does not rebuild every step.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -946,17 +1043,37 @@ impl TileRecord {
 struct Kept {
   outlines: Outlines,
   runs: Runs,
+  /// The loops each outline part packs
+  loop_packs: Packs,
+  /// The one-way runs each run part packs
+  run_packs: Packs,
 }
 
-/// A grid's outlines and one-way runs traced ahead of its build (on any
-/// thread: `TileColliders::trace`), on the grid's entity: its build takes
-/// them and only spawns the parts, which keeps the trace off the frame the
-/// grid arrives in.
-#[derive(Component, Debug)]
+/// A pack's collider, without the grid's material, and its Rapier shape
+/// built ahead (none when degenerate).
+type BuiltPack = (PackKey, Collider, Option<SharedShape>);
+
+/// A grid's outlines and one-way runs traced and packed ahead of its build,
+/// the packs' shapes built (on any thread: `TileColliders::trace`), on the
+/// grid's entity: its build takes them and only spawns the parts, which
+/// physics registers with the shapes as built, keeping the trace and the
+/// shapes off the frame the grid arrives in.
+#[derive(Component)]
 pub(crate) struct Traced {
-  /// The grid's generation when traced: another means it changed since
+  /// The grid's generation and tile size when traced: others mean it
+  /// changed since
   generation: u64,
-  kept: Option<Kept>,
+  tile_size: Vec2,
+  content: Option<(Kept, Vec<BuiltPack>)>,
+}
+
+impl std::fmt::Debug for Traced {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("Traced")
+      .field("generation", &self.generation)
+      .field("tile_size", &self.tile_size)
+      .finish_non_exhaustive()
+  }
 }
 
 /// A built map's record and what its edits can rebuild in place, kept on
@@ -1043,8 +1160,10 @@ pub(crate) fn rebuild_tile_colliders(
         // generation is stale. Either way it goes
         let traced = traced.and_then(|mut traced| {
           commands.entity(map).try_remove::<Traced>();
-          (traced.generation == tiles.generation && !tiles.solid_rects)
-            .then(|| traced.kept.take())
+          let current =
+            traced.generation == tiles.generation && traced.tile_size == tiles.tile_size;
+          (current && !tiles.solid_rects)
+            .then(|| traced.content.take())
             .flatten()
         });
         let kept = if !(tiles.tile_size.is_finite() && tiles.tile_size.min_element() > 0.0) {
@@ -1053,8 +1172,10 @@ pub(crate) fn rebuild_tile_colliders(
             "TileColliders needs a positive tile size; no colliders built",
           );
           None
-        } else if let Some(mut kept) = traced {
-          tiles.spawn_traced(&mut kept, &mut commands, map);
+        } else if let Some((mut kept, built)) = traced {
+          for (key, collider, shape) in built {
+            tiles.spawn_pack(&mut kept, key, collider, shape, &mut commands, map);
+          }
           Some(kept)
         } else {
           tiles.spawn_all(&mut commands, map)
@@ -1296,10 +1417,11 @@ mod with_physics {
       .set(1, 0, TileCell::Empty);
     run(&mut world, &mut s, 1);
     assert_eq!(
-      parts(&mut world, map).len(),
+      loop_count(&mut world, map),
       2,
       "two outlines, the old one gone"
     );
+    assert_eq!(parts(&mut world, map).len(), 1, "one chunk's collider");
   }
 
   #[test]
@@ -1330,6 +1452,81 @@ mod with_physics {
         .iter()
         .any(|c| matches!(c.shape, ColliderShape::Rect { .. }))
     );
+  }
+
+  // One-way runs in a chunk share a collider only along one row: the
+  // one-way rule measures a collider as a whole, so a lower platform
+  // packed with a higher one would let a character fall through it
+  #[test]
+  fn one_way_runs_share_a_collider_only_along_one_row() {
+    use crate::core::physics::CharacterState;
+    let (mut world, mut s) = world(60);
+    let (w, h) = (20u32, 6u32);
+    let mut cells = vec![TileCell::Empty; (w * h) as usize];
+    for x in (0..4).chain(8..12) {
+      cells[(2 * w + x) as usize] = TileCell::OneWay;
+    }
+    for x in 14..18 {
+      cells[(4 * w + x) as usize] = TileCell::OneWay;
+    }
+    let map = world
+      .spawn((
+        Transform::IDENTITY,
+        TileColliders::from_cells(w, h, Vec2::splat(16.0), cells),
+      ))
+      .id();
+    run(&mut world, &mut s, 1);
+    let built = parts_by_id(&mut world, map);
+    assert_eq!(built.len(), 2, "{built:?}");
+    let row = |y: f32| {
+      built
+        .iter()
+        .find(|(_, c)| {
+          c.one_way == Some(Vec2::NEG_Y)
+            && match &c.shape {
+              ColliderShape::Segments { points, .. } => points.iter().all(|p| p.y == y),
+              ColliderShape::Segment { a, b } => a.y == y && b.y == y,
+              _ => false,
+            }
+        })
+        .map(|(e, c)| (*e, c.shape.clone()))
+        .unwrap_or_else(|| panic!("no one-way part along y {y}: {built:?}"))
+    };
+    let (upper, shape) = row(32.0);
+    assert!(
+      matches!(&shape, ColliderShape::Segments { segments, .. } if segments.len() == 2),
+      "row 2's two runs are one collider: {shape:?}"
+    );
+    let (lower, _) = row(64.0);
+    // A character dropped on each row's far platform lands on it
+    let spawn = |world: &mut World, x: f32| {
+      world
+        .spawn((
+          Transform::from_xy(x, -40.0),
+          CharacterController::platformer(),
+          Collider::rect(12.0, 40.0),
+        ))
+        .id()
+    };
+    let on_upper = spawn(&mut world, 152.0);
+    let on_lower = spawn(&mut world, 248.0);
+    for _ in 0..90 {
+      for e in [on_upper, on_lower] {
+        world.get_mut::<Velocity>(e).unwrap().dy += 980.0 / 60.0;
+      }
+      run(&mut world, &mut s, 1);
+    }
+    for (e, floor, top) in [(on_upper, upper, 32.0), (on_lower, lower, 64.0)] {
+      let state = world.get::<CharacterState>(e).unwrap();
+      let y = world.get::<Transform>(e).unwrap().translation.y;
+      assert!(
+        state.on_floor && state.floor == Some(floor),
+        "on {floor}: on_floor {}, floor {:?}, y {y}",
+        state.on_floor,
+        state.floor
+      );
+      assert!((y + 20.0 - top).abs() < 1.0, "stands on y {top}: {y}");
+    }
   }
 
   #[test]
@@ -1724,7 +1921,7 @@ mod with_physics {
     tiles.set(1, 0, TileCell::Empty);
     entity.remove::<Disabled>();
     run(&mut world, &mut s, 1);
-    assert_eq!(ids(&mut world, map).len(), 2);
+    assert_eq!(loop_count(&mut world, map), 2);
   }
 
   #[test]
@@ -1871,6 +2068,105 @@ mod with_physics {
     assert_eq!(built, full, "built from the cells as they are");
   }
 
+  /// The chunk (32 cells a side) holding a point, in tiles
+  fn chunk_of((x, y): Corner) -> Corner {
+    (x.div_euclid(32), y.div_euclid(32))
+  }
+
+  /// Every outline part holds loops starting in one chunk, and no chunk
+  /// has two outline parts
+  fn assert_one_outline_part_per_chunk(parts: &[(Entity, Collider)], tile: f32) {
+    let mut seen = std::collections::BTreeSet::new();
+    for (part, collider) in parts {
+      if collider.one_way.is_some() {
+        continue;
+      }
+      let chunks: std::collections::BTreeSet<Corner> = collider_loops(collider, tile)
+        .iter()
+        .filter_map(|l| l.first().copied())
+        .map(chunk_of)
+        .collect();
+      assert!(
+        chunks.len() <= 1,
+        "{part:?} holds loops of chunks {chunks:?}"
+      );
+      for chunk in chunks {
+        assert!(seen.insert(chunk), "chunk {chunk:?} has two outline parts");
+      }
+    }
+  }
+
+  #[test]
+  fn edits_moving_or_joining_loops_across_chunks_keep_one_copy_of_each() {
+    // Islands both sides of the chunk border at x 32, and a one-way row
+    let (w, h) = (64u32, 12u32);
+    let mut cells = vec![TileCell::Empty; (w * h) as usize];
+    for y in (1..h - 2).step_by(3) {
+      for x in (26..40).step_by(3) {
+        cells[(y * w + x) as usize] = TileCell::Solid;
+      }
+    }
+    for x in 20..44 {
+      cells[((h - 1) * w + x) as usize] = TileCell::OneWay;
+    }
+    let (mut world, mut s) = world(60);
+    let map = world
+      .spawn((
+        Transform::IDENTITY,
+        TileColliders::from_cells(w, h, Vec2::splat(16.0), cells),
+      ))
+      .id();
+    run(&mut world, &mut s, 1);
+    let check = |world: &mut World, step: &str| {
+      let parts = parts_by_id(world, map);
+      assert_one_outline_part_per_chunk(&parts, 16.0);
+      let loops: Vec<(Entity, Collider)> = parts
+        .into_iter()
+        .filter(|(_, c)| c.one_way.is_none())
+        .collect();
+      let built = canonical(outline_loops(&loops, 16.0));
+      let full = canonical(outlines(
+        w,
+        h,
+        &world.get::<TileColliders>(map).unwrap().cells,
+      ));
+      assert_eq!(
+        built, full,
+        "{step}: each loop once, as a whole build has them"
+      );
+    };
+    let mut set = |world: &mut World, cells: &[(u32, u32)], kind: TileCell| {
+      let mut tiles = world.get_mut::<TileColliders>(map).unwrap();
+      for &(x, y) in cells {
+        tiles.set(x, y, kind);
+      }
+      run(world, &mut s, 1);
+    };
+    // The islands at 29 and 32 on row 1 join across the border: the joined
+    // loop starts in chunk 0, and chunk 1 loses the island at 32
+    set(&mut world, &[(30, 1), (31, 1)], TileCell::Solid);
+    check(&mut world, "joined across the border");
+    // Its left end cleared, the loop's first corner moves into chunk 1
+    set(&mut world, &[(29, 1), (30, 1), (31, 1)], TileCell::Empty);
+    check(&mut world, "first corner moved over the border");
+    // Grow, join, split and clear around the border
+    let mut seed = 0x9e37_79b9_u32;
+    for step in 0..300 {
+      seed ^= seed << 13;
+      seed ^= seed >> 17;
+      seed ^= seed << 5;
+      let x = 24 + seed % 16;
+      let y = (seed >> 8) % (h - 1);
+      let kind = match (seed >> 16) % 4 {
+        0 => TileCell::Empty,
+        1 => TileCell::OneWay,
+        _ => TileCell::Solid,
+      };
+      set(&mut world, &[(x, y)], kind);
+      check(&mut world, &format!("step {step}"));
+    }
+  }
+
   #[test]
   fn a_huge_grid_with_few_cells_costs_nothing() {
     use TileCell::Solid as S;
@@ -1909,7 +2205,9 @@ mod with_physics {
   /// The part whose shape has a point in `region` (px, min and max).
   fn part_in(parts: &[(Entity, Collider)], min: Vec2, max: Vec2) -> Entity {
     let points = |c: &Collider| match &c.shape {
-      ColliderShape::Polyline { points } | ColliderShape::Polygon { points } => points.clone(),
+      ColliderShape::Polyline { points }
+      | ColliderShape::Polygon { points }
+      | ColliderShape::Segments { points, .. } => points.clone(),
       ColliderShape::Segment { a, b } => vec![*a, *b],
       _ => Vec::new(),
     };
@@ -1923,20 +2221,44 @@ mod with_physics {
     found[0]
   }
 
-  /// The outline polylines among the parts, as loops of corners (tiles).
+  /// The outline loops the parts hold (not their one-way runs), as loops
+  /// of corners (tiles).
   fn outline_loops(parts: &[(Entity, Collider)], tile: f32) -> Vec<Vec<Corner>> {
     parts
       .iter()
-      .filter_map(|(_, c)| match &c.shape {
-        ColliderShape::Polyline { points } => Some(
-          points
-            .iter()
-            .map(|p| ((p.x / tile).round() as i32, (p.y / tile).round() as i32))
-            .collect(),
-        ),
-        _ => None,
-      })
+      .filter(|(_, c)| c.one_way.is_none())
+      .flat_map(|(_, c)| collider_loops(c, tile))
       .collect()
+  }
+
+  /// How many outline loops the map's parts hold, whatever packs them
+  fn loop_count(world: &mut World, map: Entity) -> usize {
+    outline_loops(&parts_by_id(world, map), 1.0).len()
+  }
+
+  /// The outline loops (or open chains) of one part, in tiles: a polyline
+  /// is one; packed segments are as many as their runs of edges, each edge
+  /// going on from the last one's end
+  fn collider_loops(collider: &Collider, tile: f32) -> Vec<Vec<Corner>> {
+    let corner = |p: &Vec2| ((p.x / tile).round() as i32, (p.y / tile).round() as i32);
+    match &collider.shape {
+      ColliderShape::Polyline { points } => vec![points.iter().map(corner).collect()],
+      ColliderShape::Segments { points, segments } => {
+        let mut loops: Vec<Vec<Corner>> = Vec::new();
+        let mut last: Option<u32> = None;
+        for &[a, b] in segments {
+          if last != Some(a) {
+            loops.push(vec![corner(&points[a as usize])]);
+          }
+          if let Some(current) = loops.last_mut() {
+            current.push(corner(&points[b as usize]));
+          }
+          last = Some(b);
+        }
+        loops
+      }
+      _ => Vec::new(),
+    }
   }
 
   /// Loops as sorted sets of directed edges, whatever their order and start.
@@ -1957,24 +2279,24 @@ mod with_physics {
   }
 
   #[test]
-  fn an_edit_rebuilds_only_the_loops_it_touches() {
+  fn an_edit_rebuilds_only_the_chunks_it_touches() {
     let (mut world, mut s) = world(60);
-    // Two islands on one row: cells 0 to 3 and 8 to 11
-    let mut cells = vec![TileCell::Empty; 12];
-    for x in (0..4).chain(8..12) {
+    // Two islands on one row, in chunks 0 and 1: cells 0 to 3 and 40 to 43
+    let mut cells = vec![TileCell::Empty; 44];
+    for x in (0..4).chain(40..44) {
       cells[x] = TileCell::Solid;
     }
     let map = world
       .spawn((
         Transform::IDENTITY,
-        TileColliders::from_cells(12, 1, Vec2::splat(16.0), cells),
+        TileColliders::from_cells(44, 1, Vec2::splat(16.0), cells),
       ))
       .id();
     run(&mut world, &mut s, 1);
     let before = parts_by_id(&mut world, map);
     assert_eq!(before.len(), 2);
     let left = part_in(&before, Vec2::ZERO, Vec2::new(64.0, 16.0));
-    let right = part_in(&before, Vec2::new(128.0, 0.0), Vec2::new(192.0, 16.0));
+    let right = part_in(&before, Vec2::new(640.0, 0.0), Vec2::new(704.0, 16.0));
     world
       .get_mut::<TileColliders>(map)
       .unwrap()
@@ -1984,9 +2306,14 @@ mod with_physics {
       .iter()
       .map(|(e, _)| *e)
       .collect();
-    assert_eq!(after.len(), 3, "the left island split in two: {after:?}");
-    assert!(after.contains(&right), "the right island kept its part");
-    assert!(!after.contains(&left), "the left island's part was rebuilt");
+    assert_eq!(
+      loop_count(&mut world, map),
+      3,
+      "the left island split in two"
+    );
+    assert_eq!(after.len(), 2, "{after:?}");
+    assert!(after.contains(&right), "the right chunk kept its part");
+    assert!(!after.contains(&left), "the left chunk's part was rebuilt");
     assert_matches_a_full_trace(&mut world, map);
   }
 
@@ -1994,18 +2321,20 @@ mod with_physics {
   fn a_pinch_corner_edit_retraces_both_loops() {
     use SlopeCorner::BottomRight;
     let (mut world, mut s) = world(60);
-    // Cells (0, 0) and (1, 1) touch at corner (1, 1); cell (6, 1) is far off
-    let mut tiles = TileColliders::new(8, 3, Vec2::splat(16.0));
-    for (x, y) in [(0, 0), (1, 1), (6, 1)] {
+    // Cells (0, 0) and (1, 1) touch at corner (1, 1); cell (36, 1) is far
+    // off, in the next chunk
+    let mut tiles = TileColliders::new(40, 3, Vec2::splat(16.0));
+    for (x, y) in [(0, 0), (1, 1), (36, 1)] {
       tiles.set(x, y, TileCell::Solid);
     }
     let map = world.spawn((Transform::IDENTITY, tiles)).id();
     run(&mut world, &mut s, 1);
+    assert_eq!(loop_count(&mut world, map), 3);
     let before = parts_by_id(&mut world, map);
-    assert_eq!(before.len(), 3);
-    let a = part_in(&before, Vec2::ZERO, Vec2::new(15.0, 16.0));
-    let b = part_in(&before, Vec2::new(16.0, 17.0), Vec2::new(32.0, 32.0));
-    let far = part_in(&before, Vec2::new(96.0, 16.0), Vec2::new(112.0, 32.0));
+    assert_eq!(before.len(), 2);
+    // (0, 0)'s and (1, 1)'s loops are chunk 0's part
+    let ab = part_in(&before, Vec2::ZERO, Vec2::new(32.0, 32.0));
+    let far = part_in(&before, Vec2::new(576.0, 16.0), Vec2::new(592.0, 32.0));
     // A slope over (1, 1) joins it and changes the edges at the pinch
     // corner; (0, 0)'s own edges stay, but its loop passes through there
     world
@@ -2015,9 +2344,12 @@ mod with_physics {
     run(&mut world, &mut s, 1);
     let after = parts_by_id(&mut world, map);
     let ids: Vec<Entity> = after.iter().map(|(e, _)| *e).collect();
-    assert_eq!(after.len(), 3, "{after:?}");
-    assert!(!ids.contains(&a), "the loop of (0, 0) was retraced");
-    assert!(!ids.contains(&b), "the loop of (1, 1) was retraced");
+    assert_eq!(after.len(), 2, "{after:?}");
+    assert_eq!(loop_count(&mut world, map), 3);
+    assert!(
+      !ids.contains(&ab),
+      "the loops of (0, 0) and (1, 1) were retraced"
+    );
     assert!(ids.contains(&far), "the far loop was not");
     assert_matches_a_full_trace(&mut world, map);
   }
@@ -2186,7 +2518,7 @@ mod with_physics {
   #[test]
   fn one_way_runs_and_shape_outlines_rebuild_only_where_edited() {
     let (mut world, mut s) = world(60);
-    let mut tiles = TileColliders::new(10, 3, Vec2::splat(16.0));
+    let mut tiles = TileColliders::new(80, 3, Vec2::splat(16.0));
     let square = tiles.add_shape(CellShape {
       polygons: vec![vec![
         Vec2::new(0.25, 0.25),
@@ -2196,21 +2528,22 @@ mod with_physics {
       ]],
       one_way: false,
     });
-    // One-way runs on rows 0 and 2, shapes at (8, 0) and (8, 2)
+    // One-way runs on rows 0 and 2, shapes at (40, 0) and (72, 2) (chunks 1
+    // and 2)
     for x in 0..4 {
       tiles.set(x, 0, TileCell::OneWay);
       tiles.set(x, 2, TileCell::OneWay);
     }
-    tiles.set(8, 0, TileCell::Shape(square));
-    tiles.set(8, 2, TileCell::Shape(square));
+    tiles.set(40, 0, TileCell::Shape(square));
+    tiles.set(72, 2, TileCell::Shape(square));
     let map = world.spawn((Transform::IDENTITY, tiles)).id();
     run(&mut world, &mut s, 1);
     let before = parts_by_id(&mut world, map);
     assert_eq!(before.len(), 4);
     let run0 = part_in(&before, Vec2::ZERO, Vec2::new(64.0, 0.0));
     let run2 = part_in(&before, Vec2::new(0.0, 32.0), Vec2::new(64.0, 32.0));
-    let shape0 = part_in(&before, Vec2::new(128.0, 0.0), Vec2::new(144.0, 16.0));
-    let shape2 = part_in(&before, Vec2::new(128.0, 32.0), Vec2::new(144.0, 48.0));
+    let shape0 = part_in(&before, Vec2::new(640.0, 0.0), Vec2::new(656.0, 16.0));
+    let shape2 = part_in(&before, Vec2::new(1152.0, 32.0), Vec2::new(1168.0, 48.0));
     // A cell on row 0 that leaves its runs as they were keeps them
     world
       .get_mut::<TileColliders>(map)
@@ -2222,11 +2555,11 @@ mod with_physics {
       .map(|(e, _)| *e)
       .collect();
     assert!([run0, run2, shape0, shape2].iter().all(|e| ids.contains(e)));
-    // Longer run on row 0; the shape at (8, 2) replaced
+    // Longer run on row 0; the shape at (72, 2) replaced
     let mut entity = world.entity_mut(map);
     let mut tiles = entity.get_mut::<TileColliders>().unwrap();
     tiles.set(4, 0, TileCell::OneWay);
-    tiles.set(8, 2, TileCell::Empty);
+    tiles.set(72, 2, TileCell::Empty);
     run(&mut world, &mut s, 1);
     let after = parts_by_id(&mut world, map);
     let ids: Vec<Entity> = after.iter().map(|(e, _)| *e).collect();
@@ -2283,11 +2616,7 @@ mod with_physics {
       tiles.set(x, y, TileCell::Empty);
     }
     run(&mut world, &mut s, 1);
-    assert_eq!(
-      parts(&mut world, map).len(),
-      4,
-      "an outline and three holes"
-    );
+    assert_eq!(loop_count(&mut world, map), 4, "an outline and three holes");
     assert_matches_a_full_trace(&mut world, map);
   }
 
