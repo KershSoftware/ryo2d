@@ -119,6 +119,7 @@ pub fn register_engine_messages(world: &mut World) {
   register_message::<crate::core::ui::UiEvent>(world);
   register_message::<crate::core::ui::UiReloaded>(world);
   register_message::<crate::core::ui::UiListBind>(world);
+  register_message::<crate::core::tilemap::MapEvent>(world);
 }
 
 #[cfg(test)]

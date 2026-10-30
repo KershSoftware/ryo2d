@@ -13,13 +13,13 @@ Ryo2D's ECS is `bevy_ecs` 0.20, presented as Ryo2D's own: `kernel.rs` re-exports
 | Step | Cadence | Engine work |
 |------|---------|-------------|
 | `First` | once | advance the clocks, publish `Input`, advance every message buffer; then the engine's debug and console keys consume their presses |
-| `PreUpdate` | once | a running scene transition, then the asset registry's pump (finished loads, reloads and frees land, and their `AssetEvent`s are sent), chained so a switch's frees and the entering scene's loads are pumped in its frame; then the console |
+| `PreUpdate` | once | a running scene transition, then the asset registry's pump (finished loads, reloads and frees land, and their `AssetEvent`s are sent), chained so a switch's frees and the entering scene's loads are pumped in its frame, then the maps whose asset is ready spawn (`spawn_maps`); then the console |
 | UI pass | once | `Scene::ui` for visible scenes bottom-up, debug overlays, console; consumption applied to `Input`; a returned `SceneAction` applies at once, and a scene change redraws the UI once so the new scene shows this frame |
 | `FixedUpdate` | 0..N | one run per fixed step; the sets below, chained |
 | `Update` | once | `UpdateSet::Game`: scene per-frame systems and builder ones by default |
 | `PostUpdate` | once | `PostUpdateSet::Transforms` (propagation), `Camera` (shake on real time, then every camera's `CameraView` from its interpolated transform), `Extract` (timed effects, real time) |
 | render | once | `present_frame` (`engine/extract.rs`): queries the world into the draw list, plans the cameras, runs the render pipeline (not a schedule) |
-| `Last` | once | physics registration bookkeeping, `forget_despawned_tilemaps`, `clear_trackers`, `check_change_ticks` every 1024 frames; the engine then clamps its own, the scenes' and physics' schedules and the UI node cache's tick (`PendingTickCheck`) |
+| `Last` | once | physics registration bookkeeping, `clear_trackers`, `check_change_ticks` every 1024 frames; the engine then clamps its own, the scenes' and physics' schedules and the UI node cache's tick (`PendingTickCheck`) |
 
 `FixedSet`, in order:
 

@@ -441,8 +441,14 @@ fn register_engine_systems(schedules: &mut EngineSchedules) {
   schedules.add_systems(
     Phase::PreUpdate,
     // The pump after the transition: in a switch's frame, what the leaving scene let go is
-    // freed and what the entering one asked for is pumped before the new scene's UI pass
-    (scene_transition_system, asset_registry_system).chain(),
+    // freed and what the entering one asked for is pumped before the new scene's UI pass.
+    // Maps spawn after the pump, so a map whose asset lands this frame spawns this frame
+    (
+      scene_transition_system,
+      asset_registry_system,
+      crate::core::tilemap::spawn_maps,
+    )
+      .chain(),
   );
   schedules.add_systems(
     Phase::FixedUpdate,

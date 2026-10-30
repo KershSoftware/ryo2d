@@ -209,11 +209,12 @@ pub mod prelude {
 
   // Tilemaps
   pub use crate::core::tilemap::{
-    CHUNK_SIZE, ImageLayer, IntGrid, LayerInfo, LayerKind, LdtkLevel, LdtkLoader, LdtkProject,
-    MapLayer, MapObjectData, Neighbour, NeighbourDirection, ObjectShape, Properties, PropertyValue,
-    Tile, TileData, TileFlip, TileFrame, TileGrid, TileMap, TileShape, TiledMapLoader,
-    TiledTilesetLoader, Tileset, TilesetImage, TilesetSource, URect, WangColor, WangKind, WangSet,
-    WorldLayout, WorldLevel,
+    CHUNK_SIZE, ImageLayer, IntGrid, IntGridKey, LayerInfo, LayerKind, LayerRef, LdtkLevel,
+    LdtkLoader, LdtkProject, MapEvent, MapIds, MapLayer, MapLayerRef, MapObject, MapObjectData,
+    MapRoot, MapTile, MapsView, Neighbour, NeighbourDirection, ObjectShape, Properties,
+    PropertyValue, Tile, TileData, TileFlip, TileFrame, TileGrid, TileLayerData, TileMap,
+    TileShape, TiledMapLoader, TiledTilesetLoader, Tileset, TilesetImage, TilesetSource, URect,
+    WangColor, WangKind, WangSet, WorldLayout, WorldLevel,
   };
 
   // Render pipeline

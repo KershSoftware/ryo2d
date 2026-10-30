@@ -24,7 +24,7 @@ mod squash_stretch;
 mod tween;
 mod y_sort;
 
-pub use glam::{Mat4, Vec2, Vec3, Vec4};
+pub use glam::{IVec2, Mat4, UVec2, Vec2, Vec3, Vec4};
 
 pub use components::{Velocity, ZLayer};
 pub use kernel::*;

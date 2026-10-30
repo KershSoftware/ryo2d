@@ -9,6 +9,7 @@ use super::property::Properties;
 use super::tile::Tile;
 use super::tileset::Tileset;
 use crate::core::asset::{Asset, Handle};
+use crate::core::ecs::Component;
 use crate::core::graphics::Image;
 use crate::core::hash::FastMap;
 use crate::core::render::batch::BlendMode;
@@ -45,8 +46,9 @@ impl IntGrid {
   }
 }
 
-/// What every kind of layer has
-#[derive(Clone, Debug)]
+/// What every kind of layer has. A spawned map's layer entities carry it
+/// as a component (their `Transform` carries the offset)
+#[derive(Component, Clone, Debug)]
 pub struct LayerInfo {
   pub id: u32,
   pub name: String,
@@ -127,8 +129,9 @@ pub struct MapObjectData {
   pub properties: Properties,
 }
 
-/// A picture laid across the map
-#[derive(Clone, Debug)]
+/// A picture laid across the map. A spawned map's image layer entities
+/// carry it as a component
+#[derive(Component, Clone, Debug)]
 pub struct ImageLayer {
   pub image: Handle<Image>,
   pub repeat_x: bool,

@@ -171,6 +171,11 @@ impl Tileset {
     self.tiles.insert(id, data);
   }
 
+  /// Every tile that carries data, in no particular order
+  pub(crate) fn tiles(&self) -> impl Iterator<Item = (u32, &TileData)> {
+    self.tiles.iter().map(|(id, data)| (*id, data))
+  }
+
   /// Where tile `id` sits in the atlas image, in texels; `None` past
   /// `tile_count`, with no columns, or where the arithmetic overflows (a file
   /// can claim any numbers)

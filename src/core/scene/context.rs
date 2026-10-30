@@ -18,6 +18,7 @@ use crate::core::render::{DebugDraw, RenderPipeline};
 use crate::core::schedule::{Phase, SceneScheduleError, SceneSchedules};
 use crate::core::shaders::EffectsManager;
 use crate::core::text::Fonts;
+use crate::core::tilemap::MapsView;
 use crate::core::time::Time;
 use crate::core::ui::{
   BindValue, Theme, UiArgs, UiFile, UiFileError, UiId, UiNode, UiTheme, nodes,
@@ -119,6 +120,27 @@ impl SceneContext<'_> {
   /// ```
   pub fn audio(&mut self) -> AudioView<'_> {
     AudioView::new(self.world)
+  }
+
+  // --- maps ---
+
+  /// The spawned maps ([`MapRoot`](crate::core::tilemap::MapRoot) entities):
+  /// read and edit their tiles, and convert between world positions and
+  /// cells. The view borrows the context, so take it for each use:
+  ///
+  /// ```
+  /// use ryo2d::prelude::*;
+  ///
+  /// fn wall_at(ctx: &mut SceneContext<'_>, map: Entity, at: Vec2) -> bool {
+  ///   let maps = ctx.maps();
+  ///   maps
+  ///     .world_to_cell(map, "collision", at)
+  ///     .and_then(|cell| maps.intgrid(map, "collision", cell))
+  ///     .is_some()
+  /// }
+  /// ```
+  pub fn maps(&mut self) -> MapsView<'_> {
+    MapsView::new(self.world)
   }
 
   // --- systems and messages ---
