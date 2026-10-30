@@ -6625,8 +6625,10 @@ dependencies = [
 name = "tilemap-demo"
 version = "0.1.0"
 dependencies = [
+ "demo-kit",
  "image",
  "ryo2d",
+ "ryo2d-procgen",
 ]
 
 [[package]]

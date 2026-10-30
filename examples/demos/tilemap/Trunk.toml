@@ -1,0 +1,7 @@
+[build]
+target = "index.html"
+dist = "dist"
+
+[watch]
+# Rebuild on engine, procgen and demo-kit edits too
+watch = [".", "../../demo-kit/src", "../../../src", "../../../crates/ryo2d-procgen/src"]

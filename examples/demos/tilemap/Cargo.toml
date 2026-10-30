@@ -2,7 +2,17 @@
 name = "tilemap-demo"
 version = "0.1.0"
 edition = "2024"
-description = "Tilemap demo - Tiled and LDtk levels drawn with Kenney's CC0 art"
+description = "Tilemap demo - Tiled and LDtk levels, collision, objects, editing, worlds, a big map and hot reload, drawn with Kenney's CC0 art"
+# The tour and `cargo run -p tilemap-demo` run the demo, not make-maps
+default-run = "tilemap-demo"
+
+[lib]
+name = "tilemap_demo"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tilemap-demo"
+path = "src/main.rs"
 
 # Writes the demo's derived art, Tiled project, world file and LDtk project,
 # then runs Tiled's own script for the tilesets and maps and checks each with
@@ -13,5 +23,7 @@ path = "src/bin/make-maps.rs"
 
 [dependencies]
 ryo2d = { path = "../../.." }
+demo-kit = { path = "../../demo-kit" }
+ryo2d-procgen = { path = "../../../crates/ryo2d-procgen" }
 # PNG reading and writing for make-maps' derived tiles (the engine's own version)
 image = { version = "0.25", default-features = false, features = ["png"] }
