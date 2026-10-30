@@ -540,3 +540,35 @@ fn a_parallax_layer_follows_part_of_the_camera() {
   let (red, green) = (at(16, 24, RED), at(8, 40, GREEN));
   assert_pixels(&engine.frame().unwrap(), |x, y| red(x, y).or(green(x, y)));
 }
+
+#[test]
+fn a_swapped_grid_redraws_its_layer() {
+  // A new grid made the way the map's own was (one tile set, then every
+  // chunk marked, as spawning does), holding another tile: the layer
+  // draws the new grid
+  let Some(mut engine) = engine(|ctx| {
+    let set = solid(ctx, &[RED, GREEN]);
+    spawn(
+      ctx,
+      map(vec![set], &[(IVec2::new(1, 1), Tile::new(0, 0))]),
+      Vec2::ZERO,
+    );
+  }) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  let red = [(IVec2::new(1, 1), RED)];
+  assert_pixels(&engine.frame().unwrap(), |x, y| in_cells(&red, x, y));
+
+  let mut grid = TileGrid::new(UVec2::splat(SIZE / CELL));
+  grid.set(IVec2::new(1, 1), Some(Tile::new(0, 1)));
+  grid.mark_all_dirty();
+  let world = engine.world_mut();
+  let mut layers = world.query::<&mut TileLayerData>();
+  for mut data in layers.iter_mut(world) {
+    data.grid = grid.clone();
+  }
+  engine.step().unwrap();
+  let green = [(IVec2::new(1, 1), GREEN)];
+  assert_pixels(&engine.frame().unwrap(), |x, y| in_cells(&green, x, y));
+}

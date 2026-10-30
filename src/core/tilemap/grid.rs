@@ -1,8 +1,19 @@
 //! The dense grid of tiles in a tile layer.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use glam::{IVec2, UVec2};
 
 use super::tile::{Tile, TileFlip};
+
+/// Where every grid's versions come from: one counter for the process, so
+/// no version is given twice, across grids and the clones of one
+static VERSIONS: AtomicU64 = AtomicU64::new(1);
+
+/// A version no grid has had
+fn next_version() -> u64 {
+  VERSIONS.fetch_add(1, Ordering::Relaxed)
+}
 
 /// The side of a chunk in cells: the unit a layer redraws and rebuilds by
 pub const CHUNK_SIZE: u32 = 32;
@@ -38,18 +49,31 @@ fn decode(cell: u32) -> Option<Tile> {
 /// in bits 28 to 31, the tileset in 20 to 27 and the tile id plus one in 0
 /// to 19. A map holds at most 256 tilesets of 1,048,575 tiles each; a tile
 /// outside that is refused. Edits mark the chunk they touch dirty.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct TileGrid {
   size: UVec2,
   cells: Vec<u32>,
   chunks: UVec2,
   dirty: Vec<bool>,
   dirty_count: usize,
-  /// Each chunk's version: the grid's counter when it last changed
+  /// Each chunk's version: the version of the change that last touched it
   versions: Vec<u64>,
-  /// Moves on at every change and never repeats, so a version is a stamp of
-  /// one state of one chunk
+  /// The version of the grid's last change (0 before any): taken from the
+  /// process-wide counter at every change, so a version is a stamp of one
+  /// state of one chunk of one grid
   counter: u64,
+}
+
+/// The size and the cells: the dirty marks and versions are bookkeeping, and
+/// versions come from a process-wide counter, so grids holding the same
+/// tiles print alike
+impl std::fmt::Debug for TileGrid {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("TileGrid")
+      .field("size", &self.size)
+      .field("cells", &self.cells)
+      .finish_non_exhaustive()
+  }
 }
 
 impl TileGrid {
@@ -86,11 +110,12 @@ impl TileGrid {
     Some(cell.y as usize * self.size.x as usize + cell.x as usize)
   }
 
-  fn mark(&mut self, cell: IVec2) {
+  /// Marks `cell`'s chunk changed by the change of version `version`
+  fn mark(&mut self, cell: IVec2, version: u64) {
     let c = cell.as_uvec2() / CHUNK_SIZE;
     let i = c.y as usize * self.chunks.x as usize + c.x as usize;
-    self.counter += 1;
-    self.versions[i] = self.counter;
+    self.counter = version;
+    self.versions[i] = version;
     if !self.dirty[i] {
       self.dirty[i] = true;
       self.dirty_count += 1;
@@ -112,7 +137,7 @@ impl TileGrid {
       return false;
     }
     self.cells[i] = v;
-    self.mark(cell);
+    self.mark(cell, next_version());
     true
   }
 
@@ -123,13 +148,16 @@ impl TileGrid {
     let lo = min.max(IVec2::ZERO);
     let hi = max.min(self.size.as_ivec2() - IVec2::ONE);
     let mut changed = 0;
+    // One change, one version, taken only if a cell changes
+    let mut version = None;
     for y in lo.y..=hi.y {
       for x in lo.x..=hi.x {
         let cell = IVec2::new(x, y);
         let i = y as usize * self.size.x as usize + x as usize;
         if self.cells[i] != v {
           self.cells[i] = v;
-          self.mark(cell);
+          let version = *version.get_or_insert_with(next_version);
+          self.mark(cell, version);
           changed += 1;
         }
       }
@@ -165,9 +193,11 @@ impl TileGrid {
   }
 
   /// The version of `chunk`: it changes whenever a cell of the chunk does,
-  /// to a value the grid has not given before, so a consumer that keeps the
-  /// last version it saw knows whether to rebuild. 0 for a chunk outside
-  /// the grid and for one never changed (a new grid)
+  /// to a value larger than any before and never given to any grid (one
+  /// counter serves them all, clones included), so a consumer that keeps the
+  /// last version it saw knows whether to rebuild, even when the layer's
+  /// grid was swapped for another. 0 for a chunk outside the grid and for
+  /// one never changed (a new grid: empty, like any other new grid's)
   pub fn chunk_version(&self, chunk: UVec2) -> u64 {
     if chunk.x >= self.chunks.x || chunk.y >= self.chunks.y {
       return 0;
@@ -182,10 +212,9 @@ impl TileGrid {
 
   /// Marks every chunk dirty, and moves every chunk's version on
   pub fn mark_all_dirty(&mut self) {
-    for v in &mut self.versions {
-      self.counter += 1;
-      *v = self.counter;
-    }
+    let version = next_version();
+    self.versions.fill(version);
+    self.counter = version;
     self.dirty.fill(true);
     self.dirty_count = self.dirty.len();
   }
@@ -321,6 +350,44 @@ mod tests {
     let before = g.chunk_version(chunk);
     assert!(!g.set(IVec2::new(40, 3), None));
     assert_eq!(g.chunk_version(chunk), before);
+  }
+
+  #[test]
+  fn cloned_grids_never_share_a_version_after_an_edit() {
+    let mut g = TileGrid::new(UVec2::splat(64));
+    g.set(IVec2::new(1, 1), Some(Tile::new(0, 1)));
+    let mut h = g.clone();
+    // A clone holds the same state, so the same versions
+    assert_eq!(h.chunk_version(UVec2::ZERO), g.chunk_version(UVec2::ZERO));
+    g.set(IVec2::new(2, 2), Some(Tile::new(0, 2)));
+    h.set(IVec2::new(2, 2), Some(Tile::new(0, 3)));
+    assert_ne!(g.chunk_version(UVec2::ZERO), h.chunk_version(UVec2::ZERO));
+    assert_ne!(g.version(), h.version());
+    // Each grid's versions still only move on
+    let before = g.chunk_version(UVec2::ZERO);
+    g.set(IVec2::new(3, 3), Some(Tile::new(0, 4)));
+    assert!(g.chunk_version(UVec2::ZERO) > before);
+  }
+
+  #[test]
+  fn grids_filled_alike_never_share_a_version() {
+    // Two grids made and changed in the same order, as a level generated
+    // again would be: a layer swapping one for the other must see a change
+    let made = || {
+      let mut g = TileGrid::new(UVec2::splat(64));
+      g.fill(IVec2::ZERO, IVec2::splat(63), Some(Tile::new(0, 1)));
+      g.set(IVec2::new(40, 40), Some(Tile::new(0, 2)));
+      g.mark_all_dirty();
+      g
+    };
+    let (a, b) = (made(), made());
+    for y in 0..2 {
+      for x in 0..2 {
+        let chunk = UVec2::new(x, y);
+        assert_ne!(a.chunk_version(chunk), b.chunk_version(chunk), "{chunk}");
+      }
+    }
+    assert_ne!(a.version(), b.version());
   }
 
   #[test]
