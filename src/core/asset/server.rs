@@ -88,6 +88,9 @@ struct Info {
   state: LoadState,
   /// The job whose result counts; any other's is stale and dropped
   job: u64,
+  /// The job whose value is in the store (0 before the first lands): it
+  /// moves when a load or reload lands, not when one starts or fails
+  loaded: u64,
   /// Whether that job is on the workers, its result not yet in
   in_flight: bool,
   /// Whether its file changed while that job ran: the result is dropped,
@@ -522,13 +525,15 @@ impl AssetServer {
   }
 
   /// Which load of its file the asset's value is from: a number the server
-  /// gives each load and reload of a file, so it moves when the file
-  /// loads again and not when code changes the value (`Assets::get_mut`);
-  /// `None` for an asset not loaded from a file
+  /// gives each load and reload of a file, so it moves when the file's new
+  /// value lands, and not when a reload starts or fails, a dependency's
+  /// reload checks it again, or code changes the value (`Assets::get_mut`);
+  /// `None` for an asset not loaded from a file, or whose first load has
+  /// not landed
   pub(crate) fn load_job(&self, id: UntypedAssetId) -> Option<u64> {
     let table = self.inner.table();
     let info = table.infos.get(&id)?;
-    matches!(info.key, Key::Path(..)).then_some(info.job)
+    (matches!(info.key, Key::Path(..)) && info.loaded != 0).then_some(info.loaded)
   }
 
   /// How far a group of assets has loaded: its handles (`&handles`,
@@ -1100,6 +1105,7 @@ impl AssetServer {
       return;
     };
     info.state = LoadState::Loaded;
+    info.loaded = job;
     info.warned = None;
     let old = std::mem::replace(&mut info.dependencies, dependencies);
     table.relink(id, &old);
@@ -1294,6 +1300,7 @@ impl Table {
         typed,
         state: LoadState::Loading,
         job,
+        loaded: 0,
         in_flight,
         again: false,
         dependencies: Vec::new(),
@@ -1363,6 +1370,7 @@ impl Table {
         typed,
         state: LoadState::Failed(error),
         job,
+        loaded: 0,
         in_flight: false,
         again: false,
         dependencies: Vec::new(),
@@ -2812,6 +2820,53 @@ mod tests {
     );
     assert_eq!(text(&world, &handle), Some("one"));
     assert!(server.state(&handle).is_loaded());
+  }
+
+  #[test]
+  fn a_file_s_load_job_moves_when_its_reload_lands_not_when_it_starts_or_fails() {
+    let files = MemorySource::new();
+    files.insert("a.txt", "one");
+    let (release, held) = crossbeam_channel::unbounded();
+    let (mut world, server) = world_on_one_worker(HeldEach {
+      files: files.clone(),
+      held: vec![("a.txt", held)],
+    });
+    let job = |server: &AssetServer, handle: &Handle<Text>| server.load_job(handle.id().untyped());
+    // The first read is let go at once
+    let _ = release.send(());
+    let handle = server.load_now::<Text>(&mut world, "a.txt").expect("loads");
+    let first = job(&server, &handle);
+    assert!(first.is_some(), "a file's value has a load");
+
+    // A reload on its way: the value is still the first load's
+    files.insert("a.txt", "two");
+    server.reload("a.txt");
+    for _ in 0..3 {
+      pump(&mut world);
+    }
+    assert_eq!(text(&world, &handle), Some("one"));
+    assert_eq!(job(&server, &handle), first, "the reload has not landed");
+    let _ = release.send(());
+    pump_until(&mut world, |w| text(w, &handle) == Some("two"));
+    let second = job(&server, &handle);
+    assert!(second > first, "{second:?} after {first:?}");
+
+    // A reload that fails keeps the value, and its load
+    let mut texts = cursor::<Text>(&world);
+    files.insert("a.txt", [0xff, 0xfe]);
+    server.reload("a.txt");
+    let _ = release.send(());
+    pump_until_sent(&mut world, &mut texts, |e| {
+      matches!(e, AssetEvent::ReloadFailed { .. })
+    });
+    assert_eq!(job(&server, &handle), second);
+
+    // A change made in code is not a load of the file
+    if let Some(text) = world.resource_mut::<Assets<Text>>().get_mut(&handle) {
+      text.0 = "three".into();
+    }
+    pump(&mut world);
+    assert_eq!(job(&server, &handle), second);
   }
 
   #[test]

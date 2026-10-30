@@ -12,6 +12,7 @@ use super::collision::{self, LayerView};
 use super::jobs::Worker;
 use super::kinds::{sources, stamps};
 use super::occluders;
+use super::reload::{MapApplied, content_stamp};
 use super::{
   ImageLayer, IntGrid, LayerInfo, LayerKind, LdtkProject, MapLayer, MapObjectData, ObjectShape,
   Properties, PropertyValue, Tile, TileData, TileGrid, TileMap, Tileset, TilesetSource,
@@ -84,6 +85,13 @@ pub(crate) enum MapSource {
 /// thread once its asset is ready, and its layers, objects, colliders,
 /// shadows and [`MapEvent::Spawned`] arrive together in one frame, so a
 /// body its object observers place stands on its ground.
+///
+/// With hot reload on, saving one of the map's files updates it in place
+/// in the frame the save lands ([`MapEvent::Reloaded`]): its layers keep
+/// their entities and only the chunks the save changed redraw, collide and
+/// occlude again; objects and class tiles the save left alone keep their
+/// entities and everything the game put on them. The file wins over what
+/// the game changed since (dug tiles come back).
 ///
 /// ```
 /// use ryo2d::prelude::*;
@@ -258,7 +266,7 @@ pub struct MapTile {
 /// A spawned map's objects by their id, on the map entity
 #[derive(Component, Clone, Debug, Default)]
 pub struct MapIds {
-  objects: FastMap<String, Entity>,
+  pub(super) objects: FastMap<String, Entity>,
 }
 
 impl MapIds {
@@ -284,7 +292,13 @@ pub enum MapEvent {
   /// and its shadows all arrived this frame, so a body put on it now (or by
   /// an observer of its objects as they arrived) stands on its ground
   Spawned { map: Entity },
-  /// Its asset changed and its layers and objects follow it
+  /// A file it was made from was saved (its map or LDtk project, a
+  /// template, the Tiled project, an LDtk level file or a tileset; not a
+  /// tileset's image, which only redraws it) and it follows the file: its
+  /// tiles are the file's; objects and class tiles the save left alone keep
+  /// their entities untouched, changed ones are updated in place and new
+  /// ones spawn. Sent in the frame the save lands, before the game's
+  /// update; a save that fails to load sends nothing
   Reloaded { map: Entity },
   /// Its asset did not load (or has no such level), or its landing
   /// panicked (tried again once the map or a tileset it uses changes):
@@ -435,6 +449,15 @@ pub(crate) fn spawn_maps(
       continue;
     }
     let landed = match landed {
+      // A save landed while it was out: worked out again from the files as
+      // they are now, so the map lands as saved, once
+      Some(landed) if is_stale(world, map, &landed) => {
+        if let Some(job) = landing_job(world, map) {
+          let job = worker.send(move || job.run());
+          world.entity_mut(map).insert(MapLanding { job });
+        }
+        continue;
+      }
       Some(landed) => Some(landed),
       None => {
         crate::engine_warn!(
@@ -451,6 +474,14 @@ pub(crate) fn spawn_maps(
       None => landing_failed(world, map),
     }
   }
+}
+
+/// Whether a load of one of `map`'s files (its map or LDtk project, or a
+/// tileset asset it uses) landed since its landing was worked out
+fn is_stale(world: &World, map: Entity, landed: &Landed) -> bool {
+  world
+    .get::<MapRoot>(map)
+    .is_some_and(|root| content_stamp(world, root) != landed.applied.stamp())
 }
 
 /// Whether `map` is a map waiting to land: an enabled root not spawned yet
@@ -613,12 +644,12 @@ pub(crate) fn spawn_class_tile(
 /// before `ChildOf`'s insert hook, so an observer of a component spawned
 /// with the `ChildOf` that despawned the parent would leave the child
 /// orphaned and the hook's queued update failing on the gone parent
-fn child_of(world: &mut World, parent: Entity, transform: Transform) -> Entity {
+pub(crate) fn child_of(world: &mut World, parent: Entity, transform: Transform) -> Entity {
   world.spawn((transform, ChildOf(parent))).id()
 }
 
 /// A layer as it spawns: its info and what it holds
-struct PlannedLayer {
+pub(crate) struct PlannedLayer {
   info: LayerInfo,
   content: Content,
 }
@@ -631,9 +662,9 @@ enum Content {
 
 /// For each of a map's tilesets, its tiles of a registered class, with
 /// their class and properties
-type ClassTiles = Vec<FastMap<u32, (String, Properties)>>;
+pub(crate) type ClassTiles = Vec<FastMap<u32, (String, Properties)>>;
 
-fn class_tiles(world: &World, map: &TileMap, classes: &[String]) -> ClassTiles {
+pub(crate) fn class_tiles(world: &World, map: &TileMap, classes: &[String]) -> ClassTiles {
   if classes.is_empty() {
     return Vec::new();
   }
@@ -662,7 +693,7 @@ fn class_tiles(world: &World, map: &TileMap, classes: &[String]) -> ClassTiles {
 }
 
 /// Takes the tiles of a registered class out of `grid`
-fn take_class_tiles(grid: &mut TileGrid, classes: &ClassTiles) -> Vec<ClassTile> {
+pub(crate) fn take_class_tiles(grid: &mut TileGrid, classes: &ClassTiles) -> Vec<ClassTile> {
   let mut found = Vec::new();
   if classes.iter().all(FastMap::is_empty) {
     return found;
@@ -696,18 +727,21 @@ fn take_class_tiles(grid: &mut TileGrid, classes: &ClassTiles) -> Vec<ClassTile>
 /// asset's layers, its root's settings and its tilesets' shapes
 pub(crate) struct LandingJob {
   map: Entity,
+  /// The loads of the map's files it is worked out from (`content_stamp`)
+  stamp: Vec<Option<u64>>,
   layers: Vec<MapLayer>,
   classes: ClassTiles,
   collision: collision::Inputs,
   shadows: occluders::Inputs,
 }
 
-/// What a map lands with: its layers as they spawn, and its colliders and
-/// shadows worked out for them
+/// What a map lands with: its layers as they spawn, its colliders and
+/// shadows worked out for them, and what a reload compares with
 pub(crate) struct Landed {
   layers: Vec<PlannedLayer>,
   collision: collision::Prepared,
   shadows: occluders::Prepared,
+  applied: MapApplied,
 }
 
 /// The landing job of the map `map`, its root's asset ready
@@ -719,6 +753,7 @@ fn landing_job(world: &World, map: Entity) -> Option<LandingJob> {
   let tileset_stamps = stamps(asset, tilesets);
   Some(LandingJob {
     map,
+    stamp: content_stamp(world, root),
     layers: asset.layers.clone(),
     classes: class_tiles(world, asset, &root.entity_tiles),
     collision: collision::Inputs {
@@ -751,30 +786,11 @@ impl LandingJob {
     if self.collision.properties.get(PANICKING_LANDING).is_some() {
       panic!("a test's landing that always panics");
     }
+    let applied = MapApplied::new(self.stamp, &self.layers);
     let layers: Vec<PlannedLayer> = self
       .layers
       .into_iter()
-      .map(|layer| PlannedLayer {
-        info: layer.info,
-        content: match layer.kind {
-          LayerKind::Tiles {
-            mut grid,
-            intgrid,
-            cell_size,
-          } => {
-            let found = take_class_tiles(&mut grid, &self.classes);
-            grid.mark_all_dirty();
-            let data = TileLayerData {
-              grid,
-              intgrid,
-              cell_size,
-            };
-            Content::Tiles(data, found)
-          }
-          LayerKind::Objects(objects) => Content::Objects(objects),
-          LayerKind::Image(image) => Content::Image(image),
-        },
-      })
+      .map(|layer| plan_layer(layer, &self.classes))
       .collect();
     let views: Vec<LayerView<'_>> = layers
       .iter()
@@ -796,12 +812,107 @@ impl LandingJob {
       layers,
       collision,
       shadows,
+      applied,
     }
   }
 }
 
+/// `layer` as it spawns: a tile layer's grid without the tiles of a
+/// registered class (and every chunk dirty, so it is drawn once), with
+/// those tiles beside it
+pub(crate) fn plan_layer(layer: MapLayer, classes: &ClassTiles) -> PlannedLayer {
+  PlannedLayer {
+    info: layer.info,
+    content: match layer.kind {
+      LayerKind::Tiles {
+        mut grid,
+        intgrid,
+        cell_size,
+      } => {
+        let found = take_class_tiles(&mut grid, classes);
+        grid.mark_all_dirty();
+        let data = TileLayerData {
+          grid,
+          intgrid,
+          cell_size,
+        };
+        Content::Tiles(data, found)
+      }
+      LayerKind::Objects(objects) => Content::Objects(objects),
+      LayerKind::Image(image) => Content::Image(image),
+    },
+  }
+}
+
+/// What a layer `spawn_layer` spawned holds that spawns once the map's
+/// other layers are in: a tile layer's class tiles (with its cell size),
+/// or an object layer's objects
+pub(crate) enum LayerRest {
+  Tiles(Vec2, Vec<ClassTile>),
+  Objects(Vec<MapObjectData>),
+  Nothing,
+}
+
+/// Spawns `planned` as layer `index` of `map`, a child of it at the
+/// layer's offset
+pub(crate) fn spawn_layer(
+  world: &mut World,
+  map: Entity,
+  index: usize,
+  PlannedLayer { info, content }: PlannedLayer,
+) -> (Entity, LayerRest) {
+  let layer = child_of(world, map, Transform::from_translation(info.offset));
+  let layer_ref = MapLayerRef {
+    map,
+    index,
+    name: info.name.clone(),
+  };
+  let Ok(mut entity) = world.get_entity_mut(layer) else {
+    return (layer, LayerRest::Nothing);
+  };
+  let rest = match content {
+    Content::Tiles(data, found) => {
+      let cell_size = data.cell_size.as_vec2();
+      entity.insert((layer_ref, info, data, LayerTiles::default()));
+      LayerRest::Tiles(cell_size, found)
+    }
+    Content::Objects(objects) => {
+      entity.insert((layer_ref, info));
+      LayerRest::Objects(objects)
+    }
+    Content::Image(image) => {
+      entity.insert((layer_ref, info, image));
+      LayerRest::Nothing
+    }
+  };
+  (layer, rest)
+}
+
+/// Spawns `found`, the class tiles of the map's layer `layer` (its `index`,
+/// of cells `cell_size` pixels), and lists them in its `LayerTiles`
+pub(crate) fn spawn_class_tiles(
+  world: &mut World,
+  map: Entity,
+  (layer, index): (Entity, usize),
+  cell_size: Vec2,
+  found: Vec<ClassTile>,
+) {
+  let mut spawned = FastMap::default();
+  for tile in found {
+    if world.get_entity(layer).is_err() {
+      break;
+    }
+    let cell = tile.cell;
+    let entity = spawn_class_tile(world, map, (layer, index), cell_size, tile);
+    spawned.insert(cell, entity);
+  }
+  if let Some(mut table) = world.get_mut::<LayerTiles>(layer) {
+    table.0.extend(spawned);
+  }
+}
+
 /// An object's component and its `Transform` in its layer
-fn object_parts(map: Entity, object: MapObjectData) -> (MapObject, Transform) {
+pub(crate) fn object_parts(map: Entity, object: MapObjectData) -> (MapObject, Transform) {
   let half = object.size * 0.5;
   // The rectangle turns about its top-left corner
   let centre = object.position + Vec2::from_angle(object.rotation).rotate(half);
@@ -840,6 +951,7 @@ fn land(world: &mut World, map: Entity, landed: Landed) {
     layers: planned,
     collision,
     shadows,
+    applied,
   } = landed;
 
   // A game's observers run as each part arrives, and may despawn the map, a
@@ -849,33 +961,16 @@ fn land(world: &mut World, map: Entity, landed: Landed) {
   let mut layers = Vec::with_capacity(planned.len());
   let mut object_layers = Vec::new();
   let mut tile_layers = Vec::new();
-  for (index, PlannedLayer { info, content }) in planned.into_iter().enumerate() {
+  for (index, planned) in planned.into_iter().enumerate() {
     if !alive(world, map) {
       return;
     }
-    let layer = child_of(world, map, Transform::from_translation(info.offset));
+    let (layer, rest) = spawn_layer(world, map, index, planned);
     layers.push(layer);
-    let layer_ref = MapLayerRef {
-      map,
-      index,
-      name: info.name.clone(),
-    };
-    let Ok(mut entity) = world.get_entity_mut(layer) else {
-      continue;
-    };
-    match content {
-      Content::Tiles(data, found) => {
-        let cell_size = data.cell_size.as_vec2();
-        entity.insert((layer_ref, info, data, LayerTiles::default()));
-        tile_layers.push((layer, index, cell_size, found));
-      }
-      Content::Objects(objects) => {
-        entity.insert((layer_ref, info));
-        object_layers.push((layer, objects));
-      }
-      Content::Image(image) => {
-        entity.insert((layer_ref, info, image));
-      }
+    match rest {
+      LayerRest::Tiles(cell_size, found) => tile_layers.push((layer, index, cell_size, found)),
+      LayerRest::Objects(objects) => object_layers.push((layer, objects)),
+      LayerRest::Nothing => {}
     }
   }
 
@@ -898,7 +993,7 @@ fn land(world: &mut World, map: Entity, landed: Landed) {
     return;
   };
   root
-    .insert((MapIds { objects: ids }, MapLayers(layers.clone())))
+    .insert((MapIds { objects: ids }, MapLayers(layers.clone()), applied))
     .remove::<MapFailed>();
   // Its colliders and shadows before anything observes its objects
   collision::land(world, map, &layers, collision);
@@ -909,18 +1004,7 @@ fn land(world: &mut World, map: Entity, landed: Landed) {
     }
   }
   for (layer, index, cell_size, found) in tile_layers {
-    let mut spawned = FastMap::default();
-    for tile in found {
-      if !alive(world, layer) {
-        break;
-      }
-      let cell = tile.cell;
-      let entity = spawn_class_tile(world, map, (layer, index), cell_size, tile);
-      spawned.insert(cell, entity);
-    }
-    if let Some(mut table) = world.get_mut::<LayerTiles>(layer) {
-      table.0.extend(spawned);
-    }
+    spawn_class_tiles(world, map, (layer, index), cell_size, found);
   }
   if alive(world, map) {
     send(world, MapEvent::Spawned { map });
@@ -943,7 +1027,7 @@ fn root_discarded(mut world: DeferredWorld, context: HookContext) {
       return;
     };
     let layers = entity.take::<MapLayers>();
-    entity.remove::<(MapIds, MapFailed, MapLanding)>();
+    entity.remove::<(MapIds, MapFailed, MapLanding, MapApplied)>();
     for layer in layers.map(|l| l.0).unwrap_or_default() {
       let _ = world.try_despawn(layer);
     }

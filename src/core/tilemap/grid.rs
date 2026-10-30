@@ -210,6 +210,51 @@ impl TileGrid {
     self.counter
   }
 
+  /// Takes `from`'s cells (a grid of the same size: another size changes
+  /// nothing), moving on the version of only the chunks whose cells differ
+  /// or that `also` names as changed for a reason of its own, as one
+  /// change, and marking them dirty. Whether any chunk moved
+  pub(crate) fn assign(&mut self, from: &TileGrid, also: impl Fn(UVec2) -> bool) -> bool {
+    if from.size != self.size {
+      return false;
+    }
+    let width = self.size.x as usize;
+    let mut version = None;
+    for cy in 0..self.chunks.y {
+      for cx in 0..self.chunks.x {
+        let chunk = UVec2::new(cx, cy);
+        let x0 = (cx * CHUNK_SIZE) as usize;
+        let x1 = ((cx + 1) * CHUNK_SIZE).min(self.size.x) as usize;
+        let rows = cy * CHUNK_SIZE..((cy + 1) * CHUNK_SIZE).min(self.size.y);
+        let mut changed = also(chunk);
+        for y in rows {
+          let row = y as usize * width;
+          let (old, new) = (
+            &mut self.cells[row + x0..row + x1],
+            &from.cells[row + x0..row + x1],
+          );
+          if old != new {
+            old.copy_from_slice(new);
+            changed = true;
+          }
+        }
+        if changed {
+          let version = *version.get_or_insert_with(next_version);
+          let i = cy as usize * self.chunks.x as usize + cx as usize;
+          self.versions[i] = version;
+          if !self.dirty[i] {
+            self.dirty[i] = true;
+            self.dirty_count += 1;
+          }
+        }
+      }
+    }
+    if let Some(version) = version {
+      self.counter = version;
+    }
+    version.is_some()
+  }
+
   /// Marks every chunk dirty, and moves every chunk's version on
   pub fn mark_all_dirty(&mut self) {
     let version = next_version();
@@ -407,5 +452,53 @@ mod tests {
     let mut out = Vec::new();
     g.drain_dirty(&mut out);
     assert_eq!(g.version(), v);
+  }
+
+  #[test]
+  fn assigning_a_grid_moves_only_the_chunks_whose_cells_differ() {
+    let chunks = [
+      UVec2::new(0, 0),
+      UVec2::new(1, 0),
+      UVec2::new(0, 1),
+      UVec2::new(1, 1),
+    ];
+    let versions = |g: &TileGrid| chunks.map(|c| g.chunk_version(c));
+    let mut g = TileGrid::new(UVec2::new(40, 40));
+    g.fill(IVec2::ZERO, IVec2::splat(39), Some(Tile::new(0, 1)));
+    let mut out = Vec::new();
+    g.drain_dirty(&mut out);
+    let before = versions(&g);
+    let mut saved = g.clone();
+    saved.set(IVec2::new(35, 2), Some(Tile::new(0, 2)));
+    saved.set(IVec2::new(39, 39), None);
+
+    assert!(g.assign(&saved, |_| false));
+    let after = versions(&g);
+    assert_eq!((after[0], after[2]), (before[0], before[2]));
+    assert!(after[1] > before[1] && after[3] > before[3]);
+    assert_eq!(after[1], after[3], "one change");
+    assert_eq!(g.version(), after[1]);
+    assert_eq!(g.get(IVec2::new(35, 2)), Some(Tile::new(0, 2)));
+    assert_eq!(g.get(IVec2::new(39, 39)), None);
+    assert_eq!(format!("{g:?}"), format!("{saved:?}"));
+    g.drain_dirty(&mut out);
+    assert_eq!(out, [UVec2::new(1, 0), UVec2::new(1, 1)]);
+
+    // The same cells again change nothing, unless a chunk is named
+    assert!(!g.assign(&saved, |_| false));
+    assert_eq!(versions(&g), after);
+    assert!(g.assign(&saved, |c| c == UVec2::new(0, 1)));
+    let named = versions(&g);
+    assert_eq!(
+      (named[0], named[1], named[3]),
+      (after[0], after[1], after[3])
+    );
+    assert!(named[2] > after[2]);
+
+    // Another size changes nothing
+    let other = TileGrid::new(UVec2::new(8, 8));
+    assert!(!g.assign(&other, |_| true));
+    assert_eq!(versions(&g), named);
+    assert_eq!(g.get(IVec2::new(35, 2)), Some(Tile::new(0, 2)));
   }
 }

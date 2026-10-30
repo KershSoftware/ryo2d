@@ -14,6 +14,7 @@ mod map;
 mod occluders;
 pub(crate) mod padded;
 mod property;
+mod reload;
 mod spawn;
 #[cfg(test)]
 pub(crate) mod test_util;
@@ -37,6 +38,7 @@ pub use map::{
 };
 pub use occluders::MapOccluder;
 pub use property::{Properties, PropertyValue};
+pub(crate) use reload::reload_maps;
 pub use spawn::{
   IntGridKey, MapEvent, MapIds, MapLayerRef, MapObject, MapRoot, MapTile, TileLayerData,
 };

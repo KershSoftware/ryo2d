@@ -36,7 +36,7 @@ use glam::{IVec2, UVec2, Vec2};
 use super::collision::LayerView;
 use super::kinds::{
   Context, Layers, Purpose, ShapeKey, ShapeSource, Stores, TilesetStamp, Tracked, changed_chunks,
-  layer_data, layer_kind, over, sources, stamps, stamps_match,
+  layer_data, layer_kind, over, shapes_kept, sources, stamps,
 };
 use super::spawn::{IntGridKey, MapLayers, MapRoot, TileLayerData, root_map};
 use super::{CHUNK_SIZE, Tile};
@@ -575,7 +575,7 @@ pub(crate) fn sync_map_occluders(
   mut commands: Commands,
 ) {
   let tilesets = tilesets.as_deref();
-  for (map, root, map_layers, state, disabled) in &mut maps {
+  for (map, root, map_layers, mut state, disabled) in &mut maps {
     let Some(map_layers) = map_layers else {
       // The root was put over or taken away, and its layers with it
       if let Some(mut state) = state {
@@ -599,10 +599,11 @@ pub(crate) fn sync_map_occluders(
       continue;
     };
     plan(views(map_layers, &layers), &mut planned);
-    let same = state.as_ref().is_some_and(|s| {
+    let same = state.as_mut().is_some_and(|s| {
+      let s = s.bypass_change_detection();
       s.layers == *planned
         && s.overrides == root.intgrid_collision
-        && stamps_match(&s.tilesets, tile_map, tilesets)
+        && shapes_kept(&mut s.tilesets, &s.shapes, tile_map, tilesets)
     });
     if same && let Some(mut state) = state {
       let state = state.bypass_change_detection();

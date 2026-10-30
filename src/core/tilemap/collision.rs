@@ -37,7 +37,7 @@ use glam::{IVec2, UVec2, Vec2};
 
 use super::kinds::{
   Context, Layers, Purpose, ShapeKey, ShapeSink, ShapeSource, Stores, TilesetStamp, Tracked,
-  changed_chunks, layer_data, layer_kind, over, sources, stamps, stamps_match,
+  changed_chunks, layer_data, layer_kind, over, shapes_kept, sources, stamps,
 };
 use super::spawn::{IntGridKey, MapLayers, MapRoot, TileLayerData, root_map};
 use super::{CHUNK_SIZE, LayerInfo, Properties, PropertyValue, Tile};
@@ -619,12 +619,13 @@ pub(crate) fn sync_map_colliders(
       warned,
       &mut planned,
     );
-    let same = state.as_ref().is_some_and(|s| {
+    let same = state.as_mut().is_some_and(|s| {
+      let s = s.bypass_change_detection();
       !s.torn
         && s.layers == *planned
         && s.tile_size == tile_map.tile_size
         && s.overrides == root.intgrid_collision
-        && stamps_match(&s.tilesets, tile_map, tilesets)
+        && shapes_kept(&mut s.tilesets, &s.shapes, tile_map, tilesets)
     });
     match state {
       Some(mut state) if same => {

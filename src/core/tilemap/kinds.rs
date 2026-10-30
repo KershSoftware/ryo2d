@@ -96,23 +96,43 @@ pub(super) fn stamps_match(
       .all(|(stamp, source)| stamp.matches(source, assets))
 }
 
+/// Whether what was built from `shapes` still stands for `map`'s tilesets:
+/// their stamps match, or they moved (an image reloaded, or a tileset saved
+/// with other tile data) and the tilesets give the same shapes, so the
+/// stamps are brought up to date and nothing is built again
+pub(super) fn shapes_kept(
+  stamps: &mut Vec<TilesetStamp>,
+  shapes: &[Option<ShapeSource>],
+  map: &TileMap,
+  assets: Option<&Assets<Tileset>>,
+) -> bool {
+  if stamps_match(stamps, map, assets) {
+    return true;
+  }
+  if *sources(map, assets) != *shapes {
+    return false;
+  }
+  *stamps = self::stamps(map, assets);
+  true
+}
+
 /// What placing and classifying a tileset's tiles reads, taken from it once
 /// (so another thread can read it): its tiles with shapes, each with the
 /// size it draws at, and the tileset's offset
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq)]
 pub(super) struct ShapeSource {
   offset: Vec2,
   tiles: FastMap<u32, SourceTile>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 struct SourceTile {
   /// The size it draws at
   size: Vec2,
   shapes: Vec<SourceShape>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 struct SourceShape {
   points: Vec<Vec2>,
   one_way: bool,

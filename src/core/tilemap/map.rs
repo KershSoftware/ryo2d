@@ -25,7 +25,7 @@ pub enum TilesetSource {
 }
 
 /// Values painted on an integer layer: 0 is empty
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct IntGrid {
   pub size: UVec2,
   pub values: Vec<i32>,
@@ -48,7 +48,7 @@ impl IntGrid {
 
 /// What every kind of layer has. A spawned map's layer entities carry it
 /// as a component (their `Transform` carries the offset)
-#[derive(Component, Clone, Debug)]
+#[derive(Component, Clone, Debug, PartialEq)]
 pub struct LayerInfo {
   pub id: u32,
   pub name: String,
@@ -108,7 +108,7 @@ pub enum ObjectShape {
 }
 
 /// An object placed on an object layer
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct MapObjectData {
   /// Unique in the map, as the file wrote it
   pub id: String,
@@ -131,7 +131,7 @@ pub struct MapObjectData {
 
 /// A picture laid across the map. A spawned map's image layer entities
 /// carry it as a component
-#[derive(Component, Clone, Debug)]
+#[derive(Component, Clone, Debug, PartialEq)]
 pub struct ImageLayer {
   pub image: Handle<Image>,
   pub repeat_x: bool,

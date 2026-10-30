@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use crate::core::asset::{AssetServer, AssetsView, Handle, MemorySource, insert_registry, pump};
-use crate::core::ecs::{Entity, World};
+use crate::core::ecs::{Entity, IntoScheduleConfigs, World};
 use crate::core::physics::test_util::world as physics_world;
 use crate::core::schedule::{EngineSchedules, Phase};
 
@@ -54,9 +54,20 @@ pub(crate) struct MapWorld {
 
 impl MapWorld {
   pub(crate) fn new() -> MapWorld {
+    MapWorld::over(files_with(&[]))
+  }
+
+  /// A map world over `files`, watching them: a file put over one already
+  /// there reloads what was loaded from it
+  pub(crate) fn over(files: MemorySource) -> MapWorld {
     let (mut world, mut schedules) = physics_world(60);
-    insert_registry(&mut world, AssetServer::new(files_with(&[])));
-    schedules.add_systems(Phase::PreUpdate, super::spawn_maps);
+    let server = AssetServer::new(files);
+    insert_registry(&mut world, server.clone());
+    server.start_watching();
+    schedules.add_systems(
+      Phase::PreUpdate,
+      (super::spawn_maps, super::reload_maps).chain(),
+    );
     super::register_tilemap_systems(&mut schedules);
     schedules.add_systems(
       Phase::Last,
@@ -96,6 +107,23 @@ impl MapWorld {
   /// `PostUpdate` alone
   pub(crate) fn post_update(&mut self) {
     self.schedules.run(Phase::PostUpdate, &mut self.world);
+  }
+
+  /// Runs frames until `done`, failing after 5 s: reloads and landings are
+  /// worked out on other threads
+  pub(crate) fn frames_until(&mut self, mut done: impl FnMut(&mut World) -> bool) {
+    let start = std::time::Instant::now();
+    loop {
+      self.frame();
+      if done(&mut self.world) {
+        return;
+      }
+      assert!(
+        start.elapsed() < std::time::Duration::from_secs(5),
+        "timed out waiting"
+      );
+      std::thread::sleep(std::time::Duration::from_millis(1));
+    }
   }
 
   /// Spawns a map entity over `root` at the origin and runs frames until
