@@ -653,13 +653,13 @@ mod tests {
       project.level("Cave_A").expect("A").world.as_deref(),
       Some("Caves")
     );
-    // a linear layout has no positions in the file: the levels follow one another
+    // a linear layout has no positions in the file: the levels follow one another, 48 px apart
     let hall = &project.worlds[2];
     assert_eq!(world_level(hall, "Hall_0").1.position, Vec2::ZERO);
-    assert_eq!(world_level(hall, "Hall_1").1.position, Vec2::new(0.0, 48.0));
+    assert_eq!(world_level(hall, "Hall_1").1.position, Vec2::new(0.0, 96.0));
     assert_eq!(
       project.level("Hall_1").expect("hall").position,
-      IVec2::new(0, 48)
+      IVec2::new(0, 96)
     );
     // a level's map is as big as its pixels say
     assert_eq!(
@@ -1028,5 +1028,61 @@ mod tests {
     let mut world = world_over(files);
     let error = load_in(&mut world, "external.ldtk").expect_err("wrong level");
     assert!(error.contains("not"), "{error}");
+  }
+
+  #[test]
+  fn linear_levels_are_placed_as_ldtk_places_them() {
+    // LDtk's `World.reorganizeWorld` puts each level after the last one's
+    // width (or height) plus a spacing of 48 px, and the file writes -1
+    let horizontal = load_json(|v| {
+      v["worldLayout"] = "LinearHorizontal".into();
+      for l in v["levels"].as_array_mut().expect("levels") {
+        l["worldX"] = (-1).into();
+        l["worldY"] = (-1).into();
+      }
+    })
+    .expect("loads");
+    assert_eq!(horizontal.levels[0].position, IVec2::ZERO);
+    assert_eq!(horizontal.levels[1].position, IVec2::new(64 + 48, 0));
+    assert_eq!(
+      horizontal.worlds[0].levels[1].position,
+      Vec2::new(112.0, 0.0)
+    );
+    let vertical = load("worlds.ldtk");
+    assert_eq!(vertical.level("Hall_0").expect("0").position, IVec2::ZERO);
+    assert_eq!(
+      vertical.level("Hall_1").expect("1").position,
+      IVec2::new(0, 48 + 48)
+    );
+    // a free or GridVania layout is as the file says
+    assert_eq!(
+      vertical.level("Cave_B").expect("B").position,
+      IVec2::new(-64, 16)
+    );
+  }
+
+  #[test]
+  fn parallax_factors_map_to_layer_parallax() {
+    // LDtk's editor shifts a layer by camera * factor (Camera.getParallaxOffsetX),
+    // so on screen it follows (1 - factor) of the camera: Tiled's parallax
+    let project = load_json(|v| {
+      let layers = v["defs"]["layers"].as_array_mut().expect("layers");
+      for l in layers.iter_mut() {
+        if l["identifier"] == "Decor" {
+          l["parallaxFactorX"] = 0.25.into();
+          l["parallaxFactorY"] = (-0.5).into();
+          l["parallaxScaling"] = false.into();
+        }
+        if l["identifier"] == "Props" {
+          l["parallaxFactorX"] = 1.into();
+        }
+      }
+    })
+    .expect("loads");
+    let level = &project.levels[0];
+    assert_eq!(layer(level, "Decor").info.parallax, Vec2::new(0.75, 1.5));
+    assert_eq!(layer(level, "Props").info.parallax, Vec2::new(0.0, 1.0));
+    // the default is a layer fixed to the world
+    assert_eq!(layer(level, "Collision").info.parallax, Vec2::ONE);
   }
 }

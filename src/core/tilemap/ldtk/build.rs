@@ -24,6 +24,8 @@ use crate::core::tilemap::{
 };
 use crate::core::ui::Color;
 
+/// The gap LDtk leaves between levels of a linear layout (`World.reorganizeWorld`)
+const LINEAR_SPACING: u32 = 48;
 const MAX_TILESETS: usize = 256;
 /// The name of a single-world project's only world
 const DEFAULT_WORLD: &str = "World";
@@ -737,7 +739,7 @@ fn build_world(
     let step = |extent: u32| i32::try_from(extent).ok();
     match layout {
       Some("LinearHorizontal") => {
-        next.x = step(size.x)
+        next.x = step(size.x.saturating_add(LINEAR_SPACING))
           .and_then(|s| next.x.checked_add(s))
           .ok_or_else(|| {
             fail(
@@ -748,7 +750,7 @@ fn build_world(
           })?;
       }
       Some("LinearVertical") => {
-        next.y = step(size.y)
+        next.y = step(size.y.saturating_add(LINEAR_SPACING))
           .and_then(|s| next.y.checked_add(s))
           .ok_or_else(|| {
             fail(
