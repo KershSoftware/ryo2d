@@ -246,6 +246,11 @@ impl Pipelines {
       (BatchShader::Tile, Stream::Quads, true, false) => {
         (&self.sprite, &self.tile_layout, "fs_base_premultiplied")
       }
+      // Repeated image layers are images, never render targets
+      (BatchShader::Repeat, Stream::Quads, false, _) => (&self.sprite, &self.layout, "fs_repeat"),
+      (BatchShader::Repeat, Stream::Quads, true, _) => {
+        (&self.sprite, &self.layout, "fs_repeat_premultiplied")
+      }
       (BatchShader::Line, Stream::Triangles, _, _) => (&self.line, &self.camera_only, "fs_main"),
       (BatchShader::LineTextured, Stream::Triangles, _, _) => {
         (&self.line, &self.layout, "fs_textured")
@@ -426,6 +431,7 @@ fn batch_pipeline(
       module,
       entry_point: Some(match key.shader {
         BatchShader::Tile => "vs_tile",
+        BatchShader::Repeat => "vs_repeat",
         _ => "vs_main",
       }),
       buffers: match key.stream {

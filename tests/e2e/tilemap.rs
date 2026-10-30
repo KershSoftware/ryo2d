@@ -1063,3 +1063,39 @@ fn tile_objects_on_a_y_sorted_layer_sort_with_characters_by_their_feet() {
   engine.step().unwrap();
   assert_pixels(&engine.frame().unwrap(), expect(36));
 }
+
+#[test]
+fn a_small_image_repeated_both_ways_covers_a_1080p_view() {
+  // An 8 px image (red on its left half, blue on its right) repeated across
+  // and down from (3, 5) covers every pixel of a 1920 x 1080 view: some
+  // 32,000 copies
+  let (width, height) = (1920, 1080);
+  let builder = EngineBuilder::new().pixel_art(width, height);
+  let Some(mut engine) = engine_with(builder, |ctx| {
+    let data: Vec<u8> = (0..CELL * CELL)
+      .flat_map(|i| if i % CELL < CELL / 2 { RED } else { BLUE })
+      .collect();
+    let image = ctx.assets().add(Image::from_rgba(data, CELL, CELL));
+    let mut layers = TileMap::new(UVec2::ONE, UVec2::splat(CELL));
+    image_layer(&mut layers, "sky", image, Vec2::new(3.0, 5.0), (true, true));
+    spawn(ctx, layers, Vec2::ZERO);
+  }) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  let frame = engine.frame().unwrap();
+  let mut wrong = 0;
+  let mut first = None;
+  for (x, y, p) in frame.enumerate_pixels() {
+    let want = if (x + CELL - 3) % CELL < CELL / 2 {
+      RED
+    } else {
+      BLUE
+    };
+    if p.0 != want {
+      wrong += 1;
+      first.get_or_insert((x, y, p.0));
+    }
+  }
+  assert_eq!(wrong, 0, "pixels not the image's; the first {first:?}");
+}

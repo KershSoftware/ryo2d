@@ -23,9 +23,9 @@ use crate::core::graphics::Image;
 use crate::core::graphics::atlas::BORDER;
 use crate::core::hash::FastMap;
 
-/// Extra texels of border a tile's cell keeps on every side (the cell is
-/// `max side + 2` rounded up to a power of two, so at least one each side)
-const EXTRUSION: u32 = 2;
+/// The least room a cell keeps past its tile, in texels: the atlas's four
+/// mip levels (the coarsest 8 texels a texel) each stay inside the cell
+const MIN_ROOM: u32 = 8;
 /// The most texels a padded image may span on a side
 const MAX_SIDE: u64 = 16384;
 /// The most cells one animation may take once its frames are repeated to a
@@ -35,8 +35,11 @@ const MAX_ANIMATION_CELLS: u64 = 128;
 /// How a tileset's tiles sit in its padded image
 #[derive(Clone, Debug)]
 pub(crate) struct PaddedLayout {
-  /// A cell's side in texels: a power of two, at least two more than the
-  /// largest tile's longer side
+  /// A cell's side in texels: the power of two at or above twice the
+  /// largest tile's longer side, and at or above that side plus 8 (R10).
+  /// Mip level k samples only a tile's own cell while 2^k is at most the
+  /// room the cell has past the tile, so every level a tile drawn a pixel
+  /// wide or more uses, and every level of an atlas page, is the tile's own
   pub cell: u32,
   /// Cells per row
   pub columns: u32,
@@ -188,7 +191,8 @@ pub(crate) fn pad_tileset(
     .filter_map(|id| Some((id, tile_size(tileset, id)?)))
     .collect();
   let side = ids.iter().map(|(_, s)| s.x.max(s.y)).max()?;
-  let cell = side.checked_add(EXTRUSION)?.checked_next_power_of_two()?;
+  let room = side.max(MIN_ROOM);
+  let cell = side.checked_add(room)?.checked_next_power_of_two()?;
 
   // The cells: the tiles by id, then each animation's frames in turn
   let mut cells: Vec<(u32, UVec2)> = ids.clone();
@@ -543,14 +547,39 @@ pub(crate) mod tests {
   }
 
   #[test]
-  fn a_tile_of_an_odd_size_gets_a_cell_with_room_to_extrude() {
+  fn a_tile_of_any_size_gets_a_cell_with_room_for_every_mip_level() {
+    // Level k of the image samples only a tile's own cell while 2^k is at
+    // most the cell's room past the tile: at least the tile's side (every
+    // level a tile drawn a pixel wide or more uses) and at least 8 (every
+    // level of an atlas page)
     let mut images = Assets::new();
-    let t = marked_atlas(&mut images, 14, 1, 1);
-    let (_, layout) = pad_tileset(&t, &images).expect("padded");
-    assert_eq!(layout.cell, 16);
-    let t = marked_atlas(&mut images, 15, 1, 1);
-    let (_, layout) = pad_tileset(&t, &images).expect("padded");
-    assert_eq!(layout.cell, 32);
+    for side in 1..=70u32 {
+      let t = marked_atlas(&mut images, side, 1, 1);
+      let (_, layout) = pad_tileset(&t, &images).expect("padded");
+      let room = layout.cell - side;
+      assert!(layout.cell.is_power_of_two(), "{side} px");
+      assert!(
+        room >= side && room >= 8,
+        "{side} px tiles in {} px cells",
+        layout.cell
+      );
+      // And no bigger than that asks
+      assert!(layout.cell / 2 < (2 * side).max(side + 8), "{side} px");
+    }
+    // Powers of two from 8 up keep cells twice their side, as before
+    for (side, cell) in [
+      (14, 32),
+      (15, 32),
+      (16, 32),
+      (30, 64),
+      (32, 64),
+      (8, 16),
+      (4, 16),
+    ] {
+      let t = marked_atlas(&mut images, side, 1, 1);
+      let (_, layout) = pad_tileset(&t, &images).expect("padded");
+      assert_eq!(layout.cell, cell, "{side} px");
+    }
   }
 
   #[test]
@@ -575,14 +604,15 @@ pub(crate) mod tests {
       },
     );
     let (image, layout) = pad_tileset(&t, &images).expect("padded");
-    assert_eq!(layout.cell, 32);
+    // The longest side, 24, takes a 64 px cell (twice it, rounded up)
+    assert_eq!(layout.cell, 64);
     assert!(layout.tile(0).is_none() && layout.tile(3).is_none());
     assert_eq!(layout.tile(5).expect("tile").size, UVec2::new(8, 24));
     let o = layout.cell_origin(layout.tile(5).expect("tile").slot);
     assert_eq!(texel(&image, o.x, o.y), [0, 255, 0, 255]);
-    assert_eq!(texel(&image, o.x + 31, o.y + 31), [0, 255, 0, 255]);
+    assert_eq!(texel(&image, o.x + 63, o.y + 63), [0, 255, 0, 255]);
     let o = layout.cell_origin(layout.tile(2).expect("tile").slot);
-    assert_eq!(texel(&image, o.x + 31, o.y), [255, 0, 0, 255]);
+    assert_eq!(texel(&image, o.x + 63, o.y), [255, 0, 0, 255]);
   }
 
   #[test]

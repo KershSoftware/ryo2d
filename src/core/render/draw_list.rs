@@ -62,6 +62,10 @@ pub(crate) enum SpriteShading {
   /// The game shader with this source key (from `shade_custom`); its
   /// parameters are already packed in the instance's effect parameters
   Custom(u64),
+  /// A repeated image layer's quad (`BatchShader::Repeat`): its UVs count
+  /// copies of the image, and its transform lanes' unused z hold the
+  /// layer's origin, which pixel art snaps
+  Repeat,
 }
 
 /// How a sprite is drawn, besides its texture and instance.

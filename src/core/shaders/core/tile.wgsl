@@ -5,6 +5,11 @@
 // moving the map, moving the camera or the atlas moving the image changes
 // no instance. Animated tiles step through their frames on game time. The
 // fragment stage is the sprite's (`fs_base` and its variants).
+//
+// Repeated image layers: one quad over the copies a camera sees, its UVs
+// counted in copies, the image wrapping along both axes (`vs_repeat`,
+// `fs_repeat`), placed as a tile layer is: the layer's origin snapped to a
+// whole pixel once, the copies at whole multiples of the image from it.
 
 // One draw's slot (`TileSlot`, `render/batch/chunks.rs`)
 struct TileSlot {
@@ -74,4 +79,61 @@ fn vs_tile(vertex: VertexInput, instance: InstanceInput) -> VertexOutput {
     out.effect_extra = vec4<f32>(0.0);
     out.emission = instance.transform0.w + 1.0;
     return out;
+}
+
+// A repeated image layer's quad: a world-space instance as a sprite's (its
+// transform lanes' xy), its UVs in copies of the image (`uv_rect`), the
+// image's place on its page in `uv_bounds`, and the layer's origin in the
+// world in the transform lanes' unused z (`transform0.z`, `transform1.z`).
+// Pixel art moves the quad as that origin's snap to a whole pixel does, and
+// never rounds the quad itself, so the copies stay whole multiples of the
+// image from the snapped origin, at any zoom, with no gap between two
+@vertex
+fn vs_repeat(vertex: VertexInput, instance: InstanceInput) -> VertexOutput {
+    var out: VertexOutput;
+    let world = instance.transform2.xy
+        + instance.transform0.xy * vertex.position.x
+        + instance.transform1.xy * vertex.position.y;
+    var clip = globals.view_proj * vec4<f32>(world, 0.0, 1.0);
+    let camera_unturned = abs(globals.view_proj[0][1]) < 1e-5 && abs(globals.view_proj[1][0]) < 1e-5;
+    if globals.snap > 0.5 && camera_unturned {
+        let at = to_pixel(vec2<f32>(instance.transform0.z, instance.transform1.z));
+        clip = from_pixel(pixel_of(clip) + round(at) - at);
+    }
+    out.clip_position = clip;
+    out.uv = mix(instance.uv_rect.xy, instance.uv_rect.zw, vertex.uv);
+    out.uv_bounds = instance.uv_bounds;
+    out.tint = instance.tint;
+    out.effect_params = vec4<f32>(0.0);
+    out.effect_extra = vec4<f32>(0.0);
+    out.emission = instance.transform0.w + 1.0;
+    return out;
+}
+
+// The sprite texture at `uv`, counted in copies of the image whose place on
+// its page is `bounds`: the fraction of each coordinate runs across the
+// image, kept half a texel inside it so filtering never reaches past it.
+// The level comes from the unwrapped UV's derivatives, so it does not jump
+// where one copy meets the next
+fn sample_repeated(uv: vec2<f32>, bounds: vec4<f32>) -> vec4<f32> {
+    let texel = 1.0 / vec2<f32>(textureDimensions(sprite_texture));
+    let size = bounds.zw - bounds.xy;
+    let low = bounds.xy + texel * 0.5;
+    let high = max(low, bounds.zw - texel * 0.5);
+    let inner = clamp(bounds.xy + fract(uv) * size, low, high);
+    return textureSampleGrad(sprite_texture, sprite_sampler, inner, uv_ddx * size, uv_ddy * size);
+}
+
+@fragment
+fn fs_repeat(in: VertexOutput) -> @location(0) vec4<f32> {
+    take_derivatives(in.uv);
+    return ui_out(finish(sample_repeated(in.uv, in.uv_bounds), in.tint, in.emission));
+}
+
+// The same for an image whose colour is already multiplied by alpha
+@fragment
+fn fs_repeat_premultiplied(in: VertexOutput) -> @location(0) vec4<f32> {
+    take_derivatives(in.uv);
+    let color = sample_repeated(in.uv, in.uv_bounds);
+    return ui_out(finish_premultiplied(color, in.tint, in.emission));
 }

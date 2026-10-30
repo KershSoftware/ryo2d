@@ -502,6 +502,7 @@ impl Batch2D {
           SpriteShading::Plain => BatchShader::Sprite,
           SpriteShading::Effect => BatchShader::SpriteEffect,
           SpriteShading::Custom(source) => BatchShader::Custom(source),
+          SpriteShading::Repeat => BatchShader::Repeat,
         };
         let key = PipelineKey {
           shader: wanted,
@@ -533,9 +534,16 @@ impl Batch2D {
             shader
           }
         };
-        // Only built-in effects grow the quad; custom params are not effect ids
-        let effects = shader == BatchShader::SpriteEffect;
-        placed.push(place_in_slot(&sprite.instance, &slot, page_size, effects));
+        if shader == BatchShader::Repeat {
+          // Its UVs count copies; the shader wraps them into the image's place
+          let mut instance = sprite.instance;
+          instance.uv_bounds = slot.uv;
+          placed.push(instance);
+        } else {
+          // Only built-in effects grow the quad; custom params are not effect ids
+          let effects = shader == BatchShader::SpriteEffect;
+          placed.push(place_in_slot(&sprite.instance, &slot, page_size, effects));
+        }
         Some(Placed::Quad(DrawState {
           page: Some(slot.page),
           shader,

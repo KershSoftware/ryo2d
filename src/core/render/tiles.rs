@@ -47,8 +47,8 @@ use crate::core::ecs::{
   Allow, Children, DetectChangesMut, Disabled, Entity, GlobalTransform, Has, Mut,
   PreviousGlobalTransform, World,
 };
-use crate::core::graphics::parallax::MAX_PARALLAX_TILES;
 use crate::core::graphics::{Image, RenderLayers, SpriteGpuRenderer, SpriteInstance, TextureId};
+use crate::core::hash::FastSet;
 use crate::core::tilemap::padded::{PaddedLayout, PaddedTile, PaddedTilesets};
 use crate::core::tilemap::{
   CHUNK_SIZE, ImageLayer, LayerInfo, MapLayerRef, MapLayers, MapObject, MapRoot, TileFlip,
@@ -299,6 +299,8 @@ pub(crate) struct TileDrawer {
   /// The frame's draws that sort among the entities', in draw order once
   /// collected
   draws: Vec<OrderedDraw>,
+  /// Image layers warned about an image too small to repeat over a view
+  warned: FastSet<Entity>,
 }
 
 /// One tile layer as a frame draws it
@@ -367,6 +369,7 @@ impl TileDrawer {
           parts,
           rows,
           draws,
+          warned,
         } = self;
         let (Some(maps), Some(layers), Some(objects)) =
           (maps.as_mut(), layers.as_mut(), objects.as_mut())
@@ -481,12 +484,14 @@ impl TileDrawer {
               let (width, height) = shown.size();
               let texture = gpu.shown_texture(shown);
               let picture = Picture {
+                layer: entity,
                 texture,
                 size: Vec2::new(width as f32, height as f32),
                 repeat: (image.repeat_x, image.repeat_y),
               };
               let parallax = (map_affine, info.parallax);
-              image_layer(list, frame.cameras, &style, &picture, affine, parallax);
+              let drawn = (&style, &picture, info.name.as_str());
+              image_layer(list, frame.cameras, drawn, affine, parallax, warned);
             } else if let Some(children) = children {
               let mut objects = Objects {
                 query: objects,
@@ -505,6 +510,11 @@ impl TileDrawer {
     }
     self.padded.end_round();
     store.end_frame(|layer| world.get::<TileLayerData>(layer).is_some());
+    if !self.warned.is_empty() {
+      self
+        .warned
+        .retain(|&layer| world.get::<ImageLayer>(layer).is_some());
+    }
     OrderedDraw::sort(&mut self.draws);
   }
 
@@ -520,6 +530,13 @@ impl TileDrawer {
   #[cfg(test)]
   pub(crate) fn padded_count(&self) -> usize {
     self.padded.len()
+  }
+
+  /// How many image layers were warned about an image too small to repeat
+  /// over a camera's view (tests)
+  #[cfg(test)]
+  pub(crate) fn too_small_warnings(&self) -> usize {
+    self.warned.len()
   }
 }
 
@@ -725,8 +742,17 @@ fn camera_box(camera: &CameraDraw, to_layer: &Affine2) -> (Vec2, Vec2) {
   (low, high)
 }
 
+/// The most copies of its image a repeated image layer draws along an axis
+/// for one camera: an 8 px image covers a 4K view at the smallest zoom
+const MAX_REPEATS: f32 = 65_536.0;
+/// The most of its image's texels a repeated image layer's quad spans along
+/// an axis: its UVs, counted in copies, keep a sixteenth of a texel there
+const MAX_REPEAT_TEXELS: f32 = 524_288.0;
+
 /// An image layer's picture
 struct Picture {
+  /// The layer entity, which a warning is given once for
+  layer: Entity,
   texture: TextureId,
   /// In the layer's pixels
   size: Vec2,
@@ -734,49 +760,88 @@ struct Picture {
   repeat: (bool, bool),
 }
 
-/// Pushes an image layer's picture onto `list` as sprites at the layer's
-/// z, after the entities there: once at the layer's origin, or repeated
-/// along the axes the editor says over each camera's view (at most
-/// [`MAX_PARALLAX_TILES`] a camera). A picture that neither repeats nor
-/// has parallax is one sprite for every camera; otherwise each camera on
-/// its layers gets its own, moved by its parallax offset
+/// The copies of an image `size` px along an axis that a view spanning
+/// `low..high` there (centred on `centre`) needs: the first and how many,
+/// and whether they had to be cut to [`MAX_REPEATS`] (or
+/// [`MAX_REPEAT_TEXELS`]), in which case they lie about the centre. One
+/// copy, the first, along an axis that does not repeat
+fn copies(
+  repeats: bool,
+  (low, high, centre): (f32, f32, f32),
+  size: f32,
+) -> Option<(f32, f32, bool)> {
+  if !repeats {
+    return Some((0.0, 1.0, false));
+  }
+  let (first, last) = ((low / size).floor(), (high / size).floor());
+  if !(first.is_finite() && last.is_finite()) {
+    return None;
+  }
+  let cap = (MAX_REPEAT_TEXELS / size).floor().clamp(1.0, MAX_REPEATS);
+  let count = last - first + 1.0;
+  if count <= cap {
+    return Some((first, count, false));
+  }
+  let middle = (centre / size).floor();
+  Some((middle - (cap / 2.0).floor(), cap, true))
+}
+
+/// Pushes an image layer's picture onto `list` at the layer's z, after the
+/// entities there, as one quad over the copies a view needs
+/// (`SpriteShading::Repeat`): the image once at the layer's origin, or
+/// repeated along the axes the editor says over a camera's view. The quad
+/// is placed as a tile layer is, the layer's origin snapped to a whole pixel
+/// once on the pixel-art target, so no gap opens between copies at any
+/// zoom. A picture that neither repeats nor has parallax is one quad for
+/// every camera; otherwise each camera on its layers gets its own, moved by
+/// its parallax offset. An image too small to cover a camera's view in
+/// [`MAX_REPEATS`] copies covers that many about the view's centre, and its
+/// layer is warned about once (`warned`)
 fn image_layer(
   list: &mut DrawList,
   cameras: &[CameraDraw],
-  style: &LayerStyle,
-  picture: &Picture,
+  (style, picture, name): (&LayerStyle, &Picture, &str),
   affine: Affine2,
   (map, factor): (Affine2, Vec2),
+  warned: &mut FastSet<Entity>,
 ) {
   let size = picture.size;
   if !(size.x > 0.0 && size.y > 0.0) {
     return;
   }
-  let (repeat_x, repeat_y) = picture.repeat;
-  let mut push = |placed: Affine2, cell: IVec2, only: Option<Entity>| {
-    let top_left = cell.as_vec2() * size;
-    let centre = placed.transform_point2(top_left + size * 0.5);
-    let mut instance = SpriteInstance::new().with_tint(style.look.tint, style.look.opacity);
-    let x_axis = placed.transform_vector2(Vec2::new(size.x, 0.0));
-    let y_axis = placed.transform_vector2(Vec2::new(0.0, size.y));
-    instance.transform[0][..2].copy_from_slice(&x_axis.to_array());
-    instance.transform[1][..2].copy_from_slice(&y_axis.to_array());
-    instance.transform[2][..2].copy_from_slice(&centre.to_array());
-    if !centre.is_finite() {
+  let look = SpriteLook {
+    shading: SpriteShading::Repeat,
+    ..style.sprite
+  };
+  // The copies `first..first + count` (in images along each axis)
+  let mut push = |placed: Affine2, first: Vec2, count: Vec2, only: Option<Entity>| {
+    let extent = count * size;
+    let centre = placed.transform_point2(first * size + extent * 0.5);
+    let x_axis = placed.transform_vector2(Vec2::new(extent.x, 0.0));
+    let y_axis = placed.transform_vector2(Vec2::new(0.0, extent.y));
+    let origin = placed.translation;
+    if !(centre.is_finite() && x_axis.is_finite() && y_axis.is_finite() && origin.is_finite()) {
       return;
     }
+    let mut instance = SpriteInstance::new()
+      .with_uv(0.0, 0.0, count.x, count.y)
+      .with_tint(style.look.tint, style.look.opacity);
+    instance.transform[0][..3].copy_from_slice(&[x_axis.x, x_axis.y, origin.x]);
+    instance.transform[1][..3].copy_from_slice(&[y_axis.x, y_axis.y, origin.y]);
+    instance.transform[2][..2].copy_from_slice(&centre.to_array());
     let seen = (style.layers, None, only);
     list.push_sprite_in(
       DrawKind::Sprite,
       style.z,
       picture.texture,
-      style.sprite,
+      look,
       instance,
       seen,
     );
   };
+  let (repeat_x, repeat_y) = picture.repeat;
   if !repeat_x && !repeat_y && factor == Vec2::ONE {
-    push(affine, IVec2::ZERO, None);
+    push(affine, Vec2::ZERO, Vec2::ONE, None);
     return;
   }
   for camera in cameras
@@ -797,30 +862,25 @@ fn image_layer(
       continue;
     }
     // The copies the camera's view meets, along the repeating axes
-    let (low, high) = camera_box(camera, &placed.inverse());
-    let (first, last) = ((low / size).floor(), (high / size).floor());
-    if !(first.is_finite() && last.is_finite()) {
+    let to_layer = placed.inverse();
+    let (low, high) = camera_box(camera, &to_layer);
+    let centre = to_layer.transform_point2(camera.view.center);
+    let across = copies(repeat_x, (low.x, high.x, centre.x), size.x);
+    let down = copies(repeat_y, (low.y, high.y, centre.y), size.y);
+    let (Some((x, columns, cut_x)), Some((y, rows, cut_y))) = (across, down) else {
       continue;
-    }
-    let span = |repeats: bool, a: f32, b: f32| {
-      if repeats {
-        (a.max(i32::MIN as f32) as i32, b.min(i32::MAX as f32) as i32)
-      } else {
-        (0, 0)
-      }
     };
-    let (x0, x1) = span(repeat_x, first.x, last.x);
-    let (y0, y1) = span(repeat_y, first.y, last.y);
-    let mut placed_count = 0;
-    'copies: for y in y0..=y1 {
-      for x in x0..=x1 {
-        if placed_count >= MAX_PARALLAX_TILES {
-          break 'copies;
-        }
-        push(placed, IVec2::new(x, y), Some(camera.entity));
-        placed_count += 1;
-      }
+    if (cut_x || cut_y) && warned.insert(picture.layer) {
+      crate::engine_warn!(
+        module: "Tilemap",
+        "image layer {name:?} repeats a {}x{} px image, too small to cover a camera's view in {} copies; it covers the middle of the view",
+        size.x,
+        size.y,
+        MAX_REPEATS
+      );
     }
+    let first = Vec2::new(x, y);
+    push(placed, first, Vec2::new(columns, rows), Some(camera.entity));
   }
 }
 

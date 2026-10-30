@@ -100,6 +100,10 @@ pub(crate) enum BatchShader {
   TextMsdf,
   /// A tile chunk's instances, placed through its slot (`tile.wgsl`)
   Tile,
+  /// A repeated image layer: one quad over the copies a camera sees, the
+  /// image wrapping along both axes, placed with its layer's origin
+  /// snapped (`tile.wgsl`)
+  Repeat,
 }
 
 /// One draw of a light into a light buffer. A shadowed light draws, inside

@@ -828,6 +828,7 @@ fn the_batch_pipelines_build_in_both_formats() {
     (BatchShader::TextMsdf, Stream::Quads),
     (BatchShader::Sprite, Stream::Quads),
     (BatchShader::Tile, Stream::Quads),
+    (BatchShader::Repeat, Stream::Quads),
     (BatchShader::Line, Stream::Triangles),
     (BatchShader::Light(LightStep::Add), Stream::Quads),
     (BatchShader::Light(LightStep::Shadow), Stream::Triangles),
@@ -1259,4 +1260,52 @@ fn two_cameras_each_draw_their_own_view_of_a_map() {
   };
   assert_eq!(chunk_draws(cameras[0].1), 3, "the left camera's chunks");
   assert_eq!(chunk_draws(cameras[1].1), 2, "the right camera's chunks");
+}
+
+#[test]
+fn a_tiny_image_too_small_to_repeat_warns_once() {
+  // A 1 px image repeated both ways under a camera at zoom 0.01 over a 1024
+  // px wide target: the view is 102,400 px across, more than the 65,536
+  // copies an image repeats at most. The layer is warned about once, and
+  // the copies cover the view's middle, as far on the left as on the right
+  let builder = EngineBuilder::new()
+    .pixel_art(1024, 64)
+    .start_scene(Fixture {
+      setup: |ctx| {
+        ctx.look().tonemap = Tonemap::Clamp;
+        let image = ctx.assets().add(Image::solid_rect(1, 1, 220, 30, 40, 255));
+        let mut map = TileMap::new(UVec2::ONE, UVec2::splat(8));
+        let mut info = LayerInfo::new(1, "dots");
+        info.collides = false;
+        map.layers.push(MapLayer {
+          info,
+          kind: LayerKind::Image(ImageLayer {
+            image,
+            repeat_x: true,
+            repeat_y: true,
+          }),
+        });
+        spawn_map(ctx, map, Vec2::ZERO);
+        ctx.camera().set_zoom(0.01);
+      },
+    });
+  let Some(mut engine) = engine(builder) else {
+    return;
+  };
+  engine.step_frames(4).unwrap();
+  assert_eq!(engine.engine.tile_drawer.too_small_warnings(), 1);
+  let frame = engine.frame().unwrap();
+  let row: Vec<bool> = (0..1024).map(|x| frame.get_pixel(x, 32).0 == RED).collect();
+  let covered = row.iter().filter(|&&c| c).count();
+  // 65,536 px at zoom 0.01: about 655 of the 1024 pixels
+  assert!((650..=660).contains(&covered), "{covered} pixels covered");
+  let left = row.iter().position(|&c| c).expect("covered");
+  let right = 1024 - 1 - row.iter().rposition(|&c| c).expect("covered");
+  assert!(
+    left.abs_diff(right) <= 1,
+    "{left} px bare on the left, {right} on the right"
+  );
+  assert!(row[left..1024 - right].iter().all(|&c| c), "one run");
+  // Down, the view is 6,400 px: covered whole
+  assert!((0..64).all(|y| frame.get_pixel(512, y).0 == RED));
 }
