@@ -1,0 +1,17 @@
+[package]
+name = "tilemap-demo"
+version = "0.1.0"
+edition = "2024"
+description = "Tilemap demo - Tiled and LDtk levels drawn with Kenney's CC0 art"
+
+# Writes the demo's derived art, Tiled project, world file and LDtk project,
+# then runs Tiled's own script for the tilesets and maps and checks each with
+# Tiled's command line: `cargo run -p tilemap-demo --bin make-maps`
+[[bin]]
+name = "make-maps"
+path = "src/bin/make-maps.rs"
+
+[dependencies]
+ryo2d = { path = "../../.." }
+# PNG reading and writing for make-maps' derived tiles (the engine's own version)
+image = { version = "0.25", default-features = false, features = ["png"] }
