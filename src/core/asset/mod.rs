@@ -60,7 +60,9 @@ pub trait Asset: Send + Sync + 'static {}
 /// [`crate::core::audio::Sound`] with [`SoundLoader`],
 /// [`crate::core::audio::Music`] with [`MusicLoader`] and
 /// [`crate::core::audio::Mixer`] with [`MixerLoader`]), have their
-/// stores before anything loads and a loader's `check` finds them. A game's
+/// stores before anything loads and a loader's `check` finds them. The
+/// tilemap types, [`crate::core::tilemap::TileMap`] and
+/// [`crate::core::tilemap::Tileset`], have stores and no loaders yet. A game's
 /// loaders are added after, so for an extension both take, the game's wins
 pub(crate) fn insert_registry(world: &mut crate::core::ecs::World, server: AssetServer) {
   server.register_asset::<crate::core::graphics::Image>(world);
@@ -83,5 +85,7 @@ pub(crate) fn insert_registry(world: &mut crate::core::ecs::World, server: Asset
   server.register_loader(MusicLoader);
   server.register_asset::<crate::core::audio::Mixer>(world);
   server.register_loader(MixerLoader);
+  server.register_asset::<crate::core::tilemap::TileMap>(world);
+  server.register_asset::<crate::core::tilemap::Tileset>(world);
   world.insert_resource(server);
 }

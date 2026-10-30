@@ -24,7 +24,7 @@ pub(crate) fn fold(a: u64, b: u64) -> u64 {
 
 /// Hashes words as `fold` folds them
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct FastHasher(u64);
+pub struct FastHasher(u64);
 
 impl Default for FastHasher {
   fn default() -> Self {
@@ -80,9 +80,9 @@ impl Hasher for FastHasher {
 }
 
 /// Builds a [`FastHasher`] for a map
-pub(crate) type FastBuild = BuildHasherDefault<FastHasher>;
+pub type FastBuild = BuildHasherDefault<FastHasher>;
 /// A `HashMap` on [`FastHasher`]
-pub(crate) type FastMap<K, V> = HashMap<K, V, FastBuild>;
+pub type FastMap<K, V> = HashMap<K, V, FastBuild>;
 /// A `HashSet` on [`FastHasher`]
 pub(crate) type FastSet<K> = HashSet<K, FastBuild>;
 

@@ -209,10 +209,9 @@ pub mod prelude {
 
   // Tilemaps
   pub use crate::core::tilemap::{
-    AutoTileMode, AutoTileSet, ChunkCoord, ChunkState, CollisionRect, TileAnimation, TileId,
-    TileProperties, TiledObject, TiledShape, TiledValue, Tilemap, TilemapError, TilemapLayer,
-    TilemapManager, TilemapOrientation, Tileset, compute_bitmask_full, compute_bitmask_minimal,
-    generate_collision_rects, generate_collision_rects_region, load_tiled_map,
+    CHUNK_SIZE, ImageLayer, IntGrid, LayerInfo, LayerKind, MapLayer, MapObjectData, ObjectShape,
+    Properties, PropertyValue, Tile, TileData, TileFlip, TileFrame, TileGrid, TileMap, TileShape,
+    Tileset, TilesetImage, TilesetSource, URect, WangColor, WangKind, WangSet,
   };
 
   // Render pipeline

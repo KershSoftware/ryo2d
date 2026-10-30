@@ -71,8 +71,5 @@ mod config_resolution;
 #[path = "integration/console.rs"]
 mod console;
 
-#[path = "integration/tilemap.rs"]
-mod tilemap;
-
 #[path = "integration/audio_files.rs"]
 mod audio_files;

@@ -2,7 +2,7 @@
 name: ryo-api
 description: Complete API reference for ryo2d::prelude - every exported type with its signatures and use, organised by area.
 metadata:
-  version: 2.13.4
+  version: 2.13.5
 ---
 
 # Ryo2D API Reference
@@ -413,7 +413,6 @@ pub struct SceneContext<'a> {
 | `effects(&mut self) -> Mut<'_, EffectsManager>` | post-processing |
 | `lighting(&mut self) -> Mut<'_, LightingSettings>` | ambient, atmosphere, forced on/off |
 | `look(&mut self) -> Mut<'_, Look>` | exposure, tonemap curve, colour grading (see [The look](#the-look)) |
-| `tilemaps(&mut self) -> Mut<'_, TilemapManager>` | |
 | `render_pipeline(&mut self) -> Mut<'_, RenderPipeline>` | toggle or insert passes (persist across scenes) |
 | `fonts(&mut self) -> Mut<'_, Fonts>` | add fonts, pick render modes and role fonts (see [Text](#text)) |
 | `debug_draw(&mut self) -> Mut<'_, DebugDraw>` | debug lines and shapes over the world (see [Debug drawing](#debug-drawing)) |
@@ -1065,17 +1064,15 @@ See `ryo-particles`.
 
 ## Tilemaps
 
-Tile data, coordinates, collision and Tiled import; the renderer does not draw tilemaps yet.
+The data model only; loading, drawing and collision arrive with the rest of 6a (`ryo-tilemap`, to come). Replaced in 6a: the old `TilemapManager`, `ctx.tilemaps()`, `Tilemap`, auto-tiling, collision rectangles and `load_tiled_map` are gone.
 
-- `TilemapManager` (resource, `ctx.tilemaps()`), keyed by the tilemap's entity (a record is dropped when its entity is despawned): `register(Entity, Tilemap)`, `unregister(Entity)`, `get_tile(e, layer, x, y) -> Option<TileId>`, `set_tile(e, layer, x, y, Option<TileId>)`, `world_to_tile(e, wx, wy) -> Option<(u32, u32)>`, `tile_to_world(e, tx, ty)` (top-left), `is_solid(e, wx, wy)`, `get_tilemap(e)`, `visible_chunks(e, min_x, min_y, max_x, max_y) -> Vec<ChunkCoord>`.
-- `Tilemap { tilesets, layers, tile_width, tile_height, map_width, map_height, orientation }`: `new(tile_w, tile_h, map_w, map_h)`, `add_layer(TilemapLayer) -> usize`, `add_tileset(Tileset) -> usize`, `pixel_width()`, `pixel_height()`, `world_to_tile(x, y)`, `tile_to_world(tx, ty)`, `tile_to_world_center(tx, ty)`, `tile_at_world(layer, x, y)`, `is_solid_at(x, y)`. `enum TilemapOrientation { Orthogonal, Isometric, HexagonalFlat, HexagonalPointy }` (coordinate conversion is orthogonal only).
-- `TilemapLayer { name, tiles: Vec<Option<TileId>>, width, height, tileset_index, visible, opacity, z_order, parallax_x, parallax_y }`: `new(name, w, h)`, `in_bounds(x, y)`, `get_tile(x, y)`, `set_tile(x, y, TileId)`.
-- `Tileset { name, image_path, tile_width, tile_height, columns, tile_count, spacing, margin, image_width, image_height, properties }`: `tile_uv(id)`, `get_properties(id) -> TileProperties`. `TileProperties { solid, platform, animation: Option<TileAnimation>, custom }`, `TileAnimation { frames: Vec<(TileId, u32 /* ms */)> }`, `type TileId = u32`.
-- Auto-tiling: `AutoTileSet::new(name, terrain_id: u16, AutoTileMode, default_tile)`, `add_rule(bitmask: u8, TileId)`, `resolve(bitmask) -> TileId`; `enum AutoTileMode { Minimal, Full }`; `compute_bitmask_minimal(x, y, w, h, is_same: &dyn Fn(u32, u32) -> bool) -> u8`, `compute_bitmask_full(..)`.
-- Physics: `tilemap.tile_colliders() -> TileColliders` (tile properties `solid`, `platform` for one-way, a `slope` custom property naming the filled corner; solid beats a slope beats one-way); spawn it with a `Transform` at the map's origin.
-- Collision: `generate_collision_rects(&Tilemap) -> Vec<CollisionRect>`, `generate_collision_rects_region(&Tilemap, x0, y0, x1, y1)` (greedy-merged solid tiles); `CollisionRect { x, y, w, h }` (tiles), `to_world(tile_w, tile_h) -> (f32, f32, f32, f32)`.
-- Chunks: `ChunkCoord { chunk_x, chunk_y, layer_index }`, `ChunkState { coord, dirty, has_tiles }` (16×16 tiles).
-- Tiled: `load_tiled_map(path: &str) -> Result<(Tilemap, Vec<TiledObject>), TilemapError>`; `TiledObject { name, obj_type, x, y, width, height, rotation (deg), shape: TiledShape, properties }`; `enum TiledShape { Rect, Ellipse, Point, Polygon(Vec<(f32, f32)>), Polyline(..) }`; `enum TiledValue { Bool, Int, Float, String }`; `enum TilemapError { Io, Parse, MissingTileset, UnsupportedFeature }`.
+- `TileMap { size, tile_size, tilesets, layers, class, background, properties }` (an `Asset`): `new(size, tile_size)`, `add_tileset(TilesetSource) -> u16`, `add_tile_layer(name) -> usize`, `add_object_layer(name) -> usize`, `layer_index(name)`, `tiles(layer) -> Option<&TileGrid>`, `tiles_mut(layer)`. `TilesetSource::{Asset(Handle<Tileset>), Embedded(Arc<Tileset>)}`.
+- `MapLayer { info: LayerInfo, kind: LayerKind }`; `LayerKind::{Tiles { grid, intgrid }, Objects(Vec<MapObjectData>), Image(ImageLayer)}`; `LayerInfo { id, name, class, offset, opacity, tint, parallax, visible, blend, collides, occludes, y_sorted, lit, properties }`.
+- `TileGrid` (dense, 4 bytes a cell, `CHUNK_SIZE` = 32): `new(size)`, `size()`, `get(IVec2) -> Option<Tile>`, `set(IVec2, Option<Tile>) -> bool`, `fill(min, max, Option<Tile>) -> usize`, `clear()`, `chunks()`, `drain_dirty(&mut Vec<UVec2>)`, `mark_all_dirty()`.
+- `Tile { tileset: u16, id: u32, flip: TileFlip }`: `new(tileset, id)`, `with_flip`; `TileFlip::{NONE, HORIZONTAL, VERTICAL, DIAGONAL}` with `contains`, `|` and `rotated_cw()`.
+- `Tileset` (an `Asset`): `new(name, tile_size, TilesetImage)`, `tile(id) -> Option<&TileData>`, `tile_rect(id) -> Option<URect>`, `insert_tile`; `TileData { class, properties, shapes: Vec<TileShape>, animation: Vec<TileFrame>, probability, image }`; `WangSet`, `WangKind`, `WangColor`.
+- `Properties` (insertion-ordered): `get`, `bool`, `int`, `float`, `string`, `color`, `insert`, `iter`; `PropertyValue` is `Bool`, `Int`, `Float`, `String`, `Color`, `File`, `Object`, `Enum`, `Class` or `List`.
+- `IntGrid { size, values, names }`: `get(IVec2)` (`None` for 0 or outside). `ObjectShape`, `MapObjectData`, `ImageLayer`, `URect`.
 
 ---
 

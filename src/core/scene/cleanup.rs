@@ -10,7 +10,6 @@ use crate::core::lighting::LightingSettings;
 use crate::core::messages::clear_messages;
 use crate::core::render::Look;
 use crate::core::shaders::EffectsManager;
-use crate::core::tilemap::manager::forget_despawned_tilemaps;
 use crate::core::time::Time;
 
 use super::SceneCleanup;
@@ -23,7 +22,6 @@ pub(super) fn execute_cleanup(cleanup: SceneCleanup, world: &mut World) {
   }
   if cleanup.contains(SceneCleanup::WORLD) {
     despawn_game_entities(world);
-    forget_despawned_tilemaps(world);
     // The cameras and sprites using them are gone; the main camera, which
     // stays, draws to the window again if it drew into one
     if let Some(mut targets) = world.get_resource_mut::<RenderTargets>() {

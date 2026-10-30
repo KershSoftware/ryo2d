@@ -44,7 +44,7 @@ Game systems: `EngineBuilder::add_systems(phase, systems)` for the whole run (an
 
 - Inside a callback those two are not in `ctx.world`: `ctx.world.resource::<Time>()` panics, and a system run on `ctx.world` that takes `Res<Time>` fails. Use the fields.
 - Systems run outside callbacks and always see them as resources.
-- Everything else stays in the world; the context's helpers (`assets()`, `camera()`, `effects()`, `lighting()`, `render_pipeline()`, `render_targets()`, `tilemaps()`, `window()`, `cursor()`, `console()`, `resource*`) reach into it.
+- Everything else stays in the world; the context's helpers (`assets()`, `camera()`, `effects()`, `lighting()`, `render_pipeline()`, `render_targets()`, `window()`, `cursor()`, `console()`, `resource*`) reach into it.
 - A panic in a callback aborts the frame; the scoped resources are not put back.
 
 ## Transform and Hierarchy

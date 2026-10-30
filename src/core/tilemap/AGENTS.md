@@ -1,28 +1,16 @@
 # AGENTS.md - Tilemap Module
 
-## Status / Gotchas
+Sub-project 6a replaces the old tilemap module. Design: `docs/specs/2026-10-29-tilemap-design.md`. What exists so far is the data model; loaders, rendering, collision and the rest arrive task by task.
 
-- **Rendering is a data stub**: nothing in the renderer consumes `TilemapManager` yet. GPU chunk rendering (entries in the frame's `DrawList`) is planned.
-- `TilemapManager` is a resource (`ctx.tilemaps()`), keyed by the tilemap's entity. The only engine system touching it is `forget_despawned_tilemaps` (in `Last` and after a `SceneCleanup::WORLD` despawn), which drops records whose entity is gone.
-- `SceneCleanup::WORLD` despawns the tilemap entities and their manager entries go with them; so does any other despawn (by `Last`).
-- **Only orthogonal is implemented**: `Tilemap::orientation` stores `TilemapOrientation` (Isometric, Hexagonal*), but coordinate conversion ignores it.
+## What exists
 
-- `Tilemap::tile_colliders()` builds a `TileColliders` from tile properties (`solid`, `platform`, and a `slope` custom property naming the filled corner: `bottom-left`, `bottom-right`, `top-left`, `top-right`); spawn it with a `Transform` at the map's origin. `generate_collision_rects` stays for code that wants plain rectangles.
+- `tile.rs`: `Tile` (tileset index, id, `TileFlip`) and `TileFlip` (H, V, D bits as Tiled stores them; `rotated_cw` uses Tiled's table).
+- `property.rs`: `PropertyValue` and `Properties` (insertion-ordered, typed getters; `int` accepts a whole float, `float` accepts an int).
+- `tileset.rs`: `Tileset` (an `Asset`; atlas or collection; per-tile `TileData` with shapes, animation, probability; `WangSet`s) and `URect`, the engine's own texel rectangle (glam has none).
+- `grid.rs`: `TileGrid`, a dense layer of 4-byte cells (0 empty; flips in bits 28..=31, tileset in 20..=27, id + 1 in 0..=19) cut into `CHUNK_SIZE` (32) chunks. Edits mark chunks dirty; `drain_dirty` hands each changed chunk out once in row order. A new grid has no dirty chunk. A tile that does not fit a cell (tileset over 255, id over 1,048,574) is refused by `set`.
+- `map.rs`: `TileMap` (an `Asset`) of `MapLayer`s (`LayerInfo` plus a `LayerKind` of tiles, objects or an image) over `TilesetSource`s (asset handle or embedded `Arc`). `IntGrid::get` returns `None` for 0 as well as outside.
 
-## Design Decisions
+## Gotchas
 
-### Why Dense Grid (Not ECS Per-Tile)?
-
-Static tiles in a flat `Vec` give O(1) lookup and cache-friendly iteration. Promoting tiles to entities would add ECS overhead for data that rarely changes. The hybrid model reserves entities for chunks (rendering units) and behavioral tiles (animated, interactive).
-
-### Why 16x16 Chunks?
-
-16x16 balances draw call count against rebuild cost. A 200x200 map = ~169 chunks per layer, with typically 50-100 visible. Each chunk is one GPU draw call when rendering is wired up.
-
-### Why Greedy Merge for Collision?
-
-Reduces collider count dramatically (100 ground tiles → ~5 rectangles), which directly improves physics performance. The algorithm is simple, fast (single pass), and produces good results for platformer-style layouts.
-
-### Why JSON-Only Tiled Import?
-
-Tiled's JSON format (.tmj/.tsj) is simpler to parse than TMX (XML) and serde_json is already a dependency. The JSON format contains all the same data as TMX.
+- Both `TileMap` and `Tileset` are registered with the asset registry and have no loaders yet.
+- `LayerInfo::occludes: None` means "as `collides`"; `lit` defaults to true.

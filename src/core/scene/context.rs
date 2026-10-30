@@ -18,7 +18,6 @@ use crate::core::render::{DebugDraw, RenderPipeline};
 use crate::core::schedule::{Phase, SceneScheduleError, SceneSchedules};
 use crate::core::shaders::EffectsManager;
 use crate::core::text::Fonts;
-use crate::core::tilemap::TilemapManager;
 use crate::core::time::Time;
 use crate::core::ui::{
   BindValue, Theme, UiArgs, UiFile, UiFileError, UiId, UiNode, UiTheme, nodes,
@@ -226,12 +225,6 @@ impl SceneContext<'_> {
   /// ```
   pub fn follow_ui_theme(&mut self, theme: Handle<Theme>) {
     crate::core::ui::theme::follow_now(self.world, theme);
-  }
-
-  /// The scene's tilemaps: tile reads and writes, coordinate conversion and
-  /// viewport culling, keyed by the tilemap's entity.
-  pub fn tilemaps(&mut self) -> Mut<'_, TilemapManager> {
-    self.world.resource_mut::<TilemapManager>()
   }
 
   /// The frame's render pipeline: toggle built-in passes or insert game passes.

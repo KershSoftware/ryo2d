@@ -406,7 +406,6 @@ pub(crate) fn init_world_resources(
   world.insert_resource(LightingSettings::default());
   world.insert_resource(crate::core::graphics::RenderTargets::default());
   world.insert_resource(crate::core::render::DebugDraw::default());
-  world.insert_resource(crate::core::tilemap::TilemapManager::new());
   world.insert_resource(WindowRequest::default());
   world.insert_resource(CursorRequest::default());
   world.insert_resource(WindowInfo {
@@ -497,7 +496,6 @@ fn register_engine_systems(schedules: &mut EngineSchedules) {
     (
       crate::core::physics::sync::forget_removed,
       crate::core::physics::sync::track_disabled,
-      crate::core::tilemap::manager::forget_despawned_tilemaps,
       clear_trackers_system,
     )
       .chain(),

@@ -2,7 +2,7 @@
 name: ryo-character
 description: Characters - the character controller, platformer and top-down movement presets, MoveIntent and key bindings, one-way platforms, triggers with pickups, kill zones, checkpoints and respawns, tile colliders and knockback.
 metadata:
-  version: 1.1.1
+  version: 1.1.2
 ---
 
 # Ryo2D Characters
@@ -662,7 +662,7 @@ impl Scene for Level {
 }
 ```
 
-The coins are drawn by their sprite; a level with art draws its tiles separately (sprites per cell, or a `Tilemap` with `tile_colliders()`), since `TileColliders` only collides.
+The coins are drawn by their sprite; a level with art draws its tiles separately (sprites per cell; a tilemap collision module is coming in 6a), since `TileColliders` only collides.
 
 ## Pitfalls
 

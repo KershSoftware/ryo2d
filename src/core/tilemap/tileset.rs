@@ -1,236 +1,217 @@
-use std::collections::HashMap;
+//! Tilesets: the art a map's tiles name, and what each tile carries.
 
-/// Unique identifier for a tile within a tileset.
-pub type TileId = u32;
+use std::time::Duration;
 
-/// A tileset defines the image and layout used to render tiles.
-///
-/// Tiles are arranged in a grid within the tileset image. Each tile can be
-/// referenced by its [`TileId`] (0-based index). The tileset handles mapping
-/// from tile IDs to UV coordinates for rendering.
-#[derive(Debug, Clone)]
-pub struct Tileset {
-  /// Human-readable name for this tileset.
-  pub name: String,
-  /// Path to the tileset image asset.
-  pub image_path: String,
-  /// Width of each tile in pixels.
-  pub tile_width: u32,
-  /// Height of each tile in pixels.
-  pub tile_height: u32,
-  /// Number of tile columns in the tileset image.
-  pub columns: u32,
-  /// Total number of tiles in the tileset.
-  pub tile_count: u32,
-  /// Spacing between tiles in pixels.
-  pub spacing: u32,
-  /// Margin around the edge of the tileset image in pixels.
-  pub margin: u32,
-  /// Width of the tileset image in pixels.
-  pub image_width: u32,
-  /// Height of the tileset image in pixels.
-  pub image_height: u32,
-  /// Per-tile properties indexed by tile ID.
-  pub properties: HashMap<TileId, TileProperties>,
+use glam::{UVec2, Vec2};
+
+use super::property::Properties;
+use crate::core::asset::{Asset, Handle};
+use crate::core::graphics::Image;
+use crate::core::hash::FastMap;
+use crate::core::ui::Color;
+
+/// A rectangle of texels in an image: `min` inclusive, `max` exclusive
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub struct URect {
+  pub min: UVec2,
+  pub max: UVec2,
 }
 
-/// Properties associated with a single tile.
-///
-/// Tiles default to non-solid and non-platform with no animation.
-#[derive(Debug, Clone, Default)]
-pub struct TileProperties {
-  /// Whether this tile blocks movement (full collision).
-  pub solid: bool,
-  /// Whether this tile acts as a one-way platform (passable from below).
-  pub platform: bool,
-  /// Optional animation data for animated tiles.
-  pub animation: Option<TileAnimation>,
-  /// Arbitrary custom properties (e.g. from Tiled editor).
-  pub custom: HashMap<String, String>,
-}
-
-/// Animation data for an animated tile.
-///
-/// Each frame is a `(TileId, duration_ms)` pair describing which tile to
-/// display and for how long.
-#[derive(Debug, Clone)]
-pub struct TileAnimation {
-  /// Sequence of `(tile_id, duration_ms)` frames.
-  pub frames: Vec<(TileId, u32)>,
-}
-
-impl Tileset {
-  /// Calculate the UV rectangle for a tile by its ID.
-  ///
-  /// Returns `Some((u_min, v_min, u_max, v_max))` with values normalized
-  /// to the `0.0..1.0` range, or `None` if the tile ID is out of range.
-  ///
-  /// The calculation accounts for [`spacing`](Tileset::spacing) between tiles
-  /// and [`margin`](Tileset::margin) around the tileset image edges.
-  pub fn tile_uv(&self, tile_id: TileId) -> Option<(f32, f32, f32, f32)> {
-    if tile_id >= self.tile_count {
-      return None;
+impl URect {
+  /// The rectangle from `(x0, y0)` to `(x1, y1)`
+  pub const fn new(x0: u32, y0: u32, x1: u32, y1: u32) -> URect {
+    URect {
+      min: UVec2::new(x0, y0),
+      max: UVec2::new(x1, y1),
     }
-
-    let col = tile_id % self.columns;
-    let row = tile_id / self.columns;
-
-    let x = self.margin + col * (self.tile_width + self.spacing);
-    let y = self.margin + row * (self.tile_height + self.spacing);
-
-    let u_min = x as f32 / self.image_width as f32;
-    let v_min = y as f32 / self.image_height as f32;
-    let u_max = (x + self.tile_width) as f32 / self.image_width as f32;
-    let v_max = (y + self.tile_height) as f32 / self.image_height as f32;
-
-    Some((u_min, v_min, u_max, v_max))
   }
 
-  /// Get the properties for a tile, returning defaults if none are set.
-  pub fn get_properties(&self, tile_id: TileId) -> TileProperties {
-    self.properties.get(&tile_id).cloned().unwrap_or_default()
+  /// Width and height
+  pub fn size(&self) -> UVec2 {
+    self.max - self.min
+  }
+}
+
+/// Where a tileset's pictures come from
+#[derive(Clone, Debug)]
+pub enum TilesetImage {
+  /// One image holding every tile in a grid; `size` is its size in texels
+  Atlas { image: Handle<Image>, size: UVec2 },
+  /// Each tile has its own image, in [`TileData::image`]
+  Collection,
+}
+
+/// One frame of a tile's animation
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct TileFrame {
+  /// The tile shown
+  pub tile: u32,
+  /// For how long
+  pub duration: Duration,
+}
+
+/// A closed polygon on a tile, in tile pixels with the origin at the top
+/// left and y down. Rectangles are four points and ellipses sixteen.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TileShape {
+  pub points: Vec<Vec2>,
+  /// Solid only from above
+  pub one_way: bool,
+  /// Blocks light
+  pub occluder: bool,
+  pub properties: Properties,
+}
+
+/// What one tile carries beyond its picture
+#[derive(Clone, Debug)]
+pub struct TileData {
+  pub class: Option<String>,
+  pub properties: Properties,
+  /// Collision shapes
+  pub shapes: Vec<TileShape>,
+  /// Frames, empty if the tile is still
+  pub animation: Vec<TileFrame>,
+  /// Weight when a brush picks among equals
+  pub probability: f32,
+  /// The tile's own image and its size, for collection tilesets
+  pub image: Option<(Handle<Image>, UVec2)>,
+}
+
+impl Default for TileData {
+  fn default() -> Self {
+    TileData {
+      class: None,
+      properties: Properties::default(),
+      shapes: Vec::new(),
+      animation: Vec::new(),
+      probability: 1.0,
+      image: None,
+    }
+  }
+}
+
+/// Which parts of a tile a Wang color touches
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum WangKind {
+  Corner,
+  Edge,
+  Mixed,
+}
+
+/// A color of a Wang set
+#[derive(Clone, Debug)]
+pub struct WangColor {
+  pub name: String,
+  pub color: Color,
+  /// The tile that stands for the color
+  pub tile: Option<u32>,
+  pub probability: f32,
+  pub properties: Properties,
+}
+
+/// A set of tiles joined by edge or corner colors, for auto-tiling
+#[derive(Clone, Debug)]
+pub struct WangSet {
+  pub name: String,
+  pub kind: WangKind,
+  pub colors: Vec<WangColor>,
+  /// Each tile with the color index at its eight positions (0 for none),
+  /// clockwise from the top edge
+  pub tiles: Vec<(u32, [u8; 8])>,
+}
+
+/// A set of tiles: an atlas or a collection of images, with the data tiles
+/// carry
+#[derive(Clone, Debug)]
+pub struct Tileset {
+  pub name: String,
+  pub class: Option<String>,
+  pub tile_size: UVec2,
+  pub columns: u32,
+  pub tile_count: u32,
+  pub spacing: u32,
+  pub margin: u32,
+  pub image: TilesetImage,
+  pub wang_sets: Vec<WangSet>,
+  pub properties: Properties,
+  tiles: FastMap<u32, TileData>,
+}
+
+impl Asset for Tileset {}
+
+impl Tileset {
+  /// An empty tileset of `tile_size` tiles; set `columns`, `tile_count`,
+  /// `spacing` and `margin` to describe an atlas
+  pub fn new(name: impl Into<String>, tile_size: UVec2, image: TilesetImage) -> Tileset {
+    Tileset {
+      name: name.into(),
+      class: None,
+      tile_size,
+      columns: 0,
+      tile_count: 0,
+      spacing: 0,
+      margin: 0,
+      image,
+      wang_sets: Vec::new(),
+      properties: Properties::default(),
+      tiles: FastMap::default(),
+    }
+  }
+
+  /// The data of tile `id`, if it carries any
+  pub fn tile(&self, id: u32) -> Option<&TileData> {
+    self.tiles.get(&id)
+  }
+
+  /// Sets the data of tile `id`
+  pub fn insert_tile(&mut self, id: u32, data: TileData) {
+    self.tiles.insert(id, data);
+  }
+
+  /// Where tile `id` sits in the atlas image, in texels; `None` past
+  /// `tile_count` or with no columns
+  pub fn tile_rect(&self, id: u32) -> Option<URect> {
+    if self.columns == 0 || id >= self.tile_count {
+      return None;
+    }
+    let col = id % self.columns;
+    let row = id / self.columns;
+    let x = self.margin + col * (self.tile_size.x + self.spacing);
+    let y = self.margin + row * (self.tile_size.y + self.spacing);
+    Some(URect::new(x, y, x + self.tile_size.x, y + self.tile_size.y))
   }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
+  use glam::UVec2;
 
-  /// Helper to create a simple tileset with no spacing or margin.
-  fn simple_tileset() -> Tileset {
-    Tileset {
-      name: "test".to_string(),
-      image_path: "test.png".to_string(),
-      tile_width: 32,
-      tile_height: 32,
-      columns: 4,
-      tile_count: 8,
-      spacing: 0,
-      margin: 0,
-      image_width: 128,
-      image_height: 64,
-      properties: HashMap::new(),
-    }
-  }
-
-  /// Helper to create a tileset with spacing and margin.
-  fn spaced_tileset() -> Tileset {
-    // 2px margin, 1px spacing, 16x16 tiles, 4 columns
-    // image_width = 2 + 4*16 + 3*1 + 2 = 69  (margin on both sides? No — margin is edge only on left/top)
-    // Actually: tiles start at margin, then tile+spacing repeats.
-    // x positions: 2, 2+16+1=19, 19+16+1=36, 36+16+1=53
-    // last tile right edge: 53+16=69
-    // So image_width needs to be at least 69. Use 69.
-    // y positions: 2, 2+16+1=19
-    // last tile bottom: 19+16=35. Use 35.
-    Tileset {
-      name: "spaced".to_string(),
-      image_path: "spaced.png".to_string(),
-      tile_width: 16,
-      tile_height: 16,
-      columns: 4,
-      tile_count: 8,
-      spacing: 1,
-      margin: 2,
-      image_width: 69,
-      image_height: 35,
-      properties: HashMap::new(),
-    }
+  fn sheet() -> Tileset {
+    let mut t = Tileset::new("t", UVec2::splat(16), TilesetImage::Collection);
+    t.columns = 4;
+    t.tile_count = 16;
+    t.margin = 1;
+    t.spacing = 2;
+    t
   }
 
   #[test]
-  fn tile_uv_first_tile() {
-    let ts = simple_tileset();
-    let uv = ts.tile_uv(0).unwrap();
-    assert_eq!(uv, (0.0, 0.0, 0.25, 0.5));
+  fn tile_rect_honours_margin_and_spacing() {
+    let t = sheet();
+    assert_eq!(t.tile_rect(5), Some(URect::new(19, 19, 35, 35)));
+    assert_eq!(t.tile_rect(0), Some(URect::new(1, 1, 17, 17)));
+    assert_eq!(t.tile_rect(16), None);
+    let mut none = sheet();
+    none.columns = 0;
+    assert_eq!(none.tile_rect(0), None);
   }
 
   #[test]
-  fn tile_uv_second_tile() {
-    let ts = simple_tileset();
-    let uv = ts.tile_uv(1).unwrap();
-    assert_eq!(uv, (0.25, 0.0, 0.5, 0.5));
-  }
-
-  #[test]
-  fn tile_uv_second_row() {
-    let ts = simple_tileset();
-    // Tile 4 is the first tile on the second row (columns = 4).
-    let uv = ts.tile_uv(4).unwrap();
-    assert_eq!(uv, (0.0, 0.5, 0.25, 1.0));
-  }
-
-  #[test]
-  fn tile_uv_out_of_range() {
-    let ts = simple_tileset();
-    assert!(ts.tile_uv(8).is_none());
-    assert!(ts.tile_uv(100).is_none());
-  }
-
-  #[test]
-  fn tile_uv_with_spacing_and_margin_first() {
-    let ts = spaced_tileset();
-    let uv = ts.tile_uv(0).unwrap();
-    // x = 2, y = 2, width = 16, height = 16
-    // image: 69 x 35
-    let expected = (2.0 / 69.0, 2.0 / 35.0, 18.0 / 69.0, 18.0 / 35.0);
-    assert!((uv.0 - expected.0).abs() < 1e-6);
-    assert!((uv.1 - expected.1).abs() < 1e-6);
-    assert!((uv.2 - expected.2).abs() < 1e-6);
-    assert!((uv.3 - expected.3).abs() < 1e-6);
-  }
-
-  #[test]
-  fn tile_uv_with_spacing_and_margin_third() {
-    let ts = spaced_tileset();
-    let uv = ts.tile_uv(2).unwrap();
-    // col=2, row=0. x = 2 + 2*(16+1) = 36, y = 2
-    let expected = (36.0 / 69.0, 2.0 / 35.0, 52.0 / 69.0, 18.0 / 35.0);
-    assert!((uv.0 - expected.0).abs() < 1e-6);
-    assert!((uv.1 - expected.1).abs() < 1e-6);
-    assert!((uv.2 - expected.2).abs() < 1e-6);
-    assert!((uv.3 - expected.3).abs() < 1e-6);
-  }
-
-  #[test]
-  fn tile_uv_with_spacing_and_margin_second_row() {
-    let ts = spaced_tileset();
-    let uv = ts.tile_uv(5).unwrap();
-    // col=1, row=1. x = 2 + 1*(16+1) = 19, y = 2 + 1*(16+1) = 19
-    let expected = (19.0 / 69.0, 19.0 / 35.0, 35.0 / 69.0, 35.0 / 35.0);
-    assert!((uv.0 - expected.0).abs() < 1e-6);
-    assert!((uv.1 - expected.1).abs() < 1e-6);
-    assert!((uv.2 - expected.2).abs() < 1e-6);
-    assert!((uv.3 - expected.3).abs() < 1e-6);
-  }
-
-  #[test]
-  fn get_properties_returns_default_when_missing() {
-    let ts = simple_tileset();
-    let props = ts.get_properties(0);
-    assert!(!props.solid);
-    assert!(!props.platform);
-    assert!(props.animation.is_none());
-    assert!(props.custom.is_empty());
-  }
-
-  #[test]
-  fn get_properties_returns_stored_value() {
-    let mut ts = simple_tileset();
-    ts.properties.insert(
-      3,
-      TileProperties {
-        solid: true,
-        platform: false,
-        animation: Some(TileAnimation {
-          frames: vec![(3, 100), (4, 100)],
-        }),
-        custom: HashMap::new(),
-      },
-    );
-    let props = ts.get_properties(3);
-    assert!(props.solid);
-    assert!(props.animation.is_some());
-    assert_eq!(props.animation.unwrap().frames.len(), 2);
+  fn tile_data_is_looked_up_by_id() {
+    let mut t = sheet();
+    assert!(t.tile(3).is_none());
+    t.insert_tile(3, TileData::default());
+    assert_eq!(t.tile(3).map(|d| d.probability), Some(1.0));
   }
 }

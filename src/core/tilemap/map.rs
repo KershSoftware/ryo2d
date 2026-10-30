@@ -1,366 +1,294 @@
-use super::TileId;
-use super::layer::TilemapLayer;
+//! The map: layers of tiles, objects or an image over a list of tilesets.
+
+use std::sync::Arc;
+
+use glam::{IVec2, UVec2, Vec2};
+
+use super::grid::TileGrid;
+use super::property::Properties;
+use super::tile::Tile;
 use super::tileset::Tileset;
-use crate::core::ecs::Vec2;
-use crate::core::physics::{SlopeCorner, TileCell, TileColliders};
+use crate::core::asset::{Asset, Handle};
+use crate::core::graphics::Image;
+use crate::core::hash::FastMap;
+use crate::core::render::batch::BlendMode;
+use crate::core::ui::Color;
 
-/// Orientation of the tilemap grid.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum TilemapOrientation {
-  /// Standard rectangular grid (default).
-  #[default]
-  Orthogonal,
-  /// Diamond-shaped isometric grid.
-  Isometric,
-  /// Hexagonal grid with flat-topped hexagons.
-  HexagonalFlat,
-  /// Hexagonal grid with pointy-topped hexagons.
-  HexagonalPointy,
+/// Where a tileset of a map comes from
+#[derive(Clone, Debug)]
+pub enum TilesetSource {
+  /// A tileset asset, shared with other maps
+  Asset(Handle<Tileset>),
+  /// A tileset the map owns
+  Embedded(Arc<Tileset>),
 }
 
-/// A complete tilemap composed of tilesets and layers.
-///
-/// The tilemap defines the grid dimensions (tile size and map size in tiles)
-/// and owns all tilesets and layers. It provides coordinate conversion between
-/// world (pixel) space and tile (grid) space.
-#[derive(Debug, Clone)]
-pub struct Tilemap {
-  /// Tilesets used by this map's layers.
-  pub tilesets: Vec<Tileset>,
-  /// Ordered list of layers (bottom to top).
-  pub layers: Vec<TilemapLayer>,
-  /// Width of a single tile in pixels.
-  pub tile_width: u32,
-  /// Height of a single tile in pixels.
-  pub tile_height: u32,
-  /// Width of the map in tiles.
-  pub map_width: u32,
-  /// Height of the map in tiles.
-  pub map_height: u32,
-  /// Grid orientation.
-  pub orientation: TilemapOrientation,
+/// Values painted on an integer layer: 0 is empty
+#[derive(Clone, Debug, Default)]
+pub struct IntGrid {
+  pub size: UVec2,
+  pub values: Vec<i32>,
+  /// What each value is called
+  pub names: FastMap<i32, String>,
 }
 
-impl Tilemap {
-  /// Create a new empty tilemap with the given tile and map dimensions.
-  ///
-  /// Orientation defaults to [`TilemapOrientation::Orthogonal`].
-  pub fn new(tile_width: u32, tile_height: u32, map_width: u32, map_height: u32) -> Self {
-    Self {
+impl IntGrid {
+  /// The value at `cell`; `None` if empty or outside
+  pub fn get(&self, cell: IVec2) -> Option<i32> {
+    if cell.x < 0 || cell.y < 0 || cell.x as u32 >= self.size.x || cell.y as u32 >= self.size.y {
+      return None;
+    }
+    let v = *self
+      .values
+      .get(cell.y as usize * self.size.x as usize + cell.x as usize)?;
+    (v != 0).then_some(v)
+  }
+}
+
+/// What every kind of layer has
+#[derive(Clone, Debug)]
+pub struct LayerInfo {
+  pub id: u32,
+  pub name: String,
+  pub class: Option<String>,
+  /// Shift in pixels
+  pub offset: Vec2,
+  pub opacity: f32,
+  pub tint: Color,
+  /// How much of the camera's motion the layer follows; one is fixed to the
+  /// world
+  pub parallax: Vec2,
+  pub visible: bool,
+  pub blend: BlendMode,
+  /// Whether its tiles' shapes collide
+  pub collides: bool,
+  /// Whether its tiles' shapes block light; `None` means as `collides`
+  pub occludes: Option<bool>,
+  /// Whether its tiles sort among the entities by their y
+  pub y_sorted: bool,
+  /// Whether lights shade it
+  pub lit: bool,
+  pub properties: Properties,
+}
+
+impl LayerInfo {
+  /// A visible, opaque, lit layer
+  pub fn new(id: u32, name: impl Into<String>) -> LayerInfo {
+    LayerInfo {
+      id,
+      name: name.into(),
+      class: None,
+      offset: Vec2::ZERO,
+      opacity: 1.0,
+      tint: Color::WHITE,
+      parallax: Vec2::ONE,
+      visible: true,
+      blend: BlendMode::default(),
+      collides: true,
+      occludes: None,
+      y_sorted: false,
+      lit: true,
+      properties: Properties::default(),
+    }
+  }
+}
+
+/// The shape of a map object
+#[derive(Clone, Debug, PartialEq)]
+pub enum ObjectShape {
+  Rect,
+  Ellipse,
+  Point,
+  Capsule,
+  Polygon(Vec<Vec2>),
+  Polyline(Vec<Vec2>),
+  Text(String),
+}
+
+/// An object placed on an object layer
+#[derive(Clone, Debug)]
+pub struct MapObjectData {
+  /// Unique in the map, as the file wrote it
+  pub id: String,
+  pub name: String,
+  pub class: Option<String>,
+  pub position: Vec2,
+  pub size: Vec2,
+  /// Degrees clockwise
+  pub rotation: f32,
+  pub shape: ObjectShape,
+  /// The tile drawn, for a tile object
+  pub tile: Option<Tile>,
+  pub visible: bool,
+  pub properties: Properties,
+}
+
+/// A picture laid across the map
+#[derive(Clone, Debug)]
+pub struct ImageLayer {
+  pub image: Handle<Image>,
+  pub repeat_x: bool,
+  pub repeat_y: bool,
+}
+
+/// What a layer holds
+#[derive(Clone, Debug)]
+pub enum LayerKind {
+  Tiles {
+    grid: TileGrid,
+    intgrid: Option<IntGrid>,
+  },
+  Objects(Vec<MapObjectData>),
+  Image(ImageLayer),
+}
+
+/// A layer: what every layer has, and what it holds
+#[derive(Clone, Debug)]
+pub struct MapLayer {
+  pub info: LayerInfo,
+  pub kind: LayerKind,
+}
+
+/// A map of layers over tilesets, from a file or built in code
+#[derive(Clone, Debug)]
+pub struct TileMap {
+  /// Width and height in cells
+  pub size: UVec2,
+  /// A cell's size in pixels
+  pub tile_size: UVec2,
+  /// The tilesets; a [`Tile`]'s `tileset` indexes this
+  pub tilesets: Vec<TilesetSource>,
+  /// Bottom first
+  pub layers: Vec<MapLayer>,
+  pub class: Option<String>,
+  pub background: Option<Color>,
+  pub properties: Properties,
+}
+
+impl Asset for TileMap {}
+
+impl TileMap {
+  /// An empty map of `size` cells of `tile_size` pixels
+  pub fn new(size: UVec2, tile_size: UVec2) -> TileMap {
+    TileMap {
+      size,
+      tile_size,
       tilesets: Vec::new(),
       layers: Vec::new(),
-      tile_width,
-      tile_height,
-      map_width,
-      map_height,
-      orientation: TilemapOrientation::default(),
+      class: None,
+      background: None,
+      properties: Properties::default(),
     }
   }
 
-  /// Total width of the map in pixels.
-  pub fn pixel_width(&self) -> f32 {
-    (self.map_width * self.tile_width) as f32
+  /// Adds a tileset and returns the index tiles name it by. A map holds at
+  /// most 256
+  pub fn add_tileset(&mut self, source: TilesetSource) -> u16 {
+    self.tilesets.push(source);
+    (self.tilesets.len() - 1) as u16
   }
 
-  /// Total height of the map in pixels.
-  pub fn pixel_height(&self) -> f32 {
-    (self.map_height * self.tile_height) as f32
+  fn next_layer_id(&self) -> u32 {
+    self.layers.iter().map(|l| l.info.id + 1).max().unwrap_or(1)
   }
 
-  /// Convert world (pixel) coordinates to tile coordinates.
-  ///
-  /// Returns `None` if the position is outside the map bounds (including
-  /// negative coordinates).
-  pub fn world_to_tile(&self, world_x: f32, world_y: f32) -> Option<(u32, u32)> {
-    if world_x < 0.0 || world_y < 0.0 {
-      return None;
+  /// Adds an empty tile layer on top and returns its index
+  pub fn add_tile_layer(&mut self, name: &str) -> usize {
+    let info = LayerInfo::new(self.next_layer_id(), name);
+    self.layers.push(MapLayer {
+      info,
+      kind: LayerKind::Tiles {
+        grid: TileGrid::new(self.size),
+        intgrid: None,
+      },
+    });
+    self.layers.len() - 1
+  }
+
+  /// Adds an empty object layer on top and returns its index
+  pub fn add_object_layer(&mut self, name: &str) -> usize {
+    let mut info = LayerInfo::new(self.next_layer_id(), name);
+    info.collides = false;
+    self.layers.push(MapLayer {
+      info,
+      kind: LayerKind::Objects(Vec::new()),
+    });
+    self.layers.len() - 1
+  }
+
+  /// The index of the first layer called `name`
+  pub fn layer_index(&self, name: &str) -> Option<usize> {
+    self.layers.iter().position(|l| l.info.name == name)
+  }
+
+  /// The tiles of layer `layer`, if it is a tile layer
+  pub fn tiles(&self, layer: usize) -> Option<&TileGrid> {
+    match &self.layers.get(layer)?.kind {
+      LayerKind::Tiles { grid, .. } => Some(grid),
+      _ => None,
     }
-    let tx = (world_x / self.tile_width as f32) as u32;
-    let ty = (world_y / self.tile_height as f32) as u32;
-    if tx >= self.map_width || ty >= self.map_height {
-      return None;
+  }
+
+  /// The tiles of layer `layer`, editable
+  pub fn tiles_mut(&mut self, layer: usize) -> Option<&mut TileGrid> {
+    match &mut self.layers.get_mut(layer)?.kind {
+      LayerKind::Tiles { grid, .. } => Some(grid),
+      _ => None,
     }
-    Some((tx, ty))
-  }
-
-  /// Convert tile coordinates to the world-space position of the tile's
-  /// top-left corner.
-  pub fn tile_to_world(&self, tile_x: u32, tile_y: u32) -> (f32, f32) {
-    (
-      (tile_x * self.tile_width) as f32,
-      (tile_y * self.tile_height) as f32,
-    )
-  }
-
-  /// Convert tile coordinates to the world-space position of the tile's
-  /// center.
-  pub fn tile_to_world_center(&self, tile_x: u32, tile_y: u32) -> (f32, f32) {
-    let (wx, wy) = self.tile_to_world(tile_x, tile_y);
-    (
-      wx + self.tile_width as f32 / 2.0,
-      wy + self.tile_height as f32 / 2.0,
-    )
-  }
-
-  /// Get the tile ID at a world position on a specific layer.
-  ///
-  /// Returns `None` if the layer index is invalid, the position is outside
-  /// the map, or the cell is empty.
-  pub fn tile_at_world(&self, layer_index: usize, world_x: f32, world_y: f32) -> Option<TileId> {
-    let (tx, ty) = self.world_to_tile(world_x, world_y)?;
-    let layer = self.layers.get(layer_index)?;
-    layer.get_tile(tx, ty)
-  }
-
-  /// Check whether any tile at the given world position is solid.
-  ///
-  /// Iterates over all layers and checks the tileset properties for each
-  /// tile found at the position.
-  pub fn is_solid_at(&self, world_x: f32, world_y: f32) -> bool {
-    let (tx, ty) = match self.world_to_tile(world_x, world_y) {
-      Some(coords) => coords,
-      None => return false,
-    };
-
-    for layer in &self.layers {
-      if let Some(tile_id) = layer.get_tile(tx, ty)
-        && let Some(tileset) = self.tilesets.get(layer.tileset_index)
-      {
-        let props = tileset.get_properties(tile_id);
-        if props.solid {
-          return true;
-        }
-      }
-    }
-    false
-  }
-
-  /// Add a layer to this tilemap. Returns the index of the new layer.
-  pub fn add_layer(&mut self, layer: TilemapLayer) -> usize {
-    let index = self.layers.len();
-    self.layers.push(layer);
-    index
-  }
-
-  /// Add a tileset to this tilemap. Returns the index of the new tileset.
-  pub fn add_tileset(&mut self, tileset: Tileset) -> usize {
-    let index = self.tilesets.len();
-    self.tilesets.push(tileset);
-    index
-  }
-
-  /// Tile colliders for this map, placed at the map's origin: tiles whose
-  /// properties are `solid` are solid, `platform` tiles are one-way, and a
-  /// `slope` custom property (`"bottom-left"`, `"bottom-right"`,
-  /// `"top-left"`, `"top-right"`) makes a 45° slope with that corner
-  /// filled. Layers combine: solid beats a slope, a slope beats one-way.
-  /// A map over 8192 × 8192 tiles is logged and gives an empty grid.
-  pub fn tile_colliders(&self) -> TileColliders {
-    let rank = |cell: TileCell| match cell {
-      TileCell::Empty => 0,
-      TileCell::OneWay => 1,
-      TileCell::Slope(_) => 2,
-      TileCell::Solid => 3,
-    };
-    let size = Vec2::new(self.tile_width as f32, self.tile_height as f32);
-    let mut tiles = TileColliders::new(self.map_width, self.map_height, size);
-    for layer in &self.layers {
-      let Some(tileset) = self.tilesets.get(layer.tileset_index) else {
-        continue;
-      };
-      for y in 0..self.map_height.min(layer.height) {
-        for x in 0..self.map_width.min(layer.width) {
-          let Some(id) = layer.get_tile(x, y) else {
-            continue;
-          };
-          let properties = tileset.get_properties(id);
-          let cell = if properties.solid {
-            TileCell::Solid
-          } else if let Some(corner) = properties
-            .custom
-            .get("slope")
-            .and_then(|name| SlopeCorner::from_name(name))
-          {
-            TileCell::Slope(corner)
-          } else if properties.platform {
-            TileCell::OneWay
-          } else {
-            continue;
-          };
-          if rank(cell) > rank(tiles.get(x, y)) {
-            tiles.set(x, y, cell);
-          }
-        }
-      }
-    }
-    tiles
   }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::core::tilemap::tileset::TileProperties;
-  use std::collections::HashMap;
+  use crate::core::tilemap::Tile;
+  use glam::{IVec2, UVec2};
 
   #[test]
-  fn a_tilemap_gives_tile_colliders_from_its_properties() {
-    use crate::core::physics::{SlopeCorner, TileCell};
-    let mut map = Tilemap::new(16, 16, 3, 1);
-    let mut tileset = Tileset {
-      name: "t".into(),
-      image_path: String::new(),
-      tile_width: 16,
-      tile_height: 16,
-      columns: 4,
-      tile_count: 4,
-      spacing: 0,
-      margin: 0,
-      image_width: 64,
-      image_height: 16,
-      properties: Default::default(),
+  fn a_map_built_in_code_holds_its_layers() {
+    let mut map = TileMap::new(UVec2::new(8, 6), UVec2::splat(16));
+    let ground = map.add_tile_layer("ground");
+    let things = map.add_object_layer("things");
+    assert_eq!((ground, things), (0, 1));
+    assert_eq!(map.layer_index("things"), Some(1));
+    assert_eq!(map.layer_index("nope"), None);
+    assert!(map.tiles(things).is_none());
+    assert!(map.tiles(9).is_none());
+    let grid = map.tiles_mut(ground).expect("tile layer");
+    assert_eq!(grid.size(), UVec2::new(8, 6));
+    grid.set(IVec2::new(1, 1), Some(Tile::new(0, 4)));
+    assert_eq!(
+      map.tiles(ground).and_then(|g| g.get(IVec2::new(1, 1))),
+      Some(Tile::new(0, 4))
+    );
+    let info = &map.layers[ground].info;
+    assert!(info.collides && info.lit && info.visible && !info.y_sorted);
+    assert_eq!(info.occludes, None);
+    assert_eq!(info.opacity, 1.0);
+    assert!(!map.layers[things].info.collides);
+    assert_ne!(map.layers[0].info.id, map.layers[1].info.id);
+  }
+
+  #[test]
+  fn tilesets_get_consecutive_indices() {
+    use crate::core::tilemap::{Tileset, TilesetImage};
+    use std::sync::Arc;
+    let mut map = TileMap::new(UVec2::ONE, UVec2::splat(8));
+    let ts = || Arc::new(Tileset::new("t", UVec2::splat(8), TilesetImage::Collection));
+    assert_eq!(map.add_tileset(TilesetSource::Embedded(ts())), 0);
+    assert_eq!(map.add_tileset(TilesetSource::Embedded(ts())), 1);
+  }
+
+  #[test]
+  fn an_int_grid_treats_zero_as_empty() {
+    let g = IntGrid {
+      size: UVec2::new(2, 2),
+      values: vec![0, 3, 0, 0],
+      names: Default::default(),
     };
-    tileset.properties.insert(
-      0,
-      TileProperties {
-        solid: true,
-        ..Default::default()
-      },
-    );
-    tileset.properties.insert(
-      1,
-      TileProperties {
-        platform: true,
-        ..Default::default()
-      },
-    );
-    let mut slope = TileProperties::default();
-    slope.custom.insert("slope".into(), "bottom-right".into());
-    tileset.properties.insert(2, slope);
-    map.add_tileset(tileset);
-    let mut layer = TilemapLayer::new("ground", 3, 1);
-    for (x, id) in [(0, 0), (1, 1), (2, 2)] {
-      layer.set_tile(x, 0, id);
-    }
-    map.add_layer(layer);
-    let tiles = map.tile_colliders();
-    assert_eq!(tiles.get(0, 0), TileCell::Solid);
-    assert_eq!(tiles.get(1, 0), TileCell::OneWay);
-    assert_eq!(tiles.get(2, 0), TileCell::Slope(SlopeCorner::BottomRight));
-    assert_eq!(tiles.tile_size, crate::core::ecs::Vec2::splat(16.0));
-  }
-
-  fn test_tileset() -> Tileset {
-    Tileset {
-      name: "test".to_string(),
-      image_path: "test.png".to_string(),
-      tile_width: 32,
-      tile_height: 32,
-      columns: 4,
-      tile_count: 16,
-      spacing: 0,
-      margin: 0,
-      image_width: 128,
-      image_height: 128,
-      properties: HashMap::new(),
-    }
-  }
-
-  #[test]
-  fn pixel_dimensions() {
-    let map = Tilemap::new(32, 32, 10, 8);
-    assert_eq!(map.pixel_width(), 320.0);
-    assert_eq!(map.pixel_height(), 256.0);
-  }
-
-  #[test]
-  fn world_to_tile_basic() {
-    let map = Tilemap::new(32, 32, 10, 8);
-    assert_eq!(map.world_to_tile(0.0, 0.0), Some((0, 0)));
-    assert_eq!(map.world_to_tile(33.0, 65.0), Some((1, 2)));
-  }
-
-  #[test]
-  fn world_to_tile_out_of_bounds() {
-    let map = Tilemap::new(32, 32, 10, 8);
-    // Negative
-    assert_eq!(map.world_to_tile(-1.0, 0.0), None);
-    assert_eq!(map.world_to_tile(0.0, -1.0), None);
-    // Beyond map
-    assert_eq!(map.world_to_tile(320.0, 0.0), None);
-    assert_eq!(map.world_to_tile(0.0, 256.0), None);
-  }
-
-  #[test]
-  fn tile_to_world_roundtrip() {
-    let map = Tilemap::new(32, 32, 10, 8);
-    let (wx, wy) = map.tile_to_world(3, 5);
-    let (tx, ty) = map.world_to_tile(wx + 1.0, wy + 1.0).unwrap();
-    assert_eq!((tx, ty), (3, 5));
-  }
-
-  #[test]
-  fn tile_to_world_center() {
-    let map = Tilemap::new(32, 32, 10, 8);
-    let (cx, cy) = map.tile_to_world_center(0, 0);
-    assert_eq!(cx, 16.0);
-    assert_eq!(cy, 16.0);
-  }
-
-  #[test]
-  fn tile_at_world_returns_tile() {
-    let mut map = Tilemap::new(32, 32, 4, 4);
-    map.add_tileset(test_tileset());
-    let mut layer = TilemapLayer::new("ground", 4, 4);
-    layer.set_tile(1, 2, 7);
-    map.add_layer(layer);
-
-    // World position inside tile (1, 2)
-    assert_eq!(map.tile_at_world(0, 33.0, 65.0), Some(7));
-  }
-
-  #[test]
-  fn tile_at_world_empty() {
-    let mut map = Tilemap::new(32, 32, 4, 4);
-    map.add_tileset(test_tileset());
-    map.add_layer(TilemapLayer::new("ground", 4, 4));
-
-    assert_eq!(map.tile_at_world(0, 0.0, 0.0), None);
-  }
-
-  #[test]
-  fn is_solid_at_with_solid_tile() {
-    let mut ts = test_tileset();
-    ts.properties.insert(
-      5,
-      TileProperties {
-        solid: true,
-        ..Default::default()
-      },
-    );
-    let mut map = Tilemap::new(32, 32, 4, 4);
-    map.add_tileset(ts);
-    let mut layer = TilemapLayer::new("ground", 4, 4);
-    layer.set_tile(0, 0, 5);
-    map.add_layer(layer);
-
-    assert!(map.is_solid_at(1.0, 1.0));
-  }
-
-  #[test]
-  fn is_solid_at_without_solid_tile() {
-    let mut map = Tilemap::new(32, 32, 4, 4);
-    map.add_tileset(test_tileset());
-    let mut layer = TilemapLayer::new("ground", 4, 4);
-    layer.set_tile(0, 0, 3); // tile 3 has no properties => not solid
-    map.add_layer(layer);
-
-    assert!(!map.is_solid_at(1.0, 1.0));
-  }
-
-  #[test]
-  fn is_solid_at_empty_position() {
-    let map = Tilemap::new(32, 32, 4, 4);
-    assert!(!map.is_solid_at(0.0, 0.0));
+    assert_eq!(g.get(IVec2::new(1, 0)), Some(3));
+    assert_eq!(g.get(IVec2::new(0, 0)), None);
+    assert_eq!(g.get(IVec2::new(2, 0)), None);
+    assert_eq!(g.get(IVec2::new(0, -1)), None);
   }
 }

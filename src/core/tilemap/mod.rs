@@ -1,24 +1,20 @@
-//! Tilemap system for grid-based 2D worlds.
-//!
-//! Provides efficient chunked rendering, collision generation,
-//! Tiled editor import, and auto-tiling support.
+//! Tilemaps: the data model. A [`TileMap`] holds layers of tiles, objects or
+//! an image over one or more [`Tileset`]s, with typed [`Properties`] on every
+//! level. Tiles live in dense [`TileGrid`]s whose edits mark chunks dirty.
 
-pub mod autotile;
-pub mod chunk;
-pub mod collision;
-pub mod layer;
-pub mod manager;
-pub mod map;
-pub mod tiled;
-pub mod tileset;
+mod grid;
+mod map;
+mod property;
+mod tile;
+mod tileset;
 
-pub use autotile::{AutoTileMode, AutoTileSet, compute_bitmask_full, compute_bitmask_minimal};
-pub use chunk::{
-  CHUNK_SIZE, ChunkCoord, ChunkState, chunk_tile_range, chunk_visible, chunks_along_axis,
+pub use grid::{CHUNK_SIZE, TileGrid};
+pub use map::{
+  ImageLayer, IntGrid, LayerInfo, LayerKind, MapLayer, MapObjectData, ObjectShape, TileMap,
+  TilesetSource,
 };
-pub use collision::{CollisionRect, generate_collision_rects, generate_collision_rects_region};
-pub use layer::TilemapLayer;
-pub use manager::TilemapManager;
-pub use map::{Tilemap, TilemapOrientation};
-pub use tiled::{TiledObject, TiledShape, TiledValue, TilemapError, load_tiled_map};
-pub use tileset::{TileAnimation, TileId, TileProperties, Tileset};
+pub use property::{Properties, PropertyValue};
+pub use tile::{Tile, TileFlip};
+pub use tileset::{
+  TileData, TileFrame, TileShape, Tileset, TilesetImage, URect, WangColor, WangKind, WangSet,
+};

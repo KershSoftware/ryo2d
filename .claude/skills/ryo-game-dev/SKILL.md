@@ -2,7 +2,7 @@
 name: ryo-game-dev
 description: Building games with Ryo2D - scenes, entities, queries, systems, resources, messages, time and input.
 metadata:
-  version: 2.5.2
+  version: 2.5.3
 ---
 
 # Ryo2D Game Developer
@@ -140,7 +140,7 @@ Entities are not drawn by `render`: anything with `Transform` + `Renderable` is 
 | `ctx.time` | `&mut Time` | `real`, `game` and `fixed` clocks |
 | `ctx.input` | `&mut Input` | Keyboard, mouse, gamepad, text |
 
-Helpers: `assets()` (the asset registry: `load_now`, `load`, `add`, `get`; `ryo-assets`), `audio()` (play sounds and music, volume settings, snapshots; `ryo-audio`), `camera()` (the main camera: position, zoom, rotation, shake, screen/world conversion), `actions()` (bind and rebind input actions), `ui_theme()` (the UI theme), `follow_ui_theme(handle)` (follow a `.theme.ron` asset), `render_targets()`, `add_systems`, `messages::<T>()`, `write_message`, `resource`, `resource_mut`, `resource_or_default`, `insert_resource`, `effects()`, `lighting()`, `look()`, `tilemaps()`, `render_pipeline()`, `window()`, `cursor()`, `console()`, `spawn_child`, `skip_interpolation`, `screen_size()`, `request_display_mode`, `request_resolution`, `set_cursor*`. The accessors return `Mut<..>`; bind one for several calls: `let mut fx = ctx.effects();`.
+Helpers: `assets()` (the asset registry: `load_now`, `load`, `add`, `get`; `ryo-assets`), `audio()` (play sounds and music, volume settings, snapshots; `ryo-audio`), `camera()` (the main camera: position, zoom, rotation, shake, screen/world conversion), `actions()` (bind and rebind input actions), `ui_theme()` (the UI theme), `follow_ui_theme(handle)` (follow a `.theme.ron` asset), `render_targets()`, `add_systems`, `messages::<T>()`, `write_message`, `resource`, `resource_mut`, `resource_or_default`, `insert_resource`, `effects()`, `lighting()`, `look()`, `render_pipeline()`, `window()`, `cursor()`, `console()`, `spawn_child`, `skip_interpolation`, `screen_size()`, `request_display_mode`, `request_resolution`, `set_cursor*`. The accessors return `Mut<..>`; bind one for several calls: `let mut fx = ctx.effects();`.
 
 **`time` and `input` are taken out of the world for the length of a callback.** Use the fields; `ctx.world.resource::<Time>()` panics inside a callback. Systems see them as resources (`Res<Time>`) as usual.
 
