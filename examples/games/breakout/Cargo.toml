@@ -3,6 +3,8 @@ name = "breakout"
 version = "0.1.0"
 edition = "2024"
 description = "Breakout demo game built with Ryo2D engine"
+# `cargo run -p breakout` runs the game, not the level converter
+default-run = "breakout"
 
 [[bin]]
 name = "breakout"
@@ -15,3 +17,5 @@ profiler = ["ryo2d/profiler"]
 [dependencies]
 ryo2d = { path = "../../.." }
 serde = { version = "1.0", features = ["derive"] }
+# The level converter's tileset image (the engine's own PNG version)
+image = { version = "0.25", default-features = false, features = ["png"] }

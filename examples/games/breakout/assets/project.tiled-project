@@ -1,0 +1,58 @@
+{
+    "automappingRulesFile": "",
+    "commands": [
+    ],
+    "extensionsPath": "extensions",
+    "folders": [
+        "."
+    ],
+    "properties": [
+    ],
+    "propertyTypes": [
+        {
+            "id": 1,
+            "name": "BlockColor",
+            "storageType": "string",
+            "type": "enum",
+            "values": [
+                "Red",
+                "Orange",
+                "Yellow",
+                "Green",
+                "Blue",
+                "Purple",
+                "White",
+                "Silver"
+            ],
+            "valuesAsFlags": false
+        },
+        {
+            "color": "#ffa0a0a4",
+            "drawFill": true,
+            "id": 2,
+            "members": [
+                {
+                    "name": "color",
+                    "propertyType": "BlockColor",
+                    "type": "string",
+                    "value": "Red"
+                },
+                {
+                    "name": "hits",
+                    "type": "int",
+                    "value": 1
+                },
+                {
+                    "name": "points",
+                    "type": "int",
+                    "value": 10
+                }
+            ],
+            "name": "brick",
+            "type": "class",
+            "useAs": [
+                "tile"
+            ]
+        }
+    ]
+}

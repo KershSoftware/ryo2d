@@ -2,15 +2,14 @@
 //!
 //! The main gameplay scene where the breakout game is played.
 
-use std::path::Path;
 use std::time::Duration;
 
 use ryo2d::prelude::*;
 
 use super::{MenuScene, PauseScene};
-use crate::components::{Ball, Block, DeathZone, Paddle, Wall};
+use crate::components::{Ball, Block, BlockColor, DeathZone, Paddle, Wall};
 use crate::constants::*;
-use crate::levels::{level_path, load_level};
+use crate::levels::{BRICK_CLASS, LEVEL_ORIGIN, level_path, read_brick};
 use crate::look::{spawn_ui_file, text_style};
 use crate::save::save_high_score;
 
@@ -54,6 +53,8 @@ pub struct GameScene {
   paddle: Option<Entity>,
   balls: Vec<Entity>,
   blocks: Vec<Entity>,
+  /// The level's map while its bricks have not landed yet
+  level_map: Option<Entity>,
   walls: Vec<Entity>,
   death_zone: Option<Entity>,
 
@@ -102,6 +103,12 @@ pub struct GameScene {
 }
 
 impl GameScene {
+  /// Start on `level` (1 to `MAX_LEVEL`) rather than the first
+  pub fn at_level(mut self, level: u32) -> Self {
+    self.level = level.clamp(1, MAX_LEVEL);
+    self
+  }
+
   /// Create a new game scene
   pub fn new(high_score: u32) -> Self {
     Self {
@@ -116,6 +123,7 @@ impl GameScene {
       paddle: None,
       balls: Vec::new(),
       blocks: Vec::new(),
+      level_map: None,
       walls: Vec::new(),
       death_zone: None,
       blocks_remaining: 0,
@@ -609,54 +617,112 @@ impl GameScene {
     self.death_zone = Some(death);
   }
 
+  /// Spawn the level's map, with its brick tiles as entities: the bricks
+  /// land with it, a few frames on, and `land_blocks` makes them blocks
   fn spawn_blocks(&mut self, ctx: &mut SceneContext) {
-    // Load level file
-    let path = level_path(self.level);
-    let level_data = match load_level(Path::new(&path)) {
-      Ok(data) => data,
+    let map = match ctx.assets().load_now::<TileMap>(&level_path(self.level)) {
+      Ok(map) => map,
       Err(e) => {
         eprintln!("Failed to load level {}: {}", self.level, e);
         // Fallback: loop back to level 1
-        match load_level(Path::new(&level_path(1))) {
-          Ok(data) => data,
+        match ctx.assets().load_now::<TileMap>(&level_path(1)) {
+          Ok(map) => map,
           Err(_) => return, // No levels available
         }
       }
     };
+    let root = ctx
+      .world
+      .spawn((
+        Transform::from_xy(LEVEL_ORIGIN.0, LEVEL_ORIGIN.1),
+        MapRoot::new(map).with_entity_tiles(&[BRICK_CLASS]),
+      ))
+      .id();
+    self.level_map = Some(root);
+  }
 
-    for (x, y, color, hits, points) in level_data.blocks {
-      let (r, g, b, _a) = color.to_rgba();
-      // Darker border color (half brightness)
-      let border = (r / 3, g / 3, b / 3);
-
-      let image = ctx.assets().add(Self::bordered_rect(
-        BLOCK_WIDTH as u32,
-        BLOCK_HEIGHT as u32,
-        r,
-        g,
-        b,
-        border,
-      ));
-      let block = ctx
-        .world
-        .spawn((
-          Transform::from_xy(x, y),
-          RigidBody::fixed(),
-          Collider::rect(BLOCK_WIDTH, BLOCK_HEIGHT)
-            .with_restitution(1.0) // Perfect bounce
-            .with_friction(0.0), // No friction
-          Renderable::image(image).with_z_order(5),
-          Block::new(color, hits, points),
-        ))
-        .id();
-      self.blocks.push(block);
+  /// Once the level's map has landed, turn its brick tiles into blocks, row
+  /// by row, and take the map down: it was only the bricks' data
+  fn land_blocks(&mut self, ctx: &mut SceneContext) {
+    let Some(root) = self.level_map else {
+      return;
+    };
+    if !ctx.maps().is_ready(root) {
+      for event in ctx.messages::<MapEvent>() {
+        if let MapEvent::Failed { map, error } = event
+          && map == root
+        {
+          game_error!("level {}: {error}", self.level);
+          ctx.world.despawn(root);
+          self.level_map = None;
+        }
+      }
+      return;
     }
+    self.level_map = None;
 
+    let mut tiles = ctx.world.query::<&MapTile>();
+    let mut bricks: Vec<MapTile> = tiles
+      .iter(ctx.world)
+      .filter(|tile| tile.map == root && tile.class == BRICK_CLASS)
+      .cloned()
+      .collect();
+    bricks.sort_by_key(|tile| (tile.cell.y, tile.cell.x));
+    for tile in bricks {
+      let at = ctx.maps().cell_to_world(root, tile.layer, tile.cell);
+      match (at, read_brick(&tile)) {
+        (Some(at), Ok((color, hits, points))) => self.spawn_block(ctx, at, color, hits, points),
+        (_, Err(e)) => game_error!("level {}: brick at {}: {e}", self.level, tile.cell),
+        (None, _) => game_error!("level {}: brick at {} has no place", self.level, tile.cell),
+      }
+    }
+    ctx.world.despawn(root);
     self.blocks_remaining = self.blocks.len() as u32;
+  }
+
+  /// Spawn one block centred on `at`
+  fn spawn_block(
+    &mut self,
+    ctx: &mut SceneContext,
+    at: Vec2,
+    color: BlockColor,
+    hits: u32,
+    points: u32,
+  ) {
+    let (r, g, b, _a) = color.to_rgba();
+    // Darker border color (half brightness)
+    let border = (r / 3, g / 3, b / 3);
+
+    let image = ctx.assets().add(Self::bordered_rect(
+      BLOCK_WIDTH as u32,
+      BLOCK_HEIGHT as u32,
+      r,
+      g,
+      b,
+      border,
+    ));
+    let block = ctx
+      .world
+      .spawn((
+        Transform::from_xy(at.x, at.y),
+        RigidBody::fixed(),
+        Collider::rect(BLOCK_WIDTH, BLOCK_HEIGHT)
+          .with_restitution(1.0) // Perfect bounce
+          .with_friction(0.0), // No friction
+        Renderable::image(image).with_z_order(5),
+        Block::new(color, hits, points),
+      ))
+      .id();
+    self.blocks.push(block);
   }
 
   /// Clear all level entities (blocks, walls, ball, paddle)
   fn clear_level(&mut self, ctx: &mut SceneContext) {
+    // A level whose bricks have not landed
+    if let Some(root) = self.level_map.take() {
+      ctx.world.despawn(root);
+    }
+
     // Despawn all blocks
     for block in self.blocks.drain(..) {
       ctx.world.despawn(block);
@@ -856,7 +922,8 @@ impl GameScene {
   }
 
   fn check_level_complete(&mut self, ctx: &mut SceneContext) -> bool {
-    if self.blocks_remaining == 0 {
+    // Not while the level's bricks are on their way
+    if self.level_map.is_none() && self.blocks_remaining == 0 {
       // Level complete! Save high score
       save_high_score(self.high_score);
 
@@ -967,6 +1034,9 @@ impl Scene for GameScene {
       self.needs_respawn = false;
       self.reset_ball(ctx);
     }
+
+    // The level's bricks, once its map has landed
+    self.land_blocks(ctx);
 
     // Animate multiball block glow
     self.update_multiball_glow(ctx, dt);

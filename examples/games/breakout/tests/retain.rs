@@ -9,21 +9,15 @@ use breakout::scenes::{GameScene, MenuScene};
 use ryo2d::prelude::*;
 use ryo2d::testing::PixelPair;
 
-/// A folder holding only the game's levels to run from, so the high score
-/// is saved there and the player's is never touched, and no UI file is on
-/// disk, so the embedded copies load. The working directory is the
+/// An empty folder to run from, so the high score is saved there and the
+/// player's is never touched, and no UI file is on disk, so the embedded
+/// copies load (as do the levels, from `embedded()`). The working directory is the
 /// process's, so the tests share one folder.
 fn game_folder() {
   static FOLDER: OnceLock<PathBuf> = OnceLock::new();
   FOLDER.get_or_init(|| {
     let folder = std::env::temp_dir().join(format!("breakout-retain-{}", std::process::id()));
-    let levels = folder.join("levels");
-    std::fs::create_dir_all(&levels).unwrap();
-    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("levels");
-    for entry in std::fs::read_dir(source).unwrap() {
-      let path = entry.unwrap().path();
-      std::fs::copy(&path, levels.join(path.file_name().unwrap())).unwrap();
-    }
+    std::fs::create_dir_all(&folder).unwrap();
     std::env::set_current_dir(&folder).unwrap();
     folder
   });
@@ -39,6 +33,7 @@ fn pair<S: Scene + 'static>(start: fn() -> S) -> Option<PixelPair> {
     EngineBuilder::new()
       .resolution(1280, 720)
       .fixed_hz(120)
+      .asset_source(breakout::embedded())
       .start_scene(start())
   })
 }

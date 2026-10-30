@@ -4,15 +4,6 @@ use breakout::prelude::*;
 use ryo2d::prelude::*;
 use ryo2d::testing::HeadlessEngine;
 
-/// Copy the files in `from` into `to`
-fn copy_files(from: &std::path::Path, to: &std::path::Path) {
-  std::fs::create_dir_all(to).unwrap();
-  for entry in std::fs::read_dir(from).unwrap() {
-    let entry = entry.unwrap();
-    std::fs::copy(entry.path(), to.join(entry.file_name())).unwrap();
-  }
-}
-
 /// The first launched ball's centre y and vertical velocity
 fn ball(world: &mut World) -> Option<(f32, f32)> {
   let mut balls = world.query::<(&Ball, &Transform, &Velocity)>();
@@ -24,22 +15,31 @@ fn ball(world: &mut World) -> Option<(f32, f32)> {
 
 #[test]
 fn a_brick_sends_the_ball_back_down() {
-  // A lost game saves the high score: run from an empty folder holding the
-  // levels the game loads, so the player's save is never touched (the
-  // working directory is the process's; this file has one test)
-  let levels = std::env::current_dir().unwrap().join("levels");
+  // A lost game saves the high score: run from an empty folder, so the
+  // player's save is never touched (the working directory is the
+  // process's; this file has one test)
   let folder = std::env::temp_dir().join(format!("breakout-ball-{}", std::process::id()));
-  copy_files(&levels, &folder.join("levels"));
+  std::fs::create_dir_all(&folder).unwrap();
   std::env::set_current_dir(&folder).unwrap();
 
   let Some(mut engine) = HeadlessEngine::new_or_skip(
     EngineBuilder::new()
       .resolution(SCREEN_WIDTH, SCREEN_HEIGHT)
       .fixed_hz(120)
+      .asset_source(breakout::embedded())
       .start_scene(GameScene::new(0)),
   ) else {
     return;
   };
+  // The bricks land with their map, a few frames in
+  for _ in 0..600 {
+    engine.step().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    let world = engine.world_mut();
+    if world.query::<&Block>().iter(world).count() > 0 {
+      break;
+    }
+  }
   engine.step_frames(5).unwrap();
   // Launch straight up from the centred, still paddle
   engine.tap_key(KeyCode::KeyW);

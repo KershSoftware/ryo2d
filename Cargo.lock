@@ -952,6 +952,7 @@ dependencies = [
 name = "breakout"
 version = "0.1.0"
 dependencies = [
+ "image",
  "ryo2d",
  "serde",
 ]

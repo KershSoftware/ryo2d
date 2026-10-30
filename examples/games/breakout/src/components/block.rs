@@ -69,19 +69,18 @@ impl BlockColor {
     )
   }
 
-  /// Parse a block character from a level file
-  ///
-  /// Returns (color, hits, points) if the character is a valid block
-  pub fn from_char(c: char) -> Option<(BlockColor, u32, u32)> {
-    match c {
-      'R' => Some((BlockColor::Red, 1, 10)),
-      'O' => Some((BlockColor::Orange, 1, 20)),
-      'Y' => Some((BlockColor::Yellow, 1, 30)),
-      'G' => Some((BlockColor::Green, 1, 40)),
-      'B' => Some((BlockColor::Blue, 1, 50)),
-      'P' => Some((BlockColor::Purple, 1, 60)),
-      'W' => Some((BlockColor::White, 2, 100)),
-      'S' => Some((BlockColor::Silver, 3, 200)),
+  /// The colour a level file names, as the enum `BlockColor` of the Tiled
+  /// project spells it (the variant's name)
+  pub fn from_name(name: &str) -> Option<BlockColor> {
+    match name {
+      "Red" => Some(BlockColor::Red),
+      "Orange" => Some(BlockColor::Orange),
+      "Yellow" => Some(BlockColor::Yellow),
+      "Green" => Some(BlockColor::Green),
+      "Blue" => Some(BlockColor::Blue),
+      "Purple" => Some(BlockColor::Purple),
+      "White" => Some(BlockColor::White),
+      "Silver" => Some(BlockColor::Silver),
       _ => None,
     }
   }

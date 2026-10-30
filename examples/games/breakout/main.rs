@@ -13,7 +13,7 @@
 //! - Collision events for game logic
 //! - Save system for high score persistence
 //! - Audio for sound effects
-//! - Level loading from external files
+//! - Levels as Tiled maps, whose brick tiles spawn as the game's blocks
 //!
 //! ## Project Structure
 //!
@@ -42,7 +42,7 @@ use breakout::prelude::*;
 use ryo2d::prelude::*;
 
 fn main() {
-  let engine = EngineBuilder::new()
+  let builder = EngineBuilder::new()
     .resolution(1280, 720)
     .target_fps(144)
     .fixed_hz(120)
@@ -51,8 +51,11 @@ fn main() {
       UserPreference::MasterVolume,
       UserPreference::MusicVolume,
       UserPreference::SfxVolume,
-    ])
-    .build();
+    ]);
+  // The web has no file system: the levels are built into the game
+  #[cfg(target_arch = "wasm32")]
+  let builder = builder.asset_source(breakout::embedded());
+  let engine = builder.build();
 
   if let Err(e) = engine.run() {
     eprintln!("Engine error: {}", e);

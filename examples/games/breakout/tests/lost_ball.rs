@@ -4,15 +4,6 @@ use breakout::prelude::*;
 use ryo2d::prelude::*;
 use ryo2d::testing::HeadlessEngine;
 
-/// Copy the files in `from` into `to`
-fn copy_files(from: &std::path::Path, to: &std::path::Path) {
-  std::fs::create_dir_all(to).unwrap();
-  for entry in std::fs::read_dir(from).unwrap() {
-    let entry = entry.unwrap();
-    std::fs::copy(entry.path(), to.join(entry.file_name())).unwrap();
-  }
-}
-
 /// The launched ball, if one is in play
 fn launched(world: &mut World) -> Option<Entity> {
   let mut balls = world.query::<(Entity, &Ball)>();
@@ -25,18 +16,17 @@ fn launched(world: &mut World) -> Option<Entity> {
 #[test]
 fn a_ball_leaving_past_a_bottom_corner_is_lost() {
   // Losing a life can end the game, which saves the high score: run from an
-  // empty folder holding the levels the game loads, so the player's save is
-  // never touched (the working directory is the process's; this file has
-  // one test)
-  let levels = std::env::current_dir().unwrap().join("levels");
+  // empty folder, so the player's save is never touched (the working
+  // directory is the process's; this file has one test)
   let folder = std::env::temp_dir().join(format!("breakout-lost-{}", std::process::id()));
-  copy_files(&levels, &folder.join("levels"));
+  std::fs::create_dir_all(&folder).unwrap();
   std::env::set_current_dir(&folder).unwrap();
 
   let Some(mut engine) = HeadlessEngine::new_or_skip(
     EngineBuilder::new()
       .resolution(SCREEN_WIDTH, SCREEN_HEIGHT)
       .fixed_hz(120)
+      .asset_source(breakout::embedded())
       .start_scene(GameScene::new(0)),
   ) else {
     return;
