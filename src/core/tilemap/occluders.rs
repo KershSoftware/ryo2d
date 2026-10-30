@@ -1251,7 +1251,11 @@ mod tests {
     };
     let builder = EngineBuilder::new().resolution(512, 256).start_scene(scene);
     let mut engine = HeadlessEngine::new_or_skip(builder)?;
-    engine.step_frames(6).expect("frames");
+    // The map lands once its landing comes back from the worker; then a
+    // few frames for the shadows to draw
+    engine.step_frames(2).expect("frames");
+    crate::core::tilemap::test_util::step_until_maps_land(&mut engine);
+    engine.step_frames(3).expect("frames");
     let frame = engine.frame().expect("a frame");
     let linear = |byte: u8| {
       let c = f32::from(byte) / 255.0;

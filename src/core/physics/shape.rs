@@ -150,25 +150,32 @@ pub(crate) fn build(shape: &ColliderShape, map: Mat2) -> Option<SharedShape> {
         .then(|| SharedShape::polyline(mapped.into_iter().map(to_rapier).collect(), None))
     }
     ColliderShape::Segments { points, segments } => {
-      let mut mapped = Vec::with_capacity(points.len());
-      for p in points {
-        let p = map * *p;
-        if !p.is_finite() {
+      // Only the points an edge names are kept (a point no edge names may
+      // be anything); an edge naming a point that is not there, or of no
+      // length, goes, and a named point that is not finite is degenerate
+      let mut index: Vec<Option<u32>> = vec![None; points.len()];
+      let mut mapped: Vec<Vec2> = Vec::new();
+      let mut kept: Vec<[u32; 2]> = Vec::with_capacity(segments.len());
+      for &[a, b] in segments {
+        let (Some(&pa), Some(&pb)) = (points.get(a as usize), points.get(b as usize)) else {
+          continue;
+        };
+        let (pa, pb) = (map * pa, map * pb);
+        if !(pa.is_finite() && pb.is_finite()) {
           return None;
         }
-        mapped.push(p);
+        if pa.distance(pb) <= f32::EPSILON {
+          continue;
+        }
+        let mut at = |i: u32, p: Vec2| {
+          *index[i as usize].get_or_insert_with(|| {
+            mapped.push(p);
+            mapped.len() as u32 - 1
+          })
+        };
+        let edge = [at(a, pa), at(b, pb)];
+        kept.push(edge);
       }
-      // An edge naming a point that is not there, or of no length, goes
-      let kept: Vec<[u32; 2]> = segments
-        .iter()
-        .copied()
-        .filter(
-          |&[a, b]| match (mapped.get(a as usize), mapped.get(b as usize)) {
-            (Some(a), Some(b)) => a.distance(*b) > f32::EPSILON,
-            _ => false,
-          },
-        )
-        .collect();
       (!kept.is_empty())
         .then(|| SharedShape::polyline(mapped.into_iter().map(to_rapier).collect(), Some(kept)))
     }
@@ -183,6 +190,21 @@ mod tests {
   fn local_aabb(shape: &SharedShape) -> (Vec2, Vec2) {
     let aabb = shape.compute_aabb(&Pose::IDENTITY);
     (from_rapier(aabb.mins), from_rapier(aabb.maxs))
+  }
+
+  #[test]
+  fn segments_keep_only_the_points_their_edges_name() {
+    let segments = |points: Vec<Vec2>, edges: Vec<[u32; 2]>| ColliderShape::Segments {
+      points,
+      segments: edges,
+    };
+    // A point no edge names may be anything, and leaves the box alone
+    let points = vec![Vec2::ZERO, Vec2::new(f32::NAN, 1.0), Vec2::new(10.0, 4.0)];
+    let built = build(&segments(points.clone(), vec![[0, 2]]), Mat2::IDENTITY)
+      .expect("the named points are finite");
+    assert_eq!(local_aabb(&built), (Vec2::ZERO, Vec2::new(10.0, 4.0)));
+    // A named point that is not finite is degenerate
+    assert!(build(&segments(points, vec![[0, 1]]), Mat2::IDENTITY).is_none());
   }
 
   #[test]

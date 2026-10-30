@@ -19,7 +19,7 @@ use super::{
 use crate::core::asset::{AssetError, AssetPath, AssetServer, Assets, Handle, LoadState};
 use crate::core::ecs::kernel::{DeferredWorld, HookContext, QueryState};
 use crate::core::ecs::{
-  ChildOf, Component, Entity, Local, Message, Messages, Transform, Without, World,
+  Allow, ChildOf, Component, Disabled, Entity, Local, Message, Messages, Transform, Without, World,
 };
 use crate::core::hash::FastMap;
 use crate::core::messages::register_message;
@@ -60,7 +60,8 @@ pub(crate) enum MapSource {
 /// colliders are worked out (off the main thread, over a frame or so), its
 /// layers spawn as its children, each object and class tile a child of its
 /// layer, and a [`MapEvent::Spawned`] is sent ([`MapEvent::Failed`] if the
-/// asset cannot load). Read and edit it through `ctx.maps()`. Despawning the
+/// asset cannot load or its landing fails). Read and edit it through
+/// `ctx.maps()`. Despawning the
 /// entity despawns all of it; putting another root over it, or taking the
 /// root away, takes its layers down first.
 ///
@@ -285,7 +286,9 @@ pub enum MapEvent {
   Spawned { map: Entity },
   /// Its asset changed and its layers and objects follow it
   Reloaded { map: Entity },
-  /// Its asset did not load (or has no such level): nothing spawned
+  /// Its asset did not load (or has no such level), or its landing
+  /// panicked (tried again once the map or a tileset it uses changes):
+  /// nothing spawned
   Failed { map: Entity, error: Arc<AssetError> },
 }
 
@@ -295,6 +298,9 @@ pub(crate) struct MapFailed {
   error: Arc<AssetError>,
   /// The project's version, for a level the project lacks
   version: Option<u64>,
+  /// For a landing that panicked: what it was worked out from
+  /// (`landing_stamp`); it is not tried again until that changes
+  landing: Option<Vec<Option<u64>>>,
 }
 
 /// A map whose landing is being worked out off the main thread, by its
@@ -371,7 +377,8 @@ pub(crate) fn registered_class(
 /// tiles taken out, its colliders and its shadows), and each whose asset
 /// failed reports it once; each landing that came back lands whole (its
 /// layers, objects, class tiles, colliders and shadows, and
-/// `MapEvent::Spawned`). Where there is no thread (the web) a landing is
+/// `MapEvent::Spawned`), or is worked out again here if it panicked, and
+/// reported once as failed if that panics too. Where there is no thread (the web) a landing is
 /// worked out here and lands in the same frame. With no map waiting it is
 /// one query over no entities
 pub(crate) fn spawn_maps(
@@ -382,7 +389,15 @@ pub(crate) fn spawn_maps(
   let decided: Vec<(Entity, Ready)> = waiting
     .iter(world)
     .filter(|(.., landing)| landing.is_none())
-    .filter_map(|(map, root, failed, _)| readiness(world, root, failed).map(|ready| (map, ready)))
+    .filter_map(|(map, root, failed, _)| {
+      let ready = readiness(world, root, failed)?;
+      // A landing that panicked waits for its map or a tileset to change
+      let given_up = matches!(ready, Ready::Spawn)
+        && failed
+          .and_then(|f| f.landing.as_ref())
+          .is_some_and(|stamp| *stamp == landing_stamp(world, root));
+      (!given_up).then_some((map, ready))
+    })
     .collect();
   for (map, ready) in decided {
     match ready {
@@ -404,7 +419,9 @@ pub(crate) fn spawn_maps(
   }
   let arrived: Vec<(u64, Option<Landed>)> = worker.finished().collect();
   for (job, landed) in arrived {
-    let mut landing = world.query::<(Entity, &MapLanding)>();
+    // Disabled roots too: one disabled while its landing was out drops it
+    // here, and is worked out again once enabled
+    let mut landing = world.query_filtered::<(Entity, &MapLanding), Allow<Disabled>>();
     let Some(map) = landing
       .iter(world)
       .find(|(_, l)| l.job == job)
@@ -414,6 +431,9 @@ pub(crate) fn spawn_maps(
       continue;
     };
     world.entity_mut(map).remove::<MapLanding>();
+    if !waits_to_land(world, map) {
+      continue;
+    }
     let landed = match landed {
       Some(landed) => Some(landed),
       None => {
@@ -426,10 +446,66 @@ pub(crate) fn spawn_maps(
         })
       }
     };
-    if let Some(landed) = landed {
-      land(world, map, landed);
+    match landed {
+      Some(landed) => land(world, map, landed),
+      None => landing_failed(world, map),
     }
   }
+}
+
+/// Whether `map` is a map waiting to land: an enabled root not spawned yet
+fn waits_to_land(world: &World, map: Entity) -> bool {
+  world.get_entity(map).is_ok_and(|entity| {
+    entity.contains::<MapRoot>() && !entity.contains::<MapIds>() && !entity.contains::<Disabled>()
+  })
+}
+
+/// Both tries at `map`'s landing panicked (off the main thread and on it):
+/// the failure is reported once, and the landing is not tried again until
+/// the root's map (or LDtk project) or a tileset it uses changes
+fn landing_failed(world: &mut World, map: Entity) {
+  let Some(root) = world.get::<MapRoot>(map) else {
+    return;
+  };
+  let landing = landing_stamp(world, root);
+  let server = world.get_resource::<AssetServer>();
+  let path = match &root.source {
+    MapSource::Map(handle) => server.and_then(|s| s.path(handle)),
+    MapSource::Ldtk { project, .. } => server.and_then(|s| s.path(project)),
+  }
+  .unwrap_or_else(|| AssetPath::from_normal(Cow::Borrowed("map")));
+  let error = Arc::new(AssetError::decode(
+    &path,
+    "its landing panicked; it is tried again once the map or a tileset it uses changes",
+  ));
+  crate::engine_warn!(module: "Tilemap", "map {map}: {}", error.report());
+  world.entity_mut(map).insert(MapFailed {
+    error: Arc::clone(&error),
+    version: None,
+    landing: Some(landing),
+  });
+  send(world, MapEvent::Failed { map, error });
+}
+
+/// What a landing is worked out from, as versions: the root's map (or LDtk
+/// project), then each tileset asset the map uses
+fn landing_stamp(world: &World, root: &MapRoot) -> Vec<Option<u64>> {
+  let mut stamp = vec![match &root.source {
+    MapSource::Map(handle) => world
+      .get_resource::<Assets<TileMap>>()
+      .and_then(|maps| maps.version(handle)),
+    MapSource::Ldtk { project, .. } => world
+      .get_resource::<Assets<LdtkProject>>()
+      .and_then(|projects| projects.version(project)),
+  }];
+  let tilesets = world.get_resource::<Assets<Tileset>>();
+  if let Some(map) = map_asset(world, root) {
+    stamp.extend(map.tilesets.iter().filter_map(|source| match source {
+      TilesetSource::Asset(handle) => Some(tilesets.and_then(|t| t.version(handle))),
+      TilesetSource::Embedded(_) => None,
+    }));
+  }
+  stamp
 }
 
 /// What a waiting map does this frame
@@ -449,6 +525,7 @@ fn readiness(world: &World, root: &MapRoot, failed: Option<&MapFailed>) -> Optio
     (!reported).then_some(Ready::Failed(MapFailed {
       error,
       version: None,
+      landing: None,
     }))
   };
   match &root.source {
@@ -490,6 +567,7 @@ fn readiness(world: &World, root: &MapRoot, failed: Option<&MapFailed>) -> Optio
         Some(Ready::Failed(MapFailed {
           error: Arc::new(error),
           version,
+          landing: None,
         }))
       }
       LoadState::Loading | LoadState::NotLoaded => None,
@@ -659,11 +737,20 @@ fn landing_job(world: &World, map: Entity) -> Option<LandingJob> {
   })
 }
 
+/// A map property that makes a test's landing panic, on every try
+#[cfg(test)]
+const PANICKING_LANDING: &str = "test: the landing panics";
+
 impl LandingJob {
   /// The map's layers as they will spawn (each tile layer's grid with class
   /// tiles taken out, every chunk dirty so it is drawn once), and its
   /// colliders and shadows for them
   fn run(self) -> Landed {
+    // A test's map whose landing always panics
+    #[cfg(test)]
+    if self.collision.properties.get(PANICKING_LANDING).is_some() {
+      panic!("a test's landing that always panics");
+    }
     let layers: Vec<PlannedLayer> = self
       .layers
       .into_iter()
@@ -746,12 +833,7 @@ fn object_parts(map: Entity, object: MapObjectData) -> (MapObject, Transform) {
 /// components (observers run as each arrives), its class tiles, and
 /// `MapEvent::Spawned`
 fn land(world: &mut World, map: Entity, landed: Landed) {
-  let waiting = world.get_entity(map).is_ok_and(|entity| {
-    entity.contains::<MapRoot>()
-      && !entity.contains::<MapIds>()
-      && !entity.contains::<crate::core::ecs::Disabled>()
-  });
-  if !waiting {
+  if !waits_to_land(world, map) {
     return;
   }
   let Landed {
@@ -1861,6 +1943,98 @@ mod tests {
     if layer.name == cancel.layer {
       despawn_later(&mut commands, add.entity);
     }
+  }
+
+  /// A 256 x 256 map of four full tile layers: big enough that its landing
+  /// is still out when the frame that sent it ends
+  fn big_map() -> TileMap {
+    let mut map = TileMap::new(UVec2::splat(256), UVec2::splat(16));
+    let tileset = Tileset::new("plain", UVec2::splat(16), TilesetImage::Collection);
+    let set = map.add_tileset(TilesetSource::Embedded(Arc::new(tileset)));
+    for name in ["ground", "decor 1", "decor 2", "decor 3"] {
+      let layer = map.add_tile_layer(name);
+      if let Some(grid) = map.tiles_mut(layer) {
+        grid.fill(IVec2::ZERO, IVec2::splat(255), Some(Tile::new(set, 0)));
+      }
+    }
+    map
+  }
+
+  #[test]
+  fn a_root_disabled_while_its_landing_is_out_lands_once_enabled() {
+    use crate::core::ecs::Disabled;
+    let mut world = world_over(files_with(&[]));
+    let handle = world.resource_mut::<Assets<TileMap>>().add(big_map());
+    let mut frames = Frames::new();
+    let mut cursor = MessageCursor::<MapEvent>::default();
+    let map = world.spawn(MapRoot::new(handle)).id();
+    // The frame that sends its landing
+    pump(&mut world);
+    frames.0.run(&mut world);
+    assert!(world.get::<MapLanding>(map).is_some(), "its landing is out");
+    world.entity_mut(map).insert(Disabled);
+    // The landing comes back while the root is disabled: nothing lands
+    let start = Instant::now();
+    while world.get::<MapLanding>(map).is_some() {
+      frames.0.run(&mut world);
+      assert!(
+        start.elapsed() < Duration::from_secs(5),
+        "its landing never came back while the root was disabled"
+      );
+      std::thread::sleep(Duration::from_millis(1));
+    }
+    for _ in 0..3 {
+      frames.0.run(&mut world);
+    }
+    assert!(
+      world.get::<MapIds>(map).is_none(),
+      "a disabled root lands nothing"
+    );
+    assert!(spawned(&events(&world, &mut cursor)).is_empty());
+    // Enabled again, it is worked out again and lands, once
+    world.entity_mut(map).remove::<Disabled>();
+    frames.until(&mut world, |world| world.get::<MapIds>(map).is_some());
+    frames.run(&mut world);
+    frames.run(&mut world);
+    assert!(MapsView::new(&mut world).is_ready(map));
+    assert_eq!(layers_of(&mut world, map).len(), 4);
+    assert_eq!(spawned(&events(&world, &mut cursor)), [map]);
+  }
+
+  #[test]
+  fn a_landing_that_always_panics_is_reported_once_and_not_retried() {
+    let mut world = world_over(files_with(&[]));
+    let mut asset = code_map();
+    asset
+      .properties
+      .insert(PANICKING_LANDING, PropertyValue::Bool(true));
+    let handle = world.resource_mut::<Assets<TileMap>>().add(asset);
+    let mut frames = Frames::new();
+    let mut cursor = MessageCursor::<MapEvent>::default();
+    let map = world.spawn(MapRoot::new(handle.clone())).id();
+    frames.until(&mut world, |world| world.get::<MapFailed>(map).is_some());
+    // Not tried again: no landing goes out
+    for _ in 0..10 {
+      pump(&mut world);
+      frames.0.run(&mut world);
+      assert!(
+        world.get::<MapLanding>(map).is_none(),
+        "its landing was sent again"
+      );
+    }
+    let sent = events(&world, &mut cursor);
+    let failures = failed(&sent);
+    assert_eq!(failures.len(), 1, "reported once: {failures:?}");
+    assert_eq!(failures[0].0, map);
+    assert!(failures[0].1.contains("panicked"), "{}", failures[0].1);
+    assert!(spawned(&sent).is_empty());
+    // Its map changes: it is tried again, and lands
+    if let Some(asset) = world.resource_mut::<Assets<TileMap>>().get_mut(&handle) {
+      asset.properties = Properties::default();
+    }
+    frames.until(&mut world, |world| world.get::<MapIds>(map).is_some());
+    assert_eq!(spawned(&events(&world, &mut cursor)), [map]);
+    assert!(world.get::<MapFailed>(map).is_none());
   }
 
   #[test]

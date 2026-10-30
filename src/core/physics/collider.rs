@@ -275,9 +275,17 @@ impl Collider {
         );
         Some((a.0.min(b.0), a.1.max(b.1)))
       }
-      ColliderShape::Polygon { points }
-      | ColliderShape::Polyline { points }
-      | ColliderShape::Segments { points, .. } => bounds_of(points.iter().map(|p| place(*p))),
+      ColliderShape::Polygon { points } | ColliderShape::Polyline { points } => {
+        bounds_of(points.iter().map(|p| place(*p)))
+      }
+      // Only the points an edge names collide
+      ColliderShape::Segments { points, segments } => bounds_of(
+        segments
+          .iter()
+          .filter_map(|&[a, b]| Some([*points.get(a as usize)?, *points.get(b as usize)?]))
+          .flatten()
+          .map(place),
+      ),
       ColliderShape::Segment { a, b } => bounds_of([place(*a), place(*b)]),
     };
     bounds.unwrap_or_else(|| {
@@ -368,6 +376,18 @@ mod tests {
         b: Vec2::X
       }
     );
+  }
+
+  #[test]
+  fn segments_are_bounded_by_the_points_their_edges_name() {
+    // The third point no edge names (and the fourth edge names a point that
+    // is not there)
+    let points = [Vec2::ZERO, Vec2::new(10.0, 4.0), Vec2::new(500.0, -500.0)];
+    let collider = Collider::segments(points, [[0, 1], [1, 9]]);
+    assert!(close(
+      collider.world_bounds(&GlobalTransform::IDENTITY),
+      (Vec2::ZERO, Vec2::new(10.0, 4.0))
+    ));
   }
 
   #[test]

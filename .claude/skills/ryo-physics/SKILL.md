@@ -2,7 +2,7 @@
 name: ryo-physics
 description: Rapier2D physics integration - bodies, colliders, one-way colliders, triggers, joints, queries, contact state and collision messages.
 metadata:
-  version: 3.2.1
+  version: 3.3.0
 ---
 
 # Ryo2D Physics Specialist

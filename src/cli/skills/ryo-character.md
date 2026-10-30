@@ -2,7 +2,7 @@
 name: ryo-character
 description: Characters - the character controller, platformer and top-down movement presets, MoveIntent and key bindings, one-way platforms, triggers with pickups, kill zones, checkpoints and respawns, tile colliders and knockback.
 metadata:
-  version: 1.1.2
+  version: 1.1.3
 ---
 
 # Ryo2D Characters

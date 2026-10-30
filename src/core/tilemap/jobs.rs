@@ -85,8 +85,9 @@ impl<T: Send + 'static> Worker<T> {
         });
       match spawned {
         Ok(_) => self.jobs = Some(jobs),
+        // Expected on the web, so not a warning
         Err(error) => {
-          crate::engine_warn!(
+          crate::engine_debug!(
             module: "Tilemap",
             "no thread to build maps on ({error}); they build on the main thread"
           );

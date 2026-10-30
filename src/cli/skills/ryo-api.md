@@ -2,7 +2,7 @@
 name: ryo-api
 description: Complete API reference for ryo2d::prelude - every exported type with its signatures and use, organised by area.
 metadata:
-  version: 2.13.8
+  version: 2.14.0
 ---
 
 # Ryo2D API Reference
