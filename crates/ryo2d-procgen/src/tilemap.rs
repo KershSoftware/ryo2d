@@ -2,24 +2,34 @@
 //! a designer's map.
 
 use std::collections::HashSet;
-use std::sync::Mutex;
 
+use ryo2d::core::dev_log::{self, LogContext, LogLevel};
 use ryo2d::prelude::*;
 
 use crate::config::TileType;
 use crate::grid::GenerationGrid;
 
-/// Names of colours a set lacked, warned of once each
-static WARNED: Mutex<Option<HashSet<String>>> = Mutex::new(None);
+/// For each Wang position, in Tiled's order (top, top-right, right,
+/// bottom-right, bottom, bottom-left, left, top-left), the offsets of the
+/// cells that share it
+const SHARED: [&[(i32, i32)]; 8] = [
+  &[(0, 0), (0, -1)],
+  &[(0, 0), (1, 0), (0, -1), (1, -1)],
+  &[(0, 0), (1, 0)],
+  &[(0, 0), (1, 0), (0, 1), (1, 1)],
+  &[(0, 0), (0, 1)],
+  &[(0, 0), (-1, 0), (0, 1), (-1, 1)],
+  &[(0, 0), (-1, 0)],
+  &[(0, 0), (-1, 0), (0, -1), (-1, -1)],
+];
 
-fn warn_once(name: &str, set: &str) {
-  let mut guard = WARNED.lock().unwrap_or_else(|e| e.into_inner());
-  if guard
-    .get_or_insert_with(HashSet::new)
-    .insert(name.to_owned())
-  {
-    eprintln!("ryo2d-procgen: Wang set `{set}` has no colour `{name}`; its cells stay empty");
-  }
+fn warn_missing_color(name: &str, set: &str) {
+  dev_log::log(
+    LogLevel::Warn,
+    LogContext::Game,
+    Some("procgen"),
+    format!("Wang set \"{set}\" has no colour \"{name}\"; its cells stay empty"),
+  );
 }
 
 impl GenerationGrid {
@@ -71,12 +81,15 @@ impl GenerationGrid {
   ) -> TileMap {
     let (mut map, layer) = self.empty_map(tile_size, tileset);
     let (w, h) = self.dimensions();
+    let mut missing: HashSet<&str> = HashSet::new();
     let colors: Vec<u8> = self
       .iter()
       .map(|(_, _, kind)| match color_of(kind) {
         None => 0,
         Some(name) => wang_set.color_index(name).unwrap_or_else(|| {
-          warn_once(name, wang_set.name());
+          if missing.insert(name) {
+            warn_missing_color(name, wang_set.name());
+          }
           0
         }),
       })
@@ -99,19 +112,7 @@ impl GenerationGrid {
     for y in 0..h as i32 {
       for x in 0..w as i32 {
         let mut wanted = [WangSet::ANY; 8];
-        // Wang order: top, top-right, right, bottom-right, bottom,
-        // bottom-left, left, top-left; each is the cells that share it
-        let cells: [&[(i32, i32)]; 8] = [
-          &[(0, 0), (0, -1)],
-          &[(0, 0), (1, 0), (0, -1), (1, -1)],
-          &[(0, 0), (1, 0)],
-          &[(0, 0), (1, 0), (0, 1), (1, 1)],
-          &[(0, 0), (0, 1)],
-          &[(0, 0), (-1, 0), (0, 1), (-1, 1)],
-          &[(0, 0), (-1, 0)],
-          &[(0, 0), (-1, 0), (0, -1), (-1, -1)],
-        ];
-        for (k, shared) in cells.iter().enumerate() {
+        for (k, shared) in SHARED.iter().enumerate() {
           let used = if k % 2 == 1 { corners } else { edges };
           if used {
             wanted[k] = shared
@@ -149,6 +150,7 @@ impl GenerationGrid {
 #[cfg(test)]
 mod tests {
   use crate::prelude::*;
+  use ryo2d::core::dev_log::LogLevel;
   use ryo2d::prelude::*;
   use std::sync::Arc;
 
@@ -270,5 +272,124 @@ mod tests {
     let map = grid.to_terrain_map(UVec2::splat(16), tileset(), &set, |_| Some("lava"));
     assert_eq!(tile_at(&map, 0, 0), None);
     assert_eq!(tile_at(&map, 1, 1), None);
+  }
+
+  /// A set of `kind` with one colour "floor" and the given tiles, as
+  /// (id, wangid)
+  fn one_colour_set(
+    kind: WangKind,
+    transformations: TileTransformations,
+    tiles: &[(u32, [u8; 8])],
+  ) -> WangSet {
+    WangSet::new(
+      "ground",
+      kind,
+      vec![color("floor")],
+      tiles
+        .iter()
+        .map(|&(tile, wangid)| WangTile {
+          tile,
+          wangid,
+          probability: 1.0,
+        })
+        .collect(),
+      transformations,
+    )
+  }
+
+  fn room(width: u32) -> GenerationGrid {
+    let mut grid = GenerationGrid::new(width, width);
+    grid.set(2, 2, TileType::Floor);
+    grid
+  }
+
+  fn floor_of(t: TileType) -> Option<&'static str> {
+    (t == TileType::Floor).then_some("floor")
+  }
+
+  #[test]
+  fn an_edge_set_picks_by_edges_alone() {
+    // top 1, right 2, bottom 4, left 8: one tile for each combination
+    let tiles: Vec<(u32, [u8; 8])> = (1..16u32)
+      .map(|id| {
+        let mut wangid = [0u8; 8];
+        for (n, slot) in [0, 2, 4, 6].into_iter().enumerate() {
+          wangid[slot] = ((id >> n) & 1) as u8;
+        }
+        (id, wangid)
+      })
+      .collect();
+    let set = one_colour_set(WangKind::Edge, TileTransformations::default(), &tiles);
+    let map = room(5).to_terrain_map(UVec2::splat(16), tileset(), &set, floor_of);
+    let id = |x, y| tile_at(&map, x, y).map(|t| t.id);
+    assert_eq!(id(2, 2), Some(15));
+    assert_eq!(id(2, 1), Some(4), "its bottom edge is the room's top");
+    assert_eq!(id(1, 2), Some(2));
+    assert_eq!(id(3, 2), Some(8));
+    assert_eq!(id(2, 3), Some(1));
+    assert_eq!(id(1, 1), None, "a diagonal neighbour shares no edge");
+  }
+
+  #[test]
+  fn a_mixed_set_picks_by_edges_and_corners() {
+    // wangid order: top, TR, right, BR, bottom, BL, left, TL
+    let tiles = [
+      (1, [1; 8]),
+      (2, [0, 0, 0, 1, 1, 1, 0, 0]),
+      (3, [0, 0, 0, 1, 0, 0, 0, 0]),
+      (4, [0, 0, 0, 0, 1, 0, 0, 0]),
+      (5, [0, 0, 0, 1, 0, 1, 0, 0]),
+    ];
+    let set = one_colour_set(WangKind::Mixed, TileTransformations::default(), &tiles);
+    let map = room(5).to_terrain_map(UVec2::splat(16), tileset(), &set, floor_of);
+    let id = |x, y| tile_at(&map, x, y).map(|t| t.id);
+    assert_eq!(id(2, 2), Some(1));
+    assert_eq!(id(2, 1), Some(2), "the bottom edge and both bottom corners");
+    assert_eq!(id(1, 1), Some(3), "a corner alone");
+    assert_eq!(id(0, 0), None);
+  }
+
+  #[test]
+  fn a_terrain_map_draws_a_tile_flipped_where_only_a_flip_fits() {
+    // the one tile has floor at its top-right corner only
+    let tiles = [(0, [0, 1, 0, 0, 0, 0, 0, 0])];
+    let allowed = TileTransformations {
+      hflip: true,
+      ..Default::default()
+    };
+    let set = one_colour_set(WangKind::Corner, allowed, &tiles);
+    let map = room(5).to_terrain_map(UVec2::splat(16), tileset(), &set, floor_of);
+    let at = |x, y| tile_at(&map, x, y).map(|t| (t.id, t.flip));
+    assert_eq!(
+      at(1, 3),
+      Some((0, TileFlip::NONE)),
+      "floor at its top-right"
+    );
+    assert_eq!(
+      at(3, 3),
+      Some((0, TileFlip::HORIZONTAL)),
+      "floor at its top-left"
+    );
+  }
+
+  #[test]
+  fn a_colour_the_set_lacks_warns_once_per_conversion() {
+    let set = corner_set(&["floor"]);
+    let grid = GenerationGrid::filled(3, 3, TileType::Floor);
+    let warnings = || {
+      ryo2d::core::dev_log::get_entries()
+        .iter()
+        .filter(|e| e.level == LogLevel::Warn && e.message.contains("lava-warn-once"))
+        .count()
+    };
+    let before = warnings();
+    grid.to_terrain_map(UVec2::splat(16), tileset(), &set, |_| {
+      Some("lava-warn-once")
+    });
+    assert_eq!(warnings(), before + 1, "nine cells, one warning");
+    grid.to_terrain_map(UVec2::splat(16), tileset(), &set, |_| {
+      Some("lava-warn-once")
+    });
+    assert_eq!(warnings(), before + 2, "another conversion warns again");
   }
 }
