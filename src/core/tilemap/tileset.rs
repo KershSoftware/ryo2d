@@ -143,6 +143,8 @@ pub struct WangSet {
   pub tiles: Vec<WangTile>,
   /// The transformations the set's tileset allows, copied from it at load
   pub transformations: TileTransformations,
+  /// What picking tiles works out once from the fields above
+  pub(crate) cache: super::wang::WangCache,
 }
 
 /// A set of tiles: an atlas or a collection of images, with the data tiles

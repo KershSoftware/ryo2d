@@ -22,6 +22,8 @@ var jobs = [
   ["maps/wang-tri-grass.tmj", "maps/wang-tri-water.tmj", "shore", 3, 3, "water"],
   ["maps/wang-flipped.tmj", "maps/wang-flipped-painted.tmj", "ground", 2, 2, "grass"],
   ["maps/wang-turn-dirt.tmj", "maps/wang-turn-painted.tmj", "turn", 2, 2, "grass"],
+  ["maps/wang-chain-grass.tmj", "maps/wang-chain-deep.tmj", "depth", 5, 5, "deep"],
+  ["maps/wang-rot-dirt.tmj", "maps/wang-rot-painted.tmj", "ground", 2, 2, "grass"],
 ];
 for (var i = 0; i < jobs.length; i++) {
   var job = jobs[i];

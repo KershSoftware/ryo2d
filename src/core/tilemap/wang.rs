@@ -5,8 +5,8 @@
 //! What a paint does, in the order of Tiled's results:
 //!
 //! - The paint asks one color of the positions the set's kind colors (a
-//!   cell's corners, edges or both) and every cell sharing one of them, the
-//!   cell first, picks again in rows and columns. A pick must have the
+//!   cell's corners, edges or both) and every cell sharing one of them
+//!   picks again, in rows and columns (the painted cell is not first). A pick must have the
 //!   color asked and what the cells that picked before it show beside it,
 //!   and among those fits is the one closest to what the cell shows now;
 //!   closeness sums the distances between colors, which are steps through
@@ -14,8 +14,10 @@
 //! - No color is color 0, and the empty cell is a candidate with only 0.
 //! - A cell nothing fits keeps what it has.
 //! - A pick that changes a cell passes the change on to the neighbours
-//!   across an edge whose colors no longer agree, within two cells of the
-//!   painted one.
+//!   across an edge whose colors no longer agree, within a square around
+//!   the painted cell as many cells out as the set's longest color chain
+//!   plus one (two colors that share a tile are a chain of one: two cells
+//!   out; deep water, water, sand, grass: four).
 //! - Flips: a cell is read through its flip, and the tileset's
 //!   transformations add flipped and turned candidates.
 //!
@@ -23,12 +25,15 @@
 //! cell, so the same edits make the same tiles.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::OnceLock;
 
 use glam::IVec2;
 
 use super::edit::{self, LayerRef};
 use super::spawn::{LayerTiles, MapRoot, MapTile, TileLayerData, map_asset};
-use super::{Tile, TileFlip, TileTransformations, TilesetSource, WangKind, WangSet};
+use super::{
+  Tile, TileFlip, TileTransformations, TilesetSource, WangColor, WangKind, WangSet, WangTile,
+};
 use crate::core::asset::Assets;
 use crate::core::ecs::{Entity, Resource, World};
 use crate::core::tilemap::Tileset;
@@ -176,6 +181,30 @@ struct Matcher {
   distance: Vec<Vec<Option<u32>>>,
   positions: &'static [usize],
   prefer_untransformed: bool,
+  /// Each tile's wangid, as the set lists it
+  ids: HashMap<u32, [u8; 8]>,
+  /// The largest distance between two colors a chain of tiles joins
+  longest_chain: i32,
+}
+
+/// What a set works out once from its tiles, colors and transformations: its
+/// candidates, how far apart its colors are and its tiles' wangids. Built the
+/// first time it is asked for, so a set made in code gets it too, and a
+/// tileset that loads again brings a new one with its sets. The set's fields
+/// are read once built: change them through a new `WangSet`.
+#[derive(Default)]
+pub(crate) struct WangCache(OnceLock<Matcher>);
+
+impl Clone for WangCache {
+  fn clone(&self) -> Self {
+    WangCache::default()
+  }
+}
+
+impl std::fmt::Debug for WangCache {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.write_str("WangCache")
+  }
 }
 
 impl Matcher {
@@ -250,11 +279,20 @@ impl Matcher {
         }
       }
     }
+    let longest_chain = distance
+      .iter()
+      .flatten()
+      .flatten()
+      .map(|&d| i32::try_from(d).unwrap_or(i32::MAX))
+      .max()
+      .unwrap_or(0);
     Matcher {
       candidates,
       distance,
       positions,
       prefer_untransformed: set.transformations.prefer_untransformed,
+      ids: set.tiles.iter().rev().map(|t| (t.tile, t.wangid)).collect(),
+      longest_chain,
     }
   }
 
@@ -321,6 +359,31 @@ impl Matcher {
 }
 
 impl WangSet {
+  /// A set of `kind` over `colors` and `tiles`, with the tileset's
+  /// `transformations`. Its fields are read once the set is first used to
+  /// pick tiles, so build it whole
+  pub fn new(
+    name: impl Into<String>,
+    kind: WangKind,
+    colors: Vec<WangColor>,
+    tiles: Vec<WangTile>,
+    transformations: TileTransformations,
+  ) -> WangSet {
+    WangSet {
+      name: name.into(),
+      kind,
+      colors,
+      tiles,
+      transformations,
+      cache: WangCache::default(),
+    }
+  }
+
+  /// The set's candidates and distances, built on the first call
+  fn matcher(&self) -> &Matcher {
+    self.cache.0.get_or_init(|| Matcher::new(self))
+  }
+
   /// In a wanted wangid: any color goes at this position
   pub const ANY: u8 = u8::MAX;
 
@@ -341,8 +404,7 @@ impl WangSet {
   /// nothing fits, or if the closest is no tile at all (an empty cell fits
   /// an all-0 `wanted` best)
   pub fn best_tile(&self, wanted: [u8; 8], cell: IVec2) -> Option<(u32, TileFlip)> {
-    let matcher = Matcher::new(self);
-    let candidate = matcher.pick(&wanted, &[Self::ANY; 8], cell, false)?;
+    let candidate = self.matcher().pick(&wanted, &[Self::ANY; 8], cell, false)?;
     Some((candidate.tile?, candidate.flip))
   }
 }
@@ -392,9 +454,7 @@ struct Painting<'w> {
   layer: Entity,
   index: u16,
   size: IVec2,
-  matcher: Matcher,
-  /// Each tile's wangid, for reading the cells
-  ids: HashMap<u32, [u8; 8]>,
+  matcher: &'w Matcher,
   /// The colors the painting asks of each cell touching it (`ANY` where it
   /// asks none)
   paint: HashMap<IVec2, [u8; 8]>,
@@ -438,6 +498,7 @@ impl Painting<'_> {
   fn colors_at(&self, at: IVec2) -> [u8; 8] {
     match self.tile_at(at) {
       Some(tile) if tile.tileset == self.index => self
+        .matcher
         .ids
         .get(&tile.id)
         .map_or([0; 8], |&id| flipped(id, tile.flip)),
@@ -448,7 +509,7 @@ impl Painting<'_> {
   fn holds_set_tile(&self, at: IVec2) -> bool {
     self
       .tile_at(at)
-      .is_some_and(|t| t.tileset == self.index && self.ids.contains_key(&t.id))
+      .is_some_and(|t| t.tileset == self.index && self.matcher.ids.contains_key(&t.id))
   }
 
   /// Settles `at` on `candidate`, and queues the neighbours whose colors at a
@@ -529,10 +590,13 @@ impl Painting<'_> {
   }
 }
 
-/// The cells a paint at `cell` may change: the square two cells out from it
-fn reach(cell: IVec2) -> HashSet<IVec2> {
-  (-2..=2)
-    .flat_map(|y| (-2..=2).map(move |x| cell + IVec2::new(x, y)))
+/// The cells a paint at `cell` may change: the square as many cells out as
+/// the set's colors chain, plus one (a chain of one step, two colors that
+/// share a tile, reaches two cells; each further step reaches one more)
+fn reach(cell: IVec2, longest_chain: i32) -> HashSet<IVec2> {
+  let out = longest_chain.max(1) + 1;
+  (-out..=out)
+    .flat_map(|y| (-out..=out).map(move |x| cell + IVec2::new(x, y)))
     .collect()
 }
 
@@ -556,15 +620,14 @@ fn plan(
     layer,
     index,
     size,
-    matcher: Matcher::new(set),
-    ids: set.tiles.iter().rev().map(|t| (t.tile, t.wangid)).collect(),
+    matcher: set.matcher(),
     paint: HashMap::new(),
     painted: cell,
     decided: HashMap::new(),
     pending: HashSet::new(),
     failed: HashSet::new(),
     queue: VecDeque::new(),
-    reach: reach(cell),
+    reach: reach(cell, set.matcher().longest_chain),
     plan: Plan {
       edits: Vec::new(),
       missed: false,
@@ -845,6 +908,32 @@ mod tests {
   }
 
   #[test]
+  fn a_chain_of_four_colours_is_corrected_ring_by_ring() {
+    // deep water into grass: sand and shallows between, three rings out
+    assert_as_tiled(
+      "wang-chain-grass.tmj",
+      "wang-chain-deep.tmj",
+      "depth",
+      IVec2::new(5, 5),
+      Some("deep"),
+    );
+  }
+
+  #[test]
+  fn an_untransformed_tile_wins_when_the_set_prefers_it() {
+    // a complete set that may also turn its tiles: every tile fits twice
+    assert_as_tiled(
+      "wang-rot-dirt.tmj",
+      "wang-rot-painted.tmj",
+      "ground",
+      IVec2::new(2, 2),
+      Some("grass"),
+    );
+    let (cells, _) = recorded(&mut MapWorld::new(), "wang-rot-painted.tmj");
+    assert!(cells.iter().flatten().all(|t| t.flip == TileFlip::NONE));
+  }
+
+  #[test]
   fn an_edge_set_picks_its_tiles() {
     let mut mw = MapWorld::new();
     let handle = load_map(&mut mw.world, "tiled/maps/wang-dirt.tmj");
@@ -1065,5 +1154,79 @@ mod tests {
       ("other".to_string(), "ground".to_string()),
       1
     ));
+  }
+
+  /// A 255-tile mixed set with every flip allowed, as procgen would call it
+  fn big_set() -> WangSet {
+    use crate::core::tilemap::{TileTransformations, WangColor, WangTile};
+    let colors = (1..=3)
+      .map(|i| WangColor {
+        name: format!("c{i}"),
+        color: crate::core::ui::Color::WHITE,
+        tile: None,
+        probability: 1.0,
+        properties: Default::default(),
+      })
+      .collect();
+    let mut tiles = Vec::new();
+    let mut seed = 12345u32;
+    for tile in 0..255 {
+      let wangid = std::array::from_fn(|_| {
+        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        ((seed >> 24) % 4) as u8
+      });
+      tiles.push(WangTile {
+        tile,
+        wangid,
+        probability: 1.0,
+      });
+    }
+    WangSet::new(
+      "big",
+      WangKind::Mixed,
+      colors,
+      tiles,
+      TileTransformations {
+        hflip: true,
+        vflip: true,
+        rotate: true,
+        prefer_untransformed: true,
+      },
+    )
+  }
+
+  #[test]
+  fn a_set_builds_its_candidates_once_and_a_copy_builds_its_own() {
+    let set = big_set();
+    let first: *const super::Matcher = set.matcher();
+    assert!(std::ptr::eq(first, set.matcher()), "built once per set");
+    let copy = set.clone();
+    assert!(!std::ptr::eq(first, copy.matcher()), "a copy has its own");
+    // the same picks either way
+    let wanted = [1, 2, 3, 1, 2, 3, 1, 2];
+    for i in 0..20 {
+      let cell = IVec2::new(i, 3);
+      assert_eq!(set.best_tile(wanted, cell), copy.best_tile(wanted, cell));
+    }
+  }
+
+  #[test]
+  #[ignore = "timing; run by hand"]
+  fn best_tile_timing_on_a_255_tile_set() {
+    let set = big_set();
+    let start = std::time::Instant::now();
+    let mut found = 0;
+    for i in 0..2000 {
+      if set
+        .best_tile([1, 2, 3, 1, 2, 3, 1, 2], IVec2::new(i, i))
+        .is_some()
+      {
+        found += 1;
+      }
+    }
+    println!(
+      "best_tile on 255 tiles with flips: {:?} per call ({found} found)",
+      start.elapsed() / 2000
+    );
   }
 }

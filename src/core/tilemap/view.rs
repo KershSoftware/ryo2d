@@ -87,18 +87,22 @@ impl<'w> MapsView<'w> {
   /// mixed set) take the color, then the cell and the cells sharing one of
   /// them pick the tile that fits, a transformed one if the tileset allows,
   /// and a change that leaves a neighbour disagreeing is passed on to it,
-  /// up to two cells from `cell`. Cells that nothing fits (an incomplete set)
-  /// keep their tile and the set warns once. False if nothing changed, the
-  /// map, layer, set or color is not there, or the cell is outside the layer.
+  /// as far as the set's longest chain of colors plus one cells from `cell`
+  /// (two for two colors that share a tile, four for deep water, water,
+  /// sand and grass). Cells that nothing fits (an incomplete set) keep their
+  /// tile and the set warns once per tileset version: so does erasing in a
+  /// set with no tile that has a bare corner or edge, where the neighbours
+  /// have nothing to turn into. False if nothing changed, the map, layer,
+  /// set or color is not there, or the cell is outside the layer.
   ///
   /// This matches Tiled's results on the cases checked against it (complete,
-  /// one-color, incomplete and multi-color sets, flipped neighbours and
-  /// transformations; the fixtures in `tests/fixtures/tilemap/tiled` were
-  /// painted by Tiled 1.12). Limits: Tiled draws at random among equal fits,
-  /// this by a hash of the cell; Tiled carries a correction further than two
-  /// cells in some sets with missing transitions; a class tile
-  /// ([`MapTile`](super::MapTile)) on a cell is not changed by a neighbour's
-  /// correction.
+  /// one-color, incomplete and multi-color sets, color chains, flipped
+  /// neighbours and transformations; the fixtures in
+  /// `tests/fixtures/tilemap/tiled` were painted by Tiled 1.12). Tiled draws
+  /// at random among equal fits and this by a hash of the cell, so those
+  /// picks differ. A class tile ([`MapTile`](super::MapTile)) keeps its
+  /// colors out of a neighbour's correction, so painting beside one meets
+  /// it with a seam; painting that very cell replaces it.
   pub fn set_terrain<'a>(
     &mut self,
     map: Entity,

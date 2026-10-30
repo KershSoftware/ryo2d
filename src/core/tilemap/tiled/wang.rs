@@ -113,13 +113,7 @@ pub(super) fn build_wang_sets(
         probability: probability(tile.tileid),
       });
     }
-    sets.push(WangSet {
-      name: set.name,
-      kind,
-      colors,
-      tiles,
-      transformations,
-    });
+    sets.push(WangSet::new(set.name, kind, colors, tiles, transformations));
   }
   Ok(sets)
 }
