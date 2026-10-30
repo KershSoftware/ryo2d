@@ -64,6 +64,12 @@ fn cell_pieces(
   );
 }
 
+// No piece is ever inserted twice: a cell's pieces are distinct (a shape's
+// tops are edges of a well-formed boundary), and two cells never share one,
+// as a piece runs left to right inside its cell's box and a top on a side
+// of the box is on its top side (a well-formed shape's bottom edges run
+// right to left), which no other cell's pieces reach.
+
 impl Runs {
   /// Every run of the grid, chained whole.
   pub(crate) fn build(cells: Cells) -> Self {
@@ -182,6 +188,7 @@ impl Runs {
 
   fn insert(&mut self, a: Point, b: Point) {
     if self.piece(a, b).is_some() {
+      debug_assert!(false, "the one-way piece {a:?} -> {b:?} is already there");
       return;
     }
     self.from.entry(key(a)).or_default().push(Piece {

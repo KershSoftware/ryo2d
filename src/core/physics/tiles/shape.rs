@@ -12,7 +12,7 @@
 
 use glam::DVec2;
 
-use super::{CellShape, GRID, Point};
+use super::{CellShape, GRID, Point, sides};
 use crate::core::ecs::Vec2;
 
 /// A corner of a convex part turning less than this (the sine of its turn)
@@ -44,26 +44,35 @@ impl ShapeBuild {
       .polygons
       .iter()
       .filter_map(|polygon| {
-        let ring = snapped(polygon)?;
-        if crosses_itself(&ring) {
+        let mut ring = snapped(polygon)?;
+        if !simple(&ring) {
           tangled = true;
           return hull(&ring);
+        }
+        if doubled_area(&ring) < 0 {
+          ring.reverse();
         }
         Some(ring)
       })
       .collect();
     if overlap(&rings) {
       tangled = true;
-      let points: Vec<Point> = rings.concat();
-      rings = hull(&points).into_iter().collect();
+      rings = hull(&rings.concat()).into_iter().collect();
+    }
+    let mut edges = cancelled(&rings);
+    // Belt and braces: what reaches the outlines must be a region's
+    // boundary inside the cell, or they could meet an edge twice
+    if !well_formed(&edges) {
+      tangled = true;
+      rings = hull(&rings.concat()).into_iter().collect();
+      edges = cancelled(&rings);
     }
     if tangled {
       crate::engine_warn!(
         module: "Physics",
-        "a CellShape polygon crosses itself or another of its polygons; it collides as their convex hull"
+        "a CellShape polygon touches or crosses itself or another of its polygons; it collides as their convex hull"
       );
     }
-    let edges = cancelled(&rings);
     let mut build = Self::default();
     if shape.one_way {
       // A top edge runs left to right (the ring is clockwise on screen) no
@@ -143,9 +152,9 @@ fn doubled_area(ring: &[Point]) -> i64 {
     .sum()
 }
 
-/// `polygon` clipped to the cell, snapped to the grid, cleaned and wound
-/// clockwise on screen; None when a point is not finite or nothing with
-/// area is left.
+/// `polygon` clipped to the cell, snapped to the grid and cleaned (either
+/// winding, maybe not simple); None when a point is not finite or fewer
+/// than three corners are left.
 fn snapped(polygon: &[Vec2]) -> Option<Vec<Point>> {
   if polygon.iter().any(|p| !p.is_finite()) {
     return None;
@@ -183,14 +192,7 @@ fn snapped(polygon: &[Vec2]) -> Option<Vec<Point>> {
     })
     .collect();
   clean(&mut ring);
-  let area = doubled_area(&ring);
-  if ring.len() < 3 || area == 0 {
-    return None;
-  }
-  if area < 0 {
-    ring.reverse();
-  }
-  Some(ring)
+  (ring.len() >= 3).then_some(ring)
 }
 
 /// Drop repeated points and points that go straight on or turn straight
@@ -239,16 +241,57 @@ fn ring_edges(ring: &[Point]) -> impl Iterator<Item = (Point, Point)> + '_ {
   (0..ring.len()).map(move |i| (ring[i], ring[(i + 1) % ring.len()]))
 }
 
-/// Whether a ring crosses itself, or runs along itself the same way.
-fn crosses_itself(ring: &[Point]) -> bool {
+/// Whether two closed segments share any point.
+fn meet(e: (Point, Point), f: (Point, Point)) -> bool {
+  cross_properly(e.0, e.1, f.0, f.1)
+    || on_segment(e.0, e.1, f.0)
+    || on_segment(e.0, e.1, f.1)
+    || on_segment(f.0, f.1, e.0)
+    || on_segment(f.0, f.1, e.1)
+}
+
+/// Whether a ring is simple: it has area, and no two of its edges meet
+/// but neighbours, at their one shared corner. A ring touching itself at a
+/// corner, with a corner on another of its edges, running back along
+/// itself or through a corner twice is not.
+fn simple(ring: &[Point]) -> bool {
+  let n = ring.len();
+  if n < 3 || doubled_area(ring) == 0 {
+    return false;
+  }
   let edges: Vec<_> = ring_edges(ring).collect();
-  let n = edges.len();
-  (0..n).any(|i| {
-    (i + 1..n).any(|j| {
+  (0..n).all(|i| {
+    (i + 1..n).all(|j| {
       let (e, f) = (edges[i], edges[j]);
-      cross_properly(e.0, e.1, f.0, f.1) || overlap_same_way(e, f)
+      if j == i + 1 {
+        // e ends where f starts: neither far end on the other edge
+        !on_segment(f.0, f.1, e.0) && !on_segment(e.0, e.1, f.1)
+      } else if i == 0 && j == n - 1 {
+        // f ends where e starts
+        !on_segment(f.0, f.1, e.1) && !on_segment(e.0, e.1, f.0)
+      } else {
+        !meet(e, f)
+      }
     })
   })
+}
+
+/// Whether edges from `cancelled` bound a region inside the cell: none
+/// repeated, and those along a side of the cell run its way round (inside
+/// on their right), as `sides::along` reads them.
+fn well_formed(edges: &[(Point, Point)]) -> bool {
+  let mut sorted = edges.to_vec();
+  sorted.sort_unstable();
+  let along_a_side = |(a, b): (Point, Point)| {
+    let on = [
+      a.1 == 0 && b.1 == 0,
+      a.0 == GRID && b.0 == GRID,
+      a.1 == GRID && b.1 == GRID,
+      a.0 == 0 && b.0 == 0,
+    ];
+    (sides::TOP..=sides::LEFT).all(|side| !on[side] || sides::along((a, b), side).is_some())
+  };
+  sorted.windows(2).all(|w| w[0] != w[1]) && edges.iter().all(|&edge| along_a_side(edge))
 }
 
 /// Whether `p` is strictly inside `ring` (on its boundary is not).
@@ -284,9 +327,10 @@ fn on_boundary(ring: &[Point], p: Point) -> bool {
   ring_edges(ring).any(|(a, b)| on_segment(a, b, p))
 }
 
-/// Whether any two rings overlap: their edges cross or run along each
-/// other the same way, or one has a corner or an edge's middle strictly
-/// inside the other. Rings that only touch do not.
+/// Whether any two rings (each simple and clockwise) overlap: their edges
+/// cross or run along each other the same way, or a piece of one's edge
+/// (split at the other's corners on it) lies strictly inside the other.
+/// Rings that only touch do not.
 fn overlap(rings: &[Vec<Point>]) -> bool {
   let doubled =
     |ring: &[Point]| -> Vec<Point> { ring.iter().map(|&(x, y)| (2 * x, 2 * y)).collect() };
@@ -300,8 +344,18 @@ fn overlap(rings: &[Vec<Point>]) -> bool {
         ring_edges(b).any(|f| cross_properly(e.0, e.1, f.0, f.1) || overlap_same_way(e, f))
       });
       let b2 = doubled(b);
-      let within = ring_edges(a)
-        .any(|(p, q)| inside(&b2, (2 * p.0, 2 * p.1)) || inside(&b2, (p.0 + q.0, p.1 + q.1)));
+      let within = ring_edges(a).any(|(p, q)| {
+        let mut cuts: Vec<Point> = b
+          .iter()
+          .copied()
+          .filter(|&c| on_segment(p, q, c))
+          .chain([p, q])
+          .collect();
+        cuts.sort_by_key(|&c| dot(sub(q, p), sub(c, p)));
+        cuts
+          .windows(2)
+          .any(|w| inside(&b2, (w[0].0 + w[1].0, w[0].1 + w[1].1)))
+      });
       edges_meet || within
     })
   })

@@ -91,10 +91,10 @@ pub(crate) type Corner = (i32, i32);
 /// A point of the grid outlines and runs are traced on, `GRID` to a tile.
 pub(crate) type Point = (i32, i32);
 
-/// Outline points a tile: 2^8 · 3^2 · 5, so a whole or half pixel of tiles
-/// 8, 12, 16, 18, 24, 32, 48, 64, 128 or 256 px wide (and many more) is a
-/// point; anything else snaps to the nearest. A grid of 8192 tiles is under
-/// 2^31 points across.
+/// Outline points a tile: 2^8 · 3^2 · 5, so a whole pixel of tiles 8, 12,
+/// 16, 18, 24, 32, 48, 64, 128 or 256 px wide (and many more) is a point,
+/// and so is a half pixel of all of these but 256; anything else snaps to
+/// the nearest. A side of `MAX_SIDE` tiles is under 2^31 points.
 pub(crate) const GRID: i32 = 11520;
 
 /// The outline edges of a solid cell, in cell points, clockwise on screen.
@@ -254,7 +254,7 @@ impl<'a> Cells<'a> {
     shapes: &'a [(CellShape, ShapeBuild)],
   ) -> Self {
     let (cols, rows) = extent(width, height, cells);
-    // A grid holds at most 8192 × 8192 cells; `cells` bounds a bare call
+    // A grid holds at most `MAX_SIDE` cells a side; `cells` bounds a bare call
     let most = (i32::MAX / GRID - 1) as u32;
     Self {
       width,
@@ -412,8 +412,9 @@ pub(crate) fn solid_rects(width: u32, height: u32, cells: &[TileCell]) -> Vec<(C
   }
   rects
 }
-/// The most cells a grid holds (8192 × 8192); a larger size is empty.
-const MAX_CELLS: usize = 1 << 26;
+/// The most cells a grid holds a side (so 2^26 in all, and under 2^31
+/// outline points across); a larger size is empty.
+const MAX_SIDE: u32 = 8192;
 
 /// The most cell changes a grid lists between rebuilds; past it the next
 /// rebuild builds everything.
@@ -431,7 +432,7 @@ const MAX_CHANGES: usize = 1 << 16;
 ///
 /// Disabling the map entity (`Disabled`) removes its colliders and enabling
 /// it builds them again from the cells as they then are; so does removing
-/// the component. A grid over 8192 × 8192 cells is logged and empty.
+/// the component. A grid over 8192 cells a side is logged and empty.
 ///
 /// Outlines are hollow: a body that ends up inside a solid region is not
 /// pushed out. `solid_rects()` trades the seamless floors for solid
@@ -479,22 +480,19 @@ impl TileColliders {
   }
 
   /// A grid from its cells, row by row from the top; missing cells are
-  /// empty and extra ones are dropped. A size over 8192 × 8192 cells (a bad
-  /// size, not a map) is logged and makes a 0 x 0 grid.
+  /// empty and extra ones are dropped. A side over 8192 cells (a bad size,
+  /// not a map) is logged and makes a 0 x 0 grid.
   pub fn from_cells(width: u32, height: u32, tile_size: Vec2, mut cells: Vec<TileCell>) -> Self {
-    let (width, height) = match (width as usize).checked_mul(height as usize) {
-      Some(count) if count <= MAX_CELLS => {
-        cells.resize(count, TileCell::Empty);
-        (width, height)
-      }
-      _ => {
-        crate::engine_warn!(
-          module: "Physics",
-          "a {width} x {height} TileColliders is over the limit of 8192 x 8192 cells; it is empty"
-        );
-        cells.clear();
-        (0, 0)
-      }
+    let (width, height) = if width <= MAX_SIDE && height <= MAX_SIDE {
+      cells.resize(width as usize * height as usize, TileCell::Empty);
+      (width, height)
+    } else {
+      crate::engine_warn!(
+        module: "Physics",
+        "a {width} x {height} TileColliders is over the limit of 8192 cells a side; it is empty"
+      );
+      cells.clear();
+      (0, 0)
     };
     let shape_refs = cells
       .iter()
@@ -1040,6 +1038,21 @@ mod tests {
   fn a_short_cell_list_counts_as_empty() {
     assert!(outlines(4, 4, &[S]).len() == 1);
     assert!(outlines(0, 0, &[]).is_empty());
+  }
+
+  #[test]
+  fn a_grid_too_wide_for_outlines_is_refused_or_warns() {
+    // Over 8192 cells a side is refused (logged), as too many cells are
+    for (w, h) in [(8193, 1), (1, 8193), (100_000, 1)] {
+      let grid = TileColliders::new(w, h, Vec2::ONE);
+      assert_eq!((grid.width(), grid.height()), (0, 0), "{w} x {h}");
+    }
+    // The widest grid it takes builds its outlines to its far end
+    let mut grid = TileColliders::new(8192, 1, Vec2::ONE);
+    assert!(grid.set(8191, 0, S));
+    let loops = outlines(grid.width(), grid.height(), &grid.cells);
+    assert_eq!(loops.len(), 1);
+    assert!(loops[0].contains(&(8192, 1)), "{loops:?}");
   }
 
   #[test]
@@ -1824,6 +1837,7 @@ mod with_physics {
       .into_iter()
       .map(|(_, c)| c)
       .collect();
+    assert_eq!(built.len(), 3, "two parts and the slab: {built:?}");
     segment(&built);
     let polygons: Vec<&Vec<Vec2>> = built
       .iter()

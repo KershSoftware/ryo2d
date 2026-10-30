@@ -99,14 +99,18 @@ fn along(edges: &[(Point, Point)], side: usize) -> Vec<(i32, i32)> {
     .collect()
 }
 
-/// Whether an interval of `cover` holds `lo..hi`.
-fn covered(cover: &[(i32, i32)], lo: i32, hi: i32) -> bool {
-  cover.iter().any(|&(l, h)| l <= lo && hi <= h)
+/// How many intervals of `cover` hold `lo..hi` (one or none, from a shape
+/// `add_shape` made).
+fn covered(cover: &[(i32, i32)], lo: i32, hi: i32) -> usize {
+  cover.iter().filter(|&&(l, h)| l <= lo && hi <= h).count()
 }
 
 /// The pieces of a border one of its cells runs and the other does not:
 /// `first` the cell before it (left of or above it), `second` the one after.
 /// Calls `emit(lo, hi, first's)` for each, in border units from its start.
+/// A piece run more often one way than the other is emitted that many
+/// times more: what cancels is a pair run each way, so every point keeps as
+/// many edges in as out, whatever edges a shape gave.
 fn border(first: &[(i32, i32)], second: &[(i32, i32)], mut emit: impl FnMut(i32, i32, bool)) {
   let mut cuts: Vec<i32> = first
     .iter()
@@ -117,10 +121,12 @@ fn border(first: &[(i32, i32)], second: &[(i32, i32)], mut emit: impl FnMut(i32,
   cuts.dedup();
   for cut in cuts.windows(2) {
     let (lo, hi) = (cut[0], cut[1]);
-    match (covered(first, lo, hi), covered(second, lo, hi)) {
-      (true, false) => emit(lo, hi, true),
-      (false, true) => emit(lo, hi, false),
-      _ => {}
+    let (firsts, seconds) = (covered(first, lo, hi), covered(second, lo, hi));
+    for _ in seconds..firsts {
+      emit(lo, hi, true);
+    }
+    for _ in firsts..seconds {
+      emit(lo, hi, false);
     }
   }
 }
@@ -296,17 +302,26 @@ impl Outlines {
       }
       was.sort_unstable();
       is.sort_unstable();
-      changes.extend(
-        was
-          .iter()
-          .filter(|e| is.binary_search(e).is_err())
-          .map(|&(a, b)| (a, b, false)),
-      );
-      changes.extend(
-        is.iter()
-          .filter(|e| was.binary_search(e).is_err())
-          .map(|&(a, b)| (a, b, true)),
-      );
+      // What went and what came, as many times as each
+      let (mut i, mut j) = (0, 0);
+      while i < was.len() || j < is.len() {
+        match (was.get(i), is.get(j)) {
+          (Some(a), Some(b)) if a == b => (i, j) = (i + 1, j + 1),
+          (Some(&(a, b)), Some(later)) if (a, b) < *later => {
+            changes.push((a, b, false));
+            i += 1;
+          }
+          (Some(&(a, b)), None) => {
+            changes.push((a, b, false));
+            i += 1;
+          }
+          (_, Some(&(a, b))) => {
+            changes.push((a, b, true));
+            j += 1;
+          }
+          (None, None) => break,
+        }
+      }
     }
     if changes.is_empty() {
       return retraced;
@@ -339,9 +354,8 @@ impl Outlines {
         self.insert(a, b);
         starts.push((a, b));
         count += 1;
-      } else {
-        self.remove(a, b);
-        count -= 1;
+      } else if self.remove(a, b) {
+        count = count.saturating_sub(1);
       }
     }
     retraced.traced = self.trace(&starts, &dropped, count);
@@ -363,21 +377,11 @@ impl Outlines {
     self.loops.get_mut(id as usize).and_then(Option::as_mut)
   }
 
-  fn find(&self, a: Point, b: Point) -> Option<usize> {
-    let step = delta(a, b);
-    self
-      .leaving
-      .get(&key(a))?
-      .as_slice()
-      .iter()
-      .position(|out| out.step() == step)
-  }
-
+  /// Add an edge. The edges are a multiset: a shape `add_shape` made never
+  /// gives an edge twice (its polygons are simple and do not overlap, and
+  /// its edges along a side run that side's way, so no unit's edges meet
+  /// another's), but an edge here twice is traced twice rather than lost.
   fn insert(&mut self, a: Point, b: Point) {
-    if self.find(a, b).is_some() {
-      debug_assert!(false, "the outline edge {a:?} -> {b:?} is already there");
-      return;
-    }
     let (dx, dy) = (b.0 - a.0, b.1 - a.1);
     self.leaving.entry(key(a)).or_default().push(Out {
       dx: dx as i16,
@@ -386,15 +390,20 @@ impl Outlines {
     });
   }
 
-  fn remove(&mut self, a: Point, b: Point) {
-    if let Some(i) = self.find(a, b)
-      && let Some(leaving) = self.leaving.get_mut(&key(a))
-    {
-      leaving.swap_remove(i);
-      if leaving.is_empty() {
-        self.leaving.remove(&key(a));
-      }
+  /// Take one copy of an edge away; false when there is none.
+  fn remove(&mut self, a: Point, b: Point) -> bool {
+    let step = delta(a, b);
+    let Some(leaving) = self.leaving.get_mut(&key(a)) else {
+      return false;
+    };
+    let Some(i) = leaving.as_slice().iter().position(|out| out.step() == step) else {
+      return false;
+    };
+    leaving.swap_remove(i);
+    if leaving.is_empty() {
+      self.leaving.remove(&key(a));
     }
+    true
   }
 
   /// Trace the loop through each of `starts` not yet traced (an edge is
@@ -418,13 +427,10 @@ impl Outlines {
       let Some(out) = leaving
         .as_mut_slice()
         .iter_mut()
-        .find(|out| out.step() == first)
+        .find(|out| out.step() == first && untraced(out.id))
       else {
         continue;
       };
-      if !untraced(out.id) {
-        continue;
-      }
       let id = self.free.pop().unwrap_or(self.loops.len() as u32);
       out.id = id;
       let mut corners = vec![start, second];
@@ -440,6 +446,9 @@ impl Outlines {
             pick = Some(i);
           }
         }
+        // Every point has as many edges in as out (cells' and shapes'
+        // edges are closed rings and a border cancels pairs), among the
+        // untraced edges too, so a loop can only end back at its start
         let Some(pick) = pick else {
           debug_assert!(false, "an outline ends at {at:?}");
           break;
@@ -486,7 +495,9 @@ pub(crate) fn outlines(width: u32, height: u32, cells: &[TileCell]) -> Vec<Vec<s
 
 #[cfg(test)]
 mod tests {
-  use super::super::{CellShape, GRID, Point, SlopeCorner, TileColliders, merge_straight_runs};
+  use super::super::{
+    CellShape, GRID, Point, ShapeBuild, SlopeCorner, TileColliders, merge_straight_runs,
+  };
   use super::*;
   use crate::core::ecs::Vec2;
   use TileCell::{Empty as E, OneWay as O, Solid as S};
@@ -826,9 +837,251 @@ mod tests {
         true,
       ),
     ];
+    // And shapes made at random, many of them broken
+    let mut kinds = kinds.to_vec();
+    kinds.extend(broken_shapes(&mut tiles, 0x0bad_5eed, 40));
     tiles.take_changes();
     let mut state = Outlines::build(tiles.cells_view());
-    walk(&mut state, &mut tiles, &kinds, 0x2545_f491, 1500);
+    walk(&mut state, &mut tiles, &kinds, 0x2545_f491, 2000);
     assert_traced_by_the_rule(&state, &tiles);
+  }
+
+  /// Shapes made at random on a lattice of quarter tiles, some corners a
+  /// hair off it (under half a grid step) and some repeated, one or two
+  /// polygons each: many touch or cross themselves or each other, or flatten
+  /// when snapped.
+  fn broken_shapes(tiles: &mut TileColliders, mut seed: u32, count: usize) -> Vec<TileCell> {
+    let mut next = |n: u32| {
+      seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+      (seed >> 8) % n
+    };
+    let hair = 0.1 / GRID as f32;
+    let mut shapes = Vec::new();
+    for _ in 0..count {
+      let mut polygons = Vec::new();
+      for _ in 0..1 + next(2) {
+        let point = |next: &mut dyn FnMut(u32) -> u32| {
+          let mut p = Vec2::new(next(5) as f32 / 4.0, next(5) as f32 / 4.0);
+          if next(3) == 0 {
+            p += Vec2::new(next(9) as f32 - 4.0, next(9) as f32 - 4.0) * hair;
+          }
+          p
+        };
+        let count = 3 + next(5);
+        let mut points: Vec<Vec2> = (0..count).map(|_| point(&mut next)).collect();
+        match next(3) {
+          // Pinched: through a point inside twice, between two lobes each
+          // with an edge along a side of the cell, wound opposite ways
+          0 => {
+            let quarter = |next: &mut dyn FnMut(u32) -> u32| (1 + next(3)) as f32 / 4.0;
+            let pinch = Vec2::new(quarter(&mut next), quarter(&mut next));
+            let on_side = |t: f32, side: u32| match side {
+              0 => Vec2::new(t, 0.0),
+              1 => Vec2::new(1.0, t),
+              2 => Vec2::new(t, 1.0),
+              _ => Vec2::new(0.0, t),
+            };
+            let lobe = |next: &mut dyn FnMut(u32) -> u32| {
+              let u = next(5);
+              let v = (u + 1 + next(4)) % 5;
+              let side = next(4);
+              (on_side(u as f32 / 4.0, side), on_side(v as f32 / 4.0, side))
+            };
+            let winding = |(a, b): (Vec2, Vec2)| (a - pinch).perp_dot(b - pinch).signum();
+            let first = lobe(&mut next);
+            let (mut a, mut b) = lobe(&mut next);
+            if winding((a, b)) == winding(first) {
+              (a, b) = (b, a);
+            }
+            points = vec![pinch, first.0, first.1, pinch, a, b];
+          }
+          // A corner on another of its edges, or a corner repeated
+          1 => {
+            let i = next(points.len() as u32) as usize;
+            let (a, b) = (points[i], points[(i + 1) % points.len()]);
+            let at = (i + 2 + next(points.len() as u32 - 1) as usize) % points.len();
+            let corner = if next(2) == 0 { (a + b) / 2.0 } else { a };
+            points.insert(at, corner);
+          }
+          _ => {}
+        }
+        polygons.push(points);
+      }
+      let one_way = next(8) == 0;
+      shapes.push(TileCell::Shape(
+        tiles.add_shape(CellShape { polygons, one_way }),
+      ));
+    }
+    shapes
+  }
+
+  /// A shape set among solid cells (either side of it and above), edited
+  /// around and compared with a full trace each time. It must build as the
+  /// hull of its points, a whole square here, and so join the solids.
+  fn hull_beside_solids(points: &[(f32, f32)]) {
+    let mut tiles = TileColliders::new(3, 3, Vec2::ONE);
+    let shape = add(&mut tiles, points, false);
+    let TileCell::Shape(index) = shape else {
+      unreachable!()
+    };
+    let square = ShapeBuild::of(&CellShape {
+      polygons: vec![vec![Vec2::ZERO, Vec2::X, Vec2::ONE, Vec2::Y]],
+      one_way: false,
+    });
+    let sorted = |edges: &[(Point, Point)]| {
+      let mut edges = edges.to_vec();
+      edges.sort_unstable();
+      edges
+    };
+    // Set among solids and edited round, the shape cell among them
+    for (x, y, cell) in [(0, 1, S), (1, 1, shape), (2, 1, S), (1, 0, S)] {
+      tiles.set(x, y, cell);
+    }
+    tiles.take_changes();
+    let mut state = Outlines::build(tiles.cells_view());
+    walk(
+      &mut state,
+      &mut tiles,
+      &[E, S, shape, shape],
+      0x51ed_270b,
+      300,
+    );
+    assert_traced_by_the_rule(&state, &tiles);
+    assert_eq!(
+      sorted(&tiles.shapes[usize::from(index)].1.edges),
+      sorted(&square.edges),
+      "{points:?}"
+    );
+    for (x, y, cell) in [(0, 1, S), (1, 1, shape), (2, 1, S), (1, 0, S), (1, 2, E)] {
+      tiles.set(x, y, cell);
+    }
+    tiles.take_changes();
+    let state = Outlines::build(tiles.cells_view());
+    assert_eq!(traced(&state).len(), 1, "one loop round the four cells");
+  }
+
+  #[test]
+  fn a_shape_touching_itself_at_a_vertex_collides_as_its_hull() {
+    // Through (0.5, 0.4) twice: a lobe above it and a larger one below,
+    // wound the other way
+    hull_beside_solids(&[
+      (0.0, 0.0),
+      (1.0, 0.0),
+      (0.5, 0.4),
+      (0.0, 1.0),
+      (1.0, 1.0),
+      (0.5, 0.4),
+    ]);
+  }
+
+  #[test]
+  fn a_shape_vertex_on_its_own_edge_collides_as_its_hull() {
+    // Its corner (0.5, 0.5) on its own edge from (0, 0) to (1, 1)
+    hull_beside_solids(&[
+      (0.0, 0.0),
+      (1.0, 1.0),
+      (1.0, 0.0),
+      (0.75, 0.0),
+      (0.5, 0.5),
+      (0.0, 1.0),
+    ]);
+  }
+
+  #[test]
+  fn shapes_that_only_become_degenerate_after_snapping_collide_as_their_hull() {
+    // Each under half a grid step from the case above it: snapping lands
+    // it there
+    let off = 0.4 / GRID as f32;
+    for y in [0.5 + off, 0.5 - off] {
+      hull_beside_solids(&[
+        (0.0, 0.0),
+        (1.0, 1.0),
+        (1.0, 0.0),
+        (0.75, 0.0),
+        (0.5, y),
+        (0.0, 1.0),
+      ]);
+    }
+    hull_beside_solids(&[
+      (0.0, 0.0),
+      (1.0, 0.0),
+      (0.5, 0.4),
+      (0.0, 1.0),
+      (1.0, 1.0),
+      (0.5 + off, 0.4 - off),
+    ]);
+    // A slit thinner than the grid closes
+    hull_beside_solids(&[
+      (0.0, 0.0),
+      (1.0, 0.0),
+      (1.0, 0.5 - off),
+      (0.5, 0.5 - off),
+      (0.5, 0.5 + off),
+      (1.0, 0.5 + off),
+      (1.0, 1.0),
+      (0.0, 1.0),
+    ]);
+  }
+
+  // Whatever closed edges a shape gave (these are ones `add_shape` never
+  // makes), the outlines neither panic nor lose or gain an edge: every
+  // boundary edge is in one loop, as often as the boundary has it
+  #[test]
+  fn the_outlines_stay_whole_whatever_edges_a_shape_gives() {
+    use SlopeCorner::TopLeft;
+    let g = GRID;
+    let mut tiles = TileColliders::new(5, 4, Vec2::ONE);
+    // A triangle wound the wrong way (its sides run against their cells'
+    // ways), and a square's edges twice
+    let wrong_way = vec![((0, 0), (0, g)), ((0, g), (g, 0)), ((g, 0), (0, 0))];
+    let square = vec![
+      ((0, 0), (g, 0)),
+      ((g, 0), (g, g)),
+      ((g, g), (0, g)),
+      ((0, g), (0, 0)),
+    ];
+    for edges in [wrong_way, [square.clone(), square].concat()] {
+      tiles.shapes.push((
+        CellShape::default(),
+        ShapeBuild {
+          edges,
+          ..ShapeBuild::default()
+        },
+      ));
+    }
+    let kinds = [
+      E,
+      S,
+      S,
+      TileCell::Slope(TopLeft),
+      TileCell::Shape(0),
+      TileCell::Shape(1),
+    ];
+    let mut state = Outlines::build(tiles.cells_view());
+    let mut seed: u32 = 0x7e57_ab1e;
+    let mut next = |n: u32| {
+      seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+      (seed >> 8) % n
+    };
+    for _ in 0..800 {
+      for _ in 0..1 + next(3) {
+        tiles.set(next(5), next(4), kinds[next(kinds.len() as u32) as usize]);
+      }
+      let changed = tiles.take_changes().expect("listed");
+      state.apply(tiles.cells_view(), &changed);
+      let mut traced: Vec<(Point, Point)> = state
+        .loops()
+        .flat_map(|(_, o)| {
+          o.corners
+            .windows(2)
+            .map(|w| (w[0], w[1]))
+            .collect::<Vec<_>>()
+        })
+        .collect();
+      let mut boundary = boundary_edges(tiles.cells_view());
+      traced.sort_unstable();
+      boundary.sort_unstable();
+      assert_eq!(traced, boundary);
+    }
   }
 }
