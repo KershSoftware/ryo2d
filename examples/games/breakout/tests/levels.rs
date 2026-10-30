@@ -60,9 +60,12 @@ fn level_problems() -> Vec<String> {
     .map(|entry| entry.message)
     .filter(|message| {
       let message = message.to_lowercase();
-      ["level", "brick", "tiled", "tmx", "tsx", "map"]
-        .iter()
-        .any(|word| message.contains(word))
+      // (the broken maps of the fallback tests warn on purpose)
+      !message.contains("nothere")
+        && !message.contains("broken")
+        && ["level", "brick", "tiled", "tmx", "tsx", "map"]
+          .iter()
+          .any(|word| message.contains(word))
     })
     .collect()
 }
@@ -200,6 +203,144 @@ fn levels_load_on_the_web_from_embedded_files() {
     );
   }
   assert!(level_problems().is_empty(), "{:#?}", level_problems());
+}
+
+/// A game on `level` over `files`
+fn engine_over(files: MemorySource, level: u32) -> Option<HeadlessEngine> {
+  empty_folder();
+  HeadlessEngine::new_or_skip(
+    EngineBuilder::new()
+      .resolution(SCREEN_WIDTH, SCREEN_HEIGHT)
+      .fixed_hz(120)
+      .asset_source(files)
+      .start_scene(GameScene::new(0).at_level(level)),
+  )
+}
+
+/// A map whose tileset has no image: it loads, and its landing fails
+const BROKEN: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<map version="1.11" tiledversion="1.12.2" orientation="orthogonal" renderorder="right-down" width="1" height="1" tilewidth="84" tileheight="29" infinite="0" nextlayerid="2" nextobjectid="1">
+ <tileset firstgid="1" source="nothere.tsx"/>
+ <layer id="1" name="bricks" width="1" height="1">
+  <data encoding="csv">
+1
+</data>
+ </layer>
+</map>
+"#;
+
+/// The broken map's tileset
+const NO_IMAGE: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<tileset version="1.11" tiledversion="1.12.2" name="nothere" tilewidth="84" tileheight="29" tilecount="1" columns="1">
+ <image source="nothere.png" width="84" height="29"/>
+</tileset>
+"#;
+
+/// Steps `frames` frames, a few milliseconds each so the landing worker keeps up
+fn steps(engine: &mut HeadlessEngine, frames: u32) {
+  for _ in 0..frames {
+    engine.step().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(5));
+  }
+}
+
+#[test]
+fn a_level_that_fails_to_load_falls_back_to_level_1_and_is_not_cleared() {
+  let files = embedded();
+  files.insert("levels/level3.tmx", BROKEN);
+  files.insert("levels/nothere.tsx", NO_IMAGE);
+  let Some(mut engine) = engine_over(files, 3) else {
+    return;
+  };
+  let found = land(&mut engine);
+  assert_eq!(found, expected(LEVELS[0]), "level 1's bricks stand in");
+  // Not cleared, so not advanced to level 4 or won
+  steps(&mut engine, 120);
+  assert_eq!(bricks(&mut engine), expected(LEVELS[0]));
+}
+
+#[test]
+fn a_map_that_fails_to_land_falls_back_to_level_1_and_is_not_cleared() {
+  let Some(mut engine) = engine_on(3) else {
+    return;
+  };
+  // The first frame spawns level 3's map; its landing fails
+  engine.step().unwrap();
+  let world = engine.world_mut();
+  let mut roots = world.query_filtered::<Entity, With<MapRoot>>();
+  let root = roots.iter(world).next().expect("level 3's map is spawned");
+  let error = std::sync::Arc::new(AssetError::NotFound {
+    path: AssetPath::parse("levels/broken-on-purpose.tmx").unwrap(),
+  });
+  world
+    .resource_mut::<Messages<MapEvent>>()
+    .write(MapEvent::Failed { map: root, error });
+  let found = land(&mut engine);
+  assert_eq!(found, expected(LEVELS[0]), "level 1's bricks stand in");
+  steps(&mut engine, 120);
+  assert_eq!(bricks(&mut engine), expected(LEVELS[0]), "not cleared");
+}
+
+#[test]
+fn when_level_1_fails_too_the_level_is_never_cleared() {
+  let files = embedded();
+  files.insert("levels/level1.tmx", BROKEN);
+  files.insert("levels/nothere.tsx", NO_IMAGE);
+  let Some(mut engine) = engine_over(files, 1) else {
+    return;
+  };
+  // Many frames: a level counted cleared would put level 2's bricks up
+  steps(&mut engine, 200);
+  assert!(bricks(&mut engine).is_empty());
+}
+
+#[test]
+fn a_level_is_not_cleared_before_its_bricks_land() {
+  for before in 1..=3 {
+    let Some(mut engine) = engine_on(1) else {
+      return;
+    };
+    // The frames before the map lands (it may be quick) press nothing
+    for _ in 0..before {
+      engine.step().unwrap();
+    }
+    let found = land(&mut engine);
+    assert_eq!(
+      found,
+      expected(LEVELS[0]),
+      "still level 1 after {before} frames"
+    );
+  }
+}
+
+#[test]
+fn the_seven_cyrillic_cells_are_the_bricks_they_were_meant_to_be() {
+  // (level, line, column from 0, colour): the text files held a Cyrillic
+  // look-alike there, which was no brick. Lines count the rows of bricks
+  // from 1 as the table does; the files' own line numbers add comments
+  let fixed: [(u32, usize, usize, &str); 7] = [
+    (5, 2, 11, "Orange"),
+    (7, 2, 2, "Purple"),
+    (7, 2, 4, "Purple"),
+    (7, 2, 6, "Purple"),
+    (7, 2, 8, "Purple"),
+    (7, 2, 10, "Purple"),
+    (7, 7, 9, "Purple"),
+  ];
+  for level in [5, 7] {
+    let Some(mut engine) = engine_on(level) else {
+      return;
+    };
+    let found = land(&mut engine);
+    for &(_, row, col, color) in fixed.iter().filter(|f| f.0 == level) {
+      let x = BLOCK_LEFT_OFFSET + col as f32 * (BLOCK_WIDTH + BLOCK_PADDING);
+      let y = BLOCK_TOP_OFFSET + (row - 1) as f32 * (BLOCK_HEIGHT + BLOCK_PADDING);
+      assert!(
+        found.iter().any(|b| b.0 == x && b.1 == y && b.2 == color),
+        "level {level}: a {color} brick at row {row}, column {col}"
+      );
+    }
+  }
 }
 
 // What `convert-levels` printed from the text files (the seven Cyrillic cells

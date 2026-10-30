@@ -55,6 +55,11 @@ pub struct GameScene {
   blocks: Vec<Entity>,
   /// The level's map while its bricks have not landed yet
   level_map: Option<Entity>,
+  /// The level failed and level 1 stands in for it
+  fell_back: bool,
+  /// No bricks will come (the level and the fallback both failed): the
+  /// level is not cleared, and the game stays on it
+  level_failed: bool,
   walls: Vec<Entity>,
   death_zone: Option<Entity>,
 
@@ -124,6 +129,8 @@ impl GameScene {
       balls: Vec::new(),
       blocks: Vec::new(),
       level_map: None,
+      fell_back: false,
+      level_failed: false,
       walls: Vec::new(),
       death_zone: None,
       blocks_remaining: 0,
@@ -620,25 +627,40 @@ impl GameScene {
   /// Spawn the level's map, with its brick tiles as entities: the bricks
   /// land with it, a few frames on, and `land_blocks` makes them blocks
   fn spawn_blocks(&mut self, ctx: &mut SceneContext) {
-    let map = match ctx.assets().load_now::<TileMap>(&level_path(self.level)) {
-      Ok(map) => map,
-      Err(e) => {
-        eprintln!("Failed to load level {}: {}", self.level, e);
-        // Fallback: loop back to level 1
-        match ctx.assets().load_now::<TileMap>(&level_path(1)) {
-          Ok(map) => map,
-          Err(_) => return, // No levels available
-        }
+    self.fell_back = false;
+    self.level_failed = false;
+    self.spawn_map(ctx, self.level);
+  }
+
+  /// Load and spawn the map of `level`; one that fails to load is `map_failed`
+  fn spawn_map(&mut self, ctx: &mut SceneContext, level: u32) {
+    match ctx.assets().load_now::<TileMap>(&level_path(level)) {
+      Ok(map) => {
+        let root = ctx
+          .world
+          .spawn((
+            Transform::from_xy(LEVEL_ORIGIN.0, LEVEL_ORIGIN.1),
+            MapRoot::new(map).with_entity_tiles(&[BRICK_CLASS]),
+          ))
+          .id();
+        self.level_map = Some(root);
       }
-    };
-    let root = ctx
-      .world
-      .spawn((
-        Transform::from_xy(LEVEL_ORIGIN.0, LEVEL_ORIGIN.1),
-        MapRoot::new(map).with_entity_tiles(&[BRICK_CLASS]),
-      ))
-      .id();
-    self.level_map = Some(root);
+      Err(e) => {
+        eprintln!("Failed to load level {level}: {e}");
+        self.map_failed(ctx);
+      }
+    }
+  }
+
+  /// The level's map failed: fall back to level 1, as the text loader did;
+  /// if that failed too, the level has no bricks and is never counted cleared
+  fn map_failed(&mut self, ctx: &mut SceneContext) {
+    if !self.fell_back && self.level != 1 {
+      self.fell_back = true;
+      self.spawn_map(ctx, 1);
+    } else {
+      self.level_failed = true;
+    }
   }
 
   /// Once the level's map has landed, turn its brick tiles into blocks, row
@@ -647,16 +669,18 @@ impl GameScene {
     let Some(root) = self.level_map else {
       return;
     };
-    if !ctx.maps().is_ready(root) {
-      for event in ctx.messages::<MapEvent>() {
-        if let MapEvent::Failed { map, error } = event
-          && map == root
-        {
-          game_error!("level {}: {error}", self.level);
-          ctx.world.despawn(root);
-          self.level_map = None;
-        }
+    for event in ctx.messages::<MapEvent>() {
+      if let MapEvent::Failed { map, error } = event
+        && map == root
+      {
+        game_error!("level {}: {error}", self.level);
+        ctx.world.despawn(root);
+        self.level_map = None;
+        self.map_failed(ctx);
+        return;
       }
+    }
+    if !ctx.maps().is_ready(root) {
       return;
     }
     self.level_map = None;
@@ -678,6 +702,10 @@ impl GameScene {
     }
     ctx.world.despawn(root);
     self.blocks_remaining = self.blocks.len() as u32;
+    if self.blocks.is_empty() {
+      game_error!("level {}: its map holds no bricks", self.level);
+      self.level_failed = true;
+    }
   }
 
   /// Spawn one block centred on `at`
@@ -922,8 +950,8 @@ impl GameScene {
   }
 
   fn check_level_complete(&mut self, ctx: &mut SceneContext) -> bool {
-    // Not while the level's bricks are on their way
-    if self.level_map.is_none() && self.blocks_remaining == 0 {
+    // Not while the level's bricks are on their way, nor when none will come
+    if self.level_map.is_none() && !self.level_failed && self.blocks_remaining == 0 {
       // Level complete! Save high score
       save_high_score(self.high_score);
 
