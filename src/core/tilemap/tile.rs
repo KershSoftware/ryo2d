@@ -25,8 +25,8 @@ impl TileFlip {
 
   /// The flips of this tile turned 90 degrees clockwise
   pub fn rotated_cw(self) -> TileFlip {
-    // Tiled's rotate-right table, indexed by the three flip bits
-    const NEXT: [u8; 8] = [5, 4, 1, 0, 7, 6, 3, 2];
+    // Tiled's rotate-right table, re-indexed for H = 1, V = 2, D = 4
+    const NEXT: [u8; 8] = [5, 7, 4, 6, 1, 3, 0, 2];
     TileFlip(NEXT[(self.0 & 7) as usize])
   }
 
@@ -92,5 +92,34 @@ mod tests {
     }
     assert_eq!(f, TileFlip::NONE);
     assert!(f.rotated_cw().contains(TileFlip::DIAGONAL));
+  }
+
+  #[test]
+  fn rotating_cycles_through_tileds_states() {
+    let (h, v, d) = (TileFlip::HORIZONTAL, TileFlip::VERTICAL, TileFlip::DIAGONAL);
+    let n = TileFlip::NONE;
+    assert_eq!(n.rotated_cw(), d | h);
+    assert_eq!((d | h).rotated_cw(), h | v);
+    assert_eq!((h | v).rotated_cw(), v | d);
+    assert_eq!((v | d).rotated_cw(), n);
+    assert_eq!(h.rotated_cw(), h | v | d);
+  }
+
+  #[test]
+  fn every_flip_state_returns_after_four_turns() {
+    for bits in 0..8u8 {
+      let start = TileFlip::from_bits(bits);
+      let mut f = start;
+      let mut seen = Vec::new();
+      for _ in 0..4 {
+        seen.push(f);
+        f = f.rotated_cw();
+      }
+      assert_eq!(f, start, "state {bits}");
+      // an unmirrored or mirrored orbit has four distinct states
+      seen.sort_by_key(|f| f.bits());
+      seen.dedup();
+      assert_eq!(seen.len(), 4, "state {bits}");
+    }
   }
 }
