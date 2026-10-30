@@ -64,10 +64,12 @@ pub(crate) enum MapSource {
 /// solid, then a shape, then a slope, then one-way; of two shapes the upper
 /// layer's), and on a layer's entity for a layer of another cell size or
 /// offset. A layer with an IntGrid collides by its values' names, any other
-/// by its tiles' collision shapes, placed where each tile draws. The map's
+/// by its tiles' collision shapes, placed where each tile draws. The
 /// properties `collision_layer`, `collision_mask`, `friction` and
-/// `restitution` give the colliders' material. Its occluding layers
-/// ([`LayerInfo::occludes`], else as they collide) cast 2D shadows through
+/// `restitution` give the colliders' material, a layer's over the map's (a
+/// layer with a material of its own collides on its own entity). Its
+/// occluding layers ([`LayerInfo::occludes`], else as they collide) cast
+/// 2D shadows through
 /// [`MapOccluder`](super::MapOccluder) children. Edits re-collide and
 /// re-shadow only the chunks they touch; a disabled map has neither.
 ///

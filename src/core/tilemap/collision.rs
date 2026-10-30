@@ -3,11 +3,13 @@
 //!
 //! A tile layer collides when its `LayerInfo::collides` is set and its
 //! root has not turned collision off. Colliding layers are grouped by their
-//! cell size and offset (R12): the group of the map's own tile size and no
-//! offset unions into one `TileColliders` on the map entity, and any other
-//! group (an LDtk IntGrid of 8 px cells under 16 px art, a layer shifted by
-//! an offset) gets its own on its first layer's entity, whose `Transform`
-//! carries the offset. A cell takes the strongest kind across its group:
+//! cell size, offset and collision material (`collision_layer`,
+//! `collision_mask`, `friction`, `restitution`: a layer's properties over
+//! its map's): the group of the map's own tile size, no offset and the
+//! map's material unions into one `TileColliders` on the map entity, and
+//! any other group (an LDtk IntGrid of 8 px cells under 16 px art, a layer
+//! shifted by an offset, an ice layer) gets its own on its first layer's
+//! entity, whose `Transform` carries the offset. A cell takes the strongest kind across its group:
 //! `Solid`, then `Shape`, then `Slope`, then `OneWay`; of two shapes (or
 //! two slopes) the upper layer's wins.
 //!
@@ -21,7 +23,7 @@
 //! one per distinct geometry. A tile with both solid and one-way shapes
 //! collides with its solid ones.
 //!
-//! Each step, every chunk whose version (R8) moved since the group last
+//! Each step, every chunk whose version moved since the group last
 //! looked is classified again and only the cells whose kind changed are
 //! set, so the tile colliders rebuild only the outlines an edit touched. A
 //! change of what the colliders are built from (which layers collide, their
@@ -54,18 +56,35 @@ const EPSILON: f32 = 1e-4;
 /// drawing the same shape share it
 const KEY_GRID: f32 = 46080.0;
 
-/// What a group of layers shares: a cell size and an offset (its bits)
+/// What a group of layers shares: a cell size, an offset and a material
+/// (floats by their bits)
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct GroupKey {
   cell: UVec2,
   offset: [u32; 2],
+  material: [u32; 4],
 }
 
 impl GroupKey {
-  fn of(cell: UVec2, offset: Vec2) -> GroupKey {
+  fn of(cell: UVec2, offset: Vec2, material: Material) -> GroupKey {
     GroupKey {
       cell,
       offset: [offset.x.to_bits(), offset.y.to_bits()],
+      material: [
+        material.layer,
+        material.mask,
+        material.friction.to_bits(),
+        material.restitution.to_bits(),
+      ],
+    }
+  }
+
+  fn material(&self) -> Material {
+    Material {
+      layer: self.material[0],
+      mask: self.material[1],
+      friction: f32::from_bits(self.material[2]),
+      restitution: f32::from_bits(self.material[3]),
     }
   }
 }
@@ -492,7 +511,7 @@ struct Group {
   shapes: FastMap<ShapeKey, u16>,
 }
 
-/// The material map properties give
+/// The collision material properties give
 #[derive(Clone, Copy, PartialEq, Debug)]
 struct Material {
   layer: u32,
@@ -502,42 +521,48 @@ struct Material {
 }
 
 impl Material {
+  /// `TileColliders`' own defaults
+  const DEFAULT: Material = Material {
+    layer: 1,
+    mask: u32::MAX,
+    friction: 0.5,
+    restitution: 0.0,
+  };
+
   /// From `collision_layer`, `collision_mask`, `friction` and
-  /// `restitution`; a property of the wrong type keeps the default and
-  /// `warn` hears of it
-  fn of(properties: &Properties, mut warn: impl FnMut(&str, &PropertyValue, &str)) -> Material {
-    // `TileColliders`' own defaults
-    let defaults = Material {
-      layer: 1,
-      mask: u32::MAX,
-      friction: 0.5,
-      restitution: 0.0,
-    };
-    let mut bits = |name: &str, default: u32| match properties.get(name) {
-      None => default,
+  /// `restitution` in `properties`, each over the same in `under` (a
+  /// layer's over its map's); a property of the wrong type is left out
+  /// (what is under it counts) and `warn` hears of it
+  fn of(
+    properties: &Properties,
+    under: Material,
+    mut warn: impl FnMut(&'static str, &PropertyValue, &'static str),
+  ) -> Material {
+    let mut bits = |name: &'static str, under: u32| match properties.get(name) {
+      None => under,
       Some(value) => match properties.int(name) {
         // A mask of every bit is -1 in a 32-bit int
         Some(int) if (i64::from(i32::MIN)..=i64::from(u32::MAX)).contains(&int) => int as u32,
         _ => {
           warn(name, value, "a whole number of 32 bits");
-          default
+          under
         }
       },
     };
-    let layer = bits("collision_layer", defaults.layer);
-    let mask = bits("collision_mask", defaults.mask);
-    let mut float = |name: &str, default: f32| match properties.get(name) {
-      None => default,
+    let layer = bits("collision_layer", under.layer);
+    let mask = bits("collision_mask", under.mask);
+    let mut float = |name: &'static str, under: f32| match properties.get(name) {
+      None => under,
       Some(value) => match properties.float(name) {
         Some(f) if f.is_finite() => f as f32,
         _ => {
           warn(name, value, "a number");
-          default
+          under
         }
       },
     };
-    let friction = float("friction", defaults.friction);
-    let restitution = float("restitution", defaults.restitution);
+    let friction = float("friction", under.friction);
+    let restitution = float("restitution", under.restitution);
     Material {
       layer,
       mask,
@@ -563,12 +588,13 @@ pub(crate) struct MapCollision {
   tilesets: Vec<TilesetStamp>,
   overrides: Vec<(IntGridKey, TileCell)>,
   groups: Vec<Group>,
-  material: Material,
   /// Its colliders were taken away (the map disabled, or one went missing):
   /// the next step builds them all
   torn: bool,
   warned_layers: FastSet<Entity>,
-  warned_properties: FastSet<String>,
+  /// Properties of the wrong type warned about: the layer's (none for the
+  /// map's) and the name
+  warned_properties: FastSet<(Option<Entity>, &'static str)>,
 }
 
 impl MapCollision {
@@ -672,10 +698,10 @@ fn build(
   context: &Context<'_>,
   planned: &[Planned],
   layers: &Layers,
-  material: Material,
+  map_material: Material,
   mut warned_layers: FastSet<Entity>,
 ) -> (MapCollision, Vec<(Entity, TileColliders)>) {
-  let map_key = GroupKey::of(context.tile_map.tile_size, Vec2::ZERO);
+  let map_key = GroupKey::of(context.tile_map.tile_size, Vec2::ZERO, map_material);
   let mut groups: Vec<Group> = Vec::new();
   for layer in planned {
     let Ok((_, data, _)) = layers.get(layer.entity) else {
@@ -749,7 +775,7 @@ fn build(
       }
     }
     let mut tiles = TileColliders::from_cells(size.x, size.y, group.key.cell.as_vec2(), cells);
-    material.apply(&mut tiles);
+    group.key.material().apply(&mut tiles);
     for shape in pending.0 {
       tiles.add_shape(shape);
     }
@@ -761,7 +787,6 @@ fn build(
     tilesets: stamps(context.tile_map, context.tilesets),
     overrides: context.overrides.to_vec(),
     groups,
-    material,
     torn: false,
     warned_layers,
     warned_properties: FastSet::default(),
@@ -889,6 +914,32 @@ pub(crate) fn sync_map_colliders(
     let Some(tile_map) = root_map(root, tile_maps.as_deref(), projects.as_deref()) else {
       continue;
     };
+    // A property of the wrong type warns once a map
+    let mut first_warnings = FastSet::default();
+    let warned = match state.as_mut() {
+      Some(state) => &mut state.warned_properties,
+      None => &mut first_warnings,
+    };
+    let mut warn = |layer: Option<(Entity, &str)>,
+                    name: &'static str,
+                    value: &PropertyValue,
+                    wanted: &str| {
+      if warned.insert((layer.map(|(entity, _)| entity), name)) {
+        let whose = match layer {
+          Some((_, layer)) => format!("layer \"{layer}\""),
+          None => "the map".to_string(),
+        };
+        crate::engine_warn!(
+          module: "Tilemap",
+          "map {map}: {whose}'s property {name} is {value:?}, not {wanted}; its colliders take what is under it (the map's, else the default)"
+        );
+      }
+    };
+    let map_material = Material::of(
+      &tile_map.properties,
+      Material::DEFAULT,
+      |name, value, wanted| warn(None, name, value, wanted),
+    );
     planned.clear();
     if root.collision {
       for &entity in &map_layers.0 {
@@ -896,9 +947,12 @@ pub(crate) fn sync_map_colliders(
           continue;
         };
         if info.collides && !layer_disabled {
+          let material = Material::of(&info.properties, map_material, |name, value, wanted| {
+            warn(Some((entity, &info.name)), name, value, wanted)
+          });
           planned.push(Planned {
             entity,
-            key: GroupKey::of(data.cell_size, info.offset),
+            key: GroupKey::of(data.cell_size, info.offset, material),
             size: data.grid.size(),
             intgrid: data.intgrid.is_some(),
           });
@@ -910,22 +964,6 @@ pub(crate) fn sync_map_colliders(
       tilesets,
       overrides: &root.intgrid_collision,
     };
-    // A property of the wrong type warns once a map
-    let mut first_warnings = FastSet::default();
-    let material = {
-      let warned = match state.as_mut() {
-        Some(state) => &mut state.warned_properties,
-        None => &mut first_warnings,
-      };
-      Material::of(&tile_map.properties, |name, value, wanted| {
-        if warned.insert(name.to_string()) {
-          crate::engine_warn!(
-            module: "Tilemap",
-            "map {map}: the property {name} is {value:?}, not {wanted}; its colliders take the default"
-          );
-        }
-      })
-    };
     let same = state.as_ref().is_some_and(|s| {
       !s.torn
         && s.layers == *planned
@@ -936,8 +974,6 @@ pub(crate) fn sync_map_colliders(
     match state {
       Some(mut state) if same => {
         let state = &mut *state;
-        let restyled = state.material != material;
-        state.material = material;
         for group in &mut state.groups {
           if group.too_large {
             continue;
@@ -947,9 +983,6 @@ pub(crate) fn sync_map_colliders(
             state.torn = true;
             continue;
           };
-          if restyled {
-            material.apply(&mut tiles);
-          }
           update(group, &mut tiles, &layers, &context);
         }
       }
@@ -958,7 +991,14 @@ pub(crate) fn sync_map_colliders(
           Some(old) => (old.warned_layers.clone(), old.warned_properties.clone()),
           None => (FastSet::default(), first_warnings),
         };
-        let (mut fresh, built) = build(map, &context, &planned, &layers, material, warned_layers);
+        let (mut fresh, built) = build(
+          map,
+          &context,
+          &planned,
+          &layers,
+          map_material,
+          warned_layers,
+        );
         fresh.warned_properties = warned_properties;
         if let Some(old) = &state {
           for target in old.targets() {
@@ -1181,7 +1221,7 @@ mod tests {
       TileCell::Empty,
       "an occluder only occludes"
     );
-    // The material is the map's properties
+    // The material is the map's properties (its layers say none)
     assert_eq!((tiles.layer, tiles.mask), (2, u32::MAX));
     assert_eq!((tiles.friction, tiles.restitution), (0.25, 0.0));
     for layer in layers_of(&mut maps.world, map) {
@@ -1659,6 +1699,53 @@ mod tests {
     assert_eq!(warned, 1, "a wrong type warns once");
     let parts = parts_of(&mut maps.world, map);
     assert!(parts.iter().all(|(_, c)| c.layer == 4 && c.friction == 1.0));
+  }
+
+  #[test]
+  fn a_layer_s_own_material_overrides_the_map_s() {
+    let mut map = code_map(
+      UVec2::new(4, 1),
+      &[
+        ("ground", &[(IVec2::new(0, 0), SOLID)]),
+        ("ice", &[(IVec2::new(1, 0), SOLID)]),
+        ("same", &[(IVec2::new(2, 0), SOLID)]),
+      ],
+    );
+    map
+      .properties
+      .insert("friction", PropertyValue::Float(0.25));
+    map
+      .properties
+      .insert("collision_layer", PropertyValue::Int(2));
+    // Ice is slippery and on its own collision layer; "same" says what the
+    // map says
+    let ice = &mut map.layers[1].info.properties;
+    ice.insert("friction", PropertyValue::Float(0.0));
+    ice.insert("collision_layer", PropertyValue::Int(8));
+    map.layers[2]
+      .info
+      .properties
+      .insert("friction", PropertyValue::Float(0.25));
+    let mut maps = MapWorld::new();
+    let handle = add(&mut maps.world, map);
+    let map = maps.spawn(MapRoot::new(handle));
+    let layers = layers_of(&mut maps.world, map);
+    let shared = colliders(&maps.world, map);
+    assert_eq!((shared.friction, shared.layer), (0.25, 2));
+    assert_eq!(shared.get(0, 0), TileCell::Solid);
+    assert_eq!(
+      shared.get(2, 0),
+      TileCell::Solid,
+      "a layer saying what the map says"
+    );
+    assert_eq!(shared.get(1, 0), TileCell::Empty);
+    let ice = colliders(&maps.world, layers[1]);
+    assert_eq!((ice.friction, ice.layer, ice.mask), (0.0, 8, u32::MAX));
+    assert_eq!(ice.get(1, 0), TileCell::Solid);
+    assert_eq!(ice.get(0, 0), TileCell::Empty);
+    assert!(maps.world.get::<TileColliders>(layers[2]).is_none());
+    let parts = parts_of(&mut maps.world, layers[1]);
+    assert!(!parts.is_empty() && parts.iter().all(|(_, c)| c.friction == 0.0 && c.layer == 8));
   }
 
   #[test]
