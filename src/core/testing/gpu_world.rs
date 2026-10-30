@@ -1113,8 +1113,9 @@ fn a_despawned_map_frees_its_chunks() {
 
 #[test]
 fn a_large_tileset_draws_from_its_own_texture() {
-  // 100 tiles of 16 px pad into 32 px cells, ten a row: 320 px, over the
-  // atlas's 256 px, so the padded image is a texture of its own (mips too)
+  // 100 tiles of 16 px pad into 32 px cells, ten a row, with 24 px of
+  // margin on each side: 368 px, over the atlas's 256 px, so the padded
+  // image is a texture of its own (mips too)
   let Some(mut engine) = tile_engine(64, |ctx| {
     let colours: Vec<[u8; 4]> = (0..100u8)
       .map(|i| [i * 2 + 20, 250 - i * 2, 90, 255])
@@ -1140,4 +1141,122 @@ fn a_large_tileset_draws_from_its_own_texture() {
   assert_eq!(frame.get_pixel(40, 24).0, colour(99));
   let gpu = engine.engine.sprite_gpu.as_ref().unwrap();
   assert_eq!(gpu.standalone_entity_count(), 1, "a texture of its own");
+}
+
+#[test]
+fn two_cameras_each_draw_their_own_view_of_a_map() {
+  // One 128 x 128 map (4 x 4 chunks of 256 px) seen by two cameras side by
+  // side, each 32 px square: the main one on the left at zoom 1 over
+  // (16, 16) on render layers 0 and 1, another on the right at zoom 2 over
+  // (300, 16) on layer 0 alone. The ground has a red tile in each view; the
+  // "near" layer, put on render layer 1, a green one in each (the right
+  // camera does not draw its); the "clouds" layer (parallax 0.5) a blue one
+  // that each camera's own parallax brings into its view, from a chunk its
+  // unshifted view does not meet
+  const GREEN: [u8; 4] = [40, 200, 60, 255];
+  const BLUE: [u8; 4] = [30, 60, 230, 255];
+  let builder = EngineBuilder::new().pixel_art(64, 32).start_scene(Fixture {
+    setup: |ctx| {
+      ctx.look().tonemap = Tonemap::Clamp;
+      let set = solid_tiles(ctx, &[RED, GREEN, BLUE]);
+      let mut map = TileMap::new(UVec2::splat(128), UVec2::splat(8));
+      map.add_tileset(TilesetSource::Embedded(std::sync::Arc::new(set)));
+      let cells = [
+        ("ground", [(1, 1), (37, 1)], 0),
+        ("near", [(2, 2), (38, 2)], 1),
+        ("clouds", [(0, 2), (18, 1)], 2),
+      ];
+      for (name, at, tile) in cells {
+        let layer = map.add_tile_layer(name);
+        let grid = map.tiles_mut(layer).expect("tile layer");
+        for (x, y) in at {
+          grid.set(IVec2::new(x, y), Some(Tile::new(0, tile)));
+        }
+      }
+      map.layers[2].info.parallax = Vec2::splat(0.5);
+      spawn_map(ctx, map, Vec2::ZERO);
+      ctx.camera().set_position(16.0, 16.0);
+      ctx.camera().set_viewport(Viewport::new(0.0, 0.0, 0.5, 1.0));
+      let main = ctx
+        .world
+        .query_filtered::<Entity, With<MainCamera>>()
+        .single(ctx.world)
+        .expect("a main camera");
+      let mut main = ctx.world.entity_mut(main);
+      main.insert(RenderLayers::layer(0).with(1));
+      // One world unit a pixel, as the other camera at zoom 1
+      if let Some(mut camera) = main.get_mut::<Camera2d>() {
+        camera.projection = Projection::ScreenUnits;
+      }
+      ctx.world.spawn((
+        Transform::from_xy(300.0, 16.0),
+        Camera2d {
+          zoom: 2.0,
+          viewport: Viewport::new(0.5, 0.0, 0.5, 1.0),
+          order: 1,
+          ..Default::default()
+        },
+        RenderLayers::layer(0),
+      ));
+    },
+  });
+  let Some(mut engine) = engine(builder) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  let map = the_map(&mut engine);
+  let near = MapsView::new(engine.world_mut())
+    .layer_entity(map, "near")
+    .expect("near");
+  engine
+    .world_mut()
+    .entity_mut(near)
+    .insert(RenderLayers::layer(1));
+  engine.step().unwrap();
+
+  let frame = engine.frame().unwrap();
+  let background = frame.get_pixel(0, 0).0;
+  let boxes = [
+    // Left: the ground, the near tile, the clouds moved by (8, 8)
+    ((8, 8), (16, 16), RED),
+    ((16, 16), (24, 24), GREEN),
+    ((8, 24), (16, 32), BLUE),
+    // Right, twice the size: the ground, the clouds moved by (150, 8)
+    ((40, 0), (56, 16), RED),
+    ((36, 16), (52, 32), BLUE),
+  ];
+  for y in 0..32 {
+    for x in 0..64 {
+      let want = boxes
+        .iter()
+        .find(|((x0, y0), (x1, y1), _)| (*x0..*x1).contains(&x) && (*y0..*y1).contains(&y))
+        .map_or(background, |b| b.2);
+      assert_eq!(frame.get_pixel(x, y).0, want, "pixel ({x}, {y})");
+    }
+  }
+
+  // Each camera drew the chunks it sees: the left three layers' chunk
+  // (0, 0); the right the ground's chunk (1, 0) and the clouds' (0, 0)
+  let world = engine.world_mut();
+  let mut cameras: Vec<(i32, Entity)> = world
+    .query::<(Entity, &Camera2d)>()
+    .iter(world)
+    .map(|(entity, camera)| (camera.order, entity))
+    .collect();
+  cameras.sort();
+  let batch = engine.engine.batch.as_ref().unwrap();
+  let chunk_draws = |camera: Entity| {
+    batch
+      .draws(camera, true)
+      .iter()
+      .filter(|draw| {
+        matches!(
+          draw.source,
+          crate::core::render::batch::DrawSource::Chunk { .. }
+        )
+      })
+      .count()
+  };
+  assert_eq!(chunk_draws(cameras[0].1), 3, "the left camera's chunks");
+  assert_eq!(chunk_draws(cameras[1].1), 2, "the right camera's chunks");
 }

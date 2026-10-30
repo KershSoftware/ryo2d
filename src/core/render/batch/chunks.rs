@@ -1,5 +1,6 @@
 //! Retained tile chunks. Each chunk of a tile layer keeps its instances, a
-//! range per tileset, in one arena the GPU holds a copy of: built once from
+//! range per tileset in row order (so each row of cells is a run of it, for
+//! y-sorted layers), in one arena the GPU holds a copy of: built once from
 //! its tiles, written to the GPU once, and built and written again only when
 //! what it was built from changes. A draw of a chunk binds a slot (group 2,
 //! at a dynamic offset) that places it: the layer's world transform, the
@@ -60,6 +61,28 @@ pub(crate) struct ChunkPart {
   pub max: Vec2,
 }
 
+/// One row of cells of one tileset's part of a chunk: a run of the part's
+/// instances (they are in row order), and the box they cover in the
+/// layer's pixels. A y-sorted layer draws each row on its own
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct ChunkRow {
+  pub tileset: u16,
+  /// The cells' row in the layer
+  pub row: u32,
+  /// Where the run starts in its part, and how many instances it has
+  pub first: u32,
+  pub count: u32,
+  pub min: Vec2,
+  pub max: Vec2,
+}
+
+/// A chunk as a view draws it: each tileset's part, and the rows of each
+pub(crate) struct BuiltChunk<'a> {
+  pub parts: &'a [ChunkPart],
+  /// Part by part, rows in order
+  pub rows: &'a [ChunkRow],
+}
+
 /// One draw's slot, as `tile.wgsl` reads it (`TileSlot`)
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Default, bytemuck::Pod, bytemuck::Zeroable)]
@@ -95,6 +118,7 @@ struct Built {
   /// The last view it was handed to
   view: u64,
   parts: Vec<ChunkPart>,
+  rows: Vec<ChunkRow>,
 }
 
 /// The CPU side of the retained chunks: each layer's built chunks, the
@@ -109,8 +133,9 @@ pub(crate) struct ChunkStore {
   free: Vec<Range<u32>>,
   /// Ranges written since the GPU last was
   written: Vec<Range<u32>>,
-  /// A chunk's instances as built, before they are split by tileset
-  scratch: Vec<(u16, SpriteInstance)>,
+  /// A chunk's instances as built (tileset, row, instance), before they
+  /// are split by tileset
+  scratch: Vec<(u16, u32, SpriteInstance)>,
   /// The frame's slots, and the texture each one's UVs come from
   slots: Vec<TileSlot>,
   slot_textures: Vec<TextureId>,
@@ -134,18 +159,19 @@ impl ChunkStore {
     self.views
   }
 
-  /// The parts of `layer`'s chunk `chunk` for `view`, built by `build`
-  /// first (it fills the instances, as `(tileset, instance)` grouped by
-  /// tileset) when `stamp` is not what it was built from. `None` when the
-  /// view had it already. The chunk counts as drawn this frame
+  /// The parts and rows of `layer`'s chunk `chunk` for `view`, built by
+  /// `build` first (it fills the instances, as `(tileset, row, instance)`
+  /// grouped by tileset, in row order within one) when `stamp` is not what
+  /// it was built from. `None` when the view had it already. The chunk
+  /// counts as drawn this frame
   pub(crate) fn chunk(
     &mut self,
     layer: Entity,
     chunk: UVec2,
     stamp: ChunkStamp,
     view: u64,
-    build: impl FnOnce(&mut Vec<(u16, SpriteInstance)>),
-  ) -> Option<&[ChunkPart]> {
+    build: impl FnOnce(&mut Vec<(u16, u32, SpriteInstance)>),
+  ) -> Option<BuiltChunk<'_>> {
     let Self {
       layers,
       held,
@@ -168,21 +194,41 @@ impl ChunkStore {
       for part in built.parts.drain(..) {
         release(held, free, part.start..part.start + part.count);
       }
+      built.rows.clear();
       scratch.clear();
       build(scratch);
       for run in scratch.chunk_by(|a, b| a.0 == b.0) {
+        let tileset = run[0].0;
         let count = run.len() as u32;
         let start = allocate(held, free, count);
-        let (mut min, mut max) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
-        for (slot, (_, instance)) in held[start as usize..].iter_mut().zip(run) {
+        for (slot, (_, _, instance)) in held[start as usize..].iter_mut().zip(run) {
           *slot = *instance;
-          let (low, high) = reach(instance);
+        }
+        // Each row's run of the part, and the box of each
+        let (mut min, mut max) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
+        let mut first = 0;
+        for cells in run.chunk_by(|a, b| a.1 == b.1) {
+          let (mut low, mut high) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
+          for (_, _, instance) in cells {
+            let (a, b) = reach(instance);
+            low = low.min(a);
+            high = high.max(b);
+          }
+          built.rows.push(ChunkRow {
+            tileset,
+            row: cells[0].1,
+            first,
+            count: cells.len() as u32,
+            min: low,
+            max: high,
+          });
+          first += cells.len() as u32;
           min = min.min(low);
           max = max.max(high);
         }
         written.push(start..start + count);
         built.parts.push(ChunkPart {
-          tileset: run[0].0,
+          tileset,
           start,
           count,
           min,
@@ -190,7 +236,10 @@ impl ChunkStore {
         });
       }
     }
-    Some(&built.parts)
+    Some(BuiltChunk {
+      parts: &built.parts,
+      rows: &built.rows,
+    })
   }
 
   /// Adds a slot for this frame, its UVs to come from `texture`'s place,
@@ -498,13 +547,13 @@ mod tests {
   }
 
   /// Builds `tiles` (tileset, centre x) as 16 px tiles on row 0
-  fn builder(tiles: &[(u16, f32)]) -> impl FnOnce(&mut Vec<(u16, SpriteInstance)>) + '_ {
+  fn builder(tiles: &[(u16, f32)]) -> impl FnOnce(&mut Vec<(u16, u32, SpriteInstance)>) + '_ {
     move |out| {
       out.clear();
       out.extend(
         tiles
           .iter()
-          .map(|&(set, x)| (set, tile(x, 8.0, 16.0, 16.0))),
+          .map(|&(set, x)| (set, 0, tile(x, 8.0, 16.0, 16.0))),
       );
     }
   }
@@ -518,7 +567,7 @@ mod tests {
     let view = store.begin_view();
     store
       .chunk(layer, UVec2::ZERO, stamp, view, builder(tiles))
-      .map(<[ChunkPart]>::to_vec)
+      .map(|built| built.parts.to_vec())
       .unwrap_or_default()
   }
 
@@ -556,6 +605,47 @@ mod tests {
     let again = parts(&mut store, layer, STAMP, &[]);
     assert_eq!(again, built);
     assert_eq!(store.rebuilds(), 1);
+  }
+
+  #[test]
+  fn a_chunk_s_rows_are_runs_of_each_part() {
+    let [layer] = layers(1)[..] else { return };
+    let mut store = ChunkStore::default();
+    store.begin_frame();
+    let view = store.begin_view();
+    // (tileset, row, centre x): rows 0 and 2 of tileset 0, row 1 of 1
+    let tiles = [(0, 0, 8.0), (0, 0, 24.0), (0, 2, 8.0), (1, 1, 40.0)];
+    let build = |out: &mut Vec<(u16, u32, SpriteInstance)>| {
+      out.extend(tiles.iter().map(|&(set, row, x)| {
+        let y = row as f32 * 16.0 + 8.0;
+        (set, row, tile(x, y, 16.0, 16.0))
+      }));
+    };
+    let built = store
+      .chunk(layer, UVec2::ZERO, STAMP, view, build)
+      .expect("built");
+    assert_eq!(built.parts.len(), 2);
+    let rows: Vec<(u16, u32, u32, u32)> = built
+      .rows
+      .iter()
+      .map(|r| (r.tileset, r.row, r.first, r.count))
+      .collect();
+    assert_eq!(rows, [(0, 0, 0, 2), (0, 2, 2, 1), (1, 1, 0, 1)]);
+    let boxes: Vec<(Vec2, Vec2)> = built.rows.iter().map(|r| (r.min, r.max)).collect();
+    assert_eq!(
+      boxes,
+      [
+        (Vec2::ZERO, Vec2::new(32.0, 16.0)),
+        (Vec2::new(0.0, 32.0), Vec2::new(16.0, 48.0)),
+        (Vec2::new(32.0, 16.0), Vec2::new(48.0, 32.0)),
+      ]
+    );
+    // Drawn again unchanged, the rows are as built
+    let again = store.begin_view();
+    let kept = store
+      .chunk(layer, UVec2::ZERO, STAMP, again, |_| {})
+      .expect("kept");
+    assert_eq!(kept.rows.len(), 3);
   }
 
   #[test]

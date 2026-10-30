@@ -572,3 +572,494 @@ fn a_swapped_grid_redraws_its_layer() {
   let green = [(IVec2::new(1, 1), GREEN)];
   assert_pixels(&engine.frame().unwrap(), |x, y| in_cells(&green, x, y));
 }
+
+/// Where `character` is moved to before the next frame
+type Moved = Arc<Mutex<Option<Entity>>>;
+
+/// A 16 px blue square whose feet (its bottom edge) are at `feet`, its left
+/// edge at x 16
+fn character_at(feet: f32) -> Vec2 {
+  Vec2::new(16.0, feet - 16.0)
+}
+
+#[test]
+fn a_character_walks_behind_a_y_sorted_tree_and_in_front_of_its_roots() {
+  // Trees 8 x 16 px on 8 px cells stand on their cell's bottom edge: a red
+  // one on cell (2, 3) (y 16..32, roots at 32) and a yellow one on (3, 5)
+  // (y 32..48, roots at 48), both in one chunk of a y-sorted layer at z 1,
+  // each row its own draw. A 16 px blue character, y-sorted at z 1, draws
+  // between the rows by its feet. Under them all a ground map's plain layer
+  // shares their z: plain draws before y-sorted at one z
+  let moved = Moved::default();
+  let character = moved.clone();
+  let Some(mut engine) = engine(move |ctx| {
+    let ground = solid(ctx, &[GREEN]);
+    let mut floor = TileMap::new(UVec2::splat(SIZE / CELL), UVec2::splat(CELL));
+    floor.add_tileset(TilesetSource::Embedded(Arc::new(ground)));
+    let layer = floor.add_tile_layer("ground");
+    let cells: Vec<(IVec2, Tile)> = (0..7)
+      .flat_map(|y| (0..7).map(move |x| (IVec2::new(x, y), Tile::new(0, 0))))
+      .collect();
+    put(&mut floor, layer, &cells);
+    let floor = ctx.assets().add(floor);
+    ctx
+      .world
+      .spawn((MapRoot::new(floor).with_z(1), Transform::IDENTITY));
+
+    // Two tall trees: tiles 8 x 16 on the map's 8 px cells
+    let data: Vec<u8> = (0..4 * CELL * CELL)
+      .flat_map(|i| if i % (2 * CELL) < CELL { RED } else { YELLOW })
+      .collect();
+    let image = ctx.assets().add(Image::from_rgba(data, 2 * CELL, 2 * CELL));
+    let size = UVec2::new(2 * CELL, 2 * CELL);
+    let mut trees = Tileset::new(
+      "trees",
+      UVec2::new(CELL, 2 * CELL),
+      TilesetImage::Atlas { image, size },
+    );
+    trees.columns = 2;
+    trees.tile_count = 2;
+    let mut forest = TileMap::new(UVec2::splat(SIZE / CELL), UVec2::splat(CELL));
+    forest.add_tileset(TilesetSource::Embedded(Arc::new(trees)));
+    let layer = forest.add_tile_layer("trees");
+    let planted = [
+      (IVec2::new(2, 3), Tile::new(0, 0)),
+      (IVec2::new(3, 5), Tile::new(0, 1)),
+    ];
+    put(&mut forest, layer, &planted);
+    forest.layers[layer].info.y_sorted = true;
+    let forest = ctx.assets().add(forest);
+    ctx
+      .world
+      .spawn((MapRoot::new(forest).with_z(1), Transform::IDENTITY));
+
+    let blue = ctx
+      .assets()
+      .add(Image::solid_rect(16, 16, 30, 60, 230, 255));
+    let at = character_at(40.0);
+    let entity = ctx
+      .world
+      .spawn((
+        Transform::from_xy(at.x, at.y),
+        Renderable::image(blue)
+          .with_anchor(Anchor::TopLeft)
+          .with_z_order(1),
+        YSort::new(),
+      ))
+      .id();
+    *character.lock().unwrap() = Some(entity);
+  }) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  let character = moved.lock().unwrap().expect("spawned");
+
+  // What draws where, bottom first: the ground, then the trees and the
+  // character by their feet
+  let expect = |feet: f32| {
+    move |x: u32, y: u32| {
+      let (x, y) = (x as f32, y as f32);
+      let inside =
+        |x0: f32, y0: f32, w: f32, h: f32| x >= x0 && x < x0 + w && y >= y0 && y < y0 + h;
+      let mut drawn = [
+        (32.0, RED, (16.0, 16.0, 8.0, 16.0)),
+        (48.0, YELLOW, (24.0, 32.0, 8.0, 16.0)),
+        (feet, BLUE, (16.0, feet - 16.0, 16.0, 16.0)),
+      ];
+      drawn.sort_by(|a, b| a.0.total_cmp(&b.0));
+      let mut colour = (x < 56.0 && y < 56.0).then_some(GREEN);
+      for (_, c, (x0, y0, w, h)) in drawn {
+        if inside(x0, y0, w, h) {
+          colour = Some(c);
+        }
+      }
+      colour
+    }
+  };
+  // Between the trees: in front of the red one's roots, behind the yellow
+  assert_pixels(&engine.frame().unwrap(), expect(40.0));
+
+  // Up behind both, then down in front of both
+  for feet in [30.0, 52.0] {
+    let at = character_at(feet);
+    engine
+      .world_mut()
+      .get_mut::<Transform>(character)
+      .unwrap()
+      .translation = at;
+    engine.step().unwrap();
+    assert_pixels(&engine.frame().unwrap(), expect(feet));
+  }
+}
+
+/// An image layer of `image` at `offset`
+fn image_layer(
+  map: &mut TileMap,
+  name: &str,
+  image: Handle<Image>,
+  offset: Vec2,
+  (repeat_x, repeat_y): (bool, bool),
+) -> usize {
+  let mut info = LayerInfo::new(100 + map.layers.len() as u32, name);
+  info.offset = offset;
+  info.collides = false;
+  map.layers.push(MapLayer {
+    info,
+    kind: LayerKind::Image(ImageLayer {
+      image,
+      repeat_x,
+      repeat_y,
+    }),
+  });
+  map.layers.len() - 1
+}
+
+/// A 16 x 8 image: red on the left, blue on the right
+fn red_blue(ctx: &mut SceneContext) -> Handle<Image> {
+  let data: Vec<u8> = (0..2 * CELL * CELL)
+    .flat_map(|i| if i % (2 * CELL) < CELL { RED } else { BLUE })
+    .collect();
+  ctx.assets().add(Image::from_rgba(data, 2 * CELL, CELL))
+}
+
+#[test]
+fn an_image_layer_draws_and_repeats() {
+  // A 16 x 8 red and blue image: once at (8, 8); repeated across at y 24
+  // from x 4; repeated down at x 40 (over the row, being above it)
+  let tint = Color::rgb(220, 120, 40);
+  let Some(frame) = render(move |ctx| {
+    let image = red_blue(ctx);
+    let mut layers = TileMap::new(UVec2::splat(SIZE / CELL), UVec2::splat(CELL));
+    let once = (false, false);
+    image_layer(
+      &mut layers,
+      "once",
+      image.clone(),
+      Vec2::new(8.0, 8.0),
+      once,
+    );
+    let across = (true, false);
+    image_layer(
+      &mut layers,
+      "across",
+      image.clone(),
+      Vec2::new(4.0, 24.0),
+      across,
+    );
+    let down = (false, true);
+    image_layer(&mut layers, "down", image, Vec2::new(40.0, 0.0), down);
+    // Tinted and half opaque, like a sprite with the same tint and alpha
+    let white = ctx
+      .assets()
+      .add(Image::solid_rect(CELL, CELL, 255, 255, 255, 255));
+    let faded = image_layer(
+      &mut layers,
+      "faded",
+      white.clone(),
+      Vec2::new(8.0, 40.0),
+      once,
+    );
+    layers.layers[faded].info.tint = tint;
+    layers.layers[faded].info.opacity = 0.5;
+    spawn(ctx, layers, Vec2::ZERO);
+    ctx.world.spawn((
+      Transform::from_xy(24.0, 40.0),
+      Renderable::image(white)
+        .with_anchor(Anchor::TopLeft)
+        .with_tint(tint)
+        .with_alpha(0.5),
+    ));
+  }) else {
+    return;
+  };
+  let faded = frame.get_pixel(28, 44).0;
+  assert_ne!(faded, WHITE);
+  // Red where the image's left half falls, blue where its right half does
+  let half = |x: f32, from: f32| {
+    if (x - from).rem_euclid(16.0) < 8.0 {
+      RED
+    } else {
+      BLUE
+    }
+  };
+  assert_pixels(&frame, |x, y| {
+    let (fx, fy) = (x as f32, y as f32);
+    if (40..56).contains(&x) {
+      return Some(half(fx, 40.0));
+    }
+    if (24..32).contains(&y) {
+      return Some(half(fx, 4.0));
+    }
+    if (8..24).contains(&x) && (8..16).contains(&y) {
+      return Some(half(fx, 8.0));
+    }
+    if (8..16).contains(&x) && (40..48).contains(&y)
+      || (24..32).contains(&x) && (40..48).contains(&y)
+    {
+      return Some(faded);
+    }
+    let _ = fy;
+    None
+  });
+}
+
+#[test]
+fn blend_modes_draw_as_their_batch_modes() {
+  // Over a backdrop, column m draws mode m four ways: a tile layer (y 8), an
+  // image layer (y 24), a tile object (y 40), and a sprite (y 56), which the
+  // three must match
+  let modes = [
+    BlendMode::Alpha,
+    BlendMode::Additive,
+    BlendMode::Multiply,
+    BlendMode::Screen,
+  ];
+  const X: [u8; 4] = [200, 100, 50, 255];
+  let Some(frame) = render(move |ctx| {
+    let backdrop = ctx
+      .assets()
+      .add(Image::solid_rect(SIZE, SIZE, 60, 120, 180, 255));
+    ctx.world.spawn((
+      Transform::IDENTITY,
+      Renderable::image(backdrop)
+        .with_anchor(Anchor::TopLeft)
+        .with_z_order(-10),
+    ));
+    let set = solid(ctx, &[X]);
+    let picture = ctx
+      .assets()
+      .add(Image::solid_rect(CELL, CELL, X[0], X[1], X[2], X[3]));
+    let mut layers = map(vec![set], &[]);
+    for (m, mode) in modes.into_iter().enumerate() {
+      let x = (2 * m) as i32;
+      let tiles = layers.add_tile_layer("tiles");
+      put(&mut layers, tiles, &[(IVec2::new(x, 1), Tile::new(0, 0))]);
+      layers.layers[tiles].info.blend = mode;
+      let once = (false, false);
+      let at = Vec2::new(16.0 * m as f32, 24.0);
+      let image = image_layer(&mut layers, "image", picture.clone(), at, once);
+      layers.layers[image].info.blend = mode;
+      let objects = layers.add_object_layer("objects");
+      layers.layers[objects].kind = LayerKind::Objects(vec![tile_object(
+        "1",
+        Vec2::new(16.0 * m as f32, 40.0),
+        Vec2::splat(CELL as f32),
+        Tile::new(0, 0),
+      )]);
+      layers.layers[objects].info.blend = mode;
+      ctx.world.spawn((
+        Transform::from_xy(16.0 * m as f32, 56.0),
+        Renderable::image(picture.clone())
+          .with_anchor(Anchor::TopLeft)
+          .with_blend(mode),
+      ));
+    }
+    spawn(ctx, layers, Vec2::ZERO);
+  }) else {
+    return;
+  };
+  let mut seen = Vec::new();
+  for m in 0..modes.len() as u32 {
+    let x = 16 * m + 4;
+    let sprite = frame.get_pixel(x, 60).0;
+    for (y, what) in [(12, "tile layer"), (28, "image layer"), (44, "tile object")] {
+      assert_eq!(
+        frame.get_pixel(x, y).0,
+        sprite,
+        "{what} in {:?}",
+        modes[m as usize]
+      );
+    }
+    assert!(!seen.contains(&sprite), "the modes differ");
+    seen.push(sprite);
+  }
+}
+
+/// A tile object showing `tile`, its top-left at `at`, `size` px
+fn tile_object(id: &str, at: Vec2, size: Vec2, tile: Tile) -> MapObjectData {
+  MapObjectData {
+    id: id.to_string(),
+    name: String::new(),
+    class: None,
+    position: at,
+    size,
+    rotation: 0.0,
+    shape: ObjectShape::Rect,
+    tile: Some(tile),
+    visible: true,
+    properties: Properties::default(),
+  }
+}
+
+#[test]
+fn tile_objects_draw_their_tile_and_hidden_ones_do_not() {
+  // The quartered tile as objects: twice its size at (8, 8); mirrored at
+  // (32, 8). Hidden ones, one on a hidden layer and a shape with no tile
+  // draw nothing; a white one on a tinted, half-opaque layer at (8, 40)
+  // matches a sprite tinted and faded alike at (24, 40)
+  let tint = Color::rgb(220, 120, 40);
+  let spawned = Moved::default();
+  let map_entity = spawned.clone();
+  let Some(mut engine) = engine(move |ctx| {
+    let quartered = tileset(
+      ctx,
+      2,
+      |id, x, y| if id == 0 { quarters(x, y) } else { WHITE },
+    );
+    let mut layers = map(vec![quartered], &[]);
+    let objects = layers.add_object_layer("things");
+    let mut hidden = tile_object("3", Vec2::new(8.0, 32.0), Vec2::splat(8.0), Tile::new(0, 0));
+    hidden.visible = false;
+    let mut shape = tile_object(
+      "4",
+      Vec2::new(40.0, 32.0),
+      Vec2::splat(8.0),
+      Tile::new(0, 0),
+    );
+    shape.tile = None;
+    layers.layers[objects].kind = LayerKind::Objects(vec![
+      tile_object("1", Vec2::new(8.0, 8.0), Vec2::splat(16.0), Tile::new(0, 0)),
+      tile_object(
+        "2",
+        Vec2::new(32.0, 8.0),
+        Vec2::splat(8.0),
+        Tile::new(0, 0).with_flip(TileFlip::HORIZONTAL),
+      ),
+      hidden,
+      shape,
+    ]);
+    let off = layers.add_object_layer("off");
+    layers.layers[off].kind = LayerKind::Objects(vec![tile_object(
+      "5",
+      Vec2::new(48.0, 48.0),
+      Vec2::splat(8.0),
+      Tile::new(0, 0),
+    )]);
+    layers.layers[off].info.visible = false;
+    let faded = layers.add_object_layer("faded");
+    layers.layers[faded].kind = LayerKind::Objects(vec![tile_object(
+      "6",
+      Vec2::new(8.0, 40.0),
+      Vec2::splat(8.0),
+      Tile::new(0, 1),
+    )]);
+    layers.layers[faded].info.tint = tint;
+    layers.layers[faded].info.opacity = 0.5;
+    let map = spawn(ctx, layers, Vec2::ZERO);
+    *map_entity.lock().unwrap() = Some(map);
+    let white = ctx
+      .assets()
+      .add(Image::solid_rect(CELL, CELL, 255, 255, 255, 255));
+    ctx.world.spawn((
+      Transform::from_xy(24.0, 40.0),
+      Renderable::image(white)
+        .with_anchor(Anchor::TopLeft)
+        .with_tint(tint)
+        .with_alpha(0.5),
+    ));
+  }) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  let frame = engine.frame().unwrap();
+  let faded = frame.get_pixel(28, 44).0;
+  assert_ne!(faded, WHITE);
+  let expect = |faded_tile: bool| {
+    move |x: u32, y: u32| {
+      if (8..24).contains(&x) && (8..24).contains(&y) {
+        return Some(quarters((x - 8) / 2, (y - 8) / 2));
+      }
+      if (32..40).contains(&x) && (8..16).contains(&y) {
+        return Some(quarters(CELL - 1 - (x - 32), y - 8));
+      }
+      if (24..32).contains(&x) && (40..48).contains(&y) {
+        return Some(faded);
+      }
+      ((8..16).contains(&x) && (40..48).contains(&y) && faded_tile).then_some(faded)
+    }
+  };
+  assert_pixels(&frame, expect(true));
+
+  // A disabled map hides its objects too
+  let map = spawned.lock().unwrap().expect("spawned");
+  engine.world_mut().entity_mut(map).insert(Disabled);
+  engine.step().unwrap();
+  let only_sprite =
+    |x: u32, y: u32| ((24..32).contains(&x) && (40..48).contains(&y)).then_some(faded);
+  assert_pixels(&engine.frame().unwrap(), only_sprite);
+}
+
+#[test]
+fn tile_objects_on_a_y_sorted_layer_sort_with_characters_by_their_feet() {
+  // A red tile object 8 x 16 px with its feet at y 32, on a y-sorted object
+  // layer at z 1; a blue character, y-sorted at z 1, overlaps it with its
+  // feet at y 28 (behind it), then at y 36 (in front)
+  let moved = Moved::default();
+  let character = moved.clone();
+  let Some(mut engine) = engine(move |ctx| {
+    let image = ctx.assets().add(Image::solid_rect(
+      CELL,
+      2 * CELL,
+      RED[0],
+      RED[1],
+      RED[2],
+      255,
+    ));
+    let size = UVec2::new(CELL, 2 * CELL);
+    let mut set = Tileset::new(
+      "tall",
+      UVec2::new(CELL, 2 * CELL),
+      TilesetImage::Atlas { image, size },
+    );
+    set.columns = 1;
+    set.tile_count = 1;
+    let mut layers = map(vec![set], &[]);
+    let objects = layers.add_object_layer("things");
+    let tree = tile_object(
+      "1",
+      Vec2::new(16.0, 16.0),
+      Vec2::new(8.0, 16.0),
+      Tile::new(0, 0),
+    );
+    layers.layers[objects].kind = LayerKind::Objects(vec![tree]);
+    layers.layers[objects].info.y_sorted = true;
+    let handle = ctx.assets().add(layers);
+    ctx.world.spawn((MapRoot::new(handle), Transform::IDENTITY));
+    let blue = ctx.assets().add(Image::solid_rect(16, 8, 30, 60, 230, 255));
+    let entity = ctx
+      .world
+      .spawn((
+        Transform::from_xy(12.0, 20.0),
+        Renderable::image(blue)
+          .with_anchor(Anchor::TopLeft)
+          .with_z_order(1),
+        YSort::new(),
+      ))
+      .id();
+    *character.lock().unwrap() = Some(entity);
+  }) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  let character = moved.lock().unwrap().expect("spawned");
+  let expect = |feet: u32| {
+    move |x: u32, y: u32| {
+      let tree = (16..24).contains(&x) && (16..32).contains(&y);
+      let blue = (12..28).contains(&x) && (feet - 8..feet).contains(&y);
+      match (tree, blue) {
+        (true, true) => Some(if feet < 32 { RED } else { BLUE }),
+        (true, false) => Some(RED),
+        (false, true) => Some(BLUE),
+        (false, false) => None,
+      }
+    }
+  };
+  assert_pixels(&engine.frame().unwrap(), expect(28));
+  engine
+    .world_mut()
+    .get_mut::<Transform>(character)
+    .unwrap()
+    .translation = Vec2::new(12.0, 28.0);
+  engine.step().unwrap();
+  assert_pixels(&engine.frame().unwrap(), expect(36));
+}

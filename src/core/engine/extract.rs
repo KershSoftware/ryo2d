@@ -254,6 +254,21 @@ impl Engine {
           }
         }
       }
+      // Spawned maps' layers: their visible chunks (built into the batch's
+      // chunk store when they change), rows and tile objects, which take
+      // their places among the entities' draws, and image layers
+      let tile_frame = TileLayerFrame {
+        cameras: &self.camera_draws,
+        alpha,
+        game_time,
+      };
+      self.tile_drawer.collect(
+        &mut self.world,
+        &tile_frame,
+        &mut gpu,
+        batch.chunks_mut(),
+        &mut self.draw_list,
+      );
       let entity_sprites = self.entity_drawer.collect(
         &mut self.world,
         &self.camera_draws,
@@ -262,19 +277,7 @@ impl Engine {
         rend.device(),
         rend.queue(),
         &mut self.draw_list,
-      );
-      // Spawned maps' tile layers: their visible chunks, built into the
-      // batch's chunk store when they change
-      let tile_frame = TileLayerFrame {
-        cameras: &self.camera_draws,
-        alpha,
-      };
-      self.tile_drawer.collect(
-        &mut self.world,
-        &tile_frame,
-        &mut gpu,
-        batch.chunks_mut(),
-        &mut self.draw_list,
+        self.tile_drawer.ordered(),
       );
       self.parallax = quads;
       // World text: lay out what changed, build the glyphs asked for ahead,

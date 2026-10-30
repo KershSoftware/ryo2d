@@ -20,6 +20,7 @@ use super::map::TilesetSource;
 use super::tileset::{Tileset, TilesetImage, URect};
 use crate::core::asset::{AssetId, Assets, Handle};
 use crate::core::graphics::Image;
+use crate::core::graphics::atlas::BORDER;
 use crate::core::hash::FastMap;
 
 /// Extra texels of border a tile's cell keeps on every side (the cell is
@@ -39,6 +40,12 @@ pub(crate) struct PaddedLayout {
   pub cell: u32,
   /// Cells per row
   pub columns: u32,
+  /// Texels before the first cell and after the last, across and down:
+  /// with the 8 texels of border a texture puts around an image
+  /// (`atlas::BORDER`), each cell starts on a multiple of its side and the
+  /// texture's sides are whole cells, so a texture of its own (with every
+  /// mip level) keeps each cell whole texels down to one texel a cell
+  pub margin: u32,
   /// The padded image's size in texels
   pub size: UVec2,
   /// The tileset's `tile_offset`: where every tile draws from its cell's
@@ -78,7 +85,7 @@ impl PaddedLayout {
 
   /// The top-left texel of cell `slot`
   pub fn cell_origin(&self, slot: u32) -> UVec2 {
-    UVec2::new(slot % self.columns, slot / self.columns) * self.cell
+    UVec2::new(slot % self.columns, slot / self.columns) * self.cell + self.margin
   }
 }
 
@@ -214,27 +221,38 @@ pub(crate) fn pad_tileset(
   let n = cells.len() as u64;
   let columns = (n as f64).sqrt().ceil().max(1.0) as u64;
   let rows = n.div_ceil(columns);
-  if columns * cell as u64 > MAX_SIDE || rows * cell as u64 > MAX_SIDE {
+  // A texture of its own has the border around the image and a level for
+  // every halving, which the GPU sizes by rounding down and spreads over
+  // the whole texture. A margin on every side makes border and margin
+  // together whole cells, so the cells start on whole texels of each level
+  // down to one texel a cell, and the texture's sides halve exactly that
+  // far. (An atlas page's four levels line up anyway: its slots, and 8
+  // texels, are whole texels of all four)
+  let margin = (cell - BORDER % cell) % cell;
+  let side = |count: u64| count * u64::from(cell) + 2 * u64::from(margin);
+  if side(columns) > MAX_SIDE || side(rows) > MAX_SIDE {
     return None;
   }
   let (columns, rows) = (columns as u32, rows as u32);
-  let size = UVec2::new(columns * cell, rows * cell);
+  let size = UVec2::new(columns, rows) * cell + 2 * margin;
+  let mut layout = PaddedLayout {
+    cell,
+    columns,
+    margin,
+    size,
+    offset: tileset.tile_offset,
+    serial: 0,
+    tiles: Arc::new(Vec::new()),
+  };
   let mut data = vec![0u8; size.x as usize * size.y as usize * 4];
   for (slot, &(id, drawn)) in cells.iter().enumerate() {
     let Some(from) = source(tileset, images, id) else {
       continue;
     };
-    let origin = UVec2::new(slot as u32 % columns, slot as u32 / columns) * cell;
+    let origin = layout.cell_origin(slot as u32);
     paint(&mut data, size.x, origin, cell, drawn, &from);
   }
-  let layout = PaddedLayout {
-    cell,
-    columns,
-    size,
-    offset: tileset.tile_offset,
-    serial: 0,
-    tiles: Arc::new(tiles),
-  };
+  layout.tiles = Arc::new(tiles);
   Some((Image::from_rgba(data, size.x, size.y), layout))
 }
 
@@ -465,8 +483,11 @@ pub(crate) mod tests {
     let (image, layout) = pad_tileset(&t, &images).expect("padded");
     assert_eq!(layout.cell, 32);
     assert_eq!(layout.columns, 2);
-    assert_eq!(layout.size, UVec2::splat(64));
-    assert_eq!((image.width(), image.height()), (64, 64));
+    // Two cells a side, and 24 texels on each side (24 and a texture's 8
+    // of border make a whole cell)
+    assert_eq!(layout.margin, 24);
+    assert_eq!(layout.size, UVec2::splat(112));
+    assert_eq!((image.width(), image.height()), (112, 112));
     for id in 0..4u32 {
       let slot = layout.tile(id).expect("tile").slot;
       let o = layout.cell_origin(slot);
@@ -484,6 +505,39 @@ pub(crate) mod tests {
         for x in 0..32 {
           assert_eq!(texel(&image, o.x + x, o.y + y)[2], id as u8);
         }
+      }
+    }
+  }
+
+  #[test]
+  fn cells_are_whole_texels_of_every_mip_level_behind_a_texture_s_border() {
+    // A texture of its own puts the atlas's border around the image: each
+    // cell must still start on a whole texel of every level down to one
+    // texel a cell, or zoomed out the levels mix neighbours into a tile.
+    // And the texture's sides must be whole cells: the GPU sizes a level
+    // by rounding down, so a level of another size would not line up with
+    // the full-size one
+    let mut images = Assets::new();
+    for (tile, cols) in [(16, 10), (8, 3), (30, 2), (2, 2)] {
+      let t = marked_atlas(&mut images, tile, cols, cols);
+      let (image, layout) = pad_tileset(&t, &images).expect("padded");
+      let size = UVec2::new(image.width(), image.height());
+      assert_eq!(size, layout.size);
+      let texture = size + 2 * BORDER;
+      assert_eq!(
+        texture % layout.cell,
+        UVec2::ZERO,
+        "{tile} px tiles: {size}"
+      );
+      for slot in 0..cols * cols {
+        let o = layout.cell_origin(slot);
+        let behind = o + UVec2::splat(BORDER);
+        assert_eq!(
+          behind % layout.cell,
+          UVec2::ZERO,
+          "{tile} px tiles, cell {slot} at {o}"
+        );
+        assert!((o + UVec2::splat(layout.cell)).cmple(size).all());
       }
     }
   }

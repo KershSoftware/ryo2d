@@ -141,16 +141,18 @@ pub(crate) struct DrawGlyph {
   pub(crate) max: Vec2,
 }
 
-/// One tileset's tiles of a chunk of a tile layer, waiting to be drawn:
-/// its instances wait in the batch's chunk store under `key`, built once,
-/// and its slot places them (the layer's transform, the camera's parallax,
-/// the tileset's place on its page).
+/// One tileset's tiles of a chunk of a tile layer, or of one row of it,
+/// waiting to be drawn: its instances wait in the batch's chunk store under
+/// `key`, built once, and its slot places them (the layer's transform, the
+/// camera's parallax, the tileset's place on its page).
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct DrawChunk {
   pub(crate) key: ChunkKey,
   /// The tileset's padded image
   pub(crate) texture: TextureId,
-  /// How many instances it has
+  /// Where its instances start in the key's, and how many it draws: all of
+  /// them, or a row's
+  pub(crate) first: u32,
   pub(crate) count: u32,
   pub(crate) blend: BlendMode,
   pub(crate) filter: Filter,
@@ -688,6 +690,7 @@ mod tests {
         tileset: 0,
       },
       texture: TextureId::for_test(1),
+      first: 0,
       count: 4,
       blend: BlendMode::Alpha,
       filter: Filter::Default,

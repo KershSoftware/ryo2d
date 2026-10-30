@@ -22,9 +22,9 @@ struct TileSlot {
 
 // How far, in padded-image UV, an animated tile's frame for the game time
 // is from its first. `params` is `[frames, seconds per frame, step u,
-// step v]` and `extra` `[first u, first v, columns, phase]`: frame k is
-// cell `first + k` counted row-major, rows wrapping at `columns`. A still
-// tile has no frames
+// step v]` and `extra` `[first column, first row, columns, phase]`: frame
+// k is cell `first + k` counted row-major, rows wrapping at `columns`. A
+// still tile has no frames
 fn frame_step(params: vec4<f32>, extra: vec4<f32>) -> vec2<f32> {
     let frames = round(params.x);
     if frames < 2.0 || params.y <= 0.0 || params.z <= 0.0 {
@@ -33,7 +33,7 @@ fn frame_step(params: vec4<f32>, extra: vec4<f32>) -> vec2<f32> {
     let beats = floor((globals.game_time + extra.w) / params.y);
     let k = clamp(beats - frames * floor(beats / frames), 0.0, frames - 1.0);
     let columns = max(round(extra.z), 1.0);
-    let first = round(extra.x / params.z);
+    let first = round(extra.x);
     let cell = first + k;
     let rows = floor(cell / columns);
     return vec2<f32>((cell - rows * columns - first) * params.z, rows * params.w);

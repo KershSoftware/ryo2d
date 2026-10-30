@@ -12,6 +12,8 @@
 //! tiles) is a [`DrawKind::Entity`] item at the entity's `z_order`, submitted
 //! in draw order, so the shadow draws under its entity and YSort orders
 //! entities within their layer; ties go by entity index (`entity_order`).
+//! Draws from outside the entity query take their places in the same order
+//! ([`OrderedDraw`]: tile layers' chunks and y-sorted rows, tile objects).
 //! Composite tiles draw at their own `z_order`; on equal z they follow the
 //! entities.
 //!
@@ -27,7 +29,7 @@ use std::collections::HashSet;
 
 use super::batch::{BlendMode, Filter};
 use super::scratch::recycle;
-use super::{CameraDraw, DrawKind, DrawList, SpriteLook, SpriteShading};
+use super::{CameraDraw, DrawChunk, DrawKind, DrawList, SpriteLook, SpriteShading};
 use crate::core::asset::{AssetId, Assets};
 use crate::core::ecs::interpolate::render_global;
 use crate::core::ecs::kernel::QueryState;
@@ -72,6 +74,10 @@ impl DrawOrder {
     }
   }
 
+  pub(crate) fn z(&self) -> i32 {
+    self.z
+  }
+
   /// By layer and sort y. Ties (a layer's plain sprites, y-sorted ones at
   /// one sort y) are broken by `entity_order` where the drawables are sorted
   pub(crate) fn cmp(&self, other: &Self) -> std::cmp::Ordering {
@@ -85,6 +91,74 @@ impl DrawOrder {
         (Some(_), None) => Ordering::Greater,
         (Some(a), Some(b)) => a.total_cmp(&b),
       })
+  }
+}
+
+/// Whether what is at `a` (its order, and the entity its ties go by) draws
+/// before what is at `b`
+fn draws_before(a: (DrawOrder, Entity), b: (DrawOrder, Entity)) -> bool {
+  a.0
+    .cmp(&b.0)
+    .then_with(|| entity_order(&a.1).cmp(&entity_order(&b.1)))
+    .is_lt()
+}
+
+/// A draw from outside the entity query that takes its place among the
+/// entities' draws: by its order, ties by its entity's index, as an entity
+/// at that order would. Tile layers make them (`render/tiles.rs`): a plain
+/// layer's chunks at its z, a y-sorted layer's rows by their bottom edges,
+/// and tile objects
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct OrderedDraw {
+  pub(crate) order: DrawOrder,
+  /// What ties at one order go by: the layer or the object
+  pub(crate) entity: Entity,
+  /// Its place among draws at one order and entity (the order made)
+  pub(crate) index: u32,
+  /// Drawn before lighting; otherwise after it, at full brightness
+  pub(crate) lit: bool,
+  /// Drawn by this camera alone (a parallax layer's)
+  pub(crate) only_camera: Option<Entity>,
+  pub(crate) payload: OrderedPayload,
+}
+
+/// What an [`OrderedDraw`] draws
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum OrderedPayload {
+  Chunk(DrawChunk),
+  Sprite {
+    texture: TextureId,
+    look: SpriteLook,
+    instance: SpriteInstance,
+    layers: RenderLayers,
+  },
+}
+
+impl OrderedDraw {
+  /// Sorts `draws` into draw order, without allocating
+  pub(crate) fn sort(draws: &mut [OrderedDraw]) {
+    draws.sort_unstable_by(|a, b| {
+      a.order
+        .cmp(&b.order)
+        .then_with(|| entity_order(&a.entity).cmp(&entity_order(&b.entity)))
+        .then_with(|| a.index.cmp(&b.index))
+    });
+  }
+
+  fn push(&self, list: &mut DrawList) {
+    let z = self.order.z();
+    match self.payload {
+      OrderedPayload::Chunk(chunk) => list.push_chunk(self.lit, z, self.only_camera, chunk),
+      OrderedPayload::Sprite {
+        texture,
+        look,
+        instance,
+        layers,
+      } => {
+        let seen = (layers, None, self.only_camera);
+        list.push_sprite_in(DrawKind::Entity, z, texture, look, instance, seen);
+      }
+    }
   }
 }
 
@@ -130,9 +204,11 @@ pub(crate) struct EntityDrawer {
 }
 
 impl EntityDrawer {
-  /// Push the frame's entities onto `list` as world-space quads, returning
-  /// how many visible renderables there were. `alpha` is the render
-  /// interpolation factor; quads none of `cameras` can see are skipped.
+  /// Push the frame's entities onto `list` as world-space quads, with
+  /// `ordered` (sorted by [`OrderedDraw::sort`]) each in its place among
+  /// them, returning how many visible renderables there were. `alpha` is
+  /// the render interpolation factor; quads none of `cameras` can see are
+  /// skipped.
   #[allow(clippy::too_many_arguments)]
   pub(crate) fn collect(
     &mut self,
@@ -143,6 +219,7 @@ impl EntityDrawer {
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     list: &mut DrawList,
+    ordered: &[OrderedDraw],
   ) -> usize {
     let mut drawables = world.query::<DrawableItem>();
     let mut composites = world.query::<(
@@ -177,7 +254,14 @@ impl EntityDrawer {
       lit: true,
       ellipse: &mut self.ellipse,
     };
-    for (_, drawable) in &items {
+    let mut ordered = ordered.iter().peekable();
+    for (order, drawable) in &items {
+      // The draws from outside the query that come before this entity
+      while let Some(draw) =
+        ordered.next_if(|draw| draws_before((draw.order, draw.entity), (*order, drawable.entity)))
+      {
+        draw.push(out.list);
+      }
       let shows = drawable.renderable.target;
       if let Some(target) = shows
         && cameras.iter().any(|camera| camera.target == Some(target))
@@ -194,6 +278,9 @@ impl EntityDrawer {
       out.filter = drawable.renderable.filter;
       out.lit = drawable.renderable.lighting;
       collect_entity(&frame, drawable, &mut out);
+    }
+    for draw in ordered {
+      draw.push(out.list);
     }
     out.shows = None;
     out.filter = Filter::Default;

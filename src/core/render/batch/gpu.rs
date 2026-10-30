@@ -400,9 +400,14 @@ impl Batch2D {
             // Its instances are in the chunk arena; its slot places them
             // and maps their UVs into the image's place
             let chunk = list.chunk(index)?;
-            let instances = chunks
-              .range(chunk.key)
-              .filter(|range| range.len() == chunk.count as usize)?;
+            // All of the key's instances, or a row of them
+            let range = chunks.range(chunk.key)?;
+            let start = range.start.checked_add(chunk.first)?;
+            let end = start.checked_add(chunk.count)?;
+            if end > range.end {
+              return None;
+            }
+            let instances = start..end;
             let (slot, _) = textures.slot(chunk.texture)?;
             let key = PipelineKey {
               shader: BatchShader::Tile,

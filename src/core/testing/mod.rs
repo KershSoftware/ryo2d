@@ -56,6 +56,8 @@ mod image_gpu;
 mod retain;
 #[cfg(test)]
 mod shader_gpu;
+#[cfg(test)]
+mod tile_bleeding;
 pub(crate) mod ui;
 
 pub use headless::{HeadlessEngine, OffscreenOptions, StepOutcome, offscreen_with_format};
