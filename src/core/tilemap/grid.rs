@@ -45,6 +45,11 @@ pub struct TileGrid {
   chunks: UVec2,
   dirty: Vec<bool>,
   dirty_count: usize,
+  /// Each chunk's version: the grid's counter when it last changed
+  versions: Vec<u64>,
+  /// Moves on at every change and never repeats, so a version is a stamp of
+  /// one state of one chunk
+  counter: u64,
 }
 
 impl TileGrid {
@@ -59,6 +64,8 @@ impl TileGrid {
       chunks,
       dirty: vec![false; n],
       dirty_count: 0,
+      versions: vec![0; n],
+      counter: 0,
     }
   }
 
@@ -82,6 +89,8 @@ impl TileGrid {
   fn mark(&mut self, cell: IVec2) {
     let c = cell.as_uvec2() / CHUNK_SIZE;
     let i = c.y as usize * self.chunks.x as usize + c.x as usize;
+    self.counter += 1;
+    self.versions[i] = self.counter;
     if !self.dirty[i] {
       self.dirty[i] = true;
       self.dirty_count += 1;
@@ -155,8 +164,28 @@ impl TileGrid {
     self.dirty_count = 0;
   }
 
-  /// Marks every chunk dirty
+  /// The version of `chunk`: it changes whenever a cell of the chunk does,
+  /// to a value the grid has not given before, so a consumer that keeps the
+  /// last version it saw knows whether to rebuild. 0 for a chunk outside
+  /// the grid and for one never changed (a new grid)
+  pub fn chunk_version(&self, chunk: UVec2) -> u64 {
+    if chunk.x >= self.chunks.x || chunk.y >= self.chunks.y {
+      return 0;
+    }
+    self.versions[chunk.y as usize * self.chunks.x as usize + chunk.x as usize]
+  }
+
+  /// A version of the whole grid: it changes whenever any chunk's does
+  pub fn version(&self) -> u64 {
+    self.counter
+  }
+
+  /// Marks every chunk dirty, and moves every chunk's version on
   pub fn mark_all_dirty(&mut self) {
+    for v in &mut self.versions {
+      self.counter += 1;
+      *v = self.counter;
+    }
     self.dirty.fill(true);
     self.dirty_count = self.dirty.len();
   }
@@ -257,5 +286,59 @@ mod tests {
     assert!(!g.set(IVec2::ZERO, Some(Tile::new(256, 0))));
     assert!(!g.set(IVec2::ZERO, Some(Tile::new(0, 1_048_575))));
     assert_eq!(g.get(IVec2::ZERO), None);
+  }
+
+  #[test]
+  fn every_change_bumps_its_chunk_s_version() {
+    let mut g = TileGrid::new(UVec2::new(100, 40));
+    let t = Some(Tile::new(0, 1));
+    let chunk = UVec2::new(1, 0);
+    let mut seen = vec![g.chunk_version(chunk)];
+    let mut whole = vec![g.version()];
+    let mut note = |g: &TileGrid| {
+      seen.push(g.chunk_version(chunk));
+      whole.push(g.version());
+    };
+    g.set(IVec2::new(40, 3), t);
+    note(&g);
+    g.set(IVec2::new(40, 3), None);
+    note(&g);
+    g.fill(IVec2::new(32, 0), IVec2::new(33, 0), t);
+    note(&g);
+    g.clear();
+    note(&g);
+    g.mark_all_dirty();
+    note(&g);
+    for pair in seen.windows(2) {
+      assert_ne!(pair[0], pair[1], "versions {seen:?}");
+    }
+    let mut sorted = seen.clone();
+    sorted.sort_unstable();
+    sorted.dedup();
+    assert_eq!(sorted.len(), seen.len(), "a version came back: {seen:?}");
+    assert!(whole.windows(2).all(|p| p[0] != p[1]));
+    // A change that changes nothing keeps the version
+    let before = g.chunk_version(chunk);
+    assert!(!g.set(IVec2::new(40, 3), None));
+    assert_eq!(g.chunk_version(chunk), before);
+  }
+
+  #[test]
+  fn untouched_chunks_keep_their_version() {
+    let mut g = TileGrid::new(UVec2::new(100, 40));
+    g.set(IVec2::new(70, 3), Some(Tile::new(0, 1)));
+    let far = g.chunk_version(UVec2::new(2, 0));
+    let other = g.chunk_version(UVec2::new(0, 0));
+    g.set(IVec2::new(40, 3), Some(Tile::new(0, 1)));
+    g.fill(IVec2::new(32, 0), IVec2::new(60, 5), Some(Tile::new(0, 2)));
+    assert_eq!(g.chunk_version(UVec2::new(2, 0)), far);
+    assert_eq!(g.chunk_version(UVec2::new(0, 0)), other);
+    assert_ne!(g.chunk_version(UVec2::new(1, 0)), 0);
+    assert_eq!(g.chunk_version(UVec2::new(9, 9)), 0);
+    // draining the dirty marks is not a change
+    let v = g.version();
+    let mut out = Vec::new();
+    g.drain_dirty(&mut out);
+    assert_eq!(g.version(), v);
   }
 }

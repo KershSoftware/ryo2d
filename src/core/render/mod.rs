@@ -57,6 +57,8 @@ mod passes;
 mod pipeline;
 pub(crate) mod scratch;
 pub(crate) mod text;
+#[allow(dead_code)] // drawn by the chunk renderer
+pub(crate) mod tiles;
 pub(crate) mod ui;
 pub(crate) mod ui_renderer;
 pub(crate) mod ui_retain;

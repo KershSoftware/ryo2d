@@ -8,6 +8,8 @@ mod edit;
 mod grid;
 mod ldtk;
 mod map;
+#[allow(dead_code)] // drawn by the chunk renderer
+pub(crate) mod padded;
 mod property;
 mod spawn;
 mod tile;
