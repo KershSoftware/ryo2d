@@ -163,6 +163,10 @@ pub struct TileMap {
   pub class: Option<String>,
   pub background: Option<Color>,
   pub properties: Properties,
+  /// For each tile layer, the highest tile id it used of each tileset, as
+  /// loaded: the loader's check measures them against the tilesets once those
+  /// are in. A layer index, a tileset index and an id
+  pub(crate) used_ids: Vec<(usize, u16, u32)>,
 }
 
 impl Asset for TileMap {}
@@ -178,6 +182,7 @@ impl TileMap {
       class: None,
       background: None,
       properties: Properties::default(),
+      used_ids: Vec::new(),
     }
   }
 
@@ -189,7 +194,12 @@ impl TileMap {
   }
 
   fn next_layer_id(&self) -> u32 {
-    self.layers.iter().map(|l| l.info.id + 1).max().unwrap_or(1)
+    self
+      .layers
+      .iter()
+      .map(|l| l.info.id.saturating_add(1))
+      .max()
+      .unwrap_or(1)
   }
 
   /// Adds an empty tile layer on top and returns its index

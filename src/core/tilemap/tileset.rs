@@ -169,16 +169,26 @@ impl Tileset {
   }
 
   /// Where tile `id` sits in the atlas image, in texels; `None` past
-  /// `tile_count` or with no columns
+  /// `tile_count`, with no columns, or where the arithmetic overflows (a file
+  /// can claim any numbers)
   pub fn tile_rect(&self, id: u32) -> Option<URect> {
     if self.columns == 0 || id >= self.tile_count {
       return None;
     }
     let col = id % self.columns;
     let row = id / self.columns;
-    let x = self.margin + col * (self.tile_size.x + self.spacing);
-    let y = self.margin + row * (self.tile_size.y + self.spacing);
-    Some(URect::new(x, y, x + self.tile_size.x, y + self.tile_size.y))
+    let x = col
+      .checked_mul(self.tile_size.x.checked_add(self.spacing)?)?
+      .checked_add(self.margin)?;
+    let y = row
+      .checked_mul(self.tile_size.y.checked_add(self.spacing)?)?
+      .checked_add(self.margin)?;
+    Some(URect::new(
+      x,
+      y,
+      x.checked_add(self.tile_size.x)?,
+      y.checked_add(self.tile_size.y)?,
+    ))
   }
 }
 
@@ -205,6 +215,18 @@ mod tests {
     let mut none = sheet();
     none.columns = 0;
     assert_eq!(none.tile_rect(0), None);
+  }
+
+  #[test]
+  fn tile_rect_is_none_where_the_arithmetic_overflows() {
+    let mut t = sheet();
+    t.tile_size = UVec2::splat(u32::MAX / 2);
+    t.tile_count = u32::MAX;
+    t.columns = 4;
+    assert_eq!(t.tile_rect(0).map(|r| r.min), Some(UVec2::splat(1)));
+    assert_eq!(t.tile_rect(5), None);
+    t.spacing = u32::MAX;
+    assert_eq!(t.tile_rect(0), None);
   }
 
   #[test]

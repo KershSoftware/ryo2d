@@ -6,6 +6,7 @@ mod grid;
 mod map;
 mod property;
 mod tile;
+mod tiled;
 mod tileset;
 
 pub use grid::{CHUNK_SIZE, TileGrid};
@@ -15,6 +16,7 @@ pub use map::{
 };
 pub use property::{Properties, PropertyValue};
 pub use tile::{Tile, TileFlip};
+pub use tiled::{TiledMapLoader, TiledTilesetLoader};
 pub use tileset::{
   TileData, TileFrame, TileShape, Tileset, TilesetImage, URect, WangColor, WangKind, WangSet,
 };

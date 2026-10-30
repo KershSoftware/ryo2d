@@ -211,7 +211,8 @@ pub mod prelude {
   pub use crate::core::tilemap::{
     CHUNK_SIZE, ImageLayer, IntGrid, LayerInfo, LayerKind, MapLayer, MapObjectData, ObjectShape,
     Properties, PropertyValue, Tile, TileData, TileFlip, TileFrame, TileGrid, TileMap, TileShape,
-    Tileset, TilesetImage, TilesetSource, URect, WangColor, WangKind, WangSet,
+    TiledMapLoader, TiledTilesetLoader, Tileset, TilesetImage, TilesetSource, URect, WangColor,
+    WangKind, WangSet,
   };
 
   // Render pipeline

@@ -1,0 +1,39 @@
+{ "compressionlevel":-1,
+ "height":4,
+ "infinite":false,
+ "layers":[
+        {
+         "data":[0, 7, 14, 2147483649, 1073741826, 536870915, 3758096388, 13,
+            2, 2147483666, 16, 5, 12, 1, 8, 15,
+            4, 11, 0, 7, 14, 3, 10, 17,
+            6, 13, 2, 9, 16, 5, 12, 1],
+         "height":4,
+         "id":1,
+         "name":"ground",
+         "opacity":1,
+         "type":"tilelayer",
+         "visible":true,
+         "width":8,
+         "x":0,
+         "y":0
+        }],
+ "nextlayerid":2,
+ "nextobjectid":1,
+ "orientation":"orthogonal",
+ "renderorder":"right-down",
+ "tiledversion":"1.12.2",
+ "tileheight":16,
+ "tilesets":[
+        {
+         "firstgid":1,
+         "source":"..\/tilesets\/tiles.tsj"
+        }, 
+        {
+         "firstgid":17,
+         "source":"..\/tilesets\/items.tsj"
+        }],
+ "tilewidth":16,
+ "type":"map",
+ "version":"1.10",
+ "width":8
+}
