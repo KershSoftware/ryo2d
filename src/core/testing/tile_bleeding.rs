@@ -1,7 +1,9 @@
 //! Tiles drawn edge to edge never show a seam: at any zoom, at any sub-pixel
 //! camera position and with either filter, every pixel over a filled tile
 //! layer is one of its tiles' colours, never the background, a mix of two
-//! tiles, or a colour from a tile next to them in the tileset images.
+//! tiles, or a colour from a tile next to them in the tileset images. And on
+//! the pixel-art target a layer's origin snaps to a whole pixel, so a camera
+//! a fraction of a pixel off draws what it draws there.
 
 use std::sync::Arc;
 
@@ -151,4 +153,82 @@ fn no_seams_at_any_zoom_or_subpixel_camera() {
     failures.extend(found.into_iter().map(|f| format!("{filter}: {f}")));
   }
   assert!(failures.is_empty(), "seams:\n{}", failures.join("\n"));
+}
+
+/// A map of 6 px tiles whose texels are in four colours by the parity of
+/// their column and row, its top-left corner on the world's origin
+struct Checked;
+
+impl Scene for Checked {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    ctx.look().tonemap = Tonemap::Clamp;
+    let colours = [A, B, NEIGHBOURS[0], NEIGHBOURS[1]];
+    let data: Vec<u8> = (0..36u32)
+      .flat_map(|i| colours[((i % 6) % 2 + 2 * ((i / 6) % 2)) as usize])
+      .collect();
+    let image = ctx.assets().add(Image::from_rgba(data, 6, 6));
+    let size = UVec2::splat(6);
+    let mut set = Tileset::new("checked", size, TilesetImage::Atlas { image, size });
+    set.columns = 1;
+    set.tile_count = 1;
+    let mut map = TileMap::new(UVec2::splat(16), size);
+    map.add_tileset(TilesetSource::Embedded(Arc::new(set)));
+    let layer = map.add_tile_layer("ground");
+    let grid = map.tiles_mut(layer).expect("tile layer");
+    for y in 0..16 {
+      for x in 0..16 {
+        grid.set(IVec2::new(x, y), Some(Tile::new(0, 0)));
+      }
+    }
+    let map = ctx.assets().add(map);
+    ctx.world.spawn((MapRoot::new(map), Transform::IDENTITY));
+  }
+}
+
+#[test]
+fn a_sub_pixel_camera_draws_tiles_as_at_the_whole_pixel_they_round_to() {
+  // Pixel art at zoom 4/3: a 6 px tile is 8 pixels and a texel 4/3 of one,
+  // so which texel a pixel shows hangs on where the layer starts to a
+  // fraction of a pixel. Its origin snaps to a whole pixel: with the map's
+  // corner a fraction of a pixel from pixel (10, 10) the frame is the one
+  // drawn with the corner on it. (Without the snap the texels slide under
+  // the pixels as the camera moves)
+  let zoom = 4.0 / 3.0;
+  let builder = EngineBuilder::new()
+    .pixel_art(SIZE, SIZE)
+    .start_scene(Checked);
+  let Some(mut engine) = HeadlessEngine::new_or_skip(builder) else {
+    return;
+  };
+  // The camera centre that puts the map's corner at `corner` on screen
+  let mut frame_at = |corner: Vec2| {
+    let centre = (Vec2::splat(SIZE as f32 / 2.0) - corner) / zoom;
+    let world = engine.world_mut();
+    let mut cameras = world.query_filtered::<(&mut Transform, &mut Camera2d), With<MainCamera>>();
+    for (mut transform, mut camera) in cameras.iter_mut(world) {
+      transform.translation = centre;
+      camera.zoom = zoom;
+    }
+    // Twice: the main camera is interpolated, and draws where it was
+    engine.step_frames(2).unwrap();
+    engine.frame().unwrap()
+  };
+  let whole = frame_at(Vec2::splat(10.0));
+  let mut found = Vec::new();
+  for fraction in [(0.2, 0.4), (0.4, -0.2), (-0.4, 0.3), (-0.2, -0.45)] {
+    let corner = Vec2::splat(10.0) + Vec2::from(fraction);
+    let frame = frame_at(corner);
+    let differ: Vec<(u32, u32)> = frame
+      .enumerate_pixels()
+      .filter(|(x, y, p)| p.0 != whole.get_pixel(*x, *y).0)
+      .map(|(x, y, _)| (x, y))
+      .collect();
+    if let Some(first) = differ.first() {
+      found.push(format!(
+        "corner at {corner}: {} pixels, first {first:?}",
+        differ.len()
+      ));
+    }
+  }
+  assert!(found.is_empty(), "the tiles slid:\n{}", found.join("\n"));
 }
