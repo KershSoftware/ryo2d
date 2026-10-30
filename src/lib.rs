@@ -213,8 +213,9 @@ pub mod prelude {
     LdtkLoader, LdtkProject, MapEvent, MapIds, MapLayer, MapLayerRef, MapObject, MapObjectData,
     MapOccluder, MapRoot, MapTile, MapsView, Neighbour, NeighbourDirection, ObjectShape,
     Properties, PropertyValue, Tile, TileData, TileFlip, TileFrame, TileGrid, TileLayerData,
-    TileMap, TileShape, TiledMapLoader, TiledTilesetLoader, Tileset, TilesetImage, TilesetSource,
-    URect, WangColor, WangKind, WangSet, WangTile, WorldLayout, WorldLevel,
+    TileMap, TileShape, TileTransformations, TiledMapLoader, TiledTilesetLoader, Tileset,
+    TilesetImage, TilesetSource, URect, WangColor, WangKind, WangSet, WangTile, WorldLayout,
+    WorldLevel,
   };
 
   // Render pipeline

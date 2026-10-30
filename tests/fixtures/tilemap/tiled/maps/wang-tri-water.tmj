@@ -1,0 +1,38 @@
+{ "compressionlevel":-1,
+ "height":7,
+ "infinite":false,
+ "layers":[
+        {
+         "data":[1, 1, 1, 1, 1, 1, 1,
+            1, 3, 4, 4, 4, 2, 1,
+            1, 7, 18, 19, 17, 10, 1,
+            1, 7, 22, 31, 25, 10, 1,
+            1, 7, 20, 28, 24, 10, 1,
+            1, 5, 13, 13, 13, 9, 1,
+            1, 1, 1, 1, 1, 1, 1],
+         "height":7,
+         "id":1,
+         "name":"ground",
+         "opacity":1,
+         "type":"tilelayer",
+         "visible":true,
+         "width":7,
+         "x":0,
+         "y":0
+        }],
+ "nextlayerid":2,
+ "nextobjectid":1,
+ "orientation":"orthogonal",
+ "renderorder":"right-down",
+ "tiledversion":"1.12.2",
+ "tileheight":16,
+ "tilesets":[
+        {
+         "firstgid":1,
+         "source":"..\/tilesets\/wang-tri.tsj"
+        }],
+ "tilewidth":16,
+ "type":"map",
+ "version":"1.10",
+ "width":7
+}

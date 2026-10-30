@@ -1,0 +1,122 @@
+{
+ "columns": 4,
+ "image": "../images/tiles.png",
+ "imageheight": 64,
+ "imagewidth": 64,
+ "margin": 0,
+ "name": "wang-turn",
+ "spacing": 0,
+ "tilecount": 16,
+ "tiledversion": "1.12.2",
+ "tileheight": 16,
+ "tilewidth": 16,
+ "type": "tileset",
+ "version": "1.10",
+ "transformations": {
+  "hflip": true,
+  "vflip": true,
+  "rotate": true,
+  "preferuntransformed": true
+ },
+ "wangsets": [
+  {
+   "colors": [
+    {
+     "color": "#00aa00",
+     "name": "grass",
+     "probability": 1,
+     "tile": -1
+    },
+    {
+     "color": "#aa5500",
+     "name": "dirt",
+     "probability": 1,
+     "tile": -1
+    }
+   ],
+   "name": "turn",
+   "tile": -1,
+   "type": "corner",
+   "wangtiles": [
+    {
+     "tileid": 0,
+     "wangid": [
+      0,
+      1,
+      0,
+      1,
+      0,
+      1,
+      0,
+      1
+     ]
+    },
+    {
+     "tileid": 1,
+     "wangid": [
+      0,
+      2,
+      0,
+      2,
+      0,
+      2,
+      0,
+      2
+     ]
+    },
+    {
+     "tileid": 2,
+     "wangid": [
+      0,
+      2,
+      0,
+      2,
+      0,
+      2,
+      0,
+      1
+     ]
+    },
+    {
+     "tileid": 3,
+     "wangid": [
+      0,
+      1,
+      0,
+      2,
+      0,
+      2,
+      0,
+      1
+     ]
+    },
+    {
+     "tileid": 4,
+     "wangid": [
+      0,
+      1,
+      0,
+      2,
+      0,
+      1,
+      0,
+      1
+     ]
+    },
+    {
+     "tileid": 5,
+     "wangid": [
+      0,
+      2,
+      0,
+      1,
+      0,
+      2,
+      0,
+      1
+     ]
+    }
+   ]
+  }
+ ]
+}

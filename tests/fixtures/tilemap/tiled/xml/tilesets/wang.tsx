@@ -58,5 +58,11 @@
    <wangtile tileid="4" wangid="1,0,1,0,1,0,1,0"/>
    <wangtile tileid="5" wangid="1,0,1,0,1,0,1,0"/>
   </wangset>
+  <wangset name="weighted" type="edge" tile="-1">
+   <wangcolor name="light" color="#ffeeeeee" tile="-1" probability="1"/>
+   <wangcolor name="heavy" color="#ff222222" tile="-1" probability="1.5"/>
+   <wangtile tileid="6" wangid="1,0,1,0,1,0,1,0"/>
+   <wangtile tileid="7" wangid="2,0,2,0,2,0,2,0"/>
+  </wangset>
  </wangsets>
 </tileset>

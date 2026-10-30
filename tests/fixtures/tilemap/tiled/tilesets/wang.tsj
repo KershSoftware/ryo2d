@@ -600,6 +600,53 @@
      ]
     }
    ]
+  },
+  {
+   "colors": [
+    {
+     "color": "#eeeeee",
+     "name": "light",
+     "probability": 1,
+     "tile": -1
+    },
+    {
+     "color": "#222222",
+     "name": "heavy",
+     "probability": 1.5,
+     "tile": -1
+    }
+   ],
+   "name": "weighted",
+   "tile": -1,
+   "type": "edge",
+   "wangtiles": [
+    {
+     "tileid": 6,
+     "wangid": [
+      1,
+      0,
+      1,
+      0,
+      1,
+      0,
+      1,
+      0
+     ]
+    },
+    {
+     "tileid": 7,
+     "wangid": [
+      2,
+      0,
+      2,
+      0,
+      2,
+      0,
+      2,
+      0
+     ]
+    }
+   ]
   }
  ]
 }

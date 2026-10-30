@@ -44,8 +44,8 @@ pub(crate) use spawn::{MapLayers, map_asset, spawn_maps};
 pub use tile::{Tile, TileFlip};
 pub use tiled::{TiledMapLoader, TiledTilesetLoader};
 pub use tileset::{
-  TileData, TileFrame, TileShape, Tileset, TilesetImage, URect, WangColor, WangKind, WangSet,
-  WangTile,
+  TileData, TileFrame, TileShape, TileTransformations, Tileset, TilesetImage, URect, WangColor,
+  WangKind, WangSet, WangTile,
 };
 pub use view::MapsView;
 

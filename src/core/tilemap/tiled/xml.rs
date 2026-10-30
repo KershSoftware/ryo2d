@@ -13,7 +13,8 @@ use serde_json::{Map, Number, Value};
 use super::build::MAX_DEPTH;
 use super::raw::{
   RawData, RawFrame, RawLayer, RawMap, RawObject, RawOffset, RawPoint, RawProperty, RawTemplate,
-  RawText, RawTile, RawTileset, RawTilesetRef, RawWangColor, RawWangSet, RawWangTile,
+  RawText, RawTile, RawTileset, RawTilesetRef, RawTransformations, RawWangColor, RawWangSet,
+  RawWangTile,
 };
 
 type Parsed<T> = Result<T, String>;
@@ -205,6 +206,19 @@ impl<'a, 'i> Reader<'a, 'i> {
       set.image = self.str(image, "source").map(str::to_string);
       set.imagewidth = self.num(image, "width")?.unwrap_or(0);
       set.imageheight = self.num(image, "height")?.unwrap_or(0);
+    }
+    if let Some(node) = self.child(node, "transformations") {
+      let flag = |name: &str| {
+        self
+          .str(node, name)
+          .is_some_and(|v| v == "1" || v == "true")
+      };
+      set.transformations = RawTransformations {
+        hflip: flag("hflip"),
+        vflip: flag("vflip"),
+        rotate: flag("rotate"),
+        preferuntransformed: flag("preferuntransformed"),
+      };
     }
     for tile in self.children(node, "tile") {
       set.tiles.push(self.tile(tile)?);
@@ -717,7 +731,7 @@ mod tests {
     "wang-dirt",
     "wang-grass",
   ];
-  const SET_PAIRS: [&str; 7] = [
+  const SET_PAIRS: [&str; 8] = [
     "tiles",
     "items",
     "offset",
@@ -725,6 +739,7 @@ mod tests {
     "terrain",
     "collision",
     "wang",
+    "wang-turn",
   ];
 
   #[test]

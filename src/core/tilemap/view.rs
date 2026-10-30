@@ -81,15 +81,24 @@ impl<'w> MapsView<'w> {
   }
 
   /// Paints `cell` of a tile layer with the color `color` of the Wang set
-  /// `wang_set` (named in one of the map's tilesets; `None` paints no color),
-  /// as Tiled's terrain brush paints one cell: the cell's corners (a corner
-  /// set), edges (an edge set) or both (a mixed set) take the color, then it
-  /// and every cell sharing one of them that holds a tile of the set pick the
-  /// tile whose wangid fits. Among equal fits the pick weighs tile
-  /// probabilities and is the same for the same cell every time. A cell with
-  /// no fitting tile keeps its tile, and the set warns once. False if
-  /// nothing changed, the map, layer, set or color is not there, or the cell
-  /// is outside the layer
+  /// `wang_set` (named in one of the map's tilesets; `None` paints no color
+  /// and empties the cell) as Tiled's terrain brush does with corrections
+  /// on: the cell's corners (a corner set), edges (an edge set) or both (a
+  /// mixed set) take the color, then the cell and the cells sharing one of
+  /// them pick the tile that fits, a transformed one if the tileset allows,
+  /// and a change that leaves a neighbour disagreeing is passed on to it,
+  /// up to two cells from `cell`. Cells that nothing fits (an incomplete set)
+  /// keep their tile and the set warns once. False if nothing changed, the
+  /// map, layer, set or color is not there, or the cell is outside the layer.
+  ///
+  /// This matches Tiled's results on the cases checked against it (complete,
+  /// one-color, incomplete and multi-color sets, flipped neighbours and
+  /// transformations; the fixtures in `tests/fixtures/tilemap/tiled` were
+  /// painted by Tiled 1.12). Limits: Tiled draws at random among equal fits,
+  /// this by a hash of the cell; Tiled carries a correction further than two
+  /// cells in some sets with missing transitions; a class tile
+  /// ([`MapTile`](super::MapTile)) on a cell is not changed by a neighbour's
+  /// correction.
   pub fn set_terrain<'a>(
     &mut self,
     map: Entity,

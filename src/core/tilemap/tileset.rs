@@ -109,6 +109,20 @@ pub struct WangColor {
   pub properties: Properties,
 }
 
+/// Which transformations of a tileset's tiles its Wang sets may use, as
+/// Tiled's tileset editor sets them
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct TileTransformations {
+  /// A tile may be mirrored left to right
+  pub hflip: bool,
+  /// A tile may be mirrored top to bottom
+  pub vflip: bool,
+  /// A tile may be turned by quarter turns
+  pub rotate: bool,
+  /// An untransformed tile wins over a transformed one that fits as well
+  pub prefer_untransformed: bool,
+}
+
 /// A tile of a Wang set with the color at each of its eight positions
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct WangTile {
@@ -127,6 +141,8 @@ pub struct WangSet {
   pub kind: WangKind,
   pub colors: Vec<WangColor>,
   pub tiles: Vec<WangTile>,
+  /// The transformations the set's tileset allows, copied from it at load
+  pub transformations: TileTransformations,
 }
 
 /// A set of tiles: an atlas or a collection of images, with the data tiles
@@ -144,6 +160,8 @@ pub struct Tileset {
   pub tile_offset: IVec2,
   pub image: TilesetImage,
   pub wang_sets: Vec<WangSet>,
+  /// What the Wang sets may do to a tile
+  pub transformations: TileTransformations,
   pub properties: Properties,
   tiles: FastMap<u32, TileData>,
 }
@@ -165,6 +183,7 @@ impl Tileset {
       tile_offset: IVec2::ZERO,
       image,
       wang_sets: Vec::new(),
+      transformations: TileTransformations::default(),
       properties: Properties::default(),
       tiles: FastMap::default(),
     }

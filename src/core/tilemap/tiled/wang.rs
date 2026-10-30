@@ -2,10 +2,21 @@
 
 use super::build::MAX_TILES;
 use super::project::{Props, parse_color};
+use super::raw::RawTransformations;
 use super::raw::RawWangSet;
 use crate::core::asset::AssetError;
-use crate::core::tilemap::{WangColor, WangKind, WangSet, WangTile};
+use crate::core::tilemap::{TileTransformations, WangColor, WangKind, WangSet, WangTile};
 use crate::core::ui::Color;
+
+/// The tileset's transformations from what its file says
+pub(super) fn transformations(raw: &RawTransformations) -> TileTransformations {
+  TileTransformations {
+    hflip: raw.hflip,
+    vflip: raw.vflip,
+    rotate: raw.rotate,
+    prefer_untransformed: raw.preferuntransformed,
+  }
+}
 
 /// The Wang sets of the tileset `place` names; `probability` is each tile's
 /// own, which the set carries
@@ -13,6 +24,7 @@ pub(super) fn build_wang_sets(
   px: &mut Props<'_>,
   place: &str,
   raw: Vec<RawWangSet>,
+  transformations: TileTransformations,
   probability: impl Fn(u32) -> f32,
 ) -> Result<Vec<WangSet>, AssetError> {
   let mut sets = Vec::with_capacity(raw.len());
@@ -106,6 +118,7 @@ pub(super) fn build_wang_sets(
       kind,
       colors,
       tiles,
+      transformations,
     });
   }
   Ok(sets)

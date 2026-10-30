@@ -65,7 +65,18 @@ pub(crate) struct RawTileset {
   pub imageheight: u32,
   pub tiles: Vec<RawTile>,
   pub wangsets: Vec<RawWangSet>,
+  pub transformations: RawTransformations,
   pub properties: Vec<RawProperty>,
+}
+
+/// What a tileset's Wang sets may do to a tile
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub(crate) struct RawTransformations {
+  pub hflip: bool,
+  pub vflip: bool,
+  pub rotate: bool,
+  pub preferuntransformed: bool,
 }
 
 /// A Wang set of a tileset

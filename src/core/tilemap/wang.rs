@@ -1,13 +1,34 @@
 //! Wang auto-tiling at runtime: painting a terrain colour into a tile layer
-//! and letting the cells around it pick the tiles of a Wang set that fit.
+//! and letting the cells around it pick the tiles of a Wang set that fit, as
+//! Tiled's terrain brush does (corrections on).
+//!
+//! What a paint does, in the order of Tiled's results:
+//!
+//! - The paint asks one color of the positions the set's kind colors (a
+//!   cell's corners, edges or both) and every cell sharing one of them, the
+//!   cell first, picks again in rows and columns. A pick must have the
+//!   color asked and what the cells that picked before it show beside it,
+//!   and among those fits is the one closest to what the cell shows now;
+//!   closeness sums the distances between colors, which are steps through
+//!   tiles that hold both (`Matcher`).
+//! - No color is color 0, and the empty cell is a candidate with only 0.
+//! - A cell nothing fits keeps what it has.
+//! - A pick that changes a cell passes the change on to the neighbours
+//!   across an edge whose colors no longer agree, within two cells of the
+//!   painted one.
+//! - Flips: a cell is read through its flip, and the tileset's
+//!   transformations add flipped and turned candidates.
+//!
+//! Where Tiled draws at random among equals, this draws by a hash of the
+//! cell, so the same edits make the same tiles.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use glam::IVec2;
 
 use super::edit::{self, LayerRef};
-use super::spawn::{MapRoot, TileLayerData, map_asset};
-use super::{Tile, TilesetSource, WangKind, WangSet};
+use super::spawn::{LayerTiles, MapRoot, MapTile, TileLayerData, map_asset};
+use super::{Tile, TileFlip, TileTransformations, TilesetSource, WangKind, WangSet};
 use crate::core::asset::Assets;
 use crate::core::ecs::{Entity, Resource, World};
 use crate::core::tilemap::Tileset;
@@ -25,9 +46,17 @@ const DIRECTIONS: [IVec2; 8] = [
   IVec2::new(-1, -1),
 ];
 
-/// The Wang sets that already warned of a pattern they have no tile for
+/// The position each position swaps with under the diagonal, horizontal and
+/// vertical flips
+const DIAGONAL: [usize; 8] = [6, 5, 4, 3, 2, 1, 0, 7];
+const HORIZONTAL: [usize; 8] = [0, 7, 6, 5, 4, 3, 2, 1];
+const VERTICAL: [usize; 8] = [4, 3, 2, 1, 0, 7, 6, 5];
+
+/// The Wang sets that warned of a cell they have no tile for, by tileset name
+/// and set name: the tileset's content version then, and how many warnings
+/// went out. A tileset that changed may warn again
 #[derive(Resource, Default)]
-pub(crate) struct WangWarned(pub(crate) HashSet<String>);
+pub(crate) struct WangWarned(pub(crate) HashMap<(String, String), (u64, u32)>);
 
 impl WangKind {
   /// The positions of a wangid this kind of set colours: corners are the odd
@@ -39,6 +68,68 @@ impl WangKind {
       WangKind::Mixed => &[0, 1, 2, 3, 4, 5, 6, 7],
     }
   }
+}
+
+/// `wangid` as a cell with `flip` shows it: the diagonal flip first, then the
+/// horizontal, then the vertical
+fn flipped(wangid: [u8; 8], flip: TileFlip) -> [u8; 8] {
+  let mut id = wangid;
+  for (flag, swap) in [
+    (TileFlip::DIAGONAL, DIAGONAL),
+    (TileFlip::HORIZONTAL, HORIZONTAL),
+    (TileFlip::VERTICAL, VERTICAL),
+  ] {
+    if flip.contains(flag) {
+      let before = id;
+      id = std::array::from_fn(|i| before[swap[i]]);
+    }
+  }
+  id
+}
+
+/// The flips a set may give its tiles: those whose turn of the positions
+/// lies in the group the allowed mirrors and quarter turn generate
+fn allowed_flips(allowed: TileTransformations) -> Vec<TileFlip> {
+  const POSITIONS: [u8; 8] = [0, 1, 2, 3, 4, 5, 6, 7];
+  let turn = |flip: TileFlip| flipped(POSITIONS, flip);
+  let mut generators = Vec::new();
+  if allowed.hflip {
+    generators.push(turn(TileFlip::HORIZONTAL));
+  }
+  if allowed.vflip {
+    generators.push(turn(TileFlip::VERTICAL));
+  }
+  if allowed.rotate {
+    generators.push(turn(TileFlip::DIAGONAL | TileFlip::HORIZONTAL));
+  }
+  let mut group = vec![POSITIONS];
+  let mut next = 0;
+  while next < group.len() {
+    let from = group[next];
+    next += 1;
+    for g in &generators {
+      let moved: [u8; 8] = std::array::from_fn(|i| from[usize::from(g[i])]);
+      if !group.contains(&moved) {
+        group.push(moved);
+      }
+    }
+  }
+  // The turns come before the mirrors, so of two flips that show the same
+  // colors the turn is the one a cell gets
+  let turns = [
+    TileFlip::NONE,
+    TileFlip::DIAGONAL | TileFlip::HORIZONTAL,
+    TileFlip::HORIZONTAL | TileFlip::VERTICAL,
+    TileFlip::VERTICAL | TileFlip::DIAGONAL,
+    TileFlip::HORIZONTAL,
+    TileFlip::VERTICAL,
+    TileFlip::DIAGONAL,
+    TileFlip::HORIZONTAL | TileFlip::VERTICAL | TileFlip::DIAGONAL,
+  ];
+  turns
+    .into_iter()
+    .filter(|&flip| group.contains(&turn(flip)))
+    .collect()
 }
 
 /// Every cell that shares position `k` of a cell, as its offset from that
@@ -67,69 +158,222 @@ fn cell_unit(cell: IVec2) -> f64 {
   (z >> 11) as f64 / (1u64 << 53) as f64
 }
 
+/// What a cell can hold in a set: a tile at a flip, or nothing
+struct Candidate {
+  tile: Option<u32>,
+  flip: TileFlip,
+  wangid: [u8; 8],
+  /// Tile probability times its colors'
+  weight: f64,
+  transformed: bool,
+}
+
+/// A set's candidates and how far apart its colors are
+struct Matcher {
+  candidates: Vec<Candidate>,
+  /// Steps between colors 0 (none) to n, through tiles that hold both; `None`
+  /// where no chain of tiles joins them
+  distance: Vec<Vec<Option<u32>>>,
+  positions: &'static [usize],
+  prefer_untransformed: bool,
+}
+
+impl Matcher {
+  fn new(set: &WangSet) -> Matcher {
+    let positions = set.kind.positions();
+    let colors = set.colors.len() + 1;
+    let probability = |color: u8| {
+      usize::from(color)
+        .checked_sub(1)
+        .and_then(|i| set.colors.get(i))
+        .map_or(1.0, |c| f64::from(c.probability))
+    };
+    let mut distance = vec![vec![None; colors]; colors];
+    for (i, row) in distance.iter_mut().enumerate() {
+      row[i] = Some(0);
+    }
+    let flips = allowed_flips(set.transformations);
+    let mut candidates = Vec::new();
+    for tile in &set.tiles {
+      // A tile with no color at all is the empty cell's twin, and loses to it
+      if tile.wangid.iter().all(|&c| c == 0) {
+        continue;
+      }
+      for &a in positions {
+        for &b in positions {
+          let (a, b) = (usize::from(tile.wangid[a]), usize::from(tile.wangid[b]));
+          if a != b && a < colors && b < colors {
+            distance[a][b] = Some(1);
+          }
+        }
+      }
+      let weight = f64::from(tile.probability).max(0.0)
+        * tile
+          .wangid
+          .iter()
+          .filter(|&&c| c != 0)
+          .map(|&c| probability(c))
+          .product::<f64>();
+      let first = candidates.len();
+      for &flip in &flips {
+        let wangid = flipped(tile.wangid, flip);
+        if candidates[first..]
+          .iter()
+          .any(|c: &Candidate| c.wangid == wangid)
+        {
+          continue;
+        }
+        candidates.push(Candidate {
+          tile: Some(tile.tile),
+          flip,
+          wangid,
+          weight,
+          transformed: flip != TileFlip::NONE,
+        });
+      }
+    }
+    candidates.push(Candidate {
+      tile: None,
+      flip: TileFlip::NONE,
+      wangid: [0; 8],
+      weight: 1.0,
+      transformed: false,
+    });
+    for via in 0..colors {
+      for from in 0..colors {
+        for to in 0..colors {
+          if let (Some(a), Some(b)) = (distance[from][via], distance[via][to])
+            && distance[from][to].is_none_or(|d| a + b < d)
+          {
+            distance[from][to] = Some(a + b);
+          }
+        }
+      }
+    }
+    Matcher {
+      candidates,
+      distance,
+      positions,
+      prefer_untransformed: set.transformations.prefer_untransformed,
+    }
+  }
+
+  /// How far `candidate` is from `wanted` (ANY positions count for nothing):
+  /// the sum of its colors' distances; `None` if some color cannot be
+  /// reached from the wanted one
+  fn penalty(&self, candidate: &Candidate, wanted: &[u8; 8]) -> Option<u32> {
+    let mut total = 0u32;
+    for &k in self.positions {
+      if wanted[k] == WangSet::ANY {
+        continue;
+      }
+      let step = self
+        .distance
+        .get(usize::from(wanted[k]))?
+        .get(usize::from(candidate.wangid[k]))
+        .copied()??;
+      total = total.saturating_add(step);
+    }
+    Some(total)
+  }
+
+  /// The candidate closest to `hard` (counted first) and then to `soft`, or
+  /// with `exact` one that has `hard` exactly and is closest to `soft`;
+  /// among equals preferring an untransformed tile if the set says so, and
+  /// then weighed by probability and drawn by `cell`'s hash
+  fn pick(&self, hard: &[u8; 8], soft: &[u8; 8], cell: IVec2, exact: bool) -> Option<&Candidate> {
+    let mut best: Vec<&Candidate> = Vec::new();
+    let mut least = None;
+    for candidate in &self.candidates {
+      let (Some(h), Some(s)) = (self.penalty(candidate, hard), self.penalty(candidate, soft))
+      else {
+        continue;
+      };
+      if exact && h != 0 {
+        continue;
+      }
+      match least {
+        Some(l) if (h, s) > l => {}
+        Some(l) if (h, s) == l => best.push(candidate),
+        _ => {
+          least = Some((h, s));
+          best.clear();
+          best.push(candidate);
+        }
+      }
+    }
+    if self.prefer_untransformed && best.iter().any(|c| !c.transformed) {
+      best.retain(|c| !c.transformed);
+    }
+    let total: f64 = best.iter().map(|c| c.weight).sum();
+    if total <= 0.0 {
+      return best.first().copied();
+    }
+    let mut left = cell_unit(cell) * total;
+    for candidate in &best {
+      left -= candidate.weight;
+      if left < 0.0 {
+        return Some(candidate);
+      }
+    }
+    best.last().copied()
+  }
+}
+
 impl WangSet {
+  /// In a wanted wangid: any color goes at this position
+  pub const ANY: u8 = u8::MAX;
+
   /// The 1-based index of the color called `name`, as a wangid holds it
   pub fn color_index(&self, name: &str) -> Option<u8> {
     let at = self.colors.iter().position(|c| c.name == name)?;
     u8::try_from(at + 1).ok()
   }
 
-  /// The tile whose wangid is `wanted` at every position the set's kind
-  /// colours (corners, edges, or all eight; 0 is no color). Among equals the
-  /// pick weighs each tile by its probability times its colors', and
-  /// `cell` seeds it, so the same cell always picks the same tile
-  pub fn best_tile(&self, wanted: [u8; 8], cell: IVec2) -> Option<u32> {
-    self.pick(wanted, self.kind.positions(), cell)
-  }
-
-  /// [`best_tile`](Self::best_tile) over just the `positions`
-  fn pick(&self, wanted: [u8; 8], positions: &[usize], cell: IVec2) -> Option<u32> {
-    let weight = |tile: &super::WangTile| {
-      let colors: f32 = tile
-        .wangid
-        .iter()
-        .filter(|&&c| c != 0)
-        .map(|&c| {
-          self
-            .colors
-            .get(usize::from(c) - 1)
-            .map_or(1.0, |c| c.probability)
-        })
-        .product();
-      (tile.probability * colors).max(0.0)
-    };
-    let mut fits = self
-      .tiles
-      .iter()
-      .filter(|t| positions.iter().all(|&k| t.wangid[k] == wanted[k]))
-      .peekable();
-    let first = *fits.peek()?;
-    let fits: Vec<_> = fits.collect();
-    let total: f64 = fits.iter().map(|t| f64::from(weight(t))).sum();
-    if total <= 0.0 {
-      return Some(first.tile);
-    }
-    let mut left = cell_unit(cell) * total;
-    for tile in &fits {
-      left -= f64::from(weight(tile));
-      if left < 0.0 {
-        return Some(tile.tile);
-      }
-    }
-    fits.last().map(|t| t.tile)
+  /// The tile, and the flip it takes, whose wangid is closest to `wanted`
+  /// at the positions the set's kind colors (corners, edges, or all eight).
+  /// A wanted position holds a color index, 0 for none, or [`ANY`](Self::ANY).
+  /// Closeness is Tiled's: the colors' distances summed, a color no chain of
+  /// tiles reaches rules a tile out, the set's flips widen the choice and an
+  /// untransformed tile wins a tie if the set prefers it. Among equals the
+  /// pick weighs each tile by its probability times its colors' and `cell`
+  /// seeds it, so the same cell always picks the same tile. `None` if
+  /// nothing fits, or if the closest is no tile at all (an empty cell fits
+  /// an all-0 `wanted` best)
+  pub fn best_tile(&self, wanted: [u8; 8], cell: IVec2) -> Option<(u32, TileFlip)> {
+    let matcher = Matcher::new(self);
+    let candidate = matcher.pick(&wanted, &[Self::ANY; 8], cell, false)?;
+    Some((candidate.tile?, candidate.flip))
   }
 }
 
-/// The set called `name` among the map's tilesets, and its tileset's index
-fn find_set<'w>(world: &'w World, root: &MapRoot, name: &str) -> Option<(u16, &'w WangSet)> {
+/// The set called `name` among the map's tilesets, its tileset's index in
+/// the map, and the tileset's name and content version
+fn find_set<'w>(
+  world: &'w World,
+  root: &MapRoot,
+  name: &str,
+) -> Option<(u16, &'w WangSet, (String, u64))> {
   let map = map_asset(world, root)?;
   for (index, source) in map.tilesets.iter().enumerate() {
-    let tileset = match source {
-      TilesetSource::Asset(handle) => world.get_resource::<Assets<Tileset>>()?.get(handle)?,
-      TilesetSource::Embedded(tileset) => tileset,
+    let (tileset, version) = match source {
+      TilesetSource::Asset(handle) => {
+        let Some(assets) = world.get_resource::<Assets<Tileset>>() else {
+          continue;
+        };
+        let Some(tileset) = assets.get(handle) else {
+          continue;
+        };
+        (tileset, assets.version(handle).unwrap_or(0))
+      }
+      TilesetSource::Embedded(tileset) => (&**tileset, 0),
     };
     if let Some(set) = tileset.wang_sets.iter().find(|s| s.name == name) {
-      return Some((u16::try_from(index).ok()?, set));
+      return Some((
+        u16::try_from(index).ok()?,
+        set,
+        (tileset.name.clone(), version),
+      ));
     }
   }
   None
@@ -137,17 +381,168 @@ fn find_set<'w>(world: &'w World, root: &MapRoot, name: &str) -> Option<(u16, &'
 
 /// What painting works out before it edits
 struct Plan {
-  tiles: Vec<(IVec2, Tile)>,
-  /// A cell had no tile to fit its colours
+  edits: Vec<(IVec2, Option<Tile>)>,
+  /// A cell holding a tile of the set had nothing to fit its colors
   missed: bool,
 }
 
+/// One painting: the cells it has settled and the ones waiting
+struct Painting<'w> {
+  world: &'w World,
+  layer: Entity,
+  index: u16,
+  size: IVec2,
+  matcher: Matcher,
+  /// Each tile's wangid, for reading the cells
+  ids: HashMap<u32, [u8; 8]>,
+  /// The colors the painting asks of each cell touching it (`ANY` where it
+  /// asks none)
+  paint: HashMap<IVec2, [u8; 8]>,
+  /// The cell painted
+  painted: IVec2,
+  decided: HashMap<IVec2, [u8; 8]>,
+  pending: HashSet<IVec2>,
+  /// Cells that had nothing to fit: left as they are, and not asked again
+  failed: HashSet<IVec2>,
+  queue: VecDeque<IVec2>,
+  /// The cells a change may reach
+  reach: HashSet<IVec2>,
+  plan: Plan,
+}
+
+impl Painting<'_> {
+  fn in_bounds(&self, at: IVec2) -> bool {
+    at.cmpge(IVec2::ZERO).all() && at.cmplt(self.size).all()
+  }
+
+  /// A class tile lives on the cell: not ours to change
+  fn locked(&self, at: IVec2) -> bool {
+    self
+      .world
+      .get::<LayerTiles>(self.layer)
+      .and_then(|table| table.0.get(&at))
+      .is_some_and(|&entity| {
+        self
+          .world
+          .get::<MapTile>(entity)
+          .is_some_and(|t| t.cell == at)
+      })
+  }
+
+  fn tile_at(&self, at: IVec2) -> Option<Tile> {
+    self.world.get::<TileLayerData>(self.layer)?.grid.get(at)
+  }
+
+  /// The colors the grid shows at `at`, through the cell's flips; zeros for an
+  /// empty cell and for a tile outside the set
+  fn colors_at(&self, at: IVec2) -> [u8; 8] {
+    match self.tile_at(at) {
+      Some(tile) if tile.tileset == self.index => self
+        .ids
+        .get(&tile.id)
+        .map_or([0; 8], |&id| flipped(id, tile.flip)),
+      _ => [0; 8],
+    }
+  }
+
+  fn holds_set_tile(&self, at: IVec2) -> bool {
+    self
+      .tile_at(at)
+      .is_some_and(|t| t.tileset == self.index && self.ids.contains_key(&t.id))
+  }
+
+  /// Settles `at` on `candidate`, and queues the neighbours whose colors at a
+  /// shared position now differ
+  fn place(&mut self, at: IVec2, candidate: usize) {
+    let (tile, flip, wangid) = {
+      let c = &self.matcher.candidates[candidate];
+      (c.tile, c.flip, c.wangid)
+    };
+    let tile = tile.map(|id| Tile::new(self.index, id).with_flip(flip));
+    if self.tile_at(at) != tile {
+      self.plan.edits.push((at, tile));
+    }
+    self.decided.insert(at, wangid);
+    for &k in self.matcher.positions {
+      for (offset, pos) in shared(k).skip(1) {
+        let other = at + offset;
+        if offset.abs().element_sum() != 1
+          || !self.in_bounds(other)
+          || !self.reach.contains(&other)
+          || self.decided.contains_key(&other)
+          || self.pending.contains(&other)
+          || (self.failed.contains(&other) && self.paint.contains_key(&other))
+          || self.locked(other)
+        {
+          continue;
+        }
+        if self.colors_at(other)[pos] != wangid[k] {
+          self.pending.insert(other);
+          self.queue.push_back(other);
+        }
+      }
+    }
+  }
+
+  /// The index of the candidate with the `hard` colors that is closest to
+  /// the `soft` ones
+  fn choose(&self, at: IVec2, hard: &[u8; 8], soft: &[u8; 8]) -> Option<usize> {
+    let picked = self.matcher.pick(hard, soft, at, true)?;
+    self
+      .matcher
+      .candidates
+      .iter()
+      .position(|c| std::ptr::eq(c, picked))
+  }
+
+  /// Settles the next waiting cell: the color painted and what the cells that
+  /// settled beside it show are a must, what the cell shows otherwise a wish
+  fn settle_next(&mut self) -> bool {
+    let Some(at) = self.queue.pop_front() else {
+      return false;
+    };
+    self.pending.remove(&at);
+    let own = self.colors_at(at);
+    let mut hard = self.paint.get(&at).copied().unwrap_or([WangSet::ANY; 8]);
+    let mut soft = [WangSet::ANY; 8];
+    for &k in self.matcher.positions {
+      if hard[k] == WangSet::ANY {
+        for (offset, pos) in shared(k).skip(1) {
+          if let Some(wangid) = self.decided.get(&(at + offset)) {
+            hard[k] = wangid[pos];
+            break;
+          }
+        }
+      }
+      if hard[k] == WangSet::ANY {
+        soft[k] = own[k];
+      }
+    }
+    match self.choose(at, &hard, &soft) {
+      Some(candidate) => self.place(at, candidate),
+      None => {
+        self.failed.insert(at);
+        self.plan.missed |= at == self.painted || self.holds_set_tile(at);
+      }
+    }
+    true
+  }
+}
+
+/// The cells a paint at `cell` may change: the square two cells out from it
+fn reach(cell: IVec2) -> HashSet<IVec2> {
+  (-2..=2)
+    .flat_map(|y| (-2..=2).map(move |x| cell + IVec2::new(x, y)))
+    .collect()
+}
+
 /// The tiles the cells around `cell` take when it is painted `color` (0 for
-/// none): its corners and/or edges (by the set's kind) take the color and
-/// every cell sharing one picks again, wanting the painted color where it
-/// shares a position with `cell` and what its neighbours outside the painted
-/// reach have, else what the cell has. Cells holding no tile of the set are
-/// left alone
+/// none). Each cell sharing a painted position settles in rows and columns
+/// (the painted cell too) on the tile, or none, that has the color asked and
+/// what the cells that settled beside it show, closest to what the cell
+/// shows now; a cell that changed has the neighbours across an edge whose
+/// colors now differ settle too, within `reach`, and so on until the colors
+/// agree or nothing fits
 fn plan(
   world: &World,
   layer: Entity,
@@ -155,59 +550,56 @@ fn plan(
   cell: IVec2,
   color: u8,
 ) -> Option<Plan> {
-  let grid = &world.get::<TileLayerData>(layer)?.grid;
-  let wangid_of = |at: IVec2| -> Option<[u8; 8]> {
-    let tile = grid.get(at).filter(|t| t.tileset == index)?;
-    set
-      .tiles
-      .iter()
-      .find(|t| t.tile == tile.id)
-      .map(|t| t.wangid)
+  let size = world.get::<TileLayerData>(layer)?.grid.size().as_ivec2();
+  let mut painting = Painting {
+    world,
+    layer,
+    index,
+    size,
+    matcher: Matcher::new(set),
+    ids: set.tiles.iter().rev().map(|t| (t.tile, t.wangid)).collect(),
+    paint: HashMap::new(),
+    painted: cell,
+    decided: HashMap::new(),
+    pending: HashSet::new(),
+    failed: HashSet::new(),
+    queue: VecDeque::new(),
+    reach: reach(cell),
+    plan: Plan {
+      edits: Vec::new(),
+      missed: false,
+    },
   };
-  let positions = set.kind.positions();
-  // Every cell touching a painted position, with what the paint says of it
-  let mut forced: Vec<(IVec2, [Option<u8>; 8])> = Vec::new();
-  for &k in positions {
-    for (offset, at) in shared(k) {
-      let target = cell + offset;
-      let slot = match forced.iter().position(|(c, _)| *c == target) {
-        Some(slot) => slot,
-        None => {
-          forced.push((target, [None; 8]));
-          forced.len() - 1
-        }
-      };
-      forced[slot].1[at] = Some(color);
+  let mut touching = vec![cell];
+  for &k in set.kind.positions() {
+    for (offset, pos) in shared(k) {
+      let at = cell + offset;
+      painting.paint.entry(at).or_insert([WangSet::ANY; 8])[pos] = color;
+      if !touching.contains(&at) {
+        touching.push(at);
+      }
     }
   }
-  let region: HashSet<IVec2> = forced.iter().map(|(c, _)| *c).collect();
-  let mut plan = Plan {
-    tiles: Vec::new(),
-    missed: false,
-  };
-  for (at, paint) in &forced {
-    let own = wangid_of(*at);
-    if *at != cell && own.is_none() {
-      continue;
-    }
-    let mut wanted = [0u8; 8];
-    for &k in positions {
-      wanted[k] = paint[k]
-        .or_else(|| {
-          shared(k)
-            .skip(1)
-            .filter(|(offset, _)| !region.contains(&(*at + *offset)))
-            .find_map(|(offset, pos)| wangid_of(*at + offset).map(|w| w[pos]))
-        })
-        .or(own.map(|w| w[k]))
-        .unwrap_or(0);
-    }
-    match set.pick(wanted, positions, *at) {
-      Some(id) => plan.tiles.push((*at, Tile::new(index, id))),
-      None => plan.missed = true,
+  touching.sort_by_key(|at| (at.y, at.x));
+  for at in touching {
+    if painting.in_bounds(at) && (at == cell || !painting.locked(at)) {
+      painting.pending.insert(at);
+      painting.queue.push_back(at);
     }
   }
-  Some(plan)
+  while painting.settle_next() {}
+  Some(painting.plan)
+}
+
+/// Whether the set `key` (tileset name, set name) has yet to warn at the
+/// tileset's content `version`; counts the warning if so
+fn warn_first(warned: &mut WangWarned, key: (String, String), version: u64) -> bool {
+  let entry = warned.0.entry(key).or_insert((version, 0));
+  let first = entry.1 == 0 || entry.0 != version;
+  if first {
+    *entry = (version, entry.1 + 1);
+  }
+  first
 }
 
 /// Paints `cell` of a tile layer with the Wang color `color` (`None` for no
@@ -233,40 +625,44 @@ pub(crate) fn set_terrain(
   if cell.cmplt(IVec2::ZERO).any() || cell.cmpge(size).any() {
     return false;
   }
-  let planned = {
+  let (planned, warn_key) = {
     let Some(root) = world.get::<MapRoot>(map) else {
       return false;
     };
-    let Some(found) = find_set(world, root, wang_set) else {
+    let Some((index, set, key)) = find_set(world, root, wang_set) else {
       return false;
     };
-    let index = match color {
+    let index_of_color = match color {
       None => 0,
-      Some(name) => match found.1.color_index(name) {
-        Some(index) => index,
+      Some(name) => match set.color_index(name) {
+        Some(found) => found,
         None => return false,
       },
     };
-    plan(world, entity, found, cell, index)
+    (
+      plan(world, entity, (index, set), cell, index_of_color),
+      (key.0, wang_set.to_string(), key.1),
+    )
   };
   let Some(planned) = planned else {
     return false;
   };
   if planned.missed {
     world.init_resource::<WangWarned>();
+    let (tileset, set, version) = warn_key;
     let first = world
       .get_resource_mut::<WangWarned>()
-      .is_some_and(|mut warned| warned.0.insert(wang_set.to_string()));
+      .is_some_and(|mut warned| warn_first(&mut warned, (tileset, set), version));
     if first {
       crate::engine_warn!(
         module: "Tilemap",
-        "map {map}: the Wang set {wang_set:?} has no tile for a pattern that painting {color:?} at {cell} asks for, so those cells keep their tiles (this set warns once)"
+        "map {map}: the Wang set {wang_set:?} has no tile to fit what painting {color:?} at {cell} asks of a cell, so that cell keeps its tile (this set warns once)"
       );
     }
   }
   let mut changed = false;
-  for (at, tile) in planned.tiles {
-    changed |= edit::set_tile(world, map, layer, at, Some(tile));
+  for (at, tile) in planned.edits {
+    changed |= edit::set_tile(world, map, layer, at, tile);
   }
   changed
 }
@@ -275,32 +671,69 @@ pub(crate) fn set_terrain(
 mod tests {
   use glam::IVec2;
 
-  use super::WangWarned;
+  use super::{WangWarned, warn_first};
   use crate::core::asset::{Assets, AssetsView};
   use crate::core::ecs::{Entity, World};
   use crate::core::tilemap::test_util::{MapWorld, load_map};
-  use crate::core::tilemap::{MapRoot, MapsView, Tile, TileMap, Tileset, WangSet};
+  use crate::core::tilemap::{
+    MapRoot, MapsView, Tile, TileFlip, TileMap, Tileset, WangKind, WangSet,
+  };
 
-  /// The 5x5 map of all-dirt tiles (id 15 of the ground set), landed
-  fn dirt_map(mw: &mut MapWorld) -> Entity {
-    let handle = load_map(&mut mw.world, "tiled/maps/wang-dirt.tmj");
-    mw.spawn(MapRoot::new(handle))
-  }
-
-  fn tile_ids(world: &mut World, map: Entity) -> Vec<Vec<Option<u32>>> {
+  /// The ground layer of a spawned map, row by row
+  fn layer(world: &mut World, map: Entity, size: IVec2) -> Vec<Option<Tile>> {
     let maps = MapsView::new(world);
-    (0..5)
-      .map(|y| {
-        (0..5)
-          .map(|x| maps.tile(map, "ground", IVec2::new(x, y)).map(|t| t.id))
-          .collect()
-      })
+    (0..size.y)
+      .flat_map(|y| (0..size.x).map(move |x| IVec2::new(x, y)))
+      .map(|cell| maps.tile(map, "ground", cell))
       .collect()
   }
 
-  fn wang_set(world: &mut World, name: &str) -> WangSet {
+  /// The ground layer of the map asset at `path`, row by row, and its size
+  fn recorded(mw: &mut MapWorld, path: &str) -> (Vec<Option<Tile>>, IVec2) {
+    let handle = load_map(&mut mw.world, &format!("tiled/maps/{path}"));
+    let asset = mw.world.resource::<Assets<TileMap>>().get(&handle);
+    let Some(grid) = asset.and_then(|m| m.tiles(0)) else {
+      panic!("{path} has no tile layer")
+    };
+    let size = grid.size().as_ivec2();
+    let cells = (0..size.y)
+      .flat_map(|y| (0..size.x).map(move |x| IVec2::new(x, y)))
+      .map(|cell| grid.get(cell))
+      .collect();
+    (cells, size)
+  }
+
+  /// `from` painted `colour` (none erases) of `set` at `cell` by
+  /// `set_terrain`, against `to` as Tiled's own brush painted it
+  /// (`scripts/paint-wang.js`)
+  fn assert_as_tiled(from: &str, to: &str, set: &str, cell: IVec2, colour: Option<&str>) {
+    let mut mw = MapWorld::new();
+    let handle = load_map(&mut mw.world, &format!("tiled/maps/{from}"));
+    let map = mw.spawn(MapRoot::new(handle));
+    let (expected, size) = recorded(&mut mw, to);
+    MapsView::new(&mut mw.world).set_terrain(map, "ground", cell, set, colour);
+    let got = layer(&mut mw.world, map, size);
+    let show = |cells: &[Option<Tile>]| -> Vec<String> {
+      cells
+        .chunks(size.x as usize)
+        .map(|row| {
+          row
+            .iter()
+            .map(|t| match t {
+              None => ".".to_string(),
+              Some(t) => format!("{}{:?}", t.id, t.flip),
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+        })
+        .collect()
+    };
+    assert_eq!(show(&got), show(&expected), "{from} -> {to}");
+  }
+
+  fn wang_set(world: &mut World, tileset: &str, name: &str) -> WangSet {
     let handle = AssetsView::new(world)
-      .load_now::<Tileset>("tiled/tilesets/wang.tsj")
+      .load_now::<Tileset>(&format!("tiled/tilesets/{tileset}"))
       .expect("loads");
     let sets = world.resource::<Assets<Tileset>>();
     match sets
@@ -314,77 +747,139 @@ mod tests {
 
   #[test]
   fn painting_grass_into_dirt_picks_edge_and_corner_tiles() {
-    let mut mw = MapWorld::new();
-    let map = dirt_map(&mut mw);
-    // painted by Tiled's own brush (scripts/paint-wang.js)
-    let handle = load_map(&mut mw.world, "tiled/maps/wang-grass.tmj");
-    let expected: Vec<Vec<Option<u32>>> = {
-      let asset = mw.world.resource::<Assets<TileMap>>().get(&handle);
-      let Some(grid) = asset.and_then(|m| m.tiles(0)) else {
-        panic!("no expected layer")
-      };
-      (0..5)
-        .map(|y| {
-          (0..5)
-            .map(|x| grid.get(IVec2::new(x, y)).map(|t| t.id))
-            .collect()
-        })
-        .collect()
-    };
-    let mut maps = MapsView::new(&mut mw.world);
-    assert!(maps.set_terrain(map, "ground", IVec2::new(2, 2), "ground", Some("grass")));
-    assert_eq!(tile_ids(&mut mw.world, map), expected);
-    assert_eq!(expected[2][2], Some(0), "all grass");
+    assert_as_tiled(
+      "wang-dirt.tmj",
+      "wang-grass.tmj",
+      "ground",
+      IVec2::new(2, 2),
+      Some("grass"),
+    );
     // the same paint again changes nothing
+    let mut mw = MapWorld::new();
+    let handle = load_map(&mut mw.world, "tiled/maps/wang-grass.tmj");
+    let map = mw.spawn(MapRoot::new(handle));
     let mut maps = MapsView::new(&mut mw.world);
     assert!(!maps.set_terrain(map, "ground", IVec2::new(2, 2), "ground", Some("grass")));
   }
 
   #[test]
-  fn an_edge_set_and_a_mixed_set_pick_their_tiles() {
-    let mut mw = MapWorld::new();
-    let map = dirt_map(&mut mw);
-    let all = (IVec2::ZERO, IVec2::splat(4));
-
-    // edges: brick at (2, 2) of a layer of plank; only the four cells across
-    // an edge pick again, the diagonals share none
-    let mut maps = MapsView::new(&mut mw.world);
-    maps.fill(map, "ground", all.0, all.1, Some(Tile::new(0, 15)));
-    assert!(maps.set_terrain(map, "ground", IVec2::new(2, 2), "walls", Some("brick")));
-    let ids = tile_ids(&mut mw.world, map);
-    let rows: Vec<Vec<u32>> = ids
-      .iter()
-      .map(|r| r.iter().flatten().copied().collect())
-      .collect();
-    assert_eq!(rows[2][2], 0, "brick on every edge");
-    assert_eq!(rows[1][2], 13, "above: its bottom edge is brick");
-    assert_eq!(rows[2][3], 14, "right: its left edge");
-    assert_eq!(rows[3][2], 7, "below: its top edge");
-    assert_eq!(rows[2][1], 11, "left: its right edge");
-    for (x, y) in [(1, 1), (3, 1), (1, 3), (3, 3)] {
-      assert_eq!(rows[y][x], 15, "diagonal ({x}, {y}) is unchanged");
-    }
-
-    // mixed: b at (2, 2) of a layer of a (tile 0); the set has the
-    // transitions of the cells to the left and right only
-    let mut maps = MapsView::new(&mut mw.world);
-    maps.fill(map, "ground", all.0, all.1, Some(Tile::new(0, 0)));
-    assert!(maps.set_terrain(map, "ground", IVec2::new(2, 2), "mix", Some("b")));
-    let ids = tile_ids(&mut mw.world, map);
-    assert_eq!(ids[2][2], Some(1), "all b");
-    assert_eq!(ids[2][3], Some(2), "right: b along its left");
-    assert_eq!(ids[2][1], Some(3), "left: b along its right");
-    assert_eq!(
-      ids[1][2],
-      Some(0),
-      "above has no transition and keeps its tile"
+  fn erasing_empties_the_cell_and_keeps_what_has_no_tile_to_fit() {
+    // the neighbours would face a hole, and a two-colour set has no tile
+    // with a bare corner, so they stay as they are
+    assert_as_tiled(
+      "wang-grass.tmj",
+      "wang-erased.tmj",
+      "ground",
+      IVec2::new(2, 2),
+      None,
     );
+  }
+
+  #[test]
+  fn a_one_colour_set_paints_transitions_into_empty_cells_and_erases_them() {
+    assert_as_tiled(
+      "wang-solo-empty.tmj",
+      "wang-solo-painted.tmj",
+      "solo",
+      IVec2::new(2, 2),
+      Some("ground"),
+    );
+    assert_as_tiled(
+      "wang-solo-full.tmj",
+      "wang-solo-erased.tmj",
+      "solo",
+      IVec2::new(2, 2),
+      None,
+    );
+  }
+
+  #[test]
+  fn an_incomplete_mixed_set_resolves_as_tiled_does() {
+    // the set holds the cells left and right of the paint but not above or
+    // below: Tiled carries the paint up and down two cells
+    assert_as_tiled(
+      "wang-mix-a.tmj",
+      "wang-mix-b.tmj",
+      "mix",
+      IVec2::new(2, 2),
+      Some("b"),
+    );
+  }
+
+  #[test]
+  fn a_missing_transition_is_made_of_the_middle_colour() {
+    assert_as_tiled(
+      "wang-tri-grass.tmj",
+      "wang-tri-water.tmj",
+      "shore",
+      IVec2::new(3, 3),
+      Some("water"),
+    );
+  }
+
+  #[test]
+  fn a_flipped_neighbour_is_read_through_its_flip() {
+    assert_as_tiled(
+      "wang-flipped.tmj",
+      "wang-flipped-painted.tmj",
+      "ground",
+      IVec2::new(2, 2),
+      Some("grass"),
+    );
+  }
+
+  #[test]
+  fn a_set_with_transformations_picks_flipped_and_rotated_tiles() {
+    assert_as_tiled(
+      "wang-turn-dirt.tmj",
+      "wang-turn-painted.tmj",
+      "turn",
+      IVec2::new(2, 2),
+      Some("grass"),
+    );
+    let (cells, _) = recorded(&mut MapWorld::new(), "wang-turn-painted.tmj");
+    assert!(
+      cells.iter().flatten().any(|t| t.flip != TileFlip::NONE),
+      "the fixture does use flips"
+    );
+  }
+
+  #[test]
+  fn an_edge_set_picks_its_tiles() {
+    let mut mw = MapWorld::new();
+    let handle = load_map(&mut mw.world, "tiled/maps/wang-dirt.tmj");
+    let map = mw.spawn(MapRoot::new(handle));
+    // brick at (2, 2) of a layer of plank (as Tiled paints it: the four
+    // cells across an edge pick again, the diagonals share none)
+    let mut maps = MapsView::new(&mut mw.world);
+    maps.fill(
+      map,
+      "ground",
+      IVec2::ZERO,
+      IVec2::splat(4),
+      Some(Tile::new(0, 15)),
+    );
+    assert!(maps.set_terrain(map, "ground", IVec2::new(2, 2), "walls", Some("brick")));
+    let ids: Vec<u32> = layer(&mut mw.world, map, IVec2::splat(5))
+      .iter()
+      .flatten()
+      .map(|t| t.id)
+      .collect();
+    let at = |x: usize, y: usize| ids[y * 5 + x];
+    assert_eq!(at(2, 2), 0, "brick on every edge");
+    assert_eq!(at(2, 1), 13, "above: its bottom edge is brick");
+    assert_eq!(at(3, 2), 14, "right: its left edge");
+    assert_eq!(at(2, 3), 7, "below: its top edge");
+    assert_eq!(at(1, 2), 11, "left: its right edge");
+    for (x, y) in [(1, 1), (3, 1), (1, 3), (3, 3)] {
+      assert_eq!(at(x, y), 15, "diagonal ({x}, {y}) is unchanged");
+    }
   }
 
   #[test]
   fn ties_pick_by_probability_and_are_stable() {
     let mut mw = MapWorld::new();
-    let tied = wang_set(&mut mw.world, "tied");
+    let tied = wang_set(&mut mw.world, "wang.tsj", "tied");
     assert_eq!(
       tied.tiles.iter().map(|t| t.probability).collect::<Vec<_>>(),
       [1.0, 3.0],
@@ -396,7 +891,7 @@ mod tests {
         .map(|i| {
           tied
             .best_tile(wanted, IVec2::new(i % 20, i / 20))
-            .unwrap_or(u32::MAX)
+            .map_or(u32::MAX, |(tile, _)| tile)
         })
         .collect()
     };
@@ -408,23 +903,22 @@ mod tests {
       "a tile three times as likely takes about 300 of 400, took {heavy}"
     );
     assert_eq!(picks, pick_all(), "the same cell picks the same tile");
-    assert_eq!(tied.color_index("x"), Some(1));
-    assert_eq!(tied.color_index("nope"), None);
 
     // the same edits to two maps give the same tiles
     let paint = |mw: &mut MapWorld| {
-      let map = dirt_map(mw);
+      let handle = load_map(&mut mw.world, "tiled/maps/wang-dirt.tmj");
+      let map = mw.spawn(MapRoot::new(handle));
       let mut maps = MapsView::new(&mut mw.world);
       for x in 0..5 {
         for y in 0..5 {
           maps.set_terrain(map, "ground", IVec2::new(x, y), "tied", Some("x"));
         }
       }
-      tile_ids(&mut mw.world, map)
+      layer(&mut mw.world, map, IVec2::splat(5))
     };
     let (first, second) = (paint(&mut mw), paint(&mut mw));
     assert_eq!(first, second);
-    let flat: Vec<u32> = first.iter().flatten().flatten().copied().collect();
+    let flat: Vec<u32> = first.iter().flatten().map(|t| t.id).collect();
     assert!(
       flat.contains(&4) && flat.contains(&5),
       "both tiles are used"
@@ -432,18 +926,120 @@ mod tests {
   }
 
   #[test]
+  fn a_colors_probability_weighs_the_pick() {
+    let mut mw = MapWorld::new();
+    let set = wang_set(&mut mw.world, "wang.tsj", "weighted");
+    assert_eq!(set.color_index("heavy"), Some(2));
+    // any color at every position: the two tiles and an empty cell all fit
+    let mut tiles = [0usize; 2];
+    for i in 0..400 {
+      let cell = IVec2::new(i % 20, i / 20);
+      if let Some((tile, _)) = set.best_tile([WangSet::ANY; 8], cell) {
+        tiles[(tile - 6) as usize] += 1;
+      }
+    }
+    // a tile weighs its colors' probabilities at each of its four edges:
+    // 1 (light), 1.5^4 (heavy) and 1 (empty), so 57, 287 and 57 of 400
+    assert!((35..=85).contains(&tiles[0]), "light took {}", tiles[0]);
+    assert!((250..=320).contains(&tiles[1]), "heavy took {}", tiles[1]);
+  }
+
+  #[test]
+  fn best_tile_follows_tileds_fit_rules() {
+    let mut mw = MapWorld::new();
+    let ground = wang_set(&mut mw.world, "wang.tsj", "ground");
+    let cell = IVec2::new(1, 1);
+    // exact
+    assert_eq!(
+      ground.best_tile([0, 1, 0, 2, 0, 2, 0, 2], cell),
+      Some((11, TileFlip::NONE))
+    );
+    assert_eq!(
+      ground
+        .best_tile([0, 2, 0, 2, 0, 2, 0, 2], cell)
+        .map(|t| t.0),
+      Some(15)
+    );
+    // don't care where it does not matter
+    assert_eq!(
+      ground
+        .best_tile(
+          [
+            WangSet::ANY,
+            1,
+            WangSet::ANY,
+            1,
+            WangSet::ANY,
+            1,
+            WangSet::ANY,
+            1
+          ],
+          cell
+        )
+        .map(|t| t.0),
+      Some(0)
+    );
+    // a color the set does not have, or no color in a set with no bare corner
+    assert_eq!(ground.best_tile([0, 9, 0, 9, 0, 9, 0, 9], cell), None);
+    assert_eq!(ground.best_tile([0; 8], cell), None);
+    assert_eq!(ground.color_index("dirt"), Some(2));
+    assert_eq!(ground.color_index("nope"), None);
+    assert_eq!(ground.kind, WangKind::Corner);
+
+    // empty is a color: a one-colour set with bare corners has a tile for it,
+    // and an all-0 wanted is the empty cell, not a tile
+    let solo = wang_set(&mut mw.world, "wang-solo.tsj", "solo");
+    assert_eq!(
+      solo.best_tile([0, 1, 0, 0, 0, 0, 0, 0], cell).map(|t| t.0),
+      Some(0)
+    );
+    assert_eq!(solo.best_tile([0; 8], cell), None);
+
+    // the set's flips widen the choice: a tile turned fits, and it is told how
+    let turn = wang_set(&mut mw.world, "wang-turn.tsj", "turn");
+    let (tile, flip) = turn
+      .best_tile([0, 2, 0, 2, 0, 1, 0, 1], cell)
+      .expect("a turned tile fits");
+    assert_eq!(tile, 3);
+    assert_ne!(flip, TileFlip::NONE);
+    // untransformed first when the set prefers it
+    assert_eq!(
+      turn.best_tile([0, 1, 0, 1, 0, 1, 0, 1], cell),
+      Some((0, TileFlip::NONE))
+    );
+  }
+
+  #[test]
   fn an_unmatched_pattern_keeps_the_tile_and_warns_once() {
     let mut mw = MapWorld::new();
-    let map = dirt_map(&mut mw);
-    let before = tile_ids(&mut mw.world, map);
+    let handle = load_map(&mut mw.world, "tiled/maps/wang-dirt.tmj");
+    let map = mw.spawn(MapRoot::new(handle));
+    let before = layer(&mut mw.world, map, IVec2::splat(5));
+    let warnings = || {
+      crate::core::dev_log::get_entries()
+        .iter()
+        .filter(|e| e.message.contains("Wang set \"mix\"") && e.message.contains("Some(\"c\")"))
+        .count()
+    };
     let mut maps = MapsView::new(&mut mw.world);
     // color c has no tile in the mixed set
     assert!(!maps.set_terrain(map, "ground", IVec2::new(2, 2), "mix", Some("c")));
     assert!(!maps.set_terrain(map, "ground", IVec2::new(1, 1), "mix", Some("c")));
-    assert_eq!(tile_ids(&mut mw.world, map), before);
-    let warned = mw.world.resource::<WangWarned>();
-    assert_eq!(warned.0.len(), 1, "one warning for the set");
-    assert!(warned.0.contains("mix"));
+    assert!(!maps.set_terrain(map, "ground", IVec2::new(3, 3), "mix", Some("c")));
+    assert_eq!(layer(&mut mw.world, map, IVec2::splat(5)), before);
+    assert_eq!(
+      warnings(),
+      1,
+      "one warning for the set, however many misses"
+    );
+    let counted: u32 = mw
+      .world
+      .resource::<WangWarned>()
+      .0
+      .values()
+      .map(|v| v.1)
+      .sum();
+    assert_eq!(counted, 1);
 
     // a set, color, layer or cell that is not there changes nothing and does
     // not warn
@@ -452,6 +1048,22 @@ mod tests {
     assert!(!maps.set_terrain(map, "ground", IVec2::new(2, 2), "mix", Some("nope")));
     assert!(!maps.set_terrain(map, "nope", IVec2::new(2, 2), "mix", Some("a")));
     assert!(!maps.set_terrain(map, "ground", IVec2::new(9, 9), "mix", Some("a")));
-    assert_eq!(mw.world.resource::<WangWarned>().0.len(), 1);
+    assert_eq!(warnings(), 1);
+  }
+
+  #[test]
+  fn a_set_warns_again_once_its_tileset_changes() {
+    let mut warned = WangWarned::default();
+    let key = || ("terrain".to_string(), "ground".to_string());
+    assert!(warn_first(&mut warned, key(), 1));
+    assert!(!warn_first(&mut warned, key(), 1));
+    assert!(warn_first(&mut warned, key(), 2), "the tileset changed");
+    assert!(!warn_first(&mut warned, key(), 2));
+    // another tileset's set of the same name is its own
+    assert!(warn_first(
+      &mut warned,
+      ("other".to_string(), "ground".to_string()),
+      1
+    ));
   }
 }

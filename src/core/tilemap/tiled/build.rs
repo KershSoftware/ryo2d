@@ -9,7 +9,7 @@ use super::data::{decode_gid, decode_layer_data};
 use super::objects::{Alignment, ObjectState, TilesetEntry, build_objects};
 use super::project::{Props, parse_color};
 use super::raw::{RawLayer, RawMap, RawObject, RawTile, RawTileset};
-use super::wang::build_wang_sets;
+use super::wang::{build_wang_sets, transformations};
 use crate::core::asset::{
   Asset, AssetError, AssetPath, AssetServer, Assets, CheckContext, Handle, LoadContext,
 };
@@ -253,7 +253,8 @@ pub(crate) fn build_tileset(
   }
   set.tile_count = count;
   // after the tiles, whose probabilities the sets' tiles carry
-  let wang_sets = build_wang_sets(px, &place, raw.wangsets, |id| {
+  set.transformations = transformations(&raw.transformations);
+  let wang_sets = build_wang_sets(px, &place, raw.wangsets, set.transformations, |id| {
     set.tile(id).map_or(1.0, |data| data.probability)
   })?;
   set.wang_sets = wang_sets;

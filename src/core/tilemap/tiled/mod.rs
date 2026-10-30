@@ -754,8 +754,8 @@ mod tests {
   use std::f32::consts::FRAC_PI_2;
 
   use crate::core::tilemap::{
-    MapObjectData, ObjectShape, Properties, TiledMapLoader, TiledTilesetLoader, WangKind, WangSet,
-    WangTile,
+    MapObjectData, ObjectShape, Properties, TileTransformations, TiledMapLoader,
+    TiledTilesetLoader, WangKind, WangSet, WangTile,
   };
 
   fn objects<'a>(map: &'a TileMap, name: &str) -> &'a [MapObjectData] {
@@ -1111,6 +1111,37 @@ mod tests {
     assert_eq!(mix.colors.len(), 2);
     assert_eq!(mix.colors[1].color, Color::rgb(0, 0, 255));
     assert_eq!(mix.tiles[1], wang_tile(6, [2, 2, 1, 1, 0, 0, 0, 1]));
+  }
+
+  #[test]
+  fn a_tileset_s_transformations_load_into_it_and_its_wang_sets() {
+    let mut world = world_over(files_with(&[]));
+    let mut load = |path: &str| {
+      let handle = AssetsView::new(&mut world)
+        .load_now::<Tileset>(path)
+        .expect("loads");
+      world
+        .resource::<Assets<Tileset>>()
+        .get(&handle)
+        .expect("stored")
+        .clone()
+    };
+    let turn = load("tilesets/wang-turn.tsj");
+    let all = TileTransformations {
+      hflip: true,
+      vflip: true,
+      rotate: true,
+      prefer_untransformed: true,
+    };
+    assert_eq!(turn.transformations, all);
+    assert_eq!(turn.wang_sets[0].transformations, all);
+    // none written: none allowed
+    let plain = load("tilesets/wang.tsj");
+    assert_eq!(plain.transformations, TileTransformations::default());
+    assert_eq!(
+      plain.wang_sets[0].transformations,
+      TileTransformations::default()
+    );
   }
 
   #[test]
