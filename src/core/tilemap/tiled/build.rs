@@ -27,7 +27,7 @@ const MAX_CELLS: u64 = 1 << 26;
 /// Most tiles a tileset holds: what a cell's 20 bits can name
 pub(super) const MAX_TILES: u32 = 1_048_575;
 const MAX_TILESETS: usize = 256;
-const MAX_DEPTH: usize = 64;
+pub(super) const MAX_DEPTH: usize = 64;
 /// Points an ellipse is cut into
 const ELLIPSE_POINTS: usize = 16;
 

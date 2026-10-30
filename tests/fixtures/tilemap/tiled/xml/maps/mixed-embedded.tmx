@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<map version="1.10" tiledversion="1.12.2" class="level" orientation="orthogonal" renderorder="right-down" width="4" height="3" tilewidth="16" tileheight="16" infinite="0" backgroundcolor="#102030" nextlayerid="4" nextobjectid="1">
+ <properties>
+  <property name="gravity" type="float" value="9.5"/>
+  <property name="title" value="Mixed"/>
+ </properties>
+ <tileset firstgid="1" name="tiles" tilewidth="16" tileheight="16" tilecount="16" columns="4">
+  <image source="../../images/tiles.png" width="64" height="64"/>
+  <tile id="1" type="brick" probability="0.5">
+   <properties>
+    <property name="hardness" type="int" value="3"/>
+    <property name="label" value="a brick"/>
+   </properties>
+   <objectgroup draworder="index" id="2">
+    <object id="1" x="0" y="8" width="16" height="8">
+     <properties>
+      <property name="one_way" type="bool" value="true"/>
+     </properties>
+    </object>
+   </objectgroup>
+  </tile>
+  <tile id="2">
+   <objectgroup draworder="index" id="2">
+    <object id="1" x="2" y="2">
+     <polygon points="0,0 12,0 6,12"/>
+    </object>
+   </objectgroup>
+  </tile>
+  <tile id="3">
+   <objectgroup draworder="index" id="2">
+    <object id="1" x="0" y="0" width="16" height="16">
+     <properties>
+      <property name="occluder" type="bool" value="true"/>
+     </properties>
+     <ellipse/>
+    </object>
+   </objectgroup>
+  </tile>
+  <tile id="4">
+   <animation>
+    <frame tileid="4" duration="100"/>
+    <frame tileid="5" duration="250"/>
+   </animation>
+  </tile>
+ </tileset>
+ <tileset firstgid="17" name="items" tilewidth="16" tileheight="16" tilecount="2" columns="0">
+  <grid orientation="orthogonal" width="1" height="1"/>
+  <tile id="0">
+   <image source="../../images/gem.png" width="16" height="16"/>
+  </tile>
+  <tile id="1">
+   <image source="../../images/key.png" width="8" height="8"/>
+  </tile>
+ </tileset>
+ <layer id="1" name="ground" class="floor" width="4" height="3">
+  <properties>
+   <property name="collides" type="bool" value="false"/>
+   <property name="lit" type="bool" value="false"/>
+   <property name="occludes" type="bool" value="true"/>
+   <property name="y_sort" type="bool" value="true"/>
+  </properties>
+  <data encoding="csv">
+1,2,3,4,
+17,18,0,5,
+6,7,8,9
+</data>
+ </layer>
+ <layer id="2" name="flips" width="4" height="3">
+  <data encoding="csv">
+2147483649,1073741825,536870913,3758096385,
+0,0,0,0,
+268435457,0,0,0
+</data>
+ </layer>
+ <objectgroup id="3" name="things"/>
+</map>

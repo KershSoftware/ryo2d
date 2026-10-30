@@ -5691,6 +5691,7 @@ dependencies = [
  "renet_netcode",
  "resvg",
  "ron",
+ "roxmltree",
  "ruzstd",
  "ryo2d-derive",
  "serde",

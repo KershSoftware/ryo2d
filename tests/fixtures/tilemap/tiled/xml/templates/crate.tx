@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="template crate" type="Crate" width="16" height="16">
+  <properties>
+   <property name="hp" type="int" value="50"/>
+  </properties>
+ </object>
+</template>

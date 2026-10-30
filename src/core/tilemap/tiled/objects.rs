@@ -18,6 +18,7 @@ use super::build::{MAX_TILES, join};
 use super::data::decode_gid;
 use super::project::Props;
 use super::raw::{RawObject, RawPoint, RawProperty, RawTemplate, RawTileset};
+use super::xml::{parse_tsx, parse_tx};
 use crate::core::asset::{AssetError, AssetPath, LoadContext};
 use crate::core::tilemap::{MapObjectData, ObjectShape, Tile};
 
@@ -104,15 +105,23 @@ fn read_alignment(
   let Ok(asset) = AssetPath::parse(path) else {
     return Ok(Alignment::BottomLeft);
   };
-  // only the JSON tileset can be looked into so far
-  if !asset.as_str().ends_with(".tsj") {
+  let name = asset.as_str().to_ascii_lowercase();
+  let xml = name.ends_with(".tsx");
+  if !xml && !name.ends_with(".tsj") {
     return Ok(Alignment::BottomLeft);
   }
   let bytes = cx
     .read(&asset)
     .map_err(|e| AssetError::decode(from, format!("{place}: {}", e.report())))?;
-  let raw: RawTileset = serde_json::from_slice(&bytes)
-    .map_err(|e| AssetError::decode(from, format!("{place}: {path:?}: {e}")))?;
+  let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes);
+  let raw: RawTileset = if xml {
+    std::str::from_utf8(bytes)
+      .map_err(|e| e.to_string())
+      .and_then(parse_tsx)
+  } else {
+    serde_json::from_slice(bytes).map_err(|e| e.to_string())
+  }
+  .map_err(|e| AssetError::decode(from, format!("{place}: {path:?}: {e}")))?;
   Alignment::parse(raw.objectalignment.as_deref()).ok_or_else(|| {
     AssetError::decode(
       from,
@@ -139,28 +148,35 @@ fn template(
   if let Some(found) = state.templates.get(&key) {
     return Ok((found.clone(), key));
   }
-  if !key.ends_with(".tj") && !key.ends_with(".json") {
+  let lower = key.to_ascii_lowercase();
+  let xml = lower.ends_with(".tx");
+  if !xml && !lower.ends_with(".tj") && !lower.ends_with(".json") {
     return Err(px.fail(
       place,
-      format!(
-        "the template {written:?} is not a .tj file; Tiled's XML templates load with the XML reader"
-      ),
+      format!("the template {written:?} is not a .tj or .tx file"),
     ));
   }
   let bytes = cx
     .read(&asset)
     .map_err(|e| px.fail(place, format!("the template {written:?}: {}", e.report())))?;
   let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes);
-  let raw: RawTemplate = serde_json::from_slice(bytes).map_err(|e| {
-    px.fail(
-      place,
-      format!(
-        "the template {written:?}: line {}, column {}: {e}",
-        e.line(),
-        e.column()
-      ),
-    )
-  })?;
+  let raw: RawTemplate = if xml {
+    std::str::from_utf8(bytes)
+      .map_err(|e| e.to_string())
+      .and_then(parse_tx)
+      .map_err(|e| px.fail(place, format!("the template {written:?}: {e}")))?
+  } else {
+    serde_json::from_slice(bytes).map_err(|e| {
+      px.fail(
+        place,
+        format!(
+          "the template {written:?}: line {}, column {}: {e}",
+          e.line(),
+          e.column()
+        ),
+      )
+    })?
+  };
   let raw = Arc::new(raw);
   state.templates.insert(key.clone(), raw.clone());
   Ok((raw, key))
