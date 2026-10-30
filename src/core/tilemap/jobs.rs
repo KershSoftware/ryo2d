@@ -36,6 +36,15 @@ impl<T: Send + 'static> Default for Worker<T> {
 }
 
 impl<T: Send + 'static> Worker<T> {
+  /// A worker with no thread, as on the web
+  #[cfg(test)]
+  pub(crate) fn without_thread() -> Self {
+    Worker {
+      inline: true,
+      ..Worker::default()
+    }
+  }
+
   /// Sends `job` to the thread (or runs it here, with no thread); returns
   /// the id its result comes back with
   pub(crate) fn send(&mut self, job: impl FnOnce() -> T + Send + 'static) -> u64 {
@@ -111,5 +120,13 @@ mod tests {
     }
     results.sort_by_key(|(id, _)| *id);
     assert_eq!(results, [(first, Some(7)), (second, None)]);
+  }
+
+  #[test]
+  fn with_no_thread_a_job_s_result_is_there_at_once() {
+    let mut worker = Worker::<u32>::without_thread();
+    let job = worker.send(|| 3);
+    let results: Vec<(u64, Option<u32>)> = worker.finished().collect();
+    assert_eq!(results, [(job, Some(3))]);
   }
 }

@@ -947,11 +947,14 @@ fn tile_engine(size: u32, setup: fn(&mut SceneContext)) -> Option<HeadlessEngine
       (self.0)(ctx);
     }
   }
-  engine(
+  let mut engine = engine(
     EngineBuilder::new()
       .pixel_art(size, size)
       .start_scene(Tiles(setup)),
-  )
+  )?;
+  // A map lands a frame or so after its asset is ready
+  crate::core::tilemap::test_util::step_until_maps_land(&mut engine);
+  Some(engine)
 }
 
 #[test]
@@ -1002,9 +1005,17 @@ fn an_interpolated_map_draws_between_its_last_two_steps() {
       ctx.world.entity_mut(map).insert(Interpolated);
     }
     fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
-      let mut maps = ctx.world.query_filtered::<&mut Transform, With<MapRoot>>();
-      for mut transform in maps.iter_mut(ctx.world) {
-        transform.translation.x += 20.0;
+      // From the frame it lands in
+      let mut maps = ctx
+        .world
+        .query_filtered::<(Entity, &mut Transform), With<MapRoot>>();
+      let roots: Vec<Entity> = maps.iter(ctx.world).map(|(map, _)| map).collect();
+      for map in roots {
+        if MapsView::new(ctx.world).is_ready(map)
+          && let Some(mut transform) = ctx.world.get_mut::<Transform>(map)
+        {
+          transform.translation.x += 20.0;
+        }
       }
       SceneAction::Continue
     }
@@ -1016,8 +1027,9 @@ fn an_interpolated_map_draws_between_its_last_two_steps() {
   let Some(mut engine) = engine(builder) else {
     return;
   };
-  // Two whole steps: the map is at x = 40 and was at 20
-  engine.step_frames(2).unwrap();
+  // The frame it lands in moves it to x = 20; one more step: x = 40, was 20
+  crate::core::tilemap::test_util::step_until_maps_land(&mut engine);
+  engine.step_frames(1).unwrap();
   // One more step (to 60, from 40) and half a step left over: x = 50
   engine.engine.frame(Some(Duration::from_millis(30)));
   let frame = engine.frame().unwrap();
@@ -1204,6 +1216,7 @@ fn two_cameras_each_draw_their_own_view_of_a_map() {
   let Some(mut engine) = engine(builder) else {
     return;
   };
+  crate::core::tilemap::test_util::step_until_maps_land(&mut engine);
   engine.step_frames(2).unwrap();
   let map = the_map(&mut engine);
   let near = MapsView::new(engine.world_mut())
@@ -1292,6 +1305,7 @@ fn a_tiny_image_too_small_to_repeat_warns_once() {
   let Some(mut engine) = engine(builder) else {
     return;
   };
+  crate::core::tilemap::test_util::step_until_maps_land(&mut engine);
   engine.step_frames(4).unwrap();
   assert_eq!(engine.engine.tile_drawer.too_small_warnings(), 1);
   let frame = engine.frame().unwrap();

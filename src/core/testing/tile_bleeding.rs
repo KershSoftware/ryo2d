@@ -95,6 +95,7 @@ impl Scene for Filled {
 /// level) rather than places in the atlas (with four)
 fn seams(builder: EngineBuilder, scene: impl Scene + 'static, own: usize) -> Option<Vec<String>> {
   let mut engine = HeadlessEngine::new_or_skip(builder.start_scene(scene))?;
+  crate::core::tilemap::test_util::step_until_maps_land(&mut engine);
   engine.step_frames(2).unwrap();
   let gpu = engine.engine.sprite_gpu.as_ref().expect("renderer");
   assert_eq!(
@@ -251,6 +252,7 @@ fn slides(scene: impl Scene + 'static) -> Option<Vec<String>> {
     .pixel_art(SIZE, SIZE)
     .start_scene(scene);
   let mut engine = HeadlessEngine::new_or_skip(builder)?;
+  crate::core::tilemap::test_util::step_until_maps_land(&mut engine);
   // The camera centre that puts the world's origin at `corner` on screen
   let mut frame_at = |corner: Vec2| {
     let centre = (Vec2::splat(SIZE as f32 / 2.0) - corner) / zoom;

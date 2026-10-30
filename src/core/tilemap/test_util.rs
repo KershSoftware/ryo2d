@@ -83,6 +83,11 @@ impl MapWorld {
     self.schedules.run(Phase::PreUpdate, &mut self.world);
   }
 
+  /// The schedules, for a test's own systems
+  pub(crate) fn schedules(&mut self) -> &mut EngineSchedules {
+    &mut self.schedules
+  }
+
   /// One fixed step alone
   pub(crate) fn step(&mut self) {
     self.schedules.run(Phase::FixedUpdate, &mut self.world);
@@ -101,25 +106,20 @@ impl MapWorld {
     map
   }
 
-  /// Runs frames until `map` collides and its shadows are all spawned: its
-  /// first builds come back from another thread, and spawn over frames
+  /// Runs frames until `map` has landed: its landing is worked out on
+  /// another thread
   pub(crate) fn settle(&mut self, map: Entity) {
     let start = std::time::Instant::now();
     loop {
       self.frame();
-      let collides = super::MapsView::new(&mut self.world).collides(map);
-      let shadows = self
-        .world
-        .get::<super::occluders::MapShadows>(map)
-        .is_some_and(super::occluders::MapShadows::is_built);
-      if collides && shadows {
+      if super::MapsView::new(&mut self.world).is_ready(map) {
         return;
       }
       assert!(
         start.elapsed() < std::time::Duration::from_secs(5),
-        "map {map} was not built in 5 s"
+        "map {map} did not land in 5 s"
       );
-      std::thread::sleep(std::time::Duration::from_millis(1));
+      std::thread::yield_now();
     }
   }
 }
@@ -142,4 +142,29 @@ pub(crate) fn layers_of(world: &mut World, map: Entity) -> Vec<Entity> {
     .collect();
   found.sort();
   found.into_iter().map(|(_, e)| e).collect()
+}
+
+/// Whether every map root in `world` has landed (or reported a failure)
+pub(crate) fn maps_landed(world: &mut World) -> bool {
+  world
+    .query_filtered::<
+      (Option<&super::MapIds>, Option<&super::spawn::MapFailed>),
+      crate::core::ecs::With<super::MapRoot>,
+    >()
+    .iter(world)
+    .all(|(ids, failed)| ids.is_some() || failed.is_some())
+}
+
+/// Steps `engine` until every map root has landed: a map's landing is
+/// worked out on another thread
+pub(crate) fn step_until_maps_land(engine: &mut crate::core::testing::HeadlessEngine) {
+  let start = std::time::Instant::now();
+  while !maps_landed(engine.world_mut()) {
+    engine.step().expect("a frame");
+    assert!(
+      start.elapsed() < std::time::Duration::from_secs(5),
+      "a map did not land in 5 s"
+    );
+    std::thread::yield_now();
+  }
 }

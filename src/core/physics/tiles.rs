@@ -763,9 +763,9 @@ impl TileColliders {
     Some(Kept { outlines, runs })
   }
 
-  /// The outlines and one-way runs traced now, for the build to spawn a
-  /// budget a step (`Traced`); pure, so any thread can do it. None in
-  /// `solid_rects` mode, which builds whole.
+  /// The outlines and one-way runs traced now, for the build to spawn
+  /// without tracing (`Traced`); pure, so any thread can do it. None in
+  /// `solid_rects` mode.
   pub(crate) fn trace(&self) -> Option<Traced> {
     if self.solid_rects {
       return None;
@@ -779,27 +779,19 @@ impl TileColliders {
     })
   }
 
-  /// Spawns parts from `due` (the next last) until a step's budget is
-  /// spent; a loop or run an edit has dropped or already built is passed.
-  fn spawn_due(&self, kept: &mut Kept, due: &mut Vec<Due>, commands: &mut Commands, map: Entity) {
-    let mut budget = POINTS_PER_STEP;
-    while budget > 0 {
-      let Some(next) = due.pop() else {
-        return;
-      };
-      match next {
-        Due::Loop(id) => {
-          if let Some(outline) = kept.outlines.get_mut(id).filter(|o| o.part.is_none()) {
-            budget = budget.saturating_sub(outline.corners.len().max(PART_POINTS));
-            outline.part = Some(self.spawn_outline(commands, map, id, &outline.corners));
-          }
-        }
-        Due::Run(id) => {
-          if let Some(run) = kept.runs.get_mut(id).filter(|r| r.part.is_none()) {
-            budget = budget.saturating_sub(run.points.len().max(PART_POINTS));
-            run.part = Some(self.spawn_run(commands, map, &run.points));
-          }
-        }
+  /// Spawns every part of a trace (`trace`), as `spawn_all` does those it
+  /// traces itself.
+  fn spawn_traced(&self, kept: &mut Kept, commands: &mut Commands, map: Entity) {
+    let ids: Vec<u32> = kept.outlines.loops().map(|(id, _)| id).collect();
+    for id in ids {
+      if let Some(outline) = kept.outlines.get_mut(id) {
+        outline.part = Some(self.spawn_outline(commands, map, id, &outline.corners));
+      }
+    }
+    let ids: Vec<u32> = kept.runs.runs().map(|(id, _)| id).collect();
+    for id in ids {
+      if let Some(run) = kept.runs.get_mut(id) {
+        run.part = Some(self.spawn_run(commands, map, &run.points));
       }
     }
   }
@@ -958,24 +950,13 @@ struct Kept {
 
 /// A grid's outlines and one-way runs traced ahead of its build (on any
 /// thread: `TileColliders::trace`), on the grid's entity: its build takes
-/// them and spawns their parts a budget a step instead of all at once.
+/// them and only spawns the parts, which keeps the trace off the frame the
+/// grid arrives in.
 #[derive(Component, Debug)]
 pub(crate) struct Traced {
   /// The grid's generation when traced: another means it changed since
   generation: u64,
   kept: Option<Kept>,
-}
-
-/// The parts a build spawning over steps spawns a step: their points, each
-/// counted as at least `PART_POINTS`.
-const POINTS_PER_STEP: usize = 4096;
-const PART_POINTS: usize = 16;
-
-/// A part a build has still to spawn.
-#[derive(Debug, Clone, Copy)]
-enum Due {
-  Loop(u32),
-  Run(u32),
 }
 
 /// A built map's record and what its edits can rebuild in place, kept on
@@ -985,14 +966,6 @@ pub(crate) struct TileBuild {
   record: TileRecord,
   /// None in `solid_rects` mode and when nothing was built
   kept: Option<Kept>,
-  /// The parts of a traced build still to spawn, the next last
-  due: Vec<Due>,
-}
-
-/// Whether `tiles`' colliders are all built: its build is of the grid as it
-/// is now, with no part still to spawn.
-pub(crate) fn tiles_built(tiles: &TileColliders, build: Option<&TileBuild>) -> bool {
-  build.is_some_and(|build| build.record == TileRecord::of(tiles) && build.due.is_empty())
 }
 
 type Maps<'w, 's> = Query<
@@ -1019,9 +992,9 @@ type Kids<'w, 's> = Query<'w, 's, &'static Children, Allow<Disabled>>;
 /// was never built, has all its colliders rebuilt; one whose cells changed
 /// rebuilds what the changed cells touch (all of it in `solid_rects` mode,
 /// or when the cells changed too often to list). A grid traced ahead
-/// (`Traced`, of its generation) is built from the trace a budget of parts a
-/// step. A step with nothing to rebuild costs a look at each map and at the
-/// parts given a parent since.
+/// (`Traced`, of its generation) is built from the trace. A step with
+/// nothing to rebuild costs a look at each map and at the parts given a
+/// parent since.
 pub(crate) fn rebuild_tile_colliders(
   mut maps: Maps,
   parts: Parts,
@@ -1033,7 +1006,7 @@ pub(crate) fn rebuild_tile_colliders(
 ) {
   // Maps whose parts are all cleared (and built again)
   let mut cleared = EntityHashSet::default();
-  for (map, tiles, mut build, traced, disabled) in &mut maps {
+  for (map, tiles, build, traced, disabled) in &mut maps {
     let Some(mut tiles) = tiles.filter(|_| !disabled) else {
       if build.is_some() {
         commands.entity(map).remove::<TileBuild>();
@@ -1043,13 +1016,6 @@ pub(crate) fn rebuild_tile_colliders(
     };
     let now = TileRecord::of(&tiles);
     if build.as_ref().is_some_and(|b| b.record == now) {
-      // A traced build goes on spawning its parts
-      if let Some(build) = build.as_mut().filter(|b| !b.due.is_empty()) {
-        let build = &mut **build;
-        if let Some(kept) = &mut build.kept {
-          tiles.spawn_due(kept, &mut build.due, &mut commands, map);
-        }
-      }
       continue;
     }
     // The change list is taken in either way (marking no change)
@@ -1068,21 +1034,19 @@ pub(crate) fn rebuild_tile_colliders(
         let build = &mut *build;
         if let (Some(kept), Some(changed)) = (&mut build.kept, &changes) {
           tiles.respawn(kept, changed, &mut commands, map);
-          tiles.spawn_due(kept, &mut build.due, &mut commands, map);
         }
         build.record = now;
       }
       build => {
         cleared.insert(map);
-        // A trace of this very grid is spawned from, over steps; one of
-        // another generation is stale. Either way it goes
+        // A trace of this very grid is built from; one of another
+        // generation is stale. Either way it goes
         let traced = traced.and_then(|mut traced| {
           commands.entity(map).try_remove::<Traced>();
           (traced.generation == tiles.generation && !tiles.solid_rects)
             .then(|| traced.kept.take())
             .flatten()
         });
-        let mut due = Vec::new();
         let kept = if !(tiles.tile_size.is_finite() && tiles.tile_size.min_element() > 0.0) {
           physics.warn_once(
             map,
@@ -1090,18 +1054,12 @@ pub(crate) fn rebuild_tile_colliders(
           );
           None
         } else if let Some(mut kept) = traced {
-          due.extend(kept.runs.runs().map(|(id, _)| Due::Run(id)));
-          due.extend(kept.outlines.loops().map(|(id, _)| Due::Loop(id)));
-          tiles.spawn_due(&mut kept, &mut due, &mut commands, map);
+          tiles.spawn_traced(&mut kept, &mut commands, map);
           Some(kept)
         } else {
           tiles.spawn_all(&mut commands, map)
         };
-        let fresh = TileBuild {
-          record: now,
-          kept,
-          due,
-        };
+        let fresh = TileBuild { record: now, kept };
         match build {
           Some(mut build) => *build = fresh,
           None => {
@@ -1852,9 +1810,8 @@ mod with_physics {
     assert_ne!(after, before);
   }
 
-  #[test]
-  fn a_traced_grid_spawns_its_parts_over_steps_as_a_whole_build_would() {
-    // 600 islands and a long one-way run: more than a step's budget
+  /// 600 islands and a one-way run, as a grid
+  fn islands() -> TileColliders {
     let (w, h) = (120u32, 40u32);
     let mut cells = vec![TileCell::Empty; (w * h) as usize];
     for y in (0..h).step_by(2) {
@@ -1865,70 +1822,53 @@ mod with_physics {
     for x in 0..w {
       cells[((h - 1) * w + x) as usize] = TileCell::OneWay;
     }
-    let grid = TileColliders::from_cells(w, h, Vec2::splat(16.0), cells);
-    let (mut whole, mut s1) = world(60);
-    let reference = whole.spawn((Transform::IDENTITY, grid.clone())).id();
-    run(&mut whole, &mut s1, 1);
-    let expected = canonical(outline_loops(&parts_by_id(&mut whole, reference), 16.0));
-    let expected_parts = parts_by_id(&mut whole, reference).len();
-
-    let (mut world, mut s) = world(60);
-    let traced = grid.trace().expect("outline mode traces");
-    let map = world.spawn((Transform::IDENTITY, grid, traced)).id();
-    let mut counts = Vec::new();
-    for _ in 0..20 {
-      run(&mut world, &mut s, 1);
-      let built = {
-        let tiles = world.get::<TileColliders>(map).unwrap();
-        tiles_built(tiles, world.get::<TileBuild>(map))
-      };
-      counts.push(parts_by_id(&mut world, map).len());
-      if built {
-        break;
-      }
-    }
-    assert!(counts.len() > 2, "spread over steps: {counts:?}");
-    assert!(counts.windows(2).all(|w| w[0] < w[1]), "{counts:?}");
-    assert_eq!(counts.last(), Some(&expected_parts));
-    assert!(world.get::<Traced>(map).is_none(), "the trace was taken");
-    let built = canonical(outline_loops(&parts_by_id(&mut world, map), 16.0));
-    assert_eq!(built, expected);
+    TileColliders::from_cells(w, h, Vec2::splat(16.0), cells)
   }
 
   #[test]
-  fn an_edit_during_a_traced_build_is_built_once() {
-    let (w, h) = (120u32, 40u32);
-    let mut cells = vec![TileCell::Empty; (w * h) as usize];
-    for y in (0..h).step_by(2) {
-      for x in (0..w).step_by(4) {
-        cells[(y * w + x) as usize] = TileCell::Solid;
-      }
-    }
-    let grid = TileColliders::from_cells(w, h, Vec2::splat(16.0), cells);
+  fn a_traced_grid_builds_from_its_trace_as_a_whole_build_would() {
+    let grid = islands();
+    let (mut whole, mut s1) = world(60);
+    let reference = whole.spawn((Transform::IDENTITY, grid.clone())).id();
+    run(&mut whole, &mut s1, 1);
+    let expected = parts_by_id(&mut whole, reference);
     let (mut world, mut s) = world(60);
     let traced = grid.trace().expect("outline mode traces");
     let map = world.spawn((Transform::IDENTITY, grid, traced)).id();
     run(&mut world, &mut s, 1);
-    // Join two islands and clear another while parts are still to come
+    let built = parts_by_id(&mut world, map);
+    assert_eq!(built.len(), expected.len(), "every part in the first step");
+    assert_eq!(
+      canonical(outline_loops(&built, 16.0)),
+      canonical(outline_loops(&expected, 16.0))
+    );
+    assert!(world.get::<Traced>(map).is_none(), "the trace was taken");
+  }
+
+  #[test]
+  fn a_grid_changed_after_its_trace_builds_from_its_cells() {
+    let grid = islands();
+    let traced = grid.trace().expect("outline mode traces");
+    let (mut world, mut s) = world(60);
+    let map = world.spawn((Transform::IDENTITY, grid, traced)).id();
+    // Islands joined and one cleared before the first build: the trace is
+    // stale
     {
       let mut tiles = world.get_mut::<TileColliders>(map).unwrap();
       tiles.set(1, 0, TileCell::Solid);
       tiles.set(2, 0, TileCell::Solid);
       tiles.set(3, 0, TileCell::Solid);
-      tiles.set(116, 38, TileCell::Empty);
+      tiles.set(116, 36, TileCell::Empty);
     }
-    for _ in 0..20 {
-      run(&mut world, &mut s, 1);
-    }
-    let tiles = world.get::<TileColliders>(map).unwrap();
-    assert!(tiles_built(tiles, world.get::<TileBuild>(map)));
+    run(&mut world, &mut s, 1);
+    assert!(world.get::<Traced>(map).is_none(), "the stale trace went");
     let built = canonical(outline_loops(&parts_by_id(&mut world, map), 16.0));
     let full = canonical(outlines(
-      w,
-      h,
+      120,
+      40,
       &world.get::<TileColliders>(map).unwrap().cells,
     ));
-    assert_eq!(built, full, "each loop once, as a whole build has them");
+    assert_eq!(built, full, "built from the cells as they are");
   }
 
   #[test]

@@ -39,11 +39,39 @@ impl Scene for Fixture {
   }
 }
 
+/// An engine whose scene runs `setup` as it enters, stepped until the maps
+/// it spawned have landed
 fn engine_with(
   builder: EngineBuilder,
   setup: impl FnMut(&mut SceneContext) + Send + 'static,
 ) -> Option<HeadlessEngine> {
-  HeadlessEngine::new_or_skip(builder.start_scene(Fixture(Some(Box::new(setup)))))
+  let mut engine =
+    HeadlessEngine::new_or_skip(builder.start_scene(Fixture(Some(Box::new(setup)))))?;
+  land(&mut engine);
+  Some(engine)
+}
+
+/// Steps until every map root has landed: a map's colliders are worked out
+/// off the main thread, and it lands whole a frame or so after its asset
+/// is ready
+fn land(engine: &mut HeadlessEngine) {
+  let start = std::time::Instant::now();
+  loop {
+    let world = engine.world_mut();
+    let roots: Vec<Entity> = world
+      .query_filtered::<Entity, With<MapRoot>>()
+      .iter(world)
+      .collect();
+    if roots
+      .iter()
+      .all(|&root| MapsView::new(world).is_ready(root))
+    {
+      return;
+    }
+    engine.step().unwrap();
+    assert!(start.elapsed().as_secs() < 5, "a map did not land in 5 s");
+    std::thread::yield_now();
+  }
 }
 
 fn engine(setup: impl FnMut(&mut SceneContext) + Send + 'static) -> Option<HeadlessEngine> {

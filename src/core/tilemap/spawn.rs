@@ -8,13 +8,19 @@ use std::sync::Arc;
 
 use glam::{IVec2, UVec2, Vec2};
 
+use super::collision::{self, LayerView};
+use super::jobs::Worker;
+use super::kinds::{sources, stamps};
+use super::occluders;
 use super::{
-  ImageLayer, IntGrid, LayerInfo, LayerKind, LdtkProject, MapObjectData, ObjectShape, Properties,
-  PropertyValue, Tile, TileData, TileGrid, TileMap, Tileset, TilesetSource,
+  ImageLayer, IntGrid, LayerInfo, LayerKind, LdtkProject, MapLayer, MapObjectData, ObjectShape,
+  Properties, PropertyValue, Tile, TileData, TileGrid, TileMap, Tileset, TilesetSource,
 };
 use crate::core::asset::{AssetError, AssetPath, AssetServer, Assets, Handle, LoadState};
 use crate::core::ecs::kernel::{DeferredWorld, HookContext, QueryState};
-use crate::core::ecs::{ChildOf, Component, Entity, Message, Messages, Transform, Without, World};
+use crate::core::ecs::{
+  ChildOf, Component, Entity, Local, Message, Messages, Transform, Without, World,
+};
 use crate::core::hash::FastMap;
 use crate::core::messages::register_message;
 use crate::core::physics::TileCell;
@@ -50,10 +56,11 @@ pub(crate) enum MapSource {
 }
 
 /// A map in the world. The entity's `Transform` places the map's top-left
-/// corner; once its asset (and the tilesets it names) is loaded, its layers
-/// spawn as its children, each object and class tile a child of its layer,
-/// and a [`MapEvent::Spawned`] is sent ([`MapEvent::Failed`] if the asset
-/// cannot load). Read and edit it through `ctx.maps()`. Despawning the
+/// corner; once its asset (and the tilesets it names) is loaded and its
+/// colliders are worked out (off the main thread, over a frame or so), its
+/// layers spawn as its children, each object and class tile a child of its
+/// layer, and a [`MapEvent::Spawned`] is sent ([`MapEvent::Failed`] if the
+/// asset cannot load). Read and edit it through `ctx.maps()`. Despawning the
 /// entity despawns all of it; putting another root over it, or taking the
 /// root away, takes its layers down first.
 ///
@@ -72,9 +79,10 @@ pub(crate) enum MapSource {
 /// 2D shadows through
 /// [`MapOccluder`](super::MapOccluder) children. Edits re-collide and
 /// re-shadow only the chunks they touch; a disabled map has neither. A
-/// map's first colliders are built off the main thread and come in over a
-/// few steps after it spawns: put bodies that stand on it there once it
-/// collides ([`MapEvent::Collides`], [`MapsView::collides`](super::MapsView::collides)).
+/// map lands whole: its colliders and shadows are worked out off the main
+/// thread once its asset is ready, and its layers, objects, colliders,
+/// shadows and [`MapEvent::Spawned`] arrive together in one frame, so a
+/// body its object observers place stands on its ground.
 ///
 /// ```
 /// use ryo2d::prelude::*;
@@ -271,15 +279,10 @@ pub(crate) struct LayerTiles(pub(crate) FastMap<IVec2, Entity>);
 /// What happened to a map entity's asset
 #[derive(Message, Clone, Debug)]
 pub enum MapEvent {
-  /// Its layers, objects and class tiles spawned. Its colliders build over
-  /// the next few steps, off the main thread: put bodies that stand on the
-  /// map on it once it `Collides`
+  /// It landed whole: its layers, objects and class tiles, its colliders
+  /// and its shadows all arrived this frame, so a body put on it now (or by
+  /// an observer of its objects as they arrived) stands on its ground
   Spawned { map: Entity },
-  /// Every collider of its first build is in physics (none for a map that
-  /// collides with nothing): a body set on it from now on stands on it.
-  /// Sent once a spawn, after `Spawned`; `MapsView::collides` says the
-  /// same at any time
-  Collides { map: Entity },
   /// Its asset changed and its layers and objects follow it
   Reloaded { map: Entity },
   /// Its asset did not load (or has no such level): nothing spawned
@@ -294,9 +297,24 @@ pub(crate) struct MapFailed {
   version: Option<u64>,
 }
 
-/// The maps not spawned yet, with the failure each reported
-pub(crate) type WaitingMaps =
-  QueryState<(Entity, &'static MapRoot, Option<&'static MapFailed>), Without<MapIds>>;
+/// A map whose landing is being worked out off the main thread, by its
+/// job's id
+#[derive(Component, Clone, Copy, Debug)]
+pub(crate) struct MapLanding {
+  job: u64,
+}
+
+/// The maps not spawned yet, with the failure each reported and the
+/// landing out for it
+pub(crate) type WaitingMaps = QueryState<
+  (
+    Entity,
+    &'static MapRoot,
+    Option<&'static MapFailed>,
+    Option<&'static MapLanding>,
+  ),
+  Without<MapIds>,
+>;
 
 /// The map a root names, once its asset is in its store
 pub(crate) fn map_asset<'w>(world: &'w World, root: &MapRoot) -> Option<&'w TileMap> {
@@ -348,18 +366,32 @@ pub(crate) fn registered_class(
   Some((class.clone(), data.properties.clone()))
 }
 
-/// `PreUpdate`, after the asset pump: each map whose asset is ready spawns
-/// its layers, objects and class tiles (so a map whose asset lands this
-/// frame spawns this frame), and each whose asset failed reports it once.
-/// With no map waiting it is one query over no entities
-pub(crate) fn spawn_maps(world: &mut World, waiting: &mut WaitingMaps) {
+/// `PreUpdate`, after the asset pump: each map whose asset is ready has
+/// its landing worked out on the worker (its layers' copies with class
+/// tiles taken out, its colliders and its shadows), and each whose asset
+/// failed reports it once; each landing that came back lands whole (its
+/// layers, objects, class tiles, colliders and shadows, and
+/// `MapEvent::Spawned`). Where there is no thread (the web) a landing is
+/// worked out here and lands in the same frame. With no map waiting it is
+/// one query over no entities
+pub(crate) fn spawn_maps(
+  world: &mut World,
+  waiting: &mut WaitingMaps,
+  mut worker: Local<Worker<Landed>>,
+) {
   let decided: Vec<(Entity, Ready)> = waiting
     .iter(world)
-    .filter_map(|(map, root, failed)| readiness(world, root, failed).map(|ready| (map, ready)))
+    .filter(|(.., landing)| landing.is_none())
+    .filter_map(|(map, root, failed, _)| readiness(world, root, failed).map(|ready| (map, ready)))
     .collect();
   for (map, ready) in decided {
     match ready {
-      Ready::Spawn => spawn_map(world, map),
+      Ready::Spawn => {
+        if let Some(job) = landing_job(world, map) {
+          let job = worker.send(move || job.run());
+          world.entity_mut(map).insert(MapLanding { job });
+        }
+      }
       // A game's observer, as another map spawned, may have despawned it
       Ready::Failed(failure) => {
         let error = Arc::clone(&failure.error);
@@ -368,6 +400,34 @@ pub(crate) fn spawn_maps(world: &mut World, waiting: &mut WaitingMaps) {
           send(world, MapEvent::Failed { map, error });
         }
       }
+    }
+  }
+  let arrived: Vec<(u64, Option<Landed>)> = worker.finished().collect();
+  for (job, landed) in arrived {
+    let mut landing = world.query::<(Entity, &MapLanding)>();
+    let Some(map) = landing
+      .iter(world)
+      .find(|(_, l)| l.job == job)
+      .map(|(map, _)| map)
+    else {
+      // Its map went (or was given another root) while it was out
+      continue;
+    };
+    world.entity_mut(map).remove::<MapLanding>();
+    let landed = match landed {
+      Some(landed) => Some(landed),
+      None => {
+        crate::engine_warn!(
+          module: "Tilemap",
+          "map {map}: its landing could not be worked out off the main thread; worked out here"
+        );
+        landing_job(world, map).and_then(|job| {
+          std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || job.run())).ok()
+        })
+      }
+    };
+    if let Some(landed) = landed {
+      land(world, map, landed);
     }
   }
 }
@@ -554,38 +614,103 @@ fn take_class_tiles(grid: &mut TileGrid, classes: &ClassTiles) -> Vec<ClassTile>
   found
 }
 
-/// The map's layers as they will spawn: each tile layer a copy of its grid
-/// (class tiles taken out, every chunk dirty so it is built once)
-fn plan(world: &World, root: &MapRoot) -> Option<Vec<PlannedLayer>> {
-  let map = map_asset(world, root)?;
-  let classes = class_tiles(world, map, &root.entity_tiles);
-  let layers = map
-    .layers
-    .iter()
-    .map(|layer| PlannedLayer {
-      info: layer.info.clone(),
-      content: match &layer.kind {
-        LayerKind::Tiles {
-          grid,
-          intgrid,
-          cell_size,
-        } => {
-          let mut grid = grid.clone();
-          let found = take_class_tiles(&mut grid, &classes);
-          grid.mark_all_dirty();
-          let data = TileLayerData {
-            grid,
-            intgrid: intgrid.clone(),
-            cell_size: *cell_size,
-          };
-          Content::Tiles(data, found)
-        }
-        LayerKind::Objects(objects) => Content::Objects(objects.clone()),
-        LayerKind::Image(image) => Content::Image(image.clone()),
-      },
-    })
-    .collect();
-  Some(layers)
+/// A map's landing, worked out off the main thread from copies of its
+/// asset's layers, its root's settings and its tilesets' shapes
+pub(crate) struct LandingJob {
+  map: Entity,
+  layers: Vec<MapLayer>,
+  classes: ClassTiles,
+  collision: collision::Inputs,
+  shadows: occluders::Inputs,
+}
+
+/// What a map lands with: its layers as they spawn, and its colliders and
+/// shadows worked out for them
+pub(crate) struct Landed {
+  layers: Vec<PlannedLayer>,
+  collision: collision::Prepared,
+  shadows: occluders::Prepared,
+}
+
+/// The landing job of the map `map`, its root's asset ready
+fn landing_job(world: &World, map: Entity) -> Option<LandingJob> {
+  let root = world.get::<MapRoot>(map)?;
+  let asset = map_asset(world, root)?;
+  let tilesets = world.get_resource::<Assets<Tileset>>();
+  let shapes = sources(asset, tilesets);
+  let tileset_stamps = stamps(asset, tilesets);
+  Some(LandingJob {
+    map,
+    layers: asset.layers.clone(),
+    classes: class_tiles(world, asset, &root.entity_tiles),
+    collision: collision::Inputs {
+      collision: root.collision,
+      overrides: root.intgrid_collision.clone(),
+      properties: asset.properties.clone(),
+      tile_size: asset.tile_size,
+      shapes: Arc::clone(&shapes),
+      tilesets: tileset_stamps.clone(),
+    },
+    shadows: occluders::Inputs {
+      overrides: root.intgrid_collision.clone(),
+      shapes,
+      tilesets: tileset_stamps,
+    },
+  })
+}
+
+impl LandingJob {
+  /// The map's layers as they will spawn (each tile layer's grid with class
+  /// tiles taken out, every chunk dirty so it is drawn once), and its
+  /// colliders and shadows for them
+  fn run(self) -> Landed {
+    let layers: Vec<PlannedLayer> = self
+      .layers
+      .into_iter()
+      .map(|layer| PlannedLayer {
+        info: layer.info,
+        content: match layer.kind {
+          LayerKind::Tiles {
+            mut grid,
+            intgrid,
+            cell_size,
+          } => {
+            let found = take_class_tiles(&mut grid, &self.classes);
+            grid.mark_all_dirty();
+            let data = TileLayerData {
+              grid,
+              intgrid,
+              cell_size,
+            };
+            Content::Tiles(data, found)
+          }
+          LayerKind::Objects(objects) => Content::Objects(objects),
+          LayerKind::Image(image) => Content::Image(image),
+        },
+      })
+      .collect();
+    let views: Vec<LayerView<'_>> = layers
+      .iter()
+      .enumerate()
+      .filter_map(|(index, layer)| match &layer.content {
+        Content::Tiles(data, _) => Some(LayerView {
+          index,
+          entity: Entity::PLACEHOLDER,
+          info: &layer.info,
+          data,
+        }),
+        _ => None,
+      })
+      .collect();
+    let collision = collision::prepare(self.map, &views, self.collision);
+    let shadows = occluders::prepare(&views, self.shadows);
+    drop(views);
+    Landed {
+      layers,
+      collision,
+      shadows,
+    }
+  }
 }
 
 /// An object's component and its `Transform` in its layer
@@ -614,23 +739,26 @@ fn object_parts(map: Entity, object: MapObjectData) -> (MapObject, Transform) {
   (component, transform)
 }
 
-/// Spawns the layers, objects and class tiles of `map`, if it is still a
-/// map waiting to spawn: an entity despawned since (with its scene) or no
-/// longer a map spawns nothing
-fn spawn_map(world: &mut World, map: Entity) {
-  let Some(root) = world
-    .get_entity(map)
-    .ok()
-    .and_then(|entity| entity.get::<MapRoot>().cloned())
-  else {
-    return;
-  };
-  if world.get::<MapIds>(map).is_some() {
+/// Lands `map` whole, if it is still a map waiting to spawn (an entity
+/// despawned since, no longer a map, or disabled spawns nothing; a
+/// disabled one is worked out again once enabled): its layers, the
+/// objects' entities, its colliders and shadows, then the objects'
+/// components (observers run as each arrives), its class tiles, and
+/// `MapEvent::Spawned`
+fn land(world: &mut World, map: Entity, landed: Landed) {
+  let waiting = world.get_entity(map).is_ok_and(|entity| {
+    entity.contains::<MapRoot>()
+      && !entity.contains::<MapIds>()
+      && !entity.contains::<crate::core::ecs::Disabled>()
+  });
+  if !waiting {
     return;
   }
-  let Some(planned) = plan(world, &root) else {
-    return;
-  };
+  let Landed {
+    layers: planned,
+    collision,
+    shadows,
+  } = landed;
 
   // A game's observers run as each part arrives, and may despawn the map, a
   // layer or an object before its turn: what is gone is skipped, and a map
@@ -688,8 +816,11 @@ fn spawn_map(world: &mut World, map: Entity) {
     return;
   };
   root
-    .insert((MapIds { objects: ids }, MapLayers(layers)))
+    .insert((MapIds { objects: ids }, MapLayers(layers.clone())))
     .remove::<MapFailed>();
+  // Its colliders and shadows before anything observes its objects
+  collision::land(world, map, &layers, collision);
+  occluders::land(world, map, &layers, shadows);
   for (entity, component) in objects {
     if let Ok(mut object) = world.get_entity_mut(entity) {
       object.insert(component);
@@ -719,7 +850,10 @@ fn spawn_map(world: &mut World, map: Entity) {
 /// afresh. Despawned, the hierarchy takes them anyway
 fn root_discarded(mut world: DeferredWorld, context: HookContext) {
   let map = context.entity;
-  if world.get::<MapLayers>(map).is_none() && world.get::<MapFailed>(map).is_none() {
+  if world.get::<MapLayers>(map).is_none()
+    && world.get::<MapFailed>(map).is_none()
+    && world.get::<MapLanding>(map).is_none()
+  {
     return;
   }
   world.commands().queue(move |world: &mut World| {
@@ -727,7 +861,7 @@ fn root_discarded(mut world: DeferredWorld, context: HookContext) {
       return;
     };
     let layers = entity.take::<MapLayers>();
-    entity.remove::<(MapIds, MapFailed)>();
+    entity.remove::<(MapIds, MapFailed, MapLanding)>();
     for layer in layers.map(|l| l.0).unwrap_or_default() {
       let _ = world.try_despawn(layer);
     }
@@ -772,14 +906,28 @@ mod tests {
       Frames(schedule)
     }
 
-    /// The spawn system alone, with no pump before it
+    /// The spawn system alone, with no pump before it, run until no
+    /// landing it started is still out (each is worked out on another
+    /// thread), so a map that starts landing lands in this frame
     fn spawn(&mut self, world: &mut World) {
-      self.0.run(world);
+      let start = Instant::now();
+      loop {
+        self.0.run(world);
+        let out = world.query::<&MapLanding>().iter(world).count();
+        if out == 0 {
+          return;
+        }
+        assert!(
+          start.elapsed() < Duration::from_secs(5),
+          "a landing never came"
+        );
+        std::thread::yield_now();
+      }
     }
 
     fn run(&mut self, world: &mut World) {
       pump(world);
-      self.0.run(world);
+      self.spawn(world);
     }
 
     /// Frames until `done`, which is then checked after the frame's spawn
@@ -1799,7 +1947,12 @@ mod tests {
     let mut expected = vec![turrets, dropping];
     expected.sort();
     assert_eq!(maps, expected);
-    assert!(failed(&sent).is_empty(), "{sent:?}");
+    // The missing map's failure is reported as the others start landing,
+    // before the level that takes it lands
+    assert!(
+      failed(&sent).iter().all(|(map, _)| *map == victim),
+      "{sent:?}"
+    );
   }
 
   /// A map built in code with the classed tileset and a brick at (1, 0), whose
@@ -2039,6 +2192,8 @@ mod tests {
       .ok()
       .and_then(|m| *m)
       .expect("the scene spawned a map");
+    // It lands a frame or so in: its landing is worked out off the main thread
+    crate::core::tilemap::test_util::step_until_maps_land(&mut engine);
     assert_eq!(
       layer_names(engine.world_mut(), map),
       ["ground", "things", "sky"]

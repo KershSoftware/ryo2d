@@ -30,9 +30,7 @@ pub use events::{
 pub use joint::{Joint, JointAnchor, JointKind, JointMotor};
 pub use query::{Hit, Overlap, PointHit, QueryFilter, Touch};
 pub(crate) use sync::physics_enabled;
-pub(crate) use tiles::{
-  Boundary, GRID, Point, TileBuild, TilePart, Traced, rebuild_tile_colliders, tiles_built,
-};
+pub(crate) use tiles::{Boundary, GRID, Point, TilePart, Traced, rebuild_tile_colliders};
 pub use tiles::{CellShape, SlopeCorner, TileCell, TileColliders};
 pub use triggers::TriggerContents;
 pub use world::Physics;

@@ -482,6 +482,9 @@ fn rank(kind: TileCell) -> u8 {
 /// A layer of a group: the chunk versions it was last read at
 #[derive(Debug)]
 pub(super) struct Tracked {
+  /// Its place among the map's layers, and its entity (a stand-in until
+  /// the layers spawn, when `relink` sets it)
+  pub(super) index: usize,
   pub(super) entity: Entity,
   versions: Vec<u64>,
   grid_version: u64,
@@ -492,7 +495,7 @@ pub(super) struct Tracked {
 impl Tracked {
   /// A layer read as its tiles are now
   pub(super) fn new(
-    entity: Entity,
+    (index, entity): (usize, Entity),
     data: &TileLayerData,
     overrides: &[(IntGridKey, TileCell)],
   ) -> Tracked {
@@ -503,6 +506,7 @@ impl Tracked {
       .map(|chunk| grid.chunk_version(chunk))
       .collect();
     Tracked {
+      index,
       entity,
       versions,
       grid_version: grid.version(),
@@ -515,12 +519,13 @@ impl Tracked {
 
   /// A layer not read yet: every chunk that ever changed counts as changed
   pub(super) fn unread(
-    entity: Entity,
+    (index, entity): (usize, Entity),
     data: &TileLayerData,
     overrides: &[(IntGridKey, TileCell)],
   ) -> Tracked {
     let chunks = data.grid.chunks();
     Tracked {
+      index,
       entity,
       versions: vec![0; chunks.x as usize * chunks.y as usize],
       grid_version: 0,
@@ -533,6 +538,13 @@ impl Tracked {
 }
 
 impl Tracked {
+  /// Points it at its layer's entity, from the map's layer entities
+  pub(super) fn relink(&mut self, layers: &[Entity]) {
+    if let Some(&entity) = layers.get(self.index) {
+      self.entity = entity;
+    }
+  }
+
   /// Marks the layer read as `data` is (a copy of it, off the main thread);
   /// returns every chunk of it that ever changed, which a first build reads
   pub(super) fn read_all(&mut self, data: &TileLayerData) -> Vec<UVec2> {

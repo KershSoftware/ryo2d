@@ -25,16 +25,15 @@
 //! so is the chunk right of it or below it when the cells it shares a
 //! border with changed kind; every other chunk keeps its occluders.
 //!
-//! A map's first chains are worked out off the main thread (`jobs.rs`) and
-//! spawned a budget a frame (`CHAINS_PER_FRAME`): shadows a frame or two
-//! late show nothing wrong, and the frame a map lands in only copies what
-//! the job reads. What it builds after that builds at once.
+//! A map's first chains are worked out off the main thread with the rest
+//! of its landing (`spawn.rs`: `prepare`), and spawned as its layers do
+//! (`land`). What it builds after that builds at once.
 
 use std::sync::Arc;
 
 use glam::{IVec2, UVec2, Vec2};
 
-use super::jobs::Worker;
+use super::collision::LayerView;
 use super::kinds::{
   Context, Layers, Purpose, ShapeKey, ShapeSource, Stores, TilesetStamp, Tracked, changed_chunks,
   layer_data, layer_kind, over, sources, stamps, stamps_match,
@@ -43,14 +42,11 @@ use super::spawn::{IntGridKey, MapLayers, MapRoot, TileLayerData, root_map};
 use super::{CHUNK_SIZE, Tile};
 use crate::core::ecs::{
   Allow, ChildOf, Commands, Component, DetectChangesMut, Disabled, Entity, Has, Local, Query,
-  Transform,
+  Transform, World,
 };
 use crate::core::hash::FastMap;
 use crate::core::lighting::LightOccluder2D;
 use crate::core::physics::{Boundary, GRID, Point, TileCell};
-
-/// The chains of a map's first build spawned a frame
-const CHAINS_PER_FRAME: usize = 128;
 
 /// Marks an occluder a map keeps from its tiles: a child of the first layer
 /// of the layers occluding as one, rebuilt with its chunk. Games can find a
@@ -62,10 +58,12 @@ pub struct MapOccluder {
   pub chunk: UVec2,
 }
 
-/// An occluding layer as the occluders were built from it
+/// An occluding layer as the occluders were built from it: its place among
+/// the map's layers and its entity (a stand-in until the layers spawn)
 #[derive(Clone, PartialEq, Debug)]
 pub(crate) struct Lit {
   entity: Entity,
+  index: usize,
   cell: UVec2,
   offset: [u32; 2],
   size: UVec2,
@@ -85,34 +83,34 @@ type Chain = (Vec2, Vec<Vec2>);
 
 /// Layers sharing a cell size and offset, occluding as one
 #[derive(Debug)]
-pub(crate) struct Group {
+struct Group {
   cell: UVec2,
   offset: [u32; 2],
   /// Its occluders' parent: its first layer
   parent: Entity,
+  parent_layer: usize,
   size: UVec2,
   layers: Vec<Tracked>,
   /// Each tile's kind and the shapes they name
   kinds: FastMap<Tile, TileCell>,
   shapes: FastMap<ShapeKey, u16>,
   boundary: Boundary,
-  /// Each chunk's occluders and sides, and the chains of the first build
-  /// still to spawn
+  /// Each chunk's occluders and sides
   chunks: Vec<Vec<Entity>>,
   sides: Vec<Sides>,
-  pending: Vec<Option<Vec<Chain>>>,
-  /// How many chunks of `pending` hold chains
-  pending_left: usize,
+  /// The chains a first build worked out, until they spawn as it lands
+  pending: Vec<Vec<Chain>>,
 }
 
 impl Group {
-  fn new(cell: UVec2, offset: [u32; 2], parent: Entity, size: UVec2) -> Group {
+  fn new(lit: &Lit, size: UVec2) -> Group {
     let chunks = UVec2::new(size.x.div_ceil(CHUNK_SIZE), size.y.div_ceil(CHUNK_SIZE));
     let count = chunks.x as usize * chunks.y as usize;
     Group {
-      cell,
-      offset,
-      parent,
+      cell: lit.cell,
+      offset: lit.offset,
+      parent: lit.entity,
+      parent_layer: lit.index,
       size,
       layers: Vec::new(),
       kinds: FastMap::default(),
@@ -120,8 +118,7 @@ impl Group {
       boundary: Boundary::default(),
       chunks: vec![Vec::new(); count],
       sides: (0..count).map(|_| Sides::default()).collect(),
-      pending: (0..count).map(|_| None).collect(),
-      pending_left: 0,
+      pending: Vec::new(),
     }
   }
 
@@ -132,15 +129,13 @@ impl Group {
     )
   }
 
-  /// Despawns every occluder (and forgets the chains still to spawn)
+  /// Despawns every occluder
   fn clear(&mut self, commands: &mut Commands) {
     for chunk in &mut self.chunks {
       for occluder in chunk.drain(..) {
         commands.entity(occluder).try_despawn();
       }
     }
-    self.pending.fill_with(|| None);
-    self.pending_left = 0;
   }
 }
 
@@ -153,10 +148,6 @@ pub(crate) struct MapShadows {
   overrides: Vec<(IntGridKey, TileCell)>,
   shapes: Arc<[Option<ShapeSource>]>,
   groups: Vec<Group>,
-  /// The first build out on the worker, by its job's id
-  building: Option<u64>,
-  /// Its first build is all spawned: it builds at once from now on
-  built: bool,
 }
 
 impl MapShadows {
@@ -164,13 +155,6 @@ impl MapShadows {
     for group in &mut self.groups {
       group.clear(commands);
     }
-    self.building = None;
-  }
-
-  /// Whether every chain it has is spawned
-  #[cfg(test)]
-  pub(crate) fn is_built(&self) -> bool {
-    self.building.is_none() && self.groups.iter().all(|g| g.pending_left == 0)
   }
 }
 
@@ -344,9 +328,9 @@ fn spawn_chains(
     .collect()
 }
 
-/// Works out (and, given `commands`, spawns) the chunks of `group` that
-/// changed since it last looked, and those across a side that changed kind;
-/// returns the chains of each chunk worked out but not spawned
+/// Works out the chunks of `group` that changed since it last looked (and
+/// those across a side that changed kind), spawning them with `commands`,
+/// or keeping them in `pending` for the landing without
 fn update(
   group: &mut Group,
   data: &[Option<&TileLayerData>],
@@ -360,6 +344,9 @@ fn update(
     if chunk.x < chunks.x && chunk.y < chunks.y {
       due[(chunk.y * chunks.x + chunk.x) as usize] = true;
     }
+  }
+  if commands.is_none() {
+    group.pending = (0..due.len()).map(|_| Vec::new()).collect();
   }
   // Row by row, so a chunk marks the ones right of and below it in time
   for y in 0..chunks.y {
@@ -375,16 +362,9 @@ fn update(
           for occluder in group.chunks[index].drain(..) {
             commands.entity(occluder).try_despawn();
           }
-          if group.pending[index].take().is_some() {
-            group.pending_left -= 1;
-          }
           group.chunks[index] = spawn_chains(commands, group.parent, chunk, chains);
         }
-        None => {
-          if group.pending[index].replace(chains).is_none() {
-            group.pending_left += 1;
-          }
-        }
+        None => group.pending[index] = chains,
       }
       if right && x + 1 < chunks.x {
         due[index + 1] = true;
@@ -396,107 +376,157 @@ fn update(
   }
 }
 
-/// Spawns the chains of first builds still to spawn, up to `budget`;
-/// returns what is left of it
-fn spawn_pending(group: &mut Group, mut budget: usize, commands: &mut Commands) -> usize {
-  let chunks = group.chunk_count();
-  for index in 0..group.pending.len() {
-    if budget == 0 || group.pending_left == 0 {
-      break;
+/// The occluding layers among `layers` into `planned`
+fn plan<'a>(layers: impl IntoIterator<Item = LayerView<'a>>, planned: &mut Vec<Lit>) {
+  planned.clear();
+  for layer in layers {
+    if layer.info.occludes.unwrap_or(layer.info.collides) {
+      planned.push(Lit {
+        entity: layer.entity,
+        index: layer.index,
+        cell: layer.data.cell_size,
+        offset: [layer.info.offset.x.to_bits(), layer.info.offset.y.to_bits()],
+        size: layer.data.grid.size(),
+        intgrid: layer.data.intgrid.is_some(),
+      });
     }
-    let Some(chains) = group.pending[index].take() else {
-      continue;
-    };
-    group.pending_left -= 1;
-    budget = budget.saturating_sub(chains.len().max(1));
-    let chunk = UVec2::new(index as u32 % chunks.x, index as u32 / chunks.x);
-    group.chunks[index] = spawn_chains(commands, group.parent, chunk, chains);
   }
-  budget
 }
 
-/// The groups of a map's occluding layers, unread
-fn groups_of(
+/// The groups of a map's occluding layers (`planned`, read through
+/// `views`), every chunk of each worked out: spawned with `commands`, kept
+/// for the landing without
+fn build(
   planned: &[Lit],
-  data: &[(Entity, &TileLayerData)],
+  views: &[LayerView<'_>],
   context: &Context<'_>,
+  mut commands: Option<&mut Commands>,
 ) -> Vec<Group> {
+  let view = |index: usize| views.iter().find(|v| v.index == index);
   let mut groups: Vec<Group> = Vec::new();
-  for layer in planned {
-    let Some((_, data)) = data.iter().find(|(e, _)| *e == layer.entity) else {
+  for lit in planned {
+    let Some(view) = view(lit.index) else {
       continue;
     };
-    let tracked = Tracked::unread(layer.entity, data, context.overrides);
+    let tracked = Tracked::unread((lit.index, lit.entity), view.data, context.overrides);
     match groups
       .iter_mut()
-      .find(|g| g.cell == layer.cell && g.offset == layer.offset)
+      .find(|g| g.cell == lit.cell && g.offset == lit.offset)
     {
       Some(group) => {
-        if layer.size.cmpgt(group.size).any() {
-          let mut grown = Group::new(
-            group.cell,
-            group.offset,
-            group.parent,
-            group.size.max(layer.size),
-          );
+        if lit.size.cmpgt(group.size).any() {
+          let first = planned
+            .iter()
+            .find(|l| l.index == group.parent_layer)
+            .unwrap_or(lit);
+          let mut grown = Group::new(first, group.size.max(lit.size));
           grown.layers = std::mem::take(&mut group.layers);
           *group = grown;
         }
         group.layers.push(tracked);
       }
       None => {
-        let mut group = Group::new(layer.cell, layer.offset, layer.entity, layer.size);
+        let mut group = Group::new(lit, lit.size);
         group.layers.push(tracked);
         groups.push(group);
       }
     }
   }
+  for group in &mut groups {
+    let data: Vec<Option<&TileLayerData>> = group
+      .layers
+      .iter()
+      .map(|t| view(t.index).map(|v| v.data))
+      .collect();
+    let mut changed = Vec::new();
+    for (tracked, data) in group.layers.iter_mut().zip(&data) {
+      if let Some(data) = data {
+        changed.extend(tracked.read_all(data));
+      }
+    }
+    changed.sort_unstable_by_key(|c| (c.y, c.x));
+    changed.dedup();
+    update(group, &data, changed, context, commands.as_deref_mut());
+  }
   groups
 }
 
-/// A map's first build, sent to the worker: copies of what it reads
-struct Job {
-  planned: Vec<Lit>,
-  layers: Vec<(Entity, TileLayerData)>,
-  shapes: Arc<[Option<ShapeSource>]>,
-  overrides: Vec<(IntGridKey, TileCell)>,
+/// What a map's first shadows read besides its layers
+pub(crate) struct Inputs {
+  pub(crate) overrides: Vec<(IntGridKey, TileCell)>,
+  pub(crate) shapes: Arc<[Option<ShapeSource>]>,
+  pub(crate) tilesets: Vec<TilesetStamp>,
 }
 
-impl Job {
-  /// The map's groups, every chunk's chains worked out to spawn
-  fn run(self) -> Vec<Group> {
-    let context = Context {
-      shapes: &self.shapes,
-      overrides: &self.overrides,
-      purpose: Purpose::Occlusion,
+/// A map's shadows worked out off the main thread, to land with its layers
+pub(crate) struct Prepared {
+  state: MapShadows,
+}
+
+/// The shadows of a map as its layers (each with its place among them)
+/// will spawn: every chunk's chains. Pure: any thread
+pub(crate) fn prepare(layers: &[LayerView<'_>], inputs: Inputs) -> Prepared {
+  let mut planned = Vec::new();
+  plan(layers.iter().copied(), &mut planned);
+  let context = Context {
+    shapes: &inputs.shapes,
+    overrides: &inputs.overrides,
+    purpose: Purpose::Occlusion,
+  };
+  let groups = build(&planned, layers, &context, None);
+  Prepared {
+    state: MapShadows {
+      layers: planned,
+      tilesets: inputs.tilesets,
+      overrides: inputs.overrides,
+      shapes: inputs.shapes,
+      groups,
+    },
+  }
+}
+
+/// Spawns a map's prepared shadows under its layers (`layers`, the entities
+/// its layers spawned as, by place), as the map lands
+pub(crate) fn land(world: &mut World, map: Entity, layers: &[Entity], prepared: Prepared) {
+  let Prepared { mut state } = prepared;
+  for lit in &mut state.layers {
+    if let Some(&entity) = layers.get(lit.index) {
+      lit.entity = entity;
+    }
+  }
+  for group in &mut state.groups {
+    let Some(&parent) = layers.get(group.parent_layer) else {
+      continue;
     };
-    let views: Vec<(Entity, &TileLayerData)> = self.layers.iter().map(|(e, d)| (*e, d)).collect();
-    let mut groups = groups_of(&self.planned, &views, &context);
-    for group in &mut groups {
-      let data: Vec<Option<&TileLayerData>> = group
-        .layers
-        .iter()
-        .map(|t| views.iter().find(|(e, _)| *e == t.entity).map(|(_, d)| *d))
-        .collect();
-      let changed = mark_read(group, &data);
-      update(group, &data, changed, &context, None);
+    group.parent = parent;
+    for tracked in &mut group.layers {
+      tracked.relink(layers);
     }
-    groups
-  }
-}
-
-/// Every chunk of `group`'s layers that ever changed, the layers marked
-/// read as the copies in `data` are
-fn mark_read(group: &mut Group, data: &[Option<&TileLayerData>]) -> Vec<UVec2> {
-  let mut changed = Vec::new();
-  for (tracked, data) in group.layers.iter_mut().zip(data) {
-    if let Some(data) = data {
-      changed.extend(tracked.read_all(data));
+    let chunks = group.chunk_count();
+    let pending = std::mem::take(&mut group.pending);
+    let counts: Vec<usize> = pending.iter().map(Vec::len).collect();
+    let bundles = pending.into_iter().enumerate().flat_map(|(index, chains)| {
+      let chunk = UVec2::new(index as u32 % chunks.x, index as u32 / chunks.x);
+      chains.into_iter().map(move |(centre, vertices)| {
+        (
+          Transform::from_translation(centre),
+          LightOccluder2D::chain(vertices),
+          MapOccluder { chunk },
+          ChildOf(parent),
+        )
+      })
+    });
+    let mut spawned = world
+      .spawn_batch(bundles)
+      .collect::<Vec<Entity>>()
+      .into_iter();
+    for (index, count) in counts.into_iter().enumerate() {
+      group.chunks[index] = spawned.by_ref().take(count).collect();
     }
   }
-  changed.sort_unstable_by_key(|c| (c.y, c.x));
-  changed.dedup();
-  changed
+  if let Ok(mut entity) = world.get_entity_mut(map) {
+    entity.insert(state);
+  }
 }
 
 type Maps<'w, 's> = Query<
@@ -512,23 +542,39 @@ type Maps<'w, 's> = Query<
   Allow<Disabled>,
 >;
 
+/// The map's enabled tile layers, as planning and a build read them
+fn views<'a>(
+  map_layers: &'a MapLayers,
+  layers: &'a Layers,
+) -> impl Iterator<Item = LayerView<'a>> + 'a {
+  map_layers
+    .0
+    .iter()
+    .enumerate()
+    .filter_map(|(index, &entity)| {
+      let (info, data, disabled) = layers.get(entity).ok()?;
+      (!disabled).then(|| LayerView {
+        index,
+        entity,
+        info,
+        data: data.into_inner(),
+      })
+    })
+}
+
 /// `PostUpdate`, before transforms propagate: every spawned map's occluding
 /// layers keep their boundary chains, a chunk built again when its version
-/// moves (or a side it shares changed kind). A map's first chains are
-/// worked out off the main thread and spawned a budget a frame. A disabled
-/// map, or one whose root went, has none. An idle frame costs a look at
-/// each map's occluding layers and tilesets
+/// moves (or a side it shares changed kind). A disabled map, or one whose
+/// root went, has none. An idle frame costs a look at each map's occluding
+/// layers and tilesets
 pub(crate) fn sync_map_occluders(
   mut maps: Maps,
   layers: Layers,
   (tile_maps, projects, tilesets): Stores,
   mut planned: Local<Vec<Lit>>,
-  mut worker: Local<Worker<Vec<Group>>>,
   mut commands: Commands,
 ) {
   let tilesets = tilesets.as_deref();
-  let mut arrived: Vec<(u64, Option<Vec<Group>>)> = worker.finished().collect();
-  let mut budget = CHAINS_PER_FRAME;
   for (map, root, map_layers, state, disabled) in &mut maps {
     let Some(map_layers) = map_layers else {
       // The root was put over or taken away, and its layers with it
@@ -539,9 +585,8 @@ pub(crate) fn sync_map_occluders(
       continue;
     };
     if disabled {
-      // Its shadows go; enabled, it builds them again (at once, if it built
-      // them before)
-      if let Some(mut state) = state.filter(|s| !s.groups.is_empty() || s.building.is_some()) {
+      // Its shadows go; enabled, it builds them again
+      if let Some(mut state) = state.filter(|s| !s.groups.is_empty()) {
         let state = state.bypass_change_detection();
         state.clear(&mut commands);
         state.groups.clear();
@@ -553,21 +598,7 @@ pub(crate) fn sync_map_occluders(
     let Some(tile_map) = root_map(root, tile_maps.as_deref(), projects.as_deref()) else {
       continue;
     };
-    planned.clear();
-    for &entity in &map_layers.0 {
-      let Ok((info, data, layer_disabled)) = layers.get(entity) else {
-        continue;
-      };
-      if info.occludes.unwrap_or(info.collides) && !layer_disabled {
-        planned.push(Lit {
-          entity,
-          cell: data.cell_size,
-          offset: [info.offset.x.to_bits(), info.offset.y.to_bits()],
-          size: data.grid.size(),
-          intgrid: data.intgrid.is_some(),
-        });
-      }
-    }
+    plan(views(map_layers, &layers), &mut planned);
     let same = state.as_ref().is_some_and(|s| {
       s.layers == *planned
         && s.overrides == root.intgrid_collision
@@ -575,41 +606,11 @@ pub(crate) fn sync_map_occluders(
     });
     if same && let Some(mut state) = state {
       let state = state.bypass_change_detection();
-      if let Some(job) = state.building {
-        let Some(at) = arrived.iter().position(|(id, _)| *id == job) else {
-          continue;
-        };
-        state.building = None;
-        let context = Context {
-          shapes: &state.shapes,
-          overrides: &root.intgrid_collision,
-          purpose: Purpose::Occlusion,
-        };
-        match arrived.swap_remove(at).1 {
-          Some(groups) => state.groups = groups,
-          // It panicked: built here instead, whole
-          None => {
-            crate::engine_warn!(
-              module: "Tilemap",
-              "map {map}: its shadows could not be built off the main thread; built here"
-            );
-            let views = views(&planned, &layers);
-            state.groups = groups_of(&planned, &views, &context);
-            for group in &mut state.groups {
-              let data = layer_data(&group.layers, &layers);
-              let data: Vec<Option<&TileLayerData>> = data.iter().map(|d| d.as_deref()).collect();
-              let changed = mark_read(group, &data);
-              update(group, &data, changed, &context, Some(&mut commands));
-            }
-          }
-        }
-      }
       let context = Context {
         shapes: &state.shapes,
         overrides: &root.intgrid_collision,
         purpose: Purpose::Occlusion,
       };
-      let mut built = true;
       for group in &mut state.groups {
         let changed = changed_chunks(&mut group.layers, &layers, context.overrides);
         if !changed.is_empty() {
@@ -617,55 +618,25 @@ pub(crate) fn sync_map_occluders(
           let data: Vec<Option<&TileLayerData>> = data.iter().map(|d| d.as_deref()).collect();
           update(group, &data, changed, &context, Some(&mut commands));
         }
-        if group.pending_left > 0 {
-          budget = spawn_pending(group, budget, &mut commands);
-        }
-        built &= group.pending_left == 0;
       }
-      state.built |= built;
       continue;
     }
+    // Built at once
     let shapes = sources(tile_map, tilesets);
-    let mut fresh = MapShadows {
+    let context = Context {
+      shapes: &shapes,
+      overrides: &root.intgrid_collision,
+      purpose: Purpose::Occlusion,
+    };
+    let views: Vec<LayerView<'_>> = views(map_layers, &layers).collect();
+    let groups = build(&planned, &views, &context, Some(&mut commands));
+    let fresh = MapShadows {
       layers: planned.clone(),
       tilesets: stamps(tile_map, tilesets),
       overrides: root.intgrid_collision.clone(),
       shapes: Arc::clone(&shapes),
-      groups: Vec::new(),
-      building: None,
-      built: state.as_ref().is_some_and(|s| s.built),
+      groups,
     };
-    if fresh.built {
-      // Built before: built again at once
-      let context = Context {
-        shapes: &shapes,
-        overrides: &root.intgrid_collision,
-        purpose: Purpose::Occlusion,
-      };
-      let views = views(&planned, &layers);
-      fresh.groups = groups_of(&planned, &views, &context);
-      for group in &mut fresh.groups {
-        let data = layer_data(&group.layers, &layers);
-        let data: Vec<Option<&TileLayerData>> = data.iter().map(|d| d.as_deref()).collect();
-        let changed = mark_read(group, &data);
-        update(group, &data, changed, &context, Some(&mut commands));
-      }
-    } else if !planned.is_empty() {
-      let layers = planned
-        .iter()
-        .filter_map(|p| {
-          let (_, data, _) = layers.get(p.entity).ok()?;
-          Some((p.entity, TileLayerData::clone(&data)))
-        })
-        .collect();
-      let job = Job {
-        planned: planned.clone(),
-        layers,
-        shapes,
-        overrides: root.intgrid_collision.clone(),
-      };
-      fresh.building = Some(worker.send(move || job.run()));
-    }
     match state {
       Some(mut state) => {
         state.clear(&mut commands);
@@ -676,18 +647,6 @@ pub(crate) fn sync_map_occluders(
       }
     }
   }
-  arrived.clear();
-}
-
-/// The occluding layers `planned` names, with their tiles
-fn views<'a>(planned: &[Lit], layers: &'a Layers) -> Vec<(Entity, &'a TileLayerData)> {
-  planned
-    .iter()
-    .filter_map(|p| {
-      let (_, data, _) = layers.get(p.entity).ok()?;
-      Some((p.entity, data.into_inner()))
-    })
-    .collect()
 }
 
 #[cfg(test)]
