@@ -79,7 +79,8 @@ pub mod prelude {
   // ECS: the kernel, Transform, the engine's components and glam's math types
   pub use crate::core::ecs::*;
 
-  // Clocks and phases
+  // Clocks, phases and what frames cost
+  pub use crate::core::config::FrameCost;
   pub use crate::core::schedule::{FixedSet, Phase, PostUpdateSet, SceneScheduleError, UpdateSet};
   pub use crate::core::time::Time;
 

@@ -1143,3 +1143,32 @@ fn an_engine_with_hot_reload_reloads_a_saved_asset_file() {
     std::thread::sleep(Duration::from_millis(2));
   }
 }
+
+#[test]
+fn the_engine_publishes_what_its_frames_cost() {
+  use crate::core::config::FrameCost;
+  use crate::core::testing::HeadlessEngine;
+
+  let Some(mut engine) = HeadlessEngine::new_or_skip(
+    EngineBuilder::new()
+      .resolution(320, 240)
+      .start_scene(EmptyScene),
+  ) else {
+    return;
+  };
+  engine.step_frames(5).unwrap();
+  let cost = *engine
+    .world()
+    .get_resource::<FrameCost>()
+    .expect("the engine publishes FrameCost");
+  assert_eq!(cost.frames(), 5, "{cost:?}");
+  assert!(
+    cost.update_ms() > 0.0 && cost.render_ms() > 0.0 && cost.present_ms() > 0.0,
+    "every phase takes time: {cost:?}"
+  );
+  let phases = cost.update_ms() + cost.render_ms() + cost.present_ms();
+  assert!(
+    cost.total_ms() >= phases - 1e-9,
+    "the total holds its phases: {cost:?}"
+  );
+}

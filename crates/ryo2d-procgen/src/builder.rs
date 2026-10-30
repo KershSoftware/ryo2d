@@ -5,7 +5,8 @@
 use super::config::{SeededRng, TileType};
 use super::grid::{GenerationGrid, GenerationResult};
 use super::{bsp, cellular, mst, noise, poisson, random_walk, wfc};
-use std::time::Instant;
+// The web has no std clock: `std::time::Instant::now` panics there
+use web_time::Instant;
 
 /// Builder for creating procedural generation pipelines
 ///

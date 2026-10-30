@@ -625,7 +625,15 @@ impl Engine {
     self.ui_renderer = Some(ui_renderer);
     self.lighting = lighting;
     self.lights = lights;
-    self.frame_timings.present = present_start.elapsed();
+    // The wait for the window's next image is vsync's pacing, not work
+    let wait = self
+      .renderer
+      .as_ref()
+      .map_or(std::time::Duration::ZERO, |renderer| {
+        renderer.acquire_wait()
+      });
+    self.frame_timings.wait = wait;
+    self.frame_timings.present = present_start.elapsed().saturating_sub(wait);
 
     if outcome == PresentOutcome::Presented {
       self.on_frame_presented();

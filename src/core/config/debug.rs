@@ -323,10 +323,89 @@ pub struct FrameTimings {
   pub physics: Duration,
   /// Time spent rendering (CPU side)
   pub render: Duration,
-  /// Time spent presenting to screen (GPU sync)
+  /// Time spent running the render passes and presenting, without
+  /// `wait`
   pub present: Duration,
-  /// Total work time (excludes sleep/vsync wait)
+  /// Time spent waiting for the window's next image to draw into, which
+  /// vsync paces
+  pub wait: Duration,
+  /// Total work time (excludes `wait` and the sleep between frames)
   pub total: Duration,
+}
+
+/// What the engine's recent frames cost on the CPU, smoothed over about 50
+/// frames: a world resource the engine writes at the end of every frame,
+/// windowed or headless, for a game's own readout of the numbers the F1
+/// frame timing overlay shows. Read it, don't write it: the engine puts it
+/// back each frame.
+///
+/// ```
+/// use ryo2d::prelude::*;
+///
+/// fn render_cost(ctx: &SceneContext<'_>) -> String {
+///   match ctx.resource::<FrameCost>() {
+///     Some(cost) => format!("render {:.2} ms, update {:.2} ms", cost.render_ms(), cost.update_ms()),
+///     None => String::new(),
+///   }
+/// }
+/// ```
+#[derive(crate::core::ecs::Resource, Debug, Clone, Copy, PartialEq)]
+pub struct FrameCost {
+  update_ms: f64,
+  render_ms: f64,
+  present_ms: f64,
+  total_ms: f64,
+  fps: f64,
+  frames: u64,
+}
+
+impl FrameCost {
+  /// The engine's smoothed timings as they stand
+  pub(crate) fn of(timings: &SmoothedFrameTimings) -> FrameCost {
+    FrameCost {
+      update_ms: timings.update_ms,
+      render_ms: timings.render_ms,
+      present_ms: timings.present_ms,
+      total_ms: timings.total_ms,
+      fps: timings.fps,
+      frames: timings.frames,
+    }
+  }
+
+  /// The UI pass and the fixed steps: the scenes' updates, their systems
+  /// and physics, in milliseconds
+  pub fn update_ms(&self) -> f64 {
+    self.update_ms
+  }
+
+  /// Building the frame on the CPU: gathering what it draws (sprites, map
+  /// chunks, text, lights), uploading and encoding it, in milliseconds
+  pub fn render_ms(&self) -> f64 {
+    self.render_ms
+  }
+
+  /// Running the render passes and presenting, without the wait for the
+  /// window's next image (which vsync paces), in milliseconds
+  pub fn present_ms(&self) -> f64 {
+    self.present_ms
+  }
+
+  /// The frame's work from its start to presenting, every phase included
+  /// but not the vsync wait or the sleep between frames, in milliseconds
+  pub fn total_ms(&self) -> f64 {
+    self.total_ms
+  }
+
+  /// Frames a second, from the wall-clock time between frames (which does
+  /// count the waits); 0 until the second frame
+  pub fn fps(&self) -> f64 {
+    self.fps
+  }
+
+  /// How many frames have been measured
+  pub fn frames(&self) -> u64 {
+    self.frames
+  }
 }
 
 /// Smoothed frame timing values for stable overlay display.
@@ -353,6 +432,8 @@ pub struct SmoothedFrameTimings {
   alpha: f64,
   /// Tracks wall-clock time between update() calls for real FPS measurement
   last_update: Option<Instant>,
+  /// How many frames have been measured
+  frames: u64,
 }
 
 impl Default for SmoothedFrameTimings {
@@ -366,6 +447,7 @@ impl Default for SmoothedFrameTimings {
       frame_secs: 0.0,
       alpha: 0.02, // Smooth over ~50 frames for stable display
       last_update: None,
+      frames: 0,
     }
   }
 }
@@ -387,11 +469,15 @@ impl SmoothedFrameTimings {
     let present_ms = raw.present.as_secs_f64() * 1000.0;
     let total_ms = raw.total.as_secs_f64() * 1000.0;
 
-    // Exponential moving average: smoothed = alpha * new + (1 - alpha) * old
-    self.update_ms = self.alpha * update_ms + (1.0 - self.alpha) * self.update_ms;
-    self.render_ms = self.alpha * render_ms + (1.0 - self.alpha) * self.render_ms;
-    self.present_ms = self.alpha * present_ms + (1.0 - self.alpha) * self.present_ms;
-    self.total_ms = self.alpha * total_ms + (1.0 - self.alpha) * self.total_ms;
+    // Exponential moving average: smoothed = alpha * new + (1 - alpha) * old.
+    // Until there are as many frames as the average spans it is their plain
+    // mean, so the first frames read as they are rather than rising from 0
+    self.frames += 1;
+    let alpha = self.alpha.max(1.0 / self.frames as f64);
+    self.update_ms = alpha * update_ms + (1.0 - alpha) * self.update_ms;
+    self.render_ms = alpha * render_ms + (1.0 - alpha) * self.render_ms;
+    self.present_ms = alpha * present_ms + (1.0 - alpha) * self.present_ms;
+    self.total_ms = alpha * total_ms + (1.0 - alpha) * self.total_ms;
 
     // FPS from the real wall-clock time between frames (includes
     // sleep/vsync). The time is averaged, not the rate: vsync often hands
@@ -664,6 +750,31 @@ pub fn render_stats(ui: &mut UiContext, stats: &SmoothedDebugStats, screen_heigh
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn the_first_frames_are_averaged_rather_than_blended_up_from_zero() {
+    let mut timings = SmoothedFrameTimings::default();
+    let raw = FrameTimings {
+      update: Duration::from_millis(2),
+      render: Duration::from_millis(4),
+      ..FrameTimings::default()
+    };
+    let mut now = Instant::now();
+    for _ in 0..3 {
+      now += Duration::from_millis(16);
+      timings.update_at(&raw, now);
+    }
+    assert!(
+      (timings.update_ms - 2.0).abs() < 1e-9,
+      "{}",
+      timings.update_ms
+    );
+    assert!(
+      (timings.render_ms - 4.0).abs() < 1e-9,
+      "{}",
+      timings.render_ms
+    );
+  }
 
   #[test]
   fn fps_averages_the_frame_time_not_the_frame_rate() {

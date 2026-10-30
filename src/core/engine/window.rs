@@ -343,10 +343,12 @@ impl Engine {
     winit::window::Icon::from_rgba(rgba.into_raw(), width, height).ok()
   }
 
-  /// Bookkeeping after a frame: timings, the once-a-second log line.
+  /// Bookkeeping after a frame: the slow-frame warning, the once-a-second
+  /// log line. The frame published its own timings (`publish_frame_cost`);
+  /// the warning measures from `frame_start` here, waits and dev windows
+  /// included.
   fn after_frame(&mut self, frame_start: Instant) {
-    self.frame_timings.total = frame_start.elapsed();
-    self.smoothed_timings.update(&self.frame_timings);
+    let elapsed = frame_start.elapsed();
 
     let frame = self.frames_run;
     self.frames_run += 1;
@@ -367,7 +369,7 @@ impl Engine {
       if let Some(warning) = self.slow_frame.due(now) {
         engine_warn!(module: "Perf", "{warning}");
       }
-      let total_ms = self.frame_timings.total.as_secs_f64() * 1000.0;
+      let total_ms = elapsed.as_secs_f64() * 1000.0;
       if total_ms > 33.0 {
         let visible_and_focused = self.game_window_focused && !self.window_occluded;
         match frame_kind(frame, scene_entered, visible_and_focused) {
@@ -394,7 +396,7 @@ impl Engine {
       }
     }
     #[cfg(not(debug_assertions))]
-    let _ = (frame, scene_entered);
+    let _ = (frame, scene_entered, elapsed);
 
     if self.last_fps_log.elapsed() >= Duration::from_secs(1) {
       self.last_fps_log = Instant::now();

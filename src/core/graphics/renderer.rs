@@ -193,6 +193,9 @@ pub struct WgpuRenderer {
   needs_reconfigure: bool,
   // Whether the last frame blended the UI image (drawn or kept)
   ui_drawn: bool,
+  // How long the last frame waited for the surface's next image (vsync
+  // paces it; an offscreen target does not wait)
+  acquire_wait: std::time::Duration,
 }
 
 /// Create the persistent lighting output texture at game resolution.
@@ -516,6 +519,7 @@ impl WgpuRenderer {
       fault: GpuFault::default(),
       needs_reconfigure: false,
       ui_drawn: false,
+      acquire_wait: std::time::Duration::ZERO,
     };
 
     // Initialize viewport transform
@@ -794,7 +798,10 @@ impl WgpuRenderer {
   ) -> Result<(), FrameError> {
     self.ui_drawn = false;
     let ui_kept = scene.ui_kept;
-    let (output, view, then_reconfigure) = self.target.acquire()?;
+    let asked = web_time::Instant::now();
+    let acquired = self.target.acquire();
+    self.acquire_wait = asked.elapsed();
+    let (output, view, then_reconfigure) = acquired?;
     self.needs_reconfigure |= then_reconfigure;
     let capture_path = self.prepare_capture();
     let screen = self.mapping.screen_size();
@@ -924,6 +931,12 @@ impl WgpuRenderer {
   /// Whether the surface asked to be reconfigured (and forget the request).
   pub(crate) fn take_needs_reconfigure(&mut self) -> bool {
     std::mem::take(&mut self.needs_reconfigure)
+  }
+
+  /// How long the last frame waited for the window's next image to draw
+  /// into: vsync's pacing, not work
+  pub(crate) fn acquire_wait(&self) -> std::time::Duration {
+    self.acquire_wait
   }
 
   /// How many window cameras have an image of their own.

@@ -12,6 +12,7 @@ use super::{Engine, FrameOutcome, PresentOutcome, QuitRequested, SceneHost};
 use crate::core::asset::AssetsView;
 use crate::core::audio::AudioEngine;
 use crate::core::capture::CaptureTarget;
+use crate::core::config::FrameCost;
 use crate::core::config::debug as overlays;
 use crate::core::console::{CommandContext, CommandRegistry, CommandResult};
 use crate::core::ecs::kernel::{CheckChangeTicks, DetectChanges};
@@ -59,6 +60,7 @@ impl Engine {
       crate::engine_error!(module: "Render", "{}", message);
       return FrameOutcome::Fatal(message);
     }
+    let frame_start = Instant::now();
     self.frame_timings = Default::default();
     self.world.insert_resource(PendingDelta(real_delta));
 
@@ -125,7 +127,20 @@ impl Engine {
     self
       .input_script
       .after_frame(&mut self.world.resource_mut::<Input>());
+    self.publish_frame_cost(frame_start);
     outcome
+  }
+
+  /// The frame's work, without its wait for the window's next image, into
+  /// the smoothed timings (the F1 overlay's) and the world's [`FrameCost`]
+  fn publish_frame_cost(&mut self, frame_start: Instant) {
+    self.frame_timings.total = frame_start
+      .elapsed()
+      .saturating_sub(self.frame_timings.wait);
+    self.smoothed_timings.update(&self.frame_timings);
+    self
+      .world
+      .insert_resource(FrameCost::of(&self.smoothed_timings));
   }
 
   /// Write the player's bindings to `system.json` when they changed this frame
