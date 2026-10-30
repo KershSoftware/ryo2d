@@ -9,52 +9,61 @@
 //! map's material unions into one `TileColliders` on the map entity, and
 //! any other group (an LDtk IntGrid of 8 px cells under 16 px art, a layer
 //! shifted by an offset, an ice layer) gets its own on its first layer's
-//! entity, whose `Transform` carries the offset. A cell takes the strongest kind across its group:
-//! `Solid`, then `Shape`, then `Slope`, then `OneWay`; of two shapes (or
-//! two slopes) the upper layer's wins.
+//! entity, whose `Transform` carries the offset. A cell takes the
+//! strongest kind across its group: `Solid`, then `Shape`, then `Slope`,
+//! then `OneWay`; of two shapes (or two slopes) the upper layer's wins.
+//! What a cell is comes from `kinds.rs`: an IntGrid layer's values by name,
+//! any other layer's tiles' collision shapes placed where they draw.
 //!
-//! A layer with an IntGrid collides by its values' names (`intgrid_table`);
-//! any other by its tiles' collision shapes (`TileShape`s not marked
-//! `occluder`), placed where the tile draws (`placed`: a tile larger than
-//! its cell stands on the cell's bottom-left, the tileset's `tile_offset`
-//! moves it, flips turn it) and classified (`classify`): one full-cell
-//! rectangle is `Solid` (`OneWay` if it is one-way), a half-cell right
-//! triangle on the cell's diagonal is `Slope`, anything else a `Shape`,
-//! one per distinct geometry. A tile with both solid and one-way shapes
-//! collides with its solid ones.
+//! A map's first build runs off the main thread (`jobs.rs`): the frame it
+//! starts in copies the colliding layers' tiles and the tilesets' shapes and
+//! sends them; when the grids come back they go on their entities traced,
+//! and physics spawns their parts a budget a step (`Traced`). Once every
+//! part is in, `MapEvent::Collides` is sent and `MapsView::collides` turns
+//! true: bodies set on the map from then on stand on it. What the map
+//! builds after that (it is enabled again, its layers or tilesets change)
+//! builds at once on the main thread, so it never lacks its colliders.
 //!
-//! Each step, every chunk whose version moved since the group last
-//! looked is classified again and only the cells whose kind changed are
-//! set, so the tile colliders rebuild only the outlines an edit touched. A
-//! change of what the colliders are built from (which layers collide, their
-//! cell sizes, offsets or sizes, the tilesets' content, the IntGrid
-//! overrides) builds every group again.
+//! Each step, every chunk whose version moved since the group last looked
+//! is classified again and only the cells whose kind changed are set, so
+//! the tile colliders rebuild only the outlines an edit touched (edits made
+//! while the first build was away included: the grids came back with the
+//! versions they were copied at). A change of what the colliders are built
+//! from (which layers collide, their cell sizes, offsets, materials or
+//! sizes, the tilesets' content, the IntGrid overrides) builds every group
+//! again.
 
 use std::sync::Arc;
 
 use glam::{IVec2, UVec2, Vec2};
 
-use super::spawn::{IntGridKey, MapLayers, MapRoot, TileLayerData, root_map};
-use super::{
-  CHUNK_SIZE, LayerInfo, LdtkProject, Properties, PropertyValue, Tile, TileFlip, TileMap,
-  TileShape, Tileset, TilesetImage, TilesetSource,
+use super::jobs::Worker;
+use super::kinds::{
+  Context, Layers, Purpose, ShapeKey, ShapeSink, ShapeSource, Stores, TilesetStamp, Tracked,
+  changed_chunks, layer_data, layer_kind, over, sources, stamps, stamps_match,
 };
-use crate::core::asset::{AssetId, Assets};
+use super::spawn::{IntGridKey, MapEvent, MapLayers, MapRoot, TileLayerData, root_map, send};
+use super::{CHUNK_SIZE, Properties, PropertyValue, Tile};
 use crate::core::ecs::{
-  Allow, Commands, Component, DetectChanges, Disabled, Entity, Has, Local, Query, Ref, Res, Without,
+  Allow, Commands, Component, DetectChangesMut, Disabled, Entity, Has, Local, Query, Without, World,
 };
 use crate::core::hash::{FastMap, FastSet};
-use crate::core::physics::{Boundary, CellShape, SlopeCorner, TileCell, TileColliders};
+use crate::core::physics::{CellShape, TileBuild, TileCell, TileColliders, Traced, tiles_built};
 
 /// The most cells a `TileColliders` holds a side
 const MAX_SIDE: u32 = 8192;
 
-/// How near a point must be to a cell corner to count as on it, in tiles
-const EPSILON: f32 = 1e-4;
+/// A grid's shapes before the grid exists, numbered as `add_shape` will
+struct Pending(Vec<CellShape>);
 
-/// Shape points are compared on this grid (a tile's points), so two tiles
-/// drawing the same shape share it
-const KEY_GRID: f32 = 46080.0;
+impl ShapeSink for Pending {
+  fn add(&mut self, shape: CellShape) -> u16 {
+    // `add_shape` names none past 65,535 (and logs it)
+    let index = u16::try_from(self.0.len()).unwrap_or(u16::MAX);
+    self.0.push(shape);
+    index
+  }
+}
 
 /// What a group of layers shares: a cell size, an offset and a material
 /// (floats by their bits)
@@ -98,514 +107,8 @@ pub(crate) struct Planned {
   intgrid: bool,
 }
 
-/// A tileset as the colliders were built from it: an asset's id and
-/// content version, or an embedded one (held, so its address is not
-/// reused while the stamp is kept)
-#[derive(Clone, Debug)]
-pub(super) enum TilesetStamp {
-  Asset(AssetId<Tileset>, Option<u64>),
-  Embedded(Arc<Tileset>),
-}
-
-impl TilesetStamp {
-  fn of(source: &TilesetSource, assets: Option<&Assets<Tileset>>) -> TilesetStamp {
-    match source {
-      TilesetSource::Asset(handle) => {
-        TilesetStamp::Asset(handle.id(), assets.and_then(|a| a.version(handle)))
-      }
-      TilesetSource::Embedded(tileset) => TilesetStamp::Embedded(Arc::clone(tileset)),
-    }
-  }
-
-  fn matches(&self, source: &TilesetSource, assets: Option<&Assets<Tileset>>) -> bool {
-    match (self, source) {
-      (TilesetStamp::Asset(id, version), TilesetSource::Asset(handle)) => {
-        *id == handle.id() && *version == assets.and_then(|a| a.version(handle))
-      }
-      (TilesetStamp::Embedded(held), TilesetSource::Embedded(tileset)) => {
-        Arc::ptr_eq(held, tileset)
-      }
-      _ => false,
-    }
-  }
-}
-
-/// The stamps of a map's tilesets
-pub(super) fn stamps(map: &TileMap, assets: Option<&Assets<Tileset>>) -> Vec<TilesetStamp> {
-  map
-    .tilesets
-    .iter()
-    .map(|source| TilesetStamp::of(source, assets))
-    .collect()
-}
-
-/// Whether `stamps` are still those of `map`'s tilesets
-pub(super) fn stamps_match(
-  stamps: &[TilesetStamp],
-  map: &TileMap,
-  assets: Option<&Assets<Tileset>>,
-) -> bool {
-  stamps.len() == map.tilesets.len()
-    && stamps
-      .iter()
-      .zip(&map.tilesets)
-      .all(|(stamp, source)| stamp.matches(source, assets))
-}
-
-/// Tileset `index` of a map
-pub(super) fn tileset_of<'a>(
-  sources: &'a [TilesetSource],
-  index: u16,
-  assets: Option<&'a Assets<Tileset>>,
-) -> Option<&'a Tileset> {
-  match sources.get(usize::from(index))? {
-    TilesetSource::Asset(handle) => assets?.get(handle),
-    TilesetSource::Embedded(tileset) => Some(tileset),
-  }
-}
-
-/// The size tile `id` draws at: the tileset's, or a collection tile's own
-fn drawn_size(tileset: &Tileset, id: u32) -> Vec2 {
-  let own = match tileset.image {
-    TilesetImage::Atlas { .. } => None,
-    TilesetImage::Collection => tileset
-      .tile(id)
-      .and_then(|data| data.image.as_ref())
-      .map(|(_, size)| *size),
-  };
-  own.unwrap_or(tileset.tile_size).as_vec2()
-}
-
-/// `points` (tile pixels from the tile image's top-left, y down) where the
-/// tile draws in its cell, in tiles from the cell's top-left: the tile
-/// stands on the cell's bottom edge from the left however large it is, the
-/// tileset's offset moves it, and its flips (diagonal first, then
-/// horizontal, then vertical, as Tiled composes them) turn it, as
-/// `render::tiles` draws it
-pub(super) fn placed(tileset: &Tileset, tile: Tile, points: &[Vec2], cell: Vec2) -> Vec<Vec2> {
-  let size = drawn_size(tileset, tile.id);
-  let diagonal = tile.flip.contains(TileFlip::DIAGONAL);
-  let drawn = if diagonal {
-    Vec2::new(size.y, size.x)
-  } else {
-    size
-  };
-  let offset = tileset.tile_offset.as_vec2();
-  points
-    .iter()
-    .map(|p| {
-      let mut at = if diagonal { Vec2::new(p.y, p.x) } else { *p };
-      if tile.flip.contains(TileFlip::HORIZONTAL) {
-        at.x = drawn.x - at.x;
-      }
-      if tile.flip.contains(TileFlip::VERTICAL) {
-        at.y = drawn.y - at.y;
-      }
-      let px = Vec2::new(at.x + offset.x, cell.y - drawn.y + at.y + offset.y);
-      px / cell
-    })
-    .collect()
-}
-
-/// `polygon` without repeated points (its closing point included)
-pub(super) fn cleaned(polygon: &[Vec2]) -> Vec<Vec2> {
-  let mut out: Vec<Vec2> = Vec::with_capacity(polygon.len());
-  for &p in polygon {
-    if out
-      .last()
-      .is_none_or(|q| (*q - p).abs().max_element() > EPSILON)
-    {
-      out.push(p);
-    }
-  }
-  while out.len() > 1
-    && out
-      .first()
-      .zip(out.last())
-      .is_some_and(|(a, b)| (*a - *b).abs().max_element() <= EPSILON)
-  {
-    out.pop();
-  }
-  out
-}
-
-/// The cell corner a point is on: 0 top-left, 1 top-right, 2 bottom-right,
-/// 3 bottom-left
-fn corner_of(p: Vec2) -> Option<u8> {
-  let near = |v: f32, to: f32| (v - to).abs() <= EPSILON;
-  match (
-    near(p.x, 0.0),
-    near(p.x, 1.0),
-    near(p.y, 0.0),
-    near(p.y, 1.0),
-  ) {
-    (true, _, true, _) => Some(0),
-    (_, true, true, _) => Some(1),
-    (_, true, _, true) => Some(2),
-    (true, _, _, true) => Some(3),
-    _ => None,
-  }
-}
-
-/// The distinct corners `polygon` is made of, if it is made of corners only
-fn corners_only(polygon: &[Vec2]) -> Option<Vec<u8>> {
-  let corners: Vec<u8> = polygon
-    .iter()
-    .map(|&p| corner_of(p))
-    .collect::<Option<_>>()?;
-  let mut distinct = corners.clone();
-  distinct.sort_unstable();
-  distinct.dedup();
-  (distinct.len() == corners.len()).then_some(corners)
-}
-
-/// Twice the signed area, y down
-pub(super) fn twice_area(points: &[Vec2]) -> f32 {
-  (0..points.len())
-    .map(|i| points[i].perp_dot(points[(i + 1) % points.len()]))
-    .sum()
-}
-
-/// Whether `polygon` (tiles) is exactly its cell
-pub(super) fn full_cell(polygon: &[Vec2]) -> bool {
-  let ring = cleaned(polygon);
-  ring.len() == 4
-    && corners_only(&ring).is_some()
-    && (twice_area(&ring).abs() - 2.0).abs() <= 4.0 * EPSILON
-}
-
-/// The filled corner of `polygon` (tiles), if it is a half cell cut along
-/// a diagonal: three of the cell's corners
-fn slope_corner(polygon: &[Vec2]) -> Option<SlopeCorner> {
-  let ring = cleaned(polygon);
-  if ring.len() != 3 {
-    return None;
-  }
-  let corners = corners_only(&ring)?;
-  let missing = (0..4).find(|c| !corners.contains(c))?;
-  // The right angle is opposite the corner the triangle leaves out
-  Some(match (missing + 2) % 4 {
-    0 => SlopeCorner::TopLeft,
-    1 => SlopeCorner::TopRight,
-    2 => SlopeCorner::BottomRight,
-    _ => SlopeCorner::BottomLeft,
-  })
-}
-
-/// A shape's geometry on a fine grid, so equal shapes share an index
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub(super) struct ShapeKey {
-  one_way: bool,
-  polygons: Vec<Vec<(i64, i64)>>,
-}
-
-impl ShapeKey {
-  fn of(polygons: &[Vec<Vec2>], one_way: bool) -> ShapeKey {
-    let snap = |v: f32| (v * KEY_GRID).round() as i64;
-    ShapeKey {
-      one_way,
-      polygons: polygons
-        .iter()
-        .map(|p| p.iter().map(|v| (snap(v.x), snap(v.y))).collect())
-        .collect(),
-    }
-  }
-}
-
-/// Where new shapes go: the grid being built's list, or the grid itself
-pub(super) trait ShapeSink {
-  fn add(&mut self, shape: CellShape) -> u16;
-}
-
-/// A grid's shapes before the grid exists, numbered as `add_shape` will
-struct Pending(Vec<CellShape>);
-
-impl ShapeSink for Pending {
-  fn add(&mut self, shape: CellShape) -> u16 {
-    // `add_shape` names none past 65,535 (and logs it)
-    let index = u16::try_from(self.0.len()).unwrap_or(u16::MAX);
-    self.0.push(shape);
-    index
-  }
-}
-
-impl ShapeSink for TileColliders {
-  fn add(&mut self, shape: CellShape) -> u16 {
-    self.add_shape(shape)
-  }
-}
-
-impl ShapeSink for Boundary {
-  fn add(&mut self, shape: CellShape) -> u16 {
-    self.add_shape(shape)
-  }
-}
-
-/// What a tile's shapes are read for
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(super) enum Purpose {
-  /// Its collision shapes (those not marked `occluder`): its solid ones,
-  /// else its one-way ones
-  Collision,
-  /// What blocks light: its shapes marked `occluder`, else its collision
-  /// shapes, one-way ones too (light does not care which way a platform
-  /// lets bodies through), all as one solid shape; an IntGrid cell occludes
-  /// if it is solid or a slope (a one-way cell is solid only along its top,
-  /// which has no area)
-  Occlusion,
-}
-
-/// The cell kind of `polygons` (tiles, already placed), solid or one-way
-fn classify(
-  polygons: Vec<Vec<Vec2>>,
-  one_way: bool,
-  ids: &mut FastMap<ShapeKey, u16>,
-  sink: &mut dyn ShapeSink,
-) -> TileCell {
-  if !one_way && polygons.iter().any(|p| full_cell(p)) {
-    return TileCell::Solid;
-  }
-  if let [polygon] = &polygons[..] {
-    if one_way && full_cell(polygon) {
-      return TileCell::OneWay;
-    }
-    if !one_way && let Some(corner) = slope_corner(polygon) {
-      return TileCell::Slope(corner);
-    }
-  }
-  let key = ShapeKey::of(&polygons, one_way);
-  if let Some(&index) = ids.get(&key) {
-    return TileCell::Shape(index);
-  }
-  let index = sink.add(CellShape { polygons, one_way });
-  ids.insert(key, index);
-  TileCell::Shape(index)
-}
-
-/// The cell kind `tile` is on cells of `cell` pixels, for `purpose`
-fn tile_kind(
-  tileset: Option<&Tileset>,
-  tile: Tile,
-  cell: Vec2,
-  purpose: Purpose,
-  ids: &mut FastMap<ShapeKey, u16>,
-  sink: &mut dyn ShapeSink,
-) -> TileCell {
-  let Some((tileset, data)) = tileset.and_then(|t| Some((t, t.tile(tile.id)?))) else {
-    return TileCell::Empty;
-  };
-  let collected = |keep: &dyn Fn(&TileShape) -> bool| -> Vec<Vec<Vec2>> {
-    data
-      .shapes
-      .iter()
-      .filter(|s| keep(s))
-      .map(|s| placed(tileset, tile, &s.points, cell))
-      .collect()
-  };
-  let (solid, one_way) = match purpose {
-    Purpose::Collision => (
-      collected(&|s| !s.occluder && !s.one_way),
-      collected(&|s| !s.occluder && s.one_way),
-    ),
-    Purpose::Occlusion => {
-      let marked = data.shapes.iter().any(|s| s.occluder);
-      (collected(&|s| s.occluder == marked), Vec::new())
-    }
-  };
-  if !solid.is_empty() {
-    return classify(solid, false, ids, sink);
-  }
-  if !one_way.is_empty() {
-    return classify(one_way, true, ids, sink);
-  }
-  TileCell::Empty
-}
-
-/// The cell kind an IntGrid value's name gives by default
-fn default_kind(name: &str) -> TileCell {
-  const NAMES: [(&str, TileCell); 6] = [
-    ("solid", TileCell::Solid),
-    ("one_way", TileCell::OneWay),
-    (
-      "slope_bottom_left",
-      TileCell::Slope(SlopeCorner::BottomLeft),
-    ),
-    (
-      "slope_bottom_right",
-      TileCell::Slope(SlopeCorner::BottomRight),
-    ),
-    ("slope_top_left", TileCell::Slope(SlopeCorner::TopLeft)),
-    ("slope_top_right", TileCell::Slope(SlopeCorner::TopRight)),
-  ];
-  NAMES
-    .iter()
-    .find(|(known, _)| known.eq_ignore_ascii_case(name))
-    .map_or(TileCell::Empty, |(_, kind)| *kind)
-}
-
-/// The cell kind of each IntGrid value: an override by value, else one by
-/// name, else the name's default (names compare ignoring ASCII case). An
-/// override to a `Shape` names no shape the map has, so it collides as
-/// nothing
-pub(super) fn intgrid_table(
-  names: &FastMap<i32, String>,
-  overrides: &[(IntGridKey, TileCell)],
-) -> FastMap<i32, TileCell> {
-  let usable = |kind: TileCell| match kind {
-    TileCell::Shape(_) => TileCell::Empty,
-    kind => kind,
-  };
-  let by_value = |value: i32| {
-    overrides
-      .iter()
-      .find(|(key, _)| *key == IntGridKey::Value(value))
-      .map(|(_, kind)| usable(*kind))
-  };
-  let by_name = |name: &str| {
-    overrides
-      .iter()
-      .find(|(key, _)| matches!(key, IntGridKey::Name(n) if n.eq_ignore_ascii_case(name)))
-      .map(|(_, kind)| usable(*kind))
-  };
-  let mut table: FastMap<i32, TileCell> = names
-    .iter()
-    .map(|(&value, name)| {
-      let kind = by_value(value)
-        .or_else(|| by_name(name))
-        .unwrap_or_else(|| default_kind(name));
-      (value, kind)
-    })
-    .collect();
-  for (key, kind) in overrides {
-    if let IntGridKey::Value(value) = key {
-      table.entry(*value).or_insert(usable(*kind));
-    }
-  }
-  table
-}
-
-/// How strong a cell kind is in a group's union
-fn rank(kind: TileCell) -> u8 {
-  match kind {
-    TileCell::Empty => 0,
-    TileCell::OneWay => 1,
-    TileCell::Slope(_) => 2,
-    TileCell::Shape(_) => 3,
-    TileCell::Solid => 4,
-  }
-}
-
-/// A layer of a group: the chunk versions it was last read at
-#[derive(Debug)]
-pub(super) struct Tracked {
-  pub(super) entity: Entity,
-  versions: Vec<u64>,
-  grid_version: u64,
-  /// The kind of each value, for a layer read by its IntGrid
-  intgrid: Option<FastMap<i32, TileCell>>,
-}
-
-impl Tracked {
-  /// A layer read as its tiles are now
-  fn new(entity: Entity, data: &TileLayerData, overrides: &[(IntGridKey, TileCell)]) -> Tracked {
-    let grid = &data.grid;
-    let chunks = grid.chunks();
-    let versions = (0..chunks.y)
-      .flat_map(|y| (0..chunks.x).map(move |x| UVec2::new(x, y)))
-      .map(|chunk| grid.chunk_version(chunk))
-      .collect();
-    Tracked {
-      entity,
-      versions,
-      grid_version: grid.version(),
-      intgrid: data
-        .intgrid
-        .as_ref()
-        .map(|intgrid| intgrid_table(&intgrid.names, overrides)),
-    }
-  }
-
-  /// A layer not read yet: every chunk that ever changed counts as changed
-  pub(super) fn unread(
-    entity: Entity,
-    data: &TileLayerData,
-    overrides: &[(IntGridKey, TileCell)],
-  ) -> Tracked {
-    let chunks = data.grid.chunks();
-    Tracked {
-      entity,
-      versions: vec![0; chunks.x as usize * chunks.y as usize],
-      grid_version: 0,
-      intgrid: data
-        .intgrid
-        .as_ref()
-        .map(|intgrid| intgrid_table(&intgrid.names, overrides)),
-    }
-  }
-}
-
-/// The chunks of the layers of a group whose version moved since each was
-/// last read (all of a layer's, when its IntGrid's names now name other
-/// kinds), sorted, each once; the layers are marked read
-pub(super) fn changed_chunks(
-  group: &mut [Tracked],
-  layers: &Layers,
-  overrides: &[(IntGridKey, TileCell)],
-) -> Vec<UVec2> {
-  let mut changed: Vec<UVec2> = Vec::new();
-  for tracked in group {
-    let Ok((_, data, _)) = layers.get(tracked.entity) else {
-      continue;
-    };
-    // An IntGrid's names may have changed with its layer
-    let mut all = false;
-    if data.is_changed()
-      && let (Some(table), Some(intgrid)) = (&mut tracked.intgrid, &data.intgrid)
-    {
-      let now = intgrid_table(&intgrid.names, overrides);
-      if now != *table {
-        *table = now;
-        all = true;
-      }
-    }
-    let grid = &data.grid;
-    if !all && grid.version() == tracked.grid_version {
-      continue;
-    }
-    let chunks = grid.chunks();
-    tracked
-      .versions
-      .resize(chunks.x as usize * chunks.y as usize, 0);
-    for y in 0..chunks.y {
-      for x in 0..chunks.x {
-        let chunk = UVec2::new(x, y);
-        let version = grid.chunk_version(chunk);
-        let seen = &mut tracked.versions[(y * chunks.x + x) as usize];
-        if all || *seen != version {
-          *seen = version;
-          changed.push(chunk);
-        }
-      }
-    }
-    tracked.grid_version = grid.version();
-  }
-  changed.sort_unstable_by_key(|c| (c.y, c.x));
-  changed.dedup();
-  changed
-}
-
-/// The tile data of a group's layers, in its order (`None` for one gone)
-pub(super) fn layer_data<'w>(
-  group: &[Tracked],
-  layers: &'w Layers,
-) -> Vec<Option<Ref<'w, TileLayerData>>> {
-  group
-    .iter()
-    .map(|t| layers.get(t.entity).ok().map(|(_, data, _)| data))
-    .collect()
-}
-
-/// Layers sharing a cell size and offset, and the grid they collide in
+/// Layers sharing a cell size, offset and material, and the grid they
+/// collide in
 #[derive(Debug)]
 struct Group {
   key: GroupKey,
@@ -688,149 +191,39 @@ impl Material {
   }
 }
 
-/// A map's collision: what it was built from, its groups, and what it has
-/// warned about. On the map entity
-#[derive(Component, Debug)]
-pub(crate) struct MapCollision {
-  layers: Vec<Planned>,
-  tile_size: UVec2,
-  tilesets: Vec<TilesetStamp>,
-  overrides: Vec<(IntGridKey, TileCell)>,
+/// A colliding layer as a build reads it
+struct LayerView<'a> {
+  entity: Entity,
+  name: &'a str,
+  data: &'a TileLayerData,
+}
+
+/// What a build of a map's groups makes: the groups, the grid each puts on
+/// its target (traced, when built off the main thread), and the layers
+/// warned about for a group too large
+pub(crate) struct Built {
   groups: Vec<Group>,
-  /// Its colliders were taken away (the map disabled, or one went missing):
-  /// the next step builds them all
-  torn: bool,
+  grids: Vec<(Entity, TileColliders, Option<Traced>)>,
   warned_layers: FastSet<Entity>,
-  /// Properties of the wrong type warned about: the layer's (none for the
-  /// map's) and the name
-  warned_properties: FastSet<(Option<Entity>, &'static str)>,
 }
 
-impl MapCollision {
-  /// The entities holding a `TileColliders` of this map's
-  fn targets(&self) -> impl Iterator<Item = Entity> + '_ {
-    self
-      .groups
-      .iter()
-      .filter(|g| !g.too_large)
-      .map(|g| g.target)
-  }
-
-  /// Takes every `TileColliders` this map put on
-  fn tear_down(&mut self, commands: &mut Commands) {
-    for target in self.targets() {
-      commands.entity(target).try_remove::<TileColliders>();
-    }
-    self.torn = true;
-  }
-}
-
-/// The asset stores a map's collision and occluders read
-pub(super) type Stores<'w> = (
-  Option<Res<'w, Assets<TileMap>>>,
-  Option<Res<'w, Assets<LdtkProject>>>,
-  Option<Res<'w, Assets<Tileset>>>,
-);
-
-type Maps<'w, 's> = Query<
-  'w,
-  's,
-  (
-    Entity,
-    &'static MapRoot,
-    Option<&'static MapLayers>,
-    Option<&'static mut MapCollision>,
-    Has<Disabled>,
-  ),
-  Allow<Disabled>,
->;
-type Unrooted<'w, 's> =
-  Query<'w, 's, (Entity, &'static mut MapCollision), (Without<MapRoot>, Allow<Disabled>)>;
-pub(super) type Layers<'w, 's> = Query<
-  'w,
-  's,
-  (
-    &'static LayerInfo,
-    Ref<'static, TileLayerData>,
-    Has<Disabled>,
-  ),
-  Allow<Disabled>,
->;
-type Grids<'w, 's> = Query<'w, 's, &'static mut TileColliders, Allow<Disabled>>;
-
-/// What classifying a map's cells reads
-pub(super) struct Context<'a> {
-  pub(super) tile_map: &'a TileMap,
-  pub(super) tilesets: Option<&'a Assets<Tileset>>,
-  pub(super) overrides: &'a [(IntGridKey, TileCell)],
-  pub(super) purpose: Purpose,
-}
-
-/// The kind `cell` of a layer is, for the context's purpose
-pub(super) fn layer_kind(
-  tracked: &Tracked,
-  data: &TileLayerData,
-  cell: IVec2,
-  (kinds, shapes): (&mut FastMap<Tile, TileCell>, &mut FastMap<ShapeKey, u16>),
-  sink: &mut dyn ShapeSink,
-  context: &Context<'_>,
-) -> TileCell {
-  match &tracked.intgrid {
-    Some(table) => {
-      let kind = data
-        .intgrid
-        .as_ref()
-        .and_then(|intgrid| intgrid.get(cell))
-        .and_then(|value| table.get(&value).copied())
-        .unwrap_or(TileCell::Empty);
-      match (context.purpose, kind) {
-        (Purpose::Occlusion, TileCell::OneWay) => TileCell::Empty,
-        (_, kind) => kind,
-      }
-    }
-    None => match data.grid.get(cell) {
-      None => TileCell::Empty,
-      Some(tile) => *kinds.entry(tile).or_insert_with(|| {
-        let tileset = tileset_of(&context.tile_map.tilesets, tile.tileset, context.tilesets);
-        tile_kind(
-          tileset,
-          tile,
-          data.cell_size.as_vec2(),
-          context.purpose,
-          shapes,
-          sink,
-        )
-      }),
-    },
-  }
-}
-
-/// `kind` over `below` in a group's union: the stronger, the upper on a tie
-pub(super) fn over(below: TileCell, kind: TileCell) -> TileCell {
-  if kind != TileCell::Empty && rank(kind) >= rank(below) {
-    kind
-  } else {
-    below
-  }
-}
-
-/// Every group of a map's colliding layers, built from their tiles as they
-/// are, with the grid each puts on its target (none for a group too large)
+/// Every group of a map's colliding layers (`planned`, read through
+/// `views`), built from their tiles as they are, with the grid each puts on
+/// its target (none for a group too large), traced if `trace`
 fn build(
   map: Entity,
+  (map_key, planned, views): (GroupKey, &[Planned], &[LayerView<'_>]),
   context: &Context<'_>,
-  planned: &[Planned],
-  layers: &Layers,
-  map_material: Material,
   mut warned_layers: FastSet<Entity>,
-) -> (MapCollision, Vec<(Entity, TileColliders)>) {
-  let map_key = GroupKey::of(context.tile_map.tile_size, Vec2::ZERO, map_material);
+  trace: bool,
+) -> Built {
+  let view = |entity: Entity| views.iter().find(|v| v.entity == entity);
   let mut groups: Vec<Group> = Vec::new();
   for layer in planned {
-    let Ok((_, data, _)) = layers.get(layer.entity) else {
+    let Some(view) = view(layer.entity) else {
       continue;
     };
-    let tracked = Tracked::new(layer.entity, &data, context.overrides);
+    let tracked = Tracked::new(layer.entity, view.data, context.overrides);
     match groups.iter_mut().find(|g| g.key == layer.key) {
       Some(group) => {
         group.size = group.size.max(layer.size);
@@ -861,8 +254,8 @@ fn build(
         let names: Vec<String> = group
           .layers
           .iter()
-          .filter_map(|t| layers.get(t.entity).ok())
-          .map(|(info, ..)| format!("\"{}\"", info.name))
+          .filter_map(|t| view(t.entity))
+          .map(|v| format!("\"{}\"", v.name))
           .collect();
         let named = if names.len() == 1 { "layer" } else { "layers" };
         crate::engine_warn!(
@@ -884,14 +277,21 @@ fn build(
       ..
     } = group;
     for layer in tracked.iter() {
-      let Ok((_, data, _)) = layers.get(layer.entity) else {
+      let Some(view) = view(layer.entity) else {
         continue;
       };
-      let reach = data.grid.size().min(size);
+      let reach = view.data.grid.size().min(size);
       for y in 0..reach.y {
         for x in 0..reach.x {
           let cell = IVec2::new(x as i32, y as i32);
-          let kind = layer_kind(layer, &data, cell, (kinds, shapes), &mut pending, context);
+          let kind = layer_kind(
+            layer,
+            view.data,
+            cell,
+            (kinds, shapes),
+            &mut pending,
+            context,
+          );
           let slot = &mut cells[y as usize * size.x as usize + x as usize];
           *slot = over(*slot, kind);
         }
@@ -902,19 +302,102 @@ fn build(
     for shape in pending.0 {
       tiles.add_shape(shape);
     }
-    grids.push((group.target, tiles));
+    let traced = if trace { tiles.trace() } else { None };
+    grids.push((group.target, tiles, traced));
   }
-  let state = MapCollision {
-    layers: planned.to_vec(),
-    tile_size: context.tile_map.tile_size,
-    tilesets: stamps(context.tile_map, context.tilesets),
-    overrides: context.overrides.to_vec(),
+  Built {
     groups,
-    torn: false,
+    grids,
     warned_layers,
-    warned_properties: FastSet::default(),
-  };
-  (state, grids)
+  }
+}
+
+/// A map's first build, sent to the worker: copies of what it reads
+struct Job {
+  map: Entity,
+  map_key: GroupKey,
+  planned: Vec<Planned>,
+  layers: Vec<(Entity, String, TileLayerData)>,
+  shapes: Arc<[Option<ShapeSource>]>,
+  overrides: Vec<(IntGridKey, TileCell)>,
+  warned_layers: FastSet<Entity>,
+}
+
+impl Job {
+  fn run(self) -> Built {
+    let views: Vec<LayerView<'_>> = self
+      .layers
+      .iter()
+      .map(|(entity, name, data)| LayerView {
+        entity: *entity,
+        name,
+        data,
+      })
+      .collect();
+    let context = Context {
+      shapes: &self.shapes,
+      overrides: &self.overrides,
+      purpose: Purpose::Collision,
+    };
+    build(
+      self.map,
+      (self.map_key, &self.planned, &views),
+      &context,
+      self.warned_layers,
+      true,
+    )
+  }
+}
+
+/// A map's collision: what it was built from, its groups, and what it has
+/// warned about. On the map entity
+#[derive(Component, Debug)]
+pub(crate) struct MapCollision {
+  layers: Vec<Planned>,
+  tile_size: UVec2,
+  tilesets: Vec<TilesetStamp>,
+  overrides: Vec<(IntGridKey, TileCell)>,
+  /// The tilesets' shapes it reads
+  shapes: Arc<[Option<ShapeSource>]>,
+  groups: Vec<Group>,
+  /// Its colliders were taken away (the map disabled, or one went missing):
+  /// the next step builds them all
+  torn: bool,
+  /// The first build out on the worker, by its job's id
+  building: Option<u64>,
+  /// Every part of its first build is in (`MapEvent::Collides` was sent):
+  /// it builds at once from now on
+  collided: bool,
+  warned_layers: FastSet<Entity>,
+  /// Properties of the wrong type warned about: the layer's (none for the
+  /// map's) and the name
+  warned_properties: FastSet<(Option<Entity>, &'static str)>,
+}
+
+impl MapCollision {
+  /// The entities holding a `TileColliders` of this map's
+  fn targets(&self) -> impl Iterator<Item = Entity> + '_ {
+    self
+      .groups
+      .iter()
+      .filter(|g| !g.too_large)
+      .map(|g| g.target)
+  }
+
+  /// Takes every `TileColliders` this map put on (a build out on the
+  /// worker is forgotten)
+  fn tear_down(&mut self, commands: &mut Commands) {
+    for target in self.targets() {
+      commands.entity(target).try_remove::<TileColliders>();
+    }
+    self.torn = true;
+    self.building = None;
+  }
+
+  /// Whether every collider it has is built: bodies set on it stand on it
+  pub(crate) fn collides(&self) -> bool {
+    self.collided && !self.torn && self.building.is_none()
+  }
 }
 
 /// Brings a group's grid up to its layers' tiles: the cells of every chunk
@@ -957,11 +440,36 @@ fn update(group: &mut Group, tiles: &mut TileColliders, layers: &Layers, context
   }
 }
 
+type Maps<'w, 's> = Query<
+  'w,
+  's,
+  (
+    Entity,
+    &'static MapRoot,
+    Option<&'static MapLayers>,
+    Option<&'static mut MapCollision>,
+    Has<Disabled>,
+  ),
+  Allow<Disabled>,
+>;
+type Unrooted<'w, 's> =
+  Query<'w, 's, (Entity, &'static mut MapCollision), (Without<MapRoot>, Allow<Disabled>)>;
+type Grids<'w, 's> =
+  Query<'w, 's, (&'static mut TileColliders, Option<&'static TileBuild>), Allow<Disabled>>;
+
+/// Sends `MapEvent::Collides` for `map`, as the commands apply
+fn collides(commands: &mut Commands, map: Entity) {
+  commands.queue(move |world: &mut World| send(world, MapEvent::Collides { map }));
+}
+
 /// `FixedSet::Movement`, before the tile colliders rebuild: every spawned
 /// map's colliding layers into its `TileColliders`, as their tiles are now.
-/// A disabled map has none (enabled, it builds them from the tiles as they
-/// then are); a map whose root went takes its colliders away. An idle step
-/// costs a look at each map's colliding layers, tilesets and properties
+/// A map's first build is made off the main thread and its parts spawned
+/// over steps; once all are in, `MapEvent::Collides` is sent. A disabled
+/// map has none (enabled, it builds them from the tiles as they then are);
+/// a map whose root went takes its colliders away. An idle step costs a
+/// look at each map's colliding layers, tilesets and properties
+#[allow(clippy::too_many_arguments)] // the queries, the stores and the worker
 pub(crate) fn sync_map_colliders(
   mut maps: Maps,
   mut unrooted: Unrooted,
@@ -969,19 +477,21 @@ pub(crate) fn sync_map_colliders(
   mut grids: Grids,
   (tile_maps, projects, tilesets): Stores,
   mut planned: Local<Vec<Planned>>,
+  mut worker: Local<Worker<Built>>,
   mut commands: Commands,
 ) {
   let tilesets = tilesets.as_deref();
+  let mut arrived: Vec<(u64, Option<Built>)> = worker.finished().collect();
   for (map, mut state) in &mut unrooted {
     state.tear_down(&mut commands);
-    commands.entity(map).remove::<MapCollision>();
+    commands.entity(map).try_remove::<MapCollision>();
   }
   for (map, root, map_layers, mut state, disabled) in &mut maps {
     let Some(map_layers) = map_layers else {
       // The root was put over or taken away, and its layers with it
       if let Some(mut state) = state {
         state.tear_down(&mut commands);
-        commands.entity(map).remove::<MapCollision>();
+        commands.entity(map).try_remove::<MapCollision>();
       }
       continue;
     };
@@ -997,7 +507,7 @@ pub(crate) fn sync_map_colliders(
     // A property of the wrong type warns once a map
     let mut first_warnings = FastSet::default();
     let warned = match state.as_mut() {
-      Some(state) => &mut state.warned_properties,
+      Some(state) => &mut state.bypass_change_detection().warned_properties,
       None => &mut first_warnings,
     };
     let mut warn = |layer: Option<(Entity, &str)>,
@@ -1039,12 +549,7 @@ pub(crate) fn sync_map_colliders(
         }
       }
     }
-    let context = Context {
-      tile_map,
-      tilesets,
-      overrides: &root.intgrid_collision,
-      purpose: Purpose::Collision,
-    };
+    let map_key = GroupKey::of(tile_map.tile_size, Vec2::ZERO, map_material);
     let same = state.as_ref().is_some_and(|s| {
       !s.torn
         && s.layers == *planned
@@ -1053,53 +558,163 @@ pub(crate) fn sync_map_colliders(
         && stamps_match(&s.tilesets, tile_map, tilesets)
     });
     match state {
+      // The first build is out: it goes on when it comes back
+      Some(mut state) if same && state.building.is_some() => {
+        let Some(at) = arrived
+          .iter()
+          .position(|(id, _)| Some(*id) == state.building)
+        else {
+          continue;
+        };
+        let state = state.bypass_change_detection();
+        state.building = None;
+        let built = match arrived.swap_remove(at).1 {
+          Some(built) => built,
+          // It panicked: built here instead, whole
+          None => {
+            crate::engine_warn!(
+              module: "Tilemap",
+              "map {map}: its collision could not be built off the main thread; built here"
+            );
+            let views = views(&planned, &layers);
+            let context = Context {
+              shapes: &state.shapes,
+              overrides: &root.intgrid_collision,
+              purpose: Purpose::Collision,
+            };
+            let warned = std::mem::take(&mut state.warned_layers);
+            build(map, (map_key, &planned, &views), &context, warned, false)
+          }
+        };
+        state.groups = built.groups;
+        state.warned_layers = built.warned_layers;
+        for (target, tiles, traced) in built.grids {
+          match traced {
+            Some(traced) => commands.entity(target).try_insert((tiles, traced)),
+            None => commands.entity(target).try_insert(tiles),
+          };
+        }
+      }
       Some(mut state) if same => {
-        let state = &mut *state;
+        let state = state.bypass_change_detection();
+        let context = Context {
+          shapes: &state.shapes,
+          overrides: &root.intgrid_collision,
+          purpose: Purpose::Collision,
+        };
+        let mut built = true;
         for group in &mut state.groups {
           if group.too_large {
             continue;
           }
-          let Ok(mut tiles) = grids.get_mut(group.target) else {
+          let Ok((mut tiles, build)) = grids.get_mut(group.target) else {
             // Taken away by something else: all of it is built next step
             state.torn = true;
+            built = false;
             continue;
           };
           update(group, &mut tiles, &layers, &context);
+          built &= tiles_built(&tiles, build);
+        }
+        if built && !state.collided {
+          state.collided = true;
+          collides(&mut commands, map);
         }
       }
       state => {
+        let shapes = sources(tile_map, tilesets);
+        let collided = state.as_ref().is_some_and(|s| s.collided);
         let (warned_layers, warned_properties) = match &state {
           Some(old) => (old.warned_layers.clone(), old.warned_properties.clone()),
           None => (FastSet::default(), first_warnings),
         };
-        let (mut fresh, built) = build(
-          map,
-          &context,
-          &planned,
-          &layers,
-          map_material,
-          warned_layers,
-        );
-        fresh.warned_properties = warned_properties;
         if let Some(old) = &state {
           for target in old.targets() {
-            if !built.iter().any(|(t, _)| *t == target) {
-              commands.entity(target).try_remove::<TileColliders>();
-            }
+            commands.entity(target).try_remove::<TileColliders>();
           }
         }
-        for (target, tiles) in built {
-          commands.entity(target).try_insert(tiles);
+        let mut fresh = MapCollision {
+          layers: planned.clone(),
+          tile_size: tile_map.tile_size,
+          tilesets: stamps(tile_map, tilesets),
+          overrides: root.intgrid_collision.clone(),
+          shapes: Arc::clone(&shapes),
+          groups: Vec::new(),
+          torn: false,
+          building: None,
+          collided,
+          warned_layers: FastSet::default(),
+          warned_properties,
+        };
+        if collided {
+          // Built before: built again at once, so it never lacks colliders
+          let views = views(&planned, &layers);
+          let context = Context {
+            shapes: &shapes,
+            overrides: &root.intgrid_collision,
+            purpose: Purpose::Collision,
+          };
+          let built = build(
+            map,
+            (map_key, &planned, &views),
+            &context,
+            warned_layers,
+            false,
+          );
+          fresh.groups = built.groups;
+          fresh.warned_layers = built.warned_layers;
+          for (target, tiles, _) in built.grids {
+            commands.entity(target).try_insert(tiles);
+          }
+        } else if planned.is_empty() {
+          // Nothing to collide: it collides as it is
+          fresh.collided = true;
+          fresh.warned_layers = warned_layers;
+          collides(&mut commands, map);
+        } else {
+          let layers = planned
+            .iter()
+            .filter_map(|p| {
+              let (info, data, _) = layers.get(p.entity).ok()?;
+              Some((p.entity, info.name.clone(), TileLayerData::clone(&data)))
+            })
+            .collect();
+          let job = Job {
+            map,
+            map_key,
+            planned: planned.clone(),
+            layers,
+            shapes,
+            overrides: root.intgrid_collision.clone(),
+            warned_layers,
+          };
+          fresh.building = Some(worker.send(move || job.run()));
         }
         match state {
           Some(mut state) => *state = fresh,
           None => {
-            commands.entity(map).insert(fresh);
+            commands.entity(map).try_insert(fresh);
           }
         }
       }
     }
   }
+  arrived.clear();
+}
+
+/// The colliding layers `planned` names, as a build reads them
+fn views<'a>(planned: &[Planned], layers: &'a Layers) -> Vec<LayerView<'a>> {
+  planned
+    .iter()
+    .filter_map(|p| {
+      let (info, data, _) = layers.get(p.entity).ok()?;
+      Some(LayerView {
+        entity: p.entity,
+        name: &info.name,
+        data: data.into_inner(),
+      })
+    })
+    .collect()
 }
 
 #[cfg(test)]
@@ -1119,10 +734,10 @@ mod tests {
   };
   use crate::core::scene::{Scene, SceneContext};
   use crate::core::testing::HeadlessEngine;
-  use crate::core::tilemap::test_util::{MapWorld, files_with};
+  use crate::core::tilemap::test_util::{MapWorld, files_with, layers_of, load_map as load};
   use crate::core::tilemap::{
-    IntGrid, LayerKind, MapLayerRef, MapRoot, MapsView, PropertyValue, Tile, TileData, TileFlip,
-    TileMap, TileShape, Tileset, TilesetImage, TilesetSource,
+    IntGrid, LayerKind, MapRoot, MapsView, PropertyValue, Tile, TileData, TileFlip, TileMap,
+    TileShape, Tileset, TilesetImage, TilesetSource,
   };
 
   /// Tile ids of `shapes`
@@ -1196,30 +811,11 @@ mod tests {
     world.resource_mut::<Assets<TileMap>>().add(map)
   }
 
-  fn load(world: &mut World, path: &str) -> Handle<TileMap> {
-    match AssetsView::new(world).load_now::<TileMap>(path) {
-      Ok(handle) => handle,
-      Err(error) => panic!("{path}: {}", error.report()),
-    }
-  }
-
   fn colliders(world: &World, entity: Entity) -> TileColliders {
     match world.get::<TileColliders>(entity) {
       Some(tiles) => tiles.clone(),
       None => panic!("{entity:?} has no TileColliders"),
     }
-  }
-
-  /// The map's layer entities, by index
-  fn layers_of(world: &mut World, map: Entity) -> Vec<Entity> {
-    let mut found: Vec<(usize, Entity)> = world
-      .query::<(Entity, &MapLayerRef)>()
-      .iter(world)
-      .filter(|(_, l)| l.map == map)
-      .map(|(e, l)| (l.index, e))
-      .collect();
-    found.sort();
-    found.into_iter().map(|(_, e)| e).collect()
   }
 
   fn count_parts(world: &mut World) -> usize {
@@ -1830,6 +1426,82 @@ mod tests {
   }
 
   #[test]
+  fn a_swapped_grid_collides_as_its_tiles_say() {
+    let mut maps = MapWorld::new();
+    let map = floor_and_island(&mut maps);
+    let ground = layers_of(&mut maps.world, map)[0];
+    // A new grid of the same size, filled alike but for one cell: its
+    // versions are new, so every chunk is read again
+    let mut grid = crate::core::tilemap::TileGrid::new(UVec2::new(40, 4));
+    grid.fill(
+      IVec2::new(0, 3),
+      IVec2::new(39, 3),
+      Some(Tile::new(0, SOLID)),
+    );
+    grid.set(IVec2::new(7, 1), Some(Tile::new(0, SOLID)));
+    if let Some(mut data) = maps
+      .world
+      .get_mut::<crate::core::tilemap::TileLayerData>(ground)
+    {
+      data.grid = grid;
+    }
+    maps.step();
+    let tiles = colliders(&maps.world, map);
+    assert_eq!(tiles.get(7, 1), TileCell::Solid);
+    assert_eq!(
+      tiles.get(20, 0),
+      TileCell::Empty,
+      "the island went with the old grid"
+    );
+    assert_eq!(tiles.get(39, 3), TileCell::Solid);
+  }
+
+  #[test]
+  fn a_grid_taken_away_is_built_again() {
+    let mut maps = MapWorld::new();
+    let map = floor_and_island(&mut maps);
+    maps.world.entity_mut(map).remove::<TileColliders>();
+    maps.step();
+    maps.step();
+    let tiles = colliders(&maps.world, map);
+    assert_eq!(tiles.get(20, 0), TileCell::Solid);
+    assert!(MapsView::new(&mut maps.world).collides(map));
+    assert_eq!(parts_of(&mut maps.world, map).len(), 2);
+  }
+
+  #[test]
+  fn a_tileset_s_new_content_builds_every_group_again() {
+    let mut maps = MapWorld::new();
+    let set = maps.world.resource_mut::<Assets<Tileset>>().add(shapes());
+    let mut map = TileMap::new(UVec2::new(4, 1), UVec2::splat(16));
+    map.add_tileset(TilesetSource::Asset(set.clone()));
+    let layer = map.add_tile_layer("ground");
+    map
+      .tiles_mut(layer)
+      .map(|g| g.fill(IVec2::ZERO, IVec2::new(3, 0), Some(Tile::new(0, SOLID))));
+    let handle = add(&mut maps.world, map);
+    let map = maps.spawn(MapRoot::new(handle));
+    assert_eq!(colliders(&maps.world, map).get(0, 0), TileCell::Solid);
+    // The solid block becomes a half block: every cell holding it changes
+    if let Some(tileset) = maps.world.resource_mut::<Assets<Tileset>>().get_mut(&set) {
+      tileset.insert_tile(
+        SOLID,
+        TileData {
+          shapes: vec![shape(rect(0.0, 8.0, 16.0, 8.0), false)],
+          ..TileData::default()
+        },
+      );
+    }
+    maps.step();
+    let tiles = colliders(&maps.world, map);
+    assert!((0..4).all(|x| matches!(tiles.get(x, 0), TileCell::Shape(_))));
+    assert!(
+      MapsView::new(&mut maps.world).collides(map),
+      "built again at once"
+    );
+  }
+
+  #[test]
   fn a_map_whose_root_goes_keeps_no_colliders() {
     let mut maps = MapWorld::new();
     let map = floor_and_island(&mut maps);
@@ -1870,8 +1542,13 @@ mod tests {
     ) else {
       return;
     };
-    engine.step().expect("a frame");
     let map = map.lock().ok().and_then(|m| *m).expect("the level spawned");
+    // Its colliders build over the first few frames, off the main thread
+    let start = std::time::Instant::now();
+    while !MapsView::new(engine.world_mut()).collides(map) {
+      engine.step().expect("a frame");
+      assert!(start.elapsed().as_secs() < 5, "the level never collided");
+    }
     assert!(engine.world_mut().get::<TileColliders>(map).is_some());
     let player = engine
       .world_mut()
@@ -1960,24 +1637,15 @@ mod tests {
     }
     let mut maps = MapWorld::new();
     let handle = add(&mut maps.world, map);
-    let map = maps.world.spawn(MapRoot::new(handle)).id();
+    // The first build is off the main thread and spread over frames (the
+    // landing frames are `spawning_a_256_map_adds_under_half_a_millisecond_to_any_frame`'s)
+    let start = Instant::now();
+    let map = maps.spawn(MapRoot::new(handle));
+    println!("built, collided and shadowed in {:?}", start.elapsed());
+    // Edits are timed in a schedule of their own, the map built
     let mut sync = Schedule::default();
     sync.add_systems(super::sync_map_colliders);
-    let timed = |maps: &mut MapWorld, what: &str, run: &mut dyn FnMut(&mut MapWorld)| {
-      let start = Instant::now();
-      run(maps);
-      println!("{what}: {:?}", start.elapsed());
-    };
-    timed(&mut maps, "the spawn", &mut |maps| maps.pre_update());
-    timed(&mut maps, "the first collision build", &mut |maps| {
-      sync.run(&mut maps.world)
-    });
-    timed(&mut maps, "physics building it, and a step", &mut |maps| {
-      maps.step()
-    });
-    timed(&mut maps, "the first occluders", &mut |maps| {
-      maps.post_update()
-    });
+    sync.run(&mut maps.world);
     let median = |mut times: Vec<Duration>| {
       times.sort();
       (times[times.len() / 2], times[times.len() - 1])
@@ -2019,5 +1687,178 @@ mod tests {
       "an idle frame's occluder sync: {:?}",
       median(idle_occluders)
     );
+  }
+
+  #[test]
+  fn a_body_on_a_map_reported_ready_never_falls_through() {
+    use crate::core::ecs::{MessageCursor, Messages};
+    use crate::core::physics::RigidBody;
+    use crate::core::tilemap::MapEvent;
+    let mut maps = MapWorld::new();
+    // 1,024 islands: more parts than physics spawns in one step
+    let handle = add(&mut maps.world, landing_map(true, true));
+    let map = maps.world.spawn(MapRoot::new(handle)).id();
+    let mut cursor = MessageCursor::<MapEvent>::default();
+    let mut partly_built = false;
+    let start = std::time::Instant::now();
+    loop {
+      maps.frame();
+      let collides_event = maps
+        .world
+        .get_resource::<Messages<MapEvent>>()
+        .is_some_and(|m| {
+          cursor
+            .read(m)
+            .any(|e| matches!(e, MapEvent::Collides { map: m } if *m == map))
+        });
+      let parts = count_parts(&mut maps.world);
+      if collides_event {
+        assert!(MapsView::new(&mut maps.world).collides(map));
+        assert_eq!(parts, 1024, "every island's part is in");
+        break;
+      }
+      assert!(!MapsView::new(&mut maps.world).collides(map));
+      partly_built |= parts > 0 && parts < 1024;
+      assert!(start.elapsed().as_secs() < 5, "never collided");
+      std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert!(partly_built, "the build was spread over steps");
+    // Boxes over islands all over the map, dropped the step it collides:
+    // each island is 3 cells from (2, 2) in every 8, its top at y 32 + 128k
+    let mut boxes = Vec::new();
+    for gy in (0..32).step_by(5) {
+      for gx in (0..32).step_by(5) {
+        let x = (gx * 8 + 3) as f32 * 16.0 + 8.0;
+        let top = (gy * 8 + 2) as f32 * 16.0;
+        let body = maps
+          .world
+          .spawn((
+            Transform::from_xy(x, top - 12.0),
+            RigidBody::dynamic(),
+            Collider::rect(8.0, 8.0),
+          ))
+          .id();
+        boxes.push((body, top));
+      }
+    }
+    for _ in 0..90 {
+      maps.step();
+    }
+    for (body, top) in boxes {
+      let y = maps
+        .world
+        .get::<Transform>(body)
+        .map_or(f32::NAN, |t| t.translation.y);
+      assert!(
+        (y - (top - 4.0)).abs() < 1.0,
+        "a box over the top at {top} is at {y}"
+      );
+    }
+  }
+
+  struct Empty;
+
+  impl Scene for Empty {}
+
+  /// 256 x 256 cells of 16 px over `shapes`, four layers: `dense` puts 3 x 3
+  /// solid islands every 8 cells on one and a tile with no shape in every
+  /// cell of the others; otherwise a terrain (solid below a jagged line)
+  /// with one full background layer and two empty ones. `collide` false
+  /// turns its collision and shadows off, as a baseline
+  fn landing_map(dense: bool, collide: bool) -> TileMap {
+    const SIDE: i32 = 256;
+    let mut map = code_map(UVec2::splat(SIDE as u32), &[]);
+    for name in ["ground", "decor 1", "decor 2", "decor 3"] {
+      let layer = map.add_tile_layer(name);
+      let grid = map.tiles_mut(layer).expect("a tile layer");
+      let solid = Some(Tile::new(0, SOLID));
+      if layer == 0 {
+        if dense {
+          for y in (0..SIDE).step_by(8) {
+            for x in (0..SIDE).step_by(8) {
+              grid.fill(IVec2::new(x + 2, y + 2), IVec2::new(x + 4, y + 4), solid);
+            }
+          }
+        } else {
+          for x in 0..SIDE {
+            let top = 160 + ((x * 7) % 13) + ((x / 9) % 5);
+            grid.fill(IVec2::new(x, top), IVec2::new(x, SIDE - 1), solid);
+          }
+        }
+      } else if dense || layer == 1 {
+        grid.fill(IVec2::ZERO, IVec2::splat(SIDE - 1), Some(Tile::new(0, 9)));
+      }
+      if !collide {
+        map.layers[layer].info.occludes = Some(false);
+      }
+    }
+    map
+  }
+
+  /// The time of each of `frames` frames from the one a 256 x 256 map is
+  /// spawned in, the median of `rounds` spawns
+  fn landing_frames(dense: bool, collide: bool, frames: usize, rounds: usize) -> Option<Vec<f64>> {
+    use std::time::Instant;
+    let builder = EngineBuilder::new().resolution(320, 180).start_scene(Empty);
+    let mut engine = HeadlessEngine::new_or_skip(builder)?;
+    engine.step_frames(10).expect("frames");
+    let handle = engine
+      .world_mut()
+      .resource_mut::<Assets<TileMap>>()
+      .add(landing_map(dense, collide));
+    let mut times = vec![Vec::new(); frames];
+    for _ in 0..rounds {
+      let root = MapRoot::new(handle.clone());
+      let root = if collide {
+        root
+      } else {
+        root.without_collision()
+      };
+      let map = engine.world_mut().spawn(root).id();
+      for time in &mut times {
+        let start = Instant::now();
+        engine.step().expect("a frame");
+        time.push(start.elapsed().as_secs_f64() * 1000.0);
+      }
+      engine.world_mut().despawn(map);
+      engine.step_frames(3).expect("frames");
+    }
+    Some(
+      times
+        .into_iter()
+        .map(|mut t| {
+          t.sort_by(f64::total_cmp);
+          t[t.len() / 2]
+        })
+        .collect(),
+    )
+  }
+
+  /// Prints what collision and shadows add to each frame from the one a
+  /// 256 x 256 four-layer map spawns in, against the same map with neither.
+  /// Run it in release: `cargo test --release -p ryo2d --lib
+  /// spawning_a_256_map -- --ignored --nocapture`
+  #[test]
+  #[ignore = "timing; run in release by hand"]
+  fn spawning_a_256_map_adds_under_half_a_millisecond_to_any_frame() {
+    const FRAMES: usize = 24;
+    let mut worst: f64 = 0.0;
+    for dense in [true, false] {
+      let (Some(on), Some(off)) = (
+        landing_frames(dense, true, FRAMES, 7),
+        landing_frames(dense, false, FRAMES, 7),
+      ) else {
+        return;
+      };
+      let name = if dense { "dense islands" } else { "terrain" };
+      println!("{name}: frame, with collision and shadows, without, added (ms)");
+      for (frame, (with, without)) in on.iter().zip(&off).enumerate() {
+        let added = with - without;
+        worst = worst.max(added);
+        println!("  {frame:>2}: {with:.3} {without:.3} {added:+.3}");
+      }
+    }
+    println!("worst frame added {worst:.3} ms");
+    assert!(worst < 0.5, "a frame took {worst:.3} ms more");
   }
 }

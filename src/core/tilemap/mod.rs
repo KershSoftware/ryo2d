@@ -7,6 +7,8 @@
 mod collision;
 mod edit;
 mod grid;
+mod jobs;
+mod kinds;
 mod ldtk;
 mod map;
 mod occluders;

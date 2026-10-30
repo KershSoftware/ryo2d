@@ -71,7 +71,10 @@ pub(crate) enum MapSource {
 /// occluding layers ([`LayerInfo::occludes`], else as they collide) cast
 /// 2D shadows through
 /// [`MapOccluder`](super::MapOccluder) children. Edits re-collide and
-/// re-shadow only the chunks they touch; a disabled map has neither.
+/// re-shadow only the chunks they touch; a disabled map has neither. A
+/// map's first colliders are built off the main thread and come in over a
+/// few steps after it spawns: put bodies that stand on it there once it
+/// collides ([`MapEvent::Collides`], [`MapsView::collides`](super::MapsView::collides)).
 ///
 /// ```
 /// use ryo2d::prelude::*;
@@ -268,8 +271,15 @@ pub(crate) struct LayerTiles(pub(crate) FastMap<IVec2, Entity>);
 /// What happened to a map entity's asset
 #[derive(Message, Clone, Debug)]
 pub enum MapEvent {
-  /// Its layers, objects and class tiles spawned
+  /// Its layers, objects and class tiles spawned. Its colliders build over
+  /// the next few steps, off the main thread: put bodies that stand on the
+  /// map on it once it `Collides`
   Spawned { map: Entity },
+  /// Every collider of its first build is in physics (none for a map that
+  /// collides with nothing): a body set on it from now on stands on it.
+  /// Sent once a spawn, after `Spawned`; `MapsView::collides` says the
+  /// same at any time
+  Collides { map: Entity },
   /// Its asset changed and its layers and objects follow it
   Reloaded { map: Entity },
   /// Its asset did not load (or has no such level): nothing spawned
@@ -724,7 +734,7 @@ fn root_discarded(mut world: DeferredWorld, context: HookContext) {
   });
 }
 
-fn send(world: &mut World, event: MapEvent) {
+pub(crate) fn send(world: &mut World, event: MapEvent) {
   register_message::<MapEvent>(world);
   world.resource_mut::<Messages<MapEvent>>().write(event);
 }

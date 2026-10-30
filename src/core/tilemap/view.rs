@@ -40,6 +40,17 @@ impl<'w> MapsView<'w> {
     self.world.get::<MapIds>(map).is_some()
   }
 
+  /// Whether every collider `map` has is built and in physics, so a body
+  /// set on it stands on it: false while its first build is still coming
+  /// (a few steps after it spawns, `MapEvent::Collides` saying when) and
+  /// while it is disabled; true for a map that collides with nothing
+  pub fn collides(&self, map: Entity) -> bool {
+    self
+      .world
+      .get::<super::collision::MapCollision>(map)
+      .is_some_and(super::collision::MapCollision::collides)
+  }
+
   /// The entity of `map`'s layer `layer`
   pub fn layer_entity<'a>(&self, map: Entity, layer: impl Into<LayerRef<'a>>) -> Option<Entity> {
     edit::layer_entity(self.world, map, layer.into())

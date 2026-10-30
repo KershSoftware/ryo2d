@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use crate::core::asset::{AssetServer, MemorySource, insert_registry, pump};
+use crate::core::asset::{AssetServer, AssetsView, Handle, MemorySource, insert_registry, pump};
 use crate::core::ecs::{Entity, World};
 use crate::core::physics::test_util::world as physics_world;
 use crate::core::schedule::{EngineSchedules, Phase};
@@ -93,10 +93,53 @@ impl MapWorld {
     self.schedules.run(Phase::PostUpdate, &mut self.world);
   }
 
-  /// Spawns a map entity over `root` at the origin and runs a frame
+  /// Spawns a map entity over `root` at the origin and runs frames until
+  /// it is built (`settle`)
   pub(crate) fn spawn(&mut self, root: super::MapRoot) -> Entity {
     let map = self.world.spawn(root).id();
-    self.frame();
+    self.settle(map);
     map
   }
+
+  /// Runs frames until `map` collides and its shadows are all spawned: its
+  /// first builds come back from another thread, and spawn over frames
+  pub(crate) fn settle(&mut self, map: Entity) {
+    let start = std::time::Instant::now();
+    loop {
+      self.frame();
+      let collides = super::MapsView::new(&mut self.world).collides(map);
+      let shadows = self
+        .world
+        .get::<super::occluders::MapShadows>(map)
+        .is_some_and(super::occluders::MapShadows::is_built);
+      if collides && shadows {
+        return;
+      }
+      assert!(
+        start.elapsed() < std::time::Duration::from_secs(5),
+        "map {map} was not built in 5 s"
+      );
+      std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+  }
+}
+
+/// The map at `path`, loaded at once
+pub(crate) fn load_map(world: &mut World, path: &str) -> Handle<super::TileMap> {
+  match AssetsView::new(world).load_now::<super::TileMap>(path) {
+    Ok(handle) => handle,
+    Err(error) => panic!("{path}: {}", error.report()),
+  }
+}
+
+/// The map's layer entities, by index
+pub(crate) fn layers_of(world: &mut World, map: Entity) -> Vec<Entity> {
+  let mut found: Vec<(usize, Entity)> = world
+    .query::<(Entity, &super::MapLayerRef)>()
+    .iter(world)
+    .filter(|(_, l)| l.map == map)
+    .map(|(e, l)| (l.index, e))
+    .collect();
+  found.sort();
+  found.into_iter().map(|(_, e)| e).collect()
 }
