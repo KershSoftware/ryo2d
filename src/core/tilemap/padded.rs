@@ -283,15 +283,18 @@ fn stamp(tileset: &Tileset, version: u64, images: &Assets<Image>) -> u64 {
   match &tileset.image {
     TilesetImage::Atlas { image, .. } => images.version(image).hash(&mut h),
     TilesetImage::Collection => {
-      let mut tiles: Vec<_> = tileset
+      // Each tile's (id, image version) hashed alone and the hashes summed,
+      // so the map's order does not matter and nothing is collected
+      let tiles = tileset
         .tiles()
-        .filter_map(|(id, data)| Some((id, &data.image.as_ref()?.0)))
-        .collect();
-      tiles.sort_unstable_by_key(|(id, _)| *id);
-      for (id, handle) in tiles {
-        id.hash(&mut h);
-        images.version(handle).hash(&mut h);
-      }
+        .filter_map(|(id, data)| Some((id, &data.image.as_ref()?.0)));
+      let sum = tiles.fold(0u64, |sum, (id, handle)| {
+        let mut one = DefaultHasher::new();
+        id.hash(&mut one);
+        images.version(handle).hash(&mut one);
+        sum.wrapping_add(one.finish())
+      });
+      sum.hash(&mut h);
     }
   }
   h.finish()
@@ -370,7 +373,39 @@ impl PaddedTilesets {
 pub(crate) mod tests {
   use super::*;
   use crate::core::tilemap::{TileData, TileFrame, TilesetImage};
+  use std::alloc::{GlobalAlloc, Layout, System};
+  use std::cell::Cell;
   use std::time::Duration;
+
+  thread_local! {
+    static ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
+  }
+
+  /// Counts the allocations each thread makes
+  struct Counting;
+
+  // SAFETY: every call goes to `System`; the counter is a const-initialised
+  // thread local without a destructor, so touching it never allocates
+  unsafe impl GlobalAlloc for Counting {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+      ALLOCATIONS.with(|c| c.set(c.get() + 1));
+      unsafe { System.alloc(layout) }
+    }
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+      unsafe { System.dealloc(ptr, layout) }
+    }
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new: usize) -> *mut u8 {
+      ALLOCATIONS.with(|c| c.set(c.get() + 1));
+      unsafe { System.realloc(ptr, layout, new) }
+    }
+  }
+
+  #[global_allocator]
+  static COUNTING: Counting = Counting;
+
+  fn allocations() -> usize {
+    ALLOCATIONS.with(Cell::get)
+  }
 
   /// A `cols` x `rows` atlas of `tile` px tiles; texel (x, y) of tile `id`
   /// is `[x, y, id, 255]` (x and y within the tile)
@@ -583,5 +618,57 @@ pub(crate) mod tests {
     drop((first, again, third));
     images.free_unheld(&mut Vec::new());
     assert_eq!(images.len(), count);
+  }
+
+  #[test]
+  fn a_cache_hit_allocates_nothing() {
+    let mut tilesets = Assets::<Tileset>::new();
+    let mut images = Assets::new();
+    let atlas = marked_atlas(&mut images, 16, 2, 2);
+    let a = images.add(Image::solid_rect(16, 16, 255, 0, 0, 255));
+    let b = images.add(Image::solid_rect(8, 24, 0, 255, 0, 255));
+    let mut collection = Tileset::new("c", UVec2::splat(16), TilesetImage::Collection);
+    collection.tile_count = 40;
+    for id in 0..40 {
+      let (handle, size) = if id % 2 == 0 {
+        (a.clone(), UVec2::splat(16))
+      } else {
+        (b.clone(), UVec2::new(8, 24))
+      };
+      collection.insert_tile(
+        id,
+        TileData {
+          image: Some((handle, size)),
+          ..TileData::default()
+        },
+      );
+    }
+    let sources = [
+      TilesetSource::Asset(tilesets.add(atlas)),
+      TilesetSource::Asset(tilesets.add(collection.clone())),
+      TilesetSource::Embedded(Arc::new(collection)),
+    ];
+    let mut padded = PaddedTilesets::default();
+    for round in 0..2 {
+      padded.begin_round();
+      for source in &sources {
+        assert!(
+          padded.get(source, &tilesets, &mut images).is_some(),
+          "round {round}"
+        );
+      }
+      padded.end_round();
+    }
+    // Warm: every further round is a hit
+    let before = allocations();
+    for _ in 0..10 {
+      padded.begin_round();
+      for source in &sources {
+        // Handle and layout clones are reference counts
+        drop(padded.get(source, &tilesets, &mut images));
+      }
+      padded.end_round();
+    }
+    assert_eq!(allocations(), before, "a cache hit allocated");
   }
 }
