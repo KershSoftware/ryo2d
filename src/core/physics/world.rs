@@ -852,13 +852,20 @@ impl Physics {
       }
     }
     self.follow_body(handle);
+    // A new shape can reach past the old one's box, which the queries
+    // before the step (the character sweep) would still use: a tile map's
+    // part takes an edit's new outline this way
+    if reshape {
+      self.make_queryable(handle);
+    }
   }
 
-  /// Put a new collider in the broad phase's tree now, so the queries made
-  /// before the step (the character sweep) see it: Rapier adds colliders at
-  /// the step, and a tile map rebuilt under a character would otherwise be
-  /// missing for that one sweep (its old parts are gone at once). The step's
-  /// broad-phase update then treats it as any collider updated this way.
+  /// Put a new or reshaped collider's box in the broad phase's tree now, so
+  /// the queries made before the step (the character sweep) see it: Rapier
+  /// updates the tree at the step, and a tile map's part spawned or
+  /// reshaped under a character would otherwise be missing (or cut to its
+  /// old box) for that one sweep. The step's broad-phase update then treats
+  /// it as any collider updated this way.
   fn make_queryable(&mut self, handle: ColliderHandle) {
     let Some(collider) = self.colliders.get(handle).filter(|c| c.is_enabled()) else {
       return;

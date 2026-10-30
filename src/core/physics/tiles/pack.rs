@@ -215,6 +215,11 @@ impl Packs {
     part
   }
 
+  /// Pack `key`'s part.
+  pub(crate) fn part(&self, key: PackKey) -> Option<Entity> {
+    self.packs.get(&key).and_then(|pack| pack.part)
+  }
+
   /// Records `part` as pack `key`'s collider.
   pub(crate) fn set_part(&mut self, key: PackKey, part: Entity) {
     if let Some(pack) = self.packs.get_mut(&key) {

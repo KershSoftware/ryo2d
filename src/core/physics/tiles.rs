@@ -437,9 +437,11 @@ const MAX_CHANGES: usize = 1 << 16;
 /// 32 by 32 cells are one collider, and so are the flat one-way runs
 /// starting in a chunk along one row (a sloped run is a collider of its
 /// own). An edit retraces the outlines and runs through the cells it
-/// changed and rebuilds the colliders of only the chunks whose outlines or
-/// runs changed, leaving every other collider as it was. With no body they
-/// are fixed; with a kinematic `RigidBody` the whole map moves.
+/// changed and gives the colliders of only the chunks whose outlines or
+/// runs changed their new shape in place, the same entities, so what
+/// stands on the rest of such a chunk keeps its contacts; every other
+/// collider stays as it was. With no body they are fixed; with a kinematic
+/// `RigidBody` the whole map moves.
 ///
 /// Disabling the map entity (`Disabled`) removes its colliders and enabling
 /// it builds them again from the cells as they then are; so does removing
@@ -810,6 +812,12 @@ impl TileColliders {
       Some(shape) => commands.spawn((part, PrebuiltShape(shape))).id(),
       None => commands.spawn(part).id(),
     };
+    self.adopt(kept, key, part);
+  }
+
+  /// Records `part` as pack `key`'s, and as the part of each of its
+  /// members.
+  fn adopt(&self, kept: &mut Kept, key: PackKey, part: Entity) {
     if let PackKey::Loops(..) = key {
       kept.loop_packs.set_part(key, part);
       for &id in kept.loop_packs.members(key) {
@@ -857,11 +865,13 @@ impl TileColliders {
 
   /// Rebuild what the cells at `changed` touch (sorted by index, each with
   /// its value before): the outline loops and one-way runs through them,
-  /// and the colliders of the packs they leave or join.
+  /// and the colliders of the packs they leave or join (`alive` tells a
+  /// part still there).
   fn respawn(
     &self,
     kept: &mut Kept,
     changed: &[(u32, TileCell)],
+    alive: &dyn Fn(Entity) -> bool,
     commands: &mut Commands,
     map: Entity,
   ) {
@@ -892,22 +902,32 @@ impl TileColliders {
     dirty.sort_unstable();
     dirty.dedup();
     for key in dirty {
-      self.repack(kept, key, commands, map);
+      self.repack(kept, key, alive, commands, map);
     }
   }
 
-  /// Builds pack `key`'s collider again from its members as they now are;
-  /// a pack left with none goes.
-  fn repack(&self, kept: &mut Kept, key: PackKey, commands: &mut Commands, map: Entity) {
+  /// Builds pack `key`'s collider again from its members as they now are.
+  /// Its part takes the new shape in place (the same entity, so physics
+  /// keeps its collider, contacts and all); a pack that had none, or whose
+  /// part is gone (`alive` false), spawns one, and a pack left with no
+  /// members despawns its part.
+  fn repack(
+    &self,
+    kept: &mut Kept,
+    key: PackKey,
+    alive: &dyn Fn(Entity) -> bool,
+    commands: &mut Commands,
+    map: Entity,
+  ) {
     let mut geometry = Geometry::default();
-    let (old, collider) = if let PackKey::Loops(..) = key {
+    let loops = matches!(key, PackKey::Loops(..));
+    let collider = if loops {
       let outlines = &kept.outlines;
       let members = kept.loop_packs.settle(key, |id| outlines.get(id).is_some());
       for outline in members.iter().filter_map(|&id| outlines.get(id)) {
         geometry.add_ring(ring(&outline.corners).into_iter().map(|p| self.at(p)));
       }
-      let old = kept.loop_packs.take_part(key);
-      (old, (!members.is_empty()).then(|| geometry.loops()))
+      (!members.is_empty()).then(|| geometry.loops())
     } else {
       let runs = &kept.runs;
       let members = kept.run_packs.settle(key, |id| runs.get(id).is_some());
@@ -915,14 +935,31 @@ impl TileColliders {
         let (a, b) = ends(&run.points);
         geometry.add_segment(self.at(a), self.at(b));
       }
-      let old = kept.run_packs.take_part(key);
-      (old, (!members.is_empty()).then(|| geometry.runs()))
+      (!members.is_empty()).then(|| geometry.runs())
     };
-    if let Some(old) = old {
-      commands.entity(old).try_despawn();
-    }
-    if let Some(collider) = collider {
-      self.spawn_pack(kept, key, collider, None, commands, map);
+    let packs = if loops {
+      &mut kept.loop_packs
+    } else {
+      &mut kept.run_packs
+    };
+    let part = packs.part(key).filter(|&part| alive(part));
+    match (collider, part) {
+      (Some(collider), Some(part)) => {
+        // A shape built ahead for its landing is no longer its shape
+        commands
+          .entity(part)
+          .try_insert(self.material(collider))
+          .try_remove::<PrebuiltShape>();
+        self.adopt(kept, key, part);
+      }
+      (collider, _) => {
+        if let Some(old) = packs.take_part(key) {
+          commands.entity(old).try_despawn();
+        }
+        if let Some(collider) = collider {
+          self.spawn_pack(kept, key, collider, None, commands, map);
+        }
+      }
     }
   }
 }
@@ -1150,7 +1187,8 @@ pub(crate) fn rebuild_tile_colliders(
       Some(mut build) if applies(&build) => {
         let build = &mut *build;
         if let (Some(kept), Some(changed)) = (&mut build.kept, &changes) {
-          tiles.respawn(kept, changed, &mut commands, map);
+          let alive = |part: Entity| parts.contains(part);
+          tiles.respawn(kept, changed, &alive, &mut commands, map);
         }
         build.record = now;
       }
@@ -1704,12 +1742,15 @@ mod with_physics {
       fall_step(&mut world, &mut s, e);
       let state = world.get::<CharacterState>(e).unwrap();
       assert!(state.on_floor, "fell through the floor at step {step}");
-      floors.push(state.floor);
+      let floor = state.floor.expect("a floor");
+      floors.push(world.get::<Collider>(floor).map(|c| c.shape.clone()));
     }
+    // Rebuilt in place: the floor's part takes each step's new outline
     floors.dedup();
     assert!(
       floors.len() > 80,
-      "the floor was rebuilt every step: {floors:?}"
+      "the floor was rebuilt every step: {} shapes",
+      floors.len()
     );
     let right = at(&world, e).translation.x + 6.0;
     assert!(
@@ -2302,18 +2343,33 @@ mod with_physics {
       .unwrap()
       .set(1, 0, TileCell::Empty);
     run(&mut world, &mut s, 1);
-    let after: Vec<Entity> = parts_by_id(&mut world, map)
-      .iter()
-      .map(|(e, _)| *e)
-      .collect();
+    let after = parts_by_id(&mut world, map);
     assert_eq!(
       loop_count(&mut world, map),
       3,
       "the left island split in two"
     );
     assert_eq!(after.len(), 2, "{after:?}");
-    assert!(after.contains(&right), "the right chunk kept its part");
-    assert!(!after.contains(&left), "the left chunk's part was rebuilt");
+    let shape = |parts: &[(Entity, Collider)], part: Entity| {
+      parts
+        .iter()
+        .find(|(e, _)| *e == part)
+        .map(|(_, c)| c.shape.clone())
+    };
+    assert!(
+      shape(&after, left).is_some(),
+      "the left chunk kept its part"
+    );
+    assert_ne!(
+      shape(&after, left),
+      shape(&before, left),
+      "rebuilt in place"
+    );
+    assert_eq!(
+      shape(&after, right),
+      shape(&before, right),
+      "the right chunk's untouched"
+    );
     assert_matches_a_full_trace(&mut world, map);
   }
 
@@ -2343,14 +2399,25 @@ mod with_physics {
       .set(1, 0, TileCell::Slope(BottomRight));
     run(&mut world, &mut s, 1);
     let after = parts_by_id(&mut world, map);
-    let ids: Vec<Entity> = after.iter().map(|(e, _)| *e).collect();
     assert_eq!(after.len(), 2, "{after:?}");
     assert_eq!(loop_count(&mut world, map), 3);
-    assert!(
-      !ids.contains(&ab),
-      "the loops of (0, 0) and (1, 1) were retraced"
+    let shape = |parts: &[(Entity, Collider)], part: Entity| {
+      parts
+        .iter()
+        .find(|(e, _)| *e == part)
+        .map(|(_, c)| c.shape.clone())
+    };
+    let ab_after = shape(&after, ab).expect("chunk 0 keeps its part");
+    assert_ne!(
+      shape(&before, ab),
+      Some(ab_after),
+      "the loops of (0, 0) and (1, 1) were retraced into it"
     );
-    assert!(ids.contains(&far), "the far loop was not");
+    assert_eq!(
+      shape(&after, far),
+      shape(&before, far),
+      "the far loop was not"
+    );
     assert_matches_a_full_trace(&mut world, map);
   }
 
@@ -2516,6 +2583,194 @@ mod with_physics {
   }
 
   #[test]
+  fn an_edit_elsewhere_in_a_chunk_keeps_the_ground_a_character_stands_on() {
+    use crate::core::ecs::Messages;
+    use crate::core::physics::{CharacterState, CollisionStarted, CollisionStopped};
+    let (mut world, mut s) = world(60);
+    // Island A, a floor on row 2 (cells 0 to 19), and island B, a block on
+    // row 0 (cells 24 to 26): both in chunk 0, one collider
+    let mut cells = vec![TileCell::Empty; 40 * 3];
+    for x in 0..20 {
+      cells[2 * 40 + x] = TileCell::Solid;
+    }
+    for cell in &mut cells[24..27] {
+      *cell = TileCell::Solid;
+    }
+    let map = world
+      .spawn((
+        Transform::from_xy(0.0, 68.0),
+        TileColliders::from_cells(40, 3, Vec2::splat(16.0), cells),
+      ))
+      .id();
+    let mut started = world
+      .resource::<Messages<CollisionStarted>>()
+      .get_cursor_current();
+    let e = standing_character(&mut world, 40.0);
+    for _ in 0..30 {
+      fall_step(&mut world, &mut s, e);
+    }
+    let state = world.get::<CharacterState>(e).unwrap();
+    assert!(state.on_floor);
+    let floor = state.floor.expect("a floor");
+    assert_eq!(parts_by_id(&mut world, map).len(), 1, "one chunk, one part");
+    let messages = world.resource::<Messages<CollisionStarted>>();
+    assert!(
+      started
+        .read(messages)
+        .any(|m| m.involves(e) && m.involves(floor)),
+      "landing on the ground is a collision"
+    );
+    let at = world.get::<Transform>(e).unwrap().translation;
+    let mut started = world
+      .resource::<Messages<CollisionStarted>>()
+      .get_cursor_current();
+    let mut stopped = world
+      .resource::<Messages<CollisionStopped>>()
+      .get_cursor_current();
+    // A tile on island B comes and goes
+    for step in 0..10 {
+      let cell = if step % 2 == 0 {
+        TileCell::Solid
+      } else {
+        TileCell::Empty
+      };
+      assert!(
+        world
+          .get_mut::<TileColliders>(map)
+          .unwrap()
+          .set(27, 0, cell)
+      );
+      fall_step(&mut world, &mut s, e);
+      let state = world.get::<CharacterState>(e).unwrap();
+      assert!(
+        state.on_floor && state.floor == Some(floor),
+        "step {step}: on_floor {}, floor {:?} (was {floor})",
+        state.on_floor,
+        state.floor
+      );
+      let now = world.get::<Transform>(e).unwrap().translation;
+      assert!(
+        (now - at).length() < 1e-3,
+        "step {step}: the character moved from {at} to {now}"
+      );
+    }
+    let on_map = |world: &World, entity: Entity| {
+      world
+        .get::<ChildOf>(entity)
+        .is_some_and(|child_of| child_of.parent() == map)
+    };
+    let messages = world.resource::<Messages<CollisionStarted>>();
+    let restarted: Vec<_> = started
+      .read(messages)
+      .filter(|m| m.involves(e) && (on_map(&world, m.a) || on_map(&world, m.b)))
+      .collect();
+    assert!(restarted.is_empty(), "{restarted:?}");
+    let messages = world.resource::<Messages<CollisionStopped>>();
+    let ended: Vec<_> = stopped
+      .read(messages)
+      .filter(|m| {
+        m.involves(e) && (m.involves(floor) || on_map(&world, m.a) || on_map(&world, m.b))
+      })
+      .collect();
+    assert!(ended.is_empty(), "{ended:?}");
+  }
+
+  // A part reshaped in place is in the queries before the step, as a new
+  // part is: a block added in the air, far from the rest of its chunk,
+  // stops a character flying into it on that very step
+  #[test]
+  fn a_block_added_in_front_of_a_flying_character_stops_it_at_once() {
+    let (mut world, mut s) = world(60);
+    // Ground on row 25, far below; the character flies along y 80 to 120
+    let mut tiles = TileColliders::new(32, 30, Vec2::splat(16.0));
+    for x in 0..32 {
+      tiles.set(x, 25, TileCell::Solid);
+    }
+    let map = world.spawn((Transform::IDENTITY, tiles)).id();
+    let e = world
+      .spawn((
+        Transform::from_xy(40.0, 100.0),
+        CharacterController::platformer(),
+        Collider::rect(12.0, 40.0),
+      ))
+      .id();
+    run(&mut world, &mut s, 1);
+    let mut added = false;
+    for step in 0..30 {
+      let right = at(&world, e).translation.x + 6.0;
+      // A block from x 160 to 192, y 64 to 144, while the character is
+      // under a step's run (10 px) short of it: this step's run would end
+      // inside it
+      if !added && right > 150.0 {
+        let mut tiles = world.get_mut::<TileColliders>(map).unwrap();
+        for y in 4..9 {
+          tiles.set(10, y, TileCell::Solid);
+          tiles.set(11, y, TileCell::Solid);
+        }
+        added = true;
+      }
+      world.get_mut::<Velocity>(e).unwrap().dx = 600.0;
+      run(&mut world, &mut s, 1);
+      if added {
+        let right = at(&world, e).translation.x + 6.0;
+        assert!(
+          right <= 160.5,
+          "step {step}: ran into the block, right side {right}"
+        );
+      }
+    }
+    assert!(added);
+    assert_eq!(parts_by_id(&mut world, map).len(), 1, "one chunk, one part");
+  }
+
+  #[test]
+  fn an_edit_keeps_a_chunk_collider_s_entity_and_handle() {
+    let (mut world, mut s) = world(60);
+    // Two islands, and two one-way runs on one row, all in chunk 0
+    let mut tiles = TileColliders::new(40, 4, Vec2::splat(16.0));
+    for (x, y) in [(0, 0), (1, 0), (6, 0)] {
+      tiles.set(x, y, TileCell::Solid);
+    }
+    for x in (0..4).chain(8..12) {
+      tiles.set(x, 3, TileCell::OneWay);
+    }
+    let map = world.spawn((Transform::IDENTITY, tiles)).id();
+    run(&mut world, &mut s, 1);
+    let registered = |world: &mut World| -> Vec<(Entity, Collider, String)> {
+      let parts = parts_by_id(world, map);
+      let physics = world.resource::<Physics>();
+      parts
+        .into_iter()
+        .map(|(part, collider)| {
+          let handle = physics
+            .collider_entries
+            .get(&part)
+            .map(|entry| entry.handle);
+          (part, collider, format!("{handle:?}"))
+        })
+        .collect()
+    };
+    let before = registered(&mut world);
+    assert_eq!(before.len(), 2, "a loop part and a run part: {before:?}");
+    // Island (6, 0) grows and a run gets longer: both parts keep members
+    {
+      let mut tiles = world.get_mut::<TileColliders>(map).unwrap();
+      tiles.set(7, 0, TileCell::Solid);
+      tiles.set(12, 3, TileCell::OneWay);
+    }
+    run(&mut world, &mut s, 1);
+    let after = registered(&mut world);
+    assert_eq!(after.len(), 2, "{after:?}");
+    for ((part, old, handle), (now_part, now, now_handle)) in before.iter().zip(&after) {
+      assert_eq!(part, now_part, "the part keeps its entity");
+      assert!(handle.starts_with("Some"), "{handle}");
+      assert_eq!(handle, now_handle, "and its physics handle");
+      assert_ne!(old.shape, now.shape, "its shape is the edited one");
+    }
+    assert_matches_a_full_trace(&mut world, map);
+  }
+
+  #[test]
   fn one_way_runs_and_shape_outlines_rebuild_only_where_edited() {
     let (mut world, mut s) = world(60);
     let mut tiles = TileColliders::new(80, 3, Vec2::splat(16.0));
@@ -2563,9 +2818,16 @@ mod with_physics {
     run(&mut world, &mut s, 1);
     let after = parts_by_id(&mut world, map);
     let ids: Vec<Entity> = after.iter().map(|(e, _)| *e).collect();
-    assert!(!ids.contains(&run0) && !ids.contains(&shape2));
-    assert!(ids.contains(&run2) && ids.contains(&shape0));
+    assert!(
+      !ids.contains(&shape2),
+      "its chunk's last loop went, so its part did"
+    );
+    assert!(ids.contains(&run0) && ids.contains(&run2) && ids.contains(&shape0));
     let longer = part_in(&after, Vec2::new(65.0, 0.0), Vec2::new(80.0, 0.0));
+    assert_eq!(
+      longer, run0,
+      "the run's part took its longer shape in place"
+    );
     assert!(matches!(
       after.iter().find(|(e, _)| *e == longer).unwrap().1.shape,
       ColliderShape::Segment { a, b } if a.x.min(b.x) == 0.0 && a.x.max(b.x) == 80.0

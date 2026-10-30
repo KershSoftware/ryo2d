@@ -1543,25 +1543,32 @@ mod tests {
 
   #[test]
   fn an_edit_re_registers_only_its_chunk() {
+    use crate::core::ecs::DetectChanges;
     use crate::core::physics::Physics;
     let mut maps = MapWorld::new();
     let handle = add(&mut maps.world, landing_map(true, true));
     let map = maps.spawn(MapRoot::new(handle));
-    let handles = |world: &mut World| -> Vec<(Entity, Vec<IVec2>, String)> {
+    // Each part: its chunks, its physics handle, when its collider last
+    // changed and its shape
+    type Registered = (Entity, Vec<IVec2>, String, String, Option<ColliderShape>);
+    let registered = |world: &mut World| -> Vec<Registered> {
       let parts = parts_by_chunk(world, map);
-      let physics = world.resource::<Physics>();
       parts
         .into_iter()
         .map(|(part, chunks, _)| {
+          let physics = world.resource::<Physics>();
           let handle = format!(
             "{:?}",
             physics.collider_entries.get(&part).map(|e| e.handle)
           );
-          (part, chunks, handle)
+          let collider = world.entity(part).get_ref::<Collider>();
+          let changed = format!("{:?}", collider.as_ref().map(|c| c.last_changed()));
+          let shape = collider.map(|c| c.shape.clone());
+          (part, chunks, handle, changed, shape)
         })
         .collect()
     };
-    let before = handles(&mut maps.world);
+    let before = registered(&mut maps.world);
     assert!(before.len() <= 64, "{} colliders", before.len());
     // An island of chunk (5, 5) grows
     assert!(MapsView::new(&mut maps.world).set_tile(
@@ -1571,20 +1578,29 @@ mod tests {
       Some(Tile::new(0, SOLID))
     ));
     maps.step();
-    let after = handles(&mut maps.world);
+    let after = registered(&mut maps.world);
     let edited = IVec2::splat(5);
-    for (part, chunks, handle) in &before {
+    for (part, chunks, handle, changed, shape) in &before {
+      let now = after.iter().find(|(p, ..)| p == part);
+      let Some((_, now_chunks, now_handle, now_changed, now_shape)) = now else {
+        panic!("chunk {chunks:?}'s collider went");
+      };
+      assert!(handle.starts_with("Some"), "{handle}");
+      assert_eq!(
+        (now_chunks, now_handle),
+        (chunks, handle),
+        "it kept its handle"
+      );
       if chunks.contains(&edited) {
-        assert!(
-          after.iter().all(|(p, ..)| p != part),
-          "the edited chunk's collider went"
+        assert_ne!(
+          now_shape, shape,
+          "the edited chunk's collider took the new shape"
         );
       } else {
-        assert!(
-          after
-            .iter()
-            .any(|(p, c, h)| p == part && c == chunks && h == handle),
-          "chunk {chunks:?}'s collider kept its entity and handle"
+        assert_eq!(
+          (now_changed, now_shape),
+          (changed, shape),
+          "chunk {chunks:?}'s collider was not touched"
         );
       }
     }
@@ -1774,7 +1790,7 @@ mod tests {
       median(colliders)
     );
     println!(
-      "an edit's fixed step, its chunk's collider rebuilt and registered: {:?}",
+      "an edit's fixed step, its chunk's collider reshaped: {:?}",
       median(steps)
     );
     println!("an idle fixed step: {:?}", median(idle_steps));
