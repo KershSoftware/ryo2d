@@ -158,7 +158,8 @@ impl Batch2D {
       placed: Vec::new(),
       draws: Vec::new(),
       triangles: Triangles::default(),
-      chunks: ChunkStore::default(),
+      // The arena holds no more than the device's largest buffer
+      chunks: ChunkStore::for_device(device.limits().max_buffer_size),
       chunk_buffers,
       vertices: GrowingBuffer::new(
         device,
@@ -305,6 +306,13 @@ impl Batch2D {
   #[cfg(test)]
   pub(crate) fn has_chunk_buffer(&self) -> bool {
     self.chunk_buffers.instances().is_some()
+  }
+
+  /// How many instances the chunk arena's GPU buffer holds, 0 with none
+  /// (tests)
+  #[cfg(test)]
+  pub(crate) fn chunk_buffer_capacity(&self) -> usize {
+    self.chunk_buffers.capacity()
   }
 
   /// The layout cameras' uniforms are bound with (group 0)

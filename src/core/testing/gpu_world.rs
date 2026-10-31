@@ -1091,6 +1091,58 @@ fn only_visible_chunks_draw() {
 }
 
 #[test]
+fn a_view_past_the_chunk_arena_s_cap_draws_what_fits_and_warns_once() {
+  // The 64 px view meets the corners of four full chunks of 1,024 tiles
+  // each; the arena may hold 2,500 instances (the GPU's largest buffer is
+  // about two million), so two chunks fit and the other two do not
+  const YELLOW: [u8; 4] = [240, 220, 20, 255];
+  const BLUE: [u8; 4] = [30, 60, 230, 255];
+  let builder = EngineBuilder::new().pixel_art(64, 64).start_scene(Fixture {
+    setup: |ctx| {
+      ctx.look().tonemap = Tonemap::Clamp;
+      let first = solid_tiles(ctx, &[RED, YELLOW]);
+      let second = solid_tiles(ctx, &[BLUE]);
+      let map = filled_map(UVec2::splat(64), vec![first, second], |cell| {
+        Some(Tile::new(((cell.x + cell.y) % 2) as u16, 0))
+      });
+      // Chunks of 256 px: the four meet at the view's centre, (32, 32)
+      spawn_map(ctx, map, Vec2::splat(-224.0));
+    },
+  });
+  let Some(mut engine) = engine(builder) else {
+    return;
+  };
+  engine
+    .engine
+    .batch
+    .as_mut()
+    .unwrap()
+    .chunks_mut()
+    .set_cap(2500);
+  crate::core::tilemap::test_util::step_until_maps_land(&mut engine);
+  for _ in 0..4 {
+    engine.step().expect("the game goes on");
+  }
+  let store = chunks(&engine);
+  assert_eq!(store.chunk_count(), 2, "the chunks that fit are built");
+  assert!(store.instances_in_use() <= 2500, "within the cap");
+  assert_eq!(store.full_warnings(), 1, "warned once");
+  let batch = engine.engine.batch.as_ref().unwrap();
+  assert!(
+    batch.chunk_buffer_capacity() <= 2500,
+    "the GPU buffer stays within the cap: {}",
+    batch.chunk_buffer_capacity()
+  );
+  // The first two chunks met (row by row) are the top half of the view
+  let frame = engine.frame().unwrap();
+  let tile = |p: [u8; 4]| [RED, YELLOW, BLUE].contains(&p);
+  for x in [4, 28, 36, 60] {
+    assert!(tile(frame.get_pixel(x, 8).0), "({x}, 8) drawn");
+    assert!(!tile(frame.get_pixel(x, 56).0), "({x}, 56) not drawn");
+  }
+}
+
+#[test]
 fn an_edit_rebuilds_one_chunk() {
   let Some(mut engine) = tile_engine(64, big_map) else {
     return;

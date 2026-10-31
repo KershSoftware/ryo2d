@@ -30,8 +30,28 @@ pub(crate) const SLOT_STRIDE: u32 = 256;
 const FIRST_SLOTS: usize = 16;
 
 /// Instances the arena's buffer holds at first; it doubles when the arena
-/// outgrows it
+/// outgrows it, up to the arena's cap
 const FIRST_INSTANCES: usize = 1024;
+
+/// The most instances the arena holds: as many as the GPU's largest buffer
+/// (`max_buffer_size`) fits, and never past what a `u32` counts
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Cap(usize);
+
+impl Cap {
+  /// The cap of a device whose largest buffer is `max_buffer_size` bytes
+  fn of(max_buffer_size: u64) -> Self {
+    let instances = max_buffer_size / std::mem::size_of::<SpriteInstance>() as u64;
+    Self(usize::try_from(instances.min(u64::from(u32::MAX))).unwrap_or(u32::MAX as usize))
+  }
+}
+
+impl Default for Cap {
+  /// The limits the engine asks its device for
+  fn default() -> Self {
+    Self::of(wgpu::Limits::default().max_buffer_size)
+  }
+}
 
 /// One tileset's tiles of one chunk of a tile layer: a range of the arena
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -76,11 +96,24 @@ pub(crate) struct ChunkRow {
   pub max: Vec2,
 }
 
-/// A chunk as a view draws it: each tileset's part, and the rows of each
-pub(crate) struct BuiltChunk<'a> {
-  pub parts: &'a [ChunkPart],
-  /// Part by part, rows in order
-  pub rows: &'a [ChunkRow],
+/// Where [`ChunkStore::chunk`] copies a chunk as a view draws it: each
+/// tileset's part, and, if asked for, the rows of each (part by part, rows
+/// in order)
+pub(crate) struct ChunkCopy<'a> {
+  pub parts: &'a mut Vec<ChunkPart>,
+  pub rows: Option<&'a mut Vec<ChunkRow>>,
+}
+
+impl ChunkCopy<'_> {
+  /// Copies `built`'s parts, and rows if asked for, over what was there
+  fn take(self, built: &Built) {
+    self.parts.clear();
+    self.parts.extend_from_slice(&built.parts);
+    if let Some(rows) = self.rows {
+      rows.clear();
+      rows.extend_from_slice(&built.rows);
+    }
+  }
 }
 
 /// One draw's slot, as `tile.wgsl` reads it (`TileSlot`)
@@ -117,13 +150,23 @@ struct Built {
   drawn: u64,
   /// The last view it was handed to
   view: u64,
+  /// What it was last refused room for: the stamp it was to be built from
+  /// and the instances that made. It is not built again from that stamp
+  /// until the arena has room for them
+  refused: Option<(ChunkStamp, u32)>,
   parts: Vec<ChunkPart>,
   rows: Vec<ChunkRow>,
 }
 
 /// The CPU side of the retained chunks: each layer's built chunks, the
 /// arena they are in (and what of it changed since the GPU was written),
-/// and the frame's slots
+/// and the frame's slots.
+///
+/// The arena holds at most as many instances as the GPU's largest buffer
+/// fits (its cap: about two million under the engine's limits). A chunk
+/// that would take it past that frees the chunks drawn least recently
+/// (none drawn this frame); when that is not enough it is not built, and
+/// draws nothing until there is room, and the dev log warns once
 #[derive(Default)]
 pub(crate) struct ChunkStore {
   layers: FastMap<Entity, FastMap<UVec2, Built>>,
@@ -142,6 +185,14 @@ pub(crate) struct ChunkStore {
   frame: u64,
   views: u64,
   rebuilds: u64,
+  cap: Cap,
+  /// Chunks that may be freed to make room, newest first (each a chunk not
+  /// drawn in the frame `evictable_frame`, when the list was made), as
+  /// `(last drawn, layer, chunk)`
+  evictable: Vec<(u64, Entity, UVec2)>,
+  evictable_frame: u64,
+  /// Whether the dev log was told the arena is full
+  warned: bool,
 }
 
 impl ChunkStore {
@@ -159,87 +210,219 @@ impl ChunkStore {
     self.views
   }
 
-  /// The parts and rows of `layer`'s chunk `chunk` for `view`, built by
-  /// `build` first (it fills the instances, as `(tileset, row, instance)`
-  /// grouped by tileset, in row order within one) when `stamp` is not what
-  /// it was built from. `None` when the view had it already. The chunk
+  /// The store of a device whose largest buffer is `max_buffer_size`
+  /// bytes: its arena holds no more than that buffer does
+  pub(crate) fn for_device(max_buffer_size: u64) -> Self {
+    Self {
+      cap: Cap::of(max_buffer_size),
+      ..Self::default()
+    }
+  }
+
+  /// Copies into `out` the parts and rows of `layer`'s chunk `chunk` for
+  /// `view`, built by `build` first (it fills the instances, as `(tileset,
+  /// row, instance)` grouped by tileset, in row order within one) when
+  /// `stamp` is not what it was built from. False, copying nothing, when
+  /// the view had it already, or the arena has no room for it. The chunk
   /// counts as drawn this frame
   pub(crate) fn chunk(
     &mut self,
-    layer: Entity,
-    chunk: UVec2,
+    (layer, chunk): (Entity, UVec2),
     stamp: ChunkStamp,
     view: u64,
     build: impl FnOnce(&mut Vec<(u16, u32, SpriteInstance)>),
-  ) -> Option<BuiltChunk<'_>> {
+    out: ChunkCopy<'_>,
+  ) -> bool {
+    let frame = self.frame;
+    let built = self
+      .layers
+      .entry(layer)
+      .or_default()
+      .entry(chunk)
+      .or_default();
+    if built.view == view {
+      return false;
+    }
+    built.view = view;
+    built.drawn = frame;
+    if built.stamp == Some(stamp) {
+      out.take(built);
+      return true;
+    }
+    built.stamp = None;
+    for part in built.parts.drain(..) {
+      release(
+        &mut self.held,
+        &mut self.free,
+        part.start..part.start + part.count,
+      );
+    }
+    built.rows.clear();
+    // Refused room for this stamp before: not built again until there is
+    // room for as many instances
+    if let Some((_, count)) = built.refused.filter(|(refused, _)| *refused == stamp)
+      && !self.make_room(count)
+    {
+      return false;
+    }
+    self.scratch.clear();
+    build(&mut self.scratch);
+    // A chunk makes at most an instance a cell
+    let count = u32::try_from(self.scratch.len()).unwrap_or(u32::MAX);
+    let Some(start) = self.allocate(count) else {
+      self.refuse(layer, chunk, (stamp, count));
+      return false;
+    };
     let Self {
       layers,
       held,
-      free,
       written,
       scratch,
-      frame,
       rebuilds,
       ..
     } = self;
-    let built = layers.entry(layer).or_default().entry(chunk).or_default();
-    if built.view == view {
-      return None;
-    }
-    built.view = view;
-    built.drawn = *frame;
-    if built.stamp != Some(stamp) {
-      built.stamp = Some(stamp);
-      *rebuilds += 1;
-      for part in built.parts.drain(..) {
-        release(held, free, part.start..part.start + part.count);
+    // Drawn this frame, so no room made took it
+    let Some(built) = layers
+      .get_mut(&layer)
+      .and_then(|chunks| chunks.get_mut(&chunk))
+    else {
+      return false;
+    };
+    built.stamp = Some(stamp);
+    built.refused = None;
+    *rebuilds += 1;
+    let mut at = start;
+    for run in scratch.chunk_by(|a, b| a.0 == b.0) {
+      let tileset = run[0].0;
+      let count = run.len() as u32;
+      let start = at;
+      at += count;
+      for (slot, (_, _, instance)) in held[start as usize..].iter_mut().zip(run) {
+        *slot = *instance;
       }
-      built.rows.clear();
-      scratch.clear();
-      build(scratch);
-      for run in scratch.chunk_by(|a, b| a.0 == b.0) {
-        let tileset = run[0].0;
-        let count = run.len() as u32;
-        let start = allocate(held, free, count);
-        for (slot, (_, _, instance)) in held[start as usize..].iter_mut().zip(run) {
-          *slot = *instance;
+      // Each row's run of the part, and the box of each
+      let (mut min, mut max) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
+      let mut first = 0;
+      for cells in run.chunk_by(|a, b| a.1 == b.1) {
+        let (mut low, mut high) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
+        for (_, _, instance) in cells {
+          let (a, b) = reach(instance);
+          low = low.min(a);
+          high = high.max(b);
         }
-        // Each row's run of the part, and the box of each
-        let (mut min, mut max) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
-        let mut first = 0;
-        for cells in run.chunk_by(|a, b| a.1 == b.1) {
-          let (mut low, mut high) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
-          for (_, _, instance) in cells {
-            let (a, b) = reach(instance);
-            low = low.min(a);
-            high = high.max(b);
-          }
-          built.rows.push(ChunkRow {
-            tileset,
-            row: cells[0].1,
-            first,
-            count: cells.len() as u32,
-            min: low,
-            max: high,
-          });
-          first += cells.len() as u32;
-          min = min.min(low);
-          max = max.max(high);
-        }
-        written.push(start..start + count);
-        built.parts.push(ChunkPart {
+        built.rows.push(ChunkRow {
           tileset,
-          start,
-          count,
-          min,
-          max,
+          row: cells[0].1,
+          first,
+          count: cells.len() as u32,
+          min: low,
+          max: high,
         });
+        first += cells.len() as u32;
+        min = min.min(low);
+        max = max.max(high);
+      }
+      written.push(start..start + count);
+      built.parts.push(ChunkPart {
+        tileset,
+        start,
+        count,
+        min,
+        max,
+      });
+    }
+    out.take(built);
+    true
+  }
+
+  /// Room for `count` instances in the arena, its start, freeing the chunks
+  /// drawn least recently until there is: `None` when freeing every chunk
+  /// not drawn this frame is not enough
+  fn allocate(&mut self, count: u32) -> Option<u32> {
+    loop {
+      if let Some(start) = allocate(&mut self.held, &mut self.free, count, self.cap) {
+        return Some(start);
+      }
+      if !self.evict_oldest() {
+        return None;
       }
     }
-    Some(BuiltChunk {
-      parts: &built.parts,
-      rows: &built.rows,
-    })
+  }
+
+  /// Whether the arena has room for `count` instances, once the chunks drawn
+  /// least recently are freed until it does
+  fn make_room(&mut self, count: u32) -> bool {
+    loop {
+      if has_room(&self.held, &self.free, count, self.cap) {
+        return true;
+      }
+      if !self.evict_oldest() {
+        return false;
+      }
+    }
+  }
+
+  /// Frees the chunk drawn least recently, of those not drawn this frame
+  /// (whose draws are already made); false when there is none
+  fn evict_oldest(&mut self) -> bool {
+    let frame = self.frame;
+    if self.evictable_frame != frame {
+      self.evictable_frame = frame;
+      self.evictable.clear();
+      for (&layer, chunks) in &self.layers {
+        for (&chunk, built) in chunks {
+          if built.drawn < frame && !built.parts.is_empty() {
+            self.evictable.push((built.drawn, layer, chunk));
+          }
+        }
+      }
+      // Newest first, so the oldest comes off the end
+      self
+        .evictable
+        .sort_unstable_by_key(|&(drawn, ..)| std::cmp::Reverse(drawn));
+    }
+    while let Some((_, layer, chunk)) = self.evictable.pop() {
+      let Some(chunks) = self.layers.get_mut(&layer) else {
+        continue;
+      };
+      // Drawn again since the list was made, or gone
+      if chunks.get(&chunk).is_none_or(|built| built.drawn >= frame) {
+        continue;
+      }
+      if let Some(built) = chunks.remove(&chunk) {
+        for part in built.parts {
+          release(
+            &mut self.held,
+            &mut self.free,
+            part.start..part.start + part.count,
+          );
+        }
+      }
+      return true;
+    }
+    false
+  }
+
+  /// Records that `layer`'s chunk `chunk` found no room for `wanted` (its
+  /// stamp, its instances), and warns the first time the arena is full
+  fn refuse(&mut self, layer: Entity, chunk: UVec2, wanted: (ChunkStamp, u32)) {
+    if let Some(built) = self
+      .layers
+      .get_mut(&layer)
+      .and_then(|chunks| chunks.get_mut(&chunk))
+    {
+      built.refused = Some(wanted);
+    }
+    if !self.warned {
+      self.warned = true;
+      let size = std::mem::size_of::<SpriteInstance>();
+      crate::engine_warn!(
+        module: "Tilemap",
+        "the tile chunk arena is full: the chunks in view, and those drawn in the last {KEEP_FRAMES} frames, need more than the {} tile instances ({} MiB) the GPU's largest buffer holds, so the chunks past that draw nothing until there is room (zoom in, show fewer tile layers, or split the view between cameras)",
+        self.cap.0,
+        self.cap.0 * size / (1024 * 1024)
+      );
+    }
   }
 
   /// Adds a slot for this frame, its UVs to come from `texture`'s place,
@@ -292,7 +475,24 @@ impl ChunkStore {
   /// How many chunks are built
   #[cfg(test)]
   pub(crate) fn chunk_count(&self) -> usize {
-    self.layers.values().map(FastMap::len).sum()
+    self
+      .layers
+      .values()
+      .flat_map(FastMap::values)
+      .filter(|built| built.stamp.is_some())
+      .count()
+  }
+
+  /// Sets the most instances the arena may hold (tests)
+  #[cfg(test)]
+  pub(crate) fn set_cap(&mut self, instances: usize) {
+    self.cap = Cap(instances);
+  }
+
+  /// How many times the dev log was told the arena is full (tests)
+  #[cfg(test)]
+  pub(crate) fn full_warnings(&self) -> usize {
+    usize::from(self.warned)
   }
 
   /// How many instances the built chunks hold
@@ -317,19 +517,43 @@ fn reach(instance: &SpriteInstance) -> (Vec2, Vec2) {
 }
 
 /// Room for `count` instances in the arena: the first free range that holds
-/// them, else past its end
-fn allocate(held: &mut Vec<SpriteInstance>, free: &mut Vec<Range<u32>>, count: u32) -> u32 {
+/// them, else past its end; `None` when that would take the arena past
+/// `cap`
+fn allocate(
+  held: &mut Vec<SpriteInstance>,
+  free: &mut Vec<Range<u32>>,
+  count: u32,
+  cap: Cap,
+) -> Option<u32> {
   if let Some(i) = free.iter().position(|r| r.len() as u32 >= count) {
     let start = free[i].start;
     free[i].start += count;
     if free[i].is_empty() {
       free.remove(i);
     }
-    return start;
+    return Some(start);
+  }
+  let end = held.len().checked_add(count as usize)?;
+  if end > cap.0 {
+    return None;
+  }
+  // Doubling, but never holding room past the cap
+  if end > held.capacity() {
+    let room = end.max(held.capacity() * 2).min(cap.0);
+    held.reserve_exact(room - held.len());
   }
   let start = held.len() as u32;
-  held.resize(held.len() + count as usize, bytemuck::Zeroable::zeroed());
-  start
+  held.resize(end, bytemuck::Zeroable::zeroed());
+  Some(start)
+}
+
+/// Whether [`allocate`] would find room for `count` instances
+fn has_room(held: &[SpriteInstance], free: &[Range<u32>], count: u32, cap: Cap) -> bool {
+  free.iter().any(|r| r.len() as u32 >= count)
+    || held
+      .len()
+      .checked_add(count as usize)
+      .is_some_and(|end| end <= cap.0)
 }
 
 /// Gives `range` of the arena back: joined with the free ranges it touches,
@@ -479,7 +703,13 @@ impl ChunkBuffers {
     let size = std::mem::size_of::<SpriteInstance>();
     let fits = matches!(&self.instances, Some((_, capacity)) if held.len() <= *capacity);
     if !fits {
-      let capacity = held.len().next_power_of_two().max(FIRST_INSTANCES);
+      // Within the GPU's largest buffer: the arena never holds more
+      let capacity = held
+        .len()
+        .next_power_of_two()
+        .max(FIRST_INSTANCES)
+        .min(store.cap.0)
+        .max(held.len());
       let buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("Tile Chunks"),
         size: (capacity * size) as u64,
@@ -511,6 +741,12 @@ impl ChunkBuffers {
     }
   }
 
+  /// How many instances the arena's buffer holds, 0 with none (tests)
+  #[cfg(test)]
+  pub(crate) fn capacity(&self) -> usize {
+    self.instances.as_ref().map_or(0, |(_, capacity)| *capacity)
+  }
+
   /// The arena's buffer, while any chunk is built
   pub(crate) fn instances(&self) -> Option<&wgpu::Buffer> {
     self.instances.as_ref().map(|(buffer, _)| buffer)
@@ -526,6 +762,33 @@ impl ChunkBuffers {
 mod tests {
   use super::*;
   use crate::core::ecs::World;
+
+  /// A chunk's parts and rows as copied out
+  struct Copied {
+    parts: Vec<ChunkPart>,
+    rows: Vec<ChunkRow>,
+  }
+
+  impl ChunkStore {
+    /// [`chunk`](ChunkStore::chunk), its parts and rows copied out
+    fn chunk_copied(
+      &mut self,
+      layer: Entity,
+      chunk: UVec2,
+      stamp: ChunkStamp,
+      view: u64,
+      build: impl FnOnce(&mut Vec<(u16, u32, SpriteInstance)>),
+    ) -> Option<Copied> {
+      let (mut parts, mut rows) = (Vec::new(), Vec::new());
+      let out = ChunkCopy {
+        parts: &mut parts,
+        rows: Some(&mut rows),
+      };
+      self
+        .chunk((layer, chunk), stamp, view, build, out)
+        .then_some(Copied { parts, rows })
+    }
+  }
 
   fn layers(n: usize) -> Vec<Entity> {
     let mut world = World::new();
@@ -566,7 +829,7 @@ mod tests {
   ) -> Vec<ChunkPart> {
     let view = store.begin_view();
     store
-      .chunk(layer, UVec2::ZERO, stamp, view, builder(tiles))
+      .chunk_copied(layer, UVec2::ZERO, stamp, view, builder(tiles))
       .map(|built| built.parts.to_vec())
       .unwrap_or_default()
   }
@@ -622,7 +885,7 @@ mod tests {
       }));
     };
     let built = store
-      .chunk(layer, UVec2::ZERO, STAMP, view, build)
+      .chunk_copied(layer, UVec2::ZERO, STAMP, view, build)
       .expect("built");
     assert_eq!(built.parts.len(), 2);
     let rows: Vec<(u16, u32, u32, u32)> = built
@@ -643,7 +906,7 @@ mod tests {
     // Drawn again unchanged, the rows are as built
     let again = store.begin_view();
     let kept = store
-      .chunk(layer, UVec2::ZERO, STAMP, again, |_| {})
+      .chunk_copied(layer, UVec2::ZERO, STAMP, again, |_| {})
       .expect("kept");
     assert_eq!(kept.rows.len(), 3);
   }
@@ -678,7 +941,7 @@ mod tests {
     let view = store.begin_view();
     let get = |store: &mut ChunkStore, view| {
       store
-        .chunk(layer, UVec2::ZERO, STAMP, view, builder(&[(0, 8.0)]))
+        .chunk_copied(layer, UVec2::ZERO, STAMP, view, builder(&[(0, 8.0)]))
         .is_some()
     };
     assert!(get(&mut store, view));
@@ -711,7 +974,7 @@ mod tests {
       tileset: 0,
     };
     let view = store.begin_view();
-    store.chunk(
+    store.chunk_copied(
       b,
       UVec2::new(1, 0),
       STAMP,
@@ -742,6 +1005,78 @@ mod tests {
     assert_eq!(store.chunk_count(), 0);
     assert_eq!(store.instances_in_use(), 0);
     assert!(store.held.is_empty());
+  }
+
+  #[test]
+  fn a_full_arena_frees_the_chunks_drawn_least_recently() {
+    let [layer] = layers(1)[..] else { return };
+    let mut store = ChunkStore::default();
+    store.set_cap(6);
+    let at = |x| UVec2::new(x, 0);
+    let draw = |store: &mut ChunkStore, x: u32, tiles: &[(u16, f32)]| {
+      let view = store.begin_view();
+      store
+        .chunk_copied(layer, at(x), STAMP, view, builder(tiles))
+        .is_some()
+    };
+    // Chunks 0 and 1, then 1 alone: 0 is the least recently drawn
+    store.begin_frame();
+    assert!(draw(&mut store, 0, &[(0, 8.0), (0, 24.0), (0, 40.0)]));
+    store.end_frame(|_| true);
+    store.begin_frame();
+    assert!(draw(&mut store, 1, &[(0, 8.0), (1, 24.0)]));
+    store.end_frame(|_| true);
+    // Chunk 2 needs three: 0 is freed for it, not 1 (drawn later)
+    store.begin_frame();
+    assert!(draw(&mut store, 2, &[(0, 8.0), (0, 24.0), (0, 40.0)]));
+    assert_eq!(store.chunk_count(), 2);
+    assert_eq!(store.instances_in_use(), 5);
+    let key = |x| ChunkKey {
+      layer,
+      chunk: at(x),
+      tileset: 0,
+    };
+    assert_eq!(store.range(key(0)), None, "freed");
+    assert!(store.range(key(1)).is_some());
+    assert!(store.held.len() <= 6 && store.held.capacity() <= 6);
+    assert_eq!(store.full_warnings(), 0, "room was made");
+  }
+
+  #[test]
+  fn a_chunk_without_room_is_not_built_until_there_is_and_warns_once() {
+    use std::cell::Cell;
+    let [layer] = layers(1)[..] else { return };
+    let mut store = ChunkStore::default();
+    store.set_cap(3);
+    let builds = Cell::new(0);
+    let draw = |store: &mut ChunkStore, x: u32, count: usize| {
+      let view = store.begin_view();
+      let build = |out: &mut Vec<(u16, u32, SpriteInstance)>| {
+        builds.set(builds.get() + 1);
+        out.extend((0..count).map(|i| (0, 0, tile(8.0 + 16.0 * i as f32, 8.0, 16.0, 16.0))));
+      };
+      store
+        .chunk_copied(layer, UVec2::new(x, 0), STAMP, view, build)
+        .is_some()
+    };
+    // Both drawn in one frame: the second has no room, and none can be made
+    store.begin_frame();
+    assert!(draw(&mut store, 0, 2));
+    assert!(!draw(&mut store, 1, 2), "no room");
+    assert_eq!((store.full_warnings(), builds.get()), (1, 2));
+    store.end_frame(|_| true);
+    // Again: it is not built again, as there is still no room
+    store.begin_frame();
+    assert!(draw(&mut store, 0, 2));
+    assert!(!draw(&mut store, 1, 2));
+    assert_eq!(builds.get(), 2, "not built again without room");
+    store.end_frame(|_| true);
+    // Drawn alone, it takes the other's room
+    store.begin_frame();
+    assert!(draw(&mut store, 1, 2));
+    assert_eq!(builds.get(), 3);
+    assert_eq!(store.chunk_count(), 1);
+    assert_eq!(store.full_warnings(), 1, "warned once");
   }
 
   #[test]

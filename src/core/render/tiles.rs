@@ -35,7 +35,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use glam::{Affine2, IVec2, UVec2, Vec2};
 
 use super::batch::{
-  BlendMode, ChunkKey, ChunkPart, ChunkRow, ChunkStamp, ChunkStore, Filter, TileSlot,
+  BlendMode, ChunkCopy, ChunkKey, ChunkPart, ChunkRow, ChunkStamp, ChunkStore, Filter, TileSlot,
 };
 use super::draw_list::reach;
 use super::entities::{DrawOrder, OrderedDraw, OrderedPayload};
@@ -690,14 +690,16 @@ impl View<'_> {
     let build = |out: &mut Vec<(u16, u32, SpriteInstance)>| {
       chunk_instances(grid, chunk, cell, layouts, &layer.look, out);
     };
-    let Some(built) = self.store.chunk(layer.layer, chunk, stamp, view, build) else {
-      return;
+    // Its parts, and its rows for a y-sorted layer, copied out of the store
+    let out = ChunkCopy {
+      parts: &mut *self.parts,
+      rows: layer.y_sorted.then_some(&mut *self.rows),
     };
-    self.parts.clear();
-    self.parts.extend_from_slice(built.parts);
-    self.rows.clear();
-    if layer.y_sorted {
-      self.rows.extend_from_slice(built.rows);
+    if !self
+      .store
+      .chunk((layer.layer, chunk), stamp, view, build, out)
+    {
+      return;
     }
     for part in self.parts.iter() {
       let tileset = usize::from(part.tileset);

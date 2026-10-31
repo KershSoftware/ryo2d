@@ -2,7 +2,7 @@
 name: ryo-tilemap
 description: "Tile maps - the workflow from Tiled (.tmx, .tmj) or LDtk (.ldtk) through assets/ to a MapRoot entity, layers and the reserved layer properties (collides, occludes, y_sort, lit), tilesets and typed tile data, objects and class tiles as entities, MapEvent, reading and editing tiles with ctx.maps() and Wang terrain, collision from tile shapes and IntGrids, tile shadows, y-sorting and parallax, worlds of levels, maps built in code and by procgen, hot reload, the web, performance and testing."
 metadata:
-  version: 1.0.0
+  version: 1.0.1
 ---
 
 # Ryo2D Tile Maps
@@ -471,6 +471,7 @@ Measured on an Apple M5 Pro in a release build, at 1920 x 1080 with 16 px tiles;
 - **Warnings in the dev log:**
   - `tileset "..." is too big to pad`: its padded copy would pass 16,384 texels a side (about 16,384 tiles of 64 px), so its tiles draw nothing until it changes. Split the tileset.
   - `layer "..." collides and has parallax`: it collides where it would be without parallax.
+  - `the tile chunk arena is full`: the cameras keep more than about two million tiles in view at once (with those seen in the last two seconds), past the GPU's largest buffer: a whole 1024 x 1024 four-layer map at a small zoom, or a minimap camera over a big map. The chunks seen least recently are let go first; past that, the chunks met last draw nothing. Zoom in, show fewer tile layers to the wide camera (`RenderLayers`), or draw the overview from a picture of the map.
   - A grid of colliding layers over 8192 cells a side gets no colliders; a repeated image layer too small to cover a view covers its middle.
 
 ## 16. Testing
