@@ -133,7 +133,9 @@ pub struct MapObjectData {
 /// carry it as a component
 #[derive(Component, Clone, Debug, PartialEq)]
 pub struct ImageLayer {
-  pub image: Handle<Image>,
+  /// The picture; `None` for a layer given none (Tiled makes a new image
+  /// layer so), which draws nothing
+  pub image: Option<Handle<Image>>,
   pub repeat_x: bool,
   pub repeat_y: bool,
 }

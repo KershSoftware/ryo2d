@@ -502,7 +502,11 @@ impl TileDrawer {
                 }
               }
             } else if let Some(image) = image {
-              let Some(shown) = gpu.shown_image(image.image.id(), images) else {
+              let Some(shown) = image
+                .image
+                .as_ref()
+                .and_then(|handle| gpu.shown_image(handle.id(), images))
+              else {
                 continue;
               };
               let (width, height) = shown.size();

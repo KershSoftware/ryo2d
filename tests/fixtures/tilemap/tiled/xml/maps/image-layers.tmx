@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<map version="1.10" tiledversion="1.12.2" orientation="orthogonal" renderorder="right-down" width="4" height="4" tilewidth="16" tileheight="16" infinite="0" parallaxoriginx="40" parallaxoriginy="24" nextlayerid="4" nextobjectid="1">
+ <layer id="1" name="far" width="4" height="4" parallaxx="0.5" parallaxy="0.25">
+  <data encoding="base64" compression="zlib">
+   eJxjYKAMAAAAQAAB
+  </data>
+ </layer>
+ <imagelayer id="2" name="empty"/>
+ <imagelayer id="3" name="keyed">
+  <image source="../../images/bg.png" trans="ff00ff" width="32" height="32"/>
+ </imagelayer>
+</map>

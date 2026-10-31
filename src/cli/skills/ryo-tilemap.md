@@ -136,7 +136,7 @@ What the editor gives a layer carries over:
 
 - **Order:** bottom first (`MapLayerRef::index`). Tiled's group layers flatten into their children: offsets add, opacity and tint multiply, parallax multiplies, visibility needs every group visible, and a group's blend mode passes down unless a child has its own. LDtk lists its top layer first; it draws last here too.
 - **Opacity, tint** (Tiled), **offset, visibility, blend mode, parallax** (section 10). A hidden layer draws nothing but still collides and casts shadows as its flags say: a collision-only layer is a hidden tile layer.
-- **Image layers** draw their picture, repeated across or down where Tiled's repeat settings say.
+- **Image layers** draw their picture, repeated across or down where Tiled's repeat settings say. One left without a picture (Tiled makes a new image layer so) loads with `ImageLayer::image` `None` and draws nothing.
 - **LDtk:** an IntGrid layer draws its auto-tiles and collides by its values; each layer keeps its own grid size, so a level may mix an 8 px collision grid with 16 px art.
 
 Four layer properties are reserved; the engine reads them into the layer's `LayerInfo`:

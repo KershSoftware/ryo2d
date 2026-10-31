@@ -405,11 +405,13 @@ impl Builder<'_, '_> {
         LayerKind::Objects(objects)
       }
       "imagelayer" => {
-        let Some(written) = raw.image.as_deref().filter(|i| !i.is_empty()) else {
-          return Err(fail(&path, &place, "the image layer has no image"));
+        // Tiled saves a new image layer with no image: it draws nothing
+        let image = match raw.image.as_deref().filter(|i| !i.is_empty()) {
+          Some(written) => Some(load_dep::<Image>(cx, &path, &place, written)?),
+          None => None,
         };
         LayerKind::Image(ImageLayer {
-          image: load_dep::<Image>(cx, &path, &place, written)?,
+          image,
           repeat_x: raw.repeatx,
           repeat_y: raw.repeaty,
         })

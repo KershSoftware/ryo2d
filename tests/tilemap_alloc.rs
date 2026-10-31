@@ -222,7 +222,7 @@ impl Scene for StaticMap {
     map.layers.push(MapLayer {
       info,
       kind: LayerKind::Image(ImageLayer {
-        image: backdrop,
+        image: Some(backdrop),
         repeat_x: true,
         repeat_y: true,
       }),

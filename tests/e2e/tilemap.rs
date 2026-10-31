@@ -734,7 +734,7 @@ fn image_layer(
   map.layers.push(MapLayer {
     info,
     kind: LayerKind::Image(ImageLayer {
-      image,
+      image: Some(image),
       repeat_x,
       repeat_y,
     }),

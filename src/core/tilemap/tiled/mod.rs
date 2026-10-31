@@ -340,10 +340,27 @@ mod tests {
       panic!("sky is not an image layer")
     };
     assert!(*repeat_x && !*repeat_y);
-    let Some(image) = world.resource::<Assets<Image>>().get(image) else {
+    let Some(image) = image
+      .as_ref()
+      .and_then(|image| world.resource::<Assets<Image>>().get(image))
+    else {
       panic!("the image is not loaded")
     };
     assert_eq!((image.width(), image.height()), (32, 32));
+  }
+
+  #[test]
+  fn an_image_layer_tiled_left_without_an_image_loads_empty() {
+    // Saved by Tiled 1.12.2 as `"image": ""` (and `<imagelayer/>` in XML)
+    let map = load("maps/image-layers.tmj");
+    let LayerKind::Image(empty) = &layer(&map, "empty").kind else {
+      panic!("empty is not an image layer")
+    };
+    assert!(empty.image.is_none());
+    let LayerKind::Image(keyed) = &layer(&map, "keyed").kind else {
+      panic!("keyed is not an image layer")
+    };
+    assert!(keyed.image.is_some());
   }
 
   #[test]
@@ -665,7 +682,12 @@ mod tests {
     let LayerKind::Image(sky) = &layer(loaded, "sky").kind else {
       panic!("no sky")
     };
-    assert!(server.is_ready(&sky.image));
+    assert!(
+      sky
+        .image
+        .as_ref()
+        .is_some_and(|image| server.is_ready(image))
+    );
     let TilesetSource::Asset(set) = &loaded.tilesets[0] else {
       panic!("not external")
     };

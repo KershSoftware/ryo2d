@@ -510,7 +510,7 @@ impl Scene for Busy {
       MapLayer {
         info: LayerInfo::new(100, "backdrop"),
         kind: LayerKind::Image(ImageLayer {
-          image: backdrop,
+          image: Some(backdrop),
           repeat_x: true,
           repeat_y: false,
         }),
@@ -1399,7 +1399,7 @@ fn a_tiny_image_too_small_to_repeat_warns_once() {
         map.layers.push(MapLayer {
           info,
           kind: LayerKind::Image(ImageLayer {
-            image,
+            image: Some(image),
             repeat_x: true,
             repeat_y: true,
           }),

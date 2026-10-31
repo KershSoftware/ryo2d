@@ -183,7 +183,7 @@ impl Scene for Repeated {
     map.layers.push(MapLayer {
       info,
       kind: LayerKind::Image(ImageLayer {
-        image,
+        image: Some(image),
         repeat_x: true,
         repeat_y: true,
       }),

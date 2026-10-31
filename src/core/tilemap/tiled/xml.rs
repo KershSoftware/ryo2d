@@ -562,7 +562,9 @@ mod tests {
     Asset, AssetServer, Assets, AssetsView, Handle, MemorySource, insert_registry,
   };
   use crate::core::ecs::kernel::World;
-  use crate::core::tilemap::{LayerKind, TileMap, Tileset, TilesetImage, TilesetSource};
+  use crate::core::tilemap::{
+    ImageLayer, LayerKind, TileMap, Tileset, TilesetImage, TilesetSource,
+  };
 
   const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tilemap/tiled");
 
@@ -691,8 +693,11 @@ mod tests {
         }
       }
       for layer in &map.layers {
-        if let LayerKind::Image(image) = &layer.kind {
-          self.handle(&image.image);
+        if let LayerKind::Image(ImageLayer {
+          image: Some(image), ..
+        }) = &layer.kind
+        {
+          self.handle(image);
         }
       }
       let tilesets: Vec<String> = map
@@ -739,7 +744,8 @@ mod tests {
     panic!("{name}: one has more lines than the other");
   }
 
-  const MAP_PAIRS: [&str; 14] = [
+  const MAP_PAIRS: [&str; 15] = [
+    "image-layers",
     "lists",
     "tile-objects",
     "mixed",
