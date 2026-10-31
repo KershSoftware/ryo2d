@@ -974,6 +974,33 @@ fn tile_engine(size: u32, setup: fn(&mut SceneContext)) -> Option<HeadlessEngine
 }
 
 #[test]
+fn a_map_spawned_entering_the_first_scene_lands_with_its_tilesets_padded() {
+  // Spawned in the start scene's `on_enter`, before any frame: its landing
+  // job pads its tileset off the frame and the landing hands it over, as a
+  // later map's does
+  let Some(engine) = tile_engine(64, |ctx| {
+    let set = solid_tiles(ctx, &[RED]);
+    let map = filled_map(UVec2::splat(4), vec![set], |_| Some(Tile::new(0, 0)));
+    spawn_map(ctx, map, Vec2::ZERO);
+  }) else {
+    return;
+  };
+  let cache = engine
+    .world()
+    .resource::<crate::core::tilemap::padded::PaddedCache>()
+    .clone();
+  let padded = cache.lock();
+  assert_eq!(padded.adopted(), 1, "the landing's padding handed over");
+  // Padded images fit the device's textures, with the atlas's border
+  let gpu = engine.world().resource::<crate::core::graphics::Gpu>();
+  let side = gpu.device.limits().max_texture_dimension_2d;
+  assert_eq!(
+    padded.max_side(),
+    side - 2 * crate::core::graphics::atlas::BORDER
+  );
+}
+
+#[test]
 fn a_moving_map_draws_where_it_is_without_rebuilding_chunks() {
   let Some(mut engine) = tile_engine(64, |ctx| {
     let set = solid_tiles(ctx, &[RED]);

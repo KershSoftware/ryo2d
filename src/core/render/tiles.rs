@@ -353,8 +353,9 @@ impl TileDrawer {
   ) {
     store.begin_frame();
     self.draws.clear();
-    // The padded tilesets are the world's, so a map's landing can hand over
-    // those it padded ahead. With no map left, the rounds free them
+    // The padded tilesets are the world's (the engine's world has them from
+    // the start), so a map's landing can hand over those it padded ahead.
+    // With no map left, the rounds free them
     let cache = self
       .padded
       .get_or_insert_with(|| {
@@ -1018,7 +1019,7 @@ mod tests {
   };
 
   fn layout_of(tileset: &Tileset, images: &Assets<Image>) -> PaddedLayout {
-    pad_tileset(tileset, images).expect("padded").1
+    pad_tileset(tileset, images, u32::MAX).expect("padded").1
   }
 
   fn build(

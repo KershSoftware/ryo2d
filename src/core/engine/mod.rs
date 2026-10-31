@@ -419,6 +419,9 @@ pub(crate) fn init_world_resources(
   world.insert_resource(crate::core::text::TextEffects::default());
   world.insert_resource(crate::core::ui::UiTheme::default());
   world.insert_resource(PhysicsPaused(false));
+  // Shared by map landings and the map drawer from the first frame, so a
+  // map spawned entering the first scene is padded off the frame too
+  world.insert_resource(crate::core::tilemap::padded::PaddedCache::default());
   world.insert_resource(frame::PendingTickCheck::default());
   world.add_observer(frame::record_tick_check);
   world.insert_resource(config.physics.clone());
@@ -1187,6 +1190,14 @@ impl Engine {
       device: renderer.device_arc(),
       queue: renderer.queue_arc(),
     });
+    // Tilesets pad into images the device's textures hold
+    if let Some(cache) = self
+      .world
+      .get_resource::<crate::core::tilemap::padded::PaddedCache>()
+    {
+      let side = renderer.device().limits().max_texture_dimension_2d;
+      cache.lock().set_texture_limit(side);
+    }
 
     self.renderer = Some(renderer);
     self.sprite_gpu = Some(sprite_gpu);

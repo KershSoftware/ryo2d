@@ -469,7 +469,7 @@ Measured on an Apple M5 Pro in a release build, at 1920 x 1080 with 16 px tiles;
   - **A lit level** gathers every map occluder each frame, and each shadowed light loops over all of them, however far away: one shadowed light over the 1024 x 1024 cave cost about 30 µs more than the unlit map.
   - **A landing frame** builds and uploads the chunks in view (about 0.5 ms at 1080p), and a tileset's first landing also makes its padded texture (about 1 ms more, the first time; a level restarted, or the next one with the same tileset, within about two seconds reuses it). A 1024 x 1024 four-layer colliding map takes about 70 ms on the builder thread and about 5 ms in its landing frame; on the web all of it is one frame (section 14). Cover a big map's landing with a loading screen.
 - **Warnings in the dev log:**
-  - `tileset "..." is too big to pad`: its padded copy would pass 16,384 texels a side (about 16,384 tiles of 64 px), so its tiles draw nothing until it changes. Split the tileset.
+  - `tileset "..." is too big to pad`: its padded copy (each tile in a cell twice its size) would pass the GPU's largest texture, 8,192 texels a side: about 3,800 tiles of 64 px, 15,800 of 32 px, or a collection of over 196 images up to 256 px (36 up to 512 px). Its tiles draw nothing until it changes. Split the tileset.
   - `layer "..." collides and has parallax`: it collides where it would be without parallax.
   - `the tile chunk arena is full`: the cameras keep more than about two million tiles in view at once (with those seen in the last two seconds), past the GPU's largest buffer: a whole 1024 x 1024 four-layer map at a small zoom, or a minimap camera over a big map. The chunks seen least recently are let go first; past that, the chunks met last draw nothing. Zoom in, show fewer tile layers to the wide camera (`RenderLayers`), or draw the overview from a picture of the map.
   - A grid of colliding layers over 8192 cells a side gets no colliders; a repeated image layer too small to cover a view covers its middle.
@@ -536,7 +536,7 @@ fn level_one_lands_with_its_floor() {
 | A seam in the floor where two layers meet | The layers differ in cell size, offset or material, so each collides as a grid of its own |
 | Tiles cast no shadows | The light lacks `with_shadows()`; the layer does not occlude (`occludes` false, or it does not collide and `occludes` is not set) |
 | A character walks over a tree instead of behind it | The layer is not y-sorted, or the character lacks `YSort` or has another z than the layer (section 10) |
-| A tileset draws nothing, warned as too big to pad | Its padded copy would pass 16,384 texels a side: split it |
+| A tileset draws nothing, warned as too big to pad | Its padded copy would pass the GPU's largest texture, 8,192 texels a side (about 3,800 tiles of 64 px): split it |
 | Painting terrain leaves a cell as it was, warned | The Wang set has no tile for what the cell needs |
 | A dug tile came back | The map's file was saved: the file wins over tile edits |
 | A coin collected did not come back after a save | As meant: what the game despawned stays away unless the save changed it |
