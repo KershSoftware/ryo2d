@@ -98,8 +98,12 @@ pub(crate) fn chunk_instances(
       ));
     }
   }
-  // Stable, so each tileset keeps its row order
-  out.sort_by_key(|(tileset, ..)| *tileset);
+  // Stable, so each tileset keeps its row order. A chunk of one tileset
+  // (or already in order) needs none: the sort would take a scratch buffer
+  // of the chunk's size (about 140 KB for a full chunk) to move nothing
+  if !out.is_sorted_by_key(|(tileset, ..)| *tileset) {
+    out.sort_by_key(|(tileset, ..)| *tileset);
+  }
 }
 
 /// One tile's instance

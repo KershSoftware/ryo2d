@@ -2,8 +2,8 @@
 //! `GlobalTransform`s, recomputing only subtrees that changed.
 
 use super::kernel::{
-  Added, Changed, ChildOf, Children, Commands, DetectChanges, DetectChangesMut, Entity, Has, Or,
-  Query, Ref, RemovedComponents, With, Without,
+  Added, Changed, ChildOf, Children, Commands, DetectChanges, DetectChangesMut, Entity, Has, Local,
+  Or, Query, Ref, RemovedComponents, With, Without,
 };
 use super::transform::{GlobalTransform, Interpolated, PreviousGlobalTransform, Transform};
 
@@ -45,6 +45,10 @@ pub fn propagate_transforms(
   mut uninterpolated: RemovedComponents<Interpolated>,
   mut untransformed: RemovedComponents<Transform>,
   mut commands: Commands,
+  // (entity, parent's global, parent changed, parent interpolated): the
+  // walk's stack, kept between runs so a run allocates nothing once it has
+  // grown to the hierarchy (empty at the end of each run)
+  mut stack: Local<Vec<(Entity, GlobalTransform, bool, bool)>>,
 ) {
   // Nothing that places an entity changed since the last run, so every
   // `GlobalTransform` and `PreviousGlobalTransform` is already right. The
@@ -58,9 +62,7 @@ pub fn propagate_transforms(
     return;
   }
 
-  // (entity, parent's global, parent changed, parent interpolated)
-  let mut stack: Vec<(Entity, GlobalTransform, bool, bool)> = Vec::new();
-
+  stack.clear();
   for (entity, transform, mut global, children, interpolated, has_previous) in roots.iter_mut() {
     let changed = transform.is_changed() || detached.contains(&entity);
     if changed {

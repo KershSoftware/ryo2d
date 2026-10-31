@@ -344,15 +344,18 @@ impl DrawList {
     self.sorted = false;
   }
 
-  /// The lit items sorted by (z, kind, sequence); stable.
+  /// The lit items sorted by (z, kind, sequence): the order they were
+  /// pushed in among equal z and kind. Every item's sequence is its own, so
+  /// the sort needs no stability and allocates nothing (a stable sort takes
+  /// a scratch buffer past 20 items).
   ///
   /// Sorts the unlit items too, so [`items`](Self::items) and
   /// [`unlit_items`](Self::unlit_items) are in draw order afterwards.
   pub(crate) fn sorted(&mut self) -> &[DrawItem] {
     if !self.sorted {
       let key = |item: &DrawItem| (item.z, item.kind, item.sequence);
-      self.items.sort_by_key(key);
-      self.unlit_items.sort_by_key(key);
+      self.items.sort_unstable_by_key(key);
+      self.unlit_items.sort_unstable_by_key(key);
       self.sorted = true;
     }
     &self.items
