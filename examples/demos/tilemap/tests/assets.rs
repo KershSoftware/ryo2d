@@ -379,19 +379,24 @@ fn the_platformer_map_has_its_layers_objects_and_a_door_wired_to_its_switch() {
 
   let objects = objects(&map, "objects");
   assert_eq!(objects.len(), 16);
-  let coins = of_class(objects, "coin");
-  assert_eq!(coins.len(), 13);
-  assert!(
-    coins
-      .iter()
-      .all(|coin| coin.tile.is_some_and(|t| t.id == 151))
-  );
-  let mut values: Vec<i64> = coins
+  // The coins are tile objects of the coin tile with no class of their
+  // own, as Tiled saves them: they take the tile's `coin` class and its
+  // value as the map lands (the Objects page's test reads them spawned).
+  // Only the prize writes a value of its own
+  let coins: Vec<&MapObjectData> = objects
     .iter()
-    .map(|coin| coin.properties.int("value").expect("a coin has a value"))
+    .filter(|object| object.tile.is_some_and(|t| t.id == 151))
+    .collect();
+  assert_eq!(coins.len(), 13);
+  assert!(coins.iter().all(|coin| coin.class.is_none()));
+  let mut values: Vec<Option<i64>> = coins
+    .iter()
+    .map(|coin| coin.properties.int("value"))
     .collect();
   values.sort_unstable();
-  assert_eq!(values, [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 10]);
+  let mut wanted = vec![None; 12];
+  wanted.push(Some(10));
+  assert_eq!(values, wanted);
 
   let start = of_class(objects, "player_start");
   assert_eq!(start.len(), 1);

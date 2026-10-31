@@ -289,6 +289,35 @@ fn a_moved_object_moves_and_keeps_game_components() {
   assert_eq!(translation(&maps.world, b), moved);
 }
 
+#[test]
+fn a_tileset_save_reaches_the_tile_objects_that_take_its_tile_s_data() {
+  // Tile 5 of the set is of class "coin"; the object has no class of its own
+  let set = |extra: &str| {
+    SET.replace(
+      r#"{"id":5,"type":"coin"}"#,
+      &format!(r#"{{"id":5,"type":"coin"{extra}}}"#),
+    )
+  };
+  let coin = object(1, "coin", (16, 16), r#","gid":6"#);
+  let files = files_with(&[
+    ("r/set.tsj", &set("")),
+    ("r/m.tmj", &small([0; 12], &[coin])),
+  ]);
+  let (mut maps, map) = spawned(&files, "r/m.tmj", MapRoot::new);
+  let (entity, landed) = object_named(&mut maps.world, map, "coin");
+  assert_eq!(landed.class.as_deref(), Some("coin"));
+  assert_eq!(landed.properties.int("value"), None);
+
+  let mut watch = Watch::new(&maps.world);
+  let worth = r#","properties":[{"name":"value","type":"int","value":5}]"#;
+  files.insert("r/set.tsj", set(worth));
+  watch.until_reloaded(&mut maps, map);
+  let (again, reloaded) = object_named(&mut maps.world, map, "coin");
+  assert_eq!(again, entity, "updated in place");
+  assert_eq!(reloaded.class.as_deref(), Some("coin"));
+  assert_eq!(reloaded.properties.int("value"), Some(5));
+}
+
 /// The ids of the objects whose `MapObject` arrived
 #[derive(Resource, Default)]
 struct Arrived(Vec<String>);

@@ -225,7 +225,7 @@ fn the_objects_page_collects_a_coin() {
   };
   wait_for_player(&mut engine);
   let before = coins(&mut engine);
-  // Twelve take the project's class default, one is worth 10
+  // Twelve take the class default their tile carries, one is worth 10
   let mut values: Vec<Option<i64>> = before.iter().map(|(_, value)| *value).collect();
   values.sort_unstable();
   let mut wanted = vec![Some(1); 12];

@@ -1,7 +1,8 @@
 //! The Objects page: what the designer placed in Tiled becomes entities.
-//! The platformer's thirteen coins are `coin` tile objects (one worth 10,
-//! the rest worth the project's default of 1): each gets a trigger and a
-//! `Pickup`, and goes when the hero touches it. The spikes are tiles of
+//! The platformer's thirteen coins are tile objects of the coin tile, whose
+//! class `coin` they take, as Tiled shows them (one worth 10, the rest worth
+//! the class's default of 1): each gets a trigger and a `Pickup`, and goes
+//! when the hero touches it. The spikes are tiles of
 //! class `spikes`, spawned as entities (`MapRoot::with_entity_tiles`):
 //! taken out of their layer, they are the game's to draw, and each gets its
 //! tile's art and a kill zone that sends the hero back to the start. The
@@ -157,8 +158,9 @@ impl ObjectsPage {
   }
 }
 
-/// A coin's `value`: its own, or the Tiled project's class default (1),
-/// which the loader fills in. A coin with neither is worth nothing, warned
+/// A coin's `value`: its own, or its tile's, which holds the Tiled
+/// project's class default (1) the loader fills in. A coin with neither is
+/// worth nothing, warned
 fn coin_value(coin: &MapObject) -> i64 {
   coin.properties.int("value").unwrap_or_else(|| {
     game_warn!(

@@ -29,7 +29,8 @@ use glam::{IVec2, UVec2, Vec2};
 
 use super::spawn::{
   ClassTile, ClassTiles, LayerRest, LayerTiles, MapLayers, MapSource, child_of, class_tiles,
-  map_asset, object_parts, plan_layer, send, spawn_class_tile, spawn_layer, take_class_tiles,
+  inherit_tile_data, map_asset, object_parts, plan_layer, send, spawn_class_tile, spawn_layer,
+  take_class_tiles,
 };
 use super::{
   CHUNK_SIZE, ImageLayer, IntGrid, LayerInfo, LayerKind, LdtkProject, MapEvent, MapIds, MapLayer,
@@ -324,7 +325,8 @@ pub(crate) fn apply_reload(world: &mut World, map: Entity) {
     }
     return;
   };
-  let layers = asset.layers.clone();
+  let mut layers = asset.layers.clone();
+  inherit_tile_data(world, &root, &mut layers);
   let classes = class_tiles(world, asset, &root.entity_tiles);
   let Some(applied) = world
     .get_entity_mut(map)

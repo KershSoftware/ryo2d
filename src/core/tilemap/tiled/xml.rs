@@ -739,8 +739,9 @@ mod tests {
     panic!("{name}: one has more lines than the other");
   }
 
-  const MAP_PAIRS: [&str; 13] = [
+  const MAP_PAIRS: [&str; 14] = [
     "lists",
+    "tile-objects",
     "mixed",
     "mixed-embedded",
     "nested",
@@ -754,7 +755,8 @@ mod tests {
     "wang-dirt",
     "wang-grass",
   ];
-  const SET_PAIRS: [&str; 8] = [
+  const SET_PAIRS: [&str; 9] = [
+    "loot",
     "tiles",
     "items",
     "offset",

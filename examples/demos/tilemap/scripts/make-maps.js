@@ -444,10 +444,12 @@ objects.addObject(point(2 * 18 + 9, 12 * 18, "start", "player_start"));
 var COINS = [
   [4, 10], [8, 7], [9, 7], [14, 7], [15, 7], [16, 7], [22, 10], [23, 10], [30, 8], [33, 8], [38, 5], [39, 5],
 ];
+// The coins have no class of their own: they take the coin tile's, with
+// its value (1, the class's default), as Tiled shows them
 for (var c = 0; c < COINS.length; c++) {
-  objects.addObject(tileObject(P, 151, COINS[c][0] * 18, (COINS[c][1] + 1) * 18, "coin", "coin"));
+  objects.addObject(tileObject(P, 151, COINS[c][0] * 18, (COINS[c][1] + 1) * 18, "coin", ""));
 }
-var prize = tileObject(P, 151, 46 * 18, 12 * 18, "prize", "coin");
+var prize = tileObject(P, 151, 46 * 18, 12 * 18, "prize", "");
 objects.addObject(prize);
 prize.setProperty("value", 10);
 var lever = tileObject(P, 64, 31 * 18, 10 * 18, "lever", "switch");

@@ -411,6 +411,38 @@ pub(crate) fn tile_data<'w>(world: &'w World, root: &MapRoot, tile: Tile) -> Opt
   tileset.tile(tile.id)
 }
 
+/// `layers` (the root's map's, copied) with each Tiled tile object given
+/// what its tile carries, as Tiled shows it: an object with no class of its
+/// own takes its tile's, and its properties lie over the tile's (which hold
+/// the tile class's defaults). A map's external tilesets are not loaded
+/// while it loads, so this is done as it lands, and again on a reload, whose
+/// objects are compared as given. An LDtk entity's tile is its picture in
+/// the editor, and gives it nothing
+pub(crate) fn inherit_tile_data(world: &World, root: &MapRoot, layers: &mut [MapLayer]) {
+  if matches!(root.source, MapSource::Ldtk { .. }) {
+    return;
+  }
+  for layer in layers {
+    let LayerKind::Objects(objects) = &mut layer.kind else {
+      continue;
+    };
+    for object in objects {
+      let Some(data) = object.tile.and_then(|tile| tile_data(world, root, tile)) else {
+        continue;
+      };
+      if object.class.is_none() {
+        object.class = data.class.clone();
+      }
+      if !data.properties.is_empty() {
+        let own = std::mem::replace(&mut object.properties, data.properties.clone());
+        for (name, value) in own.iter() {
+          object.properties.insert(name, value.clone());
+        }
+      }
+    }
+  }
+}
+
 /// The class and properties of `tile`, if `map`'s root registers its class
 /// to spawn as entities
 pub(crate) fn registered_class(
@@ -838,10 +870,12 @@ fn landing_job(world: &World, map: Entity) -> Option<LandingJob> {
     }
     _ => Vec::new(),
   };
+  let mut layers = asset.layers.clone();
+  inherit_tile_data(world, root, &mut layers);
   Some(LandingJob {
     map,
     stamp: content_stamp(world, root),
-    layers: asset.layers.clone(),
+    layers,
     classes: class_tiles(world, asset, &root.entity_tiles),
     collision: collision::Inputs {
       collision: root.collision,
@@ -2233,6 +2267,48 @@ mod tests {
     assert!(!hidden.visible);
     let (_, shown) = object(&mut world, map, "crate");
     assert!(shown.visible);
+  }
+
+  #[test]
+  fn a_tile_object_takes_its_tile_s_class_and_properties() {
+    // Saved by Tiled 1.12.2; Tiled's own resolution of each (its export
+    // with types and properties resolved) is what is asserted. The fixture
+    // project, where the loaders look for it
+    let project = std::fs::read_to_string(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/tests/fixtures/tilemap/tiled/project.tiled-project"
+    ))
+    .expect("the fixture project");
+    let mut world = world_over(files_with(&[("project.tiled-project", &project)]));
+    let handle = AssetsView::new(&mut world)
+      .load_now::<TileMap>("tiled/maps/tile-objects.tmj")
+      .expect("tile-objects.tmj loads");
+    let map = world.spawn(MapRoot::new(handle)).id();
+    Frames::new().run(&mut world);
+    // No class of its own: the tile's Crate, with the tile's hp and the
+    // class's defaults
+    let (_, crate_) = object(&mut world, map, "crate");
+    assert_eq!(crate_.class.as_deref(), Some("Crate"));
+    assert_eq!(crate_.properties.int("hp"), Some(40));
+    assert_eq!(crate_.properties.float("speed"), Some(1.5));
+    assert_eq!(crate_.properties.string("label"), Some("plain"));
+    // Its own hp lies over the tile's
+    let (_, weak) = object(&mut world, map, "weak crate");
+    assert_eq!(weak.class.as_deref(), Some("Crate"));
+    assert_eq!(weak.properties.int("hp"), Some(7));
+    assert_eq!(weak.properties.float("speed"), Some(1.5));
+    // A tile with properties and no class
+    let (_, gem) = object(&mut world, map, "gem");
+    assert_eq!(gem.class, None);
+    assert_eq!(gem.properties.bool("shiny"), Some(true));
+    // A class of its own wins, and the tile's hp comes with it
+    let (_, drop) = object(&mut world, map, "drop crate");
+    assert_eq!(drop.class.as_deref(), Some("Drop"));
+    assert_eq!(drop.properties.int("hp"), Some(40));
+    // A tile with no data adds nothing
+    let (_, plain) = object(&mut world, map, "plain");
+    assert_eq!(plain.class, None);
+    assert!(plain.properties.is_empty());
   }
 
   /// A level's maps for the observer tests: which to cancel as its first
