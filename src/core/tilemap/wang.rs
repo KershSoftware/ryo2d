@@ -851,6 +851,26 @@ mod tests {
   }
 
   #[test]
+  fn painting_on_the_map_s_right_and_bottom_edges_keeps_to_the_map() {
+    // The cell's corners on the map's border take the colour, and the cells
+    // inside pick their transitions, as Tiled's brush paints them
+    assert_as_tiled(
+      "wang-dirt.tmj",
+      "wang-grass-edge.tmj",
+      "ground",
+      IVec2::new(4, 2),
+      Some("grass"),
+    );
+    assert_as_tiled(
+      "wang-dirt.tmj",
+      "wang-grass-far-corner.tmj",
+      "ground",
+      IVec2::new(4, 4),
+      Some("grass"),
+    );
+  }
+
+  #[test]
   fn erasing_empties_the_cell_and_keeps_what_has_no_tile_to_fit() {
     // the neighbours would face a hole, and a two-colour set has no tile
     // with a bare corner, so they stay as they are

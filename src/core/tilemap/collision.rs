@@ -209,14 +209,29 @@ type Warned = FastSet<(Option<usize>, &'static str)>;
 /// The colliding layers among `layers` into `planned`, and the map's own
 /// group key. A property of the wrong type warns once, and so does a
 /// colliding layer with parallax, which collides where it would draw
-/// without it, parallax being a drawing effect (`warned`)
+/// without it, parallax being a drawing effect, and an IntGrid override to
+/// `TileCell::Shape`, which names no shape and collides as nothing
+/// (`warned`)
 fn plan<'a>(
   map: Entity,
   layers: impl IntoIterator<Item = LayerView<'a>>,
-  (collision, properties, tile_size): (bool, &Properties, UVec2),
+  (collision, properties, tile_size, overrides): (
+    bool,
+    &Properties,
+    UVec2,
+    &[(IntGridKey, TileCell)],
+  ),
   warned: &mut Warned,
   planned: &mut Vec<Planned>,
 ) -> GroupKey {
+  let is_shape = |(_, cell): &&(IntGridKey, TileCell)| matches!(cell, TileCell::Shape(_));
+  if overrides.iter().any(|o| is_shape(&o)) && warned.insert((None, "with_intgrid_collision")) {
+    let shapes: Vec<&IntGridKey> = overrides.iter().filter(is_shape).map(|(k, _)| k).collect();
+    crate::engine_warn!(
+      module: "Tilemap",
+      "map {map}: with_intgrid_collision gives the IntGrid values {shapes:?} a TileCell::Shape, which names no shape, so their cells collide as nothing; give them Solid, OneWay or a Slope"
+    );
+  }
   let warn = |warned: &mut Warned,
               layer: Option<(usize, &str)>,
               name: &'static str,
@@ -408,7 +423,12 @@ pub(crate) fn prepare(map: Entity, layers: &[LayerView<'_>], inputs: Inputs) -> 
   let map_key = plan(
     map,
     layers.iter().copied(),
-    (inputs.collision, &inputs.properties, inputs.tile_size),
+    (
+      inputs.collision,
+      &inputs.properties,
+      inputs.tile_size,
+      &inputs.overrides,
+    ),
     &mut warned,
     &mut planned,
   );
@@ -631,7 +651,12 @@ pub(crate) fn sync_map_colliders(
     let map_key = plan(
       map,
       views(map_layers, &layers),
-      (root.collision, &tile_map.properties, tile_map.tile_size),
+      (
+        root.collision,
+        &tile_map.properties,
+        tile_map.tile_size,
+        &root.intgrid_collision,
+      ),
       warned,
       &mut planned,
     );
@@ -1129,6 +1154,38 @@ mod tests {
     assert_eq!(view.fill_intgrid(map, "art", IVec2::ZERO, IVec2::ONE, 1), 0);
     maps.frame();
     assert_eq!(colliders(&maps.world, map).get(40, 5), Empty);
+  }
+
+  #[test]
+  fn an_int_grid_shape_override_collides_as_nothing_and_warns_once() {
+    let mut map = code_map(UVec2::new(4, 1), &[("collision", &[])]);
+    if let LayerKind::Tiles { intgrid, .. } = &mut map.layers[0].kind {
+      *intgrid = Some(IntGrid {
+        size: UVec2::new(4, 1),
+        values: vec![1, 1, 2, 0],
+        names: [(1, "lava-7c1e"), (2, "solid")]
+          .iter()
+          .map(|(v, n)| (*v, n.to_string()))
+          .collect(),
+      });
+    }
+    let mut maps = MapWorld::new();
+    let handle = add(&mut maps.world, map);
+    let root = MapRoot::new(handle).with_intgrid_collision("lava-7c1e", TileCell::Shape(0));
+    let map = maps.spawn(root);
+    maps.frame();
+    // An edit rebuilds through the main thread's path: still one warning
+    assert!(MapsView::new(&mut maps.world).set_intgrid(map, 0, IVec2::new(3, 0), 1));
+    maps.frame();
+    let tiles = colliders(&maps.world, map);
+    let row: Vec<TileCell> = (0..4).map(|x| tiles.get(x, 0)).collect();
+    use TileCell::{Empty, Solid};
+    assert_eq!(row, [Empty, Empty, Solid, Empty]);
+    let warned = crate::core::dev_log::get_entries()
+      .iter()
+      .filter(|e| e.message.contains("lava-7c1e") && e.message.contains("Shape"))
+      .count();
+    assert_eq!(warned, 1, "warned once, naming the value");
   }
 
   #[test]

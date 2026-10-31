@@ -119,7 +119,7 @@ What lands, all of it children of the map entity:
 Then:
 
 - **Move the map** with its `Transform`: drawing and cell conversions follow at once, and its colliders, which have no body, are put where it now is. For a map that moves while things stand on it (an airship), give the map entity `RigidBody::kinematic()`: its colliders join that body and it carries what stands on it.
-- **Disable it** (`Disabled` on the map entity): it draws nothing, and its colliders and shadows go; enabled, they are built again from its tiles as they then are. `Disabled` does not pass from the map to its layers: the map's systems check the map entity. A layer entity disabled on its own stops drawing, colliding and casting shadows; to hide a layer and keep its collision, set its `LayerInfo::visible` to false.
+- **Disable it** (`Disabled` on the map entity): it draws nothing, and its colliders and shadows go; enabled, they are built again from its tiles as they then are, on the main thread in that frame: a few milliseconds for a 256 x 256 four-layer map, about 70 ms for 1024 x 1024. Despawn a big level rather than park it, or enable it behind a loading screen. `Disabled` does not pass from the map to its layers: the map's systems check the map entity. A layer entity disabled on its own stops drawing, colliding and casting shadows; to hide a layer and keep its collision, set its `LayerInfo::visible` to false.
 - **Unload it** by despawning the map entity: everything it spawned goes with it. `SceneCleanup::WORLD` does this at a scene switch, as for any entity. Putting another `MapRoot` over it, or removing it, takes the old map down first, and the new root spawns afresh.
 
 `MapEvent` is a message (`ctx.messages::<MapEvent>()`, `MessageReader<MapEvent>` in systems):
@@ -362,6 +362,7 @@ let root = MapRoot::ldtk(project, "Cave")
 ctx.world.spawn(root);
 ```
 
+- A `TileCell::Shape` names no shape here: cells of that value collide as nothing, and the dev log warns once a map.
 - **Changing an IntGrid at run time:** `ctx.maps().set_intgrid(map, layer, cell, value)` (0 empties the cell) and `fill_intgrid(map, layer, min, max, value)` change the values, and only the chunks they change collide and cast shadows again, in that step. The art does not follow: LDtk runs its auto-layer rules in the editor, never in the game, so change the layer's tiles with `set_tile` too. `set_tile` on an IntGrid layer changes only its art.
 
 <!-- given: map: Entity, cell: IVec2, rubble: Tile -->
@@ -378,8 +379,8 @@ maps.set_tile(map, "Collision", cell, Some(rubble));
 - **Edits:** a changed tile re-collides in that step. Only the outlines through the changed cells are traced again, and only the colliders those outlines belong to change, taking their new shape in place, the same entities. So anything touching the rest of the map keeps its contacts: a character standing on the map keeps its `floor`, and no `CollisionStopped` or `CollisionStarted` is sent for it.
 - **Which entity:** the outlines are packed by area, one collider for those starting in each 32 x 32-cell chunk (and one for each row of one-way runs in a chunk), each a child of the entity holding the grid: the map entity, or a layer that collides on its own. With no body on the map each is its own fixed body, so collision messages, `CharacterHit` and `CharacterState::floor` name such a part; follow `ChildOf` to the entity holding the `TileColliders` (the `MapRoot`, or a layer with its `MapLayerRef`). With `RigidBody::kinematic()` on the map entity they name the map.
 - **A moving platform flush with the ground:** a character level with both the map's ground and a moving platform rides the platform.
-- **A disabled map** has no colliders; enabled, it builds them from its tiles as they then are.
-- **Too big:** a grid of over 8192 cells a side gets no colliders, and the dev log names its layers. The loaders take maps up to 2^26 cells a layer, so a vast map collides only if its colliding layers fit.
+- **A disabled map** has no colliders; enabled, it builds them from its tiles as they then are, on the main thread (section 2).
+- **Too big:** a grid of over 8192 cells a side gets no colliders, and the dev log names its layers: a 10,000 x 64 runner level does not collide, though it is far under the loaders' 2^26 cells a layer. Split a level that long into several maps side by side (a world of levels, section 12).
 - **Navigation:** `NavigationGrid::rebuild_from_world` blocks a map's solid and slope cells, and the shape cells whose shape covers the cell's centre; one-way cells stay walkable.
 
 ## 9. Shadows
@@ -467,7 +468,7 @@ ctx.maps().spawn_levels_in_with(&self.world, near, 0, |level, root| {
 - One level by hand: `MapRoot::world_level(&world, index)` (or `ldtk_world_level`), put at its `WorldLevel::position` with the root's `Transform`. A level the world lacks fails the root (`MapEvent::Failed`).
 - Nothing spawns until the world's asset is loaded. A Tiled world's maps are its dependencies, so it is ready when they are; a map that fails fails the world.
 - **Neighbours:** each level's `neighbours` (`Neighbour { level, direction }`, `level` an index in the same layout). A Tiled world's are worked out from the rectangles: sharing an edge is `North`, `South`, `East` or `West`, a corner a diagonal (`NorthEast` ...), an overlap `Overlap`. LDtk's are LDtk's own, `Above` and `Below` for levels at another depth.
-- **Tiled world patterns** (`"regexp"` with `multiplierX`/`multiplierY`): the registry cannot list a folder (the web has none), so a pattern must be literal text with up to two numbers, `(\d+)` or `(-?\d+)`, as in `room_(\d+)_(\d+)\.tmx` (one number is x, two are x then y). The loader tries names row by row: from y = 0, x from 0 up to the first missing file, stopping at the first row whose x = 0 file is missing, in at most 1,024 tries. Negative numbers and gaps in the numbering are never reached; a world that uses them lists its maps instead. Any other regular expression fails the load.
+- **Tiled world patterns** (`"regexp"` with `multiplierX`/`multiplierY`): the registry cannot list a folder (the web has none), so a pattern must be literal text with up to two numbers, `(\d+)` or `(-?\d+)`, as in `room_(\d+)_(\d+)\.tmx` (one number is x, two are x then y). The loader tries names row by row: from y = 0, x from 0 up to the first missing file, stopping at the first row whose x = 0 file is missing, in at most 1,024 tries. It builds each name, writing the numbers plainly, so it finds `room_1_2.tmx` but never `room_01_02.tmx` (a literal `0` in the pattern, `room_0(\d+)\.tmx`, reaches `room_00` to `room_09` and stops at `room_010`), and maps numbered from 1 are not found at all: the load fails, no map matching. Negative numbers and gaps in the numbering are never reached either; a world named any of these ways lists its maps instead. Any other regular expression fails the load.
 - **Saving the `.world` file** leaves the levels already spawned where they are; the next `spawn_levels_in` uses the new layout. A save that reorders the levels can make it spawn a level that is already there: despawn and respawn the levels after such a save.
 
 ## 13. Hot reload
@@ -593,5 +594,5 @@ fn level_one_lands_with_its_floor() {
 | Painting terrain leaves a cell as it was, warned | The Wang set has no tile for what the cell needs |
 | A dug tile came back | The map's file was saved: the file wins over tile edits |
 | A coin collected did not come back after a save | As meant: what the game despawned stays away unless the save changed it |
-| A world pattern found fewer maps than there are files | Gaps in the numbering, or negative numbers: list those maps |
+| A world pattern found fewer maps than there are files, or none | Gaps in the numbering, negative numbers, zero-padded numbers (`room_01`) or numbering from 1: list those maps |
 | A saved `.world` did not move the rooms | Levels already spawned stay where they are; respawn them |

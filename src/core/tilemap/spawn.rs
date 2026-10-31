@@ -167,8 +167,8 @@ impl MapRoot {
   /// `slope_bottom_right`, `slope_top_left` and `slope_top_right` collide as
   /// they say and every other value as nothing; names compare ignoring ASCII
   /// case (LDtk capitalises identifiers), and a value's own override wins
-  /// over its name's. A `TileCell::Shape` here names no shape and collides
-  /// as nothing
+  /// over its name's. A `TileCell::Shape` here names no shape: its cells
+  /// collide as nothing, and the map warns once in the dev log
   pub fn with_intgrid_collision(mut self, key: impl Into<IntGridKey>, cell: TileCell) -> MapRoot {
     let key = key.into();
     match self.intgrid_collision.iter_mut().find(|(k, _)| *k == key) {
@@ -2330,6 +2330,49 @@ mod tests {
     assert!(MapsView::new(&mut world).is_ready(map));
     assert_eq!(layers_of(&mut world, map).len(), 4);
     assert_eq!(spawned(&events(&world, &mut cursor)), [map]);
+  }
+
+  #[test]
+  fn a_root_despawned_or_left_with_its_scene_while_its_landing_is_out_spawns_nothing() {
+    let mut world = world_over(files_with(&[]));
+    let handle = world.resource_mut::<Assets<TileMap>>().add(big_map());
+    let mut frames = Frames::new();
+    let mut cursor = MessageCursor::<MapEvent>::default();
+    let all = |world: &mut World| {
+      world
+        .query_filtered::<Entity, Without<crate::core::ecs::IsResource>>()
+        .iter(world)
+        .count()
+    };
+    let before = all(&mut world);
+    let gone = world.spawn(MapRoot::new(handle.clone())).id();
+    let left = world.spawn(MapRoot::new(handle)).id();
+    // The frame that sends their landings
+    pump(&mut world);
+    frames.0.run(&mut world);
+    assert!(
+      world.get::<MapLanding>(gone).is_some() && world.get::<MapLanding>(left).is_some(),
+      "both landings are out"
+    );
+    // One root despawned, then its scene left (`SceneCleanup::WORLD`)
+    world.despawn(gone);
+    despawn_game_entities(&mut world);
+    assert!(world.get_entity(left).is_err());
+    // A map sent after them lands after them: the builder works in order
+    let after = world.resource_mut::<Assets<TileMap>>().add(code_map());
+    let next = world.spawn(MapRoot::new(after)).id();
+    frames.until(&mut world, |world| world.get::<MapIds>(next).is_some());
+    assert_eq!(spawned(&events(&world, &mut cursor)), [next]);
+    assert_eq!(
+      count::<MapLayerRef>(&mut world),
+      2,
+      "the next map's layers only"
+    );
+    // Nothing of the two is left behind
+    world.despawn(next);
+    frames.run(&mut world);
+    assert_eq!(all(&mut world), before);
+    assert!(events(&world, &mut cursor).is_empty());
   }
 
   #[test]

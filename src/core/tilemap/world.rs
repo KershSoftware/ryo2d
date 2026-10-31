@@ -27,8 +27,15 @@ use crate::core::ui::Rect;
 /// (x * multiplierX + offsetX, y * multiplierY + offsetY). Other regular
 /// expression features are a load error (a bare `.` is a dot, since names
 /// are built, never matched; `.*` fails on its `*`), and a pattern no file matches
-/// fails the load; negative numbers and gaps in the numbering are not
-/// reached, so a world that uses them lists its maps. A listed map without
+/// fails the load. Names are built, so only these files are found:
+/// - numbers written plainly, with no leading zeros: `room_1_2.tmx`, never
+///   `room_01_02.tmx` (a literal `0` in the pattern, `room_0(\d+)\.tmx`,
+///   reaches `room_00` to `room_09` and stops, since 10 is built `room_010`);
+/// - numbering from 0 in every row: maps numbered from 1 are not found (the
+///   load fails, no map matching), and neither are negative numbers nor the
+///   maps past a gap.
+///
+/// A world named any other way lists its maps. A listed map without
 /// a `width` and `height`, and every pattern's map, has its size read from
 /// its file as width x tilewidth by height x tileheight (isometric, hexagonal
 /// and infinite maps are load errors until 6b anyway). A pattern's probe
@@ -858,6 +865,40 @@ mod tests {
         ("one_2.tmj".to_string(), Vec2::new(85.0, 7.0)),
       ]
     );
+  }
+
+  #[test]
+  fn a_pattern_finds_numbers_from_zero_written_plainly() {
+    let pattern = |regexp: &str| format!(r#"{{"patterns":[{{"regexp":"{regexp}"}}]}}"#);
+    // Zero-padded or numbered from 1: no map matches
+    for (regexp, files) in [
+      (r"pad_(\\d+)\\.tmj", ["pad_00.tmj", "pad_01.tmj"]),
+      (r"one_(\\d+)\\.tmj", ["one_1.tmj", "one_2.tmj"]),
+    ] {
+      let json = pattern(regexp);
+      let extra: Vec<(String, &str)> = files
+        .iter()
+        .map(|f| (format!("tiled/worlds/{f}"), MAP))
+        .chain([("tiled/worlds/w.world".to_string(), json.as_str())])
+        .collect();
+      let extra: Vec<(&str, &str)> = extra.iter().map(|(p, t)| (p.as_str(), *t)).collect();
+      let (_, loaded) = world_from(&extra, "tiled/worlds/w.world");
+      assert!(loaded.expect_err("fails").contains("no map"), "{regexp}");
+    }
+    // A literal 0 reaches 00 to 09 only: 10 is built as 010
+    let mut extra: Vec<(String, String)> = (0..12)
+      .map(|n| (format!("tiled/worlds/z_{n:02}.tmj"), MAP.to_string()))
+      .collect();
+    extra.push(("tiled/worlds/z.world".into(), pattern(r"z_0(\\d+)\\.tmj")));
+    let extra: Vec<(&str, &str)> = extra
+      .iter()
+      .map(|(p, t)| (p.as_str(), t.as_str()))
+      .collect();
+    let (world, loaded) = world_from(&extra, "tiled/worlds/z.world");
+    let layout = layout_of(&world, &loaded.expect("loads"));
+    let names: Vec<String> = layout.levels.iter().map(|l| l.name.clone()).collect();
+    let expected: Vec<String> = (0..10).map(|n| format!("z_{n:02}.tmj")).collect();
+    assert_eq!(names, expected);
   }
 
   #[test]

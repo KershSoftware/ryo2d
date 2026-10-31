@@ -16,6 +16,8 @@ var jobs = [
   ["maps/wang-dirt.tmj", "maps/wang-grass.tmj", "ground", 2, 2, "grass"],
   ["xml/maps/wang-dirt.tmx", "xml/maps/wang-grass.tmx", "ground", 2, 2, "grass"],
   ["maps/wang-grass.tmj", "maps/wang-erased.tmj", "ground", 2, 2, null],
+  ["maps/wang-dirt.tmj", "maps/wang-grass-edge.tmj", "ground", 4, 2, "grass"],
+  ["maps/wang-dirt.tmj", "maps/wang-grass-far-corner.tmj", "ground", 4, 4, "grass"],
   ["maps/wang-solo-empty.tmj", "maps/wang-solo-painted.tmj", "solo", 2, 2, "ground"],
   ["maps/wang-solo-full.tmj", "maps/wang-solo-erased.tmj", "solo", 2, 2, null],
   ["maps/wang-mix-a.tmj", "maps/wang-mix-b.tmj", "mix", 2, 2, "b"],
