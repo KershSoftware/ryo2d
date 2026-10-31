@@ -2,7 +2,7 @@
 name: ryo-lighting
 description: 2D lighting - Light2D and LightOccluder2D entities (polygons and open chains), ctx.lighting() for ambient, atmosphere and on/off, shadows (tile maps' too), volumetric beams, sprite shadows and ambient occlusion.
 metadata:
-  version: 2.2.0
+  version: 2.2.1
 ---
 
 # Ryo2D Lighting Specialist
@@ -96,7 +96,7 @@ LightOccluder2D::chain(vec![Vec2::new(0.0, 32.0), Vec2::ZERO, Vec2::new(64.0, 0.
 Vertices are local to the entity and follow its `GlobalTransform` (rotation included). `with_enabled(false)` / `set_enabled(..)` turns one off without removing it.
 
 - **Chains** are open runs of edges: no edge joins the last vertex back to the first (`is_closed()` is false; true for every other kind). Wind a chain as the polygon whose boundary it is a stretch of (counter-clockwise on screen): each edge casts exactly as it would as that polygon's edge, so chains that together close a ring cast as the polygon does. Use them for a boundary built in pieces. Two closed occluders that touch cast their touching edges' shadows through each other's lit art, a dark seam; the chains of one boundary do not.
-- **Place an occluder's entity at its geometry's centre:** a light skips an occluder whose entity is more than twice its radius away, whatever its vertices reach.
+- **Reach:** a light casts from the occluders that may come within twice its radius, measured from each occluder's entity less its farthest vertex, so an occluder's entity can sit anywhere along its shape (a tile map's chunk-long chains sit at their middles).
 
 ## Tile Maps
 
@@ -195,5 +195,5 @@ The look then maps the result to the screen. God rays are an HDR effect: they ta
 - Lights have no cap: each lit camera draws the lights on its `RenderLayers` whose reach meets its view.
 - Lighting runs once per camera: a minimap camera multiplies its cost, since each lit camera draws its lights and shadows into its own buffer. Lights and shadow geometry are built once per frame, then each camera draws the ones it sees.
 - Disable shadows on unimportant lights; simple occluder shapes are cheaper.
-- Every lit frame gathers every occluder, and each shadowed light loops over all of them (casting from those within twice its radius), with no spatial index: a big lit tile map pays for all its chains (one shadowed light over a 1024 x 1024 cave of about 2,400 chains costs about 30 µs a frame more than the unlit map, on an Apple M5 Pro). Turn `occludes` off on layers whose shadows nothing shows.
+- Every lit frame gathers every occluder, and each shadowed light loops over all of them (casting from those that may come within twice its radius), with no spatial index: a big lit tile map pays for all its chains (one shadowed light over a 1024 x 1024 cave of about 2,400 chains costs about 30 µs a frame more than the unlit map, on an Apple M5 Pro). Turn `occludes` off on layers whose shadows nothing shows.
 - Lower AO radius is faster.

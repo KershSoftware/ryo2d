@@ -44,6 +44,22 @@ pub struct LightOccluder2D {
   closed: bool,
   /// Whether this occluder is currently active
   enabled: bool,
+  /// The farthest any vertex lies from the entity, kept from construction
+  /// (the vertices never change)
+  extent: f32,
+}
+
+/// The farthest any of `vertices` lies from the origin; infinite if one is
+/// not finite
+fn extent_of(vertices: &[Vec2]) -> f32 {
+  vertices.iter().fold(0.0, |far: f32, v| {
+    let length = v.length();
+    if length.is_finite() {
+      far.max(length)
+    } else {
+      f32::INFINITY
+    }
+  })
 }
 
 impl LightOccluder2D {
@@ -60,6 +76,7 @@ impl LightOccluder2D {
       "LightOccluder2D requires at least 3 vertices"
     );
     Self {
+      extent: extent_of(&vertices),
       vertices,
       closed: true,
       enabled: true,
@@ -82,6 +99,7 @@ impl LightOccluder2D {
       "a LightOccluder2D chain requires at least 2 vertices"
     );
     Self {
+      extent: extent_of(&vertices),
       vertices,
       closed: false,
       enabled: true,
@@ -179,6 +197,13 @@ impl LightOccluder2D {
   /// Get the vertices of this occluder.
   pub fn vertices(&self) -> &[Vec2] {
     &self.vertices
+  }
+
+  /// The farthest any vertex lies from the entity's origin: a light skips
+  /// an occluder whose entity is farther from it than twice its radius plus
+  /// this (infinite when a vertex is not finite)
+  pub(crate) fn extent(&self) -> f32 {
+    self.extent
   }
 
   /// Get the edges of this occluder as (start, end) pairs: a polygon's
@@ -280,6 +305,15 @@ mod tests {
 
     occluder.set_enabled(false);
     assert!(!occluder.is_enabled());
+  }
+
+  #[test]
+  fn the_extent_is_the_farthest_vertex() {
+    assert_eq!(LightOccluder2D::rect(6.0, 8.0).extent(), 5.0);
+    let chain = LightOccluder2D::chain(vec![Vec2::new(-256.0, 0.0), Vec2::new(256.0, 16.0)]);
+    assert!((chain.extent() - 256.5).abs() < 0.01, "{}", chain.extent());
+    let broken = LightOccluder2D::chain(vec![Vec2::ZERO, Vec2::new(f32::NAN, 0.0)]);
+    assert_eq!(broken.extent(), f32::INFINITY);
   }
 
   #[test]

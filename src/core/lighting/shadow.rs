@@ -48,8 +48,9 @@ pub(crate) fn push_shadow_volumes(
       continue;
     }
     let center = transform.translation();
-    // Too far for its shadow to reach the light's radius
-    if center.distance(position) > radius * 2.0 {
+    // Too far for its shadow to reach the light's radius: its nearest vertex
+    // is at least its extent nearer than its entity
+    if center.distance(position) - occluder.extent() > radius * 2.0 {
       continue;
     }
     let corners = occluder.transform_vertices(center.x, center.y, transform.rotation());

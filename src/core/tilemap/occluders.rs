@@ -21,7 +21,8 @@
 //! edges are chained into open chains (`LightOccluder2D::chain`), each a
 //! child of the group's first layer marked `MapOccluder` with its chunk, its
 //! entity at the centre of its corners' box (the light's reach test reads
-//! the entity's position). A chunk whose version moved is built again, and
+//! the entity's position less the chain's extent, its farthest corner from
+//! there). A chunk whose version moved is built again, and
 //! so is the chunk right of it or below it when the cells it shares a
 //! border with changed kind; every other chunk keeps its occluders.
 //!
@@ -937,7 +938,13 @@ mod tests {
   /// Whether `point` is in a shadow `occluders` (each at its position) cast
   /// from a light at `from`
   fn shadowed(point: Vec2, from: Vec2, occluders: &[Found]) -> bool {
-    let light = Light2D::point(crate::core::ui::Color::WHITE, 400.0).with_shadows();
+    shadowed_by(400.0, point, from, occluders)
+  }
+
+  /// Whether `point` is in a shadow `occluders` (each at its position) cast
+  /// from a light of `radius` at `from`
+  fn shadowed_by(radius: f32, point: Vec2, from: Vec2, occluders: &[Found]) -> bool {
+    let light = Light2D::point(crate::core::ui::Color::WHITE, radius).with_shadows();
     let placed: Vec<(GlobalTransform, &LightOccluder2D)> = occluders
       .iter()
       .map(|f| {
@@ -954,6 +961,23 @@ mod tests {
       let (s1, s2, s3) = (side(a, b), side(b, c), side(c, a));
       (s1 > 1e-3 && s2 > 1e-3 && s3 > 1e-3) || (s1 < -1e-3 && s2 < -1e-3 && s3 < -1e-3)
     })
+  }
+
+  #[test]
+  fn a_small_light_at_the_end_of_a_chunk_long_wall_casts_its_shadow() {
+    let mut maps = MapWorld::new();
+    // A wall one cell thick along a whole chunk (x 0 to 512, y 32 to 48):
+    // one chain, its entity at its middle, 256 px from either end
+    let handle = floor_map(&mut maps.world, UVec2::new(32, 3), |_| {});
+    let map = maps.spawn(MapRoot::new(handle));
+    let layer = layers_of(&mut maps.world, map)[0];
+    let found = occluders_of(&mut maps.world, layer);
+    assert_eq!(found.len(), 1, "{found:?}");
+    // A torch of 64 px just above its left end: the art under the wall is
+    // in its shadow
+    let torch = Vec2::new(20.0, 10.0);
+    assert!(shadowed_by(64.0, Vec2::new(20.0, 56.0), torch, &found));
+    assert!(!shadowed_by(64.0, Vec2::new(20.0, 24.0), torch, &found));
   }
 
   #[test]
