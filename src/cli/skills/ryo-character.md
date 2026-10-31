@@ -2,7 +2,7 @@
 name: ryo-character
 description: Characters - the character controller, platformer and top-down movement presets, MoveIntent and key bindings, one-way platforms, triggers with pickups, kill zones, checkpoints and respawns, tile colliders and knockback.
 metadata:
-  version: 1.1.3
+  version: 1.2.0
 ---
 
 # Ryo2D Characters
@@ -241,7 +241,7 @@ A kill-zone respawn does not skip interpolation: an `Interpolated` character can
 
 ## Tile colliders
 
-`TileColliders` turns a grid of cells into colliders: seamless outlines around solid and slope cells (a long floor is one edge, so nothing snags on seams) and a one-way segment along the top of each run of one-way cells.
+A level made in Tiled or LDtk collides by itself: spawn it with a `MapRoot` and its tiles' collision shapes, or its IntGrid's `solid`, `one_way` and `slope_*` values, become colliders, kept in step with every edit (`ryo-tilemap`, Collision; Map collision, below). Underneath, and for a level written in code, is `TileColliders`, which turns a grid of cells into colliders: seamless outlines around solid, slope and shape cells (a long floor is one edge, so nothing snags on seams) and a one-way segment along the top of each run of one-way cells.
 
 ```rust
 let mut tiles = TileColliders::new(40, 12, Vec2::splat(16.0)); // width, height in cells, cell size
@@ -249,14 +249,41 @@ tiles.set(3, 11, TileCell::Solid);
 let level = ctx.world.spawn((Transform::from_xy(0.0, 0.0), tiles)).id();
 ```
 
-- `TileCell::{Empty, Solid, OneWay, Slope(SlopeCorner)}`; `SlopeCorner::{BottomLeft, BottomRight, TopLeft, TopRight}` is the filled corner of a 45° half-cell (`BottomRight` rises to the right). `SlopeCorner::from_name("bottom-left")` reads Tiled's spelling.
+- `TileCell::{Empty, Solid, OneWay, Slope(SlopeCorner), Shape(u16)}`; `SlopeCorner::{BottomLeft, BottomRight, TopLeft, TopRight}` is the filled corner of a 45° half-cell (`BottomRight` rises to the right). `SlopeCorner::from_name("bottom-left")` reads Tiled's spelling.
+- **Shapes:** `tiles.add_shape(CellShape { polygons, one_way })` returns the index a `TileCell::Shape(index)` cell names: polygons in tile units, (0, 0) the cell's top-left and (1, 1) its bottom-right. A solid shape joins the outlines as solid and slope cells do, so a row of half blocks, or a ramp of shapes over solid ground, is one seamless outline; a one-way shape's top edges join the one-way runs. Shapes cannot be changed once added.
 - `TileColliders::new(width, height, tile_size)`, `from_cells(width, height, tile_size, cells)` (row by row from the top; missing cells are empty), `get(x, y)`, `set(x, y, cell) -> bool` (false, and nothing changes, outside the grid or when the cell already is that), `width()`, `height()`. Fields and builders: `tile_size`, `layer` / `with_layer` (default 1), `mask` / `with_mask` (default all bits), `friction` / `with_friction` (default 0.5), `restitution` / `with_restitution` (default 0), `solid_rects` / `solid_rects()` (default off: outlines).
 - Its `Transform` places cell (0, 0)'s top-left; +Y is down. With no body the colliders are fixed; with a kinematic `RigidBody` on the map entity the whole map moves.
 - **Outlines are hollow**: a body that ends up inside a solid region is not pushed out. `solid_rects()` builds merged rectangles instead (solid interiors, but seams between rectangles).
-- **Editing**: `ctx.world.get_mut::<TileColliders>(level)` and `set`. Only a real change rebuilds, before that step's physics, and only the colliders of the 32-cell chunks it changed, each taking its new shape in place; the new shapes are there for that step's characters, so one standing on the map keeps standing and one running at its wall still stops. Disabling the map entity removes its colliders and enabling it rebuilds them from the cells as they are then; removing the component removes them. A grid over 8192 × 8192 cells is refused (logged, empty), and so is a non-positive tile size.
+- **Editing**: `ctx.world.get_mut::<TileColliders>(level)` and `set`. Only a real change rebuilds, before that step's physics, and only the colliders of the 32-cell chunks it changed, each taking its new shape in place; the new shapes are there for that step's characters, so one standing on the map keeps standing and one running at its wall still stops. Disabling the map entity removes its colliders and enabling it rebuilds them from the cells as they are then; removing the component removes them. A grid over 8192 cells a side is refused (logged, empty), and so is a non-positive tile size.
 - **Which entity:** the colliders are child entities of the map, one for the outlines starting in each 32-cell chunk (and one for each row of one-way runs in a chunk). With no body on the map, collision messages and `CharacterState::floor` name such a part: follow `ChildOf` to the map (`ctx.world.get::<ChildOf>(part).map(|c| c.parent())`). With outlines (the default) an edit keeps every part's entity, so a character standing on the map keeps its `floor` and no collision message is re-sent for it; only a chunk's first outline spawns a part and its last one's going despawns it. Every part is rebuilt (new entities, `CollisionStopped` / `CollisionStarted` re-sent for what touched the map) by any edit of a `solid_rects` map, by changing the grid's layer, mask, friction, restitution, tile size or `solid_rects`, and by over 65,536 cell changes in one step.
-- From a Tiled map: `tilemap.tile_colliders()` reads tile properties (`solid`, `platform` for one-way, a `slope` custom property naming the corner); spawn it with a `Transform` at the map's origin.
-- Navigation: `NavigationGrid::rebuild_from_world` blocks a map's solid and slope cells exactly (one-way cells stay walkable) and skips its outline colliders; by hand, `grid.block_tiles(&tiles, origin)`. Only the map's position counts, not its rotation or scale.
+- Navigation: `NavigationGrid::rebuild_from_world` blocks a map's solid and slope cells exactly, and its shape cells whose shape covers the cell's centre (one-way cells stay walkable) and skips its outline colliders; by hand, `grid.block_tiles(&tiles, origin)`. Only the map's position counts, not its rotation or scale.
+
+### Map collision
+
+A spawned tile map keeps a `TileColliders` for its colliding layers: on the map entity for the layers of its own cell size, no offset and one material, and on a layer's entity for a layer with any of those of its own (`ryo-tilemap`, Collision). Everything above holds for them, and:
+
+- **Place characters when the map lands**, at a point the designer marked (a `player_start` object), on `MapEvent::Spawned` or once `ctx.maps().is_ready(map)`. The colliders come with the map, so a character placed then stands on its ground from its first move. Physics queries see the world as the last step left it, so a ray cast in the `update` that reads `Spawned` misses the map: do not snap a spawn point to the ground that way.
+- **What `floor` names:** with no body on the map, `CharacterState::floor` (like `CharacterHit` and the collision messages) names one of the map's collider parts: a child of the entity holding the `TileColliders`, which is the `MapRoot` entity, or a layer entity with its `MapLayerRef`. The character demo's readout says "ground" (or "one-way shelf", when `floor_one_way`) for such a floor:
+
+<!-- self: player: Entity -->
+```rust
+if let Some(state) = ctx.world.get::<CharacterState>(self.player)
+  && let Some(floor) = state.floor
+{
+  let holder = ctx.world.get::<ChildOf>(floor).map(ChildOf::parent);
+  let on_a_map = holder.is_some_and(|holder| ctx.world.get::<TileColliders>(holder).is_some());
+  let map = holder.and_then(|holder| match ctx.world.get::<MapLayerRef>(holder) {
+    Some(layer) => Some(layer.map),                       // a layer colliding on its own
+    None => ctx.world.get::<MapRoot>(holder).map(|_| holder), // the map's own grid
+  });
+  if on_a_map {
+    game_info!("on map {map:?}, one-way: {}", state.floor_one_way);
+  }
+}
+```
+
+- **Edits keep the ground:** a tile edit (`ctx.maps().set_tile`, Wang painting, a reload of the map's file) reshapes only the parts whose outlines changed, in place, so a character standing anywhere on the map keeps its `floor`, and no `CollisionStopped` / `CollisionStarted` is sent for it. A tileset save that changes collision shapes rebuilds the map's parts whole (new entities, `floor` names the new one), though nothing falls through.
+- **A moving platform flush with the ground:** a character level with both the map's ground and a moving platform (a kinematic or dynamic body) rides the platform, so a lift sitting in the floor carries a character who walks onto it.
 
 ## Knockback
 
@@ -662,7 +689,7 @@ impl Scene for Level {
 }
 ```
 
-The coins are drawn by their sprite; a level with art draws its tiles separately (sprites per cell; a tilemap collision module is coming in 6a), since `TileColliders` only collides.
+The coins are drawn by their sprite, since `TileColliders` only collides. A level with art is a Tiled or LDtk map spawned with `MapRoot`, which draws its tiles and collides by itself; the character demo's platformer level is one, an LDtk level whose IntGrid collides (`ryo-tilemap`).
 
 ## Pitfalls
 

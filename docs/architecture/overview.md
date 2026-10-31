@@ -32,7 +32,7 @@ The world is Ryo2D's ECS: `bevy_ecs` 0.20, exposed through `ryo2d::ecs` and the 
 
 | Resources (in the world) | Engine-owned |
 |---|---|
-| `Time`, `Input`, `ScreenMapping`, `AssetServer` and one `Assets<T>` per asset type, `AudioEngine`, `EffectsManager`, `LightingSettings`, `Look`, `TilemapManager`, `WindowRequest`, `CursorRequest`, `WindowInfo`, `RenderPipeline`, `RenderTargets`, `Gpu` (once the GPU is up), `Physics`, `PhysicsConfig`, `PhysicsPaused`, the console's `CommandRegistry`, one `Messages<T>` per message type, and the game's own resources | the window, the renderers (sprite, lighting, trail, compositor, post-process), gilrs, the dev windows, frame capture, the console overlay and the debug flags; the scene stack sits in the world as a non-send value that only the scene systems take out |
+| `Time`, `Input`, `ScreenMapping`, `AssetServer` and one `Assets<T>` per asset type, `AudioEngine`, `EffectsManager`, `LightingSettings`, `Look`, `WindowRequest`, `CursorRequest`, `WindowInfo`, `RenderPipeline`, `RenderTargets`, `Gpu` (once the GPU is up), `Physics`, `PhysicsConfig`, `PhysicsPaused`, the console's `CommandRegistry`, one `Messages<T>` per message type, and the game's own resources | the window, the renderers (sprite, lighting, trail, compositor, post-process, the tile drawer), gilrs, the dev windows, frame capture, the console overlay and the debug flags; the scene stack sits in the world as a non-send value that only the scene systems take out |
 
 In 0.20 a resource is a component on a hidden entity marked `IsResource`, so engine sweeps over "every entity" filter it out. Cameras are entities too (`Camera2d` + `Transform`); the main one (`MainCamera`) is spawned with the world and survives world cleanup.
 
@@ -47,7 +47,10 @@ Engine::frame()
  ├─ First ........ advance the clocks, publish Input, advance message buffers (after a fixed step)
  ├─ debug keys ... F1-F5, `, F9, F10, F12 consume their presses
  ├─ PreUpdate .... a running scene transition (real time), then the asset pump: loads and
- │                 reloads land, unheld assets are freed, their AssetEvents are sent; then the console
+ │                 reloads land, unheld assets are freed, their AssetEvents are sent; then tile
+ │                 maps: ready maps start landing (worked out on the map builder thread),
+ │                 landings that came back land whole (MapEvent::Spawned), spawned maps follow
+ │                 saved files (MapEvent::Reloaded); then the console
  ├─ UI pass ...... resolve the pointer, the wheel and focus against last frame's UI records;
  │                 Scene::ui for visible scenes (bottom-up; only the top scene's widgets take
  │                 input), debug overlays, console
@@ -60,18 +63,20 @@ Engine::frame()
  │        Juice ........ animation, tweens, squash/stretch, skeletons
  │        Scene ........ Scene::update(ctx, timestep) unless a transition runs, its SceneAction
  │        Game ......... the scenes' own FixedUpdate systems; builder systems by default
- │        Movement ..... trigger behaviours, tile collider rebuilds, movement input, knockback,
- │                       movement presets
+ │        Movement ..... trigger behaviours, tile maps' collision sync, tile collider rebuilds,
+ │                       movement input, knockback, movement presets
  │        Physics ...... one system: forget removed, track disabled, propagate, register bodies,
  │                       sync colliders, push changes, move characters, sync joints, step,
  │                       read back, messages, trigger contents
  │        Transforms ... propagate GlobalTransform
  │        Trails ....... record trail points
  ├─ Update ....... UpdateSet::Game: the scenes' own per-frame systems; builder ones by default
- ├─ PostUpdate ... Transforms (propagation), Camera (shake, every camera's view), Extract (timed effects);
+ ├─ PostUpdate ... tile maps' occluder sync, then Transforms (propagation), Camera (shake, every
+ │                 camera's view), Extract (timed effects);
  │                 audio_system after Camera (voices, buses, music, listener and emitters, game clock)
- ├─ render ....... Scene::render, query the world into the draw list, plan the cameras, run the RenderPipeline
- └─ Last ......... physics removal and re-enable bookkeeping, forget despawned tilemaps, clear change trackers
+ ├─ render ....... Scene::render, query the world into the draw list (tile maps' visible chunks
+ │                 from the batch's chunk store), plan the cameras, run the RenderPipeline
+ └─ Last ......... physics removal and re-enable bookkeeping, clear change trackers
 ```
 
 - Phases are bevy schedules labelled by `Phase`; the sets inside them are `FixedSet`, `UpdateSet` and `PostUpdateSet`, chained in the order shown. Every schedule uses the single-threaded executor.
@@ -97,7 +102,7 @@ Engine::frame()
 
 - `Transform` is local (`translation: Vec2`, `rotation` in radians, `scale: Vec2`). `GlobalTransform` is world space and written only by the engine; `Transform` requires it, and inserting a `Transform` places the `GlobalTransform` at once.
 - The hierarchy is the kernel's `ChildOf(parent)` / `Children`. Despawning a parent despawns its children. `WorldExt` adds `spawn_child`, `detach_keep_world` and `skip_interpolation`.
-- Propagation runs at the end of each fixed step and again in `PostUpdate`, both change-detected, so unmoved subtrees cost nothing.
+- Propagation runs at the end of each fixed step and again in `PostUpdate`, both change-detected, so an unmoved entity's `GlobalTransform` is not rewritten; but once anything has moved, each run visits every entity of every hierarchy. A big tile map's collider parts and shadow chains are thousands of children, so they cost every frame (`docs/backlog/tilemap.md`, Limits).
 - Interpolation is opt-in with `Interpolated` (covers descendants): each fixed step snapshots `GlobalTransform` into `PreviousGlobalTransform`, and the renderer draws between the two at the render alpha. Gameplay always reads the true `GlobalTransform`.
 - Pooling uses the kernel's `Disabled` marker: every query skips a disabled entity unless it asks with `Allow<Disabled>`. `Pool<B>` disables and enables entities instead of spawning.
 
@@ -111,6 +116,7 @@ Engine::frame()
 | Gameplay | `MoveIntent`, `MoveBindings`, `PlatformerMovement`, `TopDownMovement` (and the engine-written `PlatformerState`, `TopDownState`), `Pickup`, `KillZone`, `Checkpoint`, `Respawn` |
 | Lights, trails, particles | `Light2D`, `LightOccluder2D`, `Trail2D`, `Line2D`, `ParticleEmitter`, `ParticleAttractor` |
 | Navigation | `NavAgent`, `NavTarget` |
+| Tile maps | `MapRoot`; on what it spawns, `MapIds`, `MapLayerRef`, `LayerInfo`, `TileLayerData`, `ImageLayer`, `MapObject`, `MapTile`, `MapOccluder`; `WorldLevelOf` on a world's spawned levels |
 
 ## Scenes
 
@@ -122,12 +128,12 @@ SceneManager (engine-owned stack over the one shared world)
 
 - A `Scene` implements any of `on_enter`, `on_exit`, `on_pause`, `on_resume`, `update` (each fixed step), `ui` (once a frame, before the steps) and `render` (GPU-batched sprites), plus the flags `is_transparent`, `updates_below`, `is_physics_paused` and `holds_audio_below` (the scenes a top scene does not update are not heard: their voices are held until they update again).
 - `SceneAction`: `Continue`, `Push`, `Pop`, `Switch`, `Reset`, `PopReturn`, `Quit`, each with a `*With(Transition)` form (fade or slide).
-- `SceneContext` has the fields `world`, `time`, `input` and helpers for everything else (`assets()`, `audio()`, `camera()`, `render_targets()`, `effects()`, `lighting()`, `render_pipeline()`, `window()`, `cursor()`, `tilemaps()`, `console()`, `messages::<T>()`, `write_message`, `resource*`, `add_systems`). `time` and `input` are taken out of the world for the length of the callback; `assets()` and `audio()` borrow the world for as long as they are used.
+- `SceneContext` has the fields `world`, `time`, `input` and helpers for everything else (`assets()`, `audio()`, `camera()`, `render_targets()`, `effects()`, `lighting()`, `render_pipeline()`, `window()`, `cursor()`, `maps()`, `console()`, `messages::<T>()`, `write_message`, `resource*`, `add_systems`). `time` and `input` are taken out of the world for the length of the callback; `assets()` and `audio()` borrow the world for as long as they are used.
 - On `Switch` and `Reset` the leaving scene's `cleanup_on_exit()` (`SceneCleanup` flags: world, camera, effects, lighting, time, music, messages) resets engine state; `Push` and `Pop` keep it.
 
 ## Messages
 
-- A message type derives `Message`. The engine's (`CollisionStarted`/`Stopped`, `TriggerEntered`/`Exited`, `ContactForce`, `JointBroken`, `MovementEvent`, `PickedUp`, `Killed`, `CheckpointReached`, `TweenStarted`/`Completed`, `KnockbackStarted`/`Finished`, `SquashStretchStarted`/`Finished`, `ParticleCollision`, `UiEvent`, `UiReloaded`, `UiListBind`) are registered at build, and each asset type's `AssetEvent<T>` with its type; a game's register with `EngineBuilder::add_message::<T>()` or on the first `ctx.write_message`.
+- A message type derives `Message`. The engine's (`CollisionStarted`/`Stopped`, `TriggerEntered`/`Exited`, `ContactForce`, `JointBroken`, `MovementEvent`, `PickedUp`, `Killed`, `CheckpointReached`, `TweenStarted`/`Completed`, `KnockbackStarted`/`Finished`, `SquashStretchStarted`/`Finished`, `ParticleCollision`, `MapEvent`, `UiEvent`, `UiReloaded`, `UiListBind`) are registered at build, and each asset type's `AssetEvent<T>` with its type; a game's register with `EngineBuilder::add_message::<T>()` or on the first `ctx.write_message`.
 - Buffers advance in `First`, but only once a fixed step has run since the last advance: a message stays readable until two fixed steps have run after it was written, so every reader, per-frame or fixed-step, sees it at any frame rate. While no fixed step runs (the game clock paused) nothing is dropped.
 - Systems use `MessageWriter<T>` / `MessageReader<T>`; scenes use `ctx.write_message(m)` and `ctx.messages::<T>()`, which keeps a cursor per scene so each scene sees each message once.
 - Modules define no message type they do not write; games define their own notifications.
@@ -157,7 +163,7 @@ Rapier2D 0.36 behind the public `Physics` resource, which mirrors the ECS: compo
 6. Write back the poses of awake dynamic bodies, velocity-driven kinematic bodies and characters into the local `Transform` (through the parent), and dynamic bodies' velocities into `Velocity` and `AngularVelocity`.
 7. Send `CollisionStarted`, `CollisionStopped`, `TriggerEntered`, `TriggerExited` (once per body, its trigger colliders apart from its solid ones), `ContactForce` and `JointBroken` messages, and keep every trigger's `TriggerContents`.
 
-- Public surface: components `RigidBody`, `Collider` (with `one_way` and `as_trigger`), `Joint`, `AngularVelocity`, `CharacterController` / `CharacterState`, `TileColliders` (a grid of cells that builds seamless outline, one-way and slope colliders as child entities, rebuilt on a real change), `TriggerContents`; resources `Physics` (queries: `raycast`, `shape_cast`, `overlap_*`, `nearest`; contact state: `contacts`, `overlaps`, `in_contact`; forces and impulses) and `PhysicsConfig`; reached as `ctx.physics()` / `ctx.physics_mut()`.
+- Public surface: components `RigidBody`, `Collider` (with `one_way` and `as_trigger`), `Joint`, `AngularVelocity`, `CharacterController` / `CharacterState`, `TileColliders` (a grid of cells that builds seamless outline, one-way, slope and authored-shape colliders as child entities, packed by 32-cell chunk; an edit retraces only the outlines through it and reshapes their chunks' colliders in place), `TriggerContents`; resources `Physics` (queries: `raycast`, `shape_cast`, `overlap_*`, `nearest`; contact state: `contacts`, `overlaps`, `in_contact`; forces and impulses) and `PhysicsConfig`; reached as `ctx.physics()` / `ctx.physics_mut()`.
 - `PhysicsConfig::pixels_per_meter` pixels make a Rapier metre (default 100; choose it so typical moving bodies are 0.5 to 2 m); gravity in pixels/s² (default `(0, 980)`, +Y down).
 - Time: one frame adds at most `max_delta` (250 ms) of game time after speed scaling, so a stall runs about 15 fixed steps at 60 Hz, not an unbounded number. Slow motion runs fewer steps; pause and hitstop run none.
 - Colliders follow the entity's world scale, mirroring and rotation. Details and decisions: `src/core/physics/AGENTS.md`.
@@ -168,7 +174,7 @@ Rapier2D 0.36 behind the public `Physics` resource, which mirrors the ECS: compo
 
 ## Rendering
 
-`present_frame` builds each frame from the world by query; there is no render cache. Drawables are gathered once, in world space, and sorted once: the scenes' `Scene::render` sprites, every visible `Renderable` (at its interpolated `GlobalTransform`, placed by its `Anchor`), trails and lines (as joined polylines), lights and occluders; parallax layers and debug shapes are laid out per camera. Then each camera keeps what it sees (its `RenderLayers`, its view's bounds) and one 2D batch (`render/batch`) lays it into draws, and the pass-based `RenderPipeline` (`RenderPipeline::default_2d()`) runs on one command encoder with one submit: the camera passes once per camera, then the frame passes once. Everything is drawn on the GPU through each camera's view-projection matrix, the UI included: it is recorded as commands, built by a UI renderer of its own (`render/ui_renderer`) into an image of its own through a UI camera, and composited last.
+`present_frame` builds each frame from the world by query; there is no render cache but one, the tile chunks: each 32 x 32-cell chunk of a tile layer keeps its instances in the batch's chunk store, built again only when its tiles or look change, while where it draws is read every frame. Drawables are gathered once, in world space, and sorted once: the scenes' `Scene::render` sprites, every visible `Renderable` (at its interpolated `GlobalTransform`, placed by its `Anchor`), trails and lines (as joined polylines), lights and occluders; parallax layers and debug shapes are laid out per camera. Then each camera keeps what it sees (its `RenderLayers`, its view's bounds) and one 2D batch (`render/batch`) lays it into draws, and the pass-based `RenderPipeline` (`RenderPipeline::default_2d()`) runs on one command encoder with one submit: the camera passes once per camera, then the frame passes once. Everything is drawn on the GPU through each camera's view-projection matrix, the UI included: it is recorded as commands, built by a UI renderer of its own (`render/ui_renderer`) into an image of its own through a UI camera, and composited last.
 
 ```
 gather once (world space, sorted) ──→ cameras in render order: texture cameras, then window cameras (by order)
@@ -255,7 +261,7 @@ PreUpdate pump: lands finished loads (once their dependencies have, and the load
 - One registry for every asset type: `AssetServer` (a resource) loads by asset path, relative to the project's `assets/` folder, through `AssetLoader`s chosen by extension, and each type's values are in its `Assets<T>` resource. Scenes reach both through `ctx.assets()`; systems take `Res<AssetServer>` and `Res<Assets<T>>`.
 - A `Handle<T>` keeps its asset alive, and the pump frees an asset at its first run after the last handle drops. The engine's caches (textures, compiled shaders, text layouts) key by `AssetId`, so the renderer never keeps alive what the game let go.
 - An asset is its type, its path and its loader's settings (`load_with`): asking again gives the same handle, and one file at two SVG sizes is two images. Each value has a content version, and what is built from an asset (a texture, a UI tree, a text layout) is built again when it moves.
-- The engine's types are `Image` (raster formats and SVG), `Shader` (WGSL), `Font` and `BitmapFont`, `UiFile`, `Theme`, `AudioClip` (WAV, OGG Vorbis, MP3, FLAC), `Sound` and `Music` (definitions) and `Mixer`; a game adds its own (`impl Asset`, an `AssetLoader`, `EngineBuilder::asset_loader`). A UI file's imports and images, a theme's skin images and sounds, a bitmap font's sheet and a sound definition's clips are dependencies: the asset is inserted once they have loaded and its loader's `check` passes.
+- The engine's types are `Image` (raster formats and SVG), `Shader` (WGSL), `Font` and `BitmapFont`, `UiFile`, `Theme`, `AudioClip` (WAV, OGG Vorbis, MP3, FLAC), `Sound` and `Music` (definitions) and `Mixer`, and for tile maps `TileMap` and `Tileset` (Tiled), `TileWorld` (Tiled worlds) and `LdtkProject`; a game adds its own (`impl Asset`, an `AssetLoader`, `EngineBuilder::asset_loader`). A UI file's imports and images, a theme's skin images and sounds, a bitmap font's sheet and a sound definition's clips are dependencies: the asset is inserted once they have loaded and its loader's `check` passes.
 - An image that is not loaded draws a magenta checker in debug builds and nothing in release ones.
 - **Hot reload** is on in debug builds with a window (`EngineBuilder::hot_reload`): the asset folder is watched, a saved file reloads under the same handle about 100 ms after its last write, the assets that hold it are checked again, and a reload that fails keeps the last good value.
 
@@ -282,6 +288,30 @@ ctx.audio().play(&sound) -> Voice -> its bus's track -> .. -> master -> device (
 - **No device** (headless, or a device that failed to open): the same mixer runs silently on kira's mock backend, rendered by the frame's time; headless runs are seeded, so tests repeat and assert on the audio log. **The web** opens the device at the player's first click, tap or key.
 
 Details: `src/core/audio/AGENTS.md`; usage: the `ryo-audio` skill; measurements: `docs/backlog/audio.md`.
+
+## Tile Maps
+
+Levels made in Tiled and LDtk, read by the engine's own readers through the asset registry, spawned as entities and kept in step with their files (design: `docs/specs/2026-10-29-tilemap-design.md`; orthogonal maps, with isometric, hexagonal and infinite maps next, `docs/backlog/tilemap-features.md`).
+
+```
+TileMap      .tmx .tmj: layers over tilesets (or built in code)  ┐
+Tileset      .tsx .tsj: tiles, shapes, animation, Wang sets      │ registry assets,
+LdtkProject  .ldtk (+ .ldtkl): worlds, levels, tilesets          │ hot reload
+TileWorld    .world: Tiled maps placed in a world                ┘
+
+MapRoot entity ─(assets ready)→ landing job on the map builder thread (colliders, shadows,
+   paddings) ─→ lands whole in one frame: layer, object and class-tile entities, TileColliders,
+   MapOccluder chains, MapEvent::Spawned
+```
+
+- **Assets.** Maps, tilesets, LDtk projects and Tiled worlds load by asset path with their dependencies (tilesets, images, a world's maps); what a file only reads (templates, the Tiled project, LDtk level files) is read through the registry too, so a save of it reloads the reader. Every layer encoding loads on every target (zstd through `ruzstd`), and a bad file fails with the place in it.
+- **Spawning.** A `MapRoot` (a map, an LDtk level, or a world's level) on an entity whose `Transform` places the map. `spawn_maps` (`PreUpdate`, after the asset pump) sends a ready map's landing to the map builder thread and lands what comes back: layers, objects, class tiles, colliders and shadows arrive in one frame with `MapEvent::Spawned`, so a body placed then stands on its ground. The web, with no threads, works the landing out in that frame.
+- **Reading and editing.** `MapsView` (`ctx.maps()`) reads tiles, IntGrids and tile data, converts cells and world positions, edits (`set_tile`, `fill`) and paints Wang terrain as Tiled's brush does; an edit touches only its chunk's drawing and the collision outlines and shadow chains through it.
+- **Collision and shadows.** `sync_map_colliders` (`FixedSet::Movement`, before the tile collider rebuild) keeps each map's colliding layers in `TileColliders` grids, setting only the cells whose kind changed; `sync_map_occluders` (`PostUpdate`, before propagation) keeps `LightOccluder2D::chain`s of the occluding boundary per chunk.
+- **Drawing.** The render step's tile drawer pads each tileset against bleeding (made on the landing's thread the first time), builds each changed chunk's instances into the batch's chunk store, and draws the chunks a camera can see through a per-draw slot (the map's transform, the camera's parallax, the tileset's place in the atlas), y-sorted layers row by row among the entities.
+- **Worlds and hot reload.** `spawn_levels_in` spawns a world's levels near a place; when to unload is the game's call. `reload_maps` (`PreUpdate`) brings spawned maps to saved files, keeping layer and object entities and the game's state on what the save left alone.
+
+Details: `src/core/tilemap/AGENTS.md`; usage: the `ryo-tilemap` skill; measurements: `docs/backlog/tilemap.md`.
 
 ## UI
 
@@ -416,7 +446,8 @@ Client-server multiplayer with listen-server support. See [the network architect
 | `graphics/` | Images and sprites, animation, cameras and shake, render targets, render layers, the screen mapping, parallax, tiled and composite rendering, the texture registry and atlas, the sprite renderer |
 | `render/` | The render pipeline, passes, the draw list, the frame's camera plan, the 2D batch (`batch/`: keys, planning, pipelines, polylines) and debug drawing |
 | `shaders/` | The engine's WGSL and its shared includes, post-process effects and custom shaders |
-| `lighting/`, `trail/`, `particles/`, `skeleton/`, `tilemap/` | Feature renderers (lighting) and components (trails and lines, particles, skeletons, tilemaps) |
+| `lighting/`, `trail/`, `particles/`, `skeleton/` | Feature renderers (lighting) and components (trails and lines, particles, skeletons) |
+| `tilemap/` | Tile maps: the data model, the Tiled and LDtk readers, maps spawned as entities and landed off the main thread, reads and edits with Wang terrain, collision and occluders kept in step with the tiles, worlds, hot reload; drawn by `render/tiles.rs` |
 | `physics/` | Rapier integration, colliders, bodies, joints, the character controller, one-way colliders, triggers, tile colliders |
 | `gameplay/` | Movement input and presets, knockback, trigger behaviours |
 | `navigation/` | Grids, A* pathfinding, agents, steering |

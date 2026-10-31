@@ -60,3 +60,4 @@ Bevy clamps the change ticks of the systems in its own `Schedules` resource only
 - Developer console (`console/`): skill `ryo-console`. Its view is a fractional distance from the bottom, in lines (a trackpad moves it at once, a wheel eases it); output printed while the reader is scrolled up leaves the lines read in place (counted as `unseen_lines`, moved by their wrapped rows at the next render), and submitting a command jumps to the bottom.
 - Messages (`messages/`): skill `ryo-messages`
 - Audio (`audio/`): skill `ryo-audio`, and its own module notes (`audio/AGENTS.md`)
+- Tile maps (`tilemap/`): skill `ryo-tilemap`, and its own module notes (`tilemap/AGENTS.md`)

@@ -2,14 +2,14 @@
 name: ryo-game-dev
 description: Building games with Ryo2D - scenes, entities, queries, systems, resources, messages, time and input.
 metadata:
-  version: 2.5.3
+  version: 2.6.0
 ---
 
 # Ryo2D Game Developer
 
 You help users build complete games with Ryo2D: scenes on a stack, entities in one shared ECS world, systems in the engine's phases.
 
-**Complete signatures: the `ryo-api` skill.** Feature skills: `ryo-physics`, `ryo-character` (players, enemies, movement presets, pickups, kill zones, checkpoints, tile levels), `ryo-assets` (loading images, fonts, shaders, UI files, themes and audio; handles and hot reload), `ryo-animation`, `ryo-ui`, `ryo-text` (fonts, rich text, world text), `ryo-audio` (sound definitions, the mixer, volume settings, spatial sound, music), `ryo-particles`, `ryo-lighting`, `ryo-messages`, `ryo-config-save`, `ryo-console`, `ryo-controller`, `ryo-procgen`, `ryo-cli`.
+**Complete signatures: the `ryo-api` skill.** Feature skills: `ryo-physics`, `ryo-character` (players, enemies, movement presets, pickups, kill zones, checkpoints, tile levels), `ryo-assets` (loading images, fonts, shaders, UI files, themes and audio; handles and hot reload), `ryo-animation`, `ryo-ui`, `ryo-text` (fonts, rich text, world text), `ryo-audio` (sound definitions, the mixer, volume settings, spatial sound, music), `ryo-tilemap` (levels from Tiled and LDtk: layers, objects, collision, editing, worlds), `ryo-particles`, `ryo-lighting`, `ryo-messages`, `ryo-config-save`, `ryo-console`, `ryo-controller`, `ryo-procgen`, `ryo-cli`.
 
 ## Project Setup
 
@@ -140,7 +140,7 @@ Entities are not drawn by `render`: anything with `Transform` + `Renderable` is 
 | `ctx.time` | `&mut Time` | `real`, `game` and `fixed` clocks |
 | `ctx.input` | `&mut Input` | Keyboard, mouse, gamepad, text |
 
-Helpers: `assets()` (the asset registry: `load_now`, `load`, `add`, `get`; `ryo-assets`), `audio()` (play sounds and music, volume settings, snapshots; `ryo-audio`), `camera()` (the main camera: position, zoom, rotation, shake, screen/world conversion), `actions()` (bind and rebind input actions), `ui_theme()` (the UI theme), `follow_ui_theme(handle)` (follow a `.theme.ron` asset), `render_targets()`, `add_systems`, `messages::<T>()`, `write_message`, `resource`, `resource_mut`, `resource_or_default`, `insert_resource`, `effects()`, `lighting()`, `look()`, `render_pipeline()`, `window()`, `cursor()`, `console()`, `spawn_child`, `skip_interpolation`, `screen_size()`, `request_display_mode`, `request_resolution`, `set_cursor*`. The accessors return `Mut<..>`; bind one for several calls: `let mut fx = ctx.effects();`.
+Helpers: `assets()` (the asset registry: `load_now`, `load`, `add`, `get`; `ryo-assets`), `audio()` (play sounds and music, volume settings, snapshots; `ryo-audio`), `maps()` (spawned tile maps: read and edit tiles, Wang terrain, cells and world positions, world levels; `ryo-tilemap`), `camera()` (the main camera: position, zoom, rotation, shake, screen/world conversion), `actions()` (bind and rebind input actions), `ui_theme()` (the UI theme), `follow_ui_theme(handle)` (follow a `.theme.ron` asset), `render_targets()`, `add_systems`, `messages::<T>()`, `write_message`, `resource`, `resource_mut`, `resource_or_default`, `insert_resource`, `effects()`, `lighting()`, `look()`, `render_pipeline()`, `window()`, `cursor()`, `console()`, `spawn_child`, `skip_interpolation`, `screen_size()`, `request_display_mode`, `request_resolution`, `set_cursor*`. The accessors return `Mut<..>`; bind one for several calls: `let mut fx = ctx.effects();`.
 
 **`time` and `input` are taken out of the world for the length of a callback.** Use the fields; `ctx.world.resource::<Time>()` panics inside a callback. Systems see them as resources (`Res<Time>`) as usual.
 
@@ -266,7 +266,7 @@ fn add_score(mut coins: MessageReader<CoinCollected>, mut score: ResMut<Score>) 
 ```
 
 - A message stays readable until two fixed steps have run after it was written, so per-frame and fixed-step readers both see it; each scene and each reader sees it once. Read a type in one place per scene.
-- Engine messages: `CollisionStarted`/`CollisionStopped` and `TriggerEntered`/`TriggerExited` (physics), `MovementEvent`, `PickedUp`, `Killed`, `CheckpointReached` (gameplay), `TweenStarted`/`TweenCompleted`, `KnockbackStarted`/`KnockbackFinished`, `SquashStretchStarted`/`SquashStretchFinished`, `ParticleCollision`, and an `AssetEvent<T>` per asset type (`ryo-assets`). Details: `ryo-messages`.
+- Engine messages: `CollisionStarted`/`CollisionStopped` and `TriggerEntered`/`TriggerExited` (physics), `MovementEvent`, `PickedUp`, `Killed`, `CheckpointReached` (gameplay), `TweenStarted`/`TweenCompleted`, `KnockbackStarted`/`KnockbackFinished`, `SquashStretchStarted`/`SquashStretchFinished`, `ParticleCollision`, `MapEvent` (a tile map landed, reloaded or failed: `ryo-tilemap`), and an `AssetEvent<T>` per asset type (`ryo-assets`). Details: `ryo-messages`.
 
 <!-- self: score: u32 -->
 <!-- given: player: Entity -->
@@ -401,6 +401,22 @@ fn show_paths(mut debug: ResMut<DebugDraw>, agents: Query<&Route>) {
   }
 }
 ```
+
+## Tile Maps in Brief
+
+Levels are made in Tiled or LDtk and load like any asset; a `MapRoot` entity spawns one, its `Transform` at the map's top-left:
+
+<!-- self: level: Option<Entity> -->
+```rust
+fn on_enter(&mut self, ctx: &mut SceneContext) {
+  let map = ctx.assets().load::<TileMap>("maps/level1.tmx"); // or LdtkProject and MapRoot::ldtk
+  self.level = Some(ctx.world.spawn((Transform::from_xy(0.0, 0.0), MapRoot::new(map))).id());
+}
+```
+
+- The map lands a frame or so after its files load, whole: its layers (drawn in chunks at the root's z plus their index), its objects as `MapObject` entities, its colliders from the tiles' collision shapes, its shadows, and a `MapEvent::Spawned`. Wire objects and place the player then.
+- `ctx.maps()` reads and edits tiles (`tile`, `set_tile`, `fill`, Wang `set_terrain`) and converts between cells and world positions; an edit redraws and re-collides only what it touched.
+- Saving the map in its editor updates it while the game runs, keeping what the save did not change. All of it: `ryo-tilemap`.
 
 ## Physics in Brief
 

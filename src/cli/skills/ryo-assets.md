@@ -1,13 +1,13 @@
 ---
 name: ryo-assets
-description: "Assets - loading images, SVG, shaders, fonts, UI files, themes and audio (clips, sound and music definitions, the mixer) through the registry (load_now and load), asset paths, handles and what keeps an asset alive, load states and loading screens, embedded assets with add, hot reload and AssetEvent, custom asset types and loaders, and the debug checker."
+description: "Assets - loading images, SVG, shaders, fonts, UI files, themes, audio (clips, sound and music definitions, the mixer) and tile maps (Tiled maps, tilesets and worlds, LDtk projects) through the registry (load_now and load), asset paths, handles and what keeps an asset alive, load states and loading screens, embedded assets with add, hot reload and AssetEvent, custom asset types and loaders, and the debug checker."
 metadata:
-  version: 1.2.1
+  version: 1.3.0
 ---
 
 # Ryo2D Assets
 
-Everything a game reads from its `assets/` folder goes through one registry, reached as `ctx.assets()` in scenes. Every type below is in the prelude; complete signatures are in `ryo-api` (Assets). Audio files and their definitions are assets like any other; playing them is `ryo-audio`.
+Everything a game reads from its `assets/` folder goes through one registry, reached as `ctx.assets()` in scenes. Every type below is in the prelude; complete signatures are in `ryo-api` (Assets). Audio files and their definitions are assets like any other; playing them is `ryo-audio`. Tile maps from Tiled and LDtk are too; spawning them is `ryo-tilemap`.
 
 ## 1. Loading: `load_now` and `load`
 
@@ -43,7 +43,7 @@ fn on_enter(&mut self, ctx: &mut SceneContext) {
 
 ### Paths
 
-Asset paths are relative to the project's `assets/` folder (an example's own `assets/`): `"player.png"` is `assets/player.png`, `"ui/menu.ui.ron"` is `assets/ui/menu.ui.ron`. Paths inside asset files (a UI file's imports and images, a theme's skin images and sounds, a bitmap font's sheet, a sound definition's clips, a music definition's intro and loop) are asset paths too. `\` becomes `/`, `.` segments go and `..` resolves within the path; an absolute path, or one that leaves `assets/`, fails with `AssetError::InvalidPath`.
+Asset paths are relative to the project's `assets/` folder (an example's own `assets/`): `"player.png"` is `assets/player.png`, `"ui/menu.ui.ron"` is `assets/ui/menu.ui.ron`. Paths inside asset files (a UI file's imports and images, a theme's skin images and sounds, a bitmap font's sheet, a sound definition's clips, a music definition's intro and loop) are asset paths too. Tiled and LDtk files are the exception: they write paths relative to their own folder (`../images/ground.png` in `maps/level1.tmx`), as the editors save them, and the loaders read them so. `\` becomes `/`, `.` segments go and `..` resolves within the path; an absolute path, or one that leaves `assets/`, fails with `AssetError::InvalidPath`.
 
 ### Types and files
 
@@ -59,6 +59,10 @@ Asset paths are relative to the project's `assets/` folder (an example's own `as
 | `Sound` | `sound.ron`: how a sound plays (clips and their weights, bus, level, pitch, limits, fades, spatial settings), its clips loaded with it (`ryo-audio`) | |
 | `Music` | `music.ron`: an intro and a loop, or one clip with a loop region (`ryo-audio`) | |
 | `Mixer` | `mixer.ron`: the buses, effects, sends, snapshots and ducking; the engine loads `audio/mixer.mixer.ron` (`MIXER_PATH`) at start if the game has one (`ryo-audio`) | |
+| `TileMap` | `tmx`, `tmj`: a Tiled map, its tilesets, images, templates and the Tiled project loaded or read with it (`ryo-tilemap`); spawn it with a `MapRoot` | |
+| `Tileset` | `tsx`, `tsj`: a Tiled tileset, its images loaded with it | |
+| `LdtkProject` | `ldtk`: an LDtk project, its `.ldtkl` level files and tileset images loaded with it | |
+| `TileWorld` | `world`: a Tiled world, its maps loaded with it | |
 
 The loader is picked by the longest extension, so `menu.ui.ron` is a UI file, `night.theme.ron` a theme and `step.sound.ron` a sound definition. Asking for a type no loader makes from the file (`load::<Image>("menu.ui.ron")`) fails with `AssetError::NoLoader`.
 
@@ -228,6 +232,7 @@ In debug builds with a window the engine watches `assets/`: a saved file reloads
 - **A saved shader keeps drawing its last version until the new one is compiled.** A shader already drawn compiles its new version on a thread of the renderer's own (about 70 to 130 ms of GPU compile on Metal for new WGSL) and draws it from the start of the frame after, so a save brings no hitch (frames cost about 0.1 ms more while it compiles, as measured) and nothing draws plain meanwhile. A shader first drawn after the save, or one with no version that ever drew, compiles in its first frame. On the web there are no threads to compile on, so there the next frame compiles it.
 - The assets that hold a reloaded one are checked again: a UI file importing the saved file, a theme whose skin image changed, a bitmap font whose sheet did, a sound definition whose clip did.
 - **Audio reloads into what is playing:** a saved clip switches its loops and the music playing it where they are, a saved definition retunes its playing loops, and a saved mixer rebuilds the buses with the loops carrying on (`ryo-audio`, Hot reload).
+- **Tile maps follow their files:** a saved map, tileset, template, Tiled project or LDtk project or level file brings every map spawned from it to the save in the frame it lands, keeping the entities, objects and game state the save left alone, and sends `MapEvent::Reloaded` (`ryo-tilemap`, Hot reload).
 - A reload that fails (a typo in a file) keeps the last good value and warns once, naming the file and, where its format gives one, the line and column: ``could not load "shaders/glow.wgsl": 16:3: expected `;`, found "let"``. Fix the file and save again. A shader is compiled as its file loads, so a `.wgsl` file that does not compile fails as any other file does. A removed file keeps its asset as it was.
 - `ctx.assets().server().reload(path)` asks for the same reload by hand (a headless test, a console command).
 - **A large image shows its new pixels after its `Modified`.** An image whose texture's levels are more than a frame's upload budget (2 MiB; a square image over about 610 px) is written into a new texture over frames, about a frame per 2 MiB (11 frames at 2048 x 2048, about 22 at 3840 x 2160), while its old pixels draw, and the new ones replace them whole. `Modified` is sent when the new value lands, at the start, so a count of reloads moves first and the picture follows a few hundred milliseconds later. A smaller image draws its new pixels in the frame it lands.

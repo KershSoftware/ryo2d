@@ -47,7 +47,7 @@ const EMBEDDED_SKILLS: &[(&str, &str, &str)] = &[
   ),
   (
     "ryo-assets",
-    "Assets - loading images, SVG, shaders, fonts, UI files, themes and audio (clips, sound and music definitions, the mixer) through the registry (load_now and load), asset paths, handles and what keeps an asset alive, load states and loading screens, embedded assets with add, hot reload and AssetEvent, custom asset types and loaders, and the debug checker.",
+    "Assets - loading images, SVG, shaders, fonts, UI files, themes, audio (clips, sound and music definitions, the mixer) and tile maps (Tiled maps, tilesets and worlds, LDtk projects) through the registry (load_now and load), asset paths, handles and what keeps an asset alive, load states and loading screens, embedded assets with add, hot reload and AssetEvent, custom asset types and loaders, and the debug checker.",
     include_str!("../skills/ryo-assets.md"),
   ),
   (
@@ -97,7 +97,7 @@ const EMBEDDED_SKILLS: &[(&str, &str, &str)] = &[
   ),
   (
     "ryo-lighting",
-    "2D lighting - Light2D and LightOccluder2D entities, ctx.lighting() for ambient, atmosphere and on/off, shadows, volumetric beams, sprite shadows and ambient occlusion.",
+    "2D lighting - Light2D and LightOccluder2D entities (polygons and open chains), ctx.lighting() for ambient, atmosphere and on/off, shadows (tile maps' too), volumetric beams, sprite shadows and ambient occlusion.",
     include_str!("../skills/ryo-lighting.md"),
   ),
   (
@@ -139,6 +139,11 @@ const EMBEDDED_SKILLS: &[(&str, &str, &str)] = &[
     "ryo-text",
     "Text: fonts, styles, rich text and markup, inline icons, typewriter reveal and glyph effects, world text (Text2d) and the damage-number recipe.",
     include_str!("../skills/ryo-text.md"),
+  ),
+  (
+    "ryo-tilemap",
+    "Tile maps - the workflow from Tiled (.tmx, .tmj) or LDtk (.ldtk) through assets/ to a MapRoot entity, layers and the reserved layer properties (collides, occludes, y_sort, lit), tilesets and typed tile data, objects and class tiles as entities, MapEvent, reading and editing tiles with ctx.maps() and Wang terrain, collision from tile shapes and IntGrids, tile shadows, y-sorting and parallax, worlds of levels, maps built in code and by procgen, hot reload, the web, performance and testing.",
+    include_str!("../skills/ryo-tilemap.md"),
   ),
   (
     "ryo-ui",

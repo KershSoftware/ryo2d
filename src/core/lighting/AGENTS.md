@@ -23,6 +23,7 @@ Scenes control lighting through the `LightingSettings` resource (`ctx.lighting()
 
 - **No light cap**: each lit camera draws the lights on its `RenderLayers` whose reach meets its view: those without shadow volumes in one instanced draw, each shadowed one in three or four draws of its own. A light with a radius or intensity that is not positive and finite, or a position that is not finite, draws nothing.
 - **No shadow cap**: shadow volumes are built per light, once a frame, for every enabled occluder within twice its radius, and have no vertex limit. Shadow casting and complex occluder polygons add cost. Disable shadows on unimportant lights.
+- **No spatial index**: every lit frame gathers every occluder (`engine/extract.rs`), and each shadowed light loops over all of them for the reach test. A big tile map's chains are thousands (about 2,400 on the 1024 x 1024 cave of `benches/tilemap.rs`): one shadowed light over it costs about 30 µs a frame more than the unlit map (`docs/backlog/tilemap.md`). Map occluders are per chunk already, so an index by chunk, a light reading only the chunks its reach meets, is the proposed fix.
 
 ## Conventions
 
@@ -31,6 +32,7 @@ Scenes control lighting through the `LightingSettings` resource (`ctx.lighting()
 - **Coordinate space**: occluder vertices are local space (relative to the entity), CCW winding: CCW on screen, which with y down is a negative signed area, so `casts`' normal `(-edge.y, edge.x)` faces out.
 - **Chains**: `LightOccluder2D::chain` is an open run of edges (no edge from the last vertex back to the first; `is_closed` is false), wound as a polygon's: each edge casts exactly as it would as an edge of the polygon its boundary closes, so chains that together close a ring cast as that polygon does (`a_chain_occluder_casts_like_the_polygon_it_bounds`). Occluders that touch, each a closed polygon, cast their touching edges' shadows through each other; tile maps build their occluders as chains of their boundary for that reason (`tilemap/occluders.rs`).
 - **Reach test by entity**: a light skips an occluder whose entity sits more than twice its radius away, so an occluder's entity should sit at its geometry's centre (as tile maps place theirs: one chain entity per run of a chunk's boundary).
+- **Tile occluders** (`tilemap/occluders.rs`, tilemap module notes): a spawned map's occluding layers (`LayerInfo::occludes`, else as they collide) keep `LightOccluder2D::chain`s of the boundary of what occludes, per 32-cell chunk, children of the first occluding layer marked `MapOccluder { chunk }` (prelude), rebuilt per changed chunk in `PostUpdate` before transforms propagate, so an edit casts that frame. A tile's shapes marked `occluder` block light and do not collide; without any, its collision shapes occlude. A chunk-wide chain sits at its corners' box's centre, so a small light near one end can miss it by the reach test (a known limit).
 
 ## Notes for AI Agents
 

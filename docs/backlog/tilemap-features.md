@@ -1,65 +1,54 @@
-# Future Tilemap Features
+# Tile Maps: 6b and Later
 
-Features identified during the tilemap system design (2026-02-21) that are out of scope for the initial implementation. Refer to these when extending the tilemap system later.
+Sub-project 6a (`docs/specs/2026-10-29-tilemap-design.md`) made orthogonal tile maps from Tiled and LDtk: registry assets with hot reload, chunked drawing, collision and shadows from the tiles, objects as entities, runtime edits with Wang terrain, worlds. Every map 6a cannot draw correctly fails to load with an error naming the feature and sub-project 6b, rather than loading wrong. The owner chose to do isometric, hexagonal and infinite maps straight after 6a; this is 6b's scope, what each feature needs from 6a's model, and what stays later. What 6a measured, and its limits, are in `docs/backlog/tilemap.md`.
 
-## Infinite Maps (Tiled Chunked Format)
+## 6b: what it adds
 
-Tiled supports "infinite" maps where tile data is stored in sparse chunks rather than a fixed-size grid. The map has no predefined width/height — chunks are allocated on demand as the user paints tiles.
+| Feature | Tiled | LDtk |
+|---|---|---|
+| Isometric maps | `orientation: isometric` (diamond cells, 2:1 or any tile ratio) | none (LDtk is orthogonal only) |
+| Staggered isometric maps | `orientation: staggered`, with `staggeraxis` (x or y) and `staggerindex` (odd or even) | none |
+| Hexagonal maps | `orientation: hexagonal`, with `staggeraxis`, `staggerindex` and `hexsidelength` | none |
+| Oblique maps | Tiled 1.12's new orientation (a skewed grid; read its parameters from Tiled 1.12's format when 6b starts) | none |
+| Infinite maps | `infinite: true`: tile layers saved as chunks (`chunks: [{ x, y, width, height, data }]`, coordinates that may be negative), and the map's `width` and `height` meaningless | none |
 
-**What it would require:**
-- Parse Tiled's chunked layer format (`"infinite": true` in .tmj)
-- Replace the flat `Vec<Option<TileId>>` in `TilemapLayer` with a `HashMap<(i32, i32), Vec<Option<TileId>>>` keyed by chunk coordinates
-- Tile lookups become two-step: find chunk, then index within chunk
-- Collision generation needs to handle sparse regions
+Today each is refused in `tilemap/tiled/build.rs` (the orientation check and the `infinite` checks, both formats), pinned by `isometric_hexagonal_staggered_oblique_and_infinite_maps_fail_naming_6b` and `infinite_maps_are_refused_naming_6b`. 6b replaces each refusal with the feature, and keeps refusing what it does not do. The anti-goal stands: no orientation value the engine accepts but does not implement.
 
-**When you'd want this:** Very large or procedurally-expanded maps where pre-allocating the full grid is wasteful.
+## What each needs from 6a's model
 
-## Image Layers
+### Orientation, everywhere a cell meets a pixel
 
-Tiled image layers embed a single image (not tiles) positioned within the map. Used for static backgrounds, foreground overlays, etc.
+6a assumes a cell `(x, y)` covers the rectangle `(x, y) * cell_size`. That assumption lives in a few places, which an orientation on the map (a `TileMap` field, copied to the layers as they spawn) generalises:
 
-**Why it's low priority:** Ryo2D's `ParallaxBackground` system already handles layered background images with scroll factors, and it's GPU-accelerated. Image layers in Tiled are functionally equivalent but less capable (no scroll speed control).
+- **Cell and world conversions:** `edit.rs` (`world_to_cell`, `cell_to_world`), and through them `MapsView`. Isometric is an affine map of the orthogonal grid; staggered and hexagonal maps need offset-coordinate conversions, and a point to cell lookup that picks the nearest hexagon.
+- **Drawing** (`render/tiles.rs`, `chunk_instances`): an instance's place in layer pixels, the tile's anchor in its cell (Tiled draws an isometric tile from its cell's bottom centre), the draw order inside a layer (isometric rows by `x + y`, staggered and hex rows in their own order), a chunk's box for culling (a diamond's or a staggered band's bounding box), and y-sorting by those rows rather than by grid rows. The slot uniform (map transform, parallax, the tileset's place) needs nothing new.
+- **Objects** (`tiled/objects.rs`): Tiled writes an isometric map's object positions in its projected space (both axes in tile-height units along the diamond's axes), so positions and polygons convert on load; `MapObject` and its `Transform` stay as they are.
+- **Flips:** gid bit 28 is Tiled's 120° rotation of hexagonal tiles, which 6a's `decode_gid` clears. A cell already keeps four flip bits (28 to 31), so a hex rotation flag fits the 4-byte cell; `TileFlip` gains it.
+- **Wang terrain** (`wang.rs`): corner and edge colours are in cell space, so isometric and staggered maps keep the rules; check against Tiled what its terrain brush does on hexagonal maps before porting it, as 6a did for orthogonal ones.
 
-**If needed:** Parse `"type": "imagelayer"` from .tmj, load the image as a `SpriteHandle`, spawn as a `Renderable` entity at the layer's offset with the layer's z-order.
+### Collision and shadows
 
-## Wang Tiles
+- **Isometric:** the diamond grid is an affine image of the square one, so `TileColliders` could keep tracing in cell space with its colliders under the map's linear map: a 45° turn under a non-uniform scale is a 2:1 diamond, which a child entity under a scaled parent expresses. Check first that physics builds every collider shape correctly under such a sheared world map (`physics/shape.rs` builds Rapier shapes under a collider's linear map; the character sweep and one-way normals must hold too). The slopes and shapes of a tile, drawn in Tiled over the tile's image, convert to cell space on load. Occluders follow the same map (`Boundary` and the chains are in cell space too).
+- **Staggered and hexagonal:** a hexagonal cell has six neighbours, so `TileColliders`' square outline trace (units one or two cells decide, `physics/tiles/outline.rs`) does not apply. 6b needs a hex grid kind that traces the boundary of hexagons the same way (shared edges cancel, loops stay seamless, an edit retraces only the loops through it, packing by chunk), or per-cell polygons merged across shared edges. This is the largest piece of 6b, and it is physics', with the character controller's floor and wall rules checked on hex outlines.
+- **Navigation** (`NavigationGrid::block_tiles`) reads a square grid; isometric maps can block by cell, hex maps need a hex graph or a sampled square grid.
 
-Tiled's Wang tile system (terrain sets) uses edge/corner matching rules to auto-select tiles. It's Tiled's built-in auto-tiling mechanism.
+### Infinite maps
 
-**Relationship to our auto-tiling:** Our bitmask auto-tiling system (part of the tilemap design) handles the same use case with a different approach. Wang tiles could be supported as an alternative rule source — import Tiled's Wang set definitions and convert them to our bitmask rules.
+- **A sparse grid:** `TileGrid` is dense, of a fixed size, cut into 32-cell chunks with per-chunk versions. An infinite layer is a map of chunks by chunk coordinate (negative ones included) with the same per-chunk versions, so the chunk renderer, collision and occluders keep reading versions as they do. `world_to_cell` already gives cells outside a layer; edits past the current chunks create them.
+- **Collision:** `TileColliders` has a fixed size with cell (0, 0) at its top-left and a limit of 8192 cells a side. An infinite layer needs an origin (the lowest chunk) and a grid that grows, or a sparse grid; packing is already per chunk, so colliders stay one per chunk.
+- **Loading:** the reader decodes each chunk (every encoding 6a reads), and the map's size becomes the chunks' bounds for what needs one (`TileMap::size`, a world file's map size).
+- **Worlds:** a Tiled world places infinite maps by their bounds.
 
-**What it would require:**
-- Parse `"wangsets"` from .tsj tileset files
-- Convert Wang edge/corner constraints to bitmask lookup entries
-- Handle both edge-type and corner-type Wang sets
+## Later than 6b
 
-## 2D Engine Feature Gaps (Non-Tilemap)
+- Running Tiled's automapping and LDtk's auto-layer rules at runtime: both run in their editors, which save the tiles.
+- Per-tile runtime overrides of tileset data (Godot's runtime tile data).
+- Saving maps back to the editors' formats, and a tile editor inside the engine.
+- Tiled's text objects beyond their placement (`ObjectShape::Text` keeps the text; nothing draws it).
+- Streaming a world's levels automatically: 6a gives positions, neighbours and `spawn_levels_in`, and when to load and unload stays the game's call.
+- LDtk tilesets' enum tags and custom tile data (not read by 6a's loader), Tiled's map parallax origin (6a measures parallax from the map's top-left), and LDtk level background images.
+- What `docs/backlog/tilemap.md` lists as limits: transform propagation walking static subtrees, the landing frame's first draw, relabelling long split loops, lighting's lack of a spatial index, and the keep window's memory.
 
-Other features identified from researching Godot, Unity, GameMaker, Defold, Bevy, Love2D, Phaser, and Pygame that Ryo2D doesn't have yet:
+## Outside tile maps
 
-### Skeletal/Bone Animation
-Bone-based 2D rigging with IK (inverse kinematics). Godot has Skeleton2D, Unity has 2D Animation package, GameMaker supports Spine import. Would enable smoother character animation without per-frame spritesheets.
-
-### Localization / i18n
-Translation system with string tables, plural rules, and locale switching. Godot has built-in CSV/PO support, Unity has a localization package. Essential for shipping games in multiple languages.
-
-### Accessibility
-Screen reader support, focus navigation, text-to-speech. Godot 4.5+ leads here with AccessKit integration. Increasingly expected for commercial releases.
-
-### Sprite Atlas Packing
-Automatic texture atlas generation at build time — pack individual sprites into atlases to reduce draw calls. Godot, Unity, and Defold all do this automatically.
-
-### Normal Map Lighting
-Apply normal maps to 2D sprites so they react to the lighting system with depth/surface detail. Godot and Unity both support this on their 2D light systems.
-
-### 2D Joints
-Expose Rapier2D's joint system (hinge, spring, distance, fixed, prismatic). We integrate Rapier for rigid bodies and colliders but don't expose joints yet. Godot, Unity, and GameMaker all have joint APIs.
-
-### Additional Collision Shapes
-Capsule, polygon, edge/segment, and composite colliders. We currently support AABB and circle. Rapier already supports these shapes — just needs API exposure.
-
-### Path-Based Tweening
-Tween objects along Bezier/spline paths (not just linear interpolation). Phaser has tween-on-path, Godot has Path2D + PathFollow2D.
-
-### Texture Compression
-Platform-specific texture compression at build time (DXT, ETC2, ASTC). Reduces GPU memory usage significantly. Defold, Unity, and Godot handle this in their export pipelines.
+The 2026-02 survey of Godot, Unity, GameMaker, Defold, Bevy, Love2D, Phaser and Pygame also noted gaps outside tile maps. Skeletal animation, joints and capsule, polygon, segment and compound colliders have been built since; these were still open then (check before working on one): localization (string tables, plural rules, locale switching), accessibility (screen readers, text to speech), sprite atlas packing at build time, normal-map lighting for 2D sprites, tweening along Bézier and spline paths, and texture compression at build time (DXT, ETC2, ASTC).

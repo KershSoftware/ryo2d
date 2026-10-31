@@ -2,7 +2,7 @@
 name: ryo-api
 description: Complete API reference for ryo2d::prelude - every exported type with its signatures and use, organised by area.
 metadata:
-  version: 2.14.0
+  version: 2.15.0
 ---
 
 # Ryo2D API Reference
@@ -328,11 +328,11 @@ pub struct Time { pub real: RealClock, pub game: GameClock, pub fixed: FixedCloc
 | Step | Runs |
 |---|---|
 | `First` | advance clocks, publish `Input`, advance message buffers |
-| `PreUpdate` | a running scene transition, then the asset pump (loads and reloads land, unheld assets are freed, `AssetEvent`s sent); then the console |
+| `PreUpdate` | a running scene transition, then the asset pump (loads and reloads land, unheld assets are freed, `AssetEvent`s sent), then tile maps (those whose assets are ready start landing, landings that came back land with `MapEvent::Spawned`, spawned maps follow saved files with `MapEvent::Reloaded`); then the console |
 | UI pass | `Scene::ui` for visible scenes, bottom-up; input it consumes never reaches gameplay |
-| `FixedUpdate` × 0..N | `FixedSet::Snapshot` → `Juice` → `Scene` (`Scene::update`) → `Game` (scene and game systems) → `Movement` (trigger behaviours, tile collider rebuilds, movement input, knockback, movement presets) → `Physics` (one system: the whole physics step) → `Transforms` → `Trails` |
+| `FixedUpdate` × 0..N | `FixedSet::Snapshot` → `Juice` → `Scene` (`Scene::update`) → `Game` (scene and game systems) → `Movement` (trigger behaviours, tile maps' collision kept in step with their tiles, tile collider rebuilds, movement input, knockback, movement presets) → `Physics` (one system: the whole physics step) → `Transforms` → `Trails` |
 | `Update` | `UpdateSet::Game` (scene per-frame systems) |
-| `PostUpdate` | `PostUpdateSet::Transforms` → `Camera` (shake, then every camera's `CameraView`) → `Extract` |
+| `PostUpdate` | tile maps' shadows kept in step with their tiles, then `PostUpdateSet::Transforms` → `Camera` (shake, then every camera's `CameraView`) → `Extract` |
 | render | draw list from the world, `Scene::render`, render pipeline |
 | `Last` | tracker clearing |
 
@@ -403,6 +403,7 @@ pub struct SceneContext<'a> {
 |---|---|
 | `assets(&mut self) -> AssetsView<'_>` | the asset registry: load, add and read assets (see [Assets](#assets)); it borrows the world, so take it, use it and let it go |
 | `audio(&mut self) -> AudioView<'_>` | the audio engine: play sounds and music, the player's volume settings, snapshots (see [Audio](#audio)); it borrows the world like `assets()` |
+| `maps(&mut self) -> MapsView<'_>` | spawned tile maps: read and edit tiles, Wang terrain, cell conversions, world levels (see [Tilemaps](#tilemaps)); it borrows the world like `assets()` |
 | `add_systems<M>(&mut self, phase: Phase, systems: impl IntoScheduleConfigs<ScheduleSystem, M>) -> Result<(), SceneScheduleError>` | scene-owned systems; `FixedUpdate` and `Update` only (other phases: `SceneScheduleError::UnsupportedPhase`; `SceneScheduleError` is in the prelude) |
 | `messages<T: Message + Clone>(&mut self) -> Vec<T>` | messages written since this scene last read `T` |
 | `write_message<T: Message>(&mut self, message: T)` | registers `T` on first use |
@@ -568,6 +569,7 @@ Engine messages (all `Message + Clone`):
 | `SquashStretchStarted` / `SquashStretchFinished` | `entity` | |
 | `AssetEvent<T>` (one per asset type) | `Added { id }`, `Modified { id }`, `Removed { id }`, `Failed { id, error }`, `ReloadFailed { id, error }` | the asset pump (`PreUpdate`) put an asset in its store, changed it, freed it, or could not load or reload it; `load_now` sends its own at once (see [Assets](#assets)) |
 | `ParticleCollision` | see [Particles](#particles) | |
+| `MapEvent` | `Spawned { map }`, `Reloaded { map }`, `Failed { map, error: Arc<AssetError> }` | a tile map landed whole (layers, objects, colliders, shadows), followed a saved file, or did not load (see [Tilemaps](#tilemaps)) |
 | `UiEvent` | `node: Entity, name: Option<String>, action: Option<String>, kind: UiEventKind` | a UI node was clicked, changed, dropped on, focused ... (see [Node trees](#node-trees)); also triggered on the node as an entity event |
 | `UiListBind` | `list, row: Entity, index: usize` | a list node gave a pooled row an item, at the start of the UI pass; the row is drawn from the next frame; also triggered on the row |
 
@@ -861,12 +863,13 @@ The character controller and what is built on it: movement input, the platformer
 | `KillZone` (component, non-exhaustive) `{ despawn: bool }` | `new()`, `despawning()`; on a trigger collider |
 | `Checkpoint` (component, non-exhaustive) `{ offset: Vec2 }` | `new()`, `with_offset(Vec2)`; on a trigger collider |
 | `Respawn` (component, non-exhaustive) `{ point: Vec2 }` | `here()` (its `Transform` when the engine first sees it), `at(point)`; root entities only |
-| `TileColliders` (component, non-exhaustive, brings `Transform`) `{ tile_size: Vec2, layer, mask: u32, friction, restitution: f32, solid_rects: bool }` | `new(width, height, tile_size: Vec2)`, `from_cells(width, height, tile_size, Vec<TileCell>)` (row by row from the top), `width()`, `height()`, `get(x, y) -> TileCell` (`Empty` outside), `set(x, y, TileCell) -> bool` (true when the cell changed), `with_layer(u32)`, `with_mask(u32)`, `with_friction(f32)`, `with_restitution(f32)`, `solid_rects()` (defaults: layer 1, mask all bits, friction 0.5, restitution 0, outlines). Its `Transform` places cell (0, 0)'s top-left; the colliders are child entities, rebuilt on a real change; over 8192 × 8192 cells is refused |
-| `enum TileCell { Empty (default), Solid, OneWay, Slope(SlopeCorner) }` | |
+| `TileColliders` (component, non-exhaustive, brings `Transform`) `{ tile_size: Vec2, layer, mask: u32, friction, restitution: f32, solid_rects: bool }` | `new(width, height, tile_size: Vec2)`, `from_cells(width, height, tile_size, Vec<TileCell>)` (row by row from the top), `width()`, `height()`, `get(x, y) -> TileCell` (`Empty` outside), `set(x, y, TileCell) -> bool` (true when the cell changed), `with_layer(u32)`, `with_mask(u32)`, `with_friction(f32)`, `with_restitution(f32)`, `solid_rects()` (defaults: layer 1, mask all bits, friction 0.5, restitution 0, outlines), `add_shape(CellShape) -> u16` (an authored shape for `TileCell::Shape` cells to name; at most 65,535, `u16::MAX` names none), `shape(u16) -> Option<&CellShape>`. Its `Transform` places cell (0, 0)'s top-left. The colliders are child entities packed by area: the outlines starting in each 32 x 32-cell chunk are one collider, and so are a chunk's one-way runs along one row. A real change retraces only the outlines through the cells it changed and reshapes only their chunks' colliders, in place (same entities, contacts kept), before that step's physics; a side over 8192 cells is refused (logged, empty). A tile map keeps these for its colliding layers ([Tilemaps](#tilemaps)) |
+| `enum TileCell { Empty (default), Solid, OneWay, Slope(SlopeCorner), Shape(u16) }` | `Shape` names a shape `add_shape` returned |
+| `CellShape { polygons: Vec<Vec<Vec2>>, one_way: bool }` | polygons in tile units ((0, 0) the cell's top-left, (1, 1) its bottom-right); a solid shape joins the outlines as solid cells do (seamless with its neighbours), a one-way shape's top edges join the one-way runs; clipped to its cell, and a polygon that crosses itself collides as its hull (logged) |
 | `enum SlopeCorner { BottomLeft, BottomRight, TopLeft, TopRight }` | the filled corner of a 45° half-cell; `from_name(&str) -> Option<Self>` (`"bottom-left"` .. `"top-right"`, any case) |
 | `read_move_bindings` | the system that fills every bound `MoveIntent` (engine-registered) |
 
-`FixedSet::Movement` runs, chained: the zone behaviours (`Respawn::here` points, `Pickup`, pickup respawn timers, `KillZone`, `Checkpoint`, acting on the previous step's `TriggerEntered` from solid colliders), `read_move_bindings`, knockback, the platformer and top-down presets; `TileColliders` rebuilds run in the set too. Under `PhysicsPaused` the bindings, knockback, presets and pickup timers wait; the zone behaviours keep running. A game write to a character's `Transform` is a teleport: its `CharacterState` resets and it moves on by its `Velocity` from there that step.
+`FixedSet::Movement` runs, chained: the zone behaviours (`Respawn::here` points, `Pickup`, pickup respawn timers, `KillZone`, `Checkpoint`, acting on the previous step's `TriggerEntered` from solid colliders), `read_move_bindings`, knockback, the platformer and top-down presets; `TileColliders` rebuilds run in the set too, after tile maps have put their tiles' changes in their grids. Under `PhysicsPaused` the bindings, knockback, presets and pickup timers wait; the zone behaviours keep running. A game write to a character's `Transform` is a teleport: its `CharacterState` resets and it moves on by its `Velocity` from there that step.
 
 
 ---
@@ -879,7 +882,7 @@ Lighting turns on once any `Light2D` exists (or when forced) and lights the worl
 |---|---|
 | `LightingSettings` (resource; `ctx.lighting()`) | `set_enabled(bool)` (force on, e.g. a dark scene before any light, or off), `enabled() -> Option<bool>`, `ambient() -> &AmbientLight`, `set_ambient(AmbientLight)`, `atmosphere() -> &Atmosphere`, `set_atmosphere(Atmosphere)` |
 | `Light2D` (component) | `point(Color, radius)`, `point_with_intensity(..)`, `point_full(..)`, `spot(Color, radius, angle_deg, direction_deg)`, `spot_with_intensity(..)`, `spot_full(..)`; presets `torch(r)`, `moonlight(r)`, `lamp(r)`, `flashlight(r, dir_deg)`, `warning(r)`, `magic(r, Color)`; builders `with_shadows()`, `with_soft_shadows(f32)`, `with_shadow_color(Color)`, `with_intensity`, `with_falloff`, `with_volumetric()`, `with_god_rays()`, `with_volumetric_and_god_rays()`, `with_volumetric_settings(VolumetricSettings)`; getters/setters for color, radius, intensity, direction, angle, shadows, softness, volumetric |
-| `LightOccluder2D` (component) | `polygon(Vec<Vec2>)` (≥ 3 vertices, CCW), `rect(w, h)` (centred), `rect_offset(x, y, w, h)`, `circle(r, segments)`, `line(start, end, thickness)`, `vertices()`, `edges()`, `is_enabled()`, `set_enabled(bool)`, `with_enabled(bool)`, `transform_vertices(x, y, rotation)` |
+| `LightOccluder2D` (component) | `polygon(Vec<Vec2>)` (≥ 3 vertices, CCW), `chain(Vec<Vec2>)` (≥ 2 vertices: an open run of edges, wound as the polygon it is part of, each edge casting as it would there; chains that close a ring cast as that polygon), `rect(w, h)` (centred), `rect_offset(x, y, w, h)`, `circle(r, segments)`, `line(start, end, thickness)`, `vertices()`, `edges()`, `is_closed()` (false for a chain), `is_enabled()`, `set_enabled(bool)`, `with_enabled(bool)`, `transform_vertices(x, y, rotation)`. A tile map's are chains marked `MapOccluder` ([Tilemaps](#tilemaps)) |
 | `AmbientLight { color, intensity }` | `new(Color, f32)`, `with_intensity(f32)`, presets `dark()`, `night()`, `moonlit()`, `indoor()`, `daylight()`, `sunset()`, `set_intensity`, `set_color`, `with_custom_intensity`, `effective_color()` |
 | `Atmosphere { density, color, scattering, god_rays_* }` | `new(density, Color)`, presets `clear()`, `hazy()`, `dusty()`, `foggy()`, `smoky()`, `underwater()`, `with_god_rays()`, `with_god_rays_config(..)`, `with_god_rays_quality(GodRaysQuality)`, `with_density`, `with_color`, `with_scattering` |
 | `GodRaysQuality { Low, Medium, High }` | `samples()`, `decay()` |
@@ -941,7 +944,7 @@ One registry for every asset type. `AssetServer` (a resource; systems take `Res<
 - `Progress { loaded, failed, pending }` (`Copy`, `Eq`, `Default`): `is_done()` (nothing pending), `fraction()` (the share loaded or failed; 1 for an empty group). `AssetStats { types: Vec<TypeStats> }`, `TypeStats { name, loaded, loading, failed }`, one per registered type.
 - `enum AssetEvent<T: Asset> { Added { id }, Modified { id }, Removed { id }, Failed { id, error: Arc<AssetError> }, ReloadFailed { id, error } }` (`Clone`, `Debug`): a message per asset type (`ctx.messages::<AssetEvent<Image>>()`, `MessageReader<AssetEvent<T>>`). The pump sends them in `PreUpdate`, `load_now` its own at once; an asset's events come in the order its changes happened, `Removed` last, and only for an asset that was `Added` (a load dropped before it landed, or a failed one, is freed with no event).
 - `AssetPath` (`Clone`, `Eq`, `Hash`, `Ord`, `Display`): `parse(&str) -> Result<AssetPath, AssetError>` (`\` to `/`, `.` dropped, `..` resolved; absolute or leaving the root is `InvalidPath`), `as_str()`, `extensions()` (longest first: `"ui.ron"`, `"ron"`), `parent()`.
-- The engine's types and loaders, in every registry: `Image` (`ImageLoader`: `png`, `jpg`, `jpeg`, `bmp`, `gif`, `webp`, `tga`, `tif`, `tiff`, `qoi`, `ico`, `svg`; settings `ImageSettings { svg: SvgSize }`, `enum SvgSize { Native (default), Scale(f32), Fit { width: u32, height: u32 } }`), `Shader` (`ShaderLoader`: `wgsl`), `Font` (`FontLoader`: `ttf`, `otf`, `ttc`; `FontSettings { face: u32 }`), `BitmapFont` (`BitmapFontLoader`: `bitmap.ron`), `UiFile` (`UiFileLoader`: `ui.ron`), `Theme` (`ThemeLoader`: `theme.ron`), `AudioClip` (`AudioClipLoader`: `wav`, `ogg`, `mp3`, `flac`; settings `AudioClipSettings { mode: ClipMode }`), `Sound` (`SoundLoader`: `sound.ron`), `Music` (`MusicLoader`: `music.ron`) and `Mixer` (`MixerLoader`: `mixer.ron`); see [Audio](#audio). A path's loader is the one taking its longest extension.
+- The engine's types and loaders, in every registry: `Image` (`ImageLoader`: `png`, `jpg`, `jpeg`, `bmp`, `gif`, `webp`, `tga`, `tif`, `tiff`, `qoi`, `ico`, `svg`; settings `ImageSettings { svg: SvgSize }`, `enum SvgSize { Native (default), Scale(f32), Fit { width: u32, height: u32 } }`), `Shader` (`ShaderLoader`: `wgsl`), `Font` (`FontLoader`: `ttf`, `otf`, `ttc`; `FontSettings { face: u32 }`), `BitmapFont` (`BitmapFontLoader`: `bitmap.ron`), `UiFile` (`UiFileLoader`: `ui.ron`), `Theme` (`ThemeLoader`: `theme.ron`), `AudioClip` (`AudioClipLoader`: `wav`, `ogg`, `mp3`, `flac`; settings `AudioClipSettings { mode: ClipMode }`), `Sound` (`SoundLoader`: `sound.ron`), `Music` (`MusicLoader`: `music.ron`) and `Mixer` (`MixerLoader`: `mixer.ron`), see [Audio](#audio); `TileMap` (`TiledMapLoader`: `tmx`, `tmj`), `Tileset` (`TiledTilesetLoader`: `tsx`, `tsj`), `LdtkProject` (`LdtkLoader`: `ldtk`) and `TileWorld` (`TileWorldLoader`: `world`), see [Tilemaps](#tilemaps). A path's loader is the one taking its longest extension.
 - A type of your own: `trait Asset: Send + Sync + 'static {}`, and for files a loader registered with `EngineBuilder::asset_loader(loader)`:
 
   ```rust
@@ -1065,15 +1068,67 @@ See `ryo-particles`.
 
 ## Tilemaps
 
-The data model and the Tiled JSON and XML loaders; drawing and collision arrive with the rest of 6a (`ryo-tilemap`, to come). `.tmj`/`.tmx` maps and `.tsj`/`.tsx` tilesets load through the registry (`TiledMapLoader`, `TiledTilesetLoader`, in the prelude): `assets.load::<TileMap>("maps/level.tmj")`. Tilesets and images are dependencies, so a map is ready when they are. Layers of every encoding load (CSV, base64, gzip, zlib, zstd); group layers flatten; the layer properties `collides`, `occludes`, `y_sort` and `lit` fill `LayerInfo`; isometric, hexagonal, staggered and infinite maps fail naming 6b. Object layers load their objects (`MapObjectData`: every shape, tile objects, instances of `.tj` and `.tx` templates, object-reference properties as `PropertyValue::Object(id)`), and a tileset's Wang sets load on `Tileset::wang_sets`. A Tiled project file (`.tiled-project`) gives the class and enum types: a class member a map omits takes the project's default, nested classes and enums resolve (flags as a `List`). The project is `[tilemap] tiled_project` in Ryo.toml, `EngineBuilder::tiled_project(path)` over it, else `project.tiled-project` at the asset root if there is one; without one a class's members keep what the file wrote and a warning names the class once per file. Replaced in 6a: the old `TilemapManager`, `ctx.tilemaps()`, `Tilemap`, auto-tiling, collision rectangles and `load_tiled_map` are gone.
+Tiled and LDtk levels as registry assets, spawned by a `MapRoot` entity: tile layers drawn in cached 32 x 32-cell chunks through the world batch, colliding and casting 2D shadows from their tiles' shapes, objects and class tiles as entities, tiles read and edited through `ctx.maps()` with Wang terrain, worlds of levels and hot reload. All in the prelude; the guide is `ryo-tilemap`.
 
-- `TileMap { size, tile_size, tilesets, layers, class, background, properties }` (an `Asset`): `new(size, tile_size)`, `add_tileset(TilesetSource) -> u16`, `add_tile_layer(name) -> usize`, `add_object_layer(name) -> usize`, `layer_index(name)`, `tiles(layer) -> Option<&TileGrid>`, `tiles_mut(layer)`. `TilesetSource::{Asset(Handle<Tileset>), Embedded(Arc<Tileset>)}`.
-- `MapLayer { info: LayerInfo, kind: LayerKind }`; `LayerKind::{Tiles { grid, intgrid }, Objects(Vec<MapObjectData>), Image(ImageLayer)}`; `LayerInfo { id, name, class, offset, opacity, tint, parallax, visible, blend, collides, occludes, y_sorted, lit, properties }`.
-- `TileGrid` (dense, 4 bytes a cell, `CHUNK_SIZE` = 32): `new(size)`, `size()`, `get(IVec2) -> Option<Tile>`, `set(IVec2, Option<Tile>) -> bool`, `fill(min, max, Option<Tile>) -> usize`, `clear()`, `chunks()`, `drain_dirty(&mut Vec<UVec2>)`, `mark_all_dirty()`.
-- `Tile { tileset: u16, id: u32, flip: TileFlip }`: `new(tileset, id)`, `with_flip`; `TileFlip::{NONE, HORIZONTAL, VERTICAL, DIAGONAL}` with `contains`, `|` and `rotated_cw()`.
-- `Tileset` (an `Asset`): `new(name, tile_size, TilesetImage)`, `tile(id) -> Option<&TileData>`, `tile_rect(id) -> Option<URect>`, `insert_tile`; `TileData { class, properties, shapes: Vec<TileShape>, animation: Vec<TileFrame>, probability, image }`; `WangSet`, `WangKind`, `WangColor`.
-- `Properties` (insertion-ordered): `get`, `bool`, `int`, `float`, `string`, `color`, `insert`, `iter`; `PropertyValue` is `Bool`, `Int`, `Float`, `String`, `Color`, `File`, `Object`, `Enum`, `Class` or `List`.
-- `IntGrid { size, values, names }`: `get(IVec2)` (`None` for 0 or outside). `ObjectShape::{Rect, Ellipse, Point, Capsule, Polygon(Vec<Vec2>), Polyline(Vec<Vec2>), Text(String)}`; `MapObjectData { id, name, class, position, size, rotation, shape, tile, visible, properties }` (`id` is the Tiled id as a string; `position` is the top-left corner in map pixels, a tile object moved there from its tileset's alignment point; `rotation` is radians, clockwise on screen, about `position`); `ImageLayer`, `URect`.
+**Assets and loaders** (registered in every registry):
+
+| Asset | Loader, files | |
+|---|---|---|
+| `TileMap { size: UVec2, tile_size: UVec2, tilesets: Vec<TilesetSource>, layers: Vec<MapLayer>, class: Option<String>, background: Option<Color>, properties: Properties }` | `TiledMapLoader` (`default()`, `with_project(path)`): `tmx`, `tmj` | `new(size, tile_size)` (cells, a cell's pixels), `add_tileset(TilesetSource) -> u16` (at most 256), `add_tile_layer(&str) -> usize`, `add_object_layer(&str) -> usize`, `layer_index(&str) -> Option<usize>`, `tiles(layer) -> Option<&TileGrid>`, `tiles_mut(layer) -> Option<&mut TileGrid>`. Tilesets and images are dependencies |
+| `Tileset { name, class: Option<String>, tile_size: UVec2, columns, tile_count, spacing, margin: u32, tile_offset: IVec2, image: TilesetImage, wang_sets: Vec<WangSet>, transformations: TileTransformations, properties }` | `TiledTilesetLoader` (`default()`, `with_project(path)`): `tsx`, `tsj` | `new(name, tile_size, TilesetImage)`, `tile(id) -> Option<&TileData>`, `insert_tile(id, TileData)`, `wang_set(&str) -> Option<&WangSet>`, `tile_rect(id) -> Option<URect>` (its texels in the atlas) |
+| `LdtkProject { levels: Vec<LdtkLevel>, worlds: Vec<WorldLayout>, tilesets: Vec<Arc<Tileset>> }` | `LdtkLoader`: `ldtk` (its `.ldtkl` level files read with it) | `level(name_or_iid) -> Option<&LdtkLevel>`; LDtk 1.5's format, a newer one fails |
+| `TileWorld { layout: WorldLayout }` | `TileWorldLoader`: `world` | `maps() -> &[Handle<TileMap>]`, `map(level) -> Option<&Handle<TileMap>>`; its maps are dependencies |
+
+- `TilesetSource::{Asset(Handle<Tileset>), Embedded(Arc<Tileset>)}`; `TilesetImage::{Atlas { image: Handle<Image>, size: UVec2 }, Collection}` (a collection's tiles have their own `TileData::image`).
+- `MapLayer { info: LayerInfo, kind: LayerKind }`; `LayerKind::{Tiles { grid: TileGrid, intgrid: Option<IntGrid>, cell_size: UVec2 }, Objects(Vec<MapObjectData>), Image(ImageLayer)}` (`cell_size` is the map's `tile_size` unless the file gives the layer a grid of its own, as LDtk does).
+- `LayerInfo` (also a component on each spawned layer entity) `{ id: u32, name, class, offset: Vec2, opacity: f32, tint: Color, parallax: Vec2, visible: bool, blend: BlendMode, collides: bool, occludes: Option<bool> (None: as collides), y_sorted: bool, lit: bool, properties }`: `new(id, name)` (visible, opaque, lit, colliding). Tiled fills `collides`, `occludes`, `y_sorted` and `lit` from the bool layer properties `collides` (default true for tile layers), `occludes`, `y_sort` and `lit` (default true); LDtk's IntGrid layers collide, its other layers do not.
+- `ImageLayer { image: Handle<Image>, repeat_x: bool, repeat_y: bool }` (also a component on an image layer's entity). `IntGrid { size, values: Vec<i32>, names }`: `get(IVec2) -> Option<i32>` (`None` for 0 or outside).
+- `MapObjectData { id: String, name, class, position: Vec2 (the rectangle's top-left in map pixels), size: Vec2, rotation: f32 (radians, clockwise on screen, about position), shape: ObjectShape, tile: Option<Tile>, visible: bool, properties }`; `ObjectShape::{Rect, Ellipse, Point, Capsule, Polygon(Vec<Vec2>), Polyline(Vec<Vec2>), Text(String)}`.
+- `LdtkLevel { identifier, iid, world: Option<String>, position: IVec2, size: UVec2, fields: Properties, neighbours: Vec<Neighbour>, map: TileMap }`.
+- `WorldLayout { name, levels: Vec<WorldLevel> }`: `levels_in(Rect) -> impl Iterator<Item = (usize, &WorldLevel)>` (touching an edge does not count). `WorldLevel { name, position: Vec2, size: Vec2, neighbours: Vec<Neighbour> }`; `Neighbour { level: usize, direction: NeighbourDirection }`; `enum NeighbourDirection { North, South, East, West, NorthEast, NorthWest, SouthEast, SouthWest, Above, Below, Overlap }`.
+
+**Cells and tiles:**
+
+- `TileGrid` (4 bytes a cell, in chunks of `CHUNK_SIZE` = 32 cells a side): `new(size: UVec2)`, `size()`, `chunks()`, `get(IVec2) -> Option<Tile>`, `set(IVec2, Option<Tile>) -> bool` (false outside, unchanged, or a tile that does not fit a cell), `fill(min, max, Option<Tile>) -> usize` (both corners included), `clear()`, `chunk_version(UVec2) -> u64` and `version() -> u64` (move on with every change, never repeated across grids), `mark_all_dirty()`, `drain_dirty(&mut Vec<UVec2>)` (the chunks changed since the last drain; one reader only).
+- `Tile { tileset: u16, id: u32, flip: TileFlip }`: `new(tileset, id)`, `with_flip(TileFlip)`. `TileFlip::{NONE, HORIZONTAL, VERTICAL, DIAGONAL}` (Tiled's bits: diagonal first, then horizontal, then vertical): `contains`, `|`, `rotated_cw()`.
+- `TileData { class, properties, shapes: Vec<TileShape>, animation: Vec<TileFrame>, probability: f32, image: Option<(Handle<Image>, UVec2)> }` (`Default`, probability 1). `TileShape { points: Vec<Vec2> (tile pixels from the top-left), one_way: bool, occluder: bool (blocks light only), properties }` (`Default`). `TileFrame { tile: u32, duration: Duration }`.
+- `WangSet` (read-only once built): `new(name, WangKind, Vec<WangColor>, Vec<WangTile>, TileTransformations)`, `name()`, `kind()`, `colors()`, `tiles()`, `transformations()`, `color_index(&str) -> Option<u8>` (1-based), `best_tile(wanted: [u8; 8], cell: IVec2) -> Option<(u32, TileFlip)>` (positions clockwise from the top edge; 0 no colour, `WangSet::ANY` any; ties broken by a hash of `cell`), `ANY: u8`. `enum WangKind { Corner, Edge, Mixed }`; `WangColor { name, color: Color, tile: Option<u32>, probability, properties }`; `WangTile { tile: u32, wangid: [u8; 8], probability: f32 }`; `TileTransformations { hflip, vflip, rotate, prefer_untransformed: bool }`.
+- `Properties` (in written order): `get(&str) -> Option<&PropertyValue>`, `bool`, `int -> Option<i64>` (a whole float counts), `float -> Option<f64>` (an int counts), `string -> Option<&str>`, `color -> Option<Color>`, `insert(name, PropertyValue)`, `iter()`, `len()`, `is_empty()`. `enum PropertyValue { Bool(bool), Int(i64), Float(f64), String(String), Color(Color), File(String), Object(String) (an object's id), Enum { ty, value }, Class { ty, fields: Properties }, List(Vec<PropertyValue>) }`.
+- `URect { min: UVec2, max: UVec2 }` (texels, `max` exclusive): `new(x0, y0, x1, y1)`, `size()`.
+
+**Spawned maps:**
+
+| Type | API |
+|---|---|
+| `MapRoot` (component, brings `Transform`, which places the map's top-left) | `new(Handle<TileMap>)`, `ldtk(Handle<LdtkProject>, level: &str)` (identifier or iid), `world_level(&Handle<TileWorld>, level: usize)`, `ldtk_world_level(Handle<LdtkProject>, world: &str, level: usize)`; `with_entity_tiles(&[&str])` (tiles of these classes spawn as `MapTile`s, neither drawn nor collided), `with_intgrid_collision(impl Into<IntGridKey>, TileCell)`, `without_collision()`, `with_z(i32)` (the bottom layer's z; layer `i` at `z + i`). It lands whole once its assets load: layers, objects, class tiles, colliders, shadows and `MapEvent::Spawned` in one frame. Despawning it despawns the map |
+| `enum IntGridKey { Value(i32), Name(String) }` | `From<i32>`, `From<&str>`; by default the names `solid`, `one_way`, `slope_bottom_left`, `slope_bottom_right`, `slope_top_left`, `slope_top_right` (any case) collide as they say |
+| `MapLayerRef` (component on each layer entity) `{ map: Entity, index: usize (bottom first), name: String }` | with `LayerInfo`, a `Transform` at the layer's offset, and `TileLayerData` or `ImageLayer` |
+| `TileLayerData` (component) `{ grid: TileGrid, intgrid: Option<IntGrid>, cell_size: UVec2 }` | the spawned layer's own cells; editing `grid` redraws and re-collides as `ctx.maps()` does |
+| `MapObject` (component, child of its object layer, `Transform` at its rectangle's centre) `{ map: Entity, id: String, name, class: Option<String>, shape: ObjectShape, size: Vec2, tile: Option<Tile>, visible: bool, properties }` | `reference(field: &str, world: &World) -> Option<Entity>` (an object-reference property's object, if alive) |
+| `MapTile` (component, child of its tile layer at the cell's centre) `{ map: Entity, layer: usize, cell: IVec2, tile: Tile, class: String, properties }` | a class tile |
+| `MapIds` (component on the map entity) | `get(id: &str) -> Option<Entity>` |
+| `MapOccluder` (component) `{ chunk: UVec2 }` | marks the `LightOccluder2D::chain`s a map keeps from its tiles (children of its first occluding layer); an edit rebuilds a chunk's |
+| `WorldLevelOf` (component) `{ world: WorldRef, level: usize }` | marks a root `spawn_levels_in` spawned; despawn the root to unload the level |
+| `enum WorldRef { Tiled(Handle<TileWorld>), Ldtk { project: Handle<LdtkProject>, world: String } }` | `From<&Handle<TileWorld>>`; a single-world LDtk project's world is "World" |
+| `enum MapEvent { Spawned { map }, Reloaded { map }, Failed { map, error: Arc<AssetError> } }` (message) | landed whole this frame; followed a saved file; did not load or land (sent once per failure) |
+| `enum LayerRef<'a> { Name(&'a str), Index(usize) }` | `From<&str>`, `From<&String>`, `From<usize>`; a name is the first layer so called |
+
+`MapsView` (`ctx.maps()`, or `MapsView::new(&mut World)`): every call names the map entity and, where it reads cells, a layer (`impl Into<LayerRef>`); a map not landed, a missing or non-tile layer, or a cell outside reads `None` / `false` / 0.
+
+| Method | |
+|---|---|
+| `is_ready(map) -> bool` | landed |
+| `layer_entity(map, layer) -> Option<Entity>` | |
+| `tile(map, layer, cell: IVec2) -> Option<Tile>` | a class tile's cell reads `None` |
+| `set_tile(map, layer, cell, Option<Tile>) -> bool`, `fill(map, layer, min, max, Option<Tile>) -> usize` | edits; a registered class's tile spawns a `MapTile` instead; each redraws, re-collides and re-shadows only the chunks it touches |
+| `set_terrain(map, layer, cell, wang_set: &str, color: Option<&str>) -> bool` | Wang painting as Tiled's terrain brush with corrections on; `None` erases |
+| `intgrid(map, layer, cell) -> Option<i32>` | |
+| `tile_data(map, Tile) -> Option<TileData>` | |
+| `world_to_cell(map, layer, Vec2) -> Option<IVec2>`, `cell_to_world(map, layer, IVec2) -> Option<Vec2>` | through the map's and layer's `Transform`s as they are now; a cell's centre |
+| `spawn_levels_in(world: impl Into<WorldRef>, area: Rect) -> Vec<Entity>` | spawns each level overlapping `area` not already spawned (a `MapRoot` at its position with a `WorldLevelOf`); returns those it spawned |
+
+- Collision: a map's colliding layers keep `TileColliders` (see [Characters and gameplay](#characters-and-gameplay)) on the map entity, or on a layer with its own cell size, offset or material (`collision_layer`, `collision_mask`, `friction`, `restitution` properties, a layer's over the map's). Parallax is ignored for collision.
+- Not loaded: isometric, staggered, hexagonal, oblique and infinite maps (an error naming sub-project 6b), and layer blend modes other than normal, add, multiply and screen.
 
 ---
 
@@ -1450,6 +1505,7 @@ Families (see `ryo-network`):
 ## Profiling, console, logging
 
 - `profile_function!()` and `profile_scope!("name")`: puffin scopes with the `profiler` feature, nothing without. See `ryo-profiler`.
+- `FrameCost` (resource the engine writes at the end of every frame, windowed or headless; read it with `ctx.resource::<FrameCost>()`, never write it): what recent frames cost the CPU, smoothed over about 50 frames, as the F1 frame timing overlay shows it. `update_ms()` (the UI pass and the fixed steps: scenes, systems, physics), `render_ms()` (gathering, building and uploading the frame), `present_ms()` (running the render passes and presenting, without the wait for the window's next image), `total_ms()` (the frame's work, the vsync wait and the sleep between frames left out), `fps()` (from wall-clock time, waits included; 0 until the second frame), `frames()` (frames measured). For a game's own performance readout.
 - `game_trace!`, `game_debug!`, `game_info!`, `game_warn!`, `game_error!`: `format!`-style game logging (`game_info!("score {}", s)`; `game_info!(module: "ai", "..")` tags a module), shown in the logger window and the terminal.
 - Console (backtick key): `ConsoleCommandBuilder` (from `EngineBuilder::with_console_commands`): `declare(name, description)`, `declare_verbose(name, description, verbose)`, `remove_builtin(name)`. Handlers: `ctx.console().register(name, |args: &[&str], cmd: &mut CommandContext| -> CommandResult)`. `CommandContext { console: &mut ConsoleState, debug_config, quit_requested, capture_requested, time_scale, commands, game_name, game_version }`; `ConsoleState` prints with `print`, `print_colored`, `print_error`, `print_system`; `enum CommandResult { Ok, Error(String), Quit }`; `CommandRegistry` is the engine's registry. See `ryo-console`.
 - `rand` and `rand::Rng` are re-exported (`rand::thread_rng().gen_range(0.0..1.0)`).

@@ -2,7 +2,7 @@
 name: ryo-engine-dev
 description: Working on the Ryo2D engine - the frame's phases, module map, resources, public API, crates and testing.
 metadata:
-  version: 2.4.3
+  version: 2.5.0
 ---
 
 # Ryo2D Engine Developer
@@ -34,8 +34,10 @@ Engine::frame
 │                     then the engine's debug keys consume their presses
 ├─ PreUpdate          a running scene transition, then the asset pump, chained: finished loads
 │                     and reloads land, code changes' events are sent, unheld assets are freed
-│                     (AssetEvent<T>); the font registry follows the font stores; then the
-│                     console (animation, input, commands)
+│                     (AssetEvent<T>); the font registry follows the font stores; then tile maps:
+│                     spawn_maps (ready maps' landings sent to the map builder thread, finished
+│                     ones landed whole, MapEvent) and reload_maps (spawned maps follow saved
+│                     files); then the console (animation, input, commands)
 ├─ UI pass            resolve first, once a frame, against last frame's UI records: the
 │                     pointer, the wheel, then focus and navigation from the ui.* actions;
 │                     then each visible scene bottom-up: its node trees (unchanged subtrees
@@ -48,19 +50,22 @@ Engine::frame
 │   ├─ Juice          animation, tweens, sequences, property tweens, squash, skeletons
 │   ├─ Scene          transitions, Scene::update (active scene and those under updates_below), action
 │   ├─ Game           the scenes' own FixedUpdate schedules; builder systems by default
-│   ├─ Movement       trigger behaviours, tile collider rebuilds, movement input, knockback, movement presets
+│   ├─ Movement       trigger behaviours, tile maps' collision sync, tile collider rebuilds, movement input,
+│   │                 knockback, movement presets
 │   ├─ Physics        one system running PhysicsSchedule: forget, track disabled, propagate, register,
 │   │                 sync colliders, push, move characters, sync joints, step, read back, messages,
 │   │                 trigger contents
 │   ├─ Transforms     propagation
 │   └─ Trails         trail point recording; later debug shapes last one frame
 ├─ Update             UpdateSet::Game: the scenes' own Update schedules; builder systems by default
-├─ PostUpdate         Transforms (propagation) → Camera (shake on real time, every CameraView)
+├─ PostUpdate         tile maps' occluder sync, then Transforms (propagation) → Camera (shake on
+│                     real time, every CameraView)
 │                     → Extract (parallax auto-scroll, timed effects, text reveals); after Camera,
 │                     audio_system: voice commands, mixer rebuilds, reloads, music, the listener
 │                     and emitters, the game clock's holds and rates, the mock backend's render
 ├─ render             present_frame (engine/extract.rs): Scene::render (GPU batches), queries
 │                     the world into the draw list (world space, sorted once: sprites, entities,
+│                     tile maps' visible chunks, built into the batch's chunk store when changed,
 │                     trails and lines as polylines, world text; parallax and debug shapes per camera),
 │                     the UI: UI commands, then the UI renderer (its own instances), then the UI image,
 │                     then the composite,
@@ -69,20 +74,20 @@ Engine::frame
 │                     per camera: clear → world → lighting → unlit_world (Rgba16Float, linear)
 │                     per frame:  cameras → hdr_effects → tonemap → transition → post_process
 │                                 → ui → composite → capture   (tonemap writes the display image)
-└─ Last               physics removal and re-enable bookkeeping, forget despawned tilemaps, clear_trackers,
+└─ Last               physics removal and re-enable bookkeeping, clear_trackers,
                       check_change_ticks every 1024 frames
 ```
 
 - Phases are `bevy_ecs` schedules owned by `EngineSchedules` (`schedule.rs`); sets are `FixedSet`, `UpdateSet`, `PostUpdateSet`. Every schedule uses the single-threaded executor.
 - The UI pass and render are not schedules; they are engine methods between phases.
-- Engine systems are registered in `register_engine_systems` (`engine/mod.rs`), `register_juice_systems` (`systems/mod.rs`), `register_physics_systems` (`physics/sync.rs`) and `register_gameplay_systems` (`gameplay/mod.rs`). Games add theirs with `EngineBuilder::add_systems` or `SceneContext::add_systems`.
+- Engine systems are registered in `register_engine_systems` (`engine/mod.rs`), `register_juice_systems` (`systems/mod.rs`), `register_physics_systems` (`physics/sync.rs`), `register_gameplay_systems` (`gameplay/mod.rs`) and `register_tilemap_systems` (`tilemap/mod.rs`). Games add theirs with `EngineBuilder::add_systems` or `SceneContext::add_systems`.
 - Three clocks (`time.rs`): `real` (wall), `game` (capped, scaled, pausable), `fixed` (constant steps fed by game time). Fixed-step code uses `time.fixed.timestep()`; real-time effects use `time.real`. Sprite shader globals carry game time in `x`.
 
 ## World and Engine State
 
 | In the world (resources) | Engine-owned (fields of `Engine`) |
 |--------------------------|-----------------------------------|
-| `Time`, `Input`, `ScreenMapping`, `AssetServer` and one `Assets<T>` per asset type, `AudioEngine` (kira's manager, the buses and the voices; `ctx.audio()`), `EffectsManager`, `LightingSettings`, `Look`, `WindowRequest`, `CursorRequest`, `WindowInfo`, `RenderPipeline`, `RenderTargets`, `Fonts`, `TextIcons`, `TextEffects`, `Gpu` (after GPU init), `PhysicsPaused`, `PhysicsConfig`, `Physics`, `CommandRegistry`, `FallbackErrorHandler`, `Messages<T>` per type | The window, the wgpu renderer (with the camera images), the sprite textures, the 2D batch and the lighting renderer, the camera uniforms, the draw list, the text engine (layout cache), the UI's image sizes (`ImageSizes`, the image store's follower) and the frame's UI commands, console state, debug config and overlays, dev windows, gilrs, capture state |
+| `Time`, `Input`, `ScreenMapping`, `AssetServer` and one `Assets<T>` per asset type, `AudioEngine` (kira's manager, the buses and the voices; `ctx.audio()`), `EffectsManager`, `LightingSettings`, `Look`, `WindowRequest`, `CursorRequest`, `WindowInfo`, `RenderPipeline`, `RenderTargets`, `Fonts`, `TextIcons`, `TextEffects`, `Gpu` (after GPU init), `PhysicsPaused`, `PhysicsConfig`, `Physics`, `CommandRegistry`, `FallbackErrorHandler`, `Messages<T>` per type | The window, the wgpu renderer (with the camera images), the sprite textures, the 2D batch and the lighting renderer, the camera uniforms, the draw list, the tile drawer (`render/tiles.rs`; the padded tilesets it shares with map landings are the crate's `PaddedCache` resource), the text engine (layout cache), the UI's image sizes (`ImageSizes`, the image store's follower) and the frame's UI commands, console state, debug config and overlays, dev windows, gilrs, capture state |
 | Non-send `SceneHost` (the scene stack), taken out by the scene systems while they run | |
 
 - `init_world_resources` (`engine/mod.rs`) inserts the resources when the engine is built, windowed or headless; `Gpu` follows in `init_gpu`.
@@ -107,7 +112,8 @@ Engine::frame
 | `lighting/` | 2D lights, occluders, `LightingSettings` |
 | `physics/` | Rapier integration, `RigidBody`, `Collider`, `Physics`, the character controller, one-way colliders, triggers, tile colliders |
 | `gameplay/` | On top of physics: `MoveIntent` and bindings, the platformer and top-down presets, knockback, trigger behaviours (`Pickup`, `KillZone`, `Checkpoint`, `Respawn`) |
-| `particles/`, `trail/`, `skeleton/`, `tilemap/`, `navigation/`, `state_machine/` | Feature modules |
+| `tilemap/` | Tile maps: the data model, the Tiled and LDtk readers (registry loaders), `MapRoot` and the landing on the map builder thread, `MapsView` (`ctx.maps()`) with edits and Wang terrain, map collision and occluders kept in step with the tiles, worlds, hot reload, padded tilesets; drawn by `render/tiles.rs`; `src/core/tilemap/AGENTS.md` |
+| `particles/`, `trail/`, `skeleton/`, `navigation/`, `state_machine/` | Feature modules |
 | `text/` | Fonts (`Fonts`), `TextStyle`, rich text and markup, layout (Parley), glyph rasterization (swash, fdsm), effects, reveal, `Text2d` and `CpuText` for the dev windows; GPU-free |
 | `ui/` | `UiContext` and absolute drawing (`immediate/`); ids (`id.rs`), `UiMemory` (records, widget state, focus memory), layout over Taffy (`layout/`, the only Taffy code), the subtree and its resolution (`tree.rs`), containers, widgets (`widgets/`), popups and modals, the pointer and wheel resolve (`interact.rs`), focus and navigation (`nav.rs`), the theme (`theme/`), node trees (`nodes/`) and their cache (`nodes/cache.rs`, the records and the dirty set; `tape.rs`, what a build pushed and its replay; `fragment.rs`, the unchanged subtrees kept and copied), UI files (`file/`), virtual lists (`widgets/list.rs`, `nodes/list.rs`), the `debug:ui` and `debug:ui-rebuilds` overlays (`debug.rs`) |
 | `hash.rs` | The engine's fast hasher (`FastHasher`, `FastMap`, `FastSet`, `fast_hash`) for keys it makes itself: ids, the UI's memory and layout maps, the text caches; never SipHash, never saved |
@@ -155,7 +161,7 @@ See `ryo-ecs-internals` and `src/core/systems/AGENTS.md`. In short: derive `Comp
 | Integration | `tests/integration/` (target `integration`) | `cargo test --test integration` |
 | End-to-end, GPU | `tests/e2e/` with `HeadlessEngine` (target `e2e`) | `cargo test --test e2e`, `./dev.sh test:e2e` |
 | Demo tour | every page of every demo, headless | `./dev.sh demos:tour [demo...]` → `target/demo-tour/<demo>/page-N.png` |
-| Benchmarks | `benches/` (criterion): `foundation`, `physics`, `text` (the HUD frame, GPU), `ui` (a 200-widget settings screen under 60 µs and its node version within the larger of 10% or 10 µs of it, the node version unchanged under 35 µs, a 2,000-node static tree, an embedded node tree, the node cache's dirty check, a 1,000-row list, 10,000- and 100-row virtual lists and a 10,000-row node list, an empty frame; no GPU), `ui_render`, `assets` (a scene's start with `load_now` and with `load`, and a guard on the frame time of large hot reloads), `audio` (guards on 64 voices' main-thread time, 256 virtual loops ranked against 64 heard, `play`, a streamed `play` and reload landings, in an audio world; 1,024 virtual loops printed beside them) | `cargo bench --bench ui` |
+| Benchmarks | `benches/` (criterion): `foundation`, `physics`, `text` (the HUD frame, GPU), `ui` (a 200-widget settings screen under 60 µs and its node version within the larger of 10% or 10 µs of it, the node version unchanged under 35 µs, a 2,000-node static tree, an embedded node tree, the node cache's dirty check, a 1,000-row list, 10,000- and 100-row virtual lists and a 10,000-row node list, an empty frame; no GPU), `ui_render`, `assets` (a scene's start with `load_now` and with `load`, and a guard on the frame time of large hot reloads), `audio` (guards on 64 voices' main-thread time, 256 virtual loops ranked against 64 heard, `play`, a streamed `play` and reload landings, in an audio world; 1,024 virtual loops printed beside them), `tilemap` (GPU: guards on a static 1024 x 1024 map's frame, a one-tile edit's chunk, loop and occluder rebuilds, and a 256 x 256 map's load and landing; the record is `docs/backlog/tilemap.md`) | `cargo bench --bench ui` |
 
 - Rendering regressions: write the failing pixel assertion in `tests/e2e/` first (see `src/core/testing/AGENTS.md`).
 - UI behaviour: unit tests drive frames with `ui::test_util::UiDriver` (a `UiHarness` plus keys, pad buttons, held directions and scenes); games use the public `ryo2d::testing::UiHarness`.

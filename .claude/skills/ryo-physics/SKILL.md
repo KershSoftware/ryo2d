@@ -2,18 +2,18 @@
 name: ryo-physics
 description: Rapier2D physics integration - bodies, colliders, one-way colliders, triggers, joints, queries, contact state and collision messages.
 metadata:
-  version: 3.3.0
+  version: 3.4.0
 ---
 
 # Ryo2D Physics Specialist
 
 You help users add Rapier2D physics to their games: rigid bodies, colliders, joints, spatial queries and collision messages.
 
-**For complete API signatures, see the `ryo-api` skill.** Players, enemies and anything that walks (the character controller, movement presets, pickups, kill zones, checkpoints and tile levels): the `ryo-character` skill.
+**For complete API signatures, see the `ryo-api` skill.** Players, enemies and anything that walks (the character controller, movement presets, pickups, kill zones, checkpoints and tile levels): the `ryo-character` skill. Levels from Tiled and LDtk, whose tiles collide by themselves: the `ryo-tilemap` skill.
 
 ## How it runs
 
-An entity enters the simulation when it has a `Collider`, with or without a `RigidBody` (a collider with no body above it is a fixed collider). The engine does the rest in `FixedSet::Physics`, once per fixed step, after the scene's `update`, the scene's fixed systems and `FixedSet::Movement` (the gameplay systems: movement presets, knockback, trigger behaviours, tile collider rebuilds):
+An entity enters the simulation when it has a `Collider`, with or without a `RigidBody` (a collider with no body above it is a fixed collider). The engine does the rest in `FixedSet::Physics`, once per fixed step, after the scene's `update`, the scene's fixed systems and `FixedSet::Movement` (the gameplay systems: movement presets, knockback, trigger behaviours, tile maps' collision kept in step with their tiles, tile collider rebuilds):
 
 1. Forget what went away (despawned or removed bodies, colliders, joints) and what was disabled.
 2. Register new bodies, bring colliders and the game's `Transform` / `Velocity` edits in line, sweep every character (`CharacterController`) by its `Velocity`, make new joints.
@@ -126,6 +126,16 @@ let (composite, collider) = CompositeTileBuilder::new()
 ctx.world.spawn((Transform::from_xy(100.0, 50.0), RigidBody::fixed(), composite, collider));
 ```
 
+### Tile maps
+
+A `TileColliders` grid (`ryo-character`, Tile colliders), which a tile map keeps for its colliding layers (`ryo-tilemap`, Collision), builds its own colliders as child entities:
+
+- **Outlines, not cells:** solid, slope and shape cells merge into seamless outlines, so a long floor is one edge and nothing catches where two tiles meet. An authored shape (`CellShape`, from a tile's collision shapes in Tiled) joins the trace as solid cells do: where it meets a neighbour's edges along their shared side they cancel, so a row of half blocks or a ramp of shapes over solid ground is one outline. One-way cells and the top edges of one-way shapes make one-way segments, merged with those they line up with. Outlines are hollow: a body inside one is not pushed out.
+- **Packed by area:** the outlines starting in each 32 x 32-cell chunk are one collider (a `ColliderShape::Segments`, or a closed `Polyline` when the chunk starts one outline), and so are a chunk's flat one-way runs along one row, so a map's collider count follows its area, not its islands.
+- **Edits reshape in place:** a changed cell retraces only the outlines through it, and only the colliders of the chunks whose outlines changed take their new shape, keeping their entity and their Rapier collider. Contacts carry through: a body resting anywhere on the map keeps resting, a character keeps its `CharacterState::floor`, and no `CollisionStopped` / `CollisionStarted` is sent for anything still touching. A collider is spawned only when its chunk gains its first outline, and despawned only when it loses its last.
+- **Which entity:** with no body on the map each part is its own fixed body, so collision messages, `CharacterHit` and `CharacterState::floor` name the part; its parent holds the `TileColliders` (a map's root, or a layer that collides on its own). With a kinematic `RigidBody` on that entity (or above it) they name the body, and the whole map moves.
+- **Ties with moving floors:** a character level with both fixed ground (a map's) and a kinematic or dynamic body (a moving platform) stands on the moving one and rides it, whichever collider was made first.
+
 ## Materials
 
 `with_friction` (default 0.5; 0 is ice), `with_restitution` (default 0; 1 bounces back fully), `with_density` (mass per square metre, default 1), `with_mass` (overrides density for this collider). Two surfaces combine as: friction the geometric mean, restitution the larger. A 100x100 px box at density 1 weighs 1; read a body's mass with `physics.mass(entity)`.
@@ -170,7 +180,7 @@ Read with `ctx.messages::<T>()` in a scene (`MessageReader<T>` in systems); a co
 
 - `CollisionStarted { a, b, body_a, body_b, contact: Option<Contact> }` and `CollisionStopped { a, b, body_a, body_b }`: solid contact only. `a`/`b` are the colliders, `body_a`/`body_b` their bodies (a collider with no body is its own). `contact` is `Contact { point, normal }`, the first contact, the normal pointing from `a` to `b`. The order of `a` and `b` is unspecified: use `involves(entity)` (collider or body), `other(entity) -> Option<Entity>` (the other side's body) and `other_collider(entity)`.
 - `TriggerEntered { trigger, other, other_body }` and `TriggerExited { .. }`: `trigger` is the trigger collider's entity, `other` the collider that entered or left and `other_body` its body (the collider itself when it has none). `actor()` is `other_body`. A body with several colliders enters on its first and exits when its last leaves. On `TriggerExited` either entity may already be despawned.
-- A `TileColliders` map's colliders are child entities of the map: with no body on the map, a message names such a part (follow `ChildOf` to the map), and a rebuild of the map re-sends `CollisionStopped` / `CollisionStarted` for what touched it.
+- A tile map's colliders are child entities packed by chunk (Tile maps, above): with no body on the map, a message names such a part (follow `ChildOf` to the entity holding the `TileColliders`). An edit reshapes parts in place, so nothing is sent for what keeps touching the map; a part spawned or despawned (a chunk's first outline, or its last going), and a whole rebuild, send them as for any collider.
 - `ContactForce { a, b, body_a, body_b, force, direction, started }`: sent every step a contact pushes above its collider's `with_force_events(threshold)`. Breakables, impact sounds.
 - `JointBroken { joint, a, b }`: a joint exceeded its break force and was removed (its `Joint` component too).
 
@@ -213,7 +223,7 @@ Forces last one step: call them every step for a steady push (a thruster in `upd
 
 ## Queries
 
-All on `&Physics` (`ctx.physics()`), in pixels, and they see the world as the last step left it (a body spawned this tick is not in them yet).
+All on `&Physics` (`ctx.physics()`), in pixels, and they see the world as the last step left it (a body spawned this tick is not in them yet, and nor is a tile map that landed this frame until its first fixed step has run: place a character on a new map at a point its designer marked, not by casting a ray down to its ground).
 
 ```rust,ignore
 // Signatures

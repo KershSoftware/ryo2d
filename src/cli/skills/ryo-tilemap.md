@@ -1,0 +1,543 @@
+---
+name: ryo-tilemap
+description: "Tile maps - the workflow from Tiled (.tmx, .tmj) or LDtk (.ldtk) through assets/ to a MapRoot entity, layers and the reserved layer properties (collides, occludes, y_sort, lit), tilesets and typed tile data, objects and class tiles as entities, MapEvent, reading and editing tiles with ctx.maps() and Wang terrain, collision from tile shapes and IntGrids, tile shadows, y-sorting and parallax, worlds of levels, maps built in code and by procgen, hot reload, the web, performance and testing."
+metadata:
+  version: 1.0.0
+---
+
+# Ryo2D Tile Maps
+
+Levels are made in an editor, Tiled or LDtk, and handed over as files. The engine reads both editors' files itself, through the asset registry: a level loads by asset path like an image, plays on the web from the files a build embeds, and follows every save while the game runs. A `MapRoot` entity spawns a map. Its tile layers draw in cached chunks through the world batch, so lights, cameras, `RenderLayers` and z order apply to them as to sprites; its tiles collide and cast 2D shadows from the shapes the designer drew; its objects arrive as entities; and code reads and edits its tiles, with the designer's Wang sets picking edge and corner tiles.
+
+Four registry assets do the work, each loaded by asset path (`ryo-assets`):
+
+| Asset | Files | What it is |
+|---|---|---|
+| `TileMap` | `.tmx` (XML) and `.tmj` (JSON): Tiled maps | Layers over tilesets, with properties; a map can also be built in code |
+| `Tileset` | `.tsx` and `.tsj`: Tiled's external tilesets | Tiles in one atlas image or an image each, with each tile's class, properties, collision shapes and animation, and the Wang sets |
+| `LdtkProject` | `.ldtk`, with its `.ldtkl` level files | Every level of every world, the worlds' layouts and the tilesets |
+| `TileWorld` | `.world`: a Tiled world | Maps placed in one world, with their neighbours |
+
+The loaders also read Tiled's object templates (`.tx`, `.tj`) and its project file (`.tiled-project`) as the maps need them; a game never loads those itself. Every type here is in the prelude; complete signatures are in `ryo-api` (Tilemaps). The worked example is the tilemap demo, `examples/demos/tilemap` (`./dev.sh tilemap`), in eleven pages: a Tiled map and an LDtk level side by side, flips and a layer of two tilesets, animated tiles, a top-down garden (y-sorted trees, parallax clouds, an image layer), collision with slopes and a one-way bridge, objects given behaviour, painting terrain, a procgen dungeon, a world of rooms, a 1024 x 1024 map, and hot reload. The character demo's platformer level is an LDtk level (`examples/demos/character`), and breakout's ten levels are Tiled maps whose bricks are class tiles (`examples/games/breakout`).
+
+## 1. From the editor to the game
+
+1. **Make the level** in Tiled (1.12) or LDtk (1.5).
+   - **Tiled:** an orthogonal map of a fixed size. Save maps as `.tmx` or `.tmj`, and tilesets inside the map or as `.tsx` / `.tsj` files. Every layer format Tiled writes loads: CSV, and Base64 uncompressed or compressed with gzip, zlib or zstd. Isometric, staggered, hexagonal and oblique maps, and infinite maps, fail to load with an error saying so (they arrive in sub-project 6b, after this one), as does a layer blend mode other than normal, add, multiply or screen.
+   - **LDtk:** a project of one world or several, its levels inside the `.ldtk` file or saved beside it as `.ldtkl` files ("Save levels to separate files"). LDtk runs its auto-layer rules in the editor and saves the tiles they place; the game draws what was saved. A project saved by an LDtk newer than 1.5 fails to load, naming both versions.
+2. **Put the files under `assets/`**, in any folders: `assets/maps/level1.tmx`, `assets/tilesets/ground.tsx`, `assets/images/ground.png`. A path written inside a file (a tileset, an image, a template, an LDtk level file) is read from that file's folder, as the editors write them; one that leaves `assets/` fails the load.
+3. **Spawn it** with a `MapRoot`. The entity's `Transform` places the map's top-left corner.
+4. **React when it lands.** Once its files are loaded, a map's colliders and shadows are worked out on a thread of their own, and then it arrives whole, in one frame: its layers, objects, class tiles, colliders and shadows, with a `MapEvent::Spawned`. That is when to give objects their behaviour and put the player down.
+
+```rust
+use ryo2d::prelude::*;
+
+#[derive(Default)]
+struct Level {
+  map: Option<Entity>,
+  player: Option<Entity>,
+}
+
+impl Scene for Level {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    // Loads on the workers; the map lands a frame or so after its files do
+    let level = ctx.assets().load::<TileMap>("maps/level1.tmx");
+    let root = MapRoot::new(level).with_entity_tiles(&["spikes"]);
+    self.map = Some(ctx.world.spawn((Transform::from_xy(0.0, 0.0), root)).id());
+  }
+
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    for event in ctx.messages::<MapEvent>() {
+      match event {
+        MapEvent::Spawned { map } if Some(map) == self.map => self.landed(ctx, map),
+        MapEvent::Failed { error, .. } => game_warn!("the level did not load: {}", error.report()),
+        _ => {}
+      }
+    }
+    SceneAction::Continue
+  }
+}
+
+impl Level {
+  /// The designer's objects get their behaviour, and the player starts at
+  /// the point marked `player_start`
+  fn landed(&mut self, ctx: &mut SceneContext, map: Entity) {
+    let mut objects = ctx.world.query::<(Entity, &MapObject, &GlobalTransform)>();
+    let mut start = None;
+    let mut coins = Vec::new();
+    for (entity, object, global) in objects.iter(ctx.world) {
+      if object.map != map {
+        continue;
+      }
+      match object.class.as_deref() {
+        Some("player_start") => start = Some(global.translation()),
+        Some("coin") => coins.push(entity),
+        _ => {}
+      }
+    }
+    for coin in coins {
+      ctx.world.entity_mut(coin).insert((Collider::circle(6.0).as_trigger(), Pickup::new()));
+    }
+    if let Some(at) = start {
+      let player = ctx.world.spawn((
+        Transform::from_translation(at),
+        Collider::rect(12.0, 22.0),
+        PlatformerMovement::default(),
+        MoveBindings::default(),
+      ));
+      self.player = Some(player.id());
+    }
+  }
+}
+```
+
+- An LDtk level spawns the same way, named by its identifier or iid: `MapRoot::ldtk(ctx.assets().load::<LdtkProject>("ldtk/world.ldtk"), "Level_0")`.
+- `ctx.maps().is_ready(map)` says whether a map has landed, for code that polls instead of reading messages.
+- **Put characters where the designer marked**, at a `player_start` object as above, not by casting a ray down on `Spawned`. The colliders come with the map and physics takes them in during the next fixed step, before it moves anything, so a character placed on `Spawned` stands on its ground from its first move. Physics queries (`ctx.physics().raycast` and the rest) see the world as the last step left it, though, so a ray cast in the `update` that reads `Spawned` misses the map.
+
+## 2. A map in the world
+
+`MapRoot` is a component; its builders say how the map spawns:
+
+| Builder | What it does |
+|---|---|
+| `MapRoot::new(Handle<TileMap>)` | A Tiled map, or one built in code |
+| `MapRoot::ldtk(Handle<LdtkProject>, level: &str)` | A level of an LDtk project, by identifier or iid |
+| `MapRoot::world_level(&Handle<TileWorld>, level)`, `MapRoot::ldtk_world_level(project, world: &str, level)` | A level of a world, by its index in the world's layout (section 12) |
+| `.with_entity_tiles(&["brick", "spikes"])` | Tiles of these tileset classes spawn as entities instead of drawing (section 5) |
+| `.with_intgrid_collision(key, TileCell)` | An LDtk IntGrid value, by number or name, collides as this cell kind (section 8) |
+| `.without_collision()` | Nothing of the map collides; its layers still cast shadows as their flags say |
+| `.with_z(z)` | The bottom layer draws at z, each layer above one higher (default 0) |
+
+What lands, all of it children of the map entity:
+
+- **A child per layer**, bottom first, with `MapLayerRef { map, index, name }`, the layer's `LayerInfo` as a component, and a `Transform` at the layer's offset; a tile layer also has `TileLayerData` (its cells), an image layer `ImageLayer`.
+- **Objects**, children of their object layer, each with a `MapObject` (section 5); **class tiles**, children of their tile layer, each with a `MapTile`.
+- **The colliders** (children of the map, or of a layer that collides on its own) and **the shadow chains** (`MapOccluder`, children of the first occluding layer), which the map keeps in step with its tiles.
+- `MapIds` on the map entity: its objects' entities by their editor id.
+
+Then:
+
+- **Move the map** with its `Transform`: drawing and cell conversions follow at once, and its colliders, which have no body, are put where it now is. For a map that moves while things stand on it (an airship), give the map entity `RigidBody::kinematic()`: its colliders join that body and it carries what stands on it.
+- **Disable it** (`Disabled` on the map entity): it draws nothing, and its colliders and shadows go; enabled, they are built again from its tiles as they then are. `Disabled` does not pass from the map to its layers: the map's systems check the map entity. A layer entity disabled on its own stops drawing, colliding and casting shadows; to hide a layer and keep its collision, set its `LayerInfo::visible` to false.
+- **Unload it** by despawning the map entity: everything it spawned goes with it. `SceneCleanup::WORLD` does this at a scene switch, as for any entity. Putting another `MapRoot` over it, or removing it, takes the old map down first, and the new root spawns afresh.
+
+`MapEvent` is a message (`ctx.messages::<MapEvent>()`, `MessageReader<MapEvent>` in systems):
+
+| Variant | When |
+|---|---|
+| `Spawned { map }` | It landed whole this frame |
+| `Reloaded { map }` | It followed a saved file, in the frame the save landed (section 13) |
+| `Failed { map, error: Arc<AssetError> }` | Its asset did not load, its LDtk project has no such level, its world has no such level, or working out its landing failed: nothing spawned. Sent once for each failure; saving the file fixed spawns it |
+
+## 3. Layers and their properties
+
+What the editor gives a layer carries over:
+
+- **Order:** bottom first (`MapLayerRef::index`). Tiled's group layers flatten into their children: offsets add, opacity and tint multiply, parallax multiplies, visibility needs every group visible, and a group's blend mode passes down unless a child has its own. LDtk lists its top layer first; it draws last here too.
+- **Opacity, tint** (Tiled), **offset, visibility, blend mode, parallax** (section 10). A hidden layer draws nothing but still collides and casts shadows as its flags say: a collision-only layer is a hidden tile layer.
+- **Image layers** draw their picture, repeated across or down where Tiled's repeat settings say.
+- **LDtk:** an IntGrid layer draws its auto-tiles and collides by its values; each layer keeps its own grid size, so a level may mix an 8 px collision grid with 16 px art.
+
+Four layer properties are reserved; the engine reads them into the layer's `LayerInfo`:
+
+| Property | Type | Default | What it does |
+|---|---|---|---|
+| `collides` | bool | true for a Tiled tile layer, false for other layers | Its tiles collide (section 8) |
+| `occludes` | bool | left out: as `collides` | Its tiles cast 2D shadows (section 9) |
+| `y_sort` | bool | false | Its tiles sort with the characters by y, row by row (section 10) |
+| `lit` | bool | true | Lights and the ambient shade it; false draws it at full brightness |
+
+- **In Tiled:** select the layer and, in its Properties, add a custom property of type bool with the name. Properties on a group layer are its own and do not pass to its children: set them on the tile layers. A layer class from the Tiled project (section 4) can give these as its members' defaults.
+- **In LDtk:** layers have no custom properties. IntGrid layers collide, by the names of their values (section 8); every other layer neither collides nor occludes; no layer is y-sorted, and every layer is lit. To change a flag, set it on the layer entity's `LayerInfo` once the map has landed: drawing, collision and shadows read it from there and rebuild. A reload of the file puts the file's flags back.
+
+<!-- given: map: Entity -->
+```rust
+// The LDtk level's "Trees" layer sorts with the characters
+let mut layers = ctx.world.query::<(&MapLayerRef, &mut LayerInfo)>();
+for (layer, mut info) in layers.iter_mut(ctx.world) {
+  if layer.map == map && layer.name == "Trees" {
+    info.y_sorted = true;
+  }
+}
+```
+
+Other properties the engine reads, on a layer or on the map (a layer's win over the map's):
+
+| Property | Type | Default | What it does |
+|---|---|---|---|
+| `collision_layer` | int | 1 | The colliders' collision layer bits (`ryo-physics`, Layers and masks) |
+| `collision_mask` | int | every bit (-1) | What they collide with |
+| `friction` | float | 0.5 | |
+| `restitution` | float | 0 | |
+
+And on a tileset's collision shapes (the objects in Tiled's tile collision editor):
+
+| Property | Type | What it does |
+|---|---|---|
+| `one_way` | bool | The shape is solid only from above: things jump up through it and land on it |
+| `occluder` | bool | The shape blocks light and does not collide |
+
+A material property of the wrong type is warned once, and what is under it counts (the map's, else the default); a reserved flag of another type than bool counts as left out. All other properties are the game's, read from `LayerInfo::properties`, `TileMap::properties`, a tile's data or an object.
+
+## 4. Tilesets and tile data
+
+- **A cell holds a `Tile { tileset, id, flip }`:** `tileset` indexes the map's tilesets (`TileMap::tilesets`), `id` is the tile in it, and `flip` is its `TileFlip`, the flips as Tiled stores them: a diagonal flip first, then horizontal, then vertical (a 90° turn is a diagonal and a horizontal flip; `TileFlip::rotated_cw()` turns one). A layer may mix tilesets, and every tile keeps the flips and turns the editor gave it.
+- **What a tile carries:** `ctx.maps().tile_data(map, tile) -> Option<TileData>` gives its `class`, `properties`, `shapes` (its collision shapes, each `TileShape { points, one_way, occluder, properties }` in tile pixels from the top-left), `animation` (`TileFrame { tile, duration }`), `probability` and `image` (a collection tileset's own picture). A loaded `Tileset` reads the same with `tile(id)`.
+- **Typed properties:** `Properties` reads `bool`, `int` (an `i64`; a whole float counts), `float` (an `f64`; an int counts), `string` and `color` by name, and `get(name) -> Option<&PropertyValue>` for the rest: `File(path)` as written, `Object(id)` (a reference to an object), `Enum { ty, value }`, `Class { ty, fields }` and `List`. They keep the order they were written in (`iter()`).
+- **Classes and enums from the Tiled project.** Tiled keeps custom classes, enums and the members' defaults in its project file, and a map it saves writes only the members a designer changed. Put the project at `assets/project.tiled-project`, or name it in `Ryo.toml` (`[tilemap] tiled_project = "tiled/game.tiled-project"`) or with `EngineBuilder::tiled_project(path)`: a member a file leaves out then takes the project's default, nested classes layer, and enums read by name (flags as a `List`). Without it what the file wrote is kept, and the dev log names the class once per file. Saving the project reloads the maps.
+- **LDtk** writes every field with its type in the project, so nothing more is needed for entities and levels. LDtk tilesets carry no per-tile data into the game: their enum tags and custom data are not read.
+- **Animated tiles** (Tiled's tile animation editor) play on the game clock: they pause with the game and slow with its speed, and nothing is rebuilt as they play. Frames of different lengths keep their lengths, unless repeating them to a common beat would take over 128 cells of the padded tileset, when every frame takes the mean length.
+- **No bleeding at any zoom:** each tileset is drawn from a padded copy made when a map first needs it, each tile's edges stretched outward, so no filter, mip level or sub-pixel camera samples a neighbour's texels.
+
+## 5. Objects and class tiles
+
+**Objects** are Tiled's object layers (rectangles, points, ellipses, capsules, polygons, polylines, text, tile objects and instances of templates) and LDtk's entities. Each spawns as a child of its object layer:
+
+- `MapObject { map, id, name, class, shape, size, tile, visible, properties }`, and a `Transform` at the centre of its rectangle (a point at its point; a polygon or polyline at the origin of its points, which are relative to it), turned by its rotation.
+- `id` is Tiled's object id, or LDtk's iid, as a string, unique in the map; `MapIds` on the map entity finds an object's entity by it (`get(id)`). `class` is Tiled's Class (Type, in older files) or LDtk's entity identifier, which is its `name` too.
+- An object hidden in the editor spawns all the same, with `visible: false` (games use hidden markers); it does not draw.
+- A tile object draws its tile, with its flips and animation, at its place and size, on the layer's z. Set `MapObject::tile` to show another.
+- An object reference (Tiled's object property type, LDtk's entity reference) reads as `PropertyValue::Object(id)`, and `object.reference("switch", ctx.world)` gives that object's entity (`None` once it is despawned).
+- LDtk fields: a point reads as a `Class` "Point" with `cx` and `cy`, a tile as a `Class` "Tile" with `tileset`, `x`, `y`, `w` and `h`, an enum as `Enum`, an array as `List`; an unset field is left out.
+
+Give objects behaviour when the map lands (section 1), or with a system that sees each object as it arrives, objects a save adds included:
+
+```rust
+fn coins_arrive(mut commands: Commands, objects: Query<(Entity, &MapObject), Added<MapObject>>) {
+  for (entity, object) in &objects {
+    if object.class.as_deref() == Some("coin") {
+      commands
+        .entity(entity)
+        .insert((Collider::circle(6.0).as_trigger(), Pickup::new()));
+    }
+  }
+}
+// In the level's on_enter: ctx.add_systems(Phase::FixedUpdate, coins_arrive).ok();
+```
+
+**Class tiles** are tiles with behaviour of their own: a breakable brick, spikes, a door. Give the tile a Class in Tiled's tileset editor, and name the classes in `MapRoot::with_entity_tiles`. Each such tile is taken out of its layer, so the map neither draws nor collides it, and spawns as a child of the layer at its cell's centre with `MapTile { map, layer, cell, tile, class, properties }` (the properties are its tileset's). The game gives it what it needs; breakout reads its brick tiles' colour, hits and points this way, and the tilemap demo gives its spikes their art and a kill zone.
+
+<!-- with: #[derive(Component)] struct Brick { hits: i64 } -->
+<!-- given: map: Entity -->
+```rust
+let mut tiles = ctx.world.query::<(Entity, &MapTile)>();
+let bricks: Vec<(Entity, i64)> = tiles
+  .iter(ctx.world)
+  .filter(|(_, tile)| tile.map == map && tile.class == "brick")
+  .map(|(entity, tile)| (entity, tile.properties.int("hits").unwrap_or(1)))
+  .collect();
+for (entity, hits) in bricks {
+  ctx.world.entity_mut(entity).insert((Collider::rect(32.0, 16.0), Brick { hits }));
+}
+```
+
+- `ctx.maps().set_tile` and `fill` place class tiles the same way: a class tile spawns a `MapTile` on its cell. Placing another tile on that cell, or clearing it, despawns it.
+- `ctx.maps().tile(..)` reads `None` on a class tile's cell: the entity is the tile.
+
+## 6. Reading and editing tiles
+
+`ctx.maps()` is a `MapsView` over the world (in a system or a test with the world: `MapsView::new(world)`). Every call names the map entity and, where it reads cells, a layer by name (the first so called) or by index (bottom first, a `usize`). A map that has not landed, a layer it does not have, a layer that is not a tile layer, or a cell outside the layer reads `None` (or `false`, or 0) and changes nothing.
+
+| Method | |
+|---|---|
+| `is_ready(map) -> bool` | it has landed |
+| `tile(map, layer, cell: IVec2) -> Option<Tile>` | the tile at a cell |
+| `set_tile(map, layer, cell, Option<Tile>) -> bool` | put a tile, or clear it with `None`; false if nothing changed |
+| `fill(map, layer, min: IVec2, max: IVec2, Option<Tile>) -> usize` | every cell from `min` to `max`, both included, clipped to the layer; how many changed |
+| `set_terrain(map, layer, cell, wang_set: &str, color: Option<&str>) -> bool` | paint a Wang colour (section 7) |
+| `intgrid(map, layer, cell) -> Option<i32>` | an LDtk IntGrid value; `None` where it is 0 |
+| `tile_data(map, tile) -> Option<TileData>` | what the tile's tileset says about it |
+| `world_to_cell(map, layer, world: Vec2) -> Option<IVec2>`, `cell_to_world(map, layer, cell) -> Option<Vec2>` | through the map's and the layer's transforms; a cell's centre |
+| `layer_entity(map, layer) -> Option<Entity>` | the layer's entity |
+| `spawn_levels_in(world, area: Rect) -> Vec<Entity>` | the levels of a world near a place (section 12) |
+
+<!-- self: map: Entity -->
+```rust
+let (x, y) = ctx.input.mouse_position();
+let clicked = ctx.input.mouse_pressed(MouseButton::Left);
+let at = ctx.camera().screen_to_world(Vec2::new(x, y));
+let mut maps = ctx.maps();
+if clicked && let Some(cell) = maps.world_to_cell(self.map, "ground", at) {
+  // Dig out a breakable tile: its tileset says which are
+  let breakable = maps
+    .tile(self.map, "ground", cell)
+    .and_then(|tile| maps.tile_data(self.map, tile))
+    .is_some_and(|data| data.properties.bool("breakable") == Some(true));
+  if breakable {
+    maps.set_tile(self.map, "ground", cell, None);
+  }
+}
+// A wall of tile 7 of the map's first tileset, mirrored
+let brick = Tile::new(0, 7).with_flip(TileFlip::HORIZONTAL);
+maps.fill(self.map, "walls", IVec2::new(2, 2), IVec2::new(9, 3), Some(brick));
+```
+
+- **An edit costs what it touches.** It redraws only its 32 x 32-cell chunk, and re-collides and re-shadows only what changed, in time for that step: an edit made in `update` collides in that step's physics, and casts its shadow that frame.
+- **Conversions use the transforms as they are now**, so a map moved this frame converts at once; `world_to_cell` gives cells outside the layer too, and `None` only for a map scaled to nothing.
+- **Edits change the spawned map, not its asset:** two maps from one file keep their own tiles, and a reload of the file brings dug tiles back (section 13).
+- `TileLayerData { grid, intgrid, cell_size }` on a layer entity is the map's own copy of the layer: editing its `grid` (a `TileGrid`: `get`, `set`, `fill`, `clear`) draws, collides and casts as `ctx.maps()` does, though without class tiles. IntGrid values have no edit call yet: change `TileLayerData::intgrid`, then call `grid.mark_all_dirty()`, and they collide again.
+
+## 7. Wang terrain
+
+`ctx.maps().set_terrain(map, layer, cell, set, Some(color))` paints a cell with a colour of a Wang set the designer made in Tiled (Terrain Sets in the tileset editor), as Tiled's terrain brush does with its corrections on; `None` erases. The cell and the cells sharing its corners or edges pick the tiles that fit what their neighbours show, flipped or turned where the tileset allows it (Tiled's tileset transformations), and a change that leaves a neighbour disagreeing passes on to it, as far as the set needs.
+
+<!-- self: map: Entity -->
+```rust
+let (x, y) = ctx.input.mouse_position();
+let (paint, erase) = (ctx.input.mouse_down(MouseButton::Left), ctx.input.mouse_down(MouseButton::Right));
+let at = ctx.camera().screen_to_world(Vec2::new(x, y));
+let mut maps = ctx.maps();
+if let Some(cell) = maps.world_to_cell(self.map, "ground", at) {
+  if paint {
+    maps.set_terrain(self.map, "ground", cell, "terrain", Some("grass"));
+  } else if erase {
+    maps.set_terrain(self.map, "ground", cell, "terrain", None);
+  }
+}
+```
+
+- Corner, edge and mixed sets all paint. A corner set over art drawn on the cells' edges paints a 3 x 3 block for each cell: the painted cell is the block's middle, so ground is at least two cells thick. The tilemap demo's Editing page (page 7) paints this way.
+- **Results match Tiled's** on everything checked against it, with one difference: among tiles that fit equally well, Tiled draws one at random and the engine by a hash of the cell, so it picks the same tile there every time, but not Tiled's.
+- A cell the set has no tile for keeps its tile, and the set warns once per version of its tileset (an incomplete set); so does erasing in a set with no tile for a bare corner or edge.
+- A class tile keeps its colours out of its neighbours' corrections, so painting beside one leaves a seam; painting its own cell replaces it.
+- **Code can ask a set itself:** a tileset's sets are `Tileset::wang_sets` (`wang_set(name)`), read through `name()`, `kind()`, `colors()`, `tiles()` and `transformations()`; `color_index(name)` gives a colour's index, and `best_tile(wanted: [u8; 8], cell) -> Option<(u32, TileFlip)>` the tile and flip closest to a wangid (its eight positions clockwise from the top edge, 0 for no colour, `WangSet::ANY` for any). A call is about 16 µs for a 255-tile set that allows every flip.
+- **Procgen:** `GenerationGrid::to_terrain_map` (`ryo-procgen`) builds a map through a Wang set. Where cells of two colours meet, the higher colour index covers the lower, so the order of the colours in Tiled is the designer's control over which grows into which.
+
+## 8. Collision
+
+A layer collides when its `collides` is set (section 3) and its map has collision.
+
+**What a Tiled tile layer collides with** is each tile's collision shapes, from Tiled's tile collision editor, placed where the tile draws (its flips and the tileset's tile offset turn and move them):
+
+- a rectangle covering the cell is solid (one-way if marked `one_way`);
+- a right triangle on three of the cell's corners is a 45° slope;
+- any other shape (a half block, a ramp, a polygon at any angle) collides as drawn, and joins the outlines as solid cells do, so a row of half blocks, or a ramp of shapes over solid ground, is one seamless outline;
+- a shape marked `one_way` is solid only from above, along its top edges (those facing within 45° of up). A tile with solid and one-way shapes collides with its solid ones only;
+- a shape marked `occluder` blocks light and does not collide.
+
+**An LDtk IntGrid layer** collides by the names of its values, ignoring case (LDtk capitalises them):
+
+| Value name | Collides as |
+|---|---|
+| `solid` | a solid cell |
+| `one_way` | a one-way platform along the cell's top |
+| `slope_bottom_left`, `slope_bottom_right`, `slope_top_left`, `slope_top_right` | a 45° half cell filled at that corner (`slope_bottom_right` rises to the right) |
+| anything else | nothing |
+
+```rust
+let project = ctx.assets().load::<LdtkProject>("ldtk/world.ldtk");
+let root = MapRoot::ldtk(project, "Cave")
+  .with_intgrid_collision("ice", TileCell::Solid) // by name
+  .with_intgrid_collision(4, TileCell::OneWay); // by value, over its name
+ctx.world.spawn(root);
+```
+
+- **Seamless and hollow:** full cells merge into outlines, so a long floor is one edge and nothing snags where two tiles meet. An outline is hollow: a body that ends up inside a wall is not pushed out.
+- **Layers together:** the colliding layers that share the map's cell size, no offset and one material collide as one grid on the map entity, each cell taking the strongest kind among them: solid, then a shape, then a slope, then one-way. A colliding layer with a cell size, offset or material of its own collides as a grid of its own on its layer entity; where two grids meet there can be a seam.
+- **Collision ignores parallax:** a colliding layer with parallax collides where it would be without it (parallax is a drawing effect, as in Tiled), and the dev log warns once per layer. Keep parallax for layers that do not collide.
+- **Edits:** a changed tile re-collides in that step. Only the outlines through the changed cells are traced again, and only the colliders those outlines belong to change, taking their new shape in place, the same entities. So anything touching the rest of the map keeps its contacts: a character standing on the map keeps its `floor`, and no `CollisionStopped` or `CollisionStarted` is sent for it.
+- **Which entity:** the outlines are packed by area, one collider for those starting in each 32 x 32-cell chunk (and one for each row of one-way runs in a chunk), each a child of the entity holding the grid: the map entity, or a layer that collides on its own. With no body on the map each is its own fixed body, so collision messages, `CharacterHit` and `CharacterState::floor` name such a part; follow `ChildOf` to the entity holding the `TileColliders` (the `MapRoot`, or a layer with its `MapLayerRef`). With `RigidBody::kinematic()` on the map entity they name the map.
+- **A moving platform flush with the ground:** a character level with both the map's ground and a moving platform rides the platform.
+- **A disabled map** has no colliders; enabled, it builds them from its tiles as they then are.
+- **Too big:** a grid of over 8192 cells a side gets no colliders, and the dev log names its layers. The loaders take maps up to 2^26 cells a layer, so a vast map collides only if its colliding layers fit.
+- **Navigation:** `NavigationGrid::rebuild_from_world` blocks a map's solid and slope cells, and the shape cells whose shape covers the cell's centre; one-way cells stay walkable.
+
+## 9. Shadows
+
+- A layer casts shadows as its `occludes` says, or as it collides when `occludes` is left out (`without_collision` does not change it). A light casts shadows only with `with_shadows()` (`ryo-lighting`).
+- **What blocks light:** a tile's shapes marked `occluder` if it has any, else its collision shapes (one-way ones too). An IntGrid's solid cells block whole and its slopes as their half cell; a one-way cell has no area and casts nothing.
+- The map draws its occluders as the boundary of what occludes: `LightOccluder2D::chain`s, a chunk's worth each, children of the first occluding layer and marked `MapOccluder { chunk }`. Tiles that touch cast no shadow between them, so lit art shows no seam. Edits rebuild only the chains of the chunks they touch.
+- The map owns its chains: a game can find them by `MapOccluder`, and a change it makes to one lasts until its chunk changes. A disabled map casts nothing.
+- Every lit frame gathers every map's occluders, and each shadowed light tests all of them (section 15).
+
+## 10. Draw order, y-sorting and parallax
+
+- **Z:** layer `i` draws at the map's z (`with_z`) plus `i`, among the entities. A plain layer draws as one item at its z, so entities at a higher z draw over it. Give a character a z above every layer it should cover and below every layer that covers it (the tilemap demo's hero draws at 10, over the platformer's seven layers at 0 to 6); at a layer's own z, the character and the layer draw in entity index order, which nothing should rely on.
+- **Lit or not:** as `lit` says. **Cameras:** a map draws on the map entity's `RenderLayers`; a layer entity's own `RenderLayers` replace them for that layer.
+- **Y-sorted layers** (`y_sort`) draw each row of tiles as an item at the layer's z, sorted among the y-sorted entities there by the row's bottom edge. A character with `YSort` at that z walks behind a tree whose trunk row is below its feet and in front of one above them. Tile objects on a y-sorted object layer sort by their bottom edges.
+
+<!-- given: hero: Handle<Image>, at: Vec2 -->
+```rust
+// The garden's map is at z 0, and "trees" is its layer 2: the hero sorts among its rows
+ctx.world.spawn((
+  Transform::from_translation(at),
+  Renderable::image(hero).with_z_order(2),
+  YSort::new(),
+));
+```
+
+- **Parallax** (Tiled's parallax factor on a layer, LDtk's parallax factor) moves a layer by that share of the camera's motion, per camera, measured from the map's top-left corner: 1 is fixed to the world, 0.5 a slow background, 1.25 a foreground that drifts past. Tiled's Parallax Origin map setting is not read. Parallax is drawing only: a colliding layer collides where it would be without it (section 8).
+- **Image layers** draw as one quad per view, the image repeating across the view along the axes the editor says; a view needing over 65,536 copies along an axis gets that many about its centre, warned once.
+- **Opacity and tint** multiply the layer. Blend modes normal, add, multiply and screen draw as in the editor.
+- **Hidden:** a layer whose `LayerInfo::visible` is false draws nothing, and still collides and occludes as its flags say. A disabled map draws nothing at all.
+
+## 11. Maps built in code
+
+A `TileMap` built in code spawns like a file's: added to the assets and given to a `MapRoot`, it draws, collides and edits the same way.
+
+<!-- given: tileset: Handle<Tileset> -->
+```rust
+let mut map = TileMap::new(UVec2::new(40, 23), UVec2::splat(16)); // cells, a cell's pixels
+let terrain = map.add_tileset(TilesetSource::Asset(tileset.clone()));
+let ground = map.add_tile_layer("ground");
+if let Some(grid) = map.tiles_mut(ground) {
+  grid.fill(IVec2::new(0, 20), IVec2::new(39, 22), Some(Tile::new(terrain, 0)));
+}
+let map = ctx.assets().add(map);
+ctx.world.spawn((Transform::from_xy(0.0, 0.0), MapRoot::new(map)));
+```
+
+- `TilesetSource::Asset(handle)` shares a tileset asset with other maps; `TilesetSource::Embedded(Arc<Tileset>)` is one the map owns. A map holds up to 256 tilesets of up to 1,048,575 tiles each.
+- **A tileset in code:** `Tileset::new(name, tile_size, TilesetImage::Atlas { image, size })` with its `columns` and `tile_count` set (and `spacing`, `margin`), or `TilesetImage::Collection` with each tile's own image in its `TileData`. Tiles collide through their shapes: `insert_tile(id, TileData { shapes: vec![TileShape { points, ..TileShape::default() }], ..TileData::default() })`, the points in tile pixels from the top-left.
+- `add_object_layer(name)` adds an object layer, whose objects are `MapObjectData` in `LayerKind::Objects`; `layer_index(name)`, `tiles(layer)` and `tiles_mut(layer)` find layers.
+- A map added in code never reloads (it has no file), but follows its tilesets' files.
+- **Procgen:** `GenerationGrid::to_tile_map` and `to_terrain_map` (`ryo-procgen`) turn a dungeon, a cave or noise terrain into a `TileMap`. The tilemap demo's Procgen dungeon page draws one through a Wang set.
+
+## 12. Worlds of levels
+
+A world is a set of levels with their places and neighbours: a Tiled world file (`.world`, a `TileWorld`) or an LDtk project's worlds (`LdtkProject::worlds`). Each world's `WorldLayout` lists its levels (`WorldLevel { name, position, size, neighbours }`, positions in world pixels). Which levels exist when is the game's call; `ctx.maps().spawn_levels_in` spawns the levels overlapping an area that are not spawned yet, each a `MapRoot` at its level's place with a `WorldLevelOf { world, level }`:
+
+<!-- self: world: Handle<TileWorld>, player: Entity -->
+```rust
+// Each step: the rooms within 64 px of the player exist
+let Some(at) = ctx.world.get::<Transform>(self.player).map(|t| t.translation) else {
+  return;
+};
+let near = Rect::new(at.x - 64.0, at.y - 64.0, 128.0, 128.0);
+for room in ctx.maps().spawn_levels_in(&self.world, near) {
+  game_info!("room {room} is on its way");
+}
+```
+
+- Despawn a level's root to unload it; the next call whose area reaches it spawns it again. The tilemap demo's World of rooms page despawns rooms the hero has left 96 px behind.
+- An LDtk world: `spawn_levels_in(WorldRef::Ldtk { project, world: "World".to_string() }, area)` (a single-world project's world is called "World"; with several, each has its name). Its levels are also `LdtkProject::levels` (`LdtkLevel { identifier, iid, world, position, size, fields, neighbours, map }`; `level(name_or_iid)`).
+- One level by hand: `MapRoot::world_level(&world, index)` (or `ldtk_world_level`), put at its `WorldLevel::position` with the root's `Transform`. A level the world lacks fails the root (`MapEvent::Failed`).
+- Nothing spawns until the world's asset is loaded. A Tiled world's maps are its dependencies, so it is ready when they are; a map that fails fails the world.
+- **Neighbours:** each level's `neighbours` (`Neighbour { level, direction }`, `level` an index in the same layout). A Tiled world's are worked out from the rectangles: sharing an edge is `North`, `South`, `East` or `West`, a corner a diagonal (`NorthEast` ...), an overlap `Overlap`. LDtk's are LDtk's own, `Above` and `Below` for levels at another depth.
+- **Tiled world patterns** (`"regexp"` with `multiplierX`/`multiplierY`): the registry cannot list a folder (the web has none), so a pattern must be literal text with up to two numbers, `(\d+)` or `(-?\d+)`, as in `room_(\d+)_(\d+)\.tmx` (one number is x, two are x then y). The loader tries names row by row: from y = 0, x from 0 up to the first missing file, stopping at the first row whose x = 0 file is missing, in at most 1,024 tries. Negative numbers and gaps in the numbering are never reached; a world that uses them lists its maps instead. Any other regular expression fails the load.
+- **Saving the `.world` file** leaves the levels already spawned where they are; the next `spawn_levels_in` uses the new layout. A save that reorders the levels can make it spawn a level that is already there: despawn and respawn the levels after such a save.
+
+## 13. Hot reload
+
+In debug builds with a window the engine watches `assets/` (`EngineBuilder::hot_reload` turns it on or off in any build). Saving a map, an LDtk project or one of its level files, a tileset, a template or the Tiled project updates every map spawned from it in the frame the save lands, before `update`, and sends `MapEvent::Reloaded`. The camera, the player and everything else keep their state.
+
+- **Tiles:** each tile layer takes the saved cells, and only the chunks the save changed draw, collide and cast shadows again. A chunk's collider changes shape in place, so a character standing on ground the save did not change keeps its contacts and its floor.
+- **Layers** keep their entities, matched by the editor's layer id; a layer the save added spawns, one it removed despawns, and a tile layer saved at another size, cell size or offset spawns afresh.
+- **Objects** match by id. One the save left as it was keeps its entity untouched: its `Transform` and every component the game added, as the game has them. One the save changed takes its new `MapObject` and `Transform`, keeping the game's other components. One the save added spawns, and one it removed despawns. Class tiles match the same way, by layer and cell.
+- **What the game took away stays away:** an object or class tile the game despawned (a coin collected, an enemy killed) is not spawned again unless the save changed it.
+- **The file wins over the game's tile edits:** a dug tile comes back with the save.
+- A tileset image's save redraws the maps that use it, with no reload and no `Reloaded`.
+- A save that fails to load (a typo in the XML) keeps the last good map and sends nothing; the dev log names the file and the place in it.
+- A map added in code never reloads, though it follows its tilesets' files. An LDtk project saved without the map's level leaves the map as it is, warned once.
+- **Limits:** a tileset save that changes collision shapes rebuilds the colliders of every map using it whole: new collider entities, so a standing character's `floor` changes and `CollisionStopped` is sent, though nothing falls through. A tileset saved naming a larger image at the same moment as that image (a `git pull`, a script) can stay as it was until it is saved again.
+- **Cost:** a reload runs on the main thread, about 1 ms for each 4 million cells whatever the save changed, plus what changed: a hitch while developing, never in a release build.
+
+## 14. The web
+
+- **The web has no files.** A web build gives the engine every asset file in a `MemorySource` (`EngineBuilder::asset_source`): the maps, tilesets and images, and also the templates, the Tiled project, LDtk level files and a world's maps, which the loaders read through the same source.
+
+  ```rust
+  #[cfg(target_arch = "wasm32")]
+  fn web_assets() -> MemorySource {
+    let files = MemorySource::new();
+    files.insert("maps/level1.tmx", include_bytes!("../assets/maps/level1.tmx").as_slice());
+    files.insert("tilesets/ground.tsx", include_bytes!("../assets/tilesets/ground.tsx").as_slice());
+    files.insert("images/ground.png", include_bytes!("../assets/images/ground.png").as_slice());
+    files.insert("project.tiled-project", include_bytes!("../assets/project.tiled-project").as_slice());
+    files
+  }
+  // main: builder.asset_source(web_assets())
+  ```
+
+- The tilemap demo keeps its files as one table of `include_bytes!`, compiled on every target (`src/embedded.rs`: `EMBEDDED`, and `embedded()` making the `MemorySource`), so its tests play every page from the table and check that it holds exactly the files in `assets/` (`tests/pages.rs`). Do the same, and a file left out of the web build fails a test instead of a level.
+- **No threads:** a map's landing, its colliders and shadows, is worked out in the frame its asset is ready, so that frame pays for it: about 5 ms for a 256 x 256 map of four layers, and 70 to 90 ms for 1024 x 1024 (estimates from native runs; wasm runs slower). Show a loading screen over a big map's landing. Loads run in the asset pump, at most 4 ms a frame.
+- Every layer format loads on the web, zstd included. There is no hot reload.
+- The demo builds for the web: `trunk serve --release --open` in `examples/demos/tilemap`.
+
+## 15. Performance
+
+Measured on an Apple M5 Pro in a release build, at 1920 x 1080 with 16 px tiles; the numbers are approximate and machine-dependent. The record, with the method and every measurement, is `docs/backlog/tilemap.md` in the Ryo2D repository.
+
+- **Cheap:**
+  - **Drawing** costs what is on screen: a frame draws only the chunks in view, so a static 1024 x 1024 map of four layers costs about 33 µs a frame to draw, as a small one would.
+  - **A one-tile edit**, an outline split or joined included: about 20 µs to redraw its chunk, and about 50 to 80 µs each to rebuild the collision outlines and the shadow chains through it.
+  - **Loading** runs off the main thread: a 256 x 256 four-layer Tiled map with its tileset and image loads in about 1.3 ms on the workers, and its colliders and shadows are worked out on the map builder thread.
+- **What costs a game:**
+  - **Every collider and shadow chain of a map is a child entity**, and once anything moves, transform propagation visits every child of every hierarchy each frame. A 1024 x 1024 map colliding and casting shadows (about 2,900 children) costs about 85 µs a frame, against 33 µs drawn only. Turn collision off (`without_collision`, or `collides` false) and shadows off (`occludes` false) on maps and layers that need neither.
+  - **A y-sorted layer** draws each visible row as an item of its own: a dense y-sorted layer of the 1024 x 1024 map cost about 70 µs more a frame. Y-sort only the layers characters walk among.
+  - **A lit level** gathers every map occluder each frame, and each shadowed light loops over all of them, however far away: one shadowed light over the 1024 x 1024 cave cost about 30 µs more than the unlit map.
+  - **A landing frame** builds and uploads the chunks in view (about 0.5 ms at 1080p), and a tileset's first landing also makes its padded texture (about 1 ms more, the first time; a level restarted, or the next one with the same tileset, within about two seconds reuses it). A 1024 x 1024 four-layer colliding map takes about 70 ms on the builder thread and about 5 ms in its landing frame; on the web all of it is one frame (section 14). Cover a big map's landing with a loading screen.
+- **Warnings in the dev log:**
+  - `tileset "..." is too big to pad`: its padded copy would pass 16,384 texels a side (about 16,384 tiles of 64 px), so its tiles draw nothing until it changes. Split the tileset.
+  - `layer "..." collides and has parallax`: it collides where it would be without parallax.
+  - A grid of colliding layers over 8192 cells a side gets no colliders; a repeated image layer too small to cover a view covers its middle.
+
+## 16. Testing
+
+- **A headless engine** (`ryo2d::testing::HeadlessEngine`) lands maps as a windowed one does. Step it until `MapsView::new(engine.world_mut()).is_ready(map)`, then read tiles with `MapsView`, objects and class tiles with queries, and colliders through `ctx.physics()` after a step. A landing takes a frame or more (its job runs on another thread), so wait for it rather than counting frames.
+- **Events:** read `MapEvent`s between steps with a `MessageCursor<MapEvent>` over the world's `Messages<MapEvent>`; fail the test on `Failed`.
+- **Hot reload:** headless engines do not watch files. Give the engine a `MemorySource` the test keeps (`EngineBuilder::asset_source`), save over a file with `files.insert(path, text)`, and ask for its reload with `engine.assets().server().reload(path)`; the next steps bring the map to it and send `Reloaded`.
+- **The web's files:** play the levels from the embedded source too (section 14).
+
+```rust
+use ryo2d::prelude::*;
+use ryo2d::testing::HeadlessEngine;
+
+struct Empty;
+impl Scene for Empty {}
+
+/// The map events sent since `cursor` last read
+fn map_events(engine: &HeadlessEngine, cursor: &mut MessageCursor<MapEvent>) -> Vec<MapEvent> {
+  engine
+    .world()
+    .get_resource::<Messages<MapEvent>>()
+    .map(|messages| cursor.read(messages).cloned().collect())
+    .unwrap_or_default()
+}
+
+#[test]
+fn level_one_lands_with_its_floor() {
+  // None (with a "skipping: no GPU" line) on machines without a GPU
+  let Some(mut engine) = HeadlessEngine::new_or_skip(
+    EngineBuilder::new().resolution(320, 180).start_scene(Empty),
+  ) else {
+    return;
+  };
+  let level = engine.assets().load_now::<TileMap>("maps/level1.tmx").expect("level 1 loads");
+  let map = engine.world_mut().spawn(MapRoot::new(level)).id();
+  let mut cursor = MessageCursor::<MapEvent>::default();
+  let mut steps = 0;
+  while !MapsView::new(engine.world_mut()).is_ready(map) {
+    assert!(steps < 600, "level 1 never landed");
+    engine.step().unwrap();
+    for event in map_events(&engine, &mut cursor) {
+      if let MapEvent::Failed { error, .. } = event {
+        panic!("level 1 failed: {error}");
+      }
+    }
+    steps += 1;
+  }
+  let maps = MapsView::new(engine.world_mut());
+  assert!(maps.tile(map, "ground", IVec2::new(0, 20)).is_some(), "the floor's first tile");
+}
+```
+
+## 17. When something looks wrong
+
+| Symptom | Look at |
+|---|---|
+| The map never appears | Its `MapEvent::Failed`: the error names the file and the place in it (`line L, column C`, `layer "name"`, `object id`, `tile id`). A missing tileset or image, a gid outside every tileset, an image too small for its tileset, an unsupported orientation or an infinite map, an LDtk level name that is not there; or the map entity disabled; on the web, a file missing from the embedded source |
+| An object has none of its class's properties | The Tiled project was not found (the dev log names the class once per file): `assets/project.tiled-project`, or `[tilemap] tiled_project` |
+| A character falls through as the map arrives | It was placed before `MapEvent::Spawned`, or by a ray cast in the `update` that read it (section 1) |
+| Tiles draw but do not collide | The layer's `collides` is false; the root has `without_collision`; the tiles have no collision shapes in the tileset, or only `occluder` ones; an LDtk value named other than the collision names (`with_intgrid_collision`); a class tile; the map disabled; a grid over 8192 cells a side (warned) |
+| Collision sits off the art | The layer has parallax (warned): collision ignores it |
+| A seam in the floor where two layers meet | The layers differ in cell size, offset or material, so each collides as a grid of its own |
+| Tiles cast no shadows | The light lacks `with_shadows()`; the layer does not occlude (`occludes` false, or it does not collide and `occludes` is not set) |
+| A character walks over a tree instead of behind it | The layer is not y-sorted, or the character lacks `YSort` or has another z than the layer (section 10) |
+| A tileset draws nothing, warned as too big to pad | Its padded copy would pass 16,384 texels a side: split it |
+| Painting terrain leaves a cell as it was, warned | The Wang set has no tile for what the cell needs |
+| A dug tile came back | The map's file was saved: the file wins over tile edits |
+| A coin collected did not come back after a save | As meant: what the game despawned stays away unless the save changed it |
+| A world pattern found fewer maps than there are files | Gaps in the numbering, or negative numbers: list those maps |
+| A saved `.world` did not move the rooms | Levels already spawned stay where they are; respawn them |
