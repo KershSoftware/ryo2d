@@ -179,6 +179,8 @@ pub(crate) struct Props<'a> {
   warned: Vec<String>,
   /// What the file's things may still convert (`MAX_FILE_VALUES` in all)
   left_in_file: usize,
+  /// Where the file names its dependencies
+  pub(crate) places: super::build::DependencyPlaces,
 }
 
 impl<'a> Props<'a> {
@@ -188,6 +190,7 @@ impl<'a> Props<'a> {
       project,
       warned: Vec::new(),
       left_in_file: MAX_FILE_VALUES,
+      places: Default::default(),
     }
   }
 

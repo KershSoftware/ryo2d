@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use glam::Vec2;
 use serde::Deserialize;
 
-use super::build::{join, load_dep};
+use super::build::{DependencyPlaces, join, load_dep};
 use super::json::parse;
 use super::raw::RawMap;
 use super::xml::parse_tmx;
@@ -168,11 +168,13 @@ impl AssetLoader for TileWorldLoader {
     let mut levels: Vec<(String, Vec2, Vec2)> = Vec::new();
     let mut maps = Vec::new();
     let mut taken: HashSet<String> = HashSet::new();
+    // A map's place is in its own error, which the server's names
+    let mut places = DependencyPlaces::default();
 
     for (i, entry) in raw.maps.iter().enumerate() {
       let place = format!("map {i} ({:?})", entry.file_name);
       let joined = join(&path, &place, &entry.file_name)?;
-      let handle = load_dep::<TileMap>(cx, &path, &place, &entry.file_name)?;
+      let handle = load_dep::<TileMap>(cx, &path, &place, &entry.file_name, &mut places)?;
       let size = match (entry.width, entry.height) {
         (Some(w), Some(h)) => Vec2::new(w as f32, h as f32),
         _ => {
@@ -232,7 +234,7 @@ impl AssetLoader for TileWorldLoader {
           if taken.insert(joined) {
             let size = map_size(&file, &bytes)
               .map_err(|e| AssetError::decode(&path, format!("{place}: {}", e.report())))?;
-            let handle = load_dep::<TileMap>(cx, &path, &place, &written)?;
+            let handle = load_dep::<TileMap>(cx, &path, &place, &written, &mut places)?;
             let place_on = |n: i32, multiplier: i32, offset: i32| {
               n.checked_mul(multiplier)
                 .and_then(|n| n.checked_add(offset))

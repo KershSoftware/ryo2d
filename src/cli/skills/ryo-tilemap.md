@@ -583,7 +583,7 @@ fn level_one_lands_with_its_floor() {
 
 | Symptom | Look at |
 |---|---|
-| The map never appears | Its `MapEvent::Failed`: the error names the file and the place in it (`line L, column C`, `layer "name"`, `object id`, `tile id`). A missing tileset or image, a gid outside every tileset, an image too small for its tileset, an unsupported orientation or an infinite map, an LDtk level name that is not there; or the map entity disabled; on the web, a file missing from the embedded source |
+| The map never appears | Its `MapEvent::Failed`: the error names the file and the place in it (`line L, column C`, `layer "name"`, `object id`, `tile id`, `tileset "name"`). A missing tileset or image (an image that did not load is named with its tileset or layer), a gid outside every tileset, an image too small for its tileset, an unsupported orientation or an infinite map, an LDtk level name that is not there; or the map entity disabled; on the web, a file missing from the embedded source |
 | An object has none of its class's properties | The Tiled project was not found (the dev log names the class once per file): `assets/project.tiled-project`, or `[tilemap] tiled_project` |
 | A character falls through as the map arrives | It was placed before `MapEvent::Spawned`, or by a ray cast in the `update` that read it (section 1) |
 | Tiles draw but do not collide | The layer's `collides` is false; the root has `without_collision`; the tiles have no collision shapes in the tileset, or only `occluder` ones; an LDtk value named other than the collision names (`with_intgrid_collision`); a class tile; the map disabled; a grid over 8192 cells a side (warned) |

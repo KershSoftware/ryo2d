@@ -184,6 +184,8 @@ pub struct TileMap {
   /// loaded: the loader's check measures them against the tilesets once those
   /// are in. A layer index, a tileset index and an id
   pub(crate) used_ids: Vec<(usize, u16, u32)>,
+  /// Where the file names each of its dependencies
+  pub(crate) dependency_places: super::tiled::build::DependencyPlaces,
 }
 
 impl Asset for TileMap {}
@@ -201,6 +203,7 @@ impl TileMap {
       parallax_origin: Vec2::ZERO,
       properties: Properties::default(),
       used_ids: Vec::new(),
+      dependency_places: Default::default(),
     }
   }
 

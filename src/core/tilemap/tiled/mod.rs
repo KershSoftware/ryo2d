@@ -485,6 +485,75 @@ mod tests {
     let error = failure(&map_json("", &tile_layer(""), set));
     assert!(error.contains("too small"), "{error}");
     assert!(error.contains("big"), "{error}");
+    assert!(error.contains("images/gem.png"), "{error}");
+  }
+
+  /// The map `m.tmj` over the fixtures and `extra`, loaded on the workers
+  /// (a failed dependency then reaches the map through the server) and at
+  /// once (through the loader's own `cx.load`): the two errors
+  fn both_failures(extra: &[(&str, &[u8])]) -> [String; 2] {
+    let files = files_with(&[]);
+    for (path, bytes) in extra {
+      files.insert(path, *bytes);
+    }
+    let mut world = world_over(files.clone());
+    let server = world.resource::<AssetServer>().clone();
+    let map = server.load::<TileMap>("m.tmj");
+    pump_until(&mut world, |_| {
+      matches!(server.state(&map), crate::core::asset::LoadState::Failed(_))
+    });
+    let queued = match server.state(&map) {
+      crate::core::asset::LoadState::Failed(error) => error.report(),
+      other => panic!("{other:?}"),
+    };
+    let mut world = world_over(files);
+    let now = load_in(&mut world, "m.tmj").expect_err("loaded");
+    [queued, now]
+  }
+
+  #[test]
+  fn a_tileset_image_that_does_not_load_fails_the_map_naming_it_and_the_tileset() {
+    let broken: &[u8] = b"not a png";
+    // an inline tileset
+    let set = r#"{"firstgid":1,"name":"cracked","tilewidth":16,"tileheight":16,"tilecount":16,"columns":4,
+        "image":"images/broken.png","imagewidth":64,"imageheight":64}"#;
+    let map = map_json("", &tile_layer(""), set);
+    for error in both_failures(&[("m.tmj", map.as_bytes()), ("images/broken.png", broken)]) {
+      assert!(
+        error.contains("tileset \"cracked\"") && error.contains("images/broken.png"),
+        "{error}"
+      );
+    }
+    // an external one: the map names the file, the file its image
+    let set = r#"{"name":"cracked","tilewidth":16,"tileheight":16,"tilecount":16,"columns":4,
+        "image":"../images/broken.png","imagewidth":64,"imageheight":64}"#;
+    let map = map_json(
+      "",
+      &tile_layer(""),
+      r#"{"firstgid":1,"source":"sets/cracked.tsj"}"#,
+    );
+    let files: [(&str, &[u8]); 3] = [
+      ("m.tmj", map.as_bytes()),
+      ("sets/cracked.tsj", set.as_bytes()),
+      ("images/broken.png", broken),
+    ];
+    for error in both_failures(&files) {
+      assert!(
+        error.contains("tileset \"cracked\"")
+          && error.contains("images/broken.png")
+          && error.contains("sets/cracked.tsj"),
+        "{error}"
+      );
+    }
+    // an image layer's picture
+    let layer = r#"{"id":1,"name":"sky","type":"imagelayer","image":"images/broken.png"}"#;
+    let map = map_json("", layer, "");
+    for error in both_failures(&[("m.tmj", map.as_bytes()), ("images/broken.png", broken)]) {
+      assert!(
+        error.contains("layer \"sky\"") && error.contains("images/broken.png"),
+        "{error}"
+      );
+    }
   }
 
   #[test]
@@ -724,7 +793,7 @@ mod tests {
     let mut world = world_over(files);
     let error = load_in(&mut world, "m.tmj").expect_err("loaded");
     assert!(
-      error.contains("too small") && error.contains("cramped"),
+      error.contains("too small") && error.contains("cramped") && error.contains("images/gem.png"),
       "{error}"
     );
   }

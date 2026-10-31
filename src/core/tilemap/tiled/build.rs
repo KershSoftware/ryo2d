@@ -50,16 +50,78 @@ pub(crate) fn join(path: &AssetPath, place: &str, written: &str) -> Result<Strin
   })
 }
 
-/// Loads the file `written` names as a dependency of the one being loaded
+/// Where a file names each of its dependencies, kept with what it loads to,
+/// so one that fails is reported at its place in the file (a tileset's
+/// image names its tileset), however it fails: loaded at once, or on the
+/// workers, where the server tells the loader (`AssetLoader::dependency_failed`)
+#[derive(Clone, Default)]
+pub(crate) struct DependencyPlaces(Vec<(String, String)>);
+
+impl std::fmt::Debug for DependencyPlaces {
+  // Paths differ between a file and its twin in the other format, and what
+  // a load compares is what it loads to: only how many
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    write!(f, "DependencyPlaces({})", self.0.len())
+  }
+}
+
+impl DependencyPlaces {
+  /// Notes that the file names `dependency` (an asset path) at `place`; the
+  /// first place counts
+  fn note(&mut self, dependency: &str, place: &str) {
+    if !self.0.iter().any(|(d, _)| d == dependency) {
+      self.0.push((dependency.to_string(), place.to_string()));
+    }
+  }
+
+  /// The error of a failed dependency (the server's `AssetError::Dependency`)
+  /// at the place the file names it; `None` for another error, or a
+  /// dependency the file does not name
+  pub(crate) fn explain(&self, error: &AssetError) -> Option<AssetError> {
+    let AssetError::Dependency {
+      path,
+      dependency,
+      error,
+    } = error
+    else {
+      return None;
+    };
+    let (_, place) = self.0.iter().find(|(d, _)| d == dependency.as_str())?;
+    Some(dependency_error(path, place, dependency, error))
+  }
+}
+
+/// `path`'s dependency `dependency`, named at `place`, failed with `error`
+fn dependency_error(
+  path: &AssetPath,
+  place: &str,
+  dependency: &AssetPath,
+  error: &AssetError,
+) -> AssetError {
+  fail(
+    path,
+    place,
+    format!("{:?} did not load: {}", dependency.as_str(), error.report()),
+  )
+}
+
+/// Loads the file `written` names as a dependency of the one being loaded,
+/// noting where in `places`
 pub(crate) fn load_dep<T: Asset>(
   cx: &mut LoadContext<'_>,
   path: &AssetPath,
   place: &str,
   written: &str,
+  places: &mut DependencyPlaces,
 ) -> Result<Handle<T>, AssetError> {
   let joined = join(path, place, written)?;
+  if let Ok(normal) = AssetPath::parse(&joined) {
+    places.note(normal.as_str(), place);
+  }
   cx.load::<T>(&joined).map_err(|error| match error {
-    AssetError::Dependency { .. } => error,
+    AssetError::Dependency {
+      dependency, error, ..
+    } => dependency_error(path, place, &dependency, &error),
     refused => fail(path, place, format!("{written:?}: {}", refused.report())),
   })
 }
@@ -173,7 +235,7 @@ fn tile_data(
     });
   }
   if let Some(written) = &raw.image {
-    let handle = load_dep::<Image>(cx, path, place, written)?;
+    let handle = load_dep::<Image>(cx, path, place, written, &mut px.places)?;
     data.image = Some((handle, UVec2::new(raw.imagewidth, raw.imageheight)));
   }
   Ok(data)
@@ -204,7 +266,7 @@ pub(crate) fn build_tileset(
           "the image has no size (imagewidth, imageheight)",
         ));
       }
-      let image = load_dep::<Image>(cx, &path, &place, written)?;
+      let image = load_dep::<Image>(cx, &path, &place, written, &mut px.places)?;
       // how many tiles the image holds, if the file does not say
       let fit = |extent: u32, tile: u32| {
         extent
@@ -407,7 +469,13 @@ impl Builder<'_, '_> {
       "imagelayer" => {
         // Tiled saves a new image layer with no image: it draws nothing
         let image = match raw.image.as_deref().filter(|i| !i.is_empty()) {
-          Some(written) => Some(load_dep::<Image>(cx, &path, &place, written)?),
+          Some(written) => Some(load_dep::<Image>(
+            cx,
+            &path,
+            &place,
+            written,
+            &mut self.px.places,
+          )?),
           None => None,
         };
         LayerKind::Image(ImageLayer {
@@ -609,7 +677,13 @@ pub(crate) fn build_map(
             .map(|p| p.as_str().to_string()),
           alignment: None,
         });
-        TilesetSource::Asset(load_dep::<Tileset>(cx, &path, &place, written)?)
+        TilesetSource::Asset(load_dep::<Tileset>(
+          cx,
+          &path,
+          &place,
+          written,
+          &mut px.places,
+        )?)
       }
       None => {
         let alignment = Alignment::parse(entry.inline.objectalignment.as_deref())
@@ -653,6 +727,7 @@ pub(crate) fn build_map(
   builder.layers(raw.layers, inherit, 0, cx)?;
   map.layers = builder.layers;
   map.used_ids = builder.used_ids;
+  map.dependency_places = std::mem::take(&mut px.places);
   Ok(map)
 }
 

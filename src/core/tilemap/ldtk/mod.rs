@@ -93,6 +93,8 @@ pub struct LdtkProject {
   pub worlds: Vec<WorldLayout>,
   /// The project's tilesets, in definition order; the maps embed these
   pub tilesets: Vec<Arc<Tileset>>,
+  /// Where the project names its tilesets' images
+  pub(crate) dependency_places: super::tiled::build::DependencyPlaces,
 }
 
 impl Asset for LdtkProject {}
@@ -160,6 +162,11 @@ impl AssetLoader for LdtkLoader {
 
   fn check(&self, project: &LdtkProject, cx: &CheckContext<'_>) -> Result<(), AssetError> {
     check_project(project, cx)
+  }
+
+  /// A tileset image that did not load, named with its tileset
+  fn dependency_failed(&self, project: &LdtkProject, error: &AssetError) -> Option<AssetError> {
+    project.dependency_places.explain(error)
   }
 }
 
@@ -990,7 +997,9 @@ mod tests {
       v["defs"]["tilesets"][0]["relPath"] = "images/props.png".into();
     });
     assert!(
-      error.contains("tileset \"Tiles\"") && error.contains("too small"),
+      error.contains("tileset \"Tiles\"")
+        && error.contains("too small")
+        && error.contains("images/props.png"),
       "{error}"
     );
     // a path out of the asset root
@@ -1002,6 +1011,37 @@ mod tests {
       v["defs"]["tilesets"][0]["relPath"] = "/abs/x.png".into();
     });
     assert!(error.contains("absolute"), "{error}");
+  }
+
+  #[test]
+  fn a_tileset_image_that_does_not_load_fails_the_project_naming_it_and_the_tileset() {
+    let text = std::fs::read_to_string(Path::new(FIXTURES).join("internal.ldtk")).expect("fixture");
+    let mut value: serde_json::Value = serde_json::from_str(&text).expect("json");
+    value["defs"]["tilesets"][0]["relPath"] = "images/broken.png".into();
+    let files = files_at("", &[("m.ldtk", value.to_string())]);
+    files.insert("images/broken.png", b"not a png".as_slice());
+    // at once: through the loader's own load of the image
+    let mut world = world_over(files.clone());
+    let now = load_in(&mut world, "m.ldtk").expect_err("loaded");
+    // on the workers: through the server, which asks the loader where
+    let mut world = world_over(files);
+    let server = world.resource::<AssetServer>().clone();
+    let project = server.load::<LdtkProject>("m.ldtk");
+    let start = std::time::Instant::now();
+    let queued = loop {
+      crate::core::asset::pump(&mut world);
+      if let crate::core::asset::LoadState::Failed(error) = server.state(&project) {
+        break error.report();
+      }
+      assert!(start.elapsed().as_secs() < 5, "timed out");
+      std::thread::sleep(std::time::Duration::from_millis(1));
+    };
+    for error in [now, queued] {
+      assert!(
+        error.contains("tileset \"Tiles\"") && error.contains("images/broken.png"),
+        "{error}"
+      );
+    }
   }
 
   #[test]

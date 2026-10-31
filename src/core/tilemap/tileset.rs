@@ -190,6 +190,8 @@ pub struct Tileset {
   pub transformations: TileTransformations,
   pub properties: Properties,
   tiles: FastMap<u32, TileData>,
+  /// Where its file names its images
+  pub(crate) dependency_places: super::tiled::build::DependencyPlaces,
 }
 
 impl Asset for Tileset {}
@@ -212,6 +214,7 @@ impl Tileset {
       transformations: TileTransformations::default(),
       properties: Properties::default(),
       tiles: FastMap::default(),
+      dependency_places: Default::default(),
     }
   }
 

@@ -97,6 +97,12 @@ impl AssetLoader for TiledMapLoader {
   fn check(&self, map: &TileMap, cx: &CheckContext<'_>) -> Result<(), AssetError> {
     check_map(map, cx)
   }
+
+  /// A tileset or image that did not load, named where the map names it (an
+  /// inline tileset's image with its tileset, an image layer's with its layer)
+  fn dependency_failed(&self, map: &TileMap, error: &AssetError) -> Option<AssetError> {
+    map.dependency_places.explain(error)
+  }
 }
 
 impl AssetLoader for TiledTilesetLoader {
@@ -115,10 +121,18 @@ impl AssetLoader for TiledTilesetLoader {
       parse(&path, &bytes)?
     };
     let project = TiledProject::for_loader(cx, self.project.as_deref())?;
-    build_tileset(raw, cx, &mut Props::new(path, project.as_ref()))
+    let mut px = Props::new(path, project.as_ref());
+    let mut set = build_tileset(raw, cx, &mut px)?;
+    set.dependency_places = px.places;
+    Ok(set)
   }
 
   fn check(&self, set: &Tileset, cx: &CheckContext<'_>) -> Result<(), AssetError> {
     check_tileset(set, cx)
+  }
+
+  /// An image that did not load, named with its tileset (and tile)
+  fn dependency_failed(&self, set: &Tileset, error: &AssetError) -> Option<AssetError> {
+    set.dependency_places.explain(error)
   }
 }

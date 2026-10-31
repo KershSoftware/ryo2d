@@ -15,7 +15,7 @@ use crate::core::asset::{AssetError, AssetPath, CheckContext, LoadContext};
 use crate::core::graphics::Image;
 use crate::core::hash::FastMap;
 use crate::core::tilemap::tiled::build::{
-  MAX_TILES, cell_count, check_tileset, check_used_ids, fail, join, load_dep,
+  DependencyPlaces, MAX_TILES, cell_count, check_tileset, check_used_ids, fail, join, load_dep,
 };
 use crate::core::tilemap::tiled::json::parse;
 use crate::core::tilemap::{
@@ -74,6 +74,7 @@ fn build_tilesets(
   raw: &[RawTilesetDef],
   cx: &mut LoadContext<'_>,
   path: &AssetPath,
+  places: &mut DependencyPlaces,
 ) -> Result<Vec<(i64, Arc<Tileset>)>, AssetError> {
   if raw.len() > MAX_TILESETS {
     return Err(fail(
@@ -118,7 +119,7 @@ fn build_tilesets(
           rows = fit(size.y);
         }
         TilesetImage::Atlas {
-          image: load_dep::<Image>(cx, path, &place, written)?,
+          image: load_dep::<Image>(cx, path, &place, written, places)?,
           size,
         }
       }
@@ -799,7 +800,8 @@ pub(super) fn build_project(
   cx: &mut LoadContext<'_>,
 ) -> Result<LdtkProject, AssetError> {
   let path = cx.path().clone();
-  let built = build_tilesets(&raw.defs.tilesets, cx, &path)?;
+  let mut places = DependencyPlaces::default();
+  let built = build_tilesets(&raw.defs.tilesets, cx, &path, &mut places)?;
   let tilesets: Vec<Arc<Tileset>> = built.iter().map(|(_, s)| s.clone()).collect();
   let defs = Defs {
     path: &path,
@@ -849,6 +851,7 @@ pub(super) fn build_project(
     levels,
     worlds,
     tilesets,
+    dependency_places: places,
   })
 }
 
