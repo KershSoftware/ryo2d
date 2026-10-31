@@ -205,6 +205,8 @@ pub struct Engine {
     crate::core::ecs::GlobalTransform,
     &'static crate::core::lighting::LightOccluder2D,
   )>,
+  /// The occluders' query, made the first lit frame
+  occluder_query: Option<crate::core::ecs::kernel::QueryState<extract::OccluderItem>>,
   parallax: Vec<crate::core::graphics::SpriteInstance>,
   poly_points: Vec<crate::core::render::batch::PolyPoint>,
   targetless_cameras: Vec<crate::core::ecs::Entity>,
@@ -698,6 +700,7 @@ impl Engine {
       camera_globals: Vec::new(),
       lights: Vec::new(),
       occluders: Vec::new(),
+      occluder_query: None,
       parallax: Vec::new(),
       poly_points: Vec::new(),
       targetless_cameras: Vec::new(),

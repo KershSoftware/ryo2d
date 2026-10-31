@@ -240,19 +240,27 @@ impl LightOccluder2D {
   ///
   /// Returns the vertices in world space.
   pub fn transform_vertices(&self, x: f32, y: f32, rotation: f32) -> Vec<Vec2> {
+    self.placed(x, y, rotation).collect()
+  }
+
+  /// The vertices in world space, as [`transform_vertices`] gives them,
+  /// one by one rather than collected
+  ///
+  /// [`transform_vertices`]: Self::transform_vertices
+  pub(crate) fn placed(
+    &self,
+    x: f32,
+    y: f32,
+    rotation: f32,
+  ) -> impl ExactSizeIterator<Item = Vec2> + Clone + '_ {
     let cos_r = rotation.cos();
     let sin_r = rotation.sin();
-
-    self
-      .vertices
-      .iter()
-      .map(|v| {
-        // Rotate then translate
-        let rx = v.x * cos_r - v.y * sin_r;
-        let ry = v.x * sin_r + v.y * cos_r;
-        Vec2::new(rx + x, ry + y)
-      })
-      .collect()
+    self.vertices.iter().map(move |v| {
+      // Rotate then translate
+      let rx = v.x * cos_r - v.y * sin_r;
+      let ry = v.x * sin_r + v.y * cos_r;
+      Vec2::new(rx + x, ry + y)
+    })
   }
 }
 

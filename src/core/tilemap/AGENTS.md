@@ -44,7 +44,7 @@ Tile maps from Tiled and LDtk (sub-project 6a, orthogonal maps; isometric, hexag
 
 ## Speed
 
-`benches/tilemap.rs` holds the spec's targets as guards (`static_frame`, `edit`, `load` with its landing), `tests/tilemap_alloc.rs` the allocation tests (a padded cache hit, and a frame drawing a static map: no allocation of the engine's own beyond an empty frame's), and `docs/backlog/tilemap.md` the numbers measured and the limits. The `edit` guard times the systems an edit runs through on an engine's world, each in a schedule of its own (`edit_schedules`, doc-hidden): the collision sync, physics' tile collider rebuild with its collider sync, and the occluder sync.
+`benches/tilemap.rs` holds the spec's targets as guards (`static_frame`, `edit`, `load` with its landing), `tests/tilemap_alloc.rs` the allocation tests (a padded cache hit, and a frame drawing a static map under a shadowed light: no allocation of the engine's own beyond an empty frame's under the same light), and `docs/backlog/tilemap.md` the numbers measured and the limits. The `edit` guard times the systems an edit runs through on an engine's world, each in a schedule of its own (`edit_schedules`, doc-hidden): the collision sync, physics' tile collider rebuild with its collider sync, and the occluder sync.
 
 ## Gotchas
 

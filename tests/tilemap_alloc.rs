@@ -1,6 +1,7 @@
 //! Allocations of map drawing, counted by a global allocator in this test
 //! binary: a padded tileset cache hit, and a frame drawing a static map
-//! (its camera still, then panning over chunks it has drawn).
+//! under a shadowed light (its camera still, then panning over chunks it
+//! has drawn).
 //!
 //! A frame's allocations are told apart by their stacks: those made inside
 //! the GPU API (wgpu, naga and the Metal bindings, which allocate as they
@@ -166,15 +167,22 @@ const PROP: u32 = 2;
 const WATER: u32 = 3;
 const SIDE: u32 = 128;
 
-/// A scene with the static map (or nothing, `empty`): four tile layers of
-/// 128 x 128 cells over an atlas, the third y-sorted; an image layer; an
-/// object layer holding a tile object
+/// A scene with the static map (or nothing, `empty`) under a shadowed
+/// light: four tile layers of 128 x 128 cells over an atlas, the third
+/// y-sorted; an image layer; an object layer holding a tile object. The
+/// light is in both, so each frame is lit and the map's frame differs only
+/// by the map (its shadow chains among them)
 struct StaticMap {
   empty: bool,
 }
 
 impl Scene for StaticMap {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
+    let centre = Vec2::splat(SIDE as f32 * 8.0);
+    ctx.world.spawn((
+      Transform::from_translation(centre),
+      Light2D::point(Color::WHITE, 240.0).with_shadows(),
+    ));
     if self.empty {
       return;
     }

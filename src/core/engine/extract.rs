@@ -321,8 +321,11 @@ impl Engine {
       // layers and view reach them
       let mut occluders = recycle(std::mem::take(&mut self.occluders));
       if lit {
-        let mut query = self.world.query::<OccluderItem>();
-        occluders_to_draw(&self.world, &mut query, alpha, &mut occluders);
+        // Kept, so a frame makes no query state
+        let query = self
+          .occluder_query
+          .get_or_insert_with(|| self.world.query::<OccluderItem>());
+        occluders_to_draw(&self.world, query, alpha, &mut occluders);
         for light in &lights {
           if let Some(item) = crate::core::lighting::light_item(light, &occluders, triangles) {
             self.draw_list.push_light(item);
@@ -720,7 +723,7 @@ fn lights_to_draw(world: &mut World, alpha: f32, out: &mut Vec<FrameLight>) {
   );
 }
 
-type OccluderItem = (
+pub(super) type OccluderItem = (
   &'static GlobalTransform,
   Option<&'static PreviousGlobalTransform>,
   &'static LightOccluder2D,

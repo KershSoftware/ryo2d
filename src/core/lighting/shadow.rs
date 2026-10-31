@@ -53,18 +53,20 @@ pub(crate) fn push_shadow_volumes(
     if center.distance(position) - occluder.extent() > radius * 2.0 {
       continue;
     }
-    let corners = occluder.transform_vertices(center.x, center.y, transform.rotation());
+    // Placed as they are walked, so a frame collects nothing
+    let corners = occluder.placed(center.x, center.y, transform.rotation());
+    let count = corners.len();
     // A polygon's last edge returns to its first vertex; a chain's does not
-    let (least, edges) = if occluder.is_closed() {
-      (3, corners.len())
+    let (least, closing) = if occluder.is_closed() {
+      (3, corners.clone().next())
     } else {
-      (2, corners.len().saturating_sub(1))
+      (2, None)
     };
-    if corners.len() < least || !corners.iter().all(|corner| corner.is_finite()) {
+    if count < least || !corners.clone().all(|corner| corner.is_finite()) {
       continue;
     }
-    for i in 0..edges {
-      let (v0, v1) = (corners[i], corners[(i + 1) % corners.len()]);
+    let ends = corners.clone().skip(1).chain(closing);
+    for (v0, v1) in corners.zip(ends) {
       if !casts(v0, v1, position, spot) {
         continue;
       }

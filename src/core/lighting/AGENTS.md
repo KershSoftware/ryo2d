@@ -23,6 +23,7 @@ Scenes control lighting through the `LightingSettings` resource (`ctx.lighting()
 
 - **No light cap**: each lit camera draws the lights on its `RenderLayers` whose reach meets its view: those without shadow volumes in one instanced draw, each shadowed one in three or four draws of its own. A light with a radius or intensity that is not positive and finite, or a position that is not finite, draws nothing.
 - **No shadow cap**: shadow volumes are built per light, once a frame, for every enabled occluder that may reach within twice its radius, and have no vertex limit. Shadow casting and complex occluder polygons add cost. Disable shadows on unimportant lights.
+- **A lit frame allocates nothing for its occluders**: the occluders' query is kept on the engine (`occluder_query`), and shadow volumes place each occluder's vertices as they walk them (`LightOccluder2D::placed`, where `transform_vertices` collects a `Vec`), so a shadowed light over a tile map's thousands of chains collects nothing (`tests/tilemap_alloc.rs`).
 - **No spatial index**: every lit frame gathers every occluder (`engine/extract.rs`), and each shadowed light loops over all of them for the reach test. A big tile map's chains are thousands (about 2,400 on the 1024 x 1024 cave of `benches/tilemap.rs`): one shadowed light over it costs about 30 µs a frame more than the unlit map (`docs/backlog/tilemap.md`). Map occluders are per chunk already, so an index by chunk, a light reading only the chunks its reach meets, is the proposed fix.
 
 ## Conventions
