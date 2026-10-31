@@ -122,7 +122,8 @@ impl<'a, 'i> Reader<'a, 'i> {
   }
 
   /// The property's value as the JSON file would hold it: a number for `int`,
-  /// `float` and `object`, a flag for `bool`, an object for a class
+  /// `float` and `object`, a flag for `bool`, an object for a class, an
+  /// array of typed items for a list
   fn property_value(&self, p: Node<'a, 'i>, ty: &str, depth: usize) -> Parsed<Value> {
     // a string may sit between the tags instead, for several lines
     let written = match p.attribute("value") {
@@ -161,6 +162,27 @@ impl<'a, 'i> Reader<'a, 'i> {
           members.insert(m.name, m.value);
         }
         Value::Object(members)
+      }
+      // Tiled 1.12's lists: `<item type=".." propertytype=".." value=".."/>`,
+      // each read as a property's value is (a class item holds its members,
+      // a list item its items), into the JSON file's `{type, value}` items
+      "list" => {
+        if depth > MAX_DEPTH {
+          return fail(self.doc, p, "lists are nested too deep");
+        }
+        let mut items = Vec::new();
+        for item in self.children(p, "item") {
+          let ty = item.attribute("type").unwrap_or("string").to_string();
+          let value = self.property_value(item, &ty, depth + 1)?;
+          let mut entry = Map::new();
+          if let Some(custom) = item.attribute("propertytype") {
+            entry.insert("propertytype".into(), Value::String(custom.to_string()));
+          }
+          entry.insert("type".into(), Value::String(ty));
+          entry.insert("value".into(), value);
+          items.push(Value::Object(entry));
+        }
+        Value::Array(items)
       }
       _ => Value::String(written),
     })
@@ -717,7 +739,8 @@ mod tests {
     panic!("{name}: one has more lines than the other");
   }
 
-  const MAP_PAIRS: [&str; 12] = [
+  const MAP_PAIRS: [&str; 13] = [
+    "lists",
     "mixed",
     "mixed-embedded",
     "nested",

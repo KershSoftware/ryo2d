@@ -18,6 +18,50 @@ pub(crate) const DEFAULT_PROJECT: &str = "project.tiled-project";
 
 /// Classes may hold classes; a project that loops is cut off here
 const MAX_DEPTH: usize = 16;
+/// Most values one thing's properties may take to resolve: classes holding
+/// several members of classes multiply, so a project of a few classes can
+/// ask for billions
+const MAX_VALUES: usize = 1 << 16;
+/// Most values the properties of one file's things may take, all together
+const MAX_FILE_VALUES: usize = 1 << 22;
+
+/// The values a resolution may still convert
+struct Budget {
+  left: usize,
+  limit: usize,
+  /// The file's budget, not the thing's, is the one that binds
+  file: bool,
+}
+
+impl Budget {
+  /// A budget of one thing's properties
+  fn thing() -> Budget {
+    Budget {
+      left: MAX_VALUES,
+      limit: MAX_VALUES,
+      file: false,
+    }
+  }
+
+  /// Takes one value, or fails naming the cap
+  fn spend(&mut self) -> Result<(), String> {
+    if self.left == 0 {
+      return Err(if self.file {
+        format!(
+          "the file's properties take more than {} values to resolve",
+          self.limit
+        )
+      } else {
+        format!(
+          "the properties take more than {} values to resolve: classes holding members of classes multiply",
+          self.limit
+        )
+      });
+    }
+    self.left -= 1;
+    Ok(())
+  }
+}
 
 /// One member of a class
 #[derive(Debug, Default, Deserialize)]
@@ -133,6 +177,8 @@ pub(crate) struct Props<'a> {
   path: AssetPath,
   project: Option<&'a TiledProject>,
   warned: Vec<String>,
+  /// What the file's things may still convert (`MAX_FILE_VALUES` in all)
+  left_in_file: usize,
 }
 
 impl<'a> Props<'a> {
@@ -141,6 +187,7 @@ impl<'a> Props<'a> {
       path,
       project,
       warned: Vec::new(),
+      left_in_file: MAX_FILE_VALUES,
     }
   }
 
@@ -163,7 +210,18 @@ impl<'a> Props<'a> {
     class: Option<&str>,
   ) -> Result<Properties, AssetError> {
     let mut unknown = Vec::new();
-    let result = resolve(raw, class, self.project, &mut unknown);
+    let mut budget = if self.left_in_file < MAX_VALUES {
+      Budget {
+        left: self.left_in_file,
+        limit: MAX_FILE_VALUES,
+        file: true,
+      }
+    } else {
+      Budget::thing()
+    };
+    let before = budget.left;
+    let result = resolve(raw, class, self.project, &mut unknown, &mut budget);
+    self.left_in_file -= before - budget.left;
     for name in unknown {
       if self.warned.contains(&name) {
         continue;
@@ -195,7 +253,7 @@ pub(crate) fn resolve_properties(
   class: Option<&str>,
   project: Option<&TiledProject>,
 ) -> Result<Properties, String> {
-  resolve(raw, class, project, &mut Vec::new())
+  resolve(raw, class, project, &mut Vec::new(), &mut Budget::thing())
 }
 
 fn resolve(
@@ -203,6 +261,7 @@ fn resolve(
   class: Option<&str>,
   project: Option<&TiledProject>,
   unknown: &mut Vec<String>,
+  budget: &mut Budget,
 ) -> Result<Properties, String> {
   let mut out = Properties::default();
   let class_def = class
@@ -222,8 +281,7 @@ fn resolve(
       &p.ty,
       p.propertytype.as_deref(),
       &layered,
-      project,
-      unknown,
+      (project, unknown, budget),
       0,
     )
     .map_err(|e| bad(&e))?
@@ -243,8 +301,7 @@ fn resolve(
             &member.ty,
             member.property_type.as_deref(),
             &member.value,
-            project,
-            unknown,
+            (project, unknown, budget),
             0,
           )
           .map_err(|e| bad(&e))?;
@@ -297,7 +354,13 @@ fn infer(value: &Value) -> PropertyValue {
       None => PropertyValue::Float(n.as_f64().unwrap_or(0.0)),
     },
     Value::String(s) => PropertyValue::String(s.clone()),
-    Value::Array(items) => PropertyValue::List(items.iter().map(infer).collect()),
+    // a list member's items are written typed, as a list property's are
+    Value::Array(items) => PropertyValue::List(
+      items
+        .iter()
+        .map(|item| typed_item(item).unwrap_or_else(|| infer(item)))
+        .collect(),
+    ),
     Value::Object(members) => {
       let mut fields = Properties::default();
       for (name, value) in members {
@@ -310,6 +373,41 @@ fn infer(value: &Value) -> PropertyValue {
     }
     Value::Null => PropertyValue::String(String::new()),
   }
+}
+
+/// A list item as Tiled writes one: its type (`string` if left out), its
+/// custom type (`propertytype` in a map, `propertyType` in the project file)
+/// and its value
+fn list_item(item: &Value) -> Option<(&str, Option<&str>, &Value)> {
+  let Value::Object(fields) = item else {
+    return None;
+  };
+  let ty = match fields.get("type") {
+    Some(Value::String(ty)) => ty.as_str(),
+    None => "string",
+    Some(_) => return None,
+  };
+  let custom = ["propertytype", "propertyType"]
+    .iter()
+    .find_map(|key| fields.get(*key))
+    .and_then(Value::as_str);
+  Some((ty, custom, fields.get("value").unwrap_or(&Value::Null)))
+}
+
+/// A typed list item read without a project, for a class member of a class
+/// the project lacks; `None` if `item` is not one
+fn typed_item(item: &Value) -> Option<PropertyValue> {
+  let Value::Object(fields) = item else {
+    return None;
+  };
+  if !fields.contains_key("type") || !fields.contains_key("value") {
+    return None;
+  }
+  let (ty, custom, value) = list_item(item)?;
+  let mut budget = Budget::thing();
+  convert(ty, custom, value, (None, &mut Vec::new(), &mut budget), 0)
+    .ok()
+    .flatten()
 }
 
 /// `over` laid on `base`: objects merge member by member, anything else is
@@ -395,10 +493,10 @@ fn convert(
   ty: &str,
   propertytype: Option<&str>,
   value: &Value,
-  project: Option<&TiledProject>,
-  unknown: &mut Vec<String>,
+  (project, unknown, budget): (Option<&TiledProject>, &mut Vec<String>, &mut Budget),
   depth: usize,
 ) -> Result<Option<PropertyValue>, String> {
+  budget.spend()?;
   let custom = propertytype.filter(|t| !t.is_empty());
   Ok(Some(match ty {
     "bool" => PropertyValue::Bool(value.as_bool().ok_or("not a bool")?),
@@ -460,8 +558,7 @@ fn convert(
               &member.ty,
               member.property_type.as_deref(),
               &layered,
-              project,
-              unknown,
+              (project, &mut *unknown, &mut *budget),
               depth + 1,
             )
             .map_err(|e| format!("{name}.{}: {e}", member.name))?;
@@ -493,6 +590,37 @@ fn convert(
           }
         }
       }
+    }
+    "list" => {
+      let items = match value {
+        Value::Array(items) => items.as_slice(),
+        Value::Null => &[],
+        _ => return Err("not a list".into()),
+      };
+      if depth >= MAX_DEPTH {
+        return Err(format!(
+          "lists and classes are nested more than {MAX_DEPTH} deep"
+        ));
+      }
+      let mut out = Vec::with_capacity(items.len());
+      for (i, item) in items.iter().enumerate() {
+        let Some((ty, custom, value)) = list_item(item) else {
+          return Err(format!(
+            "item {i}: not a list item ({{\"type\", \"value\"}})"
+          ));
+        };
+        let value = convert(
+          ty,
+          custom,
+          value,
+          (project, &mut *unknown, &mut *budget),
+          depth + 1,
+        )
+        .map_err(|e| format!("item {i}: {e}"))?;
+        // an unset item (an empty color) is left out, as an unset property is
+        out.extend(value);
+      }
+      PropertyValue::List(out)
     }
     other => return Err(format!("unknown type {other:?}")),
   }))
@@ -560,6 +688,85 @@ mod tests {
     let raw = [prop("l", "class", Some("Loop"), serde_json::json!({}))];
     let error = resolve_properties(&raw, None, Some(&p)).expect_err("resolved");
     assert!(error.contains("holds itself"), "{error}");
+  }
+
+  #[test]
+  fn a_list_that_is_not_one_or_nests_too_deep_fails_naming_the_property() {
+    let raw = [prop("l", "list", None, serde_json::json!(4))];
+    let error = resolve_properties(&raw, None, None).expect_err("resolved");
+    assert!(
+      error.contains("property \"l\"") && error.contains("not a list"),
+      "{error}"
+    );
+    let mut deep = serde_json::json!([]);
+    for _ in 0..20 {
+      deep = serde_json::json!([{"type": "list", "value": deep}]);
+    }
+    let raw = [prop("l", "list", None, deep)];
+    let error = resolve_properties(&raw, None, None).expect_err("resolved");
+    assert!(error.contains("nested more than 16 deep"), "{error}");
+    // an item of a class the project lacks keeps its typed items
+    let raw = [prop(
+      "k",
+      "class",
+      Some("Unknown"),
+      serde_json::json!({"items": [{"type": "int", "value": 3}]}),
+    )];
+    let out = resolve_properties(&raw, None, None).expect("resolves");
+    let Some(PropertyValue::Class { fields, .. }) = out.get("k") else {
+      panic!("not a class")
+    };
+    assert_eq!(
+      fields.get("items"),
+      Some(&PropertyValue::List(vec![PropertyValue::Int(3)]))
+    );
+  }
+
+  /// A project whose class `C0` holds `fan` members of class `C1`, each
+  /// holding `fan` of `C2`, and so on `depth` deep: `fan^depth` values
+  fn fan_out(fan: usize, depth: usize) -> TiledProject {
+    let mut types = Vec::new();
+    for level in 0..depth {
+      let members: Vec<String> = (0..fan)
+        .map(|m| {
+          if level + 1 == depth {
+            format!(r#"{{"name":"m{m}","type":"int","value":1}}"#)
+          } else {
+            let next = level + 1;
+            format!(r#"{{"name":"m{m}","type":"class","propertyType":"C{next}","value":{{}}}}"#)
+          }
+        })
+        .collect();
+      types.push(format!(
+        r#"{{"name":"C{level}","type":"class","members":[{}]}}"#,
+        members.join(",")
+      ));
+    }
+    project(&format!(r#"{{"propertyTypes":[{}]}}"#, types.join(",")))
+  }
+
+  #[test]
+  fn classes_fanning_out_past_the_cap_fail_naming_the_cap() {
+    // 4^9 = 262,144 values, past the 65,536 one thing's properties may take
+    let p = fan_out(4, 9);
+    let error = resolve_properties(&[], Some("C0"), Some(&p)).expect_err("resolved");
+    assert!(error.contains("65536"), "{error}");
+    // 4^7 = 16,384 values resolve
+    let p = fan_out(4, 7);
+    assert!(resolve_properties(&[], Some("C0"), Some(&p)).is_ok());
+  }
+
+  #[test]
+  fn a_file_s_things_share_a_cap_on_the_values_they_resolve() {
+    // 4^5 = 1,024 values a thing; the file's budget runs out on the fifth
+    let p = fan_out(4, 5);
+    let mut px = Props::new(AssetPath::parse("a.tmj").expect("path"), Some(&p));
+    px.left_in_file = 4 * 1_400;
+    for _ in 0..4 {
+      assert!(px.read("object 1", &[], Some("C0")).is_ok());
+    }
+    let error = px.read("object 5", &[], Some("C0")).expect_err("read");
+    assert!(error.report().contains("object 5"), "{}", error.report());
   }
 
   #[test]

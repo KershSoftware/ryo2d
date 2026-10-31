@@ -108,6 +108,52 @@
                 "object",
                 "tile"
             ]
+        },
+        {
+            "id": 5,
+            "name": "Bag",
+            "type": "class",
+            "color": "#ffa0a0a4",
+            "drawFill": true,
+            "members": [
+                {
+                    "name": "items",
+                    "type": "list",
+                    "value": [
+                        {
+                            "type": "int",
+                            "value": 1
+                        },
+                        {
+                            "type": "int",
+                            "value": 2
+                        }
+                    ]
+                },
+                {
+                    "name": "loot",
+                    "type": "list",
+                    "value": [
+                        {
+                            "type": "class",
+                            "propertyType": "Drop",
+                            "value": {
+                                "rare": true
+                            }
+                        },
+                        {
+                            "type": "string",
+                            "propertyType": "Material",
+                            "value": "metal"
+                        }
+                    ]
+                }
+            ],
+            "useAs": [
+                "property",
+                "object",
+                "map"
+            ]
         }
     ]
 }

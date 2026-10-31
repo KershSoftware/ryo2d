@@ -955,6 +955,74 @@ mod tests {
     );
   }
 
+  fn ints(values: &[i64]) -> PropertyValue {
+    PropertyValue::List(values.iter().map(|&v| PropertyValue::Int(v)).collect())
+  }
+
+  fn drop_of(count: i64, rare: bool) -> PropertyValue {
+    let mut fields = Properties::default();
+    fields.insert("count", PropertyValue::Int(count));
+    fields.insert("rare", PropertyValue::Bool(rare));
+    PropertyValue::Class {
+      ty: "Drop".into(),
+      fields,
+    }
+  }
+
+  #[test]
+  fn list_properties_load_with_their_items_typed() {
+    // Saved by Tiled 1.12.2 from the fixture project, whose class Bag has
+    // two list members with defaults
+    let map = load("maps/lists.tmj");
+    let p = &map.properties;
+    assert_eq!(
+      p.get("items"),
+      Some(&PropertyValue::List(vec![
+        PropertyValue::Int(7),
+        ints(&[8, 9])
+      ]))
+    );
+    assert_eq!(p.get("empty"), Some(&PropertyValue::List(vec![])));
+    assert_eq!(
+      p.get("mixed"),
+      Some(&PropertyValue::List(vec![
+        PropertyValue::Int(1),
+        PropertyValue::Float(2.5),
+        PropertyValue::String("three".into()),
+        PropertyValue::Bool(true),
+        PropertyValue::Color(Color::new(0x10, 0x20, 0x30, 0xff)),
+        PropertyValue::File("a.png".into()),
+        PropertyValue::Object("2".into()),
+        enum_of("Material", "wood"),
+        PropertyValue::List(vec![
+          enum_of("Elements", "fire"),
+          enum_of("Elements", "ice")
+        ]),
+        drop_of(4, false),
+      ]))
+    );
+    // A class's list member the file leaves out takes the project's default,
+    // its items resolved against their own classes
+    let default_loot = PropertyValue::List(vec![drop_of(1, true), enum_of("Material", "metal")]);
+    assert_eq!(p.get("loot"), Some(&default_loot));
+    let plain = &object(&map, "1").properties;
+    assert_eq!(plain.get("items"), Some(&ints(&[1, 2])));
+    assert_eq!(plain.get("loot"), Some(&default_loot));
+    let own = &object(&map, "2").properties;
+    assert_eq!(
+      own.get("loot"),
+      Some(&PropertyValue::List(vec![drop_of(9, false)])),
+      "a written list replaces the default whole"
+    );
+    assert_eq!(own.get("items"), Some(&ints(&[1, 2])));
+    let Some(PropertyValue::Class { ty, fields }) = object(&map, "3").properties.get("bag") else {
+      panic!("bag is not a class")
+    };
+    assert_eq!(ty, "Bag");
+    assert_eq!(fields.get("items"), Some(&ints(&[5])));
+    assert_eq!(fields.get("loot"), Some(&default_loot));
+  }
+
   #[test]
   fn without_a_project_class_typed_properties_keep_what_is_written_and_warn_once() {
     let files = files_with(&[]);

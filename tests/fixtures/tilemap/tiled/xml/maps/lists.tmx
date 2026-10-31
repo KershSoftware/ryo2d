@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<map version="1.10" tiledversion="1.12.2" class="Bag" orientation="orthogonal" renderorder="right-down" width="4" height="4" tilewidth="16" tileheight="16" infinite="0" nextlayerid="2" nextobjectid="4">
+ <properties>
+  <property name="empty" type="list"/>
+  <property name="items" type="list">
+   <item type="int" value="7"/>
+   <item type="list">
+    <item type="int" value="8"/>
+    <item type="int" value="9"/>
+   </item>
+  </property>
+  <property name="mixed" type="list">
+   <item type="int" value="1"/>
+   <item type="float" value="2.5"/>
+   <item value="three"/>
+   <item type="bool" value="true"/>
+   <item type="color" value="#ff102030"/>
+   <item type="file" value="a.png"/>
+   <item type="object" value="2"/>
+   <item propertytype="Material" value="wood"/>
+   <item type="int" propertytype="Elements" value="3"/>
+   <item type="class" propertytype="Drop">
+    <properties>
+     <property name="count" type="int" value="4"/>
+    </properties>
+   </item>
+  </property>
+ </properties>
+ <objectgroup draworder="index" id="1" name="things">
+  <object id="1" name="plain bag" type="Bag" x="0" y="0" width="16" height="16"/>
+  <object id="2" name="own loot" type="Bag" x="16" y="0" width="16" height="16">
+   <properties>
+    <property name="loot" type="list">
+     <item type="class" propertytype="Drop">
+      <properties>
+       <property name="count" type="int" value="9"/>
+      </properties>
+     </item>
+    </property>
+   </properties>
+  </object>
+  <object id="3" name="holder" x="32" y="0" width="16" height="16">
+   <properties>
+    <property name="bag" type="class" propertytype="Bag">
+     <properties>
+      <property name="items" type="list">
+       <item type="int" value="5"/>
+      </property>
+     </properties>
+    </property>
+   </properties>
+  </object>
+ </objectgroup>
+</map>
