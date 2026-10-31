@@ -259,11 +259,11 @@ fn player_state(ctx: &SceneContext, player: Option<Entity>) -> Option<CharacterS
 
 // --- Platformer -------------------------------------------------------------
 
-/// The platformer's level: the `Platformer` level of this LDtk project, 30 x
-/// 30 cells of 16 px (an IntGrid of `solid`, `one_way` and two slopes, with
-/// the terrain art drawn over it by the project's auto-layer rules). Its
-/// cells collide as the ASCII grid they were written from did
+/// The platformer's level file: an LDtk project of one level, with the
+/// terrain art drawn over its IntGrid by the project's auto-layer rules
 const LEVEL_FILE: &str = "ldtk/platformer.ldtk";
+/// The level in `LEVEL_FILE`: 30 x 30 cells of 16 px (`solid`, `one_way` and
+/// two slope values), colliding as the grid it was written from does
 const LEVEL: &str = "Platformer";
 
 /// The platform over the gap runs between these x positions (its ends flush
@@ -290,6 +290,8 @@ struct PlatformerPage {
   coins: u32,
   deaths: u32,
   last_event: String,
+  /// Why the level is missing, when it failed to load or spawn
+  problem: Option<String>,
 }
 
 impl Default for PlatformerPage {
@@ -313,6 +315,7 @@ impl Default for PlatformerPage {
       coins: 0,
       deaths: 0,
       last_event: "-".to_string(),
+      problem: None,
     }
   }
 }
@@ -341,6 +344,12 @@ impl PlatformerPage {
 }
 
 impl PlatformerPage {
+  /// Logs why the level is missing and shows it in the readout
+  fn report(&mut self, problem: String) {
+    game_warn!("{problem}");
+    self.problem = Some(problem);
+  }
+
   /// Spawns what falls (the crates and the player) on the step the level's
   /// map is ready, so it lands on solid ground rather than through it
   fn spawn_bodies_when_ready(&mut self, ctx: &mut SceneContext) {
@@ -412,19 +421,22 @@ impl DemoPage for PlatformerPage {
   }
   fn enter(&mut self, ctx: &mut SceneContext) {
     // The map lands a few frames from now; what falls waits for it (below)
-    self.level = ctx
-      .assets()
-      .load_now::<LdtkProject>(LEVEL_FILE)
-      .ok()
-      .map(|project| {
+    self.problem = None;
+    self.level = match ctx.assets().load_now::<LdtkProject>(LEVEL_FILE) {
+      Ok(project) => Some(
         ctx
           .world
           .spawn((
             Transform::from_translation(ORIGIN),
             MapRoot::ldtk(project, LEVEL),
           ))
-          .id()
-      });
+          .id(),
+      ),
+      Err(error) => {
+        self.report(format!("the level {LEVEL_FILE} did not load: {error}"));
+        None
+      }
+    };
     // A platform crossing the gap in the ground, and a lift beside the hill
     self.across = Some(
       ctx
@@ -503,6 +515,11 @@ impl DemoPage for PlatformerPage {
     }
     self.coins += ctx.messages::<PickedUp>().len() as u32;
     self.deaths += ctx.messages::<Killed>().len() as u32;
+    for event in ctx.messages::<MapEvent>() {
+      if let MapEvent::Failed { error, .. } = event {
+        self.report(format!("the level {LEVEL} failed to spawn: {error}"));
+      }
+    }
     for event in ctx.messages::<MovementEvent>() {
       if Some(event.entity) == self.player {
         self.last_event = format!("{:?}", event.kind);
@@ -521,6 +538,9 @@ impl DemoPage for PlatformerPage {
       area.y,
       Color::WHITE,
     );
+    if let Some(problem) = &self.problem {
+      ui.draw_text(problem, area.x, area.y + 20.0, SPIKES);
+    }
   }
 }
 
