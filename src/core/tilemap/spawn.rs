@@ -1511,12 +1511,21 @@ mod tests {
     assert_eq!(gem.tile, Some(Tile::new(1, 0)));
   }
 
-  /// What a game's observers saw of the objects as they arrived
+  /// An object as a game's observer saw its `MapObject` added: its entity,
+  /// id, class, `hp` and the entity its `target` reference resolved to
+  #[derive(Clone)]
+  struct Arrival {
+    entity: Entity,
+    id: String,
+    class: Option<String>,
+    hp: Option<i64>,
+    target: Option<Entity>,
+  }
+
+  /// What a game's observers saw of the objects as they arrived and went
   #[derive(Default)]
   struct Arrivals {
-    /// Each object as its `MapObject` was added: its entity, id, class,
-    /// `hp` and the entity its `target` reference resolved to
-    added: Vec<(Entity, String, Option<String>, Option<i64>, Option<Entity>)>,
+    added: Vec<Arrival>,
     inserted: Vec<Entity>,
     removed: Vec<Entity>,
   }
@@ -1534,13 +1543,13 @@ mod tests {
           return;
         };
         let mut seen = arrivals.lock().unwrap_or_else(|e| e.into_inner());
-        seen.added.push((
-          add.entity,
-          object.id.clone(),
-          object.class.clone(),
-          object.properties.int("hp"),
-          object.reference("target", world),
-        ));
+        seen.added.push(Arrival {
+          entity: add.entity,
+          id: object.id.clone(),
+          class: object.class.clone(),
+          hp: object.properties.int("hp"),
+          target: object.reference("target", world),
+        });
       },
     );
     let arrivals = Arc::clone(&seen);
@@ -1568,7 +1577,7 @@ mod tests {
     objects.sort();
     let (spawn, _) = object(&mut world, map, "spawn");
     let got = seen.lock().unwrap_or_else(|e| e.into_inner());
-    let mut added: Vec<Entity> = got.added.iter().map(|a| a.0).collect();
+    let mut added: Vec<Entity> = got.added.iter().map(|a| a.entity).collect();
     added.sort();
     assert_eq!(objects.len(), 17);
     assert_eq!(added, objects, "one Add per object");
@@ -1577,8 +1586,11 @@ mod tests {
     assert_eq!(inserted, objects, "one Insert per object");
     // Its fields filled, and its reference to an object later in the file
     // resolved, as it arrived
-    let crate_seen = got.added.iter().find(|a| a.1 == "1").cloned();
-    let Some((_, _, class, hp, target)) = crate_seen else {
+    let crate_seen = got.added.iter().find(|a| a.id == "1").cloned();
+    let Some(Arrival {
+      class, hp, target, ..
+    }) = crate_seen
+    else {
       panic!("the crate never arrived");
     };
     assert_eq!(
