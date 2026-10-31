@@ -244,6 +244,11 @@ pub(crate) struct CharacterMove {
 
 /// How far below its feet a character looks for the floor, beyond its skin.
 const FLOOR_PROBE: f32 = 2.0;
+/// Two floors this far apart in px, at most, are at one distance: a platform
+/// and the ground it is flush with differ only by f32 rounding of their
+/// positions (an ulp near 500 px is 6e-5), so this is a few ulps, far below
+/// anything a character could see or stand on.
+const TIE_TOLERANCE: f32 = 1.0e-3;
 /// Colliders whose centres are closer than this, in px, are on one point.
 const COINCIDENT: f32 = 0.01;
 /// How far, in px along each axis, a push-out first moves a character off
@@ -320,6 +325,17 @@ fn solid(
 }
 
 impl Physics {
+  /// Whether `collider` is on a kinematic or dynamic body (not a fixed one,
+  /// nor one with no body).
+  fn moves(&self, collider: ColliderHandle) -> bool {
+    self
+      .colliders
+      .get(collider)
+      .and_then(|collider| collider.parent())
+      .and_then(|body| self.bodies.get(body))
+      .is_some_and(|body| !body.is_fixed())
+  }
+
   /// How far the body under a character moves the point `at` this step:
   /// a kinematic body from its pose to its next pose (moved by `Transform`
   /// or velocity, turning included), a dynamic body by its velocity there,
@@ -523,17 +539,38 @@ impl Physics {
     // only touches (a neighbour flush against its side); failing that, what
     // the sweep stands it on, its skin kept (a corner or a ledge's edge the
     // skin reaches but the shape does not overlap)
+    let moving_only = |handle: ColliderHandle, collider: &RapierCollider| {
+      solid_from_start(handle, collider) && self.moves(handle)
+    };
     let find_floor = |queries: &QueryPipeline, pose: &Pose| {
       if !platformer {
         return None;
       }
+      let holds = |(_, hit): &(ColliderHandle, ShapeCastHit)| {
+        from_rapier(hit.normal1).dot(up) >= floor_cos(max_slope)
+      };
       let probe = |gap, reach| {
         let down = to_rapier(Vec2::Y);
         let tolerance = kcc.normal_nudge_factor;
-        sweep::probe(queries, pose, down, &*shape, gap, reach, tolerance)
-      };
-      let holds = |(_, hit): &(ColliderHandle, ShapeCastHit)| {
-        from_rapier(hit.normal1).dot(up) >= floor_cos(max_slope)
+        let first = sweep::probe(queries, pose, down, &*shape, gap, reach, tolerance);
+        // Two floors at the same distance (a platform flush with the
+        // ground) are a tie that cast_shape settles by the order the
+        // colliders were created in, which a game's play must not depend
+        // on (a map's colliders always come late): a fixed floor gives way
+        // to a moving one as far below, which carries the character. The
+        // cast is made only from a fixed hit, so a character on a moving
+        // floor pays nothing
+        let (handle, hit) = first.as_ref()?;
+        if self.moves(*handle) {
+          return first;
+        }
+        let moving = QueryPipeline {
+          filter: queries.filter.predicate(&moving_only),
+          ..*queries
+        };
+        sweep::probe(&moving, pose, down, &*shape, gap, reach, tolerance)
+          .filter(|alt| holds(alt) && alt.1.time_of_impact <= hit.time_of_impact + TIE_TOLERANCE)
+          .or(first)
       };
       probe(0.0, skin + FLOOR_PROBE)
         .filter(holds)
@@ -2541,6 +2578,161 @@ mod tests {
     }
     assert!(state(world, e).on_floor);
     (platform, e)
+  }
+
+  /// A character walking from fixed ground onto a kinematic platform whose
+  /// end is flush with it, both tops at y = 100, with the ground (or the
+  /// platform) created first: the floor each step, and where it stands.
+  fn walk_onto_flush_platform(platform_first: bool, ground: usize) -> (Vec<bool>, Vec<Vec2>) {
+    let (mut world, mut s) = world(60);
+    let spawn_ground = |world: &mut World| match ground {
+      0 => {
+        world.spawn((
+          Transform::from_xy(-150.0, 110.0),
+          Collider::rect(300.0, 20.0),
+        ));
+      }
+      1 => {
+        // An outline polyline, as a map's chunk collider is
+        world.spawn((
+          Transform::IDENTITY,
+          Collider::polyline([
+            Vec2::new(-300.0, 100.0),
+            Vec2::new(0.0, 100.0),
+            Vec2::new(0.0, 120.0),
+            Vec2::new(-300.0, 120.0),
+            Vec2::new(-300.0, 100.0),
+          ]),
+        ));
+      }
+      3 => {
+        // Separate segments in one collider, a map chunk's, on a map entity
+        // that is not at the origin
+        let map = world.spawn(Transform::from_xy(-300.0, 90.0)).id();
+        let points = [
+          Vec2::new(0.0, 10.0),
+          Vec2::new(300.0, 10.0),
+          Vec2::new(300.0, 30.0),
+          Vec2::new(0.0, 30.0),
+        ];
+        world.spawn((
+          Transform::IDENTITY,
+          Collider::segments(points, [[0, 1], [1, 2], [2, 3], [3, 0]]),
+          ChildOf(map),
+        ));
+      }
+      _ => {
+        // Tiles: a row of 16 px cells ending at x = 0
+        use crate::core::physics::{TileCell, TileColliders};
+        let mut cells = vec![TileCell::Empty; 40];
+        cells[..20].fill(TileCell::Solid);
+        world.spawn((
+          Transform::from_xy(-320.0, 100.0),
+          TileColliders::from_cells(40, 1, Vec2::splat(16.0), cells),
+        ));
+      }
+    };
+    let spawn_platform = |world: &mut World| {
+      world
+        .spawn((
+          Transform::from_xy(50.0, 110.0),
+          RigidBody::kinematic(),
+          Collider::rect(100.0, 20.0),
+        ))
+        .id()
+    };
+    // The one created second comes a few steps after the first, as a map's
+    // colliders do, so the first is the first in physics too
+    let mut platform = None;
+    let mut e = None;
+    let (mut on_platform, mut places) = (Vec::new(), Vec::new());
+    for i in 0..210 {
+      if i == 0 {
+        if platform_first {
+          platform = Some(spawn_platform(&mut world));
+        } else {
+          spawn_ground(&mut world);
+        }
+      }
+      if i == 2 {
+        // Other colliders, so the broad phase is more than two leaves
+        for n in 0..40 {
+          world.spawn((
+            Transform::from_xy(-1000.0 + 50.0 * n as f32, 900.0),
+            Collider::rect(20.0, 20.0),
+          ));
+        }
+      }
+      if i == 5 {
+        if platform_first {
+          spawn_ground(&mut world);
+        } else {
+          platform = Some(spawn_platform(&mut world));
+        }
+      }
+      // The platform runs between its flush end (x = 50) and 72 px out and
+      // back in 172 steps, as a moving platform over a gap does; the
+      // character waits for it to come back, then walks on
+      if let Some(platform) = platform {
+        let phase = (i % 172) as f32;
+        let out = if phase < 86.0 { phase } else { 172.0 - phase };
+        world.get_mut::<Transform>(platform).unwrap().translation.x = 50.0 + 72.0 * out / 86.0;
+      }
+      if i == 6 {
+        e = Some(character(&mut world, -30.0, 80.0));
+      }
+      let Some(e) = e else {
+        run(&mut world, &mut s, 1);
+        continue;
+      };
+      world.get_mut::<Velocity>(e).unwrap().dx = if i >= 150 { 60.0 } else { 0.0 };
+      step(&mut world, &mut s, e, 980.0);
+      on_platform.push(platform.is_some_and(|platform| state(&world, e).floor == Some(platform)));
+      places.push(at(&world, e).translation);
+    }
+    (on_platform, places)
+  }
+
+  // Two floors at the same distance below a character: the moving one is
+  // its floor (it carries the character), whichever collider was created
+  // first
+  #[test]
+  fn a_character_level_on_ground_and_a_flush_platform_rides_the_platform_whichever_came_first() {
+    for ground in 0..4 {
+      let (ground_first, ground_places) = walk_onto_flush_platform(false, ground);
+      let (platform_first, platform_places) = walk_onto_flush_platform(true, ground);
+      let first = |floors: &[bool]| floors.iter().position(|&on| on);
+      eprintln!(
+        "ground {ground}: {:?} {:?}",
+        first(&ground_first),
+        first(&platform_first)
+      );
+      assert!(
+        first(&ground_first).is_some(),
+        "ground {ground}: the platform becomes the floor"
+      );
+      assert_eq!(
+        first(&ground_first),
+        first(&platform_first),
+        "ground {ground}: the floor becomes the platform on the same step in both orders"
+      );
+      assert_eq!(ground_first, platform_first, "ground {ground}");
+      // From the step its edge is under the character's (x = -10 at step
+      // 170, the first six steps not counted), the platform is the floor
+      let from = first(&ground_first).unwrap();
+      assert!(
+        from <= 166,
+        "ground {ground}: the platform is the floor from step {from}"
+      );
+      assert!(
+        ground_first[from..].iter().all(|&on| on),
+        "ground {ground}: and stays it"
+      );
+      assert_eq!(
+        ground_places, platform_places,
+        "ground {ground}: the same places, step by step"
+      );
+    }
   }
 
   #[test]
