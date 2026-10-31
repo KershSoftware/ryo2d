@@ -18,7 +18,14 @@
 //! the units of its cells (each cell's inside and its four borders): the
 //! loops through a point whose edges changed are dropped (all of them where
 //! loops touch) and their edges and the new ones traced again; every other
-//! loop keeps its id and its part.
+//! loop keeps its id and its part. Where the edit touched one loop and it
+//! stays one, the retrace keeps its id and copies its old corners up to
+//! each point whose edges changed, looking up only those points (`splice`):
+//! the rest of the loop goes on as before, since a point's edges alone
+//! decide it. Walking every edge of a long loop through the map of points,
+//! about a cache miss a step on a big map once a frame has passed, cost
+//! several times the edit's own work (a one-cell serpentine over four
+//! chunks: about 0.5 ms).
 
 use super::{Cells, Few, GRID, Point, TileCell, sides};
 use crate::core::ecs::Entity;
@@ -339,29 +346,145 @@ impl Outlines {
     dropped.retain(|&id| id != UNTRACED);
     // The dropped loops' edges keep their ids, which count as untraced
     // until the trace takes them (cheaper than marking each one)
-    let mut starts = Vec::new();
+    let mut olds: Vec<Vec<Point>> = Vec::with_capacity(dropped.len());
     for &id in &dropped {
       if let Some(outline) = self.loops.get_mut(id as usize).and_then(Option::take) {
-        starts.extend(outline.corners.windows(2).map(|edge| (edge[0], edge[1])));
         retraced.dropped.push(outline.part);
+        olds.push(outline.corners);
       }
     }
     // Every edge to trace: the dropped loops' (the removed ones were among
     // them) and the new ones
-    let mut count = starts.len();
+    let mut count: usize = olds.iter().map(|old| old.len().saturating_sub(1)).sum();
+    let mut dirty: Vec<Point> = Vec::with_capacity(changes.len() * 2);
+    let mut new_edges = Vec::new();
     for (a, b, now) in changes {
+      dirty.extend([a, b]);
       if now {
         self.insert(a, b);
-        starts.push((a, b));
+        new_edges.push((a, b));
         count += 1;
       } else if self.remove(a, b) {
         count = count.saturating_sub(1);
       }
     }
+    // One loop touched that stays one: its id and unchanged stretches kept
+    if let ([id], [old]) = (&dropped[..], &olds[..])
+      && let Some(corners) = self.splice(*id, old, &dirty, count)
+    {
+      self.loops[*id as usize] = Some(Outline {
+        corners,
+        part: None,
+      });
+      retraced.traced.push(*id);
+      return retraced;
+    }
+    let mut starts: Vec<(Point, Point)> = Vec::with_capacity(count);
+    for old in &olds {
+      starts.extend(old.windows(2).map(|edge| (edge[0], edge[1])));
+    }
+    starts.extend(new_edges);
     retraced.traced = self.trace(&starts, &dropped, count);
     // Their ids are free once the trace no longer reads them
     self.free.extend(dropped);
     retraced
+  }
+
+  /// Retraces loop `id`, whose corners were `old`, after an edit whose
+  /// changed edges (now in `leaving`) end at the `dirty` points, when it is
+  /// still one loop of `count` edges: its new corners, from its first
+  /// corner where that is untouched. The stretches between dirty points are
+  /// copied from `old`, as a point's edges alone decide where a loop goes
+  /// on from it, and only the dirty points are looked up; an edge taken
+  /// there gets the loop's id. `None` where the loop does not come out as
+  /// one loop of `count` edges (the edit split it, or joined it to
+  /// another): the whole trace sorts that out, and reads the edges this
+  /// gave the loop's id as untraced, as it reads all the dropped loop's
+  fn splice(
+    &mut self,
+    id: u32,
+    old: &[Point],
+    dirty: &[Point],
+    count: usize,
+  ) -> Option<Vec<Point>> {
+    let n = old.len().checked_sub(1)?;
+    if n < 3 || dirty.is_empty() {
+      return None;
+    }
+    let (mut low, mut high) = (dirty[0], dirty[0]);
+    for &(x, y) in dirty {
+      low = (low.0.min(x), low.1.min(y));
+      high = (high.0.max(x), high.1.max(y));
+    }
+    let is_dirty = |p: Point| {
+      p.0 >= low.0 && p.1 >= low.1 && p.0 <= high.0 && p.1 <= high.1 && dirty.contains(&p)
+    };
+    // The old edges leaving a dirty point, by their place in `old`
+    let starts_dirty: Vec<usize> = (0..n).filter(|&j| is_dirty(old[j])).collect();
+    // A first edge the edit left alone, the old first one if it can be
+    let first = (0..n).find(|&j| !is_dirty(old[j]) && !is_dirty(old[j + 1]))?;
+    let mut taken = vec![false; n];
+    let mut corners = Vec::with_capacity(count + 1);
+    corners.push(old[first]);
+    let mut at_old = first;
+    loop {
+      // Take old edge `at_old`
+      if std::mem::replace(&mut taken[at_old], true) || corners.len() > count {
+        return None;
+      }
+      let mut at = old[at_old + 1];
+      corners.push(at);
+      let next = if at_old + 1 == n { 0 } else { at_old + 1 };
+      if !is_dirty(at) {
+        if next == first {
+          break;
+        }
+        at_old = next;
+        continue;
+      }
+      // A dirty point: pick as the trace would, among the edges leaving it
+      // that are not taken, until the pick is an old edge again
+      let mut heading = delta(old[at_old], old[at_old + 1]);
+      at_old = loop {
+        let outs = self.leaving.get_mut(&key(at))?.as_mut_slice();
+        let mut pick: Option<(usize, Option<usize>)> = None;
+        for (k, out) in outs.iter().enumerate() {
+          let open = if out.id == UNTRACED {
+            Some(None)
+          } else if out.id == id {
+            let step = out.step();
+            starts_dirty
+              .iter()
+              .copied()
+              .find(|&j| !taken[j] && old[j] == at && delta(old[j], old[j + 1]) == step)
+              .map(Some)
+          } else {
+            // Another loop's edge at a point the edit changed: it was
+            // dropped too, so this is not one loop
+            return None;
+          };
+          if let Some(place) = open
+            && pick.is_none_or(|(p, _)| sharper(heading, out.step(), outs[p].step()))
+          {
+            pick = Some((k, place));
+          }
+        }
+        match pick? {
+          (_, Some(j)) => break j,
+          (k, None) => {
+            outs[k].id = id;
+            heading = outs[k].step();
+            at = outs[k].end(at);
+            corners.push(at);
+            // A new edge ends at a dirty point
+            if corners.len() > count + 1 || !is_dirty(at) {
+              return None;
+            }
+          }
+        }
+      };
+    }
+    (corners.len() == count + 1).then_some(corners)
   }
 
   /// Every loop and its id.
@@ -692,6 +815,37 @@ mod tests {
         (0.0, 1.0)
       ])]
     );
+  }
+
+  #[test]
+  fn an_edit_that_keeps_one_loop_keeps_its_id_and_copies_the_rest() {
+    let (w, h) = (40, 8);
+    let mut tiles = TileColliders::new(w, h, Vec2::ONE);
+    for x in 0..w {
+      tiles.set(x, 6, S);
+      tiles.set(x, 7, S);
+    }
+    tiles.take_changes();
+    let mut state = Outlines::build(tiles.cells_view());
+    let ids = |state: &Outlines| state.loops().map(|(id, _)| id).collect::<Vec<_>>();
+    let before = ids(&state);
+    assert_eq!(before.len(), 1);
+    let tiles = &mut tiles;
+    // A bump on the floor, at its first corner too, a dent, and both gone:
+    // still one loop, the same one, as a whole trace has it
+    for edits in [
+      &[(20, 5, S)][..],
+      &[(0, 5, S)],
+      &[(30, 6, E)],
+      &[(20, 5, E), (0, 5, E), (30, 6, S)],
+    ] {
+      edit(&mut state, tiles, edits);
+      assert_eq!(ids(&state), before, "after {edits:?}");
+      assert_traced_by_the_rule(&state, tiles);
+    }
+    // A cut through it: two loops, traced whole
+    edit(&mut state, tiles, &[(10, 6, E), (10, 7, E)]);
+    assert_eq!(ids(&state).len(), 2);
   }
 
   #[test]
