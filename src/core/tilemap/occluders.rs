@@ -161,64 +161,90 @@ impl MapShadows {
 /// Chains `edges` (directed) into as few open chains as it can greedily:
 /// from each point with more edges leaving than arriving, then round what
 /// is left (closed loops, each a chain ending where it starts). Straight
-/// runs merge into one edge
+/// runs merge into one edge. A point's edges are taken in the order given.
+/// Each point is found through one map made at its full size, with no
+/// list a point: an edit's chunk of a dense map has about a thousand edges,
+/// and a list a point, maps grown from empty and a chain made for every
+/// start tried cost half its rebuild
 fn chains(edges: &[(Point, Point)]) -> Vec<Vec<Point>> {
-  let mut leaving: FastMap<Point, Vec<usize>> = FastMap::default();
-  let mut balance: FastMap<Point, i32> = FastMap::default();
-  for (i, &(a, b)) in edges.iter().enumerate() {
-    leaving.entry(a).or_default().push(i);
-    *balance.entry(a).or_insert(0) += 1;
-    *balance.entry(b).or_insert(0) -= 1;
+  // Edge indices by start point, each point's in the order given
+  let mut sorted: Vec<(Point, u32)> = edges
+    .iter()
+    .enumerate()
+    .map(|(i, &(a, _))| (a, i as u32))
+    .collect();
+  sorted.sort_unstable();
+  let order: Vec<u32> = sorted.iter().map(|&(_, i)| i).collect();
+  // Each start point (sorted) and its run of `order`, from its first edge
+  // not yet used
+  let mut points: Vec<Point> = Vec::new();
+  let mut runs: Vec<(u32, u32)> = Vec::new();
+  for (k, &(point, _)) in sorted.iter().enumerate() {
+    if points.last() == Some(&point) {
+      if let Some(run) = runs.last_mut() {
+        run.1 = k as u32 + 1;
+      }
+    } else {
+      points.push(point);
+      runs.push((k as u32, k as u32 + 1));
+    }
+  }
+  drop(sorted);
+  let mut run_of: FastMap<Point, u32> = FastMap::default();
+  run_of.reserve(points.len());
+  for (run, &point) in points.iter().enumerate() {
+    run_of.insert(point, run as u32);
+  }
+  // The edges arriving at each start point
+  let mut arriving = vec![0u32; points.len()];
+  for &(_, b) in edges {
+    if let Some(&run) = run_of.get(&b) {
+      arriving[run as usize] += 1;
+    }
   }
   let mut used = vec![false; edges.len()];
-  let mut out = Vec::new();
-  // Heads first (sorted, so the chains do not depend on hashing), then
-  // whatever edges are left, in order
-  let mut heads: Vec<Point> = balance
-    .iter()
-    .filter(|(_, n)| **n > 0)
-    .map(|(p, _)| *p)
+  // The first edge leaving `at` not used yet, taken
+  let take = |runs: &mut [(u32, u32)], used: &mut [bool], at: Point| -> Option<usize> {
+    let run = *run_of.get(&at)? as usize;
+    let (first, end) = &mut runs[run];
+    // A run's used edges are its first ones: skip them
+    while *first < *end && used[order[*first as usize] as usize] {
+      *first += 1;
+    }
+    let found = (*first..*end)
+      .map(|j| order[j as usize] as usize)
+      .find(|&i| !used[i])?;
+    used[found] = true;
+    Some(found)
+  };
+  // Heads first: the points more edges leave than arrive at, in order
+  let heads: Vec<Point> = (0..points.len())
+    .filter(|&run| runs[run].1 - runs[run].0 > arriving[run])
+    .map(|run| points[run])
     .collect();
-  heads.sort_unstable();
-  let starts = heads
-    .into_iter()
-    .chain(edges.iter().map(|&(a, _)| a))
-    .collect::<Vec<_>>();
+  // then whatever edges are left, in order
+  let starts = heads.into_iter().chain(edges.iter().map(|&(a, _)| a));
+  let mut out = Vec::new();
   for start in starts {
-    loop {
-      let mut chain = vec![start];
-      let mut at = start;
-      while let Some(next) = leaving
-        .get_mut(&at)
-        .and_then(|list| list.iter().position(|&i| !used[i]).map(|k| list.remove(k)))
-      {
-        used[next] = true;
+    // A start with edges left starts chains until it has none
+    while let Some(first) = take(&mut runs, &mut used, start) {
+      let mut chain = vec![start, edges[first].1];
+      let mut at = edges[first].1;
+      while let Some(next) = take(&mut runs, &mut used, at) {
         let to = edges[next].1;
         // A straight run is one edge
-        if chain.len() >= 2 {
-          let (p, q) = (chain[chain.len() - 2], chain[chain.len() - 1]);
-          let (u, v) = (
-            (i64::from(q.0 - p.0), i64::from(q.1 - p.1)),
-            (i64::from(to.0 - q.0), i64::from(to.1 - q.1)),
-          );
-          if u.0 * v.1 - u.1 * v.0 == 0 && u.0 * v.0 + u.1 * v.1 > 0 {
-            chain.pop();
-          }
+        let (p, q) = (chain[chain.len() - 2], chain[chain.len() - 1]);
+        let (u, v) = (
+          (i64::from(q.0 - p.0), i64::from(q.1 - p.1)),
+          (i64::from(to.0 - q.0), i64::from(to.1 - q.1)),
+        );
+        if u.0 * v.1 - u.1 * v.0 == 0 && u.0 * v.0 + u.1 * v.1 > 0 {
+          chain.pop();
         }
         chain.push(to);
         at = to;
       }
-      if chain.len() < 2 {
-        break;
-      }
       out.push(chain);
-      // A head with more edges leaving starts another chain
-      if !leaving
-        .get(&start)
-        .is_some_and(|l| l.iter().any(|&i| !used[i]))
-      {
-        break;
-      }
     }
   }
   out
