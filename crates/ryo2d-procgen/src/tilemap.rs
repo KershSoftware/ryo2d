@@ -70,8 +70,10 @@ impl GenerationGrid {
   /// colour between two higher ones is covered; order the colours in Tiled
   /// to choose which covers which.
   ///
-  /// A cell the set has no tile for (see [`WangSet::best_tile`]) is left
-  /// empty.
+  /// A cell the set has no exact tile for (an incomplete set) takes the
+  /// closest tile that fits, as Tiled's terrain brush would pick it
+  /// ([`WangSet::best_tile`]); it is left empty only where no tile fits or
+  /// the empty cell fits best.
   pub fn to_terrain_map<'a>(
     &self,
     tile_size: UVec2,
@@ -305,6 +307,31 @@ mod tests {
 
   fn floor_of(t: TileType) -> Option<&'static str> {
     (t == TileType::Floor).then_some("floor")
+  }
+
+  #[test]
+  fn an_incomplete_set_draws_the_closest_tile() {
+    // Only the full tile (15) and the top-right corner (1): the cell left of
+    // the floor wants its top-right and bottom-right corners (3), which the
+    // set lacks, and the top-right corner is the one closest
+    let corners = |mask: u8| {
+      let mut wangid = [0u8; 8];
+      for (n, slot) in [1, 3, 5, 7].into_iter().enumerate() {
+        wangid[slot] = (mask >> n) & 1;
+      }
+      wangid
+    };
+    let set = one_colour_set(
+      WangKind::Corner,
+      TileTransformations::default(),
+      &[(15, corners(15)), (1, corners(1))],
+    );
+    let mut grid = GenerationGrid::new(3, 1);
+    grid.set(1, 0, TileType::Floor);
+    let map = grid.to_terrain_map(UVec2::splat(16), tileset(), &set, floor_of);
+    let id = |x, y| tile_at(&map, x, y).map(|t| t.id);
+    assert_eq!(id(1, 0), Some(15));
+    assert_eq!(id(0, 0), Some(1), "the closest fit, not an empty cell");
   }
 
   #[test]

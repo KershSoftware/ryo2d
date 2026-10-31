@@ -2,7 +2,7 @@
 name: ryo-procgen
 description: The optional ryo2d-procgen crate - dungeons (BSP), caves (cellular), noise terrain, random walks, Poisson sampling, WFC and MST corridors.
 metadata:
-  version: 2.2.0
+  version: 2.2.1
 ---
 
 # Ryo2D Procedural Generation Specialist
@@ -400,7 +400,7 @@ let map = result.grid().to_terrain_map(
 );
 ```
 
-A Wang position sits between cells, so it must pick one of their colours: a corner takes the highest-precedence colour of the up to four cells that meet there, an edge the higher of its two. Precedence is the set's colour order in Tiled (a higher colour covers a lower one, and every colour covers empty); outside the grid is empty. Adjacent cells then agree on what they share, so the tiling has no seams wherever the set has tiles. The visible effect: the higher colour grows half a cell into the lower one, and a one-cell strip of a lower colour between two higher ones is covered. Order the colours in Tiled to choose. A cell the set has no tile for is left empty. A corner set is asked only for corners, an edge set only for edges.
+A Wang position sits between cells, so it must pick one of their colours: a corner takes the highest-precedence colour of the up to four cells that meet there, an edge the higher of its two. Precedence is the set's colour order in Tiled (a higher colour covers a lower one, and every colour covers empty); outside the grid is empty. Adjacent cells then agree on what they share, so the tiling has no seams wherever the set has tiles. The visible effect: the higher colour grows half a cell into the lower one, and a one-cell strip of a lower colour between two higher ones is covered. Order the colours in Tiled to choose. A cell the set has no exact tile for (an incomplete set) takes the closest tile that fits, as Tiled's terrain brush picks it (`WangSet::best_tile`); only a cell no tile fits, or that the empty cell fits best, is left empty. A corner set is asked only for corners, an edge set only for edges.
 
 ## Spawning Sprites
 
