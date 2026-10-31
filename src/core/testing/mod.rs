@@ -100,6 +100,15 @@ pub fn asset_world() -> World {
   world
 }
 
+/// [`asset_world`] over `files`, a `MemorySource` the caller keeps: for a
+/// bench that loads files with no engine (`benches/tilemap.rs`)
+#[doc(hidden)]
+pub fn asset_world_over(files: MemorySource) -> World {
+  let mut world = World::new();
+  insert_registry(&mut world, AssetServer::new(files));
+  world
+}
+
 /// [`asset_world`] with a clock and the audio engine on kira's mock backend
 /// (silent, advanced by [`audio_step`]), its audio log on: a world to test
 /// what plays, with no engine or audio device. Its picks and draws start

@@ -209,6 +209,25 @@ fn color_names(set: &WangSet) -> Vec<&str> {
     .collect()
 }
 
+/// Panics unless `points` are three of a `side` px tile's corners, all but
+/// `left_out`
+fn assert_slope(points: &[Vec2], side: f32, left_out: Vec2, id: u32) {
+  assert_eq!(points.len(), 3, "slope {id}: {points:?}");
+  let corners = [
+    Vec2::ZERO,
+    Vec2::new(side, 0.0),
+    Vec2::new(side, side),
+    Vec2::new(0.0, side),
+  ];
+  for corner in corners {
+    assert_eq!(
+      points.contains(&corner),
+      corner != left_out,
+      "slope {id}: corner {corner} in {points:?}"
+    );
+  }
+}
+
 /// Spawns a root and steps until its map lands
 fn land(engine: &mut HeadlessEngine, root: MapRoot, what: &str) {
   let entity = engine.world_mut().spawn((Transform::default(), root)).id();
@@ -264,6 +283,44 @@ fn the_platformer_map_has_its_layers_objects_and_a_door_wired_to_its_switch() {
     [
       "backdrop", "scenery", "water", "ground", "doors", "hazards", "objects"
     ]
+  );
+
+  // Saved by Tiled with its ground layer in base64 and zlib, the other tile
+  // layers in CSV, so the demo loads both encodings
+  let file = std::fs::read_to_string(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/assets/maps/platformer.tmx"
+  ))
+  .expect("the platformer map's file");
+  let encodings: Vec<(&str, &str)> = file
+    .split("<layer ")
+    .skip(1)
+    .map(|layer| {
+      let name = layer
+        .split("name=\"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .unwrap_or("");
+      let data = layer
+        .split("<data ")
+        .nth(1)
+        .and_then(|rest| rest.split('>').next())
+        .unwrap_or("");
+      (name, data)
+    })
+    .collect();
+  assert_eq!(file.matches("compression=\"zlib\"").count(), 1);
+  for (name, data) in &encodings {
+    let wanted = if *name == "ground" {
+      "encoding=\"base64\" compression=\"zlib\""
+    } else {
+      "encoding=\"csv\""
+    };
+    assert_eq!(data.trim(), wanted, "layer {name}");
+  }
+  assert_eq!(
+    encodings.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
+    ["scenery", "water", "ground", "doors", "hazards"]
   );
 
   let LayerKind::Image(backdrop) = &layer(&map, "backdrop").kind else {
@@ -372,16 +429,17 @@ fn the_tilesets_carry_complete_wang_sets_animations_slopes_and_a_one_way_bridge(
   assert_eq!(set.kind(), WangKind::Corner);
   assert_eq!(color_names(set), ["ground"]);
   assert_eq!(missing_corners(set, &[0, 1]), Vec::<[u8; 4]>::new());
-  // Two 45° slopes, each a three-corner polygon
-  for id in [16, 17] {
+  // Two 45° slopes, each a three-corner polygon leaving out a top corner:
+  // 16 rises to the right (no top left), 17 to the left (no top right)
+  for (id, left_out) in [(16, Vec2::ZERO), (17, Vec2::new(18.0, 0.0))] {
     let shapes = &ground.tile(id).expect("a slope tile").shapes;
     assert_eq!(shapes.len(), 1);
-    assert_eq!(shapes[0].points.len(), 3, "slope {id}");
+    assert_slope(&shapes[0].points, 18.0, left_out, id);
   }
 
   let platformer = tileset(&mut engine, "tilesets/platformer.tsx");
   assert_eq!(platformer.tile_count, 180);
-  for id in [90, 91, 92, 146] {
+  for id in [90, 91, 92, 146, 147] {
     let shapes = &platformer.tile(id).expect("a bridge tile").shapes;
     assert!(shapes.iter().all(|shape| shape.one_way), "tile {id}");
     assert!(!shapes.is_empty(), "tile {id}");
@@ -409,9 +467,9 @@ fn the_tilesets_carry_complete_wang_sets_animations_slopes_and_a_one_way_bridge(
   // covers wall, so corridors one cell wide keep their floor
   assert!(set.color_index("floor") > set.color_index("wall"));
   assert_eq!(missing_corners(set, &[1, 2]), Vec::<[u8; 4]>::new());
-  for id in [31, 32] {
+  for (id, left_out) in [(31, Vec2::ZERO), (32, Vec2::new(16.0, 0.0))] {
     let shapes = &terrain.tile(id).expect("a slope tile").shapes;
-    assert_eq!(shapes[0].points.len(), 3, "slope {id}");
+    assert_slope(&shapes[0].points, 16.0, left_out, id);
   }
 
   let dungeon = tileset(&mut engine, "tilesets/dungeon.tsj");
@@ -461,9 +519,17 @@ fn painting_and_erasing_the_ground_gives_exactly_the_corners_asked_for() {
     .world_mut()
     .spawn((Transform::default(), MapRoot::new(handle)))
     .id();
-  while engine.world().get::<MapIds>(root).is_none() {
+  for _ in 0..600 {
+    if engine.world().get::<MapIds>(root).is_some() {
+      break;
+    }
     engine.step().unwrap();
   }
+  assert!(
+    engine.world().get::<MapIds>(root).is_some(),
+    "the platformer never landed: {:#?}",
+    warnings()
+  );
   // Paint and erase cells of the open sky, far from the level's ground, in
   // a fixed order. A paint sets a cell's four corners and an erase clears
   // them; with every corner combination in the set, no neighbour needs
@@ -523,6 +589,44 @@ fn the_top_down_map_sorts_its_trees_and_floats_its_clouds() {
     layer_names(&map),
     ["backdrop", "paths", "trees", "clouds", "objects"]
   );
+  // Saved by Tiled with its ground layer in base64 and zlib, the other tile
+  // layers in CSV, so the demo loads both encodings
+  let file = std::fs::read_to_string(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/assets/maps/platformer.tmx"
+  ))
+  .expect("the platformer map's file");
+  let encodings: Vec<(&str, &str)> = file
+    .split("<layer ")
+    .skip(1)
+    .map(|layer| {
+      let name = layer
+        .split("name=\"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .unwrap_or("");
+      let data = layer
+        .split("<data ")
+        .nth(1)
+        .and_then(|rest| rest.split('>').next())
+        .unwrap_or("");
+      (name, data)
+    })
+    .collect();
+  assert_eq!(file.matches("compression=\"zlib\"").count(), 1);
+  for (name, data) in &encodings {
+    let wanted = if *name == "ground" {
+      "encoding=\"base64\" compression=\"zlib\""
+    } else {
+      "encoding=\"csv\""
+    };
+    assert_eq!(data.trim(), wanted, "layer {name}");
+  }
+  assert_eq!(
+    encodings.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
+    ["scenery", "water", "ground", "doors", "hazards"]
+  );
+
   let LayerKind::Image(backdrop) = &layer(&map, "backdrop").kind else {
     panic!("the backdrop is not an image layer");
   };

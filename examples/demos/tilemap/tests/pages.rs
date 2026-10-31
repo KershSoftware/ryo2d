@@ -438,6 +438,96 @@ fn the_editing_page_fills_a_drag_begun_off_the_map_and_reads_only_its_cells() {
   assert!(warnings().is_empty(), "{:#?}", warnings());
 }
 
+/// Every cell of the editing page's ground layer (48 x 16)
+fn ground_cells(engine: &mut HeadlessEngine, map: Entity) -> Vec<Option<Tile>> {
+  let view = MapsView::new(engine.world_mut());
+  (0..16)
+    .flat_map(|y| (0..48).map(move |x| IVec2::new(x, y)))
+    .map(|cell| view.tile(map, "ground", cell))
+    .collect()
+}
+
+/// Moves the pointer over `cell` of the editing page's map and steps twice
+fn point_at(engine: &mut HeadlessEngine, map: Entity, cell: IVec2) {
+  let at = cell_on_screen(engine, map, cell);
+  engine.mouse_move(at.x, at.y);
+  engine.step_frames(2).unwrap();
+}
+
+#[test]
+fn shift_held_paints_no_single_cells_and_a_drag_off_the_sky_fills_only_the_sky() {
+  let Some(mut engine) = engine_on(EDITING) else {
+    return;
+  };
+  let map = spawned_map(&mut engine);
+  engine.step_frames(3).unwrap();
+  let before = ground_cells(&mut engine, map);
+
+  // Shift, a press in the sky, a detour left, and a drag ending in the
+  // ground below the sky: the fill keeps to the sky, rows 1-5 of columns
+  // 12-16, and nothing is painted on the way
+  engine.press_key(KeyCode::ShiftLeft);
+  engine.step().unwrap();
+  point_at(&mut engine, map, IVec2::new(12, 1));
+  engine.press_mouse(MouseButton::Left);
+  engine.step_frames(2).unwrap();
+  point_at(&mut engine, map, IVec2::new(7, 4));
+  point_at(&mut engine, map, IVec2::new(16, 9));
+  engine.release_mouse(MouseButton::Left);
+  engine.step_frames(2).unwrap();
+  engine.release_key(KeyCode::ShiftLeft);
+  engine.step().unwrap();
+  let after = ground_cells(&mut engine, map);
+  for y in 0..16 {
+    for x in 0..48 {
+      let i = (y * 48 + x) as usize;
+      // The rectangle, and the ring its corners reach (a corner set: a
+      // painted cell turns its eight neighbours into its edges)
+      let inside = (12..=16).contains(&x) && (1..=5).contains(&y);
+      let ring = (11..=17).contains(&x) && (0..=6).contains(&y);
+      if inside {
+        assert!(after[i].is_some(), "({x}, {y}) is filled");
+      } else if !ring {
+        assert_eq!(after[i], before[i], "({x}, {y}) is not painted");
+      }
+    }
+  }
+  assert!(
+    engine
+      .ui_snapshot()
+      .contains("painted 0, erased 0, rectangles 1"),
+    "one rectangle and no single cells"
+  );
+
+  // A button held before Shift paints its cell, and with Shift held it
+  // paints no more as the pointer moves
+  let before = ground_cells(&mut engine, map);
+  point_at(&mut engine, map, IVec2::new(30, 2));
+  engine.press_mouse(MouseButton::Left);
+  engine.step_frames(2).unwrap();
+  engine.press_key(KeyCode::ShiftLeft);
+  engine.step().unwrap();
+  point_at(&mut engine, map, IVec2::new(35, 2));
+  engine.release_mouse(MouseButton::Left);
+  engine.step_frames(2).unwrap();
+  engine.release_key(KeyCode::ShiftLeft);
+  engine.step().unwrap();
+  let after = ground_cells(&mut engine, map);
+  for x in 33..=38 {
+    for y in 0..=6 {
+      let i = (y * 48 + x) as usize;
+      assert_eq!(after[i], before[i], "({x}, {y}) is not painted");
+    }
+  }
+  assert!(
+    engine
+      .ui_snapshot()
+      .contains("painted 1, erased 0, rectangles 1"),
+    "the one cell painted before Shift"
+  );
+  assert!(warnings().is_empty(), "{:#?}", warnings());
+}
+
 /// The world levels spawned now, by their index in the world
 fn rooms(engine: &mut HeadlessEngine) -> Vec<usize> {
   let world = engine.world_mut();

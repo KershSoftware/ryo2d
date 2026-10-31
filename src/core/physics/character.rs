@@ -2702,11 +2702,6 @@ mod tests {
       let (ground_first, ground_places) = walk_onto_flush_platform(false, ground);
       let (platform_first, platform_places) = walk_onto_flush_platform(true, ground);
       let first = |floors: &[bool]| floors.iter().position(|&on| on);
-      eprintln!(
-        "ground {ground}: {:?} {:?}",
-        first(&ground_first),
-        first(&platform_first)
-      );
       assert!(
         first(&ground_first).is_some(),
         "ground {ground}: the platform becomes the floor"
