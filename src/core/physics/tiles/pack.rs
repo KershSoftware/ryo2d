@@ -47,9 +47,14 @@ pub(crate) fn ring(corners: &[Point]) -> Vec<Point> {
   ring
 }
 
-/// The pack of a loop, by its first corner as packed (`ring`).
-pub(crate) fn loop_key(ring: &[Point]) -> PackKey {
-  let (x, y) = chunk(ring.first().copied().unwrap_or_default());
+/// The pack of a loop through `corners` (its points edge by edge, as
+/// traced), by its first corner. Not by the first corner of its `ring`: an
+/// edit that straightens the first corner (an edge it changed meeting it)
+/// would move the loop to the chunk of the next corner that turns, and with
+/// it every body on the loop to another collider. A retrace starts the loop
+/// where it started while its first edge stands
+pub(crate) fn loop_key(corners: &[Point]) -> PackKey {
+  let (x, y) = chunk(corners.first().copied().unwrap_or_default());
   PackKey::Loops(x, y)
 }
 

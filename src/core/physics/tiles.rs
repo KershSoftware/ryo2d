@@ -757,8 +757,8 @@ impl TileColliders {
     let mut order = Vec::new();
     let mut dirty = Vec::new();
     for (id, outline) in kept.outlines.loops() {
+      let key = loop_key(&outline.corners);
       let ring = ring(&outline.corners);
-      let key = loop_key(&ring);
       kept.loop_packs.place(id, key, &mut dirty);
       dirty.clear();
       gathered
@@ -883,7 +883,7 @@ impl TileColliders {
     }
     for id in retraced.traced {
       if let Some(outline) = kept.outlines.get(id) {
-        let key = loop_key(&ring(&outline.corners));
+        let key = loop_key(&outline.corners);
         kept.loop_packs.place(id, key, &mut dirty);
       }
     }
@@ -2672,6 +2672,68 @@ mod with_physics {
         m.involves(e) && (m.involves(floor) || on_map(&world, m.a) || on_map(&world, m.b))
       })
       .collect();
+    assert!(ended.is_empty(), "{ended:?}");
+  }
+
+  #[test]
+  fn an_edit_at_a_loop_s_first_corner_keeps_the_loop_in_its_chunk_s_collider() {
+    use crate::core::ecs::Messages;
+    use crate::core::physics::{CharacterState, CollisionStarted, CollisionStopped};
+    let (mut world, mut s) = world(60);
+    // A floor along row 31, the last of chunk row 0. Its loop starts at its
+    // bottom-left corner, (0, 32), on chunk row 1's first line. A cell set
+    // under its left end straightens that corner (the left side then runs
+    // from (0, 33) up to (0, 31)); the loop still starts there, so it stays
+    // in that chunk's collider, as does the character standing far along it
+    let mut cells = vec![TileCell::Empty; 40 * 34];
+    for x in 0..40 {
+      cells[31 * 40 + x] = TileCell::Solid;
+    }
+    let map = world
+      .spawn((
+        Transform::from_xy(0.0, 100.0 - 31.0 * 16.0),
+        TileColliders::from_cells(40, 34, Vec2::splat(16.0), cells),
+      ))
+      .id();
+    let e = standing_character(&mut world, 480.0);
+    for _ in 0..30 {
+      fall_step(&mut world, &mut s, e);
+    }
+    let state = world.get::<CharacterState>(e).unwrap();
+    assert!(state.on_floor);
+    let floor = state.floor.expect("a floor");
+    let mut started = world
+      .resource::<Messages<CollisionStarted>>()
+      .get_cursor_current();
+    let mut stopped = world
+      .resource::<Messages<CollisionStopped>>()
+      .get_cursor_current();
+    for step in 0..10 {
+      let cell = if step % 2 == 0 {
+        TileCell::Solid
+      } else {
+        TileCell::Empty
+      };
+      assert!(
+        world
+          .get_mut::<TileColliders>(map)
+          .unwrap()
+          .set(0, 32, cell)
+      );
+      fall_step(&mut world, &mut s, e);
+      let state = world.get::<CharacterState>(e).unwrap();
+      assert!(
+        state.on_floor && state.floor == Some(floor),
+        "step {step}: on_floor {}, floor {:?} (was {floor})",
+        state.on_floor,
+        state.floor
+      );
+    }
+    let messages = world.resource::<Messages<CollisionStarted>>();
+    let restarted: Vec<_> = started.read(messages).filter(|m| m.involves(e)).collect();
+    assert!(restarted.is_empty(), "{restarted:?}");
+    let messages = world.resource::<Messages<CollisionStopped>>();
+    let ended: Vec<_> = stopped.read(messages).filter(|m| m.involves(e)).collect();
     assert!(ended.is_empty(), "{ended:?}");
   }
 
