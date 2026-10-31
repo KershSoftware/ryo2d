@@ -1120,9 +1120,10 @@ Tiled and LDtk levels as registry assets, spawned by a `MapRoot` entity: tile la
 | `is_ready(map) -> bool` | landed |
 | `layer_entity(map, layer) -> Option<Entity>` | |
 | `tile(map, layer, cell: IVec2) -> Option<Tile>` | a class tile's cell reads `None` |
-| `set_tile(map, layer, cell, Option<Tile>) -> bool`, `fill(map, layer, min, max, Option<Tile>) -> usize` | edits; a registered class's tile spawns a `MapTile` instead; each redraws, re-collides and re-shadows only the chunks it touches |
+| `set_tile(map, layer, cell, Option<Tile>) -> bool`, `fill(map, layer, min, max, Option<Tile>) -> usize` | edits; a registered class's tile spawns a `MapTile` instead; each redraws, re-collides and re-shadows only the chunks it touches (a layer with an IntGrid collides by its values, not its tiles) |
 | `set_terrain(map, layer, cell, wang_set: &str, color: Option<&str>) -> bool` | Wang painting as Tiled's terrain brush with corrections on; `None` erases |
 | `intgrid(map, layer, cell) -> Option<i32>` | |
+| `set_intgrid(map, layer, cell, value: i32) -> bool`, `fill_intgrid(map, layer, min, max, value: i32) -> usize` | IntGrid edits (0 empties; false / 0 for a layer with no IntGrid); only the chunks changed collide and cast shadows again. LDtk's auto-layer rules do not run: the tiles stay as they were |
 | `tile_data(map, Tile) -> Option<TileData>` | |
 | `world_to_cell(map, layer, Vec2) -> Option<IVec2>`, `cell_to_world(map, layer, IVec2) -> Option<Vec2>` | through the map's and layer's `Transform`s as they are now; a cell's centre |
 | `spawn_levels_in(world: impl Into<WorldRef>, area: Rect) -> Vec<Entity>` | spawns each level at world depth 0 overlapping `area` not already spawned (a `MapRoot` at its position with a `WorldLevelOf`; a disabled root counts as spawned); returns those it spawned |

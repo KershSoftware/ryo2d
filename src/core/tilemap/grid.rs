@@ -255,6 +255,30 @@ impl TileGrid {
     version.is_some()
   }
 
+  /// Moves on the version of each of `chunks` inside the grid, as one
+  /// change, and marks them dirty, the cells as they are: for what is kept
+  /// beside the grid and read through its versions (an IntGrid's values).
+  /// Whether any chunk moved
+  pub(crate) fn touch(&mut self, chunks: &[UVec2]) -> bool {
+    let mut version = None;
+    for chunk in chunks {
+      if chunk.x >= self.chunks.x || chunk.y >= self.chunks.y {
+        continue;
+      }
+      let version = *version.get_or_insert_with(next_version);
+      let i = chunk.y as usize * self.chunks.x as usize + chunk.x as usize;
+      self.versions[i] = version;
+      if !self.dirty[i] {
+        self.dirty[i] = true;
+        self.dirty_count += 1;
+      }
+    }
+    if let Some(version) = version {
+      self.counter = version;
+    }
+    version.is_some()
+  }
+
   /// Marks every chunk dirty, and moves every chunk's version on
   pub fn mark_all_dirty(&mut self) {
     let version = next_version();
@@ -500,5 +524,26 @@ mod tests {
     assert!(!g.assign(&other, |_| true));
     assert_eq!(versions(&g), named);
     assert_eq!(g.get(IVec2::new(35, 2)), Some(Tile::new(0, 2)));
+  }
+
+  #[test]
+  fn touching_chunks_moves_only_them_as_one_change() {
+    let mut g = TileGrid::new(UVec2::new(40, 40));
+    g.fill(IVec2::ZERO, IVec2::splat(39), Some(Tile::new(0, 1)));
+    let mut out = Vec::new();
+    g.drain_dirty(&mut out);
+    let cells = format!("{g:?}");
+    let (kept, before) = (g.chunk_version(UVec2::ZERO), g.version());
+    assert!(g.touch(&[UVec2::new(1, 0), UVec2::new(1, 1), UVec2::new(5, 5)]));
+    let moved = g.chunk_version(UVec2::new(1, 0));
+    assert!(moved > before);
+    assert_eq!(g.chunk_version(UVec2::new(1, 1)), moved, "one change");
+    assert_eq!((g.chunk_version(UVec2::ZERO), g.version()), (kept, moved));
+    assert_eq!(format!("{g:?}"), cells, "the cells as they were");
+    g.drain_dirty(&mut out);
+    assert_eq!(out, [UVec2::new(1, 0), UVec2::new(1, 1)]);
+    // Nothing inside: nothing moves
+    assert!(!g.touch(&[UVec2::new(2, 0)]));
+    assert_eq!(g.version(), moved);
   }
 }

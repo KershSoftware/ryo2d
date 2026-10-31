@@ -247,6 +247,7 @@ for (entity, hits) in bricks {
 | `fill(map, layer, min: IVec2, max: IVec2, Option<Tile>) -> usize` | every cell from `min` to `max`, both included, clipped to the layer; how many changed |
 | `set_terrain(map, layer, cell, wang_set: &str, color: Option<&str>) -> bool` | paint a Wang colour (section 7) |
 | `intgrid(map, layer, cell) -> Option<i32>` | an LDtk IntGrid value; `None` where it is 0 |
+| `set_intgrid(map, layer, cell, value: i32) -> bool`, `fill_intgrid(map, layer, min, max, value) -> usize` | change IntGrid values (0 empties), and so what the layer collides with (section 8) |
 | `tile_data(map, tile) -> Option<TileData>` | what the tile's tileset says about it |
 | `world_to_cell(map, layer, world: Vec2) -> Option<IVec2>`, `cell_to_world(map, layer, cell) -> Option<Vec2>` | through the map's and the layer's transforms; a cell's centre |
 | `layer_entity(map, layer) -> Option<Entity>` | the layer's entity |
@@ -276,7 +277,7 @@ maps.fill(self.map, "walls", IVec2::new(2, 2), IVec2::new(9, 3), Some(brick));
 - **An edit costs what it touches.** It redraws only its 32 x 32-cell chunk, and re-collides and re-shadows only what changed, in time for that step: an edit made in `update` collides in that step's physics, and casts its shadow that frame.
 - **Conversions use the transforms as they are now**, so a map moved this frame converts at once; `world_to_cell` gives cells outside the layer too, and `None` only for a map scaled to nothing.
 - **Edits change the spawned map, not its asset:** two maps from one file keep their own tiles, and a reload of the file brings dug tiles back (section 13).
-- `TileLayerData { grid, intgrid, cell_size }` on a layer entity is the map's own copy of the layer: editing its `grid` (a `TileGrid`: `get`, `set`, `fill`, `clear`) draws, collides and casts as `ctx.maps()` does, though without class tiles. IntGrid values have no edit call yet: change `TileLayerData::intgrid`, then call `grid.mark_all_dirty()`, and they collide again.
+- `TileLayerData { grid, intgrid, cell_size }` on a layer entity is the map's own copy of the layer: editing its `grid` (a `TileGrid`: `get`, `set`, `fill`, `clear`) draws, collides and casts as `ctx.maps()` does, though without class tiles. Change IntGrid values with `set_intgrid` and `fill_intgrid`, which re-collide only the chunks they change; values written into `TileLayerData::intgrid` by hand are not seen until those chunks change.
 
 ## 7. Wang terrain
 
@@ -331,6 +332,16 @@ let root = MapRoot::ldtk(project, "Cave")
   .with_intgrid_collision("ice", TileCell::Solid) // by name
   .with_intgrid_collision(4, TileCell::OneWay); // by value, over its name
 ctx.world.spawn(root);
+```
+
+- **Changing an IntGrid at run time:** `ctx.maps().set_intgrid(map, layer, cell, value)` (0 empties the cell) and `fill_intgrid(map, layer, min, max, value)` change the values, and only the chunks they change collide and cast shadows again, in that step. The art does not follow: LDtk runs its auto-layer rules in the editor, never in the game, so change the layer's tiles with `set_tile` too. `set_tile` on an IntGrid layer changes only its art.
+
+<!-- given: map: Entity, cell: IVec2, rubble: Tile -->
+```rust
+// A cracked wall gives way: its cell stops colliding, and shows rubble
+let mut maps = ctx.maps();
+maps.set_intgrid(map, "Collision", cell, 0);
+maps.set_tile(map, "Collision", cell, Some(rubble));
 ```
 
 - **Seamless and hollow:** full cells merge into outlines, so a long floor is one edge and nothing snags where two tiles meet. An outline is hollow: a body that ends up inside a wall is not pushed out.

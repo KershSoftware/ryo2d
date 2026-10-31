@@ -1,12 +1,12 @@
 //! Finding a spawned map's layers, and reading and editing their cells.
 
-use glam::{Affine2, IVec2, Vec2};
+use glam::{Affine2, IVec2, UVec2, Vec2};
 
 use super::spawn::{
   ClassTile, LayerTiles, MapLayerRef, MapLayers, MapTile, TileLayerData, registered_class,
   spawn_class_tile,
 };
-use super::{Properties, Tile, TileGrid};
+use super::{CHUNK_SIZE, Properties, Tile, TileGrid};
 use crate::core::ecs::{ChildOf, DetectChangesMut, Entity, Transform, World};
 
 /// How many ancestors a layer's world transform walks up before giving up:
@@ -233,6 +233,60 @@ pub(crate) fn fill(
     }
   }
   changed + edit_grid(world, layer, |grid| grid.fill(lo, hi, tile), |n| *n > 0).unwrap_or(0)
+}
+
+/// Puts `value` (0 for none) in every cell of a tile layer's IntGrid from
+/// `min` to `max`, both included, clipped to the IntGrid and the grid,
+/// moving on the version of only the chunks whose values changed, as one
+/// change, so only they collide, cast shadows and draw again; returns how
+/// many cells changed (0 for a layer with no IntGrid)
+pub(crate) fn fill_intgrid(
+  world: &mut World,
+  map: Entity,
+  layer: LayerRef<'_>,
+  min: IVec2,
+  max: IVec2,
+  value: i32,
+) -> usize {
+  let Some(entity) = layer_entity(world, map, layer) else {
+    return 0;
+  };
+  let Some(mut data) = world.get_mut::<TileLayerData>(entity) else {
+    return 0;
+  };
+  let TileLayerData { grid, intgrid, .. } = data.bypass_change_detection();
+  let Some(intgrid) = intgrid.as_mut() else {
+    return 0;
+  };
+  let size = intgrid.size.min(grid.size()).as_ivec2();
+  let (lo, hi) = (min.max(IVec2::ZERO), max.min(size - IVec2::ONE));
+  if lo.x > hi.x || lo.y > hi.y {
+    return 0;
+  }
+  let width = intgrid.size.x as usize;
+  let mut changed = 0;
+  let mut chunks: Vec<UVec2> = Vec::new();
+  for y in lo.y..=hi.y {
+    for x in lo.x..=hi.x {
+      let Some(slot) = intgrid.values.get_mut(y as usize * width + x as usize) else {
+        continue;
+      };
+      if *slot == value {
+        continue;
+      }
+      *slot = value;
+      changed += 1;
+      let chunk = IVec2::new(x, y).as_uvec2() / CHUNK_SIZE;
+      if chunks.last() != Some(&chunk) && !chunks.contains(&chunk) {
+        chunks.push(chunk);
+      }
+    }
+  }
+  if changed > 0 {
+    grid.touch(&chunks);
+    data.set_changed();
+  }
+  changed
 }
 
 /// The tile at `cell` of a tile layer

@@ -57,7 +57,10 @@ impl<'w> MapsView<'w> {
   /// nothing changed. A tile whose class the map's root registers
   /// ([`MapRoot::with_entity_tiles`]) spawns as a [`MapTile`](super::MapTile)
   /// there instead of going in the grid, as the map's own do; a class tile
-  /// already on the cell is despawned first
+  /// already on the cell is despawned first. Only the cell's chunk redraws,
+  /// collides and casts shadows again. A layer with an IntGrid (an LDtk
+  /// IntGrid layer) collides and occludes by its values, not its tiles:
+  /// change those with [`set_intgrid`](Self::set_intgrid)
   pub fn set_tile<'a>(
     &mut self,
     map: Entity,
@@ -70,7 +73,8 @@ impl<'w> MapsView<'w> {
 
   /// Puts `tile` in every cell from `min` to `max`, both included, clipped
   /// to the layer, as [`set_tile`](Self::set_tile) puts one; returns how
-  /// many cells changed
+  /// many cells changed. Only the chunks it changed redraw, collide and
+  /// cast shadows again
   pub fn fill<'a>(
     &mut self,
     map: Entity,
@@ -114,6 +118,50 @@ impl<'w> MapsView<'w> {
     color: Option<&str>,
   ) -> bool {
     wang::set_terrain(self.world, map, layer.into(), cell, wang_set, color)
+  }
+
+  /// Puts `value` at `cell` of a tile layer's IntGrid (an LDtk IntGrid
+  /// layer's values; 0 empties the cell); false if nothing changed, the
+  /// layer has no IntGrid, or the cell is outside it. The layer collides
+  /// and casts shadows by its values ([`MapRoot::with_intgrid_collision`]),
+  /// so only the cell's chunk collides and casts shadows again, as a tile
+  /// edit's does. The art does not follow: LDtk runs its auto-layer rules
+  /// in the editor, never in the game, so the layer's tiles stay as they
+  /// were; change them with [`set_tile`](Self::set_tile).
+  ///
+  /// ```
+  /// use ryo2d::prelude::*;
+  ///
+  /// /// A cracked wall gives way: its cell no longer collides, and shows rubble
+  /// fn break_wall(ctx: &mut SceneContext<'_>, level: Entity, cell: IVec2, rubble: Tile) {
+  ///   let mut maps = ctx.maps();
+  ///   maps.set_intgrid(level, "Collision", cell, 0);
+  ///   maps.set_tile(level, "Collision", cell, Some(rubble));
+  /// }
+  /// ```
+  pub fn set_intgrid<'a>(
+    &mut self,
+    map: Entity,
+    layer: impl Into<LayerRef<'a>>,
+    cell: IVec2,
+    value: i32,
+  ) -> bool {
+    edit::fill_intgrid(self.world, map, layer.into(), cell, cell, value) > 0
+  }
+
+  /// Puts `value` in every cell of a tile layer's IntGrid from `min` to
+  /// `max`, both included, clipped to the IntGrid, as
+  /// [`set_intgrid`](Self::set_intgrid) puts one; returns how many cells
+  /// changed. Only the chunks it changed collide and cast shadows again
+  pub fn fill_intgrid<'a>(
+    &mut self,
+    map: Entity,
+    layer: impl Into<LayerRef<'a>>,
+    min: IVec2,
+    max: IVec2,
+    value: i32,
+  ) -> usize {
+    edit::fill_intgrid(self.world, map, layer.into(), min, max, value)
   }
 
   /// The IntGrid value at `cell` of a tile layer; `None` where it is 0

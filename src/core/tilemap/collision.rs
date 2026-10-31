@@ -734,8 +734,8 @@ mod tests {
   use crate::core::testing::HeadlessEngine;
   use crate::core::tilemap::test_util::{MapWorld, files_with, layers_of, load_map as load};
   use crate::core::tilemap::{
-    IntGrid, LayerKind, MapRoot, MapsView, PropertyValue, Tile, TileData, TileFlip, TileMap,
-    TileShape, Tileset, TilesetImage, TilesetSource,
+    IntGrid, LayerKind, MapRoot, MapsView, PropertyValue, Tile, TileData, TileFlip, TileLayerData,
+    TileMap, TileShape, Tileset, TilesetImage, TilesetSource,
   };
 
   /// Tile ids of `shapes`
@@ -1059,6 +1059,76 @@ mod tests {
         Empty
       ]
     );
+  }
+
+  #[test]
+  fn an_int_grid_edit_re_collides_only_its_chunk() {
+    use TileCell::{Empty, OneWay, Solid};
+    // 64 x 40 cells: two chunks across, two down
+    let size = UVec2::new(64, 40);
+    let mut map = code_map(size, &[("collision", &[]), ("art", &[])]);
+    if let LayerKind::Tiles { intgrid, .. } = &mut map.layers[0].kind {
+      *intgrid = Some(IntGrid {
+        size,
+        values: vec![0; 64 * 40],
+        names: [(1, "solid"), (2, "one_way")]
+          .iter()
+          .map(|(v, n)| (*v, n.to_string()))
+          .collect(),
+      });
+    }
+    let mut maps = MapWorld::new();
+    let handle = add(&mut maps.world, map);
+    let map = maps.spawn(MapRoot::new(handle));
+    let layer = layers_of(&mut maps.world, map)[0];
+    let chunks = [
+      UVec2::new(0, 0),
+      UVec2::new(1, 0),
+      UVec2::new(0, 1),
+      UVec2::new(1, 1),
+    ];
+    let versions = |world: &World| -> Vec<u64> {
+      let Some(data) = world.get::<TileLayerData>(layer) else {
+        panic!("no layer data");
+      };
+      chunks.iter().map(|&c| data.grid.chunk_version(c)).collect()
+    };
+    let before = versions(&maps.world);
+
+    // One cell: its chunk alone moves, and it collides in the next step
+    let cell = IVec2::new(40, 5);
+    let mut view = MapsView::new(&mut maps.world);
+    assert!(view.set_intgrid(map, "collision", cell, 1));
+    assert!(!view.set_intgrid(map, "collision", cell, 1), "unchanged");
+    assert_eq!(view.intgrid(map, "collision", cell), Some(1));
+    let after = versions(&maps.world);
+    assert_eq!(after[0], before[0]);
+    assert_ne!(after[1], before[1], "the cell's chunk moved");
+    assert_eq!(after[2..], before[2..]);
+    maps.frame();
+    assert_eq!(colliders(&maps.world, map).get(40, 5), Solid);
+
+    // A rectangle: the chunks it changed alone move
+    let mut view = MapsView::new(&mut maps.world);
+    let filled = view.fill_intgrid(map, "collision", IVec2::new(-4, 36), IVec2::new(70, 99), 2);
+    assert_eq!(filled, 64 * 4, "clipped to the layer");
+    let moved = versions(&maps.world);
+    assert_eq!(moved[..2], after[..2]);
+    assert!(moved[2] != after[2] && moved[3] != after[3]);
+    maps.frame();
+    let tiles = colliders(&maps.world, map);
+    assert_eq!((tiles.get(0, 36), tiles.get(63, 39)), (OneWay, OneWay));
+    assert_eq!(tiles.get(0, 35), Empty);
+
+    // 0 empties a cell; outside, or a layer with no IntGrid, changes nothing
+    let mut view = MapsView::new(&mut maps.world);
+    assert!(view.set_intgrid(map, "collision", cell, 0));
+    assert_eq!(view.intgrid(map, "collision", cell), None);
+    assert!(!view.set_intgrid(map, "collision", IVec2::new(64, 0), 1));
+    assert!(!view.set_intgrid(map, "art", IVec2::ZERO, 1));
+    assert_eq!(view.fill_intgrid(map, "art", IVec2::ZERO, IVec2::ONE, 1), 0);
+    maps.frame();
+    assert_eq!(colliders(&maps.world, map).get(40, 5), Empty);
   }
 
   #[test]
