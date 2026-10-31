@@ -979,6 +979,7 @@ fn level_json(
   defs: &[Entity],
   groups: &[(i64, &str, Vec<Rule>)],
   title_field: &Field,
+  with_decor: bool,
 ) -> J {
   let (w, h) = level.size();
   let level_iid = iid(&format!("level/{}", level.name));
@@ -1125,7 +1126,14 @@ fn level_json(
         &Value::Str(level.title.into()),
       )]),
     ),
-    ("layerInstances", J::Arr(vec![entities, decor, collisions])),
+    (
+      "layerInstances",
+      J::Arr(if with_decor {
+        vec![entities, decor, collisions]
+      } else {
+        vec![entities, collisions]
+      }),
+    ),
     ("__neighbours", J::Arr(neighbours)),
   ])
 }
@@ -1280,8 +1288,26 @@ fn levels(level_uids: (i64, i64)) -> Vec<Level> {
 
 /// The project, as LDtk prints it
 pub fn project() -> String {
+  write_project(false)
+}
+
+/// The project trimmed to the Platformer level, for the character demo: the
+/// same layer definitions, rules and terrain tileset, without the Vault, its
+/// entities, its enum and the Tiny Dungeon tileset only its decor and
+/// entities use
+pub fn platformer_project() -> String {
+  write_project(true)
+}
+
+/// Entities only the Vault places
+const VAULT_ONLY: [&str; 6] = ["Chest", "Door", "Switch", "Sign", "Patrol", "Torch"];
+
+fn write_project(platformer_only: bool) -> String {
   let mut next = FIRST_FREE;
-  let defs = entities(&mut next);
+  let mut defs = entities(&mut next);
+  if platformer_only {
+    defs.retain(|def| !VAULT_ONLY.contains(&def.name));
+  }
   let title = Field {
     uid: next,
     name: "title",
@@ -1293,7 +1319,10 @@ pub fn project() -> String {
   let groups = rule_groups(&mut next);
   let level_uids = (next, next + 1);
   next += 2;
-  let levels = levels(level_uids);
+  let mut levels = levels(level_uids);
+  if platformer_only {
+    levels.truncate(1);
+  }
 
   let int_grid_values = J::Arr(
     [
@@ -1336,7 +1365,7 @@ pub fn project() -> String {
       })
       .collect(),
   );
-  let layers = J::Arr(vec![
+  let mut layers = vec![
     layer_def(ENTITIES_LAYER, "Entities", "Entities", None, vec![]),
     layer_def(DECOR_LAYER, "Tiles", "Decor", Some(DUNGEON), vec![]),
     layer_def(
@@ -1357,53 +1386,51 @@ pub fn project() -> String {
         ("autoRuleGroups", rule_groups_json),
       ],
     ),
-  ]);
+  ];
+  if platformer_only {
+    layers.remove(1);
+  }
+  let layers = J::Arr(layers);
+  let mut tilesets = vec![tileset_def(
+    TERRAIN,
+    "Terrain",
+    "../images/dungeon-terrain.png",
+    (128, 80),
+  )];
+  let mut enums = vec![enum_def(
+    FACING,
+    "Facing",
+    &[("Left", None, 0x63C74D), ("Right", None, 0x3E8948)],
+  )];
+  if !platformer_only {
+    tilesets.push(tileset_def(
+      DUNGEON,
+      "Tiny_dungeon",
+      "../kenney-tiny-dungeon/tilemap_packed.png",
+      (192, 176),
+    ));
+    enums.push(enum_def(
+      LOOT,
+      "Loot",
+      &[
+        ("Gold", Some(89), 0xFEE761),
+        ("Potion", Some(115), 0xE43B44),
+        ("Key", None, 0xC0CBDC),
+      ],
+    ));
+  }
   let defs_json = obj([
     ("layers", layers),
     ("entities", J::Arr(defs.iter().map(entity_def).collect())),
-    (
-      "tilesets",
-      J::Arr(vec![
-        tileset_def(
-          TERRAIN,
-          "Terrain",
-          "../images/dungeon-terrain.png",
-          (128, 80),
-        ),
-        tileset_def(
-          DUNGEON,
-          "Tiny_dungeon",
-          "../kenney-tiny-dungeon/tilemap_packed.png",
-          (192, 176),
-        ),
-      ]),
-    ),
-    (
-      "enums",
-      J::Arr(vec![
-        enum_def(
-          FACING,
-          "Facing",
-          &[("Left", None, 0x63C74D), ("Right", None, 0x3E8948)],
-        ),
-        enum_def(
-          LOOT,
-          "Loot",
-          &[
-            ("Gold", Some(89), 0xFEE761),
-            ("Potion", Some(115), 0xE43B44),
-            ("Key", None, 0xC0CBDC),
-          ],
-        ),
-      ]),
-    ),
+    ("tilesets", J::Arr(tilesets)),
+    ("enums", J::Arr(enums)),
     ("externalEnums", J::Arr(vec![])),
     ("levelFields", J::Arr(vec![field_def(&title)])),
   ]);
   let levels_json = J::Arr(
     levels
       .iter()
-      .map(|level| level_json(level, &levels, &defs, &groups, &title))
+      .map(|level| level_json(level, &levels, &defs, &groups, &title, !platformer_only))
       .collect(),
   );
   let root = obj([

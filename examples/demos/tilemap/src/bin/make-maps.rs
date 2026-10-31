@@ -6,6 +6,9 @@
 //! - `rooms/rooms.world`: the three rooms side by side, as Tiled writes a
 //!   world file
 //! - `ldtk/dungeon.ldtk`: the LDtk project (see `make-maps/ldtk.rs`)
+//! - the character demo's copy of its `Platformer` level, under
+//!   `examples/demos/character/assets/`: the project trimmed to that level,
+//!   with the terrain sheet and Tiny Dungeon's licence it needs
 //! - with Tiled 1.12 installed: `project.tiled-project` and every Tiled
 //!   tileset and map, written by Tiled itself running `scripts/make-maps.js`;
 //!   then each Tiled file is opened and exported by Tiled's command line,
@@ -70,6 +73,7 @@ fn run(root: &Path) -> Result<(), String> {
   println!("rooms/rooms.world");
   write(&assets.join("ldtk/dungeon.ldtk"), &ldtk::project())?;
   println!("ldtk/dungeon.ldtk");
+  write_character_assets(root, &assets)?;
 
   let Some(tiled) = find_tiled() else {
     println!("Tiled not found: the Tiled project, tilesets and maps were left as they are");
@@ -104,6 +108,30 @@ fn run(root: &Path) -> Result<(), String> {
     return Err("Tiled's script failed (see above)".into());
   }
   check(&tiled, &assets)
+}
+
+/// The character demo's copy of the Platformer level: the project trimmed
+/// to it, and the art it draws with, so the level has one source
+fn write_character_assets(root: &Path, assets: &Path) -> Result<(), String> {
+  let character = root.join("../character/assets");
+  write(
+    &character.join("ldtk/platformer.ldtk"),
+    &ldtk::platformer_project(),
+  )?;
+  println!("character: ldtk/platformer.ldtk");
+  for file in [
+    "images/dungeon-terrain.png",
+    "kenney-tiny-dungeon/License.txt",
+  ] {
+    let bytes = std::fs::read(assets.join(file)).map_err(|error| format!("{file}: {error}"))?;
+    let to = character.join(file);
+    if let Some(folder) = to.parent() {
+      std::fs::create_dir_all(folder).map_err(|error| format!("{}: {error}", folder.display()))?;
+    }
+    std::fs::write(&to, bytes).map_err(|error| format!("{}: {error}", to.display()))?;
+    println!("character: {file}");
+  }
+  Ok(())
 }
 
 /// Opens every Tiled file with Tiled's command line and exports it to JSON

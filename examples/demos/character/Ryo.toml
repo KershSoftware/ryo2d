@@ -2,7 +2,7 @@
 name = "Character Demo"
 
 [paths]
-entry_point = "main.rs"
+entry_point = "src/main.rs"
 save_data = "data"
 assets = "assets"
 

@@ -1,18 +1,24 @@
 //! Character: the controller and its presets on a tile level, top-down
-//! movement, and custom movement on the bare controller. Loads no files, so
-//! it runs on the web too.
+//! movement, and custom movement on the bare controller. The platformer's
+//! level is an LDtk file in `assets/` (written by the tilemap demo's
+//! `make-maps`); the web build plays it embedded ([`embedded`]), as the web
+//! has no file system. A library, so its tests drive the pages headlessly.
+
+mod embedded;
 
 use std::f32::consts::{PI, TAU};
 
 use demo_kit::prelude::*;
 
-fn main() {
+pub use embedded::{EMBEDDED, embedded};
+
+/// The demo's three pages
+pub fn demo() -> Demo {
   Demo::new("Character")
     .resolution(960, 640)
     .page(PlatformerPage::default)
     .page(TopDownPage::default)
     .page(CustomPage::default)
-    .run();
 }
 
 /// WASD moves (the arrows belong to the panel), Space jumps, Shift dashes.
@@ -32,9 +38,9 @@ const COIN: Color = Color::new(255, 230, 60, 255);
 const SPIKES: Color = Color::new(255, 80, 80, 255);
 const FLAG: Color = Color::new(80, 230, 230, 255);
 /// One tile, px. Pages keep their scenes left of x = 520, clear of the settings panel.
-const TILE: f32 = 16.0;
+pub const TILE: f32 = 16.0;
 /// Where each page's tile grid has its top-left corner.
-const ORIGIN: Vec2 = Vec2::new(20.0, 90.0);
+pub const ORIGIN: Vec2 = Vec2::new(20.0, 90.0);
 
 /// Marks the page's player so the outline can pick it out.
 #[derive(Component)]
@@ -253,41 +259,12 @@ fn player_state(ctx: &SceneContext, player: Option<Entity>) -> Option<CharacterS
 
 // --- Platformer -------------------------------------------------------------
 
-/// 30 x 30 tiles. The ground has a gap (a lift of its own crosses it, with
-/// spikes' worth of kill zone below); a hill of slopes, one-way shelves, a
-/// ledge reached by a lift, and a shaft to wall-jump up to the top ledge.
-const PLATFORMER_LEVEL: [&str; 30] = [
-  "##############################",
-  "#............................#",
-  "#............................#",
-  "#............................#",
-  "#............................#",
-  "#............................#",
-  "#............................#",
-  "#............................#",
-  "#............................#",
-  "#............................#",
-  "#...................######...#",
-  "#........................#...#",
-  "#........................#...#",
-  "#........................#...#",
-  "#........................#...#",
-  "#........................#...#",
-  "#........................#...#",
-  "#...#####................#...#",
-  "#........................#...#",
-  "#..........======........#...#",
-  "#........................#...#",
-  "#........................#...#",
-  "#.................======.#...#",
-  "#........................#...#",
-  "#............................#",
-  "#........====................#",
-  "#..../\\......................#",
-  "#.../##\\.....................#",
-  "#############........#########",
-  "#############........#########",
-];
+/// The platformer's level: the `Platformer` level of this LDtk project, 30 x
+/// 30 cells of 16 px (an IntGrid of `solid`, `one_way` and two slopes, with
+/// the terrain art drawn over it by the project's auto-layer rules). Its
+/// cells collide as the ASCII grid they were written from did
+const LEVEL_FILE: &str = "ldtk/platformer.ldtk";
+const LEVEL: &str = "Platformer";
 
 /// The platform over the gap runs between these x positions (its ends flush
 /// with the ground); the lift runs at `LIFT_X`.
@@ -305,6 +282,8 @@ struct PlatformerPage {
   wall_slide: bool,
   wall_jump: bool,
   dash: bool,
+  /// The level's `MapRoot`, once it is spawned
+  level: Option<Entity>,
   player: Option<Entity>,
   across: Option<Entity>,
   lift: Option<Entity>,
@@ -327,6 +306,7 @@ impl Default for PlatformerPage {
       wall_slide: false,
       wall_jump: false,
       dash: false,
+      level: None,
       player: None,
       across: None,
       lift: None,
@@ -357,6 +337,46 @@ impl PlatformerPage {
       movement = movement.with_dash(420.0, 0.15, 0.5);
     }
     movement
+  }
+}
+
+impl PlatformerPage {
+  /// Spawns what falls (the crates and the player) on the step the level's
+  /// map is ready, so it lands on solid ground rather than through it
+  fn spawn_bodies_when_ready(&mut self, ctx: &mut SceneContext) {
+    let Some(level) = self.level else {
+      return;
+    };
+    if self.player.is_some() || !ctx.maps().is_ready(level) {
+      return;
+    }
+    // Crates to push and stack, past the gap
+    let ground = tile_top(0.0, 28.0).y;
+    for at in [
+      Vec2::new(368.0, ground - 10.0),
+      Vec2::new(368.0, ground - 30.0),
+      Vec2::new(452.0, ground - 10.0),
+    ] {
+      ctx.world.spawn((
+        Transform::from_translation(at),
+        RigidBody::dynamic(),
+        Collider::rect(20.0, 20.0),
+      ));
+    }
+    self.player = Some(
+      ctx
+        .world
+        .spawn((
+          Player,
+          Transform::from_translation(tile_top(9.5, 28.0) - Vec2::new(0.0, 14.0)),
+          CharacterController::platformer(),
+          Collider::rect(14.0, 26.0),
+          self.movement(),
+          bindings(),
+          Respawn::here(),
+        ))
+        .id(),
+    );
   }
 }
 
@@ -391,7 +411,20 @@ impl DemoPage for PlatformerPage {
     ]
   }
   fn enter(&mut self, ctx: &mut SceneContext) {
-    spawn_level(ctx, &PLATFORMER_LEVEL);
+    // The map lands a few frames from now; what falls waits for it (below)
+    self.level = ctx
+      .assets()
+      .load_now::<LdtkProject>(LEVEL_FILE)
+      .ok()
+      .map(|project| {
+        ctx
+          .world
+          .spawn((
+            Transform::from_translation(ORIGIN),
+            MapRoot::ldtk(project, LEVEL),
+          ))
+          .id()
+      });
     // A platform crossing the gap in the ground, and a lift beside the hill
     self.across = Some(
       ctx
@@ -426,19 +459,6 @@ impl DemoPage for PlatformerPage {
       Collider::rect(32.0, 10.0).as_trigger(),
       KillZone::new(),
     ));
-    // Crates to push and stack, past the gap
-    let ground = tile_top(0.0, 28.0).y;
-    for at in [
-      Vec2::new(368.0, ground - 10.0),
-      Vec2::new(368.0, ground - 30.0),
-      Vec2::new(452.0, ground - 10.0),
-    ] {
-      ctx.world.spawn((
-        Transform::from_translation(at),
-        RigidBody::dynamic(),
-        Collider::rect(20.0, 20.0),
-      ));
-    }
     for (column, row) in [
       (5.5, 26.0),
       (10.5, 25.0),
@@ -463,22 +483,9 @@ impl DemoPage for PlatformerPage {
         Checkpoint::new(),
       ));
     }
-    self.player = Some(
-      ctx
-        .world
-        .spawn((
-          Player,
-          Transform::from_translation(tile_top(9.5, 28.0) - Vec2::new(0.0, 14.0)),
-          CharacterController::platformer(),
-          Collider::rect(14.0, 26.0),
-          self.movement(),
-          bindings(),
-          Respawn::here(),
-        ))
-        .id(),
-    );
   }
   fn update(&mut self, ctx: &mut SceneContext, _dt: f32) {
+    self.spawn_bodies_when_ready(ctx);
     if let Some(player) = self.player {
       let movement = self.movement();
       if let Some(mut current) = ctx.world.get_mut::<PlatformerMovement>(player)
