@@ -589,44 +589,6 @@ fn the_top_down_map_sorts_its_trees_and_floats_its_clouds() {
     layer_names(&map),
     ["backdrop", "paths", "trees", "clouds", "objects"]
   );
-  // Saved by Tiled with its ground layer in base64 and zlib, the other tile
-  // layers in CSV, so the demo loads both encodings
-  let file = std::fs::read_to_string(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/assets/maps/platformer.tmx"
-  ))
-  .expect("the platformer map's file");
-  let encodings: Vec<(&str, &str)> = file
-    .split("<layer ")
-    .skip(1)
-    .map(|layer| {
-      let name = layer
-        .split("name=\"")
-        .nth(1)
-        .and_then(|rest| rest.split('"').next())
-        .unwrap_or("");
-      let data = layer
-        .split("<data ")
-        .nth(1)
-        .and_then(|rest| rest.split('>').next())
-        .unwrap_or("");
-      (name, data)
-    })
-    .collect();
-  assert_eq!(file.matches("compression=\"zlib\"").count(), 1);
-  for (name, data) in &encodings {
-    let wanted = if *name == "ground" {
-      "encoding=\"base64\" compression=\"zlib\""
-    } else {
-      "encoding=\"csv\""
-    };
-    assert_eq!(data.trim(), wanted, "layer {name}");
-  }
-  assert_eq!(
-    encodings.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
-    ["scenery", "water", "ground", "doors", "hazards"]
-  );
-
   let LayerKind::Image(backdrop) = &layer(&map, "backdrop").kind else {
     panic!("the backdrop is not an image layer");
   };

@@ -5,8 +5,9 @@
 //! - `static_frame`: a 1024 x 1024 map of four layers (a background on
 //!   every cell, cave rock from noise that collides and casts shadows, and
 //!   two sparse layers of props) built in code over one 16 px atlas, the
-//!   camera flying over it at about 700 px/s, against an empty scene whose
-//!   camera flies the same path. A frame's cost is the wall time of the
+//!   camera flying a long loop over it at 444 to 690 px/s (561 on average
+//!   over the guard's frames), against an empty scene whose camera flies
+//!   the same path. A frame's cost is the wall time of the
 //!   whole step (`HeadlessEngine::step`: every phase, the render step and
 //!   its submit) with the GPU finished before each step, outside the
 //!   measure, as `benches/ui_render.rs`'s guard does; the engines step in
@@ -21,12 +22,17 @@
 //!   chains; and the map's first build (its landing job, the landing frame
 //!   and the one after), stepped back to back. Then what a padded tileset
 //!   cache hit costs, an atlas's and a 1,000-tile collection's;
-//! - `edit`: one tile set and cleared again and again on a 1024 x 1024
-//!   four-layer map of 16,000 islands with two loops each spanning four
-//!   chunks: a jagged skyline 128 cells wide and 32 high, and a one-cell
-//!   serpentine filling the same 4 x 1 chunks (the longest loop that area
-//!   can hold). Each edit is timed in three parts, each held to 100 µs
-//!   (the spec): the chunk rebuild (the render step of the frame after the
+//! - `edit`: one-tile edits on a 1024 x 1024 four-layer map of 16,000
+//!   islands with two loops each spanning four chunks: a jagged skyline 128
+//!   cells wide and 32 high, whose column 99 holds only its bottom cell (a
+//!   neck), and a one-cell serpentine filling the same 4 x 1 chunks (the
+//!   longest loop that area can hold). Each loop is edited 400 times a way:
+//!   a bump (a tile set on top of it and cleared again: it stays one loop),
+//!   and a split and a join (a cell cleared and set again: the skyline's
+//!   neck; the middle of the serpentine's first row, and of its middle row,
+//!   which splits it into halves of about 2,000 edges, the worst split a
+//!   loop of four chunks can have). Each edit is timed in three parts, each
+//!   held to 100 µs (the spec): the chunk rebuild (the render step of the frame after the
 //!   edit, less the median render step of the ordinary frames between
 //!   edits: the chunk's instances built and uploaded), the loop rebuild
 //!   (the map's collision sync, which classifies the chunk again, then
@@ -37,7 +43,7 @@
 //!   `ryo2d::core::tilemap::edit_schedules`) and the occluder rebuild (the
 //!   occluder sync, commands applied). A frame passes between edits, as in
 //!   a game, so their data is not in cache. Beside them, with no target: the
-//!   edit frame's whole step over an ordinary frame's, and the loop and
+//!   edit frame's whole step over an ordinary frame's, the loop and
 //!   occluder rebuilds of as many edits back to back (their data in cache);
 //! - `load`: a 256 x 256 four-layer Tiled map (TMX, every layer base64 and
 //!   zlib) over an external TSX tileset and its PNG, read from a
@@ -52,8 +58,8 @@
 //!   slowest of them over the run's median ordinary frame is held to
 //!   0.5 ms (the spec: no hitch). A run over that is measured once more,
 //!   and the better run is held. The despawn frames count as neither. The
-//!   first landing pads the tileset and makes its texture (later ones find
-//!   the padding kept), and is printed apart. The landing job's time, spawn
+//!   first landing makes the padded tileset's texture (its landing job
+//!   padded it; later ones find the padding kept), and is printed apart. The landing job's time, spawn
 //!   to landed with frames stepped back to back, is printed too: on the web,
 //!   which has no threads, the job runs in the frame it is sent.
 //!
@@ -106,7 +112,9 @@ const SMALL: u32 = 256;
 const ROUNDS: usize = 2000;
 /// Frames each engine runs before it is measured
 const WARM: usize = 120;
-/// The camera's speed along its path, in pixels a second
+/// The rate the camera goes round its path, as pixels a second over half
+/// the map's side: over the guard's frames it flies at 444 to 690 px/s, 561
+/// on average
 const FLY_SPEED: f32 = 600.0;
 /// Edits of each loop
 const EDITS: usize = 400;
@@ -356,7 +364,8 @@ fn flown(path: f32, side: u32) -> Vec2 {
   )
 }
 
-/// Where the camera is at frame `frame`, flying at `FLY_SPEED`
+/// Where the camera is at frame `frame`, going round its path at
+/// `FLY_SPEED`
 fn camera_at(frame: usize) -> Vec2 {
   let side = (BIG * TILE) as f32;
   flown(frame as f32 * FLY_SPEED / 60.0 / (side * 0.5), BIG)
@@ -587,7 +596,7 @@ fn static_guard() {
   let empty_lit = find(Show::EmptyLit);
   let empty_lit_step = median(empty_lit.steps.clone());
   eprintln!(
-    "static_frame guard: {ROUNDS} interleaved frames at {}x{}, the camera flying at {FLY_SPEED} \
+    "static_frame guard: {ROUNDS} interleaved frames at {}x{}, the camera flying at about 560 \
      px/s. An empty frame: step median {:.1} µs (render step {:.1}); an empty lit frame {:.1}",
     RESOLUTION.0,
     RESOLUTION.1,
@@ -741,27 +750,69 @@ fn padded_line() {
 const SKYLINE_ROW: i32 = 0;
 const SERPENTINE_ROW: i32 = 2;
 
-/// The skyline's column heights: a top in 1..=24 for each of 128 columns
+/// The skyline's column that holds only its bottom cell: the neck between
+/// its two parts, which clearing that cell splits
+const NECK: usize = 99;
+
+/// The skyline's column heights: a top in 1..=24 for each of 128 columns,
+/// but the neck's, 31
 fn skyline_tops() -> Vec<i32> {
   let mut seed: u32 = 7;
   (0..128)
-    .map(|_| {
+    .map(|x| {
       seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-      1 + (seed >> 16) as i32 % 24
+      if x == NECK {
+        31
+      } else {
+        1 + (seed >> 16) as i32 % 24
+      }
     })
     .collect()
 }
 
-/// The cells each loop's edit toggles: a cell on the skyline's top, and a
-/// bump on the serpentine's
-fn edit_cells() -> [(&'static str, IVec2); 2] {
+/// One loop's edits: a tile set on top of it and cleared again (a bump: the
+/// loop stays one), or a cell of it cleared and set again (a cut: the loop
+/// splits in two, and the two join again)
+struct EditCase {
+  name: &'static str,
+  cell: IVec2,
+  cut: bool,
+}
+
+/// The edits the guard makes: each loop's bump, and each loop's cut (the
+/// skyline's neck, the middle of the serpentine's first row, and the middle
+/// of its middle row, which splits it into halves of about 2,000 edges,
+/// the smaller given the other loop's id edge by edge)
+fn edit_cases() -> [EditCase; 5] {
   let tops = skyline_tops();
+  let skyline = |x: usize, y: i32| IVec2::new(x as i32, SKYLINE_ROW * 32 + y);
+  let serpentine = |x: i32, y: i32| IVec2::new(x, SERPENTINE_ROW * 32 + y);
   [
-    (
-      "the skyline",
-      IVec2::new(64, SKYLINE_ROW * 32 + tops[64] - 1),
-    ),
-    ("the serpentine", IVec2::new(64, SERPENTINE_ROW * 32)),
+    EditCase {
+      name: "the skyline",
+      cell: skyline(64, tops[64] - 1),
+      cut: false,
+    },
+    EditCase {
+      name: "the skyline",
+      cell: skyline(NECK, 31),
+      cut: true,
+    },
+    EditCase {
+      name: "the serpentine",
+      cell: serpentine(64, 0),
+      cut: false,
+    },
+    EditCase {
+      name: "the serpentine",
+      cell: serpentine(64, 1),
+      cut: true,
+    },
+    EditCase {
+      name: "the serpentine cut through its middle row",
+      cell: serpentine(64, 15),
+      cut: true,
+    },
   ]
 }
 
@@ -843,9 +894,11 @@ fn edit_engine() -> Option<(HeadlessEngine, Entity)> {
   Some((engine, root))
 }
 
-/// The tile edit `i` puts at `cell`: rock, then nothing, in turn
-fn toggle(engine: &mut HeadlessEngine, root: Entity, cell: IVec2, i: usize) {
-  let tile = i.is_multiple_of(2).then_some(Tile::new(0, ROCK.start));
+/// The tile edit `i` puts at `cell`: rock, then nothing, in turn; nothing
+/// first for a cut, whose cell starts as rock
+fn toggle(engine: &mut HeadlessEngine, root: Entity, cell: IVec2, i: usize, cut: bool) {
+  let rock = i.is_multiple_of(2) != cut;
+  let tile = rock.then_some(Tile::new(0, ROCK.start));
   let changed = MapsView::new(engine.world_mut()).set_tile(root, "ground", cell, tile);
   assert!(changed, "the edit changes its cell");
 }
@@ -881,7 +934,7 @@ fn step(engine: &mut HeadlessEngine) -> (Duration, Duration) {
   (engine.render_time(), start.elapsed())
 }
 
-fn edits(engine: &mut HeadlessEngine, root: Entity, cell: IVec2) -> Edits {
+fn edits(engine: &mut HeadlessEngine, root: Entity, cell: IVec2, cut: bool) -> Edits {
   let [mut collision, mut rebuild, mut occluders]: [Schedule; 3] =
     ryo2d::core::tilemap::edit_schedules();
   // Their first runs set them up
@@ -903,7 +956,7 @@ fn edits(engine: &mut HeadlessEngine, root: Entity, cell: IVec2) -> Edits {
     let (render, whole) = step(engine);
     out.renders.push(render);
     out.steps.push(whole);
-    toggle(engine, root, cell, i);
+    toggle(engine, root, cell, i, cut);
     out.collision.push(timed(&mut collision, engine));
     out.rebuild.push(timed(&mut rebuild, engine));
     out.occluders.push(timed(&mut occluders, engine));
@@ -914,7 +967,7 @@ fn edits(engine: &mut HeadlessEngine, root: Entity, cell: IVec2) -> Edits {
   // Back to back, no frame between: what the edits cost with their data
   // in cache
   for i in EDITS..2 * EDITS {
-    toggle(engine, root, cell, i);
+    toggle(engine, root, cell, i, cut);
     let collided = timed(&mut collision, engine) + timed(&mut rebuild, engine);
     out.warm_loops.push(collided);
     out.warm_occluders.push(timed(&mut occluders, engine));
@@ -922,14 +975,24 @@ fn edits(engine: &mut HeadlessEngine, root: Entity, cell: IVec2) -> Edits {
   out
 }
 
-/// The edit guard: each loop's chunk, loop and occluder rebuilds, each
-/// median held to 100 µs
+/// The edits `which` picks of `times`: every one, or every other from the
+/// first or the second
+fn picked(times: &[Duration], which: Option<usize>) -> Vec<Duration> {
+  match which {
+    None => times.to_vec(),
+    Some(first) => times.iter().skip(first).step_by(2).copied().collect(),
+  }
+}
+
+/// The edit guard: each loop's bump, split and join, each's chunk, loop and
+/// occluder rebuilds, each median held to 100 µs
 fn edit_guard() {
   let Some((mut engine, root)) = edit_engine() else {
     return;
   };
-  for (name, cell) in edit_cells() {
-    let edits = edits(&mut engine, root, cell);
+  for case in edit_cases() {
+    let (name, cell) = (case.name, case.cell);
+    let edits = edits(&mut engine, root, cell, case.cut);
     let ordinary_render = median(edits.renders.clone());
     let ordinary_step = median(edits.steps.clone());
     let chunk = over(&edits.edit_renders, ordinary_render);
@@ -939,32 +1002,42 @@ fn edit_guard() {
       .zip(&edits.rebuild)
       .map(|(a, b)| *a + *b)
       .collect();
-    eprintln!(
-      "edit guard, {name} (cell {cell}), {EDITS} edits, each beside an ordinary frame: the \
-       collision sync {}; the tile collider rebuild and collider sync {}; the edit frame's \
-       whole step over an ordinary frame's median ({:.1} µs) {} (no target)",
-      shown(edits.collision.clone()),
-      shown(edits.rebuild.clone()),
-      us(ordinary_step),
-      shown(over(&edits.edit_steps, ordinary_step)),
-    );
-    eprintln!(
-      "edit (no target), {name}, {EDITS} edits back to back with no frame between (their data \
-       in cache): the loop rebuild {}; the occluder rebuild {}",
-      shown(edits.warm_loops),
-      shown(edits.warm_occluders),
-    );
-    for (part, times) in [
-      ("the chunk rebuild", chunk),
-      ("the loop rebuild", loops),
-      ("the occluder rebuild", edits.occluders),
-    ] {
-      let held = median(times.clone());
-      let (met, verdict) = verdict(held, EDIT_TARGET);
-      let line = format!("{name}, {part}: {}; {verdict}", shown(times));
-      eprintln!("edit: {line}");
-      if !met {
-        guards::miss(format!("edit, {line}"));
+    // A bump's edits all keep one loop; a cut's split it and join it in turn
+    let kinds: &[(&str, Option<usize>)] = if case.cut {
+      &[("a split", Some(0)), ("a join", Some(1))]
+    } else {
+      &[("a bump", None)]
+    };
+    for &(kind, which) in kinds {
+      eprintln!(
+        "edit guard, {name}, {kind} (cell {cell}), {} edits, each beside an ordinary frame: \
+         the collision sync {}; the tile collider rebuild and collider sync {}; the edit \
+         frame's whole step over an ordinary frame's median ({:.1} µs) {} (no target)",
+        picked(&edits.collision, which).len(),
+        shown(picked(&edits.collision, which)),
+        shown(picked(&edits.rebuild, which)),
+        us(ordinary_step),
+        shown(over(&picked(&edits.edit_steps, which), ordinary_step)),
+      );
+      eprintln!(
+        "edit (no target), {name}, {kind}, as many edits back to back with no frame between \
+         (their data in cache): the loop rebuild {}; the occluder rebuild {}",
+        shown(picked(&edits.warm_loops, which)),
+        shown(picked(&edits.warm_occluders, which)),
+      );
+      for (part, times) in [
+        ("the chunk rebuild", &chunk),
+        ("the loop rebuild", &loops),
+        ("the occluder rebuild", &edits.occluders),
+      ] {
+        let times = picked(times, which);
+        let held = median(times.clone());
+        let (met, verdict) = verdict(held, EDIT_TARGET);
+        let line = format!("{name}, {kind}, {part}: {}; {verdict}", shown(times));
+        eprintln!("edit: {line}");
+        if !met {
+          guards::miss(format!("edit, {line}"));
+        }
       }
     }
   }
@@ -973,7 +1046,7 @@ fn edit_guard() {
 /// The edit bench: the serpentine's cell set or cleared, and the step after
 fn edit_bench(c: &mut Criterion) {
   let mut made: Option<(HeadlessEngine, Entity, usize)> = None;
-  let cell = edit_cells()[1].1;
+  let cell = edit_cases()[2].cell;
   c.bench_function("edit", |b| {
     if made.is_none() {
       made = edit_engine().map(|(engine, root)| (engine, root, 0));
@@ -982,7 +1055,7 @@ fn edit_bench(c: &mut Criterion) {
       return;
     };
     b.iter(|| {
-      toggle(engine, *root, cell, *i);
+      toggle(engine, *root, cell, *i, false);
       *i += 1;
       engine.step().expect("a frame")
     });
@@ -1202,7 +1275,8 @@ struct LandingRun {
   unlanded: usize,
   /// Frames from spawn to landed, each landing
   waits: Vec<usize>,
-  /// Each map landing frame, in order: the first pads the tileset
+  /// Each map landing frame, in order: the first makes the padded
+  /// tileset's texture
   landings: Vec<Duration>,
 }
 
@@ -1348,7 +1422,7 @@ fn landing_guard(files: &MemorySource) {
     eprintln!(
       "landing guard, run {}: {LANDINGS} landings at 60 Hz, each frame the whole step. Ordinary \
        frames ({}): {}. Over the median ordinary frame: the asset landing {}; the map landing \
-       {} (the first, which pads the tileset and makes its texture, {first:.1} µs; the others \
+       {} (the first, which makes the padded tileset's texture, {first:.1} µs; the others \
        {}); the frame after {}. Frames from spawn to landed: {}",
       number + 1,
       run.ordinary().len(),

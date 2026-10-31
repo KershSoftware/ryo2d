@@ -8,13 +8,17 @@
 //! Objective-C message) are the GPU's; every other one is the engine's own.
 //! A frame drawing a static map makes no more of the engine's own than an
 //! empty frame; the GPU's, which grow with the draw calls the map adds,
-//! are printed.
+//! are printed, and none may come from the map's own path (the map module or
+//! its drawer), which would be a GPU resource made or written every frame.
+//! The engine's own are compared site by site, so a map's allocation cannot
+//! hide behind one only the empty frame makes.
 // Each thread counts its own allocations, so the tests (one a thread)
 // never count each other's
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::backtrace::Backtrace;
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use ryo2d::core::tilemap::padded::PaddedTilesets;
@@ -293,12 +297,24 @@ fn engine(empty: bool, at: Vec2) -> Option<HeadlessEngine> {
 /// Where a stack's frames come from: the GPU API's crates
 const GPU: [&str; 5] = ["wgpu", "naga::", "objc2", "metal::", "block2"];
 
-/// One frame's allocations: how many, and of those not made inside the GPU
-/// API, where each was made (the nearest engine function and the one it
-/// called)
+/// One frame's allocations: how many; of those not made inside the GPU API,
+/// how many were made where (the nearest engine function and the one it
+/// called); and those made inside the GPU API whose nearest engine function
+/// is the map's own (the map module or its drawer)
 struct Frame {
   count: usize,
-  own: Vec<String>,
+  own: BTreeMap<String, usize>,
+  map_gpu: Vec<String>,
+}
+
+/// A stack's function names, leaf first
+fn functions(text: &str) -> Vec<&str> {
+  text
+    .lines()
+    .map(str::trim)
+    .filter(|line| !line.starts_with("at "))
+    .filter_map(|line| line.split_once(": ").map(|(_, name)| name))
+    .collect()
 }
 
 /// A step of `engine`, its allocations traced
@@ -310,27 +326,40 @@ fn traced(engine: &mut HeadlessEngine) -> Frame {
   TRACING.with(|c| c.set(false));
   let count = allocations() - before;
   let traces = TRACES.with(|t| std::mem::take(&mut *t.borrow_mut()));
-  let own = traces
-    .into_iter()
-    .filter_map(|trace| {
-      let text = trace.to_string();
-      if GPU.iter().any(|gpu| text.contains(gpu)) {
-        return None;
+  let (mut own, mut map_gpu) = (BTreeMap::new(), Vec::new());
+  for trace in traces {
+    let text = trace.to_string();
+    let frames = functions(&text);
+    let ours = frames.iter().position(|f| f.contains("ryo2d::"));
+    if GPU.iter().any(|gpu| text.contains(gpu)) {
+      if let Some(at) = ours
+        && (frames[at].contains("tilemap::") || frames[at].contains("render::tiles"))
+      {
+        map_gpu.push(frames[at].to_string());
       }
-      let frames: Vec<&str> = text
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.starts_with("at "))
-        .filter_map(|line| line.split_once(": ").map(|(_, name)| name))
-        .collect();
-      let ours = frames.iter().position(|f| f.contains("ryo2d::"));
-      Some(match ours {
-        Some(at) => format!("{} <- {}", frames[at.saturating_sub(1)], frames[at]),
-        None => frames.first().copied().unwrap_or("?").to_string(),
-      })
-    })
-    .collect();
-  Frame { count, own }
+      continue;
+    }
+    let site = match ours {
+      Some(at) => format!("{} <- {}", frames[at.saturating_sub(1)], frames[at]),
+      None => frames.first().copied().unwrap_or("?").to_string(),
+    };
+    *own.entry(site).or_insert(0) += 1;
+  }
+  Frame {
+    count,
+    own,
+    map_gpu,
+  }
+}
+
+/// The sites where `drawn` makes more allocations than `nothing`
+fn more(drawn: &Frame, nothing: &Frame) -> Vec<String> {
+  drawn
+    .own
+    .iter()
+    .filter(|(site, n)| nothing.own.get(*site).copied().unwrap_or(0) < **n)
+    .map(|(site, n)| format!("{n} at {site}"))
+    .collect()
 }
 
 /// Puts `engine`'s camera at `at`
@@ -363,22 +392,25 @@ fn a_frame_drawing_a_static_map_allocates_nothing() {
     look_at(&mut map, at);
     look_at(&mut empty, at);
     let (drawn, nothing) = (traced(&mut map), traced(&mut empty));
+    let own = |frame: &Frame| frame.own.values().sum::<usize>();
     println!(
       "frame {frame} at {at}: the map's frame {} allocations ({} the engine's own), an empty \
        frame {} ({} its own)",
       drawn.count,
-      drawn.own.len(),
+      own(&drawn),
       nothing.count,
-      nothing.own.len(),
+      own(&nothing),
+    );
+    let more = more(&drawn, &nothing);
+    assert!(
+      more.is_empty(),
+      "frame {frame}: the map's frame made allocations of the engine's own an empty frame did \
+       not: {more:#?}"
     );
     assert!(
-      drawn.own.len() <= nothing.own.len(),
-      "frame {frame}: the map's frame made {} allocations of the engine's own, an empty frame \
-       {}:\n{:#?}\nagainst\n{:#?}",
-      drawn.own.len(),
-      nothing.own.len(),
-      drawn.own,
-      nothing.own,
+      drawn.map_gpu.is_empty(),
+      "frame {frame}: the map's path made GPU allocations: {:#?}",
+      drawn.map_gpu
     );
   }
 }

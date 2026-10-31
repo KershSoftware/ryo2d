@@ -95,9 +95,7 @@ use crate::core::time::Time;
 /// assert_eq!(images.get(&dot).map(Image::width), Some(4));
 /// ```
 pub fn asset_world() -> World {
-  let mut world = World::new();
-  insert_registry(&mut world, AssetServer::new(MemorySource::new()));
-  world
+  asset_world_over(MemorySource::new())
 }
 
 /// [`asset_world`] over `files`, a `MemorySource` the caller keeps: for a
