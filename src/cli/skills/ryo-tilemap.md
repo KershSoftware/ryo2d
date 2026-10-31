@@ -23,7 +23,7 @@ The loaders also read Tiled's object templates (`.tx`, `.tj`) and its project fi
 ## 1. From the editor to the game
 
 1. **Make the level** in Tiled (1.12) or LDtk (1.5).
-   - **Tiled:** an orthogonal map of a fixed size. Save maps as `.tmx` or `.tmj`, and tilesets inside the map or as `.tsx` / `.tsj` files. Every layer format Tiled writes loads: CSV, and Base64 uncompressed or compressed with gzip, zlib or zstd. Isometric, staggered, hexagonal and oblique maps, and infinite maps, fail to load with an error saying so (they arrive in sub-project 6b, after this one), as does a layer blend mode other than normal, add, multiply or screen.
+   - **Tiled:** an orthogonal map of a fixed size. Save maps as `.tmx` or `.tmj`, and tilesets inside the map or as `.tsx` / `.tsj` files. Every layer format Tiled writes loads: CSV, and Base64 uncompressed or compressed with gzip, zlib or zstd. Isometric, staggered, hexagonal and oblique maps, and infinite maps, fail to load with an error saying so (they arrive in sub-project 6b), as does a layer blend mode other than normal, add, multiply or screen.
    - **LDtk:** a project of one world or several, its levels inside the `.ldtk` file or saved beside it as `.ldtkl` files ("Save levels to separate files"). LDtk runs its auto-layer rules in the editor and saves the tiles they place; the game draws what was saved. A project saved by an LDtk newer than 1.5 fails to load, naming both versions.
 2. **Put the files under `assets/`**, in any folders: `assets/maps/level1.tmx`, `assets/tilesets/ground.tsx`, `assets/images/ground.png`. A path written inside a file (a tileset, an image, a template, an LDtk level file) is read from that file's folder, as the editors write them; one that leaves `assets/` fails the load.
 3. **Spawn it** with a `MapRoot`. The entity's `Transform` places the map's top-left corner.
@@ -353,7 +353,7 @@ ctx.world.spawn(root);
 
 ## 10. Draw order, y-sorting and parallax
 
-- **Z:** layer `i` draws at the map's z (`with_z`) plus `i`, among the entities. A plain layer draws as one item at its z, so entities at a higher z draw over it. Give a character a z above every layer it should cover and below every layer that covers it (the tilemap demo's hero draws at 10, over the platformer's seven layers at 0 to 6); at a layer's own z, the character and the layer draw in entity index order, which nothing should rely on.
+- **Z:** layer `i` draws at the map's z (`with_z`) plus `i`, among the entities. A plain tile layer draws as one item at its z, so entities at a higher z draw over it. Give a character a z above every layer it should cover and below every layer that covers it (the tilemap demo's hero draws at 10, over the platformer's seven layers at 0 to 6); at a tile layer's own z, the character and the layer draw in entity index order, which nothing should rely on. An image layer draws as a sprite does, after the entities at its z, so at an equal z it covers them.
 - **Lit or not:** as `lit` says. **Cameras:** a map draws on the map entity's `RenderLayers`; a layer entity's own `RenderLayers` replace them for that layer.
 - **Y-sorted layers** (`y_sort`) draw each row of tiles as an item at the layer's z, sorted among the y-sorted entities there by the row's bottom edge. A character with `YSort` at that z walks behind a tree whose trunk row is below its feet and in front of one above them. Tile objects on a y-sorted object layer sort by their bottom edges.
 
@@ -368,7 +368,7 @@ ctx.world.spawn((
 ```
 
 - **Parallax** (Tiled's parallax factor on a layer, LDtk's parallax factor) moves a layer by that share of the camera's motion, per camera, measured from the map's top-left corner: 1 is fixed to the world, 0.5 a slow background, 1.25 a foreground that drifts past. Tiled's Parallax Origin map setting is not read. Parallax is drawing only: a colliding layer collides where it would be without it (section 8).
-- **Image layers** draw as one quad per view, the image repeating across the view along the axes the editor says; a view needing over 65,536 copies along an axis gets that many about its centre, warned once.
+- **Image layers** draw as one quad per view, the image repeating across the view along the axes the editor says; a view needing more than 65,536 copies, or more than 524,288 of the image's pixels, along an axis gets that many about its centre, warned once.
 - **Opacity and tint** multiply the layer. Blend modes normal, add, multiply and screen draw as in the editor.
 - **Hidden:** a layer whose `LayerInfo::visible` is false draws nothing, and still collides and occludes as its flags say. A disabled map draws nothing at all.
 
@@ -467,7 +467,7 @@ Measured on an Apple M5 Pro in a release build, at 1920 x 1080 with 16 px tiles;
   - **Every collider and shadow chain of a map is a child entity**, and once anything moves, transform propagation visits every child of every hierarchy each frame. A 1024 x 1024 map colliding and casting shadows (about 2,900 children) costs about 85 µs a frame, against 33 µs drawn only. Turn collision off (`without_collision`, or `collides` false) and shadows off (`occludes` false) on maps and layers that need neither.
   - **A y-sorted layer** draws each visible row as an item of its own: a dense y-sorted layer of the 1024 x 1024 map cost about 70 µs more a frame. Y-sort only the layers characters walk among.
   - **A lit level** gathers every map occluder each frame, and each shadowed light loops over all of them, however far away: one shadowed light over the 1024 x 1024 cave cost about 30 µs more than the unlit map.
-  - **A landing frame** builds and uploads the chunks in view (about 0.5 ms at 1080p), and a tileset's first landing also makes its padded texture (about 1 ms more, the first time; a level restarted, or the next one with the same tileset, within about two seconds reuses it). A 1024 x 1024 four-layer colliding map takes about 70 ms on the builder thread and about 5 ms in its landing frame; on the web all of it is one frame (section 14). Cover a big map's landing with a loading screen.
+  - **A landing frame** builds and uploads the chunks in view (about 0.5 ms at 1080p), and a tileset's first landing also makes its padded texture (about 0.5 ms more, about 1 ms in all, the first time; a level restarted, or the next one with the same tileset, within about two seconds reuses it). A 1024 x 1024 four-layer colliding map takes about 70 ms on the builder thread and about 5 ms in its landing frame; on the web all of it is one frame (section 14). Cover a big map's landing with a loading screen.
 - **Warnings in the dev log:**
   - `tileset "..." is too big to pad`: its padded copy (each tile in a cell twice its size) would pass the GPU's largest texture, 8,192 texels a side: about 3,800 tiles of 64 px, 15,800 of 32 px, or a collection of over 196 images up to 256 px (36 up to 512 px). Its tiles draw nothing until it changes. Split the tileset.
   - `layer "..." collides and has parallax`: it collides where it would be without parallax.
@@ -476,7 +476,7 @@ Measured on an Apple M5 Pro in a release build, at 1920 x 1080 with 16 px tiles;
 
 ## 16. Testing
 
-- **A headless engine** (`ryo2d::testing::HeadlessEngine`) lands maps as a windowed one does. Step it until `MapsView::new(engine.world_mut()).is_ready(map)`, then read tiles with `MapsView`, objects and class tiles with queries, and colliders through `ctx.physics()` after a step. A landing takes a frame or more (its job runs on another thread), so wait for it rather than counting frames.
+- **A headless engine** (`ryo2d::testing::HeadlessEngine`) lands maps as a windowed one does. Step it until `MapsView::new(engine.world_mut()).is_ready(map)`, then read tiles with `MapsView`, objects and class tiles with queries, and colliders after a step through the world's `Physics` resource (`engine.world().resource::<Physics>()`: `raycast`, `overlap_point`, `contacts` and the rest). A landing takes a frame or more (its job runs on another thread), so wait for it rather than counting frames.
 - **Events:** read `MapEvent`s between steps with a `MessageCursor<MapEvent>` over the world's `Messages<MapEvent>`; fail the test on `Failed`.
 - **Hot reload:** headless engines do not watch files. Give the engine a `MemorySource` the test keeps (`EngineBuilder::asset_source`), save over a file with `files.insert(path, text)`, and ask for its reload with `engine.assets().server().reload(path)`; the next steps bring the map to it and send `Reloaded`.
 - **The web's files:** play the levels from the embedded source too (section 14).
