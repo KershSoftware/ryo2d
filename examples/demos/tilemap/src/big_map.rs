@@ -12,9 +12,10 @@
 //! overlay, which draws the same split.
 //!
 //! The layers neither collide nor cast shadows: nothing on the page touches
-//! them, and a colliding map this size costs about 75 ms of colliders in
-//! the step after it lands (and memory for thousands of collider parts)
-//! for nothing the page shows
+//! them, and a colliding map this size takes about 70 ms on the map builder
+//! thread to work out its colliders, about 5 ms in the frame it lands, and
+//! thousands of collider parts and shadow chains that every frame's
+//! transform propagation walks, for nothing the page shows
 
 use std::f32::consts::TAU;
 

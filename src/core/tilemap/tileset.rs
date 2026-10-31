@@ -139,11 +139,24 @@ pub struct WangTile {
 /// through its accessors: the tile picking works out its candidates once, so
 /// nothing may change the fields after.
 ///
+/// A field cannot be written, even through a `&mut`:
+///
 /// ```compile_fail
 /// use ryo2d::prelude::*;
 ///
 /// fn clear(set: &mut WangSet) {
 ///   set.tiles.clear();
+/// }
+/// ```
+///
+/// while the same code reading through the accessors compiles, so the
+/// field is all the example above is refused for:
+///
+/// ```
+/// use ryo2d::prelude::*;
+///
+/// fn clear(set: &mut WangSet) {
+///   let _ = (set.name(), set.kind(), set.colors(), set.tiles().len(), set.transformations());
 /// }
 /// ```
 #[derive(Clone, Debug)]

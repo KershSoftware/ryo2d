@@ -209,7 +209,7 @@ type Warned = FastSet<(Option<usize>, &'static str)>;
 /// The colliding layers among `layers` into `planned`, and the map's own
 /// group key. A property of the wrong type warns once, and so does a
 /// colliding layer with parallax, which collides where it would draw
-/// without it (R17) (`warned`)
+/// without it, parallax being a drawing effect (`warned`)
 fn plan<'a>(
   map: Entity,
   layers: impl IntoIterator<Item = LayerView<'a>>,
@@ -1374,7 +1374,7 @@ mod tests {
     let map = maps.spawn(MapRoot::new(handle));
     maps.frame();
     maps.frame();
-    // It collides at its cells, parallax aside (R17)
+    // It collides at its cells: collision ignores parallax
     let tiles = colliders(&maps.world, map);
     assert_eq!(tiles.get(0, 0), TileCell::Solid);
     assert_eq!(tiles.get(2, 0), TileCell::Empty);

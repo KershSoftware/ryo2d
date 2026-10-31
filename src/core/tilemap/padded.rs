@@ -43,7 +43,7 @@ const KEEP_ROUNDS: u64 = crate::core::render::batch::KEEP_FRAMES;
 #[derive(Clone, Debug)]
 pub struct PaddedLayout {
   /// A cell's side in texels: the power of two at or above twice the
-  /// largest tile's longer side, and at or above that side plus 8 (R10).
+  /// largest tile's longer side, and at or above that side plus 8.
   /// Mip level k samples only a tile's own cell while 2^k is at most the
   /// room the cell has past the tile, so every level a tile drawn a pixel
   /// wide or more uses, and every level of an atlas page, is the tile's own

@@ -1,7 +1,7 @@
 //! What the pages share: the files they load, the view each frames on
 //! screen, the player (a Tiny Dungeon hero on the character controller,
-//! moved with WASD or a pad), an object's place in a map, the colliders'
-//! outlines, and the HUD's boxes and labels
+//! moved with WASD or a pad), the platformer level and an object's place in
+//! a map, and the HUD's boxes and labels
 
 use demo_kit::prelude::*;
 

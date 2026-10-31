@@ -279,9 +279,11 @@ pub(crate) struct TileLayerFrame<'a> {
 /// layer's z, a y-sorted layer's each row of them as one, sorted with the
 /// y-sorted entities at its z by the row's bottom edge. Chunks are built
 /// into the batch's [`ChunkStore`] when first seen and again when their
-/// tiles or what they are drawn from change. An image layer draws its
-/// picture as sprites, repeated over each camera's view where the editor
-/// says; an object layer draws its visible tile objects as sprites.
+/// tiles or what they are drawn from change. An image layer draws as one
+/// quad per view, its picture repeating across the view along the axes the
+/// editor says (one quad for every camera when it neither repeats nor has
+/// parallax, else one per camera); an object layer draws its visible tile
+/// objects as sprites.
 ///
 /// Image layers go straight into the draw list. Chunks, rows and tile
 /// objects take their places among the entities' draws
