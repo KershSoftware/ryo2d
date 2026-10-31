@@ -408,7 +408,7 @@ ctx.world.spawn((
 ));
 ```
 
-- **Parallax** (Tiled's parallax factor on a layer, LDtk's parallax factor) moves a layer by that share of the camera's motion, per camera, measured from the map's top-left corner: 1 is fixed to the world, 0.5 a slow background, 1.25 a foreground that drifts past. Tiled's Parallax Origin map setting is not read. Parallax is drawing only: a colliding layer collides where it would be without it (section 8).
+- **Parallax** (Tiled's parallax factor on a layer, LDtk's parallax factor) moves a layer by that share of the camera's motion, per camera: 1 is fixed to the world, 0.5 a slow background, 1.25 a foreground that drifts past. It is measured from the map's parallax origin (`TileMap::parallax_origin`: Tiled's Parallax Origin map setting, in map pixels; the map's top-left corner unless the file moves it, and always for LDtk), as Tiled draws it: a camera centred on the origin shows every layer where it would be without parallax. Parallax is drawing only: a colliding layer collides where it would be without it (section 8).
 - **Image layers** draw as one quad per view, the image repeating across the view along the axes the editor says; a view needing more than 65,536 copies, or more than 524,288 of the image's pixels, along an axis gets that many about its centre, warned once.
 - **Opacity and tint** multiply the layer. Blend modes normal, add, multiply and screen draw as in the editor.
 - **Hidden:** a layer whose `LayerInfo::visible` is false draws nothing, and still collides and occludes as its flags say. A disabled map draws nothing at all.

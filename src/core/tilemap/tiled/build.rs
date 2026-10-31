@@ -560,6 +560,14 @@ pub(crate) fn build_map(
     UVec2::new(raw.tilewidth, raw.tileheight),
   );
   map.class = raw.class.clone().filter(|c| !c.is_empty());
+  map.parallax_origin = Vec2::new(raw.parallaxoriginx, raw.parallaxoriginy);
+  if !map.parallax_origin.is_finite() {
+    return Err(fail(
+      &path,
+      place,
+      "the parallax origin is not a finite point",
+    ));
+  }
   map.properties = px.read(place, &raw.properties, raw.class.as_deref())?;
   if let Some(text) = raw.backgroundcolor.as_deref().filter(|t| !t.is_empty()) {
     map.background = Some(parse_color(text).ok_or_else(|| {

@@ -30,6 +30,9 @@ pub(crate) struct RawMap {
   pub tileheight: u32,
   pub class: Option<String>,
   pub backgroundcolor: Option<String>,
+  /// Where parallax is measured from, in pixels
+  pub parallaxoriginx: f32,
+  pub parallaxoriginy: f32,
   pub properties: Vec<RawProperty>,
   pub tilesets: Vec<RawTilesetRef>,
   pub layers: Vec<RawLayer>,

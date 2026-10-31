@@ -364,6 +364,14 @@ mod tests {
   }
 
   #[test]
+  fn the_map_s_parallax_origin_loads() {
+    let map = load("maps/image-layers.tmj");
+    assert_eq!(map.parallax_origin, Vec2::new(40.0, 24.0));
+    assert_eq!(info(&map, "far").parallax, Vec2::new(0.5, 0.25));
+    assert_eq!(load("maps/mixed.tmj").parallax_origin, Vec2::ZERO);
+  }
+
+  #[test]
   fn layer_visible_defaults_to_true() {
     let layer =
       r#"{"id":1,"name":"ground","type":"tilelayer","width":2,"height":2,"data":[0,0,0,0]}"#;

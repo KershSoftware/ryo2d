@@ -467,6 +467,8 @@ impl<'a, 'i> Reader<'a, 'i> {
       tileheight: self.num(node, "tileheight")?.unwrap_or(0),
       class: self.class(node),
       backgroundcolor: self.str(node, "backgroundcolor").map(str::to_string),
+      parallaxoriginx: self.num(node, "parallaxoriginx")?.unwrap_or(0.0),
+      parallaxoriginy: self.num(node, "parallaxoriginy")?.unwrap_or(0.0),
       properties: self.properties(node)?,
       ..RawMap::default()
     };

@@ -570,6 +570,39 @@ fn a_parallax_layer_follows_part_of_the_camera() {
 }
 
 #[test]
+fn a_parallax_layer_is_where_it_would_be_with_the_camera_on_the_map_s_parallax_origin() {
+  // Tiled's Parallax Origin moved to (48, 40): a camera centred there shows
+  // the layer unmoved, and one at (32, 32) shows it moved by half of
+  // (32, 32) - (48, 40), 8 px left and 4 up
+  let pan = Pan::default();
+  let setup: Setup = Box::new(|ctx| {
+    let set = solid(ctx, &[RED]);
+    let mut tiles = map(vec![set], &[(IVec2::new(3, 3), Tile::new(0, 0))]);
+    tiles.layers[0].info.parallax = Vec2::splat(0.5);
+    tiles.parallax_origin = Vec2::new(48.0, 40.0);
+    spawn(ctx, tiles, Vec2::ZERO);
+  });
+  let builder = EngineBuilder::new()
+    .pixel_art(SIZE, SIZE)
+    .start_scene(Panned(Some(setup), pan.clone()));
+  let Some(mut engine) = HeadlessEngine::new_or_skip(builder) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  let at = |x: u32, y: u32| {
+    move |px: u32, py: u32| {
+      ((x..x + CELL).contains(&px) && (y..y + CELL).contains(&py)).then_some(RED)
+    }
+  };
+  assert_pixels(&engine.frame().unwrap(), at(24 - 8, 24 - 4));
+  // Centred on the origin: the cell at (24, 24) in the world, which the
+  // camera's view (16 px right, 8 down of the first) shows at (8, 16)
+  *pan.lock().unwrap() = Some(Vec2::new(48.0, 40.0));
+  engine.step_frames(2).unwrap();
+  assert_pixels(&engine.frame().unwrap(), at(8, 16));
+}
+
+#[test]
 fn a_swapped_grid_redraws_its_layer() {
   // A new grid made the way the map's own was (one tile set, then every
   // chunk marked, as spawning does), holding another tile: the layer

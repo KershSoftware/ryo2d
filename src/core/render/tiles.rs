@@ -449,7 +449,8 @@ impl TileDrawer {
             let index = i32::try_from(layer_ref.index).unwrap_or(i32::MAX);
             let z = root.z.saturating_add(index);
             let affine = render_global(layer_global, layer_previous, frame.alpha).affine();
-            let views = views(frame.cameras, mask, map_affine, info.parallax);
+            let origin = asset.parallax_origin;
+            let views = views(frame.cameras, mask, (map_affine, origin), info.parallax);
             let style = LayerStyle {
               z,
               look,
@@ -517,7 +518,7 @@ impl TileDrawer {
                 size: Vec2::new(width as f32, height as f32),
                 repeat: (image.repeat_x, image.repeat_y),
               };
-              let parallax = (map_affine, info.parallax);
+              let parallax = ((map_affine, origin), info.parallax);
               let drawn = (&style, &picture, info.name.as_str());
               image_layer(list, frame.cameras, drawn, affine, parallax, warned);
             } else if let Some(children) = children {
@@ -573,11 +574,12 @@ impl TileDrawer {
 
 /// The views a layer on render layers `mask` draws in: one for every camera
 /// at once (`None`, no offset) when it has no parallax, else one for each
-/// camera on `mask`, moved by that camera's parallax offset
+/// camera on `mask`, moved by that camera's parallax offset. `map` is the
+/// map's placement and its parallax origin
 fn views(
   cameras: &[CameraDraw],
   mask: RenderLayers,
-  map: Affine2,
+  map: (Affine2, Vec2),
   factor: Vec2,
 ) -> impl Iterator<Item = (Option<&CameraDraw>, Vec2)> + Clone {
   let shared = factor == Vec2::ONE;
@@ -590,17 +592,18 @@ fn views(
 }
 
 /// The world offset a layer of parallax `factor` draws at for a camera
-/// centred on `center`, on a map placed by `map`: the part of the camera's
-/// position from the map's origin the layer does not follow (Tiled's rule,
-/// its parallax origin being the map's top-left corner). `None` for a map
-/// scaled to nothing
-fn parallax(map: Affine2, factor: Vec2, center: Vec2) -> Option<Vec2> {
+/// centred on `center`, on a map placed by `map` with its parallax origin
+/// (in map pixels): the part of the camera's position from that origin the
+/// layer does not follow, so a camera centred on the origin shows every
+/// layer where it would be without parallax (Tiled's rule). `None` for a
+/// map scaled to nothing
+fn parallax((map, origin): (Affine2, Vec2), factor: Vec2, center: Vec2) -> Option<Vec2> {
   let det = map.matrix2.determinant();
   if !det.is_finite() || det.abs() < 1e-12 {
     return None;
   }
   let local = map.inverse().transform_point2(center);
-  Some(map.transform_vector2((Vec2::ONE - factor) * local))
+  Some(map.transform_vector2((Vec2::ONE - factor) * (local - origin)))
 }
 
 /// `affine` moved by `offset`
@@ -835,7 +838,7 @@ fn image_layer(
   cameras: &[CameraDraw],
   (style, picture, name): (&LayerStyle, &Picture, &str),
   affine: Affine2,
-  (map, factor): (Affine2, Vec2),
+  (map, factor): ((Affine2, Vec2), Vec2),
   warned: &mut FastSet<Entity>,
 ) {
   let size = picture.size;

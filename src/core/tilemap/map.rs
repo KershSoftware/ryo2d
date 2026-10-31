@@ -175,6 +175,10 @@ pub struct TileMap {
   pub layers: Vec<MapLayer>,
   pub class: Option<String>,
   pub background: Option<Color>,
+  /// Where parallax is measured from, in map pixels: a camera centred here
+  /// shows every layer where it would be without parallax (Tiled's Parallax
+  /// Origin; the map's top-left corner, zero, unless the file moves it)
+  pub parallax_origin: Vec2,
   pub properties: Properties,
   /// For each tile layer, the highest tile id it used of each tileset, as
   /// loaded: the loader's check measures them against the tilesets once those
@@ -194,6 +198,7 @@ impl TileMap {
       layers: Vec::new(),
       class: None,
       background: None,
+      parallax_origin: Vec2::ZERO,
       properties: Properties::default(),
       used_ids: Vec::new(),
     }
