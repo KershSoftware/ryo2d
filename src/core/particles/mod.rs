@@ -98,7 +98,7 @@ pub use particle::Particle;
 use std::collections::HashMap;
 
 use crate::core::asset::AssetId;
-use crate::core::ecs::{Entity, GlobalTransform, SpriteEffect, World};
+use crate::core::ecs::{Entity, GlobalTransform, SpriteEffect, Vec2, World};
 use crate::core::graphics::{BatchCollector, Image, SpriteDraw, SpriteInstance};
 use crate::core::messages::register_message;
 use crate::core::physics::{Collider, ColliderShape};
@@ -164,6 +164,15 @@ enum ColliderGeometry {
     y: f32,
     radius: f32,
   },
+  /// Edges with nothing solid between them (a segment, a polyline, or
+  /// segments such as a tile map's packed outlines): the system's edges
+  /// `start..end`, in world space, within the box `min..max`
+  Edges {
+    start: u32,
+    end: u32,
+    min: Vec2,
+    max: Vec2,
+  },
 }
 
 /// A world collider snapshot, gathered once per update.
@@ -188,7 +197,32 @@ struct Contact {
 }
 
 impl ParticleCollider {
-  fn from_component(entity: Entity, global: &GlobalTransform, collider: &Collider) -> Self {
+  /// The collider as particles meet it; a segment, polyline or segments
+  /// collider's edges are added to `edges`, in world space
+  fn from_component(
+    entity: Entity,
+    global: &GlobalTransform,
+    collider: &Collider,
+    edges: &mut Vec<(Vec2, Vec2)>,
+  ) -> Self {
+    let affine = global.affine();
+    let turn = Vec2::from_angle(collider.rotation);
+    // Placed as physics places the shape's points
+    let place = |p: Vec2| affine.transform_point2(collider.offset + turn.rotate(p));
+    let start = edges.len();
+    match &collider.shape {
+      ColliderShape::Segment { a, b } => edges.push((place(*a), place(*b))),
+      ColliderShape::Polyline { points } => {
+        edges.extend(points.windows(2).map(|w| (place(w[0]), place(w[1]))));
+      }
+      ColliderShape::Segments { points, segments } => {
+        edges.extend(segments.iter().filter_map(|&[a, b]| {
+          let (a, b) = (points.get(a as usize)?, points.get(b as usize)?);
+          Some((place(*a), place(*b)))
+        }));
+      }
+      _ => {}
+    }
     let geometry = match collider.shape {
       ColliderShape::Circle { radius } => {
         let center = global.transform_point(collider.offset);
@@ -198,7 +232,22 @@ impl ParticleCollider {
           radius: radius * global.scale().max_element(),
         }
       }
-      // Every other shape collides by its world bounds until the particles rewrite
+      ColliderShape::Segment { .. }
+      | ColliderShape::Polyline { .. }
+      | ColliderShape::Segments { .. } => {
+        let placed = &edges[start..];
+        let (min, max) = placed.iter().fold(
+          (Vec2::splat(f32::INFINITY), Vec2::splat(f32::NEG_INFINITY)),
+          |(min, max), &(a, b)| (min.min(a).min(b), max.max(a).max(b)),
+        );
+        ColliderGeometry::Edges {
+          start: u32::try_from(start).unwrap_or(u32::MAX),
+          end: u32::try_from(edges.len()).unwrap_or(u32::MAX),
+          min,
+          max,
+        }
+      }
+      // Solid shapes collide by their world bounds
       _ => {
         let (min, max) = collider.world_bounds(global);
         ColliderGeometry::Box {
@@ -216,9 +265,37 @@ impl ParticleCollider {
     }
   }
 
-  /// Test a particle circle against this collider.
-  fn contact(&self, x: f32, y: f32, radius: f32) -> Option<Contact> {
+  /// Test a particle circle at `(x, y)`, which was at `from` before this
+  /// update moved it, against this collider (whose edges, if any, are in
+  /// `edges`).
+  fn contact(
+    &self,
+    edges: &[(Vec2, Vec2)],
+    from: Vec2,
+    (x, y): (f32, f32),
+    radius: f32,
+  ) -> Option<Contact> {
     let (normal_x, normal_y, point_x, point_y) = match self.geometry {
+      ColliderGeometry::Edges {
+        start,
+        end,
+        min,
+        max,
+      } => {
+        let to = Vec2::new(x, y);
+        // Its move, give or take its radius, misses the edges' box: it
+        // misses every edge
+        let (low, high) = (to.min(from) - radius, to.max(from) + radius);
+        if low.x > max.x || low.y > max.y || high.x < min.x || high.y < min.y {
+          return None;
+        }
+        let edges = edges.get(start as usize..end as usize)?;
+        let (_, point, normal) = edges
+          .iter()
+          .filter_map(|&(a, b)| edge_contact(a, b, from, to, radius))
+          .min_by(|a, b| a.0.total_cmp(&b.0))?;
+        (normal.x, normal.y, point.x, point.y)
+      }
       ColliderGeometry::Box {
         min_x,
         min_y,
@@ -287,6 +364,53 @@ impl ParticleCollider {
   }
 }
 
+/// Where a particle that moved from `from` to `to` meets the edge `a`-`b`:
+/// a rank (lower meets first), the point on the edge, and the unit normal
+/// pointing to the side it came from. An edge its move crossed is met where
+/// it crossed it, before any it ends near (ranked by how far along its move,
+/// below 0); otherwise one whose nearest point lies within `radius` of `to`
+/// (ranked by distance over radius, 0 to 1), its normal the edge's along
+/// its length and from its end at an end
+fn edge_contact(a: Vec2, b: Vec2, from: Vec2, to: Vec2, radius: f32) -> Option<(f32, Vec2, Vec2)> {
+  let along = b - a;
+  let length = along.length();
+  if !(length > 0.0 && length.is_finite()) {
+    return None;
+  }
+  let normal = Vec2::new(-along.y, along.x) / length;
+  let (before, after) = (normal.dot(from - a), normal.dot(to - a));
+  // Crossed the edge's line this update, within the edge
+  if (before > 0.0 && after < 0.0) || (before < 0.0 && after > 0.0) {
+    let t = before / (before - after);
+    let crossing = from + (to - from) * t;
+    let u = (crossing - a).dot(along) / (length * length);
+    if (0.0..=1.0).contains(&u) {
+      return Some((t - 1.0, crossing, normal * before.signum()));
+    }
+  }
+  let u = ((to - a).dot(along) / (length * length)).clamp(0.0, 1.0);
+  let nearest = a + along * u;
+  let gap = to - nearest;
+  let distance = gap.length();
+  if distance.is_nan() || distance >= radius {
+    return None;
+  }
+  // The side it is on (and was on: it did not cross)
+  let side = if after != 0.0 {
+    after.signum()
+  } else if before != 0.0 {
+    before.signum()
+  } else {
+    1.0
+  };
+  let facing = if (u > 0.0 && u < 1.0) || distance == 0.0 {
+    normal * side
+  } else {
+    gap / distance
+  };
+  Some((distance / radius, nearest, facing))
+}
+
 /// Colliders a particle can hit, in gather order.
 ///
 /// Skips the collider on the particle's own emitter entity, which particles spawn inside.
@@ -317,6 +441,9 @@ pub struct ParticleSystem {
   particles: Vec<ParticleData>,
   /// Colliders gathered this update (reused to avoid per-frame allocation)
   colliders: Vec<ParticleCollider>,
+  /// The edges of the colliders gathered this update that are edges
+  /// (segments, polylines), in world space (reused)
+  edges: Vec<(Vec2, Vec2)>,
   /// Each emitter's look while collecting for render (reused)
   looks: HashMap<Entity, (AssetId<Image>, Option<SpriteEffect>, SpriteDraw)>,
   /// Random number generator for spawn variation
@@ -348,6 +475,7 @@ impl ParticleSystem {
     Self {
       particles: Vec::with_capacity(10000),
       colliders: Vec::new(),
+      edges: Vec::new(),
       looks: HashMap::new(),
       rng,
     }
@@ -379,17 +507,19 @@ impl ParticleSystem {
 
     // Gather colliders only when some emitter collides
     self.colliders.clear();
+    self.edges.clear();
     if emitter_data
       .iter()
       .any(|(.., collision)| collision.is_some())
     {
+      let edges = &mut self.edges;
       self.colliders.extend(
         world
           .query::<(Entity, &GlobalTransform, &Collider)>()
           .iter(world)
           .filter(|(_, _, collider)| !collider.is_trigger)
           .map(|(entity, global, collider)| {
-            ParticleCollider::from_component(entity, global, collider)
+            ParticleCollider::from_component(entity, global, collider, edges)
           }),
       );
     }
@@ -458,6 +588,7 @@ impl ParticleSystem {
         p.particle.simulate(dt, grav_x, grav_y);
 
         // Update position
+        let from = Vec2::new(p.x, p.y);
         p.x += p.particle.velocity_x * dt;
         p.y += p.particle.velocity_y * dt;
 
@@ -470,7 +601,8 @@ impl ParticleSystem {
           // Bounce resolves every overlapping collider in turn (a particle resting on a floor
           // must still hit a wall); the other responses stop at the first contact.
           for collider in candidate_colliders(&self.colliders, p.emitter_entity, config) {
-            let Some(contact) = collider.contact(p.x, p.y, config.radius) else {
+            let Some(contact) = collider.contact(&self.edges, from, (p.x, p.y), config.radius)
+            else {
               continue;
             };
             p.touching = true;
@@ -1398,6 +1530,98 @@ mod tests {
       p.y > scene.bottom + RADIUS,
       "particle at y={} should fall through",
       p.y
+    );
+  }
+
+  /// A tile part as a map packs a chunk's outlines: a floor (x 0 to 400,
+  /// y 80 to 100) and a block far off (x 360 to 400, y 0 to 20), two loops
+  /// in one collider at the origin, whose box (0, 0 to 400, 100) is mostly
+  /// air. One particle from an emitter at `at` under `gravity_y`
+  fn tile_part_scene(config: CollisionConfig, at: Vec2, gravity_y: f32) -> (ParticleSystem, World) {
+    let corners = |x0: f32, y0: f32, x1: f32, y1: f32| {
+      [
+        Vec2::new(x0, y0),
+        Vec2::new(x1, y0),
+        Vec2::new(x1, y1),
+        Vec2::new(x0, y1),
+      ]
+    };
+    let mut points = corners(0.0, 80.0, 400.0, 100.0).to_vec();
+    points.extend(corners(360.0, 0.0, 400.0, 20.0));
+    let ring = |base: u32| (0..4).map(move |i| [base + i, base + (i + 1) % 4]);
+    let segments: Vec<[u32; 2]> = ring(0).chain(ring(4)).collect();
+    let mut world = World::new();
+    world.spawn((Transform::IDENTITY, Collider::segments(points, segments)));
+    world.spawn((
+      Transform::from_translation(at),
+      ParticleEmitter::new(test_sprite())
+        .with_mode(EmissionMode::Burst { count: 1 })
+        .with_speed(0.0, 0.0)
+        .with_lifetime(60.0, 60.0)
+        .with_gravity(0.0, gravity_y)
+        .with_collision(config),
+    ));
+    let mut system = ParticleSystem::new();
+    update(&mut system, &mut world, DT);
+    (system, world)
+  }
+
+  #[test]
+  fn particles_meet_a_tile_part_s_edges_not_its_box() {
+    // Drifting through the air inside the part's box: untouched
+    let config = CollisionConfig::bouncy(RADIUS, 0.5).with_events();
+    let (mut system, mut world) = tile_part_scene(config.clone(), Vec2::new(100.0, 40.0), 0.0);
+    system.particles[0].particle.velocity_x = 120.0;
+    for step in 0..60 {
+      update(&mut system, &mut world, DT);
+      let p = &system.particles[0];
+      assert!(
+        (p.y - 40.0).abs() < 1e-3 && p.particle.velocity_x == 120.0 && !p.touching,
+        "step {step}: at ({}, {}), velocity {:?}",
+        p.x,
+        p.y,
+        (p.particle.velocity_x, p.particle.velocity_y)
+      );
+    }
+    assert!(system.particles[0].x > 200.0, "it drifted on");
+    assert!(
+      world
+        .get_resource::<Messages<ParticleCollision>>()
+        .is_none()
+    );
+
+    // Falling onto the floor: it bounces off its top edge, and never sinks
+    // into the floor
+    let (mut system, mut world) = tile_part_scene(config, Vec2::new(100.0, 40.0), 600.0);
+    let mut bounced = false;
+    for step in 0..240 {
+      update(&mut system, &mut world, DT);
+      let p = &system.particles[0];
+      assert!(p.y <= 80.0 - RADIUS + 1e-3, "step {step}: y = {}", p.y);
+      bounced |= p.particle.velocity_y < 0.0;
+    }
+    assert!(bounced, "it bounced off the floor");
+    let messages = world.resource::<Messages<ParticleCollision>>();
+    let first = messages.get_cursor().read(messages).next().cloned();
+    let first = first.expect("the bounce was told");
+    assert_eq!((first.normal_x, first.normal_y), (0.0, -1.0));
+  }
+
+  #[test]
+  fn a_particle_crossing_an_edge_within_an_update_still_bounces() {
+    // 30 px an update, through the floor's 20 px: it is never within its
+    // radius of an edge, so only the edge it crossed can stop it
+    let config = CollisionConfig::bouncy(RADIUS, 0.5);
+    let (mut system, mut world) = tile_part_scene(config, Vec2::new(100.0, 50.0), 0.0);
+    system.particles[0].particle.velocity_y = 1800.0;
+    for step in 0..20 {
+      update(&mut system, &mut world, DT);
+      let p = &system.particles[0];
+      assert!(p.y <= 80.0 - RADIUS + 1e-3, "step {step}: y = {}", p.y);
+    }
+    assert!(
+      system.particles[0].particle.velocity_y < 0.0,
+      "it bounced up"
     );
   }
 

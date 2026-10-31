@@ -66,7 +66,7 @@ The order is the dependency order: removals and disables first so nothing below 
 ## Hierarchy
 
 - A collider belongs to the nearest `RigidBody` at or above its entity; one with no body above it is a fixed collider of its own. Bodies may sit anywhere in the hierarchy.
-- A collider's *placement* is its pose relative to the body plus the linear map of its shape (the world scale, mirroring and rotation), so colliders follow world scale. `Collider::world_bounds(global)` gives that geometry; particles, navigation and the overlay use it, so everything agrees with physics. A zero scale takes a collider out of the simulation until it grows.
+- A collider's *placement* is its pose relative to the body plus the linear map of its shape (the world scale, mirroring and rotation), so colliders follow world scale. `Collider::world_bounds(global)` gives that geometry; particles (for solid shapes; they meet segments, polylines and segments colliders edge by edge, each placed the same way), navigation and the overlay use it, so everything agrees with physics. A zero scale takes a collider out of the simulation until it grows.
 - Physics reads world poses from `GlobalTransform` and writes a body into its local `Transform` through its parent. A body's rotation is its local direction through its parent's linear map; its own scale (mirroring included) stays with its shape.
 - Under a rotated parent with non-uniform scale a child's shape is sheared; shear is approximated by the convex hull of the mapped shape.
 - Squash and stretch (a scale effect) on an entity with a collider scales the hitbox too: put the sprite on a child and scale that.

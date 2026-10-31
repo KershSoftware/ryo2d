@@ -2,7 +2,7 @@
 name: ryo-particles
 description: Particle system - emitters, attractors, collisions, presets for visual effects.
 metadata:
-  version: 2.1.1
+  version: 2.1.2
 ---
 
 # Ryo2D Particle System Specialist
@@ -165,7 +165,7 @@ if let Some(mut transform) = ctx.world.get_mut::<Transform>(self.attractor) {
 
 ## Collisions
 
-`with_collision(CollisionConfig)` makes an emitter's particles collide with entities that have `Collider` (no `RigidBody` needed); the examples build the configs it takes. Geometry is the collider as physics simulates it: centred on the entity's origin plus `offset`, unscaled (`Collider::world_bounds`). Trigger colliders, `Disabled` entities and the emitter's own collider are skipped. Each particle is a circle of the config's radius.
+`with_collision(CollisionConfig)` makes an emitter's particles collide with entities that have `Collider` (no `RigidBody` needed); the examples build the configs it takes. Geometry is the collider as physics places it: a circle is a circle; a segment, polyline or segments collider (a tile map's colliders among them) is its edges, which a particle meets within its radius, or by crossing one in an update, and bounces off to the side it came from; every other shape is its world bounds, a box (`Collider::world_bounds`). Trigger colliders, `Disabled` entities and the emitter's own collider are skipped. Each particle is a circle of the config's radius.
 
 ```rust
 CollisionConfig::bouncy(2.0, 0.7); // radius, restitution
@@ -183,7 +183,7 @@ CollisionConfig::new(2.0)
 | `Stick` | Stops; still ages and fades | Once, with `with_events()` |
 | `Event` | Passes through | Always, on contact entry |
 
-Contact entry is tracked per particle, not per collider: sliding from a floor into a wall does not notify again. Collisions are checked at particle positions once per update, so very fast particles can pass through thin colliders.
+Contact entry is tracked per particle, not per collider: sliding from a floor into a wall does not notify again. Collisions are checked at particle positions once per update, so very fast particles can pass through thin boxes and circles; an edge also stops a particle whose move crossed it.
 
 `ParticleCollision` is a message; read it after `update`:
 
