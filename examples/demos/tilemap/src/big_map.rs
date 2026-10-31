@@ -7,9 +7,12 @@
 //! the CPU from the engine's `FrameCost` (smoothed; the vsync wait left
 //! out), once with the map on and once with it off, so the difference is
 //! the map's: its total, and the render, present and update it splits into
-//! (the map's draws are encoded as the render passes run, in present). F1
-//! swaps the engine's FPS counter (on in this demo) for its frame timing
-//! overlay, which draws the same split.
+//! (the map's draws are encoded as the render passes run, in present), and
+//! the rest of the total, "other": the phases outside the fixed steps
+//! (`update_ms` counts the UI pass and the fixed steps alone), where the
+//! asset pump, map spawning and transform propagation run. F1 swaps the
+//! engine's FPS counter (on in this demo) for its frame timing overlay,
+//! which draws the same split without the rest.
 //!
 //! The layers neither collide nor cast shadows: nothing on the page touches
 //! them, and a colliding map this size takes about 70 ms on the map builder
@@ -331,7 +334,10 @@ impl DemoPage for BigMapPage {
     // The map's state now: what the engine reads now, marked until its
     // average settles; the other state: what it last settled at
     // The map's draws are encoded as the render passes run, so most of its
-    // cost is in present, and the total is the number to compare
+    // cost is in present, and the total is the number to compare. Update
+    // counts the fixed steps alone: the other phases (the asset pump and
+    // map spawning, transform propagation, the map's shadow sync) show as
+    // what the total has besides the three
     let state = |label: &str, slot: usize| {
       let now = usize::from(self.shown) == slot;
       let shown = if now && !settled {
@@ -351,10 +357,17 @@ impl DemoPage for BigMapPage {
           ),
           (
             format!(
-              "  render {:.3}, present {:.3}, update {:.3}",
+              "  render {:.3}, present {:.3}",
               cost.render_ms(),
-              cost.present_ms(),
-              cost.update_ms()
+              cost.present_ms()
+            ),
+            DIM,
+          ),
+          (
+            format!(
+              "  update {:.3}, other {:.3} ms",
+              cost.update_ms(),
+              (cost.total_ms() - cost.render_ms() - cost.present_ms() - cost.update_ms()).max(0.0)
             ),
             DIM,
           ),

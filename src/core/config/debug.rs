@@ -339,6 +339,14 @@ pub struct FrameTimings {
 /// frame timing overlay shows. Read it, don't write it: the engine puts it
 /// back each frame.
 ///
+/// [`update_ms`](Self::update_ms), [`render_ms`](Self::render_ms) and
+/// [`present_ms`](Self::present_ms) do not add up to
+/// [`total_ms`](Self::total_ms): the frame's phases outside the fixed steps
+/// (`First`, `PreUpdate` with the asset pump and tile map spawning,
+/// `Update`, `PostUpdate` with transform propagation and map shadow sync,
+/// and `Last`) count in the total alone: their cost is the total less the
+/// other three.
+///
 /// ```
 /// use ryo2d::prelude::*;
 ///
@@ -373,7 +381,9 @@ impl FrameCost {
   }
 
   /// The UI pass and the fixed steps: the scenes' updates, their systems
-  /// and physics, in milliseconds
+  /// and physics, in milliseconds. The frame's other phases (the asset
+  /// pump, tile map spawning, transform propagation) are not in it; they
+  /// show only in [`total_ms`](Self::total_ms)
   pub fn update_ms(&self) -> f64 {
     self.update_ms
   }

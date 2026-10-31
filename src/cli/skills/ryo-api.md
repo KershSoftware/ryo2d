@@ -2,7 +2,7 @@
 name: ryo-api
 description: Complete API reference for ryo2d::prelude - every exported type with its signatures and use, organised by area.
 metadata:
-  version: 2.15.0
+  version: 2.15.1
 ---
 
 # Ryo2D API Reference
@@ -1505,7 +1505,7 @@ Families (see `ryo-network`):
 ## Profiling, console, logging
 
 - `profile_function!()` and `profile_scope!("name")`: puffin scopes with the `profiler` feature, nothing without. See `ryo-profiler`.
-- `FrameCost` (resource the engine writes at the end of every frame, windowed or headless; read it with `ctx.resource::<FrameCost>()`, never write it): what recent frames cost the CPU, smoothed over about 50 frames, as the F1 frame timing overlay shows it. `update_ms()` (the UI pass and the fixed steps: scenes, systems, physics), `render_ms()` (gathering, building and uploading the frame), `present_ms()` (running the render passes and presenting, without the wait for the window's next image), `total_ms()` (the frame's work, the vsync wait and the sleep between frames left out), `fps()` (from wall-clock time, waits included; 0 until the second frame), `frames()` (frames measured). For a game's own performance readout.
+- `FrameCost` (resource the engine writes at the end of every frame, windowed or headless; read it with `ctx.resource::<FrameCost>()`, never write it): what recent frames cost the CPU, smoothed over about 50 frames, as the F1 frame timing overlay shows it. `update_ms()` (the UI pass and the fixed steps: scenes, systems, physics; the other phases, such as the asset pump, map spawning and transform propagation, count only in the total), `render_ms()` (gathering, building and uploading the frame), `present_ms()` (running the render passes and presenting, without the wait for the window's next image), `total_ms()` (the frame's work, the vsync wait and the sleep between frames left out), `fps()` (from wall-clock time, waits included; 0 until the second frame), `frames()` (frames measured). For a game's own performance readout.
 - `game_trace!`, `game_debug!`, `game_info!`, `game_warn!`, `game_error!`: `format!`-style game logging (`game_info!("score {}", s)`; `game_info!(module: "ai", "..")` tags a module), shown in the logger window and the terminal.
 - Console (backtick key): `ConsoleCommandBuilder` (from `EngineBuilder::with_console_commands`): `declare(name, description)`, `declare_verbose(name, description, verbose)`, `remove_builtin(name)`. Handlers: `ctx.console().register(name, |args: &[&str], cmd: &mut CommandContext| -> CommandResult)`. `CommandContext { console: &mut ConsoleState, debug_config, quit_requested, capture_requested, time_scale, commands, game_name, game_version }`; `ConsoleState` prints with `print`, `print_colored`, `print_error`, `print_system`; `enum CommandResult { Ok, Error(String), Quit }`; `CommandRegistry` is the engine's registry. See `ryo-console`.
 - `rand` and `rand::Rng` are re-exported (`rand::thread_rng().gen_range(0.0..1.0)`).

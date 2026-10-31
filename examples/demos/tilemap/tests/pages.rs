@@ -629,6 +629,10 @@ fn the_big_map_page_shows_what_a_frame_costs_with_the_map_on_and_off() {
   let on = ms_after(&shown, "Map on: total");
   assert!(on.is_some_and(|ms| ms > 0.0), "map on: {on:?}");
   assert!(shown.contains("  render "), "the split is shown");
+  // What the four figures leave out: map spawning, the asset pump and
+  // propagation, outside the fixed steps
+  let other = ms_after(&shown, ", other");
+  assert!(other.is_some_and(|ms| ms >= 0.0), "other: {other:?}");
   assert!(
     shown.contains("Map off: not measured yet"),
     "the map has not been off"

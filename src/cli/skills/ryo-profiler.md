@@ -2,7 +2,7 @@
 name: ryo-profiler
 description: Profiling Ryo2D games and engine - puffin integration, profiler window, performance analysis.
 metadata:
-  version: 1.1.0
+  version: 1.1.1
 ---
 
 # Ryo2D Profiler Specialist
@@ -32,7 +32,7 @@ The built-in profiler window (`windows/profiler_window.rs`) provides:
 
 ## The Frame Timing Overlay and `FrameCost`
 
-F1 cycles the engine's overlays (FPS, stats, frame timing; also `debug:timing` in the console). The frame timing overlay splits a frame's CPU time into update (the UI pass and the fixed steps: scenes, systems, physics), render (gathering what the frame draws, building and uploading it), present (running the render passes and presenting) and their total. Present and total leave out the wait for the window's next image, which vsync paces, so they show the work, not the display's rate; the FPS counter comes from the wall clock and does count the waits.
+F1 cycles the engine's overlays (FPS, stats, frame timing; also `debug:timing` in the console). The frame timing overlay splits a frame's CPU time into update (the UI pass and the fixed steps: scenes, systems, physics), render (gathering what the frame draws, building and uploading it), present (running the render passes and presenting) and the total. The three do not add up to the total: the frame's other phases (`PreUpdate` with the asset pump and tile map spawning, `Update`, `PostUpdate` with transform propagation, and `First` and `Last`) count only in the total, so a cost there, such as a big map's children being propagated, shows as total less the three. Present and total leave out the wait for the window's next image, which vsync paces, so they show the work, not the display's rate; the FPS counter comes from the wall clock and does count the waits.
 
 A game's own readout reads the same smoothed numbers from `FrameCost`, a resource the engine writes at the end of every frame, windowed or headless (read it; the engine puts it back each frame):
 
@@ -54,7 +54,8 @@ fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction {
 ```
 
 - The values are smoothed over about 50 frames (a plain mean until then), so a change shows within a second at 60 fps; `frames()` counts the frames measured, and `fps()` is 0 until the second frame.
-- Compare a feature on and off on the same machine to see what it costs: the tilemap demo's Big map page shows the map's cost this way, the frame with the map against the frame without it.
+- Compare a feature on and off on the same machine to see what it costs: the tilemap demo's Big map page shows the map's cost this way, the frame with the map against the frame without it, with the rest of the total (total less update, render and present) as "other".
+- `update_ms()` is the UI pass and the fixed steps alone; the asset pump, map spawning and transform propagation are in `total_ms()` only.
 - The raw measurement of each frame is `ryo2d::core::config::FrameTimings { update, physics, render, present, wait, total }` (`Duration`s), what the engine smooths; its `wait` is the time spent waiting for the window's next image, which `present` and `total` leave out.
 
 ## Instrumenting Code
