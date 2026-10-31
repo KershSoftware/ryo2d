@@ -2,7 +2,7 @@
 name: ryo-api
 description: Complete API reference for ryo2d::prelude - every exported type with its signatures and use, organised by area.
 metadata:
-  version: 2.15.1
+  version: 2.16.0
 ---
 
 # Ryo2D API Reference
@@ -1084,8 +1084,8 @@ Tiled and LDtk levels as registry assets, spawned by a `MapRoot` entity: tile la
 - `LayerInfo` (also a component on each spawned layer entity) `{ id: u32, name, class, offset: Vec2, opacity: f32, tint: Color, parallax: Vec2, visible: bool, blend: BlendMode, collides: bool, occludes: Option<bool> (None: as collides), y_sorted: bool, lit: bool, properties }`: `new(id, name)` (visible, opaque, lit, colliding). Tiled fills `collides`, `occludes`, `y_sorted` and `lit` from the bool layer properties `collides` (default true for tile layers), `occludes`, `y_sort` and `lit` (default true); LDtk's IntGrid layers collide, its other layers do not.
 - `ImageLayer { image: Handle<Image>, repeat_x: bool, repeat_y: bool }` (also a component on an image layer's entity). `IntGrid { size, values: Vec<i32>, names }`: `get(IVec2) -> Option<i32>` (`None` for 0 or outside).
 - `MapObjectData { id: String, name, class, position: Vec2 (the rectangle's top-left in map pixels), size: Vec2, rotation: f32 (radians, clockwise on screen, about position), shape: ObjectShape, tile: Option<Tile>, visible: bool, properties }`; `ObjectShape::{Rect, Ellipse, Point, Capsule, Polygon(Vec<Vec2>), Polyline(Vec<Vec2>), Text(String)}`.
-- `LdtkLevel { identifier, iid, world: Option<String>, position: IVec2, size: UVec2, fields: Properties, neighbours: Vec<Neighbour>, map: TileMap }`.
-- `WorldLayout { name, levels: Vec<WorldLevel> }`: `levels_in(Rect) -> impl Iterator<Item = (usize, &WorldLevel)>` (touching an edge does not count). `WorldLevel { name, position: Vec2, size: Vec2, neighbours: Vec<Neighbour> }`; `Neighbour { level: usize, direction: NeighbourDirection }`; `enum NeighbourDirection { North, South, East, West, NorthEast, NorthWest, SouthEast, SouthWest, Above, Below, Overlap }`.
+- `LdtkLevel { identifier, iid, world: Option<String>, position: IVec2, size: UVec2, depth: i32, fields: Properties, neighbours: Vec<Neighbour>, map: TileMap }`.
+- `WorldLayout { name, levels: Vec<WorldLevel> }`: `levels_in(Rect, depth: i32) -> impl Iterator<Item = (usize, &WorldLevel)>` (the levels at that world depth overlapping the area; touching an edge does not count). `WorldLevel { name, position: Vec2, size: Vec2, depth: i32 (LDtk's worldDepth, 0 for Tiled), neighbours: Vec<Neighbour> }`; `Neighbour { level: usize, direction: NeighbourDirection }`; `enum NeighbourDirection { North, South, East, West, NorthEast, NorthWest, SouthEast, SouthWest, Above, Below, Overlap }`.
 
 **Cells and tiles:**
 
@@ -1108,7 +1108,7 @@ Tiled and LDtk levels as registry assets, spawned by a `MapRoot` entity: tile la
 | `MapTile` (component, child of its tile layer at the cell's centre) `{ map: Entity, layer: usize, cell: IVec2, tile: Tile, class: String, properties }` | a class tile |
 | `MapIds` (component on the map entity) | `get(id: &str) -> Option<Entity>` |
 | `MapOccluder` (component) `{ chunk: UVec2 }` | marks the `LightOccluder2D::chain`s a map keeps from its tiles (children of its first occluding layer); an edit rebuilds a chunk's |
-| `WorldLevelOf` (component) `{ world: WorldRef, level: usize }` | marks a root `spawn_levels_in` spawned; despawn the root to unload the level |
+| `WorldLevelOf` (component) `{ world: WorldRef, level: usize }` | marks a root `spawn_levels_in` spawned; despawn the root to unload the level (a disabled root keeps it) |
 | `enum WorldRef { Tiled(Handle<TileWorld>), Ldtk { project: Handle<LdtkProject>, world: String } }` | `From<&Handle<TileWorld>>`; a single-world LDtk project's world is "World" |
 | `enum MapEvent { Spawned { map }, Reloaded { map }, Failed { map, error: Arc<AssetError> } }` (message) | landed whole this frame; followed a saved file; did not load or land (sent once per failure) |
 | `enum LayerRef<'a> { Name(&'a str), Index(usize) }` | `From<&str>`, `From<&String>`, `From<usize>`; a name is the first layer so called |
@@ -1125,7 +1125,8 @@ Tiled and LDtk levels as registry assets, spawned by a `MapRoot` entity: tile la
 | `intgrid(map, layer, cell) -> Option<i32>` | |
 | `tile_data(map, Tile) -> Option<TileData>` | |
 | `world_to_cell(map, layer, Vec2) -> Option<IVec2>`, `cell_to_world(map, layer, IVec2) -> Option<Vec2>` | through the map's and layer's `Transform`s as they are now; a cell's centre |
-| `spawn_levels_in(world: impl Into<WorldRef>, area: Rect) -> Vec<Entity>` | spawns each level overlapping `area` not already spawned (a `MapRoot` at its position with a `WorldLevelOf`); returns those it spawned |
+| `spawn_levels_in(world: impl Into<WorldRef>, area: Rect) -> Vec<Entity>` | spawns each level at world depth 0 overlapping `area` not already spawned (a `MapRoot` at its position with a `WorldLevelOf`; a disabled root counts as spawned); returns those it spawned |
+| `spawn_levels_in_with(world, area, depth: i32, configure: impl FnMut(&WorldLevel, MapRoot) -> MapRoot) -> Vec<Entity>` | the same at world depth `depth`, each root set up by `configure` (its z, class tiles, IntGrid collision, collision); the map stays the level's |
 
 - Collision: a map's colliding layers keep `TileColliders` (see [Characters and gameplay](#characters-and-gameplay)) on the map entity, or on a layer with its own cell size, offset or material (`collision_layer`, `collision_mask`, `friction`, `restitution` properties, a layer's over the map's). Parallax is ignored for collision.
 - Not loaded: isometric, staggered, hexagonal, oblique and infinite maps (an error naming sub-project 6b), and layer blend modes other than normal, add, multiply and screen.

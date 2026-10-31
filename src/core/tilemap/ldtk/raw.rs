@@ -96,6 +96,8 @@ pub(super) struct RawLevel {
   pub world_x: i64,
   #[serde(default, rename = "worldY")]
   pub world_y: i64,
+  #[serde(default, rename = "worldDepth")]
+  pub world_depth: i64,
   #[serde(default, rename = "pxWid")]
   pub px_wid: i64,
   #[serde(default, rename = "pxHei")]

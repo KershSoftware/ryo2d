@@ -2,7 +2,7 @@
 name: ryo-tilemap
 description: "Tile maps - the workflow from Tiled (.tmx, .tmj) or LDtk (.ldtk) through assets/ to a MapRoot entity, layers and the reserved layer properties (collides, occludes, y_sort, lit), tilesets and typed tile data, objects and class tiles as entities, MapEvent, reading and editing tiles with ctx.maps() and Wang terrain, collision from tile shapes and IntGrids, tile shadows, y-sorting and parallax, worlds of levels, maps built in code and by procgen, hot reload, the web, performance and testing."
 metadata:
-  version: 1.0.1
+  version: 1.1.0
 ---
 
 # Ryo2D Tile Maps
@@ -250,7 +250,7 @@ for (entity, hits) in bricks {
 | `tile_data(map, tile) -> Option<TileData>` | what the tile's tileset says about it |
 | `world_to_cell(map, layer, world: Vec2) -> Option<IVec2>`, `cell_to_world(map, layer, cell) -> Option<Vec2>` | through the map's and the layer's transforms; a cell's centre |
 | `layer_entity(map, layer) -> Option<Entity>` | the layer's entity |
-| `spawn_levels_in(world, area: Rect) -> Vec<Entity>` | the levels of a world near a place (section 12) |
+| `spawn_levels_in(world, area: Rect) -> Vec<Entity>`, `spawn_levels_in_with(world, area, depth, configure)` | the levels of a world near a place, the second setting each root up (section 12) |
 
 <!-- self: map: Entity -->
 ```rust
@@ -396,7 +396,7 @@ ctx.world.spawn((Transform::from_xy(0.0, 0.0), MapRoot::new(map)));
 
 ## 12. Worlds of levels
 
-A world is a set of levels with their places and neighbours: a Tiled world file (`.world`, a `TileWorld`) or an LDtk project's worlds (`LdtkProject::worlds`). Each world's `WorldLayout` lists its levels (`WorldLevel { name, position, size, neighbours }`, positions in world pixels). Which levels exist when is the game's call; `ctx.maps().spawn_levels_in` spawns the levels overlapping an area that are not spawned yet, each a `MapRoot` at its level's place with a `WorldLevelOf { world, level }`:
+A world is a set of levels with their places and neighbours: a Tiled world file (`.world`, a `TileWorld`) or an LDtk project's worlds (`LdtkProject::worlds`). Each world's `WorldLayout` lists its levels (`WorldLevel { name, position, size, depth, neighbours }`, positions in world pixels). Which levels exist when is the game's call; `ctx.maps().spawn_levels_in` spawns the levels overlapping an area that are not spawned yet, each a `MapRoot` at its level's place with a `WorldLevelOf { world, level }`:
 
 <!-- self: world: Handle<TileWorld>, player: Entity -->
 ```rust
@@ -410,8 +410,21 @@ for room in ctx.maps().spawn_levels_in(&self.world, near) {
 }
 ```
 
-- Despawn a level's root to unload it; the next call whose area reaches it spawns it again. The tilemap demo's World of rooms page despawns rooms the hero has left 96 px behind.
-- An LDtk world: `spawn_levels_in(WorldRef::Ldtk { project, world: "World".to_string() }, area)` (a single-world project's world is called "World"; with several, each has its name). Its levels are also `LdtkProject::levels` (`LdtkLevel { identifier, iid, world, position, size, fields, neighbours, map }`; `level(name_or_iid)`).
+- Despawn a level's root to unload it; the next call whose area reaches it spawns it again. A root the game disabled to park its level still counts as spawned. The tilemap demo's World of rooms page despawns rooms the hero has left 96 px behind.
+- **Set the roots up** with `spawn_levels_in_with(world, area, depth, configure)`: `configure` is given each level and its bare root and returns the root as the game wants it, with any of `MapRoot`'s builders (section 2). The map stays the level's whatever root it returns. The World of rooms page draws each room from z -2, so its y-sorted props layer is at z 0 with the hero:
+
+<!-- self: world: Handle<TileWorld> -->
+```rust
+let near = Rect::new(0.0, 0.0, 320.0, 180.0);
+ctx.maps().spawn_levels_in_with(&self.world, near, 0, |level, root| {
+  let root = root.with_z(-2).with_entity_tiles(&["coin", "spikes"]);
+  // The sky rooms are backdrops: nothing in them collides
+  if level.name.starts_with("sky") { root.without_collision() } else { root }
+});
+```
+
+- **Depth:** an LDtk world's levels each have a world depth (`WorldLevel::depth`, `LdtkLevel::depth`: LDtk's `worldDepth`), a floor of its own; a Tiled world's are all at 0. `spawn_levels_in` spawns depth 0 only, and `spawn_levels_in_with` the depth it is given, so the floors above and below never stack onto the one being played; `WorldLayout::levels_in(area, depth)` lists the levels the same way. To change floors, despawn the roots of the one left and stream the other.
+- An LDtk world: `spawn_levels_in(WorldRef::Ldtk { project, world: "World".to_string() }, area)` (a single-world project's world is called "World"; with several, each has its name). Its levels are also `LdtkProject::levels` (`LdtkLevel { identifier, iid, world, position, size, depth, fields, neighbours, map }`; `level(name_or_iid)`).
 - One level by hand: `MapRoot::world_level(&world, index)` (or `ldtk_world_level`), put at its `WorldLevel::position` with the root's `Transform`. A level the world lacks fails the root (`MapEvent::Failed`).
 - Nothing spawns until the world's asset is loaded. A Tiled world's maps are its dependencies, so it is ready when they are; a map that fails fails the world.
 - **Neighbours:** each level's `neighbours` (`Neighbour { level, direction }`, `level` an index in the same layout). A Tiled world's are worked out from the rectangles: sharing an edge is `North`, `South`, `East` or `West`, a corner a diagonal (`NorthEast` ...), an overlap `Overlap`. LDtk's are LDtk's own, `Above` and `Below` for levels at another depth.

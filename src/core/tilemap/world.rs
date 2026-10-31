@@ -8,7 +8,7 @@ use super::{LdtkProject, Neighbour, NeighbourDirection, TileMap, WorldLayout, Wo
 use crate::core::asset::{
   Asset, AssetPath, AssetServer, Assets, Handle, LoadState, UntypedAssetId,
 };
-use crate::core::ecs::{Component, Entity, Transform, World};
+use crate::core::ecs::{Allow, Component, Disabled, Entity, Transform, World};
 use crate::core::ui::Rect;
 
 /// A Tiled world file's levels: each map with its place in the world, its
@@ -192,11 +192,15 @@ impl MapRoot {
 }
 
 impl WorldLayout {
-  /// The levels whose rectangle overlaps `area`, with their indices, in
-  /// layout order. A level that only touches the area's edge does not count
-  pub fn levels_in(&self, area: Rect) -> impl Iterator<Item = (usize, &WorldLevel)> {
+  /// The levels at world depth `depth` whose rectangle overlaps `area`,
+  /// with their indices, in layout order. A level that only touches the
+  /// area's edge does not count. A Tiled world's levels are all at depth 0;
+  /// an LDtk world's are at their own ([`WorldLevel::depth`]), so a floor
+  /// above or below one is not in its area
+  pub fn levels_in(&self, area: Rect, depth: i32) -> impl Iterator<Item = (usize, &WorldLevel)> {
     self.levels.iter().enumerate().filter(move |(_, level)| {
-      level.position.x < area.right()
+      level.depth == depth
+        && level.position.x < area.right()
         && level.position.x + level.size.x > area.x
         && level.position.y < area.bottom()
         && level.position.y + level.size.y > area.y
@@ -269,40 +273,51 @@ pub(crate) fn layout_of_rects(name: &str, mut levels: Vec<WorldLevel>) -> WorldL
   }
 }
 
-/// Spawns the levels of `world` that overlap `area` and are not spawned
-pub(crate) fn spawn_levels_in(world: &mut World, source: WorldRef, area: Rect) -> Vec<Entity> {
-  let Some(layout) = source.layout(world) else {
-    return Vec::new();
-  };
-  let wanted: Vec<(usize, Vec2)> = layout
-    .levels_in(area)
-    .map(|(i, l)| (i, l.position))
-    .collect();
-  let mut have = world.query::<&WorldLevelOf>();
-  let present: Vec<usize> = have
+/// Spawns the levels of `source` at world depth `depth` that overlap `area`
+/// and are not spawned, each root set up by `configure`
+pub(crate) fn spawn_levels_in(
+  world: &mut World,
+  source: WorldRef,
+  area: Rect,
+  depth: i32,
+  mut configure: impl FnMut(&WorldLevel, MapRoot) -> MapRoot,
+) -> Vec<Entity> {
+  // A disabled root (a level the game parked) still holds its level
+  let present: Vec<usize> = world
+    .query_filtered::<&WorldLevelOf, Allow<Disabled>>()
     .iter(world)
     .filter(|of| of.world == source)
     .map(|of| of.level)
     .collect();
-  let mut spawned = Vec::new();
-  for (level, position) in wanted {
-    if present.contains(&level) {
-      continue;
-    }
-    let root = MapRoot::from_source(MapSource::WorldLevel {
-      world: source.clone(),
-      level,
-    });
-    let of = WorldLevelOf {
-      world: source.clone(),
-      level,
-    };
-    let entity = world
-      .spawn((root, of, Transform::from_xy(position.x, position.y)))
-      .id();
-    spawned.push(entity);
-  }
-  spawned
+  let Some(layout) = source.layout(world) else {
+    return Vec::new();
+  };
+  let roots: Vec<(usize, Vec2, MapRoot)> = layout
+    .levels_in(area, depth)
+    .filter(|(index, _)| !present.contains(index))
+    .map(|(index, level)| {
+      let source = MapSource::WorldLevel {
+        world: source.clone(),
+        level: index,
+      };
+      // The game sets the root up; the map stays the level's
+      let mut root = configure(level, MapRoot::from_source(source.clone()));
+      root.source = source;
+      (index, level.position, root)
+    })
+    .collect();
+  roots
+    .into_iter()
+    .map(|(level, position, root)| {
+      let of = WorldLevelOf {
+        world: source.clone(),
+        level,
+      };
+      world
+        .spawn((root, of, Transform::from_xy(position.x, position.y)))
+        .id()
+    })
+    .collect()
 }
 
 /// Gives each waiting root that names a level of a world the map it
@@ -497,7 +512,7 @@ mod tests {
     let layout = layout_of(&world, &rooms);
     let names = |area: Rect| -> Vec<String> {
       layout
-        .levels_in(area)
+        .levels_in(area, 0)
         .map(|(_, l)| l.name.clone())
         .collect()
     };
@@ -560,6 +575,141 @@ mod tests {
     assert_eq!(again.len(), 1);
     maps.frames_until(maps_landed);
     assert_eq!(spawned_roots(&mut maps.world).len(), 3);
+  }
+
+  #[test]
+  fn a_parked_level_is_not_spawned_again() {
+    use crate::core::ecs::Disabled;
+    let mut maps = MapWorld::new();
+    let rooms = load_world(&mut maps.world, "tiled/worlds/rooms.world").expect("loads");
+    let area = Rect::new(10.0, 10.0, 4.0, 4.0);
+    let first = MapsView::new(&mut maps.world).spawn_levels_in(&rooms, area);
+    assert_eq!(first.len(), 1);
+    maps.frames_until(maps_landed);
+    // The game parks the room: disabled, not despawned
+    maps.world.entity_mut(first[0]).insert(Disabled);
+    assert!(
+      MapsView::new(&mut maps.world)
+        .spawn_levels_in(&rooms, area)
+        .is_empty(),
+      "a disabled root still holds its level"
+    );
+    // Parked while its landing is out, too
+    let other = Rect::new(40.0, 10.0, 4.0, 4.0);
+    let second = MapsView::new(&mut maps.world).spawn_levels_in(&rooms, other);
+    assert_eq!(second.len(), 1);
+    maps.world.entity_mut(second[0]).insert(Disabled);
+    assert!(
+      MapsView::new(&mut maps.world)
+        .spawn_levels_in(&rooms, other)
+        .is_empty()
+    );
+  }
+
+  #[test]
+  fn levels_spawn_with_the_roots_the_game_sets_up() {
+    use crate::core::physics::TileCell;
+    use crate::core::tilemap::IntGridKey;
+    use crate::core::tilemap::spawn::MapSource;
+    use crate::core::tilemap::test_util::load_map;
+    let mut maps = MapWorld::new();
+    let rooms = load_world(&mut maps.world, "tiled/worlds/rooms.world").expect("loads");
+    let other = load_map(&mut maps.world, "tiled/worlds/d.tmj");
+    let mut seen = Vec::new();
+    let spawned = MapsView::new(&mut maps.world).spawn_levels_in_with(
+      &rooms,
+      Rect::new(30.0, 0.0, 10.0, 10.0),
+      0,
+      |level, _| {
+        seen.push(level.name.clone());
+        // A root naming another map: only its settings count
+        MapRoot::new(other.clone())
+          .with_z(-10)
+          .with_entity_tiles(&["coin"])
+          .with_intgrid_collision(3, TileCell::OneWay)
+          .without_collision()
+      },
+    );
+    assert_eq!(seen, ["a.tmj", "b.tmj"]);
+    assert_eq!(spawned.len(), 2);
+    for (index, &entity) in spawned.iter().enumerate() {
+      let Some(root) = maps.world.get::<MapRoot>(entity) else {
+        panic!("no root");
+      };
+      assert_eq!(root.z, -10);
+      assert_eq!(root.entity_tiles, ["coin"]);
+      assert_eq!(
+        root.intgrid_collision,
+        [(IntGridKey::Value(3), TileCell::OneWay)]
+      );
+      assert!(!root.collision);
+      match &root.source {
+        MapSource::WorldLevel { world, level } => {
+          assert_eq!((world, *level), (&WorldRef::Tiled(rooms.clone()), index));
+        }
+        other => panic!("the level's map was replaced: {other:?}"),
+      }
+    }
+    maps.frames_until(maps_landed);
+    for &entity in &spawned {
+      assert!(MapsView::new(&mut maps.world).is_ready(entity));
+      assert!(
+        maps
+          .world
+          .get::<crate::core::physics::TileColliders>(entity)
+          .is_none(),
+        "collision off"
+      );
+    }
+  }
+
+  #[test]
+  fn an_ldtk_world_streams_one_depth_at_a_time() {
+    let mut maps = MapWorld::new();
+    let project = AssetsView::new(&mut maps.world)
+      .load_now::<LdtkProject>("ldtk/worlds.ldtk")
+      .expect("worlds.ldtk loads");
+    let overworld = WorldRef::Ldtk {
+      project,
+      world: "Overworld".into(),
+    };
+    // Inside C (depth 0) and Over (depth 0), under Upper (depth 1)
+    let area = Rect::new(90.0, 64.0, 4.0, 4.0);
+    let names = |world: &crate::core::ecs::World, depth: i32| -> Vec<String> {
+      let Some(layout) = overworld.layout(world) else {
+        panic!("not loaded");
+      };
+      layout
+        .levels_in(area, depth)
+        .map(|(_, l)| l.name.clone())
+        .collect()
+    };
+    assert_eq!(names(&maps.world, 0), ["C", "Over"]);
+    assert_eq!(names(&maps.world, 1), ["Upper"]);
+    assert!(names(&maps.world, -1).is_empty());
+    let level_names = |maps: &mut MapWorld, roots: &[Entity]| -> Vec<String> {
+      let Some(layout) = overworld.layout(&maps.world) else {
+        panic!("not loaded");
+      };
+      roots
+        .iter()
+        .filter_map(|&root| maps.world.get::<WorldLevelOf>(root))
+        .map(|of| layout.levels[of.level].name.clone())
+        .collect()
+    };
+    // The ground floor by default, the floor above when asked
+    let ground = MapsView::new(&mut maps.world).spawn_levels_in(overworld.clone(), area);
+    assert_eq!(level_names(&mut maps, &ground), ["C", "Over"]);
+    let upper =
+      MapsView::new(&mut maps.world)
+        .spawn_levels_in_with(overworld.clone(), area, 1, |_, root| root);
+    assert_eq!(level_names(&mut maps, &upper), ["Upper"]);
+    maps.frames_until(maps_landed);
+    assert!(
+      MapsView::new(&mut maps.world)
+        .spawn_levels_in_with(overworld, area, 1, |_, root| root)
+        .is_empty()
+    );
   }
 
   #[test]

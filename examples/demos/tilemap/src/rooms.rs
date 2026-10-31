@@ -1,9 +1,10 @@
 //! The World of rooms page: `rooms/rooms.world`, a Tiled world of three
 //! rooms side by side (a TMJ, a TMX and a TMJ). Only the rooms near the
-//! hero exist: each step the page asks `ctx.maps().spawn_levels_in` for the
-//! rooms its reach (the box round the hero) overlaps, which spawns those not
-//! yet spawned, and despawns rooms the hero has left well behind. Walk
-//! through the doorways to the east and watch the next room arrive
+//! hero exist: each step the page asks `ctx.maps().spawn_levels_in_with` for
+//! the rooms its reach (the box round the hero) overlaps, which spawns those
+//! not yet spawned, each drawn from the z the page gives it, and despawns
+//! rooms the hero has left well behind. Walk through the doorways to the
+//! east and watch the next room arrive
 
 use demo_kit::prelude::*;
 
@@ -20,8 +21,9 @@ const REACH: f32 = 64.0;
 const KEEP: f32 = 96.0;
 /// The hero's sprite: a Tiny Dungeon wizard
 const HERO: u32 = 84;
-/// The rooms' props layer, which is y-sorted: the hero sorts among it
-const PROPS_Z: i32 = 2;
+/// The z each room draws from: its y-sorted props layer, the third, is then
+/// at z 0 with the hero, who walks among the props
+const ROOMS_Z: i32 = -2;
 
 /// A level of the world: its name and where it is
 struct Room {
@@ -132,7 +134,7 @@ impl DemoPage for RoomsPage {
     }
     // No gravity on a top-down hero: it can stand before its room lands
     let sprite = hero(ctx, HERO);
-    self.player = Some(spawn_top_down_player(ctx, self.start, sprite, PROPS_Z));
+    self.player = Some(spawn_top_down_player(ctx, self.start, sprite, 0));
     self.view.follow(ctx, self.start, 2.0, self.bounds, 1.0);
   }
 
@@ -140,7 +142,10 @@ impl DemoPage for RoomsPage {
     let (Some(world), Some(at)) = (self.world.clone(), place_of(ctx, self.player)) else {
       return;
     };
-    self.arrivals += ctx.maps().spawn_levels_in(&world, Self::reach(at)).len() as u32;
+    let arrived = ctx
+      .maps()
+      .spawn_levels_in_with(&world, Self::reach(at), 0, |_, room| room.with_z(ROOMS_Z));
+    self.arrivals += arrived.len() as u32;
 
     // Rooms the hero has left far behind go
     let mut levels = ctx.world.query::<(Entity, &WorldLevelOf, Has<MapIds>)>();

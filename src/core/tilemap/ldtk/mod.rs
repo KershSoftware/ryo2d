@@ -49,6 +49,10 @@ pub struct WorldLevel {
   /// The top-left corner in world pixels
   pub position: Vec2,
   pub size: Vec2,
+  /// The world depth: LDtk's `worldDepth`, where each depth is a floor of
+  /// its own (a level on another depth is above or below this one, not
+  /// beside it); 0 for a Tiled world's levels
+  pub depth: i32,
   pub neighbours: Vec<Neighbour>,
 }
 
@@ -70,6 +74,9 @@ pub struct LdtkLevel {
   pub position: IVec2,
   /// In pixels
   pub size: UVec2,
+  /// The world depth (`worldDepth`): levels on other depths are floors
+  /// above or below this one
+  pub depth: i32,
   /// The level's custom fields
   pub fields: Properties,
   /// Indices into the level's world's [`WorldLayout::levels`]
@@ -628,8 +635,10 @@ mod tests {
     let expected: Vec<(String, NeighbourDirection)> =
       expected.iter().map(|(n, d)| (n.to_string(), *d)).collect();
     assert_eq!(found, expected);
-    // `<` is a level below
+    // `<` is a level below; each level keeps its world depth
     let (_, upper) = world_level(over, "Upper");
+    assert_eq!((centre.depth, upper.depth), (0, 1));
+    assert_eq!(project.level("Upper").map(|l| l.depth), Some(1));
     assert_eq!(
       upper.neighbours,
       [Neighbour {

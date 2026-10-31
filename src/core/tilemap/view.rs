@@ -5,7 +5,7 @@ use glam::{IVec2, Vec2};
 use super::edit::{self, LayerRef};
 use super::spawn::{self, MapIds, MapRoot};
 use super::world::{self, WorldRef};
-use super::{Tile, TileData, wang};
+use super::{Tile, TileData, WorldLevel, wang};
 use crate::core::ecs::{Entity, World};
 use crate::core::ui::Rect;
 
@@ -155,16 +155,47 @@ impl<'w> MapsView<'w> {
 
   /// Spawns the levels of `world` (a Tiled world's handle, or a
   /// [`WorldRef`] for an LDtk world) that overlap `area`, in world pixels,
-  /// and returns the root entities it spawned this call. Each root is a
-  /// [`MapRoot`] for its level, at the level's position, carrying a
-  /// [`WorldLevelOf`](super::WorldLevelOf). A level already spawned for
-  /// that world (a live root with that marker) is skipped, so calling this
-  /// every frame with the area around the player spawns each level once;
-  /// despawn a level's root to unload it, and it spawns again when the area
-  /// reaches it. Nothing spawns until the world's asset is loaded. Saving
-  /// the world's file leaves spawned levels where they are, and the next
-  /// call uses the new layout
+  /// at world depth 0, and returns the root entities it spawned this call.
+  /// Each root is a [`MapRoot`] for its level, at the level's position,
+  /// carrying a [`WorldLevelOf`](super::WorldLevelOf). A level already
+  /// spawned for that world (a root with that marker, disabled or not) is
+  /// skipped, so calling this every frame with the area around the player
+  /// spawns each level once; despawn a level's root to unload it, and it
+  /// spawns again when the area reaches it (a disabled root keeps it
+  /// parked). Nothing spawns until the world's asset is loaded. Saving the
+  /// world's file leaves spawned levels where they are, and the next call
+  /// uses the new layout. To set the roots up (their z, class tiles,
+  /// IntGrid collision) or stream another depth, use
+  /// [`spawn_levels_in_with`](Self::spawn_levels_in_with)
   pub fn spawn_levels_in(&mut self, world: impl Into<WorldRef>, area: Rect) -> Vec<Entity> {
-    world::spawn_levels_in(self.world, world.into(), area)
+    world::spawn_levels_in(self.world, world.into(), area, 0, |_, root| root)
+  }
+
+  /// [`spawn_levels_in`](Self::spawn_levels_in) for the levels at world
+  /// depth `depth` (LDtk's `worldDepth`: each depth is a floor of its own,
+  /// and a Tiled world's levels are all at 0), each root set up by
+  /// `configure` before it spawns. `configure` is given the level and its
+  /// bare root, and returns the root with the settings the game wants
+  /// ([`MapRoot::with_z`], [`MapRoot::with_entity_tiles`],
+  /// [`MapRoot::with_intgrid_collision`], [`MapRoot::without_collision`]);
+  /// the map stays the level's, whatever root it returns.
+  ///
+  /// ```
+  /// use ryo2d::prelude::*;
+  ///
+  /// fn stream(ctx: &mut SceneContext<'_>, rooms: &Handle<TileWorld>, near: Rect) {
+  ///   ctx.maps().spawn_levels_in_with(rooms, near, 0, |_level, root| {
+  ///     root.with_z(-10).with_entity_tiles(&["coin", "spikes"])
+  ///   });
+  /// }
+  /// ```
+  pub fn spawn_levels_in_with(
+    &mut self,
+    world: impl Into<WorldRef>,
+    area: Rect,
+    depth: i32,
+    configure: impl FnMut(&WorldLevel, MapRoot) -> MapRoot,
+  ) -> Vec<Entity> {
+    world::spawn_levels_in(self.world, world.into(), area, depth, configure)
   }
 }

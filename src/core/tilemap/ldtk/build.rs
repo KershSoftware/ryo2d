@@ -762,6 +762,7 @@ fn build_world(
       }
       _ => {}
     }
+    let depth = to_i32(path, &place, "worldDepth", raw.world_depth)?;
     let layers = level_layers(cx, path, &mut raw)?;
     let fields = fields_of(defs, &place, &raw.field_instances)?;
     let map = build_map(defs, tilesets, &raw, &layers, size, fields.clone())?;
@@ -769,6 +770,7 @@ fn build_world(
       name: raw.identifier.clone(),
       position: position.as_vec2(),
       size: size.as_vec2(),
+      depth,
       neighbours: neighbours.clone(),
     });
     out.push(LdtkLevel {
@@ -777,6 +779,7 @@ fn build_world(
       world: multi.then(|| name.to_string()),
       position,
       size,
+      depth,
       fields,
       neighbours,
       map,

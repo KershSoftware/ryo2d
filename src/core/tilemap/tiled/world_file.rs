@@ -273,6 +273,7 @@ impl AssetLoader for TileWorldLoader {
         name,
         position,
         size,
+        depth: 0,
         neighbours: Vec::new(),
       })
       .collect();
