@@ -12,7 +12,8 @@ mod kinds;
 mod ldtk;
 mod map;
 mod occluders;
-pub(crate) mod padded;
+#[doc(hidden)]
+pub mod padded;
 mod property;
 mod reload;
 mod spawn;
@@ -25,7 +26,7 @@ mod view;
 mod wang;
 mod world;
 
-use crate::core::ecs::IntoScheduleConfigs;
+use crate::core::ecs::{IntoScheduleConfigs, Schedule};
 use crate::core::schedule::{EngineSchedules, FixedSet, Phase, PostUpdateSet};
 
 pub use edit::LayerRef;
@@ -52,6 +53,29 @@ pub use tileset::{
 };
 pub use view::MapsView;
 pub use world::{TileWorld, WorldLevelOf, WorldRef};
+
+/// The systems a tile edit runs through, each in a schedule of its own:
+/// the map collision sync (the edited chunk classified again), physics'
+/// tile collider rebuild with its collider sync after it (the loops through
+/// the cell retraced, their chunk colliders reshaped and the new shapes
+/// built for Rapier) and the map occluder sync. For a bench to time each on
+/// a world the engine runs (`benches/tilemap.rs`); not for games
+#[doc(hidden)]
+pub fn edit_schedules() -> [Schedule; 3] {
+  let mut collision = Schedule::default();
+  collision.add_systems(collision::sync_map_colliders);
+  let mut rebuild = Schedule::default();
+  rebuild.add_systems(
+    (
+      crate::core::physics::rebuild_tile_colliders,
+      crate::core::physics::sync::sync_colliders,
+    )
+      .chain(),
+  );
+  let mut occluders = Schedule::default();
+  occluders.add_systems(occluders::sync_map_occluders);
+  [collision, rebuild, occluders]
+}
 
 /// The map systems that run each frame and step: collision kept in step
 /// with the tiles before the tile colliders rebuild (so an edit made in

@@ -8,6 +8,9 @@
 //! sit in the shared atlas, where its slot can move (the draw maps UVs
 //! through the slot). UVs written for it are in padded-image space, 0..1
 //! over the whole image.
+//!
+//! Public but hidden from the docs: `tests/tilemap_alloc.rs` and
+//! `benches/tilemap.rs` drive the cache from outside the crate.
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -31,10 +34,13 @@ const MAX_SIDE: u64 = 16384;
 /// The most cells one animation may take once its frames are repeated to a
 /// common beat; past that it plays on a beat of the mean frame time
 const MAX_ANIMATION_CELLS: u64 = 128;
+/// Rounds (frames) a padding no map asked for is kept, as long as the
+/// batch keeps an undrawn chunk (`chunks::KEEP_FRAMES`)
+const KEEP_ROUNDS: u64 = crate::core::render::batch::KEEP_FRAMES;
 
 /// How a tileset's tiles sit in its padded image
 #[derive(Clone, Debug)]
-pub(crate) struct PaddedLayout {
+pub struct PaddedLayout {
   /// A cell's side in texels: the power of two at or above twice the
   /// largest tile's longer side, and at or above that side plus 8 (R10).
   /// Mip level k samples only a tile's own cell while 2^k is at most the
@@ -63,7 +69,7 @@ pub(crate) struct PaddedLayout {
 
 /// Where one tile sits in the padded image
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct PaddedTile {
+pub struct PaddedTile {
   /// The tile's cell, counted row-major from the top left
   pub slot: u32,
   /// The tile's size in texels, as drawn unflipped
@@ -74,7 +80,7 @@ pub(crate) struct PaddedTile {
 /// An animated tile's frames: `frames` cells from `first_slot`, row-major,
 /// wrapping rows, each shown for `frame_duration` seconds
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct PaddedAnimation {
+pub struct PaddedAnimation {
   pub first_slot: u32,
   pub frames: u32,
   pub frame_duration: f32,
@@ -161,16 +167,34 @@ fn gcd(a: u64, b: u64) -> u64 {
   if b == 0 { a } else { gcd(b, a % b) }
 }
 
-/// Pads `tileset`'s tiles, or `None` when it has nothing to draw yet: no
-/// tile with a picture, or its atlas image not loaded
+/// Why a tileset has no padded image
+#[derive(Debug)]
+pub(crate) enum Unpadded {
+  /// Nothing to draw yet: no tile with a picture, or its atlas image not
+  /// loaded
+  Nothing,
+  /// Its `cells` cells of `cell` texels would make an image of `size`
+  /// texels, over `MAX_SIDE` on a side (`cell` 0: a tile so large its cell
+  /// overflows)
+  TooBig {
+    cells: u64,
+    cell: u32,
+    size: (u64, u64),
+  },
+}
+
+/// Pads `tileset`'s tiles; `Unpadded::Nothing` when it has nothing to draw
+/// yet (no tile with a picture, or its atlas image not loaded), and
+/// `Unpadded::TooBig` when its padded image would be over `MAX_SIDE`
+/// texels on a side
 pub(crate) fn pad_tileset(
   tileset: &Tileset,
   images: &Assets<Image>,
-) -> Option<(Image, PaddedLayout)> {
+) -> Result<(Image, PaddedLayout), Unpadded> {
   // Every tile that has a picture, by id
   let ids: Vec<u32> = match &tileset.image {
     TilesetImage::Atlas { image, .. } => {
-      images.get(image)?;
+      images.get(image).ok_or(Unpadded::Nothing)?;
       (0..tileset.tile_count)
         .filter(|&id| tileset.tile_rect(id).is_some())
         .collect()
@@ -190,9 +214,20 @@ pub(crate) fn pad_tileset(
     .filter(|&id| source(tileset, images, id).is_some())
     .filter_map(|id| Some((id, tile_size(tileset, id)?)))
     .collect();
-  let side = ids.iter().map(|(_, s)| s.x.max(s.y)).max()?;
+  let side = ids
+    .iter()
+    .map(|(_, s)| s.x.max(s.y))
+    .max()
+    .ok_or(Unpadded::Nothing)?;
   let room = side.max(MIN_ROOM);
-  let cell = side.checked_add(room)?.checked_next_power_of_two()?;
+  let cell = side
+    .checked_add(room)
+    .and_then(u32::checked_next_power_of_two)
+    .ok_or(Unpadded::TooBig {
+      cells: ids.len() as u64,
+      cell: 0,
+      size: (u64::MAX, u64::MAX),
+    })?;
 
   // The cells: the tiles by id, then each animation's frames in turn
   let mut cells: Vec<(u32, UVec2)> = ids.clone();
@@ -235,7 +270,11 @@ pub(crate) fn pad_tileset(
   let margin = (cell - BORDER % cell) % cell;
   let side = |count: u64| count * u64::from(cell) + 2 * u64::from(margin);
   if side(columns) > MAX_SIDE || side(rows) > MAX_SIDE {
-    return None;
+    return Err(Unpadded::TooBig {
+      cells: n,
+      cell,
+      size: (side(columns), side(rows)),
+    });
   }
   let (columns, rows) = (columns as u32, rows as u32);
   let size = UVec2::new(columns, rows) * cell + 2 * margin;
@@ -257,7 +296,7 @@ pub(crate) fn pad_tileset(
     paint(&mut data, size.x, origin, cell, drawn, &from);
   }
   layout.tiles = Arc::new(tiles);
-  Some((Image::from_rgba(data, size.x, size.y), layout))
+  Ok((Image::from_rgba(data, size.x, size.y), layout))
 }
 
 /// Copies a tile of `drawn` texels into the cell at `origin`, centred, its
@@ -294,17 +333,34 @@ struct Entry {
   stamp: u64,
   handle: Handle<Image>,
   layout: PaddedLayout,
-  asked: bool,
+  /// The round it was last asked for in
+  asked: u64,
+}
+
+/// A tileset too big to pad, as it was when refused: not tried again (or
+/// warned about again) until it changes
+struct Refused {
+  stamp: u64,
+  /// The round it was last asked for in
+  asked: u64,
 }
 
 /// The next [`PaddedLayout::serial`]
 static SERIALS: AtomicU64 = AtomicU64::new(1);
 
 /// The padded image of each tileset a map draws, made once and made again
-/// when the tileset or an image of it changes
+/// when the tileset or an image of it changes, and kept for `KEEP_ROUNDS`
+/// rounds after a map last asked for it: a level despawned and another of
+/// the same tileset spawned soon after (a level restarted or changed) draws
+/// with it, rather than padding again, and making its texture again, in its
+/// landing frame. A tileset too big to pad draws nothing, and the dev log
+/// warns once for each version of it a map draws
 #[derive(Default)]
-pub(crate) struct PaddedTilesets {
+pub struct PaddedTilesets {
   entries: FastMap<Key, Entry>,
+  too_big: FastMap<Key, Refused>,
+  /// The round under way, counted from 1
+  round: u64,
 }
 
 /// A hash of the versions of what `tileset` is padded from
@@ -332,12 +388,10 @@ fn stamp(tileset: &Tileset, version: u64, images: &Assets<Image>) -> u64 {
 }
 
 impl PaddedTilesets {
-  /// Starts a round of `get`s: what no `get` asks for before `end_round` is
-  /// freed
+  /// Starts a round of `get`s (one a frame): what no `get` has asked for in
+  /// `KEEP_ROUNDS` rounds is freed at its end
   pub fn begin_round(&mut self) {
-    for e in self.entries.values_mut() {
-      e.asked = false;
-    }
+    self.round += 1;
   }
 
   /// The padded image and layout of `source`; `None` while there is nothing
@@ -362,15 +416,40 @@ impl PaddedTilesets {
     if let Some(entry) = self.entries.get_mut(&key)
       && entry.stamp == stamp
     {
-      entry.asked = true;
+      entry.asked = self.round;
       return Some((entry.handle.clone(), entry.layout.clone()));
     }
-    let made = pad_tileset(tileset, images);
-    let Some((image, mut layout)) = made else {
-      // Nothing to draw (yet): what was made before is stale
-      self.entries.remove(&key);
+    if let Some(refused) = self.too_big.get_mut(&key)
+      && refused.stamp == stamp
+    {
+      refused.asked = self.round;
       return None;
+    }
+    let (image, mut layout) = match pad_tileset(tileset, images) {
+      Ok(made) => made,
+      Err(why) => {
+        // Nothing to draw (yet), or too big: what was made before is stale
+        self.entries.remove(&key);
+        if let Unpadded::TooBig { cells, cell, size } = why {
+          crate::engine_warn!(
+            module: "Tilemap",
+            "tileset \"{}\" is too big to pad: its {cells} cells of {cell} texels need a padded image of {} x {} texels, over the {MAX_SIDE} a side it may span, so its tiles draw nothing (a tile's cell is the power of two at or above twice its tileset's largest tile side, and at least that side plus 8)",
+            tileset.name,
+            size.0,
+            size.1
+          );
+          self.too_big.insert(
+            key,
+            Refused {
+              stamp,
+              asked: self.round,
+            },
+          );
+        }
+        return None;
+      }
     };
+    self.too_big.remove(&key);
     layout.serial = SERIALS.fetch_add(1, Ordering::Relaxed);
     // Made again in place, so the draw keeps its texture's identity
     let handle = match self.entries.remove(&key) {
@@ -389,20 +468,23 @@ impl PaddedTilesets {
         stamp,
         handle: handle.clone(),
         layout: layout.clone(),
-        asked: true,
+        asked: self.round,
       },
     );
     Some((handle, layout))
   }
 
-  /// Frees what the round's `get`s did not ask for
+  /// Frees what no `get` has asked for in `KEEP_ROUNDS` rounds
   pub fn end_round(&mut self) {
-    self.entries.retain(|_, e| e.asked);
+    let round = self.round;
+    let kept = |asked: u64| round.saturating_sub(asked) < KEEP_ROUNDS;
+    self.entries.retain(|_, e| kept(e.asked));
+    self.too_big.retain(|_, refused| kept(refused.asked));
   }
 
   /// How many padded images are kept (tests)
   #[cfg(test)]
-  pub fn len(&self) -> usize {
+  pub(crate) fn len(&self) -> usize {
     self.entries.len()
   }
 }
@@ -411,39 +493,7 @@ impl PaddedTilesets {
 pub(crate) mod tests {
   use super::*;
   use crate::core::tilemap::{TileData, TileFrame, TilesetImage};
-  use std::alloc::{GlobalAlloc, Layout, System};
-  use std::cell::Cell;
   use std::time::Duration;
-
-  thread_local! {
-    static ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
-  }
-
-  /// Counts the allocations each thread makes
-  struct Counting;
-
-  // SAFETY: every call goes to `System`; the counter is a const-initialised
-  // thread local without a destructor, so touching it never allocates
-  unsafe impl GlobalAlloc for Counting {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-      ALLOCATIONS.with(|c| c.set(c.get() + 1));
-      unsafe { System.alloc(layout) }
-    }
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-      unsafe { System.dealloc(ptr, layout) }
-    }
-    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new: usize) -> *mut u8 {
-      ALLOCATIONS.with(|c| c.set(c.get() + 1));
-      unsafe { System.realloc(ptr, layout, new) }
-    }
-  }
-
-  #[global_allocator]
-  static COUNTING: Counting = Counting;
-
-  fn allocations() -> usize {
-    ALLOCATIONS.with(Cell::get)
-  }
 
   /// A `cols` x `rows` atlas of `tile` px tiles; texel (x, y) of tile `id`
   /// is `[x, y, id, 255]` (x and y within the tile)
@@ -619,7 +669,7 @@ pub(crate) mod tests {
   fn nothing_to_pad_is_none() {
     let images = Assets::new();
     let t = Tileset::new("e", UVec2::splat(16), TilesetImage::Collection);
-    assert!(pad_tileset(&t, &images).is_none());
+    assert!(matches!(pad_tileset(&t, &images), Err(Unpadded::Nothing)));
   }
 
   #[test]
@@ -715,63 +765,77 @@ pub(crate) mod tests {
     let img = images.get(&third).expect("padded image");
     assert_eq!(texel(img, o.x, o.y)[2], 99);
 
-    // A round that does not ask frees it
-    padded.begin_round();
-    padded.end_round();
+    // Rounds that do not ask free it, once it has been kept a while
+    for _ in 0..KEEP_ROUNDS {
+      padded.begin_round();
+      padded.end_round();
+    }
     drop((first, again, third));
     images.free_unheld(&mut Vec::new());
     assert_eq!(images.len(), count);
   }
 
   #[test]
-  fn a_cache_hit_allocates_nothing() {
+  fn a_padding_unasked_for_a_while_is_kept_and_then_freed() {
+    // A map despawned and another of the same tileset spawned a few frames
+    // later (a level restarted or changed) draws with the same padding,
+    // not one made again in its landing frame
     let mut tilesets = Assets::<Tileset>::new();
     let mut images = Assets::new();
-    let atlas = marked_atlas(&mut images, 16, 2, 2);
-    let a = images.add(Image::solid_rect(16, 16, 255, 0, 0, 255));
-    let b = images.add(Image::solid_rect(8, 24, 0, 255, 0, 255));
-    let mut collection = Tileset::new("c", UVec2::splat(16), TilesetImage::Collection);
-    collection.tile_count = 40;
-    for id in 0..40 {
-      let (handle, size) = if id % 2 == 0 {
-        (a.clone(), UVec2::splat(16))
-      } else {
-        (b.clone(), UVec2::new(8, 24))
-      };
-      collection.insert_tile(
-        id,
-        TileData {
-          image: Some((handle, size)),
-          ..TileData::default()
-        },
-      );
-    }
-    let sources = [
-      TilesetSource::Asset(tilesets.add(atlas)),
-      TilesetSource::Asset(tilesets.add(collection.clone())),
-      TilesetSource::Embedded(Arc::new(collection)),
-    ];
+    let source = TilesetSource::Asset(tilesets.add(marked_atlas(&mut images, 16, 2, 2)));
     let mut padded = PaddedTilesets::default();
-    for round in 0..2 {
+    padded.begin_round();
+    let (handle, made) = padded.get(&source, &tilesets, &mut images).expect("padded");
+    padded.end_round();
+    for _ in 0..30 {
       padded.begin_round();
-      for source in &sources {
-        assert!(
-          padded.get(source, &tilesets, &mut images).is_some(),
-          "round {round}"
-        );
-      }
       padded.end_round();
     }
-    // Warm: every further round is a hit
-    let before = allocations();
-    for _ in 0..10 {
+    padded.begin_round();
+    let (again, kept) = padded.get(&source, &tilesets, &mut images).expect("padded");
+    padded.end_round();
+    assert_eq!(
+      (again, kept.serial),
+      (handle, made.serial),
+      "the same padding"
+    );
+    // Unasked for as long as an undrawn chunk is kept, it goes
+    for _ in 0..KEEP_ROUNDS {
       padded.begin_round();
-      for source in &sources {
-        // Handle and layout clones are reference counts
-        drop(padded.get(source, &tilesets, &mut images));
-      }
       padded.end_round();
     }
-    assert_eq!(allocations(), before, "a cache hit allocated");
+    assert_eq!(padded.len(), 0);
+  }
+
+  #[test]
+  fn a_tileset_too_big_to_pad_draws_nothing_and_warns_once() {
+    // 16,900 tiles of 64 px: cells of 128 texels, 130 a side, over the
+    // 16,384 texels a padded image may span. The atlas image itself is
+    // small: nothing is padded, so nothing reads past it
+    let mut tilesets = Assets::<Tileset>::new();
+    let mut images = Assets::new();
+    let image = images.add(Image::solid_rect(16, 16, 255, 0, 0, 255));
+    let mut set = Tileset::new(
+      "too-big-5d2a",
+      UVec2::splat(64),
+      TilesetImage::Atlas {
+        image,
+        size: UVec2::splat(64 * 130),
+      },
+    );
+    set.columns = 130;
+    set.tile_count = 130 * 130;
+    let source = TilesetSource::Asset(tilesets.add(set));
+    let mut padded = PaddedTilesets::default();
+    for _ in 0..3 {
+      padded.begin_round();
+      assert!(padded.get(&source, &tilesets, &mut images).is_none());
+      padded.end_round();
+    }
+    let warned = crate::core::dev_log::get_entries()
+      .iter()
+      .filter(|e| e.message.contains("too-big-5d2a"))
+      .count();
+    assert_eq!(warned, 1, "warned once, naming the tileset");
   }
 }

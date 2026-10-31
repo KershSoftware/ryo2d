@@ -503,6 +503,19 @@ impl Scene for Busy {
       grid.set(IVec2::new(3, 4), Some(Tile::new(0, 1)));
     }
     map.layers[top].info.lit = false;
+    // and an image layer under the tiles, repeated across
+    let backdrop = ctx.assets().add(Image::solid_rect(8, 8, 40, 40, 90, 255));
+    map.layers.insert(
+      0,
+      MapLayer {
+        info: LayerInfo::new(100, "backdrop"),
+        kind: LayerKind::Image(ImageLayer {
+          image: backdrop,
+          repeat_x: true,
+          repeat_y: false,
+        }),
+      },
+    );
     spawn_map(ctx, map, Vec2::new(-4.0, 2.0));
     ctx.effects().set_vignette(0.4);
     ctx.effects().set_bloom(0.6);
@@ -556,6 +569,9 @@ fn steady_frames_create_no_bind_groups() {
   };
   engine.step_frames(3).unwrap();
   assert!(chunks(&engine).chunk_count() > 0, "a map on screen");
+  let world = engine.world_mut();
+  let image_layers = world.query::<&ImageLayer>().iter(world).count();
+  assert_eq!(image_layers, 1, "an image layer on screen");
   let before = created_on_this_thread();
   engine.step_frames(3).unwrap();
   assert_eq!(created_on_this_thread() - before, 0);
@@ -1117,6 +1133,10 @@ fn a_despawned_map_frees_its_chunks() {
     !engine.engine.batch.as_ref().unwrap().has_chunk_buffer(),
     "the arena's buffer goes"
   );
+  // The padded tilesets are kept a while, as a map of them may come back
+  // (a level restarted), then go
+  assert_eq!(engine.engine.tile_drawer.padded_count(), 2, "kept a while");
+  engine.step_frames(120).unwrap();
   assert_eq!(
     engine.engine.tile_drawer.padded_count(),
     0,

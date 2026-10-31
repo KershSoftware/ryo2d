@@ -8,7 +8,9 @@ mod pipelines;
 mod plan;
 mod polyline;
 
-pub(crate) use chunks::{ChunkKey, ChunkPart, ChunkRow, ChunkStamp, ChunkStore, TileSlot};
+pub(crate) use chunks::{
+  ChunkKey, ChunkPart, ChunkRow, ChunkStamp, ChunkStore, KEEP_FRAMES, TileSlot,
+};
 pub(crate) use gpu::{Batch2D, unit_quad};
 pub(crate) use key::{BatchShader, DrawState, LightStep, PageKind, Sampling, Stream};
 pub use key::{BlendMode, Filter};

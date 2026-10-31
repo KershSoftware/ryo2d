@@ -207,7 +207,9 @@ pub(super) struct LayerView<'a> {
 type Warned = FastSet<(Option<usize>, &'static str)>;
 
 /// The colliding layers among `layers` into `planned`, and the map's own
-/// group key; a property of the wrong type warns once (`warned`)
+/// group key. A property of the wrong type warns once, and so does a
+/// colliding layer with parallax, which collides where it would draw
+/// without it (R17) (`warned`)
 fn plan<'a>(
   map: Entity,
   layers: impl IntoIterator<Item = LayerView<'a>>,
@@ -215,10 +217,11 @@ fn plan<'a>(
   warned: &mut Warned,
   planned: &mut Vec<Planned>,
 ) -> GroupKey {
-  let mut warn = |layer: Option<(usize, &str)>,
-                  name: &'static str,
-                  value: &PropertyValue,
-                  wanted: &str| {
+  let warn = |warned: &mut Warned,
+              layer: Option<(usize, &str)>,
+              name: &'static str,
+              value: &PropertyValue,
+              wanted: &str| {
     if warned.insert((layer.map(|(index, _)| index), name)) {
       let whose = match layer {
         Some((_, layer)) => format!("layer \"{layer}\""),
@@ -231,7 +234,7 @@ fn plan<'a>(
     }
   };
   let map_material = Material::of(properties, Material::DEFAULT, |name, value, wanted| {
-    warn(None, name, value, wanted)
+    warn(warned, None, name, value, wanted)
   });
   planned.clear();
   if collision {
@@ -239,8 +242,21 @@ fn plan<'a>(
       let material = Material::of(
         &layer.info.properties,
         map_material,
-        |name, value, wanted| warn(Some((layer.index, &layer.info.name)), name, value, wanted),
+        |name, value, wanted| {
+          let place = Some((layer.index, layer.info.name.as_str()));
+          warn(warned, place, name, value, wanted)
+        },
       );
+      let parallax = layer.info.parallax;
+      if parallax != Vec2::ONE && warned.insert((Some(layer.index), "parallax")) {
+        crate::engine_warn!(
+          module: "Tilemap",
+          "map {map}: layer \"{}\" collides and has parallax {}, {}: collision ignores parallax, so it collides where it would draw with parallax 1, not where it draws",
+          layer.info.name,
+          parallax.x,
+          parallax.y
+        );
+      }
       planned.push(Planned {
         entity: layer.entity,
         index: layer.index,
@@ -1338,6 +1354,42 @@ mod tests {
     assert_eq!(warned, 1, "warned once, naming the layer");
     let small = layers_of(&mut maps.world, map)[1];
     assert_eq!(colliders(&maps.world, small).get(0, 0), TileCell::Solid);
+  }
+
+  #[test]
+  fn a_colliding_layer_with_parallax_collides_where_it_is_and_warns_once() {
+    let mut map = code_map(
+      UVec2::new(4, 1),
+      &[
+        ("far-hills-91b3", &[(IVec2::ZERO, SOLID)]),
+        ("far-clouds-91b3", &[(IVec2::new(2, 0), SOLID)]),
+      ],
+    );
+    map.layers[0].info.parallax = Vec2::new(0.5, 1.0);
+    // A layer that does not collide may move as it likes
+    map.layers[1].info.parallax = Vec2::new(0.25, 0.25);
+    map.layers[1].info.collides = false;
+    let mut maps = MapWorld::new();
+    let handle = add(&mut maps.world, map);
+    let map = maps.spawn(MapRoot::new(handle));
+    maps.frame();
+    maps.frame();
+    // It collides at its cells, parallax aside (R17)
+    let tiles = colliders(&maps.world, map);
+    assert_eq!(tiles.get(0, 0), TileCell::Solid);
+    assert_eq!(tiles.get(2, 0), TileCell::Empty);
+    let warned = |name: &str| {
+      crate::core::dev_log::get_entries()
+        .iter()
+        .filter(|e| e.message.contains(name) && e.message.contains("parallax"))
+        .count()
+    };
+    assert_eq!(warned("far-hills-91b3"), 1, "warned once, naming the layer");
+    assert_eq!(
+      warned("far-clouds-91b3"),
+      0,
+      "a layer that does not collide"
+    );
   }
 
   #[test]
