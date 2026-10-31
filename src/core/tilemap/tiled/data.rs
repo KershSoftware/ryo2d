@@ -197,6 +197,88 @@ mod tests {
     assert!(error.is_err_and(|e| e.contains("more than 4")));
   }
 
+  /// `bytes` compressed as `how` ("gzip", "zlib" or "zstd")
+  fn pack(bytes: &[u8], how: &str) -> Vec<u8> {
+    use std::io::Write;
+    match how {
+      "gzip" => {
+        let mut z = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+        z.write_all(bytes).expect("write");
+        z.finish().expect("finish")
+      }
+      "zlib" => {
+        let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+        z.write_all(bytes).expect("write");
+        z.finish().expect("finish")
+      }
+      _ => ruzstd::encoding::compress_to_vec(bytes, ruzstd::encoding::CompressionLevel::Fastest),
+    }
+  }
+
+  /// A layer of `n` cells, gids 1 to `n`, as little-endian bytes
+  fn cells(n: u32) -> Vec<u8> {
+    (1..=n).flat_map(|g| g.to_le_bytes()).collect()
+  }
+
+  #[test]
+  fn every_compression_decodes_its_layer() {
+    for how in ["gzip", "zlib", "zstd"] {
+      let packed = STANDARD.encode(pack(&cells(64), how));
+      let got = decode_layer_data(&text(&packed), Some("base64"), Some(how), 64);
+      assert_eq!(got, Ok((1..=64).collect::<Vec<u32>>()), "{how}");
+    }
+  }
+
+  #[test]
+  fn truncated_or_corrupt_compressed_data_is_an_error_naming_it() {
+    for how in ["gzip", "zlib", "zstd"] {
+      let whole = pack(&cells(256), how);
+      // cut short: the stream ends early (zlib's last four bytes are only
+      // its checksum, which flate2 does not miss once the cells are whole)
+      for keep in [whole.len() / 2, whole.len() - 8, 3] {
+        let packed = STANDARD.encode(&whole[..keep]);
+        let error = decode_layer_data(&text(&packed), Some("base64"), Some(how), 256);
+        assert!(error.is_err(), "{how} cut to {keep} bytes decoded");
+      }
+      // bytes overwritten past the header
+      let mut broken = whole.clone();
+      let start = broken.len() / 3;
+      for b in &mut broken[start..start + 8] {
+        *b ^= 0xA5;
+      }
+      let packed = STANDARD.encode(&broken);
+      let decoded = decode_layer_data(&text(&packed), Some("base64"), Some(how), 256);
+      if how == "zstd" {
+        // Tiled writes zstd frames without a checksum, so bytes changed
+        // inside one may decode to other cells: never more than the layer's
+        assert!(
+          decoded.as_ref().map_or(true, |gids| gids.len() == 256),
+          "{how}: {decoded:?}"
+        );
+      } else {
+        assert!(decoded.is_err(), "{how} corrupted decoded");
+      }
+      // not the format at all
+      let packed = STANDARD.encode(b"plainly not compressed data, long enough");
+      let error = decode_layer_data(&text(&packed), Some("base64"), Some(how), 4);
+      assert!(
+        error.as_ref().is_err_and(|e| e.contains(how)),
+        "{how}: {error:?}"
+      );
+    }
+  }
+
+  #[test]
+  fn no_compression_inflates_a_small_file_past_its_layer() {
+    let zeros = vec![0u8; 8 << 20];
+    for how in ["gzip", "zlib", "zstd"] {
+      let packed = STANDARD.encode(pack(&zeros, how));
+      assert!(packed.len() < 400_000, "{how}: {} bytes", packed.len());
+      let error = decode_layer_data(&text(&packed), Some("base64"), Some(how), 4);
+      assert!(error.is_err_and(|e| e.contains("more than 4")), "{how}");
+    }
+  }
+
   #[test]
   fn gids_lose_their_flag_bits() {
     assert_eq!(
