@@ -92,7 +92,8 @@ pub(crate) enum MapSource {
 /// map lands whole: its colliders and shadows are worked out off the main
 /// thread once its asset is ready, and its layers, objects, colliders,
 /// shadows and [`MapEvent::Spawned`] arrive together in one frame, so a
-/// body its object observers place stands on its ground.
+/// body put down by an observer of its objects (`On<Add<MapObject>>`, see
+/// [`MapObject`]) or on `Spawned` stands on its ground.
 ///
 /// With hot reload on, saving one of the map's files updates it in place
 /// in the frame the save lands ([`MapEvent::Reloaded`]): its layers keep
@@ -216,7 +217,35 @@ pub struct TileLayerData {
 /// at the centre of its rectangle (its point, for a point; the origin of its
 /// points, for a polygon or polyline, which Tiled gives no size) and turned
 /// by its rotation. A polygon's or polyline's points are relative to the
-/// `Transform`
+/// `Transform`.
+///
+/// An observer of `Add<MapObject>` sees each object as it arrives, its
+/// fields filled. By then the map's layers, its colliders and shadows and
+/// every object's entity are in, so [`reference`](Self::reference)
+/// resolves, and a body put down there stands on the map's ground once
+/// physics steps; objects later in the file have their entities but not
+/// yet their `MapObject`, the class tiles come after the objects, and
+/// [`MapEvent::Spawned`] follows in the same frame. An object a reload
+/// spawns is seen too; one it updates in place fires `Insert<MapObject>`
+/// only.
+///
+/// ```
+/// use ryo2d::prelude::*;
+///
+/// /// Coins become pickups as they arrive, from any map
+/// fn coins_arrive(add: On<Add<MapObject>>, objects: Query<&MapObject>, mut commands: Commands) {
+///   if objects.get(add.entity).is_ok_and(|o| o.class.as_deref() == Some("coin")) {
+///     commands
+///       .entity(add.entity)
+///       .insert((Collider::circle(6.0).as_trigger(), Pickup::new()));
+///   }
+/// }
+///
+/// fn on_enter(ctx: &mut SceneContext<'_>) -> Entity {
+///   // Despawn the observer's entity as the scene exits: observers outlive scenes
+///   ctx.world.add_observer(coins_arrive).id()
+/// }
+/// ```
 #[derive(Component, Clone, Debug)]
 pub struct MapObject {
   /// The map entity it belongs to
@@ -307,7 +336,11 @@ pub enum MapEvent {
   /// tiles are the file's; objects and class tiles the save left alone keep
   /// their entities untouched, changed ones are updated in place and new
   /// ones spawn. Sent in the frame the save lands, before the game's
-  /// update; a save that fails to load sends nothing
+  /// update; a save that fails to load sends nothing. A file that several
+  /// of the map's files read (the Tiled project, which its map and its
+  /// tilesets read) loads each of them again, and those loads can land in
+  /// different frames: each is followed by its own `Reloaded`, the last
+  /// with the save in full
   Reloaded { map: Entity },
   /// Its asset did not load (or has no such level), or its landing
   /// panicked (tried again once the map or a tileset it uses changes):
@@ -1476,6 +1509,94 @@ mod tests {
     // A tile object keeps its tile
     let (_, gem) = object(&mut world, map, "gem");
     assert_eq!(gem.tile, Some(Tile::new(1, 0)));
+  }
+
+  /// What a game's observers saw of the objects as they arrived
+  #[derive(Default)]
+  struct Arrivals {
+    /// Each object as its `MapObject` was added: its entity, id, class,
+    /// `hp` and the entity its `target` reference resolved to
+    added: Vec<(Entity, String, Option<String>, Option<i64>, Option<Entity>)>,
+    inserted: Vec<Entity>,
+    removed: Vec<Entity>,
+  }
+
+  #[test]
+  fn a_game_s_observers_see_each_object_arrive_whole_and_go() {
+    // The names a game has, from the prelude
+    use crate::prelude::{Add, Insert, Remove};
+    let mut world = world_over(files_with(&[]));
+    let seen = Arc::new(Mutex::new(Arrivals::default()));
+    let arrivals = Arc::clone(&seen);
+    world.add_observer(
+      move |add: On<Add<MapObject>>, objects: Query<&MapObject>, world: &World| {
+        let Ok(object) = objects.get(add.entity) else {
+          return;
+        };
+        let mut seen = arrivals.lock().unwrap_or_else(|e| e.into_inner());
+        seen.added.push((
+          add.entity,
+          object.id.clone(),
+          object.class.clone(),
+          object.properties.int("hp"),
+          object.reference("target", world),
+        ));
+      },
+    );
+    let arrivals = Arc::clone(&seen);
+    world.add_observer(move |insert: On<Insert<MapObject>>| {
+      let mut seen = arrivals.lock().unwrap_or_else(|e| e.into_inner());
+      seen.inserted.push(insert.entity);
+    });
+    let arrivals = Arc::clone(&seen);
+    world.add_observer(move |remove: On<Remove<MapObject>>| {
+      let mut seen = arrivals.lock().unwrap_or_else(|e| e.into_inner());
+      seen.removed.push(remove.entity);
+    });
+    let handle = AssetsView::new(&mut world)
+      .load_now::<TileMap>("tiled/maps/objects.tmj")
+      .expect("objects.tmj loads");
+    let map = world.spawn(MapRoot::new(handle)).id();
+    Frames::new().until(&mut world, |world| world.get::<MapIds>(map).is_some());
+
+    // Once each, as it arrived
+    let mut objects: Vec<Entity> = world
+      .query::<(Entity, &MapObject)>()
+      .iter(&world)
+      .map(|(e, _)| e)
+      .collect();
+    objects.sort();
+    let (spawn, _) = object(&mut world, map, "spawn");
+    let got = seen.lock().unwrap_or_else(|e| e.into_inner());
+    let mut added: Vec<Entity> = got.added.iter().map(|a| a.0).collect();
+    added.sort();
+    assert_eq!(objects.len(), 17);
+    assert_eq!(added, objects, "one Add per object");
+    let mut inserted = got.inserted.clone();
+    inserted.sort();
+    assert_eq!(inserted, objects, "one Insert per object");
+    // Its fields filled, and its reference to an object later in the file
+    // resolved, as it arrived
+    let crate_seen = got.added.iter().find(|a| a.1 == "1").cloned();
+    let Some((_, _, class, hp, target)) = crate_seen else {
+      panic!("the crate never arrived");
+    };
+    assert_eq!(
+      (class.as_deref(), hp, target),
+      (Some("Crate"), Some(25), Some(spawn))
+    );
+
+    drop(got);
+
+    // Despawning the map: one Remove per object
+    world.despawn(map);
+    let mut removed = seen
+      .lock()
+      .unwrap_or_else(|e| e.into_inner())
+      .removed
+      .clone();
+    removed.sort();
+    assert_eq!(removed, objects);
   }
 
   /// A 4 x 3 map of 16 px cells: tile layer "ground", object layer "things"

@@ -41,6 +41,7 @@ Ryo2D's ECS (`ryo2d::ecs`, all in the prelude) is a curated set of kernel types.
 | `ChildOf`, `Children` | Hierarchy relationship (see below) |
 | `Message`, `Messages`, `MessageReader`, `MessageWriter`, `MessageCursor` | Buffered messages (see [Messages](#messages)) |
 | `Event`, `EntityEvent`, `On`, `Observer` | Observer events: `world.add_observer(\|e: On<T>\| ..)`, `world.trigger(T { .. })` |
+| `Add`, `Insert`, `Remove` | A component's lifecycle, for observers: `On<Add<T>>` as an entity gains a `T`, `On<Insert<T>>` each time one is put on (added or put over), `On<Remove<T>>` as it loses it (despawned too); `add.entity` is the entity |
 | `Schedule`, `ScheduleLabel`, `SystemSet` | Own schedules (tests, tools) |
 | `IntoScheduleConfigs`, `IntoSystem`, `System`, `ScheduleSystem` | `.chain()`, `.before()`, `.after()`, `.in_set()`, `.run_if()` on systems |
 | `SystemError` | Systems may return `Result<(), SystemError>`; the engine's handler panics in debug and logs in release |
@@ -1104,7 +1105,7 @@ Tiled and LDtk levels as registry assets, spawned by a `MapRoot` entity: tile la
 | `enum IntGridKey { Value(i32), Name(String) }` | `From<i32>`, `From<&str>`; by default the names `solid`, `one_way`, `slope_bottom_left`, `slope_bottom_right`, `slope_top_left`, `slope_top_right` (any case) collide as they say |
 | `MapLayerRef` (component on each layer entity) `{ map: Entity, index: usize (bottom first), name: String }` | with `LayerInfo`, a `Transform` at the layer's offset, and `TileLayerData` or `ImageLayer` |
 | `TileLayerData` (component) `{ grid: TileGrid, intgrid: Option<IntGrid>, cell_size: UVec2 }` | the spawned layer's own cells; editing `grid` redraws and re-collides as `ctx.maps()` does |
-| `MapObject` (component, child of its object layer, `Transform` at its rectangle's centre) `{ map: Entity, id: String, name, class: Option<String>, shape: ObjectShape, size: Vec2, tile: Option<Tile>, visible: bool, properties }` | `reference(field: &str, world: &World) -> Option<Entity>` (an object-reference property's object, if alive) |
+| `MapObject` (component, child of its object layer, `Transform` at its rectangle's centre) `{ map: Entity, id: String, name, class: Option<String>, shape: ObjectShape, size: Vec2, tile: Option<Tile>, visible: bool, properties }` | `reference(field: &str, world: &World) -> Option<Entity>` (an object-reference property's object, if alive). An `On<Add<MapObject>>` observer sees each as it arrives, the map's colliders and every object's entity already in |
 | `MapTile` (component, child of its tile layer at the cell's centre) `{ map: Entity, layer: usize, cell: IVec2, tile: Tile, class: String, properties }` | a class tile |
 | `MapIds` (component on the map entity) | `get(id: &str) -> Option<Entity>` |
 | `MapOccluder` (component) `{ chunk: UVec2 }` | marks the `LightOccluder2D::chain`s a map keeps from its tiles (children of its first occluding layer); an edit rebuilds a chunk's |

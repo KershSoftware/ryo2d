@@ -22,10 +22,12 @@ pub(crate) use bevy_ecs::error::{ErrorContext, FallbackErrorHandler};
 pub use bevy_ecs::event::{EntityEvent, Event};
 pub use bevy_ecs::hierarchy::{ChildOf, Children};
 pub(crate) use bevy_ecs::lifecycle::HookContext;
-// A component's arrival and removal, observed (an entity disabled or
-// enabled: its `Disabled` added or removed)
 pub use bevy_ecs::lifecycle::RemovedComponents;
-pub(crate) use bevy_ecs::lifecycle::{Add, Remove};
+// A component's lifecycle, for observers: `On<Add<T>>` as an entity gains
+// a `T`, `On<Insert<T>>` each time one is put on (added or put over), and
+// `On<Remove<T>>` as it loses it, despawned too (the engine watches an
+// entity disabled or enabled: its `Disabled` added or removed)
+pub use bevy_ecs::lifecycle::{Add, Insert, Remove};
 // A removal message, read through a `MessageCursor` outside a system
 pub(crate) use bevy_ecs::lifecycle::RemovedComponentEntity;
 pub use bevy_ecs::message::{Message, MessageCursor, MessageReader, MessageWriter, Messages};

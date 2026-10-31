@@ -27,7 +27,7 @@ The loaders also read Tiled's object templates (`.tx`, `.tj`) and its project fi
    - **LDtk:** a project of one world or several, its levels inside the `.ldtk` file or saved beside it as `.ldtkl` files ("Save levels to separate files"). LDtk runs its auto-layer rules in the editor and saves the tiles they place; the game draws what was saved. A project saved by an LDtk newer than 1.5 fails to load, naming both versions.
 2. **Put the files under `assets/`**, in any folders: `assets/maps/level1.tmx`, `assets/tilesets/ground.tsx`, `assets/images/ground.png`. A path written inside a file (a tileset, an image, a template, an LDtk level file) is read from that file's folder, as the editors write them; one that leaves `assets/` fails the load.
 3. **Spawn it** with a `MapRoot`. The entity's `Transform` places the map's top-left corner.
-4. **React when it lands.** Once its files are loaded, a map's colliders and shadows are worked out on a thread of their own, and then it arrives whole, in one frame: its layers, objects, class tiles, colliders and shadows, with a `MapEvent::Spawned`. That is when to give objects their behaviour and put the player down.
+4. **React when it lands.** Once its files are loaded, a map's colliders and shadows are worked out on a thread of their own, and then it arrives whole, in one frame: its layers, objects, class tiles, colliders and shadows, with a `MapEvent::Spawned`. That is when to give objects their behaviour and put the player down (or as each object arrives, with an observer: section 5).
 
 ```rust
 use ryo2d::prelude::*;
@@ -201,7 +201,35 @@ A material property of the wrong type is warned once, and what is under it count
 - An object reference (Tiled's object property type, LDtk's entity reference) reads as `PropertyValue::Object(id)`, and `object.reference("switch", ctx.world)` gives that object's entity (`None` once it is despawned).
 - LDtk fields: a point reads as a `Class` "Point" with `cx` and `cy`, a tile as a `Class` "Tile" with `tileset`, `x`, `y`, `w` and `h`, an enum as `Enum`, an array as `List`; an unset field is left out.
 
-Give objects behaviour when the map lands (section 1), or with a system that sees each object as it arrives, objects a save adds included:
+Give objects behaviour in one of three places, each seeing the objects a save adds too:
+
+- **As each arrives**, with an observer of `Add<MapObject>` (`On<Add<MapObject>>`). It runs for each object as its `MapObject` goes on, its fields filled. The map's layers, colliders and shadows are in by then, and so is every object's entity, so `reference` resolves; a body put down there stands on the map's ground. Objects later in the file have no `MapObject` yet, class tiles come after the objects, and physics queries see nothing of the map until its next step. An object a save changes fires `Insert<MapObject>` only, and `Remove<MapObject>` fires as an object goes. Observers outlive scenes: add one in `on_enter` and despawn it in `on_exit` (`ryo-messages`, Observers).
+- **When the map lands** (section 1), reading `MapEvent::Spawned`.
+- **With a system** over `Added<MapObject>`, which sees them at its next run.
+
+<!-- self: observer: Option<Entity> -->
+```rust
+fn on_enter(&mut self, ctx: &mut SceneContext) {
+  let observer = ctx.world.add_observer(
+    |add: On<Add<MapObject>>, objects: Query<&MapObject>, mut commands: Commands| {
+      if objects.get(add.entity).is_ok_and(|o| o.class.as_deref() == Some("coin")) {
+        commands
+          .entity(add.entity)
+          .insert((Collider::circle(6.0).as_trigger(), Pickup::new()));
+      }
+    },
+  );
+  self.observer = Some(observer.id());
+}
+
+fn on_exit(&mut self, ctx: &mut SceneContext) {
+  if let Some(observer) = self.observer.take() {
+    ctx.world.despawn(observer);
+  }
+}
+```
+
+The same as a system:
 
 ```rust
 fn coins_arrive(mut commands: Commands, objects: Query<(Entity, &MapObject), Added<MapObject>>) {
@@ -446,6 +474,7 @@ ctx.maps().spawn_levels_in_with(&self.world, near, 0, |level, root| {
 
 In debug builds with a window the engine watches `assets/` (`EngineBuilder::hot_reload` turns it on or off in any build). Saving a map, an LDtk project or one of its level files, a tileset, a template or the Tiled project updates every map spawned from it in the frame the save lands, before `update`, and sends `MapEvent::Reloaded`. The camera, the player and everything else keep their state.
 
+- **Saving the Tiled project** loads the maps and the tilesets that use it again, and their loads can land a frame or two apart: the map follows each as it lands, with a `Reloaded` for each, the last with the save in full.
 - **Tiles:** each tile layer takes the saved cells, and only the chunks the save changed draw, collide and cast shadows again. A chunk's collider changes shape in place, so a character standing on ground the save did not change keeps its contacts and its floor.
 - **Layers** keep their entities, matched by the editor's layer id; a layer the save added spawns, one it removed despawns, and a tile layer saved at another size, cell size or offset spawns afresh.
 - **Objects** match by id. One the save left as it was keeps its entity untouched: its `Transform` and every component the game added, as the game has them. One the save changed takes its new `MapObject` and `Transform`, keeping the game's other components. One the save added spawns, and one it removed despawns. Class tiles match the same way, by layer and cell.

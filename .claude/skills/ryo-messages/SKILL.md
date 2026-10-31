@@ -2,7 +2,7 @@
 name: ryo-messages
 description: Messages - typed, buffered notifications between scenes and systems; the engine's message types and how to define, write and read your own.
 metadata:
-  version: 2.4.0
+  version: 2.5.0
 ---
 
 # Ryo2D Messages
@@ -198,5 +198,7 @@ fn on_exit(&mut self, ctx: &mut SceneContext) {
   }
 }
 ```
+
+A component's lifecycle can be observed the same way: `On<Add<T>>` runs as an entity gains a `T`, `On<Insert<T>>` each time one is put on (added or put over), and `On<Remove<T>>` as it loses it, despawned too (`add.entity` is the entity). The tile maps teach this for objects arriving (`ryo-tilemap`, Objects and class tiles).
 
 Prefer messages for gameplay: they are buffered, ordered with the frame, and readable by scenes.
