@@ -127,11 +127,24 @@ impl Batch2D {
     let camera_layout = pipelines::camera_layout(device);
     let texture_layout = pipelines::texture_layout(device);
     let chunk_buffers = ChunkBuffers::new(device);
-    let pipelines = Pipelines::new(
+    let mut pipelines = Pipelines::new(
       device,
       &camera_layout,
       &texture_layout,
       chunk_buffers.slot_layout(),
+    );
+    // Tile chunks' pipeline for a plain layer, made now rather than in the
+    // frame the first map lands (about 0.85 ms there, measured headless)
+    pipelines.ensure(
+      device,
+      PipelineKey {
+        shader: BatchShader::Tile,
+        blend: BlendMode::default(),
+        stream: Stream::Quads,
+        page: PageKind::Srgb8,
+        format,
+      },
+      None,
     );
     Self {
       format,

@@ -12,6 +12,7 @@ use super::collision::{self, LayerView};
 use super::jobs::Worker;
 use super::kinds::{sources, stamps};
 use super::occluders;
+use super::padded::{self, PaddedCache, ToPad};
 use super::reload::{MapApplied, content_stamp};
 use super::world::{WorldRef, resolve_world_levels};
 use super::{
@@ -23,6 +24,7 @@ use crate::core::ecs::kernel::{DeferredWorld, HookContext, QueryState};
 use crate::core::ecs::{
   Allow, ChildOf, Component, Disabled, Entity, Local, Message, Messages, Transform, Without, World,
 };
+use crate::core::graphics::Image;
 use crate::core::hash::FastMap;
 use crate::core::messages::register_message;
 use crate::core::physics::TileCell;
@@ -769,15 +771,19 @@ pub(crate) struct LandingJob {
   classes: ClassTiles,
   collision: collision::Inputs,
   shadows: occluders::Inputs,
+  /// The tilesets the map drawer has no padding of yet
+  pads: Vec<ToPad>,
 }
 
 /// What a map lands with: its layers as they spawn, its colliders and
-/// shadows worked out for them, and what a reload compares with
+/// shadows worked out for them, what a reload compares with, and its
+/// tilesets' paddings made ahead
 pub(crate) struct Landed {
   layers: Vec<PlannedLayer>,
   collision: collision::Prepared,
   shadows: occluders::Prepared,
   applied: MapApplied,
+  paddings: Vec<padded::Prepared>,
 }
 
 /// The landing job of the map `map`, its root's asset ready
@@ -787,6 +793,18 @@ fn landing_job(world: &World, map: Entity) -> Option<LandingJob> {
   let tilesets = world.get_resource::<Assets<Tileset>>();
   let shapes = sources(asset, tilesets);
   let tileset_stamps = stamps(asset, tilesets);
+  // Where maps are drawn, the tilesets not padded yet are padded with the
+  // landing, so its frame only writes their textures
+  let pads = match (
+    world.get_resource::<PaddedCache>(),
+    tilesets,
+    world.get_resource::<Assets<Image>>(),
+  ) {
+    (Some(padded), Some(tilesets), Some(images)) => {
+      padded.lock().to_pad(&asset.tilesets, tilesets, images)
+    }
+    _ => Vec::new(),
+  };
   Some(LandingJob {
     map,
     stamp: content_stamp(world, root),
@@ -805,6 +823,7 @@ fn landing_job(world: &World, map: Entity) -> Option<LandingJob> {
       shapes,
       tilesets: tileset_stamps,
     },
+    pads,
   })
 }
 
@@ -849,11 +868,13 @@ impl LandingJob {
     let collision = collision::prepare(self.map, &views, self.collision);
     let shadows = occluders::prepare(&views, self.shadows);
     drop(views);
+    let paddings = self.pads.into_iter().filter_map(ToPad::pad).collect();
     Landed {
       layers,
       collision,
       shadows,
       applied,
+      paddings,
     }
   }
 }
@@ -993,7 +1014,18 @@ fn land(world: &mut World, map: Entity, landed: Landed) {
     collision,
     shadows,
     applied,
+    paddings,
   } = landed;
+  // Its tilesets' paddings, made with it, for the drawer to write
+  if !paddings.is_empty()
+    && let Some(cache) = world.get_resource::<PaddedCache>().cloned()
+    && let Some(mut images) = world.get_resource_mut::<Assets<Image>>()
+  {
+    let mut padded = cache.lock();
+    for prepared in paddings {
+      padded.adopt(prepared, &mut images);
+    }
+  }
 
   // A game's observers run as each part arrives, and may despawn the map, a
   // layer or an object before its turn: what is gone is skipped, and a map
@@ -1253,6 +1285,59 @@ mod tests {
         {"id":1,"name":"a","x":16,"y":0,"width":16,"height":16},
         {"id":2,"name":"b","x":0,"y":16,"width":0,"height":0,"point":true}]},
       {"id":3,"name":"sky","type":"imagelayer","image":"tiled/images/bg.png"}]}"#;
+
+  #[test]
+  fn a_landing_pads_its_tilesets_off_the_frame_and_hands_them_over() {
+    use crate::core::graphics::Image;
+    use crate::core::tilemap::TileMap;
+    use crate::core::tilemap::padded::PaddedCache;
+    use crate::core::tilemap::test_util::MapWorld;
+    // An atlas of 400 16 px tiles: its padding is a texture of its own
+    // (680 px), whose levels are worth making off the frame
+    let mut maps = MapWorld::new();
+    maps.world.insert_resource(PaddedCache::default());
+    let (cols, rows) = (20, 20);
+    let image = maps
+      .world
+      .resource_mut::<Assets<Image>>()
+      .add(Image::solid_rect(16 * cols, 16 * rows, 90, 160, 60, 255));
+    let mut set = Tileset::new(
+      "atlas",
+      UVec2::splat(16),
+      TilesetImage::Atlas {
+        image,
+        size: UVec2::new(16 * cols, 16 * rows),
+      },
+    );
+    set.columns = cols;
+    set.tile_count = cols * rows;
+    let set = TilesetSource::Asset(maps.world.resource_mut::<Assets<Tileset>>().add(set));
+    let mut map = TileMap::new(UVec2::splat(8), UVec2::splat(16));
+    let index = map.add_tileset(set.clone());
+    let layer = map.add_tile_layer("ground");
+    map
+      .tiles_mut(layer)
+      .expect("a layer")
+      .set(IVec2::ZERO, Some(Tile::new(index, 3)));
+    let handle = maps.world.resource_mut::<Assets<TileMap>>().add(map);
+    // No drawer runs here: whatever padding there is, the landing made
+    maps.spawn(MapRoot::new(handle));
+    let padded = maps.world.resource::<PaddedCache>().lock();
+    assert_eq!(padded.len(), 1, "the landing handed its padding over");
+    let tilesets = maps.world.resource::<Assets<Tileset>>();
+    assert!(
+      padded
+        .serial(&set, tilesets)
+        .is_some_and(|serial| serial > 0)
+    );
+    // The padded image came with its levels made: uploading it only copies
+    let images = maps.world.resource::<Assets<Image>>();
+    let made = images
+      .iter()
+      .filter(|(_, image)| image.width() > 320 && image.mips().is_some())
+      .count();
+    assert_eq!(made, 1, "the padded image's levels made ahead");
+  }
 
   #[test]
   fn a_map_spawns_its_layers_and_objects_when_ready() {

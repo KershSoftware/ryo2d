@@ -49,7 +49,7 @@ use crate::core::ecs::{
 };
 use crate::core::graphics::{Image, RenderLayers, SpriteGpuRenderer, SpriteInstance, TextureId};
 use crate::core::hash::FastSet;
-use crate::core::tilemap::padded::{PaddedLayout, PaddedTile, PaddedTilesets};
+use crate::core::tilemap::padded::{PaddedCache, PaddedLayout, PaddedTile};
 use crate::core::tilemap::{
   CHUNK_SIZE, ImageLayer, LayerInfo, MapLayerRef, MapLayers, MapObject, MapRoot, TileFlip,
   TileGrid, TileLayerData, Tileset, map_asset,
@@ -288,7 +288,8 @@ pub(crate) struct TileLayerFrame<'a> {
 /// ([`ordered`](Self::ordered), which `EntityDrawer::collect` merges).
 #[derive(Default)]
 pub(crate) struct TileDrawer {
-  padded: PaddedTilesets,
+  /// The world's padded tilesets, which landings hand paddings to
+  padded: Option<PaddedCache>,
   maps: Option<QueryState<MapItem, Allow<Disabled>>>,
   layers: Option<QueryState<LayerItem>>,
   objects: Option<QueryState<ObjectItem>>,
@@ -350,8 +351,23 @@ impl TileDrawer {
   ) {
     store.begin_frame();
     self.draws.clear();
-    // With no map left, the round frees every padded image
-    self.padded.begin_round();
+    // The padded tilesets are the world's, so a map's landing can hand over
+    // those it padded ahead. With no map left, the rounds free them
+    let cache = self
+      .padded
+      .get_or_insert_with(|| {
+        world
+          .get_resource::<PaddedCache>()
+          .cloned()
+          .unwrap_or_else(|| {
+            let cache = PaddedCache::default();
+            world.insert_resource(cache.clone());
+            cache
+          })
+      })
+      .clone();
+    let mut padded = cache.lock();
+    padded.begin_round();
     self.layers.get_or_insert_with(|| world.query());
     self.objects.get_or_insert_with(|| world.query());
     let maps = self.maps.get_or_insert_with(|| world.query_filtered());
@@ -362,8 +378,9 @@ impl TileDrawer {
           return;
         };
         let world: &World = world;
+        let padded = &mut *padded;
         let Self {
-          padded,
+          padded: _,
           maps,
           layers,
           objects,
@@ -512,7 +529,8 @@ impl TileDrawer {
         }
       });
     }
-    self.padded.end_round();
+    padded.end_round();
+    drop(padded);
     store.end_frame(|layer| world.get::<TileLayerData>(layer).is_some());
     if !self.warned.is_empty() {
       self
@@ -532,8 +550,10 @@ impl TileDrawer {
 impl TileDrawer {
   /// How many padded tileset images are kept (tests)
   #[cfg(test)]
-  pub(crate) fn padded_count(&self) -> usize {
-    self.padded.len()
+  pub(crate) fn padded_count(world: &World) -> usize {
+    world
+      .get_resource::<PaddedCache>()
+      .map_or(0, |cache| cache.lock().len())
   }
 
   /// How many image layers were warned about an image too small to repeat

@@ -1123,7 +1123,10 @@ fn a_despawned_map_frees_its_chunks() {
   engine.step_frames(2).unwrap();
   assert!(chunks(&engine).instances_in_use() > 0);
   assert!(engine.engine.batch.as_ref().unwrap().has_chunk_buffer());
-  assert_eq!(engine.engine.tile_drawer.padded_count(), 2);
+  assert_eq!(
+    crate::core::render::tiles::TileDrawer::padded_count(engine.world()),
+    2
+  );
   let map = the_map(&mut engine);
   engine.world_mut().despawn(map);
   engine.step().unwrap();
@@ -1135,10 +1138,14 @@ fn a_despawned_map_frees_its_chunks() {
   );
   // The padded tilesets are kept a while, as a map of them may come back
   // (a level restarted), then go
-  assert_eq!(engine.engine.tile_drawer.padded_count(), 2, "kept a while");
+  assert_eq!(
+    crate::core::render::tiles::TileDrawer::padded_count(engine.world()),
+    2,
+    "kept a while"
+  );
   engine.step_frames(120).unwrap();
   assert_eq!(
-    engine.engine.tile_drawer.padded_count(),
+    crate::core::render::tiles::TileDrawer::padded_count(engine.world()),
     0,
     "the padded tilesets go"
   );
