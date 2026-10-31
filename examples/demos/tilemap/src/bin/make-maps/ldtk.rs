@@ -1365,32 +1365,45 @@ fn write_project(platformer_only: bool) -> String {
       })
       .collect(),
   );
-  let mut layers = vec![
-    layer_def(ENTITIES_LAYER, "Entities", "Entities", None, vec![]),
-    layer_def(DECOR_LAYER, "Tiles", "Decor", Some(DUNGEON), vec![]),
-    layer_def(
+  let layers = [
+    (
+      ENTITIES_LAYER,
+      layer_def(ENTITIES_LAYER, "Entities", "Entities", None, vec![]),
+    ),
+    (
+      DECOR_LAYER,
+      layer_def(DECOR_LAYER, "Tiles", "Decor", Some(DUNGEON), vec![]),
+    ),
+    (
       COLLISIONS_LAYER,
-      "IntGrid",
-      "Collisions",
-      Some(TERRAIN),
-      vec![
-        ("intGridValues", int_grid_values),
-        (
-          "intGridValuesGroups",
-          J::Arr(vec![obj([
-            ("uid", 1.into()),
-            ("identifier", "walls".into()),
-            ("color", J::Null),
-          ])]),
-        ),
-        ("autoRuleGroups", rule_groups_json),
-      ],
+      layer_def(
+        COLLISIONS_LAYER,
+        "IntGrid",
+        "Collisions",
+        Some(TERRAIN),
+        vec![
+          ("intGridValues", int_grid_values),
+          (
+            "intGridValuesGroups",
+            J::Arr(vec![obj([
+              ("uid", 1.into()),
+              ("identifier", "walls".into()),
+              ("color", J::Null),
+            ])]),
+          ),
+          ("autoRuleGroups", rule_groups_json),
+        ],
+      ),
     ),
   ];
-  if platformer_only {
-    layers.remove(1);
-  }
-  let layers = J::Arr(layers);
+  // The Decor layer is only the Vault's
+  let layers = J::Arr(
+    layers
+      .into_iter()
+      .filter(|(uid, _)| !(platformer_only && *uid == DECOR_LAYER))
+      .map(|(_, layer)| layer)
+      .collect(),
+  );
   let mut tilesets = vec![tileset_def(
     TERRAIN,
     "Terrain",
