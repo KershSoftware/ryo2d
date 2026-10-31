@@ -176,6 +176,28 @@ impl Watch {
       self.reloaded().contains(&map)
     });
   }
+
+  /// Frames until `map` is reloaded from a new load of every one of its
+  /// files (its map file and its tilesets), for a save that each of them
+  /// reads (the Tiled project). Those loads land in any order, each
+  /// followed by a reload, so the first `Reloaded` can come while the
+  /// map's own file still holds what it read before the save
+  fn until_reloaded_from_every_file(&mut self, maps: &mut MapWorld, map: Entity) {
+    let before = applied_stamp(&maps.world, map);
+    maps.frames_until(|world| {
+      self.read(world);
+      let now = applied_stamp(world, map);
+      self.reloaded().contains(&map) && now.iter().zip(&before).all(|(now, was)| now != was)
+    });
+  }
+}
+
+/// The loads of its files `map` was last brought to
+fn applied_stamp(world: &World, map: Entity) -> Vec<Option<u64>> {
+  match world.get::<MapApplied>(map) {
+    Some(applied) => applied.stamp().to_vec(),
+    None => panic!("{map:?} is not a spawned map"),
+  }
 }
 
 /// A map world over the fixtures and `files`, and the map at `path`
@@ -683,12 +705,59 @@ fn saving_the_tiled_project_reapplies_class_defaults() {
 
   let mut watch = Watch::new(&maps.world);
   files.insert("project.tiled-project", project(2));
-  watch.until_reloaded(&mut maps, map);
+  watch.until_reloaded_from_every_file(&mut maps, map);
 
   let (now, object) = object_named(&mut maps.world, map, "crate");
   assert_eq!(now, entity);
   assert_eq!(object.properties.int("hp"), Some(2));
   assert_eq!(maps.world.get::<Marker>(entity), Some(&Marker(3)));
+}
+
+#[test]
+fn a_project_save_whose_loads_land_apart_ends_with_the_new_defaults() {
+  // The map and its tileset both read the Tiled project, so saving it loads
+  // both again, and the two loads can land frames apart: the map follows
+  // each as it lands, ending with the new default
+  let project = |hp: i32| {
+    format!(
+      r#"{{"propertyTypes":[{{"name":"Crate","type":"class","members":[{{"name":"hp","type":"int","value":{hp}}}]}}]}}"#
+    )
+  };
+  let crate_object = [object(1, "crate", (16, 0), r#","type":"Crate""#)];
+  let files = files_with(&[
+    ("project.tiled-project", &project(1)),
+    ("r/set.tsj", SET),
+    ("r/m.tmj", &small([0; 12], &crate_object)),
+  ]);
+  // Not watched: the test reloads one file at a time
+  let mut maps = MapWorld::unwatched(files.clone());
+  let handle = load_map(&mut maps.world, "r/m.tmj");
+  let map = maps.spawn(MapRoot::new(handle));
+  let (entity, _) = object_named(&mut maps.world, map, "crate");
+  maps.world.entity_mut(entity).insert(Marker(6));
+  files.insert("project.tiled-project", project(2));
+  let server = maps
+    .world
+    .resource::<crate::core::asset::AssetServer>()
+    .clone();
+  let hp = |maps: &mut MapWorld| {
+    let (now, object) = object_named(&mut maps.world, map, "crate");
+    assert_eq!(now, entity);
+    object.properties.int("hp")
+  };
+
+  // The tileset's load lands first: the map follows it, its own file as
+  // it was
+  let mut watch = Watch::new(&maps.world);
+  server.reload("r/set.tsj");
+  watch.until_reloaded(&mut maps, map);
+  assert_eq!(hp(&mut maps), Some(1));
+  // Then the map's: the new default
+  let mut watch = Watch::new(&maps.world);
+  server.reload("r/m.tmj");
+  watch.until_reloaded(&mut maps, map);
+  assert_eq!(hp(&mut maps), Some(2));
+  assert_eq!(maps.world.get::<Marker>(entity), Some(&Marker(6)));
 }
 
 #[test]

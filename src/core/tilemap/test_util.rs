@@ -60,10 +60,16 @@ impl MapWorld {
   /// A map world over `files`, watching them: a file put over one already
   /// there reloads what was loaded from it
   pub(crate) fn over(files: MemorySource) -> MapWorld {
+    let maps = MapWorld::unwatched(files);
+    maps.world.resource::<AssetServer>().start_watching();
+    maps
+  }
+
+  /// A map world over `files` that does not watch them: a test reloads
+  /// what it chooses (`AssetServer::reload`)
+  pub(crate) fn unwatched(files: MemorySource) -> MapWorld {
     let (mut world, mut schedules) = physics_world(60);
-    let server = AssetServer::new(files);
-    insert_registry(&mut world, server.clone());
-    server.start_watching();
+    insert_registry(&mut world, AssetServer::new(files));
     schedules.add_systems(
       Phase::PreUpdate,
       (super::spawn_maps, super::reload_maps).chain(),
