@@ -553,6 +553,14 @@ ctx.world.spawn((
 - **The web has no threads:** the generator runs on the main thread, within `web_budget` (2 ms) of each frame, at least one chunk a frame. Keep it cheap there, or set a smaller budget and let chunks arrive over more frames.
 - **A Tiled infinite map streams too**, its saved chunks the hand-made part of the world and the generator filling everything else: spawn it with a `MapStream` as any map. Every engine chunk (32 x 32 cells) that any layer's Tiled chunk touches belongs to the file, the cells Tiled left empty included, so a deliberately empty plaza beside hand-made ground stays empty: the generator is never asked for those chunks, and fills only chunks the designer never touched. The file's chunks are resident from the start, wherever the anchors are: they draw, collide, take edits and count for `stream_ready`, and never unload, so a big hand-made area stays in memory. They land with the map (`MapEvent::Spawned`) and send no `ChunkEvent`. Since they never unload, a save game keeps their edits only through `save_changed_chunks`, which puts in each one changed since the map landed, or as the map's root goes; a stream given that `SavedChunks` puts them back as it starts.
 - A map built in code with tiles in its asset keeps those chunks the same way; one built empty with `TileMap::infinite` leaves every chunk to the stream. A map with no unbounded tile layer streams nothing, warned.
+- **Limits:**
+  - A `ChunkOwned` entity goes only with the chunk it names. One tagged with a chunk not resident, or placed from a `Loaded` read after its chunk unloaded again, stays until that chunk next lands and unloads or the root goes; one that moves goes when the chunk it was tagged with unloads, wherever it is (change its `ChunkOwned` as it crosses into another chunk).
+  - A `NavigationGrid` built over a streamed map (`rebuild_from_world`) treats chunks not landed as open, and does not follow chunks as they come and go: rebuild it on `ChunkEvent`s, and keep paths within the resident chunks.
+  - Replacing a live root's `MapStream` keeps the chunks the old generator made, and only later unloads go into a new store: respawn the root to stream afresh.
+  - A save of the map that makes a chunk hand-made where the player had changed the generated one leaves the player's copy in `SavedChunks`, and the next stream of the map puts it back over the new hand-made chunk: `remove` that chunk from the store.
+  - Every anchor's area is checked against the others' each frame, so hundreds of anchors cost far more than their chunks; a few cost nothing to speak of.
+  - A hot reload unloads every chunk it touches in its frame, the budgets aside: a hitch while developing.
+  - Streaming on the web has not been measured.
 
 <!-- self: world: Entity, player: Entity, loading: bool -->
 ```rust
