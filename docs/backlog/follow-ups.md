@@ -2,7 +2,19 @@
 
 Small issues found while building each sub-project and left for later: deferred review findings, known limits and pre-existing bugs seen along the way. Each line names where it came from. Remove a line when it is fixed.
 
-Items from 4f to 6a were copied from their execution records. Items from earlier sub-projects come from notes kept at the time, and some may have been fixed since: check before working on one.
+Items from 4f to 6b were copied from their execution records. Items from earlier sub-projects come from notes kept at the time, and some may have been fixed since: check before working on one.
+
+## Transform propagation (6b, stage 1)
+
+- **The full walk's threshold was measured on leaves two levels deep** (`src/core/ecs/propagate.rs`, `FULL_WALK_SHARE`). A run takes the full walk once a fifth of the entities with a `Transform` changed (and more than 64).
+  - Root movers (bullets, enemies) cost less per changed entity, since there's no walk up. Their break-even is nearer 40%, so between a fifth and that, the full walk costs about 1.8 times what the changed-subtree walk would. It is never worse than before 6b, apart from the change scan.
+  - Isolated deep leaves break even earlier than a fifth.
+  - Proposed: budget the steps taken walking up the hierarchy instead of counting changed entities, and add a root-movers bench beside `benches/foundation.rs`'s propagation benches.
+- **Re-enabled entities are no longer healed by unrelated changes.** The old walk visited every entity whenever anything moved, so it repaired state left while an entity was disabled. Now a pooled interpolated entity that is acquired but not moved gets no `PreviousGlobalTransform` until it moves (one unblended frame when it starts).
+  - Proposed: a `RemovedComponents<Disabled>` reader that seeds re-enabled entities. It would restore the healing.
+  - It would also refresh a re-enabled non-physics entity whose parent moved while it was disabled; that entity is stale on main too.
+  - Adding it would break `a_fifth_of_the_entities_changed_takes_the_full_walk`, which tells the two walks apart by that healing; give the test another witness then.
+- **A hierarchy cycle gets no warning.** It now costs up to the world's entity count in lookups for each changed entity under it, each run. The depth bound stops it hanging. Cycles are documented as invalid.
 
 ## Tilemaps (6a)
 
