@@ -1,7 +1,8 @@
-//! Maps against the spec's speed targets (6a), with a GPU where a frame is
-//! drawn (`HeadlessEngine`, 1920 x 1080, 16 px tiles at zoom 1).
+//! Maps against the spec's speed targets (6a's, and the streaming target),
+//! with a GPU where a frame is drawn (`HeadlessEngine`, 1920 x 1080, 16 px
+//! tiles at zoom 1).
 //!
-//! Before criterion runs, three guards:
+//! Before criterion runs, four guards:
 //! - `static_frame`: a 1024 x 1024 map of four layers (a background on
 //!   every cell, cave rock from noise that collides and casts shadows, and
 //!   two sparse layers of props) built in code over one 16 px atlas, the
@@ -65,18 +66,47 @@
 //!   first landing makes the padded tileset's texture (its landing job
 //!   padded it; later ones find the padding kept), and is printed apart. The landing job's time, spawn
 //!   to landed with frames stepped back to back, is printed too: on the web,
-//!   which has no threads, the job runs in the frame it is sent.
+//!   which has no threads, the job runs in the frame it is sent;
+//! - `stream`: an endless world streamed from a generator (`MapStream`
+//!   with its default budgets, loading within 512 px of the view and
+//!   unloading past 1,536): two unbounded layers over the static map's
+//!   atlas, a background on every cell and cave rock from the same noise on
+//!   the ground, which collides and casts shadows. Its camera, the stream's
+//!   anchor, crosses it on a straight line at 2,000 px/s (heading 0.8, 0.6,
+//!   so rows and columns of chunks come and go both) for the guard's frames
+//!   and the warm-up before them, against an empty scene whose camera flies
+//!   the same path; the engines step in turn, one frame each, each round
+//!   paced at 60 Hz with a spin wait, as the landing is, so the generator's
+//!   thread keeps the time a game gives it. A frame's cost is the whole
+//!   step, the GPU finished before it, as the static guard's. The 99th
+//!   percentile of the world's step over the empty frame's median is held
+//!   to 0.5 ms (the spec: any frame; one slowest frame is the machine's
+//!   noise, so the maximum is printed beside it, and so is the empty
+//!   frame's own spread). Every frame, warm-up included, two checks fail
+//!   the run at once (assertions): every chunk overlapping the camera's
+//!   view as the frame drew it is resident (no unfilled chunk on screen),
+//!   and the resident chunks number no more than the view grown by the
+//!   unload distance can meet (printed), each chunk past that distance
+//!   gone within the frames the unload budget takes to drain them all.
+//!   Beside them, with no target: the frames that landed chunks, unloaded
+//!   them, brought a chunk into view (its first draw) and the others, each
+//!   with its render step; then a teleport 100 chunks on, the camera
+//!   staying there 180 frames: the frames its view took to fill and the
+//!   chunks left behind to go, and those frames' steps.
 //!
-//! Each verdict holds the median (the landing, its slowest frame); the
-//! 95th percentile and the maximum are printed beside it. A miss fails the
-//! run once criterion's benches have run, printing the command to profile
-//! it with. Each guard runs only where criterion measures the bench of its
+//! Each verdict holds the median (the landing, its slowest frame; the
+//! stream, its 99th percentile); the 95th percentile (the stream's, the
+//! 99th) and the maximum are printed beside it. A miss fails the run once
+//! criterion's benches have run, printing the command to profile it with. Each guard runs only where criterion measures the bench of its
 //! name: with no filter or one naming it, and not for `--list`, `--test` or
 //! `--profile-time`. The criterion benches, for the profiles:
 //! `static_frame` steps the map engine with its camera flying,
 //! `edit` sets or clears the serpentine's cell and steps the engine,
 //! `load` loads the map with its tileset and image in a fresh registry,
-//! and `landing` spawns the loaded map and times its landing frame.
+//! `landing` spawns the loaded map and times its landing frame, and
+//! `stream` steps the endless world back to back, its camera crossing it
+//! (out and back along a leg of 4,000 frames, so a long profile stays
+//! within collision's reach of the origin).
 //!
 //! The guards' numbers move with the machine's load: run them on a quiet
 //! machine. Medians are read from where criterion writes its results
@@ -84,6 +114,7 @@
 
 mod guards;
 
+use std::collections::HashMap;
 use std::io::Write as _;
 use std::process::Command;
 use std::time::{Duration, Instant, SystemTime};
@@ -104,6 +135,9 @@ const EDIT_TARGET: Duration = Duration::from_micros(100);
 const LOAD_TARGET: Duration = Duration::from_millis(20);
 /// The spec's landing: no hitch, held as 0.5 ms over an ordinary frame
 const HITCH_TARGET: Duration = Duration::from_micros(500);
+/// The spec's streaming: at most 0.5 ms of main-thread time added to a
+/// frame, held at the 99th percentile
+const STREAM_TARGET: Duration = Duration::from_micros(500);
 /// Every engine's view
 const RESOLUTION: (u32, u32) = (1920, 1080);
 /// A cell's side in pixels
@@ -138,9 +172,24 @@ const ROCK: std::ops::Range<u32> = 0..8;
 const BACK: std::ops::Range<u32> = 16..24;
 const PROPS: std::ops::Range<u32> = 32..48;
 const FRONT: std::ops::Range<u32> = 48..56;
+/// The streaming camera's speed in pixels a second, and its heading: both
+/// axes move, so rows and columns of chunks stream in
+const STREAM_SPEED: f32 = 2000.0;
+const HEADING: Vec2 = Vec2::new(0.8, 0.6);
+/// The streamed world's load and unload distances: the stream's defaults
+const LOAD: f32 = 512.0;
+const UNLOAD: f32 = 1536.0;
+/// After the crossing, the streaming cameras jump this far and stay this
+/// many frames: a teleport
+const JUMP: Vec2 = Vec2::new(100.0 * (CHUNK_SIZE * TILE) as f32, 0.0);
+const TELEPORT_FRAMES: usize = 180;
+/// Frames a leg of the streaming camera's path takes: it goes out and back
+/// along it, so a long criterion run or profile stays well within
+/// collision's reach of the origin (the guard's frames all go out)
+const LEG: usize = 4000;
 /// The criterion benches whose medians are printed, with what each median
 /// is of
-const BENCHES: [(&str, &str); 4] = [
+const BENCHES: [(&str, &str); 5] = [
   (
     "static_frame",
     "a step of the 1024 x 1024 map, its camera flying (back to back, GPU-paced)",
@@ -151,6 +200,10 @@ const BENCHES: [(&str, &str); 4] = [
     "a load of the 256 x 256 TMX with its tileset and image, in a fresh registry",
   ),
   ("landing", "the frame a loaded 256 x 256 map lands in"),
+  (
+    "stream",
+    "a step of the endless world, its camera crossing it at 2,000 px/s (back to back)",
+  ),
 ];
 
 fn us(time: Duration) -> f64 {
@@ -161,12 +214,20 @@ fn ms(time: Duration) -> f64 {
   time.as_secs_f64() * 1e3
 }
 
-/// The median, 95th percentile and maximum of `times`
-fn spread(mut times: Vec<Duration>) -> Option<(Duration, Duration, Duration)> {
+/// The median, `percentile`th percentile and maximum of `times`
+fn spread_at(
+  mut times: Vec<Duration>,
+  percentile: usize,
+) -> Option<(Duration, Duration, Duration)> {
   times.sort_unstable();
   let median = *times.get(times.len() / 2)?;
-  let p95 = times[(times.len() * 95 / 100).min(times.len() - 1)];
-  Some((median, p95, *times.last()?))
+  let at = times[(times.len() * percentile / 100).min(times.len() - 1)];
+  Some((median, at, *times.last()?))
+}
+
+/// The median, 95th percentile and maximum of `times`
+fn spread(times: Vec<Duration>) -> Option<(Duration, Duration, Duration)> {
+  spread_at(times, 95)
 }
 
 fn median(times: Vec<Duration>) -> Duration {
@@ -178,17 +239,22 @@ fn over(times: &[Duration], base: Duration) -> Vec<Duration> {
   times.iter().map(|t| t.saturating_sub(base)).collect()
 }
 
-/// "median X µs, 95th percentile Y, max Z"
-fn shown(times: Vec<Duration>) -> String {
-  match spread(times) {
-    Some((median, p95, max)) => format!(
-      "median {:.1} µs, 95th percentile {:.1}, max {:.1}",
+/// "median X µs, Nth percentile Y, max Z", the `percentile`th
+fn shown_at(times: Vec<Duration>, percentile: usize) -> String {
+  match spread_at(times, percentile) {
+    Some((median, at, max)) => format!(
+      "median {:.1} µs, {percentile}th percentile {:.1}, max {:.1}",
       us(median),
-      us(p95),
+      us(at),
       us(max)
     ),
     None => "none".into(),
   }
+}
+
+/// "median X µs, 95th percentile Y, max Z"
+fn shown(times: Vec<Duration>) -> String {
+  shown_at(times, 95)
 }
 
 /// Whether `time` is within `target`, and the verdict
@@ -300,6 +366,12 @@ fn pick(range: std::ops::Range<u32>, h: u32) -> u32 {
   range.start + h % (range.end - range.start)
 }
 
+/// Whether the cell (`x`, `y`) is cave rock: where noise is high
+fn rocky(x: i32, y: i32) -> bool {
+  let (fx, fy) = (x as f32, y as f32);
+  noise(fx / 22.0, fy / 22.0, 1) * 0.7 + noise(fx / 7.0, fy / 7.0, 2) * 0.3 > 0.6
+}
+
 /// The cells of a cave map `side` cells square, layer by layer (background,
 /// ground, props, front), as tile ids: a background on every cell, rock
 /// where noise is high, props on about one open cell in 16 and front
@@ -312,9 +384,7 @@ fn cave_cells(side: u32) -> [Vec<Option<u32>>; 4] {
       let i = (y as u32 * side + x as u32) as usize;
       let h = hash(x, y, 3);
       layers[0][i] = Some(pick(BACK, h));
-      let (fx, fy) = (x as f32, y as f32);
-      let value = noise(fx / 22.0, fy / 22.0, 1) * 0.7 + noise(fx / 7.0, fy / 7.0, 2) * 0.3;
-      if value > 0.6 {
+      if rocky(x, y) {
         layers[1][i] = Some(pick(ROCK, h));
         continue;
       }
@@ -1625,6 +1695,482 @@ fn landing_bench(c: &mut Criterion, files: &mut Option<MemorySource>) {
   });
 }
 
+// stream
+
+/// Where the streaming camera is at frame `frame`: on a straight line
+/// through the origin, which the guard's frames (warm-up included) cross
+/// halfway, going out and back along a leg of `LEG` frames
+fn crossing_at(frame: usize) -> Vec2 {
+  let lap = frame % (2 * LEG);
+  let along = if lap < LEG { lap } else { 2 * LEG - lap };
+  let middle = (WARM + ROUNDS) as f32 / 2.0;
+  HEADING * (along as f32 - middle) * STREAM_SPEED / 60.0
+}
+
+/// A chunk of the endless world: a background on every cell, and on the
+/// ground cave rock where noise is high, as the static map's
+fn endless_chunk(request: ChunkRequest, set: u16) -> ChunkTiles {
+  let mut tiles = ChunkTiles::default();
+  for y in 0..CHUNK_SIZE {
+    for x in 0..CHUNK_SIZE {
+      let at = UVec2::new(x, y);
+      let cell = request.first_cell + at.as_ivec2();
+      let h = hash(cell.x, cell.y, 3);
+      tiles.set("background", at, Some(Tile::new(set, pick(BACK, h))));
+      if rocky(cell.x, cell.y) {
+        tiles.set("ground", at, Some(Tile::new(set, pick(ROCK, h))));
+      }
+    }
+  }
+  tiles
+}
+
+/// The streaming guard's scene: an endless world of two unbounded layers
+/// (the ground colliding and casting shadows) streamed round the camera
+struct EndlessScene;
+
+impl Scene for EndlessScene {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    let source = add_tileset(ctx);
+    let mut map = TileMap::infinite(UVec2::splat(TILE));
+    let set = map.add_tileset(source);
+    map.add_tile_layer("background");
+    map.add_tile_layer("ground");
+    let map = ctx.assets().add(map);
+    let stream = MapStream {
+      load_distance: LOAD,
+      unload_distance: UNLOAD,
+      ..MapStream::new(move |request: ChunkRequest| endless_chunk(request, set))
+    };
+    ctx
+      .world
+      .spawn((Transform::IDENTITY, MapRoot::new(map), stream));
+  }
+}
+
+/// The main camera's view as `engine`'s last frame drew it
+fn drawn_view(engine: &mut HeadlessEngine) -> Option<CameraBounds> {
+  let world = engine.world_mut();
+  world
+    .query_filtered::<&CameraView, With<MainCamera>>()
+    .iter(world)
+    .next()
+    .map(|view| view.bounds)
+}
+
+/// `view` grown by `by` on every side
+fn grown(view: CameraBounds, by: f32) -> Rect {
+  Rect::new(
+    view.left - by,
+    view.top - by,
+    view.width() + 2.0 * by,
+    view.height() + 2.0 * by,
+  )
+}
+
+/// The chunks overlapping `area` (touching is not overlapping), first and
+/// last, the map at the origin
+fn chunks_over(area: Rect) -> (IVec2, IVec2) {
+  let side = (CHUNK_SIZE * TILE) as f32;
+  let (min, max) = (
+    Vec2::new(area.x, area.y),
+    Vec2::new(area.x + area.width, area.y + area.height),
+  );
+  (
+    (min / side).floor().as_ivec2(),
+    ((max / side).ceil() - 1.0).as_ivec2(),
+  )
+}
+
+/// The most chunks an area of `view` grown by `by` on every side can
+/// overlap: a span of `n` chunks' length meets `n + 1` of them at most
+fn chunks_bound(view: CameraBounds, by: f32) -> usize {
+  let side = (CHUNK_SIZE * TILE) as f32;
+  let meets = |length: f32| (length / side).ceil() as usize + 1;
+  meets(view.width() + 2.0 * by) * meets(view.height() + 2.0 * by)
+}
+
+/// An engine of the streaming guard, its camera at the path's start: the
+/// endless world with every chunk of the view's load area landed, and its
+/// root (`world`), or an empty scene. None without a GPU
+fn stream_engine(world: bool) -> Option<(HeadlessEngine, Option<Entity>)> {
+  let builder = EngineBuilder::new().resolution(RESOLUTION.0, RESOLUTION.1);
+  let builder = if world {
+    builder.start_scene(EndlessScene)
+  } else {
+    builder.start_scene(Nothing)
+  };
+  let mut engine = HeadlessEngine::new_or_skip(builder)?;
+  place_camera(&mut engine, crossing_at(0));
+  if !world {
+    engine.step().expect("a frame");
+    return Some((engine, None));
+  }
+  let start = Instant::now();
+  loop {
+    engine.step().expect("a frame");
+    let root = roots(&mut engine).first().copied();
+    if let (Some(root), Some(view)) = (root, drawn_view(&mut engine))
+      && MapsView::new(engine.world_mut()).stream_ready(root, grown(view, LOAD))
+    {
+      return Some((engine, Some(root)));
+    }
+    assert!(
+      start.elapsed() < Duration::from_secs(60),
+      "the chunks round the view landed"
+    );
+    std::thread::yield_now();
+  }
+}
+
+/// One measured frame of the streaming guard
+struct Crossing {
+  /// The streamed frame's step, and its render step
+  step: Duration,
+  render: Duration,
+  /// The chunks it landed and unloaded
+  landed: usize,
+  unloaded: usize,
+  /// Whether a chunk came into the camera's view
+  came_into_view: bool,
+}
+
+/// Which of the streaming guard's measured frames a line is of
+type Pick = fn(&Crossing) -> bool;
+
+/// The chunks loaded and unloaded since `cursor` last read `engine`'s
+/// chunk messages
+fn chunk_events(
+  engine: &mut HeadlessEngine,
+  cursor: &mut MessageCursor<ChunkEvent>,
+) -> (usize, usize) {
+  let Some(messages) = engine.world().get_resource::<Messages<ChunkEvent>>() else {
+    return (0, 0);
+  };
+  cursor
+    .read(messages)
+    .fold((0, 0), |(loaded, unloaded), event| match event {
+      ChunkEvent::Loaded { .. } => (loaded + 1, unloaded),
+      ChunkEvent::Unloading { .. } => (loaded, unloaded + 1),
+    })
+}
+
+/// How many chunks are resident in `engine`'s streamed world (each is in
+/// every unbounded layer, so the layer holding the most), and those of them
+/// lying outside `keep`, into `outside`
+fn residents(engine: &mut HeadlessEngine, keep: Rect, outside: &mut Vec<IVec2>) -> usize {
+  outside.clear();
+  let (first, last) = chunks_over(keep);
+  let world = engine.world_mut();
+  let mut layers = world.query::<&TileLayerData>();
+  let Some(data) = layers
+    .iter(world)
+    .max_by_key(|data| data.grid.chunk_coords().count())
+  else {
+    return 0;
+  };
+  outside.extend(
+    data
+      .grid
+      .chunk_coords()
+      .filter(|chunk| !(chunk.cmpge(first).all() && chunk.cmple(last).all())),
+  );
+  data.grid.chunk_coords().count()
+}
+
+/// A teleport after the crossing: the streamed frames' steps over the
+/// empty frames' median meanwhile, the frame the view filled in and the
+/// frame the chunks left behind were all gone by, and the most chunks
+/// landed and unloaded in one frame
+struct Teleport {
+  steps: Vec<Duration>,
+  filled: Option<usize>,
+  settled: Option<usize>,
+  most_landed: usize,
+  most_unloaded: usize,
+}
+
+/// Both cameras jump `JUMP` from where the crossing left them and stay
+/// there `TELEPORT_FRAMES` frames, stepped in turn and paced at 60 Hz
+fn teleport(
+  (empty, streamed): (&mut HeadlessEngine, &mut HeadlessEngine),
+  root: Entity,
+  cursor: &mut MessageCursor<ChunkEvent>,
+) -> Teleport {
+  let at = crossing_at(WARM + ROUNDS) + JUMP;
+  let mut out = Teleport {
+    steps: Vec::with_capacity(TELEPORT_FRAMES),
+    filled: None,
+    settled: None,
+    most_landed: 0,
+    most_unloaded: 0,
+  };
+  let (mut empty_steps, mut outside) = (Vec::with_capacity(TELEPORT_FRAMES), Vec::new());
+  let mut next = Instant::now();
+  for frame in 0..TELEPORT_FRAMES {
+    pace(next);
+    next = Instant::now() + FRAME;
+    for i in [frame % 2, 1 - frame % 2] {
+      let engine = if i == 0 { &mut *empty } else { &mut *streamed };
+      place_camera(engine, at);
+      settle_gpu();
+      let start = Instant::now();
+      engine.step().expect("a teleport frame");
+      let took = start.elapsed();
+      if i == 0 {
+        empty_steps.push(took);
+      } else {
+        out.steps.push(took);
+      }
+    }
+    let (landed, unloaded) = chunk_events(streamed, cursor);
+    out.most_landed = out.most_landed.max(landed);
+    out.most_unloaded = out.most_unloaded.max(unloaded);
+    // The view drawn, a frame behind the camera: views are drawn from
+    // the interpolated transform, which with one fixed step a frame is
+    // the step before's
+    let Some(view) = drawn_view(streamed) else {
+      continue;
+    };
+    let middle = Vec2::new(view.left + view.right, view.top + view.bottom) * 0.5;
+    if middle.distance(at) > 1.0 {
+      continue;
+    }
+    let maps = MapsView::new(streamed.world_mut());
+    if out.filled.is_none() && maps.stream_ready(root, grown(view, 0.0)) {
+      out.filled = Some(frame + 1);
+    }
+    residents(streamed, grown(view, UNLOAD), &mut outside);
+    if out.settled.is_none() && outside.is_empty() {
+      out.settled = Some(frame + 1);
+    }
+  }
+  out.steps = over(&out.steps, median(empty_steps));
+  out
+}
+
+/// The streaming guard: the endless world's step over an empty frame's
+/// median, its 99th percentile held to 0.5 ms; every frame shows no
+/// unfilled chunk and keeps its resident chunks within the radii
+fn stream_guard() {
+  let (Some((mut empty, _)), Some((mut streamed, Some(root)))) =
+    (stream_engine(false), stream_engine(true))
+  else {
+    return;
+  };
+  let mut cursor = MessageCursor::<ChunkEvent>::default();
+  chunk_events(&mut streamed, &mut cursor);
+  let (mut empty_steps, mut empty_renders) =
+    (Vec::with_capacity(ROUNDS), Vec::with_capacity(ROUNDS));
+  let mut frames: Vec<Crossing> = Vec::with_capacity(ROUNDS);
+  let (mut unfilled, mut resident) = (Vec::new(), Vec::new());
+  let (mut bound, mut over_bound) = (0, Vec::new());
+  // The resident chunks past the unload distance, waiting their turn to
+  // unload (the stream unloads a few a frame), and how many frames each
+  // has waited
+  let (mut outside, mut waited) = (Vec::new(), HashMap::<IVec2, usize>::new());
+  let (mut most_outside, mut longest) = (0, 0);
+  // The view the stream reads in the next frame: the last frame's
+  let mut seen = drawn_view(&mut streamed).expect("the camera's view");
+  let mut next = Instant::now();
+  for round in 0..WARM + ROUNDS {
+    let at = crossing_at(round);
+    pace(next);
+    next = Instant::now() + FRAME;
+    // Each round the other engine steps first
+    let mut steps = [(Duration::ZERO, Duration::ZERO); 2];
+    for i in [round % 2, 1 - round % 2] {
+      let engine = if i == 0 { &mut empty } else { &mut streamed };
+      place_camera(engine, at);
+      settle_gpu();
+      let start = Instant::now();
+      engine.step().expect("a guard frame");
+      steps[i] = (start.elapsed(), engine.render_time());
+    }
+    // Outside the measure: what the frame streamed and showed
+    let (landed, unloaded) = chunk_events(&mut streamed, &mut cursor);
+    let drawn = drawn_view(&mut streamed).expect("the camera's view");
+    if !MapsView::new(streamed.world_mut()).stream_ready(root, grown(drawn, 0.0)) {
+      unfilled.push(round);
+    }
+    let count = residents(&mut streamed, grown(seen, UNLOAD), &mut outside);
+    let most = chunks_bound(seen, UNLOAD);
+    bound = bound.max(most);
+    if count > most {
+      over_bound.push((round, count, most));
+    }
+    resident.push(count);
+    waited.retain(|chunk, _| outside.contains(chunk));
+    for &chunk in &outside {
+      let frames = waited.entry(chunk).or_insert(0);
+      *frames += 1;
+      longest = longest.max(*frames);
+    }
+    most_outside = most_outside.max(outside.len());
+    let came_into_view = chunks_over(grown(drawn, 0.0)) != chunks_over(grown(seen, 0.0));
+    seen = drawn;
+    if round < WARM {
+      continue;
+    }
+    empty_steps.push(steps[0].0);
+    empty_renders.push(steps[0].1);
+    frames.push(Crossing {
+      step: steps[1].0,
+      render: steps[1].1,
+      landed,
+      unloaded,
+      came_into_view,
+    });
+  }
+  let jump = teleport((&mut empty, &mut streamed), root, &mut cursor);
+  let (empty_step, empty_render) = (median(empty_steps.clone()), median(empty_renders.clone()));
+  // The measured frames `pick` takes: their steps over the empty frame's
+  // median, and their render steps over its render step's
+  let added = |pick: Pick| -> (Vec<Duration>, Vec<Duration>) {
+    let picked = || frames.iter().filter(|f| pick(f));
+    let steps: Vec<Duration> = picked().map(|f| f.step).collect();
+    let renders: Vec<Duration> = picked().map(|f| f.render).collect();
+    (over(&steps, empty_step), over(&renders, empty_render))
+  };
+  eprintln!(
+    "stream guard: {ROUNDS} interleaved frames at {}x{} paced at 60 Hz, the camera crossing an \
+     endless world at {STREAM_SPEED} px/s heading ({}, {}), chunks loading within {LOAD} px of \
+     its view and unloading past {UNLOAD}. An empty frame (its own spread is the machine's \
+     noise): step {}; render step {}",
+    RESOLUTION.0,
+    RESOLUTION.1,
+    HEADING.x,
+    HEADING.y,
+    shown_at(empty_steps, 99),
+    shown_at(empty_renders, 99),
+  );
+  let (all, renders) = added(|_| true);
+  let held = spread_at(all.clone(), 99).map_or(Duration::ZERO, |(_, p99, _)| p99);
+  let (met, verdict) = verdict(held, STREAM_TARGET);
+  let line = format!(
+    "the endless world's step over the empty frame's median, {}; its render step over the empty \
+     frame's, {}",
+    shown_at(all, 99),
+    shown_at(renders, 99),
+  );
+  eprintln!(
+    "stream: {line}. Held, the 99th percentile: {:.1} µs, {verdict}",
+    us(held)
+  );
+  if !met {
+    guards::miss(format!("stream, {line}"));
+  }
+  let landings: usize = frames.iter().map(|f| f.landed).sum();
+  let unloads: usize = frames.iter().map(|f| f.unloaded).sum();
+  let both = frames
+    .iter()
+    .filter(|f| f.landed > 0 && f.unloaded > 0)
+    .count();
+  let busiest = frames
+    .iter()
+    .map(|f| (f.landed + f.unloaded, f.landed, f.unloaded))
+    .max()
+    .unwrap_or_default();
+  let kinds: [(&str, Pick); 4] = [
+    ("landing chunks", |f| f.landed > 0),
+    ("unloading chunks", |f| f.unloaded > 0),
+    ("bringing a chunk into view", |f| f.came_into_view),
+    ("doing none of these", |f| {
+      f.landed == 0 && f.unloaded == 0 && !f.came_into_view
+    }),
+  ];
+  for (kind, pick) in kinds {
+    let (steps, renders) = added(pick);
+    eprintln!(
+      "stream (no target): the frames {kind} ({}): {}; render step {}",
+      steps.len(),
+      shown_at(steps, 99),
+      shown_at(renders, 99),
+    );
+  }
+  let budgets = MapStream::new(|_: ChunkRequest| ChunkTiles::default());
+  let frames_of = |frame: Option<usize>| frame.map_or("never".to_string(), |f| f.to_string());
+  eprintln!(
+    "stream (no target): a teleport {} chunks on after the crossing, the camera staying there \
+     {TELEPORT_FRAMES} frames: its view filled in {} frames, the chunks left behind gone in {} \
+     (at most {} landed and {} unloaded a frame; the budgets {} and {}); those frames' steps \
+     over the empty frames' median, {}",
+    JUMP.x / (CHUNK_SIZE * TILE) as f32,
+    frames_of(jump.filled),
+    frames_of(jump.settled),
+    jump.most_landed,
+    jump.most_unloaded,
+    budgets.land_per_frame,
+    budgets.unload_per_frame,
+    shown_at(jump.steps, 99),
+  );
+  let most = resident.iter().copied().max().unwrap_or(0);
+  let mut measured = resident.get(WARM..).unwrap_or_default().to_vec();
+  measured.sort_unstable();
+  let typical = measured.get(measured.len() / 2).copied().unwrap_or(0);
+  let world = streamed.world_mut();
+  let occluders = world.query::<&MapOccluder>().iter(world).count();
+  let children = world.query::<&ChildOf>().iter(world).count();
+  eprintln!(
+    "stream: {landings} chunks landed and {unloads} unloaded over the measured frames, both in \
+     {both} frames, the most in one frame {} ({} landed, {} unloaded); resident \
+     chunks at most {most} in any frame, warm-up included (the median measured frame \
+     {typical}), against the radii's bound of {bound} (the most chunks the view grown by the \
+     unload distance can meet); the world at the end: {} entities, {children} of them \
+     children, {occluders} occluder chains",
+    busiest.0,
+    busiest.1,
+    busiest.2,
+    world.entities().len(),
+  );
+  assert!(
+    unfilled.is_empty(),
+    "stream: {} of the {} frames (warm-up included) showed a chunk not landed; the first, frame \
+     {}",
+    unfilled.len(),
+    WARM + ROUNDS,
+    unfilled[0],
+  );
+  // A chunk past the unload distance waits at most as many frames as the
+  // unload budget takes to drain every chunk the radii hold
+  let budget = MapStream::new(|_: ChunkRequest| ChunkTiles::default()).unload_per_frame as usize;
+  let drain = bound.div_ceil(budget.max(1));
+  eprintln!(
+    "stream: resident chunks past the unload distance, waiting their turn ({budget} unload a \
+     frame): at most {most_outside} in a frame, none waiting more than {longest} frames (the \
+     budget drains the radii's bound in {drain})"
+  );
+  assert!(
+    over_bound.is_empty() && longest <= drain,
+    "stream: resident chunks past the radii: frames over the bound (frame, resident, bound) \
+     {over_bound:?}; a chunk past the unload distance waited {longest} frames, past {drain}"
+  );
+  eprintln!(
+    "stream: no unfilled chunk on screen in any of the {} frames, and the resident chunks within \
+     the radii's bound in every one",
+    WARM + ROUNDS
+  );
+}
+
+/// The streaming bench: the endless world's engine stepped back to back,
+/// its camera crossing the world
+fn stream_bench(c: &mut Criterion) {
+  let mut made: Option<(HeadlessEngine, usize)> = None;
+  c.bench_function("stream", |b| {
+    if made.is_none() {
+      made = stream_engine(true).map(|(engine, _)| (engine, 0));
+    }
+    let Some((engine, frame)) = made.as_mut() else {
+      return;
+    };
+    b.iter(|| {
+      *frame += 1;
+      place_camera(engine, crossing_at(*frame));
+      engine.step().expect("a frame")
+    });
+  });
+}
+
 fn main() {
   let started = SystemTime::now();
   let load = Command::new("uptime")
@@ -1632,7 +2178,7 @@ fn main() {
     .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
     .unwrap_or_else(|_| "uptime unavailable".into());
   println!("machine: {load}");
-  println!("tilemap bench: a static big map, an edit and a load");
+  println!("tilemap bench: a static big map, an edit, a load and a streamed endless world");
   let results = guards::results_dir();
   let mut criterion = Criterion::default()
     .sample_size(20)
@@ -1651,10 +2197,14 @@ fn main() {
     load_guard(files);
     landing_guard(files);
   }
+  if guards::runs(&["stream"]) {
+    stream_guard();
+  }
   static_bench(&mut criterion);
   edit_bench(&mut criterion);
   load_bench(&mut criterion, &mut files);
   landing_bench(&mut criterion, &mut files);
+  stream_bench(&mut criterion);
   criterion.final_summary();
   for (bench, of) in BENCHES {
     guards::print_median(&results, bench, of, started, 1);
@@ -1664,8 +2214,8 @@ fn main() {
     "Profile a miss (the bench binary is the one `cargo bench --bench tilemap --no-run` names) \
      with\n  xcrun xctrace record --template 'Time Profiler' --output tilemap.trace --launch -- \
      target/release/deps/tilemap-<hash> --bench --profile-time 20 '^static_frame$'\n(static_frame, \
-     edit, load or landing) and charge each sample's time to the nearest ryo2d function from the \
-     leaf up.",
+     edit, load, landing or stream) and charge each sample's time to the nearest ryo2d function \
+     from the leaf up.",
   );
   eprintln!("tilemap guards: every guard that ran met its target");
 }
