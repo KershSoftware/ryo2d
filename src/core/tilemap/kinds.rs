@@ -596,10 +596,8 @@ pub(super) fn build_chunks(data: &TileLayerData) -> Vec<IVec2> {
 
 /// The chunks of the layers of a group whose version moved since each was
 /// last read (all of a layer's, when its IntGrid's names now name other
-/// kinds), in row order, each once; the layers are marked read. A layer
-/// whose grid is the one it read looks only for later versions; one whose
-/// grid was swapped for another compares every chunk, and counts a chunk
-/// the old grid had and the new one lacks as changed
+/// kinds), or that its grid no longer has, in row order, each once; the
+/// layers are marked read (`changed_in`)
 pub(super) fn changed_chunks(
   group: &mut [Tracked],
   layers: &Layers,
@@ -621,35 +619,47 @@ pub(super) fn changed_chunks(
         all = true;
       }
     }
-    let grid = &data.grid;
-    let same = grid.id() == tracked.grid_id;
-    if !all && same && grid.version() == tracked.grid_version {
-      continue;
-    }
-    for (chunk, version) in grid.chunk_versions() {
-      if same && !all && version <= tracked.grid_version {
-        continue;
-      }
-      let before = tracked.versions.insert(chunk, version);
-      if all || before != Some(version) {
-        changed.push(chunk);
-      }
-    }
-    if !same && tracked.versions.len() > grid.chunk_count() {
-      tracked.versions.retain(|&chunk, _| {
-        let kept = grid.has_chunk(chunk);
-        if !kept {
-          changed.push(chunk);
-        }
-        kept
-      });
-    }
-    tracked.grid_id = grid.id();
-    tracked.grid_version = grid.version();
+    changed_in(tracked, &data.grid, all, &mut changed);
   }
   changed.sort_unstable_by_key(|c| (c.y, c.x));
   changed.dedup();
   changed
+}
+
+/// Pushes onto `changed` the chunks of `grid` that changed since `tracked`
+/// last read it (every one with `all`), and marks it read. While the grid
+/// is the one it read it looks only for later versions; a grid swapped for
+/// another has every chunk compared. Either way a chunk it read that the
+/// grid no longer has (the old grid's, or one unloaded since) counts as
+/// changed, to empty, and is forgotten. Read so, its chunks always hold
+/// every chunk of the grid, so it holds more exactly when the grid lost
+/// some: unloads need no record on the grid, and each consumer finds them
+/// whenever it reads
+fn changed_in(tracked: &mut Tracked, grid: &TileGrid, all: bool, changed: &mut Vec<IVec2>) {
+  let same = grid.id() == tracked.grid_id;
+  if !all && same && grid.version() == tracked.grid_version {
+    return;
+  }
+  for (chunk, version) in grid.chunk_versions() {
+    if same && !all && version <= tracked.grid_version {
+      continue;
+    }
+    let before = tracked.versions.insert(chunk, version);
+    if all || before != Some(version) {
+      changed.push(chunk);
+    }
+  }
+  if tracked.versions.len() > grid.chunk_count() {
+    tracked.versions.retain(|&chunk, _| {
+      let kept = grid.has_chunk(chunk);
+      if !kept {
+        changed.push(chunk);
+      }
+      kept
+    });
+  }
+  tracked.grid_id = grid.id();
+  tracked.grid_version = grid.version();
 }
 
 /// The tile data of a group's layers, in its order (`None` for one gone)
@@ -812,5 +822,66 @@ pub(super) fn over(below: TileCell, kind: TileCell) -> TileCell {
     kind
   } else {
     below
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use glam::{IVec2, UVec2};
+
+  use super::*;
+
+  /// The chunks `tracked` finds changed in `data`'s grid, in row order
+  fn read(tracked: &mut Tracked, data: &TileLayerData) -> Vec<IVec2> {
+    let mut changed = Vec::new();
+    changed_in(tracked, &data.grid, false, &mut changed);
+    changed.sort_unstable_by_key(|c| (c.y, c.x));
+    changed
+  }
+
+  #[test]
+  fn consumers_reading_at_different_times_each_see_an_unloaded_chunk_go_once() {
+    // Chunks (-1, 0), (0, 0) and (1, 0), each holding a tile
+    let mut data = TileLayerData {
+      grid: TileGrid::unbounded(),
+      intgrid: None,
+      cell_size: UVec2::splat(16),
+    };
+    for x in [-5, 4, 40] {
+      data.grid.set(IVec2::new(x, 3), Some(Tile::new(0, 1)));
+    }
+    let (a, b, c) = (IVec2::new(-1, 0), IVec2::ZERO, IVec2::new(1, 0));
+    let place = (0, Entity::PLACEHOLDER);
+    let mut early = Tracked::new(place, &data, &[]);
+    let mut late = Tracked::new(place, &data, &[]);
+
+    // One reads just after chunk A is unloaded: changed (to empty), once,
+    // then forgotten
+    assert!(data.grid.unload_chunk(a).is_some());
+    assert_eq!(read(&mut early, &data), [a]);
+    assert_eq!(read(&mut early, &data), []);
+    assert!(!early.versions.contains_key(&a));
+
+    // Before the other reads, C is edited and B unloaded and loaded back
+    data.grid.set(IVec2::new(41, 3), Some(Tile::new(0, 2)));
+    let Some(cells) = data.grid.unload_chunk(b) else {
+      panic!("chunk {b} is there");
+    };
+    assert!(data.grid.load_chunk(b, cells));
+    // The late one sees A gone, B and C changed, each once
+    assert_eq!(read(&mut late, &data), [a, b, c]);
+    assert_eq!(read(&mut late, &data), []);
+    assert_eq!(late.versions.len(), 2, "A forgotten, B kept");
+    // and the early one sees B and C, never A again
+    assert_eq!(read(&mut early, &data), [b, c]);
+    assert_eq!(early.versions.len(), 2);
+
+    // A chunk unloaded and loaded back between two reads is changed, kept
+    let Some(cells) = data.grid.unload_chunk(c) else {
+      panic!("chunk {c} is there");
+    };
+    assert!(data.grid.load_chunk(c, cells));
+    assert_eq!(read(&mut early, &data), [c]);
+    assert!(early.versions.contains_key(&c));
   }
 }

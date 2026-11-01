@@ -564,3 +564,241 @@ fn maps_view_reads_a_grown_map_s_bounds_and_each_layer_s() {
   let waiting = maps.world.spawn_empty().id();
   assert_eq!(MapsView::new(&mut maps.world).bounds(waiting), None);
 }
+
+/// Chunk A, (-1, 0), and chunk B, (0, 0), of `two_chunks`
+const A: IVec2 = IVec2::new(-1, 0);
+const B: IVec2 = IVec2::ZERO;
+/// The crate in chunk A: column 7, row 12 of it
+const CRATE_CELL: IVec2 = IVec2::new(-25, 12);
+
+/// A solid block of 4 x 4 cells from `corner`
+fn block(corner: IVec2) -> Vec<IVec2> {
+  (0..4)
+    .flat_map(|y| (0..4).map(move |x| corner + IVec2::new(x, y)))
+    .collect()
+}
+
+/// The solid blocks in chunks A and B: away from their shared border and
+/// every other, so neither's colliders or shadows read the other's cells
+fn blocks_of_a_and_b() -> (Vec<IVec2>, Vec<IVec2>) {
+  (block(IVec2::new(-20, 5)), block(IVec2::new(10, 5)))
+}
+
+/// An unbounded map of a solid block in chunk A and one in chunk B, with a
+/// crate (a class tile) in chunk A, landed
+fn two_chunks(maps: &mut MapWorld) -> Entity {
+  let (in_a, in_b) = blocks_of_a_and_b();
+  let mut tiles: Vec<(IVec2, Tile)> = in_a.iter().chain(&in_b).map(|&c| (c, BLOCK)).collect();
+  tiles.push((CRATE_CELL, CRATE));
+  let map = spawn(maps, unbounded_map(&tiles), |root| {
+    root.with_entity_tiles(&["crate"])
+  });
+  maps.frame();
+  map
+}
+
+/// The map's collider parts by the chunk each sits at, with their entities
+fn parts_by_chunk(world: &mut World) -> Vec<(IVec2, Entity)> {
+  let mut found: Vec<(IVec2, Entity)> = world
+    .query::<(Entity, &TilePart, &Transform)>()
+    .iter(world)
+    .map(|(entity, _, at)| {
+      let chunk = (at.translation / (32.0 * CELL)).round().as_ivec2();
+      (chunk, entity)
+    })
+    .collect();
+  found.sort_by_key(|(chunk, entity)| (chunk.y, chunk.x, *entity));
+  found
+}
+
+/// The map's occluders of `chunk`
+fn occluders_of(world: &mut World, chunk: IVec2) -> Vec<Entity> {
+  let mut found: Vec<Entity> = world
+    .query::<(Entity, &MapOccluder)>()
+    .iter(world)
+    .filter(|(_, occluder)| occluder.chunk == chunk)
+    .map(|(entity, _)| entity)
+    .collect();
+  found.sort();
+  found
+}
+
+/// The map's class tiles: each one's entity and cell
+fn class_tiles(world: &mut World) -> Vec<(Entity, IVec2)> {
+  world
+    .query::<(Entity, &MapTile)>()
+    .iter(world)
+    .map(|(entity, tile)| (entity, tile.cell))
+    .collect()
+}
+
+/// The layer's grid, to unload and load chunks of
+fn grid_of(world: &mut World, map: Entity) -> crate::core::ecs::Mut<'_, TileLayerData> {
+  let layer = layers_of(world, map)[0];
+  match world.get_mut::<TileLayerData>(layer) {
+    Some(data) => data,
+    None => panic!("{layer:?} is not a tile layer"),
+  }
+}
+
+#[test]
+fn an_unloaded_chunk_leaves_collision_shadows_and_class_tiles() {
+  let mut maps = MapWorld::new();
+  let map = two_chunks(&mut maps);
+  let (in_a, in_b) = blocks_of_a_and_b();
+  let parts = parts_by_chunk(&mut maps.world);
+  assert_eq!(parts.iter().map(|p| p.0).collect::<Vec<_>>(), [A, B]);
+  let b_occluders = occluders_of(&mut maps.world, B);
+  assert!(!occluders_of(&mut maps.world, A).is_empty());
+  assert!(!b_occluders.is_empty());
+  let tiles = class_tiles(&mut maps.world);
+  assert_eq!(tiles.len(), 1);
+  let (crate_tile, _) = tiles[0];
+
+  // A leaves the layer's grid, as a stream unloads it
+  let unloaded = grid_of(&mut maps.world, map).grid.unload_chunk(A);
+  assert!(unloaded.is_some());
+  maps.frame();
+
+  // Collision: A's cells are empty and its storage gone; B's part is the
+  // one it was
+  let tiles = colliders(&maps.world, map);
+  for &cell in &in_a {
+    assert_eq!(tiles.get(cell), TileCell::Empty, "{cell}");
+  }
+  for &cell in &in_b {
+    assert_eq!(tiles.get(cell), TileCell::Solid, "{cell}");
+  }
+  assert!(
+    tiles.chunk_cells(A).is_none(),
+    "A's colliders' storage goes"
+  );
+  assert_eq!(parts_by_chunk(&mut maps.world), [parts[1]]);
+  // Shadows: none for A; B's are the ones it had
+  assert!(occluders_of(&mut maps.world, A).is_empty());
+  assert_eq!(occluders_of(&mut maps.world, B), b_occluders);
+  // The crate goes with its chunk
+  assert!(maps.world.get_entity(crate_tile).is_err(), "despawned");
+  assert!(class_tiles(&mut maps.world).is_empty());
+  let view = MapsView::new(&mut maps.world);
+  assert_eq!(view.tile(map, "ground", in_a[0]), None);
+  assert_eq!(view.tile(map, "ground", in_b[0]), Some(BLOCK));
+}
+
+#[test]
+fn a_floor_across_an_unloaded_chunk_closes_at_its_edge_in_collision_and_shadows() {
+  // A floor on row 5 from cell -32 to 63, through chunks -1, 0 and 1:
+  // unloading chunk 1 leaves a floor from -32 to 31, one closed outline
+  // ending at x = 32 cells
+  let floor: Vec<(IVec2, Tile)> = (-32..64).map(|x| (IVec2::new(x, 5), BLOCK)).collect();
+  let mut maps = MapWorld::new();
+  let map = spawn(&mut maps, unbounded_map(&floor), |r| r);
+  maps.frame();
+  let unloaded = grid_of(&mut maps.world, map)
+    .grid
+    .unload_chunk(IVec2::new(1, 0));
+  assert!(unloaded.is_some());
+  maps.frame();
+
+  let (lo, hi) = (Vec2::new(-32.0, 5.0) * CELL, Vec2::new(32.0, 6.0) * CELL);
+  let corners = [lo, Vec2::new(lo.x, hi.y), hi, Vec2::new(hi.x, lo.y)];
+  // Collision: one part, a closed loop round the floor left
+  let found = parts(&mut maps.world);
+  assert_eq!(found.len(), 1, "no part left in chunk 1");
+  let (place, collider) = found[0].clone();
+  let ColliderShape::Polyline { points } = &in_grid_space(collider, place).shape else {
+    panic!("one loop is a closed polyline");
+  };
+  assert_eq!(points.first(), points.last(), "closed");
+  let mut seen: Vec<(i32, i32)> = points
+    .iter()
+    .map(|p| (p.x.round() as i32, p.y.round() as i32))
+    .collect();
+  seen.sort_unstable();
+  seen.dedup();
+  let mut expected: Vec<(i32, i32)> = corners.iter().map(|p| (p.x as i32, p.y as i32)).collect();
+  expected.sort_unstable();
+  assert_eq!(seen, expected);
+  // Shadows: the same outline, each edge once; chunk 1 owns its right
+  // border, the left border of its own first column
+  let mut steps = Steps::new();
+  let chains: Vec<(Vec2, LightOccluder2D)> = maps
+    .world
+    .query::<(&MapOccluder, &Transform, &LightOccluder2D)>()
+    .iter(&maps.world)
+    .map(|(_, at, occluder)| (at.translation, occluder.clone()))
+    .collect();
+  for (at, occluder) in &chains {
+    for (a, b) in occluder.edges() {
+      add_steps(&mut steps, a + *at, b + *at);
+    }
+  }
+  let mut ring = Steps::new();
+  for i in 0..4 {
+    add_steps(&mut ring, corners[i], corners[(i + 1) % 4]);
+  }
+  assert_eq!(steps, ring, "the floor's outline, closed at x = 32 cells");
+  assert_eq!(
+    occluded_chunks(&mut maps.world),
+    [IVec2::new(-1, 0), IVec2::ZERO, IVec2::new(1, 0)]
+  );
+}
+
+#[test]
+fn loading_a_chunk_back_rebuilds_it_as_new() {
+  let mut maps = MapWorld::new();
+  let map = two_chunks(&mut maps);
+  let (in_a, in_b) = blocks_of_a_and_b();
+  let b_part = parts_by_chunk(&mut maps.world)[1];
+  let b_occluders = occluders_of(&mut maps.world, B);
+  let (old_crate, _) = class_tiles(&mut maps.world)[0];
+  let b_untouched = |world: &mut World, when: &str| {
+    assert!(parts_by_chunk(world).contains(&b_part), "{when}: B's part");
+    assert_eq!(occluders_of(world, B), b_occluders, "{when}: B's shadows");
+  };
+
+  let Some(mut cells) = grid_of(&mut maps.world, map).grid.unload_chunk(A) else {
+    panic!("chunk A is there");
+  };
+  maps.frame();
+  b_untouched(&mut maps.world, "unloaded");
+  // A comes back with its tiles as the map had them, the crate included
+  let local = CRATE_CELL - A * 32;
+  cells[(local.y * 32 + local.x) as usize] = TileGrid::encode(Some(CRATE)).expect("fits");
+  assert!(grid_of(&mut maps.world, map).grid.load_chunk(A, cells));
+  maps.frame();
+
+  let tiles = colliders(&maps.world, map);
+  for &cell in in_a.iter().chain(&in_b) {
+    assert_eq!(tiles.get(cell), TileCell::Solid, "{cell}");
+  }
+  assert_eq!(
+    tiles.get(CRATE_CELL),
+    TileCell::Empty,
+    "a class tile collides not"
+  );
+  let parts = parts_by_chunk(&mut maps.world);
+  assert_eq!(parts.iter().map(|p| p.0).collect::<Vec<_>>(), [A, B]);
+  assert!(
+    !occluders_of(&mut maps.world, A).is_empty(),
+    "A casts again"
+  );
+  b_untouched(&mut maps.world, "loaded back");
+  // The crate is a new entity, and out of the grid again
+  let tiles = class_tiles(&mut maps.world);
+  assert_eq!(tiles.len(), 1);
+  let (new_crate, cell) = tiles[0];
+  assert_eq!(cell, CRATE_CELL);
+  assert_ne!(new_crate, old_crate);
+  let view = MapsView::new(&mut maps.world);
+  assert_eq!(view.tile(map, "ground", CRATE_CELL), None);
+  assert_eq!(view.tile(map, "ground", in_a[0]), Some(BLOCK));
+  let at = maps
+    .world
+    .get::<Transform>(new_crate)
+    .map(|t| t.translation);
+  assert_eq!(at, Some((CRATE_CELL.as_vec2() + 0.5) * CELL));
+  // An edit to the crate's cell finds the new entity, as a landed one's
+  assert!(MapsView::new(&mut maps.world).set_tile(map, "ground", CRATE_CELL, None));
+  assert!(maps.world.get_entity(new_crate).is_err());
+}

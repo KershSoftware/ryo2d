@@ -512,7 +512,8 @@ impl MapCollision {
 
 /// Brings a group's grid up to its layers' tiles: the cells of every chunk
 /// whose version moved since it last looked, classified across its layers
-/// from the cells where they lie, setting only those whose kind changed
+/// from the cells where they lie, setting only those whose kind changed,
+/// and every chunk its layers no longer have (unloaded) taken out whole
 fn update(group: &mut Group, tiles: &mut TileColliders, layers: &Layers, context: &Context<'_>) {
   let changed = changed_chunks(&mut group.layers, layers, context.overrides);
   if changed.is_empty() {
@@ -540,6 +541,13 @@ fn update(group: &mut Group, tiles: &mut TileColliders, layers: &Layers, context
       context,
     );
     let empty = [TileCell::Empty; super::kinds::CELLS];
+    // A chunk none of the group's grids has (unloaded) and nothing else
+    // fills goes whole, its storage with it
+    let gone = now == empty && data.iter().flatten().all(|d| !d.grid.has_chunk(chunk));
+    if gone {
+      tiles.unload_chunk(chunk);
+      continue;
+    }
     let before = *tiles.chunk_cells(chunk).unwrap_or(&empty);
     for (at, (&kind, &was)) in now.iter().zip(&before).enumerate() {
       if kind != was {

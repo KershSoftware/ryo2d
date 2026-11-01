@@ -23,10 +23,11 @@ use super::{
 use crate::core::asset::{AssetError, AssetPath, AssetServer, Assets, Handle, LoadState};
 use crate::core::ecs::kernel::{DeferredWorld, HookContext, QueryState};
 use crate::core::ecs::{
-  Allow, ChildOf, Component, Disabled, Entity, Local, Message, Messages, Transform, Without, World,
+  Allow, ChildOf, Component, DetectChangesMut, Disabled, Entity, Local, Message, Messages,
+  Transform, With, Without, World,
 };
 use crate::core::graphics::Image;
-use crate::core::hash::FastMap;
+use crate::core::hash::{FastMap, FastSet};
 use crate::core::messages::register_message;
 use crate::core::physics::TileCell;
 
@@ -802,13 +803,26 @@ pub(crate) fn class_tiles(world: &World, map: &TileMap, classes: &[String]) -> C
 /// each chunk there is read where its cells lie, so a grid costs its
 /// chunks, never the rectangle they span
 pub(crate) fn take_class_tiles(grid: &mut TileGrid, classes: &ClassTiles) -> Vec<ClassTile> {
+  if classes.iter().all(FastMap::is_empty) {
+    return Vec::new();
+  }
+  let chunks: Vec<IVec2> = grid.chunk_coords().collect();
+  take_class_tiles_in(grid, classes, &chunks)
+}
+
+/// Takes the tiles of a registered class out of `chunks` of `grid`, in row
+/// order, each chunk read where its cells lie
+fn take_class_tiles_in(
+  grid: &mut TileGrid,
+  classes: &ClassTiles,
+  chunks: &[IVec2],
+) -> Vec<ClassTile> {
   let mut found = Vec::new();
   if classes.iter().all(FastMap::is_empty) {
     return found;
   }
   let side = CHUNK_SIZE as i32;
-  let chunks: Vec<IVec2> = grid.chunk_coords().collect();
-  for chunk in chunks {
+  for &chunk in chunks {
     let Some(cells) = grid.chunk_cells(chunk) else {
       continue;
     };
@@ -1051,6 +1065,166 @@ pub(crate) fn spawn_class_tiles(
   }
   if let Some(mut table) = world.get_mut::<LayerTiles>(layer) {
     table.0.extend(spawned);
+  }
+}
+
+/// What an unbounded tile layer's class tiles last followed of its grid's
+/// whole-chunk loads and unloads: the grid (its id), its version then, and
+/// the chunks it had, which the chunks it lacks now are told from (as
+/// `kinds::changed_chunks` tells them). On the layers of maps whose root
+/// registers classes
+#[derive(Component, Debug, Default)]
+pub(crate) struct ChunksFollowed {
+  grid: u64,
+  version: u64,
+  chunks: FastSet<IVec2>,
+}
+
+/// The tile layers whose class tiles follow their grid's loads and unloads
+pub(crate) type FollowingLayers = QueryState<
+  (
+    Entity,
+    &'static MapLayerRef,
+    &'static TileLayerData,
+    Option<&'static ChunksFollowed>,
+  ),
+  With<LayerTiles>,
+>;
+
+/// `PreUpdate`, after the maps land and reload: on an unbounded layer of a
+/// map whose root registers classes, class tiles follow their chunks. An
+/// unloaded chunk's class tiles despawn with it; a loaded chunk's tiles of
+/// a registered class leave the grid and spawn as class tiles (any it had
+/// before despawning), as a landing's do. Only whole-chunk loads and
+/// unloads are followed (`TileGrid::swapped`): an edit places its own class
+/// tiles. A layer with no load or unload since it last looked costs a look,
+/// and allocates nothing
+pub(crate) fn follow_chunk_swaps(
+  world: &mut World,
+  layers: &mut FollowingLayers,
+  mut due: Local<Vec<Entity>>,
+) {
+  for (layer, layer_ref, data, followed) in layers.iter(world) {
+    let grid = &data.grid;
+    if grid.bounds().is_some() {
+      continue;
+    }
+    let registers = world
+      .get::<MapRoot>(layer_ref.map)
+      .is_some_and(|root| !root.entity_tiles.is_empty());
+    let behind = followed.is_none_or(|f| f.grid != grid.id() || grid.swapped() > f.version);
+    if registers && behind {
+      due.push(layer);
+    }
+  }
+  let mut list = std::mem::take(&mut *due);
+  for &layer in &list {
+    follow_layer(world, layer);
+  }
+  list.clear();
+  *due = list;
+}
+
+/// Brings the class tiles of the layer entity `layer` up to its grid's
+/// loads and unloads since it last looked; a grid it has not followed yet
+/// (a layer just landed, or a grid a game swapped in) is only noted
+fn follow_layer(world: &mut World, layer: Entity) {
+  let Some(&MapLayerRef { map, index, .. }) = world.get::<MapLayerRef>(layer) else {
+    return;
+  };
+  let mut followed = world
+    .get_mut::<ChunksFollowed>(layer)
+    .map(|mut followed| std::mem::take(&mut *followed))
+    .unwrap_or_default();
+  let Some(data) = world.get::<TileLayerData>(layer) else {
+    return;
+  };
+  let grid = &data.grid;
+  let cell_size = data.cell_size.as_vec2();
+  let (mut gone, mut loaded) = (Vec::new(), Vec::new());
+  if followed.grid == grid.id() {
+    // The chunks made since join; the ones it had and the grid lacks were
+    // unloaded
+    for (chunk, version) in grid.chunk_versions() {
+      if version > followed.version {
+        followed.chunks.insert(chunk);
+      }
+    }
+    loaded.extend(grid.loaded_since(followed.version));
+    if followed.chunks.len() > grid.chunk_count() {
+      followed.chunks.retain(|&chunk| {
+        let kept = grid.has_chunk(chunk);
+        if !kept {
+          gone.push(chunk);
+        }
+        kept
+      });
+    }
+  } else {
+    followed.chunks.clear();
+    followed.chunks.extend(grid.chunk_coords());
+  }
+  followed.grid = grid.id();
+  followed.version = grid.version();
+  // A chunk unloaded takes its class tiles with it, and a chunk loaded
+  // replaces them whole
+  if !gone.is_empty() || !loaded.is_empty() {
+    let swapped: FastSet<IVec2> = gone.iter().chain(&loaded).copied().collect();
+    let taken: Vec<(IVec2, Entity)> = world
+      .get::<LayerTiles>(layer)
+      .map(|table| {
+        table
+          .0
+          .iter()
+          .filter(|(cell, _)| swapped.contains(&TileGrid::chunk_of(**cell)))
+          .map(|(cell, entity)| (*cell, *entity))
+          .collect()
+      })
+      .unwrap_or_default();
+    if let Some(mut table) = world.get_mut::<LayerTiles>(layer) {
+      for (cell, _) in &taken {
+        table.0.remove(cell);
+      }
+    }
+    for (cell, entity) in taken {
+      // An entry may name an entity a game despawned since
+      if world.get::<MapTile>(entity).is_some_and(|t| t.cell == cell) {
+        let _ = world.try_despawn(entity);
+      }
+    }
+  }
+  if !loaded.is_empty() {
+    let classes = world
+      .get::<MapRoot>(map)
+      .and_then(|root| {
+        Some(class_tiles(
+          world,
+          map_asset(world, root)?,
+          &root.entity_tiles,
+        ))
+      })
+      .unwrap_or_default();
+    let found = match world.get_mut::<TileLayerData>(layer) {
+      Some(mut data) => {
+        let found =
+          take_class_tiles_in(&mut data.bypass_change_detection().grid, &classes, &loaded);
+        if !found.is_empty() {
+          data.set_changed();
+        }
+        followed.version = data.grid.version();
+        found
+      }
+      None => Vec::new(),
+    };
+    spawn_class_tiles(world, map, (layer, index), cell_size, found);
+  }
+  match world.get_mut::<ChunksFollowed>(layer) {
+    Some(mut kept) => *kept = followed,
+    None => {
+      if let Ok(mut entity) = world.get_entity_mut(layer) {
+        entity.insert(followed);
+      }
+    }
   }
 }
 

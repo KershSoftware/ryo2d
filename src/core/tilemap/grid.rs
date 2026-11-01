@@ -49,7 +49,7 @@ pub(crate) fn fill_cap() -> u64 {
 /// A chunk's side as a cell coordinate
 const SIDE: i32 = CHUNK_SIZE as i32;
 /// The cells of a chunk
-const CELLS: usize = (CHUNK_SIZE * CHUNK_SIZE) as usize;
+pub(crate) const CELLS: usize = (CHUNK_SIZE * CHUNK_SIZE) as usize;
 
 const ID_BITS: u32 = 20;
 const SET_BITS: u32 = 8;
@@ -119,6 +119,9 @@ struct Chunk {
   cells: Option<Box<[u32; CELLS]>>,
   /// The version of the change that last touched it
   version: u64,
+  /// The version of the load that last put it in whole
+  /// ([`TileGrid::load_chunk`]); 0 for a chunk never loaded
+  loaded: u64,
   dirty: bool,
 }
 
@@ -157,7 +160,8 @@ fn holds_tiles(cells: Option<&[u32; CELLS]>) -> bool {
 /// mark the chunks they touch dirty and move on their versions.
 ///
 /// Chunks persist: once made, a chunk stays, emptied or not, for as long as
-/// the grid does. A spawned map's bounded layer has every chunk of its
+/// the grid does (the engine alone takes one out, unloading a streamed
+/// layer's chunk whole). A spawned map's bounded layer has every chunk of its
 /// bounds (its landing makes them, holding no cells where it has no tile),
 /// and its collision, shadows and change tracking keep an entry for each,
 /// so a huge bounded map built in code is slow to land and costly to keep
@@ -182,6 +186,10 @@ pub struct TileGrid {
   /// process-wide counter at every change, so a version is a stamp of one
   /// state of one chunk of one grid
   counter: u64,
+  /// The version of its last load or unload of a whole chunk (0 before
+  /// any), so a consumer that only follows those can tell at a glance
+  /// whether there were any since it last looked
+  swapped: u64,
 }
 
 /// A copy with an id of its own: its versions are the original's, but
@@ -196,6 +204,7 @@ impl Clone for TileGrid {
       span: self.span,
       dirty: self.dirty,
       counter: self.counter,
+      swapped: self.swapped,
     }
   }
 }
@@ -243,6 +252,7 @@ impl TileGrid {
       span: CellRect::default(),
       dirty: 0,
       counter: 0,
+      swapped: 0,
     }
   }
 
@@ -478,7 +488,8 @@ impl TileGrid {
   /// The chunks there are, in row order (by row, then column): each made
   /// by the first tile written in it, or by a change that reached it
   /// without one (`mark_all_dirty` makes every chunk of a bounded grid's
-  /// bounds). A chunk stays once made, cleared or not
+  /// bounds). A chunk stays once made, cleared or not, unless the engine
+  /// unloads it (a streamed layer's)
   pub fn chunk_coords(&self) -> impl Iterator<Item = IVec2> + '_ {
     self.order.iter().copied()
   }
@@ -732,6 +743,99 @@ impl TileGrid {
     }
     settle(order, before);
     version.is_some()
+  }
+
+  /// Takes `chunk` out of an unbounded grid whole, returning its cells
+  /// (`None` when the grid has no such chunk, and from a bounded grid, which
+  /// keeps every chunk of its bounds: only unbounded layers stream). The
+  /// chunk is gone as if never made, its dirty mark with it, and the grid's
+  /// version moves on as for any change. Consumers see it as changed to
+  /// empty on their next read, then forget it: each keeps what it built for
+  /// each chunk it read, and the chunks it keeps that the grid lacks are the
+  /// ones unloaded (`kinds::changed_chunks`). No tombstone is kept here, so
+  /// consumers reading at different times each find it, and an unloaded
+  /// chunk costs the grid nothing
+  #[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "chunk streaming calls it; nothing else does yet")
+  )]
+  pub(crate) fn unload_chunk(&mut self, chunk: IVec2) -> Option<Box<[u32; CELLS]>> {
+    if self.bounds.is_some() {
+      return None;
+    }
+    let entry = self.chunks.remove(&chunk)?;
+    if let Ok(at) = self
+      .order
+      .binary_search_by_key(&row_order(&chunk), row_order)
+    {
+      self.order.remove(at);
+    }
+    // The cells of the chunks left
+    self.span = self
+      .order
+      .iter()
+      .fold(CellRect::default(), |span, &c| span.union(chunk_rect(c)));
+    if entry.dirty {
+      self.dirty -= 1;
+    }
+    let version = next_version();
+    self.counter = version;
+    self.swapped = version;
+    Some(entry.cells.unwrap_or_else(empty_cells))
+  }
+
+  /// Puts a whole chunk's cells (`CHUNK_SIZE` rows of `CHUNK_SIZE`, each as
+  /// [`encode`](Self::encode) gives it) into an unbounded grid at once, as
+  /// one change: the chunk made if the grid lacks it, its cells replaced
+  /// whole if not. It is made even when every cell is empty (holding no
+  /// cells then), so a chunk loaded is a chunk the grid has, and the load is
+  /// noted on it ([`loaded_since`](Self::loaded_since)). False, changing
+  /// nothing, for a bounded grid (only unbounded layers stream) and for a
+  /// chunk past the cells an `i32` holds
+  #[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "chunk streaming calls it; nothing else does yet")
+  )]
+  pub(crate) fn load_chunk(&mut self, chunk: IVec2, cells: Box<[u32; CELLS]>) -> bool {
+    let (first, last) = (Self::chunk_of(IVec2::MIN), Self::chunk_of(IVec2::MAX));
+    if self.bounds.is_some() || chunk.cmplt(first).any() || chunk.cmpgt(last).any() {
+      return false;
+    }
+    let before = self.order.len();
+    let Self {
+      chunks,
+      order,
+      span,
+      dirty,
+      counter,
+      swapped,
+      ..
+    } = self;
+    let entry = make_chunk(chunks, order, span, chunk);
+    entry.cells = holds_tiles(Some(&*cells)).then_some(cells);
+    let version = next_version();
+    entry.mark(version, dirty);
+    entry.loaded = version;
+    *counter = version;
+    *swapped = version;
+    settle(order, before);
+    true
+  }
+
+  /// The version of the grid's last load or unload of a whole chunk; 0 for
+  /// a grid that has had none (every bounded grid's)
+  pub(crate) fn swapped(&self) -> u64 {
+    self.swapped
+  }
+
+  /// The chunks there are whose last whole load came after version
+  /// `version` (later edits to them leave it noted), in no set order
+  pub(crate) fn loaded_since(&self, version: u64) -> impl Iterator<Item = IVec2> + '_ {
+    self
+      .chunks
+      .iter()
+      .filter(move |(_, entry)| entry.loaded > version)
+      .map(|(&chunk, _)| chunk)
   }
 
   /// What tells this grid from every other, its clones included
@@ -1422,6 +1526,153 @@ mod tests {
     let near = IVec2::splat(i32::MIN);
     assert!(far.write_rows(near, 2, &[t; 4]));
     assert_eq!(far.get(near + IVec2::ONE), Some(Tile::new(0, 4)));
+  }
+
+  #[test]
+  fn a_bounded_grid_refuses_to_unload_or_load_chunks() {
+    let mut g = TileGrid::new(UVec2::splat(64));
+    g.fill(IVec2::ZERO, IVec2::splat(63), Some(Tile::new(0, 1)));
+    let (before, version, chunks) = (format!("{g:?}"), g.version(), g.chunk_count());
+    assert!(g.unload_chunk(IVec2::ZERO).is_none());
+    let mut cells = empty_cells();
+    cells[0] = TileGrid::encode(Some(Tile::new(0, 2))).expect("fits");
+    assert!(!g.load_chunk(IVec2::new(1, 1), cells.clone()));
+    assert!(!g.load_chunk(IVec2::new(5, 5), cells));
+    assert_eq!(format!("{g:?}"), before, "the cells as they were");
+    assert_eq!((g.version(), g.chunk_count()), (version, chunks));
+    assert_eq!(g.swapped(), 0);
+  }
+
+  #[test]
+  fn an_unloaded_chunk_leaves_the_grid_as_one_change() {
+    // Chunks (-1, 0), (0, 0) and (3, 2), each holding a tile
+    let mut g = TileGrid::unbounded();
+    let (a, b, far) = (IVec2::new(-1, 0), IVec2::ZERO, IVec2::new(3, 2));
+    g.set(IVec2::new(-5, 3), Some(Tile::new(0, 1)));
+    g.set(IVec2::new(4, 3), Some(Tile::new(0, 2)));
+    g.set(IVec2::new(100, 70), Some(Tile::new(0, 3)));
+    let mut out = Vec::new();
+    g.drain_dirty(&mut out);
+    let (kept, before) = (g.chunk_version(b), g.version());
+
+    let Some(cells) = g.unload_chunk(a) else {
+      panic!("chunk {a} is there");
+    };
+    // Its cells come back as they were: (-5, 3) is column 27, row 3
+    assert_eq!(
+      TileGrid::decode(cells[3 * SIDE as usize + 27]),
+      Some(Tile::new(0, 1))
+    );
+    assert_eq!(cells.iter().filter(|&&c| c != 0).count(), 1);
+    // and the chunk is gone, as if never made
+    assert!(!g.has_chunk(a));
+    assert_eq!(g.get(IVec2::new(-5, 3)), None);
+    assert!(g.chunk_cells(a).is_none());
+    assert_eq!(g.chunk_version(a), 0);
+    assert_eq!(g.chunk_coords().collect::<Vec<_>>(), [b, far]);
+    assert_eq!(g.chunk_count(), 2);
+    assert!(g.chunk_versions().all(|(chunk, _)| chunk != a));
+    // The extent shrinks to the chunks left
+    assert_eq!(g.extent(), CellRect::new(IVec2::ZERO, IVec2::new(128, 96)));
+    // One change: the grid's version moves on, the other chunks keep theirs
+    assert!(g.version() > before);
+    assert_eq!(g.swapped(), g.version());
+    assert_eq!(g.chunk_version(b), kept);
+    g.drain_dirty(&mut out);
+    assert!(out.is_empty(), "nothing left to drain: {out:?}");
+
+    // An absent chunk is not unloaded, and changes nothing
+    let version = g.version();
+    assert!(g.unload_chunk(a).is_none());
+    assert!(g.unload_chunk(IVec2::new(40, 40)).is_none());
+    assert_eq!(g.version(), version);
+
+    // A dirty chunk unloaded leaves no dirty mark behind
+    g.set(IVec2::new(5, 5), Some(Tile::new(0, 4)));
+    assert!(g.unload_chunk(b).is_some());
+    g.drain_dirty(&mut out);
+    assert!(out.is_empty(), "{out:?}");
+    // An empty chunk unloads as empty cells
+    g.set(IVec2::new(100, 70), None);
+    let Some(cells) = g.unload_chunk(far) else {
+      panic!("chunk {far} is there, emptied");
+    };
+    assert!(cells.iter().all(|&c| c == 0));
+    assert_eq!(g.chunk_count(), 0);
+    assert!(g.extent().is_empty());
+  }
+
+  #[test]
+  fn a_loaded_chunk_comes_in_whole_as_one_change() {
+    let mut g = TileGrid::unbounded();
+    g.set(IVec2::new(4, 3), Some(Tile::new(0, 2)));
+    let kept = g.chunk_version(IVec2::ZERO);
+    let read = g.version();
+    let tile = |id: u32| TileGrid::encode(Some(Tile::new(0, id))).expect("fits");
+    let chunk = IVec2::new(-2, 1);
+    let mut cells = empty_cells();
+    cells[0] = tile(7);
+    cells[CELLS - 1] = tile(8);
+    assert!(g.load_chunk(chunk, cells));
+    // Its cells, from its first to its last
+    assert_eq!(g.get(IVec2::new(-64, 32)), Some(Tile::new(0, 7)));
+    assert_eq!(g.get(IVec2::new(-33, 63)), Some(Tile::new(0, 8)));
+    assert_eq!(
+      g.chunk_coords().collect::<Vec<_>>(),
+      [IVec2::ZERO, chunk],
+      "in row order"
+    );
+    assert_eq!(
+      g.extent(),
+      CellRect::new(IVec2::new(-64, 0), IVec2::new(32, 64))
+    );
+    // One change, which the grid notes as a load
+    assert!(g.version() > read);
+    assert_eq!(g.chunk_version(chunk), g.version());
+    assert_eq!(g.chunk_version(IVec2::ZERO), kept);
+    assert_eq!(g.swapped(), g.version());
+    assert_eq!(g.loaded_since(read).collect::<Vec<_>>(), [chunk]);
+    assert_eq!(g.loaded_since(g.version()).count(), 0);
+    let mut out = Vec::new();
+    g.drain_dirty(&mut out);
+    assert_eq!(out, [IVec2::ZERO, chunk]);
+
+    // Loading over a chunk there is replaces its cells whole
+    let before = g.version();
+    let mut cells = empty_cells();
+    cells[5] = tile(9);
+    assert!(g.load_chunk(IVec2::ZERO, cells));
+    assert_eq!(g.get(IVec2::new(4, 3)), None);
+    assert_eq!(g.get(IVec2::new(5, 0)), Some(Tile::new(0, 9)));
+    assert_eq!(g.loaded_since(before).collect::<Vec<_>>(), [IVec2::ZERO]);
+    // An edit after a load leaves the load noted
+    g.set(IVec2::new(6, 0), Some(Tile::new(0, 1)));
+    assert_eq!(g.loaded_since(before).collect::<Vec<_>>(), [IVec2::ZERO]);
+
+    // An empty chunk loads as a chunk holding no cells
+    assert!(g.load_chunk(IVec2::new(9, 9), empty_cells()));
+    assert!(g.has_chunk(IVec2::new(9, 9)));
+    assert!(g.chunk_cells(IVec2::new(9, 9)).is_none());
+    // A chunk past the cells an i32 holds is refused
+    let version = g.version();
+    for chunk in [IVec2::MAX, IVec2::MIN, IVec2::new(0, i32::MAX / SIDE + 1)] {
+      assert!(!g.load_chunk(chunk, empty_cells()), "{chunk}");
+    }
+    assert_eq!(g.version(), version);
+    // The first and last chunks an i32 holds load
+    let (first, last) = (
+      TileGrid::chunk_of(IVec2::MIN),
+      TileGrid::chunk_of(IVec2::MAX),
+    );
+    let mut cells = empty_cells();
+    cells[0] = tile(1);
+    cells[CELLS - 1] = tile(2);
+    assert!(g.load_chunk(first, cells.clone()));
+    assert!(g.load_chunk(last, cells));
+    assert_eq!(g.get(IVec2::MIN), Some(Tile::new(0, 1)));
+    assert_eq!(g.get(IVec2::MAX), Some(Tile::new(0, 2)));
+    assert!(g.unload_chunk(last).is_some());
+    assert!(g.unload_chunk(first).is_some());
   }
 
   #[test]

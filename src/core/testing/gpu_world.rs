@@ -1196,6 +1196,50 @@ fn an_edit_rebuilds_one_chunk() {
 }
 
 #[test]
+fn an_unloaded_chunk_draws_nothing_and_the_store_lets_it_go() {
+  use crate::core::render::batch::KEEP_FRAMES;
+  // An infinite map whose cell (0, 0) is at the view's centre, (32, 32):
+  // a red tile at cell (-1, -1), the last of chunk (-1, -1), and one at
+  // (0, 0), the first of chunk (0, 0), both on screen
+  let Some(mut engine) = tile_engine(64, |ctx| {
+    let set = solid_tiles(ctx, &[RED]);
+    let mut map = TileMap::infinite(UVec2::splat(8));
+    map.add_tileset(TilesetSource::Embedded(std::sync::Arc::new(set)));
+    let layer = map.add_tile_layer("ground");
+    if let Some(grid) = map.tiles_mut(layer) {
+      grid.set(IVec2::NEG_ONE, Some(Tile::new(0, 0)));
+      grid.set(IVec2::ZERO, Some(Tile::new(0, 0)));
+    }
+    spawn_map(ctx, map, Vec2::splat(32.0));
+  }) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  let frame = engine.frame().unwrap();
+  let background = frame.get_pixel(4, 4).0;
+  assert_eq!(frame.get_pixel(28, 28).0, RED, "chunk (-1, -1)'s tile");
+  assert_eq!(frame.get_pixel(36, 36).0, RED, "chunk (0, 0)'s tile");
+  let built = |engine: &HeadlessEngine| -> Vec<IVec2> {
+    engine.tile_chunks().into_iter().map(|(_, c)| c).collect()
+  };
+  assert_eq!(built(&engine), [IVec2::NEG_ONE, IVec2::ZERO]);
+
+  let world = engine.world_mut();
+  let mut layers = world.query::<&mut TileLayerData>();
+  for mut data in layers.iter_mut(world) {
+    assert!(data.grid.unload_chunk(IVec2::NEG_ONE).is_some());
+  }
+  engine.step().unwrap();
+  let frame = engine.frame().unwrap();
+  assert_eq!(frame.get_pixel(28, 28).0, background, "drawn no more");
+  assert_eq!(frame.get_pixel(36, 36).0, RED, "the other chunk draws on");
+  // The store keeps it as it keeps any chunk not drawn, then lets it go
+  assert_eq!(built(&engine), [IVec2::NEG_ONE, IVec2::ZERO]);
+  engine.step_frames(KEEP_FRAMES as u32).unwrap();
+  assert_eq!(built(&engine), [IVec2::ZERO]);
+}
+
+#[test]
 fn a_despawned_map_frees_its_chunks() {
   let Some(mut engine) = tile_engine(64, big_map) else {
     return;

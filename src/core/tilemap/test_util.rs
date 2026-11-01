@@ -45,8 +45,9 @@ pub(crate) fn world_over(files: MemorySource) -> World {
 }
 
 /// A physics world over the tilemap fixtures with the engine's map systems:
-/// spawning in `PreUpdate`, collision in the fixed step, occluders in
-/// `PostUpdate`, and physics forgetting what was removed in `Last`
+/// spawning, reloading and class tiles following chunks in `PreUpdate`,
+/// collision in the fixed step, occluders in `PostUpdate`, and physics
+/// forgetting what was removed in `Last`
 pub(crate) struct MapWorld {
   pub(crate) world: World,
   schedules: EngineSchedules,
@@ -72,7 +73,12 @@ impl MapWorld {
     insert_registry(&mut world, AssetServer::new(files));
     schedules.add_systems(
       Phase::PreUpdate,
-      (super::spawn_maps, super::reload_maps).chain(),
+      (
+        super::spawn_maps,
+        super::reload_maps,
+        super::follow_chunk_swaps,
+      )
+        .chain(),
     );
     super::register_tilemap_systems(&mut schedules);
     schedules.add_systems(

@@ -873,6 +873,36 @@ impl TileColliders {
     self.changes = None;
   }
 
+  /// Takes `chunk` out whole: each cell it held leaves as `set` would empty
+  /// it, listed as a change with what it held, so the next rebuild retraces
+  /// only the loops and runs through it (a loop running on into the chunk
+  /// closes at its edge), and its storage goes with it, so a grid streamed
+  /// across an endless world costs only the chunks it holds. A chunk the
+  /// grid lacks changes nothing
+  pub(crate) fn unload_chunk(&mut self, chunk: IVec2) {
+    let Some(cells) = self.chunks.remove(&chunk) else {
+      return;
+    };
+    // The cells of the chunks left
+    self.span = self
+      .chunks
+      .keys()
+      .fold(CellRect::default(), |span, &c| span.union(chunk_rect(c)));
+    let origin = chunk * CHUNK;
+    let held = cells
+      .iter()
+      .enumerate()
+      .filter(|&(_, &cell)| cell != TileCell::Empty);
+    for (at, &before) in held {
+      let cell = origin + IVec2::new(at as i32 % CHUNK, at as i32 / CHUNK);
+      match &mut self.changes {
+        Some(changes) if changes.len() < MAX_CHANGES => changes.push((cell, before)),
+        _ => self.changes = None,
+      }
+    }
+    self.generation = next_generation();
+  }
+
   /// The cells changed since the rebuild last took them in, in row order
   /// (by row, then column), each once with its value then; None when there
   /// were too many to list. The list starts again from now.
@@ -1761,6 +1791,44 @@ mod tests {
     // Nothing but empty cells makes no chunk
     free.put_chunk(IVec2::new(9, 9), &[E; CELLS]);
     assert!(free.chunk_cells(IVec2::new(9, 9)).is_none());
+  }
+
+  #[test]
+  fn an_unloaded_chunk_s_cells_leave_as_changes_and_its_storage_goes() {
+    let mut grid = TileColliders::unbounded(Vec2::splat(16.0));
+    for cell in [IVec2::new(-3, 2), IVec2::new(-1, 31), IVec2::new(40, 2)] {
+      assert!(grid.set(cell, S));
+    }
+    assert!(grid.set(IVec2::new(-20, 4), O));
+    let _ = grid.take_changes();
+    let generation = grid.generation;
+    grid.unload_chunk(IVec2::new(-1, 0));
+    assert!(grid.generation > generation, "a change");
+    assert!(grid.chunk_cells(IVec2::new(-1, 0)).is_none());
+    for cell in [IVec2::new(-3, 2), IVec2::new(-1, 31), IVec2::new(-20, 4)] {
+      assert_eq!(grid.get(cell), E, "{cell}");
+    }
+    assert_eq!(grid.get(IVec2::new(40, 2)), S);
+    // Each cell it held, with what it held, in row order, as `set` lists them
+    assert_eq!(
+      grid.take_changes(),
+      Some(vec![
+        (IVec2::new(-3, 2), S),
+        (IVec2::new(-20, 4), O),
+        (IVec2::new(-1, 31), S),
+      ])
+    );
+    // The extent is the chunks left
+    assert_eq!(
+      grid.extent(),
+      CellRect::new(IVec2::new(32, 0), IVec2::new(64, 32))
+    );
+    // A chunk it lacks changes nothing
+    let generation = grid.generation;
+    grid.unload_chunk(IVec2::new(-1, 0));
+    grid.unload_chunk(IVec2::new(7, 7));
+    assert_eq!(grid.generation, generation);
+    assert_eq!(grid.take_changes(), Some(Vec::new()));
   }
 
   #[test]
@@ -2948,6 +3016,41 @@ mod with_physics {
         "the part at {at} took its prebuilt shape"
       );
     }
+  }
+
+  #[test]
+  fn a_floor_across_an_unloaded_chunk_closes_at_its_edge() {
+    // A floor on row 5 from cell -32 to 63, through chunks -1, 0 and 1, and
+    // a block in chunk 1 of its own. Unloading chunk 1 leaves one closed
+    // loop from x -32 to 32, still in chunk -1's part, and no part in chunk 1
+    let mut tiles = TileColliders::unbounded(Vec2::splat(16.0));
+    for x in -32..64 {
+      assert!(tiles.set(IVec2::new(x, 5), TileCell::Solid));
+    }
+    assert!(tiles.set(IVec2::new(50, 20), TileCell::Solid));
+    let (mut world, mut s) = world(60);
+    let map = world.spawn((Transform::IDENTITY, tiles)).id();
+    run(&mut world, &mut s, 1);
+    let before = parts_by_id(&mut world, map);
+    assert_eq!(before.len(), 2, "chunk -1's part and chunk 1's");
+    let floor = part_in(&before, Vec2::new(-512.0, 80.0), Vec2::new(-512.0, 96.0));
+    world
+      .get_mut::<TileColliders>(map)
+      .unwrap()
+      .unload_chunk(IVec2::new(1, 0));
+    run(&mut world, &mut s, 1);
+    let after = parts_by_id(&mut world, map);
+    assert_eq!(after.len(), 1, "no part left in chunk 1: {after:?}");
+    assert_eq!(after[0].0, floor, "the floor's part keeps its entity");
+    let loops = outline_loops(&after, 16.0);
+    assert_eq!(loops.len(), 1, "one loop: {loops:?}");
+    let ring = &loops[0];
+    assert_eq!(ring.first(), ring.last(), "closed: {ring:?}");
+    let mut corners = ring.clone();
+    corners.sort_unstable();
+    corners.dedup();
+    assert_eq!(corners, [(-32, 5), (-32, 6), (32, 5), (32, 6)]);
+    assert_matches_a_full_trace(&mut world, map);
   }
 
   #[test]

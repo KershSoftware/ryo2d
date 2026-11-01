@@ -45,7 +45,7 @@ pub(crate) use reload::reload_maps;
 pub use spawn::{
   IntGridKey, MapEvent, MapIds, MapLayerRef, MapObject, MapRoot, MapTile, TileLayerData,
 };
-pub(crate) use spawn::{MapLayers, map_asset, spawn_maps};
+pub(crate) use spawn::{MapLayers, follow_chunk_swaps, map_asset, spawn_maps};
 pub use tile::{Tile, TileFlip};
 pub use tiled::{TileWorldLoader, TiledMapLoader, TiledTilesetLoader};
 pub use tileset::{

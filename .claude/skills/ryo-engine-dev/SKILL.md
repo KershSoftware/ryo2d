@@ -2,7 +2,7 @@
 name: ryo-engine-dev
 description: Working on the Ryo2D engine - the frame's phases, module map, resources, public API, crates and testing.
 metadata:
-  version: 2.5.0
+  version: 2.5.1
 ---
 
 # Ryo2D Engine Developer
@@ -36,8 +36,9 @@ Engine::frame
 │                     and reloads land, code changes' events are sent, unheld assets are freed
 │                     (AssetEvent<T>); the font registry follows the font stores; then tile maps:
 │                     spawn_maps (ready maps' landings sent to the map builder thread, finished
-│                     ones landed whole, MapEvent) and reload_maps (spawned maps follow saved
-│                     files); then the console (animation, input, commands)
+│                     ones landed whole, MapEvent), reload_maps (spawned maps follow saved
+│                     files) and follow_chunk_swaps (class tiles follow the chunks loaded and
+│                     unloaded whole); then the console (animation, input, commands)
 ├─ UI pass            resolve first, once a frame, against last frame's UI records: the
 │                     pointer, the wheel, then focus and navigation from the ui.* actions;
 │                     then each visible scene bottom-up: its node trees (unchanged subtrees
