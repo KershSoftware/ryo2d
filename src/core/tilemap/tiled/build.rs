@@ -14,10 +14,11 @@ use crate::core::asset::{
   Asset, AssetError, AssetPath, AssetServer, Assets, CheckContext, Handle, LoadContext,
 };
 use crate::core::graphics::Image;
+use crate::core::hash::FastSet;
 use crate::core::render::batch::BlendMode;
 use crate::core::tilemap::{
-  ImageLayer, LayerKind, MapLayer, Tile, TileData, TileFrame, TileGrid, TileMap, TileShape,
-  Tileset, TilesetImage, TilesetSource,
+  CHUNK_SIZE, ImageLayer, LayerKind, MapLayer, Tile, TileData, TileFrame, TileGrid, TileMap,
+  TileShape, Tileset, TilesetImage, TilesetSource,
 };
 use crate::core::ui::Color;
 use glam::{IVec2, UVec2, Vec2};
@@ -27,8 +28,9 @@ const MAX_CELLS: u64 = 1 << 26;
 /// Most cells a map's tile layers hold together (and an LDtk level's and
 /// project's, an IntGrid layer counting its tiles and its values): 512 MiB
 /// of 4-byte cells, an 8192 x 8192 map of two layers or a 1024 x 1024 one of
-/// 128. Counted from the layers' sizes before any is decoded or allocated,
-/// so a small file cannot ask for gigabytes
+/// 128. Counted from the layers' sizes before any is decoded or allocated
+/// (an infinite map's layer as the engine will allocate it,
+/// `chunked_cells`), so a small file cannot ask for gigabytes
 pub(crate) const MAX_MAP_CELLS: u64 = 1 << 27;
 /// Most tiles a tileset holds: what a cell's 20 bits can name
 pub(crate) const MAX_TILES: u32 = 1_048_575;
@@ -467,8 +469,8 @@ struct Builder<'p, 'a> {
 
 /// The cells the tile layers of `layers` (in groups too) hold, as their
 /// sizes say (a layer without one is the map's `size`), or an infinite
-/// map's as their chunks' sizes say, each chunk checked first
-/// (`check_chunk`); a layer past what one holds fails, naming it
+/// map's as [`chunked_cells`] counts them; a layer past what one holds
+/// fails, naming it
 fn tile_cells(
   path: &AssetPath,
   layers: &[RawLayer],
@@ -484,22 +486,7 @@ fn tile_cells(
   for l in layers {
     let place = || format!("layer {:?}", l.name);
     let cells = match (l.ty.as_str(), &l.chunks) {
-      ("tilelayer", Some(chunks)) => {
-        let mut cells = 0u64;
-        for chunk in chunks {
-          let (_, size) = check_chunk(chunk, tile_size)
-            .map_err(|what| fail(path, &chunk_place(&place(), chunk), what))?;
-          cells = cells.saturating_add(u64::from(size.x) * u64::from(size.y));
-        }
-        if cells > MAX_CELLS {
-          return Err(fail(
-            path,
-            &place(),
-            format!("its chunks hold {cells} cells, past the {MAX_CELLS} cells a layer holds"),
-          ));
-        }
-        cells
-      }
+      ("tilelayer", Some(chunks)) => chunked_cells(path, &place(), chunks, tile_size)?,
       ("tilelayer", None) => {
         let (w, h) = (l.width.unwrap_or(size.x), l.height.unwrap_or(size.y));
         let Some(n) = cell_count(w, h) else {
@@ -519,6 +506,56 @@ fn tile_cells(
   Ok(total)
 }
 
+/// The cells an infinite map's layer of `chunks`, at `place`, counts
+/// against the caps: the more of the cells its chunks hold (what is read
+/// and decoded) and the cells of the engine's chunks they reach (what is
+/// allocated: each engine chunk a tile goes in holds `CHUNK_SIZE` x
+/// `CHUNK_SIZE` cells, however few of them the file writes, so a 1 x 1
+/// chunk takes 1,024 and a 16 x 16 one off the engine's grid reaches
+/// four). Each chunk is checked first (`check_chunk`); either count past a
+/// layer's cells fails naming the layer. The engine chunks are found
+/// without decoding anything, keeping no more of them than a layer holds
+fn chunked_cells(
+  path: &AssetPath,
+  place: &str,
+  chunks: &[RawChunk],
+  tile_size: UVec2,
+) -> Result<u64, AssetError> {
+  let per_chunk = u64::from(CHUNK_SIZE * CHUNK_SIZE);
+  let mut read = 0u64;
+  let mut reached: FastSet<IVec2> = FastSet::default();
+  for chunk in chunks {
+    let (origin, size) =
+      check_chunk(chunk, tile_size).map_err(|what| fail(path, &chunk_place(place, chunk), what))?;
+    read = read.saturating_add(u64::from(size.x) * u64::from(size.y));
+    if read > MAX_CELLS {
+      return Err(fail(
+        path,
+        place,
+        format!("its chunks hold {read} cells, past the {MAX_CELLS} cells a layer holds"),
+      ));
+    }
+    // Its first and last cells are cells an `i32` holds (`check_chunk`)
+    let last = origin.saturating_add((size - UVec2::ONE).as_ivec2());
+    let (first, last) = (TileGrid::chunk_of(origin), TileGrid::chunk_of(last));
+    for y in first.y..=last.y {
+      for x in first.x..=last.x {
+        if reached.insert(IVec2::new(x, y)) && reached.len() as u64 * per_chunk > MAX_CELLS {
+          return Err(fail(
+            path,
+            place,
+            format!(
+              "its chunks take {} cells of the engine's chunks of {CHUNK_SIZE} x {CHUNK_SIZE}, past the {MAX_CELLS} cells a layer holds",
+              reached.len() as u64 * per_chunk
+            ),
+          ));
+        }
+      }
+    }
+  }
+  Ok(read.max(reached.len() as u64 * per_chunk))
+}
+
 /// Where a chunk of the layer at `layer` is, for its errors
 fn chunk_place(layer: &str, chunk: &RawChunk) -> String {
   format!("{layer}, chunk ({}, {})", chunk.x, chunk.y)
@@ -530,7 +567,7 @@ fn chunk_place(layer: &str, chunk: &RawChunk) -> String {
 /// is not zero) a number an `i32` holds. Checked before anything is
 /// decoded or allocated, so a chunk far past the cells and pixels the
 /// engine counts in fails naming it, and a map's cells are counted from
-/// its chunks' sizes alone
+/// its chunks' places and sizes alone
 fn check_chunk(chunk: &RawChunk, tile_size: UVec2) -> Result<(IVec2, UVec2), String> {
   let (w, h) = (chunk.width, chunk.height);
   if w <= 0 || h <= 0 {

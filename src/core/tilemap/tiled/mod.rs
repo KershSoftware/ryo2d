@@ -915,9 +915,9 @@ mod tests {
       "-16 x 16",
     );
     // 2^20 chunks of 16 x 16 (one layer's limit, 2^26 cells, in each of
-    // four layers) are 2^28 cells, past the 2^27 a map holds: counted from
-    // the chunks' sizes before any is decoded, so a 25 MB file asking for
-    // a GiB of cells fails on the count
+    // four layers) are 2^28 cells to read, past the 2^27 a map holds:
+    // counted from the chunks' sizes before any is decoded, so a 25 MB file
+    // asking for a GiB of cells fails on the count
     let chunks = vec![r#"{"width":16,"height":16}"#; 1 << 18].join(",");
     let layers: Vec<String> = (1..=4)
       .map(|id| chunked_layer(id, &format!("l{id}"), &chunks))
@@ -933,6 +933,59 @@ mod tests {
     let error = failure(&infinite_json(&chunked_layer(1, "vast", &chunks)));
     assert!(
       error.contains(r#"layer "vast""#) && error.contains("past the 67108864 cells a layer holds"),
+      "{error}"
+    );
+  }
+
+  /// `count` chunks of `size` cells, each full of tile 1, the `i`th at
+  /// `at(i)`
+  fn tiled_chunks(count: usize, size: i64, at: impl Fn(usize) -> (i64, i64)) -> String {
+    let data = vec!["1"; (size * size) as usize].join(",");
+    (0..count)
+      .map(|i| {
+        let (x, y) = at(i);
+        format!(r#"{{"x":{x},"y":{y},"width":{size},"height":{size},"data":[{data}]}}"#)
+      })
+      .collect::<Vec<_>>()
+      .join(",")
+  }
+
+  #[test]
+  fn infinite_chunks_count_the_engine_chunks_they_take_before_allocating() {
+    // The engine keeps a layer's cells in chunks of 32 x 32, each made
+    // whole where a tile goes: a 1 x 1 chunk takes 1,024 cells, and a
+    // 16 x 16 chunk at (24, 24) reaches four of them. So a layer counts
+    // the cells of the engine's chunks its chunks reach (when more than
+    // the cells they hold), checked before anything is decoded or
+    // allocated.
+    let set = r#""tilesets":[{"firstgid":1,"source":"tilesets/tiles.tsj"}]"#;
+    let with_set = |layers: &str| infinite_json(layers).replace(r#""tilesets":[]"#, set);
+    // One layer of 65,537 one-cell chunks 32 cells apart: 65,537 cells
+    // read, far under a layer's 2^26, but 65,537 engine chunks, past it
+    let scattered = tiled_chunks(65_537, 1, |i| (32 * i as i64, 0));
+    let error = failure(&with_set(&chunked_layer(1, "dust", &scattered)));
+    assert!(
+      error.contains(r#"layer "dust""#)
+        && error.contains("67109888 cells")
+        && error.contains("past the 67108864 cells a layer holds"),
+      "{error}"
+    );
+    // A map of one layer at the limit (65,536 one-cell chunks), one of
+    // 16,384 chunks of 16 x 16 each reaching four engine chunks (65,536,
+    // at the limit too), and one more cell: 131,073 engine chunks, past
+    // the 2^27 cells a map holds, from 4,259,841 cells read
+    let dust = tiled_chunks(65_536, 1, |i| (32 * i as i64, 0));
+    let straddling = tiled_chunks(16_384, 16, |i| (24 + 64 * i as i64, 24));
+    let last = tiled_chunks(1, 1, |_| (0, -100));
+    let layers = [
+      chunked_layer(1, "dust", &dust),
+      chunked_layer(2, "straddling", &straddling),
+      chunked_layer(3, "last", &last),
+    ];
+    let error = failure(&with_set(&layers.join(",")));
+    assert!(
+      error.contains("m.tmj")
+        && error.contains("layers hold 134218752 cells, past the 134217728 a map holds"),
       "{error}"
     );
   }
