@@ -1076,6 +1076,62 @@ mod tests {
   }
 
   #[test]
+  fn chunks_straddling_the_engine_s_chunks_and_a_grouped_layer_land_where_tiled_put_them() {
+    // Tiled's chunks of 24 x 24 (`make-fixtures.js`, `chunks24`) straddle
+    // the engine's borders at x 32 and -32, and a tile layer sits inside a
+    // group: every tile at the cell the script painted, in both formats
+    let mut world = world_with(&[]);
+    let (h, v) = (TileFlip::HORIZONTAL, TileFlip::VERTICAL);
+    let tile = |x: i32, y: i32, id: u32, flip: TileFlip| {
+      (IVec2::new(x, y), Tile::new(0, id).with_flip(flip))
+    };
+    let mut ground = painted("ground");
+    ground.extend([
+      tile(30, 5, 4, TileFlip::NONE),
+      tile(33, 5, 7, TileFlip::NONE),
+      tile(-33, -25, 8, TileFlip::NONE),
+      tile(-31, -25, 9, h),
+    ]);
+    ground.sort_by_key(|(cell, _)| (cell.y, cell.x));
+    let inner = vec![
+      tile(31, -49, 12, v),
+      tile(32, -49, 13, TileFlip::NONE),
+      tile(-40, 47, 11, TileFlip::NONE),
+    ];
+    let at = |x: i32, y: i32| IVec2::new(x, y);
+    for path in [
+      "maps/infinite-chunks24.tmj",
+      "xml/maps/infinite-chunks24.tmx",
+    ] {
+      let map = loaded(&mut world, path);
+      assert!(map.infinite, "{path}");
+      // the group flattens: its tile layer is the map's second
+      assert_eq!(map.layer_index("inner"), Some(1), "{path}");
+      for (name, expected) in [("ground", &ground), ("inner", &inner)] {
+        let grid = grid_of(&map, name);
+        assert_eq!(grid.bounds(), None, "{path} {name}");
+        assert_eq!(tiles_of(grid), *expected, "{path} {name}");
+      }
+      // a straddling chunk's tiles in the engine chunks either side
+      assert_eq!(
+        grid_of(&map, "ground").chunk_coords().collect::<Vec<_>>(),
+        [at(-2, -1), at(-1, -1), at(-1, 0), at(0, 0), at(1, 0)],
+        "{path}"
+      );
+      assert_eq!(
+        grid_of(&map, "inner").chunk_coords().collect::<Vec<_>>(),
+        [at(0, -2), at(1, -2), at(-2, 1)],
+        "{path}"
+      );
+      assert_eq!(
+        map.bounds(),
+        CellRect::new(at(-40, -49), at(41, 48)),
+        "{path}"
+      );
+    }
+  }
+
+  #[test]
   fn tile_elements_without_an_encoding_fill_a_layer() {
     let tiles = r#"<tile gid="0"/><tile gid="0"/><tile gid="0"/><tile gid="0"/>"#;
     let mut world = world_with(&[(

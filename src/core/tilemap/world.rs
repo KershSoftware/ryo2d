@@ -656,6 +656,37 @@ mod tests {
   }
 
   #[test]
+  fn an_infinite_map_s_world_rectangle_holds_its_grouped_layers_and_straddling_chunks() {
+    // The world reads the file itself: a tile layer in a group, and Tiled's
+    // chunks of 24 x 24 across the engine's, give the loaded map's bounds
+    let files = files_with(&[(
+      "tiled/worlds/chunks24.world",
+      r#"{"maps":[{"fileName":"../maps/infinite-chunks24.tmj","x":160,"y":-80,"width":16,"height":16}],"type":"world"}"#,
+    )]);
+    let mut maps = MapWorld::over(files);
+    let world = load_world(&mut maps.world, "tiled/worlds/chunks24.world").expect("loads");
+    let layout = layout_of(&maps.world, &world);
+    let handle = AssetsView::new(&mut maps.world)
+      .load_now::<TileMap>("tiled/maps/infinite-chunks24.tmj")
+      .expect("the map loads");
+    let bounds = match maps.world.resource::<Assets<TileMap>>().get(&handle) {
+      Some(map) => map.bounds(),
+      None => panic!("the map is not in the store"),
+    };
+    assert_eq!(bounds.min, IVec2::new(-40, -49), "the grouped layer's tile");
+    let level = &layout.levels[0];
+    let tile = Vec2::splat(16.0);
+    assert_eq!(
+      (level.origin, level.position, level.size),
+      (
+        Vec2::new(160.0, -80.0),
+        Vec2::new(160.0, -80.0) + bounds.min.as_vec2() * tile,
+        bounds.size().as_vec2() * tile
+      )
+    );
+  }
+
+  #[test]
   fn an_empty_infinite_map_in_a_world_takes_its_origin_cell() {
     let empty = r#"{"type":"map","orientation":"orthogonal","infinite":true,"width":0,"height":0,
       "tilewidth":16,"tileheight":8,"tilesets":[],

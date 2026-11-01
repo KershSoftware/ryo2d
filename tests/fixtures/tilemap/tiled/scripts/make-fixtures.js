@@ -1,8 +1,9 @@
 // Writes the fixtures for tile objects taking their tile's class, image
 // layers (one with no image, one with a transparent colour), the map's
 // parallax origin and infinite maps (chunks at negative cells, of Tiled's
-// 16 x 16 and of 8 x 4, in every layer format), through Tiled's own
-// scripting API, in both formats.
+// 16 x 16, of 8 x 4 and of 24 x 24, which straddle the engine's chunks of
+// 32, in every layer format, and a tile layer in a group), through Tiled's
+// own scripting API, in both formats.
 //
 // Regenerate (Tiled 1.12.2, from the repository root):
 //   /Applications/Tiled.app/Contents/MacOS/Tiled \
@@ -218,3 +219,33 @@ function chunks8(set, path, format) {
 }
 chunks8(jsonTiles, "maps/infinite-chunks8.tmj", tiled.mapFormat("json"));
 chunks8(xmlTiles, "xml/maps/infinite-chunks8.tmx", tiled.mapFormat("tmx"));
+
+// Tiles on both sides of the engine's chunk borders at x 32 and -32, each
+// pair in one of Tiled's chunks of 24 x 24 (which straddle them)
+var straddleTiles = [
+  [30, 5, 4, 0],
+  [33, 5, 7, 0],
+  [-33, -25, 8, 0],
+  [-31, -25, 9, Tile.FlippedHorizontally],
+];
+
+// The ground layer and the straddling tiles in chunks of 24 x 24, and a
+// tile layer inside a group, its tiles across the borders too
+function chunks24(set, path, format) {
+  var map = infiniteMap(set, TileMap.CSV);
+  map.chunkSize = Qt.size(24, 24);
+  var ground = groundLayer(map, set);
+  paint(ground, set, straddleTiles);
+  var level = new GroupLayer("level");
+  map.addLayer(level);
+  var inner = new TileLayer("inner");
+  level.addLayer(inner);
+  paint(inner, set, [
+    [-40, 47, 11, 0],
+    [31, -49, 12, Tile.FlippedVertically],
+    [32, -49, 13, 0],
+  ]);
+  save(map, format, path);
+}
+chunks24(jsonTiles, "maps/infinite-chunks24.tmj", tiled.mapFormat("json"));
+chunks24(xmlTiles, "xml/maps/infinite-chunks24.tmx", tiled.mapFormat("tmx"));
