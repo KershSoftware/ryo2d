@@ -232,7 +232,20 @@ impl GlobalTransform {
   }
 
   /// Blend toward `other`: linear on translation and scale, shortest arc on rotation.
+  ///
+  /// What is the same in both stays exact (a still entity draws where it is,
+  /// a moving one keeps an unchanged axis), so nothing on a pixel boundary
+  /// flips between frames that blend and frames that don't.
   pub fn lerp(&self, other: &Self, t: f32) -> Self {
+    // `a + (b - a) * t` is exact where a component did not change, where
+    // `a * (1 - t) + b * t` can round away from it
+    let mix = |a: Vec2, b: Vec2| a + (b - a) * t;
+    if self.0.matrix2 == other.0.matrix2 {
+      return Self(Affine2 {
+        matrix2: other.0.matrix2,
+        translation: mix(self.0.translation, other.0.translation),
+      });
+    }
     let (a, b) = (self.to_transform(), other.to_transform());
     let mut delta = b.rotation - a.rotation;
     if delta > std::f32::consts::PI {
@@ -241,9 +254,9 @@ impl GlobalTransform {
       delta += std::f32::consts::TAU;
     }
     let blended = Transform {
-      translation: a.translation.lerp(b.translation, t),
+      translation: mix(a.translation, b.translation),
       rotation: a.rotation + delta * t,
-      scale: a.scale.lerp(b.scale, t),
+      scale: mix(a.scale, b.scale),
     };
     Self::from_transform(&blended)
   }
@@ -334,6 +347,41 @@ mod tests {
       "{}",
       mid.rotation()
     );
+  }
+
+  /// Overstep fractions a 120 Hz display gives a 60 Hz step
+  const BLENDS: [f32; 6] = [0.077_4, 0.088_7, 0.098, 0.138_2, 0.5, 0.99];
+
+  #[test]
+  fn lerp_between_equal_transforms_is_exact() {
+    // A still camera at a half pixel jumped a pixel on every frame that
+    // blended it, when the blend rounded
+    let still = [
+      Transform::from_xy(432.0, 244.666_67),
+      Transform::from_xy(-17.3, 0.1)
+        .with_rotation(0.7)
+        .with_uniform_scale(1.5),
+    ];
+    for transform in still {
+      let g = GlobalTransform::from_transform(&transform);
+      for t in BLENDS {
+        assert_eq!(g.lerp(&g, t), g, "{transform:?} at {t}");
+      }
+    }
+  }
+
+  #[test]
+  fn lerp_keeps_what_did_not_change_exact() {
+    // A camera scrolling sideways at a fixed height keeps its height
+    let a =
+      GlobalTransform::from_transform(&Transform::from_xy(10.0, 244.666_67).with_rotation(0.7));
+    let b =
+      GlobalTransform::from_transform(&Transform::from_xy(20.0, 244.666_67).with_rotation(0.7));
+    for t in BLENDS {
+      let blend = a.lerp(&b, t);
+      assert_eq!(blend.translation().y, 244.666_67, "at {t}");
+      assert_eq!(blend.affine().matrix2, a.affine().matrix2, "at {t}");
+    }
   }
 
   #[test]

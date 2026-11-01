@@ -52,6 +52,18 @@ mod tests {
   }
 
   #[test]
+  fn a_still_entity_draws_exactly_where_it_is() {
+    let g = GlobalTransform::from_transform(&Transform::from_xy(432.0, 244.666_67));
+    let prev = PreviousGlobalTransform {
+      global: g,
+      skip: false,
+    };
+    for alpha in [0.077_4, 0.088_7, 0.098, 0.138_2] {
+      assert_eq!(render_global(&g, Some(&prev), alpha), g, "at {alpha}");
+    }
+  }
+
+  #[test]
   fn skip_draws_current() {
     let prev = PreviousGlobalTransform {
       global: at(0.0),
