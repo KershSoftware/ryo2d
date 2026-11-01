@@ -19,6 +19,7 @@ use crate::core::asset::{Assets, AssetsView, Handle};
 use crate::core::ecs::kernel::{ChildOf, Disabled, MessageCursor, Messages};
 use crate::core::ecs::world_ext::despawn_game_entities;
 use crate::core::ecs::{Entity, Transform, World};
+use crate::core::graphics::{Camera2d, CameraView};
 use crate::core::tilemap::test_util::{FIXTURES, MapWorld, files_with, layers_of, load_map};
 use crate::core::tilemap::{
   IntGrid, MapEvent, MapLayerRef, MapRoot, MapTile, MapsView, Tile, TileData, TileFlip,
@@ -564,6 +565,78 @@ fn a_point_on_a_chunk_boundary_is_ready_once_the_chunk_holding_it_lands() {
   }
   until_idle(&mut maps, map);
   assert_eq!(resident(&mut maps.world, map), [IVec2::ZERO]);
+}
+
+/// The chunks under `area` (world pixels, the map at the origin), by row
+fn chunks_under(area: Rect) -> Vec<IVec2> {
+  let first = (Vec2::new(area.x, area.y) / CHUNK).floor().as_ivec2();
+  let last =
+    ((Vec2::new(area.x + area.width, area.y + area.height) / CHUNK).ceil() - 1.0).as_ivec2();
+  let chunks = (first.y..=last.y)
+    .flat_map(|y| (first.x..=last.x).map(move |x| IVec2::new(x, y)))
+    .collect();
+  sorted(chunks)
+}
+
+#[test]
+fn a_camera_far_out_loads_what_parallax_and_offset_layers_show() {
+  let mut maps = MapWorld::new();
+  // A background following half the camera's motion, the ground, and a
+  // front layer drawn 2,048 px right of its cells (past the load distance)
+  let mut map = infinite(&["background", "ground", "front"]);
+  map.layers[0].info.parallax = Vec2::splat(0.5);
+  map.layers[2].info.offset = Vec2::new(2048.0, 0.0);
+  let handle = maps.world.resource_mut::<Assets<TileMap>>().add(map);
+  let root = maps
+    .world
+    .spawn((MapRoot::new(handle), MapStream::new(floors)))
+    .id();
+  maps.settle(root);
+  // A 640 x 360 camera 20,000 px from the parallax origin, (0, 0)
+  let (camera, center) = (Camera2d::default(), Vec2::new(20_000.0, 0.0));
+  let view = CameraView::compute(center, 0.0, &camera, Vec2::ZERO, Vec2::new(640.0, 360.0));
+  maps
+    .world
+    .spawn((camera, view, Transform::from_translation(center)));
+  until_idle(&mut maps, root);
+
+  let bounds = view.bounds;
+  let shown = |moved: Vec2| {
+    Rect::new(
+      bounds.left - moved.x,
+      bounds.top - moved.y,
+      bounds.width(),
+      bounds.height(),
+    )
+  };
+  // Each layer's cells on screen: the ground's under the view; the
+  // background's half the camera's way back towards the origin; the
+  // front's 2,048 px left
+  let (ground, background, front) = (
+    shown(Vec2::ZERO),
+    shown(center * 0.5),
+    shown(Vec2::new(2048.0, 0.0)),
+  );
+  let chunks = resident(&mut maps.world, root);
+  for (layer, area) in [
+    ("ground", ground),
+    ("background", background),
+    ("front", front),
+  ] {
+    assert!(
+      MapsView::new(&mut maps.world).stream_ready(root, area),
+      "the {layer}'s cells on screen ({area:?}) have landed"
+    );
+    for chunk in chunks_under(area) {
+      assert!(
+        chunks.contains(&chunk),
+        "the {layer}'s chunk {chunk} is resident"
+      );
+    }
+  }
+  // Nothing between the background's chunks and the camera's: a union of
+  // areas, not a span
+  assert!(!chunks.contains(&IVec2::new(28, 0)), "{chunks:?}");
 }
 
 #[test]

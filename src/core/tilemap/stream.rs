@@ -26,7 +26,7 @@ use super::jobs::Worker;
 use super::spawn::{
   LayerTiles, MapLayerRef, MapLayers, MapRoot, MapTile, TileLayerData, map_asset,
 };
-use super::{CHUNK_SIZE, LayerKind, Tile, TileGrid, TileMap};
+use super::{CHUNK_SIZE, LayerInfo, LayerKind, Tile, TileGrid, TileMap};
 use crate::core::ecs::kernel::{Allow, Disabled, QueryState};
 use crate::core::ecs::{
   Component, DetectChangesMut, Entity, Local, Message, Messages, With, World,
@@ -34,6 +34,7 @@ use crate::core::ecs::{
 use crate::core::graphics::{Camera2d, CameraView};
 use crate::core::hash::{FastMap, FastSet};
 use crate::core::messages::register_message;
+use crate::core::render::tiles::{moved, parallax};
 use crate::core::ui::Rect;
 
 /// The most chunks a streamed map has asked for and not landed yet: out on
@@ -416,7 +417,11 @@ pub struct ChunkRequest {
 /// a teleport the chunks left behind stay resident a few frames as they
 /// go, and the resident chunks are within the distances again once they
 /// have. Distances are measured in world pixels from the anchor (or
-/// the view) to the chunk, along each axis. Only the chunks resident take
+/// the view) to the chunk, along each axis. A camera's view loads and
+/// keeps the chunks each tile layer shows, so a layer with parallax, or
+/// offset from the map, also has the chunks loaded where it shows them,
+/// however far from the view's own (those chunks are resident in every
+/// layer). Only the chunks resident take
 /// edits: `ctx.maps()` refuses a cell in any other. When the map's root
 /// goes (despawned, a scene's cleanup among them, or a `MapRoot` put over
 /// it), its changed resident chunks go into the `SavedChunks` as their
@@ -680,10 +685,12 @@ enum Generated {
 }
 
 /// A world rectangle the chunks near it load around: an anchor's point,
-/// or a camera's view
+/// or a camera's view (and the point at its centre, which parallax is
+/// measured from)
 struct Anchor {
   min: Vec2,
   max: Vec2,
+  center: Vec2,
   camera: bool,
 }
 
@@ -708,6 +715,9 @@ pub(crate) struct StreamWork {
   maps: Vec<(Entity, MapStream)>,
   /// The map's unbounded tile layers
   layers: Vec<Entity>,
+  /// Where those drawn apart from the map are placed: each distinct world
+  /// placement and parallax (`apart_layers`)
+  placements: Vec<(Affine2, Vec2)>,
   areas: Vec<Area>,
   wanted: Vec<((f32, f32), IVec2)>,
   gone: Vec<IVec2>,
@@ -762,6 +772,7 @@ pub(crate) fn stream_maps(
       work.anchors.push(Anchor {
         min: at,
         max: at,
+        center: at,
         camera: false,
       });
     }
@@ -772,10 +783,11 @@ pub(crate) fn stream_maps(
       Vec2::new(bounds.left, bounds.top),
       Vec2::new(bounds.right, bounds.bottom),
     );
-    if min.is_finite() && max.is_finite() {
+    if min.is_finite() && max.is_finite() && view.center.is_finite() {
       work.anchors.push(Anchor {
         min,
         max,
+        center: view.center,
         camera: true,
       });
     }
@@ -810,9 +822,10 @@ impl StreamWork {
       return;
     }
     // A map scaled to nothing streams nothing until it is not
-    let Some((cell, chunk_px, to_map)) = map_space(world, map) else {
+    let Some(space) = map_space(world, map) else {
       return;
     };
+    let (cell, chunk_px) = (space.cell, space.chunk_px);
     let load_px = distance(stream.load_distance);
     let mut unload_px = distance(stream.unload_distance);
     if unload_px < load_px {
@@ -828,21 +841,32 @@ impl StreamWork {
     }
     self.areas.clear();
     let (cap, mut capped) = (span_cap(), false);
+    let reach = (load_px, unload_px, chunk_px);
     for anchor in &self.anchors {
       if anchor.camera && !stream.cameras {
         continue;
       }
-      let (min, max) = map_rect(to_map, anchor.min, anchor.max);
-      let grown = |by: f32| map_rect(to_map, anchor.min - by, anchor.max + by);
-      let load = chunk_range(grown(load_px), chunk_px);
-      let load = load.map(|range| cap_range(range, cap, &mut capped));
-      let keep = chunk_range(grown(unload_px), chunk_px);
-      self.areas.push(Area {
-        min,
-        max,
-        load,
-        keep,
-      });
+      let area = area_of(anchor, space.to_map, reach, (cap, &mut capped));
+      self.areas.push(area);
+    }
+    // A camera's view also loads and keeps the chunks each unbounded layer
+    // drawn apart from the map shows there (its parallax, or an offset),
+    // as the renderer places it: residency is shared by the layers, so
+    // their areas join the map's. A map with no such layer has none
+    apart_layers(world, &self.layers, space.to_world, &mut self.placements);
+    if stream.cameras && !self.placements.is_empty() {
+      let origin = world
+        .get::<MapRoot>(map)
+        .and_then(|root| map_asset(world, root))
+        .map_or(Vec2::ZERO, |asset| asset.parallax_origin);
+      for anchor in self.anchors.iter().filter(|anchor| anchor.camera) {
+        for &layer in &self.placements {
+          if let Some(to_layer) = layer_view((space.to_world, origin), layer, anchor.center) {
+            let area = area_of(anchor, to_layer, reach, (cap, &mut capped));
+            self.areas.push(area);
+          }
+        }
+      }
     }
     if capped
       && let Some(mut state) = world.get_mut::<StreamState>(map)
@@ -1535,11 +1559,22 @@ fn distance(pixels: f32) -> f32 {
   }
 }
 
-/// A streamed map's space: its tile layers' cell size (its first unbounded
-/// layer's), a chunk's side in its pixels, and the world to its space (its
-/// root's transform and its ancestors' as they are now, undone). `None` for
-/// a map with no unbounded tile layer, or scaled to nothing
-fn map_space(world: &World, map: Entity) -> Option<(UVec2, Vec2, Affine2)> {
+/// A streamed map's space
+struct MapSpace {
+  /// Its tile layers' cell size (its first unbounded layer's)
+  cell: UVec2,
+  /// A chunk's side in its pixels
+  chunk_px: Vec2,
+  /// Where it lies in the world: its root's transform and its ancestors'
+  /// as they are now
+  to_world: Affine2,
+  /// The world to its space: `to_world` undone
+  to_map: Affine2,
+}
+
+/// `map`'s space; `None` for a map with no unbounded tile layer, or scaled
+/// to nothing
+fn map_space(world: &World, map: Entity) -> Option<MapSpace> {
   let cell = world
     .get::<MapLayers>(map)?
     .0
@@ -1555,7 +1590,81 @@ fn map_space(world: &World, map: Entity) -> Option<(UVec2, Vec2, Affine2)> {
   if !det.is_finite() || det.abs() < 1e-12 {
     return None;
   }
-  Some((cell, cell.as_vec2() * CHUNK_SIZE as f32, to_world.inverse()))
+  Some(MapSpace {
+    cell,
+    chunk_px: cell.as_vec2() * CHUNK_SIZE as f32,
+    to_world,
+    to_map: to_world.inverse(),
+  })
+}
+
+/// `anchor` taken into a space by `to_space` (the map's, or a layer's as a
+/// camera sees it): the box holding it there, and the chunks it loads and
+/// keeps, its rectangle grown by the load and unload distances
+/// (`reach`, with a chunk's side); a load area past `cap` chunks a side
+/// loads its middle, noted in `capped`
+fn area_of(
+  anchor: &Anchor,
+  to_space: Affine2,
+  (load_px, unload_px, chunk_px): (f32, f32, Vec2),
+  (cap, capped): (i32, &mut bool),
+) -> Area {
+  let (min, max) = map_rect(to_space, anchor.min, anchor.max);
+  let grown = |by: f32| map_rect(to_space, anchor.min - by, anchor.max + by);
+  let load = chunk_range(grown(load_px), chunk_px).map(|range| cap_range(range, cap, capped));
+  let keep = chunk_range(grown(unload_px), chunk_px);
+  Area {
+    min,
+    max,
+    load,
+    keep,
+  }
+}
+
+/// The placements of `layers` drawn apart from their map, which lies at
+/// `to_world`, into `out`: each distinct pair of a layer's world placement
+/// (the map's transform and its own, which holds its offset) and its
+/// parallax, leaving out those with no parallax placed as the map is
+fn apart_layers(
+  world: &World,
+  layers: &[Entity],
+  to_world: Affine2,
+  out: &mut Vec<(Affine2, Vec2)>,
+) {
+  out.clear();
+  for &layer in layers {
+    let factor = world
+      .get::<LayerInfo>(layer)
+      .map_or(Vec2::ONE, |info| info.parallax);
+    let Some(placed) = local_to_world(world, layer) else {
+      continue;
+    };
+    let as_map = factor == Vec2::ONE && placed == to_world;
+    if !as_map && !out.contains(&(placed, factor)) {
+      out.push((placed, factor));
+    }
+  }
+}
+
+/// The world to the space of a layer placed at `placed` with parallax
+/// `factor` (one of `apart_layers`), as a camera centred on `center` shows
+/// it: the renderer's mapping, through `render::tiles::parallax` from the
+/// map's placement and parallax origin (`map`). `None` for a layer scaled
+/// to nothing
+fn layer_view(
+  map: (Affine2, Vec2),
+  (placed, factor): (Affine2, Vec2),
+  center: Vec2,
+) -> Option<Affine2> {
+  // As the renderer's views: a layer with no parallax draws unmoved
+  let offset = if factor == Vec2::ONE {
+    Vec2::ZERO
+  } else {
+    parallax(map, factor, center)?
+  };
+  let placed = moved(placed, offset);
+  let det = placed.matrix2.determinant();
+  (det.is_finite() && det.abs() >= 1e-12).then(|| placed.inverse())
 }
 
 /// The box in map space holding the world rectangle `min..max`
@@ -1698,7 +1807,10 @@ pub(crate) fn stream_ready(world: &World, map: Entity, area: Rect) -> bool {
   let Some(state) = world.get::<StreamState>(map) else {
     return false;
   };
-  let Some((_, chunk_px, to_map)) = map_space(world, map) else {
+  let Some(MapSpace {
+    chunk_px, to_map, ..
+  }) = map_space(world, map)
+  else {
     return false;
   };
   let (a, b) = (

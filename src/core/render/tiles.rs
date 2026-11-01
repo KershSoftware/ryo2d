@@ -725,8 +725,9 @@ fn views(
 /// (in map pixels): the part of the camera's position from that origin the
 /// layer does not follow, so a camera centred on the origin shows every
 /// layer where it would be without parallax (Tiled's rule). `None` for a
-/// map scaled to nothing
-fn parallax((map, origin): (Affine2, Vec2), factor: Vec2, center: Vec2) -> Option<Vec2> {
+/// map scaled to nothing. A streamed map loads round each camera's view
+/// through it too (`tilemap::stream`), so it loads what a layer shows
+pub(crate) fn parallax((map, origin): (Affine2, Vec2), factor: Vec2, center: Vec2) -> Option<Vec2> {
   let det = map.matrix2.determinant();
   if !det.is_finite() || det.abs() < 1e-12 {
     return None;
@@ -736,7 +737,7 @@ fn parallax((map, origin): (Affine2, Vec2), factor: Vec2, center: Vec2) -> Optio
 }
 
 /// `affine` moved by `offset`
-fn moved(affine: Affine2, offset: Vec2) -> Affine2 {
+pub(crate) fn moved(affine: Affine2, offset: Vec2) -> Affine2 {
   Affine2::from_mat2_translation(affine.matrix2, affine.translation + offset)
 }
 
