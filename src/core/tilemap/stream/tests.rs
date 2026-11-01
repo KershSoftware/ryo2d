@@ -514,6 +514,58 @@ fn a_teleported_anchor_s_area_reports_ready_once_landed() {
 }
 
 #[test]
+fn a_point_on_a_chunk_boundary_is_ready_once_the_chunk_holding_it_lands() {
+  let mut maps = MapWorld::new();
+  // Only the anchor's own chunk
+  let stream = MapStream {
+    load_distance: 0.0,
+    unload_distance: 0.0,
+    ..MapStream::new(floors)
+  };
+  let map = spawn(&mut maps, infinite(&["ground"]), stream, |r| r);
+  let point = |x: f32, y: f32| Rect::new(x, y, 0.0, 0.0);
+  // The origin, where four chunks meet, and a point on the line between
+  // chunks -2 and -1: nothing has landed, so neither is ready
+  let (origin, west) = (point(0.0, 0.0), point(-CHUNK, 0.0));
+  assert!(!MapsView::new(&mut maps.world).stream_ready(map, origin));
+  assert!(!MapsView::new(&mut maps.world).stream_ready(map, west));
+  // A line with no width along a chunk boundary, and none with no height
+  let (down, across) = (
+    Rect::new(-CHUNK, 10.0, 0.0, 100.0),
+    Rect::new(10.0, 0.0, 100.0, 0.0),
+  );
+  assert!(!MapsView::new(&mut maps.world).stream_ready(map, down));
+  assert!(!MapsView::new(&mut maps.world).stream_ready(map, across));
+
+  // Chunk (0, 0) holds the origin and the line across
+  let anchor = anchor_at(&mut maps, IVec2::ZERO);
+  until_idle(&mut maps, map);
+  assert_eq!(resident(&mut maps.world, map), [IVec2::ZERO]);
+  let view = MapsView::new(&mut maps.world);
+  assert!(view.stream_ready(map, origin));
+  assert!(view.stream_ready(map, across));
+  assert!(!view.stream_ready(map, west));
+  assert!(!view.stream_ready(map, down));
+
+  // Chunk (-1, 0) holds the point at x = -512 and the line down it
+  move_to(&mut maps.world, anchor, IVec2::new(-1, 0));
+  until_idle(&mut maps, map);
+  assert_eq!(resident(&mut maps.world, map), [IVec2::new(-1, 0)]);
+  let view = MapsView::new(&mut maps.world);
+  assert!(view.stream_ready(map, west));
+  assert!(view.stream_ready(map, down));
+  assert!(!view.stream_ready(map, origin));
+
+  // An anchor exactly on the boundary loads the chunk holding it
+  match maps.world.get_mut::<Transform>(anchor) {
+    Some(mut at) => at.translation = Vec2::ZERO,
+    None => panic!("{anchor} is an anchor"),
+  }
+  until_idle(&mut maps, map);
+  assert_eq!(resident(&mut maps.world, map), [IVec2::ZERO]);
+}
+
+#[test]
 fn a_despawned_streamed_map_takes_no_late_chunks() {
   let (calls, done) = (
     Arc::new(AtomicUsize::new(0)),

@@ -1561,7 +1561,9 @@ fn map_rect(to_map: Affine2, min: Vec2, max: Vec2) -> (Vec2, Vec2) {
 
 /// The chunks, first and last (both included), overlapping the map-space
 /// box `min..max` (touching its edge is not overlapping), within the
-/// chunks of `i32`'s cells; `None` for none, or a box that is not a number
+/// chunks of `i32`'s cells; on an axis where the box has no size (a point,
+/// or a line), the chunk holding it there, so a point on a chunk boundary
+/// is in the chunk past it. `None` for a box that is not a number
 fn chunk_range((min, max): (Vec2, Vec2), chunk_px: Vec2) -> Option<(IVec2, IVec2)> {
   let (a, b) = (min / chunk_px, max / chunk_px);
   if !(a.is_finite() && b.is_finite()) {
@@ -1571,9 +1573,13 @@ fn chunk_range((min, max): (Vec2, Vec2), chunk_px: Vec2) -> Option<(IVec2, IVec2
     TileGrid::chunk_of(IVec2::MIN),
     TileGrid::chunk_of(IVec2::MAX),
   );
+  let first = a.floor();
+  let last = Vec2::select(a.cmpeq(b), first, b.ceil() - 1.0);
   // `as` saturates, and the clamp keeps to the chunks a map holds
-  let first = a.floor().as_ivec2().clamp(lo, hi);
-  let last = (b.ceil() - 1.0).as_ivec2().clamp(lo, hi);
+  let (first, last) = (
+    first.as_ivec2().clamp(lo, hi),
+    last.as_ivec2().clamp(lo, hi),
+  );
   first.cmple(last).all().then_some((first, last))
 }
 
@@ -1673,7 +1679,8 @@ pub(crate) fn stream_status(world: &World, map: Entity) -> Option<StreamStatus> 
 }
 
 /// Whether every chunk overlapping `area` (world pixels) is resident on the
-/// streamed map `map`; false for a map not streamed or not landed
+/// streamed map `map` (an area of no size on an axis: the chunks holding
+/// it there); false for a map not streamed or not landed
 pub(crate) fn stream_ready(world: &World, map: Entity, area: Rect) -> bool {
   if world.get::<MapStream>(map).is_none() {
     return false;
@@ -1692,7 +1699,7 @@ pub(crate) fn stream_ready(world: &World, map: Entity, area: Rect) -> bool {
     return false;
   }
   let Some((first, last)) = chunk_range(map_rect(to_map, a.min(b), a.max(b)), chunk_px) else {
-    return true;
+    return false;
   };
   // More chunks than are resident cannot all be: never walk past them
   let count =

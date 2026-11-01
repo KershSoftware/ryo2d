@@ -53,8 +53,9 @@ impl<'w> MapsView<'w> {
   /// Whether every chunk overlapping `area` (world pixels) is resident on
   /// the streamed map `map` ([`MapStream`](super::MapStream)): landed, or
   /// one of a Tiled infinite map's own chunks, so it draws and collides.
-  /// False for a map not streamed or not landed.
-  /// For a loading screen after a respawn or a teleport, rather than
+  /// An area of no width or height (a point, or a line) asks for the
+  /// chunks holding it, even on a chunk boundary. False for a map not
+  /// streamed or not landed. For a loading screen after a respawn or a teleport, rather than
   /// dropping a body into chunks not generated yet
   ///
   /// ```
