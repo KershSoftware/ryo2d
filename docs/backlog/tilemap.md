@@ -19,7 +19,7 @@ Measured on an Apple M5 Pro (18 cores, Metal, macOS 27.0.1), a shared machine. T
 
 | Target | Measured, three runs: median (95th percentile, max) | Verdict |
 |---|---|---|
-| A static 1024 x 1024 four-layer map adds at most 50 µs of CPU a frame over an empty frame (`static_frame`: the map colliding and casting shadows, the camera flying) | +83.8 (119.3, 348.5), +85.3 (130.2, 467.2), +89.1 (113.9, 1,781.7) µs. Since transform propagation walks only the subtrees that changed (6b, one run on 2026-11-01, an empty frame's step 91.7 µs): +41.7 (67.0, 368.6) µs | **met** since propagation walks only the subtrees that changed (missed before: transform propagation) |
+| A static 1024 x 1024 four-layer map adds at most 50 µs of CPU a frame over an empty frame (`static_frame`: the map colliding and casting shadows, the camera flying) | +83.8 (119.3, 348.5), +85.3 (130.2, 467.2), +89.1 (113.9, 1,781.7) µs. Since transform propagation walks only the subtrees that changed (6b, three runs on 2026-11-01, an empty frame's step 93.6, 94.3 and 95.4 µs): +45.3 (91.3, 345.5), +43.8 (84.2, 1,612.7), +45.7 (104.4, 1,189.7) µs | **met** in every 6b run, since propagation walks only the subtrees that changed (missed before: transform propagation) |
 | An edit's chunk rebuild within 100 µs: the slowest of the eight edits' medians | 22.6 (50.0, 123.5), 21.8 (78.5, 219.8), 19.9 (49.5, 205.8) µs | **met**, every edit in every run |
 | An edit's loop rebuild within 100 µs: the slowest of the eight (each run the serpentine split through its middle row, about 2,000 edges a half) | 65.0 (117.4, 130.7), 63.6 (72.1, 111.5), 62.6 (73.0, 98.8) µs | **met**, every edit in every run (the splits and joins 125.7 to 213.8 µs before the fix, load 8.5) |
 | An edit's occluder rebuild within 100 µs: the slowest of the eight | 79.2 (90.9, 96.0), 77.9 (91.7, 99.4), 79.2 (83.5, 87.3) µs | **met**, every edit in every run |
@@ -52,11 +52,19 @@ It is built in code and landed, then given 120 frames to warm up. Each engine th
 - **The miss was the map's child entities.** Every collider part and occluder chain is a child entity, and each cost about 17 to 24 ns a frame. The 503 parts added 11 to 12 µs, and the 2,378 chains 40 to 43 µs, so the map with both read 84 to 89 µs.
   - A profile of the map frame (`--profile-time 20 '^static_frame$'`, first record) charged 22% of it to `propagate_transforms`.
   - Once anything had moved (here the camera, in a game a player), each of propagation's three runs a frame walked every entity of every hierarchy. The runs are physics' own schedule, the fixed step's end and `PostUpdate`. Each recomputed only what changed, but visited everything.
-- **Fixed in 6b: propagation walks only the subtrees that changed** (`ecs/propagate.rs`). Each run starts from the entities that changed since its last run, each from its parent's stored global transform, so the map's still children are not visited. What is left of them is finding the changed entities, a change-tick check per entity per run. One run on 2026-11-01, at an empty frame's step of 91.7 µs (as in the record above):
-  - the map colliding and casting shadows +41.7 µs (67.0, 368.6), its render step +31.0 µs: **met**;
-  - drawn only +32.3 (59.3, 275.2), colliding without shadows +36.4 (65.1, 386.0), casting shadows without collision +38.9 (65.2, 414.6), y-sorted +109.5 (143.0, 474.2), lit +73.8 (116.8, 4,941.5) over an empty lit frame of 127.4 µs;
-  - so the parts and chains add about 9 µs together, against 51 to 55 µs.
-  - The same session's run before the change read the map at +105.1 µs (242.3, 1,609.9) and drawn only at +49.1, but the machine was slower then (nothing else heavy ran in either run): an empty frame's step read 130.3 µs, and the maps' render steps about 15 µs dearer. The run after compares with the record above, whose empty frame matched it.
+- **Fixed in 6b: propagation walks only the subtrees that changed** (`ecs/propagate.rs`). Each run starts from the entities that changed since its last run, each from its parent's stored global transform, so the map's still children are not visited. What is left of them is finding the changed entities, a change-tick check per entity per run. Three runs on 2026-11-01 between 01:27 and 01:28, the 1-minute load 4.64, 4.10 and 4.25 at their starts, nothing else heavy running, an empty frame's step 93.6, 94.3 and 95.4 µs (as in the record above), each show's step over the empty frame's median:
+
+| Show | Run 1 | Run 2 | Run 3 |
+|---|---|---|---|
+| The map, colliding and casting shadows (held) | +45.3 (91.3, 345.5): **met** | +43.8 (84.2, 1,612.7): **met** | +45.7 (104.4, 1,189.7): **met** |
+| Drawn only | +35.2 (84.5, 1,120.7) | +34.3 (78.5, 330.9) | +34.1 (96.1, 2,020.0) |
+| Colliding, without shadows | +38.9 (82.2, 336.3) | +38.7 (78.8, 329.1) | +39.8 (96.9, 894.6) |
+| Casting shadows, without collision | +41.8 (82.1, 6,519.8) | +40.5 (78.4, 4,926.7) | +42.2 (95.5, 693.0) |
+| Y-sorted | +115.9 (171.3, 480.7) | +115.6 (165.5, 383.6) | +119.3 (184.7, 807.5) |
+| Lit, over an empty lit frame (131.3, 134.5, 134.8 µs) | +77.7 (143.8, 398.2) | +77.1 (134.7, 493.0) | +79.6 (160.5, 454.0) |
+
+  - So the parts and chains add about 10 µs together (9.5 to 11.6), against 51 to 55 µs. The held margin is 4.3 to 6.2 µs.
+  - A first run, earlier that night with an empty frame of 91.7 µs, read +41.7 µs (67.0, 368.6). The same session's run before the change read the map at +105.1 µs (242.3, 1,609.9) and drawn only at +49.1, but the machine was slower then (nothing else heavy ran): an empty frame's step read 130.3 µs, and the maps' render steps about 15 µs dearer, so it does not compare with the runs after.
 - **A y-sorted layer** draws each visible row of each chunk as an item of its own: one per row, chunk, tileset and camera. It costs about another 71 µs here; there is no target for it.
 - **Lit frames** pay for every occluder in the map: about 30 µs more than the unlit map over the same light (see Limits).
 
@@ -192,7 +200,10 @@ The guard (no slower than before by more than 5%) is **met**. The review's fixes
 
 ## Limits
 
-- **More than 64 changed entities in a run walk every hierarchy.** Transform propagation walks only the subtrees that changed while at most 64 entities changed since its last run (`FULL_WALK_AT`, `ecs/propagate.rs`); above that it walks everything, as it did before 6b, and a big map's collider parts and occluder chains cost about 17 to 24 ns each a frame again (+51 to +55 µs for the 1024² cave map's 2,881). A game moving more than 64 entities a fixed step over a big static map pays that. The bound is low because a changed entity costs the walk a few lookups by entity, a full walk a few nanoseconds an entity: at 1,024, `benches/foundation.rs`'s 100 roots moved over 10,000 entities cost 7% more than the full walk. Proposed: weigh the changed entities (each with its children) against the size of the hierarchies, instead of a fixed count.
+- **Transform propagation still scans every entity for changes.** It walks only the subtrees that changed (`ecs/propagate.rs`), but finding them is a change-tick check per entity per run, about 0.7 ns: about 3 µs a run for the 1024² cave map's 4,096 entities, three runs a frame. Bigger maps, and streamed chunks, add to it.
+  - **A run that changes many entities pays the scan on top.** Where the changed subtrees cover the hierarchy, the walk visits every entity as the full walk would, plus the scan: `benches/foundation.rs`'s 100 roots moved over 10,000 entities cost 77.4 µs against 73.5 µs before (+5.3%, the same session).
+  - **A fifth changed walks everything.** Once the changed entities are a fifth of those with a `Transform` (and more than 64), a run walks every hierarchy, as before 6b, the map's children included: there that costs about what the changed subtrees would (2,000 leaves moved of 10,000 entities: 83 µs through the changed subtrees, about 81 through the full walk). The fifth was measured on leaves two deep; deeper changed entities cost the changed subtrees' walk more each, so for them the crossover comes earlier.
+  - Proposed, if the scan shows in a profile: keep a static map's parts (collider parts, occluder chains) out of the scanned set, which changes what `TilePart` and `MapOccluder` carry.
 - **Drawing a big map is most of its frame:** about 32 µs of the static map's 41.7 µs. Proposed, for the margin: **merged contiguous chunk draws.** Neighbouring chunks of a layer whose instances lie next to each other in the arena could share one draw, instead of one draw and its encoding a chunk.
 - **The landing frame draws the map for the first time** (the landing miss). What is left after the fixes:
   - **The first landing of a tileset** creates its padded texture and writes its levels in that frame: about 0.35 to 0.58 ms more than a later landing.

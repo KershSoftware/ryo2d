@@ -67,6 +67,21 @@ fn propagate(c: &mut Criterion) {
       world.clear_trackers();
     })
   });
+  // 65 leaves spread over the hierarchies, a different set each iteration
+  let stride = leaves.len() / 65;
+  let mut offset = 0;
+  c.bench_function("propagate 10k, 65 leaves moved", |b| {
+    b.iter(|| {
+      offset = (offset + 1) % stride;
+      for i in 0..65 {
+        if let Some(mut transform) = world.get_mut::<Transform>(leaves[offset + i * stride]) {
+          transform.translation.x += 0.001;
+        }
+      }
+      schedule.run(&mut world);
+      world.clear_trackers();
+    })
+  });
   c.bench_function("propagate 10k, every leaf moved", |b| {
     b.iter(|| {
       for mut transform in world

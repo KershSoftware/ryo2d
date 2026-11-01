@@ -32,17 +32,24 @@ type NodeItem<'a> = (
 /// of the walk's stack
 type Visit = (Entity, GlobalTransform, bool, bool);
 
-/// Above this many changed entities a run walks every hierarchy from its
-/// roots, as it did before it walked only the changed subtrees; the scan for
-/// changes stops at the first entity over it. A changed entity costs a few
-/// lookups by entity (its walk up its ancestors) on top of its subtree,
-/// where a full walk visits an entity in a few nanoseconds, so walking the
-/// changed subtrees pays only while few changed. 64, from
-/// `benches/foundation.rs`: with the bound at 1,024 its 100 roots moved (of
-/// 10,000 entities) took the changed subtrees and cost 7% more than a full
-/// walk; under 100 they take the full walk, at its cost. A low bound also
-/// keeps a world of many movers at the full walk's cost, not above it.
-const FULL_WALK_AT: usize = 64;
+/// A run walks every hierarchy from its roots, as it did before it walked
+/// only the changed subtrees, once the changed entities are at least
+/// 1 / `FULL_WALK_SHARE` of the entities it places (those with a
+/// `Transform`), and more than `ALWAYS_SEEDED`; the scan for changes stops
+/// there. The changed subtrees' walk costs the change filter's full scan
+/// (about 0.7 ns an entity; the full walk's scan stops at the share) and,
+/// for each changed entity, its walk up its ancestors by entity lookups (about
+/// 25 ns for a leaf two deep) and its subtree; the full walk visits every
+/// entity in about 5 ns. The two cost the same once about a fifth changed:
+/// in `benches/foundation.rs`'s hierarchy of 10,000 entities, 2,000 leaves
+/// moved cost 83 µs through the changed subtrees and about 81 through the
+/// full walk (1,000: 47 against 68; 4,000: 154 against 108).
+const FULL_WALK_SHARE: usize = 5;
+/// Up to this many changed entities a run walks only the changed subtrees,
+/// whatever their share: 65 changed leaves cost about 3 µs over the scan, so
+/// the full walk saves a small world little, and small worlds (the tests
+/// among them) keep to one path.
+const ALWAYS_SEEDED: usize = 64;
 
 /// Recompute `GlobalTransform` for every subtree whose root or any ancestor
 /// changed, and keep `PreviousGlobalTransform` present on interpolated
@@ -61,6 +68,7 @@ pub fn propagate_transforms(
   mut nodes: Query<NodeItem, With<ChildOf>>,
   grouping: Query<(Entity, &Children), Without<Transform>>,
   changed: Query<Entity, Placement>,
+  placed: Query<(), With<Transform>>,
   entities: &Entities,
   mut detached: RemovedComponents<ChildOf>,
   mut uninterpolated: RemovedComponents<Interpolated>,
@@ -90,7 +98,10 @@ pub fn propagate_transforms(
     uninterpolated: &lost_interpolated,
     untransformed: &lost_transform,
   };
-  let seeded = collect_seeds(&mut seeds, &changes, &grouping);
+  // Exact from the matched tables' lengths: no entity is visited
+  let placed = placed.iter().len();
+  let full_at = (placed / FULL_WALK_SHARE).max(ALWAYS_SEEDED + 1);
+  let seeded = collect_seeds(&mut seeds, &changes, &grouping, full_at);
   // Nothing that places an entity changed since the last run, so every
   // `GlobalTransform` and `PreviousGlobalTransform` is already right
   if seeded && seeds.is_empty() {
@@ -175,15 +186,15 @@ fn refill(list: &mut Vec<Entity>, entities: impl Iterator<Item = Entity>) {
 /// Collect the run's changed entities into `seeds`, sorted and without
 /// repeats: those the `Placement` filter finds, those that lost their
 /// parent or `Interpolated`, and the children of a parent that lost its
-/// `Transform`. False when there are more than `FULL_WALK_AT`, for a full
-/// walk.
+/// `Transform`. False once there are `full_at` of them, for a full walk.
 fn collect_seeds(
   seeds: &mut Vec<Entity>,
   changes: &Changes,
   grouping: &Query<(Entity, &Children), Without<Transform>>,
+  full_at: usize,
 ) -> bool {
   seeds.clear();
-  if changes.detached.len() + changes.uninterpolated.len() > FULL_WALK_AT {
+  if changes.detached.len() + changes.uninterpolated.len() >= full_at {
     return false;
   }
   seeds.extend_from_slice(changes.detached);
@@ -192,13 +203,13 @@ fn collect_seeds(
     if let Ok((_, children)) = grouping.get(group) {
       seeds.extend(children.iter().copied());
     }
-    if seeds.len() > FULL_WALK_AT {
+    if seeds.len() >= full_at {
       return false;
     }
   }
   for entity in changes.placement.iter() {
     seeds.push(entity);
-    if seeds.len() > FULL_WALK_AT {
+    if seeds.len() >= full_at {
       return false;
     }
   }
@@ -821,7 +832,8 @@ mod tests {
   #[test]
   fn more_changes_than_the_seeded_walk_takes_walk_every_hierarchy() {
     let mut world = World::new();
-    let pairs: Vec<(Entity, Entity)> = (0..FULL_WALK_AT + 1)
+    // Past the floor, and half of the entities placed: a full walk
+    let pairs: Vec<(Entity, Entity)> = (0..ALWAYS_SEEDED + 1)
       .map(|_| {
         let root = world.spawn(Transform::IDENTITY).id();
         let child = world
@@ -858,6 +870,33 @@ mod tests {
       global(&world, detached).translation(),
       Vec2::new(5.0, 0.0)
     ));
+  }
+
+  /// Whether a run that moves `moved` of `count` roots takes the full walk:
+  /// only the full walk visits an interpolated entity that did not change,
+  /// and so puts back the previous transform taken from it
+  fn takes_the_full_walk(count: usize, moved: usize) -> bool {
+    let mut world = World::new();
+    let roots: Vec<Entity> = (0..count - 1)
+      .map(|_| world.spawn(Transform::IDENTITY).id())
+      .collect();
+    let still = world.spawn((Transform::IDENTITY, Interpolated)).id();
+    let mut s = settled(&mut world);
+    world.entity_mut(still).remove::<PreviousGlobalTransform>();
+    for &root in &roots[..moved] {
+      world.get_mut::<Transform>(root).unwrap().translation.x = 1.0;
+    }
+    s.run(&mut world);
+    previous(&world, still).is_some()
+  }
+
+  #[test]
+  fn a_fifth_of_the_entities_changed_takes_the_full_walk() {
+    assert!(!takes_the_full_walk(1000, 199));
+    assert!(takes_the_full_walk(1000, 200));
+    // Up to 64 changed take the changed subtrees, whatever their share
+    assert!(!takes_the_full_walk(100, ALWAYS_SEEDED));
+    assert!(takes_the_full_walk(100, ALWAYS_SEEDED + 1));
   }
 
   /// A small xorshift, so the random test is the same every run
