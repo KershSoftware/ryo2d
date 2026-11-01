@@ -2438,6 +2438,59 @@ mod tests {
     }
   }
 
+  #[test]
+  fn an_edit_across_chunk_borders_clears_only_its_region_of_each_sub_layer() {
+    // A sub-layer of "Ground" holding cells on both sides of the chunk
+    // borders at x 32 and y 32: an edit reads only its region's rows and
+    // columns of each chunk, and clears what is there and nothing else
+    let mut world = crate::core::testing::asset_world();
+    let mut map = TileMap::new(UVec2::new(64, 40), UVec2::splat(16));
+    map.add_tileset(TilesetSource::Embedded(Arc::new(classed_tileset())));
+    let ground = map.add_tile_layer("Ground");
+    let base = map.layers[ground].info.id;
+    let part = map.add_tile_layer("Ground#1");
+    map.layers[part].info.part_of = Some(base);
+    map.layers[part].info.collides = false;
+    let held = [
+      IVec2::new(30, 5),
+      IVec2::new(33, 5),
+      IVec2::new(28, 5),
+      IVec2::new(31, 31),
+      IVec2::new(31, 32),
+      IVec2::new(40, 36),
+      IVec2::new(41, 36),
+    ];
+    if let Some(grid) = map.tiles_mut(part) {
+      for cell in held {
+        grid.set(cell, Some(Tile::new(0, 0)));
+      }
+    }
+    let map = spawn_code_map(&mut world, map, MapRoot::new);
+    Frames::new().run(&mut world);
+    let left = |world: &mut World| -> Vec<IVec2> {
+      let found = world
+        .query::<(&MapLayerRef, &TileLayerData)>()
+        .iter(world)
+        .find(|(layer, _)| layer.map == map && layer.name == "Ground#1")
+        .map(|(_, data)| data.grid.clone());
+      let grid = found.unwrap_or_else(|| panic!("no sub-layer"));
+      held
+        .into_iter()
+        .filter(|&c| grid.get(c).is_some())
+        .collect()
+    };
+    let mut view = MapsView::new(&mut world);
+    // Across x 32: (30, 5) and (33, 5), not (28, 5)
+    let cleared = view.fill(map, "Ground", IVec2::new(29, 4), IVec2::new(34, 6), None);
+    assert_eq!(cleared, 2);
+    // Across y 32: (31, 31) and (31, 32)
+    let cleared = view.fill(map, "Ground", IVec2::new(31, 31), IVec2::new(31, 32), None);
+    assert_eq!(cleared, 2);
+    // One cell: (40, 36) and not its neighbour
+    assert!(view.set_tile(map, "Ground", IVec2::new(40, 36), None));
+    assert_eq!(left(&mut world), [IVec2::new(28, 5), IVec2::new(41, 36)]);
+  }
+
   /// A level's maps for the observer tests: which to cancel as its first
   /// layer arrives (with another map), and which layer to drop as it arrives
   #[derive(Resource)]

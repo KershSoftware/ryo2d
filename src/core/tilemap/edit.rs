@@ -2,7 +2,7 @@
 
 use glam::{Affine2, IVec2, Vec2};
 
-use super::grid::MAX_FILL_CHUNKS;
+use super::grid::fill_cap;
 use super::spawn::{
   ClassTile, LayerTiles, MapIds, MapLayerRef, MapLayers, MapRoot, MapTile, TileLayerData,
   map_asset, registered_class, spawn_class_tile,
@@ -93,7 +93,8 @@ pub(crate) fn parts_of(world: &World, map: Entity, layer: Entity) -> Vec<Entity>
 /// Clears the cells from `lo` to `hi` (both included) in `parts`; the cells
 /// that held a tile in any of them. Each part's chunks in the region are
 /// read where their cells lie (the region's chunks or the part's, whichever
-/// are fewer), never a lookup per cell
+/// are fewer), only the region's rows and columns of each, never a lookup
+/// per cell: one cell of a layer of 16 sub-layers reads 16 cells
 fn clear_parts(world: &mut World, parts: &[Entity], lo: IVec2, hi: IVec2) -> FastSet<IVec2> {
   let mut cleared = FastSet::default();
   let side = CHUNK_SIZE as i32;
@@ -117,13 +118,18 @@ fn clear_parts(world: &mut World, parts: &[Entity], lo: IVec2, hi: IVec2) -> Fas
       let Some(cells) = grid.chunk_cells(chunk) else {
         continue;
       };
-      // A chunk of `extent` is a chunk of cells: its origin is a cell
+      // A chunk of `extent` is a chunk of cells: its origin is a cell, and
+      // so is its last (`origin + side - 1`)
       let origin = chunk * side;
-      for (at, &cell) in cells.iter().enumerate() {
-        let place = origin + IVec2::new(at as i32 % side, at as i32 / side);
-        if cell != 0 && place.cmpge(a).all() && place.cmple(b).all() {
-          cleared.insert(place);
-          found = true;
+      let from = a.max(origin) - origin;
+      let to = b.min(origin + IVec2::splat(side - 1)) - origin;
+      for y in from.y..=to.y {
+        let row = (y * side) as usize;
+        for x in from.x..=to.x {
+          if cells[row + x as usize] != 0 {
+            cleared.insert(origin + IVec2::new(x, y));
+            found = true;
+          }
         }
       }
     }
@@ -351,7 +357,8 @@ fn refused_fill(world: &mut World, layer: Entity, lo: IVec2, hi: IVec2) -> bool 
     return false;
   };
   let missing = data.grid.missing_chunks(lo, hi);
-  if missing <= MAX_FILL_CHUNKS {
+  let cap = fill_cap();
+  if missing <= cap {
     return false;
   }
   world.init_resource::<FillRefused>();
@@ -364,7 +371,7 @@ fn refused_fill(world: &mut World, layer: Entity, lo: IVec2, hi: IVec2) -> bool 
       .map_or("?", |info| info.name.as_str());
     crate::engine_warn!(
       module: "Tilemap",
-      "layer {name:?}: a fill from {lo} to {hi} would make {missing} chunks, past the {MAX_FILL_CHUNKS} a map holds, so it changed nothing (this layer warns once)"
+      "layer {name:?}: a fill from {lo} to {hi} would make {missing} chunks, past the {cap} a map holds, so it changed nothing (this layer warns once)"
     );
   }
   true

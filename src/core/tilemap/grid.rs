@@ -28,6 +28,24 @@ pub const CHUNK_SIZE: u32 = 32;
 pub(crate) const MAX_FILL_CHUNKS: u64 =
   super::tiled::build::MAX_MAP_CELLS / (CHUNK_SIZE as u64 * CHUNK_SIZE as u64);
 
+#[cfg(test)]
+thread_local! {
+  /// A test's own cap on the chunks a fill makes, lower than
+  /// `MAX_FILL_CHUNKS`: a test of the refusal then asks for a few chunks
+  /// past it, so it allocates kilobytes, not gigabytes, should the guard
+  /// ever be gone
+  pub(crate) static FILL_CAP: std::cell::Cell<u64> = const { std::cell::Cell::new(MAX_FILL_CHUNKS) };
+}
+
+/// The most chunks a tile fill may make: `MAX_FILL_CHUNKS` (in a test, the
+/// thread's `FILL_CAP`)
+pub(crate) fn fill_cap() -> u64 {
+  #[cfg(test)]
+  return FILL_CAP.with(std::cell::Cell::get);
+  #[cfg(not(test))]
+  MAX_FILL_CHUNKS
+}
+
 /// A chunk's side as a cell coordinate
 const SIDE: i32 = CHUNK_SIZE as i32;
 /// The cells of a chunk
@@ -359,7 +377,7 @@ impl TileGrid {
     if lo.x > hi.x || lo.y > hi.y {
       return 0;
     }
-    if value != 0 && self.missing_chunks(lo, hi) > MAX_FILL_CHUNKS {
+    if value != 0 && self.missing_chunks(lo, hi) > fill_cap() {
       return 0;
     }
     let (first, last) = (Self::chunk_of(lo), Self::chunk_of(hi));
@@ -1175,20 +1193,33 @@ mod tests {
   #[test]
   fn an_unbounded_fill_making_more_chunks_than_a_map_holds_is_refused() {
     // A map holds 2^27 cells, 131,072 chunks: a fill making more is
-    // refused before anything is made, where it would have allocated the
-    // whole range (every `i32` cell: an out-of-memory abort)
+    // refused before anything is made, where every `i32` cell was an
+    // out-of-memory abort. The test lowers the cap to 4 chunks, so were
+    // the guard gone it would make 5 chunks (20 KB), not gigabytes
+    assert_eq!(MAX_FILL_CHUNKS, 131_072);
+    FILL_CAP.with(|cap| cap.set(4));
     let mut g = TileGrid::unbounded();
     let tile = Some(Tile::new(0, 2));
-    assert_eq!(g.fill(IVec2::MIN, IVec2::MAX, tile), 0);
-    let wide = IVec2::new(131_073 * 32 - 1, 0);
-    assert_eq!(g.fill(IVec2::ZERO, wide, tile), 0, "131,073 chunks");
+    let five = IVec2::new(5 * 32 - 1, 0);
+    assert_eq!(g.fill(IVec2::ZERO, five, tile), 0, "5 chunks");
+    let square = IVec2::new(-33, -33);
+    assert_eq!(g.fill(square, IVec2::ZERO, tile), 0, "3 x 3 chunks");
     assert_eq!(g.chunk_coords().count(), 0, "nothing made");
     assert_eq!(g.version(), 0, "nothing changed");
-    // A fill within the cap writes as before, and clearing any range reads
-    // only the chunks there are
+    // A fill within the cap writes as before; the chunks it has count for
+    // nothing against the next
     assert_eq!(g.fill(IVec2::new(-40, 0), IVec2::new(40, 0), tile), 81);
-    assert_eq!(g.fill(IVec2::MIN, IVec2::MAX, None), 81);
     assert_eq!(g.chunk_coords().count(), 4, "chunks -2 to 1");
+    assert_eq!(g.missing_chunks(IVec2::new(-64, 0), five), 3);
+    assert_eq!(g.fill(IVec2::new(-64, 0), five, None), 81);
+    assert_eq!(
+      g.fill(IVec2::new(-64, 1), IVec2::new(5 * 32 - 1, 1), tile),
+      224
+    );
+    // Clearing any range reads only the chunks there are
+    assert_eq!(g.fill(IVec2::MIN, IVec2::MAX, None), 224);
+    assert_eq!(g.chunk_coords().count(), 7);
+    FILL_CAP.with(|cap| cap.set(MAX_FILL_CHUNKS));
   }
 
   #[test]

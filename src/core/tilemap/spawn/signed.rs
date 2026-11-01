@@ -282,24 +282,21 @@ fn writing_a_tile_far_away_on_an_unbounded_layer_collides_and_casts_shadows() {
 
 #[test]
 fn a_fill_making_more_chunks_than_a_map_holds_is_refused_and_warns_once() {
+  use crate::core::tilemap::grid::{FILL_CAP, MAX_FILL_CHUNKS};
+  // The cap lowered to 4 chunks for the test (131,072 in a game), so were
+  // the guard gone the refused fills would make a few chunks, not gigabytes
+  FILL_CAP.with(|cap| cap.set(4));
   let mut maps = MapWorld::new();
   let mut map = infinite_map();
   map.layers[0].info.name = "huge-fill-5d2a".to_string();
   let map = spawn(&mut maps, map, |r| r.with_entity_tiles(&["crate"]));
   let layer = "huge-fill-5d2a";
   let mut view = MapsView::new(&mut maps.world);
-  // Every cell of `i32`, a plain tile and a class tile, and a row of
-  // 131,073 chunks: refused before anything is made
-  assert_eq!(
-    view.fill(map, layer, IVec2::MIN, IVec2::MAX, Some(BLOCK)),
-    0
-  );
-  assert_eq!(
-    view.fill(map, layer, IVec2::MIN, IVec2::MAX, Some(CRATE)),
-    0
-  );
-  let wide = IVec2::new(131_073 * 32 - 1, 0);
-  assert_eq!(view.fill(map, layer, IVec2::ZERO, wide, Some(BLOCK)), 0);
+  // A row of 5 chunks, a plain tile and a class tile: refused before
+  // anything is made
+  let five = IVec2::new(5 * 32 - 1, 0);
+  assert_eq!(view.fill(map, layer, IVec2::ZERO, five, Some(BLOCK)), 0);
+  assert_eq!(view.fill(map, layer, IVec2::ZERO, five, Some(CRATE)), 0);
   let Some(ground) = view.layer_entity(map, layer) else {
     panic!("no layer");
   };
@@ -328,6 +325,7 @@ fn a_fill_making_more_chunks_than_a_map_holds_is_refused_and_warns_once() {
     81
   );
   assert_eq!(view.fill(map, layer, IVec2::MIN, IVec2::MAX, None), 81);
+  FILL_CAP.with(|cap| cap.set(MAX_FILL_CHUNKS));
 }
 
 #[test]
