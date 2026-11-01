@@ -4,6 +4,47 @@ Small issues found while building each sub-project and left for later: deferred 
 
 Items from 4f to 6b were copied from their execution records. Items from earlier sub-projects come from notes kept at the time, and some may have been fixed since: check before working on one.
 
+## Sparse grids and infinite maps (6b, stage 2)
+
+- Owner decisions (2026-11-01):
+  - The owner chose to merge after hand-playing the `tile-grids` demo.
+  - The meadow page shows Tiled's infinite format: a hand-made part of a world, walled at its ends. Endless terrain beyond it comes with streaming in stage 3.
+- Rulings the owner may revisit:
+  - A bounded layer counts every engine chunk it spans against the cell caps (a 10,000 x 64 runner level counts 641,024 cells), so a 1-cell-wide layer 2^26 tall is refused.
+  - `TileMap::bounds()` for an infinite map is tight (the rectangle of its tiles), and a world places an infinite map by its origin plus those bounds, whatever size the world lists. Tiled's own placement could not be checked headless.
+  - The world loader reads every listed map, so a world load parses each map once more beside the map's own load.
+- Deferred findings:
+  - **Grids and edits.**
+    - `grid.rs` `TileGrid::touch` accepts any chunk, and `chunk_rect`'s `chunk * SIDE` would wrap past the chunks of the `i32` range. No caller passes one (they pass `chunk_of` results). Fix: have `holds_chunk` refuse it, or saturate.
+    - `grid.rs` `set` hashes twice per write (`contains_key`, then `entry`), which cost the load guard about 0.35 ms (1.23 to 1.58 ms). `TileColliders::set` does the same, harmlessly. Fix: one `entry` call.
+    - `TileGrid::fill`'s cell cap applies to bounded grids too (only code-built maps over 2^27 cells reach it), and it returns 0 there without a warning.
+    - `changed_chunks` (`kinds.rs`) walks every chunk of a layer whose version moved, so an edit on a very large unbounded layer costs all of its chunks. Fix: have the grid list the chunks that moved.
+    - `take_class_tiles` collects `chunk_coords()` into a `Vec` it does not need, and `Tracked::new` discards `read_all`'s `Vec`. Neither runs warm.
+    - `grid.rs` (~156) says "an empty chunk costs nothing" just above the "Chunks persist" paragraph, which contradicts it for a landed bounded grid. Tests are missing for `touch` making an absent chunk with a version, a bounded `assign` into a grid lacking chunks, and an unbounded `clear()` keeping chunks whose `chunk_cells` is `None`.
+  - **Collision.**
+    - `src/core/physics/tiles.rs`: `TileColliders`' derived `PartialEq` includes the span, the warned reach and emptied chunks, so it depends on history. Fix: compare only the parts.
+    - Shape indices are handed out chunk by chunk, then by layer (they were layer then row). The geometry is the same, but which shapes drop past 65,535 can differ.
+    - `solid_rects` mode builds a `FastSet` per probe where it used a `Vec<bool>`. It is unmeasured, and that mode rebuilds whole anyway.
+    - The dev-log filter on "10000 x 64" in `a_grid_wider_than_8192_cells_collides` matches nothing, so only its `warnings == 0` assertion counts.
+    - The new tests do not assert that a grown map's shadows follow, that a far tile collides, or that the million-cell test's far edit rebuilt the occluder.
+  - **Loaders and worlds.**
+    - `settle` (`grid.rs`) runs per `write_rows` call, which is once per Tiled chunk. New chunks arriving out of order rotate or sort `order` each time, so a hostile file with reverse-ordered chunks goes quadratic: capped at 65,536 engine chunks a layer, about 2 s of moves per layer, off the main thread. Fix: settle once per layer.
+    - The pixel rule depends on tile size: a map of 1 px tiles lets cells reach `i32::MAX - 1`.
+    - `tile_cells` counts an infinite map's chunkless layer from the header's width and height, which the loader ignores, so a big header can fail the cap for nothing.
+    - A world load parses every listed map once more, and `infinite_bounds` builds full grids (up to a map's cap) beside the map's own load. Fix: work the tight bounds out from the decoded gids without a grid, and check the header's `infinite` first.
+    - `MAP_PAIRS` (`tiled/xml.rs`, ~784) lacks `infinite-chunks24`, which has its own test checking both formats.
+  - **The speed record.**
+    - The unbounded static-frame margin is thin: 49.2 of 50 µs in one run, 0.8 µs in another. Name the cause of the unbounded map's 48 extra chains in the bench or the record.
+    - The Disabled-map limit compares about 60 ms with `reload_timing`'s 76.9 ms only loosely ("as does").
+  - **The demo.**
+    - `examples/demos/tile-grids/tests/pages.rs` hardcodes the cell size 18.0 (in three places) beside `CELL` in `src/shared.rs`.
+    - Page 1's right-hand HUD and minimap cover part of the sky and the runner's path. This is within the demo standard.
+  - **Docs.**
+    - `src/core/asset/AGENTS.md` (~82) still says an infinite map's world rectangle is "read from its chunks", and its `cx.read` list leaves out listed maps.
+    - `docs/backlog/tilemap.md` and `tilemap-features.md` still use the 6a and 6b labels in many places. Replace them with plain sentences.
+  - **Engine-wide.**
+    - A scene's `ui` runs before the frame's fixed steps, and `CameraMut::world_to_screen` uses the step's uninterpolated camera, so UI anchored to world points (name tags, health bars) jitters against a moving, interpolated camera. This was already so before stage 2; the hand-play of `tile-grids` found it. Fix: a world anchor resolved when the frame is drawn, from `CameraView`, or building the UI after `PostUpdate`. The demo works around it with world text (`Text2d`).
+
 ## Transform propagation (6b, stage 1)
 
 - **The full walk's threshold was measured on leaves two levels deep** (`src/core/ecs/propagate.rs`, `FULL_WALK_SHARE`). A run takes the full walk once a fifth of the entities with a `Transform` changed (and more than 64).
