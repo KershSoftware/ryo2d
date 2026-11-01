@@ -1414,6 +1414,12 @@ impl Boundary {
     });
     for y in 0..h {
       for x in 0..w {
+        // A cell's units read it and the cells left of it and above it:
+        // with all three empty they have no edges (most of an open map)
+        let empty = TileCell::Empty;
+        if local(x, y) == empty && local(x - 1, y) == empty && local(x, y - 1) == empty {
+          continue;
+        }
         unit_edges(Unit::Inside(x, y), &cells, &local, out);
         unit_edges(Unit::Left(x, y), &cells, &local, out);
         unit_edges(Unit::Above(x, y), &cells, &local, out);
@@ -2682,6 +2688,48 @@ mod with_physics {
       outlines.apply(tiles.cells_view(), &changed);
       load_traces.push(start.elapsed());
     }
+    // A chunk's shadow boundary, as a map's shadows read it a chunk at a
+    // time: one of the rock, and the empty one right of the grid, whose
+    // only edges close the rock at its left border
+    let boundary = Boundary::default();
+    let at = |x: i32, y: i32| tiles.get(IVec2::new(x, y));
+    let mut edges = Vec::new();
+    let mut shadow = |chunk: IVec2| {
+      let (min, max) = (chunk * side, (chunk + IVec2::ONE) * side);
+      // Read from an array, as a map's shadows read their chunk's kinds:
+      // the chunk, the column left of it and the row above
+      let wide = side + 1;
+      let window: Vec<TileCell> = (0..wide * wide)
+        .map(|i| at(min.x - 1 + i % wide, min.y - 1 + i / wide))
+        .collect();
+      let read = |x: i32, y: i32| {
+        let (dx, dy) = (x - min.x + 1, y - min.y + 1);
+        if (0..wide).contains(&dx) && (0..wide).contains(&dy) {
+          window[(dy * wide + dx) as usize]
+        } else {
+          TileCell::Empty
+        }
+      };
+      let mut times = Vec::new();
+      for _ in 0..2000 {
+        edges.clear();
+        let start = Instant::now();
+        boundary.edges(read, (min.x, min.y), (max.x, max.y), None, &mut edges);
+        times.push(start.elapsed());
+      }
+      (median(times).0, edges.len())
+    };
+    // The chunk of the most edges
+    let densest = (-5..5)
+      .flat_map(|y| (-6..6).map(move |x| IVec2::new(x, y)))
+      .max_by_key(|&chunk| {
+        let mut edges = Vec::new();
+        let (min, max) = (chunk * side, (chunk + IVec2::ONE) * side);
+        boundary.edges(at, (min.x, min.y), (max.x, max.y), None, &mut edges);
+        edges.len()
+      })
+      .unwrap_or_default();
+    let ((rock, rock_edges), (open, open_edges)) = (shadow(densest), shadow(IVec2::new(6, 0)));
     let ((unload, unload_max), (load, load_max)) = (median(unloads), median(loads));
     let (both, both_max) = median(both);
     let ((unload_trace, _), (load_trace, _)) = (median(unload_traces), median(load_traces));
@@ -2692,7 +2740,9 @@ mod with_physics {
        a chunk loaded back, rebuild system: median {load:?}, max {load_max:?}; the retrace \
        alone {load_trace:?}\n  \
        one unloaded and one loaded ten chunks apart, rebuild system: median {both:?}, max \
-       {both_max:?}",
+       {both_max:?}\n  \
+       a chunk's shadow boundary: the rock's busiest chunk {rock:?} ({rock_edges} edges), the \
+       empty chunk beside the rock {open:?} ({open_edges} edges)",
       solid / 120,
       parts(&mut world, map).len()
     );
