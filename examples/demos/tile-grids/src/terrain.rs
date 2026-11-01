@@ -34,8 +34,7 @@ const MARGIN: i32 = 2;
 /// and a row above and below
 const WIDTH: i32 = SIDE + 2 * MARGIN;
 const HEIGHT: i32 = SIDE + 2;
-/// The row the noise is read along for heights: off the noise's lattice,
-/// where every octave would be zero
+/// The row of the 2D noise heights are read along
 const HEIGHT_ROW: f64 = 11.3;
 
 /// Pixel Platformer's earth, closed on every side: the backdrop's tile

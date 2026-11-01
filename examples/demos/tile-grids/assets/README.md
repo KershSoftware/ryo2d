@@ -44,7 +44,7 @@ Two pages stream chunks from a generator (`src/terrain.rs`), a pure function of 
 - **The meadow's world** (page 1, `MeadowWorld`): the meadow's ground going on past both its ends, read from the file (its bottom row, its end columns and their grass rows), with the same tileset and the same `ground_tile` rule, its gentle hills rising from the seam over about 18 columns, and the meadow's sprouts, pines, mushrooms, bushes, trees and clouds. Chunks above the clouds and below the bottom row come back empty.
 - **The endless page's world** (page 3, `Wilds`): rolling hills of earth going down without end, caves opening six cells or more under the grass, sprouts, pines and clouds, and a backdrop layer of earth tinted dark behind everything under the grass.
 
-The heights and the caves are `ryo2d-procgen`'s noise: `generate_heightmap` (Perlin with octaves), its offset set to the chunk's first cell, so a chunk samples the noise at its own cells and chunks side by side meet. Heights are read along a row off the noise's lattice (row 11.3), where every octave would be zero. Where scenery stands is a hash of the column.
+The heights and the caves are `ryo2d-procgen`'s noise: `generate_heightmap` (Perlin with octaves), its offset set to the chunk's first cell, so a chunk samples the noise at its own cells and chunks side by side meet. Heights are read along one row of the 2D noise (row 11.3), so a column's height is the noise at that column. Where scenery stands is a hash of the column.
 
 ## Editors
 
