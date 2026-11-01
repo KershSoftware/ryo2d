@@ -415,6 +415,19 @@ ctx.world.spawn((
 - **Image layers** draw as one quad per view, the image repeating across the view along the axes the editor says; a view needing more than 65,536 copies, or more than 524,288 of the image's pixels, along an axis gets that many about its centre, warned once.
 - **Opacity and tint** multiply the layer. Blend modes normal, add, multiply and screen draw as in the editor.
 - **Hidden:** a layer whose `LayerInfo::visible` is false draws nothing, and still collides and occludes as its flags say. A disabled map draws nothing at all.
+- **The background colour is not drawn.** `TileMap::background` holds Tiled's map background colour, or an LDtk level's (`__bgColor`, else the level's own, else the project's default), but a map draws only its layers. Clear the camera to it, as the tilemap demo's pages do, or put a sprite of it behind the map at a lower z (the demo's `backdrop`, for a map smaller than the view):
+
+<!-- given: level: Handle<TileMap> -->
+```rust
+// Once the level's asset is loaded, the camera clears to its background
+let background = ctx.assets().get(&level).and_then(|map| map.background);
+if let Some(color) = background {
+  let camera = ctx.camera().entity();
+  if let Some(mut camera) = ctx.world.get_mut::<Camera2d>(camera) {
+    camera.clear = CameraClear::Color(color);
+  }
+}
+```
 
 ## 11. Maps built in code
 
