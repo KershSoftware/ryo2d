@@ -1658,8 +1658,6 @@ impl Resident<'_> {
   }
 }
 
-/// Whether every chunk overlapping `area` (world pixels) is resident on the
-/// streamed map `map`; false for a map not streamed or not landed
 /// The status of the streamed map `map` (`MapsView::stream_status`):
 /// `None` with no `MapStream`, or before its stream's first frame
 pub(crate) fn stream_status(world: &World, map: Entity) -> Option<StreamStatus> {
@@ -1674,6 +1672,8 @@ pub(crate) fn stream_status(world: &World, map: Entity) -> Option<StreamStatus> 
   })
 }
 
+/// Whether every chunk overlapping `area` (world pixels) is resident on the
+/// streamed map `map`; false for a map not streamed or not landed
 pub(crate) fn stream_ready(world: &World, map: Entity, area: Rect) -> bool {
   if world.get::<MapStream>(map).is_none() {
     return false;
