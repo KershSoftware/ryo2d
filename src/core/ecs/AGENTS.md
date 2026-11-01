@@ -78,7 +78,7 @@ In `bevy_ecs` 0.20 a resource is a component on a hidden entity marked `IsResour
 world.query_filtered::<Entity, (Allow<Disabled>, Without<IsResource>)>()
 ```
 
-`despawn_game_entities` (`world_ext.rs`, used by `SceneCleanup::WORLD`) also excludes `Observer` and `SystemIdMarker`; the entity count in the debug stats does the same per archetype.
+`despawn_game_entities` (`world_ext.rs`, used by `SceneCleanup::WORLD`) also excludes `Observer` and `SystemIdMarker`; the entity count in the debug stats does the same per archetype. It despawns each hierarchy from its top (the entities sorted by depth; the world lists them by archetype, children often first), so a component's discard hook still sees the entity's children: a streamed map's root saves its changed chunks from its layers and class tiles as a scene's cleanup takes it (`despawn_game_entities_despawns_each_hierarchy_from_its_top`).
 
 Each resource also has an archetype of its own, and a query visits archetypes in hash-map order, so adding any resource can reorder a query's results. Wherever an order shows (draw ties, physics registration, a message order), sort by `ecs::entity_order` (entity index), never by a query's or a hash set's order. Tests built on `test_util::insert_unrelated` check an order for 0 to 8 extra resources.
 

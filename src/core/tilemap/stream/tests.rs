@@ -17,6 +17,7 @@ use super::{
 };
 use crate::core::asset::{Assets, AssetsView, Handle};
 use crate::core::ecs::kernel::{ChildOf, Disabled, MessageCursor, Messages};
+use crate::core::ecs::world_ext::despawn_game_entities;
 use crate::core::ecs::{Entity, Transform, World};
 use crate::core::tilemap::test_util::{FIXTURES, MapWorld, files_with, layers_of, load_map};
 use crate::core::tilemap::{
@@ -1148,6 +1149,88 @@ fn a_despawned_streamed_map_takes_its_chunk_owned_entities() {
   maps.frame();
   assert!(maps.world.get_entity(owned).is_err());
   assert!(maps.world.get_entity(other).is_ok(), "another map's stays");
+}
+
+/// A generator laying `floors` with a coin at (3, 3) of every chunk
+fn a_coin_a_chunk(request: ChunkRequest) -> ChunkTiles {
+  let mut tiles = floors(request);
+  tiles.set("ground", UVec2::new(3, 3), Some(COIN));
+  tiles
+}
+
+/// A block built in chunk (0, 0)
+const BUILT: IVec2 = IVec2::new(6, 9);
+
+/// A streamed map round chunk (0, 0), its coins class tiles, keeping its
+/// changed chunks in `saved`, with a block built in chunk (0, 0) (`BUILT`)
+/// and nothing unloaded yet
+fn edited_world(saved: &SavedChunks) -> (MapWorld, Entity) {
+  let mut maps = MapWorld::new();
+  let stream = MapStream::new(a_coin_a_chunk).with_saved(saved.clone());
+  let map = spawn(&mut maps, infinite(&["ground"]), stream, |root| {
+    root.with_entity_tiles(&["coin"])
+  });
+  anchor_at(&mut maps, IVec2::ZERO);
+  until_idle(&mut maps, map);
+  maps.frame();
+  assert_eq!(class_tiles(&mut maps.world).len(), 9, "a coin a chunk");
+  assert!(MapsView::new(&mut maps.world).set_tile(map, "ground", BUILT, Some(BLOCK)));
+  assert!(saved.is_empty());
+  (maps, map)
+}
+
+/// Asserts that `saved` holds chunk (0, 0) alone, as the player left it:
+/// the block built, its floor and its coin
+fn kept_as_left(saved: &SavedChunks) {
+  assert_eq!(saved.keys(), [IVec2::ZERO], "the changed chunk alone");
+  let Some(tiles) = saved.get(IVec2::ZERO) else {
+    panic!("chunk (0, 0) is kept");
+  };
+  assert_eq!(tiles.get("ground", BUILT.as_uvec2()), Some(BLOCK));
+  assert_eq!(tiles.get("ground", UVec2::new(5, 0)), Some(BLOCK));
+  assert_eq!(tiles.get("ground", UVec2::new(3, 3)), Some(COIN));
+}
+
+#[test]
+fn a_despawned_streamed_map_keeps_its_changed_chunks() {
+  let saved = SavedChunks::default();
+  let (mut maps, map) = edited_world(&saved);
+  let mut cursor = MessageCursor::<ChunkEvent>::default();
+  events(&maps.world, &mut cursor);
+  assert!(maps.world.despawn(map));
+  kept_as_left(&saved);
+  maps.frame();
+  // No chunk tells of its unloading as the map goes
+  assert!(changes(&events(&maps.world, &mut cursor), map).is_empty());
+  kept_as_left(&saved);
+}
+
+#[test]
+fn leaving_the_scene_keeps_a_streamed_map_s_changed_chunks() {
+  // A scene's world cleanup despawns every entity, the map's layers and
+  // class tiles among them, in the order the world lists them
+  let saved = SavedChunks::default();
+  let (mut maps, _) = edited_world(&saved);
+  despawn_game_entities(&mut maps.world);
+  maps.frame();
+  kept_as_left(&saved);
+}
+
+#[test]
+fn a_streamed_map_put_over_keeps_its_changed_chunks() {
+  let saved = SavedChunks::default();
+  let (mut maps, map) = edited_world(&saved);
+  let other = maps
+    .world
+    .resource_mut::<Assets<TileMap>>()
+    .add(infinite(&["ground"]));
+  maps.world.entity_mut(map).insert(MapRoot::new(other));
+  kept_as_left(&saved);
+  // The new map streams the kept chunk back
+  maps.settle(map);
+  until_idle(&mut maps, map);
+  let view = MapsView::new(&mut maps.world);
+  assert_eq!(view.tile(map, "ground", BUILT), Some(BLOCK));
 }
 
 #[test]

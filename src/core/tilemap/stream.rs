@@ -252,8 +252,11 @@ fn unpack(text: &str) -> Result<Box<[u32; CELLS]>, String> {
 /// landed unloads (an edit through `ctx.maps()`, or a class tile the game
 /// despawned or an edit placed), its tiles go in, class tiles included,
 /// and a chunk the store holds comes back from it instead of the
-/// generator. Serialize it with a save game, and give it back to the
-/// stream when the game loads; [`MapsView::save_changed_chunks`](super::MapsView::save_changed_chunks)
+/// generator. The changed chunks still resident go in too as the map's
+/// root goes (despawned, a scene's cleanup among them, or a `MapRoot` put
+/// over it), so leaving the scene keeps the player's edits. Serialize it
+/// with a save game, and give it back to the stream when the game loads;
+/// [`MapsView::save_changed_chunks`](super::MapsView::save_changed_chunks)
 /// puts in the changed chunks still resident first.
 ///
 /// ```
@@ -414,7 +417,12 @@ pub struct ChunkRequest {
 /// go, and the resident chunks are within the distances again once they
 /// have. Distances are measured in world pixels from the anchor (or
 /// the view) to the chunk, along each axis. Only the chunks resident take
-/// edits: `ctx.maps()` refuses a cell in any other.
+/// edits: `ctx.maps()` refuses a cell in any other. When the map's root
+/// goes (despawned, a scene's cleanup among them, or a `MapRoot` put over
+/// it), its changed resident chunks go into the `SavedChunks` as their
+/// unloads would, so leaving the scene keeps the player's edits, and the
+/// entities its chunks own go with it; no [`ChunkEvent::Unloading`] is
+/// sent then.
 ///
 /// A Tiled infinite map's own chunks are the hand-made part of the world:
 /// every engine chunk (32 x 32 cells) that any layer's Tiled chunk touches
@@ -422,9 +430,10 @@ pub struct ChunkRequest {
 /// a map built in code holds in its asset. The generator never runs
 /// there; those chunks are resident from the start, whatever the
 /// distances, take edits, never unload and send no [`ChunkEvent`], so a
-/// big hand-made area stays in memory. Their edits are kept only through
-/// [`MapsView::save_changed_chunks`](super::MapsView::save_changed_chunks),
-/// and a stream with those [`SavedChunks`] puts them back as it starts. A
+/// big hand-made area stays in memory. Their edits are kept through
+/// [`MapsView::save_changed_chunks`](super::MapsView::save_changed_chunks)
+/// and as the root goes, and a stream with those [`SavedChunks`] puts them
+/// back as it starts. A
 /// hot reload changes the file's chunks alone: the generated ones keep
 /// their tiles, and a save that adds, drops or reshapes a tile layer
 /// streams them again.
@@ -1457,7 +1466,8 @@ pub(crate) fn note_class_edit(world: &mut World, map: Entity, cell: IVec2) {
 /// Puts each chunk resident on the streamed map `map` that a player
 /// changed since it landed into its stream's [`SavedChunks`], as its unload
 /// would; how many it put (0 for a map with no stream, or whose stream
-/// keeps no chunks)
+/// keeps no chunks). `MapsView::save_changed_chunks`, and the root's
+/// discard hook as the map goes
 pub(crate) fn save_changed(world: &World, map: Entity) -> usize {
   let Some(saved) = world
     .get::<MapStream>(map)

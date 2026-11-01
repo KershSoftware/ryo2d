@@ -43,9 +43,11 @@ impl WorldExt for World {
 
 /// Despawn every game entity, disabled ones included. Resources, observers
 /// and registered systems are entities too, and stay, as does the main
-/// camera (a camera cleanup resets it instead).
+/// camera (a camera cleanup resets it instead). Each hierarchy goes from its
+/// top, so a component's hooks see the entity's children as it goes (a
+/// streamed map saves its changed chunks from its layers).
 pub(crate) fn despawn_game_entities(world: &mut World) {
-  let entities: Vec<Entity> = world
+  let mut entities: Vec<(usize, Entity)> = world
     .query_filtered::<Entity, (
       Allow<Disabled>,
       Without<IsResource>,
@@ -54,11 +56,27 @@ pub(crate) fn despawn_game_entities(world: &mut World) {
       Without<MainCamera>,
     )>()
     .iter(world)
+    .map(|entity| (depth(world, entity), entity))
     .collect();
-  for entity in entities {
+  entities.sort_by_key(|&(depth, _)| depth);
+  for (_, entity) in entities {
     // Children went with their parent already
     let _ = world.try_despawn(entity);
   }
+}
+
+/// How many ancestors `entity` has (a cycle, which the hierarchy forbids,
+/// counts as deep as the world's entities)
+fn depth(world: &World, entity: Entity) -> usize {
+  let limit = world.entities().len() as usize;
+  let mut at = entity;
+  for depth in 0..limit {
+    match world.get::<ChildOf>(at) {
+      Some(child_of) => at = child_of.parent(),
+      None => return depth,
+    }
+  }
+  limit
 }
 
 #[cfg(test)]
@@ -99,6 +117,45 @@ mod tests {
     assert_eq!(world.resource::<Score>().0, 7);
     assert_eq!(world.query::<&Observer>().iter(&world).count(), 1);
     assert!(world.run_system(system).is_ok());
+  }
+
+  #[test]
+  fn despawn_game_entities_despawns_each_hierarchy_from_its_top() {
+    use crate::core::ecs::kernel::{Component, DeferredWorld, HookContext, Resource};
+
+    /// What the hook of a parent's `Watch` saw: whether the child it
+    /// watches was still there as the parent went
+    #[derive(Resource, Default)]
+    struct Seen(Vec<bool>);
+    #[derive(Component)]
+    #[component(on_discard = watched)]
+    struct Watch(Entity);
+    fn watched(mut world: DeferredWorld, context: HookContext) {
+      let child = world.get::<Watch>(context.entity).map(|w| w.0);
+      let there = child.is_some_and(|child| world.get_entity(child).is_ok());
+      world.resource_mut::<Seen>().0.push(there);
+    }
+
+    let mut world = World::new();
+    world.init_resource::<Seen>();
+    // Children listed before their parents: a child's archetype made first
+    let elder = world.spawn(Transform::IDENTITY).id();
+    world.spawn_child(elder, Transform::IDENTITY);
+    let mut parents = Vec::new();
+    for _ in 0..3 {
+      let parent = world.spawn(Transform::IDENTITY).id();
+      let child = world.spawn_child(parent, Transform::IDENTITY);
+      // Grandchildren too, the middle one watching its child
+      let grandchild = world.spawn_child(child, Transform::IDENTITY);
+      world.entity_mut(child).insert(Watch(grandchild));
+      world.entity_mut(parent).insert(Watch(child));
+      parents.push(parent);
+    }
+
+    despawn_game_entities(&mut world);
+
+    assert_eq!(world.resource::<Seen>().0, [true; 6], "each saw its child");
+    assert!(parents.iter().all(|&p| world.get_entity(p).is_err()));
   }
 
   #[derive(ScheduleLabel, Debug, Clone, Copy, PartialEq, Eq, Hash)]

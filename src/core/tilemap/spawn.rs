@@ -1383,7 +1383,11 @@ fn land(world: &mut World, map: Entity, landed: Landed) {
 /// A root going (put over by another, taken away, or despawned with its
 /// entity): a map that spawned takes its layers down, so a new root spawns
 /// afresh, and the entities its streamed chunks own (`ChunkOwned`) go with
-/// them. Despawned, the hierarchy takes the layers anyway
+/// them. Despawned, the hierarchy takes the layers anyway. A streamed map
+/// first puts its changed resident chunks into its stream's `SavedChunks`,
+/// as unloading them would (sending no `ChunkEvent`): the hook runs with
+/// the root's components and its layers and class tiles still there, as
+/// the hierarchy despawns children through commands
 fn root_discarded(mut world: DeferredWorld, context: HookContext) {
   let map = context.entity;
   if world.get::<MapLayers>(map).is_none()
@@ -1392,6 +1396,7 @@ fn root_discarded(mut world: DeferredWorld, context: HookContext) {
   {
     return;
   }
+  super::stream::save_changed(&world, map);
   world.commands().queue(move |world: &mut World| {
     // Its chunks go with it, and the entities they own
     super::stream::despawn_chunk_owned(world, map);
