@@ -279,18 +279,31 @@ fn number_after(shown: &str, marker: &str) -> Option<usize> {
   digits.parse().ok()
 }
 
-/// Steps until the HUD has shown no chunk in flight for 20 frames running
-fn settle(engine: &mut HeadlessEngine) {
+/// What the stream of `map` has now, as the engine counts it
+fn status(engine: &mut HeadlessEngine, map: Entity) -> StreamStatus {
+  MapsView::new(engine.world_mut())
+    .stream_status(map)
+    .expect("the page's map streams")
+}
+
+/// Steps until `map`'s stream has had nothing in flight and nothing
+/// draining for 20 frames running
+fn settle(engine: &mut HeadlessEngine, map: Entity) {
   let (mut quiet, mut last) = (0, None);
   for _ in 0..900 {
     engine.step().unwrap();
-    last = number_before(&engine.ui_snapshot(), " in flight");
-    quiet = if last == Some(0) { quiet + 1 } else { 0 };
+    let now = status(engine, map);
+    quiet = if now.in_flight == 0 && now.draining == 0 {
+      quiet + 1
+    } else {
+      0
+    };
+    last = Some(now);
     if quiet >= 20 {
       return;
     }
   }
-  panic!("the stream never settled: the HUD last showed {last:?} in flight");
+  panic!("the stream never settled: last {last:?}");
 }
 
 /// The meadow's runner, once it has one
@@ -322,7 +335,7 @@ fn the_meadow_s_hand_made_chunks_lie_at_negative_cells_and_the_hud_tells_them_fr
   // and the chunks round it stay put
   engine.tap_key(KeyCode::Space);
   engine.step_frames(90).unwrap();
-  settle(&mut engine);
+  settle(&mut engine, map);
 
   // The asset: an infinite map, its bounds reaching negative cells
   let meadow = meadow_asset(&mut engine);
@@ -364,19 +377,30 @@ fn the_meadow_s_hand_made_chunks_lie_at_negative_cells_and_the_hud_tells_them_fr
     "the stream generated the chunks round the view beyond the file's: {now:?}"
   );
 
-  // The HUD: the hand-made chunks and the file's bounds (last cells
-  // included), the generated chunks resident, and every chunk resident and
-  // in flight
+  // The engine's count of them
+  let counted = status(&mut engine, map);
+  assert_eq!(
+    (counted.resident, counted.hand_made, counted.generated),
+    (now.len(), file.len(), generated.len()),
+    "the stream's status: {counted:?}"
+  );
+
+  // The HUD reads it: the hand-made chunks and the file's bounds (last
+  // cells included), the generated chunks resident, and every chunk
+  // resident and in flight
   let shown = engine.ui_snapshot();
   let last = bounds.max - IVec2::ONE;
   for line in [
-    format!("Hand-made: {} chunks", file.len()),
+    format!("Hand-made: {} chunks", counted.hand_made),
     format!(
       "The file's bounds: cells ({}, {}) to ({}, {})",
       bounds.min.x, bounds.min.y, last.x, last.y
     ),
-    format!("Generated: {} resident", generated.len()),
-    format!("Resident: {} chunks, 0 in flight", now.len()),
+    format!("Generated: {} resident", counted.generated),
+    format!(
+      "Resident: {} chunks, {} in flight",
+      counted.resident, counted.in_flight
+    ),
   ] {
     assert!(shown.contains(&line), "{line:?} in the HUD");
   }
@@ -461,6 +485,11 @@ fn a_save_of_the_meadow_adds_a_hand_made_chunk_and_the_hud_follows() {
     hand_made(&mut engine),
     before + 1,
     "the new chunk is hand-made"
+  );
+  assert_eq!(
+    status(&mut engine, map).hand_made,
+    before + 1,
+    "the stream counts it hand-made"
   );
   let far_chunk = TileGrid::chunk_of(far);
   assert!(
@@ -883,13 +912,15 @@ fn the_endless_world_keeps_what_you_dig_and_build_when_you_leave_and_come_back()
     engine.step().unwrap();
   }
   assert!(digger(&mut engine).is_some(), "the digger spawned");
-  settle(&mut engine);
+  settle(&mut engine, map);
 
-  // The HUD counts the chunks resident, none in flight and none saved
+  // The HUD reads the stream's status: the chunks resident, none in
+  // flight, and none saved
+  let counted = status(&mut engine, map);
+  assert_eq!(counted.resident, resident(&mut engine, map).len());
   let shown = engine.ui_snapshot();
-  let count = resident(&mut engine, map).len();
   for line in [
-    format!("Resident: {count} chunks, 0 in flight"),
+    format!("Resident: {} chunks, 0 in flight", counted.resident),
     "Saved: 0 chunks".to_string(),
   ] {
     assert!(shown.contains(&line), "{line:?} in the HUD");
@@ -937,7 +968,9 @@ fn the_endless_world_keeps_what_you_dig_and_build_when_you_leave_and_come_back()
   assert!(shown.contains("Dug 1, built 1"), "the HUD counts the edits");
 
   // Leaving: E travels far right; the chunks left behind unload, those
-  // changed into the stream's SavedChunks, while new ones stream in
+  // changed into the stream's SavedChunks, while new ones stream in: the
+  // HUD shows the stream's own count in flight each frame, and a chunk
+  // lands after it reads more than none
   let edited: BTreeSet<(i32, i32)> = [dig, build]
     .iter()
     .map(|cell| TileGrid::chunk_of(*cell))
@@ -946,23 +979,34 @@ fn the_endless_world_keeps_what_you_dig_and_build_when_you_leave_and_come_back()
   engine.tap_key(KeyCode::KeyE);
   let mut cursor = MessageCursor::<ChunkEvent>::default();
   let mut kept = BTreeSet::new();
-  let mut most_in_flight = 0;
+  let (mut most_in_flight, mut landed_after) = (0, false);
   for _ in 0..600 {
     engine.step().unwrap();
-    for event in chunk_events(&engine, &mut cursor) {
+    let events = chunk_events(&engine, &mut cursor);
+    for event in &events {
       if let ChunkEvent::Unloading {
         map: m,
         chunk,
         changed: Some(_),
       } = event
-        && m == map
+        && *m == map
       {
         kept.insert((chunk.x, chunk.y));
       }
     }
-    let flying = number_before(&engine.ui_snapshot(), " in flight").unwrap_or(0);
+    if most_in_flight > 0 {
+      landed_after |= events
+        .iter()
+        .any(|e| matches!(e, ChunkEvent::Loaded { map: m, .. } if *m == map));
+    }
+    let flying = status(&mut engine, map).in_flight;
+    assert_eq!(
+      number_before(&engine.ui_snapshot(), " in flight"),
+      Some(flying),
+      "the HUD shows the stream's count in flight"
+    );
     most_in_flight = most_in_flight.max(flying);
-    if edited.is_subset(&kept) && most_in_flight > 0 {
+    if edited.is_subset(&kept) && landed_after {
       break;
     }
   }
@@ -971,15 +1015,15 @@ fn the_endless_world_keeps_what_you_dig_and_build_when_you_leave_and_come_back()
     "the edited chunks {edited:?} unloaded changed: {kept:?}"
   );
   assert!(
-    most_in_flight > 0,
-    "the HUD counted the chunks in flight after the travel"
+    most_in_flight > 0 && landed_after,
+    "chunks were in flight after the travel ({most_in_flight} at most), and landed after"
   );
   let away = digger(&mut engine).expect("the digger");
   assert!(
     away.x > at.x + 3000.0,
     "the digger travelled far right: from {at} to {away}"
   );
-  settle(&mut engine);
+  settle(&mut engine, map);
   let store = saved_chunks(&engine, map);
   for &(x, y) in &edited {
     assert!(
@@ -1011,7 +1055,7 @@ fn the_endless_world_keeps_what_you_dig_and_build_when_you_leave_and_come_back()
     edited.is_subset(&back),
     "the edited chunks came back: {back:?}"
   );
-  settle(&mut engine);
+  settle(&mut engine, map);
   assert_eq!(ground_at(&mut engine, map, dig), None, "{dig} is still dug");
   assert!(
     ground_at(&mut engine, map, build).is_some(),

@@ -82,15 +82,6 @@ impl Grid {
   pub(crate) fn chunk(self, chunk: IVec2) -> Rect {
     self.rect(chunk * SIDE, (chunk + IVec2::ONE) * SIDE)
   }
-
-  /// The chunks a world rectangle from `min` to `max` overlaps, first and
-  /// last, as a stream counts them
-  fn chunks_over(self, min: Vec2, max: Vec2) -> (IVec2, IVec2) {
-    let side = SIDE as f32;
-    let a = self.to_cells(min) / side;
-    let b = self.to_cells(max) / side;
-    (a.floor().as_ivec2(), (b.ceil() - Vec2::ONE).as_ivec2())
-  }
 }
 
 /// Outlines a chunk's world rectangle `rect` with `debug`: a light line over
@@ -113,32 +104,25 @@ pub(crate) fn outline(debug: &mut DebugDraw, rect: Rect, color: Color, width: f3
     .rect(Vec2::new(x, y), Vec2::new(rect.width, rect.height), color);
 }
 
-/// What a streamed map has, as a game reads it: the chunks resident (its
-/// layers' chunks), those landed just now, how many landed and unloaded
-/// since the page opened (`ChunkEvent`s), and how many chunks the stream
-/// wants and has not landed. The engine keeps no count of its requests a
-/// game can read, so that last is worked out here as the stream works it
-/// out: the chunks within its load distance of the camera's view or of an
-/// anchor, along each axis, not resident
+/// What a streamed map has, as a game reads it: the stream's own counts
+/// (`ctx.maps().stream_status`), the chunks resident (its layers' chunks),
+/// which of them the stream landed and which landed just now, and how many
+/// landed and unloaded since the page opened (from its `ChunkEvent`s)
 #[derive(Debug, Default)]
 pub(crate) struct Streamed {
+  /// The stream's counts, once it has run
+  pub(crate) status: Option<StreamStatus>,
+  /// The most chunks in flight at once since the page opened
+  pub(crate) most_in_flight: usize,
   /// The chunks resident, by row then column
   pub(crate) chunks: Vec<IVec2>,
+  /// Of those, the ones the stream landed (each `Loaded` and not
+  /// `Unloading` since), by row then column: the rest are the file's
+  pub(crate) generated: Vec<IVec2>,
   /// Chunks landed just now, each with how long it has left to glow
   pub(crate) fresh: Vec<(IVec2, f32)>,
   pub(crate) landed: usize,
   pub(crate) unloaded: usize,
-  /// Chunks wanted and not landed: asked of the generator, or waiting to
-  /// land; and the most there have been at once
-  pub(crate) in_flight: usize,
-  pub(crate) most_in_flight: usize,
-}
-
-/// Where a stream loads round: its anchors (world points; the camera's
-/// view is one too), and its load distance
-pub(crate) struct Loading<'a> {
-  pub(crate) anchors: &'a [Vec2],
-  pub(crate) distance: f32,
 }
 
 impl Streamed {
@@ -147,9 +131,7 @@ impl Streamed {
     &mut self,
     ctx: &mut SceneContext,
     map: Entity,
-    grid: Grid,
     events: &[ChunkEvent],
-    loading: Loading,
     dt: f32,
   ) {
     map_chunks(ctx.world, map, &mut self.chunks);
@@ -162,8 +144,12 @@ impl Streamed {
           self.landed += 1;
           self.fresh.retain(|(c, _)| c != chunk);
           self.fresh.push((*chunk, FLASH));
+          self.generated.push(*chunk);
         }
-        ChunkEvent::Unloading { map: m, .. } if *m == map => self.unloaded += 1,
+        ChunkEvent::Unloading { map: m, chunk, .. } if *m == map => {
+          self.unloaded += 1;
+          self.generated.retain(|c| c != chunk);
+        }
         _ => {}
       }
     }
@@ -171,36 +157,34 @@ impl Streamed {
     self
       .fresh
       .retain(|(chunk, left)| *left > 0.0 && has_chunk(chunks, *chunk));
+    self
+      .generated
+      .sort_unstable_by_key(|chunk| (chunk.y, chunk.x));
+    self.generated.dedup();
+    self.generated.retain(|chunk| has_chunk(chunks, *chunk));
+  }
 
-    // The areas the stream loads: the view's and each anchor's, grown by
-    // the load distance
-    let view = ctx.camera().visible_bounds();
-    let load = loading.distance;
-    let mut areas = vec![grid.chunks_over(
-      Vec2::new(view.left, view.top) - load,
-      Vec2::new(view.right, view.bottom) + load,
-    )];
-    areas.extend(
-      loading
-        .anchors
-        .iter()
-        .map(|&at| grid.chunks_over(at - load, at + load)),
-    );
-    let (mut from, mut to) = areas[0];
-    for &(a, b) in &areas {
-      from = from.min(a);
-      to = to.max(b);
+  /// Reads the stream's counts: in a page's `ui`, after this frame's
+  /// stream ran (`PreUpdate`), so the HUD shows this frame's
+  pub(crate) fn read_status(&mut self, ctx: &mut SceneContext, map: Entity) {
+    self.status = ctx.maps().stream_status(map);
+    if let Some(status) = self.status {
+      self.most_in_flight = self.most_in_flight.max(status.in_flight);
     }
-    let wanted = |chunk: IVec2| {
-      areas
-        .iter()
-        .any(|&(a, b)| chunk.cmpge(a).all() && chunk.cmple(b).all())
-    };
-    self.in_flight = (from.y..=to.y)
-      .flat_map(|y| (from.x..=to.x).map(move |x| IVec2::new(x, y)))
-      .filter(|&chunk| wanted(chunk) && !has_chunk(chunks, chunk))
-      .count();
-    self.most_in_flight = self.most_in_flight.max(self.in_flight);
+  }
+
+  /// Whether `chunk` is one the stream landed
+  pub(crate) fn is_generated(&self, chunk: IVec2) -> bool {
+    has_chunk(&self.generated, chunk)
+  }
+
+  /// The HUD's line of the stream's counts
+  pub(crate) fn resident_line(&self) -> String {
+    let status = self.status.unwrap_or_default();
+    format!(
+      "Resident: {} chunks, {} in flight (at most {})",
+      status.resident, status.in_flight, self.most_in_flight
+    )
   }
 
   /// How fresh `chunk` is: 1 just landed, 0 settled

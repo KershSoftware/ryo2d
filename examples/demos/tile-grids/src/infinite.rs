@@ -22,18 +22,19 @@
 //! the coins (tile objects taking the coin tile's class, back after a few
 //! seconds), then on over generated ground, which streams in ahead of it.
 //! WASD or a pad takes over. The overlay outlines the chunks resident, the
-//! file's in white and the generated in green, labels them in world text,
-//! and outlines the file's bounds; the HUD counts the hand-made chunks, the
-//! generated ones resident, every chunk resident and those in flight; a
-//! minimap follows the view. A save of the map in Tiled (hot reload)
+//! file's in white and those the stream landed (its `ChunkEvent`s) in
+//! green, labels them in world text, and outlines the file's bounds; the
+//! HUD shows the stream's own counts (`ctx.maps().stream_status`): the
+//! hand-made chunks, the generated ones resident, every chunk resident and
+//! those in flight; a minimap follows the view. A save of the map in Tiled (hot reload)
 //! redraws the overlay, the hand-made chunks and the bounds from the map as
 //! saved
 
 use demo_kit::prelude::*;
 
 use crate::overlay::{
-  self, BOUNDS_LINE, CHUNK_FILL, CHUNK_LINE, ChunkLabels, FRESH, GENERATED, Grid, Loading, Minimap,
-  Streamed, Tag, has_chunk,
+  self, BOUNDS_LINE, CHUNK_FILL, CHUNK_LINE, ChunkLabels, FRESH, GENERATED, Grid, Minimap,
+  Streamed, Tag,
 };
 use crate::shared::{
   CELL, DIM, GOOD, HOT, View, beside_panel, bindings, clear_to, hero, hud, load, pan_input, wasd,
@@ -69,10 +70,8 @@ pub(crate) struct InfinitePage {
   view: View,
   root: Option<Entity>,
   map: Option<Handle<TileMap>>,
-  /// The file's bounds (the cells its tile layers hold tiles in) and its
-  /// chunks, by row: the hand-made part of the world
+  /// The file's bounds: the cells its tile layers hold tiles in
   bounds: CellRect,
-  hand_made: Vec<IVec2>,
   /// Where the runner starts (its feet), and the way it faces
   start: Vec2,
   facing: f32,
@@ -82,11 +81,9 @@ pub(crate) struct InfinitePage {
   /// bottom, which the generated ground keeps to
   grid: Option<Grid>,
   floor: f32,
-  /// What the stream has resident, and of it what is generated (by row)
+  /// What the stream has: its counts, the chunks resident, and which of
+  /// them it generated
   streamed: Streamed,
-  generated: Vec<IVec2>,
-  /// The stream's load distance
-  load_distance: f32,
   /// The camera's centre, easing after the runner
   eye: Option<Vec2>,
   /// Seconds until the next hop
@@ -106,7 +103,6 @@ impl InfinitePage {
       root: None,
       map: None,
       bounds: CellRect::default(),
-      hand_made: Vec::new(),
       start: Vec2::ZERO,
       facing: -1.0,
       runner: None,
@@ -114,8 +110,6 @@ impl InfinitePage {
       grid: None,
       floor: f32::INFINITY,
       streamed: Streamed::default(),
-      generated: Vec::new(),
-      load_distance: 0.0,
       eye: None,
       hop: HOP_EVERY,
       coins: 0,
@@ -144,23 +138,10 @@ impl InfinitePage {
     }
   }
 
-  /// The file's bounds and chunks, as it is now: as the page opens, and
-  /// again after each save of the file. Every engine chunk a layer of the
-  /// file holds tiles in is the file's
+  /// The file's bounds, as it is now: as the page opens, and again after
+  /// each save of the file
   fn read_file(&mut self, map: &TileMap) {
     self.bounds = map.bounds();
-    self.hand_made.clear();
-    for index in 0..map.layers.len() {
-      if let Some(grid) = map.tiles(index)
-        && grid.bounds().is_none()
-      {
-        self.hand_made.extend(grid.chunk_coords());
-      }
-    }
-    self
-      .hand_made
-      .sort_unstable_by_key(|chunk| (chunk.y, chunk.x));
-    self.hand_made.dedup();
   }
 
   /// Once the map has landed: its grid, the coins' triggers, and the runner
@@ -302,12 +283,13 @@ impl InfinitePage {
   }
 }
 
-/// What a chunk's label says it is, from the file's chunks
-fn tag(hand_made: &[IVec2], chunk: IVec2) -> Tag {
-  if has_chunk(hand_made, chunk) {
-    Some(("hand-made", CHUNK_LINE))
-  } else {
+/// What a chunk's label says it is: one the stream landed, or one of the
+/// file's
+fn tag(streamed: &Streamed, chunk: IVec2) -> Tag {
+  if streamed.is_generated(chunk) {
     Some(("generated", GENERATED))
+  } else {
+    Some(("hand-made", CHUNK_LINE))
   }
 }
 
@@ -387,7 +369,6 @@ impl DemoPage for InfinitePage {
       return;
     };
     let stream = MapStream::new(move |request: ChunkRequest| world.chunk(request));
-    self.load_distance = stream.load_distance;
     self.root = Some(
       ctx
         .world
@@ -423,34 +404,21 @@ impl DemoPage for InfinitePage {
     let Some(grid) = self.grid else {
       return;
     };
-    let runner: Vec<Vec2> = self.runner_at(ctx).into_iter().collect();
-    let loading = Loading {
-      anchors: &runner,
-      distance: self.load_distance,
-    };
-    self.streamed.update(ctx, root, grid, &events, loading, dt);
-    let hand_made = &self.hand_made;
-    self.generated.clear();
-    self.generated.extend(
-      self
-        .streamed
-        .chunks
-        .iter()
-        .filter(|chunk| !has_chunk(hand_made, **chunk)),
-    );
+    self.streamed.update(ctx, root, &events, dt);
+    let streamed = &self.streamed;
     self
       .labels
-      .place(ctx, grid, &self.streamed.chunks, self.overlay, &|chunk| {
-        tag(hand_made, chunk)
+      .place(ctx, grid, &streamed.chunks, self.overlay, &|chunk| {
+        tag(streamed, chunk)
       });
 
     if self.overlay {
       let mut debug = ctx.debug_draw();
       for &chunk in &self.streamed.chunks {
-        let color = if has_chunk(&self.hand_made, chunk) {
-          CHUNK_LINE
-        } else {
+        let color = if self.streamed.is_generated(chunk) {
           GENERATED
+        } else {
+          CHUNK_LINE
         };
         overlay::chunk_outline_in(&mut debug, grid.chunk(chunk), color);
       }
@@ -471,6 +439,7 @@ impl DemoPage for InfinitePage {
       return;
     };
     self.labels.measure(ui);
+    self.streamed.read_status(ctx, root);
 
     let runner = self.runner_at(ctx);
     let cell = runner.and_then(|at| ctx.maps().world_to_cell(root, GROUND, at));
@@ -478,10 +447,10 @@ impl DemoPage for InfinitePage {
       || "Runner: waiting for the map".to_string(),
       |cell| {
         let chunk = TileGrid::chunk_of(cell);
-        let kind = if has_chunk(&self.hand_made, chunk) {
-          "hand-made"
-        } else {
+        let kind = if self.streamed.is_generated(chunk) {
           "generated"
+        } else {
+          "hand-made"
         };
         format!(
           "Runner: cell {}, {} in chunk {}, {}, {kind}",
@@ -496,32 +465,24 @@ impl DemoPage for InfinitePage {
     };
     let last = self.bounds.max - IVec2::ONE;
     let streamed = &self.streamed;
+    let status = streamed.status.unwrap_or_default();
     let lines = vec![
       (
         "The file's chunks are the meadow; the rest streams".to_string(),
         Color::WHITE,
       ),
       (
-        format!("Hand-made: {} chunks, the file's", self.hand_made.len()),
+        format!("Hand-made: {} chunks, the file's", status.hand_made),
         CHUNK_FILL,
       ),
       (
         format!(
           "Generated: {} resident, {} landed so far",
-          self.generated.len(),
-          streamed.landed
+          status.generated, streamed.landed
         ),
         GENERATED,
       ),
-      (
-        format!(
-          "Resident: {} chunks, {} in flight (at most {})",
-          streamed.chunks.len(),
-          streamed.in_flight,
-          streamed.most_in_flight
-        ),
-        Color::WHITE,
-      ),
+      (streamed.resident_line(), Color::WHITE),
       (
         if self.bounds.is_empty() {
           "The file's bounds: none".to_string()
@@ -556,7 +517,7 @@ impl DemoPage for InfinitePage {
       &Minimap {
         caption: "Blue: hand-made; green: generated; gold: the file",
         chunks: &self.streamed.chunks,
-        generated: &self.generated,
+        generated: &self.streamed.generated,
         fresh: &fresh,
         marked: &[],
         bounds: Some(self.bounds),

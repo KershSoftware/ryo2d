@@ -14,7 +14,6 @@
 //! of earth going down without end, with caves below.
 
 use demo_kit::prelude::*;
-use ryo2d_procgen::generate_heightmap;
 use ryo2d_procgen::prelude::*;
 
 use crate::shared::ground_tile;

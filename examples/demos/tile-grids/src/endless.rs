@@ -16,14 +16,14 @@
 //! right, so the chunks round the old place unload (the changed ones into
 //! the store) and those round the new one land; the digger waits in the air
 //! until `ctx.maps().stream_ready` says the ground round it has landed.
-//! The HUD counts the chunks resident, those in flight and those kept, and
-//! the minimap outlines the kept ones in gold wherever they are
+//! The HUD shows the stream's own counts (`ctx.maps().stream_status`: the
+//! chunks resident and those in flight) and the chunks the store keeps
+//! (`SavedChunks::len`); the labels and the minimap mark the kept ones in
+//! gold (`SavedChunks::contains`, `SavedChunks::keys`)
 
 use demo_kit::prelude::*;
 
-use crate::overlay::{
-  self, ChunkLabels, FRESH, GENERATED, Grid, Loading, Minimap, Streamed, Tag, has_chunk,
-};
+use crate::overlay::{self, ChunkLabels, FRESH, GENERATED, Grid, Minimap, Streamed, Tag};
 use crate::shared::{
   CELL, DIM, GOOD, HOT, TILESET, View, beside_panel, bindings, clear_to, ground_tile, hero, hud,
   load, wasd,
@@ -66,8 +66,7 @@ pub(crate) struct EndlessPage {
   wilds: Option<Wilds>,
   /// Where the stream keeps the chunks the player changed, as they unload
   saved: SavedChunks,
-  /// The chunks it keeps, by row: from the stream's `Unloading` events,
-  /// which carry each changed chunk as it goes in
+  /// The chunks it keeps, by row, as this step found them
   kept: Vec<IVec2>,
   digger: Option<Entity>,
   sprite: Option<Entity>,
@@ -350,24 +349,6 @@ impl EndlessPage {
       _ => self.last = None,
     }
   }
-
-  /// Notes the chunks the stream keeps, from the chunks that unloaded
-  /// changed
-  fn note_kept(&mut self, root: Entity, events: &[ChunkEvent]) {
-    for event in events {
-      if let ChunkEvent::Unloading {
-        map,
-        chunk,
-        changed: Some(_),
-      } = event
-        && *map == root
-        && !has_chunk(&self.kept, *chunk)
-      {
-        self.kept.push(*chunk);
-        self.kept.sort_unstable_by_key(|c| (c.y, c.x));
-      }
-    }
-  }
 }
 
 /// Where a body's middle goes to stand on cell row `top` of column `column`
@@ -378,9 +359,10 @@ fn feet_on(column: i32, top: i32) -> Vec2 {
   )
 }
 
-/// What a chunk's label says it is, from the chunks kept
-fn tag(kept: &[IVec2], chunk: IVec2) -> Tag {
-  if has_chunk(kept, chunk) {
+/// What a chunk's label says it is: kept in the store, or as the
+/// generator made it
+fn tag(saved: &SavedChunks, chunk: IVec2) -> Tag {
+  if saved.contains(chunk) {
     Some(("kept", HOT))
   } else {
     Some(("generated", GENERATED))
@@ -461,7 +443,6 @@ impl DemoPage for EndlessPage {
       self.land(ctx, root);
     }
     let events = ctx.messages::<ChunkEvent>();
-    self.note_kept(root, &events);
     if self.arriving.is_none() {
       if ctx.input.key_pressed(KeyCode::KeyQ) {
         self.travel(ctx, -TRAVEL);
@@ -477,22 +458,18 @@ impl DemoPage for EndlessPage {
     };
     self.point(ctx, root);
 
-    let digger: Vec<Vec2> = self.digger_at(ctx).into_iter().collect();
-    let loading = Loading {
-      anchors: &digger,
-      distance: LOAD,
-    };
-    self.streamed.update(ctx, root, grid, &events, loading, dt);
-    let kept = &self.kept;
+    self.streamed.update(ctx, root, &events, dt);
+    self.kept = self.saved.keys();
+    let saved = &self.saved;
     self
       .labels
       .place(ctx, grid, &self.streamed.chunks, self.overlay, &|chunk| {
-        tag(kept, chunk)
+        tag(saved, chunk)
       });
     if self.overlay {
       let mut debug = ctx.debug_draw();
       for &chunk in &self.streamed.chunks {
-        let color = if has_chunk(&self.kept, chunk) {
+        let color = if self.saved.contains(chunk) {
           HOT
         } else {
           GENERATED
@@ -519,6 +496,7 @@ impl DemoPage for EndlessPage {
       return;
     };
     self.labels.measure(ui);
+    self.streamed.read_status(ctx, root);
 
     let digger = self.digger_at(ctx);
     let digger_line = match digger.and_then(|at| ctx.maps().world_to_cell(root, GROUND, at)) {
@@ -543,15 +521,7 @@ impl DemoPage for EndlessPage {
         "Dig and build; leave, come back: it is kept".to_string(),
         Color::WHITE,
       ),
-      (
-        format!(
-          "Resident: {} chunks, {} in flight (at most {})",
-          streamed.chunks.len(),
-          streamed.in_flight,
-          streamed.most_in_flight
-        ),
-        GENERATED,
-      ),
+      (streamed.resident_line(), GENERATED),
       (
         format!(
           "Saved: {saved} chunk{} you changed and left",
