@@ -662,7 +662,7 @@ mod tests {
     // A right-up render order; an inline tileset whose tiles render at the
     // grid's size, with two tiles drawing parts of their images and one
     // with a polyline collision shape; two top-down object layers whose
-    // tile objects are out of order by their y
+    // tile objects overlap out of order by their y
     let set = r#"{"firstgid":1,"name":"parts","tilewidth":16,"tileheight":16,"tilecount":3,"columns":0,
         "tilerendersize":"grid","fillmode":"preserve-aspect-fit","tiles":[
         {"id":0,"image":"images/tiles.png","imagewidth":64,"imageheight":64,"x":16,"y":0,"width":16,"height":16},
@@ -673,7 +673,7 @@ mod tests {
       format!(
         r#"{{"id":{id},"name":"o{id}","type":"objectgroup","draworder":"topdown","objects":[
           {{"id":{a},"gid":1,"x":0,"y":32,"width":16,"height":16}},
-          {{"id":{b},"gid":2,"x":16,"y":16,"width":16,"height":16}}]}}"#,
+          {{"id":{b},"gid":2,"x":8,"y":24,"width":16,"height":16}}]}}"#,
         a = id * 10,
         b = id * 10 + 1
       )
@@ -706,7 +706,7 @@ mod tests {
     // in order, a top-down layer draws as Tiled does: no warning
     let json = map_json(
       "",
-      &objects(1).replace(r#""x":0,"y":32"#, r#""x":0,"y":0"#),
+      &objects(1).replace(r#""x":0,"y":32"#, r#""x":0,"y":16"#),
       set.replace(r#""tilerendersize":"grid","#, "").as_str(),
     );
     let mut world = world_over(files_with(&[("warn-c2d4.tmj", &json)]));

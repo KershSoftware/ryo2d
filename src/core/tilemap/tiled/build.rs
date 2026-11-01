@@ -625,14 +625,9 @@ impl Builder<'_, '_> {
           .collect();
         // Tiled draws a top-down layer's (its default) objects by their y:
         // its tile objects draw in file order here, which differs only
-        // where the file has them out of that order
+        // where two overlap in the other order
         let top_down = matches!(raw.draworder.as_deref(), None | Some("topdown"));
-        let bottoms: Vec<f32> = objects
-          .iter()
-          .filter(|o| o.tile.is_some())
-          .map(|o| o.position.y + o.size.y)
-          .collect();
-        if top_down && !bottoms.is_sorted() {
+        if top_down && drawn_out_of_order(&objects) {
           self.px.unread.note(
             "an object layer drawn top down (Tiled's default) draws its tile objects in their order in the file, not by their y (set the layer's draw order to manual, or order them)",
             &place,
@@ -761,6 +756,35 @@ impl Builder<'_, '_> {
       used,
     ))
   }
+}
+
+/// Whether two of `objects`' tile objects overlap and are in the file in
+/// the other order from the one Tiled's top-down layers draw them in: by
+/// the bottom edge (a tile object's y in Tiled), equal ones in file order
+fn drawn_out_of_order(objects: &[crate::core::tilemap::MapObjectData]) -> bool {
+  // each tile object's place in the file and its rectangle, by its top
+  let mut tiles: Vec<(usize, Vec2, Vec2)> = objects
+    .iter()
+    .enumerate()
+    .filter(|(_, o)| o.tile.is_some())
+    .map(|(i, o)| (i, o.position, o.position + o.size))
+    .collect();
+  tiles.sort_by(|a, b| a.1.y.total_cmp(&b.1.y));
+  for (k, a) in tiles.iter().enumerate() {
+    for b in &tiles[k + 1..] {
+      // this and every later one starts below `a`'s bottom
+      if b.1.y >= a.2.y {
+        break;
+      }
+      if a.1.x < b.2.x && b.1.x < a.2.x {
+        let tiled = a.2.y < b.2.y || (a.2.y == b.2.y && a.0 < b.0);
+        if tiled != (a.0 < b.0) {
+          return true;
+        }
+      }
+    }
+  }
+  false
 }
 
 /// A map from what its file says. Tilesets named by `source` and images load

@@ -346,9 +346,9 @@ fn keyed_image(
   }
   let picture = images.get(source)?;
   let mut data = picture.data().to_vec();
-  for texel in data.chunks_exact_mut(4) {
+  for texel in data.as_chunks_mut::<4>().0 {
     if texel[..3] == key {
-      texel.copy_from_slice(&[0; 4]);
+      *texel = [0; 4];
     }
   }
   let keyed = Image::from_rgba(data, picture.width(), picture.height());

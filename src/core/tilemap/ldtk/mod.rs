@@ -485,9 +485,19 @@ mod tests {
     );
   }
 
-  /// The level's layers: name, id, offset, opacity, whether it collides and
-  /// has an int grid, and its tiles as (cell, id)
-  fn sub_layers(level: &LdtkLevel) -> Vec<(String, u32, Vec2, f32, bool, bool, Vec<(IVec2, u32)>)> {
+  /// A loaded tile layer, as the sub-layer tests compare them
+  struct SubLayer {
+    name: String,
+    id: u32,
+    offset: Vec2,
+    opacity: f32,
+    collides: bool,
+    intgrid: bool,
+    /// Its tiles as (cell, id)
+    tiles: Vec<(IVec2, u32)>,
+  }
+
+  fn sub_layers(level: &LdtkLevel) -> Vec<SubLayer> {
     level
       .map
       .layers
@@ -504,15 +514,15 @@ mod tests {
             }
           }
         }
-        (
-          l.info.name.clone(),
-          l.info.id,
-          l.info.offset,
-          l.info.opacity,
-          l.info.collides,
-          intgrid.is_some(),
+        SubLayer {
+          name: l.info.name.clone(),
+          id: l.info.id,
+          offset: l.info.offset,
+          opacity: l.info.opacity,
+          collides: l.info.collides,
+          intgrid: intgrid.is_some(),
           tiles,
-        )
+        }
       })
       .collect()
   }
@@ -525,7 +535,7 @@ mod tests {
     let project = load("stacked.ldtk");
     let level = &project.levels[0];
     let layers = sub_layers(level);
-    let names: Vec<&str> = layers.iter().map(|l| l.0.as_str()).collect();
+    let names: Vec<&str> = layers.iter().map(|l| l.name.as_str()).collect();
     assert_eq!(
       names,
       [
@@ -539,34 +549,41 @@ mod tests {
     );
     let c = IVec2::new;
     // the IntGrid and collision stay on the layer's own
-    assert_eq!(layers[0].1, 31);
-    assert!(layers[0].4 && layers[0].5);
-    assert_eq!(layers[0].6, [(c(1, 1), 2)]);
-    assert_eq!((layers[1].4, layers[1].5), (false, false));
-    assert_eq!(layers[1].6, [(c(1, 1), 1)], "stacked above");
+    assert_eq!(layers[0].id, 31);
+    assert!(layers[0].collides && layers[0].intgrid);
+    assert_eq!(layers[0].tiles, [(c(1, 1), 2)]);
+    assert_eq!((layers[1].collides, layers[1].intgrid), (false, false));
+    assert_eq!(layers[1].tiles, [(c(1, 1), 1)], "stacked above");
     // Ground's own holds the plain tiles
-    assert_eq!(layers[2].1, 30);
-    assert_eq!(layers[2].6, [(c(0, 0), 0), (c(3, 2), 4)]);
+    assert_eq!(layers[2].id, 30);
+    assert_eq!(layers[2].tiles, [(c(0, 0), 0), (c(3, 2), 4)]);
     // then by depth, each depth as LDtk lists them: the moved tile, the
     // translucent one, and the stacked one over the red
-    assert_eq!((layers[3].2, layers[3].3), (Vec2::new(4.0, 4.0), 1.0));
-    assert_eq!(layers[3].6, [(c(2, 0), 2)]);
-    assert_eq!((layers[4].2, layers[4].3), (Vec2::ZERO, 0.5));
-    assert_eq!(layers[4].6, [(c(0, 2), 3)]);
-    assert_eq!((layers[5].2, layers[5].3), (Vec2::ZERO, 1.0));
-    assert_eq!(layers[5].6, [(c(0, 0), 1)]);
+    assert_eq!(
+      (layers[3].offset, layers[3].opacity),
+      (Vec2::new(4.0, 4.0), 1.0)
+    );
+    assert_eq!(layers[3].tiles, [(c(2, 0), 2)]);
+    assert_eq!((layers[4].offset, layers[4].opacity), (Vec2::ZERO, 0.5));
+    assert_eq!(layers[4].tiles, [(c(0, 2), 3)]);
+    assert_eq!((layers[5].offset, layers[5].opacity), (Vec2::ZERO, 1.0));
+    assert_eq!(layers[5].tiles, [(c(0, 0), 1)]);
     for sub in [1, 3, 4, 5] {
-      assert!(!layers[sub].4 && !layers[sub].5, "{}", layers[sub].0);
+      assert!(
+        !layers[sub].collides && !layers[sub].intgrid,
+        "{}",
+        layers[sub].name
+      );
     }
     // sub-layer ids are their own, and the same each load
-    let ids: Vec<u32> = layers.iter().map(|l| l.1).collect();
+    let ids: Vec<u32> = layers.iter().map(|l| l.id).collect();
     let mut unique = ids.clone();
     unique.sort_unstable();
     unique.dedup();
     assert_eq!(unique.len(), ids.len(), "{ids:?}");
     let again: Vec<u32> = sub_layers(&load("stacked.ldtk").levels[0])
       .iter()
-      .map(|l| l.1)
+      .map(|l| l.id)
       .collect();
     assert_eq!(again, ids);
   }
@@ -589,13 +606,16 @@ mod tests {
     let mut world = world_over(files_at("", &[("m.ldtk", value.to_string())]));
     let edited = load_in(&mut world, "m.ldtk").expect("loads");
     let after = sub_layers(&edited.levels[0]);
-    let id_of = |layers: &[(String, u32, Vec2, f32, bool, bool, Vec<(IVec2, u32)>)],
-                 offset: Vec2,
-                 opacity: f32| {
+    let id_of = |layers: &[SubLayer], offset: Vec2, opacity: f32| {
       layers
         .iter()
-        .find(|l| l.0.starts_with("Ground") && l.2 == offset && l.3 == opacity && !l.6.is_empty())
-        .map(|l| l.1)
+        .find(|l| {
+          l.name.starts_with("Ground")
+            && l.offset == offset
+            && l.opacity == opacity
+            && !l.tiles.is_empty()
+        })
+        .map(|l| l.id)
     };
     assert_eq!(after.len(), before.len() + 1);
     for (offset, opacity) in [(Vec2::new(4.0, 4.0), 1.0), (Vec2::ZERO, 0.5)] {
