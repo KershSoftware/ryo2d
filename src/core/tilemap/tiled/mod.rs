@@ -600,6 +600,29 @@ mod tests {
   }
 
   #[test]
+  fn a_map_whose_layers_hold_too_many_cells_together_is_refused_before_decoding_them() {
+    // Three layers of 8192 x 8192 cells, each within a layer's limit: their
+    // cells are counted before any is decoded (or allocated), so the map
+    // fails on the count, not on their data
+    let layers: Vec<String> = (1..=3)
+      .map(|id| {
+        format!(
+          r#"{{"id":{id},"name":"l{id}","type":"tilelayer","width":8192,"height":8192,"data":[]}}"#
+        )
+      })
+      .collect();
+    let json = format!(
+      r#"{{"type":"map","orientation":"orthogonal","width":8192,"height":8192,"tilewidth":16,"tileheight":16,"tilesets":[],"layers":[{{"id":9,"name":"g","type":"group","layers":[{}]}}]}}"#,
+      layers.join(",")
+    );
+    let error = failure(&json);
+    assert!(
+      error.contains("201326592 cells") && error.contains("past the 134217728 a map holds"),
+      "{error}"
+    );
+  }
+
+  #[test]
   fn tile_collision_shapes_animation_class_and_probability_load() {
     let mut world = world_over(files_with(&[]));
     let map = load_in(&mut world, "maps/mixed.tmj").expect("loads");

@@ -514,6 +514,8 @@ In debug builds with a window the engine watches `assets/` (`EngineBuilder::hot_
 
 Measured on an Apple M5 Pro in a release build, at 1920 x 1080 with 16 px tiles; the numbers are approximate and machine-dependent. The record, with the method and every measurement, is `docs/backlog/tilemap.md` in the Ryo2D repository.
 
+- **How big a map loads:** a tile layer holds at most 8192 x 8192 cells, and a map's tile layers together 134,217,728 (2^27, 512 MiB of 4-byte cells: an 8192 x 8192 map of two layers, or a 1024 x 1024 map of 128). An LDtk level counts each layer, empty or not, and an IntGrid layer twice (its tiles and its values), and all the levels of a project share the same total, since a project loads whole. Past it the load fails, naming the map or level, before anything is allocated.
+
 - **Cheap:**
   - **Drawing** costs what is on screen: a frame draws only the chunks in view, so a static 1024 x 1024 map of four layers costs about 33 µs a frame to draw, as a small one would.
   - **A one-tile edit**, an outline split or joined included: about 20 µs to redraw its chunk, and about 50 to 80 µs each to rebuild the collision outlines and the shadow chains through it.

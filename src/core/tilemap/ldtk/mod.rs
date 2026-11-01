@@ -1045,6 +1045,32 @@ mod tests {
   }
 
   #[test]
+  fn a_level_whose_layers_hold_too_many_cells_together_is_refused_before_allocating() {
+    // Level_0 made 8192 x 8192 cells of 16 px, its layers empty but each
+    // counted (the IntGrid twice, its tiles and its values): four layers'
+    // worth of 2^26 cells
+    let error = json_failure(|v| {
+      let level = &mut v["levels"][0];
+      level["pxWid"] = (8192 * 16).into();
+      level["pxHei"] = (8192 * 16).into();
+      let layers = level["layerInstances"].as_array_mut().expect("layers");
+      for layer in layers.iter_mut() {
+        if layer["__type"] != "Entities" {
+          layer["__cWid"] = 8192.into();
+          layer["__cHei"] = 8192.into();
+          layer["intGridCsv"] = serde_json::json!([]);
+          layer["autoLayerTiles"] = serde_json::json!([]);
+          layer["gridTiles"] = serde_json::json!([]);
+        }
+      }
+    });
+    assert!(
+      error.contains("level \"Level_0\"") && error.contains("past the 134217728"),
+      "{error}"
+    );
+  }
+
+  #[test]
   fn sizes_that_would_overflow_are_refused() {
     let error = json_failure(|v| {
       v["levels"][1]["pxWid"] = 4_000_000_000i64.into();

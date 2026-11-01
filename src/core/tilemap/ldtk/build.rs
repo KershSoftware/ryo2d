@@ -15,7 +15,8 @@ use crate::core::asset::{AssetError, AssetPath, CheckContext, LoadContext};
 use crate::core::graphics::Image;
 use crate::core::hash::FastMap;
 use crate::core::tilemap::tiled::build::{
-  DependencyPlaces, MAX_TILES, cell_count, check_tileset, check_used_ids, fail, join, load_dep,
+  DependencyPlaces, MAX_MAP_CELLS, MAX_TILES, cell_count, check_map_cells, check_tileset,
+  check_used_ids, fail, join, load_dep,
 };
 use crate::core::tilemap::tiled::json::parse;
 use crate::core::tilemap::{
@@ -556,16 +557,51 @@ fn background(defs: &Defs<'_>, place: &str, raw: &RawLevel) -> Result<Option<Col
     .transpose()
 }
 
-/// A level's map, from its layers (LDtk lists the top one first)
+/// The cells a level's layers hold, as their sizes say: every tile layer
+/// whether it has tiles or not, an IntGrid layer twice (its tiles and its
+/// values)
+fn level_cells(layers: &[RawLayer]) -> u64 {
+  layers
+    .iter()
+    .filter(|l| l.ty != "Entities")
+    .map(|l| {
+      let cells = u64::try_from(l.c_wid)
+        .unwrap_or(0)
+        .saturating_mul(u64::try_from(l.c_hei).unwrap_or(0));
+      if l.ty == "IntGrid" {
+        cells.saturating_mul(2)
+      } else {
+        cells
+      }
+    })
+    .fold(0, u64::saturating_add)
+}
+
+/// A level's map, from its layers (LDtk lists the top one first). `cells`
+/// is the project's levels' cells so far, which this level's join before
+/// any is allocated
 fn build_map(
   defs: &Defs<'_>,
   tilesets: &[Arc<Tileset>],
   raw: &RawLevel,
-  layers: &[RawLayer],
+  (layers, cells): (&[RawLayer], &mut u64),
   size_px: UVec2,
   fields: Properties,
 ) -> Result<TileMap, AssetError> {
   let place = format!("level {:?}", raw.identifier);
+  let own = level_cells(layers);
+  check_map_cells(defs.path, &place, own)?;
+  *cells = cells.saturating_add(own);
+  if *cells > MAX_MAP_CELLS {
+    return Err(fail(
+      defs.path,
+      &place,
+      format!(
+        "the project's levels hold {} cells up to this one, past the {MAX_MAP_CELLS} a project holds",
+        *cells
+      ),
+    ));
+  }
   // the map's own cell is the bottom tile layer's; each layer keeps its grid
   let grid_size = layers
     .iter()
@@ -679,11 +715,11 @@ fn direction(path: &AssetPath, place: &str, dir: &str) -> Result<NeighbourDirect
   })
 }
 
-/// One world's levels, built
+/// One world's levels, built. `cells` counts the project's levels' cells
 fn build_world(
   cx: &mut LoadContext<'_>,
   defs: &Defs<'_>,
-  tilesets: &[Arc<Tileset>],
+  (tilesets, cells): (&[Arc<Tileset>], &mut u64),
   name: &str,
   multi: bool,
   layout: Option<&str>,
@@ -766,7 +802,14 @@ fn build_world(
     let depth = to_i32(path, &place, "worldDepth", raw.world_depth)?;
     let layers = level_layers(cx, path, &mut raw)?;
     let fields = fields_of(defs, &place, &raw.field_instances)?;
-    let map = build_map(defs, tilesets, &raw, &layers, size, fields.clone())?;
+    let map = build_map(
+      defs,
+      tilesets,
+      &raw,
+      (&layers, &mut *cells),
+      size,
+      fields.clone(),
+    )?;
     world_levels.push(WorldLevel {
       name: raw.identifier.clone(),
       position: position.as_vec2(),
@@ -834,11 +877,12 @@ pub(super) fn build_project(
   };
   let mut worlds = Vec::with_capacity(sources.len());
   let mut levels = Vec::new();
+  let mut cells = 0u64;
   for (name, layout, world_levels) in sources {
     let (layout, built) = build_world(
       cx,
       &defs,
-      &tilesets,
+      (&tilesets, &mut cells),
       &name,
       multi,
       layout.as_deref(),

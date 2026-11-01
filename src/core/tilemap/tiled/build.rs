@@ -24,6 +24,12 @@ use glam::{IVec2, UVec2, Vec2};
 
 /// Most cells a layer or a map holds (8192 x 8192), as for `TileColliders`
 const MAX_CELLS: u64 = 1 << 26;
+/// Most cells a map's tile layers hold together (and an LDtk level's and
+/// project's, an IntGrid layer counting its tiles and its values): 512 MiB
+/// of 4-byte cells, an 8192 x 8192 map of two layers or a 1024 x 1024 one of
+/// 128. Counted from the layers' sizes before any is decoded or allocated,
+/// so a small file cannot ask for gigabytes
+pub(crate) const MAX_MAP_CELLS: u64 = 1 << 27;
 /// Most tiles a tileset holds: what a cell's 20 bits can name
 pub(crate) const MAX_TILES: u32 = 1_048_575;
 const MAX_TILESETS: usize = 256;
@@ -351,6 +357,53 @@ struct Builder<'p, 'a> {
   used_ids: Vec<(usize, u16, u32)>,
 }
 
+/// The cells the tile layers of `layers` (in groups too) hold, as their
+/// sizes say (a layer without one is the map's `size`); a layer past what
+/// one holds fails, naming it
+fn tile_cells(
+  path: &AssetPath,
+  layers: &[RawLayer],
+  size: UVec2,
+  depth: usize,
+) -> Result<u64, AssetError> {
+  let mut total = 0u64;
+  // deeper groups fail as they are built
+  if depth > MAX_DEPTH {
+    return Ok(total);
+  }
+  for l in layers {
+    let cells = match l.ty.as_str() {
+      "tilelayer" => {
+        let (w, h) = (l.width.unwrap_or(size.x), l.height.unwrap_or(size.y));
+        let Some(n) = cell_count(w, h) else {
+          return Err(fail(
+            path,
+            &format!("layer {:?}", l.name),
+            format!("{w} x {h} cells is past the {MAX_CELLS} cells a layer holds"),
+          ));
+        };
+        n as u64
+      }
+      "group" => tile_cells(path, &l.layers, size, depth + 1)?,
+      _ => 0,
+    };
+    total = total.saturating_add(cells);
+  }
+  Ok(total)
+}
+
+/// Fails if layers holding `cells` together are past [`MAX_MAP_CELLS`]
+pub(crate) fn check_map_cells(path: &AssetPath, place: &str, cells: u64) -> Result<(), AssetError> {
+  if cells > MAX_MAP_CELLS {
+    return Err(fail(
+      path,
+      place,
+      format!("its layers hold {cells} cells, past the {MAX_MAP_CELLS} a map holds"),
+    ));
+  }
+  Ok(())
+}
+
 fn max_layer_id(layers: &[RawLayer]) -> u32 {
   layers
     .iter()
@@ -627,6 +680,7 @@ pub(crate) fn build_map(
     UVec2::new(raw.width, raw.height),
     UVec2::new(raw.tilewidth, raw.tileheight),
   );
+  check_map_cells(&path, place, tile_cells(&path, &raw.layers, map.size, 0)?)?;
   map.class = raw.class.clone().filter(|c| !c.is_empty());
   map.parallax_origin = Vec2::new(raw.parallaxoriginx, raw.parallaxoriginy);
   if !map.parallax_origin.is_finite() {
