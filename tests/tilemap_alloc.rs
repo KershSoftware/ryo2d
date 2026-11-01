@@ -1,7 +1,7 @@
 //! Allocations of map drawing, counted by a global allocator in this test
-//! binary: a padded tileset cache hit, and a frame drawing a static map
-//! under a shadowed light (its camera still, then panning over chunks it
-//! has drawn).
+//! binary: a padded tileset cache hit, a frame drawing a static map under a
+//! shadowed light (its camera still, then panning over chunks it has
+//! drawn), and an idle frame of a streamed map whose chunks have landed.
 //!
 //! A frame's allocations are told apart by their stacks: those made inside
 //! the GPU API (wgpu, naga and the Metal bindings, which allocate as they
@@ -415,6 +415,130 @@ fn a_frame_drawing_a_static_map_allocates_nothing() {
       more.is_empty(),
       "frame {frame}: the map's frame made allocations of the engine's own an empty frame did \
        not: {more:#?}"
+    );
+    assert!(
+      drawn.map_gpu.is_empty(),
+      "frame {frame}: the map's path made GPU allocations: {:#?}",
+      drawn.map_gpu
+    );
+  }
+}
+
+/// A scene streaming an endless map round its camera (or nothing,
+/// `empty`): one unbounded layer, each chunk a floor along its first row
+/// that collides and casts shadows, and a coin, a tile of a class the root
+/// registers, so the class tiles follow the chunks
+struct StreamedMap {
+  empty: bool,
+}
+
+impl Scene for StreamedMap {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    if self.empty {
+      return;
+    }
+    let mut set = atlas(&mut ctx.world.resource_mut::<Assets<Image>>(), 16, 4, 1);
+    set.insert_tile(
+      GROUND,
+      TileData {
+        shapes: vec![TileShape {
+          points: vec![
+            Vec2::ZERO,
+            Vec2::new(16.0, 0.0),
+            Vec2::new(16.0, 16.0),
+            Vec2::new(0.0, 16.0),
+          ],
+          ..TileShape::default()
+        }],
+        ..TileData::default()
+      },
+    );
+    set.insert_tile(
+      PROP,
+      TileData {
+        class: Some("coin".to_string()),
+        ..TileData::default()
+      },
+    );
+    let set = TilesetSource::Asset(ctx.assets().add(set));
+    let mut map = TileMap::infinite(UVec2::splat(16));
+    let set = map.add_tileset(set);
+    map.add_tile_layer("ground");
+    let handle = ctx.assets().add(map);
+    let stream = MapStream::new(move |_| {
+      let mut tiles = ChunkTiles::default();
+      for x in 0..32 {
+        tiles.set("ground", UVec2::new(x, 0), Some(Tile::new(set, GROUND)));
+      }
+      tiles.set("ground", UVec2::new(3, 3), Some(Tile::new(set, PROP)));
+      tiles
+    });
+    let root = MapRoot::new(handle).with_entity_tiles(&["coin"]);
+    ctx.world.spawn((Transform::IDENTITY, root, stream));
+  }
+}
+
+/// An engine on the streamed map (or nothing), its camera at the origin,
+/// every chunk round the view landed and warmed up. None without a GPU
+fn streamed_engine(empty: bool) -> Option<HeadlessEngine> {
+  let builder = EngineBuilder::new()
+    .resolution(640, 360)
+    .start_scene(StreamedMap { empty });
+  let mut engine = HeadlessEngine::new_or_skip(builder)?;
+  look_at(&mut engine, Vec2::ZERO);
+  // The 640 x 360 view grown by the stream's 512 px on every side
+  let wanted = Rect::new(-832.0, -692.0, 1664.0, 1384.0);
+  let start = std::time::Instant::now();
+  loop {
+    engine.step().expect("a frame");
+    let world = engine.world_mut();
+    let roots: Vec<Entity> = world
+      .query_filtered::<Entity, With<MapRoot>>()
+      .iter(world)
+      .collect();
+    let view = MapsView::new(world);
+    if roots.iter().all(|&root| view.stream_ready(root, wanted)) {
+      break;
+    }
+    assert!(
+      start.elapsed() < std::time::Duration::from_secs(10),
+      "the chunks round the view landed"
+    );
+  }
+  engine.step_frames(30).expect("the warm-up frames");
+  if !empty {
+    let world = engine.world_mut();
+    let coins = world.query::<&MapTile>().iter(world).count();
+    assert_eq!(
+      coins, 16,
+      "a coin in each of the 4 x 4 chunks round the view"
+    );
+  }
+  Some(engine)
+}
+
+#[test]
+fn an_idle_frame_of_a_streamed_map_allocates_nothing() {
+  let (Some(mut empty), Some(mut streamed)) = (streamed_engine(true), streamed_engine(false))
+  else {
+    return;
+  };
+  for frame in 0..4 {
+    let (drawn, nothing) = (traced(&mut streamed), traced(&mut empty));
+    let own = |frame: &Frame| frame.own.values().sum::<usize>();
+    println!(
+      "frame {frame}: the streamed map's frame {} allocations ({} the engine's own), an empty \
+       frame {} ({} its own)",
+      drawn.count,
+      own(&drawn),
+      nothing.count,
+      own(&nothing),
+    );
+    let more = more(&drawn, &nothing);
+    assert!(
+      more.is_empty(),
+      "frame {frame}: the streamed map's idle frame made allocations of the engine's own an \
+       empty frame did not: {more:#?}"
     );
     assert!(
       drawn.map_gpu.is_empty(),

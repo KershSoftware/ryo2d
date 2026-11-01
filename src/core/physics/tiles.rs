@@ -596,8 +596,12 @@ pub struct TileColliders {
   bounds: Option<CellRect>,
   /// Its cells by chunk; a chunk is made by the first cell written in it
   chunks: Chunks,
-  /// The cells of the chunks there are
+  /// The cells of the chunks there are (more, while `span_stale`)
   span: CellRect,
+  /// A chunk on the edge of `span` was unloaded since it was last worked
+  /// out: `extent` works it out from the chunks until `settle_extent`
+  /// keeps it
+  span_stale: bool,
   /// One cell's size, px
   pub tile_size: Vec2,
   pub layer: u32,
@@ -694,6 +698,7 @@ impl TileColliders {
       bounds,
       chunks: Chunks::default(),
       span: CellRect::default(),
+      span_stale: false,
       tile_size,
       layer: 1,
       mask: u32::MAX,
@@ -718,7 +723,29 @@ impl TileColliders {
   /// The cells it holds: a bounded grid's bounds, an unbounded one's
   /// chunks' cells (empty before a cell is written).
   pub fn extent(&self) -> CellRect {
-    self.bounds.unwrap_or(self.span)
+    match self.bounds {
+      Some(bounds) => bounds,
+      None if self.span_stale => self.chunks_span(),
+      None => self.span,
+    }
+  }
+
+  /// The cells of the chunks there are, worked out from them
+  fn chunks_span(&self) -> CellRect {
+    self
+      .chunks
+      .keys()
+      .fold(CellRect::default(), |span, &c| span.union(chunk_rect(c)))
+  }
+
+  /// Keeps the extent worked out after chunks on its edge were unloaded
+  /// (`unload_chunk` leaves that to here), so a run of unloads works it
+  /// out once, not once a chunk
+  pub(crate) fn settle_extent(&mut self) {
+    if self.span_stale {
+      self.span = self.chunks_span();
+      self.span_stale = false;
+    }
   }
 
   /// The cell at `cell`; `Empty` outside the grid.
@@ -878,16 +905,23 @@ impl TileColliders {
   /// only the loops and runs through it (a loop running on into the chunk
   /// closes at its edge), and its storage goes with it, so a grid streamed
   /// across an endless world costs only the chunks it holds. A chunk the
-  /// grid lacks changes nothing
+  /// grid lacks changes nothing. The extent shrinks to the chunks left:
+  /// one taken from its edge has it worked out again when read, or once by
+  /// `settle_extent` after a run of unloads
   pub(crate) fn unload_chunk(&mut self, chunk: IVec2) {
     let Some(cells) = self.chunks.remove(&chunk) else {
       return;
     };
-    // The cells of the chunks left
-    self.span = self
-      .chunks
-      .keys()
-      .fold(CellRect::default(), |span, &c| span.union(chunk_rect(c)));
+    // The cells of the chunks left: the same unless it was on their edge
+    let rect = chunk_rect(chunk);
+    let span = self.span;
+    if rect.min.x <= span.min.x
+      || rect.min.y <= span.min.y
+      || rect.max.x >= span.max.x
+      || rect.max.y >= span.max.y
+    {
+      self.span_stale = true;
+    }
     let origin = chunk * CHUNK;
     let held = cells
       .iter()

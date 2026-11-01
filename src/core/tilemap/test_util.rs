@@ -45,7 +45,8 @@ pub(crate) fn world_over(files: MemorySource) -> World {
 }
 
 /// A physics world over the tilemap fixtures with the engine's map systems:
-/// spawning, reloading and class tiles following chunks in `PreUpdate`,
+/// spawning, reloading, streaming and class tiles following chunks in
+/// `PreUpdate`,
 /// collision in the fixed step, occluders in `PostUpdate`, and physics
 /// forgetting what was removed in `Last`
 pub(crate) struct MapWorld {
@@ -76,6 +77,7 @@ impl MapWorld {
       (
         super::spawn_maps,
         super::reload_maps,
+        super::stream_maps,
         super::follow_chunk_swaps,
       )
         .chain(),

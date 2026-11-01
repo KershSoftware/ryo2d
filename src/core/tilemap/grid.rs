@@ -91,6 +91,14 @@ fn chunk_rect(chunk: IVec2) -> CellRect {
   CellRect::new(min, min.saturating_add(IVec2::splat(SIDE)))
 }
 
+/// Whether `rect`, inside `span`, reaches one of its edges
+pub(crate) fn on_edge(span: CellRect, rect: CellRect) -> bool {
+  rect.min.x <= span.min.x
+    || rect.min.y <= span.min.y
+    || rect.max.x >= span.max.x
+    || rect.max.y >= span.max.y
+}
+
 /// The first and last chunk (both included) holding cells of `rect`, which
 /// is not empty
 fn chunk_span(rect: CellRect) -> (IVec2, IVec2) {
@@ -178,8 +186,12 @@ pub struct TileGrid {
   chunks: FastMap<IVec2, Chunk>,
   /// The coordinates of `chunks` in row order, kept as chunks are made
   order: Vec<IVec2>,
-  /// The cells of the chunks there are
+  /// The cells of the chunks there are (more, while `span_stale`)
   span: CellRect,
+  /// A chunk on the edge of `span` was unloaded since it was last worked
+  /// out, so it may hold more than the chunks there are: `extent` works it
+  /// out from the chunks until `settle_extent` keeps it
+  span_stale: bool,
   /// How many chunks are dirty
   dirty: usize,
   /// The version of the grid's last change (0 before any): taken from the
@@ -202,6 +214,7 @@ impl Clone for TileGrid {
       chunks: self.chunks.clone(),
       order: self.order.clone(),
       span: self.span,
+      span_stale: self.span_stale,
       dirty: self.dirty,
       counter: self.counter,
       swapped: self.swapped,
@@ -250,6 +263,7 @@ impl TileGrid {
       chunks: FastMap::default(),
       order: Vec::new(),
       span: CellRect::default(),
+      span_stale: false,
       dirty: 0,
       counter: 0,
       swapped: 0,
@@ -265,7 +279,29 @@ impl TileGrid {
   /// unbounded one's chunks' cells (empty before any is made; the end of a
   /// chunk at the far end of `i32` stops at `i32::MAX`)
   pub fn extent(&self) -> CellRect {
-    self.bounds.unwrap_or(self.span)
+    match self.bounds {
+      Some(bounds) => bounds,
+      None if self.span_stale => self.chunks_span(),
+      None => self.span,
+    }
+  }
+
+  /// The cells of the chunks there are, worked out from them
+  fn chunks_span(&self) -> CellRect {
+    self
+      .order
+      .iter()
+      .fold(CellRect::default(), |span, &c| span.union(chunk_rect(c)))
+  }
+
+  /// Keeps the extent worked out after chunks on its edge were unloaded
+  /// ([`unload_chunk`](Self::unload_chunk) leaves that to here), so a
+  /// stream unloading many chunks works it out once, not once a chunk
+  pub(crate) fn settle_extent(&mut self) {
+    if self.span_stale {
+      self.span = self.chunks_span();
+      self.span_stale = false;
+    }
   }
 
   /// The smallest rectangle holding every cell with a tile; empty when the
@@ -754,11 +790,9 @@ impl TileGrid {
   /// each chunk it read, and the chunks it keeps that the grid lacks are the
   /// ones unloaded (`kinds::changed_chunks`). No tombstone is kept here, so
   /// consumers reading at different times each find it, and an unloaded
-  /// chunk costs the grid nothing
-  #[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "chunk streaming calls it; nothing else does yet")
-  )]
+  /// chunk costs the grid nothing. The extent shrinks to the chunks left:
+  /// one taken from its edge has it worked out again when read, or once by
+  /// [`settle_extent`](Self::settle_extent) after a run of unloads
   pub(crate) fn unload_chunk(&mut self, chunk: IVec2) -> Option<Box<[u32; CELLS]>> {
     if self.bounds.is_some() {
       return None;
@@ -770,11 +804,10 @@ impl TileGrid {
     {
       self.order.remove(at);
     }
-    // The cells of the chunks left
-    self.span = self
-      .order
-      .iter()
-      .fold(CellRect::default(), |span, &c| span.union(chunk_rect(c)));
+    // The cells of the chunks left: the same unless it was on their edge
+    if on_edge(self.span, chunk_rect(chunk)) {
+      self.span_stale = true;
+    }
     if entry.dirty {
       self.dirty -= 1;
     }
@@ -792,10 +825,6 @@ impl TileGrid {
   /// noted on it ([`loaded_since`](Self::loaded_since)). False, changing
   /// nothing, for a bounded grid (only unbounded layers stream) and for a
   /// chunk past the cells an `i32` holds
-  #[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "chunk streaming calls it; nothing else does yet")
-  )]
   pub(crate) fn load_chunk(&mut self, chunk: IVec2, cells: Box<[u32; CELLS]>) -> bool {
     let (first, last) = (Self::chunk_of(IVec2::MIN), Self::chunk_of(IVec2::MAX));
     if self.bounds.is_some() || chunk.cmplt(first).any() || chunk.cmpgt(last).any() {
@@ -1600,6 +1629,43 @@ mod tests {
     assert!(cells.iter().all(|&c| c == 0));
     assert_eq!(g.chunk_count(), 0);
     assert!(g.extent().is_empty());
+  }
+
+  #[test]
+  fn a_run_of_unloads_keeps_the_extent_exact_and_works_it_out_once() {
+    // A 4 x 4 block of chunks, unloaded by row as a stream leaving them does
+    let mut g = TileGrid::unbounded();
+    let chunks: Vec<IVec2> = (0..4)
+      .flat_map(|y| (0..4).map(move |x| IVec2::new(x, y)))
+      .collect();
+    for &chunk in &chunks {
+      assert!(g.load_chunk(chunk, empty_cells()));
+    }
+    // An inner chunk leaves the extent as it was, with nothing to work out
+    let inner = IVec2::new(1, 1);
+    assert!(g.unload_chunk(inner).is_some());
+    assert!(!g.span_stale);
+    assert_eq!(g.extent(), CellRect::new(IVec2::ZERO, IVec2::splat(128)));
+    // Each on the edge leaves it to be worked out, exact whenever read
+    for (i, &chunk) in chunks.iter().enumerate() {
+      if chunk == inner {
+        continue;
+      }
+      assert!(g.unload_chunk(chunk).is_some());
+      let left = chunks[i + 1..].iter().filter(|&&c| c != inner);
+      let span = left.fold(CellRect::default(), |span, &c| span.union(chunk_rect(c)));
+      assert_eq!(g.extent(), span, "after {chunk}");
+    }
+    assert!(g.span_stale);
+    g.settle_extent();
+    assert!(!g.span_stale);
+    assert!(g.extent().is_empty());
+    // A chunk made after keeps the extent exact
+    assert!(g.load_chunk(IVec2::new(-2, 5), empty_cells()));
+    assert_eq!(
+      g.extent(),
+      CellRect::new(IVec2::new(-64, 160), IVec2::new(-32, 192))
+    );
   }
 
   #[test]

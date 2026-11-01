@@ -1,9 +1,10 @@
 //! Work for spawned maps done on a thread of its own: a map's first
 //! collision and shadow builds (classifying every cell, tracing the
 //! outlines, chaining the occluders), so the frame a map lands in only
-//! hands them over. The thread starts with the first job; where none can
-//! start (the web), a job runs where it is sent, so its result is there at
-//! once.
+//! hands them over, and a streamed map's chunks, generated on a thread of
+//! their own so a chunk never waits behind a landing. A thread starts with
+//! its first job; where none can start (the web), a job runs where it is
+//! sent, so its result is there at once.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
@@ -14,6 +15,8 @@ type Job<T> = (u64, Box<dyn FnOnce() -> T + Send>);
 
 /// One worker thread for one system's jobs, and the results that came back
 pub(crate) struct Worker<T: Send + 'static> {
+  /// The thread's name
+  name: &'static str,
   jobs: Option<Sender<Job<T>>>,
   /// A thread was tried and would not start: jobs run where they are sent
   inline: bool,
@@ -26,6 +29,7 @@ impl<T: Send + 'static> Default for Worker<T> {
   fn default() -> Self {
     let (done_sender, done) = crossbeam_channel::unbounded();
     Worker {
+      name: "ryo2d map builder",
       jobs: None,
       inline: false,
       done_sender,
@@ -36,6 +40,14 @@ impl<T: Send + 'static> Default for Worker<T> {
 }
 
 impl<T: Send + 'static> Worker<T> {
+  /// A worker whose thread is called `name`
+  pub(crate) fn named(name: &'static str) -> Self {
+    Worker {
+      name,
+      ..Worker::default()
+    }
+  }
+
   /// A worker with no thread, as on the web
   #[cfg(test)]
   pub(crate) fn without_thread() -> Self {
@@ -62,6 +74,12 @@ impl<T: Send + 'static> Worker<T> {
     id
   }
 
+  /// Whether jobs run where they are sent: no thread would start (the web),
+  /// found when the first job is sent
+  pub(crate) fn runs_inline(&self) -> bool {
+    self.inline
+  }
+
   /// The results that came back since: each job's id and what it made
   /// (`None`: it panicked). Never waits
   pub(crate) fn finished(&self) -> impl Iterator<Item = (u64, Option<T>)> + '_ {
@@ -75,7 +93,7 @@ impl<T: Send + 'static> Worker<T> {
       let (jobs, inbox) = crossbeam_channel::unbounded::<Job<T>>();
       let done = self.done_sender.clone();
       let spawned = std::thread::Builder::new()
-        .name("ryo2d map builder".into())
+        .name(self.name.into())
         .spawn(move || {
           for job in inbox {
             if done.send(run(job)).is_err() {
@@ -89,7 +107,8 @@ impl<T: Send + 'static> Worker<T> {
         Err(error) => {
           crate::engine_debug!(
             module: "Tilemap",
-            "no thread to build maps on ({error}); they build on the main thread"
+            "no thread for the {} ({error}); its jobs run on the main thread",
+            self.name
           );
           self.inline = true;
         }

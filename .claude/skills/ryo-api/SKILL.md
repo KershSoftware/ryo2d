@@ -2,7 +2,7 @@
 name: ryo-api
 description: Complete API reference for ryo2d::prelude - every exported type with its signatures and use, organised by area.
 metadata:
-  version: 2.17.0
+  version: 2.18.0
 ---
 
 # Ryo2D API Reference
@@ -329,7 +329,7 @@ pub struct Time { pub real: RealClock, pub game: GameClock, pub fixed: FixedCloc
 | Step | Runs |
 |---|---|
 | `First` | advance clocks, publish `Input`, advance message buffers |
-| `PreUpdate` | a running scene transition, then the asset pump (loads and reloads land, unheld assets are freed, `AssetEvent`s sent), then tile maps (those whose assets are ready start landing, landings that came back land with `MapEvent::Spawned`, spawned maps follow saved files with `MapEvent::Reloaded`); then the console |
+| `PreUpdate` | a running scene transition, then the asset pump (loads and reloads land, unheld assets are freed, `AssetEvent`s sent), then tile maps (those whose assets are ready start landing, landings that came back land with `MapEvent::Spawned`, spawned maps follow saved files with `MapEvent::Reloaded`, streamed maps unload and land chunks round their anchors with `ChunkEvent`s, class tiles follow the chunks); then the console |
 | UI pass | `Scene::ui` for visible scenes, bottom-up; input it consumes never reaches gameplay |
 | `FixedUpdate` × 0..N | `FixedSet::Snapshot` → `Juice` → `Scene` (`Scene::update`) → `Game` (scene and game systems) → `Movement` (trigger behaviours, tile maps' collision kept in step with their tiles, tile collider rebuilds, movement input, knockback, movement presets) → `Physics` (one system: the whole physics step) → `Transforms` → `Trails` |
 | `Update` | `UpdateSet::Game` (scene per-frame systems) |
@@ -571,6 +571,7 @@ Engine messages (all `Message + Clone`):
 | `AssetEvent<T>` (one per asset type) | `Added { id }`, `Modified { id }`, `Removed { id }`, `Failed { id, error }`, `ReloadFailed { id, error }` | the asset pump (`PreUpdate`) put an asset in its store, changed it, freed it, or could not load or reload it; `load_now` sends its own at once (see [Assets](#assets)) |
 | `ParticleCollision` | see [Particles](#particles) | |
 | `MapEvent` | `Spawned { map }`, `Reloaded { map }`, `Failed { map, error: Arc<AssetError> }` | a tile map landed whole (layers, objects, colliders, shadows), followed a saved file, or did not load (see [Tilemaps](#tilemaps)) |
+| `ChunkEvent` | `Loaded { map, chunk: IVec2 }`, `Unloading { map, chunk, changed: Option<ChunkTiles> }` | a streamed map's chunk landed (its class tiles in), or is about to unload (see [Tilemaps](#tilemaps)) |
 | `UiEvent` | `node: Entity, name: Option<String>, action: Option<String>, kind: UiEventKind` | a UI node was clicked, changed, dropped on, focused ... (see [Node trees](#node-trees)); also triggered on the node as an entity event |
 | `UiListBind` | `list, row: Entity, index: usize` | a list node gave a pooled row an item, at the start of the UI pass; the row is drawn from the next frame; also triggered on the row |
 
@@ -1114,8 +1115,13 @@ Tiled and LDtk levels as registry assets, spawned by a `MapRoot` entity: tile la
 | `enum WorldRef { Tiled(Handle<TileWorld>), Ldtk { project: Handle<LdtkProject>, world: String } }` | `From<&Handle<TileWorld>>`; a single-world LDtk project's world is "World" |
 | `enum MapEvent { Spawned { map }, Reloaded { map }, Failed { map, error: Arc<AssetError> } }` (message) | landed whole this frame; followed a saved file; did not load or land (sent once per failure) |
 | `enum LayerRef<'a> { Name(&'a str), Index(usize) }` | `From<&str>`, `From<&String>`, `From<usize>`; a name is the first layer so called |
+| `MapStream` (component, `Clone`, on a `MapRoot` entity) `{ generator: Arc<dyn Fn(ChunkRequest) -> ChunkTiles + Send + Sync>, load_distance: f32, unload_distance: f32, cameras: bool, land_per_frame: u32, web_budget: Duration }` | `new(impl Fn(ChunkRequest) -> ChunkTiles + Send + Sync + 'static)` (load 512 px, unload 1,536 px, cameras on, 4 a frame, 2 ms). Streams an infinite map's unbounded tile layers: chunks within `load_distance` (world px, along each axis) of a camera's view (while `cameras`) or a `StreamAnchor` are generated on the `ryo2d chunk builder` thread, nearest first, and land at most `land_per_frame` a frame, nearest first, in every tile layer (an empty chunk where the generator gives a layer nothing); chunks past `unload_distance` from every one unload (an `unload_distance` below `load_distance` is raised to it, warned). An anchor's load area is capped at 64 chunks a side (warned). A generator that panics leaves its chunk empty, never asked again, warned once a map. On the web the generator runs on the main thread, `web_budget` a frame (at least one chunk). Only resident chunks take edits |
+| `StreamAnchor` (component, `Default`) | keeps the chunks near its entity loaded on every streamed map |
+| `ChunkTiles` (`Clone`, `Default`, `PartialEq`: the same tiles) | a chunk's tiles by layer name: `set(layer: &str, cell: UVec2, Option<Tile>)` (`cell` within the chunk, 0..32 each way; outside it, or a tile that does not fit a cell, changes nothing), `get(layer, cell) -> Option<Tile>`, `is_empty() -> bool` |
+| `ChunkRequest { chunk: IVec2, first_cell: IVec2 (chunk * 32), tile_size: UVec2 }` (`Copy`) | what a generator is asked for; a `ChunkTiles` cell `c` is the map's cell `first_cell + c` |
+| `enum ChunkEvent { Loaded { map, chunk: IVec2 }, Unloading { map, chunk, changed: Option<ChunkTiles> } }` (message) | a streamed chunk landed this frame (its class tiles in); one is about to unload (`changed` is `None`: changes are not tracked) |
 
-`MapsView` (`ctx.maps()`, or `MapsView::new(&mut World)`): every call names the map entity and, where it reads cells, a layer (`impl Into<LayerRef>`); a map not landed, a missing or non-tile layer, or a cell outside a bounded layer reads `None` / `false` / 0. An unbounded layer (`TileGrid::unbounded`) takes any cell: `set_tile`, `fill` and `set_terrain` make the chunks they write in, which draw, collide (within 186,411 cells of (0, 0)) and cast shadows.
+`MapsView` (`ctx.maps()`, or `MapsView::new(&mut World)`): every call names the map entity and, where it reads cells, a layer (`impl Into<LayerRef>`); a map not landed, a missing or non-tile layer, or a cell outside a bounded layer reads `None` / `false` / 0. An unbounded layer (`TileGrid::unbounded`) takes any cell: `set_tile`, `fill` and `set_terrain` make the chunks they write in, which draw, collide (within 186,411 cells of (0, 0)) and cast shadows. On a map with a `MapStream`, only its resident chunks take edits: `set_tile`, `set_terrain` (the painted cell) and `set_intgrid` elsewhere return false, and `fill` and `fill_intgrid` change only the cells in resident chunks.
 
 | Method | |
 |---|---|
@@ -1123,6 +1129,7 @@ Tiled and LDtk levels as registry assets, spawned by a `MapRoot` entity: tile la
 | `layer_entity(map, layer) -> Option<Entity>` | |
 | `bounds(map) -> Option<CellRect>` | the cells the map covers as it is now: a bounded map's (0, 0) to its size, an infinite map's smallest rectangle holding every cell of its tile layers with a tile (class tiles included), following edits; `None` until it lands |
 | `layer_bounds(map, layer) -> Option<CellRect>` | a tile layer's: a bounded layer's bounds, an unbounded one's cells holding tiles as they are now; `None` for a layer the map lacks or not a tile layer |
+| `stream_ready(map, area: Rect) -> bool` | every chunk overlapping `area` (world px) is resident on the streamed map: for a loading screen after a teleport; false for a map not streamed or not landed |
 | `tile(map, layer, cell: IVec2) -> Option<Tile>` | a class tile's cell reads `None` |
 | `set_tile(map, layer, cell, Option<Tile>) -> bool`, `fill(map, layer, min, max, Option<Tile>) -> usize` | edits; a registered class's tile spawns a `MapTile` instead; each redraws, re-collides and re-shadows only the chunks it touches (a layer with an IntGrid collides by its values, not its tiles); a tile `fill` that would make more than 131,072 chunks of an unbounded layer is refused (0, warned once a layer) |
 | `set_terrain(map, layer, cell, wang_set: &str, color: Option<&str>) -> bool` | Wang painting as Tiled's terrain brush with corrections on; `None` erases; false within a few cells of the ends of `i32`, where the cells the paint reaches would not fit |

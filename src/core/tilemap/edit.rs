@@ -7,6 +7,7 @@ use super::spawn::{
   ClassTile, LayerTiles, MapIds, MapLayerRef, MapLayers, MapRoot, MapTile, TileLayerData,
   map_asset, registered_class, spawn_class_tile,
 };
+use super::stream::resident_chunks;
 use super::{CHUNK_SIZE, LayerInfo, Properties, Tile, TileGrid};
 use crate::core::ecs::{ChildOf, DetectChangesMut, Entity, Resource, Transform, World};
 use crate::core::hash::FastSet;
@@ -295,10 +296,43 @@ pub(crate) fn set_tile(
   if bounds.is_some_and(|bounds| !bounds.contains(cell)) {
     return false;
   }
+  if bounds.is_none() && !streamed_holds(world, map, cell) {
+    return false;
+  }
   let class = tile.and_then(|tile| registered_class(world, map, tile));
   let parts = parts_of(world, map, layer);
   let cleared = !clear_parts(world, &parts, cell, cell).is_empty();
   set_cell(world, map, layer, cell, tile, class.as_ref()) || cleared
+}
+
+/// Whether an unbounded layer of `map` takes an edit at `cell`: any cell
+/// of a map not streamed, and on a streamed map ([`MapStream`](super::MapStream))
+/// a cell of a resident chunk only, so an edit never makes a chunk the
+/// stream has not landed (it would never unload)
+pub(crate) fn streamed_holds(world: &World, map: Entity, cell: IVec2) -> bool {
+  resident_chunks(world, map).is_none_or(|resident| resident.holds(TileGrid::chunk_of(cell)))
+}
+
+/// Runs `edit` on each part of the cells from `lo` to `hi` (both included)
+/// that lies in a resident chunk of the streamed map `map`, by row, and
+/// sums what each returns; `None` for a map not streamed, whose edit takes
+/// the whole region
+fn per_resident_chunk(
+  world: &mut World,
+  map: Entity,
+  (lo, hi): (IVec2, IVec2),
+  mut edit: impl FnMut(&mut World, IVec2, IVec2) -> usize,
+) -> Option<usize> {
+  let chunks = resident_chunks(world, map)?.within(TileGrid::chunk_of(lo), TileGrid::chunk_of(hi));
+  let side = CHUNK_SIZE as i32;
+  let mut changed = 0;
+  for chunk in chunks {
+    // A resident chunk holds cells of `i32`: its first and last are cells
+    let origin = chunk * side;
+    let (a, b) = (lo.max(origin), hi.min(origin + IVec2::splat(side - 1)));
+    changed += edit(world, a, b);
+  }
+  Some(changed)
 }
 
 /// Puts `tile` (or nothing) in every cell from `min` to `max`, both
@@ -316,6 +350,25 @@ pub(crate) fn fill(
   let Some((layer, bounds)) = tile_layer_bounds(world, map, layer) else {
     return 0;
   };
+  if bounds.is_none() && min.cmple(max).all() {
+    let each = |world: &mut World, lo, hi| fill_in(world, map, (layer, None), lo, hi, tile);
+    if let Some(changed) = per_resident_chunk(world, map, (min, max), each) {
+      return changed;
+    }
+  }
+  fill_in(world, map, (layer, bounds), min, max, tile)
+}
+
+/// [`fill`] on the tile layer entity `layer`, which holds the cells
+/// `bounds` (`None` for any)
+fn fill_in(
+  world: &mut World,
+  map: Entity,
+  (layer, bounds): (Entity, Option<CellRect>),
+  min: IVec2,
+  max: IVec2,
+  tile: Option<Tile>,
+) -> usize {
   let (lo, hi) = match bounds {
     None => (min, max),
     Some(bounds) if bounds.is_empty() => return 0,
@@ -450,6 +503,20 @@ pub(crate) fn fill_intgrid(
   let Some(entity) = layer_entity(world, map, layer) else {
     return 0;
   };
+  let unbounded = world
+    .get::<TileLayerData>(entity)
+    .is_some_and(|data| data.grid.bounds().is_none());
+  if unbounded && min.cmple(max).all() {
+    let each = |world: &mut World, lo, hi| fill_intgrid_in(world, entity, lo, hi, value);
+    if let Some(changed) = per_resident_chunk(world, map, (min, max), each) {
+      return changed;
+    }
+  }
+  fill_intgrid_in(world, entity, min, max, value)
+}
+
+/// [`fill_intgrid`] on the tile layer entity `entity`
+fn fill_intgrid_in(world: &mut World, entity: Entity, min: IVec2, max: IVec2, value: i32) -> usize {
   let Some(mut data) = world.get_mut::<TileLayerData>(entity) else {
     return 0;
   };
@@ -521,7 +588,7 @@ pub(crate) fn intgrid_at(
 /// its ancestors' as they are now: an edit made this frame counts before
 /// propagation runs. A parent with no `Transform` starts its children from
 /// the identity, as propagation does
-fn local_to_world(world: &World, entity: Entity) -> Option<Affine2> {
+pub(crate) fn local_to_world(world: &World, entity: Entity) -> Option<Affine2> {
   let mut affine = world.get::<Transform>(entity)?.to_affine();
   let mut child = entity;
   for _ in 0..MAX_DEPTH {

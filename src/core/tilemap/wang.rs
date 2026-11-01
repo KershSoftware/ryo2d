@@ -729,6 +729,11 @@ pub(crate) fn set_terrain(
   if bounds.is_some_and(|bounds| !bounds.contains(cell)) {
     return false;
   }
+  // A streamed map's painted cell must be in a resident chunk; the cells
+  // the paint reaches past them are left out, as `set_tile` leaves them
+  if bounds.is_none() && !edit::streamed_holds(world, map, cell) {
+    return false;
+  }
   let (planned, warn_key) = {
     let Some(root) = world.get::<MapRoot>(map) else {
       return false;

@@ -37,8 +37,11 @@ Engine::frame
 │                     (AssetEvent<T>); the font registry follows the font stores; then tile maps:
 │                     spawn_maps (ready maps' landings sent to the map builder thread, finished
 │                     ones landed whole, MapEvent), reload_maps (spawned maps follow saved
-│                     files) and follow_chunk_swaps (class tiles follow the chunks loaded and
-│                     unloaded whole); then the console (animation, input, commands)
+│                     files), stream_maps (streamed maps unload chunks far from every anchor,
+│                     ask the chunk builder thread for the missing ones near them and land
+│                     those back, nearest first, ChunkEvent) and follow_chunk_swaps (class
+│                     tiles follow the chunks loaded and unloaded whole); then the console
+│                     (animation, input, commands)
 ├─ UI pass            resolve first, once a frame, against last frame's UI records: the
 │                     pointer, the wheel, then focus and navigation from the ui.* actions;
 │                     then each visible scene bottom-up: its node trees (unchanged subtrees

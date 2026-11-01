@@ -4,6 +4,7 @@ use glam::{IVec2, Vec2};
 
 use super::edit::{self, LayerRef};
 use super::spawn::{self, MapIds, MapRoot};
+use super::stream;
 use super::world::{self, WorldRef};
 use super::{Tile, TileData, WorldLevel, wang};
 use crate::core::ecs::{Entity, World};
@@ -18,7 +19,10 @@ use crate::core::ui::Rect;
 /// changes nothing. A layer whose grid is unbounded
 /// ([`TileGrid::unbounded`](super::TileGrid::unbounded)) has no outside:
 /// its cells are signed, and an edit anywhere makes the chunk it writes
-/// in, which then draws, collides and casts shadows.
+/// in, which then draws, collides and casts shadows. A streamed map
+/// ([`MapStream`](super::MapStream)) takes edits in its resident chunks
+/// alone: a cell in any other is refused, as a cell outside a bounded
+/// layer is.
 ///
 /// ```
 /// use ryo2d::prelude::*;
@@ -44,6 +48,25 @@ impl<'w> MapsView<'w> {
   /// Whether `map` has spawned its layers
   pub fn is_ready(&self, map: Entity) -> bool {
     self.world.get::<MapIds>(map).is_some()
+  }
+
+  /// Whether every chunk overlapping `area` (world pixels) is resident on
+  /// the streamed map `map` ([`MapStream`](super::MapStream)): landed, so
+  /// it draws and collides. False for a map not streamed or not landed.
+  /// For a loading screen after a respawn or a teleport, rather than
+  /// dropping a body into chunks not generated yet
+  ///
+  /// ```
+  /// use ryo2d::prelude::*;
+  ///
+  /// /// Whether the view round `at` has landed, for the loading screen to go
+  /// fn arrived(ctx: &mut SceneContext<'_>, world: Entity, at: Vec2) -> bool {
+  ///   let view = Rect::new(at.x - 960.0, at.y - 540.0, 1920.0, 1080.0);
+  ///   ctx.maps().stream_ready(world, view)
+  /// }
+  /// ```
+  pub fn stream_ready(&self, map: Entity, area: Rect) -> bool {
+    stream::stream_ready(self.world, map, area)
   }
 
   /// The entity of `map`'s layer `layer`

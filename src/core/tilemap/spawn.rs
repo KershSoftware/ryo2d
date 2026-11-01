@@ -10,10 +10,11 @@ use glam::{IVec2, UVec2, Vec2};
 
 use super::collision::{self, LayerView};
 use super::jobs::Worker;
-use super::kinds::{sources, stamps};
+use super::kinds::{TilesetStamp, sources, stamps, stamps_match};
 use super::occluders;
 use super::padded::{self, PaddedCache, ToPad};
 use super::reload::{MapApplied, content_stamp};
+use super::stream::StreamState;
 use super::world::{WorldRef, resolve_world_levels};
 use super::{
   CHUNK_SIZE, ImageLayer, IntGrid, LayerInfo, LayerKind, LdtkProject, MapLayer, MapObjectData,
@@ -799,6 +800,43 @@ pub(crate) fn class_tiles(world: &World, map: &TileMap, classes: &[String]) -> C
     .collect()
 }
 
+/// A map's tiles of a registered class (`class_tiles`), kept on the map
+/// entity for the class tiles that follow chunks, and built again only when
+/// its tilesets change (their stamps), so a stream landing chunk after
+/// chunk does not build it for each
+#[derive(Component)]
+pub(crate) struct ClassTable {
+  stamps: Vec<TilesetStamp>,
+  classes: Arc<ClassTiles>,
+}
+
+/// `map`'s tiles of a registered class, from its `ClassTable` while its
+/// tilesets are those it was built from, else built and kept; empty for a
+/// map whose asset is not there
+fn class_table(world: &mut World, map: Entity) -> Arc<ClassTiles> {
+  let Some(root) = world.get::<MapRoot>(map) else {
+    return Arc::default();
+  };
+  let Some(asset) = map_asset(world, root) else {
+    return Arc::default();
+  };
+  let tilesets = world.get_resource::<Assets<Tileset>>();
+  if let Some(table) = world.get::<ClassTable>(map)
+    && stamps_match(&table.stamps, asset, tilesets)
+  {
+    return Arc::clone(&table.classes);
+  }
+  let table = ClassTable {
+    stamps: stamps(asset, tilesets),
+    classes: Arc::new(class_tiles(world, asset, &root.entity_tiles)),
+  };
+  let classes = Arc::clone(&table.classes);
+  if let Ok(mut entity) = world.get_entity_mut(map) {
+    entity.insert(table);
+  }
+  classes
+}
+
 /// Takes the tiles of a registered class out of `grid`, in row order:
 /// each chunk there is read where its cells lie, so a grid costs its
 /// chunks, never the rectangle they span
@@ -1126,12 +1164,16 @@ pub(crate) fn follow_chunk_swaps(
 }
 
 /// Brings the class tiles of the layer entity `layer` up to its grid's
-/// loads and unloads since it last looked; a grid it has not followed yet
-/// (a layer just landed, or a grid a game swapped in) is only noted
+/// loads and unloads since it last looked. A grid it has not followed yet
+/// is noted: on a layer it never followed (one just landed) its chunks
+/// loaded whole so far (a stream's, landing in the map's landing frame) are
+/// followed as loads, and on a layer whose grid a game swapped in nothing
+/// more is done
 fn follow_layer(world: &mut World, layer: Entity) {
   let Some(&MapLayerRef { map, index, .. }) = world.get::<MapLayerRef>(layer) else {
     return;
   };
+  let first = world.get::<ChunksFollowed>(layer).is_none();
   let mut followed = world
     .get_mut::<ChunksFollowed>(layer)
     .map(|mut followed| std::mem::take(&mut *followed))
@@ -1163,6 +1205,9 @@ fn follow_layer(world: &mut World, layer: Entity) {
   } else {
     followed.chunks.clear();
     followed.chunks.extend(grid.chunk_coords());
+    if first {
+      loaded.extend(grid.loaded_since(0));
+    }
   }
   followed.grid = grid.id();
   followed.version = grid.version();
@@ -1194,16 +1239,10 @@ fn follow_layer(world: &mut World, layer: Entity) {
     }
   }
   if !loaded.is_empty() {
-    let classes = world
-      .get::<MapRoot>(map)
-      .and_then(|root| {
-        Some(class_tiles(
-          world,
-          map_asset(world, root)?,
-          &root.entity_tiles,
-        ))
-      })
-      .unwrap_or_default();
+    // By row, as a landing walks its chunks (the tiles found are put in
+    // row order across them too)
+    loaded.sort_unstable_by_key(|chunk| (chunk.y, chunk.x));
+    let classes = class_table(world, map);
     let found = match world.get_mut::<TileLayerData>(layer) {
       Some(mut data) => {
         let found =
@@ -1355,7 +1394,14 @@ fn root_discarded(mut world: DeferredWorld, context: HookContext) {
       return;
     };
     let layers = entity.take::<MapLayers>();
-    entity.remove::<(MapIds, MapFailed, MapLanding, MapApplied)>();
+    entity.remove::<(
+      MapIds,
+      MapFailed,
+      MapLanding,
+      MapApplied,
+      StreamState,
+      ClassTable,
+    )>();
     for layer in layers.map(|l| l.0).unwrap_or_default() {
       let _ = world.try_despawn(layer);
     }

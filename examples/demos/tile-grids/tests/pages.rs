@@ -54,7 +54,8 @@ fn map_events(engine: &HeadlessEngine, cursor: &mut MessageCursor<MapEvent>) -> 
     .unwrap_or_default()
 }
 
-/// The layer names of each map that has landed, and how many roots there are
+/// The layer names of each map that has landed, bottom first, and how many
+/// roots there are
 fn landed_maps(engine: &mut HeadlessEngine) -> (Vec<Vec<String>>, usize) {
   let world = engine.world_mut();
   let mut roots = world.query::<(Entity, Has<MapIds>, &MapRoot)>();
@@ -67,11 +68,14 @@ fn landed_maps(engine: &mut HeadlessEngine) -> (Vec<Vec<String>>, usize) {
     .iter()
     .filter(|(_, landed)| *landed)
     .map(|(root, _)| {
-      layers
+      // By index, bottom first: a query's order is the world's layout
+      let mut found: Vec<(usize, String)> = layers
         .iter(world)
         .filter(|layer| layer.map == *root)
-        .map(|layer| layer.name.clone())
-        .collect()
+        .map(|layer| (layer.index, layer.name.clone()))
+        .collect();
+      found.sort();
+      found.into_iter().map(|(_, name)| name).collect()
     })
     .collect();
   (landed, roots.len())

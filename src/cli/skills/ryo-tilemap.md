@@ -1,8 +1,8 @@
 ---
 name: ryo-tilemap
-description: "Tile maps - the workflow from Tiled (.tmx, .tmj) or LDtk (.ldtk) through assets/ to a MapRoot entity, layers and the reserved layer properties (collides, occludes, y_sort, lit), tilesets and typed tile data, objects and class tiles as entities, MapEvent, reading and editing tiles with ctx.maps() and Wang terrain, collision from tile shapes and IntGrids, tile shadows, y-sorting and parallax, worlds of levels, maps built in code and by procgen, hot reload, the web, performance and testing."
+description: "Tile maps - the workflow from Tiled (.tmx, .tmj) or LDtk (.ldtk) through assets/ to a MapRoot entity, layers and the reserved layer properties (collides, occludes, y_sort, lit), tilesets and typed tile data, objects and class tiles as entities, MapEvent, reading and editing tiles with ctx.maps() and Wang terrain, collision from tile shapes and IntGrids, tile shadows, y-sorting and parallax, worlds of levels, maps built in code and by procgen, endless worlds streamed from a generator (MapStream, StreamAnchor, ChunkEvent), hot reload, the web, performance and testing."
 metadata:
-  version: 1.2.0
+  version: 1.3.0
 ---
 
 # Ryo2D Tile Maps
@@ -104,7 +104,7 @@ impl Level {
 |---|---|
 | `MapRoot::new(Handle<TileMap>)` | A Tiled map, or one built in code |
 | `MapRoot::ldtk(Handle<LdtkProject>, level: &str)` | A level of an LDtk project, by identifier or iid |
-| `MapRoot::world_level(&Handle<TileWorld>, level)`, `MapRoot::ldtk_world_level(project, world: &str, level)` | A level of a world, by its index in the world's layout (section 12) |
+| `MapRoot::world_level(&Handle<TileWorld>, level)`, `MapRoot::ldtk_world_level(project, world: &str, level)` | A level of a world, by its index in the world's layout (section 13) |
 | `.with_entity_tiles(&["brick", "spikes"])` | Tiles of these tileset classes spawn as entities instead of drawing (section 5) |
 | `.with_intgrid_collision(key, TileCell)` | An LDtk IntGrid value, by number or name, collides as this cell kind (section 8) |
 | `.without_collision()` | Nothing of the map collides; its layers still cast shadows as their flags say |
@@ -128,7 +128,7 @@ Then:
 | Variant | When |
 |---|---|
 | `Spawned { map }` | It landed whole this frame |
-| `Reloaded { map }` | It followed a saved file, in the frame the save landed (section 13) |
+| `Reloaded { map }` | It followed a saved file, in the frame the save landed (section 14) |
 | `Failed { map, error: Arc<AssetError> }` | Its asset did not load, its LDtk project has no such level, its world has no such level, or working out its landing failed: nothing spawned. Sent once for each failure; saving the file fixed spawns it |
 
 ## 3. Layers and their properties
@@ -269,7 +269,7 @@ for (entity, hits) in bricks {
 
 ## 6. Reading and editing tiles
 
-`ctx.maps()` is a `MapsView` over the world (in a system or a test with the world: `MapsView::new(world)`). Every call names the map entity and, where it reads cells, a layer by name (the first so called) or by index (bottom first, a `usize`). A map that has not landed, a layer it does not have, a layer that is not a tile layer, or a cell outside the layer reads `None` (or `false`, or 0) and changes nothing. An unbounded layer (section 11) has no outside: its cells are signed, and `set_tile`, `fill` and `set_terrain` take any cell, negative ones included, making the 32 x 32-cell chunk a tile goes in, which then draws, collides and casts shadows. Two writes are refused there, changing nothing: a tile `fill` that would make more than 131,072 chunks (the 2^27 cells a map may hold; `IVec2::MIN` to `IVec2::MAX`, say) returns 0 and the dev log warns once a layer, and `set_terrain` within a few cells of the ends of `i32` (the cells its paint reaches would not fit) returns false.
+`ctx.maps()` is a `MapsView` over the world (in a system or a test with the world: `MapsView::new(world)`). Every call names the map entity and, where it reads cells, a layer by name (the first so called) or by index (bottom first, a `usize`). A map that has not landed, a layer it does not have, a layer that is not a tile layer, or a cell outside the layer reads `None` (or `false`, or 0) and changes nothing. An unbounded layer (section 11) has no outside: its cells are signed, and `set_tile`, `fill` and `set_terrain` take any cell, negative ones included, making the 32 x 32-cell chunk a tile goes in, which then draws, collides and casts shadows. On a streamed map (section 12) only the chunks it has landed take edits: `set_tile` and `set_terrain` elsewhere return false, and `fill` changes only the cells in landed chunks. Two writes are refused there, changing nothing: a tile `fill` that would make more than 131,072 chunks (the 2^27 cells a map may hold; `IVec2::MIN` to `IVec2::MAX`, say) returns 0 and the dev log warns once a layer, and `set_terrain` within a few cells of the ends of `i32` (the cells its paint reaches would not fit) returns false.
 
 | Method | |
 |---|---|
@@ -284,7 +284,7 @@ for (entity, hits) in bricks {
 | `world_to_cell(map, layer, world: Vec2) -> Option<IVec2>`, `cell_to_world(map, layer, cell) -> Option<Vec2>` | through the map's and the layer's transforms; a cell's centre |
 | `layer_entity(map, layer) -> Option<Entity>` | the layer's entity |
 | `bounds(map) -> Option<CellRect>`, `layer_bounds(map, layer) -> Option<CellRect>` | the cells the map, or a tile layer, covers as it is now: a bounded one's size; an unbounded one's cells holding tiles, class tiles included, following every edit (empty with none; it looks at every chunk, so on a map grown to many chunks read it when the map changes, not every frame) |
-| `spawn_levels_in(world, area: Rect) -> Vec<Entity>`, `spawn_levels_in_with(world, area, depth, configure)` | the levels of a world near a place, the second setting each root up (section 12) |
+| `spawn_levels_in(world, area: Rect) -> Vec<Entity>`, `spawn_levels_in_with(world, area, depth, configure)` | the levels of a world near a place, the second setting each root up (section 13) |
 
 <!-- self: map: Entity -->
 ```rust
@@ -309,7 +309,7 @@ maps.fill(self.map, "walls", IVec2::new(2, 2), IVec2::new(9, 3), Some(brick));
 
 - **An edit costs what it touches.** It redraws only its 32 x 32-cell chunk, and re-collides and re-shadows only what changed, in time for that step: an edit made in `update` collides in that step's physics, and casts its shadow that frame.
 - **Conversions use the transforms as they are now**, so a map moved this frame converts at once; `world_to_cell` gives cells outside the layer too, and `None` only for a map scaled to nothing.
-- **Edits change the spawned map, not its asset:** two maps from one file keep their own tiles, and a reload of the file brings dug tiles back (section 13).
+- **Edits change the spawned map, not its asset:** two maps from one file keep their own tiles, and a reload of the file brings dug tiles back (section 14).
 - `TileLayerData { grid, intgrid, cell_size }` on a layer entity is the map's own copy of the layer: editing its `grid` (a `TileGrid`: `get`, `set`, `fill`, `clear`) draws, collides and casts as `ctx.maps()` does, though without class tiles. Change IntGrid values with `set_intgrid` and `fill_intgrid`, which re-collide only the chunks they change; values written into `TileLayerData::intgrid` by hand are not seen until those chunks change.
 
 ## 7. Wang terrain
@@ -395,7 +395,7 @@ maps.set_tile(map, "Collision", cell, Some(rubble));
 - **What blocks light:** a tile's shapes marked `occluder` if it has any, else its collision shapes (one-way ones too). An IntGrid's solid cells block whole and its slopes as their half cell; a one-way cell has no area and casts nothing.
 - The map draws its occluders as the boundary of what occludes: `LightOccluder2D::chain`s, a chunk's worth each, children of the first occluding layer and marked `MapOccluder { chunk }` (an `IVec2`: chunks are signed, as `TileGrid::chunk_of` gives them, so cell -1 is in chunk -1). A chunk owns the borders left of and above its cells, so the right and bottom edges of a chunk's last cells can be the next chunk's chains. Tiles that touch cast no shadow between them, so lit art shows no seam. Edits rebuild only the chains of the chunks they touch.
 - The map owns its chains: a game can find them by `MapOccluder`, and a change it makes to one lasts until its chunk changes. A disabled map casts nothing.
-- Every lit frame gathers every map's occluders, and each shadowed light tests all of them (section 15).
+- Every lit frame gathers every map's occluders, and each shadowed light tests all of them (section 16).
 
 ## 10. Draw order, y-sorting and parallax
 
@@ -452,7 +452,7 @@ ctx.world.spawn((Transform::from_xy(0.0, 0.0), MapRoot::new(map)));
 - `add_object_layer(name)` adds an object layer, whose objects are `MapObjectData` in `LayerKind::Objects`; `layer_index(name)`, `tiles(layer)` and `tiles_mut(layer)` find layers.
 - **An unbounded layer:** a tile layer whose grid is `TileGrid::unbounded()` (set through `tiles_mut`) holds any cell, negative ones included, in chunks made where tiles are written. Spawned, it draws, collides, casts shadows and spawns class tiles wherever it has chunks, and costs the chunks it has, however far apart: never the rectangle between them. Its colliding layers' grid is unbounded too; a cell collides within 186,411 cells of (0, 0).
 - **A map grown at run time:** `TileMap::infinite(tile_size)` is an empty infinite map, with `size` zero and `infinite` true, whose `add_tile_layer` layers are unbounded. A game spawns it empty and grows it by writing tiles through `ctx.maps()`: a write at any cell, negative or far out, makes the chunk it lands in, which then draws, collides and casts shadows like any other. Nothing is paid for the space between chunks.
-- **Chunks persist.** A chunk, once made, stays for as long as the spawned map does, emptied or not: nothing unloads chunks yet, so a map a game keeps growing keeps every chunk it ever wrote in. A bounded map has every chunk of its size from its landing (its collision, shadows and change tracking keep an entry for each), so a huge bounded map built with `TileMap::new` is slow to land and costly to keep however few tiles it holds; an infinite one costs nothing until a tile is written.
+- **Chunks persist.** A chunk, once made, stays for as long as the spawned map does, emptied or not: only a stream unloads chunks (section 12), so a map a game grows by writing keeps every chunk it ever wrote in. A bounded map has every chunk of its size from its landing (its collision, shadows and change tracking keep an entry for each), so a huge bounded map built with `TileMap::new` is slow to land and costly to keep however few tiles it holds; an infinite one costs nothing until a tile is written.
 
 <!-- given: tileset: Handle<Tileset> -->
 ```rust
@@ -473,7 +473,73 @@ let grown: Option<CellRect> = ctx.maps().bounds(root);
 - A map added in code never reloads (it has no file), but follows its tilesets' files.
 - **Procgen:** `GenerationGrid::to_tile_map` and `to_terrain_map` (`ryo-procgen`) turn a dungeon, a cave or noise terrain into a `TileMap`. The tilemap demo's Procgen dungeon page draws one through a Wang set.
 
-## 12. Worlds of levels
+## 12. Streaming an endless world
+
+A map can go on forever. Give an empty infinite map a generator, in a `MapStream` on its root, and the engine fills its 32 x 32-cell chunks as cameras and `StreamAnchor` entities come near, and unloads them once they are far behind. The generator is a function from a chunk to its tiles; it runs on a thread of its own, so the frame never waits for it.
+
+<!-- given: tileset: Handle<Tileset> -->
+```rust
+/// The ground's top row at column `x` of a side-on world: a smooth noise
+/// of the column, from row 20 to row 31
+fn ground_top(x: i32) -> i32 {
+  let hash = |n: i32| {
+    let n = (n as u32).wrapping_mul(0x9E37_79B9) ^ 0x85EB_CA6B;
+    let n = (n ^ (n >> 15)).wrapping_mul(0x2C1B_3C6D);
+    (n ^ (n >> 12)) as f32 / u32::MAX as f32
+  };
+  let (knot, t) = (x.div_euclid(16), x.rem_euclid(16) as f32 / 16.0);
+  let t = t * t * (3.0 - 2.0 * t);
+  20 + ((hash(knot) * (1.0 - t) + hash(knot + 1) * t) * 12.0) as i32
+}
+
+let mut map = TileMap::infinite(UVec2::splat(16));
+let terrain = map.add_tileset(TilesetSource::Asset(tileset.clone()));
+map.add_tile_layer("ground");
+let map = ctx.assets().add(map);
+let (grass, dirt) = (Tile::new(terrain, 0), Tile::new(terrain, 1));
+let stream = MapStream::new(move |request: ChunkRequest| {
+  let mut tiles = ChunkTiles::default();
+  for x in 0..32 {
+    let top = ground_top(request.first_cell.x + x as i32);
+    for y in 0..32 {
+      let row = request.first_cell.y + y as i32;
+      let tile = if row == top { Some(grass) } else if row > top { Some(dirt) } else { None };
+      tiles.set("ground", UVec2::new(x, y), tile);
+    }
+  }
+  tiles
+});
+ctx.world.spawn((Transform::from_xy(0.0, 0.0), MapRoot::new(map), stream));
+// The player keeps the chunks round it loaded, wherever the camera looks
+ctx.world.spawn((Transform::from_xy(64.0, 256.0), StreamAnchor));
+```
+
+- **The generator** gets a `ChunkRequest { chunk, first_cell, tile_size }` and returns a `ChunkTiles`: `set(layer, cell, Option<Tile>)` with `cell` inside the chunk (0 to 31 each way; the map's cell is `first_cell + cell`), layers by the map's names. A layer it gives nothing lands empty, and a name the map has no tile layer of is left out, warned once. It runs on the `ryo2d chunk builder` thread, so it must be `Send + Sync` and cannot touch the world: make it a pure function of the chunk and what it captured (a seed, a `ryo-procgen` noise). It is asked again for a chunk that comes back after unloading, so the same chunk must come out the same.
+- **Distances** are in world pixels, along each axis: chunks within `load_distance` (512) of a camera's view or an anchor load, nearest first, and chunks farther than `unload_distance` (1,536) from every one unload; the gap keeps a chunk at the edge from loading and unloading as the player paces. Set them as fields: `MapStream { load_distance: 256.0, ..MapStream::new(generator) }`. Every camera's view is an anchor unless `cameras` is false (a minimap camera zoomed far out would load a wide area: an anchor's area is capped at 64 chunks a side, warned). An `unload_distance` below `load_distance` is raised to it, warned.
+- **Landing:** at most `land_per_frame` (4) chunks land a frame, nearest the anchors first. A landed chunk draws, collides, casts shadows and spawns its class tiles (`with_entity_tiles`) like a map's own, and `ChunkEvent::Loaded { map, chunk }` is sent, its class tiles already in: place the chunk's enemies and pickups then.
+- **Unloading:** `ChunkEvent::Unloading { map, chunk, changed }` is sent, then the chunk's tiles, colliders, shadows and class tiles go; entities the game spawned there are the game's to despawn. `changed` is `None`: an edited chunk that unloads comes back as the generator makes it. A shadow chain along an unloaded chunk's left or top border can stay while the cells beside it remain, closing their shadow at the gap: `MapOccluder::chunk` names the unloaded chunk.
+- **Edits** through `ctx.maps()` reach only the chunks that have landed (section 6), so a write never makes a chunk the stream would not unload; a write to a layer's `TileLayerData::grid` itself is not checked, so keep it to landed chunks too.
+- **A respawn or a teleport:** the chunks round the old place unload and those round the new one land nearest first over the next frames. Hold a loading screen until `ctx.maps().stream_ready(map, area)` says every chunk overlapping a world rectangle has landed, rather than dropping a body into ground not made yet.
+- **A generator that panics** on a chunk is caught: the chunk lands empty, is not asked for again, and the dev log warns once a map, naming the chunk.
+- **The web has no threads:** the generator runs on the main thread, within `web_budget` (2 ms) of each frame, at least one chunk a frame. Keep it cheap there, or set a smaller budget and let chunks arrive over more frames.
+- Stream a map built empty with `TileMap::infinite`: the stream owns every chunk of its tile layers. A map with no unbounded tile layer streams nothing, warned.
+
+<!-- self: world: Entity, player: Entity, loading: bool -->
+```rust
+// After a respawn: the loading screen stays until the view round the player has landed
+if self.loading {
+  let at = ctx.world.get::<Transform>(self.player).map(|t| t.translation).unwrap_or_default();
+  let view = Rect::new(at.x - 960.0, at.y - 540.0, 1920.0, 1080.0);
+  self.loading = !ctx.maps().stream_ready(self.world, view);
+}
+for event in ctx.messages::<ChunkEvent>() {
+  if let ChunkEvent::Loaded { chunk, .. } = event {
+    game_info!("chunk {chunk} landed: its class tiles are in");
+  }
+}
+```
+
+## 13. Worlds of levels
 
 A world is a set of levels with their places and neighbours: a Tiled world file (`.world`, a `TileWorld`) or an LDtk project's worlds (`LdtkProject::worlds`). Each world's `WorldLayout` lists its levels (`WorldLevel { name, position, size, origin, depth, neighbours }`, in world pixels: `position` and `size` its rectangle, `origin` where its map's cell (0, 0) sits). Which levels exist when is the game's call; `ctx.maps().spawn_levels_in` spawns the levels overlapping an area that are not spawned yet, each a `MapRoot` at its level's place with a `WorldLevelOf { world, level }`:
 
@@ -511,7 +577,7 @@ ctx.maps().spawn_levels_in_with(&self.world, near, 0, |level, root| {
 - **Tiled world patterns** (`"regexp"` with `multiplierX`/`multiplierY`): the registry cannot list a folder (the web has none), so a pattern must be literal text with up to two numbers, `(\d+)` or `(-?\d+)`, as in `room_(\d+)_(\d+)\.tmx` (one number is x, two are x then y). The loader tries names row by row: from y = 0, x from 0 up to the first missing file, stopping at the first row whose x = 0 file is missing, in at most 1,024 tries. It builds each name, writing the numbers plainly, so it finds `room_1_2.tmx` but never `room_01_02.tmx` (a literal `0` in the pattern, `room_0(\d+)\.tmx`, reaches `room_00` to `room_09` and stops at `room_010`), and maps numbered from 1 are not found at all: the load fails, no map matching. Negative numbers and gaps in the numbering are never reached either; a world named any of these ways lists its maps instead. Any other regular expression fails the load.
 - **Saving the `.world` file** leaves the levels already spawned where they are; the next `spawn_levels_in` uses the new layout. A save that reorders the levels can make it spawn a level that is already there: despawn and respawn the levels after such a save.
 
-## 13. Hot reload
+## 14. Hot reload
 
 In debug builds with a window the engine watches `assets/` (`EngineBuilder::hot_reload` turns it on or off in any build). Saving a map, an LDtk project or one of its level files, a tileset, a template or the Tiled project updates every map spawned from it in the frame the save lands, before `update`, and sends `MapEvent::Reloaded`. The camera, the player and everything else keep their state.
 
@@ -527,7 +593,7 @@ In debug builds with a window the engine watches `assets/` (`EngineBuilder::hot_
 - **Limits:** a tileset save that changes collision shapes rebuilds the colliders of every map using it whole: new collider entities, so a standing character's `floor` changes and `CollisionStopped` is sent, though nothing falls through. A tileset saved naming a larger image at the same moment as that image (a `git pull`, a script) can stay as it was until it is saved again.
 - **Cost:** a reload runs on the main thread, about 1 ms for each 4 million cells whatever the save changed, plus what changed: a hitch while developing, never in a release build.
 
-## 14. The web
+## 15. The web
 
 - **The web has no files.** A web build gives the engine every asset file in a `MemorySource` (`EngineBuilder::asset_source`): the maps, tilesets and images, and also the templates, the Tiled project, LDtk level files and a world's maps, which the loaders read through the same source.
 
@@ -546,10 +612,11 @@ In debug builds with a window the engine watches `assets/` (`EngineBuilder::hot_
 
 - The tilemap demo keeps its files as one table of `include_bytes!`, compiled on every target (`src/embedded.rs`: `EMBEDDED`, and `embedded()` making the `MemorySource`), so its tests play every page from the table and check that it holds exactly the files in `assets/` (`tests/pages.rs`). Do the same, and a file left out of the web build fails a test instead of a level.
 - **No threads:** a map's landing, its colliders and shadows, is worked out in the frame its asset is ready, so that frame pays for it: about 4 ms for a 256 x 256 map of four layers, and about 60 ms for 1024 x 1024 (estimates from native runs; wasm runs slower). Show a loading screen over a big map's landing. Loads run in the asset pump, at most 4 ms a frame.
+- **A streamed map's generator** runs on the main thread there, within its `MapStream::web_budget` of each frame (section 12).
 - Every layer format loads on the web, zstd included. There is no hot reload.
 - The demo builds for the web: `trunk serve --release --open` in `examples/demos/tilemap`.
 
-## 15. Performance
+## 16. Performance
 
 Measured on an Apple M5 Pro in a release build, at 1920 x 1080 with 16 px tiles; the numbers are approximate and machine-dependent. The record, with the method and every measurement, is `docs/backlog/tilemap.md` in the Ryo2D repository.
 
@@ -564,7 +631,7 @@ Measured on an Apple M5 Pro in a release build, at 1920 x 1080 with 16 px tiles;
   - **Moving a map moves every collider and shadow chain under it:** moving its root or a layer makes transform propagation recompute every one of them, in up to three runs a frame: at least 17 to 24 ns each a frame, what merely visiting them cost (at least 50 µs for the 1024 x 1024 cave's 2,900). So does a fixed step that changes a fifth of the world's entities (and more than 64: about 1,000 movers beside that map's 4,096 entities): propagation then walks every hierarchy, at about what the changed entities' own walks would cost. Keep big maps still, and turn collision off (`without_collision`, or `collides` false) and shadows off (`occludes` false) on maps and layers that need neither: they cost physics and lighting too.
   - **A y-sorted layer** draws each visible row as an item of its own: a dense y-sorted layer of the 1024 x 1024 map cost about 70 µs more a frame. Y-sort only the layers characters walk among.
   - **A lit level** gathers every map occluder each frame, and each shadowed light loops over all of them, however far away: one shadowed light over the 1024 x 1024 cave cost about 30 µs more than the unlit map.
-  - **A landing frame** builds and uploads the chunks in view (about 0.5 ms at 1080p), and a tileset's first landing also makes its padded texture (about 0.5 ms more, about 1 ms in all, the first time; a level restarted, or the next one with the same tileset, within about two seconds reuses it). A 1024 x 1024 four-layer colliding map takes about 60 ms on the builder thread and about 2.5 ms in its landing frame, bounded or unbounded; on the web all of it is one frame (section 14). Cover a big map's landing with a loading screen.
+  - **A landing frame** builds and uploads the chunks in view (about 0.5 ms at 1080p), and a tileset's first landing also makes its padded texture (about 0.5 ms more, about 1 ms in all, the first time; a level restarted, or the next one with the same tileset, within about two seconds reuses it). A 1024 x 1024 four-layer colliding map takes about 60 ms on the builder thread and about 2.5 ms in its landing frame, bounded or unbounded; on the web all of it is one frame (section 15). Cover a big map's landing with a loading screen.
 - **Warnings in the dev log:**
   - `tileset "..." is too big to pad`: its padded copy (each tile in a cell twice its size) would pass the GPU's largest texture, 8,192 texels a side: about 3,800 tiles of 64 px, 15,800 of 32 px, or a collection of over 196 images up to 256 px (36 up to 512 px). Its tiles draw nothing until it changes. Split the tileset.
   - `layer "..." collides and has parallax`: it collides where it would be without parallax.
@@ -572,12 +639,12 @@ Measured on an Apple M5 Pro in a release build, at 1920 x 1080 with 16 px tiles;
   - `a TileColliders cell ... is past the reach of tile collision`: a tile of any layer, unbounded or a bounded one long enough to reach it, more than 186,411 cells from (0, 0) on an axis draws but does not collide.
   - A repeated image layer too small to cover a view covers its middle.
 
-## 16. Testing
+## 17. Testing
 
 - **A headless engine** (`ryo2d::testing::HeadlessEngine`) lands maps as a windowed one does. Step it until `MapsView::new(engine.world_mut()).is_ready(map)`, then read tiles with `MapsView`, objects and class tiles with queries, and colliders after a step through the world's `Physics` resource (`engine.world().resource::<Physics>()`: `raycast`, `overlap_point`, `contacts` and the rest). A landing takes a frame or more (its job runs on another thread), so wait for it rather than counting frames.
 - **Events:** read `MapEvent`s between steps with a `MessageCursor<MapEvent>` over the world's `Messages<MapEvent>`; fail the test on `Failed`.
 - **Hot reload:** headless engines do not watch files. Give the engine a `MemorySource` the test keeps (`EngineBuilder::asset_source`), save over a file with `files.insert(path, text)`, and ask for its reload with `engine.assets().server().reload(path)`; the next steps bring the map to it and send `Reloaded`.
-- **The web's files:** play the levels from the embedded source too (section 14).
+- **The web's files:** play the levels from the embedded source too (section 15).
 
 ```rust
 use ryo2d::prelude::*;
@@ -622,7 +689,7 @@ fn level_one_lands_with_its_floor() {
 }
 ```
 
-## 17. When something looks wrong
+## 18. When something looks wrong
 
 | Symptom | Look at |
 |---|---|
@@ -640,3 +707,5 @@ fn level_one_lands_with_its_floor() {
 | A coin collected did not come back after a save | As meant: what the game despawned stays away unless the save changed it |
 | A world pattern found fewer maps than there are files, or none | Gaps in the numbering, negative numbers, zero-padded numbers (`room_01`) or numbering from 1: list those maps |
 | A saved `.world` did not move the rooms | Levels already spawned stay where they are; respawn them |
+| A streamed world stays empty | No anchor near it: `cameras` false and no `StreamAnchor`; the map is not infinite (warned); the generator names layers the map lacks (warned) or panicked (warned, that chunk empty) |
+| An edit on a streamed map changes nothing | Its chunk has not landed, or has unloaded: only landed chunks take edits (section 12) |

@@ -556,6 +556,8 @@ fn update(group: &mut Group, tiles: &mut TileColliders, layers: &Layers, context
       }
     }
   }
+  // The extent worked out once for every chunk that went
+  tiles.settle_extent();
 }
 
 type Maps<'w, 's> = Query<

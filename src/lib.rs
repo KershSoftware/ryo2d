@@ -210,13 +210,14 @@ pub mod prelude {
 
   // Tilemaps
   pub use crate::core::tilemap::{
-    CHUNK_SIZE, ImageLayer, IntGrid, IntGridKey, LayerInfo, LayerKind, LayerRef, LdtkLevel,
-    LdtkLoader, LdtkProject, MapEvent, MapIds, MapLayer, MapLayerRef, MapObject, MapObjectData,
-    MapOccluder, MapRoot, MapTile, MapsView, Neighbour, NeighbourDirection, ObjectShape,
-    Properties, PropertyValue, Tile, TileData, TileFlip, TileFrame, TileGrid, TileLayerData,
-    TileMap, TileShape, TileTransformations, TileWorld, TileWorldLoader, TiledMapLoader,
-    TiledTilesetLoader, Tileset, TilesetImage, TilesetSource, URect, WangColor, WangKind, WangSet,
-    WangTile, WorldLayout, WorldLevel, WorldLevelOf, WorldRef,
+    CHUNK_SIZE, ChunkEvent, ChunkRequest, ChunkTiles, ImageLayer, IntGrid, IntGridKey, LayerInfo,
+    LayerKind, LayerRef, LdtkLevel, LdtkLoader, LdtkProject, MapEvent, MapIds, MapLayer,
+    MapLayerRef, MapObject, MapObjectData, MapOccluder, MapRoot, MapStream, MapTile, MapsView,
+    Neighbour, NeighbourDirection, ObjectShape, Properties, PropertyValue, StreamAnchor, Tile,
+    TileData, TileFlip, TileFrame, TileGrid, TileLayerData, TileMap, TileShape,
+    TileTransformations, TileWorld, TileWorldLoader, TiledMapLoader, TiledTilesetLoader, Tileset,
+    TilesetImage, TilesetSource, URect, WangColor, WangKind, WangSet, WangTile, WorldLayout,
+    WorldLevel, WorldLevelOf, WorldRef,
   };
 
   // Render pipeline
