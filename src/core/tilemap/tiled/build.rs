@@ -28,9 +28,10 @@ const MAX_CELLS: u64 = 1 << 26;
 /// Most cells a map's tile layers hold together (and an LDtk level's and
 /// project's, an IntGrid layer counting its tiles and its values): 512 MiB
 /// of 4-byte cells, an 8192 x 8192 map of two layers or a 1024 x 1024 one of
-/// 128. Counted from the layers' sizes before any is decoded or allocated
-/// (an infinite map's layer as the engine will allocate it,
-/// `chunked_cells`), so a small file cannot ask for gigabytes
+/// 128. Counted as the engine allocates them, in whole chunks of
+/// `CHUNK_SIZE` x `CHUNK_SIZE` (`layer_cells`, `chunked_cells`), from the
+/// layers' sizes before any is decoded or allocated, so a small file
+/// cannot ask for gigabytes
 pub(crate) const MAX_MAP_CELLS: u64 = 1 << 27;
 /// Most tiles a tileset holds: what a cell's 20 bits can name
 pub(crate) const MAX_TILES: u32 = 1_048_575;
@@ -185,6 +186,38 @@ fn transparent(
 fn multiply(a: Color, b: Color) -> Color {
   let m = |x: u8, y: u8| ((x as u16 * y as u16 + 127) / 255) as u8;
   Color::new(m(a.r, b.r), m(a.g, b.g), m(a.b, b.b), m(a.a, b.a))
+}
+
+/// The cells the engine allocates for a bounded grid of `size` were it
+/// full: every chunk of `CHUNK_SIZE` x `CHUNK_SIZE` it spans, whole, since
+/// a grid makes a chunk whole where a tile goes (a 1 x 1 layer takes
+/// 1,024 cells, a 1 x 2^26 one 2^31)
+pub(crate) fn engine_cells(size: UVec2) -> u64 {
+  let chunks = |side: u32| u64::from(side.div_ceil(CHUNK_SIZE));
+  chunks(size.x)
+    .saturating_mul(chunks(size.y))
+    .saturating_mul(u64::from(CHUNK_SIZE * CHUNK_SIZE))
+}
+
+/// The cells a bounded grid of `size` counts against the caps: its
+/// engine cells ([`engine_cells`]), once its sides and cells are within a
+/// layer's (`cell_count`) and so are its engine cells. The error says
+/// which is past
+pub(crate) fn layer_cells(size: UVec2) -> Result<u64, String> {
+  if cell_count(size.x, size.y).is_none() {
+    return Err(format!(
+      "{} x {} cells is past the {MAX_CELLS} cells a layer holds",
+      size.x, size.y
+    ));
+  }
+  let cells = engine_cells(size);
+  if cells > MAX_CELLS {
+    return Err(format!(
+      "{} x {} cells take {cells} cells of the engine's chunks of {CHUNK_SIZE} x {CHUNK_SIZE}, past the {MAX_CELLS} cells a layer holds",
+      size.x, size.y
+    ));
+  }
+  Ok(cells)
 }
 
 /// A cell count that is within the limit
@@ -467,10 +500,11 @@ struct Builder<'p, 'a> {
   used_ids: Vec<(usize, u16, u32)>,
 }
 
-/// The cells the tile layers of `layers` (in groups too) hold, as their
-/// sizes say (a layer without one is the map's `size`), or an infinite
-/// map's as [`chunked_cells`] counts them; a layer past what one holds
-/// fails, naming it
+/// The cells the tile layers of `layers` (in groups too) take, as the
+/// engine allocates them: a bounded layer's as its size says (a layer
+/// without one is the map's `size`; [`layer_cells`]), an infinite map's as
+/// [`chunked_cells`] counts them; a layer past what one holds fails,
+/// naming it
 fn tile_cells(
   path: &AssetPath,
   layers: &[RawLayer],
@@ -489,14 +523,7 @@ fn tile_cells(
       ("tilelayer", Some(chunks)) => chunked_cells(path, &place(), chunks, tile_size)?,
       ("tilelayer", None) => {
         let (w, h) = (l.width.unwrap_or(size.x), l.height.unwrap_or(size.y));
-        let Some(n) = cell_count(w, h) else {
-          return Err(fail(
-            path,
-            &place(),
-            format!("{w} x {h} cells is past the {MAX_CELLS} cells a layer holds"),
-          ));
-        };
-        n as u64
+        layer_cells(UVec2::new(w, h)).map_err(|what| fail(path, &place(), what))?
       }
       ("group", _) => tile_cells(path, &l.layers, size, tile_size, depth + 1)?,
       _ => 0,
@@ -1215,4 +1242,57 @@ pub(crate) fn check_used_ids(map: &TileMap, cx: &CheckContext<'_>) -> Result<(),
     }
   }
   Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn tile_layer(width: u32, height: u32) -> RawLayer {
+    RawLayer {
+      name: format!("{width} x {height}"),
+      ty: "tilelayer".to_string(),
+      width: Some(width),
+      height: Some(height),
+      ..RawLayer::default()
+    }
+  }
+
+  /// The cells a map of `layers` counts against the caps, or why it fails
+  fn count(layers: &[RawLayer]) -> Result<u64, String> {
+    let path = AssetPath::parse("m.tmj").map_err(|e| e.report())?;
+    let cells =
+      tile_cells(&path, layers, UVec2::ZERO, UVec2::splat(16), 0).map_err(|e| e.report())?;
+    check_map_cells(&path, "map", cells).map_err(|e| e.report())?;
+    Ok(cells)
+  }
+
+  #[test]
+  fn bounded_layers_count_the_engine_chunks_they_span_and_the_spec_s_maps_fit() {
+    // An 8192 x 8192 layer is 2^26 cells either way, at a layer's cap
+    assert_eq!(count(&[tile_layer(8192, 8192)]), Ok(1 << 26));
+    // A 1024 x 1024 map of 128 layers is 2^27, at a map's cap; one more
+    // layer passes it
+    let mut many: Vec<RawLayer> = (0..128).map(|_| tile_layer(1024, 1024)).collect();
+    assert_eq!(count(&many), Ok(1 << 27));
+    many.push(tile_layer(1, 1));
+    let error = count(&many).expect_err("a 129th layer");
+    assert!(
+      error.contains("layers hold 134218752 cells, past the 134217728 a map holds"),
+      "{error}"
+    );
+    // A 10,000 x 64 runner takes 313 x 2 chunks of 1,024 cells
+    assert_eq!(count(&[tile_layer(10_000, 64)]), Ok(313 * 2 * 1024));
+    // a side short of a chunk takes the whole chunk
+    assert_eq!(count(&[tile_layer(33, 1)]), Ok(2 * 1024));
+    // A thin layer within a layer's cells spans more chunks than a layer
+    // holds: 1 x 2^26 is 2^21 chunks, 2^31 cells
+    let error = count(&[tile_layer(1, 1 << 26)]).expect_err("a thread");
+    assert!(
+      error.contains("layer \"1 x 67108864\"")
+        && error.contains("2147483648 cells")
+        && error.contains("past the 67108864 cells a layer holds"),
+      "{error}"
+    );
+  }
 }

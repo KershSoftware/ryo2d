@@ -990,6 +990,60 @@ mod tests {
     );
   }
 
+  /// `cells` empty cells as base64 of zlib, packed as they are written so
+  /// the test holds none of them at once
+  fn packed_zeros(cells: usize) -> String {
+    use base64::Engine;
+    use std::io::Write;
+    let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+    let block = [0u8; 1 << 16];
+    let mut left = cells * 4;
+    while left > 0 {
+      let n = left.min(block.len());
+      z.write_all(&block[..n]).expect("write");
+      left -= n;
+    }
+    base64::engine::general_purpose::STANDARD.encode(z.finish().expect("finish"))
+  }
+
+  /// A bounded map of `width` x `height` cells of 16 px whose layers are
+  /// `count` empty tile layers of its size, in zlib
+  fn empty_layers_json(width: u32, height: u32, count: u32) -> String {
+    let data = packed_zeros(width as usize * height as usize);
+    let layers: Vec<String> = (1..=count)
+      .map(|id| {
+        format!(
+          r#"{{"id":{id},"name":"l{id}","type":"tilelayer","width":{width},"height":{height},"encoding":"base64","compression":"zlib","data":"{data}"}}"#
+        )
+      })
+      .collect();
+    format!(
+      r#"{{"type":"map","orientation":"orthogonal","width":{width},"height":{height},"tilewidth":16,"tileheight":16,"tilesets":[],"layers":[{}]}}"#,
+      layers.join(",")
+    )
+  }
+
+  #[test]
+  fn a_thin_bounded_layer_counts_the_engine_chunks_it_spans_before_allocating() {
+    // 1 x 2^26 cells, a layer's cells, but 2^21 of the engine's 32 x 32
+    // chunks: 2^31 cells (8 GiB) were it full. A few hundred KB of zlib,
+    // refused on its count before any is decoded
+    let error = failure(&empty_layers_json(1, 1 << 26, 1));
+    assert!(
+      error.contains(r#"layer "l1""#)
+        && error.contains("2147483648 cells")
+        && error.contains("past the 67108864 cells a layer holds"),
+      "{error}"
+    );
+    // Three layers of 1 x 1,500,000: each 46,875 chunks, under a layer's
+    // cap; together 144,000,000 cells, past a map's, from 4,500,000 cells
+    let error = failure(&empty_layers_json(1, 1_500_000, 3));
+    assert!(
+      error.contains("layers hold 144000000 cells, past the 134217728 a map holds"),
+      "{error}"
+    );
+  }
+
   #[test]
   fn chunks_are_an_infinite_map_s_and_its_empty_layers_load_empty() {
     // A bounded map's layer of chunks, and an infinite map's of data

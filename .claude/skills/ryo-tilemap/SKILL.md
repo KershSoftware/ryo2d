@@ -533,7 +533,7 @@ In debug builds with a window the engine watches `assets/` (`EngineBuilder::hot_
 
 Measured on an Apple M5 Pro in a release build, at 1920 x 1080 with 16 px tiles; the numbers are approximate and machine-dependent. The record, with the method and every measurement, is `docs/backlog/tilemap.md` in the Ryo2D repository.
 
-- **How big a map loads:** a tile layer holds at most 8192 x 8192 cells, and a map's tile layers together 134,217,728 (2^27, 512 MiB of 4-byte cells: an 8192 x 8192 map of two layers, or a 1024 x 1024 map of 128). An LDtk level counts each layer, empty or not, and an IntGrid layer twice (its tiles and its values), and all the levels of a project share the same total, since a project loads whole. Past it the load fails, naming the map or level, before anything is allocated.
+- **How big a map loads:** a tile layer holds at most 67,108,864 cells (8192 x 8192), and a map's tile layers together 134,217,728 (2^27, 512 MiB of 4-byte cells: an 8192 x 8192 map of two layers, or a 1024 x 1024 map of 128). Cells count as the engine stores them, in whole chunks of 32 x 32: a layer counts every chunk it spans (a 10,000 x 64 runner 641,024 cells, a 1 x 1 layer 1,024, so a 1-cell-wide layer 2^26 tall is refused), and an infinite map's layer the chunks its chunks reach, or its chunks' cells if more. An LDtk level counts each layer, empty or not, and an IntGrid layer's values once more, and all the levels of a project share the same total, since a project loads whole. Past it the load fails, naming the map, level or layer, before anything is allocated.
 
 - **Cheap:**
   - **Drawing** costs what is on screen: a frame draws only the chunks in view, so a static 1024 x 1024 map of four layers costs about 33 µs a frame to draw, as a small one would.

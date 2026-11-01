@@ -16,7 +16,7 @@ use crate::core::graphics::Image;
 use crate::core::hash::{FastMap, FastSet};
 use crate::core::tilemap::tiled::build::{
   DependencyPlaces, MAX_MAP_CELLS, MAX_TILES, Unread, cell_count, check_map_cells, check_tileset,
-  check_used_ids, fail, join, load_dep,
+  check_used_ids, engine_cells, fail, join, layer_cells, load_dep,
 };
 use crate::core::tilemap::tiled::json::parse;
 use crate::core::tilemap::{
@@ -639,15 +639,20 @@ struct PlannedLayer<'d> {
 }
 
 impl PlannedLayer<'_> {
-  /// The cells its grids will hold: the level's a sub-layer, and an
-  /// IntGrid's values once more
+  /// The cells its grids take, as the engine allocates them: each grid
+  /// (the layer's own and a sub-layer each, level-sized) its whole chunks
+  /// (`engine_cells`), and an IntGrid's values, one a cell, once more
   fn cells(&self) -> u64 {
     if self.raw.ty == "Entities" {
       return 0;
     }
-    let one = u64::from(self.size.x) * u64::from(self.size.y);
-    let grids = self.plan.keys.len() as u64 + u64::from(self.raw.ty == "IntGrid");
-    one.saturating_mul(grids)
+    let grids = engine_cells(self.size).saturating_mul(self.plan.keys.len() as u64);
+    let values = if self.raw.ty == "IntGrid" {
+      u64::from(self.size.x) * u64::from(self.size.y)
+    } else {
+      0
+    };
+    grids.saturating_add(values)
   }
 }
 
@@ -721,16 +726,7 @@ fn plan_layer<'d>(
     return Err(fail(defs.path, &place, "the grid size is 0"));
   }
   let size = UVec2::new(ceil_div(size_px.x, g), ceil_div(size_px.y, g));
-  if cell_count(size.x, size.y).is_none() {
-    return Err(fail(
-      defs.path,
-      &place,
-      format!(
-        "{} x {} cells is past the cells a layer holds",
-        size.x, size.y
-      ),
-    ));
-  }
+  layer_cells(size).map_err(|what| fail(defs.path, &place, what))?;
   if raw.c_wid != i64::from(size.x) || raw.c_hei != i64::from(size.y) {
     return Err(fail(
       defs.path,

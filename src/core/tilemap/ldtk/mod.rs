@@ -1368,6 +1368,34 @@ mod tests {
   }
 
   #[test]
+  fn a_thin_level_counts_the_engine_chunks_its_layers_span_before_allocating() {
+    // Level_0 made 1 x 2^26 cells of 16 px with one tile layer, empty: a
+    // layer's cells, but 2^21 of the engine's 32 x 32 chunks (2^31 cells)
+    // were it full, so it is refused before any grid is allocated
+    let error = json_failure(|v| {
+      let level = &mut v["levels"][0];
+      level["pxWid"] = 16.into();
+      level["pxHei"] = ((1i64 << 26) * 16).into();
+      let layers = level["layerInstances"].as_array_mut().expect("layers");
+      layers
+        .retain(|layer| layer["__identifier"] == "Entities" || layer["__identifier"] == "Props");
+      for layer in layers.iter_mut() {
+        if layer["__type"] != "Entities" {
+          layer["__cWid"] = 1.into();
+          layer["__cHei"] = (1i64 << 26).into();
+          layer["gridTiles"] = serde_json::json!([]);
+        }
+      }
+    });
+    assert!(
+      error.contains("layer \"Props\"")
+        && error.contains("2147483648 cells")
+        && error.contains("past the 67108864 cells a layer holds"),
+      "{error}"
+    );
+  }
+
+  #[test]
   fn ldtk_features_drawn_otherwise_warn_once_naming_each() {
     // The door's tile drawn repeated over its box, and two layers with
     // parallax that LDtk scales
