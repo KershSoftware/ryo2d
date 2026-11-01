@@ -313,6 +313,18 @@ impl SavedChunks {
     self.lock().remove(&chunk)
   }
 
+  /// Whether tiles are kept for `chunk`
+  pub fn contains(&self, chunk: IVec2) -> bool {
+    self.lock().contains_key(&chunk)
+  }
+
+  /// The chunks kept, by row then column: a copy, as the store is now
+  pub fn keys(&self) -> Vec<IVec2> {
+    let mut keys: Vec<IVec2> = self.lock().keys().copied().collect();
+    keys.sort_unstable_by_key(|chunk| (chunk.y, chunk.x));
+    keys
+  }
+
   /// How many chunks are kept
   pub fn len(&self) -> usize {
     self.lock().len()
@@ -519,6 +531,34 @@ impl std::fmt::Debug for MapStream {
 /// player, a companion, a far-off machine that must keep running
 #[derive(Component, Clone, Copy, Debug, Default)]
 pub struct StreamAnchor;
+
+/// What a streamed map has now, as its stream's last frame left it:
+/// [`MapsView::stream_status`](super::MapsView::stream_status) reads it.
+/// For a HUD, a loading screen's progress or a test: how many chunks are
+/// resident, which of them the file holds and which the stream landed,
+/// how many are on their way, and how many wait to unload
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StreamStatus {
+  /// Chunks resident: drawn, colliding and taking edits. The hand-made
+  /// chunks and the generated ones together
+  pub resident: usize,
+  /// Of the resident chunks, those the stream landed (from its generator,
+  /// or from its [`SavedChunks`]): the only ones that unload
+  pub generated: usize,
+  /// Of the resident chunks, the file's: every engine chunk a Tiled
+  /// infinite map's chunks touch, and every chunk a map built in code
+  /// holds in its asset. Resident from the start, never generated, never
+  /// unloaded
+  pub hand_made: usize,
+  /// Chunks asked for and not landed yet: out on the chunk builder, or
+  /// back and waiting their turn to land under `land_per_frame`. At most
+  /// 64 are held at once; more wanted wait to be asked
+  pub in_flight: usize,
+  /// Resident chunks past every unload distance left for later frames by
+  /// `unload_per_frame` (after a teleport, the old area going a few a
+  /// frame)
+  pub draining: usize,
+}
 
 /// An entity that belongs to a streamed chunk: despawned (its children
 /// with it) when the chunk unloads, disabled or not, and when its map's
@@ -1620,6 +1660,20 @@ impl Resident<'_> {
 
 /// Whether every chunk overlapping `area` (world pixels) is resident on the
 /// streamed map `map`; false for a map not streamed or not landed
+/// The status of the streamed map `map` (`MapsView::stream_status`):
+/// `None` with no `MapStream`, or before its stream's first frame
+pub(crate) fn stream_status(world: &World, map: Entity) -> Option<StreamStatus> {
+  world.get::<MapStream>(map)?;
+  let state = world.get::<StreamState>(map)?;
+  Some(StreamStatus {
+    resident: state.resident.len(),
+    generated: state.generated.len(),
+    hand_made: state.file.len(),
+    in_flight: state.out.len() + state.ready.len(),
+    draining: state.draining,
+  })
+}
+
 pub(crate) fn stream_ready(world: &World, map: Entity, area: Rect) -> bool {
   if world.get::<MapStream>(map).is_none() {
     return false;

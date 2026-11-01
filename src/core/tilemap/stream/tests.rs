@@ -13,7 +13,7 @@ use glam::{IVec2, UVec2, Vec2};
 
 use super::{
   ChunkEvent, ChunkOwned, ChunkRequest, ChunkTiles, INLINE, MapStream, SPAN_CAP, SavedChunks,
-  StreamAnchor, StreamState,
+  StreamAnchor, StreamState, StreamStatus,
 };
 use crate::core::asset::{Assets, AssetsView, Handle};
 use crate::core::ecs::kernel::{ChildOf, Disabled, MessageCursor, Messages};
@@ -1184,6 +1184,110 @@ fn saving_the_changed_chunks_round_an_anchor_keeps_them_for_a_save_game() {
   let view = MapsView::new(&mut again.world);
   assert_eq!(view.tile(map, "ground", built), Some(BLOCK));
   assert_eq!(view.tile(map, "ground", IVec2::new(-20, 0)), Some(BLOCK));
+}
+
+#[test]
+fn the_stream_status_counts_the_chunks_resident_in_flight_and_draining() {
+  // The generator waits until the test lets it go (5 s at most), so the
+  // chunks asked for stay in flight
+  let open = Arc::new(AtomicBool::new(false));
+  let gate = Arc::clone(&open);
+  let held = move |request: ChunkRequest| {
+    let start = std::time::Instant::now();
+    while !gate.load(Ordering::SeqCst) && start.elapsed() < Duration::from_secs(5) {
+      std::thread::sleep(Duration::from_millis(1));
+    }
+    floors(request)
+  };
+  // A hand-made chunk: a tile in the map's asset, far from the anchor
+  let mut map = infinite(&["ground"]);
+  if let Some(grid) = map.tiles_mut(0) {
+    grid.set(IVec2::new(32 * 10 + 4, 4), Some(BLOCK));
+  }
+  let mut maps = MapWorld::new();
+  let map = spawn(&mut maps, map, MapStream::new(held), |r| r);
+  let status = |world: &mut World| MapsView::new(world).stream_status(map);
+
+  // The nine chunks round a new anchor are asked for in its first frame
+  // and stay in flight while the generator waits
+  let anchor = anchor_at(&mut maps, IVec2::ZERO);
+  maps.frame();
+  assert_eq!(
+    status(&mut maps.world),
+    Some(StreamStatus {
+      resident: 1,
+      generated: 0,
+      hand_made: 1,
+      in_flight: 9,
+      draining: 0,
+    })
+  );
+
+  // Let go, they land, and none is in flight once it settles
+  open.store(true, Ordering::SeqCst);
+  until_idle(&mut maps, map);
+  let chunks = resident(&mut maps.world, map);
+  assert_eq!(
+    status(&mut maps.world),
+    Some(StreamStatus {
+      resident: chunks.len(),
+      generated: 9,
+      hand_made: 1,
+      in_flight: 0,
+      draining: 0,
+    })
+  );
+
+  // A teleport: two of the nine left behind unload in its first frame, the
+  // others drain, and the new chunks are in flight
+  move_to(&mut maps.world, anchor, IVec2::new(20, 0));
+  maps.frame();
+  let Some(moving) = status(&mut maps.world) else {
+    panic!("{map} streams");
+  };
+  assert_eq!(moving.draining, 7, "{moving:?}");
+  assert!(moving.in_flight > 0, "{moving:?}");
+  until_idle(&mut maps, map);
+  let chunks = resident(&mut maps.world, map);
+  assert_eq!(
+    status(&mut maps.world),
+    Some(StreamStatus {
+      resident: chunks.len(),
+      generated: 9,
+      hand_made: 1,
+      in_flight: 0,
+      draining: 0,
+    })
+  );
+
+  // A map with no stream has no status
+  let plain = maps
+    .world
+    .resource_mut::<Assets<TileMap>>()
+    .add(infinite(&["ground"]));
+  let plain = maps.world.spawn(MapRoot::new(plain)).id();
+  maps.settle(plain);
+  assert_eq!(MapsView::new(&mut maps.world).stream_status(plain), None);
+}
+
+#[test]
+fn saved_chunks_say_which_chunks_they_keep() {
+  let saved = SavedChunks::default();
+  assert!(saved.keys().is_empty());
+  for chunk in [IVec2::new(3, 1), IVec2::new(-2, 1), IVec2::new(5, -4)] {
+    saved.insert(chunk, ChunkTiles::default());
+  }
+  assert!(saved.contains(IVec2::new(-2, 1)));
+  assert!(!saved.contains(IVec2::new(0, 0)));
+  // By row, then column
+  assert_eq!(
+    saved.keys(),
+    vec![IVec2::new(5, -4), IVec2::new(-2, 1), IVec2::new(3, 1)]
+  );
+  // A clone is the same store
+  saved.clone().remove(IVec2::new(3, 1));
+  assert!(!saved.contains(IVec2::new(3, 1)));
+  assert_eq!(saved.keys().len(), 2);
 }
 
 #[test]

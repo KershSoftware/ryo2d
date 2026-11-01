@@ -70,6 +70,31 @@ impl<'w> MapsView<'w> {
     stream::stream_ready(self.world, map, area)
   }
 
+  /// What the streamed map `map` ([`MapStream`](super::MapStream)) has
+  /// now, as its stream's last frame left it: the chunks resident, the
+  /// file's and the generated among them, those in flight and those
+  /// waiting to unload. `None` for a map not streamed, or not landed yet.
+  /// The stream runs in `PreUpdate`, so the status read in a scene's
+  /// update or UI is this frame's
+  ///
+  /// ```
+  /// use ryo2d::prelude::*;
+  ///
+  /// /// A HUD line: what the world has round the player
+  /// fn chunks_line(ctx: &mut SceneContext<'_>, world: Entity) -> String {
+  ///   match ctx.maps().stream_status(world) {
+  ///     Some(status) => format!(
+  ///       "{} chunks ({} hand-made), {} on the way",
+  ///       status.resident, status.hand_made, status.in_flight
+  ///     ),
+  ///     None => "not streamed".to_string(),
+  ///   }
+  /// }
+  /// ```
+  pub fn stream_status(&self, map: Entity) -> Option<stream::StreamStatus> {
+    stream::stream_status(self.world, map)
+  }
+
   /// Puts each chunk resident on the streamed map `map` that a player
   /// changed since it landed into its stream's
   /// [`SavedChunks`](super::SavedChunks), as unloading it would. A chunk

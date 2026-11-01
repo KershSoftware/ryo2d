@@ -53,6 +53,7 @@ pub(crate) use spawn::{MapLayers, follow_chunk_swaps, map_asset, spawn_maps};
 pub(crate) use stream::stream_maps;
 pub use stream::{
   ChunkEvent, ChunkOwned, ChunkRequest, ChunkTiles, MapStream, SavedChunks, StreamAnchor,
+  StreamStatus,
 };
 pub use tile::{Tile, TileFlip};
 pub use tiled::{TileWorldLoader, TiledMapLoader, TiledTilesetLoader};
