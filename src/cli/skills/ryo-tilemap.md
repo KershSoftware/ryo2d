@@ -556,7 +556,7 @@ ctx.world.spawn((
 - **Limits:**
   - A `ChunkOwned` entity goes only with the chunk it names. One tagged with a chunk not resident, or placed from a `Loaded` read after its chunk unloaded again, stays until that chunk next lands and unloads or the root goes; one that moves goes when the chunk it was tagged with unloads, wherever it is (change its `ChunkOwned` as it crosses into another chunk).
   - A `NavigationGrid` built over a streamed map (`rebuild_from_world`) treats chunks not landed as open, and does not follow chunks as they come and go: rebuild it on `ChunkEvent`s, and keep paths within the resident chunks.
-  - Replacing a live root's `MapStream` keeps the chunks the old generator made, and only later unloads go into a new store: respawn the root to stream afresh.
+  - Replacing a live root's `MapStream` keeps the chunks the old generator made, and later unloads and the root's going put the player's changes into the new store: to stream afresh, despawn the old root (its changes go to the store it holds) and spawn a new one with its `MapRoot` and `MapStream` together.
   - A save of the map that makes a chunk hand-made where the player had changed the generated one leaves the player's copy in `SavedChunks`, and the next stream of the map puts it back over the new hand-made chunk: `remove` that chunk from the store.
   - Every anchor's area is checked against the others' each frame, so hundreds of anchors cost far more than their chunks; a few cost nothing to speak of.
   - A hot reload unloads every chunk it touches in its frame, the budgets aside: a hitch while developing.
