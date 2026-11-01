@@ -35,15 +35,18 @@ use crate::core::ui::Rect;
 ///   load fails, no map matching), and neither are negative numbers nor the
 ///   maps past a gap.
 ///
-/// A world named any other way lists its maps. A listed map without
-/// a `width` and `height`, and every pattern's map, has its rectangle read
-/// from its file: width x tilewidth by height x tileheight from its place.
-/// An infinite map is placed by its tile origin: the world's x and y are
-/// where its cell (0, 0) sits ([`WorldLevel::origin`]), and its rectangle
-/// is its chunks' bounds from there, as [`TileMap::bounds`] gives them in
-/// pixels (Tiled documents no rule for infinite maps in worlds; this is
-/// the engine's reading). A pattern's probe reads each map, which then
-/// loads again as a dependency.
+/// A world named any other way lists its maps. A bounded map listed
+/// without a `width` and `height`, and every pattern's map, has its
+/// rectangle read from its file: width x tilewidth by height x tileheight
+/// from its place. An infinite map is placed by its tile origin: the
+/// world's x and y are where its cell (0, 0) sits
+/// ([`WorldLevel::origin`]), and its rectangle is its tiles' bounds from
+/// there, as [`TileMap::bounds`] gives them, in pixels, whatever size the
+/// world lists it with; one with no tile takes its origin cell (Tiled
+/// documents no rule for infinite maps in worlds; this is the engine's
+/// reading). The world reads every map it lists or a pattern finds, each
+/// of which then loads again as a dependency, so saving one loads the
+/// world again.
 ///
 /// Spawn the levels near the player with
 /// [`MapsView::spawn_levels_in`](super::MapsView::spawn_levels_in).
@@ -559,7 +562,7 @@ mod tests {
     };
     assert!(bounds.min.x < 0 && bounds.min.y < 0, "{bounds:?}");
     // The world's x and y are where the map's cell (0, 0) sits; its
-    // rectangle is its chunks' bounds from there
+    // rectangle is its tiles' bounds from there
     let tile = Vec2::splat(16.0);
     let (index, far_level) = level(&layout, "../maps/infinite.tmj");
     assert_eq!(far_level.origin, Vec2::new(1000.0, 500.0));
