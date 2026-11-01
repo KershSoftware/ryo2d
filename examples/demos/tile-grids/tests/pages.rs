@@ -196,17 +196,20 @@ fn the_meadow_s_chunks_lie_at_negative_cells_and_the_hud_shows_its_bounds() {
   );
 
   // The HUD names the bounds (last cells included) and counts the chunks
-  // the layers have of those the bounds hold
-  let side = CHUNK_SIZE as i32;
-  let size = bounds.size().as_ivec2() / side;
+  // the layers have of those the bounds reach
   let shown = engine.ui_snapshot();
   let last = bounds.max - IVec2::ONE;
+  let size = TileGrid::chunk_of(last) - TileGrid::chunk_of(bounds.min) + IVec2::ONE;
   let bounds_line = format!(
     "Bounds: cells ({}, {}) to ({}, {})",
     bounds.min.x, bounds.min.y, last.x, last.y
   );
   assert!(shown.contains(&bounds_line), "{bounds_line:?} in {shown}");
-  let chunks_line = format!("Chunks: {} of the {} ", chunks.len(), size.x * size.y);
+  let chunks_line = format!(
+    "Chunks: {} of the {} the bounds reach",
+    chunks.len(),
+    size.x * size.y
+  );
   assert!(shown.contains(&chunks_line), "{chunks_line:?} in {shown}");
   assert!(
     chunks.len() < (size.x * size.y) as usize,

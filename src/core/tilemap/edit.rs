@@ -2,12 +2,13 @@
 
 use glam::{Affine2, IVec2, Vec2};
 
+use super::grid::MAX_FILL_CHUNKS;
 use super::spawn::{
   ClassTile, LayerTiles, MapLayerRef, MapLayers, MapTile, TileLayerData, registered_class,
   spawn_class_tile,
 };
 use super::{CHUNK_SIZE, LayerInfo, Properties, Tile, TileGrid};
-use crate::core::ecs::{ChildOf, DetectChangesMut, Entity, Transform, World};
+use crate::core::ecs::{ChildOf, DetectChangesMut, Entity, Resource, Transform, World};
 use crate::core::hash::FastSet;
 use crate::core::physics::CellRect;
 
@@ -273,6 +274,9 @@ pub(crate) fn fill(
   if lo.x > hi.x || lo.y > hi.y {
     return 0;
   }
+  if tile.is_some() && refused_fill(world, layer, lo, hi) {
+    return 0;
+  }
   // Cells that change only by losing a sub-layer's tile: the layer's own
   // grid already holds `tile` there, and no class tile is on them
   let parts = parts_of(world, map, layer);
@@ -287,6 +291,39 @@ pub(crate) fn fill(
     })
     .count();
   fill_layer(world, map, layer, (lo, hi), tile) + only_parts
+}
+
+/// The layers a fill was refused on, each warned about once
+#[derive(Resource, Default)]
+pub(crate) struct FillRefused(FastSet<Entity>);
+
+/// Whether a tile fill of the cells from `lo` to `hi` of the layer entity
+/// `layer` would make more chunks than a map holds (`MAX_FILL_CHUNKS`): a
+/// huge region of an unbounded layer, refused before anything is made
+/// rather than exhausting memory, and warned once a layer. A class tile's
+/// fill counts the same chunks, each cell of them spawning an entity
+fn refused_fill(world: &mut World, layer: Entity, lo: IVec2, hi: IVec2) -> bool {
+  let Some(data) = world.get::<TileLayerData>(layer) else {
+    return false;
+  };
+  let missing = data.grid.missing_chunks(lo, hi);
+  if missing <= MAX_FILL_CHUNKS {
+    return false;
+  }
+  world.init_resource::<FillRefused>();
+  let first = world
+    .get_resource_mut::<FillRefused>()
+    .is_some_and(|mut refused| refused.0.insert(layer));
+  if first {
+    let name = world
+      .get::<LayerInfo>(layer)
+      .map_or("?", |info| info.name.as_str());
+    crate::engine_warn!(
+      module: "Tilemap",
+      "layer {name:?}: a fill from {lo} to {hi} would make {missing} chunks, past the {MAX_FILL_CHUNKS} a map holds, so it changed nothing (this layer warns once)"
+    );
+  }
+  true
 }
 
 /// [`fill`] on the layer entity `layer` alone, the region clipped

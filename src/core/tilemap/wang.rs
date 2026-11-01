@@ -629,13 +629,22 @@ fn reach(cell: IVec2, longest_chain: i32) -> HashSet<IVec2> {
     .collect()
 }
 
+/// Whether every cell a paint at `cell` reads lies in `i32`: its `reach`,
+/// and the neighbours a cell at the reach's edge looks at
+fn reach_fits(cell: IVec2, longest_chain: i32) -> bool {
+  let margin = longest_chain.max(1).saturating_add(2);
+  let fits = |v: i32| v.checked_sub(margin).is_some() && v.checked_add(margin).is_some();
+  fits(cell.x) && fits(cell.y)
+}
+
 /// The tiles the cells around `cell` take when it is painted `color` (0 for
 /// none). Each cell sharing a painted position settles in rows and columns
 /// (the painted cell too) on the tile, or none, that has the color asked and
 /// what the cells that settled beside it show, closest to what the cell
 /// shows now; a cell that changed has the neighbours across an edge whose
 /// colors now differ settle too, within `reach`, and so on until the colors
-/// agree or nothing fits
+/// agree or nothing fits. `None` for a cell whose reach leaves `i32` (an
+/// unbounded layer's cell near its ends)
 fn plan(
   world: &World,
   layer: Entity,
@@ -643,6 +652,9 @@ fn plan(
   cell: IVec2,
   color: u8,
 ) -> Option<Plan> {
+  if !reach_fits(cell, set.matcher().longest_chain) {
+    return None;
+  }
   let bounds = world.get::<TileLayerData>(layer)?.grid.bounds();
   let mut painting = Painting {
     world,
@@ -991,6 +1003,54 @@ mod tests {
       .map(|data| data.grid.chunk_coords().collect())
       .unwrap_or_default();
     assert_eq!(chunks, [IVec2::ZERO, TileGrid::chunk_of(painted)]);
+  }
+
+  #[test]
+  fn painting_terrain_at_the_ends_of_i32_is_refused() {
+    // An unbounded layer takes any cell, but a paint changes the cells
+    // around it: one whose reach leaves `i32` is refused, not wrapped to
+    // the far end of the world (or a panic in a dev build)
+    let mut mw = MapWorld::new();
+    let empty = load_map(&mut mw.world, "tiled/maps/wang-solo-empty.tmj");
+    let tilesets = mw
+      .world
+      .resource::<Assets<TileMap>>()
+      .get(&empty)
+      .map(|m| m.tilesets.clone())
+      .unwrap_or_default();
+    let mut map = TileMap::infinite(UVec2::splat(16));
+    map.tilesets = tilesets;
+    map.add_tile_layer("ground");
+    let handle = mw.world.resource_mut::<Assets<TileMap>>().add(map);
+    let map = mw.spawn(MapRoot::new(handle));
+    let (lo, hi) = (i32::MIN, i32::MAX);
+    let mut maps = MapsView::new(&mut mw.world);
+    for cell in [
+      IVec2::new(hi, 0),
+      IVec2::new(lo, 0),
+      IVec2::new(0, hi),
+      IVec2::new(0, lo),
+      IVec2::new(hi - 2, lo + 2),
+      IVec2::new(lo + 1, hi - 1),
+    ] {
+      assert!(
+        !maps.set_terrain(map, "ground", cell, "solo", Some("ground")),
+        "{cell} is refused"
+      );
+    }
+    let Some(ground) = maps.layer_entity(map, "ground") else {
+      panic!("no ground layer");
+    };
+    let chunks = mw
+      .world
+      .get::<TileLayerData>(ground)
+      .map_or(0, |data| data.grid.chunk_coords().count());
+    assert_eq!(chunks, 0, "nothing was written");
+    // A cell whose reach fits paints as anywhere else
+    let near = IVec2::new(hi - 4, lo + 4);
+    let mut maps = MapsView::new(&mut mw.world);
+    assert!(maps.set_terrain(map, "ground", near, "solo", Some("ground")));
+    assert!(maps.tile(map, "ground", near).is_some());
   }
 
   #[test]

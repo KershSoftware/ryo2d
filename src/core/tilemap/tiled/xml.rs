@@ -935,7 +935,7 @@ mod tests {
         assert_eq!(grid.bounds(), None, "{format} {layer} is unbounded");
         // every tile the script placed, at its cell, and no other
         assert_eq!(tiles_of(grid), painted(layer), "{format} {layer}");
-        union = union.union(grid.extent());
+        union = union.union(grid.tile_extent());
       }
       // the engine's chunks of 32 hold Tiled's chunks of 16
       let chunks = |layer: &str| grid_of(map, layer).chunk_coords().collect::<Vec<_>>();
@@ -950,11 +950,11 @@ mod tests {
       // Tiled did not save: nothing of it is made
       assert_eq!(chunks("decor"), [at(0, 0)], "{format}");
       assert!(!grid_of(map, "decor").has_chunk(TileGrid::chunk_of(at(70, -40))));
-      // the map's bounds hold every layer's chunks
+      // the map's bounds hold every layer's tiles, exactly
       assert_eq!(map.bounds(), union, "{format}");
       assert_eq!(
         map.bounds(),
-        CellRect::new(at(-64, -32), at(64, 32)),
+        CellRect::new(at(-50, -17), at(41, 21)),
         "{format}"
       );
       // objects keep their negative coordinates

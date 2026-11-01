@@ -85,7 +85,12 @@ impl<'w> MapsView<'w> {
   /// to a bounded layer (an unbounded one makes the chunks a tile goes in),
   /// as [`set_tile`](Self::set_tile) puts one (the whole cell, a sub-layer's
   /// tiles cleared); returns how many cells changed. Only the chunks it
-  /// changed redraw, collide and cast shadows again
+  /// changed redraw, collide and cast shadows again. On an unbounded layer
+  /// a tile fill that would make more than 131,072 chunks (the 2^27 cells
+  /// a map may hold; a region such as `IVec2::MIN` to `IVec2::MAX`) is
+  /// refused before anything is made: it returns 0 and the dev log warns
+  /// once a layer. Clearing (`None`) any region reads only the chunks
+  /// there are
   pub fn fill<'a>(
     &mut self,
     map: Entity,
@@ -111,7 +116,9 @@ impl<'w> MapsView<'w> {
   /// set with no tile that has a bare corner or edge, where the neighbours
   /// have nothing to turn into. False if nothing changed, the map, layer,
   /// set or color is not there, or the cell is outside a bounded layer (an
-  /// unbounded one takes any cell, making the chunks the paint writes in).
+  /// unbounded one takes any cell, making the chunks the paint writes in,
+  /// but for a cell so near the ends of `i32` that the cells the paint
+  /// reaches would not fit, a few cells from them).
   ///
   /// This matches Tiled's results on the cases checked against it (complete,
   /// one-color, incomplete and multi-color sets, color chains, flipped

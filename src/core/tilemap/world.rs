@@ -605,6 +605,95 @@ mod tests {
     );
   }
 
+  #[test]
+  fn an_infinite_map_listed_with_a_size_takes_its_tiles_rectangle() {
+    // Tiled writes a width and height for every map a world lists: an
+    // infinite map's rectangle is its tiles' from its origin, whatever the
+    // entry says
+    let files = files_with(&[(
+      "tiled/worlds/sized.world",
+      r#"{"maps":[{"fileName":"../maps/infinite.tmj","x":1000,"y":500,"width":320,"height":160},
+         {"fileName":"a.tmj","x":-1000,"y":-1000,"width":64,"height":48}],"type":"world"}"#,
+    )]);
+    let mut maps = MapWorld::over(files);
+    let sized = load_world(&mut maps.world, "tiled/worlds/sized.world").expect("loads");
+    let layout = layout_of(&maps.world, &sized);
+    let handle = AssetsView::new(&mut maps.world)
+      .load_now::<TileMap>("tiled/maps/infinite.tmj")
+      .expect("the map loads");
+    let bounds = match maps.world.resource::<Assets<TileMap>>().get(&handle) {
+      Some(map) => map.bounds(),
+      None => panic!("the map is not in the store"),
+    };
+    let tile = Vec2::splat(16.0);
+    let (index, far) = level(&layout, "../maps/infinite.tmj");
+    assert_eq!(far.origin, Vec2::new(1000.0, 500.0));
+    assert_eq!(
+      (far.position, far.size),
+      (
+        far.origin + bounds.min.as_vec2() * tile,
+        bounds.size().as_vec2() * tile
+      )
+    );
+    // a bounded map keeps the size it is listed with
+    let (_, a) = level(&layout, "a.tmj");
+    assert_eq!(
+      (a.origin, a.position, a.size),
+      (
+        Vec2::splat(-1000.0),
+        Vec2::splat(-1000.0),
+        Vec2::new(64.0, 48.0)
+      )
+    );
+    // An area over the map's negative part, away from its origin, finds it
+    // and spawns it
+    let west = Rect::new(far.position.x + 1.0, far.position.y + 1.0, 4.0, 4.0);
+    assert!(west.right() < far.origin.x && west.bottom() < far.origin.y);
+    let found: Vec<usize> = layout.levels_in(west, 0).map(|(i, _)| i).collect();
+    assert_eq!(found, [index]);
+    let spawned = MapsView::new(&mut maps.world).spawn_levels_in(&sized, west);
+    assert_eq!(spawned.len(), 1);
+  }
+
+  #[test]
+  fn an_empty_infinite_map_in_a_world_takes_its_origin_cell() {
+    let empty = r#"{"type":"map","orientation":"orthogonal","infinite":true,"width":0,"height":0,
+      "tilewidth":16,"tileheight":8,"tilesets":[],
+      "layers":[{"id":1,"name":"ground","type":"tilelayer","chunks":[]}]}"#;
+    let files = files_with(&[
+      ("tiled/maps/empty-7c1e.tmj", empty),
+      (
+        "tiled/worlds/empty.world",
+        r#"{"maps":[{"fileName":"../maps/empty-7c1e.tmj","x":64,"y":-32,"width":320,"height":160},
+           {"fileName":"../maps/empty-7c1e.tmj","x":-64,"y":32}],"type":"world"}"#,
+      ),
+    ]);
+    let mut maps = MapWorld::over(files);
+    let world = load_world(&mut maps.world, "tiled/worlds/empty.world").expect("loads");
+    let layout = layout_of(&maps.world, &world);
+    let rects: Vec<(Vec2, Vec2, Vec2)> = layout
+      .levels
+      .iter()
+      .map(|l| (l.origin, l.position, l.size))
+      .collect();
+    let tile = Vec2::new(16.0, 8.0);
+    assert_eq!(
+      rects,
+      [
+        (Vec2::new(64.0, -32.0), Vec2::new(64.0, -32.0), tile),
+        (Vec2::new(-64.0, 32.0), Vec2::new(-64.0, 32.0), tile)
+      ]
+    );
+    // so it can still spawn
+    let area = Rect::new(66.0, -30.0, 2.0, 2.0);
+    assert_eq!(
+      MapsView::new(&mut maps.world)
+        .spawn_levels_in(&world, area)
+        .len(),
+      1
+    );
+  }
+
   fn spawned_roots(world: &mut crate::core::ecs::World) -> Vec<(Entity, usize, Vec2)> {
     let mut found: Vec<_> = world
       .query::<(Entity, &WorldLevelOf, &Transform)>()

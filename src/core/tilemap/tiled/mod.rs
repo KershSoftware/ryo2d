@@ -1088,10 +1088,15 @@ mod tests {
       Some(Tile::new(1, 1).with_flip(TileFlip::HORIZONTAL))
     );
     assert_eq!(cell(&map, "ground", -3, 0), None);
-    // its tiles in two of the engine's chunks of 32: (-1, -1) and (-1, 0)
+    // its tiles in two of the engine's chunks of 32, the bounds round them
+    // exactly
+    assert_eq!(
+      grid_of(&map, "ground").chunk_coords().collect::<Vec<_>>(),
+      [IVec2::splat(-1), IVec2::new(-1, 0)]
+    );
     assert_eq!(
       map.bounds(),
-      crate::core::physics::CellRect::new(IVec2::splat(-32), IVec2::new(0, 32))
+      crate::core::physics::CellRect::new(IVec2::new(-2, -1), IVec2::new(0, 1))
     );
     // a gid no tileset holds (the map has none) names its cell in the chunk
     let layer = chunked_layer(

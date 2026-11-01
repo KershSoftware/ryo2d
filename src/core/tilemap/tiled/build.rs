@@ -15,7 +15,9 @@ use crate::core::asset::{
 };
 use crate::core::graphics::Image;
 use crate::core::hash::FastSet;
+use crate::core::physics::CellRect;
 use crate::core::render::batch::BlendMode;
+use crate::core::tilemap::map::tiles_bounds;
 use crate::core::tilemap::{
   CHUNK_SIZE, ImageLayer, LayerKind, MapLayer, Tile, TileData, TileFrame, TileGrid, TileMap,
   TileShape, Tileset, TilesetImage, TilesetSource,
@@ -583,6 +585,107 @@ fn chunked_cells(
   Ok(read.max(reached.len() as u64 * per_chunk))
 }
 
+/// An infinite map's tile layer `raw` (at `place`) as an unbounded grid of
+/// its chunks: each checked (`check_chunk`; the map's cells were counted
+/// before), decoded in the layer's encoding and compression, turned into
+/// cells by `cells` (the chunk's gids, its first cell and its width) and
+/// written where it says. A layer of data, not chunks, fails
+fn chunked_grid(
+  path: &AssetPath,
+  place: &str,
+  raw: &RawLayer,
+  tile_size: UVec2,
+  mut cells: impl FnMut(&mut [u32], IVec2, u32) -> Result<(), String>,
+) -> Result<TileGrid, AssetError> {
+  if raw.chunks.is_none() && raw.data.as_ref().is_some_and(holds_data) {
+    return Err(fail(
+      path,
+      place,
+      "an infinite map's layer keeps its cells in chunks, not data",
+    ));
+  }
+  let mut grid = TileGrid::unbounded();
+  for chunk in raw.chunks.iter().flatten() {
+    let at = chunk_place(place, chunk);
+    // Checked with the map's cells before anything was decoded: this only
+    // reads its place and size again
+    let (origin, size) = check_chunk(chunk, tile_size).map_err(|e| fail(path, &at, e))?;
+    let expected = (size.x as usize) * (size.y as usize);
+    // Its data as long as its size before any is decoded
+    let data = match &chunk.data {
+      None => return Err(fail(path, &at, "the chunk has no data")),
+      Some(RawData::Array(gids)) if gids.len() != expected => {
+        return Err(fail(
+          path,
+          &at,
+          format!("has {} cells, expected {expected}", gids.len()),
+        ));
+      }
+      Some(data) => data,
+    };
+    let mut decoded = decode_layer_data(
+      data,
+      raw.encoding.as_deref(),
+      raw.compression.as_deref(),
+      expected,
+    )
+    .map_err(|e| fail(path, &at, e))?;
+    cells(&mut decoded, origin, size.x).map_err(|e| fail(path, &at, e))?;
+    grid.write_rows(origin, size.x as usize, &decoded);
+  }
+  Ok(grid)
+}
+
+/// The cells an infinite map's tile layers (in groups too) hold tiles in,
+/// read from what its file says (`raw`) without loading it, for a world
+/// file's level rectangle: the map's cells counted against the caps, then
+/// its chunks checked, decoded and placed as its load does, and their
+/// rectangle found by the function [`TileMap::bounds`] uses, so the two
+/// agree. Empty when the map holds no tile. A chunk or count its load
+/// refuses fails here too
+pub(crate) fn infinite_bounds(path: &AssetPath, raw: &RawMap) -> Result<CellRect, AssetError> {
+  let tile_size = UVec2::new(raw.tilewidth, raw.tileheight);
+  if tile_size.min_element() == 0 {
+    return Err(fail(path, "map", "the tile size is 0"));
+  }
+  let cells = tile_cells(path, &raw.layers, UVec2::ZERO, tile_size, 0)?;
+  check_map_cells(path, "map", cells)?;
+  // Any tile is a tile here: which one is the map load's business
+  let Some(tile) = TileGrid::encode(Some(Tile::new(0, 0))) else {
+    return Ok(CellRect::default());
+  };
+  let mut grids = Vec::new();
+  let mut pending: Vec<(&[RawLayer], usize)> = vec![(&raw.layers, 0)];
+  while let Some((layers, depth)) = pending.pop() {
+    // deeper groups fail as the map is built
+    if depth > MAX_DEPTH {
+      continue;
+    }
+    for layer in layers {
+      match layer.ty.as_str() {
+        "group" => pending.push((&layer.layers, depth + 1)),
+        "tilelayer" => {
+          let place = format!("layer {:?}", layer.name);
+          grids.push(chunked_grid(
+            path,
+            &place,
+            layer,
+            tile_size,
+            |gids, _, _| {
+              for gid in gids.iter_mut() {
+                *gid = if decode_gid(*gid).0 == 0 { 0 } else { tile };
+              }
+              Ok(())
+            },
+          )?);
+        }
+        _ => {}
+      }
+    }
+  }
+  Ok(tiles_bounds(&grids))
+}
+
 /// Where a chunk of the layer at `layer` is, for its errors
 fn chunk_place(layer: &str, chunk: &RawChunk) -> String {
   format!("{layer}, chunk ({}, {})", chunk.x, chunk.y)
@@ -820,48 +923,9 @@ impl Builder<'_, '_> {
     let path = self.path.clone();
     let mut highest: Vec<Option<u32>> = vec![None; self.first_gids.len()];
     let mut grid = match (self.infinite, &raw.chunks) {
-      (true, chunks) => {
-        if chunks.is_none() && raw.data.as_ref().is_some_and(holds_data) {
-          return Err(fail(
-            &path,
-            place,
-            "an infinite map's layer keeps its cells in chunks, not data",
-          ));
-        }
-        let mut grid = TileGrid::unbounded();
-        for chunk in chunks.iter().flatten() {
-          let at = chunk_place(place, chunk);
-          // Checked with the map's cells before anything was decoded: this
-          // only reads its place and size again
-          let (origin, size) =
-            check_chunk(chunk, self.tile_size).map_err(|e| fail(&path, &at, e))?;
-          let expected = (size.x as usize) * (size.y as usize);
-          // Its data as long as its size before any is decoded
-          let data = match &chunk.data {
-            None => return Err(fail(&path, &at, "the chunk has no data")),
-            Some(RawData::Array(gids)) if gids.len() != expected => {
-              return Err(fail(
-                &path,
-                &at,
-                format!("has {} cells, expected {expected}", gids.len()),
-              ));
-            }
-            Some(data) => data,
-          };
-          let mut cells = decode_layer_data(
-            data,
-            raw.encoding.as_deref(),
-            raw.compression.as_deref(),
-            expected,
-          )
-          .map_err(|e| fail(&path, &at, e))?;
-          self
-            .cells(&mut cells, &mut highest, origin, size.x)
-            .map_err(|e| fail(&path, &at, e))?;
-          grid.write_rows(origin, size.x as usize, &cells);
-        }
-        grid
-      }
+      (true, _) => chunked_grid(&path, place, raw, self.tile_size, |gids, origin, width| {
+        self.cells(gids, &mut highest, origin, width)
+      })?,
       (false, Some(_)) => {
         return Err(fail(
           &path,

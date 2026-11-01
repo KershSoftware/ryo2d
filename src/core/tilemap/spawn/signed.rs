@@ -281,6 +281,56 @@ fn writing_a_tile_far_away_on_an_unbounded_layer_collides_and_casts_shadows() {
 }
 
 #[test]
+fn a_fill_making_more_chunks_than_a_map_holds_is_refused_and_warns_once() {
+  let mut maps = MapWorld::new();
+  let mut map = infinite_map();
+  map.layers[0].info.name = "huge-fill-5d2a".to_string();
+  let map = spawn(&mut maps, map, |r| r.with_entity_tiles(&["crate"]));
+  let layer = "huge-fill-5d2a";
+  let mut view = MapsView::new(&mut maps.world);
+  // Every cell of `i32`, a plain tile and a class tile, and a row of
+  // 131,073 chunks: refused before anything is made
+  assert_eq!(
+    view.fill(map, layer, IVec2::MIN, IVec2::MAX, Some(BLOCK)),
+    0
+  );
+  assert_eq!(
+    view.fill(map, layer, IVec2::MIN, IVec2::MAX, Some(CRATE)),
+    0
+  );
+  let wide = IVec2::new(131_073 * 32 - 1, 0);
+  assert_eq!(view.fill(map, layer, IVec2::ZERO, wide, Some(BLOCK)), 0);
+  let Some(ground) = view.layer_entity(map, layer) else {
+    panic!("no layer");
+  };
+  let chunks = maps
+    .world
+    .get::<TileLayerData>(ground)
+    .map_or(usize::MAX, |data| data.grid.chunk_coords().count());
+  assert_eq!(chunks, 0, "nothing was made");
+  assert_eq!(maps.world.query::<&MapTile>().iter(&maps.world).count(), 0);
+  let warned = crate::core::dev_log::get_entries()
+    .iter()
+    .filter(|e| e.message.contains(layer) && e.message.contains("fill"))
+    .count();
+  assert_eq!(warned, 1, "warned once, naming the layer");
+  // A fill within the cap writes; clearing every cell reads the chunks
+  // there are
+  let mut view = MapsView::new(&mut maps.world);
+  assert_eq!(
+    view.fill(
+      map,
+      layer,
+      IVec2::new(-40, 0),
+      IVec2::new(40, 0),
+      Some(BLOCK)
+    ),
+    81
+  );
+  assert_eq!(view.fill(map, layer, IVec2::MIN, IVec2::MAX, None), 81);
+}
+
+#[test]
 fn an_unbounded_layer_with_a_tile_a_million_cells_out_lands_holding_only_its_chunks() {
   // The rectangle the two tiles span holds about 976 million chunks:
   // nothing may be sized from it

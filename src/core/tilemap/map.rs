@@ -177,6 +177,16 @@ pub struct MapLayer {
   pub kind: LayerKind,
 }
 
+/// The smallest rectangle holding every cell with a tile in `grids`
+/// (empty when none has one): an infinite map's bounds, which a world
+/// file's level rectangle is worked out with too
+pub(crate) fn tiles_bounds<'a>(grids: impl IntoIterator<Item = &'a TileGrid>) -> CellRect {
+  grids
+    .into_iter()
+    .map(TileGrid::tile_extent)
+    .fold(CellRect::default(), CellRect::union)
+}
+
 /// A map of layers over tilesets, from a file or built in code
 #[derive(Clone, Debug)]
 pub struct TileMap {
@@ -239,19 +249,18 @@ impl TileMap {
   }
 
   /// The cells the map covers: a bounded map's from (0, 0) to its size;
-  /// an infinite map's the union of its tile layers' extents
+  /// an infinite map's the smallest rectangle holding every cell of its
+  /// tile layers with a tile (empty when it has none). An asset's: a
+  /// spawned map's edits change its layers' copies, which
+  /// `MapsView::bounds` reads
   pub fn bounds(&self) -> CellRect {
     if !self.infinite {
       return CellRect::from_size(self.size);
     }
-    self
-      .layers
-      .iter()
-      .filter_map(|layer| match &layer.kind {
-        LayerKind::Tiles { grid, .. } => Some(grid.extent()),
-        _ => None,
-      })
-      .fold(CellRect::default(), CellRect::union)
+    tiles_bounds(self.layers.iter().filter_map(|layer| match &layer.kind {
+      LayerKind::Tiles { grid, .. } => Some(grid),
+      _ => None,
+    }))
   }
 
   /// Adds a tileset and returns the index tiles name it by. A map holds at
@@ -359,6 +368,41 @@ mod tests {
     assert_eq!(info.opacity, 1.0);
     assert!(!map.layers[things].info.collides);
     assert_ne!(map.layers[0].info.id, map.layers[1].info.id);
+  }
+
+  #[test]
+  fn an_infinite_map_s_bounds_hold_its_tiles_exactly() {
+    use crate::core::physics::CellRect;
+    let mut map = TileMap::infinite(UVec2::splat(16));
+    let ground = map.add_tile_layer("ground");
+    let decor = map.add_tile_layer("decor");
+    assert!(map.bounds().is_empty(), "no tile yet");
+    // Tiles inside their chunks, never on a chunk's edge, on two layers
+    for (layer, cell) in [
+      (ground, IVec2::new(-5, 3)),
+      (ground, IVec2::new(40, 9)),
+      (decor, IVec2::new(7, -70)),
+      (decor, IVec2::new(2, 100)),
+    ] {
+      if let Some(grid) = map.tiles_mut(layer) {
+        grid.set(cell, Some(Tile::new(0, 1)));
+      }
+    }
+    assert_eq!(
+      map.bounds(),
+      CellRect::new(IVec2::new(-5, -70), IVec2::new(41, 101))
+    );
+    // A chunk emptied of its tiles holds none, though it stays
+    if let Some(grid) = map.tiles_mut(decor) {
+      grid.set(IVec2::new(2, 100), None);
+    }
+    assert_eq!(
+      map.bounds(),
+      CellRect::new(IVec2::new(-5, -70), IVec2::new(41, 10))
+    );
+    // A bounded map's are its size, tiles or not
+    let bounded = TileMap::new(UVec2::new(8, 6), UVec2::splat(16));
+    assert_eq!(bounded.bounds(), CellRect::from_size(UVec2::new(8, 6)));
   }
 
   #[test]

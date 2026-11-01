@@ -43,7 +43,8 @@ use glam::{IVec2, UVec2, Vec2};
 
 use super::kinds::{
   Context, Layers, Part, Purpose, ShapeKey, ShapeSink, ShapeSource, Stores, TilesetStamp, Tracked,
-  changed_chunks, chunk_origin, layer_data, shapes_kept, sources, stamps, union_kinds,
+  build_chunks, changed_chunks, chunk_origin, layer_data, shapes_kept, sources, stamps,
+  union_kinds,
 };
 use super::spawn::{IntGridKey, MapLayers, MapRoot, TileLayerData, root_map};
 use super::{CHUNK_SIZE, LayerInfo, Properties, PropertyValue};
@@ -354,11 +355,12 @@ fn build(
       .iter()
       .map(|t| view(t.index).map(|v| v.data))
       .collect();
-    // The chunks any of its layers has, in row order
+    // The chunks any of its layers has (an IntGrid layer's IntGrid too),
+    // in row order
     let mut chunks: Vec<IVec2> = data
       .iter()
       .flatten()
-      .flat_map(|data| data.grid.chunk_coords())
+      .flat_map(|data| build_chunks(data))
       .collect();
     chunks.sort_unstable_by_key(|c| (c.y, c.x));
     chunks.dedup();
@@ -1147,6 +1149,55 @@ mod tests {
     assert_eq!(view.fill_intgrid(map, "art", IVec2::ZERO, IVec2::ONE, 1), 0);
     maps.frame();
     assert_eq!(colliders(&maps.world, map).get(IVec2::new(40, 5)), Empty);
+  }
+
+  #[test]
+  fn an_int_grid_whose_grid_a_game_swapped_collides_and_casts_shadows_after_a_rebuild() {
+    // 64 x 64 cells, four chunks, a solid IntGrid cell in the last
+    let size = UVec2::new(64, 64);
+    let far = IVec2::new(40, 40);
+    let mut map = code_map(size, &[("collision", &[])]);
+    if let LayerKind::Tiles { intgrid, .. } = &mut map.layers[0].kind {
+      let mut values = vec![0; 64 * 64];
+      values[(far.y * 64 + far.x) as usize] = 1;
+      *intgrid = Some(IntGrid {
+        size,
+        values,
+        names: [(1, "solid".to_string())].into_iter().collect(),
+      });
+    }
+    let mut maps = MapWorld::new();
+    let handle = add(&mut maps.world, map);
+    let map = maps.spawn(MapRoot::new(handle));
+    let layer = layers_of(&mut maps.world, map)[0];
+    let shadowed = |world: &mut World| {
+      world
+        .query::<&crate::core::tilemap::MapOccluder>()
+        .iter(world)
+        .any(|o| o.chunk == IVec2::ONE)
+    };
+    // The game swaps the layer's grid for a new one holding one tile, so
+    // the new grid has one chunk, not the IntGrid's
+    let mut grid = crate::core::tilemap::TileGrid::new(size);
+    grid.set(IVec2::ONE, Some(Tile::new(0, SOLID)));
+    if let Some(mut data) = maps.world.get_mut::<TileLayerData>(layer) {
+      data.grid = grid;
+    }
+    maps.frame();
+    assert_eq!(colliders(&maps.world, map).get(far), TileCell::Solid);
+    assert!(shadowed(&mut maps.world), "the IntGrid casts its shadow");
+    // A full rebuild (the map disabled, then enabled) reads every chunk of
+    // the IntGrid, not only the grid's
+    maps.world.entity_mut(map).insert(Disabled);
+    maps.frame();
+    maps.world.entity_mut(map).remove::<Disabled>();
+    maps.frame();
+    assert_eq!(
+      colliders(&maps.world, map).get(far),
+      TileCell::Solid,
+      "the IntGrid still collides"
+    );
+    assert!(shadowed(&mut maps.world), "and still casts its shadow");
   }
 
   #[test]

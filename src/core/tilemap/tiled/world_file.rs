@@ -6,14 +6,14 @@ use std::collections::HashSet;
 use glam::{IVec2, Vec2};
 use serde::Deserialize;
 
-use super::build::{DependencyPlaces, MAX_DEPTH, join, load_dep};
+use super::build::{DependencyPlaces, infinite_bounds, join, load_dep};
 use super::json::parse;
-use super::raw::{RawLayer, RawMap};
+use super::raw::RawMap;
 use super::xml::parse_tmx;
 use crate::core::asset::{AssetError, AssetLoader, AssetPath, LoadContext};
 use crate::core::physics::CellRect;
 use crate::core::tilemap::world::{TileWorld, layout_of_rects};
-use crate::core::tilemap::{CHUNK_SIZE, TileGrid, TileMap, WorldLevel};
+use crate::core::tilemap::{TileMap, WorldLevel};
 
 /// Most files a pattern's search tries before it stops
 const MAX_PROBES: usize = 1024;
@@ -130,10 +130,16 @@ fn name_with(parts: &[Part], numbers: &[i32]) -> String {
 }
 
 /// A map's rectangle in pixels from its file, as where its top-left lies
-/// from its cell (0, 0) and its size: a bounded map's from (0, 0), width x
-/// tilewidth by height x tileheight; an infinite map's its chunks' bounds
-/// ([`chunk_bounds`]), which is what [`TileMap::bounds`] gives the map
-fn map_rect(path: &AssetPath, bytes: &[u8]) -> Result<(Vec2, Vec2), AssetError> {
+/// from its cell (0, 0) and its size: an infinite map's its tiles' bounds
+/// ([`infinite_bounds`], what [`TileMap::bounds`] gives the map; its
+/// origin cell when it holds no tile, so it can still spawn), whatever
+/// size the world lists it with; a bounded map's from (0, 0), the size it
+/// is `listed` with, else width x tilewidth by height x tileheight
+fn map_rect(
+  path: &AssetPath,
+  bytes: &[u8],
+  listed: Option<Vec2>,
+) -> Result<(Vec2, Vec2), AssetError> {
   let raw: RawMap = if path.as_str().to_ascii_lowercase().ends_with(".tmx") {
     let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
     let text = std::str::from_utf8(bytes)
@@ -144,62 +150,17 @@ fn map_rect(path: &AssetPath, bytes: &[u8]) -> Result<(Vec2, Vec2), AssetError> 
   };
   let tile = Vec2::new(raw.tilewidth as f32, raw.tileheight as f32);
   if raw.infinite {
-    let bounds = chunk_bounds(&raw.layers, 0);
+    let mut bounds = infinite_bounds(path, &raw)?;
+    if bounds.is_empty() {
+      bounds = CellRect::new(IVec2::ZERO, IVec2::ONE);
+    }
     return Ok((bounds.min.as_vec2() * tile, bounds.size().as_vec2() * tile));
   }
-  Ok((
-    Vec2::ZERO,
-    Vec2::new(
-      raw.width.saturating_mul(raw.tilewidth) as f32,
-      raw.height.saturating_mul(raw.tileheight) as f32,
-    ),
-  ))
-}
-
-/// The cells an infinite map's tile layers (in groups too) cover, as their
-/// chunks give them, each widened to the engine's chunks of
-/// [`CHUNK_SIZE`] it reaches: the union of the layers' extents, as the
-/// loaded map's grids hold them once every chunk holds a tile (Tiled
-/// leaves empty chunks out). A chunk the map's load refuses is left out
-fn chunk_bounds(layers: &[RawLayer], depth: usize) -> CellRect {
-  let mut bounds = CellRect::default();
-  if depth > MAX_DEPTH {
-    return bounds;
-  }
-  let side = i64::from(CHUNK_SIZE);
-  for layer in layers {
-    bounds = bounds.union(chunk_bounds(&layer.layers, depth + 1));
-    for chunk in layer.chunks.iter().flatten() {
-      if chunk.width <= 0 || chunk.height <= 0 {
-        continue;
-      }
-      // Its first and last cells, then the engine chunks holding them
-      let cell = |n: Option<i64>| n.and_then(|n| i32::try_from(n).ok());
-      let (Some(x0), Some(y0), Some(x1), Some(y1)) = (
-        cell(Some(chunk.x)),
-        cell(Some(chunk.y)),
-        cell(chunk.x.checked_add(chunk.width - 1)),
-        cell(chunk.y.checked_add(chunk.height - 1)),
-      ) else {
-        continue;
-      };
-      let (lo, hi) = (
-        TileGrid::chunk_of(IVec2::new(x0, y0)),
-        TileGrid::chunk_of(IVec2::new(x1, y1)),
-      );
-      // The end of the last chunk `i32` reaches stops at `i32::MAX`
-      let end = |chunk: i32| {
-        (i64::from(chunk) + 1)
-          .saturating_mul(side)
-          .min(i64::from(i32::MAX)) as i32
-      };
-      bounds = bounds.union(CellRect::new(
-        lo * CHUNK_SIZE as i32,
-        IVec2::new(end(hi.x), end(hi.y)),
-      ));
-    }
-  }
-  bounds
+  let size = listed.unwrap_or(Vec2::new(
+    raw.width.saturating_mul(raw.tilewidth) as f32,
+    raw.height.saturating_mul(raw.tileheight) as f32,
+  ));
+  Ok((Vec2::ZERO, size))
 }
 
 /// Loads Tiled world files (`.world`) as [`TileWorld`]s: the maps they list
@@ -234,18 +195,19 @@ impl AssetLoader for TileWorldLoader {
       let place = format!("map {i} ({:?})", entry.file_name);
       let joined = join(&path, &place, &entry.file_name)?;
       let handle = load_dep::<TileMap>(cx, &path, &place, &entry.file_name, &mut places)?;
-      let (offset, size) = match (entry.width, entry.height) {
-        (Some(w), Some(h)) => (Vec2::ZERO, Vec2::new(w as f32, h as f32)),
-        _ => {
-          let file = AssetPath::parse(&joined)
-            .map_err(|e| AssetError::decode(&path, format!("{place}: {}", e.report())))?;
-          let bytes = cx
-            .read(&file)
-            .map_err(|e| AssetError::decode(&path, format!("{place}: {}", e.report())))?;
-          map_rect(&file, &bytes)
-            .map_err(|e| AssetError::decode(&path, format!("{place}: {}", e.report())))?
-        }
-      };
+      // Read even when listed with a size: an infinite map's rectangle is
+      // its tiles', and a save of it moves them
+      let listed = entry
+        .width
+        .zip(entry.height)
+        .map(|(w, h)| Vec2::new(w as f32, h as f32));
+      let file = AssetPath::parse(&joined)
+        .map_err(|e| AssetError::decode(&path, format!("{place}: {}", e.report())))?;
+      let bytes = cx
+        .read(&file)
+        .map_err(|e| AssetError::decode(&path, format!("{place}: {}", e.report())))?;
+      let (offset, size) = map_rect(&file, &bytes, listed)
+        .map_err(|e| AssetError::decode(&path, format!("{place}: {}", e.report())))?;
       taken.insert(joined);
       levels.push((
         entry.file_name.clone(),
@@ -292,7 +254,7 @@ impl AssetLoader for TileWorldLoader {
           };
           found += 1;
           if taken.insert(joined) {
-            let (offset, size) = map_rect(&file, &bytes)
+            let (offset, size) = map_rect(&file, &bytes, None)
               .map_err(|e| AssetError::decode(&path, format!("{place}: {}", e.report())))?;
             let handle = load_dep::<TileMap>(cx, &path, &place, &written, &mut places)?;
             let place_on = |n: i32, multiplier: i32, offset: i32| {

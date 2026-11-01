@@ -22,6 +22,12 @@ fn next_version() -> u64 {
 /// The side of a chunk in cells: the unit a layer redraws and rebuilds by
 pub const CHUNK_SIZE: u32 = 32;
 
+/// Most chunks one tile fill makes: the chunks of the cells a map holds
+/// (`MAX_MAP_CELLS`, 2^27 cells, 512 MiB), 131,072, so a fill over a huge
+/// region of an unbounded grid is refused rather than exhausting memory
+pub(crate) const MAX_FILL_CHUNKS: u64 =
+  super::tiled::build::MAX_MAP_CELLS / (CHUNK_SIZE as u64 * CHUNK_SIZE as u64);
+
 /// A chunk's side as a cell coordinate
 const SIDE: i32 = CHUNK_SIZE as i32;
 /// The cells of a chunk
@@ -225,6 +231,41 @@ impl TileGrid {
     self.bounds.unwrap_or(self.span)
   }
 
+  /// The smallest rectangle holding every cell with a tile; empty when the
+  /// grid holds none (a cell at `i32::MAX` is left out, as `extent` leaves
+  /// it). Found from the chunks along the edges of those holding tiles: a
+  /// look at each chunk for a tile, then the cells of the edge chunks
+  pub(crate) fn tile_extent(&self) -> CellRect {
+    let tiled = || {
+      self.order.iter().filter_map(|chunk| {
+        let cells = self.chunks.get(chunk)?.cells()?;
+        holds_tiles(Some(cells)).then_some((*chunk, cells))
+      })
+    };
+    let Some((first, last)) = tiled().fold(None, |span, (chunk, _)| match span {
+      None => Some((chunk, chunk)),
+      Some((first, last)) => Some((chunk.min(first), chunk.max(last))),
+    }) else {
+      return CellRect::default();
+    };
+    // Each side's outermost tile is in a chunk on that side, so the tiles
+    // of the edge chunks give every side
+    let (mut min, mut max) = (IVec2::MAX, IVec2::MIN);
+    for (chunk, cells) in tiled() {
+      let edge = chunk.x == first.x || chunk.x == last.x || chunk.y == first.y || chunk.y == last.y;
+      if !edge {
+        continue;
+      }
+      let origin = chunk * SIDE;
+      for (at, _) in cells.iter().enumerate().filter(|&(_, &c)| c != 0) {
+        let cell = origin + IVec2::new(at as i32 % SIDE, at as i32 / SIDE);
+        min = min.min(cell);
+        max = max.max(cell);
+      }
+    }
+    CellRect::new(min, max.saturating_add(IVec2::ONE))
+  }
+
   /// The chunk `cell` is in, rounding toward negative infinity: cell -1 is
   /// in chunk -1, cell -33 in chunk -2
   pub fn chunk_of(cell: IVec2) -> IVec2 {
@@ -304,7 +345,10 @@ impl TileGrid {
 
   /// Sets every cell from `min` to `max`, both inclusive (clipped to a
   /// bounded grid); returns how many changed. A tile makes the chunks it
-  /// goes in; clearing reads only the chunks there are, and leaves them
+  /// goes in; clearing reads only the chunks there are, and leaves them. A
+  /// tile fill that would make more chunks than a map holds (131,072 new
+  /// chunks, the 2^27 cells a map may hold) changes nothing and returns 0,
+  /// so a huge region of an unbounded grid cannot exhaust memory
   pub fn fill(&mut self, min: IVec2, max: IVec2, tile: Option<Tile>) -> usize {
     let Some(value) = encode(tile) else { return 0 };
     let (lo, hi) = match self.bounds {
@@ -313,6 +357,9 @@ impl TileGrid {
       Some(bounds) => (min.max(bounds.min), max.min(bounds.max - IVec2::ONE)),
     };
     if lo.x > hi.x || lo.y > hi.y {
+      return 0;
+    }
+    if value != 0 && self.missing_chunks(lo, hi) > MAX_FILL_CHUNKS {
       return 0;
     }
     let (first, last) = (Self::chunk_of(lo), Self::chunk_of(hi));
@@ -376,6 +423,19 @@ impl TileGrid {
     }
     settle(order, before);
     changed
+  }
+
+  /// How many chunks holding the cells from `lo` to `hi` (both included,
+  /// `lo` not past `hi`) the grid has yet to make: what a tile fill of
+  /// them would make. Counted without making or walking more than the
+  /// range or the list of chunks, whichever is shorter
+  pub(crate) fn missing_chunks(&self, lo: IVec2, hi: IVec2) -> u64 {
+    let (first, last) = (Self::chunk_of(lo), Self::chunk_of(hi));
+    let side = |a: i32, b: i32| (i64::from(b) - i64::from(a) + 1).max(0) as u64;
+    let area = side(first.x, last.x) * side(first.y, last.y);
+    let (ranged, listed) = within(&self.order, self.chunks.len(), first, last);
+    let had = ranged.filter(|c| self.chunks.contains_key(c)).count() + listed.count();
+    area.saturating_sub(had as u64)
   }
 
   /// Empties every cell, keeping the chunks
@@ -1110,6 +1170,25 @@ mod tests {
       11 * 4
     );
     assert_eq!(g.chunk_coords().count(), 4); // clearing leaves the chunks; only a streaming unload removes one
+  }
+
+  #[test]
+  fn an_unbounded_fill_making_more_chunks_than_a_map_holds_is_refused() {
+    // A map holds 2^27 cells, 131,072 chunks: a fill making more is
+    // refused before anything is made, where it would have allocated the
+    // whole range (every `i32` cell: an out-of-memory abort)
+    let mut g = TileGrid::unbounded();
+    let tile = Some(Tile::new(0, 2));
+    assert_eq!(g.fill(IVec2::MIN, IVec2::MAX, tile), 0);
+    let wide = IVec2::new(131_073 * 32 - 1, 0);
+    assert_eq!(g.fill(IVec2::ZERO, wide, tile), 0, "131,073 chunks");
+    assert_eq!(g.chunk_coords().count(), 0, "nothing made");
+    assert_eq!(g.version(), 0, "nothing changed");
+    // A fill within the cap writes as before, and clearing any range reads
+    // only the chunks there are
+    assert_eq!(g.fill(IVec2::new(-40, 0), IVec2::new(40, 0), tile), 81);
+    assert_eq!(g.fill(IVec2::MIN, IVec2::MAX, None), 81);
+    assert_eq!(g.chunk_coords().count(), 4, "chunks -2 to 1");
   }
 
   #[test]

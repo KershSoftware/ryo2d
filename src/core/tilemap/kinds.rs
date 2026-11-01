@@ -558,8 +558,7 @@ impl Tracked {
   }
 
   /// Marks the layer read as `data` is (a copy of it, off the main thread);
-  /// returns every chunk its grid has, in row order, which a first build
-  /// reads
+  /// returns the chunks a build reads (`build_chunks`)
   pub(super) fn read_all(&mut self, data: &TileLayerData) -> Vec<IVec2> {
     let grid = &data.grid;
     self.versions.clear();
@@ -567,8 +566,32 @@ impl Tracked {
     self.versions.extend(grid.chunk_versions());
     self.grid_id = grid.id();
     self.grid_version = grid.version();
-    grid.chunk_coords().collect()
+    build_chunks(data)
   }
+}
+
+/// The chunks a build of a layer reads: every chunk its grid has and, for
+/// an IntGrid layer, every chunk holding cells of its IntGrid that its grid
+/// holds (`chunk_kinds` reads an IntGrid's values in any chunk, and a grid
+/// a game swapped for a new one has only the chunks its tiles went in), in
+/// no set order and possibly twice
+pub(super) fn build_chunks(data: &TileLayerData) -> Vec<IVec2> {
+  let grid = &data.grid;
+  let mut chunks: Vec<IVec2> = grid.chunk_coords().collect();
+  if let Some(intgrid) = &data.intgrid {
+    let mut held = CellRect::from_size(intgrid.size);
+    if let Some(bounds) = grid.bounds() {
+      held = CellRect::new(held.min.max(bounds.min), held.max.min(bounds.max));
+    }
+    if !held.is_empty() {
+      let first = TileGrid::chunk_of(held.min);
+      let last = TileGrid::chunk_of(held.max - IVec2::ONE);
+      for y in first.y..=last.y {
+        chunks.extend((first.x..=last.x).map(|x| IVec2::new(x, y)));
+      }
+    }
+  }
+  chunks
 }
 
 /// The chunks of the layers of a group whose version moved since each was

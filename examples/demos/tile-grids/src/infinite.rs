@@ -5,8 +5,8 @@
 //! the sky above it at negative rows), and a small island sits far up and
 //! left at cell (-204, -40). The engine keeps each layer in chunks of
 //! 32 x 32 cells where it has tiles, so the empty sky between the island and
-//! the meadow costs nothing; `TileMap::bounds()` is the rectangle of chunks
-//! that holds them all.
+//! the meadow costs nothing; `TileMap::bounds()` is the rectangle of the
+//! cells holding tiles.
 //!
 //! A runner patrols the meadow by itself, between the ends of the
 //! designer's `patrol` rectangle, starting at `player_start`: it jumps
@@ -51,7 +51,7 @@ pub struct Runner;
 pub(crate) struct InfinitePage {
   view: View,
   root: Option<Entity>,
-  /// The asset's bounds: its tile layers' chunks, in cells
+  /// The asset's bounds: the cells its tile layers hold tiles in
   bounds: CellRect,
   /// Where the runner starts (its feet), and the way it faces
   start: Vec2,
@@ -374,9 +374,9 @@ impl DemoPage for InfinitePage {
       overlay::chunk_labels(ui, ctx, grid, &self.chunks, content_area(ui));
     }
 
-    let side = CHUNK_SIZE as i32;
-    let size = self.bounds.size().as_ivec2() / side;
+    // The chunks the bounds reach: the bounds hold the cells with tiles
     let last = self.bounds.max - IVec2::ONE;
+    let reach = TileGrid::chunk_of(last) - TileGrid::chunk_of(self.bounds.min) + IVec2::ONE;
     let runner = self
       .runner
       .and_then(|runner| ctx.world.get::<Transform>(runner))
@@ -411,9 +411,9 @@ impl DemoPage for InfinitePage {
       ),
       (
         format!(
-          "Chunks: {} of the {} in the bounds, 32 x 32 cells each",
+          "Chunks: {} of the {} the bounds reach, 32 x 32 cells each",
           self.chunks.len(),
-          size.x * size.y
+          reach.x * reach.y
         ),
         Color::WHITE,
       ),
