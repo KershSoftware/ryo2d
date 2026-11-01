@@ -397,7 +397,10 @@ pub struct ChunkRequest {
 /// `unload_distance` from every camera's view and anchor unloads, with the
 /// entities it owns ([`ChunkOwned`]), sending [`ChunkEvent::Unloading`]
 /// (carrying its tiles, and kept in the `SavedChunks`, when a player
-/// changed it). Distances are measured in world pixels from the anchor (or
+/// changed it), at most `unload_per_frame` a frame, the farthest first: after
+/// a teleport the chunks left behind stay resident a few frames as they
+/// go, and the resident chunks are within the distances again once they
+/// have. Distances are measured in world pixels from the anchor (or
 /// the view) to the chunk, along each axis. Only the chunks resident take
 /// edits: `ctx.maps()` refuses a cell in any other.
 ///
@@ -457,6 +460,10 @@ pub struct MapStream {
   pub cameras: bool,
   /// Landed chunks a frame, at most (at least one)
   pub land_per_frame: u32,
+  /// Unloaded chunks a frame, at most (at least one), the farthest from
+  /// every camera's view and anchor first: a teleport's unloads spread over
+  /// a few frames, the chunks waiting their turn still resident
+  pub unload_per_frame: u32,
   /// Where there are no threads (the web): main-thread time a frame for
   /// generating (at least one chunk a frame)
   pub web_budget: Duration,
@@ -468,16 +475,18 @@ pub struct MapStream {
 
 impl MapStream {
   /// A stream of `generator`'s chunks: those within 512 px of a camera's
-  /// view or an anchor load, those past 1,536 px of every one unload, four
-  /// land a frame, the web gives it 2 ms a frame, and it keeps no changed
-  /// chunks
+  /// view or an anchor load, those past 1,536 px of every one unload, two
+  /// land and two unload a frame at most (each builds or takes down a
+  /// chunk's collision and shadows in that frame), the web gives it 2 ms a
+  /// frame, and it keeps no changed chunks
   pub fn new(generator: impl Fn(ChunkRequest) -> ChunkTiles + Send + Sync + 'static) -> MapStream {
     MapStream {
       generator: Arc::new(generator),
       load_distance: 512.0,
       unload_distance: 1536.0,
       cameras: true,
-      land_per_frame: 4,
+      land_per_frame: 2,
+      unload_per_frame: 2,
       web_budget: Duration::from_millis(2),
       saved: None,
     }
@@ -499,6 +508,7 @@ impl std::fmt::Debug for MapStream {
       .field("unload_distance", &self.unload_distance)
       .field("cameras", &self.cameras)
       .field("land_per_frame", &self.land_per_frame)
+      .field("unload_per_frame", &self.unload_per_frame)
       .field("web_budget", &self.web_budget)
       .field("saved", &self.saved)
       .finish_non_exhaustive()
@@ -560,6 +570,9 @@ pub(crate) struct StreamState {
   /// ones that unload, so a frame's look for chunks to unload never walks
   /// a big hand-made map's chunks
   generated: FastSet<IVec2>,
+  /// How many resident chunks no anchor keeps were left for later frames
+  /// at the last look, past the unload budget
+  draining: usize,
   /// The version the stream started at: one of the file's chunks has
   /// changed since when its version passed it (and its last whole load's)
   since: u64,
@@ -598,6 +611,7 @@ impl StreamState {
       resident: FastSet::default(),
       file: FastSet::default(),
       generated: FastSet::default(),
+      draining: 0,
       since: 0,
       out: FastMap::default(),
       ready: Vec::new(),
@@ -790,7 +804,7 @@ impl StreamWork {
         "map {map}: an anchor's load area spans more than {cap} chunks a side (its stream's load_distance, or a camera zoomed far out), so only the middle {cap} x {cap} load (this map warns once)"
       );
     }
-    self.unload(world, map, stream.saved.as_ref());
+    self.unload(world, map, stream, chunk_px);
     self.request(world, map, stream, (cell, chunk_px));
     self.route(world);
     self.land(world, map, stream.land_per_frame, chunk_px);
@@ -839,9 +853,11 @@ impl StreamWork {
   }
 
   /// Unloads `map`'s chunks past every anchor's unload distance (never the
-  /// file's), telling the game, keeping in `saved` those a player changed
-  /// since they landed, and calls off what it asked for or holds there
-  fn unload(&mut self, world: &mut World, map: Entity, saved: Option<&SavedChunks>) {
+  /// file's), at most the stream's `unload_per_frame`, the farthest first
+  /// (the others wait, resident, for the next frames), telling the game,
+  /// keeping in its `SavedChunks` those a player changed since they landed,
+  /// and calls off what it asked for or holds there
+  fn unload(&mut self, world: &mut World, map: Entity, stream: &MapStream, chunk_px: Vec2) {
     let areas = &self.areas;
     let kept = |chunk: IVec2| {
       areas
@@ -870,7 +886,20 @@ impl StreamWork {
       });
       state.ready.retain(|(chunk, _)| kept(*chunk));
     }
-    self.unload_gone(world, map, saved, true);
+    let budget = stream.unload_per_frame.max(1) as usize;
+    let draining = self.gone.len().saturating_sub(budget);
+    if draining > 0 {
+      let StreamWork { gone, areas, .. } = self;
+      gone.sort_unstable_by(|a, b| {
+        nearer(nearness(areas, *b, chunk_px), nearness(areas, *a, chunk_px))
+          .then((a.y, a.x).cmp(&(b.y, b.x)))
+      });
+      gone.truncate(budget);
+    }
+    if let Some(mut state) = world.get_mut::<StreamState>(map) {
+      state.draining = draining;
+    }
+    self.unload_gone(world, map, stream.saved.as_ref(), true);
   }
 
   /// Unloads the chunks `gone` lists from `map`: each leaves every

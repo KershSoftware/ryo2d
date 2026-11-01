@@ -180,11 +180,11 @@ fn generated_tracked(world: &World, map: Entity) {
 }
 
 /// Whether `map`'s stream is idle: every chunk its anchors want is
-/// resident, and none is out or waiting to land
+/// resident, none is out or waiting to land, and none waits to unload
 fn idle(world: &mut World, map: Entity) -> bool {
-  world
-    .get::<StreamState>(map)
-    .is_some_and(|state| state.waiting == 0 && state.out.is_empty() && state.ready.is_empty())
+  world.get::<StreamState>(map).is_some_and(|state| {
+    state.waiting == 0 && state.out.is_empty() && state.ready.is_empty() && state.draining == 0
+  })
 }
 
 /// Runs frames until `map`'s stream is idle
@@ -390,6 +390,72 @@ fn chunks_land_nearest_first_and_within_the_frame_budget() {
     order[1..5].iter().all(|chunk| sides.contains(chunk)),
     "{order:?}"
   );
+}
+
+#[test]
+fn a_teleport_s_unloads_spread_over_frames_farthest_first() {
+  let mut maps = MapWorld::new();
+  let stream = MapStream {
+    unload_per_frame: 2,
+    ..MapStream::new(floors)
+  };
+  let map = spawn(&mut maps, infinite(&["ground"]), stream, |r| r);
+  let anchor = anchor_at(&mut maps, IVec2::ZERO);
+  until_idle(&mut maps, map);
+  let mut cursor = MessageCursor::<ChunkEvent>::default();
+  events(&maps.world, &mut cursor);
+
+  // Twenty chunks on: the nine left behind go two a frame, the farthest
+  // (the column at x -1) first, then the column at 0, then the one at 1,
+  // staying resident until their turn
+  move_to(&mut maps.world, anchor, IVec2::new(20, 0));
+  let old = around(IVec2::ZERO, 1);
+  let mut frames: Vec<Vec<IVec2>> = Vec::new();
+  maps.frames_until(|world| {
+    let gone = unloading(&events(world, &mut cursor), map);
+    assert!(gone.len() <= 2, "{} chunks unloaded in a frame", gone.len());
+    if !gone.is_empty() {
+      frames.push(gone);
+    }
+    // Those not gone yet are still resident
+    let went = frames.concat();
+    let Some(state) = world.get::<StreamState>(map) else {
+      panic!("{map} streams");
+    };
+    let still: Vec<IVec2> = old
+      .iter()
+      .copied()
+      .filter(|chunk| state.resident.contains(chunk))
+      .collect();
+    let waiting: Vec<IVec2> = old
+      .iter()
+      .copied()
+      .filter(|chunk| !went.contains(chunk))
+      .collect();
+    assert_eq!(
+      still, waiting,
+      "the old chunks stay resident until their turn"
+    );
+    idle(world, map)
+  });
+  assert_eq!(frames.len(), 5, "nine chunks, two a frame: {frames:?}");
+  assert_eq!(
+    sorted(frames.concat()),
+    around(IVec2::ZERO, 1),
+    "each went once"
+  );
+  // How far a chunk's box is from the anchor
+  let far = |chunk: &IVec2| {
+    let (min, at) = (chunk.as_vec2() * CHUNK, centre(IVec2::new(20, 0)));
+    (min - at).max(at - (min + CHUNK)).max(Vec2::ZERO).length()
+  };
+  for pair in frames.windows(2) {
+    let nearest = pair[0].iter().map(far).fold(f32::INFINITY, f32::min);
+    let farthest = pair[1].iter().map(far).fold(0.0, f32::max);
+    assert!(nearest >= farthest, "farthest first: {frames:?}");
+  }
+  // Settled: within the distances again
+  assert_eq!(resident(&mut maps.world, map), around(IVec2::new(20, 0), 1));
 }
 
 #[test]
@@ -875,7 +941,11 @@ fn an_unchanged_chunk_is_not_saved() {
 fn an_edit_in_the_unloading_frame_is_saved() {
   let saved = SavedChunks::default();
   let mut maps = MapWorld::new();
-  let stream = MapStream::new(floors).with_saved(saved.clone());
+  // Every chunk left behind unloads in the one frame
+  let stream = MapStream {
+    unload_per_frame: 9,
+    ..MapStream::new(floors).with_saved(saved.clone())
+  };
   let map = spawn(&mut maps, infinite(&["ground"]), stream, |r| r);
   let anchor = anchor_at(&mut maps, IVec2::ZERO);
   until_idle(&mut maps, map);
