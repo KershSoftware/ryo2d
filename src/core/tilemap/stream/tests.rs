@@ -150,6 +150,7 @@ fn resident(world: &mut World, map: Entity) -> Vec<IVec2> {
     panic!("{map} streams");
   };
   let chunks = sorted(state.resident.iter().copied().collect());
+  generated_tracked(world, map);
   for layer in layers_of(world, map) {
     if let Some(data) = world.get::<TileLayerData>(layer) {
       let held: Vec<IVec2> = data.grid.chunk_coords().collect();
@@ -157,6 +158,25 @@ fn resident(world: &mut World, map: Entity) -> Vec<IVec2> {
     }
   }
   chunks
+}
+
+/// Asserts that `map`'s stream keeps its landed chunks apart: the resident
+/// chunks that are not the file's, the only ones it looks at to unload
+fn generated_tracked(world: &World, map: Entity) {
+  let Some(state) = world.get::<StreamState>(map) else {
+    panic!("{map} streams");
+  };
+  let landed: Vec<IVec2> = state
+    .resident
+    .iter()
+    .copied()
+    .filter(|chunk| !state.file.contains(chunk))
+    .collect();
+  assert_eq!(
+    sorted(state.generated.iter().copied().collect()),
+    sorted(landed),
+    "the generated chunks are the resident ones not the file's"
+  );
 }
 
 /// Whether `map`'s stream is idle: every chunk its anchors want is
@@ -1368,8 +1388,10 @@ fn the_file_s_chunks_stay_resident_when_the_anchor_leaves() {
   let (map, file) = spawn_file(&mut maps, INFINITE, stream);
   let anchor = anchor_at(&mut maps, IVec2::ZERO);
   until_idle(&mut maps, map);
+  generated_tracked(&maps.world, map);
   move_to(&mut maps.world, anchor, IVec2::new(40, 40));
   until_idle(&mut maps, map);
+  generated_tracked(&maps.world, map);
   // The generated chunks went; the file's stayed, as the file has them
   for chunk in GENERATED {
     assert!(!MapsView::new(&mut maps.world).stream_ready(map, rect_of(chunk)));
@@ -1586,6 +1608,13 @@ fn a_save_that_moves_the_file_s_chunks_hands_them_to_and_from_the_generator() {
   assert_eq!(loaded(&sent, map), [IVec2::new(1, 0)]);
   assert!(bricked(&mut maps.world, map, IVec2::new(1, 0)));
   assert!(asked_for(&asked).contains(&IVec2::new(1, 0)));
+  // and only the generator's chunks are looked at to unload
+  generated_tracked(&maps.world, map);
+  let Some(state) = maps.world.get::<StreamState>(map) else {
+    panic!("{map} streams");
+  };
+  assert!(state.generated.contains(&IVec2::new(1, 0)));
+  assert!(!state.generated.contains(&IVec2::new(1, 1)));
 }
 
 #[test]
@@ -1671,4 +1700,44 @@ fn a_reload_leaves_a_class_tile_taken_from_a_generated_chunk_taken() {
   until_idle(&mut maps, map);
   maps.frame();
   assert!(class_tiles_at(&mut maps.world, IVec2::new(3, 3)).is_empty());
+}
+
+/// What a streamed map's hand-made chunks cost its frames: a map built in
+/// code holding a tile in each of 64 x 64 chunks (its asset's chunks, so
+/// the file's, which never unload), streamed round an anchor far from
+/// them, its idle `PreUpdate` (the stream's look at what to unload, ask
+/// for and land) timed. Run in release:
+/// `cargo test --release -p ryo2d --lib hand_made_chunks_idle_timing -- --ignored --nocapture`
+#[test]
+#[ignore = "a timing: run in release with --ignored --nocapture"]
+fn hand_made_chunks_idle_timing() {
+  let mut maps = MapWorld::new();
+  let mut map = infinite(&["ground"]);
+  if let Some(grid) = map.tiles_mut(0) {
+    for y in 0..64 {
+      for x in 0..64 {
+        grid.set(IVec2::new(x, y) * 32 + IVec2::splat(5), Some(COIN));
+      }
+    }
+  }
+  let map = spawn(&mut maps, map, MapStream::new(floors), |r| r);
+  anchor_at(&mut maps, IVec2::new(-500, -500));
+  until_idle(&mut maps, map);
+  let mut times = Vec::new();
+  for _ in 0..2000 {
+    let start = std::time::Instant::now();
+    maps.pre_update();
+    times.push(start.elapsed());
+  }
+  times.sort();
+  let resident = maps
+    .world
+    .get::<StreamState>(map)
+    .map_or(0, |state| state.resident.len());
+  println!(
+    "a streamed map of 4,096 hand-made chunks, {resident} resident: an idle PreUpdate, median \
+     {:?}, 99th percentile {:?}",
+    times[times.len() / 2],
+    times[times.len() * 99 / 100]
+  );
 }

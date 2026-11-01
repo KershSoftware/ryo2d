@@ -556,6 +556,10 @@ pub(crate) struct StreamState {
   /// The chunks that are the file's (`file_chunks`): resident from the
   /// stream's first frame, never asked for and never unloaded
   file: FastSet<IVec2>,
+  /// The resident chunks that are not the file's: those landed, the only
+  /// ones that unload, so a frame's look for chunks to unload never walks
+  /// a big hand-made map's chunks
+  generated: FastSet<IVec2>,
   /// The version the stream started at: one of the file's chunks has
   /// changed since when its version passed it (and its last whole load's)
   since: u64,
@@ -593,6 +597,7 @@ impl StreamState {
       epoch: EPOCHS.fetch_add(1, Ordering::Relaxed),
       resident: FastSet::default(),
       file: FastSet::default(),
+      generated: FastSet::default(),
       since: 0,
       out: FastMap::default(),
       ready: Vec::new(),
@@ -849,13 +854,12 @@ impl StreamWork {
         return;
       };
       let state = &mut *state;
-      let file = &state.file;
       self.gone.extend(
         state
-          .resident
+          .generated
           .iter()
           .copied()
-          .filter(|chunk| !kept(*chunk) && !file.contains(chunk)),
+          .filter(|chunk| !kept(*chunk)),
       );
       state.out.retain(|&chunk, (_, called_off)| {
         let keep = kept(chunk);
@@ -933,6 +937,7 @@ impl StreamWork {
     if let Some(mut state) = world.get_mut::<StreamState>(map) {
       for chunk in &self.gone {
         state.resident.remove(chunk);
+        state.generated.remove(chunk);
         state.touched.remove(chunk);
       }
     }
@@ -1133,6 +1138,7 @@ impl StreamWork {
     }
     if let Some(mut state) = world.get_mut::<StreamState>(map) {
       state.resident.insert(chunk);
+      state.generated.insert(chunk);
     }
     send(world, ChunkEvent::Loaded { map, chunk });
   }
