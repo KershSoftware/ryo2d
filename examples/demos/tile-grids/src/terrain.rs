@@ -100,8 +100,9 @@ fn smooth(t: f32) -> f32 {
 }
 
 /// The cells round one chunk, worked out before its tiles are picked: each
-/// column's top row (its first ground cell from above), and which cells are
-/// ground, a margin wide round the chunk so the tiles at its edges see
+/// column's top row (its first ground cell from above, ground in both
+/// worlds by their rules, whatever rows the block holds), and which cells
+/// are ground, a margin wide round the chunk so the tiles at its edges see
 /// their neighbours
 pub(crate) struct Block {
   /// The block's first cell: the chunk's, less the margin
@@ -206,8 +207,11 @@ impl Scenery {
       else {
         continue;
       };
-      // On level ground only, so the canopy clears its neighbours
-      if (left - top).abs() > 1 || (right - top).abs() > 1 || !block.ground(IVec2::new(root, top)) {
+      // On level ground only, so the canopy clears its neighbours. A
+      // column's top is ground by the world's rule, so a tree rooted below
+      // the block's rows (low ground, seen from the chunk above) still
+      // stands there, and its canopy reaches into this chunk
+      if (left - top).abs() > 1 || (right - top).abs() > 1 {
         continue;
       }
       if let Some(slot) = trunks.get_mut(n) {
@@ -226,7 +230,7 @@ impl Scenery {
       let Some(top) = block.top(x) else {
         continue;
       };
-      if trunks.contains(&x) || self.quiet(x, x) || !block.ground(IVec2::new(x, top)) {
+      if trunks.contains(&x) || self.quiet(x, x) {
         continue;
       }
       let roll = hash(x, 3, self.seed);
@@ -463,5 +467,165 @@ impl Wilds {
       cell.y >= top && !open
     });
     fill(first, &block, self.tileset, &scenery, true)
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use std::collections::HashMap;
+
+  use super::*;
+
+  /// The meadow's world as the demo's file gives it: the meadow from
+  /// column -96 to 63, its grass at row 0 at both ends, its bottom row 5
+  fn meadow() -> MeadowWorld {
+    MeadowWorld {
+      tileset: 0,
+      left: IVec2::new(-96, 0),
+      right: IVec2::new(63, 0),
+      floor: 5,
+    }
+  }
+
+  fn request(chunk: IVec2) -> ChunkRequest {
+    ChunkRequest {
+      chunk,
+      first_cell: chunk * SIDE,
+      tile_size: UVec2::splat(18),
+    }
+  }
+
+  /// Column `x`'s grass row in the meadow's world, read alone
+  fn meadow_top(world: &MeadowWorld, x: i32) -> i32 {
+    let noise = heights(&MeadowWorld::noise(), MEADOW_SEED, x, 1);
+    world.top(x, noise.first().copied().unwrap_or(0.0))
+  }
+
+  /// The tile at `cell` of `layer`, from the chunk holding it, each chunk
+  /// made once
+  fn tile_at(
+    made: &mut HashMap<IVec2, ChunkTiles>,
+    chunk: impl Fn(ChunkRequest) -> ChunkTiles,
+    layer: &str,
+    cell: IVec2,
+  ) -> Option<Tile> {
+    let of = IVec2::new(cell.x.div_euclid(SIDE), cell.y.div_euclid(SIDE));
+    let tiles = made.entry(of).or_insert_with(|| chunk(request(of)));
+    tiles.get(layer, (cell - of * SIDE).as_uvec2())
+  }
+
+  #[test]
+  fn a_tree_rooted_on_low_ground_has_its_canopy_across_both_chunk_rows() {
+    let world = meadow();
+    let scenery = world.scenery();
+    let mut made = HashMap::new();
+    let mut low = 0;
+    // The trees either side of the meadow, out to about 1,000 columns
+    for slot in (-80..-8).chain(6..80) {
+      let Some(root) = scenery.tree_in(slot) else {
+        continue;
+      };
+      let top = meadow_top(&world, root);
+      let level = [root - 1, root + 1]
+        .iter()
+        .all(|&x| (meadow_top(&world, x) - top).abs() <= 1);
+      // A cloud may cross the canopy of a tree on the highest hills
+      if !level || top - 6 <= scenery.clouds.1 {
+        continue;
+      }
+      // Rows 1 and 2: rooted in chunk row 0, the tree reaching into row -1
+      if top >= 1 {
+        low += 1;
+      }
+      let mut want = Vec::new();
+      for (r, row) in CANOPY.iter().enumerate() {
+        for (c, id) in row.iter().enumerate() {
+          want.push((IVec2::new(root - 1 + c as i32, top - 6 + r as i32), *id));
+        }
+      }
+      for (r, id) in TRUNK.iter().enumerate() {
+        want.push((IVec2::new(root, top - 3 + r as i32), *id));
+      }
+      for (cell, id) in want {
+        let got = tile_at(&mut made, |r| world.chunk(r), SCENERY, cell);
+        assert_eq!(
+          got,
+          Some(Tile::new(0, id)),
+          "the tree at column {root} (its ground at row {top}) has tile {id} at {cell}"
+        );
+      }
+    }
+    assert!(low > 0, "some trees stand on rows 1 and 2");
+  }
+
+  /// Asserts that every cell along the edges of the chunks from `first` to
+  /// `last` holds the ground tile the world's own rule gives it, `ground`
+  /// read cell by cell: so neighbouring chunks agree where they meet
+  fn edges_follow_the_rule(
+    chunk: impl Fn(ChunkRequest) -> ChunkTiles,
+    ground: impl Fn(IVec2) -> bool,
+    (first, last): (IVec2, IVec2),
+  ) {
+    for cy in first.y..=last.y {
+      for cx in first.x..=last.x {
+        let of = IVec2::new(cx, cy);
+        let tiles = chunk(request(of));
+        let edge = (0..SIDE).flat_map(|i| {
+          [
+            IVec2::new(0, i),
+            IVec2::new(SIDE - 1, i),
+            IVec2::new(i, 0),
+            IVec2::new(i, SIDE - 1),
+          ]
+        });
+        for at in edge {
+          let cell = of * SIDE + at;
+          let want = ground(cell).then(|| {
+            ground_tile(
+              ground(cell + IVec2::NEG_Y),
+              ground(cell + IVec2::Y),
+              ground(cell + IVec2::NEG_X),
+              ground(cell + IVec2::X),
+            )
+          });
+          let got = tiles.get(GROUND, at.as_uvec2()).map(|tile| tile.id);
+          assert_eq!(got, want, "chunk {of}'s ground at {cell}");
+        }
+      }
+    }
+  }
+
+  #[test]
+  fn neighbouring_chunks_agree_where_they_meet() {
+    let world = meadow();
+    let ground = |cell: IVec2| cell.y >= meadow_top(&world, cell.x) && cell.y <= world.floor;
+    // Past the meadow's ends, in both rows of chunks its ground spans
+    let chunk = |r| world.chunk(r);
+    edges_follow_the_rule(chunk, ground, (IVec2::new(-9, -1), IVec2::new(-4, 0)));
+    edges_follow_the_rule(chunk, ground, (IVec2::new(2, -1), IVec2::new(7, 0)));
+
+    let wilds = Wilds { tileset: 0 };
+    let ground = |cell: IVec2| {
+      let top = wilds.top(cell.x);
+      let cave = field(&Wilds::caves(), WILDS_SEED + 1, cell, IVec2::ONE);
+      let open = cell.y > top + CAVE_DEPTH && cave.first().is_some_and(|v| *v < CAVES);
+      cell.y >= top && !open
+    };
+    let chunk = |r| wilds.chunk(r);
+    edges_follow_the_rule(chunk, ground, (IVec2::new(-3, -1), IVec2::new(2, 1)));
+  }
+
+  #[test]
+  fn a_chunk_comes_out_the_same_each_time() {
+    let (world, wilds) = (meadow(), Wilds { tileset: 0 });
+    for chunk in [
+      IVec2::new(-5, -1),
+      IVec2::new(-5, 0),
+      IVec2::new(4, 0),
+      IVec2::new(-2, 1),
+    ] {
+      assert_eq!(world.chunk(request(chunk)), world.chunk(request(chunk)));
+      assert_eq!(wilds.chunk(request(chunk)), wilds.chunk(request(chunk)));
+    }
   }
 }
