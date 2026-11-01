@@ -186,6 +186,7 @@ impl Scene for Repeated {
         image: Some(image),
         repeat_x: true,
         repeat_y: true,
+        transparent: None,
       }),
     });
     let map = ctx.assets().add(map);

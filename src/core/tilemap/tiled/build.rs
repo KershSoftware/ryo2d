@@ -97,6 +97,35 @@ impl DependencyPlaces {
   }
 }
 
+/// The editor features a file uses that load otherwise than the editor
+/// shows them, each warned once per file (`warn`), naming its first place
+/// and how many more
+#[derive(Default)]
+pub(crate) struct Unread(Vec<(String, String, usize)>);
+
+impl Unread {
+  /// Notes `what` (what the file does and how it loads) at `place`
+  pub(crate) fn note(&mut self, what: impl Into<String>, place: &str) {
+    let what = what.into();
+    match self.0.iter_mut().find(|(w, ..)| *w == what) {
+      Some((.., more)) => *more += 1,
+      None => self.0.push((what, place.to_string(), 0)),
+    }
+  }
+
+  /// Warns once for each feature noted, then forgets them
+  pub(crate) fn warn(&mut self, path: &AssetPath, module: &str) {
+    for (what, place, more) in self.0.drain(..) {
+      let more = match more {
+        0 => String::new(),
+        1 => " and 1 place more".to_string(),
+        n => format!(" and {n} places more"),
+      };
+      crate::engine_warn!(module: module, "{path}: {what} (at {place}{more})");
+    }
+  }
+}
+
 /// `path`'s dependency `dependency`, named at `place`, failed with `error`
 fn dependency_error(
   path: &AssetPath,
@@ -132,6 +161,25 @@ pub(crate) fn load_dep<T: Asset>(
   })
 }
 
+/// A transparent colour as Tiled writes it (`#ff00ff` in JSON, `ff00ff` in
+/// XML); an empty one is none
+fn transparent(
+  path: &AssetPath,
+  place: &str,
+  text: Option<&str>,
+) -> Result<Option<Color>, AssetError> {
+  let Some(text) = text.filter(|t| !t.is_empty()) else {
+    return Ok(None);
+  };
+  parse_color(text).map(Some).ok_or_else(|| {
+    fail(
+      path,
+      place,
+      format!("the transparent colour {text:?} is not a color"),
+    )
+  })
+}
+
 fn multiply(a: Color, b: Color) -> Color {
   let m = |x: u8, y: u8| ((x as u16 * y as u16 + 127) / 255) as u8;
   Color::new(m(a.r, b.r), m(a.g, b.g), m(a.b, b.b), m(a.a, b.a))
@@ -150,17 +198,25 @@ pub(crate) fn cell_count(w: u32, h: u32) -> Option<usize> {
 // ---- tilesets -------------------------------------------------------------
 
 /// The polygon of a collision object, in tile pixels; `None` for objects that
-/// are no closed shape (points, polylines, text, tile objects)
+/// are no closed shape (points, polylines, text, tile objects). Ellipses and
+/// capsules are cut into polygons
 fn collision_shape(
   px: &mut Props<'_>,
   place: &str,
   o: &RawObject,
 ) -> Result<Option<TileShape>, AssetError> {
-  if o.point || o.capsule || o.polyline.is_some() || o.text.is_some() || o.gid.is_some() {
+  let place = format!("{place}, object {}", o.id);
+  if o.polyline.is_some() {
+    px.unread.note(
+      "a polyline among a tile's collision shapes has no inside, so it does not collide or cast a shadow (draw a polygon)",
+      &place,
+    );
+    return Ok(None);
+  }
+  if o.point || o.text.is_some() || o.gid.is_some() {
     return Ok(None);
   }
   let (width, height) = (o.width.unwrap_or(0.0), o.height.unwrap_or(0.0));
-  let place = format!("{place}, object {}", o.id);
   // points relative to the object's position, before it is turned
   let local: Vec<(f64, f64)> = if let Some(points) = &o.polygon {
     if points.len() < 3 {
@@ -177,6 +233,11 @@ fn collision_shape(
         )
       })
       .collect()
+  } else if o.capsule {
+    if width <= 0.0 || height <= 0.0 {
+      return Ok(None);
+    }
+    capsule_points(width, height)
   } else {
     if width <= 0.0 || height <= 0.0 {
       return Ok(None);
@@ -202,6 +263,32 @@ fn collision_shape(
     occluder: properties.bool("occluder").unwrap_or(false),
     properties,
   }))
+}
+
+/// A capsule of `width` x `height` from its top-left: a rectangle whose two
+/// short ends are half circles, each cut into `ELLIPSE_POINTS / 2` edges,
+/// clockwise on screen (y down) from the right end's top
+fn capsule_points(width: f64, height: f64) -> Vec<(f64, f64)> {
+  let r = width.min(height) / 2.0;
+  let half = ELLIPSE_POINTS / 2;
+  let arc = |centre: (f64, f64), from: f64| {
+    (0..=half).map(move |i| {
+      let t = from + std::f64::consts::PI * i as f64 / half as f64;
+      (centre.0 + r * t.cos(), centre.1 + r * t.sin())
+    })
+  };
+  let quarter = std::f64::consts::FRAC_PI_2;
+  if width >= height {
+    // ends left and right: the right half circle from its top, then the left
+    arc((width - r, r), -quarter)
+      .chain(arc((r, r), quarter))
+      .collect()
+  } else {
+    // ends top and bottom: the bottom half circle from its right, then the top
+    arc((r, height - r), 0.0)
+      .chain(arc((r, r), std::f64::consts::PI))
+      .collect()
+  }
 }
 
 fn tile_data(
@@ -243,6 +330,18 @@ fn tile_data(
   if let Some(written) = &raw.image {
     let handle = load_dep::<Image>(cx, path, place, written, &mut px.places)?;
     data.image = Some((handle, UVec2::new(raw.imagewidth, raw.imageheight)));
+    let part = (
+      raw.x.unwrap_or(0),
+      raw.y.unwrap_or(0),
+      raw.width.unwrap_or(raw.imagewidth),
+      raw.height.unwrap_or(raw.imageheight),
+    );
+    if part != (0, 0, raw.imagewidth, raw.imageheight) {
+      px.unread.note(
+        "a collection tile's part of its image (x, y, width, height) is not read: the tile draws its whole image",
+        place,
+      );
+    }
   }
   Ok(data)
 }
@@ -294,6 +393,13 @@ pub(crate) fn build_tileset(
   set.margin = raw.margin;
   set.columns = columns;
   set.tile_offset = IVec2::new(raw.tileoffset.x, raw.tileoffset.y);
+  if raw.tilerendersize.as_deref() == Some("grid") {
+    px.unread.note(
+      "a tileset's tile render size \"grid\" (tiles scaled to the map's cells as its fill mode says) is not read: its tiles draw at their own size",
+      &place,
+    );
+  }
+  set.transparent = transparent(&path, &place, raw.transparentcolor.as_deref())?;
   let declared = raw.tilecount.unwrap_or(computed_count);
   if declared > MAX_TILES {
     return Err(fail(
@@ -517,6 +623,21 @@ impl Builder<'_, '_> {
           .enumerate()
           .filter_map(|(tileset, max)| Some((tileset as u16, max?)))
           .collect();
+        // Tiled draws a top-down layer's (its default) objects by their y:
+        // its tile objects draw in file order here, which differs only
+        // where the file has them out of that order
+        let top_down = matches!(raw.draworder.as_deref(), None | Some("topdown"));
+        let bottoms: Vec<f32> = objects
+          .iter()
+          .filter(|o| o.tile.is_some())
+          .map(|o| o.position.y + o.size.y)
+          .collect();
+        if top_down && !bottoms.is_sorted() {
+          self.px.unread.note(
+            "an object layer drawn top down (Tiled's default) draws its tile objects in their order in the file, not by their y (set the layer's draw order to manual, or order them)",
+            &place,
+          );
+        }
         LayerKind::Objects(objects)
       }
       "imagelayer" => {
@@ -535,6 +656,7 @@ impl Builder<'_, '_> {
           image,
           repeat_x: raw.repeatx,
           repeat_y: raw.repeaty,
+          transparent: transparent(&path, &place, raw.transparentcolor.as_deref())?,
         })
       }
       other => return Err(fail(&path, &place, format!("unknown layer type {other:?}"))),
@@ -665,6 +787,15 @@ pub(crate) fn build_map(
   }
   if raw.tilewidth == 0 || raw.tileheight == 0 {
     return Err(fail(&path, place, "the tile size is 0"));
+  }
+  if !matches!(raw.renderorder.as_str(), "" | "right-down") {
+    px.unread.note(
+      format!(
+        "the render order {:?} is not read: tiles draw right-down, which differs where tiles reach past their cells",
+        raw.renderorder
+      ),
+      place,
+    );
   }
   if cell_count(raw.width, raw.height).is_none() {
     return Err(fail(

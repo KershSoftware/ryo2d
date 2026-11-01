@@ -513,6 +513,7 @@ impl Scene for Busy {
           image: Some(backdrop),
           repeat_x: true,
           repeat_y: false,
+          transparent: None,
         }),
       },
     );
@@ -1402,6 +1403,7 @@ fn a_tiny_image_too_small_to_repeat_warns_once() {
             image: Some(image),
             repeat_x: true,
             repeat_y: true,
+            transparent: None,
           }),
         });
         spawn_map(ctx, map, Vec2::ZERO);

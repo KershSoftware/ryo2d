@@ -132,19 +132,24 @@ impl Pixels for FastMap<AssetId<Image>, Image> {
 struct Source<'a> {
   image: &'a Image,
   rect: URect,
+  /// The colour that pads clear (the tileset's transparent colour)
+  key: Option<[u8; 3]>,
 }
 
 fn source<'a>(tileset: &Tileset, images: &'a impl Pixels, id: u32) -> Option<Source<'a>> {
+  let key = tileset.transparent.map(|c| [c.r, c.g, c.b]);
   match &tileset.image {
     TilesetImage::Atlas { image, .. } => Some(Source {
       image: images.image(image)?,
       rect: tileset.tile_rect(id)?,
+      key,
     }),
     TilesetImage::Collection => {
       let (handle, size) = tileset.tile(id)?.image.as_ref()?;
       Some(Source {
         image: images.image(handle)?,
         rect: URect::new(0, 0, size.x, size.y),
+        key,
       })
     }
   }
@@ -329,8 +334,8 @@ pub(crate) fn pad_tileset(
 }
 
 /// Copies a tile of `drawn` texels into the cell at `origin`, centred, its
-/// edge texels extruded over the rest of the cell. Texels the source lacks
-/// stay transparent
+/// edge texels extruded over the rest of the cell. Texels the source lacks,
+/// and texels of the tileset's transparent colour, are transparent
 fn paint(data: &mut [u8], stride: u32, origin: UVec2, cell: u32, drawn: UVec2, from: &Source) {
   let offset = UVec2::new((cell - drawn.x) / 2, (cell - drawn.y) / 2);
   let (src_w, src_h) = (from.image.width(), from.image.height());
@@ -344,6 +349,9 @@ fn paint(data: &mut [u8], stride: u32, origin: UVec2, cell: u32, drawn: UVec2, f
       }
       let at = (sy as usize * src_w as usize + sx as usize) * 4;
       let to = ((origin.y + y) as usize * stride as usize + (origin.x + x) as usize) * 4;
+      if from.key.is_some_and(|key| pixels[at..at + 3] == key) {
+        continue;
+      }
       data[to..to + 4].copy_from_slice(&pixels[at..at + 4]);
     }
   }
@@ -822,6 +830,22 @@ pub(crate) mod tests {
         }
       }
     }
+  }
+
+  #[test]
+  fn a_tileset_s_transparent_colour_pads_transparent() {
+    use crate::core::ui::Color;
+    // Texel (x, y) of tile `id` is [x, y, id, 255]: with [3, 4, 1] the
+    // transparent colour, tile 1's texel (3, 4) pads clear, and nothing else
+    let mut images = Assets::new();
+    let mut t = marked_atlas(&mut images, 16, 2, 2);
+    t.transparent = Some(Color::rgb(3, 4, 1));
+    let (image, layout) = pad_tileset(&t, &images, default_max_side()).expect("padded");
+    let o = layout.cell_origin(layout.tile(1).expect("tile").slot);
+    assert_eq!(texel(&image, o.x + 8 + 3, o.y + 8 + 4), [0, 0, 0, 0]);
+    assert_eq!(texel(&image, o.x + 8 + 4, o.y + 8 + 4), [4, 4, 1, 255]);
+    let o = layout.cell_origin(layout.tile(0).expect("tile").slot);
+    assert_eq!(texel(&image, o.x + 8 + 3, o.y + 8 + 4), [3, 4, 0, 255]);
   }
 
   #[test]

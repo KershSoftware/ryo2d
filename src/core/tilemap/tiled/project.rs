@@ -181,6 +181,8 @@ pub(crate) struct Props<'a> {
   left_in_file: usize,
   /// Where the file names its dependencies
   pub(crate) places: super::build::DependencyPlaces,
+  /// What the file uses that loads otherwise than Tiled shows it
+  pub(crate) unread: super::build::Unread,
 }
 
 impl<'a> Props<'a> {
@@ -191,6 +193,7 @@ impl<'a> Props<'a> {
       warned: Vec::new(),
       left_in_file: MAX_FILE_VALUES,
       places: Default::default(),
+      unread: Default::default(),
     }
   }
 

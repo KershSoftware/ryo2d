@@ -215,6 +215,7 @@ impl<'a, 'i> Reader<'a, 'i> {
       tilecount: self.num(node, "tilecount")?,
       columns: self.num(node, "columns")?.unwrap_or(0),
       objectalignment: self.str(node, "objectalignment").map(str::to_string),
+      tilerendersize: self.str(node, "tilerendersize").map(str::to_string),
       properties: self.properties(node)?,
       ..RawTileset::default()
     };
@@ -228,6 +229,7 @@ impl<'a, 'i> Reader<'a, 'i> {
       set.image = self.str(image, "source").map(str::to_string);
       set.imagewidth = self.num(image, "width")?.unwrap_or(0);
       set.imageheight = self.num(image, "height")?.unwrap_or(0);
+      set.transparentcolor = self.str(image, "trans").map(str::to_string);
     }
     if let Some(node) = self.child(node, "transformations") {
       let flag = |name: &str| {
@@ -258,6 +260,10 @@ impl<'a, 'i> Reader<'a, 'i> {
       id: self.num(node, "id")?.unwrap_or(0),
       class: self.class(node),
       probability: self.num(node, "probability")?,
+      x: self.num(node, "x")?,
+      y: self.num(node, "y")?,
+      width: self.num(node, "width")?,
+      height: self.num(node, "height")?,
       properties: self.properties(node)?,
       ..RawTile::default()
     };
@@ -346,6 +352,7 @@ impl<'a, 'i> Reader<'a, 'i> {
       height: self.num(node, "height")?,
       repeatx: self.flag(node, "repeatx")?.unwrap_or(false),
       repeaty: self.flag(node, "repeaty")?.unwrap_or(false),
+      draworder: self.str(node, "draworder").map(str::to_string),
       properties: self.properties(node)?,
       ..RawLayer::default()
     };
@@ -361,10 +368,11 @@ impl<'a, 'i> Reader<'a, 'i> {
         }
       }
       "imagelayer" => {
-        layer.image = self
-          .child(node, "image")
+        let image = self.child(node, "image");
+        layer.image = image
           .and_then(|i| self.str(i, "source"))
           .map(str::to_string);
+        layer.transparentcolor = image.and_then(|i| self.str(i, "trans")).map(str::to_string);
       }
       _ => {
         for child in node.children().filter(Node::is_element) {
@@ -458,6 +466,10 @@ impl<'a, 'i> Reader<'a, 'i> {
     let mut map = RawMap {
       orientation: self
         .str(node, "orientation")
+        .unwrap_or_default()
+        .to_string(),
+      renderorder: self
+        .str(node, "renderorder")
         .unwrap_or_default()
         .to_string(),
       infinite: self.flag(node, "infinite")?.unwrap_or(false),

@@ -91,7 +91,10 @@ impl AssetLoader for TiledMapLoader {
       parse(&path, &bytes)?
     };
     let project = TiledProject::for_loader(cx, self.project.as_deref())?;
-    build_map(raw, cx, &mut Props::new(path, project.as_ref()))
+    let mut px = Props::new(path.clone(), project.as_ref());
+    let map = build_map(raw, cx, &mut px)?;
+    px.unread.warn(&path, "Tiled");
+    Ok(map)
   }
 
   fn check(&self, map: &TileMap, cx: &CheckContext<'_>) -> Result<(), AssetError> {
@@ -121,8 +124,9 @@ impl AssetLoader for TiledTilesetLoader {
       parse(&path, &bytes)?
     };
     let project = TiledProject::for_loader(cx, self.project.as_deref())?;
-    let mut px = Props::new(path, project.as_ref());
+    let mut px = Props::new(path.clone(), project.as_ref());
     let mut set = build_tileset(raw, cx, &mut px)?;
+    px.unread.warn(&path, "Tiled");
     set.dependency_places = px.places;
     Ok(set)
   }

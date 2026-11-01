@@ -860,6 +860,7 @@ fn image_layer(
       image: Some(image),
       repeat_x,
       repeat_y,
+      transparent: None,
     }),
   });
   map.layers.len() - 1
@@ -871,6 +872,41 @@ fn red_blue(ctx: &mut SceneContext) -> Handle<Image> {
     .flat_map(|i| if i % (2 * CELL) < CELL { RED } else { BLUE })
     .collect();
   ctx.assets().add(Image::from_rgba(data, 2 * CELL, CELL))
+}
+
+#[test]
+fn an_image_layer_s_transparent_colour_draws_clear() {
+  // A 16 x 8 image, red with its right half magenta, keyed to magenta: the
+  // right half shows what is under it
+  let Some(frame) = render(|ctx| {
+    let data: Vec<u8> = (0..2 * CELL * CELL)
+      .flat_map(|i| {
+        if i % (2 * CELL) < CELL {
+          RED
+        } else {
+          [255, 0, 255, 255]
+        }
+      })
+      .collect();
+    let image = ctx.assets().add(Image::from_rgba(data, 2 * CELL, CELL));
+    let mut layers = TileMap::new(UVec2::splat(SIZE / CELL), UVec2::splat(CELL));
+    let at = image_layer(
+      &mut layers,
+      "keyed",
+      image,
+      Vec2::new(8.0, 8.0),
+      (false, false),
+    );
+    if let LayerKind::Image(layer) = &mut layers.layers[at].kind {
+      layer.transparent = Some(Color::rgb(255, 0, 255));
+    }
+    spawn(ctx, layers, Vec2::ZERO);
+  }) else {
+    return;
+  };
+  assert_pixels(&frame, |x, y| {
+    ((8..16).contains(&x) && (8..16).contains(&y)).then_some(RED)
+  });
 }
 
 #[test]

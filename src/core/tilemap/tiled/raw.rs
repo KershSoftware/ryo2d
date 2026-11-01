@@ -23,6 +23,8 @@ pub(crate) struct RawProperty {
 #[serde(default)]
 pub(crate) struct RawMap {
   pub orientation: String,
+  /// The order Tiled draws tiles in (`right-down` unless set)
+  pub renderorder: String,
   pub infinite: bool,
   pub width: u32,
   pub height: u32,
@@ -63,9 +65,14 @@ pub(crate) struct RawTileset {
   pub tileoffset: RawOffset,
   /// Where tile objects sit against their position (`bottomleft`, `center`...)
   pub objectalignment: Option<String>,
+  /// The size tiles draw at (`tile`, or `grid`: scaled to the map's cells
+  /// as `fillmode` says)
+  pub tilerendersize: Option<String>,
   pub image: Option<String>,
   pub imagewidth: u32,
   pub imageheight: u32,
+  /// The colour the image draws clear
+  pub transparentcolor: Option<String>,
   pub tiles: Vec<RawTile>,
   pub wangsets: Vec<RawWangSet>,
   pub transformations: RawTransformations,
@@ -137,6 +144,12 @@ pub(crate) struct RawTile {
   pub image: Option<String>,
   pub imagewidth: u32,
   pub imageheight: u32,
+  /// The part of its image a collection tile draws (Tiled 1.9): left out,
+  /// the whole image
+  pub x: Option<u32>,
+  pub y: Option<u32>,
+  pub width: Option<u32>,
+  pub height: Option<u32>,
   pub properties: Vec<RawProperty>,
   /// The collision shapes: an object group
   pub objectgroup: Option<RawLayer>,
@@ -178,8 +191,12 @@ pub(crate) struct RawLayer {
   pub compression: Option<String>,
   /// Present only in infinite maps
   pub chunks: Option<Vec<Value>>,
+  /// An object layer's draw order: `topdown` (Tiled's default) or `index`
+  pub draworder: Option<String>,
   pub objects: Vec<RawObject>,
   pub image: Option<String>,
+  /// The colour an image layer's picture draws clear
+  pub transparentcolor: Option<String>,
   pub repeatx: bool,
   pub repeaty: bool,
   /// The children of a group

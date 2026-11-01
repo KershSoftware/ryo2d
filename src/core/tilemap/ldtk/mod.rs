@@ -1276,6 +1276,36 @@ mod tests {
   }
 
   #[test]
+  fn ldtk_features_drawn_otherwise_warn_once_naming_each() {
+    // The door's tile drawn repeated over its box, and two layers with
+    // parallax that LDtk scales
+    let text = std::fs::read_to_string(Path::new(FIXTURES).join("internal.ldtk")).expect("fixture");
+    let mut value: serde_json::Value = serde_json::from_str(&text).expect("json");
+    let mut tiled_entities = 0;
+    for def in value["defs"]["entities"].as_array_mut().expect("entities") {
+      def["tileRenderMode"] = "Repeat".into();
+      tiled_entities += 1;
+    }
+    assert!(tiled_entities > 0);
+    for layer in value["defs"]["layers"].as_array_mut().expect("layers") {
+      if layer["identifier"] == "Decor" || layer["identifier"] == "Props" {
+        layer["parallaxFactorX"] = 0.5.into();
+        layer["parallaxScaling"] = true.into();
+      }
+    }
+    let mut world = world_over(files_at("", &[("warn-e5f6.ldtk", value.to_string())]));
+    load_in(&mut world, "warn-e5f6.ldtk").expect("loads");
+    let warned: Vec<String> = crate::core::dev_log::get_entries()
+      .into_iter()
+      .filter(|e| e.message.contains("warn-e5f6.ldtk"))
+      .map(|e| e.message)
+      .collect();
+    let count = |what: &str| warned.iter().filter(|w| w.contains(what)).count();
+    assert_eq!(count("parallax layer's scaling"), 1, "{warned:#?}");
+    assert_eq!(count("\"Repeat\""), 1, "{warned:#?}");
+  }
+
+  #[test]
   fn sizes_that_would_overflow_are_refused() {
     let error = json_failure(|v| {
       v["levels"][1]["pxWid"] = 4_000_000_000i64.into();

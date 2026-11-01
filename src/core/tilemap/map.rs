@@ -138,6 +138,9 @@ pub struct ImageLayer {
   pub image: Option<Handle<Image>>,
   pub repeat_x: bool,
   pub repeat_y: bool,
+  /// The colour the picture draws clear where it holds it (Tiled's
+  /// transparent colour; its alpha is not compared)
+  pub transparent: Option<Color>,
 }
 
 /// What a layer holds

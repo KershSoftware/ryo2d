@@ -225,6 +225,7 @@ impl Scene for StaticMap {
         image: Some(backdrop),
         repeat_x: true,
         repeat_y: true,
+        transparent: None,
       }),
     });
     for name in ["back", "ground", "props", "water"] {

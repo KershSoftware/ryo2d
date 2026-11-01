@@ -335,6 +335,7 @@ mod tests {
       image,
       repeat_x,
       repeat_y,
+      ..
     }) = &sky.kind
     else {
       panic!("sky is not an image layer")
@@ -361,6 +362,31 @@ mod tests {
       panic!("keyed is not an image layer")
     };
     assert!(keyed.image.is_some());
+  }
+
+  #[test]
+  fn transparent_colours_load_on_tilesets_and_image_layers() {
+    let magenta = Some(Color::rgb(0xff, 0x00, 0xff));
+    let mut world = world_over(files_with(&[]));
+    let handle = AssetsView::new(&mut world)
+      .load_now::<Tileset>("tilesets/loot.tsj")
+      .expect("loads");
+    let set = world
+      .resource::<Assets<Tileset>>()
+      .get(&handle)
+      .expect("stored");
+    assert_eq!(set.transparent, magenta);
+    let map = load("maps/image-layers.tmj");
+    let LayerKind::Image(keyed) = &layer(&map, "keyed").kind else {
+      panic!("keyed is not an image layer")
+    };
+    assert_eq!(keyed.transparent, magenta);
+    let LayerKind::Image(empty) = &layer(&map, "empty").kind else {
+      panic!("empty is not an image layer")
+    };
+    assert_eq!(empty.transparent, None);
+    let mixed = load_in(&mut world, "maps/mixed.tmj").expect("loads");
+    assert_eq!(tileset_of(&mixed, 0, &world).transparent, None);
   }
 
   #[test]
@@ -619,6 +645,109 @@ mod tests {
     assert!(
       error.contains("201326592 cells") && error.contains("past the 134217728 a map holds"),
       "{error}"
+    );
+  }
+
+  /// The dev log's warnings naming `file`
+  fn warnings_about(file: &str) -> Vec<String> {
+    crate::core::dev_log::get_entries()
+      .into_iter()
+      .filter(|e| e.message.contains(file))
+      .map(|e| e.message)
+      .collect()
+  }
+
+  #[test]
+  fn editor_features_drawn_otherwise_warn_once_a_file_naming_each() {
+    // A right-up render order; an inline tileset whose tiles render at the
+    // grid's size, with two tiles drawing parts of their images and one
+    // with a polyline collision shape; two top-down object layers whose
+    // tile objects are out of order by their y
+    let set = r#"{"firstgid":1,"name":"parts","tilewidth":16,"tileheight":16,"tilecount":3,"columns":0,
+        "tilerendersize":"grid","fillmode":"preserve-aspect-fit","tiles":[
+        {"id":0,"image":"images/tiles.png","imagewidth":64,"imageheight":64,"x":16,"y":0,"width":16,"height":16},
+        {"id":1,"image":"images/tiles.png","imagewidth":64,"imageheight":64,"x":32,"y":0,"width":16,"height":16},
+        {"id":2,"image":"images/gem.png","imagewidth":16,"imageheight":16,
+         "objectgroup":{"type":"objectgroup","objects":[{"id":1,"x":0,"y":0,"polyline":[{"x":0,"y":0},{"x":16,"y":16}]}]}}]}"#;
+    let objects = |id: u32| {
+      format!(
+        r#"{{"id":{id},"name":"o{id}","type":"objectgroup","draworder":"topdown","objects":[
+          {{"id":{a},"gid":1,"x":0,"y":32,"width":16,"height":16}},
+          {{"id":{b},"gid":2,"x":16,"y":16,"width":16,"height":16}}]}}"#,
+        a = id * 10,
+        b = id * 10 + 1
+      )
+    };
+    let json = map_json(
+      r#""renderorder":"right-up","#,
+      &format!("{},{}", objects(1), objects(2)),
+      set,
+    );
+    let mut world = world_over(files_with(&[("warn-b7e1.tmj", &json)]));
+    load_in(&mut world, "warn-b7e1.tmj").expect("loads");
+    let warned = warnings_about("warn-b7e1.tmj");
+    let count = |what: &str| warned.iter().filter(|w| w.contains(what)).count();
+    assert_eq!(count("render order \"right-up\""), 1, "{warned:#?}");
+    assert_eq!(count("tile render size"), 1, "{warned:#?}");
+    assert_eq!(count("part of its image"), 1, "{warned:#?}");
+    assert!(
+      warned
+        .iter()
+        .any(|w| w.contains("part of its image") && w.contains("1 place more"))
+    );
+    assert_eq!(count("polyline"), 1, "{warned:#?}");
+    assert_eq!(count("top down"), 1, "{warned:#?}");
+    assert!(
+      warned
+        .iter()
+        .any(|w| w.contains("top down") && w.contains("layer \"o1\""))
+    );
+    assert_eq!(warned.len(), 5, "{warned:#?}");
+    // in order, a top-down layer draws as Tiled does: no warning
+    let json = map_json(
+      "",
+      &objects(1).replace(r#""x":0,"y":32"#, r#""x":0,"y":0"#),
+      set.replace(r#""tilerendersize":"grid","#, "").as_str(),
+    );
+    let mut world = world_over(files_with(&[("warn-c2d4.tmj", &json)]));
+    load_in(&mut world, "warn-c2d4.tmj").expect("loads");
+    let warned = warnings_about("warn-c2d4.tmj");
+    assert!(
+      !warned.iter().any(|w| w.contains("top down")),
+      "{warned:#?}"
+    );
+  }
+
+  #[test]
+  fn a_capsule_among_a_tile_s_collision_shapes_collides_as_its_outline() {
+    let set = r#"{"firstgid":1,"name":"pill","tilewidth":16,"tileheight":16,"tilecount":1,"columns":0,"tiles":[
+        {"id":0,"image":"images/gem.png","imagewidth":16,"imageheight":16,
+         "objectgroup":{"type":"objectgroup","objects":[{"id":1,"x":2,"y":4,"width":12,"height":8,"capsule":true}]}}]}"#;
+    let map = load_json(&map_json("", &tile_layer(""), set)).expect("loads");
+    let TilesetSource::Embedded(set) = &map.tilesets[0] else {
+      panic!("not inline")
+    };
+    let shape = &set.tile(0).expect("tile 0").shapes[0];
+    // two half circles of radius 4 on a 12 x 8 box from (2, 4)
+    assert_eq!(shape.points.len(), 18);
+    let (min, max) = shape.points.iter().fold(
+      (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN)),
+      |(lo, hi), p| (lo.min(*p), hi.max(*p)),
+    );
+    assert!(
+      (min - Vec2::new(2.0, 4.0)).abs().max_element() < 1e-4,
+      "{min}"
+    );
+    assert!(
+      (max - Vec2::new(14.0, 12.0)).abs().max_element() < 1e-4,
+      "{max}"
+    );
+    // its corners are cut: the box's corner is outside it
+    assert!(
+      shape
+        .points
+        .iter()
+        .all(|p| p.distance(Vec2::new(2.0, 4.0)) > 1.0)
     );
   }
 

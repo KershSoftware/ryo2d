@@ -33,6 +33,17 @@ pub(super) struct RawDefs {
   pub layers: Vec<RawLayerDef>,
   #[serde(default)]
   pub tilesets: Vec<RawTilesetDef>,
+  #[serde(default)]
+  pub entities: Vec<RawEntityDef>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct RawEntityDef {
+  pub uid: i64,
+  /// How an entity's tile fills its box (`FitInside`, `Stretch`, `Cover`,
+  /// `Repeat`, `FullSizeCropped`, `FullSizeUncropped`, `NineSlice`)
+  #[serde(default, rename = "tileRenderMode")]
+  pub tile_render_mode: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -44,6 +55,9 @@ pub(super) struct RawLayerDef {
   pub parallax_x: f64,
   #[serde(default, rename = "parallaxFactorY")]
   pub parallax_y: f64,
+  /// Whether LDtk scales a parallax layer with its factor as it zooms
+  #[serde(default = "yes", rename = "parallaxScaling")]
+  pub parallax_scaling: bool,
 }
 
 #[derive(Deserialize)]
@@ -206,6 +220,8 @@ pub(super) struct RawEntity {
   pub identifier: String,
   #[serde(default)]
   pub iid: String,
+  #[serde(default, rename = "defUid")]
+  pub def_uid: i64,
   #[serde(default)]
   pub width: f64,
   #[serde(default)]

@@ -185,6 +185,9 @@ pub struct Tileset {
   /// Where Tiled draws each tile from its cell, in pixels
   pub tile_offset: IVec2,
   pub image: TilesetImage,
+  /// The colour its images draw clear where they hold it (Tiled's
+  /// transparent colour; its alpha is not compared)
+  pub transparent: Option<Color>,
   pub wang_sets: Vec<WangSet>,
   /// What the Wang sets may do to a tile
   pub transformations: TileTransformations,
@@ -210,6 +213,7 @@ impl Tileset {
       margin: 0,
       tile_offset: IVec2::ZERO,
       image,
+      transparent: None,
       wang_sets: Vec::new(),
       transformations: TileTransformations::default(),
       properties: Properties::default(),

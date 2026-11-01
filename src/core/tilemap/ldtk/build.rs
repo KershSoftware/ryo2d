@@ -15,7 +15,7 @@ use crate::core::asset::{AssetError, AssetPath, CheckContext, LoadContext};
 use crate::core::graphics::Image;
 use crate::core::hash::{FastMap, FastSet};
 use crate::core::tilemap::tiled::build::{
-  DependencyPlaces, MAX_MAP_CELLS, MAX_TILES, cell_count, check_map_cells, check_tileset,
+  DependencyPlaces, MAX_MAP_CELLS, MAX_TILES, Unread, cell_count, check_map_cells, check_tileset,
   check_used_ids, fail, join, load_dep,
 };
 use crate::core::tilemap::tiled::json::parse;
@@ -43,8 +43,12 @@ struct Defs<'a> {
   path: &'a AssetPath,
   tilesets: FastMap<i64, TilesetRef>,
   layers: FastMap<i64, &'a RawLayerDef>,
+  /// Each entity definition's tile render mode
+  tile_modes: FastMap<i64, &'a str>,
   default_grid: i64,
   default_bg: Option<String>,
+  /// What the project uses that loads otherwise than LDtk shows it
+  unread: std::cell::RefCell<Unread>,
 }
 
 fn to_u32(path: &AssetPath, place: &str, what: &str, v: i64) -> Result<u32, AssetError> {
@@ -357,6 +361,30 @@ fn entity_tile(defs: &Defs<'_>, rect: &RawRect) -> Option<Tile> {
 fn entity(defs: &Defs<'_>, place: &str, raw: &RawEntity) -> Result<MapObjectData, AssetError> {
   let place = format!("{place}, entity {}", raw.iid);
   let size = Vec2::new(raw.width as f32, raw.height as f32);
+  let tile = raw.tile.as_ref().and_then(|r| entity_tile(defs, r));
+  // A tile object draws stretched over its box: as LDtk draws `Stretch`,
+  // and any mode when the box is the tile's size (or, fitting or covering,
+  // its shape)
+  if let (Some(_), Some(rect)) = (tile, raw.tile.as_ref()) {
+    let mode = defs
+      .tile_modes
+      .get(&raw.def_uid)
+      .copied()
+      .unwrap_or("FitInside");
+    let drawn = Vec2::new(rect.w as f32, rect.h as f32);
+    let same_shape = (size.x * drawn.y - size.y * drawn.x).abs() < 1e-3;
+    let alike = match mode {
+      "Stretch" => true,
+      "FitInside" | "Cover" => same_shape,
+      _ => size == drawn,
+    };
+    if !alike {
+      defs.unread.borrow_mut().note(
+        format!("an entity's tile drawn {mode:?} in LDtk draws stretched over the entity's box"),
+        &place,
+      );
+    }
+  }
   // LDtk's px is where the pivot lies; the map wants the top-left
   let position = Vec2::new(raw.px[0] as f32, raw.px[1] as f32)
     - Vec2::new(raw.pivot[0] as f32, raw.pivot[1] as f32) * size;
@@ -368,7 +396,7 @@ fn entity(defs: &Defs<'_>, place: &str, raw: &RawEntity) -> Result<MapObjectData
     size,
     rotation: 0.0,
     shape: ObjectShape::Rect,
-    tile: raw.tile.as_ref().and_then(|r| entity_tile(defs, r)),
+    tile,
     visible: true,
     properties: fields_of(defs, &place, &raw.field_instances)?,
   })
@@ -651,6 +679,12 @@ fn plan_layer<'d>(
   info.visible = raw.visible;
   // LDtk's factor is 0 for a layer that scrolls with the world
   info.parallax = Vec2::new((1.0 - def.parallax_x) as f32, (1.0 - def.parallax_y) as f32);
+  if def.parallax_scaling && (def.parallax_x != 0.0 || def.parallax_y != 0.0) {
+    defs.unread.borrow_mut().note(
+      "a parallax layer's scaling (LDtk zooms it by its factor) is not drawn: it moves by its factor and keeps its size",
+      &place,
+    );
+  }
   info.collides = raw.ty == "IntGrid";
   if !matches!(
     raw.ty.as_str(),
@@ -1156,8 +1190,15 @@ pub(super) fn build_project(
       })
       .collect(),
     layers: raw.defs.layers.iter().map(|l| (l.uid, l)).collect(),
+    tile_modes: raw
+      .defs
+      .entities
+      .iter()
+      .filter_map(|e| Some((e.uid, e.tile_render_mode.as_deref()?)))
+      .collect(),
     default_grid: raw.default_grid_size.unwrap_or(16),
     default_bg: raw.default_level_bg_color.clone(),
+    unread: Default::default(),
   };
   let multi = !raw.worlds.is_empty();
   let sources: Vec<(String, Option<String>, Vec<RawLevel>)> = if multi {
@@ -1185,6 +1226,7 @@ pub(super) fn build_project(
     worlds.push(layout);
     levels.extend(built);
   }
+  defs.unread.borrow_mut().warn(&path, "LDtk");
   Ok(LdtkProject {
     levels,
     worlds,

@@ -40,7 +40,7 @@ use super::batch::{
 use super::draw_list::reach;
 use super::entities::{DrawOrder, OrderedDraw, OrderedPayload};
 use super::{CameraDraw, DrawChunk, DrawKind, DrawList, SpriteLook, SpriteShading};
-use crate::core::asset::Assets;
+use crate::core::asset::{AssetId, Assets, Handle};
 use crate::core::ecs::interpolate::render_global;
 use crate::core::ecs::kernel::QueryState;
 use crate::core::ecs::{
@@ -48,7 +48,7 @@ use crate::core::ecs::{
   PreviousGlobalTransform, World,
 };
 use crate::core::graphics::{Image, RenderLayers, SpriteGpuRenderer, SpriteInstance, TextureId};
-use crate::core::hash::FastSet;
+use crate::core::hash::{FastMap, FastSet};
 use crate::core::tilemap::padded::{PaddedCache, PaddedLayout, PaddedTile};
 use crate::core::tilemap::{
   CHUNK_SIZE, ImageLayer, LayerInfo, MapLayerRef, MapLayers, MapObject, MapRoot, TileFlip,
@@ -308,6 +308,69 @@ pub(crate) struct TileDrawer {
   draws: Vec<OrderedDraw>,
   /// Image layers warned about an image too small to repeat over a view
   warned: FastSet<Entity>,
+  /// Image layers' pictures with their transparent colour drawn clear, by
+  /// picture and colour (`keyed_image`)
+  keyed: FastMap<(AssetId<Image>, [u8; 3]), KeyedImage>,
+  /// Frames collected, for letting go of keyed pictures no longer drawn
+  frames: u64,
+}
+
+/// A picture with its transparent colour drawn clear
+struct KeyedImage {
+  /// The version of the picture it was made from
+  version: Option<u64>,
+  handle: Handle<Image>,
+  /// The frame it was last drawn in
+  drawn: u64,
+}
+
+/// Frames a keyed picture is kept after it was last drawn
+const KEYED_KEEP_FRAMES: u64 = 120;
+
+/// `source` with its texels of colour `key` clear, made once per version of
+/// it (again in place when it changes, keeping the handle) and kept while
+/// drawn; `None` while the picture is not loaded
+fn keyed_image(
+  cache: &mut FastMap<(AssetId<Image>, [u8; 3]), KeyedImage>,
+  (source, key): (&Handle<Image>, [u8; 3]),
+  images: &mut Assets<Image>,
+  frame: u64,
+) -> Option<Handle<Image>> {
+  let version = images.version(source);
+  let id = (source.id(), key);
+  if let Some(entry) = cache.get_mut(&id)
+    && entry.version == version
+  {
+    entry.drawn = frame;
+    return Some(entry.handle.clone());
+  }
+  let picture = images.get(source)?;
+  let mut data = picture.data().to_vec();
+  for texel in data.chunks_exact_mut(4) {
+    if texel[..3] == key {
+      texel.copy_from_slice(&[0; 4]);
+    }
+  }
+  let keyed = Image::from_rgba(data, picture.width(), picture.height());
+  let handle = match cache.remove(&id) {
+    Some(old) => match images.get_mut(&old.handle) {
+      Some(slot) => {
+        *slot = keyed;
+        old.handle
+      }
+      None => images.add(keyed),
+    },
+    None => images.add(keyed),
+  };
+  cache.insert(
+    id,
+    KeyedImage {
+      version,
+      handle: handle.clone(),
+      drawn: frame,
+    },
+  );
+  Some(handle)
 }
 
 /// One tile layer as a frame draws it
@@ -353,6 +416,7 @@ impl TileDrawer {
   ) {
     store.begin_frame();
     self.draws.clear();
+    self.frames += 1;
     // The padded tilesets are the world's (the engine's world has them from
     // the start), so a map's landing can hand over those it padded ahead.
     // With no map left, the rounds free them
@@ -394,6 +458,8 @@ impl TileDrawer {
           rows,
           draws,
           warned,
+          keyed,
+          frames,
         } = self;
         let (Some(maps), Some(layers), Some(objects)) =
           (maps.as_mut(), layers.as_mut(), objects.as_mut())
@@ -503,11 +569,18 @@ impl TileDrawer {
                 }
               }
             } else if let Some(image) = image {
-              let Some(shown) = image
-                .image
-                .as_ref()
-                .and_then(|handle| gpu.shown_image(handle.id(), images))
-              else {
+              let Some(source) = image.image.as_ref() else {
+                continue;
+              };
+              // A transparent colour draws clear: from a keyed copy
+              let id = match image.transparent {
+                None => source.id(),
+                Some(c) => match keyed_image(keyed, (source, [c.r, c.g, c.b]), images, *frames) {
+                  Some(handle) => handle.id(),
+                  None => continue,
+                },
+              };
+              let Some(shown) = gpu.shown_image(id, images) else {
                 continue;
               };
               let (width, height) = shown.size();
@@ -544,6 +617,12 @@ impl TileDrawer {
       self
         .warned
         .retain(|&layer| world.get::<ImageLayer>(layer).is_some());
+    }
+    if !self.keyed.is_empty() {
+      let frame = self.frames;
+      self
+        .keyed
+        .retain(|_, keyed| frame - keyed.drawn < KEYED_KEEP_FRAMES);
     }
     OrderedDraw::sort(&mut self.draws);
   }
