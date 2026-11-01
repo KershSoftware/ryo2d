@@ -328,7 +328,7 @@ fn sync_previous(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::core::ecs::kernel::{Schedule, ScheduleLabel, World};
+  use crate::core::ecs::kernel::{Disabled, Schedule, ScheduleLabel, World};
   use glam::Vec2;
   use std::f32::consts::FRAC_PI_2;
 
@@ -674,6 +674,51 @@ mod tests {
   }
 
   #[test]
+  fn a_parent_and_its_child_changed_together_compose_with_the_new_parent_whichever_sorts_first() {
+    // The test above with the grandchild spawned first. The changed
+    // entities sort by their bits, which run against the index, so here the
+    // root's walk starts first and above the grandchild's: both orders
+    let mut world = World::new();
+    let grandchild = world.spawn(Transform::from_xy(0.0, 1.0)).id();
+    let root = world.spawn(Transform::from_xy(1.0, 1.0)).id();
+    let child = world
+      .spawn((
+        Transform::from_xy(3.0, 0.0).with_rotation(0.5),
+        ChildOf(root),
+      ))
+      .id();
+    world.entity_mut(grandchild).insert(ChildOf(child));
+    assert!(grandchild.index() < root.index());
+    let mut s = settled(&mut world);
+    world.get_mut::<Transform>(root).unwrap().translation = Vec2::new(50.0, 0.0);
+    world.get_mut::<Transform>(grandchild).unwrap().translation = Vec2::new(0.0, 7.0);
+    s.run(&mut world);
+    let expected = GlobalTransform::from_transform(world.get::<Transform>(root).unwrap())
+      .mul_transform(world.get::<Transform>(child).unwrap())
+      .mul_transform(world.get::<Transform>(grandchild).unwrap());
+    assert_eq!(global(&world, grandchild), expected);
+  }
+
+  #[test]
+  fn a_change_below_a_disabled_parent_is_not_placed() {
+    // No walk goes below a disabled entity, as before propagation walked
+    // only the changed subtrees
+    let mut world = World::new();
+    let parent = world.spawn(Transform::from_xy(100.0, 0.0)).id();
+    let child = world
+      .spawn((Transform::from_xy(1.0, 0.0), ChildOf(parent)))
+      .id();
+    let mut s = settled(&mut world);
+    let before = global(&world, child);
+    world.entity_mut(parent).insert(Disabled);
+    world.get_mut::<Transform>(child).unwrap().translation.x = 2.0;
+    s.run(&mut world);
+    assert_eq!(global(&world, child), before);
+    let placed = world.entity(child).get_ref::<GlobalTransform>().unwrap();
+    assert!(!placed.is_changed(), "the child was rewritten");
+  }
+
+  #[test]
   fn a_change_below_a_transform_less_parent_starts_from_the_identity() {
     let mut world = World::new();
     let root = world
@@ -820,6 +865,10 @@ mod tests {
     let mut s = settled(&mut world);
     world.entity_mut(a).insert(ChildOf(b));
     assert_eq!(world.get::<ChildOf>(a).map(ChildOf::parent), Some(b));
+    s.run(&mut world);
+    world.clear_trackers();
+    // Nothing in the cycle is a seed now, so the walk up from c goes round
+    // it until the depth bound stops it
     world.get_mut::<Transform>(c).unwrap().translation.x = 1.0;
     world.get_mut::<Transform>(other).unwrap().translation.x = 1.0;
     s.run(&mut world);
