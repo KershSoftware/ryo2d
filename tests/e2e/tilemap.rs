@@ -922,6 +922,54 @@ fn an_unbounded_layer_draws_tiles_at_negative_cells_and_culls_by_signed_chunk() 
   assert_eq!(built(&engine), [IVec2::new(-2, -1), IVec2::new(1, 0)]);
 }
 
+#[test]
+fn a_tile_painted_far_from_the_origin_on_an_infinite_map_draws_with_a_camera_there() {
+  // An infinite map built in code, grown at run time: a tile written at
+  // (5000, -5000) draws under a camera centred on it, and the origin shows
+  // nothing there
+  let pan = Pan::default();
+  let root: Arc<Mutex<Option<Entity>>> = Arc::default();
+  let kept = root.clone();
+  let setup: Setup = Box::new(move |ctx| {
+    let set = solid(ctx, &[RED, GREEN]);
+    let mut tiles = TileMap::infinite(UVec2::splat(CELL));
+    tiles.add_tileset(TilesetSource::Embedded(Arc::new(set)));
+    tiles.add_tile_layer("ground");
+    let at = spawn(ctx, tiles, Vec2::ZERO);
+    if let Ok(mut kept) = kept.lock() {
+      *kept = Some(at);
+    }
+  });
+  let builder = EngineBuilder::new()
+    .pixel_art(SIZE, SIZE)
+    .start_scene(Panned(Some(setup), pan.clone()));
+  let Some(mut engine) = HeadlessEngine::new_or_skip(builder) else {
+    return;
+  };
+  land(&mut engine);
+  let Some(map) = root.lock().ok().and_then(|kept| *kept) else {
+    panic!("the map was not spawned");
+  };
+  let cell = IVec2::new(5000, -5000);
+  assert!(MapsView::new(engine.world_mut()).set_tile(map, "ground", cell, Some(Tile::new(0, 1))));
+  if let Ok(mut at) = pan.lock() {
+    *at = Some(cell.as_vec2() * CELL as f32);
+  }
+  engine.step_frames(3).unwrap();
+  // The camera's centre is the frame's: the tile fills the cell right of
+  // and below it
+  assert_pixels(&engine.frame().unwrap(), |x, y| {
+    let inside = |v: u32| (SIZE / 2..SIZE / 2 + CELL).contains(&v);
+    (inside(x) && inside(y)).then_some(GREEN)
+  });
+  // Back at the origin, where nothing was written, the frame is empty
+  if let Ok(mut at) = pan.lock() {
+    *at = Some(Vec2::ZERO);
+  }
+  engine.step_frames(2).unwrap();
+  assert_pixels(&engine.frame().unwrap(), |_, _| None);
+}
+
 /// Where `character` is moved to before the next frame
 type Moved = Arc<Mutex<Option<Entity>>>;
 

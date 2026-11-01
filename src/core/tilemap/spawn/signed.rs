@@ -322,3 +322,81 @@ fn an_unbounded_layer_with_a_tile_a_million_cells_out_lands_holding_only_its_chu
   maps.frame();
   assert_eq!(occluded_chunks(&mut maps.world), [IVec2::ZERO, far_chunk]);
 }
+
+/// A map built infinite in code, over the solid blocks, with one tile layer
+/// "ground"
+fn infinite_map() -> TileMap {
+  let mut map = TileMap::infinite(UVec2::splat(16));
+  map.add_tileset(TilesetSource::Embedded(Arc::new(blocks())));
+  map.add_tile_layer("ground");
+  map
+}
+
+#[test]
+fn a_map_built_infinite_in_code_grows_where_a_game_writes() {
+  use crate::core::physics::RigidBody;
+
+  let mut maps = MapWorld::new();
+  let map = spawn(&mut maps, infinite_map(), |r| r);
+  assert_eq!(
+    MapsView::new(&mut maps.world).fill(
+      map,
+      "ground",
+      IVec2::new(-100, 5),
+      IVec2::new(-90, 5),
+      Some(BLOCK)
+    ),
+    11
+  );
+  assert!(MapsView::new(&mut maps.world).set_tile(
+    map,
+    "ground",
+    IVec2::new(5000, -5000),
+    Some(BLOCK)
+  ));
+  // A body over the floor's cell (-95, 4), well above it
+  let body = maps
+    .world
+    .spawn((
+      Transform::from_xy(-95.0 * CELL + CELL / 2.0, 40.0),
+      RigidBody::dynamic(),
+      Collider::rect(8.0, 8.0),
+    ))
+    .id();
+  let y_of = |world: &World| world.get::<Transform>(body).map(|t| t.translation.y);
+  let mut last = f32::MAX;
+  let mut still = 0;
+  for _ in 0..120 {
+    maps.frame();
+    let y = y_of(&maps.world).unwrap_or(f32::NAN);
+    still = if (y - last).abs() < 1e-3 {
+      still + 1
+    } else {
+      0
+    };
+    last = y;
+    if still >= 5 {
+      break;
+    }
+  }
+  // The floor's top is at y 80: the 8 px body rests with its centre 4 above
+  let y = y_of(&maps.world).unwrap_or(f32::NAN);
+  assert!(
+    (y - 76.0).abs() < 1.0,
+    "the body is at y {y}, not on the floor"
+  );
+  // The layer holds the chunks of both writes: from chunk (-4, -157) to
+  // chunk (156, 0)
+  let layer = layers_of(&mut maps.world, map)[0];
+  let extent = maps
+    .world
+    .get::<TileLayerData>(layer)
+    .map(|data| data.grid.extent());
+  assert_eq!(
+    extent,
+    Some(crate::core::physics::CellRect::new(
+      IVec2::new(-128, -5024),
+      IVec2::new(5024, 32)
+    ))
+  );
+}

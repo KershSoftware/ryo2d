@@ -450,6 +450,22 @@ ctx.world.spawn((Transform::from_xy(0.0, 0.0), MapRoot::new(map)));
 - **A tileset in code:** `Tileset::new(name, tile_size, TilesetImage::Atlas { image, size })` with its `columns` and `tile_count` set (and `spacing`, `margin`), or `TilesetImage::Collection` with each tile's own image in its `TileData`. Tiles collide through their shapes: `insert_tile(id, TileData { shapes: vec![TileShape { points, ..TileShape::default() }], ..TileData::default() })`, the points in tile pixels from the top-left.
 - `add_object_layer(name)` adds an object layer, whose objects are `MapObjectData` in `LayerKind::Objects`; `layer_index(name)`, `tiles(layer)` and `tiles_mut(layer)` find layers.
 - **An unbounded layer:** a tile layer whose grid is `TileGrid::unbounded()` (set through `tiles_mut`) holds any cell, negative ones included, in chunks made where tiles are written. Spawned, it draws, collides, casts shadows and spawns class tiles wherever it has chunks, and costs the chunks it has, however far apart: never the rectangle between them. Its colliding layers' grid is unbounded too; a cell collides within 186,411 cells of (0, 0).
+- **A map grown at run time:** `TileMap::infinite(tile_size)` is an empty infinite map, with `size` zero and `infinite` true, whose `add_tile_layer` layers are unbounded. A game spawns it empty and grows it by writing tiles through `ctx.maps()`: a write at any cell, negative or far out, makes the chunk it lands in, which then draws, collides and casts shadows like any other. Nothing is paid for the space between chunks.
+
+<!-- given: tileset: Handle<Tileset> -->
+```rust
+let mut map = TileMap::infinite(UVec2::splat(16));
+let terrain = map.add_tileset(TilesetSource::Asset(tileset.clone()));
+map.add_tile_layer("ground");
+let map = ctx.assets().add(map);
+let root = ctx.world.spawn((Transform::from_xy(0.0, 0.0), MapRoot::new(map))).id();
+// Later, once it has landed: a floor of 11 cells left of the origin, and a tile far away
+let solid = Some(Tile::new(terrain, 0));
+let floor = ctx.maps().fill(root, "ground", IVec2::new(-100, 5), IVec2::new(-90, 5), solid);
+let far = ctx.maps().set_tile(root, "ground", IVec2::new(5000, -5000), solid);
+```
+
+  `TileMap::bounds()` of the asset is what the map held when it was added; the layer entity's `TileLayerData::grid.extent()` follows the writes. A cell collides within 186,411 cells of (0, 0) (above).
 - A map added in code never reloads (it has no file), but follows its tilesets' files.
 - **Procgen:** `GenerationGrid::to_tile_map` and `to_terrain_map` (`ryo-procgen`) turn a dungeon, a cave or noise terrain into a `TileMap`. The tilemap demo's Procgen dungeon page draws one through a Wang set.
 

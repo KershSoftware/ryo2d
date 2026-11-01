@@ -228,6 +228,16 @@ impl TileMap {
     }
   }
 
+  /// An empty infinite map of cells of `tile_size` pixels: its tile layers
+  /// ([`add_tile_layer`](Self::add_tile_layer)) are unbounded and grow
+  /// wherever a tile is written, negative cells included
+  pub fn infinite(tile_size: UVec2) -> TileMap {
+    TileMap {
+      infinite: true,
+      ..TileMap::new(UVec2::ZERO, tile_size)
+    }
+  }
+
   /// The cells the map covers: a bounded map's from (0, 0) to its size;
   /// an infinite map's the union of its tile layers' extents
   pub fn bounds(&self) -> CellRect {
