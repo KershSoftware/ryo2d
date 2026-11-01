@@ -51,6 +51,34 @@ fn propagate(c: &mut Criterion) {
       world.clear_trackers();
     })
   });
+  let leaves: Vec<Entity> = world
+    .query_filtered::<Entity, (With<ChildOf>, Without<Children>)>()
+    .iter(&world)
+    .collect();
+  let mut next = 0;
+  c.bench_function("propagate 10k, one leaf moved", |b| {
+    b.iter(|| {
+      let leaf = leaves[next % leaves.len()];
+      next += 1;
+      if let Some(mut transform) = world.get_mut::<Transform>(leaf) {
+        transform.translation.x += 0.001;
+      }
+      schedule.run(&mut world);
+      world.clear_trackers();
+    })
+  });
+  c.bench_function("propagate 10k, every leaf moved", |b| {
+    b.iter(|| {
+      for mut transform in world
+        .query_filtered::<&mut Transform, (With<ChildOf>, Without<Children>)>()
+        .iter_mut(&mut world)
+      {
+        transform.translation.x += 0.001;
+      }
+      schedule.run(&mut world);
+      world.clear_trackers();
+    })
+  });
 }
 
 /// 10,000 small sprites from three textures on a 100 x 100 grid.

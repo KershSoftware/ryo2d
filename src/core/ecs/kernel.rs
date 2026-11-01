@@ -13,6 +13,8 @@ pub use bevy_ecs::component::{Component, Mutable};
 // A component type's id, to find its removal messages
 pub(crate) use bevy_ecs::component::ComponentId;
 pub use bevy_ecs::entity::Entity;
+// The world's entity count: propagation's bound on a hierarchy's depth
+pub(crate) use bevy_ecs::entity::Entities;
 // Maps and sets keyed by `Entity`, with a hash cheaper than SipHash
 pub(crate) use bevy_ecs::entity::{EntityHashMap, EntityHashSet};
 pub use bevy_ecs::entity_disabling::Disabled;

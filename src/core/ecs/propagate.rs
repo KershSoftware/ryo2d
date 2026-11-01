@@ -1,9 +1,9 @@
 //! Transform propagation: local `Transform`s down the hierarchy into
-//! `GlobalTransform`s, recomputing only subtrees that changed.
+//! `GlobalTransform`s, walking only the subtrees that hold a change.
 
 use super::kernel::{
-  Added, Changed, ChildOf, Children, Commands, DetectChanges, DetectChangesMut, Entity, Has, Local,
-  Or, Query, Ref, RemovedComponents, With, Without,
+  Added, Changed, ChildOf, Children, Commands, DetectChanges, DetectChangesMut, Entities, Entity,
+  Has, Local, Mut, Or, Query, Ref, RemovedComponents, With, Without,
 };
 use super::transform::{GlobalTransform, Interpolated, PreviousGlobalTransform, Transform};
 
@@ -28,6 +28,22 @@ type NodeItem<'a> = (
   Has<PreviousGlobalTransform>,
 );
 
+/// (entity, parent's global, parent changed, parent interpolated): an entry
+/// of the walk's stack
+type Visit = (Entity, GlobalTransform, bool, bool);
+
+/// Above this many changed entities a run walks every hierarchy from its
+/// roots, as it did before it walked only the changed subtrees; the scan for
+/// changes stops at the first entity over it. A changed entity costs a few
+/// lookups by entity (its walk up its ancestors) on top of its subtree,
+/// where a full walk visits an entity in a few nanoseconds, so walking the
+/// changed subtrees pays only while few changed. 64, from
+/// `benches/foundation.rs`: with the bound at 1,024 its 100 roots moved (of
+/// 10,000 entities) took the changed subtrees and cost 7% more than a full
+/// walk; under 100 they take the full walk, at its cost. A low bound also
+/// keeps a world of many movers at the full walk's cost, not above it.
+const FULL_WALK_AT: usize = 64;
+
 /// Recompute `GlobalTransform` for every subtree whose root or any ancestor
 /// changed, and keep `PreviousGlobalTransform` present on interpolated
 /// subtrees (and absent elsewhere).
@@ -35,51 +51,72 @@ type NodeItem<'a> = (
 /// Roots are entities with a `Transform` and no parent. Children of a parent
 /// that has no `Transform` of its own (a bare grouping entity) start from the
 /// identity, as if they were roots.
+///
+/// The walk starts at the entities that changed, each from its parent's
+/// stored `GlobalTransform`, so a subtree where nothing changed is not
+/// visited. Finding them is a change-tick check per entity.
 #[allow(clippy::too_many_arguments)] // one query or removal reader per input
 pub fn propagate_transforms(
   mut roots: Query<RootItem, Without<ChildOf>>,
   mut nodes: Query<NodeItem, With<ChildOf>>,
   grouping: Query<(Entity, &Children), Without<Transform>>,
-  changed: Query<(), Placement>,
+  changed: Query<Entity, Placement>,
+  entities: &Entities,
   mut detached: RemovedComponents<ChildOf>,
   mut uninterpolated: RemovedComponents<Interpolated>,
   mut untransformed: RemovedComponents<Transform>,
   mut commands: Commands,
-  // (entity, parent's global, parent changed, parent interpolated): the
-  // walk's stack, kept between runs so a run allocates nothing once it has
-  // grown to the hierarchy (empty at the end of each run)
-  mut stack: Local<Vec<(Entity, GlobalTransform, bool, bool)>>,
+  // The walk's stack, kept between runs so a run allocates nothing once it
+  // has grown to the hierarchy (empty at the end of each run)
+  mut stack: Local<Vec<Visit>>,
+  // The run's changed entities, and the entities that lost their parent,
+  // their `Interpolated` or their `Transform` since the last run (each
+  // sorted), kept between runs as the stack is
+  mut seeds: Local<Vec<Entity>>,
+  mut lost_parent: Local<Vec<Entity>>,
+  mut lost_interpolated: Local<Vec<Entity>>,
+  mut lost_transform: Local<Vec<Entity>>,
 ) {
-  // Nothing that places an entity changed since the last run, so every
-  // `GlobalTransform` and `PreviousGlobalTransform` is already right. The
-  // removal readers are drained either way so old removals don't count again.
-  // An entity that lost its parent is a root placed by its own Transform
-  let detached: Vec<Entity> = detached.read().collect();
+  // The removal readers are drained every run so old removals don't count
+  // again. An entity that lost its parent is a root placed by its own
+  // Transform
+  refill(&mut lost_parent, detached.read());
+  refill(&mut lost_interpolated, uninterpolated.read());
   // A parent that lost its Transform now places its children from the identity
-  let untransformed: Vec<Entity> = untransformed.read().collect();
-  let removed = detached.len() + uninterpolated.read().count() + untransformed.len();
-  if removed == 0 && changed.is_empty() {
+  refill(&mut lost_transform, untransformed.read());
+  let changes = Changes {
+    placement: &changed,
+    detached: &lost_parent,
+    uninterpolated: &lost_interpolated,
+    untransformed: &lost_transform,
+  };
+  let seeded = collect_seeds(&mut seeds, &changes, &grouping);
+  // Nothing that places an entity changed since the last run, so every
+  // `GlobalTransform` and `PreviousGlobalTransform` is already right
+  if seeded && seeds.is_empty() {
     return;
   }
 
   stack.clear();
-  for (entity, transform, mut global, children, interpolated, has_previous) in roots.iter_mut() {
-    let changed = transform.is_changed() || detached.contains(&entity);
-    if changed {
-      global.set_if_neq(GlobalTransform::from_transform(&transform));
-    }
-    sync_previous(&mut commands, entity, interpolated, has_previous, *global);
-    if let Some(children) = children {
-      for child in children.iter().copied() {
-        stack.push((child, *global, changed, interpolated));
+  if seeded {
+    // A chain of more parents than the world has entities is a cycle
+    let depth = entities.len() as usize;
+    for &entity in seeds.iter() {
+      if let Ok(root) = roots.get_mut(entity) {
+        walk_root(root, changes.detached, &mut commands, &mut stack);
+      } else if let Some(visit) = start_below(entity, depth, &nodes, &roots, &grouping, &changes) {
+        stack.push(visit);
       }
     }
-  }
-
-  for (group, children) in grouping.iter() {
-    let changed = untransformed.contains(&group);
-    for child in children.iter().copied() {
-      stack.push((child, GlobalTransform::IDENTITY, changed, false));
+  } else {
+    for root in roots.iter_mut() {
+      walk_root(root, changes.detached, &mut commands, &mut stack);
+    }
+    for (group, children) in grouping.iter() {
+      let changed = changes.untransformed.binary_search(&group).is_ok();
+      for child in children.iter().copied() {
+        stack.push((child, GlobalTransform::IDENTITY, changed, false));
+      }
     }
   }
 
@@ -103,6 +140,156 @@ pub fn propagate_transforms(
       }
     }
   }
+}
+
+/// What changed since a run's last run: the `Placement` filter's entities,
+/// and the removals, each list sorted
+struct Changes<'a, 'w, 's> {
+  placement: &'a Query<'w, 's, Entity, Placement>,
+  detached: &'a [Entity],
+  uninterpolated: &'a [Entity],
+  untransformed: &'a [Entity],
+}
+
+impl Changes<'_, '_, '_> {
+  /// Whether `entity` is one of the run's changed entities, which a walk
+  /// starts from (a child of a parent that lost its `Transform` is one too;
+  /// `start_below` checks for it)
+  fn is_seed(&self, entity: Entity) -> bool {
+    self.placement.contains(entity)
+      || self.detached.binary_search(&entity).is_ok()
+      || self.uninterpolated.binary_search(&entity).is_ok()
+  }
+}
+
+/// Replace `list` with `entities`, sorted and without repeats
+fn refill(list: &mut Vec<Entity>, entities: impl Iterator<Item = Entity>) {
+  list.clear();
+  list.extend(entities);
+  if list.len() > 1 {
+    list.sort_unstable();
+    list.dedup();
+  }
+}
+
+/// Collect the run's changed entities into `seeds`, sorted and without
+/// repeats: those the `Placement` filter finds, those that lost their
+/// parent or `Interpolated`, and the children of a parent that lost its
+/// `Transform`. False when there are more than `FULL_WALK_AT`, for a full
+/// walk.
+fn collect_seeds(
+  seeds: &mut Vec<Entity>,
+  changes: &Changes,
+  grouping: &Query<(Entity, &Children), Without<Transform>>,
+) -> bool {
+  seeds.clear();
+  if changes.detached.len() + changes.uninterpolated.len() > FULL_WALK_AT {
+    return false;
+  }
+  seeds.extend_from_slice(changes.detached);
+  seeds.extend_from_slice(changes.uninterpolated);
+  for &group in changes.untransformed {
+    if let Ok((_, children)) = grouping.get(group) {
+      seeds.extend(children.iter().copied());
+    }
+    if seeds.len() > FULL_WALK_AT {
+      return false;
+    }
+  }
+  for entity in changes.placement.iter() {
+    seeds.push(entity);
+    if seeds.len() > FULL_WALK_AT {
+      return false;
+    }
+  }
+  seeds.sort_unstable();
+  seeds.dedup();
+  true
+}
+
+type RootMut<'a> = (
+  Entity,
+  Ref<'a, Transform>,
+  Mut<'a, GlobalTransform>,
+  Option<&'a Children>,
+  bool,
+  bool,
+);
+
+/// Place a root, which its own `Transform` places, and push its children
+fn walk_root(
+  (entity, transform, mut global, children, interpolated, has_previous): RootMut,
+  detached: &[Entity],
+  commands: &mut Commands,
+  stack: &mut Vec<Visit>,
+) {
+  let changed = transform.is_changed() || detached.binary_search(&entity).is_ok();
+  if changed {
+    global.set_if_neq(GlobalTransform::from_transform(&transform));
+  }
+  sync_previous(commands, entity, interpolated, has_previous, *global);
+  if let Some(children) = children {
+    for child in children.iter().copied() {
+      stack.push((child, *global, changed, interpolated));
+    }
+  }
+}
+
+/// Where the walk from a changed child starts: its parent's stored global,
+/// whether a full walk would reach it with its parent changed, and whether
+/// an ancestor makes it interpolated. `None` when an ancestor is a seed
+/// too, whose walk reaches it, or when no walk reaches it: it is gone,
+/// disabled or under a disabled entity, or in or under a cycle.
+///
+/// The ancestors that count stop at the first parent without a
+/// `Transform`: what is below one starts from the identity and inherits no
+/// interpolation.
+fn start_below(
+  entity: Entity,
+  depth: usize,
+  nodes: &Query<NodeItem, With<ChildOf>>,
+  roots: &Query<RootItem, Without<ChildOf>>,
+  grouping: &Query<(Entity, &Children), Without<Transform>>,
+  changes: &Changes,
+) -> Option<Visit> {
+  let (_, child_of, ..) = nodes.get(entity).ok()?;
+  let mut parent = child_of.parent();
+  let mut parent_global = None;
+  let mut interpolated = false;
+  for _ in 0..depth {
+    if let Ok((_, child_of, global, _, is_interpolated, _)) = nodes.get(parent) {
+      if changes.is_seed(parent) {
+        return None;
+      }
+      parent_global.get_or_insert(*global);
+      interpolated |= is_interpolated;
+      parent = child_of.parent();
+    } else if let Ok((root, _, global, _, is_interpolated, _)) = roots.get(parent) {
+      if changes.is_seed(root) {
+        return None;
+      }
+      let parent_global = parent_global.unwrap_or(*global);
+      return Some((
+        entity,
+        parent_global,
+        false,
+        interpolated || is_interpolated,
+      ));
+    } else if grouping.contains(parent) {
+      // A group that has just lost its Transform: a full walk reaches its
+      // children changed, and each of them is a seed
+      let regrouped = changes.untransformed.binary_search(&parent).is_ok();
+      return match parent_global {
+        None => Some((entity, GlobalTransform::IDENTITY, regrouped, false)),
+        Some(_) if regrouped => None,
+        Some(parent_global) => Some((entity, parent_global, false, interpolated)),
+      };
+    } else {
+      // Disabled: no walk goes below it
+      return None;
+    }
+  }
+  None
 }
 
 /// Insert or remove `PreviousGlobalTransform` so that it exists exactly on
@@ -366,5 +553,446 @@ mod tests {
     let b = world.spawn((Transform::IDENTITY, ChildOf(a))).id();
     world.despawn(a);
     assert!(world.get_entity(b).is_err());
+  }
+
+  fn previous(world: &World, e: Entity) -> Option<PreviousGlobalTransform> {
+    world.get::<PreviousGlobalTransform>(e).copied()
+  }
+
+  /// Run once, then clear the trackers: the world is settled
+  fn settled(world: &mut World) -> Schedule {
+    let mut s = schedule();
+    s.run(world);
+    world.clear_trackers();
+    s
+  }
+
+  #[test]
+  fn moving_one_leaf_of_a_big_tree_moves_only_that_leaf() {
+    let mut world = World::new();
+    let mut all = Vec::new();
+    let mut leaves = Vec::new();
+    for r in 0..10 {
+      let root = world
+        .spawn(Transform::from_xy(r as f32 * 10.0, 0.0).with_rotation(0.3))
+        .id();
+      all.push(root);
+      for c in 0..10 {
+        let child = world
+          .spawn((Transform::from_xy(1.0, c as f32), ChildOf(root)))
+          .id();
+        all.push(child);
+        for g in 0..9 {
+          let leaf = world
+            .spawn((Transform::from_xy(0.0, g as f32 + 1.0), ChildOf(child)))
+            .id();
+          all.push(leaf);
+          leaves.push(leaf);
+        }
+      }
+    }
+    let mut s = settled(&mut world);
+    let before: Vec<GlobalTransform> = all.iter().map(|&e| global(&world, e)).collect();
+    let moved = leaves[400];
+    world.get_mut::<Transform>(moved).unwrap().translation.x += 5.0;
+    s.run(&mut world);
+    let parent = world.get::<ChildOf>(moved).unwrap().parent();
+    let local = *world.get::<Transform>(moved).unwrap();
+    assert_eq!(
+      global(&world, moved),
+      global(&world, parent).mul_transform(&local)
+    );
+    assert_ne!(
+      global(&world, moved),
+      before[all.iter().position(|&e| e == moved).unwrap()]
+    );
+    for (i, &e) in all.iter().enumerate() {
+      if e == moved {
+        continue;
+      }
+      assert_eq!(global(&world, e), before[i], "entity {i} moved");
+      let rewritten = world.entity(e).get_ref::<GlobalTransform>().unwrap();
+      assert!(!rewritten.is_changed(), "entity {i} was rewritten");
+    }
+  }
+
+  #[test]
+  fn a_child_changed_under_an_unchanged_parent_composes_with_the_parent_s_stored_global() {
+    let mut world = World::new();
+    let root = world
+      .spawn(
+        Transform::from_xy(100.0, 0.0)
+          .with_rotation(FRAC_PI_2)
+          .with_uniform_scale(2.0),
+      )
+      .id();
+    let child = world
+      .spawn((Transform::from_xy(1.0, 0.0), ChildOf(root)))
+      .id();
+    let mut s = settled(&mut world);
+    world.get_mut::<Transform>(child).unwrap().translation = Vec2::new(10.0, 0.0);
+    s.run(&mut world);
+    assert!(
+      close(global(&world, child).translation(), Vec2::new(100.0, 20.0)),
+      "child at {:?}",
+      global(&world, child).translation()
+    );
+  }
+
+  #[test]
+  fn a_parent_and_its_child_changed_together_compose_with_the_new_parent() {
+    let mut world = World::new();
+    let root = world.spawn(Transform::from_xy(1.0, 1.0)).id();
+    let child = world
+      .spawn((
+        Transform::from_xy(3.0, 0.0).with_rotation(0.5),
+        ChildOf(root),
+      ))
+      .id();
+    let grandchild = world
+      .spawn((Transform::from_xy(0.0, 1.0), ChildOf(child)))
+      .id();
+    let mut s = settled(&mut world);
+    world.get_mut::<Transform>(root).unwrap().translation = Vec2::new(50.0, 0.0);
+    world.get_mut::<Transform>(grandchild).unwrap().translation = Vec2::new(0.0, 7.0);
+    s.run(&mut world);
+    let expected = GlobalTransform::from_transform(world.get::<Transform>(root).unwrap())
+      .mul_transform(world.get::<Transform>(child).unwrap())
+      .mul_transform(world.get::<Transform>(grandchild).unwrap());
+    assert_eq!(global(&world, grandchild), expected);
+  }
+
+  #[test]
+  fn a_change_below_a_transform_less_parent_starts_from_the_identity() {
+    let mut world = World::new();
+    let root = world
+      .spawn((Transform::from_xy(100.0, 0.0), Interpolated))
+      .id();
+    let group = world.spawn(ChildOf(root)).id();
+    let child = world
+      .spawn((Transform::from_xy(3.0, 4.0), ChildOf(group)))
+      .id();
+    let mut s = settled(&mut world);
+    world.get_mut::<Transform>(child).unwrap().translation = Vec2::new(6.0, 8.0);
+    s.run(&mut world);
+    assert!(close(
+      global(&world, child).translation(),
+      Vec2::new(6.0, 8.0)
+    ));
+    assert!(previous(&world, child).is_none());
+  }
+
+  #[test]
+  fn interpolated_added_mid_tree_marks_its_subtree_only() {
+    let mut world = World::new();
+    let root = world.spawn(Transform::from_xy(1.0, 0.0)).id();
+    let a = world
+      .spawn((Transform::from_xy(1.0, 0.0), ChildOf(root)))
+      .id();
+    let b = world.spawn((Transform::from_xy(1.0, 0.0), ChildOf(a))).id();
+    let c = world.spawn((Transform::from_xy(1.0, 0.0), ChildOf(b))).id();
+    let mut s = settled(&mut world);
+    world.entity_mut(b).insert(Interpolated);
+    s.run(&mut world);
+    assert!(previous(&world, b).is_some_and(|p| p.skip));
+    assert!(previous(&world, c).is_some_and(|p| p.skip));
+    assert!(previous(&world, root).is_none());
+    assert!(previous(&world, a).is_none());
+  }
+
+  #[test]
+  fn removing_interpolated_keeps_previous_under_another_interpolated_ancestor() {
+    let mut world = World::new();
+    let root = world.spawn((Transform::IDENTITY, Interpolated)).id();
+    let a = world
+      .spawn((Transform::from_xy(1.0, 0.0), Interpolated, ChildOf(root)))
+      .id();
+    let b = world.spawn((Transform::from_xy(1.0, 0.0), ChildOf(a))).id();
+    let mut s = settled(&mut world);
+    world.entity_mut(a).remove::<Interpolated>();
+    s.run(&mut world);
+    world.clear_trackers();
+    assert!(previous(&world, a).is_some(), "the root still covers a");
+    assert!(previous(&world, b).is_some(), "the root still covers b");
+    world.entity_mut(root).remove::<Interpolated>();
+    s.run(&mut world);
+    for e in [root, a, b] {
+      assert!(previous(&world, e).is_none());
+    }
+  }
+
+  #[test]
+  fn reparenting_into_and_out_of_an_interpolated_subtree_syncs_previous() {
+    let mut world = World::new();
+    let p = world
+      .spawn((Transform::from_xy(100.0, 0.0), Interpolated))
+      .id();
+    let q = world.spawn(Transform::from_xy(0.0, 50.0)).id();
+    let x = world.spawn((Transform::from_xy(1.0, 0.0), ChildOf(q))).id();
+    let y = world.spawn((Transform::from_xy(0.0, 1.0), ChildOf(x))).id();
+    let mut s = settled(&mut world);
+    assert!(previous(&world, x).is_none());
+    world.entity_mut(x).insert(ChildOf(p));
+    s.run(&mut world);
+    world.clear_trackers();
+    assert!(previous(&world, x).is_some());
+    assert!(previous(&world, y).is_some());
+    assert!(close(
+      global(&world, x).translation(),
+      Vec2::new(101.0, 0.0)
+    ));
+    assert!(close(
+      global(&world, y).translation(),
+      Vec2::new(101.0, 1.0)
+    ));
+    world.entity_mut(x).insert(ChildOf(q));
+    s.run(&mut world);
+    assert!(previous(&world, x).is_none());
+    assert!(previous(&world, y).is_none());
+    assert!(close(global(&world, y).translation(), Vec2::new(1.0, 51.0)));
+  }
+
+  #[test]
+  fn a_child_spawned_under_an_unchanged_parent_is_placed_and_marked() {
+    let mut world = World::new();
+    let parent = world
+      .spawn((Transform::from_xy(10.0, 10.0), Interpolated))
+      .id();
+    let mut s = settled(&mut world);
+    let child = world
+      .spawn((Transform::from_xy(1.0, 0.0), ChildOf(parent)))
+      .id();
+    s.run(&mut world);
+    assert!(close(
+      global(&world, child).translation(),
+      Vec2::new(11.0, 10.0)
+    ));
+    assert!(previous(&world, child).is_some());
+  }
+
+  #[test]
+  fn a_changed_entity_despawned_before_the_run_is_skipped() {
+    let mut world = World::new();
+    let root = world.spawn(Transform::from_xy(100.0, 0.0)).id();
+    let child = world
+      .spawn((Transform::from_xy(1.0, 0.0), ChildOf(root)))
+      .id();
+    let other = world.spawn(Transform::IDENTITY).id();
+    let third = world
+      .spawn((Transform::from_xy(5.0, 0.0), ChildOf(root)))
+      .id();
+    let mut s = settled(&mut world);
+    world.get_mut::<Transform>(child).unwrap().translation.x = 2.0;
+    world.despawn(child);
+    world.get_mut::<Transform>(other).unwrap().translation = Vec2::new(30.0, 40.0);
+    world.entity_mut(third).remove::<ChildOf>();
+    s.run(&mut world);
+    assert!(close(
+      global(&world, other).translation(),
+      Vec2::new(30.0, 40.0)
+    ));
+    assert!(close(
+      global(&world, third).translation(),
+      Vec2::new(5.0, 0.0)
+    ));
+  }
+
+  #[test]
+  fn a_hierarchy_cycle_does_not_hang_the_walk() {
+    // A cycle is a misuse (nothing places it), but a change in or under one
+    // must not stop the run
+    let mut world = World::new();
+    let a = world.spawn(Transform::IDENTITY).id();
+    let b = world.spawn((Transform::IDENTITY, ChildOf(a))).id();
+    let c = world.spawn((Transform::IDENTITY, ChildOf(b))).id();
+    let other = world.spawn(Transform::IDENTITY).id();
+    let mut s = settled(&mut world);
+    world.entity_mut(a).insert(ChildOf(b));
+    assert_eq!(world.get::<ChildOf>(a).map(ChildOf::parent), Some(b));
+    world.get_mut::<Transform>(c).unwrap().translation.x = 1.0;
+    world.get_mut::<Transform>(other).unwrap().translation.x = 1.0;
+    s.run(&mut world);
+    assert!(close(
+      global(&world, other).translation(),
+      Vec2::new(1.0, 0.0)
+    ));
+  }
+
+  #[test]
+  fn more_changes_than_the_seeded_walk_takes_walk_every_hierarchy() {
+    let mut world = World::new();
+    let pairs: Vec<(Entity, Entity)> = (0..FULL_WALK_AT + 1)
+      .map(|_| {
+        let root = world.spawn(Transform::IDENTITY).id();
+        let child = world
+          .spawn((Transform::from_xy(1.0, 0.0), ChildOf(root)))
+          .id();
+        (root, child)
+      })
+      .collect();
+    let parent = world.spawn(Transform::from_xy(100.0, 0.0)).id();
+    let grouped = world
+      .spawn((Transform::from_xy(10.0, 0.0), ChildOf(parent)))
+      .id();
+    let detached = world
+      .spawn((Transform::from_xy(5.0, 0.0), ChildOf(parent)))
+      .id();
+    let mut s = settled(&mut world);
+    for &(root, _) in &pairs {
+      world.get_mut::<Transform>(root).unwrap().translation.y = 3.0;
+    }
+    world.entity_mut(parent).remove::<Transform>();
+    world.entity_mut(detached).remove::<ChildOf>();
+    s.run(&mut world);
+    for &(_, child) in &pairs {
+      assert!(close(
+        global(&world, child).translation(),
+        Vec2::new(1.0, 3.0)
+      ));
+    }
+    assert!(close(
+      global(&world, grouped).translation(),
+      Vec2::new(10.0, 0.0)
+    ));
+    assert!(close(
+      global(&world, detached).translation(),
+      Vec2::new(5.0, 0.0)
+    ));
+  }
+
+  /// A small xorshift, so the random test is the same every run
+  struct Rng(u64);
+
+  impl Rng {
+    fn below(&mut self, n: usize) -> usize {
+      self.0 ^= self.0 << 13;
+      self.0 ^= self.0 >> 7;
+      self.0 ^= self.0 << 17;
+      (self.0 % n as u64) as usize
+    }
+  }
+
+  /// An entity's global and whether it is interpolated, placed from scratch
+  fn placed_from_scratch(world: &World, e: Entity) -> (GlobalTransform, bool) {
+    let local = world.get::<Transform>(e).expect("a Transform");
+    let own = world.get::<Interpolated>(e).is_some();
+    match world.get::<ChildOf>(e).map(ChildOf::parent) {
+      Some(parent) if world.get::<Transform>(parent).is_some() => {
+        let (parent_global, parent_interpolated) = placed_from_scratch(world, parent);
+        (
+          parent_global.mul_transform(local),
+          own || parent_interpolated,
+        )
+      }
+      Some(_) => (GlobalTransform::IDENTITY.mul_transform(local), own),
+      None => (GlobalTransform::from_transform(local), own),
+    }
+  }
+
+  fn is_below(world: &World, e: Entity, ancestor: Entity) -> bool {
+    let mut at = Some(e);
+    while let Some(entity) = at {
+      if entity == ancestor {
+        return true;
+      }
+      at = world.get::<ChildOf>(entity).map(ChildOf::parent);
+    }
+    false
+  }
+
+  #[test]
+  fn random_edits_leave_every_entity_where_a_walk_from_scratch_puts_it() {
+    let mut world = World::new();
+    let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
+    let mut entities: Vec<Entity> = Vec::new();
+    let point = |rng: &mut Rng| {
+      Transform::from_xy(rng.below(200) as f32 - 100.0, rng.below(200) as f32 - 100.0)
+        .with_rotation(rng.below(628) as f32 / 100.0)
+    };
+    for i in 0..150 {
+      let parent = (i > 0 && rng.below(4) != 0).then(|| entities[rng.below(entities.len())]);
+      let mut e = if rng.below(10) == 0 {
+        world.spawn_empty()
+      } else {
+        world.spawn(point(&mut rng))
+      };
+      if let Some(parent) = parent {
+        e.insert(ChildOf(parent));
+      }
+      if rng.below(6) == 0 {
+        e.insert(Interpolated);
+      }
+      entities.push(e.id());
+    }
+    let mut s = settled(&mut world);
+    for round in 0..300 {
+      // Every tenth round moves more than the changed subtrees' walk takes
+      if round % 10 == 9 {
+        for mut transform in world.query::<&mut Transform>().iter_mut(&mut world) {
+          if rng.below(3) != 0 {
+            transform.translation.x += 1.0;
+          }
+        }
+      }
+      for _ in 0..1 + rng.below(6) {
+        entities.retain(|&e| world.get_entity(e).is_ok());
+        let e = entities[rng.below(entities.len())];
+        let other = entities[rng.below(entities.len())];
+        match rng.below(20) {
+          0..=7 => {
+            if let Some(mut transform) = world.get_mut::<Transform>(e) {
+              *transform = point(&mut rng);
+            }
+          }
+          8..=10 if !is_below(&world, other, e) => {
+            world.entity_mut(e).insert(ChildOf(other));
+          }
+          11 => {
+            world.entity_mut(e).remove::<ChildOf>();
+          }
+          12 | 13 => {
+            if world.get::<Interpolated>(e).is_some() {
+              world.entity_mut(e).remove::<Interpolated>();
+            } else {
+              world.entity_mut(e).insert(Interpolated);
+            }
+          }
+          14 => {
+            if world.get::<Transform>(e).is_some() {
+              world.entity_mut(e).remove::<Transform>();
+            } else {
+              world.entity_mut(e).insert(point(&mut rng));
+            }
+          }
+          15 if entities.len() > 40 => {
+            world.despawn(e);
+          }
+          16..=18 => {
+            let child = world.spawn((point(&mut rng), ChildOf(e))).id();
+            entities.push(child);
+          }
+          _ => {}
+        }
+      }
+      s.run(&mut world);
+      world.clear_trackers();
+      let placed: Vec<Entity> = world
+        .query_filtered::<Entity, With<Transform>>()
+        .iter(&world)
+        .collect();
+      for e in placed {
+        let (expected, interpolated) = placed_from_scratch(&world, e);
+        assert_eq!(
+          global(&world, e),
+          expected,
+          "round {round}: {e:?} misplaced"
+        );
+        assert_eq!(
+          previous(&world, e).is_some(),
+          interpolated,
+          "round {round}: {e:?}'s previous transform"
+        );
+      }
+    }
   }
 }

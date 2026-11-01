@@ -2,7 +2,7 @@
 name: ryo-ecs-internals
 description: Working on Ryo2D's ECS (bevy_ecs presented as ryo2d::ecs) - kernel re-exports, components, propagation, interpolation, pooling and engine systems.
 metadata:
-  version: 2.1.2
+  version: 2.1.3
 ---
 
 # Ryo2D ECS Internals
@@ -83,7 +83,7 @@ A resource must be `Send + Sync`. The scene stack is not (its scenes are not `Se
 ## Transform Internals
 
 - **Insert hook** (`place_on_insert`): inserting a `Transform` sets `GlobalTransform` at once, from the parent's current global for a child. Spawning in `update` therefore places the entity for the rest of the step. Edits through `get_mut::<Transform>` do not fire it; they wait for propagation.
-- **Propagation** (`propagate_transforms`): one system, run in `FixedSet::Transforms` and `PostUpdateSet::Transforms`. Roots are `Transform` without `ChildOf`; a subtree is recomputed when the root's `Transform` changed or, during the walk, an ancestor's `Transform`/`ChildOf` changed. Children of a parent with no `Transform` (a grouping entity) start from the identity; they are recomputed like any node, plus when the grouping entity has just lost its `Transform`. Writes go through `set_if_neq`, so an unmoved entity's `GlobalTransform` is never marked changed.
+- **Propagation** (`propagate_transforms`): one system, run in `FixedSet::Transforms`, `PostUpdateSet::Transforms` and physics' own schedule. A run starts from the entities that changed since its last run (the `Placement` filter: `Transform` or `ChildOf` changed, `Interpolated` added; those that lost their parent or `Interpolated`; the children of a parent that lost its `Transform`), recomputing each from its parent's stored `GlobalTransform`, then its subtree; one under a changed ancestor is left to that ancestor's walk. A subtree where nothing changed is not visited, so a run costs a change-tick check per entity (the filter's scan) plus the changed subtrees. Over 64 changed entities (`FULL_WALK_AT`) it walks every hierarchy from its roots (`Transform` without `ChildOf`) instead, recomputing a subtree whose root or an ancestor changed. Children of a parent with no `Transform` (a grouping entity) start from the identity and inherit no interpolation; they are recomputed like any node, plus when the grouping entity has just lost its `Transform`. Writes go through `set_if_neq`, so an unmoved entity's `GlobalTransform` is never marked changed. The tests in `propagate.rs` check random edits against a walk from scratch.
 - **Cameras** are entities (`Camera2d`, `Transform`, and the `CameraView` it requires). In `PostUpdateSet::Camera` the shake system advances `CameraShake` on real time, then `camera_view_system` computes every camera's `CameraView` from its interpolated transform (after `PostUpdateSet::Transforms`, before `Extract`). The main camera (`MainCamera`, `Interpolated`) is spawned with the world; `ctx.camera()` respawns it over the design area if a game despawned it.
 - **Previous transforms**: propagation also inserts `PreviousGlobalTransform` (with `skip: true`) on every entity that is `Interpolated` or under one, and removes it elsewhere, through `Commands` (applied at the end of the phase).
 - **Snapshot**: `snapshot_previous_transforms` runs first in each fixed step and copies `GlobalTransform` into `PreviousGlobalTransform`, clearing `skip`.
