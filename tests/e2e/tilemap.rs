@@ -628,6 +628,137 @@ fn stacked_tiles_png() -> Vec<u8> {
   bytes
 }
 
+/// An engine of 64 x 48 drawing `stacked.ldtk`'s level, landed, its
+/// tileset image the one `stacked_tiles_png` makes
+fn stacked_level() -> Option<HeadlessEngine> {
+  let files = MemorySource::new();
+  let fixture = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/tilemap/ldtk/stacked.ldtk"
+  );
+  files.insert(
+    "ldtk/stacked.ldtk",
+    std::fs::read(fixture).expect("the fixture"),
+  );
+  files.insert("ldtk/images/tiles.png", stacked_tiles_png());
+  let builder = EngineBuilder::new().pixel_art(64, 48).asset_source(files);
+  engine_with(builder, |ctx| {
+    let project = ctx.assets().load::<LdtkProject>("ldtk/stacked.ldtk");
+    ctx
+      .world
+      .spawn((MapRoot::ldtk(project, "Stacked"), Transform::IDENTITY));
+  })
+}
+
+/// The layer entity called `name`, and its info
+fn layer_named(engine: &mut HeadlessEngine, name: &str) -> Entity {
+  let world = engine.world_mut();
+  let found = world
+    .query::<(Entity, &MapLayerRef)>()
+    .iter(world)
+    .find(|(_, layer)| layer.name == name)
+    .map(|(entity, _)| entity);
+  found.unwrap_or_else(|| panic!("no layer {name}"))
+}
+
+#[test]
+fn hiding_an_ldtk_layer_or_keeping_it_from_a_camera_takes_its_stacked_tiles_too() {
+  // Ground's own tiles are a red cell under a half green one (0, 0), a
+  // moved blue one (2, 0), a half yellow one (0, 2) and a white one
+  // (3, 2): the green, the moved blue and the yellow are its sub-layers'.
+  // Hidden, or on render layers the camera lacks, none of them draws;
+  // Collision's (1, 1) still does
+  let Some(mut engine) = stacked_level() else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  let background = engine.frame().unwrap().get_pixel(60, 24).0;
+  let collision_only = |frame: &image::RgbaImage| {
+    for y in 0..48 {
+      for x in 0..64 {
+        let want = if (16..24).contains(&x) && (16..32).contains(&y) {
+          GREEN
+        } else if (24..32).contains(&x) && (16..32).contains(&y) {
+          BLUE
+        } else {
+          background
+        };
+        assert_eq!(frame.get_pixel(x, y).0, want, "pixel ({x}, {y})");
+      }
+    }
+  };
+  let ground = layer_named(&mut engine, "Ground");
+  engine
+    .world_mut()
+    .get_mut::<LayerInfo>(ground)
+    .expect("a layer")
+    .visible = false;
+  engine.step_frames(2).unwrap();
+  collision_only(&engine.frame().unwrap());
+
+  engine
+    .world_mut()
+    .get_mut::<LayerInfo>(ground)
+    .expect("a layer")
+    .visible = true;
+  engine
+    .world_mut()
+    .entity_mut(ground)
+    .insert(RenderLayers::layer(3));
+  engine.step_frames(2).unwrap();
+  collision_only(&engine.frame().unwrap());
+}
+
+#[test]
+fn a_y_sorted_ldtk_layer_s_stacked_tiles_sort_with_a_character_as_one_layer() {
+  // Ground made y-sorted on its own entity, as a game sets a flag: its cell
+  // (0, 0), a red tile under a half green one standing on y 16, sorts with
+  // a 16 px blue character at its z by the feet, both halves alike
+  let Some(mut engine) = stacked_level() else {
+    return;
+  };
+  let ground = layer_named(&mut engine, "Ground");
+  engine
+    .world_mut()
+    .get_mut::<LayerInfo>(ground)
+    .expect("a layer")
+    .y_sorted = true;
+  let blue = engine
+    .assets()
+    .add(Image::solid_rect(16, 16, 30, 60, 230, 255));
+  let character = engine
+    .world_mut()
+    .spawn((
+      Transform::from_xy(0.0, 4.0),
+      Renderable::image(blue)
+        .with_anchor(Anchor::TopLeft)
+        .with_z_order(1),
+      YSort::new(),
+    ))
+    .id();
+  for (feet, in_front) in [(20.0, true), (12.0, false)] {
+    engine
+      .world_mut()
+      .get_mut::<Transform>(character)
+      .expect("a transform")
+      .translation = Vec2::new(0.0, feet - 16.0);
+    engine.step_frames(2).unwrap();
+    let frame = engine.frame().unwrap();
+    let top = (feet - 16.0).max(0.0) as u32;
+    for y in top..16 {
+      for x in 0..16 {
+        let tile = if x < 8 { GREEN } else { RED };
+        let want = if in_front { BLUE } else { tile };
+        assert_eq!(
+          frame.get_pixel(x, y).0,
+          want,
+          "feet at {feet}: pixel ({x}, {y})"
+        );
+      }
+    }
+  }
+}
+
 #[test]
 fn an_ldtk_level_s_stacked_offset_and_translucent_tiles_draw_as_ldtk_shows_them() {
   // `stacked.ldtk`, shaped like LDtk's saved output, over a tileset image

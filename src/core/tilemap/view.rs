@@ -48,7 +48,9 @@ impl<'w> MapsView<'w> {
   }
 
   /// The tile at `cell` of a tile layer's grid: a cell holding a class
-  /// tile ([`MapTile`](super::MapTile)) reads `None`, the tile being its entity
+  /// tile ([`MapTile`](super::MapTile)) reads `None`, the tile being its
+  /// entity. On an LDtk layer with sub-layers, the layer's own tile (the
+  /// first in the cell)
   pub fn tile<'a>(&self, map: Entity, layer: impl Into<LayerRef<'a>>, cell: IVec2) -> Option<Tile> {
     edit::tile_at(self.world, map, layer.into(), cell)
   }
@@ -60,7 +62,10 @@ impl<'w> MapsView<'w> {
   /// already on the cell is despawned first. Only the cell's chunk redraws,
   /// collides and casts shadows again. A layer with an IntGrid (an LDtk
   /// IntGrid layer) collides and occludes by its values, not its tiles:
-  /// change those with [`set_intgrid`](Self::set_intgrid)
+  /// change those with [`set_intgrid`](Self::set_intgrid). The whole cell
+  /// takes the tile: on an LDtk layer whose stacked, offset or translucent
+  /// tiles are in sub-layers ([`LayerInfo::part_of`](super::LayerInfo::part_of)),
+  /// they lose what they held there
   pub fn set_tile<'a>(
     &mut self,
     map: Entity,
@@ -72,9 +77,9 @@ impl<'w> MapsView<'w> {
   }
 
   /// Puts `tile` in every cell from `min` to `max`, both included, clipped
-  /// to the layer, as [`set_tile`](Self::set_tile) puts one; returns how
-  /// many cells changed. Only the chunks it changed redraw, collide and
-  /// cast shadows again
+  /// to the layer, as [`set_tile`](Self::set_tile) puts one (the whole
+  /// cell, a sub-layer's tiles cleared); returns how many cells changed.
+  /// Only the chunks it changed redraw, collide and cast shadows again
   pub fn fill<'a>(
     &mut self,
     map: Entity,

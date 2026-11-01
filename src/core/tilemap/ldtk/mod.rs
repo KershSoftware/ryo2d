@@ -353,10 +353,11 @@ mod tests {
       .iter()
       .map(|l| l.info.name.as_str())
       .collect();
-    // Collision stacks a tile on another: its second sub-layer draws next
+    // Collision stacks a tile on another: its sub-layer, part of it, comes
+    // after the editor's layers
     assert_eq!(
       names,
-      ["Decor", "Collision", "Collision#1", "Props", "Entities"]
+      ["Decor", "Collision", "Props", "Entities", "Collision#1"]
     );
   }
 
@@ -536,29 +537,34 @@ mod tests {
     let level = &project.levels[0];
     let layers = sub_layers(level);
     let names: Vec<&str> = layers.iter().map(|l| l.name.as_str()).collect();
+    // the editor's layers in its order, then the sub-layers, each part of
+    // its layer
     assert_eq!(
       names,
       [
         "Collision",
-        "Collision#1",
         "Ground",
+        "Collision#1",
         "Ground#1",
         "Ground#2",
         "Ground#3"
       ]
     );
+    let parts: Vec<Option<u32>> = level.map.layers.iter().map(|l| l.info.part_of).collect();
+    assert_eq!(parts, [None, None, Some(31), Some(30), Some(30), Some(30)]);
     let c = IVec2::new;
     // the IntGrid and collision stay on the layer's own
     assert_eq!(layers[0].id, 31);
     assert!(layers[0].collides && layers[0].intgrid);
     assert_eq!(layers[0].tiles, [(c(1, 1), 2)]);
-    assert_eq!((layers[1].collides, layers[1].intgrid), (false, false));
-    assert_eq!(layers[1].tiles, [(c(1, 1), 1)], "stacked above");
+    assert_eq!((layers[2].collides, layers[2].intgrid), (false, false));
+    assert_eq!(layers[2].tiles, [(c(1, 1), 1)], "stacked above");
     // Ground's own holds the plain tiles
-    assert_eq!(layers[2].id, 30);
-    assert_eq!(layers[2].tiles, [(c(0, 0), 0), (c(3, 2), 4)]);
+    assert_eq!(layers[1].id, 30);
+    assert_eq!(layers[1].tiles, [(c(0, 0), 0), (c(3, 2), 4)]);
     // then by depth, each depth as LDtk lists them: the moved tile, the
-    // translucent one, and the stacked one over the red
+    // translucent one, and the stacked one over the red, each at its own
+    // offset and opacity over its layer's
     assert_eq!(
       (layers[3].offset, layers[3].opacity),
       (Vec2::new(4.0, 4.0), 1.0)
@@ -568,7 +574,7 @@ mod tests {
     assert_eq!(layers[4].tiles, [(c(0, 2), 3)]);
     assert_eq!((layers[5].offset, layers[5].opacity), (Vec2::ZERO, 1.0));
     assert_eq!(layers[5].tiles, [(c(0, 0), 1)]);
-    for sub in [1, 3, 4, 5] {
+    for sub in [2, 3, 4, 5] {
       assert!(
         !layers[sub].collides && !layers[sub].intgrid,
         "{}",
@@ -586,6 +592,59 @@ mod tests {
       .map(|l| l.id)
       .collect();
     assert_eq!(again, ids);
+  }
+
+  #[test]
+  fn a_later_layer_keeps_its_place_whatever_stacking_a_save_adds() {
+    // internal.ldtk's Collision stacks a tile: its sub-layer is listed after
+    // the editor's layers, part of Collision, so Props is still third
+    let project = load("internal.ldtk");
+    let level = &project.levels[0];
+    let names: Vec<&str> = level
+      .map
+      .layers
+      .iter()
+      .map(|l| l.info.name.as_str())
+      .collect();
+    assert_eq!(
+      names,
+      ["Decor", "Collision", "Props", "Entities", "Collision#1"]
+    );
+    assert_eq!(level.map.layers[4].info.part_of, Some(1));
+    assert!(
+      level.map.layers[..4]
+        .iter()
+        .all(|l| l.info.part_of.is_none())
+    );
+    // a save stacks a tile in Decor too: every editor layer keeps its place
+    let edited = load_json(|v| {
+      let layers = v["levels"][0]["layerInstances"]
+        .as_array_mut()
+        .expect("layers");
+      let decor = layers
+        .iter_mut()
+        .find(|l| l["__identifier"] == "Decor")
+        .expect("decor");
+      let first = decor["gridTiles"][0].clone();
+      decor["gridTiles"]
+        .as_array_mut()
+        .expect("tiles")
+        .push(first);
+    })
+    .expect("loads");
+    let level = &edited.levels[0];
+    for (index, name) in ["Decor", "Collision", "Props", "Entities"]
+      .iter()
+      .enumerate()
+    {
+      assert_eq!(level.map.layer_index(name), Some(index), "{name}");
+    }
+    let decor_id = level.map.layers[0].info.id;
+    assert!(
+      level.map.layers[4..]
+        .iter()
+        .any(|l| l.info.name == "Decor#1" && l.info.part_of == Some(decor_id))
+    );
   }
 
   #[test]

@@ -198,7 +198,8 @@ impl MapRoot {
 #[derive(Component, Clone, Debug, PartialEq, Eq)]
 pub struct MapLayerRef {
   pub map: Entity,
-  /// Bottom first, as in the asset
+  /// Bottom first, as in the asset: the editor's layers, then an LDtk
+  /// layer's sub-layers (see [`LayerInfo::part_of`])
   pub index: usize,
   pub name: String,
 }
@@ -2142,11 +2143,11 @@ mod tests {
     expected.sort();
     assert_eq!(spawned_maps, expected);
 
-    // By identifier: its layers (Collision's stacked tile a sub-layer of
-    // its own), IntGrid, tiles and entities
+    // By identifier: its layers (Collision's stacked tile in a sub-layer,
+    // part of it, after the editor's layers), IntGrid, tiles and entities
     assert_eq!(
       layer_names(&mut world, by_name),
-      ["Decor", "Collision", "Collision#1", "Props", "Entities"]
+      ["Decor", "Collision", "Props", "Entities", "Collision#1"]
     );
     let maps = MapsView::new(&mut world);
     assert_eq!(
@@ -2310,6 +2311,50 @@ mod tests {
     let (_, plain) = object(&mut world, map, "plain");
     assert_eq!(plain.class, None);
     assert!(plain.properties.is_empty());
+  }
+
+  #[test]
+  fn an_edit_by_name_on_a_split_ldtk_layer_replaces_the_whole_cell() {
+    use crate::core::tilemap::test_util::MapWorld;
+    let mut maps = MapWorld::new();
+    let project = AssetsView::new(&mut maps.world)
+      .load_now::<LdtkProject>("ldtk/stacked.ldtk")
+      .expect("stacked.ldtk loads");
+    let map = maps.spawn(MapRoot::ldtk(project, "Stacked"));
+    let part_tile = |world: &mut World, name: &str, cell: IVec2| {
+      let found = world
+        .query::<(&MapLayerRef, &TileLayerData)>()
+        .iter(world)
+        .find(|(layer, _)| layer.map == map && layer.name == name)
+        .map(|(_, data)| data.grid.get(cell));
+      found.unwrap_or_else(|| panic!("no layer {name}"))
+    };
+    // Ground's cell (0, 0): a red tile, a half green one stacked on it
+    let origin = IVec2::ZERO;
+    assert!(part_tile(&mut maps.world, "Ground#3", origin).is_some());
+    let mut view = MapsView::new(&mut maps.world);
+    assert_eq!(view.tile(map, "Ground", origin), Some(Tile::new(0, 0)));
+    assert!(view.set_tile(map, "Ground", origin, Some(Tile::new(0, 4))));
+    assert_eq!(view.tile(map, "Ground", origin), Some(Tile::new(0, 4)));
+    assert_eq!(part_tile(&mut maps.world, "Ground#3", origin), None);
+    // a fill clears the moved and the translucent tiles in its region too
+    let mut view = MapsView::new(&mut maps.world);
+    assert_eq!(
+      view.fill(map, "Ground", IVec2::new(1, 0), IVec2::new(3, 2), None),
+      2,
+      "the white tile, and the cells only the moved tile held"
+    );
+    assert_eq!(
+      part_tile(&mut maps.world, "Ground#1", IVec2::new(2, 0)),
+      None
+    );
+    assert!(part_tile(&mut maps.world, "Ground#2", IVec2::new(0, 2)).is_some());
+    let mut view = MapsView::new(&mut maps.world);
+    assert!(view.set_tile(map, "Ground", IVec2::new(0, 2), None));
+    assert_eq!(
+      part_tile(&mut maps.world, "Ground#2", IVec2::new(0, 2)),
+      None
+    );
   }
 
   /// A level's maps for the observer tests: which to cancel as its first

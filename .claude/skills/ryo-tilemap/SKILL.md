@@ -138,7 +138,7 @@ What the editor gives a layer carries over:
 - **Opacity, tint** (Tiled), **offset, visibility, blend mode, parallax** (section 10). A hidden layer draws nothing but still collides and casts shadows as its flags say: a collision-only layer is a hidden tile layer.
 - **Image layers** draw their picture, repeated across or down where Tiled's repeat settings say. One left without a picture (Tiled makes a new image layer so) loads with `ImageLayer::image` `None` and draws nothing. A transparent colour set on its image (`ImageLayer::transparent`) draws clear.
 - **LDtk:** an IntGrid layer draws its auto-tiles and collides by its values; each layer keeps its own grid size, so a level may mix an 8 px collision grid with 16 px art.
-- **LDtk's stacked, offset and translucent tiles** draw as the editor shows them. Rules and stamps stack several tiles in a cell, a rule can move its tiles off the grid or fade them, and a layer holds one tile a cell, so such a layer loads as several: its own (named as in LDtk, holding the IntGrid and the collision), then a sub-layer for each distinct stack depth, offset and alpha its tiles need, named `Ground#1`, `Ground#2` and on, right after it in `MapLayers` (so one z higher each, the first tile in a cell beneath the next), each offset and faded as its tiles are. A layer splits into 16 at most: past that, the tiles left over draw in the nearest sub-layer, and the dev log says how many. Edits by the layer's name reach its own layer; a flag set on its `LayerInfo` (say `y_sorted`) belongs on its sub-layers too, as the example below sets it.
+- **LDtk's stacked, offset and translucent tiles** draw as the editor shows them. Rules and stamps stack several tiles in a cell, a rule can move its tiles off the grid or fade them, and a layer holds one tile a cell, so such a layer loads with sub-layers: one for each distinct stack depth, offset and alpha its tiles need, named `Ground#1`, `Ground#2` and on, with `LayerInfo::part_of` naming the layer's editor id. They are parts of the layer, not layers of their own: each draws with the layer's settings as they are now (visibility, `y_sorted`, `lit`, parallax, blend, tint, its entity's `RenderLayers` and `Disabled`), at its z, just after it, its own offset and opacity over the layer's, so a game sets a flag on the layer alone and the whole layer follows, and a y-sorted layer's stacked tiles sort with a character as its own do. They are listed after the editor's layers in `MapLayers`, so every layer keeps the index and z LDtk's order gives it whatever stacking a save adds. The IntGrid and the collision are the layer's own. Edits by the layer's name (`set_tile`, `fill`, `set_terrain`) replace the whole cell, clearing what its sub-layers held there, and `tile` reads the layer's own tile. A layer has 16 sub-layers at most: past that, the tiles left over draw in the nearest, and the dev log says how many.
 
 Four layer properties are reserved; the engine reads them into the layer's `LayerInfo`:
 
@@ -154,10 +154,10 @@ Four layer properties are reserved; the engine reads them into the layer's `Laye
 
 <!-- given: map: Entity -->
 ```rust
-// The LDtk level's "Trees" layer, and its sub-layers, sort with the characters
+// The LDtk level's "Trees" layer (its stacked tiles with it) sorts with the characters
 let mut layers = ctx.world.query::<(&MapLayerRef, &mut LayerInfo)>();
 for (layer, mut info) in layers.iter_mut(ctx.world) {
-  if layer.map == map && (layer.name == "Trees" || layer.name.starts_with("Trees#")) {
+  if layer.map == map && layer.name == "Trees" {
     info.y_sorted = true;
   }
 }

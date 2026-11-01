@@ -70,6 +70,16 @@ pub struct LayerInfo {
   pub y_sorted: bool,
   /// Whether lights shade it
   pub lit: bool,
+  /// For an LDtk sub-layer, the editor id of the layer it is part of
+  /// (`None` for every other layer). An LDtk layer whose tiles stack in a
+  /// cell, sit off the grid or fade keeps those tiles in sub-layers named
+  /// after it (`Ground#1`, `Ground#2`...), listed after the editor's layers.
+  /// A sub-layer draws with the settings of the layer it is part of, as
+  /// they are now (`visible`, `y_sorted`, `lit`, `parallax`, `blend`,
+  /// `tint`, its entity's `RenderLayers` and `Disabled`), at its z and just
+  /// after it; its own `offset` and `opacity` lie over that layer's. Edits
+  /// by that layer clear the cells they touch in its sub-layers
+  pub part_of: Option<u32>,
   pub properties: Properties,
 }
 
@@ -90,6 +100,7 @@ impl LayerInfo {
       occludes: None,
       y_sorted: false,
       lit: true,
+      part_of: None,
       properties: Properties::default(),
     }
   }

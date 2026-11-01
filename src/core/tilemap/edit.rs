@@ -6,8 +6,9 @@ use super::spawn::{
   ClassTile, LayerTiles, MapLayerRef, MapLayers, MapTile, TileLayerData, registered_class,
   spawn_class_tile,
 };
-use super::{CHUNK_SIZE, Properties, Tile, TileGrid};
+use super::{CHUNK_SIZE, LayerInfo, Properties, Tile, TileGrid};
 use crate::core::ecs::{ChildOf, DetectChangesMut, Entity, Transform, World};
+use crate::core::hash::FastSet;
 
 /// How many ancestors a layer's world transform walks up before giving up:
 /// far past any real hierarchy, and a cycle (which nothing else checks for)
@@ -15,7 +16,7 @@ use crate::core::ecs::{ChildOf, DetectChangesMut, Entity, Transform, World};
 const MAX_DEPTH: usize = 256;
 
 /// A layer of a map: by name (the first layer so called) or by index
-/// (bottom first)
+/// (bottom first: the editor's layers, then an LDtk layer's sub-layers)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LayerRef<'a> {
   Name(&'a str),
@@ -59,6 +60,57 @@ pub(crate) fn layer_entity(world: &World, map: Entity, layer: LayerRef<'_>) -> O
       .copied()
       .find(|&entity| is_layer(entity, Some(name))),
   }
+}
+
+/// The sub-layers of `map`'s layer entity `layer` (an LDtk layer's stacked,
+/// offset and translucent tiles), which are part of it: empty for every
+/// other layer, without allocating
+pub(crate) fn parts_of(world: &World, map: Entity, layer: Entity) -> Vec<Entity> {
+  let Some(id) = world
+    .get::<LayerInfo>(layer)
+    .filter(|info| info.part_of.is_none())
+    .map(|info| info.id)
+  else {
+    return Vec::new();
+  };
+  let Some(layers) = world.get::<MapLayers>(map) else {
+    return Vec::new();
+  };
+  layers
+    .0
+    .iter()
+    .copied()
+    .filter(|&entity| {
+      world
+        .get::<LayerInfo>(entity)
+        .is_some_and(|info| info.part_of == Some(id))
+    })
+    .collect()
+}
+
+/// Clears the cells from `lo` to `hi` (both included) in `parts`; the cells
+/// that held a tile in any of them
+fn clear_parts(world: &mut World, parts: &[Entity], lo: IVec2, hi: IVec2) -> FastSet<IVec2> {
+  let mut cleared = FastSet::default();
+  for &part in parts {
+    let Some(data) = world.get::<TileLayerData>(part) else {
+      continue;
+    };
+    let size = data.grid.size().as_ivec2();
+    let (a, b) = (lo.max(IVec2::ZERO), hi.min(size - IVec2::ONE));
+    for y in a.y..=b.y {
+      for x in a.x..=b.x {
+        let cell = IVec2::new(x, y);
+        if data.grid.get(cell).is_some() {
+          cleared.insert(cell);
+        }
+      }
+    }
+    if a.x <= b.x && a.y <= b.y {
+      edit_grid(world, part, |grid| grid.fill(a, b, None), |n| *n > 0);
+    }
+  }
+  cleared
 }
 
 /// A tile layer's cells
@@ -151,7 +203,8 @@ fn set_cell(
   }
 }
 
-/// Puts `tile` (or nothing) at `cell` of a tile layer; see [`set_cell`]
+/// Puts `tile` (or nothing) at `cell` of a tile layer; see [`set_cell`].
+/// The whole cell takes it: the layer's sub-layers lose what they held there
 pub(crate) fn set_tile(
   world: &mut World,
   map: Entity,
@@ -166,11 +219,14 @@ pub(crate) fn set_tile(
     return false;
   }
   let class = tile.and_then(|tile| registered_class(world, map, tile));
-  set_cell(world, map, layer, cell, tile, class.as_ref())
+  let parts = parts_of(world, map, layer);
+  let cleared = !clear_parts(world, &parts, cell, cell).is_empty();
+  set_cell(world, map, layer, cell, tile, class.as_ref()) || cleared
 }
 
 /// Puts `tile` (or nothing) in every cell from `min` to `max`, both
-/// included, clipped to the layer; returns how many cells changed
+/// included, clipped to the layer; returns how many cells changed. The
+/// whole of each cell takes it: the layer's sub-layers lose what they held
 pub(crate) fn fill(
   world: &mut World,
   map: Entity,
@@ -186,6 +242,30 @@ pub(crate) fn fill(
   if lo.x > hi.x || lo.y > hi.y {
     return 0;
   }
+  // Cells that change only by losing a sub-layer's tile: the layer's own
+  // grid already holds `tile` there, and no class tile is on them
+  let parts = parts_of(world, map, layer);
+  let cleared = clear_parts(world, &parts, lo, hi);
+  let only_parts = cleared
+    .iter()
+    .filter(|&&cell| {
+      class_tile_at(world, layer, cell).is_none()
+        && world
+          .get::<TileLayerData>(layer)
+          .is_some_and(|data| data.grid.get(cell) == tile)
+    })
+    .count();
+  fill_layer(world, map, layer, (lo, hi), tile) + only_parts
+}
+
+/// [`fill`] on the layer entity `layer` alone, the region clipped
+fn fill_layer(
+  world: &mut World,
+  map: Entity,
+  layer: Entity,
+  (lo, hi): (IVec2, IVec2),
+  tile: Option<Tile>,
+) -> usize {
   let class = tile.and_then(|tile| registered_class(world, map, tile));
   if class.is_some() {
     // Each cell spawns its own entity

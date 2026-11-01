@@ -376,6 +376,9 @@ fn keyed_image(
 /// One tile layer as a frame draws it
 struct LayerDraw<'a> {
   layer: Entity,
+  /// What its draws' ties go by: the layer, or the layer a sub-layer is
+  /// part of, so its rows sort with entities as that layer's do
+  ties: Entity,
   data: &'a TileLayerData,
   look: LayerLook,
   /// What its chunks are built from besides their tiles
@@ -499,10 +502,53 @@ impl TileDrawer {
           let map_layers_mask = render_layers.copied().unwrap_or_default();
           let map_affine = render_global(global, previous, frame.alpha).affine();
           for &entity in &map_layers.0 {
-            let Ok((layer_ref, info, tiles, image, layer_global, layer_previous, own, children)) =
-              layers.get(world, entity)
+            let Ok((
+              layer_ref,
+              own_info,
+              tiles,
+              image,
+              layer_global,
+              layer_previous,
+              own,
+              children,
+            )) = layers.get(world, entity)
             else {
               continue;
+            };
+            // An LDtk sub-layer draws as part of its layer: that layer's
+            // settings, place, z and render layers (a hidden, disabled or
+            // gone one takes it along), its own offset and opacity over them
+            let (info, ties, layer_ref, layer_global, layer_previous, own, part) = match own_info
+              .part_of
+            {
+              None => (
+                own_info,
+                entity,
+                layer_ref,
+                layer_global,
+                layer_previous,
+                own,
+                None,
+              ),
+              Some(id) => {
+                let base = map_layers.0.iter().find_map(|&base| {
+                  let item = layers.get(world, base).ok()?;
+                  (item.1.id == id && item.1.part_of.is_none()).then_some((base, item))
+                });
+                let Some((base, (base_ref, base_info, _, _, global, previous, base_own, _))) = base
+                else {
+                  continue;
+                };
+                (
+                  base_info,
+                  base,
+                  base_ref,
+                  global,
+                  previous,
+                  base_own,
+                  Some(own_info),
+                )
+              }
             };
             let mask = own.copied().unwrap_or(map_layers_mask);
             if !info.visible || !frame.cameras.iter().any(|c| c.layers.intersects(&mask)) {
@@ -510,11 +556,14 @@ impl TileDrawer {
             }
             let look = LayerLook {
               tint: info.tint,
-              opacity: info.opacity,
+              opacity: info.opacity * part.map_or(1.0, |part| part.opacity),
             };
             let index = i32::try_from(layer_ref.index).unwrap_or(i32::MAX);
             let z = root.z.saturating_add(index);
-            let affine = render_global(layer_global, layer_previous, frame.alpha).affine();
+            let mut affine = render_global(layer_global, layer_previous, frame.alpha).affine();
+            if let Some(part) = part {
+              affine *= Affine2::from_translation(part.offset);
+            }
             let origin = asset.parallax_origin;
             let views = views(frame.cameras, mask, (map_affine, origin), info.parallax);
             let style = LayerStyle {
@@ -534,9 +583,10 @@ impl TileDrawer {
                 continue;
               }
               let mut stamp = DefaultHasher::new();
-              (paddings, info.tint, info.opacity.to_bits(), data.cell_size).hash(&mut stamp);
+              (paddings, look.tint, look.opacity.to_bits(), data.cell_size).hash(&mut stamp);
               let draw = LayerDraw {
                 layer: entity,
+                ties,
                 data,
                 look,
                 stamp: stamp.finish(),
@@ -817,7 +867,7 @@ impl View<'_> {
         let index = self.draws.len() as u32;
         self.draws.push(OrderedDraw {
           order,
-          entity: layer.layer,
+          entity: layer.ties,
           index,
           lit: layer.lit,
           only_camera: only,

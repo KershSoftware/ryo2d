@@ -837,12 +837,15 @@ fn build_planned(defs: &Defs<'_>, planned: PlannedLayer<'_>) -> Result<Vec<Layer
       None
     };
     if k > 0 {
+      // Part of its layer, which it draws with: its offset and opacity are
+      // its own, over the layer's
       sub.name = format!("{}#{k}", info.name);
       sub.id = sub_layer_id(info.id, key);
-      sub.offset += key.offset.as_vec2();
-      sub.opacity *= key.alpha();
+      sub.part_of = Some(info.id);
+      sub.offset = key.offset.as_vec2();
+      sub.opacity = key.alpha();
       sub.collides = false;
-      sub.occludes = None;
+      sub.occludes = Some(false);
     }
     out.push(LayerOut {
       layer: MapLayer {
@@ -959,21 +962,31 @@ fn build_map(
   }
   map.background = background(defs, &place, raw)?;
   map.properties = fields;
-  // a sub-layer's id is a hash: kept apart from the layers' and each other's
+  // The editor's layers in its order, then the sub-layers, so a layer's
+  // place (and z) stays LDtk's whatever stacking a save adds. A sub-layer's
+  // id is a hash: kept apart from the layers' and each other's
   let mut ids: FastSet<u32> = planned.iter().map(|p| p.info.id).collect();
+  let mut parts = Vec::new();
   for layer in planned {
-    let own = layer.info.id;
     for mut out in build_planned(defs, layer)? {
-      if out.layer.info.id != own {
-        while !ids.insert(out.layer.info.id) {
-          out.layer.info.id = (out.layer.info.id.wrapping_add(1) & 0x7FFF_FFFF) | 0x8000_0000;
+      if out.layer.info.part_of.is_none() {
+        if let Some((tileset, max)) = out.used {
+          map.used_ids.push((map.layers.len(), tileset, max));
         }
+        map.layers.push(out.layer);
+        continue;
       }
-      if let Some((tileset, max)) = out.used {
-        map.used_ids.push((map.layers.len(), tileset, max));
+      while !ids.insert(out.layer.info.id) {
+        out.layer.info.id = (out.layer.info.id.wrapping_add(1) & 0x7FFF_FFFF) | 0x8000_0000;
       }
-      map.layers.push(out.layer);
+      parts.push(out);
     }
+  }
+  for out in parts {
+    if let Some((tileset, max)) = out.used {
+      map.used_ids.push((map.layers.len(), tileset, max));
+    }
+    map.layers.push(out.layer);
   }
   Ok(map)
 }
