@@ -4,7 +4,7 @@
 //! map's bounds; and an empty infinite map built in code that grows
 //! wherever the mouse paints, with a ball bouncing on what is painted. The
 //! meadow is a file in `assets/` written by Tiled through
-//! `src/bin/make-maps.rs`. A library, so its tests drive the pages
+//! `src/bin/make-grid-maps.rs`. A library, so its tests drive the pages
 //! headlessly. Later pages (isometric, hexagonal and oblique grids,
 //! streaming, floors) join these
 

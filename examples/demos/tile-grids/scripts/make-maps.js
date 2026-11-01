@@ -1,9 +1,9 @@
 // Writes the tile grids demo's Tiled files through Tiled's own scripting
 // API: the property types of project.tiled-project, the Pixel Platformer
-// tileset and the maps. make-maps runs it from assets/, after writing an
+// tileset and the maps. make-grid-maps runs it from assets/, after writing an
 // empty project:
 //
-//   cargo run -p tile-grids-demo --bin make-maps
+//   cargo run -p tile-grids-demo --bin make-grid-maps
 //
 // which comes down to (Tiled 1.12.2, from examples/demos/tile-grids/assets):
 //

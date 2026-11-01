@@ -1,6 +1,6 @@
 # Tile grids demo assets
 
-The art is Kenney's, CC0. The Tiled project, tileset and map are written by `make-maps`, through Tiled itself; nothing here is drawn or placed by hand.
+The art is Kenney's, CC0. The Tiled project, tileset and map are written by `make-grid-maps`, through Tiled itself; nothing here is drawn or placed by hand.
 
 ## Art
 
@@ -25,14 +25,14 @@ The engine reads the meadow into chunks of its own, 32 x 32 cells: 11 of the 27 
 
 ### How the files are made
 
-`make-maps` (`src/bin/make-maps.rs`) writes an empty `project.tiled-project` and runs `scripts/make-maps.js` with Tiled's `--evaluate`. The script adds the project's types, builds the tileset and the map through Tiled's scripting API (`map.infinite = true`; tiles written at any cell through a layer's `edit()`), and saves each with Tiled's own writers, which lay an infinite map's layers out in chunks. Every choice is made by rule or by a hash of the cell, so a run writes the same bytes each time. The ground's tiles are picked by the four cells beside each one (a grass top where the cell above is open, an edge on each open side, a bottom edge where the cell below is open), the rule the Paint anywhere page paints by (`src/shared.rs`, `ground_tile`).
+`make-grid-maps` (`src/bin/make-grid-maps.rs`) writes an empty `project.tiled-project` and runs `scripts/make-maps.js` with Tiled's `--evaluate`. The script adds the project's types, builds the tileset and the map through Tiled's scripting API (`map.infinite = true`; tiles written at any cell through a layer's `edit()`), and saves each with Tiled's own writers, which lay an infinite map's layers out in chunks. Every choice is made by rule or by a hash of the cell, so a run writes the same bytes each time. The ground's tiles are picked by the four cells beside each one (a grass top where the cell above is open, an edge on each open side, a bottom edge where the cell below is open), the rule the Paint anywhere page paints by (`src/shared.rs`, `ground_tile`).
 
-`make-maps` then opens and exports each file with Tiled's command line (`--export-tileset json`, `--export-map json`, with the project), which fails on anything Tiled cannot read, and checks the meadow's export is an infinite map with chunks at negative cells on both axes.
+`make-grid-maps` then opens and exports each file with Tiled's command line (`--export-tileset json`, `--export-map json`, with the project), which fails on anything Tiled cannot read, and checks the meadow's export is an infinite map with chunks at negative cells on both axes.
 
 ## Regenerating
 
 ```sh
-cargo run -p tile-grids-demo --bin make-maps
+cargo run -p tile-grids-demo --bin make-grid-maps
 ```
 
 It needs Tiled 1.12.2 (`$TILED`, `/Applications/Tiled.app`, or `tiled` on the path); without it nothing is written. `cargo test -p tile-grids-demo` loads the meadow through the engine and plays both pages.

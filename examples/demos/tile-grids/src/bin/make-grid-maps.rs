@@ -10,7 +10,7 @@
 //! `/Applications/Tiled.app/Contents/MacOS/Tiled`, then as `tiled` on the
 //! path. Without it nothing is written.
 //!
-//! `cargo run -p tile-grids-demo --bin make-maps`
+//! `cargo run -p tile-grids-demo --bin make-grid-maps`
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -28,7 +28,7 @@ const PROJECT_STUB: &str = "{\n    \"folders\": [\n        \".\"\n    ]\n}\n";
 fn main() {
   let root = Path::new(env!("CARGO_MANIFEST_DIR"));
   if let Err(error) = run(root) {
-    eprintln!("make-maps: {error}");
+    eprintln!("make-grid-maps: {error}");
     std::process::exit(1);
   }
 }
