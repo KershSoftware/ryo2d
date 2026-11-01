@@ -283,7 +283,7 @@ for (entity, hits) in bricks {
 | `tile_data(map, tile) -> Option<TileData>` | what the tile's tileset says about it |
 | `world_to_cell(map, layer, world: Vec2) -> Option<IVec2>`, `cell_to_world(map, layer, cell) -> Option<Vec2>` | through the map's and the layer's transforms; a cell's centre |
 | `layer_entity(map, layer) -> Option<Entity>` | the layer's entity |
-| `bounds(map) -> Option<CellRect>`, `layer_bounds(map, layer) -> Option<CellRect>` | the cells the map, or a tile layer, covers as it is now: a bounded one's size; an unbounded one's cells holding tiles, class tiles included, following every edit (empty with none) |
+| `bounds(map) -> Option<CellRect>`, `layer_bounds(map, layer) -> Option<CellRect>` | the cells the map, or a tile layer, covers as it is now: a bounded one's size; an unbounded one's cells holding tiles, class tiles included, following every edit (empty with none; it looks at every chunk, so on a map grown to many chunks read it when the map changes, not every frame) |
 | `spawn_levels_in(world, area: Rect) -> Vec<Entity>`, `spawn_levels_in_with(world, area, depth, configure)` | the levels of a world near a place, the second setting each root up (section 12) |
 
 <!-- self: map: Entity -->

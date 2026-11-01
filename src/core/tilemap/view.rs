@@ -56,7 +56,10 @@ impl<'w> MapsView<'w> {
   /// holding every cell of its tile layers with a tile (class tiles
   /// included), following every edit since it landed (empty with none).
   /// For camera limits on a map that grows; [`TileMap::bounds`](super::TileMap::bounds)
-  /// reads the asset, which edits never change. `None` until it lands
+  /// reads the asset, which edits never change. `None` until it lands. An
+  /// infinite map's costs a look at each of its chunks plus the cells of
+  /// the chunks on its edges: on a map grown to many chunks, read it when
+  /// the map changes rather than every frame
   pub fn bounds(&self, map: Entity) -> Option<CellRect> {
     edit::map_bounds(self.world, map)
   }
