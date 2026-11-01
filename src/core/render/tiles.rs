@@ -64,19 +64,18 @@ pub(crate) struct LayerLook {
 }
 
 /// Appends to `out` (cleared first) an instance for each tile of `chunk`
-/// that has a picture, as `(tileset, row, instance)` (`row` being the
-/// cell's row in the layer), grouped by tileset index and in row order
+/// (signed) that has a picture, as `(tileset, row, instance)` (`row` being
+/// the cell's row in the layer), grouped by tileset index and in row order
 /// within a tileset. A cell whose tileset or tile the map lacks makes none.
 pub(crate) fn chunk_instances(
   grid: &TileGrid,
-  chunk: UVec2,
+  chunk: IVec2,
   cell_size: Vec2,
   layouts: &[Option<PaddedLayout>],
   look: &LayerLook,
-  out: &mut Vec<(u16, u32, SpriteInstance)>,
+  out: &mut Vec<(u16, i32, SpriteInstance)>,
 ) {
   out.clear();
-  let chunk = chunk.as_ivec2();
   // Row by row, each cell read where it lies, not looked up
   let Some(cells) = grid.chunk_cells(chunk) else {
     return;
@@ -95,7 +94,7 @@ pub(crate) fn chunk_instances(
     };
     out.push((
       tile.tileset,
-      cell.y as u32,
+      cell.y,
       instance(cell, cell_size, tile.flip, layout, padded, look),
     ));
   }
@@ -771,13 +770,16 @@ impl View<'_> {
     }
     let to_layer = placed.inverse();
     let grid = &layer.data.grid;
-    // The chunks from chunk (0, 0) to the far corner of the grid's extent:
-    // all of a bounded layer's
-    let reach = grid.extent().max.max(IVec2::ZERO).as_uvec2();
-    let chunks = UVec2::new(reach.x.div_ceil(CHUNK_SIZE), reach.y.div_ceil(CHUNK_SIZE));
-    if chunks.min_element() == 0 {
+    // The chunks the layer reaches: all of a bounded layer's, the span of
+    // an unbounded one's (whose chunks drawn are the ones it has)
+    let extent = grid.extent();
+    if extent.is_empty() {
       return;
     }
+    let (reach_first, reach_last) = (
+      TileGrid::chunk_of(extent.min),
+      TileGrid::chunk_of(extent.max - IVec2::ONE),
+    );
     let cell = layer.data.cell_size.as_vec2();
     let chunk_px = cell * CHUNK_SIZE as f32;
     let view = self.store.begin_view();
@@ -792,19 +794,29 @@ impl View<'_> {
     };
     for camera in cameras {
       // The camera's view in the layer's pixels, widened by how far a tile
-      // may draw past its cell; then the chunks it meets
+      // may draw past its cell; then the signed chunks it meets, within
+      // those the layer reaches
       let (low, high) = camera_box(camera, &to_layer);
       let (low, high) = (low - layer.margin, high + layer.margin);
-      let first = (low / chunk_px).floor().max(Vec2::ZERO);
-      let last = (high / chunk_px).floor().min(chunks.as_vec2() - 1.0);
+      let first = (low / chunk_px).floor().max(reach_first.as_vec2());
+      let last = (high / chunk_px).floor().min(reach_last.as_vec2());
       // Not finite, or off the layer
       if !(first.x <= last.x && first.y <= last.y) {
         continue;
       }
-      let (first, last) = (first.as_uvec2(), last.as_uvec2());
-      for y in first.y..=last.y {
-        for x in first.x..=last.x {
-          self.chunk(layer, UVec2::new(x, y), view, (&placed, slot), only);
+      let first = first.as_ivec2().max(reach_first);
+      let last = last.as_ivec2().min(reach_last);
+      if grid.bounds().is_some() {
+        for y in first.y..=last.y {
+          for x in first.x..=last.x {
+            self.chunk(layer, IVec2::new(x, y), view, (&placed, slot), only);
+          }
+        }
+      } else {
+        // Only the chunks an unbounded layer has, found by walking the
+        // view's chunks or the layer's, whichever are fewer
+        for chunk in grid.chunks_within(first, last) {
+          self.chunk(layer, chunk, view, (&placed, slot), only);
         }
       }
     }
@@ -816,19 +828,19 @@ impl View<'_> {
   fn chunk(
     &mut self,
     layer: &LayerDraw<'_>,
-    chunk: UVec2,
+    chunk: IVec2,
     view: u64,
     (placed, slot): (&Affine2, TileSlot),
     only: Option<Entity>,
   ) {
     let grid = &layer.data.grid;
     let stamp = ChunkStamp {
-      version: grid.chunk_version(chunk.as_ivec2()),
+      version: grid.chunk_version(chunk),
       look: layer.stamp,
     };
     let cell = layer.data.cell_size.as_vec2();
     let layouts = self.layouts;
-    let build = |out: &mut Vec<(u16, u32, SpriteInstance)>| {
+    let build = |out: &mut Vec<(u16, i32, SpriteInstance)>| {
       chunk_instances(grid, chunk, cell, layouts, &layer.look, out);
     };
     // Its parts, and its rows for a y-sorted layer, copied out of the store
@@ -1164,7 +1176,7 @@ mod tests {
 
   fn build(
     grid: &TileGrid,
-    chunk: UVec2,
+    chunk: IVec2,
     cell: Vec2,
     layouts: &[Option<PaddedLayout>],
   ) -> Vec<(u16, SpriteInstance)> {
@@ -1207,7 +1219,7 @@ mod tests {
     grid.set(IVec2::new(1, 1), Some(Tile::new(0, 3).with_flip(flip)));
     let out = build(
       &grid,
-      UVec2::ZERO,
+      IVec2::ZERO,
       Vec2::splat(16.0),
       &[Some(layout.clone())],
     );
@@ -1313,7 +1325,7 @@ mod tests {
     // Outside the chunk
     grid.set(IVec2::new(5, 5), Some(Tile::new(0, 0)));
     grid.set(IVec2::new(35, 33), Some(Tile::new(0, 0)));
-    let out = build(&grid, UVec2::new(1, 0), Vec2::splat(16.0), &layouts);
+    let out = build(&grid, IVec2::new(1, 0), Vec2::splat(16.0), &layouts);
     let sets: Vec<u16> = out.iter().map(|(s, _)| *s).collect();
     assert_eq!(sets, [0, 0, 1, 1]);
     let centres: Vec<Vec2> = out.iter().map(|(_, i)| at(i)).collect();
@@ -1331,16 +1343,16 @@ mod tests {
     let mut rows = Vec::new();
     chunk_instances(
       &grid,
-      UVec2::new(1, 0),
+      IVec2::new(1, 0),
       Vec2::splat(16.0),
       &layouts,
       &LOOK,
       &mut rows,
     );
-    let rows: Vec<(u16, u32)> = rows.iter().map(|(s, r, _)| (*s, *r)).collect();
+    let rows: Vec<(u16, i32)> = rows.iter().map(|(s, r, _)| (*s, *r)).collect();
     assert_eq!(rows, [(0, 0), (0, 2), (1, 0), (1, 2)]);
     // The last chunk of a grid is cut at the grid's edge
-    let edge = build(&grid, UVec2::new(1, 1), Vec2::splat(16.0), &layouts);
+    let edge = build(&grid, IVec2::new(1, 1), Vec2::splat(16.0), &layouts);
     assert_eq!(edge.len(), 1);
   }
 
@@ -1348,9 +1360,9 @@ mod tests {
   fn empty_cells_make_no_instance() {
     let (layouts, _) = two_sets();
     let grid = TileGrid::new(UVec2::splat(10));
-    assert!(build(&grid, UVec2::ZERO, Vec2::splat(16.0), &layouts).is_empty());
+    assert!(build(&grid, IVec2::ZERO, Vec2::splat(16.0), &layouts).is_empty());
     // A chunk outside the grid too
-    assert!(build(&grid, UVec2::new(3, 3), Vec2::splat(16.0), &layouts).is_empty());
+    assert!(build(&grid, IVec2::new(3, 3), Vec2::splat(16.0), &layouts).is_empty());
   }
 
   #[test]
@@ -1363,7 +1375,7 @@ mod tests {
     grid.set(IVec2::new(3, 0), Some(Tile::new(0, 1)));
     grid.set(IVec2::new(0, 1), Some(Tile::new(1, 1)));
     layouts[1] = None;
-    let out = build(&grid, UVec2::ZERO, Vec2::splat(16.0), &layouts);
+    let out = build(&grid, IVec2::ZERO, Vec2::splat(16.0), &layouts);
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].0, 0);
   }
@@ -1380,7 +1392,7 @@ mod tests {
     let mut out = Vec::new();
     chunk_instances(
       &grid,
-      UVec2::ZERO,
+      IVec2::ZERO,
       Vec2::splat(16.0),
       &layouts,
       &look,
@@ -1411,7 +1423,7 @@ mod tests {
     grid.set(IVec2::new(0, 0), Some(Tile::new(0, 1)));
     let out = build(
       &grid,
-      UVec2::ZERO,
+      IVec2::ZERO,
       Vec2::splat(16.0),
       &[Some(layout.clone())],
     );
@@ -1460,7 +1472,7 @@ mod tests {
     let layouts = [Some(layout_of(&t, &images))];
     let mut grid = TileGrid::new(UVec2::splat(8));
     grid.set(IVec2::new(2, 3), Some(Tile::new(0, 0)));
-    let out = build(&grid, UVec2::ZERO, Vec2::splat(16.0), &layouts);
+    let out = build(&grid, IVec2::ZERO, Vec2::splat(16.0), &layouts);
     let (min, max) = screen_box(&out[0].1);
     // The cell spans (32, 48) to (48, 64); the tile stands on its bottom
     assert_eq!((min, max), (Vec2::new(32.0, 32.0), Vec2::new(48.0, 64.0)));
@@ -1469,7 +1481,7 @@ mod tests {
     let mut wide = tall_set(&mut images);
     wide.tile_size = UVec2::new(32, 16);
     let layouts = [Some(layout_of(&wide, &images))];
-    let out = build(&grid, UVec2::ZERO, Vec2::splat(16.0), &layouts);
+    let out = build(&grid, IVec2::ZERO, Vec2::splat(16.0), &layouts);
     let (min, max) = screen_box(&out[0].1);
     assert_eq!((min, max), (Vec2::new(32.0, 48.0), Vec2::new(64.0, 64.0)));
   }
@@ -1483,7 +1495,7 @@ mod tests {
     let mut shifted = layouts[0].clone().expect("layout");
     shifted.offset = IVec2::new(3, -5);
     layouts[0] = Some(shifted);
-    let out = build(&grid, UVec2::ZERO, Vec2::splat(16.0), &layouts);
+    let out = build(&grid, IVec2::ZERO, Vec2::splat(16.0), &layouts);
     let (min, _) = screen_box(&out[0].1);
     assert_eq!(min, Vec2::new(16.0 + 3.0, 16.0 - 5.0));
     // The other tileset is not shifted
@@ -1501,7 +1513,7 @@ mod tests {
       IVec2::new(2, 3),
       Some(Tile::new(0, 0).with_flip(TileFlip::DIAGONAL)),
     );
-    let out = build(&grid, UVec2::ZERO, Vec2::splat(16.0), &layouts);
+    let out = build(&grid, IVec2::ZERO, Vec2::splat(16.0), &layouts);
     let (min, max) = screen_box(&out[0].1);
     // 32 wide and 16 tall, on the cell's bottom edge, growing right
     assert_eq!((min, max), (Vec2::new(32.0, 48.0), Vec2::new(64.0, 64.0)));
@@ -1520,7 +1532,7 @@ mod tests {
     let (layouts, _) = two_sets();
     let mut grid = TileGrid::new(UVec2::splat(4));
     grid.set(IVec2::new(3, 2), Some(Tile::new(0, 0)));
-    let out = build(&grid, UVec2::ZERO, Vec2::new(8.0, 12.0), &layouts);
+    let out = build(&grid, IVec2::ZERO, Vec2::new(8.0, 12.0), &layouts);
     let (min, max) = screen_box(&out[0].1);
     // 16 px tile on an 8 x 12 cell: bottom-left of the cell (24, 24..36)
     assert_eq!((min, max), (Vec2::new(24.0, 20.0), Vec2::new(40.0, 36.0)));

@@ -2,7 +2,7 @@
 name: ryo-tilemap
 description: "Tile maps - the workflow from Tiled (.tmx, .tmj) or LDtk (.ldtk) through assets/ to a MapRoot entity, layers and the reserved layer properties (collides, occludes, y_sort, lit), tilesets and typed tile data, objects and class tiles as entities, MapEvent, reading and editing tiles with ctx.maps() and Wang terrain, collision from tile shapes and IntGrids, tile shadows, y-sorting and parallax, worlds of levels, maps built in code and by procgen, hot reload, the web, performance and testing."
 metadata:
-  version: 1.1.1
+  version: 1.2.0
 ---
 
 # Ryo2D Tile Maps
@@ -268,14 +268,14 @@ for (entity, hits) in bricks {
 
 ## 6. Reading and editing tiles
 
-`ctx.maps()` is a `MapsView` over the world (in a system or a test with the world: `MapsView::new(world)`). Every call names the map entity and, where it reads cells, a layer by name (the first so called) or by index (bottom first, a `usize`). A map that has not landed, a layer it does not have, a layer that is not a tile layer, or a cell outside the layer reads `None` (or `false`, or 0) and changes nothing.
+`ctx.maps()` is a `MapsView` over the world (in a system or a test with the world: `MapsView::new(world)`). Every call names the map entity and, where it reads cells, a layer by name (the first so called) or by index (bottom first, a `usize`). A map that has not landed, a layer it does not have, a layer that is not a tile layer, or a cell outside the layer reads `None` (or `false`, or 0) and changes nothing. An unbounded layer (section 11) has no outside: its cells are signed, and `set_tile`, `fill` and `set_terrain` take any cell, negative ones included, making the 32 x 32-cell chunk a tile goes in, which then draws, collides and casts shadows.
 
 | Method | |
 |---|---|
 | `is_ready(map) -> bool` | it has landed |
 | `tile(map, layer, cell: IVec2) -> Option<Tile>` | the tile at a cell |
 | `set_tile(map, layer, cell, Option<Tile>) -> bool` | put a tile, or clear it with `None`; false if nothing changed |
-| `fill(map, layer, min: IVec2, max: IVec2, Option<Tile>) -> usize` | every cell from `min` to `max`, both included, clipped to the layer; how many changed |
+| `fill(map, layer, min: IVec2, max: IVec2, Option<Tile>) -> usize` | every cell from `min` to `max`, both included, clipped to a bounded layer; how many changed |
 | `set_terrain(map, layer, cell, wang_set: &str, color: Option<&str>) -> bool` | paint a Wang colour (section 7) |
 | `intgrid(map, layer, cell) -> Option<i32>` | an LDtk IntGrid value; `None` where it is 0 |
 | `set_intgrid(map, layer, cell, value: i32) -> bool`, `fill_intgrid(map, layer, min, max, value) -> usize` | change IntGrid values (0 empties), and so what the layer collides with (section 8) |
@@ -381,17 +381,17 @@ maps.set_tile(map, "Collision", cell, Some(rubble));
 - **Layers together:** the colliding layers that share the map's cell size, no offset and one material collide as one grid on the map entity, each cell taking the strongest kind among them: solid, then a shape, then a slope, then one-way. A colliding layer with a cell size, offset or material of its own collides as a grid of its own on its layer entity; where two grids meet there can be a seam.
 - **Collision ignores parallax:** a colliding layer with parallax collides where it would be without it (parallax is a drawing effect, as in Tiled), and the dev log warns once per layer. Keep parallax for layers that do not collide.
 - **Edits:** a changed tile re-collides in that step. Only the outlines through the changed cells are traced again, and only the colliders those outlines belong to change, taking their new shape in place, the same entities. So anything touching the rest of the map keeps its contacts: a character standing on the map keeps its `floor`, and no `CollisionStopped` or `CollisionStarted` is sent for it.
-- **Which entity:** the outlines are packed by area, one collider for those starting in each 32 x 32-cell chunk (and one for each row of one-way runs in a chunk), each a child of the entity holding the grid: the map entity, or a layer that collides on its own. With no body on the map each is its own fixed body, so collision messages, `CharacterHit` and `CharacterState::floor` name such a part; follow `ChildOf` to the entity holding the `TileColliders` (the `MapRoot`, or a layer with its `MapLayerRef`). With `RigidBody::kinematic()` on the map entity they name the map.
+- **Which entity:** the outlines are packed by area, one collider for those starting in each 32 x 32-cell chunk (and one for each row of one-way runs in a chunk), each a child of the entity holding the grid: the map entity, or a layer that collides on its own. Each sits at its chunk's top-left (its `Transform`), its collider's points relative to that, so they stay small however far from (0, 0) the chunk is: add the translation to read them where they are. With no body on the map each is its own fixed body, so collision messages, `CharacterHit` and `CharacterState::floor` name such a part; follow `ChildOf` to the entity holding the `TileColliders` (the `MapRoot`, or a layer with its `MapLayerRef`). With `RigidBody::kinematic()` on the map entity they name the map.
 - **A moving platform flush with the ground:** a character level with both the map's ground and a moving platform rides the platform.
 - **A disabled map** has no colliders; enabled, it builds them from its tiles as they then are, on the main thread (section 2).
-- **Too big:** a grid of over 8192 cells a side gets no colliders, and the dev log names its layers: a 10,000 x 64 runner level does not collide, though it is far under the loaders' 2^26 cells a layer. Split a level that long into several maps side by side (a world of levels, section 12).
+- **Long levels:** a grid holds the chunks its layers have, of any length: a 10,000 x 64 runner level collides end to end. A cell collides within 186,411 cells of (0, 0) on either axis (about 3 million px of 16 px tiles); a tile farther out on an unbounded layer draws and casts its shadow but does not collide, and the dev log says so once.
 - **Navigation:** `NavigationGrid::rebuild_from_world` blocks a map's solid and slope cells, and the shape cells whose shape covers the cell's centre; one-way cells stay walkable.
 
 ## 9. Shadows
 
 - A layer casts shadows as its `occludes` says, or as it collides when `occludes` is left out (`without_collision` does not change it). A light casts shadows only with `with_shadows()` (`ryo-lighting`).
 - **What blocks light:** a tile's shapes marked `occluder` if it has any, else its collision shapes (one-way ones too). An IntGrid's solid cells block whole and its slopes as their half cell; a one-way cell has no area and casts nothing.
-- The map draws its occluders as the boundary of what occludes: `LightOccluder2D::chain`s, a chunk's worth each, children of the first occluding layer and marked `MapOccluder { chunk }`. Tiles that touch cast no shadow between them, so lit art shows no seam. Edits rebuild only the chains of the chunks they touch.
+- The map draws its occluders as the boundary of what occludes: `LightOccluder2D::chain`s, a chunk's worth each, children of the first occluding layer and marked `MapOccluder { chunk }` (an `IVec2`: chunks are signed, as `TileGrid::chunk_of` gives them, so cell -1 is in chunk -1). A chunk owns the borders left of and above its cells, so the right and bottom edges of a chunk's last cells can be the next chunk's chains. Tiles that touch cast no shadow between them, so lit art shows no seam. Edits rebuild only the chains of the chunks they touch.
 - The map owns its chains: a game can find them by `MapOccluder`, and a change it makes to one lasts until its chunk changes. A disabled map casts nothing.
 - Every lit frame gathers every map's occluders, and each shadowed light tests all of them (section 15).
 
@@ -448,6 +448,7 @@ ctx.world.spawn((Transform::from_xy(0.0, 0.0), MapRoot::new(map)));
 - `TilesetSource::Asset(handle)` shares a tileset asset with other maps; `TilesetSource::Embedded(Arc<Tileset>)` is one the map owns. A map holds up to 256 tilesets of up to 1,048,575 tiles each.
 - **A tileset in code:** `Tileset::new(name, tile_size, TilesetImage::Atlas { image, size })` with its `columns` and `tile_count` set (and `spacing`, `margin`), or `TilesetImage::Collection` with each tile's own image in its `TileData`. Tiles collide through their shapes: `insert_tile(id, TileData { shapes: vec![TileShape { points, ..TileShape::default() }], ..TileData::default() })`, the points in tile pixels from the top-left.
 - `add_object_layer(name)` adds an object layer, whose objects are `MapObjectData` in `LayerKind::Objects`; `layer_index(name)`, `tiles(layer)` and `tiles_mut(layer)` find layers.
+- **An unbounded layer:** a tile layer whose grid is `TileGrid::unbounded()` (set through `tiles_mut`) holds any cell, negative ones included, in chunks made where tiles are written. Spawned, it draws, collides, casts shadows and spawns class tiles wherever it has chunks, and costs the chunks it has, however far apart: never the rectangle between them. Its colliding layers' grid is unbounded too; a cell collides within 186,411 cells of (0, 0).
 - A map added in code never reloads (it has no file), but follows its tilesets' files.
 - **Procgen:** `GenerationGrid::to_tile_map` and `to_terrain_map` (`ryo-procgen`) turn a dungeon, a cave or noise terrain into a `TileMap`. The tilemap demo's Procgen dungeon page draws one through a Wang set.
 
@@ -546,7 +547,8 @@ Measured on an Apple M5 Pro in a release build, at 1920 x 1080 with 16 px tiles;
   - `tileset "..." is too big to pad`: its padded copy (each tile in a cell twice its size) would pass the GPU's largest texture, 8,192 texels a side: about 3,800 tiles of 64 px, 15,800 of 32 px, or a collection of over 196 images up to 256 px (36 up to 512 px). Its tiles draw nothing until it changes. Split the tileset.
   - `layer "..." collides and has parallax`: it collides where it would be without parallax.
   - `the tile chunk arena is full`: the cameras keep more than about two million tiles in view at once (with those seen in the last two seconds), past the GPU's largest buffer: a whole 1024 x 1024 four-layer map at a small zoom, or a minimap camera over a big map. The chunks seen least recently are let go first; past that, the chunks met last draw nothing. Zoom in, show fewer tile layers to the wide camera (`RenderLayers`), or draw the overview from a picture of the map.
-  - A grid of colliding layers over 8192 cells a side gets no colliders; a repeated image layer too small to cover a view covers its middle.
+  - `a TileColliders cell ... is past the reach of tile collision`: a tile of an unbounded layer more than 186,411 cells from (0, 0) on an axis draws but does not collide.
+  - A repeated image layer too small to cover a view covers its middle.
 
 ## 16. Testing
 
@@ -605,7 +607,7 @@ fn level_one_lands_with_its_floor() {
 | The map never appears | Its `MapEvent::Failed`: the error names the file and the place in it (`line L, column C`, `layer "name"`, `object id`, `tile id`, `tileset "name"`). A missing tileset or image (an image that did not load is named with its tileset or layer), a gid outside every tileset, an image too small for its tileset, an unsupported orientation or an infinite map, an LDtk level name that is not there; or the map entity disabled; on the web, a file missing from the embedded source |
 | An object has none of its class's properties | The Tiled project was not found (the dev log names the class once per file): `assets/project.tiled-project`, or `[tilemap] tiled_project` |
 | A character falls through as the map arrives | It was placed before `MapEvent::Spawned`, or by a ray cast in the `update` that read it (section 1) |
-| Tiles draw but do not collide | The layer's `collides` is false; the root has `without_collision`; the tiles have no collision shapes in the tileset, or only `occluder` ones; an LDtk value named other than the collision names (`with_intgrid_collision`); a class tile; the map disabled; a grid over 8192 cells a side (warned) |
+| Tiles draw but do not collide | The layer's `collides` is false; the root has `without_collision`; the tiles have no collision shapes in the tileset, or only `occluder` ones; an LDtk value named other than the collision names (`with_intgrid_collision`); a class tile; the map disabled; a cell more than 186,411 cells from (0, 0) on an unbounded layer (warned) |
 | Collision sits off the art | The layer has parallax (warned): collision ignores it |
 | A seam in the floor where two layers meet | The layers differ in cell size, offset or material, so each collides as a grid of its own |
 | Tiles cast no shadows | The light lacks `with_shadows()`; the layer does not occlude (`occludes` false, or it does not collide and `occludes` is not set) |

@@ -22,7 +22,7 @@ use crate::core::tilemap::{
 use crate::core::ui::Color;
 use glam::{IVec2, UVec2, Vec2};
 
-/// Most cells a layer or a map holds (8192 x 8192), as for `TileColliders`
+/// Most cells a layer or a map holds (8192 x 8192)
 const MAX_CELLS: u64 = 1 << 26;
 /// Most cells a map's tile layers hold together (and an LDtk level's and
 /// project's, an IntGrid layer counting its tiles and its values): 512 MiB

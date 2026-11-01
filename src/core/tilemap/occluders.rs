@@ -24,30 +24,35 @@
 //! the entity's position less the chain's extent, its farthest corner from
 //! there). A chunk whose version moved is built again, and
 //! so is the chunk right of it or below it when the cells it shares a
-//! border with changed kind; every other chunk keeps its occluders.
+//! border with changed kind; every other chunk keeps its occluders. Chunks
+//! are signed: a group of bounded layers covers their largest bounds, one
+//! with an unbounded layer any chunk, where an unbounded grid has no right
+//! or bottom border, so the borders right of and below its last cells are
+//! the next chunk's (built as that chunk, though its layers have none).
 //!
 //! A map's first chains are worked out off the main thread with the rest
 //! of its landing (`spawn.rs`: `prepare`), and spawned as its layers do
 //! (`land`). What it builds after that builds at once.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use glam::{IVec2, UVec2, Vec2};
 
 use super::collision::LayerView;
 use super::kinds::{
-  Context, Layers, Purpose, ShapeKey, ShapeSource, Stores, TilesetStamp, Tracked, changed_chunks,
-  covered, layer_data, layer_kind, over, shapes_kept, sources, stamps,
+  Context, Layers, Part, Purpose, ShapeKey, ShapeSource, Stores, TilesetStamp, Tracked,
+  changed_chunks, layer_data, shapes_kept, sources, stamps, union_kinds,
 };
 use super::spawn::{IntGridKey, MapLayers, MapRoot, TileLayerData, root_map};
-use super::{CHUNK_SIZE, Tile};
+use super::{CHUNK_SIZE, TileGrid};
 use crate::core::ecs::{
   Allow, ChildOf, Commands, Component, DetectChangesMut, Disabled, Entity, Has, Local, Query,
   Transform, World,
 };
 use crate::core::hash::FastMap;
 use crate::core::lighting::LightOccluder2D;
-use crate::core::physics::{Boundary, GRID, Point, TileCell};
+use crate::core::physics::{Boundary, CellRect, GRID, Point, TileCell};
 
 /// Marks an occluder a map keeps from its tiles: a child of the first layer
 /// of the layers occluding as one, rebuilt with its chunk. Games can find a
@@ -55,8 +60,9 @@ use crate::core::physics::{Boundary, GRID, Point, TileCell};
 /// its chunk changes
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MapOccluder {
-  /// The chunk of the layers it was built from
-  pub chunk: UVec2,
+  /// The chunk of the layers it was built from: signed, as
+  /// [`TileGrid::chunk_of`] gives it
+  pub chunk: IVec2,
 }
 
 /// An occluding layer as the occluders were built from it: its place among
@@ -67,17 +73,35 @@ pub(crate) struct Lit {
   index: usize,
   cell: UVec2,
   offset: [u32; 2],
-  size: UVec2,
+  /// Its grid's bounds; `None` for an unbounded grid
+  bounds: Option<CellRect>,
   intgrid: bool,
 }
 
 /// What a chunk's cells along its right and bottom sides were when it was
-/// last built: the chunks right of it and below read them
+/// last built: the chunks right of it and below read them. A chunk not
+/// kept is one whose sides are all `Empty`
 #[derive(Debug, Default, PartialEq)]
 struct Sides {
   right: Vec<TileCell>,
   bottom: Vec<TileCell>,
 }
+
+/// Whether a side kept as `old` (none: all `Empty`) is `now`
+fn same_side(old: Option<&[TileCell]>, now: &[TileCell]) -> bool {
+  match old {
+    Some(old) => old == now,
+    None => now.iter().all(|&c| c == TileCell::Empty),
+  }
+}
+
+/// The first chunk a group of unbounded layers casts shadows in, on either
+/// axis, and one past the last: a chunk's cells, the column left of it and
+/// the row above are all cells `i32` holds
+const SHADOW_CHUNKS: (i32, i32) = (
+  -(i32::MAX / CHUNK_SIZE as i32),
+  i32::MAX / CHUNK_SIZE as i32,
+);
 
 /// A chain to spawn: where its entity goes, and its vertices around it
 type Chain = (Vec2, Vec<Vec2>);
@@ -90,50 +114,64 @@ struct Group {
   /// Its occluders' parent: its first layer
   parent: Entity,
   parent_layer: usize,
-  size: UVec2,
+  /// The cells its layers hold: their largest bounds (bounded grids start
+  /// at (0, 0)), or `None` with an unbounded layer
+  bounds: Option<CellRect>,
   layers: Vec<Tracked>,
-  /// Each tile's kind and the shapes they name
-  kinds: FastMap<Tile, TileCell>,
+  /// Each tile's kind (by its cell's value) and the shapes they name
+  kinds: FastMap<u32, TileCell>,
   shapes: FastMap<ShapeKey, u16>,
   boundary: Boundary,
-  /// Each chunk's occluders and sides
-  chunks: Vec<Vec<Entity>>,
-  sides: Vec<Sides>,
-  /// The chains a first build worked out, until they spawn as it lands
-  pending: Vec<Vec<Chain>>,
+  /// Each chunk's occluders, a chunk with none left out
+  chunks: FastMap<IVec2, Vec<Entity>>,
+  /// Each chunk's sides, a chunk whose sides are all `Empty` left out
+  sides: FastMap<IVec2, Sides>,
+  /// The chains a first build worked out, chunk by chunk in row order,
+  /// until they spawn as it lands
+  pending: Vec<(IVec2, Vec<Chain>)>,
 }
 
 impl Group {
-  fn new(lit: &Lit, size: UVec2) -> Group {
-    let chunks = UVec2::new(size.x.div_ceil(CHUNK_SIZE), size.y.div_ceil(CHUNK_SIZE));
-    let count = chunks.x as usize * chunks.y as usize;
+  fn new(lit: &Lit) -> Group {
     Group {
       cell: lit.cell,
       offset: lit.offset,
       parent: lit.entity,
       parent_layer: lit.index,
-      size,
+      bounds: lit.bounds,
       layers: Vec::new(),
       kinds: FastMap::default(),
       shapes: FastMap::default(),
       boundary: Boundary::default(),
-      chunks: vec![Vec::new(); count],
-      sides: (0..count).map(|_| Sides::default()).collect(),
+      chunks: FastMap::default(),
+      sides: FastMap::default(),
       pending: Vec::new(),
     }
   }
 
-  fn chunk_count(&self) -> UVec2 {
-    UVec2::new(
-      self.size.x.div_ceil(CHUNK_SIZE),
-      self.size.y.div_ceil(CHUNK_SIZE),
-    )
+  /// Whether `chunk` is one the group builds: one holding cells of its
+  /// bounds, or for unbounded layers one within `SHADOW_CHUNKS`
+  fn holds_chunk(&self, chunk: IVec2) -> bool {
+    match self.bounds {
+      Some(bounds) if bounds.is_empty() => false,
+      Some(bounds) => {
+        let (first, last) = (
+          TileGrid::chunk_of(bounds.min),
+          TileGrid::chunk_of(bounds.max - IVec2::ONE),
+        );
+        chunk.cmpge(first).all() && chunk.cmple(last).all()
+      }
+      None => {
+        let (first, end) = SHADOW_CHUNKS;
+        chunk.cmpge(IVec2::splat(first)).all() && chunk.cmplt(IVec2::splat(end)).all()
+      }
+    }
   }
 
   /// Despawns every occluder
   fn clear(&mut self, commands: &mut Commands) {
-    for chunk in &mut self.chunks {
-      for occluder in chunk.drain(..) {
+    for (_, chunk) in self.chunks.drain() {
+      for occluder in chunk {
         commands.entity(occluder).try_despawn();
       }
     }
@@ -251,25 +289,27 @@ fn chains(edges: &[(Point, Point)]) -> Vec<Vec<Point>> {
   out
 }
 
-/// Works out chunk `chunk` (index `index`) of `group` again from its layers'
-/// cells: the chains of the boundary edges it owns, in its layers' space.
-/// Returns them and whether its right and bottom sides changed kind (the
-/// chunks across them read those cells)
+/// Works out chunk `chunk` of `group` (one it holds) again from its
+/// layers' cells: the chains of the boundary edges it owns, in its layers'
+/// space. Returns them and whether its right and bottom sides changed kind
+/// (the chunks across them read those cells)
 fn chunk_chains(
   group: &mut Group,
-  chunk: UVec2,
-  index: usize,
+  chunk: IVec2,
   data: &[Option<&TileLayerData>],
   context: &Context<'_>,
 ) -> (Vec<Chain>, bool, bool) {
-  let size = group.size.as_ivec2();
-  let min = (chunk * CHUNK_SIZE).as_ivec2();
-  let max = (min + IVec2::splat(CHUNK_SIZE as i32)).min(size);
-  // The cells its borders read: its own, the column left of it and the row
-  // above, as one kind each across the group's layers
-  let low = (min - IVec2::ONE).max(IVec2::ZERO);
-  let span = max - low;
-  let mut cells = vec![TileCell::Empty; (span.x * span.y) as usize];
+  let side = CHUNK_SIZE as i32;
+  // `holds_chunk`: its cells, and the column and row before them, are in
+  // an i32
+  let min = chunk * side;
+  let mut max = min + IVec2::splat(side);
+  if let Some(bounds) = group.bounds {
+    max = max.min(bounds.max);
+  }
+  // The cells its borders read, each one kind across the group's layers:
+  // its own, the last column of the chunk left of it and the last row of
+  // the chunk above
   let Group {
     layers,
     kinds,
@@ -277,35 +317,46 @@ fn chunk_chains(
     boundary,
     ..
   } = group;
-  for y in low.y..max.y {
-    for x in low.x..max.x {
-      let cell = IVec2::new(x, y);
-      let mut kind = TileCell::Empty;
-      for (layer, data) in layers.iter().zip(data) {
-        if let Some(data) = data {
-          kind = over(
-            kind,
-            layer_kind(layer, data, cell, (kinds, shapes), boundary, context),
-          );
-        }
-      }
-      cells[((y - low.y) * span.x + (x - low.x)) as usize] = kind;
-    }
-  }
+  let mut classify = |at: IVec2, part: Part| {
+    union_kinds(
+      layers,
+      data,
+      (at, part),
+      (&mut *kinds, &mut *shapes),
+      &mut *boundary,
+      context,
+    )
+  };
+  let own = classify(chunk, Part::WHOLE);
+  let column = Part {
+    min: IVec2::new(side - 1, 0),
+    max: IVec2::splat(side),
+  };
+  let row = Part {
+    min: IVec2::new(0, side - 1),
+    max: IVec2::splat(side),
+  };
+  let left = classify(chunk - IVec2::X, column);
+  let above = classify(chunk - IVec2::Y, row);
   let at = |x: i32, y: i32| {
-    if x < low.x || y < low.y || x >= max.x || y >= max.y {
-      return TileCell::Empty;
+    let (lx, ly) = (x - min.x, y - min.y);
+    let inside = |v: i32| (0..side).contains(&v);
+    if x >= max.x || y >= max.y {
+      TileCell::Empty
+    } else if inside(lx) && inside(ly) {
+      own[(ly * side + lx) as usize]
+    } else if lx == -1 && inside(ly) {
+      left[(ly * side + side - 1) as usize]
+    } else if ly == -1 && inside(lx) {
+      above[((side - 1) * side + lx) as usize]
+    } else {
+      TileCell::Empty
     }
-    cells[((y - low.y) * span.x + (x - low.x)) as usize]
   };
   let mut edges = Vec::new();
-  group.boundary.edges(
-    at,
-    (min.x, min.y),
-    (max.x, max.y),
-    (size.x, size.y),
-    &mut edges,
-  );
+  group
+    .boundary
+    .edges(at, (min.x, min.y), (max.x, max.y), group.bounds, &mut edges);
   // The outlines run clockwise on screen; lighting's polygons the other way
   let edges: Vec<_> = edges.into_iter().map(|(a, b)| (b, a)).collect();
   let cell = group.cell.as_dvec2();
@@ -328,16 +379,22 @@ fn chunk_chains(
     right: (min.y..max.y).map(|y| at(max.x - 1, y)).collect(),
     bottom: (min.x..max.x).map(|x| at(x, max.y - 1)).collect(),
   };
-  let old = std::mem::replace(&mut group.sides[index], sides);
-  let now = &group.sides[index];
-  (built, old.right != now.right, old.bottom != now.bottom)
+  let old = group.sides.get(&chunk);
+  let right = !same_side(old.map(|s| &s.right[..]), &sides.right);
+  let bottom = !same_side(old.map(|s| &s.bottom[..]), &sides.bottom);
+  if same_side(None, &sides.right) && same_side(None, &sides.bottom) {
+    group.sides.remove(&chunk);
+  } else {
+    group.sides.insert(chunk, sides);
+  }
+  (built, right, bottom)
 }
 
 /// Spawns `chains` as chunk `chunk`'s occluders, children of `parent`
 fn spawn_chains(
   commands: &mut Commands,
   parent: Entity,
-  chunk: UVec2,
+  chunk: IVec2,
   chains: Vec<Chain>,
 ) -> Vec<Entity> {
   chains
@@ -361,44 +418,40 @@ fn spawn_chains(
 fn update(
   group: &mut Group,
   data: &[Option<&TileLayerData>],
-  changed: Vec<UVec2>,
+  changed: Vec<IVec2>,
   context: &Context<'_>,
   mut commands: Option<&mut Commands>,
 ) {
-  let chunks = group.chunk_count();
-  let mut due = vec![false; chunks.x as usize * chunks.y as usize];
-  for chunk in changed {
-    if chunk.x < chunks.x && chunk.y < chunks.y {
-      due[(chunk.y * chunks.x + chunk.x) as usize] = true;
-    }
-  }
-  if commands.is_none() {
-    group.pending = (0..due.len()).map(|_| Vec::new()).collect();
-  }
   // Row by row, so a chunk marks the ones right of and below it in time
-  for y in 0..chunks.y {
-    for x in 0..chunks.x {
-      let index = (y * chunks.x + x) as usize;
-      if !due[index] {
-        continue;
-      }
-      let chunk = UVec2::new(x, y);
-      let (chains, right, bottom) = chunk_chains(group, chunk, index, data, context);
-      match commands.as_deref_mut() {
-        Some(commands) => {
-          for occluder in group.chunks[index].drain(..) {
-            commands.entity(occluder).try_despawn();
-          }
-          group.chunks[index] = spawn_chains(commands, group.parent, chunk, chains);
+  let mut due: BTreeSet<(i32, i32)> = changed
+    .into_iter()
+    .filter(|&chunk| group.holds_chunk(chunk))
+    .map(|chunk| (chunk.y, chunk.x))
+    .collect();
+  if commands.is_none() {
+    group.pending.clear();
+  }
+  while let Some((y, x)) = due.pop_first() {
+    let chunk = IVec2::new(x, y);
+    let (chains, right, bottom) = chunk_chains(group, chunk, data, context);
+    match commands.as_deref_mut() {
+      Some(commands) => {
+        for occluder in group.chunks.remove(&chunk).unwrap_or_default() {
+          commands.entity(occluder).try_despawn();
         }
-        None => group.pending[index] = chains,
+        if !chains.is_empty() {
+          let spawned = spawn_chains(commands, group.parent, chunk, chains);
+          group.chunks.insert(chunk, spawned);
+        }
       }
-      if right && x + 1 < chunks.x {
-        due[index + 1] = true;
-      }
-      if bottom && y + 1 < chunks.y {
-        due[index + chunks.x as usize] = true;
-      }
+      None if chains.is_empty() => {}
+      None => group.pending.push((chunk, chains)),
+    }
+    if right && group.holds_chunk(chunk + IVec2::X) {
+      due.insert((y, x + 1));
+    }
+    if bottom && group.holds_chunk(chunk + IVec2::Y) {
+      due.insert((y + 1, x));
     }
   }
 }
@@ -413,7 +466,7 @@ fn plan<'a>(layers: impl IntoIterator<Item = LayerView<'a>>, planned: &mut Vec<L
         index: layer.index,
         cell: layer.data.cell_size,
         offset: [layer.info.offset.x.to_bits(), layer.info.offset.y.to_bits()],
-        size: covered(&layer.data.grid),
+        bounds: layer.data.grid.bounds(),
         intgrid: layer.data.intgrid.is_some(),
       });
     }
@@ -441,19 +494,12 @@ fn build(
       .find(|g| g.cell == lit.cell && g.offset == lit.offset)
     {
       Some(group) => {
-        if lit.size.cmpgt(group.size).any() {
-          let first = planned
-            .iter()
-            .find(|l| l.index == group.parent_layer)
-            .unwrap_or(lit);
-          let mut grown = Group::new(first, group.size.max(lit.size));
-          grown.layers = std::mem::take(&mut group.layers);
-          *group = grown;
-        }
+        // The largest bounds, or none with an unbounded layer
+        group.bounds = group.bounds.zip(lit.bounds).map(|(a, b)| a.union(b));
         group.layers.push(tracked);
       }
       None => {
-        let mut group = Group::new(lit, lit.size);
+        let mut group = Group::new(lit);
         group.layers.push(tracked);
         groups.push(group);
       }
@@ -529,11 +575,12 @@ pub(crate) fn land(world: &mut World, map: Entity, layers: &[Entity], prepared: 
     for tracked in &mut group.layers {
       tracked.relink(layers);
     }
-    let chunks = group.chunk_count();
     let pending = std::mem::take(&mut group.pending);
-    let counts: Vec<usize> = pending.iter().map(Vec::len).collect();
-    let bundles = pending.into_iter().enumerate().flat_map(|(index, chains)| {
-      let chunk = UVec2::new(index as u32 % chunks.x, index as u32 / chunks.x);
+    let counts: Vec<(IVec2, usize)> = pending
+      .iter()
+      .map(|(chunk, chains)| (*chunk, chains.len()))
+      .collect();
+    let bundles = pending.into_iter().flat_map(|(chunk, chains)| {
       chains.into_iter().map(move |(centre, vertices)| {
         (
           Transform::from_translation(centre),
@@ -547,8 +594,10 @@ pub(crate) fn land(world: &mut World, map: Entity, layers: &[Entity], prepared: 
       .spawn_batch(bundles)
       .collect::<Vec<Entity>>()
       .into_iter();
-    for (index, count) in counts.into_iter().enumerate() {
-      group.chunks[index] = spawned.by_ref().take(count).collect();
+    for (chunk, count) in counts {
+      group
+        .chunks
+        .insert(chunk, spawned.by_ref().take(count).collect());
     }
   }
   if let Ok(mut entity) = world.get_entity_mut(map) {
@@ -701,7 +750,7 @@ mod tests {
   #[derive(Debug, Clone)]
   struct Found {
     entity: Entity,
-    chunk: UVec2,
+    chunk: IVec2,
     at: Vec2,
     occluder: LightOccluder2D,
   }
@@ -869,7 +918,7 @@ mod tests {
     let layer = layers_of(&mut maps.world, map)[0];
     let found = occluders_of(&mut maps.world, layer);
     assert_placed(&found);
-    assert!(found.iter().all(|f| f.chunk == UVec2::ZERO));
+    assert!(found.iter().all(|f| f.chunk == IVec2::ZERO));
     // Counter-clockwise on screen, as lighting winds polygons: the edges
     // between the floor and what stands on it cancel
     let ground = ring(&[
@@ -930,9 +979,9 @@ mod tests {
       steps(&found),
       ring(&[(0, 48), (0, 64), (1024, 64), (1024, 48)])
     );
-    let mut chunks: Vec<UVec2> = found.iter().map(|f| f.chunk).collect();
+    let mut chunks: Vec<IVec2> = found.iter().map(|f| f.chunk).collect();
     chunks.sort_by_key(|c| (c.y, c.x));
-    assert_eq!(chunks, [UVec2::ZERO, UVec2::new(1, 0)]);
+    assert_eq!(chunks, [IVec2::ZERO, IVec2::new(1, 0)]);
   }
 
   /// Whether `point` is in a shadow `occluders` (each at its position) cast
@@ -1106,7 +1155,7 @@ mod tests {
     assert_eq!(before.len(), 2, "{before:#?}");
     let far = before
       .iter()
-      .find(|f| f.chunk == UVec2::new(1, 0))
+      .find(|f| f.chunk == IVec2::new(1, 0))
       .expect("the far chunk's")
       .clone();
     assert!(MapsView::new(&mut maps.world).set_tile(
@@ -1122,7 +1171,7 @@ mod tests {
       after.iter().any(|f| f.entity == far.entity),
       "the far chunk kept its occluder"
     );
-    let near: Vec<&Found> = after.iter().filter(|f| f.chunk == UVec2::ZERO).collect();
+    let near: Vec<&Found> = after.iter().filter(|f| f.chunk == IVec2::ZERO).collect();
     assert_eq!(
       near.len(),
       2,

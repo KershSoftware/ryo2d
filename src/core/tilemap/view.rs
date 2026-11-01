@@ -14,7 +14,10 @@ use crate::core::ui::Rect;
 /// Every call names the map entity and, where it reads cells, a layer by
 /// name or index; a map not yet spawned, a layer it does not have, a layer
 /// that is not a tile layer, or a cell outside the layer reads `None` and
-/// changes nothing.
+/// changes nothing. A layer whose grid is unbounded
+/// ([`TileGrid::unbounded`](super::TileGrid::unbounded)) has no outside:
+/// its cells are signed, and an edit anywhere makes the chunk it writes
+/// in, which then draws, collides and casts shadows.
 ///
 /// ```
 /// use ryo2d::prelude::*;
@@ -56,7 +59,9 @@ impl<'w> MapsView<'w> {
   }
 
   /// Puts `tile` at `cell` of a tile layer (`None` clears it); false if
-  /// nothing changed. A tile whose class the map's root registers
+  /// nothing changed. On an unbounded layer any cell takes it, negative ones
+  /// included, its chunk made if it has none. A tile whose class the map's
+  /// root registers
   /// ([`MapRoot::with_entity_tiles`]) spawns as a [`MapTile`](super::MapTile)
   /// there instead of going in the grid, as the map's own do; a class tile
   /// already on the cell is despawned first. Only the cell's chunk redraws,
@@ -77,9 +82,10 @@ impl<'w> MapsView<'w> {
   }
 
   /// Puts `tile` in every cell from `min` to `max`, both included, clipped
-  /// to the layer, as [`set_tile`](Self::set_tile) puts one (the whole
-  /// cell, a sub-layer's tiles cleared); returns how many cells changed.
-  /// Only the chunks it changed redraw, collide and cast shadows again
+  /// to a bounded layer (an unbounded one makes the chunks a tile goes in),
+  /// as [`set_tile`](Self::set_tile) puts one (the whole cell, a sub-layer's
+  /// tiles cleared); returns how many cells changed. Only the chunks it
+  /// changed redraw, collide and cast shadows again
   pub fn fill<'a>(
     &mut self,
     map: Entity,
@@ -104,7 +110,8 @@ impl<'w> MapsView<'w> {
   /// tile and the set warns once per tileset version: so does erasing in a
   /// set with no tile that has a bare corner or edge, where the neighbours
   /// have nothing to turn into. False if nothing changed, the map, layer,
-  /// set or color is not there, or the cell is outside the layer.
+  /// set or color is not there, or the cell is outside a bounded layer (an
+  /// unbounded one takes any cell, making the chunks the paint writes in).
   ///
   /// This matches Tiled's results on the cases checked against it (complete,
   /// one-color, incomplete and multi-color sets, color chains, flipped

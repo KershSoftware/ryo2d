@@ -693,7 +693,7 @@ mod tests {
     DrawChunk {
       key: ChunkKey {
         layer,
-        chunk: glam::UVec2::ZERO,
+        chunk: glam::IVec2::ZERO,
         tileset: 0,
       },
       texture: TextureId::for_test(1),

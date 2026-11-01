@@ -24,11 +24,17 @@
 //! again, a layer's flags, the tilesets or the overrides change) builds at
 //! once on the main thread.
 //!
+//! A group's grid holds the chunks its layers have: a group of bounded
+//! layers is bounded by their largest, and a group with an unbounded layer
+//! is unbounded (`TileColliders::unbounded`), its cells signed. Each chunk
+//! is classified from its layers' cells where they lie, never by a lookup
+//! per cell.
+//!
 //! Each step, every chunk whose version moved since the group last looked
 //! is classified again and only the cells whose kind changed are set, so
 //! the tile colliders rebuild only the outlines an edit touched. A change
 //! of what the colliders are built from (which layers collide, their cell
-//! sizes, offsets, materials or sizes, the tilesets' content, the IntGrid
+//! sizes, offsets, materials or bounds, the tilesets' content, the IntGrid
 //! overrides) builds every group again.
 
 use std::sync::Arc;
@@ -36,19 +42,16 @@ use std::sync::Arc;
 use glam::{IVec2, UVec2, Vec2};
 
 use super::kinds::{
-  Context, Layers, Purpose, ShapeKey, ShapeSink, ShapeSource, Stores, TilesetStamp, Tracked,
-  changed_chunks, covered, layer_data, layer_kind, over, shapes_kept, sources, stamps,
+  Context, Layers, Part, Purpose, ShapeKey, ShapeSink, ShapeSource, Stores, TilesetStamp, Tracked,
+  changed_chunks, chunk_origin, layer_data, shapes_kept, sources, stamps, union_kinds,
 };
 use super::spawn::{IntGridKey, MapLayers, MapRoot, TileLayerData, root_map};
-use super::{CHUNK_SIZE, LayerInfo, Properties, PropertyValue, Tile};
+use super::{CHUNK_SIZE, LayerInfo, Properties, PropertyValue};
 use crate::core::ecs::{
   Allow, Commands, Component, DetectChangesMut, Disabled, Entity, Has, Local, Query, Without, World,
 };
 use crate::core::hash::{FastMap, FastSet};
-use crate::core::physics::{CellShape, TileCell, TileColliders, Traced};
-
-/// The most cells a `TileColliders` holds a side
-const MAX_SIDE: u32 = 8192;
+use crate::core::physics::{CellRect, CellShape, TileCell, TileColliders, Traced};
 
 /// A grid's shapes before the grid exists, numbered as `add_shape` will
 struct Pending(Vec<CellShape>);
@@ -102,7 +105,8 @@ pub(crate) struct Planned {
   entity: Entity,
   index: usize,
   key: GroupKey,
-  size: UVec2,
+  /// Its grid's bounds; `None` for an unbounded grid
+  bounds: Option<CellRect>,
   intgrid: bool,
 }
 
@@ -114,12 +118,13 @@ struct Group {
   /// Where its `TileColliders` is: the map, or its first layer
   target: Entity,
   target_layer: Option<usize>,
-  size: UVec2,
-  /// Over the most a `TileColliders` holds: it has none
-  too_large: bool,
+  /// The cells its grid holds: its layers' largest bounds (all bounded
+  /// grids start at (0, 0)), or `None` with an unbounded layer
+  bounds: Option<CellRect>,
   layers: Vec<Tracked>,
-  /// Each tile's kind, its shapes numbered in this group's grid
-  kinds: FastMap<Tile, TileCell>,
+  /// Each tile's kind (by its cell's value), its shapes numbered in this
+  /// group's grid
+  kinds: FastMap<u32, TileCell>,
   shapes: FastMap<ShapeKey, u16>,
 }
 
@@ -276,7 +281,7 @@ fn plan<'a>(
         entity: layer.entity,
         index: layer.index,
         key: GroupKey::of(layer.data.cell_size, layer.info.offset, material),
-        size: covered(&layer.data.grid),
+        bounds: layer.data.grid.bounds(),
         intgrid: layer.data.intgrid.is_some(),
       });
     }
@@ -284,23 +289,27 @@ fn plan<'a>(
   GroupKey::of(tile_size, Vec2::ZERO, map_material)
 }
 
-/// What a build of a map's groups makes: the groups, the grid of each group
-/// that has one (by its index), traced when built off the main thread, and
-/// the layers (the first of each group too large) warned about
+/// What a build of a map's groups makes: the groups, and the grid of each
+/// group (by its index), traced when built off the main thread
 struct Built {
   groups: Vec<Group>,
   grids: Vec<(usize, TileColliders, Option<Traced>)>,
-  warned_layers: FastSet<usize>,
+}
+
+/// The bounds of a group of layers of `a`'s and `b`'s bounds: the larger,
+/// or `None` (unbounded) if either is
+fn joined(a: Option<CellRect>, b: Option<CellRect>) -> Option<CellRect> {
+  Some(a?.union(b?))
 }
 
 /// Every group of a map's colliding layers (`planned`, read through
-/// `views`), built from their tiles as they are, with the grid each puts on
-/// its target (none for a group too large), traced if `trace`
+/// `views`), built from their tiles as they are: each group's grid holds
+/// the chunks its layers have, each classified across them from the cells
+/// where they lie. Traced if `trace`
 fn build(
   map: Entity,
   (map_key, planned, views): (GroupKey, &[Planned], &[LayerView<'_>]),
   context: &Context<'_>,
-  mut warned_layers: FastSet<usize>,
   trace: bool,
 ) -> Built {
   let view = |index: usize| views.iter().find(|v| v.index == index);
@@ -312,7 +321,7 @@ fn build(
     let tracked = Tracked::new((layer.index, layer.entity), view.data, context.overrides);
     match groups.iter_mut().find(|g| g.key == layer.key) {
       Some(group) => {
-        group.size = group.size.max(layer.size);
+        group.bounds = joined(group.bounds, layer.bounds);
         group.layers.push(tracked);
       }
       None => {
@@ -321,8 +330,7 @@ fn build(
           key: layer.key,
           target: if own { layer.entity } else { map },
           target_layer: own.then_some(layer.index),
-          size: layer.size,
-          too_large: false,
+          bounds: layer.bounds,
           layers: vec![tracked],
           kinds: FastMap::default(),
           shapes: FastMap::default(),
@@ -332,70 +340,53 @@ fn build(
   }
   let mut grids = Vec::new();
   for (index, group) in groups.iter_mut().enumerate() {
-    let size = group.size;
-    if size.x > MAX_SIDE || size.y > MAX_SIDE {
-      group.too_large = true;
-      let first = group.layers.first().map(|t| t.index);
-      if first.is_some_and(|first| warned_layers.insert(first)) {
-        let names: Vec<String> = group
-          .layers
-          .iter()
-          .filter_map(|t| view(t.index))
-          .map(|v| format!("\"{}\"", v.info.name))
-          .collect();
-        let named = if names.len() == 1 { "layer" } else { "layers" };
-        crate::engine_warn!(
-          module: "Tilemap",
-          "map {map}: {named} {} would collide in a grid of {} x {} cells, over the {MAX_SIDE} a side tile colliders hold, so nothing there collides",
-          names.join(", "),
-          size.x,
-          size.y
-        );
+    let cell = group.key.cell.as_vec2();
+    let mut tiles = match group.bounds {
+      Some(bounds) => {
+        let size = bounds.max.max(IVec2::ZERO).as_uvec2();
+        TileColliders::new(size.x, size.y, cell)
       }
-      continue;
-    }
-    let mut cells = vec![TileCell::Empty; size.x as usize * size.y as usize];
+      None => TileColliders::unbounded(cell),
+    };
+    group.key.material().apply(&mut tiles);
+    let data: Vec<Option<&TileLayerData>> = group
+      .layers
+      .iter()
+      .map(|t| view(t.index).map(|v| v.data))
+      .collect();
+    // The chunks any of its layers has, in row order
+    let mut chunks: Vec<IVec2> = data
+      .iter()
+      .flatten()
+      .flat_map(|data| data.grid.chunk_coords())
+      .collect();
+    chunks.sort_unstable_by_key(|c| (c.y, c.x));
+    chunks.dedup();
     let mut pending = Pending(Vec::new());
     let Group {
-      layers: tracked,
+      layers,
       kinds,
       shapes,
       ..
     } = group;
-    for layer in tracked.iter() {
-      let Some(view) = view(layer.index) else {
-        continue;
-      };
-      let reach = covered(&view.data.grid).min(size);
-      for y in 0..reach.y {
-        for x in 0..reach.x {
-          let cell = IVec2::new(x as i32, y as i32);
-          let kind = layer_kind(
-            layer,
-            view.data,
-            cell,
-            (kinds, shapes),
-            &mut pending,
-            context,
-          );
-          let slot = &mut cells[y as usize * size.x as usize + x as usize];
-          *slot = over(*slot, kind);
-        }
-      }
+    for chunk in chunks {
+      let cells = union_kinds(
+        layers,
+        &data,
+        (chunk, Part::WHOLE),
+        (&mut *kinds, &mut *shapes),
+        &mut pending,
+        context,
+      );
+      tiles.put_chunk(chunk, &cells);
     }
-    let mut tiles = TileColliders::from_cells(size.x, size.y, group.key.cell.as_vec2(), cells);
-    group.key.material().apply(&mut tiles);
     for shape in pending.0 {
       tiles.add_shape(shape);
     }
     let traced = if trace { tiles.trace() } else { None };
     grids.push((index, tiles, traced));
   }
-  Built {
-    groups,
-    grids,
-    warned_layers,
-  }
+  Built { groups, grids }
 }
 
 /// What a map's first build reads besides its layers: its root's settings,
@@ -437,13 +428,7 @@ pub(crate) fn prepare(map: Entity, layers: &[LayerView<'_>], inputs: Inputs) -> 
     overrides: &inputs.overrides,
     purpose: Purpose::Collision,
   };
-  let built = build(
-    map,
-    (map_key, &planned, layers),
-    &context,
-    FastSet::default(),
-    true,
-  );
+  let built = build(map, (map_key, &planned, layers), &context, true);
   Prepared {
     state: MapCollision {
       layers: planned,
@@ -453,7 +438,6 @@ pub(crate) fn prepare(map: Entity, layers: &[LayerView<'_>], inputs: Inputs) -> 
       shapes: inputs.shapes,
       groups: built.groups,
       torn: false,
-      warned_layers: built.warned_layers,
       warned_properties: warned,
     },
     grids: built.grids,
@@ -506,18 +490,13 @@ pub(crate) struct MapCollision {
   /// Its colliders were taken away (the map disabled, or one went missing):
   /// the next step builds them all
   torn: bool,
-  warned_layers: FastSet<usize>,
   warned_properties: Warned,
 }
 
 impl MapCollision {
   /// The entities holding a `TileColliders` of this map's
   fn targets(&self) -> impl Iterator<Item = Entity> + '_ {
-    self
-      .groups
-      .iter()
-      .filter(|g| !g.too_large)
-      .map(|g| g.target)
+    self.groups.iter().map(|g| g.target)
   }
 
   /// Takes every `TileColliders` this map put on
@@ -530,40 +509,40 @@ impl MapCollision {
 }
 
 /// Brings a group's grid up to its layers' tiles: the cells of every chunk
-/// whose version moved since it last looked, setting only those whose kind
-/// changed
+/// whose version moved since it last looked, classified across its layers
+/// from the cells where they lie, setting only those whose kind changed
 fn update(group: &mut Group, tiles: &mut TileColliders, layers: &Layers, context: &Context<'_>) {
   let changed = changed_chunks(&mut group.layers, layers, context.overrides);
   if changed.is_empty() {
     return;
   }
   let data = layer_data(&group.layers, layers);
+  let data: Vec<Option<&TileLayerData>> = data.iter().map(|d| d.as_deref()).collect();
   let Group {
     layers: tracked,
     kinds,
     shapes,
-    size,
     ..
   } = group;
+  let side = CHUNK_SIZE as i32;
   for chunk in changed {
-    let min = chunk * CHUNK_SIZE;
-    let max = (min + UVec2::splat(CHUNK_SIZE)).min(*size);
-    for y in min.y..max.y {
-      for x in min.x..max.x {
-        let cell = IVec2::new(x as i32, y as i32);
-        let mut kind = TileCell::Empty;
-        for (layer, data) in tracked.iter().zip(&data) {
-          if let Some(data) = data {
-            let below = kind;
-            kind = over(
-              below,
-              layer_kind(layer, data, cell, (kinds, shapes), tiles, context),
-            );
-          }
-        }
-        if tiles.get(cell) != kind {
-          tiles.set(cell, kind);
-        }
+    let Some(origin) = chunk_origin(chunk) else {
+      continue;
+    };
+    let now = union_kinds(
+      tracked,
+      &data,
+      (chunk, Part::WHOLE),
+      (&mut *kinds, &mut *shapes),
+      tiles,
+      context,
+    );
+    let empty = [TileCell::Empty; super::kinds::CELLS];
+    let before = *tiles.chunk_cells(chunk).unwrap_or(&empty);
+    for (at, (&kind, &was)) in now.iter().zip(&before).enumerate() {
+      if kind != was {
+        let cell = origin + IVec2::new(at as i32 % side, at as i32 / side);
+        tiles.set(cell, kind);
       }
     }
   }
@@ -677,9 +656,6 @@ pub(crate) fn sync_map_colliders(
           purpose: Purpose::Collision,
         };
         for group in &mut state.groups {
-          if group.too_large {
-            continue;
-          }
           let Ok(mut tiles) = grids.get_mut(group.target) else {
             // Taken away by something else: all of it is built next step
             state.torn = true;
@@ -691,9 +667,9 @@ pub(crate) fn sync_map_colliders(
       state => {
         // Built at once, so a map never lacks its colliders
         let shapes = sources(tile_map, tilesets);
-        let (warned_layers, warned_properties) = match &state {
-          Some(old) => (old.warned_layers.clone(), old.warned_properties.clone()),
-          None => (FastSet::default(), first_warnings),
+        let warned_properties = match &state {
+          Some(old) => old.warned_properties.clone(),
+          None => first_warnings,
         };
         if let Some(old) = &state {
           for target in old.targets() {
@@ -706,13 +682,7 @@ pub(crate) fn sync_map_colliders(
           purpose: Purpose::Collision,
         };
         let views: Vec<LayerView<'_>> = views(map_layers, &layers).collect();
-        let built = build(
-          map,
-          (map_key, &planned, &views),
-          &context,
-          warned_layers,
-          false,
-        );
+        let built = build(map, (map_key, &planned, &views), &context, false);
         for (group, tiles, _) in built.grids {
           commands
             .entity(built.groups[group].target)
@@ -726,7 +696,6 @@ pub(crate) fn sync_map_colliders(
           shapes: Arc::clone(&shapes),
           groups: built.groups,
           torn: false,
-          warned_layers: built.warned_layers,
           warned_properties,
         };
         match state {
@@ -1489,12 +1458,15 @@ mod tests {
   }
 
   #[test]
-  fn a_colliding_layer_too_wide_for_tile_colliders_warns_once_naming_it() {
+  fn a_colliding_layer_wider_than_8192_cells_collides() {
+    // 6a capped a group at 8,192 cells a side; the colliders hold the
+    // chunks their layers have, so a long level collides end to end
+    let far = IVec2::new(9999, 0);
     let mut map = code_map(
-      UVec2::new(8193, 1),
-      &[("too-wide-7c1e", &[(IVec2::ZERO, SOLID)])],
+      UVec2::new(10_000, 1),
+      &[("long-7c1e", &[(IVec2::ZERO, SOLID), (far, SOLID)])],
     );
-    // and a layer within the limit, offset onto its own grid, still collides
+    // and a layer offset onto its own grid collides beside it
     let small = map.add_tile_layer("small");
     map.layers[small].kind = LayerKind::Tiles {
       grid: {
@@ -1510,13 +1482,25 @@ mod tests {
     let handle = add(&mut maps.world, map);
     let map = maps.spawn(MapRoot::new(handle));
     maps.frame();
-    maps.frame();
-    assert!(maps.world.get::<TileColliders>(map).is_none());
+    let tiles = colliders(&maps.world, map);
+    assert_eq!(
+      tiles.bounds(),
+      Some(CellRect::from_size(UVec2::new(10_000, 1)))
+    );
+    assert_eq!(tiles.get(IVec2::ZERO), TileCell::Solid);
+    assert_eq!(tiles.get(far), TileCell::Solid);
     let warned = crate::core::dev_log::get_entries()
       .iter()
-      .filter(|e| e.message.contains("too-wide-7c1e"))
+      .filter(|e| e.message.contains("long-7c1e"))
       .count();
-    assert_eq!(warned, 1, "warned once, naming the layer");
+    assert_eq!(warned, 0, "no warning names the layer");
+    // A part at the far end, at its chunk's top-left
+    let parts = parts_of(&mut maps.world, map);
+    part_in(
+      &parts,
+      Vec2::new(9999.0 * 16.0, 0.0),
+      Vec2::new(10_000.0 * 16.0, 16.0),
+    );
     let small = layers_of(&mut maps.world, map)[1];
     assert_eq!(
       colliders(&maps.world, small).get(IVec2::new(0, 0)),

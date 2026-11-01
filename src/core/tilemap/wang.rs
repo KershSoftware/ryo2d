@@ -479,8 +479,10 @@ struct Painting<'w> {
   world: &'w World,
   layer: Entity,
   index: u16,
-  /// The cells the layer's grid reaches
-  extent: CellRect,
+  /// The cells the layer's grid holds: a bounded grid's bounds, `None`
+  /// for an unbounded one, which holds any cell (a paint there makes the
+  /// chunks it writes in, as `set_tile` does)
+  bounds: Option<CellRect>,
   matcher: &'w Matcher,
   /// The colors the painting asks of each cell touching it (`ANY` where it
   /// asks none)
@@ -499,7 +501,7 @@ struct Painting<'w> {
 
 impl Painting<'_> {
   fn in_bounds(&self, at: IVec2) -> bool {
-    self.extent.contains(at)
+    self.bounds.is_none_or(|bounds| bounds.contains(at))
   }
 
   /// A class tile lives on the cell: not ours to change
@@ -641,12 +643,12 @@ fn plan(
   cell: IVec2,
   color: u8,
 ) -> Option<Plan> {
-  let extent = world.get::<TileLayerData>(layer)?.grid.extent();
+  let bounds = world.get::<TileLayerData>(layer)?.grid.bounds();
   let mut painting = Painting {
     world,
     layer,
     index,
-    extent,
+    bounds,
     matcher: set.matcher(),
     paint: HashMap::new(),
     painted: cell,
@@ -706,13 +708,13 @@ pub(crate) fn set_terrain(
   let Some(entity) = edit::layer_entity(world, map, layer) else {
     return false;
   };
-  let Some(extent) = world
+  let Some(bounds) = world
     .get::<TileLayerData>(entity)
-    .map(|data| data.grid.extent())
+    .map(|data| data.grid.bounds())
   else {
     return false;
   };
-  if !extent.contains(cell) {
+  if bounds.is_some_and(|bounds| !bounds.contains(cell)) {
     return false;
   }
   let (planned, warn_key) = {
@@ -759,14 +761,14 @@ pub(crate) fn set_terrain(
 
 #[cfg(test)]
 mod tests {
-  use glam::IVec2;
+  use glam::{IVec2, UVec2};
 
   use super::{WangWarned, warn_first};
   use crate::core::asset::{Assets, AssetsView};
   use crate::core::ecs::{Entity, World};
   use crate::core::tilemap::test_util::{MapWorld, load_map};
   use crate::core::tilemap::{
-    MapRoot, MapsView, Tile, TileFlip, TileMap, Tileset, WangKind, WangSet,
+    MapRoot, MapsView, Tile, TileFlip, TileGrid, TileLayerData, TileMap, Tileset, WangKind, WangSet,
   };
 
   /// The ground layer of a spawned map, row by row
@@ -945,6 +947,50 @@ mod tests {
       IVec2::new(3, 3),
       Some("water"),
     );
+  }
+
+  #[test]
+  fn painting_terrain_outside_every_chunk_of_an_unbounded_layer_makes_its_chunks() {
+    // The one-colour set painted into an unbounded layer, far from the one
+    // chunk it has: the cells around the paint take what Tiled's brush gave
+    // the same paint into an empty layer, in chunks made for them
+    let mut mw = MapWorld::new();
+    let empty = load_map(&mut mw.world, "tiled/maps/wang-solo-empty.tmj");
+    let tilesets = mw
+      .world
+      .resource::<Assets<TileMap>>()
+      .get(&empty)
+      .map(|m| m.tilesets.clone())
+      .unwrap_or_default();
+    let mut map = TileMap::new(UVec2::ZERO, UVec2::splat(16));
+    map.tilesets = tilesets;
+    let layer = map.add_tile_layer("ground");
+    if let Some(grid) = map.tiles_mut(layer) {
+      *grid = TileGrid::unbounded();
+      grid.set(IVec2::ZERO, Some(Tile::new(0, 0)));
+    }
+    let handle = mw.world.resource_mut::<Assets<TileMap>>().add(map);
+    let map = mw.spawn(MapRoot::new(handle));
+    let painted = IVec2::new(-100, 70);
+    let mut maps = MapsView::new(&mut mw.world);
+    assert!(maps.set_terrain(map, "ground", painted, "solo", Some("ground")));
+    let (expected, size) = recorded(&mut mw, "wang-solo-painted.tmj");
+    let corner = painted - IVec2::splat(2);
+    let maps = MapsView::new(&mut mw.world);
+    let got: Vec<Option<Tile>> = (0..size.y)
+      .flat_map(|y| (0..size.x).map(move |x| IVec2::new(x, y)))
+      .map(|cell| maps.tile(map, "ground", corner + cell))
+      .collect();
+    assert_eq!(got, expected);
+    let Some(ground) = maps.layer_entity(map, "ground") else {
+      panic!("no ground layer");
+    };
+    let chunks: Vec<IVec2> = mw
+      .world
+      .get::<TileLayerData>(ground)
+      .map(|data| data.grid.chunk_coords().collect())
+      .unwrap_or_default();
+    assert_eq!(chunks, [IVec2::ZERO, TileGrid::chunk_of(painted)]);
   }
 
   #[test]

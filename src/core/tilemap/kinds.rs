@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use glam::{IVec2, UVec2, Vec2};
+use glam::{IVec2, Vec2};
 
 use super::spawn::{IntGridKey, TileLayerData};
 use super::{
@@ -17,7 +17,7 @@ use super::{
 use crate::core::asset::{AssetId, Assets};
 use crate::core::ecs::{Allow, DetectChanges, Disabled, Entity, Has, Query, Ref, Res};
 use crate::core::hash::FastMap;
-use crate::core::physics::{Boundary, CellShape, SlopeCorner, TileCell, TileColliders};
+use crate::core::physics::{Boundary, CellRect, CellShape, SlopeCorner, TileCell, TileColliders};
 
 /// How near a point must be to a cell corner to count as on it, in tiles
 const EPSILON: f32 = 1e-4;
@@ -500,27 +500,21 @@ fn rank(kind: TileCell) -> u8 {
   }
 }
 
-/// The cells of `grid` that collision and shadows cover: from (0, 0) to
-/// the far corner of its extent, a bounded grid's every cell
-pub(super) fn covered(grid: &TileGrid) -> UVec2 {
-  grid.extent().max.max(IVec2::ZERO).as_uvec2()
-}
-
-/// The chunks across and down holding the cells `covered` gives
-fn covered_chunks(grid: &TileGrid) -> UVec2 {
-  let cells = covered(grid);
-  UVec2::new(cells.x.div_ceil(CHUNK_SIZE), cells.y.div_ceil(CHUNK_SIZE))
-}
-
-/// A layer of a group: the chunk versions it was last read at
+/// A layer of a group: what it was last read at
 #[derive(Debug)]
 pub(super) struct Tracked {
   /// Its place among the map's layers, and its entity (a stand-in until
   /// the layers spawn, when `relink` sets it)
   pub(super) index: usize,
   pub(super) entity: Entity,
-  versions: Vec<u64>,
+  /// The grid it was last read from (`TileGrid::id`; 0 before any), and
+  /// that grid's version then: while the grid is the same one, the chunks
+  /// changed since are those of a later version
+  grid_id: u64,
   grid_version: u64,
+  /// The version each chunk was read at, for a grid swapped for another,
+  /// whose chunks are compared one by one
+  versions: FastMap<IVec2, u64>,
   /// The kind of each value, for a layer read by its IntGrid
   intgrid: Option<FastMap<i32, TileCell>>,
 }
@@ -528,49 +522,34 @@ pub(super) struct Tracked {
 impl Tracked {
   /// A layer read as its tiles are now
   pub(super) fn new(
-    (index, entity): (usize, Entity),
+    place: (usize, Entity),
     data: &TileLayerData,
     overrides: &[(IntGridKey, TileCell)],
   ) -> Tracked {
-    let grid = &data.grid;
-    let chunks = covered_chunks(grid);
-    let versions = (0..chunks.y)
-      .flat_map(|y| (0..chunks.x).map(move |x| UVec2::new(x, y)))
-      .map(|chunk| grid.chunk_version(chunk.as_ivec2()))
-      .collect();
-    Tracked {
-      index,
-      entity,
-      versions,
-      grid_version: grid.version(),
-      intgrid: data
-        .intgrid
-        .as_ref()
-        .map(|intgrid| intgrid_table(&intgrid.names, overrides)),
-    }
+    let mut tracked = Tracked::unread(place, data, overrides);
+    tracked.read_all(data);
+    tracked
   }
 
-  /// A layer not read yet: every chunk that ever changed counts as changed
+  /// A layer not read yet: every chunk counts as changed
   pub(super) fn unread(
     (index, entity): (usize, Entity),
     data: &TileLayerData,
     overrides: &[(IntGridKey, TileCell)],
   ) -> Tracked {
-    let chunks = covered_chunks(&data.grid);
     Tracked {
       index,
       entity,
-      versions: vec![0; chunks.x as usize * chunks.y as usize],
+      grid_id: 0,
       grid_version: 0,
+      versions: FastMap::default(),
       intgrid: data
         .intgrid
         .as_ref()
         .map(|intgrid| intgrid_table(&intgrid.names, overrides)),
     }
   }
-}
 
-impl Tracked {
   /// Points it at its layer's entity, from the map's layer entities
   pub(super) fn relink(&mut self, layers: &[Entity]) {
     if let Some(&entity) = layers.get(self.index) {
@@ -579,35 +558,31 @@ impl Tracked {
   }
 
   /// Marks the layer read as `data` is (a copy of it, off the main thread);
-  /// returns every chunk of it that ever changed, which a first build reads
-  pub(super) fn read_all(&mut self, data: &TileLayerData) -> Vec<UVec2> {
+  /// returns every chunk its grid has, in row order, which a first build
+  /// reads
+  pub(super) fn read_all(&mut self, data: &TileLayerData) -> Vec<IVec2> {
     let grid = &data.grid;
-    let chunks = covered_chunks(grid);
     self.versions.clear();
-    let mut changed = Vec::new();
-    for y in 0..chunks.y {
-      for x in 0..chunks.x {
-        let version = grid.chunk_version(UVec2::new(x, y).as_ivec2());
-        self.versions.push(version);
-        if version != 0 {
-          changed.push(UVec2::new(x, y));
-        }
-      }
-    }
+    self.versions.reserve(grid.chunk_count());
+    self.versions.extend(grid.chunk_versions());
+    self.grid_id = grid.id();
     self.grid_version = grid.version();
-    changed
+    grid.chunk_coords().collect()
   }
 }
 
 /// The chunks of the layers of a group whose version moved since each was
 /// last read (all of a layer's, when its IntGrid's names now name other
-/// kinds), sorted, each once; the layers are marked read
+/// kinds), in row order, each once; the layers are marked read. A layer
+/// whose grid is the one it read looks only for later versions; one whose
+/// grid was swapped for another compares every chunk, and counts a chunk
+/// the old grid had and the new one lacks as changed
 pub(super) fn changed_chunks(
   group: &mut [Tracked],
   layers: &Layers,
   overrides: &[(IntGridKey, TileCell)],
-) -> Vec<UVec2> {
-  let mut changed: Vec<UVec2> = Vec::new();
+) -> Vec<IVec2> {
+  let mut changed: Vec<IVec2> = Vec::new();
   for tracked in group {
     let Ok((_, data, _)) = layers.get(tracked.entity) else {
       continue;
@@ -624,24 +599,29 @@ pub(super) fn changed_chunks(
       }
     }
     let grid = &data.grid;
-    if !all && grid.version() == tracked.grid_version {
+    let same = grid.id() == tracked.grid_id;
+    if !all && same && grid.version() == tracked.grid_version {
       continue;
     }
-    let chunks = covered_chunks(grid);
-    tracked
-      .versions
-      .resize(chunks.x as usize * chunks.y as usize, 0);
-    for y in 0..chunks.y {
-      for x in 0..chunks.x {
-        let chunk = UVec2::new(x, y);
-        let version = grid.chunk_version(chunk.as_ivec2());
-        let seen = &mut tracked.versions[(y * chunks.x + x) as usize];
-        if all || *seen != version {
-          *seen = version;
-          changed.push(chunk);
-        }
+    for (chunk, version) in grid.chunk_versions() {
+      if same && !all && version <= tracked.grid_version {
+        continue;
+      }
+      let before = tracked.versions.insert(chunk, version);
+      if all || before != Some(version) {
+        changed.push(chunk);
       }
     }
+    if !same && tracked.versions.len() > grid.chunk_count() {
+      tracked.versions.retain(|&chunk, _| {
+        let kept = grid.has_chunk(chunk);
+        if !kept {
+          changed.push(chunk);
+        }
+        kept
+      });
+    }
+    tracked.grid_id = grid.id();
     tracked.grid_version = grid.version();
   }
   changed.sort_unstable_by_key(|c| (c.y, c.x));
@@ -668,46 +648,139 @@ pub(super) struct Context<'a> {
   pub(super) purpose: Purpose,
 }
 
-/// The kind `cell` of a layer is, for the context's purpose
-pub(super) fn layer_kind(
+/// The cells of a chunk, row by row
+pub(super) type ChunkKinds = [TileCell; CELLS];
+
+/// The cells of a chunk, `CHUNK_SIZE` rows of `CHUNK_SIZE`
+pub(super) const CELLS: usize = (CHUNK_SIZE * CHUNK_SIZE) as usize;
+
+/// A chunk's side as a cell coordinate
+const SIDE: i32 = CHUNK_SIZE as i32;
+
+/// The part of a chunk a classification reads: its cells from `min`
+/// (included) to `max` (excluded), counted from the chunk's top-left
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Part {
+  pub(super) min: IVec2,
+  pub(super) max: IVec2,
+}
+
+impl Part {
+  /// All of a chunk
+  pub(super) const WHOLE: Part = Part {
+    min: IVec2::ZERO,
+    max: IVec2::splat(SIDE),
+  };
+}
+
+/// The first cell of `chunk`, if `i32` holds it
+pub(super) fn chunk_origin(chunk: IVec2) -> Option<IVec2> {
+  Some(IVec2::new(
+    chunk.x.checked_mul(SIDE)?,
+    chunk.y.checked_mul(SIDE)?,
+  ))
+}
+
+/// Lays the kinds of `part` of `chunk` of a layer, for the context's
+/// purpose, over `out` (a chunk's cells: each cell the stronger of what is
+/// there and the layer's, the layer's on a tie). A tile layer's cells are
+/// read where they lie in the chunk, each tile's kind worked out once
+/// (`kinds`, by the cell's value); an IntGrid layer's are its values in the
+/// cells both its IntGrid and its grid hold
+pub(super) fn chunk_kinds(
   tracked: &Tracked,
   data: &TileLayerData,
-  cell: IVec2,
-  (kinds, shapes): (&mut FastMap<Tile, TileCell>, &mut FastMap<ShapeKey, u16>),
+  (chunk, part): (IVec2, Part),
+  (kinds, shapes): (&mut FastMap<u32, TileCell>, &mut FastMap<ShapeKey, u16>),
   sink: &mut dyn ShapeSink,
   context: &Context<'_>,
-) -> TileCell {
+  out: &mut ChunkKinds,
+) {
+  let local = |x: i32, y: i32| (y * SIDE + x) as usize;
   match &tracked.intgrid {
     Some(table) => {
-      let kind = data
-        .intgrid
-        .as_ref()
-        .and_then(|intgrid| intgrid.get(cell))
-        .and_then(|value| table.get(&value).copied())
-        .unwrap_or(TileCell::Empty);
-      match (context.purpose, kind) {
-        (Purpose::Occlusion, TileCell::OneWay) => TileCell::Empty,
-        (_, kind) => kind,
+      let (Some(origin), Some(intgrid)) = (chunk_origin(chunk), data.intgrid.as_ref()) else {
+        return;
+      };
+      let mut held = CellRect::from_size(intgrid.size);
+      if let Some(bounds) = data.grid.bounds() {
+        held = CellRect::new(held.min.max(bounds.min), held.max.min(bounds.max));
+      }
+      let lo = origin.saturating_add(part.min).max(held.min);
+      let hi = origin.saturating_add(part.max).min(held.max);
+      let width = intgrid.size.x as usize;
+      for y in lo.y..hi.y {
+        let row = y as usize * width;
+        for x in lo.x..hi.x {
+          let value = intgrid.values.get(row + x as usize).copied().unwrap_or(0);
+          if value == 0 {
+            continue;
+          }
+          let kind = match (context.purpose, table.get(&value).copied()) {
+            (_, None) | (Purpose::Occlusion, Some(TileCell::OneWay)) => continue,
+            (_, Some(kind)) => kind,
+          };
+          let slot = &mut out[local(x - origin.x, y - origin.y)];
+          *slot = over(*slot, kind);
+        }
       }
     }
-    None => match data.grid.get(cell) {
-      None => TileCell::Empty,
-      Some(tile) => *kinds.entry(tile).or_insert_with(|| {
-        let source = context
-          .shapes
-          .get(usize::from(tile.tileset))
-          .and_then(Option::as_ref);
-        tile_kind(
-          source,
-          tile,
-          data.cell_size.as_vec2(),
-          context.purpose,
-          shapes,
-          sink,
-        )
-      }),
-    },
+    None => {
+      let Some(cells) = data.grid.chunk_cells(chunk) else {
+        return;
+      };
+      let cell = data.cell_size.as_vec2();
+      for y in part.min.y..part.max.y {
+        for x in part.min.x..part.max.x {
+          let at = local(x, y);
+          let raw = cells[at];
+          if raw == 0 {
+            continue;
+          }
+          let kind = *kinds.entry(raw).or_insert_with(|| {
+            let Some(tile) = TileGrid::decode(raw) else {
+              return TileCell::Empty;
+            };
+            let source = context
+              .shapes
+              .get(usize::from(tile.tileset))
+              .and_then(Option::as_ref);
+            tile_kind(source, tile, cell, context.purpose, shapes, sink)
+          });
+          out[at] = over(out[at], kind);
+        }
+      }
+    }
   }
+}
+
+/// The kinds of `part` of `chunk` across a group's layers (`data` in the
+/// group's order, `None` for a layer gone), each cell the strongest, the
+/// upper layer's on a tie; cells outside `part` are `Empty`
+pub(super) fn union_kinds(
+  layers: &[Tracked],
+  data: &[Option<&TileLayerData>],
+  at: (IVec2, Part),
+  kinds: (&mut FastMap<u32, TileCell>, &mut FastMap<ShapeKey, u16>),
+  sink: &mut dyn ShapeSink,
+  context: &Context<'_>,
+) -> ChunkKinds {
+  let (tile_kinds, shapes) = kinds;
+  let mut out = [TileCell::Empty; CELLS];
+  for (layer, data) in layers.iter().zip(data) {
+    if let Some(data) = data {
+      chunk_kinds(
+        layer,
+        data,
+        at,
+        (&mut *tile_kinds, &mut *shapes),
+        sink,
+        context,
+        &mut out,
+      );
+    }
+  }
+  out
 }
 
 /// `kind` over `below` in a group's union: the stronger, the upper on a tie

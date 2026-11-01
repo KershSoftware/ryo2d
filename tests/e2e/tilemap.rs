@@ -855,6 +855,73 @@ fn a_swapped_grid_redraws_its_layer() {
   assert_pixels(&engine.frame().unwrap(), |x, y| in_cells(&green, x, y));
 }
 
+#[test]
+fn an_unbounded_layer_draws_tiles_at_negative_cells_and_culls_by_signed_chunk() {
+  // Red at (-40, -3), in chunk (-2, -1), and green at (40, 3), in chunk
+  // (1, 0), on an unbounded layer; the camera centred on the red tile's
+  // top-left corner
+  let cell = CELL as f32;
+  let pan = Pan::default();
+  if let Ok(mut at) = pan.lock() {
+    *at = Some(Vec2::new(-40.0, -3.0) * cell);
+  }
+  let setup: Setup = Box::new(|ctx| {
+    let set = solid(ctx, &[RED, GREEN]);
+    let mut tiles = map(vec![set], &[]);
+    let Some(grid) = tiles.tiles_mut(0) else {
+      panic!("ground is a tile layer");
+    };
+    *grid = TileGrid::unbounded();
+    assert!(grid.set(IVec2::new(-40, -3), Some(Tile::new(0, 0))));
+    assert!(grid.set(IVec2::new(40, 3), Some(Tile::new(0, 1))));
+    spawn(ctx, tiles, Vec2::ZERO);
+  });
+  let builder = EngineBuilder::new()
+    .pixel_art(SIZE, SIZE)
+    .start_scene(Panned(Some(setup), pan.clone()));
+  let Some(mut engine) = HeadlessEngine::new_or_skip(builder) else {
+    return;
+  };
+  land(&mut engine);
+  engine.step_frames(2).unwrap();
+  // The camera's centre is the frame's: the tile fills the cell right of
+  // and below it
+  let centre = |colour| {
+    move |x: u32, y: u32| {
+      let inside = |v: u32| (SIZE / 2..SIZE / 2 + CELL).contains(&v);
+      (inside(x) && inside(y)).then_some(colour)
+    }
+  };
+  assert_pixels(&engine.frame().unwrap(), centre(RED));
+  let world = engine.world_mut();
+  let layers: Vec<Entity> = world
+    .query_filtered::<Entity, With<TileLayerData>>()
+    .iter(world)
+    .collect();
+  assert_eq!(layers.len(), 1);
+  let built = |engine: &HeadlessEngine| -> Vec<IVec2> {
+    engine
+      .tile_chunks()
+      .into_iter()
+      .filter(|(layer, _)| *layer == layers[0])
+      .map(|(_, chunk)| chunk)
+      .collect()
+  };
+  assert_eq!(
+    built(&engine),
+    [IVec2::new(-2, -1)],
+    "chunk (1, 0) is out of view and not built, and no chunk the layer lacks is"
+  );
+
+  // Over the green tile, its chunk is built and drawn
+  if let Ok(mut at) = pan.lock() {
+    *at = Some(Vec2::new(40.0, 3.0) * cell);
+  }
+  engine.step_frames(2).unwrap();
+  assert_pixels(&engine.frame().unwrap(), centre(GREEN));
+  assert_eq!(built(&engine), [IVec2::new(-2, -1), IVec2::new(1, 0)]);
+}
+
 /// Where `character` is moved to before the next frame
 type Moved = Arc<Mutex<Option<Entity>>>;
 

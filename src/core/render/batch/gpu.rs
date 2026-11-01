@@ -296,8 +296,8 @@ impl Batch2D {
     &mut self.chunks
   }
 
-  /// The tile chunks (tests)
-  #[cfg(test)]
+  /// The tile chunks (tests, and the headless engine's reads)
+  #[cfg(not(target_arch = "wasm32"))]
   pub(crate) fn chunks(&self) -> &ChunkStore {
     &self.chunks
   }

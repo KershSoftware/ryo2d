@@ -970,11 +970,11 @@ fn a_reload_keeps_the_ground_a_character_stands_on() {
     let grid = &world.get::<TileLayerData>(ground).expect("tiles").grid;
     [0, 1, 2].map(|x| grid.chunk_version(IVec2::new(x, 0)))
   };
-  let shadows = |world: &mut World, chunk: u32| {
+  let shadows = |world: &mut World, chunk: i32| {
     let mut found: Vec<Entity> = world
       .query::<(Entity, &MapOccluder)>()
       .iter(world)
-      .filter(|(_, o)| o.chunk == UVec2::new(chunk, 0))
+      .filter(|(_, o)| o.chunk == IVec2::new(chunk, 0))
       .map(|(e, _)| e)
       .collect();
     found.sort();

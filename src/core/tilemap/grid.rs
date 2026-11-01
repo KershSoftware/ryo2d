@@ -131,8 +131,11 @@ fn holds_tiles(cells: Option<&[u32; CELLS]>) -> bool {
 /// holds any cell. Either makes a chunk the first time a tile is written in
 /// it, so an empty chunk costs nothing; clearing leaves the chunk. Edits
 /// mark the chunks they touch dirty and move on their versions.
-#[derive(Clone)]
 pub struct TileGrid {
+  /// Never given to another grid, a clone included: a consumer that keeps
+  /// the version it last read a grid at knows the chunks changed since are
+  /// those of a later version, while the grid is the one it read
+  id: u64,
   /// The cells it holds; `None` for any
   bounds: Option<CellRect>,
   chunks: FastMap<IVec2, Chunk>,
@@ -146,6 +149,22 @@ pub struct TileGrid {
   /// process-wide counter at every change, so a version is a stamp of one
   /// state of one chunk of one grid
   counter: u64,
+}
+
+/// A copy with an id of its own: its versions are the original's, but
+/// edits to either give the other's consumers nothing to read
+impl Clone for TileGrid {
+  fn clone(&self) -> TileGrid {
+    TileGrid {
+      id: next_version(),
+      bounds: self.bounds,
+      chunks: self.chunks.clone(),
+      order: self.order.clone(),
+      span: self.span,
+      dirty: self.dirty,
+      counter: self.counter,
+    }
+  }
 }
 
 /// The bounds and the chunks holding tiles, with their cells: the dirty
@@ -184,6 +203,7 @@ impl TileGrid {
 
   fn with_bounds(bounds: Option<CellRect>) -> TileGrid {
     TileGrid {
+      id: next_version(),
       bounds,
       chunks: FastMap::default(),
       order: Vec::new(),
@@ -248,10 +268,6 @@ impl TileGrid {
       return false;
     }
     let (chunk, at) = (Self::chunk_of(cell), local(cell));
-    let present = self.chunks.contains_key(&chunk);
-    if !present && value == 0 {
-      return false;
-    }
     let before = self.order.len();
     let Self {
       chunks,
@@ -261,7 +277,15 @@ impl TileGrid {
       counter,
       ..
     } = self;
-    let entry = make_chunk(chunks, order, span, chunk);
+    // One lookup: clearing reads the chunk if there is one, a tile makes it
+    let entry = if value == 0 {
+      match chunks.get_mut(&chunk) {
+        Some(entry) => entry,
+        None => return false,
+      }
+    } else {
+      make_chunk(chunks, order, span, chunk)
+    };
     let cells = match &mut entry.cells {
       Some(cells) => cells,
       None if value == 0 => return false,
@@ -334,12 +358,11 @@ impl TileGrid {
       }
     };
     if value == 0 {
-      // Only the chunks there are hold a tile to clear
-      for &chunk in order.iter() {
-        if chunk.cmpge(first).all()
-          && chunk.cmple(last).all()
-          && let Some(entry) = chunks.get_mut(&chunk)
-        {
+      // Only the chunks there are hold a tile to clear: the region's, or
+      // the list of them, whichever is shorter
+      let (ranged, listed) = within(order, chunks.len(), first, last);
+      for chunk in ranged.chain(listed) {
+        if let Some(entry) = chunks.get_mut(&chunk) {
           write(chunk, entry);
         }
       }
@@ -532,6 +555,81 @@ impl TileGrid {
   pub(crate) fn decode(cell: u32) -> Option<Tile> {
     decode(cell)
   }
+
+  /// What tells this grid from every other, its clones included
+  pub(crate) fn id(&self) -> u64 {
+    self.id
+  }
+
+  /// How many chunks there are
+  pub(crate) fn chunk_count(&self) -> usize {
+    self.order.len()
+  }
+
+  /// Whether there is a chunk `chunk` (holding cells or not)
+  pub(crate) fn has_chunk(&self, chunk: IVec2) -> bool {
+    self.chunks.contains_key(&chunk)
+  }
+
+  /// Each chunk there is with its version, in no set order, without a
+  /// lookup each
+  pub(crate) fn chunk_versions(&self) -> impl Iterator<Item = (IVec2, u64)> + '_ {
+    self
+      .chunks
+      .iter()
+      .map(|(&chunk, entry)| (chunk, entry.version))
+  }
+
+  /// The chunks there are from `first` to `last` (both included), in row
+  /// order: found by walking that range or the list of chunks, whichever
+  /// is shorter, so neither a wide range over a few chunks nor a small one
+  /// over many walks far
+  pub(crate) fn chunks_within(
+    &self,
+    first: IVec2,
+    last: IVec2,
+  ) -> impl Iterator<Item = IVec2> + '_ {
+    let (ranged, listed) = within(&self.order, self.chunks.len(), first, last);
+    ranged
+      .filter(|chunk| self.chunks.contains_key(chunk))
+      .chain(listed)
+  }
+}
+
+/// The chunks from `first` to `last` (both included) to look at, in row
+/// order, as two parts of which one is empty: the range itself, when it
+/// holds no more chunks than the `count` there are, else those of `order`
+/// (the chunks there are, in row order) inside it
+fn within(
+  order: &[IVec2],
+  count: usize,
+  first: IVec2,
+  last: IVec2,
+) -> (
+  impl Iterator<Item = IVec2> + use<>,
+  impl Iterator<Item = IVec2> + '_,
+) {
+  let side = |a: i32, b: i32| (i64::from(b) - i64::from(a) + 1).max(0);
+  let area = side(first.x, last.x).saturating_mul(side(first.y, last.y));
+  let walk = area <= count as i64;
+  let ranged = walk
+    .then_some(first.y..=last.y)
+    .into_iter()
+    .flatten()
+    .flat_map(move |y| (first.x..=last.x).map(move |x| IVec2::new(x, y)));
+  let rows = if walk {
+    &order[..0]
+  } else {
+    // `order` is by row, then column: the rows of the range are one run
+    let from = order.partition_point(|c| c.y < first.y);
+    let to = order.partition_point(|c| c.y <= last.y);
+    &order[from..to.max(from)]
+  };
+  let listed = rows
+    .iter()
+    .copied()
+    .filter(move |c| (first.x..=last.x).contains(&c.x));
+  (ranged, listed)
 }
 
 /// `chunk`'s entry in `chunks`, made (holding no cells) if there is none:
@@ -1002,5 +1100,53 @@ mod tests {
     );
     assert_eq!(cells.iter().filter(|&&c| c != 0).count(), 1);
     assert!(g.chunk_cells(IVec2::ZERO).is_none());
+  }
+
+  #[test]
+  fn chunks_within_a_range_come_in_row_order_however_they_are_found() {
+    let mut g = TileGrid::unbounded();
+    let t = Some(Tile::new(0, 1));
+    for cell in [(-40, -40), (0, 0), (40, 0), (-40, 40), (5000, 3000)] {
+      g.set(IVec2::new(cell.0, cell.1), t);
+    }
+    let all: Vec<IVec2> = g.chunk_coords().collect();
+    let inside = |first: IVec2, last: IVec2| -> Vec<IVec2> {
+      let wanted = |c: &IVec2| c.cmpge(first).all() && c.cmple(last).all();
+      all.iter().copied().filter(wanted).collect()
+    };
+    // A small range is walked, a wide one read from the list: both alike
+    for (first, last) in [
+      (IVec2::new(-2, -2), IVec2::new(1, 1)),
+      (IVec2::new(0, 0), IVec2::new(0, 0)),
+      (
+        IVec2::new(-1_000_000, -1_000_000),
+        IVec2::new(1_000_000, 1_000_000),
+      ),
+      (IVec2::new(-2, -1_000_000), IVec2::new(1, 1_000_000)),
+      (
+        IVec2::new(i32::MIN, i32::MIN),
+        IVec2::new(i32::MAX, i32::MAX),
+      ),
+      (IVec2::new(3, 3), IVec2::new(2, 2)),
+    ] {
+      let found: Vec<IVec2> = g.chunks_within(first, last).collect();
+      assert_eq!(found, inside(first, last), "{first} to {last}");
+    }
+  }
+
+  #[test]
+  fn a_clone_is_a_grid_of_its_own() {
+    let mut g = TileGrid::new(UVec2::splat(40));
+    g.set(IVec2::new(3, 3), Some(Tile::new(0, 1)));
+    let copy = g.clone();
+    assert_ne!(copy.id(), g.id());
+    assert_eq!(copy.version(), g.version());
+    assert_eq!(
+      copy.chunk_version(IVec2::ZERO),
+      g.chunk_version(IVec2::ZERO)
+    );
+    assert_eq!(format!("{copy:?}"), format!("{g:?}"));
+    let versions: Vec<(IVec2, u64)> = g.chunk_versions().collect();
+    assert_eq!(versions, [(IVec2::ZERO, g.version())]);
   }
 }

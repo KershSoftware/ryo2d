@@ -200,6 +200,13 @@ fn chunk_rect(chunk: IVec2) -> CellRect {
   CellRect::new(min, min + IVec2::splat(CHUNK))
 }
 
+/// The cells of any `chunk` of `i32` cells: the end of the last chunk
+/// stops at `i32::MAX`
+fn chunk_rect_of(chunk: IVec2) -> CellRect {
+  let min = chunk * CHUNK;
+  CellRect::new(min, min.saturating_add(IVec2::splat(CHUNK)))
+}
+
 /// Whether `cell` is within the outline lattice's reach (`MAX_REACH`)
 fn reaches(cell: IVec2) -> bool {
   cell.cmpge(IVec2::splat(-MAX_REACH)).all() && cell.cmple(IVec2::splat(MAX_REACH)).all()
@@ -817,6 +824,51 @@ impl TileColliders {
     Cells::new(&self.chunks, &self.shapes)
   }
 
+  /// The cells of `chunk` (`CHUNK` rows of `CHUNK`), if the grid has it:
+  /// for a builder comparing a chunk without a lookup per cell
+  pub(crate) fn chunk_cells(&self, chunk: IVec2) -> Option<&Chunk> {
+    self.chunks.get(&chunk).map(|cells| &**cells)
+  }
+
+  /// Writes `cells` (`CHUNK` rows of `CHUNK`) as chunk `chunk`'s, for a
+  /// grid being made from chunks: a cell outside the grid is left out, and
+  /// so is one past `MAX_REACH` (logged once). It lists no change, so a
+  /// grid already built is built again whole; a chunk of nothing but
+  /// `Empty` makes none.
+  pub(crate) fn put_chunk(&mut self, chunk: IVec2, cells: &Chunk) {
+    let rect = chunk_rect_of(chunk);
+    let inside = |cell: IVec2| reaches(cell) && self.bounds.is_none_or(|b| b.contains(cell));
+    // Most chunks lie wholly inside: copied as they are
+    let whole = inside(rect.min) && inside(rect.max - IVec2::ONE);
+    let mut kept = *cells;
+    let mut past = None;
+    if !whole {
+      for (i, slot) in kept.iter_mut().enumerate() {
+        let cell = rect.min + IVec2::new(i as i32 % CHUNK, i as i32 / CHUNK);
+        if *slot != TileCell::Empty && !inside(cell) {
+          if past.is_none() && !reaches(cell) {
+            past = Some(cell);
+          }
+          *slot = TileCell::Empty;
+        }
+      }
+    }
+    if let Some(cell) = past {
+      self.past_reach(cell.x, cell.y);
+    }
+    if kept.iter().all(|&c| c == TileCell::Empty) && !self.chunks.contains_key(&chunk) {
+      return;
+    }
+    for &cell in &kept {
+      if let TileCell::Shape(index) = cell {
+        self.shape_refs = self.shape_refs.max(u32::from(index) + 1);
+      }
+    }
+    *self.chunk_mut(chunk) = kept;
+    self.generation = next_generation();
+    self.changes = None;
+  }
+
   /// The cells changed since the rebuild last took them in, in row order
   /// (by row, then column), each once with its value then; None when there
   /// were too many to list. The list starts again from now.
@@ -1249,43 +1301,49 @@ impl Boundary {
   }
 
   /// Pushes onto `out` the boundary edges the cells from `min` to `max`
-  /// (exclusive) of a grid `size` cells own: each one's inside, the border
-  /// on its left and the border above it, and, where the block reaches the
-  /// grid's right or bottom, the borders there. So every border belongs to
-  /// one block, and blocks laid side by side give the grid's boundary with
-  /// nothing twice. `at` gives a cell by its place in the grid (a border
-  /// reads the cell across it, outside the block, and every cell outside the
-  /// grid is empty). Points are on the outline grid (`GRID` a tile) from
-  /// `min`'s top-left; edges run clockwise on screen round what they bound.
+  /// (exclusive) of a grid own: each one's inside, the border on its left
+  /// and the border above it, and, where the block reaches a bounded grid's
+  /// right or bottom (`bounds`; `None` for an unbounded grid, which has
+  /// none), the borders there. So every border belongs to one block, and
+  /// blocks laid side by side give the grid's boundary with nothing twice
+  /// (an unbounded grid's blocks reaching one past its cells right and
+  /// down). `at` gives a cell by its place in the grid (a border reads the
+  /// cell across it, outside the block, and every cell outside the bounds is
+  /// empty). Points are on the outline grid (`GRID` a tile) from `min`'s
+  /// top-left, so they stay small however far out the block is; edges run
+  /// clockwise on screen round what they bound.
   pub(crate) fn edges(
     &self,
     at: impl Fn(i32, i32) -> TileCell,
     min: (i32, i32),
     max: (i32, i32),
-    size: (i32, i32),
+    bounds: Option<CellRect>,
     out: &mut Vec<(Point, Point)>,
   ) {
     let cells = Cells::shapes_only(&self.shapes);
     let local = |x: i32, y: i32| {
-      let (gx, gy) = (min.0 + x, min.1 + y);
-      if gx < 0 || gy < 0 || gx >= size.0 || gy >= size.1 {
+      let cell = IVec2::new(min.0, min.1) + IVec2::new(x, y);
+      if bounds.is_some_and(|bounds| !bounds.contains(cell)) {
         TileCell::Empty
       } else {
-        at(gx, gy)
+        at(cell.x, cell.y)
       }
     };
     let (w, h) = (max.0 - min.0, max.1 - min.1);
+    let (right, bottom) = bounds.map_or((false, false), |bounds| {
+      (max.0 == bounds.max.x, max.1 == bounds.max.y)
+    });
     for y in 0..h {
       for x in 0..w {
         unit_edges(Unit::Inside(x, y), &cells, &local, out);
         unit_edges(Unit::Left(x, y), &cells, &local, out);
         unit_edges(Unit::Above(x, y), &cells, &local, out);
       }
-      if max.0 == size.0 {
+      if right {
         unit_edges(Unit::Left(w, y), &cells, &local, out);
       }
     }
-    if max.1 == size.1 {
+    if bottom {
       for x in 0..w {
         unit_edges(Unit::Above(x, h), &cells, &local, out);
       }
@@ -1622,11 +1680,12 @@ mod tests {
     let at = |x: i32, y: i32| tiles.get(IVec2::new(x, y));
     let mut pieced = Vec::new();
     let size = (width as i32, height as i32);
+    let bounds = Some(CellRect::from_size(UVec2::new(width, height)));
     for by in (0..size.1).step_by(4) {
       for bx in (0..size.0).step_by(4) {
         let max = ((bx + 4).min(size.0), (by + 4).min(size.1));
         let mut block = Vec::new();
-        boundary.edges(at, (bx, by), max, size, &mut block);
+        boundary.edges(at, (bx, by), max, bounds, &mut block);
         let origin = (bx * GRID, by * GRID);
         pieced.extend(
           block
@@ -1639,6 +1698,65 @@ mod tests {
     pieced.sort_unstable();
     assert!(!whole.is_empty());
     assert_eq!(pieced, whole);
+  }
+
+  #[test]
+  fn an_unbounded_grid_s_blocks_give_its_boundary_at_negative_cells() {
+    // Blocks of 4 cells from left of and above the cells to one block past
+    // them right and down: an unbounded grid's blocks own no right or
+    // bottom border, the block across it does
+    let mut tiles = TileColliders::unbounded(Vec2::ONE);
+    for (x, y) in [(-5, -5), (-4, -5), (-1, -1), (0, 0), (3, -2), (-6, 2)] {
+      tiles.set(IVec2::new(x, y), S);
+    }
+    tiles.set(IVec2::new(-2, 1), TileCell::Slope(SlopeCorner::TopRight));
+    tiles.set(IVec2::new(-1, 1), O);
+    let mut whole = outline::boundary_edges(tiles.cells_view());
+    let boundary = Boundary::default();
+    let at = |x: i32, y: i32| tiles.get(IVec2::new(x, y));
+    let mut pieced = Vec::new();
+    for by in (-8..8).step_by(4) {
+      for bx in (-8..8).step_by(4) {
+        let mut block = Vec::new();
+        boundary.edges(at, (bx, by), (bx + 4, by + 4), None, &mut block);
+        let origin = (bx * GRID, by * GRID);
+        pieced.extend(
+          block
+            .into_iter()
+            .map(|(a, b)| (sides::plus(origin, a), sides::plus(origin, b))),
+        );
+      }
+    }
+    whole.sort_unstable();
+    pieced.sort_unstable();
+    assert!(!whole.is_empty());
+    assert_eq!(pieced, whole);
+  }
+
+  #[test]
+  fn a_grid_made_from_chunks_holds_what_set_would_put_there() {
+    let mut cells = [E; CELLS];
+    cells[0] = S;
+    cells[CELLS - 1] = O;
+    // Bounded: a chunk reaching past the bounds keeps what is inside
+    let mut bounded = TileColliders::new(40, 40, Vec2::ONE);
+    bounded.put_chunk(IVec2::new(1, 1), &cells);
+    bounded.put_chunk(IVec2::new(5, 5), &cells);
+    assert_eq!(bounded.get(IVec2::new(32, 32)), S);
+    assert_eq!(bounded.get(IVec2::new(63, 63)), E, "outside the bounds");
+    assert!(bounded.chunk_cells(IVec2::new(5, 5)).is_none());
+    // Unbounded: any chunk, but a cell past the reach is left out
+    let mut free = TileColliders::unbounded(Vec2::ONE);
+    free.put_chunk(IVec2::new(-3, -7), &cells);
+    assert_eq!(free.get(IVec2::new(-96, -224)), S);
+    assert_eq!(free.get(IVec2::new(-65, -193)), O);
+    let far = IVec2::splat(MAX_REACH).div_euclid(IVec2::splat(CHUNK));
+    free.put_chunk(far, &cells);
+    assert_eq!(free.get(far * CHUNK), S, "within the reach");
+    assert_eq!(free.get(far * CHUNK + IVec2::splat(CHUNK - 1)), E);
+    // Nothing but empty cells makes no chunk
+    free.put_chunk(IVec2::new(9, 9), &[E; CELLS]);
+    assert!(free.chunk_cells(IVec2::new(9, 9)).is_none());
   }
 
   #[test]

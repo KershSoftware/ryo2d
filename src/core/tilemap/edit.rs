@@ -6,7 +6,7 @@ use super::spawn::{
   ClassTile, LayerTiles, MapLayerRef, MapLayers, MapTile, TileLayerData, registered_class,
   spawn_class_tile,
 };
-use super::{LayerInfo, Properties, Tile, TileGrid};
+use super::{CHUNK_SIZE, LayerInfo, Properties, Tile, TileGrid};
 use crate::core::ecs::{ChildOf, DetectChangesMut, Entity, Transform, World};
 use crate::core::hash::FastSet;
 use crate::core::physics::CellRect;
@@ -90,27 +90,40 @@ pub(crate) fn parts_of(world: &World, map: Entity, layer: Entity) -> Vec<Entity>
 }
 
 /// Clears the cells from `lo` to `hi` (both included) in `parts`; the cells
-/// that held a tile in any of them
+/// that held a tile in any of them. Each part's chunks in the region are
+/// read where their cells lie (the region's chunks or the part's, whichever
+/// are fewer), never a lookup per cell
 fn clear_parts(world: &mut World, parts: &[Entity], lo: IVec2, hi: IVec2) -> FastSet<IVec2> {
   let mut cleared = FastSet::default();
+  let side = CHUNK_SIZE as i32;
   for &part in parts {
     let Some(data) = world.get::<TileLayerData>(part) else {
       continue;
     };
-    let extent = data.grid.extent();
+    let grid = &data.grid;
+    let extent = grid.extent();
     if extent.is_empty() {
       continue;
     }
     let (a, b) = (lo.max(extent.min), hi.min(extent.max - IVec2::ONE));
-    for y in a.y..=b.y {
-      for x in a.x..=b.x {
-        let cell = IVec2::new(x, y);
-        if data.grid.get(cell).is_some() {
-          cleared.insert(cell);
+    if a.x > b.x || a.y > b.y {
+      continue;
+    }
+    let before = cleared.len();
+    for chunk in grid.chunks_within(TileGrid::chunk_of(a), TileGrid::chunk_of(b)) {
+      let Some(cells) = grid.chunk_cells(chunk) else {
+        continue;
+      };
+      // A chunk of `extent` is a chunk of cells: its origin is a cell
+      let origin = chunk * side;
+      for (at, &cell) in cells.iter().enumerate() {
+        let place = origin + IVec2::new(at as i32 % side, at as i32 / side);
+        if cell != 0 && place.cmpge(a).all() && place.cmple(b).all() {
+          cleared.insert(place);
         }
       }
     }
-    if a.x <= b.x && a.y <= b.y {
+    if cleared.len() > before {
       edit_grid(world, part, |grid| grid.fill(a, b, None), |n| *n > 0);
     }
   }
@@ -138,15 +151,16 @@ fn edit_grid<R>(
   Some(result)
 }
 
-/// A tile layer's entity and the cells its grid reaches
-fn tile_layer_extent(
+/// A tile layer's entity and the cells its grid holds: a bounded grid's
+/// bounds, or `None` for an unbounded grid, which holds any cell
+fn tile_layer_bounds(
   world: &World,
   map: Entity,
   layer: LayerRef<'_>,
-) -> Option<(Entity, CellRect)> {
+) -> Option<(Entity, Option<CellRect>)> {
   let entity = layer_entity(world, map, layer)?;
-  let extent = world.get::<TileLayerData>(entity)?.grid.extent();
-  Some((entity, extent))
+  let bounds = world.get::<TileLayerData>(entity)?.grid.bounds();
+  Some((entity, bounds))
 }
 
 /// The class tile living at `cell` of the layer entity `layer`
@@ -211,8 +225,9 @@ fn set_cell(
   }
 }
 
-/// Puts `tile` (or nothing) at `cell` of a tile layer; see [`set_cell`].
-/// The whole cell takes it: the layer's sub-layers lose what they held there
+/// Puts `tile` (or nothing) at `cell` of a tile layer (any cell of an
+/// unbounded one, its chunk made); see [`set_cell`]. The whole cell takes
+/// it: the layer's sub-layers lose what they held there
 pub(crate) fn set_tile(
   world: &mut World,
   map: Entity,
@@ -220,10 +235,10 @@ pub(crate) fn set_tile(
   cell: IVec2,
   tile: Option<Tile>,
 ) -> bool {
-  let Some((layer, extent)) = tile_layer_extent(world, map, layer) else {
+  let Some((layer, bounds)) = tile_layer_bounds(world, map, layer) else {
     return false;
   };
-  if !extent.contains(cell) {
+  if bounds.is_some_and(|bounds| !bounds.contains(cell)) {
     return false;
   }
   let class = tile.and_then(|tile| registered_class(world, map, tile));
@@ -233,8 +248,9 @@ pub(crate) fn set_tile(
 }
 
 /// Puts `tile` (or nothing) in every cell from `min` to `max`, both
-/// included, clipped to the layer; returns how many cells changed. The
-/// whole of each cell takes it: the layer's sub-layers lose what they held
+/// included, clipped to a bounded layer (an unbounded one makes the chunks
+/// a tile goes in); returns how many cells changed. The whole of each cell
+/// takes it: the layer's sub-layers lose what they held
 pub(crate) fn fill(
   world: &mut World,
   map: Entity,
@@ -243,13 +259,14 @@ pub(crate) fn fill(
   max: IVec2,
   tile: Option<Tile>,
 ) -> usize {
-  let Some((layer, extent)) = tile_layer_extent(world, map, layer) else {
+  let Some((layer, bounds)) = tile_layer_bounds(world, map, layer) else {
     return 0;
   };
-  if extent.is_empty() {
-    return 0;
-  }
-  let (lo, hi) = (min.max(extent.min), max.min(extent.max - IVec2::ONE));
+  let (lo, hi) = match bounds {
+    None => (min, max),
+    Some(bounds) if bounds.is_empty() => return 0,
+    Some(bounds) => (min.max(bounds.min), max.min(bounds.max - IVec2::ONE)),
+  };
   if lo.x > hi.x || lo.y > hi.y {
     return 0;
   }
@@ -349,15 +366,17 @@ pub(crate) fn fill_intgrid(
   let Some(intgrid) = intgrid.as_mut() else {
     return 0;
   };
-  // The cells both the IntGrid and the grid hold
-  let (extent, values) = (grid.extent(), CellRect::from_size(intgrid.size));
-  if extent.is_empty() || values.is_empty() {
+  // The cells both the IntGrid and the grid hold (an unbounded grid holds
+  // every cell)
+  let mut held = CellRect::from_size(intgrid.size);
+  if let Some(bounds) = grid.bounds() {
+    held = CellRect::new(held.min.max(bounds.min), held.max.min(bounds.max));
+  }
+  if held.is_empty() {
     return 0;
   }
-  let lo = min.max(extent.min).max(values.min);
-  let hi = max
-    .min(extent.max - IVec2::ONE)
-    .min(values.max - IVec2::ONE);
+  let lo = min.max(held.min);
+  let hi = max.min(held.max - IVec2::ONE);
   if lo.x > hi.x || lo.y > hi.y {
     return 0;
   }

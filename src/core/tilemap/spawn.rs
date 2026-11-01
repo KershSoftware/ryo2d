@@ -16,8 +16,9 @@ use super::padded::{self, PaddedCache, ToPad};
 use super::reload::{MapApplied, content_stamp};
 use super::world::{WorldRef, resolve_world_levels};
 use super::{
-  ImageLayer, IntGrid, LayerInfo, LayerKind, LdtkProject, MapLayer, MapObjectData, ObjectShape,
-  Properties, PropertyValue, Tile, TileData, TileGrid, TileMap, Tileset, TilesetSource,
+  CHUNK_SIZE, ImageLayer, IntGrid, LayerInfo, LayerKind, LdtkProject, MapLayer, MapObjectData,
+  ObjectShape, Properties, PropertyValue, Tile, TileData, TileGrid, TileMap, Tileset,
+  TilesetSource,
 };
 use crate::core::asset::{AssetError, AssetPath, AssetServer, Assets, Handle, LoadState};
 use crate::core::ecs::kernel::{DeferredWorld, HookContext, QueryState};
@@ -796,17 +797,24 @@ pub(crate) fn class_tiles(world: &World, map: &TileMap, classes: &[String]) -> C
     .collect()
 }
 
-/// Takes the tiles of a registered class out of `grid`
+/// Takes the tiles of a registered class out of `grid`, in row order:
+/// each chunk there is read where its cells lie, so a grid costs its
+/// chunks, never the rectangle they span
 pub(crate) fn take_class_tiles(grid: &mut TileGrid, classes: &ClassTiles) -> Vec<ClassTile> {
   let mut found = Vec::new();
   if classes.iter().all(FastMap::is_empty) {
     return found;
   }
-  let extent = grid.extent();
-  for y in extent.min.y..extent.max.y {
-    for x in extent.min.x..extent.max.x {
-      let cell = IVec2::new(x, y);
-      let Some(tile) = grid.get(cell) else {
+  let side = CHUNK_SIZE as i32;
+  let chunks: Vec<IVec2> = grid.chunk_coords().collect();
+  for chunk in chunks {
+    let Some(cells) = grid.chunk_cells(chunk) else {
+      continue;
+    };
+    // A chunk there is holds cells of `i32`: its origin is one
+    let origin = chunk * side;
+    for (at, &raw) in cells.iter().enumerate() {
+      let Some(tile) = TileGrid::decode(raw) else {
         continue;
       };
       let Some((class, properties)) = classes
@@ -816,13 +824,17 @@ pub(crate) fn take_class_tiles(grid: &mut TileGrid, classes: &ClassTiles) -> Vec
         continue;
       };
       found.push(ClassTile {
-        cell,
+        cell: origin + IVec2::new(at as i32 % side, at as i32 / side),
         tile,
         class: class.clone(),
         properties: properties.clone(),
       });
-      grid.set(cell, None);
     }
+  }
+  // Across chunks, by row then column, as a scan of every cell meets them
+  found.sort_by_key(|tile| (tile.cell.y, tile.cell.x));
+  for tile in &found {
+    grid.set(tile.cell, None);
   }
   found
 }
@@ -1179,6 +1191,9 @@ pub(crate) fn send(world: &mut World, event: MapEvent) {
   register_message::<MapEvent>(world);
   world.resource_mut::<Messages<MapEvent>>().write(event);
 }
+
+#[cfg(test)]
+mod signed;
 
 #[cfg(test)]
 mod tests {

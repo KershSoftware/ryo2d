@@ -13,7 +13,7 @@
 
 use std::ops::Range;
 
-use glam::{UVec2, Vec2};
+use glam::{IVec2, Vec2};
 
 use crate::core::ecs::Entity;
 use crate::core::graphics::{SpriteGpuRenderer, SpriteInstance, TextureId};
@@ -57,7 +57,8 @@ impl Default for Cap {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct ChunkKey {
   pub layer: Entity,
-  pub chunk: UVec2,
+  /// Signed, as `TileGrid::chunk_of` gives it
+  pub chunk: IVec2,
   pub tileset: u16,
 }
 
@@ -87,8 +88,8 @@ pub(crate) struct ChunkPart {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct ChunkRow {
   pub tileset: u16,
-  /// The cells' row in the layer
-  pub row: u32,
+  /// The cells' row in the layer (signed)
+  pub row: i32,
   /// Where the run starts in its part, and how many instances it has
   pub first: u32,
   pub count: u32,
@@ -169,7 +170,7 @@ struct Built {
 /// draws nothing until there is room, and the dev log warns once
 #[derive(Default)]
 pub(crate) struct ChunkStore {
-  layers: FastMap<Entity, FastMap<UVec2, Built>>,
+  layers: FastMap<Entity, FastMap<IVec2, Built>>,
   /// The arena: every chunk's instances, as the GPU is to hold them
   held: Vec<SpriteInstance>,
   /// Free ranges of the arena below its end, by start, none touching
@@ -178,7 +179,7 @@ pub(crate) struct ChunkStore {
   written: Vec<Range<u32>>,
   /// A chunk's instances as built (tileset, row, instance), before they
   /// are split by tileset
-  scratch: Vec<(u16, u32, SpriteInstance)>,
+  scratch: Vec<(u16, i32, SpriteInstance)>,
   /// The frame's slots, and the texture each one's UVs come from
   slots: Vec<TileSlot>,
   slot_textures: Vec<TextureId>,
@@ -189,7 +190,7 @@ pub(crate) struct ChunkStore {
   /// Chunks that may be freed to make room, newest first (each a chunk not
   /// drawn in the frame `evictable_frame`, when the list was made), as
   /// `(last drawn, layer, chunk)`
-  evictable: Vec<(u64, Entity, UVec2)>,
+  evictable: Vec<(u64, Entity, IVec2)>,
   evictable_frame: u64,
   /// Whether the dev log was told the arena is full
   warned: bool,
@@ -227,10 +228,10 @@ impl ChunkStore {
   /// counts as drawn this frame
   pub(crate) fn chunk(
     &mut self,
-    (layer, chunk): (Entity, UVec2),
+    (layer, chunk): (Entity, IVec2),
     stamp: ChunkStamp,
     view: u64,
-    build: impl FnOnce(&mut Vec<(u16, u32, SpriteInstance)>),
+    build: impl FnOnce(&mut Vec<(u16, i32, SpriteInstance)>),
     out: ChunkCopy<'_>,
   ) -> bool {
     let frame = self.frame;
@@ -405,7 +406,7 @@ impl ChunkStore {
 
   /// Records that `layer`'s chunk `chunk` found no room for `wanted` (its
   /// stamp, its instances), and warns the first time the arena is full
-  fn refuse(&mut self, layer: Entity, chunk: UVec2, wanted: (ChunkStamp, u32)) {
+  fn refuse(&mut self, layer: Entity, chunk: IVec2, wanted: (ChunkStamp, u32)) {
     if let Some(built) = self
       .layers
       .get_mut(&layer)
@@ -464,6 +465,18 @@ impl ChunkStore {
     let built = self.layers.get(&key.layer)?.get(&key.chunk)?;
     let part = built.parts.iter().find(|p| p.tileset == key.tileset)?;
     Some(part.start..part.start + part.count)
+  }
+
+  /// The chunks built, each with its layer, in no set order (the headless
+  /// engine's reads)
+  #[cfg(not(target_arch = "wasm32"))]
+  pub(crate) fn built_chunks(&self) -> impl Iterator<Item = (Entity, IVec2)> + '_ {
+    self.layers.iter().flat_map(|(&layer, chunks)| {
+      chunks
+        .iter()
+        .filter(|(_, built)| built.stamp.is_some())
+        .map(move |(&chunk, _)| (layer, chunk))
+    })
   }
 
   /// How many times a chunk has been built (again)
@@ -774,10 +787,10 @@ mod tests {
     fn chunk_copied(
       &mut self,
       layer: Entity,
-      chunk: UVec2,
+      chunk: IVec2,
       stamp: ChunkStamp,
       view: u64,
-      build: impl FnOnce(&mut Vec<(u16, u32, SpriteInstance)>),
+      build: impl FnOnce(&mut Vec<(u16, i32, SpriteInstance)>),
     ) -> Option<Copied> {
       let (mut parts, mut rows) = (Vec::new(), Vec::new());
       let out = ChunkCopy {
@@ -810,7 +823,7 @@ mod tests {
   }
 
   /// Builds `tiles` (tileset, centre x) as 16 px tiles on row 0
-  fn builder(tiles: &[(u16, f32)]) -> impl FnOnce(&mut Vec<(u16, u32, SpriteInstance)>) + '_ {
+  fn builder(tiles: &[(u16, f32)]) -> impl FnOnce(&mut Vec<(u16, i32, SpriteInstance)>) + '_ {
     move |out| {
       out.clear();
       out.extend(
@@ -829,7 +842,7 @@ mod tests {
   ) -> Vec<ChunkPart> {
     let view = store.begin_view();
     store
-      .chunk_copied(layer, UVec2::ZERO, stamp, view, builder(tiles))
+      .chunk_copied(layer, IVec2::ZERO, stamp, view, builder(tiles))
       .map(|built| built.parts.to_vec())
       .unwrap_or_default()
   }
@@ -855,7 +868,7 @@ mod tests {
     assert_eq!(store.instances_in_use(), 3);
     let key = |tileset| ChunkKey {
       layer,
-      chunk: UVec2::ZERO,
+      chunk: IVec2::ZERO,
       tileset,
     };
     let first = store.range(key(0)).expect("tileset 0");
@@ -878,17 +891,17 @@ mod tests {
     let view = store.begin_view();
     // (tileset, row, centre x): rows 0 and 2 of tileset 0, row 1 of 1
     let tiles = [(0, 0, 8.0), (0, 0, 24.0), (0, 2, 8.0), (1, 1, 40.0)];
-    let build = |out: &mut Vec<(u16, u32, SpriteInstance)>| {
+    let build = |out: &mut Vec<(u16, i32, SpriteInstance)>| {
       out.extend(tiles.iter().map(|&(set, row, x)| {
         let y = row as f32 * 16.0 + 8.0;
         (set, row, tile(x, y, 16.0, 16.0))
       }));
     };
     let built = store
-      .chunk_copied(layer, UVec2::ZERO, STAMP, view, build)
+      .chunk_copied(layer, IVec2::ZERO, STAMP, view, build)
       .expect("built");
     assert_eq!(built.parts.len(), 2);
-    let rows: Vec<(u16, u32, u32, u32)> = built
+    let rows: Vec<(u16, i32, u32, u32)> = built
       .rows
       .iter()
       .map(|r| (r.tileset, r.row, r.first, r.count))
@@ -906,7 +919,7 @@ mod tests {
     // Drawn again unchanged, the rows are as built
     let again = store.begin_view();
     let kept = store
-      .chunk_copied(layer, UVec2::ZERO, STAMP, again, |_| {})
+      .chunk_copied(layer, IVec2::ZERO, STAMP, again, |_| {})
       .expect("kept");
     assert_eq!(kept.rows.len(), 3);
   }
@@ -941,7 +954,7 @@ mod tests {
     let view = store.begin_view();
     let get = |store: &mut ChunkStore, view| {
       store
-        .chunk_copied(layer, UVec2::ZERO, STAMP, view, builder(&[(0, 8.0)]))
+        .chunk_copied(layer, IVec2::ZERO, STAMP, view, builder(&[(0, 8.0)]))
         .is_some()
     };
     assert!(get(&mut store, view));
@@ -970,13 +983,13 @@ mod tests {
     store.begin_frame();
     let key = |layer| ChunkKey {
       layer,
-      chunk: UVec2::new(1, 0),
+      chunk: IVec2::new(1, 0),
       tileset: 0,
     };
     let view = store.begin_view();
     store.chunk_copied(
       b,
-      UVec2::new(1, 0),
+      IVec2::new(1, 0),
       STAMP,
       view,
       builder(&[(0, 8.0), (0, 24.0)]),
@@ -1012,8 +1025,8 @@ mod tests {
     let [layer] = layers(1)[..] else { return };
     let mut store = ChunkStore::default();
     store.set_cap(6);
-    let at = |x| UVec2::new(x, 0);
-    let draw = |store: &mut ChunkStore, x: u32, tiles: &[(u16, f32)]| {
+    let at = |x| IVec2::new(x, 0);
+    let draw = |store: &mut ChunkStore, x: i32, tiles: &[(u16, f32)]| {
       let view = store.begin_view();
       store
         .chunk_copied(layer, at(x), STAMP, view, builder(tiles))
@@ -1049,14 +1062,14 @@ mod tests {
     let mut store = ChunkStore::default();
     store.set_cap(3);
     let builds = Cell::new(0);
-    let draw = |store: &mut ChunkStore, x: u32, count: usize| {
+    let draw = |store: &mut ChunkStore, x: i32, count: usize| {
       let view = store.begin_view();
-      let build = |out: &mut Vec<(u16, u32, SpriteInstance)>| {
+      let build = |out: &mut Vec<(u16, i32, SpriteInstance)>| {
         builds.set(builds.get() + 1);
         out.extend((0..count).map(|i| (0, 0, tile(8.0 + 16.0 * i as f32, 8.0, 16.0, 16.0))));
       };
       store
-        .chunk_copied(layer, UVec2::new(x, 0), STAMP, view, build)
+        .chunk_copied(layer, IVec2::new(x, 0), STAMP, view, build)
         .is_some()
     };
     // Both drawn in one frame: the second has no room, and none can be made

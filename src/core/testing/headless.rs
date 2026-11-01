@@ -2,6 +2,7 @@
 
 use std::time::Duration;
 
+use glam::IVec2;
 use image::RgbaImage;
 use winit::event::{MouseButton, MouseScrollDelta};
 use winit::keyboard::KeyCode;
@@ -10,8 +11,8 @@ use super::ui::{UiCacheStats, UiSnapshot, runs_snapshot, ui_snapshot};
 use super::{HeadlessError, shared_gpu};
 use crate::core::asset::AssetsView;
 use crate::core::audio::{AudioEngine, AudioLogEntry};
-use crate::core::ecs::World;
 use crate::core::ecs::kernel::Messages;
+use crate::core::ecs::{Entity, World};
 use crate::core::engine::{Engine, EngineBuilder, FrameOutcome};
 use crate::core::graphics::{ScreenMapping, WgpuRenderer};
 use crate::core::input::{GamepadButton, InputEvent, Stick};
@@ -653,6 +654,20 @@ impl HeadlessEngine {
       .sprite_gpu
       .as_ref()
       .map_or(0, |gpu| gpu.atlas_rects())
+  }
+
+  /// The tile chunks the batch holds built, each as its layer entity and
+  /// chunk, sorted (tests that watch what a view built and culled)
+  #[doc(hidden)]
+  pub fn tile_chunks(&self) -> Vec<(Entity, IVec2)> {
+    let mut chunks: Vec<(Entity, IVec2)> = self
+      .engine
+      .batch
+      .as_ref()
+      .map(|batch| batch.chunks().built_chunks().collect())
+      .unwrap_or_default();
+    chunks.sort_by_key(|&(layer, chunk)| (layer, chunk.y, chunk.x));
+    chunks
   }
 
   /// The last frame's render step on the CPU (building, uploading and
