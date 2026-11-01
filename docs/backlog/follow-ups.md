@@ -2,7 +2,82 @@
 
 Small issues found while building each sub-project and left for later: deferred review findings, known limits and pre-existing bugs seen along the way. Each line names where it came from. Remove a line when it is fixed.
 
-Items from 4f to 5b were copied from their execution records. Items from earlier sub-projects come from notes kept at the time, and some may have been fixed since: check before working on one.
+Items from 4f to 6a were copied from their execution records. Items from earlier sub-projects come from notes kept at the time, and some may have been fixed since: check before working on one.
+
+## Tilemaps (6a)
+
+- Owner decisions (2026-10-29 to 2026-10-31):
+  - Isometric, hexagonal and infinite maps come next, as sub-project 6b (`docs/backlog/tilemap-features.md`).
+  - The Tiled and LDtk re-save hand-test is deferred: open and save every demo file in Tiled 1.12.2 and LDtk 1.5.3, per the "Hand-play" steps in `examples/demos/tilemap/assets/README.md`, and review the `git diff`. The owner did not have the editors where they tested.
+  - The branch merged with two speed misses, listed in `docs/backlog/tilemap.md` Limits: a static big map's frame at about +85 µs against 50, from transform propagation walking unchanged subtrees, and a map's first landing frame at about +0.9 ms against 0.5.
+- Known limits and the speed record are in `docs/backlog/tilemap.md` (Limits and the carries); they are not repeated here.
+- Deferred findings:
+  - **Tiled loader.**
+    - `xml.rs` `wang_set()` fills a wang set's `class` through `self.class(node)`, which falls back to the `type` attribute, so `<wangset type="corner">` reads as class "corner" where the JSON reader gives none. Nothing reads a wang set's class yet. Fix: `node.attribute("class")` for wang sets.
+    - `xml.rs` `Reader::num::<f32>` accepts "NaN" and "inf" for layer offsets, opacity, parallax and probabilities (only `float()` checks `is_finite`); JSON cannot produce them. Fix: a finite-checking f32 helper.
+    - `xml.rs` tests: `tile_elements_without_an_encoding_fill_a_layer` proves only a missing-tileset error in its first half and `is_ok()` in its second. Nothing tests class nesting depth, a BOM, invalid UTF-8 or a bad `.tsx` root.
+    - The BOM strip, UTF-8 decode and parse are written three times (`json.rs` `from_xml`, `objects.rs` `read_alignment` and `template`), and `xml.rs` `read()` strips the BOM again. `Reader::str()` is a plain alias of `node.attribute`. Fix: one `pub(super)` reader helper; inline `str()`.
+    - Ignored data: wangtile flip attributes, and an unencoded `<data>` with no `<tile>` children, which falls to CSV parsing so an empty layer reports a cell-count mismatch instead of a clearer message.
+    - `TiledProject` (`project.rs`) uses std `HashMap` where the engine's `FastMap` fits. `resolve_properties` has no caller outside tests (`Props::read` has a private resolve), and `tiled/mod.rs:1605` has a stray `let _ = Properties::default();` that keeps an import alive.
+    - A tile object written without width and height gets size 0 (`objects.rs:355`); Tiled normally writes both.
+    - A project file created after a map loaded without one does not reload that map, and the project is parsed again on every map and tileset load. Each free-text object type of a pre-1.9 file warns once with a project present, and the warn-once test checks `Props::warned`, not the emitted warning.
+    - An object with a class of its own keeps the tile class's defaults under its own properties, where Tiled keeps only what the tile wrote. A crate-private table on `Tileset` would give Tiled's exact rule.
+    - Limits with no tests: 256 tilesets, `firstgid` and `MAX_DEPTH`. Duplicate layer ids are not checked, a layer's size may differ from its map's (Tiled finite maps keep them equal), and `ruzstd` reserves its default 128 MiB window on each zstd decode (`tiled/data.rs:112`).
+  - **LDtk loader.**
+    - `ldtk/build.rs:1110-1111`: the `LinearHorizontal` and `LinearVertical` arms are identical; merge them with `|`.
+    - `ldtk/mod.rs:1415`: a test reads `tests/fixtures/...` relative to the cwd where every other test uses `FIXTURES`.
+    - `ldtk/mod.rs:157-159` parses the whole project twice (the version, then the full file). Parse once into a `Value`, or read the version with a light struct. External `.ldtkl` files get no `jsonVersion` check.
+    - An unknown field `__type` is a hard load error (`build.rs:286`). It is gated to 1.5.x, but warn-and-skip would be kinder to a patch release's new field kinds.
+    - A sub-layer's entity sits in map space, not its base layer's, so LDtk enum-tag class tiles that land in a sub-layer are misplaced by the base layer's offset, and survive edits by the layer's name (`spawn.rs` ~994, `edit.rs` ~93).
+    - The map cell cap holds per map, not across the maps of one `.world`.
+  - **Model and editing.**
+    - `drain_dirty` (`grid.rs:176`) says both that it appends and that `out` is cleared first. `TileMap::add_tileset` casts `len - 1` to `u16` with no 256 limit for a map built in code. `FastHasher`, `FastBuild` and `FastMap` are `pub` while `FastSet` stays `pub(crate)`.
+    - `TileMap::used_ids` goes stale if a game edits a loaded map and a dependency reload then rechecks it.
+    - `set_tile` and `fill` (`view.rs`, `edit.rs`) accept a tile whose tileset index the map lacks (`Tile::new(9, 0)` on a one-tileset map) and ids past the tileset's tile count. Refuse them, or say on the methods that drawing and collision skip them. Wang tile ids and animation frame ids are likewise checked against `MAX_TILES`, not the tileset's own count.
+    - Public items without rustdoc: the `IntGridKey` and `LayerRef` variants, `TileLayerData::grid` and `intgrid`, `MapLayerRef::map` and `name`, `MapTile::map`, `cell` and `class`.
+    - There is no `MapsView::map(root)` accessor, and `Tileset`'s tiles are not public. The spec's "apply a pattern" write (a stamp of a `TileGrid`) is absent; `set_tile` loops do it.
+    - Naming: `with_entity_tiles` against "class tiles"; `world_level` takes `&Handle<TileWorld>` while the other constructors take handles by value.
+    - Live class tiles on a respawned tile layer (its size, cell size or offset changed) come back as new entities and lose the game's components, where objects keep theirs (`reload.rs`, `reconcile_class_tiles`, the `lived` arm). Fix by moving the live entity to the new layer, or document it.
+    - `fill_intgrid` (`edit.rs:360`) finds repeated chunks by linear search, so filling a whole 1024² IntGrid costs tens of ms on the main thread. The top-down draw-order warning check is quadratic for many tile objects in one band.
+  - **Drawing and the padded cache.**
+    - `padded.rs:344-346` (`paint`): a collection animation frame whose image is smaller than the base tile's size reads past its declared rect into neighbouring texels, because the clamp uses `drawn`. Clamp to the smaller of `drawn` and the frame's own rect size.
+    - `padded.rs:303`: the border margin costs more than it seems. With 32 px tiles (cell 64, margin 56) a tileset of more than 4 tiles leaves the 256 px atlas limit, and a 4x4 tileset grows from 256² to 368². The margin is needed only for textures with full mip chains. A standalone texture without a border, or with a whole-cell one, would keep atlas images unpadded.
+    - `padded.rs:284` (`if let Some(Some(..)) = tiles.get_mut(id)`) would hide a logic error silently. `render/tiles.rs:105`'s `sort_by_key` allocates a scratch buffer above about 20 elements on a chunk rebuild; a counting group by tileset index would avoid it.
+    - Hot reload of a large padded tileset can briefly sample the old image with new UVs when the reload changes the layout (dev-time). Fix: keep the old serial, and so the old chunks, until the new texture is resident.
+    - One re-padded tileset rebuilds every chunk of every layer of its map, because the look stamp hashes the serials of all the map's tilesets (`render/tiles.rs:493`). A disabled map's padded images stay resident while it is disabled, with no bound if a game parks many.
+    - Tiles of different tilesets overlap in tileset-index order within a chunk, not Tiled's cell order. A chunk first reached by a second camera gets a later sequence than row-major order. Both matter only for oversized tiles that overlap.
+    - Fading a layer rebuilds its chunks each frame, because tint times opacity is in the chunk stamp. Move it into the tile slot.
+    - `render/tiles.rs` `object_instance`: tile objects ignore the tileset's `tile_offset` (`layout.offset`), which Tiled applies to tile objects and chunks do apply.
+    - `render/tiles.rs` caches its `PaddedCache` clone for good (`get_or_insert_with`, line 428). Fetch it from the world each frame so a replaced resource cannot split the drawer from the landings.
+    - The comparator "`DrawOrder::cmp`, then `entity_order`" is written three times in `render/entities.rs` (lines 102, 143, 339); one shared function would keep them in agreement. The degenerate-determinant guard is written three times in `render/tiles.rs` (lines 730, 767, 1025).
+    - The repeat-cap warning for an image layer names 65,536 copies when a lower cap (`MAX_REPEAT_TEXELS`) applied.
+    - The chunk arena's first-fit allocator can fragment at the cap, so an eviction may free more than needed (only past about 2M resident instances). Past the cap, panning can rebuild chunks that a later view draws in the same frame: extra work, never a wrong picture.
+    - Untested: animated tile objects, tile objects with diagonal flips, rotation or parallax, an image layer with parallax, the repeat copy cap, a collection tileset's rebuild stamp when a tile image changes, and the 128-cell animation fallback to the mean duration.
+  - **Collision.**
+    - The random-edit test for the outline splice compares against the same tracer (`outline.rs` `outlines()` is `Outlines::build`), so a fault in the shared follow rule would pass it. A tracer-independent check: the loops' edges equal the boundary edges computed from the cells, and each step follows the rule's pick.
+    - Nothing tests `respawn`'s bookkeeping for one-way runs and shapes at the ECS level with random edits; only a hand-picked test does. Compare every part's geometry with a fresh full build after random `TileColliders::set` edits.
+    - The test helper `canonical` appears nearly verbatim at `physics/tiles.rs:2306` and `physics/tiles/outline.rs:935`. `physics/tiles.rs` is 3,170 lines, most of it tests; the `with_physics` tests could move to a `tiles/tests.rs`.
+    - Authored shape points over 1024 tiles past the cell are pulled in one axis at a time (`tiles/shape.rs:155`), which can bend an edge a lot where the docs say "a hair". Only absurd data; clip to the reach box before snapping, or fix the docs.
+    - No direct test pins how `chains()` (`occluders.rs:170`) partitions edges into chains; the edge multiset and the open chains are pinned. The spliced loop's start corner is tested by one case, and the random walks compare edge sets only.
+    - The character controller's floor tie (`physics/character.rs:556`): when the tie winner fails the rise filter the result is `None` instead of falling back to the fixed floor (one step, a vertical platform passing exactly flush). Apply the filter to the alternative first. A steep fixed first hit with a moving floor within 1e-3 px that holds yields the moving floor, with no visible effect.
+  - **Particles.**
+    - Particles test every edge of a tile part their move reaches, with no per-edge index; fine for hundreds of particles.
+    - Particles more than half a cell deep in thick tile ground stay put, and air under half a cell thick beside a wall can be misjudged (the local test is bounded at half a cell; documented).
+    - An authored-shape wall under half a cell thick that encloses a room can let nearby particles be pushed through it. It is in the module notes; the `ryo-particles` skill should say it too.
+    - A particle wider than half a cell that starts inside ground is pushed further in (`particles/mod.rs` ~521-533). Use `reach.max(radius)` as the in-ground bound.
+  - **Demos and games.**
+    - Tilemap demo, `make-maps`: it exits 0 without Tiled, leaving tilesets stale against changed art (fail, or require a flag), and never checks Tiled's version (the README requires 1.12.2). `check()` reads only Tiled's exit status, not its export output.
+    - The sheet layouts live in `art.rs`, `make-maps.js` and `ldtk.rs` (`TERRAIN_COLUMNS`, the (128, 80) size, the rule ids) with nothing tying them together. `PLATFORMER_LEVEL` is copied in `ldtk.rs:15`, `tests/assets.rs:18` and the character demo, and nothing compares the copies. `json.rs:77,84`: `escape_slash` is always false, a dead branch. `ldtk.rs` is 1,532 lines; split the rules and resolver out.
+    - Tilemap demo: `spawn_platformer` (`shared.rs:384`) falls back to `Vec2::ZERO` without a `player_start` (it was (45, 216)); a failure path only. The spikes cut their art from hard-coded sheet geometry, one image per spike (`objects.rs:21`); derive it from `Tileset::tile_rect`, or give class tiles a draw helper. The Editing page is mouse-only; the plan said keyboard and pad.
+    - Character demo: the page's `MapEvent::Failed` report path (`lib.rs:519`) has no test (the missing-file path does).
+    - Breakout: `land_blocks` reads `MapEvent::Failed` only while `update` runs, so a scene paused during landing could drop it and leave the board empty (edge case).
+    - Breakout: `spawn_map`'s load error is `eprintln!` (`scenes/game.rs:649`), not `game_error!`. Give it `embedded()` plus a no-folder wrapper, and move the error to the dev log (`tests/menus.rs`'s no-folder test asserts no "could not read" warning).
+    - Breakout: when `level_failed` is set (the level and level 1 both fail, or a map holds no bricks) the player sees an empty board with a frozen ball and no message, and outside debug mode cannot leave. Show a message or return to the menu.
+  - **Tests and tooling.**
+    - `tests/tilemap_alloc.rs` `map_gpu` keys on the nearest engine function in `tilemap::` or `render::tiles`, but map GPU writes go through `render::batch` (the chunk store, `Batch2D::prepare`'s `write_buffer`) and `graphics::sprite_gpu`, so a per-frame re-upload of unchanged chunks would not be flagged. Match `render::batch::chunks` or `ChunkBuffers` anywhere in the stack, or compare the GPU sites of two still frames.
+    - The seams test's `slides` helper (`testing/tile_bleeding.rs:250`) never checks that its reference frame draws anything.
+    - `breakout/tests/levels.rs` `level_problems` filters out warnings containing "nothere" or "broken", which could mask a real one.
+    - The test helpers `read_tree`, `files_with` and `world_over` are still copied in `tiled/mod.rs`, `tiled/xml.rs` and `ldtk/mod.rs`, though `tilemap/test_util.rs` holds one.
 
 ## Audio (5b)
 
