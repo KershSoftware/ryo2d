@@ -541,7 +541,7 @@ In debug builds with a window the engine watches `assets/` (`EngineBuilder::hot_
   ```
 
 - The tilemap demo keeps its files as one table of `include_bytes!`, compiled on every target (`src/embedded.rs`: `EMBEDDED`, and `embedded()` making the `MemorySource`), so its tests play every page from the table and check that it holds exactly the files in `assets/` (`tests/pages.rs`). Do the same, and a file left out of the web build fails a test instead of a level.
-- **No threads:** a map's landing, its colliders and shadows, is worked out in the frame its asset is ready, so that frame pays for it: about 4 ms for a 256 x 256 map of four layers, and 60 to 90 ms for 1024 x 1024 (estimates from native runs; wasm runs slower). Show a loading screen over a big map's landing. Loads run in the asset pump, at most 4 ms a frame.
+- **No threads:** a map's landing, its colliders and shadows, is worked out in the frame its asset is ready, so that frame pays for it: about 4 ms for a 256 x 256 map of four layers, and about 60 ms for 1024 x 1024 (estimates from native runs; wasm runs slower). Show a loading screen over a big map's landing. Loads run in the asset pump, at most 4 ms a frame.
 - Every layer format loads on the web, zstd included. There is no hot reload.
 - The demo builds for the web: `trunk serve --release --open` in `examples/demos/tilemap`.
 
@@ -553,7 +553,7 @@ Measured on an Apple M5 Pro in a release build, at 1920 x 1080 with 16 px tiles;
 
 - **Cheap:**
   - **Drawing** costs what is on screen: a frame draws only the chunks in view, so a static 1024 x 1024 map of four layers costs about 35 µs a frame to draw, as a small one would; about 47 µs with its colliders and shadow chains, and the same with its layers unbounded.
-  - **A one-tile edit**, an outline split or joined included: about 17 µs to redraw its chunk, about 30 to 43 µs to rebuild the collision outlines through it and about 33 to 66 µs for the shadow chains. On an unbounded layer, an edit also checks every chunk of the layer, so one on a very large unbounded layer costs more.
+  - **A one-tile edit**, an outline split or joined included: about 17 µs to redraw its chunk, about 30 to 43 µs to rebuild the collision outlines through it and about 33 to 66 µs for the shadow chains. An edit also checks every chunk of the layer it wrote in, so its cost grows with the layer's chunk count: largest on a big unbounded layer.
   - **A still map's colliders and shadow chains:** each is a child entity, and transform propagation walks only what changed, so the colliders and shadow chains of a still 1024 x 1024 map (about 2,900 children) add about 10 µs a frame to drawing it: propagation's check of each entity for changes, and physics.
   - **Loading** runs off the main thread: a 256 x 256 four-layer Tiled map with its tileset and image loads in about 1.2 ms on the workers (about 4.8 ms saved as an infinite map in 16 x 16 chunks), and its colliders and shadows are worked out on the map builder thread.
 - **What costs a game:**
