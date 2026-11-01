@@ -602,6 +602,96 @@ fn a_parallax_layer_is_where_it_would_be_with_the_camera_on_the_map_s_parallax_o
   assert_pixels(&engine.frame().unwrap(), at(8, 16));
 }
 
+/// A tileset image of 16 px tiles, four a row, two rows: tile 0 red, 1
+/// green on its left half and clear on its right, 2 blue, 3 yellow, 4 white
+fn stacked_tiles_png() -> Vec<u8> {
+  let mut image = image::RgbaImage::new(64, 32);
+  for (x, y, pixel) in image.enumerate_pixels_mut() {
+    let tile = (y / 16) * 4 + x / 16;
+    let left = x % 16 < 8;
+    *pixel = image::Rgba(match tile {
+      0 => RED,
+      1 if left => GREEN,
+      2 => BLUE,
+      3 => YELLOW,
+      4 => WHITE,
+      _ => [0; 4],
+    });
+  }
+  let mut bytes = Vec::new();
+  image
+    .write_to(
+      &mut std::io::Cursor::new(&mut bytes),
+      image::ImageFormat::Png,
+    )
+    .expect("a png");
+  bytes
+}
+
+#[test]
+fn an_ldtk_level_s_stacked_offset_and_translucent_tiles_draw_as_ldtk_shows_them() {
+  // `stacked.ldtk`, shaped like LDtk's saved output, over a tileset image
+  // made here: a half green tile stacked on a red one (cell 0, 0), and on
+  // the IntGrid a half green on a blue (cell 1, 1); a blue tile a rule
+  // moved 4 px right and down (cell 2, 0); a yellow one at half alpha
+  // (cell 0, 2), matched against a sprite drawn at half alpha beside it
+  let files = MemorySource::new();
+  let fixture = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/tilemap/ldtk/stacked.ldtk"
+  );
+  files.insert(
+    "ldtk/stacked.ldtk",
+    std::fs::read(fixture).expect("the fixture"),
+  );
+  files.insert("ldtk/images/tiles.png", stacked_tiles_png());
+  let builder = EngineBuilder::new().pixel_art(64, 48).asset_source(files);
+  let Some(mut engine) = engine_with(builder, |ctx| {
+    let project = ctx.assets().load::<LdtkProject>("ldtk/stacked.ldtk");
+    ctx
+      .world
+      .spawn((MapRoot::ldtk(project, "Stacked"), Transform::IDENTITY));
+    let yellow = ctx
+      .assets()
+      .add(Image::solid_rect(16, 16, 240, 220, 20, 255));
+    ctx.world.spawn((
+      Transform::from_xy(16.0, 32.0),
+      Renderable::image(yellow)
+        .with_anchor(Anchor::TopLeft)
+        .with_alpha(0.5),
+    ));
+  }) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  let frame = engine.frame().unwrap();
+  let background = frame.get_pixel(60, 24).0;
+  let half_yellow = frame.get_pixel(20, 36).0;
+  assert_ne!(half_yellow, background);
+  assert_ne!(half_yellow, YELLOW);
+  let inside = |x: u32, y: u32, (x0, y0): (u32, u32), (w, h): (u32, u32)| {
+    (x0..x0 + w).contains(&x) && (y0..y0 + h).contains(&y)
+  };
+  for y in 0..48 {
+    for x in 0..64 {
+      let want = if inside(x, y, (0, 0), (8, 16)) || inside(x, y, (16, 16), (8, 16)) {
+        GREEN
+      } else if inside(x, y, (8, 0), (8, 16)) {
+        RED
+      } else if inside(x, y, (24, 16), (8, 16)) || inside(x, y, (36, 4), (16, 16)) {
+        BLUE
+      } else if inside(x, y, (0, 32), (32, 16)) {
+        half_yellow
+      } else if inside(x, y, (48, 32), (16, 16)) {
+        WHITE
+      } else {
+        background
+      };
+      assert_eq!(frame.get_pixel(x, y).0, want, "pixel ({x}, {y})");
+    }
+  }
+}
+
 #[test]
 fn a_swapped_grid_redraws_its_layer() {
   // A new grid made the way the map's own was (one tile set, then every

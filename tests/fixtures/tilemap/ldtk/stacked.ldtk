@@ -1,0 +1,381 @@
+{
+  "__header__": {
+    "fileType": "LDtk Project JSON",
+    "app": "LDtk",
+    "doc": "https://ldtk.io/json",
+    "schema": "https://ldtk.io/files/JSON_SCHEMA.json",
+    "appAuthor": "Sebastien 'deepnight' Benard",
+    "appVersion": "1.5.3",
+    "url": "https://ldtk.io"
+  },
+  "iid": "22222222-0000-4000-8000-0000000000fe",
+  "jsonVersion": "1.5.3",
+  "appBuildId": 473702,
+  "nextUid": 40,
+  "identifierStyle": "Capitalize",
+  "worldLayout": "Free",
+  "worldGridWidth": 64,
+  "worldGridHeight": 48,
+  "defaultLevelWidth": 64,
+  "defaultLevelHeight": 48,
+  "defaultPivotX": 0.5,
+  "defaultPivotY": 0.5,
+  "defaultGridSize": 16,
+  "defaultEntityWidth": 16,
+  "defaultEntityHeight": 16,
+  "bgColor": "#373852",
+  "defaultLevelBgColor": "#6E6F8B",
+  "minifyJson": false,
+  "externalLevels": false,
+  "exportTiled": false,
+  "simplifiedExport": false,
+  "imageExportMode": "None",
+  "exportLevelBg": true,
+  "pngFilePattern": null,
+  "backupOnSave": false,
+  "backupLimit": 10,
+  "backupRelPath": null,
+  "levelNamePattern": "%world_Level_%idx",
+  "customCommands": [],
+  "flags": [
+    "ExportOldTableOfContentData",
+    "UseMultilinesType"
+  ],
+  "dummyWorldIid": "11111111-0000-4000-8000-0000000000ff",
+  "toc": [],
+  "tutorialDesc": null,
+  "defs": {
+    "layers": [
+      {
+        "__type": "AutoLayer",
+        "identifier": "Ground",
+        "type": "AutoLayer",
+        "uid": 30,
+        "doc": null,
+        "uiColor": null,
+        "gridSize": 16,
+        "guideGridWid": 0,
+        "guideGridHei": 0,
+        "displayOpacity": 1,
+        "inactiveOpacity": 1,
+        "hideInList": false,
+        "hideFieldsWhenInactive": true,
+        "canSelectWhenInactive": true,
+        "renderInWorldView": true,
+        "pxOffsetX": 0,
+        "pxOffsetY": 0,
+        "parallaxFactorX": 0,
+        "parallaxFactorY": 0,
+        "parallaxScaling": true,
+        "requiredTags": [],
+        "excludedTags": [],
+        "autoTilesKilledByOtherLayerUid": null,
+        "uiFilterTags": [],
+        "useAsyncRender": false,
+        "intGridValues": [],
+        "intGridValuesGroups": [],
+        "autoRuleGroups": [],
+        "autoSourceLayerDefUid": null,
+        "tilesetDefUid": 2,
+        "tilePivotX": 0,
+        "tilePivotY": 0,
+        "biomeFieldUid": null
+      },
+      {
+        "__type": "IntGrid",
+        "identifier": "Collision",
+        "type": "IntGrid",
+        "uid": 31,
+        "doc": null,
+        "uiColor": null,
+        "gridSize": 16,
+        "guideGridWid": 0,
+        "guideGridHei": 0,
+        "displayOpacity": 1,
+        "inactiveOpacity": 1,
+        "hideInList": false,
+        "hideFieldsWhenInactive": true,
+        "canSelectWhenInactive": true,
+        "renderInWorldView": true,
+        "pxOffsetX": 0,
+        "pxOffsetY": 0,
+        "parallaxFactorX": 0,
+        "parallaxFactorY": 0,
+        "parallaxScaling": true,
+        "requiredTags": [],
+        "excludedTags": [],
+        "autoTilesKilledByOtherLayerUid": null,
+        "uiFilterTags": [],
+        "useAsyncRender": false,
+        "intGridValues": [
+          {
+            "value": 1,
+            "identifier": "Solid",
+            "color": "#FFFFFF",
+            "tile": null,
+            "groupUid": 0
+          }
+        ],
+        "intGridValuesGroups": [],
+        "autoRuleGroups": [
+          {
+            "uid": 4,
+            "name": "walls",
+            "color": null,
+            "icon": null,
+            "active": true,
+            "isOptional": false,
+            "rules": [],
+            "usesWizard": false,
+            "requiredBiomeValues": [],
+            "biomeRequirementMode": 0
+          }
+        ],
+        "autoSourceLayerDefUid": null,
+        "tilesetDefUid": 2,
+        "tilePivotX": 0,
+        "tilePivotY": 0,
+        "biomeFieldUid": null
+      }
+    ],
+    "entities": [],
+    "tilesets": [
+      {
+        "__cWid": 4,
+        "__cHei": 2,
+        "identifier": "Tiles",
+        "uid": 2,
+        "relPath": "images/tiles.png",
+        "embedAtlas": null,
+        "pxWid": 64,
+        "pxHei": 32,
+        "tileGridSize": 16,
+        "spacing": 0,
+        "padding": 0,
+        "tags": [],
+        "tagsSourceEnumUid": null,
+        "enumTags": [],
+        "customData": [],
+        "savedSelections": [],
+        "cachedPixelData": {
+          "opaqueTiles": "",
+          "averageColors": ""
+        }
+      }
+    ],
+    "enums": [],
+    "externalEnums": [],
+    "levelFields": []
+  },
+  "levels": [
+    {
+      "identifier": "Stacked",
+      "iid": "22222222-0000-4000-8000-000000000001",
+      "uid": 32,
+      "worldX": 0,
+      "worldY": 0,
+      "worldDepth": 0,
+      "pxWid": 64,
+      "pxHei": 48,
+      "__bgColor": "#398666",
+      "bgColor": null,
+      "useAutoIdentifier": false,
+      "bgRelPath": null,
+      "bgPos": null,
+      "bgPivotX": 0.5,
+      "bgPivotY": 0.5,
+      "__smartColor": "#AFB0BF",
+      "__bgPos": null,
+      "externalRelPath": null,
+      "fieldInstances": [],
+      "layerInstances": [
+        {
+          "__identifier": "Ground",
+          "__type": "AutoLayer",
+          "__cWid": 4,
+          "__cHei": 3,
+          "__gridSize": 16,
+          "__opacity": 1,
+          "__pxTotalOffsetX": 0,
+          "__pxTotalOffsetY": 0,
+          "__tilesetDefUid": 2,
+          "__tilesetRelPath": "images/tiles.png",
+          "iid": "22222222-0000-4000-8000-0000000000a1",
+          "levelId": 32,
+          "layerDefUid": 30,
+          "pxOffsetX": 0,
+          "pxOffsetY": 0,
+          "visible": true,
+          "optionalRules": [],
+          "intGridCsv": [],
+          "autoLayerTiles": [
+            {
+              "px": [
+                0,
+                0
+              ],
+              "src": [
+                0,
+                0
+              ],
+              "f": 0,
+              "t": 0,
+              "d": [
+                101,
+                0
+              ],
+              "a": 1
+            },
+            {
+              "px": [
+                36,
+                4
+              ],
+              "src": [
+                32,
+                0
+              ],
+              "f": 0,
+              "t": 2,
+              "d": [
+                102,
+                2
+              ],
+              "a": 1
+            },
+            {
+              "px": [
+                0,
+                0
+              ],
+              "src": [
+                16,
+                0
+              ],
+              "f": 0,
+              "t": 1,
+              "d": [
+                103,
+                0
+              ],
+              "a": 1
+            },
+            {
+              "px": [
+                0,
+                32
+              ],
+              "src": [
+                48,
+                0
+              ],
+              "f": 0,
+              "t": 3,
+              "d": [
+                104,
+                8
+              ],
+              "a": 0.5
+            },
+            {
+              "px": [
+                48,
+                32
+              ],
+              "src": [
+                0,
+                16
+              ],
+              "f": 0,
+              "t": 4,
+              "d": [
+                105,
+                11
+              ],
+              "a": 1
+            }
+          ],
+          "seed": 1234567,
+          "overrideTilesetUid": null,
+          "gridTiles": [],
+          "entityInstances": []
+        },
+        {
+          "__identifier": "Collision",
+          "__type": "IntGrid",
+          "__cWid": 4,
+          "__cHei": 3,
+          "__gridSize": 16,
+          "__opacity": 1,
+          "__pxTotalOffsetX": 0,
+          "__pxTotalOffsetY": 0,
+          "__tilesetDefUid": 2,
+          "__tilesetRelPath": "images/tiles.png",
+          "iid": "22222222-0000-4000-8000-0000000000a2",
+          "levelId": 32,
+          "layerDefUid": 31,
+          "pxOffsetX": 0,
+          "pxOffsetY": 0,
+          "visible": true,
+          "optionalRules": [],
+          "intGridCsv": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "autoLayerTiles": [
+            {
+              "px": [
+                16,
+                16
+              ],
+              "src": [
+                32,
+                0
+              ],
+              "f": 0,
+              "t": 2,
+              "d": [
+                106,
+                5
+              ],
+              "a": 1
+            },
+            {
+              "px": [
+                16,
+                16
+              ],
+              "src": [
+                16,
+                0
+              ],
+              "f": 0,
+              "t": 1,
+              "d": [
+                107,
+                5
+              ],
+              "a": 1
+            }
+          ],
+          "seed": 1234567,
+          "overrideTilesetUid": null,
+          "gridTiles": [],
+          "entityInstances": []
+        }
+      ],
+      "__neighbours": []
+    }
+  ],
+  "worlds": []
+}

@@ -2142,10 +2142,11 @@ mod tests {
     expected.sort();
     assert_eq!(spawned_maps, expected);
 
-    // By identifier: its layers, IntGrid, tiles and entities
+    // By identifier: its layers (Collision's stacked tile a sub-layer of
+    // its own), IntGrid, tiles and entities
     assert_eq!(
       layer_names(&mut world, by_name),
-      ["Decor", "Collision", "Props", "Entities"]
+      ["Decor", "Collision", "Collision#1", "Props", "Entities"]
     );
     let maps = MapsView::new(&mut world);
     assert_eq!(

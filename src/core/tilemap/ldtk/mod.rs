@@ -353,7 +353,11 @@ mod tests {
       .iter()
       .map(|l| l.info.name.as_str())
       .collect();
-    assert_eq!(names, ["Decor", "Collision", "Props", "Entities"]);
+    // Collision stacks a tile on another: its second sub-layer draws next
+    assert_eq!(
+      names,
+      ["Decor", "Collision", "Collision#1", "Props", "Entities"]
+    );
   }
 
   #[test]
@@ -389,8 +393,9 @@ mod tests {
     let project = load("internal.ldtk");
     let level = &project.levels[0];
     let (h, v) = (TileFlip::HORIZONTAL, TileFlip::VERTICAL);
-    // auto-tiles; the last tile stacked in a cell is the one on top
-    assert_eq!(cell(level, "Collision", 0, 0), Some(Tile::new(0, 5)));
+    // auto-tiles; a tile stacked on another in its cell is a sub-layer up
+    assert_eq!(cell(level, "Collision", 0, 0), Some(Tile::new(0, 0)));
+    assert_eq!(cell(level, "Collision#1", 0, 0), Some(Tile::new(0, 5)));
     assert_eq!(
       cell(level, "Collision", 1, 0),
       Some(Tile::new(0, 1).with_flip(h))
@@ -478,6 +483,168 @@ mod tests {
       error.contains("tileset \"Tiles\"") && error.contains("tile 8"),
       "{error}"
     );
+  }
+
+  /// The level's layers: name, id, offset, opacity, whether it collides and
+  /// has an int grid, and its tiles as (cell, id)
+  fn sub_layers(level: &LdtkLevel) -> Vec<(String, u32, Vec2, f32, bool, bool, Vec<(IVec2, u32)>)> {
+    level
+      .map
+      .layers
+      .iter()
+      .map(|l| {
+        let LayerKind::Tiles { grid, intgrid, .. } = &l.kind else {
+          panic!("{} is not a tile layer", l.info.name)
+        };
+        let mut tiles = Vec::new();
+        for y in 0..grid.size().y as i32 {
+          for x in 0..grid.size().x as i32 {
+            if let Some(t) = grid.get(IVec2::new(x, y)) {
+              tiles.push((IVec2::new(x, y), t.id));
+            }
+          }
+        }
+        (
+          l.info.name.clone(),
+          l.info.id,
+          l.info.offset,
+          l.info.opacity,
+          l.info.collides,
+          intgrid.is_some(),
+          tiles,
+        )
+      })
+      .collect()
+  }
+
+  #[test]
+  fn stacked_offset_and_translucent_tiles_load_as_sub_layers() {
+    // Shaped like LDtk's saved output: Ground stacks a tile on another,
+    // moves one 4 px by a rule's offset and draws one at half alpha; the
+    // IntGrid Collision stacks two
+    let project = load("stacked.ldtk");
+    let level = &project.levels[0];
+    let layers = sub_layers(level);
+    let names: Vec<&str> = layers.iter().map(|l| l.0.as_str()).collect();
+    assert_eq!(
+      names,
+      [
+        "Collision",
+        "Collision#1",
+        "Ground",
+        "Ground#1",
+        "Ground#2",
+        "Ground#3"
+      ]
+    );
+    let c = IVec2::new;
+    // the IntGrid and collision stay on the layer's own
+    assert_eq!(layers[0].1, 31);
+    assert!(layers[0].4 && layers[0].5);
+    assert_eq!(layers[0].6, [(c(1, 1), 2)]);
+    assert_eq!((layers[1].4, layers[1].5), (false, false));
+    assert_eq!(layers[1].6, [(c(1, 1), 1)], "stacked above");
+    // Ground's own holds the plain tiles
+    assert_eq!(layers[2].1, 30);
+    assert_eq!(layers[2].6, [(c(0, 0), 0), (c(3, 2), 4)]);
+    // then by depth, each depth as LDtk lists them: the moved tile, the
+    // translucent one, and the stacked one over the red
+    assert_eq!((layers[3].2, layers[3].3), (Vec2::new(4.0, 4.0), 1.0));
+    assert_eq!(layers[3].6, [(c(2, 0), 2)]);
+    assert_eq!((layers[4].2, layers[4].3), (Vec2::ZERO, 0.5));
+    assert_eq!(layers[4].6, [(c(0, 2), 3)]);
+    assert_eq!((layers[5].2, layers[5].3), (Vec2::ZERO, 1.0));
+    assert_eq!(layers[5].6, [(c(0, 0), 1)]);
+    for sub in [1, 3, 4, 5] {
+      assert!(!layers[sub].4 && !layers[sub].5, "{}", layers[sub].0);
+    }
+    // sub-layer ids are their own, and the same each load
+    let ids: Vec<u32> = layers.iter().map(|l| l.1).collect();
+    let mut unique = ids.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    assert_eq!(unique.len(), ids.len(), "{ids:?}");
+    let again: Vec<u32> = sub_layers(&load("stacked.ldtk").levels[0])
+      .iter()
+      .map(|l| l.1)
+      .collect();
+    assert_eq!(again, ids);
+  }
+
+  #[test]
+  fn a_sub_layer_keeps_its_id_when_a_save_adds_another_before_it() {
+    // A save adds a tile at another offset, listed first: the sub-layers'
+    // places and names move up, their ids (the layer's uid and their key)
+    // do not, so a reload keeps each one's entity for the same tiles
+    let before = sub_layers(&load("stacked.ldtk").levels[0]);
+    let text = std::fs::read_to_string(Path::new(FIXTURES).join("stacked.ldtk")).expect("fixture");
+    let mut value: serde_json::Value = serde_json::from_str(&text).expect("json");
+    let ground = &mut value["levels"][0]["layerInstances"][0];
+    assert_eq!(ground["__identifier"], "Ground");
+    let tiles = ground["autoLayerTiles"].as_array_mut().expect("tiles");
+    tiles.insert(
+      0,
+      serde_json::json!({"px": [33, 17], "src": [0, 0], "f": 0, "t": 0, "d": [100, 6], "a": 1}),
+    );
+    let mut world = world_over(files_at("", &[("m.ldtk", value.to_string())]));
+    let edited = load_in(&mut world, "m.ldtk").expect("loads");
+    let after = sub_layers(&edited.levels[0]);
+    let id_of = |layers: &[(String, u32, Vec2, f32, bool, bool, Vec<(IVec2, u32)>)],
+                 offset: Vec2,
+                 opacity: f32| {
+      layers
+        .iter()
+        .find(|l| l.0.starts_with("Ground") && l.2 == offset && l.3 == opacity && !l.6.is_empty())
+        .map(|l| l.1)
+    };
+    assert_eq!(after.len(), before.len() + 1);
+    for (offset, opacity) in [(Vec2::new(4.0, 4.0), 1.0), (Vec2::ZERO, 0.5)] {
+      assert!(id_of(&before, offset, opacity).is_some());
+      assert_eq!(
+        id_of(&after, offset, opacity),
+        id_of(&before, offset, opacity)
+      );
+    }
+  }
+
+  #[test]
+  fn a_layer_needing_more_sub_layers_than_it_may_have_puts_the_rest_in_the_nearest_and_warns_once()
+  {
+    // Twenty tiles in a row of cells, each a pixel further into its cell:
+    // twenty sub-layers asked for, sixteen made, four tiles snapped
+    let project = load_json(|v| {
+      let layers = v["levels"][0]["layerInstances"]
+        .as_array_mut()
+        .expect("layers");
+      let decor = layers
+        .iter_mut()
+        .find(|l| l["__identifier"] == "Decor")
+        .expect("decor");
+      decor["__identifier"] = "Decor-9f4a".into();
+      let tiles: Vec<serde_json::Value> = (0..20)
+        .map(|i| {
+          let (cx, cy) = (i % 4, (i / 4) % 3);
+          serde_json::json!({"px": [cx * 16 + i % 16, cy * 16], "src": [0, 0], "f": 0, "t": 1, "d": [i], "a": 1})
+        })
+        .collect();
+      decor["gridTiles"] = tiles.into();
+    })
+    .expect("loads");
+    let level = &project.levels[0];
+    let decor = level
+      .map
+      .layers
+      .iter()
+      .filter(|l| l.info.name.starts_with("Decor-9f4a"))
+      .count();
+    assert_eq!(decor, 16);
+    let warned: Vec<String> = crate::core::dev_log::get_entries()
+      .into_iter()
+      .filter(|e| e.message.contains("Decor-9f4a"))
+      .map(|e| e.message)
+      .collect();
+    assert_eq!(warned.len(), 1, "warned once, naming the layer: {warned:?}");
+    assert!(warned[0].contains("4 tiles"), "{}", warned[0]);
   }
 
   fn door(level: &LdtkLevel) -> &crate::core::tilemap::MapObjectData {
@@ -788,7 +955,7 @@ mod tests {
     assert_eq!(path.as_str(), "game/maps/images/tiles.png");
     // and the external levels, read from beside the project
     let external = load_in(&mut world, "game/maps/external.ldtk").expect("external");
-    assert_eq!(external.levels[0].map.layers.len(), 4);
+    assert_eq!(external.levels[0].map.layers.len(), 5);
   }
 
   /// `internal.ldtk` with `edit` applied to its JSON, loaded as `m.ldtk`

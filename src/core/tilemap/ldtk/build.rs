@@ -13,7 +13,7 @@ use super::raw::{
 use super::{LdtkLevel, LdtkProject, Neighbour, NeighbourDirection, WorldLayout, WorldLevel};
 use crate::core::asset::{AssetError, AssetPath, CheckContext, LoadContext};
 use crate::core::graphics::Image;
-use crate::core::hash::FastMap;
+use crate::core::hash::{FastMap, FastSet};
 use crate::core::tilemap::tiled::build::{
   DependencyPlaces, MAX_MAP_CELLS, MAX_TILES, cell_count, check_map_cells, check_tileset,
   check_used_ids, fail, join, load_dep,
@@ -374,37 +374,187 @@ fn entity(defs: &Defs<'_>, place: &str, raw: &RawEntity) -> Result<MapObjectData
   })
 }
 
-/// Fills a grid of `size` cells from LDtk's tiles. `grid_size` is the layer's
-/// cell in pixels. Returns the highest id used of each tileset
-fn fill_grid(
+/// Most layers one LDtk layer splits into: its own and the sub-layers its
+/// stacked, offset and translucent tiles need. Each sub-layer is a grid the
+/// size of the level, drawn chunk by chunk, so the cap bounds a layer's
+/// cells and draws at 16 times a plain layer's (a 1024 x 1024 layer's at
+/// 64 MiB). LDtk's bundled samples ask for up to 44 in a rule-heavy layer;
+/// past 16 the tiles left over are at most 28 of a layer's thousands, the
+/// deepest stacks and rarest offsets, which then draw in the nearest
+/// sub-layer
+const MAX_SUBLAYERS: usize = 16;
+
+/// `1.0f32`'s bits: an opaque tile
+const OPAQUE: u32 = 0x3F80_0000;
+
+/// What puts a tile in a sub-layer of its own: how deep it is stacked in its
+/// cell (the first tile LDtk lists there is 0), where in the cell it is
+/// drawn (a rule's offset), and its alpha (a rule's opacity)
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+struct SubKey {
+  depth: u32,
+  offset: IVec2,
+  alpha: u32,
+}
+
+impl SubKey {
+  /// The layer's own: the first tile in a cell, on the grid, opaque
+  const BASE: SubKey = SubKey {
+    depth: 0,
+    offset: IVec2::ZERO,
+    alpha: OPAQUE,
+  };
+
+  fn alpha(self) -> f32 {
+    f32::from_bits(self.alpha)
+  }
+}
+
+/// A layer's tiles sorted into sub-layers, before any grid is allocated
+struct TilePlan {
+  /// The sub-layers' keys in drawing order, the layer's own first
+  keys: Vec<SubKey>,
+  /// Each tile in the level, in the order LDtk lists them: its index in the
+  /// layer's tiles, its cell and its sub-layer
+  placed: Vec<(usize, IVec2, usize)>,
+  /// The sub-layers the tiles asked for, and how many tiles past the cap
+  /// went to the nearest kept one
+  needed: usize,
+  snapped: usize,
+}
+
+/// Sorts `tiles` (in LDtk's display order, the first beneath the next) into
+/// the sub-layers of a layer of `size` cells of `grid` pixels: one per
+/// distinct (stack depth, offset in the cell, alpha), the layer's own first,
+/// then by depth and, within a depth, as LDtk lists them, so each tile draws
+/// over the ones listed before it in its cell. Past [`MAX_SUBLAYERS`] the
+/// keys holding the most tiles are kept, and each other tile goes to the
+/// kept sub-layer whose cell is free and whose offset, depth and alpha are
+/// nearest. Tiles whose cell is outside the level (auto-tiles of stamps
+/// reach past its edge) are left out
+fn plan_tiles(size: UVec2, grid: u32, tiles: &[&RawTile]) -> TilePlan {
+  let g = i64::from(grid.max(1));
+  let mut depth: FastMap<IVec2, u32> = FastMap::default();
+  let mut keyed = Vec::with_capacity(tiles.len());
+  // each key's tiles and the index of its first
+  let mut counts: FastMap<SubKey, (usize, usize)> = FastMap::default();
+  for (i, tile) in tiles.iter().enumerate() {
+    let (px, py) = (tile.px[0], tile.px[1]);
+    let (cx, cy) = (px.div_euclid(g), py.div_euclid(g));
+    if cx < 0 || cy < 0 || cx >= i64::from(size.x) || cy >= i64::from(size.y) {
+      continue;
+    }
+    let cell = IVec2::new(cx as i32, cy as i32);
+    let stacked = depth.entry(cell).or_insert(0);
+    let alpha = if tile.a.is_finite() {
+      tile.a.clamp(0.0, 1.0) as f32
+    } else {
+      1.0
+    };
+    let key = SubKey {
+      depth: *stacked,
+      offset: IVec2::new(px.rem_euclid(g) as i32, py.rem_euclid(g) as i32),
+      alpha: alpha.to_bits(),
+    };
+    *stacked = stacked.saturating_add(1);
+    counts.entry(key).or_insert((0, i)).0 += 1;
+    keyed.push((i, cell, key));
+  }
+  let needed =
+    counts.len().max(1) + usize::from(!counts.is_empty() && !counts.contains_key(&SubKey::BASE));
+  let mut others: Vec<(SubKey, usize, usize)> = counts
+    .iter()
+    .filter(|(key, _)| **key != SubKey::BASE)
+    .map(|(key, &(count, first))| (*key, count, first))
+    .collect();
+  others.sort_by(|a, b| b.1.cmp(&a.1).then(a.2.cmp(&b.2)));
+  others.truncate(MAX_SUBLAYERS - 1);
+  others.sort_by_key(|&(key, _, first)| (key.depth, first));
+  let mut keys = vec![SubKey::BASE];
+  keys.extend(others.iter().map(|&(key, ..)| key));
+  let index: FastMap<SubKey, usize> = keys.iter().enumerate().map(|(i, k)| (*k, i)).collect();
+  let mut placed = Vec::with_capacity(keyed.len());
+  let mut taken: FastSet<(usize, IVec2)> = FastSet::default();
+  let mut rest = Vec::new();
+  for &(i, cell, key) in &keyed {
+    match index.get(&key) {
+      Some(&sub) => {
+        taken.insert((sub, cell));
+        placed.push((i, cell, sub));
+      }
+      None => rest.push((i, cell, key)),
+    }
+  }
+  let snapped = rest.len();
+  for (i, cell, key) in rest {
+    let sub = nearest(&keys, key, |sub| taken.contains(&(sub, cell)));
+    taken.insert((sub, cell));
+    placed.push((i, cell, sub));
+  }
+  // as LDtk lists them, so where two share a cell the later wins
+  placed.sort_unstable_by_key(|&(i, ..)| i);
+  TilePlan {
+    keys,
+    placed,
+    needed,
+    snapped,
+  }
+}
+
+/// The kept sub-layer nearest `key`: one whose cell is free first, then the
+/// nearest offset (where the tile draws), depth (what it draws over) and
+/// alpha
+fn nearest(keys: &[SubKey], key: SubKey, taken: impl Fn(usize) -> bool) -> usize {
+  (0..keys.len())
+    .min_by_key(|&sub| {
+      let k = keys[sub];
+      let offset = (k.offset - key.offset).abs().element_sum();
+      let alpha = ((k.alpha() - key.alpha()).abs() * 255.0) as u32;
+      (taken(sub), offset, k.depth.abs_diff(key.depth), alpha)
+    })
+    .unwrap_or(0)
+}
+
+/// A sub-layer's editor id: its layer's uid and its key, hashed (FNV-1a),
+/// with the top bit set, which no LDtk uid has, so a reload matches it to
+/// the sub-layer of the same tiles wherever it now sits
+fn sub_layer_id(uid: u32, key: SubKey) -> u32 {
+  let mut h: u32 = 0x811c_9dc5;
+  for word in [
+    uid,
+    key.depth,
+    key.offset.x as u32,
+    key.offset.y as u32,
+    key.alpha,
+  ] {
+    for byte in word.to_le_bytes() {
+      h ^= u32::from(byte);
+      h = h.wrapping_mul(0x0100_0193);
+    }
+  }
+  h | 0x8000_0000
+}
+
+/// Fills a grid of `size` cells for each of the plan's sub-layers from
+/// LDtk's tiles. Returns the grids and the highest id each uses of the
+/// tileset
+fn fill_grids(
   defs: &Defs<'_>,
   place: &str,
   size: UVec2,
-  grid_size: u32,
   tileset: Option<&TilesetRef>,
-  tiles: &[&RawTile],
-) -> Result<(TileGrid, Option<u32>), AssetError> {
-  let mut grid = TileGrid::new(size);
-  let mut highest = None;
-  for tile in tiles {
-    let Some(tileset) = tileset else {
-      return Err(fail(defs.path, place, "the layer has tiles but no tileset"));
-    };
-    let at = || format!("tile at pixel ({}, {})", tile.px[0], tile.px[1]);
-    let (px, py) = (tile.px[0], tile.px[1]);
-    // auto-tiles of stamps and rules may reach past the level's edge: those
-    // cells are not in the map
-    let outside = px < 0
-      || py < 0
-      || px / i64::from(grid_size) >= i64::from(size.x)
-      || py / i64::from(grid_size) >= i64::from(size.y);
-    if outside {
-      continue;
+  (tiles, plan): (&[&RawTile], &TilePlan),
+) -> Result<(Vec<TileGrid>, Vec<Option<u32>>), AssetError> {
+  let Some(tileset) = tileset else {
+    if tiles.is_empty() {
+      return Ok((vec![TileGrid::new(size)], vec![None]));
     }
-    let cell = IVec2::new(
-      (px / i64::from(grid_size)) as i32,
-      (py / i64::from(grid_size)) as i32,
-    );
+    return Err(fail(defs.path, place, "the layer has tiles but no tileset"));
+  };
+  let mut grids: Vec<TileGrid> = plan.keys.iter().map(|_| TileGrid::new(size)).collect();
+  let mut highest = vec![None; plan.keys.len()];
+  for &(i, cell, sub) in &plan.placed {
+    let tile = tiles[i];
     let id = u32::try_from(tile.t)
       .ok()
       .filter(|&id| id < MAX_TILES)
@@ -413,9 +563,8 @@ fn fill_grid(
           defs.path,
           place,
           format!(
-            "{}: tile id {} is past the {MAX_TILES} tiles a tileset holds",
-            at(),
-            tile.t
+            "tile at pixel ({}, {}): tile id {} is past the {MAX_TILES} tiles a tileset holds",
+            tile.px[0], tile.px[1], tile.t
           ),
         )
       })?;
@@ -427,13 +576,16 @@ fn fill_grid(
     if tile.f & 2 != 0 {
       flip = flip | TileFlip::VERTICAL;
     }
-    // tiles stacked in a cell come in drawing order: the last one wins
-    grid.set(cell, Some(Tile::new(tileset.index, id).with_flip(flip)));
-    highest = Some(highest.map_or(id, |m: u32| m.max(id)));
+    if let (Some(grid), Some(slot)) = (grids.get_mut(sub), highest.get_mut(sub)) {
+      grid.set(cell, Some(Tile::new(tileset.index, id).with_flip(flip)));
+      *slot = Some(slot.map_or(id, |m: u32| m.max(id)));
+    }
   }
   // a loaded grid starts clean
-  grid.drain_dirty(&mut Vec::new());
-  Ok((grid, highest))
+  for grid in &mut grids {
+    grid.drain_dirty(&mut Vec::new());
+  }
+  Ok((grids, highest))
 }
 
 struct LayerOut {
@@ -442,9 +594,42 @@ struct LayerOut {
   used: Option<(u16, u32)>,
 }
 
-fn build_layer(defs: &Defs<'_>, size_px: UVec2, raw: &RawLayer) -> Result<LayerOut, AssetError> {
+/// A layer checked and its tiles sorted into sub-layers, before any grid is
+/// allocated, so a level's cells can be counted first
+struct PlannedLayer<'d> {
+  raw: &'d RawLayer,
+  def: &'d RawLayerDef,
+  info: LayerInfo,
+  place: String,
+  /// Cells across and down, and a cell's pixels (zero for entities)
+  size: UVec2,
+  cell_size: UVec2,
+  tileset: Option<&'d TilesetRef>,
+  /// What it draws: its auto-tiles, or its grid tiles
+  tiles: Vec<&'d RawTile>,
+  plan: TilePlan,
+}
+
+impl PlannedLayer<'_> {
+  /// The cells its grids will hold: the level's a sub-layer, and an
+  /// IntGrid's values once more
+  fn cells(&self) -> u64 {
+    if self.raw.ty == "Entities" {
+      return 0;
+    }
+    let one = u64::from(self.size.x) * u64::from(self.size.y);
+    let grids = self.plan.keys.len() as u64 + u64::from(self.raw.ty == "IntGrid");
+    one.saturating_mul(grids)
+  }
+}
+
+fn plan_layer<'d>(
+  defs: &'d Defs<'_>,
+  size_px: UVec2,
+  raw: &'d RawLayer,
+) -> Result<PlannedLayer<'d>, AssetError> {
   let place = format!("layer {:?}", raw.identifier);
-  let def = defs
+  let def: &RawLayerDef = defs
     .layers
     .get(&raw.layer_def_uid)
     .copied()
@@ -466,118 +651,178 @@ fn build_layer(defs: &Defs<'_>, size_px: UVec2, raw: &RawLayer) -> Result<LayerO
   info.visible = raw.visible;
   // LDtk's factor is 0 for a layer that scrolls with the world
   info.parallax = Vec2::new((1.0 - def.parallax_x) as f32, (1.0 - def.parallax_y) as f32);
-  info.collides = false;
-  // each layer counts cells of its own grid
-  let (size, cell_size) = if raw.ty == "Entities" {
-    (UVec2::ZERO, UVec2::ZERO)
-  } else {
-    let g = to_u32(defs.path, &place, "__gridSize", raw.grid_size)?;
-    if g == 0 {
-      return Err(fail(defs.path, &place, "the grid size is 0"));
-    }
-    let size = UVec2::new(ceil_div(size_px.x, g), ceil_div(size_px.y, g));
-    if cell_count(size.x, size.y).is_none() {
-      return Err(fail(
-        defs.path,
-        &place,
-        format!(
-          "{} x {} cells is past the cells a layer holds",
-          size.x, size.y
-        ),
-      ));
-    }
-    if raw.c_wid != i64::from(size.x) || raw.c_hei != i64::from(size.y) {
-      return Err(fail(
-        defs.path,
-        &place,
-        format!(
-          "it is {} x {} cells but the level's {} x {} px make {} x {} of {g} px",
-          raw.c_wid, raw.c_hei, size_px.x, size_px.y, size.x, size.y
-        ),
-      ));
-    }
-    (size, UVec2::splat(g))
+  info.collides = raw.ty == "IntGrid";
+  if !matches!(
+    raw.ty.as_str(),
+    "IntGrid" | "AutoLayer" | "Tiles" | "Entities"
+  ) {
+    return Err(fail(
+      defs.path,
+      &place,
+      format!("unknown layer type {:?}", raw.ty),
+    ));
+  }
+  let empty = TilePlan {
+    keys: vec![SubKey::BASE],
+    placed: Vec::new(),
+    needed: 1,
+    snapped: 0,
   };
+  if raw.ty == "Entities" {
+    return Ok(PlannedLayer {
+      raw,
+      def,
+      info,
+      place,
+      size: UVec2::ZERO,
+      cell_size: UVec2::ZERO,
+      tileset: None,
+      tiles: Vec::new(),
+      plan: empty,
+    });
+  }
+  // each layer counts cells of its own grid
+  let g = to_u32(defs.path, &place, "__gridSize", raw.grid_size)?;
+  if g == 0 {
+    return Err(fail(defs.path, &place, "the grid size is 0"));
+  }
+  let size = UVec2::new(ceil_div(size_px.x, g), ceil_div(size_px.y, g));
+  if cell_count(size.x, size.y).is_none() {
+    return Err(fail(
+      defs.path,
+      &place,
+      format!(
+        "{} x {} cells is past the cells a layer holds",
+        size.x, size.y
+      ),
+    ));
+  }
+  if raw.c_wid != i64::from(size.x) || raw.c_hei != i64::from(size.y) {
+    return Err(fail(
+      defs.path,
+      &place,
+      format!(
+        "it is {} x {} cells but the level's {} x {} px make {} x {} of {g} px",
+        raw.c_wid, raw.c_hei, size_px.x, size_px.y, size.x, size.y
+      ),
+    ));
+  }
   let tileset = raw
     .override_tileset_uid
     .or(raw.tileset_uid)
     .and_then(|uid| defs.tilesets.get(&uid));
-  let tiled = |tiles: &[&RawTile], used: &mut Option<(u16, u32)>| -> Result<TileGrid, AssetError> {
-    let grid_size = to_u32(defs.path, &place, "__gridSize", raw.grid_size)?;
-    let (grid, highest) = fill_grid(defs, &place, size, grid_size, tileset, tiles)?;
-    *used = tileset.zip(highest).map(|(t, max)| (t.index, max));
-    Ok(grid)
+  let tiles: Vec<&RawTile> = match raw.ty.as_str() {
+    "Tiles" => raw.grid_tiles.iter().collect(),
+    _ => raw.auto_layer_tiles.iter().collect(),
   };
-  let mut used = None;
-  let kind = match raw.ty.as_str() {
-    "IntGrid" => {
-      info.collides = true;
-      let want = cell_count(size.x, size.y).unwrap_or(0);
-      if raw.int_grid_csv.len() != want {
-        return Err(fail(
-          defs.path,
-          &place,
-          format!(
-            "intGridCsv holds {} values for {} x {} cells",
-            raw.int_grid_csv.len(),
-            size.x,
-            size.y
-          ),
-        ));
-      }
-      let auto: Vec<&RawTile> = raw.auto_layer_tiles.iter().collect();
-      let grid = tiled(&auto, &mut used)?;
+  let plan = plan_tiles(size, g, &tiles);
+  Ok(PlannedLayer {
+    raw,
+    def,
+    info,
+    place,
+    size,
+    cell_size: UVec2::splat(g),
+    tileset,
+    tiles,
+    plan,
+  })
+}
+
+/// The layers a planned layer makes: its own (with the IntGrid and the
+/// collision), then its sub-layers, named after it with `#1`, `#2` and on in
+/// drawing order, each at its tiles' offset and alpha over the layer's
+fn build_planned(defs: &Defs<'_>, planned: PlannedLayer<'_>) -> Result<Vec<LayerOut>, AssetError> {
+  let PlannedLayer {
+    raw,
+    def,
+    info,
+    place,
+    size,
+    cell_size,
+    tileset,
+    tiles,
+    plan,
+  } = planned;
+  if raw.ty == "Entities" {
+    let mut objects = Vec::with_capacity(raw.entity_instances.len());
+    for e in &raw.entity_instances {
+      objects.push(entity(defs, &place, e)?);
+    }
+    return Ok(vec![LayerOut {
+      layer: MapLayer {
+        info,
+        kind: LayerKind::Objects(objects),
+      },
+      used: None,
+    }]);
+  }
+  if plan.snapped > 0 {
+    crate::engine_warn!(
+      module: "LDtk",
+      "{}: {place}: its stacked, offset and translucent tiles ask for {} layers, past the {MAX_SUBLAYERS} a layer splits into, so {} {} in the nearest of them",
+      defs.path,
+      plan.needed,
+      plan.snapped,
+      if plan.snapped == 1 { "tile draws" } else { "tiles draw" }
+    );
+  }
+  if raw.ty == "IntGrid" {
+    let want = cell_count(size.x, size.y).unwrap_or(0);
+    if raw.int_grid_csv.len() != want {
+      return Err(fail(
+        defs.path,
+        &place,
+        format!(
+          "intGridCsv holds {} values for {} x {} cells",
+          raw.int_grid_csv.len(),
+          size.x,
+          size.y
+        ),
+      ));
+    }
+  }
+  let (grids, highest) = fill_grids(defs, &place, size, tileset, (&tiles, &plan))?;
+  let mut out = Vec::with_capacity(grids.len());
+  for (k, (grid, max)) in grids.into_iter().zip(highest).enumerate() {
+    let key = plan.keys.get(k).copied().unwrap_or(SubKey::BASE);
+    let mut sub = info.clone();
+    let intgrid = if k == 0 && raw.ty == "IntGrid" {
       let mut names = FastMap::default();
       for value in &def.int_grid_values {
         if let Some(name) = value.identifier.as_deref().filter(|n| !n.is_empty()) {
           names.insert(value.value, name.to_string());
         }
       }
-      LayerKind::Tiles {
-        grid,
-        intgrid: Some(IntGrid {
-          size,
-          values: raw.int_grid_csv.clone(),
-          names,
-        }),
-        cell_size,
-      }
+      Some(IntGrid {
+        size,
+        values: raw.int_grid_csv.clone(),
+        names,
+      })
+    } else {
+      None
+    };
+    if k > 0 {
+      sub.name = format!("{}#{k}", info.name);
+      sub.id = sub_layer_id(info.id, key);
+      sub.offset += key.offset.as_vec2();
+      sub.opacity *= key.alpha();
+      sub.collides = false;
+      sub.occludes = None;
     }
-    "AutoLayer" => {
-      let auto: Vec<&RawTile> = raw.auto_layer_tiles.iter().collect();
-      LayerKind::Tiles {
-        grid: tiled(&auto, &mut used)?,
-        intgrid: None,
-        cell_size,
-      }
-    }
-    "Tiles" => {
-      let tiles: Vec<&RawTile> = raw.grid_tiles.iter().collect();
-      LayerKind::Tiles {
-        grid: tiled(&tiles, &mut used)?,
-        intgrid: None,
-        cell_size,
-      }
-    }
-    "Entities" => {
-      let mut objects = Vec::with_capacity(raw.entity_instances.len());
-      for e in &raw.entity_instances {
-        objects.push(entity(defs, &place, e)?);
-      }
-      LayerKind::Objects(objects)
-    }
-    other => {
-      return Err(fail(
-        defs.path,
-        &place,
-        format!("unknown layer type {other:?}"),
-      ));
-    }
-  };
-  Ok(LayerOut {
-    layer: MapLayer { info, kind },
-    used,
-  })
+    out.push(LayerOut {
+      layer: MapLayer {
+        info: sub,
+        kind: LayerKind::Tiles {
+          grid,
+          intgrid,
+          cell_size,
+        },
+      },
+      used: tileset.zip(max).map(|(t, max)| (t.index, max)),
+    });
+  }
+  Ok(out)
 }
 
 // ---- levels ---------------------------------------------------------------
@@ -606,26 +851,6 @@ fn background(defs: &Defs<'_>, place: &str, raw: &RawLevel) -> Result<Option<Col
     .transpose()
 }
 
-/// The cells a level's layers hold, as their sizes say: every tile layer
-/// whether it has tiles or not, an IntGrid layer twice (its tiles and its
-/// values)
-fn level_cells(layers: &[RawLayer]) -> u64 {
-  layers
-    .iter()
-    .filter(|l| l.ty != "Entities")
-    .map(|l| {
-      let cells = u64::try_from(l.c_wid)
-        .unwrap_or(0)
-        .saturating_mul(u64::try_from(l.c_hei).unwrap_or(0));
-      if l.ty == "IntGrid" {
-        cells.saturating_mul(2)
-      } else {
-        cells
-      }
-    })
-    .fold(0, u64::saturating_add)
-}
-
 /// A level's map, from its layers (LDtk lists the top one first). `cells`
 /// is the project's levels' cells so far, which this level's join before
 /// any is allocated
@@ -638,7 +863,18 @@ fn build_map(
   fields: Properties,
 ) -> Result<TileMap, AssetError> {
   let place = format!("level {:?}", raw.identifier);
-  let own = level_cells(layers);
+  // every layer checked and its tiles sorted first, so its cells are
+  // counted (every tile layer, empty or not, a sub-layer each, an IntGrid
+  // twice) before any grid is allocated
+  let planned = layers
+    .iter()
+    .rev()
+    .map(|layer| plan_layer(defs, size_px, layer))
+    .collect::<Result<Vec<_>, _>>()?;
+  let own = planned
+    .iter()
+    .map(PlannedLayer::cells)
+    .fold(0, u64::saturating_add);
   check_map_cells(defs.path, &place, own)?;
   *cells = cells.saturating_add(own);
   if *cells > MAX_MAP_CELLS {
@@ -689,12 +925,21 @@ fn build_map(
   }
   map.background = background(defs, &place, raw)?;
   map.properties = fields;
-  for layer in layers.iter().rev() {
-    let out = build_layer(defs, size_px, layer)?;
-    if let Some((tileset, max)) = out.used {
-      map.used_ids.push((map.layers.len(), tileset, max));
+  // a sub-layer's id is a hash: kept apart from the layers' and each other's
+  let mut ids: FastSet<u32> = planned.iter().map(|p| p.info.id).collect();
+  for layer in planned {
+    let own = layer.info.id;
+    for mut out in build_planned(defs, layer)? {
+      if out.layer.info.id != own {
+        while !ids.insert(out.layer.info.id) {
+          out.layer.info.id = (out.layer.info.id.wrapping_add(1) & 0x7FFF_FFFF) | 0x8000_0000;
+        }
+      }
+      if let Some((tileset, max)) = out.used {
+        map.used_ids.push((map.layers.len(), tileset, max));
+      }
+      map.layers.push(out.layer);
     }
-    map.layers.push(out.layer);
   }
   Ok(map)
 }

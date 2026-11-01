@@ -195,6 +195,9 @@ pub(super) struct RawTile {
   #[serde(default)]
   pub f: u8,
   pub t: i64,
+  /// Its alpha, 0 to 1 (a rule's opacity, LDtk 1.4 on)
+  #[serde(default = "one")]
+  pub a: f64,
 }
 
 #[derive(Deserialize)]
