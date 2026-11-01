@@ -43,18 +43,6 @@
             "drawFill": true,
             "id": 3,
             "members": [
-            ],
-            "name": "patrol",
-            "type": "class",
-            "useAs": [
-                "object"
-            ]
-        },
-        {
-            "color": "#ffa0a0a4",
-            "drawFill": true,
-            "id": 4,
-            "members": [
                 {
                     "name": "value",
                     "type": "int",

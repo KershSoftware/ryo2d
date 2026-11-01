@@ -1,35 +1,51 @@
 //! The demo's pages without a window: each plays for five seconds, landing
-//! its map without a warning or a failed map; the meadow's chunks lie at
-//! negative cells, none of them empty, and the HUD shows its bounds and
-//! chunks; its runner runs left across chunks at negative cells and back,
-//! the camera keeping it in view, and a player runs it to both ends of the
-//! meadow without falling off; the chunks in view are labelled with world
-//! text on whole screen pixels; a click on the paint page paints the cell
-//! under the pointer (at negative cells), making its chunk, and a right
-//! click erases it; and the ball dropped over painted ground comes to rest
-//! on it
+//! its map without a warning or a failed map. The meadow is a Tiled
+//! infinite map streamed with a generator: its hand-made chunks lie at
+//! negative cells, the HUD tells them from the generated ones and counts
+//! the chunks resident and in flight, its runner runs on past the meadow's
+//! left end and a player runs it past the right end, onto generated ground
+//! streamed in ahead, without falling, and the file's chunks stay as the
+//! file has them; a save of the map adds a hand-made chunk; the chunks in
+//! view are labelled with world text on whole screen pixels, saying which
+//! are hand-made and which generated. A click on the paint page paints the
+//! cell under the pointer (at negative cells), making its chunk, and a
+//! right click erases it; the ball dropped over painted ground comes to
+//! rest on it. On the endless page the digger digs and builds with the
+//! mouse; leaving takes the changed chunks into the stream's `SavedChunks`
+//! (the HUD counts them, and the chunks in flight as new ground streams
+//! in), and coming back finds them as the player left them
 
 use std::collections::BTreeSet;
 
 use ryo2d::core::dev_log::{self, LogLevel};
 use ryo2d::prelude::*;
 use ryo2d::testing::HeadlessEngine;
-use tile_grids_demo::{Ball, ChunkLabel, Runner, demo};
+use tile_grids_demo::{Ball, ChunkLabel, Digger, Runner, demo};
 
 /// The pages, in the demo's order
 const MEADOW: usize = 0;
 const PAINT: usize = 1;
-const PAGES: usize = 2;
+const ENDLESS: usize = 2;
+const PAGES: usize = 3;
 
 /// The meadow's file
 const MEADOW_FILE: &str = "maps/endless-meadow.tmx";
 
-/// The map each page lands within five seconds, named by layers only it
-/// has: the meadow's `scenery` and `ground`, the paint page's `ground`
-const LANDS: [&[&str]; PAGES] = [&["scenery", "water", "ground"], &["ground"]];
+/// The map each page lands within five seconds, named by its tile layers:
+/// the meadow's `scenery`, `water` and `ground`, the paint page's `ground`,
+/// and the endless world's `backdrop`, `scenery` and `ground`
+const LANDS: [&[&str]; PAGES] = [
+  &["scenery", "water", "ground"],
+  &["ground"],
+  &["backdrop", "scenery", "ground"],
+];
 
 /// Five seconds at the demo's 60 Hz
 const FRAMES: u32 = 300;
+
+/// A cell's side, and a chunk's, in pixels
+const CELL: f32 = 18.0;
+const CHUNK_PX: f32 = CHUNK_SIZE as f32 * CELL;
 
 fn engine_on(page: usize) -> Option<HeadlessEngine> {
   HeadlessEngine::new_or_skip(demo().start_page(page).engine_builder())
@@ -50,6 +66,18 @@ fn map_events(engine: &HeadlessEngine, cursor: &mut MessageCursor<MapEvent>) -> 
   engine
     .world()
     .get_resource::<Messages<MapEvent>>()
+    .map(|messages| cursor.read(messages).cloned().collect())
+    .unwrap_or_default()
+}
+
+/// The chunk events sent since `cursor` last read
+fn chunk_events(
+  engine: &HeadlessEngine,
+  cursor: &mut MessageCursor<ChunkEvent>,
+) -> Vec<ChunkEvent> {
+  engine
+    .world()
+    .get_resource::<Messages<ChunkEvent>>()
     .map(|messages| cursor.read(messages).cloned().collect())
     .unwrap_or_default()
 }
@@ -140,87 +168,218 @@ fn layer_grid(engine: &mut HeadlessEngine, map: Entity, name: &str) -> TileGrid 
     .unwrap_or_else(|| panic!("layer {name:?} has no tiles"))
 }
 
-/// Every tile of a chunk of `grid`
-fn chunk_tiles(grid: &TileGrid, chunk: IVec2) -> usize {
+/// The chunks resident on `map`: those its tile layers have, each once
+fn resident(engine: &mut HeadlessEngine, map: Entity) -> BTreeSet<(i32, i32)> {
+  let world = engine.world_mut();
+  let mut layers = world.query::<(&MapLayerRef, &TileLayerData)>();
+  layers
+    .iter(world)
+    .filter(|(layer, _)| layer.map == map)
+    .flat_map(|(_, data)| data.grid.chunk_coords().map(|c| (c.x, c.y)))
+    .collect()
+}
+
+/// The cells of `chunk`
+fn chunk_cells(chunk: IVec2) -> impl Iterator<Item = IVec2> {
   let side = CHUNK_SIZE as i32;
   let origin = chunk * side;
-  (0..side)
-    .flat_map(|y| (0..side).map(move |x| origin + IVec2::new(x, y)))
+  (0..side).flat_map(move |y| (0..side).map(move |x| origin + IVec2::new(x, y)))
+}
+
+/// Every tile of a chunk of `grid`
+fn chunk_tiles(grid: &TileGrid, chunk: IVec2) -> usize {
+  chunk_cells(chunk)
     .filter(|cell| grid.get(*cell).is_some())
     .count()
 }
 
+/// The meadow's asset as its file has it
+fn meadow_asset(engine: &mut HeadlessEngine) -> TileMap {
+  let handle = engine
+    .assets()
+    .load_now::<TileMap>(MEADOW_FILE)
+    .expect("the meadow");
+  let assets = engine.world().resource::<Assets<TileMap>>();
+  assets.get(&handle).expect("the meadow is loaded").clone()
+}
+
+/// The file's tile layers, each with its name and grid
+fn file_layers(meadow: &TileMap) -> Vec<(String, TileGrid)> {
+  meadow
+    .layers
+    .iter()
+    .enumerate()
+    .filter_map(|(index, layer)| {
+      let grid = meadow.tiles(index)?;
+      Some((layer.info.name.clone(), grid.clone()))
+    })
+    .collect()
+}
+
+/// The hand-made chunks: every engine chunk the file's layers hold tiles in
+fn file_chunks(meadow: &TileMap) -> BTreeSet<(i32, i32)> {
+  file_layers(meadow)
+    .iter()
+    .flat_map(|(_, grid)| grid.chunk_coords().map(|c| (c.x, c.y)).collect::<Vec<_>>())
+    .collect()
+}
+
+/// The meadow's ends, in pixels: the left edge of its leftmost hand-made
+/// chunk on the grass's chunk row, and the right edge of its rightmost
+fn meadow_ends(file: &BTreeSet<(i32, i32)>) -> (f32, f32) {
+  let row: Vec<i32> = file
+    .iter()
+    .filter(|(_, y)| *y == 0)
+    .map(|(x, _)| *x)
+    .collect();
+  let first = *row.iter().min().expect("hand-made chunks on row 0");
+  let last = *row.iter().max().expect("hand-made chunks on row 0");
+  (first as f32 * CHUNK_PX, (last + 1) as f32 * CHUNK_PX)
+}
+
+/// Every cell of every hand-made chunk holds what the file has there, in
+/// every tile layer
+fn assert_file_chunks_unchanged(engine: &mut HeadlessEngine, map: Entity, meadow: &TileMap) {
+  let file = file_chunks(meadow);
+  for (name, saved) in file_layers(meadow) {
+    let live = layer_grid(engine, map, &name);
+    for &(x, y) in &file {
+      for cell in chunk_cells(IVec2::new(x, y)) {
+        assert_eq!(
+          live.get(cell),
+          saved.get(cell),
+          "{name}'s cell {cell}, in hand-made chunk ({x}, {y}), is as the file has it"
+        );
+      }
+    }
+  }
+}
+
+/// The number written just before `marker` in the HUD (`"3 in flight"`),
+/// or just after it (`"Resident: 14"`)
+fn number_before(shown: &str, marker: &str) -> Option<usize> {
+  let at = shown.find(marker)?;
+  let digits: String = shown[..at]
+    .chars()
+    .rev()
+    .take_while(char::is_ascii_digit)
+    .collect::<Vec<_>>()
+    .into_iter()
+    .rev()
+    .collect();
+  digits.parse().ok()
+}
+
+fn number_after(shown: &str, marker: &str) -> Option<usize> {
+  let at = shown.find(marker)? + marker.len();
+  let digits: String = shown[at..]
+    .chars()
+    .take_while(char::is_ascii_digit)
+    .collect();
+  digits.parse().ok()
+}
+
+/// Steps until the HUD has shown no chunk in flight for 20 frames running
+fn settle(engine: &mut HeadlessEngine) {
+  let (mut quiet, mut last) = (0, None);
+  for _ in 0..900 {
+    engine.step().unwrap();
+    last = number_before(&engine.ui_snapshot(), " in flight");
+    quiet = if last == Some(0) { quiet + 1 } else { 0 };
+    if quiet >= 20 {
+      return;
+    }
+  }
+  panic!("the stream never settled: the HUD last showed {last:?} in flight");
+}
+
+/// The meadow's runner, once it has one
+fn runner(engine: &mut HeadlessEngine) -> Option<Vec2> {
+  let world = engine.world_mut();
+  let mut runners = world.query_filtered::<&Transform, With<Runner>>();
+  runners.iter(world).next().map(|t| t.translation)
+}
+
+/// Steps until the meadow's runner has spawned
+fn wait_for_runner(engine: &mut HeadlessEngine) -> Vec2 {
+  for _ in 0..600 {
+    engine.step().unwrap();
+    if let Some(at) = runner(engine) {
+      return at;
+    }
+  }
+  panic!("the runner never spawned: {:#?}", warnings());
+}
+
 #[test]
-fn the_meadow_s_chunks_lie_at_negative_cells_and_the_hud_shows_its_bounds() {
+fn the_meadow_s_hand_made_chunks_lie_at_negative_cells_and_the_hud_tells_them_from_generated() {
   let Some(mut engine) = engine_on(MEADOW) else {
     return;
   };
   let map = spawned_map(&mut engine);
-  engine.step_frames(3).unwrap();
+  wait_for_runner(&mut engine);
+  // Space takes the runner over (it jumps once and stands), so the view
+  // and the chunks round it stay put
+  engine.tap_key(KeyCode::Space);
+  engine.step_frames(90).unwrap();
+  settle(&mut engine);
 
   // The asset: an infinite map, its bounds reaching negative cells
-  let bounds = {
-    let handle = engine
-      .assets()
-      .load_now::<TileMap>(MEADOW_FILE)
-      .expect("the meadow");
-    let assets = engine.world().resource::<Assets<TileMap>>();
-    let meadow = assets.get(&handle).expect("the meadow is loaded");
-    assert!(meadow.infinite, "the meadow is an infinite map");
-    assert_eq!(meadow.size, UVec2::ZERO, "an infinite map has no size");
-    meadow.bounds()
-  };
+  let meadow = meadow_asset(&mut engine);
+  assert!(meadow.infinite, "the meadow is an infinite map");
+  assert_eq!(meadow.size, UVec2::ZERO, "an infinite map has no size");
+  let bounds = meadow.bounds();
   assert!(
     bounds.min.x < 0 && bounds.min.y < 0,
     "bounds reach negative cells: {bounds:?}"
   );
 
-  // Its layers: unbounded, with chunks left of and above the origin, and
-  // none empty (Tiled leaves empty chunks out of the file, and the engine
-  // makes a chunk only where a tile lands)
-  let mut chunks = BTreeSet::new();
-  for name in ["scenery", "water", "ground"] {
-    let grid = layer_grid(&mut engine, map, name);
-    assert_eq!(grid.bounds(), None, "{name} is unbounded");
-    for chunk in grid.chunk_coords() {
-      assert!(
-        chunk_tiles(&grid, chunk) > 0,
-        "{name}'s chunk {chunk} is empty"
-      );
-      chunks.insert((chunk.x, chunk.y));
-    }
+  // Its layers: unbounded, the hand-made chunks left of and above the
+  // origin, each holding tiles, and all resident
+  for (name, _) in file_layers(&meadow) {
+    assert_eq!(
+      layer_grid(&mut engine, map, &name).bounds(),
+      None,
+      "{name} is unbounded"
+    );
   }
-  let ground = layer_grid(&mut engine, map, "ground");
-  let ground_chunks: Vec<IVec2> = ground.chunk_coords().collect();
+  let file = file_chunks(&meadow);
   assert!(
-    ground_chunks.iter().any(|c| c.x < -1),
-    "ground left of the origin by more than a chunk: {ground_chunks:?}"
+    file.iter().any(|c| c.0 < -1) && file.iter().any(|c| c.1 < 0),
+    "hand-made chunks left of and above the origin: {file:?}"
   );
+  let layers = file_layers(&meadow);
+  for &(x, y) in &file {
+    let tiles: usize = layers
+      .iter()
+      .map(|(_, grid)| chunk_tiles(grid, IVec2::new(x, y)))
+      .sum();
+    assert!(tiles > 0, "hand-made chunk ({x}, {y}) holds tiles");
+  }
+  let now = resident(&mut engine, map);
+  assert!(file.is_subset(&now), "every hand-made chunk is resident");
+  let generated: BTreeSet<(i32, i32)> = now.difference(&file).copied().collect();
   assert!(
-    ground_chunks.iter().any(|c| c.y < 0),
-    "ground above the origin: {ground_chunks:?}"
+    !generated.is_empty(),
+    "the stream generated the chunks round the view beyond the file's: {now:?}"
   );
 
-  // The HUD names the bounds (last cells included) and counts the chunks
-  // the layers have of those the bounds reach
+  // The HUD: the hand-made chunks and the file's bounds (last cells
+  // included), the generated chunks resident, and every chunk resident and
+  // in flight
   let shown = engine.ui_snapshot();
   let last = bounds.max - IVec2::ONE;
-  let size = TileGrid::chunk_of(last) - TileGrid::chunk_of(bounds.min) + IVec2::ONE;
-  let bounds_line = format!(
-    "Bounds: cells ({}, {}) to ({}, {})",
-    bounds.min.x, bounds.min.y, last.x, last.y
-  );
-  assert!(shown.contains(&bounds_line), "{bounds_line:?} in {shown}");
-  let chunks_line = format!(
-    "Chunks: {} of the {} the bounds reach",
-    chunks.len(),
-    size.x * size.y
-  );
-  assert!(shown.contains(&chunks_line), "{chunks_line:?} in {shown}");
-  assert!(
-    chunks.len() < (size.x * size.y) as usize,
-    "the bounds hold chunks the map does not have"
-  );
+  for line in [
+    format!("Hand-made: {} chunks", file.len()),
+    format!(
+      "The file's bounds: cells ({}, {}) to ({}, {})",
+      bounds.min.x, bounds.min.y, last.x, last.y
+    ),
+    format!("Generated: {} resident", generated.len()),
+    format!("Resident: {} chunks, 0 in flight", now.len()),
+  ] {
+    assert!(shown.contains(&line), "{line:?} in the HUD");
+  }
   assert!(warnings().is_empty(), "{:#?}", warnings());
 }
 
@@ -244,7 +403,7 @@ fn assets_in_memory() -> MemorySource {
 }
 
 #[test]
-fn the_meadow_s_overlay_and_bounds_follow_a_save() {
+fn a_save_of_the_meadow_adds_a_hand_made_chunk_and_the_hud_follows() {
   let files = assets_in_memory();
   let builder = demo()
     .start_page(MEADOW)
@@ -258,16 +417,10 @@ fn the_meadow_s_overlay_and_bounds_follow_a_save() {
   };
   let map = spawned_map(&mut engine);
   engine.step_frames(3).unwrap();
-  let chunks_shown = |engine: &mut HeadlessEngine| {
-    let shown = engine.ui_snapshot();
-    let at = shown.find("Chunks: ").expect("the chunks line") + "Chunks: ".len();
-    let count: String = shown[at..]
-      .chars()
-      .take_while(char::is_ascii_digit)
-      .collect();
-    count.parse::<usize>().expect("a count")
+  let hand_made = |engine: &mut HeadlessEngine| {
+    number_after(&engine.ui_snapshot(), "Hand-made: ").expect("the hand-made line")
   };
-  let before = chunks_shown(&mut engine);
+  let before = hand_made(&mut engine);
 
   // A save adds a tile far right of the meadow, in a chunk of its own
   let text = std::fs::read_to_string(
@@ -305,31 +458,44 @@ fn the_meadow_s_overlay_and_bounds_follow_a_save() {
   assert!(reloaded, "the save reloaded the meadow: {:#?}", warnings());
   engine.step_frames(2).unwrap();
   assert_eq!(
-    chunks_shown(&mut engine),
+    hand_made(&mut engine),
     before + 1,
-    "the overlay has the new chunk"
+    "the new chunk is hand-made"
   );
-  let bounds = MapsView::new(engine.world_mut())
-    .bounds(map)
-    .expect("bounds");
-  assert_eq!(bounds.max.x, far.x + 1, "the bounds reach the new tile");
+  let far_chunk = TileGrid::chunk_of(far);
+  assert!(
+    resident(&mut engine, map).contains(&(far_chunk.x, far_chunk.y)),
+    "the file's new chunk is resident, far from the view"
+  );
+  let bounds = meadow_asset(&mut engine).bounds();
+  assert_eq!(
+    bounds.max.x,
+    far.x + 1,
+    "the file's bounds reach the new tile"
+  );
   let shown = engine.ui_snapshot();
   let last = bounds.max - IVec2::ONE;
   let line = format!(
-    "Bounds: cells ({}, {}) to ({}, {})",
+    "The file's bounds: cells ({}, {}) to ({}, {})",
     bounds.min.x, bounds.min.y, last.x, last.y
   );
-  assert!(shown.contains(&line), "{line:?} in {shown}");
+  assert!(shown.contains(&line), "{line:?} in the HUD");
   assert!(warnings().is_empty(), "{:#?}", warnings());
 }
 
-/// The chunk labels there are, each with its place in the world
-fn chunk_labels(engine: &mut HeadlessEngine) -> Vec<(IVec2, Vec2)> {
+/// The chunk labels there are, each with its place in the world and text
+fn chunk_labels(engine: &mut HeadlessEngine) -> Vec<(IVec2, Vec2, String)> {
   let world = engine.world_mut();
-  let mut labels = world.query_filtered::<(&ChunkLabel, &Transform), With<Text2d>>();
+  let mut labels = world.query::<(&ChunkLabel, &Transform, &Text2d)>();
   labels
     .iter(world)
-    .map(|(label, transform)| (label.chunk, transform.translation))
+    .map(|(label, transform, text)| {
+      (
+        label.chunk,
+        transform.translation,
+        text.text.as_str().to_string(),
+      )
+    })
     .collect()
 }
 
@@ -340,23 +506,28 @@ fn the_chunk_labels_are_world_text_on_the_chunks_in_view_on_whole_pixels() {
   };
   let map = spawned_map(&mut engine);
   engine.step_frames(10).unwrap();
-  let mut chunks = BTreeSet::new();
-  for name in ["scenery", "water", "ground"] {
-    for chunk in layer_grid(&mut engine, map, name).chunk_coords() {
-      chunks.insert((chunk.x, chunk.y));
-    }
-  }
+  let chunks = resident(&mut engine, map);
+  let file = file_chunks(&meadow_asset(&mut engine));
   let labels = chunk_labels(&mut engine);
   assert!(!labels.is_empty(), "chunks in view are labelled");
-  let side = CHUNK_SIZE as f32 * 18.0;
-  for (chunk, at) in &labels {
+  for (chunk, at, text) in &labels {
     assert!(
       chunks.contains(&(chunk.x, chunk.y)),
       "{chunk} is a chunk the map has"
     );
-    let min = chunk.as_vec2() * side;
+    let kind = if file.contains(&(chunk.x, chunk.y)) {
+      "hand-made"
+    } else {
+      "generated"
+    };
+    assert_eq!(
+      *text,
+      format!("chunk {}, {}, {kind}", chunk.x, chunk.y),
+      "chunk {chunk}'s label"
+    );
+    let min = chunk.as_vec2() * CHUNK_PX;
     assert!(
-      at.cmpge(min).all() && at.cmplt(min + side).all(),
+      at.cmpge(min).all() && at.cmplt(min + CHUNK_PX).all(),
       "chunk {chunk}'s label at {at} lies in it"
     );
     let screen = CameraMut::main(engine.world_mut())
@@ -382,124 +553,169 @@ fn the_chunk_labels_are_world_text_on_the_chunks_in_view_on_whole_pixels() {
   assert!(warnings().is_empty(), "{:#?}", warnings());
 }
 
-/// The meadow's runner, once it has one
-fn runner(engine: &mut HeadlessEngine) -> Option<Vec2> {
-  let world = engine.world_mut();
-  let mut runners = world.query_filtered::<&Transform, With<Runner>>();
-  runners.iter(world).next().map(|t| t.translation)
+/// The topmost ground cell in the column under `at` (world pixels), from a
+/// few cells above it down to the meadow's floor
+fn ground_under(engine: &mut HeadlessEngine, map: Entity, layer: &str, at: Vec2) -> Option<IVec2> {
+  let maps = MapsView::new(engine.world_mut());
+  let cell = maps.world_to_cell(map, layer, at)?;
+  (cell.y - 4..cell.y + 12)
+    .map(|y| IVec2::new(cell.x, y))
+    .find(|c| maps.tile(map, layer, *c).is_some())
+}
+
+/// Whether `at` is on screen
+fn on_screen(engine: &mut HeadlessEngine, at: Vec2) -> Option<Vec2> {
+  let screen = CameraMut::main(engine.world_mut())
+    .expect("the main camera")
+    .world_to_screen(at);
+  ((0.0..=960.0).contains(&screen.x) && (0.0..=600.0).contains(&screen.y)).then_some(screen)
 }
 
 #[test]
-fn the_runner_runs_left_across_negative_chunks_and_back_in_view() {
+fn the_runner_runs_on_past_the_meadow_s_left_end_onto_generated_ground() {
   let Some(mut engine) = engine_on(MEADOW) else {
     return;
   };
-  let mut start = None;
-  for _ in 0..600 {
-    engine.step().unwrap();
-    start = runner(&mut engine);
-    if start.is_some() {
-      break;
-    }
-  }
-  let start = start.expect("the runner spawned");
-  let cell = 18.0;
-  let chunk = CHUNK_SIZE as f32 * cell;
+  let map = spawned_map(&mut engine);
+  let start = wait_for_runner(&mut engine);
+  let meadow = meadow_asset(&mut engine);
+  let file = file_chunks(&meadow);
+  let (left_end, _) = meadow_ends(&file);
+  assert!(start.x > left_end, "the runner starts on the meadow");
 
-  // Left, across a chunk edge into chunk -2, then back right
-  let (mut min_x, mut now) = (start.x, start);
-  for _ in 0..1500 {
+  // By itself it runs left, past the meadow's end and two chunks on, in
+  // view and never falling, chunks streaming in ahead of it
+  let past = left_end - 2.0 * CHUNK_PX;
+  let fallen = 6.0 * CELL;
+  let mut cursor = MessageCursor::<ChunkEvent>::default();
+  let mut landed_beyond = BTreeSet::new();
+  let mut now = start;
+  for _ in 0..3000 {
     engine.step().unwrap();
     now = runner(&mut engine).expect("the runner");
-    min_x = min_x.min(now.x);
-    let screen = CameraMut::main(engine.world_mut())
-      .expect("the main camera")
-      .world_to_screen(now);
+    assert!(now.y < fallen, "the runner fell, at {now}");
     assert!(
-      (0.0..=960.0).contains(&screen.x) && (0.0..=600.0).contains(&screen.y),
-      "the runner at {now} is in view (on screen at {screen})"
+      on_screen(&mut engine, now).is_some(),
+      "the runner at {now} is in view"
     );
-    if min_x < -chunk && now.x > min_x + 10.0 * cell {
+    for event in chunk_events(&engine, &mut cursor) {
+      if let ChunkEvent::Loaded { map: m, chunk } = event
+        && m == map
+        && (chunk.x as f32 + 1.0) * CHUNK_PX <= left_end
+      {
+        landed_beyond.insert((chunk.x, chunk.y));
+      }
+    }
+    if now.x < past {
       break;
     }
   }
   assert!(
-    min_x < -chunk,
-    "the runner reached chunk -2 (x < {}): it got to {min_x}",
-    -chunk
-  );
-  assert!(
-    now.x > min_x + 10.0 * cell,
-    "the runner turned back: at {} after reaching {min_x}",
+    now.x < past,
+    "the runner ran two chunks past the meadow's left end (x {past}): it got to {}",
     now.x
   );
+  assert!(
+    !landed_beyond.is_empty(),
+    "chunks streamed in left of the meadow"
+  );
+  let under = ground_under(&mut engine, map, "ground", now).expect("ground under the runner");
+  let chunk = TileGrid::chunk_of(under);
+  assert!(
+    !file.contains(&(chunk.x, chunk.y)),
+    "the runner runs on generated ground: {under} is in chunk {chunk}"
+  );
+
+  // The labels in view say which chunks are generated
+  let labels = chunk_labels(&mut engine);
+  assert!(
+    labels
+      .iter()
+      .any(|(_, _, text)| text.ends_with(", generated")),
+    "a generated chunk's label is in view: {labels:?}"
+  );
+  assert_file_chunks_unchanged(&mut engine, map, &meadow);
   assert!(warnings().is_empty(), "{:#?}", warnings());
 }
 
 #[test]
-fn a_player_runs_the_runner_to_both_ends_of_the_meadow_without_falling_off() {
+fn a_player_runs_the_runner_past_the_meadow_s_right_end_and_the_file_s_chunks_stay_as_saved() {
   let Some(mut engine) = engine_on(MEADOW) else {
     return;
   };
-  for _ in 0..600 {
+  let map = spawned_map(&mut engine);
+  wait_for_runner(&mut engine);
+  let meadow = meadow_asset(&mut engine);
+  let file = file_chunks(&meadow);
+  let (_, right_end) = meadow_ends(&file);
+
+  // D takes the runner over; held, with a full jump now and then (a tap is
+  // cut short) for the hills and out of the dip, past the meadow's right
+  // end and two chunks on
+  let past = right_end + 2.0 * CHUNK_PX;
+  let fallen = 6.0 * CELL;
+  let mut cursor = MessageCursor::<ChunkEvent>::default();
+  let mut landed_beyond = BTreeSet::new();
+  engine.press_key(KeyCode::KeyD);
+  let mut now = Vec2::ZERO;
+  for frame in 0..4000 {
+    match frame % 40 {
+      0 => engine.press_key(KeyCode::Space),
+      25 => engine.release_key(KeyCode::Space),
+      _ => {}
+    }
     engine.step().unwrap();
-    if runner(&mut engine).is_some() {
+    now = runner(&mut engine).expect("the runner");
+    assert!(now.y < fallen, "the runner fell, at {now}");
+    for event in chunk_events(&engine, &mut cursor) {
+      if let ChunkEvent::Loaded { map: m, chunk } = event
+        && m == map
+        && chunk.x as f32 * CHUNK_PX >= right_end
+      {
+        landed_beyond.insert((chunk.x, chunk.y));
+      }
+    }
+    if now.x > past {
       break;
     }
   }
-  assert!(runner(&mut engine).is_some(), "the runner spawned");
-  let cell = 18.0;
-  // The meadow's ground runs from cell -88 to cell 51, its grass at row 0;
-  // the dip's floor, its lowest walk, is at row 2
-  let ends = [(KeyCode::KeyA, -88.0 * cell), (KeyCode::KeyD, 52.0 * cell)];
-  let fallen = 4.0 * cell;
-  for (key, end) in ends {
-    // WASD takes the runner over; held, with a full jump now and then (a
-    // tap is cut short) for the hills and out of the dip, until it has stood
-    // at the end for a second
-    engine.press_key(key);
-    let (mut nearest, mut held) = (f32::MAX, 0);
-    for frame in 0..2400 {
-      match frame % 40 {
-        0 => engine.press_key(KeyCode::Space),
-        25 => engine.release_key(KeyCode::Space),
-        _ => {}
-      }
-      engine.step().unwrap();
-      let at = runner(&mut engine).expect("the runner");
-      assert!(
-        at.y < fallen,
-        "the runner fell off the meadow at {at}, running toward x {end}"
-      );
-      let gap = (at.x - end).abs();
-      nearest = nearest.min(gap);
-      held = if gap < 2.0 * cell { held + 1 } else { 0 };
-      if held >= 60 {
-        break;
-      }
-    }
-    engine.release_key(key);
-    engine.release_key(KeyCode::Space);
-    engine.step_frames(2).unwrap();
-    assert!(
-      held >= 60,
-      "the runner stood at the meadow's end, x {end}: it came within {nearest} px"
-    );
-  }
+  engine.release_key(KeyCode::KeyD);
+  engine.release_key(KeyCode::Space);
+  assert!(
+    now.x > past,
+    "the runner ran two chunks past the meadow's right end (x {past}): it got to {}",
+    now.x
+  );
+  assert!(
+    !landed_beyond.is_empty(),
+    "chunks streamed in right of the meadow"
+  );
+  let under = ground_under(&mut engine, map, "ground", now).expect("ground under the runner");
+  let chunk = TileGrid::chunk_of(under);
+  assert!(
+    !file.contains(&(chunk.x, chunk.y)),
+    "the runner runs on generated ground: {under} is in chunk {chunk}"
+  );
+  assert_file_chunks_unchanged(&mut engine, map, &meadow);
   assert!(warnings().is_empty(), "{:#?}", warnings());
 }
 
 /// The paint page's layer
 const LAYER: &str = "ground";
 
-/// Where `cell` of the paint page's layer is on screen
-fn cell_on_screen(engine: &mut HeadlessEngine, map: Entity, cell: IVec2) -> Vec2 {
+/// Where `cell` of the page's layer `layer` is on screen
+fn cell_on_screen_in(engine: &mut HeadlessEngine, map: Entity, layer: &str, cell: IVec2) -> Vec2 {
   let at = MapsView::new(engine.world_mut())
-    .cell_to_world(map, LAYER, cell)
-    .expect("the paint layer");
+    .cell_to_world(map, layer, cell)
+    .expect("the layer");
   CameraMut::main(engine.world_mut())
     .expect("the main camera")
     .world_to_screen(at)
+}
+
+/// Where `cell` of the paint page's layer is on screen
+fn cell_on_screen(engine: &mut HeadlessEngine, map: Entity, cell: IVec2) -> Vec2 {
+  cell_on_screen_in(engine, map, LAYER, cell)
 }
 
 /// The cell of the paint page's layer under screen point `at`
@@ -626,6 +842,180 @@ fn the_ball_comes_to_rest_on_painted_ground() {
   assert!(
     row.contains(&below),
     "the ball rests on the painted floor: {at} is over {below}, the floor is {row:?}"
+  );
+  assert!(warnings().is_empty(), "{:#?}", warnings());
+}
+
+/// The endless page's digger, once it has one
+fn digger(engine: &mut HeadlessEngine) -> Option<Vec2> {
+  let world = engine.world_mut();
+  let mut diggers = world.query_filtered::<&Transform, With<Digger>>();
+  diggers.iter(world).next().map(|t| t.translation)
+}
+
+/// The endless page's ground layer
+const GROUND: &str = "ground";
+
+/// The tile at `cell` of the endless world's ground
+fn ground_at(engine: &mut HeadlessEngine, map: Entity, cell: IVec2) -> Option<Tile> {
+  MapsView::new(engine.world_mut()).tile(map, GROUND, cell)
+}
+
+/// The store the endless world's stream keeps changed chunks in
+fn saved_chunks(engine: &HeadlessEngine, map: Entity) -> SavedChunks {
+  engine
+    .world()
+    .get::<MapStream>(map)
+    .and_then(|stream| stream.saved.clone())
+    .expect("the endless world's stream keeps SavedChunks")
+}
+
+#[test]
+fn the_endless_world_keeps_what_you_dig_and_build_when_you_leave_and_come_back() {
+  let Some(mut engine) = engine_on(ENDLESS) else {
+    return;
+  };
+  let map = spawned_map(&mut engine);
+  for _ in 0..600 {
+    if digger(&mut engine).is_some() {
+      break;
+    }
+    engine.step().unwrap();
+  }
+  assert!(digger(&mut engine).is_some(), "the digger spawned");
+  settle(&mut engine);
+
+  // The HUD counts the chunks resident, none in flight and none saved
+  let shown = engine.ui_snapshot();
+  let count = resident(&mut engine, map).len();
+  for line in [
+    format!("Resident: {count} chunks, 0 in flight"),
+    "Saved: 0 chunks".to_string(),
+  ] {
+    assert!(shown.contains(&line), "{line:?} in the HUD");
+  }
+
+  // Dig the top ground cell two columns right of the digger, and build a
+  // cell of open air three left and two up
+  let at = digger(&mut engine).expect("the digger");
+  let here = MapsView::new(engine.world_mut())
+    .world_to_cell(map, GROUND, at)
+    .expect("the ground layer");
+  let dig = ground_under(
+    &mut engine,
+    map,
+    GROUND,
+    at + Vec2::new(2.0 * CELL, -2.0 * CELL),
+  )
+  .expect("ground two columns right");
+  let screen = cell_on_screen_in(&mut engine, map, GROUND, dig);
+  click(&mut engine, screen, MouseButton::Left);
+  assert_eq!(
+    ground_at(&mut engine, map, dig),
+    None,
+    "the click dug {dig}"
+  );
+  let build = (2..=5)
+    .map(|up| here + IVec2::new(-3, -up))
+    .find(|cell| ground_at(&mut engine, map, *cell).is_none())
+    .expect("open air up and left");
+  let screen = cell_on_screen_in(&mut engine, map, GROUND, build);
+  click(&mut engine, screen, MouseButton::Right);
+  assert!(
+    ground_at(&mut engine, map, build).is_some(),
+    "the right click built {build}"
+  );
+  // Building where the digger stands builds nothing
+  let screen = cell_on_screen_in(&mut engine, map, GROUND, here);
+  click(&mut engine, screen, MouseButton::Right);
+  assert_eq!(
+    ground_at(&mut engine, map, here),
+    None,
+    "no ground built over the digger"
+  );
+  let shown = engine.ui_snapshot();
+  assert!(shown.contains("Dug 1, built 1"), "the HUD counts the edits");
+
+  // Leaving: E travels far right; the chunks left behind unload, those
+  // changed into the stream's SavedChunks, while new ones stream in
+  let edited: BTreeSet<(i32, i32)> = [dig, build]
+    .iter()
+    .map(|cell| TileGrid::chunk_of(*cell))
+    .map(|c| (c.x, c.y))
+    .collect();
+  engine.tap_key(KeyCode::KeyE);
+  let mut cursor = MessageCursor::<ChunkEvent>::default();
+  let mut kept = BTreeSet::new();
+  let mut most_in_flight = 0;
+  for _ in 0..600 {
+    engine.step().unwrap();
+    for event in chunk_events(&engine, &mut cursor) {
+      if let ChunkEvent::Unloading {
+        map: m,
+        chunk,
+        changed: Some(_),
+      } = event
+        && m == map
+      {
+        kept.insert((chunk.x, chunk.y));
+      }
+    }
+    let flying = number_before(&engine.ui_snapshot(), " in flight").unwrap_or(0);
+    most_in_flight = most_in_flight.max(flying);
+    if edited.is_subset(&kept) && most_in_flight > 0 {
+      break;
+    }
+  }
+  assert!(
+    edited.is_subset(&kept),
+    "the edited chunks {edited:?} unloaded changed: {kept:?}"
+  );
+  assert!(
+    most_in_flight > 0,
+    "the HUD counted the chunks in flight after the travel"
+  );
+  let away = digger(&mut engine).expect("the digger");
+  assert!(
+    away.x > at.x + 3000.0,
+    "the digger travelled far right: from {at} to {away}"
+  );
+  settle(&mut engine);
+  let store = saved_chunks(&engine, map);
+  for &(x, y) in &edited {
+    assert!(
+      store.get(IVec2::new(x, y)).is_some(),
+      "the store keeps chunk ({x}, {y})"
+    );
+  }
+  let line = format!("Saved: {} chunk", store.len());
+  assert!(engine.ui_snapshot().contains(&line), "{line:?} in the HUD");
+
+  // Coming back: Q travels back, and the edited chunks land from the store
+  // as the player left them
+  engine.tap_key(KeyCode::KeyQ);
+  let mut back = BTreeSet::new();
+  for _ in 0..600 {
+    engine.step().unwrap();
+    for event in chunk_events(&engine, &mut cursor) {
+      if let ChunkEvent::Loaded { map: m, chunk } = event
+        && m == map
+      {
+        back.insert((chunk.x, chunk.y));
+      }
+    }
+    if edited.is_subset(&back) {
+      break;
+    }
+  }
+  assert!(
+    edited.is_subset(&back),
+    "the edited chunks came back: {back:?}"
+  );
+  settle(&mut engine);
+  assert_eq!(ground_at(&mut engine, map, dig), None, "{dig} is still dug");
+  assert!(
+    ground_at(&mut engine, map, build).is_some(),
+    "{build} is still built"
   );
   assert!(warnings().is_empty(), "{:#?}", warnings());
 }

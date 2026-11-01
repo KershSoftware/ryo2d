@@ -57,6 +57,17 @@ pub(crate) fn wasd(what: &str) -> Control {
   )
 }
 
+/// A character's keys: WASD moves (the arrows belong to the settings
+/// panel), Space jumps, and the first pad's left stick or D-pad moves and
+/// South jumps
+pub(crate) fn bindings() -> MoveBindings {
+  MoveBindings::default()
+    .with_left([KeyCode::KeyA])
+    .with_right([KeyCode::KeyD])
+    .with_up([KeyCode::KeyW])
+    .with_down([KeyCode::KeyS])
+}
+
 /// Where WASD and the first pad's sticks point, each axis -1 to 1 (+Y
 /// down); the arrows belong to the settings panel
 pub(crate) fn pan_input(input: &Input) -> Vec2 {

@@ -6629,6 +6629,7 @@ version = "0.1.0"
 dependencies = [
  "demo-kit",
  "ryo2d",
+ "ryo2d-procgen",
 ]
 
 [[package]]

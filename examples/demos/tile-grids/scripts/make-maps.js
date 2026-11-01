@@ -106,7 +106,6 @@ function classType(name, members, usage) {
   type.usageFlags = usage;
 }
 classType("player_start", [["facing", tiled.propertyValue("Facing", "right")]], ClassPropertyType.MapObjectClass);
-classType("patrol", [], ClassPropertyType.MapObjectClass);
 classType("coin", [["value", 1]], ClassPropertyType.MapObjectClass | ClassPropertyType.TileClass);
 
 // ---- the tileset -----------------------------------------------------------
@@ -156,13 +155,13 @@ CellSet.prototype.each = function (f) {
 };
 
 // The Pixel Platformer tile for a ground cell, from which of the four cells
-// beside it are ground: rows of the sheet for open above and below (a one
-// cell platform), open above (a grass top), closed both ways (earth) and
-// open below (a bottom edge); in each row, the tile for open on both sides,
-// open on the left, closed both sides, and open on the right
-function groundTile(ground, x, y) {
-  var up = ground.has(x, y - 1), down = ground.has(x, y + 1);
-  var left = ground.has(x - 1, y), right = ground.has(x + 1, y);
+// beside it are ground (`has(x, y)`): rows of the sheet for open above and
+// below (a one cell platform), open above (a grass top), closed both ways
+// (earth) and open below (a bottom edge); in each row, the tile for open on
+// both sides, open on the left, closed both sides, and open on the right
+function groundTile(has, x, y) {
+  var up = has(x, y - 1), down = has(x, y + 1);
+  var left = has(x - 1, y), right = has(x + 1, y);
   var row = !up ? (down ? 20 : 0) : (down ? 120 : 140);
   var column = left ? (right ? 2 : 3) : (right ? 1 : 0);
   return row + column;
@@ -187,11 +186,16 @@ function tileObject(tileset, id, x, y, name) {
 // ---- the endless meadow ----------------------------------------------------
 
 // An infinite map of 18 px cells, saved in Tiled's chunks of 16 x 16 cells:
-// a meadow from cell -88 to cell 51 with its grass at row 0, hills, a pond
+// a meadow from cell -96 to cell 63 with its grass at row 0, hills, a pond
 // under a rope bridge, a dip, planks and coins; and a small island far up
-// and left, at cell (-204, -40), alone in its chunk. The `patrol` rectangle
-// covers the meadow end to end: the page walls its ends, and the runner,
-// starting at `player_start`, turns before them
+// and left, at cell (-204, -40), alone in its chunk. The meadow is the
+// hand-made part of an endless world: the page's generator streams the
+// ground on past both its ends, at the grass row, down to the meadow's
+// bottom row. So the meadow ends on the edges of the engine's chunks (32 x
+// 32 cells: -96 and 63 are the first and last cells of chunks -3 and 1),
+// whose cells a stream leaves to the file, and its end columns are laid as
+// ground going on, with no edge facing the generated ground. The runner
+// starts at `player_start`
 var CELL = 18;
 var BOTTOM = 5;
 var meadow = new TileMap();
@@ -203,9 +207,9 @@ meadow.addTileset(P);
 
 // The grass row of each column: [from, to, row], and the pond and the dip
 var SURFACE = [
-  [-88, -69, 0], [-68, -67, -1], [-66, -63, -2], [-62, -61, -1], [-60, -46, 0],
+  [-96, -69, 0], [-68, -67, -1], [-66, -63, -2], [-62, -61, -1], [-60, -46, 0],
   [-36, -27, 0], [-26, -21, -1], [-20, 7, 0], [8, 9, -1], [10, 13, -2], [14, 15, -1],
-  [16, 33, 0], [37, 51, 0],
+  [16, 33, 0], [37, 63, 0],
 ];
 var POND = { from: -45, to: -37, floor: 3 }; // bank to bank; the bridge spans it at row 0
 var DIP = { from: 34, to: 36, floor: 2 };
@@ -220,6 +224,15 @@ for (var px = POND.from; px <= POND.to; px++) {
 }
 for (var dx = DIP.from; dx <= DIP.to; dx++) {
   for (var dy = DIP.floor; dy <= BOTTOM; dy++) ground.add(dx, dy);
+}
+// The ground goes on past the meadow's ends, at the grass row of each down
+// to the bottom row: the generated world's, which the end columns meet
+var LEFT = SURFACE[0], RIGHT = SURFACE[SURFACE.length - 1];
+function meadowGround(x, y) {
+  if (ground.has(x, y)) return true;
+  if (x < LEFT[0]) return y >= LEFT[2] && y <= BOTTOM;
+  if (x > RIGHT[1]) return y >= RIGHT[2] && y <= BOTTOM;
+  return false;
 }
 // The island: three rows, nine cells across
 var ISLAND = { x: -204, y: -40, width: 9 };
@@ -262,14 +275,14 @@ var TREES = [-74, -31, 2, 45];
 for (var t = 0; t < TREES.length; t++) tree(TREES[t]);
 var PINES = [-84, -64, -24, -18, 19, 31, 47];
 for (var p = 0; p < PINES.length; p++) standing(PINES[p], 126);
-standing(-86, 85); // a sign pointing right, at the left end
-standing(49, 84); // and left, at the right end
+standing(-86, 85); // a sign pointing right, near the left end
+standing(49, 84); // and left, near the right end
 standing(-49, 128);
 standing(25, 128, Tile.FlippedHorizontally);
 standing(-52, 16);
 standing(12, 16);
 // Sprouts on open grass, by a hash of the column
-for (var sx = -88; sx <= 51; sx++) {
+for (var sx = LEFT[0]; sx <= RIGHT[1]; sx++) {
   var top = surfaceAt(sx);
   if (top === null || decorated.has(sx, top - 1)) continue;
   var roll = hash(sx, top, 1);
@@ -308,7 +321,7 @@ meadow.addLayer(water);
 var groundLayer = tileLayer("ground");
 var groundEdit = groundLayer.edit();
 ground.each(function (x, y) {
-  groundEdit.setTile(x, y, P.tile(groundTile(ground, x, y)));
+  groundEdit.setTile(x, y, P.tile(groundTile(meadowGround, x, y)));
 });
 for (var bx = POND.from; bx <= POND.to; bx++) {
   var id = bx == POND.from ? 90 : (bx == POND.to ? 92 : 91);
@@ -322,8 +335,8 @@ for (var q = 0; q < PLANKS.length; q++) {
 groundEdit.apply();
 meadow.addLayer(groundLayer);
 
-// The objects: where the runner starts and the meadow it keeps to, and the
-// coins, tile objects of the coin tile taking its class
+// The objects: where the runner starts, and the coins, tile objects of the
+// coin tile taking its class
 var objects = new ObjectGroup("objects");
 meadow.addLayer(objects);
 var start = new MapObject(MapObject.Point, "start");
@@ -332,13 +345,6 @@ start.x = -16 * CELL + CELL / 2;
 start.y = 0;
 objects.addObject(start);
 start.setProperty("facing", tiled.propertyValue("Facing", "left"));
-var patrol = new MapObject(MapObject.Rectangle, "patrol");
-patrol.className = "patrol";
-patrol.x = -88 * CELL;
-patrol.y = -3 * CELL;
-patrol.width = (52 - -88) * CELL;
-patrol.height = 3 * CELL;
-objects.addObject(patrol);
 // Coins: [cell x, row]; walked through at row -1, jumped to above it, and
 // over the planks
 var COINS = [

@@ -1,5 +1,6 @@
 # Tile Grids Demo - Ryo2D Engine Project Configuration
-# A Tiled infinite map, and painting an infinite map anywhere
+# A hand-made Tiled meadow in an endless streamed world, painting an
+# infinite map anywhere, and an endless world that keeps what you dig and build
 
 [project]
 name = "Tile Grids Demo"

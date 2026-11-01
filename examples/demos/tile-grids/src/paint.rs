@@ -379,7 +379,9 @@ impl DemoPage for PaintPage {
 
     self.read_chunks(ctx, root, dt);
     if let Some(grid) = self.grid {
-      self.labels.place(ctx, grid, &self.chunks, self.overlay);
+      self
+        .labels
+        .place(ctx, grid, &self.chunks, self.overlay, &|_| None);
     }
     if self.overlay
       && let Some(grid) = self.grid
@@ -484,14 +486,17 @@ impl DemoPage for PaintPage {
       &Minimap {
         caption: "Chunks there are; gold: the bounds; white: the view",
         chunks: &self.chunks,
+        generated: &[],
         fresh: &self
           .fresh
           .iter()
           .map(|&(chunk, left)| (chunk, left / FLASH))
           .collect::<Vec<_>>(),
+        marked: &[],
         bounds: Some(self.bounds),
         view: Rect::new(a.x, a.y, b.x - a.x, b.y - a.y),
         dot: ball.map(|at| grid.to_cells(at)),
+        window: None,
       },
     );
     self.covered.push(drawn);

@@ -37,7 +37,7 @@ Items from 4f to 6b were copied from their execution records. Items from earlier
     - The unbounded static-frame margin is thin: 49.2 of 50 µs in one run, 0.8 µs in another. Name the cause of the unbounded map's 48 extra chains in the bench or the record.
     - The Disabled-map limit compares about 60 ms with `reload_timing`'s 76.9 ms only loosely ("as does").
   - **The demo.**
-    - `examples/demos/tile-grids/tests/pages.rs` hardcodes the cell size 18.0 (in three places) beside `CELL` in `src/shared.rs`.
+    - `examples/demos/tile-grids/tests/pages.rs` hardcodes the cell size 18.0 (its own `CELL`) beside `CELL` in `src/shared.rs`.
     - Page 1's right-hand HUD and minimap cover part of the sky and the runner's path. This is within the demo standard.
   - **Docs.**
     - `src/core/asset/AGENTS.md` (~82) still says an infinite map's world rectangle is "read from its chunks", and its `cx.read` list leaves out listed maps.

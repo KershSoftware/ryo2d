@@ -1,43 +1,49 @@
-//! The page "A map without fixed edges (Tiled's infinite format)":
-//! `maps/endless-meadow.tmx`, a map Tiled saved with no fixed size, as the
-//! chunks of 16 x 16 cells the designer painted, at any cells, negative ones
-//! too. It loads by asset path and spawns with a `MapRoot` like any map.
-//! Its cells are signed: the meadow runs from cell -88 to cell 51 with its
-//! grass at row 0 (the scenery and the sky above it at negative rows), and
-//! a small island sits far up and left at cell (-204, -40). The engine
-//! keeps each layer in chunks of 32 x 32 cells where it has tiles, so the
-//! empty sky between the island and the meadow costs nothing;
-//! `ctx.maps().bounds()` is the rectangle of the cells holding tiles, as the
-//! map is now (the asset's `TileMap::bounds()` until a save or an edit
-//! changes it).
+//! The page "A hand-made meadow in an endless world": `maps/endless-meadow.tmx`,
+//! a map Tiled saved with no fixed size, as the chunks of 16 x 16 cells the
+//! designer painted, at any cells, negative ones too, spawned with a
+//! `MapRoot` and a `MapStream`. Its cells are signed: the meadow runs from
+//! cell -96 to cell 63 with its grass at row 0 (the scenery and the sky
+//! above it at negative rows), and a small island sits far up and left at
+//! cell (-204, -40).
 //!
-//! The meadow is the hand-made part of a world, and it ends: the
-//! designer's `patrol` rectangle covers it end to end, and the page puts a
-//! wall at each end, so neither the runner nor a player falls off. Endless
-//! terrain beyond it is streaming's to generate, which this page will show.
+//! The file's chunks are the hand-made part of an endless world. The
+//! engine keeps each layer in chunks of 32 x 32 cells, and every one a
+//! Tiled chunk touches is the file's: resident from the start, never
+//! unloaded, never generated. The stream's generator fills every other
+//! chunk round the view as it comes near (`terrain::MeadowWorld`): the
+//! meadow's ground going on past both its ends with the same tiles, picked
+//! by the same rule, at the grass row of each end and down to the meadow's
+//! bottom row, its hills rising from the seam on noise. The meadow ends on
+//! the edges of its chunks, its end columns laid as ground going on, so the
+//! seam reads as one world.
 //!
-//! A runner patrols the meadow by itself, starting at `player_start` and
-//! turning before the walls: it jumps steps and dips, hops now and then,
-//! and collects the coins (tile objects taking the coin tile's class, back
-//! after a few seconds). WASD or a pad takes over. The overlay outlines
-//! the chunks there are and the map's bounds, labels the chunks with their
-//! coordinates in world text, and a minimap shows them all with the view.
-//! A save of the map in Tiled (hot reload) redraws the overlay and the
-//! bounds from the map as saved
+//! A runner runs by itself from `player_start`, and keeps going: across
+//! the meadow, jumping steps and dips, hopping now and then and collecting
+//! the coins (tile objects taking the coin tile's class, back after a few
+//! seconds), then on over generated ground, which streams in ahead of it.
+//! WASD or a pad takes over. The overlay outlines the chunks resident, the
+//! file's in white and the generated in green, labels them in world text,
+//! and outlines the file's bounds; the HUD counts the hand-made chunks, the
+//! generated ones resident, every chunk resident and those in flight; a
+//! minimap follows the view. A save of the map in Tiled (hot reload)
+//! redraws the overlay, the hand-made chunks and the bounds from the map as
+//! saved
 
 use demo_kit::prelude::*;
 
-use crate::overlay::{self, BOUNDS_LINE, ChunkLabels, Grid, Minimap};
-use crate::shared::{
-  CELL, DIM, GOOD, HOT, View, beside_panel, clear_to, hero, hud, load, pan_input, wasd,
+use crate::overlay::{
+  self, BOUNDS_LINE, CHUNK_FILL, CHUNK_LINE, ChunkLabels, FRESH, GENERATED, Grid, Loading, Minimap,
+  Streamed, Tag, has_chunk,
 };
+use crate::shared::{
+  CELL, DIM, GOOD, HOT, View, beside_panel, bindings, clear_to, hero, hud, load, pan_input, wasd,
+};
+use crate::terrain::{GROUND, MeadowWorld};
 
 /// The map
 const MEADOW: &str = "maps/endless-meadow.tmx";
 /// The meadow's background, should its file give none
 const SKY: Color = Color::rgb(159, 220, 244);
-/// The layer whose cells the page names
-const GROUND: &str = "ground";
 /// The runner's sprite on Tiny Dungeon's sheet (an adventurer), drawn over
 /// the map's three tile layers (z 0 to 2)
 const RUNNER_SPRITE: u32 = 88;
@@ -50,12 +56,10 @@ const RUN_SPEED: f32 = 130.0;
 const HOP_EVERY: f32 = 1.6;
 /// Seconds before a collected coin comes back
 const COIN_BACK: f32 = 6.0;
-/// How far before a wall the auto-run turns
-const TURN_BEFORE: f32 = 3.0 * CELL;
-/// A wall's thickness, and how far above the meadow's lowest edge it rises
-const WALL: Vec2 = Vec2::new(16.0, 2000.0);
 /// The settings rows, for the notes under the panel
 const ROWS: usize = 3;
+/// The chunks a side the minimap shows round the view
+const WINDOW: IVec2 = IVec2::new(9, 5);
 
 /// The meadow's runner
 #[derive(Component, Debug)]
@@ -64,20 +68,25 @@ pub struct Runner;
 pub(crate) struct InfinitePage {
   view: View,
   root: Option<Entity>,
-  /// The landed map's bounds: the cells its tile layers hold tiles in
+  map: Option<Handle<TileMap>>,
+  /// The file's bounds (the cells its tile layers hold tiles in) and its
+  /// chunks, by row: the hand-made part of the world
   bounds: CellRect,
+  hand_made: Vec<IVec2>,
   /// Where the runner starts (its feet), and the way it faces
   start: Vec2,
   facing: f32,
-  /// The meadow's x range: walls at both ends, the auto-run turning before
-  /// them
-  patrol: (f32, f32),
   runner: Option<Entity>,
   sprite: Option<Entity>,
-  /// The landed map's grid and chunks, and its lowest edge (world y)
+  /// The landed map's grid, and its lowest edge (world y): the meadow's
+  /// bottom, which the generated ground keeps to
   grid: Option<Grid>,
-  chunks: Vec<IVec2>,
   floor: f32,
+  /// What the stream has resident, and of it what is generated (by row)
+  streamed: Streamed,
+  generated: Vec<IVec2>,
+  /// The stream's load distance
+  load_distance: f32,
   /// The camera's centre, easing after the runner
   eye: Option<Vec2>,
   /// Seconds until the next hop
@@ -95,15 +104,18 @@ impl InfinitePage {
     Self {
       view: View::new(true),
       root: None,
+      map: None,
       bounds: CellRect::default(),
+      hand_made: Vec::new(),
       start: Vec2::ZERO,
       facing: -1.0,
-      patrol: (-1000.0, 1000.0),
       runner: None,
       sprite: None,
       grid: None,
-      chunks: Vec::new(),
       floor: f32::INFINITY,
+      streamed: Streamed::default(),
+      generated: Vec::new(),
+      load_distance: 0.0,
       eye: None,
       hop: HOP_EVERY,
       coins: 0,
@@ -114,59 +126,46 @@ impl InfinitePage {
     }
   }
 
-  /// The designer's marks in the asset: the start, the way the runner
-  /// faces there, and the meadow's ends
+  /// The designer's marks in the asset: the start, and the way the runner
+  /// faces there
   fn read_marks(&mut self, map: &TileMap) {
     for layer in &map.layers {
       let LayerKind::Objects(objects) = &layer.kind else {
         continue;
       };
       for object in objects {
-        let at = layer.info.offset + object.position;
-        match object.class.as_deref() {
-          Some("player_start") => {
-            self.start = at;
-            if let Some(PropertyValue::Enum { value, .. }) = object.properties.get("facing") {
-              self.facing = if value == "left" { -1.0 } else { 1.0 };
-            }
+        if object.class.as_deref() == Some("player_start") {
+          self.start = layer.info.offset + object.position;
+          if let Some(PropertyValue::Enum { value, .. }) = object.properties.get("facing") {
+            self.facing = if value == "left" { -1.0 } else { 1.0 };
           }
-          Some("patrol") => self.patrol = (at.x, at.x + object.size.x),
-          _ => {}
         }
       }
     }
   }
 
-  /// The landed map's chunks, bounds and lowest edge, as it is now: at
-  /// landing, and again after each save of its file
-  fn read_map(&mut self, ctx: &mut SceneContext, root: Entity) {
-    overlay::map_chunks(ctx.world, root, &mut self.chunks);
-    self.bounds = ctx.maps().bounds(root).unwrap_or_default();
-    // The map's root sits at the origin, so its cells' rows are world rows
-    if !self.bounds.is_empty() {
-      self.floor = self.bounds.max.y as f32 * CELL;
+  /// The file's bounds and chunks, as it is now: as the page opens, and
+  /// again after each save of the file. Every engine chunk a layer of the
+  /// file holds tiles in is the file's
+  fn read_file(&mut self, map: &TileMap) {
+    self.bounds = map.bounds();
+    self.hand_made.clear();
+    for index in 0..map.layers.len() {
+      if let Some(grid) = map.tiles(index)
+        && grid.bounds().is_none()
+      {
+        self.hand_made.extend(grid.chunk_coords());
+      }
     }
+    self
+      .hand_made
+      .sort_unstable_by_key(|chunk| (chunk.y, chunk.x));
+    self.hand_made.dedup();
   }
 
-  /// Once the map has landed: its grid and chunks, the walls at the
-  /// meadow's ends, the coins' triggers, and the runner
+  /// Once the map has landed: its grid, the coins' triggers, and the runner
   fn land(&mut self, ctx: &mut SceneContext, root: Entity) {
     self.grid = Grid::of(ctx, root, GROUND, CELL);
-    self.read_map(ctx, root);
-
-    // The meadow is all the map has here, so its ends are walled: the
-    // terrain beyond them is streaming's to generate
-    let floor = if self.floor.is_finite() {
-      self.floor
-    } else {
-      0.0
-    };
-    for x in [self.patrol.0 - WALL.x / 2.0, self.patrol.1 + WALL.x / 2.0] {
-      ctx.world.spawn((
-        Transform::from_xy(x, floor - WALL.y / 2.0),
-        Collider::rect(WALL.x, WALL.y),
-      ));
-    }
 
     let mut objects = ctx.world.query::<(Entity, &MapObject)>();
     let coins: Vec<Entity> = objects
@@ -193,6 +192,8 @@ impl InfinitePage {
         PlatformerMovement::default()
           .with_run(RUN_SPEED, 0.08, 0.06)
           .with_jump(58.0, 0.36),
+        // The chunks round it stay loaded, wherever the camera looks
+        StreamAnchor,
         Runner,
       ))
       .id();
@@ -241,11 +242,6 @@ impl InfinitePage {
         .get::<CharacterState>(runner)
         .cloned()
         .unwrap_or_default();
-      if at.x <= self.patrol.0 + TURN_BEFORE {
-        self.facing = 1.0;
-      } else if at.x >= self.patrol.1 - TURN_BEFORE {
-        self.facing = -1.0;
-      }
       let mut jump = false;
       if state.on_floor {
         // A wall ahead: its normal points back at the runner
@@ -286,10 +282,7 @@ impl InfinitePage {
   /// lowest edge kept at or below the screen's bottom: there at once the
   /// first time, easing after
   fn follow(&mut self, ctx: &mut SceneContext) {
-    let focus = self
-      .runner
-      .and_then(|runner| ctx.world.get::<Transform>(runner))
-      .map_or(self.start, |transform| transform.translation);
+    let focus = self.runner_at(ctx).unwrap_or(self.start);
     let zoom = self.zoom as f32;
     let mut target = self.view.centre_for(ctx, focus, zoom);
     target.y = target.y.min(self.floor - View::half_screen(ctx, zoom).y);
@@ -300,25 +293,59 @@ impl InfinitePage {
     self.eye = Some(eye);
     self.view.place(ctx, eye, zoom, jump);
   }
+
+  fn runner_at(&self, ctx: &SceneContext) -> Option<Vec2> {
+    self
+      .runner
+      .and_then(|runner| ctx.world.get::<Transform>(runner))
+      .map(|transform| transform.translation)
+  }
 }
 
-/// WASD moves (the arrows belong to the settings panel), Space jumps, and
-/// the first pad's left stick or D-pad moves and South jumps
-fn bindings() -> MoveBindings {
-  MoveBindings::default()
-    .with_left([KeyCode::KeyA])
-    .with_right([KeyCode::KeyD])
-    .with_up([KeyCode::KeyW])
-    .with_down([KeyCode::KeyS])
+/// What a chunk's label says it is, from the file's chunks
+fn tag(hand_made: &[IVec2], chunk: IVec2) -> Tag {
+  if has_chunk(hand_made, chunk) {
+    Some(("hand-made", CHUNK_LINE))
+  } else {
+    Some(("generated", GENERATED))
+  }
+}
+
+/// The generator's world from the meadow as its file has it: the ground
+/// layer's bottom row (the bounds' last), the first and last columns with
+/// ground there, and how high each of those columns' ground reaches
+fn meadow_world(map: &TileMap) -> Option<MeadowWorld> {
+  let grid = map.tiles(map.layer_index(GROUND)?)?;
+  let bounds = map.bounds();
+  let floor = bounds.max.y - 1;
+  let ground = |x: i32, y: i32| grid.get(IVec2::new(x, y)).is_some();
+  let first = (bounds.min.x..bounds.max.x).find(|&x| ground(x, floor))?;
+  let last = (bounds.min.x..bounds.max.x)
+    .rev()
+    .find(|&x| ground(x, floor))?;
+  let top = |x: i32| {
+    let mut y = floor;
+    while y > bounds.min.y && ground(x, y - 1) {
+      y -= 1;
+    }
+    y
+  };
+  let tileset = grid.get(IVec2::new(first, floor))?.tileset;
+  Some(MeadowWorld {
+    tileset,
+    left: IVec2::new(first, top(first)),
+    right: IVec2::new(last, top(last)),
+    floor,
+  })
 }
 
 impl DemoPage for InfinitePage {
   fn name(&self) -> &str {
-    "A map without fixed edges (Tiled's infinite format)"
+    "A hand-made meadow in an endless world"
   }
 
   fn description(&self) -> &str {
-    "No fixed size: chunks at any cells, negative ones too, and only the painted ones stored"
+    "A Tiled infinite map's chunks are the meadow; a generator streams the ground on past both ends"
   }
 
   fn settings(&mut self, s: &mut Settings) {
@@ -338,28 +365,36 @@ impl DemoPage for InfinitePage {
     let Some(map) = load::<TileMap>(ctx, MEADOW) else {
       return;
     };
-    // The asset, borrowed: the designer's marks, its lowest edge (the
-    // bottom of its bounds; the root sits at the origin, so its cells' rows
-    // are world rows) and its background
-    let background = {
+    // The asset, borrowed: the designer's marks, the file's bounds and
+    // chunks, its lowest edge (the bottom of its bounds; the root sits at
+    // the origin, so its cells' rows are world rows), its background, and
+    // the meadow's ends, where the generated world meets it
+    let (background, world) = {
       let assets = ctx.assets();
       let Some(data) = assets.get(&map) else {
         return;
       };
       self.read_marks(data);
-      let bounds = data.bounds();
-      if !bounds.is_empty() {
-        self.floor = (bounds.max.y * data.tile_size.y as i32) as f32;
+      self.read_file(data);
+      if !self.bounds.is_empty() {
+        self.floor = (self.bounds.max.y * data.tile_size.y as i32) as f32;
       }
-      data.background
+      (data.background, meadow_world(data))
     };
     clear_to(ctx, background.unwrap_or(SKY));
+    let Some(world) = world else {
+      game_warn!("the meadow has no ground to go on from");
+      return;
+    };
+    let stream = MapStream::new(move |request: ChunkRequest| world.chunk(request));
+    self.load_distance = stream.load_distance;
     self.root = Some(
       ctx
         .world
-        .spawn((Transform::IDENTITY, MapRoot::new(map)))
+        .spawn((Transform::IDENTITY, MapRoot::new(map.clone()), stream))
         .id(),
     );
+    self.map = Some(map);
     self.follow(ctx);
   }
 
@@ -375,22 +410,53 @@ impl DemoPage for InfinitePage {
       .messages::<MapEvent>()
       .iter()
       .any(|event| matches!(event, MapEvent::Reloaded { map } if *map == root));
-    if saved && self.runner.is_some() {
-      self.read_map(ctx, root);
+    if saved && let Some(map) = self.map.clone() {
+      let assets = ctx.assets();
+      if let Some(data) = assets.get(&map) {
+        self.read_file(data);
+      }
     }
+    let events = ctx.messages::<ChunkEvent>();
     self.steer(ctx, dt);
     self.coins += ctx.messages::<PickedUp>().len() as u32;
     self.follow(ctx);
-    if let Some(grid) = self.grid {
-      self.labels.place(ctx, grid, &self.chunks, self.overlay);
-    }
+    let Some(grid) = self.grid else {
+      return;
+    };
+    let runner: Vec<Vec2> = self.runner_at(ctx).into_iter().collect();
+    let loading = Loading {
+      anchors: &runner,
+      distance: self.load_distance,
+    };
+    self.streamed.update(ctx, root, grid, &events, loading, dt);
+    let hand_made = &self.hand_made;
+    self.generated.clear();
+    self.generated.extend(
+      self
+        .streamed
+        .chunks
+        .iter()
+        .filter(|chunk| !has_chunk(hand_made, **chunk)),
+    );
+    self
+      .labels
+      .place(ctx, grid, &self.streamed.chunks, self.overlay, &|chunk| {
+        tag(hand_made, chunk)
+      });
 
-    if self.overlay
-      && let Some(grid) = self.grid
-    {
+    if self.overlay {
       let mut debug = ctx.debug_draw();
-      for &chunk in &self.chunks {
-        overlay::chunk_outline(&mut debug, grid.chunk(chunk));
+      for &chunk in &self.streamed.chunks {
+        let color = if has_chunk(&self.hand_made, chunk) {
+          CHUNK_LINE
+        } else {
+          GENERATED
+        };
+        overlay::chunk_outline_in(&mut debug, grid.chunk(chunk), color);
+      }
+      for (chunk, fresh) in self.streamed.freshness() {
+        let alpha = (fresh * 255.0) as u8;
+        overlay::outline(&mut debug, grid.chunk(chunk), FRESH.with_alpha(alpha), 3.0);
       }
       if !self.bounds.is_empty() {
         let bounds = grid.rect(self.bounds.min, self.bounds.max);
@@ -406,56 +472,66 @@ impl DemoPage for InfinitePage {
     };
     self.labels.measure(ui);
 
-    // The chunks the bounds reach: the bounds hold the cells with tiles
-    let last = self.bounds.max - IVec2::ONE;
-    let reach = TileGrid::chunk_of(last) - TileGrid::chunk_of(self.bounds.min) + IVec2::ONE;
-    let runner = self
-      .runner
-      .and_then(|runner| ctx.world.get::<Transform>(runner))
-      .map(|transform| transform.translation);
+    let runner = self.runner_at(ctx);
     let cell = runner.and_then(|at| ctx.maps().world_to_cell(root, GROUND, at));
     let runner_line = cell.map_or_else(
       || "Runner: waiting for the map".to_string(),
       |cell| {
         let chunk = TileGrid::chunk_of(cell);
+        let kind = if has_chunk(&self.hand_made, chunk) {
+          "hand-made"
+        } else {
+          "generated"
+        };
         format!(
-          "Runner: cell {}, {} in chunk {}, {}",
+          "Runner: cell {}, {} in chunk {}, {}, {kind}",
           cell.x, cell.y, chunk.x, chunk.y
         )
       },
     );
     let hint = if self.auto {
-      "It runs by itself: WASD or a pad takes over"
+      "It runs on by itself: WASD or a pad takes over"
     } else {
       "WASD runs, Space jumps; Auto-run hands it back"
     };
+    let last = self.bounds.max - IVec2::ONE;
+    let streamed = &self.streamed;
     let lines = vec![
       (
-        "The hand-made part of a world: walls end the meadow".to_string(),
+        "The file's chunks are the meadow; the rest streams".to_string(),
         Color::WHITE,
       ),
       (
-        "Endless terrain beyond them comes with streaming".to_string(),
-        DIM,
+        format!("Hand-made: {} chunks, the file's", self.hand_made.len()),
+        CHUNK_FILL,
+      ),
+      (
+        format!(
+          "Generated: {} resident, {} landed so far",
+          self.generated.len(),
+          streamed.landed
+        ),
+        GENERATED,
+      ),
+      (
+        format!(
+          "Resident: {} chunks, {} in flight (at most {})",
+          streamed.chunks.len(),
+          streamed.in_flight,
+          streamed.most_in_flight
+        ),
+        Color::WHITE,
       ),
       (
         if self.bounds.is_empty() {
-          "Bounds: waiting for the map".to_string()
+          "The file's bounds: none".to_string()
         } else {
           format!(
-            "Bounds: cells ({}, {}) to ({}, {})",
+            "The file's bounds: cells ({}, {}) to ({}, {})",
             self.bounds.min.x, self.bounds.min.y, last.x, last.y
           )
         },
         HOT,
-      ),
-      (
-        format!(
-          "Chunks: {} of the {} the bounds reach, 32 x 32 cells each",
-          self.chunks.len(),
-          reach.x * reach.y
-        ),
-        Color::WHITE,
       ),
       (runner_line, GOOD),
       (format!("Coins: {}", self.coins), HOT),
@@ -473,16 +549,20 @@ impl DemoPage for InfinitePage {
     );
     let below = notes.bottom() + 8.0;
     let area = Rect::new(column.x, below, column.width, column.bottom() - below);
+    let fresh = self.streamed.freshness();
     overlay::minimap(
       ui,
       area,
       &Minimap {
-        caption: "Chunks there are; gold: the bounds; white: the view",
-        chunks: &self.chunks,
-        fresh: &[],
+        caption: "Blue: hand-made; green: generated; gold: the file",
+        chunks: &self.streamed.chunks,
+        generated: &self.generated,
+        fresh: &fresh,
+        marked: &[],
         bounds: Some(self.bounds),
         view: Rect::new(a.x, a.y, b.x - a.x, b.y - a.y),
         dot: runner.map(|at| grid.to_cells(at)),
+        window: Some(WINDOW),
       },
     );
   }
