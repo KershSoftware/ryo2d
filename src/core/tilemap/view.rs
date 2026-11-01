@@ -7,6 +7,7 @@ use super::spawn::{self, MapIds, MapRoot};
 use super::world::{self, WorldRef};
 use super::{Tile, TileData, WorldLevel, wang};
 use crate::core::ecs::{Entity, World};
+use crate::core::physics::CellRect;
 use crate::core::ui::Rect;
 
 /// The spawned maps of a world: read and edit their tiles, read their
@@ -48,6 +49,24 @@ impl<'w> MapsView<'w> {
   /// The entity of `map`'s layer `layer`
   pub fn layer_entity<'a>(&self, map: Entity, layer: impl Into<LayerRef<'a>>) -> Option<Entity> {
     edit::layer_entity(self.world, map, layer.into())
+  }
+
+  /// The cells `map` covers as it is now, in its tile size: a bounded
+  /// map's (0, 0) to its size; an infinite map's the smallest rectangle
+  /// holding every cell of its tile layers with a tile (class tiles
+  /// included), following every edit since it landed (empty with none).
+  /// For camera limits on a map that grows; [`TileMap::bounds`](super::TileMap::bounds)
+  /// reads the asset, which edits never change. `None` until it lands
+  pub fn bounds(&self, map: Entity) -> Option<CellRect> {
+    edit::map_bounds(self.world, map)
+  }
+
+  /// The cells of a tile layer as it is now: a bounded layer's bounds, an
+  /// unbounded one's smallest rectangle holding every cell with a tile
+  /// (class tiles included; empty with none). `None` for a layer the map
+  /// lacks or one that is not a tile layer
+  pub fn layer_bounds<'a>(&self, map: Entity, layer: impl Into<LayerRef<'a>>) -> Option<CellRect> {
+    edit::layer_bounds(self.world, map, layer.into())
   }
 
   /// The tile at `cell` of a tile layer's grid: a cell holding a class

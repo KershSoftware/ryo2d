@@ -4,8 +4,8 @@ use glam::{Affine2, IVec2, Vec2};
 
 use super::grid::MAX_FILL_CHUNKS;
 use super::spawn::{
-  ClassTile, LayerTiles, MapLayerRef, MapLayers, MapTile, TileLayerData, registered_class,
-  spawn_class_tile,
+  ClassTile, LayerTiles, MapIds, MapLayerRef, MapLayers, MapRoot, MapTile, TileLayerData,
+  map_asset, registered_class, spawn_class_tile,
 };
 use super::{CHUNK_SIZE, LayerInfo, Properties, Tile, TileGrid};
 use crate::core::ecs::{ChildOf, DetectChangesMut, Entity, Resource, Transform, World};
@@ -165,6 +165,50 @@ fn tile_layer_bounds(
   let entity = layer_entity(world, map, layer)?;
   let bounds = world.get::<TileLayerData>(entity)?.grid.bounds();
   Some((entity, bounds))
+}
+
+/// A tile layer's bounds as `MapsView::layer_bounds` gives them: a bounded
+/// layer's bounds; an unbounded one's smallest rectangle holding every cell
+/// with a tile as it is now, its class tiles' cells included (empty with
+/// none)
+pub(crate) fn layer_bounds(world: &World, map: Entity, layer: LayerRef<'_>) -> Option<CellRect> {
+  layer_entity_bounds(world, layer_entity(world, map, layer)?)
+}
+
+/// [`layer_bounds`] of the layer entity `layer`
+fn layer_entity_bounds(world: &World, layer: Entity) -> Option<CellRect> {
+  let grid = &world.get::<TileLayerData>(layer)?.grid;
+  if let Some(bounds) = grid.bounds() {
+    return Some(bounds);
+  }
+  let mut bounds = grid.tile_extent();
+  if let Some(table) = world.get::<LayerTiles>(layer) {
+    for (&cell, &entity) in &table.0 {
+      if world.get::<MapTile>(entity).is_some_and(|t| t.cell == cell) {
+        bounds = bounds.union(CellRect::new(cell, cell.saturating_add(IVec2::ONE)));
+      }
+    }
+  }
+  Some(bounds)
+}
+
+/// A spawned map's bounds as `MapsView::bounds` gives them: a bounded
+/// map's (0, 0) to its size, as its asset says; an infinite map's the
+/// union of its tile layers' [`layer_bounds`], so its tiles as they are now
+pub(crate) fn map_bounds(world: &World, map: Entity) -> Option<CellRect> {
+  world.get::<MapIds>(map)?;
+  let asset = map_asset(world, world.get::<MapRoot>(map)?)?;
+  if !asset.infinite {
+    return Some(asset.bounds());
+  }
+  let layers = world.get::<MapLayers>(map)?;
+  Some(
+    layers
+      .0
+      .iter()
+      .filter_map(|&layer| layer_entity_bounds(world, layer))
+      .fold(CellRect::default(), CellRect::union),
+  )
 }
 
 /// The class tile living at `cell` of the layer entity `layer`

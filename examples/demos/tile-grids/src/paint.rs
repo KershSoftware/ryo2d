@@ -10,13 +10,13 @@
 //!
 //! A ball (a dynamic body) bounces on what is painted and comes to rest on
 //! it; Space drops it at the pointer. The HUD shows the cell under the
-//! pointer, the chunks there are, and the layer's extent, which a game
-//! reads from the layer entity's `TileLayerData` grid (`ctx.maps()` has no
-//! reader for it)
+//! pointer, the chunks there are, and the layer's bounds as painted, the
+//! cells holding tiles, which `ctx.maps().layer_bounds` reads (the map's
+//! whole is `ctx.maps().bounds`)
 
 use demo_kit::prelude::*;
 
-use crate::overlay::{self, BOUNDS_LINE, CHUNK_LINE, FRESH, Grid, Minimap};
+use crate::overlay::{self, BOUNDS_LINE, FRESH, Grid, Minimap};
 use crate::shared::{
   CELL, DIM, GOOD, HOT, TILESET, View, beside_panel, clear_to, ground_tile, hud, load, pan_input,
   wasd,
@@ -75,8 +75,8 @@ pub(crate) struct PaintPage {
   fresh: Vec<(IVec2, f32)>,
   /// Chunks made since the page opened
   made: usize,
-  /// The layer's extent: what its chunks span
-  extent: CellRect,
+  /// The layer's bounds: the cells holding tiles
+  bounds: CellRect,
   painted: u32,
   erased: u32,
   /// Where the page's notes are on screen: the pointer paints nothing there
@@ -103,7 +103,7 @@ impl PaintPage {
       scratch: Vec::new(),
       fresh: Vec::new(),
       made: 0,
-      extent: CellRect::default(),
+      bounds: CellRect::default(),
       painted: 0,
       erased: 0,
       covered: Vec::new(),
@@ -203,7 +203,7 @@ impl PaintPage {
     self.ball = Some(ball);
   }
 
-  /// The chunks there are now, those just made glowing, and the extent
+  /// The chunks there are now, those just made glowing, and the bounds
   fn read_chunks(&mut self, ctx: &mut SceneContext, root: Entity, dt: f32) {
     overlay::map_chunks(ctx.world, root, &mut self.scratch);
     for &chunk in &self.scratch {
@@ -218,14 +218,7 @@ impl PaintPage {
       *left -= dt;
     }
     self.fresh.retain(|(_, left)| *left > 0.0);
-    // `ctx.maps()` reads cells, not a grown layer's extent: the layer
-    // entity's grid has it
-    self.extent = ctx
-      .maps()
-      .layer_entity(root, LAYER)
-      .and_then(|layer| ctx.world.get::<TileLayerData>(layer))
-      .map(|data| data.grid.extent())
-      .unwrap_or_default();
+    self.bounds = ctx.maps().layer_bounds(root, LAYER).unwrap_or_default();
   }
 }
 
@@ -387,15 +380,15 @@ impl DemoPage for PaintPage {
     {
       let mut debug = ctx.debug_draw();
       for &chunk in &self.chunks {
-        overlay::outline(&mut debug, grid.chunk(chunk), CHUNK_LINE, 1.0);
+        overlay::chunk_outline(&mut debug, grid.chunk(chunk));
       }
       for &(chunk, left) in &self.fresh {
         let alpha = (left / FLASH * 255.0) as u8;
         overlay::outline(&mut debug, grid.chunk(chunk), FRESH.with_alpha(alpha), 3.0);
       }
-      if !self.extent.is_empty() {
-        let extent = grid.rect(self.extent.min, self.extent.max);
-        overlay::outline(&mut debug, extent, BOUNDS_LINE, 2.0);
+      if !self.bounds.is_empty() {
+        let bounds = grid.rect(self.bounds.min, self.bounds.max);
+        overlay::outline(&mut debug, bounds, BOUNDS_LINE, 2.0);
       }
       if let Some(cell) = self.hover {
         let rect = grid.rect(cell, cell + IVec2::ONE);
@@ -427,13 +420,13 @@ impl DemoPage for PaintPage {
         )
       },
     );
-    let extent = if self.extent.is_empty() {
-      "Extent: none yet".to_string()
+    let bounds = if self.bounds.is_empty() {
+      "Bounds: none yet".to_string()
     } else {
-      let last = self.extent.max - IVec2::ONE;
+      let last = self.bounds.max - IVec2::ONE;
       format!(
-        "Extent: cells ({}, {}) to ({}, {})",
-        self.extent.min.x, self.extent.min.y, last.x, last.y
+        "Bounds: cells ({}, {}) to ({}, {})",
+        self.bounds.min.x, self.bounds.min.y, last.x, last.y
       )
     };
     let ball = self
@@ -463,7 +456,7 @@ impl DemoPage for PaintPage {
         ),
         Color::WHITE,
       ),
-      (extent, HOT),
+      (bounds, HOT),
       (
         format!("Painted {}, erased {}", self.painted, self.erased),
         Color::WHITE,
@@ -487,14 +480,14 @@ impl DemoPage for PaintPage {
       ui,
       area,
       &Minimap {
-        caption: "Chunks there are; gold: the extent; white: the view",
+        caption: "Chunks there are; gold: the bounds; white: the view",
         chunks: &self.chunks,
         fresh: &self
           .fresh
           .iter()
           .map(|&(chunk, left)| (chunk, left / FLASH))
           .collect::<Vec<_>>(),
-        bounds: Some(self.extent),
+        bounds: Some(self.bounds),
         view: Rect::new(a.x, a.y, b.x - a.x, b.y - a.y),
         dot: ball.map(|at| grid.to_cells(at)),
       },

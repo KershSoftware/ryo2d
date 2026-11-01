@@ -21,7 +21,7 @@ The ball on the Paint anywhere page is drawn in code (`src/paint.rs`, `ball_imag
 | `tilesets/platformer.tsx` | Tiled | Pixel Platformer: the terrain tiles solid (0-5, 20-25, 104, 120-123, 140-143), the rope bridge (90-92) and the planks (146, 147) one-way, the coin (151) of class `coin` and animated, the water's surface (33) animated |
 | `maps/endless-meadow.tmx` | Tiled | An infinite map of 18 px cells, saved as CSV in Tiled's chunks of 16 x 16 cells. `scenery` (11 chunks; trees, pines, sprouts, mushrooms, bushes, signs and clouds, not colliding), `water` (1 chunk; the pond, not colliding), `ground` (18 chunks; the meadow from cell -88 to cell 51 with its grass at row 0, two hills, a plateau, a pond under the rope bridge, a dip, planks, and an island of 9 x 3 cells at cell (-204, -40)), and `objects`: a `player_start` facing left at cell (-16, 0), a `patrol` rectangle from cell -84 to cell 47, and 23 tile objects of the coin tile with no class of their own, which take the tile's `coin` |
 
-The engine reads the meadow into chunks of its own, 32 x 32 cells: 11 of the 27 the map's bounds (cells (-224, -64) to (63, 31)) hold.
+The engine reads the meadow into chunks of its own, 32 x 32 cells: 11 of the 27 that the map's bounds, the cells holding tiles (cells (-204, -41) to (51, 5)), reach.
 
 ### How the files are made
 

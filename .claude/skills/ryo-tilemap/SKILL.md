@@ -283,6 +283,7 @@ for (entity, hits) in bricks {
 | `tile_data(map, tile) -> Option<TileData>` | what the tile's tileset says about it |
 | `world_to_cell(map, layer, world: Vec2) -> Option<IVec2>`, `cell_to_world(map, layer, cell) -> Option<Vec2>` | through the map's and the layer's transforms; a cell's centre |
 | `layer_entity(map, layer) -> Option<Entity>` | the layer's entity |
+| `bounds(map) -> Option<CellRect>`, `layer_bounds(map, layer) -> Option<CellRect>` | the cells the map, or a tile layer, covers as it is now: a bounded one's size; an unbounded one's cells holding tiles, class tiles included, following every edit (empty with none) |
 | `spawn_levels_in(world, area: Rect) -> Vec<Entity>`, `spawn_levels_in_with(world, area, depth, configure)` | the levels of a world near a place, the second setting each root up (section 12) |
 
 <!-- self: map: Entity -->
@@ -463,9 +464,11 @@ let root = ctx.world.spawn((Transform::from_xy(0.0, 0.0), MapRoot::new(map))).id
 let solid = Some(Tile::new(terrain, 0));
 let floor = ctx.maps().fill(root, "ground", IVec2::new(-100, 5), IVec2::new(-90, 5), solid);
 let far = ctx.maps().set_tile(root, "ground", IVec2::new(5000, -5000), solid);
+// The cells it covers now, (-100, -5000) to (5000, 5) both included: for the camera's limits
+let grown: Option<CellRect> = ctx.maps().bounds(root);
 ```
 
-  `TileMap::bounds()` of the asset is what the map held when it was added; the layer entity's `TileLayerData::grid.extent()` follows the writes. A cell collides within 186,411 cells of (0, 0) (above).
+  `TileMap::bounds()` of the asset is what the map held when it was added; `ctx.maps().bounds(root)` (the whole map) and `ctx.maps().layer_bounds(root, "ground")` (one layer) follow the writes: the cells holding tiles as they are now, for camera limits on a map that grows. A cell collides within 186,411 cells of (0, 0) (above).
 - A map added in code never reloads (it has no file), but follows its tilesets' files.
 - **Procgen:** `GenerationGrid::to_tile_map` and `to_terrain_map` (`ryo-procgen`) turn a dungeon, a cave or noise terrain into a `TileMap`. The tilemap demo's Procgen dungeon page draws one through a Wang set.
 

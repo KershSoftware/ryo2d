@@ -1121,6 +1121,8 @@ Tiled and LDtk levels as registry assets, spawned by a `MapRoot` entity: tile la
 |---|---|
 | `is_ready(map) -> bool` | landed |
 | `layer_entity(map, layer) -> Option<Entity>` | |
+| `bounds(map) -> Option<CellRect>` | the cells the map covers as it is now: a bounded map's (0, 0) to its size, an infinite map's smallest rectangle holding every cell of its tile layers with a tile (class tiles included), following edits; `None` until it lands |
+| `layer_bounds(map, layer) -> Option<CellRect>` | a tile layer's: a bounded layer's bounds, an unbounded one's cells holding tiles as they are now; `None` for a layer the map lacks or not a tile layer |
 | `tile(map, layer, cell: IVec2) -> Option<Tile>` | a class tile's cell reads `None` |
 | `set_tile(map, layer, cell, Option<Tile>) -> bool`, `fill(map, layer, min, max, Option<Tile>) -> usize` | edits; a registered class's tile spawns a `MapTile` instead; each redraws, re-collides and re-shadows only the chunks it touches (a layer with an IntGrid collides by its values, not its tiles); a tile `fill` that would make more than 131,072 chunks of an unbounded layer is refused (0, warned once a layer) |
 | `set_terrain(map, layer, cell, wang_set: &str, color: Option<&str>) -> bool` | Wang painting as Tiled's terrain brush with corrections on; `None` erases; false within a few cells of the ends of `i32`, where the cells the paint reaches would not fit |

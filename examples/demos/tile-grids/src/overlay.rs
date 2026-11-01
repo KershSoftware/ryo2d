@@ -9,8 +9,10 @@ use demo_kit::prelude::*;
 
 use crate::shared::{BACKING, DIM, GOOD, HOT};
 
-/// A chunk's outline in the world
-pub(crate) const CHUNK_LINE: Color = Color::new(255, 255, 255, 150);
+/// A chunk's label, and the light line inside its outline
+pub(crate) const CHUNK_LINE: Color = Color::new(255, 255, 255, 235);
+/// The dark line under a chunk's outline, so it shows over sky and earth
+const CHUNK_EDGE: Color = Color::new(20, 30, 70, 200);
 /// The map's bounds
 pub(crate) const BOUNDS_LINE: Color = HOT;
 /// A chunk on the minimap
@@ -68,6 +70,13 @@ impl Grid {
   pub(crate) fn chunk(self, chunk: IVec2) -> Rect {
     self.rect(chunk * SIDE, (chunk + IVec2::ONE) * SIDE)
   }
+}
+
+/// Outlines a chunk's world rectangle `rect` with `debug`: a light line over
+/// a dark one, clear over the sky, the grass and the earth at any zoom
+pub(crate) fn chunk_outline(debug: &mut DebugDraw, rect: Rect) {
+  outline(debug, rect, CHUNK_EDGE, 3.0);
+  outline(debug, rect, CHUNK_LINE, 1.0);
 }
 
 /// Outlines `rect` (in world pixels) with `debug`, `width` screen pixels wide

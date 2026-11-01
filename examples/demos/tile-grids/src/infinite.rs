@@ -5,8 +5,9 @@
 //! the sky above it at negative rows), and a small island sits far up and
 //! left at cell (-204, -40). The engine keeps each layer in chunks of
 //! 32 x 32 cells where it has tiles, so the empty sky between the island and
-//! the meadow costs nothing; `TileMap::bounds()` is the rectangle of the
-//! cells holding tiles.
+//! the meadow costs nothing; `ctx.maps().bounds()` is the rectangle of the
+//! cells holding tiles, as the map is now (the asset's `TileMap::bounds()`
+//! until a save or an edit changes it).
 //!
 //! A runner patrols the meadow by itself, between the ends of the
 //! designer's `patrol` rectangle, starting at `player_start`: it jumps
@@ -14,13 +15,14 @@
 //! taking the coin tile's class, back after a few seconds). WASD or a pad
 //! takes over. The overlay outlines the chunks there are and the map's
 //! bounds, labelled with their coordinates, and a minimap shows them all
-//! with the view
+//! with the view. A save of the map in Tiled (hot reload) redraws the
+//! overlay and the bounds from the map as saved
 
 use demo_kit::prelude::*;
 
-use crate::overlay::{self, BOUNDS_LINE, CHUNK_LINE, Grid, Minimap};
+use crate::overlay::{self, BOUNDS_LINE, Grid, Minimap};
 use crate::shared::{
-  CELL, DIM, GOOD, HOT, View, asset, beside_panel, clear_to, hero, hud, load, pan_input, wasd,
+  CELL, DIM, GOOD, HOT, View, beside_panel, clear_to, hero, hud, load, pan_input, wasd,
 };
 
 /// The map
@@ -51,7 +53,7 @@ pub struct Runner;
 pub(crate) struct InfinitePage {
   view: View,
   root: Option<Entity>,
-  /// The asset's bounds: the cells its tile layers hold tiles in
+  /// The landed map's bounds: the cells its tile layers hold tiles in
   bounds: CellRect,
   /// Where the runner starts (its feet), and the way it faces
   start: Vec2,
@@ -120,11 +122,22 @@ impl InfinitePage {
     }
   }
 
+  /// The landed map's chunks, bounds and lowest edge, as it is now: at
+  /// landing, and again after each save of its file
+  fn read_map(&mut self, ctx: &mut SceneContext, root: Entity) {
+    overlay::map_chunks(ctx.world, root, &mut self.chunks);
+    self.bounds = ctx.maps().bounds(root).unwrap_or_default();
+    // The map's root sits at the origin, so its cells' rows are world rows
+    if !self.bounds.is_empty() {
+      self.floor = self.bounds.max.y as f32 * CELL;
+    }
+  }
+
   /// Once the map has landed: its grid and chunks, the coins' triggers,
   /// and the runner
   fn land(&mut self, ctx: &mut SceneContext, root: Entity) {
     self.grid = Grid::of(ctx, root, GROUND, CELL);
-    overlay::map_chunks(ctx.world, root, &mut self.chunks);
+    self.read_map(ctx, root);
 
     let mut objects = ctx.world.query::<(Entity, &MapObject)>();
     let coins: Vec<Entity> = objects
@@ -270,31 +283,6 @@ fn bindings() -> MoveBindings {
     .with_down([KeyCode::KeyS])
 }
 
-/// The lowest row any of `map`'s tile layers has a tile in
-fn lowest_row(map: &TileMap) -> Option<i32> {
-  let side = CHUNK_SIZE as i32;
-  let mut lowest: Option<i32> = None;
-  for layer in 0..map.layers.len() {
-    let Some(grid) = map.tiles(layer) else {
-      continue;
-    };
-    for chunk in grid.chunk_coords() {
-      let origin = chunk * side;
-      for y in (0..side).rev() {
-        let row = origin.y + y;
-        if lowest.is_some_and(|lowest| row <= lowest) {
-          break;
-        }
-        if (0..side).any(|x| grid.get(IVec2::new(origin.x + x, row)).is_some()) {
-          lowest = Some(row);
-          break;
-        }
-      }
-    }
-  }
-  lowest
-}
-
 impl DemoPage for InfinitePage {
   fn name(&self) -> &str {
     "A Tiled infinite map"
@@ -321,16 +309,22 @@ impl DemoPage for InfinitePage {
     let Some(map) = load::<TileMap>(ctx, MEADOW) else {
       return;
     };
-    let Some(data) = asset(ctx, &map) else {
-      return;
+    // The asset, borrowed: the designer's marks, its lowest edge (the
+    // bottom of its bounds; the root sits at the origin, so its cells' rows
+    // are world rows) and its background
+    let background = {
+      let assets = ctx.assets();
+      let Some(data) = assets.get(&map) else {
+        return;
+      };
+      self.read_marks(data);
+      let bounds = data.bounds();
+      if !bounds.is_empty() {
+        self.floor = (bounds.max.y * data.tile_size.y as i32) as f32;
+      }
+      data.background
     };
-    self.bounds = data.bounds();
-    self.read_marks(&data);
-    // The map's root sits at the origin, so its cells' rows are world rows
-    if let Some(row) = lowest_row(&data) {
-      self.floor = (row + 1) as f32 * data.tile_size.y as f32;
-    }
-    clear_to(ctx, data.background.unwrap_or(SKY));
+    clear_to(ctx, background.unwrap_or(SKY));
     self.root = Some(
       ctx
         .world
@@ -347,6 +341,14 @@ impl DemoPage for InfinitePage {
     if self.runner.is_none() && ctx.maps().is_ready(root) {
       self.land(ctx, root);
     }
+    // A save of the map's file: its chunks and bounds as saved
+    let saved = ctx
+      .messages::<MapEvent>()
+      .iter()
+      .any(|event| matches!(event, MapEvent::Reloaded { map } if *map == root));
+    if saved && self.runner.is_some() {
+      self.read_map(ctx, root);
+    }
     self.steer(ctx, dt);
     self.coins += ctx.messages::<PickedUp>().len() as u32;
     self.follow(ctx);
@@ -356,10 +358,12 @@ impl DemoPage for InfinitePage {
     {
       let mut debug = ctx.debug_draw();
       for &chunk in &self.chunks {
-        overlay::outline(&mut debug, grid.chunk(chunk), CHUNK_LINE, 1.0);
+        overlay::chunk_outline(&mut debug, grid.chunk(chunk));
       }
-      let bounds = grid.rect(self.bounds.min, self.bounds.max);
-      overlay::outline(&mut debug, bounds, BOUNDS_LINE, 2.0);
+      if !self.bounds.is_empty() {
+        let bounds = grid.rect(self.bounds.min, self.bounds.max);
+        overlay::outline(&mut debug, bounds, BOUNDS_LINE, 2.0);
+      }
     }
   }
 
@@ -403,10 +407,14 @@ impl DemoPage for InfinitePage {
         Color::WHITE,
       ),
       (
-        format!(
-          "Bounds: cells ({}, {}) to ({}, {})",
-          self.bounds.min.x, self.bounds.min.y, last.x, last.y
-        ),
+        if self.bounds.is_empty() {
+          "Bounds: waiting for the map".to_string()
+        } else {
+          format!(
+            "Bounds: cells ({}, {}) to ({}, {})",
+            self.bounds.min.x, self.bounds.min.y, last.x, last.y
+          )
+        },
         HOT,
       ),
       (

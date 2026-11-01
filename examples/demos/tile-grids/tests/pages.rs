@@ -218,6 +218,105 @@ fn the_meadow_s_chunks_lie_at_negative_cells_and_the_hud_shows_its_bounds() {
   assert!(warnings().is_empty(), "{:#?}", warnings());
 }
 
+/// The demo's assets folder, read into memory: a test saves over a file
+/// there without touching the disk
+fn assets_in_memory() -> MemorySource {
+  fn read(root: &std::path::Path, dir: &std::path::Path, files: &MemorySource) {
+    for entry in std::fs::read_dir(dir).expect("the assets folder").flatten() {
+      let path = entry.path();
+      if path.is_dir() {
+        read(root, &path, files);
+      } else if let (Ok(rel), Ok(bytes)) = (path.strip_prefix(root), std::fs::read(&path)) {
+        files.insert(&rel.to_string_lossy().replace('\\', "/"), bytes);
+      }
+    }
+  }
+  let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets");
+  let files = MemorySource::new();
+  read(&root, &root, &files);
+  files
+}
+
+#[test]
+fn the_meadow_s_overlay_and_bounds_follow_a_save() {
+  let files = assets_in_memory();
+  let builder = demo()
+    .start_page(MEADOW)
+    .configure({
+      let files = files.clone();
+      move |b| b.asset_source(files)
+    })
+    .engine_builder();
+  let Some(mut engine) = HeadlessEngine::new_or_skip(builder) else {
+    return;
+  };
+  let map = spawned_map(&mut engine);
+  engine.step_frames(3).unwrap();
+  let chunks_shown = |engine: &mut HeadlessEngine| {
+    let shown = engine.ui_snapshot();
+    let at = shown.find("Chunks: ").expect("the chunks line") + "Chunks: ".len();
+    let count: String = shown[at..]
+      .chars()
+      .take_while(char::is_ascii_digit)
+      .collect();
+    count.parse::<usize>().expect("a count")
+  };
+  let before = chunks_shown(&mut engine);
+
+  // A save adds a tile far right of the meadow, in a chunk of its own
+  let text = std::fs::read_to_string(
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+      .join("assets")
+      .join(MEADOW_FILE),
+  )
+  .expect("the meadow's file");
+  let far = IVec2::new(300, -100);
+  let chunk = format!(
+    "<chunk x=\"{}\" y=\"{}\" width=\"1\" height=\"1\">\n5\n</chunk>\n",
+    far.x, far.y
+  );
+  let ground = text.find("name=\"ground\"").expect("the ground layer");
+  let data = ground
+    + text[ground..]
+      .find("<data encoding=\"csv\">\n")
+      .expect("its data");
+  let at = data + "<data encoding=\"csv\">\n".len();
+  let saved = format!("{}{chunk}{}", &text[..at], &text[at..]);
+  files.insert(MEADOW_FILE, saved);
+  engine.assets().server().reload(MEADOW_FILE);
+  let mut cursor = MessageCursor::<MapEvent>::default();
+  let mut reloaded = false;
+  for _ in 0..600 {
+    engine.step().unwrap();
+    if map_events(&engine, &mut cursor)
+      .iter()
+      .any(|e| matches!(e, MapEvent::Reloaded { map: m } if *m == map))
+    {
+      reloaded = true;
+      break;
+    }
+  }
+  assert!(reloaded, "the save reloaded the meadow: {:#?}", warnings());
+  engine.step_frames(2).unwrap();
+  assert_eq!(
+    chunks_shown(&mut engine),
+    before + 1,
+    "the overlay has the new chunk"
+  );
+  let bounds = MapsView::new(engine.world_mut())
+    .bounds(map)
+    .expect("bounds");
+  assert_eq!(bounds.max.x, far.x + 1, "the bounds reach the new tile");
+  let shown = engine.ui_snapshot();
+  let last = bounds.max - IVec2::ONE;
+  let line = format!(
+    "Bounds: cells ({}, {}) to ({}, {})",
+    bounds.min.x, bounds.min.y, last.x, last.y
+  );
+  assert!(shown.contains(&line), "{line:?} in {shown}");
+  assert!(warnings().is_empty(), "{:#?}", warnings());
+}
+
 /// The meadow's runner, once it has one
 fn runner(engine: &mut HeadlessEngine) -> Option<Vec2> {
   let world = engine.world_mut();

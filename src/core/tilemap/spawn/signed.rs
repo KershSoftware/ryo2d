@@ -450,3 +450,58 @@ fn a_map_built_infinite_in_code_grows_where_a_game_writes() {
     ))
   );
 }
+
+#[test]
+fn maps_view_reads_a_grown_map_s_bounds_and_each_layer_s() {
+  use crate::core::physics::CellRect;
+  let mut maps = MapWorld::new();
+  let mut map = infinite_map();
+  map.add_tile_layer("decor");
+  map.add_object_layer("things");
+  let map = spawn(&mut maps, map, |r| r.with_entity_tiles(&["crate"]));
+  let view = MapsView::new(&mut maps.world);
+  let empty = Some(CellRect::default());
+  assert_eq!(view.bounds(map), empty, "no tile yet");
+  assert_eq!(view.layer_bounds(map, "ground"), empty);
+  // Writes grow it, negative cells and class tiles included; the asset's
+  // bounds stay what it held when it was added
+  let mut view = MapsView::new(&mut maps.world);
+  assert!(view.set_tile(map, "ground", IVec2::new(-40, 3), Some(BLOCK)));
+  assert!(view.set_tile(map, "ground", IVec2::new(7, -9), Some(BLOCK)));
+  assert!(view.set_tile(map, "decor", IVec2::new(100, 20), Some(CRATE)));
+  assert_eq!(
+    view.layer_bounds(map, "ground"),
+    Some(CellRect::new(IVec2::new(-40, -9), IVec2::new(8, 4)))
+  );
+  assert_eq!(
+    view.layer_bounds(map, 1),
+    Some(CellRect::new(IVec2::new(100, 20), IVec2::new(101, 21))),
+    "the class tile's cell"
+  );
+  assert_eq!(
+    view.bounds(map),
+    Some(CellRect::new(IVec2::new(-40, -9), IVec2::new(101, 21)))
+  );
+  // Clearing a tile shrinks it
+  assert!(view.set_tile(map, "ground", IVec2::new(-40, 3), None));
+  assert_eq!(
+    view.layer_bounds(map, "ground"),
+    Some(CellRect::new(IVec2::new(7, -9), IVec2::new(8, -8)))
+  );
+  // A layer that is not a tile layer, or one the map lacks, has none
+  assert_eq!(view.layer_bounds(map, "things"), None);
+  assert_eq!(view.layer_bounds(map, "nope"), None);
+
+  // A bounded map's are its size, its layers' their bounds
+  let mut bounded = TileMap::new(UVec2::new(40, 8), UVec2::splat(16));
+  bounded.add_tileset(TilesetSource::Embedded(Arc::new(blocks())));
+  bounded.add_tile_layer("ground");
+  let bounded = spawn(&mut maps, bounded, |r| r);
+  let whole = Some(CellRect::from_size(UVec2::new(40, 8)));
+  let view = MapsView::new(&mut maps.world);
+  assert_eq!(view.bounds(bounded), whole);
+  assert_eq!(view.layer_bounds(bounded, "ground"), whole);
+  // A root that has not landed has none
+  let waiting = maps.world.spawn_empty().id();
+  assert_eq!(MapsView::new(&mut maps.world).bounds(waiting), None);
+}

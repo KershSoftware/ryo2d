@@ -26,11 +26,6 @@ pub(crate) fn load<T: Asset>(ctx: &mut SceneContext, path: &str) -> Option<Handl
   ctx.assets().load_now(path).ok()
 }
 
-/// A copy of `T` as the store holds it now
-pub(crate) fn asset<T: Asset + Clone>(ctx: &mut SceneContext, handle: &Handle<T>) -> Option<T> {
-  ctx.assets().get(handle).cloned()
-}
-
 /// The Pixel Platformer tile for a ground cell, from which of the four cells
 /// beside it are ground: the sheet's rows for open above and below (a one
 /// cell platform), open above (a grass top), closed both ways (earth) and

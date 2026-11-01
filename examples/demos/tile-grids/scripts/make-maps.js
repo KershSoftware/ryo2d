@@ -189,7 +189,7 @@ function tileObject(tileset, id, x, y, name) {
 // An infinite map of 18 px cells, saved in Tiled's chunks of 16 x 16 cells:
 // a meadow from cell -88 to cell 51 with its grass at row 0, hills, a pond
 // under a rope bridge, a dip, planks and coins; and a small island far up
-// and left, at cell (-200, -40), alone in its chunk. The runner patrols the
+// and left, at cell (-204, -40), alone in its chunk. The runner patrols the
 // meadow between the ends of the `patrol` rectangle, starting at
 // `player_start`
 var CELL = 18;
