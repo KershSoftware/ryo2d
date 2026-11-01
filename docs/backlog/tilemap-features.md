@@ -12,7 +12,7 @@ Sub-project 6a (`docs/specs/2026-10-29-tilemap-design.md`) made orthogonal tile 
 | Oblique maps | Tiled 1.12's new orientation (a skewed grid; read its parameters from Tiled 1.12's format when 6b starts) | none |
 | Infinite maps | `infinite: true`: tile layers saved as chunks (`chunks: [{ x, y, width, height, data }]`, coordinates that may be negative), and the map's `width` and `height` meaningless | none |
 
-Infinite maps load (6b's second stage: `an_infinite_map_s_chunks_land_where_tiled_put_them` replaced the two tests that pinned their refusal). The orientations are still refused in `tilemap/tiled/build.rs` (both formats), pinned by `isometric_hexagonal_staggered_and_oblique_maps_fail_naming_6b`. 6b replaces each refusal with the feature, and keeps refusing what it does not do. The anti-goal stands: no orientation value the engine accepts but does not implement.
+Infinite maps load (`an_infinite_map_s_chunks_land_where_tiled_put_them` replaced the two tests that pinned their refusal). The orientations are still refused in `tilemap/tiled/build.rs` (both formats), pinned by `isometric_hexagonal_staggered_and_oblique_maps_fail_naming_6b`. 6b replaces each refusal with the feature, and keeps refusing what it does not do. The anti-goal stands: no orientation value the engine accepts but does not implement.
 
 ## What each needs from 6a's model
 
@@ -34,8 +34,8 @@ Infinite maps load (6b's second stage: `an_infinite_map_s_chunks_land_where_tile
 
 ### Infinite maps
 
-- **A sparse grid:** `TileGrid` is dense, of a fixed size, cut into 32-cell chunks with per-chunk versions. An infinite layer is a map of chunks by chunk coordinate (negative ones included) with the same per-chunk versions, so the chunk renderer, collision and occluders keep reading versions as they do. `world_to_cell` already gives cells outside a layer; edits past the current chunks create them.
-- **Collision:** `TileColliders` has a fixed size with cell (0, 0) at its top-left and a limit of 8192 cells a side. An infinite layer needs an origin (the lowest chunk) and a grid that grows, or a sparse grid; packing is already per chunk, so colliders stay one per chunk.
+- **A sparse grid (done):** `TileGrid` is a map of 32-cell chunks by signed chunk coordinate with per-chunk versions, bounded (a fixed size) or unbounded, so the chunk renderer, collision and occluders read versions as they did. `world_to_cell` gives cells outside a layer, and an edit past the current chunks of an unbounded layer creates them.
+- **Collision (done):** `TileColliders` holds the chunks its layers have, signed, with no cap on a side; a cell collides within 186,411 cells of (0, 0) on either axis (outline points stay `i32`). Packing is per chunk, so colliders stay one per chunk. A reach past that is not built (see `docs/backlog/tilemap.md`, Limits).
 - **Loading (done):** the reader decodes each chunk (every encoding 6a reads) into an unbounded grid; `TileMap::infinite` marks the map, its `size` is zero, and `TileMap::bounds()` is its layers' extents.
 - **Worlds (done):** a Tiled world places an infinite map by its tile origin, its rectangle its chunks' bounds (`WorldLevel::origin`).
 

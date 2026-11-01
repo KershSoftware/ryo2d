@@ -13,7 +13,9 @@
 //!   measure, as `benches/ui_render.rs`'s guard does; the engines step in
 //!   turn, one frame each, so a change in the machine's load moves them
 //!   alike. The median frame over the empty frame's median is held to
-//!   50 µs (the spec). Beside it, with no target: the same map drawn only
+//!   50 µs (the spec). The same map built with unbounded layers
+//!   (`TileMap::infinite`) steps in the same rounds and is held to 50 µs
+//!   the same way. Beside them, with no target: the same map drawn only
 //!   (no collision, no shadows), colliding without shadows, casting shadows
 //!   without collision (which split what the map's child entities cost),
 //!   with its props layer y-sorted, and lit (a shadowed light following the
@@ -49,7 +51,9 @@
 //!   zlib) over an external TSX tileset and its PNG, read from a
 //!   `MemorySource`. Its load, from `load` to the map ready with its
 //!   tileset and image, on the asset workers with the main thread pumping,
-//!   is held to 20 ms (the spec; twenty loads of fresh files, the median);
+//!   is held to 20 ms (the spec; twenty loads of fresh files, the median),
+//!   and so is the same map saved as an infinite TMX (16 x 16 chunks, zlib
+//!   each);
 //!   a level change (the tileset loaded already) is printed beside it. Then
 //!   the landing: an engine at 60 Hz (paced with a spin wait) loads and
 //!   spawns a fresh copy of the map every 40 frames and despawns it 32
@@ -327,9 +331,14 @@ fn cave_cells(side: u32) -> [Vec<Option<u32>>; 4] {
 
 const LAYER_NAMES: [&str; 4] = ["background", "ground", "props", "front"];
 
-/// A map of `cells` (as `cave_cells` gives them) over the tileset `set`
-fn map_of(side: u32, set: TilesetSource, cells: &[Vec<Option<u32>>; 4]) -> TileMap {
-  let mut map = TileMap::new(UVec2::splat(side), UVec2::splat(TILE));
+/// A map of `cells` (as `cave_cells` gives them) over the tileset `set`:
+/// bounded layers of `side` cells, or unbounded ones of an infinite map
+fn map_of(side: u32, set: TilesetSource, cells: &[Vec<Option<u32>>; 4], infinite: bool) -> TileMap {
+  let mut map = if infinite {
+    TileMap::infinite(UVec2::splat(TILE))
+  } else {
+    TileMap::new(UVec2::splat(side), UVec2::splat(TILE))
+  };
   let set = map.add_tileset(set);
   for (name, layer_cells) in LAYER_NAMES.iter().zip(cells) {
     let layer = map.add_tile_layer(name);
@@ -411,6 +420,8 @@ enum Show {
   Empty,
   /// The map with collision and shadows: the guarded one
   Map,
+  /// The same map with unbounded layers, also guarded
+  MapUnbounded,
   /// Drawn only: no collision, no shadows
   Drawn,
   /// The map with its props layer y-sorted
@@ -436,6 +447,7 @@ impl Show {
     match self {
       Show::Empty => "an empty frame",
       Show::Map => "the map, colliding and casting shadows",
+      Show::MapUnbounded => "the map with unbounded layers, colliding and casting shadows",
       Show::Drawn => "the map drawn only (no collision, no shadows)",
       Show::YSorted => "the map with its props layer y-sorted",
       Show::EmptyLit => "an empty lit frame",
@@ -465,7 +477,7 @@ impl Scene for BigScene {
       return;
     }
     let set = add_tileset(ctx);
-    let mut map = map_of(BIG, set, &cave_cells(BIG));
+    let mut map = map_of(BIG, set, &cave_cells(BIG), self.show == Show::MapUnbounded);
     if self.show == Show::YSorted {
       map.layers[2].info.y_sorted = true;
     }
@@ -542,6 +554,7 @@ fn static_guard() {
   let shows = [
     Show::Empty,
     Show::Map,
+    Show::MapUnbounded,
     Show::Drawn,
     Show::YSorted,
     Show::EmptyLit,
@@ -551,12 +564,15 @@ fn static_guard() {
   ];
   let mut probes = Vec::new();
   let mut first = None;
+  let mut first_unbounded = None;
   for show in shows {
     let Some((engine, built)) = static_engine(show) else {
       return;
     };
     if show == Show::Map {
       first = built;
+    } else if show == Show::MapUnbounded {
+      first_unbounded = built;
     }
     probes.push(Probe {
       show,
@@ -621,7 +637,7 @@ fn static_guard() {
       shown(over(&probe.steps, base)),
       us(render) - us(empty_render),
     );
-    if probe.show == Show::Map {
+    if matches!(probe.show, Show::Map | Show::MapUnbounded) {
       let added = median(probe.steps.clone()).saturating_sub(base);
       let (met, held) = verdict(added, STATIC_TARGET);
       eprintln!(
@@ -646,9 +662,10 @@ fn static_guard() {
       world.entities().len(),
     );
   }
-  if let Some(first) = first {
+  for (first, of) in [(first, "bounded"), (first_unbounded, "unbounded")] {
+    let Some(first) = first else { continue };
     eprintln!(
-      "static_frame (no target): the 1024 x 1024 map's first build, stepped back to back: \
+      "static_frame (no target): the 1024 x 1024 {of} map's first build, stepped back to back: \
        spawn to landed {:.1} ms (the landing job on its worker, and the frames meanwhile), the \
        landing frame {:.1} ms, the frame after {:.1} ms",
       ms(first.job),
@@ -861,7 +878,7 @@ fn edit_map(set: TilesetSource) -> TileMap {
       cells[3][i] = None;
     }
   }
-  map_of(BIG, set, &cells)
+  map_of(BIG, set, &cells, false)
 }
 
 /// The edit guard's scene: the edit map
@@ -1095,6 +1112,56 @@ fn tmx(cells: &[Vec<Option<u32>>; 4], tileset: &str) -> Vec<u8> {
   out.into_bytes()
 }
 
+/// An infinite TMX file of the same map: every layer base64 and zlib in
+/// chunks of 16 x 16 cells, an empty chunk left out as Tiled does
+fn tmx_infinite(cells: &[Vec<Option<u32>>; 4], tileset: &str) -> Vec<u8> {
+  const CHUNK: u32 = 16;
+  let mut out = String::new();
+  out.push_str(&format!(
+    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<map version=\"1.10\" \
+     tiledversion=\"1.12.0\" orientation=\"orthogonal\" renderorder=\"right-down\" \
+     width=\"0\" height=\"0\" tilewidth=\"{TILE}\" tileheight=\"{TILE}\" \
+     infinite=\"1\" nextlayerid=\"5\" nextobjectid=\"1\">\n <tileset firstgid=\"1\" \
+     source=\"{tileset}\"/>\n"
+  ));
+  for (index, (name, layer)) in LAYER_NAMES.iter().zip(cells).enumerate() {
+    out.push_str(&format!(
+      " <layer id=\"{}\" name=\"{name}\" width=\"0\" height=\"0\">\n  <data \
+       encoding=\"base64\" compression=\"zlib\">\n",
+      index + 1
+    ));
+    for cy in 0..SMALL / CHUNK {
+      for cx in 0..SMALL / CHUNK {
+        let mut raw = Vec::with_capacity((CHUNK * CHUNK * 4) as usize);
+        let mut any = false;
+        for y in cy * CHUNK..(cy + 1) * CHUNK {
+          for x in cx * CHUNK..(cx + 1) * CHUNK {
+            let id = layer[(y * SMALL + x) as usize];
+            any |= id.is_some();
+            raw.extend_from_slice(&id.map_or(0, |id| id + 1).to_le_bytes());
+          }
+        }
+        if !any {
+          continue;
+        }
+        let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        z.write_all(&raw).expect("compressed");
+        let packed = z.finish().expect("compressed");
+        let text = base64::engine::general_purpose::STANDARD.encode(packed);
+        out.push_str(&format!(
+          "   <chunk x=\"{}\" y=\"{}\" width=\"{CHUNK}\" height=\"{CHUNK}\">\n   {text}\n   \
+           </chunk>\n",
+          cx * CHUNK,
+          cy * CHUNK
+        ));
+      }
+    }
+    out.push_str("  </data>\n </layer>\n");
+  }
+  out.push_str("</map>\n");
+  out.into_bytes()
+}
+
 /// A TSX file of the tileset over the image at `image` (relative to the
 /// tileset's folder): rock tiles with a full-cell rectangle
 fn tsx(image: &str) -> Vec<u8> {
@@ -1151,6 +1218,15 @@ fn load_files() -> MemorySource {
     );
     files.insert(&format!("images/cold-{i}.png"), png.clone());
     files.insert(&format!("maps/warm-{i}.tmx"), terrain.clone());
+    files.insert(
+      &format!("maps/inf-cold-{i}.tmx"),
+      tmx_infinite(&cells, &format!("../tilesets/inf-cold-{i}.tsx")),
+    );
+    files.insert(
+      &format!("tilesets/inf-cold-{i}.tsx"),
+      tsx(&format!("../images/inf-cold-{i}.png")),
+    );
+    files.insert(&format!("images/inf-cold-{i}.png"), png.clone());
   }
   for run in 0..2 {
     for i in 0..LANDINGS {
@@ -1198,6 +1274,11 @@ fn load_guard(files: &MemorySource) {
     cold.push(took);
     pumps.push(pumping);
   }
+  let mut infinite = Vec::new();
+  for i in 0..LOADS {
+    let path = format!("maps/inf-cold-{i}.tmx");
+    infinite.push(timed_load(&mut world, &server, &path).0);
+  }
   let tileset = server.load::<Tileset>("tilesets/terrain.tsx");
   while !server.is_ready(&tileset) {
     pump(&mut world);
@@ -1209,10 +1290,10 @@ fn load_guard(files: &MemorySource) {
   }
   drop(tileset);
   let held = median(cold.clone());
-  let (met, verdict) = verdict(held, LOAD_TARGET);
+  let (met, held_text) = verdict(held, LOAD_TARGET);
   let line = format!(
     "a 256 x 256 four-layer base64 and zlib TMX with its TSX and PNG, {LOADS} loads of fresh \
-     files: {}; {verdict}",
+     files: {}; {held_text}",
     shown(cold)
   );
   eprintln!("load: {line}");
@@ -1222,6 +1303,17 @@ fn load_guard(files: &MemorySource) {
     shown(pumps),
     shown(warm),
   );
+  if !met {
+    guards::miss(format!("load, {line}"));
+  }
+  let held = median(infinite.clone());
+  let (met, held_text) = verdict(held, LOAD_TARGET);
+  let line = format!(
+    "a 256 x 256 four-layer infinite TMX (16 x 16 chunks, base64 and zlib) with its TSX and \
+     PNG, {LOADS} loads of fresh files: {}; {held_text}",
+    shown(infinite)
+  );
+  eprintln!("load: {line}");
   if !met {
     guards::miss(format!("load, {line}"));
   }
