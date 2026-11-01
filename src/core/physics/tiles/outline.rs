@@ -107,6 +107,129 @@ pub(super) enum Unit {
   Above(i32, i32),
 }
 
+/// The units of the cells `changed` (each cell's inside and its four
+/// borders), each once, in the units' order (by kind, then x, then y). The
+/// cells are sorted by column once, and each kind's units are then those
+/// cells or two shifted copies merged, so a big edit (a streamed chunk's
+/// thousand cells) never sorts five units a cell
+fn units_of(changed: &[(IVec2, TileCell)]) -> Vec<Unit> {
+  // The sign bit flipped: signed order as unsigned
+  let flip = |v: i32| u64::from(v.cast_unsigned() ^ 0x8000_0000);
+  let unflip = |v: u64| ((v as u32) ^ 0x8000_0000).cast_signed();
+  let mut keys: Vec<u64> = changed
+    .iter()
+    .map(|&(cell, _)| (flip(cell.x) << 32) | flip(cell.y))
+    .collect();
+  keys.sort_unstable();
+  let cells: Vec<(i32, i32)> = keys
+    .into_iter()
+    .map(|key| (unflip(key >> 32), unflip(key)))
+    .collect();
+  let mut units = Vec::with_capacity(cells.len() * 4);
+  units.extend(cells.iter().map(|&(x, y)| Unit::Inside(x, y)));
+  // Each of a kind's two copies is sorted as the cells are (a shift keeps
+  // the order), so merging them sorts the kind
+  let mut merged = |shift: (i32, i32), unit: fn(i32, i32) -> Unit| {
+    let shifted = |&(x, y): &(i32, i32)| (x + shift.0, y + shift.1);
+    let (mut i, mut j) = (0, 0);
+    while i < cells.len() || j < cells.len() {
+      let (a, b) = (cells.get(i).copied(), cells.get(j).map(shifted));
+      let next = match (a, b) {
+        (Some(a), Some(b)) if a == b => {
+          (i, j) = (i + 1, j + 1);
+          a
+        }
+        (Some(a), Some(b)) if a < b => {
+          i += 1;
+          a
+        }
+        (Some(a), None) => {
+          i += 1;
+          a
+        }
+        (_, Some(b)) => {
+          j += 1;
+          b
+        }
+        (None, None) => break,
+      };
+      units.push(unit(next.0, next.1));
+    }
+  };
+  merged((1, 0), Unit::Left);
+  merged((0, 1), Unit::Above);
+  units
+}
+
+/// The values an edit's cells had before it, by cell: a window over the
+/// box holding them when it is small for how many there are (a streamed
+/// chunk's thousand cells, a fill), so each read is an index, else the
+/// list itself, searched (cells far apart)
+struct Before<'c> {
+  changed: &'c [(IVec2, TileCell)],
+  min: IVec2,
+  width: i64,
+  height: i64,
+  window: Vec<Option<TileCell>>,
+}
+
+impl<'c> Before<'c> {
+  /// The cells most a window holds for each changed cell, past a floor
+  const SPREAD: i64 = 8;
+  const FLOOR: i64 = 4096;
+
+  /// `changed` sorted by row, then column, each once with its value before
+  fn new(changed: &'c [(IVec2, TileCell)]) -> Self {
+    let (mut min, mut max) = (IVec2::MAX, IVec2::MIN);
+    for &(cell, _) in changed {
+      (min, max) = (min.min(cell), max.max(cell));
+    }
+    let (width, height) = (
+      i64::from(max.x) - i64::from(min.x) + 1,
+      i64::from(max.y) - i64::from(min.y) + 1,
+    );
+    let mut before = Self {
+      changed,
+      min,
+      width,
+      height,
+      window: Vec::new(),
+    };
+    let most = (changed.len() as i64 * Self::SPREAD).max(Self::FLOOR);
+    if !changed.is_empty() && width.saturating_mul(height) <= most {
+      before.window = vec![None; (width * height) as usize];
+      for &(cell, was) in changed {
+        if let Some(at) = before.place(cell.x, cell.y) {
+          before.window[at] = Some(was);
+        }
+      }
+    }
+    before
+  }
+
+  /// The window's place of (`x`, `y`); `None` outside its box
+  fn place(&self, x: i32, y: i32) -> Option<usize> {
+    let (dx, dy) = (
+      i64::from(x) - i64::from(self.min.x),
+      i64::from(y) - i64::from(self.min.y),
+    );
+    ((0..self.width).contains(&dx) && (0..self.height).contains(&dy))
+      .then(|| (dy * self.width + dx) as usize)
+  }
+
+  /// What (`x`, `y`) held before the edit, if the edit changed it
+  fn get(&self, x: i32, y: i32) -> Option<TileCell> {
+    if self.window.is_empty() {
+      let i = self
+        .changed
+        .binary_search_by_key(&(y, x), |&(cell, _)| (cell.y, cell.x))
+        .ok()?;
+      return Some(self.changed[i].1);
+    }
+    self.window[self.place(x, y)?]
+  }
+}
+
 /// The intervals a cell's edges run along one of its sides, in the side's
 /// own way (`sides`), from its edges in cell points.
 fn along(edges: &[(Point, Point)], side: usize) -> Vec<(i32, i32)> {
@@ -368,22 +491,12 @@ impl Outlines {
     if changed.is_empty() {
       return retraced;
     }
-    let before = |x: i32, y: i32| cells.before(x, y, changed);
-    let now = |x: i32, y: i32| cells.at(x, y);
+    // Units come by column, so the reads keep to a chunk for runs of them
+    let now = cells.cached();
+    let prior = Before::new(changed);
+    let before = |x: i32, y: i32| prior.get(x, y).unwrap_or_else(|| now(x, y));
     // An edit changes the units of its cells only
-    let mut units: Vec<Unit> = Vec::with_capacity(changed.len() * 5);
-    for &(cell, _) in changed {
-      let (x, y) = (cell.x, cell.y);
-      units.extend([
-        Unit::Inside(x, y),
-        Unit::Left(x, y),
-        Unit::Left(x + 1, y),
-        Unit::Above(x, y),
-        Unit::Above(x, y + 1),
-      ]);
-    }
-    units.sort_unstable();
-    units.dedup();
+    let units = units_of(changed);
     let (mut was, mut is) = (Vec::new(), Vec::new());
     let mut changes: Vec<(Point, Point, bool)> = Vec::new();
     for unit in units {
@@ -458,6 +571,9 @@ impl Outlines {
         count = count.saturating_sub(1);
       }
     }
+    // Sorted, for the splice to look a point up in
+    dirty.sort_unstable();
+    dirty.dedup();
     // The loops the edit touched, spliced: unchanged stretches copied
     if let Some(made) = self.splice(&old_ids, &olds, (&dirty, &removed, &new_edges), count) {
       #[cfg(test)]
@@ -499,8 +615,9 @@ impl Outlines {
   }
 
   /// Retraces the loops an edit touched (`ids`, whose corners were
-  /// `olds`) after its changed edges, ending at the `dirty` points, went
-  /// into `leaving` (the `new` ones added, the `removed` ones taken out):
+  /// `olds`) after its changed edges, ending at the `dirty` points (sorted,
+  /// each once), went into `leaving` (the `new` ones added, the `removed`
+  /// ones taken out):
   /// the loops they now make, `count` edges in all, each with its id. Each
   /// loop starts at the first edge left in the order a whole trace takes
   /// them (the old loops' edges in order, then the new ones), so it starts
@@ -534,7 +651,11 @@ impl Outlines {
       high = (high.0.max(x), high.1.max(y));
     }
     let is_dirty = |p: Point| {
-      p.0 >= low.0 && p.1 >= low.1 && p.0 <= high.0 && p.1 <= high.1 && dirty.contains(&p)
+      p.0 >= low.0
+        && p.1 >= low.1
+        && p.0 <= high.0
+        && p.1 <= high.1
+        && dirty.binary_search(&p).is_ok()
     };
     let edge = |k: usize, j: usize| (olds[k][j], olds[k][j + 1]);
     // Each old loop's edges that leave a dirty corner, by place
@@ -553,19 +674,27 @@ impl Outlines {
     if at_points.windows(2).any(|pair| pair[0] == pair[1]) {
       return None;
     }
+    // So each old edge at a dirty point is there once: found by its ends
+    let mut old_at: Vec<(Edge, usize, usize)> = dirty_at
+      .iter()
+      .enumerate()
+      .flat_map(|(k, places)| places.iter().map(move |&j| (k, j)))
+      .map(|(k, j)| (edge(k, j), k, j))
+      .collect();
+    old_at.sort_unstable_by_key(|&(edge, _, _)| edge);
     let mut taken: Vec<Vec<bool>> = sizes.iter().map(|&n| vec![false; n]).collect();
-    // The old edge leaving dirty point `at` by `step`, not yet taken
+    // The old edge leaving dirty point `at` by `step`, not yet taken (its
+    // end is within an `i32`, as every point of an old loop is)
     let find = |taken: &[Vec<bool>], at: Point, step: (i64, i64)| {
-      dirty_at.iter().enumerate().find_map(|(k, places)| {
-        places
-          .iter()
-          .copied()
-          .find(|&j| {
-            let (a, b) = edge(k, j);
-            !taken[k][j] && a == at && delta(a, b) == step
-          })
-          .map(|j| (k, j))
-      })
+      let end = (
+        i32::try_from(i64::from(at.0) + step.0).ok()?,
+        i32::try_from(i64::from(at.1) + step.1).ok()?,
+      );
+      let i = old_at
+        .binary_search_by_key(&(at, end), |&(edge, _, _)| edge)
+        .ok()?;
+      let (_, k, j) = old_at[i];
+      (!taken[k][j]).then_some((k, j))
     };
     // The removed edges were old ones at dirty points: none to take
     for &(a, b) in removed {
@@ -1201,6 +1330,41 @@ mod tests {
     edit(&mut state, tiles, &[(10, 6, S), (10, 7, S)]);
     assert_eq!(ids(&state), before);
     assert_eq!(state.splices.whole, 0, "{:?}", state.splices);
+  }
+
+  #[test]
+  fn an_edit_s_units_come_each_once_in_the_units_order() {
+    let mut seed: u32 = 11;
+    let mut next = |below: u32| {
+      seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+      (seed >> 8) % below
+    };
+    for round in 0..200 {
+      // A few cells or a chunk's worth, some apart and some touching,
+      // either side of 0
+      let count = if round % 10 == 0 { 600 } else { 1 + next(40) };
+      let mut cells: Vec<IVec2> = (0..count)
+        .map(|_| IVec2::new(next(70) as i32 - 35, next(70) as i32 - 35))
+        .collect();
+      cells.sort_by_key(|cell| (cell.y, cell.x));
+      cells.dedup();
+      let changed: Vec<(IVec2, TileCell)> = cells.iter().map(|&cell| (cell, S)).collect();
+      let mut expected: Vec<Unit> = cells
+        .iter()
+        .flat_map(|&IVec2 { x, y }| {
+          [
+            Unit::Inside(x, y),
+            Unit::Left(x, y),
+            Unit::Left(x + 1, y),
+            Unit::Above(x, y),
+            Unit::Above(x, y + 1),
+          ]
+        })
+        .collect();
+      expected.sort_unstable();
+      expected.dedup();
+      assert_eq!(units_of(&changed), expected, "round {round}");
+    }
   }
 
   #[test]

@@ -402,6 +402,26 @@ impl<'a> Cells<'a> {
       .map_or(TileCell::Empty, |cells| cells[local(cell)])
   }
 
+  /// A reader of any cell, as `at`, that keeps the chunk it last looked
+  /// up: reads that come in runs within a chunk (an edit's cells by column)
+  /// look each chunk up once a run
+  pub(crate) fn cached(self) -> impl Fn(i32, i32) -> TileCell + 'a {
+    let last: std::cell::Cell<Option<(IVec2, Option<&'a Chunk>)>> = std::cell::Cell::new(None);
+    move |x, y| {
+      let cell = IVec2::new(x, y);
+      let at = chunk_of(cell);
+      let cells = match last.get() {
+        Some((chunk, cells)) if chunk == at => cells,
+        _ => {
+          let cells = self.chunk(at);
+          last.set(Some((at, cells)));
+          cells
+        }
+      };
+      cells.map_or(TileCell::Empty, |cells| cells[local(cell)])
+    }
+  }
+
   /// A reader of the cells around `chunk` without a lookup each: the
   /// chunk's own, the chunk's left of it and the chunk's above it (all its
   /// cells' units read); any other cell is looked up.
@@ -445,15 +465,6 @@ impl<'a> Cells<'a> {
           }
         }
       }
-    }
-  }
-
-  /// The cell at (x, y) as it was before `changed` (sorted by row, then
-  /// column, each with its value before).
-  pub(crate) fn before(&self, x: i32, y: i32, changed: &[(IVec2, TileCell)]) -> TileCell {
-    match changed.binary_search_by_key(&(y, x), |&(cell, _)| (cell.y, cell.x)) {
-      Ok(i) => changed[i].1,
-      Err(_) => self.at(x, y),
     }
   }
 
@@ -2548,6 +2559,121 @@ mod with_physics {
        one-tile edit, rebuild system: median {system:?}, max {system_max:?}\n  \
        one-tile edit, outline retrace alone: median {retrace:?}, max {retrace_max:?}\n  \
        fixed step with physics: {still:?} with no edit, {edited:?} with one (max {edited_max:?})",
+      parts(&mut world, map).len()
+    );
+  }
+
+  /// What a stream's chunk costs the rebuild: an unbounded grid of cave
+  /// rock from value noise over 12 x 10 chunks (about a quarter of its
+  /// cells solid, in islands and caves), a chunk unloaded whole
+  /// (`unload_chunk`) and loaded back cell by cell (`set`, as a map's
+  /// collision sync lands it), each rebuilt in the rebuild system and in the
+  /// outline retrace alone. Run in release:
+  /// `cargo test --release -p ryo2d --lib chunk_swap_timing -- --ignored --nocapture`
+  #[test]
+  #[ignore = "a timing: run in release with --ignored --nocapture"]
+  fn chunk_swap_timing() {
+    use crate::core::ecs::Schedule;
+    use std::time::{Duration, Instant};
+    let hash = |x: i32, y: i32, salt: u32| {
+      let mut h = (x as u32).wrapping_mul(0x8DA6_B343)
+        ^ (y as u32).wrapping_mul(0xD816_3841)
+        ^ salt.wrapping_mul(0xCB1A_B31F);
+      h ^= h >> 13;
+      h = h.wrapping_mul(0x5BD1_E995);
+      h ^ (h >> 15)
+    };
+    let noise = |x: f32, y: f32, salt: u32| {
+      let (x0, y0) = (x.floor(), y.floor());
+      let (fx, fy) = (x - x0, y - y0);
+      let (sx, sy) = (fx * fx * (3.0 - 2.0 * fx), fy * fy * (3.0 - 2.0 * fy));
+      let (ix, iy) = (x0 as i32, y0 as i32);
+      let at = |dx: i32, dy: i32| (hash(ix + dx, iy + dy, salt) & 0xFFFF) as f32 / 65535.0;
+      let top = at(0, 0) + (at(1, 0) - at(0, 0)) * sx;
+      let bottom = at(0, 1) + (at(1, 1) - at(0, 1)) * sx;
+      top + (bottom - top) * sy
+    };
+    let rock = |cell: IVec2| {
+      let (x, y) = (cell.x as f32, cell.y as f32);
+      noise(x / 22.0, y / 22.0, 1) * 0.7 + noise(x / 7.0, y / 7.0, 2) * 0.3 > 0.6
+    };
+    let side = CHUNK;
+    let mut tiles = TileColliders::unbounded(Vec2::splat(16.0));
+    let mut solid = 0;
+    for y in -5 * side..5 * side {
+      for x in -6 * side..6 * side {
+        if rock(IVec2::new(x, y)) {
+          tiles.set(IVec2::new(x, y), TileCell::Solid);
+          solid += 1;
+        }
+      }
+    }
+    // Built whole: the cells set so far are not an edit
+    tiles.take_changes();
+    let median = |mut times: Vec<Duration>| {
+      times.sort();
+      (times[times.len() / 2], times[times.len() - 1])
+    };
+    // The chunks swapped: one inside, one on the edge, in turn
+    let chunks = [IVec2::new(0, 0), IVec2::new(-1, 2), IVec2::new(5, -1)];
+    let load = |tiles: &mut TileColliders, chunk: IVec2| {
+      let origin = chunk * side;
+      for y in 0..side {
+        for x in 0..side {
+          let cell = origin + IVec2::new(x, y);
+          if rock(cell) {
+            tiles.set(cell, TileCell::Solid);
+          }
+        }
+      }
+    };
+    // The rebuild system alone
+    let mut world = World::new();
+    world.insert_resource(Physics::new());
+    let map = world.spawn((Transform::IDENTITY, tiles.clone())).id();
+    let mut schedule = Schedule::default();
+    schedule.add_systems(rebuild_tile_colliders);
+    schedule.run(&mut world);
+    let (mut unloads, mut loads) = (Vec::new(), Vec::new());
+    for i in 0..300 {
+      let chunk = chunks[i % chunks.len()];
+      world
+        .get_mut::<TileColliders>(map)
+        .unwrap()
+        .unload_chunk(chunk);
+      let start = Instant::now();
+      schedule.run(&mut world);
+      unloads.push(start.elapsed());
+      load(&mut world.get_mut::<TileColliders>(map).unwrap(), chunk);
+      let start = Instant::now();
+      schedule.run(&mut world);
+      loads.push(start.elapsed());
+    }
+    // The outline retrace alone
+    let mut outlines = Outlines::build(tiles.cells_view());
+    let (mut unload_traces, mut load_traces) = (Vec::new(), Vec::new());
+    for i in 0..300 {
+      let chunk = chunks[i % chunks.len()];
+      tiles.unload_chunk(chunk);
+      let changed = tiles.take_changes().unwrap_or_default();
+      let start = Instant::now();
+      outlines.apply(tiles.cells_view(), &changed);
+      unload_traces.push(start.elapsed());
+      load(&mut tiles, chunk);
+      let changed = tiles.take_changes().unwrap_or_default();
+      let start = Instant::now();
+      outlines.apply(tiles.cells_view(), &changed);
+      load_traces.push(start.elapsed());
+    }
+    let ((unload, unload_max), (load, load_max)) = (median(unloads), median(loads));
+    let ((unload_trace, _), (load_trace, _)) = (median(unload_traces), median(load_traces));
+    println!(
+      "12 x 10 chunks of noise rock, {solid} solid cells ({} a chunk), {} parts\n  \
+       a chunk unloaded, rebuild system: median {unload:?}, max {unload_max:?}; the retrace \
+       alone {unload_trace:?}\n  \
+       a chunk loaded back, rebuild system: median {load:?}, max {load_max:?}; the retrace \
+       alone {load_trace:?}",
+      solid / 120,
       parts(&mut world, map).len()
     );
   }
