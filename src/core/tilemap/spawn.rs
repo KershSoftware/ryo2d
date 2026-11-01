@@ -65,8 +65,9 @@ pub(crate) enum MapSource {
   },
 }
 
-/// A map in the world. The entity's `Transform` places the map's top-left
-/// corner; once its asset (and the tilesets it names) is loaded and its
+/// A map in the world. The entity's `Transform` places the map's cell
+/// (0, 0): its top-left corner, or an infinite map's tile origin, its
+/// chunks lying around it. Once its asset (and the tilesets it names) is loaded and its
 /// colliders are worked out (off the main thread, over a frame or so), its
 /// layers spawn as its children, each object and class tile a child of its
 /// layer, and a [`MapEvent::Spawned`] is sent ([`MapEvent::Failed`] if the

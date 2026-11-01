@@ -556,6 +556,97 @@ impl TileGrid {
     decode(cell)
   }
 
+  /// The cell `tile` (0 for none) is held as, for
+  /// [`write_rows`](Self::write_rows); `None` for a tile that does not fit
+  /// a cell
+  pub(crate) fn encode(tile: Option<Tile>) -> Option<u32> {
+    encode(tile)
+  }
+
+  /// Writes `cells` (cells as [`encode`](Self::encode) gives them, in rows
+  /// of `width`; a last row short of it is left out) with the first at
+  /// `origin`, looking each chunk it reaches up once rather than each cell,
+  /// as one change: what a loader writes a decoded layer or chunk with. A
+  /// chunk is made only where a tile goes; cells outside a bounded grid, or
+  /// past what an `i32` holds, are left out. Whether any cell changed
+  pub(crate) fn write_rows(&mut self, origin: IVec2, width: usize, cells: &[u32]) -> bool {
+    let rows = cells.len().checked_div(width).unwrap_or(0);
+    if rows == 0 {
+      return false;
+    }
+    // The block's corners, both included, clipped to the cells the grid
+    // holds: measured in i64, so a block running past `i32` cannot wrap
+    let (mut lo, mut hi) = (
+      origin.as_i64vec2(),
+      origin.as_i64vec2() + glam::I64Vec2::new(width as i64 - 1, rows as i64 - 1),
+    );
+    let (min, max) = match self.bounds {
+      Some(bounds) => (bounds.min.as_i64vec2(), bounds.max.as_i64vec2() - 1),
+      None => (
+        glam::I64Vec2::splat(i64::from(i32::MIN)),
+        glam::I64Vec2::splat(i64::from(i32::MAX)),
+      ),
+    };
+    lo = lo.max(min);
+    hi = hi.min(max);
+    if lo.x > hi.x || lo.y > hi.y {
+      return false;
+    }
+    let (lo, hi) = (lo.as_ivec2(), hi.as_ivec2());
+    let (first, last) = (Self::chunk_of(lo), Self::chunk_of(hi));
+    let before = self.order.len();
+    let Self {
+      chunks,
+      order,
+      span,
+      dirty,
+      counter,
+      ..
+    } = self;
+    let mut version = None;
+    for cy in first.y..=last.y {
+      for cx in first.x..=last.x {
+        let chunk = IVec2::new(cx, cy);
+        // The part of the block in the chunk: neither corner overflows,
+        // the last chunk of `i32` ending at `i32::MAX`
+        let corner = chunk * SIDE;
+        let (a, b) = (lo.max(corner), hi.min(corner + IVec2::splat(SIDE - 1)));
+        let run = (b.x - a.x + 1) as usize;
+        let source = |y: i32| {
+          let at = (y - origin.y) as usize * width + (a.x - origin.x) as usize;
+          &cells[at..at + run]
+        };
+        let tiles = (a.y..=b.y).any(|y| source(y).iter().any(|&c| c != 0));
+        let entry = if tiles {
+          make_chunk(chunks, order, span, chunk)
+        } else {
+          match chunks.get_mut(&chunk) {
+            Some(entry) if entry.cells.is_some() => entry,
+            _ => continue,
+          }
+        };
+        let target = entry.cells.get_or_insert_with(empty_cells);
+        let mut changed = false;
+        for y in a.y..=b.y {
+          let at = ((y - corner.y) * SIDE + (a.x - corner.x)) as usize;
+          let row = &mut target[at..at + run];
+          let from = source(y);
+          if row != from {
+            row.copy_from_slice(from);
+            changed = true;
+          }
+        }
+        if changed {
+          let version = *version.get_or_insert_with(next_version);
+          entry.mark(version, dirty);
+          *counter = version;
+        }
+      }
+    }
+    settle(order, before);
+    version.is_some()
+  }
+
   /// What tells this grid from every other, its clones included
   pub(crate) fn id(&self) -> u64 {
     self.id
@@ -1132,6 +1223,86 @@ mod tests {
       let found: Vec<IVec2> = g.chunks_within(first, last).collect();
       assert_eq!(found, inside(first, last), "{first} to {last}");
     }
+  }
+
+  #[test]
+  fn written_rows_land_in_their_chunks_as_one_change_making_only_chunks_with_tiles() {
+    // A block of 40 x 3 from (-20, -2), reaching chunks -1 and 0 both
+    // ways, with tiles in three of those four chunks
+    let (width, rows) = (40usize, 3usize);
+    let tile = |id: u32| TileGrid::encode(Some(Tile::new(0, id))).expect("fits");
+    let mut cells = vec![0u32; width * rows];
+    cells[0] = tile(1); // (-20, -2)
+    cells[width - 1] = tile(2); // (19, -2)
+    cells[2 * width] = tile(3); // (-20, 0)
+    let mut g = TileGrid::unbounded();
+    let before = g.version();
+    assert!(g.write_rows(IVec2::new(-20, -2), width, &cells));
+    assert_eq!(g.get(IVec2::new(-20, -2)), Some(Tile::new(0, 1)));
+    assert_eq!(g.get(IVec2::new(19, -2)), Some(Tile::new(0, 2)));
+    assert_eq!(g.get(IVec2::new(-20, 0)), Some(Tile::new(0, 3)));
+    assert_eq!(g.get(IVec2::new(0, -1)), None);
+    // chunk (0, 0) gets only empty cells: it is not made
+    let chunks: Vec<IVec2> = g.chunk_coords().collect();
+    assert_eq!(
+      chunks,
+      [IVec2::new(-1, -1), IVec2::new(0, -1), IVec2::new(-1, 0)]
+    );
+    // one change, one version, every chunk it wrote dirty
+    let version = g.version();
+    assert!(version > before);
+    for &chunk in &chunks {
+      assert_eq!(g.chunk_version(chunk), version);
+    }
+    let mut dirty = Vec::new();
+    g.drain_dirty(&mut dirty);
+    assert_eq!(dirty, chunks);
+    // the same rows again change nothing; empty rows clear what is there
+    assert!(!g.write_rows(IVec2::new(-20, -2), width, &cells));
+    assert_eq!(g.version(), version);
+    assert!(g.write_rows(IVec2::new(-20, -2), width, &vec![0; width]));
+    assert_eq!(g.get(IVec2::new(-20, -2)), None);
+    assert_eq!(g.get(IVec2::new(-20, 0)), Some(Tile::new(0, 3)));
+    assert!(g.chunk_version(IVec2::new(-1, 0)) < g.version());
+    // a short last row is left out, and so is a block of no row
+    assert!(!g.write_rows(IVec2::new(100, 0), 4, &[tile(1); 3]));
+    assert!(!g.write_rows(IVec2::ZERO, 0, &cells));
+    assert!(!g.has_chunk(IVec2::new(3, 0)));
+  }
+
+  #[test]
+  fn written_rows_keep_to_a_bounded_grid_and_to_what_i32_holds() {
+    let t = TileGrid::encode(Some(Tile::new(0, 4))).expect("fits");
+    let mut g = TileGrid::new(UVec2::new(10, 4));
+    // a 4 x 4 block from (8, 2): only (8..10, 2..4) is the grid's
+    assert!(g.write_rows(IVec2::new(8, 2), 4, &[t; 16]));
+    let held: Vec<IVec2> = (0..4)
+      .flat_map(|y| (0..10).map(move |x| IVec2::new(x, y)))
+      .filter(|&cell| g.get(cell).is_some())
+      .collect();
+    assert_eq!(
+      held,
+      [
+        IVec2::new(8, 2),
+        IVec2::new(9, 2),
+        IVec2::new(8, 3),
+        IVec2::new(9, 3)
+      ]
+    );
+    assert!(
+      !g.write_rows(IVec2::new(-8, -8), 4, &[t; 16]),
+      "all outside"
+    );
+    // an unbounded grid writes up to the last cell `i32` holds, no further
+    let mut far = TileGrid::unbounded();
+    let edge = IVec2::splat(i32::MAX - 1);
+    assert!(far.write_rows(edge, 4, &[t; 16]));
+    assert_eq!(far.get(edge), Some(Tile::new(0, 4)));
+    assert_eq!(far.get(IVec2::splat(i32::MAX)), Some(Tile::new(0, 4)));
+    assert_eq!(far.chunk_coords().count(), 1);
+    let near = IVec2::splat(i32::MIN);
+    assert!(far.write_rows(near, 2, &[t; 4]));
+    assert_eq!(far.get(near + IVec2::ONE), Some(Tile::new(0, 4)));
   }
 
   #[test]

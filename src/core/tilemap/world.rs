@@ -36,10 +36,14 @@ use crate::core::ui::Rect;
 ///   maps past a gap.
 ///
 /// A world named any other way lists its maps. A listed map without
-/// a `width` and `height`, and every pattern's map, has its size read from
-/// its file as width x tilewidth by height x tileheight (isometric, hexagonal
-/// and infinite maps are load errors until 6b anyway). A pattern's probe
-/// reads each map, which then loads again as a dependency.
+/// a `width` and `height`, and every pattern's map, has its rectangle read
+/// from its file: width x tilewidth by height x tileheight from its place.
+/// An infinite map is placed by its tile origin: the world's x and y are
+/// where its cell (0, 0) sits ([`WorldLevel::origin`]), and its rectangle
+/// is its chunks' bounds from there, as [`TileMap::bounds`] gives them in
+/// pixels (Tiled documents no rule for infinite maps in worlds; this is
+/// the engine's reading). A pattern's probe reads each map, which then
+/// loads again as a dependency.
 ///
 /// Spawn the levels near the player with
 /// [`MapsView::spawn_levels_in`](super::MapsView::spawn_levels_in).
@@ -177,7 +181,7 @@ impl MapRoot {
   /// [`WorldLayout::levels`]). The root names the map once the world is
   /// loaded; a level the world does not have fails the root
   /// ([`MapEvent::Failed`](super::MapEvent::Failed)). Put the level at
-  /// its [`WorldLevel::position`] with the root's `Transform`
+  /// its [`WorldLevel::origin`] with the root's `Transform`
   pub fn world_level(world: &Handle<TileWorld>, level: usize) -> MapRoot {
     MapRoot::from_source(MapSource::WorldLevel {
       world: WorldRef::Tiled(world.clone()),
@@ -310,7 +314,7 @@ pub(crate) fn spawn_levels_in(
       // The game sets the root up; the map stays the level's
       let mut root = configure(level, MapRoot::from_source(source.clone()));
       root.source = source;
-      (index, level.position, root)
+      (index, level.origin, root)
     })
     .collect();
   roots
@@ -350,7 +354,7 @@ pub(crate) fn resolve_world_levels(world: &mut World, waiting: &mut super::spawn
 
 #[cfg(test)]
 mod tests {
-  use glam::Vec2;
+  use glam::{IVec2, Vec2};
 
   use super::*;
   use crate::core::asset::{Assets, AssetsView};
@@ -534,6 +538,71 @@ mod tests {
     assert!(names(Rect::new(-10.0, 0.0, 10.0, 10.0)).is_empty());
     assert!(names(Rect::new(0.0, -10.0, 10.0, 10.0)).is_empty());
     assert!(names(Rect::new(500.0, 500.0, 4.0, 4.0)).is_empty());
+  }
+
+  #[test]
+  fn a_world_places_an_infinite_map_by_its_tile_origin() {
+    let files = files_with(&[(
+      "tiled/worlds/far.world",
+      r#"{"maps":[{"fileName":"../maps/infinite.tmj","x":1000,"y":500},
+         {"fileName":"a.tmj","x":-1000,"y":-1000}],"type":"world"}"#,
+    )]);
+    let mut maps = MapWorld::over(files);
+    let far = load_world(&mut maps.world, "tiled/worlds/far.world").expect("loads");
+    let layout = layout_of(&maps.world, &far);
+    let handle = AssetsView::new(&mut maps.world)
+      .load_now::<TileMap>("tiled/maps/infinite.tmj")
+      .expect("the map loads");
+    let bounds = match maps.world.resource::<Assets<TileMap>>().get(&handle) {
+      Some(map) => map.bounds(),
+      None => panic!("the map is not in the store"),
+    };
+    assert!(bounds.min.x < 0 && bounds.min.y < 0, "{bounds:?}");
+    // The world's x and y are where the map's cell (0, 0) sits; its
+    // rectangle is its chunks' bounds from there
+    let tile = Vec2::splat(16.0);
+    let (index, far_level) = level(&layout, "../maps/infinite.tmj");
+    assert_eq!(far_level.origin, Vec2::new(1000.0, 500.0));
+    assert_eq!(
+      far_level.position,
+      Vec2::new(1000.0, 500.0) + bounds.min.as_vec2() * tile
+    );
+    assert_eq!(far_level.size, bounds.size().as_vec2() * tile);
+    // a bounded map's origin is its rectangle's top-left
+    let (_, a) = level(&layout, "a.tmj");
+    assert_eq!(
+      (a.origin, a.position),
+      (Vec2::splat(-1000.0), Vec2::splat(-1000.0))
+    );
+
+    // Spawned, its root (the map's cell (0, 0)) sits at the tile origin
+    let near = Rect::new(
+      far_level.position.x + 1.0,
+      far_level.position.y + 1.0,
+      4.0,
+      4.0,
+    );
+    assert!(
+      !near.contains(far_level.origin.x, far_level.origin.y),
+      "the area is away from the origin"
+    );
+    let spawned = MapsView::new(&mut maps.world).spawn_levels_in(&far, near);
+    assert_eq!(spawned.len(), 1);
+    maps.frames_until(maps_landed);
+    let roots = spawned_roots(&mut maps.world);
+    assert_eq!(
+      roots.iter().map(|(_, l, p)| (*l, *p)).collect::<Vec<_>>(),
+      [(index, Vec2::new(1000.0, 500.0))]
+    );
+    let cell =
+      MapsView::new(&mut maps.world).cell_to_world(roots[0].0, "ground", IVec2::new(-20, -3));
+    assert_eq!(
+      cell,
+      Some(Vec2::new(
+        1000.0 - 20.0 * 16.0 + 8.0,
+        500.0 - 3.0 * 16.0 + 8.0
+      ))
+    );
   }
 
   fn spawned_roots(world: &mut crate::core::ecs::World) -> Vec<(Entity, usize, Vec2)> {

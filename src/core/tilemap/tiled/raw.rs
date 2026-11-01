@@ -189,8 +189,9 @@ pub(crate) struct RawLayer {
   pub data: Option<RawData>,
   pub encoding: Option<String>,
   pub compression: Option<String>,
-  /// Present only in infinite maps
-  pub chunks: Option<Vec<Value>>,
+  /// An infinite map's tile layer: its cells in chunks, in the layer's
+  /// `encoding` and `compression`
+  pub chunks: Option<Vec<RawChunk>>,
   /// An object layer's draw order: `topdown` (Tiled's default) or `index`
   pub draworder: Option<String>,
   pub objects: Vec<RawObject>,
@@ -202,6 +203,19 @@ pub(crate) struct RawLayer {
   /// The children of a group
   pub layers: Vec<RawLayer>,
   pub properties: Vec<RawProperty>,
+}
+
+/// A chunk of an infinite map's tile layer: where its first cell is, its
+/// size in cells and its gids, row by row. Its numbers are read wider than
+/// a cell's, so a chunk past what a cell holds is refused naming it
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub(crate) struct RawChunk {
+  pub x: i64,
+  pub y: i64,
+  pub width: i64,
+  pub height: i64,
+  pub data: Option<RawData>,
 }
 
 /// A tile layer's cells: a list of gids, or text to decode (CSV in XML,

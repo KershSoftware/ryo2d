@@ -1155,6 +1155,7 @@ fn build_world(
       name: raw.identifier.clone(),
       position: position.as_vec2(),
       size: size.as_vec2(),
+      origin: position.as_vec2(),
       depth,
       neighbours: neighbours.clone(),
     });

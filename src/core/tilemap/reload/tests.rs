@@ -257,6 +257,117 @@ fn saving_a_map_updates_its_tiles_and_keeps_unchanged_objects() {
   assert!(watch.spawned().is_empty());
 }
 
+/// The infinite fixture as Tiled saved it, changed by `edit` (its JSON)
+fn infinite_saved_as(edit: impl FnOnce(&mut serde_json::Value)) -> String {
+  let path = format!(
+    "{}/tiled/maps/infinite.tmj",
+    crate::core::tilemap::test_util::FIXTURES
+  );
+  let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
+  let mut json: serde_json::Value =
+    serde_json::from_str(&text).unwrap_or_else(|e| panic!("{path}: {e}"));
+  edit(&mut json);
+  json.to_string()
+}
+
+/// The chunks of the infinite fixture's layer `layer`, as JSON
+fn chunks_of(json: &mut serde_json::Value, layer: usize) -> &mut Vec<serde_json::Value> {
+  match json["layers"][layer]["chunks"].as_array_mut() {
+    Some(chunks) => chunks,
+    None => panic!("layer {layer} has no chunks"),
+  }
+}
+
+#[test]
+fn saving_an_infinite_map_that_moves_its_chunks_reloads_by_chunk() {
+  let files = files_with(&[]);
+  let (mut maps, map) = spawned(&files, "tiled/maps/infinite.tmj", MapRoot::new);
+  let layers = layers_of(&mut maps.world, map);
+  let (crate_object, _) = object_named(&mut maps.world, map, "crate");
+  let (spot, _) = object_named(&mut maps.world, map, "spot");
+  let grid = |world: &World, layer: usize| match world.get::<TileLayerData>(layers[layer]) {
+    Some(data) => data.grid.clone(),
+    None => panic!("layer {layer} is not a tile layer"),
+  };
+  let (ground, walls, decor) = (
+    grid(&maps.world, 0),
+    grid(&maps.world, 1),
+    grid(&maps.world, 2),
+  );
+  assert_eq!(
+    ground.bounds(),
+    None,
+    "an infinite map's layers are unbounded"
+  );
+  assert_eq!(walls.get(IVec2::new(17, -17)), Some(Tile::new(0, 8)));
+  let decor_versions: Vec<(IVec2, u64)> = decor
+    .chunk_coords()
+    .map(|chunk| (chunk, decor.chunk_version(chunk)))
+    .collect();
+
+  // A save that drops walls' chunk at (16, -32), adds one at (1600, -800)
+  // with a tile at (1602, -797), and changes ground's tile at (5, 2)
+  let mut watch = Watch::new(&maps.world);
+  let saved = infinite_saved_as(|json| {
+    let walls = chunks_of(json, 1);
+    walls.retain(|chunk| (chunk["x"].as_i64(), chunk["y"].as_i64()) != (Some(16), Some(-32)));
+    let mut data = vec![0u32; 256];
+    data[3 * 16 + 2] = 1;
+    walls.push(serde_json::json!({"x": 1600, "y": -800, "width": 16, "height": 16, "data": data}));
+    let ground = chunks_of(json, 0);
+    let Some(chunk) = ground
+      .iter_mut()
+      .find(|chunk| (chunk["x"].as_i64(), chunk["y"].as_i64()) == (Some(0), Some(0)))
+    else {
+      panic!("ground has no chunk at (0, 0)")
+    };
+    chunk["data"][2 * 16 + 5] = serde_json::json!(5);
+  });
+  files.insert("tiled/maps/infinite.tmj", saved);
+  watch.until_reloaded(&mut maps, map);
+
+  // The same layers and objects, each keeping its entity
+  assert_eq!(layers_of(&mut maps.world, map), layers);
+  assert_eq!(id_of(&maps.world, map, "1"), Some(crate_object));
+  assert_eq!(id_of(&maps.world, map, "2"), Some(spot));
+  assert_eq!(watch.reloaded(), [map], "one reload");
+  assert!(watch.spawned().is_empty());
+
+  let (ground_now, walls_now, decor_now) = (
+    grid(&maps.world, 0),
+    grid(&maps.world, 1),
+    grid(&maps.world, 2),
+  );
+  // the dropped chunk's cells are empty; the new one far out holds its tile
+  assert_eq!(walls_now.get(IVec2::new(17, -17)), None);
+  assert_eq!(walls_now.get(IVec2::new(18, -17)), None);
+  assert_eq!(walls_now.get(IVec2::new(1602, -797)), Some(Tile::new(0, 0)));
+  assert_eq!(walls_now.get(IVec2::new(-50, 20)), Some(Tile::new(0, 7)));
+  let far = TileGrid::chunk_of(IVec2::new(1602, -797));
+  assert!(walls_now.chunk_version(far) > walls.version());
+  assert!(walls_now.chunk_version(IVec2::new(0, -1)) > walls.version());
+  assert_eq!(
+    walls_now.chunk_version(IVec2::new(-2, 0)),
+    walls.chunk_version(IVec2::new(-2, 0)),
+    "walls' untouched chunk"
+  );
+  // the changed chunk moved on, the others did not
+  assert_eq!(ground_now.get(IVec2::new(5, 2)), Some(Tile::new(0, 4)));
+  assert!(ground_now.chunk_version(IVec2::ZERO) > ground.chunk_version(IVec2::ZERO));
+  for chunk in [IVec2::new(-1, -1), IVec2::new(-1, 0), IVec2::new(1, 0)] {
+    assert_eq!(
+      ground_now.chunk_version(chunk),
+      ground.chunk_version(chunk),
+      "ground's chunk {chunk}"
+    );
+  }
+  let decor_now_versions: Vec<(IVec2, u64)> = decor_now
+    .chunk_coords()
+    .map(|chunk| (chunk, decor_now.chunk_version(chunk)))
+    .collect();
+  assert_eq!(decor_now_versions, decor_versions, "decor is as it was");
+}
+
 #[test]
 fn a_moved_object_moves_and_keeps_game_components() {
   let hp = |n: i32| format!(r#","properties":[{{"name":"hp","type":"int","value":{n}}}]"#);

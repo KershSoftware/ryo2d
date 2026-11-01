@@ -12,9 +12,9 @@ use serde_json::{Map, Number, Value};
 
 use super::build::MAX_DEPTH;
 use super::raw::{
-  RawData, RawFrame, RawLayer, RawMap, RawObject, RawOffset, RawPoint, RawProperty, RawTemplate,
-  RawText, RawTile, RawTileset, RawTilesetRef, RawTransformations, RawWangColor, RawWangSet,
-  RawWangTile,
+  RawChunk, RawData, RawFrame, RawLayer, RawMap, RawObject, RawOffset, RawPoint, RawProperty,
+  RawTemplate, RawText, RawTile, RawTileset, RawTilesetRef, RawTransformations, RawWangColor,
+  RawWangSet, RawWangTile,
 };
 
 type Parsed<T> = Result<T, String>;
@@ -388,25 +388,43 @@ impl<'a, 'i> Reader<'a, 'i> {
     Ok(layer)
   }
 
+  /// A tile layer's `<data>`: its cells, or an infinite map's `<chunk>`s
+  /// of them, each in the layer's encoding
   fn layer_data(&self, data: Node<'a, 'i>, layer: &mut RawLayer) -> Parsed<()> {
     layer.encoding = self.str(data, "encoding").map(str::to_string);
     layer.compression = self.str(data, "compression").map(str::to_string);
+    let plain = layer.encoding.is_none();
     if self.child(data, "chunk").is_some() {
-      // the builder refuses it, naming sub-project 6b
-      layer.chunks = Some(Vec::new());
+      let mut chunks = Vec::new();
+      for chunk in self.children(data, "chunk") {
+        chunks.push(RawChunk {
+          x: self.num(chunk, "x")?.unwrap_or(0),
+          y: self.num(chunk, "y")?.unwrap_or(0),
+          width: self.num(chunk, "width")?.unwrap_or(0),
+          height: self.num(chunk, "height")?.unwrap_or(0),
+          data: Some(self.cells(chunk, plain)?),
+        });
+      }
+      layer.chunks = Some(chunks);
       return Ok(());
     }
-    let tiles: Vec<Node<'a, 'i>> = self.children(data, "tile").collect();
-    layer.data = Some(if layer.encoding.is_none() && !tiles.is_empty() {
+    layer.data = Some(self.cells(data, plain)?);
+    Ok(())
+  }
+
+  /// The cells of a `<data>` or `<chunk>`: its `<tile>` elements' gids
+  /// where there is no encoding (`plain`), else its text to decode
+  fn cells(&self, node: Node<'a, 'i>, plain: bool) -> Parsed<RawData> {
+    let tiles: Vec<Node<'a, 'i>> = self.children(node, "tile").collect();
+    Ok(if plain && !tiles.is_empty() {
       let mut gids = Vec::with_capacity(tiles.len());
       for tile in tiles {
         gids.push(self.num(tile, "gid")?.unwrap_or(0));
       }
       RawData::Array(gids)
     } else {
-      RawData::Text(text_of(data))
-    });
-    Ok(())
+      RawData::Text(text_of(node))
+    })
   }
 
   fn object(&self, node: Node<'a, 'i>) -> Parsed<RawObject> {
@@ -572,12 +590,15 @@ pub(crate) fn parse_tx(text: &str) -> Parsed<RawTemplate> {
 mod tests {
   use std::path::Path;
 
+  use glam::{IVec2, UVec2, Vec2};
+
   use crate::core::asset::{
     Asset, AssetServer, Assets, AssetsView, Handle, MemorySource, insert_registry,
   };
   use crate::core::ecs::kernel::World;
+  use crate::core::physics::CellRect;
   use crate::core::tilemap::{
-    ImageLayer, LayerKind, TileMap, Tileset, TilesetImage, TilesetSource,
+    ImageLayer, LayerKind, Tile, TileFlip, TileGrid, TileMap, Tileset, TilesetImage, TilesetSource,
   };
 
   const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tilemap/tiled");
@@ -758,7 +779,7 @@ mod tests {
     panic!("{name}: one has more lines than the other");
   }
 
-  const MAP_PAIRS: [&str; 15] = [
+  const MAP_PAIRS: [&str; 22] = [
     "image-layers",
     "lists",
     "tile-objects",
@@ -774,6 +795,13 @@ mod tests {
     "level",
     "wang-dirt",
     "wang-grass",
+    "infinite",
+    "infinite-chunks8",
+    "infinite-csv",
+    "infinite-base64",
+    "infinite-zlib",
+    "infinite-gzip",
+    "infinite-zstd",
   ];
   const SET_PAIRS: [&str; 9] = [
     "loot",
@@ -842,12 +870,143 @@ mod tests {
     );
   }
 
+  // ---- infinite maps ------------------------------------------------------
+
+  /// The grid of `map`'s tile layer `name`
+  fn grid_of<'a>(map: &'a TileMap, name: &str) -> &'a TileGrid {
+    match map.layer_index(name).and_then(|index| map.tiles(index)) {
+      Some(grid) => grid,
+      None => panic!("no tile layer {name}"),
+    }
+  }
+
+  /// Every tile of `grid` with its cell, row by row
+  fn tiles_of(grid: &TileGrid) -> Vec<(IVec2, Tile)> {
+    let extent = grid.extent();
+    (extent.min.y..extent.max.y)
+      .flat_map(|y| (extent.min.x..extent.max.x).map(move |x| IVec2::new(x, y)))
+      .filter_map(|cell| Some((cell, grid.get(cell)?)))
+      .collect()
+  }
+
+  /// What `make-fixtures.js` painted into each tile layer of `infinite`,
+  /// row by row (the ground layer is every infinite fixture's)
+  fn painted(layer: &str) -> Vec<(IVec2, Tile)> {
+    let (h, v, d) = (TileFlip::HORIZONTAL, TileFlip::VERTICAL, TileFlip::DIAGONAL);
+    let tile = |x: i32, y: i32, id: u32, flip: TileFlip| {
+      (IVec2::new(x, y), Tile::new(0, id).with_flip(flip))
+    };
+    let mut tiles = match layer {
+      "ground" => vec![
+        tile(-20, -3, 0, TileFlip::NONE),
+        tile(-1, -1, 1, h),
+        tile(0, 0, 2, TileFlip::NONE),
+        tile(5, 2, 3, h | v | d),
+        tile(40, 10, 5, TileFlip::NONE),
+        tile(-17, 18, 6, v),
+      ],
+      "walls" => vec![
+        tile(-50, 20, 7, TileFlip::NONE),
+        tile(17, -17, 8, TileFlip::NONE),
+        tile(18, -17, 8, TileFlip::NONE),
+      ],
+      "decor" => vec![tile(3, 3, 9, TileFlip::NONE)],
+      _ => panic!("no layer {layer} was painted"),
+    };
+    tiles.sort_by_key(|(cell, _)| (cell.y, cell.x));
+    tiles
+  }
+
+  fn loaded(world: &mut World, path: &str) -> TileMap {
+    load_map(world, path).unwrap_or_else(|e| panic!("{path}: {e}"))
+  }
+
   #[test]
-  fn infinite_maps_are_refused_naming_6b() {
-    let error = failure(&format!(
-      "{HEAD}\n <layer id=\"1\" name=\"a\" width=\"2\" height=\"2\">\n  <data encoding=\"csv\"><chunk x=\"0\" y=\"0\" width=\"16\" height=\"16\">0</chunk></data>\n </layer>\n</map>"
-    ));
-    assert!(error.contains("6b"), "{error}");
+  fn an_infinite_map_s_chunks_land_where_tiled_put_them() {
+    let mut world = world_with(&[]);
+    let json = loaded(&mut world, "maps/infinite.tmj");
+    let xml = loaded(&mut world, "xml/maps/infinite.tmx");
+    for (map, format) in [(&json, "tmj"), (&xml, "tmx")] {
+      assert!(map.infinite, "{format}");
+      assert_eq!(map.size, UVec2::ZERO, "{format}");
+      let mut union = CellRect::default();
+      for layer in ["ground", "walls", "decor"] {
+        let grid = grid_of(map, layer);
+        assert_eq!(grid.bounds(), None, "{format} {layer} is unbounded");
+        // every tile the script placed, at its cell, and no other
+        assert_eq!(tiles_of(grid), painted(layer), "{format} {layer}");
+        union = union.union(grid.extent());
+      }
+      // the engine's chunks of 32 hold Tiled's chunks of 16
+      let chunks = |layer: &str| grid_of(map, layer).chunk_coords().collect::<Vec<_>>();
+      let at = |x: i32, y: i32| IVec2::new(x, y);
+      assert_eq!(
+        chunks("ground"),
+        [at(-1, -1), at(-1, 0), at(0, 0), at(1, 0)],
+        "{format}"
+      );
+      assert_eq!(chunks("walls"), [at(0, -1), at(-2, 0)], "{format}");
+      // decor's tile at (70, -40), written and erased, left an empty chunk
+      // Tiled did not save: nothing of it is made
+      assert_eq!(chunks("decor"), [at(0, 0)], "{format}");
+      assert!(!grid_of(map, "decor").has_chunk(TileGrid::chunk_of(at(70, -40))));
+      // the map's bounds hold every layer's chunks
+      assert_eq!(map.bounds(), union, "{format}");
+      assert_eq!(
+        map.bounds(),
+        CellRect::new(at(-64, -32), at(64, 32)),
+        "{format}"
+      );
+      // objects keep their negative coordinates
+      let LayerKind::Objects(objects) = &map.layers[3].kind else {
+        panic!("{format}: no object layer")
+      };
+      let placed: Vec<(&str, Vec2)> = objects
+        .iter()
+        .map(|o| (o.name.as_str(), o.position))
+        .collect();
+      assert_eq!(
+        placed,
+        [
+          ("crate", Vec2::new(-40.0, -24.0)),
+          ("spot", Vec2::new(-8.5, -100.0))
+        ],
+        "{format}"
+      );
+    }
+    assert_same(
+      "infinite",
+      &canon_map(&world, &xml),
+      &canon_map(&world, &json),
+    );
+  }
+
+  #[test]
+  fn chunks_of_any_size_and_every_encoding_load() {
+    let mut world = world_with(&[]);
+    let reference = painted("ground");
+    let mut paths = vec!["xml/maps/infinite-xml.tmx".to_string()];
+    for name in [
+      "infinite-chunks8",
+      "infinite-csv",
+      "infinite-base64",
+      "infinite-zlib",
+      "infinite-gzip",
+      "infinite-zstd",
+    ] {
+      paths.push(format!("maps/{name}.tmj"));
+      paths.push(format!("xml/maps/{name}.tmx"));
+    }
+    let first = loaded(&mut world, "maps/infinite-csv.tmj");
+    let chunks: Vec<IVec2> = grid_of(&first, "ground").chunk_coords().collect();
+    for path in paths {
+      let map = loaded(&mut world, &path);
+      assert!(map.infinite, "{path}");
+      let grid = grid_of(&map, "ground");
+      assert_eq!(grid.bounds(), None, "{path}");
+      assert_eq!(tiles_of(grid), reference, "{path}");
+      assert_eq!(grid.chunk_coords().collect::<Vec<_>>(), chunks, "{path}");
+    }
   }
 
   #[test]

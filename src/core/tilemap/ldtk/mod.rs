@@ -46,9 +46,14 @@ pub struct Neighbour {
 pub struct WorldLevel {
   /// The level's identifier
   pub name: String,
-  /// The top-left corner in world pixels
+  /// The top-left corner of its rectangle in world pixels
   pub position: Vec2,
   pub size: Vec2,
+  /// Where the map's cell (0, 0) sits in world pixels, where a root
+  /// spawning the level puts its `Transform`: `position` for a bounded
+  /// map, whose rectangle starts at its cell (0, 0); for an infinite map,
+  /// its tile origin, its rectangle starting where its chunks do
+  pub origin: Vec2,
   /// The world depth: LDtk's `worldDepth`, where each depth is a floor of
   /// its own (a level on another depth is above or below this one, not
   /// beside it); 0 for a Tiled world's levels

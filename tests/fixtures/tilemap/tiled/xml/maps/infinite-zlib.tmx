@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<map version="1.10" tiledversion="1.12.2" orientation="orthogonal" renderorder="right-down" width="0" height="0" tilewidth="16" tileheight="16" infinite="1" nextlayerid="2" nextobjectid="1">
+ <tileset firstgid="1" source="../tilesets/tiles.tsx"/>
+ <layer id="1" name="ground" width="0" height="0">
+  <data encoding="base64" compression="zlib">
+   <chunk x="-32" y="-16" width="16" height="16">
+   eJxjYBgFo2AU0AswDrQD0AAABJAAAg==
+  </chunk>
+   <chunk x="-16" y="-16" width="16" height="16">
+   eJxjYBgFo2AUjETAxMDQAAAEiACD
+  </chunk>
+   <chunk x="0" y="0" width="16" height="16">
+   eJxjZhh8gIWB4cFAu2EUjIKRAAAZvQDo
+  </chunk>
+   <chunk x="32" y="0" width="16" height="16">
+   eJxjYBgFo2DwAraBdsAwBwAMQAAH
+  </chunk>
+   <chunk x="-32" y="16" width="16" height="16">
+   eJxjYBi6gJ2BwWGg3TAKRsFQBgDrHABI
+  </chunk>
+  </data>
+ </layer>
+</map>

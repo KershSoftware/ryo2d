@@ -12,6 +12,7 @@ use crate::core::asset::{Asset, Handle};
 use crate::core::ecs::Component;
 use crate::core::graphics::Image;
 use crate::core::hash::FastMap;
+use crate::core::physics::CellRect;
 use crate::core::render::batch::BlendMode;
 use crate::core::ui::Color;
 
@@ -179,10 +180,15 @@ pub struct MapLayer {
 /// A map of layers over tilesets, from a file or built in code
 #[derive(Clone, Debug)]
 pub struct TileMap {
-  /// Width and height in cells
+  /// A bounded map's size in cells; zero for an infinite map (use
+  /// [`bounds`](Self::bounds))
   pub size: UVec2,
   /// A cell's size in pixels
   pub tile_size: UVec2,
+  /// Whether its tile layers hold any cell, negative ones included (a
+  /// Tiled infinite map): its layers' grids are unbounded and its `size`
+  /// is zero
+  pub infinite: bool,
   /// The tilesets; a [`Tile`]'s `tileset` indexes this
   pub tilesets: Vec<TilesetSource>,
   /// Bottom first
@@ -210,6 +216,7 @@ impl TileMap {
     TileMap {
       size,
       tile_size,
+      infinite: false,
       tilesets: Vec::new(),
       layers: Vec::new(),
       class: None,
@@ -219,6 +226,22 @@ impl TileMap {
       used_ids: Vec::new(),
       dependency_places: Default::default(),
     }
+  }
+
+  /// The cells the map covers: a bounded map's from (0, 0) to its size;
+  /// an infinite map's the union of its tile layers' extents
+  pub fn bounds(&self) -> CellRect {
+    if !self.infinite {
+      return CellRect::from_size(self.size);
+    }
+    self
+      .layers
+      .iter()
+      .filter_map(|layer| match &layer.kind {
+        LayerKind::Tiles { grid, .. } => Some(grid.extent()),
+        _ => None,
+      })
+      .fold(CellRect::default(), CellRect::union)
   }
 
   /// Adds a tileset and returns the index tiles name it by. A map holds at
@@ -237,13 +260,19 @@ impl TileMap {
       .unwrap_or(1)
   }
 
-  /// Adds an empty tile layer on top and returns its index
+  /// Adds an empty tile layer on top and returns its index: of the map's
+  /// size, or holding any cell on an infinite map
   pub fn add_tile_layer(&mut self, name: &str) -> usize {
     let info = LayerInfo::new(self.next_layer_id(), name);
+    let grid = if self.infinite {
+      TileGrid::unbounded()
+    } else {
+      TileGrid::new(self.size)
+    };
     self.layers.push(MapLayer {
       info,
       kind: LayerKind::Tiles {
-        grid: TileGrid::new(self.size),
+        grid,
         intgrid: None,
         cell_size: self.tile_size,
       },

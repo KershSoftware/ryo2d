@@ -842,7 +842,7 @@ mod tests {
   }
 
   #[test]
-  fn isometric_hexagonal_staggered_oblique_and_infinite_maps_fail_naming_6b() {
+  fn isometric_hexagonal_staggered_and_oblique_maps_fail_naming_6b() {
     for orientation in ["isometric", "hexagonal", "staggered", "oblique"] {
       let json = format!(
         r#"{{"type":"map","orientation":"{orientation}","width":1,"height":1,"tilewidth":16,"tileheight":16,"tilesets":[],"layers":[]}}"#
@@ -853,12 +853,202 @@ mod tests {
         "{error}"
       );
     }
-    let json = r#"{"type":"map","orientation":"orthogonal","infinite":true,"width":1,"height":1,"tilewidth":16,"tileheight":16,"tilesets":[],"layers":[]}"#;
-    let error = failure(json);
+  }
+
+  /// An infinite map of 16 px tiles around `layers`
+  fn infinite_json(layers: &str) -> String {
+    format!(
+      r#"{{"type":"map","orientation":"orthogonal","infinite":true,"width":0,"height":0,"tilewidth":16,"tileheight":16,"tilesets":[],"layers":[{layers}]}}"#
+    )
+  }
+
+  /// An infinite tile layer called `name` of `chunks` (JSON objects)
+  fn chunked_layer(id: u32, name: &str, chunks: &str) -> String {
+    format!(r#"{{"id":{id},"name":"{name}","type":"tilelayer","chunks":[{chunks}]}}"#)
+  }
+
+  /// A chunk's JSON: `cells` empty gids at (`x`, `y`), `width` x `height`
+  fn chunk(x: i64, y: i64, (width, height): (i64, i64), cells: usize) -> String {
+    let data = vec!["0"; cells].join(",");
+    format!(r#"{{"x":{x},"y":{y},"width":{width},"height":{height},"data":[{data}]}}"#)
+  }
+
+  #[test]
+  fn hostile_infinite_chunks_are_refused_before_allocating() {
+    let refused = |name: &str, chunk_json: String, at: &str, what: &str| {
+      let error = failure(&infinite_json(&chunked_layer(1, name, &chunk_json)));
+      assert!(
+        error.contains("m.tmj")
+          && error.contains(&format!("layer {name:?}"))
+          && error.contains(&format!("chunk {at}"))
+          && error.contains(what),
+        "{name}: {error}"
+      );
+    };
+    // A chunk whose cells' pixels pass what an i32 holds
+    refused(
+      "far",
+      chunk(2_147_483_600, 0, (16, 16), 256),
+      "(2147483600, 0)",
+      "pixels",
+    );
+    // and one past the cells an i32 holds, whatever the tile size
+    refused(
+      "beyond",
+      chunk(0, -4_294_967_296, (16, 16), 256),
+      "(0, -4294967296)",
+      "pixels",
+    );
+    // Data shorter than the chunk's cells
+    refused(
+      "short",
+      chunk(0, 16, (16, 16), 255),
+      "(0, 16)",
+      "has 255 cells, expected 256",
+    );
+    // A chunk with no width, or a negative one
+    refused("thin", chunk(0, 0, (0, 16), 0), "(0, 0)", "0 x 16");
+    refused(
+      "inside out",
+      chunk(16, 0, (-16, 16), 0),
+      "(16, 0)",
+      "-16 x 16",
+    );
+    // 2^20 chunks of 16 x 16 (one layer's limit, 2^26 cells, in each of
+    // four layers) are 2^28 cells, past the 2^27 a map holds: counted from
+    // the chunks' sizes before any is decoded, so a 25 MB file asking for
+    // a GiB of cells fails on the count
+    let chunks = vec![r#"{"width":16,"height":16}"#; 1 << 18].join(",");
+    let layers: Vec<String> = (1..=4)
+      .map(|id| chunked_layer(id, &format!("l{id}"), &chunks))
+      .collect();
+    let error = failure(&infinite_json(&layers.join(",")));
     assert!(
-      error.contains("infinite") && error.contains("6b"),
+      error.contains("m.tmj")
+        && error.contains("layers hold 268435456 cells, past the 134217728 a map holds"),
       "{error}"
     );
+    // one layer holding more than a layer holds names it
+    let chunks = vec![r#"{"width":16,"height":16}"#; (1 << 18) + 1].join(",");
+    let error = failure(&infinite_json(&chunked_layer(1, "vast", &chunks)));
+    assert!(
+      error.contains(r#"layer "vast""#) && error.contains("past the 67108864 cells a layer holds"),
+      "{error}"
+    );
+  }
+
+  #[test]
+  fn chunks_are_an_infinite_map_s_and_its_empty_layers_load_empty() {
+    // A bounded map's layer of chunks, and an infinite map's of data
+    let chunked = chunked_layer(1, "ground", &chunk(0, 0, (2, 2), 4));
+    let error = failure(&map_json("", &chunked, ""));
+    assert!(
+      error.contains(r#"layer "ground""#) && error.contains("only an infinite map"),
+      "{error}"
+    );
+    let error = failure(&infinite_json(&tile_layer("")));
+    assert!(
+      error.contains(r#"layer "ground""#) && error.contains("in chunks"),
+      "{error}"
+    );
+    // A layer of no chunks, or of empty data, holds nothing anywhere; and
+    // a map of nothing has no bounds
+    let empty = format!(
+      "{},{}",
+      chunked_layer(1, "none", ""),
+      r#"{"id":2,"name":"blank","type":"tilelayer","data":[]}"#
+    );
+    let map = load_json(&infinite_json(&empty)).expect("loads");
+    for name in ["none", "blank"] {
+      let grid = grid_of(&map, name);
+      assert_eq!(grid.bounds(), None, "{name}");
+      assert_eq!(grid.chunk_coords().count(), 0, "{name}");
+    }
+    assert!(map.bounds().is_empty());
+    // A chunk's cells land at its place, whatever its size; its gids are
+    // matched to tilesets, flips kept
+    let set = r#"{"firstgid":1,"source":"tilesets/tiles.tsj"},{"firstgid":17,"source":"tilesets/items.tsj"}"#;
+    let layer = chunked_layer(
+      1,
+      "ground",
+      r#"{"x":-3,"y":-1,"width":3,"height":2,"data":[0,2,0,0,0,2147483666]}"#,
+    );
+    let json = infinite_json(&layer).replace(r#""tilesets":[]"#, &format!(r#""tilesets":[{set}]"#));
+    let map = load_json(&json).expect("loads");
+    assert_eq!(cell(&map, "ground", -2, -1), Some(Tile::new(0, 1)));
+    assert_eq!(
+      cell(&map, "ground", -1, 0),
+      Some(Tile::new(1, 1).with_flip(TileFlip::HORIZONTAL))
+    );
+    assert_eq!(cell(&map, "ground", -3, 0), None);
+    // its tiles in two of the engine's chunks of 32: (-1, -1) and (-1, 0)
+    assert_eq!(
+      map.bounds(),
+      crate::core::physics::CellRect::new(IVec2::splat(-32), IVec2::new(0, 32))
+    );
+    // a gid no tileset holds (the map has none) names its cell in the chunk
+    let layer = chunked_layer(
+      1,
+      "ground",
+      r#"{"x":-3,"y":-1,"width":1,"height":1,"data":[99]}"#,
+    );
+    let error = failure(&infinite_json(&layer));
+    assert!(
+      error.contains("chunk (-3, -1)") && error.contains("cell (-3, -1)") && error.contains("99"),
+      "{error}"
+    );
+  }
+
+  #[test]
+  fn a_file_s_chunk_a_million_cells_out_loads_and_lands_holding_only_its_chunks() {
+    use crate::core::tilemap::test_util::{self, MapWorld, layers_of};
+    use crate::core::tilemap::{MapRoot, TileGrid, TileLayerData};
+    // Tiles at (1, 1) and (1,000,001, -999,999): the rectangle between
+    // them holds about 976 million of the engine's chunks, and nothing may
+    // be sized from it, loading or landing
+    let mut cells = vec!["0"; 256];
+    cells[17] = "1";
+    let data = cells.join(",");
+    let layer = chunked_layer(
+      1,
+      "ground",
+      &format!(
+        r#"{{"x":0,"y":0,"width":16,"height":16,"data":[{data}]}},{{"x":1000000,"y":-1000000,"width":16,"height":16,"data":[{data}]}}"#
+      ),
+    );
+    let json = infinite_json(&layer).replace(
+      r#""tilesets":[]"#,
+      r#""tilesets":[{"firstgid":1,"source":"../tilesets/tiles.tsj"}]"#,
+    );
+    let started = Instant::now();
+    let mut maps = MapWorld::over(test_util::files_with(&[("tiled/maps/far.tmj", &json)]));
+    let handle = test_util::load_map(&mut maps.world, "tiled/maps/far.tmj");
+    let far = IVec2::new(1_000_001, -999_999);
+    let far_chunk = TileGrid::chunk_of(far);
+    let loaded = match maps.world.resource::<Assets<TileMap>>().get(&handle) {
+      Some(map) => map.clone(),
+      None => panic!("not in the store"),
+    };
+    let grid = grid_of(&loaded, "ground");
+    assert_eq!(
+      grid.chunk_coords().collect::<Vec<_>>(),
+      [far_chunk, IVec2::ZERO]
+    );
+    assert_eq!(grid.get(far), Some(Tile::new(0, 0)));
+    let map = maps.spawn(MapRoot::new(handle));
+    maps.frame();
+    assert!(
+      started.elapsed() < Duration::from_secs(5),
+      "loaded and landed in {:?}",
+      started.elapsed()
+    );
+    let layer = layers_of(&mut maps.world, map)[0];
+    let chunks: Vec<IVec2> = maps
+      .world
+      .get::<TileLayerData>(layer)
+      .map(|data| data.grid.chunk_coords().collect())
+      .unwrap_or_default();
+    assert_eq!(chunks, [far_chunk, IVec2::ZERO]);
   }
 
   #[test]

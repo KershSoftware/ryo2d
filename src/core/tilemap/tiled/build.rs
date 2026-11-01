@@ -8,7 +8,7 @@ use std::time::Duration;
 use super::data::{decode_gid, decode_layer_data};
 use super::objects::{Alignment, ObjectState, TilesetEntry, build_objects};
 use super::project::{Props, parse_color};
-use super::raw::{RawLayer, RawMap, RawObject, RawTile, RawTileset};
+use super::raw::{RawChunk, RawData, RawLayer, RawMap, RawObject, RawTile, RawTileset};
 use super::wang::{build_wang_sets, transformations};
 use crate::core::asset::{
   Asset, AssetError, AssetPath, AssetServer, Assets, CheckContext, Handle, LoadContext,
@@ -453,6 +453,8 @@ struct Builder<'p, 'a> {
   objects: ObjectState,
   path: AssetPath,
   size: UVec2,
+  /// Whether the map is infinite: its tile layers' cells are in chunks
+  infinite: bool,
   /// The map's cell size, which every tile layer uses
   tile_size: UVec2,
   /// Each tileset's first gid and its index, by first gid
@@ -464,12 +466,14 @@ struct Builder<'p, 'a> {
 }
 
 /// The cells the tile layers of `layers` (in groups too) hold, as their
-/// sizes say (a layer without one is the map's `size`); a layer past what
-/// one holds fails, naming it
+/// sizes say (a layer without one is the map's `size`), or an infinite
+/// map's as their chunks' sizes say, each chunk checked first
+/// (`check_chunk`); a layer past what one holds fails, naming it
 fn tile_cells(
   path: &AssetPath,
   layers: &[RawLayer],
   size: UVec2,
+  tile_size: UVec2,
   depth: usize,
 ) -> Result<u64, AssetError> {
   let mut total = 0u64;
@@ -478,24 +482,88 @@ fn tile_cells(
     return Ok(total);
   }
   for l in layers {
-    let cells = match l.ty.as_str() {
-      "tilelayer" => {
+    let place = || format!("layer {:?}", l.name);
+    let cells = match (l.ty.as_str(), &l.chunks) {
+      ("tilelayer", Some(chunks)) => {
+        let mut cells = 0u64;
+        for chunk in chunks {
+          let (_, size) = check_chunk(chunk, tile_size)
+            .map_err(|what| fail(path, &chunk_place(&place(), chunk), what))?;
+          cells = cells.saturating_add(u64::from(size.x) * u64::from(size.y));
+        }
+        if cells > MAX_CELLS {
+          return Err(fail(
+            path,
+            &place(),
+            format!("its chunks hold {cells} cells, past the {MAX_CELLS} cells a layer holds"),
+          ));
+        }
+        cells
+      }
+      ("tilelayer", None) => {
         let (w, h) = (l.width.unwrap_or(size.x), l.height.unwrap_or(size.y));
         let Some(n) = cell_count(w, h) else {
           return Err(fail(
             path,
-            &format!("layer {:?}", l.name),
+            &place(),
             format!("{w} x {h} cells is past the {MAX_CELLS} cells a layer holds"),
           ));
         };
         n as u64
       }
-      "group" => tile_cells(path, &l.layers, size, depth + 1)?,
+      ("group", _) => tile_cells(path, &l.layers, size, tile_size, depth + 1)?,
       _ => 0,
     };
     total = total.saturating_add(cells);
   }
   Ok(total)
+}
+
+/// Where a chunk of the layer at `layer` is, for its errors
+fn chunk_place(layer: &str, chunk: &RawChunk) -> String {
+  format!("{layer}, chunk ({}, {})", chunk.x, chunk.y)
+}
+
+/// Where `chunk`'s first cell is and its size in cells, once it is a
+/// chunk the engine can hold: a size of a cell or more, within what a
+/// layer holds, and every cell's pixels (its cell times `tile_size`, which
+/// is not zero) a number an `i32` holds. Checked before anything is
+/// decoded or allocated, so a chunk far past the cells and pixels the
+/// engine counts in fails naming it, and a map's cells are counted from
+/// its chunks' sizes alone
+fn check_chunk(chunk: &RawChunk, tile_size: UVec2) -> Result<(IVec2, UVec2), String> {
+  let (w, h) = (chunk.width, chunk.height);
+  if w <= 0 || h <= 0 {
+    return Err(format!("its size, {w} x {h}, holds no cell"));
+  }
+  let Some(size) = u32::try_from(w)
+    .ok()
+    .zip(u32::try_from(h).ok())
+    .filter(|&(w, h)| cell_count(w, h).is_some())
+    .map(|(w, h)| UVec2::new(w, h))
+  else {
+    return Err(format!(
+      "{w} x {h} cells is past the {MAX_CELLS} cells a layer holds"
+    ));
+  };
+  // The first cell's top-left pixel and the last cell's bottom-right one,
+  // in i128: no product of these overflows it
+  let fits = |at: i64, side: i64, tile: u32| {
+    let (first, end) = (i128::from(at), i128::from(at) + i128::from(side));
+    let tile = i128::from(tile);
+    first * tile >= i128::from(i32::MIN) && end * tile <= i128::from(i32::MAX)
+  };
+  let origin = i32::try_from(chunk.x)
+    .ok()
+    .zip(i32::try_from(chunk.y).ok())
+    .filter(|_| fits(chunk.x, w, tile_size.x) && fits(chunk.y, h, tile_size.y));
+  let Some((x, y)) = origin else {
+    return Err(
+      "its cells reach past the pixels a map holds (a cell's place in pixels, its cell times the tile size, must fit a 32-bit integer)"
+        .to_string(),
+    );
+  };
+  Ok((IVec2::new(x, y), size))
 }
 
 /// Fails if layers holding `cells` together are past [`MAX_MAP_CELLS`]
@@ -677,69 +745,96 @@ impl Builder<'_, '_> {
     Ok(())
   }
 
-  /// The layer's tiles, and the highest id it uses of each tileset
+  /// The layer's tiles, and the highest id it uses of each tileset: a
+  /// bounded grid of its data, or an infinite map's unbounded grid of its
+  /// chunks, each chunk as large as it says, where it says
   fn tile_layer(
     &mut self,
     raw: &RawLayer,
     place: &str,
   ) -> Result<(LayerKind, Vec<(u16, u32)>), AssetError> {
     let path = self.path.clone();
-    if raw.chunks.is_some() {
-      return Err(fail(&path, place, "infinite maps arrive in sub-project 6b"));
-    }
-    let (w, h) = (
-      raw.width.unwrap_or(self.size.x),
-      raw.height.unwrap_or(self.size.y),
-    );
-    let Some(expected) = cell_count(w, h) else {
-      return Err(fail(
-        &path,
-        place,
-        format!("{w} x {h} cells is past the {MAX_CELLS} cells a layer holds"),
-      ));
-    };
-    let Some(data) = &raw.data else {
-      return Err(fail(&path, place, "the layer has no data"));
-    };
-    let gids = decode_layer_data(
-      data,
-      raw.encoding.as_deref(),
-      raw.compression.as_deref(),
-      expected,
-    )
-    .map_err(|e| fail(&path, place, e))?;
-    let mut grid = TileGrid::new(UVec2::new(w, h));
     let mut highest: Vec<Option<u32>> = vec![None; self.first_gids.len()];
-    let width = (w as usize).max(1);
-    for (i, &raw_gid) in gids.iter().enumerate() {
-      let (gid, flip) = decode_gid(raw_gid);
-      if gid == 0 {
-        continue;
+    let mut grid = match (self.infinite, &raw.chunks) {
+      (true, chunks) => {
+        if chunks.is_none() && raw.data.as_ref().is_some_and(holds_data) {
+          return Err(fail(
+            &path,
+            place,
+            "an infinite map's layer keeps its cells in chunks, not data",
+          ));
+        }
+        let mut grid = TileGrid::unbounded();
+        for chunk in chunks.iter().flatten() {
+          let at = chunk_place(place, chunk);
+          // Checked with the map's cells before anything was decoded: this
+          // only reads its place and size again
+          let (origin, size) =
+            check_chunk(chunk, self.tile_size).map_err(|e| fail(&path, &at, e))?;
+          let expected = (size.x as usize) * (size.y as usize);
+          // Its data as long as its size before any is decoded
+          let data = match &chunk.data {
+            None => return Err(fail(&path, &at, "the chunk has no data")),
+            Some(RawData::Array(gids)) if gids.len() != expected => {
+              return Err(fail(
+                &path,
+                &at,
+                format!("has {} cells, expected {expected}", gids.len()),
+              ));
+            }
+            Some(data) => data,
+          };
+          let mut cells = decode_layer_data(
+            data,
+            raw.encoding.as_deref(),
+            raw.compression.as_deref(),
+            expected,
+          )
+          .map_err(|e| fail(&path, &at, e))?;
+          self
+            .cells(&mut cells, &mut highest, origin, size.x)
+            .map_err(|e| fail(&path, &at, e))?;
+          grid.write_rows(origin, size.x as usize, &cells);
+        }
+        grid
       }
-      let cell = IVec2::new((i % width) as i32, (i / width) as i32);
-      let at = || format!("cell ({}, {})", cell.x, cell.y);
-      let k = self.first_gids.partition_point(|&(first, _)| first <= gid);
-      let Some(&(first, tileset)) = k.checked_sub(1).and_then(|k| self.first_gids.get(k)) else {
+      (false, Some(_)) => {
         return Err(fail(
           &path,
           place,
-          format!("{}: gid {gid} is outside every tileset", at()),
-        ));
-      };
-      let id = gid - first;
-      if !grid.set(cell, Some(Tile { tileset, id, flip })) {
-        return Err(fail(
-          &path,
-          place,
-          format!(
-            "{}: tile id {id} is past the {MAX_TILES} tiles a tileset holds",
-            at()
-          ),
+          "the layer keeps its cells in chunks, which only an infinite map's layers do",
         ));
       }
-      let slot = &mut highest[tileset as usize];
-      *slot = Some(slot.map_or(id, |m| m.max(id)));
-    }
+      (false, None) => {
+        let (w, h) = (
+          raw.width.unwrap_or(self.size.x),
+          raw.height.unwrap_or(self.size.y),
+        );
+        let Some(expected) = cell_count(w, h) else {
+          return Err(fail(
+            &path,
+            place,
+            format!("{w} x {h} cells is past the {MAX_CELLS} cells a layer holds"),
+          ));
+        };
+        let Some(data) = &raw.data else {
+          return Err(fail(&path, place, "the layer has no data"));
+        };
+        let mut cells = decode_layer_data(
+          data,
+          raw.encoding.as_deref(),
+          raw.compression.as_deref(),
+          expected,
+        )
+        .map_err(|e| fail(&path, place, e))?;
+        self
+          .cells(&mut cells, &mut highest, IVec2::ZERO, w)
+          .map_err(|e| fail(&path, place, e))?;
+        let mut grid = TileGrid::new(UVec2::new(w, h));
+        grid.write_rows(IVec2::ZERO, w as usize, &cells);
+        grid
+      }
+    };
     // a loaded grid starts clean
     grid.drain_dirty(&mut Vec::new());
     let used = highest
@@ -755,6 +850,66 @@ impl Builder<'_, '_> {
       },
       used,
     ))
+  }
+
+  /// Turns `gids` (rows of `width`, the first at cell `origin`) into the
+  /// cells a grid holds, in place, noting the highest id each tileset is
+  /// used for in `highest`. The error names the cell
+  fn cells(
+    &self,
+    gids: &mut [u32],
+    highest: &mut [Option<u32>],
+    origin: IVec2,
+    width: u32,
+  ) -> Result<(), String> {
+    let width = (width as usize).max(1);
+    let at = |i: usize| {
+      let cell = origin + IVec2::new((i % width) as i32, (i / width) as i32);
+      format!("cell ({}, {})", cell.x, cell.y)
+    };
+    // The tileset of the last gid, which the next is most likely in: its
+    // first gid, the first of the next tileset, and its index
+    let mut last: Option<(u32, u32, u16)> = None;
+    for (i, slot) in gids.iter_mut().enumerate() {
+      let (gid, flip) = decode_gid(*slot);
+      if gid == 0 {
+        *slot = 0;
+        continue;
+      }
+      let (first, tileset) = match last {
+        Some((first, end, tileset)) if (first..end).contains(&gid) => (first, tileset),
+        _ => {
+          let k = self.first_gids.partition_point(|&(first, _)| first <= gid);
+          let Some(&(first, tileset)) = k.checked_sub(1).and_then(|k| self.first_gids.get(k))
+          else {
+            return Err(format!("{}: gid {gid} is outside every tileset", at(i)));
+          };
+          let end = self.first_gids.get(k).map_or(u32::MAX, |&(next, _)| next);
+          last = Some((first, end, tileset));
+          (first, tileset)
+        }
+      };
+      let id = gid - first;
+      let Some(cell) = TileGrid::encode(Some(Tile { tileset, id, flip })) else {
+        return Err(format!(
+          "{}: tile id {id} is past the {MAX_TILES} tiles a tileset holds",
+          at(i)
+        ));
+      };
+      *slot = cell;
+      let max = &mut highest[tileset as usize];
+      *max = Some(max.map_or(id, |m| m.max(id)));
+    }
+    Ok(())
+  }
+}
+
+/// Whether `data` holds any cell: an infinite map's empty layer may be
+/// written with empty data
+fn holds_data(data: &RawData) -> bool {
+  match data {
+    RawData::Array(gids) => !gids.is_empty(),
+    RawData::Text(text) => !text.trim().is_empty(),
   }
 }
 
@@ -806,9 +961,6 @@ pub(crate) fn build_map(
       ));
     }
   }
-  if raw.infinite {
-    return Err(fail(&path, place, "infinite maps arrive in sub-project 6b"));
-  }
   if raw.tilewidth == 0 || raw.tileheight == 0 {
     return Err(fail(&path, place, "the tile size is 0"));
   }
@@ -821,21 +973,27 @@ pub(crate) fn build_map(
       place,
     );
   }
-  if cell_count(raw.width, raw.height).is_none() {
-    return Err(fail(
-      &path,
-      place,
-      format!(
-        "{} x {} cells is past the {MAX_CELLS} cells a map holds",
-        raw.width, raw.height
-      ),
-    ));
-  }
-  let mut map = TileMap::new(
-    UVec2::new(raw.width, raw.height),
-    UVec2::new(raw.tilewidth, raw.tileheight),
-  );
-  check_map_cells(&path, place, tile_cells(&path, &raw.layers, map.size, 0)?)?;
+  // An infinite map's size means nothing (Tiled writes 0): its layers'
+  // chunks say where its cells are
+  let size = if raw.infinite {
+    UVec2::ZERO
+  } else {
+    if cell_count(raw.width, raw.height).is_none() {
+      return Err(fail(
+        &path,
+        place,
+        format!(
+          "{} x {} cells is past the {MAX_CELLS} cells a map holds",
+          raw.width, raw.height
+        ),
+      ));
+    }
+    UVec2::new(raw.width, raw.height)
+  };
+  let mut map = TileMap::new(size, UVec2::new(raw.tilewidth, raw.tileheight));
+  map.infinite = raw.infinite;
+  let cells = tile_cells(&path, &raw.layers, map.size, map.tile_size, 0)?;
+  check_map_cells(&path, place, cells)?;
   map.class = raw.class.clone().filter(|c| !c.is_empty());
   map.parallax_origin = Vec2::new(raw.parallaxoriginx, raw.parallaxoriginy);
   if !map.parallax_origin.is_finite() {
@@ -919,6 +1077,7 @@ pub(crate) fn build_map(
     objects: ObjectState::new(entries),
     path: path.clone(),
     size: map.size,
+    infinite: map.infinite,
     tile_size: map.tile_size,
     first_gids,
     next_id: max_layer_id(&raw.layers).checked_add(1),
