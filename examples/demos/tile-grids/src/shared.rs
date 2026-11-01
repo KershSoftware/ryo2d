@@ -203,11 +203,3 @@ pub(crate) fn beside_panel(ui: &UiContext, rows: usize) -> Rect {
   let y = area.y + settings_panel_height(ui, rows) + 10.0;
   Rect::new(x, y, area.right() - x, area.bottom() - y)
 }
-
-/// `text` at screen point `at` (its top-left), on a dark backing
-pub(crate) fn tag(ui: &mut UiContext, at: Vec2, text: &str, color: Color) {
-  let (w, h) = ui.text_size(text);
-  let rect = Rect::new(at.x, at.y, w as f32 + 6.0, h as f32 + 2.0);
-  ui.draw_rect(rect, BACKING);
-  ui.draw_text(text, rect.x + 3.0, rect.y + 1.0, color);
-}

@@ -1,26 +1,33 @@
-//! The page "A Tiled infinite map": `maps/endless-meadow.tmx`, an infinite
-//! map Tiled saved in its chunks of 16 x 16 cells, loaded by asset path and
-//! spawned with a `MapRoot` like any map. Its cells are signed: the meadow
-//! runs from cell -88 to cell 51 with its grass at row 0 (the scenery and
-//! the sky above it at negative rows), and a small island sits far up and
-//! left at cell (-204, -40). The engine keeps each layer in chunks of
-//! 32 x 32 cells where it has tiles, so the empty sky between the island and
-//! the meadow costs nothing; `ctx.maps().bounds()` is the rectangle of the
-//! cells holding tiles, as the map is now (the asset's `TileMap::bounds()`
-//! until a save or an edit changes it).
+//! The page "A map without fixed edges (Tiled's infinite format)":
+//! `maps/endless-meadow.tmx`, a map Tiled saved with no fixed size, as the
+//! chunks of 16 x 16 cells the designer painted, at any cells, negative ones
+//! too. It loads by asset path and spawns with a `MapRoot` like any map.
+//! Its cells are signed: the meadow runs from cell -88 to cell 51 with its
+//! grass at row 0 (the scenery and the sky above it at negative rows), and
+//! a small island sits far up and left at cell (-204, -40). The engine
+//! keeps each layer in chunks of 32 x 32 cells where it has tiles, so the
+//! empty sky between the island and the meadow costs nothing;
+//! `ctx.maps().bounds()` is the rectangle of the cells holding tiles, as the
+//! map is now (the asset's `TileMap::bounds()` until a save or an edit
+//! changes it).
 //!
-//! A runner patrols the meadow by itself, between the ends of the
-//! designer's `patrol` rectangle, starting at `player_start`: it jumps
-//! walls and dips, hops now and then, and collects the coins (tile objects
-//! taking the coin tile's class, back after a few seconds). WASD or a pad
-//! takes over. The overlay outlines the chunks there are and the map's
-//! bounds, labelled with their coordinates, and a minimap shows them all
-//! with the view. A save of the map in Tiled (hot reload) redraws the
-//! overlay and the bounds from the map as saved
+//! The meadow is the hand-made part of a world, and it ends: the
+//! designer's `patrol` rectangle covers it end to end, and the page puts a
+//! wall at each end, so neither the runner nor a player falls off. Endless
+//! terrain beyond it is streaming's to generate, which this page will show.
+//!
+//! A runner patrols the meadow by itself, starting at `player_start` and
+//! turning before the walls: it jumps steps and dips, hops now and then,
+//! and collects the coins (tile objects taking the coin tile's class, back
+//! after a few seconds). WASD or a pad takes over. The overlay outlines
+//! the chunks there are and the map's bounds, labels the chunks with their
+//! coordinates in world text, and a minimap shows them all with the view.
+//! A save of the map in Tiled (hot reload) redraws the overlay and the
+//! bounds from the map as saved
 
 use demo_kit::prelude::*;
 
-use crate::overlay::{self, BOUNDS_LINE, Grid, Minimap};
+use crate::overlay::{self, BOUNDS_LINE, ChunkLabels, Grid, Minimap};
 use crate::shared::{
   CELL, DIM, GOOD, HOT, View, beside_panel, clear_to, hero, hud, load, pan_input, wasd,
 };
@@ -43,6 +50,10 @@ const RUN_SPEED: f32 = 130.0;
 const HOP_EVERY: f32 = 1.6;
 /// Seconds before a collected coin comes back
 const COIN_BACK: f32 = 6.0;
+/// How far before a wall the auto-run turns
+const TURN_BEFORE: f32 = 3.0 * CELL;
+/// A wall's thickness, and how far above the meadow's lowest edge it rises
+const WALL: Vec2 = Vec2::new(16.0, 2000.0);
 /// The settings rows, for the notes under the panel
 const ROWS: usize = 3;
 
@@ -58,7 +69,8 @@ pub(crate) struct InfinitePage {
   /// Where the runner starts (its feet), and the way it faces
   start: Vec2,
   facing: f32,
-  /// The x range it patrols
+  /// The meadow's x range: walls at both ends, the auto-run turning before
+  /// them
   patrol: (f32, f32),
   runner: Option<Entity>,
   sprite: Option<Entity>,
@@ -72,6 +84,8 @@ pub(crate) struct InfinitePage {
   hop: f32,
   coins: u32,
   overlay: bool,
+  /// The chunks' labels, world text placed after the camera moves
+  labels: ChunkLabels,
   zoom: i32,
   auto: bool,
 }
@@ -94,13 +108,14 @@ impl InfinitePage {
       hop: HOP_EVERY,
       coins: 0,
       overlay: true,
+      labels: ChunkLabels::default(),
       zoom: 2,
       auto: true,
     }
   }
 
   /// The designer's marks in the asset: the start, the way the runner
-  /// faces there, and the patrol's ends
+  /// faces there, and the meadow's ends
   fn read_marks(&mut self, map: &TileMap) {
     for layer in &map.layers {
       let LayerKind::Objects(objects) = &layer.kind else {
@@ -133,11 +148,25 @@ impl InfinitePage {
     }
   }
 
-  /// Once the map has landed: its grid and chunks, the coins' triggers,
-  /// and the runner
+  /// Once the map has landed: its grid and chunks, the walls at the
+  /// meadow's ends, the coins' triggers, and the runner
   fn land(&mut self, ctx: &mut SceneContext, root: Entity) {
     self.grid = Grid::of(ctx, root, GROUND, CELL);
     self.read_map(ctx, root);
+
+    // The meadow is all the map has here, so its ends are walled: the
+    // terrain beyond them is streaming's to generate
+    let floor = if self.floor.is_finite() {
+      self.floor
+    } else {
+      0.0
+    };
+    for x in [self.patrol.0 - WALL.x / 2.0, self.patrol.1 + WALL.x / 2.0] {
+      ctx.world.spawn((
+        Transform::from_xy(x, floor - WALL.y / 2.0),
+        Collider::rect(WALL.x, WALL.y),
+      ));
+    }
 
     let mut objects = ctx.world.query::<(Entity, &MapObject)>();
     let coins: Vec<Entity> = objects
@@ -212,9 +241,9 @@ impl InfinitePage {
         .get::<CharacterState>(runner)
         .cloned()
         .unwrap_or_default();
-      if at.x <= self.patrol.0 {
+      if at.x <= self.patrol.0 + TURN_BEFORE {
         self.facing = 1.0;
-      } else if at.x >= self.patrol.1 {
+      } else if at.x >= self.patrol.1 - TURN_BEFORE {
         self.facing = -1.0;
       }
       let mut jump = false;
@@ -285,11 +314,11 @@ fn bindings() -> MoveBindings {
 
 impl DemoPage for InfinitePage {
   fn name(&self) -> &str {
-    "A Tiled infinite map"
+    "A map without fixed edges (Tiled's infinite format)"
   }
 
   fn description(&self) -> &str {
-    "Tiled's chunks at negative cells: the engine keeps 32 x 32-cell chunks only where tiles are"
+    "No fixed size: chunks at any cells, negative ones too, and only the painted ones stored"
   }
 
   fn settings(&mut self, s: &mut Settings) {
@@ -352,6 +381,9 @@ impl DemoPage for InfinitePage {
     self.steer(ctx, dt);
     self.coins += ctx.messages::<PickedUp>().len() as u32;
     self.follow(ctx);
+    if let Some(grid) = self.grid {
+      self.labels.place(ctx, grid, &self.chunks, self.overlay);
+    }
 
     if self.overlay
       && let Some(grid) = self.grid
@@ -372,11 +404,7 @@ impl DemoPage for InfinitePage {
     let Some(root) = self.root else {
       return;
     };
-    if self.overlay
-      && let Some(grid) = self.grid
-    {
-      overlay::chunk_labels(ui, ctx, grid, &self.chunks, content_area(ui));
-    }
+    self.labels.measure(ui);
 
     // The chunks the bounds reach: the bounds hold the cells with tiles
     let last = self.bounds.max - IVec2::ONE;
@@ -403,8 +431,12 @@ impl DemoPage for InfinitePage {
     };
     let lines = vec![
       (
-        "A Tiled infinite map, saved in chunks of 16 x 16 cells".to_string(),
+        "The hand-made part of a world: walls end the meadow".to_string(),
         Color::WHITE,
+      ),
+      (
+        "Endless terrain beyond them comes with streaming".to_string(),
+        DIM,
       ),
       (
         if self.bounds.is_empty() {

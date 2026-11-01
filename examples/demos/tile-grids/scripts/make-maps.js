@@ -189,9 +189,9 @@ function tileObject(tileset, id, x, y, name) {
 // An infinite map of 18 px cells, saved in Tiled's chunks of 16 x 16 cells:
 // a meadow from cell -88 to cell 51 with its grass at row 0, hills, a pond
 // under a rope bridge, a dip, planks and coins; and a small island far up
-// and left, at cell (-204, -40), alone in its chunk. The runner patrols the
-// meadow between the ends of the `patrol` rectangle, starting at
-// `player_start`
+// and left, at cell (-204, -40), alone in its chunk. The `patrol` rectangle
+// covers the meadow end to end: the page walls its ends, and the runner,
+// starting at `player_start`, turns before them
 var CELL = 18;
 var BOTTOM = 5;
 var meadow = new TileMap();
@@ -207,7 +207,7 @@ var SURFACE = [
   [-36, -27, 0], [-26, -21, -1], [-20, 7, 0], [8, 9, -1], [10, 13, -2], [14, 15, -1],
   [16, 33, 0], [37, 51, 0],
 ];
-var POND = { from: -45, to: -37, floor: 3 }; // the bridge spans it at row 0
+var POND = { from: -45, to: -37, floor: 3 }; // bank to bank; the bridge spans it at row 0
 var DIP = { from: 34, to: 36, floor: 2 };
 var ground = new CellSet();
 for (var s = 0; s < SURFACE.length; s++) {
@@ -296,7 +296,7 @@ meadow.addLayer(scenery);
 // The pond's water, under the bridge
 var water = tileLayer("water", { collides: false });
 var waterEdit = water.edit();
-for (var wx = POND.from + 1; wx <= POND.to - 1; wx++) {
+for (var wx = POND.from; wx <= POND.to; wx++) {
   waterEdit.setTile(wx, 1, P.tile(33));
   waterEdit.setTile(wx, 2, P.tile(73));
 }
@@ -310,8 +310,8 @@ var groundEdit = groundLayer.edit();
 ground.each(function (x, y) {
   groundEdit.setTile(x, y, P.tile(groundTile(ground, x, y)));
 });
-for (var bx = POND.from + 1; bx <= POND.to - 1; bx++) {
-  var id = bx == POND.from + 1 ? 90 : (bx == POND.to - 1 ? 92 : 91);
+for (var bx = POND.from; bx <= POND.to; bx++) {
+  var id = bx == POND.from ? 90 : (bx == POND.to ? 92 : 91);
   groundEdit.setTile(bx, 0, P.tile(id));
 }
 // Planks: [left cell, row, cells]
@@ -322,7 +322,7 @@ for (var q = 0; q < PLANKS.length; q++) {
 groundEdit.apply();
 meadow.addLayer(groundLayer);
 
-// The objects: where the runner starts and the stretch it patrols, and the
+// The objects: where the runner starts and the meadow it keeps to, and the
 // coins, tile objects of the coin tile taking its class
 var objects = new ObjectGroup("objects");
 meadow.addLayer(objects);
@@ -334,9 +334,9 @@ objects.addObject(start);
 start.setProperty("facing", tiled.propertyValue("Facing", "left"));
 var patrol = new MapObject(MapObject.Rectangle, "patrol");
 patrol.className = "patrol";
-patrol.x = -84 * CELL;
+patrol.x = -88 * CELL;
 patrol.y = -3 * CELL;
-patrol.width = (47 - -84) * CELL;
+patrol.width = (52 - -88) * CELL;
 patrol.height = 3 * CELL;
 objects.addObject(patrol);
 // Coins: [cell x, row]; walked through at row -1, jumped to above it, and

@@ -2,7 +2,9 @@
 //! its map without a warning or a failed map; the meadow's chunks lie at
 //! negative cells, none of them empty, and the HUD shows its bounds and
 //! chunks; its runner runs left across chunks at negative cells and back,
-//! the camera keeping it in view; a click on the paint page paints the cell
+//! the camera keeping it in view, and a player runs it to both ends of the
+//! meadow without falling off; the chunks in view are labelled with world
+//! text on whole screen pixels; a click on the paint page paints the cell
 //! under the pointer (at negative cells), making its chunk, and a right
 //! click erases it; and the ball dropped over painted ground comes to rest
 //! on it
@@ -12,7 +14,7 @@ use std::collections::BTreeSet;
 use ryo2d::core::dev_log::{self, LogLevel};
 use ryo2d::prelude::*;
 use ryo2d::testing::HeadlessEngine;
-use tile_grids_demo::{Ball, Runner, demo};
+use tile_grids_demo::{Ball, ChunkLabel, Runner, demo};
 
 /// The pages, in the demo's order
 const MEADOW: usize = 0;
@@ -317,6 +319,65 @@ fn the_meadow_s_overlay_and_bounds_follow_a_save() {
   assert!(warnings().is_empty(), "{:#?}", warnings());
 }
 
+/// The chunk labels there are, each with its place in the world
+fn chunk_labels(engine: &mut HeadlessEngine) -> Vec<(IVec2, Vec2)> {
+  let world = engine.world_mut();
+  let mut labels = world.query_filtered::<(&ChunkLabel, &Transform), With<Text2d>>();
+  labels
+    .iter(world)
+    .map(|(label, transform)| (label.chunk, transform.translation))
+    .collect()
+}
+
+#[test]
+fn the_chunk_labels_are_world_text_on_the_chunks_in_view_on_whole_pixels() {
+  let Some(mut engine) = engine_on(MEADOW) else {
+    return;
+  };
+  let map = spawned_map(&mut engine);
+  engine.step_frames(10).unwrap();
+  let mut chunks = BTreeSet::new();
+  for name in ["scenery", "water", "ground"] {
+    for chunk in layer_grid(&mut engine, map, name).chunk_coords() {
+      chunks.insert((chunk.x, chunk.y));
+    }
+  }
+  let labels = chunk_labels(&mut engine);
+  assert!(!labels.is_empty(), "chunks in view are labelled");
+  let side = CHUNK_SIZE as f32 * 18.0;
+  for (chunk, at) in &labels {
+    assert!(
+      chunks.contains(&(chunk.x, chunk.y)),
+      "{chunk} is a chunk the map has"
+    );
+    let min = chunk.as_vec2() * side;
+    assert!(
+      at.cmpge(min).all() && at.cmplt(min + side).all(),
+      "chunk {chunk}'s label at {at} lies in it"
+    );
+    let screen = CameraMut::main(engine.world_mut())
+      .expect("the main camera")
+      .world_to_screen(*at);
+    assert!(
+      (0.0..960.0).contains(&screen.x) && (0.0..600.0).contains(&screen.y),
+      "chunk {chunk}'s label is on screen, at {screen}"
+    );
+    assert!(
+      (screen - screen.round()).abs().max_element() < 0.01,
+      "chunk {chunk}'s label sits on a whole screen pixel: {screen}"
+    );
+  }
+
+  // The Chunk overlay row has the panel's focus: off, the labels go
+  engine.tap_key(KeyCode::ArrowRight);
+  engine.step_frames(3).unwrap();
+  assert!(
+    chunk_labels(&mut engine).is_empty(),
+    "no labels with the overlay off"
+  );
+  assert!(warnings().is_empty(), "{:#?}", warnings());
+}
+
 /// The meadow's runner, once it has one
 fn runner(engine: &mut HeadlessEngine) -> Option<Vec2> {
   let world = engine.world_mut();
@@ -368,6 +429,59 @@ fn the_runner_runs_left_across_negative_chunks_and_back_in_view() {
     "the runner turned back: at {} after reaching {min_x}",
     now.x
   );
+  assert!(warnings().is_empty(), "{:#?}", warnings());
+}
+
+#[test]
+fn a_player_runs_the_runner_to_both_ends_of_the_meadow_without_falling_off() {
+  let Some(mut engine) = engine_on(MEADOW) else {
+    return;
+  };
+  for _ in 0..600 {
+    engine.step().unwrap();
+    if runner(&mut engine).is_some() {
+      break;
+    }
+  }
+  assert!(runner(&mut engine).is_some(), "the runner spawned");
+  let cell = 18.0;
+  // The meadow's ground runs from cell -88 to cell 51, its grass at row 0;
+  // the dip's floor, its lowest walk, is at row 2
+  let ends = [(KeyCode::KeyA, -88.0 * cell), (KeyCode::KeyD, 52.0 * cell)];
+  let fallen = 4.0 * cell;
+  for (key, end) in ends {
+    // WASD takes the runner over; held, with a full jump now and then (a
+    // tap is cut short) for the hills and out of the dip, until it has stood
+    // at the end for a second
+    engine.press_key(key);
+    let (mut nearest, mut held) = (f32::MAX, 0);
+    for frame in 0..2400 {
+      match frame % 40 {
+        0 => engine.press_key(KeyCode::Space),
+        25 => engine.release_key(KeyCode::Space),
+        _ => {}
+      }
+      engine.step().unwrap();
+      let at = runner(&mut engine).expect("the runner");
+      assert!(
+        at.y < fallen,
+        "the runner fell off the meadow at {at}, running toward x {end}"
+      );
+      let gap = (at.x - end).abs();
+      nearest = nearest.min(gap);
+      held = if gap < 2.0 * cell { held + 1 } else { 0 };
+      if held >= 60 {
+        break;
+      }
+    }
+    engine.release_key(key);
+    engine.release_key(KeyCode::Space);
+    engine.step_frames(2).unwrap();
+    assert!(
+      held >= 60,
+      "the runner stood at the meadow's end, x {end}: it came within {nearest} px"
+    );
+  }
   assert!(warnings().is_empty(), "{:#?}", warnings());
 }
 

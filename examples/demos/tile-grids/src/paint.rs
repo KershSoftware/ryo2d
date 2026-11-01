@@ -16,7 +16,7 @@
 
 use demo_kit::prelude::*;
 
-use crate::overlay::{self, BOUNDS_LINE, FRESH, Grid, Minimap};
+use crate::overlay::{self, BOUNDS_LINE, ChunkLabels, FRESH, Grid, Minimap};
 use crate::shared::{
   CELL, DIM, GOOD, HOT, TILESET, View, beside_panel, clear_to, ground_tile, hud, load, pan_input,
   wasd,
@@ -84,6 +84,8 @@ pub(crate) struct PaintPage {
   /// The camera has been put in place
   placed: bool,
   overlay: bool,
+  /// The chunks' labels, world text placed after the camera moves
+  labels: ChunkLabels,
   zoom: i32,
   bounce: f32,
 }
@@ -109,6 +111,7 @@ impl PaintPage {
       covered: Vec::new(),
       placed: false,
       overlay: true,
+      labels: ChunkLabels::default(),
       zoom: 2,
       bounce: 0.5,
     }
@@ -375,6 +378,9 @@ impl DemoPage for PaintPage {
     }
 
     self.read_chunks(ctx, root, dt);
+    if let Some(grid) = self.grid {
+      self.labels.place(ctx, grid, &self.chunks, self.overlay);
+    }
     if self.overlay
       && let Some(grid) = self.grid
     {
@@ -404,11 +410,7 @@ impl DemoPage for PaintPage {
     let Some(root) = self.root else {
       return;
     };
-    if self.overlay
-      && let Some(grid) = self.grid
-    {
-      overlay::chunk_labels(ui, ctx, grid, &self.chunks, content_area(ui));
-    }
+    self.labels.measure(ui);
 
     let pointer = self.hover.map_or_else(
       || "Pointer: off the world".to_string(),

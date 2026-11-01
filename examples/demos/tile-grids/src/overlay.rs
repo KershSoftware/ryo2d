@@ -1,7 +1,7 @@
 //! The chunk overlay the pages share. The engine keeps a tile layer's cells
 //! in chunks of 32 x 32 (`CHUNK_SIZE`), made where tiles are first written;
-//! the overlay outlines the chunks a map's tile layers have, in the world
-//! and with their coordinates, and draws them on a minimap with the map's
+//! the overlay outlines the chunks a map's tile layers have, labels them
+//! with their coordinates in world text, and draws them on a minimap with the map's
 //! bounds and the view. It reads only what a game can: each layer entity's
 //! `TileLayerData` grid
 
@@ -87,36 +87,107 @@ pub(crate) fn outline(debug: &mut DebugDraw, rect: Rect, color: Color, width: f3
     .rect(Vec2::new(x, y), Vec2::new(rect.width, rect.height), color);
 }
 
-/// Labels each of `chunks` in view with its coordinates, at its top-left
-/// corner, kept inside `area` (screen pixels: the page's content area,
-/// clear of the top bar) while any of the chunk shows there
-pub(crate) fn chunk_labels(
-  ui: &mut UiContext,
-  ctx: &mut SceneContext,
-  grid: Grid,
-  chunks: &[IVec2],
-  area: Rect,
-) {
-  let camera = ctx.camera();
-  let top_left = camera.screen_to_world(Vec2::new(area.x, area.y));
-  let bottom_right = camera.screen_to_world(Vec2::new(area.right(), area.bottom()));
-  for &chunk in chunks {
-    let rect = grid.chunk(chunk);
-    let seen = rect.right() > top_left.x
-      && rect.x < bottom_right.x
-      && rect.bottom() > top_left.y
-      && rect.y < bottom_right.y;
-    if !seen {
-      continue;
+/// A chunk label, world text at a chunk's top-left corner
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChunkLabel {
+  /// The chunk it names
+  pub chunk: IVec2,
+}
+
+/// The labels' z: over the map's layers and what walks on them
+const LABEL_Z: i32 = 50;
+/// A label's text height, and the gap from its chunk's corner, in screen
+/// pixels at every zoom
+const LABEL_SIZE: f32 = 14.0;
+const LABEL_GAP: f32 = 4.0;
+
+/// The chunk labels: world text (`Text2d`) at the top-left corner of each
+/// chunk in view, naming it, kept inside the page's content area while any
+/// of the chunk shows there. As world text they draw with the tiles, the
+/// camera's movement between fixed steps included, so they move exactly
+/// with the world; they are placed in the fixed step, after the camera
+#[derive(Debug, Default)]
+pub(crate) struct ChunkLabels {
+  /// The content area on screen, from the last `ui`
+  area: Option<Rect>,
+  labels: Vec<(IVec2, Entity)>,
+  /// The chunks in view this step and where their labels go
+  seen: Vec<(IVec2, Vec2)>,
+  /// The zoom the labels' text is sized for
+  zoom: f32,
+}
+
+impl ChunkLabels {
+  /// Takes this frame's content area
+  pub(crate) fn measure(&mut self, ui: &UiContext) {
+    self.area = Some(content_area(ui));
+  }
+
+  /// Labels each of `chunks` in view (none when `show` is off); call it
+  /// after moving the camera this step
+  pub(crate) fn place(&mut self, ctx: &mut SceneContext, grid: Grid, chunks: &[IVec2], show: bool) {
+    self.seen.clear();
+    let zoom = ctx.camera().zoom();
+    if let (true, Some(area)) = (show, self.area) {
+      let camera = ctx.camera();
+      let top_left = camera.screen_to_world(Vec2::new(area.x, area.y));
+      let bottom_right = camera.screen_to_world(Vec2::new(area.right(), area.bottom()));
+      // On whole screen pixels: the camera is, and so are a chunk's corner
+      // and the area's
+      let gap = Vec2::splat(LABEL_GAP / zoom);
+      for &chunk in chunks {
+        let rect = grid.chunk(chunk);
+        let seen = rect.right() > top_left.x
+          && rect.x < bottom_right.x
+          && rect.bottom() > top_left.y
+          && rect.y < bottom_right.y;
+        if seen {
+          let corner = Vec2::new(rect.x.max(top_left.x), rect.y.max(top_left.y));
+          self.seen.push((chunk, corner + gap));
+        }
+      }
     }
-    let corner = Vec2::new(rect.x.max(top_left.x), rect.y.max(top_left.y));
-    let at = camera.world_to_screen(corner) + Vec2::new(4.0, 4.0);
-    crate::shared::tag(
-      ui,
-      at,
-      &format!("chunk {}, {}", chunk.x, chunk.y),
-      CHUNK_LINE,
-    );
+    let seen = &self.seen;
+    self.labels.retain(|&(chunk, entity)| {
+      let keep = seen.iter().any(|&(c, _)| c == chunk);
+      if !keep {
+        ctx.world.despawn(entity);
+      }
+      keep
+    });
+    let resized = zoom != self.zoom;
+    self.zoom = zoom;
+    let style = TextStyle::new()
+      .size(LABEL_SIZE / zoom)
+      .color(CHUNK_LINE)
+      .outline(2.0 / zoom, CHUNK_EDGE);
+    for &(chunk, at) in &self.seen {
+      match self.labels.iter().find(|(c, _)| *c == chunk) {
+        Some(&(_, entity)) => {
+          if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
+            transform.translation = at;
+          }
+          if resized && let Some(mut text) = ctx.world.get_mut::<Text2d>(entity) {
+            text.style = style.clone();
+          }
+        }
+        None => {
+          let entity = ctx
+            .world
+            .spawn((
+              Transform::from_translation(at),
+              Interpolated,
+              Text2d::new(format!("chunk {}, {}", chunk.x, chunk.y))
+                .with_style(style.clone())
+                .with_layout(TextLayoutOptions::default().anchor(Anchor::TopLeft))
+                .with_z(LABEL_Z),
+              ChunkLabel { chunk },
+            ))
+            .id();
+          self.labels.push((chunk, entity));
+        }
+      }
+    }
   }
 }
 
