@@ -2,7 +2,7 @@
 name: ryo-physics
 description: Rapier2D physics integration - bodies, colliders, one-way colliders, triggers, joints, queries, contact state and collision messages.
 metadata:
-  version: 3.4.0
+  version: 3.5.0
 ---
 
 # Ryo2D Physics Specialist
@@ -131,7 +131,8 @@ ctx.world.spawn((Transform::from_xy(100.0, 50.0), RigidBody::fixed(), composite,
 A `TileColliders` grid (`ryo-character`, Tile colliders), which a tile map keeps for its colliding layers (`ryo-tilemap`, Collision), builds its own colliders as child entities:
 
 - **Outlines, not cells:** solid, slope and shape cells merge into seamless outlines, so a long floor is one edge and nothing catches where two tiles meet. An authored shape (`CellShape`, from a tile's collision shapes in Tiled) joins the trace as solid cells do: where it meets a neighbour's edges along their shared side they cancel, so a row of half blocks or a ramp of shapes over solid ground is one outline. One-way cells and the top edges of one-way shapes make one-way segments, merged with those they line up with. Outlines are hollow: a body inside one is not pushed out.
-- **Packed by area:** the outlines starting in each 32 x 32-cell chunk are one collider (a `ColliderShape::Segments`, or a closed `Polyline` when the chunk starts one outline), and so are a chunk's flat one-way runs along one row, so a map's collider count follows its area, not its islands.
+- **Packed by area:** the outlines starting in each 32 x 32-cell chunk are one collider (a `ColliderShape::Segments`, or a closed `Polyline` when the chunk starts one outline), and so are a chunk's flat one-way runs along one row, so a map's collider count follows its area, not its islands. Each collider's entity sits at its chunk's top-left, its points relative to it, so read its world geometry through its `GlobalTransform` (`Collider::world_bounds(global)`), never its points alone.
+- **Any size, signed cells:** cells are `IVec2`s stored by chunk, so a 10,000 x 64 level built with `TileColliders::new` collides, and `TileColliders::unbounded(tile_size)` holds negative cells too. A cell collides within 186,411 cells of (0, 0) on either axis (about 3 million px of 16 px tiles); `set` refuses one past that, logging it once.
 - **Edits reshape in place:** a changed cell retraces only the outlines through it, and only the colliders of the chunks whose outlines changed take their new shape, keeping their entity and their Rapier collider. Contacts carry through: a body resting anywhere on the map keeps resting, a character keeps its `CharacterState::floor`, and no `CollisionStopped` / `CollisionStarted` is sent for anything still touching. A collider is spawned only when its chunk gains its first outline, and despawned only when it loses its last.
 - **Which entity:** with no body on the map each part is its own fixed body, so collision messages, `CharacterHit` and `CharacterState::floor` name the part; its parent holds the `TileColliders` (a map's root, or a layer that collides on its own). With a kinematic `RigidBody` on that entity (or above it) they name the body, and the whole map moves.
 - **Ties with moving floors:** a character level with both fixed ground (a map's) and a kinematic or dynamic body (a moving platform) stands on the moving one and rides it, whichever collider was made first.

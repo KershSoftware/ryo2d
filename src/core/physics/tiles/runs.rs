@@ -12,6 +12,8 @@
 //! chains their pieces and the new ones again; every other run keeps its id
 //! and its part.
 
+use glam::IVec2;
+
 use super::outline::{Retraced, cross, delta, key};
 use super::{Cells, Few, GRID, Point, TileCell};
 use crate::core::ecs::Entity;
@@ -47,18 +49,16 @@ pub(crate) struct Runs {
   free: Vec<u32>,
 }
 
-/// The pieces of the cell at (x, y), the cells read through `at`, pushed onto `out`.
-fn cell_pieces(
-  cells: &Cells,
-  at: &impl Fn(i32, i32) -> TileCell,
-  x: i32,
-  y: i32,
-  out: &mut Vec<(Point, Point)>,
-) {
+/// The pieces of `cell`, the cell at (x, y) (within `MAX_REACH`, as a
+/// grid's cells are), pushed onto `out`.
+fn cell_pieces(cells: &Cells, cell: TileCell, x: i32, y: i32, out: &mut Vec<(Point, Point)>) {
+  let tops = cells.tops(cell);
+  if tops.is_empty() {
+    return;
+  }
   let origin = (x * GRID, y * GRID);
   out.extend(
-    cells
-      .tops(at(x, y))
+    tops
       .iter()
       .map(|&(a, b)| (super::sides::plus(origin, a), super::sides::plus(origin, b))),
   );
@@ -73,14 +73,8 @@ fn cell_pieces(
 impl Runs {
   /// Every run of the grid, chained whole.
   pub(crate) fn build(cells: Cells) -> Self {
-    let (cols, rows) = cells.extent();
-    let at = |x: i32, y: i32| cells.at(x, y);
     let mut pieces = Vec::new();
-    for y in 0..rows {
-      for x in 0..cols {
-        cell_pieces(&cells, &at, x, y, &mut pieces);
-      }
-    }
+    cells.each(|x, y, cell| cell_pieces(&cells, cell, x, y, &mut pieces));
     let mut runs = Self::default();
     for &(a, b) in &pieces {
       runs.insert(a, b);
@@ -89,24 +83,21 @@ impl Runs {
     runs
   }
 
-  /// Take in the cells at `changed` (sorted by index, each with the value it
+  /// Take in the cells at `changed` (in row order, each with the value it
   /// had when the runs were last brought up to date).
-  pub(crate) fn apply(&mut self, cells: Cells, changed: &[(u32, TileCell)]) -> Retraced {
+  pub(crate) fn apply(&mut self, cells: Cells, changed: &[(IVec2, TileCell)]) -> Retraced {
     let mut retraced = Retraced::default();
-    let width = cells.width();
-    if width == 0 || changed.is_empty() {
+    if changed.is_empty() {
       return retraced;
     }
-    let before = |x: i32, y: i32| cells.before(x, y, changed);
-    let now = |x: i32, y: i32| cells.at(x, y);
     let (mut was, mut is) = (Vec::new(), Vec::new());
     let mut changes: Vec<(Point, Point, bool)> = Vec::new();
-    for &(index, _) in changed {
-      let (x, y) = ((index % width) as i32, (index / width) as i32);
+    for &(cell, before) in changed {
+      let (x, y) = (cell.x, cell.y);
       was.clear();
       is.clear();
-      cell_pieces(&cells, &before, x, y, &mut was);
-      cell_pieces(&cells, &now, x, y, &mut is);
+      cell_pieces(&cells, before, x, y, &mut was);
+      cell_pieces(&cells, cells.at(x, y), x, y, &mut is);
       if was == is {
         continue;
       }
@@ -302,10 +293,11 @@ pub(crate) fn one_way_runs(
   height: u32,
   cells: &[TileCell],
 ) -> Vec<(super::Corner, super::Corner)> {
-  Runs::build(Cells::bare(width, height, cells))
+  let grid = super::TileColliders::from_cells(width, height, glam::Vec2::ONE, cells.to_vec());
+  Runs::build(grid.cells_view())
     .runs()
     .map(|(_, run)| {
-      let tiles = |(x, y): Point| (x / GRID, y / GRID);
+      let tiles = |(x, y): Point| (x.div_euclid(GRID), y.div_euclid(GRID));
       (
         tiles(run.points[0]),
         tiles(run.points[run.points.len() - 1]),

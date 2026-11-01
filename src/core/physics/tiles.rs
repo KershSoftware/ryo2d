@@ -1,7 +1,7 @@
 //! Tile colliders: a grid of cells becomes seamless outlines (or merged
 //! rectangles), one-way runs, 45° slopes and authored shapes. Coordinates
-//! here are in tiles, +Y down, cell (0, 0)'s top-left at the origin; the
-//! outlines and runs are traced on a finer grid, `GRID` points a tile.
+//! here are in tiles, +Y down, cell (0, 0)'s top-left at the origin, signed;
+//! the outlines and runs are traced on a finer grid, `GRID` points a tile.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -14,17 +14,17 @@ use crate::core::ecs::{
   Allow, Changed, ChildOf, Children, Commands, Component, DetectChangesMut, Disabled, Entity,
   EntityHashSet, Has, Or, Query, RemovedComponents, ResMut, Transform, Vec2, With,
 };
-use crate::core::hash::FastMap;
+use crate::core::hash::{FastMap, FastSet};
 
 mod outline;
 mod pack;
 mod runs;
 mod shape;
 
-#[cfg(test)]
-use outline::outlines;
 use outline::{Outlines, Unit, unit_edges};
-use pack::{Geometry, PackKey, Packs, ends, loop_key, ring, run_key};
+#[cfg(test)]
+use outline::{outlines, traced_outlines};
+use pack::{CHUNK, Geometry, PackKey, Packs, ends, loop_key, ring, run_key};
 use runs::Runs;
 #[cfg(test)]
 use runs::one_way_runs;
@@ -161,8 +161,49 @@ pub(crate) type Point = (i32, i32);
 /// Outline points a tile: 2^8 · 3^2 · 5, so a whole pixel of tiles 8, 12,
 /// 16, 18, 24, 32, 48, 64, 128 or 256 px wide (and many more) is a point,
 /// and so is a half pixel of all of these but 256; anything else snaps to
-/// the nearest. A side of `MAX_SIDE` tiles is under 2^31 points.
+/// the nearest. Cells within `MAX_REACH` of (0, 0) are within an `i32` of
+/// points.
 pub(crate) const GRID: i32 = 11520;
+
+/// How far from cell (0, 0) a grid's cells may be, on either axis, and
+/// still collide: what an i32 outline lattice of `GRID` units a cell holds,
+/// with room for a shape's reach. Every point the units of a cell within it
+/// reach (its edges, and the borders past it with their cells' edges) is
+/// under 2^31 from the origin: 186,411 cells, about 3 million px of 16 px
+/// tiles.
+pub(crate) const MAX_REACH: i32 = (i32::MAX / GRID) - 2;
+
+/// Cells in a chunk of a grid's storage: `CHUNK` a side, as the packing's
+const CELLS: usize = (CHUNK * CHUNK) as usize;
+
+/// One chunk's cells, row by row
+type Chunk = [TileCell; CELLS];
+
+/// A grid's chunks, by signed chunk coordinate
+type Chunks = FastMap<IVec2, Box<Chunk>>;
+
+/// The chunk holding `cell`, rounding toward negative infinity: cell -1 is
+/// in chunk -1, cell -33 in chunk -2
+fn chunk_of(cell: IVec2) -> IVec2 {
+  cell.div_euclid(IVec2::splat(CHUNK))
+}
+
+/// `cell`'s place in its chunk
+fn local(cell: IVec2) -> usize {
+  let at = cell.rem_euclid(IVec2::splat(CHUNK));
+  (at.y * CHUNK + at.x) as usize
+}
+
+/// The cells of `chunk`, a chunk of cells within `MAX_REACH`
+fn chunk_rect(chunk: IVec2) -> CellRect {
+  let min = chunk * CHUNK;
+  CellRect::new(min, min + IVec2::splat(CHUNK))
+}
+
+/// Whether `cell` is within the outline lattice's reach (`MAX_REACH`)
+fn reaches(cell: IVec2) -> bool {
+  cell.cmpge(IVec2::splat(-MAX_REACH)).all() && cell.cmple(IVec2::splat(MAX_REACH)).all()
+}
 
 /// The outline edges of a solid cell, in cell points, clockwise on screen.
 const SOLID: [(Point, Point); 4] = [
@@ -302,66 +343,104 @@ impl<T: Copy + Default> Few<T> {
   }
 }
 
-/// A grid's cells and shapes, as the outlines and runs read them.
+/// A grid's cells and shapes, as the outlines and runs read them: any
+/// signed cell, `Empty` where the grid has none. A grid holds no cell past
+/// `MAX_REACH`, so nothing read here is past it.
 #[derive(Clone, Copy)]
 pub(crate) struct Cells<'a> {
-  width: u32,
-  /// The columns and rows worth reading (`extent`)
-  cols: i32,
-  rows: i32,
-  cells: &'a [TileCell],
+  /// None for a `Boundary`'s, whose cells come through a closure
+  chunks: Option<&'a Chunks>,
   shapes: &'a [(CellShape, ShapeBuild)],
 }
 
 impl<'a> Cells<'a> {
-  fn new(
-    width: u32,
-    height: u32,
-    cells: &'a [TileCell],
-    shapes: &'a [(CellShape, ShapeBuild)],
-  ) -> Self {
-    let (cols, rows) = extent(width, height, cells);
-    // A grid holds at most `MAX_SIDE` cells a side; `cells` bounds a bare call
-    let most = (i32::MAX / GRID - 1) as u32;
+  fn new(chunks: &'a Chunks, shapes: &'a [(CellShape, ShapeBuild)]) -> Self {
     Self {
-      width,
-      cols: cols.min(most) as i32,
-      rows: rows.min(most) as i32,
-      cells,
+      chunks: Some(chunks),
       shapes,
     }
   }
 
-  /// Cells with no shapes (the pure outline functions' tests).
-  #[cfg(test)]
-  fn bare(width: u32, height: u32, cells: &'a [TileCell]) -> Self {
-    Self::new(width, height, cells, &[])
+  /// No cells, only shapes (a `Boundary`'s)
+  fn shapes_only(shapes: &'a [(CellShape, ShapeBuild)]) -> Self {
+    Self {
+      chunks: None,
+      shapes,
+    }
   }
 
-  pub(crate) fn width(&self) -> u32 {
-    self.width
+  /// The cells of `chunk`, if the grid has it
+  fn chunk(self, chunk: IVec2) -> Option<&'a Chunk> {
+    self.chunks?.get(&chunk).map(|cells| &**cells)
   }
 
-  pub(crate) fn extent(&self) -> (i32, i32) {
-    (self.cols, self.rows)
+  /// The chunks there are, in row order (by row, then column)
+  pub(crate) fn chunk_order(&self) -> Vec<IVec2> {
+    let mut order: Vec<IVec2> = self
+      .chunks
+      .map_or_else(Vec::new, |chunks| chunks.keys().copied().collect());
+    order.sort_unstable_by_key(|chunk| (chunk.y, chunk.x));
+    order
   }
 
-  /// The cell at (x, y); `Empty` outside.
+  /// The cell at (x, y); `Empty` where the grid has none.
   pub(crate) fn at(&self, x: i32, y: i32) -> TileCell {
-    if x < 0 || y < 0 || x >= self.cols || y >= self.rows {
-      return TileCell::Empty;
-    }
-    cell(self.width, self.cells, x as u32, y as u32)
+    let cell = IVec2::new(x, y);
+    self
+      .chunk(chunk_of(cell))
+      .map_or(TileCell::Empty, |cells| cells[local(cell)])
   }
 
-  /// The cell at (x, y) as it was before `changed` (sorted by index, each
-  /// with its value before).
-  pub(crate) fn before(&self, x: i32, y: i32, changed: &[(u32, TileCell)]) -> TileCell {
-    if x < 0 || y < 0 || x >= self.cols || y >= self.rows {
-      return TileCell::Empty;
+  /// A reader of the cells around `chunk` without a lookup each: the
+  /// chunk's own, the chunk's left of it and the chunk's above it (all its
+  /// cells' units read); any other cell is looked up.
+  pub(crate) fn near(self, chunk: IVec2) -> impl Fn(i32, i32) -> TileCell + 'a {
+    let (left, above) = (chunk - IVec2::X, chunk - IVec2::Y);
+    let found = [self.chunk(chunk), self.chunk(left), self.chunk(above)];
+    move |x, y| {
+      let cell = IVec2::new(x, y);
+      let at = chunk_of(cell);
+      let cells = if at == chunk {
+        found[0]
+      } else if at == left {
+        found[1]
+      } else if at == above {
+        found[2]
+      } else {
+        self.chunk(at)
+      };
+      cells.map_or(TileCell::Empty, |cells| cells[local(cell)])
     }
-    let index = y as u32 * self.width + x as u32;
-    match changed.binary_search_by_key(&index, |&(i, _)| i) {
+  }
+
+  /// Calls `f` with each cell holding something (not `Empty`), in row order
+  /// (by row, then column): what a scan of every cell would meet, reading
+  /// only the chunks there are.
+  pub(crate) fn each(&self, mut f: impl FnMut(i32, i32, TileCell)) {
+    let order = self.chunk_order();
+    for row in order.chunk_by(|a, b| a.y == b.y) {
+      let top = row[0].y * CHUNK;
+      let found: Vec<(i32, &Chunk)> = row
+        .iter()
+        .filter_map(|&chunk| Some((chunk.x * CHUNK, self.chunk(chunk)?)))
+        .collect();
+      for dy in 0..CHUNK {
+        for &(left, cells) in &found {
+          let line = &cells[(dy * CHUNK) as usize..((dy + 1) * CHUNK) as usize];
+          for (dx, &cell) in (0..CHUNK).zip(line) {
+            if cell != TileCell::Empty {
+              f(left + dx, top + dy, cell);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  /// The cell at (x, y) as it was before `changed` (sorted by row, then
+  /// column, each with its value before).
+  pub(crate) fn before(&self, x: i32, y: i32, changed: &[(IVec2, TileCell)]) -> TileCell {
+    match changed.binary_search_by_key(&(y, x), |&(cell, _)| (cell.y, cell.x)) {
       Ok(i) => changed[i].1,
       Err(_) => self.at(x, y),
     }
@@ -409,29 +488,12 @@ pub(crate) fn corners(cell: TileCell) -> &'static [Corner] {
   }
 }
 
-/// The columns and rows worth scanning: a grid claiming more than its
-/// `cells` hold costs nothing and cannot overflow.
-fn extent(width: u32, height: u32, cells: &[TileCell]) -> (u32, u32) {
-  if width == 0 {
-    return (0, 0);
-  }
-  let len = cells.len().min(u32::MAX as usize);
-  let rows = cells.len().div_ceil(width as usize).min(u32::MAX as usize) as u32;
-  (width.min(len as u32), height.min(rows))
-}
-
-/// The cell at (x, y); missing cells are empty.
-fn cell(width: u32, cells: &[TileCell], x: u32, y: u32) -> TileCell {
-  let index = y as usize * width as usize + x as usize;
-  cells.get(index).copied().unwrap_or_default()
-}
-
 /// Drop the points in the middle of straight runs; `points` is closed (its
 /// last repeats its first) and so is the result.
 fn merge_straight_runs(points: &[Point]) -> Vec<Point> {
   let ring = &points[..points.len().saturating_sub(1)];
   let n = ring.len();
-  let step = |a: Point, b: Point| (i64::from(b.0 - a.0), i64::from(b.1 - a.1));
+  let step = |a: Point, b: Point| outline::delta(a, b);
   let mut kept: Vec<Point> = (0..n)
     .filter(|&i| {
       let (a, b) = (
@@ -449,39 +511,36 @@ fn merge_straight_runs(points: &[Point]) -> Vec<Point> {
   kept
 }
 
-/// Solid cells greedily merged into rectangles: (min corner, size).
-pub(crate) fn solid_rects(width: u32, height: u32, cells: &[TileCell]) -> Vec<(Corner, Corner)> {
-  let (cols, height) = extent(width, height, cells);
-  let solid = |x: u32, y: u32| cell(width, cells, x, y) == TileCell::Solid;
-  let mut taken = vec![false; cols as usize * height as usize];
-  let index = |x: u32, y: u32| y as usize * cols as usize + x as usize;
+/// Solid cells greedily merged into rectangles, from each solid cell not
+/// yet taken in row order (by row, then column): (min corner, size).
+pub(crate) fn solid_rects(cells: Cells) -> Vec<(Corner, Corner)> {
+  let mut taken: FastSet<Corner> = FastSet::default();
+  let free = |taken: &FastSet<Corner>, x: i32, y: i32| {
+    cells.at(x, y) == TileCell::Solid && !taken.contains(&(x, y))
+  };
   let mut rects = Vec::new();
-  for y in 0..height {
-    for x in 0..cols {
-      if !solid(x, y) || taken[index(x, y)] {
-        continue;
-      }
-      let mut w = 1;
-      while x + w < cols && solid(x + w, y) && !taken[index(x + w, y)] {
-        w += 1;
-      }
-      let mut h = 1;
-      while y + h < height && (x..x + w).all(|cx| solid(cx, y + h) && !taken[index(cx, y + h)]) {
-        h += 1;
-      }
-      for ty in y..y + h {
-        for tx in x..x + w {
-          taken[index(tx, ty)] = true;
-        }
-      }
-      rects.push(((x as i32, y as i32), (w as i32, h as i32)));
+  cells.each(|x, y, cell| {
+    if cell != TileCell::Solid || taken.contains(&(x, y)) {
+      return;
     }
-  }
+    // A grid's cells are within `MAX_REACH`, so the ends cannot overflow
+    let mut w = 1;
+    while free(&taken, x + w, y) {
+      w += 1;
+    }
+    let mut h = 1;
+    while (x..x + w).all(|cx| free(&taken, cx, y + h)) {
+      h += 1;
+    }
+    for ty in y..y + h {
+      for tx in x..x + w {
+        taken.insert((tx, ty));
+      }
+    }
+    rects.push(((x, y), (w, h)));
+  });
   rects
 }
-/// The most cells a grid holds a side (so 2^26 in all, and under 2^31
-/// outline points across); a larger size is empty.
-const MAX_SIDE: u32 = 8192;
 
 /// The most cell changes a grid lists between rebuilds; past it the next
 /// rebuild builds everything.
@@ -491,21 +550,29 @@ const MAX_CHANGES: usize = 1 << 16;
 /// around solid, slope and authored shape cells (`add_shape`,
 /// `TileCell::Shape`), or merged rectangles with `solid_rects()`, and
 /// one-way segments along runs of one-way cells and shapes. Its `Transform`
-/// places cell (0, 0)'s top-left; +Y is down. The colliders are child
-/// entities, brought up to date before the next physics step after a
-/// change. The outlines are packed by area: the loops starting in a chunk of
-/// 32 by 32 cells are one collider, and so are the flat one-way runs
-/// starting in a chunk along one row (a sloped run is a collider of its
-/// own). An edit retraces the outlines and runs through the cells it
-/// changed and gives the colliders of only the chunks whose outlines or
-/// runs changed their new shape in place, the same entities, so what
-/// stands on the rest of such a chunk keeps its contacts; every other
-/// collider stays as it was. With no body they are fixed; with a kinematic
-/// `RigidBody` the whole map moves.
+/// places cell (0, 0)'s top-left; +Y is down. Cells are signed and stored
+/// by chunk, so an empty area costs nothing: a bounded grid (`new`,
+/// `from_cells`) holds the cells from (0, 0) to its size, an unbounded one
+/// (`unbounded`) any cell. A cell collides within `MAX_REACH` (186,411)
+/// cells of (0, 0) on either axis; one past it is refused (logged once a
+/// grid).
+///
+/// The colliders are child entities, brought up to date before the next
+/// physics step after a change. The outlines are packed by area: the loops
+/// starting in a chunk of 32 by 32 cells are one collider, and so are the
+/// flat one-way runs starting in a chunk along one row (a sloped run is a
+/// collider of its own); each sits at its chunk's top-left, its points
+/// relative to it, so they stay small however far out the chunk is. An
+/// edit retraces the outlines and runs through the cells it changed and
+/// gives the colliders of only the chunks whose outlines or runs changed
+/// their new shape in place, the same entities, so what stands on the rest
+/// of such a chunk keeps its contacts; every other collider stays as it
+/// was. With no body they are fixed; with a kinematic `RigidBody` the whole
+/// map moves.
 ///
 /// Disabling the map entity (`Disabled`) removes its colliders and enabling
 /// it builds them again from the cells as they then are; so does removing
-/// the component. A grid over 8192 cells a side is logged and empty.
+/// the component.
 ///
 /// Outlines are hollow: a body that ends up inside a solid region is not
 /// pushed out. `solid_rects()` trades the seamless floors for solid
@@ -514,9 +581,12 @@ const MAX_CHANGES: usize = 1 << 16;
 #[non_exhaustive]
 #[require(Transform)]
 pub struct TileColliders {
-  width: u32,
-  height: u32,
-  cells: Vec<TileCell>,
+  /// The cells it holds; None for any
+  bounds: Option<CellRect>,
+  /// Its cells by chunk; a chunk is made by the first cell written in it
+  chunks: Chunks,
+  /// The cells of the chunks there are
+  span: CellRect,
   /// One cell's size, px
   pub tile_size: Vec2,
   pub layer: u32,
@@ -536,8 +606,10 @@ pub struct TileColliders {
   /// The cells changed since generation `changes_since` (the one the
   /// rebuild last took in), each with its value before, or None when there
   /// were too many to list
-  changes: Option<Vec<(u32, TileCell)>>,
+  changes: Option<Vec<(IVec2, TileCell)>>,
   changes_since: u64,
+  /// A cell past `MAX_REACH` was refused (and logged)
+  warned_reach: bool,
 }
 
 static GENERATIONS: AtomicU64 = AtomicU64::new(1);
@@ -547,39 +619,70 @@ fn next_generation() -> u64 {
 }
 
 impl TileColliders {
-  /// An empty grid.
+  /// An empty grid of the cells from (0, 0) up to (`width`, `height`).
   pub fn new(width: u32, height: u32, tile_size: Vec2) -> Self {
     Self::from_cells(width, height, tile_size, Vec::new())
   }
 
-  /// A grid from its cells, row by row from the top; missing cells are
-  /// empty and extra ones are dropped. A side over 8192 cells (a bad size,
-  /// not a map) is logged and makes a 0 x 0 grid.
-  pub fn from_cells(width: u32, height: u32, tile_size: Vec2, mut cells: Vec<TileCell>) -> Self {
-    let (width, height) = if width <= MAX_SIDE && height <= MAX_SIDE {
-      cells.resize(width as usize * height as usize, TileCell::Empty);
-      (width, height)
-    } else {
-      crate::engine_warn!(
-        module: "Physics",
-        "a {width} x {height} TileColliders is over the limit of 8192 cells a side; it is empty"
-      );
-      cells.clear();
-      (0, 0)
-    };
-    let shape_refs = cells
-      .iter()
-      .filter_map(|cell| match cell {
-        TileCell::Shape(index) => Some(u32::from(*index) + 1),
-        _ => None,
-      })
-      .max()
-      .unwrap_or(0);
+  /// A grid of the cells from (0, 0) up to (`width`, `height`), from its
+  /// cells row by row from the top; missing cells are empty and extra ones
+  /// are dropped. Only the chunks holding a cell are stored, so a long
+  /// level costs what its cells do. A cell past `MAX_REACH` is dropped
+  /// (logged).
+  pub fn from_cells(width: u32, height: u32, tile_size: Vec2, cells: Vec<TileCell>) -> Self {
+    let bounds = CellRect::from_size(UVec2::new(width, height));
+    let mut grid = Self::with_bounds(Some(bounds), tile_size);
+    if width == 0 {
+      return grid;
+    }
+    let (side, reach) = (CHUNK as usize, MAX_REACH as usize);
+    let mut past = None;
+    let rows = cells.chunks(width as usize).take(height as usize);
+    for (y, row) in rows.enumerate() {
+      // The columns that collide: none in a row past the reach
+      let within = if y <= reach {
+        row.len().min(reach + 1)
+      } else {
+        0
+      };
+      if past.is_none()
+        && let Some(x) = row[within..].iter().position(|&c| c != TileCell::Empty)
+      {
+        past = Some((within + x, y));
+      }
+      for (column, run) in row[..within].chunks(side).enumerate() {
+        if run.iter().all(|&c| c == TileCell::Empty) {
+          continue;
+        }
+        for &cell in run {
+          if let TileCell::Shape(index) = cell {
+            grid.shape_refs = grid.shape_refs.max(u32::from(index) + 1);
+          }
+        }
+        // Both within the reach, so in an i32
+        let chunk = IVec2::new(column as i32, (y / side) as i32);
+        let start = (y % side) * side;
+        grid.chunk_mut(chunk)[start..start + run.len()].copy_from_slice(run);
+      }
+    }
+    if let Some((x, y)) = past {
+      grid.past_reach(x, y);
+    }
+    grid
+  }
+
+  /// An empty grid holding any cell, signed (within `MAX_REACH`): a chunk
+  /// is made the first time a cell is written in it.
+  pub fn unbounded(tile_size: Vec2) -> Self {
+    Self::with_bounds(None, tile_size)
+  }
+
+  fn with_bounds(bounds: Option<CellRect>, tile_size: Vec2) -> Self {
     let generation = next_generation();
     Self {
-      width,
-      height,
-      cells,
+      bounds,
+      chunks: Chunks::default(),
+      span: CellRect::default(),
       tile_size,
       layer: 1,
       mask: u32::MAX,
@@ -588,51 +691,104 @@ impl TileColliders {
       solid_rects: false,
       generation,
       shapes: Vec::new(),
-      shape_refs,
+      shape_refs: 0,
       changes: Some(Vec::new()),
       changes_since: generation,
+      warned_reach: false,
     }
   }
 
-  pub fn width(&self) -> u32 {
-    self.width
+  /// The cells a bounded grid holds (from (0, 0) to its size); None for an
+  /// unbounded one.
+  pub fn bounds(&self) -> Option<CellRect> {
+    self.bounds
   }
 
-  pub fn height(&self) -> u32 {
-    self.height
+  /// The cells it holds: a bounded grid's bounds, an unbounded one's
+  /// chunks' cells (empty before a cell is written).
+  pub fn extent(&self) -> CellRect {
+    self.bounds.unwrap_or(self.span)
   }
 
-  /// The cell at (x, y); `Empty` outside the grid.
-  pub fn get(&self, x: u32, y: u32) -> TileCell {
-    if x < self.width && y < self.height {
-      self.cells[y as usize * self.width as usize + x as usize]
-    } else {
-      TileCell::Empty
-    }
+  /// The cell at `cell`; `Empty` outside the grid.
+  pub fn get(&self, cell: IVec2) -> TileCell {
+    self.cells_view().at(cell.x, cell.y)
   }
 
   /// Change a cell (its colliders rebuild next step). Returns false, and
-  /// changes nothing, for a cell outside the grid or one already `cell`.
-  pub fn set(&mut self, x: u32, y: u32, cell: TileCell) -> bool {
-    if x >= self.width || y >= self.height {
+  /// changes nothing, for a cell outside the grid or one already `value`.
+  /// A cell past `MAX_REACH` of (0, 0) does not collide: it is refused,
+  /// logged the first time.
+  pub fn set(&mut self, cell: IVec2, value: TileCell) -> bool {
+    if self.bounds.is_some_and(|bounds| !bounds.contains(cell)) {
       return false;
     }
-    let index = y as usize * self.width as usize + x as usize;
-    let slot = &mut self.cells[index];
-    if *slot == cell {
+    if !reaches(cell) {
+      if value != TileCell::Empty {
+        self.past_reach(cell.x, cell.y);
+      }
       return false;
     }
-    let before = std::mem::replace(slot, cell);
-    if let TileCell::Shape(shape) = cell {
+    let chunk = chunk_of(cell);
+    if value == TileCell::Empty && !self.chunks.contains_key(&chunk) {
+      return false;
+    }
+    let slot = &mut self.chunk_mut(chunk)[local(cell)];
+    if *slot == value {
+      return false;
+    }
+    let before = std::mem::replace(slot, value);
+    if let TileCell::Shape(shape) = value {
       self.shape_refs = self.shape_refs.max(u32::from(shape) + 1);
     }
     self.generation = next_generation();
     match &mut self.changes {
-      // A grid holds at most 2^26 cells, so an index fits
-      Some(changes) if changes.len() < MAX_CHANGES => changes.push((index as u32, before)),
+      Some(changes) if changes.len() < MAX_CHANGES => changes.push((cell, before)),
       _ => self.changes = None,
     }
     true
+  }
+
+  /// `chunk`'s cells, made empty if the grid has none there
+  fn chunk_mut(&mut self, chunk: IVec2) -> &mut Chunk {
+    let span = &mut self.span;
+    self.chunks.entry(chunk).or_insert_with(|| {
+      *span = span.union(chunk_rect(chunk));
+      Box::new([TileCell::Empty; CELLS])
+    })
+  }
+
+  /// Logs, the first time, that the cell at (x, y) is past `MAX_REACH`
+  fn past_reach(&mut self, x: impl std::fmt::Display, y: impl std::fmt::Display) {
+    if std::mem::replace(&mut self.warned_reach, true) {
+      return;
+    }
+    crate::engine_warn!(
+      module: "Physics",
+      "a TileColliders cell at ({x}, {y}) is past the reach of tile collision, {MAX_REACH} cells from (0, 0) on either axis, so it does not collide (logged once a grid)"
+    );
+  }
+
+  /// Each cell holding something (not `Empty`) in `area`, read from the
+  /// chunks overlapping it only, in no set order.
+  pub(crate) fn cells_in(&self, area: CellRect) -> impl Iterator<Item = (IVec2, TileCell)> + '_ {
+    self
+      .chunks
+      .iter()
+      .filter(move |(chunk, _)| {
+        let rect = chunk_rect(**chunk);
+        rect.min.cmplt(area.max).all() && area.min.cmplt(rect.max).all()
+      })
+      .flat_map(move |(chunk, cells)| {
+        let origin = *chunk * CHUNK;
+        (0..CHUNK)
+          .flat_map(|y| (0..CHUNK).map(move |x| IVec2::new(x, y)))
+          .zip(cells.iter())
+          .filter_map(move |(at, &cell)| {
+            let at = origin + at;
+            (cell != TileCell::Empty && area.contains(at)).then_some((at, cell))
+          })
+      })
   }
 
   /// Add an authored shape for `TileCell::Shape` cells to name; returns its
@@ -658,19 +814,19 @@ impl TileColliders {
   }
 
   pub(crate) fn cells_view(&self) -> Cells<'_> {
-    Cells::new(self.width, self.height, &self.cells, &self.shapes)
+    Cells::new(&self.chunks, &self.shapes)
   }
 
-  /// The cells changed since the rebuild last took them in, sorted by
-  /// index, each once with its value then; None when there were too many to
-  /// list. The list starts again from now.
-  pub(crate) fn take_changes(&mut self) -> Option<Vec<(u32, TileCell)>> {
+  /// The cells changed since the rebuild last took them in, in row order
+  /// (by row, then column), each once with its value then; None when there
+  /// were too many to list. The list starts again from now.
+  pub(crate) fn take_changes(&mut self) -> Option<Vec<(IVec2, TileCell)>> {
     let changes = self.changes.replace(Vec::new());
     self.changes_since = self.generation;
     changes.map(|mut list| {
       // Stable: a cell's first entry holds its value before them all
-      list.sort_by_key(|&(index, _)| index);
-      list.dedup_by_key(|&mut (index, _)| index);
+      list.sort_by_key(|&(cell, _)| (cell.y, cell.x));
+      list.dedup_by_key(|&mut (cell, _)| cell);
       list
     })
   }
@@ -735,12 +891,28 @@ impl TileColliders {
       .id()
   }
 
-  /// A point of the outline grid in the map's space, px.
-  fn at(&self, (x, y): Point) -> Vec2 {
-    let grid = f64::from(GRID);
+  /// The top-left of `chunk` (of `CHUNK` cells a side) in the map's
+  /// space, px: where a pack's part sits.
+  fn origin(&self, chunk: (i32, i32)) -> Vec2 {
+    let side = f64::from(CHUNK);
     Vec2::new(
-      (f64::from(x) / grid * f64::from(self.tile_size.x)) as f32,
-      (f64::from(y) / grid * f64::from(self.tile_size.y)) as f32,
+      (f64::from(chunk.0) * side * f64::from(self.tile_size.x)) as f32,
+      (f64::from(chunk.1) * side * f64::from(self.tile_size.y)) as f32,
+    )
+  }
+
+  /// A point of the outline grid from the top-left of `chunk`, px. Worked
+  /// out in f64, where every lattice point and chunk origin is exact, so
+  /// the point stays small (and as exact as in chunk (0, 0)) however far
+  /// out the chunk is.
+  fn at(&self, (x, y): Point, chunk: (i32, i32)) -> Vec2 {
+    let (grid, side) = (f64::from(GRID), f64::from(GRID) * f64::from(CHUNK));
+    let along = |p: i32, chunk: i32, tile: f32| {
+      ((f64::from(p) - f64::from(chunk) * side) / grid * f64::from(tile)) as f32
+    };
+    Vec2::new(
+      along(x, chunk.0, self.tile_size.x),
+      along(y, chunk.1, self.tile_size.y),
     )
   }
 
@@ -748,7 +920,10 @@ impl TileColliders {
   /// from its first point to its last, solid from the side it faces (up,
   /// for a flat run).
   fn spawn_run(&self, commands: &mut Commands, map: Entity, points: &[Point]) -> Entity {
-    let (a, b) = (self.at(points[0]), self.at(points[points.len() - 1]));
+    let (a, b) = (
+      self.at(points[0], (0, 0)),
+      self.at(points[points.len() - 1], (0, 0)),
+    );
     let along = b - a;
     let facing = Vec2::new(along.y, -along.x).normalize_or(Vec2::NEG_Y);
     self.spawn(
@@ -763,37 +938,30 @@ impl TileColliders {
   fn spawn_all(&self, commands: &mut Commands, map: Entity) -> Option<Kept> {
     if self.solid_rects {
       let runs = Runs::build(self.cells_view());
-      let (cols, rows) = extent(self.width, self.height, &self.cells);
-      for (min, cells) in solid_rects(self.width, self.height, &self.cells) {
+      for (min, cells) in solid_rects(self.cells_view()) {
         let extent = self.px(cells);
         let centre = self.px(min) + extent / 2.0;
         let rect = Collider::rect(extent.x, extent.y).with_offset(centre.x, centre.y);
         self.spawn(commands, map, rect);
       }
-      for y in 0..rows {
-        for x in 0..cols {
+      self.cells_view().each(|x, y, cell| match cell {
+        TileCell::Slope(_) => {
+          let points = corners(cell).iter().map(|c| self.px((x + c.0, y + c.1)));
+          self.spawn(commands, map, Collider::polygon(points));
+        }
+        TileCell::Shape(shape) => {
           let origin = Vec2::new(x as f32, y as f32);
-          match self.get(x, y) {
-            cell @ TileCell::Slope(_) => {
-              let points = corners(cell)
-                .iter()
-                .map(|c| self.px((x as i32 + c.0, y as i32 + c.1)));
-              self.spawn(commands, map, Collider::polygon(points));
-            }
-            TileCell::Shape(shape) => {
-              let parts = self
-                .shapes
-                .get(usize::from(shape))
-                .map_or(&[][..], |(_, build)| &build.parts[..]);
-              for part in parts {
-                let points = part.iter().map(|&p| (origin + p) * self.tile_size);
-                self.spawn(commands, map, Collider::polygon(points));
-              }
-            }
-            _ => {}
+          let parts = self
+            .shapes
+            .get(usize::from(shape))
+            .map_or(&[][..], |(_, build)| &build.parts[..]);
+          for part in parts {
+            let points = part.iter().map(|&p| (origin + p) * self.tile_size);
+            self.spawn(commands, map, Collider::polygon(points));
           }
         }
-      }
+        _ => {}
+      });
       for (_, run) in runs.runs() {
         self.spawn_run(commands, map, &run.points);
       }
@@ -804,70 +972,84 @@ impl TileColliders {
       runs: Runs::build(self.cells_view()),
       ..Kept::default()
     };
-    for (key, collider) in self.pack_all(&mut kept) {
-      self.spawn_pack(&mut kept, key, collider, None, commands, map);
+    for (key, at, collider) in self.pack_all(&mut kept) {
+      self.spawn_pack(&mut kept, key, at, collider, None, commands, map);
     }
     Some(kept)
   }
 
-  /// Puts every loop and run of `kept` in its pack; each pack's collider
-  /// (without the grid's material), in the order the packs were met.
-  fn pack_all(&self, kept: &mut Kept) -> Vec<(PackKey, Collider)> {
-    let mut gathered: FastMap<PackKey, Geometry> = FastMap::default();
+  /// Puts every loop and run of `kept` in its pack; each pack's part's
+  /// place and collider (relative to it, without the grid's material), in
+  /// the order the packs were met.
+  fn pack_all(&self, kept: &mut Kept) -> Vec<(PackKey, Vec2, Collider)> {
+    type Gathered = FastMap<PackKey, ((i32, i32), Geometry)>;
+    /// Pack `key`'s geometry, its part at the top-left of `chunk`
+    fn gather<'g>(
+      (gathered, order): (&'g mut Gathered, &mut Vec<PackKey>),
+      key: PackKey,
+      chunk: (i32, i32),
+    ) -> &'g mut Geometry {
+      let entry = gathered.entry(key).or_insert_with(|| {
+        order.push(key);
+        (chunk, Geometry::default())
+      });
+      &mut entry.1
+    }
+    let mut gathered = Gathered::default();
     let mut order = Vec::new();
     let mut dirty = Vec::new();
     for (id, outline) in kept.outlines.loops() {
       let key = loop_key(&outline.corners);
-      let ring = ring(&outline.corners);
+      let chunk = key.chunk(outline.corners.first().copied().unwrap_or_default());
       kept.loop_packs.place(id, key, &mut dirty);
       dirty.clear();
-      gathered
-        .entry(key)
-        .or_insert_with(|| {
-          order.push(key);
-          Geometry::default()
-        })
-        .add_ring(ring.into_iter().map(|p| self.at(p)));
+      let ring = ring(&outline.corners);
+      gather((&mut gathered, &mut order), key, chunk)
+        .add_ring(ring.into_iter().map(|p| self.at(p, chunk)));
     }
     for (id, run) in kept.runs.runs() {
       let key = run_key(id, &run.points);
       kept.run_packs.place(id, key, &mut dirty);
       dirty.clear();
       let (a, b) = ends(&run.points);
-      gathered
-        .entry(key)
-        .or_insert_with(|| {
-          order.push(key);
-          Geometry::default()
-        })
-        .add_segment(self.at(a), self.at(b));
+      let chunk = key.chunk(a);
+      gather((&mut gathered, &mut order), key, chunk)
+        .add_segment(self.at(a, chunk), self.at(b, chunk));
     }
     order
       .into_iter()
       .map(|key| {
-        let geometry = gathered.remove(&key).unwrap_or_default();
+        let (chunk, geometry) = gathered.remove(&key).unwrap_or_default();
         let collider = match key {
           PackKey::Loops(..) => geometry.loops(),
           _ => geometry.runs(),
         };
-        (key, collider)
+        (key, self.origin(chunk), collider)
       })
       .collect()
   }
 
-  /// Spawns pack `key`'s part, `collider` with the grid's material (and its
-  /// shape built ahead, if any), as the part of the pack's members.
+  /// Spawns pack `key`'s part at `at`, `collider` with the grid's material
+  /// (and its shape built ahead, if any), as the part of the pack's
+  /// members.
+  #[allow(clippy::too_many_arguments)] // the part, then where it goes
   fn spawn_pack(
     &self,
     kept: &mut Kept,
     key: PackKey,
+    at: Vec2,
     collider: Collider,
     shape: Option<SharedShape>,
     commands: &mut Commands,
     map: Entity,
   ) {
     let collider = self.material(collider);
-    let part = (Transform::IDENTITY, collider, TilePart, ChildOf(map));
+    let part = (
+      Transform::from_xy(at.x, at.y),
+      collider,
+      TilePart,
+      ChildOf(map),
+    );
     let part = match shape {
       Some(shape) => commands.spawn((part, PrebuiltShape(shape))).id(),
       None => commands.spawn(part).id(),
@@ -911,9 +1093,9 @@ impl TileColliders {
     let built = self
       .pack_all(&mut kept)
       .into_iter()
-      .map(|(key, collider)| {
+      .map(|(key, at, collider)| {
         let shape = super::shape::build(&collider.shape, Mat2::IDENTITY);
-        (key, collider, shape)
+        (key, at, collider, shape)
       })
       .collect();
     Some(Traced {
@@ -923,14 +1105,14 @@ impl TileColliders {
     })
   }
 
-  /// Rebuild what the cells at `changed` touch (sorted by index, each with
-  /// its value before): the outline loops and one-way runs through them,
-  /// and the colliders of the packs they leave or join (`alive` tells a
-  /// part still there).
+  /// Rebuild what the cells at `changed` touch (in row order, each with its
+  /// value before): the outline loops and one-way runs through them, and
+  /// the colliders of the packs they leave or join (`alive` tells a part
+  /// still there).
   fn respawn(
     &self,
     kept: &mut Kept,
-    changed: &[(u32, TileCell)],
+    changed: &[(IVec2, TileCell)],
     alive: &dyn Fn(Entity) -> bool,
     commands: &mut Commands,
     map: Entity,
@@ -981,22 +1163,32 @@ impl TileColliders {
   ) {
     let mut geometry = Geometry::default();
     let loops = matches!(key, PackKey::Loops(..));
-    let collider = if loops {
+    // Its members' points relative to the part's chunk (a sloped run's the
+    // chunk of its first point, so its part follows the run)
+    let (collider, chunk) = if loops {
       let outlines = &kept.outlines;
       let members = kept.loop_packs.settle(key, |id| outlines.get(id).is_some());
+      let chunk = key.chunk((0, 0));
       for outline in members.iter().filter_map(|&id| outlines.get(id)) {
-        geometry.add_ring(ring(&outline.corners).into_iter().map(|p| self.at(p)));
+        geometry.add_ring(
+          ring(&outline.corners)
+            .into_iter()
+            .map(|p| self.at(p, chunk)),
+        );
       }
-      (!members.is_empty()).then(|| geometry.loops())
+      ((!members.is_empty()).then(|| geometry.loops()), chunk)
     } else {
       let runs = &kept.runs;
       let members = kept.run_packs.settle(key, |id| runs.get(id).is_some());
+      let first = members.first().and_then(|&id| runs.get(id));
+      let chunk = key.chunk(first.map_or((0, 0), |run| ends(&run.points).0));
       for run in members.iter().filter_map(|&id| runs.get(id)) {
         let (a, b) = ends(&run.points);
-        geometry.add_segment(self.at(a), self.at(b));
+        geometry.add_segment(self.at(a, chunk), self.at(b, chunk));
       }
-      (!members.is_empty()).then(|| geometry.runs())
+      ((!members.is_empty()).then(|| geometry.runs()), chunk)
     };
+    let at = self.origin(chunk);
     let packs = if loops {
       &mut kept.loop_packs
     } else {
@@ -1006,10 +1198,15 @@ impl TileColliders {
     match (collider, part) {
       (Some(collider), Some(part)) => {
         // A shape built ahead for its landing is no longer its shape
-        commands
-          .entity(part)
+        let mut entity = commands.entity(part);
+        entity
           .try_insert(self.material(collider))
           .try_remove::<PrebuiltShape>();
+        // A sloped run's pack is one run, whose id an edit may give to a
+        // run elsewhere: the part moves with it, keeping its entity
+        if let PackKey::Run(_) = key {
+          entity.try_insert(Transform::from_xy(at.x, at.y));
+        }
         self.adopt(kept, key, part);
       }
       (collider, _) => {
@@ -1017,7 +1214,7 @@ impl TileColliders {
           commands.entity(old).try_despawn();
         }
         if let Some(collider) = collider {
-          self.spawn_pack(kept, key, collider, None, commands, map);
+          self.spawn_pack(kept, key, at, collider, None, commands, map);
         }
       }
     }
@@ -1068,7 +1265,7 @@ impl Boundary {
     size: (i32, i32),
     out: &mut Vec<(Point, Point)>,
   ) {
-    let cells = Cells::new(0, 0, &[], &self.shapes);
+    let cells = Cells::shapes_only(&self.shapes);
     let local = |x: i32, y: i32| {
       let (gx, gy) = (min.0 + x, min.1 + y);
       if gx < 0 || gy < 0 || gx >= size.0 || gy >= size.1 {
@@ -1099,6 +1296,28 @@ impl Boundary {
 /// Marks a collider a `TileColliders` built; its parent owns it.
 #[derive(Component, Debug, Clone, Copy)]
 pub(crate) struct TilePart;
+
+/// A part's collider moved by `by`, its part's translation, into its
+/// grid's space (tests: a packed part's points are relative to its chunk).
+#[cfg(test)]
+pub(crate) fn in_grid_space(mut collider: Collider, by: Vec2) -> Collider {
+  use super::ColliderShape;
+  match &mut collider.shape {
+    ColliderShape::Polyline { points }
+    | ColliderShape::Polygon { points }
+    | ColliderShape::Segments { points, .. } => {
+      for point in points {
+        *point += by;
+      }
+    }
+    ColliderShape::Segment { a, b } => {
+      *a += by;
+      *b += by;
+    }
+    _ => collider.offset += by,
+  }
+  collider
+}
 
 /// What the colliders of a map were last built from. Floats compare by
 /// bits, so a NaN size does not rebuild every step.
@@ -1146,9 +1365,9 @@ struct Kept {
   run_packs: Packs,
 }
 
-/// A pack's collider, without the grid's material, and its Rapier shape
-/// built ahead (none when degenerate).
-type BuiltPack = (PackKey, Collider, Option<SharedShape>);
+/// A pack's part's place, its collider (relative to it, without the grid's
+/// material) and its Rapier shape built ahead (none when degenerate).
+type BuiltPack = (PackKey, Vec2, Collider, Option<SharedShape>);
 
 /// A grid's outlines and one-way runs traced and packed ahead of its build,
 /// the packs' shapes built (on any thread: `TileColliders::trace`), on the
@@ -1271,8 +1490,8 @@ pub(crate) fn rebuild_tile_colliders(
           );
           None
         } else if let Some((mut kept, built)) = traced {
-          for (key, collider, shape) in built {
-            tiles.spawn_pack(&mut kept, key, collider, shape, &mut commands, map);
+          for (key, at, collider, shape) in built {
+            tiles.spawn_pack(&mut kept, key, at, collider, shape, &mut commands, map);
           }
           Some(kept)
         } else {
@@ -1315,6 +1534,11 @@ pub(crate) fn rebuild_tile_colliders(
 mod tests {
   use super::*;
   use TileCell::{Empty as E, OneWay as O, Solid as S};
+
+  /// A cell, from the unsigned place the tests lay grids out by
+  pub(super) fn xy(x: u32, y: u32) -> IVec2 {
+    IVec2::new(x as i32, y as i32)
+  }
 
   /// A loop as a set of directed edges, so tests do not depend on where it starts.
   fn edges(outline: &[Corner]) -> std::collections::BTreeSet<(Corner, Corner)> {
@@ -1391,11 +1615,11 @@ mod tests {
         seed ^= seed << 13;
         seed ^= seed >> 17;
         seed ^= seed << 5;
-        tiles.set(x, y, kinds[seed as usize % kinds.len()]);
+        tiles.set(xy(x, y), kinds[seed as usize % kinds.len()]);
       }
     }
     let mut whole = outline::boundary_edges(tiles.cells_view());
-    let at = |x: i32, y: i32| tiles.get(x as u32, y as u32);
+    let at = |x: i32, y: i32| tiles.get(IVec2::new(x, y));
     let mut pieced = Vec::new();
     let size = (width as i32, height as i32);
     for by in (0..size.1).step_by(4) {
@@ -1474,10 +1698,25 @@ mod tests {
     assert_eq!(runs, [((0, 0), (3, 0)), ((4, 0), (6, 0))]);
   }
 
+  /// The merged rectangles of a grid `width` by `height` from its cells
+  /// row by row
+  pub(super) fn rects(width: u32, height: u32, cells: &[TileCell]) -> Vec<(Corner, Corner)> {
+    let grid = TileColliders::from_cells(width, height, Vec2::ONE, cells.to_vec());
+    solid_rects(grid.cells_view())
+  }
+
   #[test]
   fn solid_cells_merge_into_few_rectangles() {
-    assert_eq!(solid_rects(2, 2, &[S, S, S, S]), [((0, 0), (2, 2))]);
-    assert_eq!(solid_rects(3, 1, &[S, E, S]).len(), 2);
+    assert_eq!(rects(2, 2, &[S, S, S, S]), [((0, 0), (2, 2))]);
+    assert_eq!(rects(3, 1, &[S, E, S]).len(), 2);
+    // Signed cells, across chunk borders
+    let mut grid = TileColliders::unbounded(Vec2::ONE);
+    for x in -34..-30 {
+      for y in [-1, 0] {
+        grid.set(IVec2::new(x, y), S);
+      }
+    }
+    assert_eq!(solid_rects(grid.cells_view()), [((-34, -1), (4, 2))]);
   }
 
   #[test]
@@ -1487,18 +1726,118 @@ mod tests {
   }
 
   #[test]
-  fn a_grid_too_wide_for_outlines_is_refused_or_warns() {
-    // Over 8192 cells a side is refused (logged), as too many cells are
+  fn a_grid_holds_and_traces_cells_far_from_the_origin() {
+    // Sides past 6a's 8192 hold their cells to the far corner
     for (w, h) in [(8193, 1), (1, 8193), (100_000, 1)] {
-      let grid = TileColliders::new(w, h, Vec2::ONE);
-      assert_eq!((grid.width(), grid.height()), (0, 0), "{w} x {h}");
+      let mut grid = TileColliders::new(w, h, Vec2::ONE);
+      assert_eq!(grid.bounds(), Some(CellRect::from_size(UVec2::new(w, h))));
+      assert_eq!(grid.extent(), CellRect::from_size(UVec2::new(w, h)));
+      assert!(grid.set(xy(w - 1, h - 1), S), "{w} x {h}");
+      assert!(!grid.set(xy(w, h - 1), S), "outside {w} x {h}");
+      assert!(!grid.set(IVec2::new(-1, 0), S), "outside {w} x {h}");
+      let loops = traced_outlines(grid.cells_view());
+      assert_eq!(loops.len(), 1);
+      assert!(loops[0].contains(&(w as i32, h as i32)), "{loops:?}");
     }
-    // The widest grid it takes builds its outlines to its far end
-    let mut grid = TileColliders::new(8192, 1, Vec2::ONE);
-    assert!(grid.set(8191, 0, S));
-    let loops = outlines(grid.width(), grid.height(), &grid.cells);
-    assert_eq!(loops.len(), 1);
-    assert!(loops[0].contains(&(8192, 1)), "{loops:?}");
+    // An unbounded grid holds signed cells, each in its chunk
+    let mut grid = TileColliders::unbounded(Vec2::ONE);
+    assert_eq!((grid.bounds(), grid.extent()), (None, CellRect::default()));
+    let cells = [(-1, -1), (-33, 0), (31, -32), (-100_000, 50_000)].map(|(x, y)| IVec2::new(x, y));
+    for cell in cells {
+      assert!(grid.set(cell, S));
+      assert_eq!(grid.get(cell), S);
+    }
+    assert_eq!(grid.get(IVec2::new(-2, -1)), E);
+    assert_eq!(
+      grid.extent(),
+      CellRect::new(IVec2::new(-100_000, -32), IVec2::new(32, 50_016))
+    );
+    let loops = traced_outlines(grid.cells_view());
+    assert_eq!(loops.len(), 4);
+    let square = |x: i32, y: i32| edges(&[(x, y), (x + 1, y), (x + 1, y + 1), (x, y + 1), (x, y)]);
+    for cell in cells {
+      assert!(
+        loops.iter().any(|l| edges(l) == square(cell.x, cell.y)),
+        "{cell}: {loops:?}"
+      );
+    }
+  }
+
+  /// The boundary edges a scan of every cell from `min` up to `max` (and
+  /// the borders right of and below them) meets, in its order
+  fn scanned(cells: Cells, min: IVec2, max: IVec2) -> Vec<(Point, Point)> {
+    let mut edges = Vec::new();
+    let at = |x: i32, y: i32| cells.at(x, y);
+    for y in min.y..=max.y {
+      for x in min.x..=max.x {
+        if x < max.x && y < max.y {
+          unit_edges(Unit::Inside(x, y), &cells, &at, &mut edges);
+        }
+        if y < max.y {
+          unit_edges(Unit::Left(x, y), &cells, &at, &mut edges);
+        }
+        if x < max.x {
+          unit_edges(Unit::Above(x, y), &cells, &at, &mut edges);
+        }
+      }
+    }
+    edges
+  }
+
+  #[test]
+  fn boundary_edges_come_in_the_order_a_scan_of_every_cell_meets_them() {
+    // The order decides where each loop starts, so its pack: a bounded grid
+    // traces as 6a's dense scan did, and an unbounded one in the same order
+    let mut bounded = TileColliders::new(100, 70, Vec2::ONE);
+    let mut unbounded = TileColliders::unbounded(Vec2::ONE);
+    let shape = CellShape {
+      polygons: vec![vec![
+        Vec2::new(0.0, 0.5),
+        Vec2::new(1.0, 0.5),
+        Vec2::new(1.0, 1.0),
+        Vec2::new(0.0, 1.0),
+      ]],
+      one_way: false,
+    };
+    let half = bounded.add_shape(shape.clone());
+    assert_eq!(unbounded.add_shape(shape), half);
+    let kinds = [
+      S,
+      S,
+      E,
+      E,
+      O,
+      TileCell::Slope(SlopeCorner::TopLeft),
+      TileCell::Shape(half),
+    ];
+    let mut seed = 0x1234_5678_u32;
+    let mut next = |n: u32| {
+      seed ^= seed << 13;
+      seed ^= seed >> 17;
+      seed ^= seed << 5;
+      seed % n
+    };
+    for _ in 0..3000 {
+      let kind = kinds[next(kinds.len() as u32) as usize];
+      bounded.set(xy(next(100), next(70)), kind);
+      // Chunks left out in a checkerboard and along row 0, so units border
+      // chunks that are not there on every side
+      let cell = IVec2::new(next(192) as i32 - 96, next(160) as i32 - 64);
+      let chunk = chunk_of(cell);
+      if (chunk.x + chunk.y) % 2 != 0 && chunk.y != 0 {
+        unbounded.set(cell, kind);
+      }
+    }
+    let view = bounded.cells_view();
+    assert_eq!(
+      outline::boundary_edges(view),
+      scanned(view, IVec2::ZERO, IVec2::new(100, 70))
+    );
+    let (view, extent) = (unbounded.cells_view(), unbounded.extent());
+    assert!(extent.min.cmplt(IVec2::splat(-32)).all(), "{extent:?}");
+    let edges = outline::boundary_edges(view);
+    assert!(!edges.is_empty());
+    assert_eq!(edges, scanned(view, extent.min, extent.max));
   }
 
   #[test]
@@ -1517,18 +1856,18 @@ mod tests {
 
 #[cfg(test)]
 mod with_physics {
+  use super::tests::xy;
   use super::*;
-  use crate::core::ecs::{Bundle, ChildOf, Disabled, Transform, Velocity, World};
+  use crate::core::ecs::{Bundle, ChildOf, Disabled, GlobalTransform, Transform, Velocity, World};
   use crate::core::physics::test_util::*;
   use crate::core::physics::{CellShape, SlopeCorner};
   use crate::core::physics::{CharacterController, Collider, ColliderShape, Physics, RigidBody};
 
+  /// The map's parts' colliders, in its space
   fn parts(world: &mut World, map: Entity) -> Vec<Collider> {
-    let mut query = world.query::<(&ChildOf, &Collider)>();
-    query
-      .iter(world)
-      .filter(|(child_of, _)| child_of.parent() == map)
-      .map(|(_, collider)| collider.clone())
+    parts_by_id(world, map)
+      .into_iter()
+      .map(|(_, collider)| collider)
       .collect()
   }
 
@@ -1546,7 +1885,7 @@ mod with_physics {
     world
       .get_mut::<TileColliders>(map)
       .unwrap()
-      .set(1, 0, TileCell::Empty);
+      .set(IVec2::new(1, 0), TileCell::Empty);
     run(&mut world, &mut s, 1);
     assert_eq!(
       loop_count(&mut world, map),
@@ -1736,7 +2075,7 @@ mod with_physics {
     world
       .get_mut::<TileColliders>(map)
       .unwrap()
-      .set(35, 0, TileCell::Empty);
+      .set(IVec2::new(35, 0), TileCell::Empty);
     for step in 0..5 {
       fall_step(&mut world, &mut s, e);
       let state = world.get::<CharacterState>(e).unwrap();
@@ -1783,7 +2122,7 @@ mod with_physics {
       world
         .get_mut::<TileColliders>(map)
         .unwrap()
-        .set(38, 0, cell);
+        .set(IVec2::new(38, 0), cell);
       world.get_mut::<Velocity>(e).unwrap().dx = 600.0;
       fall_step(&mut world, &mut s, e);
       let state = world.get::<CharacterState>(e).unwrap();
@@ -1831,7 +2170,7 @@ mod with_physics {
       world
         .get_mut::<TileColliders>(map)
         .unwrap()
-        .set(38, 1, cell);
+        .set(IVec2::new(38, 1), cell);
       world.get_mut::<Velocity>(e).unwrap().dx = 600.0;
       fall_step(&mut world, &mut s, e);
       let state = world.get::<CharacterState>(e).unwrap();
@@ -1873,7 +2212,7 @@ mod with_physics {
             continue;
           }
           for (x, y) in (0..9).map(|i| (bx + i % 3, by + i / 3)) {
-            tiles.set(x, y, TileCell::Solid);
+            tiles.set(xy(x, y), TileCell::Solid);
           }
         }
       }
@@ -1887,7 +2226,7 @@ mod with_physics {
       let top = 1 + (seed >> 16) % 24;
       tops.push(top);
       for y in top..32 {
-        skyline.set(x, y, TileCell::Solid);
+        skyline.set(xy(x, y), TileCell::Solid);
       }
     }
     time_edit("a skyline", skyline, (64, tops[64] - 1));
@@ -1896,11 +2235,11 @@ mod with_physics {
     let mut serpentine = islands();
     for y in (1..32).step_by(2) {
       for x in 0..128 {
-        serpentine.set(x, y, TileCell::Solid);
+        serpentine.set(xy(x, y), TileCell::Solid);
       }
       if y < 31 {
         let end = if y % 4 == 1 { 127 } else { 0 };
-        serpentine.set(end, y + 1, TileCell::Solid);
+        serpentine.set(xy(end, y + 1), TileCell::Solid);
       }
     }
     time_edit("a serpentine", serpentine, (64, 0));
@@ -1909,7 +2248,6 @@ mod with_physics {
   fn time_edit(name: &str, tiles: TileColliders, (column, row): (u32, u32)) {
     use crate::core::ecs::Schedule;
     use std::time::{Duration, Instant};
-    let size = tiles.width();
     let built = Outlines::build(tiles.cells_view());
     let longest = built
       .loops()
@@ -1928,7 +2266,7 @@ mod with_physics {
       }
     };
     let edit = |tiles: &mut TileColliders, i: u32| {
-      assert!(tiles.set(column, row, cell(i)));
+      assert!(tiles.set(xy(column, row), cell(i)));
     };
 
     // The rebuild system alone
@@ -1951,17 +2289,13 @@ mod with_physics {
 
     // The outline retrace alone
     let mut outlines = built;
-    let mut cells = tiles.cells.clone();
-    let index = row * size + column;
+    let mut grid = tiles.clone();
     let mut times = Vec::new();
     for i in 0..400 {
-      let before = std::mem::replace(&mut cells[index as usize], cell(i));
-      let view = Cells {
-        cells: &cells,
-        ..tiles.cells_view()
-      };
+      edit(&mut grid, i);
+      let changed = grid.take_changes().unwrap_or_default();
       let start = Instant::now();
-      let retraced = outlines.apply(view, &[(index, before)]);
+      let retraced = outlines.apply(grid.cells_view(), &changed);
       times.push(start.elapsed());
       assert_eq!(retraced.traced.len(), 1);
     }
@@ -2053,7 +2387,7 @@ mod with_physics {
     run(&mut world, &mut s, 1);
     let mut entity = world.entity_mut(map);
     let mut tiles = entity.get_mut::<TileColliders>().unwrap();
-    tiles.set(1, 0, TileCell::Empty);
+    tiles.set(IVec2::new(1, 0), TileCell::Empty);
     entity.remove::<Disabled>();
     run(&mut world, &mut s, 1);
     assert_eq!(loop_count(&mut world, map), 2);
@@ -2125,13 +2459,13 @@ mod with_physics {
       !world
         .get_mut::<TileColliders>(map)
         .unwrap()
-        .set(0, 0, TileCell::Solid)
+        .set(IVec2::new(0, 0), TileCell::Solid)
     );
     assert!(
       !world
         .get_mut::<TileColliders>(map)
         .unwrap()
-        .set(99, 0, TileCell::Solid)
+        .set(IVec2::new(99, 0), TileCell::Solid)
     );
     run(&mut world, &mut s, 2);
     assert_eq!(ids(&mut world, map), before);
@@ -2187,18 +2521,16 @@ mod with_physics {
     // stale
     {
       let mut tiles = world.get_mut::<TileColliders>(map).unwrap();
-      tiles.set(1, 0, TileCell::Solid);
-      tiles.set(2, 0, TileCell::Solid);
-      tiles.set(3, 0, TileCell::Solid);
-      tiles.set(116, 36, TileCell::Empty);
+      tiles.set(IVec2::new(1, 0), TileCell::Solid);
+      tiles.set(IVec2::new(2, 0), TileCell::Solid);
+      tiles.set(IVec2::new(3, 0), TileCell::Solid);
+      tiles.set(IVec2::new(116, 36), TileCell::Empty);
     }
     run(&mut world, &mut s, 1);
     assert!(world.get::<Traced>(map).is_none(), "the stale trace went");
     let built = canonical(outline_loops(&parts_by_id(&mut world, map), 16.0));
-    let full = canonical(outlines(
-      120,
-      40,
-      &world.get::<TileColliders>(map).unwrap().cells,
+    let full = canonical(traced_outlines(
+      world.get::<TileColliders>(map).unwrap().cells_view(),
     ));
     assert_eq!(built, full, "built from the cells as they are");
   }
@@ -2260,10 +2592,8 @@ mod with_physics {
         .filter(|(_, c)| c.one_way.is_none())
         .collect();
       let built = canonical(outline_loops(&loops, 16.0));
-      let full = canonical(outlines(
-        w,
-        h,
-        &world.get::<TileColliders>(map).unwrap().cells,
+      let full = canonical(traced_outlines(
+        world.get::<TileColliders>(map).unwrap().cells_view(),
       ));
       assert_eq!(
         built, full,
@@ -2273,7 +2603,7 @@ mod with_physics {
     let mut set = |world: &mut World, cells: &[(u32, u32)], kind: TileCell| {
       let mut tiles = world.get_mut::<TileColliders>(map).unwrap();
       for &(x, y) in cells {
-        tiles.set(x, y, kind);
+        tiles.set(xy(x, y), kind);
       }
       run(world, &mut s, 1);
     };
@@ -2304,6 +2634,7 @@ mod with_physics {
 
   #[test]
   fn a_huge_grid_with_few_cells_costs_nothing() {
+    use super::tests::rects;
     use TileCell::Solid as S;
     let cells = [S; 4];
     for (w, h) in [
@@ -2314,27 +2645,276 @@ mod with_physics {
     ] {
       let _ = outlines(w, h, &cells);
       let _ = one_way_runs(w, h, &cells);
-      let _ = solid_rects(w, h, &cells);
+      let _ = rects(w, h, &cells);
     }
-    assert_eq!(solid_rects(4, u32::MAX, &cells), [((0, 0), (4, 1))]);
-    assert_eq!(solid_rects(u32::MAX, 1, &cells), [((0, 0), (4, 1))]);
+    assert_eq!(rects(4, u32::MAX, &cells), [((0, 0), (4, 1))]);
+    assert_eq!(rects(u32::MAX, 1, &cells), [((0, 0), (4, 1))]);
     assert_eq!(outlines(4, u32::MAX, &cells).len(), 1);
     assert_eq!(outlines(u32::MAX, 1, &cells).len(), 1);
+    // Its bounds reach as far as an i32 does; its cells are one chunk
     let grid = TileColliders::from_cells(u32::MAX, u32::MAX, Vec2::ONE, vec![S; 4]);
-    assert_eq!((grid.width(), grid.height()), (0, 0));
-    assert_eq!(grid.get(0, 0), TileCell::Empty);
+    assert_eq!(grid.bounds(), Some(CellRect::from_size(UVec2::MAX)));
+    assert_eq!(grid.get(IVec2::new(3, 0)), S);
+    assert_eq!(grid.get(IVec2::new(4, 0)), TileCell::Empty);
+    assert_eq!(grid.chunks.len(), 1);
   }
 
-  /// The map's parts, by entity, sorted.
+  #[test]
+  fn an_unbounded_grid_collides_at_negative_cells() {
+    let (mut world, mut s) = world(60);
+    let mut tiles = TileColliders::unbounded(Vec2::splat(16.0));
+    // A 5-cell floor at y = -3, x = -40 to -36
+    for x in -40..=-36 {
+      assert!(tiles.set(IVec2::new(x, -3), TileCell::Solid));
+    }
+    assert_eq!(tiles.bounds(), None);
+    assert_eq!(
+      tiles.extent(),
+      CellRect::new(IVec2::new(-64, -32), IVec2::new(-32, 0))
+    );
+    let map = world.spawn((Transform::IDENTITY, tiles)).id();
+    run(&mut world, &mut s, 1);
+    let bounds = part_bounds(&mut world, map);
+    assert_eq!(bounds.len(), 1, "one part: {bounds:?}");
+    let (min, max) = bounds[0];
+    assert!(min.abs_diff_eq(Vec2::new(-640.0, -48.0), 1e-3), "{min}");
+    assert!(max.abs_diff_eq(Vec2::new(-560.0, -32.0), 1e-3), "{max}");
+    // And it holds a ball dropped onto it
+    let ball = ball(&mut world, -600.0, -100.0);
+    run(&mut world, &mut s, 90);
+    let y = at(&world, ball).translation.y;
+    assert!((y - (-58.0)).abs() < 1.0, "rests on the floor: {y}");
+  }
+
+  #[test]
+  fn a_grid_wider_than_8192_cells_collides() {
+    // 6a refused it: past 8192 cells a side
+    let (w, h) = (10_000_u32, 64_u32);
+    let mut cells = vec![TileCell::Empty; (w * h) as usize];
+    cells[((h - 1) * w) as usize..].fill(TileCell::Solid);
+    let tiles = TileColliders::from_cells(w, h, Vec2::splat(16.0), cells);
+    let (mut world, mut s) = world(60);
+    let map = world.spawn((Transform::IDENTITY, tiles)).id();
+    run(&mut world, &mut s, 1);
+    let (min, max) = union(&part_bounds(&mut world, map));
+    assert!(min.abs_diff_eq(Vec2::new(0.0, 1008.0), 1e-3), "{min}");
+    assert!(max.abs_diff_eq(Vec2::new(160_000.0, 1024.0), 1e-3), "{max}");
+    let warned = crate::core::dev_log::get_entries()
+      .iter()
+      .filter(|e| e.message.contains("10000 x 64"))
+      .count();
+    assert_eq!(warned, 0, "no warning");
+    assert_eq!(world.resource::<Physics>().warnings, 0);
+    // A ball dropped near its far end lands on it
+    let ball = ball(&mut world, 150_000.0, 950.0);
+    run(&mut world, &mut s, 90);
+    let y = at(&world, ball).translation.y;
+    assert!((y - 998.0).abs() < 1.0, "rests on the floor: {y}");
+  }
+
+  #[test]
+  fn a_cell_past_the_lattice_s_reach_draws_but_does_not_collide() {
+    use crate::core::dev_log::{LogEntry, get_entries};
+    let mut tiles = TileColliders::unbounded(Vec2::splat(16.0));
+    let past = IVec2::new(MAX_REACH + 1, 0);
+    let others = [IVec2::new(-MAX_REACH - 1, 7), IVec2::new(3, i32::MIN)];
+    assert!(!tiles.set(past, TileCell::Solid));
+    assert!(!tiles.set(past, TileCell::Solid), "again");
+    for cell in others {
+      assert!(!tiles.set(cell, TileCell::Solid), "{cell}");
+    }
+    assert_eq!(tiles.get(past), TileCell::Empty);
+    assert_eq!(tiles.extent(), CellRect::default(), "no chunk made");
+    let named = |entry: &LogEntry| {
+      entry.message.contains("past the reach")
+        && [past, others[0], others[1]]
+          .iter()
+          .any(|c| entry.message.contains(&format!("({}, {})", c.x, c.y)))
+    };
+    assert_eq!(get_entries().iter().filter(|e| named(e)).count(), 1);
+    // The farthest cells that collide build, and edit, without overflowing
+    let near = IVec2::new(MAX_REACH - 1, 0);
+    let corner = IVec2::splat(-MAX_REACH);
+    assert!(tiles.set(near, TileCell::Solid));
+    assert!(tiles.set(corner, TileCell::Solid));
+    let (mut world, mut s) = world(60);
+    let map = world.spawn((Transform::IDENTITY, tiles)).id();
+    run(&mut world, &mut s, 1);
+    assert_eq!(part_bounds(&mut world, map).len(), 2);
+    let last = IVec2::new(MAX_REACH, 0);
+    assert!(
+      world
+        .get_mut::<TileColliders>(map)
+        .unwrap()
+        .set(last, TileCell::Solid)
+    );
+    run(&mut world, &mut s, 1);
+    let mut bounds = part_bounds(&mut world, map);
+    bounds.sort_by(|a, b| a.0.x.total_cmp(&b.0.x));
+    let px = |cell: i32| cell as f32 * 16.0;
+    let (min, max) = bounds[1];
+    assert!(
+      min.abs_diff_eq(Vec2::new(px(MAX_REACH - 1), 0.0), 0.5),
+      "{min}"
+    );
+    assert!(
+      max.abs_diff_eq(Vec2::new(px(MAX_REACH + 1), 16.0), 0.5),
+      "{max}"
+    );
+    let (min, _) = bounds[0];
+    assert!(min.abs_diff_eq(Vec2::splat(px(-MAX_REACH)), 0.5), "{min}");
+  }
+
+  #[test]
+  fn parts_sit_at_their_chunk_origin_with_chunk_relative_vertices() {
+    let mut tiles = TileColliders::unbounded(Vec2::splat(16.0));
+    // In chunk (-32, 62), 24 cells right of its left and 16 below its top
+    assert!(tiles.set(IVec2::new(-1000, 2000), TileCell::Solid));
+    let (mut world, mut s) = world(60);
+    let map = world.spawn((Transform::IDENTITY, tiles)).id();
+    run(&mut world, &mut s, 1);
+    let mut query = world.query::<(&ChildOf, &Transform, &Collider)>();
+    let parts: Vec<(Transform, Collider)> = query
+      .iter(&world)
+      .filter(|(child_of, ..)| child_of.parent() == map)
+      .map(|(_, at, collider)| (*at, collider.clone()))
+      .collect();
+    assert_eq!(parts.len(), 1);
+    let (at, collider) = &parts[0];
+    assert_eq!(at.translation, Vec2::new(-1024.0 * 16.0, 1984.0 * 16.0));
+    let ColliderShape::Polyline { points } = &collider.shape else {
+      panic!("one loop is a closed polyline: {collider:?}");
+    };
+    assert!(
+      points.iter().all(|p| p.abs().max_element() <= 32.0 * 16.0),
+      "{points:?}"
+    );
+    let mut corners: Vec<(i32, i32)> = points.iter().map(|p| (p.x as i32, p.y as i32)).collect();
+    corners.sort_unstable();
+    corners.dedup();
+    assert_eq!(corners, [(384, 256), (384, 272), (400, 256), (400, 272)]);
+  }
+
+  #[test]
+  fn a_traced_grid_s_parts_take_their_prebuilt_shapes_at_their_chunk_origins() {
+    // Islands in chunk (0, 0) and far out in chunk (-3, 2), traced ahead as
+    // a landing does
+    let mut tiles = TileColliders::unbounded(Vec2::splat(16.0));
+    for cell in [IVec2::new(1, 1), IVec2::new(-90, 70)] {
+      assert!(tiles.set(cell, TileCell::Solid));
+    }
+    let traced = tiles.trace().expect("outline mode traces");
+    let (mut world, mut s) = world(60);
+    let map = world.spawn((Transform::IDENTITY, tiles, traced)).id();
+    run(&mut world, &mut s, 1);
+    let mut query = world.query::<(Entity, &ChildOf, &Transform, &PrebuiltShape)>();
+    let mut parts: Vec<(Entity, Vec2, SharedShape)> = query
+      .iter(&world)
+      .filter(|(_, child_of, ..)| child_of.parent() == map)
+      .map(|(part, _, at, shape)| (part, at.translation, shape.0.clone()))
+      .collect();
+    parts.sort_by(|a, b| a.1.x.total_cmp(&b.1.x));
+    let places: Vec<Vec2> = parts.iter().map(|part| part.1).collect();
+    assert_eq!(places, [Vec2::new(-3.0 * 512.0, 2.0 * 512.0), Vec2::ZERO]);
+    // Physics registered each with the shape built ahead, not one of its own
+    let physics = world.resource::<Physics>();
+    for (part, at, shape) in &parts {
+      let handle = physics.collider_entries[part].handle;
+      let registered = physics.colliders.get(handle).expect("registered");
+      assert!(
+        std::sync::Arc::ptr_eq(&shape.0, &registered.shared_shape().0),
+        "the part at {at} took its prebuilt shape"
+      );
+    }
+  }
+
+  #[test]
+  fn an_edit_on_an_unbounded_grid_retraces_only_its_loops() {
+    let mut tiles = TileColliders::unbounded(Vec2::splat(16.0));
+    // Islands in chunks (-2, -1) and (-4, -3)
+    for x in -40..-37 {
+      tiles.set(IVec2::new(x, -5), TileCell::Solid);
+    }
+    for y in -70..-67 {
+      tiles.set(IVec2::new(-100, y), TileCell::Solid);
+    }
+    let (mut world, mut s) = world(60);
+    let map = world.spawn((Transform::IDENTITY, tiles)).id();
+    run(&mut world, &mut s, 1);
+    let handles = |world: &mut World| -> Vec<(Entity, Collider, String)> {
+      let parts = parts_by_id(world, map);
+      let physics = world.resource::<Physics>();
+      parts
+        .into_iter()
+        .map(|(part, collider)| {
+          let handle = physics.collider_entries.get(&part).map(|e| e.handle);
+          (part, collider, format!("{handle:?}"))
+        })
+        .collect()
+    };
+    let before = handles(&mut world);
+    assert_eq!(before.len(), 2);
+    let parts: Vec<(Entity, Collider)> = before.iter().map(|(e, c, _)| (*e, c.clone())).collect();
+    let edited = part_in(&parts, Vec2::new(-640.0, -80.0), Vec2::new(-592.0, -64.0));
+    let other = part_in(
+      &parts,
+      Vec2::new(-1600.0, -1120.0),
+      Vec2::new(-1584.0, -1072.0),
+    );
+    assert!(
+      world
+        .get_mut::<TileColliders>(map)
+        .unwrap()
+        .set(IVec2::new(-37, -5), TileCell::Solid)
+    );
+    run(&mut world, &mut s, 1);
+    let after = handles(&mut world);
+    let find = |parts: &[(Entity, Collider, String)], part: Entity| {
+      parts.iter().find(|(e, ..)| *e == part).cloned()
+    };
+    let (Some(was), Some(now)) = (find(&before, edited), find(&after, edited)) else {
+      panic!("the edited island's part kept its entity: {after:?}");
+    };
+    assert!(was.2.starts_with("Some") && was.2 == now.2, "and handle");
+    assert_ne!(was.1.shape, now.1.shape, "reshaped in place");
+    assert!(part_bounds(&mut world, map).iter().any(|b| b.1.x == -576.0));
+    assert_eq!(
+      find(&after, other).map(|p| p.1),
+      find(&before, other).map(|p| p.1),
+      "the other island's part is untouched"
+    );
+    assert_eq!(after.len(), 2);
+    assert_matches_a_full_trace(&mut world, map);
+  }
+
+  /// The map's parts, by entity, sorted, their colliders in its space.
   fn parts_by_id(world: &mut World, map: Entity) -> Vec<(Entity, Collider)> {
-    let mut query = world.query::<(Entity, &ChildOf, &Collider)>();
+    let mut query = world.query::<(Entity, &ChildOf, &Collider, &Transform)>();
     let mut found: Vec<(Entity, Collider)> = query
       .iter(world)
-      .filter(|(_, child_of, _)| child_of.parent() == map)
-      .map(|(e, _, collider)| (e, collider.clone()))
+      .filter(|(_, child_of, ..)| child_of.parent() == map)
+      .map(|(e, _, collider, at)| (e, in_grid_space(collider.clone(), at.translation)))
       .collect();
     found.sort_by_key(|(e, _)| *e);
     found
+  }
+
+  /// Each of the map's parts' world box, as physics places it
+  fn part_bounds(world: &mut World, map: Entity) -> Vec<(Vec2, Vec2)> {
+    let mut query = world.query::<(&ChildOf, &Collider, &GlobalTransform)>();
+    query
+      .iter(world)
+      .filter(|(child_of, ..)| child_of.parent() == map)
+      .map(|(_, collider, global)| collider.world_bounds(global))
+      .collect()
+  }
+
+  /// The box holding every one of `bounds`
+  fn union(bounds: &[(Vec2, Vec2)]) -> (Vec2, Vec2) {
+    bounds.iter().fold(
+      (Vec2::splat(f32::INFINITY), Vec2::splat(f32::NEG_INFINITY)),
+      |(min, max), &(a, b)| (min.min(a), max.max(b)),
+    )
   }
 
   /// The part whose shape has a point in `region` (px, min and max).
@@ -2409,7 +2989,7 @@ mod with_physics {
   fn assert_matches_a_full_trace(world: &mut World, map: Entity) {
     let tiles = world.get::<TileColliders>(map).unwrap().clone();
     let built = outline_loops(&parts_by_id(world, map), tiles.tile_size.x);
-    let full = outlines(tiles.width(), tiles.height(), &tiles.cells);
+    let full = traced_outlines(tiles.cells_view());
     assert_eq!(canonical(built), canonical(full));
   }
 
@@ -2435,7 +3015,7 @@ mod with_physics {
     world
       .get_mut::<TileColliders>(map)
       .unwrap()
-      .set(1, 0, TileCell::Empty);
+      .set(IVec2::new(1, 0), TileCell::Empty);
     run(&mut world, &mut s, 1);
     let after = parts_by_id(&mut world, map);
     assert_eq!(
@@ -2475,7 +3055,7 @@ mod with_physics {
     // off, in the next chunk
     let mut tiles = TileColliders::new(40, 3, Vec2::splat(16.0));
     for (x, y) in [(0, 0), (1, 1), (36, 1)] {
-      tiles.set(x, y, TileCell::Solid);
+      tiles.set(xy(x, y), TileCell::Solid);
     }
     let map = world.spawn((Transform::IDENTITY, tiles)).id();
     run(&mut world, &mut s, 1);
@@ -2490,7 +3070,7 @@ mod with_physics {
     world
       .get_mut::<TileColliders>(map)
       .unwrap()
-      .set(1, 0, TileCell::Slope(BottomRight));
+      .set(IVec2::new(1, 0), TileCell::Slope(BottomRight));
     run(&mut world, &mut s, 1);
     let after = parts_by_id(&mut world, map);
     assert_eq!(after.len(), 2, "{after:?}");
@@ -2540,10 +3120,10 @@ mod with_physics {
     assert_eq!((l, slab), (0, 1));
     assert!(tiles.shape(slab).is_some_and(|shape| shape.one_way));
     assert!(tiles.shape(2).is_none());
-    tiles.set(0, 0, TileCell::Shape(l));
-    tiles.set(2, 0, TileCell::Shape(slab));
+    tiles.set(IVec2::new(0, 0), TileCell::Shape(l));
+    tiles.set(IVec2::new(2, 0), TileCell::Shape(slab));
     // A shape no shape was added for builds nothing
-    tiles.set(3, 0, TileCell::Shape(7));
+    tiles.set(IVec2::new(3, 0), TileCell::Shape(7));
     let segment = |built: &[Collider]| {
       let segments: Vec<&Collider> = built
         .iter()
@@ -2650,7 +3230,7 @@ mod with_physics {
         world
           .get_mut::<TileColliders>(map)
           .unwrap()
-          .set(36, 0, cell)
+          .set(IVec2::new(36, 0), cell)
       );
       fall_step(&mut world, &mut s, e);
       let state = world.get::<CharacterState>(e).unwrap();
@@ -2732,7 +3312,7 @@ mod with_physics {
         world
           .get_mut::<TileColliders>(map)
           .unwrap()
-          .set(27, 0, cell)
+          .set(IVec2::new(27, 0), cell)
       );
       fall_step(&mut world, &mut s, e);
       let state = world.get::<CharacterState>(e).unwrap();
@@ -2812,7 +3392,7 @@ mod with_physics {
         world
           .get_mut::<TileColliders>(map)
           .unwrap()
-          .set(0, 32, cell)
+          .set(IVec2::new(0, 32), cell)
       );
       fall_step(&mut world, &mut s, e);
       let state = world.get::<CharacterState>(e).unwrap();
@@ -2840,7 +3420,7 @@ mod with_physics {
     // Ground on row 25, far below; the character flies along y 80 to 120
     let mut tiles = TileColliders::new(32, 30, Vec2::splat(16.0));
     for x in 0..32 {
-      tiles.set(x, 25, TileCell::Solid);
+      tiles.set(xy(x, 25), TileCell::Solid);
     }
     let map = world.spawn((Transform::IDENTITY, tiles)).id();
     let e = world
@@ -2860,8 +3440,8 @@ mod with_physics {
       if !added && right > 150.0 {
         let mut tiles = world.get_mut::<TileColliders>(map).unwrap();
         for y in 4..9 {
-          tiles.set(10, y, TileCell::Solid);
-          tiles.set(11, y, TileCell::Solid);
+          tiles.set(xy(10, y), TileCell::Solid);
+          tiles.set(xy(11, y), TileCell::Solid);
         }
         added = true;
       }
@@ -2885,10 +3465,10 @@ mod with_physics {
     // Two islands, and two one-way runs on one row, all in chunk 0
     let mut tiles = TileColliders::new(40, 4, Vec2::splat(16.0));
     for (x, y) in [(0, 0), (1, 0), (6, 0)] {
-      tiles.set(x, y, TileCell::Solid);
+      tiles.set(xy(x, y), TileCell::Solid);
     }
     for x in (0..4).chain(8..12) {
-      tiles.set(x, 3, TileCell::OneWay);
+      tiles.set(xy(x, 3), TileCell::OneWay);
     }
     let map = world.spawn((Transform::IDENTITY, tiles)).id();
     run(&mut world, &mut s, 1);
@@ -2911,8 +3491,8 @@ mod with_physics {
     // Island (6, 0) grows and a run gets longer: both parts keep members
     {
       let mut tiles = world.get_mut::<TileColliders>(map).unwrap();
-      tiles.set(7, 0, TileCell::Solid);
-      tiles.set(12, 3, TileCell::OneWay);
+      tiles.set(IVec2::new(7, 0), TileCell::Solid);
+      tiles.set(IVec2::new(12, 3), TileCell::OneWay);
     }
     run(&mut world, &mut s, 1);
     let after = registered(&mut world);
@@ -2942,11 +3522,11 @@ mod with_physics {
     // One-way runs on rows 0 and 2, shapes at (40, 0) and (72, 2) (chunks 1
     // and 2)
     for x in 0..4 {
-      tiles.set(x, 0, TileCell::OneWay);
-      tiles.set(x, 2, TileCell::OneWay);
+      tiles.set(xy(x, 0), TileCell::OneWay);
+      tiles.set(xy(x, 2), TileCell::OneWay);
     }
-    tiles.set(40, 0, TileCell::Shape(square));
-    tiles.set(72, 2, TileCell::Shape(square));
+    tiles.set(IVec2::new(40, 0), TileCell::Shape(square));
+    tiles.set(IVec2::new(72, 2), TileCell::Shape(square));
     let map = world.spawn((Transform::IDENTITY, tiles)).id();
     run(&mut world, &mut s, 1);
     let before = parts_by_id(&mut world, map);
@@ -2959,7 +3539,7 @@ mod with_physics {
     world
       .get_mut::<TileColliders>(map)
       .unwrap()
-      .set(6, 0, TileCell::Solid);
+      .set(IVec2::new(6, 0), TileCell::Solid);
     run(&mut world, &mut s, 1);
     let ids: Vec<Entity> = parts_by_id(&mut world, map)
       .iter()
@@ -2969,8 +3549,8 @@ mod with_physics {
     // Longer run on row 0; the shape at (72, 2) replaced
     let mut entity = world.entity_mut(map);
     let mut tiles = entity.get_mut::<TileColliders>().unwrap();
-    tiles.set(4, 0, TileCell::OneWay);
-    tiles.set(72, 2, TileCell::Empty);
+    tiles.set(IVec2::new(4, 0), TileCell::OneWay);
+    tiles.set(IVec2::new(72, 2), TileCell::Empty);
     run(&mut world, &mut s, 1);
     let after = parts_by_id(&mut world, map);
     let ids: Vec<Entity> = after.iter().map(|(e, _)| *e).collect();
@@ -3027,11 +3607,11 @@ mod with_physics {
     // A block of 78,000 cells, more than the change list holds, with holes
     for y in 0..260 {
       for x in 0..300 {
-        tiles.set(x, y, TileCell::Solid);
+        tiles.set(xy(x, y), TileCell::Solid);
       }
     }
     for (x, y) in [(10, 10), (11, 10), (100, 200), (250, 40)] {
-      tiles.set(x, y, TileCell::Empty);
+      tiles.set(xy(x, y), TileCell::Empty);
     }
     run(&mut world, &mut s, 1);
     assert_eq!(loop_count(&mut world, map), 4, "an outline and three holes");
@@ -3078,7 +3658,7 @@ mod with_physics {
       &[(0.0, 0.5), (1.0, 0.5), (1.0, 1.0), (0.0, 1.0)],
     );
     for x in 0..100 {
-      tiles.set(x, 1, half);
+      tiles.set(xy(x, 1), half);
     }
     let travelled = slide(tiles, 24.0);
     assert!(travelled >= 0.95 * 1200.0, "half blocks: {travelled}");
@@ -3094,7 +3674,7 @@ mod with_physics {
       } else {
         top_half
       };
-      tiles.set(x, 1, cell);
+      tiles.set(xy(x, 1), cell);
     }
     let travelled = slide(tiles, 16.0);
     assert!(
@@ -3122,19 +3702,19 @@ mod with_physics {
       })
       .collect();
     for x in 0..width {
-      tiles.set(x, rows - 1, TileCell::Solid);
+      tiles.set(xy(x, rows - 1), TileCell::Solid);
     }
     for x in 10..10 + cols {
       let k = x - 10;
       let row = rows - 2 - k / per_row;
-      tiles.set(x, row, shapes[(k % per_row) as usize]);
+      tiles.set(xy(x, row), shapes[(k % per_row) as usize]);
       for below in row + 1..rows {
-        tiles.set(x, below, TileCell::Solid);
+        tiles.set(xy(x, below), TileCell::Solid);
       }
     }
     for x in 10 + cols..width {
       for row in rows - 1 - rise..rows {
-        tiles.set(x, row, TileCell::Solid);
+        tiles.set(xy(x, row), TileCell::Solid);
       }
     }
     let (ground, top) = ((rows - 1) as f32 * 16.0, (rows - 1 - rise) as f32 * 16.0);
@@ -3223,11 +3803,11 @@ mod with_physics {
       &[(0.0, 0.5), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)],
     );
     for x in 0..6 {
-      tiles.set(x, 0, slab);
-      tiles.set(x, 2, if x % 2 == 0 { flush } else { TileCell::OneWay });
+      tiles.set(xy(x, 0), slab);
+      tiles.set(xy(x, 2), if x % 2 == 0 { flush } else { TileCell::OneWay });
     }
     for (x, y, cell) in [(0, 5, low), (1, 5, high), (2, 4, low), (3, 4, high)] {
-      tiles.set(x, y, cell);
+      tiles.set(xy(x, y), cell);
     }
     let map = world.spawn((Transform::IDENTITY, tiles)).id();
     run(&mut world, &mut s, 1);

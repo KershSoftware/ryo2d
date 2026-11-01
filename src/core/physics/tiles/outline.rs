@@ -27,7 +27,9 @@
 //! several times the edit's own work (a one-cell serpentine over four
 //! chunks: about 0.5 ms).
 
-use super::{Cells, Few, GRID, Point, TileCell, sides};
+use glam::IVec2;
+
+use super::{CHUNK, Cells, Few, GRID, MAX_REACH, Point, TileCell, sides};
 use crate::core::ecs::Entity;
 use crate::core::hash::FastMap;
 
@@ -35,8 +37,12 @@ pub(super) fn key((x, y): Point) -> u64 {
   (u64::from(x as u32) << 32) | u64::from(y as u32)
 }
 
+/// The step from `a` to `b`, in i64: any two points of the lattice
 pub(super) fn delta(a: Point, b: Point) -> (i64, i64) {
-  (i64::from(b.0 - a.0), i64::from(b.1 - a.1))
+  (
+    i64::from(b.0) - i64::from(a.0),
+    i64::from(b.1) - i64::from(a.1),
+  )
 }
 
 pub(super) fn cross(u: (i64, i64), v: (i64, i64)) -> i64 {
@@ -215,21 +221,54 @@ pub(super) fn unit_edges(
   }
 }
 
-/// Every boundary edge of the grid, unit by unit, cell by cell.
+/// Every boundary edge of the grid, unit by unit, cell by cell in row order
+/// (by row, then column: each cell's inside, the border left of it, the
+/// border above it), in the order a scan of every cell meets them. Only the
+/// units that can have an edge are read: those of the chunks there are, the
+/// row below each (its bottom border) and the column right of each (its
+/// right border). Each chunk's units read its own cells, the chunk's left
+/// of it and the chunk's above it without a lookup a cell. Units are read
+/// within the lattice's reach, and a border past the farthest cells, so no
+/// point leaves an `i32`.
 pub(super) fn boundary_edges(cells: Cells) -> Vec<(Point, Point)> {
   let mut edges = Vec::new();
-  let (cols, rows) = cells.extent();
-  let at = |x: i32, y: i32| cells.at(x, y);
-  for y in 0..=rows {
-    for x in 0..=cols {
-      if x < cols && y < rows {
-        unit_edges(Unit::Inside(x, y), &cells, &at, &mut edges);
-      }
-      if y < rows {
-        unit_edges(Unit::Left(x, y), &cells, &at, &mut edges);
-      }
-      if x < cols {
-        unit_edges(Unit::Above(x, y), &cells, &at, &mut edges);
+  let chunks = cells.chunk_order();
+  let in_row = |row: i32| {
+    let start = chunks.partition_point(|c| c.y < row);
+    let end = chunks.partition_point(|c| c.y <= row);
+    &chunks[start..end]
+  };
+  // Each row of chunks, and the row below it
+  let mut rows: Vec<i32> = chunks.iter().flat_map(|c| [c.y, c.y + 1]).collect();
+  rows.sort_unstable();
+  rows.dedup();
+  let (lo, hi) = (-MAX_REACH, MAX_REACH + 1);
+  for row in rows {
+    let (now, above) = (in_row(row), in_row(row - 1));
+    // The row's top line reads the chunks above too (their bottom borders)
+    let mut columns: Vec<i32> = now.iter().chain(above).map(|c| c.x).collect();
+    columns.sort_unstable();
+    columns.dedup();
+    let top_line: Vec<_> = columns
+      .into_iter()
+      .map(|x| (x, cells.near(IVec2::new(x, row))))
+      .collect();
+    let lines: Vec<_> = now.iter().map(|&c| (c.x, cells.near(c))).collect();
+    let top = row * CHUNK;
+    for y in top.max(lo)..=(top + CHUNK - 1).min(hi) {
+      let scan = if y == top { &top_line } else { &lines };
+      for (i, (column, at)) in scan.iter().enumerate() {
+        let left = column * CHUNK;
+        for x in left.max(lo)..=(left + CHUNK - 1).min(hi) {
+          unit_edges(Unit::Inside(x, y), &cells, at, &mut edges);
+          unit_edges(Unit::Left(x, y), &cells, at, &mut edges);
+          unit_edges(Unit::Above(x, y), &cells, at, &mut edges);
+        }
+        // The border right of the chunk, where the next column is not read
+        let right = left + CHUNK;
+        if right <= hi && scan.get(i + 1).is_none_or(|(next, _)| *next != column + 1) {
+          unit_edges(Unit::Left(right, y), &cells, at, &mut edges);
+        }
       }
     }
   }
@@ -320,22 +359,21 @@ impl Outlines {
     outlines
   }
 
-  /// Take in the cells at `changed` (sorted by index, each with the value it
-  /// had when the outlines were last brought up to date): the loops through
-  /// a point whose edges changed are dropped and traced again with the new
-  /// edges.
-  pub(crate) fn apply(&mut self, cells: Cells, changed: &[(u32, TileCell)]) -> Retraced {
+  /// Take in the cells at `changed` (in row order, each with the value it
+  /// had when the outlines were last brought up to date; every one within
+  /// `MAX_REACH`, as a grid holds no other): the loops through a point
+  /// whose edges changed are dropped and traced again with the new edges.
+  pub(crate) fn apply(&mut self, cells: Cells, changed: &[(IVec2, TileCell)]) -> Retraced {
     let mut retraced = Retraced::default();
-    let width = cells.width();
-    if width == 0 || changed.is_empty() {
+    if changed.is_empty() {
       return retraced;
     }
     let before = |x: i32, y: i32| cells.before(x, y, changed);
     let now = |x: i32, y: i32| cells.at(x, y);
     // An edit changes the units of its cells only
     let mut units: Vec<Unit> = Vec::with_capacity(changed.len() * 5);
-    for &(index, _) in changed {
-      let (x, y) = ((index % width) as i32, (index / width) as i32);
+    for &(cell, _) in changed {
+      let (x, y) = (cell.x, cell.y);
       units.extend([
         Unit::Inside(x, y),
         Unit::Left(x, y),
@@ -903,16 +941,24 @@ impl Outlines {
 }
 
 /// The closed outlines around every region of solid and slope cells (holes
-/// too), straight runs merged, in tiles: each is a loop of corners whose
-/// last repeats its first.
+/// too) of a grid `width` by `height` from its cells row by row, straight
+/// runs merged, in tiles: each is a loop of corners whose last repeats its
+/// first.
 #[cfg(test)]
 pub(crate) fn outlines(width: u32, height: u32, cells: &[TileCell]) -> Vec<Vec<super::Corner>> {
-  Outlines::build(Cells::bare(width, height, cells))
+  let grid = super::TileColliders::from_cells(width, height, glam::Vec2::ONE, cells.to_vec());
+  traced_outlines(grid.cells_view())
+}
+
+/// The outlines of `cells` traced whole, as `outlines` gives them.
+#[cfg(test)]
+pub(crate) fn traced_outlines(cells: Cells) -> Vec<Vec<super::Corner>> {
+  Outlines::build(cells)
     .loops()
     .map(|(_, outline)| {
       super::merge_straight_runs(&outline.corners)
         .into_iter()
-        .map(|(x, y)| (x / GRID, y / GRID))
+        .map(|(x, y)| (x.div_euclid(GRID), y.div_euclid(GRID)))
         .collect()
     })
     .collect()
@@ -920,6 +966,7 @@ pub(crate) fn outlines(width: u32, height: u32, cells: &[TileCell]) -> Vec<Vec<s
 
 #[cfg(test)]
 mod tests {
+  use super::super::tests::xy;
   use super::super::{
     CellShape, GRID, Point, ShapeBuild, SlopeCorner, TileColliders, merge_straight_runs,
   };
@@ -970,7 +1017,7 @@ mod tests {
   /// with a full trace.
   fn edit(state: &mut Outlines, tiles: &mut TileColliders, edits: &[(u32, u32, TileCell)]) {
     for &(x, y, cell) in edits {
-      tiles.set(x, y, cell);
+      tiles.set(xy(x, y), cell);
     }
     let changed = tiles.take_changes().expect("listed");
     state.apply(tiles.cells_view(), &changed);
@@ -1024,7 +1071,7 @@ mod tests {
     let band = [(0.0, 0.25), (1.0, 0.25), (1.0, 0.75), (0.0, 0.75)];
     let loops = |cells: &[TileCell], tiles: &mut TileColliders| {
       for (x, &cell) in cells.iter().enumerate() {
-        tiles.set(x as u32, 0, cell);
+        tiles.set(xy(x as u32, 0), cell);
       }
       traced(&Outlines::build(tiles.cells_view()))
     };
@@ -1120,8 +1167,8 @@ mod tests {
     let (w, h) = (40, 8);
     let mut tiles = TileColliders::new(w, h, Vec2::ONE);
     for x in 0..w {
-      tiles.set(x, 6, S);
-      tiles.set(x, 7, S);
+      tiles.set(xy(x, 6), S);
+      tiles.set(xy(x, 7), S);
     }
     tiles.take_changes();
     let mut state = Outlines::build(tiles.cells_view());
@@ -1166,8 +1213,8 @@ mod tests {
     let (w, h) = (40, 8);
     let mut tiles = TileColliders::new(w, h, Vec2::ONE);
     for x in 2..w {
-      tiles.set(x, 6, S);
-      tiles.set(x, 7, S);
+      tiles.set(xy(x, 6), S);
+      tiles.set(xy(x, 7), S);
     }
     tiles.take_changes();
     let mut state = Outlines::build(tiles.cells_view());
@@ -1192,8 +1239,8 @@ mod tests {
     let mut tiles = TileColliders::new(w, h, Vec2::ONE);
     // A floor two cells deep
     for x in 0..w {
-      tiles.set(x, 6, S);
-      tiles.set(x, 7, S);
+      tiles.set(xy(x, 6), S);
+      tiles.set(xy(x, 7), S);
     }
     tiles.take_changes();
     let mut state = Outlines::build(tiles.cells_view());
@@ -1265,7 +1312,10 @@ mod tests {
     mut seed: u32,
     count: usize,
   ) {
-    let (w, h) = (tiles.width(), tiles.height());
+    let size = tiles
+      .bounds()
+      .map_or(glam::UVec2::ZERO, |bounds| bounds.size());
+    let (w, h) = (size.x, size.y);
     let mut next = |n: u32| {
       seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
       (seed >> 8) % n
@@ -1480,7 +1530,7 @@ mod tests {
     };
     // Set among solids and edited round, the shape cell among them
     for (x, y, cell) in [(0, 1, S), (1, 1, shape), (2, 1, S), (1, 0, S)] {
-      tiles.set(x, y, cell);
+      tiles.set(xy(x, y), cell);
     }
     tiles.take_changes();
     let mut state = Outlines::build(tiles.cells_view());
@@ -1498,7 +1548,7 @@ mod tests {
       "{points:?}"
     );
     for (x, y, cell) in [(0, 1, S), (1, 1, shape), (2, 1, S), (1, 0, S), (1, 2, E)] {
-      tiles.set(x, y, cell);
+      tiles.set(xy(x, y), cell);
     }
     tiles.take_changes();
     let state = Outlines::build(tiles.cells_view());
@@ -1525,7 +1575,7 @@ mod tests {
     for (_, build) in &tiles.shapes {
       assert!(!build.hulled, "no hull, no warning");
     }
-    tiles.set(1, 1, solid);
+    tiles.set(IVec2::new(1, 1), solid);
     let legs = [
       expect(&[(1.1, 1.0), (1.3, 1.0), (1.3, 1.8), (1.1, 1.8)]),
       expect(&[(1.7, 1.0), (1.9, 1.0), (1.9, 1.8), (1.7, 1.8)]),
@@ -1657,7 +1707,10 @@ mod tests {
     };
     for _ in 0..800 {
       for _ in 0..1 + next(3) {
-        tiles.set(next(5), next(4), kinds[next(kinds.len() as u32) as usize]);
+        tiles.set(
+          xy(next(5), next(4)),
+          kinds[next(kinds.len() as u32) as usize],
+        );
       }
       let changed = tiles.take_changes().expect("listed");
       state.apply(tiles.cells_view(), &changed);

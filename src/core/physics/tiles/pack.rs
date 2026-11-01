@@ -33,8 +33,22 @@ pub(crate) enum PackKey {
   Run(u32),
 }
 
-/// The chunk holding an outline grid point.
-fn chunk((x, y): Point) -> (i32, i32) {
+impl PackKey {
+  /// The chunk whose top-left its part sits at: a loop pack's or a row's
+  /// own; a sloped run's (a pack of one run) the chunk of `first`, its
+  /// run's first point, which counts for nothing else
+  pub(crate) fn chunk(self, first: Point) -> (i32, i32) {
+    match self {
+      PackKey::Loops(x, y) => (x, y),
+      PackKey::Row { chunk, .. } => chunk,
+      PackKey::Run(_) => point_chunk(first),
+    }
+  }
+}
+
+/// The chunk holding an outline grid point, rounding toward negative
+/// infinity.
+pub(crate) fn point_chunk((x, y): Point) -> (i32, i32) {
   let side = GRID * CHUNK;
   (x.div_euclid(side), y.div_euclid(side))
 }
@@ -54,7 +68,7 @@ pub(crate) fn ring(corners: &[Point]) -> Vec<Point> {
 /// it every body on the loop to another collider. A retrace starts the loop
 /// where it started while its first edge stands
 pub(crate) fn loop_key(corners: &[Point]) -> PackKey {
-  let (x, y) = chunk(corners.first().copied().unwrap_or_default());
+  let (x, y) = point_chunk(corners.first().copied().unwrap_or_default());
   PackKey::Loops(x, y)
 }
 
@@ -64,7 +78,7 @@ pub(crate) fn run_key(id: u32, points: &[Point]) -> PackKey {
   let (a, b) = ends(points);
   if a.1 == b.1 {
     PackKey::Row {
-      chunk: chunk(a),
+      chunk: point_chunk(a),
       y: a.1,
       rightward: b.0 > a.0,
     }

@@ -145,25 +145,26 @@ impl Scene for Empty {}
 fn level() -> TileColliders {
   let (width, height) = LEVEL;
   let mut tiles = TileColliders::new(width, height, Vec2::splat(TILE));
+  let cell = |x: u32, y: u32| IVec2::new(x as i32, y as i32);
   for x in 0..width {
     for y in [0, height - 2, height - 1] {
-      tiles.set(x, y, TileCell::Solid);
+      tiles.set(cell(x, y), TileCell::Solid);
     }
   }
   for y in 0..height {
-    tiles.set(0, y, TileCell::Solid);
-    tiles.set(width - 1, y, TileCell::Solid);
+    tiles.set(cell(0, y), TileCell::Solid);
+    tiles.set(cell(width - 1, y), TileCell::Solid);
   }
   for start in (10..width - 10).step_by(20) {
     for (i, steps) in [1, 2, 2, 1].into_iter().enumerate() {
       for step in 0..steps {
-        tiles.set(start + i as u32, height - 3 - step, TileCell::Solid);
+        tiles.set(cell(start + i as u32, height - 3 - step), TileCell::Solid);
       }
     }
   }
   for (row, from, to) in [(35, 4, 50), (35, 64, 110), (31, 20, 60), (31, 76, 116)] {
     for x in from..to {
-      tiles.set(x, row, TileCell::OneWay);
+      tiles.set(IVec2::new(x, row), TileCell::OneWay);
     }
   }
   tiles
@@ -199,7 +200,7 @@ impl Scene for Characters {
       let x = 40.0 + i as f32 * 18.4;
       let column = (x / TILE) as u32;
       let ground = (1..height)
-        .find(|&row| tiles.get(column, row) == TileCell::Solid)
+        .find(|&row| tiles.get(IVec2::new(column as i32, row as i32)) == TileCell::Solid)
         .unwrap_or(height - 2);
       ctx.world.spawn((
         Bot(i),

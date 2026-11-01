@@ -2,7 +2,7 @@
 name: ryo-character
 description: Characters - the character controller, platformer and top-down movement presets, MoveIntent and key bindings, one-way platforms, triggers with pickups, kill zones, checkpoints and respawns, tile colliders and knockback.
 metadata:
-  version: 1.2.0
+  version: 1.3.0
 ---
 
 # Ryo2D Characters
@@ -245,17 +245,17 @@ A level made in Tiled or LDtk collides by itself: spawn it with a `MapRoot` and 
 
 ```rust
 let mut tiles = TileColliders::new(40, 12, Vec2::splat(16.0)); // width, height in cells, cell size
-tiles.set(3, 11, TileCell::Solid);
+tiles.set(IVec2::new(3, 11), TileCell::Solid);
 let level = ctx.world.spawn((Transform::from_xy(0.0, 0.0), tiles)).id();
 ```
 
 - `TileCell::{Empty, Solid, OneWay, Slope(SlopeCorner), Shape(u16)}`; `SlopeCorner::{BottomLeft, BottomRight, TopLeft, TopRight}` is the filled corner of a 45° half-cell (`BottomRight` rises to the right). `SlopeCorner::from_name("bottom-left")` reads Tiled's spelling.
 - **Shapes:** `tiles.add_shape(CellShape { polygons, one_way })` returns the index a `TileCell::Shape(index)` cell names: polygons in tile units, (0, 0) the cell's top-left and (1, 1) its bottom-right. A solid shape joins the outlines as solid and slope cells do, so a row of half blocks, or a ramp of shapes over solid ground, is one seamless outline; a one-way shape's top edges join the one-way runs. Shapes cannot be changed once added.
-- `TileColliders::new(width, height, tile_size)`, `from_cells(width, height, tile_size, cells)` (row by row from the top; missing cells are empty), `get(x, y)`, `set(x, y, cell) -> bool` (false, and nothing changes, outside the grid or when the cell already is that), `width()`, `height()`. Fields and builders: `tile_size`, `layer` / `with_layer` (default 1), `mask` / `with_mask` (default all bits), `friction` / `with_friction` (default 0.5), `restitution` / `with_restitution` (default 0), `solid_rects` / `solid_rects()` (default off: outlines).
+- `TileColliders::new(width, height, tile_size)` and `from_cells(width, height, tile_size, cells)` (row by row from the top; missing cells are empty) hold the cells from (0, 0) up to that size; `unbounded(tile_size)` holds any cell, negative ones included. `get(cell: IVec2)` (`Empty` outside), `set(cell, value) -> bool` (false, and nothing changes, outside the grid or when the cell already is that), `bounds()` (`Some` rectangle for a sized grid, `None` for an unbounded one) and `extent()` (the cells it holds: its bounds, or an unbounded grid's chunks), both a `CellRect` (`min` included, `max` not). Cells are stored by 32-cell chunk, so a long level costs what its cells do: a 10,000 x 64 runner level is fine. A cell collides within 186,411 cells of (0, 0) on either axis (about 3 million px of 16 px tiles); `set` refuses one past that, logging it once. Fields and builders: `tile_size`, `layer` / `with_layer` (default 1), `mask` / `with_mask` (default all bits), `friction` / `with_friction` (default 0.5), `restitution` / `with_restitution` (default 0), `solid_rects` / `solid_rects()` (default off: outlines).
 - Its `Transform` places cell (0, 0)'s top-left; +Y is down. With no body the colliders are fixed; with a kinematic `RigidBody` on the map entity the whole map moves.
 - **Outlines are hollow**: a body that ends up inside a solid region is not pushed out. `solid_rects()` builds merged rectangles instead (solid interiors, but seams between rectangles).
-- **Editing**: `ctx.world.get_mut::<TileColliders>(level)` and `set`. Only a real change rebuilds, before that step's physics, and only the colliders of the 32-cell chunks it changed, each taking its new shape in place; the new shapes are there for that step's characters, so one standing on the map keeps standing and one running at its wall still stops. Disabling the map entity removes its colliders and enabling it rebuilds them from the cells as they are then; removing the component removes them. A grid over 8192 cells a side is refused (logged, empty), and so is a non-positive tile size.
-- **Which entity:** the colliders are child entities of the map, one for the outlines starting in each 32-cell chunk (and one for each row of one-way runs in a chunk). With no body on the map, collision messages and `CharacterState::floor` name such a part: follow `ChildOf` to the map (`ctx.world.get::<ChildOf>(part).map(|c| c.parent())`). With outlines (the default) an edit keeps every part's entity, so a character standing on the map keeps its `floor` and no collision message is re-sent for it; only a chunk's first outline spawns a part and its last one's going despawns it. Every part is rebuilt (new entities, `CollisionStopped` / `CollisionStarted` re-sent for what touched the map) by any edit of a `solid_rects` map, by changing the grid's layer, mask, friction, restitution, tile size or `solid_rects`, and by over 65,536 cell changes in one step.
+- **Editing**: `ctx.world.get_mut::<TileColliders>(level)` and `set`. Only a real change rebuilds, before that step's physics, and only the colliders of the 32-cell chunks it changed, each taking its new shape in place; the new shapes are there for that step's characters, so one standing on the map keeps standing and one running at its wall still stops. Disabling the map entity removes its colliders and enabling it rebuilds them from the cells as they are then; removing the component removes them. A non-positive tile size builds nothing (logged).
+- **Which entity:** the colliders are child entities of the map, one for the outlines starting in each 32-cell chunk (and one for each row of one-way runs in a chunk), each placed at its chunk's top-left with its points relative to it (so read a part's world geometry through its `GlobalTransform`, as `Collider::world_bounds` does). With no body on the map, collision messages and `CharacterState::floor` name such a part: follow `ChildOf` to the map (`ctx.world.get::<ChildOf>(part).map(|c| c.parent())`). With outlines (the default) an edit keeps every part's entity, so a character standing on the map keeps its `floor` and no collision message is re-sent for it; only a chunk's first outline spawns a part and its last one's going despawns it. Every part is rebuilt (new entities, `CollisionStopped` / `CollisionStarted` re-sent for what touched the map) by any edit of a `solid_rects` map, by changing the grid's layer, mask, friction, restitution, tile size or `solid_rects`, and by over 65,536 cell changes in one step.
 - Navigation: `NavigationGrid::rebuild_from_world` blocks a map's solid and slope cells exactly, and its shape cells whose shape covers the cell's centre (one-way cells stay walkable) and skips its outline colliders; by hand, `grid.block_tiles(&tiles, origin)`. Only the map's position counts, not its rotation or scale.
 
 ### Map collision
@@ -390,12 +390,12 @@ impl Scene for Dungeon {
     // A walled room of 16 px tiles
     let mut room = TileColliders::new(40, 30, Vec2::splat(16.0));
     for x in 0..40 {
-      room.set(x, 0, TileCell::Solid);
-      room.set(x, 29, TileCell::Solid);
+      room.set(IVec2::new(x, 0), TileCell::Solid);
+      room.set(IVec2::new(x, 29), TileCell::Solid);
     }
     for y in 0..30 {
-      room.set(0, y, TileCell::Solid);
-      room.set(39, y, TileCell::Solid);
+      room.set(IVec2::new(0, y), TileCell::Solid);
+      room.set(IVec2::new(39, y), TileCell::Solid);
     }
     ctx.world.spawn((Transform::IDENTITY, room));
     // A crate to push, and coins

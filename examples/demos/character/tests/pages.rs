@@ -231,21 +231,21 @@ fn the_ldtk_level_collides_exactly_as_the_ascii_level_did() {
   let (colliders, at) = map_colliders(&mut engine);
   let old = level(&PLATFORMER_LEVEL);
   assert_eq!(at, ORIGIN, "the level sits at ORIGIN");
-  assert_eq!((colliders.width(), colliders.height()), (30, 30));
-  assert_eq!(
-    (colliders.width(), colliders.height()),
-    (old.width(), old.height())
-  );
+  let size = CellRect::from_size(UVec2::new(30, 30));
+  assert_eq!(colliders.bounds(), Some(size));
+  assert_eq!(colliders.bounds(), old.bounds());
   assert_eq!(colliders.tile_size, Vec2::splat(TILE));
   assert_eq!(colliders.tile_size, old.tile_size);
-  let wrong: Vec<String> = (0..old.height())
-    .flat_map(|y| (0..old.width()).map(move |x| (x, y)))
-    .filter(|&(x, y)| colliders.get(x, y) != old.get(x, y))
-    .map(|(x, y)| {
+  let wrong: Vec<String> = (size.min.y..size.max.y)
+    .flat_map(|y| (size.min.x..size.max.x).map(move |x| IVec2::new(x, y)))
+    .filter(|&cell| colliders.get(cell) != old.get(cell))
+    .map(|cell| {
       format!(
-        "({x}, {y}): {:?}, was {:?}",
-        colliders.get(x, y),
-        old.get(x, y)
+        "({}, {}): {:?}, was {:?}",
+        cell.x,
+        cell.y,
+        colliders.get(cell),
+        old.get(cell)
       )
     })
     .collect();

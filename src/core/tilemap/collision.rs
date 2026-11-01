@@ -561,8 +561,8 @@ fn update(group: &mut Group, tiles: &mut TileColliders, layers: &Layers, context
             );
           }
         }
-        if tiles.get(x, y) != kind {
-          tiles.set(x, y, kind);
+        if tiles.get(cell) != kind {
+          tiles.set(cell, kind);
         }
       }
     }
@@ -753,7 +753,8 @@ mod tests {
   use crate::core::gameplay::{MoveIntent, PlatformerMovement};
   use crate::core::physics::CharacterState;
   use crate::core::physics::{
-    Collider, ColliderShape, SlopeCorner, TileCell, TileColliders, TilePart,
+    CellRect, Collider, ColliderShape, SlopeCorner, TileCell, TileColliders, TilePart,
+    in_grid_space,
   };
   use crate::core::scene::{Scene, SceneContext};
   use crate::core::testing::HeadlessEngine;
@@ -845,13 +846,14 @@ mod tests {
     world.query::<&TilePart>().iter(world).count()
   }
 
-  /// The parts under `parent`, by entity
+  /// The parts under `parent`, by entity, their colliders in its space
+  /// (a part sits at its chunk's top-left)
   fn parts_of(world: &mut World, parent: Entity) -> Vec<(Entity, Collider)> {
     let mut found: Vec<(Entity, Collider)> = world
-      .query::<(Entity, &ChildOf, &Collider)>()
+      .query::<(Entity, &ChildOf, &Collider, &Transform)>()
       .iter(world)
-      .filter(|(_, child_of, _)| child_of.parent() == parent)
-      .map(|(e, _, c)| (e, c.clone()))
+      .filter(|(_, child_of, ..)| child_of.parent() == parent)
+      .map(|(e, _, c, at)| (e, in_grid_space(c.clone(), at.translation)))
       .collect();
     found.sort_by_key(|(e, _)| *e);
     found
@@ -893,18 +895,33 @@ mod tests {
     let level = load(&mut maps.world, "tiled/maps/level.tmj");
     let map = maps.spawn(MapRoot::new(level));
     let tiles = colliders(&maps.world, map);
-    assert_eq!((tiles.width(), tiles.height()), (24, 12));
+    assert_eq!(
+      tiles.bounds(),
+      Some(CellRect::from_size(UVec2::new(24, 12)))
+    );
     assert_eq!(tiles.tile_size, Vec2::splat(16.0));
     // The floor is two layers' tiles, in one grid
-    assert!((0..24).all(|x| tiles.get(x, 11) == TileCell::Solid));
+    assert!((0..24).all(|x| tiles.get(IVec2::new(x, 11)) == TileCell::Solid));
     // One slope tile, as drawn, mirrored and turned
-    assert_eq!(tiles.get(20, 10), TileCell::Slope(BottomRight));
-    assert_eq!(tiles.get(21, 10), TileCell::Slope(BottomLeft), "mirrored");
-    assert_eq!(tiles.get(22, 10), TileCell::Slope(TopRight), "upside down");
-    assert_eq!(tiles.get(23, 10), TileCell::Slope(BottomLeft), "turned");
-    assert!((4..8).all(|x| tiles.get(x, 7) == TileCell::OneWay));
-    let TileCell::Shape(half) = tiles.get(18, 10) else {
-      panic!("the half block is {:?}", tiles.get(18, 10))
+    assert_eq!(tiles.get(IVec2::new(20, 10)), TileCell::Slope(BottomRight));
+    assert_eq!(
+      tiles.get(IVec2::new(21, 10)),
+      TileCell::Slope(BottomLeft),
+      "mirrored"
+    );
+    assert_eq!(
+      tiles.get(IVec2::new(22, 10)),
+      TileCell::Slope(TopRight),
+      "upside down"
+    );
+    assert_eq!(
+      tiles.get(IVec2::new(23, 10)),
+      TileCell::Slope(BottomLeft),
+      "turned"
+    );
+    assert!((4..8).all(|x| tiles.get(IVec2::new(x, 7)) == TileCell::OneWay));
+    let TileCell::Shape(half) = tiles.get(IVec2::new(18, 10)) else {
+      panic!("the half block is {:?}", tiles.get(IVec2::new(18, 10)))
     };
     let half = tiles.shape(half).expect("the half block's shape");
     assert!(!half.one_way);
@@ -917,9 +934,13 @@ mod tests {
       "{:?}",
       half.polygons
     );
-    assert_eq!(tiles.get(14, 10), TileCell::Empty, "decor does not collide");
     assert_eq!(
-      tiles.get(10, 5),
+      tiles.get(IVec2::new(14, 10)),
+      TileCell::Empty,
+      "decor does not collide"
+    );
+    assert_eq!(
+      tiles.get(IVec2::new(10, 5)),
       TileCell::Empty,
       "an occluder only occludes"
     );
@@ -971,13 +992,13 @@ mod tests {
     let tiles = colliders(&maps.world, map);
     for (x, (flip, corner)) in flips.iter().enumerate() {
       assert_eq!(
-        tiles.get(x as u32, 0),
+        tiles.get(IVec2::new(x as i32, 0)),
         TileCell::Slope(*corner),
         "flip {flip:?}"
       );
     }
-    let TileCell::Shape(raised) = tiles.get(0, 1) else {
-      panic!("the raised half block is {:?}", tiles.get(0, 1))
+    let TileCell::Shape(raised) = tiles.get(IVec2::new(0, 1)) else {
+      panic!("the raised half block is {:?}", tiles.get(IVec2::new(0, 1)))
     };
     let raised = tiles.shape(raised).expect("its shape");
     assert!(
@@ -1021,12 +1042,12 @@ mod tests {
     let map = maps.spawn(MapRoot::new(handle));
     let tiles = colliders(&maps.world, map);
     assert_eq!(
-      tiles.get(0, 0),
+      tiles.get(IVec2::new(0, 0)),
       TileCell::Solid,
       "the quarter over its cell"
     );
     // the other tile's square is right of its cell: nothing of it is inside
-    match tiles.get(1, 0) {
+    match tiles.get(IVec2::new(1, 0)) {
       TileCell::Empty => {}
       TileCell::Shape(index) => {
         let polygon = &tiles.shape(index).expect("its shape").polygons[0];
@@ -1068,7 +1089,7 @@ mod tests {
       .with_intgrid_collision(2, Empty);
     let map = maps.spawn(root);
     let tiles = colliders(&maps.world, map);
-    let row: Vec<TileCell> = (0..8).map(|x| tiles.get(x, 0)).collect();
+    let row: Vec<TileCell> = (0..8).map(|x| tiles.get(IVec2::new(x, 0))).collect();
     // by name (any case), a value over a name, nothing for an unknown name;
     // the layer's tiles (its auto-tiles) do not collide, its IntGrid does
     assert_eq!(
@@ -1131,7 +1152,7 @@ mod tests {
     assert_ne!(after[1], before[1], "the cell's chunk moved");
     assert_eq!(after[2..], before[2..]);
     maps.frame();
-    assert_eq!(colliders(&maps.world, map).get(40, 5), Solid);
+    assert_eq!(colliders(&maps.world, map).get(IVec2::new(40, 5)), Solid);
 
     // A rectangle: the chunks it changed alone move
     let mut view = MapsView::new(&mut maps.world);
@@ -1142,8 +1163,11 @@ mod tests {
     assert!(moved[2] != after[2] && moved[3] != after[3]);
     maps.frame();
     let tiles = colliders(&maps.world, map);
-    assert_eq!((tiles.get(0, 36), tiles.get(63, 39)), (OneWay, OneWay));
-    assert_eq!(tiles.get(0, 35), Empty);
+    assert_eq!(
+      (tiles.get(IVec2::new(0, 36)), tiles.get(IVec2::new(63, 39))),
+      (OneWay, OneWay)
+    );
+    assert_eq!(tiles.get(IVec2::new(0, 35)), Empty);
 
     // 0 empties a cell; outside, or a layer with no IntGrid, changes nothing
     let mut view = MapsView::new(&mut maps.world);
@@ -1153,7 +1177,7 @@ mod tests {
     assert!(!view.set_intgrid(map, "art", IVec2::ZERO, 1));
     assert_eq!(view.fill_intgrid(map, "art", IVec2::ZERO, IVec2::ONE, 1), 0);
     maps.frame();
-    assert_eq!(colliders(&maps.world, map).get(40, 5), Empty);
+    assert_eq!(colliders(&maps.world, map).get(IVec2::new(40, 5)), Empty);
   }
 
   #[test]
@@ -1178,7 +1202,7 @@ mod tests {
     assert!(MapsView::new(&mut maps.world).set_intgrid(map, 0, IVec2::new(3, 0), 1));
     maps.frame();
     let tiles = colliders(&maps.world, map);
-    let row: Vec<TileCell> = (0..4).map(|x| tiles.get(x, 0)).collect();
+    let row: Vec<TileCell> = (0..4).map(|x| tiles.get(IVec2::new(x, 0))).collect();
     use TileCell::{Empty, Solid};
     assert_eq!(row, [Empty, Empty, Solid, Empty]);
     let warned = crate::core::dev_log::get_entries()
@@ -1210,9 +1234,10 @@ mod tests {
       .world
       .get::<TileColliders>(map)
       .map(|tiles| {
-        (0..tiles.height())
-          .flat_map(|y| (0..tiles.width()).map(move |x| (x, y)))
-          .filter(|&(x, y)| tiles.get(x, y) == TileCell::Solid)
+        let cells = tiles.extent();
+        (cells.min.y..cells.max.y)
+          .flat_map(|y| (cells.min.x..cells.max.x).map(move |x| IVec2::new(x, y)))
+          .filter(|&cell| tiles.get(cell) == TileCell::Solid)
           .count()
       })
       .unwrap_or(0);
@@ -1240,7 +1265,10 @@ mod tests {
     assert_eq!(count_parts(&mut maps.world), 0);
     // The same layer colliding builds its floor
     let loud = maps.spawn(MapRoot::new(on));
-    assert_eq!(colliders(&maps.world, loud).get(3, 0), TileCell::Solid);
+    assert_eq!(
+      colliders(&maps.world, loud).get(IVec2::new(3, 0)),
+      TileCell::Solid
+    );
     assert_eq!(count_parts(&mut maps.world), 1);
   }
 
@@ -1267,8 +1295,8 @@ mod tests {
     // One fixed step: the cells change and physics builds them
     maps.step();
     let tiles = colliders(&maps.world, map);
-    assert_eq!(tiles.get(10, 1), TileCell::Solid);
-    assert_eq!(tiles.get(39, 3), TileCell::Empty);
+    assert_eq!(tiles.get(IVec2::new(10, 1)), TileCell::Solid);
+    assert_eq!(tiles.get(IVec2::new(39, 3)), TileCell::Empty);
     let parts = parts_of(&mut maps.world, map);
     part_in(&parts, Vec2::new(160.0, 16.0), Vec2::new(176.0, 32.0));
     let floor = part_in(&parts, Vec2::new(0.0, 48.0), Vec2::new(0.0, 64.0));
@@ -1342,17 +1370,21 @@ mod tests {
     // one-way cell, a one-way cell alone
     let bottom_half = [(0.0, 0.5), (1.0, 0.5), (1.0, 1.0), (0.0, 1.0)];
     let top_half = [(0.0, 0.0), (1.0, 0.0), (1.0, 0.5), (0.0, 0.5)];
-    assert!(shape_of(tiles.get(0, 0)).is_some_and(|p| same_points(&p, &bottom_half)));
-    assert_eq!(tiles.get(1, 0), TileCell::Solid);
-    assert_eq!(tiles.get(2, 0), TileCell::Slope(SlopeCorner::BottomRight));
-    assert_eq!(tiles.get(4, 0), TileCell::OneWay);
+    assert!(shape_of(tiles.get(IVec2::new(0, 0))).is_some_and(|p| same_points(&p, &bottom_half)));
+    assert_eq!(tiles.get(IVec2::new(1, 0)), TileCell::Solid);
+    assert_eq!(
+      tiles.get(IVec2::new(2, 0)),
+      TileCell::Slope(SlopeCorner::BottomRight)
+    );
+    assert_eq!(tiles.get(IVec2::new(4, 0)), TileCell::OneWay);
     // Of two shapes, the upper layer's
-    assert!(shape_of(tiles.get(3, 0)).is_some_and(|p| same_points(&p, &top_half)));
+    assert!(shape_of(tiles.get(IVec2::new(3, 0))).is_some_and(|p| same_points(&p, &top_half)));
     // and an edit to the layer below changes nothing the one above covers
     assert!(MapsView::new(&mut maps.world).set_tile(map, "below", at(3), None));
     maps.step();
     assert!(
-      shape_of(colliders(&maps.world, map).get(3, 0)).is_some_and(|p| same_points(&p, &top_half))
+      shape_of(colliders(&maps.world, map).get(IVec2::new(3, 0)))
+        .is_some_and(|p| same_points(&p, &top_half))
     );
   }
 
@@ -1384,23 +1416,26 @@ mod tests {
     let layers = layers_of(&mut maps.world, map);
     // The two layers sharing the map's cells and no offset are one grid
     let shared = colliders(&maps.world, map);
-    assert_eq!((shared.width(), shared.height()), (4, 2));
-    assert_eq!(shared.get(0, 1), TileCell::Solid);
-    assert_eq!(shared.get(1, 1), TileCell::Solid);
-    assert_eq!(shared.get(3, 0), TileCell::Empty);
+    assert_eq!(shared.bounds(), Some(CellRect::from_size(UVec2::new(4, 2))));
+    assert_eq!(shared.get(IVec2::new(0, 1)), TileCell::Solid);
+    assert_eq!(shared.get(IVec2::new(1, 1)), TileCell::Solid);
+    assert_eq!(shared.get(IVec2::new(3, 0)), TileCell::Empty);
     for layer in &layers[..2] {
       assert!(maps.world.get::<TileColliders>(*layer).is_none());
     }
     let shifted = colliders(&maps.world, layers[2]);
-    assert_eq!(shifted.get(3, 0), TileCell::Solid);
+    assert_eq!(shifted.get(IVec2::new(3, 0)), TileCell::Solid);
     assert_eq!(shifted.tile_size, Vec2::splat(16.0));
     let fine = colliders(&maps.world, layers[3]);
     assert_eq!(
-      (fine.width(), fine.height(), fine.tile_size),
-      (8, 4, Vec2::splat(8.0))
+      (fine.bounds(), fine.tile_size),
+      (
+        Some(CellRect::from_size(UVec2::new(8, 4))),
+        Vec2::splat(8.0)
+      )
     );
-    assert_eq!(fine.get(7, 3), TileCell::Solid);
-    assert_eq!(fine.get(0, 0), TileCell::Empty);
+    assert_eq!(fine.get(IVec2::new(7, 3)), TileCell::Solid);
+    assert_eq!(fine.get(IVec2::new(0, 0)), TileCell::Empty);
     // Each built its parts
     assert_eq!(parts_of(&mut maps.world, layers[2]).len(), 1);
     assert_eq!(parts_of(&mut maps.world, layers[3]).len(), 1);
@@ -1441,7 +1476,10 @@ mod tests {
     maps.frame();
     assert_eq!(count_parts(&mut maps.world), 2);
     let shifted = layers_of(&mut maps.world, map)[1];
-    assert_eq!(colliders(&maps.world, shifted).get(0, 0), TileCell::Solid);
+    assert_eq!(
+      colliders(&maps.world, shifted).get(IVec2::new(0, 0)),
+      TileCell::Solid
+    );
     // The shifted layer's two islands, in one chunk, are one collider
     let parts = parts_of(&mut maps.world, shifted);
     assert!(
@@ -1480,7 +1518,10 @@ mod tests {
       .count();
     assert_eq!(warned, 1, "warned once, naming the layer");
     let small = layers_of(&mut maps.world, map)[1];
-    assert_eq!(colliders(&maps.world, small).get(0, 0), TileCell::Solid);
+    assert_eq!(
+      colliders(&maps.world, small).get(IVec2::new(0, 0)),
+      TileCell::Solid
+    );
   }
 
   #[test]
@@ -1503,8 +1544,8 @@ mod tests {
     maps.frame();
     // It collides at its cells: collision ignores parallax
     let tiles = colliders(&maps.world, map);
-    assert_eq!(tiles.get(0, 0), TileCell::Solid);
-    assert_eq!(tiles.get(2, 0), TileCell::Empty);
+    assert_eq!(tiles.get(IVec2::new(0, 0)), TileCell::Solid);
+    assert_eq!(tiles.get(IVec2::new(2, 0)), TileCell::Empty);
     let warned = |name: &str| {
       crate::core::dev_log::get_entries()
         .iter()
@@ -1581,17 +1622,17 @@ mod tests {
     let layers = layers_of(&mut maps.world, map);
     let shared = colliders(&maps.world, map);
     assert_eq!((shared.friction, shared.layer), (0.25, 2));
-    assert_eq!(shared.get(0, 0), TileCell::Solid);
+    assert_eq!(shared.get(IVec2::new(0, 0)), TileCell::Solid);
     assert_eq!(
-      shared.get(2, 0),
+      shared.get(IVec2::new(2, 0)),
       TileCell::Solid,
       "a layer saying what the map says"
     );
-    assert_eq!(shared.get(1, 0), TileCell::Empty);
+    assert_eq!(shared.get(IVec2::new(1, 0)), TileCell::Empty);
     let ice = colliders(&maps.world, layers[1]);
     assert_eq!((ice.friction, ice.layer, ice.mask), (0.0, 8, u32::MAX));
-    assert_eq!(ice.get(1, 0), TileCell::Solid);
-    assert_eq!(ice.get(0, 0), TileCell::Empty);
+    assert_eq!(ice.get(IVec2::new(1, 0)), TileCell::Solid);
+    assert_eq!(ice.get(IVec2::new(0, 0)), TileCell::Empty);
     assert!(maps.world.get::<TileColliders>(layers[2]).is_none());
     let parts = parts_of(&mut maps.world, layers[1]);
     assert!(!parts.is_empty() && parts.iter().all(|(_, c)| c.friction == 0.0 && c.layer == 8));
@@ -1619,13 +1660,13 @@ mod tests {
     }
     maps.step();
     let tiles = colliders(&maps.world, map);
-    assert_eq!(tiles.get(7, 1), TileCell::Solid);
+    assert_eq!(tiles.get(IVec2::new(7, 1)), TileCell::Solid);
     assert_eq!(
-      tiles.get(36, 0),
+      tiles.get(IVec2::new(36, 0)),
       TileCell::Empty,
       "the island went with the old grid"
     );
-    assert_eq!(tiles.get(39, 3), TileCell::Solid);
+    assert_eq!(tiles.get(IVec2::new(39, 3)), TileCell::Solid);
   }
 
   #[test]
@@ -1636,7 +1677,7 @@ mod tests {
     maps.step();
     maps.step();
     let tiles = colliders(&maps.world, map);
-    assert_eq!(tiles.get(36, 0), TileCell::Solid);
+    assert_eq!(tiles.get(IVec2::new(36, 0)), TileCell::Solid);
     assert_eq!(parts_of(&mut maps.world, map).len(), 2);
   }
 
@@ -1652,7 +1693,10 @@ mod tests {
       .map(|g| g.fill(IVec2::ZERO, IVec2::new(3, 0), Some(Tile::new(0, SOLID))));
     let handle = add(&mut maps.world, map);
     let map = maps.spawn(MapRoot::new(handle));
-    assert_eq!(colliders(&maps.world, map).get(0, 0), TileCell::Solid);
+    assert_eq!(
+      colliders(&maps.world, map).get(IVec2::new(0, 0)),
+      TileCell::Solid
+    );
     // The solid block becomes a half block: every cell holding it changes
     if let Some(tileset) = maps.world.resource_mut::<Assets<Tileset>>().get_mut(&set) {
       tileset.insert_tile(
@@ -1665,7 +1709,7 @@ mod tests {
     }
     maps.step();
     let tiles = colliders(&maps.world, map);
-    assert!((0..4).all(|x| matches!(tiles.get(x, 0), TileCell::Shape(_))));
+    assert!((0..4).all(|x| matches!(tiles.get(IVec2::new(x, 0)), TileCell::Shape(_))));
   }
 
   /// The map's parts with the chunks their loops start in (a part's

@@ -240,9 +240,9 @@ fn saving_a_map_updates_its_tiles_and_keeps_unchanged_objects() {
   // The tiles are the file's, the dug cell's too, and they collide so
   assert_eq!(grid_of(&maps.world, layers[0]), cells(&saved));
   let tiles = maps.world.get::<TileColliders>(map).expect("colliders");
-  assert_eq!(tiles.get(0, 0), TileCell::Solid);
-  assert_eq!(tiles.get(1, 2), TileCell::Solid);
-  assert_eq!(tiles.get(2, 2), TileCell::Empty);
+  assert_eq!(tiles.get(IVec2::new(0, 0)), TileCell::Solid);
+  assert_eq!(tiles.get(IVec2::new(1, 2)), TileCell::Solid);
+  assert_eq!(tiles.get(IVec2::new(2, 2)), TileCell::Empty);
   // The same layers, and the objects the save left alone as the game has them
   assert_eq!(layers_of(&mut maps.world, map), layers);
   assert_eq!(id_of(&maps.world, map, "1"), Some(a));
@@ -844,7 +844,11 @@ fn saving_an_ldtk_level_file_reloads_its_project() {
     MapsView::new(&mut maps.world).intgrid(map, "Collision", cell),
     None
   );
-  let solid_at = |world: &World| world.get::<TileColliders>(map).map(|t| t.get(1, 1));
+  let solid_at = |world: &World| {
+    world
+      .get::<TileColliders>(map)
+      .map(|t| t.get(IVec2::new(1, 1)))
+  };
   assert_eq!(solid_at(&maps.world), Some(TileCell::Empty));
 
   // The level file: an IntGrid value painted, the entity moved
@@ -901,7 +905,7 @@ fn a_disabled_map_reloads_and_is_current_once_enabled() {
   maps.frame();
   maps.frame();
   let tiles = maps.world.get::<TileColliders>(map).expect("colliders");
-  assert_eq!(tiles.get(0, 0), TileCell::Solid);
+  assert_eq!(tiles.get(IVec2::new(0, 0)), TileCell::Solid);
 }
 
 /// The parts of the map's colliders: each one's entity, physics handle and
@@ -1005,7 +1009,7 @@ fn a_reload_keeps_the_ground_a_character_stands_on() {
   }
   let tiles = maps.world.get::<TileColliders>(map).expect("colliders");
   assert_eq!(
-    (tiles.get(80, 2), tiles.get(81, 2)),
+    (tiles.get(IVec2::new(80, 2)), tiles.get(IVec2::new(81, 2))),
     (TileCell::Empty, TileCell::Solid)
   );
   // Every part kept its entity and handle; only the last chunk's changed shape

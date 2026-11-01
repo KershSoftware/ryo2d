@@ -2,8 +2,8 @@
 //!
 //! Provides a cell-based walkability map for A* pathfinding.
 
-use crate::core::ecs::{Entity, GlobalTransform, Vec2, Without, World};
-use crate::core::physics::{Collider, TileCell, TileColliders, TilePart};
+use crate::core::ecs::{Entity, GlobalTransform, IVec2, Vec2, Without, World};
+use crate::core::physics::{CellRect, Collider, TileCell, TileColliders, TilePart};
 use std::collections::HashSet;
 
 /// Cell walkability state
@@ -292,7 +292,9 @@ impl NavigationGrid {
   /// Block the cells under a tile grid's solid and slope cells, and its
   /// shape cells whose shape covers the cell's centre, its cell (0, 0)'s
   /// top-left at `origin` (its entity's position). One-way cells and
-  /// one-way shapes stay walkable.
+  /// one-way shapes stay walkable. Only the tile grid's chunks under this
+  /// grid are read, so a vast or unbounded tile grid costs what lies under
+  /// it.
   pub fn block_tiles(&mut self, tiles: &TileColliders, origin: Vec2) {
     let size = tiles.tile_size;
     if !(size.is_finite() && size.min_element() > 0.0) {
@@ -308,25 +310,36 @@ impl NavigationGrid {
       let last = (((to / cell).ceil() - 1.0).min(f64::from(count) - 1.0)) as i64;
       first..=last
     };
-    for y in 0..tiles.height() {
-      for x in 0..tiles.width() {
-        let blocks = match tiles.get(x, y) {
-          TileCell::Solid | TileCell::Slope(_) => true,
-          TileCell::Shape(shape) => tiles.shape_blocks(shape),
-          TileCell::Empty | TileCell::OneWay => false,
-        };
-        if !blocks {
-          continue;
-        }
-        let min_x =
-          f64::from(origin.x) + f64::from(x) * f64::from(size.x) - f64::from(self.origin_x);
-        let min_y =
-          f64::from(origin.y) + f64::from(y) * f64::from(size.y) - f64::from(self.origin_y);
-        let xs = span(min_x, min_x + f64::from(size.x), cols);
-        for gy in span(min_y, min_y + f64::from(size.y), rows) {
-          for gx in xs.clone() {
-            self.set(GridCoord::new(gx as i32, gy as i32), CellState::Blocked);
-          }
+    // The tile cells under the grid, a cell wider each way (float casts
+    // saturate, so a far or non-finite grid reads nothing it should not)
+    let under = |grid: f32, count: u32, map: f32, tile: f32| {
+      let from = (f64::from(grid) - f64::from(map)) / f64::from(tile);
+      let to = from + f64::from(count) * cell / f64::from(tile);
+      (
+        (from.floor() as i32).saturating_sub(1),
+        (to.ceil() as i32).saturating_add(1),
+      )
+    };
+    let (x0, x1) = under(self.origin_x, cols, origin.x, size.x);
+    let (y0, y1) = under(self.origin_y, rows, origin.y, size.y);
+    let area = CellRect::new(IVec2::new(x0, y0), IVec2::new(x1, y1));
+    for (at, kind) in tiles.cells_in(area) {
+      let blocks = match kind {
+        TileCell::Solid | TileCell::Slope(_) => true,
+        TileCell::Shape(shape) => tiles.shape_blocks(shape),
+        TileCell::Empty | TileCell::OneWay => false,
+      };
+      if !blocks {
+        continue;
+      }
+      let min_x =
+        f64::from(origin.x) + f64::from(at.x) * f64::from(size.x) - f64::from(self.origin_x);
+      let min_y =
+        f64::from(origin.y) + f64::from(at.y) * f64::from(size.y) - f64::from(self.origin_y);
+      let xs = span(min_x, min_x + f64::from(size.x), cols);
+      for gy in span(min_y, min_y + f64::from(size.y), rows) {
+        for gx in xs.clone() {
+          self.set(GridCoord::new(gx as i32, gy as i32), CellState::Blocked);
         }
       }
     }
@@ -487,6 +500,34 @@ mod tests {
   }
 
   #[test]
+  fn block_tiles_reads_an_unbounded_grid_at_negative_cells() {
+    use crate::core::ecs::IVec2;
+    use crate::core::physics::{TileCell, TileColliders};
+    let mut tiles = TileColliders::unbounded(Vec2::splat(16.0));
+    // Two cells under the grid (one right at its top-left), one solid
+    // cell left of it and a one-way cell under it
+    for (x, y) in [(-10, -10), (-20, -1), (-21, 3), (5, 5)] {
+      tiles.set(IVec2::new(x, y), TileCell::Solid);
+    }
+    tiles.set(IVec2::new(-1, -1), TileCell::OneWay);
+    let mut grid = NavigationGrid::with_origin(640.0, 640.0, 16.0, -320.0, -320.0);
+    grid.block_tiles(&tiles, Vec2::ZERO);
+    let (w, h) = grid.dimensions();
+    let blocked: Vec<_> = (0..h as i32)
+      .flat_map(|y| (0..w as i32).map(move |x| GridCoord::new(x, y)))
+      .filter(|c| !grid.is_walkable(*c))
+      .collect();
+    assert_eq!(
+      blocked,
+      [
+        GridCoord::new(10, 10),
+        GridCoord::new(0, 19),
+        GridCoord::new(25, 25)
+      ]
+    );
+  }
+
+  #[test]
   fn block_tiles_blocks_shape_cells_that_cover_their_centre() {
     use crate::core::physics::{CellShape, TileCell, TileColliders};
     let polygon = |points: &[(f32, f32)]| points.iter().map(|&(x, y)| Vec2::new(x, y)).collect();
@@ -504,10 +545,10 @@ mod tests {
       polygons: vec![polygon(&[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])],
       one_way: true,
     });
-    tiles.set(0, 0, TileCell::Shape(most));
-    tiles.set(1, 0, TileCell::Shape(corner));
-    tiles.set(2, 0, TileCell::Shape(slab));
-    tiles.set(3, 0, TileCell::Shape(9));
+    tiles.set(IVec2::new(0, 0), TileCell::Shape(most));
+    tiles.set(IVec2::new(1, 0), TileCell::Shape(corner));
+    tiles.set(IVec2::new(2, 0), TileCell::Shape(slab));
+    tiles.set(IVec2::new(3, 0), TileCell::Shape(9));
     let mut grid = NavigationGrid::new(40.0, 10.0, 10.0);
     grid.block_tiles(&tiles, Vec2::ZERO);
     let walkable: Vec<bool> = (0..4)
