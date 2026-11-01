@@ -47,7 +47,7 @@ Today each is refused in `tilemap/tiled/build.rs` (the orientation check and the
 - Tiled's text objects beyond their placement (`ObjectShape::Text` keeps the text; nothing draws it).
 - Streaming a world's levels automatically: 6a gives positions, neighbours and `spawn_levels_in`, and when to load and unload stays the game's call.
 - LDtk level background images.
-- What `docs/backlog/tilemap.md` lists as limits: transform propagation walking static subtrees, the landing frame's first draw, relabelling long split loops, lighting's lack of a spatial index, and the keep window's memory.
+- What `docs/backlog/tilemap.md` lists as limits: the landing frame's first draw, relabelling long split loops, lighting's lack of a spatial index, and the keep window's memory.
 
 ## Outside tile maps
 
