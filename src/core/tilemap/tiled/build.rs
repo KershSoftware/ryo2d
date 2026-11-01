@@ -553,9 +553,9 @@ fn chunked_cells(
   let per_chunk = u64::from(CHUNK_SIZE * CHUNK_SIZE);
   let mut read = 0u64;
   let mut reached: FastSet<IVec2> = FastSet::default();
-  for chunk in chunks {
-    let (origin, size) =
-      check_chunk(chunk, tile_size).map_err(|what| fail(path, &chunk_place(place, chunk), what))?;
+  for (index, chunk) in chunks.iter().enumerate() {
+    let (origin, size) = check_chunk(chunk, tile_size)
+      .map_err(|what| fail(path, &chunk_place(place, index, chunk), what))?;
     read = read.saturating_add(u64::from(size.x) * u64::from(size.y));
     if read > MAX_CELLS {
       return Err(fail(
@@ -605,8 +605,8 @@ fn chunked_grid(
     ));
   }
   let mut grid = TileGrid::unbounded();
-  for chunk in raw.chunks.iter().flatten() {
-    let at = chunk_place(place, chunk);
+  for (index, chunk) in raw.chunks.iter().flatten().enumerate() {
+    let at = chunk_place(place, index, chunk);
     // Checked with the map's cells before anything was decoded: this only
     // reads its place and size again
     let (origin, size) = check_chunk(chunk, tile_size).map_err(|e| fail(path, &at, e))?;
@@ -686,20 +686,32 @@ pub(crate) fn infinite_bounds(path: &AssetPath, raw: &RawMap) -> Result<CellRect
   Ok(tiles_bounds(&grids))
 }
 
-/// Where a chunk of the layer at `layer` is, for its errors
-fn chunk_place(layer: &str, chunk: &RawChunk) -> String {
-  format!("{layer}, chunk ({}, {})", chunk.x, chunk.y)
+/// Where the chunk `index` (counting from 0) of the layer at `layer` is,
+/// for its errors: by its place, or by its index when it states no place
+fn chunk_place(layer: &str, index: usize, chunk: &RawChunk) -> String {
+  match (chunk.x, chunk.y) {
+    (Some(x), Some(y)) => format!("{layer}, chunk ({x}, {y})"),
+    _ => format!("{layer}, chunk {index} (counting from 0)"),
+  }
 }
 
 /// Where `chunk`'s first cell is and its size in cells, once it is a
-/// chunk the engine can hold: a size of a cell or more, within what a
-/// layer holds, and every cell's pixels (its cell times `tile_size`, which
-/// is not zero) a number an `i32` holds. Checked before anything is
-/// decoded or allocated, so a chunk far past the cells and pixels the
-/// engine counts in fails naming it, and a map's cells are counted from
-/// its chunks' places and sizes alone
+/// chunk the engine can hold: its `x`, `y`, `width` and `height` all
+/// stated (Tiled writes each; one left out is a broken file, not a 0), a
+/// size of a cell or more, within what a layer holds, and every cell's
+/// pixels (its cell times `tile_size`, which is not zero) a number an
+/// `i32` holds. Checked before anything is decoded or allocated, so a
+/// chunk far past the cells and pixels the engine counts in fails naming
+/// it, and a map's cells are counted from its chunks' places and sizes
+/// alone
 fn check_chunk(chunk: &RawChunk, tile_size: UVec2) -> Result<(IVec2, UVec2), String> {
-  let (w, h) = (chunk.width, chunk.height);
+  let stated =
+    |value: Option<i64>, name: &str| value.ok_or_else(|| format!("it does not state its `{name}`"));
+  let (x, y) = (stated(chunk.x, "x")?, stated(chunk.y, "y")?);
+  let (w, h) = (
+    stated(chunk.width, "width")?,
+    stated(chunk.height, "height")?,
+  );
   if w <= 0 || h <= 0 {
     return Err(format!("its size, {w} x {h}, holds no cell"));
   }
@@ -720,10 +732,10 @@ fn check_chunk(chunk: &RawChunk, tile_size: UVec2) -> Result<(IVec2, UVec2), Str
     let tile = i128::from(tile);
     first * tile >= i128::from(i32::MIN) && end * tile <= i128::from(i32::MAX)
   };
-  let origin = i32::try_from(chunk.x)
+  let origin = i32::try_from(x)
     .ok()
-    .zip(i32::try_from(chunk.y).ok())
-    .filter(|_| fits(chunk.x, w, tile_size.x) && fits(chunk.y, h, tile_size.y));
+    .zip(i32::try_from(y).ok())
+    .filter(|_| fits(x, w, tile_size.x) && fits(y, h, tile_size.y));
   let Some((x, y)) = origin else {
     return Err(
       "its cells reach past the pixels a map holds (a cell's place in pixels, its cell times the tile size, must fit a 32-bit integer)"

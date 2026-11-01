@@ -918,7 +918,7 @@ mod tests {
     // four layers) are 2^28 cells to read, past the 2^27 a map holds:
     // counted from the chunks' sizes before any is decoded, so a 25 MB file
     // asking for a GiB of cells fails on the count
-    let chunks = vec![r#"{"width":16,"height":16}"#; 1 << 18].join(",");
+    let chunks = vec![r#"{"x":0,"y":0,"width":16,"height":16}"#; 1 << 18].join(",");
     let layers: Vec<String> = (1..=4)
       .map(|id| chunked_layer(id, &format!("l{id}"), &chunks))
       .collect();
@@ -929,12 +929,41 @@ mod tests {
       "{error}"
     );
     // one layer holding more than a layer holds names it
-    let chunks = vec![r#"{"width":16,"height":16}"#; (1 << 18) + 1].join(",");
+    let chunks = vec![r#"{"x":0,"y":0,"width":16,"height":16}"#; (1 << 18) + 1].join(",");
     let error = failure(&infinite_json(&chunked_layer(1, "vast", &chunks)));
     assert!(
       error.contains(r#"layer "vast""#) && error.contains("past the 67108864 cells a layer holds"),
       "{error}"
     );
+  }
+
+  #[test]
+  fn a_chunk_that_does_not_state_its_place_or_size_fails_naming_it() {
+    // Tiled writes all four; one left out is a broken file, not a chunk at
+    // 0 or of no size. The error names the layer, the chunk (by its place,
+    // or by its order in the layer when its place is what is missing) and
+    // what it lacks
+    let data = ["0"; 4].join(",");
+    let cases = [
+      (r#""y":0,"width":2,"height":2"#, "chunk 1", "`x`"),
+      (r#""x":0,"width":2,"height":2"#, "chunk 1", "`y`"),
+      (r#""x":-4,"y":2,"height":2"#, "chunk (-4, 2)", "`width`"),
+      (r#""x":-4,"y":2,"width":2"#, "chunk (-4, 2)", "`height`"),
+    ];
+    for (fields, at, what) in cases {
+      let chunks = format!(
+        r#"{{"x":0,"y":0,"width":2,"height":2,"data":[{data}]}},{{{fields},"data":[{data}]}}"#
+      );
+      let error = failure(&infinite_json(&chunked_layer(1, "ground", &chunks)));
+      assert!(
+        error.contains("m.tmj")
+          && error.contains(r#"layer "ground""#)
+          && error.contains(at)
+          && error.contains(what)
+          && error.contains("does not state"),
+        "{fields}: {error}"
+      );
+    }
   }
 
   /// `count` chunks of `size` cells, each full of tile 1, the `i`th at

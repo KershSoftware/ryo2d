@@ -397,11 +397,13 @@ impl<'a, 'i> Reader<'a, 'i> {
     if self.child(data, "chunk").is_some() {
       let mut chunks = Vec::new();
       for chunk in self.children(data, "chunk") {
+        // An attribute left out stays `None`: the build refuses it,
+        // naming the chunk
         chunks.push(RawChunk {
-          x: self.num(chunk, "x")?.unwrap_or(0),
-          y: self.num(chunk, "y")?.unwrap_or(0),
-          width: self.num(chunk, "width")?.unwrap_or(0),
-          height: self.num(chunk, "height")?.unwrap_or(0),
+          x: self.num(chunk, "x")?,
+          y: self.num(chunk, "y")?,
+          width: self.num(chunk, "width")?,
+          height: self.num(chunk, "height")?,
           data: Some(self.cells(chunk, plain)?),
         });
       }
@@ -852,6 +854,70 @@ mod tests {
 
   const HEAD: &str =
     r#"<map orientation="orthogonal" width="2" height="2" tilewidth="16" tileheight="16">"#;
+
+  /// An infinite TMX map of 16 px tiles holding one tile layer "ground"
+  /// whose `<data>` (CSV) holds `chunks`
+  fn infinite_tmx(chunks: &str) -> String {
+    format!(
+      "<map orientation=\"orthogonal\" width=\"0\" height=\"0\" tilewidth=\"16\" tileheight=\"16\" infinite=\"1\">\n <layer id=\"1\" name=\"ground\" width=\"0\" height=\"0\">\n  <data encoding=\"csv\">\n{chunks}\n  </data>\n </layer>\n</map>"
+    )
+  }
+
+  #[test]
+  fn a_tmx_chunk_that_does_not_state_its_place_or_size_fails_naming_it() {
+    let full = "<chunk x=\"0\" y=\"0\" width=\"2\" height=\"2\">0,0,\n0,0</chunk>";
+    let cases = [
+      ("y=\"0\" width=\"2\" height=\"2\"", "chunk 1", "`x`"),
+      ("x=\"0\" width=\"2\" height=\"2\"", "chunk 1", "`y`"),
+      ("x=\"-4\" y=\"2\" height=\"2\"", "chunk (-4, 2)", "`width`"),
+      ("x=\"-4\" y=\"2\" width=\"2\"", "chunk (-4, 2)", "`height`"),
+    ];
+    for (attributes, at, what) in cases {
+      let chunks = format!("{full}\n<chunk {attributes}>0,0,\n0,0</chunk>");
+      let error = failure(&infinite_tmx(&chunks));
+      assert!(
+        error.contains("m.tmx")
+          && error.contains(r#"layer "ground""#)
+          && error.contains(at)
+          && error.contains(what)
+          && error.contains("does not state"),
+        "{attributes}: {error}"
+      );
+    }
+  }
+
+  #[test]
+  fn hostile_tmx_chunks_are_refused_naming_their_place() {
+    // The TMX reader's own path to the chunks the JSON's hostile tests
+    // cover: each fails its load naming the file and the place, never a
+    // panic or an allocation of what the chunk claims
+    let refused = |chunk: &str, wanted: &[&str]| {
+      let error = failure(&infinite_tmx(chunk));
+      assert!(
+        error.contains("m.tmx") && wanted.iter().all(|w| error.contains(w)),
+        "{chunk}: {error}"
+      );
+    };
+    // CSV shorter than the chunk's cells
+    refused(
+      "<chunk x=\"0\" y=\"16\" width=\"2\" height=\"2\">0,0,\n0</chunk>",
+      &[
+        r#"layer "ground""#,
+        "chunk (0, 16)",
+        "has 3 cells, expected 4",
+      ],
+    );
+    // A negative width
+    refused(
+      "<chunk x=\"16\" y=\"0\" width=\"-16\" height=\"16\">0</chunk>",
+      &[r#"layer "ground""#, "chunk (16, 0)", "-16 x 16"],
+    );
+    // An x past what an i64 holds: the reader names its line and column
+    refused(
+      "<chunk x=\"9223372036854775808\" y=\"0\" width=\"1\" height=\"1\">0</chunk>",
+      &["line 4, column", "x"],
+    );
+  }
 
   #[test]
   fn a_broken_tmx_names_its_line_and_column() {

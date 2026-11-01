@@ -207,14 +207,16 @@ pub(crate) struct RawLayer {
 
 /// A chunk of an infinite map's tile layer: where its first cell is, its
 /// size in cells and its gids, row by row. Its numbers are read wider than
-/// a cell's, so a chunk past what a cell holds is refused naming it
+/// a cell's, so a chunk past what a cell holds is refused naming it, and
+/// each is `None` where the file leaves it out, which the build refuses
+/// naming it (`check_chunk`)
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub(crate) struct RawChunk {
-  pub x: i64,
-  pub y: i64,
-  pub width: i64,
-  pub height: i64,
+  pub x: Option<i64>,
+  pub y: Option<i64>,
+  pub width: Option<i64>,
+  pub height: Option<i64>,
   pub data: Option<RawData>,
 }
 
