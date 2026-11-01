@@ -137,6 +137,30 @@ let heightmap = generate_heightmap(128, 128, &NoiseConfig::default(), &mut rng);
 // heightmap is Vec<f32> with values 0.0-1.0
 ```
 
+**An endless world, a chunk at a time:** `with_offset(x, y)` sets where the heightmap's first cell samples the noise, so a streamed map's generator (`MapStream`, `ryo-tilemap`) samples it at the chunk's own cells by offsetting to the chunk's `first_cell`. A call's values are not normalized to that call (each is the noise at its cell, taken from -1..1 to 0..1), so chunks side by side meet without a seam, and a chunk asked for again comes out the same. Keep the seed the same for every chunk:
+
+<!-- with: use ryo2d_procgen::prelude::*; -->
+```rust
+let hills = NoiseConfig::new().with_scale(0.045).with_octaves(3);
+let stream = MapStream::new(move |request: ChunkRequest| {
+  let first = request.first_cell;
+  // The chunk's 32 columns, read along one row of the noise
+  let at_columns = hills.clone().with_offset(f64::from(first.x), 0.0);
+  let heights = generate_heightmap(32, 1, &at_columns, &mut SeededRng::new(2026));
+  let mut tiles = ChunkTiles::default();
+  for (x, height) in heights.iter().enumerate() {
+    // The grass row: from row 20 to row 32
+    let top = 20 + (height * 12.0) as i32;
+    for y in 0..32 {
+      if first.y + y >= top {
+        tiles.set("ground", UVec2::new(x as u32, y as u32), Some(Tile::new(0, 0)));
+      }
+    }
+  }
+  tiles
+});
+```
+
 ### Random Walk (Drunkard's Walk)
 
 Creates organic paths and caves:

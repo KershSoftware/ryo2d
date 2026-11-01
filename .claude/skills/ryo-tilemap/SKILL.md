@@ -521,6 +521,26 @@ ctx.world.spawn((
 ```
 
 - **The generator** gets a `ChunkRequest { chunk, first_cell, tile_size }` and returns a `ChunkTiles`: `set(layer, cell, Option<Tile>)` with `cell` inside the chunk (0 to 31 each way; the map's cell is `first_cell + cell`), layers by the map's names. A layer it gives nothing lands empty, and a name the map has no tile layer of is left out, warned once. It runs on the `ryo2d chunk builder` thread, so it must be `Send + Sync` and cannot touch the world: make it a pure function of the chunk and what it captured (a seed, a `ryo-procgen` noise). It is asked again for a chunk that comes back after unloading (unless the stream kept it, below), so the same chunk must come out the same.
+- **Noise from `ryo-procgen`** (the game adds `ryo2d-procgen`) is sampled at the chunk's own cells by offsetting it to `first_cell` with `NoiseConfig::with_offset`. Procgen does not normalize a call's values to that call (each is the noise at its cell), so chunks side by side meet, and the same chunk comes out the same:
+
+  <!-- with: use ryo2d_procgen::prelude::*; -->
+  ```rust
+  // Caves: open where the noise at a cell is low, the same seed for every chunk
+  let caves = NoiseConfig::new().with_scale(0.075).with_octaves(2);
+  let stream = MapStream::new(move |request: ChunkRequest| {
+    let first = request.first_cell;
+    let at_cells = caves.clone().with_offset(f64::from(first.x), f64::from(first.y));
+    let field = generate_heightmap(32, 32, &at_cells, &mut SeededRng::new(77));
+    let mut tiles = ChunkTiles::default();
+    for (i, value) in field.iter().enumerate() {
+      if *value >= 0.36 {
+        let cell = UVec2::new(i as u32 % 32, i as u32 / 32);
+        tiles.set("ground", cell, Some(Tile::new(0, 1)));
+      }
+    }
+    tiles
+  });
+  ```
 - **Distances** are in world pixels, along each axis: chunks within `load_distance` (512) of a camera's view or an anchor load, nearest first, and chunks farther than `unload_distance` (1,536) from every one unload; the gap keeps a chunk at the edge from loading and unloading as the player paces. Set them as fields: `MapStream { load_distance: 256.0, ..MapStream::new(generator) }`. Every camera's view is an anchor unless `cameras` is false (a minimap camera zoomed far out would load a wide area: an anchor's area is capped at 64 chunks a side, warned). A view loads what each tile layer shows there: a layer with parallax (section 10), or offset from the map, also has its chunks loaded where it shows them, however far that is from the view's own, at the cost of those chunks (each resident in every layer). An `unload_distance` below `load_distance` is raised to it, warned.
 - **Landing:** at most `land_per_frame` (2) chunks land a frame, nearest the anchors first. Each chunk landed or unloaded builds or takes down its collision and shadows in that frame (about 0.1 ms each, natively), and a camera crossing a 1080p view at 2,000 px a second needs about half a chunk landed and half unloaded a frame on average, in bursts as a row or column of chunks comes in, so the defaults keep up with room to spare; raise them for a faster or zoomed-out camera, at that cost a frame. A landed chunk draws, collides, casts shadows and spawns its class tiles (`with_entity_tiles`) like a map's own, and `ChunkEvent::Loaded { map, chunk }` is sent, its class tiles already in: place the chunk's enemies and pickups then, each with `ChunkOwned { map, chunk }` so it goes with the chunk (example below).
 - **Unloading:** at most `unload_per_frame` (2) chunks unload a frame, the farthest from the anchors first; the others stay resident (drawn, colliding, editable) until their turn, so after a teleport the old area goes over a few frames and the resident chunks are within the distances again once it has. An unloading chunk's tiles and class tiles go, and so do the entities marked `ChunkOwned` with it (their children too, and disabled ones), in `PreUpdate`; its colliders and shadows follow within the frame. `ChunkEvent::Unloading { map, chunk, changed }` says so, and by the time the game reads it nothing of the chunk is left to read from the map: `changed` holds its tiles when the player changed it (below), and is `None` for a chunk as it landed. Entities the game spawned there without `ChunkOwned` are the game's to despawn, and a map's root despawned or put over takes the `ChunkOwned` entities of all its chunks, sending no `Unloading`. A shadow chain along an unloaded chunk's left or top border can stay while the cells beside it remain, closing their shadow at the gap: `MapOccluder::chunk` names the unloaded chunk.
