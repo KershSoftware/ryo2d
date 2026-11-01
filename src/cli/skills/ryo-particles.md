@@ -165,7 +165,7 @@ if let Some(mut transform) = ctx.world.get_mut::<Transform>(self.attractor) {
 
 ## Collisions
 
-`with_collision(CollisionConfig)` makes an emitter's particles collide with entities that have `Collider` (no `RigidBody` needed); the examples build the configs it takes. Geometry is the collider as physics places it: a circle is a circle; a segment, polyline or segments collider (a tile map's colliders among them) is its edges, which a particle meets within its radius, or by crossing one in an update, and bounces off to the side it came from; every other shape is its world bounds, a box (`Collider::world_bounds`). Trigger colliders, `Disabled` entities and the emitter's own collider are skipped. Each particle is a circle of the config's radius.
+`with_collision(CollisionConfig)` makes an emitter's particles collide with entities that have `Collider` (no `RigidBody` needed); the examples build the configs it takes. Geometry is the collider as physics places it: a circle is a circle; a segment, polyline or segments collider (a tile map's colliders among them) is its edges, which a particle meets within its radius, or by crossing one in an update, and bounces off to the side it came from; every other shape is its world bounds, a box (`Collider::world_bounds`). A loop round something solid, a tile map's ground or a polyline whose last point is its first, has one side, the outside: a particle that starts inside it (landing dust spawned round the feet) goes out through the nearest edge, so it ends on top of the ground. An open polyline or segment has no inside: a particle spawned past one stays on that side, so spawn colliding particles on the side they belong. Trigger colliders, `Disabled` entities and the emitter's own collider are skipped. Each particle is a circle of the config's radius.
 
 ```rust
 CollisionConfig::bouncy(2.0, 0.7); // radius, restitution
@@ -180,7 +180,7 @@ CollisionConfig::new(2.0)
 |----------|-----------|------------------------------|
 | `Die` | Particle removed | Once, with `with_events()` |
 | `CollisionResponse::bounce(r)` | Reflects with restitution | With `with_events()`, on contact entry at an impact speed of at least `MIN_BOUNCE_EVENT_SPEED` (20 px/s) |
-| `Stick` | Stops; still ages and fades | Once, with `with_events()` |
+| `Stick` | Stops on the surface, its radius out (where it crossed an edge, for a fast one); still ages and fades | Once, with `with_events()` |
 | `Event` | Passes through | Always, on contact entry |
 
 Contact entry is tracked per particle, not per collider: sliding from a floor into a wall does not notify again. Collisions are checked at particle positions once per update, so very fast particles can pass through thin boxes and circles; an edge also stops a particle whose move crossed it.
