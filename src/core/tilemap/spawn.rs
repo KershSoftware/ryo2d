@@ -2372,6 +2372,71 @@ mod tests {
     );
   }
 
+  #[test]
+  fn an_edit_clears_a_cell_every_sub_layer_of_it_holds() {
+    // "Ground" and its sub-layers "Ground#1" and "Ground#2" (as an LDtk
+    // stack three deep makes) all hold (1, 1); "#2" holds (3, 1), which
+    // "#1" holds too. Each sub-layer is cleared, however many before it
+    // held the same cells
+    let mut world = crate::core::testing::asset_world();
+    let mut map = TileMap::new(UVec2::new(8, 4), UVec2::splat(16));
+    map.add_tileset(TilesetSource::Embedded(Arc::new(classed_tileset())));
+    let plain = Tile::new(0, 0);
+    let ground = map.add_tile_layer("Ground");
+    let base = map.layers[ground].info.id;
+    let held: [(&str, &[IVec2]); 3] = [
+      ("Ground", &[IVec2::new(1, 1)]),
+      (
+        "Ground#1",
+        &[IVec2::new(1, 1), IVec2::new(2, 1), IVec2::new(3, 1)],
+      ),
+      ("Ground#2", &[IVec2::new(1, 1), IVec2::new(3, 1)]),
+    ];
+    for (name, cells) in held {
+      let layer = map
+        .layer_index(name)
+        .unwrap_or_else(|| map.add_tile_layer(name));
+      if name != "Ground" {
+        map.layers[layer].info.part_of = Some(base);
+        map.layers[layer].info.collides = false;
+      }
+      let Some(grid) = map.tiles_mut(layer) else {
+        panic!("{name} is a tile layer");
+      };
+      for &cell in cells {
+        grid.set(cell, Some(plain));
+      }
+    }
+    let map = spawn_code_map(&mut world, map, MapRoot::new);
+    Frames::new().run(&mut world);
+    let held = |world: &mut World, name: &str, cell: IVec2| {
+      let found = world
+        .query::<(&MapLayerRef, &TileLayerData)>()
+        .iter(world)
+        .find(|(layer, _)| layer.map == map && layer.name == name)
+        .map(|(_, data)| data.grid.get(cell));
+      found.unwrap_or_else(|| panic!("no layer {name}"))
+    };
+    let stacked = IVec2::new(1, 1);
+    let mut view = MapsView::new(&mut world);
+    assert!(view.set_tile(map, "Ground", stacked, Some(Tile::new(0, 3))));
+    assert_eq!(view.tile(map, "Ground", stacked), Some(Tile::new(0, 3)));
+    for part in ["Ground#1", "Ground#2"] {
+      assert_eq!(held(&mut world, part, stacked), None, "{part}");
+    }
+    // A fill whose region the second sub-layer holds less of than the first
+    let mut view = MapsView::new(&mut world);
+    let changed = view.fill(map, "Ground", IVec2::new(2, 1), IVec2::new(3, 1), None);
+    assert_eq!(changed, 2, "the two cells only the sub-layers held");
+    for (part, cell) in [
+      ("Ground#1", IVec2::new(2, 1)),
+      ("Ground#1", IVec2::new(3, 1)),
+      ("Ground#2", IVec2::new(3, 1)),
+    ] {
+      assert_eq!(held(&mut world, part, cell), None, "{part} at {cell}");
+    }
+  }
+
   /// A level's maps for the observer tests: which to cancel as its first
   /// layer arrives (with another map), and which layer to drop as it arrives
   #[derive(Resource)]

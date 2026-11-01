@@ -109,7 +109,9 @@ fn clear_parts(world: &mut World, parts: &[Entity], lo: IVec2, hi: IVec2) -> Fas
     if a.x > b.x || a.y > b.y {
       continue;
     }
-    let before = cleared.len();
+    // Whether this part holds a tile in the region: a cell an earlier part
+    // held too is in `cleared` already, and is this part's to clear as well
+    let mut found = false;
     for chunk in grid.chunks_within(TileGrid::chunk_of(a), TileGrid::chunk_of(b)) {
       let Some(cells) = grid.chunk_cells(chunk) else {
         continue;
@@ -120,10 +122,11 @@ fn clear_parts(world: &mut World, parts: &[Entity], lo: IVec2, hi: IVec2) -> Fas
         let place = origin + IVec2::new(at as i32 % side, at as i32 / side);
         if cell != 0 && place.cmpge(a).all() && place.cmple(b).all() {
           cleared.insert(place);
+          found = true;
         }
       }
     }
-    if cleared.len() > before {
+    if found {
       edit_grid(world, part, |grid| grid.fill(a, b, None), |n| *n > 0);
     }
   }
