@@ -7,7 +7,7 @@ use super::spawn::{
   ClassTile, LayerTiles, MapIds, MapLayerRef, MapLayers, MapRoot, MapTile, TileLayerData,
   map_asset, registered_class, spawn_class_tile,
 };
-use super::stream::resident_chunks;
+use super::stream::{note_class_edit, resident_chunks};
 use super::{CHUNK_SIZE, LayerInfo, Properties, Tile, TileGrid};
 use crate::core::ecs::{ChildOf, DetectChangesMut, Entity, Resource, Transform, World};
 use crate::core::hash::FastSet;
@@ -252,8 +252,14 @@ fn set_cell(
   {
     return false;
   }
-  if let Some(mut table) = world.get_mut::<LayerTiles>(layer) {
-    table.0.remove(&cell);
+  // An entry, even one naming a class tile the game despawned, is the
+  // cell's class tile: on a streamed map, its chunk changed
+  let listed = world
+    .get_mut::<LayerTiles>(layer)
+    .and_then(|mut table| table.0.remove(&cell))
+    .is_some();
+  if listed || (class.is_some() && tile.is_some()) {
+    note_class_edit(world, map, cell);
   }
   let mut changed = false;
   if let Some(entity) = existing {
@@ -475,6 +481,7 @@ fn fill_layer(
     if let Some(mut table) = world.get_mut::<LayerTiles>(layer) {
       table.0.remove(&cell);
     }
+    note_class_edit(world, map, cell);
     let live = world.get::<MapTile>(entity).is_some_and(|t| t.cell == cell);
     let unchanged = world
       .get::<TileLayerData>(layer)

@@ -1,24 +1,31 @@
 //! Streaming an infinite map's chunks. A [`MapStream`] on a map's root
 //! gives it a generator; each frame `stream_maps` works out the chunks
 //! within its load distance of the cameras and the [`StreamAnchor`]s, asks
-//! the generator for the missing ones on a thread of its own (where there
-//! is none, the web, on the main thread within a time budget), lands those
-//! that came back nearest first within a budget a frame, and unloads the
-//! chunks past its unload distance from every anchor. Each arrival and
+//! for the missing ones on a thread of its own (where there is none, the
+//! web, on the main thread within a time budget): the stream's
+//! [`SavedChunks`] first, then the generator. It lands those that came
+//! back nearest first within a budget a frame, and unloads the chunks past
+//! its unload distance from every anchor, keeping those a player changed
+//! and despawning the entities they own ([`ChunkOwned`]). Each arrival and
 //! departure is a [`ChunkEvent`].
 
-use std::sync::Arc;
+use std::collections::BTreeMap;
+use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use glam::{Affine2, IVec2, UVec2, Vec2};
+use serde::ser::SerializeMap;
 
 use super::edit::local_to_world;
 use super::grid::CELLS;
 use super::jobs::Worker;
-use super::spawn::{MapLayerRef, MapLayers, TileLayerData};
+use super::spawn::{LayerTiles, MapLayerRef, MapLayers, MapTile, TileLayerData};
 use super::{CHUNK_SIZE, Tile, TileGrid};
-use crate::core::ecs::kernel::QueryState;
+use crate::core::ecs::kernel::{Allow, Disabled, QueryState};
 use crate::core::ecs::{
   Component, DetectChangesMut, Entity, Local, Message, Messages, With, World,
 };
@@ -70,7 +77,10 @@ fn span_cap() -> i32 {
 /// named as the map names it, its cells from (0, 0), the chunk's first
 /// cell, to (31, 31). A layer given nothing lands empty.
 ///
-/// Two are equal when they hold the same tiles in every layer.
+/// Two are equal when they hold the same tiles in every layer. It
+/// serializes as a map from each layer holding a tile to its cells, packed
+/// as a Tiled layer's base64 zlib data packs them, so a save game holding
+/// it stays small.
 #[derive(Clone, Default)]
 pub struct ChunkTiles {
   /// Each layer's cells, row by row, as `TileGrid::encode` gives them
@@ -160,6 +170,193 @@ impl std::fmt::Debug for ChunkTiles {
   }
 }
 
+/// Each layer holding a tile, by name, to its cells packed as base64 zlib
+impl serde::Serialize for ChunkTiles {
+  fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+    let mut layers = serializer.serialize_map(None)?;
+    for (name, cells) in &self.layers {
+      if !empty(cells) {
+        let packed = pack(cells).map_err(serde::ser::Error::custom)?;
+        layers.serialize_entry(name, &packed)?;
+      }
+    }
+    layers.end()
+  }
+}
+
+/// A map from layer names to packed cells, as [`ChunkTiles`] serializes:
+/// data that is not base64, or does not inflate to a chunk's cells, is an
+/// error naming its layer, and a cell holding no tile reads empty
+impl<'de> serde::Deserialize<'de> for ChunkTiles {
+  fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<ChunkTiles, D::Error> {
+    let packed = BTreeMap::<String, String>::deserialize(deserializer)?;
+    let mut tiles = ChunkTiles::default();
+    for (name, text) in packed {
+      let cells = unpack(&text)
+        .map_err(|error| serde::de::Error::custom(format!("layer {name:?}: {error}")))?;
+      if !empty(&cells) {
+        tiles.layers.push((name, cells));
+      }
+    }
+    Ok(tiles)
+  }
+}
+
+/// A chunk's cells as base64 text of their little-endian bytes, zlib
+/// compressed
+fn pack(cells: &[u32; CELLS]) -> std::io::Result<String> {
+  let mut zlib = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+  for cell in cells {
+    zlib.write_all(&cell.to_le_bytes())?;
+  }
+  Ok(STANDARD.encode(zlib.finish()?))
+}
+
+/// The cells `pack` packed: an error for text that is not base64 or does
+/// not inflate to exactly a chunk's cells (inflating no further than one
+/// byte past them, so a small text cannot fill memory)
+fn unpack(text: &str) -> Result<Box<[u32; CELLS]>, String> {
+  let packed = STANDARD
+    .decode(text.trim())
+    .map_err(|error| format!("the base64 data is broken: {error}"))?;
+  let want = CELLS * 4;
+  let mut bytes = Vec::with_capacity(want);
+  flate2::read::ZlibDecoder::new(packed.as_slice())
+    .take(want as u64 + 1)
+    .read_to_end(&mut bytes)
+    .map_err(|error| format!("the zlib data is broken: {error}"))?;
+  if bytes.len() > want {
+    return Err(format!("it holds more than a chunk's {CELLS} cells"));
+  }
+  if bytes.len() < want {
+    return Err(format!(
+      "it holds {} bytes, short of a chunk's {CELLS} cells of 4",
+      bytes.len()
+    ));
+  }
+  let mut cells = Box::new([0; CELLS]);
+  for (cell, raw) in cells.iter_mut().zip(bytes.as_chunks::<4>().0) {
+    let raw = u32::from_le_bytes(*raw);
+    if TileGrid::decode(raw).is_some() {
+      *cell = raw;
+    }
+  }
+  Ok(cells)
+}
+
+/// The chunks a player changed, kept while they are unloaded so they come
+/// back as the player left them; a clone shares the same store. Give it to
+/// a stream with [`MapStream::with_saved`]: when a chunk changed since it
+/// landed unloads (an edit through `ctx.maps()`, or a class tile the game
+/// despawned or an edit placed), its tiles go in, class tiles included,
+/// and a chunk the store holds comes back from it instead of the
+/// generator. Serialize it with a save game, and give it back to the
+/// stream when the game loads; [`MapsView::save_changed_chunks`](super::MapsView::save_changed_chunks)
+/// puts in the changed chunks still resident first.
+///
+/// ```
+/// use ryo2d::prelude::*;
+///
+/// /// What a save game holds of an endless world
+/// #[derive(serde::Serialize, serde::Deserialize)]
+/// struct WorldSave {
+///   seed: u64,
+///   chunks: SavedChunks,
+/// }
+///
+/// fn endless(ctx: &mut SceneContext<'_>, map: Handle<TileMap>, save: &WorldSave) -> Entity {
+///   // The stream keeps the chunks a player changed in the save's store
+///   let stream =
+///     MapStream::new(|_: ChunkRequest| ChunkTiles::default()).with_saved(save.chunks.clone());
+///   ctx.world.spawn((MapRoot::new(map), stream)).id()
+/// }
+///
+/// fn write(ctx: &mut SceneContext<'_>, map: Entity, save: &WorldSave) -> serde_json::Result<String> {
+///   // The changed chunks round the player, still resident, go in first
+///   ctx.maps().save_changed_chunks(map);
+///   serde_json::to_string(save)
+/// }
+/// ```
+#[derive(Clone, Default, serde::Deserialize)]
+#[serde(from = "Vec<SavedChunk<ChunkTiles>>")]
+pub struct SavedChunks {
+  chunks: Arc<Mutex<FastMap<IVec2, ChunkTiles>>>,
+}
+
+/// A saved chunk as a save game holds it
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SavedChunk<T> {
+  chunk: IVec2,
+  tiles: T,
+}
+
+impl SavedChunks {
+  /// The store, whose lock no one keeps across a panic
+  fn lock(&self) -> MutexGuard<'_, FastMap<IVec2, ChunkTiles>> {
+    self.chunks.lock().unwrap_or_else(PoisonError::into_inner)
+  }
+
+  /// A copy of the tiles kept for `chunk`
+  pub fn get(&self, chunk: IVec2) -> Option<ChunkTiles> {
+    self.lock().get(&chunk).cloned()
+  }
+
+  /// Keeps `tiles` for `chunk`, over what was kept for it
+  pub fn insert(&self, chunk: IVec2, tiles: ChunkTiles) {
+    self.lock().insert(chunk, tiles);
+  }
+
+  /// Forgets `chunk`, so it comes back from the generator
+  pub fn remove(&self, chunk: IVec2) -> Option<ChunkTiles> {
+    self.lock().remove(&chunk)
+  }
+
+  /// How many chunks are kept
+  pub fn len(&self) -> usize {
+    self.lock().len()
+  }
+
+  /// Whether no chunk is kept
+  pub fn is_empty(&self) -> bool {
+    self.lock().is_empty()
+  }
+}
+
+/// The chunks kept, by row, each with its tiles
+impl serde::Serialize for SavedChunks {
+  fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+    let chunks = self.lock();
+    let mut sorted: Vec<(&IVec2, &ChunkTiles)> = chunks.iter().collect();
+    sorted.sort_unstable_by_key(|(chunk, _)| (chunk.y, chunk.x));
+    serializer.collect_seq(
+      sorted
+        .into_iter()
+        .map(|(&chunk, tiles)| SavedChunk { chunk, tiles }),
+    )
+  }
+}
+
+impl From<Vec<SavedChunk<ChunkTiles>>> for SavedChunks {
+  fn from(chunks: Vec<SavedChunk<ChunkTiles>>) -> SavedChunks {
+    let store = chunks
+      .into_iter()
+      .map(|saved| (saved.chunk, saved.tiles))
+      .collect();
+    SavedChunks {
+      chunks: Arc::new(Mutex::new(store)),
+    }
+  }
+}
+
+/// How many chunks are kept
+impl std::fmt::Debug for SavedChunks {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("SavedChunks")
+      .field("chunks", &self.len())
+      .finish()
+  }
+}
+
 /// `cell`'s place among a chunk's cells; `None` outside the chunk
 fn place(cell: UVec2) -> Option<usize> {
   (cell.x < CHUNK_SIZE && cell.y < CHUNK_SIZE).then(|| (cell.y * CHUNK_SIZE + cell.x) as usize)
@@ -189,19 +386,23 @@ pub struct ChunkRequest {
 /// The engine asks `generator` for each chunk within `load_distance` of a
 /// camera's view or a [`StreamAnchor`], nearest first, on a thread of its
 /// own: it must be `Send + Sync`, and should be a pure function of the
-/// chunk (a seeded noise, say). Chunks land in every tile layer of the map
-/// at most `land_per_frame` a frame, nearest first, each drawing,
-/// colliding, casting shadows and spawning its class tiles as a landed
-/// map's do, and each sending [`ChunkEvent::Loaded`]. A chunk farther than
-/// `unload_distance` from every camera's view and anchor unloads, sending
-/// [`ChunkEvent::Unloading`] first. Distances are measured in world pixels
-/// from the anchor (or the view) to the chunk, along each axis. Only the
-/// chunks resident take edits: `ctx.maps()` refuses a cell in any other.
+/// chunk (a seeded noise, say). A chunk the stream's [`SavedChunks`] hold
+/// comes from them instead. Chunks land in every tile layer of the map at
+/// most `land_per_frame` a frame, nearest first, each drawing, colliding,
+/// casting shadows and spawning its class tiles as a landed map's do, and
+/// each sending [`ChunkEvent::Loaded`]. A chunk farther than
+/// `unload_distance` from every camera's view and anchor unloads, with the
+/// entities it owns ([`ChunkOwned`]), sending [`ChunkEvent::Unloading`]
+/// (carrying its tiles, and kept in the `SavedChunks`, when a player
+/// changed it). Distances are measured in world pixels from the anchor (or
+/// the view) to the chunk, along each axis. Only the chunks resident take
+/// edits: `ctx.maps()` refuses a cell in any other.
 ///
-/// A generator that panics on a chunk is caught: the chunk lands empty, it
-/// is not asked for again, and the dev log warns once a map. Where there
-/// are no threads (the web) the generator runs on the main thread,
-/// `web_budget` of each frame.
+/// On native platforms a generator that panics on a chunk is caught: the
+/// chunk lands empty, it is not asked for again, and the dev log warns once
+/// a map. A web build aborts on a panic, so there it ends the game: keep
+/// the generator from panicking. Where there are no threads (the web) the
+/// generator runs on the main thread, `web_budget` of each frame.
 ///
 /// ```
 /// use ryo2d::prelude::*;
@@ -243,12 +444,17 @@ pub struct MapStream {
   /// Where there are no threads (the web): main-thread time a frame for
   /// generating (at least one chunk a frame)
   pub web_budget: Duration,
+  /// Where the chunks a player changed are kept as they unload, and asked
+  /// for before the generator; `None` (the default) keeps none, so a
+  /// changed chunk comes back as the generator makes it
+  pub saved: Option<SavedChunks>,
 }
 
 impl MapStream {
   /// A stream of `generator`'s chunks: those within 512 px of a camera's
   /// view or an anchor load, those past 1,536 px of every one unload, four
-  /// land a frame, and the web gives it 2 ms a frame
+  /// land a frame, the web gives it 2 ms a frame, and it keeps no changed
+  /// chunks
   pub fn new(generator: impl Fn(ChunkRequest) -> ChunkTiles + Send + Sync + 'static) -> MapStream {
     MapStream {
       generator: Arc::new(generator),
@@ -257,7 +463,16 @@ impl MapStream {
       cameras: true,
       land_per_frame: 4,
       web_budget: Duration::from_millis(2),
+      saved: None,
     }
+  }
+
+  /// This stream keeping the chunks a player changed in `saved` (a clone
+  /// of the game's, which shares its store), and bringing back those it
+  /// holds instead of the generator's
+  pub fn with_saved(mut self, saved: SavedChunks) -> MapStream {
+    self.saved = Some(saved);
+    self
   }
 }
 
@@ -269,6 +484,7 @@ impl std::fmt::Debug for MapStream {
       .field("cameras", &self.cameras)
       .field("land_per_frame", &self.land_per_frame)
       .field("web_budget", &self.web_budget)
+      .field("saved", &self.saved)
       .finish_non_exhaustive()
   }
 }
@@ -278,15 +494,33 @@ impl std::fmt::Debug for MapStream {
 #[derive(Component, Clone, Copy, Debug, Default)]
 pub struct StreamAnchor;
 
+/// An entity that belongs to a streamed chunk: despawned (its children
+/// with it) when the chunk unloads, disabled or not, and when its map's
+/// root goes. Put it on the enemies and pickups a game spawns there on
+/// [`ChunkEvent::Loaded`]; they go in the unloading frame, before the
+/// game's update, and the next `Loaded` of the chunk places them afresh
+#[derive(Component, Clone, Copy, Debug)]
+pub struct ChunkOwned {
+  /// The map's root entity
+  pub map: Entity,
+  /// The chunk, signed as [`TileGrid::chunk_of`] gives it
+  pub chunk: IVec2,
+}
+
 /// A streamed map's chunk arriving or leaving
 #[derive(Message, Clone, Debug)]
 pub enum ChunkEvent {
   /// It landed this frame: its tiles draw and collide, and its class tiles
   /// are in, so a game can place its own entities there
   Loaded { map: Entity, chunk: IVec2 },
-  /// Sent before the chunk goes. `changed` is for its tiles when an edit
-  /// changed it since it landed; the engine does not track a chunk's
-  /// changes, so it is `None`
+  /// It unloaded this frame. By the time a game reads it the chunk is gone:
+  /// its tiles, its class tiles and the entities it owned ([`ChunkOwned`])
+  /// are, and its colliders and shadows go within the frame, so nothing of
+  /// it can be read from the map. `changed` is what it held when a player
+  /// changed it since it landed
+  /// (an edit through `ctx.maps()`, or a class tile the game despawned or
+  /// an edit placed): its tiles, class tiles included, as the stream's
+  /// [`SavedChunks`] keep them. `None` for a chunk as it landed
   Unloading {
     map: Entity,
     chunk: IVec2,
@@ -311,6 +545,9 @@ pub(crate) struct StreamState {
   /// The chunks whose generator panicked: each lands empty, never asked
   /// for again
   panicked: FastSet<IVec2>,
+  /// The resident chunks whose class tiles an edit placed, replaced or
+  /// took since they landed, which their grids' versions do not show
+  touched: FastSet<IVec2>,
   /// How many chunks within the load distance were not resident at the
   /// last look
   waiting: usize,
@@ -336,6 +573,7 @@ impl StreamState {
       out: FastMap::default(),
       ready: Vec::new(),
       panicked: FastSet::default(),
+      touched: FastSet::default(),
       waiting: 0,
       warned: Warned::default(),
     }
@@ -382,22 +620,37 @@ pub(crate) struct StreamWork {
   wanted: Vec<((f32, f32), IVec2)>,
   gone: Vec<IVec2>,
   arrived: Vec<(u64, Option<Generated>)>,
+  /// The class tiles of the chunks unloading
+  class_tiles: Vec<ClassEntry>,
+  /// Each map and chunk unloaded this frame, then the entities they owned
+  unloaded: Vec<(Entity, IVec2)>,
+  owned: Vec<Entity>,
 }
+
+/// A class tile listed in a chunk: its chunk, its layer's place among the
+/// map's unbounded tile layers, its cell and its entity (which the game may
+/// have despawned)
+type ClassEntry = (IVec2, usize, IVec2, Entity);
 
 /// The streamed maps: landed, and enabled
 pub(crate) type StreamedMaps = QueryState<(Entity, &'static MapStream), With<MapLayers>>;
 
+/// The entities owned by streamed chunks, disabled ones too
+pub(crate) type OwnedEntities = QueryState<(Entity, &'static ChunkOwned), Allow<Disabled>>;
+
 /// `PreUpdate`, after the maps land and reload and before class tiles
 /// follow the chunks: each streamed map unloads the chunks past its unload
-/// distance from every anchor, asks for the chunks within its load distance
-/// it lacks, nearest first, and lands those that came back, nearest first,
-/// within its budget. A frame where nothing lands or unloads allocates
-/// nothing
+/// distance from every anchor (keeping those a player changed, and
+/// despawning the entities they own), asks for the chunks within its load
+/// distance it lacks, nearest first, and lands those that came back,
+/// nearest first, within its budget. A frame where nothing lands or
+/// unloads allocates nothing
 pub(crate) fn stream_maps(
   world: &mut World,
   streamed: &mut StreamedMaps,
   anchors: &mut QueryState<Entity, With<StreamAnchor>>,
   cameras: &mut QueryState<&'static CameraView, With<Camera2d>>,
+  owned: &mut OwnedEntities,
   mut work: Local<StreamWork>,
 ) {
   let work = &mut *work;
@@ -443,6 +696,7 @@ pub(crate) fn stream_maps(
   }
   work.maps = maps;
   work.maps.clear();
+  work.despawn_owned(world, owned);
 }
 
 impl StreamWork {
@@ -454,17 +708,7 @@ impl StreamWork {
       };
       entity.insert(StreamState::new());
     }
-    self.layers.clear();
-    if let Some(layers) = world.get::<MapLayers>(map) {
-      let unbounded = |layer: &Entity| {
-        world
-          .get::<TileLayerData>(*layer)
-          .is_some_and(|data| data.grid.bounds().is_none())
-      };
-      self
-        .layers
-        .extend(layers.0.iter().copied().filter(unbounded));
-    }
+    unbounded_layers(world, map, &mut self.layers);
     if self.layers.is_empty() {
       if let Some(mut state) = world.get_mut::<StreamState>(map)
         && !std::mem::replace(&mut state.warned.unbounded, true)
@@ -520,15 +764,16 @@ impl StreamWork {
         "map {map}: an anchor's load area spans more than {cap} chunks a side (its stream's load_distance, or a camera zoomed far out), so only the middle {cap} x {cap} load (this map warns once)"
       );
     }
-    self.unload(world, map);
+    self.unload(world, map, stream.saved.as_ref());
     self.request(world, map, stream, (cell, chunk_px));
     self.route(world);
     self.land(world, map, stream.land_per_frame, chunk_px);
   }
 
   /// Unloads `map`'s chunks past every anchor's unload distance, telling
-  /// the game first, and calls off what it asked for or holds there
-  fn unload(&mut self, world: &mut World, map: Entity) {
+  /// the game, keeping in `saved` those a player changed since they landed,
+  /// and calls off what it asked for or holds there
+  fn unload(&mut self, world: &mut World, map: Entity, saved: Option<&SavedChunks>) {
     let areas = &self.areas;
     let kept = |chunk: IVec2| {
       areas
@@ -557,15 +802,27 @@ impl StreamWork {
       return;
     }
     self.gone.sort_unstable_by_key(|chunk| (chunk.y, chunk.x));
+    class_tiles_in(world, &self.layers, &self.gone, &mut self.class_tiles);
     for &chunk in &self.gone {
+      // What it holds now, class tiles still in, if a player changed it
+      let tiles = entries_of(&self.class_tiles, chunk);
+      let touched = world
+        .get::<StreamState>(map)
+        .is_some_and(|state| state.touched.contains(&chunk));
+      let changed = changed_since_landing(world, &self.layers, chunk, touched, tiles)
+        .then(|| holdings(world, &self.layers, chunk, tiles));
+      if let (Some(saved), Some(tiles)) = (saved, &changed) {
+        saved.insert(chunk, tiles.clone());
+      }
       send(
         world,
         ChunkEvent::Unloading {
           map,
           chunk,
-          changed: None,
+          changed,
         },
       );
+      self.unloaded.push((map, chunk));
       for &layer in &self.layers {
         if let Some(mut data) = world.get_mut::<TileLayerData>(layer)
           && data
@@ -587,8 +844,36 @@ impl StreamWork {
     if let Some(mut state) = world.get_mut::<StreamState>(map) {
       for chunk in &self.gone {
         state.resident.remove(chunk);
+        state.touched.remove(chunk);
       }
     }
+  }
+
+  /// Despawns the entities owned by the chunks unloaded this frame, their
+  /// children with them
+  fn despawn_owned(&mut self, world: &mut World, owned: &mut OwnedEntities) {
+    if self.unloaded.is_empty() {
+      return;
+    }
+    let key = |map: Entity, chunk: IVec2| (map, chunk.y, chunk.x);
+    self
+      .unloaded
+      .sort_unstable_by_key(|&(map, chunk)| key(map, chunk));
+    let unloaded = &self.unloaded;
+    self.owned.extend(
+      owned
+        .iter(world)
+        .filter(|(_, of)| {
+          unloaded
+            .binary_search_by_key(&key(of.map, of.chunk), |&(map, chunk)| key(map, chunk))
+            .is_ok()
+        })
+        .map(|(entity, _)| entity),
+    );
+    for entity in self.owned.drain(..) {
+      let _ = world.try_despawn(entity);
+    }
+    self.unloaded.clear();
   }
 
   /// Asks the generator for `map`'s chunks within the load distance that
@@ -627,7 +912,9 @@ impl StreamWork {
               continue;
             }
             if state.panicked.contains(&chunk) {
-              state.ready.push((chunk, ChunkTiles::default()));
+              // Empty, unless the player changed it and it was kept
+              let kept = stream.saved.as_ref().and_then(|saved| saved.get(chunk));
+              state.ready.push((chunk, kept.unwrap_or_default()));
               continue;
             }
             self
@@ -656,11 +943,15 @@ impl StreamWork {
       };
       let called_off = Arc::new(AtomicBool::new(false));
       let (generator, off) = (Arc::clone(&stream.generator), Arc::clone(&called_off));
+      let saved = stream.saved.clone();
       let job = worker.send(move || {
         if off.load(Ordering::Relaxed) {
-          Generated::CalledOff
-        } else {
-          Generated::Tiles(generator(request))
+          return Generated::CalledOff;
+        }
+        // A chunk the player changed comes back as they left it
+        match saved.and_then(|saved| saved.get(request.chunk)) {
+          Some(tiles) => Generated::Tiles(tiles),
+          None => Generated::Tiles(generator(request)),
         }
       });
       self.jobs.insert(job, (map, epoch, chunk));
@@ -774,6 +1065,172 @@ impl StreamWork {
     }
     state.resident.insert(chunk);
     send(world, ChunkEvent::Loaded { map, chunk });
+  }
+}
+
+/// `map`'s unbounded tile layers, bottom first, into `out`
+fn unbounded_layers(world: &World, map: Entity, out: &mut Vec<Entity>) {
+  out.clear();
+  if let Some(layers) = world.get::<MapLayers>(map) {
+    let unbounded = |layer: &Entity| {
+      world
+        .get::<TileLayerData>(*layer)
+        .is_some_and(|data| data.grid.bounds().is_none())
+    };
+    out.extend(layers.0.iter().copied().filter(unbounded));
+  }
+}
+
+/// The class tiles `layers` list in `chunks` (sorted by row), into `out`
+/// by chunk, then layer, then cell: one look at each layer's list
+fn class_tiles_in(world: &World, layers: &[Entity], chunks: &[IVec2], out: &mut Vec<ClassEntry>) {
+  out.clear();
+  let row = |chunk: &IVec2| (chunk.y, chunk.x);
+  for (at, &layer) in layers.iter().enumerate() {
+    let Some(table) = world.get::<LayerTiles>(layer) else {
+      continue;
+    };
+    for (&cell, &entity) in &table.0 {
+      let chunk = TileGrid::chunk_of(cell);
+      if chunks.binary_search_by_key(&row(&chunk), row).is_ok() {
+        out.push((chunk, at, cell, entity));
+      }
+    }
+  }
+  out.sort_unstable_by_key(|&(chunk, at, cell, _)| (row(&chunk), at, row(&cell)));
+}
+
+/// The class tiles of `chunk` among `entries` (sorted by chunk)
+fn entries_of(entries: &[ClassEntry], chunk: IVec2) -> &[ClassEntry] {
+  let key = (chunk.y, chunk.x);
+  let from = entries.partition_point(|entry| (entry.0.y, entry.0.x) < key);
+  let to = entries.partition_point(|entry| (entry.0.y, entry.0.x) <= key);
+  &entries[from..to]
+}
+
+/// The class tile `entity`, if it still lives at `cell`: the game has not
+/// despawned it or moved it to another cell
+fn living(world: &World, entity: Entity, cell: IVec2) -> Option<&MapTile> {
+  world
+    .get::<MapTile>(entity)
+    .filter(|tile| tile.cell == cell)
+}
+
+/// Whether `chunk` changed since it landed: an edit changed its cells in
+/// one of `layers`, or placed, replaced or took one of its class tiles
+/// (`touched`), or the game despawned one of the class tiles listed in it
+/// (`tiles`, a collected coin)
+fn changed_since_landing(
+  world: &World,
+  layers: &[Entity],
+  chunk: IVec2,
+  touched: bool,
+  tiles: &[ClassEntry],
+) -> bool {
+  touched
+    || layers.iter().any(|&layer| {
+      world
+        .get::<TileLayerData>(layer)
+        .is_some_and(|data| data.grid.changed_since_load(chunk))
+    })
+    || tiles
+      .iter()
+      .any(|&(_, _, cell, entity)| living(world, entity, cell).is_none())
+}
+
+/// What `chunk` holds now, as a generator would give it: each of `layers`'
+/// cells under its name, with its class tiles still living (`tiles`) back
+/// in their cells. A layer whose name an earlier one has is left out, as a
+/// landing gives the chunk's cells of a name to the first layer so named
+fn holdings(world: &World, layers: &[Entity], chunk: IVec2, tiles: &[ClassEntry]) -> ChunkTiles {
+  let mut held = ChunkTiles::default();
+  // A chunk holds cells of `i32`: its first is one
+  let first = chunk * CHUNK_SIZE as i32;
+  for (at, &layer) in layers.iter().enumerate() {
+    let (Some(of), Some(data)) = (
+      world.get::<MapLayerRef>(layer),
+      world.get::<TileLayerData>(layer),
+    ) else {
+      continue;
+    };
+    if held.layers.iter().any(|(name, _)| *name == of.name) {
+      continue;
+    }
+    let mut cells = Box::new([0; CELLS]);
+    if let Some(grid) = data.grid.chunk_cells(chunk) {
+      cells.copy_from_slice(grid);
+    }
+    for &(_, _, cell, entity) in tiles.iter().filter(|entry| entry.1 == at) {
+      let Some(tile) = living(world, entity, cell) else {
+        continue;
+      };
+      if let (Some(slot), Some(raw)) = (
+        place((cell - first).as_uvec2()),
+        TileGrid::encode(Some(tile.tile)),
+      ) {
+        cells[slot] = raw;
+      }
+    }
+    held.layers.push((of.name.clone(), cells));
+  }
+  held.layers.retain(|(_, cells)| !empty(cells));
+  held
+}
+
+/// Notes an edit placing, replacing or taking a class tile at `cell` of
+/// `map`: on a streamed map, a change of its chunk, if resident, that its
+/// grids' versions do not show
+pub(crate) fn note_class_edit(world: &mut World, map: Entity, cell: IVec2) {
+  let chunk = TileGrid::chunk_of(cell);
+  if let Some(mut state) = world.get_mut::<StreamState>(map)
+    && state.resident.contains(&chunk)
+  {
+    state.touched.insert(chunk);
+  }
+}
+
+/// Puts each chunk resident on the streamed map `map` that a player
+/// changed since it landed into its stream's [`SavedChunks`], as its unload
+/// would; how many it put (0 for a map with no stream, or whose stream
+/// keeps no chunks)
+pub(crate) fn save_changed(world: &World, map: Entity) -> usize {
+  let Some(saved) = world
+    .get::<MapStream>(map)
+    .and_then(|stream| stream.saved.as_ref())
+  else {
+    return 0;
+  };
+  let Some(state) = world.get::<StreamState>(map) else {
+    return 0;
+  };
+  let mut layers = Vec::new();
+  unbounded_layers(world, map, &mut layers);
+  let mut chunks: Vec<IVec2> = state.resident.iter().copied().collect();
+  chunks.sort_unstable_by_key(|chunk| (chunk.y, chunk.x));
+  let mut entries = Vec::new();
+  class_tiles_in(world, &layers, &chunks, &mut entries);
+  let mut put = 0;
+  for &chunk in &chunks {
+    let tiles = entries_of(&entries, chunk);
+    if changed_since_landing(world, &layers, chunk, state.touched.contains(&chunk), tiles) {
+      saved.insert(chunk, holdings(world, &layers, chunk, tiles));
+      put += 1;
+    }
+  }
+  put
+}
+
+/// Despawns the entities owned by `map`'s chunks (`ChunkOwned`), as its
+/// root goes
+pub(crate) fn despawn_chunk_owned(world: &mut World, map: Entity) {
+  let owned: Vec<Entity> = world
+    .query_filtered::<(Entity, &ChunkOwned), Allow<Disabled>>()
+    .iter(world)
+    .filter(|(_, of)| of.map == map)
+    .map(|(entity, _)| entity)
+    .collect();
+  for entity in owned {
+    let _ = world.try_despawn(entity);
   }
 }
 

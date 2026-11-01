@@ -1245,8 +1245,10 @@ fn follow_layer(world: &mut World, layer: Entity) {
     let classes = class_table(world, map);
     let found = match world.get_mut::<TileLayerData>(layer) {
       Some(mut data) => {
-        let found =
-          take_class_tiles_in(&mut data.bypass_change_detection().grid, &classes, &loaded);
+        let grid = &mut data.bypass_change_detection().grid;
+        let found = take_class_tiles_in(grid, &classes, &loaded);
+        // Taking them out is part of the load, not a change a stream saves
+        grid.fold_into_load(&loaded);
         if !found.is_empty() {
           data.set_changed();
         }
@@ -1380,7 +1382,8 @@ fn land(world: &mut World, map: Entity, landed: Landed) {
 
 /// A root going (put over by another, taken away, or despawned with its
 /// entity): a map that spawned takes its layers down, so a new root spawns
-/// afresh. Despawned, the hierarchy takes them anyway
+/// afresh, and the entities its streamed chunks own (`ChunkOwned`) go with
+/// them. Despawned, the hierarchy takes the layers anyway
 fn root_discarded(mut world: DeferredWorld, context: HookContext) {
   let map = context.entity;
   if world.get::<MapLayers>(map).is_none()
@@ -1390,6 +1393,8 @@ fn root_discarded(mut world: DeferredWorld, context: HookContext) {
     return;
   }
   world.commands().queue(move |world: &mut World| {
+    // Its chunks go with it, and the entities they own
+    super::stream::despawn_chunk_owned(world, map);
     let Ok(mut entity) = world.get_entity_mut(map) else {
       return;
     };

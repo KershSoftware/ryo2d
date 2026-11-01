@@ -1,7 +1,9 @@
 //! A streamed map's chunks generated around anchors on a thread of their
 //! own, landed nearest first within a budget a frame and unloaded far
-//! behind, with their messages, the edits refused outside them, and a
-//! generator that panics. Each test keeps to a few chunks of 16 px cells.
+//! behind, with their messages, the edits refused outside them, a
+//! generator that panics, the chunks a player changed saved and brought
+//! back, and the entities that go with their chunk. Each test keeps to a
+//! few chunks of 16 px cells.
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -10,15 +12,16 @@ use std::time::Duration;
 use glam::{IVec2, UVec2, Vec2};
 
 use super::{
-  ChunkEvent, ChunkRequest, ChunkTiles, INLINE, MapStream, SPAN_CAP, StreamAnchor, StreamState,
+  ChunkEvent, ChunkOwned, ChunkRequest, ChunkTiles, INLINE, MapStream, SPAN_CAP, SavedChunks,
+  StreamAnchor, StreamState,
 };
 use crate::core::asset::Assets;
-use crate::core::ecs::kernel::{MessageCursor, Messages};
+use crate::core::ecs::kernel::{ChildOf, Disabled, MessageCursor, Messages};
 use crate::core::ecs::{Entity, Transform, World};
-use crate::core::tilemap::test_util::{MapWorld, layers_of};
+use crate::core::tilemap::test_util::{MapWorld, layers_of, load_map};
 use crate::core::tilemap::{
-  MapLayerRef, MapRoot, MapTile, MapsView, Tile, TileData, TileFlip, TileLayerData, TileMap,
-  TileShape, Tileset, TilesetImage, TilesetSource,
+  IntGrid, MapLayerRef, MapRoot, MapTile, MapsView, Tile, TileData, TileFlip, TileLayerData,
+  TileMap, TileShape, Tileset, TilesetImage, TilesetSource,
 };
 use crate::core::ui::Rect;
 
@@ -191,21 +194,49 @@ fn loaded(events: &[ChunkEvent], map: Entity) -> Vec<IVec2> {
 
 /// The chunks of `map` that `events` say unloaded, by row
 fn unloading(events: &[ChunkEvent], map: Entity) -> Vec<IVec2> {
-  let chunks = events
+  changes(events, map)
+    .into_iter()
+    .map(|(chunk, changed)| {
+      assert!(changed.is_none(), "nothing changed chunk {chunk}");
+      chunk
+    })
+    .collect()
+}
+
+/// The chunks of `map` that `events` say unloaded, by row, each with the
+/// tiles it carried as changed
+fn changes(events: &[ChunkEvent], map: Entity) -> Vec<(IVec2, Option<ChunkTiles>)> {
+  let mut chunks: Vec<(IVec2, Option<ChunkTiles>)> = events
     .iter()
     .filter_map(|event| match event {
       ChunkEvent::Unloading {
         map: of,
         chunk,
         changed,
-      } if *of == map => {
-        assert!(changed.is_none(), "nothing is tracked as changed");
-        Some(*chunk)
-      }
+      } if *of == map => Some((*chunk, changed.clone())),
       _ => None,
     })
     .collect();
-  sorted(chunks)
+  chunks.sort_by_key(|(chunk, _)| (chunk.y, chunk.x));
+  chunks
+}
+
+/// What `chunk` carried as changed among `changes`
+fn carried(changes: &[(IVec2, Option<ChunkTiles>)], chunk: IVec2) -> Option<ChunkTiles> {
+  changes
+    .iter()
+    .find(|(of, _)| *of == chunk)
+    .and_then(|(_, tiles)| tiles.clone())
+}
+
+/// The class tile entities at `cell`
+fn class_tiles_at(world: &mut World, cell: IVec2) -> Vec<Entity> {
+  world
+    .query::<(Entity, &MapTile)>()
+    .iter(world)
+    .filter(|(_, tile)| tile.cell == cell)
+    .map(|(entity, _)| entity)
+    .collect()
 }
 
 /// The warnings in the dev log holding every one of `words`
@@ -737,4 +768,393 @@ fn a_bounded_map_given_a_stream_streams_nothing_and_warns_once() {
   assert_eq!(warnings(&[&named, "streams nothing"]), 1);
   // Its own cells still take edits
   assert!(MapsView::new(&mut maps.world).set_tile(map, "ground", IVec2::new(2, 2), Some(BLOCK)));
+}
+
+/// A generator laying `floors`, with a coin at (3, 3) and (7, 7) of chunk
+/// (0, 0), counting its calls for that chunk in `calls`
+fn coins_at_home(calls: Arc<AtomicUsize>) -> impl Fn(ChunkRequest) -> ChunkTiles + Send + Sync {
+  move |request: ChunkRequest| {
+    let mut tiles = floors(request);
+    if request.chunk == IVec2::ZERO {
+      calls.fetch_add(1, Ordering::SeqCst);
+      tiles.set("ground", UVec2::new(3, 3), Some(COIN));
+      tiles.set("ground", UVec2::new(7, 7), Some(COIN));
+    }
+    tiles
+  }
+}
+
+#[test]
+fn an_edit_survives_leaving_and_coming_back() {
+  let calls = Arc::new(AtomicUsize::new(0));
+  let saved = SavedChunks::default();
+  let mut maps = MapWorld::new();
+  let stream = MapStream::new(coins_at_home(Arc::clone(&calls))).with_saved(saved.clone());
+  let map = spawn(&mut maps, infinite(&["ground"]), stream, |r| r);
+  let anchor = anchor_at(&mut maps, IVec2::ZERO);
+  until_idle(&mut maps, map);
+  // A block of chunk (0, 0)'s floor dug out, and one built
+  let (dug, built) = (IVec2::new(4, 0), IVec2::new(6, 9));
+  let mut view = MapsView::new(&mut maps.world);
+  assert!(view.set_tile(map, "ground", dug, None));
+  assert!(view.set_tile(map, "ground", built, Some(BLOCK)));
+  let mut cursor = MessageCursor::<ChunkEvent>::default();
+  events(&maps.world, &mut cursor);
+
+  move_to(&mut maps.world, anchor, IVec2::new(20, 0));
+  until_idle(&mut maps, map);
+  assert_eq!(saved.len(), 1, "the edited chunk alone");
+  let gone = changes(&events(&maps.world, &mut cursor), map);
+  assert_eq!(gone.len(), 9);
+  let Some(tiles) = carried(&gone, IVec2::ZERO) else {
+    panic!("chunk (0, 0) carried its tiles: {gone:?}");
+  };
+  assert_eq!(tiles.get("ground", UVec2::new(4, 0)), None);
+  assert_eq!(tiles.get("ground", UVec2::new(5, 0)), Some(BLOCK));
+  assert_eq!(tiles.get("ground", UVec2::new(6, 9)), Some(BLOCK));
+  assert_eq!(saved.get(IVec2::ZERO), Some(tiles));
+  let others = gone.iter().filter(|(chunk, _)| *chunk != IVec2::ZERO);
+  assert!(others.clone().all(|(_, tiles)| tiles.is_none()), "{gone:?}");
+
+  move_to(&mut maps.world, anchor, IVec2::ZERO);
+  until_idle(&mut maps, map);
+  let view = MapsView::new(&mut maps.world);
+  assert_eq!(view.tile(map, "ground", dug), None);
+  assert_eq!(view.tile(map, "ground", built), Some(BLOCK));
+  assert_eq!(view.tile(map, "ground", IVec2::new(5, 0)), Some(BLOCK));
+  assert_eq!(calls.load(Ordering::SeqCst), 1, "not generated again");
+}
+
+#[test]
+fn an_unchanged_chunk_is_not_saved() {
+  // Its coins taken out of the grid as it lands are not a change
+  let saved = SavedChunks::default();
+  let mut maps = MapWorld::new();
+  let generator = coins_at_home(Arc::default());
+  let stream = MapStream::new(generator).with_saved(saved.clone());
+  let map = spawn(&mut maps, infinite(&["ground"]), stream, |root| {
+    root.with_entity_tiles(&["coin"])
+  });
+  let anchor = anchor_at(&mut maps, IVec2::ZERO);
+  until_idle(&mut maps, map);
+  maps.frame();
+  assert_eq!(class_tiles(&mut maps.world).len(), 2);
+  let mut cursor = MessageCursor::<ChunkEvent>::default();
+
+  move_to(&mut maps.world, anchor, IVec2::new(20, 0));
+  until_idle(&mut maps, map);
+  // `unloading` checks that each carried nothing
+  assert_eq!(
+    unloading(&events(&maps.world, &mut cursor), map),
+    around(IVec2::ZERO, 1)
+  );
+  assert!(saved.is_empty());
+}
+
+#[test]
+fn an_edit_in_the_unloading_frame_is_saved() {
+  let saved = SavedChunks::default();
+  let mut maps = MapWorld::new();
+  let stream = MapStream::new(floors).with_saved(saved.clone());
+  let map = spawn(&mut maps, infinite(&["ground"]), stream, |r| r);
+  let anchor = anchor_at(&mut maps, IVec2::ZERO);
+  until_idle(&mut maps, map);
+  // The anchor leaves, and a cell is edited before the stream next looks
+  move_to(&mut maps.world, anchor, IVec2::new(20, 0));
+  assert!(MapsView::new(&mut maps.world).set_tile(map, "ground", IVec2::new(8, 8), Some(BLOCK)));
+  maps.frame();
+  assert!(!resident(&mut maps.world, map).contains(&IVec2::ZERO));
+  let kept = saved.get(IVec2::ZERO);
+  assert_eq!(
+    kept.and_then(|tiles| tiles.get("ground", UVec2::new(8, 8))),
+    Some(BLOCK)
+  );
+}
+
+#[test]
+fn saved_chunks_round_trip_through_serde() {
+  let turned = Tile::new(2, 77).with_flip(TileFlip::DIAGONAL);
+  let mut first = ChunkTiles::default();
+  first.set("ground", UVec2::new(0, 0), Some(BLOCK));
+  first.set("ground", UVec2::new(31, 31), Some(turned));
+  first.set("items", UVec2::new(3, 3), Some(COIN));
+  let mut second = ChunkTiles::default();
+  second.set("ground", UVec2::new(5, 6), Some(BLOCK));
+  let saved = SavedChunks::default();
+  saved.insert(IVec2::ZERO, first.clone());
+  saved.insert(IVec2::new(-3, 7), second.clone());
+  // An emptied chunk is kept as empty
+  saved.insert(IVec2::new(9, -9), ChunkTiles::default());
+
+  let text = serde_json::to_string(&saved).expect("serializes");
+  let back: SavedChunks = serde_json::from_str(&text).expect("deserializes");
+  assert_eq!(back.len(), 3);
+  assert_eq!(back.get(IVec2::ZERO), Some(first));
+  assert_eq!(back.get(IVec2::new(-3, 7)), Some(second));
+  assert_eq!(back.get(IVec2::new(9, -9)), Some(ChunkTiles::default()));
+  // A clone shares its store, and what was read back is a store of its own
+  saved.clone().remove(IVec2::ZERO);
+  assert_eq!((saved.len(), back.len()), (2, 3));
+
+  // A broken save is an error, not a panic or a wrong chunk: text that is
+  // not base64, two cells where a chunk has 1,024, a number for the text
+  for broken in [
+    r#"[{"chunk":[0,0],"tiles":{"ground":"not base64!"}}]"#,
+    r#"[{"chunk":[0,0],"tiles":{"ground":"eJxjYIAAAAAIAAE="}}]"#,
+    r#"[{"chunk":[0,0],"tiles":{"ground":7}}]"#,
+  ] {
+    assert!(
+      serde_json::from_str::<SavedChunks>(broken).is_err(),
+      "{broken}"
+    );
+  }
+}
+
+#[test]
+fn chunk_owned_entities_unload_with_their_chunk() {
+  let mut maps = MapWorld::new();
+  let map = spawn(
+    &mut maps,
+    infinite(&["ground"]),
+    MapStream::new(floors),
+    |r| r,
+  );
+  let mut cursor = MessageCursor::<ChunkEvent>::default();
+  let anchor = anchor_at(&mut maps, IVec2::ZERO);
+  until_idle(&mut maps, map);
+  // A pickup on each chunk as it landed
+  let mut owned = Vec::new();
+  for chunk in loaded(&events(&maps.world, &mut cursor), map) {
+    let at = Transform::from_translation(centre(chunk));
+    let entity = maps.world.spawn((at, ChunkOwned { map, chunk })).id();
+    owned.push((chunk, entity));
+  }
+  // One asleep (disabled), and one carrying a child
+  let entity_of = |chunk: IVec2| owned.iter().find(|(c, _)| *c == chunk).map(|(_, e)| *e);
+  let (Some(asleep), Some(parent)) = (entity_of(IVec2::new(0, 1)), entity_of(IVec2::new(-1, 0)))
+  else {
+    panic!("the chunks round (0, 0) landed");
+  };
+  maps.world.entity_mut(asleep).insert(Disabled);
+  let child = maps
+    .world
+    .spawn((Transform::default(), ChildOf(parent)))
+    .id();
+
+  // Four chunks on, columns -1 and 0 unload, and column 1 stays
+  move_to(&mut maps.world, anchor, IVec2::new(4, 0));
+  until_idle(&mut maps, map);
+  for (chunk, entity) in owned {
+    let alive = maps.world.get_entity(entity).is_ok();
+    assert_eq!(alive, chunk.x == 1, "the entity of chunk {chunk}");
+  }
+  assert!(maps.world.get_entity(child).is_err(), "the child went too");
+}
+
+#[test]
+fn a_despawned_streamed_map_takes_its_chunk_owned_entities() {
+  let mut maps = MapWorld::new();
+  let map = spawn(
+    &mut maps,
+    infinite(&["ground"]),
+    MapStream::new(floors),
+    |r| r,
+  );
+  anchor_at(&mut maps, IVec2::ZERO);
+  until_idle(&mut maps, map);
+  let owned = maps
+    .world
+    .spawn(ChunkOwned {
+      map,
+      chunk: IVec2::ZERO,
+    })
+    .id();
+  let other = maps
+    .world
+    .spawn(ChunkOwned {
+      map: Entity::PLACEHOLDER,
+      chunk: IVec2::ZERO,
+    })
+    .id();
+  assert!(maps.world.despawn(map));
+  maps.frame();
+  assert!(maps.world.get_entity(owned).is_err());
+  assert!(maps.world.get_entity(other).is_ok(), "another map's stays");
+}
+
+#[test]
+fn a_saved_chunk_keeps_its_class_tiles_and_a_collected_one_stays_gone() {
+  let calls = Arc::new(AtomicUsize::new(0));
+  let saved = SavedChunks::default();
+  let mut maps = MapWorld::new();
+  let stream = MapStream::new(coins_at_home(Arc::clone(&calls))).with_saved(saved.clone());
+  let map = spawn(&mut maps, infinite(&["ground"]), stream, |root| {
+    root.with_entity_tiles(&["coin"])
+  });
+  let anchor = anchor_at(&mut maps, IVec2::ZERO);
+  until_idle(&mut maps, map);
+  maps.frame();
+  // A tile built away from the coins saves the chunk; the coin at (7, 7)
+  // is collected
+  let built = IVec2::new(12, 12);
+  assert!(MapsView::new(&mut maps.world).set_tile(map, "ground", built, Some(BLOCK)));
+  let collected = class_tiles_at(&mut maps.world, IVec2::new(7, 7));
+  assert_eq!(collected.len(), 1);
+  for coin in collected {
+    assert!(maps.world.despawn(coin));
+  }
+  let mut cursor = MessageCursor::<ChunkEvent>::default();
+
+  move_to(&mut maps.world, anchor, IVec2::new(20, 0));
+  until_idle(&mut maps, map);
+  maps.frame();
+  assert!(class_tiles(&mut maps.world).is_empty());
+  let Some(tiles) = carried(
+    &changes(&events(&maps.world, &mut cursor), map),
+    IVec2::ZERO,
+  ) else {
+    panic!("chunk (0, 0) carried its tiles");
+  };
+  assert_eq!(tiles.get("ground", UVec2::new(3, 3)), Some(COIN));
+  assert_eq!(tiles.get("ground", UVec2::new(7, 7)), None);
+
+  move_to(&mut maps.world, anchor, IVec2::ZERO);
+  until_idle(&mut maps, map);
+  maps.frame();
+  // The coin left there is a class tile again; the collected one stays gone
+  assert_eq!(class_tiles(&mut maps.world), [IVec2::new(3, 3)]);
+  let view = MapsView::new(&mut maps.world);
+  assert_eq!(view.tile(map, "ground", IVec2::new(3, 3)), None);
+  assert_eq!(view.tile(map, "ground", built), Some(BLOCK));
+  assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn class_tiles_a_game_takes_or_places_are_changes() {
+  let saved = SavedChunks::default();
+  let mut maps = MapWorld::new();
+  let stream = MapStream::new(coins_at_home(Arc::default())).with_saved(saved.clone());
+  let map = spawn(&mut maps, infinite(&["ground"]), stream, |root| {
+    root.with_entity_tiles(&["coin"])
+  });
+  let anchor = anchor_at(&mut maps, IVec2::ZERO);
+  until_idle(&mut maps, map);
+  maps.frame();
+  // Chunk (0, 0)'s coins both collected, and a coin placed in an empty
+  // cell of chunk (1, 0): neither changes a grid's cells
+  for cell in [IVec2::new(3, 3), IVec2::new(7, 7)] {
+    for coin in class_tiles_at(&mut maps.world, cell) {
+      assert!(maps.world.despawn(coin));
+    }
+  }
+  let placed = IVec2::new(40, 9);
+  assert!(MapsView::new(&mut maps.world).set_tile(map, "ground", placed, Some(COIN)));
+
+  move_to(&mut maps.world, anchor, IVec2::new(20, 0));
+  until_idle(&mut maps, map);
+  let mut kept: Vec<IVec2> = [IVec2::ZERO, IVec2::X]
+    .into_iter()
+    .filter(|&chunk| saved.get(chunk).is_some())
+    .collect();
+  kept.sort_by_key(|chunk| chunk.x);
+  assert_eq!((kept, saved.len()), (vec![IVec2::ZERO, IVec2::X], 2));
+
+  move_to(&mut maps.world, anchor, IVec2::ZERO);
+  until_idle(&mut maps, map);
+  maps.frame();
+  assert_eq!(class_tiles(&mut maps.world), [placed]);
+}
+
+#[test]
+fn saving_the_changed_chunks_round_an_anchor_keeps_them_for_a_save_game() {
+  let saved = SavedChunks::default();
+  let mut maps = MapWorld::new();
+  let stream = MapStream::new(floors).with_saved(saved.clone());
+  let map = spawn(&mut maps, infinite(&["ground"]), stream, |r| r);
+  anchor_at(&mut maps, IVec2::ZERO);
+  until_idle(&mut maps, map);
+  let built = IVec2::new(-20, 20);
+  assert!(MapsView::new(&mut maps.world).set_tile(map, "ground", built, Some(BLOCK)));
+  // Nothing has unloaded: the store is empty until the changed chunks are
+  // put in, and only the changed one goes in
+  assert!(saved.is_empty());
+  assert_eq!(MapsView::new(&mut maps.world).save_changed_chunks(map), 1);
+  assert_eq!(saved.len(), 1);
+  assert_eq!(resident(&mut maps.world, map), around(IVec2::ZERO, 1));
+
+  // Written with a save game and read back, it streams a new map with the
+  // tile there
+  let text = serde_json::to_string(&saved).expect("serializes");
+  let loaded: SavedChunks = serde_json::from_str(&text).expect("deserializes");
+  let mut again = MapWorld::new();
+  let stream = MapStream::new(floors).with_saved(loaded);
+  let map = spawn(&mut again, infinite(&["ground"]), stream, |r| r);
+  anchor_at(&mut again, IVec2::ZERO);
+  until_idle(&mut again, map);
+  let view = MapsView::new(&mut again.world);
+  assert_eq!(view.tile(map, "ground", built), Some(BLOCK));
+  assert_eq!(view.tile(map, "ground", IVec2::new(-20, 0)), Some(BLOCK));
+}
+
+#[test]
+fn painting_terrain_outside_the_resident_chunks_is_refused() {
+  let mut maps = MapWorld::new();
+  // The one-colour Wang set "solo", from a map Tiled saved
+  let solo = load_map(&mut maps.world, "tiled/maps/wang-solo-empty.tmj");
+  let tilesets = maps
+    .world
+    .resource::<Assets<TileMap>>()
+    .get(&solo)
+    .map(|m| m.tilesets.clone())
+    .unwrap_or_default();
+  let mut map = TileMap::infinite(UVec2::splat(16));
+  map.tilesets = tilesets;
+  map.add_tile_layer("ground");
+  let stream = MapStream {
+    load_distance: 0.0,
+    ..MapStream::new(|_| ChunkTiles::default())
+  };
+  let map = spawn(&mut maps, map, stream, |r| r);
+  anchor_at(&mut maps, IVec2::ZERO);
+  until_idle(&mut maps, map);
+  let mut view = MapsView::new(&mut maps.world);
+  // Chunk (3, 0) is not resident: nothing painted, no chunk made
+  assert!(!view.set_terrain(map, "ground", IVec2::new(100, 16), "solo", Some("ground")));
+  assert_eq!(view.tile(map, "ground", IVec2::new(100, 16)), None);
+  // Chunk (0, 0) is
+  assert!(view.set_terrain(map, "ground", IVec2::new(16, 16), "solo", Some("ground")));
+  assert_eq!(resident(&mut maps.world, map), [IVec2::ZERO]);
+}
+
+#[test]
+fn int_grid_edits_outside_the_resident_chunks_are_refused() {
+  let mut maps = MapWorld::new();
+  let stream = MapStream {
+    load_distance: 0.0,
+    ..MapStream::new(floors)
+  };
+  let map = spawn(&mut maps, infinite(&["ground"]), stream, |r| r);
+  anchor_at(&mut maps, IVec2::ZERO);
+  until_idle(&mut maps, map);
+  // A game's IntGrid over chunks (0, 0) to (2, 0), only the first resident
+  let Some(ground) = MapsView::new(&mut maps.world).layer_entity(map, "ground") else {
+    panic!("no ground layer");
+  };
+  if let Some(mut data) = maps.world.get_mut::<TileLayerData>(ground) {
+    data.intgrid = Some(IntGrid {
+      size: UVec2::new(96, 32),
+      values: vec![0; 96 * 32],
+      ..IntGrid::default()
+    });
+  }
+  let mut view = MapsView::new(&mut maps.world);
+  assert!(!view.set_intgrid(map, "ground", IVec2::new(40, 5), 1));
+  assert!(view.set_intgrid(map, "ground", IVec2::new(5, 5), 1));
+  assert_eq!(
+    view.fill_intgrid(map, "ground", IVec2::ZERO, IVec2::new(95, 31), 2),
+    1024
+  );
+  assert_eq!(view.intgrid(map, "ground", IVec2::new(40, 5)), None);
+  assert_eq!(view.intgrid(map, "ground", IVec2::new(31, 31)), Some(2));
+  assert_eq!(resident(&mut maps.world, map), [IVec2::ZERO]);
 }

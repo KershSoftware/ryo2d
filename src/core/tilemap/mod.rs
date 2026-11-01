@@ -5,7 +5,8 @@
 //! entity spawns a map's layers, objects and class tiles as its children,
 //! read and edited through [`MapsView`] (`ctx.maps()`). A [`MapStream`]
 //! streams an infinite map's chunks from a generator around the cameras
-//! and [`StreamAnchor`]s.
+//! and [`StreamAnchor`]s, keeping the chunks a player changed in
+//! [`SavedChunks`].
 
 mod collision;
 mod edit;
@@ -50,7 +51,9 @@ pub use spawn::{
 };
 pub(crate) use spawn::{MapLayers, follow_chunk_swaps, map_asset, spawn_maps};
 pub(crate) use stream::stream_maps;
-pub use stream::{ChunkEvent, ChunkRequest, ChunkTiles, MapStream, StreamAnchor};
+pub use stream::{
+  ChunkEvent, ChunkOwned, ChunkRequest, ChunkTiles, MapStream, SavedChunks, StreamAnchor,
+};
 pub use tile::{Tile, TileFlip};
 pub use tiled::{TileWorldLoader, TiledMapLoader, TiledTilesetLoader};
 pub use tileset::{

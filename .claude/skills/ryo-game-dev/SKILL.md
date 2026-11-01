@@ -266,7 +266,7 @@ fn add_score(mut coins: MessageReader<CoinCollected>, mut score: ResMut<Score>) 
 ```
 
 - A message stays readable until two fixed steps have run after it was written, so per-frame and fixed-step readers both see it; each scene and each reader sees it once. Read a type in one place per scene.
-- Engine messages: `CollisionStarted`/`CollisionStopped` and `TriggerEntered`/`TriggerExited` (physics), `MovementEvent`, `PickedUp`, `Killed`, `CheckpointReached` (gameplay), `TweenStarted`/`TweenCompleted`, `KnockbackStarted`/`KnockbackFinished`, `SquashStretchStarted`/`SquashStretchFinished`, `ParticleCollision`, `MapEvent` (a tile map landed, reloaded or failed: `ryo-tilemap`), `ChunkEvent` (a streamed map's chunk landed or is unloading: `ryo-tilemap`), and an `AssetEvent<T>` per asset type (`ryo-assets`). Details: `ryo-messages`.
+- Engine messages: `CollisionStarted`/`CollisionStopped` and `TriggerEntered`/`TriggerExited` (physics), `MovementEvent`, `PickedUp`, `Killed`, `CheckpointReached` (gameplay), `TweenStarted`/`TweenCompleted`, `KnockbackStarted`/`KnockbackFinished`, `SquashStretchStarted`/`SquashStretchFinished`, `ParticleCollision`, `MapEvent` (a tile map landed, reloaded or failed: `ryo-tilemap`), `ChunkEvent` (a streamed map's chunk landed or unloaded: `ryo-tilemap`), and an `AssetEvent<T>` per asset type (`ryo-assets`). Details: `ryo-messages`.
 
 <!-- self: score: u32 -->
 <!-- given: player: Entity -->

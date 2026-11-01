@@ -851,6 +851,32 @@ impl TileGrid {
     true
   }
 
+  /// Whether `chunk`'s cells changed since its last whole load
+  /// ([`load_chunk`](Self::load_chunk)): an edit moved its version past
+  /// the load's ([`fold_into_load`](Self::fold_into_load) moves the load's
+  /// on). True for a chunk never loaded whole that has changed at all;
+  /// false for a chunk the grid lacks
+  pub(crate) fn changed_since_load(&self, chunk: IVec2) -> bool {
+    self
+      .chunks
+      .get(&chunk)
+      .is_some_and(|entry| entry.version > entry.loaded)
+  }
+
+  /// Counts what changed in each of `chunks` since its whole load as part
+  /// of the load, so [`changed_since_load`](Self::changed_since_load) is
+  /// false again: the class tiles taken out of a chunk just loaded are what
+  /// it loaded, not an edit. A chunk never loaded whole is left as it is
+  pub(crate) fn fold_into_load(&mut self, chunks: &[IVec2]) {
+    for chunk in chunks {
+      if let Some(entry) = self.chunks.get_mut(chunk)
+        && entry.loaded != 0
+      {
+        entry.loaded = entry.version;
+      }
+    }
+  }
+
   /// The version of the grid's last load or unload of a whole chunk; 0 for
   /// a grid that has had none (every bounded grid's)
   pub(crate) fn swapped(&self) -> u64 {
@@ -1666,6 +1692,31 @@ mod tests {
       g.extent(),
       CellRect::new(IVec2::new(-64, 160), IVec2::new(-32, 192))
     );
+  }
+
+  #[test]
+  fn a_loaded_chunk_tells_whether_its_cells_changed_since() {
+    let mut g = TileGrid::unbounded();
+    let coin = TileGrid::encode(Some(Tile::new(0, 3))).expect("fits");
+    let mut cells = empty_cells();
+    cells[5] = coin;
+    assert!(g.load_chunk(IVec2::ZERO, cells));
+    assert!(!g.changed_since_load(IVec2::ZERO));
+    // A cell taken out as part of the load (a class tile) is folded in
+    g.set(IVec2::new(5, 0), None);
+    assert!(g.changed_since_load(IVec2::ZERO));
+    g.fold_into_load(&[IVec2::ZERO]);
+    assert!(!g.changed_since_load(IVec2::ZERO));
+    // An edit after that is a change; one changing nothing is not
+    g.set(IVec2::new(5, 0), None);
+    assert!(!g.changed_since_load(IVec2::ZERO));
+    g.set(IVec2::new(9, 9), Some(Tile::new(0, 1)));
+    assert!(g.changed_since_load(IVec2::ZERO));
+    // A chunk made by an edit was never loaded: folding leaves it changed
+    g.set(IVec2::new(40, 0), Some(Tile::new(0, 1)));
+    g.fold_into_load(&[IVec2::X]);
+    assert!(g.changed_since_load(IVec2::X));
+    assert!(!g.changed_since_load(IVec2::NEG_ONE), "no such chunk");
   }
 
   #[test]

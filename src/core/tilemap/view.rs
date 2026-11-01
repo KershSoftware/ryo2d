@@ -69,6 +69,17 @@ impl<'w> MapsView<'w> {
     stream::stream_ready(self.world, map, area)
   }
 
+  /// Puts each chunk resident on the streamed map `map` that a player
+  /// changed since it landed into its stream's
+  /// [`SavedChunks`](super::SavedChunks), as unloading it would. A chunk
+  /// goes in only as it unloads, so call this just before writing the
+  /// `SavedChunks` into a save game, or the chunks changed round the player
+  /// are left out. Returns how many it put: 0 for a map with no
+  /// `MapStream`, or whose stream keeps no `SavedChunks`
+  pub fn save_changed_chunks(&self, map: Entity) -> usize {
+    stream::save_changed(self.world, map)
+  }
+
   /// The entity of `map`'s layer `layer`
   pub fn layer_entity<'a>(&self, map: Entity, layer: impl Into<LayerRef<'a>>) -> Option<Entity> {
     edit::layer_entity(self.world, map, layer.into())

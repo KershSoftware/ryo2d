@@ -1,6 +1,6 @@
 ---
 name: ryo-tilemap
-description: "Tile maps - the workflow from Tiled (.tmx, .tmj) or LDtk (.ldtk) through assets/ to a MapRoot entity, layers and the reserved layer properties (collides, occludes, y_sort, lit), tilesets and typed tile data, objects and class tiles as entities, MapEvent, reading and editing tiles with ctx.maps() and Wang terrain, collision from tile shapes and IntGrids, tile shadows, y-sorting and parallax, worlds of levels, maps built in code and by procgen, endless worlds streamed from a generator (MapStream, StreamAnchor, ChunkEvent), hot reload, the web, performance and testing."
+description: "Tile maps - the workflow from Tiled (.tmx, .tmj) or LDtk (.ldtk) through assets/ to a MapRoot entity, layers and the reserved layer properties (collides, occludes, y_sort, lit), tilesets and typed tile data, objects and class tiles as entities, MapEvent, reading and editing tiles with ctx.maps() and Wang terrain, collision from tile shapes and IntGrids, tile shadows, y-sorting and parallax, worlds of levels, maps built in code and by procgen, endless worlds streamed from a generator (MapStream, StreamAnchor, ChunkEvent, SavedChunks, ChunkOwned), hot reload, the web, performance and testing."
 metadata:
   version: 1.3.0
 ---
@@ -475,7 +475,7 @@ let grown: Option<CellRect> = ctx.maps().bounds(root);
 
 ## 12. Streaming an endless world
 
-A map can go on forever. Give an empty infinite map a generator, in a `MapStream` on its root, and the engine fills its 32 x 32-cell chunks as cameras and `StreamAnchor` entities come near, and unloads them once they are far behind. The generator is a function from a chunk to its tiles; it runs on a thread of its own, so the frame never waits for it.
+A map can go on forever. Give an empty infinite map a generator, in a `MapStream` on its root, and the engine fills its 32 x 32-cell chunks as cameras and `StreamAnchor` entities come near, and unloads them once they are far behind. The generator is a function from a chunk to its tiles; it runs on a thread of its own, so the frame never waits for it. The chunks a player changed can be kept, in a `SavedChunks` that goes into a save game, and come back as the player left them.
 
 <!-- given: tileset: Handle<Tileset> -->
 ```rust
@@ -510,17 +510,25 @@ let stream = MapStream::new(move |request: ChunkRequest| {
   tiles
 });
 ctx.world.spawn((Transform::from_xy(0.0, 0.0), MapRoot::new(map), stream));
-// The player keeps the chunks round it loaded, wherever the camera looks
-ctx.world.spawn((Transform::from_xy(64.0, 256.0), StreamAnchor));
+// The player, a platformer character, keeps the chunks round it loaded, wherever the camera looks
+ctx.world.spawn((
+  Transform::from_xy(64.0, 256.0),
+  Collider::rect(14.0, 26.0),
+  PlatformerMovement::default(),
+  MoveBindings::default(),
+  StreamAnchor,
+));
 ```
 
-- **The generator** gets a `ChunkRequest { chunk, first_cell, tile_size }` and returns a `ChunkTiles`: `set(layer, cell, Option<Tile>)` with `cell` inside the chunk (0 to 31 each way; the map's cell is `first_cell + cell`), layers by the map's names. A layer it gives nothing lands empty, and a name the map has no tile layer of is left out, warned once. It runs on the `ryo2d chunk builder` thread, so it must be `Send + Sync` and cannot touch the world: make it a pure function of the chunk and what it captured (a seed, a `ryo-procgen` noise). It is asked again for a chunk that comes back after unloading, so the same chunk must come out the same.
+- **The generator** gets a `ChunkRequest { chunk, first_cell, tile_size }` and returns a `ChunkTiles`: `set(layer, cell, Option<Tile>)` with `cell` inside the chunk (0 to 31 each way; the map's cell is `first_cell + cell`), layers by the map's names. A layer it gives nothing lands empty, and a name the map has no tile layer of is left out, warned once. It runs on the `ryo2d chunk builder` thread, so it must be `Send + Sync` and cannot touch the world: make it a pure function of the chunk and what it captured (a seed, a `ryo-procgen` noise). It is asked again for a chunk that comes back after unloading (unless the stream kept it, below), so the same chunk must come out the same.
 - **Distances** are in world pixels, along each axis: chunks within `load_distance` (512) of a camera's view or an anchor load, nearest first, and chunks farther than `unload_distance` (1,536) from every one unload; the gap keeps a chunk at the edge from loading and unloading as the player paces. Set them as fields: `MapStream { load_distance: 256.0, ..MapStream::new(generator) }`. Every camera's view is an anchor unless `cameras` is false (a minimap camera zoomed far out would load a wide area: an anchor's area is capped at 64 chunks a side, warned). An `unload_distance` below `load_distance` is raised to it, warned.
-- **Landing:** at most `land_per_frame` (4) chunks land a frame, nearest the anchors first. A landed chunk draws, collides, casts shadows and spawns its class tiles (`with_entity_tiles`) like a map's own, and `ChunkEvent::Loaded { map, chunk }` is sent, its class tiles already in: place the chunk's enemies and pickups then.
-- **Unloading:** `ChunkEvent::Unloading { map, chunk, changed }` is sent, then the chunk's tiles, colliders, shadows and class tiles go; entities the game spawned there are the game's to despawn. `changed` is `None`: an edited chunk that unloads comes back as the generator makes it. A shadow chain along an unloaded chunk's left or top border can stay while the cells beside it remain, closing their shadow at the gap: `MapOccluder::chunk` names the unloaded chunk.
+- **Landing:** at most `land_per_frame` (4) chunks land a frame, nearest the anchors first. A landed chunk draws, collides, casts shadows and spawns its class tiles (`with_entity_tiles`) like a map's own, and `ChunkEvent::Loaded { map, chunk }` is sent, its class tiles already in: place the chunk's enemies and pickups then, each with `ChunkOwned { map, chunk }` so it goes with the chunk (example below).
+- **Unloading:** the chunk's tiles and class tiles go, and so do the entities marked `ChunkOwned` with it (their children too, and disabled ones), in `PreUpdate`; its colliders and shadows follow within the frame. `ChunkEvent::Unloading { map, chunk, changed }` says so, and by the time the game reads it nothing of the chunk is left to read from the map: `changed` holds its tiles when the player changed it (below), and is `None` for a chunk as it landed. Entities the game spawned there without `ChunkOwned` are the game's to despawn, and a map's root despawned or put over takes the `ChunkOwned` entities of all its chunks. A shadow chain along an unloaded chunk's left or top border can stay while the cells beside it remain, closing their shadow at the gap: `MapOccluder::chunk` names the unloaded chunk.
+- **What the player changed stays changed** when the stream has a `SavedChunks` (`MapStream::new(generator).with_saved(saved)`). A chunk changed since it landed (a tile edit through `ctx.maps()`, a class tile an edit placed or replaced, or one the game despawned: a coin collected, an enemy killed) goes into it as it unloads, its tiles and the class tiles still living there, and comes back from it instead of the generator, its class tiles spawning again. So a coin left there is back, and a coin collected stays collected, whether or not anything else changed. A chunk as it landed is not kept: it comes back from the generator. `SavedChunks` is a shared store (a clone is the same store): `get`, `insert`, `remove` (forget a chunk, so it regenerates: an area the game resets), `len`, `is_empty`. It grows with every chunk the player changes and never forgets one by itself. IntGrid values are not kept.
+- **Saving the world:** `SavedChunks` serializes with serde (each layer's cells packed small), so it goes in a save game; give the copy loaded back to the new stream. A chunk goes in only as it unloads, so before writing a save call `ctx.maps().save_changed_chunks(map)`, which puts in the changed chunks still round the player.
 - **Edits** through `ctx.maps()` reach only the chunks that have landed (section 6), so a write never makes a chunk the stream would not unload; a write to a layer's `TileLayerData::grid` itself is not checked, so keep it to landed chunks too.
 - **A respawn or a teleport:** the chunks round the old place unload and those round the new one land nearest first over the next frames. Hold a loading screen until `ctx.maps().stream_ready(map, area)` says every chunk overlapping a world rectangle has landed, rather than dropping a body into ground not made yet.
-- **A generator that panics** on a chunk is caught: the chunk lands empty, is not asked for again, and the dev log warns once a map, naming the chunk.
+- **A generator that panics** on a chunk is caught on native platforms: the chunk lands empty, is not asked for again, and the dev log warns once a map, naming the chunk. A web build aborts on a panic, so there a panicking generator ends the game: keep it from panicking (no `unwrap` on its inputs, no indexing past an array).
 - **The web has no threads:** the generator runs on the main thread, within `web_budget` (2 ms) of each frame, at least one chunk a frame. Keep it cheap there, or set a smaller budget and let chunks arrive over more frames.
 - Stream a map built empty with `TileMap::infinite`: the stream owns every chunk of its tile layers. A map with no unbounded tile layer streams nothing, warned.
 
@@ -536,6 +544,54 @@ for event in ctx.messages::<ChunkEvent>() {
   if let ChunkEvent::Loaded { chunk, .. } = event {
     game_info!("chunk {chunk} landed: its class tiles are in");
   }
+}
+```
+
+Enemies and pickups placed as a chunk lands, which go when it unloads and are placed afresh when it lands again:
+
+<!-- self: world: Entity, slime: Handle<Image> -->
+```rust
+for event in ctx.messages::<ChunkEvent>() {
+  if let ChunkEvent::Loaded { map, chunk } = event
+    && map == self.world
+  {
+    // A slime on the middle of the chunk's top row: 32 cells of 16 px a side
+    let at = chunk.as_vec2() * 512.0 + Vec2::new(256.0, 8.0);
+    ctx.world.spawn((
+      Transform::from_translation(at),
+      Renderable::image(self.slime.clone()),
+      ChunkOwned { map, chunk },
+    ));
+  }
+}
+```
+
+Keeping the player's changes in a save game, with `SaveManager` (`ryo-config-save`; the game adds `serde`):
+
+<!-- with: use serde::{Deserialize, Serialize}; -->
+<!-- self: world: Entity, saves: SaveManager, chunks: SavedChunks -->
+<!-- given: map: Handle<TileMap>, stream: MapStream -->
+```rust
+/// What a save game holds of the world
+#[derive(Serialize, Deserialize)]
+struct WorldSave {
+  chunks: SavedChunks,
+}
+
+// Entering the world: the chunks the player changed, from the last save
+self.chunks = match self.saves.load_game::<WorldSave>("world") {
+  Ok(save) => save.data.chunks,
+  Err(_) => SavedChunks::default(),
+};
+// The stream keeps the changed chunks in the same store: a clone shares it
+let stream = stream.with_saved(self.chunks.clone());
+self.world = ctx.world.spawn((MapRoot::new(map), stream)).id();
+
+// Saving: the changed chunks still round the player go in, then the store is written
+ctx.maps().save_changed_chunks(self.world);
+let save = WorldSave { chunks: self.chunks.clone() };
+if let Err(error) = self.saves.save_game("world", &save) {
+  game_warn!("the world was not saved: {error}");
 }
 ```
 
@@ -612,7 +668,7 @@ In debug builds with a window the engine watches `assets/` (`EngineBuilder::hot_
 
 - The tilemap demo keeps its files as one table of `include_bytes!`, compiled on every target (`src/embedded.rs`: `EMBEDDED`, and `embedded()` making the `MemorySource`), so its tests play every page from the table and check that it holds exactly the files in `assets/` (`tests/pages.rs`). Do the same, and a file left out of the web build fails a test instead of a level.
 - **No threads:** a map's landing, its colliders and shadows, is worked out in the frame its asset is ready, so that frame pays for it: about 4 ms for a 256 x 256 map of four layers, and about 60 ms for 1024 x 1024 (estimates from native runs; wasm runs slower). Show a loading screen over a big map's landing. Loads run in the asset pump, at most 4 ms a frame.
-- **A streamed map's generator** runs on the main thread there, within its `MapStream::web_budget` of each frame (section 12).
+- **A streamed map's generator** runs on the main thread there, within its `MapStream::web_budget` of each frame, and a panic in it aborts the game rather than being caught (section 12).
 - Every layer format loads on the web, zstd included. There is no hot reload.
 - The demo builds for the web: `trunk serve --release --open` in `examples/demos/tilemap`.
 
@@ -709,3 +765,5 @@ fn level_one_lands_with_its_floor() {
 | A saved `.world` did not move the rooms | Levels already spawned stay where they are; respawn them |
 | A streamed world stays empty | No anchor near it: `cameras` false and no `StreamAnchor`; the map is not infinite (warned); the generator names layers the map lacks (warned) or panicked (warned, that chunk empty) |
 | An edit on a streamed map changes nothing | Its chunk has not landed, or has unloaded: only landed chunks take edits (section 12) |
+| An edited chunk of a streamed world came back as generated | The stream has no `SavedChunks` (`with_saved`); or the save game was written without `save_changed_chunks` first, leaving out the chunks changed round the player |
+| Enemies placed on a streamed chunk pile up as the player travels | They lack `ChunkOwned { map, chunk }`, so they outlive their chunk |

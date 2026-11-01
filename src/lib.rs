@@ -210,11 +210,11 @@ pub mod prelude {
 
   // Tilemaps
   pub use crate::core::tilemap::{
-    CHUNK_SIZE, ChunkEvent, ChunkRequest, ChunkTiles, ImageLayer, IntGrid, IntGridKey, LayerInfo,
-    LayerKind, LayerRef, LdtkLevel, LdtkLoader, LdtkProject, MapEvent, MapIds, MapLayer,
+    CHUNK_SIZE, ChunkEvent, ChunkOwned, ChunkRequest, ChunkTiles, ImageLayer, IntGrid, IntGridKey,
+    LayerInfo, LayerKind, LayerRef, LdtkLevel, LdtkLoader, LdtkProject, MapEvent, MapIds, MapLayer,
     MapLayerRef, MapObject, MapObjectData, MapOccluder, MapRoot, MapStream, MapTile, MapsView,
-    Neighbour, NeighbourDirection, ObjectShape, Properties, PropertyValue, StreamAnchor, Tile,
-    TileData, TileFlip, TileFrame, TileGrid, TileLayerData, TileMap, TileShape,
+    Neighbour, NeighbourDirection, ObjectShape, Properties, PropertyValue, SavedChunks,
+    StreamAnchor, Tile, TileData, TileFlip, TileFrame, TileGrid, TileLayerData, TileMap, TileShape,
     TileTransformations, TileWorld, TileWorldLoader, TiledMapLoader, TiledTilesetLoader, Tileset,
     TilesetImage, TilesetSource, URect, WangColor, WangKind, WangSet, WangTile, WorldLayout,
     WorldLevel, WorldLevelOf, WorldRef,
