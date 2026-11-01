@@ -2,7 +2,7 @@
 name: ryo-game-dev
 description: Building games with Ryo2D - scenes, entities, queries, systems, resources, messages, time and input.
 metadata:
-  version: 2.6.1
+  version: 2.7.0
 ---
 
 # Ryo2D Game Developer
@@ -224,7 +224,14 @@ ctx
 | `ctx.add_systems(phase, systems)` | `Phase::FixedUpdate`, `Phase::Update` (others return `SceneScheduleError`) | While the scene is active (or below an `updates_below` scene) |
 | `EngineBuilder::add_systems(phase, systems)` | Any `Phase` | The whole run |
 
-Scene systems run inside `FixedSet::Game` (after the scene's `update`, before physics) and `UpdateSet::Game`. Builder systems go there too, one `add_systems` call at a time, unless the call names a set or another call's system to order against (`.in_set(FixedSet::Juice)`, `.after(FixedSet::Physics)`, `.after(other_system)`); then it keeps exactly that order. Systems may return `Result<(), SystemError>`; an error panics in debug builds and is logged in release. The frame's phases are described in `ryo-engine-dev`.
+Scene systems run inside `FixedSet::Game` (after the scene's `update`, before physics) and `UpdateSet::Game`, and nowhere else. Builder systems go there too, one `add_systems` call at a time, unless the call names a set or another call's system to order against (`.in_set(FixedSet::Juice)`, `.after(FixedSet::Physics)`, `.after(other_system)`); then it keeps exactly that order. Systems may return `Result<(), SystemError>`; an error panics in debug builds and is logged in release. The frame's phases are described in `ryo-engine-dev`.
+
+`ctx.add_systems` refuses a call, and adds none of its systems, in two cases:
+
+- **It names a place scene systems never run** (`SceneScheduleError::EngineSet`): `.after(FixedSet::Physics)`, `.in_set(FixedSet::Juice)`, any `PostUpdateSet`. Naming where they already run is fine: `.in_set(FixedSet::Game)`, `.after(FixedSet::Scene)`, `.before(FixedSet::Physics)`. A system that must run after physics (reading this step's contacts or poses) is a builder system: `EngineBuilder::add_systems(Phase::FixedUpdate, react.after(FixedSet::Physics))`.
+- **The same line added the same systems in an earlier callback** (`SceneScheduleError::AlreadyAdded`), as a call in `update` would every step. Add a scene's systems once, in `on_enter`; they stay through a push and pop, so `on_resume` needs no second call.
+
+Scene systems see only the world: state in the scene's own fields is out of their reach. Keep what they share with the scene in a resource or on components.
 
 ## Resources
 

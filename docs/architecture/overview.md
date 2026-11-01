@@ -80,7 +80,7 @@ Engine::frame()
 ```
 
 - Phases are bevy schedules labelled by `Phase`; the sets inside them are `FixedSet`, `UpdateSet` and `PostUpdateSet`, chained in the order shown. Every schedule uses the single-threaded executor.
-- Games add systems with `EngineBuilder::add_systems(phase, systems)` for the whole run, or `ctx.add_systems(Phase::FixedUpdate | Phase::Update, systems)` for schedules a scene owns, which run in the `Game` sets while the scene is active and are dropped with it.
+- Games add systems with `EngineBuilder::add_systems(phase, systems)` for the whole run, or `ctx.add_systems(Phase::FixedUpdate | Phase::Update, systems)` for schedules a scene owns, which run in the `Game` sets while the scene is active and are dropped with it. A scene's call that places its systems anywhere else, or that a line repeats from a later callback, is refused and adds nothing (`SceneScheduleError`).
 - The UI runs before gameplay so that input it consumes never reaches `Scene::update`.
 - Systems may return `Result<(), SystemError>`; the fallback handler panics in debug builds and logs in release.
 

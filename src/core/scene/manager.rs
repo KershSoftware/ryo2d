@@ -693,9 +693,10 @@ impl Default for SceneManager {
 mod tests {
   use super::*;
   use crate::core::console::CommandResult;
+  use crate::core::ecs::kernel::{IntoScheduleConfigs, ScheduleSystem};
   use crate::core::ecs::{Allow, Component, Disabled, ResMut, Resource, Transform, World};
   use crate::core::messages::{register_message, update_messages};
-  use crate::core::schedule::Phase;
+  use crate::core::schedule::{Phase, SceneScheduleError};
   use std::sync::{Arc, Mutex};
 
   #[derive(Resource, Default)]
@@ -2486,5 +2487,222 @@ mod tests {
     let engine = world.resource::<AudioEngine>();
     assert_eq!(engine.sounds_on("sfx"), 1, "kira holds only that loop");
     assert_eq!(engine.sounds_on("music"), 1);
+  }
+
+  type Results = Arc<Mutex<Vec<Result<(), SceneScheduleError>>>>;
+  type Callback = Box<dyn FnMut(&mut SceneContext, &Results)>;
+
+  /// A scene that runs `enter` in `on_enter` and `update` in each `update`,
+  /// keeping what its `add_systems` calls returned
+  struct Adds {
+    results: Results,
+    enter: Callback,
+    update: Callback,
+  }
+
+  impl Scene for Adds {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
+      (self.enter)(ctx, &self.results);
+    }
+    fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+      (self.update)(ctx, &self.results);
+      SceneAction::Continue
+    }
+  }
+
+  /// Enter a scene of `enter` and `update`, then run `updates` of its steps
+  fn adds(
+    enter: impl FnMut(&mut SceneContext, &Results) + 'static,
+    update: impl FnMut(&mut SceneContext, &Results) + 'static,
+    updates: usize,
+  ) -> (World, SceneManager, Results) {
+    let results = Results::default();
+    let mut world = world();
+    let mut m = SceneManager::with_scene(Box::new(Adds {
+      results: results.clone(),
+      enter: Box::new(enter),
+      update: Box::new(update),
+    }));
+    m.enter_initial(&mut world);
+    for _ in 0..updates {
+      m.update(&mut world);
+    }
+    (world, m, results)
+  }
+
+  fn log_a(mut log: ResMut<Log>) {
+    log.0.push("a");
+  }
+
+  fn log_b(mut log: ResMut<Log>) {
+    log.0.push("b");
+  }
+
+  fn logs(label: &'static str) -> impl FnMut(ResMut<Log>) {
+    move |mut log: ResMut<Log>| log.0.push(label)
+  }
+
+  /// What one run of the scene's fixed systems, then its update systems, logged
+  fn run_scene_systems(world: &mut World, m: &mut SceneManager) -> Vec<&'static str> {
+    world.resource_mut::<Log>().0.clear();
+    m.run_fixed_systems(world);
+    m.run_update_systems(world);
+    std::mem::take(&mut world.resource_mut::<Log>().0)
+  }
+
+  #[test]
+  fn a_scene_system_placed_where_scene_systems_never_run_is_refused() {
+    use crate::core::schedule::{FixedSet, PostUpdateSet, UpdateSet};
+    let (mut world, mut m, results) = adds(
+      |ctx, results| {
+        let push = |result| results.lock().unwrap().push(result);
+        push(ctx.add_systems(Phase::FixedUpdate, log_a.after(FixedSet::Physics)));
+        push(ctx.add_systems(Phase::FixedUpdate, log_a.after(FixedSet::Game)));
+        push(ctx.add_systems(Phase::FixedUpdate, log_a.before(FixedSet::Scene)));
+        push(ctx.add_systems(Phase::FixedUpdate, log_a.in_set(FixedSet::Physics)));
+        push(ctx.add_systems(Phase::Update, log_a.after(FixedSet::Physics)));
+        push(ctx.add_systems(Phase::Update, log_a.before(UpdateSet::Game)));
+        push(ctx.add_systems(Phase::Update, log_a.in_set(PostUpdateSet::Camera)));
+      },
+      |_, _| {},
+      0,
+    );
+    assert_eq!(
+      *results.lock().unwrap(),
+      [
+        Err(SceneScheduleError::EngineSet("FixedSet::Physics")),
+        Err(SceneScheduleError::EngineSet("FixedSet::Game")),
+        Err(SceneScheduleError::EngineSet("FixedSet::Scene")),
+        Err(SceneScheduleError::EngineSet("FixedSet::Physics")),
+        Err(SceneScheduleError::EngineSet("FixedSet::Physics")),
+        Err(SceneScheduleError::EngineSet("UpdateSet::Game")),
+        Err(SceneScheduleError::EngineSet("PostUpdateSet::Camera")),
+      ]
+    );
+    assert!(
+      run_scene_systems(&mut world, &mut m).is_empty(),
+      "no refused system runs"
+    );
+  }
+
+  #[test]
+  fn a_scene_system_may_name_the_place_it_runs_in() {
+    use crate::core::schedule::{FixedSet, UpdateSet};
+    let (mut world, mut m, results) = adds(
+      |ctx, results| {
+        let push = |result| results.lock().unwrap().push(result);
+        push(ctx.add_systems(Phase::FixedUpdate, logs("game").in_set(FixedSet::Game)));
+        push(ctx.add_systems(Phase::FixedUpdate, logs("scene").after(FixedSet::Scene)));
+        push(ctx.add_systems(Phase::FixedUpdate, logs("juice").after(FixedSet::Juice)));
+        push(ctx.add_systems(
+          Phase::FixedUpdate,
+          logs("physics").before(FixedSet::Physics),
+        ));
+        push(ctx.add_systems(Phase::FixedUpdate, logs("trails").before(FixedSet::Trails)));
+        push(ctx.add_systems(Phase::Update, logs("update").in_set(UpdateSet::Game)));
+      },
+      |_, _| {},
+      0,
+    );
+    assert!(
+      results.lock().unwrap().iter().all(Result::is_ok),
+      "{:?}",
+      results.lock().unwrap()
+    );
+    let mut ran = run_scene_systems(&mut world, &mut m);
+    ran.sort_unstable();
+    assert_eq!(
+      ran,
+      ["game", "juice", "physics", "scene", "trails", "update"]
+    );
+  }
+
+  #[test]
+  fn a_refused_call_adds_none_of_its_systems_and_keeps_earlier_ones() {
+    use crate::core::schedule::FixedSet;
+    let (mut world, mut m, results) = adds(
+      |ctx, results| {
+        let push = |result| results.lock().unwrap().push(result);
+        push(ctx.add_systems(Phase::FixedUpdate, logs("kept")));
+        push(ctx.add_systems(Phase::FixedUpdate, (log_a, log_b.after(FixedSet::Physics))));
+      },
+      |_, _| {},
+      0,
+    );
+    assert!(results.lock().unwrap()[0].is_ok());
+    assert!(results.lock().unwrap()[1].is_err());
+    assert_eq!(run_scene_systems(&mut world, &mut m), ["kept"]);
+  }
+
+  #[test]
+  fn adding_systems_again_from_a_later_callback_is_refused() {
+    let (mut world, mut m, results) = adds(
+      |_, _| {},
+      |ctx, results| {
+        let result = ctx.add_systems(Phase::FixedUpdate, log_a);
+        results.lock().unwrap().push(result);
+      },
+      3,
+    );
+    let results = results.lock().unwrap().clone();
+    assert_eq!(results.len(), 3);
+    assert!(results[0].is_ok());
+    for later in &results[1..] {
+      assert!(
+        matches!(later, Err(SceneScheduleError::AlreadyAdded(_))),
+        "{results:?}"
+      );
+    }
+    assert_eq!(
+      run_scene_systems(&mut world, &mut m),
+      ["a"],
+      "added once, run once"
+    );
+  }
+
+  #[test]
+  fn one_callback_may_add_from_the_same_place_more_than_once() {
+    let (mut world, mut m, results) = adds(
+      |ctx, results| {
+        for label in ["first", "second"] {
+          let result = ctx.add_systems(Phase::FixedUpdate, logs(label));
+          results.lock().unwrap().push(result);
+        }
+      },
+      |_, _| {},
+      0,
+    );
+    assert_eq!(*results.lock().unwrap(), [Ok(()), Ok(())]);
+    let mut ran = run_scene_systems(&mut world, &mut m);
+    ran.sort_unstable();
+    assert_eq!(ran, ["first", "second"]);
+  }
+
+  #[test]
+  fn one_place_may_add_other_systems_from_a_later_callback() {
+    /// A helper every call goes through, so every call has its location
+    fn add<M>(
+      ctx: &mut SceneContext,
+      results: &Results,
+      systems: impl IntoScheduleConfigs<ScheduleSystem, M>,
+    ) {
+      let result = ctx.add_systems(Phase::FixedUpdate, systems);
+      results.lock().unwrap().push(result);
+    }
+    let mut added = false;
+    let (mut world, mut m, results) = adds(
+      |ctx, results| add(ctx, results, log_a),
+      move |ctx, results| {
+        if !added {
+          added = true;
+          add(ctx, results, log_b);
+        }
+      },
+      2,
+    );
+    assert_eq!(*results.lock().unwrap(), [Ok(()), Ok(())]);
+    let mut ran = run_scene_systems(&mut world, &mut m);
+    ran.sort_unstable();
+    assert_eq!(ran, ["a", "b"]);
   }
 }

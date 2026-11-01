@@ -2,7 +2,7 @@
 name: ryo-api
 description: Complete API reference for ryo2d::prelude - every exported type with its signatures and use, organised by area.
 metadata:
-  version: 2.18.0
+  version: 2.19.0
 ---
 
 # Ryo2D API Reference
@@ -405,7 +405,7 @@ pub struct SceneContext<'a> {
 | `assets(&mut self) -> AssetsView<'_>` | the asset registry: load, add and read assets (see [Assets](#assets)); it borrows the world, so take it, use it and let it go |
 | `audio(&mut self) -> AudioView<'_>` | the audio engine: play sounds and music, the player's volume settings, snapshots (see [Audio](#audio)); it borrows the world like `assets()` |
 | `maps(&mut self) -> MapsView<'_>` | spawned tile maps: read and edit tiles, Wang terrain, cell conversions, world levels (see [Tilemaps](#tilemaps)); it borrows the world like `assets()` |
-| `add_systems<M>(&mut self, phase: Phase, systems: impl IntoScheduleConfigs<ScheduleSystem, M>) -> Result<(), SceneScheduleError>` | scene-owned systems; `FixedUpdate` and `Update` only (other phases: `SceneScheduleError::UnsupportedPhase`; `SceneScheduleError` is in the prelude) |
+| `add_systems<M>(&mut self, phase: Phase, systems: impl IntoScheduleConfigs<ScheduleSystem, M>) -> Result<(), SceneScheduleError>` | scene-owned systems, run in `FixedSet::Game` / `UpdateSet::Game`; add them once, in `on_enter`. Refused, adding nothing: other phases (`SceneScheduleError::UnsupportedPhase`), a place they never run, such as `.after(FixedSet::Physics)` (`EngineSet`, naming the set), and the same line adding the same systems in a later callback (`AlreadyAdded`, with its location). `SceneScheduleError` is in the prelude |
 | `messages<T: Message + Clone>(&mut self) -> Vec<T>` | messages written since this scene last read `T` |
 | `write_message<T: Message>(&mut self, message: T)` | registers `T` on first use |
 | `resource<T: Resource>(&self) -> Option<&T>` | |

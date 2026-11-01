@@ -53,7 +53,9 @@ pub(crate) use bevy_ecs::system::SystemState as EcsSystemState;
 pub use bevy_ecs::resource::{IsResource, Resource};
 pub(crate) use bevy_ecs::schedule::SingleThreadedExecutor;
 pub(crate) use bevy_ecs::schedule::graph::Direction;
-pub(crate) use bevy_ecs::schedule::{InternedSystemSet, NodeId};
+pub(crate) use bevy_ecs::schedule::{
+  InternedSystemSet, NodeId, ScheduleCleanupPolicy, ScheduleGraph,
+};
 pub use bevy_ecs::schedule::{IntoScheduleConfigs, Schedule, ScheduleLabel, SystemSet};
 pub use bevy_ecs::system::{
   Commands, EntityCommands, IntoSystem, Query, Res, ResMut, ScheduleSystem, System,

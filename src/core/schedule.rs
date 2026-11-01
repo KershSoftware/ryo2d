@@ -1,8 +1,12 @@
 //! The engine's phases and the schedules behind them.
 
+use std::any::TypeId;
+use std::panic::Location;
+
 use crate::core::ecs::kernel::{
   CheckChangeTicks, Direction, InternedSystemSet, IntoScheduleConfigs, NodeId, Schedule,
-  ScheduleLabel, ScheduleSystem, SingleThreadedExecutor, SystemSet, World,
+  ScheduleCleanupPolicy, ScheduleGraph, ScheduleLabel, ScheduleSystem, SingleThreadedExecutor,
+  SystemSet, World,
 };
 
 #[derive(ScheduleLabel, Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -265,6 +269,16 @@ fn places_itself(schedule: &Schedule, group: InternedSystemSet) -> bool {
 pub enum SceneScheduleError {
   #[error("scenes can add systems to FixedUpdate and Update only, not {0:?}")]
   UnsupportedPhase(Phase),
+  #[error(
+    "scene systems run in the phase's Game set and cannot be placed by {0}; \
+     add systems that order against the engine's sets with EngineBuilder::add_systems"
+  )]
+  EngineSet(&'static str),
+  #[error(
+    "the add_systems call at {0} already added these systems in an earlier callback; \
+     add a scene's systems once, in on_enter"
+  )]
+  AlreadyAdded(&'static Location<'static>),
 }
 
 /// Schedules a scene owns; they run inside the `Game` sets and go away with the scene.
@@ -272,24 +286,178 @@ pub enum SceneScheduleError {
 pub struct SceneSchedules {
   fixed: Option<Schedule>,
   update: Option<Schedule>,
+  /// The scene's callbacks so far, counted by `begin_callback`
+  callback: u64,
+  /// Numbers each call's `SceneCallSet`
+  next_call: u32,
+  /// The calls whose systems were added
+  calls: Vec<SceneCall>,
 }
 
 #[derive(ScheduleLabel, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct SceneOwned;
 
+/// One scene `add_systems` call's systems, so they can be checked and taken
+/// out together.
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct SceneCallSet(u32);
+
+/// A scene `add_systems` call whose systems were added.
+struct SceneCall {
+  phase: Phase,
+  site: &'static Location<'static>,
+  /// The scene callback it was made in
+  callback: u64,
+  /// Its systems' types
+  systems: Vec<TypeId>,
+}
+
+/// How a scene's systems name one of the engine's sets.
+#[derive(Clone, Copy)]
+enum Placement {
+  In,
+  After,
+  Before,
+}
+
+/// The engine's sets a scene's systems may name, and their names.
+fn engine_sets() -> [(InternedSystemSet, &'static str); 12] {
+  [
+    (FixedSet::Snapshot.intern(), "FixedSet::Snapshot"),
+    (FixedSet::Juice.intern(), "FixedSet::Juice"),
+    (FixedSet::Scene.intern(), "FixedSet::Scene"),
+    (FixedSet::Game.intern(), "FixedSet::Game"),
+    (FixedSet::Movement.intern(), "FixedSet::Movement"),
+    (FixedSet::Physics.intern(), "FixedSet::Physics"),
+    (FixedSet::Transforms.intern(), "FixedSet::Transforms"),
+    (FixedSet::Trails.intern(), "FixedSet::Trails"),
+    (UpdateSet::Game.intern(), "UpdateSet::Game"),
+    (
+      PostUpdateSet::Transforms.intern(),
+      "PostUpdateSet::Transforms",
+    ),
+    (PostUpdateSet::Camera.intern(), "PostUpdateSet::Camera"),
+    (PostUpdateSet::Extract.intern(), "PostUpdateSet::Extract"),
+  ]
+}
+
+/// Whether a scene's systems in `phase`, which run in the phase's `Game`
+/// set, really are `placement` the engine's `set`.
+fn holds(phase: Phase, placement: Placement, set: InternedSystemSet) -> bool {
+  let any = |sets: &[FixedSet]| sets.iter().any(|fixed| fixed.intern() == set);
+  match (phase, placement) {
+    (Phase::FixedUpdate, Placement::In) => set == FixedSet::Game.intern(),
+    (Phase::FixedUpdate, Placement::After) => {
+      any(&[FixedSet::Snapshot, FixedSet::Juice, FixedSet::Scene])
+    }
+    (Phase::FixedUpdate, Placement::Before) => any(&[
+      FixedSet::Movement,
+      FixedSet::Physics,
+      FixedSet::Transforms,
+      FixedSet::Trails,
+    ]),
+    (Phase::Update, Placement::In) => set == UpdateSet::Game.intern(),
+    _ => false,
+  }
+}
+
+/// The first of the engine's sets that `members` name in a way that does not
+/// hold for scene systems in `phase`.
+fn misplaced(graph: &ScheduleGraph, phase: Phase, members: &[NodeId]) -> Option<&'static str> {
+  let hierarchy = graph.hierarchy().graph();
+  let dependency = graph.dependency().graph();
+  engine_sets().into_iter().find_map(|(set, name)| {
+    let set_node = NodeId::Set(graph.system_sets.get_key(set)?);
+    let names = |&member: &NodeId, placement| match placement {
+      Placement::In => hierarchy.contains_edge(set_node, member),
+      Placement::After => dependency.contains_edge(set_node, member),
+      Placement::Before => dependency.contains_edge(member, set_node),
+    };
+    let wrong = members.iter().any(|member| {
+      [Placement::In, Placement::After, Placement::Before]
+        .into_iter()
+        .any(|placement| names(member, placement) && !holds(phase, placement, set))
+    });
+    wrong.then_some(name)
+  })
+}
+
 impl SceneSchedules {
+  /// A scene callback begins: the calls from here are its calls.
+  pub(crate) fn begin_callback(&mut self) {
+    self.callback += 1;
+  }
+
+  /// Add a scene's systems to `phase`. A call is refused, and adds none of
+  /// its systems, when it places them where scene systems never run (they
+  /// run in the phase's `Game` set), or when the same place in the game's
+  /// code added any of them in an earlier callback.
+  #[track_caller]
   pub fn add_systems<M>(
     &mut self,
     phase: Phase,
     systems: impl IntoScheduleConfigs<ScheduleSystem, M>,
+    world: &mut World,
   ) -> Result<(), SceneScheduleError> {
+    let site = Location::caller();
     let slot = match phase {
       Phase::FixedUpdate => &mut self.fixed,
       Phase::Update => &mut self.update,
       other => return Err(SceneScheduleError::UnsupportedPhase(other)),
     };
     let schedule = slot.get_or_insert_with(|| new_schedule(SceneOwned));
-    schedule.add_systems(systems);
+    let group = SceneCallSet(self.next_call);
+    // A call refused every step counts on for years; a refused call's set is gone
+    self.next_call = self.next_call.wrapping_add(1);
+    schedule.add_systems(systems.in_set(group));
+
+    let graph = schedule.graph();
+    let members: Vec<NodeId> = graph
+      .system_sets
+      .get_key(group.intern())
+      .map(|key| {
+        graph
+          .hierarchy()
+          .graph()
+          .neighbors_directed(NodeId::Set(key), Direction::Outgoing)
+          .collect()
+      })
+      .unwrap_or_default();
+    let types: Vec<TypeId> = members
+      .iter()
+      .filter_map(|member| match member {
+        NodeId::System(key) => graph.systems.get(*key),
+        NodeId::Set(_) => None,
+      })
+      .map(|system| system.system().system_type())
+      .collect();
+    let callback = self.callback;
+    let refused = misplaced(graph, phase, &members)
+      .map(SceneScheduleError::EngineSet)
+      .or_else(|| {
+        let again = self.calls.iter().any(|call| {
+          call.phase == phase
+            && call.site == site
+            && call.callback != callback
+            && call.systems.iter().any(|ty| types.contains(ty))
+        });
+        again.then_some(SceneScheduleError::AlreadyAdded(site))
+      });
+
+    if let Some(error) = refused {
+      if let Err(removal) =
+        schedule.remove_systems_in_set(group, world, ScheduleCleanupPolicy::RemoveSetAndSystems)
+      {
+        crate::engine_warn!("a refused scene add_systems call could not be taken out: {removal}");
+      }
+      return Err(error);
+    }
+    self.calls.push(SceneCall {
+      phase,
+      site,
+      callback,
+      systems: types,
+    });
     Ok(())
   }
 
@@ -458,11 +626,20 @@ mod tests {
 
   #[test]
   fn scene_schedules_accept_only_fixed_and_update() {
+    let mut world = World::new();
     let mut scene = SceneSchedules::default();
-    assert!(scene.add_systems(Phase::FixedUpdate, push("a")).is_ok());
-    assert!(scene.add_systems(Phase::Update, push("b")).is_ok());
+    assert!(
+      scene
+        .add_systems(Phase::FixedUpdate, push("a"), &mut world)
+        .is_ok()
+    );
+    assert!(
+      scene
+        .add_systems(Phase::Update, push("b"), &mut world)
+        .is_ok()
+    );
     assert!(matches!(
-      scene.add_systems(Phase::Last, push("c")),
+      scene.add_systems(Phase::Last, push("c"), &mut world),
       Err(SceneScheduleError::UnsupportedPhase(Phase::Last))
     ));
   }
@@ -473,11 +650,17 @@ mod tests {
     world.init_resource::<Log>();
     let mut scene = SceneSchedules::default();
     scene
-      .add_systems(Phase::FixedUpdate, |mut commands: Commands| {
-        commands.spawn(Spawned);
-      })
+      .add_systems(
+        Phase::FixedUpdate,
+        |mut commands: Commands| {
+          commands.spawn(Spawned);
+        },
+        &mut world,
+      )
       .unwrap();
-    scene.add_systems(Phase::Update, push("u")).unwrap();
+    scene
+      .add_systems(Phase::Update, push("u"), &mut world)
+      .unwrap();
     scene.run_fixed(&mut world);
     assert_eq!(
       world.query::<&Spawned>().iter(&world).count(),

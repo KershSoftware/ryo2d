@@ -72,6 +72,7 @@ impl SceneContext<'_> {
     scope_id: u64,
     f: impl FnOnce(&mut SceneContext<'_>) -> R,
   ) -> R {
+    schedules.begin_callback();
     world.resource_scope(|world, mut time: Mut<Time>| {
       world.resource_scope(|world, mut input: Mut<Input>| {
         let mut ctx = SceneContext {
@@ -146,15 +147,24 @@ impl SceneContext<'_> {
   // --- systems and messages ---
 
   /// Add systems that run while this scene is active (or below an
-  /// `updates_below` scene) and go away with it.
+  /// `updates_below` scene) and go away with it. Add them once, in
+  /// `on_enter`.
   ///
-  /// Only `Phase::FixedUpdate` and `Phase::Update` take scene systems.
+  /// Only `Phase::FixedUpdate` and `Phase::Update` take scene systems, and
+  /// they run in the phase's `Game` set (`FixedSet::Game`: after the scene's
+  /// `update`, before physics; `UpdateSet::Game`). A call is refused, adding
+  /// none of its systems, when it places them anywhere else
+  /// (`SceneScheduleError::EngineSet`; `EngineBuilder::add_systems` places
+  /// systems anywhere), or when this place in the code added any of them in
+  /// an earlier callback, as a call in `update` would every step
+  /// (`SceneScheduleError::AlreadyAdded`).
+  #[track_caller]
   pub fn add_systems<M>(
     &mut self,
     phase: Phase,
     systems: impl IntoScheduleConfigs<ScheduleSystem, M>,
   ) -> Result<(), SceneScheduleError> {
-    self.schedules.add_systems(phase, systems)
+    self.schedules.add_systems(phase, systems, self.world)
   }
 
   /// Every `T` written since this scene last read them.
