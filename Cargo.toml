@@ -110,6 +110,9 @@ matchbox = ["matchbox_socket"]
 tempfile = "3"
 serial_test = "3"
 criterion = "0.5"
+# A save format that needs every map's length up front (SavedChunks' tests);
+# the networking's GGRS uses this version already
+bincode = "1.3"
 
 [[bench]]
 name = "foundation"

@@ -175,12 +175,12 @@ impl std::fmt::Debug for ChunkTiles {
 /// Each layer holding a tile, by name, to its cells packed as base64 zlib
 impl serde::Serialize for ChunkTiles {
   fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-    let mut layers = serializer.serialize_map(None)?;
-    for (name, cells) in &self.layers {
-      if !empty(cells) {
-        let packed = pack(cells).map_err(serde::ser::Error::custom)?;
-        layers.serialize_entry(name, &packed)?;
-      }
+    // Formats such as bincode and postcard write the length first
+    let held = || self.layers.iter().filter(|(_, cells)| !empty(cells));
+    let mut layers = serializer.serialize_map(Some(held().count()))?;
+    for (name, cells) in held() {
+      let packed = pack(cells).map_err(serde::ser::Error::custom)?;
+      layers.serialize_entry(name, &packed)?;
     }
     layers.end()
   }

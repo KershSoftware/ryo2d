@@ -5665,6 +5665,7 @@ dependencies = [
  "arboard",
  "base64 0.22.1",
  "bevy_ecs",
+ "bincode",
  "bitflags 2.10.0",
  "bytemuck",
  "console_error_panic_hook",

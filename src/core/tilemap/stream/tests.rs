@@ -1053,6 +1053,32 @@ fn saved_chunks_round_trip_through_serde() {
 }
 
 #[test]
+fn saved_chunks_round_trip_through_a_format_that_needs_lengths() {
+  // bincode, like postcard, writes a map's length before its entries
+  let mut tiles = ChunkTiles::default();
+  tiles.set("ground", UVec2::new(0, 0), Some(BLOCK));
+  tiles.set("items", UVec2::new(3, 3), Some(COIN));
+  // A layer emptied again is left out, and the length counts only the rest
+  tiles.set("gone", UVec2::new(1, 1), Some(BLOCK));
+  tiles.set("gone", UVec2::new(1, 1), None);
+  let saved = SavedChunks::default();
+  saved.insert(IVec2::new(-3, 7), tiles.clone());
+  saved.insert(IVec2::ZERO, ChunkTiles::default());
+
+  let bytes = match bincode::serialize(&saved) {
+    Ok(bytes) => bytes,
+    Err(error) => panic!("SavedChunks serializes with bincode: {error}"),
+  };
+  let back: SavedChunks = match bincode::deserialize(&bytes) {
+    Ok(back) => back,
+    Err(error) => panic!("SavedChunks deserializes with bincode: {error}"),
+  };
+  assert_eq!(back.keys(), [IVec2::ZERO, IVec2::new(-3, 7)]);
+  assert_eq!(back.get(IVec2::new(-3, 7)), Some(tiles));
+  assert_eq!(back.get(IVec2::ZERO), Some(ChunkTiles::default()));
+}
+
+#[test]
 fn chunk_owned_entities_unload_with_their_chunk() {
   let mut maps = MapWorld::new();
   let map = spawn(
