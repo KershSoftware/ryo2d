@@ -37,7 +37,7 @@ use glam::{IVec2, UVec2, Vec2};
 use super::collision::LayerView;
 use super::kinds::{
   Context, Layers, Purpose, ShapeKey, ShapeSource, Stores, TilesetStamp, Tracked, changed_chunks,
-  layer_data, layer_kind, over, shapes_kept, sources, stamps,
+  covered, layer_data, layer_kind, over, shapes_kept, sources, stamps,
 };
 use super::spawn::{IntGridKey, MapLayers, MapRoot, TileLayerData, root_map};
 use super::{CHUNK_SIZE, Tile};
@@ -413,7 +413,7 @@ fn plan<'a>(layers: impl IntoIterator<Item = LayerView<'a>>, planned: &mut Vec<L
         index: layer.index,
         cell: layer.data.cell_size,
         offset: [layer.info.offset.x.to_bits(), layer.info.offset.y.to_bits()],
-        size: layer.data.grid.size(),
+        size: covered(&layer.data.grid),
         intgrid: layer.data.intgrid.is_some(),
       });
     }

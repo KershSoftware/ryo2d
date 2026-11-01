@@ -169,10 +169,10 @@ fn grid(layer: &MapLayer) -> &TileGrid {
 /// Every tile in a tile layer
 fn tiles(layer: &MapLayer) -> Vec<Tile> {
   let grid = grid(layer);
-  let size = grid.size();
+  let extent = grid.extent();
   let mut out = Vec::new();
-  for y in 0..size.y as i32 {
-    for x in 0..size.x as i32 {
+  for y in extent.min.y..extent.max.y {
+    for x in extent.min.x..extent.max.x {
       out.extend(grid.get(IVec2::new(x, y)));
     }
   }

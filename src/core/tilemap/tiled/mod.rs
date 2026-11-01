@@ -252,7 +252,10 @@ mod tests {
       )
       .collect();
     let first = grid_of(&maps[0], "ground");
-    assert_eq!(first.size(), UVec2::new(8, 4));
+    assert_eq!(
+      first.bounds(),
+      Some(crate::core::physics::CellRect::from_size(UVec2::new(8, 4)))
+    );
     for (map, name) in maps.iter().zip(names) {
       let grid = grid_of(map, "ground");
       for y in 0..4 {

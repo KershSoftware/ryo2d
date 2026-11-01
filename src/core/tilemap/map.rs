@@ -301,7 +301,10 @@ mod tests {
     assert!(map.tiles(things).is_none());
     assert!(map.tiles(9).is_none());
     let grid = map.tiles_mut(ground).expect("tile layer");
-    assert_eq!(grid.size(), UVec2::new(8, 6));
+    assert_eq!(
+      grid.bounds(),
+      Some(crate::core::physics::CellRect::from_size(UVec2::new(8, 6)))
+    );
     grid.set(IVec2::new(1, 1), Some(Tile::new(0, 4)));
     assert_eq!(
       map.tiles(ground).and_then(|g| g.get(IVec2::new(1, 1))),

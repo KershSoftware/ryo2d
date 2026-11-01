@@ -1,6 +1,7 @@
 //! Tilemaps. A [`TileMap`] holds layers of tiles, objects or an image over
 //! one or more [`Tileset`]s, with typed [`Properties`] on every level. Tiles
-//! live in dense [`TileGrid`]s whose edits mark chunks dirty. A [`MapRoot`]
+//! live in [`TileGrid`]s of chunks by signed chunk coordinate, bounded or
+//! unbounded, whose edits mark chunks dirty. A [`MapRoot`]
 //! entity spawns a map's layers, objects and class tiles as its children,
 //! read and edited through [`MapsView`] (`ctx.maps()`).
 

@@ -15,7 +15,7 @@ Rapier2D 0.36 behind `Physics` (a resource), driven by the systems in `src/core/
 | `world.rs` | `Physics`: the Rapier sets, the entity maps, the event collector, queued pushes |
 | `sync.rs` | The systems that keep the world and Rapier in step |
 | `one_way.rs` | One-way colliders: the direction encoding, Rapier's contact hook and the character rule |
-| `tiles.rs` | `TileColliders`, `TileCell`, `SlopeCorner`, `CellShape`: the grid, its parts and `rebuild_tile_colliders`; `tiles/outline.rs` keeps the outlines between steps, `tiles/runs.rs` the one-way runs, `tiles/shape.rs` prepares authored shapes |
+| `tiles.rs` | `TileColliders`, `TileCell`, `SlopeCorner`, `CellShape`: the grid, its parts and `rebuild_tile_colliders`; `CellRect`, a rectangle of signed cells (`min` included, `max` not), which tile maps' grids give their bounds and extent in (physics is the lower layer, so the tilemap module takes it from here); `tiles/outline.rs` keeps the outlines between steps, `tiles/runs.rs` the one-way runs, `tiles/shape.rs` prepares authored shapes |
 | `shape.rs` | `ColliderShape` to a Rapier shape under a collider's linear map |
 | `convert.rs` | The glam 0.31 / 0.33 boundary, the sync tolerances |
 | `debug.rs` | The F2 overlay |

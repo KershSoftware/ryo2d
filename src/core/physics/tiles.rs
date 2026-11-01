@@ -5,7 +5,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use glam::Mat2;
+use glam::{IVec2, Mat2, UVec2};
 use rapier2d::prelude::SharedShape;
 
 use super::collider::{Collider, PrebuiltShape};
@@ -64,6 +64,66 @@ impl SlopeCorner {
       "top-left" => Some(Self::TopLeft),
       "top-right" => Some(Self::TopRight),
       _ => None,
+    }
+  }
+}
+
+/// A rectangle of cells, `min` inclusive and `max` exclusive, in signed
+/// cell coordinates: empty unless `max` is past `min` on both axes. What a
+/// tile grid holds (its bounds) or reaches (its extent).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct CellRect {
+  pub min: IVec2,
+  pub max: IVec2,
+}
+
+impl CellRect {
+  /// The cells from `min` up to, not including, `max`
+  pub fn new(min: IVec2, max: IVec2) -> CellRect {
+    CellRect { min, max }
+  }
+
+  /// The cells from (0, 0) up to `size`; a side past what an `i32` holds
+  /// stops at `i32::MAX`
+  pub fn from_size(size: UVec2) -> CellRect {
+    CellRect {
+      min: IVec2::ZERO,
+      max: size.min(UVec2::splat(i32::MAX as u32)).as_ivec2(),
+    }
+  }
+
+  /// Width and height in cells: zero when empty
+  pub fn size(&self) -> UVec2 {
+    if self.is_empty() {
+      return UVec2::ZERO;
+    }
+    // Measured in i64: the widest rectangle spans every i32
+    let side = |min: i32, max: i32| (i64::from(max) - i64::from(min)) as u32;
+    UVec2::new(side(self.min.x, self.max.x), side(self.min.y, self.max.y))
+  }
+
+  /// Whether it holds no cell
+  pub fn is_empty(&self) -> bool {
+    self.max.x <= self.min.x || self.max.y <= self.min.y
+  }
+
+  /// Whether `cell` is one of its cells
+  pub fn contains(&self, cell: IVec2) -> bool {
+    cell.cmpge(self.min).all() && cell.cmplt(self.max).all()
+  }
+
+  /// The smallest rectangle holding both; an empty side is ignored (two
+  /// empty sides give `self`)
+  pub fn union(self, other: CellRect) -> CellRect {
+    if other.is_empty() {
+      return self;
+    }
+    if self.is_empty() {
+      return other;
+    }
+    CellRect {
+      min: self.min.min(other.min),
+      max: self.max.max(other.max),
     }
   }
 }
@@ -1259,6 +1319,40 @@ mod tests {
   /// A loop as a set of directed edges, so tests do not depend on where it starts.
   fn edges(outline: &[Corner]) -> std::collections::BTreeSet<(Corner, Corner)> {
     outline.windows(2).map(|w| (w[0], w[1])).collect()
+  }
+
+  #[test]
+  fn a_cell_rect_measures_holds_and_joins_signed_cells() {
+    let r = CellRect::new(IVec2::new(-3, -2), IVec2::new(2, 1));
+    assert_eq!(r.size(), UVec2::new(5, 3));
+    assert!(!r.is_empty());
+    assert!(r.contains(IVec2::new(-3, -2)) && r.contains(IVec2::new(1, 0)));
+    assert!(!r.contains(IVec2::new(2, 0)) && !r.contains(IVec2::new(0, 1)));
+    let empty = CellRect::new(IVec2::new(5, 5), IVec2::new(9, 5));
+    assert!(empty.is_empty());
+    assert_eq!(empty.size(), UVec2::ZERO);
+    assert!(!empty.contains(IVec2::new(5, 5)));
+    assert_eq!(r.union(empty), r);
+    assert_eq!(empty.union(r), r);
+    let far = CellRect::new(IVec2::new(10, -8), IVec2::new(11, -7));
+    assert_eq!(
+      r.union(far),
+      CellRect::new(IVec2::new(-3, -8), IVec2::new(11, 1))
+    );
+    assert_eq!(
+      CellRect::from_size(UVec2::new(40, 20)),
+      CellRect::new(IVec2::ZERO, IVec2::new(40, 20))
+    );
+    assert_eq!(CellRect::default().size(), UVec2::ZERO);
+    // A side past what an i32 holds stops there; the widest rect measures
+    assert_eq!(
+      CellRect::from_size(UVec2::splat(u32::MAX)).max,
+      IVec2::splat(i32::MAX)
+    );
+    assert_eq!(
+      CellRect::new(IVec2::MIN, IVec2::MAX).size(),
+      UVec2::splat(u32::MAX)
+    );
   }
 
   #[test]

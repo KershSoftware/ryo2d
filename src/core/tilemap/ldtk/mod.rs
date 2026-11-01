@@ -287,8 +287,9 @@ mod tests {
           cell_size,
         } => {
           out += &format!("cell {cell_size:?}\n");
-          for y in 0..grid.size().y as i32 {
-            for x in 0..grid.size().x as i32 {
+          let extent = grid.extent();
+          for y in extent.min.y..extent.max.y {
+            for x in extent.min.x..extent.max.x {
               out += &format!("{:?};", grid.get(IVec2::new(x, y)));
             }
           }
@@ -508,8 +509,9 @@ mod tests {
           panic!("{} is not a tile layer", l.info.name)
         };
         let mut tiles = Vec::new();
-        for y in 0..grid.size().y as i32 {
-          for x in 0..grid.size().x as i32 {
+        let extent = grid.extent();
+        for y in extent.min.y..extent.max.y {
+          for x in extent.min.x..extent.max.x {
             if let Some(t) = grid.get(IVec2::new(x, y)) {
               tiles.push((IVec2::new(x, y), t.id));
             }
@@ -1118,7 +1120,10 @@ mod tests {
     let LayerKind::Tiles { grid, intgrid, .. } = &layer(level, "Collision").kind else {
       panic!("no tiles")
     };
-    assert_eq!(grid.size(), UVec2::new(8, 6));
+    assert_eq!(
+      grid.bounds(),
+      Some(crate::core::physics::CellRect::from_size(UVec2::new(8, 6)))
+    );
     assert_eq!(intgrid.as_ref().map(|g| g.size), Some(UVec2::new(8, 6)));
     assert_eq!(
       intgrid.as_ref().and_then(|g| g.get(IVec2::new(1, 1))),
@@ -1132,7 +1137,10 @@ mod tests {
     let LayerKind::Tiles { grid, .. } = &layer(level, "Decor").kind else {
       panic!("no tiles")
     };
-    assert_eq!(grid.size(), UVec2::new(4, 3));
+    assert_eq!(
+      grid.bounds(),
+      Some(crate::core::physics::CellRect::from_size(UVec2::new(4, 3)))
+    );
     // the map's own cell is the bottom layer's
     assert_eq!(level.map.tile_size, UVec2::splat(16));
     assert_eq!(level.map.size, UVec2::new(4, 3));

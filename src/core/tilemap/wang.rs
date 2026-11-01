@@ -36,6 +36,7 @@ use super::{
 };
 use crate::core::asset::Assets;
 use crate::core::ecs::{Entity, Resource, World};
+use crate::core::physics::CellRect;
 use crate::core::tilemap::Tileset;
 
 /// Where each of a tile's eight positions lies from its centre, clockwise
@@ -478,7 +479,8 @@ struct Painting<'w> {
   world: &'w World,
   layer: Entity,
   index: u16,
-  size: IVec2,
+  /// The cells the layer's grid reaches
+  extent: CellRect,
   matcher: &'w Matcher,
   /// The colors the painting asks of each cell touching it (`ANY` where it
   /// asks none)
@@ -497,7 +499,7 @@ struct Painting<'w> {
 
 impl Painting<'_> {
   fn in_bounds(&self, at: IVec2) -> bool {
-    at.cmpge(IVec2::ZERO).all() && at.cmplt(self.size).all()
+    self.extent.contains(at)
   }
 
   /// A class tile lives on the cell: not ours to change
@@ -639,12 +641,12 @@ fn plan(
   cell: IVec2,
   color: u8,
 ) -> Option<Plan> {
-  let size = world.get::<TileLayerData>(layer)?.grid.size().as_ivec2();
+  let extent = world.get::<TileLayerData>(layer)?.grid.extent();
   let mut painting = Painting {
     world,
     layer,
     index,
-    size,
+    extent,
     matcher: set.matcher(),
     paint: HashMap::new(),
     painted: cell,
@@ -704,13 +706,13 @@ pub(crate) fn set_terrain(
   let Some(entity) = edit::layer_entity(world, map, layer) else {
     return false;
   };
-  let Some(size) = world
+  let Some(extent) = world
     .get::<TileLayerData>(entity)
-    .map(|data| data.grid.size().as_ivec2())
+    .map(|data| data.grid.extent())
   else {
     return false;
   };
-  if cell.cmplt(IVec2::ZERO).any() || cell.cmpge(size).any() {
+  if !extent.contains(cell) {
     return false;
   }
   let (planned, warn_key) = {
@@ -783,7 +785,7 @@ mod tests {
     let Some(grid) = asset.and_then(|m| m.tiles(0)) else {
       panic!("{path} has no tile layer")
     };
-    let size = grid.size().as_ivec2();
+    let size = grid.extent().size().as_ivec2();
     let cells = (0..size.y)
       .flat_map(|y| (0..size.x).map(move |x| IVec2::new(x, y)))
       .map(|cell| grid.get(cell))

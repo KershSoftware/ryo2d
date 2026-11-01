@@ -37,7 +37,7 @@ use glam::{IVec2, UVec2, Vec2};
 
 use super::kinds::{
   Context, Layers, Purpose, ShapeKey, ShapeSink, ShapeSource, Stores, TilesetStamp, Tracked,
-  changed_chunks, layer_data, layer_kind, over, shapes_kept, sources, stamps,
+  changed_chunks, covered, layer_data, layer_kind, over, shapes_kept, sources, stamps,
 };
 use super::spawn::{IntGridKey, MapLayers, MapRoot, TileLayerData, root_map};
 use super::{CHUNK_SIZE, LayerInfo, Properties, PropertyValue, Tile};
@@ -276,7 +276,7 @@ fn plan<'a>(
         entity: layer.entity,
         index: layer.index,
         key: GroupKey::of(layer.data.cell_size, layer.info.offset, material),
-        size: layer.data.grid.size(),
+        size: covered(&layer.data.grid),
         intgrid: layer.data.intgrid.is_some(),
       });
     }
@@ -366,7 +366,7 @@ fn build(
       let Some(view) = view(layer.index) else {
         continue;
       };
-      let reach = view.data.grid.size().min(size);
+      let reach = covered(&view.data.grid).min(size);
       for y in 0..reach.y {
         for x in 0..reach.x {
           let cell = IVec2::new(x as i32, y as i32);
@@ -1107,10 +1107,10 @@ mod tests {
     let map = maps.spawn(MapRoot::new(handle));
     let layer = layers_of(&mut maps.world, map)[0];
     let chunks = [
-      UVec2::new(0, 0),
-      UVec2::new(1, 0),
-      UVec2::new(0, 1),
-      UVec2::new(1, 1),
+      IVec2::new(0, 0),
+      IVec2::new(1, 0),
+      IVec2::new(0, 1),
+      IVec2::new(1, 1),
     ];
     let versions = |world: &World| -> Vec<u64> {
       let Some(data) = world.get::<TileLayerData>(layer) else {

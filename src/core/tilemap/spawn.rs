@@ -802,9 +802,9 @@ pub(crate) fn take_class_tiles(grid: &mut TileGrid, classes: &ClassTiles) -> Vec
   if classes.iter().all(FastMap::is_empty) {
     return found;
   }
-  let size = grid.size().as_ivec2();
-  for y in 0..size.y {
-    for x in 0..size.x {
+  let extent = grid.extent();
+  for y in extent.min.y..extent.max.y {
+    for x in extent.min.x..extent.max.x {
       let cell = IVec2::new(x, y);
       let Some(tile) = grid.get(cell) else {
         continue;
@@ -1453,7 +1453,7 @@ mod tests {
     assert_eq!(data.grid.get(IVec2::new(2, 0)), None);
     let mut dirty = Vec::new();
     data.grid.drain_dirty(&mut dirty);
-    assert_eq!(dirty, [UVec2::ZERO]);
+    assert_eq!(dirty, [IVec2::ZERO]);
     assert_eq!(translation(&world, ground), Vec2::new(4.0, 8.0));
     assert_eq!(global(&world, ground), Vec2::new(104.0, 58.0));
     assert!(world.get::<TileLayerData>(things).is_none());

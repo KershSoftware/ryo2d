@@ -76,27 +76,28 @@ pub(crate) fn chunk_instances(
   out: &mut Vec<(u16, u32, SpriteInstance)>,
 ) {
   out.clear();
-  let size = grid.size();
-  let first = chunk.saturating_mul(UVec2::splat(CHUNK_SIZE));
-  let last = first.saturating_add(UVec2::splat(CHUNK_SIZE)).min(size);
-  for y in first.y..last.y {
-    for x in first.x..last.x {
-      let cell = IVec2::new(x as i32, y as i32);
-      let Some(tile) = grid.get(cell) else {
-        continue;
-      };
-      let Some(layout) = layouts.get(tile.tileset as usize).and_then(Option::as_ref) else {
-        continue;
-      };
-      let Some(padded) = layout.tile(tile.id) else {
-        continue;
-      };
-      out.push((
-        tile.tileset,
-        y,
-        instance(cell, cell_size, tile.flip, layout, padded, look),
-      ));
-    }
+  let chunk = chunk.as_ivec2();
+  // Row by row, each cell read where it lies, not looked up
+  let Some(cells) = grid.chunk_cells(chunk) else {
+    return;
+  };
+  let (origin, side) = (chunk * CHUNK_SIZE as i32, CHUNK_SIZE as usize);
+  for (at, &raw) in cells.iter().enumerate() {
+    let Some(tile) = TileGrid::decode(raw) else {
+      continue;
+    };
+    let cell = origin + IVec2::new((at % side) as i32, (at / side) as i32);
+    let Some(layout) = layouts.get(tile.tileset as usize).and_then(Option::as_ref) else {
+      continue;
+    };
+    let Some(padded) = layout.tile(tile.id) else {
+      continue;
+    };
+    out.push((
+      tile.tileset,
+      cell.y as u32,
+      instance(cell, cell_size, tile.flip, layout, padded, look),
+    ));
   }
   // Stable, so each tileset keeps its row order. A chunk of one tileset
   // (or already in order) needs none: the sort would take a scratch buffer
@@ -770,7 +771,10 @@ impl View<'_> {
     }
     let to_layer = placed.inverse();
     let grid = &layer.data.grid;
-    let chunks = grid.chunks();
+    // The chunks from chunk (0, 0) to the far corner of the grid's extent:
+    // all of a bounded layer's
+    let reach = grid.extent().max.max(IVec2::ZERO).as_uvec2();
+    let chunks = UVec2::new(reach.x.div_ceil(CHUNK_SIZE), reach.y.div_ceil(CHUNK_SIZE));
     if chunks.min_element() == 0 {
       return;
     }
@@ -819,7 +823,7 @@ impl View<'_> {
   ) {
     let grid = &layer.data.grid;
     let stamp = ChunkStamp {
-      version: grid.chunk_version(chunk),
+      version: grid.chunk_version(chunk.as_ivec2()),
       look: layer.stamp,
     };
     let cell = layer.data.cell_size.as_vec2();

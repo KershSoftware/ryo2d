@@ -1,10 +1,14 @@
-//! The dense grid of tiles in a tile layer.
+//! The grid of tiles in a tile layer: chunks of cells by signed chunk
+//! coordinate, made where tiles are written.
 
+use std::collections::hash_map::Entry;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use glam::{IVec2, UVec2};
 
 use super::tile::{Tile, TileFlip};
+use crate::core::hash::FastMap;
+use crate::core::physics::CellRect;
 
 /// Where every grid's versions come from: one counter for the process, so
 /// no version is given twice, across grids and the clones of one
@@ -17,6 +21,11 @@ fn next_version() -> u64 {
 
 /// The side of a chunk in cells: the unit a layer redraws and rebuilds by
 pub const CHUNK_SIZE: u32 = 32;
+
+/// A chunk's side as a cell coordinate
+const SIDE: i32 = CHUNK_SIZE as i32;
+/// The cells of a chunk
+const CELLS: usize = (CHUNK_SIZE * CHUNK_SIZE) as usize;
 
 const ID_BITS: u32 = 20;
 const SET_BITS: u32 = 8;
@@ -45,164 +54,351 @@ fn decode(cell: u32) -> Option<Tile> {
   })
 }
 
-/// A dense grid of cells, 4 bytes each: 0 is empty, otherwise the flips sit
-/// in bits 28 to 31, the tileset in 20 to 27 and the tile id plus one in 0
-/// to 19. A map holds at most 256 tilesets of 1,048,575 tiles each; a tile
-/// outside that is refused. Edits mark the chunk they touch dirty.
+/// A chunk's key in row order: by row, then by column
+fn row_order(chunk: &IVec2) -> (i32, i32) {
+  (chunk.y, chunk.x)
+}
+
+/// The cells of `chunk`: its first cell (a multiple of `SIDE`) never
+/// overflows, and the end of the last chunk `i32` reaches stops at
+/// `i32::MAX`
+fn chunk_rect(chunk: IVec2) -> CellRect {
+  let min = chunk * SIDE;
+  CellRect::new(min, min.saturating_add(IVec2::splat(SIDE)))
+}
+
+/// The first and last chunk (both included) holding cells of `rect`, which
+/// is not empty
+fn chunk_span(rect: CellRect) -> (IVec2, IVec2) {
+  (
+    TileGrid::chunk_of(rect.min),
+    TileGrid::chunk_of(rect.max - IVec2::ONE),
+  )
+}
+
+/// `cell`'s place among its chunk's cells
+fn local(cell: IVec2) -> usize {
+  let at = cell.rem_euclid(IVec2::splat(SIDE));
+  (at.y * SIDE + at.x) as usize
+}
+
+/// A chunk's cells, every one empty
+fn empty_cells() -> Box<[u32; CELLS]> {
+  Box::new([0; CELLS])
+}
+
+/// One chunk of a grid
+#[derive(Clone, Default)]
+struct Chunk {
+  /// Row by row; `None` while every cell is empty (a chunk marked,
+  /// touched or cleared, which needs a version but no cells)
+  cells: Option<Box<[u32; CELLS]>>,
+  /// The version of the change that last touched it
+  version: u64,
+  dirty: bool,
+}
+
+impl Chunk {
+  /// Stamps it with the change of version `version` and marks it dirty,
+  /// counting it in `dirty` if it was not
+  fn mark(&mut self, version: u64, dirty: &mut usize) {
+    self.version = version;
+    if !self.dirty {
+      self.dirty = true;
+      *dirty += 1;
+    }
+  }
+
+  /// Its cells, an empty chunk's as none
+  fn cells(&self) -> Option<&[u32; CELLS]> {
+    self.cells.as_deref()
+  }
+}
+
+/// Whether `cells` (none for an empty chunk) holds a tile
+fn holds_tiles(cells: Option<&[u32; CELLS]>) -> bool {
+  cells.is_some_and(|cells| cells.iter().any(|&c| c != 0))
+}
+
+/// A layer's cells, 4 bytes each, in chunks of `CHUNK_SIZE` cells a side
+/// keyed by signed chunk coordinate: 0 is empty, otherwise the flips sit in
+/// bits 28 to 31, the tileset in 20 to 27 and the tile id plus one in 0 to
+/// 19. A map holds at most 256 tilesets of 1,048,575 tiles each; a tile
+/// outside that is refused.
+///
+/// A bounded grid ([`new`](Self::new)) holds the cells from (0, 0) to its
+/// size and refuses the rest; an unbounded one ([`unbounded`](Self::unbounded))
+/// holds any cell. Either makes a chunk the first time a tile is written in
+/// it, so an empty chunk costs nothing; clearing leaves the chunk. Edits
+/// mark the chunks they touch dirty and move on their versions.
 #[derive(Clone)]
 pub struct TileGrid {
-  size: UVec2,
-  cells: Vec<u32>,
-  chunks: UVec2,
-  dirty: Vec<bool>,
-  dirty_count: usize,
-  /// Each chunk's version: the version of the change that last touched it
-  versions: Vec<u64>,
+  /// The cells it holds; `None` for any
+  bounds: Option<CellRect>,
+  chunks: FastMap<IVec2, Chunk>,
+  /// The coordinates of `chunks` in row order, kept as chunks are made
+  order: Vec<IVec2>,
+  /// The cells of the chunks there are
+  span: CellRect,
+  /// How many chunks are dirty
+  dirty: usize,
   /// The version of the grid's last change (0 before any): taken from the
   /// process-wide counter at every change, so a version is a stamp of one
   /// state of one chunk of one grid
   counter: u64,
 }
 
-/// The size and the cells: the dirty marks and versions are bookkeeping, and
-/// versions come from a process-wide counter, so grids holding the same
+/// The bounds and the chunks holding tiles, with their cells: the dirty
+/// marks and versions are bookkeeping, versions come from a process-wide
+/// counter and an empty chunk holds nothing, so grids holding the same
 /// tiles print alike
 impl std::fmt::Debug for TileGrid {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    let chunks: Vec<(IVec2, &[u32])> = self
+      .order
+      .iter()
+      .filter_map(|chunk| {
+        let cells = self.chunks.get(chunk)?.cells()?;
+        holds_tiles(Some(cells)).then_some((*chunk, &cells[..]))
+      })
+      .collect();
     f.debug_struct("TileGrid")
-      .field("size", &self.size)
-      .field("cells", &self.cells)
+      .field("bounds", &self.bounds)
+      .field("chunks", &chunks)
       .finish_non_exhaustive()
   }
 }
 
 impl TileGrid {
-  /// An empty grid of `size` cells, no chunk dirty
+  /// An empty bounded grid of the cells from (0, 0) to `size`, no chunk
+  /// dirty
   pub fn new(size: UVec2) -> TileGrid {
-    // div_ceil cannot overflow the way adding to the size can
-    let chunks = UVec2::new(size.x.div_ceil(CHUNK_SIZE), size.y.div_ceil(CHUNK_SIZE));
-    let n = chunks.x as usize * chunks.y as usize;
+    TileGrid::with_bounds(Some(CellRect::from_size(size)))
+  }
+
+  /// An empty grid holding any cell, signed: each chunk is made the first
+  /// time a tile is written in it
+  pub fn unbounded() -> TileGrid {
+    TileGrid::with_bounds(None)
+  }
+
+  fn with_bounds(bounds: Option<CellRect>) -> TileGrid {
     TileGrid {
-      size,
-      cells: vec![0; (size.x as usize) * (size.y as usize)],
-      chunks,
-      dirty: vec![false; n],
-      dirty_count: 0,
-      versions: vec![0; n],
+      bounds,
+      chunks: FastMap::default(),
+      order: Vec::new(),
+      span: CellRect::default(),
+      dirty: 0,
       counter: 0,
     }
   }
 
-  /// Width and height in cells
-  pub fn size(&self) -> UVec2 {
-    self.size
+  /// The cells a bounded grid holds; `None` for an unbounded one
+  pub fn bounds(&self) -> Option<CellRect> {
+    self.bounds
   }
 
-  /// Width and height in chunks
-  pub fn chunks(&self) -> UVec2 {
-    self.chunks
+  /// The cells to look at for its tiles: a bounded grid's bounds, an
+  /// unbounded one's chunks' cells (empty before any is made; the end of a
+  /// chunk at the far end of `i32` stops at `i32::MAX`)
+  pub fn extent(&self) -> CellRect {
+    self.bounds.unwrap_or(self.span)
   }
 
-  fn index(&self, cell: IVec2) -> Option<usize> {
-    if cell.x < 0 || cell.y < 0 || cell.x as u32 >= self.size.x || cell.y as u32 >= self.size.y {
-      return None;
-    }
-    Some(cell.y as usize * self.size.x as usize + cell.x as usize)
+  /// The chunk `cell` is in, rounding toward negative infinity: cell -1 is
+  /// in chunk -1, cell -33 in chunk -2
+  pub fn chunk_of(cell: IVec2) -> IVec2 {
+    cell.div_euclid(IVec2::splat(SIDE))
   }
 
-  /// Marks `cell`'s chunk changed by the change of version `version`
-  fn mark(&mut self, cell: IVec2, version: u64) {
-    let c = cell.as_uvec2() / CHUNK_SIZE;
-    let i = c.y as usize * self.chunks.x as usize + c.x as usize;
-    self.counter = version;
-    self.versions[i] = version;
-    if !self.dirty[i] {
-      self.dirty[i] = true;
-      self.dirty_count += 1;
+  /// Whether the grid holds `cell`
+  fn holds(&self, cell: IVec2) -> bool {
+    self.bounds.is_none_or(|bounds| bounds.contains(cell))
+  }
+
+  /// Whether `chunk` holds cells of the grid
+  fn holds_chunk(&self, chunk: IVec2) -> bool {
+    match self.bounds {
+      None => true,
+      Some(bounds) if bounds.is_empty() => false,
+      Some(bounds) => {
+        let (first, last) = chunk_span(bounds);
+        chunk.cmpge(first).all() && chunk.cmple(last).all()
+      }
     }
   }
 
   /// The tile at `cell`; `None` if empty or outside
   pub fn get(&self, cell: IVec2) -> Option<Tile> {
-    decode(self.cells[self.index(cell)?])
+    if !self.holds(cell) {
+      return None;
+    }
+    let cells = self.chunks.get(&Self::chunk_of(cell))?.cells()?;
+    decode(cells[local(cell)])
   }
 
-  /// Puts `tile` (or clears) at `cell`. False if the cell is outside, the
-  /// tile does not fit a cell, or nothing changed
+  /// Puts `tile` (or clears) at `cell`, making its chunk if a tile goes
+  /// where there is none. False if the cell is outside, the tile does not
+  /// fit a cell, or nothing changed
   pub fn set(&mut self, cell: IVec2, tile: Option<Tile>) -> bool {
-    let (Some(i), Some(v)) = (self.index(cell), encode(tile)) else {
+    let Some(value) = encode(tile) else {
       return false;
     };
-    if self.cells[i] == v {
+    if !self.holds(cell) {
       return false;
     }
-    self.cells[i] = v;
-    self.mark(cell, next_version());
+    let (chunk, at) = (Self::chunk_of(cell), local(cell));
+    let present = self.chunks.contains_key(&chunk);
+    if !present && value == 0 {
+      return false;
+    }
+    let before = self.order.len();
+    let Self {
+      chunks,
+      order,
+      span,
+      dirty,
+      counter,
+      ..
+    } = self;
+    let entry = make_chunk(chunks, order, span, chunk);
+    let cells = match &mut entry.cells {
+      Some(cells) => cells,
+      None if value == 0 => return false,
+      cells @ None => cells.insert(empty_cells()),
+    };
+    if cells[at] == value {
+      return false;
+    }
+    cells[at] = value;
+    let version = next_version();
+    entry.mark(version, dirty);
+    *counter = version;
+    settle(order, before);
     true
   }
 
-  /// Sets every cell from `min` to `max`, both inclusive and clipped to the
-  /// grid; returns how many changed
+  /// Sets every cell from `min` to `max`, both inclusive (clipped to a
+  /// bounded grid); returns how many changed. A tile makes the chunks it
+  /// goes in; clearing reads only the chunks there are, and leaves them
   pub fn fill(&mut self, min: IVec2, max: IVec2, tile: Option<Tile>) -> usize {
-    let Some(v) = encode(tile) else { return 0 };
-    let lo = min.max(IVec2::ZERO);
-    let hi = max.min(self.size.as_ivec2() - IVec2::ONE);
-    let mut changed = 0;
+    let Some(value) = encode(tile) else { return 0 };
+    let (lo, hi) = match self.bounds {
+      None => (min, max),
+      Some(bounds) if bounds.is_empty() => return 0,
+      Some(bounds) => (min.max(bounds.min), max.min(bounds.max - IVec2::ONE)),
+    };
+    if lo.x > hi.x || lo.y > hi.y {
+      return 0;
+    }
+    let (first, last) = (Self::chunk_of(lo), Self::chunk_of(hi));
+    let before = self.order.len();
+    let Self {
+      chunks,
+      order,
+      span,
+      dirty,
+      counter,
+      ..
+    } = self;
     // One change, one version, taken only if a cell changes
     let mut version = None;
-    for y in lo.y..=hi.y {
-      for x in lo.x..=hi.x {
-        let cell = IVec2::new(x, y);
-        let i = y as usize * self.size.x as usize + x as usize;
-        if self.cells[i] != v {
-          self.cells[i] = v;
-          let version = *version.get_or_insert_with(next_version);
-          self.mark(cell, version);
-          changed += 1;
+    let mut changed = 0;
+    let mut write = |chunk: IVec2, entry: &mut Chunk| {
+      let Some(cells) = (match (&mut entry.cells, value) {
+        (Some(cells), _) => Some(cells),
+        (None, 0) => None,
+        (cells @ None, _) => Some(cells.insert(empty_cells())),
+      }) else {
+        return;
+      };
+      // The part of the region in the chunk: neither corner overflows
+      let origin = chunk * SIDE;
+      let (a, b) = (lo.max(origin), hi.min(origin + IVec2::splat(SIDE - 1)));
+      let mut any = false;
+      for y in a.y..=b.y {
+        let row = ((y - origin.y) * SIDE) as usize;
+        for x in a.x..=b.x {
+          let slot = &mut cells[row + (x - origin.x) as usize];
+          if *slot != value {
+            *slot = value;
+            changed += 1;
+            any = true;
+          }
+        }
+      }
+      if any {
+        let version = *version.get_or_insert_with(next_version);
+        entry.mark(version, dirty);
+        *counter = version;
+      }
+    };
+    if value == 0 {
+      // Only the chunks there are hold a tile to clear
+      for &chunk in order.iter() {
+        if chunk.cmpge(first).all()
+          && chunk.cmple(last).all()
+          && let Some(entry) = chunks.get_mut(&chunk)
+        {
+          write(chunk, entry);
+        }
+      }
+    } else {
+      for y in first.y..=last.y {
+        for x in first.x..=last.x {
+          let chunk = IVec2::new(x, y);
+          write(chunk, make_chunk(chunks, order, span, chunk));
         }
       }
     }
+    settle(order, before);
     changed
   }
 
-  /// Empties every cell
+  /// Empties every cell, keeping the chunks
   pub fn clear(&mut self) {
-    if self.cells.iter().any(|&c| c != 0) {
-      self.cells.fill(0);
+    if self.chunks.values().any(|chunk| holds_tiles(chunk.cells())) {
+      for chunk in self.chunks.values_mut() {
+        chunk.cells = None;
+      }
       self.mark_all_dirty();
     }
   }
 
+  /// The chunks there are, in row order (by row, then column): each made
+  /// by the first tile written in it, or by a change that reached it
+  /// without one (`mark_all_dirty` makes every chunk of a bounded grid's
+  /// bounds). A chunk stays once made, cleared or not
+  pub fn chunk_coords(&self) -> impl Iterator<Item = IVec2> + '_ {
+    self.order.iter().copied()
+  }
+
   /// Appends to `out` each chunk changed since the last drain, once, in row
   /// order, and clears the marks. `out` is cleared first
-  pub fn drain_dirty(&mut self, out: &mut Vec<UVec2>) {
+  pub fn drain_dirty(&mut self, out: &mut Vec<IVec2>) {
     out.clear();
-    if self.dirty_count == 0 {
+    if self.dirty == 0 {
       return;
     }
-    for (i, d) in self.dirty.iter_mut().enumerate() {
-      if *d {
-        *d = false;
-        out.push(UVec2::new(
-          (i % self.chunks.x as usize) as u32,
-          (i / self.chunks.x as usize) as u32,
-        ));
+    for chunk in &self.order {
+      if let Some(entry) = self.chunks.get_mut(chunk)
+        && entry.dirty
+      {
+        entry.dirty = false;
+        out.push(*chunk);
       }
     }
-    self.dirty_count = 0;
+    self.dirty = 0;
   }
 
   /// The version of `chunk`: it changes whenever a cell of the chunk does,
   /// to a value larger than any before and never given to any grid (one
   /// counter serves them all, clones included), so a consumer that keeps the
   /// last version it saw knows whether to rebuild, even when the layer's
-  /// grid was swapped for another. 0 for a chunk outside the grid and for
-  /// one never changed (a new grid: empty, like any other new grid's)
-  pub fn chunk_version(&self, chunk: UVec2) -> u64 {
-    if chunk.x >= self.chunks.x || chunk.y >= self.chunks.y {
-      return 0;
-    }
-    self.versions[chunk.y as usize * self.chunks.x as usize + chunk.x as usize]
+  /// grid was swapped for another. 0 for a chunk never changed (a new
+  /// grid's: empty, like any other new grid's) and for one outside the grid
+  pub fn chunk_version(&self, chunk: IVec2) -> u64 {
+    self.chunks.get(&chunk).map_or(0, |entry| entry.version)
   }
 
   /// A version of the whole grid: it changes whenever any chunk's does
@@ -210,88 +406,171 @@ impl TileGrid {
     self.counter
   }
 
-  /// Takes `from`'s cells (a grid of the same size: another size changes
-  /// nothing), moving on the version of only the chunks whose cells differ
-  /// or that `also` names as changed for a reason of its own, as one
-  /// change, and marking them dirty. Whether any chunk moved
-  pub(crate) fn assign(&mut self, from: &TileGrid, also: impl Fn(UVec2) -> bool) -> bool {
-    if from.size != self.size {
-      return false;
-    }
-    let width = self.size.x as usize;
-    let mut version = None;
-    for cy in 0..self.chunks.y {
-      for cx in 0..self.chunks.x {
-        let chunk = UVec2::new(cx, cy);
-        let x0 = (cx * CHUNK_SIZE) as usize;
-        let x1 = ((cx + 1) * CHUNK_SIZE).min(self.size.x) as usize;
-        let rows = cy * CHUNK_SIZE..((cy + 1) * CHUNK_SIZE).min(self.size.y);
-        let mut changed = also(chunk);
-        for y in rows {
-          let row = y as usize * width;
-          let (old, new) = (
-            &mut self.cells[row + x0..row + x1],
-            &from.cells[row + x0..row + x1],
-          );
-          if old != new {
-            old.copy_from_slice(new);
-            changed = true;
-          }
-        }
-        if changed {
-          let version = *version.get_or_insert_with(next_version);
-          let i = cy as usize * self.chunks.x as usize + cx as usize;
-          self.versions[i] = version;
-          if !self.dirty[i] {
-            self.dirty[i] = true;
-            self.dirty_count += 1;
+  /// Marks every chunk dirty, and moves every chunk's version on: every
+  /// chunk of a bounded grid's bounds (an empty one made, holding no
+  /// cells), every chunk there is of an unbounded one
+  pub fn mark_all_dirty(&mut self) {
+    let version = next_version();
+    self.counter = version;
+    if let Some(bounds) = self.bounds.filter(|bounds| !bounds.is_empty()) {
+      let (first, last) = chunk_span(bounds);
+      let count = (i64::from(last.x - first.x) + 1) * (i64::from(last.y - first.y) + 1);
+      if self.chunks.len() as i64 != count {
+        // A bounded grid's chunks are all inside its bounds, so they are
+        // made by row
+        self.order.clear();
+        for y in first.y..=last.y {
+          for x in first.x..=last.x {
+            let chunk = IVec2::new(x, y);
+            self.chunks.entry(chunk).or_default();
+            self.order.push(chunk);
+            self.span = self.span.union(chunk_rect(chunk));
           }
         }
       }
     }
-    if let Some(version) = version {
-      self.counter = version;
+    for entry in self.chunks.values_mut() {
+      entry.version = version;
+      entry.dirty = true;
     }
+    self.dirty = self.chunks.len();
+  }
+
+  /// Takes `from`'s cells (a grid of the same bounds, or unbounded as
+  /// `from` is: any other changes nothing), moving on the version of only
+  /// the chunks whose cells differ or that `also` names as changed for a
+  /// reason of its own, as one change, and marking them dirty. A bounded
+  /// grid asks `also` of every chunk of its bounds, an unbounded one of the
+  /// chunks either grid has; a chunk `from` lacks is emptied and kept.
+  /// Whether any chunk moved
+  pub(crate) fn assign(&mut self, from: &TileGrid, also: impl Fn(IVec2) -> bool) -> bool {
+    if from.bounds != self.bounds {
+      return false;
+    }
+    let candidates: Vec<IVec2> = match self.bounds {
+      Some(bounds) if bounds.is_empty() => Vec::new(),
+      Some(bounds) => {
+        let (first, last) = chunk_span(bounds);
+        (first.y..=last.y)
+          .flat_map(|y| (first.x..=last.x).map(move |x| IVec2::new(x, y)))
+          .collect()
+      }
+      None => {
+        let mut both: Vec<IVec2> = self.order.iter().chain(&from.order).copied().collect();
+        both.sort_unstable_by_key(row_order);
+        both.dedup();
+        both
+      }
+    };
+    let before = self.order.len();
+    let Self {
+      chunks,
+      order,
+      span,
+      dirty,
+      counter,
+      ..
+    } = self;
+    let mut version = None;
+    for chunk in candidates {
+      let new = from.chunks.get(&chunk).and_then(Chunk::cells);
+      let old = chunks.get(&chunk).and_then(Chunk::cells);
+      let named = also(chunk);
+      let differ = match (old, new) {
+        (Some(old), Some(new)) => old != new,
+        (Some(cells), None) | (None, Some(cells)) => holds_tiles(Some(cells)),
+        (None, None) => false,
+      };
+      if !named && !differ {
+        continue;
+      }
+      let entry = make_chunk(chunks, order, span, chunk);
+      if differ {
+        match (&mut entry.cells, new) {
+          (Some(cells), Some(new)) => cells.copy_from_slice(new),
+          (cells, Some(new)) => *cells = Some(Box::new(*new)),
+          (cells, None) => *cells = None,
+        }
+      }
+      let version = *version.get_or_insert_with(next_version);
+      entry.mark(version, dirty);
+      *counter = version;
+    }
+    settle(order, before);
     version.is_some()
   }
 
-  /// Moves on the version of each of `chunks` inside the grid, as one
-  /// change, and marks them dirty, the cells as they are: for what is kept
-  /// beside the grid and read through its versions (an IntGrid's values).
-  /// Whether any chunk moved
-  pub(crate) fn touch(&mut self, chunks: &[UVec2]) -> bool {
+  /// Moves on the version of each of `chunks` holding cells of the grid, as
+  /// one change, and marks them dirty, the cells as they are (a chunk not
+  /// made yet is made, holding none): for what is kept beside the grid and
+  /// read through its versions (an IntGrid's values). Whether any chunk
+  /// moved
+  pub(crate) fn touch(&mut self, chunks: &[IVec2]) -> bool {
+    let before = self.order.len();
     let mut version = None;
-    for chunk in chunks {
-      if chunk.x >= self.chunks.x || chunk.y >= self.chunks.y {
+    for &chunk in chunks {
+      if !self.holds_chunk(chunk) {
         continue;
       }
       let version = *version.get_or_insert_with(next_version);
-      let i = chunk.y as usize * self.chunks.x as usize + chunk.x as usize;
-      self.versions[i] = version;
-      if !self.dirty[i] {
-        self.dirty[i] = true;
-        self.dirty_count += 1;
-      }
-    }
-    if let Some(version) = version {
+      let entry = make_chunk(&mut self.chunks, &mut self.order, &mut self.span, chunk);
+      entry.mark(version, &mut self.dirty);
       self.counter = version;
     }
+    settle(&mut self.order, before);
     version.is_some()
   }
 
-  /// Marks every chunk dirty, and moves every chunk's version on
-  pub fn mark_all_dirty(&mut self) {
-    let version = next_version();
-    self.versions.fill(version);
-    self.counter = version;
-    self.dirty.fill(true);
-    self.dirty_count = self.dirty.len();
+  /// The cells of `chunk`, `CHUNK_SIZE` rows of `CHUNK_SIZE`, for a builder
+  /// walking a chunk without looking it up for every cell (each read with
+  /// [`decode`](Self::decode)); `None` for a chunk holding no cells
+  pub(crate) fn chunk_cells(&self, chunk: IVec2) -> Option<&[u32; CELLS]> {
+    self.chunks.get(&chunk)?.cells()
+  }
+
+  /// The tile a cell of [`chunk_cells`](Self::chunk_cells) holds
+  pub(crate) fn decode(cell: u32) -> Option<Tile> {
+    decode(cell)
+  }
+}
+
+/// `chunk`'s entry in `chunks`, made (holding no cells) if there is none:
+/// its coordinates then go on the end of `order` for [`settle`] to place,
+/// and its cells join `span`
+fn make_chunk<'a>(
+  chunks: &'a mut FastMap<IVec2, Chunk>,
+  order: &mut Vec<IVec2>,
+  span: &mut CellRect,
+  chunk: IVec2,
+) -> &'a mut Chunk {
+  match chunks.entry(chunk) {
+    Entry::Occupied(entry) => entry.into_mut(),
+    Entry::Vacant(entry) => {
+      order.push(chunk);
+      *span = span.union(chunk_rect(chunk));
+      entry.insert(Chunk::default())
+    }
+  }
+}
+
+/// Puts the chunks pushed onto `order` past its first `before` (which are
+/// in row order) in their places: one moved into place, more sorted
+fn settle(order: &mut [IVec2], before: usize) {
+  match order.len() - before {
+    0 => {}
+    1 => {
+      let new = order[before];
+      let at = order[..before].partition_point(|c| row_order(c) < row_order(&new));
+      order[at..].rotate_right(1);
+    }
+    _ => order.sort_unstable_by_key(row_order),
   }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::core::physics::CellRect;
   use crate::core::tilemap::{Tile, TileFlip};
   use glam::{IVec2, UVec2};
 
@@ -321,7 +600,7 @@ mod tests {
     assert!(!g.set(IVec2::new(40, 3), Some(t)));
     let mut out = Vec::new();
     g.drain_dirty(&mut out);
-    assert_eq!(out, [UVec2::new(1, 0)]);
+    assert_eq!(out, [IVec2::new(1, 0)]);
     g.drain_dirty(&mut out);
     assert!(out.is_empty());
   }
@@ -336,11 +615,17 @@ mod tests {
     g.set(IVec2::new(40, 1), t);
     let mut out = Vec::new();
     g.drain_dirty(&mut out);
-    assert_eq!(out, [UVec2::new(0, 0), UVec2::new(1, 0), UVec2::new(2, 1)]);
-    assert_eq!(g.chunks(), UVec2::new(4, 4));
+    assert_eq!(out, [IVec2::new(0, 0), IVec2::new(1, 0), IVec2::new(2, 1)]);
+    // Only the chunks written exist; marking all reaches every chunk of
+    // the bounds, the empty ones given a version but no cells
+    assert_eq!(g.chunk_coords().count(), 3);
     g.mark_all_dirty();
     g.drain_dirty(&mut out);
     assert_eq!(out.len(), 16);
+    assert!(out.windows(2).all(|p| (p[0].y, p[0].x) < (p[1].y, p[1].x)));
+    assert!(g.chunk_version(IVec2::new(3, 3)) > 0);
+    assert!(g.chunk_cells(IVec2::new(3, 3)).is_none());
+    assert_eq!(g.chunk_version(IVec2::new(4, 3)), 0, "past the bounds");
   }
 
   #[test]
@@ -372,10 +657,43 @@ mod tests {
 
   #[test]
   fn a_grid_of_absurd_size_does_not_overflow() {
-    let g = TileGrid::new(UVec2::new(u32::MAX, 0));
-    assert_eq!(g.chunks(), UVec2::new(u32::MAX / CHUNK_SIZE + 1, 0));
+    let t = Some(Tile::new(0, 1));
+    let mut g = TileGrid::new(UVec2::new(u32::MAX, 0));
+    assert_eq!(
+      g.bounds(),
+      Some(CellRect::new(IVec2::ZERO, IVec2::new(i32::MAX, 0)))
+    );
+    assert!(g.extent().is_empty());
+    assert!(!g.set(IVec2::ZERO, t));
+    assert_eq!(g.fill(IVec2::MIN, IVec2::MAX, t), 0);
+    g.mark_all_dirty();
+    let mut out = Vec::new();
+    g.drain_dirty(&mut out);
+    assert!(out.is_empty());
     let g = TileGrid::new(UVec2::new(0, u32::MAX));
-    assert_eq!(g.size(), UVec2::new(0, u32::MAX));
+    assert_eq!(g.extent().size(), UVec2::ZERO);
+
+    // A side past what an i32 holds stops there, and makes no chunk it does
+    // not write
+    let mut g = TileGrid::new(UVec2::splat(u32::MAX));
+    let far = IVec2::splat(i32::MAX - 1);
+    assert!(g.set(far, t));
+    assert!(!g.set(IVec2::MAX, t));
+    assert_eq!(g.get(far), t);
+    assert_eq!(g.fill(far - IVec2::ONE, IVec2::MAX, t), 3);
+    assert_eq!(
+      g.chunk_coords().collect::<Vec<_>>(),
+      [TileGrid::chunk_of(far)]
+    );
+
+    // An unbounded grid takes the cells at both ends of i32
+    let mut g = TileGrid::unbounded();
+    assert!(g.set(IVec2::MIN, t));
+    assert!(g.set(IVec2::MAX, t));
+    assert_eq!(g.fill(IVec2::MAX - IVec2::ONE, IVec2::MAX, t), 3);
+    assert_eq!((g.get(IVec2::MIN), g.get(IVec2::MAX)), (t, t));
+    assert_eq!(g.extent().min, IVec2::MIN);
+    assert_eq!(g.fill(IVec2::MIN, IVec2::MAX, None), 5);
   }
 
   #[test]
@@ -390,7 +708,7 @@ mod tests {
   fn every_change_bumps_its_chunk_s_version() {
     let mut g = TileGrid::new(UVec2::new(100, 40));
     let t = Some(Tile::new(0, 1));
-    let chunk = UVec2::new(1, 0);
+    let chunk = IVec2::new(1, 0);
     let mut seen = vec![g.chunk_version(chunk)];
     let mut whole = vec![g.version()];
     let mut note = |g: &TileGrid| {
@@ -427,15 +745,15 @@ mod tests {
     g.set(IVec2::new(1, 1), Some(Tile::new(0, 1)));
     let mut h = g.clone();
     // A clone holds the same state, so the same versions
-    assert_eq!(h.chunk_version(UVec2::ZERO), g.chunk_version(UVec2::ZERO));
+    assert_eq!(h.chunk_version(IVec2::ZERO), g.chunk_version(IVec2::ZERO));
     g.set(IVec2::new(2, 2), Some(Tile::new(0, 2)));
     h.set(IVec2::new(2, 2), Some(Tile::new(0, 3)));
-    assert_ne!(g.chunk_version(UVec2::ZERO), h.chunk_version(UVec2::ZERO));
+    assert_ne!(g.chunk_version(IVec2::ZERO), h.chunk_version(IVec2::ZERO));
     assert_ne!(g.version(), h.version());
     // Each grid's versions still only move on
-    let before = g.chunk_version(UVec2::ZERO);
+    let before = g.chunk_version(IVec2::ZERO);
     g.set(IVec2::new(3, 3), Some(Tile::new(0, 4)));
-    assert!(g.chunk_version(UVec2::ZERO) > before);
+    assert!(g.chunk_version(IVec2::ZERO) > before);
   }
 
   #[test]
@@ -452,7 +770,7 @@ mod tests {
     let (a, b) = (made(), made());
     for y in 0..2 {
       for x in 0..2 {
-        let chunk = UVec2::new(x, y);
+        let chunk = IVec2::new(x, y);
         assert_ne!(a.chunk_version(chunk), b.chunk_version(chunk), "{chunk}");
       }
     }
@@ -463,14 +781,14 @@ mod tests {
   fn untouched_chunks_keep_their_version() {
     let mut g = TileGrid::new(UVec2::new(100, 40));
     g.set(IVec2::new(70, 3), Some(Tile::new(0, 1)));
-    let far = g.chunk_version(UVec2::new(2, 0));
-    let other = g.chunk_version(UVec2::new(0, 0));
+    let far = g.chunk_version(IVec2::new(2, 0));
+    let other = g.chunk_version(IVec2::new(0, 0));
     g.set(IVec2::new(40, 3), Some(Tile::new(0, 1)));
     g.fill(IVec2::new(32, 0), IVec2::new(60, 5), Some(Tile::new(0, 2)));
-    assert_eq!(g.chunk_version(UVec2::new(2, 0)), far);
-    assert_eq!(g.chunk_version(UVec2::new(0, 0)), other);
-    assert_ne!(g.chunk_version(UVec2::new(1, 0)), 0);
-    assert_eq!(g.chunk_version(UVec2::new(9, 9)), 0);
+    assert_eq!(g.chunk_version(IVec2::new(2, 0)), far);
+    assert_eq!(g.chunk_version(IVec2::new(0, 0)), other);
+    assert_ne!(g.chunk_version(IVec2::new(1, 0)), 0);
+    assert_eq!(g.chunk_version(IVec2::new(9, 9)), 0);
     // draining the dirty marks is not a change
     let v = g.version();
     let mut out = Vec::new();
@@ -481,10 +799,10 @@ mod tests {
   #[test]
   fn assigning_a_grid_moves_only_the_chunks_whose_cells_differ() {
     let chunks = [
-      UVec2::new(0, 0),
-      UVec2::new(1, 0),
-      UVec2::new(0, 1),
-      UVec2::new(1, 1),
+      IVec2::new(0, 0),
+      IVec2::new(1, 0),
+      IVec2::new(0, 1),
+      IVec2::new(1, 1),
     ];
     let versions = |g: &TileGrid| chunks.map(|c| g.chunk_version(c));
     let mut g = TileGrid::new(UVec2::new(40, 40));
@@ -506,12 +824,12 @@ mod tests {
     assert_eq!(g.get(IVec2::new(39, 39)), None);
     assert_eq!(format!("{g:?}"), format!("{saved:?}"));
     g.drain_dirty(&mut out);
-    assert_eq!(out, [UVec2::new(1, 0), UVec2::new(1, 1)]);
+    assert_eq!(out, [IVec2::new(1, 0), IVec2::new(1, 1)]);
 
     // The same cells again change nothing, unless a chunk is named
     assert!(!g.assign(&saved, |_| false));
     assert_eq!(versions(&g), after);
-    assert!(g.assign(&saved, |c| c == UVec2::new(0, 1)));
+    assert!(g.assign(&saved, |c| c == IVec2::new(0, 1)));
     let named = versions(&g);
     assert_eq!(
       (named[0], named[1], named[3]),
@@ -533,17 +851,156 @@ mod tests {
     let mut out = Vec::new();
     g.drain_dirty(&mut out);
     let cells = format!("{g:?}");
-    let (kept, before) = (g.chunk_version(UVec2::ZERO), g.version());
-    assert!(g.touch(&[UVec2::new(1, 0), UVec2::new(1, 1), UVec2::new(5, 5)]));
-    let moved = g.chunk_version(UVec2::new(1, 0));
+    let (kept, before) = (g.chunk_version(IVec2::ZERO), g.version());
+    assert!(g.touch(&[IVec2::new(1, 0), IVec2::new(1, 1), IVec2::new(5, 5)]));
+    let moved = g.chunk_version(IVec2::new(1, 0));
     assert!(moved > before);
-    assert_eq!(g.chunk_version(UVec2::new(1, 1)), moved, "one change");
-    assert_eq!((g.chunk_version(UVec2::ZERO), g.version()), (kept, moved));
+    assert_eq!(g.chunk_version(IVec2::new(1, 1)), moved, "one change");
+    assert_eq!((g.chunk_version(IVec2::ZERO), g.version()), (kept, moved));
     assert_eq!(format!("{g:?}"), cells, "the cells as they were");
     g.drain_dirty(&mut out);
-    assert_eq!(out, [UVec2::new(1, 0), UVec2::new(1, 1)]);
+    assert_eq!(out, [IVec2::new(1, 0), IVec2::new(1, 1)]);
     // Nothing inside: nothing moves
-    assert!(!g.touch(&[UVec2::new(2, 0)]));
+    assert!(!g.touch(&[IVec2::new(2, 0), IVec2::new(-1, 0)]));
     assert_eq!(g.version(), moved);
+  }
+
+  #[test]
+  fn an_unbounded_grid_takes_any_cell_and_makes_its_chunk() {
+    let mut g = TileGrid::unbounded();
+    assert!(g.set(IVec2::new(-33, -1), Some(Tile::new(0, 5))));
+    assert_eq!(g.get(IVec2::new(-33, -1)), Some(Tile::new(0, 5)));
+    assert_eq!(
+      g.chunk_coords().collect::<Vec<_>>(),
+      vec![IVec2::new(-2, -1)]
+    );
+    assert_eq!(
+      g.extent(),
+      CellRect::new(IVec2::new(-64, -32), IVec2::new(-32, 0))
+    );
+    assert_eq!(g.bounds(), None);
+  }
+
+  #[test]
+  fn clearing_an_absent_cell_makes_no_chunk() {
+    let mut g = TileGrid::unbounded();
+    assert!(!g.set(IVec2::new(100, 100), None));
+    assert_eq!(g.chunk_coords().count(), 0);
+  }
+
+  #[test]
+  fn a_bounded_grid_refuses_cells_outside_it_as_before() {
+    let mut g = TileGrid::new(UVec2::new(40, 20));
+    assert!(!g.set(IVec2::new(-1, 0), Some(Tile::new(0, 1))));
+    assert!(!g.set(IVec2::new(40, 0), Some(Tile::new(0, 1))));
+    assert!(g.set(IVec2::new(39, 19), Some(Tile::new(0, 1))));
+    assert_eq!(g.bounds(), Some(CellRect::from_size(UVec2::new(40, 20))));
+  }
+
+  #[test]
+  fn chunk_of_floors_toward_negative_infinity() {
+    assert_eq!(TileGrid::chunk_of(IVec2::new(-1, 0)), IVec2::new(-1, 0));
+    assert_eq!(TileGrid::chunk_of(IVec2::new(-32, 31)), IVec2::new(-1, 0));
+    assert_eq!(TileGrid::chunk_of(IVec2::new(-33, 32)), IVec2::new(-2, 1));
+  }
+
+  #[test]
+  fn an_unbounded_fill_makes_the_chunks_it_writes_and_clears_only_what_exists() {
+    let mut g = TileGrid::unbounded();
+    assert_eq!(
+      g.fill(
+        IVec2::new(-40, -2),
+        IVec2::new(-30, 1),
+        Some(Tile::new(0, 2))
+      ),
+      11 * 4
+    );
+    assert_eq!(g.chunk_coords().count(), 4); // chunks (-2,-1) (-1,-1) (-2,0) (-1,0)
+    assert_eq!(
+      g.fill(IVec2::new(-1000, -1000), IVec2::new(1000, 1000), None),
+      11 * 4
+    );
+    assert_eq!(g.chunk_coords().count(), 4); // clearing leaves the chunks; only a streaming unload removes one
+  }
+
+  #[test]
+  fn drain_dirty_and_versions_work_on_signed_chunks() {
+    let mut g = TileGrid::unbounded();
+    g.set(IVec2::new(-1, -1), Some(Tile::new(0, 1)));
+    g.set(IVec2::new(32, 0), Some(Tile::new(0, 1)));
+    let mut out = Vec::new();
+    g.drain_dirty(&mut out);
+    assert_eq!(out, vec![IVec2::new(-1, -1), IVec2::new(1, 0)]); // row order
+    assert!(g.chunk_version(IVec2::new(-1, -1)) > 0);
+    assert_eq!(g.chunk_version(IVec2::new(5, 5)), 0);
+  }
+
+  #[test]
+  fn assign_diffs_two_unbounded_grids_by_their_chunk_sets() {
+    // a has chunks A (unchanged in b) and B (dropped in b); b adds C
+    let (in_a, in_b, in_c) = (IVec2::new(-5, -5), IVec2::new(40, -5), IVec2::new(-100, 70));
+    let [chunk_a, chunk_b, chunk_c] = [in_a, in_b, in_c].map(TileGrid::chunk_of);
+    assert_eq!(
+      [chunk_a, chunk_b, chunk_c],
+      [IVec2::new(-1, -1), IVec2::new(1, -1), IVec2::new(-4, 2)]
+    );
+    let mut a = TileGrid::unbounded();
+    a.set(in_a, Some(Tile::new(0, 1)));
+    a.fill(
+      IVec2::new(32, -32),
+      IVec2::new(63, -1),
+      Some(Tile::new(0, 2)),
+    );
+    let mut b = TileGrid::unbounded();
+    b.set(in_a, Some(Tile::new(0, 1)));
+    b.set(in_c, Some(Tile::new(0, 3)));
+    b.set(in_c + IVec2::X, Some(Tile::new(0, 4)));
+    let mut out = Vec::new();
+    a.drain_dirty(&mut out);
+    let (kept, dropped) = (a.chunk_version(chunk_a), a.chunk_version(chunk_b));
+
+    assert!(a.assign(&b, |_| false));
+    // A: as it was
+    assert_eq!(a.chunk_version(chunk_a), kept);
+    assert_eq!(a.get(in_a), Some(Tile::new(0, 1)));
+    // B: every cell empty, with a new version
+    let moved = a.chunk_version(chunk_b);
+    assert!(moved > dropped);
+    for y in -32..0 {
+      for x in 32..64 {
+        assert_eq!(a.get(IVec2::new(x, y)), None, "({x}, {y})");
+      }
+    }
+    // C: present with b's cells, and the same new version: one change
+    assert!(a.chunk_coords().any(|c| c == chunk_c));
+    assert_eq!(a.get(in_c), Some(Tile::new(0, 3)));
+    assert_eq!(a.get(in_c + IVec2::X), Some(Tile::new(0, 4)));
+    assert_eq!(a.chunk_version(chunk_c), moved);
+    assert_eq!(a.version(), moved);
+    assert_eq!(format!("{a:?}"), format!("{b:?}"));
+    a.drain_dirty(&mut out);
+    assert_eq!(out, [chunk_b, chunk_c]);
+
+    // The same chunks again change nothing, and a bounded grid is not
+    // taken by an unbounded one
+    assert!(!a.assign(&b, |_| false));
+    assert!(!a.assign(&TileGrid::new(UVec2::splat(64)), |_| true));
+    assert_eq!(a.version(), moved);
+  }
+
+  #[test]
+  fn chunk_cells_hold_a_chunk_row_by_row() {
+    let mut g = TileGrid::unbounded();
+    g.set(IVec2::new(-31, -2), Some(Tile::new(0, 5)));
+    let cells = g
+      .chunk_cells(IVec2::new(-1, -1))
+      .expect("the chunk written");
+    // (-31, -2) is column 1, row 30 of chunk (-1, -1)
+    assert_eq!(
+      TileGrid::decode(cells[30 * CHUNK_SIZE as usize + 1]),
+      Some(Tile::new(0, 5))
+    );
+    assert_eq!(cells.iter().filter(|&&c| c != 0).count(), 1);
+    assert!(g.chunk_cells(IVec2::ZERO).is_none());
   }
 }

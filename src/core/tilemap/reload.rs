@@ -43,6 +43,7 @@ use crate::core::ecs::{
   Allow, ChildOf, Component, DetectChangesMut, Disabled, Entity, Local, Transform, World,
 };
 use crate::core::hash::{FastMap, FastSet};
+use crate::core::physics::CellRect;
 
 /// The loads of a root's files its spawned map follows: its map's (or its
 /// LDtk project's), then those of the tileset assets the map uses, as
@@ -71,12 +72,12 @@ fn source_id(root: &MapRoot) -> UntypedAssetId {
 }
 
 /// What keeps a layer's entity through a reload: the same kind, and for a
-/// tile layer the same size, cell size and offset (an object or image
-/// layer keeps its entity through an offset change, and moves)
+/// tile layer the same bounds (or none), cell size and offset (an object
+/// or image layer keeps its entity through an offset change, and moves)
 #[derive(Clone, Debug, PartialEq)]
 enum LayerShape {
   Tiles {
-    size: UVec2,
+    bounds: Option<CellRect>,
     cell_size: UVec2,
     offset: Vec2,
   },
@@ -100,7 +101,7 @@ impl FileLayer {
       LayerKind::Tiles {
         grid, cell_size, ..
       } => LayerShape::Tiles {
-        size: grid.size(),
+        bounds: grid.bounds(),
         cell_size: *cell_size,
         offset: layer.info.offset,
       },
@@ -606,10 +607,14 @@ fn take_cells(world: &mut World, entity: Entity, grid: &TileGrid, intgrid: Optio
 
 /// Whether two IntGrids' values differ in `chunk` (where one is missing, or
 /// they differ in size, everywhere)
-fn values_differ(old: Option<&IntGrid>, new: Option<&IntGrid>, chunk: UVec2) -> bool {
+fn values_differ(old: Option<&IntGrid>, new: Option<&IntGrid>, chunk: IVec2) -> bool {
   match (old, new) {
     (None, None) => false,
     (Some(a), Some(b)) if a.size == b.size => {
+      // An IntGrid's cells start at (0, 0)
+      let Ok(chunk) = UVec2::try_from(chunk) else {
+        return false;
+      };
       let width = a.size.x as usize;
       let x0 = (chunk.x * CHUNK_SIZE).min(a.size.x) as usize;
       let x1 = ((chunk.x + 1) * CHUNK_SIZE).min(a.size.x) as usize;

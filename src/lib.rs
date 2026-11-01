@@ -155,11 +155,11 @@ pub mod prelude {
 
   // Physics
   pub use crate::core::physics::{
-    AngularVelocity, BodyKind, CellShape, CharacterController, CharacterHit, CharacterMode,
-    CharacterState, Collider, ColliderShape, CollisionStarted, CollisionStopped, Contact,
-    ContactForce, Hit, Joint, JointAnchor, JointBroken, JointKind, JointMotor, Overlap, Physics,
-    PhysicsConfig, PointHit, QueryFilter, RigidBody, SlopeCorner, TileCell, TileColliders, Touch,
-    TriggerContents, TriggerEntered, TriggerExited,
+    AngularVelocity, BodyKind, CellRect, CellShape, CharacterController, CharacterHit,
+    CharacterMode, CharacterState, Collider, ColliderShape, CollisionStarted, CollisionStopped,
+    Contact, ContactForce, Hit, Joint, JointAnchor, JointBroken, JointKind, JointMotor, Overlap,
+    Physics, PhysicsConfig, PointHit, QueryFilter, RigidBody, SlopeCorner, TileCell, TileColliders,
+    Touch, TriggerContents, TriggerEntered, TriggerExited,
   };
 
   // Gameplay

@@ -11,7 +11,8 @@ use glam::{IVec2, UVec2, Vec2};
 
 use super::spawn::{IntGridKey, TileLayerData};
 use super::{
-  LayerInfo, LdtkProject, Tile, TileFlip, TileMap, Tileset, TilesetImage, TilesetSource,
+  CHUNK_SIZE, LayerInfo, LdtkProject, Tile, TileFlip, TileGrid, TileMap, Tileset, TilesetImage,
+  TilesetSource,
 };
 use crate::core::asset::{AssetId, Assets};
 use crate::core::ecs::{Allow, DetectChanges, Disabled, Entity, Has, Query, Ref, Res};
@@ -499,6 +500,18 @@ fn rank(kind: TileCell) -> u8 {
   }
 }
 
+/// The cells of `grid` that collision and shadows cover: from (0, 0) to
+/// the far corner of its extent, a bounded grid's every cell
+pub(super) fn covered(grid: &TileGrid) -> UVec2 {
+  grid.extent().max.max(IVec2::ZERO).as_uvec2()
+}
+
+/// The chunks across and down holding the cells `covered` gives
+fn covered_chunks(grid: &TileGrid) -> UVec2 {
+  let cells = covered(grid);
+  UVec2::new(cells.x.div_ceil(CHUNK_SIZE), cells.y.div_ceil(CHUNK_SIZE))
+}
+
 /// A layer of a group: the chunk versions it was last read at
 #[derive(Debug)]
 pub(super) struct Tracked {
@@ -520,10 +533,10 @@ impl Tracked {
     overrides: &[(IntGridKey, TileCell)],
   ) -> Tracked {
     let grid = &data.grid;
-    let chunks = grid.chunks();
+    let chunks = covered_chunks(grid);
     let versions = (0..chunks.y)
       .flat_map(|y| (0..chunks.x).map(move |x| UVec2::new(x, y)))
-      .map(|chunk| grid.chunk_version(chunk))
+      .map(|chunk| grid.chunk_version(chunk.as_ivec2()))
       .collect();
     Tracked {
       index,
@@ -543,7 +556,7 @@ impl Tracked {
     data: &TileLayerData,
     overrides: &[(IntGridKey, TileCell)],
   ) -> Tracked {
-    let chunks = data.grid.chunks();
+    let chunks = covered_chunks(&data.grid);
     Tracked {
       index,
       entity,
@@ -569,12 +582,12 @@ impl Tracked {
   /// returns every chunk of it that ever changed, which a first build reads
   pub(super) fn read_all(&mut self, data: &TileLayerData) -> Vec<UVec2> {
     let grid = &data.grid;
-    let chunks = grid.chunks();
+    let chunks = covered_chunks(grid);
     self.versions.clear();
     let mut changed = Vec::new();
     for y in 0..chunks.y {
       for x in 0..chunks.x {
-        let version = grid.chunk_version(UVec2::new(x, y));
+        let version = grid.chunk_version(UVec2::new(x, y).as_ivec2());
         self.versions.push(version);
         if version != 0 {
           changed.push(UVec2::new(x, y));
@@ -614,14 +627,14 @@ pub(super) fn changed_chunks(
     if !all && grid.version() == tracked.grid_version {
       continue;
     }
-    let chunks = grid.chunks();
+    let chunks = covered_chunks(grid);
     tracked
       .versions
       .resize(chunks.x as usize * chunks.y as usize, 0);
     for y in 0..chunks.y {
       for x in 0..chunks.x {
         let chunk = UVec2::new(x, y);
-        let version = grid.chunk_version(chunk);
+        let version = grid.chunk_version(chunk.as_ivec2());
         let seen = &mut tracked.versions[(y * chunks.x + x) as usize];
         if all || *seen != version {
           *seen = version;

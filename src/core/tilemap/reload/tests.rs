@@ -91,9 +91,9 @@ fn grid_of(world: &World, layer: Entity) -> Vec<Option<Tile>> {
   let Some(data) = world.get::<TileLayerData>(layer) else {
     panic!("{layer:?} is not a tile layer")
   };
-  let size = data.grid.size().as_ivec2();
-  (0..size.y)
-    .flat_map(|y| (0..size.x).map(move |x| IVec2::new(x, y)))
+  let extent = data.grid.extent();
+  (extent.min.y..extent.max.y)
+    .flat_map(|y| (extent.min.x..extent.max.x).map(move |x| IVec2::new(x, y)))
     .map(|cell| data.grid.get(cell))
     .collect()
 }
@@ -964,7 +964,7 @@ fn a_reload_keeps_the_ground_a_character_stands_on() {
   let ground = layers_of(&mut maps.world, map)[0];
   let chunk_versions = |world: &World| {
     let grid = &world.get::<TileLayerData>(ground).expect("tiles").grid;
-    [0, 1, 2].map(|x| grid.chunk_version(UVec2::new(x, 0)))
+    [0, 1, 2].map(|x| grid.chunk_version(IVec2::new(x, 0)))
   };
   let shadows = |world: &mut World, chunk: u32| {
     let mut found: Vec<Entity> = world

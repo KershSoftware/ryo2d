@@ -1,14 +1,15 @@
 //! Finding a spawned map's layers, and reading and editing their cells.
 
-use glam::{Affine2, IVec2, UVec2, Vec2};
+use glam::{Affine2, IVec2, Vec2};
 
 use super::spawn::{
   ClassTile, LayerTiles, MapLayerRef, MapLayers, MapTile, TileLayerData, registered_class,
   spawn_class_tile,
 };
-use super::{CHUNK_SIZE, LayerInfo, Properties, Tile, TileGrid};
+use super::{LayerInfo, Properties, Tile, TileGrid};
 use crate::core::ecs::{ChildOf, DetectChangesMut, Entity, Transform, World};
 use crate::core::hash::FastSet;
+use crate::core::physics::CellRect;
 
 /// How many ancestors a layer's world transform walks up before giving up:
 /// far past any real hierarchy, and a cycle (which nothing else checks for)
@@ -96,8 +97,11 @@ fn clear_parts(world: &mut World, parts: &[Entity], lo: IVec2, hi: IVec2) -> Fas
     let Some(data) = world.get::<TileLayerData>(part) else {
       continue;
     };
-    let size = data.grid.size().as_ivec2();
-    let (a, b) = (lo.max(IVec2::ZERO), hi.min(size - IVec2::ONE));
+    let extent = data.grid.extent();
+    if extent.is_empty() {
+      continue;
+    }
+    let (a, b) = (lo.max(extent.min), hi.min(extent.max - IVec2::ONE));
     for y in a.y..=b.y {
       for x in a.x..=b.x {
         let cell = IVec2::new(x, y);
@@ -134,11 +138,15 @@ fn edit_grid<R>(
   Some(result)
 }
 
-/// A tile layer's entity and grid size
-fn tile_layer_size(world: &World, map: Entity, layer: LayerRef<'_>) -> Option<(Entity, IVec2)> {
+/// A tile layer's entity and the cells its grid reaches
+fn tile_layer_extent(
+  world: &World,
+  map: Entity,
+  layer: LayerRef<'_>,
+) -> Option<(Entity, CellRect)> {
   let entity = layer_entity(world, map, layer)?;
-  let size = world.get::<TileLayerData>(entity)?.grid.size().as_ivec2();
-  Some((entity, size))
+  let extent = world.get::<TileLayerData>(entity)?.grid.extent();
+  Some((entity, extent))
 }
 
 /// The class tile living at `cell` of the layer entity `layer`
@@ -212,10 +220,10 @@ pub(crate) fn set_tile(
   cell: IVec2,
   tile: Option<Tile>,
 ) -> bool {
-  let Some((layer, size)) = tile_layer_size(world, map, layer) else {
+  let Some((layer, extent)) = tile_layer_extent(world, map, layer) else {
     return false;
   };
-  if cell.x < 0 || cell.y < 0 || cell.x >= size.x || cell.y >= size.y {
+  if !extent.contains(cell) {
     return false;
   }
   let class = tile.and_then(|tile| registered_class(world, map, tile));
@@ -235,10 +243,13 @@ pub(crate) fn fill(
   max: IVec2,
   tile: Option<Tile>,
 ) -> usize {
-  let Some((layer, size)) = tile_layer_size(world, map, layer) else {
+  let Some((layer, extent)) = tile_layer_extent(world, map, layer) else {
     return 0;
   };
-  let (lo, hi) = (min.max(IVec2::ZERO), max.min(size - IVec2::ONE));
+  if extent.is_empty() {
+    return 0;
+  }
+  let (lo, hi) = (min.max(extent.min), max.min(extent.max - IVec2::ONE));
   if lo.x > hi.x || lo.y > hi.y {
     return 0;
   }
@@ -338,14 +349,21 @@ pub(crate) fn fill_intgrid(
   let Some(intgrid) = intgrid.as_mut() else {
     return 0;
   };
-  let size = intgrid.size.min(grid.size()).as_ivec2();
-  let (lo, hi) = (min.max(IVec2::ZERO), max.min(size - IVec2::ONE));
+  // The cells both the IntGrid and the grid hold
+  let (extent, values) = (grid.extent(), CellRect::from_size(intgrid.size));
+  if extent.is_empty() || values.is_empty() {
+    return 0;
+  }
+  let lo = min.max(extent.min).max(values.min);
+  let hi = max
+    .min(extent.max - IVec2::ONE)
+    .min(values.max - IVec2::ONE);
   if lo.x > hi.x || lo.y > hi.y {
     return 0;
   }
   let width = intgrid.size.x as usize;
   let mut changed = 0;
-  let mut chunks: Vec<UVec2> = Vec::new();
+  let mut chunks: Vec<IVec2> = Vec::new();
   for y in lo.y..=hi.y {
     for x in lo.x..=hi.x {
       let Some(slot) = intgrid.values.get_mut(y as usize * width + x as usize) else {
@@ -356,7 +374,7 @@ pub(crate) fn fill_intgrid(
       }
       *slot = value;
       changed += 1;
-      let chunk = IVec2::new(x, y).as_uvec2() / CHUNK_SIZE;
+      let chunk = TileGrid::chunk_of(IVec2::new(x, y));
       if chunks.last() != Some(&chunk) && !chunks.contains(&chunk) {
         chunks.push(chunk);
       }
