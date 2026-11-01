@@ -1,0 +1,15 @@
+# Tile Grids Demo - Ryo2D Engine Project Configuration
+# A Tiled infinite map, and painting an infinite map anywhere
+
+[project]
+name = "Tile Grids Demo"
+
+[paths]
+entry_point = "src/main.rs"
+assets = "assets"
+
+[system]
+resolution = "960x600"
+vsync = true
+display_mode = "windowed"
+show_fps = true

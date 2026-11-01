@@ -6624,6 +6624,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "tile-grids-demo"
+version = "0.1.0"
+dependencies = [
+ "demo-kit",
+ "ryo2d",
+]
+
+[[package]]
 name = "tilemap-demo"
 version = "0.1.0"
 dependencies = [
