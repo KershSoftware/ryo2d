@@ -75,10 +75,11 @@
 //!   anchor, crosses it on a straight line at 2,000 px/s (heading 0.8, 0.6,
 //!   so rows and columns of chunks come and go both) for the guard's frames
 //!   and the warm-up before them, against an empty scene whose camera flies
-//!   the same path; the engines step in turn, one frame each, each round
-//!   paced at 60 Hz with a spin wait, as the landing is, so the generator's
-//!   thread keeps the time a game gives it. A frame's cost is the whole
-//!   step, the GPU finished before it, as the static guard's. The 99th
+//!   the same path; the engines (and the baseline below) step in turn, one
+//!   frame each, each round paced at 60 Hz with a spin wait, as the landing
+//!   is, so the generator's thread keeps the time a game gives it. A
+//!   frame's cost is the whole step, the GPU finished before it, as the
+//!   static guard's. The 99th
 //!   percentile of the world's step over the empty frame's median is held
 //!   to 0.5 ms (the spec: any frame; one slowest frame is the machine's
 //!   noise, so the maximum is printed beside it, and so is the empty
@@ -88,7 +89,13 @@
 //!   and the resident chunks number no more than the view grown by the
 //!   unload distance can meet (printed), each chunk past that distance
 //!   gone within the frames the unload budget takes to drain them all.
-//!   Beside them, with no target: the frames that landed chunks, unloaded
+//!   Beside them, with no target: the world's 99th percentile less the
+//!   empty frame's; a static baseline, a third engine stepped in the same
+//!   rounds on the chunks the crossing meets (the view grown by the load
+//!   distance: about 1,100 chunks, 2.3 million cells of the generator's own
+//!   tiles) built in code as an infinite map with no stream, its step over
+//!   the empty frame's and the world's over its own, so streaming's cost
+//!   stands apart from the map's; the frames that landed chunks, unloaded
 //!   them, brought a chunk into view (its first draw) and the others, each
 //!   with its render step; then a teleport 100 chunks on, the camera
 //!   staying there 180 frames: the frames its view took to fill and the
@@ -114,7 +121,7 @@
 
 mod guards;
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::io::Write as _;
 use std::process::Command;
 use std::time::{Duration, Instant, SystemTime};
@@ -1748,6 +1755,70 @@ impl Scene for EndlessScene {
   }
 }
 
+/// The chunks the streaming guard's crossing meets (warm-up included),
+/// the view grown by the load distance: those the stream lands round the
+/// view, by row
+fn crossed_chunks() -> Vec<IVec2> {
+  let half = Vec2::new(RESOLUTION.0 as f32, RESOLUTION.1 as f32) / 2.0 + LOAD;
+  let mut chunks = BTreeSet::new();
+  for frame in 0..=WARM + ROUNDS {
+    let at = crossing_at(frame);
+    let (first, last) = chunks_over(Rect::new(
+      at.x - half.x,
+      at.y - half.y,
+      2.0 * half.x,
+      2.0 * half.y,
+    ));
+    for y in first.y..=last.y {
+      for x in first.x..=last.x {
+        chunks.insert((y, x));
+      }
+    }
+  }
+  chunks.into_iter().map(|(y, x)| IVec2::new(x, y)).collect()
+}
+
+/// The streaming guard's static baseline: the endless world's chunks the
+/// crossing meets (`crossed_chunks`, the generator's own tiles), built in
+/// code as an infinite map of the same two layers (the ground colliding
+/// and casting shadows), with no stream: what the map costs drawn and
+/// still, so the world over it is what streaming adds
+struct CrossedScene;
+
+impl Scene for CrossedScene {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    let source = add_tileset(ctx);
+    let mut map = TileMap::infinite(UVec2::splat(TILE));
+    let set = map.add_tileset(source);
+    let layers = [
+      ("background", map.add_tile_layer("background")),
+      ("ground", map.add_tile_layer("ground")),
+    ];
+    for chunk in crossed_chunks() {
+      let first_cell = chunk * CHUNK_SIZE as i32;
+      let request = ChunkRequest {
+        chunk,
+        first_cell,
+        tile_size: UVec2::splat(TILE),
+      };
+      let tiles = endless_chunk(request, set);
+      for (name, layer) in layers {
+        let grid = map.tiles_mut(layer).expect("a tile layer");
+        for y in 0..CHUNK_SIZE {
+          for x in 0..CHUNK_SIZE {
+            let at = UVec2::new(x, y);
+            if let Some(tile) = tiles.get(name, at) {
+              grid.set(first_cell + at.as_ivec2(), Some(tile));
+            }
+          }
+        }
+      }
+    }
+    let map = ctx.assets().add(map);
+    ctx.world.spawn((Transform::IDENTITY, MapRoot::new(map)));
+  }
+}
+
 /// The main camera's view as `engine`'s last frame drew it
 fn drawn_view(engine: &mut HeadlessEngine) -> Option<CameraBounds> {
   let world = engine.world_mut();
@@ -1790,19 +1861,30 @@ fn chunks_bound(view: CameraBounds, by: f32) -> usize {
   meets(view.width() + 2.0 * by) * meets(view.height() + 2.0 * by)
 }
 
+/// What an engine of the streaming guard shows
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Crossed {
+  Empty,
+  /// The endless world, streamed: the guarded one
+  Streamed,
+  /// The static baseline (`CrossedScene`)
+  Baseline,
+}
+
 /// An engine of the streaming guard, its camera at the path's start: the
 /// endless world with every chunk of the view's load area landed, and its
-/// root (`world`), or an empty scene. None without a GPU
-fn stream_engine(world: bool) -> Option<(HeadlessEngine, Option<Entity>)> {
+/// root; the static baseline landed, and its root; or an empty scene. None
+/// without a GPU
+fn stream_engine(show: Crossed) -> Option<(HeadlessEngine, Option<Entity>)> {
   let builder = EngineBuilder::new().resolution(RESOLUTION.0, RESOLUTION.1);
-  let builder = if world {
-    builder.start_scene(EndlessScene)
-  } else {
-    builder.start_scene(Nothing)
+  let builder = match show {
+    Crossed::Empty => builder.start_scene(Nothing),
+    Crossed::Streamed => builder.start_scene(EndlessScene),
+    Crossed::Baseline => builder.start_scene(CrossedScene),
   };
   let mut engine = HeadlessEngine::new_or_skip(builder)?;
   place_camera(&mut engine, crossing_at(0));
-  if !world {
+  if show == Crossed::Empty {
     engine.step().expect("a frame");
     return Some((engine, None));
   }
@@ -1810,10 +1892,15 @@ fn stream_engine(world: bool) -> Option<(HeadlessEngine, Option<Entity>)> {
   loop {
     engine.step().expect("a frame");
     let root = roots(&mut engine).first().copied();
-    if let (Some(root), Some(view)) = (root, drawn_view(&mut engine))
-      && MapsView::new(engine.world_mut()).stream_ready(root, grown(view, LOAD))
-    {
-      return Some((engine, Some(root)));
+    let ready = match (root, drawn_view(&mut engine)) {
+      (Some(root), Some(view)) if show == Crossed::Streamed => {
+        MapsView::new(engine.world_mut()).stream_ready(root, grown(view, LOAD))
+      }
+      (Some(_), Some(_)) => landed(&mut engine),
+      _ => false,
+    };
+    if ready {
+      return Some((engine, root));
     }
     assert!(
       start.elapsed() < Duration::from_secs(60),
@@ -1953,14 +2040,18 @@ fn teleport(
 /// median, its 99th percentile held to 0.5 ms; every frame shows no
 /// unfilled chunk and keeps its resident chunks within the radii
 fn stream_guard() {
-  let (Some((mut empty, _)), Some((mut streamed, Some(root)))) =
-    (stream_engine(false), stream_engine(true))
-  else {
+  let (Some((mut empty, _)), Some((mut streamed, Some(root))), Some((mut baseline, _))) = (
+    stream_engine(Crossed::Empty),
+    stream_engine(Crossed::Streamed),
+    stream_engine(Crossed::Baseline),
+  ) else {
     return;
   };
   let mut cursor = MessageCursor::<ChunkEvent>::default();
   chunk_events(&mut streamed, &mut cursor);
   let (mut empty_steps, mut empty_renders) =
+    (Vec::with_capacity(ROUNDS), Vec::with_capacity(ROUNDS));
+  let (mut baseline_steps, mut baseline_renders) =
     (Vec::with_capacity(ROUNDS), Vec::with_capacity(ROUNDS));
   let mut frames: Vec<Crossing> = Vec::with_capacity(ROUNDS);
   let (mut unfilled, mut resident) = (Vec::new(), Vec::new());
@@ -1977,10 +2068,14 @@ fn stream_guard() {
     let at = crossing_at(round);
     pace(next);
     next = Instant::now() + FRAME;
-    // Each round the other engine steps first
-    let mut steps = [(Duration::ZERO, Duration::ZERO); 2];
-    for i in [round % 2, 1 - round % 2] {
-      let engine = if i == 0 { &mut empty } else { &mut streamed };
+    // Each round another engine steps first
+    let mut steps = [(Duration::ZERO, Duration::ZERO); 3];
+    for i in [round % 3, (round + 1) % 3, (round + 2) % 3] {
+      let engine = match i {
+        0 => &mut empty,
+        1 => &mut streamed,
+        _ => &mut baseline,
+      };
       place_camera(engine, at);
       settle_gpu();
       let start = Instant::now();
@@ -2014,6 +2109,8 @@ fn stream_guard() {
     }
     empty_steps.push(steps[0].0);
     empty_renders.push(steps[0].1);
+    baseline_steps.push(steps[2].0);
+    baseline_renders.push(steps[2].1);
     frames.push(Crossing {
       step: steps[1].0,
       render: steps[1].1,
@@ -2041,7 +2138,7 @@ fn stream_guard() {
     RESOLUTION.1,
     HEADING.x,
     HEADING.y,
-    shown_at(empty_steps, 99),
+    shown_at(empty_steps.clone(), 99),
     shown_at(empty_renders, 99),
   );
   let (all, renders) = added(|_| true);
@@ -2060,6 +2157,42 @@ fn stream_guard() {
   if !met {
     guards::miss(format!("stream, {line}"));
   }
+  // With no target, so one quiet run tells the machine's floor from the
+  // stream's own cost: the 99th percentiles apart, and a static baseline
+  let p99 = |times: &[Duration]| spread_at(times.to_vec(), 99).map_or(Duration::ZERO, |s| s.1);
+  let world_steps: Vec<Duration> = frames.iter().map(|f| f.step).collect();
+  let (world_p99, empty_p99, baseline_p99) =
+    (p99(&world_steps), p99(&empty_steps), p99(&baseline_steps));
+  let apart = |a: Duration, b: Duration| us(a) - us(b);
+  eprintln!(
+    "stream (no target): the endless world's 99th percentile less the empty frame's, {:.1} µs \
+     (the world's {:.1}, the empty frame's {:.1})",
+    apart(world_p99, empty_p99),
+    us(world_p99),
+    us(empty_p99),
+  );
+  let baseline_step = median(baseline_steps.clone());
+  let baseline_render = median(baseline_renders.clone());
+  let world_renders: Vec<Duration> = frames.iter().map(|f| f.render).collect();
+  eprintln!(
+    "stream (no target): a static baseline, the {} chunks the crossing meets (the view grown by \
+     the load distance) built in code as an infinite map of the same two layers, colliding and \
+     casting shadows, with no MapStream, stepped in the same rounds: its step over the empty \
+     frame's median, {}; its render step over the empty frame's, {}; its 99th percentile less \
+     the empty frame's, {:.1} µs",
+    crossed_chunks().len(),
+    shown_at(over(&baseline_steps, empty_step), 99),
+    shown_at(over(&baseline_renders, empty_render), 99),
+    apart(baseline_p99, empty_p99),
+  );
+  eprintln!(
+    "stream (no target): the endless world over the static baseline: its step over the \
+     baseline's median, {}; its render step over the baseline's, {}; its 99th percentile less \
+     the baseline's, {:.1} µs",
+    shown_at(over(&world_steps, baseline_step), 99),
+    shown_at(over(&world_renders, baseline_render), 99),
+    apart(world_p99, baseline_p99),
+  );
   let landings: usize = frames.iter().map(|f| f.landed).sum();
   let unloads: usize = frames.iter().map(|f| f.unloaded).sum();
   let both = frames
@@ -2158,7 +2291,7 @@ fn stream_bench(c: &mut Criterion) {
   let mut made: Option<(HeadlessEngine, usize)> = None;
   c.bench_function("stream", |b| {
     if made.is_none() {
-      made = stream_engine(true).map(|(engine, _)| (engine, 0));
+      made = stream_engine(Crossed::Streamed).map(|(engine, _)| (engine, 0));
     }
     let Some((engine, frame)) = made.as_mut() else {
       return;
