@@ -2,7 +2,7 @@
 name: ryo-tilemap
 description: "Tile maps - the workflow from Tiled (.tmx, .tmj) or LDtk (.ldtk) through assets/ to a MapRoot entity, layers and the reserved layer properties (collides, occludes, y_sort, lit), tilesets and typed tile data, objects and class tiles as entities, MapEvent, reading and editing tiles with ctx.maps() and Wang terrain, collision from tile shapes and IntGrids, tile shadows, y-sorting and parallax, worlds of levels, maps built in code and by procgen, hot reload, the web, performance and testing."
 metadata:
-  version: 1.1.0
+  version: 1.1.1
 ---
 
 # Ryo2D Tile Maps
@@ -535,9 +535,10 @@ Measured on an Apple M5 Pro in a release build, at 1920 x 1080 with 16 px tiles;
 - **Cheap:**
   - **Drawing** costs what is on screen: a frame draws only the chunks in view, so a static 1024 x 1024 map of four layers costs about 33 µs a frame to draw, as a small one would.
   - **A one-tile edit**, an outline split or joined included: about 20 µs to redraw its chunk, and about 50 to 80 µs each to rebuild the collision outlines and the shadow chains through it.
+  - **A still map's colliders and shadow chains:** each is a child entity, and transform propagation walks only what changed, so the colliders and shadow chains of a still 1024 x 1024 map (about 2,900 children) add about 10 µs a frame to drawing it: propagation's check of each entity for changes, and physics.
   - **Loading** runs off the main thread: a 256 x 256 four-layer Tiled map with its tileset and image loads in about 1.3 ms on the workers, and its colliders and shadows are worked out on the map builder thread.
 - **What costs a game:**
-  - **Every collider and shadow chain of a map is a child entity**, and once anything moves, transform propagation visits every child of every hierarchy each frame. A 1024 x 1024 map colliding and casting shadows (about 2,900 children) costs about 85 µs a frame, against 33 µs drawn only. Turn collision off (`without_collision`, or `collides` false) and shadows off (`occludes` false) on maps and layers that need neither.
+  - **Moving a map moves every collider and shadow chain under it:** moving its root or a layer makes transform propagation walk all of them, about 17 to 24 ns each a frame (about 50 µs for the 1024 x 1024 cave's 2,900). So does a fixed step that changes a fifth of the world's entities (and more than 64: about 1,000 movers beside that map's 4,096 entities): propagation then walks every hierarchy, at about what the changed entities' own walks would cost. Keep big maps still, and turn collision off (`without_collision`, or `collides` false) and shadows off (`occludes` false) on maps and layers that need neither: they cost physics and lighting too.
   - **A y-sorted layer** draws each visible row as an item of its own: a dense y-sorted layer of the 1024 x 1024 map cost about 70 µs more a frame. Y-sort only the layers characters walk among.
   - **A lit level** gathers every map occluder each frame, and each shadowed light loops over all of them, however far away: one shadowed light over the 1024 x 1024 cave cost about 30 µs more than the unlit map.
   - **A landing frame** builds and uploads the chunks in view (about 0.5 ms at 1080p), and a tileset's first landing also makes its padded texture (about 0.5 ms more, about 1 ms in all, the first time; a level restarted, or the next one with the same tileset, within about two seconds reuses it). A 1024 x 1024 four-layer colliding map takes about 70 ms on the builder thread and about 5 ms in its landing frame; on the web all of it is one frame (section 14). Cover a big map's landing with a loading screen.
