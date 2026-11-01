@@ -51,8 +51,9 @@ impl<'w> MapsView<'w> {
   }
 
   /// Whether every chunk overlapping `area` (world pixels) is resident on
-  /// the streamed map `map` ([`MapStream`](super::MapStream)): landed, so
-  /// it draws and collides. False for a map not streamed or not landed.
+  /// the streamed map `map` ([`MapStream`](super::MapStream)): landed, or
+  /// one of a Tiled infinite map's own chunks, so it draws and collides.
+  /// False for a map not streamed or not landed.
   /// For a loading screen after a respawn or a teleport, rather than
   /// dropping a body into chunks not generated yet
   ///
@@ -74,8 +75,11 @@ impl<'w> MapsView<'w> {
   /// [`SavedChunks`](super::SavedChunks), as unloading it would. A chunk
   /// goes in only as it unloads, so call this just before writing the
   /// `SavedChunks` into a save game, or the chunks changed round the player
-  /// are left out. Returns how many it put: 0 for a map with no
-  /// `MapStream`, or whose stream keeps no `SavedChunks`
+  /// are left out. A Tiled infinite map's own chunks never unload, so this
+  /// is the only way their changes are kept: one changed since the map
+  /// landed goes in, and comes back from the save as a new stream of the
+  /// map starts. Returns how many it put: 0 for a map with no `MapStream`,
+  /// or whose stream keeps no `SavedChunks`
   pub fn save_changed_chunks(&self, map: Entity) -> usize {
     stream::save_changed(self.world, map)
   }

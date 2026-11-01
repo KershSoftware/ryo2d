@@ -500,6 +500,8 @@ struct Builder<'p, 'a> {
   next_id: Option<u32>,
   layers: Vec<MapLayer>,
   used_ids: Vec<(usize, u16, u32)>,
+  /// The engine chunks an infinite map's Tiled chunks touch, any layer's
+  file_chunks: FastSet<IVec2>,
 }
 
 /// The cells the tile layers of `layers` (in groups too) take, as the
@@ -934,8 +936,15 @@ impl Builder<'_, '_> {
   ) -> Result<(LayerKind, Vec<(u16, u32)>), AssetError> {
     let path = self.path.clone();
     let mut highest: Vec<Option<u32>> = vec![None; self.first_gids.len()];
+    // Each Tiled chunk's first and last engine chunk
+    let mut touched: Vec<(IVec2, IVec2)> = Vec::new();
     let mut grid = match (self.infinite, &raw.chunks) {
       (true, _) => chunked_grid(&path, place, raw, self.tile_size, |gids, origin, width| {
+        // A chunk of a cell or more, its last cell one an `i32` holds
+        // (`check_chunk`)
+        let rows = (gids.len() as u32).checked_div(width).unwrap_or(0);
+        let last = origin.saturating_add(UVec2::new(width, rows).as_ivec2() - IVec2::ONE);
+        touched.push((TileGrid::chunk_of(origin), TileGrid::chunk_of(last)));
         self.cells(gids, &mut highest, origin, width)
       })?,
       (false, Some(_)) => {
@@ -975,6 +984,15 @@ impl Builder<'_, '_> {
         grid
       }
     };
+    // Counted against the caps with the map's cells, so no more of them
+    // than a layer holds
+    for (first, last) in touched {
+      for y in first.y..=last.y {
+        self
+          .file_chunks
+          .extend((first.x..=last.x).map(|x| IVec2::new(x, y)));
+      }
+    }
     // a loaded grid starts clean
     grid.drain_dirty(&mut Vec::new());
     let used = highest
@@ -1223,6 +1241,7 @@ pub(crate) fn build_map(
     next_id: max_layer_id(&raw.layers).checked_add(1),
     layers: Vec::new(),
     used_ids: Vec::new(),
+    file_chunks: FastSet::default(),
   };
   let inherit = Inherit {
     offset: Vec2::ZERO,
@@ -1235,6 +1254,10 @@ pub(crate) fn build_map(
   builder.layers(raw.layers, inherit, 0, cx)?;
   map.layers = builder.layers;
   map.used_ids = builder.used_ids;
+  map.file_chunks = builder.file_chunks.into_iter().collect();
+  map
+    .file_chunks
+    .sort_unstable_by_key(|chunk| (chunk.y, chunk.x));
   map.dependency_places = std::mem::take(&mut px.places);
   Ok(map)
 }

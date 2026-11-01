@@ -601,6 +601,19 @@ impl TileGrid {
   /// chunks either grid has; a chunk `from` lacks is emptied and kept.
   /// Whether any chunk moved
   pub(crate) fn assign(&mut self, from: &TileGrid, also: impl Fn(IVec2) -> bool) -> bool {
+    self.assign_where(from, |_| true, also)
+  }
+
+  /// [`assign`](Self::assign) over the chunks `within` takes alone: every
+  /// other chunk keeps its cells and version, whatever `from` holds there.
+  /// A streamed map's reload takes the file's cells in the file's chunks
+  /// so, leaving the chunks its stream generated as they are
+  pub(crate) fn assign_where(
+    &mut self,
+    from: &TileGrid,
+    within: impl Fn(IVec2) -> bool,
+    also: impl Fn(IVec2) -> bool,
+  ) -> bool {
     if from.bounds != self.bounds {
       return false;
     }
@@ -629,7 +642,7 @@ impl TileGrid {
       ..
     } = self;
     let mut version = None;
-    for chunk in candidates {
+    for chunk in candidates.into_iter().filter(|&chunk| within(chunk)) {
       let new = from.chunks.get(&chunk).and_then(Chunk::cells);
       let old = chunks.get(&chunk).and_then(Chunk::cells);
       let named = also(chunk);
@@ -852,20 +865,23 @@ impl TileGrid {
   }
 
   /// Whether `chunk`'s cells changed since its last whole load
-  /// ([`load_chunk`](Self::load_chunk)): an edit moved its version past
-  /// the load's ([`fold_into_load`](Self::fold_into_load) moves the load's
-  /// on). True for a chunk never loaded whole that has changed at all;
-  /// false for a chunk the grid lacks
-  pub(crate) fn changed_since_load(&self, chunk: IVec2) -> bool {
+  /// ([`load_chunk`](Self::load_chunk)) and since the change of version
+  /// `version`: an edit moved its version past both
+  /// ([`fold_into_load`](Self::fold_into_load) moves the load's on). With
+  /// `version` 0, true for a chunk never loaded whole that has changed at
+  /// all; a chunk that came with its map (a Tiled infinite map's, never
+  /// loaded whole) is told from what it was at `version`. False for a
+  /// chunk the grid lacks
+  pub(crate) fn changed_since(&self, chunk: IVec2, version: u64) -> bool {
     self
       .chunks
       .get(&chunk)
-      .is_some_and(|entry| entry.version > entry.loaded)
+      .is_some_and(|entry| entry.version > entry.loaded.max(version))
   }
 
   /// Counts what changed in each of `chunks` since its whole load as part
-  /// of the load, so [`changed_since_load`](Self::changed_since_load) is
-  /// false again: the class tiles taken out of a chunk just loaded are what
+  /// of the load, so [`changed_since`](Self::changed_since) is false
+  /// again: the class tiles taken out of a chunk just loaded are what
   /// it loaded, not an edit. A chunk never loaded whole is left as it is
   pub(crate) fn fold_into_load(&mut self, chunks: &[IVec2]) {
     for chunk in chunks {
@@ -1456,6 +1472,28 @@ mod tests {
   }
 
   #[test]
+  fn assigning_within_some_chunks_leaves_the_others_as_they_are() {
+    // a holds chunks (0, 0) and (1, 0); b changes (0, 0) and lacks (1, 0)
+    let (in_taken, in_left) = (IVec2::new(3, 3), IVec2::new(40, 0));
+    let mut a = TileGrid::unbounded();
+    a.set(in_taken, Some(Tile::new(0, 1)));
+    a.set(in_left, Some(Tile::new(0, 1)));
+    let mut b = TileGrid::unbounded();
+    b.set(in_taken, Some(Tile::new(0, 2)));
+    let left = a.chunk_version(IVec2::X);
+    let taken = |chunk: IVec2| chunk == IVec2::ZERO;
+    assert!(a.assign_where(&b, taken, |_| true));
+    assert_eq!(a.get(in_taken), Some(Tile::new(0, 2)));
+    assert_eq!(
+      a.get(in_left),
+      Some(Tile::new(0, 1)),
+      "kept, though b lacks it"
+    );
+    assert_eq!(a.chunk_version(IVec2::X), left);
+    assert!(!a.assign_where(&b, taken, |_| false));
+  }
+
+  #[test]
   fn chunk_cells_hold_a_chunk_row_by_row() {
     let mut g = TileGrid::unbounded();
     g.set(IVec2::new(-31, -2), Some(Tile::new(0, 5)));
@@ -1701,22 +1739,33 @@ mod tests {
     let mut cells = empty_cells();
     cells[5] = coin;
     assert!(g.load_chunk(IVec2::ZERO, cells));
-    assert!(!g.changed_since_load(IVec2::ZERO));
+    assert!(!g.changed_since(IVec2::ZERO, 0));
     // A cell taken out as part of the load (a class tile) is folded in
     g.set(IVec2::new(5, 0), None);
-    assert!(g.changed_since_load(IVec2::ZERO));
+    assert!(g.changed_since(IVec2::ZERO, 0));
     g.fold_into_load(&[IVec2::ZERO]);
-    assert!(!g.changed_since_load(IVec2::ZERO));
+    assert!(!g.changed_since(IVec2::ZERO, 0));
     // An edit after that is a change; one changing nothing is not
     g.set(IVec2::new(5, 0), None);
-    assert!(!g.changed_since_load(IVec2::ZERO));
+    assert!(!g.changed_since(IVec2::ZERO, 0));
     g.set(IVec2::new(9, 9), Some(Tile::new(0, 1)));
-    assert!(g.changed_since_load(IVec2::ZERO));
+    assert!(g.changed_since(IVec2::ZERO, 0));
     // A chunk made by an edit was never loaded: folding leaves it changed
     g.set(IVec2::new(40, 0), Some(Tile::new(0, 1)));
     g.fold_into_load(&[IVec2::X]);
-    assert!(g.changed_since_load(IVec2::X));
-    assert!(!g.changed_since_load(IVec2::NEG_ONE), "no such chunk");
+    assert!(g.changed_since(IVec2::X, 0));
+    assert!(!g.changed_since(IVec2::NEG_ONE, 0), "no such chunk");
+    // A chunk never loaded is told from a version: unchanged since the
+    // grid's last change, changed by an edit after it
+    let then = g.version();
+    assert!(!g.changed_since(IVec2::X, then));
+    g.set(IVec2::new(41, 0), Some(Tile::new(0, 1)));
+    assert!(g.changed_since(IVec2::X, then));
+    // and one loaded after it from its load
+    assert!(g.load_chunk(IVec2::Y, empty_cells()));
+    assert!(!g.changed_since(IVec2::Y, then));
+    g.set(IVec2::new(0, 40), Some(Tile::new(0, 1)));
+    assert!(g.changed_since(IVec2::Y, then));
   }
 
   #[test]

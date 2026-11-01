@@ -15,13 +15,13 @@ use super::{
   ChunkEvent, ChunkOwned, ChunkRequest, ChunkTiles, INLINE, MapStream, SPAN_CAP, SavedChunks,
   StreamAnchor, StreamState,
 };
-use crate::core::asset::Assets;
+use crate::core::asset::{Assets, AssetsView, Handle};
 use crate::core::ecs::kernel::{ChildOf, Disabled, MessageCursor, Messages};
 use crate::core::ecs::{Entity, Transform, World};
-use crate::core::tilemap::test_util::{MapWorld, layers_of, load_map};
+use crate::core::tilemap::test_util::{FIXTURES, MapWorld, files_with, layers_of, load_map};
 use crate::core::tilemap::{
-  IntGrid, MapLayerRef, MapRoot, MapTile, MapsView, Tile, TileData, TileFlip, TileLayerData,
-  TileMap, TileShape, Tileset, TilesetImage, TilesetSource,
+  IntGrid, MapEvent, MapLayerRef, MapRoot, MapTile, MapsView, Tile, TileData, TileFlip,
+  TileLayerData, TileMap, TileShape, Tileset, TilesetImage, TilesetSource,
 };
 use crate::core::ui::Rect;
 
@@ -1157,4 +1157,518 @@ fn int_grid_edits_outside_the_resident_chunks_are_refused() {
   assert_eq!(view.intgrid(map, "ground", IVec2::new(40, 5)), None);
   assert_eq!(view.intgrid(map, "ground", IVec2::new(31, 31)), Some(2));
   assert_eq!(resident(&mut maps.world, map), [IVec2::ZERO]);
+}
+
+/// The Tiled infinite fixture (saved by Tiled), and its tileset
+const INFINITE: &str = "tiled/maps/infinite.tmj";
+const TILESET: &str = "tiled/tilesets/tiles.tsj";
+
+/// The fixture's tile layers
+const LAYERS: [&str; 3] = ["ground", "walls", "decor"];
+
+/// The engine chunks the fixture's Tiled chunks touch, by row: ground's at
+/// cells (-32, -16), (-16, -16), (0, 0), (32, 0) and (-32, 16), walls' at
+/// (16, -32) and (-64, 16), and decor's at (0, 0), each 16 cells a side
+const FILE_CHUNKS: [IVec2; 6] = [
+  IVec2::new(-1, -1),
+  IVec2::new(0, -1),
+  IVec2::new(-2, 0),
+  IVec2::new(-1, 0),
+  IVec2::new(0, 0),
+  IVec2::new(1, 0),
+];
+
+/// The chunks within 512 px of the middle of chunk (0, 0) that the file
+/// never touched
+const GENERATED: [IVec2; 4] = [
+  IVec2::new(1, -1),
+  IVec2::new(-1, 1),
+  IVec2::new(0, 1),
+  IVec2::new(1, 1),
+];
+
+/// What the generator lays: tile 1 of the fixture's tileset
+const BRICK: Tile = Tile {
+  tileset: 0,
+  id: 1,
+  flip: TileFlip::NONE,
+};
+
+/// A generator filling every cell of "ground" with bricks, noting each
+/// chunk it is asked for in `asked`
+fn bricks(asked: Arc<Mutex<Vec<IVec2>>>) -> impl Fn(ChunkRequest) -> ChunkTiles + Send + Sync {
+  move |request: ChunkRequest| {
+    asked.lock().expect("not poisoned").push(request.chunk);
+    let mut tiles = ChunkTiles::default();
+    for y in 0..32 {
+      for x in 0..32 {
+        tiles.set("ground", UVec2::new(x, y), Some(BRICK));
+      }
+    }
+    tiles
+  }
+}
+
+/// The chunks the generator was asked for, by row
+fn asked_for(asked: &Mutex<Vec<IVec2>>) -> Vec<IVec2> {
+  sorted(asked.lock().expect("not poisoned").clone())
+}
+
+/// Spawns the map at `path`, streamed by `stream` with the cameras left
+/// out, and lets it land: its root and its asset
+fn spawn_file(maps: &mut MapWorld, path: &str, stream: MapStream) -> (Entity, Handle<TileMap>) {
+  let handle = load_map(&mut maps.world, path);
+  let stream = MapStream {
+    cameras: false,
+    ..stream
+  };
+  let map = maps
+    .world
+    .spawn((MapRoot::new(handle.clone()), stream))
+    .id();
+  maps.settle(map);
+  (map, handle)
+}
+
+/// The cells of `chunk`, row by row
+fn cells_of(chunk: IVec2) -> impl Iterator<Item = IVec2> {
+  let first = chunk * 32;
+  (0..32).flat_map(move |y| (0..32).map(move |x| first + IVec2::new(x, y)))
+}
+
+/// The tiles of `layer` in `chunk` of the spawned map `map`, row by row
+fn tiles_in(world: &mut World, map: Entity, layer: &str, chunk: IVec2) -> Vec<Option<Tile>> {
+  let view = MapsView::new(world);
+  cells_of(chunk)
+    .map(|cell| view.tile(map, layer, cell))
+    .collect()
+}
+
+/// Whether every cell of "ground" in `chunk` holds a brick
+fn bricked(world: &mut World, map: Entity, chunk: IVec2) -> bool {
+  tiles_in(world, map, "ground", chunk)
+    .iter()
+    .all(|tile| *tile == Some(BRICK))
+}
+
+/// The tiles of `layer` in `chunk` as the file `file` has them
+fn file_tiles(
+  world: &World,
+  file: &Handle<TileMap>,
+  layer: &str,
+  chunk: IVec2,
+) -> Vec<Option<Tile>> {
+  let assets = world.resource::<Assets<TileMap>>();
+  let grid = assets
+    .get(file)
+    .and_then(|map| map.tiles(map.layer_index(layer)?));
+  let Some(grid) = grid else {
+    panic!("the file has no tile layer {layer}");
+  };
+  cells_of(chunk).map(|cell| grid.get(cell)).collect()
+}
+
+/// `chunk`'s world rectangle (the map sits at the origin)
+fn rect_of(chunk: IVec2) -> Rect {
+  let at = chunk.as_vec2() * CHUNK;
+  Rect::new(at.x, at.y, CHUNK, CHUNK)
+}
+
+/// Each of `chunks` that a tile layer of `map` holds, with its version
+fn versions(world: &mut World, map: Entity, chunks: &[IVec2]) -> Vec<(Entity, IVec2, u64)> {
+  let mut found = Vec::new();
+  for layer in layers_of(world, map) {
+    let Some(data) = world.get::<TileLayerData>(layer) else {
+      continue;
+    };
+    for &chunk in chunks {
+      if data.grid.has_chunk(chunk) {
+        found.push((layer, chunk, data.grid.chunk_version(chunk)));
+      }
+    }
+  }
+  found
+}
+
+/// The infinite fixture as Tiled saved it, changed by `edit` (its JSON)
+fn infinite_saved_as(edit: impl FnOnce(&mut serde_json::Value)) -> String {
+  let path = format!("{FIXTURES}/{INFINITE}");
+  let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
+  let mut json: serde_json::Value =
+    serde_json::from_str(&text).unwrap_or_else(|e| panic!("{path}: {e}"));
+  edit(&mut json);
+  json.to_string()
+}
+
+/// The Tiled chunks of the fixture's layer `layer`, as JSON
+fn chunks_of(json: &mut serde_json::Value, layer: usize) -> &mut Vec<serde_json::Value> {
+  match json["layers"][layer]["chunks"].as_array_mut() {
+    Some(chunks) => chunks,
+    None => panic!("layer {layer} has no chunks"),
+  }
+}
+
+/// Whether the Tiled chunk `chunk` (JSON) starts at cell `at`
+fn starts_at(chunk: &serde_json::Value, (x, y): (i64, i64)) -> bool {
+  (chunk["x"].as_i64(), chunk["y"].as_i64()) == (Some(x), Some(y))
+}
+
+/// Runs frames until every one of `maps_reloaded` reloads, reading the map
+/// messages from `cursor`
+fn until_reloaded(
+  maps: &mut MapWorld,
+  maps_reloaded: &[Entity],
+  cursor: &mut MessageCursor<MapEvent>,
+) {
+  let mut seen = Vec::new();
+  maps.frames_until(|world| {
+    if let Some(messages) = world.get_resource::<Messages<MapEvent>>() {
+      seen.extend(cursor.read(messages).filter_map(|event| match event {
+        MapEvent::Reloaded { map } => Some(*map),
+        _ => None,
+      }));
+    }
+    maps_reloaded.iter().all(|map| seen.contains(map))
+  });
+}
+
+#[test]
+fn a_tiled_infinite_map_streams_around_its_hand_made_chunks() {
+  let asked = Arc::default();
+  let mut maps = MapWorld::new();
+  let stream = MapStream::new(bricks(Arc::clone(&asked)));
+  let (map, file) = spawn_file(&mut maps, INFINITE, stream);
+  anchor_at(&mut maps, IVec2::ZERO);
+  until_idle(&mut maps, map);
+  // Every chunk the file touches holds the file's tiles, its empty cells
+  // empty: ground's in chunk (0, -1), which only walls' Tiled chunk
+  // touches, too
+  for chunk in FILE_CHUNKS {
+    for layer in LAYERS {
+      let file = file_tiles(&maps.world, &file, layer, chunk);
+      assert_eq!(
+        tiles_in(&mut maps.world, map, layer, chunk),
+        file,
+        "{layer} in chunk {chunk}"
+      );
+    }
+  }
+  // The chunks round (0, 0) the file never touched are the generator's,
+  // and it was asked for those alone
+  for chunk in GENERATED {
+    assert!(bricked(&mut maps.world, map, chunk), "chunk {chunk}");
+  }
+  assert_eq!(asked_for(&asked), sorted(GENERATED.to_vec()));
+}
+
+#[test]
+fn the_file_s_chunks_stay_resident_when_the_anchor_leaves() {
+  let mut maps = MapWorld::new();
+  let stream = MapStream::new(bricks(Arc::default()));
+  let (map, file) = spawn_file(&mut maps, INFINITE, stream);
+  let anchor = anchor_at(&mut maps, IVec2::ZERO);
+  until_idle(&mut maps, map);
+  move_to(&mut maps.world, anchor, IVec2::new(40, 40));
+  until_idle(&mut maps, map);
+  // The generated chunks went; the file's stayed, as the file has them
+  for chunk in GENERATED {
+    assert!(!MapsView::new(&mut maps.world).stream_ready(map, rect_of(chunk)));
+  }
+  for chunk in FILE_CHUNKS {
+    assert!(MapsView::new(&mut maps.world).stream_ready(map, rect_of(chunk)));
+    for layer in LAYERS {
+      let file = file_tiles(&maps.world, &file, layer, chunk);
+      assert_eq!(tiles_in(&mut maps.world, map, layer, chunk), file);
+    }
+  }
+  // and they take edits, however far the anchor is
+  let mut view = MapsView::new(&mut maps.world);
+  assert!(view.set_tile(map, "ground", IVec2::new(-60, 20), Some(BRICK)));
+}
+
+#[test]
+fn saving_a_streamed_tiled_map_keeps_the_generated_chunks() {
+  let files = files_with(&[]);
+  let mut maps = MapWorld::over(files.clone());
+  let (asked, saved) = (Arc::default(), SavedChunks::default());
+  let stream = MapStream::new(bricks(Arc::clone(&asked))).with_saved(saved.clone());
+  let (map, _) = spawn_file(&mut maps, INFINITE, stream);
+  let anchor = anchor_at(&mut maps, IVec2::ZERO);
+  until_idle(&mut maps, map);
+  let before = versions(&mut maps.world, map, &GENERATED);
+  assert_eq!(before.len(), 12, "every layer holds the generated chunks");
+
+  // A save changing ground's tile at (5, 2), in the file's chunk (0, 0)
+  let mut cursor = MessageCursor::<MapEvent>::default();
+  let changed = infinite_saved_as(|json| {
+    let Some(chunk) = chunks_of(json, 0).iter_mut().find(|c| starts_at(c, (0, 0))) else {
+      panic!("ground has a chunk at (0, 0)");
+    };
+    chunk["data"][2 * 16 + 5] = serde_json::json!(5);
+  });
+  files.insert(INFINITE, changed);
+  until_reloaded(&mut maps, &[map], &mut cursor);
+
+  // The changed chunk follows the file; the generated ones are untouched,
+  // their versions too, and ready
+  let view = MapsView::new(&mut maps.world);
+  assert_eq!(
+    view.tile(map, "ground", IVec2::new(5, 2)),
+    Some(Tile::new(0, 4))
+  );
+  assert_eq!(versions(&mut maps.world, map, &GENERATED), before);
+  for chunk in GENERATED {
+    assert!(bricked(&mut maps.world, map, chunk), "chunk {chunk}");
+    assert!(MapsView::new(&mut maps.world).stream_ready(map, rect_of(chunk)));
+  }
+  // The stream keeps going, and the generated chunks unload as they
+  // landed: none is saved
+  move_to(&mut maps.world, anchor, IVec2::new(20, 0));
+  until_idle(&mut maps, map);
+  assert!(bricked(&mut maps.world, map, IVec2::new(20, 0)));
+  assert!(saved.is_empty(), "{saved:?}");
+  let asked = asked_for(&asked);
+  assert!(!FILE_CHUNKS.iter().any(|c| asked.contains(c)), "{asked:?}");
+}
+
+#[test]
+fn a_tileset_save_keeps_the_generated_chunks_of_streamed_maps() {
+  let files = files_with(&[]);
+  let mut maps = MapWorld::over(files.clone());
+  // The Tiled map, and an endless map built in code over its tileset file
+  let (tiled_saved, built_saved) = (SavedChunks::default(), SavedChunks::default());
+  let stream = MapStream::new(bricks(Arc::default())).with_saved(tiled_saved.clone());
+  let (tiled, _) = spawn_file(&mut maps, INFINITE, stream);
+  let tileset = match AssetsView::new(&mut maps.world).load_now::<Tileset>(TILESET) {
+    Ok(tileset) => tileset,
+    Err(error) => panic!("{TILESET}: {}", error.report()),
+  };
+  let mut built = TileMap::infinite(UVec2::splat(16));
+  built.add_tileset(TilesetSource::Asset(tileset));
+  built.add_tile_layer("ground");
+  let stream = MapStream::new(bricks(Arc::default())).with_saved(built_saved.clone());
+  let built = spawn(&mut maps, built, stream, |r| r);
+  let anchor = anchor_at(&mut maps, IVec2::ZERO);
+  until_idle(&mut maps, tiled);
+  until_idle(&mut maps, built);
+  let tiled_before = versions(&mut maps.world, tiled, &GENERATED);
+  let built_before = versions(&mut maps.world, built, &around(IVec2::ZERO, 1));
+  assert_eq!((tiled_before.len(), built_before.len()), (12, 9));
+
+  // The tileset saved with a tile's property changed: both maps reload,
+  // and only their tilesets change
+  let mut cursor = MessageCursor::<MapEvent>::default();
+  let path = format!("{FIXTURES}/{TILESET}");
+  let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
+  files.insert(TILESET, text.replace("a brick", "a red brick"));
+  until_reloaded(&mut maps, &[tiled, built], &mut cursor);
+  assert_eq!(versions(&mut maps.world, tiled, &GENERATED), tiled_before);
+  assert_eq!(
+    versions(&mut maps.world, built, &around(IVec2::ZERO, 1)),
+    built_before
+  );
+  let area = Rect::new(-CHUNK, -CHUNK, 3.0 * CHUNK, 3.0 * CHUNK);
+  for map in [tiled, built] {
+    assert!(MapsView::new(&mut maps.world).stream_ready(map, area));
+    assert!(bricked(&mut maps.world, map, IVec2::new(1, 1)));
+  }
+  assert!(bricked(&mut maps.world, built, IVec2::ZERO));
+
+  // Unloaded, the generated chunks are not saved as changed
+  move_to(&mut maps.world, anchor, IVec2::new(20, 0));
+  until_idle(&mut maps, tiled);
+  until_idle(&mut maps, built);
+  assert!(tiled_saved.is_empty(), "{tiled_saved:?}");
+  assert!(built_saved.is_empty(), "{built_saved:?}");
+}
+
+#[test]
+fn an_edit_in_a_file_chunk_is_kept_for_a_save_game() {
+  let saved = SavedChunks::default();
+  let mut maps = MapWorld::new();
+  let stream = MapStream::new(bricks(Arc::default())).with_saved(saved.clone());
+  let (map, _) = spawn_file(&mut maps, INFINITE, stream);
+  anchor_at(&mut maps, IVec2::new(40, 0));
+  until_idle(&mut maps, map);
+  // Walls' tile at (-50, 20), in the file's chunk (-2, 0) far from the
+  // anchor, dug out
+  let dug = IVec2::new(-50, 20);
+  let mut view = MapsView::new(&mut maps.world);
+  assert_eq!(view.tile(map, "walls", dug), Some(Tile::new(0, 7)));
+  assert!(view.set_tile(map, "walls", dug, None));
+  // The file's chunks never unload, so only saving the changed chunks
+  // keeps it: the dug chunk alone
+  assert!(saved.is_empty());
+  assert_eq!(view.save_changed_chunks(map), 1);
+  assert!(saved.get(IVec2::new(-2, 0)).is_some());
+
+  // A new map of the file, streamed with the save, has the tile dug and
+  // the rest of the file as it was
+  let mut again = MapWorld::new();
+  let stream = MapStream::new(bricks(Arc::default())).with_saved(saved);
+  let (map, _) = spawn_file(&mut again, INFINITE, stream);
+  let view = MapsView::new(&mut again.world);
+  assert_eq!(view.tile(map, "walls", dug), None);
+  assert_eq!(
+    view.tile(map, "walls", IVec2::new(17, -17)),
+    Some(Tile::new(0, 8))
+  );
+  assert_eq!(
+    view.tile(map, "ground", IVec2::new(-17, 18)),
+    Some(Tile::new(0, 6).with_flip(TileFlip::VERTICAL))
+  );
+}
+
+#[test]
+fn every_engine_chunk_a_tiled_chunk_touches_is_the_file_s() {
+  // Tiled's 24-cell chunks straddle the engine's: ground's at (-48, -48)
+  // holds tiles in chunks (-2, -1) and (-1, -1), and touches (-2, -2) and
+  // (-1, -2) with none
+  let asked = Arc::default();
+  let mut maps = MapWorld::new();
+  let stream = MapStream::new(bricks(Arc::clone(&asked)));
+  let (map, _) = spawn_file(&mut maps, "tiled/maps/infinite-chunks24.tmj", stream);
+  anchor_at(&mut maps, IVec2::new(-2, -2));
+  until_idle(&mut maps, map);
+  let generated = [(-3, -3), (-2, -3), (-1, -3), (-3, -2), (-3, -1)];
+  let generated: Vec<IVec2> = generated.map(IVec2::from).to_vec();
+  assert_eq!(asked_for(&asked), sorted(generated));
+  for chunk in [IVec2::new(-2, -2), IVec2::new(-1, -2)] {
+    assert_eq!(
+      tiles_in(&mut maps.world, map, "ground", chunk),
+      [None; 1024]
+    );
+    assert!(MapsView::new(&mut maps.world).stream_ready(map, rect_of(chunk)));
+  }
+}
+
+#[test]
+fn a_save_that_moves_the_file_s_chunks_hands_them_to_and_from_the_generator() {
+  let files = files_with(&[]);
+  let mut maps = MapWorld::over(files.clone());
+  let asked = Arc::default();
+  let stream = MapStream::new(bricks(Arc::clone(&asked)));
+  let (map, _) = spawn_file(&mut maps, INFINITE, stream);
+  anchor_at(&mut maps, IVec2::ZERO);
+  until_idle(&mut maps, map);
+  let mut chunk_cursor = MessageCursor::<ChunkEvent>::default();
+  events(&maps.world, &mut chunk_cursor);
+
+  // A save dropping ground's Tiled chunk at (32, 0), the file's only one
+  // in chunk (1, 0), and adding one to walls at (32, 32), in the generated
+  // chunk (1, 1)
+  let mut cursor = MessageCursor::<MapEvent>::default();
+  let changed = infinite_saved_as(|json| {
+    chunks_of(json, 0).retain(|c| !starts_at(c, (32, 0)));
+    let mut data = vec![0u32; 256];
+    data[0] = 7;
+    let chunk = serde_json::json!({"x": 32, "y": 32, "width": 16, "height": 16, "data": data});
+    chunks_of(json, 1).push(chunk);
+  });
+  files.insert(INFINITE, changed);
+  until_reloaded(&mut maps, &[map], &mut cursor);
+  until_idle(&mut maps, map);
+
+  // Chunk (1, 1) is the file's: the generator's left it, and it holds the
+  // file's tile alone
+  let sent = events(&maps.world, &mut chunk_cursor);
+  assert_eq!(unloading(&sent, map), [IVec2::new(1, 1)]);
+  assert_eq!(
+    tiles_in(&mut maps.world, map, "ground", IVec2::new(1, 1)),
+    [None; 1024]
+  );
+  let view = MapsView::new(&mut maps.world);
+  assert_eq!(
+    view.tile(map, "walls", IVec2::new(32, 32)),
+    Some(Tile::new(0, 6))
+  );
+  // Chunk (1, 0) is the generator's now
+  assert_eq!(loaded(&sent, map), [IVec2::new(1, 0)]);
+  assert!(bricked(&mut maps.world, map, IVec2::new(1, 0)));
+  assert!(asked_for(&asked).contains(&IVec2::new(1, 0)));
+}
+
+#[test]
+fn a_save_that_adds_a_tile_layer_streams_the_generated_chunks_into_it() {
+  let files = files_with(&[]);
+  let mut maps = MapWorld::over(files.clone());
+  let asked = Arc::default();
+  let stream = MapStream::new(bricks(Arc::clone(&asked)));
+  let (map, _) = spawn_file(&mut maps, INFINITE, stream);
+  anchor_at(&mut maps, IVec2::ZERO);
+  until_idle(&mut maps, map);
+  asked.lock().expect("not poisoned").clear();
+
+  // A save adding a copy of decor, "extra", on top
+  let mut cursor = MessageCursor::<MapEvent>::default();
+  let changed = infinite_saved_as(|json| {
+    let mut extra = json["layers"][2].clone();
+    extra["id"] = serde_json::json!(5);
+    extra["name"] = serde_json::json!("extra");
+    if let Some(layers) = json["layers"].as_array_mut() {
+      layers.insert(3, extra);
+    }
+    json["nextlayerid"] = serde_json::json!(6);
+  });
+  files.insert(INFINITE, changed);
+  until_reloaded(&mut maps, &[map], &mut cursor);
+  until_idle(&mut maps, map);
+
+  // The generated chunks streamed again, into every tile layer
+  assert_eq!(asked_for(&asked), sorted(GENERATED.to_vec()));
+  assert_eq!(versions(&mut maps.world, map, &GENERATED).len(), 16);
+  for chunk in GENERATED {
+    assert!(bricked(&mut maps.world, map, chunk), "chunk {chunk}");
+  }
+}
+
+#[test]
+fn a_reload_leaves_a_class_tile_taken_from_a_generated_chunk_taken() {
+  let files = files_with(&[]);
+  let mut maps = MapWorld::over(files.clone());
+  let saved = SavedChunks::default();
+  let tileset = match AssetsView::new(&mut maps.world).load_now::<Tileset>(TILESET) {
+    Ok(tileset) => tileset,
+    Err(error) => panic!("{TILESET}: {}", error.report()),
+  };
+  let mut map = TileMap::infinite(UVec2::splat(16));
+  map.add_tileset(TilesetSource::Asset(tileset));
+  map.add_tile_layer("ground");
+  // A brick, of the class "brick", at (3, 3) of chunk (0, 0)
+  let generator = |request: ChunkRequest| {
+    let mut tiles = ChunkTiles::default();
+    if request.chunk == IVec2::ZERO {
+      tiles.set("ground", UVec2::new(3, 3), Some(BRICK));
+    }
+    tiles
+  };
+  let stream = MapStream::new(generator).with_saved(saved.clone());
+  let map = spawn(&mut maps, map, stream, |root| {
+    root.with_entity_tiles(&["brick"])
+  });
+  let anchor = anchor_at(&mut maps, IVec2::ZERO);
+  until_idle(&mut maps, map);
+  maps.frame();
+  // The game takes the brick, then the tileset is saved
+  let taken = class_tiles_at(&mut maps.world, IVec2::new(3, 3));
+  assert_eq!(taken.len(), 1);
+  for brick in taken {
+    assert!(maps.world.despawn(brick));
+  }
+  let mut cursor = MessageCursor::<MapEvent>::default();
+  let path = format!("{FIXTURES}/{TILESET}");
+  let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
+  files.insert(TILESET, text.replace("a brick", "a red brick"));
+  until_reloaded(&mut maps, &[map], &mut cursor);
+
+  // The chunk still counts as changed: kept as it unloads, the brick gone,
+  // and back so
+  move_to(&mut maps.world, anchor, IVec2::new(20, 0));
+  until_idle(&mut maps, map);
+  let kept = saved.get(IVec2::ZERO);
+  assert_eq!(kept.map(|tiles| tiles.is_empty()), Some(true));
+  move_to(&mut maps.world, anchor, IVec2::ZERO);
+  until_idle(&mut maps, map);
+  maps.frame();
+  assert!(class_tiles_at(&mut maps.world, IVec2::new(3, 3)).is_empty());
 }

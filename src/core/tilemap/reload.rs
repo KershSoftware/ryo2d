@@ -32,6 +32,7 @@ use super::spawn::{
   inherit_tile_data, map_asset, object_parts, plan_layer, send, spawn_class_tile, spawn_layer,
   take_class_tiles,
 };
+use super::stream::{StreamState, before_reload, file_chunks};
 use super::{
   CHUNK_SIZE, ImageLayer, IntGrid, LayerInfo, LayerKind, LdtkProject, MapEvent, MapIds, MapLayer,
   MapLayerRef, MapObject, MapObjectData, MapRoot, MapTile, Properties, Tile, TileGrid,
@@ -114,6 +115,18 @@ impl FileLayer {
       offset: layer.info.offset,
     }
   }
+}
+
+/// The editor ids and shapes of the unbounded tile layers among `files`,
+/// by id
+fn unbounded_shapes(files: &[FileLayer]) -> Vec<(u32, &LayerShape)> {
+  let mut found: Vec<(u32, &LayerShape)> = files
+    .iter()
+    .filter(|file| matches!(file.shape, LayerShape::Tiles { bounds: None, .. }))
+    .map(|file| (file.id, &file.shape))
+    .collect();
+  found.sort_by_key(|&(id, _)| id);
+  found
 }
 
 /// A class tile as the file had it: its tile, class and properties
@@ -288,8 +301,9 @@ enum Pending {
     cell_size: Vec2,
     found: Vec<ClassTile>,
     /// The class tiles alive on the layer's entity before (on the old one,
-    /// for a layer spawned afresh), by cell
-    live: FastMap<IVec2, Entity>,
+    /// for a layer spawned afresh), by cell, and of those the ones a
+    /// streamed map's reload leaves alone (outside the file's chunks)
+    live: (FastMap<IVec2, Entity>, FastMap<IVec2, Entity>),
     kept: bool,
   },
   Objects {
@@ -303,8 +317,12 @@ enum Pending {
 /// Brings the spawned map `map` to its asset as it now is, with its
 /// tilesets (see the module docs), then sends `MapEvent::Reloaded`. A map
 /// whose LDtk project no longer has its level stays as it is, warned once
-/// per load of the project. Game observers run as objects and class tiles
-/// change and may despawn the map or its parts: what is gone is skipped
+/// per load of the project. A streamed map takes the file's cells and class
+/// tiles in the file's chunks alone (`stream::file_chunks`, readied by
+/// `stream::before_reload`): the chunks its stream generated or brought
+/// back keep their cells, versions and class tiles. Game observers run as
+/// objects and class tiles change and may despawn the map or its parts:
+/// what is gone is skipped
 pub(crate) fn apply_reload(world: &mut World, map: Entity) {
   let Some(root) = world.get::<MapRoot>(map).cloned() else {
     return;
@@ -329,6 +347,11 @@ pub(crate) fn apply_reload(world: &mut World, map: Entity) {
   let mut layers = asset.layers.clone();
   inherit_tile_data(world, &root, &mut layers);
   let classes = class_tiles(world, asset, &root.entity_tiles);
+  // A streamed map's reload reaches the file's chunks alone
+  let streamed = world
+    .get::<StreamState>(map)
+    .is_some()
+    .then(|| file_chunks(asset));
   let Some(applied) = world
     .get_entity_mut(map)
     .ok()
@@ -343,6 +366,11 @@ pub(crate) fn apply_reload(world: &mut World, map: Entity) {
   let mut old: FastMap<u32, (Entity, &FileLayer)> = FastMap::default();
   for (file, &entity) in applied.layers.iter().zip(&old_layers) {
     old.entry(file.id).or_insert((entity, file));
+  }
+  if let Some(file) = &streamed {
+    let new: Vec<FileLayer> = layers.iter().map(FileLayer::of).collect();
+    let reshaped = unbounded_shapes(&applied.layers) != unbounded_shapes(&new);
+    before_reload(world, map, file, reshaped);
   }
 
   // The layers: kept ones brought up to the file, new or reshaped ones
@@ -360,8 +388,8 @@ pub(crate) fn apply_reload(world: &mut World, map: Entity) {
         .get::<MapLayerRef>(*entity)
         .is_some_and(|layer| layer.map == map)
     });
-    let live = was.map_or_else(FastMap::default, |(entity, _)| {
-      live_class_tiles(world, entity)
+    let live = was.map_or_else(Default::default, |(entity, _)| {
+      listed_class_tiles(world, entity, streamed.as_ref())
     });
     let kept = was.filter(|(_, then)| then.shape == file.shape);
     let (entity, rest) = match kept {
@@ -371,7 +399,13 @@ pub(crate) fn apply_reload(world: &mut World, map: Entity) {
         {
           transform.translation = file.offset;
         }
-        let rest = update_layer(world, map, (entity, index), layer, &classes);
+        let rest = update_layer(
+          world,
+          map,
+          (entity, index),
+          layer,
+          (&classes, streamed.as_ref()),
+        );
         (entity, rest)
       }
       None => spawn_layer(world, map, index, plan_layer(layer, &classes)),
@@ -511,10 +545,12 @@ pub(crate) fn apply_reload(world: &mut World, map: Entity) {
       class_tiles.insert((id, tile.cell), file);
     }
     let was = |cell: IVec2| applied.class_tiles.get(&(id, cell));
+    let (live, untouched) = live;
     let layer = ClassLayer {
       layer,
       cell_size,
       live,
+      untouched,
       kept,
     };
     reconcile_class_tiles(world, map, layer, found, was);
@@ -547,14 +583,16 @@ fn replace<C: Component + PartialEq>(world: &mut World, entity: Entity, value: C
 }
 
 /// Brings the kept layer `entity`, now layer `index`, up to the file's
-/// `layer`: its place, info and cells (or picture). What spawns once the
-/// layers are in place (its objects, its class tiles) is handed back
+/// `layer`: its place, info and cells (or picture; a streamed map's
+/// unbounded layer takes the cells of the file's chunks, `file`, alone).
+/// What spawns once the layers are in place (its objects, its class tiles)
+/// is handed back
 fn update_layer(
   world: &mut World,
   map: Entity,
   (entity, index): (Entity, usize),
   MapLayer { info, kind }: MapLayer,
-  classes: &ClassTiles,
+  (classes, file): (&ClassTiles, Option<&FastSet<IVec2>>),
 ) -> LayerRest {
   let layer_ref = MapLayerRef {
     map,
@@ -570,7 +608,7 @@ fn update_layer(
       cell_size,
     } => {
       let found = take_class_tiles(&mut grid, classes);
-      take_cells(world, entity, &grid, intgrid);
+      take_cells(world, entity, (&grid, intgrid), file);
       LayerRest::Tiles(cell_size.as_vec2(), found)
     }
     LayerKind::Objects(objects) => LayerRest::Objects(objects),
@@ -583,8 +621,15 @@ fn update_layer(
 
 /// The kept tile layer `entity` takes the file's cells and IntGrid: only
 /// the chunks whose tiles or values differ move their versions, so only
-/// they draw, collide and occlude again
-fn take_cells(world: &mut World, entity: Entity, grid: &TileGrid, intgrid: Option<IntGrid>) {
+/// they draw, collide and occlude again. On a streamed map's unbounded
+/// layer only the file's chunks (`file`) take its cells: the others are
+/// its stream's, and keep their cells and versions
+fn take_cells(
+  world: &mut World,
+  entity: Entity,
+  (grid, intgrid): (&TileGrid, Option<IntGrid>),
+  file: Option<&FastSet<IVec2>>,
+) {
   let Some(mut data) = world.get_mut::<TileLayerData>(entity) else {
     return;
   };
@@ -593,9 +638,11 @@ fn take_cells(world: &mut World, entity: Entity, grid: &TileGrid, intgrid: Optio
     intgrid: values,
     ..
   } = data.bypass_change_detection();
-  let moved = cells.assign(grid, |chunk| {
-    values_differ(values.as_ref(), intgrid.as_ref(), chunk)
-  });
+  let differ = |chunk| values_differ(values.as_ref(), intgrid.as_ref(), chunk);
+  let moved = match file.filter(|_| cells.bounds().is_none()) {
+    Some(file) => cells.assign_where(grid, |chunk| file.contains(&chunk), differ),
+    None => cells.assign(grid, differ),
+  };
   let new_values = *values != intgrid;
   if new_values {
     *values = intgrid;
@@ -628,19 +675,31 @@ fn values_differ(old: Option<&IntGrid>, new: Option<&IntGrid>, chunk: IVec2) -> 
   }
 }
 
-/// The class tiles alive on the layer entity `layer`, by cell
-fn live_class_tiles(world: &World, layer: Entity) -> FastMap<IVec2, Entity> {
-  world
-    .get::<LayerTiles>(layer)
-    .map(|table| {
-      table
-        .0
-        .iter()
-        .filter(|&(&cell, &entity)| world.get::<MapTile>(entity).is_some_and(|t| t.cell == cell))
-        .map(|(&cell, &entity)| (cell, entity))
-        .collect()
-    })
-    .unwrap_or_default()
+/// The class tiles the layer entity `layer` lists, by cell: those alive
+/// that a reload reconciles, and on a streamed map (`file`, its file's
+/// chunks) the entries outside the file's chunks, which its stream placed
+/// and the reload leaves as they are, a dead one included (a class tile
+/// the game took, which counts as a change of its chunk)
+fn listed_class_tiles(
+  world: &World,
+  layer: Entity,
+  file: Option<&FastSet<IVec2>>,
+) -> (FastMap<IVec2, Entity>, FastMap<IVec2, Entity>) {
+  let (mut live, mut untouched) = (FastMap::default(), FastMap::default());
+  let Some(table) = world.get::<LayerTiles>(layer) else {
+    return (live, untouched);
+  };
+  for (&cell, &entity) in &table.0 {
+    if file.is_some_and(|file| !file.contains(&TileGrid::chunk_of(cell))) {
+      untouched.insert(cell, entity);
+    } else if world
+      .get::<MapTile>(entity)
+      .is_some_and(|tile| tile.cell == cell)
+    {
+      live.insert(cell, entity);
+    }
+  }
+  (live, untouched)
 }
 
 /// A tile layer whose class tiles a reload reconciles
@@ -651,6 +710,9 @@ struct ClassLayer {
   /// The class tiles alive on it before, by cell (on its old entity, for a
   /// layer spawned afresh: those went with it)
   live: FastMap<IVec2, Entity>,
+  /// The class tiles listed on it that the reload leaves alone: a kept
+  /// layer keeps listing them
+  untouched: FastMap<IVec2, Entity>,
   /// Whether it kept its entity
   kept: bool,
 }
@@ -672,6 +734,7 @@ fn reconcile_class_tiles<'a>(
     layer: (layer, index),
     cell_size,
     mut live,
+    untouched,
     kept,
   }: ClassLayer,
   found: Vec<ClassTile>,
@@ -721,6 +784,7 @@ fn reconcile_class_tiles<'a>(
     for entity in live.into_values() {
       let _ = world.try_despawn(entity);
     }
+    table.extend(untouched);
   }
   if let Some(mut tiles) = world.get_mut::<LayerTiles>(layer) {
     tiles.0 = table;

@@ -23,8 +23,10 @@ use serde::ser::SerializeMap;
 use super::edit::local_to_world;
 use super::grid::CELLS;
 use super::jobs::Worker;
-use super::spawn::{LayerTiles, MapLayerRef, MapLayers, MapTile, TileLayerData};
-use super::{CHUNK_SIZE, Tile, TileGrid};
+use super::spawn::{
+  LayerTiles, MapLayerRef, MapLayers, MapRoot, MapTile, TileLayerData, map_asset,
+};
+use super::{CHUNK_SIZE, LayerKind, Tile, TileGrid, TileMap};
 use crate::core::ecs::kernel::{Allow, Disabled, QueryState};
 use crate::core::ecs::{
   Component, DetectChangesMut, Entity, Local, Message, Messages, With, World,
@@ -381,7 +383,8 @@ pub struct ChunkRequest {
 
 /// Streams an infinite map's chunks: put it on the map's [`MapRoot`](super::MapRoot)
 /// entity, with a map whose tile layers are unbounded
-/// ([`TileMap::infinite`](super::TileMap::infinite)).
+/// ([`TileMap::infinite`](super::TileMap::infinite), or a Tiled infinite
+/// map).
 ///
 /// The engine asks `generator` for each chunk within `load_distance` of a
 /// camera's view or a [`StreamAnchor`], nearest first, on a thread of its
@@ -397,6 +400,19 @@ pub struct ChunkRequest {
 /// changed it). Distances are measured in world pixels from the anchor (or
 /// the view) to the chunk, along each axis. Only the chunks resident take
 /// edits: `ctx.maps()` refuses a cell in any other.
+///
+/// A Tiled infinite map's own chunks are the hand-made part of the world:
+/// every engine chunk (32 x 32 cells) that any layer's Tiled chunk touches
+/// belongs to the file, its empty cells included, and so does every chunk
+/// a map built in code holds in its asset. The generator never runs
+/// there; those chunks are resident from the start, whatever the
+/// distances, take edits, never unload and send no [`ChunkEvent`], so a
+/// big hand-made area stays in memory. Their edits are kept only through
+/// [`MapsView::save_changed_chunks`](super::MapsView::save_changed_chunks),
+/// and a stream with those [`SavedChunks`] puts them back as it starts. A
+/// hot reload changes the file's chunks alone: the generated ones keep
+/// their tiles, and a save that adds, drops or reshapes a tile layer
+/// streams them again.
 ///
 /// On native platforms a generator that panics on a chunk is caught: the
 /// chunk lands empty, it is not asked for again, and the dev log warns once
@@ -534,9 +550,15 @@ pub enum ChunkEvent {
 pub(crate) struct StreamState {
   /// Tells this stream's jobs from those of a stream the root had before
   epoch: u64,
-  /// The chunks landed and not unloaded since, in every unbounded tile
-  /// layer of the map
+  /// The chunks resident: the file's, and those landed and not unloaded
+  /// since (in every unbounded tile layer of the map)
   resident: FastSet<IVec2>,
+  /// The chunks that are the file's (`file_chunks`): resident from the
+  /// stream's first frame, never asked for and never unloaded
+  file: FastSet<IVec2>,
+  /// The version the stream started at: one of the file's chunks has
+  /// changed since when its version passed it (and its last whole load's)
+  since: u64,
   /// The chunks asked of the generator: each one's job, and the flag that
   /// calls it off once the chunk is no longer wanted
   out: FastMap<IVec2, (u64, Arc<AtomicBool>)>,
@@ -570,6 +592,8 @@ impl StreamState {
     StreamState {
       epoch: EPOCHS.fetch_add(1, Ordering::Relaxed),
       resident: FastSet::default(),
+      file: FastSet::default(),
+      since: 0,
       out: FastMap::default(),
       ready: Vec::new(),
       panicked: FastSet::default(),
@@ -702,13 +726,10 @@ pub(crate) fn stream_maps(
 impl StreamWork {
   /// One streamed map's frame: unload, ask, land
   fn stream(&mut self, world: &mut World, map: Entity, stream: &MapStream) {
-    if world.get::<StreamState>(map).is_none() {
-      let Ok(mut entity) = world.get_entity_mut(map) else {
-        return;
-      };
-      entity.insert(StreamState::new());
-    }
     unbounded_layers(world, map, &mut self.layers);
+    if world.get::<StreamState>(map).is_none() && !self.start(world, map, stream) {
+      return;
+    }
     if self.layers.is_empty() {
       if let Some(mut state) = world.get_mut::<StreamState>(map)
         && !std::mem::replace(&mut state.warned.unbounded, true)
@@ -770,9 +791,51 @@ impl StreamWork {
     self.land(world, map, stream.land_per_frame, chunk_px);
   }
 
-  /// Unloads `map`'s chunks past every anchor's unload distance, telling
-  /// the game, keeping in `saved` those a player changed since they landed,
-  /// and calls off what it asked for or holds there
+  /// A stream's first frame on `map` (its unbounded tile layers found):
+  /// its state, the file's chunks resident from the start, and those of
+  /// them the stream's `SavedChunks` hold put back as a player left them.
+  /// False for a root gone
+  fn start(&mut self, world: &mut World, map: Entity, stream: &MapStream) -> bool {
+    let mut state = StreamState::new();
+    if !self.layers.is_empty() {
+      if let Some(asset) = world
+        .get::<MapRoot>(map)
+        .and_then(|root| map_asset(world, root))
+      {
+        state.file = file_chunks(asset);
+      }
+      state.resident.extend(state.file.iter().copied());
+      state.since = self
+        .layers
+        .iter()
+        .filter_map(|&layer| world.get::<TileLayerData>(layer))
+        .map(|data| data.grid.version())
+        .max()
+        .unwrap_or(0);
+    }
+    let mut kept: Vec<(IVec2, ChunkTiles)> = match &stream.saved {
+      Some(saved) if !state.file.is_empty() => saved
+        .lock()
+        .iter()
+        .filter(|(chunk, _)| state.file.contains(chunk))
+        .map(|(&chunk, tiles)| (chunk, tiles.clone()))
+        .collect(),
+      _ => Vec::new(),
+    };
+    let Ok(mut entity) = world.get_entity_mut(map) else {
+      return false;
+    };
+    entity.insert(state);
+    kept.sort_unstable_by_key(|(chunk, _)| (chunk.y, chunk.x));
+    for (chunk, tiles) in kept {
+      self.put_chunk(world, map, chunk, tiles);
+    }
+    true
+  }
+
+  /// Unloads `map`'s chunks past every anchor's unload distance (never the
+  /// file's), telling the game, keeping in `saved` those a player changed
+  /// since they landed, and calls off what it asked for or holds there
   fn unload(&mut self, world: &mut World, map: Entity, saved: Option<&SavedChunks>) {
     let areas = &self.areas;
     let kept = |chunk: IVec2| {
@@ -786,9 +849,14 @@ impl StreamWork {
         return;
       };
       let state = &mut *state;
-      self
-        .gone
-        .extend(state.resident.iter().copied().filter(|&chunk| !kept(chunk)));
+      let file = &state.file;
+      self.gone.extend(
+        state
+          .resident
+          .iter()
+          .copied()
+          .filter(|chunk| !kept(*chunk) && !file.contains(chunk)),
+      );
       state.out.retain(|&chunk, (_, called_off)| {
         let keep = kept(chunk);
         if !keep {
@@ -798,30 +866,51 @@ impl StreamWork {
       });
       state.ready.retain(|(chunk, _)| kept(*chunk));
     }
+    self.unload_gone(world, map, saved, true);
+  }
+
+  /// Unloads the chunks `gone` lists from `map`: each leaves every
+  /// unbounded tile layer, and the entities it owns go after every map's
+  /// unloads. A chunk a player changed since it landed is kept in `saved`;
+  /// with `tell`, each sends `ChunkEvent::Unloading` first
+  fn unload_gone(
+    &mut self,
+    world: &mut World,
+    map: Entity,
+    saved: Option<&SavedChunks>,
+    tell: bool,
+  ) {
     if self.gone.is_empty() {
       return;
     }
     self.gone.sort_unstable_by_key(|chunk| (chunk.y, chunk.x));
-    class_tiles_in(world, &self.layers, &self.gone, &mut self.class_tiles);
+    let read = tell || saved.is_some();
+    if read {
+      class_tiles_in(world, &self.layers, &self.gone, &mut self.class_tiles);
+    }
     for &chunk in &self.gone {
-      // What it holds now, class tiles still in, if a player changed it
-      let tiles = entries_of(&self.class_tiles, chunk);
-      let touched = world
-        .get::<StreamState>(map)
-        .is_some_and(|state| state.touched.contains(&chunk));
-      let changed = changed_since_landing(world, &self.layers, chunk, touched, tiles)
-        .then(|| holdings(world, &self.layers, chunk, tiles));
-      if let (Some(saved), Some(tiles)) = (saved, &changed) {
-        saved.insert(chunk, tiles.clone());
+      if read {
+        // What it holds now, class tiles still in, if a player changed it
+        let tiles = entries_of(&self.class_tiles, chunk);
+        let (touched, since) = world.get::<StreamState>(map).map_or((false, 0), |state| {
+          (state.touched.contains(&chunk), state.since_for(chunk))
+        });
+        let changed = changed_since_landing(world, &self.layers, chunk, (touched, since), tiles)
+          .then(|| holdings(world, &self.layers, chunk, tiles));
+        if let (Some(saved), Some(tiles)) = (saved, &changed) {
+          saved.insert(chunk, tiles.clone());
+        }
+        if tell {
+          send(
+            world,
+            ChunkEvent::Unloading {
+              map,
+              chunk,
+              changed,
+            },
+          );
+        }
       }
-      send(
-        world,
-        ChunkEvent::Unloading {
-          map,
-          chunk,
-          changed,
-        },
-      );
       self.unloaded.push((map, chunk));
       for &layer in &self.layers {
         if let Some(mut data) = world.get_mut::<TileLayerData>(layer)
@@ -1036,10 +1125,29 @@ impl StreamWork {
     }
   }
 
-  /// Puts `chunk` into every unbounded tile layer of `map`, each layer the
-  /// cells `tiles` gives it by name (an empty chunk where it gives none),
-  /// and tells the game
-  fn land_chunk(&mut self, world: &mut World, map: Entity, chunk: IVec2, mut tiles: ChunkTiles) {
+  /// Lands `chunk` on `map` (`put_chunk`), resident from now, and tells
+  /// the game
+  fn land_chunk(&mut self, world: &mut World, map: Entity, chunk: IVec2, tiles: ChunkTiles) {
+    if !self.put_chunk(world, map, chunk, tiles) {
+      return;
+    }
+    if let Some(mut state) = world.get_mut::<StreamState>(map) {
+      state.resident.insert(chunk);
+    }
+    send(world, ChunkEvent::Loaded { map, chunk });
+  }
+
+  /// Puts `chunk` into every unbounded tile layer of `map` whole, each
+  /// layer the cells `tiles` gives it by name (an empty chunk where it
+  /// gives none), warning once of each name the map has no tile layer of.
+  /// False for a map that does not stream
+  fn put_chunk(
+    &mut self,
+    world: &mut World,
+    map: Entity,
+    chunk: IVec2,
+    mut tiles: ChunkTiles,
+  ) -> bool {
     for &layer in &self.layers {
       let cells = world
         .get::<MapLayerRef>(layer)
@@ -1052,7 +1160,7 @@ impl StreamWork {
       }
     }
     let Some(mut state) = world.get_mut::<StreamState>(map) else {
-      return;
+      return false;
     };
     for (name, cells) in &tiles.layers {
       if !empty(cells) && !state.warned.layers.contains(name) {
@@ -1063,8 +1171,88 @@ impl StreamWork {
         );
       }
     }
-    state.resident.insert(chunk);
-    send(world, ChunkEvent::Loaded { map, chunk });
+    true
+  }
+}
+
+impl StreamState {
+  /// The version `chunk`'s changes are told from besides its last whole
+  /// load: the file's chunks', 0 for every other (made by its load)
+  fn since_for(&self, chunk: IVec2) -> u64 {
+    if self.file.contains(&chunk) {
+      self.since
+    } else {
+      0
+    }
+  }
+}
+
+/// The chunks a streamed map leaves to its asset: every engine chunk any
+/// of a Tiled infinite map's layers' Tiled chunks touches, and every chunk
+/// the asset's unbounded tile layers hold (so a map built in code keeps
+/// what its asset was given). The generator never runs there, and they
+/// stay resident
+pub(crate) fn file_chunks(map: &TileMap) -> FastSet<IVec2> {
+  let mut chunks: FastSet<IVec2> = map.file_chunks.iter().copied().collect();
+  for layer in &map.layers {
+    if let LayerKind::Tiles { grid, .. } = &layer.kind
+      && grid.bounds().is_none()
+    {
+      chunks.extend(grid.chunk_coords());
+    }
+  }
+  chunks
+}
+
+/// Readies the streamed map `map` for a reload whose file holds the
+/// chunks `file` (`file_chunks`), before its layers take the file's cells,
+/// which a reload then gives the file's chunks alone: the file's chunks
+/// the save dropped unload without a message (the stream fills them as it
+/// fills any other); the generated chunks the file now holds unload as
+/// the stream unloads a chunk, not kept (the file's cells take their
+/// place); and when the save adds, takes away or reshapes one of the
+/// map's unbounded tile layers (`reshaped`), every generated chunk unloads
+/// as the stream unloads a chunk, kept when a player changed it, to stream
+/// back into the layers as they are now. The file's chunks are then
+/// `file`, every one resident, and none is asked for
+pub(crate) fn before_reload(world: &mut World, map: Entity, file: &FastSet<IVec2>, reshaped: bool) {
+  let Some(state) = world.get::<StreamState>(map) else {
+    return;
+  };
+  let (mut dropped, mut claimed, mut restream) = (Vec::new(), Vec::new(), Vec::new());
+  for &chunk in &state.resident {
+    match (state.file.contains(&chunk), file.contains(&chunk)) {
+      (true, false) => dropped.push(chunk),
+      (false, true) => claimed.push(chunk),
+      (false, false) if reshaped => restream.push(chunk),
+      _ => {}
+    }
+  }
+  let saved = world
+    .get::<MapStream>(map)
+    .and_then(|stream| stream.saved.clone());
+  let mut work = StreamWork::default();
+  unbounded_layers(world, map, &mut work.layers);
+  work.gone = restream;
+  work.unload_gone(world, map, saved.as_ref(), true);
+  work.gone = claimed;
+  work.unload_gone(world, map, None, true);
+  work.gone = dropped;
+  work.unload_gone(world, map, None, false);
+  let mut owned = world.query_filtered::<(Entity, &ChunkOwned), Allow<Disabled>>();
+  work.despawn_owned(world, &mut owned);
+  if let Some(mut state) = world.get_mut::<StreamState>(map) {
+    let state = &mut *state;
+    state.out.retain(|chunk, (_, called_off)| {
+      let keep = !file.contains(chunk);
+      if !keep {
+        called_off.store(true, Ordering::Relaxed);
+      }
+      keep
+    });
+    state.ready.retain(|(chunk, _)| !file.contains(chunk));
+    state.resident.extend(file.iter().copied());
+    state.file.clone_from(file);
   }
 }
 
@@ -1116,7 +1304,9 @@ fn living(world: &World, entity: Entity, cell: IVec2) -> Option<&MapTile> {
     .filter(|tile| tile.cell == cell)
 }
 
-/// Whether `chunk` changed since it landed: an edit changed its cells in
+/// Whether `chunk` changed since it landed (one of the file's chunks:
+/// since the version `since` its stream started at): an edit changed its
+/// cells in
 /// one of `layers`, or placed, replaced or took one of its class tiles
 /// (`touched`), or the game despawned one of the class tiles listed in it
 /// (`tiles`, a collected coin)
@@ -1124,14 +1314,14 @@ fn changed_since_landing(
   world: &World,
   layers: &[Entity],
   chunk: IVec2,
-  touched: bool,
+  (touched, since): (bool, u64),
   tiles: &[ClassEntry],
 ) -> bool {
   touched
     || layers.iter().any(|&layer| {
       world
         .get::<TileLayerData>(layer)
-        .is_some_and(|data| data.grid.changed_since_load(chunk))
+        .is_some_and(|data| data.grid.changed_since(chunk, since))
     })
     || tiles
       .iter()
@@ -1212,7 +1402,8 @@ pub(crate) fn save_changed(world: &World, map: Entity) -> usize {
   let mut put = 0;
   for &chunk in &chunks {
     let tiles = entries_of(&entries, chunk);
-    if changed_since_landing(world, &layers, chunk, state.touched.contains(&chunk), tiles) {
+    let touched = (state.touched.contains(&chunk), state.since_for(chunk));
+    if changed_since_landing(world, &layers, chunk, touched, tiles) {
       saved.insert(chunk, holdings(world, &layers, chunk, tiles));
       put += 1;
     }

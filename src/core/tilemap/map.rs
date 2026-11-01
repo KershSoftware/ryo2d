@@ -216,6 +216,10 @@ pub struct TileMap {
   pub(crate) used_ids: Vec<(usize, u16, u32)>,
   /// Where the file names each of its dependencies
   pub(crate) dependency_places: super::tiled::build::DependencyPlaces,
+  /// For a Tiled infinite map, the engine chunks its file's chunks touch,
+  /// any tile layer's, by row (empty for every other map): a stream leaves
+  /// them to the file, the parts Tiled left empty included
+  pub(crate) file_chunks: Vec<IVec2>,
 }
 
 impl Asset for TileMap {}
@@ -240,6 +244,7 @@ impl TileMap {
       properties: Properties::default(),
       used_ids: Vec::new(),
       dependency_places: Default::default(),
+      file_chunks: Vec::new(),
     }
   }
 
