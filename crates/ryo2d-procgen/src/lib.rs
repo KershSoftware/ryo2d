@@ -187,6 +187,6 @@ pub mod prelude {
     BspConfig, CellularConfig, Connection, GenerationGrid, GenerationResult, GridRect, MstConfig,
     MstEdge, NoiseConfig, NoiseThreshold, NoiseType, PoissonConfig, PoissonResult, ProcgenBuilder,
     RandomWalkConfig, Region, RegionMetadata, RegionType, SeededRng, TileType, WfcConfig,
-    WfcDirection, WfcResult, WfcTile, poisson_points,
+    WfcDirection, WfcResult, WfcTile, generate_heightmap, poisson_points,
   };
 }

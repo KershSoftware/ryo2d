@@ -2,7 +2,7 @@
 name: ryo-procgen
 description: The optional ryo2d-procgen crate - dungeons (BSP), caves (cellular), noise terrain, random walks, Poisson sampling, WFC and MST corridors.
 metadata:
-  version: 2.2.1
+  version: 2.3.0
 ---
 
 # Ryo2D Procedural Generation Specialist
@@ -38,7 +38,7 @@ use ryo2d::prelude::*;
 use ryo2d_procgen::prelude::*;
 ```
 
-A demo inside the repository uses `{ path = "../../../crates/ryo2d-procgen" }`. The prelude holds the builder, configs, grid and result types, `SeededRng`, `TileType` and `poisson_points`; `generate_heightmap`, `apply_island_gradient`, `poisson_circle` and `poisson_masked` are imported from the crate root.
+A demo inside the repository uses `{ path = "../../../crates/ryo2d-procgen" }`. The prelude holds the builder, configs, grid and result types, `SeededRng`, `TileType`, `generate_heightmap` and `poisson_points`; `apply_island_gradient`, `poisson_circle` and `poisson_masked` are imported from the crate root.
 
 Generation is a plain function call that returns its result; the crate writes no messages. A game that wants to announce a finished level defines its own `#[derive(Message, Clone)]` type and calls `ctx.write_message(..)`.
 
@@ -129,11 +129,9 @@ let result = ProcgenBuilder::new(128, 128)
 - `NoiseConfig::island_preset()` - Island with water edges
 - `NoiseConfig::cave_preset()` - Binary floor/wall noise
 
-**Heightmap generation** (`generate_heightmap` is not in the prelude; import it from `ryo2d_procgen`):
+**Heightmap generation:**
 <!-- with: use ryo2d_procgen::prelude::*; -->
 ```rust
-use ryo2d_procgen::generate_heightmap;
-
 let mut rng = SeededRng::new(12345);
 let heightmap = generate_heightmap(128, 128, &NoiseConfig::default(), &mut rng);
 // heightmap is Vec<f32> with values 0.0-1.0
