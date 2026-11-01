@@ -2,7 +2,7 @@
 //! a spawned map (collision, shadows, class tiles, edits, cell conversions)
 //! agrees on which chunk a cell is in and where it is.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -10,6 +10,7 @@ use glam::{IVec2, UVec2, Vec2};
 
 use crate::core::asset::Assets;
 use crate::core::ecs::{Entity, Transform, World};
+use crate::core::lighting::LightOccluder2D;
 use crate::core::physics::{
   Collider, ColliderShape, TileCell, TileColliders, TilePart, in_grid_space,
 };
@@ -139,6 +140,33 @@ fn chunk_origin(chunk: IVec2) -> Vec2 {
   (chunk * 32).as_vec2() * CELL
 }
 
+/// Whole-pixel steps of edges (from, to), each with how many times it is there
+type Steps = BTreeMap<((i32, i32), (i32, i32)), usize>;
+
+/// Counts the whole-pixel steps of the axis-aligned edge from `a` to `b`
+/// (px, on the pixel grid) in `steps`, so edges compare however chains
+/// split and merge them
+fn add_steps(steps: &mut Steps, a: Vec2, b: Vec2) {
+  let on_grid = |v: Vec2| {
+    assert!(
+      (v - v.round()).abs().max_element() < 1e-3,
+      "{v} off the pixel grid"
+    );
+    v.round().as_ivec2()
+  };
+  let (a, b) = (on_grid(a), on_grid(b));
+  let delta = b - a;
+  assert!(
+    delta.x == 0 || delta.y == 0,
+    "{a} to {b} is not axis-aligned"
+  );
+  let unit = delta.signum();
+  for i in 0..delta.abs().max_element() {
+    let (from, to) = (a + unit * i, a + unit * (i + 1));
+    *steps.entry(((from.x, from.y), (to.x, to.y))).or_insert(0) += 1;
+  }
+}
+
 #[test]
 fn negative_and_chunk_edge_cells_agree_in_every_consumer() {
   // Cells -1, 0, -32 and -33 on both axes: -1 and -32 are the last and
@@ -217,6 +245,39 @@ fn negative_and_chunk_edge_cells_agree_in_every_consumer() {
       IVec2::ZERO,
     ]
   );
+
+  // and their geometry: each solid cell's outline, wound as lighting winds
+  // polygons, each edge once, in the chunk that owns it (a chunk's chains
+  // lie within its cells' box, its right and bottom borders included)
+  let chains: Vec<(IVec2, Vec2, LightOccluder2D)> = maps
+    .world
+    .query::<(&MapOccluder, &Transform, &LightOccluder2D)>()
+    .iter(&maps.world)
+    .map(|(marker, at, occluder)| (marker.chunk, at.translation, occluder.clone()))
+    .collect();
+  let mut steps = Steps::new();
+  for (chunk, at, occluder) in &chains {
+    let (low, high) = (chunk_origin(*chunk), chunk_origin(*chunk + IVec2::ONE));
+    for (a, b) in occluder.edges() {
+      let (a, b) = (a + *at, b + *at);
+      for p in [a, b] {
+        assert!(
+          p.cmpge(low).all() && p.cmple(high).all(),
+          "chunk {chunk}'s chain reaches {p}"
+        );
+      }
+      add_steps(&mut steps, a, b);
+    }
+  }
+  let mut rings = BTreeMap::new();
+  for cell in solid {
+    let (lo, hi) = (cell.as_vec2() * CELL, (cell + IVec2::ONE).as_vec2() * CELL);
+    let corners = [lo, Vec2::new(lo.x, hi.y), hi, Vec2::new(hi.x, lo.y)];
+    for i in 0..4 {
+      add_steps(&mut rings, corners[i], corners[(i + 1) % 4]);
+    }
+  }
+  assert_eq!(steps, rings, "the solid cells' outlines, each edge once");
 
   // The class tile sits at its cell's centre
   let found: Vec<(Entity, MapTile)> = maps

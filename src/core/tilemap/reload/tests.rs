@@ -304,17 +304,45 @@ fn saving_an_infinite_map_that_moves_its_chunks_reloads_by_chunk() {
     .chunk_coords()
     .map(|chunk| (chunk, decor.chunk_version(chunk)))
     .collect();
+  // Ground's shaped tile at (-1, -1), alone in Tiled's chunk at (-16, -16),
+  // collides and casts its shadow in the engine's chunk (-1, -1)
+  let collides = |world: &World, cell: IVec2| {
+    world
+      .get::<TileColliders>(map)
+      .map(|tiles| tiles.get(cell))
+      .unwrap_or(TileCell::Empty)
+  };
+  let shadowed_chunks = |world: &mut World| -> Vec<IVec2> {
+    let mut chunks: Vec<IVec2> = world
+      .query::<&MapOccluder>()
+      .iter(world)
+      .map(|occluder| occluder.chunk)
+      .collect();
+    chunks.sort_by_key(|c| (c.y, c.x));
+    chunks.dedup();
+    chunks
+  };
+  let (dropped, far_cell) = (IVec2::new(-1, -1), IVec2::new(1602, -797));
+  let far = TileGrid::chunk_of(far_cell);
+  assert_ne!(collides(&maps.world, dropped), TileCell::Empty);
+  let shadows = shadowed_chunks(&mut maps.world);
+  assert!(
+    shadows.contains(&dropped) && !shadows.contains(&far),
+    "{shadows:?}"
+  );
 
-  // A save that drops walls' chunk at (16, -32), adds one at (1600, -800)
-  // with a tile at (1602, -797), and changes ground's tile at (5, 2)
+  // A save that drops walls' chunk at (16, -32) and ground's at (-16, -16),
+  // adds one to walls at (1600, -800) with a shaped tile at (1602, -797),
+  // and changes ground's tile at (5, 2)
   let mut watch = Watch::new(&maps.world);
   let saved = infinite_saved_as(|json| {
     let walls = chunks_of(json, 1);
     walls.retain(|chunk| (chunk["x"].as_i64(), chunk["y"].as_i64()) != (Some(16), Some(-32)));
     let mut data = vec![0u32; 256];
-    data[3 * 16 + 2] = 1;
+    data[3 * 16 + 2] = 2;
     walls.push(serde_json::json!({"x": 1600, "y": -800, "width": 16, "height": 16, "data": data}));
     let ground = chunks_of(json, 0);
+    ground.retain(|chunk| (chunk["x"].as_i64(), chunk["y"].as_i64()) != (Some(-16), Some(-16)));
     let Some(chunk) = ground
       .iter_mut()
       .find(|chunk| (chunk["x"].as_i64(), chunk["y"].as_i64()) == (Some(0), Some(0)))
@@ -341,9 +369,8 @@ fn saving_an_infinite_map_that_moves_its_chunks_reloads_by_chunk() {
   // the dropped chunk's cells are empty; the new one far out holds its tile
   assert_eq!(walls_now.get(IVec2::new(17, -17)), None);
   assert_eq!(walls_now.get(IVec2::new(18, -17)), None);
-  assert_eq!(walls_now.get(IVec2::new(1602, -797)), Some(Tile::new(0, 0)));
+  assert_eq!(walls_now.get(far_cell), Some(Tile::new(0, 1)));
   assert_eq!(walls_now.get(IVec2::new(-50, 20)), Some(Tile::new(0, 7)));
-  let far = TileGrid::chunk_of(IVec2::new(1602, -797));
   assert!(walls_now.chunk_version(far) > walls.version());
   assert!(walls_now.chunk_version(IVec2::new(0, -1)) > walls.version());
   assert_eq!(
@@ -351,10 +378,15 @@ fn saving_an_infinite_map_that_moves_its_chunks_reloads_by_chunk() {
     walls.chunk_version(IVec2::new(-2, 0)),
     "walls' untouched chunk"
   );
-  // the changed chunk moved on, the others did not
+  // the changed chunks moved on (ground's (-1, -1) keeps its chunk, its
+  // tile at (-20, -3) from another of Tiled's chunks), the others did not
   assert_eq!(ground_now.get(IVec2::new(5, 2)), Some(Tile::new(0, 4)));
-  assert!(ground_now.chunk_version(IVec2::ZERO) > ground.chunk_version(IVec2::ZERO));
-  for chunk in [IVec2::new(-1, -1), IVec2::new(-1, 0), IVec2::new(1, 0)] {
+  assert_eq!(ground_now.get(dropped), None);
+  assert_eq!(ground_now.get(IVec2::new(-20, -3)), Some(Tile::new(0, 0)));
+  for chunk in [IVec2::ZERO, dropped] {
+    assert!(ground_now.chunk_version(chunk) > ground.chunk_version(chunk));
+  }
+  for chunk in [IVec2::new(-1, 0), IVec2::new(1, 0)] {
     assert_eq!(
       ground_now.chunk_version(chunk),
       ground.chunk_version(chunk),
@@ -366,6 +398,15 @@ fn saving_an_infinite_map_that_moves_its_chunks_reloads_by_chunk() {
     .map(|chunk| (chunk, decor_now.chunk_version(chunk)))
     .collect();
   assert_eq!(decor_now_versions, decor_versions, "decor is as it was");
+  // The dropped chunk's collision and shadows went, the new chunk's came
+  maps.frame();
+  assert_eq!(collides(&maps.world, dropped), TileCell::Empty);
+  assert_ne!(collides(&maps.world, far_cell), TileCell::Empty);
+  let shadows = shadowed_chunks(&mut maps.world);
+  assert!(
+    !shadows.contains(&dropped) && shadows.contains(&far),
+    "{shadows:?}"
+  );
 }
 
 #[test]

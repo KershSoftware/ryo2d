@@ -3892,6 +3892,89 @@ mod with_physics {
     }
   }
 
+  /// The sloped one-way segments among the map's parts, each with its part
+  /// and where its part sits, the segment in the map's space, left end first
+  fn sloped_runs(world: &mut World, map: Entity) -> Vec<(Entity, Vec2, (Vec2, Vec2))> {
+    let mut query = world.query::<(Entity, &ChildOf, &Collider, &Transform)>();
+    query
+      .iter(world)
+      .filter(|(_, child_of, ..)| child_of.parent() == map)
+      .filter_map(|(part, _, collider, at)| match collider.shape {
+        ColliderShape::Segment { a, b } if collider.one_way.is_some() && a.y != b.y => {
+          let (a, b) = (a + at.translation, b + at.translation);
+          let ends = if a.x <= b.x { (a, b) } else { (b, a) };
+          Some((part, at.translation, ends))
+        }
+        _ => None,
+      })
+      .collect()
+  }
+
+  // A sloped one-way run is a part of its own, at the chunk of its first
+  // (left) point: an edit that lengthens it leftward across a chunk border
+  // moves its part to the new chunk, keeping its entity (`repack` writes
+  // its `Transform`), so the segment stays where its cells are
+  #[test]
+  fn a_sloped_one_way_run_lengthened_into_another_chunk_moves_its_part_there() {
+    let (mut world, mut s) = world(60);
+    let mut tiles = TileColliders::new(80, 12, Vec2::splat(16.0));
+    let one_way = |tiles: &mut TileColliders, points: &[(f32, f32)]| {
+      TileCell::Shape(tiles.add_shape(CellShape {
+        polygons: vec![polygon(points)],
+        one_way: true,
+      }))
+    };
+    // A ramp rising half a tile a cell, a pair of cells a row: the low and
+    // the high half of each step
+    let low = one_way(&mut tiles, &[(0.0, 1.0), (1.0, 0.5), (1.0, 1.0)]);
+    let high = one_way(
+      &mut tiles,
+      &[(0.0, 0.5), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)],
+    );
+    let step = |tiles: &mut TileColliders, x: u32, y: u32| {
+      tiles.set(xy(x, y), low);
+      tiles.set(xy(x + 1, y), high);
+    };
+    // Cells 34 to 37, in chunk 1
+    step(&mut tiles, 34, 6);
+    step(&mut tiles, 36, 5);
+    let map = world.spawn((Transform::IDENTITY, tiles)).id();
+    run(&mut world, &mut s, 1);
+    let cell = 16.0;
+    let before = sloped_runs(&mut world, map);
+    assert_eq!(
+      before.iter().map(|r| (r.1, r.2)).collect::<Vec<_>>(),
+      [(
+        Vec2::new(32.0 * cell, 0.0),
+        (
+          Vec2::new(34.0 * cell, 7.0 * cell),
+          Vec2::new(38.0 * cell, 5.0 * cell)
+        )
+      )],
+      "its part at chunk 1's top-left"
+    );
+    // Lengthened by two steps leftward, across the border at cell 32
+    {
+      let mut tiles = world.get_mut::<TileColliders>(map).unwrap();
+      step(&mut tiles, 30, 8);
+      step(&mut tiles, 32, 7);
+    }
+    run(&mut world, &mut s, 1);
+    let after = sloped_runs(&mut world, map);
+    assert_eq!(after.len(), 1, "{after:?}");
+    assert_eq!(after[0].0, before[0].0, "the part keeps its entity");
+    assert_eq!(after[0].1, Vec2::ZERO, "and moves to chunk 0's top-left");
+    assert_eq!(
+      after[0].2,
+      (
+        Vec2::new(30.0 * cell, 9.0 * cell),
+        Vec2::new(38.0 * cell, 5.0 * cell)
+      ),
+      "the segment lies on its cells"
+    );
+    assert_matches_a_full_trace(&mut world, map);
+  }
+
   // One-way shapes' tops join collinear one-way neighbours (one-way cells
   // and one-way shapes, across rows too) into single segments
   #[test]
