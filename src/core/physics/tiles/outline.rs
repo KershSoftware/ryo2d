@@ -29,7 +29,7 @@
 
 use glam::IVec2;
 
-use super::{CHUNK, Cells, Few, GRID, MAX_REACH, Point, TileCell, sides};
+use super::{CELLS, CHUNK, Cells, Few, GRID, MAX_REACH, Point, TileCell, chunk_of, local, sides};
 use crate::core::ecs::Entity;
 use crate::core::hash::FastMap;
 
@@ -161,72 +161,72 @@ fn units_of(changed: &[(IVec2, TileCell)]) -> Vec<Unit> {
   units
 }
 
-/// The values an edit's cells had before it, by cell: a window over the
-/// box holding them when it is small for how many there are (a streamed
-/// chunk's thousand cells, a fill), so each read is an index, else the
-/// list itself, searched (cells far apart)
+/// The values an edit's cells had before it, by cell: a window for each
+/// chunk holding changed cells, when those chunks are few for how many
+/// cells changed (a streamed chunk's thousand cells, a fill, several
+/// chunks landing and unloading in one step), so each read is an index,
+/// else the list itself, searched (cells scattered over many chunks)
 struct Before<'c> {
   changed: &'c [(IVec2, TileCell)],
-  min: IVec2,
-  width: i64,
-  height: i64,
-  window: Vec<Option<TileCell>>,
+  /// Each chunk holding changed cells, by row, with its cells' values
+  /// before (`None` for a cell not changed)
+  chunks: Vec<(IVec2, Box<[Option<TileCell>]>)>,
+  /// The chunk last read: reads come in runs within a chunk
+  last: std::cell::Cell<usize>,
 }
 
 impl<'c> Before<'c> {
-  /// The cells most a window holds for each changed cell, past a floor
-  const SPREAD: i64 = 8;
-  const FLOOR: i64 = 4096;
+  /// The cells the windows may hold for each changed cell, past a floor
+  const SPREAD: usize = 8;
+  const FLOOR: usize = 4096;
 
   /// `changed` sorted by row, then column, each once with its value before
   fn new(changed: &'c [(IVec2, TileCell)]) -> Self {
-    let (mut min, mut max) = (IVec2::MAX, IVec2::MIN);
-    for &(cell, _) in changed {
-      (min, max) = (min.min(cell), max.max(cell));
-    }
-    let (width, height) = (
-      i64::from(max.x) - i64::from(min.x) + 1,
-      i64::from(max.y) - i64::from(min.y) + 1,
-    );
-    let mut before = Self {
-      changed,
-      min,
-      width,
-      height,
-      window: Vec::new(),
-    };
-    let most = (changed.len() as i64 * Self::SPREAD).max(Self::FLOOR);
-    if !changed.is_empty() && width.saturating_mul(height) <= most {
-      before.window = vec![None; (width * height) as usize];
+    let row = |chunk: &IVec2| (chunk.y, chunk.x);
+    let mut keys: Vec<IVec2> = changed.iter().map(|&(cell, _)| chunk_of(cell)).collect();
+    keys.sort_unstable_by_key(row);
+    keys.dedup();
+    let mut chunks = Vec::new();
+    let room = (changed.len() * Self::SPREAD).max(Self::FLOOR);
+    if keys.len().saturating_mul(CELLS) <= room {
+      chunks = keys
+        .into_iter()
+        .map(|chunk| (chunk, vec![None; CELLS].into_boxed_slice()))
+        .collect();
       for &(cell, was) in changed {
-        if let Some(at) = before.place(cell.x, cell.y) {
-          before.window[at] = Some(was);
+        let chunk = chunk_of(cell);
+        if let Ok(i) = chunks.binary_search_by_key(&row(&chunk), |(c, _)| row(c)) {
+          chunks[i].1[local(cell)] = Some(was);
         }
       }
     }
-    before
-  }
-
-  /// The window's place of (`x`, `y`); `None` outside its box
-  fn place(&self, x: i32, y: i32) -> Option<usize> {
-    let (dx, dy) = (
-      i64::from(x) - i64::from(self.min.x),
-      i64::from(y) - i64::from(self.min.y),
-    );
-    ((0..self.width).contains(&dx) && (0..self.height).contains(&dy))
-      .then(|| (dy * self.width + dx) as usize)
+    Self {
+      changed,
+      chunks,
+      last: std::cell::Cell::new(0),
+    }
   }
 
   /// What (`x`, `y`) held before the edit, if the edit changed it
   fn get(&self, x: i32, y: i32) -> Option<TileCell> {
-    if self.window.is_empty() {
+    if self.chunks.is_empty() {
       let i = self
         .changed
         .binary_search_by_key(&(y, x), |&(cell, _)| (cell.y, cell.x))
         .ok()?;
       return Some(self.changed[i].1);
     }
-    self.window[self.place(x, y)?]
+    let cell = IVec2::new(x, y);
+    let chunk = chunk_of(cell);
+    let mut i = self.last.get();
+    if self.chunks.get(i).is_none_or(|(c, _)| *c != chunk) {
+      i = self
+        .chunks
+        .binary_search_by_key(&(chunk.y, chunk.x), |(c, _)| (c.y, c.x))
+        .ok()?;
+      self.last.set(i);
+    }
+    self.chunks[i].1[local(cell)]
   }
 }
 

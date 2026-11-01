@@ -2649,6 +2649,23 @@ mod with_physics {
       schedule.run(&mut world);
       loads.push(start.elapsed());
     }
+    // A stream's step: a chunk unloaded behind and one loaded ahead, ten
+    // chunks apart, in one rebuild (then put back as they were)
+    let (behind, ahead) = (IVec2::new(-5, -3), IVec2::new(4, 2));
+    let mut both = Vec::new();
+    for _ in 0..300 {
+      let mut grid = world.get_mut::<TileColliders>(map).unwrap();
+      grid.unload_chunk(ahead);
+      schedule.run(&mut world);
+      let mut grid = world.get_mut::<TileColliders>(map).unwrap();
+      grid.unload_chunk(behind);
+      load(&mut grid, ahead);
+      let start = Instant::now();
+      schedule.run(&mut world);
+      both.push(start.elapsed());
+      load(&mut world.get_mut::<TileColliders>(map).unwrap(), behind);
+      schedule.run(&mut world);
+    }
     // The outline retrace alone
     let mut outlines = Outlines::build(tiles.cells_view());
     let (mut unload_traces, mut load_traces) = (Vec::new(), Vec::new());
@@ -2666,13 +2683,16 @@ mod with_physics {
       load_traces.push(start.elapsed());
     }
     let ((unload, unload_max), (load, load_max)) = (median(unloads), median(loads));
+    let (both, both_max) = median(both);
     let ((unload_trace, _), (load_trace, _)) = (median(unload_traces), median(load_traces));
     println!(
       "12 x 10 chunks of noise rock, {solid} solid cells ({} a chunk), {} parts\n  \
        a chunk unloaded, rebuild system: median {unload:?}, max {unload_max:?}; the retrace \
        alone {unload_trace:?}\n  \
        a chunk loaded back, rebuild system: median {load:?}, max {load_max:?}; the retrace \
-       alone {load_trace:?}",
+       alone {load_trace:?}\n  \
+       one unloaded and one loaded ten chunks apart, rebuild system: median {both:?}, max \
+       {both_max:?}",
       solid / 120,
       parts(&mut world, map).len()
     );
