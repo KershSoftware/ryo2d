@@ -292,9 +292,11 @@ impl NavigationGrid {
   /// Block the cells under a tile grid's solid and slope cells, and its
   /// shape cells whose shape covers the cell's centre, its cell (0, 0)'s
   /// top-left at `origin` (its entity's position). One-way cells and
-  /// one-way shapes stay walkable. Only the tile grid's chunks under this
-  /// grid are read, so a vast or unbounded tile grid costs what lies under
-  /// it.
+  /// one-way shapes stay walkable. Only the cells of the tile grid's chunks
+  /// under this grid are read: the cost is a look at each of the tile
+  /// grid's chunks to filter them (O(chunks)), plus the cells under this
+  /// grid, so a vast or unbounded tile grid costs its chunk count and what
+  /// lies under it.
   pub fn block_tiles(&mut self, tiles: &TileColliders, origin: Vec2) {
     let size = tiles.tile_size;
     if !(size.is_finite() && size.min_element() > 0.0) {

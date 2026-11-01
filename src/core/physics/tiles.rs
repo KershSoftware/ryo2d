@@ -170,7 +170,11 @@ pub(crate) const GRID: i32 = 11520;
 /// with room for a shape's reach. Every point the units of a cell within it
 /// reach (its edges, and the borders past it with their cells' edges) is
 /// under 2^31 from the origin: 186,411 cells, about 3 million px of 16 px
-/// tiles.
+/// tiles. This is the lattice's reach, not where f32 positions stay
+/// precise: a `Transform`'s f32 pixels are 1/8 px apart a million px out
+/// (2^20), 1/4 px at this reach and a whole pixel past 2^23 px (Rapier's
+/// metres, at 100 px a metre, about 0.2 px apart here), so precise play
+/// keeps within about a million px.
 pub(crate) const MAX_REACH: i32 = (i32::MAX / GRID) - 2;
 
 /// Cells in a chunk of a grid's storage: `CHUNK` a side, as the packing's

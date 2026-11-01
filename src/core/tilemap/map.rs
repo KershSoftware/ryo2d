@@ -221,7 +221,12 @@ pub struct TileMap {
 impl Asset for TileMap {}
 
 impl TileMap {
-  /// An empty map of `size` cells of `tile_size` pixels
+  /// An empty map of `size` cells of `tile_size` pixels. Spawned, each of
+  /// its tile layers has every chunk of its size (`CHUNK_SIZE` cells a
+  /// side), each kept by its collision, shadows and change tracking, so a
+  /// huge map built this way is slow to land and costly to keep however few
+  /// tiles it holds; [`infinite`](Self::infinite) costs nothing until a
+  /// tile is written
   pub fn new(size: UVec2, tile_size: UVec2) -> TileMap {
     TileMap {
       size,

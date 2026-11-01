@@ -155,6 +155,15 @@ fn holds_tiles(cells: Option<&[u32; CELLS]>) -> bool {
 /// holds any cell. Either makes a chunk the first time a tile is written in
 /// it, so an empty chunk costs nothing; clearing leaves the chunk. Edits
 /// mark the chunks they touch dirty and move on their versions.
+///
+/// Chunks persist: once made, a chunk stays, emptied or not, for as long as
+/// the grid does. A spawned map's bounded layer has every chunk of its
+/// bounds (its landing makes them, holding no cells where it has no tile),
+/// and its collision, shadows and change tracking keep an entry for each,
+/// so a huge bounded map built in code is slow to land and costly to keep
+/// however little of it holds tiles. An unbounded grid, every layer of a
+/// [`TileMap::infinite`](super::TileMap::infinite) map, costs nothing until
+/// a tile is written, then the chunks written in.
 pub struct TileGrid {
   /// Never given to another grid, a clone included: a consumer that keeps
   /// the version it last read a grid at knows the chunks changed since are
@@ -1187,7 +1196,7 @@ mod tests {
       g.fill(IVec2::new(-1000, -1000), IVec2::new(1000, 1000), None),
       11 * 4
     );
-    assert_eq!(g.chunk_coords().count(), 4); // clearing leaves the chunks; only a streaming unload removes one
+    assert_eq!(g.chunk_coords().count(), 4); // clearing leaves the chunks
   }
 
   #[test]
