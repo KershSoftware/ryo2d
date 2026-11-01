@@ -98,10 +98,10 @@ pub use particle::Particle;
 use std::collections::HashMap;
 
 use crate::core::asset::AssetId;
-use crate::core::ecs::{Entity, GlobalTransform, Has, SpriteEffect, Vec2, World};
+use crate::core::ecs::{ChildOf, Entity, GlobalTransform, Has, SpriteEffect, Vec2, World};
 use crate::core::graphics::{BatchCollector, Image, SpriteDraw, SpriteInstance};
 use crate::core::messages::register_message;
-use crate::core::physics::{Collider, ColliderShape, TilePart};
+use crate::core::physics::{Collider, ColliderShape, TileColliders, TilePart};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
@@ -166,15 +166,17 @@ enum ColliderGeometry {
   },
   /// Edges (a segment, a polyline, or segments such as a tile map's packed
   /// outlines): the system's edges `start..end`, in world space, within the
-  /// box `min..max`. `closed` edges are loops round something solid (a
-  /// closed polyline, a tile part's outlines), each wound so its left
-  /// normal, `(-along.y, along.x)`, points out of the solid
+  /// box `min..max`. `solid` is `Some(reach)` for a tile part's loops,
+  /// which bound solid ground: each edge is wound so its left normal,
+  /// `(-along.y, along.x)`, points out of it, and a particle up to `reach`
+  /// (half a cell) inside goes out (`solid_contact`). Other edges are
+  /// two-sided
   Edges {
     start: u32,
     end: u32,
     min: Vec2,
     max: Vec2,
-    closed: bool,
+    solid: Option<f32>,
   },
 }
 
@@ -201,15 +203,19 @@ struct Contact {
 
 impl ParticleCollider {
   /// The collider as particles meet it; a segment, polyline or segments
-  /// collider's edges are added to `edges`, in world space. A tile part
-  /// (`tile_part`, not one-way) holds loops wound clockwise on screen round
-  /// its solid, and a polyline whose last point is its first is a loop
-  /// round its inside, so their edges are closed: wound so each one's left
-  /// normal points out
+  /// collider's edges are added to `edges`, in world space. `cell` is a
+  /// tile part's grid cell, in world pixels (`None` for a game's own
+  /// collider). A tile part that is not one-way holds the loops of a map's
+  /// outline, which physics winds clockwise on screen round the solid
+  /// (holes too: the solid is on the same side of every edge), as segments
+  /// or, for one loop, a closed polyline: its edges are turned round so
+  /// their left normals point out of the solid (unless the placement
+  /// mirrors them, which turns them already). Every other collider's edges
+  /// are two-sided, as physics treats them
   fn from_component(
     entity: Entity,
     global: &GlobalTransform,
-    (collider, tile_part): (&Collider, bool),
+    (collider, cell): (&Collider, Option<f32>),
     edges: &mut Vec<(Vec2, Vec2)>,
   ) -> Self {
     let affine = global.affine();
@@ -217,37 +223,30 @@ impl ParticleCollider {
     // Placed as physics places the shape's points
     let place = |p: Vec2| affine.transform_point2(collider.offset + turn.rotate(p));
     let start = edges.len();
-    let mut closed = false;
+    let solid = cell
+      .filter(|_| collider.one_way.is_none())
+      .map(|cell| cell * 0.5);
+    let turned = solid.is_some() && affine.matrix2.determinant() >= 0.0;
+    let edge = |a: Vec2, b: Vec2| if turned { (b, a) } else { (a, b) };
     match &collider.shape {
       ColliderShape::Segment { a, b } => edges.push((place(*a), place(*b))),
       ColliderShape::Polyline { points } => {
-        edges.extend(points.windows(2).map(|w| (place(w[0]), place(w[1]))));
-        if points.len() > 3 && points.first() == points.last() {
-          // the shoelace sum over y-down points: positive is clockwise on
-          // screen, whose left normals point in
-          let placed = &mut edges[start..];
-          let area: f32 = placed.iter().map(|(a, b)| a.perp_dot(*b)).sum();
-          if area > 0.0 {
-            placed.iter_mut().for_each(|edge| *edge = (edge.1, edge.0));
-          }
-          closed = area != 0.0 && area.is_finite();
-        }
+        edges.extend(points.windows(2).map(|w| edge(place(w[0]), place(w[1]))));
       }
       ColliderShape::Segments { points, segments } => {
-        // clockwise on screen, so in on the left: turned round to point
-        // out, unless the placement mirrors them
-        let mirrored = affine.matrix2.determinant() < 0.0;
-        closed = tile_part && collider.one_way.is_none();
         edges.extend(segments.iter().filter_map(|&[a, b]| {
-          let (a, b) = (
+          Some(edge(
             place(*points.get(a as usize)?),
             place(*points.get(b as usize)?),
-          );
-          Some(if closed && !mirrored { (b, a) } else { (a, b) })
+          ))
         }));
       }
       _ => {}
     }
+    let solid = match collider.shape {
+      ColliderShape::Polyline { .. } | ColliderShape::Segments { .. } => solid,
+      _ => None,
+    };
     let geometry = match collider.shape {
       ColliderShape::Circle { radius } => {
         let center = global.transform_point(collider.offset);
@@ -270,7 +269,7 @@ impl ParticleCollider {
           end: u32::try_from(edges.len()).unwrap_or(u32::MAX),
           min,
           max,
-          closed,
+          solid,
         }
       }
       // Solid shapes collide by their world bounds
@@ -307,26 +306,23 @@ impl ParticleCollider {
         end,
         min,
         max,
-        closed,
+        solid,
       } => {
         let to = Vec2::new(x, y);
-        // Its move, give or take its radius, misses the edges' box: it
-        // misses every edge
-        let (low, high) = (to.min(from) - radius, to.max(from) + radius);
+        // Its move, give or take how far it is met, misses the edges' box:
+        // it misses every edge
+        let reach = solid.map_or(radius, |reach| reach.max(radius));
+        let (low, high) = (to.min(from) - reach, to.max(from) + reach);
         if low.x > max.x || low.y > max.y || high.x < min.x || high.y < min.y {
           return None;
         }
         let edges = edges.get(start as usize..end as usize)?;
-        let met = edges
-          .iter()
-          .filter_map(|&(a, b)| edge_contact(a, b, (from, to), radius, closed))
-          .min_by(|a, b| a.0.total_cmp(&b.0));
-        let (_, point, normal) = match met {
-          // A move into a loop is met where it crossed in
-          Some(crossed) if crossed.0 < 0.0 => crossed,
-          // Inside a loop: out through the nearest edge, to its outer side
-          _ if closed && inside(edges, to) => nearest_way_out(edges, to)?,
-          met => met?,
+        let (_, point, normal) = match solid {
+          Some(reach) => solid_contact(edges, (from, to), radius, reach)?,
+          None => edges
+            .iter()
+            .filter_map(|&(a, b)| edge_contact(a, b, from, to, radius))
+            .min_by(|a, b| a.0.total_cmp(&b.0))?,
         };
         (normal.x, normal.y, point.x, point.y)
       }
@@ -398,23 +394,14 @@ impl ParticleCollider {
   }
 }
 
-/// Where a particle that moved from `from` to `to` meets the edge `a`-`b`:
-/// a rank (lower meets first), the point on the edge, and the unit normal
-/// pointing to the side it came from. An edge its move crossed is met where
-/// it crossed it, before any it ends near (ranked by how far along its move,
-/// below 0); otherwise one whose nearest point lies within `radius` of `to`
-/// (ranked by distance over radius, 0 to 1), its normal the edge's along
-/// its length and from its end at an end. A `closed` edge (part of a loop
-/// round something solid, its left normal pointing out) has one side, the
-/// outer: a move out across it is not met, and one near it is pushed out.
-/// An open edge has two, and the side is the one it came from
-fn edge_contact(
-  a: Vec2,
-  b: Vec2,
-  (from, to): (Vec2, Vec2),
-  radius: f32,
-  closed: bool,
-) -> Option<(f32, Vec2, Vec2)> {
+/// Where a particle that moved from `from` to `to` meets the two-sided edge
+/// `a`-`b`: a rank (lower meets first), the point on the edge, and the unit
+/// normal pointing to the side it came from. An edge its move crossed is
+/// met where it crossed it, before any it ends near (ranked by how far
+/// along its move, below 0); otherwise one whose nearest point lies within
+/// `radius` of `to` (ranked by distance over radius, 0 to 1), its normal
+/// the edge's along its length and from its end at an end
+fn edge_contact(a: Vec2, b: Vec2, from: Vec2, to: Vec2, radius: f32) -> Option<(f32, Vec2, Vec2)> {
   let along = b - a;
   let length = along.length();
   if !(length > 0.0 && length.is_finite()) {
@@ -422,8 +409,8 @@ fn edge_contact(
   }
   let normal = Vec2::new(-along.y, along.x) / length;
   let (before, after) = (normal.dot(from - a), normal.dot(to - a));
-  // Crossed the edge's line this update, within the edge (into a loop only)
-  if (before > 0.0 && after < 0.0) || (before < 0.0 && after > 0.0 && !closed) {
+  // Crossed the edge's line this update, within the edge
+  if (before > 0.0 && after < 0.0) || (before < 0.0 && after > 0.0) {
     let t = before / (before - after);
     let crossing = from + (to - from) * t;
     let u = (crossing - a).dot(along) / (length * length);
@@ -438,10 +425,8 @@ fn edge_contact(
   if distance.is_nan() || distance >= radius {
     return None;
   }
-  // The side it is on (and was on: it did not cross); a loop's outer one
-  let side = if closed {
-    1.0
-  } else if after != 0.0 {
+  // The side it is on (and was on: it did not cross)
+  let side = if after != 0.0 {
     after.signum()
   } else if before != 0.0 {
     before.signum()
@@ -456,37 +441,96 @@ fn edge_contact(
   Some((distance / radius, nearest, facing))
 }
 
-/// Whether `p` is inside the loops `edges` make (crossings of a ray to the
-/// right, odd inside)
-fn inside(edges: &[(Vec2, Vec2)], p: Vec2) -> bool {
-  edges
-    .iter()
-    .filter(|&&(a, b)| {
-      (a.y > p.y) != (b.y > p.y) && p.x < a.x + (p.y - a.y) * (b.x - a.x) / (b.y - a.y)
-    })
-    .count()
-    % 2
-    == 1
-}
-
-/// The nearest point of `edges` to `p`, inside their loops, with the outer
-/// normal of its edge: where a particle inside gets out (ranked 0)
-fn nearest_way_out(edges: &[(Vec2, Vec2)], p: Vec2) -> Option<(f32, Vec2, Vec2)> {
-  edges
-    .iter()
-    .filter_map(|&(a, b)| {
-      let along = b - a;
-      let length_sq = along.length_squared();
-      if !(length_sq > 0.0 && length_sq.is_finite()) {
-        return None;
+/// Where a particle that moved from `from` to `to` meets a tile part's
+/// loops `edges`, which bound solid ground with each edge's left normal
+/// pointing out: a rank (lower meets first), the point, and the unit
+/// normal out of the ground. A move into the ground across an edge is met
+/// where it crossed in (ranked by how far along its move, below 0); a move
+/// out is not met. Otherwise the part's nearest point to `to` decides,
+/// locally, since the loops round a place may lie in several parts (a room
+/// carved from a wall has its own loop, likely in another chunk's part): if
+/// it is within `reach` and `to` is on its inner side (by the edge's
+/// normal, or at a corner the sum of its two edges' normals), the particle
+/// is in the ground and goes out there (ranked 0); if it is on the outer
+/// side within `radius`, it touches (ranked by distance over radius).
+/// Ground deeper than `reach` from this part's edges is not judged
+fn solid_contact(
+  edges: &[(Vec2, Vec2)],
+  (from, to): (Vec2, Vec2),
+  radius: f32,
+  reach: f32,
+) -> Option<(f32, Vec2, Vec2)> {
+  let outward = |a: Vec2, b: Vec2| {
+    let along = b - a;
+    let length = along.length();
+    (length > 0.0 && length.is_finite()).then(|| Vec2::new(-along.y, along.x) / length)
+  };
+  // Crossed into the ground this update
+  let mut crossed: Option<(f32, Vec2, Vec2)> = None;
+  for &(a, b) in edges {
+    let Some(normal) = outward(a, b) else {
+      continue;
+    };
+    let (before, after) = (normal.dot(from - a), normal.dot(to - a));
+    if before > 0.0 && after < 0.0 {
+      let t = before / (before - after);
+      let crossing = from + (to - from) * t;
+      let u = (crossing - a).dot(b - a) / (b - a).length_squared();
+      if (0.0..=1.0).contains(&u) && crossed.is_none_or(|c| t - 1.0 < c.0) {
+        crossed = Some((t - 1.0, crossing, normal));
       }
-      let u = ((p - a).dot(along) / length_sq).clamp(0.0, 1.0);
-      let point = a + along * u;
-      let normal = Vec2::new(-along.y, along.x) / length_sq.sqrt();
-      Some((p.distance_squared(point), point, normal))
-    })
-    .min_by(|a, b| a.0.total_cmp(&b.0))
-    .map(|(_, point, normal)| (0.0, point, normal))
+    }
+  }
+  if crossed.is_some() {
+    return crossed;
+  }
+  // The nearest point, and the outer normal there: an edge's, or at a
+  // corner its edges' together
+  let nearest = |a: Vec2, b: Vec2| {
+    let along = b - a;
+    let u = ((to - a).dot(along) / along.length_squared()).clamp(0.0, 1.0);
+    a + along * u
+  };
+  let mut best: Option<(f32, Vec2)> = None;
+  for &(a, b) in edges {
+    if outward(a, b).is_none() {
+      continue;
+    }
+    let point = nearest(a, b);
+    let distance = to.distance(point);
+    if best.is_none_or(|(d, _)| distance < d) {
+      best = Some((distance, point));
+    }
+  }
+  let (distance, point) = best?;
+  if distance.is_nan() || distance >= reach.max(radius) {
+    return None;
+  }
+  let mut normal = Vec2::ZERO;
+  for &(a, b) in edges {
+    if let Some(n) = outward(a, b)
+      && nearest(a, b).distance(point) <= 1e-3
+    {
+      normal += n;
+    }
+  }
+  let normal = normal.normalize_or_zero();
+  if normal == Vec2::ZERO {
+    return None;
+  }
+  if normal.dot(to - point) < 0.0 && distance < reach {
+    // In the ground: out through its nearest edge
+    return Some((0.0, point, normal));
+  }
+  if distance >= radius {
+    return None;
+  }
+  let facing = if distance > 0.0 {
+    (to - point) / distance
+  } else {
+    normal
+  };
+  Some((distance / radius, point, facing))
 }
 
 /// Colliders a particle can hit, in gather order.
@@ -591,13 +635,30 @@ impl ParticleSystem {
       .any(|(.., collision)| collision.is_some())
     {
       let edges = &mut self.edges;
+      let mut query = world.query::<(
+        Entity,
+        &GlobalTransform,
+        &Collider,
+        Option<&ChildOf>,
+        Has<TilePart>,
+      )>();
+      let world: &World = world;
       self.colliders.extend(
-        world
-          .query::<(Entity, &GlobalTransform, &Collider, Has<TilePart>)>()
+        query
           .iter(world)
-          .filter(|(_, _, collider, _)| !collider.is_trigger)
-          .map(|(entity, global, collider, tile_part)| {
-            ParticleCollider::from_component(entity, global, (collider, tile_part), edges)
+          .filter(|(_, _, collider, ..)| !collider.is_trigger)
+          .map(|(entity, global, collider, parent, tile_part)| {
+            // A tile part's cell, from the grid it was built from, in
+            // world pixels
+            let cell = parent
+              .filter(|_| tile_part)
+              .and_then(|parent| world.get::<TileColliders>(parent.parent()))
+              .map(|grid| {
+                let scale = global.scale().abs().min_element();
+                grid.tile_size.min_element() * scale
+              })
+              .filter(|cell| cell.is_finite() && *cell > 0.0);
+            ParticleCollider::from_component(entity, global, (collider, cell), edges)
           }),
       );
     }
@@ -1634,12 +1695,42 @@ mod tests {
     points.extend(corners(360.0, 0.0, 400.0, 20.0));
     let ring = |base: u32| (0..4).map(move |i| [base + i, base + (i + 1) % 4]);
     let segments: Vec<[u32; 2]> = ring(0).chain(ring(4)).collect();
+    parts_scene(
+      vec![Collider::segments(points, segments)],
+      true,
+      (config, at, gravity_y),
+    )
+  }
+
+  /// `parts` at the origin and one particle from an emitter at `at` under
+  /// `gravity_y`. As a map's tile parts (`tile_parts`), they are children of
+  /// an entity holding the grid they were built from, of 20 px cells, as
+  /// physics spawns them; otherwise a game's own colliders
+  fn parts_scene(
+    parts: Vec<Collider>,
+    tile_parts: bool,
+    (config, at, gravity_y): (CollisionConfig, Vec2, f32),
+  ) -> (ParticleSystem, World) {
+    use crate::core::physics::{TileColliders, TilePart};
     let mut world = World::new();
-    world.spawn((
-      Transform::IDENTITY,
-      Collider::segments(points, segments),
-      crate::core::physics::TilePart,
-    ));
+    let grid = world
+      .spawn((
+        Transform::IDENTITY,
+        TileColliders::new(20, 20, Vec2::splat(20.0)),
+      ))
+      .id();
+    for part in parts {
+      if tile_parts {
+        world.spawn((
+          Transform::IDENTITY,
+          part,
+          TilePart,
+          crate::core::ecs::ChildOf(grid),
+        ));
+      } else {
+        world.spawn((Transform::IDENTITY, part));
+      }
+    }
     world.spawn((
       Transform::from_translation(at),
       ParticleEmitter::new(test_sprite())
@@ -1652,6 +1743,96 @@ mod tests {
     let mut system = ParticleSystem::new();
     update(&mut system, &mut world, DT);
     (system, world)
+  }
+
+  /// A closed polyline round the rectangle (x0, y0) to (x1, y1): clockwise
+  /// on screen, as a tile map winds the loop round a solid, or the other way,
+  /// as it winds a hole's
+  fn closed_loop(x0: f32, y0: f32, x1: f32, y1: f32, clockwise: bool) -> Collider {
+    let mut points = vec![
+      Vec2::new(x0, y0),
+      Vec2::new(x1, y0),
+      Vec2::new(x1, y1),
+      Vec2::new(x0, y1),
+    ];
+    if !clockwise {
+      points.reverse();
+    }
+    points.push(points[0]);
+    Collider::polyline(points)
+  }
+
+  #[test]
+  fn a_particle_in_a_room_whose_wall_s_outline_lies_in_another_part_drifts_untouched() {
+    // A solid mass 200 px square whose outer loop is one part, with a room
+    // (60 to 140) carved in it whose loop is another part, as two chunks
+    // pack them: a particle drifting in the room meets nothing
+    let mass = closed_loop(0.0, 0.0, 200.0, 200.0, true);
+    let room = closed_loop(60.0, 60.0, 140.0, 140.0, false);
+    let config = CollisionConfig::bouncy(RADIUS, 0.5);
+    let (mut system, mut world) = parts_scene(
+      vec![mass, room],
+      true,
+      (config, Vec2::new(90.0, 100.0), 0.0),
+    );
+    system.particles[0].particle.velocity_x = 60.0;
+    for step in 0..30 {
+      update(&mut system, &mut world, DT);
+      let p = &system.particles[0];
+      assert!(
+        (p.y - 100.0).abs() < 1e-3 && p.particle.velocity_x == 60.0 && !p.touching,
+        "step {step}: at ({}, {}), velocity {:?}",
+        p.x,
+        p.y,
+        (p.particle.velocity_x, p.particle.velocity_y)
+      );
+    }
+  }
+
+  #[test]
+  fn a_particle_in_a_room_alone_in_its_part_bounces_off_its_walls() {
+    // The room's loop alone in its part, a closed polyline wound as a
+    // hole's: the particle bounces off the walls from inside, and stays in
+    let room = closed_loop(60.0, 60.0, 140.0, 140.0, false);
+    let config = CollisionConfig::bouncy(RADIUS, 1.0);
+    let (mut system, mut world) =
+      parts_scene(vec![room], true, (config, Vec2::new(100.0, 100.0), 0.0));
+    system.particles[0].particle.velocity_x = 300.0;
+    let mut bounced = false;
+    for step in 0..120 {
+      update(&mut system, &mut world, DT);
+      let p = &system.particles[0];
+      assert!(
+        p.x > 60.0 + RADIUS - 1e-3 && p.x < 140.0 - RADIUS + 1e-3,
+        "step {step}: x = {}",
+        p.x
+      );
+      bounced |= p.particle.velocity_x < 0.0;
+    }
+    assert!(bounced, "it bounced off the wall");
+  }
+
+  #[test]
+  fn particles_stay_in_a_game_s_closed_polyline_arena_and_bounce() {
+    // A game's arena wall: a closed polyline, hollow as physics treats it
+    let arena = closed_loop(0.0, 0.0, 200.0, 200.0, true);
+    let config = CollisionConfig::bouncy(RADIUS, 1.0);
+    let (mut system, mut world) =
+      parts_scene(vec![arena], false, (config, Vec2::new(100.0, 100.0), 0.0));
+    system.particles[0].particle.velocity_x = 400.0;
+    let mut bounced = false;
+    for step in 0..120 {
+      update(&mut system, &mut world, DT);
+      let p = &system.particles[0];
+      assert!(
+        p.x > RADIUS - 1e-3 && p.x < 200.0 - RADIUS + 1e-3 && (p.y - 100.0).abs() < 1e-3,
+        "step {step}: at ({}, {})",
+        p.x,
+        p.y
+      );
+      bounced |= p.particle.velocity_x < 0.0;
+    }
+    assert!(bounced, "it bounced off the wall");
   }
 
   #[test]
