@@ -46,7 +46,7 @@ Today each is refused in `tilemap/tiled/build.rs` (the orientation check and the
 - Saving maps back to the editors' formats, and a tile editor inside the engine.
 - Tiled's text objects beyond their placement (`ObjectShape::Text` keeps the text; nothing draws it).
 - Streaming a world's levels automatically: 6a gives positions, neighbours and `spawn_levels_in`, and when to load and unload stays the game's call.
-- LDtk tilesets' enum tags and custom tile data (not read by 6a's loader), Tiled's map parallax origin (6a measures parallax from the map's top-left), and LDtk level background images.
+- LDtk level background images.
 - What `docs/backlog/tilemap.md` lists as limits: transform propagation walking static subtrees, the landing frame's first draw, relabelling long split loops, lighting's lack of a spatial index, and the keep window's memory.
 
 ## Outside tile maps

@@ -870,9 +870,17 @@
         "spacing": 0,
         "padding": 0,
         "tags": [],
-        "tagsSourceEnumUid": null,
-        "enumTags": [],
-        "customData": [],
+        "tagsSourceEnumUid": 21,
+        "enumTags": [
+          { "enumValueId": "A", "tileIds": [1,2] },
+          { "enumValueId": "B", "tileIds": [2] },
+          { "enumValueId": "C", "tileIds": [] },
+          { "enumValueId": "D", "tileIds": [] }
+        ],
+        "customData": [
+          { "tileId": 1, "data": "slippery" },
+          { "tileId": 3, "data": "{\"speed\": 2}" }
+        ],
         "savedSelections": [],
         "cachedPixelData": {
           "opaqueTiles": "",

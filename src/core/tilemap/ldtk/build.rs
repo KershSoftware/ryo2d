@@ -21,7 +21,7 @@ use crate::core::tilemap::tiled::build::{
 use crate::core::tilemap::tiled::json::parse;
 use crate::core::tilemap::{
   IntGrid, LayerInfo, LayerKind, MapLayer, MapObjectData, ObjectShape, Properties, PropertyValue,
-  Tile, TileFlip, TileGrid, TileMap, Tileset, TilesetImage, TilesetSource,
+  Tile, TileData, TileFlip, TileGrid, TileMap, Tileset, TilesetImage, TilesetSource,
 };
 use crate::core::ui::Color;
 
@@ -140,9 +140,58 @@ fn build_tilesets(
     set.tile_count = count as u32;
     set.spacing = spacing;
     set.margin = padding;
+    tile_data(path, &place, def, &mut set)?;
     out.push((def.uid, Arc::new(set)));
   }
   Ok(out)
+}
+
+/// The tiles' data from the tileset's enum tags and custom data, read as
+/// Tiled's tile classes and properties are: a tagged tile's class is its
+/// first tag in the enum's order and each of its tags a bool property true
+/// (a tile may have several), and its custom data (LDtk's one free text a
+/// tile) the string property `custom_data`
+fn tile_data(
+  path: &AssetPath,
+  place: &str,
+  def: &RawTilesetDef,
+  set: &mut Tileset,
+) -> Result<(), AssetError> {
+  let id_of = |id: i64| {
+    u32::try_from(id)
+      .ok()
+      .filter(|&id| id < set.tile_count)
+      .ok_or_else(|| {
+        fail(
+          path,
+          place,
+          format!("tile {id} is not one of its {} tiles", set.tile_count),
+        )
+      })
+  };
+  let mut data: FastMap<u32, TileData> = FastMap::default();
+  for tag in &def.enum_tags {
+    for &id in &tag.tile_ids {
+      let tile = data.entry(id_of(id)?).or_default();
+      if tile.class.is_none() {
+        tile.class = Some(tag.enum_value_id.clone());
+      }
+      tile
+        .properties
+        .insert(tag.enum_value_id.clone(), PropertyValue::Bool(true));
+    }
+  }
+  for custom in def.custom_data.iter().filter(|c| !c.data.is_empty()) {
+    data
+      .entry(id_of(custom.tile_id)?)
+      .or_default()
+      .properties
+      .insert("custom_data", PropertyValue::String(custom.data.clone()));
+  }
+  for (id, tile) in data {
+    set.insert_tile(id, tile);
+  }
+  Ok(())
 }
 
 // ---- fields ---------------------------------------------------------------

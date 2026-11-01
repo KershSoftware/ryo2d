@@ -74,6 +74,28 @@ pub(super) struct RawTilesetDef {
   pub c_wid: i64,
   #[serde(default, rename = "__cHei")]
   pub c_hei: i64,
+  /// The tiles each value of the tileset's tag enum marks, in the enum's
+  /// order
+  #[serde(default, rename = "enumTags")]
+  pub enum_tags: Vec<RawEnumTag>,
+  #[serde(default, rename = "customData")]
+  pub custom_data: Vec<RawCustomData>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct RawEnumTag {
+  #[serde(rename = "enumValueId")]
+  pub enum_value_id: String,
+  #[serde(default, rename = "tileIds")]
+  pub tile_ids: Vec<i64>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct RawCustomData {
+  #[serde(rename = "tileId")]
+  pub tile_id: i64,
+  #[serde(default)]
+  pub data: String,
 }
 
 #[derive(Deserialize)]

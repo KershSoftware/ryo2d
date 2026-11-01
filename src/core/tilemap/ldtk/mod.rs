@@ -442,6 +442,44 @@ mod tests {
     ));
   }
 
+  #[test]
+  fn tile_enum_tags_and_custom_data_read_as_class_and_properties() {
+    // The Tiles tileset tags its tiles with SomeEnum's values: tile 1 A,
+    // tile 2 A and B; tiles 1 and 3 carry custom data
+    let project = load("internal.ldtk");
+    let tiles = &project.tilesets[0];
+    let one = tiles.tile(1).expect("tile 1 has data");
+    assert_eq!(one.class.as_deref(), Some("A"));
+    assert_eq!(one.properties.bool("A"), Some(true));
+    assert_eq!(one.properties.string("custom_data"), Some("slippery"));
+    let two = tiles.tile(2).expect("tile 2 has data");
+    assert_eq!(
+      two.class.as_deref(),
+      Some("A"),
+      "the first tag in the enum's order"
+    );
+    assert_eq!(
+      (two.properties.bool("A"), two.properties.bool("B")),
+      (Some(true), Some(true))
+    );
+    assert_eq!(two.properties.get("custom_data"), None);
+    let three = tiles.tile(3).expect("tile 3 has data");
+    assert_eq!(three.class, None);
+    assert_eq!(
+      three.properties.string("custom_data"),
+      Some("{\"speed\": 2}")
+    );
+    assert!(tiles.tile(0).is_none());
+    // a tag on a tile the tileset does not have fails, naming the tileset
+    let error = json_failure(|v| {
+      v["defs"]["tilesets"][0]["enumTags"][0]["tileIds"] = serde_json::json!([8]);
+    });
+    assert!(
+      error.contains("tileset \"Tiles\"") && error.contains("tile 8"),
+      "{error}"
+    );
+  }
+
   fn door(level: &LdtkLevel) -> &crate::core::tilemap::MapObjectData {
     let LayerKind::Objects(objects) = &layer(level, "Entities").kind else {
       panic!("Entities holds no objects")
