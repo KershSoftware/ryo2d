@@ -93,6 +93,22 @@ fn floors(_: ChunkRequest) -> ChunkTiles {
   tiles
 }
 
+/// `floors`, each chunk waiting while `open` is false (5 s at most): a test
+/// holds the generator over the frames it asserts, so no chunk lands in
+/// them however the builder thread is scheduled
+fn floors_while(
+  open: &Arc<AtomicBool>,
+) -> impl Fn(ChunkRequest) -> ChunkTiles + Send + Sync + use<> {
+  let open = Arc::clone(open);
+  move |request: ChunkRequest| {
+    let start = std::time::Instant::now();
+    while !open.load(Ordering::SeqCst) && start.elapsed() < Duration::from_secs(5) {
+      std::thread::sleep(Duration::from_millis(1));
+    }
+    floors(request)
+  }
+}
+
 /// Spawns `map`, streamed by `stream` with the cameras left out, under the
 /// root `root` makes, and lets it land
 fn spawn(
@@ -507,19 +523,36 @@ fn a_frame_that_lands_chunks_unloads_none_unless_many_wait() {
   // budget: they unload in the frames landing chunks too, until no more
   // than eight wait
   let mut maps = MapWorld::new();
+  let calls = Arc::new(AtomicUsize::new(0));
+  let counted = Arc::clone(&calls);
   let stream = MapStream {
     load_distance: 2.0 * CHUNK,
     land_per_frame: 1,
     unload_per_frame: 1,
-    ..MapStream::new(floors)
+    ..MapStream::new(move |request: ChunkRequest| {
+      counted.fetch_add(1, Ordering::SeqCst);
+      floors(request)
+    })
   };
   let map = spawn(&mut maps, infinite(&["ground"]), stream, |r| r);
   let anchor = anchor_at(&mut maps, IVec2::ZERO);
   until_idle(&mut maps, map);
   events(&maps.world, &mut cursor);
   move_to(&mut maps.world, anchor, IVec2::new(20, 0));
+  // The first frame asks for the 25 chunks round the new place and unloads
+  // one; then the builder thread makes them all before the next frame, so
+  // they land one a frame from it while more than eight still wait,
+  // however the thread is scheduled
+  let asked = calls.load(Ordering::SeqCst) + 25;
   let (mut gone, mut both) = (Vec::new(), Vec::new());
+  let mut first = true;
   maps.frames_until(|world| {
+    if std::mem::replace(&mut first, false) {
+      let start = std::time::Instant::now();
+      while calls.load(Ordering::SeqCst) < asked && start.elapsed() < Duration::from_secs(5) {
+        std::thread::sleep(Duration::from_millis(1));
+      }
+    }
     let happened = events(world, &mut cursor);
     let (now_landed, now_gone) = (loaded(&happened, map), unloading(&happened, map));
     if !now_landed.is_empty() && !now_gone.is_empty() {
@@ -1142,18 +1175,22 @@ fn an_unchanged_chunk_is_not_saved() {
 fn an_edit_in_the_unloading_frame_is_saved() {
   let saved = SavedChunks::default();
   let mut maps = MapWorld::new();
-  // Every chunk left behind unloads in the one frame
+  // Every chunk left behind unloads in the one frame; the chunks round the
+  // anchor's new place are held back, so none lands in it
+  let open = Arc::new(AtomicBool::new(true));
   let stream = MapStream {
     unload_per_frame: 9,
-    ..MapStream::new(floors).with_saved(saved.clone())
+    ..MapStream::new(floors_while(&open)).with_saved(saved.clone())
   };
   let map = spawn(&mut maps, infinite(&["ground"]), stream, |r| r);
   let anchor = anchor_at(&mut maps, IVec2::ZERO);
   until_idle(&mut maps, map);
   // The anchor leaves, and a cell is edited before the stream next looks
+  open.store(false, Ordering::SeqCst);
   move_to(&mut maps.world, anchor, IVec2::new(20, 0));
   assert!(MapsView::new(&mut maps.world).set_tile(map, "ground", IVec2::new(8, 8), Some(BLOCK)));
   maps.frame();
+  open.store(true, Ordering::SeqCst);
   assert!(!resident(&mut maps.world, map).contains(&IVec2::ZERO));
   let kept = saved.get(IVec2::ZERO);
   assert_eq!(
@@ -1548,14 +1585,17 @@ fn the_stream_status_counts_the_chunks_resident_in_flight_and_draining() {
   );
 
   // A teleport: two of the nine left behind unload in its first frame, the
-  // others drain, and the new chunks are in flight
+  // others drain, and the new chunks are in flight, held back so none
+  // lands in it
+  open.store(false, Ordering::SeqCst);
   move_to(&mut maps.world, anchor, IVec2::new(20, 0));
   maps.frame();
   let Some(moving) = status(&mut maps.world) else {
     panic!("{map} streams");
   };
+  open.store(true, Ordering::SeqCst);
   assert_eq!(moving.draining, 7, "{moving:?}");
-  assert!(moving.in_flight > 0, "{moving:?}");
+  assert_eq!(moving.in_flight, 9, "{moving:?}");
   until_idle(&mut maps, map);
   let chunks = resident(&mut maps.world, map);
   assert_eq!(
