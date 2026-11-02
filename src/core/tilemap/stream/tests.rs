@@ -2776,25 +2776,42 @@ fn assert_as_built_whole(maps: &mut MapWorld, map: Entity, at: usize) {
 /// of loads, unloads and edits are those of the map built whole from what
 /// it then holds: an anchor jumping about a jumbled world (caves of rock
 /// across chunk borders, shapes, slopes, one-way tiles, coins, two layers)
-/// with edits at and near chunk sides, compared every ten frames
+/// with edits at and near chunk sides, compared every ten frames. Twice:
+/// with the default budgets, where a frame landing chunks rarely unloads,
+/// and with one of each a frame over wider areas, where a jump leaves more
+/// than eight chunks waiting and frames do both
 #[test]
 fn collision_shadows_and_class_tiles_match_a_whole_build_after_random_streaming() {
+  random_streaming(MapStream {
+    load_distance: 300.0,
+    unload_distance: 600.0,
+    ..MapStream::new(jumble)
+  });
+  let both = random_streaming(MapStream {
+    load_distance: 600.0,
+    unload_distance: 900.0,
+    land_per_frame: 1,
+    unload_per_frame: 1,
+    ..MapStream::new(jumble)
+  });
+  assert!(both > 10, "{both} frames both landed and unloaded");
+}
+
+/// The jumbled world streamed by `stream` under a jumping anchor and random
+/// edits, checked against a whole build every ten frames: how many frames
+/// both landed and unloaded
+fn random_streaming(stream: MapStream) -> usize {
   let mut maps = MapWorld::new();
   let mut map = TileMap::infinite(UVec2::splat(16));
   map.add_tileset(TilesetSource::Embedded(Arc::new(jumble_tiles())));
   map.add_tile_layer("ground");
   map.add_tile_layer("front");
-  let stream = MapStream {
-    load_distance: 300.0,
-    unload_distance: 600.0,
-    ..MapStream::new(jumble)
-  };
   let map = spawn(&mut maps, map, stream, |root| {
     root.with_entity_tiles(&["coin"])
   });
   let anchor = anchor_at(&mut maps, IVec2::ZERO);
   let mut cursor = MessageCursor::<ChunkEvent>::default();
-  let (mut landed, mut unloaded) = (0, 0);
+  let (mut landed, mut unloaded, mut both) = (0, 0, 0);
   let mut seed = 0x2545_f491_u32;
   let mut next = |n: u32| {
     seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
@@ -2830,8 +2847,10 @@ fn collision_shadows_and_class_tiles_match_a_whole_build_after_random_streaming(
     }
     maps.frame();
     let happened = events(&maps.world, &mut cursor);
-    landed += loaded(&happened, map).len();
-    unloaded += changes(&happened, map).len();
+    let (now_landed, now_unloaded) = (loaded(&happened, map).len(), changes(&happened, map).len());
+    both += usize::from(now_landed > 0 && now_unloaded > 0);
+    landed += now_landed;
+    unloaded += now_unloaded;
     std::thread::sleep(Duration::from_micros(500));
     if step % 10 == 9 {
       assert_as_built_whole(&mut maps, map, step);
@@ -2841,4 +2860,5 @@ fn collision_shadows_and_class_tiles_match_a_whole_build_after_random_streaming(
     landed > 100 && unloaded > 100,
     "{landed} landed, {unloaded} unloaded"
   );
+  both
 }

@@ -1263,7 +1263,8 @@ mod tests {
   }
 
   /// Whole chunks loaded and unloaded under an unbounded grid's outlines,
-  /// as a stream lands and unloads them, with edits at chunk sides between:
+  /// as a stream lands and unloads them, with edits at chunk sides between
+  /// and steps unloading a chunk and loading its neighbour together:
   /// the outlines stay a full trace's, the islands under a chunk unloaded
   /// dropped whole and the loops crossing its sides spliced
   #[test]
@@ -1328,30 +1329,68 @@ mod tests {
     }
     tiles.take_changes();
     let mut state = Outlines::build(tiles.cells_view());
-    for round in 0..90 {
+    let mut together = 0;
+    for round in 0..150 {
       let chunk = area[next(area.len() as u32) as usize];
-      match loaded.iter().position(|&c| c == chunk) {
-        Some(i) if next(3) > 0 => {
-          tiles.unload_chunk(chunk);
-          loaded.swap_remove(i);
-        }
-        Some(_) => {
-          // Cells at its sides edited
-          for _ in 0..1 + next(6) {
-            let along = next(side as u32) as i32;
-            let at = match next(4) {
-              0 => IVec2::new(0, along),
-              1 => IVec2::new(side - 1, along),
-              2 => IVec2::new(along, 0),
-              _ => IVec2::new(along, side - 1),
-            };
-            let kind = kinds[next(kinds.len() as u32) as usize];
-            tiles.set(chunk * side + at, kind);
+      if next(4) == 0 {
+        // A chunk unloaded, a neighbour loaded (afresh, if it was) and
+        // their shared side edited on either side, in one apply: a step
+        // landing and unloading side by side
+        let dir = [IVec2::X, IVec2::NEG_X, IVec2::Y, IVec2::NEG_Y][next(4) as usize];
+        let neighbour = chunk + dir;
+        for gone in [chunk, neighbour] {
+          if let Some(i) = loaded.iter().position(|&c| c == gone) {
+            tiles.unload_chunk(gone);
+            loaded.swap_remove(i);
           }
         }
-        None => {
-          load(&mut tiles, chunk, &mut next);
-          loaded.push(chunk);
+        load(&mut tiles, neighbour, &mut next);
+        loaded.push(neighbour);
+        // A cell `depth` from a chunk's side facing `facing`
+        let beside = |facing: IVec2, along: i32, depth: i32| match (facing.x, facing.y) {
+          (1, _) => IVec2::new(side - 1 - depth, along),
+          (-1, _) => IVec2::new(depth, along),
+          (_, 1) => IVec2::new(along, side - 1 - depth),
+          _ => IVec2::new(along, depth),
+        };
+        for _ in 0..1 + next(6) {
+          let (along, depth) = (next(side as u32) as i32, next(2) as i32);
+          let (at, facing) = if next(2) == 0 {
+            (neighbour, -dir)
+          } else {
+            (chunk, dir)
+          };
+          let kind = kinds[next(kinds.len() as u32) as usize];
+          tiles.set(at * side + beside(facing, along, depth), kind);
+          if at == chunk && !loaded.contains(&chunk) {
+            loaded.push(chunk);
+          }
+        }
+        together += 1;
+      } else {
+        match loaded.iter().position(|&c| c == chunk) {
+          Some(i) if next(3) > 0 => {
+            tiles.unload_chunk(chunk);
+            loaded.swap_remove(i);
+          }
+          Some(_) => {
+            // Cells at its sides edited
+            for _ in 0..1 + next(6) {
+              let along = next(side as u32) as i32;
+              let at = match next(4) {
+                0 => IVec2::new(0, along),
+                1 => IVec2::new(side - 1, along),
+                2 => IVec2::new(along, 0),
+                _ => IVec2::new(along, side - 1),
+              };
+              let kind = kinds[next(kinds.len() as u32) as usize];
+              tiles.set(chunk * side + at, kind);
+            }
+          }
+          None => {
+            load(&mut tiles, chunk, &mut next);
+            loaded.push(chunk);
+          }
         }
       }
       let changed = tiles.take_changes().expect("listed");
@@ -1368,6 +1407,10 @@ mod tests {
     let s = state.splices;
     assert!(s.gone > 100 && s.kept + s.splits + s.joins > 50, "{s:?}");
     assert_eq!(s.whole, 0, "{s:?}");
+    assert!(
+      together > 25,
+      "{together} steps unloading and loading side by side"
+    );
   }
 
   #[test]
