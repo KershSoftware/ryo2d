@@ -19,8 +19,8 @@ use crate::core::physics::CellRect;
 use crate::core::render::batch::BlendMode;
 use crate::core::tilemap::map::tiles_bounds;
 use crate::core::tilemap::{
-  CHUNK_SIZE, ImageLayer, LayerKind, MapLayer, Tile, TileData, TileFrame, TileGrid, TileMap,
-  TileShape, Tileset, TilesetImage, TilesetSource,
+  CHUNK_SIZE, ImageLayer, LayerKind, MapGrid, MapLayer, Tile, TileData, TileFrame, TileGrid,
+  TileMap, TileShape, Tileset, TilesetImage, TilesetSource,
 };
 use crate::core::ui::Color;
 use glam::{IVec2, UVec2, Vec2};
@@ -492,8 +492,10 @@ struct Builder<'p, 'a> {
   size: UVec2,
   /// Whether the map is infinite: its tile layers' cells are in chunks
   infinite: bool,
-  /// The map's cell size, which every tile layer uses
+  /// The map's cell size
   tile_size: UVec2,
+  /// The map's grid, which every tile layer copies
+  grid: MapGrid,
   /// Each tileset's first gid and its index, by first gid
   first_gids: Vec<(u32, u16)>,
   /// The id for a layer the file gave none; `None` once the ids ran out
@@ -1002,9 +1004,9 @@ impl Builder<'_, '_> {
       .collect();
     Ok((
       LayerKind::Tiles {
-        grid,
+        tiles: grid,
         intgrid: None,
-        cell_size: self.tile_size,
+        grid: self.grid,
       },
       used,
     ))
@@ -1237,6 +1239,7 @@ pub(crate) fn build_map(
     size: map.size,
     infinite: map.infinite,
     tile_size: map.tile_size,
+    grid: map.grid(),
     first_gids,
     next_id: max_layer_id(&raw.layers).checked_add(1),
     layers: Vec::new(),

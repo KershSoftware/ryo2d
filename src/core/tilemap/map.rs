@@ -5,6 +5,7 @@ use std::sync::Arc;
 use glam::{IVec2, UVec2, Vec2};
 
 use super::grid::TileGrid;
+use super::grid_shape::{GridShape, MapGrid};
 use super::property::Properties;
 use super::tile::Tile;
 use super::tileset::Tileset;
@@ -159,12 +160,13 @@ pub struct ImageLayer {
 #[derive(Clone, Debug)]
 pub enum LayerKind {
   Tiles {
-    grid: TileGrid,
+    tiles: TileGrid,
     intgrid: Option<IntGrid>,
-    /// A cell's size in pixels on this layer: the map's `tile_size` unless
-    /// the file gave the layer a grid of its own (LDtk does). The grid and
-    /// the int grid then count cells of this size
-    cell_size: UVec2,
+    /// Where the layer's cells are in its pixels: the map's grid
+    /// ([`TileMap::grid`]) unless the file gave the layer a grid of its own
+    /// (LDtk does, a square one of its own cell size). The tiles and the
+    /// int grid then count cells of this grid
+    grid: MapGrid,
   },
   Objects(Vec<MapObjectData>),
   Image(ImageLayer),
@@ -195,6 +197,11 @@ pub struct TileMap {
   pub size: UVec2,
   /// A cell's size in pixels
   pub tile_size: UVec2,
+  /// How its cells are laid out: Tiled's orientation, orthogonal unless
+  /// set ([`with_shape`](Self::with_shape)). A tile layer copies the map's
+  /// grid ([`grid`](Self::grid)) as it is added, so setting this field
+  /// moves none of the layers already there; `with_shape` does
+  pub shape: GridShape,
   /// Whether its tile layers hold any cell, negative ones included (a
   /// Tiled infinite map): its layers' grids are unbounded and its `size`
   /// is zero
@@ -235,6 +242,7 @@ impl TileMap {
     TileMap {
       size,
       tile_size,
+      shape: GridShape::Orthogonal,
       infinite: false,
       tilesets: Vec::new(),
       layers: Vec::new(),
@@ -258,6 +266,45 @@ impl TileMap {
     }
   }
 
+  /// The map with its cells laid out as `shape` (isometric, staggered,
+  /// hexagonal or oblique, as Tiled's maps are), its tile layers moved onto
+  /// the new grid where they had the map's.
+  ///
+  /// ```
+  /// use ryo2d::prelude::*;
+  ///
+  /// let mut map = TileMap::new(UVec2::new(10, 10), UVec2::new(64, 32))
+  ///   .with_shape(GridShape::Isometric);
+  /// let ground = map.add_tile_layer("ground");
+  /// // Cell (0, 0) is the top diamond, its top vertex half the map across
+  /// assert_eq!(map.grid().cell_center(IVec2::ZERO), Vec2::new(320.0, 16.0));
+  /// assert!(matches!(
+  ///   &map.layers[ground].kind,
+  ///   LayerKind::Tiles { grid, .. } if *grid == map.grid()
+  /// ));
+  /// ```
+  pub fn with_shape(mut self, shape: GridShape) -> TileMap {
+    let was = self.grid();
+    self.shape = shape;
+    let grid = self.grid();
+    for layer in &mut self.layers {
+      if let LayerKind::Tiles { grid: held, .. } = &mut layer.kind
+        && *held == was
+      {
+        *held = grid;
+      }
+    }
+    self
+  }
+
+  /// Where the map's cells are in its pixels: its shape and cell size,
+  /// with Tiled's origin for its size (on a bounded isometric map, cell
+  /// (0, 0)'s top vertex lies the map's height in half cells across; see
+  /// [`MapGrid::for_map`]). Each tile layer added copies it
+  pub fn grid(&self) -> MapGrid {
+    MapGrid::for_map(self.shape, self.tile_size, self.size, self.infinite)
+  }
+
   /// The cells the map covers: a bounded map's from (0, 0) to its size;
   /// an infinite map's the smallest rectangle holding every cell of its
   /// tile layers with a tile (empty when it has none). An asset's: a
@@ -268,7 +315,7 @@ impl TileMap {
       return CellRect::from_size(self.size);
     }
     tiles_bounds(self.layers.iter().filter_map(|layer| match &layer.kind {
-      LayerKind::Tiles { grid, .. } => Some(grid),
+      LayerKind::Tiles { tiles, .. } => Some(tiles),
       _ => None,
     }))
   }
@@ -290,10 +337,10 @@ impl TileMap {
   }
 
   /// Adds an empty tile layer on top and returns its index: of the map's
-  /// size, or holding any cell on an infinite map
+  /// size, or holding any cell on an infinite map, on the map's grid
   pub fn add_tile_layer(&mut self, name: &str) -> usize {
     let info = LayerInfo::new(self.next_layer_id(), name);
-    let grid = if self.infinite {
+    let tiles = if self.infinite {
       TileGrid::unbounded()
     } else {
       TileGrid::new(self.size)
@@ -301,9 +348,9 @@ impl TileMap {
     self.layers.push(MapLayer {
       info,
       kind: LayerKind::Tiles {
-        grid,
+        tiles,
         intgrid: None,
-        cell_size: self.tile_size,
+        grid: self.grid(),
       },
     });
     self.layers.len() - 1
@@ -328,7 +375,7 @@ impl TileMap {
   /// The tiles of layer `layer`, if it is a tile layer
   pub fn tiles(&self, layer: usize) -> Option<&TileGrid> {
     match &self.layers.get(layer)?.kind {
-      LayerKind::Tiles { grid, .. } => Some(grid),
+      LayerKind::Tiles { tiles, .. } => Some(tiles),
       _ => None,
     }
   }
@@ -336,7 +383,7 @@ impl TileMap {
   /// The tiles of layer `layer`, editable
   pub fn tiles_mut(&mut self, layer: usize) -> Option<&mut TileGrid> {
     match &mut self.layers.get_mut(layer)?.kind {
-      LayerKind::Tiles { grid, .. } => Some(grid),
+      LayerKind::Tiles { tiles, .. } => Some(tiles),
       _ => None,
     }
   }
@@ -370,7 +417,7 @@ mod tests {
     );
     assert!(matches!(
       map.layers[ground].kind,
-      LayerKind::Tiles { cell_size, .. } if cell_size == UVec2::splat(16)
+      LayerKind::Tiles { grid, .. } if grid == MapGrid::new(GridShape::Orthogonal, UVec2::splat(16))
     ));
     let info = &map.layers[ground].info;
     assert!(info.collides && info.lit && info.visible && !info.y_sorted);

@@ -1227,7 +1227,7 @@ fn an_unloaded_chunk_draws_nothing_and_the_store_lets_it_go() {
   let world = engine.world_mut();
   let mut layers = world.query::<&mut TileLayerData>();
   for mut data in layers.iter_mut(world) {
-    assert!(data.grid.unload_chunk(IVec2::NEG_ONE).is_some());
+    assert!(data.tiles.unload_chunk(IVec2::NEG_ONE).is_some());
   }
   engine.step().unwrap();
   let frame = engine.frame().unwrap();

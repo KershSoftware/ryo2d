@@ -560,7 +560,7 @@ impl Tracked {
   /// Marks the layer read as `data` is (a copy of it, off the main thread);
   /// returns the chunks a build reads (`build_chunks`)
   pub(super) fn read_all(&mut self, data: &TileLayerData) -> Vec<IVec2> {
-    let grid = &data.grid;
+    let grid = &data.tiles;
     self.versions.clear();
     self.versions.reserve(grid.chunk_count());
     self.versions.extend(grid.chunk_versions());
@@ -576,7 +576,7 @@ impl Tracked {
 /// a game swapped for a new one has only the chunks its tiles went in), in
 /// no set order and possibly twice
 pub(super) fn build_chunks(data: &TileLayerData) -> Vec<IVec2> {
-  let grid = &data.grid;
+  let grid = &data.tiles;
   let mut chunks: Vec<IVec2> = grid.chunk_coords().collect();
   if let Some(intgrid) = &data.intgrid {
     let mut held = CellRect::from_size(intgrid.size);
@@ -619,7 +619,7 @@ pub(super) fn changed_chunks(
         all = true;
       }
     }
-    changed_in(tracked, &data.grid, all, &mut changed);
+    changed_in(tracked, &data.tiles, all, &mut changed);
   }
   changed.sort_unstable_by_key(|c| (c.y, c.x));
   changed.dedup();
@@ -736,7 +736,7 @@ pub(super) fn chunk_kinds(
         return;
       };
       let mut held = CellRect::from_size(intgrid.size);
-      if let Some(bounds) = data.grid.bounds() {
+      if let Some(bounds) = data.tiles.bounds() {
         held = CellRect::new(held.min.max(bounds.min), held.max.min(bounds.max));
       }
       let lo = origin.saturating_add(part.min).max(held.min);
@@ -759,10 +759,10 @@ pub(super) fn chunk_kinds(
       }
     }
     None => {
-      let Some(cells) = data.grid.chunk_cells(chunk) else {
+      let Some(cells) = data.tiles.chunk_cells(chunk) else {
         return;
       };
-      let cell = data.cell_size.as_vec2();
+      let cell = data.grid.cell.as_vec2();
       // The tiles met last, by a hash of their value, in front of the map
       // of every tile's kind: a chunk holds few tiles, often over and over
       let mut met = [(0u32, TileCell::Empty); 32];
@@ -844,7 +844,7 @@ mod tests {
   /// The chunks `tracked` finds changed in `data`'s grid, in row order
   fn read(tracked: &mut Tracked, data: &TileLayerData) -> Vec<IVec2> {
     let mut changed = Vec::new();
-    changed_in(tracked, &data.grid, false, &mut changed);
+    changed_in(tracked, &data.tiles, false, &mut changed);
     changed.sort_unstable_by_key(|c| (c.y, c.x));
     changed
   }
@@ -853,12 +853,15 @@ mod tests {
   fn consumers_reading_at_different_times_each_see_an_unloaded_chunk_go_once() {
     // Chunks (-1, 0), (0, 0) and (1, 0), each holding a tile
     let mut data = TileLayerData {
-      grid: TileGrid::unbounded(),
+      tiles: TileGrid::unbounded(),
       intgrid: None,
-      cell_size: UVec2::splat(16),
+      grid: crate::core::tilemap::MapGrid::new(
+        crate::core::tilemap::GridShape::Orthogonal,
+        UVec2::splat(16),
+      ),
     };
     for x in [-5, 4, 40] {
-      data.grid.set(IVec2::new(x, 3), Some(Tile::new(0, 1)));
+      data.tiles.set(IVec2::new(x, 3), Some(Tile::new(0, 1)));
     }
     let (a, b, c) = (IVec2::new(-1, 0), IVec2::ZERO, IVec2::new(1, 0));
     let place = (0, Entity::PLACEHOLDER);
@@ -867,17 +870,17 @@ mod tests {
 
     // One reads just after chunk A is unloaded: changed (to empty), once,
     // then forgotten
-    assert!(data.grid.unload_chunk(a).is_some());
+    assert!(data.tiles.unload_chunk(a).is_some());
     assert_eq!(read(&mut early, &data), [a]);
     assert_eq!(read(&mut early, &data), []);
     assert!(!early.versions.contains_key(&a));
 
     // Before the other reads, C is edited and B unloaded and loaded back
-    data.grid.set(IVec2::new(41, 3), Some(Tile::new(0, 2)));
-    let Some(cells) = data.grid.unload_chunk(b) else {
+    data.tiles.set(IVec2::new(41, 3), Some(Tile::new(0, 2)));
+    let Some(cells) = data.tiles.unload_chunk(b) else {
       panic!("chunk {b} is there");
     };
-    assert!(data.grid.load_chunk(b, cells));
+    assert!(data.tiles.load_chunk(b, cells));
     // The late one sees A gone, B and C changed, each once
     assert_eq!(read(&mut late, &data), [a, b, c]);
     assert_eq!(read(&mut late, &data), []);
@@ -887,10 +890,10 @@ mod tests {
     assert_eq!(early.versions.len(), 2);
 
     // A chunk unloaded and loaded back between two reads is changed, kept
-    let Some(cells) = data.grid.unload_chunk(c) else {
+    let Some(cells) = data.tiles.unload_chunk(c) else {
       panic!("chunk {c} is there");
     };
-    assert!(data.grid.load_chunk(c, cells));
+    assert!(data.tiles.load_chunk(c, cells));
     assert_eq!(read(&mut early, &data), [c]);
     assert!(early.versions.contains_key(&c));
   }

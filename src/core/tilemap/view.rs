@@ -287,8 +287,10 @@ impl<'w> MapsView<'w> {
     spawn::tile_data(self.world, self.world.get::<MapRoot>(map)?, tile).cloned()
   }
 
-  /// The cell of a tile layer under the world position `world`, whether or
-  /// not the layer reaches it; `None` for a map scaled to nothing
+  /// The cell of a tile layer under the world position `world` (the one
+  /// whose outline holds it on the layer's grid, [`MapGrid::cell_at`](super::MapGrid::cell_at)),
+  /// whether or not the layer reaches it; `None` for a map scaled to
+  /// nothing
   pub fn world_to_cell<'a>(
     &self,
     map: Entity,
@@ -298,7 +300,8 @@ impl<'w> MapsView<'w> {
     edit::world_to_cell(self.world, map, layer.into(), world)
   }
 
-  /// The world position of the centre of `cell` of a tile layer
+  /// The world position of the centre of `cell` of a tile layer, on the
+  /// layer's grid ([`MapGrid::cell_center`](super::MapGrid::cell_center))
   pub fn cell_to_world<'a>(
     &self,
     map: Entity,

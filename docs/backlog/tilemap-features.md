@@ -12,7 +12,7 @@ Sub-project 6a (`docs/specs/2026-10-29-tilemap-design.md`) made orthogonal tile 
 | Oblique maps | Tiled 1.12's new orientation (a skewed grid; read its parameters from Tiled 1.12's format when 6b starts) | none |
 | Infinite maps | `infinite: true`: tile layers saved as chunks (`chunks: [{ x, y, width, height, data }]`, coordinates that may be negative), and the map's `width` and `height` meaningless | none |
 
-Infinite maps load (`an_infinite_map_s_chunks_land_where_tiled_put_them` replaced the two tests that pinned their refusal). The orientations are still refused in `tilemap/tiled/build.rs` (both formats), pinned by `isometric_hexagonal_staggered_and_oblique_maps_fail_naming_6b`. 6b replaces each refusal with the feature, and keeps refusing what it does not do. The anti-goal stands: no orientation value the engine accepts but does not implement.
+Infinite maps load (`an_infinite_map_s_chunks_land_where_tiled_put_them` replaced the two tests that pinned their refusal). The orientations are still refused in `tilemap/tiled/build.rs` (both formats), pinned by `isometric_hexagonal_staggered_and_oblique_maps_fail_naming_6b`. 6b replaces each refusal with the feature, and keeps refusing what it does not do. The anti-goal stands: no orientation value the engine accepts but does not implement. Maps built in code are where the grids arrive first: `TileMap::with_shape` takes any of them, every tile layer carries its `MapGrid` (`grid_shape.rs`), and class tiles, picking (`world_to_cell`, `cell_to_world`) and a stream's `ChunkRequest` go through it; drawing, collision and shadows still place such a map's cells as rectangles of its cell size until they move onto the grid.
 
 ## What each needs from 6a's model
 

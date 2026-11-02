@@ -848,7 +848,7 @@ fn a_swapped_grid_redraws_its_layer() {
   let world = engine.world_mut();
   let mut layers = world.query::<&mut TileLayerData>();
   for mut data in layers.iter_mut(world) {
-    data.grid = grid.clone();
+    data.tiles = grid.clone();
   }
   engine.step().unwrap();
   let green = [(IVec2::new(1, 1), GREEN)];

@@ -281,8 +281,8 @@ fn plan<'a>(
       planned.push(Planned {
         entity: layer.entity,
         index: layer.index,
-        key: GroupKey::of(layer.data.cell_size, layer.info.offset, material),
-        bounds: layer.data.grid.bounds(),
+        key: GroupKey::of(layer.data.grid.cell, layer.info.offset, material),
+        bounds: layer.data.tiles.bounds(),
         intgrid: layer.data.intgrid.is_some(),
       });
     }
@@ -542,7 +542,7 @@ fn update(group: &mut Group, tiles: &mut TileColliders, layers: &Layers, context
     let empty = [TileCell::Empty; super::kinds::CELLS];
     // A chunk none of the group's grids has (unloaded) and nothing else
     // fills goes whole, its storage with it
-    let gone = now == empty && data.iter().flatten().all(|d| !d.grid.has_chunk(chunk));
+    let gone = now == empty && data.iter().flatten().all(|d| !d.tiles.has_chunk(chunk));
     if gone {
       tiles.unload_chunk(chunk);
       continue;
@@ -734,8 +734,8 @@ mod tests {
   use crate::core::testing::HeadlessEngine;
   use crate::core::tilemap::test_util::{MapWorld, files_with, layers_of, load_map as load};
   use crate::core::tilemap::{
-    IntGrid, LayerKind, MapRoot, MapsView, PropertyValue, Tile, TileData, TileFlip, TileLayerData,
-    TileMap, TileShape, Tileset, TilesetImage, TilesetSource,
+    GridShape, IntGrid, LayerKind, MapGrid, MapRoot, MapsView, PropertyValue, Tile, TileData,
+    TileFlip, TileLayerData, TileMap, TileShape, Tileset, TilesetImage, TilesetSource,
   };
 
   /// Tile ids of `shapes`
@@ -1111,7 +1111,10 @@ mod tests {
       let Some(data) = world.get::<TileLayerData>(layer) else {
         panic!("no layer data");
       };
-      chunks.iter().map(|&c| data.grid.chunk_version(c)).collect()
+      chunks
+        .iter()
+        .map(|&c| data.tiles.chunk_version(c))
+        .collect()
     };
     let before = versions(&maps.world);
 
@@ -1184,7 +1187,7 @@ mod tests {
     let mut grid = crate::core::tilemap::TileGrid::new(size);
     grid.set(IVec2::ONE, Some(Tile::new(0, SOLID)));
     if let Some(mut data) = maps.world.get_mut::<TileLayerData>(layer) {
-      data.grid = grid;
+      data.tiles = grid;
     }
     maps.frame();
     assert_eq!(colliders(&maps.world, map).get(far), TileCell::Solid);
@@ -1425,13 +1428,13 @@ mod tests {
     // An 8 px IntGrid under the 16 px art, as LDtk levels mix them
     let fine = map.add_tile_layer("fine");
     map.layers[fine].kind = LayerKind::Tiles {
-      grid: crate::core::tilemap::TileGrid::new(UVec2::new(8, 4)),
+      tiles: crate::core::tilemap::TileGrid::new(UVec2::new(8, 4)),
       intgrid: Some(IntGrid {
         size: UVec2::new(8, 4),
         values: (0..32).map(|i| i32::from(i == 31)).collect(),
         names: [(1, "solid".to_string())].into_iter().collect(),
       }),
-      cell_size: UVec2::splat(8),
+      grid: MapGrid::new(GridShape::Orthogonal, UVec2::splat(8)),
     };
     let mut maps = MapWorld::new();
     let handle = add(&mut maps.world, map);
@@ -1523,13 +1526,13 @@ mod tests {
     // and a layer offset onto its own grid collides beside it
     let small = map.add_tile_layer("small");
     map.layers[small].kind = LayerKind::Tiles {
-      grid: {
+      tiles: {
         let mut grid = crate::core::tilemap::TileGrid::new(UVec2::new(2, 1));
         grid.set(IVec2::ZERO, Some(Tile::new(0, SOLID)));
         grid
       },
       intgrid: None,
-      cell_size: UVec2::splat(16),
+      grid: MapGrid::new(GridShape::Orthogonal, UVec2::splat(16)),
     };
     map.layers[small].info.offset = Vec2::new(0.0, 32.0);
     let mut maps = MapWorld::new();
@@ -1694,7 +1697,7 @@ mod tests {
       .world
       .get_mut::<crate::core::tilemap::TileLayerData>(ground)
     {
-      data.grid = grid;
+      data.tiles = grid;
     }
     maps.step();
     let tiles = colliders(&maps.world, map);

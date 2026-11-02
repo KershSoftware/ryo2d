@@ -6,7 +6,7 @@
 use std::borrow::Cow;
 use std::sync::Arc;
 
-use glam::{IVec2, UVec2, Vec2};
+use glam::{IVec2, Vec2};
 
 use super::collision::{self, LayerView};
 use super::jobs::Worker;
@@ -17,9 +17,9 @@ use super::reload::{MapApplied, content_stamp};
 use super::stream::StreamState;
 use super::world::{WorldRef, resolve_world_levels};
 use super::{
-  CHUNK_SIZE, ImageLayer, IntGrid, LayerInfo, LayerKind, LdtkProject, MapLayer, MapObjectData,
-  ObjectShape, Properties, PropertyValue, Tile, TileData, TileGrid, TileMap, Tileset,
-  TilesetSource,
+  CHUNK_SIZE, ImageLayer, IntGrid, LayerInfo, LayerKind, LdtkProject, MapGrid, MapLayer,
+  MapObjectData, ObjectShape, Properties, PropertyValue, Tile, TileData, TileGrid, TileMap,
+  Tileset, TilesetSource,
 };
 use crate::core::asset::{AssetError, AssetPath, AssetServer, Assets, Handle, LoadState};
 use crate::core::ecs::kernel::{DeferredWorld, HookContext, QueryState};
@@ -212,10 +212,11 @@ pub struct MapLayerRef {
 /// map only (`ctx.maps()` makes them)
 #[derive(Component, Clone, Debug)]
 pub struct TileLayerData {
-  pub grid: TileGrid,
+  pub tiles: TileGrid,
   pub intgrid: Option<IntGrid>,
-  /// A cell's size in pixels in the layer's space
-  pub cell_size: UVec2,
+  /// Where its cells are in the layer's pixels (the layer's `Transform`
+  /// takes those to the map's)
+  pub grid: MapGrid,
 }
 
 /// An object of a spawned map: a child of its object layer, its `Transform`
@@ -289,10 +290,10 @@ impl MapObject {
 
 /// A tile whose class the map's root registered
 /// ([`MapRoot::with_entity_tiles`]), spawned as an entity instead of going
-/// in its layer's grid: a child of its layer, its `Transform` at the cell's
-/// centre. The map spawns one for each such tile in the file, and
-/// `ctx.maps()` one for each it places; placing another tile on the cell,
-/// or clearing it, despawns it
+/// in its layer's tiles: a child of its layer, its `Transform` at the
+/// cell's centre on the layer's grid ([`MapGrid::cell_center`]). The map
+/// spawns one for each such tile in the file, and `ctx.maps()` one for each
+/// it places; placing another tile on the cell, or clearing it, despawns it
 #[derive(Component, Clone, Debug)]
 pub struct MapTile {
   pub map: Entity,
@@ -722,16 +723,16 @@ pub(crate) struct ClassTile {
   pub(crate) properties: Properties,
 }
 
-/// Spawns `tile` as a child of `layer` (the map's layer `index`, of cells
-/// `cell_size` pixels) at its cell's centre
+/// Spawns `tile` as a child of `layer` (the map's layer `index`, its cells
+/// on `grid`) at its cell's centre
 pub(crate) fn spawn_class_tile(
   world: &mut World,
   map: Entity,
   (layer, index): (Entity, usize),
-  cell_size: Vec2,
+  grid: &MapGrid,
   tile: ClassTile,
 ) -> Entity {
-  let centre = (tile.cell.as_vec2() + 0.5) * cell_size;
+  let centre = grid.cell_center(tile.cell);
   let component = MapTile {
     map,
     layer: index,
@@ -762,6 +763,10 @@ pub(crate) struct PlannedLayer {
   content: Content,
 }
 
+/// What a planned layer holds. One per layer, for the length of a landing,
+/// and most of a map's layers are tile layers: boxing that variant would
+/// add an allocation to most layers for no saving worth having
+#[allow(clippy::large_enum_variant)]
 enum Content {
   Tiles(TileLayerData, Vec<ClassTile>),
   Objects(Vec<MapObjectData>),
@@ -1020,16 +1025,16 @@ pub(crate) fn plan_layer(layer: MapLayer, classes: &ClassTiles) -> PlannedLayer 
     info: layer.info,
     content: match layer.kind {
       LayerKind::Tiles {
-        mut grid,
+        mut tiles,
         intgrid,
-        cell_size,
+        grid,
       } => {
-        let found = take_class_tiles(&mut grid, classes);
-        grid.mark_all_dirty();
+        let found = take_class_tiles(&mut tiles, classes);
+        tiles.mark_all_dirty();
         let data = TileLayerData {
-          grid,
+          tiles,
           intgrid,
-          cell_size,
+          grid,
         };
         Content::Tiles(data, found)
       }
@@ -1040,10 +1045,10 @@ pub(crate) fn plan_layer(layer: MapLayer, classes: &ClassTiles) -> PlannedLayer 
 }
 
 /// What a layer `spawn_layer` spawned holds that spawns once the map's
-/// other layers are in: a tile layer's class tiles (with its cell size),
-/// or an object layer's objects
+/// other layers are in: a tile layer's class tiles (with its grid), or an
+/// object layer's objects
 pub(crate) enum LayerRest {
-  Tiles(Vec2, Vec<ClassTile>),
+  Tiles(MapGrid, Vec<ClassTile>),
   Objects(Vec<MapObjectData>),
   Nothing,
 }
@@ -1067,9 +1072,9 @@ pub(crate) fn spawn_layer(
   };
   let rest = match content {
     Content::Tiles(data, found) => {
-      let cell_size = data.cell_size.as_vec2();
+      let grid = data.grid;
       entity.insert((layer_ref, info, data, LayerTiles::default()));
-      LayerRest::Tiles(cell_size, found)
+      LayerRest::Tiles(grid, found)
     }
     Content::Objects(objects) => {
       entity.insert((layer_ref, info));
@@ -1084,12 +1089,12 @@ pub(crate) fn spawn_layer(
 }
 
 /// Spawns `found`, the class tiles of the map's layer `layer` (its `index`,
-/// of cells `cell_size` pixels), and lists them in its `LayerTiles`
+/// its cells on `grid`), and lists them in its `LayerTiles`
 pub(crate) fn spawn_class_tiles(
   world: &mut World,
   map: Entity,
   (layer, index): (Entity, usize),
-  cell_size: Vec2,
+  grid: &MapGrid,
   found: Vec<ClassTile>,
 ) {
   let mut spawned = FastMap::default();
@@ -1098,7 +1103,7 @@ pub(crate) fn spawn_class_tiles(
       break;
     }
     let cell = tile.cell;
-    let entity = spawn_class_tile(world, map, (layer, index), cell_size, tile);
+    let entity = spawn_class_tile(world, map, (layer, index), grid, tile);
     spawned.insert(cell, entity);
   }
   if let Some(mut table) = world.get_mut::<LayerTiles>(layer) {
@@ -1143,14 +1148,14 @@ pub(crate) fn follow_chunk_swaps(
   mut due: Local<Vec<Entity>>,
 ) {
   for (layer, layer_ref, data, followed) in layers.iter(world) {
-    let grid = &data.grid;
-    if grid.bounds().is_some() {
+    let tiles = &data.tiles;
+    if tiles.bounds().is_some() {
       continue;
     }
     let registers = world
       .get::<MapRoot>(layer_ref.map)
       .is_some_and(|root| !root.entity_tiles.is_empty());
-    let behind = followed.is_none_or(|f| f.grid != grid.id() || grid.swapped() > f.version);
+    let behind = followed.is_none_or(|f| f.grid != tiles.id() || tiles.swapped() > f.version);
     if registers && behind {
       due.push(layer);
     }
@@ -1181,21 +1186,21 @@ fn follow_layer(world: &mut World, layer: Entity) {
   let Some(data) = world.get::<TileLayerData>(layer) else {
     return;
   };
-  let grid = &data.grid;
-  let cell_size = data.cell_size.as_vec2();
+  let tiles = &data.tiles;
+  let grid = data.grid;
   let (mut gone, mut loaded) = (Vec::new(), Vec::new());
-  if followed.grid == grid.id() {
+  if followed.grid == tiles.id() {
     // The chunks made since join; the ones it had and the grid lacks were
     // unloaded
-    for (chunk, version) in grid.chunk_versions() {
+    for (chunk, version) in tiles.chunk_versions() {
       if version > followed.version {
         followed.chunks.insert(chunk);
       }
     }
-    loaded.extend(grid.loaded_since(followed.version));
-    if followed.chunks.len() > grid.chunk_count() {
+    loaded.extend(tiles.loaded_since(followed.version));
+    if followed.chunks.len() > tiles.chunk_count() {
       followed.chunks.retain(|&chunk| {
-        let kept = grid.has_chunk(chunk);
+        let kept = tiles.has_chunk(chunk);
         if !kept {
           gone.push(chunk);
         }
@@ -1204,13 +1209,13 @@ fn follow_layer(world: &mut World, layer: Entity) {
     }
   } else {
     followed.chunks.clear();
-    followed.chunks.extend(grid.chunk_coords());
+    followed.chunks.extend(tiles.chunk_coords());
     if first {
-      loaded.extend(grid.loaded_since(0));
+      loaded.extend(tiles.loaded_since(0));
     }
   }
-  followed.grid = grid.id();
-  followed.version = grid.version();
+  followed.grid = tiles.id();
+  followed.version = tiles.version();
   // A chunk unloaded takes its class tiles with it, and a chunk loaded
   // replaces them whole
   if !gone.is_empty() || !loaded.is_empty() {
@@ -1245,19 +1250,19 @@ fn follow_layer(world: &mut World, layer: Entity) {
     let classes = class_table(world, map);
     let found = match world.get_mut::<TileLayerData>(layer) {
       Some(mut data) => {
-        let grid = &mut data.bypass_change_detection().grid;
-        let found = take_class_tiles_in(grid, &classes, &loaded);
+        let tiles = &mut data.bypass_change_detection().tiles;
+        let found = take_class_tiles_in(tiles, &classes, &loaded);
         // Taking them out is part of the load, not a change a stream saves
-        grid.fold_into_load(&loaded);
+        tiles.fold_into_load(&loaded);
         if !found.is_empty() {
           data.set_changed();
         }
-        followed.version = data.grid.version();
+        followed.version = data.tiles.version();
         found
       }
       None => Vec::new(),
     };
-    spawn_class_tiles(world, map, (layer, index), cell_size, found);
+    spawn_class_tiles(world, map, (layer, index), &grid, found);
   }
   match world.get_mut::<ChunksFollowed>(layer) {
     Some(mut kept) => *kept = followed,
@@ -1337,7 +1342,7 @@ fn land(world: &mut World, map: Entity, landed: Landed) {
     let (layer, rest) = spawn_layer(world, map, index, planned);
     layers.push(layer);
     match rest {
-      LayerRest::Tiles(cell_size, found) => tile_layers.push((layer, index, cell_size, found)),
+      LayerRest::Tiles(grid, found) => tile_layers.push((layer, index, grid, found)),
       LayerRest::Objects(objects) => object_layers.push((layer, objects)),
       LayerRest::Nothing => {}
     }
@@ -1372,8 +1377,8 @@ fn land(world: &mut World, map: Entity, landed: Landed) {
       object.insert(component);
     }
   }
-  for (layer, index, cell_size, found) in tile_layers {
-    spawn_class_tiles(world, map, (layer, index), cell_size, found);
+  for (layer, index, grid, found) in tile_layers {
+    spawn_class_tiles(world, map, (layer, index), &grid, found);
   }
   if alive(world, map) {
     send(world, MapEvent::Spawned { map });
@@ -1445,8 +1450,8 @@ mod tests {
   use crate::core::testing::HeadlessEngine;
   use crate::core::tilemap::test_util::{files_with, world_over};
   use crate::core::tilemap::{
-    LayerKind, LayerRef, MapLayer, MapObjectData, MapsView, PropertyValue, TileData, TileFlip,
-    Tileset, TilesetImage, TilesetSource,
+    GridShape, LayerKind, LayerRef, MapGrid, MapLayer, MapObjectData, MapsView, PropertyValue,
+    StaggerAxis, StaggerIndex, TileData, TileFlip, Tileset, TilesetImage, TilesetSource,
   };
 
   /// A frame's map work: the asset pump, then the spawn system
@@ -1691,14 +1696,17 @@ mod tests {
       .get::<TileLayerData>(ground)
       .expect("tile data")
       .clone();
-    assert_eq!(data.cell_size, UVec2::splat(16));
+    assert_eq!(
+      data.grid,
+      MapGrid::new(GridShape::Orthogonal, UVec2::splat(16))
+    );
     assert!(data.intgrid.is_none());
-    assert_eq!(data.grid.get(IVec2::new(0, 0)), Some(Tile::new(0, 0)));
-    assert_eq!(data.grid.get(IVec2::new(1, 0)), Some(Tile::new(0, 1)));
-    assert_eq!(data.grid.get(IVec2::new(2, 1)), Some(Tile::new(0, 2)));
-    assert_eq!(data.grid.get(IVec2::new(2, 0)), None);
+    assert_eq!(data.tiles.get(IVec2::new(0, 0)), Some(Tile::new(0, 0)));
+    assert_eq!(data.tiles.get(IVec2::new(1, 0)), Some(Tile::new(0, 1)));
+    assert_eq!(data.tiles.get(IVec2::new(2, 1)), Some(Tile::new(0, 2)));
+    assert_eq!(data.tiles.get(IVec2::new(2, 0)), None);
     let mut dirty = Vec::new();
-    data.grid.drain_dirty(&mut dirty);
+    data.tiles.drain_dirty(&mut dirty);
     assert_eq!(dirty, [IVec2::ZERO]);
     assert_eq!(translation(&world, ground), Vec2::new(4.0, 8.0));
     assert_eq!(global(&world, ground), Vec2::new(104.0, 58.0));
@@ -2083,7 +2091,7 @@ mod tests {
     let ground = layers_of(&mut world, map)[0];
     let mut dirty = Vec::new();
     if let Some(mut data) = world.get_mut::<TileLayerData>(ground) {
-      data.grid.drain_dirty(&mut dirty);
+      data.tiles.drain_dirty(&mut dirty);
     }
 
     let tile = Some(Tile::new(0, 1));
@@ -2154,7 +2162,7 @@ mod tests {
     }
     // Nothing changed
     if let Some(mut data) = world.get_mut::<TileLayerData>(ground) {
-      data.grid.drain_dirty(&mut dirty);
+      data.tiles.drain_dirty(&mut dirty);
     }
     assert!(dirty.is_empty(), "{dirty:?}");
 
@@ -2184,9 +2192,9 @@ mod tests {
     map.layers.push(MapLayer {
       info: LayerInfo::new(9, "fine"),
       kind: LayerKind::Tiles {
-        grid: TileGrid::new(UVec2::new(8, 6)),
+        tiles: TileGrid::new(UVec2::new(8, 6)),
         intgrid: None,
-        cell_size: UVec2::splat(8),
+        grid: MapGrid::new(GridShape::Orthogonal, UVec2::splat(8)),
       },
     });
     let handle = world.resource_mut::<Assets<TileMap>>().add(map);
@@ -2572,7 +2580,7 @@ mod tests {
         .query::<(&MapLayerRef, &TileLayerData)>()
         .iter(world)
         .find(|(layer, _)| layer.map == map && layer.name == name)
-        .map(|(_, data)| data.grid.get(cell));
+        .map(|(_, data)| data.tiles.get(cell));
       found.unwrap_or_else(|| panic!("no layer {name}"))
     };
     // Ground's cell (0, 0): a red tile, a half green one stacked on it
@@ -2645,7 +2653,7 @@ mod tests {
         .query::<(&MapLayerRef, &TileLayerData)>()
         .iter(world)
         .find(|(layer, _)| layer.map == map && layer.name == name)
-        .map(|(_, data)| data.grid.get(cell));
+        .map(|(_, data)| data.tiles.get(cell));
       found.unwrap_or_else(|| panic!("no layer {name}"))
     };
     let stacked = IVec2::new(1, 1);
@@ -2702,7 +2710,7 @@ mod tests {
         .query::<(&MapLayerRef, &TileLayerData)>()
         .iter(world)
         .find(|(layer, _)| layer.map == map && layer.name == "Ground#1")
-        .map(|(_, data)| data.grid.clone());
+        .map(|(_, data)| data.tiles.clone());
       let grid = found.unwrap_or_else(|| panic!("no sub-layer"));
       held
         .into_iter()
@@ -3179,6 +3187,140 @@ mod tests {
     assert!(!maps.set_tile(map, "ground", IVec2::new(0, 2), None));
     assert!(maps.set_tile(map, "ground", IVec2::new(0, 2), Some(brick)));
     assert_eq!(class_tiles_of(&mut world, map).len(), 1);
+  }
+
+  #[test]
+  fn a_code_built_isometric_map_places_class_tiles_and_picks_through_its_grid() {
+    let mut world = crate::core::testing::asset_world();
+    let mut map =
+      TileMap::new(UVec2::splat(8), UVec2::new(64, 32)).with_shape(GridShape::Isometric);
+    map.add_tileset(TilesetSource::Embedded(Arc::new(classed_tileset())));
+    let ground = map.add_tile_layer("ground");
+    map.layers[ground].info.offset = Vec2::new(8.0, 4.0);
+    let brick = Tile::new(0, 1);
+    if let Some(tiles) = map.tiles_mut(ground) {
+      tiles.set(IVec2::new(2, 1), Some(brick));
+    }
+    let grid = map.grid();
+    // Tiled's origin for a bounded diamond map: cell (0, 0)'s top vertex,
+    // the map's height in half cells across
+    assert_eq!(grid.origin, Vec2::new(256.0, 0.0));
+    let handle = world.resource_mut::<Assets<TileMap>>().add(map);
+    let map = world
+      .spawn((
+        MapRoot::new(handle).with_entity_tiles(&["brick"]),
+        Transform::from_xy(100.0, 50.0),
+      ))
+      .id();
+    Frames::new().run(&mut world);
+
+    // The landed brick stands at its diamond's centre, in the layer's pixels
+    // (on a square grid of these cells it would stand at (160, 48))
+    let found = class_tiles_of(&mut world, map);
+    assert_eq!(found.len(), 1);
+    let (cell, entity, _) = &found[0];
+    assert_eq!(*cell, IVec2::new(2, 1));
+    assert_eq!(
+      translation(&world, *entity),
+      grid.cell_center(IVec2::new(2, 1))
+    );
+    assert_eq!(translation(&world, *entity), Vec2::new(288.0, 64.0));
+    // And one an edit places
+    assert!(MapsView::new(&mut world).set_tile(map, "ground", IVec2::new(6, 0), Some(brick)));
+    let placed = class_tiles_of(&mut world, map);
+    let (_, entity, _) = placed
+      .iter()
+      .find(|(cell, ..)| *cell == IVec2::new(6, 0))
+      .expect("the edit's brick");
+    assert_eq!(
+      translation(&world, *entity),
+      grid.cell_center(IVec2::new(6, 0))
+    );
+
+    // Picking and the centres go through the grid and the layer's transform
+    let maps = MapsView::new(&mut world);
+    let layer_to_world = Vec2::new(100.0, 50.0) + Vec2::new(8.0, 4.0);
+    let centre = grid.cell_center(IVec2::new(5, 3)) + layer_to_world;
+    assert_eq!(
+      maps.cell_to_world(map, "ground", IVec2::new(5, 3)),
+      Some(centre)
+    );
+    assert_eq!(
+      maps.world_to_cell(map, "ground", centre),
+      Some(IVec2::new(5, 3))
+    );
+    // A diamond's box corner is its neighbour's: (5, 3)'s top-left is (4, 3)'s
+    let corner = grid.cell_bounds(IVec2::new(5, 3));
+    let inside = Vec2::new(corner.x + 2.0, corner.y + 2.0) + layer_to_world;
+    assert_eq!(
+      maps.world_to_cell(map, "ground", inside),
+      Some(IVec2::new(4, 3))
+    );
+    for y in -2..10 {
+      for x in -2..10 {
+        let cell = IVec2::new(x, y);
+        let at = maps.cell_to_world(map, "ground", cell).expect("a centre");
+        assert_eq!(at, grid.cell_center(cell) + layer_to_world, "{cell}");
+        assert_eq!(maps.world_to_cell(map, "ground", at), Some(cell), "{cell}");
+      }
+    }
+  }
+
+  #[test]
+  fn every_layer_copies_its_maps_grid() {
+    let cell = UVec2::new(64, 32);
+    let layer_grid = |map: &TileMap, layer: usize| match &map.layers[layer].kind {
+      LayerKind::Tiles { grid, .. } => *grid,
+      _ => panic!("layer {layer} holds tiles"),
+    };
+    // A bounded diamond map: Tiled's origin, which every tile layer copies
+    let mut map = TileMap::new(UVec2::new(6, 4), cell).with_shape(GridShape::Isometric);
+    assert_eq!(map.shape, GridShape::Isometric);
+    let grid = map.grid();
+    assert_eq!(
+      grid,
+      MapGrid::for_map(GridShape::Isometric, cell, UVec2::new(6, 4), false)
+    );
+    assert_eq!(grid.origin, Vec2::new(128.0, 0.0));
+    let below = map.add_tile_layer("below");
+    map.add_object_layer("things");
+    let above = map.add_tile_layer("above");
+    for layer in [below, above] {
+      assert_eq!(layer_grid(&map, layer), grid);
+    }
+    // An infinite one has no origin to move
+    let mut endless = TileMap::infinite(cell).with_shape(GridShape::Isometric);
+    let only = endless.add_tile_layer("ground");
+    assert_eq!(layer_grid(&endless, only).origin, Vec2::ZERO);
+    assert_eq!(layer_grid(&endless, only), endless.grid());
+    // A shape given after the layers moves the layers that had the map's grid
+    let mut late = TileMap::new(UVec2::new(6, 4), cell);
+    assert_eq!(late.shape, GridShape::Orthogonal);
+    let early = late.add_tile_layer("early");
+    assert_eq!(
+      layer_grid(&late, early),
+      MapGrid::new(GridShape::Orthogonal, cell)
+    );
+    let hex = GridShape::Hexagonal {
+      axis: StaggerAxis::Y,
+      index: StaggerIndex::Odd,
+      side: 12,
+    };
+    let late = late.with_shape(hex);
+    assert_eq!(layer_grid(&late, early), late.grid());
+    assert_eq!(late.grid().shape, hex);
+
+    // Landed, each tile layer's data holds the grid
+    let mut world = crate::core::testing::asset_world();
+    let handle = world.resource_mut::<Assets<TileMap>>().add(map);
+    let root = world.spawn(MapRoot::new(handle)).id();
+    Frames::new().run(&mut world);
+    let layers = layers_of(&mut world, root);
+    assert_eq!(layers.len(), 3);
+    for layer in [layers[below], layers[above]] {
+      let data = world.get::<TileLayerData>(layer).expect("tile data");
+      assert_eq!(data.grid, grid);
+    }
   }
 
   /// Loads `m.tmj` at once and spawns it as it enters; records the map

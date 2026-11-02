@@ -185,7 +185,8 @@ mod tests {
   use crate::core::asset::{AssetServer, AssetsView, MemorySource, insert_registry};
   use crate::core::ecs::kernel::World;
   use crate::core::tilemap::{
-    LayerKind, MapLayer, PropertyValue, Tile, TileFlip, TilesetImage, TilesetSource,
+    GridShape, LayerKind, MapGrid, MapLayer, PropertyValue, Tile, TileFlip, TilesetImage,
+    TilesetSource,
   };
   use crate::core::ui::Color;
 
@@ -265,7 +266,7 @@ mod tests {
 
   fn cell(level: &LdtkLevel, layer_name: &str, x: i32, y: i32) -> Option<Tile> {
     match &layer(level, layer_name).kind {
-      LayerKind::Tiles { grid, .. } => grid.get(IVec2::new(x, y)),
+      LayerKind::Tiles { tiles: grid, .. } => grid.get(IVec2::new(x, y)),
       _ => panic!("{layer_name} is not a tile layer"),
     }
   }
@@ -287,15 +288,15 @@ mod tests {
       out += &format!("{:?}\n", l.info);
       match &l.kind {
         LayerKind::Tiles {
-          grid,
+          tiles,
           intgrid,
-          cell_size,
+          grid,
         } => {
-          out += &format!("cell {cell_size:?}\n");
-          let extent = grid.extent();
+          out += &format!("grid {grid:?}\n");
+          let extent = tiles.extent();
           for y in extent.min.y..extent.max.y {
             for x in extent.min.x..extent.max.x {
-              out += &format!("{:?};", grid.get(IVec2::new(x, y)));
+              out += &format!("{:?};", tiles.get(IVec2::new(x, y)));
             }
           }
           if let Some(ig) = intgrid {
@@ -510,7 +511,12 @@ mod tests {
       .layers
       .iter()
       .map(|l| {
-        let LayerKind::Tiles { grid, intgrid, .. } = &l.kind else {
+        let LayerKind::Tiles {
+          tiles: grid,
+          intgrid,
+          ..
+        } = &l.kind
+        else {
           panic!("{} is not a tile layer", l.info.name)
         };
         let mut tiles = Vec::new();
@@ -1114,15 +1120,22 @@ mod tests {
   fn a_level_mixing_grid_sizes_keeps_each_layer_s_cell_size() {
     let project = mixed_grid_project();
     let level = &project.levels[0];
-    let cell_size = |name: &str| match &layer(level, name).kind {
-      LayerKind::Tiles { cell_size, .. } => *cell_size,
+    // Each layer's grid square, of its own cell size
+    let grid = |name: &str| match &layer(level, name).kind {
+      LayerKind::Tiles { grid, .. } => *grid,
       _ => panic!("{name} is no tile layer"),
     };
-    assert_eq!(cell_size("Collision"), UVec2::splat(8));
-    assert_eq!(cell_size("Decor"), UVec2::splat(16));
-    assert_eq!(cell_size("Props"), UVec2::splat(16));
+    let square = |side: u32| MapGrid::new(GridShape::Orthogonal, UVec2::splat(side));
+    assert_eq!(grid("Collision"), square(8));
+    assert_eq!(grid("Decor"), square(16));
+    assert_eq!(grid("Props"), square(16));
     // the 8 px layer has twice the cells across and down
-    let LayerKind::Tiles { grid, intgrid, .. } = &layer(level, "Collision").kind else {
+    let LayerKind::Tiles {
+      tiles: grid,
+      intgrid,
+      ..
+    } = &layer(level, "Collision").kind
+    else {
       panic!("no tiles")
     };
     assert_eq!(
@@ -1139,7 +1152,7 @@ mod tests {
       cell(level, "Collision", 7, 5),
       Some(Tile::new(0, 4).with_flip(TileFlip::HORIZONTAL))
     );
-    let LayerKind::Tiles { grid, .. } = &layer(level, "Decor").kind else {
+    let LayerKind::Tiles { tiles: grid, .. } = &layer(level, "Decor").kind else {
       panic!("no tiles")
     };
     assert_eq!(

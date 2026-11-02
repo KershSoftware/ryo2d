@@ -164,7 +164,7 @@ fn layer_grid(engine: &mut HeadlessEngine, map: Entity, name: &str) -> TileGrid 
   engine
     .world()
     .get::<TileLayerData>(layer)
-    .map(|data| data.grid.clone())
+    .map(|data| data.tiles.clone())
     .unwrap_or_else(|| panic!("layer {name:?} has no tiles"))
 }
 
@@ -175,7 +175,7 @@ fn resident(engine: &mut HeadlessEngine, map: Entity) -> BTreeSet<(i32, i32)> {
   layers
     .iter(world)
     .filter(|(layer, _)| layer.map == map)
-    .flat_map(|(_, data)| data.grid.chunk_coords().map(|c| (c.x, c.y)))
+    .flat_map(|(_, data)| data.tiles.chunk_coords().map(|c| (c.x, c.y)))
     .collect()
 }
 

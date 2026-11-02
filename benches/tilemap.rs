@@ -1799,7 +1799,7 @@ impl Scene for CrossedScene {
       let request = ChunkRequest {
         chunk,
         first_cell,
-        tile_size: UVec2::splat(TILE),
+        grid: map.grid(),
       };
       let tiles = endless_chunk(request, set);
       for (name, layer) in layers {
@@ -1952,17 +1952,17 @@ fn residents(engine: &mut HeadlessEngine, keep: Rect, outside: &mut Vec<IVec2>) 
   let mut layers = world.query::<&TileLayerData>();
   let Some(data) = layers
     .iter(world)
-    .max_by_key(|data| data.grid.chunk_coords().count())
+    .max_by_key(|data| data.tiles.chunk_coords().count())
   else {
     return 0;
   };
   outside.extend(
     data
-      .grid
+      .tiles
       .chunk_coords()
       .filter(|chunk| !(chunk.cmpge(first).all() && chunk.cmple(last).all())),
   );
-  data.grid.chunk_coords().count()
+  data.tiles.chunk_coords().count()
 }
 
 /// A teleport after the crossing: the streamed frames' steps over the

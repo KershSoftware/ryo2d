@@ -490,7 +490,7 @@ mod tests {
     ChunkRequest {
       chunk,
       first_cell: chunk * SIDE,
-      tile_size: UVec2::splat(18),
+      grid: MapGrid::new(GridShape::Orthogonal, UVec2::splat(18)),
     }
   }
 

@@ -579,11 +579,11 @@ impl TileDrawer {
               layers: mask,
             };
             if let Some(data) = tiles {
-              if data.cell_size.min_element() == 0 {
+              if data.grid.cell.min_element() == 0 {
                 continue;
               }
               let mut stamp = DefaultHasher::new();
-              (paddings, look.tint, look.opacity.to_bits(), data.cell_size).hash(&mut stamp);
+              (paddings, look.tint, look.opacity.to_bits(), data.grid.cell).hash(&mut stamp);
               let draw = LayerDraw {
                 layer: entity,
                 ties,
@@ -770,10 +770,10 @@ impl View<'_> {
       return;
     }
     let to_layer = placed.inverse();
-    let grid = &layer.data.grid;
+    let tiles = &layer.data.tiles;
     // The chunks the layer reaches: all of a bounded layer's, the span of
     // an unbounded one's (whose chunks drawn are the ones it has)
-    let extent = grid.extent();
+    let extent = tiles.extent();
     if extent.is_empty() {
       return;
     }
@@ -781,7 +781,7 @@ impl View<'_> {
       TileGrid::chunk_of(extent.min),
       TileGrid::chunk_of(extent.max - IVec2::ONE),
     );
-    let cell = layer.data.cell_size.as_vec2();
+    let cell = layer.data.grid.cell.as_vec2();
     let chunk_px = cell * CHUNK_SIZE as f32;
     let view = self.store.begin_view();
     self.slots.clear();
@@ -807,7 +807,7 @@ impl View<'_> {
       }
       let first = first.as_ivec2().max(reach_first);
       let last = last.as_ivec2().min(reach_last);
-      if grid.bounds().is_some() {
+      if tiles.bounds().is_some() {
         for y in first.y..=last.y {
           for x in first.x..=last.x {
             self.chunk(layer, IVec2::new(x, y), view, (&placed, slot), only);
@@ -816,7 +816,7 @@ impl View<'_> {
       } else {
         // Only the chunks an unbounded layer has, found by walking the
         // view's chunks or the layer's, whichever are fewer
-        for chunk in grid.chunks_within(first, last) {
+        for chunk in tiles.chunks_within(first, last) {
           self.chunk(layer, chunk, view, (&placed, slot), only);
         }
       }
@@ -834,15 +834,15 @@ impl View<'_> {
     (placed, slot): (&Affine2, TileSlot),
     only: Option<Entity>,
   ) {
-    let grid = &layer.data.grid;
+    let tiles = &layer.data.tiles;
     let stamp = ChunkStamp {
-      version: grid.chunk_version(chunk),
+      version: tiles.chunk_version(chunk),
       look: layer.stamp,
     };
-    let cell = layer.data.cell_size.as_vec2();
+    let cell = layer.data.grid.cell.as_vec2();
     let layouts = self.layouts;
     let build = |out: &mut Vec<(u16, i32, SpriteInstance)>| {
-      chunk_instances(grid, chunk, cell, layouts, &layer.look, out);
+      chunk_instances(tiles, chunk, cell, layouts, &layer.look, out);
     };
     // Its parts, and its rows for a y-sorted layer, copied out of the store
     let out = ChunkCopy {

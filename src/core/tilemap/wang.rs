@@ -519,7 +519,7 @@ impl Painting<'_> {
   }
 
   fn tile_at(&self, at: IVec2) -> Option<Tile> {
-    self.world.get::<TileLayerData>(self.layer)?.grid.get(at)
+    self.world.get::<TileLayerData>(self.layer)?.tiles.get(at)
   }
 
   /// The colors the grid shows at `at`, through the cell's flips; zeros for an
@@ -655,7 +655,7 @@ fn plan(
   if !reach_fits(cell, set.matcher().longest_chain) {
     return None;
   }
-  let bounds = world.get::<TileLayerData>(layer)?.grid.bounds();
+  let bounds = world.get::<TileLayerData>(layer)?.tiles.bounds();
   let mut painting = Painting {
     world,
     layer,
@@ -722,7 +722,7 @@ pub(crate) fn set_terrain(
   };
   let Some(bounds) = world
     .get::<TileLayerData>(entity)
-    .map(|data| data.grid.bounds())
+    .map(|data| data.tiles.bounds())
   else {
     return false;
   };
@@ -1005,7 +1005,7 @@ mod tests {
     let chunks: Vec<IVec2> = mw
       .world
       .get::<TileLayerData>(ground)
-      .map(|data| data.grid.chunk_coords().collect())
+      .map(|data| data.tiles.chunk_coords().collect())
       .unwrap_or_default();
     assert_eq!(chunks, [IVec2::ZERO, TileGrid::chunk_of(painted)]);
   }
@@ -1049,7 +1049,7 @@ mod tests {
     let chunks = mw
       .world
       .get::<TileLayerData>(ground)
-      .map_or(0, |data| data.grid.chunk_coords().count());
+      .map_or(0, |data| data.tiles.chunk_coords().count());
     assert_eq!(chunks, 0, "nothing was written");
     // A cell whose reach fits paints as anywhere else
     let near = IVec2::new(hi - 4, lo + 4);

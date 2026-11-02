@@ -15,7 +15,7 @@
 //! entity and handle, so contacts and a character's floor carry through).
 //! A kept object or image layer whose offset changed moves (a Tiled
 //! group's offset lands on its layers). A layer new to the file, or whose
-//! kind changed, or a tile layer whose size, cell size or offset changed,
+//! kind changed, or a tile layer whose size, grid or offset changed,
 //! spawns afresh, and one gone despawns. Objects reconcile by id
 //! (`reconcile`) and class tiles by layer and cell, each judged against
 //! what the file said before (`MapApplied`): one the file left as it was
@@ -34,8 +34,8 @@ use super::spawn::{
 };
 use super::stream::{StreamState, before_reload, file_chunks};
 use super::{
-  CHUNK_SIZE, ImageLayer, IntGrid, LayerInfo, LayerKind, LdtkProject, MapEvent, MapIds, MapLayer,
-  MapLayerRef, MapObject, MapObjectData, MapRoot, MapTile, Properties, Tile, TileGrid,
+  CHUNK_SIZE, ImageLayer, IntGrid, LayerInfo, LayerKind, LdtkProject, MapEvent, MapGrid, MapIds,
+  MapLayer, MapLayerRef, MapObject, MapObjectData, MapRoot, MapTile, Properties, Tile, TileGrid,
   TileLayerData, TileMap, Tileset, TilesetSource,
 };
 use crate::core::asset::{Asset, AssetEvent, AssetServer, UntypedAssetId};
@@ -73,13 +73,13 @@ fn source_id(root: &MapRoot) -> UntypedAssetId {
 }
 
 /// What keeps a layer's entity through a reload: the same kind, and for a
-/// tile layer the same bounds (or none), cell size and offset (an object
-/// or image layer keeps its entity through an offset change, and moves)
+/// tile layer the same bounds (or none), grid and offset (an object or
+/// image layer keeps its entity through an offset change, and moves)
 #[derive(Clone, Debug, PartialEq)]
 enum LayerShape {
   Tiles {
     bounds: Option<CellRect>,
-    cell_size: UVec2,
+    grid: MapGrid,
     offset: Vec2,
   },
   Objects,
@@ -99,11 +99,9 @@ struct FileLayer {
 impl FileLayer {
   fn of(layer: &MapLayer) -> FileLayer {
     let shape = match &layer.kind {
-      LayerKind::Tiles {
-        grid, cell_size, ..
-      } => LayerShape::Tiles {
-        bounds: grid.bounds(),
-        cell_size: *cell_size,
+      LayerKind::Tiles { tiles, grid, .. } => LayerShape::Tiles {
+        bounds: tiles.bounds(),
+        grid: *grid,
         offset: layer.info.offset,
       },
       LayerKind::Objects(_) => LayerShape::Objects,
@@ -298,7 +296,7 @@ enum Pending {
   Tiles {
     layer: (Entity, usize),
     id: u32,
-    cell_size: Vec2,
+    grid: MapGrid,
     found: Vec<ClassTile>,
     /// The class tiles alive on the layer's entity before (on the old one,
     /// for a layer spawned afresh), by cell, and of those the ones a
@@ -412,10 +410,10 @@ pub(crate) fn apply_reload(world: &mut World, map: Entity) {
     };
     let kept = kept.is_some();
     match rest {
-      LayerRest::Tiles(cell_size, found) => pending.push(Pending::Tiles {
+      LayerRest::Tiles(grid, found) => pending.push(Pending::Tiles {
         layer: (entity, index),
         id: file.id,
-        cell_size,
+        grid,
         found,
         live,
         kept,
@@ -456,11 +454,11 @@ pub(crate) fn apply_reload(world: &mut World, map: Entity) {
       Pending::Tiles {
         layer,
         id,
-        cell_size,
+        grid,
         found,
         live,
         kept,
-      } => tiles.push((layer, id, cell_size, found, live, kept)),
+      } => tiles.push((layer, id, grid, found, live, kept)),
     }
   }
   let mut existing: Vec<(String, Entity)> = world
@@ -536,7 +534,7 @@ pub(crate) fn apply_reload(world: &mut World, map: Entity) {
 
   // The class tiles, by layer and cell
   let mut class_tiles = FastMap::default();
-  for (layer, id, cell_size, found, live, kept) in tiles {
+  for (layer, id, grid, found, live, kept) in tiles {
     if world.get_entity(map).is_err() {
       return;
     }
@@ -548,7 +546,7 @@ pub(crate) fn apply_reload(world: &mut World, map: Entity) {
     let (live, untouched) = live;
     let layer = ClassLayer {
       layer,
-      cell_size,
+      grid,
       live,
       untouched,
       kept,
@@ -603,13 +601,13 @@ fn update_layer(
   replace::<LayerInfo>(world, entity, info);
   match kind {
     LayerKind::Tiles {
-      mut grid,
+      mut tiles,
       intgrid,
-      cell_size,
+      grid,
     } => {
-      let found = take_class_tiles(&mut grid, classes);
-      take_cells(world, entity, (&grid, intgrid), file);
-      LayerRest::Tiles(cell_size.as_vec2(), found)
+      let found = take_class_tiles(&mut tiles, classes);
+      take_cells(world, entity, (&tiles, intgrid), file);
+      LayerRest::Tiles(grid, found)
     }
     LayerKind::Objects(objects) => LayerRest::Objects(objects),
     LayerKind::Image(image) => {
@@ -634,7 +632,7 @@ fn take_cells(
     return;
   };
   let TileLayerData {
-    grid: cells,
+    tiles: cells,
     intgrid: values,
     ..
   } = data.bypass_change_detection();
@@ -706,7 +704,8 @@ fn listed_class_tiles(
 struct ClassLayer {
   /// Its entity and index
   layer: (Entity, usize),
-  cell_size: Vec2,
+  /// Where its cells are in its pixels
+  grid: MapGrid,
   /// The class tiles alive on it before, by cell (on its old entity, for a
   /// layer spawned afresh: those went with it)
   live: FastMap<IVec2, Entity>,
@@ -732,7 +731,7 @@ fn reconcile_class_tiles<'a>(
   map: Entity,
   ClassLayer {
     layer: (layer, index),
-    cell_size,
+    grid,
     mut live,
     untouched,
     kept,
@@ -758,7 +757,7 @@ fn reconcile_class_tiles<'a>(
             held.layer = index;
           }
         } else if let Ok(mut held) = world.get_entity_mut(entity) {
-          let centre = (cell.as_vec2() + 0.5) * cell_size;
+          let centre = grid.cell_center(cell);
           held.insert((
             MapTile {
               map,
@@ -774,7 +773,7 @@ fn reconcile_class_tiles<'a>(
         table.insert(cell, entity);
       }
       lived if lived.is_some() || !unchanged => {
-        let entity = spawn_class_tile(world, map, (layer, index), cell_size, tile);
+        let entity = spawn_class_tile(world, map, (layer, index), &grid, tile);
         table.insert(cell, entity);
       }
       _ => {}

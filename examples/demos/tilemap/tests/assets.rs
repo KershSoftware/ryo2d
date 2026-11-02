@@ -161,7 +161,7 @@ fn of_class<'a>(objects: &'a [MapObjectData], class: &str) -> Vec<&'a MapObjectD
 
 fn grid(layer: &MapLayer) -> &TileGrid {
   match &layer.kind {
-    LayerKind::Tiles { grid, .. } => grid,
+    LayerKind::Tiles { tiles, .. } => tiles,
     _ => panic!("layer {:?} holds no tiles", layer.info.name),
   }
 }
@@ -679,7 +679,7 @@ fn the_ldtk_project_holds_the_character_level_and_a_vault_of_entities() {
   let collisions = layer(&level.map, "Collisions");
   assert!(collisions.info.collides);
   let LayerKind::Tiles {
-    grid,
+    tiles: grid,
     intgrid: Some(intgrid),
     ..
   } = &collisions.kind

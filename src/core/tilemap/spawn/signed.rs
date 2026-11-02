@@ -16,8 +16,8 @@ use crate::core::physics::{
 };
 use crate::core::tilemap::test_util::{MapWorld, layers_of};
 use crate::core::tilemap::{
-  MapOccluder, MapRoot, MapTile, MapsView, Tile, TileData, TileFlip, TileGrid, TileLayerData,
-  TileMap, TileShape, Tileset, TilesetImage, TilesetSource,
+  GridShape, MapGrid, MapOccluder, MapRoot, MapTile, MapsView, Tile, TileData, TileFlip, TileGrid,
+  TileLayerData, TileMap, TileShape, Tileset, TilesetImage, TilesetSource,
 };
 
 /// A cell's side in pixels
@@ -302,6 +302,59 @@ fn negative_and_chunk_edge_cells_agree_in_every_consumer() {
 }
 
 #[test]
+fn negative_and_chunk_edge_cells_of_an_isometric_layer_place_and_pick_through_its_grid() {
+  let mut maps = MapWorld::new();
+  let mut map = TileMap::infinite(UVec2::new(32, 16)).with_shape(GridShape::Isometric);
+  map.add_tileset(TilesetSource::Embedded(Arc::new(blocks())));
+  let layer = map.add_tile_layer("ground");
+  // Each side of chunk borders, at negative cells, and far out
+  let crates = [
+    IVec2::new(-1, -1),
+    IVec2::new(-33, 31),
+    IVec2::new(-32, 32),
+    IVec2::new(32, -33),
+    IVec2::new(-500, 300),
+  ];
+  let Some(tiles) = map.tiles_mut(layer) else {
+    panic!("ground is a tile layer");
+  };
+  for &cell in &crates {
+    assert!(tiles.set(cell, Some(CRATE)), "{cell} takes a tile");
+  }
+  let grid = map.grid();
+  assert_eq!(grid, MapGrid::new(GridShape::Isometric, UVec2::new(32, 16)));
+  let map = spawn(&mut maps, map, |root| root.with_entity_tiles(&["crate"]));
+
+  // Each crate stands at its diamond's centre
+  let mut found: Vec<(IVec2, Vec2)> = maps
+    .world
+    .query::<(&MapTile, &Transform)>()
+    .iter(&maps.world)
+    .map(|(tile, at)| (tile.cell, at.translation))
+    .collect();
+  found.sort_by_key(|(cell, _)| (cell.y, cell.x));
+  let mut expected: Vec<(IVec2, Vec2)> = crates
+    .iter()
+    .map(|&cell| (cell, grid.cell_center(cell)))
+    .collect();
+  expected.sort_by_key(|(cell, _)| (cell.y, cell.x));
+  assert_eq!(found, expected);
+
+  // The cell under each centre is that cell, and back, around the borders
+  let view = MapsView::new(&mut maps.world);
+  for &around in &crates {
+    for dy in -1..=1 {
+      for dx in -1..=1 {
+        let cell = around + IVec2::new(dx, dy);
+        let centre = grid.cell_center(cell);
+        assert_eq!(view.world_to_cell(map, "ground", centre), Some(cell));
+        assert_eq!(view.cell_to_world(map, "ground", cell), Some(centre));
+      }
+    }
+  }
+}
+
+#[test]
 fn writing_a_tile_far_away_on_an_unbounded_layer_collides_and_casts_shadows() {
   let mut maps = MapWorld::new();
   let map = spawn(&mut maps, unbounded_map(&[(IVec2::ZERO, BLOCK)]), |r| r);
@@ -364,7 +417,7 @@ fn a_fill_making_more_chunks_than_a_map_holds_is_refused_and_warns_once() {
   let chunks = maps
     .world
     .get::<TileLayerData>(ground)
-    .map_or(usize::MAX, |data| data.grid.chunk_coords().count());
+    .map_or(usize::MAX, |data| data.tiles.chunk_coords().count());
   assert_eq!(chunks, 0, "nothing was made");
   assert_eq!(maps.world.query::<&MapTile>().iter(&maps.world).count(), 0);
   let warned = crate::core::dev_log::get_entries()
@@ -411,7 +464,7 @@ fn an_unbounded_layer_with_a_tile_a_million_cells_out_lands_holding_only_its_chu
   let chunks: Vec<IVec2> = maps
     .world
     .get::<TileLayerData>(layer)
-    .map(|data| data.grid.chunk_coords().collect())
+    .map(|data| data.tiles.chunk_coords().collect())
     .unwrap_or_default();
   let far_chunk = TileGrid::chunk_of(far);
   assert_eq!(chunks, [IVec2::ZERO, far_chunk]);
@@ -500,7 +553,7 @@ fn a_map_built_infinite_in_code_grows_where_a_game_writes() {
   let extent = maps
     .world
     .get::<TileLayerData>(layer)
-    .map(|data| data.grid.extent());
+    .map(|data| data.tiles.extent());
   assert_eq!(
     extent,
     Some(crate::core::physics::CellRect::new(
@@ -656,7 +709,7 @@ fn an_unloaded_chunk_leaves_collision_shadows_and_class_tiles() {
   let (crate_tile, _) = tiles[0];
 
   // A leaves the layer's grid, as a stream unloads it
-  let unloaded = grid_of(&mut maps.world, map).grid.unload_chunk(A);
+  let unloaded = grid_of(&mut maps.world, map).tiles.unload_chunk(A);
   assert!(unloaded.is_some());
   maps.frame();
 
@@ -695,7 +748,7 @@ fn a_floor_across_an_unloaded_chunk_closes_at_its_edge_in_collision_and_shadows(
   let map = spawn(&mut maps, unbounded_map(&floor), |r| r);
   maps.frame();
   let unloaded = grid_of(&mut maps.world, map)
-    .grid
+    .tiles
     .unload_chunk(IVec2::new(1, 0));
   assert!(unloaded.is_some());
   maps.frame();
@@ -757,7 +810,7 @@ fn loading_a_chunk_back_rebuilds_it_as_new() {
     assert_eq!(occluders_of(world, B), b_occluders, "{when}: B's shadows");
   };
 
-  let Some(mut cells) = grid_of(&mut maps.world, map).grid.unload_chunk(A) else {
+  let Some(mut cells) = grid_of(&mut maps.world, map).tiles.unload_chunk(A) else {
     panic!("chunk A is there");
   };
   maps.frame();
@@ -765,7 +818,7 @@ fn loading_a_chunk_back_rebuilds_it_as_new() {
   // A comes back with its tiles as the map had them, the crate included
   let local = CRATE_CELL - A * 32;
   cells[(local.y * 32 + local.x) as usize] = TileGrid::encode(Some(CRATE)).expect("fits");
-  assert!(grid_of(&mut maps.world, map).grid.load_chunk(A, cells));
+  assert!(grid_of(&mut maps.world, map).tiles.load_chunk(A, cells));
   maps.frame();
 
   let tiles = colliders(&maps.world, map);

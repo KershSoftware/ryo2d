@@ -20,8 +20,9 @@ use crate::core::tilemap::tiled::build::{
 };
 use crate::core::tilemap::tiled::json::parse;
 use crate::core::tilemap::{
-  IntGrid, LayerInfo, LayerKind, MapLayer, MapObjectData, ObjectShape, Properties, PropertyValue,
-  Tile, TileData, TileFlip, TileGrid, TileMap, Tileset, TilesetImage, TilesetSource,
+  GridShape, IntGrid, LayerInfo, LayerKind, MapGrid, MapLayer, MapObjectData, ObjectShape,
+  Properties, PropertyValue, Tile, TileData, TileFlip, TileGrid, TileMap, Tileset, TilesetImage,
+  TilesetSource,
 };
 use crate::core::ui::Color;
 
@@ -847,9 +848,10 @@ fn build_planned(defs: &Defs<'_>, planned: PlannedLayer<'_>) -> Result<Vec<Layer
       layer: MapLayer {
         info: sub,
         kind: LayerKind::Tiles {
-          grid,
+          tiles: grid,
           intgrid,
-          cell_size,
+          // LDtk's grids are square, each layer's of its own size
+          grid: MapGrid::new(GridShape::Orthogonal, cell_size),
         },
       },
       used: tileset.zip(max).map(|(t, max)| (t.index, max)),

@@ -1,6 +1,6 @@
 //! Finding a spawned map's layers, and reading and editing their cells.
 
-use glam::{Affine2, IVec2, Vec2};
+use glam::{Affine2, IVec2, UVec2, Vec2};
 
 use super::grid::fill_cap;
 use super::spawn::{
@@ -8,7 +8,7 @@ use super::spawn::{
   map_asset, registered_class, spawn_class_tile,
 };
 use super::stream::{note_class_edit, resident_chunks};
-use super::{CHUNK_SIZE, LayerInfo, Properties, Tile, TileGrid};
+use super::{CHUNK_SIZE, LayerInfo, MapGrid, Properties, Tile, TileGrid};
 use crate::core::ecs::{ChildOf, DetectChangesMut, Entity, Resource, Transform, World};
 use crate::core::hash::FastSet;
 use crate::core::physics::CellRect;
@@ -103,7 +103,7 @@ fn clear_parts(world: &mut World, parts: &[Entity], lo: IVec2, hi: IVec2) -> Fas
     let Some(data) = world.get::<TileLayerData>(part) else {
       continue;
     };
-    let grid = &data.grid;
+    let grid = &data.tiles;
     let extent = grid.extent();
     if extent.is_empty() {
       continue;
@@ -155,7 +155,7 @@ fn edit_grid<R>(
   changed: impl FnOnce(&R) -> bool,
 ) -> Option<R> {
   let mut data = world.get_mut::<TileLayerData>(layer)?;
-  let result = edit(&mut data.bypass_change_detection().grid);
+  let result = edit(&mut data.bypass_change_detection().tiles);
   if changed(&result) {
     data.set_changed();
   }
@@ -170,7 +170,7 @@ fn tile_layer_bounds(
   layer: LayerRef<'_>,
 ) -> Option<(Entity, Option<CellRect>)> {
   let entity = layer_entity(world, map, layer)?;
-  let bounds = world.get::<TileLayerData>(entity)?.grid.bounds();
+  let bounds = world.get::<TileLayerData>(entity)?.tiles.bounds();
   Some((entity, bounds))
 }
 
@@ -184,7 +184,7 @@ pub(crate) fn layer_bounds(world: &World, map: Entity, layer: LayerRef<'_>) -> O
 
 /// [`layer_bounds`] of the layer entity `layer`
 fn layer_entity_bounds(world: &World, layer: Entity) -> Option<CellRect> {
-  let grid = &world.get::<TileLayerData>(layer)?.grid;
+  let grid = &world.get::<TileLayerData>(layer)?.tiles;
   if let Some(bounds) = grid.bounds() {
     return Some(bounds);
   }
@@ -240,10 +240,7 @@ fn set_cell(
   class: Option<&(String, Properties)>,
 ) -> bool {
   // A game's observer of an earlier cell's class tile may have taken the layer
-  let Some(cell_size) = world
-    .get::<TileLayerData>(layer)
-    .map(|data| data.cell_size.as_vec2())
-  else {
+  let Some(grid) = world.get::<TileLayerData>(layer).map(|data| data.grid) else {
     return false;
   };
   let existing = class_tile_at(world, layer, cell);
@@ -276,7 +273,7 @@ fn set_cell(
         class: class.clone(),
         properties: properties.clone(),
       };
-      let entity = spawn_class_tile(world, map, (layer, index), cell_size, class_tile);
+      let entity = spawn_class_tile(world, map, (layer, index), &grid, class_tile);
       if let Some(mut table) = world.get_mut::<LayerTiles>(layer) {
         table.0.insert(cell, entity);
       }
@@ -396,7 +393,7 @@ fn fill_in(
       class_tile_at(world, layer, cell).is_none()
         && world
           .get::<TileLayerData>(layer)
-          .is_some_and(|data| data.grid.get(cell) == tile)
+          .is_some_and(|data| data.tiles.get(cell) == tile)
     })
     .count();
   fill_layer(world, map, layer, (lo, hi), tile) + only_parts
@@ -415,7 +412,7 @@ fn refused_fill(world: &mut World, layer: Entity, lo: IVec2, hi: IVec2) -> bool 
   let Some(data) = world.get::<TileLayerData>(layer) else {
     return false;
   };
-  let missing = data.grid.missing_chunks(lo, hi);
+  let missing = data.tiles.missing_chunks(lo, hi);
   let cap = fill_cap();
   if missing <= cap {
     return false;
@@ -485,7 +482,7 @@ fn fill_layer(
     let live = world.get::<MapTile>(entity).is_some_and(|t| t.cell == cell);
     let unchanged = world
       .get::<TileLayerData>(layer)
-      .is_some_and(|data| data.grid.get(cell) == tile);
+      .is_some_and(|data| data.tiles.get(cell) == tile);
     if live {
       let _ = world.try_despawn(entity);
       changed += usize::from(unchanged);
@@ -512,7 +509,7 @@ pub(crate) fn fill_intgrid(
   };
   let unbounded = world
     .get::<TileLayerData>(entity)
-    .is_some_and(|data| data.grid.bounds().is_none());
+    .is_some_and(|data| data.tiles.bounds().is_none());
   if unbounded && min.cmple(max).all() {
     let each = |world: &mut World, lo, hi| fill_intgrid_in(world, entity, lo, hi, value);
     if let Some(changed) = per_resident_chunk(world, map, (min, max), each) {
@@ -527,14 +524,14 @@ fn fill_intgrid_in(world: &mut World, entity: Entity, min: IVec2, max: IVec2, va
   let Some(mut data) = world.get_mut::<TileLayerData>(entity) else {
     return 0;
   };
-  let TileLayerData { grid, intgrid, .. } = data.bypass_change_detection();
+  let TileLayerData { tiles, intgrid, .. } = data.bypass_change_detection();
   let Some(intgrid) = intgrid.as_mut() else {
     return 0;
   };
   // The cells both the IntGrid and the grid hold (an unbounded grid holds
   // every cell)
   let mut held = CellRect::from_size(intgrid.size);
-  if let Some(bounds) = grid.bounds() {
+  if let Some(bounds) = tiles.bounds() {
     held = CellRect::new(held.min.max(bounds.min), held.max.min(bounds.max));
   }
   if held.is_empty() {
@@ -565,7 +562,7 @@ fn fill_intgrid_in(world: &mut World, entity: Entity, min: IVec2, max: IVec2, va
     }
   }
   if changed > 0 {
-    grid.touch(&chunks);
+    tiles.touch(&chunks);
     data.set_changed();
   }
   changed
@@ -578,7 +575,7 @@ pub(crate) fn tile_at(
   layer: LayerRef<'_>,
   cell: IVec2,
 ) -> Option<Tile> {
-  tile_layer(world, map, layer)?.grid.get(cell)
+  tile_layer(world, map, layer)?.tiles.get(cell)
 }
 
 /// The IntGrid value at `cell` of a tile layer
@@ -611,27 +608,28 @@ pub(crate) fn local_to_world(world: &World, entity: Entity) -> Option<Affine2> {
   None
 }
 
-/// A tile layer's cell size and where its space lies in the world
-fn layer_space(world: &World, map: Entity, layer: LayerRef<'_>) -> Option<(Vec2, Affine2)> {
+/// A tile layer's grid and where its space lies in the world
+fn layer_space(world: &World, map: Entity, layer: LayerRef<'_>) -> Option<(MapGrid, Affine2)> {
   let entity = layer_entity(world, map, layer)?;
-  let cell = world.get::<TileLayerData>(entity)?.cell_size.as_vec2();
-  Some((cell, local_to_world(world, entity)?))
+  let grid = world.get::<TileLayerData>(entity)?.grid;
+  Some((grid, local_to_world(world, entity)?))
 }
 
-/// The cell of a tile layer under the world position `point`, inside the
-/// layer or not; `None` where the layer is scaled to nothing
+/// The cell of a tile layer under the world position `point` (the one whose
+/// outline holds it, as the layer's grid picks), inside the layer or not;
+/// `None` where the layer is scaled to nothing or its cells have no size
 pub(crate) fn world_to_cell(
   world: &World,
   map: Entity,
   layer: LayerRef<'_>,
   point: Vec2,
 ) -> Option<IVec2> {
-  let (cell, affine) = layer_space(world, map, layer)?;
-  if affine.matrix2.determinant() == 0.0 {
+  let (grid, affine) = layer_space(world, map, layer)?;
+  if affine.matrix2.determinant() == 0.0 || grid.cell.cmpeq(UVec2::ZERO).any() {
     return None;
   }
-  let local = affine.inverse().transform_point2(point) / cell;
-  local.is_finite().then(|| local.floor().as_ivec2())
+  let local = affine.inverse().transform_point2(point);
+  local.is_finite().then(|| grid.cell_at(local))
 }
 
 /// The world position of the centre of a tile layer's `cell`
@@ -641,6 +639,6 @@ pub(crate) fn cell_to_world(
   layer: LayerRef<'_>,
   cell: IVec2,
 ) -> Option<Vec2> {
-  let (size, affine) = layer_space(world, map, layer)?;
-  Some(affine.transform_point2((cell.as_vec2() + 0.5) * size))
+  let (grid, affine) = layer_space(world, map, layer)?;
+  Some(affine.transform_point2(grid.cell_center(cell)))
 }

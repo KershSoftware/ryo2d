@@ -525,9 +525,9 @@ fn plan<'a>(layers: impl IntoIterator<Item = LayerView<'a>>, planned: &mut Vec<L
       planned.push(Lit {
         entity: layer.entity,
         index: layer.index,
-        cell: layer.data.cell_size,
+        cell: layer.data.grid.cell,
         offset: [layer.info.offset.x.to_bits(), layer.info.offset.y.to_bits()],
-        bounds: layer.data.grid.bounds(),
+        bounds: layer.data.tiles.bounds(),
         intgrid: layer.data.intgrid.is_some(),
       });
     }

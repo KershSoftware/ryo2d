@@ -36,7 +36,7 @@ pub(crate) fn map_chunks(world: &mut World, map: Entity, out: &mut Vec<IVec2>) {
   let mut layers = world.query::<(&MapLayerRef, &TileLayerData)>();
   for (layer, data) in layers.iter(world) {
     if layer.map == map {
-      out.extend(data.grid.chunk_coords());
+      out.extend(data.tiles.chunk_coords());
     }
   }
   out.sort_unstable_by_key(|chunk| (chunk.y, chunk.x));

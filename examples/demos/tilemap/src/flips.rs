@@ -181,11 +181,11 @@ impl DemoPage for FlipsPage {
       return;
     };
     for layer in &data.layers {
-      if let LayerKind::Tiles { grid, .. } = &layer.kind {
-        let extent = grid.extent();
+      if let LayerKind::Tiles { tiles, .. } = &layer.kind {
+        let extent = tiles.extent();
         for y in extent.min.y..extent.max.y {
           for x in extent.min.x..extent.max.x {
-            if let Some(tile) = grid.get(IVec2::new(x, y)) {
+            if let Some(tile) = tiles.get(IVec2::new(x, y)) {
               if let Some(count) = self.counts.get_mut(usize::from(tile.tileset)) {
                 *count += 1;
               }

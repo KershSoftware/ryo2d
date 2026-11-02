@@ -23,8 +23,8 @@ use crate::core::ecs::{Entity, Transform, World};
 use crate::core::graphics::{Camera2d, CameraView};
 use crate::core::tilemap::test_util::{FIXTURES, MapWorld, files_with, layers_of, load_map};
 use crate::core::tilemap::{
-  IntGrid, MapEvent, MapLayerRef, MapRoot, MapTile, MapsView, Tile, TileData, TileFlip,
-  TileLayerData, TileMap, TileShape, Tileset, TilesetImage, TilesetSource,
+  GridShape, IntGrid, MapEvent, MapGrid, MapLayerRef, MapRoot, MapTile, MapsView, Tile, TileData,
+  TileFlip, TileLayerData, TileMap, TileShape, Tileset, TilesetImage, TilesetSource,
 };
 use crate::core::ui::Rect;
 
@@ -172,7 +172,7 @@ fn resident(world: &mut World, map: Entity) -> Vec<IVec2> {
   generated_tracked(world, map);
   for layer in layers_of(world, map) {
     if let Some(data) = world.get::<TileLayerData>(layer) {
-      let held: Vec<IVec2> = data.grid.chunk_coords().collect();
+      let held: Vec<IVec2> = data.tiles.chunk_coords().collect();
       assert_eq!(held, chunks, "layer {layer} holds the resident chunks");
     }
   }
@@ -339,6 +339,32 @@ fn chunks_load_around_an_anchor_and_unload_behind_it() {
     view.tile(map, "ground", IVec2::new(32 * 24, 0)),
     Some(BLOCK)
   );
+}
+
+#[test]
+fn a_streamed_request_carries_the_grid() {
+  let seen: Arc<Mutex<Vec<ChunkRequest>>> = Arc::default();
+  let record = Arc::clone(&seen);
+  let generator = move |request: ChunkRequest| {
+    record.lock().expect("not poisoned").push(request);
+    floors(request)
+  };
+  let cell = UVec2::new(64, 32);
+  let mut map = TileMap::infinite(cell).with_shape(GridShape::Isometric);
+  map.add_tileset(TilesetSource::Embedded(Arc::new(tiles())));
+  map.add_tile_layer("ground");
+  let mut maps = MapWorld::new();
+  let map = spawn(&mut maps, map, MapStream::new(generator), |r| r);
+  anchor_at(&mut maps, IVec2::ZERO);
+  until_idle(&mut maps, map);
+  let seen = seen.lock().expect("not poisoned");
+  assert!(!seen.is_empty(), "the generator was asked");
+  let grid = MapGrid::for_map(GridShape::Isometric, cell, UVec2::ZERO, true);
+  for request in seen.iter() {
+    assert_eq!(request.grid, grid, "chunk {}", request.chunk);
+    assert_eq!(request.grid.shape, GridShape::Isometric);
+    assert_eq!(request.first_cell, request.chunk * 32);
+  }
 }
 
 #[test]
@@ -1883,8 +1909,8 @@ fn versions(world: &mut World, map: Entity, chunks: &[IVec2]) -> Vec<(Entity, IV
       continue;
     };
     for &chunk in chunks {
-      if data.grid.has_chunk(chunk) {
-        found.push((layer, chunk, data.grid.chunk_version(chunk)));
+      if data.tiles.has_chunk(chunk) {
+        found.push((layer, chunk, data.tiles.chunk_version(chunk)));
       }
     }
   }
@@ -2774,7 +2800,7 @@ fn assert_as_built_whole(maps: &mut MapWorld, map: Entity, at: usize) {
       .world
       .get::<TileLayerData>(layer)
       .map(|data| {
-        let grid = &data.grid;
+        let grid = &data.tiles;
         grid
           .chunk_coords()
           .flat_map(|chunk| cells_of(chunk).filter_map(move |cell| Some((cell, grid.get(cell)?))))

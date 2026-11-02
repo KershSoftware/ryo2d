@@ -2,7 +2,7 @@
 name: ryo-tilemap
 description: "Tile maps - the workflow from Tiled (.tmx, .tmj) or LDtk (.ldtk) through assets/ to a MapRoot entity, layers and the reserved layer properties (collides, occludes, y_sort, lit), tilesets and typed tile data, objects and class tiles as entities, MapEvent, reading and editing tiles with ctx.maps() and Wang terrain, collision from tile shapes and IntGrids, tile shadows, y-sorting and parallax, worlds of levels, maps built in code and by procgen, endless worlds streamed from a generator (MapStream, StreamAnchor, ChunkEvent, SavedChunks, ChunkOwned), hot reload, the web, performance and testing."
 metadata:
-  version: 1.3.0
+  version: 1.4.0
 ---
 
 # Ryo2D Tile Maps
@@ -281,7 +281,7 @@ for (entity, hits) in bricks {
 | `intgrid(map, layer, cell) -> Option<i32>` | an LDtk IntGrid value; `None` where it is 0 |
 | `set_intgrid(map, layer, cell, value: i32) -> bool`, `fill_intgrid(map, layer, min, max, value) -> usize` | change IntGrid values (0 empties), and so what the layer collides with (section 8) |
 | `tile_data(map, tile) -> Option<TileData>` | what the tile's tileset says about it |
-| `world_to_cell(map, layer, world: Vec2) -> Option<IVec2>`, `cell_to_world(map, layer, cell) -> Option<Vec2>` | through the map's and the layer's transforms; a cell's centre |
+| `world_to_cell(map, layer, world: Vec2) -> Option<IVec2>`, `cell_to_world(map, layer, cell) -> Option<Vec2>` | through the map's and the layer's transforms and the layer's grid (section 11): the cell whose outline holds the point; a cell's centre |
 | `layer_entity(map, layer) -> Option<Entity>` | the layer's entity |
 | `bounds(map) -> Option<CellRect>`, `layer_bounds(map, layer) -> Option<CellRect>` | the cells the map, or a tile layer, covers as it is now: a bounded one's size; an unbounded one's cells holding tiles, class tiles included, following every edit (empty with none; it looks at every chunk, so on a map grown to many chunks read it when the map changes, not every frame) |
 | `spawn_levels_in(world, area: Rect) -> Vec<Entity>`, `spawn_levels_in_with(world, area, depth, configure)` | the levels of a world near a place, the second setting each root up (section 13) |
@@ -308,9 +308,9 @@ maps.fill(self.map, "walls", IVec2::new(2, 2), IVec2::new(9, 3), Some(brick));
 ```
 
 - **An edit costs what it touches.** It redraws only its 32 x 32-cell chunk, and re-collides and re-shadows only what changed, in time for that step: an edit made in `update` collides in that step's physics, and casts its shadow that frame.
-- **Conversions use the transforms as they are now**, so a map moved this frame converts at once; `world_to_cell` gives cells outside the layer too, and `None` only for a map scaled to nothing.
+- **Conversions use the transforms as they are now**, so a map moved this frame converts at once; `world_to_cell` gives cells outside the layer too, and `None` only for a map scaled to nothing (or a layer whose cells have no size).
 - **Edits change the spawned map, not its asset:** two maps from one file keep their own tiles, and a reload of the file brings dug tiles back (section 14).
-- `TileLayerData { grid, intgrid, cell_size }` on a layer entity is the map's own copy of the layer: editing its `grid` (a `TileGrid`: `get`, `set`, `fill`, `clear`) draws, collides and casts as `ctx.maps()` does, though without class tiles. Change IntGrid values with `set_intgrid` and `fill_intgrid`, which re-collide only the chunks they change; values written into `TileLayerData::intgrid` by hand are not seen until those chunks change.
+- `TileLayerData { tiles, intgrid, grid }` on a layer entity is the map's own copy of the layer: editing its `tiles` (a `TileGrid`: `get`, `set`, `fill`, `clear`) draws, collides and casts as `ctx.maps()` does, though without class tiles. Its `grid` is the layer's `MapGrid` (section 11). Change IntGrid values with `set_intgrid` and `fill_intgrid`, which re-collide only the chunks they change; values written into `TileLayerData::intgrid` by hand are not seen until those chunks change.
 
 ## 7. Wang terrain
 
@@ -440,8 +440,8 @@ A `TileMap` built in code spawns like a file's: added to the assets and given to
 let mut map = TileMap::new(UVec2::new(40, 23), UVec2::splat(16)); // cells, a cell's pixels
 let terrain = map.add_tileset(TilesetSource::Asset(tileset.clone()));
 let ground = map.add_tile_layer("ground");
-if let Some(grid) = map.tiles_mut(ground) {
-  grid.fill(IVec2::new(0, 20), IVec2::new(39, 22), Some(Tile::new(terrain, 0)));
+if let Some(tiles) = map.tiles_mut(ground) {
+  tiles.fill(IVec2::new(0, 20), IVec2::new(39, 22), Some(Tile::new(terrain, 0)));
 }
 let map = ctx.assets().add(map);
 ctx.world.spawn((Transform::from_xy(0.0, 0.0), MapRoot::new(map)));
@@ -451,6 +451,25 @@ ctx.world.spawn((Transform::from_xy(0.0, 0.0), MapRoot::new(map)));
 - **A tileset in code:** `Tileset::new(name, tile_size, TilesetImage::Atlas { image, size })` with its `columns` and `tile_count` set (and `spacing`, `margin`), or `TilesetImage::Collection` with each tile's own image in its `TileData`. Tiles collide through their shapes: `insert_tile(id, TileData { shapes: vec![TileShape { points, ..TileShape::default() }], ..TileData::default() })`, the points in tile pixels from the top-left.
 - `add_object_layer(name)` adds an object layer, whose objects are `MapObjectData` in `LayerKind::Objects`; `layer_index(name)`, `tiles(layer)` and `tiles_mut(layer)` find layers.
 - **An unbounded layer:** a tile layer whose grid is `TileGrid::unbounded()` (set through `tiles_mut`) holds any cell, negative ones included, in chunks made where tiles are written. Spawned, it draws, collides, casts shadows and spawns class tiles wherever it has chunks, and costs the chunks it has, however far apart: never the rectangle between them. Its colliding layers' grid is unbounded too; a cell collides within 186,411 cells of (0, 0).
+- **Other grids:** a map's `shape` lays its cells out as Tiled's other grids do: `TileMap::new(size, tile_size).with_shape(shape)` with `GridShape::Isometric` (diamonds), `Staggered { axis, index }` (diamonds in rows or columns, every other one shifted half a cell), `Hexagonal { axis, index, side }` (pointy-topped hexagons in rows for `StaggerAxis::Y`, flat-topped ones in columns for `X`; `side` is Tiled's hex side length) or `Oblique { skew }` (each row shifted `skew.x` pixels across, each column `skew.y` down); `GridShape::Orthogonal` is the default. `map.grid()` is the map's `MapGrid`, with Tiled's origin for its size (a bounded isometric map's cell (0, 0) has its top vertex the map's height in half cells across), and each tile layer copies it as it is added: `with_shape` moves the layers already added, setting `map.shape` moves none. A `MapGrid` answers where a cell is in the layer's pixels (`cell_center`, `cell_outline`, `cell_bounds`, `tile_anchor`), which cell is under a point (`cell_at`), and board questions on any grid (`neighbours`, `distance`, `line`, `range`, `ring`). Spawned, the layer's grid is `TileLayerData::grid`: class tiles stand at their cell's centre on it, `ctx.maps()` picks cells and gives their centres through it, and a stream's `ChunkRequest` carries it. Drawing, collision and shadows do not follow the grid yet: a layer on another grid draws, collides and casts shadows as if its cells were rectangles of its cell size. Tiled's isometric, staggered, hexagonal and oblique files still fail to load (section 1).
+
+<!-- given: tileset: Handle<Tileset> -->
+```rust
+let mut map = TileMap::new(UVec2::new(20, 20), UVec2::new(64, 32)).with_shape(GridShape::Isometric);
+let terrain = map.add_tileset(TilesetSource::Asset(tileset.clone()));
+let ground = map.add_tile_layer("ground");
+if let Some(tiles) = map.tiles_mut(ground) {
+  tiles.fill(IVec2::new(0, 0), IVec2::new(19, 19), Some(Tile::new(terrain, 0)));
+}
+// Where cell (3, 2) is in the map's pixels, which cell is under a point, and the cells round it
+let board: MapGrid = map.grid();
+let centre: Vec2 = board.cell_center(IVec2::new(3, 2));
+let picked: IVec2 = board.cell_at(centre + Vec2::new(0.0, 10.0));
+let around: Vec<IVec2> = board.neighbours(IVec2::new(3, 2)).collect();
+let map = ctx.assets().add(map);
+ctx.world.spawn((Transform::from_xy(0.0, 0.0), MapRoot::new(map)));
+```
+
 - **A map grown at run time:** `TileMap::infinite(tile_size)` is an empty infinite map, with `size` zero and `infinite` true, whose `add_tile_layer` layers are unbounded. A game spawns it empty and grows it by writing tiles through `ctx.maps()`: a write at any cell, negative or far out, makes the chunk it lands in, which then draws, collides and casts shadows like any other. Nothing is paid for the space between chunks.
 - **Chunks persist.** A chunk, once made, stays for as long as the spawned map does, emptied or not: only a stream unloads chunks (section 12), so a map a game grows by writing keeps every chunk it ever wrote in. A bounded map has every chunk of its size from its landing (its collision, shadows and change tracking keep an entry for each), so a huge bounded map built with `TileMap::new` is slow to land and costly to keep however few tiles it holds; an infinite one costs nothing until a tile is written.
 
@@ -520,7 +539,7 @@ ctx.world.spawn((
 ));
 ```
 
-- **The generator** gets a `ChunkRequest { chunk, first_cell, tile_size }` and returns a `ChunkTiles`: `set(layer, cell, Option<Tile>)` with `cell` inside the chunk (0 to 31 each way; the map's cell is `first_cell + cell`), layers by the map's names. A layer it gives nothing lands empty, and a name the map has no tile layer of is left out, warned once. It runs on the `ryo2d chunk builder` thread, so it must be `Send + Sync` and cannot touch the world: make it a pure function of the chunk and what it captured (a seed, a `ryo-procgen` noise). It is asked again for a chunk that comes back after unloading (unless the stream kept it, below), so the same chunk must come out the same.
+- **The generator** gets a `ChunkRequest { chunk, first_cell, grid }` (`grid` the streamed layers' `MapGrid`, section 11) and returns a `ChunkTiles`: `set(layer, cell, Option<Tile>)` with `cell` inside the chunk (0 to 31 each way; the map's cell is `first_cell + cell`), layers by the map's names. A layer it gives nothing lands empty, and a name the map has no tile layer of is left out, warned once. It runs on the `ryo2d chunk builder` thread, so it must be `Send + Sync` and cannot touch the world: make it a pure function of the chunk and what it captured (a seed, a `ryo-procgen` noise). It is asked again for a chunk that comes back after unloading (unless the stream kept it, below), so the same chunk must come out the same.
 - **Noise from `ryo-procgen`** (the game adds `ryo2d-procgen`) is sampled at the chunk's own cells by offsetting it to `first_cell` with `NoiseConfig::with_offset`. Procgen does not normalize a call's values to that call (each is the noise at its cell), so chunks side by side meet, and the same chunk comes out the same:
 
   <!-- with: use ryo2d_procgen::prelude::*; -->
@@ -546,7 +565,7 @@ ctx.world.spawn((
 - **Unloading:** at most `unload_per_frame` (2) chunks unload a frame, the farthest from the anchors first; the others stay resident (drawn, colliding, editable) until their turn, so after a teleport the old area goes over a few frames and the resident chunks are within the distances again once it has. A frame that lands chunks unloads none while eight or fewer wait, whatever the budget, so landing and unloading rarely add their costs to one frame: the chunks a crossing leaves behind go in the frames after its landings, and while chunks keep landing at most eight stay resident past the unload distance (with more waiting, after a teleport or under a camera faster than the land budget, frames landing unload too, at the budget). An unloading chunk's tiles and class tiles go, and so do the entities marked `ChunkOwned` with it (their children too, and disabled ones), in `PreUpdate`; its colliders and shadows follow within the frame. `ChunkEvent::Unloading { map, chunk, changed }` says so (in a frame that both lands and unloads, after the frame's `Loaded` messages), and by the time the game reads it nothing of the chunk is left to read from the map: `changed` holds its tiles when the player changed it (below), and is `None` for a chunk as it landed. Entities the game spawned there without `ChunkOwned` are the game's to despawn, and a map's root despawned or put over takes the `ChunkOwned` entities of all its chunks, sending no `Unloading`. A shadow chain along an unloaded chunk's left or top border can stay while the cells beside it remain, closing their shadow at the gap: `MapOccluder::chunk` names the unloaded chunk.
 - **What the player changed stays changed** when the stream has a `SavedChunks` (`MapStream::new(generator).with_saved(saved)`). A chunk changed since it landed (a tile edit through `ctx.maps()`, a class tile an edit placed or replaced, or one the game despawned: a coin collected, an enemy killed) goes into it as it unloads, its tiles and the class tiles still living there, and comes back from it instead of the generator, its class tiles spawning again. The changed chunks still resident go in as the map's root goes too (despawned, a scene's cleanup included, or a `MapRoot` put over it), with no `ChunkEvent`, so leaving the scene keeps the player's edits. So a coin left there is back, and a coin collected stays collected, whether or not anything else changed. A chunk as it landed is not kept: it comes back from the generator. `SavedChunks` is a shared store (a clone is the same store): `get`, `insert`, `remove` (forget a chunk, so it regenerates: an area the game resets), `contains`, `keys` (the chunks kept, by row: a copy, for a map of what the player changed), `len`, `is_empty`. It grows with every chunk the player changes and never forgets one by itself. It keeps chunks by their place alone, so each streamed map needs its own `SavedChunks`: two maps sharing one would bring back each other's chunks. A saved chunk holds tiles, not IntGrid values (a game's own, on an unbounded layer): during play they stay in the layer, which unloading leaves alone, but a save game written from the store loses them.
 - **Saving the world:** `SavedChunks` serializes with serde (each layer's cells packed small), so it goes in a save game; give the copy loaded back to the new stream. A chunk goes in only as it unloads or as the map goes, so before writing a save during play call `ctx.maps().save_changed_chunks(map)`, which puts in the changed chunks still round the player.
-- **Edits** through `ctx.maps()` reach only the chunks that have landed (section 6), so a write never makes a chunk the stream would not unload; a write to a layer's `TileLayerData::grid` itself is not checked, so keep it to landed chunks too.
+- **Edits** through `ctx.maps()` reach only the chunks that have landed (section 6), so a write never makes a chunk the stream would not unload; a write to a layer's `TileLayerData::tiles` itself is not checked, so keep it to landed chunks too.
 - **A respawn or a teleport:** the chunks round the old place unload, the farthest first, and those round the new one land nearest first, each within its budget a frame, over the next frames. Hold a loading screen until `ctx.maps().stream_ready(map, area)` says every chunk overlapping a world rectangle has landed, rather than dropping a body into ground not made yet.
 - **What a stream has now:** `ctx.maps().stream_status(map)` is a `StreamStatus { resident, generated, hand_made, in_flight, draining }` (`Copy`), as this frame's stream left it (the stream runs in `PreUpdate`, so a scene's update and UI read this frame's): the chunks resident, of them those the stream landed and the file's, the chunks asked for and not landed (out on the chunk builder or waiting their turn to land; 64 held at most), and the resident chunks past every unload distance waiting their turn to unload. `None` for a map with no `MapStream`, or not landed yet. For a HUD, a loading bar or a test.
 - **A generator that panics** on a chunk is caught on native platforms: the chunk lands empty, is not asked for again, and the dev log warns once a map, naming the chunk. A web build aborts on a panic, so there a panicking generator ends the game: keep it from panicking (no `unwrap` on its inputs, no indexing past an array).

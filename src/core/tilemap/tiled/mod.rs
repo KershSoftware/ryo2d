@@ -143,9 +143,10 @@ mod tests {
     let map = load("maps/mixed.tmj");
     let mut tile_layers = 0;
     for l in &map.layers {
-      if let LayerKind::Tiles { cell_size, .. } = &l.kind {
+      if let LayerKind::Tiles { grid, .. } = &l.kind {
         tile_layers += 1;
-        assert_eq!(*cell_size, map.tile_size, "{}", l.info.name);
+        assert_eq!(*grid, map.grid(), "{}", l.info.name);
+        assert_eq!(grid.cell, map.tile_size, "{}", l.info.name);
       }
     }
     assert!(tile_layers > 0);
@@ -1187,7 +1188,7 @@ mod tests {
     let chunks: Vec<IVec2> = maps
       .world
       .get::<TileLayerData>(layer)
-      .map(|data| data.grid.chunk_coords().collect())
+      .map(|data| data.tiles.chunk_coords().collect())
       .unwrap_or_default();
     assert_eq!(chunks, [far_chunk, IVec2::ZERO]);
   }

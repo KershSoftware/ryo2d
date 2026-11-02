@@ -91,10 +91,10 @@ fn grid_of(world: &World, layer: Entity) -> Vec<Option<Tile>> {
   let Some(data) = world.get::<TileLayerData>(layer) else {
     panic!("{layer:?} is not a tile layer")
   };
-  let extent = data.grid.extent();
+  let extent = data.tiles.extent();
   (extent.min.y..extent.max.y)
     .flat_map(|y| (extent.min.x..extent.max.x).map(move |x| IVec2::new(x, y)))
-    .map(|cell| data.grid.get(cell))
+    .map(|cell| data.tiles.get(cell))
     .collect()
 }
 
@@ -286,7 +286,7 @@ fn saving_an_infinite_map_that_moves_its_chunks_reloads_by_chunk() {
   let (crate_object, _) = object_named(&mut maps.world, map, "crate");
   let (spot, _) = object_named(&mut maps.world, map, "spot");
   let grid = |world: &World, layer: usize| match world.get::<TileLayerData>(layers[layer]) {
-    Some(data) => data.grid.clone(),
+    Some(data) => data.tiles.clone(),
     None => panic!("layer {layer} is not a tile layer"),
   };
   let (ground, walls, decor) = (
@@ -1119,7 +1119,7 @@ fn a_reload_keeps_the_ground_a_character_stands_on() {
   let before = parts(&mut maps.world, map);
   let ground = layers_of(&mut maps.world, map)[0];
   let chunk_versions = |world: &World| {
-    let grid = &world.get::<TileLayerData>(ground).expect("tiles").grid;
+    let grid = &world.get::<TileLayerData>(ground).expect("tiles").tiles;
     [0, 1, 2].map(|x| grid.chunk_version(IVec2::new(x, 0)))
   };
   let shadows = |world: &mut World, chunk: i32| {

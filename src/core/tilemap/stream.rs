@@ -26,7 +26,7 @@ use super::jobs::Worker;
 use super::spawn::{
   LayerTiles, MapLayerRef, MapLayers, MapRoot, MapTile, TileLayerData, map_asset,
 };
-use super::{CHUNK_SIZE, LayerInfo, LayerKind, Tile, TileGrid, TileMap};
+use super::{CHUNK_SIZE, LayerInfo, LayerKind, MapGrid, Tile, TileGrid, TileMap};
 use crate::core::ecs::kernel::{Allow, Disabled, QueryState};
 use crate::core::ecs::{
   Component, DetectChangesMut, Entity, Local, Message, Messages, With, World,
@@ -391,15 +391,16 @@ fn empty(cells: &[u32; CELLS]) -> bool {
 }
 
 /// What a generator is asked for: one chunk of the map
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ChunkRequest {
   /// The chunk, signed as [`TileGrid::chunk_of`] gives it
   pub chunk: IVec2,
-  /// Its first cell, the top-left: `chunk * 32`. A [`ChunkTiles`] cell
-  /// `c` is the map's cell `first_cell + c`
+  /// Its first cell, the top-left by index: `chunk * 32`. A
+  /// [`ChunkTiles`] cell `c` is the map's cell `first_cell + c`
   pub first_cell: IVec2,
-  /// A cell's size in pixels
-  pub tile_size: UVec2,
+  /// The streamed layers' grid (its first unbounded tile layer's): where
+  /// each cell is in the layer's pixels, and which cells neighbour it
+  pub grid: MapGrid,
 }
 
 /// Streams an infinite map's chunks: put it on the map's [`MapRoot`](super::MapRoot)
@@ -840,7 +841,7 @@ impl StreamWork {
     let Some(space) = map_space(world, map) else {
       return;
     };
-    let (cell, chunk_px) = (space.cell, space.chunk_px);
+    let (grid, chunk_px) = (space.grid, space.chunk_px);
     let load_px = distance(stream.load_distance);
     let mut unload_px = distance(stream.unload_distance);
     if unload_px < load_px {
@@ -893,7 +894,7 @@ impl StreamWork {
       );
     }
     self.call_off(world, map);
-    self.request(world, map, stream, (cell, chunk_px));
+    self.request(world, map, stream, (grid, chunk_px));
     self.route(world);
     let landed = self.land(world, map, stream.land_per_frame, chunk_px);
     self.unload(world, map, stream, chunk_px, landed > 0);
@@ -917,7 +918,7 @@ impl StreamWork {
         .layers
         .iter()
         .filter_map(|&layer| world.get::<TileLayerData>(layer))
-        .map(|data| data.grid.version())
+        .map(|data| data.tiles.version())
         .max()
         .unwrap_or(0);
     }
@@ -1066,7 +1067,7 @@ impl StreamWork {
         if let Some(mut data) = world.get_mut::<TileLayerData>(layer)
           && data
             .bypass_change_detection()
-            .grid
+            .tiles
             .unload_chunk(chunk)
             .is_some()
         {
@@ -1077,7 +1078,7 @@ impl StreamWork {
     // Each grid's extent worked out once for all the chunks that went
     for &layer in &self.layers {
       if let Some(mut data) = world.get_mut::<TileLayerData>(layer) {
-        data.bypass_change_detection().grid.settle_extent();
+        data.bypass_change_detection().tiles.settle_extent();
       }
     }
     if let Some(mut state) = world.get_mut::<StreamState>(map) {
@@ -1124,7 +1125,7 @@ impl StreamWork {
     world: &mut World,
     map: Entity,
     stream: &MapStream,
-    (cell, chunk_px): (UVec2, Vec2),
+    (grid, chunk_px): (MapGrid, Vec2),
   ) {
     self.wanted.clear();
     let (epoch, room) = {
@@ -1179,7 +1180,7 @@ impl StreamWork {
       let request = ChunkRequest {
         chunk,
         first_cell: chunk * CHUNK_SIZE as i32,
-        tile_size: cell,
+        grid,
       };
       let called_off = Arc::new(AtomicBool::new(false));
       let (generator, off) = (Arc::clone(&stream.generator), Arc::clone(&called_off));
@@ -1309,7 +1310,10 @@ impl StreamWork {
         .and_then(|of| tiles.take(&of.name))
         .unwrap_or_else(|| Box::new([0; CELLS]));
       if let Some(mut data) = world.get_mut::<TileLayerData>(layer)
-        && data.bypass_change_detection().grid.load_chunk(chunk, cells)
+        && data
+          .bypass_change_detection()
+          .tiles
+          .load_chunk(chunk, cells)
       {
         data.set_changed();
       }
@@ -1350,10 +1354,10 @@ impl StreamState {
 pub(crate) fn file_chunks(map: &TileMap) -> FastSet<IVec2> {
   let mut chunks: FastSet<IVec2> = map.file_chunks.iter().copied().collect();
   for layer in &map.layers {
-    if let LayerKind::Tiles { grid, .. } = &layer.kind
-      && grid.bounds().is_none()
+    if let LayerKind::Tiles { tiles, .. } = &layer.kind
+      && tiles.bounds().is_none()
     {
-      chunks.extend(grid.chunk_coords());
+      chunks.extend(tiles.chunk_coords());
     }
   }
   chunks
@@ -1418,7 +1422,7 @@ fn unbounded_layers(world: &World, map: Entity, out: &mut Vec<Entity>) {
     let unbounded = |layer: &Entity| {
       world
         .get::<TileLayerData>(*layer)
-        .is_some_and(|data| data.grid.bounds().is_none())
+        .is_some_and(|data| data.tiles.bounds().is_none())
     };
     out.extend(layers.0.iter().copied().filter(unbounded));
   }
@@ -1476,7 +1480,7 @@ fn changed_since_landing(
     || layers.iter().any(|&layer| {
       world
         .get::<TileLayerData>(layer)
-        .is_some_and(|data| data.grid.changed_since(chunk, since))
+        .is_some_and(|data| data.tiles.changed_since(chunk, since))
     })
     || tiles
       .iter()
@@ -1502,7 +1506,7 @@ fn holdings(world: &World, layers: &[Entity], chunk: IVec2, tiles: &[ClassEntry]
       continue;
     }
     let mut cells = Box::new([0; CELLS]);
-    if let Some(grid) = data.grid.chunk_cells(chunk) {
+    if let Some(grid) = data.tiles.chunk_cells(chunk) {
       cells.copy_from_slice(grid);
     }
     for &(_, _, cell, entity) in tiles.iter().filter(|entry| entry.1 == at) {
@@ -1608,8 +1612,8 @@ fn distance(pixels: f32) -> f32 {
 
 /// A streamed map's space
 struct MapSpace {
-  /// Its tile layers' cell size (its first unbounded layer's)
-  cell: UVec2,
+  /// Its tile layers' grid (its first unbounded layer's)
+  grid: MapGrid,
   /// A chunk's side in its pixels
   chunk_px: Vec2,
   /// Where it lies in the world: its root's transform and its ancestors'
@@ -1622,13 +1626,14 @@ struct MapSpace {
 /// `map`'s space; `None` for a map with no unbounded tile layer, or scaled
 /// to nothing
 fn map_space(world: &World, map: Entity) -> Option<MapSpace> {
-  let cell = world
+  let grid = world
     .get::<MapLayers>(map)?
     .0
     .iter()
     .filter_map(|&layer| world.get::<TileLayerData>(layer))
-    .find(|data| data.grid.bounds().is_none())?
-    .cell_size;
+    .find(|data| data.tiles.bounds().is_none())?
+    .grid;
+  let cell = grid.cell;
   if cell.cmpeq(UVec2::ZERO).any() {
     return None;
   }
@@ -1638,7 +1643,7 @@ fn map_space(world: &World, map: Entity) -> Option<MapSpace> {
     return None;
   }
   Some(MapSpace {
-    cell,
+    grid,
     chunk_px: cell.as_vec2() * CHUNK_SIZE as f32,
     to_world,
     to_map: to_world.inverse(),
