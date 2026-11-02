@@ -209,11 +209,14 @@ impl MapShadows {
 /// from each point with more edges leaving than arriving, then round what
 /// is left (closed loops, each a chain ending where it starts). Straight
 /// runs merge into one edge. A point's edges are taken in the order given.
-/// Each point is found through one map made at its full size, with no
-/// list a point: an edit's chunk of a dense map has about a thousand edges,
-/// and a list a point, maps grown from empty and a chain made for every
-/// start tried cost half its rebuild
+/// The edges are sorted by start and by end once, and every point found
+/// by its place in those orders, with no map: an edit's chunk of a dense
+/// map has about a thousand edges, and a list a point, maps grown from
+/// empty and a chain made for every start tried cost half its rebuild; a
+/// map of the points made at its full size was a third of a chunk's
+/// shadows once those went
 fn chains(edges: &[(Point, Point)]) -> Vec<Vec<Point>> {
+  const NONE: u32 = u32::MAX;
   // Edge indices by start point, each point's in the order given
   let mut sorted: Vec<(Point, u32)> = edges
     .iter()
@@ -223,10 +226,11 @@ fn chains(edges: &[(Point, Point)]) -> Vec<Vec<Point>> {
   sorted.sort_unstable();
   let order: Vec<u32> = sorted.iter().map(|&(_, i)| i).collect();
   // Each start point (sorted) and its run of `order`, from its first edge
-  // not yet used
+  // not yet used, and the run each edge starts in
   let mut points: Vec<Point> = Vec::new();
   let mut runs: Vec<(u32, u32)> = Vec::new();
-  for (k, &(point, _)) in sorted.iter().enumerate() {
+  let mut start_run = vec![0u32; edges.len()];
+  for (k, &(point, i)) in sorted.iter().enumerate() {
     if points.last() == Some(&point) {
       if let Some(run) = runs.last_mut() {
         run.1 = k as u32 + 1;
@@ -235,48 +239,56 @@ fn chains(edges: &[(Point, Point)]) -> Vec<Vec<Point>> {
       points.push(point);
       runs.push((k as u32, k as u32 + 1));
     }
+    start_run[i as usize] = (points.len() - 1) as u32;
+  }
+  // The run each edge ends in (`NONE` where no edge leaves its end): the
+  // edges by end walked beside the points
+  sorted.clear();
+  sorted.extend(edges.iter().enumerate().map(|(i, &(_, b))| (b, i as u32)));
+  sorted.sort_unstable();
+  let mut end_run = vec![NONE; edges.len()];
+  let mut p = 0;
+  for &(end, i) in &sorted {
+    while p < points.len() && points[p] < end {
+      p += 1;
+    }
+    if points.get(p) == Some(&end) {
+      end_run[i as usize] = p as u32;
+    }
   }
   drop(sorted);
-  let mut run_of: FastMap<Point, u32> = FastMap::default();
-  run_of.reserve(points.len());
-  for (run, &point) in points.iter().enumerate() {
-    run_of.insert(point, run as u32);
-  }
   // The edges arriving at each start point
   let mut arriving = vec![0u32; points.len()];
-  for &(_, b) in edges {
-    if let Some(&run) = run_of.get(&b) {
+  for &run in &end_run {
+    if run != NONE {
       arriving[run as usize] += 1;
     }
   }
   let mut used = vec![false; edges.len()];
-  // The first edge leaving `at` not used yet, taken
-  let take = |runs: &mut [(u32, u32)], used: &mut [bool], at: Point| -> Option<usize> {
-    let run = *run_of.get(&at)? as usize;
-    let (first, end) = &mut runs[run];
+  // The first edge of run `run` not used yet, taken
+  let take = |runs: &mut [(u32, u32)], used: &mut [bool], run: u32| -> Option<usize> {
+    let (first, end) = runs.get_mut(run as usize)?;
     // A run's used edges are its first ones: skip them
     while *first < *end && used[order[*first as usize] as usize] {
       *first += 1;
     }
-    let found = (*first..*end)
-      .map(|j| order[j as usize] as usize)
-      .find(|&i| !used[i])?;
+    let found = (*first < *end).then(|| order[*first as usize] as usize)?;
     used[found] = true;
     Some(found)
   };
-  // Heads first: the points more edges leave than arrive at, in order
-  let heads: Vec<Point> = (0..points.len())
-    .filter(|&run| runs[run].1 - runs[run].0 > arriving[run])
-    .map(|run| points[run])
-    .collect();
+  // Heads first: the points more edges leave than arrive at, in order,
   // then whatever edges are left, in order
-  let starts = heads.into_iter().chain(edges.iter().map(|&(a, _)| a));
+  let heads = (0..points.len() as u32).filter(|&run| {
+    let (first, end) = runs[run as usize];
+    end - first > arriving[run as usize]
+  });
+  let starts: Vec<u32> = heads.chain(start_run.iter().copied()).collect();
   let mut out = Vec::new();
   for start in starts {
     // A start with edges left starts chains until it has none
     while let Some(first) = take(&mut runs, &mut used, start) {
-      let mut chain = vec![start, edges[first].1];
-      let mut at = edges[first].1;
+      let mut chain = vec![points[start as usize], edges[first].1];
+      let mut at = end_run[first];
       while let Some(next) = take(&mut runs, &mut used, at) {
         let to = edges[next].1;
         // A straight run is one edge
@@ -289,7 +301,7 @@ fn chains(edges: &[(Point, Point)]) -> Vec<Vec<Point>> {
           chain.pop();
         }
         chain.push(to);
-        at = to;
+        at = end_run[next];
       }
       out.push(chain);
     }
@@ -947,6 +959,146 @@ mod tests {
   fn put(map: &mut TileMap, layer: usize, cell: (i32, i32), id: u32) {
     if let Some(grid) = map.tiles_mut(layer) {
       grid.set(IVec2::new(cell.0, cell.1), Some(Tile::new(0, id)));
+    }
+  }
+
+  /// `chains` as it was, each point found through a map (the reference)
+  fn chains_through_a_map(edges: &[(Point, Point)]) -> Vec<Vec<Point>> {
+    // Edge indices by start point, each point's in the order given
+    let mut sorted: Vec<(Point, u32)> = edges
+      .iter()
+      .enumerate()
+      .map(|(i, &(a, _))| (a, i as u32))
+      .collect();
+    sorted.sort_unstable();
+    let order: Vec<u32> = sorted.iter().map(|&(_, i)| i).collect();
+    // Each start point (sorted) and its run of `order`, from its first edge
+    // not yet used
+    let mut points: Vec<Point> = Vec::new();
+    let mut runs: Vec<(u32, u32)> = Vec::new();
+    for (k, &(point, _)) in sorted.iter().enumerate() {
+      if points.last() == Some(&point) {
+        if let Some(run) = runs.last_mut() {
+          run.1 = k as u32 + 1;
+        }
+      } else {
+        points.push(point);
+        runs.push((k as u32, k as u32 + 1));
+      }
+    }
+    drop(sorted);
+    let mut run_of: FastMap<Point, u32> = FastMap::default();
+    run_of.reserve(points.len());
+    for (run, &point) in points.iter().enumerate() {
+      run_of.insert(point, run as u32);
+    }
+    // The edges arriving at each start point
+    let mut arriving = vec![0u32; points.len()];
+    for &(_, b) in edges {
+      if let Some(&run) = run_of.get(&b) {
+        arriving[run as usize] += 1;
+      }
+    }
+    let mut used = vec![false; edges.len()];
+    // The first edge leaving `at` not used yet, taken
+    let take = |runs: &mut [(u32, u32)], used: &mut [bool], at: Point| -> Option<usize> {
+      let run = *run_of.get(&at)? as usize;
+      let (first, end) = &mut runs[run];
+      // A run's used edges are its first ones: skip them
+      while *first < *end && used[order[*first as usize] as usize] {
+        *first += 1;
+      }
+      let found = (*first..*end)
+        .map(|j| order[j as usize] as usize)
+        .find(|&i| !used[i])?;
+      used[found] = true;
+      Some(found)
+    };
+    // Heads first: the points more edges leave than arrive at, in order
+    let heads: Vec<Point> = (0..points.len())
+      .filter(|&run| runs[run].1 - runs[run].0 > arriving[run])
+      .map(|run| points[run])
+      .collect();
+    // then whatever edges are left, in order
+    let starts = heads.into_iter().chain(edges.iter().map(|&(a, _)| a));
+    let mut out = Vec::new();
+    for start in starts {
+      // A start with edges left starts chains until it has none
+      while let Some(first) = take(&mut runs, &mut used, start) {
+        let mut chain = vec![start, edges[first].1];
+        let mut at = edges[first].1;
+        while let Some(next) = take(&mut runs, &mut used, at) {
+          let to = edges[next].1;
+          // A straight run is one edge
+          let (p, q) = (chain[chain.len() - 2], chain[chain.len() - 1]);
+          let (u, v) = (
+            (i64::from(q.0 - p.0), i64::from(q.1 - p.1)),
+            (i64::from(to.0 - q.0), i64::from(to.1 - q.1)),
+          );
+          if u.0 * v.1 - u.1 * v.0 == 0 && u.0 * v.0 + u.1 * v.1 > 0 {
+            chain.pop();
+          }
+          chain.push(to);
+          at = to;
+        }
+        out.push(chain);
+      }
+    }
+    out
+  }
+
+  #[test]
+  fn chains_found_by_place_are_those_found_through_a_map() {
+    // Random directed edges on a small lattice (repeated, branching, closed
+    // and open), and the boundary edges of random blocks of cells
+    let mut seed = 0x2545_f491_u32;
+    let mut next = |n: u32| {
+      seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+      (seed >> 8) % n
+    };
+    for round in 0..300 {
+      let count = 1 + next(80) as usize;
+      let side = 2 + next(6) as i32;
+      let edges: Vec<(Point, Point)> = (0..count)
+        .map(|_| {
+          let p = |next: &mut dyn FnMut(u32) -> u32| {
+            (next(side as u32) as i32 * 7, next(side as u32) as i32 * 7)
+          };
+          (p(&mut next), p(&mut next))
+        })
+        .filter(|(a, b)| a != b)
+        .collect();
+      assert_eq!(
+        chains(&edges),
+        chains_through_a_map(&edges),
+        "round {round}"
+      );
+    }
+    let boundary = Boundary::default();
+    let kinds = [
+      TileCell::Solid,
+      TileCell::Empty,
+      TileCell::Empty,
+      TileCell::OneWay,
+    ];
+    for round in 0..100 {
+      let cells: Vec<TileCell> = (0..64).map(|_| kinds[next(4) as usize]).collect();
+      let at = |x: i32, y: i32| {
+        if (0..8).contains(&x) && (0..8).contains(&y) {
+          cells[(y * 8 + x) as usize]
+        } else {
+          TileCell::Empty
+        }
+      };
+      let mut placed = Vec::new();
+      boundary.placed_edges(at, (0, 0), (9, 9), None, &mut placed);
+      let edges: Vec<(Point, Point)> = placed.iter().map(|&(_, a, b)| (b, a)).collect();
+      assert!(!edges.is_empty());
+      assert_eq!(
+        chains(&edges),
+        chains_through_a_map(&edges),
+        "block {round}"
+      );
     }
   }
 
