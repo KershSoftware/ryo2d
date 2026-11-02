@@ -426,6 +426,8 @@ fn chunk_chains(
   if placed.is_empty() {
     group.edges.remove(&chunk);
   } else {
+    // Kept for as long as the chunk is: no room past its edges
+    placed.shrink_to_fit();
     group.edges.insert(chunk, placed);
   }
   if !own {
@@ -1342,6 +1344,38 @@ mod tests {
     let solid_and_slope = ring(&[(0, 0), (0, 16), (32, 16), (16, 0)]);
     let wall = ring(&[(48, 0), (48, 16), (64, 16), (64, 0)]);
     assert_eq!(steps(&found), merged(&[solid_and_slope, wall]));
+  }
+
+  #[test]
+  fn the_edges_kept_a_chunk_take_no_room_past_them() {
+    // A floor across two chunks, with blocks scattered over it: each
+    // chunk's kept edges are shrunk to fit, as they live with the chunk
+    let mut maps = MapWorld::new();
+    let handle = floor_map(&mut maps.world, UVec2::new(64, 8), |map| {
+      for x in (0..64).step_by(3) {
+        put(map, 0, (x, x % 5), 0);
+      }
+    });
+    let map = maps.spawn(MapRoot::new(handle));
+    let layer = layers_of(&mut maps.world, map)[0];
+    let block = Some(Tile::new(0, 0));
+    assert!(MapsView::new(&mut maps.world).set_tile(map, 0, IVec2::new(33, 6), block));
+    maps.frame();
+    let Some(shadows) = maps.world.get::<MapShadows>(map) else {
+      panic!("{map} casts shadows");
+    };
+    let kept: Vec<(usize, usize)> = shadows
+      .groups
+      .iter()
+      .flat_map(|group| group.edges.values())
+      .map(|edges| (edges.len(), edges.capacity()))
+      .collect();
+    assert!(
+      kept.len() >= 2 && kept.iter().all(|&(len, _)| len > 4),
+      "{kept:?}"
+    );
+    assert!(kept.iter().all(|&(len, room)| len == room), "{kept:?}");
+    assert!(!occluders_of(&mut maps.world, layer).is_empty());
   }
 
   #[test]
