@@ -488,6 +488,11 @@ impl<'a, 'i> Reader<'a, 'i> {
         .str(node, "orientation")
         .unwrap_or_default()
         .to_string(),
+      staggeraxis: self.str(node, "staggeraxis").map(str::to_string),
+      staggerindex: self.str(node, "staggerindex").map(str::to_string),
+      hexsidelength: self.num(node, "hexsidelength")?,
+      skewx: self.num(node, "skewx")?.unwrap_or(0),
+      skewy: self.num(node, "skewy")?.unwrap_or(0),
       renderorder: self
         .str(node, "renderorder")
         .unwrap_or_default()
@@ -600,7 +605,8 @@ mod tests {
   use crate::core::ecs::kernel::World;
   use crate::core::physics::CellRect;
   use crate::core::tilemap::{
-    ImageLayer, LayerKind, Tile, TileFlip, TileGrid, TileMap, Tileset, TilesetImage, TilesetSource,
+    GridShape, ImageLayer, LayerKind, MapGrid, StaggerAxis, StaggerIndex, Tile, TileFlip, TileGrid,
+    TileMap, Tileset, TilesetImage, TilesetSource,
   };
 
   const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tilemap/tiled");
@@ -781,7 +787,7 @@ mod tests {
     panic!("{name}: one has more lines than the other");
   }
 
-  const MAP_PAIRS: [&str; 22] = [
+  const MAP_PAIRS: [&str; 50] = [
     "image-layers",
     "lists",
     "tile-objects",
@@ -804,6 +810,34 @@ mod tests {
     "infinite-zlib",
     "infinite-gzip",
     "infinite-zstd",
+    "shape-iso",
+    "shape-iso-48x32",
+    "shape-stag-x-odd",
+    "shape-stag-x-even",
+    "shape-stag-y-odd",
+    "shape-stag-y-even",
+    "shape-hex-x-odd",
+    "shape-hex-x-even",
+    "shape-hex-y-odd",
+    "shape-hex-y-even",
+    "shape-hex-x-side0",
+    "shape-hex-y-side0",
+    "shape-hex-long-side",
+    "shape-oblique",
+    "shape-oblique-neg-x",
+    "shape-oblique-neg-y",
+    "shape-odd-ortho",
+    "shape-odd-iso",
+    "shape-odd-stag-x-odd",
+    "shape-odd-stag-y-even",
+    "shape-odd-hex-x-odd",
+    "shape-odd-hex-y-odd",
+    "shape-odd-oblique",
+    "shape-infinite-iso",
+    "shape-infinite-stag",
+    "shape-infinite-hex",
+    "shape-infinite-oblique",
+    "shape-hex-rotations",
   ];
   const SET_PAIRS: [&str; 9] = [
     "loot",
@@ -916,6 +950,147 @@ mod tests {
     refused(
       "<chunk x=\"9223372036854775808\" y=\"0\" width=\"1\" height=\"1\">0</chunk>",
       &["line 4, column", "x"],
+    );
+  }
+
+  /// A `shape-*` fixture's name, grid, tile size and size in cells
+  type ShapeFixture = (&'static str, GridShape, (u32, u32), (u32, u32));
+
+  /// Each bounded `shape-*` fixture
+  fn shape_fixtures() -> Vec<ShapeFixture> {
+    use StaggerAxis::{X, Y};
+    use StaggerIndex::{Even, Odd};
+    let stag = |axis, index| GridShape::Staggered { axis, index };
+    let hex = |axis, index, side| GridShape::Hexagonal { axis, index, side };
+    let oblique = |x, y| GridShape::Oblique {
+      skew: IVec2::new(x, y),
+    };
+    vec![
+      ("shape-iso", GridShape::Isometric, (64, 32), (6, 4)),
+      ("shape-iso-48x32", GridShape::Isometric, (48, 32), (6, 4)),
+      ("shape-stag-x-odd", stag(X, Odd), (64, 32), (6, 6)),
+      ("shape-stag-x-even", stag(X, Even), (64, 32), (6, 6)),
+      ("shape-stag-y-odd", stag(Y, Odd), (64, 32), (6, 6)),
+      ("shape-stag-y-even", stag(Y, Even), (64, 32), (6, 6)),
+      ("shape-hex-x-odd", hex(X, Odd, 12), (32, 32), (6, 6)),
+      ("shape-hex-x-even", hex(X, Even, 12), (32, 32), (6, 6)),
+      ("shape-hex-y-odd", hex(Y, Odd, 12), (32, 32), (6, 6)),
+      ("shape-hex-y-even", hex(Y, Even, 12), (32, 32), (6, 6)),
+      ("shape-hex-x-side0", hex(X, Even, 0), (32, 32), (6, 6)),
+      ("shape-hex-y-side0", hex(Y, Odd, 0), (32, 32), (6, 6)),
+      ("shape-hex-long-side", hex(Y, Odd, 40), (32, 32), (6, 6)),
+      ("shape-oblique", oblique(8, 12), (32, 32), (6, 6)),
+      ("shape-oblique-neg-x", oblique(-10, 0), (32, 32), (6, 6)),
+      ("shape-oblique-neg-y", oblique(0, -12), (32, 32), (6, 6)),
+      ("shape-odd-ortho", GridShape::Orthogonal, (33, 17), (6, 6)),
+      ("shape-odd-iso", GridShape::Isometric, (33, 17), (6, 4)),
+      ("shape-odd-stag-x-odd", stag(X, Odd), (33, 17), (6, 6)),
+      ("shape-odd-stag-y-even", stag(Y, Even), (33, 17), (6, 6)),
+      ("shape-odd-hex-x-odd", hex(X, Odd, 13), (33, 17), (6, 6)),
+      ("shape-odd-hex-y-odd", hex(Y, Odd, 13), (33, 17), (6, 6)),
+      ("shape-odd-oblique", oblique(7, -5), (33, 17), (6, 6)),
+    ]
+  }
+
+  #[test]
+  fn every_grid_loads_in_both_formats_with_its_parameters() {
+    let mut world = world_with(&[]);
+    for (name, shape, (tw, th), (w, h)) in shape_fixtures() {
+      for path in [format!("maps/{name}.tmj"), format!("xml/maps/{name}.tmx")] {
+        let map = loaded(&mut world, &path);
+        assert_eq!(map.shape, shape, "{path}");
+        assert_eq!(map.tile_size, UVec2::new(tw, th), "{path}");
+        assert_eq!(
+          (map.size, map.infinite),
+          (UVec2::new(w, h), false),
+          "{path}"
+        );
+        assert_eq!(
+          map.grid(),
+          MapGrid::for_map(shape, map.tile_size, map.size, false),
+          "{path}"
+        );
+        // Every tile layer is on the map's grid
+        for layer in &map.layers {
+          if let LayerKind::Tiles { grid, .. } = &layer.kind {
+            assert_eq!(*grid, map.grid(), "{path}: {}", layer.info.name);
+          }
+        }
+        // Tile (x + 2y) mod 4 at every cell but the outer ring
+        let ground = grid_of(&map, "ground");
+        for y in 0..h as i32 {
+          for x in 0..w as i32 {
+            let inside = x > 0 && y > 0 && x < w as i32 - 1 && y < h as i32 - 1;
+            let wanted = inside.then(|| Tile::new(0, (x + 2 * y).rem_euclid(4) as u32));
+            assert_eq!(ground.get(IVec2::new(x, y)), wanted, "{path}: ({x}, {y})");
+          }
+        }
+      }
+    }
+  }
+
+  #[test]
+  fn tmx_grid_values_load_and_unknown_ones_fail_naming_them() {
+    let map_with = |attributes: &str| {
+      format!(
+        "<map {attributes} width=\"1\" height=\"1\" tilewidth=\"16\" tileheight=\"16\"></map>"
+      )
+    };
+    let refused = [
+      ("orientation=\"hexagon\"", "\"hexagon\""),
+      (
+        "orientation=\"staggered\" staggeraxis=\"z\"",
+        "staggeraxis \"z\"",
+      ),
+      (
+        "orientation=\"hexagonal\" staggerindex=\"middle\"",
+        "staggerindex \"middle\"",
+      ),
+      (
+        "orientation=\"hexagonal\" hexsidelength=\"-5\"",
+        "hexsidelength -5",
+      ),
+      (
+        "orientation=\"oblique\" skewy=\"3000000000\"",
+        "skewy 3000000000",
+      ),
+    ];
+    for (attributes, named) in refused {
+      let error = failure(&map_with(attributes));
+      assert!(error.contains("m.tmx") && error.contains(named), "{error}");
+    }
+    let mut world = world_with(&[(
+      "m.tmx",
+      &map_with(
+        "orientation=\"hexagonal\" staggeraxis=\"x\" staggerindex=\"even\" hexsidelength=\"7\"",
+      ),
+    )]);
+    let map = loaded(&mut world, "m.tmx");
+    assert_eq!(
+      map.shape,
+      GridShape::Hexagonal {
+        axis: StaggerAxis::X,
+        index: StaggerIndex::Even,
+        side: 7
+      }
+    );
+    let mut world = world_with(&[("m.tmx", &map_with("orientation=\"oblique\" skewx=\"-10\""))]);
+    let map = loaded(&mut world, "m.tmx");
+    assert_eq!(
+      map.shape,
+      GridShape::Oblique {
+        skew: IVec2::new(-10, 0)
+      }
+    );
+    // A hexagonal layer that collides is refused from TMX as from JSON
+    let mut world = world_with(&[]);
+    let error = load_map(&mut world, "xml/maps/shape-hex-collides.tmx")
+      .err()
+      .unwrap_or_default();
+    assert!(
+      error.contains("shape-hex-collides.tmx")
+        && error.contains("layer \"walls\" on a hexagonal map collides or casts shadows"),
+      "{error}"
     );
   }
 

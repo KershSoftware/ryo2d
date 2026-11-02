@@ -49,10 +49,11 @@ pub struct WorldLevel {
   /// The top-left corner of its rectangle in world pixels
   pub position: Vec2,
   pub size: Vec2,
-  /// Where the map's cell (0, 0) sits in world pixels, where a root
-  /// spawning the level puts its `Transform`: `position` for a bounded
-  /// map, whose rectangle starts at its cell (0, 0); for an infinite map,
-  /// its tile origin, its rectangle starting at its top-left tile
+  /// Where the map's pixel (0, 0) sits in world pixels (its tile origin),
+  /// where a root spawning the level puts its `Transform`: `position` for
+  /// a bounded map, whose rectangle starts there (except an oblique map
+  /// skewed left or up); for an infinite map, cell (0, 0)'s corner, its
+  /// rectangle starting at its top-left tile
   pub origin: Vec2,
   /// The world depth: LDtk's `worldDepth`, where each depth is a floor of
   /// its own (a level on another depth is above or below this one, not

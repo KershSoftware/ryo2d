@@ -11,18 +11,21 @@ use crate::core::tilemap::TileFlip;
 
 const FLIP_H: u32 = 1 << 31;
 const FLIP_V: u32 = 1 << 30;
+/// The diagonal flip, or on a hexagonal map a 60 degree turn
 const FLIP_D: u32 = 1 << 29;
-/// Bit 28 is the hexagonal 120 degree rotation; clearing it with the flips
-/// ignores it in orthogonal maps
+/// A hexagonal map's 120 degree turn, which Tiled ignores on other grids:
+/// the map's build drops it there
+const ROTATE_120: u32 = 1 << 28;
 const FLAG_BITS: u32 = 0xF000_0000;
 
-/// A gid split into its number (0 for empty) and its flips
+/// A gid split into its number (0 for empty) and its flips, all four
 pub(crate) fn decode_gid(gid: u32) -> (u32, TileFlip) {
   let mut bits = 0;
   for (flag, flip) in [
     (FLIP_H, TileFlip::HORIZONTAL),
     (FLIP_V, TileFlip::VERTICAL),
     (FLIP_D, TileFlip::DIAGONAL),
+    (ROTATE_120, TileFlip::HEX_ROTATE_120),
   ] {
     if gid & flag != 0 {
       bits |= flip.bits();
@@ -285,7 +288,7 @@ mod tests {
       decode_gid(0xF000_0000),
       (
         0,
-        TileFlip::HORIZONTAL | TileFlip::VERTICAL | TileFlip::DIAGONAL
+        TileFlip::HORIZONTAL | TileFlip::VERTICAL | TileFlip::DIAGONAL | TileFlip::HEX_ROTATE_120
       )
     );
   }

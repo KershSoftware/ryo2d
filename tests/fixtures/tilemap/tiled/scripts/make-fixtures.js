@@ -448,3 +448,233 @@ measuredFile.write(
     ' "oblique_order": [\n' + orders.join(",\n") + "\n ]}\n"
 );
 measuredFile.commit();
+
+// ---- shapes -----------------------------------------------------------------
+
+// Maps of every grid, in both formats (`maps/shape-*.tmj`, `xml/maps/shape-*.tmx`):
+// the grids `measure` samples, each filled with tiles shaped like its cells
+// (diamonds, hexagons whose corners are clear, rectangles) in four colours,
+// tile (x + 2y) mod 4 at every cell but the map's outer ring, which is left
+// empty so no tile reaches past the edge of Tiled's render; infinite maps
+// of isometric, staggered, hexagonal and oblique grids with tiles at
+// negative cells across chunks; a hexagonal map holding a marker tile with
+// each of the sixteen flag combinations (flips and 60 and 120 degree
+// rotations); a hexagonal map with a layer that collides; and a world
+// listing an isometric map and an infinite hexagonal one, by their tile
+// origins (written as text: Tiled's scripting cannot load or save a world
+// headless). `renders/shape-*.png` is `toImage()` of each bounded map but
+// the colliding one: what Tiled draws. Every tile pixel is opaque or clear.
+var RED = 0xffff0000, GREEN = 0xff00ff00, BLUE = 0xff0000ff, YELLOW = 0xffffff00, WHITE = 0xffffffff;
+var shapeColours = [RED, GREEN, BLUE, YELLOW];
+
+// The outline of a tile image `w` x `h` shaped like a cell of its grid
+function outline(kind, w, h, side) {
+  if (kind === "diamond") return [[w / 2, 0], [w, h / 2], [w / 2, h], [0, h / 2]];
+  if (kind === "hex-y") {
+    var s = Math.max(0, (h - side) / 2);
+    return [[w / 2, 0], [w, s], [w, h - s], [w / 2, h], [0, h - s], [0, s]];
+  }
+  if (kind === "hex-x") {
+    var t = Math.max(0, (w - side) / 2);
+    return [[t, 0], [w - t, 0], [w, h / 2], [w - t, h], [t, h], [0, h / 2]];
+  }
+  return [[0, 0], [w, 0], [w, h], [0, h]];
+}
+
+// Whether pixel (x, y)'s centre is inside the convex outline `points`
+function covers(points, x, y) {
+  var px = x + 0.5, py = y + 0.5, sign = 0;
+  for (var i = 0; i < points.length; i++) {
+    var a = points[i], b = points[(i + 1) % points.length];
+    var cross = (b[0] - a[0]) * (py - a[1]) - (b[1] - a[1]) * (px - a[0]);
+    if (cross === 0) continue;
+    var s = cross > 0 ? 1 : -1;
+    if (sign === 0) sign = s;
+    else if (s !== sign) return false;
+  }
+  return true;
+}
+
+// An embedded tileset of `colours.length` tiles in a row, each shaped by
+// `kind`, its image saved to `images/<file>.png`; `paint(x, y, colour)` may
+// colour a pixel otherwise
+var savedImages = {};
+function shapeTileset(file, kind, w, h, side, colours, paint) {
+  var path = "images/" + file + ".png";
+  if (!savedImages[path]) {
+    var image = new Image(w * colours.length, h, Image.Format_ARGB32);
+    image.fill(0);
+    var points = outline(kind, w, h, side);
+    for (var t = 0; t < colours.length; t++) {
+      for (var y = 0; y < h; y++) {
+        for (var x = 0; x < w; x++) {
+          if (covers(points, x, y)) image.setPixel(t * w + x, y, paint ? paint(x, y, colours[t]) : colours[t]);
+        }
+      }
+    }
+    if (!image.save(dir + path)) throw new Error("make-fixtures.js: " + path + ": not saved");
+    savedImages[path] = true;
+  }
+  var set = new Tileset(file);
+  set.setTileSize(w, h);
+  set.image = dir + path;
+  return set;
+}
+
+function mod4(n) {
+  return ((n % 4) + 4) % 4;
+}
+
+// A map of grid `g` and its tileset, its layers in CSV
+function shapeMap(g) {
+  var map = sampleMap(g);
+  map.layerDataFormat = TileMap.CSV;
+  var kind = g.kind || "rect";
+  var name = "shape-" + kind + "-" + g.tile[0] + "x" + g.tile[1] + (g.side !== undefined ? "-" + g.side : "");
+  var set = shapeTileset(name, kind, g.tile[0], g.tile[1], g.side || 0, shapeColours);
+  map.addTileset(set);
+  return [map, set];
+}
+
+// Tile (x + 2y) mod 4 at every cell of a bounded map but its outer ring
+function fill(layer, set, size) {
+  var edit = layer.edit();
+  for (var y = 1; y < size[1] - 1; y++)
+    for (var x = 1; x < size[0] - 1; x++) edit.setTile(x, y, set.tile(mod4(x + 2 * y)));
+  edit.apply();
+}
+
+var shapeGrids = [
+  { name: "iso", orientation: I, tile: [64, 32], size: [6, 4], kind: "diamond" },
+  { name: "iso-48x32", orientation: I, tile: [48, 32], size: [6, 4], kind: "diamond" },
+  { name: "stag-x-odd", orientation: S, tile: [64, 32], size: [6, 6], axis: AX, index: ODD, kind: "diamond" },
+  { name: "stag-x-even", orientation: S, tile: [64, 32], size: [6, 6], axis: AX, index: EVEN, kind: "diamond" },
+  { name: "stag-y-odd", orientation: S, tile: [64, 32], size: [6, 6], axis: AY, index: ODD, kind: "diamond" },
+  { name: "stag-y-even", orientation: S, tile: [64, 32], size: [6, 6], axis: AY, index: EVEN, kind: "diamond" },
+  { name: "hex-x-odd", orientation: H, tile: [32, 32], size: [6, 6], axis: AX, index: ODD, side: 12, kind: "hex-x" },
+  { name: "hex-x-even", orientation: H, tile: [32, 32], size: [6, 6], axis: AX, index: EVEN, side: 12, kind: "hex-x" },
+  { name: "hex-y-odd", orientation: H, tile: [32, 32], size: [6, 6], axis: AY, index: ODD, side: 12, kind: "hex-y" },
+  { name: "hex-y-even", orientation: H, tile: [32, 32], size: [6, 6], axis: AY, index: EVEN, side: 12, kind: "hex-y" },
+  // Side 0: the staggered grid of its stagger, with diamond tiles
+  { name: "hex-x-side0", orientation: H, tile: [32, 32], size: [6, 6], axis: AX, index: EVEN, side: 0, kind: "hex-x" },
+  { name: "hex-y-side0", orientation: H, tile: [32, 32], size: [6, 6], axis: AY, index: ODD, side: 0, kind: "hex-y" },
+  // A side longer than the tile: rows spread apart, the tiles are boxes
+  { name: "hex-long-side", orientation: H, tile: [32, 32], size: [6, 6], axis: AY, index: ODD, side: 40, kind: "hex-y" },
+  { name: "oblique", orientation: O, tile: [32, 32], size: [6, 6], skew: [8, 12] },
+  { name: "oblique-neg-x", orientation: O, tile: [32, 32], size: [6, 6], skew: [-10, 0] },
+  { name: "oblique-neg-y", orientation: O, tile: [32, 32], size: [6, 6], skew: [0, -12] },
+  // Odd sizes, whose half cells fall on half pixels
+  { name: "odd-ortho", orientation: TileMap.Orthogonal, tile: [33, 17], size: [6, 6] },
+  { name: "odd-iso", orientation: I, tile: [33, 17], size: [6, 4], kind: "diamond" },
+  { name: "odd-stag-x-odd", orientation: S, tile: [33, 17], size: [6, 6], axis: AX, index: ODD, kind: "diamond" },
+  { name: "odd-stag-y-even", orientation: S, tile: [33, 17], size: [6, 6], axis: AY, index: EVEN, kind: "diamond" },
+  { name: "odd-hex-x-odd", orientation: H, tile: [33, 17], size: [6, 6], axis: AX, index: ODD, side: 13, kind: "hex-x" },
+  { name: "odd-hex-y-odd", orientation: H, tile: [33, 17], size: [6, 6], axis: AY, index: ODD, side: 13, kind: "hex-y" },
+  { name: "odd-oblique", orientation: O, tile: [33, 17], size: [6, 6], skew: [7, -5] },
+];
+
+function saveBoth(name, build) {
+  save(build(), tiled.mapFormat("json"), "maps/" + name + ".tmj");
+  save(build(), tiled.mapFormat("tmx"), "xml/maps/" + name + ".tmx");
+}
+
+function renderTo(name, map) {
+  var path = "renders/" + name + ".png";
+  if (!map.toImage().save(dir + path)) throw new Error("make-fixtures.js: " + path + ": not saved");
+}
+
+File.makePath(dir + "renders");
+
+for (var b = 0; b < shapeGrids.length; b++) {
+  (function (g) {
+    var build = function () {
+      var made = shapeMap(g);
+      var layer = new TileLayer("ground");
+      made[0].addLayer(layer);
+      fill(layer, made[1], g.size);
+      return made[0];
+    };
+    saveBoth("shape-" + g.name, build);
+    renderTo("shape-" + g.name, build());
+  })(shapeGrids[b]);
+}
+
+// Infinite maps: tiles at negative cells, across Tiled's chunks and the engine's
+var shapeInfinite = [
+  { name: "infinite-iso", orientation: I, tile: [64, 32], infinite: true, kind: "diamond" },
+  { name: "infinite-stag", orientation: S, tile: [64, 32], infinite: true, axis: AY, index: ODD, kind: "diamond" },
+  { name: "infinite-hex", orientation: H, tile: [32, 32], infinite: true, axis: AY, index: ODD, side: 12, kind: "hex-y" },
+  { name: "infinite-oblique", orientation: O, tile: [32, 32], infinite: true, skew: [8, 12] },
+];
+var shapeInfiniteCells = [[-20, -3], [-1, -1], [0, 0], [5, 2], [40, 10], [-17, 18], [-33, -40]];
+for (var n = 0; n < shapeInfinite.length; n++) {
+  (function (g) {
+    saveBoth("shape-" + g.name, function () {
+      var made = shapeMap(g);
+      var layer = new TileLayer("ground");
+      made[0].addLayer(layer);
+      var edit = layer.edit();
+      for (var i = 0; i < shapeInfiniteCells.length; i++) {
+        var c = shapeInfiniteCells[i];
+        edit.setTile(c[0], c[1], made[1].tile(mod4(c[0] + 2 * c[1])));
+      }
+      edit.apply();
+      return made[0];
+    });
+  })(shapeInfinite[n]);
+}
+
+// The hex rotations: a white hexagon with its top-left quarter red, near
+// regular (56 x 64, side 32), at cell (1 + i mod 4, 1 + i / 4) with flags
+// i: 1 flips it horizontally, 2 vertically, 4 rotates it 60 degrees
+// clockwise and 8 rotates it 120
+var rotations = { orientation: H, tile: [56, 64], size: [6, 6], axis: AY, index: ODD, side: 32 };
+function hexRotations() {
+  var map = sampleMap(rotations);
+  map.layerDataFormat = TileMap.CSV;
+  var set = shapeTileset("shape-marker-56x64-32", "hex-y", 56, 64, 32, [WHITE], function (x, y, colour) {
+    return x < 28 && y < 32 ? RED : colour;
+  });
+  map.addTileset(set);
+  var layer = new TileLayer("markers");
+  map.addLayer(layer);
+  var edit = layer.edit();
+  for (var i = 0; i < 16; i++) {
+    var flags = (i & 1 ? Tile.FlippedHorizontally : 0) | (i & 2 ? Tile.FlippedVertically : 0) |
+      (i & 4 ? Tile.FlippedAntiDiagonally : 0) | (i & 8 ? Tile.RotatedHexagonal120 : 0);
+    edit.setTile(1 + (i % 4), 1 + Math.floor(i / 4), set.tile(0), flags);
+  }
+  edit.apply();
+  return map;
+}
+saveBoth("shape-hex-rotations", hexRotations);
+renderTo("shape-hex-rotations", hexRotations());
+
+// A hexagonal map whose "walls" layer collides, which the engine refuses,
+// over a "ground" layer that says nothing of collision
+saveBoth("shape-hex-collides", function () {
+  var made = shapeMap({ orientation: H, tile: [32, 32], size: [4, 4], axis: AY, index: ODD, side: 12, kind: "hex-y" });
+  var ground = new TileLayer("ground");
+  made[0].addLayer(ground);
+  fill(ground, made[1], [4, 4]);
+  var walls = new TileLayer("walls");
+  made[0].addLayer(walls);
+  walls.setProperty("collides", true);
+  var edit = walls.edit();
+  edit.setTile(1, 1, made[1].tile(2));
+  edit.apply();
+  return made[0];
+});
+
+var shapeWorld = new TextFile(dir + "worlds/shape.world", TextFile.WriteOnly);
+shapeWorld.write(
+  "{\n" +
+    '  "maps": [\n' +
+    '    { "fileName": "../maps/shape-iso.tmj", "x": -400, "y": -200 },\n' +
+    '    { "fileName": "../maps/shape-infinite-hex.tmj", "x": 1000, "y": 500 }\n' +
+    "  ],\n" +
+    '  "onlyShowAdjacentMaps": false,\n' +
+    '  "type": "world"\n' +
+    "}\n"
+);
+shapeWorld.commit();

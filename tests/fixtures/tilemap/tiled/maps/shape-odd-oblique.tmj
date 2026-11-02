@@ -1,0 +1,54 @@
+{ "compressionlevel":-1,
+ "height":6,
+ "infinite":false,
+ "layers":[
+        {
+         "data":[0, 0, 0, 0, 0, 0,
+            0, 4, 1, 2, 3, 0,
+            0, 2, 3, 4, 1, 0,
+            0, 4, 1, 2, 3, 0,
+            0, 2, 3, 4, 1, 0,
+            0, 0, 0, 0, 0, 0],
+         "height":6,
+         "id":1,
+         "name":"ground",
+         "opacity":1,
+         "type":"tilelayer",
+         "visible":true,
+         "width":6,
+         "x":0,
+         "y":0
+        }],
+ "nextlayerid":2,
+ "nextobjectid":1,
+ "orientation":"oblique",
+ "renderorder":"right-down",
+ "skewx":7,
+ "skewy":-5,
+ "tiledversion":"1.12.2",
+ "tileheight":17,
+ "tilesets":[
+        {
+         "columns":4,
+         "firstgid":1,
+         "grid":
+            {
+             "height":0,
+             "orientation":"orthogonal",
+             "width":0
+            },
+         "image":"..\/images\/shape-rect-33x17.png",
+         "imageheight":17,
+         "imagewidth":132,
+         "margin":0,
+         "name":"shape-rect-33x17",
+         "spacing":0,
+         "tilecount":4,
+         "tileheight":17,
+         "tilewidth":33
+        }],
+ "tilewidth":33,
+ "type":"map",
+ "version":"1.10",
+ "width":6
+}

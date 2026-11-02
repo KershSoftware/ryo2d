@@ -74,6 +74,8 @@ fn decode(cell: u32) -> Option<Tile> {
   Some(Tile {
     tileset: ((cell >> ID_BITS) & SET_MASK) as u16,
     id: id1 - 1,
+    // the four flip bits: H, V, the diagonal (a hexagonal 60 degree turn)
+    // and a hexagonal 120 degree turn
     flip: TileFlip::from_bits((cell >> (ID_BITS + SET_BITS)) as u8),
   })
 }

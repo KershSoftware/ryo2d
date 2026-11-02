@@ -35,18 +35,18 @@ use crate::core::ui::Rect;
 ///   load fails, no map matching), and neither are negative numbers nor the
 ///   maps past a gap.
 ///
-/// A world named any other way lists its maps. A bounded map listed
-/// without a `width` and `height`, and every pattern's map, has its
-/// rectangle read from its file: width x tilewidth by height x tileheight
-/// from its place. An infinite map is placed by its tile origin: the
-/// world's x and y are where its cell (0, 0) sits
-/// ([`WorldLevel::origin`]), and its rectangle is its tiles' bounds from
-/// there, as [`TileMap::bounds`] gives them, in pixels, whatever size the
-/// world lists it with; one with no tile takes its origin cell (Tiled
-/// documents no rule for infinite maps in worlds; this is the engine's
-/// reading). The world reads every map it lists or a pattern finds, each
-/// of which then loads again as a dependency, so saving one loads the
-/// world again.
+/// A world named any other way lists its maps. Every map is placed by its
+/// tile origin: the world's x and y are where its pixel (0, 0) sits
+/// ([`WorldLevel::origin`]), and its rectangle is its cells' box on its
+/// grid ([`MapGrid::bounds_of`](super::MapGrid::bounds_of)) from there,
+/// read from its file: a bounded map's every cell (an isometric map's
+/// diamond's box), or the size the world lists it with; an infinite map's
+/// tiles' bounds, as [`TileMap::bounds`] gives them, whatever size the
+/// world lists it with, and one with no tile takes its origin cell (Tiled
+/// documents no rule for infinite or non-orthogonal maps in worlds, and
+/// cannot load one headless to measure; this is the engine's reading).
+/// The world reads every map it lists or a pattern finds, each of which
+/// then loads again as a dependency, so saving one loads the world again.
 ///
 /// Spawn the levels near the player with
 /// [`MapsView::spawn_levels_in`](super::MapsView::spawn_levels_in).
@@ -363,7 +363,9 @@ mod tests {
   use crate::core::asset::{Assets, AssetsView};
   use crate::core::ecs::{Entity, Transform};
   use crate::core::tilemap::test_util::{MapWorld, files_with, maps_landed, world_over};
-  use crate::core::tilemap::{LdtkProject, MapRoot, MapsView, NeighbourDirection};
+  use crate::core::tilemap::{
+    GridShape, LdtkProject, MapRoot, MapsView, NeighbourDirection, StaggerAxis, StaggerIndex,
+  };
   use crate::core::ui::Rect;
 
   fn load_world(
@@ -687,6 +689,64 @@ mod tests {
         bounds.size().as_vec2() * tile
       )
     );
+  }
+
+  #[test]
+  fn a_world_places_isometric_and_infinite_hex_levels_by_their_grid_bounds() {
+    // `shape.world` lists a bounded isometric map at (-400, -200) and an
+    // infinite hexagonal one at (1000, 500): each level's origin (where its
+    // root, the map's pixel (0, 0), spawns) is where the world lists it, and
+    // its rectangle is its cells' box on its grid from there
+    let mut maps = MapWorld::new();
+    let world = load_world(&mut maps.world, "tiled/worlds/shape.world").expect("loads");
+    let layout = layout_of(&maps.world, &world);
+    for (name, at, shape) in [
+      (
+        "../maps/shape-iso.tmj",
+        Vec2::new(-400.0, -200.0),
+        GridShape::Isometric,
+      ),
+      (
+        "../maps/shape-infinite-hex.tmj",
+        Vec2::new(1000.0, 500.0),
+        GridShape::Hexagonal {
+          axis: StaggerAxis::Y,
+          index: StaggerIndex::Odd,
+          side: 12,
+        },
+      ),
+    ] {
+      let path = format!("tiled/{}", name.trim_start_matches("../"));
+      let handle = AssetsView::new(&mut maps.world)
+        .load_now::<TileMap>(&path)
+        .expect("the map loads");
+      let Some(map) = maps.world.resource::<Assets<TileMap>>().get(&handle) else {
+        panic!("{name} is not in the store")
+      };
+      assert_eq!(map.shape, shape, "{name}");
+      let rect = map.grid().bounds_of(map.bounds());
+      let (_, level) = level(&layout, name);
+      assert_eq!(level.origin, at, "{name}");
+      assert_eq!(
+        (level.position, level.size),
+        (
+          at + Vec2::new(rect.x, rect.y),
+          Vec2::new(rect.width, rect.height)
+        ),
+        "{name}"
+      );
+    }
+    // The isometric map's box is its diamond's, (6 + 4) half cells a side,
+    // from its top-left: not 6 x 4 cells of 64 x 32
+    let (_, iso) = level(&layout, "../maps/shape-iso.tmj");
+    assert_eq!(
+      (iso.position, iso.size),
+      (Vec2::new(-400.0, -200.0), Vec2::new(320.0, 160.0))
+    );
+    // The hexagonal one's rows step 22 pixels, not 32: its top row, -40, is
+    // 880 above its origin
+    let (_, hex) = level(&layout, "../maps/shape-infinite-hex.tmj");
+    assert_eq!(hex.position.y, 500.0 - 40.0 * 22.0);
   }
 
   #[test]

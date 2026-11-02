@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<map version="1.10" tiledversion="1.12.2" orientation="hexagonal" renderorder="right-down" width="6" height="6" tilewidth="56" tileheight="64" infinite="0" hexsidelength="32" staggeraxis="y" staggerindex="odd" nextlayerid="2" nextobjectid="1">
+ <tileset firstgid="1" name="shape-marker-56x64-32" tilewidth="56" tileheight="64" tilecount="1" columns="1">
+  <grid orientation="orthogonal" width="0" height="0"/>
+  <image source="../../images/shape-marker-56x64-32.png" width="56" height="64"/>
+ </tileset>
+ <layer id="1" name="markers" width="6" height="6">
+  <data encoding="csv">
+0,0,0,0,0,0,
+0,1,2147483649,1073741825,3221225473,0,
+0,536870913,2684354561,1610612737,3758096385,0,
+0,268435457,2415919105,1342177281,3489660929,0,
+0,805306369,2952790017,1879048193,4026531841,0,
+0,0,0,0,0,0
+</data>
+ </layer>
+</map>

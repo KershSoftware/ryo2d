@@ -337,9 +337,14 @@ impl TileMap {
   }
 
   /// Adds an empty tile layer on top and returns its index: of the map's
-  /// size, or holding any cell on an infinite map, on the map's grid
+  /// size, or holding any cell on an infinite map, on the map's grid. On a
+  /// hexagonal map it neither collides nor casts shadows (`collides` is
+  /// false): hexagonal collision and shadows aren't supported yet
   pub fn add_tile_layer(&mut self, name: &str) -> usize {
-    let info = LayerInfo::new(self.next_layer_id(), name);
+    let mut info = LayerInfo::new(self.next_layer_id(), name);
+    if matches!(self.shape, GridShape::Hexagonal { .. }) {
+      info.collides = false;
+    }
     let tiles = if self.infinite {
       TileGrid::unbounded()
     } else {

@@ -768,9 +768,28 @@ impl MapGrid {
   }
 
   /// The box holding the outlines of the cells from `lo` to `hi`, both
-  /// included: the cells of the first and last two rows and columns hold
-  /// every extreme on every grid
+  /// included
   fn bounds_between(&self, lo: (i64, i64), hi: (i64, i64)) -> Rect {
+    let (min, max) = self.local_box_between(lo, hi);
+    self.rect(min, max)
+  }
+
+  /// The cells from `first` to `last` (both included) as `bounds_of` boxes
+  /// them, in exact `f64` pixels with the origin added: (top-left,
+  /// bottom-right). For checks that a box fits a range, which `f32` rounds
+  /// past at its ends
+  pub(crate) fn exact_box(&self, first: IVec2, last: IVec2) -> (DVec2, DVec2) {
+    let (min, max) = self.local_box_between(
+      (i64::from(first.x), i64::from(first.y)),
+      (i64::from(last.x), i64::from(last.y)),
+    );
+    let origin = self.origin.as_dvec2();
+    (min + origin, max + origin)
+  }
+
+  /// `bounds_between`'s box, local: the cells of the first and last two
+  /// rows and columns hold every extreme on every grid
+  fn local_box_between(&self, lo: (i64, i64), hi: (i64, i64)) -> (DVec2, DVec2) {
     let ends = |a: i64, b: i64| [a, (a + 1).min(b), (b - 1).max(a), b];
     let (mut min, mut max) = (DVec2::INFINITY, DVec2::NEG_INFINITY);
     for y in ends(lo.1, hi.1) {
@@ -780,7 +799,7 @@ impl MapGrid {
         max = max.max(b);
       }
     }
-    self.rect(min, max)
+    (min, max)
   }
 
   /// A cell on the square lattice: its index, or on a staggered grid its

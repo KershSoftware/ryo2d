@@ -3,17 +3,17 @@
 
 use std::collections::HashSet;
 
-use glam::{IVec2, Vec2};
+use glam::{IVec2, UVec2, Vec2};
 use serde::Deserialize;
 
-use super::build::{DependencyPlaces, infinite_bounds, join, load_dep};
+use super::build::{DependencyPlaces, grid_shape, infinite_bounds, join, load_dep};
 use super::json::parse;
 use super::raw::RawMap;
 use super::xml::parse_tmx;
 use crate::core::asset::{AssetError, AssetLoader, AssetPath, LoadContext};
 use crate::core::physics::CellRect;
 use crate::core::tilemap::world::{TileWorld, layout_of_rects};
-use crate::core::tilemap::{TileMap, WorldLevel};
+use crate::core::tilemap::{MapGrid, TileMap, WorldLevel};
 
 /// Most files a pattern's search tries before it stops
 const MAX_PROBES: usize = 1024;
@@ -129,12 +129,15 @@ fn name_with(parts: &[Part], numbers: &[i32]) -> String {
   name
 }
 
-/// A map's rectangle in pixels from its file, as where its top-left lies
-/// from its cell (0, 0) and its size: an infinite map's its tiles' bounds
+/// A map's rectangle in pixels from its file's header, as where its
+/// top-left lies from its pixel (0, 0) (where its root spawns, the world's
+/// x and y) and its size: its cells' box on its grid
+/// ([`MapGrid::bounds_of`], the grid built from the header as the map's
+/// load builds it). An infinite map's cells are its tiles' bounds
 /// ([`infinite_bounds`], what [`TileMap::bounds`] gives the map; its
 /// origin cell when it holds no tile, so it can still spawn), whatever
-/// size the world lists it with; a bounded map's from (0, 0), the size it
-/// is `listed` with, else width x tilewidth by height x tileheight
+/// size the world lists it with; a bounded map's are its width by its
+/// height, and it takes the size it is `listed` with when there is one
 fn map_rect(
   path: &AssetPath,
   bytes: &[u8],
@@ -148,19 +151,33 @@ fn map_rect(
   } else {
     parse(path, bytes)?
   };
-  let tile = Vec2::new(raw.tilewidth as f32, raw.tileheight as f32);
-  if raw.infinite {
-    let mut bounds = infinite_bounds(path, &raw)?;
+  let shape = grid_shape(path, &raw)?;
+  let tile = UVec2::new(raw.tilewidth, raw.tileheight);
+  // An infinite map's width and height mean nothing (Tiled writes 0)
+  let size = if raw.infinite {
+    UVec2::ZERO
+  } else {
+    UVec2::new(raw.width, raw.height)
+  };
+  let grid = MapGrid::for_map(shape, tile, size, raw.infinite);
+  let cells = if raw.infinite {
+    let bounds = infinite_bounds(path, &raw, &grid)?;
     if bounds.is_empty() {
-      bounds = CellRect::new(IVec2::ZERO, IVec2::ONE);
+      CellRect::new(IVec2::ZERO, IVec2::ONE)
+    } else {
+      bounds
     }
-    return Ok((bounds.min.as_vec2() * tile, bounds.size().as_vec2() * tile));
-  }
-  let size = listed.unwrap_or(Vec2::new(
-    raw.width.saturating_mul(raw.tilewidth) as f32,
-    raw.height.saturating_mul(raw.tileheight) as f32,
-  ));
-  Ok((Vec2::ZERO, size))
+  } else {
+    CellRect::from_size(size)
+  };
+  let rect = grid.bounds_of(cells);
+  let boxed = Vec2::new(rect.width, rect.height);
+  let size = if raw.infinite {
+    boxed
+  } else {
+    listed.unwrap_or(boxed)
+  };
+  Ok((Vec2::new(rect.x, rect.y), size))
 }
 
 /// Loads Tiled world files (`.world`) as [`TileWorld`]s: the maps they list

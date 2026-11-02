@@ -25,8 +25,8 @@ mod tests {
   use crate::core::graphics::Image;
   use crate::core::render::batch::BlendMode;
   use crate::core::tilemap::{
-    ImageLayer, LayerInfo, LayerKind, PropertyValue, Tile, TileFlip, TileMap, Tileset,
-    TilesetImage, TilesetSource,
+    GridShape, ImageLayer, LayerInfo, LayerKind, PropertyValue, StaggerAxis, StaggerIndex, Tile,
+    TileFlip, TileMap, Tileset, TilesetImage, TilesetSource,
   };
   use crate::core::ui::Color;
 
@@ -184,12 +184,13 @@ mod tests {
     assert_eq!(decode_gid(0x8000_0007), (7, TileFlip::HORIZONTAL));
     assert_eq!(decode_gid(0x4000_0007), (7, TileFlip::VERTICAL));
     assert_eq!(decode_gid(0x2000_0007), (7, TileFlip::DIAGONAL));
-    assert_eq!(decode_gid(0x1000_0007), (7, TileFlip::NONE));
+    // the hexagonal 120 degree turn, which a map off a hexagonal grid drops
+    assert_eq!(decode_gid(0x1000_0007), (7, TileFlip::HEX_ROTATE_120));
     assert_eq!(
       decode_gid(0xF000_0007),
       (
         7,
-        TileFlip::HORIZONTAL | TileFlip::VERTICAL | TileFlip::DIAGONAL
+        TileFlip::HORIZONTAL | TileFlip::VERTICAL | TileFlip::DIAGONAL | TileFlip::HEX_ROTATE_120
       )
     );
   }
@@ -842,17 +843,457 @@ mod tests {
     assert_eq!(fields.string("name"), Some("x"));
   }
 
+  /// An empty 1 x 1 map of `orientation` with `extra` fields
+  fn grid_json(orientation: &str, extra: &str) -> String {
+    format!(
+      r#"{{"type":"map","orientation":"{orientation}",{extra}"width":1,"height":1,"tilewidth":16,"tileheight":16,"tilesets":[],"layers":[]}}"#
+    )
+  }
+
   #[test]
-  fn isometric_hexagonal_staggered_and_oblique_maps_fail_naming_6b() {
-    for orientation in ["isometric", "hexagonal", "staggered", "oblique"] {
-      let json = format!(
-        r#"{{"type":"map","orientation":"{orientation}","width":1,"height":1,"tilewidth":16,"tileheight":16,"tilesets":[],"layers":[]}}"#
-      );
-      let error = failure(&json);
+  fn unknown_grid_values_and_a_negative_hex_side_fail_naming_them() {
+    let refused = [
+      ("hexagon", "", "\"hexagon\""),
+      ("staggered", r#""staggeraxis":"z","#, "staggeraxis \"z\""),
+      (
+        "hexagonal",
+        r#""staggerindex":"middle","#,
+        "staggerindex \"middle\"",
+      ),
+      ("hexagonal", r#""hexsidelength":-5,"#, "hexsidelength -5"),
+      ("oblique", r#""skewx":4294967296,"#, "skewx 4294967296"),
+      ("oblique", r#""skewy":-4294967296,"#, "skewy -4294967296"),
+    ];
+    for (orientation, extra, named) in refused {
+      let error = failure(&grid_json(orientation, extra));
       assert!(
-        error.contains(orientation) && error.contains("6b"),
+        error.contains("m.tmj") && error.contains(named) && !error.contains("6b"),
         "{error}"
       );
+    }
+    // Fields left out take Tiled's defaults (measured): rows shifted, the
+    // odd ones, a side of 0, no skew
+    let shapes = [
+      ("orthogonal", GridShape::Orthogonal),
+      ("", GridShape::Orthogonal),
+      ("isometric", GridShape::Isometric),
+      (
+        "staggered",
+        GridShape::Staggered {
+          axis: StaggerAxis::Y,
+          index: StaggerIndex::Odd,
+        },
+      ),
+      (
+        "hexagonal",
+        GridShape::Hexagonal {
+          axis: StaggerAxis::Y,
+          index: StaggerIndex::Odd,
+          side: 0,
+        },
+      ),
+      ("oblique", GridShape::Oblique { skew: IVec2::ZERO }),
+    ];
+    for (orientation, shape) in shapes {
+      let map = load_json(&grid_json(orientation, "")).unwrap_or_else(|e| panic!("{e}"));
+      assert_eq!(map.shape, shape, "{orientation}");
+    }
+    // a stagger written on a grid without one means nothing, as in Tiled
+    let map = load_json(&grid_json("isometric", r#""staggeraxis":"x","#)).expect("loads");
+    assert_eq!(map.shape, GridShape::Isometric);
+  }
+
+  /// The colours of the shape fixtures' tiles 0 to 3
+  const SHAPE_COLOURS: [[u8; 4]; 4] = [
+    [255, 0, 0, 255],
+    [0, 255, 0, 255],
+    [0, 0, 255, 255],
+    [255, 255, 0, 255],
+  ];
+
+  /// Loads `renders/{name}.png`, Tiled's `toImage()` of `maps/{name}.tmj`,
+  /// and checks the loaded map against it: the render is the size of the
+  /// map's box on its grid, and the pixel at the centre of each cell of its
+  /// "ground" layer holding a tile is that tile's colour
+  fn assert_placed_as_tileds_render(name: &str) {
+    assert_placed_as_tileds_render_within(name, 0.0);
+  }
+
+  /// `assert_placed_as_tileds_render` where the cells' outlines reach
+  /// `below` pixels past the bottom of the tiles Tiled renders
+  fn assert_placed_as_tileds_render_within(name: &str, below: f32) {
+    let map = load(&format!("maps/{name}.tmj"));
+    let grid = map.grid();
+    let path = format!("{FIXTURES}/renders/{name}.png");
+    let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
+    let render = match image::load_from_memory(&bytes) {
+      Ok(image) => image.to_rgba8(),
+      Err(e) => panic!("{path}: {e}"),
+    };
+    let bounds = grid.bounds_of(map.bounds());
+    assert_eq!(
+      (render.width() as f32, render.height() as f32),
+      (bounds.width, bounds.height - below),
+      "{name}: the render's size"
+    );
+    // Tiled draws from the box's top-left (a negative skew's content is
+    // left of or above the origin)
+    let offset = -Vec2::new(bounds.x, bounds.y);
+    let mut tiles = 0;
+    for y in 0..map.size.y as i32 {
+      for x in 0..map.size.x as i32 {
+        let Some(tile) = cell(&map, "ground", x, y) else {
+          continue;
+        };
+        let at = (grid.cell_center(IVec2::new(x, y)) + offset).floor();
+        let pixel = render.get_pixel(at.x as u32, at.y as u32).0;
+        assert_eq!(
+          pixel, SHAPE_COLOURS[tile.id as usize],
+          "{name}: cell ({x}, {y}), its centre at {at}"
+        );
+        tiles += 1;
+      }
+    }
+    assert!(tiles >= 4, "{name}: {tiles} tiles");
+  }
+
+  #[test]
+  fn odd_and_degenerate_grids_place_as_tiled_measures() {
+    let hex = |axis, index, side| GridShape::Hexagonal { axis, index, side };
+    let (x, y, odd, even) = (
+      StaggerAxis::X,
+      StaggerAxis::Y,
+      StaggerIndex::Odd,
+      StaggerIndex::Even,
+    );
+    let odd_and_degenerate = [
+      // a hexagonal map of side 0, a staggered one
+      ("shape-hex-x-side0", hex(x, even, 0), (32, 32)),
+      ("shape-hex-y-side0", hex(y, odd, 0), (32, 32)),
+      // a side longer than the tile, whose rows spread apart
+      ("shape-hex-long-side", hex(y, odd, 40), (32, 32)),
+      // negative skews
+      (
+        "shape-oblique-neg-x",
+        GridShape::Oblique {
+          skew: IVec2::new(-10, 0),
+        },
+        (32, 32),
+      ),
+      (
+        "shape-oblique-neg-y",
+        GridShape::Oblique {
+          skew: IVec2::new(0, -12),
+        },
+        (32, 32),
+      ),
+      // an isometric ratio other than 2:1
+      ("shape-iso-48x32", GridShape::Isometric, (48, 32)),
+      // odd sizes, whose half cells fall on half pixels
+      ("shape-odd-ortho", GridShape::Orthogonal, (33, 17)),
+      ("shape-odd-iso", GridShape::Isometric, (33, 17)),
+      (
+        "shape-odd-stag-x-odd",
+        GridShape::Staggered {
+          axis: x,
+          index: odd,
+        },
+        (33, 17),
+      ),
+      (
+        "shape-odd-stag-y-even",
+        GridShape::Staggered {
+          axis: y,
+          index: even,
+        },
+        (33, 17),
+      ),
+      ("shape-odd-hex-x-odd", hex(x, odd, 13), (33, 17)),
+      ("shape-odd-hex-y-odd", hex(y, odd, 13), (33, 17)),
+      (
+        "shape-odd-oblique",
+        GridShape::Oblique {
+          skew: IVec2::new(7, -5),
+        },
+        (33, 17),
+      ),
+    ];
+    for (name, shape, (w, h)) in odd_and_degenerate {
+      let map = load(&format!("maps/{name}.tmj"));
+      assert_eq!(map.shape, shape, "{name}");
+      assert_eq!(map.tile_size, UVec2::new(w, h), "{name}");
+      // A hexagon's side longer than its tile: rows step 36 pixels (the
+      // slant, (32 - 40) / 2, and the side), and Tiled stands each tile on
+      // a box 32 tall (the slant twice and the side), so the last row's
+      // outline, the step tall, reaches 4 pixels below Tiled's render
+      let below = if name == "shape-hex-long-side" {
+        4.0
+      } else {
+        0.0
+      };
+      assert_placed_as_tileds_render_within(name, below);
+    }
+    // and the plain grids alike
+    for name in [
+      "shape-iso",
+      "shape-stag-x-odd",
+      "shape-stag-x-even",
+      "shape-stag-y-odd",
+      "shape-stag-y-even",
+      "shape-hex-x-odd",
+      "shape-hex-x-even",
+      "shape-hex-y-odd",
+      "shape-hex-y-even",
+      "shape-oblique",
+    ] {
+      assert_placed_as_tileds_render(name);
+    }
+  }
+
+  /// The cells and tiles of the shape fixtures' infinite maps
+  const SHAPE_INFINITE_CELLS: [(i32, i32); 7] = [
+    (-20, -3),
+    (-1, -1),
+    (0, 0),
+    (5, 2),
+    (40, 10),
+    (-17, 18),
+    (-33, -40),
+  ];
+
+  #[test]
+  fn infinite_maps_of_every_grid_load_their_chunks() {
+    let maps = [
+      ("shape-infinite-iso", GridShape::Isometric, (64, 32)),
+      (
+        "shape-infinite-stag",
+        GridShape::Staggered {
+          axis: StaggerAxis::Y,
+          index: StaggerIndex::Odd,
+        },
+        (64, 32),
+      ),
+      (
+        "shape-infinite-hex",
+        GridShape::Hexagonal {
+          axis: StaggerAxis::Y,
+          index: StaggerIndex::Odd,
+          side: 12,
+        },
+        (32, 32),
+      ),
+      (
+        "shape-infinite-oblique",
+        GridShape::Oblique {
+          skew: IVec2::new(8, 12),
+        },
+        (32, 32),
+      ),
+    ];
+    for (name, shape, (w, h)) in maps {
+      let map = load(&format!("maps/{name}.tmj"));
+      assert!(map.infinite && map.size == UVec2::ZERO, "{name}");
+      assert_eq!(map.shape, shape, "{name}");
+      assert_eq!(map.tile_size, UVec2::new(w, h), "{name}");
+      // an infinite map's grid has its (0, 0) at the layer's, isometric too
+      assert_eq!(map.grid().origin, Vec2::ZERO, "{name}");
+      for (x, y) in SHAPE_INFINITE_CELLS {
+        let id = (x + 2 * y).rem_euclid(4) as u32;
+        assert_eq!(
+          cell(&map, "ground", x, y),
+          Some(Tile::new(0, id)),
+          "{name}: ({x}, {y})"
+        );
+      }
+      let ground = grid_of(&map, "ground");
+      let held: usize = ground
+        .chunk_coords()
+        .filter_map(|chunk| ground.chunk_cells(chunk))
+        .map(|cells| cells.iter().filter(|&&c| c != 0).count())
+        .sum();
+      assert_eq!(held, SHAPE_INFINITE_CELLS.len(), "{name}");
+      // bounds hold every tile, and nothing more
+      assert_eq!(
+        map.bounds(),
+        crate::core::physics::CellRect::new(IVec2::new(-33, -40), IVec2::new(41, 19)),
+        "{name}"
+      );
+    }
+    // A chunk's pixels are its cells' on the map's grid: one far up and
+    // right, whose cells' pixels an i32 holds as squares of 64 x 32, is past
+    // it as diamonds, whose x is the column less the row in half cells
+    let far = chunked_layer(1, "far", &chunk(33_000_000, -67_000_000, (16, 16), 256));
+    let square = infinite_json(&far).replace(
+      r#""tilewidth":16,"tileheight":16"#,
+      r#""tilewidth":64,"tileheight":32"#,
+    );
+    load_json(&square).unwrap_or_else(|e| panic!("{e}"));
+    let diamond = square.replace(
+      r#""orientation":"orthogonal""#,
+      r#""orientation":"isometric""#,
+    );
+    let error = failure(&diamond);
+    assert!(
+      error.contains(r#"layer "far""#) && error.contains("pixels"),
+      "{error}"
+    );
+  }
+
+  #[test]
+  fn hex_rotation_flags_survive_loading_and_are_dropped_off_hex_maps() {
+    let map = load("maps/shape-hex-rotations.tmj");
+    assert_eq!(
+      map.shape,
+      GridShape::Hexagonal {
+        axis: StaggerAxis::Y,
+        index: StaggerIndex::Odd,
+        side: 32
+      }
+    );
+    // Cell (1 + i % 4, 1 + i / 4) holds the marker with flags i: 1 flips it
+    // horizontally (0x8...), 2 vertically (0x4...), 4 turns it 60 degrees
+    // (0x2...) and 8 120 (0x1...)
+    for i in 0..16 {
+      let mut flip = TileFlip::NONE;
+      for (bit, f) in [
+        (1, TileFlip::HORIZONTAL),
+        (2, TileFlip::VERTICAL),
+        (4, TileFlip::HEX_ROTATE_60),
+        (8, TileFlip::HEX_ROTATE_120),
+      ] {
+        if i & bit != 0 {
+          flip = flip | f;
+        }
+      }
+      assert_eq!(
+        cell(&map, "markers", 1 + i % 4, 1 + i / 4),
+        Some(Tile::new(0, 0).with_flip(flip)),
+        "flags {i}"
+      );
+    }
+    // Off hexagonal maps Tiled ignores the 120 degree bit, and so does the
+    // load, in layers and tile objects alike
+    let (h, v, d) = (TileFlip::HORIZONTAL, TileFlip::VERTICAL, TileFlip::DIAGONAL);
+    let mixed = load("maps/mixed.tmj");
+    assert_eq!(cell(&mixed, "flips", 0, 2), Some(Tile::new(0, 0)));
+    let layers = format!(
+      "{},{}",
+      tile_layer("").replace("[0,0,0,0]", "[268435457,4026531841,0,0]"),
+      r#"{"id":2,"name":"things","type":"objectgroup","objects":[{"id":1,"gid":268435457,"x":0,"y":16,"width":16,"height":16}]}"#
+    );
+    for (orientation, kept) in [
+      ("orthogonal", false),
+      ("isometric", false),
+      ("staggered", false),
+      ("oblique", false),
+      ("hexagonal", true),
+    ] {
+      let json = map_json("", &layers, SET_REF).replace(
+        r#""orientation":"orthogonal""#,
+        &format!(r#""orientation":"{orientation}""#),
+      );
+      let map = load_json(&json).unwrap_or_else(|e| panic!("{orientation}: {e}"));
+      let r120 = if kept {
+        TileFlip::HEX_ROTATE_120
+      } else {
+        TileFlip::NONE
+      };
+      assert_eq!(
+        cell(&map, "ground", 0, 0),
+        Some(Tile::new(0, 0).with_flip(r120)),
+        "{orientation}"
+      );
+      assert_eq!(
+        cell(&map, "ground", 1, 0),
+        Some(Tile::new(0, 0).with_flip(h | v | d | r120)),
+        "{orientation}"
+      );
+      let LayerKind::Objects(objects) = &layer(&map, "things").kind else {
+        panic!("not objects")
+      };
+      assert_eq!(
+        objects[0].tile,
+        Some(Tile::new(0, 0).with_flip(r120)),
+        "{orientation}"
+      );
+    }
+  }
+
+  /// The map at `path` written as `text`, over the fixture files
+  fn load_text(path: &str, text: &str) -> Result<TileMap, String> {
+    let mut world = world_over(files_with(&[(path, text)]));
+    load_in(&mut world, path)
+  }
+
+  #[test]
+  fn a_hex_layer_that_collides_is_refused_and_one_that_does_not_loads() {
+    const REFUSAL: &str = "layer \"walls\" on a hexagonal map collides or casts shadows; hexagonal collision and shadows aren't supported yet: set its collides and occludes properties to false";
+    let error = match load_in(
+      &mut world_over(files_with(&[])),
+      "maps/shape-hex-collides.tmj",
+    ) {
+      Ok(_) => panic!("a hexagonal layer that collides loaded"),
+      Err(error) => error,
+    };
+    assert!(
+      error.contains("shape-hex-collides.tmj") && error.contains(REFUSAL),
+      "{error}"
+    );
+    let path = format!("{FIXTURES}/maps/shape-hex-collides.tmj");
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
+    assert_eq!(text.matches(r#""name":"collides""#).count(), 1);
+    let at = "maps/hex-walls.tmj";
+    // A layer that casts shadows is refused alike
+    let occludes = text.replace(r#""name":"collides""#, r#""name":"occludes""#);
+    let error = load_text(at, &occludes).err().unwrap_or_default();
+    assert!(error.contains(REFUSAL), "{error}");
+    // One that says it does neither loads
+    let neither = text.replace(r#""value":true"#, r#""value":false"#);
+    let map = load_text(at, &neither).unwrap_or_else(|e| panic!("{e}"));
+    assert!(!info(&map, "walls").collides);
+    // and one that says nothing of it loads not colliding, nor casting
+    // shadows, as the "ground" layer beside it does
+    let silent = text.replace(r#""name":"collides""#, r#""name":"note""#);
+    let map = load_text(at, &silent).unwrap_or_else(|e| panic!("{e}"));
+    for name in ["walls", "ground"] {
+      let info = info(&map, name);
+      assert!(
+        !info.collides && !info.occludes.unwrap_or(info.collides),
+        "{name}"
+      );
+    }
+    // A tile layer added to a hexagonal map in code does not collide;
+    // on any other grid it does, as before
+    let mut hex = TileMap::new(UVec2::splat(4), UVec2::splat(32)).with_shape(map.shape);
+    let walls = hex.add_tile_layer("walls");
+    assert!(!hex.layers[walls].info.collides);
+    let mut iso =
+      TileMap::new(UVec2::splat(4), UVec2::new(64, 32)).with_shape(GridShape::Isometric);
+    let walls = iso.add_tile_layer("walls");
+    assert!(iso.layers[walls].info.collides);
+  }
+
+  #[test]
+  fn render_order_warns_only_on_orthogonal_and_oblique_maps() {
+    // Tiled draws orthogonal and oblique maps in their render order and
+    // every other grid right-down whatever it says (measured)
+    for (orientation, warns) in [
+      ("orthogonal", true),
+      ("oblique", true),
+      ("isometric", false),
+      ("staggered", false),
+      ("hexagonal", false),
+    ] {
+      let file = format!("order-{orientation}-5c1e.tmj");
+      let json = grid_json(orientation, r#""renderorder":"left-up","#);
+      let mut world = world_over(files_with(&[(&file, &json)]));
+      load_in(&mut world, &file).unwrap_or_else(|e| panic!("{e}"));
+      let warned = warnings_about(&file);
+      let count = warned
+        .iter()
+        .filter(|w| w.contains("render order \"left-up\""))
+        .count();
+      assert_eq!(count, usize::from(warns), "{orientation}: {warned:#?}");
     }
   }
 

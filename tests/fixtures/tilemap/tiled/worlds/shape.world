@@ -1,0 +1,8 @@
+{
+  "maps": [
+    { "fileName": "../maps/shape-iso.tmj", "x": -400, "y": -200 },
+    { "fileName": "../maps/shape-infinite-hex.tmj", "x": 1000, "y": 500 }
+  ],
+  "onlyShowAdjacentMaps": false,
+  "type": "world"
+}

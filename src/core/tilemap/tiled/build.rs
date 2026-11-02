@@ -19,8 +19,9 @@ use crate::core::physics::CellRect;
 use crate::core::render::batch::BlendMode;
 use crate::core::tilemap::map::tiles_bounds;
 use crate::core::tilemap::{
-  CHUNK_SIZE, ImageLayer, LayerKind, MapGrid, MapLayer, Tile, TileData, TileFrame, TileGrid,
-  TileMap, TileShape, Tileset, TilesetImage, TilesetSource,
+  CHUNK_SIZE, GridShape, ImageLayer, LayerKind, MapGrid, MapLayer, StaggerAxis, StaggerIndex, Tile,
+  TileData, TileFlip, TileFrame, TileGrid, TileMap, TileShape, Tileset, TilesetImage,
+  TilesetSource,
 };
 use crate::core::ui::Color;
 use glam::{IVec2, UVec2, Vec2};
@@ -492,8 +493,6 @@ struct Builder<'p, 'a> {
   size: UVec2,
   /// Whether the map is infinite: its tile layers' cells are in chunks
   infinite: bool,
-  /// The map's cell size
-  tile_size: UVec2,
   /// The map's grid, which every tile layer copies
   grid: MapGrid,
   /// Each tileset's first gid and its index, by first gid
@@ -515,7 +514,7 @@ fn tile_cells(
   path: &AssetPath,
   layers: &[RawLayer],
   size: UVec2,
-  tile_size: UVec2,
+  grid: &MapGrid,
   depth: usize,
 ) -> Result<u64, AssetError> {
   let mut total = 0u64;
@@ -526,12 +525,12 @@ fn tile_cells(
   for l in layers {
     let place = || format!("layer {:?}", l.name);
     let cells = match (l.ty.as_str(), &l.chunks) {
-      ("tilelayer", Some(chunks)) => chunked_cells(path, &place(), chunks, tile_size)?,
+      ("tilelayer", Some(chunks)) => chunked_cells(path, &place(), chunks, grid)?,
       ("tilelayer", None) => {
         let (w, h) = (l.width.unwrap_or(size.x), l.height.unwrap_or(size.y));
         layer_cells(UVec2::new(w, h)).map_err(|what| fail(path, &place(), what))?
       }
-      ("group", _) => tile_cells(path, &l.layers, size, tile_size, depth + 1)?,
+      ("group", _) => tile_cells(path, &l.layers, size, grid, depth + 1)?,
       _ => 0,
     };
     total = total.saturating_add(cells);
@@ -552,13 +551,13 @@ fn chunked_cells(
   path: &AssetPath,
   place: &str,
   chunks: &[RawChunk],
-  tile_size: UVec2,
+  grid: &MapGrid,
 ) -> Result<u64, AssetError> {
   let per_chunk = u64::from(CHUNK_SIZE * CHUNK_SIZE);
   let mut read = 0u64;
   let mut reached: FastSet<IVec2> = FastSet::default();
   for (index, chunk) in chunks.iter().enumerate() {
-    let (origin, size) = check_chunk(chunk, tile_size)
+    let (origin, size) = check_chunk(chunk, grid)
       .map_err(|what| fail(path, &chunk_place(place, index, chunk), what))?;
     read = read.saturating_add(u64::from(size.x) * u64::from(size.y));
     if read > MAX_CELLS {
@@ -598,7 +597,7 @@ fn chunked_grid(
   path: &AssetPath,
   place: &str,
   raw: &RawLayer,
-  tile_size: UVec2,
+  grid: &MapGrid,
   mut cells: impl FnMut(&mut [u32], IVec2, u32) -> Result<(), String>,
 ) -> Result<TileGrid, AssetError> {
   if raw.chunks.is_none() && raw.data.as_ref().is_some_and(holds_data) {
@@ -608,12 +607,12 @@ fn chunked_grid(
       "an infinite map's layer keeps its cells in chunks, not data",
     ));
   }
-  let mut grid = TileGrid::unbounded();
+  let mut tiles = TileGrid::unbounded();
   for (index, chunk) in raw.chunks.iter().flatten().enumerate() {
     let at = chunk_place(place, index, chunk);
     // Checked with the map's cells before anything was decoded: this only
     // reads its place and size again
-    let (origin, size) = check_chunk(chunk, tile_size).map_err(|e| fail(path, &at, e))?;
+    let (origin, size) = check_chunk(chunk, grid).map_err(|e| fail(path, &at, e))?;
     let expected = (size.x as usize) * (size.y as usize);
     // Its data as long as its size before any is decoded
     let data = match &chunk.data {
@@ -635,24 +634,27 @@ fn chunked_grid(
     )
     .map_err(|e| fail(path, &at, e))?;
     cells(&mut decoded, origin, size.x).map_err(|e| fail(path, &at, e))?;
-    grid.write_rows(origin, size.x as usize, &decoded);
+    tiles.write_rows(origin, size.x as usize, &decoded);
   }
-  Ok(grid)
+  Ok(tiles)
 }
 
 /// The cells an infinite map's tile layers (in groups too) hold tiles in,
-/// read from what its file says (`raw`) without loading it, for a world
-/// file's level rectangle: the map's cells counted against the caps, then
-/// its chunks checked, decoded and placed as its load does, and their
-/// rectangle found by the function [`TileMap::bounds`] uses, so the two
-/// agree. Empty when the map holds no tile. A chunk or count its load
-/// refuses fails here too
-pub(crate) fn infinite_bounds(path: &AssetPath, raw: &RawMap) -> Result<CellRect, AssetError> {
-  let tile_size = UVec2::new(raw.tilewidth, raw.tileheight);
-  if tile_size.min_element() == 0 {
+/// read from what its file says (`raw`, on `grid`, the map's) without
+/// loading it, for a world file's level rectangle: the map's cells counted
+/// against the caps, then its chunks checked, decoded and placed as its
+/// load does, and their rectangle found by the function
+/// [`TileMap::bounds`] uses, so the two agree. Empty when the map holds no
+/// tile. A chunk or count its load refuses fails here too
+pub(crate) fn infinite_bounds(
+  path: &AssetPath,
+  raw: &RawMap,
+  grid: &MapGrid,
+) -> Result<CellRect, AssetError> {
+  if grid.cell.min_element() == 0 {
     return Err(fail(path, "map", "the tile size is 0"));
   }
-  let cells = tile_cells(path, &raw.layers, UVec2::ZERO, tile_size, 0)?;
+  let cells = tile_cells(path, &raw.layers, UVec2::ZERO, grid, 0)?;
   check_map_cells(path, "map", cells)?;
   // Any tile is a tile here: which one is the map load's business
   let Some(tile) = TileGrid::encode(Some(Tile::new(0, 0))) else {
@@ -670,18 +672,12 @@ pub(crate) fn infinite_bounds(path: &AssetPath, raw: &RawMap) -> Result<CellRect
         "group" => pending.push((&layer.layers, depth + 1)),
         "tilelayer" => {
           let place = format!("layer {:?}", layer.name);
-          grids.push(chunked_grid(
-            path,
-            &place,
-            layer,
-            tile_size,
-            |gids, _, _| {
-              for gid in gids.iter_mut() {
-                *gid = if decode_gid(*gid).0 == 0 { 0 } else { tile };
-              }
-              Ok(())
-            },
-          )?);
+          grids.push(chunked_grid(path, &place, layer, grid, |gids, _, _| {
+            for gid in gids.iter_mut() {
+              *gid = if decode_gid(*gid).0 == 0 { 0 } else { tile };
+            }
+            Ok(())
+          })?);
         }
         _ => {}
       }
@@ -702,13 +698,13 @@ fn chunk_place(layer: &str, index: usize, chunk: &RawChunk) -> String {
 /// Where `chunk`'s first cell is and its size in cells, once it is a
 /// chunk the engine can hold: its `x`, `y`, `width` and `height` all
 /// stated (Tiled writes each; one left out is a broken file, not a 0), a
-/// size of a cell or more, within what a layer holds, and every cell's
-/// pixels (its cell times `tile_size`, which is not zero) a number an
-/// `i32` holds. Checked before anything is decoded or allocated, so a
-/// chunk far past the cells and pixels the engine counts in fails naming
-/// it, and a map's cells are counted from its chunks' places and sizes
-/// alone
-fn check_chunk(chunk: &RawChunk, tile_size: UVec2) -> Result<(IVec2, UVec2), String> {
+/// size of a cell or more, within what a layer holds, every cell one an
+/// `i32` holds, and every cell's pixels (its outline on `grid`, the map's)
+/// numbers an `i32` holds. Checked before anything is decoded or
+/// allocated, so a chunk far past the cells and pixels the engine counts
+/// in fails naming it, and a map's cells are counted from its chunks'
+/// places and sizes alone
+fn check_chunk(chunk: &RawChunk, grid: &MapGrid) -> Result<(IVec2, UVec2), String> {
   let stated =
     |value: Option<i64>, name: &str| value.ok_or_else(|| format!("it does not state its `{name}`"));
   let (x, y) = (stated(chunk.x, "x")?, stated(chunk.y, "y")?);
@@ -729,24 +725,23 @@ fn check_chunk(chunk: &RawChunk, tile_size: UVec2) -> Result<(IVec2, UVec2), Str
       "{w} x {h} cells is past the {MAX_CELLS} cells a layer holds"
     ));
   };
-  // The first cell's top-left pixel and the last cell's bottom-right one,
-  // in i128: no product of these overflows it
-  let fits = |at: i64, side: i64, tile: u32| {
-    let (first, end) = (i128::from(at), i128::from(at) + i128::from(side));
-    let tile = i128::from(tile);
-    first * tile >= i128::from(i32::MIN) && end * tile <= i128::from(i32::MAX)
+  // Its first and last cells, each one an i32 holds: on a grid whose step
+  // is under a pixel (a staggered map of 1-pixel tiles) a cell past one can
+  // still sit at a pixel within it
+  let cell = |x: i64, y: i64| Some(IVec2::new(i32::try_from(x).ok()?, i32::try_from(y).ok()?));
+  let ends = cell(x, y).zip(cell(x.saturating_add(w - 1), y.saturating_add(h - 1)));
+  // and the box of their outlines on the grid, in exact pixels
+  let fits = |(first, last): &(IVec2, IVec2)| {
+    let (min, max) = grid.exact_box(*first, *last);
+    min.min_element() >= f64::from(i32::MIN) && max.max_element() <= f64::from(i32::MAX)
   };
-  let origin = i32::try_from(x)
-    .ok()
-    .zip(i32::try_from(y).ok())
-    .filter(|_| fits(x, w, tile_size.x) && fits(y, h, tile_size.y));
-  let Some((x, y)) = origin else {
+  let Some((first, _)) = ends.filter(fits) else {
     return Err(
-      "its cells reach past the pixels a map holds (a cell's place in pixels, its cell times the tile size, must fit a 32-bit integer)"
+      "its cells reach past the pixels a map holds (a cell's place in pixels on the map's grid must fit a 32-bit integer)"
         .to_string(),
     );
   };
-  Ok((IVec2::new(x, y), size))
+  Ok((first, size))
 }
 
 /// Fails if layers holding `cells` together are past [`MAX_MAP_CELLS`]
@@ -797,6 +792,11 @@ impl Builder<'_, '_> {
     })?;
     self.next_id = id.checked_add(1);
     Ok(id)
+  }
+
+  /// Whether the map's grid is hexagonal
+  fn hex(&self) -> bool {
+    matches!(self.grid.shape, GridShape::Hexagonal { .. })
   }
 
   fn layers(
@@ -851,6 +851,18 @@ impl Builder<'_, '_> {
       .px
       .read(&place, &raw.properties, raw.class.as_deref())?;
     let is_tiles = raw.ty == "tilelayer";
+    // Hexagonal collision and shadows aren't supported yet: a hexagonal
+    // map's tile layers do neither unless they say so, which is refused
+    let hex_tiles = is_tiles && self.hex();
+    if hex_tiles && (props.bool("collides") == Some(true) || props.bool("occludes") == Some(true)) {
+      return Err(AssetError::decode(
+        &path,
+        format!(
+          "layer {:?} on a hexagonal map collides or casts shadows; hexagonal collision and shadows aren't supported yet: set its collides and occludes properties to false",
+          raw.name
+        ),
+      ));
+    }
     let mut used = Vec::new();
     let kind = match raw.ty.as_str() {
       "tilelayer" => {
@@ -860,7 +872,7 @@ impl Builder<'_, '_> {
       }
       "objectgroup" => {
         let mut highest = vec![None; self.first_gids.len()];
-        let objects = build_objects(
+        let mut objects = build_objects(
           &mut self.objects,
           &self.first_gids,
           cx,
@@ -869,6 +881,12 @@ impl Builder<'_, '_> {
           std::mem::take(&mut raw.objects),
           &mut highest,
         )?;
+        // Tiled ignores the 120 degree turn off hexagonal maps
+        if !self.hex() {
+          for tile in objects.iter_mut().filter_map(|o| o.tile.as_mut()) {
+            tile.flip = tile.flip.without(TileFlip::HEX_ROTATE_120);
+          }
+        }
         used = highest
           .into_iter()
           .enumerate()
@@ -915,7 +933,7 @@ impl Builder<'_, '_> {
     info.parallax = here.parallax;
     info.visible = here.visible;
     info.blend = here.blend;
-    info.collides = props.bool("collides").unwrap_or(is_tiles);
+    info.collides = props.bool("collides").unwrap_or(is_tiles && !hex_tiles);
     info.occludes = props.bool("occludes");
     info.y_sorted = props.bool("y_sort").unwrap_or(false);
     info.lit = props.bool("lit").unwrap_or(true);
@@ -940,8 +958,9 @@ impl Builder<'_, '_> {
     let mut highest: Vec<Option<u32>> = vec![None; self.first_gids.len()];
     // Each Tiled chunk's first and last engine chunk
     let mut touched: Vec<(IVec2, IVec2)> = Vec::new();
+    let map_grid = self.grid;
     let mut grid = match (self.infinite, &raw.chunks) {
-      (true, _) => chunked_grid(&path, place, raw, self.tile_size, |gids, origin, width| {
+      (true, _) => chunked_grid(&path, place, raw, &map_grid, |gids, origin, width| {
         // A chunk of a cell or more, its last cell one an `i32` holds
         // (`check_chunk`)
         let rows = (gids.len() as u32).checked_div(width).unwrap_or(0);
@@ -1030,11 +1049,16 @@ impl Builder<'_, '_> {
     // The tileset of the last gid, which the next is most likely in: its
     // first gid, the first of the next tileset, and its index
     let mut last: Option<(u32, u32, u16)> = None;
+    let hex = self.hex();
     for (i, slot) in gids.iter_mut().enumerate() {
-      let (gid, flip) = decode_gid(*slot);
+      let (gid, mut flip) = decode_gid(*slot);
       if gid == 0 {
         *slot = 0;
         continue;
+      }
+      // Tiled ignores the 120 degree turn off hexagonal maps
+      if !hex {
+        flip = flip.without(TileFlip::HEX_ROTATE_120);
       }
       let (first, tileset) = match last {
         Some((first, end, tileset)) if (first..end).contains(&gid) => (first, tileset),
@@ -1102,6 +1126,87 @@ fn drawn_out_of_order(objects: &[crate::core::tilemap::MapObjectData]) -> bool {
   false
 }
 
+/// The grid a map's file says it has (`raw`, the file at `path`): its
+/// orientation (orthogonal when not written), and the parameters Tiled
+/// writes for it, each defaulting where it is left out as Tiled's do
+/// (measured): a staggered or hexagonal map's stagger axis and index (`y`
+/// and `odd`), a hexagonal map's side (0), an oblique map's skews (0). An
+/// orientation, axis or index Tiled has none of, a negative side, or a skew
+/// an `i32` does not hold fails naming it. A parameter of another grid's is
+/// not read
+pub(crate) fn grid_shape(path: &AssetPath, raw: &RawMap) -> Result<GridShape, AssetError> {
+  let place = "map";
+  let axis = || match raw.staggeraxis.as_deref() {
+    None | Some("") | Some("y") => Ok(StaggerAxis::Y),
+    Some("x") => Ok(StaggerAxis::X),
+    Some(other) => Err(fail(
+      path,
+      place,
+      format!("staggeraxis {other:?} is not one Tiled has (x or y)"),
+    )),
+  };
+  let index = || match raw.staggerindex.as_deref() {
+    None | Some("") | Some("odd") => Ok(StaggerIndex::Odd),
+    Some("even") => Ok(StaggerIndex::Even),
+    Some(other) => Err(fail(
+      path,
+      place,
+      format!("staggerindex {other:?} is not one Tiled has (odd or even)"),
+    )),
+  };
+  let skew = |value: i64, name: &str| {
+    i32::try_from(value).map_err(|_| {
+      fail(
+        path,
+        place,
+        format!("{name} {value} is past the pixels a skew can be (a 32-bit integer)"),
+      )
+    })
+  };
+  Ok(match raw.orientation.as_str() {
+    "" | "orthogonal" => GridShape::Orthogonal,
+    "isometric" => GridShape::Isometric,
+    "staggered" => GridShape::Staggered {
+      axis: axis()?,
+      index: index()?,
+    },
+    "hexagonal" => {
+      let side = raw.hexsidelength.unwrap_or(0);
+      if side < 0 {
+        return Err(fail(
+          path,
+          place,
+          format!("hexsidelength {side} is negative: a hexagon's side is 0 or more pixels"),
+        ));
+      }
+      let Ok(side) = u32::try_from(side) else {
+        return Err(fail(
+          path,
+          place,
+          format!("hexsidelength {side} is past the pixels a side can be (a 32-bit integer)"),
+        ));
+      };
+      GridShape::Hexagonal {
+        axis: axis()?,
+        index: index()?,
+        side,
+      }
+    }
+    "oblique" => GridShape::Oblique {
+      skew: IVec2::new(skew(raw.skewx, "skewx")?, skew(raw.skewy, "skewy")?),
+    },
+    other => {
+      return Err(fail(
+        path,
+        place,
+        format!(
+          "orientation {other:?} is not one Tiled has (orthogonal, isometric, staggered, hexagonal or oblique)"
+        ),
+      ));
+    }
+  })
+}
+
 /// A map from what its file says. Tilesets named by `source` and images load
 /// as dependencies of the file being loaded, resolved against its folder
 pub(crate) fn build_map(
@@ -1111,20 +1216,14 @@ pub(crate) fn build_map(
 ) -> Result<TileMap, AssetError> {
   let path = cx.path().clone();
   let place = "map";
-  match raw.orientation.as_str() {
-    "" | "orthogonal" => {}
-    other => {
-      return Err(fail(
-        &path,
-        place,
-        format!("{other} maps are not supported yet; they arrive in sub-project 6b"),
-      ));
-    }
-  }
+  let shape = grid_shape(&path, &raw)?;
   if raw.tilewidth == 0 || raw.tileheight == 0 {
     return Err(fail(&path, place, "the tile size is 0"));
   }
-  if !matches!(raw.renderorder.as_str(), "" | "right-down") {
+  // Tiled draws orthogonal and oblique maps in their render order, and
+  // every other grid right-down whatever it says (measured)
+  let ordered = matches!(shape, GridShape::Orthogonal | GridShape::Oblique { .. });
+  if ordered && !matches!(raw.renderorder.as_str(), "" | "right-down") {
     px.unread.note(
       format!(
         "the render order {:?} is not read: tiles draw right-down, which differs where tiles reach past their cells",
@@ -1152,7 +1251,8 @@ pub(crate) fn build_map(
   };
   let mut map = TileMap::new(size, UVec2::new(raw.tilewidth, raw.tileheight));
   map.infinite = raw.infinite;
-  let cells = tile_cells(&path, &raw.layers, map.size, map.tile_size, 0)?;
+  map.shape = shape;
+  let cells = tile_cells(&path, &raw.layers, map.size, &map.grid(), 0)?;
   check_map_cells(&path, place, cells)?;
   map.class = raw.class.clone().filter(|c| !c.is_empty());
   map.parallax_origin = Vec2::new(raw.parallaxoriginx, raw.parallaxoriginy);
@@ -1238,7 +1338,6 @@ pub(crate) fn build_map(
     path: path.clone(),
     size: map.size,
     infinite: map.infinite,
-    tile_size: map.tile_size,
     grid: map.grid(),
     first_gids,
     next_id: max_layer_id(&raw.layers).checked_add(1),
@@ -1363,8 +1462,8 @@ mod tests {
   /// The cells a map of `layers` counts against the caps, or why it fails
   fn count(layers: &[RawLayer]) -> Result<u64, String> {
     let path = AssetPath::parse("m.tmj").map_err(|e| e.report())?;
-    let cells =
-      tile_cells(&path, layers, UVec2::ZERO, UVec2::splat(16), 0).map_err(|e| e.report())?;
+    let grid = MapGrid::new(GridShape::Orthogonal, UVec2::splat(16));
+    let cells = tile_cells(&path, layers, UVec2::ZERO, &grid, 0).map_err(|e| e.report())?;
     check_map_cells(&path, "map", cells).map_err(|e| e.report())?;
     Ok(cells)
   }

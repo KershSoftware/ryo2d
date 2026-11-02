@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<map version="1.10" tiledversion="1.12.2" orientation="isometric" renderorder="right-down" width="6" height="4" tilewidth="64" tileheight="32" infinite="0" nextlayerid="2" nextobjectid="1">
+ <tileset firstgid="1" name="shape-diamond-64x32" tilewidth="64" tileheight="32" tilecount="4" columns="4">
+  <grid orientation="orthogonal" width="0" height="0"/>
+  <image source="../../images/shape-diamond-64x32.png" width="256" height="32"/>
+ </tileset>
+ <layer id="1" name="ground" width="6" height="4">
+  <data encoding="csv">
+0,0,0,0,0,0,
+0,4,1,2,3,0,
+0,2,3,4,1,0,
+0,0,0,0,0,0
+</data>
+ </layer>
+</map>

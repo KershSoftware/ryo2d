@@ -23,6 +23,18 @@ pub(crate) struct RawProperty {
 #[serde(default)]
 pub(crate) struct RawMap {
   pub orientation: String,
+  /// The lines a staggered or hexagonal map shifts by half a cell: its
+  /// rows (`y`) or columns (`x`)
+  pub staggeraxis: Option<String>,
+  /// Which of those lines: the `odd` or the `even` ones
+  pub staggerindex: Option<String>,
+  /// A hexagonal map's side along the stagger axis, in pixels (Tiled takes
+  /// a negative one, which the builder refuses)
+  pub hexsidelength: Option<i64>,
+  /// An oblique map's shift across per row and down per column, in
+  /// pixels; Tiled leaves out a 0
+  pub skewx: i64,
+  pub skewy: i64,
   /// The order Tiled draws tiles in (`right-down` unless set)
   pub renderorder: String,
   pub infinite: bool,
