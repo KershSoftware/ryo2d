@@ -798,6 +798,80 @@ impl TileColliders {
     true
   }
 
+  /// Sets chunk `chunk`'s cells to `cells` (`CHUNK` rows of `CHUNK`) as a
+  /// `set` of each would, in row order: each cell that changes is listed
+  /// with its value before, a cell outside the grid is left out and a
+  /// non-empty one past `MAX_REACH` refused (logged once a grid), and a
+  /// chunk the grid lacks is made only for a cell that is not empty. One
+  /// lookup and one generation for the chunk, where a `set` took both a
+  /// cell (a tile map's chunk changed whole: a stream's landing). True if
+  /// a cell changed
+  pub(crate) fn set_chunk(&mut self, chunk: IVec2, cells: &Chunk) -> bool {
+    let rect = chunk_rect_of(chunk);
+    let bounds = self.bounds;
+    let in_bounds = |cell: IVec2| bounds.is_none_or(|b| b.contains(cell));
+    let at = |i: usize| rect.min + IVec2::new(i as i32 % CHUNK, i as i32 / CHUNK);
+    // Most chunks lie wholly inside
+    let whole = [rect.min, rect.max - IVec2::ONE]
+      .into_iter()
+      .all(|cell| reaches(cell) && in_bounds(cell));
+    let taken = |cell: IVec2| whole || (reaches(cell) && in_bounds(cell));
+    // A cell `set` refuses for its reach is logged, as `set` logs it
+    let refused =
+      |cell: IVec2, value: TileCell| value != TileCell::Empty && in_bounds(cell) && !reaches(cell);
+    if !self.chunks.contains_key(&chunk)
+      && !(0..CELLS).any(|i| cells[i] != TileCell::Empty && taken(at(i)))
+    {
+      if let Some(cell) = (0..CELLS)
+        .map(at)
+        .find(|&cell| refused(cell, cells[local(cell)]))
+      {
+        self.past_reach(cell.x, cell.y);
+      }
+      return false;
+    }
+    let TileColliders {
+      chunks,
+      span,
+      changes,
+      shape_refs,
+      ..
+    } = self;
+    let stored = chunks.entry(chunk).or_insert_with(|| {
+      *span = span.union(chunk_rect(chunk));
+      Box::new([TileCell::Empty; CELLS])
+    });
+    let (mut changed, mut past) = (false, None);
+    for (i, (&value, slot)) in cells.iter().zip(stored.iter_mut()).enumerate() {
+      if *slot == value {
+        continue;
+      }
+      let cell = at(i);
+      if !taken(cell) {
+        if past.is_none() && refused(cell, value) {
+          past = Some(cell);
+        }
+        continue;
+      }
+      let before = std::mem::replace(slot, value);
+      if let TileCell::Shape(shape) = value {
+        *shape_refs = (*shape_refs).max(u32::from(shape) + 1);
+      }
+      changed = true;
+      match changes {
+        Some(list) if list.len() < MAX_CHANGES => list.push((cell, before)),
+        _ => *changes = None,
+      }
+    }
+    if let Some(cell) = past {
+      self.past_reach(cell.x, cell.y);
+    }
+    if changed {
+      self.generation = next_generation();
+    }
+    changed
+  }
+
   /// `chunk`'s cells, made empty if the grid has none there
   fn chunk_mut(&mut self, chunk: IVec2) -> &mut Chunk {
     let span = &mut self.span;
@@ -868,6 +942,7 @@ impl TileColliders {
 
   /// The cells of `chunk` (`CHUNK` rows of `CHUNK`), if the grid has it:
   /// for a builder comparing a chunk without a lookup per cell
+  #[cfg(test)]
   pub(crate) fn chunk_cells(&self, chunk: IVec2) -> Option<&Chunk> {
     self.chunks.get(&chunk).map(|cells| &**cells)
   }
@@ -2054,6 +2129,55 @@ mod tests {
       scanned += now.len();
     }
     assert!(rebuilt > 200 && scanned > 3000, "{rebuilt} {scanned}");
+  }
+
+  #[test]
+  fn a_chunk_set_whole_changes_and_lists_what_setting_each_cell_would() {
+    // Random chunks written whole into one grid and cell by cell into its
+    // twin: a bounded grid whose bounds cut chunks, and an unbounded one,
+    // chunks there and not, empty ones among them
+    let mut seed = 0x0bad_5eed_u32;
+    let mut next = |n: u32| {
+      seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+      (seed >> 8) % n
+    };
+    let kinds = [E, E, E, S, O, TileCell::Slope(SlopeCorner::TopLeft)];
+    for bounded in [true, false] {
+      let fresh = || {
+        if bounded {
+          TileColliders::new(70, 45, Vec2::ONE)
+        } else {
+          TileColliders::unbounded(Vec2::ONE)
+        }
+      };
+      let (mut whole, mut each) = (fresh(), fresh());
+      for round in 0..200 {
+        let chunk = IVec2::new(next(5) as i32 - 2, next(4) as i32 - 2);
+        let mut cells = [E; CELLS];
+        if next(4) > 0 {
+          for cell in &mut cells {
+            *cell = kinds[next(kinds.len() as u32) as usize];
+          }
+        }
+        let wrote = whole.set_chunk(chunk, &cells);
+        let mut set = false;
+        for (i, &kind) in cells.iter().enumerate() {
+          let cell = chunk * CHUNK + IVec2::new(i as i32 % CHUNK, i as i32 / CHUNK);
+          set |= each.set(cell, kind);
+        }
+        assert_eq!(wrote, set, "round {round}: chunk {chunk}");
+        assert_eq!(whole.take_changes(), each.take_changes(), "round {round}");
+        assert_eq!(whole.chunks.len(), each.chunks.len(), "round {round}");
+        assert_eq!(whole.extent(), each.extent(), "round {round}");
+        for (at, cells) in &each.chunks {
+          assert_eq!(
+            whole.chunks.get(at),
+            Some(cells),
+            "round {round}: chunk {at}"
+          );
+        }
+      }
+    }
   }
 
   #[test]

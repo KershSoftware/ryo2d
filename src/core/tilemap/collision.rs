@@ -47,7 +47,7 @@ use super::kinds::{
   union_kinds,
 };
 use super::spawn::{IntGridKey, MapLayers, MapRoot, TileLayerData, root_map};
-use super::{CHUNK_SIZE, LayerInfo, Properties, PropertyValue};
+use super::{LayerInfo, Properties, PropertyValue};
 use crate::core::ecs::{
   Allow, Commands, Component, DetectChangesMut, Disabled, Entity, Has, Local, Query, Without, World,
 };
@@ -527,11 +527,10 @@ fn update(group: &mut Group, tiles: &mut TileColliders, layers: &Layers, context
     shapes,
     ..
   } = group;
-  let side = CHUNK_SIZE as i32;
   for chunk in changed {
-    let Some(origin) = chunk_origin(chunk) else {
+    if chunk_origin(chunk).is_none() {
       continue;
-    };
+    }
     let now = union_kinds(
       tracked,
       &data,
@@ -548,13 +547,7 @@ fn update(group: &mut Group, tiles: &mut TileColliders, layers: &Layers, context
       tiles.unload_chunk(chunk);
       continue;
     }
-    let before = *tiles.chunk_cells(chunk).unwrap_or(&empty);
-    for (at, (&kind, &was)) in now.iter().zip(&before).enumerate() {
-      if kind != was {
-        let cell = origin + IVec2::new(at as i32 % side, at as i32 / side);
-        tiles.set(cell, kind);
-      }
-    }
+    tiles.set_chunk(chunk, &now);
   }
   // The extent worked out once for every chunk that went
   tiles.settle_extent();
