@@ -47,8 +47,9 @@ const MAX_OUT: usize = 64;
 /// once a map
 pub(crate) const MAX_SPAN: i32 = 64;
 
-/// How many times its unload budget of chunks may wait to unload while a
-/// stream lands chunks: past that, a frame that lands unloads too
+/// How many chunks past every unload distance may wait to unload while a
+/// stream lands chunks, whatever its unload budget: past that, a frame that
+/// lands unloads too
 pub(crate) const UNLOAD_BACKLOG: usize = 8;
 
 /// The farthest a distance reaches, in pixels: one past it is read as it,
@@ -418,11 +419,13 @@ pub struct ChunkRequest {
 /// entities it owns ([`ChunkOwned`]), sending [`ChunkEvent::Unloading`]
 /// (carrying its tiles, and kept in the `SavedChunks`, when a player
 /// changed it), at most `unload_per_frame` a frame, the farthest first, and
-/// none in a frame that lands chunks unless more than eight times that many
-/// wait (so a frame rarely both builds and takes down chunks): after a
-/// teleport the chunks left behind stay resident a few frames as they go,
-/// and the resident chunks are within the distances again once they have. Distances are measured in world pixels from the anchor (or
-/// the view) to the chunk, along each axis. A camera's view loads and
+/// none in a frame that lands chunks while eight or fewer wait (so a frame
+/// rarely both builds and takes down chunks, and at most eight linger past
+/// the distance while chunks keep landing): after a teleport the chunks
+/// left behind stay resident a few frames as they go, and the resident
+/// chunks are within the distances again once they have. Distances are
+/// measured in world pixels from the anchor (or the view) to the chunk,
+/// along each axis. A camera's view loads and
 /// keeps the chunks each tile layer shows, so a layer with parallax, or
 /// offset from the map, also has the chunks loaded where it shows them,
 /// however far from the view's own (those chunks are resident in every
@@ -494,8 +497,9 @@ pub struct MapStream {
   /// Unloaded chunks a frame, at most (at least one), the farthest from
   /// every camera's view and anchor first: a teleport's unloads spread over
   /// a few frames, the chunks waiting their turn still resident. A frame
-  /// that lands chunks unloads none while no more than eight times this
-  /// many wait, so landing and unloading rarely share a frame's cost
+  /// that lands chunks unloads none while eight or fewer wait, whatever
+  /// this budget, so landing and unloading rarely share a frame's cost and
+  /// at most eight linger past the distance while chunks keep landing
   pub unload_per_frame: u32,
   /// Where there are no threads (the web): main-thread time a frame for
   /// generating (at least one chunk a frame)
@@ -511,8 +515,8 @@ impl MapStream {
   /// view or an anchor load, those past 1,536 px of every one unload, two
   /// land and two unload a frame at most (each builds or takes down a
   /// chunk's collision and shadows in that frame; a frame landing chunks
-  /// unloads none while 16 or fewer wait), the web gives it 2 ms a frame,
-  /// and it keeps no changed chunks
+  /// unloads none while eight or fewer wait), the web gives it 2 ms a
+  /// frame, and it keeps no changed chunks
   pub fn new(generator: impl Fn(ChunkRequest) -> ChunkTiles + Send + Sync + 'static) -> MapStream {
     MapStream {
       generator: Arc::new(generator),
@@ -961,9 +965,10 @@ impl StreamWork {
   /// file's), at most the stream's `unload_per_frame`, the farthest first
   /// (the others wait, resident, for the next frames), telling the game and
   /// keeping in its `SavedChunks` those a player changed since they landed.
-  /// A frame that `landed` chunks unloads none, unless more chunks wait than
-  /// `UNLOAD_BACKLOG` times the budget: unloading waits out a burst of
-  /// landings, so the two rarely build and take down chunks in one frame
+  /// A frame that `landed` chunks unloads none, unless more than
+  /// `UNLOAD_BACKLOG` chunks wait: unloading waits out a burst of landings,
+  /// so the two rarely build and take down chunks in one frame, and no more
+  /// than that many linger past the distance while chunks keep landing
   fn unload(
     &mut self,
     world: &mut World,
@@ -992,7 +997,7 @@ impl StreamWork {
       );
     }
     let budget = stream.unload_per_frame.max(1) as usize;
-    let backlog = self.gone.len() > budget.saturating_mul(UNLOAD_BACKLOG);
+    let backlog = self.gone.len() > UNLOAD_BACKLOG;
     let budget = if landed && !backlog { 0 } else { budget };
     let draining = self.gone.len().saturating_sub(budget);
     if budget == 0 {

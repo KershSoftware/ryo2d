@@ -519,9 +519,8 @@ fn a_frame_that_lands_chunks_unloads_none_unless_many_wait() {
     )
   );
 
-  // A teleport leaving 25 chunks behind, more than eight times the unload
-  // budget: they unload in the frames landing chunks too, until no more
-  // than eight wait
+  // A teleport leaving 25 chunks behind, more than eight: they unload in
+  // the frames landing chunks too, until no more than eight wait
   let mut maps = MapWorld::new();
   let calls = Arc::new(AtomicUsize::new(0));
   let counted = Arc::clone(&calls);
@@ -566,6 +565,58 @@ fn a_frame_that_lands_chunks_unloads_none_unless_many_wait() {
     "frames landing unloaded while more than eight waited, and only then: {both:?}"
   );
   assert_eq!(sorted(gone), around(IVec2::ZERO, 2), "and all went");
+}
+
+#[test]
+fn a_raised_unload_budget_leaves_no_more_than_eight_waiting_while_chunks_land() {
+  // Eight unloading a frame, one landing: a teleport leaves 25 chunks
+  // behind, eight go in its first frame (the new chunks held back, none
+  // landing), and the frames landing after it unload too while more than
+  // eight wait, however large the budget
+  let open = Arc::new(AtomicBool::new(true));
+  let calls = Arc::new(AtomicUsize::new(0));
+  let (gate, counted) = (floors_while(&open), Arc::clone(&calls));
+  let stream = MapStream {
+    load_distance: 2.0 * CHUNK,
+    land_per_frame: 1,
+    unload_per_frame: 8,
+    ..MapStream::new(move |request: ChunkRequest| {
+      let tiles = gate(request);
+      counted.fetch_add(1, Ordering::SeqCst);
+      tiles
+    })
+  };
+  let mut maps = MapWorld::new();
+  let map = spawn(&mut maps, infinite(&["ground"]), stream, |r| r);
+  let anchor = anchor_at(&mut maps, IVec2::ZERO);
+  until_idle(&mut maps, map);
+  let status = |world: &mut World| MapsView::new(world).stream_status(map);
+  open.store(false, Ordering::SeqCst);
+  let asked = calls.load(Ordering::SeqCst) + 25;
+  move_to(&mut maps.world, anchor, IVec2::new(20, 0));
+  maps.frame();
+  assert_eq!(status(&mut maps.world).map(|s| s.draining), Some(17));
+  // The builder thread makes all 25 before the frames landing them
+  open.store(true, Ordering::SeqCst);
+  let start = std::time::Instant::now();
+  while calls.load(Ordering::SeqCst) < asked && start.elapsed() < Duration::from_secs(5) {
+    std::thread::sleep(Duration::from_millis(1));
+  }
+  let mut cursor = MessageCursor::<ChunkEvent>::default();
+  events(&maps.world, &mut cursor);
+  let mut waiting = Vec::new();
+  for _ in 0..3 {
+    maps.frame();
+    let happened = events(&maps.world, &mut cursor);
+    assert_eq!(loaded(&happened, map).len(), 1, "one lands a frame");
+    waiting.push(status(&mut maps.world).map_or(0, |s| s.draining));
+  }
+  assert_eq!(
+    waiting,
+    [9, 1, 1],
+    "eight more go in each frame landing while more than eight wait"
+  );
+  until_idle(&mut maps, map);
 }
 
 #[test]
