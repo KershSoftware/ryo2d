@@ -11,6 +11,7 @@
 mod collision;
 mod edit;
 mod grid;
+mod grid_shape;
 mod jobs;
 mod kinds;
 mod ldtk;
@@ -36,6 +37,7 @@ use crate::core::schedule::{EngineSchedules, FixedSet, Phase, PostUpdateSet};
 
 pub use edit::LayerRef;
 pub use grid::{CHUNK_SIZE, TileGrid};
+pub use grid_shape::{CellOutline, GridShape, MapGrid, StaggerAxis, StaggerIndex};
 pub use ldtk::{
   LdtkLevel, LdtkLoader, LdtkProject, Neighbour, NeighbourDirection, WorldLayout, WorldLevel,
 };
