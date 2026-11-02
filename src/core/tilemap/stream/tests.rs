@@ -462,6 +462,80 @@ fn a_teleport_s_unloads_spread_over_frames_farthest_first() {
 }
 
 #[test]
+fn a_frame_that_lands_chunks_unloads_none_unless_many_wait() {
+  // Four chunks on: nine chunks land and six are left behind, so few wait
+  // that the frames landing unload nothing and the unloads come after
+  let mut maps = MapWorld::new();
+  let map = spawn(
+    &mut maps,
+    infinite(&["ground"]),
+    MapStream::new(floors),
+    |r| r,
+  );
+  let anchor = anchor_at(&mut maps, IVec2::ZERO);
+  until_idle(&mut maps, map);
+  let mut cursor = MessageCursor::<ChunkEvent>::default();
+  events(&maps.world, &mut cursor);
+  move_to(&mut maps.world, anchor, IVec2::new(4, 0));
+  let (mut landed, mut gone, mut both) = (Vec::new(), Vec::new(), 0);
+  maps.frames_until(|world| {
+    let happened = events(world, &mut cursor);
+    let (now_landed, now_gone) = (loaded(&happened, map), unloading(&happened, map));
+    both += usize::from(!now_landed.is_empty() && !now_gone.is_empty());
+    landed.extend(now_landed);
+    gone.extend(now_gone);
+    idle(world, map)
+  });
+  assert_eq!(both, 0, "no frame both landed and unloaded");
+  assert_eq!(sorted(landed), around(IVec2::new(4, 0), 1));
+  let behind: Vec<IVec2> = around(IVec2::ZERO, 1)
+    .into_iter()
+    .filter(|chunk| chunk.x < 1)
+    .collect();
+  assert_eq!(sorted(gone), behind, "the chunks left behind all went");
+  assert_eq!(
+    resident(&mut maps.world, map),
+    sorted(
+      around(IVec2::new(4, 0), 1)
+        .into_iter()
+        .chain(around(IVec2::ZERO, 1).into_iter().filter(|c| c.x == 1))
+        .collect()
+    )
+  );
+
+  // A teleport leaving 25 chunks behind, more than eight times the unload
+  // budget: they unload in the frames landing chunks too, until no more
+  // than eight wait
+  let mut maps = MapWorld::new();
+  let stream = MapStream {
+    load_distance: 2.0 * CHUNK,
+    land_per_frame: 1,
+    unload_per_frame: 1,
+    ..MapStream::new(floors)
+  };
+  let map = spawn(&mut maps, infinite(&["ground"]), stream, |r| r);
+  let anchor = anchor_at(&mut maps, IVec2::ZERO);
+  until_idle(&mut maps, map);
+  events(&maps.world, &mut cursor);
+  move_to(&mut maps.world, anchor, IVec2::new(20, 0));
+  let (mut gone, mut both) = (Vec::new(), Vec::new());
+  maps.frames_until(|world| {
+    let happened = events(world, &mut cursor);
+    let (now_landed, now_gone) = (loaded(&happened, map), unloading(&happened, map));
+    if !now_landed.is_empty() && !now_gone.is_empty() {
+      both.push(gone.len());
+    }
+    gone.extend(now_gone);
+    idle(world, map)
+  });
+  assert!(
+    !both.is_empty() && both.iter().all(|&went| went < 17),
+    "frames landing unloaded while more than eight waited, and only then: {both:?}"
+  );
+  assert_eq!(sorted(gone), around(IVec2::ZERO, 2), "and all went");
+}
+
+#[test]
 fn loaded_and_unloading_messages_follow_the_chunks() {
   let mut maps = MapWorld::new();
   let map = spawn(
@@ -2228,7 +2302,9 @@ fn cave(request: ChunkRequest) -> ChunkTiles {
 /// of a chunk landed or unloaded. Run in release:
 /// `cargo test --release -p ryo2d --lib crossing_timing -- --ignored --nocapture`
 /// (for a profile, `RYO_CROSSING_ROUNDS=40000 RYO_CROSSING_PACE_US=0` runs
-/// a longer crossing back to back)
+/// a longer crossing back to back; `RYO_CROSSING_THRASH_MB=48` writes over
+/// 48 MB between frames, evicting the caches as the guard's other engines
+/// and drawing do)
 #[test]
 #[ignore = "a timing: run in release with --ignored --nocapture"]
 fn crossing_timing() {
@@ -2275,8 +2351,18 @@ fn crossing_timing() {
       .and_then(|v| v.parse().ok())
       .unwrap_or(4000),
   );
+  // What a frame's drawing reads, evicting the caches as the guard's do
+  let thrash: usize = std::env::var("RYO_CROSSING_THRASH_MB")
+    .ok()
+    .and_then(|v| v.parse().ok())
+    .unwrap_or(0);
+  let mut evict = vec![0u64; thrash * 131_072];
   let mut next = Instant::now();
   for frame in 0..warm + rounds {
+    for (i, word) in evict.iter_mut().enumerate().step_by(8) {
+      *word = word.wrapping_add(i as u64);
+    }
+    std::hint::black_box(&evict);
     while Instant::now() < next {
       std::hint::spin_loop();
     }

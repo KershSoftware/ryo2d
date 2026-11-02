@@ -47,6 +47,10 @@ const MAX_OUT: usize = 64;
 /// once a map
 pub(crate) const MAX_SPAN: i32 = 64;
 
+/// How many times its unload budget of chunks may wait to unload while a
+/// stream lands chunks: past that, a frame that lands unloads too
+pub(crate) const UNLOAD_BACKLOG: usize = 8;
+
 /// The farthest a distance reaches, in pixels: one past it is read as it,
 /// and one that is not a number as 0
 const MAX_DISTANCE: f32 = 1.0e9;
@@ -413,10 +417,11 @@ pub struct ChunkRequest {
 /// `unload_distance` from every camera's view and anchor unloads, with the
 /// entities it owns ([`ChunkOwned`]), sending [`ChunkEvent::Unloading`]
 /// (carrying its tiles, and kept in the `SavedChunks`, when a player
-/// changed it), at most `unload_per_frame` a frame, the farthest first: after
-/// a teleport the chunks left behind stay resident a few frames as they
-/// go, and the resident chunks are within the distances again once they
-/// have. Distances are measured in world pixels from the anchor (or
+/// changed it), at most `unload_per_frame` a frame, the farthest first, and
+/// none in a frame that lands chunks unless more than eight times that many
+/// wait (so a frame rarely both builds and takes down chunks): after a
+/// teleport the chunks left behind stay resident a few frames as they go,
+/// and the resident chunks are within the distances again once they have. Distances are measured in world pixels from the anchor (or
 /// the view) to the chunk, along each axis. A camera's view loads and
 /// keeps the chunks each tile layer shows, so a layer with parallax, or
 /// offset from the map, also has the chunks loaded where it shows them,
@@ -488,7 +493,9 @@ pub struct MapStream {
   pub land_per_frame: u32,
   /// Unloaded chunks a frame, at most (at least one), the farthest from
   /// every camera's view and anchor first: a teleport's unloads spread over
-  /// a few frames, the chunks waiting their turn still resident
+  /// a few frames, the chunks waiting their turn still resident. A frame
+  /// that lands chunks unloads none while no more than eight times this
+  /// many wait, so landing and unloading rarely share a frame's cost
   pub unload_per_frame: u32,
   /// Where there are no threads (the web): main-thread time a frame for
   /// generating (at least one chunk a frame)
@@ -503,8 +510,9 @@ impl MapStream {
   /// A stream of `generator`'s chunks: those within 512 px of a camera's
   /// view or an anchor load, those past 1,536 px of every one unload, two
   /// land and two unload a frame at most (each builds or takes down a
-  /// chunk's collision and shadows in that frame), the web gives it 2 ms a
-  /// frame, and it keeps no changed chunks
+  /// chunk's collision and shadows in that frame; a frame landing chunks
+  /// unloads none while 16 or fewer wait), the web gives it 2 ms a frame,
+  /// and it keeps no changed chunks
   pub fn new(generator: impl Fn(ChunkRequest) -> ChunkTiles + Send + Sync + 'static) -> MapStream {
     MapStream {
       generator: Arc::new(generator),
@@ -570,7 +578,7 @@ pub struct StreamStatus {
   pub in_flight: usize,
   /// Resident chunks past every unload distance left for later frames by
   /// `unload_per_frame` (after a teleport, the old area going a few a
-  /// frame)
+  /// frame), or by a frame that landed chunks
   pub draining: usize,
 }
 
@@ -877,10 +885,11 @@ impl StreamWork {
         "map {map}: an anchor's load area spans more than {cap} chunks a side (its stream's load_distance, or a camera zoomed far out), so only the middle {cap} x {cap} load (this map warns once)"
       );
     }
-    self.unload(world, map, stream, chunk_px);
+    self.call_off(world, map);
     self.request(world, map, stream, (cell, chunk_px));
     self.route(world);
-    self.land(world, map, stream.land_per_frame, chunk_px);
+    let landed = self.land(world, map, stream.land_per_frame, chunk_px);
+    self.unload(world, map, stream, chunk_px, landed > 0);
   }
 
   /// A stream's first frame on `map` (its unbounded tile layers found):
@@ -925,12 +934,44 @@ impl StreamWork {
     true
   }
 
+  /// Calls off what `map`'s stream asked for or holds past every anchor's
+  /// unload distance, so none of it lands
+  fn call_off(&mut self, world: &mut World, map: Entity) {
+    let areas = &self.areas;
+    let kept = |chunk: IVec2| {
+      areas
+        .iter()
+        .any(|area| area.keep.is_some_and(|range| within(range, chunk)))
+    };
+    let Some(mut state) = world.get_mut::<StreamState>(map) else {
+      return;
+    };
+    let state = &mut *state;
+    state.out.retain(|&chunk, (_, called_off)| {
+      let keep = kept(chunk);
+      if !keep {
+        called_off.store(true, Ordering::Relaxed);
+      }
+      keep
+    });
+    state.ready.retain(|(chunk, _)| kept(*chunk));
+  }
+
   /// Unloads `map`'s chunks past every anchor's unload distance (never the
   /// file's), at most the stream's `unload_per_frame`, the farthest first
-  /// (the others wait, resident, for the next frames), telling the game,
-  /// keeping in its `SavedChunks` those a player changed since they landed,
-  /// and calls off what it asked for or holds there
-  fn unload(&mut self, world: &mut World, map: Entity, stream: &MapStream, chunk_px: Vec2) {
+  /// (the others wait, resident, for the next frames), telling the game and
+  /// keeping in its `SavedChunks` those a player changed since they landed.
+  /// A frame that `landed` chunks unloads none, unless more chunks wait than
+  /// `UNLOAD_BACKLOG` times the budget: unloading waits out a burst of
+  /// landings, so the two rarely build and take down chunks in one frame
+  fn unload(
+    &mut self,
+    world: &mut World,
+    map: Entity,
+    stream: &MapStream,
+    chunk_px: Vec2,
+    landed: bool,
+  ) {
     let areas = &self.areas;
     let kept = |chunk: IVec2| {
       areas
@@ -939,10 +980,9 @@ impl StreamWork {
     };
     self.gone.clear();
     {
-      let Some(mut state) = world.get_mut::<StreamState>(map) else {
+      let Some(state) = world.get::<StreamState>(map) else {
         return;
       };
-      let state = &mut *state;
       self.gone.extend(
         state
           .generated
@@ -950,18 +990,14 @@ impl StreamWork {
           .copied()
           .filter(|chunk| !kept(*chunk)),
       );
-      state.out.retain(|&chunk, (_, called_off)| {
-        let keep = kept(chunk);
-        if !keep {
-          called_off.store(true, Ordering::Relaxed);
-        }
-        keep
-      });
-      state.ready.retain(|(chunk, _)| kept(*chunk));
     }
     let budget = stream.unload_per_frame.max(1) as usize;
+    let backlog = self.gone.len() > budget.saturating_mul(UNLOAD_BACKLOG);
+    let budget = if landed && !backlog { 0 } else { budget };
     let draining = self.gone.len().saturating_sub(budget);
-    if draining > 0 {
+    if budget == 0 {
+      self.gone.clear();
+    } else if draining > 0 {
       let StreamWork { gone, areas, .. } = self;
       gone.sort_unstable_by(|a, b| {
         nearer(nearness(areas, *b, chunk_px), nearness(areas, *a, chunk_px))
@@ -1207,13 +1243,13 @@ impl StreamWork {
 
   /// Lands up to `budget` (at least one) of `map`'s generated chunks,
   /// nearest the anchors first
-  fn land(&mut self, world: &mut World, map: Entity, budget: u32, chunk_px: Vec2) {
+  fn land(&mut self, world: &mut World, map: Entity, budget: u32, chunk_px: Vec2) -> usize {
     {
       let Some(mut state) = world.get_mut::<StreamState>(map) else {
-        return;
+        return 0;
       };
       if state.ready.is_empty() {
-        return;
+        return 0;
       }
       // The nearest last, to pop
       let areas = &self.areas;
@@ -1221,6 +1257,7 @@ impl StreamWork {
         nearer(nearness(areas, *b, chunk_px), nearness(areas, *a, chunk_px))
       });
     }
+    let mut landed = 0;
     for _ in 0..budget.max(1) {
       let next = world
         .get_mut::<StreamState>(map)
@@ -1229,7 +1266,9 @@ impl StreamWork {
         break;
       };
       self.land_chunk(world, map, chunk, tiles);
+      landed += 1;
     }
+    landed
   }
 
   /// Lands `chunk` on `map` (`put_chunk`), resident from now, and tells
