@@ -4,6 +4,53 @@ Small issues found while building each sub-project and left for later: deferred 
 
 Items from 4f to 6b were copied from their execution records. Items from earlier sub-projects come from notes kept at the time, and some may have been fixed since: check before working on one.
 
+## Streaming endless worlds (6b, stage 3)
+
+- Owner decisions (2026-11-01 to 11-02):
+  - The owner hand-played the `tile-grids` demo ("all working as expected") and chose to merge.
+  - The speed check's held figure met 1 of 3 on the first quiet runs (597, 484, 515 µs); the owner chose one perf round before merge, after which it met 3 of 3 (367, 357, 427 µs). That session was quieter, and the build before the round met there too; the margin comes from the unload rule (below), the structural fixes moved the guard less than its noise.
+- Rulings the owner may revisit:
+  - A frame that lands chunks unloads none while eight or fewer wait, so landing and unloading rarely share a frame; resident chunks reach 65 (was 62) and a chunk past the unload distance can wait up to 9 frames. `land_per_frame` and `unload_per_frame` both default to 2 (land was 4), so a teleport's view fills in about 11 frames.
+  - A scene's cleanup despawns parents before children, so a map root's discard hook still sees its layers and saves the player's changed chunks into its `SavedChunks`.
+  - A code-built map's asset chunks count as hand-made, like a Tiled infinite map's: never generated or unloaded.
+  - A hot reload that adds, removes or reshapes an unbounded layer re-streams the generated chunks; without a `SavedChunks`, the player's changes there are lost.
+  - The meadow map was redrawn so it ends on engine-chunk edges with its ends laid as continuing ground, since a stream keeps a hand-made chunk's empty cells empty.
+  - Parallax and offset unbounded layers: each camera's load and keep areas also cover its view mapped through each distinct layer placement. This loads chunks for hidden layers too, and for cameras whose render layers exclude them.
+- Deferred findings:
+  - **Streaming.**
+    - `SavedChunks::serialize` holds the store's lock while it compresses every chunk, so a save on another thread stalls the main thread's unload `insert` and the worker's `get`. Fix: snapshot the entries (`Arc<ChunkTiles>`) and serialize outside the lock.
+    - Edits on a streamed map's unbounded layer cost O(resident chunks) per `fill` or `set_intgrid` call, plus a `Vec` (`edit.rs`, `stream.rs` resident checks); a big hand-made area is resident. Fix: walk the chunk range when it is smaller, as `TileGrid::chunks_within` does.
+    - Many anchors are quadratic: each wanted chunk is checked against every earlier area, and `unload`'s nearness walks every area (in Limits). Fix: gather the areas into one chunk set first.
+    - "At most eight linger" holds once the backlog settles; a single frame can show nine waiting.
+    - A `ChunkOwned` entity tagged with a chunk not resident, or spawned from a `Loaded` read after its chunk unloaded, lives until that chunk next lands and unloads or the root goes; one that moves keeps the chunk it was tagged with (in Limits). Fix: sweep `Added<ChunkOwned>` against the resident set.
+    - Replacing a live stream's generator or store keeps the old chunks, and the root's going then saves them into the new store (in Limits; respawn the root to stream afresh).
+    - A hostile save inflates about 100x (linear, no panic). Proposed: keep layers packed until `get`.
+    - Hot-reload unloads (`before_reload`, `unload_gone`) skip the unload budget, a dev-time hitch (in Limits).
+    - A `NavigationGrid` over a streamed map treats unloaded chunks as open ground (in Limits; stage 5 owns infinite navigation windows).
+    - Streaming on the web is unmeasured (generation within `web_budget` plus landing, all on the main thread).
+  - **Tiled infinite maps under a stream.**
+    - `listed_class_tiles` (`reload.rs`) splits class tiles by the file's chunks even for a bounded layer of a streamed map (a warned misuse): stale class tiles stay alive and removed ones never despawn. Fix: pass `file` only for unbounded layers, as `take_cells` does.
+    - A chunk the file newly claims keeps the player's old `SavedChunks` entry, which the next stream puts back over the hand-made chunk (in Limits). Fix: remove the entry when the chunk is claimed.
+    - A reload that changes a file chunk counts it as changed, so a layer-adding save makes `save_changed_chunks` copy much of the hand-made area into the store.
+    - Renaming an unbounded layer is not treated as a reshape (`unbounded_shapes` compares id and shape only): generated chunks keep cells made under the old name.
+  - **Tests missing.**
+    - A root put over mid-job (the epoch path); `MAX_OUT` (64 out plus ready); the over-long inflate guard (8 KB of zeros); `Unloading::changed` carried without a store.
+    - An edit to a chunk waiting under the unload budget, saved when it finally unloads.
+    - `Before` (`physics/tiles/outline.rs`)'s binary-search fallback for cells spread over more chunks than its windows hold.
+    - Class tiles in claimed or dropped file chunks on a reload; a code-built map with asset tiles under a stream; a layer reshape with a `SavedChunks` keeping a changed generated chunk.
+    - `tests/tilemap_alloc.rs` pins a still camera only; a camera panning inside the resident area with nothing requested is not pinned.
+  - **The speed guard.**
+    - The waiting check is loose (55 frames allowed, 3 to 9 observed); one row plus one column of the keep area (21 chunks) gives a tighter bound.
+    - The guard reads the budgets from `MapStream::new`'s defaults, not the root's `MapStream`.
+    - No lit line: lighting with chains appearing and disappearing is unmeasured, and the guard's world has no class tiles or owned entities.
+  - **Engine-wide.**
+    - The scene cleanup's `depth()` walks each entity's ancestors, O(depth²) on deep chains. Fix: memoize.
+  - **The demo.**
+    - A cloud can overwrite a canopy cell on the meadow's highest hills (pre-existing; the terrain test skips those trees).
+    - Page 1's per-chunk generated set comes from `ChunkEvent`s while its counts come from `stream_status`.
+    - Page 3: `saved.keys()` allocates and sorts every fixed step (recompute on `Unloading { changed: Some }`); its 9 x 5 minimap can't show chunks kept 4,000 px behind, and wastes sky; no test of the gold "kept" marks, or of a page switch or reset with chunks in flight.
+    - The tour captures only frame 90, so no committed capture shows the generated world past the meadow, a dig or a kept chunk; `infinite.rs`'s module doc runs past the wrap width.
+
 ## Sparse grids and infinite maps (6b, stage 2)
 
 - Owner decisions (2026-11-01):

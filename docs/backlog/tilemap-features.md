@@ -38,6 +38,7 @@ Infinite maps load (`an_infinite_map_s_chunks_land_where_tiled_put_them` replace
 - **Collision (done):** `TileColliders` holds the chunks its layers have, signed, with no cap on a side; a cell collides within 186,411 cells of (0, 0) on either axis (outline points stay `i32`). Packing is per chunk, so colliders stay one per chunk. A reach past that is not built (see `docs/backlog/tilemap.md`, Limits).
 - **Loading (done):** the reader decodes each chunk (every encoding 6a reads) into an unbounded grid; `TileMap::infinite` marks the map, its `size` is zero, and `TileMap::bounds()` is the rectangle of the cells its tile layers hold tiles in (`MapsView::bounds` for a spawned map as edited).
 - **Worlds (done):** a Tiled world places an infinite map by its tile origin, its rectangle its tiles' bounds whatever size the world lists (`WorldLevel::origin`).
+- **Streaming (done):** `MapStream` on a map root generates chunks on its own thread around the cameras and `StreamAnchor`s, lands and unloads them within per-frame budgets, keeps the player's changes in `SavedChunks`, and streams a Tiled infinite map's world around its hand-made chunks (`ChunkEvent`, `ChunkOwned`, `MapsView::stream_ready` and `stream_status`; see the ryo-tilemap skill and `docs/backlog/tilemap.md`).
 
 ## Later than 6b
 
