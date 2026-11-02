@@ -33,124 +33,9 @@ impl SkillsPlatform {
   }
 }
 
-/// Embedded skills: (name, description, SKILL.md content)
-const EMBEDDED_SKILLS: &[(&str, &str, &str)] = &[
-  (
-    "ryo-animation",
-    "Sprite animations (Animator, AnimationController), tweens, knockback and squash/stretch.",
-    include_str!("../skills/ryo-animation.md"),
-  ),
-  (
-    "ryo-api",
-    "Complete API reference for ryo2d::prelude - every exported type with its signatures and use, organised by area.",
-    include_str!("../skills/ryo-api.md"),
-  ),
-  (
-    "ryo-assets",
-    "Assets - loading images, SVG, shaders, fonts, UI files, themes, audio (clips, sound and music definitions, the mixer) and tile maps (Tiled maps, tilesets and worlds, LDtk projects) through the registry (load_now and load), asset paths, handles and what keeps an asset alive, load states and loading screens, embedded assets with add, hot reload and AssetEvent, custom asset types and loaders, and the debug checker.",
-    include_str!("../skills/ryo-assets.md"),
-  ),
-  (
-    "ryo-audio",
-    "Audio - the workflow from a DAW export through assets/ and a .sound.ron definition to ctx.audio().play, voices and voice limits, the mixer file (buses, effects, sends, snapshots, ducking), the player's volume settings and their curve, 2D spatial sound with listeners and emitters, pause and time scale, music with intros, loops and crossfades, hot reload, the web's first-gesture unlock, latency, and testing with audio_world and the audio log.",
-    include_str!("../skills/ryo-audio.md"),
-  ),
-  (
-    "ryo-character",
-    "Characters - the character controller, platformer and top-down movement presets, MoveIntent and key bindings, one-way platforms, triggers with pickups, kill zones, checkpoints and respawns, tile colliders and knockback.",
-    include_str!("../skills/ryo-character.md"),
-  ),
-  (
-    "ryo-cli",
-    "Using the ryo2d CLI for building, running, and developing games.",
-    include_str!("../skills/ryo-cli.md"),
-  ),
-  (
-    "ryo-config-save",
-    "Project configuration (Ryo.toml), player settings (system.json, SystemState) and game saves (SaveManager, GameSaveData).",
-    include_str!("../skills/ryo-config-save.md"),
-  ),
-  (
-    "ryo-console",
-    "Developer console system - commands, registration, debugging overlays.",
-    include_str!("../skills/ryo-console.md"),
-  ),
-  (
-    "ryo-controller",
-    "Gamepad/controller input with gilrs - buttons, sticks, triggers, actions and stick directions, pad families and button prompts, the last-used device, and scripted or headless pad input.",
-    include_str!("../skills/ryo-controller.md"),
-  ),
-  (
-    "ryo-ecs-internals",
-    "Working on Ryo2D's ECS (bevy_ecs presented as ryo2d::ecs) - kernel re-exports, components, propagation, interpolation, pooling and engine systems.",
-    include_str!("../skills/ryo-ecs-internals.md"),
-  ),
-  (
-    "ryo-engine-dev",
-    "Working on the Ryo2D engine - the frame's phases, module map, resources, public API, crates and testing.",
-    include_str!("../skills/ryo-engine-dev.md"),
-  ),
-  (
-    "ryo-game-dev",
-    "Building games with Ryo2D - scenes, entities, queries, systems, resources, messages, time and input.",
-    include_str!("../skills/ryo-game-dev.md"),
-  ),
-  (
-    "ryo-lighting",
-    "2D lighting - Light2D and LightOccluder2D entities (polygons and open chains), ctx.lighting() for ambient, atmosphere and on/off, shadows (tile maps' too), volumetric beams, sprite shadows and ambient occlusion.",
-    include_str!("../skills/ryo-lighting.md"),
-  ),
-  (
-    "ryo-messages",
-    "Messages - typed, buffered notifications between scenes and systems; the engine's message types and how to define, write and read your own.",
-    include_str!("../skills/ryo-messages.md"),
-  ),
-  (
-    "ryo-network",
-    "Multiplayer networking with Ryo2D - client-server, replication, RPCs.",
-    include_str!("../skills/ryo-network.md"),
-  ),
-  (
-    "ryo-particles",
-    "Particle system - emitters, attractors, collisions, presets for visual effects.",
-    include_str!("../skills/ryo-particles.md"),
-  ),
-  (
-    "ryo-physics",
-    "Rapier2D physics integration - bodies, colliders, one-way colliders, triggers, joints, queries, contact state and collision messages.",
-    include_str!("../skills/ryo-physics.md"),
-  ),
-  (
-    "ryo-procgen",
-    "The optional ryo2d-procgen crate - dungeons (BSP), caves (cellular), noise terrain, random walks, Poisson sampling, WFC and MST corridors.",
-    include_str!("../skills/ryo-procgen.md"),
-  ),
-  (
-    "ryo-profiler",
-    "Profiling Ryo2D games and engine - puffin integration, profiler window, performance analysis.",
-    include_str!("../skills/ryo-profiler.md"),
-  ),
-  (
-    "ryo-renderer",
-    "Working on the wgpu renderer, shaders, and GPU batching.",
-    include_str!("../skills/ryo-renderer.md"),
-  ),
-  (
-    "ryo-text",
-    "Text: fonts, styles, rich text and markup, inline icons, typewriter reveal and glyph effects, world text (Text2d) and the damage-number recipe.",
-    include_str!("../skills/ryo-text.md"),
-  ),
-  (
-    "ryo-tilemap",
-    "Tile maps - the workflow from Tiled (.tmx, .tmj) or LDtk (.ldtk) through assets/ to a MapRoot entity, layers and the reserved layer properties (collides, occludes, y_sort, lit), tilesets and typed tile data, objects and class tiles as entities, MapEvent, reading and editing tiles with ctx.maps() and Wang terrain, collision from tile shapes and IntGrids, tile shadows, y-sorting and parallax, worlds of levels, maps built in code and by procgen, endless worlds streamed from a generator (MapStream, StreamAnchor, ChunkEvent, SavedChunks, ChunkOwned), hot reload, the web, performance and testing.",
-    include_str!("../skills/ryo-tilemap.md"),
-  ),
-  (
-    "ryo-ui",
-    "Build game UI - widgets as builders in the Scene::ui hook, or node trees (UiNode) spawned once as entities - laid out in rows, columns and grids, with focus scopes for keyboard and gamepad navigation, scroll areas, popups and modals, drag and drop, themes, UI events and the input the UI consumes. Use when creating HUDs, menus, settings screens, inventories, dialogue or any in-game interface.",
-    include_str!("../skills/ryo-ui.md"),
-  ),
-];
+/// Every `.claude/skills/<name>/SKILL.md` as (name, content), listed by the
+/// build script (`src/build.rs`): the skills folder is the one copy
+const EMBEDDED_SKILLS: &[(&str, &str)] = include!(concat!(env!("OUT_DIR"), "/embedded_skills.rs"));
 
 /// Execute the install-skills command
 pub fn execute(args: &[String]) -> CliResult<()> {
@@ -182,8 +67,8 @@ pub fn install_skills_to_dir(
     println!();
     println!("Installing Ryo2D Agent Skills for {}:", platform.name());
     println!();
-    for (name, desc, _) in EMBEDDED_SKILLS {
-      println!("  • {} - {}", name, desc);
+    for (name, content) in EMBEDDED_SKILLS {
+      println!("  • {} - {}", name, skill_description(content));
     }
     println!();
   }
@@ -193,7 +78,7 @@ pub fn install_skills_to_dir(
     .map_err(|e| CliError::Other(format!("Failed to create skills directory: {}", e)))?;
 
   // Install all embedded skills
-  for (name, _, content) in EMBEDDED_SKILLS {
+  for (name, content) in EMBEDDED_SKILLS {
     if !quiet {
       Output::status("Installing", name);
     }
@@ -320,6 +205,18 @@ fn update_gitignore(project_dir: &Path, platform: SkillsPlatform) -> CliResult<(
   Ok(())
 }
 
+/// A skill's `description:`, from its frontmatter
+fn skill_description(skill: &str) -> &str {
+  let mut lines = skill.lines();
+  if lines.next() != Some("---") {
+    return "";
+  }
+  lines
+    .take_while(|line| *line != "---")
+    .find_map(|line| line.strip_prefix("description: "))
+    .map_or("", |description| description.trim_matches('"'))
+}
+
 fn print_help() {
   println!(
     r#"
@@ -352,41 +249,51 @@ EXAMPLES:
 mod tests {
   use std::path::Path;
 
-  use super::EMBEDDED_SKILLS;
+  use super::{EMBEDDED_SKILLS, SkillsPlatform, install_skills_to_dir, skill_description};
 
-  /// Each embedded skill is its `.claude/skills/<name>/SKILL.md` byte for
-  /// byte, listed with the description its frontmatter gives, and every
-  /// skill folder there is embedded
   #[test]
-  fn embedded_skills_are_their_sources() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join(".claude/skills");
-    for (name, description, content) in EMBEDDED_SKILLS {
-      let source = std::fs::read_to_string(root.join(name).join("SKILL.md")).unwrap();
-      assert!(
-        source == *content,
-        "src/cli/skills/{name}.md is not a copy of .claude/skills/{name}/SKILL.md"
-      );
-      let frontmatter = source
-        .lines()
-        .find_map(|line| line.strip_prefix("description: "))
-        .unwrap();
-      assert_eq!(
-        frontmatter.trim_matches('"'),
-        *description,
-        "{name}'s listed description"
-      );
+  fn a_skills_description_is_its_frontmatters() {
+    let skill = "---\nname: ryo-x\ndescription: Does things - and more.\nmetadata:\n  version: 1.0.0\n---\n\n# X\n\ndescription: not this\n";
+    assert_eq!(skill_description(skill), "Does things - and more.");
+    let quoted = "---\nname: ryo-y\ndescription: \"Quoted: yes\"\n---\n";
+    assert_eq!(skill_description(quoted), "Quoted: yes");
+    let body_only = "# No frontmatter\n\ndescription: body text\n";
+    assert_eq!(
+      skill_description(body_only),
+      "",
+      "only the frontmatter counts"
+    );
+  }
+
+  #[test]
+  fn every_embedded_skill_has_a_description() {
+    for (name, content) in EMBEDDED_SKILLS {
+      assert!(!skill_description(content).is_empty(), "{name}");
     }
-    // And every skill is embedded: a new skill folder needs an entry
-    for entry in std::fs::read_dir(&root).unwrap() {
+  }
+
+  /// Installing writes every `.claude/skills/<name>/SKILL.md` byte for byte,
+  /// and nothing else
+  #[test]
+  fn installing_writes_every_skill_folder_as_it_is() {
+    let project = tempfile::tempdir().unwrap();
+    install_skills_to_dir(project.path(), SkillsPlatform::Claude, true).unwrap();
+    let installed = project.path().join(".claude/skills");
+    let sources = Path::new(env!("CARGO_MANIFEST_DIR")).join(".claude/skills");
+    let mut skills = 0;
+    for entry in std::fs::read_dir(&sources).unwrap() {
       let entry = entry.unwrap();
       if !entry.file_type().unwrap().is_dir() {
         continue;
       }
-      let name = entry.file_name().to_string_lossy().into_owned();
-      assert!(
-        EMBEDDED_SKILLS.iter().any(|(listed, ..)| *listed == name),
-        ".claude/skills/{name}/ is not in EMBEDDED_SKILLS"
-      );
+      let name = entry.file_name();
+      let source = std::fs::read_to_string(entry.path().join("SKILL.md")).unwrap();
+      let copy = std::fs::read_to_string(installed.join(&name).join("SKILL.md"))
+        .unwrap_or_else(|_| panic!("{name:?} was not installed"));
+      assert!(copy == source, "{name:?} was installed as it is");
+      skills += 1;
     }
+    assert!(skills > 20, "the engine's skills were found: {skills}");
+    assert_eq!(std::fs::read_dir(&installed).unwrap().count(), skills);
   }
 }

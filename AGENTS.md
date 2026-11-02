@@ -40,7 +40,7 @@ Suggested sources for game assets:
 | `tests/integration`, `tests/e2e` | Integration tests and headless GPU end-to-end tests |
 | `tests/skill-examples` | Compiles every Rust example in the skills (a workspace member, so `cargo check` and `cargo test --workspace` build it) |
 | `attic/` | Code parked outside the build (the raycaster and its demo); not compiled |
-| `.claude/skills/` | Agent skills; the CLI embeds copies in `src/cli/skills/` |
+| `.claude/skills/` | Agent skills; the CLI embeds them straight from here (listed by `src/build.rs`) |
 
 Dependencies point toward the core: the optional crates depend on `ryo2d`, never the reverse (the core's only dependency in `crates/` is the `ryo2d-derive` proc macro), and the `ryo2d` prelude exports the core only.
 
@@ -96,7 +96,7 @@ Designs and implementation plans from the superpowers skills live here, not in t
 - **Performance:** Cache-friendly data structures, minimize allocations in hot paths
 - **API design:** Ergonomic, hard to misuse, well-documented
 - **Testing:** Unit tests for core logic, integration tests for systems, e2e for complex-but-worth-know-shouldn't-break
-- **Documentation:** Rustdoc for API; the skills (`.claude/skills/`, embedded in the CLI from `src/cli/skills/`) for using the engine, whose Rust examples must compile (`tests/skill-examples`: its notes give the `<!-- given: -->`, `<!-- self: -->` and `<!-- with: -->` comments for a fragment's inputs, and the `rust,ignore` fence for signature lists); nested AGENTS.md for module conventions and decisions; `docs/architecture/` for the big picture. There is no separate guide book
+- **Documentation:** Rustdoc for API; the skills (`.claude/skills/`, which the CLI embeds as they are) for using the engine, whose Rust examples must compile (`tests/skill-examples`: its notes give the `<!-- given: -->`, `<!-- self: -->` and `<!-- with: -->` comments for a fragment's inputs, and the `rust,ignore` fence for signature lists); nested AGENTS.md for module conventions and decisions; `docs/architecture/` for the big picture. There is no separate guide book
 
 **Code comments should be normal/minimal** - explain intent and non-obvious logic. Complex algorithms get thorough documentation.
 

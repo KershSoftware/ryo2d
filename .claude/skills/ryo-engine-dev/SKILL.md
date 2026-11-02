@@ -2,7 +2,7 @@
 name: ryo-engine-dev
 description: Working on the Ryo2D engine - the frame's phases, module map, resources, public API, crates and testing.
 metadata:
-  version: 2.5.1
+  version: 2.5.2
 ---
 
 # Ryo2D Engine Developer
@@ -197,7 +197,7 @@ See `ryo-ecs-internals` and `src/core/systems/AGENTS.md`. In short: derive `Comp
 | What | Where |
 |------|-------|
 | API | Rustdoc on public items |
-| Using the engine | Skills in `.claude/skills/` (the CLI embeds copies from `src/cli/skills/`; keep both in step) |
+| Using the engine | Skills in `.claude/skills/` (the one copy: the CLI embeds every `<name>/SKILL.md` there at build time) |
 | Module conventions and decisions | The nearest `AGENTS.md` |
 | The big picture | `docs/architecture/` |
 | Designs and their reasons | `docs/specs/` |

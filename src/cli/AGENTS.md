@@ -12,5 +12,6 @@
 
 ## Skills
 
-- `src/cli/skills/*.md` are compiled into the binary via `include_str!` in `EMBEDDED_SKILLS` (`commands/install_skills.rs`), and that is what `init`/`install-skills` ship to games
-- They are verbatim copies of `.claude/skills/<name>/SKILL.md`: edit the skill there, copy it to `src/cli/skills/<name>.md`, and keep its `EMBEDDED_SKILLS` description in step with the skill's frontmatter (add an entry for a new skill). `embedded_skills_are_their_sources` checks all three: each copy is its source, each description its frontmatter's, and every `.claude/skills/<name>/` has an entry
+- `.claude/skills/<name>/SKILL.md` is the one copy of each skill: `init` and `install-skills` ship it as it is. The build script (`src/build.rs`, `list_skills`) writes `embedded_skills.rs` to `OUT_DIR`, an `include_str!` of every skill folder's `SKILL.md`, which `EMBEDDED_SKILLS` (`commands/install_skills.rs`) includes. An edited skill rebuilds through `include_str!`, and a new or removed folder reruns the build script, so a skill needs no step beyond writing it
+- The listing printed during install reads each description from the skill's frontmatter (`skill_description`). Only `SKILL.md` is shipped: a skill that grows other files needs the installer to ship them too
+- `installing_writes_every_skill_folder_as_it_is` installs into a temporary folder and checks it holds every skill folder's `SKILL.md` byte for byte, and nothing else
