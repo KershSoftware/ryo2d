@@ -599,7 +599,10 @@ pub struct ChunkOwned {
   pub chunk: IVec2,
 }
 
-/// A streamed map's chunk arriving or leaving
+/// A streamed map's chunk arriving or leaving. A map's frame lands before
+/// it unloads, so in a frame that does both (after a teleport, or under a
+/// camera faster than the land budget) its `Loaded` messages come before
+/// its `Unloading` ones
 #[derive(Message, Clone, Debug)]
 pub enum ChunkEvent {
   /// It landed this frame: its tiles draw and collide, and its class tiles
