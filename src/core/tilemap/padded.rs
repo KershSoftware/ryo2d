@@ -72,6 +72,9 @@ pub struct PaddedLayout {
   /// The tileset's `tile_offset`: where every tile draws from its cell's
   /// bottom-left corner, in pixels, x right and y down
   pub offset: IVec2,
+  /// The widest and the tallest of its tiles, in texels (as drawn
+  /// unflipped), which may be two tiles
+  pub largest: UVec2,
   /// Which padding this is: [`PaddedTilesets`] gives each image it makes a
   /// number never given before (0 until then), so what was built from a
   /// layout can tell it was padded again
@@ -256,6 +259,9 @@ pub(crate) fn pad_tileset(
     .map(|(_, s)| s.x.max(s.y))
     .max()
     .ok_or(Unpadded::Nothing)?;
+  let largest = ids
+    .iter()
+    .fold(UVec2::ZERO, |largest, (_, size)| largest.max(*size));
   let room = side.max(MIN_ROOM);
   let cell = side
     .checked_add(room)
@@ -318,6 +324,7 @@ pub(crate) fn pad_tileset(
     margin,
     size,
     offset: tileset.tile_offset,
+    largest,
     serial: 0,
     tiles: Arc::new(Vec::new()),
   };

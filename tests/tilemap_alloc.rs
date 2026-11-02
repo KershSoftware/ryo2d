@@ -171,14 +171,28 @@ const SIDE: u32 = 128;
 /// light: four tile layers of 128 x 128 cells over an atlas, the third
 /// y-sorted; an image layer; an object layer holding a tile object. The
 /// light is in both, so each frame is lit and the map's frame differs only
-/// by the map (its shadow chains among them)
+/// by the map (its shadow chains among them). A `tall` map is isometric, on
+/// cells of 16 x 8, so its 16 px tiles stand taller than their cells and
+/// its plain layers draw in Tiled's order across tilesets and chunks
 struct StaticMap {
   empty: bool,
+  tall: bool,
+}
+
+impl StaticMap {
+  /// Where the map's middle is in its pixels
+  fn centre(&self) -> Vec2 {
+    if self.tall {
+      Vec2::new(SIDE as f32 * 8.0, SIDE as f32 * 4.0)
+    } else {
+      Vec2::splat(SIDE as f32 * 8.0)
+    }
+  }
 }
 
 impl Scene for StaticMap {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
-    let centre = Vec2::splat(SIDE as f32 * 8.0);
+    let centre = self.centre();
     ctx.world.spawn((
       Transform::from_translation(centre),
       Light2D::point(Color::WHITE, 240.0).with_shadows(),
@@ -214,7 +228,11 @@ impl Scene for StaticMap {
       },
     );
     let set = TilesetSource::Asset(ctx.assets().add(set));
-    let mut map = TileMap::new(UVec2::splat(SIDE), UVec2::splat(16));
+    let mut map = if self.tall {
+      TileMap::new(UVec2::splat(SIDE), UVec2::new(16, 8)).with_shape(GridShape::Isometric)
+    } else {
+      TileMap::new(UVec2::splat(SIDE), UVec2::splat(16))
+    };
     let set = map.add_tileset(set);
     let backdrop = ctx.assets().add(Image::solid_rect(64, 64, 20, 30, 60, 255));
     let mut info = LayerInfo::new(100, "backdrop");
@@ -274,10 +292,8 @@ impl Scene for StaticMap {
 
 /// An engine on the static map (or nothing), landed and warmed up, its
 /// camera at `at`. None without a GPU
-fn engine(empty: bool, at: Vec2) -> Option<HeadlessEngine> {
-  let builder = EngineBuilder::new()
-    .resolution(640, 360)
-    .start_scene(StaticMap { empty });
+fn engine(scene: StaticMap, at: Vec2) -> Option<HeadlessEngine> {
+  let builder = EngineBuilder::new().resolution(640, 360).start_scene(scene);
   let mut engine = HeadlessEngine::new_or_skip(builder)?;
   if let Some(mut camera) = CameraMut::main(engine.world_mut()) {
     camera.set_position(at.x, at.y);
@@ -380,8 +396,23 @@ fn look_at(engine: &mut HeadlessEngine, at: Vec2) {
 
 #[test]
 fn a_frame_drawing_a_static_map_allocates_nothing() {
-  let centre = Vec2::splat(SIDE as f32 * 8.0);
-  let (Some(mut empty), Some(mut map)) = (engine(true, centre), engine(false, centre)) else {
+  static_frames_allocate_nothing(false);
+}
+
+#[test]
+fn a_frame_drawing_an_isometric_map_of_tall_tiles_in_tileds_order_allocates_nothing() {
+  static_frames_allocate_nothing(true);
+}
+
+/// A frame drawing the static map (`tall` or not), still and panning over
+/// chunks it has drawn, makes no allocation of the engine's own an empty
+/// frame does not, and its own path none inside the GPU API
+fn static_frames_allocate_nothing(tall: bool) {
+  let centre = StaticMap { empty: true, tall }.centre();
+  let (Some(mut empty), Some(mut map)) = (
+    engine(StaticMap { empty: true, tall }, centre),
+    engine(StaticMap { empty: false, tall }, centre),
+  ) else {
     return;
   };
   // Panning 256 px right and back, its chunks drawn the first time over

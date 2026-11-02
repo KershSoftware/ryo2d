@@ -787,7 +787,7 @@ mod tests {
     panic!("{name}: one has more lines than the other");
   }
 
-  const MAP_PAIRS: [&str; 57] = [
+  const MAP_PAIRS: [&str; 61] = [
     "image-layers",
     "lists",
     "tile-objects",
@@ -845,6 +845,10 @@ mod tests {
     "shape-objects-iso-bottomleft",
     "shape-objects-iso-center",
     "shape-objects-iso-external",
+    "shape-tall-chunk-border",
+    "shape-tall-iso-upright",
+    "shape-tall-stag-upright",
+    "shape-tall-ortho-upright",
   ];
   const SET_PAIRS: [&str; 10] = [
     "loot",

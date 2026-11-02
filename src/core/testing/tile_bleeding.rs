@@ -299,3 +299,194 @@ fn a_sub_pixel_camera_draws_tiles_as_at_the_whole_pixel_they_round_to() {
   };
   assert!(found.is_empty(), "the tiles slid:\n{}", found.join("\n"));
 }
+
+/// A 48 x 48 map of `shape` on cells of `cell` px, every cell holding a
+/// solid tile its cell's size: A (the first tileset's first tile) or B (the
+/// second's second) in a checkerboard of x + y, at the world's origin
+struct Odd {
+  shape: GridShape,
+  cell: UVec2,
+}
+
+/// The odd maps' side, in cells
+const ODD_CELLS: i32 = 48;
+
+impl Scene for Odd {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    ctx.look().tonemap = Tonemap::Clamp;
+    let mut map = TileMap::new(UVec2::splat(ODD_CELLS as u32), self.cell).with_shape(self.shape);
+    for colours in [[A, NEIGHBOURS[0]], [NEIGHBOURS[1], B]] {
+      let (width, height) = (self.cell.x * 2, self.cell.y);
+      let data: Vec<u8> = (0..width * height)
+        .flat_map(|i| colours[((i % width) / self.cell.x) as usize])
+        .collect();
+      let image = ctx.assets().add(Image::from_rgba(data, width, height));
+      let size = UVec2::new(width, height);
+      let mut set = Tileset::new("odd", self.cell, TilesetImage::Atlas { image, size });
+      set.columns = 2;
+      set.tile_count = 2;
+      map.add_tileset(TilesetSource::Embedded(Arc::new(set)));
+    }
+    let layer = map.add_tile_layer("ground");
+    let grid = map.tiles_mut(layer).expect("tile layer");
+    for y in 0..ODD_CELLS {
+      for x in 0..ODD_CELLS {
+        let tile = if (x + y) % 2 == 0 {
+          Tile::new(0, 0)
+        } else {
+          Tile::new(1, 1)
+        };
+        grid.set(IVec2::new(x, y), Some(tile));
+      }
+    }
+    let map = ctx.assets().add(map);
+    ctx.world.spawn((MapRoot::new(map), Transform::IDENTITY));
+  }
+}
+
+/// Where Tiled's renderer puts a tile whose bottom-left the grid places at
+/// `anchor`: an isometric grid of odd sizes places tiles on half pixels,
+/// which it rounds up, and its odd cell heights put a tile a pixel lower
+/// where its bottom is a whole pixel (measured; the formats note has it);
+/// every other grid places them on whole pixels
+fn tileds_raster(grid: &MapGrid, anchor: Vec2) -> IVec2 {
+  if grid.shape != GridShape::Isometric {
+    assert_eq!(
+      anchor,
+      anchor.round(),
+      "{grid:?} places tiles on whole pixels"
+    );
+    return anchor.as_ivec2();
+  }
+  let y = if grid.cell.y % 2 == 1 {
+    anchor.y.floor() + 1.0
+  } else {
+    anchor.y
+  };
+  Vec2::new(anchor.x.ceil(), y).as_ivec2()
+}
+
+/// What Tiled's raster draws of an `Odd` map in the world's pixels from
+/// `min`, `side` a side: each cell's tile where `tileds_raster` puts it, in
+/// Tiled's paint order (the later over the earlier)
+fn odd_reference(grid: &MapGrid, min: IVec2, side: i32) -> Vec<Option<[u8; 4]>> {
+  let mut cells: Vec<IVec2> = (0..ODD_CELLS)
+    .flat_map(|y| (0..ODD_CELLS).map(move |x| IVec2::new(x, y)))
+    .collect();
+  cells.sort_by_key(|&cell| grid.paint_key(cell));
+  let mut out = vec![None; (side * side) as usize];
+  let size = grid.cell.as_ivec2();
+  for cell in cells {
+    let bottom_left = tileds_raster(grid, grid.tile_anchor(cell));
+    let colour = if (cell.x + cell.y) % 2 == 0 { A } else { B };
+    for y in bottom_left.y - size.y..bottom_left.y {
+      for x in bottom_left.x..bottom_left.x + size.x {
+        let at = IVec2::new(x, y) - min;
+        if at.cmpge(IVec2::ZERO).all() && at.cmplt(IVec2::splat(side)).all() {
+          out[(at.y * side + at.x) as usize] = Some(colour);
+        }
+      }
+    }
+  }
+  out
+}
+
+#[test]
+fn half_pixel_steps_draw_without_seams_in_pixel_art() {
+  // Odd cell sizes, whose half cells fall on half pixels: Tiled steps
+  // staggered and hexagonal grids in whole pixels (so tiles a pixel larger
+  // than the step overlap their neighbours) and isometric ones on half
+  // pixels, which its raster rounds. Solid tiles the cell's size from two
+  // tilesets cover each map; at zooms 1 to 4, and with the camera a fraction
+  // of a pixel off, the pixel-art frame over a corner where four chunks meet
+  // is what Tiled's raster draws, scaled: each tile where Tiled puts it, in
+  // Tiled's order, every pixel one tile's colour, never the background
+  // between two
+  const FRAME: u32 = 96;
+  let cell = UVec2::new(33, 17);
+  let (x, y) = (StaggerAxis::X, StaggerAxis::Y);
+  let grids = [
+    GridShape::Isometric,
+    GridShape::Staggered {
+      axis: x,
+      index: StaggerIndex::Odd,
+    },
+    GridShape::Staggered {
+      axis: y,
+      index: StaggerIndex::Even,
+    },
+    GridShape::Hexagonal {
+      axis: x,
+      index: StaggerIndex::Odd,
+      side: 13,
+    },
+    GridShape::Hexagonal {
+      axis: y,
+      index: StaggerIndex::Odd,
+      side: 13,
+    },
+  ];
+  let fractions = [
+    (0.0, 0.0),
+    (0.2, 0.4),
+    (0.4, -0.2),
+    (-0.4, 0.3),
+    (-0.2, -0.45),
+  ];
+  let mut failures = Vec::new();
+  for shape in grids {
+    let builder = EngineBuilder::new()
+      .pixel_art(FRAME, FRAME)
+      .start_scene(Odd { shape, cell });
+    let Some(mut engine) = HeadlessEngine::new_or_skip(builder) else {
+      return;
+    };
+    crate::core::tilemap::test_util::step_until_maps_land(&mut engine);
+    let grid = MapGrid::for_map(shape, cell, UVec2::splat(ODD_CELLS as u32), false);
+    // The camera on a whole pixel by cell (32, 32), where chunks meet
+    let centre = grid.cell_center(IVec2::splat(32)).round();
+    let half = FRAME as i32 / 2;
+    let min = centre.as_ivec2() - half - 2;
+    let side = FRAME as i32 + 4;
+    let reference = odd_reference(&grid, min, side);
+    assert!(
+      reference.iter().all(Option::is_some),
+      "{shape:?}: the tiles cover the view"
+    );
+    for zoom in [1.0f32, 2.0, 3.0, 4.0] {
+      for fraction in fractions {
+        let at = centre + Vec2::from(fraction) / zoom;
+        let world = engine.world_mut();
+        let mut cameras =
+          world.query_filtered::<(&mut Transform, &mut Camera2d), With<MainCamera>>();
+        for (mut transform, mut camera) in cameras.iter_mut(world) {
+          transform.translation = at;
+          camera.zoom = zoom;
+        }
+        // Twice: the main camera is interpolated, and draws where it was
+        engine.step_frames(2).unwrap();
+        let frame = engine.frame().unwrap();
+        let unlike: Vec<(u32, u32, [u8; 4], [u8; 4])> = frame
+          .enumerate_pixels()
+          .filter_map(|(sx, sy, p)| {
+            let world = centre + (Vec2::new(sx as f32, sy as f32) + 0.5 - half as f32) / zoom;
+            let at = world.floor().as_ivec2() - min;
+            let want = reference[(at.y * side + at.x) as usize]?;
+            (p.0 != want).then_some((sx, sy, p.0, want))
+          })
+          .collect();
+        if let Some(&(sx, sy, got, want)) = unlike.first() {
+          failures.push(format!(
+            "{shape:?}, zoom {zoom}, camera {fraction:?} px off: {} pixels, first ({sx}, {sy}) {got:?}, Tiled {want:?}",
+            unlike.len()
+          ));
+        }
+      }
+    }
+  }
+  assert!(
+    failures.is_empty(),
+    "unlike Tiled:\n{}",
+    failures.join("\n")
+  );
+}

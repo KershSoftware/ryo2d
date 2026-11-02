@@ -1,8 +1,11 @@
 //! Retained tile chunks. Each chunk of a tile layer keeps its instances, a
-//! range per tileset in row order (so each row of cells is a run of it, for
-//! y-sorted layers), in one arena the GPU holds a copy of: built once from
-//! its tiles, written to the GPU once, and built and written again only when
-//! what it was built from changes. A draw of a chunk binds a slot (group 2,
+//! range per tileset in Tiled's paint order (so each paint band of cells, a
+//! row, is a run of it, for y-sorted layers), in one arena the GPU holds a
+//! copy of: built once from its tiles, written to the GPU once, and built
+//! and written again only when what it was built from changes. A chunk with
+//! a tile that leaves its cell's box keeps its paint order too, as runs of
+//! one tileset's instances, so a layer whose tiles overlap can draw them in
+//! Tiled's order across tilesets and chunks. A draw of a chunk binds a slot (group 2,
 //! at a dynamic offset) that places it: the layer's world transform, the
 //! camera's parallax offset and where the tileset's padded image sits on its
 //! page, so moving the map, moving the camera or the atlas moving the image
@@ -82,14 +85,51 @@ pub(crate) struct ChunkPart {
   pub max: Vec2,
 }
 
-/// One row of cells of one tileset's part of a chunk: a run of the part's
-/// instances (they are in row order), and the box they cover in the
-/// layer's pixels. A y-sorted layer draws each row on its own
+/// A cell's place in Tiled's paint order (`MapGrid::paint_key`): its paint
+/// band, then its column
+pub(crate) type PaintKey = (i32, i32, i32);
+
+/// A paint band: the first two parts of a paint key, the cells' row (on an
+/// isometric grid their diagonal, x + y) and, on axis-X staggered and
+/// hexagonal grids, 1 for the row's shifted cells (0 for the rest, and on
+/// every other grid)
+pub(crate) type Band = (i32, i32);
+
+/// A paint key's band
+fn band((row, phase, _): PaintKey) -> Band {
+  (row, phase)
+}
+
+/// How a chunk's tiles leave their cells' boxes (each cell's outline's
+/// bounding box), as pixel art draws them
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Spill {
+  /// None does: a tile overlaps nothing but where its cell's box overlaps
+  /// its neighbours'
+  #[default]
+  None,
+  /// Some reach above or below their cell's box, none past its sides: a
+  /// band's cells' boxes lie side by side, so its tiles never overlap one
+  /// another, and only the bands' order shows
+  Vertical,
+  /// Some reach past their cell's box's sides (wide, moved across, or
+  /// turned): a band's tiles overlap one another, and their order shows
+  Sideways,
+}
+
+/// A run of one tileset's part of a chunk: instances next to each other in
+/// the part (which is in paint order), all of one paint band, and the box
+/// they cover in the layer's pixels. A chunk's rows are each tileset's band
+/// as one run, which a y-sorted layer draws on its own; its runs are its
+/// instances in paint order, a run where the tileset changes or the band
+/// ends
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct ChunkRow {
+pub(crate) struct ChunkRun {
   pub tileset: u16,
-  /// The cells' row in the layer (signed)
-  pub row: i32,
+  /// The cells' paint band in the layer (signed)
+  pub band: Band,
+  /// The paint column of its first cell (the last part of its paint key)
+  pub column: i32,
   /// Where the run starts in its part, and how many instances it has
   pub first: u32,
   pub count: u32,
@@ -98,22 +138,35 @@ pub(crate) struct ChunkRow {
 }
 
 /// Where [`ChunkStore::chunk`] copies a chunk as a view draws it: each
-/// tileset's part, and, if asked for, the rows of each (part by part, rows
-/// in order)
+/// tileset's part, and, if asked for, its rows (band by band, each band's
+/// tilesets in order) and its runs in paint order (a chunk whose tiles stay
+/// inside their cells' boxes' sides gives its rows, as a band's tiles then
+/// never overlap one another)
 pub(crate) struct ChunkCopy<'a> {
   pub parts: &'a mut Vec<ChunkPart>,
-  pub rows: Option<&'a mut Vec<ChunkRow>>,
+  pub rows: Option<&'a mut Vec<ChunkRun>>,
+  pub runs: Option<&'a mut Vec<ChunkRun>>,
 }
 
 impl ChunkCopy<'_> {
-  /// Copies `built`'s parts, and rows if asked for, over what was there
-  fn take(self, built: &Built) {
+  /// Copies `built`'s parts, and rows and runs if asked for, over what was
+  /// there; how its tiles leave their cells' boxes
+  fn take(self, built: &Built) -> Spill {
     self.parts.clear();
     self.parts.extend_from_slice(&built.parts);
     if let Some(rows) = self.rows {
       rows.clear();
       rows.extend_from_slice(&built.rows);
     }
+    if let Some(runs) = self.runs {
+      runs.clear();
+      runs.extend_from_slice(if built.spill == Spill::Sideways {
+        &built.runs
+      } else {
+        &built.rows
+      });
+    }
+    built.spill
   }
 }
 
@@ -156,7 +209,13 @@ struct Built {
   /// until the arena has room for them
   refused: Option<(ChunkStamp, u32)>,
   parts: Vec<ChunkPart>,
-  rows: Vec<ChunkRow>,
+  /// Each tileset's bands, band by band
+  rows: Vec<ChunkRun>,
+  /// How its tiles leave their cells' boxes
+  spill: Spill,
+  /// Its instances in paint order, as runs (only when a tile of it leaves
+  /// its cell's box's sides)
+  runs: Vec<ChunkRun>,
 }
 
 /// The CPU side of the retained chunks: each layer's built chunks, the
@@ -177,9 +236,9 @@ pub(crate) struct ChunkStore {
   free: Vec<Range<u32>>,
   /// Ranges written since the GPU last was
   written: Vec<Range<u32>>,
-  /// A chunk's instances as built (tileset, row, instance), before they
-  /// are split by tileset
-  scratch: Vec<(u16, i32, SpriteInstance)>,
+  /// A chunk's instances as built (tileset, paint key, instance), in
+  /// paint order, before they are split by tileset
+  scratch: Vec<(u16, PaintKey, SpriteInstance)>,
   /// The frame's slots, and the texture each one's UVs come from
   slots: Vec<TileSlot>,
   slot_textures: Vec<TextureId>,
@@ -220,20 +279,21 @@ impl ChunkStore {
     }
   }
 
-  /// Copies into `out` the parts and rows of `layer`'s chunk `chunk` for
-  /// `view`, built by `build` first (it fills the instances, as `(tileset,
-  /// row, instance)` grouped by tileset, in row order within one) when
-  /// `stamp` is not what it was built from. False, copying nothing, when
-  /// the view had it already, or the arena has no room for it. The chunk
-  /// counts as drawn this frame
+  /// Copies into `out` the parts, rows and runs of `layer`'s chunk `chunk`
+  /// for `view`, built by `build` first (it fills the instances, as
+  /// `(tileset, paint key, instance)` in paint order, and says how they
+  /// leave their cells' boxes) when `stamp` is not what it was built from;
+  /// then how its tiles leave their cells' boxes. `None`, copying nothing,
+  /// when the view had it already, or the arena has no room for it. The
+  /// chunk counts as drawn this frame
   pub(crate) fn chunk(
     &mut self,
     (layer, chunk): (Entity, IVec2),
     stamp: ChunkStamp,
     view: u64,
-    build: impl FnOnce(&mut Vec<(u16, i32, SpriteInstance)>),
+    build: impl FnOnce(&mut Vec<(u16, PaintKey, SpriteInstance)>) -> Spill,
     out: ChunkCopy<'_>,
-  ) -> bool {
+  ) -> Option<Spill> {
     let frame = self.frame;
     let built = self
       .layers
@@ -242,13 +302,12 @@ impl ChunkStore {
       .entry(chunk)
       .or_default();
     if built.view == view {
-      return false;
+      return None;
     }
     built.view = view;
     built.drawn = frame;
     if built.stamp == Some(stamp) {
-      out.take(built);
-      return true;
+      return Some(out.take(built));
     }
     built.stamp = None;
     for part in built.parts.drain(..) {
@@ -259,20 +318,22 @@ impl ChunkStore {
       );
     }
     built.rows.clear();
+    built.runs.clear();
+    built.spill = Spill::None;
     // Refused room for this stamp before: not built again until there is
     // room for as many instances
     if let Some((_, count)) = built.refused.filter(|(refused, _)| *refused == stamp)
       && !self.make_room(count)
     {
-      return false;
+      return None;
     }
     self.scratch.clear();
-    build(&mut self.scratch);
+    let spill = build(&mut self.scratch);
     // A chunk makes at most an instance a cell
     let count = u32::try_from(self.scratch.len()).unwrap_or(u32::MAX);
     let Some(start) = self.allocate(count) else {
       self.refuse(layer, chunk, (stamp, count));
-      return false;
+      return None;
     };
     let Self {
       layers,
@@ -283,15 +344,24 @@ impl ChunkStore {
       ..
     } = self;
     // Drawn this frame, so no room made took it
-    let Some(built) = layers
+    let built = layers
       .get_mut(&layer)
-      .and_then(|chunks| chunks.get_mut(&chunk))
-    else {
-      return false;
-    };
+      .and_then(|chunks| chunks.get_mut(&chunk))?;
     built.stamp = Some(stamp);
     built.refused = None;
+    built.spill = spill;
     *rebuilds += 1;
+    // A chunk whose tiles overlap within a band keeps its paint order: runs
+    // of one tileset's instances, each counted from its part's start
+    if spill == Spill::Sideways {
+      paint_runs(scratch, &mut built.runs);
+    }
+    // Stable, so each tileset keeps its paint order. A chunk of one tileset
+    // (or already in order) needs none: the sort would take a scratch buffer
+    // of the chunk's size (about 140 KB for a full chunk) to move nothing
+    if !scratch.is_sorted_by_key(|(tileset, ..)| *tileset) {
+      scratch.sort_by_key(|(tileset, ..)| *tileset);
+    }
     let mut at = start;
     for run in scratch.chunk_by(|a, b| a.0 == b.0) {
       let tileset = run[0].0;
@@ -301,19 +371,20 @@ impl ChunkStore {
       for (slot, (_, _, instance)) in held[start as usize..].iter_mut().zip(run) {
         *slot = *instance;
       }
-      // Each row's run of the part, and the box of each
+      // Each band's run of the part, and the box of each
       let (mut min, mut max) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
       let mut first = 0;
-      for cells in run.chunk_by(|a, b| a.1 == b.1) {
+      for cells in run.chunk_by(|a, b| band(a.1) == band(b.1)) {
         let (mut low, mut high) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
         for (_, _, instance) in cells {
           let (a, b) = reach(instance);
           low = low.min(a);
           high = high.max(b);
         }
-        built.rows.push(ChunkRow {
+        built.rows.push(ChunkRun {
           tileset,
-          row: cells[0].1,
+          band: band(cells[0].1),
+          column: cells[0].1.2,
           first,
           count: cells.len() as u32,
           min: low,
@@ -332,8 +403,14 @@ impl ChunkStore {
         max,
       });
     }
-    out.take(built);
-    true
+    // Band by band, so a band's runs are together (a chunk of one tileset
+    // has them so already)
+    if !built.rows.is_sorted_by_key(|row| (row.band, row.tileset)) {
+      built
+        .rows
+        .sort_unstable_by_key(|row| (row.band, row.tileset));
+    }
+    Some(out.take(built))
   }
 
   /// Room for `count` instances in the arena, its start, freeing the chunks
@@ -513,6 +590,39 @@ impl ChunkStore {
   pub(crate) fn instances_in_use(&self) -> usize {
     let free: usize = self.free.iter().map(|r| r.len()).sum();
     self.held.len() - free
+  }
+}
+
+/// `scratch`'s instances, in paint order, as runs into `runs`: a run ends
+/// where the tileset changes or the band does, and starts where its first
+/// instance will be in its tileset's part (the parts keep paint order)
+fn paint_runs(scratch: &[(u16, PaintKey, SpriteInstance)], runs: &mut Vec<ChunkRun>) {
+  // How many of each tileset's instances come before; a map holds at most
+  // 256 tilesets
+  let mut placed = [0u32; 256];
+  for &(tileset, key, ref instance) in scratch {
+    let Some(at) = placed.get_mut(usize::from(tileset)) else {
+      continue;
+    };
+    let first = *at;
+    *at += 1;
+    let (low, high) = reach(instance);
+    match runs.last_mut() {
+      Some(run) if run.tileset == tileset && run.band == band(key) => {
+        run.count += 1;
+        run.min = run.min.min(low);
+        run.max = run.max.max(high);
+      }
+      _ => runs.push(ChunkRun {
+        tileset,
+        band: band(key),
+        column: key.2,
+        first,
+        count: 1,
+        min: low,
+        max: high,
+      }),
+    }
   }
 }
 
@@ -776,30 +886,41 @@ mod tests {
   use super::*;
   use crate::core::ecs::World;
 
-  /// A chunk's parts and rows as copied out
+  /// A chunk's parts, rows and runs as copied out, and how its tiles
+  /// leave their cells' boxes
   struct Copied {
     parts: Vec<ChunkPart>,
-    rows: Vec<ChunkRow>,
+    rows: Vec<ChunkRun>,
+    runs: Vec<ChunkRun>,
+    spill: Spill,
   }
 
+  /// What a build fills a chunk with
+  type Scratch = Vec<(u16, PaintKey, SpriteInstance)>;
+
   impl ChunkStore {
-    /// [`chunk`](ChunkStore::chunk), its parts and rows copied out
+    /// [`chunk`](ChunkStore::chunk), its parts, rows and runs copied out
     fn chunk_copied(
       &mut self,
       layer: Entity,
       chunk: IVec2,
       stamp: ChunkStamp,
       view: u64,
-      build: impl FnOnce(&mut Vec<(u16, i32, SpriteInstance)>),
+      build: impl FnOnce(&mut Scratch) -> Spill,
     ) -> Option<Copied> {
-      let (mut parts, mut rows) = (Vec::new(), Vec::new());
+      let (mut parts, mut rows, mut runs) = (Vec::new(), Vec::new(), Vec::new());
       let out = ChunkCopy {
         parts: &mut parts,
         rows: Some(&mut rows),
+        runs: Some(&mut runs),
       };
-      self
-        .chunk((layer, chunk), stamp, view, build, out)
-        .then_some(Copied { parts, rows })
+      let spill = self.chunk((layer, chunk), stamp, view, build, out)?;
+      Some(Copied {
+        parts,
+        rows,
+        runs,
+        spill,
+      })
     }
   }
 
@@ -823,14 +944,15 @@ mod tests {
   }
 
   /// Builds `tiles` (tileset, centre x) as 16 px tiles on row 0
-  fn builder(tiles: &[(u16, f32)]) -> impl FnOnce(&mut Vec<(u16, i32, SpriteInstance)>) + '_ {
+  fn builder(tiles: &[(u16, f32)]) -> impl FnOnce(&mut Scratch) -> Spill + '_ {
     move |out| {
       out.clear();
       out.extend(
         tiles
           .iter()
-          .map(|&(set, x)| (set, 0, tile(x, 8.0, 16.0, 16.0))),
+          .map(|&(set, x)| (set, (0, 0, (x / 16.0) as i32), tile(x, 8.0, 16.0, 16.0))),
       );
+      Spill::None
     }
   }
 
@@ -883,45 +1005,129 @@ mod tests {
     assert_eq!(store.rebuilds(), 1);
   }
 
+  /// A build of `tiles` (tileset, row, centre x), 16 px tiles in paint
+  /// order, saying how they leave their cells' boxes
+  fn rows_of(tiles: &[(u16, i32, f32)], spill: Spill) -> impl FnOnce(&mut Scratch) -> Spill + '_ {
+    move |out| {
+      out.extend(tiles.iter().map(|&(set, row, x)| {
+        let y = row as f32 * 16.0 + 8.0;
+        (set, (row, 0, (x / 16.0) as i32), tile(x, y, 16.0, 16.0))
+      }));
+      spill
+    }
+  }
+
   #[test]
-  fn a_chunk_s_rows_are_runs_of_each_part() {
+  fn a_chunk_s_rows_are_runs_of_each_part_band_by_band() {
     let [layer] = layers(1)[..] else { return };
     let mut store = ChunkStore::default();
     store.begin_frame();
     let view = store.begin_view();
     // (tileset, row, centre x): rows 0 and 2 of tileset 0, row 1 of 1
-    let tiles = [(0, 0, 8.0), (0, 0, 24.0), (0, 2, 8.0), (1, 1, 40.0)];
-    let build = |out: &mut Vec<(u16, i32, SpriteInstance)>| {
-      out.extend(tiles.iter().map(|&(set, row, x)| {
-        let y = row as f32 * 16.0 + 8.0;
-        (set, row, tile(x, y, 16.0, 16.0))
-      }));
-    };
+    let tiles = [(0, 0, 8.0), (0, 0, 24.0), (1, 1, 40.0), (0, 2, 8.0)];
     let built = store
-      .chunk_copied(layer, IVec2::ZERO, STAMP, view, build)
+      .chunk_copied(
+        layer,
+        IVec2::ZERO,
+        STAMP,
+        view,
+        rows_of(&tiles, Spill::Vertical),
+      )
       .expect("built");
     assert_eq!(built.parts.len(), 2);
     let rows: Vec<(u16, i32, u32, u32)> = built
       .rows
       .iter()
-      .map(|r| (r.tileset, r.row, r.first, r.count))
+      .map(|r| (r.tileset, r.band.0, r.first, r.count))
       .collect();
-    assert_eq!(rows, [(0, 0, 0, 2), (0, 2, 2, 1), (1, 1, 0, 1)]);
+    assert_eq!(rows, [(0, 0, 0, 2), (1, 1, 0, 1), (0, 2, 2, 1)]);
     let boxes: Vec<(Vec2, Vec2)> = built.rows.iter().map(|r| (r.min, r.max)).collect();
     assert_eq!(
       boxes,
       [
         (Vec2::ZERO, Vec2::new(32.0, 16.0)),
-        (Vec2::new(0.0, 32.0), Vec2::new(16.0, 48.0)),
         (Vec2::new(32.0, 16.0), Vec2::new(48.0, 32.0)),
+        (Vec2::new(0.0, 32.0), Vec2::new(16.0, 48.0)),
       ]
     );
+    // No tile leaves its cell's sides, so a band's tiles never overlap and
+    // its runs are its rows
+    assert_eq!(built.spill, Spill::Vertical);
+    assert_eq!(built.runs, built.rows);
     // Drawn again unchanged, the rows are as built
     let again = store.begin_view();
     let kept = store
-      .chunk_copied(layer, IVec2::ZERO, STAMP, again, |_| {})
+      .chunk_copied(layer, IVec2::ZERO, STAMP, again, |_| Spill::Sideways)
       .expect("kept");
     assert_eq!(kept.rows.len(), 3);
+    assert_eq!(kept.spill, Spill::Vertical);
+  }
+
+  #[test]
+  fn a_spilling_chunk_keeps_its_paint_order_as_runs_of_its_parts() {
+    let [layer] = layers(1)[..] else { return };
+    let mut store = ChunkStore::default();
+    store.begin_frame();
+    let view = store.begin_view();
+    // Row 0: tilesets 0, 0, 1, 0; row 1: 1, 1, 0 (paint order)
+    let tiles = [
+      (0, 0, 8.0),
+      (0, 0, 24.0),
+      (1, 0, 40.0),
+      (0, 0, 56.0),
+      (1, 1, 8.0),
+      (1, 1, 24.0),
+      (0, 1, 40.0),
+    ];
+    let built = store
+      .chunk_copied(
+        layer,
+        IVec2::ZERO,
+        STAMP,
+        view,
+        rows_of(&tiles, Spill::Sideways),
+      )
+      .expect("built");
+    assert_eq!(built.spill, Spill::Sideways);
+    let parts: Vec<(u16, u32)> = built.parts.iter().map(|p| (p.tileset, p.count)).collect();
+    assert_eq!(parts, [(0, 4), (1, 3)]);
+    // Each run: its tileset, band, and place in its part
+    let runs: Vec<(u16, i32, u32, u32)> = built
+      .runs
+      .iter()
+      .map(|r| (r.tileset, r.band.0, r.first, r.count))
+      .collect();
+    assert_eq!(
+      runs,
+      [
+        (0, 0, 0, 2),
+        (1, 0, 0, 1),
+        (0, 0, 2, 1),
+        (1, 1, 1, 2),
+        (0, 1, 3, 1)
+      ]
+    );
+    assert_eq!(
+      (built.runs[3].min, built.runs[3].max),
+      (Vec2::new(0.0, 16.0), Vec2::new(32.0, 32.0))
+    );
+    // The rows are each tileset's band, band by band
+    let rows: Vec<(u16, i32, u32, u32)> = built
+      .rows
+      .iter()
+      .map(|r| (r.tileset, r.band.0, r.first, r.count))
+      .collect();
+    assert_eq!(
+      rows,
+      [(0, 0, 0, 3), (1, 0, 0, 1), (0, 1, 3, 1), (1, 1, 1, 2)]
+    );
+    // Drawn again unchanged, the runs are as built
+    let again = store.begin_view();
+    let kept = store
+      .chunk_copied(layer, IVec2::ZERO, STAMP, again, |_| Spill::None)
+      .expect("kept");
+    assert_eq!(kept.spill, Spill::Sideways);
+    assert_eq!(kept.runs, built.runs);
   }
 
   #[test]
@@ -1064,9 +1270,16 @@ mod tests {
     let builds = Cell::new(0);
     let draw = |store: &mut ChunkStore, x: i32, count: usize| {
       let view = store.begin_view();
-      let build = |out: &mut Vec<(u16, i32, SpriteInstance)>| {
+      let build = |out: &mut Scratch| {
         builds.set(builds.get() + 1);
-        out.extend((0..count).map(|i| (0, 0, tile(8.0 + 16.0 * i as f32, 8.0, 16.0, 16.0))));
+        out.extend((0..count).map(|i| {
+          (
+            0,
+            (0, 0, i as i32),
+            tile(8.0 + 16.0 * i as f32, 8.0, 16.0, 16.0),
+          )
+        }));
+        Spill::None
       };
       store
         .chunk_copied(layer, IVec2::new(x, 0), STAMP, view, build)

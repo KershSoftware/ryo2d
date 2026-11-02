@@ -1,0 +1,23 @@
+{"tiled": "1.12.2",
+ "grids": [
+  {"name": "isometric 16x8", "orientation": "isometric", "tile": [16, 8]},
+  {"name": "staggered y odd 16x8", "orientation": "staggered", "tile": [16, 8], "staggeraxis": "y", "staggerindex": "odd"},
+  {"name": "staggered x odd 16x8", "orientation": "staggered", "tile": [16, 8], "staggeraxis": "x", "staggerindex": "odd"},
+  {"name": "hexagonal y odd 16x16 side 8", "orientation": "hexagonal", "tile": [16, 16], "staggeraxis": "y", "staggerindex": "odd", "hexsidelength": 8},
+  {"name": "hexagonal x even 16x16 side 8", "orientation": "hexagonal", "tile": [16, 16], "staggeraxis": "x", "staggerindex": "even", "hexsidelength": 8}
+ ],
+ "pairs": [
+  {"grid": "isometric 16x8", "a": [8, 7], "b": [7, 8], "over": [8, 7]},
+  {"grid": "isometric 16x8", "a": [9, 7], "b": [7, 8], "over": [9, 7]},
+  {"grid": "isometric 16x8", "a": [8, 8], "b": [8, 7], "over": [8, 8]},
+  {"grid": "isometric 16x8", "a": [8, 8], "b": [9, 8], "over": [9, 8]},
+  {"grid": "isometric 16x8", "a": [7, 9], "b": [9, 6], "over": [7, 9]},
+  {"grid": "staggered y odd 16x8", "a": [7, 8], "b": [8, 7], "over": [7, 8]},
+  {"grid": "staggered y odd 16x8", "a": [7, 8], "b": [8, 8], "over": [8, 8]},
+  {"grid": "staggered x odd 16x8", "a": [7, 8], "b": [8, 7], "over": [7, 8]},
+  {"grid": "staggered x odd 16x8", "a": [8, 8], "b": [9, 8], "over": [9, 8]},
+  {"grid": "hexagonal y odd 16x16 side 8", "a": [7, 8], "b": [8, 7], "over": [7, 8]},
+  {"grid": "hexagonal y odd 16x16 side 8", "a": [7, 8], "b": [8, 8], "over": [8, 8]},
+  {"grid": "hexagonal x even 16x16 side 8", "a": [7, 8], "b": [8, 7], "over": [7, 8]},
+  {"grid": "hexagonal x even 16x16 side 8", "a": [8, 8], "b": [9, 8], "over": [8, 8]}
+ ]}

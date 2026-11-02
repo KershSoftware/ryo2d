@@ -6,7 +6,7 @@
 //!
 //! The instances are independent of where the map is, how the camera moves
 //! and where the tileset's image sits in the atlas: they hold layer-local
-//! pixels (cell (x, y) at (x, y) times the layer's cell size, y down) and
+//! pixels (each tile standing where the layer's grid places it, y down) and
 //! UVs over the whole padded tileset image. The draw applies the map's
 //! transform, the camera's parallax and the image's slot.
 //!
@@ -14,9 +14,13 @@
 //!
 //! - `transform`: the quad is centred on the tile's drawn rectangle; row 0
 //!   is the quad's x axis and row 1 its y axis, in pixels. Unflipped, row 0
-//!   is `[w, 0]` and row 1 `[0, h]`; with the diagonal flip they swap:
-//!   row 0 `[0, h]`, row 1 `[w, 0]` (w and h being the drawn width and
-//!   height, already swapped for a diagonal flip). Row 2 is the centre.
+//!   is `[w, 0]` and row 1 `[0, h]` (w and h the tile's width and height);
+//!   with the diagonal flip they swap: row 0 `[0, w]`, row 1 `[h, 0]`. On a
+//!   hexagonal grid the diagonal bit and the 120 degree bit turn both rows
+//!   clockwise by 60 and 120 degrees instead. Row 2 is the centre. Row 1's
+//!   last two lanes are where pixel art draws the tile from there: Tiled's
+//!   raster rounding of a tile an isometric grid of odd sizes places on a
+//!   half pixel, zero everywhere else.
 //! - `uv_rect`: the tile's texels in the padded image, 0..1 over the whole
 //!   image; flips are swaps of its min and max.
 //! - `uv_bounds`: the tile's padded cell in the same space.
@@ -32,10 +36,11 @@
 
 use std::hash::{DefaultHasher, Hash, Hasher};
 
-use glam::{Affine2, IVec2, UVec2, Vec2};
+use glam::{Affine2, IVec2, Mat2, UVec2, Vec2};
 
 use super::batch::{
-  BlendMode, ChunkCopy, ChunkKey, ChunkPart, ChunkRow, ChunkStamp, ChunkStore, Filter, TileSlot,
+  Band, BlendMode, ChunkCopy, ChunkKey, ChunkPart, ChunkRun, ChunkStamp, ChunkStore, Filter,
+  PaintKey, Spill, TileSlot,
 };
 use super::draw_list::reach;
 use super::entities::{DrawOrder, OrderedDraw, OrderedPayload};
@@ -51,10 +56,10 @@ use crate::core::graphics::{Image, RenderLayers, SpriteGpuRenderer, SpriteInstan
 use crate::core::hash::{FastMap, FastSet};
 use crate::core::tilemap::padded::{PaddedCache, PaddedLayout, PaddedTile};
 use crate::core::tilemap::{
-  CHUNK_SIZE, ImageLayer, LayerInfo, MapLayerRef, MapLayers, MapObject, MapRoot, TileFlip,
-  TileGrid, TileLayerData, Tileset, map_asset,
+  CHUNK_SIZE, GridShape, ImageLayer, LayerInfo, MapGrid, MapLayerRef, MapLayers, MapObject,
+  MapRoot, StaggerAxis, TileFlip, TileGrid, TileLayerData, Tileset, map_asset,
 };
-use crate::core::ui::Color;
+use crate::core::ui::{Color, Rect};
 
 /// What a layer paints every tile with
 #[derive(Clone, Copy, Debug)]
@@ -64,83 +69,231 @@ pub(crate) struct LayerLook {
 }
 
 /// Appends to `out` (cleared first) an instance for each tile of `chunk`
-/// (signed) that has a picture, as `(tileset, row, instance)` (`row` being
-/// the cell's row in the layer), grouped by tileset index and in row order
-/// within a tileset. A cell whose tileset or tile the map lacks makes none.
+/// (signed) that has a picture, as `(tileset, key, instance)`, `key` being
+/// the cell's paint key in the layer, in Tiled's paint order (`grid`'s
+/// `paint_key`): row by row (on axis-X staggered and hexagonal grids a
+/// row's unshifted cells before its shifted ones), or on an isometric grid
+/// diagonal by diagonal, each left to right. A cell whose tileset or tile
+/// the map lacks makes none. With `check`, how its tiles leave their cells'
+/// boxes (each outline's bounding box), as drawn on the pixel-art target;
+/// `Spill::None` without
 pub(crate) fn chunk_instances(
-  grid: &TileGrid,
+  tiles: &TileGrid,
   chunk: IVec2,
-  cell_size: Vec2,
+  (grid, check): (&MapGrid, bool),
   layouts: &[Option<PaddedLayout>],
   look: &LayerLook,
-  out: &mut Vec<(u16, i32, SpriteInstance)>,
-) {
+  out: &mut Vec<(u16, PaintKey, SpriteInstance)>,
+) -> Spill {
   out.clear();
-  // Row by row, each cell read where it lies, not looked up
-  let Some(cells) = grid.chunk_cells(chunk) else {
-    return;
+  // Each cell read where it lies, not looked up
+  let Some(cells) = tiles.chunk_cells(chunk) else {
+    return Spill::None;
   };
-  let (origin, side) = (chunk * CHUNK_SIZE as i32, CHUNK_SIZE as usize);
-  for (at, &raw) in cells.iter().enumerate() {
-    let Some(tile) = TileGrid::decode(raw) else {
-      continue;
+  let side = CHUNK_SIZE as usize;
+  let origin = chunk * CHUNK_SIZE as i32;
+  let mut spill = Spill::None;
+  let mut put = |x: usize, y: usize| {
+    let Some(tile) = TileGrid::decode(cells[y * side + x]) else {
+      return;
     };
-    let cell = origin + IVec2::new((at % side) as i32, (at / side) as i32);
     let Some(layout) = layouts.get(tile.tileset as usize).and_then(Option::as_ref) else {
-      continue;
+      return;
     };
     let Some(padded) = layout.tile(tile.id) else {
-      continue;
+      return;
     };
-    out.push((
-      tile.tileset,
-      cell.y,
-      instance(cell, cell_size, tile.flip, layout, padded, look),
-    ));
+    let cell = origin + IVec2::new(x as i32, y as i32);
+    let instance = instance(cell, grid, tile.flip, layout, padded, look);
+    if check {
+      spill = spill.max(leaves(&instance, grid.cell_bounds(cell)));
+    }
+    out.push((tile.tileset, grid.paint_key(cell), instance));
+  };
+  match paint_order(grid) {
+    PaintOrder::Rows => {
+      for y in 0..side {
+        for x in 0..side {
+          put(x, y);
+        }
+      }
+    }
+    PaintOrder::Phases => {
+      // Each row twice: its unshifted cells, then its shifted ones (whole
+      // chunks start on an even column, so the phase goes by the column's)
+      let shifted = |x: usize| grid.paint_key(origin + IVec2::new(x as i32, 0)).1;
+      for y in 0..side {
+        for phase in [0, 1] {
+          for x in (0..side).filter(|&x| shifted(x) == phase) {
+            put(x, y);
+          }
+        }
+      }
+    }
+    PaintOrder::Diagonals => {
+      for k in 0..2 * side - 1 {
+        for x in k.saturating_sub(side - 1)..=k.min(side - 1) {
+          put(x, k - x);
+        }
+      }
+    }
   }
-  // Stable, so each tileset keeps its row order. A chunk of one tileset
-  // (or already in order) needs none: the sort would take a scratch buffer
-  // of the chunk's size (about 140 KB for a full chunk) to move nothing
-  if !out.is_sorted_by_key(|(tileset, ..)| *tileset) {
-    out.sort_by_key(|(tileset, ..)| *tileset);
+  spill
+}
+
+/// How Tiled walks a grid's cells in paint order
+enum PaintOrder {
+  /// Row by row, each left to right
+  Rows,
+  /// Row by row, a row's unshifted cells, then its shifted ones (axis-X
+  /// staggered and hexagonal grids)
+  Phases,
+  /// Diagonal by diagonal (cells of equal x + y), each left to right
+  /// (isometric grids)
+  Diagonals,
+}
+
+fn paint_order(grid: &MapGrid) -> PaintOrder {
+  match grid.shape {
+    GridShape::Isometric => PaintOrder::Diagonals,
+    GridShape::Staggered {
+      axis: StaggerAxis::X,
+      ..
+    }
+    | GridShape::Hexagonal {
+      axis: StaggerAxis::X,
+      ..
+    } => PaintOrder::Phases,
+    _ => PaintOrder::Rows,
   }
+}
+
+/// How far a drawn box may leave its cell's box before it counts as
+/// leaving it: the grid's maths is exact in whole and half pixels, a turn's
+/// is not
+const FIT_SLACK: f32 = 1.0 / 64.0;
+
+/// How `instance`'s quad, moved where pixel art draws it, leaves `cell` (a
+/// cell's box in the layer's pixels)
+fn leaves(instance: &SpriteInstance, cell: Rect) -> Spill {
+  let [x, y, at] = [
+    instance.transform[0],
+    instance.transform[1],
+    instance.transform[2],
+  ];
+  let half = Vec2::new(x[0].abs() + y[0].abs(), x[1].abs() + y[1].abs()) * 0.5;
+  let centre = Vec2::new(at[0], at[1]);
+  let raster = Vec2::new(y[2], y[3]);
+  let (low, high) = (centre - half + raster, centre + half + raster);
+  let within = |low: f32, high: f32, start: f32, length: f32| {
+    low >= start - FIT_SLACK && high <= start + length + FIT_SLACK
+  };
+  if !within(low.x, high.x, cell.x, cell.width) {
+    Spill::Sideways
+  } else if !within(low.y, high.y, cell.y, cell.height) {
+    Spill::Vertical
+  } else {
+    Spill::None
+  }
+}
+
+/// The sines and cosines of a hexagonal tile's turns: none, 60, 120 and 180
+/// degrees clockwise on screen (y down)
+const HEX_TURNS: [(f32, f32); 4] = [
+  (0.0, 1.0),
+  (0.866_025_4, 0.5),
+  (0.866_025_4, -0.5),
+  (0.0, -1.0),
+];
+
+/// The turn a tile's flips make of its quad, as the matrix taking the
+/// tile's own axes (its width across, its height down) to the quad's: on a
+/// hexagonal grid the 60 and 120 degree turns clockwise (both, a half
+/// turn); elsewhere the diagonal flip, which swaps them
+fn quad_turn(flip: TileFlip, hex: bool) -> Mat2 {
+  if hex {
+    let turns = usize::from(flip.contains(TileFlip::HEX_ROTATE_60))
+      + 2 * usize::from(flip.contains(TileFlip::HEX_ROTATE_120));
+    let (sin, cos) = HEX_TURNS[turns];
+    // (1, 0) turns to (cos, sin): clockwise, y being down
+    return Mat2::from_cols(Vec2::new(cos, sin), Vec2::new(-sin, cos));
+  }
+  if flip.contains(TileFlip::DIAGONAL) {
+    Mat2::from_cols(Vec2::Y, Vec2::X)
+  } else {
+    Mat2::IDENTITY
+  }
+}
+
+/// Where a tile `size` pixels (unflipped) of a tileset offset `offset`
+/// draws in a cell of `grid` whose tile anchor is `anchor`, turned by
+/// `flip`: its quad's centre and its x and y axes. It stands on the anchor
+/// from the left, however large, the offset moving it from there; a
+/// diagonal flip lays it on its side first, and on a hexagonal grid a turn
+/// turns it about the middle of the box it stands on, after its flips
+/// (which mirror its texels)
+fn placed(
+  grid: &MapGrid,
+  anchor: Vec2,
+  size: Vec2,
+  offset: Vec2,
+  flip: TileFlip,
+) -> (Vec2, Vec2, Vec2) {
+  let hex = matches!(grid.shape, GridShape::Hexagonal { .. });
+  let turn = quad_turn(flip, hex);
+  // The tile as drawn: a diagonal flip swaps its sides
+  let drawn = if !hex && flip.contains(TileFlip::DIAGONAL) {
+    Vec2::new(size.y, size.x)
+  } else {
+    size
+  };
+  let top_left = Vec2::new(anchor.x, anchor.y - drawn.y) + offset;
+  let mut centre = top_left + drawn * 0.5;
+  if hex && turn != Mat2::IDENTITY {
+    let tile_box = grid.tile_box();
+    let pivot = anchor + Vec2::new(tile_box.x, -tile_box.y) * 0.5;
+    centre = pivot + turn * (centre - pivot);
+  }
+  (
+    centre,
+    turn * Vec2::new(size.x, 0.0),
+    turn * Vec2::new(0.0, size.y),
+  )
 }
 
 /// One tile's instance
 fn instance(
   cell: IVec2,
-  cell_size: Vec2,
+  grid: &MapGrid,
   flip: TileFlip,
   layout: &PaddedLayout,
   tile: &PaddedTile,
   look: &LayerLook,
 ) -> SpriteInstance {
-  let diagonal = flip.contains(TileFlip::DIAGONAL);
-  let tile_size = tile.size.as_vec2();
-  // The tile as drawn: a diagonal flip swaps its sides
-  let drawn = if diagonal {
-    Vec2::new(tile_size.y, tile_size.x)
-  } else {
-    tile_size
-  };
-  // It stands on the cell's bottom edge from the left, however large; the
-  // tileset's offset moves it from there
-  let top_left = Vec2::new(
-    cell.x as f32 * cell_size.x,
-    (cell.y as f32 + 1.0) * cell_size.y - drawn.y,
-  ) + layout.offset.as_vec2();
-  let centre = top_left + drawn * 0.5;
+  let hex = matches!(grid.shape, GridShape::Hexagonal { .. });
+  let anchor = grid.tile_anchor(cell);
+  let (centre, x_axis, y_axis) = placed(
+    grid,
+    anchor,
+    tile.size.as_vec2(),
+    layout.offset.as_vec2(),
+    flip,
+  );
 
   // An animated tile shows its first frame's cell; the draw steps from it
   let slot = tile.animation.map_or(tile.slot, |a| a.first_slot);
-  let [u0, v0, u1, v1] = flipped_uv(layout, tile, slot, flip);
+  let diagonal = !hex && flip.contains(TileFlip::DIAGONAL);
+  let [u0, v0, u1, v1] = flipped_uv(layout, tile, slot, (flip, diagonal));
   let mut instance = SpriteInstance::new()
     .with_uv(u0, v0, u1, v1)
     .with_tint(look.tint, look.opacity);
-  let (x_axis, y_axis) = axes(drawn, diagonal);
   instance.transform[0][..2].copy_from_slice(&x_axis.to_array());
   instance.transform[1][..2].copy_from_slice(&y_axis.to_array());
   instance.transform[2][..2].copy_from_slice(&centre.to_array());
+  // Where Tiled's raster puts a tile its grid places on a half pixel, for
+  // pixel art
+  let raster = grid.raster_offset(anchor);
+  instance.transform[1][2..].copy_from_slice(&raster.to_array());
   let image = layout.size.as_vec2();
   let origin = layout.cell_origin(slot).as_vec2();
   let cell_min = origin / image;
@@ -155,17 +308,64 @@ fn instance(
   instance
 }
 
+/// Whether a tile of one of `layouts` could leave its cell's box on `grid`,
+/// drawn as pixel art: the tileset's widest and tallest tiles at its
+/// offset, flipped diagonally, or on a hexagonal grid turned. When none
+/// can, a plain layer's tiles never overlap but where their cells' boxes
+/// do, and it draws chunk by chunk, tileset by tileset
+fn may_spill(grid: &MapGrid, layouts: &[Option<PaddedLayout>]) -> bool {
+  let bounds = grid.cell_bounds(IVec2::ZERO);
+  let anchor = grid.tile_anchor(IVec2::ZERO);
+  // Isometric grids of odd sizes put tiles on half pixels, which pixel art
+  // rounds as Tiled does, moving them up to a pixel
+  if grid.raster_offset(anchor) != Vec2::ZERO
+    || grid.raster_offset(grid.tile_anchor(IVec2::X)) != Vec2::ZERO
+  {
+    return layouts.iter().any(Option::is_some);
+  }
+  let hex_turns = [
+    TileFlip::NONE,
+    TileFlip::HEX_ROTATE_60,
+    TileFlip::HEX_ROTATE_120,
+    TileFlip::HEX_ROTATE_60 | TileFlip::HEX_ROTATE_120,
+  ];
+  let square = [TileFlip::NONE, TileFlip::DIAGONAL];
+  let flips: &[TileFlip] = if matches!(grid.shape, GridShape::Hexagonal { .. }) {
+    &hex_turns
+  } else {
+    &square
+  };
+  layouts.iter().flatten().any(|layout| {
+    let (size, offset) = (layout.largest.as_vec2(), layout.offset.as_vec2());
+    flips.iter().any(|&flip| {
+      let (centre, x_axis, y_axis) = placed(grid, anchor, size, offset, flip);
+      let mut quad = SpriteInstance::new();
+      quad.transform[0][..2].copy_from_slice(&x_axis.to_array());
+      quad.transform[1][..2].copy_from_slice(&y_axis.to_array());
+      quad.transform[2][..2].copy_from_slice(&centre.to_array());
+      leaves(&quad, bounds) != Spill::None
+    })
+  })
+}
+
 /// The UV rect (0..1 over the padded image) of `tile`'s texels in cell
-/// `slot`, its sides swapped for `flip`'s mirrors. Screen x shows the
-/// tile's u, or its v under the diagonal flip, which swaps the axes
-fn flipped_uv(layout: &PaddedLayout, tile: &PaddedTile, slot: u32, flip: TileFlip) -> [f32; 4] {
+/// `slot`, its sides swapped for the flips' mirrors. Screen x shows the
+/// tile's u, or its v under a `diagonal` flip, which swaps the axes (on a
+/// hexagonal grid the diagonal bit turns the tile instead, and its mirrors
+/// are its own)
+fn flipped_uv(
+  layout: &PaddedLayout,
+  tile: &PaddedTile,
+  slot: u32,
+  (flip, diagonal): (TileFlip, bool),
+) -> [f32; 4] {
   let image = layout.size.as_vec2();
   let origin = layout.cell_origin(slot).as_vec2();
   let inset = ((UVec2::splat(layout.cell) - tile.size) / 2).as_vec2();
   let min = (origin + inset) / image;
   let max = (origin + inset + tile.size.as_vec2()) / image;
   let (mut u, mut v) = ((min.x, max.x), (min.y, max.y));
-  let (flip_u, flip_v) = if flip.contains(TileFlip::DIAGONAL) {
+  let (flip_u, flip_v) = if diagonal {
     (
       flip.contains(TileFlip::VERTICAL),
       flip.contains(TileFlip::HORIZONTAL),
@@ -183,17 +383,6 @@ fn flipped_uv(layout: &PaddedLayout, tile: &PaddedTile, slot: u32, flip: TileFli
     v = (v.1, v.0);
   }
   [u.0, v.0, u.1, v.1]
-}
-
-/// A quad's x and y axes (rows 0 and 1 of its transform) drawing `drawn`
-/// pixels: across and down, or, under the diagonal flip, the quad's x
-/// (the tile's u) running down and its y across
-fn axes(drawn: Vec2, diagonal: bool) -> (Vec2, Vec2) {
-  if diagonal {
-    (Vec2::new(0.0, drawn.y), Vec2::new(drawn.x, 0.0))
-  } else {
-    (Vec2::new(drawn.x, 0.0), Vec2::new(0.0, drawn.y))
-  }
 }
 
 /// A tile object's instance in the world: its tile (the frame for game
@@ -219,13 +408,20 @@ fn object_instance(
     Some(a) => a.first_slot,
     None => tile.slot,
   };
-  let [u0, v0, u1, v1] = flipped_uv(layout, tile, slot, flip);
+  let diagonal = flip.contains(TileFlip::DIAGONAL);
+  let [u0, v0, u1, v1] = flipped_uv(layout, tile, slot, (flip, diagonal));
   let mut instance = SpriteInstance::new()
     .with_uv(u0, v0, u1, v1)
     .with_tint(look.tint, look.opacity);
-  let (x_axis, y_axis) = axes(size, flip.contains(TileFlip::DIAGONAL));
-  let x_axis = affine.transform_vector2(x_axis);
-  let y_axis = affine.transform_vector2(y_axis);
+  // `size` is as drawn: a diagonal flip's quad runs the tile's width down
+  let tile_size = if diagonal {
+    Vec2::new(size.y, size.x)
+  } else {
+    size
+  };
+  let turn = quad_turn(flip, false);
+  let x_axis = affine.transform_vector2(turn * Vec2::new(tile_size.x, 0.0));
+  let y_axis = affine.transform_vector2(turn * Vec2::new(0.0, tile_size.y));
   instance.transform[0][..2].copy_from_slice(&x_axis.to_array());
   instance.transform[1][..2].copy_from_slice(&y_axis.to_array());
   instance.transform[2][..2].copy_from_slice(&affine.translation.to_array());
@@ -276,8 +472,10 @@ pub(crate) struct TileLayerFrame<'a> {
 /// once, or each camera for a layer with parallax) draws the chunks its
 /// cameras can see through the view's slot for each tileset: a plain
 /// layer's each tileset's tiles of a chunk as one [`DrawChunk`] at the
-/// layer's z, a y-sorted layer's each row of them as one, sorted with the
-/// y-sorted entities at its z by the row's bottom edge. Chunks are built
+/// layer's z (where tiles leave their cells, as many as keep Tiled's
+/// order across tilesets and chunks: `View::draw_gathered`), a y-sorted
+/// layer's each row of them as one, sorted with the y-sorted entities at
+/// its z by the row's bottom edge. Chunks are built
 /// into the batch's [`ChunkStore`] when first seen and again when their
 /// tiles or what they are drawn from change. An image layer draws as one
 /// quad per view, its picture repeating across the view along the axes the
@@ -300,9 +498,11 @@ pub(crate) struct TileDrawer {
   textures: Vec<Option<TextureId>>,
   /// The view being drawn: each tileset's slot, once it has one
   slots: Vec<Option<u32>>,
-  /// A chunk's parts and rows, copied out of the store
+  /// A chunk's parts, and its rows or runs, copied out of the store
   parts: Vec<ChunkPart>,
-  rows: Vec<ChunkRow>,
+  rows: Vec<ChunkRun>,
+  /// A view's chunks gathered to draw in Tiled's order
+  gathered: Gathered,
   /// The frame's draws that sort among the entities', in draw order once
   /// collected
   draws: Vec<OrderedDraw>,
@@ -392,6 +592,45 @@ struct LayerDraw<'a> {
   layers: RenderLayers,
   /// How far past its cell a tile may draw, in the layer's pixels
   margin: f32,
+  /// A tileset of its map has a tile that may leave its cell's box, so its
+  /// chunks are built knowing whether one does (`may_spill`)
+  check: bool,
+  /// A plain layer of such a map: its chunks are gathered, and drawn in
+  /// Tiled's order across tilesets and chunks when one of them has a tile
+  /// leaving its cell's box
+  in_order: bool,
+}
+
+/// One chunk a view gathered: its parts and its runs in paint order, as
+/// ranges of the gathered lists
+#[derive(Clone, Copy, Debug)]
+struct GatheredChunk {
+  chunk: IVec2,
+  /// How its tiles leave their cells' boxes
+  spill: Spill,
+  parts: (usize, usize),
+  runs: (usize, usize),
+}
+
+/// A gathered chunk's runs of one paint band: the band, the paint column of
+/// its first cell, its chunk and the range of the gathered runs
+#[derive(Clone, Copy, Debug)]
+struct Stretch {
+  band: Band,
+  column: i32,
+  chunk: IVec2,
+  runs: (usize, usize),
+}
+
+/// A view's chunks, gathered before they are drawn, and the lists their
+/// parts and runs are copied into (kept, so a warm frame allocates nothing)
+#[derive(Default)]
+struct Gathered {
+  chunks: Vec<GatheredChunk>,
+  parts: Vec<ChunkPart>,
+  runs: Vec<ChunkRun>,
+  /// Every chunk's runs band by band, in paint order once sorted
+  stretches: Vec<Stretch>,
 }
 
 /// How an image or object layer draws
@@ -459,6 +698,7 @@ impl TileDrawer {
           slots,
           parts,
           rows,
+          gathered,
           draws,
           warned,
           keyed,
@@ -582,8 +822,12 @@ impl TileDrawer {
               if data.grid.cell.min_element() == 0 {
                 continue;
               }
+              let grid = &data.grid;
               let mut stamp = DefaultHasher::new();
-              (paddings, look.tint, look.opacity.to_bits(), data.grid.cell).hash(&mut stamp);
+              let origin = grid.origin.to_array().map(f32::to_bits);
+              (paddings, look.tint, look.opacity.to_bits()).hash(&mut stamp);
+              (grid.shape, grid.cell, origin).hash(&mut stamp);
+              let check = may_spill(grid, layouts);
               let draw = LayerDraw {
                 layer: entity,
                 ties,
@@ -596,6 +840,8 @@ impl TileDrawer {
                 y_sorted: info.y_sorted,
                 layers: mask,
                 margin,
+                check,
+                in_order: check && !info.y_sorted,
               };
               let mut view = View {
                 store: &mut *store,
@@ -605,6 +851,7 @@ impl TileDrawer {
                 slots,
                 parts,
                 rows,
+                gathered: &mut *gathered,
               };
               for (camera, offset) in views {
                 match camera {
@@ -693,6 +940,23 @@ impl TileDrawer {
       .map_or(0, |cache| cache.lock().len())
   }
 
+  /// The frame's chunk draws in draw order, each as its layer, chunk,
+  /// tileset and the instances of the tileset's part it draws (the first,
+  /// and how many) (the headless engine's reads)
+  #[cfg(not(target_arch = "wasm32"))]
+  pub(crate) fn chunk_draws(&self) -> impl Iterator<Item = (Entity, IVec2, u16, u32, u32)> + '_ {
+    self.draws.iter().filter_map(|draw| match &draw.payload {
+      OrderedPayload::Chunk(chunk) => Some((
+        chunk.key.layer,
+        chunk.key.chunk,
+        chunk.key.tileset,
+        chunk.first,
+        chunk.count,
+      )),
+      OrderedPayload::Sprite { .. } => None,
+    })
+  }
+
   /// How many image layers were warned about an image too small to repeat
   /// over a camera's view (tests)
   #[cfg(test)]
@@ -749,7 +1013,8 @@ struct View<'s> {
   textures: &'s [Option<TextureId>],
   slots: &'s mut Vec<Option<u32>>,
   parts: &'s mut Vec<ChunkPart>,
-  rows: &'s mut Vec<ChunkRow>,
+  rows: &'s mut Vec<ChunkRun>,
+  gathered: &'s mut Gathered,
 }
 
 impl View<'_> {
@@ -771,6 +1036,7 @@ impl View<'_> {
     }
     let to_layer = placed.inverse();
     let tiles = &layer.data.tiles;
+    let grid = &layer.data.grid;
     // The chunks the layer reaches: all of a bounded layer's, the span of
     // an unbounded one's (whose chunks drawn are the ones it has)
     let extent = tiles.extent();
@@ -781,8 +1047,6 @@ impl View<'_> {
       TileGrid::chunk_of(extent.min),
       TileGrid::chunk_of(extent.max - IVec2::ONE),
     );
-    let cell = layer.data.grid.cell.as_vec2();
-    let chunk_px = cell * CHUNK_SIZE as f32;
     let view = self.store.begin_view();
     self.slots.clear();
     self.slots.resize(self.layouts.len(), None);
@@ -793,39 +1057,55 @@ impl View<'_> {
       parallax: offset.to_array(),
       uv: [0.0, 0.0, 1.0, 1.0],
     };
+    let gathered = &mut *self.gathered;
+    gathered.chunks.clear();
+    gathered.parts.clear();
+    gathered.runs.clear();
+    // An orthogonal grid's chunks over a box are exactly those it meets;
+    // another's are more, which each chunk's box sorts out
+    let exact = grid.shape == GridShape::Orthogonal;
     for camera in cameras {
       // The camera's view in the layer's pixels, widened by how far a tile
       // may draw past its cell; then the signed chunks it meets, within
       // those the layer reaches
       let (low, high) = camera_box(camera, &to_layer);
       let (low, high) = (low - layer.margin, high + layer.margin);
-      let first = (low / chunk_px).floor().max(reach_first.as_vec2());
-      let last = (high / chunk_px).floor().min(reach_last.as_vec2());
+      let (first, last) = grid.chunks_over(Rect::new(low.x, low.y, high.x - low.x, high.y - low.y));
+      let first = first.max(reach_first);
+      let last = last.min(reach_last);
       // Not finite, or off the layer
       if !(first.x <= last.x && first.y <= last.y) {
         continue;
       }
-      let first = first.as_ivec2().max(reach_first);
-      let last = last.as_ivec2().min(reach_last);
+      let sees = |chunk: IVec2| exact || meets(grid.chunk_bounds(chunk), low, high);
       if tiles.bounds().is_some() {
         for y in first.y..=last.y {
           for x in first.x..=last.x {
-            self.chunk(layer, IVec2::new(x, y), view, (&placed, slot), only);
+            let chunk = IVec2::new(x, y);
+            if sees(chunk) {
+              self.chunk(layer, chunk, view, (&placed, slot), only);
+            }
           }
         }
       } else {
         // Only the chunks an unbounded layer has, found by walking the
         // view's chunks or the layer's, whichever are fewer
         for chunk in tiles.chunks_within(first, last) {
-          self.chunk(layer, chunk, view, (&placed, slot), only);
+          if sees(chunk) {
+            self.chunk(layer, chunk, view, (&placed, slot), only);
+          }
         }
       }
+    }
+    if layer.in_order {
+      self.draw_gathered(layer, (&placed, slot), only);
     }
   }
 
   /// Pushes `chunk` of `layer` for `view` (built first if it changed),
   /// each tileset's tiles through the view's slot for it: whole, or row by
-  /// row for a y-sorted layer
+  /// row for a y-sorted layer. A layer drawn in Tiled's order gathers it
+  /// instead, for `draw_gathered`
   fn chunk(
     &mut self,
     layer: &LayerDraw<'_>,
@@ -839,36 +1119,203 @@ impl View<'_> {
       version: tiles.chunk_version(chunk),
       look: layer.stamp,
     };
-    let cell = layer.data.grid.cell.as_vec2();
+    let grid = &layer.data.grid;
     let layouts = self.layouts;
-    let build = |out: &mut Vec<(u16, i32, SpriteInstance)>| {
-      chunk_instances(tiles, chunk, cell, layouts, &layer.look, out);
+    let build = |out: &mut Vec<(u16, PaintKey, SpriteInstance)>| {
+      chunk_instances(tiles, chunk, (grid, layer.check), layouts, &layer.look, out)
     };
+    if layer.in_order {
+      // Its parts and its runs in paint order, after those gathered
+      let gathered = &mut *self.gathered;
+      let out = ChunkCopy {
+        parts: &mut *self.parts,
+        rows: None,
+        runs: Some(&mut *self.rows),
+      };
+      let Some(spill) = self
+        .store
+        .chunk((layer.layer, chunk), stamp, view, build, out)
+      else {
+        return;
+      };
+      let parts = (
+        gathered.parts.len(),
+        gathered.parts.len() + self.parts.len(),
+      );
+      let runs = (gathered.runs.len(), gathered.runs.len() + self.rows.len());
+      gathered.parts.extend_from_slice(self.parts);
+      gathered.runs.extend_from_slice(self.rows);
+      gathered.chunks.push(GatheredChunk {
+        chunk,
+        spill,
+        parts,
+        runs,
+      });
+      return;
+    }
     // Its parts, and its rows for a y-sorted layer, copied out of the store
     let out = ChunkCopy {
       parts: &mut *self.parts,
       rows: layer.y_sorted.then_some(&mut *self.rows),
+      runs: None,
     };
-    if !self
+    if self
       .store
       .chunk((layer.layer, chunk), stamp, view, build, out)
+      .is_none()
     {
       return;
     }
-    for part in self.parts.iter() {
-      let tileset = usize::from(part.tileset);
-      let Some(&Some(texture)) = self.textures.get(tileset) else {
+    let cell = grid.cell.as_vec2();
+    for at in 0..self.parts.len() {
+      let part = self.parts[at];
+      if !layer.y_sorted {
+        let bounds = world_box(placed, part.min, part.max);
+        let piece = (chunk, part.tileset, 0, part.count, bounds);
+        self.push(layer, DrawOrder::plain(layer.z), piece, slot, only);
         continue;
-      };
-      let Some(entry) = self.slots.get_mut(tileset) else {
-        continue;
-      };
-      let slot = *entry.get_or_insert_with(|| self.store.push_slot(slot, texture));
-      let chunk_draw = |first, count, (min, max)| DrawChunk {
+      }
+      // Each row sorts by its bottom edge, at the layer's left (so every
+      // chunk of a row sorts alike, on a turned map too)
+      for row in 0..self.rows.len() {
+        let row = self.rows[row];
+        if row.tileset != part.tileset {
+          continue;
+        }
+        let bottom = Vec2::new(0.0, (row.band.0 as f32 + 1.0) * cell.y);
+        let sort_y = placed.transform_point2(bottom).y;
+        let bounds = world_box(placed, row.min, row.max);
+        let order = DrawOrder::y_sorted(layer.z, sort_y);
+        let piece = (chunk, part.tileset, row.first, row.count, bounds);
+        self.push(layer, order, piece, slot, only);
+      }
+    }
+  }
+
+  /// Pushes the chunks gathered for a plain layer drawn in Tiled's order,
+  /// as few draws as keep it:
+  ///
+  /// - While no tile leaves its cell's box nothing overlaps, and each chunk
+  ///   draws as any other plain layer's does: a draw per tileset, in the
+  ///   order the view met them.
+  /// - While tiles leave only the tops or bottoms of their cells' boxes, on
+  ///   a grid whose chunks' order, row by row, paints every pair of tiles
+  ///   that overlap as Tiled does (`chunks_keep_order`), each chunk draws in
+  ///   that order: a draw per tileset where it has one, else each band of
+  ///   each tileset in turn.
+  /// - Otherwise every tile draws in the grid's paint order, across
+  ///   tilesets and chunks: band by band, and in a band each chunk's
+  ///   stretch of it in turn (one chunk's cells of a band are columns next
+  ///   to each other, which no other chunk's are), each of its runs a draw.
+  ///
+  /// A draw that follows the last one in its part joins it
+  fn draw_gathered(
+    &mut self,
+    layer: &LayerDraw<'_>,
+    (placed, slot): (&Affine2, TileSlot),
+    only: Option<Entity>,
+  ) {
+    let order = DrawOrder::plain(layer.z);
+    let spill = self
+      .gathered
+      .chunks
+      .iter()
+      .map(|chunk| chunk.spill)
+      .max()
+      .unwrap_or_default();
+    let by_chunk = spill == Spill::Vertical && chunks_keep_order(&layer.data.grid);
+    if spill == Spill::None || by_chunk {
+      if by_chunk {
+        let chunks = &mut self.gathered.chunks;
+        chunks.sort_unstable_by_key(|chunk| (chunk.chunk.y, chunk.chunk.x));
+      }
+      let joined = self.draws.len();
+      for at in 0..self.gathered.chunks.len() {
+        let chunk = self.gathered.chunks[at];
+        if !by_chunk || chunk.spill == Spill::None || chunk.parts.1 - chunk.parts.0 == 1 {
+          for part in chunk.parts.0..chunk.parts.1 {
+            let part = self.gathered.parts[part];
+            let bounds = world_box(placed, part.min, part.max);
+            let piece = (chunk.chunk, part.tileset, 0, part.count, bounds);
+            self.push(layer, order, piece, slot, only);
+          }
+          continue;
+        }
+        // Its runs are its rows: each tileset's bands, band by band
+        for run in chunk.runs.0..chunk.runs.1 {
+          let run = self.gathered.runs[run];
+          let bounds = world_box(placed, run.min, run.max);
+          let piece = (chunk.chunk, run.tileset, run.first, run.count, bounds);
+          self.push_joined(layer, joined, piece, slot, only);
+        }
+      }
+      return;
+    }
+    // Each chunk's runs, band by band (they are in paint order), then the
+    // bands of every chunk in paint order
+    let gathered = &mut *self.gathered;
+    gathered.stretches.clear();
+    for chunk in &gathered.chunks {
+      let runs = &gathered.runs[chunk.runs.0..chunk.runs.1];
+      let mut start = 0;
+      for same in runs.chunk_by(|a, b| a.band == b.band) {
+        let from = chunk.runs.0 + start;
+        start += same.len();
+        gathered.stretches.push(Stretch {
+          band: same[0].band,
+          column: same[0].column,
+          chunk: chunk.chunk,
+          runs: (from, from + same.len()),
+        });
+      }
+    }
+    gathered
+      .stretches
+      .sort_unstable_by_key(|stretch| (stretch.band, stretch.column));
+    let joined = self.draws.len();
+    for at in 0..self.gathered.stretches.len() {
+      let stretch = self.gathered.stretches[at];
+      for run in stretch.runs.0..stretch.runs.1 {
+        let run = self.gathered.runs[run];
+        let bounds = world_box(placed, run.min, run.max);
+        let piece = (stretch.chunk, run.tileset, run.first, run.count, bounds);
+        self.push_joined(layer, joined, piece, slot, only);
+      }
+    }
+  }
+
+  /// Pushes a draw at `order` of `count` instances from `first` of
+  /// `tileset`'s part of `chunk`, in the world box `bounds`, through the
+  /// view's slot for the tileset (made on its first draw); nothing for a
+  /// tileset with no texture
+  fn push(
+    &mut self,
+    layer: &LayerDraw<'_>,
+    order: DrawOrder,
+    (chunk, tileset, first, count, (min, max)): (IVec2, u16, u32, u32, (Vec2, Vec2)),
+    slot: TileSlot,
+    only: Option<Entity>,
+  ) {
+    let at = usize::from(tileset);
+    let Some(&Some(texture)) = self.textures.get(at) else {
+      return;
+    };
+    let Some(entry) = self.slots.get_mut(at) else {
+      return;
+    };
+    let slot = *entry.get_or_insert_with(|| self.store.push_slot(slot, texture));
+    let index = self.draws.len() as u32;
+    self.draws.push(OrderedDraw {
+      order,
+      entity: layer.ties,
+      index,
+      lit: layer.lit,
+      only_camera: only,
+      payload: OrderedPayload::Chunk(DrawChunk {
         key: ChunkKey {
           layer: layer.layer,
           chunk,
-          tileset: part.tileset,
+          tileset,
         },
         texture,
         first,
@@ -879,34 +1326,63 @@ impl View<'_> {
         min,
         max,
         slot,
-      };
-      let mut push = |order, chunk| {
-        let index = self.draws.len() as u32;
-        self.draws.push(OrderedDraw {
-          order,
-          entity: layer.ties,
-          index,
-          lit: layer.lit,
-          only_camera: only,
-          payload: OrderedPayload::Chunk(chunk),
-        });
-      };
-      if !layer.y_sorted {
-        let bounds = world_box(placed, part.min, part.max);
-        push(DrawOrder::plain(layer.z), chunk_draw(0, part.count, bounds));
-        continue;
-      }
-      // Each row sorts by its bottom edge, at the layer's left (so every
-      // chunk of a row sorts alike, on a turned map too)
-      for row in self.rows.iter().filter(|row| row.tileset == part.tileset) {
-        let bottom = Vec2::new(0.0, (row.row as f32 + 1.0) * cell.y);
-        let sort_y = placed.transform_point2(bottom).y;
-        let bounds = world_box(placed, row.min, row.max);
-        let order = DrawOrder::y_sorted(layer.z, sort_y);
-        push(order, chunk_draw(row.first, row.count, bounds));
-      }
-    }
+      }),
+    });
   }
+
+  /// `push` as a plain draw, joined to the last draw when that draw (one
+  /// pushed from `since` on) is of the same part and ends where this one
+  /// starts
+  fn push_joined(
+    &mut self,
+    layer: &LayerDraw<'_>,
+    since: usize,
+    piece: (IVec2, u16, u32, u32, (Vec2, Vec2)),
+    slot: TileSlot,
+    only: Option<Entity>,
+  ) {
+    let (chunk, tileset, first, count, (min, max)) = piece;
+    if self.draws.len() > since
+      && let Some(last) = self.draws.last_mut()
+      && let OrderedPayload::Chunk(draw) = &mut last.payload
+      && draw.key.chunk == chunk
+      && draw.key.tileset == tileset
+      && draw.first + draw.count == first
+    {
+      draw.count += count;
+      draw.min = draw.min.min(min);
+      draw.max = draw.max.max(max);
+      return;
+    }
+    self.push(layer, DrawOrder::plain(layer.z), piece, slot, only);
+  }
+}
+
+/// Whether drawing `grid`'s chunks row by row, each left to right, each in
+/// paint order, paints every pair of overlapping tiles as Tiled does while
+/// no tile leaves its cell's box's sides. Such a tile overlaps only cells
+/// above or below its own across its own width: on an orthogonal grid, or
+/// an oblique one skewed down its columns alone, the cells of its column;
+/// on an isometric grid those up and to the left of it on both axes (above)
+/// or down and to the right (below). Each lies in its chunk, or in one
+/// drawn before it (above) or after it (below). Not so on staggered and
+/// hexagonal grids, where a shifted row's cells overlap the next chunk's
+/// across, nor on an oblique one skewed across its rows
+fn chunks_keep_order(grid: &MapGrid) -> bool {
+  match grid.shape {
+    GridShape::Orthogonal | GridShape::Isometric => true,
+    GridShape::Oblique { skew } => skew.x == 0,
+    GridShape::Staggered { .. } | GridShape::Hexagonal { .. } => false,
+  }
+}
+
+/// Whether `bounds` meets the box `low..high`, touching included (as
+/// flooring a box's ends to chunks counts a chunk it touches)
+fn meets(bounds: Rect, low: Vec2, high: Vec2) -> bool {
+  bounds.x <= high.x
+    && bounds.x + bounds.width >= low.x
+    && bounds.y <= high.y
+    && bounds.y + bounds.height >= low.y
 }
 
 /// `camera`'s view under `to_layer`: the box its corners span there
@@ -1175,6 +1651,12 @@ mod tests {
     pad_tileset(tileset, images, u32::MAX).expect("padded").1
   }
 
+  /// An orthogonal grid of `cell` px cells
+  fn square(cell: Vec2) -> MapGrid {
+    MapGrid::new(GridShape::Orthogonal, cell.as_uvec2())
+  }
+
+  /// `chunk`'s instances in paint order, on an orthogonal grid of `cell` px
   fn build(
     grid: &TileGrid,
     chunk: IVec2,
@@ -1182,7 +1664,7 @@ mod tests {
     layouts: &[Option<PaddedLayout>],
   ) -> Vec<(u16, SpriteInstance)> {
     let mut out = Vec::new();
-    chunk_instances(grid, chunk, cell, layouts, &LOOK, &mut out);
+    chunk_instances(grid, chunk, (&square(cell), true), layouts, &LOOK, &mut out);
     out.into_iter().map(|(set, _, i)| (set, i)).collect()
   }
 
@@ -1315,7 +1797,7 @@ mod tests {
   }
 
   #[test]
-  fn a_chunk_groups_instances_by_tileset_in_row_order() {
+  fn a_chunk_lists_its_instances_in_paint_order_with_their_bands() {
     let (layouts, _) = two_sets();
     let mut grid = TileGrid::new(UVec2::new(40, 40));
     // Chunk (1, 0) covers cells 32..40 across and 0..32 down
@@ -1328,30 +1810,41 @@ mod tests {
     grid.set(IVec2::new(35, 33), Some(Tile::new(0, 0)));
     let out = build(&grid, IVec2::new(1, 0), Vec2::splat(16.0), &layouts);
     let sets: Vec<u16> = out.iter().map(|(s, _)| *s).collect();
-    assert_eq!(sets, [0, 0, 1, 1]);
+    assert_eq!(sets, [0, 1, 0, 1]);
     let centres: Vec<Vec2> = out.iter().map(|(_, i)| at(i)).collect();
     let centre = |x: f32, y: f32| Vec2::new(x * 16.0 + 8.0, y * 16.0 + 8.0);
     assert_eq!(
       centres,
       [
         centre(32.0, 0.0),
-        centre(33.0, 2.0),
         centre(39.0, 0.0),
+        centre(33.0, 2.0),
         centre(35.0, 2.0)
       ]
     );
-    // Each knows its cell's row
-    let mut rows = Vec::new();
-    chunk_instances(
+    // Each knows its cell's paint key, row and column on an orthogonal
+    // grid; the tiles fit their cells
+    let mut bands = Vec::new();
+    let grid16 = square(Vec2::splat(16.0));
+    let spill = chunk_instances(
       &grid,
       IVec2::new(1, 0),
-      Vec2::splat(16.0),
+      (&grid16, true),
       &layouts,
       &LOOK,
-      &mut rows,
+      &mut bands,
     );
-    let rows: Vec<(u16, i32)> = rows.iter().map(|(s, r, _)| (*s, *r)).collect();
-    assert_eq!(rows, [(0, 0), (0, 2), (1, 0), (1, 2)]);
+    assert_eq!(spill, Spill::None);
+    let keys: Vec<(u16, PaintKey)> = bands.iter().map(|(s, k, _)| (*s, *k)).collect();
+    assert_eq!(
+      keys,
+      [
+        (0, (0, 0, 32)),
+        (1, (0, 0, 39)),
+        (0, (2, 0, 33)),
+        (1, (2, 0, 35))
+      ]
+    );
     // The last chunk of a grid is cut at the grid's edge
     let edge = build(&grid, IVec2::new(1, 1), Vec2::splat(16.0), &layouts);
     assert_eq!(edge.len(), 1);
@@ -1391,10 +1884,11 @@ mod tests {
       opacity: 0.5,
     };
     let mut out = Vec::new();
+    let grid16 = square(Vec2::splat(16.0));
     chunk_instances(
       &grid,
       IVec2::ZERO,
-      Vec2::splat(16.0),
+      (&grid16, false),
       &layouts,
       &look,
       &mut out,

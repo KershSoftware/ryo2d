@@ -153,7 +153,7 @@ Measured with overlapping 48x48 tiles in 32x32 cells: with `right-down`, (2,3) c
 
 **Isometric, staggered, hexagonal (and oblique):** `renderorder` is ignored. I saved all four values and compared overlapping renders: they were identical. The order is always `right-down`:
 
-- Rows top to bottom, columns left to right (iso, hex y, stagger y, with `staggerindex` irrelevant to order).
+- Rows top to bottom, columns left to right (hex y, stagger y, with `staggerindex` irrelevant to order). On isometric maps the rows are screen rows: the diagonals of equal x + y, each left to right (measured since, section 10).
 - **Axis-x staggered and hex maps are not column-major.** They are row-major, but within a row the half-cell-lowered (shifted) columns draw on top of the unshifted neighbours. Measured: stagger x odd, (3,2) over (2,2); stagger x even (shifted = even columns), (2,2) over (3,2) and (4,2) over (3,2). This matches painter order by the cell's screen y. Hex x gave the same.
 - The oblique render order was not separately measured (it comes after the ortho path in my gen, and I did not test overlap there). Measured since (section 7): oblique maps draw as orthogonal ones, honouring the render order.
 
@@ -279,3 +279,11 @@ How Tiled turns an object on the grids whose object space is not pixels. The met
 2. **An ellipse on an isometric or oblique map draws as its projected box and the projected curve inside it.** The measured box of an ellipse is the box of the rectangle round it (a 64 x 32 ellipse at stored (96, 32) covers a parallelogram 96 wide and 48 tall, plus the pen).
 3. **Points and text are not projected as shapes.** A point is at the projected position; a text object's box starts at the projected position and keeps its width and height in pixels (the red glyphs of a 100 x 40 box at stored (96, 64) start at x 289, y 84 for the anchor (288, 80)).
 4. **A tile object's size is in screen pixels** on every grid: a 64 x 64 image at stored (64, 96) on an isometric 64 x 32 map of 6 x 6 cells (origin 192) has its anchor at (160, 80) and, aligned bottom-centre (Tiled's choice when the tileset says nothing, inline or in a file), covers x 128..192, y 16..80; `bottomleft` covers x 160..224, y 16..80; `center` covers x 128..192, y 48..112.
+
+## 10. Measured 2026-11-02: the paint order of overlapping tiles
+
+Which of two overlapping tiles Tiled draws over the other inside one layer, measured as section 7.6 measured the oblique order: `make-fixtures.js` (its paint order section) renders pairs of solid tiles larger than their cells, red and blue, in the middle of a 16 x 16 map, and counts each colour's pixels; the tile drawn last shows whole. It writes `tests/fixtures/tilemap/tiled/measured-order.json`, which `MapGrid::paint_key`'s tests check (`paint_keys_order_overlapping_tiles_as_tileds_renders_do`).
+
+1. **An isometric map draws its diagonals, not its grid rows.** On 16 x 8 cells, with 32 x 24 tiles (64 x 24 for the pair furthest apart): (8, 7) over (7, 8), the same diagonal (15) and the cell further right, though its row is the earlier; (9, 7) over (7, 8), diagonal 16 over 15, rows 7 and 8; (7, 9) over (9, 6), diagonal 16 over 15, rows 9 and 6. So the order is the diagonals x + y (rows on screen) top to bottom, each left to right (x up, y down). Section 2's "rows top to bottom" held for the pairs it tried, which never told grid rows from diagonals. The render of the tall tiles across a chunk border (`renders/shape-tall-chunk-border.png`) shows it too: (30, 1) over (29, 2), of one diagonal.
+2. **Staggered and hexagonal maps draw their rows**, as section 2 says: on axis Y (7, 8) over (8, 7), the later row, and (8, 8) over (7, 8), the cell to its right; on axis X (7, 8) over (8, 7), the later row, and in a row the shifted cells after the unshifted ones, (9, 8) over (8, 8) with the odd columns shifted and (8, 8) over (9, 8) with the even ones.
+

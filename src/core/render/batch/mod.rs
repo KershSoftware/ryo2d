@@ -9,7 +9,8 @@ mod plan;
 mod polyline;
 
 pub(crate) use chunks::{
-  ChunkCopy, ChunkKey, ChunkPart, ChunkRow, ChunkStamp, ChunkStore, KEEP_FRAMES, TileSlot,
+  Band, ChunkCopy, ChunkKey, ChunkPart, ChunkRun, ChunkStamp, ChunkStore, KEEP_FRAMES, PaintKey,
+  Spill, TileSlot,
 };
 pub(crate) use gpu::{Batch2D, unit_quad};
 pub(crate) use key::{BatchShader, DrawState, LightStep, PageKind, Sampling, Stream};

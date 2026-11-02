@@ -1532,3 +1532,473 @@ fn a_small_image_repeated_both_ways_covers_a_1080p_view() {
   }
   assert_eq!(wrong, 0, "pixels not the image's; the first {first:?}");
 }
+
+// ---- every grid: Tiled's renders ---------------------------------------------
+
+/// Tiled's fixtures: maps of every grid and Tiled's renders of them
+const TILED: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tilemap/tiled");
+
+/// The colours of the shape fixtures' tiles
+const SHAPE_COLOURS: [[u8; 4]; 5] = [
+  [255, 0, 0, 255],
+  [0, 255, 0, 255],
+  [0, 0, 255, 255],
+  [255, 255, 0, 255],
+  [255, 255, 255, 255],
+];
+
+/// Tiled's render of `maps/{name}.tmj` (`toImage()`, every alpha 0 or 255)
+fn tiled_render(name: &str) -> image::RgbaImage {
+  let path = format!("{TILED}/renders/{name}.png");
+  let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
+  match image::load_from_memory(&bytes) {
+    Ok(image) => image.to_rgba8(),
+    Err(e) => panic!("{path}: {e}"),
+  }
+}
+
+/// An engine drawing `maps/{name}.tmj`, read from Tiled's fixtures, as pixel
+/// art at zoom 1 on a frame of `size`, landed, with the map's grid and the
+/// box its cells cover
+fn tiled_engine(name: &str, size: (u32, u32)) -> Option<(HeadlessEngine, MapGrid, Rect)> {
+  let held: Arc<Mutex<Option<Handle<TileMap>>>> = Arc::default();
+  let kept = held.clone();
+  let path = format!("maps/{name}.tmj");
+  let builder = EngineBuilder::new()
+    .pixel_art(size.0, size.1)
+    .asset_source(DiskSource::new(TILED));
+  let engine = engine_with(builder, move |ctx| {
+    let map = ctx.assets().load::<TileMap>(&path);
+    ctx
+      .world
+      .spawn((MapRoot::new(map.clone()), Transform::IDENTITY));
+    if let Ok(mut kept) = kept.lock() {
+      *kept = Some(map);
+    }
+  })?;
+  let Some(handle) = held.lock().ok().and_then(|held| held.clone()) else {
+    panic!("{name}: the map was not loaded");
+  };
+  let (grid, bounds) = {
+    let maps = engine.world().resource::<Assets<TileMap>>();
+    let Some(map) = maps.get(&handle) else {
+      panic!("{name}: the map is not loaded");
+    };
+    let grid = map.grid();
+    (grid, grid.bounds_of(map.bounds()))
+  };
+  Some((engine, grid, bounds))
+}
+
+/// The engine's frame of `maps/{name}.tmj` the size of Tiled's render of it,
+/// its camera on where the render starts (the top-left of the box the map's
+/// cells cover: a negative skew's content left of or above the origin
+/// included), and the map's grid
+fn as_tiled_draws(name: &str, render: &image::RgbaImage) -> Option<(image::RgbaImage, MapGrid)> {
+  let size = (render.width(), render.height());
+  let (mut engine, grid, bounds) = tiled_engine(name, size)?;
+  let centre = Vec2::new(bounds.x, bounds.y) + Vec2::new(size.0 as f32, size.1 as f32) / 2.0;
+  if let Some(mut camera) = CameraMut::main(engine.world_mut()) {
+    camera.set_position(centre.x, centre.y);
+  }
+  // More than once: the main camera is interpolated, and draws where it was
+  engine.step_frames(3).unwrap();
+  Some((engine.frame().unwrap(), grid))
+}
+
+/// The pixels where `frame` differs from Tiled's `render`: where Tiled drew
+/// a tile, its colour; where it drew nothing, the background (the frame's
+/// pixel at the first place Tiled left clear)
+fn unlike_tiled(frame: &image::RgbaImage, render: &image::RgbaImage) -> Vec<String> {
+  let Some((x0, y0, _)) = render.enumerate_pixels().find(|(_, _, p)| p.0[3] == 0) else {
+    panic!("Tiled's render covers every pixel");
+  };
+  let background = frame.get_pixel(x0, y0).0;
+  assert!(
+    !SHAPE_COLOURS.contains(&background),
+    "the background {background:?} is a tile colour"
+  );
+  render
+    .enumerate_pixels()
+    .filter_map(|(x, y, tiled)| {
+      let want = match tiled.0[3] {
+        255 => tiled.0,
+        0 => background,
+        alpha => panic!("Tiled's render has alpha {alpha} at ({x}, {y})"),
+      };
+      let got = frame.get_pixel(x, y).0;
+      (got != want).then(|| format!("({x}, {y}): {got:?}, Tiled {want:?}"))
+    })
+    .collect()
+}
+
+/// Every pixel of `name`'s frame is as Tiled draws it
+fn assert_draws_as_tiled(name: &str) {
+  let render = tiled_render(name);
+  let Some((frame, _)) = as_tiled_draws(name, &render) else {
+    return;
+  };
+  let unlike = unlike_tiled(&frame, &render);
+  if !unlike.is_empty() {
+    let path = std::env::temp_dir().join(format!("ryo2d-{name}.png"));
+    let _ = frame.save(&path);
+    panic!(
+      "{name}: {} pixels differ from Tiled's render (the frame is at {}), the first: {:#?}",
+      unlike.len(),
+      path.display(),
+      &unlike[..unlike.len().min(8)]
+    );
+  }
+}
+
+#[test]
+fn every_grid_draws_its_tiles_as_tileds_render_shows() {
+  // Each shape fixture: the engine's frame of the map (pixel art, zoom 1,
+  // the camera on the map's box) is Tiled's render, pixel for pixel. The
+  // tiles are shaped like their cells (rectangles, diamonds, hexagons) and
+  // are opaque or clear with no smoothed edge, and the maps leave their
+  // outer ring empty so no tile overhangs the render's edge (Tiled's
+  // `toImage` clips there). Odd sizes overlap their neighbours by a pixel
+  // (staggered and hexagonal grids step in whole pixels, isometric ones on
+  // half pixels, which Tiled's raster rounds)
+  for name in [
+    "shape-iso",
+    "shape-iso-48x32",
+    "shape-stag-x-odd",
+    "shape-stag-x-even",
+    "shape-stag-y-odd",
+    "shape-stag-y-even",
+    "shape-hex-x-odd",
+    "shape-hex-x-even",
+    "shape-hex-y-odd",
+    "shape-hex-y-even",
+    "shape-hex-x-side0",
+    "shape-hex-y-side0",
+    "shape-hex-long-side",
+    "shape-oblique",
+    "shape-oblique-neg-x",
+    "shape-oblique-neg-y",
+    "shape-odd-ortho",
+    "shape-odd-iso",
+    "shape-odd-stag-x-odd",
+    "shape-odd-stag-y-even",
+    "shape-odd-hex-x-odd",
+    "shape-odd-hex-y-odd",
+    "shape-odd-oblique",
+  ] {
+    assert_draws_as_tiled(name);
+  }
+}
+
+#[test]
+fn hex_rotations_and_flips_draw_as_tiled_shows_them() {
+  // The hex rotation fixture: a marker hexagon (56 x 64, side 32), white
+  // with its top-left quarter red, at cell (1 + i mod 4, 1 + i / 4) with
+  // flags i (1 flips it across, 2 down, 4 turns it 60 degrees clockwise, 8
+  // 120). Tiled flips first, then turns about the middle of the cell's box.
+  // A turned picture is resampled, so its edges are not compared: at the
+  // middle of each quarter of each marker, Tiled shows red at one and white
+  // at three, and the engine shows what Tiled does
+  let name = "shape-hex-rotations";
+  let render = tiled_render(name);
+  let Some((frame, grid)) = as_tiled_draws(name, &render) else {
+    return;
+  };
+  let (red, white) = (SHAPE_COLOURS[0], SHAPE_COLOURS[4]);
+  let mut unlike = Vec::new();
+  for i in 0..16u32 {
+    let cell = IVec2::new(1 + (i % 4) as i32, 1 + (i / 4) as i32);
+    let centre = grid.cell_center(cell);
+    let turn = (60.0 * f32::from(u8::from(i & 4 != 0)) + 120.0 * f32::from(u8::from(i & 8 != 0)))
+      .to_radians();
+    let mut reds = 0;
+    for quarter in [(-14.0, -16.0), (14.0, -16.0), (-14.0, 16.0), (14.0, 16.0)] {
+      // The quarter's middle in the picture, from its centre: flipped,
+      // then turned clockwise (y is down)
+      let mut at = Vec2::from(quarter);
+      if i & 1 != 0 {
+        at.x = -at.x;
+      }
+      if i & 2 != 0 {
+        at.y = -at.y;
+      }
+      let at = Vec2::from_angle(turn).rotate(at);
+      let (x, y) = ((centre.x + at.x) as u32, (centre.y + at.y) as u32);
+      let tiled = render.get_pixel(x, y).0;
+      assert!(
+        tiled == red || tiled == white,
+        "flags {i}: Tiled's render at ({x}, {y}) is {tiled:?}, no quarter of the marker"
+      );
+      reds += usize::from(tiled == red);
+      let got = frame.get_pixel(x, y).0;
+      if got != tiled {
+        unlike.push(format!("flags {i}, ({x}, {y}): {got:?}, Tiled {tiled:?}"));
+      }
+    }
+    assert_eq!(reds, 1, "flags {i}: one quarter is red in Tiled's render");
+  }
+  assert!(unlike.is_empty(), "unlike Tiled: {unlike:#?}");
+}
+
+#[test]
+fn tall_tiles_across_a_chunk_border_draw_in_tileds_order() {
+  // Plain layers of tiles larger than their cells, from two tilesets,
+  // straddling the engine's chunk border at x 32 (y 32 on the orthogonal
+  // map), each overlapping its neighbours. Tiled draws them in its order
+  // whatever their tileset or chunk: on the isometric map, diagonal by
+  // diagonal, so of 24 x 32 tiles in 16 x 8 cells (30, 1) of one tileset
+  // over (29, 2) of the other, across the cells' sides; of 16 x 32 tiles,
+  // reaching only above their cells, (30, 2) over (30, 1); on the
+  // staggered map's rows, a shifted row's last cell before the cell of the
+  // next chunk below it; on the orthogonal map, the rows above the border
+  // before those below
+  for name in [
+    "shape-tall-chunk-border",
+    "shape-tall-iso-upright",
+    "shape-tall-stag-upright",
+    "shape-tall-ortho-upright",
+  ] {
+    assert_draws_as_tiled(name);
+  }
+}
+
+// ---- every grid: how chunks draw and cull -------------------------------------
+
+/// A map of `shape` whose cells are `cell` px, `size` of them a side, every
+/// cell holding a tile its cell's box's size from one of two tilesets
+/// (red and green, blue and yellow), as `tileset(cell)` says
+fn two_tileset_map(
+  ctx: &mut SceneContext,
+  (shape, cell, size): (GridShape, UVec2, u32),
+  tileset: impl Fn(IVec2) -> u16,
+) -> TileMap {
+  let tile = MapGrid::new(shape, cell).cell_bounds(IVec2::ZERO);
+  let tile = UVec2::new(tile.width as u32, tile.height as u32);
+  let mut map = TileMap::new(UVec2::splat(size), cell).with_shape(shape);
+  for colours in [[RED, GREEN], [BLUE, YELLOW]] {
+    let (width, height) = (tile.x * 2, tile.y);
+    let data: Vec<u8> = (0..width * height)
+      .flat_map(|i| colours[((i % width) / tile.x) as usize])
+      .collect();
+    let image = ctx.assets().add(Image::from_rgba(data, width, height));
+    let mut set = Tileset::new(
+      "solid",
+      tile,
+      TilesetImage::Atlas {
+        image,
+        size: UVec2::new(width, height),
+      },
+    );
+    set.columns = 2;
+    set.tile_count = 2;
+    map.add_tileset(TilesetSource::Embedded(Arc::new(set)));
+  }
+  let layer = map.add_tile_layer("ground");
+  let Some(grid) = map.tiles_mut(layer) else {
+    panic!("ground is a tile layer");
+  };
+  for y in 0..size as i32 {
+    for x in 0..size as i32 {
+      let cell = IVec2::new(x, y);
+      grid.set(cell, Some(Tile::new(tileset(cell), (x % 2) as u32)));
+    }
+  }
+  map
+}
+
+#[test]
+fn a_layer_whose_tiles_fit_their_cells_keeps_its_per_chunk_draws() {
+  // Tiles the size of their cell's box, from two tilesets, on an
+  // orthogonal, an isometric and a hexagonal map of 3 x 3 chunks, seen
+  // whole: nothing leaves its cell, so each chunk draws as one draw per
+  // tileset in it, all of the tileset's tiles there, chunk by chunk
+  let hex = GridShape::Hexagonal {
+    axis: StaggerAxis::Y,
+    index: StaggerIndex::Odd,
+    side: 8,
+  };
+  let grids = [
+    (GridShape::Orthogonal, UVec2::splat(8)),
+    (GridShape::Isometric, UVec2::new(16, 8)),
+    (hex, UVec2::splat(16)),
+  ];
+  // Bands of the two tilesets, and a last column of chunks of the first
+  // alone
+  let tileset = |cell: IVec2| u16::from(cell.x < 64 && (cell.x / 7 + cell.y / 5) % 2 == 1);
+  for (shape, cell) in grids {
+    let pan = Pan::default();
+    let setup: Setup = Box::new(move |ctx| {
+      let map = two_tileset_map(ctx, (shape, cell, 96), tileset);
+      spawn(ctx, map, Vec2::ZERO);
+    });
+    let builder = EngineBuilder::new()
+      .pixel_art(SIZE, SIZE)
+      .start_scene(Panned(Some(setup), pan.clone()));
+    let Some(mut engine) = HeadlessEngine::new_or_skip(builder) else {
+      return;
+    };
+    land(&mut engine);
+    let grid = MapGrid::for_map(shape, cell, UVec2::splat(96), false);
+    let whole = grid.bounds_of(CellRect::from_size(UVec2::splat(96)));
+    if let Ok(mut at) = pan.lock() {
+      *at = Some(Vec2::new(
+        whole.x + whole.width / 2.0,
+        whole.y + whole.height / 2.0,
+      ));
+    }
+    for (_, mut camera) in engine
+      .world_mut()
+      .query::<(&MainCamera, &mut Camera2d)>()
+      .iter_mut(engine.world_mut())
+    {
+      camera.zoom = SIZE as f32 / whole.width.max(whole.height) / 1.25;
+    }
+    engine.step_frames(3).unwrap();
+    let draws = engine.tile_draws();
+    let mut chunks: Vec<IVec2> = draws.iter().map(|d| d.1).collect();
+    chunks.dedup();
+    assert_eq!(
+      chunks.len(),
+      9,
+      "{shape:?}: every chunk draws, chunk by chunk"
+    );
+    for chunk in chunks {
+      let mut counts = [0u32; 2];
+      for y in 0..32 {
+        for x in 0..32 {
+          counts[usize::from(tileset(chunk * 32 + IVec2::new(x, y)))] += 1;
+        }
+      }
+      let want: Vec<(u16, u32, u32)> = (0..2u16)
+        .filter(|&set| counts[usize::from(set)] > 0)
+        .map(|set| (set, 0, counts[usize::from(set)]))
+        .collect();
+      let got: Vec<(u16, u32, u32)> = draws
+        .iter()
+        .filter(|d| d.1 == chunk)
+        .map(|d| (d.2, d.3, d.4))
+        .collect();
+      assert_eq!(
+        got, want,
+        "{shape:?}, chunk {chunk}: a draw per tileset, whole"
+      );
+    }
+  }
+}
+
+#[test]
+fn culling_draws_only_chunks_a_camera_sees_on_every_grid() {
+  // A 64 px camera over an isometric and a hexagonal map of 3 x 3 chunks:
+  // every chunk holding a cell whose box meets its view is built and drawn,
+  // and no chunk whose cells' box lies further than 64 px from it is (a
+  // view's chunks are those holding cells its box widened by how far a tile
+  // may draw past its cell meets). At (144, 288), by the isometric map's
+  // top-left edge, the corners of the view are in the cells of chunks (0, 1)
+  // and (0, 2), but the view sees only (0, 2): (0, 1)'s cells lie more than
+  // 64 px to its right
+  let hex = GridShape::Hexagonal {
+    axis: StaggerAxis::Y,
+    index: StaggerIndex::Odd,
+    side: 8,
+  };
+  let cases = [
+    (
+      GridShape::Isometric,
+      UVec2::new(16, 8),
+      [
+        Vec2::new(144.0, 288.0),
+        Vec2::new(768.0, 300.0),
+        Vec2::new(1200.0, 400.0),
+      ],
+    ),
+    (
+      hex,
+      UVec2::splat(16),
+      [
+        Vec2::new(300.0, 900.0),
+        Vec2::new(515.0, 500.0),
+        Vec2::new(1300.0, 100.0),
+      ],
+    ),
+  ];
+  for (shape, cell, places) in cases {
+    let pan = Pan::default();
+    let setup: Setup = Box::new(move |ctx| {
+      let map = two_tileset_map(ctx, (shape, cell, 96), |cell| (cell.x % 2) as u16);
+      spawn(ctx, map, Vec2::ZERO);
+    });
+    let builder = EngineBuilder::new()
+      .pixel_art(SIZE, SIZE)
+      .start_scene(Panned(Some(setup), pan.clone()));
+    let Some(mut engine) = HeadlessEngine::new_or_skip(builder) else {
+      return;
+    };
+    land(&mut engine);
+    let grid = MapGrid::for_map(shape, cell, UVec2::splat(96), false);
+    let half = SIZE as f32 / 2.0;
+    let meets = |b: Rect, low: Vec2, high: Vec2| {
+      b.x <= high.x && b.x + b.width >= low.x && b.y <= high.y && b.y + b.height >= low.y
+    };
+    for at in places {
+      let (low, high) = (at - half, at + half);
+      // The chunks holding a cell whose box meets the view
+      let seen: Vec<IVec2> = (0..3)
+        .flat_map(|y| (0..3).map(move |x| IVec2::new(x, y)))
+        .filter(|&chunk| {
+          (0..32 * 32).any(|i| {
+            let cell = chunk * 32 + IVec2::new(i % 32, i / 32);
+            meets(grid.cell_bounds(cell), low, high)
+          })
+        })
+        .collect();
+      // The chunks whose cells' box comes within 64 px of it
+      let near: Vec<IVec2> = (0..3)
+        .flat_map(|y| (0..3).map(move |x| IVec2::new(x, y)))
+        .filter(|&chunk| {
+          let b = grid.bounds_of(CellRect::new(chunk * 32, chunk * 32 + 32));
+          meets(b, low - 64.0, high + 64.0)
+        })
+        .collect();
+      // The store keeps chunks drawn in the last 120 frames: a fresh engine
+      // for each place would be slow, so each place is looked at after the
+      // last place's chunks have gone
+      if let Ok(mut pan) = pan.lock() {
+        *pan = Some(at);
+      }
+      engine.step_frames(130).unwrap();
+      let built: Vec<IVec2> = engine.tile_chunks().into_iter().map(|(_, c)| c).collect();
+      let mut drawn: Vec<IVec2> = engine.tile_draws().into_iter().map(|d| d.1).collect();
+      drawn.sort_by_key(|c| (c.y, c.x));
+      drawn.dedup();
+      assert!(
+        !seen.is_empty(),
+        "{shape:?} at {at}: the view is over the map"
+      );
+      for chunk in &seen {
+        assert!(
+          built.contains(chunk),
+          "{shape:?} at {at}: chunk {chunk} is seen, built {built:?}"
+        );
+        assert!(
+          drawn.contains(chunk),
+          "{shape:?} at {at}: chunk {chunk} is seen, drawn {drawn:?}"
+        );
+      }
+      for chunk in &built {
+        assert!(
+          near.contains(chunk),
+          "{shape:?} at {at}: chunk {chunk} is out of view, built {built:?}"
+        );
+      }
+    }
+    // The one the view's corners name but the view does not see
+    if shape == GridShape::Isometric {
+      if let Ok(mut pan) = pan.lock() {
+        *pan = Some(Vec2::new(144.0, 288.0));
+      }
+      engine.step_frames(130).unwrap();
+      let built: Vec<IVec2> = engine.tile_chunks().into_iter().map(|(_, c)| c).collect();
+      assert_eq!(built, [IVec2::new(0, 2)], "{shape:?}");
+    }
+  }
+}

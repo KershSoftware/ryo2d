@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<map version="1.10" tiledversion="1.12.2" orientation="orthogonal" renderorder="right-down" width="6" height="36" tilewidth="16" tileheight="16" infinite="0" nextlayerid="2" nextobjectid="1">
+ <tileset firstgid="1" name="shape-tall-a-16x40" tilewidth="16" tileheight="40" tilecount="2" columns="2">
+  <grid orientation="orthogonal" width="0" height="0"/>
+  <image source="../../images/shape-tall-a-16x40.png" width="32" height="40"/>
+ </tileset>
+ <tileset firstgid="3" name="shape-tall-b-16x40" tilewidth="16" tileheight="40" tilecount="2" columns="2">
+  <grid orientation="orthogonal" width="0" height="0"/>
+  <image source="../../images/shape-tall-b-16x40.png" width="32" height="40"/>
+ </tileset>
+ <layer id="1" name="ground" width="6" height="36">
+  <data encoding="csv">
+0,0,0,0,0,0,
+0,0,0,0,0,0,
+0,0,0,0,0,0,
+0,0,0,0,0,0,
+0,0,0,0,0,0,
+0,0,0,0,0,0,
+0,0,0,0,0,0,
+0,0,0,0,0,0,
+0,0,0,0,0,0,
+0,0,0,0,0,0,
+0,0,0,0,0,0,
+0,0,0,0,0,0,
+0,0,0,0,0,0,
+0,0,0,0,0,0,
+0,0,0,0,0,0,
+0,0,0,0,0,0,
+0,0,0,0,0,0,
+0,0,0,0,0,0,
+0,0,0,0,0,0,
+0,0,0,0,0,0,
+0,0,0,0,0,0,
+0,0,0,0,0,0,
+0,0,0,0,0,0,
+0,0,0,0,0,0,
+0,0,0,0,0,0,
+0,0,0,0,0,0,
+0,0,0,0,0,0,
+0,0,0,0,0,0,
+0,0,0,0,0,0,
+0,0,0,0,0,0,
+0,4,1,4,1,0,
+0,2,3,2,3,0,
+0,4,1,4,1,0,
+0,2,3,2,3,0,
+0,4,1,4,1,0,
+0,0,0,0,0,0
+</data>
+ </layer>
+</map>

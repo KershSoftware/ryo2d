@@ -48,10 +48,15 @@ fn frame_step(params: vec4<f32>, extra: vec4<f32>) -> vec2<f32> {
 fn vs_tile(vertex: VertexInput, instance: InstanceInput) -> VertexOutput {
     var out: VertexOutput;
 
-    // The corner in the layer's pixels, then in the world
-    let local = instance.transform2.xy
+    // The corner in the layer's pixels, then in the world. Pixel art draws
+    // a tile where Tiled's raster puts it: an isometric grid of odd sizes
+    // places tiles on half pixels, which `transform1.zw` rounds
+    var local = instance.transform2.xy
         + instance.transform0.xy * vertex.position.x
         + instance.transform1.xy * vertex.position.y;
+    if globals.snap > 0.5 {
+        local += instance.transform1.zw;
+    }
     let origin = tile_slot.origin + tile_slot.parallax;
     let world = tile_slot.x_axis * local.x + tile_slot.y_axis * local.y + origin;
     var clip = globals.view_proj * vec4<f32>(world, 0.0, 1.0);

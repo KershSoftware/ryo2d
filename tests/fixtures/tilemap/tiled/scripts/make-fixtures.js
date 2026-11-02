@@ -3,8 +3,10 @@
 // parallax origin and infinite maps (chunks at negative cells, of Tiled's
 // 16 x 16, of 8 x 4 and of 24 x 24, which straddle the engine's chunks of
 // 32, in every layer format, and a tile layer in a group), through Tiled's
-// own scripting API, in both formats; and measured.json, where Tiled puts
-// the cells of isometric, staggered, hexagonal and oblique grids.
+// own scripting API, in both formats; measured.json, where Tiled puts
+// the cells of isometric, staggered, hexagonal and oblique grids; and
+// measured-order.json, which of two overlapping tiles it draws over the
+// other on those grids.
 //
 // Regenerate (Tiled 1.12.2, from the repository root):
 //   /Applications/Tiled.app/Contents/MacOS/Tiled \
@@ -650,6 +652,46 @@ function hexRotations() {
 saveBoth("shape-hex-rotations", hexRotations);
 renderTo("shape-hex-rotations", hexRotations());
 
+// Tall tiles across a chunk border: plain layers of opaque tiles larger than
+// their cells, from two tilesets (red and green, blue and yellow; the
+// tileset by (x + y) mod 2, the colour by x mod 2), straddling the border
+// the engine's chunks of 32 cells have at x 32 (y 32 on the orthogonal
+// map), each overlapping its neighbours: Tiled draws them in its order
+// whatever their tileset or chunk. 24 x 32 tiles in an isometric map's
+// 16 x 8 cells reach past their cells' sides; 16 x 32 ones there, 16 x 24
+// ones in a staggered map's and 16 x 40 ones in an orthogonal map's 16 px
+// cells reach only above them
+var tallMaps = [
+  { name: "shape-tall-chunk-border", grid: { orientation: I, tile: [16, 8], size: [36, 4] }, tile: [24, 32], cells: [29, 34, 1, 2] },
+  { name: "shape-tall-iso-upright", grid: { orientation: I, tile: [16, 8], size: [36, 4] }, tile: [16, 32], cells: [29, 34, 1, 2] },
+  { name: "shape-tall-stag-upright", grid: { orientation: S, tile: [16, 8], size: [36, 10], axis: AY, index: ODD }, tile: [16, 24], cells: [29, 34, 4, 7] },
+  { name: "shape-tall-ortho-upright", grid: { orientation: TileMap.Orthogonal, tile: [16, 16], size: [6, 36] }, tile: [16, 40], cells: [1, 4, 30, 34] },
+];
+function tallMap(t) {
+  var map = sampleMap(t.grid);
+  map.layerDataFormat = TileMap.CSV;
+  var w = t.tile[0], h = t.tile[1];
+  var sets = [
+    shapeTileset("shape-tall-a-" + w + "x" + h, "rect", w, h, 0, [RED, GREEN]),
+    shapeTileset("shape-tall-b-" + w + "x" + h, "rect", w, h, 0, [BLUE, YELLOW]),
+  ];
+  map.addTileset(sets[0]);
+  map.addTileset(sets[1]);
+  var layer = new TileLayer("ground");
+  map.addLayer(layer);
+  var edit = layer.edit();
+  for (var y = t.cells[2]; y <= t.cells[3]; y++)
+    for (var x = t.cells[0]; x <= t.cells[1]; x++) edit.setTile(x, y, sets[(x + y) % 2].tile(x % 2));
+  edit.apply();
+  return map;
+}
+for (var tm = 0; tm < tallMaps.length; tm++) {
+  (function (t) {
+    saveBoth(t.name, function () { return tallMap(t); });
+    renderTo(t.name, tallMap(t));
+  })(tallMaps[tm]);
+}
+
 // A hexagonal map whose "walls" layer collides, which the engine refuses,
 // over a "ground" layer that says nothing of collision
 saveBoth("shape-hex-collides", function () {
@@ -808,3 +850,67 @@ measureObjects("shape-objects-iso-external", isoGrid, alignedTile);
 var objectsFile = new TextFile(dir + "measured-objects.json", TextFile.WriteOnly);
 objectsFile.write('{"tiled": "' + tiled.version + '",\n "objects": [\n' + objectMeasures.join(",\n") + "\n ]}\n");
 objectsFile.commit();
+
+// ---- paint order --------------------------------------------------------------
+
+// Which of two overlapping tiles Tiled draws over the other inside one layer
+// on isometric, staggered and hexagonal maps (`measured-order.json`): pairs
+// of solid tiles larger than their cells, in the middle of a 16 x 16 map so
+// neither reaches the render's edge, `over` the cell whose tile shows whole.
+// An isometric map draws its diagonals (cells of equal x + y) top to bottom,
+// each left to right; the other grids their rows
+var paintGrids = [
+  { name: "isometric 16x8", orientation: I, tile: [16, 8], size: [16, 16] },
+  { name: "staggered y odd 16x8", orientation: S, tile: [16, 8], size: [16, 16], axis: AY, index: ODD },
+  { name: "staggered x odd 16x8", orientation: S, tile: [16, 8], size: [16, 16], axis: AX, index: ODD },
+  { name: "hexagonal y odd 16x16 side 8", orientation: H, tile: [16, 16], size: [16, 16], axis: AY, index: ODD, side: 8 },
+  { name: "hexagonal x even 16x16 side 8", orientation: H, tile: [16, 16], size: [16, 16], axis: AX, index: EVEN, side: 8 },
+];
+// [grid, cell a, cell b, tile size]
+var paintPairs = [
+  [0, [8, 7], [7, 8], [32, 24]],
+  [0, [9, 7], [7, 8], [32, 24]],
+  [0, [8, 8], [8, 7], [32, 24]],
+  [0, [8, 8], [9, 8], [32, 24]],
+  [0, [7, 9], [9, 6], [64, 24]],
+  [1, [7, 8], [8, 7], [32, 24]],
+  [1, [7, 8], [8, 8], [32, 24]],
+  [2, [7, 8], [8, 7], [32, 24]],
+  [2, [8, 8], [9, 8], [32, 24]],
+  [3, [7, 8], [8, 7], [32, 32]],
+  [3, [7, 8], [8, 8], [32, 32]],
+  [4, [7, 8], [8, 7], [32, 32]],
+  [4, [8, 8], [9, 8], [32, 32]],
+];
+var paintOrders = [];
+for (var pp = 0; pp < paintPairs.length; pp++) {
+  var spec = paintPairs[pp];
+  var pg = paintGrids[spec[0]], size = spec[3];
+  var redArgb = 0xffff0000, blueArgb = 0xff0000ff;
+  var drawn = render(pg, undefined, [
+    [spec[1][0], spec[1][1], solidImage(size[0], size[1], redArgb)],
+    [spec[2][0], spec[2][1], solidImage(size[0], size[1], blueArgb)],
+  ]);
+  var whole = size[0] * size[1];
+  var reds = countPixels(drawn, redArgb), blues = countPixels(drawn, blueArgb);
+  var over;
+  if (reds === whole && blues < whole) over = spec[1];
+  else if (blues === whole && reds < whole) over = spec[2];
+  else throw new Error("make-fixtures.js: paint order: " + pg.name + ": " + reds + " red and " + blues + " blue pixels");
+  paintOrders.push('  {"grid": "' + pg.name + '", "a": ' + list(spec[1]) + ', "b": ' + list(spec[2]) + ', "over": ' + list(over) + "}");
+}
+var orderGrids = [];
+for (var og = 0; og < paintGrids.length; og++) {
+  var g = paintGrids[og];
+  var head = '  {"name": "' + g.name + '", "orientation": "' + orientationNames[g.orientation] + '", "tile": ' + list(g.tile);
+  if (g.axis !== undefined)
+    head += ', "staggeraxis": "' + (g.axis === AX ? "x" : "y") + '", "staggerindex": "' + (g.index === ODD ? "odd" : "even") + '"';
+  if (g.side !== undefined) head += ', "hexsidelength": ' + g.side;
+  orderGrids.push(head + "}");
+}
+var orderFile = new TextFile(dir + "measured-order.json", TextFile.WriteOnly);
+orderFile.write(
+  '{"tiled": "' + tiled.version + '",\n "grids": [\n' + orderGrids.join(",\n") + "\n ],\n" +
+    ' "pairs": [\n' + paintOrders.join(",\n") + "\n ]}\n"
+);
+orderFile.commit();

@@ -670,6 +670,15 @@ impl HeadlessEngine {
     chunks
   }
 
+  /// The last frame's tile chunk draws, in draw order, each as its layer
+  /// entity, chunk, tileset, and the instances of the tileset's part of the
+  /// chunk it draws (the first, and how many) (tests of how a layer's
+  /// chunks draw)
+  #[doc(hidden)]
+  pub fn tile_draws(&self) -> Vec<(Entity, IVec2, u16, u32, u32)> {
+    self.engine.tile_drawer.chunk_draws().collect()
+  }
+
   /// The last frame's render step on the CPU (building, uploading and
   /// encoding the frame; not the UI pass)
   #[doc(hidden)]

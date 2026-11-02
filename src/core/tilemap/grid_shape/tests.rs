@@ -322,6 +322,49 @@ fn check_placement(sample: &Sample) {
       "{name} {c}"
     );
   }
+  // Pixel art draws tiles where Tiled's raster does
+  for &c in sample.screen.keys() {
+    let anchor = grid.tile_anchor(c);
+    assert_eq!(
+      anchor + grid.raster_offset(anchor),
+      rastered(&grid, anchor),
+      "{name} {c}"
+    );
+  }
+}
+
+#[test]
+fn a_tile_stands_on_the_box_tiled_steps_by() {
+  // The cell, but on staggered and hexagonal grids the box of whole pixels
+  // Tiled steps by: half a cell across rounded down, twice; the slant twice
+  // and the side along the axis (a side longer than the tile makes the
+  // slant negative)
+  let boxes = [
+    (grid(GridShape::Isometric, 33, 17), (33.0, 17.0)),
+    (grid(oblique(8, 12), 32, 32), (32.0, 32.0)),
+    (grid(stag(Y, Even), 33, 17), (32.0, 16.0)),
+    (grid(stag(X, Odd), 33, 17), (32.0, 16.0)),
+    (grid(hex(Y, Odd, 13), 33, 17), (32.0, 17.0)),
+    (grid(hex(X, Odd, 13), 33, 17), (33.0, 16.0)),
+    (grid(hex(Y, Odd, 32), 56, 64), (56.0, 64.0)),
+    (grid(hex(Y, Odd, 40), 32, 32), (32.0, 32.0)),
+  ];
+  for (grid, (w, h)) in boxes {
+    assert_eq!(grid.tile_box(), Vec2::new(w, h), "{grid:?}");
+    // Its bottom-left is the tile anchor, and it lies in the cell's box
+    let cell = IVec2::new(3, 2);
+    let (anchor, bounds) = (grid.tile_anchor(cell), grid.cell_bounds(cell));
+    if !matches!(grid.shape, GridShape::Oblique { .. }) {
+      assert!(
+        anchor.x >= bounds.x && anchor.x + w <= bounds.x + bounds.width,
+        "{grid:?}"
+      );
+      assert!(
+        anchor.y - h >= bounds.y && anchor.y <= bounds.y + bounds.height,
+        "{grid:?}"
+      );
+    }
+  }
 }
 
 #[test]
@@ -1035,15 +1078,22 @@ fn a_staggered_lattice_agrees_with_its_cells() {
 #[test]
 fn paint_keys_order_as_tiled_draws() {
   let mut rng = Rng(0x9a1_7e5);
-  // Rows top to bottom on every grid, then columns left to right
+  // Rows top to bottom, then columns left to right; on isometric grids
+  // the diagonals (x + y) top to bottom, each left to right
   for grid in grids() {
+    let iso = grid.shape == GridShape::Isometric;
     for _ in 0..500 {
       let a = IVec2::new(rng.int(-50, 50), rng.int(-50, 50));
       let b = IVec2::new(rng.int(-50, 50), rng.int(-50, 50));
-      if a.y < b.y {
+      let (row_a, row_b) = if iso {
+        (a.x + a.y, b.x + b.y)
+      } else {
+        (a.y, b.y)
+      };
+      if row_a < row_b {
         assert!(grid.paint_key(a) < grid.paint_key(b), "{grid:?} {a} {b}");
       }
-      if a.y == b.y
+      if row_a == row_b
         && a.x < b.x
         && !matches!(
           grid.shape,
@@ -1080,6 +1130,76 @@ fn paint_keys_order_as_tiled_draws() {
     assert_eq!(*over, [IVec2::new(3, 4), IVec2::new(4, 3)]);
     assert!(key(shape, 3, 4) > key(shape, 3, 3));
     assert!(key(shape, 4, 3) > key(shape, 3, 3));
+  }
+}
+
+/// Tiled's overlapping pairs (`measured-order.json`): the grid of each,
+/// both cells and the one drawn over the other
+fn measured_order() -> Vec<(MapGrid, IVec2, IVec2, IVec2)> {
+  let path = format!("{FIXTURES}/tiled/measured-order.json");
+  let text = std::fs::read_to_string(&path).expect("measured-order.json");
+  let json: Value = serde_json::from_str(&text).expect("measured-order.json is JSON");
+  assert_eq!(json["tiled"], "1.12.2");
+  let grids: Vec<(String, MapGrid)> = json["grids"]
+    .as_array()
+    .expect("grids")
+    .iter()
+    .map(|g| {
+      let tile = pair(&g["tile"]).as_uvec2();
+      let stagger = || {
+        let axis = if g["staggeraxis"] == "x" { X } else { Y };
+        let index = if g["staggerindex"] == "odd" {
+          Odd
+        } else {
+          Even
+        };
+        (axis, index)
+      };
+      let shape = match g["orientation"].as_str() {
+        Some("isometric") => GridShape::Isometric,
+        Some("staggered") => {
+          let (axis, index) = stagger();
+          stag(axis, index)
+        }
+        Some("hexagonal") => {
+          let (axis, index) = stagger();
+          hex(axis, index, int(&g["hexsidelength"]) as u32)
+        }
+        other => panic!("measured-order.json: orientation {other:?}"),
+      };
+      let name = g["name"].as_str().expect("a name").to_string();
+      (name, MapGrid::new(shape, tile))
+    })
+    .collect();
+  json["pairs"]
+    .as_array()
+    .expect("pairs")
+    .iter()
+    .map(|p| {
+      let name = p["grid"].as_str().expect("a grid");
+      let Some((_, grid)) = grids.iter().find(|(n, _)| n == name) else {
+        panic!("measured-order.json: no grid {name}");
+      };
+      (*grid, pair(&p["a"]), pair(&p["b"]), pair(&p["over"]))
+    })
+    .collect()
+}
+
+#[test]
+fn paint_keys_order_overlapping_tiles_as_tileds_renders_do() {
+  // Pairs of tiles larger than their cells, rendered by Tiled: the one it
+  // draws over the other has the larger paint key. On an isometric map
+  // that is the later diagonal, though its row is the earlier: (7, 9) over
+  // (9, 6), (9, 7) over (7, 8), and in one diagonal the cell further right,
+  // (8, 7) over (7, 8)
+  let pairs = measured_order();
+  assert_eq!(pairs.len(), 13);
+  for (grid, a, b, over) in pairs {
+    let under = if over == a { b } else { a };
+    assert!(
+      grid.paint_key(over) > grid.paint_key(under),
+      "{grid:?}: Tiled draws {over} over {under}"
+    );
   }
 }
 

@@ -338,6 +338,46 @@ impl MapGrid {
     }
   }
 
+  /// The size of the box a tile stands on, `tile_anchor` its bottom-left:
+  /// the cell, except on staggered and hexagonal grids, where it is the box
+  /// Tiled steps by (its whole-pixel half twice across the stagger axis,
+  /// the slant twice and the side along it). A hexagonal tile turns about
+  /// its middle
+  pub(crate) fn tile_box(&self) -> Vec2 {
+    match self.shape {
+      GridShape::Staggered { .. } | GridShape::Hexagonal { .. } => {
+        let lines = self.lines();
+        let (across, along) = (2.0 * lines.half, lines.depth.max(0.0));
+        let size = match lines.axis {
+          StaggerAxis::Y => DVec2::new(across, along),
+          StaggerAxis::X => DVec2::new(along, across),
+        };
+        size.as_vec2()
+      }
+      _ => self.cell.as_vec2(),
+    }
+  }
+
+  /// Where Tiled's renderer draws a tile image whose bottom-left is
+  /// `anchor` (a `tile_anchor`, before the tileset's offset), less the
+  /// anchor: nothing on every grid but an isometric one of odd sizes, whose
+  /// half pixels it rounds up, and whose odd cell heights put a tile a pixel
+  /// lower where its bottom is a whole pixel (measured; the formats note
+  /// has it). Pixel art draws tiles there, so every corner of theirs is on
+  /// a whole pixel
+  pub(crate) fn raster_offset(&self, anchor: Vec2) -> Vec2 {
+    let (even_x, even_y) = (self.cell.x.is_multiple_of(2), self.cell.y.is_multiple_of(2));
+    if self.shape != GridShape::Isometric || (even_x && even_y) {
+      return Vec2::ZERO;
+    }
+    let y = if !even_y {
+      anchor.y.floor() + 1.0
+    } else {
+      anchor.y
+    };
+    Vec2::new(anchor.x.ceil(), y) - anchor
+  }
+
   /// The cell whose outline holds `point`: what draws there.
   ///
   /// A point on an edge or a corner that cells share goes to one of them,
@@ -491,7 +531,6 @@ impl MapGrid {
 
   /// The bounding box of a storage chunk's cells (`CHUNK_SIZE` a side, by
   /// cell index), outlines included
-  #[cfg_attr(not(test), allow(dead_code))] // nothing outside the tests reads it yet
   pub(crate) fn chunk_bounds(&self, chunk: IVec2) -> Rect {
     let side = i64::from(CHUNK_SIZE);
     let lo = (i64::from(chunk.x) * side, i64::from(chunk.y) * side);
@@ -506,7 +545,6 @@ impl MapGrid {
   /// under each of its points (a point's or a line's), and at most a chunk
   /// more each side. Empty (`first` past `last`) for a rectangle that is
   /// not finite
-  #[cfg_attr(not(test), allow(dead_code))] // nothing outside the tests reads it yet
   pub(crate) fn chunks_over(&self, rect: Rect) -> (IVec2, IVec2) {
     let ends = [rect.x, rect.x + rect.width, rect.y, rect.y + rect.height];
     if !ends.iter().all(|v| v.is_finite()) {
@@ -610,13 +648,16 @@ impl MapGrid {
 
   /// Tiled's order inside a plain layer: compare keys, smaller draws first.
   ///
-  /// Rows top to bottom and columns left to right on every grid (oblique
-  /// grids too, whatever the skew, as Tiled's right-down); on axis-X
-  /// staggered and hexagonal grids a row's unshifted columns first, then
-  /// its shifted ones, which sit half a cell lower (measured)
-  #[cfg_attr(not(test), allow(dead_code))] // nothing outside the tests reads it yet
+  /// Rows top to bottom and columns left to right (oblique grids too,
+  /// whatever the skew, as Tiled's right-down); on axis-X staggered and
+  /// hexagonal grids a row's unshifted columns first, then its shifted ones,
+  /// which sit half a cell lower; on isometric grids the diagonals (cells of
+  /// equal x + y, a row on screen) top to bottom, each left to right
+  /// (measured: `measured-order.json`). The first two parts are a paint
+  /// band, whose cells' boxes lie side by side
   pub(crate) fn paint_key(&self, cell: IVec2) -> (i32, i32, i32) {
     match self.shape {
+      GridShape::Isometric => (clamp_i32(i64::from(cell.x) + i64::from(cell.y)), 0, cell.x),
       GridShape::Staggered {
         axis: StaggerAxis::X,
         ..
