@@ -2380,4 +2380,284 @@ mod tests {
     }
     let _ = Properties::default();
   }
+
+  // ---- objects on every grid -----------------------------------------------
+
+  /// The object named `name` of the layer "things"
+  fn named<'a>(map: &'a TileMap, name: &str) -> &'a MapObjectData {
+    match objects(map, "things").iter().find(|o| o.name == name) {
+      Some(o) => o,
+      None => panic!("no object named {name}"),
+    }
+  }
+
+  /// What Tiled measured for `map`'s object of id `id`: its anchor, and the
+  /// box its render covers, if it draws one
+  fn measured_object(map: &str, id: u64) -> (Vec2, Option<[f32; 4]>) {
+    let text = std::fs::read_to_string(format!("{FIXTURES}/measured-objects.json"))
+      .expect("measured-objects.json");
+    let json: serde_json::Value = serde_json::from_str(&text).expect("it is JSON");
+    let list = json["objects"].as_array().expect("objects");
+    let row = list
+      .iter()
+      .find(|r| r["map"] == map && r["id"] == id)
+      .unwrap_or_else(|| panic!("{map}, object {id} was not measured"));
+    let n = |v: &serde_json::Value| v.as_f64().expect("a number") as f32;
+    let anchor = Vec2::new(n(&row["anchor"][0]), n(&row["anchor"][1]));
+    let box_ = row["box"]
+      .as_array()
+      .map(|b| [n(&b[0]), n(&b[1]), n(&b[2]), n(&b[3])]);
+    (anchor, box_)
+  }
+
+  /// The map `name` of the fixtures (the TMX twins load the same: the xml
+  /// module's tests hold them to it)
+  fn fixture(name: &str) -> TileMap {
+    load(&format!("maps/{name}.tmj"))
+  }
+
+  /// An object's outline in its layer's pixels, as it draws: a polygon's
+  /// points, or a rectangle's corners (a tile object's picture, a rectangle
+  /// or an ellipse's box), turned about its position
+  fn outline(o: &MapObjectData) -> Vec<Vec2> {
+    let local: Vec<Vec2> = match &o.shape {
+      ObjectShape::Polygon(points) => points.clone(),
+      _ => vec![
+        Vec2::ZERO,
+        Vec2::new(o.size.x, 0.0),
+        o.size,
+        Vec2::new(0.0, o.size.y),
+      ],
+    };
+    let turn = Vec2::from_angle(o.rotation);
+    local
+      .into_iter()
+      .map(|p| o.position + turn.rotate(p))
+      .collect()
+  }
+
+  fn bounds(points: &[Vec2]) -> [f32; 4] {
+    let mut b = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+    for p in points {
+      b = [b[0].min(p.x), b[1].min(p.y), b[2].max(p.x), b[3].max(p.y)];
+    }
+    b
+  }
+
+  fn assert_close(got: Vec2, want: Vec2, what: &str) {
+    assert!(got.distance(want) < 1e-3, "{what}: {got} is not {want}");
+  }
+
+  #[test]
+  fn isometric_objects_project_from_tileds_stored_space() {
+    {
+      let map = fixture("shape-objects-iso");
+      assert_eq!(map.shape, GridShape::Isometric);
+      // 6 rows of 64-wide cells: the origin is 192 across. A stored point
+      // is in tile-height units along the diamond's axes
+      let point = named(&map, "point");
+      assert_eq!(point.shape, ObjectShape::Point);
+      assert_close(point.position, Vec2::new(224.0, 64.0), "point (80, 48)");
+      // the rectangle is its four projected corners, steps from its top
+      // vertex
+      let rect = named(&map, "rect");
+      assert_close(rect.position, Vec2::new(192.0, 32.0), "rect position");
+      assert_eq!(
+        rect.shape,
+        ObjectShape::Polygon(vec![
+          Vec2::new(0.0, 0.0),
+          Vec2::new(32.0, 16.0),
+          Vec2::new(-32.0, 48.0),
+          Vec2::new(-64.0, 32.0),
+        ])
+      );
+      assert_eq!(rect.size, Vec2::ZERO);
+      // the ellipse is 32 points round its projected box
+      let ellipse = named(&map, "ellipse");
+      let ObjectShape::Polygon(points) = &ellipse.shape else {
+        panic!("{:?}", ellipse.shape)
+      };
+      assert_eq!(points.len(), 32);
+      // the stored ellipse's right-most point, (64, 16) from its corner,
+      // projects to (48, 40); the whole curve stays in the projected box
+      // (x -32..64, y 0..48 about the anchor), which Tiled draws as well
+      assert_close(points[0], Vec2::new(48.0, 40.0), "ellipse point");
+      let [l, t, r, b] = bounds(points);
+      assert!(
+        l >= -32.0 && r <= 64.0 && t >= 0.0 && b <= 48.0,
+        "{l} {t} {r} {b}"
+      );
+      // the polygon's points are projected as steps
+      let polygon = named(&map, "polygon");
+      assert_close(polygon.position, Vec2::new(128.0, 64.0), "polygon position");
+      assert_eq!(
+        polygon.shape,
+        ObjectShape::Polygon(vec![
+          Vec2::new(0.0, 0.0),
+          Vec2::new(16.0, 8.0),
+          Vec2::new(0.0, 16.0),
+          Vec2::new(-8.0, 4.0),
+        ])
+      );
+      // a tile object's picture stands on its anchor, bottom-centre:
+      // 64 x 64 at stored (64, 96), anchor (160, 80), covers 128..192 and 16..80
+      let tile = named(&map, "tile");
+      assert!(tile.tile.is_some());
+      assert_eq!(tile.size, Vec2::new(64.0, 64.0));
+      assert_close(tile.position, Vec2::new(128.0, 16.0), "tile position");
+    }
+  }
+
+  #[test]
+  fn oblique_objects_skew_and_staggered_and_hex_ones_do_not() {
+    {
+      let map = fixture("shape-objects-oblique");
+      // 32 x 32 cells, skew (8, 12): a stored point is unskewed pixels
+      let point = named(&map, "point");
+      assert_close(
+        point.position,
+        Vec2::new(92.0, 78.0),
+        "oblique point (80, 48)",
+      );
+      let rect = named(&map, "rect");
+      assert_close(
+        rect.position,
+        Vec2::new(40.0, 44.0),
+        "oblique rect position",
+      );
+      assert_eq!(
+        rect.shape,
+        ObjectShape::Polygon(vec![
+          Vec2::new(0.0, 0.0),
+          Vec2::new(32.0, 12.0),
+          Vec2::new(48.0, 76.0),
+          Vec2::new(16.0, 64.0),
+        ])
+      );
+      let tile = named(&map, "tile");
+      // bottom-left on the skewed anchor: (64, 96) is (88, 120)
+      assert_close(
+        tile.position,
+        Vec2::new(88.0, 56.0),
+        "oblique tile position",
+      );
+    }
+    for name in ["shape-objects-stag", "shape-objects-hex"] {
+      {
+        let map = fixture(name);
+        assert_close(named(&map, "point").position, Vec2::new(80.0, 48.0), name);
+        let rect = named(&map, "rect");
+        assert_eq!(rect.shape, ObjectShape::Rect, "{name}");
+        assert_close(rect.position, Vec2::new(32.0, 32.0), name);
+        assert_eq!(rect.size, Vec2::new(32.0, 64.0), "{name}");
+        assert_eq!(named(&map, "ellipse").shape, ObjectShape::Ellipse, "{name}");
+        // bottom-left, as on orthogonal maps: 64 x 64 at (64, 96)
+        assert_close(named(&map, "tile").position, Vec2::new(64.0, 32.0), name);
+      }
+    }
+  }
+
+  #[test]
+  fn a_rotated_object_matches_tileds_corners_on_every_grid() {
+    // The measurements are of Tiled's render of each object alone: a tile
+    // object's picture is exact, an outline has a pen about 3 pixels wide, more at a sharp corner
+    for name in [
+      "shape-objects-iso",
+      "shape-objects-oblique",
+      "shape-objects-stag",
+      "shape-objects-hex",
+    ] {
+      {
+        let map = fixture(name);
+        for (object, id, pen) in [
+          ("rect", 2, 3.5),
+          ("ellipse", 3, 3.5),
+          ("polygon", 4, 5.0),
+          ("tile", 5, 1.0),
+          ("turned rect", 6, 5.0),
+          ("turned tile", 7, 1.0),
+        ] {
+          let o = named(&map, object);
+          let (anchor, measured) = measured_object(name, id);
+          let [l, t, r, b] = measured.expect("drawn");
+          let got = bounds(&outline(o));
+          // Tiled draws an ellipse of these grids inside its projected
+          // box, and the box too: the curve stays in what it covers
+          let curved = object == "ellipse" && matches!(o.shape, ObjectShape::Polygon(_));
+          if curved {
+            assert!(
+              got[0] >= l - pen && got[1] >= t - pen && got[2] <= r + pen && got[3] <= b + pen,
+              "{name}, {object}: {got:?} is not inside {:?}",
+              [l, t, r, b]
+            );
+          }
+          for (mine, theirs, what) in [
+            (got[0], l, "left"),
+            (got[1], t, "top"),
+            (got[2], r, "right"),
+            (got[3], b, "bottom"),
+          ]
+          .into_iter()
+          .filter(|_| !curved)
+          {
+            assert!(
+              (mine - theirs).abs() <= pen,
+              "{name}, {object}: {what} is {mine}, Tiled draws {theirs} ({got:?} against {:?})",
+              [l, t, r, b]
+            );
+          }
+          // a tile object's position is its corner, whose alignment point
+          // is Tiled's anchor; every other shape's position is the anchor
+          if o.tile.is_none() {
+            assert_close(o.position, anchor, &format!("{name}, {object} anchor"));
+          }
+        }
+        assert_close(
+          named(&map, "point").position,
+          measured_object(name, 1).0,
+          name,
+        );
+      }
+    }
+  }
+
+  #[test]
+  fn an_isometric_tile_object_honours_its_tilesets_alignment() {
+    // 64 x 64 at stored (64, 96): the anchor is (160, 80) whichever way
+    // it is aligned (Tiled's measure)
+    for (name, id, offset) in [
+      // unspecified in a tileset file, aligned bottom-centre by Tiled
+      ("shape-objects-iso-external", 5, Vec2::new(-32.0, -64.0)),
+      ("shape-objects-iso-bottomleft", 5, Vec2::new(0.0, -64.0)),
+      ("shape-objects-iso-center", 5, Vec2::new(-32.0, -32.0)),
+    ] {
+      {
+        let map = fixture(name);
+        let tile = named(&map, "tile");
+        let (anchor, measured) = measured_object(name, id);
+        assert_close(anchor, Vec2::new(160.0, 80.0), name);
+        assert_close(tile.position, anchor + offset, name);
+        let [l, t, r, b] = measured.expect("drawn");
+        assert_eq!(
+          bounds(&outline(tile)),
+          [l, t, r, b],
+          "{name}: Tiled draws its picture there"
+        );
+      }
+    }
+    // an inline tileset that says nothing is bottom-centre on an isometric
+    // map and bottom-left on any other
+    let map = load("maps/shape-objects-iso.tmj");
+    assert_close(
+      named(&map, "tile").position,
+      Vec2::new(128.0, 16.0),
+      "inline",
+    );
+    let map = load("maps/shape-objects-oblique.tmj");
+    assert_close(
+      named(&map, "tile").position,
+      Vec2::new(88.0, 56.0),
+      "oblique",
+    );
+  }
 }

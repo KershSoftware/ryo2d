@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<map version="1.10" tiledversion="1.12.2" orientation="oblique" renderorder="right-down" width="8" height="8" tilewidth="32" tileheight="32" infinite="0" skewx="8" skewy="12" nextlayerid="2" nextobjectid="8">
+ <tileset firstgid="1" name="shape-objects-tile" tilewidth="64" tileheight="64" tilecount="1" columns="1">
+  <grid orientation="orthogonal" width="0" height="0"/>
+  <image source="../../images/shape-objects-tile.png" width="64" height="64"/>
+ </tileset>
+ <objectgroup draworder="index" id="1" name="things">
+  <object id="1" name="point" x="80" y="48">
+   <point/>
+  </object>
+  <object id="2" name="rect" x="32" y="32" width="32" height="64"/>
+  <object id="3" name="ellipse" x="96" y="32" width="64" height="32">
+   <ellipse/>
+  </object>
+  <object id="4" name="polygon" x="32" y="96">
+   <polygon points="0,0 16,0 16,16 0,8"/>
+  </object>
+  <object id="5" name="tile" gid="1" x="64" y="96" width="64" height="64"/>
+  <object id="6" name="turned rect" x="96" y="96" width="64" height="32" rotation="30"/>
+  <object id="7" name="turned tile" gid="1" x="128" y="128" width="64" height="64" rotation="30"/>
+ </objectgroup>
+</map>

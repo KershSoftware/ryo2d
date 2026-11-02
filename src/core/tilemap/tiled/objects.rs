@@ -2,8 +2,10 @@
 //! tileset's alignment, and instances of templates.
 //!
 //! Every object is stored the same way: `position` is the top-left corner of
-//! its rectangle (the origin of its points, for a polygon or polyline) in map
-//! pixels, and `rotation` turns it about that corner. Tiled rotates about the
+//! its rectangle (the origin of its points, for a polygon or polyline) in the
+//! layer's pixels, and `rotation` turns it about that corner. Tiled stores an
+//! isometric or oblique map's objects in a space of its own, which the
+//! grid projects on the way in. Tiled rotates about the
 //! object's own position, which for a tile object is the alignment point
 //! (bottom-left unless the tileset says otherwise), so a rotated tile object's
 //! position moves to where its top-left corner ends up: the same picture,
@@ -12,7 +14,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use glam::Vec2;
+use glam::{DVec2, Vec2};
 
 use super::build::{MAX_TILES, join};
 use super::data::decode_gid;
@@ -20,7 +22,7 @@ use super::project::Props;
 use super::raw::{RawObject, RawPoint, RawProperty, RawTemplate, RawTileset};
 use super::xml::{parse_tsx, parse_tx};
 use crate::core::asset::{AssetError, AssetPath, LoadContext};
-use crate::core::tilemap::{MapObjectData, ObjectShape, Tile};
+use crate::core::tilemap::{GridShape, MapGrid, MapObjectData, ObjectShape, Tile};
 
 /// Where a tile object's position sits on its picture
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,11 +39,13 @@ pub(super) enum Alignment {
 }
 
 impl Alignment {
-  /// The alignment Tiled's `objectalignment` names; an unspecified one is
-  /// the bottom left, which is Tiled's for orthogonal maps
-  pub(super) fn parse(text: Option<&str>) -> Option<Alignment> {
+  /// The alignment Tiled's `objectalignment` names on a map of `shape`; an
+  /// unspecified one is the bottom centre on an isometric map and the bottom
+  /// left on every other (measured)
+  pub(super) fn parse(text: Option<&str>, shape: GridShape) -> Option<Alignment> {
     Some(match text {
-      None | Some("" | "unspecified" | "bottomleft") => Alignment::BottomLeft,
+      None | Some("" | "unspecified") => Alignment::unspecified(shape),
+      Some("bottomleft") => Alignment::BottomLeft,
       Some("topleft") => Alignment::TopLeft,
       Some("top") => Alignment::Top,
       Some("topright") => Alignment::TopRight,
@@ -52,6 +56,14 @@ impl Alignment {
       Some("bottomright") => Alignment::BottomRight,
       _ => return None,
     })
+  }
+
+  /// What an unspecified `objectalignment` means on a map of `shape`
+  pub(super) fn unspecified(shape: GridShape) -> Alignment {
+    match shape {
+      GridShape::Isometric => Alignment::Bottom,
+      _ => Alignment::BottomLeft,
+    }
   }
 
   /// The point as a fraction of the picture's width and height
@@ -82,13 +94,16 @@ pub(super) struct TilesetEntry {
 /// A map's objects as they are read: its tilesets, and the templates met so far
 pub(super) struct ObjectState {
   pub tilesets: Vec<TilesetEntry>,
+  /// The map's grid, whose object space positions are read through
+  grid: MapGrid,
   templates: HashMap<String, Arc<RawTemplate>>,
 }
 
 impl ObjectState {
-  pub(super) fn new(tilesets: Vec<TilesetEntry>) -> ObjectState {
+  pub(super) fn new(tilesets: Vec<TilesetEntry>, grid: MapGrid) -> ObjectState {
     ObjectState {
       tilesets,
+      grid,
       templates: HashMap::new(),
     }
   }
@@ -98,17 +113,18 @@ impl ObjectState {
 /// map holds as a dependency and so cannot look inside while it loads
 fn read_alignment(
   cx: &LoadContext<'_>,
+  shape: GridShape,
   from: &AssetPath,
   place: &str,
   path: &str,
 ) -> Result<Alignment, AssetError> {
   let Ok(asset) = AssetPath::parse(path) else {
-    return Ok(Alignment::BottomLeft);
+    return Ok(Alignment::unspecified(shape));
   };
   let name = asset.as_str().to_ascii_lowercase();
   let xml = name.ends_with(".tsx");
   if !xml && !name.ends_with(".tsj") {
-    return Ok(Alignment::BottomLeft);
+    return Ok(Alignment::unspecified(shape));
   }
   let bytes = cx
     .read(&asset)
@@ -122,7 +138,7 @@ fn read_alignment(
     serde_json::from_slice(bytes).map_err(|e| e.to_string())
   }
   .map_err(|e| AssetError::decode(from, format!("{place}: {path:?}: {e}")))?;
-  Alignment::parse(raw.objectalignment.as_deref()).ok_or_else(|| {
+  Alignment::parse(raw.objectalignment.as_deref(), shape).ok_or_else(|| {
     AssetError::decode(
       from,
       format!(
@@ -180,6 +196,91 @@ fn template(
   let raw = Arc::new(raw);
   state.templates.insert(key.clone(), raw.clone());
   Ok((raw, key))
+}
+
+/// Points round an ellipse of an isometric or oblique map, which Tiled
+/// draws as the outline of its projection
+const ELLIPSE_POINTS: usize = 32;
+
+/// Points of each of a capsule's two caps
+const CAP_POINTS: usize = 9;
+
+/// The outline of the rectangle `size` as its corners, in the object space
+fn rect_outline(size: Vec2) -> Vec<DVec2> {
+  let (w, h) = (f64::from(size.x), f64::from(size.y));
+  vec![
+    DVec2::ZERO,
+    DVec2::new(w, 0.0),
+    DVec2::new(w, h),
+    DVec2::new(0.0, h),
+  ]
+}
+
+/// The ellipse that fills the rectangle `size`, as `ELLIPSE_POINTS` points
+fn ellipse_outline(size: Vec2) -> Vec<DVec2> {
+  let (rx, ry) = (f64::from(size.x) / 2.0, f64::from(size.y) / 2.0);
+  (0..ELLIPSE_POINTS)
+    .map(|k| {
+      let t = std::f64::consts::TAU * k as f64 / ELLIPSE_POINTS as f64;
+      DVec2::new(rx + rx * t.cos(), ry + ry * t.sin())
+    })
+    .collect()
+}
+
+/// The capsule that fills the rectangle `size`: its caps are half circles
+/// at the ends of the longer side
+fn capsule_outline(size: Vec2) -> Vec<DVec2> {
+  let (w, h) = (f64::from(size.x), f64::from(size.y));
+  let radius = w.min(h) / 2.0;
+  let mut out = Vec::with_capacity(CAP_POINTS * 2);
+  // a cap's points from `from` degrees turning half a circle clockwise
+  let mut cap = |centre: DVec2, from: f64| {
+    for k in 0..CAP_POINTS {
+      let t = (from + 180.0 * k as f64 / (CAP_POINTS - 1) as f64).to_radians();
+      out.push(centre + DVec2::new(t.cos(), t.sin()) * radius);
+    }
+  };
+  if w >= h {
+    cap(DVec2::new(w - radius, radius), -90.0);
+    cap(DVec2::new(radius, radius), 90.0);
+  } else {
+    cap(DVec2::new(radius, h - radius), 0.0);
+    cap(DVec2::new(radius, radius), 180.0);
+  }
+  out
+}
+
+/// An object's shape on an isometric or oblique map, where Tiled stores
+/// it in the grid's object space: rectangles, ellipses and capsules become
+/// polygons of their projected outline, and a polygon's or polyline's points
+/// are projected. Its points are steps from the object's projected position,
+/// and the rotation (Tiled measured: in screen space, about that position)
+/// turns them as it does any polygon. Points and text keep their box, drawn
+/// unprojected at the projected position (measured). The size of a shape
+/// that became points is zero
+fn project_shape(grid: &MapGrid, shape: ObjectShape, size: Vec2) -> (ObjectShape, Vec2) {
+  let step = |p: DVec2| grid.object_step(p).as_vec2();
+  let steps = |outline: Vec<DVec2>| outline.into_iter().map(step).collect();
+  match shape {
+    ObjectShape::Rect => (ObjectShape::Polygon(steps(rect_outline(size))), Vec2::ZERO),
+    ObjectShape::Ellipse => (
+      ObjectShape::Polygon(steps(ellipse_outline(size))),
+      Vec2::ZERO,
+    ),
+    ObjectShape::Capsule => (
+      ObjectShape::Polygon(steps(capsule_outline(size))),
+      Vec2::ZERO,
+    ),
+    ObjectShape::Polygon(points) => (
+      ObjectShape::Polygon(points.iter().map(|p| step(p.as_dvec2())).collect()),
+      Vec2::ZERO,
+    ),
+    ObjectShape::Polyline(points) => (
+      ObjectShape::Polyline(points.iter().map(|p| step(p.as_dvec2())).collect()),
+      Vec2::ZERO,
+    ),
+    other => (other, size),
+  }
 }
 
 fn points(raw: &[RawPoint]) -> Vec<Vec2> {
@@ -350,11 +451,23 @@ fn build_object(
     tileset_index = usize::from(*index);
   }
 
-  let mut position = Vec2::new(o.x.unwrap_or(0.0) as f32, o.y.unwrap_or(0.0) as f32);
-  let size = Vec2::new(
+  let grid = state.grid;
+  let stored = DVec2::new(o.x.unwrap_or(0.0), o.y.unwrap_or(0.0));
+  let mut position = if grid.projects_objects() {
+    grid.object_point(stored)
+  } else {
+    stored.as_vec2()
+  };
+  let mut size = Vec2::new(
     o.width.unwrap_or(0.0) as f32,
     o.height.unwrap_or(0.0) as f32,
   );
+  // a tile object's picture is sized in pixels; every other shape of an
+  // isometric or oblique map is drawn through the grid
+  let mut shape = shape;
+  if grid.projects_objects() && tile.is_none() {
+    (shape, size) = project_shape(&grid, shape, size);
+  }
   let rotation = (o.rotation.unwrap_or(0.0) as f32).to_radians();
   if tile.is_some() {
     // the position is the alignment point: move it to the top-left corner
@@ -367,13 +480,13 @@ fn build_object(
         alignment: None,
       }) => {
         let path = path.clone();
-        let a = read_alignment(cx, px.path(), &place, &path)?;
+        let a = read_alignment(cx, state.grid.shape, px.path(), &place, &path)?;
         if let Some(entry) = state.tilesets.get_mut(tileset_index) {
           entry.alignment = Some(a);
         }
         a
       }
-      _ => Alignment::BottomLeft,
+      _ => Alignment::unspecified(state.grid.shape),
     };
     let from_top_left = -alignment.anchor() * size;
     let (sin, cos) = rotation.sin_cos();
@@ -398,4 +511,48 @@ fn build_object(
     visible: o.visible.unwrap_or(true),
     properties,
   })
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn an_unspecified_alignment_is_bottom_centre_only_on_isometric_maps() {
+    assert_eq!(
+      Alignment::parse(None, GridShape::Isometric),
+      Some(Alignment::Bottom)
+    );
+    assert_eq!(
+      Alignment::parse(Some("unspecified"), GridShape::Isometric),
+      Some(Alignment::Bottom)
+    );
+    assert_eq!(
+      Alignment::parse(Some("bottomleft"), GridShape::Isometric),
+      Some(Alignment::BottomLeft)
+    );
+    for shape in [
+      GridShape::Orthogonal,
+      GridShape::Oblique {
+        skew: (8, 12).into(),
+      },
+    ] {
+      assert_eq!(Alignment::parse(None, shape), Some(Alignment::BottomLeft));
+    }
+  }
+
+  #[test]
+  fn a_capsule_outline_fills_its_box_with_round_ends() {
+    for size in [Vec2::new(64.0, 32.0), Vec2::new(20.0, 50.0)] {
+      let outline = capsule_outline(size);
+      assert_eq!(outline.len(), CAP_POINTS * 2);
+      let (mut lo, mut hi) = (DVec2::MAX, DVec2::MIN);
+      for p in &outline {
+        lo = lo.min(*p);
+        hi = hi.max(*p);
+      }
+      assert!(lo.abs_diff_eq(DVec2::ZERO, 1e-9), "{lo}");
+      assert!(hi.abs_diff_eq(size.as_dvec2(), 1e-9), "{hi}");
+    }
+  }
 }

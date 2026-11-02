@@ -186,6 +186,38 @@ impl MapGrid {
     grid.with_origin(Vec2::new(across as f32, 0.0))
   }
 
+  /// Whether Tiled stores a map object's position in a space of its own
+  /// that this grid projects, rather than in the layer's pixels: isometric
+  /// and oblique grids do
+  pub(crate) fn projects_objects(&self) -> bool {
+    matches!(self.shape, GridShape::Isometric | GridShape::Oblique { .. })
+  }
+
+  /// A step `stored` in Tiled's object space as a step in the layer's
+  /// pixels. Isometric objects count tile-height units along the diamond's
+  /// axes, so a step `(x, y)` goes `(x - y) / th * tw / 2` across and
+  /// `(x + y) / 2` down; oblique ones count unskewed pixels, which the
+  /// skew shears. Every other grid's object space is its pixels.
+  pub(crate) fn object_step(&self, stored: DVec2) -> DVec2 {
+    let size = self.cell.as_dvec2().max(DVec2::ONE);
+    match self.shape {
+      GridShape::Isometric => DVec2::new(
+        (stored.x - stored.y) / size.y * size.x / 2.0,
+        (stored.x + stored.y) / 2.0,
+      ),
+      GridShape::Oblique { skew } => DVec2::new(
+        stored.x + stored.y / size.y * f64::from(skew.x),
+        stored.y + stored.x / size.x * f64::from(skew.y),
+      ),
+      _ => stored,
+    }
+  }
+
+  /// Where Tiled's object space point `stored` stands in the layer's pixels
+  pub(crate) fn object_point(&self, stored: DVec2) -> Vec2 {
+    (self.object_step(stored) + self.origin.as_dvec2()).as_vec2()
+  }
+
   /// The centre of `cell`: the middle of its box, which on every shape is
   /// the middle of its outline
   pub fn cell_center(&self, cell: IVec2) -> Vec2 {

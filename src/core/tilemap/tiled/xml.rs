@@ -787,7 +787,7 @@ mod tests {
     panic!("{name}: one has more lines than the other");
   }
 
-  const MAP_PAIRS: [&str; 50] = [
+  const MAP_PAIRS: [&str; 57] = [
     "image-layers",
     "lists",
     "tile-objects",
@@ -838,8 +838,15 @@ mod tests {
     "shape-infinite-hex",
     "shape-infinite-oblique",
     "shape-hex-rotations",
+    "shape-objects-iso",
+    "shape-objects-oblique",
+    "shape-objects-stag",
+    "shape-objects-hex",
+    "shape-objects-iso-bottomleft",
+    "shape-objects-iso-center",
+    "shape-objects-iso-external",
   ];
-  const SET_PAIRS: [&str; 9] = [
+  const SET_PAIRS: [&str; 10] = [
     "loot",
     "tiles",
     "items",
@@ -849,6 +856,7 @@ mod tests {
     "collision",
     "wang",
     "wang-turn",
+    "shape-objects-tile",
   ];
 
   #[test]

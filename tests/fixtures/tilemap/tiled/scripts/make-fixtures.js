@@ -678,3 +678,133 @@ shapeWorld.write(
     "}\n"
 );
 shapeWorld.commit();
+
+// ---- objects on every grid ----------------------------------------------------
+
+// Maps of an isometric, an oblique, a staggered and a hexagonal grid
+// (`maps/shape-objects-*.tmj`, `xml/maps/shape-objects-*.tmx`), each with the
+// same objects in Tiled's own object space: a point, a rectangle, an
+// ellipse, a polygon, a tile object, a rotated rectangle and a rotated tile
+// object; isometric ones whose tileset aligns its objects at the bottom left
+// or the centre, or is a file that says nothing of it (so Tiled aligns them
+// at the bottom centre). measured-objects.json holds, for each map and
+// object, where Tiled puts its anchor (`pixelToScreen`) and the box of
+// pixels `toImage()` draws it in (`box`: left, top, right and bottom
+// edges), the object drawn alone: a rectangle, ellipse or polygon's outline
+// is a pen of about 3 pixels wide round its corners, a tile object's
+// picture is exact.
+var objectSpecs = [
+  { name: "point", id: 1, shape: "point", x: 80, y: 48 },
+  { name: "rect", id: 2, shape: "rect", x: 32, y: 32, w: 32, h: 64 },
+  { name: "ellipse", id: 3, shape: "ellipse", x: 96, y: 32, w: 64, h: 32 },
+  { name: "polygon", id: 4, shape: "polygon", x: 32, y: 96, points: [[0, 0], [16, 0], [16, 16], [0, 8]] },
+  { name: "tile", id: 5, shape: "tile", x: 64, y: 96, w: 64, h: 64 },
+  { name: "turned rect", id: 6, shape: "rect", x: 96, y: 96, w: 64, h: 32, rotation: 30 },
+  { name: "turned tile", id: 7, shape: "tile", x: 128, y: 128, w: 64, h: 64, rotation: 30 },
+];
+var objectGrids = [
+  { name: "iso", orientation: I, tile: [64, 32], size: [6, 6] },
+  { name: "oblique", orientation: O, tile: [32, 32], size: [8, 8], skew: [8, 12] },
+  { name: "stag", orientation: S, tile: [64, 32], size: [12, 12], axis: AY, index: ODD },
+  { name: "hex", orientation: H, tile: [32, 32], size: [12, 12], axis: AY, index: ODD, side: 12 },
+];
+var objectTile = "shape-objects-tile";
+
+// A map of `g` with the objects `specs` names in one layer; `set` is its
+// tileset, with `alignment` for tile objects when given
+function objectsMap(g, specs, set) {
+  var map = sampleMap(g);
+  map.addTileset(set);
+  var layer = new ObjectGroup("things");
+  layer.drawOrder = ObjectGroup.IndexOrder;
+  map.addLayer(layer);
+  for (var i = 0; i < specs.length; i++) {
+    var spec = specs[i];
+    var o = new MapObject(spec.name);
+    o.x = spec.x;
+    o.y = spec.y;
+    if (spec.shape === "point") o.shape = MapObject.Point;
+    else if (spec.shape === "ellipse") o.shape = MapObject.Ellipse;
+    else if (spec.shape === "polygon") {
+      o.shape = MapObject.Polygon;
+      o.polygon = spec.points.map(function (p) { return Qt.point(p[0], p[1]); });
+    } else {
+      o.shape = MapObject.Rectangle;
+      if (spec.shape === "tile") o.tile = set.tile(0);
+    }
+    if (spec.w !== undefined) {
+      o.width = spec.w;
+      o.height = spec.h;
+    }
+    if (spec.rotation) o.rotation = spec.rotation;
+    layer.addObject(o);
+  }
+  return map;
+}
+
+function objectSet(alignment) {
+  var set = shapeTileset(objectTile, "rect", 64, 64, 0, [RED]);
+  if (alignment !== undefined) set.objectAlignment = alignment;
+  return set;
+}
+
+// The box of pixels a render covers, or null for none
+function coverBox(image) {
+  var left = image.width, top = image.height, right = 0, bottom = 0;
+  for (var y = 0; y < image.height; y++) {
+    for (var x = 0; x < image.width; x++) {
+      if ((image.pixel(x, y) >>> 24) > 0) {
+        left = Math.min(left, x);
+        top = Math.min(top, y);
+        right = Math.max(right, x + 1);
+        bottom = Math.max(bottom, y + 1);
+      }
+    }
+  }
+  return right ? [left, top, right, bottom] : null;
+}
+
+var objectMeasures = [];
+// Every object of `specs` alone on a map of `g` named `name`
+function measureObjects(name, g, specs, alignment) {
+  for (var i = 0; i < specs.length; i++) {
+    var map = objectsMap(g, [specs[i]], objectSet(alignment));
+    var anchor = map.pixelToScreen(specs[i].x, specs[i].y);
+    var image = map.toImage();
+    var box = specs[i].shape === "point" ? null : coverBox(image);
+    if (box && (box[0] <= 0 || box[1] <= 0 || box[2] >= image.width || box[3] >= image.height))
+      throw new Error("make-fixtures.js: " + name + ", object " + specs[i].id + " reaches the edge of its render");
+    objectMeasures.push('  {"map": "' + name + '", "id": ' + specs[i].id + ', "anchor": ' + list([anchor.x, anchor.y]) +
+      ', "box": ' + (box ? list(box) : "null") + "}");
+  }
+}
+
+for (var q = 0; q < objectGrids.length; q++) {
+  (function (g) {
+    var name = "shape-objects-" + g.name;
+    saveBoth(name, function () { return objectsMap(g, objectSpecs, objectSet()); });
+    measureObjects(name, g, objectSpecs);
+  })(objectGrids[q]);
+}
+
+// The tile object alone, aligned at the bottom left and at the centre, and
+// by a tileset file that is silent
+var alignedTile = [objectSpecs[4]];
+var isoGrid = objectGrids[0];
+var alignments = [["bottomleft", Tileset.BottomLeft], ["center", Tileset.Center]];
+for (var al = 0; al < alignments.length; al++) {
+  (function (word, value) {
+    var name = "shape-objects-iso-" + word;
+    saveBoth(name, function () { return objectsMap(isoGrid, alignedTile, objectSet(value)); });
+    measureObjects(name, isoGrid, alignedTile, value);
+  })(alignments[al][0], alignments[al][1]);
+}
+save(objectSet(), tiled.tilesetFormat("json"), "tilesets/" + objectTile + ".tsj");
+save(objectSet(), tiled.tilesetFormat("tsx"), "xml/tilesets/" + objectTile + ".tsx");
+save(objectsMap(isoGrid, alignedTile, external("maps", "../tilesets/" + objectTile + ".tsj")), tiled.mapFormat("json"), "maps/shape-objects-iso-external.tmj");
+save(objectsMap(isoGrid, alignedTile, external("xml/maps", "../tilesets/" + objectTile + ".tsx")), tiled.mapFormat("tmx"), "xml/maps/shape-objects-iso-external.tmx");
+measureObjects("shape-objects-iso-external", isoGrid, alignedTile);
+
+var objectsFile = new TextFile(dir + "measured-objects.json", TextFile.WriteOnly);
+objectsFile.write('{"tiled": "' + tiled.version + '",\n "objects": [\n' + objectMeasures.join(",\n") + "\n ]}\n");
+objectsFile.commit();

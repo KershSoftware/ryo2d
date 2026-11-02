@@ -1313,7 +1313,7 @@ pub(crate) fn build_map(
         )?)
       }
       None => {
-        let alignment = Alignment::parse(entry.inline.objectalignment.as_deref())
+        let alignment = Alignment::parse(entry.inline.objectalignment.as_deref(), map.shape)
           .ok_or_else(|| fail(&path, &place, "objectalignment is not one Tiled has"))?;
         entries.push(TilesetEntry {
           path: None,
@@ -1334,7 +1334,7 @@ pub(crate) fn build_map(
   }
   let mut builder = Builder {
     px,
-    objects: ObjectState::new(entries),
+    objects: ObjectState::new(entries, map.grid()),
     path: path.clone(),
     size: map.size,
     infinite: map.infinite,
