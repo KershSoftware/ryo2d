@@ -113,18 +113,7 @@ pub(super) enum Unit {
 /// cells or two shifted copies merged, so a big edit (a streamed chunk's
 /// thousand cells) never sorts five units a cell
 fn units_of(changed: &[(IVec2, TileCell)]) -> Vec<Unit> {
-  // The sign bit flipped: signed order as unsigned
-  let flip = |v: i32| u64::from(v.cast_unsigned() ^ 0x8000_0000);
-  let unflip = |v: u64| ((v as u32) ^ 0x8000_0000).cast_signed();
-  let mut keys: Vec<u64> = changed
-    .iter()
-    .map(|&(cell, _)| (flip(cell.x) << 32) | flip(cell.y))
-    .collect();
-  keys.sort_unstable();
-  let cells: Vec<(i32, i32)> = keys
-    .into_iter()
-    .map(|key| (unflip(key >> 32), unflip(key)))
-    .collect();
+  let cells = by_column(changed);
   let mut units = Vec::with_capacity(cells.len() * 4);
   units.extend(cells.iter().map(|&(x, y)| Unit::Inside(x, y)));
   // Each of a kind's two copies is sorted as the cells are (a shift keeps
@@ -159,6 +148,49 @@ fn units_of(changed: &[(IVec2, TileCell)]) -> Vec<Unit> {
   merged((1, 0), Unit::Left);
   merged((0, 1), Unit::Above);
   units
+}
+
+/// The cells `changed` (in row order: by row, then column) by column, then
+/// row. Over a few columns for their number (a streamed chunk's thousand
+/// cells over 32, a fill's), counted into their columns, which keeps each
+/// column's rows in order; else sorted
+fn by_column(changed: &[(IVec2, TileCell)]) -> Vec<(i32, i32)> {
+  let (low, high) = changed
+    .iter()
+    .fold((i32::MAX, i32::MIN), |(low, high), &(cell, _)| {
+      (low.min(cell.x), high.max(cell.x))
+    });
+  let columns = i64::from(high) - i64::from(low) + 1;
+  if changed.len() < 64 || columns > (changed.len() as i64) * 4 {
+    // The sign bit flipped: signed order as unsigned
+    let flip = |v: i32| u64::from(v.cast_unsigned() ^ 0x8000_0000);
+    let unflip = |v: u64| ((v as u32) ^ 0x8000_0000).cast_signed();
+    let mut keys: Vec<u64> = changed
+      .iter()
+      .map(|&(cell, _)| (flip(cell.x) << 32) | flip(cell.y))
+      .collect();
+    keys.sort_unstable();
+    return keys
+      .into_iter()
+      .map(|key| (unflip(key >> 32), unflip(key)))
+      .collect();
+  }
+  // Each column's first place, then each cell put at its column's next
+  let column = |cell: IVec2| (i64::from(cell.x) - i64::from(low)) as usize;
+  let mut start = vec![0usize; columns as usize + 1];
+  for &(cell, _) in changed {
+    start[column(cell) + 1] += 1;
+  }
+  for i in 1..start.len() {
+    start[i] += start[i - 1];
+  }
+  let mut cells = vec![(0, 0); changed.len()];
+  for &(cell, _) in changed {
+    let place = &mut start[column(cell)];
+    cells[*place] = (cell.x, cell.y);
+    *place += 1;
+  }
+  cells
 }
 
 /// The values an edit's cells had before it, by cell: a window for each
@@ -440,6 +472,20 @@ pub(crate) struct Splices {
   pub(crate) joins: usize,
   /// Traced whole with loops dropped (the splice gave up)
   pub(crate) whole: usize,
+  /// Loops dropped whole before the splice, all their edges gone
+  pub(crate) gone: usize,
+}
+
+#[cfg(test)]
+impl Splices {
+  /// An edit that dropped `dropped` loops and made `made`
+  fn count(&mut self, made: usize, dropped: usize) {
+    match made.cmp(&dropped) {
+      std::cmp::Ordering::Equal => self.kept += 1,
+      std::cmp::Ordering::Greater => self.splits += 1,
+      std::cmp::Ordering::Less => self.joins += 1,
+    }
+  }
 }
 
 /// An edge, from its start to its end
@@ -560,17 +606,38 @@ impl Outlines {
     let mut count: usize = olds.iter().map(|old| old.len().saturating_sub(1)).sum();
     let mut dirty: Vec<Point> = Vec::with_capacity(changes.len() * 2);
     let (mut new_edges, mut removed) = (Vec::new(), Vec::new());
+    // How many of each dropped loop's edges went
+    let mut gone = vec![0; olds.len()];
     for (a, b, now) in changes {
       dirty.extend([a, b]);
       if now {
         self.insert(a, b);
         new_edges.push((a, b));
         count += 1;
-      } else if self.remove(a, b) {
-        removed.push((a, b));
+      } else if let Some(id) = self.remove(a, b) {
+        removed.push((a, b, id));
         count = count.saturating_sub(1);
+        if let Ok(k) = old_ids.binary_search(&id) {
+          gone[k] += 1;
+        }
       }
     }
+    // A loop all of whose edges went (an island under a chunk unloaded, a
+    // block cleared) leaves nothing to trace: it is dropped, its id free
+    #[cfg(test)]
+    let dropped_loops = olds.len();
+    if (0..olds.len()).any(|k| gone[k] + 1 == olds[k].len()) {
+      let whole = |k: usize| gone[k] + 1 == olds[k].len();
+      let left: Vec<usize> = (0..olds.len()).filter(|&k| !whole(k)).collect();
+      removed.retain(|&(_, _, id)| old_ids.binary_search(&id).map_or(true, |k| !whole(k)));
+      #[cfg(test)]
+      {
+        self.splices.gone += olds.len() - left.len();
+      }
+      olds = left.iter().map(|&k| std::mem::take(&mut olds[k])).collect();
+      old_ids = left.iter().map(|&k| old_ids[k]).collect();
+    }
+    let removed: Vec<Edge> = removed.into_iter().map(|(a, b, _)| (a, b)).collect();
     // Sorted, for the splice to look a point up in
     dirty.sort_unstable();
     dirty.dedup();
@@ -578,12 +645,7 @@ impl Outlines {
     if let Some(made) = self.splice(&old_ids, &olds, (&dirty, &removed, &new_edges), count) {
       #[cfg(test)]
       {
-        let splices = &mut self.splices;
-        match made.len().cmp(&olds.len()) {
-          std::cmp::Ordering::Equal => splices.kept += 1,
-          std::cmp::Ordering::Greater => splices.splits += 1,
-          std::cmp::Ordering::Less => splices.joins += 1,
-        }
+        self.splices.count(made.len(), dropped_loops);
       }
       for (id, corners) in made {
         self.loops[id as usize] = Some(Outline {
@@ -609,6 +671,12 @@ impl Outlines {
     }
     starts.extend(new_edges);
     retraced.traced = self.trace(&starts, &dropped, count);
+    // Every loop it dropped was gone whole: the new edges, if any, traced
+    // as the splice would have
+    #[cfg(test)]
+    if olds.is_empty() && dropped_loops > 0 {
+      self.splices.count(retraced.traced.len(), dropped_loops);
+    }
     // Their ids are free once the trace no longer reads them
     self.free.extend(dropped);
     retraced
@@ -982,20 +1050,21 @@ impl Outlines {
     });
   }
 
-  /// Take one copy of an edge away; false when there is none.
-  fn remove(&mut self, a: Point, b: Point) -> bool {
+  /// Take one copy of an edge away: the id of the loop it was in, none
+  /// when there is no copy.
+  fn remove(&mut self, a: Point, b: Point) -> Option<u32> {
     let step = delta(a, b);
-    let Some(leaving) = self.leaving.get_mut(&key(a)) else {
-      return false;
-    };
-    let Some(i) = leaving.as_slice().iter().position(|out| out.step() == step) else {
-      return false;
-    };
+    let leaving = self.leaving.get_mut(&key(a))?;
+    let i = leaving
+      .as_slice()
+      .iter()
+      .position(|out| out.step() == step)?;
+    let id = leaving.as_slice()[i].id;
     leaving.swap_remove(i);
     if leaving.is_empty() {
       self.leaving.remove(&key(a));
     }
-    true
+    Some(id)
   }
 
   /// Trace the loop through each of `starts` not yet traced (an edge is
@@ -1191,6 +1260,114 @@ mod tests {
     boundary.sort();
     seen.sort();
     assert_eq!(seen, boundary, "the loops' edges are the boundary's");
+  }
+
+  /// Whole chunks loaded and unloaded under an unbounded grid's outlines,
+  /// as a stream lands and unloads them, with edits at chunk sides between:
+  /// the outlines stay a full trace's, the islands under a chunk unloaded
+  /// dropped whole and the loops crossing its sides spliced
+  #[test]
+  fn chunks_loaded_and_unloaded_whole_keep_a_full_trace() {
+    use SlopeCorner::{BottomLeft, TopRight};
+    use TileCell::Slope;
+    let mut tiles = TileColliders::unbounded(Vec2::ONE);
+    let half = add(
+      &mut tiles,
+      &[(0.0, 0.5), (1.0, 0.5), (1.0, 1.0), (0.0, 1.0)],
+      false,
+    );
+    let diamond = add(
+      &mut tiles,
+      &[(0.5, 0.0), (1.0, 0.5), (0.5, 1.0), (0.0, 0.5)],
+      false,
+    );
+    let kinds = [
+      S,
+      S,
+      S,
+      S,
+      S,
+      S,
+      S,
+      S,
+      S,
+      E,
+      O,
+      Slope(BottomLeft),
+      Slope(TopRight),
+      half,
+      diamond,
+    ];
+    let mut seed = 0x51ed_270b_u32;
+    let mut next = |n: u32| {
+      seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+      (seed >> 8) % n
+    };
+    let side = CHUNK;
+    // A chunk loaded whole: about half its cells filled, most solid
+    let load = |tiles: &mut TileColliders, chunk: IVec2, next: &mut dyn FnMut(u32) -> u32| {
+      for y in 0..side {
+        for x in 0..side {
+          if next(20) < 9 {
+            let kind = kinds[next(kinds.len() as u32) as usize];
+            tiles.set(chunk * side + IVec2::new(x, y), kind);
+          }
+        }
+      }
+    };
+    // Chunks of a 4 x 3 area, signed, three in four loaded to start
+    let area: Vec<IVec2> = (-1..2)
+      .flat_map(|y| (-2..2).map(move |x| IVec2::new(x, y)))
+      .collect();
+    let mut loaded: Vec<IVec2> = Vec::new();
+    for &chunk in &area {
+      if next(4) > 0 {
+        load(&mut tiles, chunk, &mut next);
+        loaded.push(chunk);
+      }
+    }
+    tiles.take_changes();
+    let mut state = Outlines::build(tiles.cells_view());
+    for round in 0..90 {
+      let chunk = area[next(area.len() as u32) as usize];
+      match loaded.iter().position(|&c| c == chunk) {
+        Some(i) if next(3) > 0 => {
+          tiles.unload_chunk(chunk);
+          loaded.swap_remove(i);
+        }
+        Some(_) => {
+          // Cells at its sides edited
+          for _ in 0..1 + next(6) {
+            let along = next(side as u32) as i32;
+            let at = match next(4) {
+              0 => IVec2::new(0, along),
+              1 => IVec2::new(side - 1, along),
+              2 => IVec2::new(along, 0),
+              _ => IVec2::new(along, side - 1),
+            };
+            let kind = kinds[next(kinds.len() as u32) as usize];
+            tiles.set(chunk * side + at, kind);
+          }
+        }
+        None => {
+          load(&mut tiles, chunk, &mut next);
+          loaded.push(chunk);
+        }
+      }
+      let changed = tiles.take_changes().expect("listed");
+      state.apply(tiles.cells_view(), &changed);
+      assert_eq!(
+        traced(&state),
+        traced(&Outlines::build(tiles.cells_view())),
+        "round {round}, chunk {chunk}"
+      );
+      if round % 30 == 29 {
+        assert_traced_by_the_rule(&state, &tiles);
+      }
+    }
+    let s = state.splices;
+    assert!(s.gone > 100 && s.kept + s.splits + s.joins > 50, "{s:?}");
+    assert_eq!(s.whole, 0, "{s:?}");
   }
 
   #[test]
