@@ -556,6 +556,13 @@ fn a_frame_that_lands_chunks_unloads_none_unless_many_wait() {
     let (now_landed, now_gone) = (loaded(&happened, map), unloading(&happened, map));
     if !now_landed.is_empty() && !now_gone.is_empty() {
       both.push(gone.len());
+      // The frame's landings come first, then its unloads
+      let unloading = |event: &ChunkEvent| matches!(event, ChunkEvent::Unloading { .. });
+      let first = happened.iter().position(unloading);
+      assert!(
+        first.is_some_and(|first| happened[first..].iter().all(unloading)),
+        "Loaded before Unloading: {happened:?}"
+      );
     }
     gone.extend(now_gone);
     idle(world, map)
