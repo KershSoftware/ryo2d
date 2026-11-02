@@ -344,7 +344,7 @@ impl MapGrid {
   /// above, right, below and left in index). On staggered grids the four
   /// are the diamonds' through their lattice; a hexagonal grid of side 0
   /// keeps all six, two of them meeting the cell at a point
-  pub fn neighbours(&self, cell: IVec2) -> impl ExactSizeIterator<Item = IVec2> {
+  pub fn neighbours(&self, cell: IVec2) -> impl ExactSizeIterator<Item = IVec2> + use<> {
     let mut out = [cell; 6];
     let count = if let GridShape::Hexagonal { .. } = self.shape {
       let lines = self.lines();

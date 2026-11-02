@@ -705,6 +705,20 @@ fn neighbours_share_an_edge_and_distance_counts_steps() {
   }
 }
 
+/// A grid's neighbours, from a grid made here and dropped as this returns:
+/// the iterator holds the cells, not the grid
+fn neighbours_of_a_passing_grid(cell: IVec2) -> impl ExactSizeIterator<Item = IVec2> {
+  MapGrid::new(GridShape::Isometric, UVec2::new(64, 32)).neighbours(cell)
+}
+
+#[test]
+fn neighbours_outlive_the_grid_they_came_from() {
+  let around: Vec<IVec2> = neighbours_of_a_passing_grid(IVec2::new(2, 3)).collect();
+  assert_eq!(around, [(2, 2), (3, 3), (2, 4), (1, 3)].map(IVec2::from));
+  let held = grid(hex(Y, Odd, 12), 32, 32).neighbours(IVec2::ZERO);
+  assert_eq!(held.len(), 6);
+}
+
 // ---- lines, ranges and rings ------------------------------------------------
 
 fn is_chain(grid: &MapGrid, cells: &[IVec2]) -> bool {
