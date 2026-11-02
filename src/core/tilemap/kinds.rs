@@ -763,6 +763,9 @@ pub(super) fn chunk_kinds(
         return;
       };
       let cell = data.cell_size.as_vec2();
+      // The tiles met last, by a hash of their value, in front of the map
+      // of every tile's kind: a chunk holds few tiles, often over and over
+      let mut met = [(0u32, TileCell::Empty); 32];
       for y in part.min.y..part.max.y {
         for x in part.min.x..part.max.x {
           let at = local(x, y);
@@ -770,16 +773,23 @@ pub(super) fn chunk_kinds(
           if raw == 0 {
             continue;
           }
-          let kind = *kinds.entry(raw).or_insert_with(|| {
-            let Some(tile) = TileGrid::decode(raw) else {
-              return TileCell::Empty;
-            };
-            let source = context
-              .shapes
-              .get(usize::from(tile.tileset))
-              .and_then(Option::as_ref);
-            tile_kind(source, tile, cell, context.purpose, shapes, sink)
-          });
+          let slot = &mut met[(raw.wrapping_mul(0x9E37_79B9) >> 27) as usize];
+          let kind = if slot.0 == raw {
+            slot.1
+          } else {
+            let kind = *kinds.entry(raw).or_insert_with(|| {
+              let Some(tile) = TileGrid::decode(raw) else {
+                return TileCell::Empty;
+              };
+              let source = context
+                .shapes
+                .get(usize::from(tile.tileset))
+                .and_then(Option::as_ref);
+              tile_kind(source, tile, cell, context.purpose, shapes, sink)
+            });
+            *slot = (raw, kind);
+            kind
+          };
           out[at] = over(out[at], kind);
         }
       }
