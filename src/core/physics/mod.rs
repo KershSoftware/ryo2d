@@ -32,7 +32,9 @@ pub use query::{Hit, Overlap, PointHit, QueryFilter, Touch};
 pub(crate) use sync::physics_enabled;
 #[cfg(test)]
 pub(crate) use tiles::in_grid_space;
-pub(crate) use tiles::{Boundary, GRID, Point, TilePart, Traced, rebuild_tile_colliders};
+pub(crate) use tiles::{
+  Boundary, GRID, PlacedEdge, Point, TilePart, Traced, rebuild_tile_colliders,
+};
 pub use tiles::{CellRect, CellShape, SlopeCorner, TileCell, TileColliders};
 pub use triggers::TriggerContents;
 pub use world::Physics;

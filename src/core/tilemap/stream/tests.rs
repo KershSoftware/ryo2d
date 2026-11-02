@@ -5,6 +5,7 @@
 //! back, and the entities that go with their chunk. Each test keeps to a
 //! few chunks of 16 px cells.
 
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -2147,5 +2148,571 @@ fn hand_made_chunks_idle_timing() {
      {:?}, 99th percentile {:?}",
     times[times.len() / 2],
     times[times.len() * 99 / 100]
+  );
+}
+
+/// Whether cell (`x`, `y`) is cave rock: smooth value noise at two scales,
+/// high where about a quarter of the cells are (the streaming guard's)
+fn rocky(x: i32, y: i32) -> bool {
+  let hash = |x: i32, y: i32, salt: u32| {
+    let mut h = (x as u32).wrapping_mul(0x8DA6_B343)
+      ^ (y as u32).wrapping_mul(0xD816_3841)
+      ^ salt.wrapping_mul(0xCB1A_B31F);
+    h ^= h >> 13;
+    h = h.wrapping_mul(0x5BD1_E995);
+    h ^ (h >> 15)
+  };
+  let noise = |x: f32, y: f32, salt: u32| {
+    let (x0, y0) = (x.floor(), y.floor());
+    let (fx, fy) = (x - x0, y - y0);
+    let (sx, sy) = (fx * fx * (3.0 - 2.0 * fx), fy * fy * (3.0 - 2.0 * fy));
+    let (ix, iy) = (x0 as i32, y0 as i32);
+    let at = |dx: i32, dy: i32| (hash(ix + dx, iy + dy, salt) & 0xFFFF) as f32 / 65535.0;
+    let top = at(0, 0) + (at(1, 0) - at(0, 0)) * sx;
+    let bottom = at(0, 1) + (at(1, 1) - at(0, 1)) * sx;
+    top + (bottom - top) * sy
+  };
+  let (fx, fy) = (x as f32, y as f32);
+  noise(fx / 22.0, fy / 22.0, 1) * 0.7 + noise(fx / 7.0, fy / 7.0, 2) * 0.3 > 0.6
+}
+
+/// A cave tileset of 16 px tiles: 0 to 3 rock, each a full-cell shape, and
+/// 4 to 11 background with none
+fn cave_tiles() -> Tileset {
+  let mut set = Tileset::new("cave", UVec2::splat(16), TilesetImage::Collection);
+  set.tile_count = 12;
+  for id in 0..4 {
+    set.insert_tile(
+      id,
+      TileData {
+        shapes: vec![TileShape {
+          points: vec![
+            Vec2::ZERO,
+            Vec2::new(16.0, 0.0),
+            Vec2::new(16.0, 16.0),
+            Vec2::new(0.0, 16.0),
+          ],
+          ..TileShape::default()
+        }],
+        ..TileData::default()
+      },
+    );
+  }
+  set
+}
+
+/// A chunk of the endless cave: a background on every cell and rock on the
+/// ground where `rocky` says, each tile picked by the cell
+fn cave(request: ChunkRequest) -> ChunkTiles {
+  let mut tiles = ChunkTiles::default();
+  for y in 0..32 {
+    for x in 0..32 {
+      let at = UVec2::new(x, y);
+      let cell = request.first_cell + at.as_ivec2();
+      let pick = (cell.x.wrapping_mul(7) ^ cell.y.wrapping_mul(13)).rem_euclid(8) as u32;
+      tiles.set("background", at, Some(Tile::new(0, 4 + pick)));
+      if rocky(cell.x, cell.y) {
+        tiles.set("ground", at, Some(Tile::new(0, pick % 4)));
+      }
+    }
+  }
+  tiles
+}
+
+/// What crossing an endless world costs a frame on the main thread, as the
+/// streaming guard crosses it without drawing: a cave of two unbounded
+/// layers (both colliding, the ground's rock casting shadows) streamed round
+/// a 1920 x 1080 camera crossing it at 2,000 px/s heading (0.8, 0.6), each
+/// frame paced so the generator keeps up. Prints each phase's median for
+/// the frames landing or unloading chunks and for the others, and the cost
+/// of a chunk landed or unloaded. Run in release:
+/// `cargo test --release -p ryo2d --lib crossing_timing -- --ignored --nocapture`
+/// (for a profile, `RYO_CROSSING_ROUNDS=40000 RYO_CROSSING_PACE_US=0` runs
+/// a longer crossing back to back)
+#[test]
+#[ignore = "a timing: run in release with --ignored --nocapture"]
+fn crossing_timing() {
+  use std::time::Instant;
+  let mut maps = MapWorld::new();
+  let mut map = TileMap::infinite(UVec2::splat(16));
+  map.add_tileset(TilesetSource::Embedded(Arc::new(cave_tiles())));
+  map.add_tile_layer("background");
+  map.add_tile_layer("ground");
+  let handle = maps.world.resource_mut::<Assets<TileMap>>().add(map);
+  let stream = MapStream {
+    load_distance: 512.0,
+    unload_distance: 1536.0,
+    ..MapStream::new(cave)
+  };
+  let root = maps.world.spawn((MapRoot::new(handle), stream)).id();
+  maps.settle(root);
+  let camera = Camera2d::default();
+  let (heading, speed) = (Vec2::new(0.8, 0.6), 2000.0 / 60.0);
+  let rounds = std::env::var("RYO_CROSSING_ROUNDS")
+    .ok()
+    .and_then(|v| v.parse().ok())
+    .unwrap_or(2400);
+  let warm = 120;
+  let start = heading * -((warm + rounds) as f32 / 2.0) * speed;
+  let view_at = |frame: usize| {
+    let center = start + heading * frame as f32 * speed;
+    CameraView::compute(center, 0.0, &camera, Vec2::ZERO, Vec2::new(1920.0, 1080.0))
+  };
+  let eye = maps
+    .world
+    .spawn((camera, view_at(0), Transform::from_translation(start)))
+    .id();
+  until_idle(&mut maps, root);
+  let mut cursor = MessageCursor::<ChunkEvent>::default();
+  events(&maps.world, &mut cursor);
+  // Each frame's phases (stream, fixed step, PostUpdate and Last) in µs,
+  // and the chunks it landed and unloaded
+  type Frame = ([f64; 4], usize, usize);
+  let mut frames: Vec<Frame> = Vec::new();
+  let pace = Duration::from_micros(
+    std::env::var("RYO_CROSSING_PACE_US")
+      .ok()
+      .and_then(|v| v.parse().ok())
+      .unwrap_or(4000),
+  );
+  let mut next = Instant::now();
+  for frame in 0..warm + rounds {
+    while Instant::now() < next {
+      std::hint::spin_loop();
+    }
+    next = Instant::now() + pace;
+    if let Some(mut view) = maps.world.get_mut::<CameraView>(eye) {
+      *view = view_at(frame);
+    }
+    let mut times = [0.0; 4];
+    let t = Instant::now();
+    maps.pre_update();
+    times[0] = t.elapsed().as_secs_f64() * 1e6;
+    let t = Instant::now();
+    maps.step();
+    times[1] = t.elapsed().as_secs_f64() * 1e6;
+    let t = Instant::now();
+    maps.post_update();
+    times[2] = t.elapsed().as_secs_f64() * 1e6;
+    let t = Instant::now();
+    maps.last();
+    times[3] = t.elapsed().as_secs_f64() * 1e6;
+    let happened = events(&maps.world, &mut cursor);
+    let landed = loaded(&happened, root).len();
+    let unloaded = unloading(&happened, root).len();
+    if frame >= warm {
+      frames.push((times, landed, unloaded));
+    }
+  }
+  let median = |mut v: Vec<f64>| {
+    v.sort_by(f64::total_cmp);
+    v.get(v.len() / 2).copied().unwrap_or(0.0)
+  };
+  let percentile = |mut v: Vec<f64>, p: usize| {
+    v.sort_by(f64::total_cmp);
+    v.get((v.len() * p / 100).min(v.len().saturating_sub(1)))
+      .copied()
+      .unwrap_or(0.0)
+  };
+  let busy = |f: &&Frame| f.1 + f.2 > 0;
+  let (active, idle): (Vec<_>, Vec<_>) = frames.iter().partition(busy);
+  let phase = |set: &[&Frame], i: usize| -> Vec<f64> { set.iter().map(|f| f.0[i]).collect() };
+  let total = |set: &[&Frame]| -> Vec<f64> { set.iter().map(|f| f.0.iter().sum()).collect() };
+  let ops: usize = frames.iter().map(|f| f.1 + f.2).sum();
+  let landed: usize = frames.iter().map(|f| f.1).sum();
+  let idle_total = median(total(&idle));
+  let added: f64 = active
+    .iter()
+    .map(|f| f.0.iter().sum::<f64>() - idle_total)
+    .sum();
+  println!(
+    "crossing an endless cave at 2,000 px/s, {rounds} frames: {landed} chunks landed and {} \
+     unloaded, in {} frames",
+    ops - landed,
+    active.len()
+  );
+  for (name, set) in [("busy", &active), ("idle", &idle)] {
+    println!(
+      "  {name} frames ({}): stream {:.1} µs, fixed step {:.1}, PostUpdate {:.1}, Last {:.1}; \
+       whole median {:.1}, 99th percentile {:.1}, max {:.1}",
+      set.len(),
+      median(phase(set, 0)),
+      median(phase(set, 1)),
+      median(phase(set, 2)),
+      median(phase(set, 3)),
+      median(total(set)),
+      percentile(total(set), 99),
+      percentile(total(set), 100),
+    );
+  }
+  for (name, pick) in [
+    (
+      "landing only",
+      (|f: &Frame| f.1 > 0 && f.2 == 0) as fn(&_) -> bool,
+    ),
+    ("unloading only", |f| f.1 == 0 && f.2 > 0),
+    ("both", |f| f.1 > 0 && f.2 > 0),
+  ] {
+    let set: Vec<_> = frames.iter().filter(|f| pick(f)).collect();
+    let each: usize = set.iter().map(|f| f.1 + f.2).sum();
+    println!(
+      "  {name} ({} frames, {each} chunks): stream {:.1} µs, fixed step {:.1}, PostUpdate \
+       {:.1}; whole median {:.1}",
+      set.len(),
+      median(phase(&set, 0)),
+      median(phase(&set, 1)),
+      median(phase(&set, 2)),
+      median(total(&set)),
+    );
+  }
+  println!(
+    "  a chunk landed or unloaded adds {:.1} µs on average",
+    added / ops.max(1) as f64
+  );
+}
+
+/// A jumble of 16 px tiles: 0 a solid block, 1 a coin, 2 a half block, 3 a
+/// slope, 4 a one-way block, 5 a block that only casts a small shadow, 6 an
+/// L, 7 a diamond touching each side at its middle, 8 a one-way slab, 9
+/// plain decor
+fn jumble_tiles() -> Tileset {
+  let mut set = Tileset::new("jumble", UVec2::splat(16), TilesetImage::Collection);
+  set.tile_count = 10;
+  let shaped = |points: &[(f32, f32)], one_way: bool, occluder: bool| TileData {
+    shapes: vec![TileShape {
+      points: points.iter().map(|&(x, y)| Vec2::new(x, y)).collect(),
+      one_way,
+      occluder,
+      ..TileShape::default()
+    }],
+    ..TileData::default()
+  };
+  let square = [(0.0, 0.0), (16.0, 0.0), (16.0, 16.0), (0.0, 16.0)];
+  set.insert_tile(0, shaped(&square, false, false));
+  set.insert_tile(
+    1,
+    TileData {
+      class: Some("coin".to_string()),
+      ..TileData::default()
+    },
+  );
+  let half = [(0.0, 8.0), (16.0, 8.0), (16.0, 16.0), (0.0, 16.0)];
+  set.insert_tile(2, shaped(&half, false, false));
+  let slope = [(16.0, 0.0), (16.0, 16.0), (0.0, 16.0)];
+  set.insert_tile(3, shaped(&slope, false, false));
+  set.insert_tile(4, shaped(&square, true, false));
+  let small = [(4.0, 2.0), (12.0, 2.0), (12.0, 14.0), (4.0, 14.0)];
+  set.insert_tile(5, shaped(&small, false, true));
+  let l = [
+    (0.0, 0.0),
+    (8.0, 0.0),
+    (8.0, 8.0),
+    (16.0, 8.0),
+    (16.0, 16.0),
+    (0.0, 16.0),
+  ];
+  set.insert_tile(6, shaped(&l, false, false));
+  let diamond = [(8.0, 0.0), (16.0, 8.0), (8.0, 16.0), (0.0, 8.0)];
+  set.insert_tile(7, shaped(&diamond, false, false));
+  let slab = [(0.0, 4.0), (16.0, 4.0), (16.0, 8.0), (0.0, 8.0)];
+  set.insert_tile(8, shaped(&slab, true, false));
+  set
+}
+
+/// A hash of a cell, for the jumble's scatter
+fn jumble_hash(cell: IVec2, salt: u32) -> u32 {
+  let mut h = (cell.x as u32).wrapping_mul(0x8DA6_B343)
+    ^ (cell.y as u32).wrapping_mul(0xD816_3841)
+    ^ salt.wrapping_mul(0xCB1A_B31F);
+  h ^= h >> 13;
+  h = h.wrapping_mul(0x5BD1_E995);
+  h ^ (h >> 15)
+}
+
+/// A random tile of the jumble (or none), most of them solid blocks
+fn jumble_tile(h: u32) -> Option<Tile> {
+  let id = match h % 32 {
+    0..=13 => 0,
+    14 => 1,
+    15 | 16 => 2,
+    17 | 18 => 3,
+    19 => 4,
+    20 => 5,
+    21 => 6,
+    22 => 7,
+    23 => 8,
+    24 => 9,
+    _ => return None,
+  };
+  Some(Tile::new(0, id))
+}
+
+/// A chunk of a jumbled world: on the ground, rock in caves crossing chunk
+/// borders with shapes, slopes, one-way tiles and coins scattered through
+/// it; in front, a few tiles more
+fn jumble(request: ChunkRequest) -> ChunkTiles {
+  let mut tiles = ChunkTiles::default();
+  for y in 0..32 {
+    for x in 0..32 {
+      let at = UVec2::new(x, y);
+      let cell = request.first_cell + at.as_ivec2();
+      let h = jumble_hash(cell, 7);
+      let ground = if rocky(cell.x * 2, cell.y * 2) {
+        if h.is_multiple_of(5) {
+          jumble_tile(h >> 8)
+        } else {
+          Some(Tile::new(0, 0))
+        }
+      } else if h.is_multiple_of(9) {
+        jumble_tile(h >> 8)
+      } else {
+        None
+      };
+      tiles.set("ground", at, ground);
+      if jumble_hash(cell, 11).is_multiple_of(23) {
+        tiles.set("front", at, jumble_tile(h >> 16));
+      }
+    }
+  }
+  tiles
+}
+
+/// Whole-pixel steps (from, to) and how many times each is there
+type Steps = BTreeMap<((i32, i32), (i32, i32)), usize>;
+
+/// Every edge of the map's tile parts (each in px, cut into whole-pixel
+/// steps so edges compare however loops and packs split them), solid and
+/// one-way apart, each with how many times it is there
+fn part_steps(world: &mut World, map: Entity) -> [Steps; 2] {
+  use crate::core::physics::{Collider, ColliderShape, TilePart, in_grid_space};
+  let mut steps = [BTreeMap::new(), BTreeMap::new()];
+  let mut query =
+    world.query_filtered::<(&ChildOf, &Collider, &Transform), crate::core::ecs::With<TilePart>>();
+  let rounded = |v: Vec2| {
+    assert!(
+      (v - v.round()).abs().max_element() < 1e-3,
+      "{v} off the pixel grid"
+    );
+    (v.x.round() as i32, v.y.round() as i32)
+  };
+  for (child_of, collider, at) in query.iter(world) {
+    if child_of.parent() != map {
+      continue;
+    }
+    let collider = in_grid_space(collider.clone(), at.translation);
+    let pairs: Vec<(Vec2, Vec2)> = match &collider.shape {
+      ColliderShape::Polyline { points } => points.windows(2).map(|w| (w[0], w[1])).collect(),
+      ColliderShape::Segments { points, segments } => segments
+        .iter()
+        .map(|&[a, b]| (points[a as usize], points[b as usize]))
+        .collect(),
+      ColliderShape::Segment { a, b } => vec![(*a, *b)],
+      other => panic!("a tile part of {other:?}"),
+    };
+    let into = &mut steps[usize::from(collider.one_way.is_some())];
+    for (a, b) in pairs {
+      let (a, b) = (rounded(a), rounded(b));
+      let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+      let gcd = |mut a: i32, mut b: i32| {
+        (a, b) = (a.abs(), b.abs());
+        while b != 0 {
+          (a, b) = (b, a % b);
+        }
+        a.max(1)
+      };
+      let n = gcd(dx, dy);
+      for i in 0..n {
+        let from = (a.0 + dx * i / n, a.1 + dy * i / n);
+        let to = (a.0 + dx * (i + 1) / n, a.1 + dy * (i + 1) / n);
+        *into.entry((from, to)).or_insert(0) += 1;
+      }
+    }
+  }
+  steps
+}
+
+/// The map's shadows: each occluder's chunk, place and vertices, sorted
+fn shadows(world: &mut World, map: Entity) -> Vec<(IVec2, Vec2, Vec<Vec2>)> {
+  use crate::core::lighting::LightOccluder2D;
+  use crate::core::tilemap::MapOccluder;
+  let layers = layers_of(world, map);
+  let mut found: Vec<(IVec2, Vec2, Vec<Vec2>)> = world
+    .query::<(&ChildOf, &MapOccluder, &Transform, &LightOccluder2D)>()
+    .iter(world)
+    .filter(|(child_of, ..)| layers.contains(&child_of.parent()))
+    .map(|(_, marker, at, occluder)| (marker.chunk, at.translation, occluder.vertices().to_vec()))
+    .collect();
+  let key = |v: &Vec2| (v.x.to_bits(), v.y.to_bits());
+  found.sort_by(|a, b| {
+    (
+      a.0.y,
+      a.0.x,
+      key(&a.1),
+      a.2.iter().map(key).collect::<Vec<_>>(),
+    )
+      .cmp(&(
+        b.0.y,
+        b.0.x,
+        key(&b.1),
+        b.2.iter().map(key).collect::<Vec<_>>(),
+      ))
+  });
+  found
+}
+
+/// The map's class tiles: each one's layer, cell and tile, sorted
+fn class_tiles_of(world: &mut World, map: Entity) -> Vec<(usize, IVec2, Tile)> {
+  let mut found: Vec<(usize, IVec2, Tile)> = world
+    .query::<&MapTile>()
+    .iter(world)
+    .filter(|tile| tile.map == map)
+    .map(|tile| (tile.layer, tile.cell, tile.tile))
+    .collect();
+  found.sort_by_key(|&(layer, cell, tile)| (layer, cell.y, cell.x, tile.id));
+  found
+}
+
+/// Asserts that the streamed map `map`'s collision, shadows and class tiles
+/// are those of a map built whole from what it holds now (its grids' tiles
+/// and its class tiles, put into an infinite map of the same layers) and
+/// landed in a world of its own
+fn assert_as_built_whole(maps: &mut MapWorld, map: Entity, at: usize) {
+  let mut whole = TileMap::infinite(UVec2::splat(16));
+  whole.add_tileset(TilesetSource::Embedded(Arc::new(jumble_tiles())));
+  let layers = layers_of(&mut maps.world, map);
+  for (index, &layer) in layers.iter().enumerate() {
+    let name = maps
+      .world
+      .get::<MapLayerRef>(layer)
+      .map(|of| of.name.clone());
+    let added = whole.add_tile_layer(name.as_deref().unwrap_or("layer"));
+    let cells: Vec<(IVec2, Tile)> = maps
+      .world
+      .get::<TileLayerData>(layer)
+      .map(|data| {
+        let grid = &data.grid;
+        grid
+          .chunk_coords()
+          .flat_map(|chunk| cells_of(chunk).filter_map(move |cell| Some((cell, grid.get(cell)?))))
+          .collect()
+      })
+      .unwrap_or_default();
+    let classes: Vec<(IVec2, Tile)> = class_tiles_of(&mut maps.world, map)
+      .into_iter()
+      .filter(|&(of, ..)| of == index)
+      .map(|(_, cell, tile)| (cell, tile))
+      .collect();
+    if let Some(grid) = whole.tiles_mut(added) {
+      for (cell, tile) in cells.into_iter().chain(classes) {
+        grid.set(cell, Some(tile));
+      }
+    }
+  }
+  let mut apart = MapWorld::new();
+  let handle = apart.world.resource_mut::<Assets<TileMap>>().add(whole);
+  let fresh = apart
+    .world
+    .spawn(MapRoot::new(handle).with_entity_tiles(&["coin"]))
+    .id();
+  apart.settle(fresh);
+  apart.frame();
+  let (streamed, built) = (
+    part_steps(&mut maps.world, map),
+    part_steps(&mut apart.world, fresh),
+  );
+  assert!(
+    streamed[0] == built[0],
+    "step {at}: the collision outlines are a whole build's"
+  );
+  assert!(
+    streamed[1] == built[1],
+    "step {at}: the one-way runs are a whole build's"
+  );
+  let (streamed, built) = (
+    shadows(&mut maps.world, map),
+    shadows(&mut apart.world, fresh),
+  );
+  assert!(
+    streamed == built,
+    "step {at}: the shadows are a whole build's"
+  );
+  let (streamed, built) = (
+    class_tiles_of(&mut maps.world, map),
+    class_tiles_of(&mut apart.world, fresh),
+  );
+  assert_eq!(
+    streamed, built,
+    "step {at}: the class tiles are a whole build's"
+  );
+}
+
+/// A streamed map's collision, shadows and class tiles after any sequence
+/// of loads, unloads and edits are those of the map built whole from what
+/// it then holds: an anchor jumping about a jumbled world (caves of rock
+/// across chunk borders, shapes, slopes, one-way tiles, coins, two layers)
+/// with edits at and near chunk sides, compared every ten frames
+#[test]
+fn collision_shadows_and_class_tiles_match_a_whole_build_after_random_streaming() {
+  let mut maps = MapWorld::new();
+  let mut map = TileMap::infinite(UVec2::splat(16));
+  map.add_tileset(TilesetSource::Embedded(Arc::new(jumble_tiles())));
+  map.add_tile_layer("ground");
+  map.add_tile_layer("front");
+  let stream = MapStream {
+    load_distance: 300.0,
+    unload_distance: 600.0,
+    ..MapStream::new(jumble)
+  };
+  let map = spawn(&mut maps, map, stream, |root| {
+    root.with_entity_tiles(&["coin"])
+  });
+  let anchor = anchor_at(&mut maps, IVec2::ZERO);
+  let mut cursor = MessageCursor::<ChunkEvent>::default();
+  let (mut landed, mut unloaded) = (0, 0);
+  let mut seed = 0x2545_f491_u32;
+  let mut next = |n: u32| {
+    seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+    (seed >> 8) % n
+  };
+  for step in 0..300 {
+    // The anchor jumps about a region of 6 x 6 chunks, now and then
+    if next(4) == 0 {
+      let to = Vec2::new(next(6 * 512) as f32, next(6 * 512) as f32) - 3.0 * CHUNK;
+      if let Some(mut at) = maps.world.get_mut::<Transform>(anchor) {
+        at.translation = to;
+      }
+    }
+    // Edits in resident chunks, most at or near a chunk's side
+    let resident: Vec<IVec2> = maps
+      .world
+      .get::<StreamState>(map)
+      .map(|state| sorted(state.resident.iter().copied().collect()))
+      .unwrap_or_default();
+    if !resident.is_empty() {
+      for _ in 0..next(4) {
+        let chunk = resident[next(resident.len() as u32) as usize];
+        let near = |next: &mut dyn FnMut(u32) -> u32| match next(3) {
+          0 => next(32) as i32,
+          1 => next(2) as i32,
+          _ => 30 + next(2) as i32,
+        };
+        let cell = chunk * 32 + IVec2::new(near(&mut next), near(&mut next));
+        let layer = if next(5) == 0 { "front" } else { "ground" };
+        let tile = jumble_tile(next(1 << 20));
+        MapsView::new(&mut maps.world).set_tile(map, layer, cell, tile);
+      }
+    }
+    maps.frame();
+    let happened = events(&maps.world, &mut cursor);
+    landed += loaded(&happened, map).len();
+    unloaded += changes(&happened, map).len();
+    std::thread::sleep(Duration::from_micros(500));
+    if step % 10 == 9 {
+      assert_as_built_whole(&mut maps, map, step);
+    }
+  }
+  assert!(
+    landed > 100 && unloaded > 100,
+    "{landed} landed, {unloaded} unloaded"
   );
 }

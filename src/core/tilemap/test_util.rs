@@ -98,8 +98,8 @@ impl MapWorld {
   pub(crate) fn frame(&mut self) {
     self.pre_update();
     self.step();
-    self.schedules.run(Phase::PostUpdate, &mut self.world);
-    self.schedules.run(Phase::Last, &mut self.world);
+    self.post_update();
+    self.last();
   }
 
   /// The pump and `PreUpdate` (the spawn) alone
@@ -121,6 +121,11 @@ impl MapWorld {
   /// `PostUpdate` alone
   pub(crate) fn post_update(&mut self) {
     self.schedules.run(Phase::PostUpdate, &mut self.world);
+  }
+
+  /// `Last` alone
+  pub(crate) fn last(&mut self) {
+    self.schedules.run(Phase::Last, &mut self.world);
   }
 
   /// Runs frames until `done`, failing after 5 s: reloads and landings are

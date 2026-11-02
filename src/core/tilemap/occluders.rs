@@ -24,7 +24,8 @@
 //! the entity's position less the chain's extent, its farthest corner from
 //! there). A chunk whose version moved is built again, and
 //! so is the chunk right of it or below it when the cells it shares a
-//! border with changed kind; every other chunk keeps its occluders. Chunks
+//! border with changed kind (that one only at the border, its other edges
+//! as it kept them); every other chunk keeps its occluders. Chunks
 //! are signed: a group of bounded layers covers their largest bounds, one
 //! with an unbounded layer any chunk, where an unbounded grid has no right
 //! or bottom border, so the borders right of and below its last cells are
@@ -34,7 +35,7 @@
 //! of its landing (`spawn.rs`: `prepare`), and spawned as its layers do
 //! (`land`). What it builds after that builds at once.
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use glam::{IVec2, UVec2, Vec2};
@@ -52,7 +53,7 @@ use crate::core::ecs::{
 };
 use crate::core::hash::FastMap;
 use crate::core::lighting::LightOccluder2D;
-use crate::core::physics::{Boundary, CellRect, GRID, Point, TileCell};
+use crate::core::physics::{Boundary, CellRect, GRID, PlacedEdge, Point, TileCell};
 
 /// Marks an occluder a map keeps from its tiles: a child of the first layer
 /// of the layers occluding as one, rebuilt with its chunk. Games can find a
@@ -124,6 +125,11 @@ struct Group {
   boundary: Boundary,
   /// Each chunk's occluders, a chunk with none left out
   chunks: FastMap<IVec2, Vec<Entity>>,
+  /// Each chunk's boundary edges as it was last built (`Boundary`'s
+  /// placed edges, from its top-left), a chunk with none left out: a chunk
+  /// whose own cells did not change since rebuilds only its borders on the
+  /// left and above from them
+  edges: FastMap<IVec2, Vec<PlacedEdge>>,
   /// Each chunk's sides, a chunk whose sides are all `Empty` left out
   sides: FastMap<IVec2, Sides>,
   /// The chains a first build worked out, chunk by chunk in row order,
@@ -144,6 +150,7 @@ impl Group {
       shapes: FastMap::default(),
       boundary: Boundary::default(),
       chunks: FastMap::default(),
+      edges: FastMap::default(),
       sides: FastMap::default(),
       pending: Vec::new(),
     }
@@ -175,6 +182,7 @@ impl Group {
         commands.entity(occluder).try_despawn();
       }
     }
+    self.edges.clear();
   }
 }
 
@@ -292,10 +300,15 @@ fn chains(edges: &[(Point, Point)]) -> Vec<Vec<Point>> {
 /// Works out chunk `chunk` of `group` (one it holds) again from its
 /// layers' cells: the chains of the boundary edges it owns, in its layers'
 /// space. Returns them and whether its right and bottom sides changed kind
-/// (the chunks across them read those cells)
+/// (the chunks across them read those cells). With `own` its own cells
+/// changed and are read whole; without, only the cells across its borders
+/// on the left and above did, so it reads its first column and row alone
+/// and takes its other edges from those it kept (`Group::edges`), as it
+/// does when its own cells are all empty
 fn chunk_chains(
   group: &mut Group,
   chunk: IVec2,
+  own: bool,
   data: &[Option<&TileLayerData>],
   context: &Context<'_>,
 ) -> (Vec<Chain>, bool, bool) {
@@ -308,8 +321,8 @@ fn chunk_chains(
     max = max.min(bounds.max);
   }
   // The cells its borders read, each one kind across the group's layers:
-  // its own, the last column of the chunk left of it and the last row of
-  // the chunk above
+  // its own (or its first column and row), the last column of the chunk
+  // left of it and the last row of the chunk above
   let Group {
     layers,
     kinds,
@@ -327,24 +340,31 @@ fn chunk_chains(
       context,
     )
   };
-  let own = classify(chunk, Part::WHOLE);
-  let column = Part {
-    min: IVec2::new(side - 1, 0),
-    max: IVec2::splat(side),
+  let column = |x: i32| Part {
+    min: IVec2::new(x, 0),
+    max: IVec2::new(x + 1, side),
   };
-  let row = Part {
-    min: IVec2::new(0, side - 1),
-    max: IVec2::splat(side),
+  let row = |y: i32| Part {
+    min: IVec2::new(0, y),
+    max: IVec2::new(side, y + 1),
   };
-  let left = classify(chunk - IVec2::X, column);
-  let above = classify(chunk - IVec2::Y, row);
+  let cells = if own {
+    classify(chunk, Part::WHOLE)
+  } else {
+    let mut first = classify(chunk, column(0));
+    let top = classify(chunk, row(0));
+    first[..side as usize].copy_from_slice(&top[..side as usize]);
+    first
+  };
+  let left = classify(chunk - IVec2::X, column(side - 1));
+  let above = classify(chunk - IVec2::Y, row(side - 1));
   let at = |x: i32, y: i32| {
     let (lx, ly) = (x - min.x, y - min.y);
     let inside = |v: i32| (0..side).contains(&v);
     if x >= max.x || y >= max.y {
       TileCell::Empty
     } else if inside(lx) && inside(ly) {
-      own[(ly * side + lx) as usize]
+      cells[(ly * side + lx) as usize]
     } else if lx == -1 && inside(ly) {
       left[(ly * side + side - 1) as usize]
     } else if ly == -1 && inside(lx) {
@@ -353,12 +373,28 @@ fn chunk_chains(
       TileCell::Empty
     }
   };
-  let mut edges = Vec::new();
-  group
-    .boundary
-    .edges(at, (min.x, min.y), (max.x, max.y), group.bounds, &mut edges);
+  let empty = own && cells.iter().all(|&c| c == TileCell::Empty);
+  let mut placed = Vec::new();
+  let (from, to) = ((min.x, min.y), (max.x, max.y));
+  if own && !empty {
+    group
+      .boundary
+      .placed_edges(at, from, to, group.bounds, &mut placed);
+  } else {
+    // Only its borders on the left and above can have changed: an empty
+    // chunk has no other edges
+    let kept = if empty { None } else { group.edges.get(&chunk) };
+    group.boundary.rebuilt_borders(
+      at,
+      from,
+      to,
+      group.bounds,
+      kept.map_or(&[][..], Vec::as_slice),
+      &mut placed,
+    );
+  }
   // The outlines run clockwise on screen; lighting's polygons the other way
-  let edges: Vec<_> = edges.into_iter().map(|(a, b)| (b, a)).collect();
+  let edges: Vec<(Point, Point)> = placed.iter().map(|&(_, a, b)| (b, a)).collect();
   let cell = group.cell.as_dvec2();
   let origin = min.as_dvec2();
   let px = |(x, y): Point| {
@@ -375,6 +411,15 @@ fn chunk_chains(
       (centre, points.into_iter().map(|p| p - centre).collect())
     })
     .collect();
+  if placed.is_empty() {
+    group.edges.remove(&chunk);
+  } else {
+    group.edges.insert(chunk, placed);
+  }
+  if !own {
+    // Its own cells, its sides among them, are as they were
+    return (built, false, false);
+  }
   let sides = Sides {
     right: (min.y..max.y).map(|y| at(max.x - 1, y)).collect(),
     bottom: (min.x..max.x).map(|x| at(x, max.y - 1)).collect(),
@@ -422,18 +467,20 @@ fn update(
   context: &Context<'_>,
   mut commands: Option<&mut Commands>,
 ) {
-  // Row by row, so a chunk marks the ones right of and below it in time
-  let mut due: BTreeSet<(i32, i32)> = changed
+  // Row by row, so a chunk marks the ones right of and below it in time;
+  // each with whether its own cells changed (else only those across a
+  // border it owns did)
+  let mut due: BTreeMap<(i32, i32), bool> = changed
     .into_iter()
     .filter(|&chunk| group.holds_chunk(chunk))
-    .map(|chunk| (chunk.y, chunk.x))
+    .map(|chunk| ((chunk.y, chunk.x), true))
     .collect();
   if commands.is_none() {
     group.pending.clear();
   }
-  while let Some((y, x)) = due.pop_first() {
+  while let Some(((y, x), own)) = due.pop_first() {
     let chunk = IVec2::new(x, y);
-    let (chains, right, bottom) = chunk_chains(group, chunk, data, context);
+    let (chains, right, bottom) = chunk_chains(group, chunk, own, data, context);
     match commands.as_deref_mut() {
       Some(commands) => {
         for occluder in group.chunks.remove(&chunk).unwrap_or_default() {
@@ -448,10 +495,10 @@ fn update(
       None => group.pending.push((chunk, chains)),
     }
     if right && group.holds_chunk(chunk + IVec2::X) {
-      due.insert((y, x + 1));
+      due.entry((y, x + 1)).or_insert(false);
     }
     if bottom && group.holds_chunk(chunk + IVec2::Y) {
-      due.insert((y + 1, x));
+      due.entry((y + 1, x)).or_insert(false);
     }
   }
 }

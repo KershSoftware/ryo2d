@@ -1390,7 +1390,9 @@ impl Boundary {
   /// cell across it, outside the block, and every cell outside the bounds is
   /// empty). Points are on the outline grid (`GRID` a tile) from `min`'s
   /// top-left, so they stay small however far out the block is; edges run
-  /// clockwise on screen round what they bound.
+  /// clockwise on screen round what they bound. (Tests: tile maps read
+  /// `placed_edges`.)
+  #[cfg(test)]
   pub(crate) fn edges(
     &self,
     at: impl Fn(i32, i32) -> TileCell,
@@ -1399,15 +1401,99 @@ impl Boundary {
     bounds: Option<CellRect>,
     out: &mut Vec<(Point, Point)>,
   ) {
+    self.scan(at, min, max, bounds, &mut Plain(out));
+  }
+
+  /// The edges `edges` gives, in the same order, each with its unit's
+  /// place in the block's scan (`PlacedEdge`): what `rebuilt_borders`
+  /// keeps of a block whose own cells did not change. A block is at most
+  /// 16,383 cells a side
+  pub(crate) fn placed_edges(
+    &self,
+    at: impl Fn(i32, i32) -> TileCell,
+    min: (i32, i32),
+    max: (i32, i32),
+    bounds: Option<CellRect>,
+    out: &mut Vec<PlacedEdge>,
+  ) {
+    self.scan(at, min, max, bounds, &mut Placed::new(out));
+  }
+
+  /// The edges `placed_edges` gives now for a block whose own cells have
+  /// not changed since `kept` was read from it (an earlier `placed_edges`;
+  /// nothing for a block whose cells are all empty), when the cells across
+  /// its borders on the left of its first column and above its first row
+  /// may have: those borders' units are worked out again through `at`
+  /// (read only at the block's first column and row and the column and row
+  /// across them), and every other unit's edges, which read the block's
+  /// own cells alone, are taken from `kept`, all in the order a scan meets
+  /// them
+  pub(crate) fn rebuilt_borders(
+    &self,
+    at: impl Fn(i32, i32) -> TileCell,
+    min: (i32, i32),
+    max: (i32, i32),
+    bounds: Option<CellRect>,
+    kept: &[PlacedEdge],
+    out: &mut Vec<PlacedEdge>,
+  ) {
     let cells = Cells::shapes_only(&self.shapes);
-    let local = |x: i32, y: i32| {
+    let local = Self::local(&at, min, bounds);
+    let (w, h) = (max.0 - min.0, max.1 - min.1);
+    // The border units in the scan's order: the first row's border on the
+    // left and its cells' borders above, then each other row's on the left
+    let mut fresh = Vec::new();
+    let mut placed = Placed::new(&mut fresh);
+    for y in 0..h {
+      placed.unit(Unit::Left(0, y), &cells, &local);
+      if y == 0 {
+        for x in 0..w {
+          placed.unit(Unit::Above(x, 0), &cells, &local);
+        }
+      }
+    }
+    let border = |place: u32| {
+      let (y, x, kind) = (place >> 16, (place >> 2) & 0x3FFF, place & 3);
+      (kind == 1 && x == 0) || (kind == 2 && y == 0)
+    };
+    // The places are the scan's order, and the two lists hold no unit both
+    let mut fresh = fresh.into_iter().peekable();
+    for &edge in kept.iter().filter(|edge| !border(edge.0)) {
+      while let Some(next) = fresh.next_if(|next| next.0 < edge.0) {
+        out.push(next);
+      }
+      out.push(edge);
+    }
+    out.extend(fresh);
+  }
+
+  /// `at` read from `min`'s top-left, every cell outside `bounds` empty
+  fn local(
+    at: &impl Fn(i32, i32) -> TileCell,
+    min: (i32, i32),
+    bounds: Option<CellRect>,
+  ) -> impl Fn(i32, i32) -> TileCell {
+    move |x: i32, y: i32| {
       let cell = IVec2::new(min.0, min.1) + IVec2::new(x, y);
       if bounds.is_some_and(|bounds| !bounds.contains(cell)) {
         TileCell::Empty
       } else {
         at(cell.x, cell.y)
       }
-    };
+    }
+  }
+
+  /// The block's units in the scan's order (`edges`), each handed to `out`
+  fn scan(
+    &self,
+    at: impl Fn(i32, i32) -> TileCell,
+    min: (i32, i32),
+    max: (i32, i32),
+    bounds: Option<CellRect>,
+    out: &mut impl UnitSink,
+  ) {
+    let cells = Cells::shapes_only(&self.shapes);
+    let local = Self::local(&at, min, bounds);
     let (w, h) = (max.0 - min.0, max.1 - min.1);
     let (right, bottom) = bounds.map_or((false, false), |bounds| {
       (max.0 == bounds.max.x, max.1 == bounds.max.y)
@@ -1420,19 +1506,74 @@ impl Boundary {
         if local(x, y) == empty && local(x - 1, y) == empty && local(x, y - 1) == empty {
           continue;
         }
-        unit_edges(Unit::Inside(x, y), &cells, &local, out);
-        unit_edges(Unit::Left(x, y), &cells, &local, out);
-        unit_edges(Unit::Above(x, y), &cells, &local, out);
+        out.unit(Unit::Inside(x, y), &cells, &local);
+        out.unit(Unit::Left(x, y), &cells, &local);
+        out.unit(Unit::Above(x, y), &cells, &local);
       }
       if right {
-        unit_edges(Unit::Left(w, y), &cells, &local, out);
+        out.unit(Unit::Left(w, y), &cells, &local);
       }
     }
     if bottom {
       for x in 0..w {
-        unit_edges(Unit::Above(x, h), &cells, &local, out);
+        out.unit(Unit::Above(x, h), &cells, &local);
       }
     }
+  }
+}
+
+/// A boundary edge and its unit's place in a block's scan
+/// (`Boundary::placed_edges`): from the block's top-left, by row, then
+/// column, then the cell's inside, the border on its left and the border
+/// above it, packed as `y << 16 | x << 2 | kind` (0, 1 and 2), so the
+/// scan's order is the places' order
+pub(crate) type PlacedEdge = (u32, Point, Point);
+
+/// Where a block's scan hands each unit
+trait UnitSink {
+  fn unit(&mut self, unit: Unit, cells: &Cells, at: &impl Fn(i32, i32) -> TileCell);
+}
+
+/// A scan's edges pushed as they come
+#[cfg(test)]
+struct Plain<'o>(&'o mut Vec<(Point, Point)>);
+
+#[cfg(test)]
+impl UnitSink for Plain<'_> {
+  fn unit(&mut self, unit: Unit, cells: &Cells, at: &impl Fn(i32, i32) -> TileCell) {
+    unit_edges(unit, cells, at, self.0);
+  }
+}
+
+/// A scan's edges pushed with their units' places
+struct Placed<'o> {
+  out: &'o mut Vec<PlacedEdge>,
+  unit: Vec<(Point, Point)>,
+}
+
+impl<'o> Placed<'o> {
+  fn new(out: &'o mut Vec<PlacedEdge>) -> Self {
+    Placed {
+      out,
+      unit: Vec::new(),
+    }
+  }
+}
+
+impl UnitSink for Placed<'_> {
+  fn unit(&mut self, unit: Unit, cells: &Cells, at: &impl Fn(i32, i32) -> TileCell) {
+    self.unit.clear();
+    unit_edges(unit, cells, at, &mut self.unit);
+    let (x, y, kind) = match unit {
+      Unit::Inside(x, y) => (x, y, 0),
+      Unit::Left(x, y) => (x, y, 1),
+      Unit::Above(x, y) => (x, y, 2),
+    };
+    debug_assert!((0..0x4000).contains(&x) && (0..0x1_0000).contains(&y));
+    let place = ((y as u32) << 16) | ((x as u32) << 2) | kind;
+    self
+      .out
+      .extend(self.unit.iter().map(|&(a, b)| (place, a, b)));
   }
 }
 
@@ -1816,6 +1957,103 @@ mod tests {
     pieced.sort_unstable();
     assert!(!whole.is_empty());
     assert_eq!(pieced, whole);
+  }
+
+  #[test]
+  fn a_block_s_borders_rebuilt_alone_give_its_edges_in_the_scan_s_order() {
+    use SlopeCorner::{BottomLeft, TopRight};
+    // Blocks of a grid of every kind and shapes, the cells left of and
+    // above each changed at random: its borders rebuilt from what it kept
+    // give its edges, places and order as a scan of it now gives them. A
+    // bounded grid's blocks that reach its right or bottom keep those
+    // borders; an empty block keeps nothing
+    let (width, height) = (13u32, 11u32);
+    let mut tiles = TileColliders::new(width, height, Vec2::ONE);
+    let mut boundary = Boundary::default();
+    let mut kinds = vec![S, S, S, E, E, E, O, TileCell::Slope(BottomLeft)];
+    kinds.push(TileCell::Slope(TopRight));
+    for polygon in [
+      vec![(0.0, 0.5), (1.0, 0.5), (1.0, 1.0), (0.0, 1.0)],
+      vec![(0.5, 0.0), (1.0, 0.5), (0.5, 1.0), (0.0, 0.5)],
+      vec![
+        (0.0, 0.0),
+        (0.5, 0.0),
+        (0.5, 0.5),
+        (1.0, 0.5),
+        (1.0, 1.0),
+        (0.0, 1.0),
+      ],
+      vec![(0.25, 0.0), (0.75, 0.0), (0.75, 1.0), (0.25, 1.0)],
+    ] {
+      let shape = CellShape {
+        polygons: vec![polygon.into_iter().map(|(x, y)| Vec2::new(x, y)).collect()],
+        one_way: false,
+      };
+      let index = tiles.add_shape(shape.clone());
+      assert_eq!(boundary.add_shape(shape), index);
+      kinds.push(TileCell::Shape(index));
+    }
+    let mut seed = 0x9e37_79b9_u32;
+    let mut next = |n: usize| {
+      seed ^= seed << 13;
+      seed ^= seed >> 17;
+      seed ^= seed << 5;
+      seed as usize % n
+    };
+    for y in 0..height {
+      for x in 0..width {
+        tiles.set(xy(x, y), kinds[next(kinds.len())]);
+      }
+    }
+    let bounds = Some(CellRect::from_size(UVec2::new(width, height)));
+    let (mut rebuilt, mut scanned) = (0, 0);
+    for round in 0..400 {
+      // A block of 2 to 6 cells a side within the grid, or past its right
+      // and bottom
+      let (w, h) = (2 + next(5) as i32, 2 + next(5) as i32);
+      let min = (
+        1 + next(width as usize - 1) as i32,
+        1 + next(height as usize - 1) as i32,
+      );
+      let max = (
+        (min.0 + w).min(width as i32),
+        (min.1 + h).min(height as i32),
+      );
+      // Every fourth block emptied first
+      if round % 4 == 0 {
+        for y in min.1..max.1 {
+          for x in min.0..max.0 {
+            tiles.set(IVec2::new(x, y), E);
+          }
+        }
+      }
+      let mut kept = Vec::new();
+      let at = |x: i32, y: i32| tiles.get(IVec2::new(x, y));
+      boundary.placed_edges(at, min, max, bounds, &mut kept);
+      // The column left of it and the row above it, changed
+      for y in min.1 - 1..max.1 {
+        if next(2) == 0 {
+          tiles.set(IVec2::new(min.0 - 1, y), kinds[next(kinds.len())]);
+        }
+      }
+      for x in min.0..max.0 {
+        if next(2) == 0 {
+          tiles.set(IVec2::new(x, min.1 - 1), kinds[next(kinds.len())]);
+        }
+      }
+      let at = |x: i32, y: i32| tiles.get(IVec2::new(x, y));
+      let (mut now, mut borders) = (Vec::new(), Vec::new());
+      boundary.placed_edges(at, min, max, bounds, &mut now);
+      boundary.rebuilt_borders(at, min, max, bounds, &kept, &mut borders);
+      assert_eq!(borders, now, "round {round}: block {min:?} to {max:?}");
+      let mut edges = Vec::new();
+      boundary.edges(at, min, max, bounds, &mut edges);
+      let placed: Vec<(Point, Point)> = now.iter().map(|&(_, a, b)| (a, b)).collect();
+      assert_eq!(placed, edges, "placed edges are the scan's edges");
+      rebuilt += usize::from(borders != kept);
+      scanned += now.len();
+    }
+    assert!(rebuilt > 200 && scanned > 3000, "{rebuilt} {scanned}");
   }
 
   #[test]
