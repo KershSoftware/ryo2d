@@ -322,11 +322,11 @@ fn check_placement(sample: &Sample) {
       "{name} {c}"
     );
   }
-  // Pixel art draws tiles where Tiled's raster does
+  // Pixel art draws a tile the cell's size where Tiled's raster does
   for &c in sample.screen.keys() {
     let anchor = grid.tile_anchor(c);
     assert_eq!(
-      anchor + grid.raster_offset(anchor),
+      anchor + grid.raster_offset(anchor, grid.cell),
       rastered(&grid, anchor),
       "{name} {c}"
     );
@@ -334,37 +334,34 @@ fn check_placement(sample: &Sample) {
 }
 
 #[test]
-fn a_tile_stands_on_the_box_tiled_steps_by() {
-  // The cell, but on staggered and hexagonal grids the box of whole pixels
-  // Tiled steps by: half a cell across rounded down, twice; the slant twice
-  // and the side along the axis (a side longer than the tile makes the
-  // slant negative)
-  let boxes = [
-    (grid(GridShape::Isometric, 33, 17), (33.0, 17.0)),
-    (grid(oblique(8, 12), 32, 32), (32.0, 32.0)),
-    (grid(stag(Y, Even), 33, 17), (32.0, 16.0)),
-    (grid(stag(X, Odd), 33, 17), (32.0, 16.0)),
-    (grid(hex(Y, Odd, 13), 33, 17), (32.0, 17.0)),
-    (grid(hex(X, Odd, 13), 33, 17), (33.0, 16.0)),
-    (grid(hex(Y, Odd, 32), 56, 64), (56.0, 64.0)),
-    (grid(hex(Y, Odd, 40), 32, 32), (32.0, 32.0)),
-  ];
-  for (grid, (w, h)) in boxes {
-    assert_eq!(grid.tile_box(), Vec2::new(w, h), "{grid:?}");
-    // Its bottom-left is the tile anchor, and it lies in the cell's box
-    let cell = IVec2::new(3, 2);
-    let (anchor, bounds) = (grid.tile_anchor(cell), grid.cell_bounds(cell));
-    if !matches!(grid.shape, GridShape::Oblique { .. }) {
-      assert!(
-        anchor.x >= bounds.x && anchor.x + w <= bounds.x + bounds.width,
-        "{grid:?}"
-      );
-      assert!(
-        anchor.y - h >= bounds.y && anchor.y <= bounds.y + bounds.height,
-        "{grid:?}"
-      );
-    }
+fn pixel_art_draws_tiles_where_tileds_raster_does_on_odd_isometric_grids() {
+  // Tiled's renders of one tile alone on isometric maps of odd cells
+  // (`measured-raster.json`): atlas tiles and image collections read from
+  // a file, of tilesets whose tile size is below, at and past the cell's
+  // width, across and down, at whole and half anchors. Where the anchor is
+  // and where the render puts the tile's bottom-left
+  let path = format!("{FIXTURES}/tiled/measured-raster.json");
+  let text = std::fs::read_to_string(&path).expect("measured-raster.json");
+  let json: Value = serde_json::from_str(&text).expect("measured-raster.json is JSON");
+  assert_eq!(json["tiled"], "1.12.2");
+  let rows = json["rows"].as_array().expect("rows");
+  assert_eq!(rows.len(), 108);
+  let mut late = 0;
+  for row in rows {
+    let v = |i: usize| num(&row[i]);
+    let cell = UVec2::new(v(0) as u32, v(1) as u32);
+    let tileset = UVec2::new(v(3) as u32, v(4) as u32);
+    let at = IVec2::new(v(7) as i32, v(8) as i32);
+    let grid = MapGrid::for_map(GridShape::Isometric, cell, UVec2::splat(12), false);
+    let anchor = grid.tile_anchor(at);
+    assert_eq!(anchor, Vec2::new(v(9), v(10)), "{row}");
+    let drawn = anchor + grid.raster_offset(anchor, tileset);
+    assert_eq!(drawn, Vec2::new(v(11), v(12)), "{row}");
+    late += usize::from(drawn.x == anchor.x + 1.0);
   }
+  // Tiles of tilesets past the cell's width, at a whole x on odd widths:
+  // three atlases and two collections a grid, on five grids of odd widths
+  assert_eq!(late, 25);
 }
 
 #[test]

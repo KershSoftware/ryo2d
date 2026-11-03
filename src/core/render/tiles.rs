@@ -230,8 +230,8 @@ fn quad_turn(flip: TileFlip, hex: bool) -> Mat2 {
 /// `flip`: its quad's centre and its x and y axes. It stands on the anchor
 /// from the left, however large, the offset moving it from there; a
 /// diagonal flip lays it on its side first, and on a hexagonal grid a turn
-/// turns it about the middle of the box it stands on, after its flips
-/// (which mirror its texels)
+/// turns it about its own middle, where it stands unturned, after its
+/// flips, which mirror its texels (measured: `shape-hex-turns-*`)
 fn placed(
   grid: &MapGrid,
   anchor: Vec2,
@@ -248,12 +248,7 @@ fn placed(
     size
   };
   let top_left = Vec2::new(anchor.x, anchor.y - drawn.y) + offset;
-  let mut centre = top_left + drawn * 0.5;
-  if hex && turn != Mat2::IDENTITY {
-    let tile_box = grid.tile_box();
-    let pivot = anchor + Vec2::new(tile_box.x, -tile_box.y) * 0.5;
-    centre = pivot + turn * (centre - pivot);
-  }
+  let centre = top_left + drawn * 0.5;
   (
     centre,
     turn * Vec2::new(size.x, 0.0),
@@ -292,7 +287,7 @@ fn instance(
   instance.transform[2][..2].copy_from_slice(&centre.to_array());
   // Where Tiled's raster puts a tile its grid places on a half pixel, for
   // pixel art
-  let raster = grid.raster_offset(anchor);
+  let raster = grid.raster_offset(anchor, layout.tile_size);
   instance.transform[1][2..].copy_from_slice(&raster.to_array());
   let image = layout.size.as_vec2();
   let origin = layout.cell_origin(slot).as_vec2();
@@ -318,8 +313,8 @@ fn may_spill(grid: &MapGrid, layouts: &[Option<PaddedLayout>]) -> bool {
   let anchor = grid.tile_anchor(IVec2::ZERO);
   // Isometric grids of odd sizes put tiles on half pixels, which pixel art
   // rounds as Tiled does, moving them up to a pixel
-  if grid.raster_offset(anchor) != Vec2::ZERO
-    || grid.raster_offset(grid.tile_anchor(IVec2::X)) != Vec2::ZERO
+  if grid.raster_offset(anchor, UVec2::ZERO) != Vec2::ZERO
+    || grid.raster_offset(grid.tile_anchor(IVec2::X), UVec2::ZERO) != Vec2::ZERO
   {
     return layouts.iter().any(Option::is_some);
   }

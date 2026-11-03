@@ -75,6 +75,11 @@ pub struct PaddedLayout {
   /// The widest and the tallest of its tiles, in texels (as drawn
   /// unflipped), which may be two tiles
   pub largest: UVec2,
+  /// The tileset's tile size (Tiled's `tilewidth` and `tileheight`; an
+  /// image collection's largest image, as Tiled saves it), which Tiled's
+  /// raster of an isometric map of odd cells goes by
+  /// (`MapGrid::raster_offset`)
+  pub tile_size: UVec2,
   /// Which padding this is: [`PaddedTilesets`] gives each image it makes a
   /// number never given before (0 until then), so what was built from a
   /// layout can tell it was padded again
@@ -325,6 +330,7 @@ pub(crate) fn pad_tileset(
     size,
     offset: tileset.tile_offset,
     largest,
+    tile_size: tileset.tile_size,
     serial: 0,
     tiles: Arc::new(Vec::new()),
   };

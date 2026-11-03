@@ -1740,6 +1740,123 @@ fn hex_rotations_and_flips_draw_as_tiled_shows_them() {
   assert!(unlike.is_empty(), "unlike Tiled: {unlike:#?}");
 }
 
+/// The box of the pixels in `frame` within `size` of `centre` that are not
+/// `clear` (or, with `clear` None, not transparent), as its middle and its
+/// size
+fn drawn_box(
+  frame: &image::RgbaImage,
+  (centre, size): (Vec2, i32),
+  clear: Option<[u8; 4]>,
+) -> (Vec2, Vec2) {
+  let (mut low, mut high) = (IVec2::MAX, IVec2::MIN);
+  let c = centre.floor().as_ivec2();
+  for y in c.y - size..c.y + size {
+    for x in c.x - size..c.x + size {
+      let p = frame.get_pixel(x as u32, y as u32).0;
+      let drawn = match clear {
+        Some(clear) => p != clear,
+        None => p[3] > 0,
+      };
+      if drawn {
+        low = low.min(IVec2::new(x, y));
+        high = high.max(IVec2::new(x + 1, y + 1));
+      }
+    }
+  }
+  assert!(low.x < high.x, "nothing drawn about {centre}");
+  let (low, high) = (low.as_vec2(), high.as_vec2());
+  ((low + high) / 2.0, high - low)
+}
+
+#[test]
+fn hex_tiles_turn_about_their_own_middle_as_tiled_shows() {
+  // Turned markers (a white rectangle, its top-left quarter red, flags i at
+  // cell (2 + 4 (i mod 4), 2 + 4 (i / 4))) that are not their box's size:
+  // 48 x 40 on 32 x 32 hexagons of side 16; their box's size with the
+  // tileset offset by (6, -4); on 33 x 33 hexagons of side 15, whose box is
+  // 32 across, the cell's size, and 45 x 41 offset by (5, -3). Tiled turns
+  // each about its own middle where it stands unturned, offset and all
+  // (measured). Each marker's drawn box has the middle Tiled's has, and at
+  // the middle of each quarter the engine shows what Tiled does: red at
+  // one, white at three
+  let (red, white) = (SHAPE_COLOURS[0], SHAPE_COLOURS[4]);
+  let maps = [
+    ("shape-hex-turns-large", Vec2::new(48.0, 40.0)),
+    ("shape-hex-turns-offset", Vec2::new(32.0, 32.0)),
+    ("shape-hex-turns-odd", Vec2::new(33.0, 33.0)),
+    ("shape-hex-turns-odd-offset", Vec2::new(45.0, 41.0)),
+  ];
+  let mut unlike = Vec::new();
+  for (name, marker) in maps {
+    let render = tiled_render(name);
+    let Some((frame, grid)) = as_tiled_draws(name, &render) else {
+      return;
+    };
+    let Some((x0, y0, _)) = render.enumerate_pixels().find(|(_, _, p)| p.0[3] == 0) else {
+      panic!("{name}: Tiled's render covers every pixel");
+    };
+    let background = frame.get_pixel(x0, y0).0;
+    for i in 0..16u32 {
+      let cell = IVec2::new(2 + 4 * (i % 4) as i32, 2 + 4 * (i / 4) as i32);
+      // Markers are 128 px apart across and 96 down
+      let near = (grid.cell_center(cell), 48);
+      let (tiled_middle, tiled_size) = drawn_box(&render, near, None);
+      let (middle, size) = drawn_box(&frame, near, Some(background));
+      if (middle - tiled_middle).abs().max_element() > 0.5
+        || (size - tiled_size).abs().max_element() > 2.0
+      {
+        unlike.push(format!(
+          "{name}, flags {i}: drawn about {middle} ({size}), Tiled {tiled_middle} ({tiled_size})"
+        ));
+      }
+      let turn = (60.0 * f32::from(u8::from(i & 4 != 0)) + 120.0 * f32::from(u8::from(i & 8 != 0)))
+        .to_radians();
+      let mut reds = 0;
+      for (sx, sy) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+        // The quarter's middle in the picture, from its middle: flipped,
+        // then turned clockwise (y is down)
+        let mut at = Vec2::new(sx, sy) * marker / 4.0;
+        if i & 1 != 0 {
+          at.x = -at.x;
+        }
+        if i & 2 != 0 {
+          at.y = -at.y;
+        }
+        let at = tiled_middle + Vec2::from_angle(turn).rotate(at);
+        let (x, y) = (at.x as u32, at.y as u32);
+        let tiled = render.get_pixel(x, y).0;
+        assert!(
+          tiled == red || tiled == white,
+          "{name}, flags {i}: Tiled's render at ({x}, {y}) is {tiled:?}, no quarter of the marker"
+        );
+        reds += usize::from(tiled == red);
+        let got = frame.get_pixel(x, y).0;
+        if got != tiled {
+          unlike.push(format!(
+            "{name}, flags {i}, ({x}, {y}): {got:?}, Tiled {tiled:?}"
+          ));
+        }
+      }
+      assert_eq!(
+        reds, 1,
+        "{name}, flags {i}: one quarter is red in Tiled's render"
+      );
+    }
+  }
+  assert!(unlike.is_empty(), "unlike Tiled: {unlike:#?}");
+}
+
+#[test]
+fn tall_tiles_on_an_odd_isometric_grid_draw_where_tileds_raster_does() {
+  // Tiles of 33 x 40, 33 x 41, 32 x 40 and 32 x 41 on 33 x 17 isometric
+  // cells, each at a whole and a half anchor: Tiled's raster rounds an x
+  // on a half pixel up, puts tiles of tilesets wider or taller than the
+  // cell's width a pixel further right where x is whole, and puts a tile a
+  // pixel lower where its bottom is whole (the cell's height being odd),
+  // whatever its own height. Pixel art draws them all where Tiled does
+  assert_draws_as_tiled("shape-tall-odd-iso");
+}
+
 #[test]
 fn tall_tiles_across_a_chunk_border_draw_in_tileds_order() {
   // Plain layers of tiles larger than their cells, from two tilesets,

@@ -787,7 +787,7 @@ mod tests {
     panic!("{name}: one has more lines than the other");
   }
 
-  const MAP_PAIRS: [&str; 61] = [
+  const MAP_PAIRS: [&str; 66] = [
     "image-layers",
     "lists",
     "tile-objects",
@@ -849,6 +849,11 @@ mod tests {
     "shape-tall-iso-upright",
     "shape-tall-stag-upright",
     "shape-tall-ortho-upright",
+    "shape-hex-turns-large",
+    "shape-hex-turns-offset",
+    "shape-hex-turns-odd",
+    "shape-hex-turns-odd-offset",
+    "shape-tall-odd-iso",
   ];
   const SET_PAIRS: [&str; 10] = [
     "loot",

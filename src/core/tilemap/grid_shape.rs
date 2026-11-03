@@ -338,44 +338,35 @@ impl MapGrid {
     }
   }
 
-  /// The size of the box a tile stands on, `tile_anchor` its bottom-left:
-  /// the cell, except on staggered and hexagonal grids, where it is the box
-  /// Tiled steps by (its whole-pixel half twice across the stagger axis,
-  /// the slant twice and the side along it). A hexagonal tile turns about
-  /// its middle
-  pub(crate) fn tile_box(&self) -> Vec2 {
-    match self.shape {
-      GridShape::Staggered { .. } | GridShape::Hexagonal { .. } => {
-        let lines = self.lines();
-        let (across, along) = (2.0 * lines.half, lines.depth.max(0.0));
-        let size = match lines.axis {
-          StaggerAxis::Y => DVec2::new(across, along),
-          StaggerAxis::X => DVec2::new(along, across),
-        };
-        size.as_vec2()
-      }
-      _ => self.cell.as_vec2(),
-    }
-  }
-
   /// Where Tiled's renderer draws a tile image whose bottom-left is
   /// `anchor` (a `tile_anchor`, before the tileset's offset), less the
-  /// anchor: nothing on every grid but an isometric one of odd sizes, whose
-  /// half pixels it rounds up, and whose odd cell heights put a tile a pixel
-  /// lower where its bottom is a whole pixel (measured; the formats note
-  /// has it). Pixel art draws tiles there, so every corner of theirs is on
-  /// a whole pixel
-  pub(crate) fn raster_offset(&self, anchor: Vec2) -> Vec2 {
+  /// anchor, for a tile of a tileset whose tile size (Tiled's `tilewidth`
+  /// and `tileheight`) is `tileset_tile`: nothing on every grid but an
+  /// isometric one of odd sizes, whose half cells fall on half pixels
+  /// (measured: `measured-raster.json`). There an odd cell width rounds x
+  /// up, but a tileset whose tile size is wider or taller than the cell is
+  /// wide puts its tiles a pixel further right where x is whole (floor
+  /// plus one), and an odd cell height puts a tile a pixel lower where its
+  /// bottom is a whole pixel (floor plus one), whatever its height. Pixel
+  /// art draws tiles there, so every corner of theirs is on a whole pixel
+  pub(crate) fn raster_offset(&self, anchor: Vec2, tileset_tile: UVec2) -> Vec2 {
     let (even_x, even_y) = (self.cell.x.is_multiple_of(2), self.cell.y.is_multiple_of(2));
     if self.shape != GridShape::Isometric || (even_x && even_y) {
       return Vec2::ZERO;
     }
-    let y = if !even_y {
-      anchor.y.floor() + 1.0
+    let x = if even_x {
+      anchor.x
+    } else if tileset_tile.max_element() > self.cell.x {
+      anchor.x.floor() + 1.0
     } else {
-      anchor.y
+      anchor.x.ceil()
     };
-    Vec2::new(anchor.x.ceil(), y) - anchor
+    let y = if even_y {
+      anchor.y
+    } else {
+      anchor.y.floor() + 1.0
+    };
+    Vec2::new(x, y) - anchor
   }
 
   /// The cell whose outline holds `point`: what draws there.

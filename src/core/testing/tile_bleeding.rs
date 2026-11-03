@@ -344,11 +344,12 @@ impl Scene for Odd {
   }
 }
 
-/// Where Tiled's renderer puts a tile whose bottom-left the grid places at
-/// `anchor`: an isometric grid of odd sizes places tiles on half pixels,
-/// which it rounds up, and its odd cell heights put a tile a pixel lower
-/// where its bottom is a whole pixel (measured; the formats note has it);
-/// every other grid places them on whole pixels
+/// Where Tiled's renderer puts a tile, of a tileset no wider or taller
+/// than the cell is wide, whose bottom-left the grid places at `anchor`: an
+/// isometric grid of odd sizes places tiles on half pixels, which it rounds
+/// up, and its odd cell heights put a tile a pixel lower where its bottom
+/// is a whole pixel (measured; the formats note has it); every other grid
+/// places them on whole pixels
 fn tileds_raster(grid: &MapGrid, anchor: Vec2) -> IVec2 {
   if grid.shape != GridShape::Isometric {
     assert_eq!(

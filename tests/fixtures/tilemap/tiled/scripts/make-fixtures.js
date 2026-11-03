@@ -914,3 +914,137 @@ orderFile.write(
     ' "pairs": [\n' + paintOrders.join(",\n") + "\n ]}\n"
 );
 orderFile.commit();
+
+// ---- turns about their box, and tall tiles on an odd grid ---------------------
+
+// Hexagonal maps of turned marker tiles that are not their box's size: a
+// white rectangle with its top-left quarter red, at cell (2 + 4 (i mod 4),
+// 2 + 4 (i / 4)) with flags i, as in the hex rotation fixture. On even
+// cells (32 x 32, side 16) a marker 48 x 40, larger than its box, and one
+// of the box's size whose tileset has an offset (6, -4); on odd cells
+// (33 x 33, side 15: the box Tiled steps by is 32 across) a marker the
+// cell's size, a pixel wider than its box, and one of 45 x 41 with an
+// offset (5, -3). Where Tiled turns each about shows in its render
+var turnMaps = [
+  { name: "shape-hex-turns-large", tile: [32, 32], side: 16, marker: [48, 40] },
+  { name: "shape-hex-turns-offset", tile: [32, 32], side: 16, marker: [32, 32], offset: [6, -4] },
+  { name: "shape-hex-turns-odd", tile: [33, 33], side: 15, marker: [33, 33] },
+  { name: "shape-hex-turns-odd-offset", tile: [33, 33], side: 15, marker: [45, 41], offset: [5, -3] },
+];
+function turnMap(t) {
+  var map = sampleMap({ orientation: H, tile: t.tile, size: [17, 17], axis: AY, index: ODD, side: t.side });
+  map.layerDataFormat = TileMap.CSV;
+  var w = t.marker[0], h = t.marker[1];
+  var file = "shape-marker-" + w + "x" + h + (t.offset ? "-offset" : "");
+  var set = shapeTileset(file, "rect", w, h, 0, [WHITE], function (x, y, colour) {
+    return 2 * x < w && 2 * y < h ? RED : colour;
+  });
+  if (t.offset) set.tileOffset = Qt.point(t.offset[0], t.offset[1]);
+  map.addTileset(set);
+  var layer = new TileLayer("markers");
+  map.addLayer(layer);
+  var edit = layer.edit();
+  for (var i = 0; i < 16; i++) {
+    var flags = (i & 1 ? Tile.FlippedHorizontally : 0) | (i & 2 ? Tile.FlippedVertically : 0) |
+      (i & 4 ? Tile.FlippedAntiDiagonally : 0) | (i & 8 ? Tile.RotatedHexagonal120 : 0);
+    edit.setTile(2 + 4 * (i % 4), 2 + 4 * Math.floor(i / 4), set.tile(0), flags);
+  }
+  edit.apply();
+  return map;
+}
+for (var tt = 0; tt < turnMaps.length; tt++) {
+  (function (t) {
+    saveBoth(t.name, function () { return turnMap(t); });
+    renderTo(t.name, turnMap(t));
+  })(turnMaps[tt]);
+}
+
+// Tall tiles on an isometric map of odd cells (33 x 17), each alone: images
+// of either width parity and either height parity (33 x 40 red, 33 x 41
+// green, 32 x 40 blue, 32 x 41 yellow), each at a cell whose anchor's y is
+// a whole pixel and at one where it is a half, so the render shows where
+// Tiled's raster puts images whose height is not the cell's
+function oddTall() {
+  var map = sampleMap({ orientation: I, tile: [33, 17], size: [12, 12] });
+  map.layerDataFormat = TileMap.CSV;
+  var sizes = [[33, 40, RED], [33, 41, GREEN], [32, 40, BLUE], [32, 41, YELLOW]];
+  var cells = [[[3, 3], [6, 3]], [[9, 3], [3, 6]], [[6, 6], [9, 6]], [[3, 9], [6, 9]]];
+  var layer = new TileLayer("ground");
+  var sets = [];
+  for (var k = 0; k < sizes.length; k++) {
+    var s = sizes[k];
+    sets.push(shapeTileset("shape-tall-odd-" + s[0] + "x" + s[1], "rect", s[0], s[1], 0, [s[2]]));
+    map.addTileset(sets[k]);
+  }
+  map.addLayer(layer);
+  var edit = layer.edit();
+  for (var k = 0; k < sizes.length; k++)
+    for (var c = 0; c < 2; c++) edit.setTile(cells[k][c][0], cells[k][c][1], sets[k].tile(0));
+  edit.apply();
+  return map;
+}
+saveBoth("shape-tall-odd-iso", oddTall);
+renderTo("shape-tall-odd-iso", oddTall());
+
+// ---- the raster of isometric maps of odd cells --------------------------------
+
+// Where toImage() draws a tile on isometric maps of odd cells
+// (`measured-raster.json`): one solid tile alone on a 12 x 12 map, at a
+// cell whose anchor's x is whole and one where it is a half (y the other),
+// for tilesets whose tile size is below, at and past the cell's width
+// across or down: an atlas (its image a file) and an image collection
+// read back from a saved map (Tiled writes its largest image as its tile
+// size). Each row: [cell width, cell height, kind, tileset width, tileset
+// height, image width, image height, x, y, anchor x, anchor y, left,
+// bottom], the anchor `tileToScreen`'s top vertex less half a cell across
+// and plus a cell down, left and bottom the render's opaque pixels'
+var rasterScratch = dir + "maps/make-fixtures-scratch";
+function rasterRow(cell, kind, image, at) {
+  var map = new TileMap();
+  map.setTileSize(cell[0], cell[1]);
+  map.setSize(12, 12);
+  map.orientation = I;
+  var set = new Tileset("raster");
+  var tile;
+  if (kind === "atlas") {
+    solidImage(image[0], image[1], RED).save(rasterScratch + ".png");
+    set.setTileSize(image[0], image[1]);
+    set.image = rasterScratch + ".png";
+    tile = set.tile(0);
+  } else {
+    tile = set.addTile();
+    tile.setImage(solidImage(image[0], image[1], RED));
+  }
+  map.addTileset(set);
+  var layer = new TileLayer("tiles");
+  map.addLayer(layer);
+  var edit = layer.edit();
+  edit.setTile(at[0], at[1], tile);
+  edit.apply();
+  if (kind === "collection") {
+    tiled.mapFormat("tmx").write(map, rasterScratch + ".tmx");
+    map = tiled.mapFormat("tmx").read(rasterScratch + ".tmx");
+  }
+  var cover = coverBox(map.toImage());
+  var top = map.tileToScreen(at[0], at[1]);
+  var tileset = map.tilesets[0];
+  return list([cell[0], cell[1], '"' + kind + '"', tileset.tileWidth, tileset.tileHeight, image[0], image[1],
+    at[0], at[1], top.x - cell[0] / 2, top.y + cell[1], cover[0], cover[3]]);
+}
+var rasterCells = [[33, 17], [33, 15], [31, 17], [21, 11], [33, 16], [32, 17]];
+var rasterRows = [];
+for (var rc = 0; rc < rasterCells.length; rc++) {
+  var cell = rasterCells[rc], tw = cell[0], th = cell[1];
+  var atlasImages = [[tw - 1, 8], [tw, 8], [tw + 1, 8], [8, tw], [8, tw + 1], [tw + 3, 2 * th + 5]];
+  var collectionImages = [[tw, 8], [tw + 1, 8], [8, tw + 1]];
+  var ats = [[6, 5], [7, 5]];
+  for (var ai = 0; ai < atlasImages.length; ai++)
+    for (var at = 0; at < ats.length; at++) rasterRows.push(rasterRow(cell, "atlas", atlasImages[ai], ats[at]));
+  for (var ci = 0; ci < collectionImages.length; ci++)
+    for (var at2 = 0; at2 < ats.length; at2++) rasterRows.push(rasterRow(cell, "collection", collectionImages[ci], ats[at2]));
+}
+File.remove(rasterScratch + ".png");
+File.remove(rasterScratch + ".tmx");
+var rasterFile = new TextFile(dir + "measured-raster.json", TextFile.WriteOnly);
+rasterFile.write('{"tiled": "' + tiled.version + '",\n "rows": [\n  ' + rasterRows.join(",\n  ") + "\n ]}\n");
+rasterFile.commit();

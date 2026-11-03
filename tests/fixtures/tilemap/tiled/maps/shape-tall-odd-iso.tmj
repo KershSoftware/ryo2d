@@ -1,0 +1,115 @@
+{ "compressionlevel":-1,
+ "height":12,
+ "infinite":false,
+ "layers":[
+        {
+         "data":[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 1, 0, 0, 1, 0, 0, 2, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 2, 0, 0, 3, 0, 0, 3, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 4, 0, 0, 4, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+         "height":12,
+         "id":1,
+         "name":"ground",
+         "opacity":1,
+         "type":"tilelayer",
+         "visible":true,
+         "width":12,
+         "x":0,
+         "y":0
+        }],
+ "nextlayerid":2,
+ "nextobjectid":1,
+ "orientation":"isometric",
+ "renderorder":"right-down",
+ "tiledversion":"1.12.2",
+ "tileheight":17,
+ "tilesets":[
+        {
+         "columns":1,
+         "firstgid":1,
+         "grid":
+            {
+             "height":0,
+             "orientation":"orthogonal",
+             "width":0
+            },
+         "image":"..\/images\/shape-tall-odd-33x40.png",
+         "imageheight":40,
+         "imagewidth":33,
+         "margin":0,
+         "name":"shape-tall-odd-33x40",
+         "spacing":0,
+         "tilecount":1,
+         "tileheight":40,
+         "tilewidth":33
+        }, 
+        {
+         "columns":1,
+         "firstgid":2,
+         "grid":
+            {
+             "height":0,
+             "orientation":"orthogonal",
+             "width":0
+            },
+         "image":"..\/images\/shape-tall-odd-33x41.png",
+         "imageheight":41,
+         "imagewidth":33,
+         "margin":0,
+         "name":"shape-tall-odd-33x41",
+         "spacing":0,
+         "tilecount":1,
+         "tileheight":41,
+         "tilewidth":33
+        }, 
+        {
+         "columns":1,
+         "firstgid":3,
+         "grid":
+            {
+             "height":0,
+             "orientation":"orthogonal",
+             "width":0
+            },
+         "image":"..\/images\/shape-tall-odd-32x40.png",
+         "imageheight":40,
+         "imagewidth":32,
+         "margin":0,
+         "name":"shape-tall-odd-32x40",
+         "spacing":0,
+         "tilecount":1,
+         "tileheight":40,
+         "tilewidth":32
+        }, 
+        {
+         "columns":1,
+         "firstgid":4,
+         "grid":
+            {
+             "height":0,
+             "orientation":"orthogonal",
+             "width":0
+            },
+         "image":"..\/images\/shape-tall-odd-32x41.png",
+         "imageheight":41,
+         "imagewidth":32,
+         "margin":0,
+         "name":"shape-tall-odd-32x41",
+         "spacing":0,
+         "tilecount":1,
+         "tileheight":41,
+         "tilewidth":32
+        }],
+ "tilewidth":33,
+ "type":"map",
+ "version":"1.10",
+ "width":12
+}
