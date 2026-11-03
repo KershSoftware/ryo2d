@@ -171,21 +171,34 @@ const SIDE: u32 = 128;
 /// light: four tile layers of 128 x 128 cells over an atlas, the third
 /// y-sorted; an image layer; an object layer holding a tile object. The
 /// light is in both, so each frame is lit and the map's frame differs only
-/// by the map (its shadow chains among them). A `tall` map is isometric, on
-/// cells of 16 x 8, so its 16 px tiles stand taller than their cells and
-/// its plain layers draw in Tiled's order across tilesets and chunks
+/// by the map (its shadow chains among them). Its tiles fit their cells
+/// (`Art::Fitting`), or its plain layers draw in Tiled's order across
+/// tilesets and chunks (the other `Art`s)
 struct StaticMap {
   empty: bool,
-  tall: bool,
+  art: Art,
+}
+
+/// The static map's grid, and how its 16 px tiles sit in their cells
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Art {
+  /// Orthogonal, on cells of 16 px: the tiles fit
+  Fitting,
+  /// Isometric, on cells of 16 x 8: the tiles stand taller than their
+  /// cells, so its layers draw chunk by chunk in row order, a part a draw
+  Tall,
+  /// Staggered along y, on cells of 12 x 8: the tiles reach past their
+  /// cells' sides too, so its layers draw every chunk's runs band by band
+  Wide,
 }
 
 impl StaticMap {
   /// Where the map's middle is in its pixels
   fn centre(&self) -> Vec2 {
-    if self.tall {
-      Vec2::new(SIDE as f32 * 8.0, SIDE as f32 * 4.0)
-    } else {
-      Vec2::splat(SIDE as f32 * 8.0)
+    match self.art {
+      Art::Fitting => Vec2::splat(SIDE as f32 * 8.0),
+      Art::Tall => Vec2::new(SIDE as f32 * 8.0, SIDE as f32 * 4.0),
+      Art::Wide => Vec2::new(SIDE as f32 * 6.0, SIDE as f32 * 2.0),
     }
   }
 }
@@ -228,10 +241,17 @@ impl Scene for StaticMap {
       },
     );
     let set = TilesetSource::Asset(ctx.assets().add(set));
-    let mut map = if self.tall {
-      TileMap::new(UVec2::splat(SIDE), UVec2::new(16, 8)).with_shape(GridShape::Isometric)
-    } else {
-      TileMap::new(UVec2::splat(SIDE), UVec2::splat(16))
+    let mut map = match self.art {
+      Art::Fitting => TileMap::new(UVec2::splat(SIDE), UVec2::splat(16)),
+      Art::Tall => {
+        TileMap::new(UVec2::splat(SIDE), UVec2::new(16, 8)).with_shape(GridShape::Isometric)
+      }
+      Art::Wide => {
+        TileMap::new(UVec2::splat(SIDE), UVec2::new(12, 8)).with_shape(GridShape::Staggered {
+          axis: StaggerAxis::Y,
+          index: StaggerIndex::Odd,
+        })
+      }
     };
     let set = map.add_tileset(set);
     let backdrop = ctx.assets().add(Image::solid_rect(64, 64, 20, 30, 60, 255));
@@ -396,25 +416,60 @@ fn look_at(engine: &mut HeadlessEngine, at: Vec2) {
 
 #[test]
 fn a_frame_drawing_a_static_map_allocates_nothing() {
-  static_frames_allocate_nothing(false);
+  static_frames_allocate_nothing(Art::Fitting);
 }
 
 #[test]
 fn a_frame_drawing_an_isometric_map_of_tall_tiles_in_tileds_order_allocates_nothing() {
-  static_frames_allocate_nothing(true);
+  static_frames_allocate_nothing(Art::Tall);
 }
 
-/// A frame drawing the static map (`tall` or not), still and panning over
-/// chunks it has drawn, makes no allocation of the engine's own an empty
-/// frame does not, and its own path none inside the GPU API
-fn static_frames_allocate_nothing(tall: bool) {
-  let centre = StaticMap { empty: true, tall }.centre();
+#[test]
+fn a_frame_drawing_a_staggered_map_of_wide_tiles_run_by_run_allocates_nothing() {
+  static_frames_allocate_nothing(Art::Wide);
+}
+
+/// The most draws a chunk's tileset takes in `engine`'s last frame, over
+/// its plain tile layers: one where each part draws whole, more where a
+/// layer draws its chunks' runs band by band
+fn draws_a_part(engine: &mut HeadlessEngine) -> usize {
+  let world = engine.world_mut();
+  let y_sorted: Vec<Entity> = world
+    .query::<(Entity, &LayerInfo)>()
+    .iter(world)
+    .filter(|(_, info)| info.y_sorted)
+    .map(|(entity, _)| entity)
+    .collect();
+  let mut parts: BTreeMap<String, usize> = BTreeMap::new();
+  for (layer, chunk, tileset, _, _) in engine.tile_draws() {
+    if !y_sorted.contains(&layer) {
+      *parts
+        .entry(format!("{layer:?} {chunk} {tileset}"))
+        .or_insert(0) += 1;
+    }
+  }
+  parts.values().copied().max().unwrap_or(0)
+}
+
+/// A frame drawing the static map of `art`, still and panning over chunks
+/// it has drawn, makes no allocation of the engine's own an empty frame
+/// does not, and its own path none inside the GPU API
+fn static_frames_allocate_nothing(art: Art) {
+  let centre = StaticMap { empty: true, art }.centre();
   let (Some(mut empty), Some(mut map)) = (
-    engine(StaticMap { empty: true, tall }, centre),
-    engine(StaticMap { empty: false, tall }, centre),
+    engine(StaticMap { empty: true, art }, centre),
+    engine(StaticMap { empty: false, art }, centre),
   ) else {
     return;
   };
+  // The path drawing it: a part a draw while its tiles fit or stand tall
+  // on an isometric grid, its runs band by band while they reach across
+  // on a staggered one
+  let most = draws_a_part(&mut map);
+  match art {
+    Art::Fitting | Art::Tall => assert_eq!(most, 1, "{art:?}: each part draws whole"),
+    Art::Wide => assert!(most > 1, "{art:?}: a part draws as runs, {most} at most"),
+  }
   // Panning 256 px right and back, its chunks drawn the first time over
   let pan = |frame: usize| {
     let t = (frame % 64) as f32 / 64.0;
@@ -434,12 +489,14 @@ fn static_frames_allocate_nothing(tall: bool) {
     let (drawn, nothing) = (traced(&mut map), traced(&mut empty));
     let own = |frame: &Frame| frame.own.values().sum::<usize>();
     println!(
-      "frame {frame} at {at}: the map's frame {} allocations ({} the engine's own), an empty \
-       frame {} ({} its own)",
+      "{art:?}, frame {frame} at {at}: the map's frame {} allocations ({} the engine's own), an \
+       empty frame {} ({} its own); {} tile draws, at most {} a part",
       drawn.count,
       own(&drawn),
       nothing.count,
       own(&nothing),
+      map.tile_draws().len(),
+      draws_a_part(&mut map),
     );
     let more = more(&drawn, &nothing);
     assert!(
