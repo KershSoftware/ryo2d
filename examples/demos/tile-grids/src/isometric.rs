@@ -1,5 +1,6 @@
 //! The page "An isometric town": `maps/town.tmx`, an isometric map of 16 x
-//! 16 cells of 232 x 110 drawn with Kenney's Sketch Town, written by Tiled.
+//! 16 cells of 116 x 55 drawn with Kenney's Sketch Town (halved), written by
+//! Tiled.
 //! Its `ground` layer holds grass and water blocks, their tops on the cells
 //! (the ground tileset draws them a cell lower), and its `props` layer,
 //! y-sorted, the castle's walls and towers and the trees, taller than their
@@ -31,17 +32,16 @@ const WATER: &str = "water";
 const GRASS: &str = "grass";
 /// The view's background, should the map give none
 const SKY: Color = Color::rgb(120, 185, 216);
-/// The knight, 64 px tall on cells 232 wide, 16 screen pixels at a quarter
-/// zoom
+/// The knight, 32 px tall on cells 116 wide, 16 screen pixels at half zoom
 const KNIGHT: Walk = Walk {
   sprite: 97,
-  scale: 4.0,
-  radius: 20.0,
-  speed: 360.0,
+  scale: 2.0,
+  radius: 10.0,
+  speed: 180.0,
 };
-/// The zooms the page offers: a quarter shows most of the town, a half
+/// The zooms the page offers: a half shows most of the town, a whole
 /// draws the knight's pixels two to a texel
-const ZOOMS: [f32; 2] = [0.25, 0.5];
+const ZOOMS: [f32; 2] = [0.5, 1.0];
 /// The settings rows, for the notes under the panel
 const ROWS: usize = 1;
 
@@ -139,7 +139,7 @@ impl DemoPage for TownPage {
   }
 
   fn settings(&mut self, s: &mut Settings) {
-    s.choice("Zoom", &mut self.zoom, &["1/4", "1/2"]);
+    s.choice("Zoom", &mut self.zoom, &["1/2", "1"]);
   }
 
   fn controls(&self) -> Vec<Control> {
@@ -219,7 +219,7 @@ impl DemoPage for TownPage {
     );
     let lines = vec![
       (
-        "Isometric cells of 232 x 110; walls and trees y-sorted".to_string(),
+        "Isometric cells of 116 x 55; walls and trees y-sorted".to_string(),
         Color::WHITE,
       ),
       (pointer, GOOD),

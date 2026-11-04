@@ -1,27 +1,27 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<map version="1.11" tiledversion="1.12.2" orientation="hexagonal" renderorder="right-down" width="8" height="9" tilewidth="120" tileheight="140" infinite="0" hexsidelength="70" staggeraxis="y" staggerindex="odd" backgroundcolor="#24313f" nextlayerid="6" nextobjectid="1">
- <tileset firstgid="1" source="../tilesets/hexagon-terrain.tsx"/>
+<map version="1.11" tiledversion="1.12.2" orientation="hexagonal" renderorder="right-down" width="8" height="9" tilewidth="60" tileheight="70" infinite="0" hexsidelength="35" staggeraxis="y" staggerindex="odd" backgroundcolor="#24313f" nextlayerid="6" nextobjectid="1">
+ <tileset firstgid="1" source="../tilesets/hexagon-board.tsx"/>
  <layer id="1" name="board" width="8" height="9">
   <properties>
    <property name="collides" type="bool" value="false"/>
    <property name="occludes" type="bool" value="false"/>
   </properties>
   <data encoding="csv">
-85,69,14,14,14,47,47,94,
-69,108,14,14,14,47,78,46,
-69,108,14,14,53,47,47,47,
-85,69,14,14,14,97,47,47,
-14,14,14,97,97,97,27,805306395,
-14,14,97,97,3489660955,3758096411,3489660955,3489660955,
-14,14,14,3758096411,268435483,98,3489660955,805306395,
-53,14,27,3758096411,268435483,536870939,90,27,
-14,14,805306395,268435483,3489660955,82,3758096411,3758096411
+2,3,1,1,1,9,9,12,
+3,5,1,1,1,9,11,14,
+3,5,1,1,6,9,9,9,
+2,3,1,1,1,17,9,9,
+1,1,1,17,17,17,18,805306386,
+1,1,17,17,3489660946,3758096402,3489660946,3489660946,
+1,1,1,3758096402,268435474,21,3489660946,805306386,
+6,1,18,3758096402,268435474,536870930,20,18,
+1,1,805306386,268435474,3489660946,19,3758096402,3758096402
 </data>
  </layer>
  <layer id="2" name="range" width="8" height="9" opacity="0.45">
   <properties>
    <property name="collides" type="bool" value="false"/>
-   <property name="mark" type="int" value="26"/>
+   <property name="mark" type="int" value="17"/>
    <property name="occludes" type="bool" value="false"/>
   </properties>
   <data encoding="csv">
@@ -39,7 +39,7 @@
  <layer id="3" name="ring" width="8" height="9">
   <properties>
    <property name="collides" type="bool" value="false"/>
-   <property name="mark" type="int" value="74"/>
+   <property name="mark" type="int" value="21"/>
    <property name="occludes" type="bool" value="false"/>
   </properties>
   <data encoding="csv">
@@ -57,7 +57,7 @@
  <layer id="4" name="neighbours" width="8" height="9">
   <properties>
    <property name="collides" type="bool" value="false"/>
-   <property name="mark" type="int" value="33"/>
+   <property name="mark" type="int" value="22"/>
    <property name="occludes" type="bool" value="false"/>
   </properties>
   <data encoding="csv">
@@ -75,7 +75,7 @@
  <layer id="5" name="line" width="8" height="9">
   <properties>
    <property name="collides" type="bool" value="false"/>
-   <property name="mark" type="int" value="66"/>
+   <property name="mark" type="int" value="23"/>
    <property name="occludes" type="bool" value="false"/>
   </properties>
   <data encoding="csv">

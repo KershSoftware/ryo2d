@@ -22,7 +22,7 @@ const TILESETS: [&str; 5] = [
   "tilesets/platformer.tsx",
   "tilesets/sketch-town-ground.tsx",
   "tilesets/sketch-town-props.tsx",
-  "tilesets/hexagon-terrain.tsx",
+  "tilesets/hexagon-board.tsx",
   "tilesets/dungeon.tsx",
 ];
 const MAPS: [&str; 7] = [
@@ -47,7 +47,7 @@ const GRIDS: [(&str, &[&str]); 6] = [
   ),
   (
     "maps/hex-board.tmx",
-    &["\"orientation\":\"hexagonal\"", "\"hexsidelength\":70"],
+    &["\"orientation\":\"hexagonal\"", "\"hexsidelength\":35"],
   ),
   (
     "maps/dungeon.tmx",

@@ -1370,10 +1370,18 @@ fn the_town_character_draws_behind_a_wall_and_in_front_of_it() {
       .filter(|&&(x, y)| shown.get_pixel(x, y) == bare_shown.get_pixel(x, y))
       .count();
     if at == behind {
+      // Behind it, the wall draws over the knight: no pixel where they
+      // overlap shows the knight as it draws in the open, and nearly all
+      // show the wall alone (the rest are its outline's see-through
+      // texels, the knight faint behind them)
       assert_eq!(
-        covered,
-        both.len(),
-        "behind the wall, the wall covers the character where they overlap"
+        over, 0,
+        "behind the wall, the knight never draws over it where they overlap"
+      );
+      assert!(
+        covered * 10 >= both.len() * 9,
+        "behind the wall, the wall covers the knight: {covered} of {} pixels",
+        both.len()
       );
     } else {
       assert_eq!(

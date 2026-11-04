@@ -1,5 +1,5 @@
 //! The page "A hex board": `maps/hex-board.tmx`, 8 x 9 pointy-topped
-//! hexagons of Kenney's Hexagon Pack in rows, every other row half a hex
+//! hexagons of 60 x 70 (Kenney's Hexagon Pack, halved) in rows, every other row half a hex
 //! right, written by Tiled. The sand's dunes are turned a sixth of a turn
 //! at a time (Tiled's hex turns, `TileFlip::HEX_ROTATE_60` and
 //! `HEX_ROTATE_120`), so their ripples run three ways; the trees and rocks
@@ -27,8 +27,8 @@ const TERRAIN: &str = "board";
 const MARKS: [&str; 4] = ["range", "ring", "neighbours", "line"];
 /// The view's background, should the map give none
 const NIGHT: Color = Color::rgb(36, 49, 63);
-/// The zoom the board fits the view at: 60 x 70 px a hex
-const ZOOM: f32 = 0.5;
+/// The zoom the board fits the view at: 60 x 70 px a hex, a texel a pixel
+const ZOOM: f32 = 1.0;
 /// The hex selected until a click picks another: the board's middle
 const FIRST: IVec2 = IVec2::new(4, 4);
 /// The settings rows, for the notes under the panel
@@ -215,7 +215,7 @@ impl DemoPage for HexPage {
     let (range, ring) = (self.marks[0].1.len(), self.marks[1].1.len());
     let mut lines = vec![
       (
-        "Pointy hexagons of 120 x 140, sides of 70".to_string(),
+        "Pointy hexagons of 60 x 70, sides of 35".to_string(),
         Color::WHITE,
       ),
       (

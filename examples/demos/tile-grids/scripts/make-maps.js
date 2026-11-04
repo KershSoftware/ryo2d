@@ -139,23 +139,26 @@ save(platformer, tiled.tilesetFormat("tsx"), "tilesets/platformer.tsx");
 
 // ---- the other grids' tilesets -----------------------------------------------
 
-// Kenney's Sketch Town, one picture a tile (256 x 352): blocks and props
-// drawn for isometric cells of 232 x 110, each picture standing 12 px left of
-// its cell (Kenney's own tileset's offset). A block is a cell high, so it is
-// two tilesets of the same pictures' kind: the ground's blocks drawn a cell
-// lower (offset y 116), their tops on the cells, and the props standing on
-// the cells (offset y 6), so a prop stands on the block of its cell and the
-// cells the characters walk, pick and collide on are the blocks' tops. Each
+// Kenney's Sketch Town, one picture a tile, halved and cut to its bottom
+// 128 rows (scripts/derive-art.sh): blocks and props drawn for isometric
+// cells of 116 x 55 (the pack's 232 x 110 halved; its diamond is 55 tall,
+// so the cell is too, and its half-cell steps fall on half pixels), each
+// picture standing 6 px left of its cell (Kenney's own tileset's offset,
+// halved). A block is a cell high, so it is two tilesets of the same
+// pictures' kind: the ground's blocks drawn a cell lower (offset y 58),
+// their tops on the cells, and the props standing on the cells (offset y
+// 3), so a prop stands on the block of its cell and the cells the
+// characters walk, pick and collide on are the blocks' tops. Each
 // tileset's grid stays orthogonal: the collision shapes are in the
 // pictures' pixels
 var SKETCH = "kenney-sketch-town/";
-var ISO_W = 232, ISO_H = 110;
-var SKETCH_W = 256, SKETCH_H = 352;
+var ISO_W = 116, ISO_H = 55;
+var SKETCH_W = 128, SKETCH_H = 128, SKETCH_LEFT = 6;
 
 function collection(name, offsetY, files) {
   var set = new Tileset(name);
   set.setTileSize(SKETCH_W, SKETCH_H);
-  set.tileOffset = Qt.point(-12, offsetY);
+  set.tileOffset = Qt.point(-SKETCH_LEFT, offsetY);
   for (var i = 0; i < files.length; i++) {
     var tile = set.addTile();
     tile.imageFileName = file(SKETCH + files[i] + ".png");
@@ -166,7 +169,7 @@ function collection(name, offsetY, files) {
 // The cell's diamond in a picture drawn with offset y `offsetY`: a shape on
 // its four vertices collides as the whole cell
 function diamond(offsetY) {
-  var top = SKETCH_H - offsetY - ISO_H, left = 12;
+  var top = SKETCH_H - offsetY - ISO_H, left = SKETCH_LEFT;
   var shape = new MapObject(MapObject.Polygon, "");
   shape.x = 0;
   shape.y = 0;
@@ -184,7 +187,7 @@ function diamond(offsetY) {
 // cell's in the map: top-left the diamond's top vertex, top-right its right
 // one, bottom-right its bottom, bottom-left its left. The pack's edges
 // cover every corner combination but the two diagonals. Water collides
-var GROUND_OFFSET = 116, PROPS_OFFSET = 6;
+var GROUND_OFFSET = 58, PROPS_OFFSET = 3;
 var GROUND_FILES = [
   ["grass_center_N", [1, 1, 1, 1]],
   ["water_center_N", [2, 2, 2, 2]],
@@ -227,14 +230,25 @@ shapes(sketchProps, [PROP.castle_wall_N, PROP.castle_wall_E, PROP.castle_tower_N
 });
 save(sketchProps, tiled.tilesetFormat("tsx"), "tilesets/sketch-town-props.tsx");
 
-// Kenney's Hexagon Pack: its terrain sheet, pointy-topped hexagons of 120 x
-// 140 two pixels apart, 8 a row. Nothing collides: hexagonal layers don't
-var hexTerrain = new Tileset("hexagon-terrain");
-hexTerrain.setTileSize(120, 140);
-hexTerrain.tileSpacing = 2;
-hexTerrain.margin = 0;
-hexTerrain.imageFileName = file("kenney-hexagon-pack/hexagonTerrain_sheet.png");
-save(hexTerrain, tiled.tilesetFormat("tsx"), "tilesets/hexagon-terrain.tsx");
+// Kenney's Hexagon Pack: the hexagons the board uses, cut from its terrain
+// sheet and halved (scripts/derive-art.sh), pointy-topped hexagons of 60 x
+// 70 side by side, 6 a row, in HEX_SHEET's order. Nothing collides:
+// hexagonal layers don't
+var HEX_SHEET = [
+  "grass_05", "grass_10", "grass_12", "grass_13", "grass_11", "grass_14",
+  "grass_15", "grass_16", "dirt_06", "dirt_11", "dirt_12", "dirt_14",
+  "dirt_13", "dirt_16", "dirt_18", "dirt_17", "stone_07", "sand_07",
+  "sand_14", "sand_13", "sand_12", "sand_01", "stone_01", "mars_01",
+];
+function hexTile(name) {
+  var id = HEX_SHEET.indexOf(name);
+  if (id < 0) fail("no hexagon " + name + " in the board's sheet");
+  return id;
+}
+var hexTerrain = new Tileset("hexagon-board");
+hexTerrain.setTileSize(60, 70);
+hexTerrain.imageFileName = file("kenney-hexagon-pack/hexagon-board.png");
+save(hexTerrain, tiled.tilesetFormat("tsx"), "tilesets/hexagon-board.tsx");
 
 // Tiny Dungeon, 16 px, for the oblique dungeon: its grey brick walls solid,
 // a rectangle filling the tile (on an oblique map, the cell unskewed)
@@ -487,7 +501,7 @@ save(meadow, tiled.mapFormat("tmx"), "maps/endless-meadow.tmx");
 
 var SG = external("tilesets/sketch-town-ground.tsx");
 var SP = external("tilesets/sketch-town-props.tsx");
-var HX = external("tilesets/hexagon-terrain.tsx");
+var HX = external("tilesets/hexagon-board.tsx");
 var DG = external("tilesets/dungeon.tsx");
 
 function gridMap(orientation, tileWidth, tileHeight, width, height, background) {
@@ -532,7 +546,7 @@ function prop(roll, trees, rocks) {
 
 // ---- the isometric town ------------------------------------------------------
 
-// 16 x 16 isometric cells of 232 x 110 (an even width, which draws tall art
+// 16 x 16 isometric cells of 116 x 55 (an even width, which draws tall art
 // chunk by chunk). A castle wall rings cells 2 to 10 each way, a tower at
 // each corner and an open gate in each of its two front sides; trees and
 // rocks stand outside it and inside, clear of the walls; a pond lies right
@@ -595,15 +609,15 @@ save(town, tiled.mapFormat("tmx"), "maps/town.tmx");
 
 // ---- the staggered island ----------------------------------------------------
 
-// The same island on two staggered grids of 232 x 110 cells, each 2900 x
-// 1375 px: rows shifted (staggered along y, odd rows half a cell right; 12
+// The same island on two staggered grids of 116 x 55 cells, each 1450 x
+// 687.5 px: rows shifted (staggered along y, odd rows half a cell right; 12
 // x 24 cells) and columns shifted (along x, odd columns half a cell down; 24
 // x 12). A cell is grass where its centre is inside the island's outline
 // (in pixels, so both grids show one island), else sea, which collides;
 // trees grow where a value noise of the centre is high (groves at the same
 // places on both), rocks by a hash of the cell. The character starts in
 // the middle
-var ISLAND_W = 2900, ISLAND_H = 1375;
+var ISLAND_W = 1450, ISLAND_H = 687.5;
 
 // Smooth value noise in 0..1 on a lattice one unit apart
 function noise(x, y, salt) {
@@ -616,7 +630,7 @@ function noise(x, y, salt) {
   return top + (bottom - top) * sy;
 }
 function onIsland(px, py) {
-  var dx = (px - ISLAND_W / 2) / 1060, dy = (py - ISLAND_H / 2) / 470;
+  var dx = (px - ISLAND_W / 2) / 530, dy = (py - ISLAND_H / 2) / 235;
   var angle = Math.atan2(dy, dx);
   var edge = 1 + 0.12 * Math.sin(3 * angle + 0.5) + 0.08 * Math.sin(5 * angle + 2);
   return Math.sqrt(dx * dx + dy * dy) < edge;
@@ -644,9 +658,9 @@ function island(axis, width, height, path) {
         continue;
       }
       g.setTile(x, y, SG.tile(GROUND.grass_center_N));
-      var middle = Math.abs(c[0] - ISLAND_W / 2) < 300 && Math.abs(c[1] - ISLAND_H / 2) < 150;
+      var middle = Math.abs(c[0] - ISLAND_W / 2) < 150 && Math.abs(c[1] - ISLAND_H / 2) < 75;
       if (middle) continue;
-      var grove = noise(c[0] / 320, c[1] / 320, 31) > 0.62;
+      var grove = noise(c[0] / 160, c[1] / 160, 31) > 0.62;
       var id = grove ? prop(hash(x, y, 32) * 0.3, 0.3, 0) : prop(hash(x, y, 33), 0.03, 0.04);
       if (id !== null) p.setTile(x, y, SP.tile(id));
     }
@@ -664,7 +678,7 @@ island(TileMap.StaggerX, 24, 12, "maps/island-columns.tmx");
 
 // ---- the hex board -----------------------------------------------------------
 
-// 8 x 9 pointy-topped hexagons of 120 x 140 with sides of 70 (regular), in
+// 8 x 9 pointy-topped hexagons of 60 x 70 with sides of 35 (regular), in
 // rows, odd rows half a hexagon right. The board is drawn from BOARD, a row
 // a string: g grass, t pines, T trees, f forest, r rocks, d dirt, D dirt
 // with trees, R dirt with rocks, k stone, s sand and c cacti. The sand's
@@ -687,8 +701,9 @@ var BOARD = [
   "ggssscss",
 ];
 var HEX_TILES = {
-  g: [13], t: [84, 68], T: [60, 107], f: [68], r: [52, 44, 36], d: [46], D: [53, 77, 93, 101],
-  R: [45, 61, 69], k: [96], s: [26], c: [81, 89, 97],
+  g: ["grass_05"], t: ["grass_10", "grass_12"], T: ["grass_13", "grass_11"], f: ["grass_12"],
+  r: ["grass_14", "grass_15", "grass_16"], d: ["dirt_06"], D: ["dirt_11", "dirt_12", "dirt_14", "dirt_13"],
+  R: ["dirt_16", "dirt_18", "dirt_17"], k: ["stone_07"], s: ["sand_07"], c: ["sand_14", "sand_13", "sand_12"],
 };
 var TURNS = [
   0,
@@ -699,11 +714,11 @@ var TURNS = [
   Tile.FlippedHorizontally | Tile.FlippedVertically | Tile.RotatedHexagonal120,
 ];
 // The marks' rims: beige, red and grey; the range a see-through sand wash
-var MARKS = [["range", 26, 0.45], ["ring", 74, 1], ["neighbours", 33, 1], ["line", 66, 1]];
-var board = gridMap(TileMap.Hexagonal, 120, 140, 8, BOARD.length, "#24313f");
+var MARKS = [["range", "sand_07", 0.45], ["ring", "sand_01", 1], ["neighbours", "stone_01", 1], ["line", "mars_01", 1]];
+var board = gridMap(TileMap.Hexagonal, 60, 70, 8, BOARD.length, "#24313f");
 board.staggerAxis = TileMap.StaggerY;
 board.staggerIndex = TileMap.StaggerOdd;
-board.hexSideLength = 70;
+board.hexSideLength = 35;
 board.addTileset(HX);
 var boardLayer = tileLayer("board", { collides: false, occludes: false });
 var boardEdit = boardLayer.edit();
@@ -714,13 +729,13 @@ for (var by = 0; by < BOARD.length; by++) {
     if (!options) fail("no hex tile for '" + kind + "'");
     var roll = hash(bx, by, 41);
     var flags = kind == "s" ? TURNS[Math.floor(hash(bx, by, 42) * TURNS.length)] : 0;
-    boardEdit.setTile(bx, by, HX.tile(options[Math.floor(roll * options.length)]), flags);
+    boardEdit.setTile(bx, by, HX.tile(hexTile(options[Math.floor(roll * options.length)])), flags);
   }
 }
 boardEdit.apply();
 board.addLayer(boardLayer);
 for (var mk = 0; mk < MARKS.length; mk++) {
-  var mark = tileLayer(MARKS[mk][0], { collides: false, occludes: false, mark: MARKS[mk][1] });
+  var mark = tileLayer(MARKS[mk][0], { collides: false, occludes: false, mark: hexTile(MARKS[mk][1]) });
   mark.opacity = MARKS[mk][2];
   board.addLayer(mark);
 }
