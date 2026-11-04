@@ -17,8 +17,8 @@ use crate::core::scene::{Scene, SceneContext};
 use crate::core::testing::HeadlessEngine;
 use crate::core::tilemap::test_util::{MapWorld, files_with, layers_of, load_map, maps_landed};
 use crate::core::tilemap::{
-  LdtkProject, MapEvent, MapIds, MapLayerRef, MapObject, MapOccluder, MapRoot, MapTile, MapsView,
-  Tile, TileLayerData, TileMap,
+  GridShape, LdtkProject, MapEvent, MapGrid, MapIds, MapLayerRef, MapObject, MapOccluder, MapRoot,
+  MapTile, MapsView, Tile, TileLayerData, TileMap,
 };
 
 /// What a game put on an entity
@@ -827,6 +827,129 @@ fn layers_new_removed_moved_or_reshaped_respawn_and_the_rest_keep_their_entities
     MapsView::new(&mut maps.world).tile(map, "sky", IVec2::ZERO),
     Some(Tile::new(0, 3))
   );
+}
+
+/// The map's class tiles: each one's cell, entity, parent and place in
+/// its layer, by row
+fn class_tiles_of(world: &mut World, map: Entity) -> Vec<(IVec2, Entity, Entity, Vec2)> {
+  let mut found: Vec<(IVec2, Entity, Entity, Vec2)> = world
+    .query::<(Entity, &MapTile, &ChildOf, &Transform)>()
+    .iter(world)
+    .filter(|(_, tile, ..)| tile.map == map)
+    .map(|(entity, tile, child_of, at)| (tile.cell, entity, child_of.parent(), at.translation))
+    .collect();
+  found.sort_by_key(|(cell, ..)| (cell.y, cell.x));
+  found
+}
+
+/// Every occluder entity in the world, sorted
+fn occluders_in(world: &mut World) -> Vec<Entity> {
+  let mut found: Vec<Entity> = world
+    .query::<(Entity, &MapOccluder)>()
+    .iter(world)
+    .map(|(entity, _)| entity)
+    .collect();
+  found.sort();
+  found
+}
+
+#[test]
+fn a_map_saved_with_another_grid_respawns_its_layers() {
+  // A floor of blocks (colliding and casting shadows) and two coins on a
+  // 4 x 3 orthogonal map; then the designer turns the map isometric in
+  // Tiled and saves it, the cells as they were
+  let ground = [0, 6, 0, 6, 0, 0, 0, 0, 1, 1, 1, 1];
+  let orthogonal = map_of((4, 3), &[tiles(1, "ground", (4, 3), &ground, "")]);
+  let isometric = orthogonal.replace(
+    r#""orientation":"orthogonal""#,
+    r#""orientation":"isometric""#,
+  );
+  assert_ne!(orthogonal, isometric);
+  let files = files_with(&[("r/set.tsj", SET), ("r/m.tmj", &orthogonal)]);
+  let (mut maps, map) = spawned(&files, "r/m.tmj", |h| {
+    MapRoot::new(h).with_entity_tiles(&["coin"])
+  });
+  for _ in 0..3 {
+    maps.frame();
+  }
+  let square = MapGrid::new(GridShape::Orthogonal, UVec2::splat(16));
+  let before = layers_of(&mut maps.world, map);
+  assert_eq!(before.len(), 1);
+  let data = maps.world.get::<TileLayerData>(before[0]).map(|d| d.grid);
+  assert_eq!(data, Some(square));
+  let coins = class_tiles_of(&mut maps.world, map);
+  assert_eq!(coins.len(), 2);
+  let parts_before = parts(&mut maps.world, map);
+  let shadows_before = occluders_in(&mut maps.world);
+  assert!(!parts_before.is_empty() && !shadows_before.is_empty());
+
+  let mut watch = Watch::new(&maps.world);
+  files.insert("r/m.tmj", isometric);
+  watch.until_reloaded(&mut maps, map);
+  for _ in 0..3 {
+    maps.frame();
+  }
+
+  // The layer is a new entity on the isometric grid, holding the file's
+  // cells; the old one is gone
+  let diamonds = MapGrid::for_map(
+    GridShape::Isometric,
+    UVec2::splat(16),
+    UVec2::new(4, 3),
+    false,
+  );
+  let after = layers_of(&mut maps.world, map);
+  assert_eq!(after.len(), 1);
+  assert_ne!(after[0], before[0], "a new layer entity");
+  assert!(
+    maps.world.get_entity(before[0]).is_err(),
+    "the old layer went"
+  );
+  let data = maps.world.get::<TileLayerData>(after[0]).map(|d| d.grid);
+  assert_eq!(data, Some(diamonds));
+  assert_eq!(
+    grid_of(&maps.world, after[0]),
+    cells(&[0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1])
+  );
+  assert_eq!(watch.reloaded(), [map]);
+
+  // The coins are new entities on the new layer, at their diamonds'
+  // centres; the old ones are gone
+  let now = class_tiles_of(&mut maps.world, map);
+  let cells_now: Vec<IVec2> = now.iter().map(|(cell, ..)| *cell).collect();
+  assert_eq!(cells_now, [IVec2::new(1, 0), IVec2::new(3, 0)]);
+  for (cell, entity, parent, at) in &now {
+    assert_eq!(*parent, after[0], "coin {cell} is on the new layer");
+    assert_eq!(*at, diamonds.cell_center(*cell), "coin {cell}");
+    assert!(coins.iter().all(|(_, old, ..)| old != entity));
+  }
+  for (cell, old, ..) in &coins {
+    assert!(
+      maps.world.get_entity(*old).is_err(),
+      "the old coin {cell} went"
+    );
+  }
+  let view = MapsView::new(&mut maps.world);
+  let centre = diamonds.cell_center(IVec2::new(2, 2));
+  assert_eq!(
+    view.world_to_cell(map, "ground", centre),
+    Some(IVec2::new(2, 2))
+  );
+
+  // The colliders and shadows were built again from the new layer: none
+  // of the old grid's parts or occluder chains is left
+  let parts_now = parts(&mut maps.world, map);
+  let shadows_now = occluders_in(&mut maps.world);
+  assert!(!parts_now.is_empty() && !shadows_now.is_empty());
+  for (old, ..) in &parts_before {
+    assert!(
+      maps.world.get_entity(*old).is_err(),
+      "collider part {old} went"
+    );
+  }
+  for old in &shadows_before {
+    assert!(maps.world.get_entity(*old).is_err(), "occluder {old} went");
+  }
 }
 
 #[test]

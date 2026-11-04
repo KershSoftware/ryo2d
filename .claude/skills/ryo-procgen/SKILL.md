@@ -2,7 +2,7 @@
 name: ryo-procgen
 description: The optional ryo2d-procgen crate - dungeons (BSP), caves (cellular), noise terrain, random walks, Poisson sampling, WFC and MST corridors.
 metadata:
-  version: 2.3.0
+  version: 2.4.0
 ---
 
 # Ryo2D Procedural Generation Specialist
@@ -386,12 +386,13 @@ let path = Pathfinder::new().find_path(&nav_grid, start_x, start_y, goal_x, goal
 
 ## Tile Maps
 
-`GenerationGrid::to_tile_map` turns a result into a `TileMap` of one tile layer, `"tiles"`, as big as the grid. Spawn it with `MapRoot` and it draws, collides and edits like a map a designer made. `tile_of` gives each `TileType` a tile id in the tileset (`None` leaves the cell empty); row 0 of the grid is the map's top row:
+`GenerationGrid::to_tile_map` turns a result into a `TileMap` of one tile layer, `"tiles"`, on the grid shape it is given. Spawn it with `MapRoot` and it draws, collides and edits like a map a designer made. `tile_of` gives each `TileType` a tile id in the tileset (`None` leaves the cell empty); on an orthogonal map row 0 of the grid is the map's top row:
 
 <!-- with: use ryo2d_procgen::prelude::*; -->
 <!-- given: result: ryo2d_procgen::GenerationResult, tileset: Handle<Tileset> -->
 ```rust
-let map = result.grid().to_tile_map(
+let Some(map) = result.grid().to_tile_map(
+  GridShape::Orthogonal,
   UVec2::splat(16),
   TilesetSource::Asset(tileset.clone()),
   |tile| match tile {
@@ -399,7 +400,31 @@ let map = result.grid().to_tile_map(
     TileType::Floor => Some(1),
     _ => None,
   },
-);
+) else {
+  return;
+};
+let map = ctx.assets().add(map);
+ctx.world.spawn(MapRoot::new(map));
+```
+
+The generators are square, and the grid is the map's square lattice (`MapGrid::lattice`, `ryo-tilemap`), so it converts to orthogonal, isometric, staggered and oblique maps, and cells side by side in the grid are neighbours on every one of them:
+
+- **Orthogonal, isometric and oblique:** the map is as big as the grid and cell `(x, y)` is the map's `(x, y)`. On an isometric map the grid's rows run down to the right as diamonds, so the whole grid stands as one big diamond.
+- **Staggered:** its lattice is indexed otherwise, so each cell goes to its lattice cell's map cell (`Lattice::grid_cell`). The grid's rectangle stands as a diamond on a staggered map just big enough to hold it: a `w` x `h` grid takes `w + h - 1` lines (rows on a map staggered along y, columns along x) of about `(w + h) / 2` cells, and the cells outside the diamond stay empty.
+- **Hexagonal:** `None`. A hexagon has six neighbours, so a square grid has no place on one.
+
+<!-- with: use ryo2d_procgen::prelude::*; -->
+<!-- given: result: ryo2d_procgen::GenerationResult, tileset: Handle<Tileset> -->
+```rust
+let diamonds = GridShape::Staggered { axis: StaggerAxis::Y, index: StaggerIndex::Odd };
+let Some(map) = result.grid().to_tile_map(
+  diamonds,
+  UVec2::new(64, 32),
+  TilesetSource::Asset(tileset.clone()),
+  |tile| (tile == TileType::Floor).then_some(1),
+) else {
+  return;
+};
 let map = ctx.assets().add(map);
 ctx.world.spawn(MapRoot::new(map));
 ```
@@ -411,6 +436,7 @@ ctx.world.spawn(MapRoot::new(map));
 ```rust
 let Some(ground) = loaded.wang_set("ground") else { return };
 let map = result.grid().to_terrain_map(
+  GridShape::Orthogonal,
   UVec2::splat(16),
   TilesetSource::Asset(tileset.clone()),
   ground,
@@ -422,7 +448,7 @@ let map = result.grid().to_terrain_map(
 );
 ```
 
-A Wang position sits between cells, so it must pick one of their colours: a corner takes the highest-precedence colour of the up to four cells that meet there, an edge the higher of its two. Precedence is the set's colour order in Tiled (a higher colour covers a lower one, and every colour covers empty); outside the grid is empty. Adjacent cells then agree on what they share, so the tiling has no seams wherever the set has tiles. The visible effect: the higher colour grows half a cell into the lower one, and a one-cell strip of a lower colour between two higher ones is covered. Order the colours in Tiled to choose. A cell the set has no exact tile for (an incomplete set) takes the closest tile that fits, as Tiled's terrain brush picks it (`WangSet::best_tile`); only a cell no tile fits, or that the empty cell fits best, is left empty. A corner set is asked only for corners, an edge set only for edges.
+A Wang position sits between cells, so it must pick one of their colours: a corner takes the highest-precedence colour of the up to four cells that meet there, an edge the higher of its two. Precedence is the set's colour order in Tiled (a higher colour covers a lower one, and every colour covers empty); outside the grid is empty. Adjacent cells then agree on what they share, so the tiling has no seams wherever the set has tiles. The visible effect: the higher colour grows half a cell into the lower one, and a one-cell strip of a lower colour between two higher ones is covered. Order the colours in Tiled to choose. A cell the set has no exact tile for (an incomplete set) takes the closest tile that fits, as Tiled's terrain brush picks it (`WangSet::best_tile`); only a cell no tile fits, or that the empty cell fits best, is left empty. A corner set is asked only for corners, an edge set only for edges. The corners and edges are worked out in the grid, the square lattice, so on an isometric or staggered map a cell's top edge is the side it shares with the cell above it in the grid, its diamond's top-right side. It takes the same grid shapes as `to_tile_map`, and returns `None` for a hexagonal one.
 
 ## Spawning Sprites
 

@@ -1,6 +1,6 @@
 //! Finding a spawned map's layers, and reading and editing their cells.
 
-use glam::{Affine2, IVec2, UVec2, Vec2};
+use glam::{Affine2, IVec2};
 
 use super::grid::fill_cap;
 use super::spawn::{
@@ -8,7 +8,8 @@ use super::spawn::{
   map_asset, registered_class, spawn_class_tile,
 };
 use super::stream::{note_class_edit, resident_chunks};
-use super::{CHUNK_SIZE, LayerInfo, MapGrid, Properties, Tile, TileGrid};
+use super::view::LayerGrid;
+use super::{CHUNK_SIZE, LayerInfo, Properties, Tile, TileGrid};
 use crate::core::ecs::{ChildOf, DetectChangesMut, Entity, Resource, Transform, World};
 use crate::core::hash::FastSet;
 use crate::core::physics::CellRect;
@@ -608,37 +609,13 @@ pub(crate) fn local_to_world(world: &World, entity: Entity) -> Option<Affine2> {
   None
 }
 
-/// A tile layer's grid and where its space lies in the world
-fn layer_space(world: &World, map: Entity, layer: LayerRef<'_>) -> Option<(MapGrid, Affine2)> {
+/// A tile layer's grid and where its pixels lie in the world, through its
+/// transform and its ancestors' as they are now
+pub(crate) fn layer_grid(world: &World, map: Entity, layer: LayerRef<'_>) -> Option<LayerGrid> {
   let entity = layer_entity(world, map, layer)?;
   let grid = world.get::<TileLayerData>(entity)?.grid;
-  Some((grid, local_to_world(world, entity)?))
-}
-
-/// The cell of a tile layer under the world position `point` (the one whose
-/// outline holds it, as the layer's grid picks), inside the layer or not;
-/// `None` where the layer is scaled to nothing or its cells have no size
-pub(crate) fn world_to_cell(
-  world: &World,
-  map: Entity,
-  layer: LayerRef<'_>,
-  point: Vec2,
-) -> Option<IVec2> {
-  let (grid, affine) = layer_space(world, map, layer)?;
-  if affine.matrix2.determinant() == 0.0 || grid.cell.cmpeq(UVec2::ZERO).any() {
-    return None;
-  }
-  let local = affine.inverse().transform_point2(point);
-  local.is_finite().then(|| grid.cell_at(local))
-}
-
-/// The world position of the centre of a tile layer's `cell`
-pub(crate) fn cell_to_world(
-  world: &World,
-  map: Entity,
-  layer: LayerRef<'_>,
-  cell: IVec2,
-) -> Option<Vec2> {
-  let (grid, affine) = layer_space(world, map, layer)?;
-  Some(affine.transform_point2(grid.cell_center(cell)))
+  Some(LayerGrid {
+    grid,
+    to_world: local_to_world(world, entity)?,
+  })
 }

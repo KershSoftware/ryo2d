@@ -128,6 +128,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use base64::Engine as _;
 use criterion::{BatchSize, Criterion};
+use glam::DVec2;
 use ryo2d::core::asset::pump;
 use ryo2d::core::tilemap::padded::PaddedTilesets;
 use ryo2d::ecs::Schedule;
@@ -1732,6 +1733,12 @@ fn endless_chunk(request: ChunkRequest, set: u16) -> ChunkTiles {
   tiles
 }
 
+/// The grid of the streaming guard's endless world, and of its static
+/// baseline
+fn endless_grid() -> MapGrid {
+  TileMap::infinite(UVec2::splat(TILE)).grid()
+}
+
 /// The streaming guard's scene: an endless world of two unbounded layers
 /// (the ground colliding and casting shadows) streamed round the camera
 struct EndlessScene;
@@ -1763,16 +1770,9 @@ fn crossed_chunks() -> Vec<IVec2> {
   let mut chunks = BTreeSet::new();
   for frame in 0..=WARM + ROUNDS {
     let at = crossing_at(frame);
-    let (first, last) = chunks_over(Rect::new(
-      at.x - half.x,
-      at.y - half.y,
-      2.0 * half.x,
-      2.0 * half.y,
-    ));
-    for y in first.y..=last.y {
-      for x in first.x..=last.x {
-        chunks.insert((y, x));
-      }
+    let area = Rect::new(at.x - half.x, at.y - half.y, 2.0 * half.x, 2.0 * half.y);
+    for chunk in chunks_over(&endless_grid(), area) {
+      chunks.insert((chunk.y, chunk.x));
     }
   }
   chunks.into_iter().map(|(y, x)| IVec2::new(x, y)).collect()
@@ -1839,26 +1839,136 @@ fn grown(view: CameraBounds, by: f32) -> Rect {
   )
 }
 
-/// The chunks overlapping `area` (touching is not overlapping), first and
-/// last, the map at the origin
-fn chunks_over(area: Rect) -> (IVec2, IVec2) {
-  let side = (CHUNK_SIZE * TILE) as f32;
+/// The chunks of a streamed map on `grid`, at the origin, that `area`
+/// takes, by row. On an orthogonal grid those it overlaps (touching is not
+/// overlapping), as the stream takes them. On any other grid every chunk
+/// whose box (its cells' outlines' box) meets it, touching included: the
+/// stream takes those of them `MapGrid`'s chunk range over the area holds,
+/// so this holds every chunk it takes
+fn chunks_over(grid: &MapGrid, area: Rect) -> Vec<IVec2> {
   let (min, max) = (
     Vec2::new(area.x, area.y),
     Vec2::new(area.x + area.width, area.y + area.height),
   );
-  (
-    (min / side).floor().as_ivec2(),
-    ((max / side).ceil() - 1.0).as_ivec2(),
-  )
+  if grid.shape == GridShape::Orthogonal {
+    let side = grid.cell.as_vec2() * CHUNK_SIZE as f32;
+    let (first, last) = (
+      ((min - grid.origin) / side).floor().as_ivec2(),
+      (((max - grid.origin) / side).ceil() - 1.0).as_ivec2(),
+    );
+    return (first.y..=last.y)
+      .flat_map(|y| (first.x..=last.x).map(move |x| IVec2::new(x, y)))
+      .collect();
+  }
+  let steps = ChunkSteps::of(grid);
+  steps.meeting(min.as_dvec2(), max.as_dvec2())
 }
 
-/// The most chunks an area of `view` grown by `by` on every side can
-/// overlap: a span of `n` chunks' length meets `n + 1` of them at most
-fn chunks_bound(view: CameraBounds, by: f32) -> usize {
-  let side = (CHUNK_SIZE * TILE) as f32;
-  let meets = |length: f32| (length / side).ceil() as usize + 1;
-  meets(view.width() + 2.0 * by) * meets(view.height() + 2.0 * by)
+/// The most chunks an area of `view` grown by `by` on every side can take
+/// on `grid`, wherever it is. On an orthogonal grid a span of `n` chunks'
+/// length meets `n + 1` of them at most; on any other grid, the most
+/// chunks' boxes a box of that size meets (`chunks_over`)
+fn chunks_bound(grid: &MapGrid, view: CameraBounds, by: f32) -> usize {
+  let size = Vec2::new(view.width() + 2.0 * by, view.height() + 2.0 * by);
+  if grid.shape == GridShape::Orthogonal {
+    let side = grid.cell.as_vec2() * CHUNK_SIZE as f32;
+    let meets = |length: f32, side: f32| (length / side).ceil() as usize + 1;
+    return meets(size.x, side.x) * meets(size.y, side.y);
+  }
+  ChunkSteps::of(grid).most_meeting(size.as_dvec2())
+}
+
+/// Where a grid's chunks' boxes are: chunk (0, 0)'s, and the steps from a
+/// chunk's box to the next along x and along y (every grid repeats by whole
+/// chunks), so chunk `c`'s box is chunk (0, 0)'s moved by `c.x` steps along
+/// x and `c.y` along y
+struct ChunkSteps {
+  lo: DVec2,
+  hi: DVec2,
+  x: DVec2,
+  y: DVec2,
+}
+
+impl ChunkSteps {
+  fn of(grid: &MapGrid) -> ChunkSteps {
+    let side = CHUNK_SIZE as i32;
+    let corners = |chunk: IVec2| {
+      let first = chunk * side;
+      let b = grid.bounds_of(CellRect::new(first, first + side));
+      (
+        DVec2::new(f64::from(b.x), f64::from(b.y)),
+        DVec2::new(f64::from(b.x + b.width), f64::from(b.y + b.height)),
+      )
+    };
+    let (lo, hi) = corners(IVec2::ZERO);
+    ChunkSteps {
+      lo,
+      hi,
+      x: corners(IVec2::X).0 - lo,
+      y: corners(IVec2::Y).0 - lo,
+    }
+  }
+
+  /// Where `chunk`'s box is moved from chunk (0, 0)'s
+  fn moved(&self, chunk: IVec2) -> DVec2 {
+    self.x * f64::from(chunk.x) + self.y * f64::from(chunk.y)
+  }
+
+  /// The chunks whose boxes meet the box `min..max`, touching included, by
+  /// row: chunk `c`'s does where its move lies in `min - hi..max - lo`
+  fn meeting(&self, min: DVec2, max: DVec2) -> Vec<IVec2> {
+    let (a, b) = (min - self.hi, max - self.lo);
+    // The chunks whose moves can lie in `a..b`: the box's corners taken
+    // back through the steps, a chunk more each side for rounding
+    let det = self.x.x * self.y.y - self.y.x * self.x.y;
+    if det == 0.0 || !det.is_finite() {
+      return Vec::new();
+    }
+    let back = |p: DVec2| {
+      DVec2::new(
+        (p.x * self.y.y - p.y * self.y.x) / det,
+        (p.y * self.x.x - p.x * self.x.y) / det,
+      )
+    };
+    let corners = [a, DVec2::new(b.x, a.y), b, DVec2::new(a.x, b.y)].map(back);
+    let lo = corners.iter().fold(DVec2::INFINITY, |m, &c| m.min(c));
+    let hi = corners.iter().fold(DVec2::NEG_INFINITY, |m, &c| m.max(c));
+    let (first, last) = (
+      lo.floor().as_ivec2() - IVec2::ONE,
+      hi.ceil().as_ivec2() + IVec2::ONE,
+    );
+    (first.y..=last.y)
+      .flat_map(|y| (first.x..=last.x).map(move |x| IVec2::new(x, y)))
+      .filter(|&chunk| {
+        let at = self.moved(chunk);
+        at.cmpge(a).all() && at.cmple(b).all()
+      })
+      .collect()
+  }
+
+  /// The most chunks' boxes a box of `size` meets, wherever it is: the
+  /// most moves a box of `size` plus a chunk's box holds. Slid right until
+  /// the leftmost move it holds is on its left side, then down until the
+  /// topmost is on its top, a box holds as many as it did, so the most is
+  /// that of a box with a move on its left side and one on its top: the
+  /// move (0, 0) on its left (every move is a step from another), and on
+  /// its top any move it can then hold
+  fn most_meeting(&self, size: DVec2) -> usize {
+    // A box `r0..r1` meets the chunks whose moves lie in `r0 - hi..r1 - lo`,
+    // a window `span` in size; the window `t..t + span` is the box's at
+    // `t + hi`
+    let span = size + (self.hi - self.lo);
+    let held = |t: DVec2| self.meeting(t + self.hi, t + self.hi + size).len();
+    let tops = self.meeting(
+      DVec2::new(0.0, -span.y) + self.hi,
+      DVec2::new(span.x, 0.0) + self.lo,
+    );
+    tops
+      .into_iter()
+      .map(|chunk| held(DVec2::new(0.0, self.moved(chunk).y)))
+      .max()
+      .unwrap_or(0)
+  }
 }
 
 /// What an engine of the streaming guard shows
@@ -1947,7 +2057,7 @@ fn chunk_events(
 /// lying outside `keep`, into `outside`
 fn residents(engine: &mut HeadlessEngine, keep: Rect, outside: &mut Vec<IVec2>) -> usize {
   outside.clear();
-  let (first, last) = chunks_over(keep);
+  let kept = chunks_over(&endless_grid(), keep);
   let world = engine.world_mut();
   let mut layers = world.query::<&TileLayerData>();
   let Some(data) = layers
@@ -1960,7 +2070,7 @@ fn residents(engine: &mut HeadlessEngine, keep: Rect, outside: &mut Vec<IVec2>) 
     data
       .tiles
       .chunk_coords()
-      .filter(|chunk| !(chunk.cmpge(first).all() && chunk.cmple(last).all())),
+      .filter(|chunk| !kept.contains(chunk)),
   );
   data.tiles.chunk_coords().count()
 }
@@ -2089,7 +2199,7 @@ fn stream_guard() {
       unfilled.push(round);
     }
     let count = residents(&mut streamed, grown(seen, UNLOAD), &mut outside);
-    let most = chunks_bound(seen, UNLOAD);
+    let most = chunks_bound(&endless_grid(), seen, UNLOAD);
     bound = bound.max(most);
     if count > most {
       over_bound.push((round, count, most));
@@ -2102,7 +2212,9 @@ fn stream_guard() {
       longest = longest.max(*frames);
     }
     most_outside = most_outside.max(outside.len());
-    let came_into_view = chunks_over(grown(drawn, 0.0)) != chunks_over(grown(seen, 0.0));
+    let grid = endless_grid();
+    let came_into_view =
+      chunks_over(&grid, grown(drawn, 0.0)) != chunks_over(&grid, grown(seen, 0.0));
     seen = drawn;
     if round < WARM {
       continue;

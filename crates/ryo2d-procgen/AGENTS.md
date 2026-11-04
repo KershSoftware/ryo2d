@@ -15,7 +15,7 @@ use ryo2d::prelude::*;
 use ryo2d_procgen::prelude::*;
 ```
 
-Inside this repository a demo uses `{ path = "../../../crates/ryo2d-procgen" }`. The crate's prelude exports only its own types; `GenerationGrid::to_navigation_grid(cell_size)` converts a result into the core's `NavigationGrid`, and `to_tile_map` / `to_terrain_map` (in `src/tilemap.rs`) into a `TileMap` (the latter picks Wang edge tiles, a corner or edge taking the highest-precedence colour of the cells that share it).
+Inside this repository a demo uses `{ path = "../../../crates/ryo2d-procgen" }`. The crate's prelude exports only its own types; `GenerationGrid::to_navigation_grid(cell_size)` converts a result into the core's `NavigationGrid`, and `to_tile_map` / `to_terrain_map` (in `src/tilemap.rs`) into a `TileMap` of a `GridShape` (the latter picks Wang edge tiles, a corner or edge taking the highest-precedence colour of the cells that share it). The generators are square, so the grid is the map's square lattice (`MapGrid::lattice`): orthogonal, isometric and oblique maps take cell `(x, y)` as it is, a staggered map takes each cell at `Lattice::grid_cell` of it (`Placement`: the lattice shifted so the lines start at 0, the cells moved along their lines to start at 0, the map as big as holds them), so cells side by side stay neighbours, and a hexagonal map gives `None` (`procgen_builds_isometric_and_staggered_maps_from_its_square_grid`). Wang positions are worked out in the grid, the lattice.
 
 ## Gotchas
 

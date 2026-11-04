@@ -1,15 +1,76 @@
 //! `ctx.maps()`: reading and editing spawned maps.
 
-use glam::{IVec2, Vec2};
+use glam::{Affine2, IVec2, UVec2, Vec2};
 
 use super::edit::{self, LayerRef};
 use super::spawn::{self, MapIds, MapRoot};
 use super::stream;
 use super::world::{self, WorldRef};
-use super::{Tile, TileData, WorldLevel, wang};
+use super::{CellOutline, MapGrid, Tile, TileData, WorldLevel, wang};
 use crate::core::ecs::{Entity, World};
 use crate::core::physics::CellRect;
 use crate::core::ui::Rect;
+
+/// A spawned tile layer's grid and where its pixels are in the world
+/// ([`MapsView::grid`]): the cell under a world point, a cell's centre and
+/// outline in the world, and through `grid` the board questions of any grid
+/// (`neighbours`, `distance`, `line`, `range`, `ring`), whose cells are the
+/// layer's.
+///
+/// `to_world` is the layer's transform and its map's as they were when it
+/// was read: a map that moves later needs reading again.
+///
+/// ```
+/// use ryo2d::prelude::*;
+///
+/// /// The hexes a unit standing under the pointer can reach in `moves`
+/// fn reach(ctx: &mut SceneContext<'_>, board: Entity, pointer: Vec2, moves: u32) -> Vec<IVec2> {
+///   match ctx.maps().grid(board, "ground") {
+///     Some(layer) => layer.grid.range(layer.cell_at_world(pointer), moves),
+///     None => Vec::new(),
+///   }
+/// }
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LayerGrid {
+  /// Where the layer's cells are in its own pixels
+  pub grid: MapGrid,
+  /// The layer's pixels to the world
+  pub to_world: Affine2,
+}
+
+impl LayerGrid {
+  /// The cell whose outline holds the world point `world`
+  /// ([`MapGrid::cell_at`]), inside the layer or not. A layer scaled to
+  /// nothing, of cells with no size, or a point that is not a number,
+  /// gives cell (0, 0) ([`MapsView::world_to_cell`] gives `None` there)
+  pub fn cell_at_world(&self, world: Vec2) -> IVec2 {
+    self.try_cell_at_world(world).unwrap_or(IVec2::ZERO)
+  }
+
+  /// The world position of `cell`'s centre ([`MapGrid::cell_center`])
+  pub fn cell_center_world(&self, cell: IVec2) -> Vec2 {
+    self.to_world.transform_point2(self.grid.cell_center(cell))
+  }
+
+  /// `cell`'s outline in the world ([`MapGrid::cell_outline`] through the
+  /// layer's transform): clockwise on screen from its top-most point, on a
+  /// turned or mirrored map too. For drawing a cursor or a range over the
+  /// map, or a hit test against it
+  pub fn outline_world(&self, cell: IVec2) -> CellOutline {
+    self.grid.cell_outline(cell).mapped(self.to_world)
+  }
+
+  /// `cell_at_world`, `None` where the layer is scaled to nothing, its
+  /// cells have no size, or the point is not a number
+  pub(crate) fn try_cell_at_world(&self, world: Vec2) -> Option<IVec2> {
+    if self.to_world.matrix2.determinant() == 0.0 || self.grid.cell.cmpeq(UVec2::ZERO).any() {
+      return None;
+    }
+    let local = self.to_world.inverse().transform_point2(world);
+    local.is_finite().then(|| self.grid.cell_at(local))
+  }
+}
 
 /// The spawned maps of a world: read and edit their tiles, read their
 /// IntGrids and tile data, and convert between world positions and cells.
@@ -50,14 +111,17 @@ impl<'w> MapsView<'w> {
     self.world.get::<MapIds>(map).is_some()
   }
 
-  /// Whether every chunk overlapping `area` (world pixels) is resident on
-  /// the streamed map `map` ([`MapStream`](super::MapStream)): landed, or
-  /// one of the map's own chunks (a Tiled infinite map's, or those a map
-  /// built in code holds in its asset), so it draws and collides.
-  /// An area of no width or height (a point, or a line) asks for the
-  /// chunks holding it, even on a chunk boundary. False for a map not
-  /// streamed or not landed. For a loading screen after a respawn or a teleport, rather than
-  /// dropping a body into chunks not generated yet
+  /// Whether every chunk `area` (world pixels) takes is resident on the
+  /// streamed map `map` ([`MapStream`](super::MapStream)): landed, or one
+  /// of the map's own chunks (a Tiled infinite map's, or those a map built
+  /// in code holds in its asset), so it draws and collides. The chunks are
+  /// those a view's area takes: on an orthogonal map the chunks overlapping
+  /// it, where an area of no width or height (a point, or a line) asks for
+  /// the chunks holding it, even on a chunk boundary; on any other grid
+  /// every chunk with a cell in it, and the others whose boxes reach it.
+  /// False for a map not streamed or not landed. For a loading screen
+  /// after a respawn or a teleport, rather than dropping a body into chunks
+  /// not generated yet
   ///
   /// ```
   /// use ryo2d::prelude::*;
@@ -287,8 +351,29 @@ impl<'w> MapsView<'w> {
     spawn::tile_data(self.world, self.world.get::<MapRoot>(map)?, tile).cloned()
   }
 
+  /// A tile layer's grid and where its pixels are in the world, through
+  /// the map's and the layer's transforms as they are now: for picking,
+  /// outlines in the world, and the board tools of any grid. `None` for a
+  /// map not landed, a layer it lacks or one that is not a tile layer
+  ///
+  /// ```
+  /// use ryo2d::prelude::*;
+  ///
+  /// /// The cells of a line drawn from one point to another, each step a
+  /// /// neighbour, on whatever grid the layer has
+  /// fn line_between(ctx: &mut SceneContext<'_>, map: Entity, from: Vec2, to: Vec2) -> Vec<IVec2> {
+  ///   let Some(layer) = ctx.maps().grid(map, "ground") else {
+  ///     return Vec::new();
+  ///   };
+  ///   layer.grid.line(layer.cell_at_world(from), layer.cell_at_world(to))
+  /// }
+  /// ```
+  pub fn grid<'a>(&self, map: Entity, layer: impl Into<LayerRef<'a>>) -> Option<LayerGrid> {
+    edit::layer_grid(self.world, map, layer.into())
+  }
+
   /// The cell of a tile layer under the world position `world` (the one
-  /// whose outline holds it on the layer's grid, [`MapGrid::cell_at`](super::MapGrid::cell_at)),
+  /// whose outline holds it on the layer's grid, [`LayerGrid::cell_at_world`]),
   /// whether or not the layer reaches it; `None` for a map scaled to
   /// nothing
   pub fn world_to_cell<'a>(
@@ -297,18 +382,18 @@ impl<'w> MapsView<'w> {
     layer: impl Into<LayerRef<'a>>,
     world: Vec2,
   ) -> Option<IVec2> {
-    edit::world_to_cell(self.world, map, layer.into(), world)
+    self.grid(map, layer)?.try_cell_at_world(world)
   }
 
   /// The world position of the centre of `cell` of a tile layer, on the
-  /// layer's grid ([`MapGrid::cell_center`](super::MapGrid::cell_center))
+  /// layer's grid ([`LayerGrid::cell_center_world`])
   pub fn cell_to_world<'a>(
     &self,
     map: Entity,
     layer: impl Into<LayerRef<'a>>,
     cell: IVec2,
   ) -> Option<Vec2> {
-    edit::cell_to_world(self.world, map, layer.into(), cell)
+    Some(self.grid(map, layer)?.cell_center_world(cell))
   }
 
   /// Spawns the levels of `world` (a Tiled world's handle, or a
@@ -357,3 +442,6 @@ impl<'w> MapsView<'w> {
     world::spawn_levels_in(self.world, world.into(), area, depth, configure)
   }
 }
+
+#[cfg(test)]
+mod tests;

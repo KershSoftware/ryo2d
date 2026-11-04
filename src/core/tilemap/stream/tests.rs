@@ -21,10 +21,12 @@ use crate::core::ecs::kernel::{ChildOf, Disabled, MessageCursor, Messages};
 use crate::core::ecs::world_ext::despawn_game_entities;
 use crate::core::ecs::{Entity, Transform, World};
 use crate::core::graphics::{Camera2d, CameraView};
+use crate::core::physics::CellRect;
 use crate::core::tilemap::test_util::{FIXTURES, MapWorld, files_with, layers_of, load_map};
 use crate::core::tilemap::{
-  GridShape, IntGrid, MapEvent, MapGrid, MapLayerRef, MapRoot, MapTile, MapsView, Tile, TileData,
-  TileFlip, TileLayerData, TileMap, TileShape, Tileset, TilesetImage, TilesetSource,
+  GridShape, IntGrid, LayerKind, MapEvent, MapGrid, MapLayerRef, MapRoot, MapTile, MapsView,
+  StaggerAxis, StaggerIndex, Tile, TileData, TileFlip, TileGrid, TileLayerData, TileMap, TileShape,
+  Tileset, TilesetImage, TilesetSource,
 };
 use crate::core::ui::Rect;
 
@@ -2945,4 +2947,367 @@ fn random_streaming(stream: MapStream) -> usize {
     "{landed} landed, {unloaded} unloaded"
   );
   both
+}
+
+// ---- other grids ------------------------------------------------------------
+
+/// An infinite map of `shape` with `cell`-sized cells over the tiles, with
+/// the tile layers `layers`
+fn infinite_on(shape: GridShape, cell: UVec2, layers: &[&str]) -> TileMap {
+  let mut map = TileMap::infinite(cell).with_shape(shape);
+  map.add_tileset(TilesetSource::Embedded(Arc::new(tiles())));
+  for name in layers {
+    map.add_tile_layer(name);
+  }
+  map
+}
+
+/// The box of `chunk`'s cells' outlines on `grid`
+fn chunk_box(grid: &MapGrid, chunk: IVec2) -> Rect {
+  let first = chunk * 32;
+  grid.bounds_of(CellRect::new(first, first + IVec2::splat(32)))
+}
+
+/// Whether `rect` meets the box `lo..hi`, touching included
+fn meets(rect: Rect, (lo, hi): (Vec2, Vec2)) -> bool {
+  rect.x <= hi.x && rect.x + rect.width >= lo.x && rect.y <= hi.y && rect.y + rect.height >= lo.y
+}
+
+/// The chunks of the cells under points of the box `lo..hi` on `grid`,
+/// every `step` pixels and at its corners: chunks a stream over the box
+/// must have (some of them, never one it may leave out)
+fn chunks_under_box(grid: &MapGrid, (lo, hi): (Vec2, Vec2), step: f32) -> Vec<IVec2> {
+  let mut found = std::collections::BTreeSet::new();
+  let (nx, ny) = (
+    ((hi.x - lo.x) / step).ceil() as i32,
+    ((hi.y - lo.y) / step).ceil() as i32,
+  );
+  for j in 0..=ny {
+    for i in 0..=nx {
+      let at = Vec2::new(
+        (lo.x + i as f32 * step).min(hi.x),
+        (lo.y + j as f32 * step).min(hi.y),
+      );
+      let chunk = TileGrid::chunk_of(grid.cell_at(at));
+      found.insert((chunk.y, chunk.x));
+    }
+  }
+  found.into_iter().map(|(y, x)| IVec2::new(x, y)).collect()
+}
+
+/// Asserts that what `map` holds round the box `lo..hi` (world pixels, the
+/// map at the origin) is what a stream over it should: every chunk with a
+/// cell under the box resident, and no resident chunk whose box misses it
+fn holds_the_box(maps: &mut MapWorld, map: Entity, area: (Vec2, Vec2), label: &str) {
+  let grid = streamed_grid(&mut maps.world, map);
+  let held = resident(&mut maps.world, map);
+  assert!(!held.is_empty(), "{label}: something landed");
+  for chunk in chunks_under_box(&grid, area, 8.0) {
+    assert!(
+      held.contains(&chunk),
+      "{label}: chunk {chunk}, under the box, is resident ({held:?})"
+    );
+  }
+  for &chunk in &held {
+    assert!(
+      meets(chunk_box(&grid, chunk), area),
+      "{label}: resident chunk {chunk}'s box {:?} meets {area:?}",
+      chunk_box(&grid, chunk)
+    );
+  }
+  // Each landed whole, its generated row in place
+  let view = MapsView::new(&mut maps.world);
+  for &chunk in &held {
+    assert_eq!(view.tile(map, "ground", chunk * 32), Some(BLOCK), "{label}");
+  }
+}
+
+/// The grid of `map`'s streamed layers
+fn streamed_grid(world: &mut World, map: Entity) -> MapGrid {
+  let layers = layers_of(world, map);
+  match layers
+    .first()
+    .and_then(|&layer| world.get::<TileLayerData>(layer))
+  {
+    Some(data) => data.grid,
+    None => panic!("{map} has a tile layer"),
+  }
+}
+
+/// Moves `anchor` to `at`
+fn move_anchor(world: &mut World, anchor: Entity, at: Vec2) {
+  match world.get_mut::<Transform>(anchor) {
+    Some(mut placed) => placed.translation = at,
+    None => panic!("{anchor} is an anchor"),
+  }
+}
+
+/// A stream loading and keeping the chunks within `reach` of its anchors,
+/// filling every chunk's first row of "ground"
+fn reaching(reach: f32) -> MapStream {
+  MapStream {
+    load_distance: reach,
+    unload_distance: reach,
+    ..MapStream::new(floors)
+  }
+}
+
+#[test]
+fn an_isometric_stream_loads_the_chunks_around_a_moving_anchor() {
+  let mut maps = MapWorld::new();
+  let iso = infinite_on(GridShape::Isometric, UVec2::new(64, 32), &["ground"]);
+  let reach = 300.0;
+  let map = spawn(&mut maps, iso, reaching(reach), |r| r);
+  let anchor = maps
+    .world
+    .spawn((Transform::from_xy(40.0, 30.0), StreamAnchor))
+    .id();
+  // A view smaller than the load area round each place
+  let view = |at: Vec2| Rect::new(at.x - 200.0, at.y - 120.0, 400.0, 240.0);
+  let around = |at: Vec2| (at - reach, at + reach);
+  until_idle(&mut maps, map);
+  holds_the_box(
+    &mut maps,
+    map,
+    around(Vec2::new(40.0, 30.0)),
+    "at the start",
+  );
+  assert!(MapsView::new(&mut maps.world).stream_ready(map, view(Vec2::new(40.0, 30.0))));
+
+  // Along a diagonal of the diamonds, then off to negative chunks: the
+  // chunks follow, those left behind unload
+  for at in [
+    Vec2::new(1500.0, 700.0),
+    Vec2::new(3000.0, 1400.0),
+    Vec2::new(-5000.0, -2600.0),
+    Vec2::new(-200.0, 4100.0),
+  ] {
+    move_anchor(&mut maps.world, anchor, at);
+    assert!(
+      !MapsView::new(&mut maps.world).stream_ready(map, view(at)),
+      "{at}: not landed yet"
+    );
+    maps.frames_until(|world| MapsView::new(world).stream_ready(map, view(at)));
+    until_idle(&mut maps, map);
+    holds_the_box(&mut maps, map, around(at), &format!("at {at}"));
+  }
+}
+
+#[test]
+fn every_grid_streams_the_chunks_its_anchor_needs_and_no_far_ones() {
+  let shapes = [
+    (
+      GridShape::Staggered {
+        axis: StaggerAxis::Y,
+        index: StaggerIndex::Odd,
+      },
+      UVec2::new(64, 32),
+    ),
+    (
+      GridShape::Staggered {
+        axis: StaggerAxis::X,
+        index: StaggerIndex::Even,
+      },
+      UVec2::new(32, 16),
+    ),
+    (
+      GridShape::Hexagonal {
+        axis: StaggerAxis::Y,
+        index: StaggerIndex::Even,
+        side: 12,
+      },
+      UVec2::new(32, 28),
+    ),
+    (
+      GridShape::Hexagonal {
+        axis: StaggerAxis::X,
+        index: StaggerIndex::Odd,
+        side: 10,
+      },
+      UVec2::new(28, 32),
+    ),
+    (
+      GridShape::Oblique {
+        skew: IVec2::new(-12, 6),
+      },
+      UVec2::new(32, 32),
+    ),
+  ];
+  for (shape, cell) in shapes {
+    let label = format!("{shape:?} {cell}");
+    let mut maps = MapWorld::new();
+    let reach = 250.0;
+    let map = spawn(
+      &mut maps,
+      infinite_on(shape, cell, &["ground"]),
+      reaching(reach),
+      |r| r,
+    );
+    let anchor = maps
+      .world
+      .spawn((Transform::from_xy(0.0, 0.0), StreamAnchor))
+      .id();
+    for at in [
+      Vec2::ZERO,
+      Vec2::new(-1700.0, 900.0),
+      Vec2::new(2600.0, -2100.0),
+    ] {
+      move_anchor(&mut maps.world, anchor, at);
+      until_idle(&mut maps, map);
+      holds_the_box(
+        &mut maps,
+        map,
+        (at - reach, at + reach),
+        &format!("{label} at {at}"),
+      );
+      let point = Rect::new(at.x, at.y, 0.0, 0.0);
+      assert!(
+        MapsView::new(&mut maps.world).stream_ready(map, point),
+        "{label}"
+      );
+    }
+  }
+}
+
+/// The world points a camera's `view` shows: its rectangle, turned and
+/// zoomed, at every `step` of the target's pixels and along its edges
+fn shown_points(view: &CameraView, step: f32) -> Vec<Vec2> {
+  let to_world = view.view_proj.inverse();
+  let (nx, ny) = (
+    (view.rect_size.x / step).ceil() as i32,
+    (view.rect_size.y / step).ceil() as i32,
+  );
+  let mut points = Vec::new();
+  for j in 0..=ny {
+    for i in 0..=nx {
+      let clip = glam::Vec4::new(
+        (-1.0 + 2.0 * i as f32 / nx as f32).min(1.0),
+        (-1.0 + 2.0 * j as f32 / ny as f32).min(1.0),
+        0.0,
+        1.0,
+      );
+      let at = to_world * clip;
+      points.push(Vec2::new(at.x, at.y) / at.w);
+    }
+  }
+  points
+}
+
+#[test]
+fn a_turned_camera_over_an_isometric_stream_shows_no_unfilled_chunk() {
+  let mut maps = MapWorld::new();
+  let map = infinite_on(GridShape::Isometric, UVec2::new(32, 16), &["ground"]);
+  let handle = maps.world.resource_mut::<Assets<TileMap>>().add(map);
+  // The camera's view alone loads: nothing round it
+  let stream = MapStream {
+    load_distance: 0.0,
+    unload_distance: 0.0,
+    land_per_frame: 8,
+    unload_per_frame: 8,
+    ..MapStream::new(floors)
+  };
+  let root = maps.world.spawn((MapRoot::new(handle), stream)).id();
+  maps.settle(root);
+  // Turned 30 degrees and zoomed out to half: a 640 x 360 target shows
+  // 1,280 x 720 world pixels at a slant
+  let camera = Camera2d {
+    zoom: 0.5,
+    ..Camera2d::default()
+  };
+  let turn = 30f32.to_radians();
+  let target = Vec2::new(640.0, 360.0);
+  let place = |center: Vec2| CameraView::compute(center, turn, &camera, Vec2::ZERO, target);
+  let start = Vec2::new(300.0, -200.0);
+  let eye = maps
+    .world
+    .spawn((
+      camera,
+      place(start),
+      Transform::from_translation(start).with_rotation(turn),
+    ))
+    .id();
+  for center in [start, Vec2::new(4100.0, 2300.0), Vec2::new(-6000.0, 1000.0)] {
+    let view = place(center);
+    if let Some(mut seen) = maps.world.get_mut::<CameraView>(eye) {
+      *seen = view;
+    }
+    if let Some(mut at) = maps.world.get_mut::<Transform>(eye) {
+      at.translation = center;
+    }
+    until_idle(&mut maps, root);
+    let bounds = view.bounds;
+    let area = Rect::new(bounds.left, bounds.top, bounds.width(), bounds.height());
+    let view_rs = MapsView::new(&mut maps.world);
+    assert!(
+      view_rs.stream_ready(root, area),
+      "{center}: the view landed"
+    );
+    // Every cell on screen is in a resident chunk, the turned view's
+    // corners and edges included
+    let layer = match view_rs.grid(root, "ground") {
+      Some(layer) => layer,
+      None => panic!("a ground layer"),
+    };
+    let held = resident(&mut maps.world, root);
+    for at in shown_points(&view, 4.0) {
+      let chunk = TileGrid::chunk_of(layer.cell_at_world(at));
+      assert!(
+        held.contains(&chunk),
+        "{center}: {at} on screen is in chunk {chunk}, resident ({held:?})"
+      );
+    }
+    // And nothing whose box misses the view's box
+    let grid = layer.grid;
+    let boxed = (
+      Vec2::new(bounds.left, bounds.top),
+      Vec2::new(bounds.right, bounds.bottom),
+    );
+    for &chunk in &held {
+      assert!(meets(chunk_box(&grid, chunk), boxed), "{center}: {chunk}");
+    }
+  }
+}
+
+#[test]
+fn a_map_whose_streamed_layers_differ_in_grid_streams_by_the_first_and_warns_once() {
+  let seen: Arc<Mutex<Vec<ChunkRequest>>> = Arc::default();
+  let record = Arc::clone(&seen);
+  let generator = move |request: ChunkRequest| {
+    record.lock().expect("not poisoned").push(request);
+    floors(request)
+  };
+  let cell = UVec2::new(64, 32);
+  let mut map = infinite_on(GridShape::Isometric, cell, &["ground", "grid-apart-front"]);
+  let iso = map.grid();
+  if let LayerKind::Tiles { grid, .. } = &mut map.layers[1].kind {
+    *grid = MapGrid::new(GridShape::Orthogonal, UVec2::splat(16));
+  }
+  let mut maps = MapWorld::new();
+  let stream = MapStream {
+    load_distance: 200.0,
+    unload_distance: 200.0,
+    ..MapStream::new(generator)
+  };
+  let before = warnings(&["different grids"]);
+  let map = spawn(&mut maps, map, stream, |r| r);
+  let anchor = maps
+    .world
+    .spawn((Transform::from_xy(10.0, 10.0), StreamAnchor))
+    .id();
+  until_idle(&mut maps, map);
+  move_anchor(&mut maps.world, anchor, Vec2::new(2000.0, 900.0));
+  until_idle(&mut maps, map);
+  for _ in 0..5 {
+    maps.frame();
+  }
+  assert_eq!(warnings(&["different grids"]), before + 1, "warned once");
+  // The first streamed layer's grid lays the chunks out
+  holds_the_box(
+    &mut maps,
+    map,
+    (Vec2::new(1800.0, 700.0), Vec2::new(2200.0, 1100.0)),
+    "by the first layer's grid",
+  );
+  let seen = seen.lock().expect("not poisoned");
+  assert!(seen.iter().all(|request| request.grid == iso));
 }

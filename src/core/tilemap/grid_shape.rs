@@ -117,23 +117,66 @@ impl CellOutline {
       len: len as u8,
     }
   }
+
+  /// The outline taken through `to` (a layer's place in the world), still
+  /// clockwise on screen from its top-most point: turned the other way
+  /// where `to` mirrors it, and started again at the point `to` brings
+  /// top-most (the left one of a level top)
+  pub(crate) fn mapped(&self, to: Affine2) -> CellOutline {
+    let mut out = *self;
+    let points = &mut out.points[..usize::from(self.len)];
+    for point in points.iter_mut() {
+      *point = to.transform_point2(*point);
+    }
+    if to.matrix2.determinant() < 0.0 {
+      points.reverse();
+    }
+    let top = (0..points.len())
+      .min_by(|&a, &b| {
+        points[a]
+          .y
+          .total_cmp(&points[b].y)
+          .then(points[a].x.total_cmp(&points[b].x))
+      })
+      .unwrap_or(0);
+    points.rotate_left(top);
+    out
+  }
 }
 
-/// A square lattice: lattice cell (x, y) is the unit square at (x, y) in
-/// lattice units, which `to_pixel` takes to the layer's pixels. The index
-/// space of orthogonal, isometric and oblique grids; on a staggered grid
-/// the isometric lattice its diamonds make, indexed otherwise
+/// The square lattice a grid's cells make ([`MapGrid::lattice`]): lattice
+/// cell (x, y) is the unit square at (x, y) in lattice units, which
+/// `to_pixel` takes to the layer's pixels, so lattice cells side by side
+/// are neighbours on the grid. The index space of orthogonal, isometric and
+/// oblique grids; on a staggered grid the isometric lattice its diamonds
+/// make, which the grid indexes otherwise (`lattice_cell` and `grid_cell`).
+/// What works on a square grid works on these through it: a generator's
+/// cells placed at `grid_cell` keep their neighbours.
+///
+/// ```
+/// use ryo2d::prelude::*;
+///
+/// let grid = MapGrid::new(
+///   GridShape::Staggered { axis: StaggerAxis::Y, index: StaggerIndex::Odd },
+///   UVec2::new(64, 32),
+/// );
+/// let lattice = grid.lattice().expect("a staggered grid has a square lattice");
+/// // Lattice cells side by side are neighbours on the map
+/// let (a, b) = (lattice.grid_cell(IVec2::new(2, 1)), lattice.grid_cell(IVec2::new(3, 1)));
+/// assert!(grid.neighbours(a).any(|n| n == b));
+/// assert_eq!(lattice.lattice_cell(a), IVec2::new(2, 1));
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq)]
-#[cfg_attr(not(test), allow(dead_code))] // nothing outside the tests reads it yet
-pub(crate) struct Lattice {
+pub struct Lattice {
+  /// Lattice units to the layer's pixels: lattice cell (x, y)'s centre is
+  /// at (x + 0.5, y + 0.5), the centre of its grid cell
   pub to_pixel: Affine2,
   stagger: Option<(StaggerAxis, StaggerIndex)>,
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // nothing outside the tests reads it yet
 impl Lattice {
   /// The lattice cell of a grid cell: the same cell, except on staggered maps
-  pub(crate) fn lattice_cell(&self, cell: IVec2) -> IVec2 {
+  pub fn lattice_cell(&self, cell: IVec2) -> IVec2 {
     match self.stagger {
       None => cell,
       Some((axis, index)) => {
@@ -144,13 +187,40 @@ impl Lattice {
   }
 
   /// The grid cell of a lattice cell: `lattice_cell` undone
-  pub(crate) fn grid_cell(&self, lattice: IVec2) -> IVec2 {
+  pub fn grid_cell(&self, lattice: IVec2) -> IVec2 {
     match self.stagger {
       None => lattice,
       Some((axis, index)) => {
         from_lattice(axis, index, (i64::from(lattice.x), i64::from(lattice.y)))
       }
     }
+  }
+}
+
+/// Where a grid's storage chunks' boxes are (`MapGrid::chunk_boxes`): each
+/// chunk's is `exact_box` of its cells, in exact `f64` pixels with the
+/// origin added. Every grid repeats by whole chunks (a chunk's 32 lines
+/// keep a staggered or hexagonal grid's phase), so a chunk's box is chunk
+/// (0, 0)'s moved by a step along x per chunk and one along y
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ChunkBoxes {
+  lo: DVec2,
+  hi: DVec2,
+  step_x: DVec2,
+  step_y: DVec2,
+}
+
+impl ChunkBoxes {
+  /// `chunk`'s box: (top-left, bottom-right)
+  pub(crate) fn of(&self, chunk: IVec2) -> (DVec2, DVec2) {
+    let at = self.step_x * f64::from(chunk.x) + self.step_y * f64::from(chunk.y);
+    (self.lo + at, self.hi + at)
+  }
+
+  /// Whether `chunk`'s box meets the box `lo..hi`, touching included
+  pub(crate) fn meets(&self, chunk: IVec2, (lo, hi): (DVec2, DVec2)) -> bool {
+    let (min, max) = self.of(chunk);
+    min.cmple(hi).all() && max.cmpge(lo).all()
   }
 }
 
@@ -528,6 +598,23 @@ impl MapGrid {
     self.bounds_between(lo, (lo.0 + side - 1, lo.1 + side - 1))
   }
 
+  /// Where the grid's storage chunks' boxes are, for asking of many chunks
+  /// what `chunk_bounds` gives one ([`ChunkBoxes`])
+  pub(crate) fn chunk_boxes(&self) -> ChunkBoxes {
+    let side = CHUNK_SIZE as i32;
+    let last = IVec2::splat(side - 1);
+    let box_of = |first: IVec2| self.exact_box(first, first + last);
+    let (lo, hi) = box_of(IVec2::ZERO);
+    let (x, _) = box_of(IVec2::new(side, 0));
+    let (y, _) = box_of(IVec2::new(0, side));
+    ChunkBoxes {
+      lo,
+      hi,
+      step_x: x - lo,
+      step_y: y - lo,
+    }
+  }
+
   /// The storage chunks (`CHUNK_SIZE` cells a side, by cell index) whose
   /// cells' outlines may meet `rect`: a superset, never missing one.
   ///
@@ -586,9 +673,10 @@ impl MapGrid {
     (chunk(first), chunk(last))
   }
 
-  /// The square lattice collision and shadows trace in: None on hex maps
-  #[cfg_attr(not(test), allow(dead_code))] // nothing outside the tests reads it yet
-  pub(crate) fn lattice(&self) -> Option<Lattice> {
+  /// The square lattice the grid's cells make, which collision and
+  /// shadows trace in and square generators place cells through: `None` on
+  /// hex maps, whose cells make none
+  pub fn lattice(&self) -> Option<Lattice> {
     let size = self.cell.as_vec2();
     let (x_axis, y_axis, at, stagger) = match self.shape {
       GridShape::Orthogonal => (

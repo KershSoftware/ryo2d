@@ -37,7 +37,7 @@ use crate::core::schedule::{EngineSchedules, FixedSet, Phase, PostUpdateSet};
 
 pub use edit::LayerRef;
 pub use grid::{CHUNK_SIZE, TileGrid};
-pub use grid_shape::{CellOutline, GridShape, MapGrid, StaggerAxis, StaggerIndex};
+pub use grid_shape::{CellOutline, GridShape, Lattice, MapGrid, StaggerAxis, StaggerIndex};
 pub use ldtk::{
   LdtkLevel, LdtkLoader, LdtkProject, Neighbour, NeighbourDirection, WorldLayout, WorldLevel,
 };
@@ -63,7 +63,7 @@ pub use tileset::{
   TileData, TileFrame, TileShape, TileTransformations, Tileset, TilesetImage, URect, WangColor,
   WangKind, WangSet, WangTile,
 };
-pub use view::MapsView;
+pub use view::{LayerGrid, MapsView};
 pub use world::{TileWorld, WorldLevelOf, WorldRef};
 
 /// The systems a tile edit runs through, each in a schedule of its own:

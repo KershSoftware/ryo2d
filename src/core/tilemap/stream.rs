@@ -17,16 +17,17 @@ use std::time::Duration;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use glam::{Affine2, IVec2, UVec2, Vec2};
+use glam::{Affine2, DVec2, IVec2, UVec2, Vec2};
 use serde::ser::SerializeMap;
 
 use super::edit::local_to_world;
 use super::grid::CELLS;
+use super::grid_shape::ChunkBoxes;
 use super::jobs::Worker;
 use super::spawn::{
   LayerTiles, MapLayerRef, MapLayers, MapRoot, MapTile, TileLayerData, map_asset,
 };
-use super::{CHUNK_SIZE, LayerInfo, LayerKind, MapGrid, Tile, TileGrid, TileMap};
+use super::{CHUNK_SIZE, GridShape, LayerInfo, LayerKind, MapGrid, Tile, TileGrid, TileMap};
 use crate::core::ecs::kernel::{Allow, Disabled, QueryState};
 use crate::core::ecs::{
   Component, DetectChangesMut, Entity, Local, Message, Messages, With, World,
@@ -426,7 +427,12 @@ pub struct ChunkRequest {
 /// left behind stay resident a few frames as they go, and the resident
 /// chunks are within the distances again once they have. Distances are
 /// measured in world pixels from the anchor (or the view) to the chunk,
-/// along each axis. A camera's view loads and
+/// along each axis: on an orthogonal map to its rectangle, on any other
+/// grid, where a chunk's cells make a diamond, a strip or a
+/// parallelogram, to the chunks with a cell within the distance (and any
+/// whose box round its cells reaches it), by the grid of the map's first
+/// unbounded tile layer, which a layer on another grid follows, warned
+/// once. A camera's view loads and
 /// keeps the chunks each tile layer shows, so a layer with parallax, or
 /// offset from the map, also has the chunks loaded where it shows them,
 /// however far from the view's own (those chunks are resident in every
@@ -670,6 +676,8 @@ struct Warned {
   span: bool,
   panic: bool,
   unbounded: bool,
+  /// Its unbounded tile layers lie on different grids
+  grids: bool,
   /// The layer names a generator gave that the map lacks
   layers: FastSet<String>,
 }
@@ -715,8 +723,29 @@ struct Anchor {
 struct Area {
   min: Vec2,
   max: Vec2,
-  load: Option<(IVec2, IVec2)>,
-  keep: Option<(IVec2, IVec2)>,
+  load: Option<Span>,
+  keep: Option<Span>,
+}
+
+/// The chunks an area takes: those from `first` to `last` (both included),
+/// and on a grid other than the orthogonal only those whose boxes meet
+/// `meets` (the area's box, in exact map pixels, and where the chunks'
+/// boxes are)
+#[derive(Clone, Copy)]
+struct Span {
+  first: IVec2,
+  last: IVec2,
+  meets: Option<(DVec2, DVec2, ChunkBoxes)>,
+}
+
+impl Span {
+  /// Whether the area takes `chunk`
+  fn holds(&self, chunk: IVec2) -> bool {
+    within((self.first, self.last), chunk)
+      && self
+        .meets
+        .is_none_or(|(lo, hi, boxes)| boxes.meets(chunk, (lo, hi)))
+  }
 }
 
 /// What the stream keeps between frames: the chunk worker, which map and
@@ -841,7 +870,24 @@ impl StreamWork {
     let Some(space) = map_space(world, map) else {
       return;
     };
-    let (grid, chunk_px) = (space.grid, space.chunk_px);
+    let grid = space.grid;
+    let apart = self.layers.iter().any(|&layer| {
+      world
+        .get::<TileLayerData>(layer)
+        .is_some_and(|data| data.grid != grid)
+    });
+    if apart
+      && let Some(mut state) = world.get_mut::<StreamState>(map)
+      && !std::mem::replace(&mut state.warned.grids, true)
+    {
+      crate::engine_warn!(
+        module: "Tilemap",
+        "map {map}: its streamed tile layers (its unbounded ones) lie on different grids (shape, cell size or origin), so the chunks they load are those the first one's grid ({:?}, cells of {}) takes round the anchors (this map warns once)",
+        grid.shape,
+        grid.cell
+      );
+    }
+    let chunking = space.chunking;
     let load_px = distance(stream.load_distance);
     let mut unload_px = distance(stream.unload_distance);
     if unload_px < load_px {
@@ -857,7 +903,7 @@ impl StreamWork {
     }
     self.areas.clear();
     let (cap, mut capped) = (span_cap(), false);
-    let reach = (load_px, unload_px, chunk_px);
+    let reach = (load_px, unload_px, &chunking);
     for anchor in &self.anchors {
       if anchor.camera && !stream.cameras {
         continue;
@@ -894,10 +940,10 @@ impl StreamWork {
       );
     }
     self.call_off(world, map);
-    self.request(world, map, stream, (grid, chunk_px));
+    self.request(world, map, stream, (grid, &chunking));
     self.route(world);
-    let landed = self.land(world, map, stream.land_per_frame, chunk_px);
-    self.unload(world, map, stream, chunk_px, landed > 0);
+    let landed = self.land(world, map, stream.land_per_frame, &chunking);
+    self.unload(world, map, stream, &chunking, landed > 0);
   }
 
   /// A stream's first frame on `map` (its unbounded tile layers found):
@@ -949,7 +995,7 @@ impl StreamWork {
     let kept = |chunk: IVec2| {
       areas
         .iter()
-        .any(|area| area.keep.is_some_and(|range| within(range, chunk)))
+        .any(|area| area.keep.is_some_and(|span| span.holds(chunk)))
     };
     let Some(mut state) = world.get_mut::<StreamState>(map) else {
       return;
@@ -978,14 +1024,14 @@ impl StreamWork {
     world: &mut World,
     map: Entity,
     stream: &MapStream,
-    chunk_px: Vec2,
+    chunking: &Chunking,
     landed: bool,
   ) {
     let areas = &self.areas;
     let kept = |chunk: IVec2| {
       areas
         .iter()
-        .any(|area| area.keep.is_some_and(|range| within(range, chunk)))
+        .any(|area| area.keep.is_some_and(|span| span.holds(chunk)))
     };
     self.gone.clear();
     {
@@ -1009,7 +1055,7 @@ impl StreamWork {
     } else if draining > 0 {
       let StreamWork { gone, areas, .. } = self;
       gone.sort_unstable_by(|a, b| {
-        nearer(nearness(areas, *b, chunk_px), nearness(areas, *a, chunk_px))
+        nearer(nearness(areas, *b, chunking), nearness(areas, *a, chunking))
           .then((a.y, a.x).cmp(&(b.y, b.x)))
       });
       gone.truncate(budget);
@@ -1125,7 +1171,7 @@ impl StreamWork {
     world: &mut World,
     map: Entity,
     stream: &MapStream,
-    (grid, chunk_px): (MapGrid, Vec2),
+    (grid, chunking): (MapGrid, &Chunking),
   ) {
     self.wanted.clear();
     let (epoch, room) = {
@@ -1135,16 +1181,19 @@ impl StreamWork {
       let state = &mut *state;
       let mut waiting = 0;
       for (i, area) in self.areas.iter().enumerate() {
-        let Some((first, last)) = area.load else {
+        let Some(span) = area.load else {
           continue;
         };
-        for y in first.y..=last.y {
-          for x in first.x..=last.x {
+        for y in span.first.y..=span.last.y {
+          for x in span.first.x..=span.last.x {
             let chunk = IVec2::new(x, y);
+            if !span.holds(chunk) {
+              continue;
+            }
             // Each chunk counted once, by the first area wanting it
             let earlier = self.areas[..i]
               .iter()
-              .any(|area| area.load.is_some_and(|range| within(range, chunk)));
+              .any(|area| area.load.is_some_and(|span| span.holds(chunk)));
             if earlier || state.resident.contains(&chunk) {
               continue;
             }
@@ -1160,7 +1209,7 @@ impl StreamWork {
             }
             self
               .wanted
-              .push((nearness(&self.areas, chunk, chunk_px), chunk));
+              .push((nearness(&self.areas, chunk, chunking), chunk));
           }
         }
       }
@@ -1252,7 +1301,7 @@ impl StreamWork {
 
   /// Lands up to `budget` (at least one) of `map`'s generated chunks,
   /// nearest the anchors first
-  fn land(&mut self, world: &mut World, map: Entity, budget: u32, chunk_px: Vec2) -> usize {
+  fn land(&mut self, world: &mut World, map: Entity, budget: u32, chunking: &Chunking) -> usize {
     {
       let Some(mut state) = world.get_mut::<StreamState>(map) else {
         return 0;
@@ -1263,7 +1312,7 @@ impl StreamWork {
       // The nearest last, to pop
       let areas = &self.areas;
       state.ready.sort_unstable_by(|(a, _), (b, _)| {
-        nearer(nearness(areas, *b, chunk_px), nearness(areas, *a, chunk_px))
+        nearer(nearness(areas, *b, chunking), nearness(areas, *a, chunking))
       });
     }
     let mut landed = 0;
@@ -1614,13 +1663,87 @@ fn distance(pixels: f32) -> f32 {
 struct MapSpace {
   /// Its tile layers' grid (its first unbounded layer's)
   grid: MapGrid,
-  /// A chunk's side in its pixels
-  chunk_px: Vec2,
+  /// Where its chunks lie, and which an area takes
+  chunking: Chunking,
   /// Where it lies in the world: its root's transform and its ancestors'
   /// as they are now
   to_world: Affine2,
   /// The world to its space: `to_world` undone
   to_map: Affine2,
+}
+
+/// Where a streamed map's chunks lie in its pixels, and which chunks a box
+/// there takes
+#[derive(Clone, Copy)]
+enum Chunking {
+  /// An orthogonal grid: a chunk is the rectangle of its cells, `side`
+  /// pixels a side from the grid's `origin`, and a box takes the chunks it
+  /// overlaps (touching is not overlapping; on an axis where it has no
+  /// size, the chunk holding it there), so a view takes exactly the chunks
+  /// it shows
+  Square { side: Vec2, origin: Vec2 },
+  /// Any other grid, where a chunk's cells make a diamond, a staggered
+  /// strip or a parallelogram: its box is its cells' outlines' box, and a
+  /// box takes the chunks `MapGrid::chunks_over` finds whose boxes meet it
+  /// (touching included): every chunk with a cell in the box, and of the
+  /// others only those whose boxes reach it
+  Grid { grid: MapGrid, boxes: ChunkBoxes },
+}
+
+impl Chunking {
+  fn of(grid: MapGrid) -> Chunking {
+    if grid.shape == GridShape::Orthogonal {
+      Chunking::Square {
+        side: grid.cell.as_vec2() * CHUNK_SIZE as f32,
+        origin: grid.origin,
+      }
+    } else {
+      Chunking::Grid {
+        grid,
+        boxes: grid.chunk_boxes(),
+      }
+    }
+  }
+
+  /// `chunk`'s box in the map's pixels: (top-left, bottom-right)
+  fn chunk_box(&self, chunk: IVec2) -> (Vec2, Vec2) {
+    match self {
+      Chunking::Square { side, origin } => {
+        let min = chunk.as_vec2() * *side + *origin;
+        (min, min + *side)
+      }
+      Chunking::Grid { boxes, .. } => {
+        let (min, max) = boxes.of(chunk);
+        (min.as_vec2(), max.as_vec2())
+      }
+    }
+  }
+
+  /// The chunks the map-space box `min..max` takes; `None` for a box that
+  /// is not a number
+  fn span(&self, (min, max): (Vec2, Vec2)) -> Option<Span> {
+    match self {
+      Chunking::Square { side, origin } => {
+        chunk_range((min - *origin, max - *origin), *side).map(|(first, last)| Span {
+          first,
+          last,
+          meets: None,
+        })
+      }
+      Chunking::Grid { grid, boxes } => {
+        if !(min.is_finite() && max.is_finite()) {
+          return None;
+        }
+        let size = max - min;
+        let (first, last) = grid.chunks_over(Rect::new(min.x, min.y, size.x, size.y));
+        first.cmple(last).all().then_some(Span {
+          first,
+          last,
+          meets: Some((min.as_dvec2(), max.as_dvec2(), *boxes)),
+        })
+      }
+    }
+  }
 }
 
 /// `map`'s space; `None` for a map with no unbounded tile layer, or scaled
@@ -1633,8 +1756,7 @@ fn map_space(world: &World, map: Entity) -> Option<MapSpace> {
     .filter_map(|&layer| world.get::<TileLayerData>(layer))
     .find(|data| data.tiles.bounds().is_none())?
     .grid;
-  let cell = grid.cell;
-  if cell.cmpeq(UVec2::ZERO).any() {
+  if grid.cell.cmpeq(UVec2::ZERO).any() {
     return None;
   }
   let to_world = local_to_world(world, map).unwrap_or(Affine2::IDENTITY);
@@ -1644,7 +1766,7 @@ fn map_space(world: &World, map: Entity) -> Option<MapSpace> {
   }
   Some(MapSpace {
     grid,
-    chunk_px: cell.as_vec2() * CHUNK_SIZE as f32,
+    chunking: Chunking::of(grid),
     to_world,
     to_map: to_world.inverse(),
   })
@@ -1653,18 +1775,25 @@ fn map_space(world: &World, map: Entity) -> Option<MapSpace> {
 /// `anchor` taken into a space by `to_space` (the map's, or a layer's as a
 /// camera sees it): the box holding it there, and the chunks it loads and
 /// keeps, its rectangle grown by the load and unload distances
-/// (`reach`, with a chunk's side); a load area past `cap` chunks a side
-/// loads its middle, noted in `capped`
+/// (`reach`, with where the chunks lie); a load area past `cap` chunks a
+/// side loads its middle, noted in `capped`
 fn area_of(
   anchor: &Anchor,
   to_space: Affine2,
-  (load_px, unload_px, chunk_px): (f32, f32, Vec2),
+  (load_px, unload_px, chunking): (f32, f32, &Chunking),
   (cap, capped): (i32, &mut bool),
 ) -> Area {
   let (min, max) = map_rect(to_space, anchor.min, anchor.max);
   let grown = |by: f32| map_rect(to_space, anchor.min - by, anchor.max + by);
-  let load = chunk_range(grown(load_px), chunk_px).map(|range| cap_range(range, cap, capped));
-  let keep = chunk_range(grown(unload_px), chunk_px);
+  let load = chunking.span(grown(load_px)).map(|span| {
+    let (first, last) = cap_range((span.first, span.last), cap, capped);
+    Span {
+      first,
+      last,
+      ..span
+    }
+  });
+  let keep = chunking.span(grown(unload_px));
   Area {
     min,
     max,
@@ -1776,12 +1905,11 @@ fn within((first, last): (IVec2, IVec2), chunk: IVec2) -> bool {
   chunk.cmpge(first).all() && chunk.cmple(last).all()
 }
 
-/// How near `chunk` is to the anchors: its gap to the nearest anchor's
-/// box (0 inside it), then the distance from its middle to that box's
-/// middle, in map pixels
-fn nearness(areas: &[Area], chunk: IVec2, chunk_px: Vec2) -> (f32, f32) {
-  let min = chunk.as_vec2() * chunk_px;
-  let max = min + chunk_px;
+/// How near `chunk` is to the anchors: its box's gap to the nearest
+/// anchor's box (0 where they meet), then the distance from its middle to
+/// that box's middle, in map pixels
+fn nearness(areas: &[Area], chunk: IVec2, chunking: &Chunking) -> (f32, f32) {
+  let (min, max) = chunking.chunk_box(chunk);
   let middle = (min + max) * 0.5;
   areas
     .iter()
@@ -1849,9 +1977,9 @@ pub(crate) fn stream_status(world: &World, map: Entity) -> Option<StreamStatus> 
   })
 }
 
-/// Whether every chunk overlapping `area` (world pixels) is resident on the
-/// streamed map `map` (an area of no size on an axis: the chunks holding
-/// it there); false for a map not streamed or not landed
+/// Whether every chunk `area` (world pixels) takes is resident on the
+/// streamed map `map`, as an anchor's area takes them (`Chunking`); false
+/// for a map not streamed or not landed
 pub(crate) fn stream_ready(world: &World, map: Entity, area: Rect) -> bool {
   if world.get::<MapStream>(map).is_none() {
     return false;
@@ -1860,7 +1988,7 @@ pub(crate) fn stream_ready(world: &World, map: Entity, area: Rect) -> bool {
     return false;
   };
   let Some(MapSpace {
-    chunk_px, to_map, ..
+    chunking, to_map, ..
   }) = map_space(world, map)
   else {
     return false;
@@ -1872,16 +2000,44 @@ pub(crate) fn stream_ready(world: &World, map: Entity, area: Rect) -> bool {
   if !(a.is_finite() && b.is_finite()) {
     return false;
   }
-  let Some((first, last)) = chunk_range(map_rect(to_map, a.min(b), a.max(b)), chunk_px) else {
+  let Some(span) = chunking.span(map_rect(to_map, a.min(b), a.max(b))) else {
     return false;
   };
-  // More chunks than are resident cannot all be: never walk past them
-  let count =
-    (i64::from(last.x) - i64::from(first.x) + 1) * (i64::from(last.y) - i64::from(first.y) + 1);
-  if count > state.resident.len() as i64 {
+  let (first, last) = (span.first, span.last);
+  let (rows, columns) = (
+    i64::from(last.y) - i64::from(first.y) + 1,
+    i64::from(last.x) - i64::from(first.x) + 1,
+  );
+  let resident = state.resident.len() as i64;
+  if span.meets.is_none() {
+    // More chunks than are resident cannot all be: never walk past them
+    if rows * columns > resident {
+      return false;
+    }
+    return (first.y..=last.y)
+      .all(|y| (first.x..=last.x).all(|x| state.resident.contains(&IVec2::new(x, y))));
+  }
+  // Every row and column of the span but its first and last holds a chunk
+  // with a cell in the area, so a span longer than the resident chunks
+  // cannot all be; past that, the walk stops at the first chunk missing,
+  // or once it has counted more than are resident
+  if rows - 2 > resident || columns - 2 > resident {
     return false;
   }
-  (first.y..=last.y).all(|y| (first.x..=last.x).all(|x| state.resident.contains(&IVec2::new(x, y))))
+  let mut taken = 0;
+  for y in first.y..=last.y {
+    for x in first.x..=last.x {
+      let chunk = IVec2::new(x, y);
+      if !span.holds(chunk) {
+        continue;
+      }
+      taken += 1;
+      if taken > resident || !state.resident.contains(&chunk) {
+        return false;
+      }
+    }
+  }
+  true
 }
 
 #[cfg(test)]

@@ -64,7 +64,10 @@ impl DungeonPage {
     let grid = result.grid();
     self.rooms = grid.regions().len();
     self.floor = grid.iter().filter(|(_, _, t)| t.is_walkable()).count();
-    let map = grid.to_terrain_map(
+    // A square map always converts; only a hexagonal one has no square
+    // lattice to take the grid
+    let Some(map) = grid.to_terrain_map(
+      GridShape::Orthogonal,
       UVec2::splat(16),
       TilesetSource::Asset(terrain),
       set,
@@ -72,7 +75,9 @@ impl DungeonPage {
         TileType::Floor | TileType::Door => Some("floor"),
         _ => Some("wall"),
       },
-    );
+    ) else {
+      return;
+    };
     let map = ctx.assets().add(map);
     self.root = Some(
       ctx

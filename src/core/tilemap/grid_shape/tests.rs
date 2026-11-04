@@ -1018,6 +1018,35 @@ fn chunk_bounds_and_bounds_of_hold_their_cells_exactly() {
   }
 }
 
+#[test]
+fn chunk_boxes_give_each_chunk_s_exact_box() {
+  let side = CHUNK_SIZE as i32;
+  let far = TileGrid::chunk_of(IVec2::MAX);
+  let near_end = TileGrid::chunk_of(IVec2::MIN);
+  let mut rng = Rng(0xc4_b0c5);
+  for grid in grids() {
+    let boxes = grid.chunk_boxes();
+    let mut chunks = vec![
+      IVec2::ZERO,
+      IVec2::new(-1, 2),
+      far,
+      near_end,
+      IVec2::new(far.x, near_end.y),
+    ];
+    chunks.extend((0..40).map(|_| IVec2::new(rng.int(-5000, 5000), rng.int(-5000, 5000))));
+    for chunk in chunks {
+      let first = chunk * side;
+      let exact = grid.exact_box(first, first + IVec2::splat(side - 1));
+      assert_eq!(boxes.of(chunk), exact, "{grid:?} {chunk}");
+    }
+    // Meeting a box counts touching it
+    let (lo, hi) = boxes.of(IVec2::new(2, -1));
+    assert!(boxes.meets(IVec2::new(2, -1), (hi, hi + 1.0)));
+    assert!(boxes.meets(IVec2::new(2, -1), (lo - 1.0, lo)));
+    assert!(!boxes.meets(IVec2::new(2, -1), (hi + 0.5, hi + 1.0)));
+  }
+}
+
 // ---- the lattice ------------------------------------------------------------
 
 #[test]
