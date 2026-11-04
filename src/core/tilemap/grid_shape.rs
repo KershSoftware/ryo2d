@@ -598,7 +598,8 @@ impl MapGrid {
 
   /// The bounding box of a storage chunk's cells (`CHUNK_SIZE` a side, by
   /// cell index), outlines included: worked out from its cells, the
-  /// reference [`chunk_boxes`](Self::chunk_boxes) is held to
+  /// reference the tests hold [`chunk_boxes`](Self::chunk_boxes) to (and
+  /// this to the union of the cells' outlines)
   #[cfg(test)]
   pub(crate) fn chunk_bounds(&self, chunk: IVec2) -> Rect {
     let side = i64::from(CHUNK_SIZE);

@@ -1039,6 +1039,14 @@ fn chunk_boxes_give_each_chunk_s_exact_box() {
       let exact = grid.exact_box(first, first + IVec2::splat(side - 1));
       assert_eq!(boxes.of(chunk), exact, "{grid:?} {chunk}");
     }
+    // And the box worked out from a chunk's cells (`chunk_bounds`), where
+    // f32 holds it exactly
+    for chunk in [IVec2::ZERO, IVec2::new(-1, 2), IVec2::new(3, -4)] {
+      let (lo, hi) = boxes.of(chunk);
+      let size = (hi - lo).as_vec2();
+      let from_steps = Rect::new(lo.x as f32, lo.y as f32, size.x, size.y);
+      assert_eq!(from_steps, grid.chunk_bounds(chunk), "{grid:?} {chunk}");
+    }
     // Meeting a box counts touching it
     let (lo, hi) = boxes.of(IVec2::new(2, -1));
     assert!(boxes.meets(IVec2::new(2, -1), (hi, hi + 1.0)));
