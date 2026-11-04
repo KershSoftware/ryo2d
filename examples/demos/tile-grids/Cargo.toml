@@ -2,7 +2,7 @@
 name = "tile-grids-demo"
 version = "0.1.0"
 edition = "2024"
-description = "Tile grids demo - a hand-made Tiled meadow in an endless streamed world, painting an infinite map anywhere, and an endless world that keeps what you dig and build, drawn with Kenney's CC0 art"
+description = "Tile grids demo - a hand-made Tiled meadow in an endless streamed world, painting an infinite map anywhere, an endless world that keeps what you dig and build, an isometric town, a staggered island, a hex board, an oblique dungeon and the speed of every grid, drawn with Kenney's CC0 art"
 # The tour and `cargo run -p tile-grids-demo` run the demo, not make-grid-maps
 default-run = "tile-grids-demo"
 
@@ -25,3 +25,7 @@ ryo2d = { path = "../../.." }
 demo-kit = { path = "../../demo-kit" }
 # The generators' noise: heights and caves sampled at a chunk's own cells
 ryo2d-procgen = { path = "../../../crates/ryo2d-procgen" }
+
+[dev-dependencies]
+# The frames the page tests sample (the engine's own version)
+image = { version = "0.25", default-features = false }

@@ -1,10 +1,12 @@
 //! Writes the tile grids demo's Tiled files under `assets/`, the same bytes
-//! each run: `project.tiled-project`, `tilesets/platformer.tsx` and
-//! `maps/endless-meadow.tmx`, written by Tiled itself running
-//! `scripts/make-maps.js`. Then each file is opened and exported to JSON by
-//! Tiled's command line, which fails on anything it cannot read, and the
-//! meadow's export is checked to be an infinite map with chunks at negative
-//! cells.
+//! each run: `project.tiled-project`, the tilesets in `tilesets/` and the
+//! maps in `maps/` (the meadow, the isometric town, the island on two
+//! staggered grids, the hex board, and the oblique dungeon and its mirror),
+//! written by Tiled itself running `scripts/make-maps.js`. Then each file is
+//! opened and exported to JSON by Tiled's command line, which fails on
+//! anything it cannot read; the meadow's export is checked to be an
+//! infinite map with chunks at negative cells, and each map's to have the
+//! grid it was written with.
 //!
 //! Tiled is looked for in `$TILED`, then at
 //! `/Applications/Tiled.app/Contents/MacOS/Tiled`, then as `tiled` on the
@@ -16,8 +18,46 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// The Tiled files the script writes, relative to `assets/`
-const TILESETS: [&str; 1] = ["tilesets/platformer.tsx"];
-const MAPS: [&str; 1] = ["maps/endless-meadow.tmx"];
+const TILESETS: [&str; 5] = [
+  "tilesets/platformer.tsx",
+  "tilesets/sketch-town-ground.tsx",
+  "tilesets/sketch-town-props.tsx",
+  "tilesets/hexagon-terrain.tsx",
+  "tilesets/dungeon.tsx",
+];
+const MAPS: [&str; 7] = [
+  "maps/endless-meadow.tmx",
+  "maps/town.tmx",
+  "maps/island-rows.tmx",
+  "maps/island-columns.tmx",
+  "maps/hex-board.tmx",
+  "maps/dungeon.tmx",
+  "maps/dungeon-mirror.tmx",
+];
+/// What each map's export must say of its grid (its JSON, spaces taken out)
+const GRIDS: [(&str, &[&str]); 6] = [
+  ("maps/town.tmx", &["\"orientation\":\"isometric\""]),
+  (
+    "maps/island-rows.tmx",
+    &["\"orientation\":\"staggered\"", "\"staggeraxis\":\"y\""],
+  ),
+  (
+    "maps/island-columns.tmx",
+    &["\"orientation\":\"staggered\"", "\"staggeraxis\":\"x\""],
+  ),
+  (
+    "maps/hex-board.tmx",
+    &["\"orientation\":\"hexagonal\"", "\"hexsidelength\":70"],
+  ),
+  (
+    "maps/dungeon.tmx",
+    &["\"orientation\":\"oblique\"", "\"skewx\":4"],
+  ),
+  (
+    "maps/dungeon-mirror.tmx",
+    &["\"orientation\":\"oblique\"", "\"skewx\":-4"],
+  ),
+];
 /// The map that must be infinite, with chunks at negative cells
 const INFINITE: &str = "maps/endless-meadow.tmx";
 
@@ -72,7 +112,7 @@ fn run(root: &Path) -> Result<(), String> {
 /// Opens every Tiled file with Tiled's command line and exports it to JSON
 /// in a scratch folder: Tiled exits with an error on a file it cannot read.
 /// The infinite map's export must say it is infinite and hold chunks at
-/// negative cells on both axes
+/// negative cells on both axes, and each other map's its grid
 fn check(tiled: &Path, assets: &Path) -> Result<(), String> {
   let scratch = std::env::temp_dir().join(format!("tile-grids-check-{}", std::process::id()));
   std::fs::create_dir_all(&scratch).map_err(|error| format!("{}: {error}", scratch.display()))?;
@@ -102,8 +142,19 @@ fn check(tiled: &Path, assets: &Path) -> Result<(), String> {
       failed.push(format!("{path} (Tiled failed)"));
       continue;
     }
+    let compact: String = exported.split_whitespace().collect();
+    if let Some((_, says)) = GRIDS.iter().find(|(map, _)| *map == path) {
+      let missing: Vec<&str> = says
+        .iter()
+        .copied()
+        .filter(|said| !compact.contains(said))
+        .collect();
+      if !missing.is_empty() {
+        failed.push(format!("{path} (its export lacks {})", missing.join(", ")));
+        continue;
+      }
+    }
     if path == INFINITE {
-      let compact: String = exported.split_whitespace().collect();
       let infinite = compact.contains("\"infinite\":true");
       let chunks = compact.contains("\"chunks\":[");
       let negative = compact.contains("\"x\":-") && compact.contains("\"y\":-");

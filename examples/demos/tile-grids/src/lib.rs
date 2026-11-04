@@ -4,20 +4,32 @@
 //! generator goes on past both its ends, a runner running on across it and
 //! an overlay telling the hand-made chunks from the generated; an empty
 //! infinite map built in code that grows wherever the mouse paints, with a
-//! ball bouncing on what is painted; and an endless world streamed from a
+//! ball bouncing on what is painted; an endless world streamed from a
 //! generator, where a digger digs and builds and finds it all as it left it
-//! when it comes back (`SavedChunks`). The meadow is a file in `assets/`
-//! written by Tiled through `src/bin/make-grid-maps.rs`; the generators'
-//! noise is `ryo2d-procgen`'s. A library, so its tests drive the pages
-//! headlessly. Later pages (isometric, hexagonal and oblique grids, floors)
-//! join these
+//! when it comes back (`SavedChunks`); then the other grids Tiled has: an
+//! isometric town of tall walls and trees a knight walks behind and in
+//! front of, its terrain painted with the mouse; an island on a staggered
+//! grid, its rows or its columns shifted; a hex board that picks, selects
+//! and shows a hex's range, ring, line and neighbours, its sand turned in
+//! sixths; a skewed oblique dungeon and its mirror; and the speed guards'
+//! 1024 x 1024 map on each grid, flown over with the frame's cost shown.
+//! The maps are files in `assets/` written by Tiled through
+//! `src/bin/make-grid-maps.rs` (the speed page's are built in code); the
+//! generators' noise is `ryo2d-procgen`'s. A library, so its tests drive
+//! the pages headlessly. Floors join these later
 
 mod endless;
+mod hexagonal;
 mod infinite;
+mod isometric;
+mod oblique;
 mod overlay;
 mod paint;
 mod shared;
+mod speed;
+mod staggered;
 mod terrain;
+mod walker;
 
 use demo_kit::prelude::*;
 
@@ -34,4 +46,9 @@ pub fn demo() -> Demo {
     .page(infinite::InfinitePage::new)
     .page(paint::PaintPage::new)
     .page(endless::EndlessPage::new)
+    .page(isometric::TownPage::new)
+    .page(staggered::StaggeredPage::new)
+    .page(hexagonal::HexPage::new)
+    .page(oblique::ObliquePage::new)
+    .page(speed::SpeedPage::new)
 }

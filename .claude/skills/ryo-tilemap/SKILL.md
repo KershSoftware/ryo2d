@@ -96,6 +96,21 @@ impl Level {
 - `ctx.maps().is_ready(map)` says whether a map has landed, for code that polls instead of reading messages.
 - **Put characters where the designer marked**, at a `player_start` object as above, not by casting a ray down on `Spawned`. The colliders come with the map and physics takes them in during the next fixed step, before it moves anything, so a character placed on `Spawned` stands on its ground from its first move. Physics queries (`ctx.physics().raycast` and the rest) see the world as the last step left it, though, so a ray cast in the `update` that reads `Spawned` misses the map.
 
+### Maps on other grids
+
+The steps are the same on every grid; these come on top. The tile-grids demo (`examples/demos/tile-grids`) shows each, with Kenney's art, its maps written by Tiled:
+
+1. **Give the map its grid in Tiled** (New Map: orientation isometric, staggered, hexagonal or oblique, with the stagger axis and index, the hex side or the skew) and its cell's size as the tile size: an isometric cell is its diamond's box. The map loads with that grid; nothing is set in code.
+2. **Stand tall art on its cell with the tileset's offset.** A picture's bottom-left goes on its cell box's bottom-left, moved by the tileset's tile offset (section 10): set the offset so a wall's or a tree's base sits on the cell. A block a cell high (raised ground) is two tilesets of the same kind of picture: the blocks drawn a cell lower, their tops on the cells, and the props standing on the cells, so the cells characters walk, pick and collide on are the blocks' tops.
+3. **Draw collision shapes in the picture's pixels**, keeping the tileset's own grid orthogonal: a polygon on the four vertices of the cell's diamond, where the picture draws it, collides as the whole cell, so a row of walls is one seamless outline (section 8). Hexagonal layers neither collide nor cast shadows.
+4. **Y-sort the layer characters walk among** (`y_sort`), and give the character a sprite with `YSort` at that layer's z (the map's z plus the layer's index), anchored at its feet (`Anchor::BottomCenter`): it draws behind a tile whose cell's centre is below its feet and in front of one above (section 10).
+5. **Pick, outline and measure cells through the layer's grid:** `ctx.maps().grid(map, layer)` gives the cell under the pointer (the nearest hexagon on a hex map), its outline in the world to draw, and the board tools (section 6). Terrain paints on every grid but the hexagonal (section 7).
+6. **Show the same place on another grid with another map**, saved by Tiled with that grid, spawned in place of the first, rather than reshaping a map that has spawned.
+
+Pictures of 256 px and more are padded into cells of their own as the map lands, off the main thread: a few hundred milliseconds for a few dozen such tiles, so a headless test waits for the landing in time rather than in steps (section 17).
+
+The demo's pages: **An isometric town** (Sketch Town's walls and trees on a y-sorted layer, a knight walking behind and in front of them, the hovered cell outlined, the walls and the water colliding, water and grass painted through a Wang set), **A staggered map** (an island on rows shifted and on columns shifted, two files, a setting swapping them), **A hex board** (the hex under the pointer, a click selecting one, its range, ring and line and the hovered hex's neighbours marked on layers of their own, the distance in the HUD, the sand's ripples turned in sixths), **An oblique map** (a dungeon skewed and its mirror, a knight stopped by the slanted walls) and **Speed on every grid** (the speed guards' 1024 x 1024 four-layer map on the grid chosen, flown over, with the frame's cost; section 16).
+
 ## 2. A map in the world
 
 `MapRoot` is a component; its builders say how the map spawns:
@@ -788,7 +803,7 @@ Measured on an Apple M5 Pro in a release build, at 1920 x 1080 with 16 px tiles;
 
 ## 17. Testing
 
-- **A headless engine** (`ryo2d::testing::HeadlessEngine`) lands maps as a windowed one does. Step it until `MapsView::new(engine.world_mut()).is_ready(map)`, then read tiles with `MapsView`, objects and class tiles with queries, and colliders after a step through the world's `Physics` resource (`engine.world().resource::<Physics>()`: `raycast`, `overlap_point`, `contacts` and the rest). A landing takes a frame or more (its job runs on another thread), so wait for it rather than counting frames.
+- **A headless engine** (`ryo2d::testing::HeadlessEngine`) lands maps as a windowed one does. Step it until `MapsView::new(engine.world_mut()).is_ready(map)`, then read tiles with `MapsView`, objects and class tiles with queries, and colliders after a step through the world's `Physics` resource (`engine.world().resource::<Physics>()`: `raycast`, `overlap_point`, `contacts` and the rest). A landing takes a frame or more (its job runs on another thread), so wait for it rather than counting frames. Its tilesets are padded on another thread too: a few hundred milliseconds for a few dozen pictures of 256 px and more, which a test stepping as fast as it can outpaces by thousands of steps, so bound the wait in time (a step and a millisecond's rest, say), not in a few hundred steps.
 - **Events:** read `MapEvent`s between steps with a `MessageCursor<MapEvent>` over the world's `Messages<MapEvent>`; fail the test on `Failed`.
 - **Hot reload:** headless engines do not watch files. Give the engine a `MemorySource` the test keeps (`EngineBuilder::asset_source`), save over a file with `files.insert(path, text)`, and ask for its reload with `engine.assets().server().reload(path)`; the next steps bring the map to it and send `Reloaded`.
 - **The web's files:** play the levels from the embedded source too (section 15).

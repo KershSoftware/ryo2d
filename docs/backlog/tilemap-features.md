@@ -1,52 +1,47 @@
-# Tile Maps: 6b and Later
+# Tile Maps: What Stays for Later
 
-Sub-project 6a (`docs/specs/2026-10-29-tilemap-design.md`) made orthogonal tile maps from Tiled and LDtk: registry assets with hot reload, chunked drawing, collision and shadows from the tiles, objects as entities, runtime edits with Wang terrain, worlds. Every map 6a could not draw correctly failed to load with an error naming the feature and sub-project 6b, rather than loading wrong. The owner chose to do isometric, hexagonal and infinite maps straight after 6a; this is 6b's scope, what each feature needs from 6a's model, and what stays later. What 6a measured, and its limits, are in `docs/backlog/tilemap.md`.
+Tile maps load from Tiled and LDtk on every grid Tiled has (orthogonal, isometric, staggered, hexagonal and oblique), from files and built in code, bounded or infinite, and stream endless worlds round the cameras and anchors: drawing, objects, picking and the board tools, edits and Wang terrain, collision and shadows, y-sorting, streaming, worlds and hot reload follow each map's grid. Designs: `docs/specs/2026-10-29-tilemap-design.md` and `docs/specs/2026-10-31-tilemap-shapes-design.md`; using them from a game: the `ryo-tilemap` skill; what they cost, and their limits: `docs/backlog/tilemap.md`; a demo of each grid: `examples/demos/tile-grids`. This is what the designs left for later. Each is refused with a clear error, or warned once where a file is otherwise usable, until it is done.
 
-## 6b: what it adds
+## Hexagonal collision and shadows
 
-| Feature | Tiled | LDtk |
-|---|---|---|
-| Isometric maps | `orientation: isometric` (diamond cells, 2:1 or any tile ratio) | none (LDtk is orthogonal only) |
-| Staggered isometric maps | `orientation: staggered`, with `staggeraxis` (x or y) and `staggerindex` (odd or even) | none |
-| Hexagonal maps | `orientation: hexagonal`, with `staggeraxis`, `staggerindex` and `hexsidelength` | none |
-| Oblique maps | `orientation: oblique`, with `skewx` and `skewy` (pixels each row shifts across and each column down; left out when 0, negative allowed) | none |
-| Infinite maps | `infinite: true`: tile layers saved as chunks (`chunks: [{ x, y, width, height, data }]`, coordinates that may be negative), and the map's `width` and `height` meaningless | none |
+A hexagonal map's tile layers neither collide nor cast shadows: one whose `collides` or `occludes` is true fails to load, naming the layer, and a hexagonal layer made to collide in code builds nothing, warned once a layer.
 
-Infinite maps load (`an_infinite_map_s_chunks_land_where_tiled_put_them` replaced the two tests that pinned their refusal). Every orientation loads now, in both formats, with its parameters (`every_grid_loads_in_both_formats_with_its_parameters`, over `shape-*` fixtures Tiled saved, replacing `isometric_hexagonal_staggered_and_oblique_maps_fail_naming_6b`), and so do infinite maps of every grid; an orientation, stagger axis or index Tiled has none of, or a negative hex side, is refused naming it. 6b keeps refusing what it does not do: a hexagonal map's tile layer that collides or casts shadows is refused at load (its layers default to neither, and so does a tile layer added to a hexagonal map in code). The anti-goal stands: no orientation value the engine accepts but does not implement. Maps built in code take any grid too: `TileMap::with_shape`, every tile layer carries its `MapGrid` (`grid_shape.rs`), and class tiles, picking (`world_to_cell`, `cell_to_world`) and a stream's `ChunkRequest` go through it. At run time a game has each layer's grid in the world (`MapsView::grid`, a `LayerGrid`: the cell under a point, a cell's centre and outline in the world, and the grid's neighbours, distance, line, range and ring), edits land on the cell under the point on every grid, streaming takes the chunks round its anchors on every grid (an orthogonal stream's exactly as before, another's by its chunks' boxes), a map saved with another grid respawns its layers on hot reload, and procgen's square grids convert to isometric, staggered and oblique maps through their square lattice (`MapGrid::lattice`, `Lattice`). Drawing follows the grid: every tile where Tiled places it, hexagonal turns about the cell's box, plain layers whose tiles leave their cells in Tiled's order across tilesets and chunks (`every_grid_draws_its_tiles_as_tileds_render_shows`, `tall_tiles_across_a_chunk_border_draw_in_tileds_order`, over Tiled's renders). Collision and shadows follow the grid on isometric, staggered and oblique maps, loaded or built (`an_isometric_wall_collides_along_its_diamonds`, `a_staggered_map_collides_as_the_isometric_map_of_the_same_cells`, `an_oblique_map_collides_skewed`, `shadows_follow_the_same_outlines_on_every_square_lattice_grid`), and y-sorted layers sort by the grid's bands (Drawing, below). A hexagonal layer that collides or casts shadows builds nothing at run time, warned once a layer (`a_code_built_hex_layer_that_collides_warns_once_and_builds_nothing`), and navigation refuses every grid but the orthogonal, warned once.
+- A hexagonal cell has six neighbours, so `TileColliders`' square outline trace (units one or two cells decide, `physics/tiles/outline.rs`), which isometric, staggered and oblique maps share through their square lattice (`MapGrid::lattice`), does not apply, and a hexagonal grid has no lattice.
+- It needs a hex grid kind that traces the boundary of hexagons the same way (shared edges cancel, loops stay seamless, an edit retraces only the loops through it, packing by chunk), or per-cell polygons merged across shared edges, with the character controller's floor and wall rules checked on hex outlines. Shadows would follow the same outlines. It is the largest piece left, and it is physics'.
 
-## What each needs from 6a's model
+## Navigation off the orthogonal grid
 
-### Orientation, everywhere a cell meets a pixel
+`NavigationGrid::block_tiles` reads a square grid of upright rectangles. Over an isometric, staggered or hexagonal map, or an oblique one that is skewed, it blocks nothing, and the dev log warns once a navigation grid.
 
-6a assumes a cell `(x, y)` covers the rectangle `(x, y) * cell_size`. That assumption lives in a few places, which an orientation on the map (a `TileMap` field, copied to the layers as they spawn) generalises:
+- Isometric, staggered and oblique maps could block by cell in their square lattice, with step costs from world distance.
+- Hexagonal maps need a hex graph (six neighbours) or a sampled square grid.
+- The design asks for paths over the loaded part of an infinite map, and across floors (below), on one graph linked at stairs.
 
-- **Cell and world conversions (done):** `edit.rs` (`world_to_cell`, `cell_to_world`), and through them `MapsView`, with `MapsView::grid` for the layer's grid in the world. Isometric is an affine map of the orthogonal grid; staggered and hexagonal maps need offset-coordinate conversions, and a point to cell lookup that picks the cell whose outline holds the point.
-- **Drawing** (`render/tiles.rs`, `chunk_instances`): an instance's place in layer pixels, the tile's anchor in its cell (Tiled draws an isometric tile from its cell's bottom centre), the draw order inside a layer (isometric rows by `x + y`, staggered and hex rows in their own order), a chunk's box for culling (a diamond's or a staggered band's bounding box), and y-sorting by `MapGrid::band_y`: a band's tiles sort at its cells' centre (an orthogonal row at its bottom edge), an oblique layer skewed down its columns cell by cell, a tile with `sort_offset` at its own point. The slot uniform (map transform, parallax, the tileset's place) needs nothing new.
-- **Objects** (`tiled/objects.rs`): Tiled writes an isometric map's object positions in its projected space (both axes in tile-height units along the diamond's axes), so positions and polygons convert on load; `MapObject` and its `Transform` stay as they are.
-- **Flips (done):** gid bit 28 is Tiled's 120° rotation of hexagonal tiles, and bit 29 (the diagonal flip) its 60° one. `TileFlip` keeps four bits (`HEX_ROTATE_120`, and `HEX_ROTATE_60` as the diagonal's alias), the cell's bits 28 to 31, and `rotated_hex_cw` turns a hex tile; a map off a hexagonal grid loads without bit 28, as Tiled ignores it there. Drawing them turned is the renderer's part.
-- **Wang terrain (done, hexagonal refused):** `wang.rs` paints isometric and oblique maps in their cells and staggered ones in the isometric lattice, as Tiled's brush does (measured by `paint-wang.js` jobs on every axis and index). A hexagonal map is refused with one warning: a hexagon has six neighbours where a Wang id has four corners and four edges, and Tiled's own brush is not really supported there (its issue #2824). The staggered correction reaches two cells further than the other grids' (measured along the half-step axis only).
+## Floors
 
-### Collision and shadows
+A layer belonging to a floor (raised ground, an upper storey, a bridge), on every grid:
+- characters draw in front of and behind that floor's tiles and the floors round it, every y-sorted layer of a map with floors sorting with the characters at one z;
+- an entity stands on the ground and its floor lifts its drawing; the cell under the mouse checks floors from the top down, through each floor's lift;
+- colliders on different floors never interact (a floor filter in physics, apart from the 32 layer and mask bits games own), and a light on a floor is blocked only by that floor's occluders;
+- characters change floors through stairs and ramps the designer marks.
 
-- **Isometric, staggered and oblique (done):** their cells make a square lattice (`MapGrid::lattice`), so `TileColliders` traces in it as on squares and maps the outline points through the lattice's affine to layer pixels (`TileColliders::with_lattice`), the parts staying unturned at their chunks' corners: physics builds their shapes ahead and one-way normals stay true, which colliders under a sheared parent would not (`docs/research/2026-10-31-tile-shapes-seams.md`, top risk 1). A staggered map's cells sit at their lattice cells, a streamed chunk's leaving one by one. A tile's shapes, drawn in Tiled over its image in pixels, go into its cell's square through the grid (a polygon on the diamond's vertices is a solid cell; an oblique tile's are taken unskewed and skew with the grid); one-way tiles collide both ways off orthogonal maps, warned once a map. Shadows follow the same outlines. A tileset whose grid is isometric has its shapes read as pixels, warned (Tiled's collision editor draws them on the grid; unmeasured, formats note section 12).
-- **Hexagonal:** a hexagonal cell has six neighbours, so `TileColliders`' square outline trace (units one or two cells decide, `physics/tiles/outline.rs`) does not apply. 6b needs a hex grid kind that traces the boundary of hexagons the same way (shared edges cancel, loops stay seamless, an edit retraces only the loops through it, packing by chunk), or per-cell polygons merged across shared edges. This is the largest piece of 6b, and it is physics', with the character controller's floor and wall rules checked on hex outlines.
-- **Navigation** (`NavigationGrid::block_tiles`) reads a square grid of upright rectangles; tiles on an isometric, staggered or skewed oblique map's lattice block nothing for now, warned once. Isometric maps can block by cell with step costs from world distance, hex maps need a hex graph or a sampled square grid.
+Until then, raised ground a character stands on is drawn as the tile-grids demo's town draws it: blocks drawn a cell lower than their props, their tops on the cells, with one floor.
 
-### Infinite maps
+## Terrain painting on hexagonal maps
 
-- **A sparse grid (done):** `TileGrid` is a map of 32-cell chunks by signed chunk coordinate with per-chunk versions, bounded (a fixed size) or unbounded, so the chunk renderer, collision and occluders read versions as they did. `world_to_cell` gives cells outside a layer, and an edit past the current chunks of an unbounded layer creates them.
-- **Collision (done):** `TileColliders` holds the chunks its layers have, signed, with no cap on a side; a cell collides within 186,411 cells of (0, 0) on either axis (outline points stay `i32`). Packing is per chunk, so colliders stay one per chunk. A reach past that is not built (see `docs/backlog/tilemap.md`, Limits).
-- **Loading (done):** the reader decodes each chunk (every encoding 6a reads) into an unbounded grid; `TileMap::infinite` marks the map, its `size` is zero, and `TileMap::bounds()` is the rectangle of the cells its tile layers hold tiles in (`MapsView::bounds` for a spawned map as edited).
-- **Worlds (done):** a Tiled world places every map by its tile origin (`WorldLevel::origin`, the map's pixel (0, 0)), its rectangle its cells' box on its grid: a bounded map's every cell, an infinite map's tiles' bounds whatever size the world lists. Tiled documents no rule for this and cannot load a world headless to measure one, so it is the engine's reading.
-- **Streaming (done):** `MapStream` on a map root generates chunks on its own thread around the cameras and `StreamAnchor`s, on every grid, lands and unloads them within per-frame budgets, keeps the player's changes in `SavedChunks`, and streams a Tiled infinite map's world around its hand-made chunks (`ChunkEvent`, `ChunkOwned`, `MapsView::stream_ready` and `stream_status`; see the ryo-tilemap skill and `docs/backlog/tilemap.md`).
+`set_terrain` on a hexagonal map warns once, paints nothing and returns false. A hexagon has six neighbours where a Wang id has four corners and four edges, and Tiled's own terrain brush does not support hexagonal maps (its issue #2824), so there is no editor to author hex terrain sets for a run-time feature to read.
 
-## Later than 6b
+## Hexagonal generators in the procgen crate
 
-- Running Tiled's automapping and LDtk's auto-layer rules at runtime: both run in their editors, which save the tiles.
-- Per-tile runtime overrides of tileset data (Godot's runtime tile data).
+Procgen's generators stay square. Their grids convert to square, isometric, staggered and oblique maps, which share the square lattice; a hexagonal map has none.
+
+## Other later items
+
+- Running Tiled's automapping and LDtk's auto-layer rules at run time: both run in their editors, which save the tiles.
+- Per-tile run-time overrides of tileset data (Godot's run-time tile data).
 - Saving maps back to the editors' formats, and a tile editor inside the engine.
 - Tiled's text objects beyond their placement (`ObjectShape::Text` keeps the text; nothing draws it).
-- Streaming a world's levels automatically: 6a gives positions, neighbours and `spawn_levels_in`, and when to load and unload stays the game's call.
+- Streaming a world's levels automatically: worlds give positions, neighbours and `spawn_levels_in`, and when to load and unload stays the game's call.
 - LDtk level background images.
 - What `docs/backlog/tilemap.md` lists as limits: the landing frame's first draw, relabelling long split loops, lighting's lack of a spatial index, and the keep window's memory.
 

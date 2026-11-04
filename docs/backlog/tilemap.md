@@ -1,6 +1,6 @@
 # Tilemaps (Sub-project 6a): speed
 
-Spec: `docs/specs/2026-10-29-tilemap-design.md` (Acceptance, Targets). The 6b feature list is `docs/backlog/tilemap-features.md`.
+Spec: `docs/specs/2026-10-29-tilemap-design.md` (Acceptance, Targets). What stays for later is `docs/backlog/tilemap-features.md`.
 
 ## 6a: measured
 
