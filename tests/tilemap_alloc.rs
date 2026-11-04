@@ -1,7 +1,8 @@
 //! Allocations of map drawing, counted by a global allocator in this test
 //! binary: a padded tileset cache hit, a frame drawing a static map under a
 //! shadowed light (its camera still, then panning over chunks it has
-//! drawn), and an idle frame of a streamed map whose chunks have landed.
+//! drawn), and an idle frame of a streamed map whose chunks have landed, on
+//! orthogonal and on isometric cells.
 //!
 //! A frame's allocations are told apart by their stacks: those made inside
 //! the GPU API (wgpu, naga and the Metal bindings, which allocate as they
@@ -538,9 +539,12 @@ fn static_frames_allocate_nothing(art: Art) {
 /// A scene streaming an endless map round its camera (or nothing,
 /// `empty`): one unbounded layer, each chunk a floor along its first row
 /// that collides and casts shadows, and a coin, a tile of a class the root
-/// registers, so the class tiles follow the chunks
+/// registers, so the class tiles follow the chunks. On orthogonal cells of
+/// 16 px, or isometric ones of 16 x 8, where the stream takes its chunks
+/// through their boxes and the 16 px tiles stand taller than their cells
 struct StreamedMap {
   empty: bool,
+  isometric: bool,
 }
 
 impl Scene for StreamedMap {
@@ -549,16 +553,28 @@ impl Scene for StreamedMap {
       return;
     }
     let mut set = atlas(&mut ctx.world.resource_mut::<Assets<Image>>(), 16, 4, 1);
+    // A whole cell: the tile's square, or the diamond of the isometric cell
+    // under its bottom half
+    let floor = if self.isometric {
+      vec![
+        Vec2::new(8.0, 8.0),
+        Vec2::new(16.0, 12.0),
+        Vec2::new(8.0, 16.0),
+        Vec2::new(0.0, 12.0),
+      ]
+    } else {
+      vec![
+        Vec2::ZERO,
+        Vec2::new(16.0, 0.0),
+        Vec2::new(16.0, 16.0),
+        Vec2::new(0.0, 16.0),
+      ]
+    };
     set.insert_tile(
       GROUND,
       TileData {
         shapes: vec![TileShape {
-          points: vec![
-            Vec2::ZERO,
-            Vec2::new(16.0, 0.0),
-            Vec2::new(16.0, 16.0),
-            Vec2::new(0.0, 16.0),
-          ],
+          points: floor,
           ..TileShape::default()
         }],
         ..TileData::default()
@@ -572,7 +588,11 @@ impl Scene for StreamedMap {
       },
     );
     let set = TilesetSource::Asset(ctx.assets().add(set));
-    let mut map = TileMap::infinite(UVec2::splat(16));
+    let mut map = if self.isometric {
+      TileMap::infinite(UVec2::new(16, 8)).with_shape(GridShape::Isometric)
+    } else {
+      TileMap::infinite(UVec2::splat(16))
+    };
     let set = map.add_tileset(set);
     map.add_tile_layer("ground");
     let handle = ctx.assets().add(map);
@@ -591,10 +611,10 @@ impl Scene for StreamedMap {
 
 /// An engine on the streamed map (or nothing), its camera at the origin,
 /// every chunk round the view landed and warmed up. None without a GPU
-fn streamed_engine(empty: bool) -> Option<HeadlessEngine> {
+fn streamed_engine(empty: bool, isometric: bool) -> Option<HeadlessEngine> {
   let builder = EngineBuilder::new()
     .resolution(640, 360)
-    .start_scene(StreamedMap { empty });
+    .start_scene(StreamedMap { empty, isometric });
   let mut engine = HeadlessEngine::new_or_skip(builder)?;
   look_at(&mut engine, Vec2::ZERO);
   // The 640 x 360 view grown by the stream's 512 px on every side
@@ -620,26 +640,54 @@ fn streamed_engine(empty: bool) -> Option<HeadlessEngine> {
   if !empty {
     let world = engine.world_mut();
     let coins = world.query::<&MapTile>().iter(world).count();
-    assert_eq!(
-      coins, 16,
-      "a coin in each of the 4 x 4 chunks round the view"
-    );
+    let chunks = world
+      .query::<&TileLayerData>()
+      .iter(world)
+      .map(|data| data.tiles.chunk_coords().count())
+      .sum::<usize>();
+    if isometric {
+      assert!(
+        chunks > 0 && coins == chunks,
+        "a coin in each of the {chunks} chunks round the view, not {coins}"
+      );
+    } else {
+      assert_eq!(
+        coins, 16,
+        "a coin in each of the 4 x 4 chunks round the view"
+      );
+    }
   }
   Some(engine)
 }
 
 #[test]
 fn an_idle_frame_of_a_streamed_map_allocates_nothing() {
-  let (Some(mut empty), Some(mut streamed)) = (streamed_engine(true), streamed_engine(false))
-  else {
+  idle_streamed_frames_allocate_nothing(false);
+}
+
+#[test]
+fn an_idle_frame_of_an_isometric_streamed_map_allocates_nothing() {
+  idle_streamed_frames_allocate_nothing(true);
+}
+
+/// An idle frame of the streamed map (`isometric` or not), its chunks
+/// landed round a still camera, makes no allocation of the engine's own an
+/// empty frame does not, and its own path none inside the GPU API: the
+/// stream's look over its areas included, which on isometric cells takes
+/// the chunks through their boxes
+fn idle_streamed_frames_allocate_nothing(isometric: bool) {
+  let (Some(mut empty), Some(mut streamed)) = (
+    streamed_engine(true, isometric),
+    streamed_engine(false, isometric),
+  ) else {
     return;
   };
   for frame in 0..4 {
     let (drawn, nothing) = (traced(&mut streamed), traced(&mut empty));
     let own = |frame: &Frame| frame.own.values().sum::<usize>();
     println!(
-      "frame {frame}: the streamed map's frame {} allocations ({} the engine's own), an empty \
-       frame {} ({} its own)",
+      "isometric {isometric}, frame {frame}: the streamed map's frame {} allocations ({} the \
+       engine's own), an empty frame {} ({} its own)",
       drawn.count,
       own(&drawn),
       nothing.count,
