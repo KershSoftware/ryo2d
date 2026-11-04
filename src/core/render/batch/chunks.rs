@@ -147,32 +147,23 @@ pub(crate) struct ChunkRun {
 
 /// Where [`ChunkStore::chunk`] copies a chunk as a view draws it: each
 /// tileset's part, and, if asked for, its rows (band by band, each band's
-/// tilesets in order) and its runs in paint order (a chunk whose tiles stay
-/// inside their cells' boxes' sides gives its rows, as a band's tiles then
-/// never overlap one another)
+/// tilesets in order). Its runs in paint order a view drawing in Tiled's
+/// order asks for apart, only for the chunks it draws run by run
+/// ([`ChunkStore::runs`])
 pub(crate) struct ChunkCopy<'a> {
   pub parts: &'a mut Vec<ChunkPart>,
   pub rows: Option<&'a mut Vec<ChunkRun>>,
-  pub runs: Option<&'a mut Vec<ChunkRun>>,
 }
 
 impl ChunkCopy<'_> {
-  /// Copies `built`'s parts, and rows and runs if asked for, over what was
-  /// there; how its tiles leave their cells' boxes
+  /// Copies `built`'s parts, and rows if asked for, over what was there;
+  /// how its tiles leave their cells' boxes
   fn take(self, built: &Built) -> Spill {
     self.parts.clear();
     self.parts.extend_from_slice(&built.parts);
     if let Some(rows) = self.rows {
       rows.clear();
       rows.extend_from_slice(&built.rows);
-    }
-    if let Some(runs) = self.runs {
-      runs.clear();
-      runs.extend_from_slice(if built.spill == Spill::Sideways {
-        &built.runs
-      } else {
-        &built.rows
-      });
     }
     built.spill
   }
@@ -287,13 +278,17 @@ impl ChunkStore {
     }
   }
 
-  /// Copies into `out` the parts, rows and runs of `layer`'s chunk `chunk`
-  /// for `view`, built by `build` first (it fills the instances, as
+  /// Copies into `out` the parts and rows of `layer`'s chunk `chunk` for
+  /// `view`, built by `build` first (it fills the instances, as
   /// `(tileset, paint key, instance)` in paint order, and says how they
   /// leave their cells' boxes) when `stamp` is not what it was built from;
   /// then how its tiles leave their cells' boxes. `None`, copying nothing,
   /// when the view had it already, or the arena has no room for it. The
   /// chunk counts as drawn this frame
+  ///
+  /// A view drawing a layer in Tiled's order copies no chunk's runs here:
+  /// most of its chunks draw part by part, and it asks [`runs`](Self::runs)
+  /// for those it draws run by run
   pub(crate) fn chunk(
     &mut self,
     (layer, chunk): (Entity, IVec2),
@@ -424,6 +419,28 @@ impl ChunkStore {
         .sort_unstable_by_key(|row| (row.band, row.tileset, row.first));
     }
     Some(out.take(built))
+  }
+
+  /// Appends to `out` the runs of `layer`'s chunk `chunk` as last built, for
+  /// a view drawing it run by run in Tiled's order after
+  /// [`chunk`](Self::chunk) handed it over: its instances in paint order as
+  /// runs of one tileset when a tile of it leaves its cell's box's sides,
+  /// else its rows (each tileset's bands, band by band), since a band's
+  /// tiles then never overlap one another. Nothing for a chunk not built
+  pub(crate) fn runs(&self, (layer, chunk): (Entity, IVec2), out: &mut Vec<ChunkRun>) {
+    let Some(built) = self
+      .layers
+      .get(&layer)
+      .and_then(|chunks| chunks.get(&chunk))
+      .filter(|built| built.stamp.is_some())
+    else {
+      return;
+    };
+    out.extend_from_slice(if built.spill == Spill::Sideways {
+      &built.runs
+    } else {
+      &built.rows
+    });
   }
 
   /// Room for `count` instances in the arena, its start, freeing the chunks
@@ -926,9 +943,9 @@ mod tests {
       let out = ChunkCopy {
         parts: &mut parts,
         rows: Some(&mut rows),
-        runs: Some(&mut runs),
       };
       let spill = self.chunk((layer, chunk), stamp, view, build, out)?;
+      self.runs((layer, chunk), &mut runs);
       Some(Copied {
         parts,
         rows,

@@ -608,7 +608,7 @@ struct LayerDraw<'a> {
 }
 
 /// One chunk a view gathered: its parts and its runs in paint order, as
-/// ranges of the gathered lists
+/// ranges of the gathered lists (its runs empty unless it draws run by run)
 #[derive(Clone, Copy, Debug)]
 struct GatheredChunk {
   chunk: IVec2,
@@ -1138,12 +1138,12 @@ impl View<'_> {
       )
     };
     if layer.in_order {
-      // Its parts and its runs in paint order, after those gathered
+      // Its parts, after those gathered; its runs only if it draws run by
+      // run (`draw_gathered`)
       let gathered = &mut *self.gathered;
       let out = ChunkCopy {
         parts: &mut *self.parts,
         rows: None,
-        runs: Some(&mut *self.rows),
       };
       let Some(spill) = self
         .store
@@ -1155,14 +1155,12 @@ impl View<'_> {
         gathered.parts.len(),
         gathered.parts.len() + self.parts.len(),
       );
-      let runs = (gathered.runs.len(), gathered.runs.len() + self.rows.len());
       gathered.parts.extend_from_slice(self.parts);
-      gathered.runs.extend_from_slice(self.rows);
       gathered.chunks.push(GatheredChunk {
         chunk,
         spill,
         parts,
-        runs,
+        runs: (0, 0),
       });
       return;
     }
@@ -1170,7 +1168,6 @@ impl View<'_> {
     let out = ChunkCopy {
       parts: &mut *self.parts,
       rows: layer.y_sorted.then_some(&mut *self.rows),
-      runs: None,
     };
     if self
       .store
@@ -1238,6 +1235,23 @@ impl View<'_> {
       .max()
       .unwrap_or_default();
     let by_chunk = spill == Spill::Vertical && chunks_keep_order(&layer.data.grid);
+    // The runs of the chunks drawn run by run, copied out of the store now
+    // that the path is known: every chunk's when tiles leave their cells'
+    // sides or the chunks' order does not keep Tiled's, else only those of
+    // the chunks of more than one tileset whose tiles leave their cells
+    if spill != Spill::None {
+      let gathered = &mut *self.gathered;
+      for chunk in &mut gathered.chunks {
+        let tilesets = chunk.parts.1 - chunk.parts.0;
+        if !by_chunk || (chunk.spill != Spill::None && tilesets > 1) {
+          let from = gathered.runs.len();
+          self
+            .store
+            .runs((layer.layer, chunk.chunk), &mut gathered.runs);
+          chunk.runs = (from, gathered.runs.len());
+        }
+      }
+    }
     if spill == Spill::None || by_chunk {
       if by_chunk {
         let chunks = &mut self.gathered.chunks;
