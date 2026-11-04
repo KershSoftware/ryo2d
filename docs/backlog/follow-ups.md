@@ -4,6 +4,71 @@ Small issues found while building each sub-project and left for later: deferred 
 
 Items from 4f to 6b were copied from their execution records. Items from earlier sub-projects come from notes kept at the time, and some may have been fixed since: check before working on one.
 
+## Tile grid shapes (6b, stage 4)
+
+- Owner decisions (2026-11-04):
+  - The owner hand-played the `tile-grids` demo's grid pages ("looks and feels good") and chose to merge.
+  - Big tiles' padding is the next piece of work, on its own, before hex collision and pathfinding: cap the room past a big tile at what the mip levels of a tile drawn a pixel wide or more need, and clamp its texture's mip levels (the Limit in `docs/backlog/tilemap.md`). Kenney's Sketch Town art took 577 MB of GPU memory at full size.
+  - Not yet checked in Tiled: whether its collision editor draws an isometric-grid tileset's shapes on the diamond or in the image's pixels. The engine reads them in pixels and warns once a file; if Tiled draws them projected, the docs need a note on the difference.
+- Rulings the owner may revisit:
+  - Hex picking follows the drawn outline, not the nearest centre: on hexes that aren't regular, a sliver by each vertex picks differently from Tiled's editor, which hands it to a neighbour.
+  - On axis-X staggered and hex grids a sort band is half a row, since shifted cells sit half a cell lower. Oblique maps with a vertical skew sort their y-sorted layers per cell (more draw items); a skew.y of 0 keeps rows.
+  - Isometric plain layers draw by diagonal (equal x + y, each left to right), as Tiled was measured to paint them, not by grid row as the design said.
+  - A negative `hexsidelength` (Tiled accepts it) is refused at load with an error naming it.
+  - The render-order warning fires on oblique maps as on orthogonal ones: Tiled honours the render order on both, and the engine draws right-down only.
+  - A layer's `TileGrid` field is now `tiles` (`LayerKind::Tiles { tiles, grid, .. }`, `TileLayerData::tiles`), so `grid` names the `MapGrid`.
+  - `Lattice` and `MapGrid::lattice()` are public, for procgen. Procgen on a staggered map lays its square grid as a diamond, corners empty.
+  - A tile's `sort_offset` moves its sort point down when positive, as `YSort` does (the plan's example had it inverted).
+  - Collision shapes on an isometric-grid tileset are read in the image's pixels, with one warning a file.
+  - The navigation warning names skewed oblique maps too.
+  - Big tiles' padding was fixed in the demo (its art halved, 577 to 38 MiB of GPU memory), not in the engine.
+  - `RYO_HEADLESS_HZ` paces a headless run's wall time per step (1 to 10,000 Hz, game time unchanged). `demo-tour` sets it to 60 so pages whose maps land in the background are captured landed; the tour takes about 1.5 s a page longer.
+- Deferred findings:
+  - **Grid maths and docs.**
+    - `CellOutline`'s doc (`grid_shape.rs`, the tilemap module notes) says an outline starts at "the left one of a level top", but an axis-Y hex whose side is longer than its tile starts at the top edge's midpoint; nothing pins where outlines start off isometric.
+    - `MapGrid::shape`, the `StaggerAxis` and `StaggerIndex` variants and the axis, index and side fields have no rustdoc.
+    - `MapGrid::cell` (a size) shares its name with the `cell: IVec2` parameters (an index); rename it `cell_size`.
+    - `TileMap::with_shape` moves only the layers whose grid equals the old map grid: setting `shape` directly, or changing `size` or `tile_size` once layers exist, leaves stale layer grids (a stale isometric origin included), and the size case isn't documented. On a map with layers, `with_shape(Hexagonal)` leaves them colliding (a warning fires); its rustdoc should say to call it before adding layers.
+    - `rotated_cw` silently drops bit 8 (`HEX_ROTATE_120`); documented, and fine on square grids.
+    - On a hex map whose side is longer than its tile, `bounds_of` (and the world rect) is 4 px taller than Tiled's map (in Limits).
+    - `LayerGrid` ignores parallax and its docs don't say so: picking on a parallax layer won't match where it draws.
+    - The formats note still says at :154 that oblique maps ignore `renderorder` (corrected at :158 and §7.6); its §9 could say the capsule isn't measured.
+  - **Tests missing or loose.**
+    - Hex lines' straightness and their 1e-6 nudge are unpinned (any shortest path passes); the ring's start check is loose (assert `ring[0]` is `n` steps from the centre along the first direction); two assertions restate the code (neighbours through the lattice, the `sort_band` formula); views wider than 900 px are only smoke-tested in `chunks_over`'s tests.
+    - `CellOutline::mapped`'s mirrored path (a negative determinant) is untested.
+    - Objects: the rotated-object pen tolerance (3.5 to 5 px) wouldn't catch a 3 to 5 px error (assert the 90° rectangle's corners from formats §9); negative-skew objects, objects on an infinite isometric map, flipped tile objects on isometric or oblique maps, a tile template on an isometric map and the capsule against Tiled are untested; redundant bare blocks and an over-long comment in `tiled/mod.rs`'s tests.
+    - Drawing: no in-order test over negative chunks or with two cameras; the culling test named for every grid covers isometric and hex only.
+    - Y-sorting: the every-grid test isn't proven to fail under the old formula on staggered and oblique maps (sample the tree's own cell, or a feet point between the old bottom edge and the centre); add a staggered-X or oblique `sort_offset` case.
+    - Collision: untested are rescatter dropping empty lattice chunks (a leak on an endless staggered stream would pass), `solid_rects` with a lattice, IntGrid one-way cells becoming solid off orthogonal, equal cell sizes with different shapes not sharing a group, and the folding-lattice refusal; tall tiles and tileset offsets through the lattice placement are tested only by the demo's town-walls test.
+    - Terrain: the hex terrain warning is keyed once per world, not per map or layer (a second hex map is silent), and its test counts a global log string; no test of staggered cells near the ends of i32.
+    - The `Bound` GPU test covers neither tile slots (group 2's dynamic offset) nor light steps, and nothing catches removing its group reset on a pipeline change (wgpu keeps compatible groups bound); the two-tileset render tests are its only other teeth.
+  - **Drawing and speed.**
+    - Art that fills its cell's box but not its outline isn't detected as overlapping, so it draws chunk by chunk (in Limits).
+    - Odd-width isometric maps always take the in-order path (the half-pixel raster shift counts as sideways), though the vertical-spill path would be exact; the skill's cost text doesn't say so. `reach` (`chunks.rs`) ignores the raster offset, so per-camera culling could drop a 1 px sliver at the screen's edge on such maps.
+    - `may_spill` runs per layer per frame; once per map would do.
+    - Non-orthogonal chunk builds call `tile_anchor`, `paint_key` and `cell_bounds` per cell, each rebuilding `Lines` on staggered and hex grids; staggered edits cost about twice other grids' (within the 100 µs target).
+    - Y-sorted layers' chunk builds get `check`, so they compute `cell_bounds` per cell and paint runs they never draw by (`tiles.rs`, `chunks.rs`); pass `check && !y_sorted`.
+    - Per-cell and offset y-sort items sort at the layer's x = 0 through its transform (a rotated layer sorts by projection); say so in the skill's Limits.
+    - On hex maps a tile object's bit 29 draws as a diagonal flip and its `HEX_ROTATE_120` bit (kept by the loader) is ignored (`object_instance`). Tiled's editor can't set these bits on tile objects, and how Tiled draws them is unmeasured: measure a hand-edited TMX through Tiled's headless render, then draw the turn or drop the bits.
+    - The tall-props isometric static case meets 50 µs by only 0.5 to 3.0 µs on a quiet machine; a busier one misses.
+    - Streams on staggered, hex and oblique grids are unmeasured: the stream guard runs orthogonal and isometric worlds only, so their resident chunks and frame cost are unknown.
+  - **Collision, streaming and reload.**
+    - A folding oblique lattice (skew.x × skew.y = w × h) is refused at rebuild, but `trace()` still runs first off the main thread, and occluders build degenerate chains with no warning; check `placeable()` in both.
+    - Odd-height staggered tiles classify a full diamond as a clipped shape, leaving half-pixel notches by the side vertices (in Limits; the demo's island coast shows it).
+    - The navigation warning names hexagonal maps, but hex layers never reach `block_tiles`.
+    - Chunks in flight across a grid-changing reload carry the old grid in their `ChunkRequest`; on a reshape, call off every chunk out and ready, not only the file's.
+    - The different-grids stream warning prints the shape with `{:?}`.
+    - Tiled's correction reach on staggered terrain (two cells wider) is measured along the half-step axis only (said in the rustdoc).
+  - **The speed guards.**
+    - `load_files` writes LOADS+1 files per grid (the extra one used only by orthogonal); orthogonal infinite loads now run after the level changes.
+    - `benches/tilemap.rs` is about 2,950 lines; split it into `benches/tilemap/{static_frame,edit,load,stream}.rs` beside the guards.
+    - Unheld static rows in the record give medians only (no p99 or max).
+  - **The demo.**
+    - Turned 60 x 70 sand hexes leave 1 px pinholes at a few vertices (the art isn't a regular hexagon, which would be 69.28 tall at width 60; Tiled shows the same); the halved hex art shows a one-pixel stair on turned hexes at the board's edge.
+    - The speed page's grid switch builds a million cells on the main thread, a one-off hitch; the town's pointer readout lags its outline by a frame.
+    - The tilemap demo's page 10 prints wall-clock timings, so its tour capture differs run to run (pre-existing).
+    - One comment line in `make-fixtures.js` runs to about 130 columns.
+
 ## Streaming endless worlds (6b, stage 3)
 
 - Owner decisions (2026-11-01 to 11-02):
