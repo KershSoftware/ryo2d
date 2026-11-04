@@ -2119,3 +2119,310 @@ fn culling_draws_only_chunks_a_camera_sees_on_every_grid() {
     }
   }
 }
+
+// ---- every grid: y-sorting ----------------------------------------------------
+
+/// A rectangle in frame pixels: left, top, width, height
+type Box4 = (f32, f32, f32, f32);
+
+/// The middle pixel of where two boxes overlap, if they share at least a
+/// 3 x 3 patch
+fn overlap_middle(a: Box4, b: Box4) -> Option<(u32, u32)> {
+  let (x0, y0) = (a.0.max(b.0), a.1.max(b.1));
+  let (x1, y1) = ((a.0 + a.2).min(b.0 + b.2), (a.1 + a.3).min(b.1 + b.3));
+  (x1 - x0 >= 3.0 && y1 - y0 >= 3.0).then(|| (((x0 + x1) / 2.0) as u32, ((y0 + y1) / 2.0) as u32))
+}
+
+fn count_of(frame: &image::RgbaImage, colour: [u8; 4]) -> usize {
+  frame.pixels().filter(|p| p.0 == colour).count()
+}
+
+/// A y-sorted layer of one tall tree (red, its cell's box wide and twice as
+/// high, `sort_offset` set on its tile) on a map of `shape`, the map moved
+/// so the tree's cell is near the middle of the frame, and a blue 16 x 12
+/// character, y-sorted at the same z, which `stand` puts feet at a point of
+/// the layer
+struct Woods {
+  engine: HeadlessEngine,
+  character: Entity,
+  grid: MapGrid,
+  /// Where the map's origin is in the frame
+  shift: Vec2,
+  tree: IVec2,
+}
+
+impl Woods {
+  fn new(shape: GridShape, cell: UVec2, tree: IVec2, sort_offset: f32) -> Option<Woods> {
+    let grid = MapGrid::for_map(shape, cell, UVec2::splat(10), false);
+    let shift = (Vec2::new(32.0, 40.0) - grid.cell_center(tree)).round();
+    let moved = Moved::default();
+    let made = moved.clone();
+    let engine = engine(move |ctx| {
+      let b = grid.cell_bounds(IVec2::ZERO);
+      let (w, h) = (b.width as u32, 2 * b.height as u32);
+      let image = ctx
+        .assets()
+        .add(Image::solid_rect(w, h, RED[0], RED[1], RED[2], 255));
+      let mut set = Tileset::new(
+        "tree",
+        UVec2::new(w, h),
+        TilesetImage::Atlas {
+          image,
+          size: UVec2::new(w, h),
+        },
+      );
+      set.columns = 1;
+      set.tile_count = 1;
+      set.insert_tile(
+        0,
+        TileData {
+          sort_offset,
+          ..TileData::default()
+        },
+      );
+      let mut forest = TileMap::new(UVec2::splat(10), cell).with_shape(shape);
+      forest.add_tileset(TilesetSource::Embedded(Arc::new(set)));
+      let layer = forest.add_tile_layer("trees");
+      put(&mut forest, layer, &[(tree, Tile::new(0, 0))]);
+      forest.layers[layer].info.y_sorted = true;
+      let forest = ctx.assets().add(forest);
+      ctx.world.spawn((
+        MapRoot::new(forest).with_z(1),
+        Transform::from_xy(shift.x, shift.y),
+      ));
+      let blue = ctx
+        .assets()
+        .add(Image::solid_rect(16, 12, BLUE[0], BLUE[1], BLUE[2], 255));
+      let entity = ctx
+        .world
+        .spawn((
+          Transform::from_xy(0.0, 0.0),
+          Renderable::image(blue)
+            .with_anchor(Anchor::TopLeft)
+            .with_z_order(1),
+          YSort::new(),
+        ))
+        .id();
+      *made.lock().unwrap() = Some(entity);
+    })?;
+    let character = moved.lock().unwrap().expect("spawned");
+    Some(Woods {
+      engine,
+      character,
+      grid,
+      shift,
+      tree,
+    })
+  }
+
+  /// The character stands with its feet at `feet` in the layer's pixels;
+  /// whether the tree draws over it (the frame's pixel in their overlap is
+  /// red) or it draws over the tree (blue)
+  fn tree_is_in_front(&mut self, feet: Vec2) -> bool {
+    let at = feet + self.shift;
+    self
+      .engine
+      .world_mut()
+      .get_mut::<Transform>(self.character)
+      .unwrap()
+      .translation = Vec2::new(at.x - 8.0, at.y - 12.0);
+    self.engine.step_frames(2).unwrap();
+    let frame = self.engine.frame().unwrap();
+    let b = self.grid.cell_bounds(IVec2::ZERO);
+    let anchor = self.grid.tile_anchor(self.tree) + self.shift;
+    let tree = (anchor.x, anchor.y - 2.0 * b.height, b.width, 2.0 * b.height);
+    let man = (at.x - 8.0, at.y - 12.0, 16.0, 12.0);
+    let (x, y) = overlap_middle(tree, man).unwrap_or_else(|| {
+      panic!(
+        "{:?}: the character at {feet} overlaps the tree: {tree:?} {man:?}",
+        self.grid.shape
+      )
+    });
+    assert!(count_of(&frame, RED) > 0 && count_of(&frame, BLUE) > 0);
+    match frame.get_pixel(x, y).0 {
+      RED => true,
+      BLUE => false,
+      other => panic!("pixel ({x}, {y}) is {other:?}"),
+    }
+  }
+}
+
+fn grids_that_sort() -> Vec<(GridShape, UVec2)> {
+  let hex = |axis| GridShape::Hexagonal {
+    axis,
+    index: StaggerIndex::Odd,
+    side: 8,
+  };
+  let staggered = |axis| GridShape::Staggered {
+    axis,
+    index: StaggerIndex::Odd,
+  };
+  vec![
+    (GridShape::Orthogonal, UVec2::splat(8)),
+    (GridShape::Isometric, UVec2::new(16, 8)),
+    (staggered(StaggerAxis::Y), UVec2::new(16, 8)),
+    (staggered(StaggerAxis::X), UVec2::new(16, 8)),
+    (hex(StaggerAxis::Y), UVec2::splat(16)),
+    (hex(StaggerAxis::X), UVec2::splat(16)),
+    (
+      GridShape::Oblique {
+        skew: IVec2::new(4, 0),
+      },
+      UVec2::splat(8),
+    ),
+    (
+      GridShape::Oblique {
+        skew: IVec2::new(0, 4),
+      },
+      UVec2::splat(8),
+    ),
+  ]
+}
+
+#[test]
+fn a_character_walks_behind_and_in_front_of_a_tall_tile_on_every_grid() {
+  // A tall tree on a y-sorted layer at cell T: a character standing in the
+  // cell behind T (the one above it) draws under the tree, in the cell in
+  // front (below it) over it. On an oblique grid skewed down its columns
+  // the cells beside T sort alone too: the one before T is higher, the one
+  // after lower
+  for (shape, cell) in grids_that_sort() {
+    let tree = IVec2::new(4, 4);
+    let Some(mut woods) = Woods::new(shape, cell, tree, 0.0) else {
+      return;
+    };
+    let feet = |at: IVec2| woods.grid.cell_center(at);
+    let (behind, front) = (feet(tree - IVec2::Y), feet(tree + IVec2::Y));
+    let (before, after) = (feet(tree - IVec2::X), feet(tree + IVec2::X));
+    assert!(woods.tree_is_in_front(behind), "{shape:?}: behind the tree");
+    assert!(
+      !woods.tree_is_in_front(front),
+      "{shape:?}: in front of the tree"
+    );
+    if matches!(shape, GridShape::Oblique { skew } if skew.y != 0) {
+      assert!(
+        woods.tree_is_in_front(before),
+        "{shape:?}: in the cell before it"
+      );
+      assert!(
+        !woods.tree_is_in_front(after),
+        "{shape:?}: in the cell after it"
+      );
+    }
+  }
+}
+
+#[test]
+fn a_tiles_sort_offset_moves_its_sort_point() {
+  // A tree whose tile says `sort_offset` 16 sorts 16 px below where it
+  // stands, so a character 8 px in front of it draws behind it; one saying
+  // -16 sorts 16 px above, so a character 8 px behind it draws over it
+  for (shape, cell) in [
+    (GridShape::Orthogonal, UVec2::splat(8)),
+    (GridShape::Isometric, UVec2::new(16, 8)),
+  ] {
+    let tree = IVec2::new(4, 4);
+    for offset in [16.0, -16.0] {
+      let Some(mut woods) = Woods::new(shape, cell, tree, offset) else {
+        return;
+      };
+      // Where the tree's band sorts: an orthogonal row's bottom edge, else
+      // the cell's centre
+      let at = woods.grid.cell_center(tree);
+      let band = if shape == GridShape::Orthogonal {
+        woods.grid.tile_anchor(tree).y
+      } else {
+        at.y
+      };
+      let feet = Vec2::new(at.x, if offset > 0.0 { band + 8.0 } else { band - 8.0 });
+      assert_eq!(
+        woods.tree_is_in_front(feet),
+        offset > 0.0,
+        "{shape:?}, sort_offset {offset}"
+      );
+    }
+  }
+}
+
+#[test]
+fn tile_objects_on_an_isometric_y_sorted_layer_sort_by_their_feet() {
+  // A red tile object 8 x 16 px standing at isometric object point (32, 32)
+  // (the map's origin puts it at layer point (32, 48); moved back it stands at frame x 24 to 32 with its feet at y 32), on a y-sorted
+  // object layer at z 1; a blue character overlaps it with its feet at y 28
+  // (behind it), then at y 36 (in front)
+  let moved = Moved::default();
+  let character = moved.clone();
+  let Some(mut engine) = engine(move |ctx| {
+    let image = ctx.assets().add(Image::solid_rect(
+      CELL,
+      2 * CELL,
+      RED[0],
+      RED[1],
+      RED[2],
+      255,
+    ));
+    let size = UVec2::new(CELL, 2 * CELL);
+    let mut set = Tileset::new(
+      "tall",
+      UVec2::new(CELL, 2 * CELL),
+      TilesetImage::Atlas { image, size },
+    );
+    set.columns = 1;
+    set.tile_count = 1;
+    let mut layers =
+      TileMap::new(UVec2::splat(8), UVec2::new(16, 8)).with_shape(GridShape::Isometric);
+    layers.add_tileset(TilesetSource::Embedded(Arc::new(set)));
+    // A layer's z is the map's plus its place, so the objects, second, are
+    // at the character's z
+    layers.add_tile_layer("ground");
+    let objects = layers.add_object_layer("things");
+    let tree = tile_object(
+      "1",
+      Vec2::new(32.0, 32.0),
+      Vec2::new(8.0, 16.0),
+      Tile::new(0, 0),
+    );
+    layers.layers[objects].kind = LayerKind::Objects(vec![tree]);
+    layers.layers[objects].info.y_sorted = true;
+    let handle = ctx.assets().add(layers);
+    ctx
+      .world
+      .spawn((MapRoot::new(handle), Transform::from_xy(-8.0, -16.0)));
+    let blue = ctx.assets().add(Image::solid_rect(16, 8, 30, 60, 230, 255));
+    let entity = ctx
+      .world
+      .spawn((
+        Transform::from_xy(20.0, 20.0),
+        Renderable::image(blue)
+          .with_anchor(Anchor::TopLeft)
+          .with_z_order(1),
+        YSort::new(),
+      ))
+      .id();
+    *character.lock().unwrap() = Some(entity);
+  }) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  let character = moved.lock().unwrap().expect("spawned");
+  let expect = |feet: u32| {
+    move |x: u32, y: u32| {
+      let tree = (24..32).contains(&x) && (16..32).contains(&y);
+      let blue = (20..36).contains(&x) && (feet - 8..feet).contains(&y);
+      match (tree, blue) {
+        (true, true) => Some(if feet < 32 { RED } else { BLUE }),
+        (true, false) => Some(RED),
+        (false, true) => Some(BLUE),
+        (false, false) => None,
+      }
+    }
+  };
+  assert_pixels(&engine.frame().unwrap(), expect(28));
+  engine
+    .world_mut()
+    .get_mut::<Transform>(character)
+    .unwrap()
+    .translation = Vec2::new(20.0, 28.0);
+  engine.step().unwrap();
+  assert_pixels(&engine.frame().unwrap(), expect(36));
+}

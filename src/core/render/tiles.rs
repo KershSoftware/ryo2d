@@ -40,7 +40,7 @@ use glam::{Affine2, IVec2, Mat2, UVec2, Vec2};
 
 use super::batch::{
   Band, BlendMode, ChunkCopy, ChunkKey, ChunkPart, ChunkRun, ChunkStamp, ChunkStore, Filter,
-  PaintKey, Spill, TileSlot,
+  Planted, Spill, TileSlot,
 };
 use super::draw_list::reach;
 use super::entities::{DrawOrder, OrderedDraw, OrderedPayload};
@@ -80,10 +80,10 @@ pub(crate) struct LayerLook {
 pub(crate) fn chunk_instances(
   tiles: &TileGrid,
   chunk: IVec2,
-  (grid, check): (&MapGrid, bool),
+  (grid, check, sorted): (&MapGrid, bool, bool),
   layouts: &[Option<PaddedLayout>],
   look: &LayerLook,
-  out: &mut Vec<(u16, PaintKey, SpriteInstance)>,
+  out: &mut Vec<Planted>,
 ) -> Spill {
   out.clear();
   // Each cell read where it lies, not looked up
@@ -108,7 +108,18 @@ pub(crate) fn chunk_instances(
     if check {
       spill = spill.max(leaves(&instance, grid.cell_bounds(cell)));
     }
-    out.push((tile.tileset, grid.paint_key(cell), instance));
+    // A y-sorted layer's cells sort by their band, unless a cell stands
+    // alone: on a grid whose rows slope, or by a tile's `sort_offset`
+    let sort = if !sorted {
+      None
+    } else if grid.sorts_per_cell() {
+      Some(grid.cell_center(cell).y + padded.sort_offset)
+    } else if padded.sort_offset != 0.0 {
+      Some(grid.band_y(grid.sort_band(cell)) + padded.sort_offset)
+    } else {
+      None
+    };
+    out.push((tile.tileset, grid.paint_key(cell), instance, sort));
   };
   match paint_order(grid) {
     PaintOrder::Rows => {
@@ -820,7 +831,7 @@ impl TileDrawer {
               let grid = &data.grid;
               let mut stamp = DefaultHasher::new();
               let origin = grid.origin.to_array().map(f32::to_bits);
-              (paddings, look.tint, look.opacity.to_bits()).hash(&mut stamp);
+              (paddings, look.tint, look.opacity.to_bits(), info.y_sorted).hash(&mut stamp);
               (grid.shape, grid.cell, origin).hash(&mut stamp);
               let check = may_spill(grid, layouts);
               let draw = LayerDraw {
@@ -1116,8 +1127,15 @@ impl View<'_> {
     };
     let grid = &layer.data.grid;
     let layouts = self.layouts;
-    let build = |out: &mut Vec<(u16, PaintKey, SpriteInstance)>| {
-      chunk_instances(tiles, chunk, (grid, layer.check), layouts, &layer.look, out)
+    let build = |out: &mut Vec<Planted>| {
+      chunk_instances(
+        tiles,
+        chunk,
+        (grid, layer.check, layer.y_sorted),
+        layouts,
+        &layer.look,
+        out,
+      )
     };
     if layer.in_order {
       // Its parts and its runs in paint order, after those gathered
@@ -1161,7 +1179,6 @@ impl View<'_> {
     {
       return;
     }
-    let cell = grid.cell.as_vec2();
     for at in 0..self.parts.len() {
       let part = self.parts[at];
       if !layer.y_sorted {
@@ -1177,8 +1194,10 @@ impl View<'_> {
         if row.tileset != part.tileset {
           continue;
         }
-        let bottom = Vec2::new(0.0, (row.band.0 as f32 + 1.0) * cell.y);
-        let sort_y = placed.transform_point2(bottom).y;
+        let layer_y = row
+          .sort
+          .unwrap_or_else(|| grid.band_y(grid.sort_band_of(row.band)));
+        let sort_y = placed.transform_point2(Vec2::new(0.0, layer_y)).y;
         let bounds = world_box(placed, row.min, row.max);
         let order = DrawOrder::y_sorted(layer.z, sort_y);
         let piece = (chunk, part.tileset, row.first, row.count, bounds);
@@ -1659,8 +1678,15 @@ mod tests {
     layouts: &[Option<PaddedLayout>],
   ) -> Vec<(u16, SpriteInstance)> {
     let mut out = Vec::new();
-    chunk_instances(grid, chunk, (&square(cell), true), layouts, &LOOK, &mut out);
-    out.into_iter().map(|(set, _, i)| (set, i)).collect()
+    chunk_instances(
+      grid,
+      chunk,
+      (&square(cell), true, false),
+      layouts,
+      &LOOK,
+      &mut out,
+    );
+    out.into_iter().map(|(set, _, i, _)| (set, i)).collect()
   }
 
   /// The screen position and UV at each of an instance's four corners, in
@@ -1824,13 +1850,13 @@ mod tests {
     let spill = chunk_instances(
       &grid,
       IVec2::new(1, 0),
-      (&grid16, true),
+      (&grid16, true, false),
       &layouts,
       &LOOK,
       &mut bands,
     );
     assert_eq!(spill, Spill::None);
-    let keys: Vec<(u16, PaintKey)> = bands.iter().map(|(s, k, _)| (*s, *k)).collect();
+    let keys: Vec<(u16, (i32, i32, i32))> = bands.iter().map(|(s, k, ..)| (*s, *k)).collect();
     assert_eq!(
       keys,
       [
@@ -1883,7 +1909,7 @@ mod tests {
     chunk_instances(
       &grid,
       IVec2::ZERO,
-      (&grid16, false),
+      (&grid16, false, false),
       &layouts,
       &look,
       &mut out,

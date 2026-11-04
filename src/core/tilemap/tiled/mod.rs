@@ -1741,6 +1741,27 @@ mod tests {
   }
 
   #[test]
+  fn a_tile_s_sort_offset_property_loads_in_pixels() {
+    let inline = r#"{"firstgid":1,"name":"o","tilewidth":16,"tileheight":16,"tilecount":16,"columns":4,
+        "image":"images/tiles.png","imagewidth":64,"imageheight":64,
+        "tiles":[
+          {"id":1,"properties":[{"name":"sort_offset","type":"float","value":-12.5}]},
+          {"id":2,"properties":[{"name":"sort_offset","type":"int","value":16}]},
+          {"id":3,"properties":[{"name":"sort_offset","type":"string","value":"far"}]},
+          {"id":4,"properties":[{"name":"hits","type":"int","value":1}]}]}"#;
+    let map = load_json(&map_json("", &tile_layer(""), inline)).expect("loads");
+    let TilesetSource::Embedded(set) = &map.tilesets[0] else {
+      panic!("not inline")
+    };
+    let offset = |id| set.tile(id).map(|tile| tile.sort_offset);
+    assert_eq!(offset(1), Some(-12.5));
+    assert_eq!(offset(2), Some(16.0));
+    // Not a number, or not given: the tile sorts where it stands
+    assert_eq!(offset(3), Some(0.0));
+    assert_eq!(offset(4), Some(0.0));
+  }
+
+  #[test]
   fn a_tileset_s_tile_offset_loads() {
     let mut world = world_over(files_with(&[]));
     let handle = AssetsView::new(&mut world)

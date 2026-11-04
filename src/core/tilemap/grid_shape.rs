@@ -672,10 +672,16 @@ impl MapGrid {
   /// unshifted cells (2r) or its shifted ones (2r + 1), which sit half a
   /// cell lower. On an oblique grid skewed down along its rows (`skew.y`)
   /// a row's cells step down by the skew, so they share no sort point
-  #[cfg_attr(not(test), allow(dead_code))] // nothing outside the tests reads it yet
+  /// (`sorts_per_cell`)
   pub(crate) fn sort_band(&self, cell: IVec2) -> i32 {
+    let (row, phase, _) = self.paint_key(cell);
+    self.sort_band_of((row, phase))
+  }
+
+  /// The sort band of the cells of a paint band (the first two parts of
+  /// their paint key)
+  pub(crate) fn sort_band_of(&self, (row, phase): (i32, i32)) -> i32 {
     match self.shape {
-      GridShape::Isometric => clamp_i32(i64::from(cell.x) + i64::from(cell.y)),
       GridShape::Staggered {
         axis: StaggerAxis::X,
         ..
@@ -683,19 +689,21 @@ impl MapGrid {
       | GridShape::Hexagonal {
         axis: StaggerAxis::X,
         ..
-      } => {
-        let shifted = self.lines().shifted(i64::from(cell.x));
-        clamp_i32(2 * i64::from(cell.y) + i64::from(shifted))
-      }
-      _ => cell.y,
+      } => clamp_i32(2 * i64::from(row) + i64::from(phase)),
+      _ => row,
     }
+  }
+
+  /// Whether the cells of a row sort one by one: an oblique grid skewed
+  /// down along its rows, whose cells share no sort point
+  pub(crate) fn sorts_per_cell(&self) -> bool {
+    matches!(self.shape, GridShape::Oblique { skew } if skew.y != 0)
   }
 
   /// The layer y a band sorts at: on orthogonal maps the row's bottom edge
   /// (the rule they have always had); on other grids its cells' centre, on
   /// an oblique grid skewed down along its rows that of the row's cell in
   /// column 0
-  #[cfg_attr(not(test), allow(dead_code))] // nothing outside the tests reads it yet
   pub(crate) fn band_y(&self, band: i32) -> f32 {
     let b = f64::from(band);
     let size = self.cell.as_dvec2();

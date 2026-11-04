@@ -73,6 +73,10 @@ pub struct TileData {
   pub animation: Vec<TileFrame>,
   /// Weight when a brush picks among equals
   pub probability: f32,
+  /// How far the tile's sort point lies below where it stands, in pixels,
+  /// on a y-sorted layer (the reserved tile property `sort_offset`;
+  /// negative moves it up)
+  pub sort_offset: f32,
   /// The tile's own image and its size, for collection tilesets
   pub image: Option<(Handle<Image>, UVec2)>,
 }
@@ -85,6 +89,7 @@ impl Default for TileData {
       shapes: Vec::new(),
       animation: Vec::new(),
       probability: 1.0,
+      sort_offset: 0.0,
       image: None,
     }
   }

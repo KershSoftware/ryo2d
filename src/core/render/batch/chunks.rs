@@ -95,6 +95,11 @@ pub(crate) type PaintKey = (i32, i32, i32);
 /// every other grid)
 pub(crate) type Band = (i32, i32);
 
+/// One instance a chunk is built from: its tileset, its place in Tiled's
+/// paint order, the instance, and where it sorts (in the layer's pixels)
+/// when that is not its band's sort point, as on a y-sorted layer
+pub(crate) type Planted = (u16, PaintKey, SpriteInstance, Option<f32>);
+
 /// A paint key's band
 fn band((row, phase, _): PaintKey) -> Band {
   (row, phase)
@@ -135,6 +140,9 @@ pub(crate) struct ChunkRun {
   pub count: u32,
   pub min: Vec2,
   pub max: Vec2,
+  /// Where a y-sorted layer sorts the run, in the layer's pixels, when it
+  /// is not its band's sort point: the run is then one instance
+  pub sort: Option<f32>,
 }
 
 /// Where [`ChunkStore::chunk`] copies a chunk as a view draws it: each
@@ -238,7 +246,7 @@ pub(crate) struct ChunkStore {
   written: Vec<Range<u32>>,
   /// A chunk's instances as built (tileset, paint key, instance), in
   /// paint order, before they are split by tileset
-  scratch: Vec<(u16, PaintKey, SpriteInstance)>,
+  scratch: Vec<Planted>,
   /// The frame's slots, and the texture each one's UVs come from
   slots: Vec<TileSlot>,
   slot_textures: Vec<TextureId>,
@@ -291,7 +299,7 @@ impl ChunkStore {
     (layer, chunk): (Entity, IVec2),
     stamp: ChunkStamp,
     view: u64,
-    build: impl FnOnce(&mut Vec<(u16, PaintKey, SpriteInstance)>) -> Spill,
+    build: impl FnOnce(&mut Vec<Planted>) -> Spill,
     out: ChunkCopy<'_>,
   ) -> Option<Spill> {
     let frame = self.frame;
@@ -368,15 +376,16 @@ impl ChunkStore {
       let count = run.len() as u32;
       let start = at;
       at += count;
-      for (slot, (_, _, instance)) in held[start as usize..].iter_mut().zip(run) {
+      for (slot, (_, _, instance, _)) in held[start as usize..].iter_mut().zip(run) {
         *slot = *instance;
       }
       // Each band's run of the part, and the box of each
       let (mut min, mut max) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
       let mut first = 0;
-      for cells in run.chunk_by(|a, b| band(a.1) == band(b.1)) {
+      // An instance with a sort point of its own is a run alone
+      for cells in run.chunk_by(|a, b| band(a.1) == band(b.1) && a.3.is_none() && b.3.is_none()) {
         let (mut low, mut high) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
-        for (_, _, instance) in cells {
+        for (_, _, instance, _) in cells {
           let (a, b) = reach(instance);
           low = low.min(a);
           high = high.max(b);
@@ -389,6 +398,7 @@ impl ChunkStore {
           count: cells.len() as u32,
           min: low,
           max: high,
+          sort: cells[0].3,
         });
         first += cells.len() as u32;
         min = min.min(low);
@@ -405,10 +415,13 @@ impl ChunkStore {
     }
     // Band by band, so a band's runs are together (a chunk of one tileset
     // has them so already)
-    if !built.rows.is_sorted_by_key(|row| (row.band, row.tileset)) {
+    if !built
+      .rows
+      .is_sorted_by_key(|row| (row.band, row.tileset, row.first))
+    {
       built
         .rows
-        .sort_unstable_by_key(|row| (row.band, row.tileset));
+        .sort_unstable_by_key(|row| (row.band, row.tileset, row.first));
     }
     Some(out.take(built))
   }
@@ -596,11 +609,11 @@ impl ChunkStore {
 /// `scratch`'s instances, in paint order, as runs into `runs`: a run ends
 /// where the tileset changes or the band does, and starts where its first
 /// instance will be in its tileset's part (the parts keep paint order)
-fn paint_runs(scratch: &[(u16, PaintKey, SpriteInstance)], runs: &mut Vec<ChunkRun>) {
+fn paint_runs(scratch: &[Planted], runs: &mut Vec<ChunkRun>) {
   // How many of each tileset's instances come before; a map holds at most
   // 256 tilesets
   let mut placed = [0u32; 256];
-  for &(tileset, key, ref instance) in scratch {
+  for &(tileset, key, ref instance, _) in scratch {
     let Some(at) = placed.get_mut(usize::from(tileset)) else {
       continue;
     };
@@ -621,6 +634,7 @@ fn paint_runs(scratch: &[(u16, PaintKey, SpriteInstance)], runs: &mut Vec<ChunkR
         count: 1,
         min: low,
         max: high,
+        sort: None,
       }),
     }
   }
@@ -896,7 +910,7 @@ mod tests {
   }
 
   /// What a build fills a chunk with
-  type Scratch = Vec<(u16, PaintKey, SpriteInstance)>;
+  type Scratch = Vec<Planted>;
 
   impl ChunkStore {
     /// [`chunk`](ChunkStore::chunk), its parts, rows and runs copied out
@@ -947,11 +961,14 @@ mod tests {
   fn builder(tiles: &[(u16, f32)]) -> impl FnOnce(&mut Scratch) -> Spill + '_ {
     move |out| {
       out.clear();
-      out.extend(
-        tiles
-          .iter()
-          .map(|&(set, x)| (set, (0, 0, (x / 16.0) as i32), tile(x, 8.0, 16.0, 16.0))),
-      );
+      out.extend(tiles.iter().map(|&(set, x)| {
+        (
+          set,
+          (0, 0, (x / 16.0) as i32),
+          tile(x, 8.0, 16.0, 16.0),
+          None,
+        )
+      }));
       Spill::None
     }
   }
@@ -1011,10 +1028,48 @@ mod tests {
     move |out| {
       out.extend(tiles.iter().map(|&(set, row, x)| {
         let y = row as f32 * 16.0 + 8.0;
-        (set, (row, 0, (x / 16.0) as i32), tile(x, y, 16.0, 16.0))
+        (
+          set,
+          (row, 0, (x / 16.0) as i32),
+          tile(x, y, 16.0, 16.0),
+          None,
+        )
       }));
       spill
     }
+  }
+
+  #[test]
+  fn an_instance_with_a_sort_point_of_its_own_is_a_row_alone() {
+    let [layer] = layers(1)[..] else { return };
+    let mut store = ChunkStore::default();
+    store.begin_frame();
+    let view = store.begin_view();
+    // Four tiles of one tileset in row 0, the third sorting at 3.5
+    let built = store
+      .chunk_copied(layer, IVec2::ZERO, STAMP, view, |out| {
+        out.extend((0..4).map(|i| {
+          let x = 8.0 + 16.0 * i as f32;
+          (
+            0,
+            (0, 0, i),
+            tile(x, 8.0, 16.0, 16.0),
+            (i == 2).then_some(3.5),
+          )
+        }));
+        Spill::None
+      })
+      .expect("built");
+    let rows: Vec<(u32, u32, Option<f32>)> = built
+      .rows
+      .iter()
+      .map(|r| (r.first, r.count, r.sort))
+      .collect();
+    assert_eq!(
+      rows,
+      [(0, 2, None), (2, 1, Some(3.5)), (3, 1, None)],
+      "the tile with a point of its own splits the band"
+    );
   }
 
   #[test]
@@ -1277,6 +1332,7 @@ mod tests {
             0,
             (0, 0, i as i32),
             tile(8.0 + 16.0 * i as f32, 8.0, 16.0, 16.0),
+            None,
           )
         }));
         Spill::None

@@ -95,6 +95,8 @@ pub struct PaddedTile {
   /// The tile's size in texels, as drawn unflipped
   pub size: UVec2,
   pub animation: Option<PaddedAnimation>,
+  /// The tile's `sort_offset`, in pixels
+  pub sort_offset: f32,
 }
 
 /// An animated tile's frames: `frames` cells from `first_slot`, row-major,
@@ -284,6 +286,7 @@ pub(crate) fn pad_tileset(
       slot: slot as u32,
       size,
       animation: None,
+      sort_offset: tileset.tile(id).map_or(0.0, |data| data.sort_offset),
     });
   }
   for &(id, size) in &ids {

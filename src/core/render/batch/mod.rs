@@ -9,7 +9,7 @@ mod plan;
 mod polyline;
 
 pub(crate) use chunks::{
-  Band, ChunkCopy, ChunkKey, ChunkPart, ChunkRun, ChunkStamp, ChunkStore, KEEP_FRAMES, PaintKey,
+  Band, ChunkCopy, ChunkKey, ChunkPart, ChunkRun, ChunkStamp, ChunkStore, KEEP_FRAMES, Planted,
   Spill, TileSlot,
 };
 pub(crate) use gpu::{Batch2D, unit_quad};

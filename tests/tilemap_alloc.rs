@@ -190,6 +190,9 @@ enum Art {
   /// Staggered along y, on cells of 12 x 8: the tiles reach past their
   /// cells' sides too, so its layers draw every chunk's runs band by band
   Wide,
+  /// Oblique, on cells of 16 px skewed 4 px down along their columns: the
+  /// cells of a y-sorted layer share no sort point, so each draws alone
+  Sheared,
 }
 
 impl StaticMap {
@@ -199,6 +202,7 @@ impl StaticMap {
       Art::Fitting => Vec2::splat(SIDE as f32 * 8.0),
       Art::Tall => Vec2::new(SIDE as f32 * 8.0, SIDE as f32 * 4.0),
       Art::Wide => Vec2::new(SIDE as f32 * 6.0, SIDE as f32 * 2.0),
+      Art::Sheared => Vec2::new(SIDE as f32 * 8.0, SIDE as f32 * 10.0),
     }
   }
 }
@@ -240,6 +244,14 @@ impl Scene for StaticMap {
         ..TileData::default()
       },
     );
+    // The y-sorted props sort 4 px below where they stand, each alone
+    set.insert_tile(
+      PROP,
+      TileData {
+        sort_offset: 4.0,
+        ..TileData::default()
+      },
+    );
     let set = TilesetSource::Asset(ctx.assets().add(set));
     let mut map = match self.art {
       Art::Fitting => TileMap::new(UVec2::splat(SIDE), UVec2::splat(16)),
@@ -250,6 +262,11 @@ impl Scene for StaticMap {
         TileMap::new(UVec2::splat(SIDE), UVec2::new(12, 8)).with_shape(GridShape::Staggered {
           axis: StaggerAxis::Y,
           index: StaggerIndex::Odd,
+        })
+      }
+      Art::Sheared => {
+        TileMap::new(UVec2::splat(SIDE), UVec2::splat(16)).with_shape(GridShape::Oblique {
+          skew: IVec2::new(0, 4),
         })
       }
     };
@@ -429,6 +446,11 @@ fn a_frame_drawing_a_staggered_map_of_wide_tiles_run_by_run_allocates_nothing() 
   static_frames_allocate_nothing(Art::Wide);
 }
 
+#[test]
+fn a_frame_drawing_a_y_sorted_oblique_map_cell_by_cell_allocates_nothing() {
+  static_frames_allocate_nothing(Art::Sheared);
+}
+
 /// The most draws a chunk's tileset takes in `engine`'s last frame, over
 /// its plain tile layers: one where each part draws whole, more where a
 /// layer draws its chunks' runs band by band
@@ -469,6 +491,7 @@ fn static_frames_allocate_nothing(art: Art) {
   match art {
     Art::Fitting | Art::Tall => assert_eq!(most, 1, "{art:?}: each part draws whole"),
     Art::Wide => assert!(most > 1, "{art:?}: a part draws as runs, {most} at most"),
+    Art::Sheared => {}
   }
   // Panning 256 px right and back, its chunks drawn the first time over
   let pan = |frame: usize| {

@@ -336,9 +336,14 @@ fn tile_data(
   place: &str,
   raw: RawTile,
 ) -> Result<TileData, AssetError> {
+  let properties = px.read(place, &raw.properties, raw.class.as_deref())?;
   let mut data = TileData {
     class: raw.class.clone().filter(|c| !c.is_empty()),
-    properties: px.read(place, &raw.properties, raw.class.as_deref())?,
+    sort_offset: properties
+      .float("sort_offset")
+      .filter(|offset| offset.is_finite())
+      .map_or(0.0, |offset| offset as f32),
+    properties,
     probability: raw.probability.unwrap_or(1.0),
     ..TileData::default()
   };
