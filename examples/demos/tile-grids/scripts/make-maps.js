@@ -610,14 +610,19 @@ save(town, tiled.mapFormat("tmx"), "maps/town.tmx");
 // ---- the staggered island ----------------------------------------------------
 
 // The same island on two staggered grids of 116 x 55 cells, each 1450 x
-// 687.5 px: rows shifted (staggered along y, odd rows half a cell right; 12
+// 675 px: rows shifted (staggered along y, odd rows half a cell right; 12
 // x 24 cells) and columns shifted (along x, odd columns half a cell down; 24
-// x 12). A cell is grass where its centre is inside the island's outline
-// (in pixels, so both grids show one island), else sea, which collides;
-// trees grow where a value noise of the centre is high (groves at the same
-// places on both), rocks by a hash of the cell. The character starts in
-// the middle
-var ISLAND_W = 1450, ISLAND_H = 687.5;
+// x 12). Tiled steps staggered grids in whole pixels, half a cell rounding
+// down: rows 27 apart and shifted 58 along y, columns 58 apart and their
+// cells 54 apart, shifted 27, along x (the 55 px tiles reach a pixel above
+// those steps' 54 px diamonds). A cell is grass where its centre is inside
+// the island's outline (in pixels, so both grids show one island), else
+// sea, which collides; trees grow where a value noise of the centre is high
+// (groves at the same places on both), rocks by a hash of the cell. The
+// character starts in the middle
+var ISLAND_W = 1450, ISLAND_H = 675;
+// Half a cell across and along, in Tiled's whole pixels
+var ISO_HALF_W = Math.floor(ISO_W / 2), ISO_HALF_H = Math.floor(ISO_H / 2);
 
 // Smooth value noise in 0..1 on a lattice one unit apart
 function noise(x, y, salt) {
@@ -641,11 +646,14 @@ function island(axis, width, height, path) {
   map.staggerIndex = TileMap.StaggerOdd;
   map.addTileset(SG);
   map.addTileset(SP);
+  // A cell's centre where Tiled draws it, stepping in whole pixels
   var centre = function (x, y) {
     if (axis == TileMap.StaggerY) {
-      return [x * ISO_W + (y % 2 == 1 ? ISO_W / 2 : 0) + ISO_W / 2, y * ISO_H / 2 + ISO_H / 2];
+      var shift = y % 2 == 1 ? ISO_HALF_W : 0;
+      return [x * 2 * ISO_HALF_W + shift + ISO_HALF_W, y * ISO_HALF_H + ISO_HALF_H];
     }
-    return [x * ISO_W / 2 + ISO_W / 2, y * ISO_H + (x % 2 == 1 ? ISO_H / 2 : 0) + ISO_H / 2];
+    var down = x % 2 == 1 ? ISO_HALF_H : 0;
+    return [x * ISO_HALF_W + ISO_HALF_W, y * 2 * ISO_HALF_H + down + ISO_HALF_H];
   };
   var ground = tileLayer("ground", { occludes: false });
   var props = tileLayer("props", { y_sort: true, occludes: false });
