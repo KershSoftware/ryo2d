@@ -333,9 +333,11 @@ pub struct Engine {
   /// Run the frame's logic but do not draw it (an unfocused window with
   /// background rendering off)
   skip_present: bool,
-  // Headless runs (`RYO_HEADLESS`)
+  // Headless runs (`RYO_HEADLESS`), and the wall time each of their steps
+  // takes at least (`RYO_HEADLESS_HZ`)
   offscreen_run: bool,
   offscreen_refused: bool,
+  offscreen_pace: Option<std::time::Duration>,
   game_name: Option<String>,
   game_version: Option<String>,
 }
@@ -377,6 +379,18 @@ fn scripted_run_from_env() -> (AutoCaptureConfig, InputScript, bool) {
     engine_warn!(module: "Input", "{}", warning);
   }
   (capture, script, invalid)
+}
+
+/// `RYO_HEADLESS_HZ` from the environment, its warning reported: the wall
+/// time each step of a headless run takes at least, and whether the value
+/// was invalid
+fn headless_pace_from_env() -> (Option<std::time::Duration>, bool) {
+  let (pace, warning) = crate::core::capture::headless_pace_from_env();
+  if let Some(warning) = &warning {
+    eprintln!("[headless] {warning}");
+    engine_warn!(module: "Capture", "{}", warning);
+  }
+  (pace, warning.is_some())
 }
 
 /// Systems that fail panic in debug builds and log in release builds.
@@ -782,6 +796,7 @@ impl Engine {
       skip_present: false,
       offscreen_run: false,
       offscreen_refused: false,
+      offscreen_pace: None,
       game_name,
       game_version,
       bindings_saver,
@@ -862,6 +877,12 @@ impl Engine {
         "[headless] no RYO_CAPTURE_EXIT=1 with RYO_CAPTURE_FRAMES: running until the scene quits"
       );
     }
+    if let Some(pace) = self.offscreen_pace {
+      println!(
+        "[headless] paced: each step takes at least {:.2} ms of wall time",
+        pace.as_secs_f64() * 1000.0
+      );
+    }
     if self.run_offscreen_frames()? {
       std::process::exit(1);
     }
@@ -870,6 +891,11 @@ impl Engine {
 
   /// The offscreen loop: step until the scene quits or `RYO_CAPTURE_EXIT` is
   /// met, then flush captures. Returns whether a scheduled capture failed.
+  ///
+  /// Each step advances the game by the fixed timestep whatever the wall
+  /// time; with a pace (`RYO_HEADLESS_HZ`) a step that finishes early sleeps
+  /// out the rest of it, so work off the main thread (a map's landing, an
+  /// asset's load) gets the wall time a windowed run would give it.
   #[cfg(not(target_arch = "wasm32"))]
   pub(crate) fn run_offscreen_frames(&mut self) -> EngineResult<bool> {
     let (device, queue) =
@@ -888,6 +914,7 @@ impl Engine {
     let dt = self.fixed_timestep();
     let mut fatal = None;
     loop {
+      let started = std::time::Instant::now();
       let outcome = self.frame(Some(dt));
       self.apply_headless_requests();
       let reports = self.capture.poll_writes();
@@ -902,6 +929,12 @@ impl Engine {
       }
       if self.capture.exit_requested() {
         break;
+      }
+      if let Some(rest) = self
+        .offscreen_pace
+        .and_then(|pace| pace.checked_sub(started.elapsed()))
+      {
+        std::thread::sleep(rest);
       }
     }
 
@@ -1633,7 +1666,8 @@ impl EngineBuilder {
   /// `HeadlessEngine` (sound on the silent mock backend, its variations
   /// seeded so runs repeat; no gamepads, user preferences or wall-clock
   /// overlays) but keeps `RYO_CAPTURE_*` and `RYO_INPUT`, and `run` renders
-  /// offscreen.
+  /// offscreen, each step taking at least its share of a second when
+  /// `RYO_HEADLESS_HZ` is set.
   pub fn build(self) -> Engine {
     let (offscreen, warning) = crate::core::capture::headless_run_from_env();
     if let Some(warning) = warning {
@@ -1644,8 +1678,10 @@ impl EngineBuilder {
     }
     let mut engine = self.build_engine(true);
     let (capture, script, invalid) = scripted_run_from_env();
+    let (pace, invalid_pace) = headless_pace_from_env();
     engine.prepare_offscreen_run(capture, script);
-    engine.offscreen_refused = invalid;
+    engine.offscreen_pace = pace;
+    engine.offscreen_refused = invalid || invalid_pace;
     engine
   }
 

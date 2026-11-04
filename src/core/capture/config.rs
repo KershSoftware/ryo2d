@@ -1,6 +1,8 @@
-//! `RYO_CAPTURE_*` environment configuration.
+//! `RYO_CAPTURE_*`, `RYO_HEADLESS` and `RYO_HEADLESS_HZ` environment
+//! configuration.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 /// Default output directory for captures.
 pub const DEFAULT_CAPTURE_DIR: &str = "captures";
@@ -110,6 +112,41 @@ pub(crate) fn parse_headless(raw: Option<&str>, dev_build: bool) -> (bool, Optio
   }
 }
 
+/// The most steps a second `RYO_HEADLESS_HZ` takes
+const MAX_HEADLESS_HZ: f64 = 10_000.0;
+
+/// Read `RYO_HEADLESS_HZ`: the wall time each step of a headless run takes
+/// at least (`None`: as fast as it can), and a warning for a value that was
+/// not used.
+pub(crate) fn headless_pace_from_env() -> (Option<Duration>, Option<String>) {
+  parse_headless_hz(std::env::var("RYO_HEADLESS_HZ").ok().as_deref())
+}
+
+/// Steps a second (a positive number up to 10,000, `60` or `59.94`), each
+/// step then taking at least its share of a second of wall time; unset,
+/// empty or `0` is unpaced
+pub(crate) fn parse_headless_hz(raw: Option<&str>) -> (Option<Duration>, Option<String>) {
+  let Some(raw) = raw else {
+    return (None, None);
+  };
+  let trimmed = raw.trim();
+  if trimmed.is_empty() {
+    return (None, None);
+  }
+  match trimmed.parse::<f64>() {
+    Ok(0.0) => (None, None),
+    Ok(hz) if hz.is_finite() && hz > 0.0 && hz <= MAX_HEADLESS_HZ => {
+      (Some(Duration::from_secs_f64(1.0 / hz)), None)
+    }
+    _ => (
+      None,
+      Some(format!(
+        "RYO_HEADLESS_HZ={raw:?} is invalid (expected steps a second like \"60\", up to 10000, or 0 for as fast as it can)"
+      )),
+    ),
+  }
+}
+
 /// `1`/`true` or `0`/`false` (any case, surrounding spaces ignored); empty is false
 fn parse_flag(raw: &str) -> Option<bool> {
   match raw.trim().to_ascii_lowercase().as_str() {
@@ -210,6 +247,34 @@ mod tests {
     let (on, warning) = parse_headless(Some("1"), false);
     assert!(!on, "release builds always open a window");
     assert!(warning.is_some_and(|w| w.contains("release")));
+  }
+
+  #[test]
+  fn headless_hz_paces_each_step_to_its_share_of_a_second() {
+    assert_eq!(parse_headless_hz(None), (None, None));
+    for raw in ["", " ", "0", "0.0"] {
+      assert_eq!(parse_headless_hz(Some(raw)), (None, None), "{raw:?}");
+    }
+    assert_eq!(
+      parse_headless_hz(Some(" 60 ")),
+      (Some(Duration::from_secs_f64(1.0 / 60.0)), None)
+    );
+    assert_eq!(
+      parse_headless_hz(Some("4")),
+      (Some(Duration::from_millis(250)), None)
+    );
+    assert_eq!(
+      parse_headless_hz(Some("10000")),
+      (Some(Duration::from_micros(100)), None)
+    );
+    for raw in ["fast", "-60", "10001", "inf", "NaN", "60hz"] {
+      let (pace, warning) = parse_headless_hz(Some(raw));
+      assert_eq!(pace, None, "{raw:?}");
+      assert!(
+        warning.is_some_and(|w| w.contains("RYO_HEADLESS_HZ") && w.contains(raw)),
+        "{raw:?} warns, naming itself"
+      );
+    }
   }
 
   #[test]

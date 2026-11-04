@@ -13,8 +13,8 @@ use std::path::PathBuf;
 
 use image::RgbaImage;
 
-pub(crate) use config::headless_run_from_env;
 pub use config::{AutoCaptureConfig, DEFAULT_CAPTURE_DIR};
+pub(crate) use config::{headless_pace_from_env, headless_run_from_env};
 pub use readback::read_texture_rgba;
 pub use state::{CaptureReport, CaptureState};
 pub use writer::{default_file_name, write_png};

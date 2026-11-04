@@ -688,6 +688,45 @@ fn offscreen_run_ends_when_the_scene_quits() {
 }
 
 #[test]
+fn a_paced_offscreen_run_takes_its_wall_time_and_keeps_its_game_time() {
+  if crate::core::testing::shared_gpu().is_err() {
+    eprintln!("skipping: no GPU available");
+    return;
+  }
+  // The scene quits after its 8th fixed update, paced or not
+  let run = |pace: Option<std::time::Duration>| {
+    let (scene, _) = space_watcher(8);
+    let mut engine = EngineBuilder::new()
+      .resolution(32, 32)
+      .start_scene(scene)
+      .build_headless();
+    engine.prepare_offscreen_run(AutoCaptureConfig::default(), InputScript::default());
+    engine.offscreen_pace = pace;
+    let started = std::time::Instant::now();
+    assert!(!engine.run_offscreen_frames().unwrap());
+    let time = engine.world.resource::<Time>();
+    (
+      started.elapsed(),
+      engine.capture.presented_frames(),
+      time.fixed.step_count(),
+      time.game.elapsed(),
+    )
+  };
+  let (_, frames, steps, game) = run(None);
+  let pace = std::time::Duration::from_millis(10);
+  let (wall, paced_frames, paced_steps, paced_game) = run(Some(pace));
+  assert_eq!(
+    (paced_frames, paced_steps, paced_game),
+    (frames, steps, game),
+    "pacing changes no frame, step or game time"
+  );
+  assert!(
+    wall >= pace * (paced_frames.max(1) as u32 - 1),
+    "{paced_frames} paced frames took {wall:?}, at least {pace:?} each"
+  );
+}
+
+#[test]
 fn engine_config_has_sensible_defaults() {
   let config = EngineConfig::default();
   assert_eq!(config.title, "Ryo2D");

@@ -103,8 +103,8 @@ Top bar (title, `N/M page`, shell keys), one description line, the settings pane
 
 - `RYO_DEMO_PAGE=<n>` (dev builds, 1-based) starts on page n; an out-of-range page exits with code 2.
 - The demo logs `[demo] <title>: <m> pages` at startup.
-- Combine with `RYO_HEADLESS=1`, `RYO_INPUT` and `RYO_CAPTURE_*` (see the `ryo-cli` skill).
+- Combine with `RYO_HEADLESS=1` (and `RYO_HEADLESS_HZ=60` for a page that waits on work off the main thread), `RYO_INPUT` and `RYO_CAPTURE_*` (see the `ryo-cli` skill).
 
 ## Tour
 
-`./dev demos:tour [demo...]` (or `cargo run -p demo-kit --bin demo-tour -- [demo...]`) builds the demos and captures every page headlessly to `target/demo-tour/<demo>/page-<n>.png`, with each run's log beside it. A page that panics, times out (60 s) or captures nothing fails the tour, as does a demo that never prints the kit's `[demo]` startup line; every page still runs, so one tour lists every failure. `RYO_*` variables in your shell are not passed on to the demos. Run it after changing a demo or the renderer, and look at the PNGs.
+`./dev demos:tour [demo...]` (or `cargo run -p demo-kit --bin demo-tour -- [demo...]`) builds the demos and captures every page headlessly to `target/demo-tour/<demo>/page-<n>.png`, with each run's log beside it. Each run is paced to 60 steps a second (`RYO_HEADLESS_HZ=60`) and captured at frame 90, a second and a half of wall time as of game time, so a page whose map lands off the main thread (the tile-grids demo's big art) shows it landed; a page takes about 1.5 s. A page that panics, times out (60 s) or captures nothing fails the tour, as does a demo that never prints the kit's `[demo]` startup line; every page still runs, so one tour lists every failure. `RYO_*` variables in your shell are not passed on to the demos. Run it after changing a demo or the renderer, and look at the PNGs.

@@ -2,8 +2,10 @@
 //!
 //! `cargo run -p demo-kit --bin demo-tour -- [demo ...]` (or
 //! `./dev demos:tour [demo ...]`) builds the demos, runs each page with
-//! `RYO_HEADLESS=1` and `RYO_DEMO_PAGE`, and saves
-//! `target/demo-tour/<demo>/page-<n>.png`. Exits non-zero if any page
+//! `RYO_HEADLESS=1` and `RYO_DEMO_PAGE`, paced to 60 steps a second
+//! (`RYO_HEADLESS_HZ`) so what a page does off the main thread (a map's
+//! landing, an asset's load) has the time a window would give it, and
+//! saves `target/demo-tour/<demo>/page-<n>.png`. Exits non-zero if any page
 //! panics, times out or captures nothing, or a demo is not on demo-kit.
 //! `RYO_*` variables in the caller's environment are not passed on.
 
@@ -14,6 +16,9 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 const CAPTURE_FRAME: u32 = 90;
+/// The steps a second a captured run keeps to: a window's, so frame 90 is
+/// a second and a half of wall time as well as of game time
+const CAPTURE_HZ: u32 = 60;
 const TIMEOUT: Duration = Duration::from_secs(60);
 
 struct DemoBin {
@@ -215,6 +220,19 @@ fn inherited_ryo_vars(vars: impl Iterator<Item = (String, String)>) -> Vec<Strin
     .collect()
 }
 
+/// The variables a page's run gets: headless, paced, on the page, its
+/// frame captured into `capture_dir` and the run ended there
+fn page_env(page: usize, capture_dir: &Path) -> Vec<(&'static str, String)> {
+  vec![
+    ("RYO_HEADLESS", "1".to_string()),
+    ("RYO_HEADLESS_HZ", CAPTURE_HZ.to_string()),
+    ("RYO_DEMO_PAGE", page.to_string()),
+    ("RYO_CAPTURE_FRAMES", CAPTURE_FRAME.to_string()),
+    ("RYO_CAPTURE_EXIT", "1".to_string()),
+    ("RYO_CAPTURE_DIR", capture_dir.display().to_string()),
+  ]
+}
+
 /// A page's log; bytes that are not UTF-8 must not hide the rest
 fn read_log(path: &Path) -> String {
   fs::read(path)
@@ -234,11 +252,7 @@ fn run_page(demo: &DemoBin, bin: &Path, out_dir: &Path, page: usize) -> Result<S
   }
   let mut child = command
     .current_dir(&demo.dir)
-    .env("RYO_HEADLESS", "1")
-    .env("RYO_DEMO_PAGE", page.to_string())
-    .env("RYO_CAPTURE_FRAMES", CAPTURE_FRAME.to_string())
-    .env("RYO_CAPTURE_EXIT", "1")
-    .env("RYO_CAPTURE_DIR", &capture_dir)
+    .envs(page_env(page, &capture_dir))
     .stdout(Stdio::from(log))
     .stderr(Stdio::from(log_err))
     .spawn()
@@ -363,6 +377,27 @@ mod tests {
     assert_eq!(
       inherited_ryo_vars(vars.into_iter()),
       ["RYO_INPUT", "RYO_CAPTURE_FRAMES"]
+    );
+  }
+
+  #[test]
+  fn a_page_runs_headless_paced_to_a_window_s_rate_and_captures_its_frame() {
+    let env = page_env(3, Path::new("/tmp/tour/page-3.capture"));
+    let get = |name: &str| {
+      env
+        .iter()
+        .find(|(key, _)| *key == name)
+        .map(|(_, value)| value.as_str())
+    };
+    assert_eq!(get("RYO_HEADLESS"), Some("1"));
+    assert_eq!(get("RYO_HEADLESS_HZ"), Some("60"));
+    assert_eq!(get("RYO_DEMO_PAGE"), Some("3"));
+    assert_eq!(get("RYO_CAPTURE_FRAMES"), Some("90"));
+    assert_eq!(get("RYO_CAPTURE_EXIT"), Some("1"));
+    assert_eq!(get("RYO_CAPTURE_DIR"), Some("/tmp/tour/page-3.capture"));
+    assert!(
+      env.iter().all(|(key, _)| key.starts_with("RYO_")),
+      "only RYO_ variables: {env:?}"
     );
   }
 
