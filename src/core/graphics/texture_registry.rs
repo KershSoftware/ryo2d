@@ -23,6 +23,8 @@ pub(crate) enum TextureSource {
     mips: Option<Arc<Vec<Vec<u8>>>>,
     /// The rest of its upload as its loader made it, until written
     prepared: Option<PreparedUpload>,
+    /// Whether it has no border in a texture of its own
+    borderless: bool,
     version: u64,
   },
   Pixels(Arc<[u8]>),
@@ -73,7 +75,19 @@ impl TextureSource {
       rgba: self.rgba(),
       mips: self.mips(),
       prepared: self.prepared(),
+      borderless: self.borderless(),
     }
+  }
+
+  /// Whether it has no border in a texture of its own
+  pub(crate) fn borderless(&self) -> bool {
+    matches!(
+      self,
+      TextureSource::Image {
+        borderless: true,
+        ..
+      }
+    )
   }
 }
 
@@ -188,6 +202,7 @@ impl TextureRegistry {
       pixels: Arc::clone(image.pixels()),
       mips: image.mips().cloned(),
       prepared: image.take_upload(),
+      borderless: image.is_borderless(),
       version,
     }
   }

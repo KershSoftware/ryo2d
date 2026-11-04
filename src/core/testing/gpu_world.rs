@@ -992,13 +992,10 @@ fn a_map_spawned_entering_the_first_scene_lands_with_its_tilesets_padded() {
     .clone();
   let padded = cache.lock();
   assert_eq!(padded.adopted(), 1, "the landing's padding handed over");
-  // Padded images fit the device's textures, with the atlas's border
+  // Padded images fit the device's textures
   let gpu = engine.world().resource::<crate::core::graphics::Gpu>();
   let side = gpu.device.limits().max_texture_dimension_2d;
-  assert_eq!(
-    padded.max_side(),
-    side - 2 * crate::core::graphics::atlas::BORDER
-  );
+  assert_eq!(padded.max_side(), side);
 }
 
 #[test]
@@ -1277,9 +1274,9 @@ fn a_despawned_map_frees_its_chunks() {
 
 #[test]
 fn a_large_tileset_draws_from_its_own_texture() {
-  // 100 tiles of 16 px pad into 32 px cells, ten a row, with 24 px of
-  // margin on each side: 368 px, over the atlas's 256 px, so the padded
-  // image is a texture of its own (mips too)
+  // 100 tiles of 16 px pad into 32 px cells, ten a row, with no margin
+  // and no border: 320 px, over the atlas's 256 px, so the padded image is
+  // a texture of its own (mips too)
   let Some(mut engine) = tile_engine(64, |ctx| {
     let colours: Vec<[u8; 4]> = (0..100u8)
       .map(|i| [i * 2 + 20, 250 - i * 2, 90, 255])

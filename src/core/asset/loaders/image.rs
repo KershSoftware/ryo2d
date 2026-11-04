@@ -462,7 +462,7 @@ mod tests {
     let Some(bordered) = extrude_border(&changed, 300, 300, BORDER) else {
       panic!("300x300 pixels are 300x300");
     };
-    assert!(upload.fits(300, 300));
+    assert!(upload.fits(300, 300, BORDER));
     assert!(upload.first() == bordered.as_slice());
   }
 
@@ -490,7 +490,7 @@ mod tests {
       panic!("64x32 pixels are 64x32");
     };
     let expected = mip_chain(bordered, 80, 48, 4);
-    assert!(upload.fits(64, 32));
+    assert!(upload.fits(64, 32, BORDER));
     assert!(upload.first() == expected[0].2.as_slice());
     let below: Vec<&[u8]> = upload.below().iter().map(Vec::as_slice).collect();
     let made: Vec<&[u8]> = expected[1..].iter().map(|(_, _, p)| p.as_slice()).collect();

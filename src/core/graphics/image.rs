@@ -31,6 +31,9 @@ pub struct Image {
   /// [`Image::prepare_upload`]) until the renderer takes it, shared with
   /// clones; none once the pixels change
   upload: Option<Arc<Mutex<Option<PreparedUpload>>>>,
+  /// Whether, in a texture of its own, it has no border (see
+  /// [`Image::borderless`])
+  borderless: bool,
 }
 
 impl Asset for Image {}
@@ -89,6 +92,7 @@ impl Image {
       opaque: OnceLock::from(is_opaque),
       mips: None,
       upload: None,
+      borderless: false,
     }
   }
 
@@ -298,7 +302,7 @@ impl Image {
   /// first (`mips`); the rest goes to the renderer the first time it uploads
   /// the image ([`Image::take_upload`])
   pub(crate) fn prepare_upload(&mut self) {
-    let upload = PreparedUpload::new(&self.data, self.width, self.height);
+    let upload = PreparedUpload::new(&self.data, self.width, self.height, self.border());
     self.mips = upload
       .as_ref()
       .filter(|_| self.has_own_texture())
@@ -312,9 +316,28 @@ impl Image {
   /// it holds no bordered copy of its pixels until it is drawn
   pub(crate) fn prepare_mips(&mut self) {
     if self.has_own_texture() {
-      self.mips = PreparedUpload::new(&self.data, self.width, self.height)
+      self.mips = PreparedUpload::new(&self.data, self.width, self.height, self.border())
         .map(|upload| Arc::clone(upload.below()));
     }
+  }
+
+  /// Marks the image as one that has no border in a texture of its own: its
+  /// pixels start at texel 0 and the texture is exactly its size, for an
+  /// image whose own texels already keep neighbours apart (a padded
+  /// tileset). On a shared atlas page it keeps its slot's border
+  pub(crate) fn borderless(mut self) -> Image {
+    self.borderless = true;
+    self
+  }
+
+  /// Whether the image is [`borderless`](Image::borderless)
+  pub(crate) fn is_borderless(&self) -> bool {
+    self.borderless
+  }
+
+  /// The border its first upload carries
+  fn border(&self) -> u32 {
+    super::atlas::upload_border(self.width, self.height, self.borderless)
   }
 
   /// Whether the image gets a texture of its own on the GPU rather than a
@@ -675,6 +698,7 @@ impl AnimatedSprite {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::core::graphics::atlas::BORDER;
 
   #[test]
   fn solid_rect_creates_correct_size() {
@@ -810,7 +834,7 @@ mod tests {
     let copy = image.clone();
     let upload = image.take_upload().expect("prepared");
     assert_eq!(upload.size(), (300, 300));
-    assert!(upload.fits(300, 300) && !upload.fits(300, 299));
+    assert!(upload.fits(300, 300, BORDER) && !upload.fits(300, 299, BORDER));
     assert!(image.take_upload().is_none(), "taken once");
     assert!(copy.take_upload().is_none(), "a clone shares it");
     assert!(
@@ -826,7 +850,7 @@ mod tests {
       "a shared page's levels go with its upload"
     );
     let upload = small.take_upload().expect("prepared");
-    assert!(upload.fits(64, 32));
+    assert!(upload.fits(64, 32, BORDER));
     assert_eq!(upload.below().len(), 3, "the pages' three levels below");
   }
 

@@ -399,10 +399,11 @@ struct Maker<'a> {
 impl Spread {
   fn new(upload: PreparedUpload) -> Spread {
     let (width, height) = upload.size();
+    let border = upload.border();
     Spread {
       texture: None,
       upload,
-      levels: standalone_levels(width + 2 * BORDER, height + 2 * BORDER),
+      levels: standalone_levels(width + 2 * border, height + 2 * border),
       level: 0,
       row: 0,
     }
@@ -425,13 +426,14 @@ impl Spread {
     (room, floor): (u64, bool),
   ) -> Option<u64> {
     let (width, height) = self.upload.size();
-    let first_row = u64::from(width + 2 * BORDER) * 4;
+    let border = self.upload.border();
+    let first_row = u64::from(width + 2 * border) * 4;
     if self.texture.is_none() && !floor && room < first_row {
       return Some(0);
     }
     if self.texture.is_none() {
       crate::profile_scope!("atlas:spread texture");
-      let (bw, bh) = (width + 2 * BORDER, height + 2 * BORDER);
+      let (bw, bh) = (width + 2 * border, height + 2 * border);
       self.texture = Some(new_texture(make, (bw, bh), self.levels, "Atlas Standalone"));
     }
     let Spread {
@@ -756,12 +758,15 @@ impl TextureAtlas {
       rgba,
       mips,
       prepared,
+      borderless,
     } = image;
     if width == 0 || height == 0 {
       return None;
     }
     let max_dim = device.limits().max_texture_dimension_2d;
-    if width + 2 * BORDER > max_dim || height + 2 * BORDER > max_dim {
+    // The border a texture of its own puts around the image
+    let own_border = if borderless { 0 } else { BORDER };
+    if width + 2 * own_border > max_dim || height + 2 * own_border > max_dim {
       return None;
     }
 
@@ -782,11 +787,12 @@ impl TextureAtlas {
 
     // The pixels with their border, made ahead or here. Validated before
     // anything is registered, so a bad upload leaves no entry
-    let bordered = match prepared.filter(|prepared| prepared.fits(width, height)) {
+    let first_border = if small { BORDER } else { own_border };
+    let bordered = match prepared.filter(|prepared| prepared.fits(width, height, first_border)) {
       Some(prepared) => Bordered::Ahead(prepared),
-      None => Bordered::Here(extrude_border(rgba, width, height, BORDER)?),
+      None => Bordered::Here(extrude_border(rgba, width, height, first_border)?),
     };
-    let (bw, bh) = (width + 2 * BORDER, height + 2 * BORDER);
+    let (bw, bh) = (width + 2 * first_border, height + 2 * first_border);
     if small && let Some(p) = self.layout.place(key, width, height, frame) {
       while self.pages.len() < self.layout.page_count() {
         self.pages.push(self.create_page(device));
@@ -813,6 +819,14 @@ impl TextureAtlas {
     // the key later shrinks back to its old size
     self.layout.remove(key);
     self.writes += 1;
+    // A small borderless image turned away by a full atlas is a texture of
+    // its own without a border, its pixels bordered again for it
+    let bordered = if small && own_border != BORDER {
+      Bordered::Here(extrude_border(rgba, width, height, own_border)?)
+    } else {
+      bordered
+    };
+    let (bw, bh) = (width + 2 * own_border, height + 2 * own_border);
     let levels = standalone_levels(bw, bh);
     let (texture, bind_groups) = self.create_texture(device, bw, bh, levels, "Atlas Standalone");
     let written = match bordered {
@@ -848,7 +862,7 @@ impl TextureAtlas {
       }
     };
     self.spent += written;
-    Some(self.add_standalone(key, (texture, bind_groups), (width, height)))
+    Some(self.add_standalone(key, (texture, bind_groups), (width, height), own_border))
   }
 
   /// Whether `upload`, a new version of `key`'s image, is written into a
@@ -863,7 +877,7 @@ impl TextureAtlas {
   ) -> bool {
     let (width, height) = upload.size();
     let max = u64::from(device.limits().max_texture_dimension_2d);
-    let fits = |side: u32| u64::from(side) + u64::from(2 * BORDER) <= max;
+    let fits = |side: u32| u64::from(side) + u64::from(2 * upload.border()) <= max;
     own_texture(width, height)
       && fits(width)
       && fits(height)
@@ -1033,7 +1047,7 @@ impl TextureAtlas {
       texture, upload, ..
     } = spread;
     // The upload's levels are freed with it
-    Some(self.add_standalone(key, texture?, upload.size()))
+    Some(self.add_standalone(key, texture?, upload.size(), upload.border()))
   }
 
   /// Drop `key`'s new texture, which can never be whole: its old texture
@@ -1252,23 +1266,24 @@ impl TextureAtlas {
   }
 
   /// Register `texture` as `key`'s standalone texture, for an image
-  /// `width`x`height` px
+  /// `width`x`height` px with `border` texels of border on each side
   fn add_standalone(
     &mut self,
     key: TextureId,
     (texture, bind_groups): (wgpu::Texture, PageBindGroups),
     (width, height): (u32, u32),
+    border: u32,
   ) -> AtlasSlot {
-    let (bw, bh) = (width + 2 * BORDER, height + 2 * BORDER);
+    let (bw, bh) = (width + 2 * border, height + 2 * border);
     let id = self.next_standalone;
     self.next_standalone += 1;
     let slot = AtlasSlot {
       page: SlotPage::Standalone(id),
       uv: [
-        BORDER as f32 / bw as f32,
-        BORDER as f32 / bh as f32,
-        (BORDER + width) as f32 / bw as f32,
-        (BORDER + height) as f32 / bh as f32,
+        border as f32 / bw as f32,
+        border as f32 / bh as f32,
+        (border + width) as f32 / bw as f32,
+        (border + height) as f32 / bh as f32,
       ],
     };
     self.standalone_ids.insert(key, id);
@@ -1324,7 +1339,8 @@ fn new_texture(
 
 /// An image's pixels as the atlas takes them: `rgba` (sRGB bytes,
 /// `width`x`height`), the levels below the first of its own texture its
-/// loader made, and the rest of its upload made ahead, if not yet taken
+/// loader made, and the rest of its upload made ahead, if not yet taken.
+/// `borderless` images have no border in a texture of their own
 #[derive(Clone, Copy)]
 pub(crate) struct ImagePixels<'p> {
   pub(crate) width: u32,
@@ -1332,6 +1348,7 @@ pub(crate) struct ImagePixels<'p> {
   pub(crate) rgba: &'p [u8],
   pub(crate) mips: Option<&'p [Vec<u8>]>,
   pub(crate) prepared: Option<&'p PreparedUpload>,
+  pub(crate) borderless: bool,
 }
 
 impl<'p> ImagePixels<'p> {
@@ -1344,6 +1361,7 @@ impl<'p> ImagePixels<'p> {
       rgba,
       mips: None,
       prepared: None,
+      borderless: false,
     }
   }
 }
@@ -1363,6 +1381,9 @@ pub(crate) struct PreparedUpload {
   /// The image's size, without its border
   width: u32,
   height: u32,
+  /// The border on each side: [`BORDER`], or none for a borderless image's
+  /// texture of its own
+  border: u32,
   /// The pixels with their border
   bordered: Vec<u8>,
   /// The levels below: down to one texel for an image with a texture of
@@ -1381,13 +1402,14 @@ impl std::fmt::Debug for PreparedUpload {
 }
 
 impl PreparedUpload {
-  /// The upload of `rgba`, an image `width`x`height` px: its levels as a
-  /// texture of its own or a shared page takes them. None when `rgba` is
-  /// not `width * height * 4` bytes
-  pub(crate) fn new(rgba: &[u8], width: u32, height: u32) -> Option<PreparedUpload> {
-    let bordered = extrude_border(rgba, width, height, BORDER)?;
-    let bw = width.checked_add(2 * BORDER)?;
-    let bh = height.checked_add(2 * BORDER)?;
+  /// The upload of `rgba`, an image `width`x`height` px with `border`
+  /// texels of border on each side: its levels as a texture of its own or a
+  /// shared page takes them. None when `rgba` is not `width * height * 4`
+  /// bytes
+  pub(crate) fn new(rgba: &[u8], width: u32, height: u32, border: u32) -> Option<PreparedUpload> {
+    let bordered = extrude_border(rgba, width, height, border)?;
+    let bw = width.checked_add(2 * border)?;
+    let bh = height.checked_add(2 * border)?;
     let levels = if own_texture(width, height) {
       standalone_levels(bw, bh)
     } else {
@@ -1400,6 +1422,7 @@ impl PreparedUpload {
     Some(PreparedUpload {
       width,
       height,
+      border,
       bordered,
       below: Arc::new(chain.collect()),
     })
@@ -1408,6 +1431,11 @@ impl PreparedUpload {
   /// The image's size, without its border
   pub(crate) fn size(&self) -> (u32, u32) {
     (self.width, self.height)
+  }
+
+  /// The border on each side of the first level
+  pub(crate) fn border(&self) -> u32 {
+    self.border
   }
 
   /// The levels below the first, which an image with a texture of its own
@@ -1433,6 +1461,7 @@ impl PreparedUpload {
     PreparedUpload {
       width,
       height,
+      border: BORDER,
       bordered,
       below: Arc::new(below),
     }
@@ -1440,7 +1469,7 @@ impl PreparedUpload {
 
   /// Every level with its size, the bordered first one first
   fn levels(&self) -> impl Iterator<Item = (u32, u32, &[u8])> {
-    let (bw, bh) = (self.width + 2 * BORDER, self.height + 2 * BORDER);
+    let (bw, bh) = (self.width + 2 * self.border, self.height + 2 * self.border);
     std::iter::once((bw, bh, self.bordered.as_slice())).chain(
       halvings(bw, bh)
         .skip(1)
@@ -1449,19 +1478,20 @@ impl PreparedUpload {
     )
   }
 
-  /// Whether it is the upload of an image `width`x`height` px: made for
-  /// that size, each level the size `mip_chain` halves to
-  pub(crate) fn fits(&self, width: u32, height: u32) -> bool {
+  /// Whether it is the upload of an image `width`x`height` px with `border`
+  /// texels of border: made for that size, each level the size `mip_chain`
+  /// halves to
+  pub(crate) fn fits(&self, width: u32, height: u32, border: u32) -> bool {
     let (bw, bh) = (
-      width.saturating_add(2 * BORDER),
-      height.saturating_add(2 * BORDER),
+      width.saturating_add(2 * border),
+      height.saturating_add(2 * border),
     );
     let levels = if own_texture(width, height) {
       standalone_levels(bw, bh)
     } else {
       MIP_LEVELS
     };
-    (self.width, self.height) == (width, height)
+    (self.width, self.height, self.border) == (width, height, border)
       && self.bordered.len() as u64 == u64::from(bw) * u64::from(bh) * 4
       && prepared_mips_fit(&self.below, bw, bh, levels)
   }
@@ -1477,6 +1507,17 @@ impl PreparedUpload {
 /// [`MAX_ATLAS_IMAGE`] px on a side
 pub(crate) fn own_texture(width: u32, height: u32) -> bool {
   width > MAX_ATLAS_IMAGE || height > MAX_ATLAS_IMAGE
+}
+
+/// The border an upload of an image `width`x`height` px carries: none for a
+/// borderless image with a texture of its own, else [`BORDER`] (a borderless
+/// image on a shared page keeps its slot's)
+pub(crate) fn upload_border(width: u32, height: u32, borderless: bool) -> u32 {
+  if borderless && own_texture(width, height) {
+    0
+  } else {
+    BORDER
+  }
 }
 
 /// The sizes of a mip chain from `width`x`height`, halving with `mip_chain`
@@ -2112,7 +2153,7 @@ mod tests {
     atlas.set_budget(4 * 1024);
     let image = crate::core::graphics::image::test_handle(Image::solid_rect(1, 1, 0, 0, 0, 255));
     // A 316x20 texture of 1,264-byte rows, 33 KB in all
-    let upload = |shade| PreparedUpload::new(&[shade; 300 * 4 * 4], 300, 4).unwrap();
+    let upload = |shade| PreparedUpload::new(&[shade; 300 * 4 * 4], 300, 4, BORDER).unwrap();
     atlas.spread(id(0), upload(1), (image.id(), 1));
     let mut frame = 0;
     while !atlas.spreads[&id(0)].done() {
@@ -2162,6 +2203,57 @@ mod tests {
         )
         .is_none()
     );
+  }
+
+  #[test]
+  fn a_borderless_image_of_its_own_texture_has_no_border() {
+    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+      return;
+    };
+    let mut atlas = gpu_atlas(&device);
+    // Over the atlas's 256 px: a texture of its own
+    let rgba = [9; 300 * 40 * 4];
+    let image = ImagePixels {
+      borderless: true,
+      ..ImagePixels::plain(300, 40, &rgba)
+    };
+    let slot = atlas.slot(&device, &queue, id(0), image, 0).unwrap();
+    assert!(matches!(slot.page, SlotPage::Standalone(_)));
+    assert_eq!(slot.uv, [0.0, 0.0, 1.0, 1.0]);
+    let texture = atlas.texture(slot.page).unwrap();
+    assert_eq!((texture.width(), texture.height()), (300, 40));
+    assert_eq!(texture.mip_level_count(), standalone_levels(300, 40));
+    // Its upload is the chain of 300 x 40 alone
+    let upload = PreparedUpload::new(&rgba, 300, 40, 0).unwrap();
+    let chain = mip_chain(rgba.to_vec(), 300, 40, standalone_levels(300, 40));
+    let bytes: usize = chain.iter().map(|(_, _, pixels)| pixels.len()).sum();
+    assert_eq!(upload.bytes(), bytes as u64);
+    assert!(upload.fits(300, 40, 0) && !upload.fits(300, 40, BORDER));
+  }
+
+  #[test]
+  fn a_borderless_image_in_the_atlas_keeps_its_slot_border() {
+    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+      return;
+    };
+    let mut atlas = gpu_atlas(&device);
+    let rgba = [9; 64 * 64 * 4];
+    let image = ImagePixels {
+      borderless: true,
+      ..ImagePixels::plain(64, 64, &rgba)
+    };
+    let slot = atlas.slot(&device, &queue, id(0), image, 0).unwrap();
+    assert!(matches!(slot.page, SlotPage::Atlas(_)));
+    let (x, y) = (
+      (slot.uv[0] * PAGE_SIZE as f32).round() as u32,
+      (slot.uv[1] * PAGE_SIZE as f32).round() as u32,
+    );
+    // Its rect starts on a cell and the image BORDER texels into it
+    assert!(x >= BORDER && y >= BORDER);
+    assert_eq!(((x - BORDER) % CELL, (y - BORDER) % CELL), (0, 0));
+    assert_eq!(atlas.texture(slot.page).unwrap().width(), PAGE_SIZE);
+    let upload = PreparedUpload::new(&rgba, 64, 64, upload_border(64, 64, true)).unwrap();
+    assert!(upload.fits(64, 64, BORDER));
   }
 
   #[test]

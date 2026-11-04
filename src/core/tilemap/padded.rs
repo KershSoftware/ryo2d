@@ -24,7 +24,7 @@ use super::tileset::{Tileset, TilesetImage, URect};
 use crate::core::asset::{AssetId, Assets, Handle};
 use crate::core::ecs::Resource;
 use crate::core::graphics::Image;
-use crate::core::graphics::atlas::BORDER;
+use crate::core::graphics::atlas::{BORDER, own_texture};
 use crate::core::hash::FastMap;
 
 /// The least room a cell keeps past its tile, in texels: the atlas's four
@@ -32,16 +32,16 @@ use crate::core::hash::FastMap;
 const MIN_ROOM: u32 = 8;
 /// The most texels a padded image may span on a side under the limits the
 /// engine asks its device for (`wgpu::Limits::default()`): a texture's
-/// largest side, less the border a texture puts around an image
+/// largest side
 fn default_max_side() -> u32 {
   texture_side_room(wgpu::Limits::default().max_texture_dimension_2d)
 }
 
 /// The most texels a padded image may span on a side on a device whose
-/// textures span `max_texture_dimension_2d`: what the atlas takes, with its
-/// border on both sides
+/// textures span `max_texture_dimension_2d`: the dimension itself, as a
+/// padded image in a texture of its own has no border
 fn texture_side_room(max_texture_dimension_2d: u32) -> u32 {
-  max_texture_dimension_2d.saturating_sub(2 * BORDER)
+  max_texture_dimension_2d
 }
 /// The most cells one animation may take once its frames are repeated to a
 /// common beat; past that it plays on a beat of the mean frame time
@@ -61,11 +61,13 @@ pub struct PaddedLayout {
   pub cell: u32,
   /// Cells per row
   pub columns: u32,
-  /// Texels before the first cell and after the last, across and down:
-  /// with the 8 texels of border a texture puts around an image
-  /// (`atlas::BORDER`), each cell starts on a multiple of its side and the
-  /// texture's sides are whole cells, so a texture of its own (with every
-  /// mip level) keeps each cell whole texels down to one texel a cell
+  /// Texels before the first cell and after the last, across and down.
+  /// An image over 256 px has a texture of its own with no border, its cells
+  /// from texel 0 (no margin). A smaller one is in the atlas with the 8
+  /// texels of border a slot has (`atlas::BORDER`): the margin makes each
+  /// cell start on a multiple of its side behind that border, and the
+  /// image's sides whole cells, so a texture of its own (with every mip
+  /// level) would keep each cell whole texels down to one texel a cell
   pub margin: u32,
   /// The padded image's size in texels
   pub size: UVec2,
@@ -307,14 +309,22 @@ pub(crate) fn pad_tileset(
   let n = cells.len() as u64;
   let columns = (n as f64).sqrt().ceil().max(1.0) as u64;
   let rows = n.div_ceil(columns);
-  // A texture of its own has the border around the image and a level for
-  // every halving, which the GPU sizes by rounding down and spreads over
-  // the whole texture. A margin on every side makes border and margin
-  // together whole cells, so the cells start on whole texels of each level
-  // down to one texel a cell, and the texture's sides halve exactly that
-  // far. (An atlas page's four levels line up anyway: its slots, and 8
-  // texels, are whole texels of all four)
-  let margin = (cell - BORDER % cell) % cell;
+  // An image over the atlas's 256 px has a texture of its own with no
+  // border and a level for every halving, which the GPU sizes by rounding
+  // down: its sides are whole cells, so the cells start on whole texels of
+  // each level down to one texel a cell, and the texture's sides halve
+  // exactly that far. A smaller one sits in the atlas behind a slot's
+  // border (and keeps it if a full atlas gives it a texture of its own): a
+  // margin on every side makes border and margin together whole cells, so
+  // the same holds. (An atlas page's four levels line up anyway: its slots,
+  // and 8 texels, are whole texels of all four)
+  let flat = |count: u64| u32::try_from(count * u64::from(cell)).unwrap_or(u32::MAX);
+  let borderless = own_texture(flat(columns), flat(rows));
+  let margin = if borderless {
+    0
+  } else {
+    (cell - BORDER % cell) % cell
+  };
   let side = |count: u64| count * u64::from(cell) + 2 * u64::from(margin);
   let max_side = u64::from(max_side);
   if side(columns) > max_side || side(rows) > max_side {
@@ -346,7 +356,15 @@ pub(crate) fn pad_tileset(
     paint(&mut data, size.x, origin, cell, drawn, &from);
   }
   layout.tiles = Arc::new(tiles);
-  Ok((Image::from_rgba(data, size.x, size.y), layout))
+  let image = Image::from_rgba(data, size.x, size.y);
+  Ok((
+    if borderless {
+      image.borderless()
+    } else {
+      image
+    },
+    layout,
+  ))
 }
 
 /// Copies a tile of `drawn` texels into the cell at `origin`, centred, its
@@ -426,8 +444,8 @@ pub struct PaddedTilesets {
   /// The round under way, counted from 1
   round: u64,
   /// The most texels a padded image may span on a side: the device's
-  /// largest texture side less the atlas's border, which the engine sets
-  /// once its device exists (`set_texture_limit`)
+  /// largest texture side, which the engine sets once its device exists
+  /// (`set_texture_limit`)
   max_side: u32,
   /// Paddings landings handed over (tests)
   #[cfg(test)]
@@ -558,7 +576,7 @@ fn stamp(tileset: &Tileset, version: u64, images: &Assets<Image>) -> u64 {
 impl PaddedTilesets {
   /// Pads for a device whose textures span at most
   /// `max_texture_dimension_2d` texels a side: a tileset whose padded image
-  /// would not fit one (with the atlas's border) draws nothing, warned.
+  /// would not fit one draws nothing, warned.
   /// Paddings already made are kept
   pub(crate) fn set_texture_limit(&mut self, max_texture_dimension_2d: u32) {
     self.max_side = texture_side_room(max_texture_dimension_2d);
@@ -695,7 +713,7 @@ impl PaddedTilesets {
           Unpadded::TooBig { cells, cell, size } => {
             crate::engine_warn!(
               module: "Tilemap",
-              "tileset \"{}\" is too big to pad: its {cells} cells of {cell} texels need a padded image of {} x {} texels, over the {} a side it may span (the GPU's largest texture side, less a border of {BORDER} texels each side), so its tiles draw nothing (a tile's cell is the power of two at or above twice its tileset's largest tile side, and at least that side plus 8)",
+              "tileset \"{}\" is too big to pad: its {cells} cells of {cell} texels need a padded image of {} x {} texels, over the {} a side it may span (the GPU's largest texture side), so its tiles draw nothing (a tile's cell is the power of two at or above twice its tileset's largest tile side, and at least that side plus 8)",
               tileset.name,
               size.0,
               size.1,
@@ -865,20 +883,34 @@ pub(crate) mod tests {
   }
 
   #[test]
+  fn a_padded_image_of_its_own_texture_starts_its_cells_at_texel_zero() {
+    // 100 tiles of 16 px: ten 32 px cells a side, over 256 px, so a texture
+    // of its own
+    let mut images = Assets::new();
+    let t = marked_atlas(&mut images, 16, 10, 10);
+    let (image, layout) = pad_tileset(&t, &images, default_max_side()).expect("padded");
+    assert!(image.is_borderless());
+    assert_eq!(layout.margin, 0);
+    assert_eq!(layout.cell_origin(0), UVec2::ZERO);
+    assert_eq!(layout.size, UVec2::new(10, 10) * layout.cell);
+  }
+
+  #[test]
   fn cells_are_whole_texels_of_every_mip_level_behind_a_texture_s_border() {
-    // A texture of its own puts the atlas's border around the image: each
-    // cell must still start on a whole texel of every level down to one
-    // texel a cell, or zoomed out the levels mix neighbours into a tile.
-    // And the texture's sides must be whole cells: the GPU sizes a level
-    // by rounding down, so a level of another size would not line up with
-    // the full-size one
+    // Behind its texture's border (the atlas's 8 texels for a smaller
+    // image, none for one over 256 px), each cell must start on a whole
+    // texel of every level down to one texel a cell, or zoomed out the
+    // levels mix neighbours into a tile. And the texture's sides must be
+    // whole cells: the GPU sizes a level by rounding down, so a level of
+    // another size would not line up with the full-size one
     let mut images = Assets::new();
     for (tile, cols) in [(16, 10), (8, 3), (30, 2), (2, 2)] {
       let t = marked_atlas(&mut images, tile, cols, cols);
       let (image, layout) = pad_tileset(&t, &images, default_max_side()).expect("padded");
       let size = UVec2::new(image.width(), image.height());
       assert_eq!(size, layout.size);
-      let texture = size + 2 * BORDER;
+      let border = if image.has_own_texture() { 0 } else { BORDER };
+      let texture = size + 2 * border;
       assert_eq!(
         texture % layout.cell,
         UVec2::ZERO,
@@ -886,7 +918,7 @@ pub(crate) mod tests {
       );
       for slot in 0..cols * cols {
         let o = layout.cell_origin(slot);
-        let behind = o + UVec2::splat(BORDER);
+        let behind = o + UVec2::splat(border);
         assert_eq!(
           behind % layout.cell,
           UVec2::ZERO,
@@ -1157,10 +1189,10 @@ pub(crate) mod tests {
 
   #[test]
   fn a_padded_image_past_the_device_s_texture_side_is_too_big() {
-    // 3,969 tiles of 64 px: 63 cells of 128 texels a side with the margins,
-    // 8,304 texels, past the 8,192 a texture may span under the limits the
-    // engine asks for (less the atlas's border); the atlas would refuse it
-    // and the tiles would draw nothing, unwarned
+    // 4,225 tiles of 64 px: 65 cells of 128 texels a side, 8,320 texels,
+    // past the 8,192 a texture may span under the limits the engine asks
+    // for; the atlas would refuse it and the tiles would draw nothing,
+    // unwarned
     let mut tilesets = Assets::<Tileset>::new();
     let mut images = Assets::new();
     let image = images.add(Image::solid_rect(16, 16, 255, 0, 0, 255));
@@ -1169,11 +1201,11 @@ pub(crate) mod tests {
       UVec2::splat(64),
       TilesetImage::Atlas {
         image,
-        size: UVec2::splat(64 * 63),
+        size: UVec2::splat(64 * 65),
       },
     );
-    set.columns = 63;
-    set.tile_count = 63 * 63;
+    set.columns = 65;
+    set.tile_count = 65 * 65;
     let source = TilesetSource::Asset(tilesets.add(set));
     let mut padded = PaddedTilesets::default();
     padded.begin_round();
@@ -1192,14 +1224,14 @@ pub(crate) mod tests {
     let made = padded.get(&source, &tilesets, &mut images);
     assert_eq!(
       made.map(|(_, layout)| layout.size),
-      Some(UVec2::splat(8304))
+      Some(UVec2::splat(8320))
     );
   }
 
   #[test]
   fn a_tileset_too_big_to_pad_draws_nothing_and_warns_once() {
     // 16,900 tiles of 64 px: cells of 128 texels, 130 a side, over the
-    // 8,176 texels a padded image may span. The atlas image itself is
+    // 8,192 texels a padded image may span. The atlas image itself is
     // small: nothing is padded, so nothing reads past it
     let mut tilesets = Assets::<Tileset>::new();
     let mut images = Assets::new();

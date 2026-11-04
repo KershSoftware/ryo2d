@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 
-use super::atlas::Showing;
+use super::atlas::{Showing, upload_border};
 use super::glyph_atlas::{GlyphPage, GlyphSlot};
 use super::render_targets::RenderTargets;
 use super::{AtlasSlot, SlotPage, TextureAtlas, TextureId, TextureRegistry, TextureSource};
@@ -448,12 +448,14 @@ impl SpriteGpuRenderer {
     let TextureSource::Image {
       id: image,
       prepared: Some(upload),
+      borderless,
       ..
     } = &entry.source
     else {
       return false;
     };
-    if !upload.fits(entry.width, entry.height) || !self.atlas.spreads(device, id, upload) {
+    let border = upload_border(entry.width, entry.height, *borderless);
+    if !upload.fits(entry.width, entry.height, border) || !self.atlas.spreads(device, id, upload) {
       return false;
     }
     let shows = (*image, entry.uploaded_content.unwrap_or_default());
