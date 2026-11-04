@@ -5743,6 +5743,7 @@ dependencies = [
  "rand 0.8.5",
  "ryo2d",
  "serde",
+ "serde_json",
  "web-time",
 ]
 

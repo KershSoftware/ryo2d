@@ -353,6 +353,7 @@ if let Some(cell) = maps.world_to_cell(self.map, "ground", at) {
 }
 ```
 
+- **Every grid but the hexagonal paints.** On an isometric or oblique map the cells sharing a corner or an edge are the layer's own, as on a square map. On a staggered map they are the isometric lattice's: the cells around a corner are the four diamonds that meet there (above, left, right and below it on screen), whichever axis and index the map has, as Tiled's brush paints them. A hexagonal map has no corner shared by four cells, so `set_terrain` warns once, paints nothing and returns false.
 - Corner, edge and mixed sets all paint. A corner set over art drawn on the cells' edges paints a 3 x 3 block for each cell: the painted cell is the block's middle, so ground is at least two cells thick. The tilemap demo's Editing page (page 7) paints this way.
 - **Results match Tiled's** on everything checked against it, with one difference: among tiles that fit equally well, Tiled draws one at random and the engine by a hash of the cell, so it picks the same tile there every time, but not Tiled's.
 - A cell the set has no tile for keeps its tile, and the set warns once per version of its tileset (an incomplete set); so does erasing in a set with no tile for a bare corner or edge.

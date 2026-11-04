@@ -1,0 +1,135 @@
+{
+ "columns": 4,
+ "image": "../images/tiles.png",
+ "imageheight": 64,
+ "imagewidth": 64,
+ "margin": 0,
+ "name": "wang-long",
+ "spacing": 0,
+ "tilecount": 16,
+ "tiledversion": "1.12.2",
+ "tileheight": 16,
+ "tilewidth": 16,
+ "type": "tileset",
+ "version": "1.10",
+ "wangsets": [
+  {
+   "colors": [
+    {
+     "color": "#00aa00",
+     "name": "a",
+     "probability": 1,
+     "tile": -1
+    },
+    {
+     "color": "#aa0000",
+     "name": "b",
+     "probability": 1,
+     "tile": -1
+    },
+    {
+     "color": "#0000aa",
+     "name": "c",
+     "probability": 1,
+     "tile": -1
+    }
+   ],
+   "name": "long",
+   "tile": -1,
+   "type": "mixed",
+   "wangtiles": [
+    {
+     "tileid": 0,
+     "wangid": [
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1
+     ]
+    },
+    {
+     "tileid": 1,
+     "wangid": [
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2
+     ]
+    },
+    {
+     "tileid": 2,
+     "wangid": [
+      1,
+      1,
+      1,
+      1,
+      1,
+      2,
+      2,
+      2
+     ]
+    },
+    {
+     "tileid": 3,
+     "wangid": [
+      1,
+      2,
+      2,
+      2,
+      1,
+      1,
+      1,
+      1
+     ]
+    },
+    {
+     "tileid": 4,
+     "wangid": [
+      3,
+      3,
+      3,
+      3,
+      3,
+      3,
+      3,
+      3
+     ]
+    },
+    {
+     "tileid": 5,
+     "wangid": [
+      2,
+      2,
+      2,
+      2,
+      2,
+      3,
+      3,
+      3
+     ]
+    },
+    {
+     "tileid": 6,
+     "wangid": [
+      2,
+      3,
+      3,
+      3,
+      2,
+      2,
+      2,
+      2
+     ]
+    }
+   ]
+  }
+ ]
+}

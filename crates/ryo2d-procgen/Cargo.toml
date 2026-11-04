@@ -12,3 +12,6 @@ rand = "0.8"
 serde = { version = "1.0", features = ["derive"] }
 # A clock that works on the web too (the engine's own version)
 web-time = "1.1"
+
+[dev-dependencies]
+serde_json = "1.0"

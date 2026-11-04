@@ -624,6 +624,95 @@ mod tests {
     (cells, sizes[0])
   }
 
+  /// The `ground` corner set of the Tiled fixtures with its colours swapped
+  /// (dirt 1, grass 2), so that grass covers dirt where a generated grid
+  /// puts them side by side
+  fn fixture_ground_set() -> WangSet {
+    let path = concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/../../tests/fixtures/tilemap/tiled/tilesets/wang.tsj"
+    );
+    let json: serde_json::Value =
+      serde_json::from_str(&std::fs::read_to_string(path).expect("the fixture")).expect("json");
+    let ground = &json["wangsets"][0];
+    assert_eq!(ground["name"], "ground");
+    let swap = |c: u64| match c {
+      1 => 2,
+      2 => 1,
+      other => other,
+    };
+    let tiles = ground["wangtiles"]
+      .as_array()
+      .expect("tiles")
+      .iter()
+      .map(|t| {
+        let mut wangid = [0u8; 8];
+        for (slot, c) in t["wangid"].as_array().expect("wangid").iter().enumerate() {
+          wangid[slot] = swap(c.as_u64().expect("colour")) as u8;
+        }
+        WangTile {
+          tile: t["tileid"].as_u64().expect("id") as u32,
+          wangid,
+          probability: 1.0,
+        }
+      })
+      .collect();
+    WangSet::new(
+      "ground",
+      WangKind::Corner,
+      vec![color("dirt"), color("grass")],
+      tiles,
+      TileTransformations::default(),
+    )
+  }
+
+  #[test]
+  fn staggered_terrain_matches_what_tileds_brush_paints() {
+    // One grass cell in dirt, against `wang-stag-*-grass.tmj`, in which
+    // Tiled's brush painted one cell of dirt grass (`paint-wang.js`): the
+    // nine cells around the painted one, on the lattice, hold the same tiles
+    let set = fixture_ground_set();
+    let (w, h) = (7u32, 7u32);
+    let mut grid = GenerationGrid::filled(w, h, TileType::Wall);
+    grid.set(3, 3, TileType::Floor);
+    let tile_size = UVec2::new(32, 16);
+    for (name, axis, index) in [
+      ("stag-y-odd", StaggerAxis::Y, StaggerIndex::Odd),
+      ("stag-y-even", StaggerAxis::Y, StaggerIndex::Even),
+      ("stag-x-odd", StaggerAxis::X, StaggerIndex::Odd),
+      ("stag-x-even", StaggerAxis::X, StaggerIndex::Even),
+    ] {
+      let shape = GridShape::Staggered { axis, index };
+      let path = format!(
+        "{}/../../tests/fixtures/tilemap/tiled/maps/wang-{name}-grass.tmj",
+        env!("CARGO_MANIFEST_DIR")
+      );
+      let json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).expect("the fixture")).expect("json");
+      let data = json["layers"][0]["data"].as_array().expect("data");
+      let painted = |cell: IVec2| data[(cell.y * 9 + cell.x) as usize].as_u64().expect("gid") - 1;
+      let lattice = MapGrid::new(shape, tile_size).lattice().expect("lattice");
+      let middle = lattice.lattice_cell(IVec2::splat(4));
+
+      let map = grid
+        .to_terrain_map(shape, tile_size, tileset(), &set, |t| {
+          (t == TileType::Floor).then_some("grass").or(Some("dirt"))
+        })
+        .expect("a staggered grid makes a map");
+      let (cells, _) = placed(shape, (w, h));
+      for dy in -1..=1 {
+        for dx in -1..=1 {
+          let d = IVec2::new(dx, dy);
+          let (x, y) = (3 + dx, 3 + dy);
+          let cell = cells[(y as u32 * w + x as u32) as usize];
+          let got = tile_at(&map, cell.x, cell.y).map(|t| u64::from(t.id));
+          let expected = painted(lattice.grid_cell(middle + d));
+          assert_eq!(got, Some(expected), "{name}: lattice offset {d}");
+        }
+      }
+    }
+  }
+
   #[test]
   fn procgen_builds_isometric_and_staggered_maps_from_its_square_grid() {
     let (w, h) = (7u32, 5u32);

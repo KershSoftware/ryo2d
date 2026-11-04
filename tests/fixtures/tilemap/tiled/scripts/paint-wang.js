@@ -28,6 +28,41 @@ var jobs = [
   ["maps/wang-chain-grass.tmj", "maps/wang-chain-deep.tmj", "depth", 5, 5, "deep"],
   ["maps/wang-rot-dirt.tmj", "maps/wang-rot-painted.tmj", "ground", 2, 2, "grass"],
 ];
+// The same sets painted on isometric and staggered maps (32 x 16 cells): a
+// corner and an edge set in the middle of a map nine cells square, the corner
+// set at its first and last cell, and a mixed set on a map of thirteen at
+// four neighbouring cells, which are of every parity and make its correction
+// spread as far as it may
+var grids = ["iso", "stag-y-odd", "stag-y-even", "stag-x-odd", "stag-x-even"];
+for (var g = 0; g < grids.length; g++) {
+  var m = "maps/wang-" + grids[g];
+  jobs.push([m + "-dirt.tmj", m + "-grass.tmj", "ground", 4, 4, "grass"]);
+  jobs.push([m + "-walls.tmj", m + "-plank.tmj", "walls", 4, 4, "plank"]);
+  jobs.push([m + "-dirt.tmj", m + "-grass-first.tmj", "ground", 0, 0, "grass"]);
+  jobs.push([m + "-dirt.tmj", m + "-grass-last.tmj", "ground", 8, 8, "grass"]);
+  jobs.push([m + "-mix.tmj", m + "-b-6-6.tmj", "mix", 6, 6, "b"]);
+  jobs.push([m + "-mix.tmj", m + "-b-7-6.tmj", "mix", 7, 6, "b"]);
+  jobs.push([m + "-mix.tmj", m + "-b-6-7.tmj", "mix", 6, 7, "b"]);
+  jobs.push([m + "-mix.tmj", m + "-b-7-7.tmj", "mix", 7, 7, "b"]);
+  jobs.push([m + "-long.tmj", m + "-long-b.tmj", "long", 12, 12, "b"]);
+}
+
+// A staggered map's cell as its isometric lattice cell, and back
+function toLattice(map, x, y) {
+  var odd = map.staggerIndex == TileMap.StaggerOdd;
+  var down = function(n) { return Math.floor(n / 2); };
+  var up = function(n) { return Math.floor((n + 1) / 2); };
+  if (map.staggerAxis == TileMap.StaggerY) {
+    return odd ? [x + up(y), down(y) - x] : [x + down(y), up(y) - x];
+  }
+  return odd ? [y + up(x), y - down(x)] : [y + down(x), y - up(x)];
+}
+function fromLattice(map, x, y) {
+  var odd = map.staggerIndex == TileMap.StaggerOdd;
+  var half = function(n) { return odd ? Math.floor((n + 1) / 2) : Math.floor(n / 2); };
+  if (map.staggerAxis == TileMap.StaggerY) return [x - half(x + y), x + y];
+  return [x - y, x - half(x - y)];
+}
 for (var i = 0; i < jobs.length; i++) {
   var job = jobs[i];
   // -e runs without an editor, so the maps are read, not opened
@@ -47,11 +82,23 @@ for (var i = 0; i < jobs.length; i++) {
   var x = job[3], y = job[4];
   var edit = layer.wangEdit(set);
   edit.correctionsEnabled = true;
+  // On a staggered map the brush paints in the isometric lattice its
+  // diamonds make: a cell's corners are its lattice cell's, and a corner
+  // (x, y) is the top vertex of grid cell (x, y)'s lattice cell. Measured:
+  // one corner fills the four cells around a lattice vertex, one edge the
+  // two lattice cells either side of it. Every other map paints in its
+  // index space
+  var stag = map.orientation == TileMap.Staggered;
+  var lat = stag ? toLattice(map, x, y) : [x, y];
+  var corner = function(dx, dy) {
+    var g = stag ? fromLattice(map, lat[0] + dx, lat[1] + dy) : [lat[0] + dx, lat[1] + dy];
+    edit.setCorner(g[0], g[1], color);
+  };
   if (set.type == WangSet.Corner || set.type == WangSet.Mixed) {
-    edit.setCorner(x, y, color);
-    edit.setCorner(x + 1, y, color);
-    edit.setCorner(x, y + 1, color);
-    edit.setCorner(x + 1, y + 1, color);
+    corner(0, 0);
+    corner(1, 0);
+    corner(0, 1);
+    corner(1, 1);
   }
   if (set.type == WangSet.Edge || set.type == WangSet.Mixed) {
     edit.setEdge(x, y, WangIndex.Top, color);

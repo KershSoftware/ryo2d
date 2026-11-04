@@ -37,7 +37,7 @@ use super::{
 use crate::core::asset::Assets;
 use crate::core::ecs::{Entity, Resource, World};
 use crate::core::physics::CellRect;
-use crate::core::tilemap::Tileset;
+use crate::core::tilemap::{Lattice, Tileset};
 
 /// Where each of a tile's eight positions lies from its centre, clockwise
 /// from the top edge
@@ -479,6 +479,9 @@ struct Painting<'w> {
   world: &'w World,
   layer: Entity,
   index: u16,
+  /// The square lattice the paint works in: every cell here is a lattice
+  /// cell, which `grid` takes to the layer's own cell
+  lattice: Lattice,
   /// The cells the layer's grid holds: a bounded grid's bounds, `None`
   /// for an unbounded one, which holds any cell (a paint there makes the
   /// chunks it writes in, as `set_tile` does)
@@ -500,12 +503,19 @@ struct Painting<'w> {
 }
 
 impl Painting<'_> {
+  /// The layer's cell of the lattice cell `at`
+  fn grid(&self, at: IVec2) -> IVec2 {
+    self.lattice.grid_cell(at)
+  }
+
   fn in_bounds(&self, at: IVec2) -> bool {
-    self.bounds.is_none_or(|bounds| bounds.contains(at))
+    let cell = self.grid(at);
+    self.bounds.is_none_or(|bounds| bounds.contains(cell))
   }
 
   /// A class tile lives on the cell: not ours to change
   fn locked(&self, at: IVec2) -> bool {
+    let at = self.grid(at);
     self
       .world
       .get::<LayerTiles>(self.layer)
@@ -519,6 +529,7 @@ impl Painting<'_> {
   }
 
   fn tile_at(&self, at: IVec2) -> Option<Tile> {
+    let at = self.grid(at);
     self.world.get::<TileLayerData>(self.layer)?.tiles.get(at)
   }
 
@@ -550,7 +561,7 @@ impl Painting<'_> {
     };
     let tile = tile.map(|id| Tile::new(self.index, id).with_flip(flip));
     if self.tile_at(at) != tile {
-      self.plan.edits.push((at, tile));
+      self.plan.edits.push((self.grid(at), tile));
     }
     self.decided.insert(at, wangid);
     for &k in self.matcher.positions {
@@ -619,21 +630,35 @@ impl Painting<'_> {
   }
 }
 
-/// The cells a paint at `cell` may change: the square as many cells out as
-/// the set's colors chain, plus one (a chain of one step, two colors that
-/// share a tile, reaches two cells; each further step reaches one more)
-fn reach(cell: IVec2, longest_chain: i32) -> HashSet<IVec2> {
-  let out = longest_chain.max(1) + 1;
+/// The lattice cells a paint at the layer's `cell` may change: the square
+/// of the layer's cells as many out as the set's colors chain, plus one (a
+/// chain of one step, two colors that share a tile, reaches two cells; each
+/// further step reaches one more). On a staggered map Tiled's brush reaches
+/// two cells further: a correction that never settles was measured to stop
+/// `chain + 3` rows out along the axis whose rows are half a cell apart,
+/// where an isometric or orthogonal map stops it `chain + 1` out
+fn reach(cell: IVec2, lattice: Lattice, longest_chain: i32) -> HashSet<IVec2> {
+  let out = longest_chain.max(1) + 1 + if lattice.reindexes() { 2 } else { 0 };
   (-out..=out)
-    .flat_map(|y| (-out..=out).map(move |x| cell + IVec2::new(x, y)))
+    .flat_map(|y| (-out..=out).map(move |x| lattice.lattice_cell(cell + IVec2::new(x, y))))
     .collect()
 }
 
 /// Whether every cell a paint at `cell` reads lies in `i32`: its `reach`,
-/// and the neighbours a cell at the reach's edge looks at
-fn reach_fits(cell: IVec2, longest_chain: i32) -> bool {
-  let margin = longest_chain.max(1).saturating_add(2);
-  let fits = |v: i32| v.checked_sub(margin).is_some() && v.checked_add(margin).is_some();
+/// and the neighbours a cell at the reach's edge looks at. A staggered
+/// map's lattice cells count up to half as far again as its grid cells
+/// (`Lattice::lattice_cell`), so those keep to half the range
+fn reach_fits(cell: IVec2, lattice: Lattice, longest_chain: i32) -> bool {
+  let (extra, span) = if lattice.reindexes() {
+    (2, i32::MAX / 4)
+  } else {
+    (0, i32::MAX)
+  };
+  let margin = longest_chain.max(1).saturating_add(2 + extra);
+  let fits = |v: i32| {
+    v.checked_sub(margin).is_some_and(|v| v >= -span)
+      && v.checked_add(margin).is_some_and(|v| v <= span)
+  };
   fits(cell.x) && fits(cell.y)
 }
 
@@ -644,22 +669,31 @@ fn reach_fits(cell: IVec2, longest_chain: i32) -> bool {
 /// shows now; a cell that changed has the neighbours across an edge whose
 /// colors now differ settle too, within `reach`, and so on until the colors
 /// agree or nothing fits. `None` for a cell whose reach leaves `i32` (an
-/// unbounded layer's cell near its ends)
+/// unbounded layer's cell near its ends).
+///
+/// `cell` is the layer's cell. Every cell the paint works on is a lattice
+/// cell: the layer's own on orthogonal, isometric and oblique maps, the
+/// isometric lattice's on staggered ones (`lattice`), where Tiled's brush
+/// paints
 fn plan(
   world: &World,
   layer: Entity,
   (index, set): (u16, &WangSet),
+  lattice: Lattice,
   cell: IVec2,
   color: u8,
 ) -> Option<Plan> {
-  if !reach_fits(cell, set.matcher().longest_chain) {
+  if !reach_fits(cell, lattice, set.matcher().longest_chain) {
     return None;
   }
+  let reach = reach(cell, lattice, set.matcher().longest_chain);
+  let cell = lattice.lattice_cell(cell);
   let bounds = world.get::<TileLayerData>(layer)?.tiles.bounds();
   let mut painting = Painting {
     world,
     layer,
     index,
+    lattice,
     bounds,
     matcher: set.matcher(),
     paint: HashMap::new(),
@@ -668,7 +702,7 @@ fn plan(
     pending: HashSet::new(),
     failed: HashSet::new(),
     queue: VecDeque::new(),
-    reach: reach(cell, set.matcher().longest_chain),
+    reach,
     plan: Plan {
       edits: Vec::new(),
       missed: false,
@@ -720,10 +754,25 @@ pub(crate) fn set_terrain(
   let Some(entity) = edit::layer_entity(world, map, layer) else {
     return false;
   };
-  let Some(bounds) = world
+  let Some((bounds, lattice)) = world
     .get::<TileLayerData>(entity)
-    .map(|data| data.tiles.bounds())
+    .map(|data| (data.tiles.bounds(), data.grid.lattice()))
   else {
+    return false;
+  };
+  // Hexagonal cells make no square lattice, and a hex cell has six
+  // neighbours where a Wang id has four corners and four edges
+  let Some(lattice) = lattice else {
+    world.init_resource::<WangWarned>();
+    let first = world
+      .get_resource_mut::<WangWarned>()
+      .is_some_and(|mut warned| warn_first(&mut warned, (String::new(), String::new()), 0));
+    if first {
+      crate::engine_warn!(
+        module: "Tilemap",
+        "map {map}: terrain painting on hexagonal maps isn't supported, so set_terrain paints nothing (this warns once)"
+      );
+    }
     return false;
   };
   if bounds.is_some_and(|bounds| !bounds.contains(cell)) {
@@ -749,7 +798,7 @@ pub(crate) fn set_terrain(
       },
     };
     (
-      plan(world, entity, (index, set), cell, index_of_color),
+      plan(world, entity, (index, set), lattice, cell, index_of_color),
       (key.0, wang_set.to_string(), key.1),
     )
   };
@@ -1316,6 +1365,77 @@ mod tests {
     assert!(!maps.set_terrain(map, "nope", IVec2::new(2, 2), "mix", Some("a")));
     assert!(!maps.set_terrain(map, "ground", IVec2::new(9, 9), "mix", Some("a")));
     assert_eq!(warnings(), 1);
+  }
+
+  /// The terrain jobs `paint-wang.js` runs on the maps of one `grid` (the
+  /// file names' middle), each as (input, output, set, cell, colour): a
+  /// corner and an edge set in the middle of a map nine cells square, the
+  /// corner set at its first and last cell, a mixed set on a map of thirteen
+  /// at four neighbouring cells (of every parity), and a set of a longer
+  /// chain on a map of 25. The mixed sets' corrections spread as far as
+  /// Tiled lets them, which shows how far that is.
+  fn grid_jobs(grid: &str) -> Vec<(String, String, &'static str, IVec2, &'static str)> {
+    let job = |from: &str, to: &str, set, (x, y), colour| {
+      (
+        format!("wang-{grid}-{from}.tmj"),
+        format!("wang-{grid}-{to}.tmj"),
+        set,
+        IVec2::new(x, y),
+        colour,
+      )
+    };
+    vec![
+      job("dirt", "grass", "ground", (4, 4), "grass"),
+      job("walls", "plank", "walls", (4, 4), "plank"),
+      job("dirt", "grass-first", "ground", (0, 0), "grass"),
+      job("dirt", "grass-last", "ground", (8, 8), "grass"),
+      job("mix", "b-6-6", "mix", (6, 6), "b"),
+      job("mix", "b-7-6", "mix", (7, 6), "b"),
+      job("mix", "b-6-7", "mix", (6, 7), "b"),
+      job("mix", "b-7-7", "mix", (7, 7), "b"),
+      job("long", "long-b", "long", (12, 12), "b"),
+    ]
+  }
+
+  fn assert_grid_as_tiled(grid: &str) {
+    for (from, to, set, cell, colour) in grid_jobs(grid) {
+      assert_as_tiled(&from, &to, set, cell, Some(colour));
+    }
+  }
+
+  #[test]
+  fn isometric_terrain_paints_as_tileds_brush() {
+    assert_grid_as_tiled("iso");
+  }
+
+  #[test]
+  fn staggered_terrain_paints_as_tileds_brush_on_every_axis_and_index() {
+    for grid in ["stag-y-odd", "stag-y-even", "stag-x-odd", "stag-x-even"] {
+      assert_grid_as_tiled(grid);
+    }
+  }
+
+  #[test]
+  fn hex_terrain_is_refused_with_one_warning() {
+    let mut mw = MapWorld::new();
+    let handle = load_map(&mut mw.world, "tiled/maps/wang-hex-dirt.tmj");
+    let map = mw.spawn(MapRoot::new(handle));
+    let size = IVec2::splat(9);
+    let before = layer(&mut mw.world, map, size);
+    let warnings = || {
+      crate::core::dev_log::get_entries()
+        .iter()
+        .filter(|e| {
+          e.message
+            .contains("terrain painting on hexagonal maps isn't supported")
+        })
+        .count()
+    };
+    let mut maps = MapsView::new(&mut mw.world);
+    assert!(!maps.set_terrain(map, "ground", IVec2::splat(4), "ground", Some("grass")));
+    assert!(!maps.set_terrain(map, "ground", IVec2::splat(3), "ground", Some("grass")));
+    assert_eq!(layer(&mut mw.world, map, size), before);
+    assert_eq!(warnings(), 1, "one warning, however many paints");
   }
 
   #[test]

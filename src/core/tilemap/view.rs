@@ -272,6 +272,15 @@ impl<'w> MapsView<'w> {
   /// but for a cell so near the ends of `i32` that the cells the paint
   /// reaches would not fit, a few cells from them).
   ///
+  /// On an isometric or oblique map the paint works in the layer's cells, as
+  /// on an orthogonal one. On a staggered map it works in the isometric
+  /// lattice the diamonds make ([`MapGrid::lattice`](super::MapGrid::lattice)),
+  /// where Tiled's brush paints: the cell's four lattice corners take the
+  /// color, and the cells around them are the lattice's, not the grid
+  /// indexes'. A hexagonal map is refused with one warning (false), as a
+  /// hexagon has six neighbours where a Wang id has four corners and four
+  /// edges.
+  ///
   /// This matches Tiled's results on the cases checked against it (complete,
   /// one-color, incomplete and multi-color sets, color chains, flipped
   /// neighbours and transformations; the fixtures in
