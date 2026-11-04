@@ -1,8 +1,8 @@
 //! Allocations of map drawing, counted by a global allocator in this test
 //! binary: a padded tileset cache hit, a frame drawing a static map under a
 //! shadowed light (its camera still, then panning over chunks it has
-//! drawn), and an idle frame of a streamed map whose chunks have landed, on
-//! orthogonal and on isometric cells.
+//! drawn) on every grid, and an idle frame of a streamed map whose chunks
+//! have landed, on orthogonal and on isometric cells.
 //!
 //! A frame's allocations are told apart by their stacks: those made inside
 //! the GPU API (wgpu, naga and the Metal bindings, which allocate as they
@@ -194,6 +194,11 @@ enum Art {
   /// Oblique, on cells of 16 px skewed 4 px down along their columns: the
   /// cells of a y-sorted layer share no sort point, so each draws alone
   Sheared,
+  /// Hexagonal along x, flat-topped hexagons of 16 px with sides of 8, a
+  /// row's unshifted cells painted before its shifted ones; a third of the
+  /// tiles turned 60 degrees and a third 120, which reach past their
+  /// cells' boxes though the tiles fit them unturned
+  Turned,
 }
 
 impl StaticMap {
@@ -204,6 +209,7 @@ impl StaticMap {
       Art::Tall => Vec2::new(SIDE as f32 * 8.0, SIDE as f32 * 4.0),
       Art::Wide => Vec2::new(SIDE as f32 * 6.0, SIDE as f32 * 2.0),
       Art::Sheared => Vec2::new(SIDE as f32 * 8.0, SIDE as f32 * 10.0),
+      Art::Turned => Vec2::new(SIDE as f32 * 6.0, SIDE as f32 * 8.0),
     }
   }
 }
@@ -270,7 +276,15 @@ impl Scene for StaticMap {
           skew: IVec2::new(0, 4),
         })
       }
+      Art::Turned => {
+        TileMap::new(UVec2::splat(SIDE), UVec2::splat(16)).with_shape(GridShape::Hexagonal {
+          axis: StaggerAxis::X,
+          index: StaggerIndex::Odd,
+          side: 8,
+        })
+      }
     };
+    let hex = self.art == Art::Turned;
     let set = map.add_tileset(set);
     let backdrop = ctx.assets().add(Image::solid_rect(64, 64, 20, 30, 60, 255));
     let mut info = LayerInfo::new(100, "backdrop");
@@ -284,6 +298,7 @@ impl Scene for StaticMap {
         transparent: None,
       }),
     });
+    // On the hexagonal grid the layers neither collide nor occlude
     for name in ["back", "ground", "props", "water"] {
       map.add_tile_layer(name);
     }
@@ -291,11 +306,16 @@ impl Scene for StaticMap {
     for y in 0..side {
       for x in 0..side {
         let cell = IVec2::new(x, y);
+        let flip = match (x + 2 * y) % 3 {
+          1 if hex => TileFlip::HEX_ROTATE_60,
+          2 if hex => TileFlip::HEX_ROTATE_120,
+          _ => TileFlip::NONE,
+        };
         let mut put = |layer: usize, id: u32| {
           map
             .tiles_mut(layer)
             .expect("a tile layer")
-            .set(cell, Some(Tile::new(set, id)));
+            .set(cell, Some(Tile::new(set, id).with_flip(flip)));
         };
         put(1, BACK);
         if (x / 5 + y / 3) % 4 == 0 {
@@ -452,6 +472,11 @@ fn a_frame_drawing_a_y_sorted_oblique_map_cell_by_cell_allocates_nothing() {
   static_frames_allocate_nothing(Art::Sheared);
 }
 
+#[test]
+fn a_frame_drawing_a_hexagonal_map_of_turned_tiles_allocates_nothing() {
+  static_frames_allocate_nothing(Art::Turned);
+}
+
 /// The most draws a chunk's tileset takes in `engine`'s last frame, over
 /// its plain tile layers: one where each part draws whole, more where a
 /// layer draws its chunks' runs band by band
@@ -487,11 +512,13 @@ fn static_frames_allocate_nothing(art: Art) {
   };
   // The path drawing it: a part a draw while its tiles fit or stand tall
   // on an isometric grid, its runs band by band while they reach across
-  // on a staggered one
+  // on a staggered or hexagonal one
   let most = draws_a_part(&mut map);
   match art {
     Art::Fitting | Art::Tall => assert_eq!(most, 1, "{art:?}: each part draws whole"),
-    Art::Wide => assert!(most > 1, "{art:?}: a part draws as runs, {most} at most"),
+    Art::Wide | Art::Turned => {
+      assert!(most > 1, "{art:?}: a part draws as runs, {most} at most")
+    }
     Art::Sheared => {}
   }
   // Panning 256 px right and back, its chunks drawn the first time over
