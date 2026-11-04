@@ -991,6 +991,275 @@ mod lines {
   }
 }
 
+/// The batch's draws in one render pass, each setting only the state the
+/// pass has not bound (`Bound`), against the same draws each in a pass of
+/// its own (where everything is set): pixel for pixel the same
+mod bound {
+  use glam::Vec2;
+
+  use super::*;
+  use crate::core::render::DrawKind;
+  use crate::core::render::batch::Stream;
+  use crate::core::render::ui::line_of;
+  use crate::core::ui::immediate::UiCommand;
+
+  /// The image's size
+  const IMAGE: (u32, u32) = (96, 64);
+
+  /// A pass into `view`, cleared first or keeping what it holds
+  fn pass<'e>(
+    encoder: &'e mut wgpu::CommandEncoder,
+    view: &wgpu::TextureView,
+    clear: bool,
+  ) -> wgpu::RenderPass<'e> {
+    let load = if clear {
+      wgpu::LoadOp::Clear(CLEAR)
+    } else {
+      wgpu::LoadOp::Load
+    };
+    encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+      label: Some("Bound Test Pass"),
+      color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+        view,
+        depth_slice: None,
+        resolve_target: None,
+        ops: wgpu::Operations {
+          load,
+          store: wgpu::StoreOp::Store,
+        },
+      })],
+      depth_stencil_attachment: None,
+      timestamp_writes: None,
+      occlusion_query_set: None,
+      multiview_mask: None,
+    })
+  }
+
+  /// Sprites of two images under two blends and two samplers, and lines
+  /// between them: draws that change the pipeline but keep the bind groups
+  /// (a blend), keep the pipeline but change the texture group (a
+  /// sampler), and change the stream and the pipeline layout (a line,
+  /// which binds the camera alone) and back. Drawn in one pass (`together`)
+  /// and each draw in a pass of its own (`apart`); the draws' streams
+  #[allow(clippy::type_complexity)]
+  fn drawn(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+  ) -> (
+    image::RgbaImage,
+    image::RgbaImage,
+    Vec<(Stream, BlendMode, Sampling)>,
+  ) {
+    // The camera UI lines are drawn for
+    let camera = crate::core::render::ui::UI_CAMERA;
+    let (width, height) = IMAGE;
+    let size = Vec2::new(width as f32, height as f32);
+    let view = CameraView::compute(size / 2.0, 0.0, &Camera2d::default(), Vec2::ZERO, size);
+    let (mut cameras, mut targetless) = (Vec::new(), Vec::new());
+    plan_cameras(
+      [(camera, &Camera2d::default(), &view, None)].into_iter(),
+      IMAGE,
+      false,
+      None,
+      &mut cameras,
+      &mut targetless,
+    );
+    let mut sprites = SpriteGpuRenderer::new(device, queue);
+    // Into the UI image's format, which reads back as bytes
+    let mut batch = Batch2D::new(device, UI_FORMAT, Default::default());
+    let mut list = DrawList::default();
+    // The images first: the test store is borrowed while it is read
+    let (first, second) = (gradient(5, 4), gradient(3, 7));
+    let (first, second) = {
+      let images = crate::core::graphics::test_images();
+      let mut texture = |handle: &Handle<Image>| {
+        sprites
+          .texture_of(handle.id(), &images)
+          .expect("a test image")
+      };
+      (texture(&first), texture(&second))
+    };
+    let mut sprite = |z: i32, texture, blend, filter, centre: (f32, f32), angle: f32| {
+      let look = SpriteLook {
+        shading: SpriteShading::Plain,
+        blend,
+        filter,
+        lit: false,
+      };
+      let instance = quad(
+        Vec2::new(centre.0, centre.1),
+        Vec2::new(30.5, 22.5),
+        angle,
+        Color::new(255, 240, 230, 230),
+      );
+      list.push_sprite_in(
+        DrawKind::Sprite,
+        z,
+        texture,
+        look,
+        instance,
+        (RenderLayers::all(), None, None),
+      );
+    };
+    sprite(
+      0,
+      first,
+      BlendMode::Alpha,
+      Filter::Linear,
+      (20.0, 18.0),
+      0.2,
+    );
+    sprite(
+      1,
+      first,
+      BlendMode::Additive,
+      Filter::Linear,
+      (34.0, 26.0),
+      -0.3,
+    );
+    sprite(
+      3,
+      first,
+      BlendMode::Alpha,
+      Filter::Nearest,
+      (52.0, 30.0),
+      0.5,
+    );
+    sprite(
+      4,
+      second,
+      BlendMode::Alpha,
+      Filter::Linear,
+      (66.0, 36.0),
+      0.1,
+    );
+    sprite(
+      6,
+      second,
+      BlendMode::Additive,
+      Filter::Nearest,
+      (76.0, 44.0),
+      0.4,
+    );
+    let mut points = Vec::new();
+    for (z, line) in [
+      (2, vec![Vec2::new(4.0, 50.0), Vec2::new(60.0, 8.0)]),
+      (5, vec![Vec2::new(40.0, 60.0), Vec2::new(92.0, 12.0)]),
+    ] {
+      let command = UiCommand::Line {
+        points: line.as_slice().into(),
+        at: Vec2::ZERO,
+        width: 3.0,
+        color: Color::new(250, 220, 40, 255),
+        closed: false,
+        clip: None,
+        layer: 0,
+      };
+      let (style, look) = line_of(&command, z, &mut points, None).expect("a line");
+      push_polyline(&mut list, batch.triangles(), &points, &style, look);
+    }
+    list.sorted();
+    let mut uniforms = CameraUniforms::default();
+    let globals = CameraGlobals::new(&view, IMAGE, 0.0, 0.0, false);
+    uniforms.sync(device, queue, &[(camera, globals)]);
+    batch.sync_cameras(device, &uniforms);
+    batch.prepare(device, queue, &list, &cameras, &mut sprites, &[]);
+    let draws = batch.draws(camera, false);
+    let kinds = draws
+      .iter()
+      .map(|draw| (draw.stream, draw.state.blend, draw.state.sampling))
+      .collect();
+    let image = || {
+      device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Bound Test Image"),
+        size: wgpu::Extent3d {
+          width,
+          height,
+          depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: UI_FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+      })
+    };
+    let (together, apart) = (image(), image());
+    let mut encoder = device.create_command_encoder(&Default::default());
+    {
+      let view = together.create_view(&Default::default());
+      let mut pass = pass(&mut encoder, &view, true);
+      let mut bound = Bound::default();
+      for draw in draws {
+        batch.draw(&mut pass, draw, camera, &sprites, IMAGE, &mut bound);
+      }
+    }
+    let view = apart.create_view(&Default::default());
+    for (i, draw) in draws.iter().enumerate() {
+      let mut pass = pass(&mut encoder, &view, i == 0);
+      let mut bound = Bound::default();
+      batch.draw(&mut pass, draw, camera, &sprites, IMAGE, &mut bound);
+    }
+    queue.submit([encoder.finish()]);
+    let read = |texture| crate::core::capture::read_texture_rgba(device, queue, texture);
+    (
+      read(&together).expect("read back"),
+      read(&apart).expect("read back"),
+      kinds,
+    )
+  }
+
+  #[test]
+  fn draws_in_one_pass_set_only_what_changed_and_draw_as_draws_apart() {
+    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+      return;
+    };
+    let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let (together, apart, kinds) = drawn(&device, &queue);
+    let error = pollster::block_on(scope.pop());
+    assert!(error.is_none(), "{error:?}");
+    // The draws change what the test means them to: a blend alone (a new
+    // pipeline, the same groups), a sampler alone (the same pipeline, a new
+    // texture group) and the stream (quads, then lines, then quads)
+    let pairs: Vec<_> = kinds.windows(2).map(|w| (w[0], w[1])).collect();
+    let quads = |(stream, ..): (Stream, BlendMode, Sampling)| stream == Stream::Quads;
+    assert!(
+      pairs
+        .iter()
+        .any(|&(a, b)| quads(a) && quads(b) && a.1 != b.1 && a.2 == b.2),
+      "a blend changing alone: {kinds:?}"
+    );
+    assert!(
+      pairs
+        .iter()
+        .any(|&(a, b)| quads(a) && quads(b) && a.1 == b.1 && a.2 != b.2),
+      "a sampler changing alone: {kinds:?}"
+    );
+    assert!(
+      kinds
+        .windows(3)
+        .any(|w| quads(w[0]) && !quads(w[1]) && quads(w[2])),
+      "quads, a line, quads: {kinds:?}"
+    );
+    let cleared = [51, 102, 153, 255];
+    let painted = together.pixels().filter(|pixel| pixel.0 != cleared).count();
+    assert!(painted > 1500, "{painted} pixels drawn");
+    let differ: Vec<_> = together
+      .enumerate_pixels()
+      .zip(apart.pixels())
+      .filter(|((_, _, a), b)| a != b)
+      .map(|((x, y, a), b)| format!("({x}, {y}): {:?} {:?}", a.0, b.0))
+      .collect();
+    assert!(
+      differ.is_empty(),
+      "{} pixels differ (one pass, passes apart): {:?}",
+      differ.len(),
+      &differ[..differ.len().min(8)]
+    );
+  }
+}
+
 /// `build_ui`, command by command: what each command builds against the
 /// shared functions that make it (`rect_instance`, `sprite_instance`,
 /// `line_of` and the line builder, `text_of` and the text emitters)
