@@ -2257,6 +2257,27 @@ mod tests {
   }
 
   #[test]
+  fn a_small_borderless_image_turned_away_by_a_full_atlas_has_no_border() {
+    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+      return;
+    };
+    let mut atlas = gpu_atlas(&device);
+    // No page to place it on
+    atlas.layout = AtlasLayout::new(PAGE_SIZE, 0);
+    let rgba = [9; 64 * 40 * 4];
+    let image = ImagePixels {
+      borderless: true,
+      ..ImagePixels::plain(64, 40, &rgba)
+    };
+    let slot = atlas.slot(&device, &queue, id(0), image, 0).unwrap();
+    assert!(matches!(slot.page, SlotPage::Standalone(_)));
+    assert_eq!(slot.uv, [0.0, 0.0, 1.0, 1.0]);
+    let texture = atlas.texture(slot.page).unwrap();
+    assert_eq!((texture.width(), texture.height()), (64, 40));
+    assert_eq!(texture.mip_level_count(), standalone_levels(64, 40));
+  }
+
+  #[test]
   fn border_repeats_edge_pixels() {
     let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
       return;

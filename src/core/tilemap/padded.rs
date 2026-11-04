@@ -24,7 +24,6 @@ use super::tileset::{Tileset, TilesetImage, URect};
 use crate::core::asset::{AssetId, Assets, Handle};
 use crate::core::ecs::Resource;
 use crate::core::graphics::Image;
-use crate::core::graphics::atlas::{BORDER, own_texture};
 use crate::core::hash::FastMap;
 
 /// The least room a cell keeps past its tile, in texels: the atlas's four
@@ -61,13 +60,12 @@ pub struct PaddedLayout {
   pub cell: u32,
   /// Cells per row
   pub columns: u32,
-  /// Texels before the first cell and after the last, across and down.
-  /// An image over 256 px has a texture of its own with no border, its cells
-  /// from texel 0 (no margin). A smaller one is in the atlas with the 8
-  /// texels of border a slot has (`atlas::BORDER`): the margin makes each
-  /// cell start on a multiple of its side behind that border, and the
-  /// image's sides whole cells, so a texture of its own (with every mip
-  /// level) would keep each cell whole texels down to one texel a cell
+  /// Texels before the first cell and after the last, across and down: none.
+  /// The image is borderless (`Image::borderless`), so in a texture of its
+  /// own its cells start at texel 0 and its sides are whole cells, keeping
+  /// each cell whole texels of every mip level down to one texel a cell; on
+  /// an atlas page, a slot starts on 8 texels and the 8 of border keep them
+  /// whole texels of the page's four levels
   pub margin: u32,
   /// The padded image's size in texels
   pub size: UVec2,
@@ -309,22 +307,13 @@ pub(crate) fn pad_tileset(
   let n = cells.len() as u64;
   let columns = (n as f64).sqrt().ceil().max(1.0) as u64;
   let rows = n.div_ceil(columns);
-  // An image over the atlas's 256 px has a texture of its own with no
-  // border and a level for every halving, which the GPU sizes by rounding
-  // down: its sides are whole cells, so the cells start on whole texels of
-  // each level down to one texel a cell, and the texture's sides halve
-  // exactly that far. A smaller one sits in the atlas behind a slot's
-  // border (and keeps it if a full atlas gives it a texture of its own): a
-  // margin on every side makes border and margin together whole cells, so
-  // the same holds. (An atlas page's four levels line up anyway: its slots,
-  // and 8 texels, are whole texels of all four)
-  let flat = |count: u64| u32::try_from(count * u64::from(cell)).unwrap_or(u32::MAX);
-  let borderless = own_texture(flat(columns), flat(rows));
-  let margin = if borderless {
-    0
-  } else {
-    (cell - BORDER % cell) % cell
-  };
+  // The image is borderless: in a texture of its own (a level for every
+  // halving, which the GPU sizes by rounding down) its sides are whole
+  // cells, so the cells start on whole texels of each level down to one
+  // texel a cell and the texture's sides halve exactly that far. On an atlas
+  // page its slot starts on 8 texels and keeps its 8 of border, so its cells
+  // are whole texels of the page's four levels too
+  let margin = 0;
   let side = |count: u64| count * u64::from(cell) + 2 * u64::from(margin);
   let max_side = u64::from(max_side);
   if side(columns) > max_side || side(rows) > max_side {
@@ -356,15 +345,7 @@ pub(crate) fn pad_tileset(
     paint(&mut data, size.x, origin, cell, drawn, &from);
   }
   layout.tiles = Arc::new(tiles);
-  let image = Image::from_rgba(data, size.x, size.y);
-  Ok((
-    if borderless {
-      image.borderless()
-    } else {
-      image
-    },
-    layout,
-  ))
+  Ok((Image::from_rgba(data, size.x, size.y).borderless(), layout))
 }
 
 /// Copies a tile of `drawn` texels into the cell at `origin`, centred, its
@@ -795,6 +776,7 @@ impl PaddedTilesets {
 #[cfg(test)]
 pub(crate) mod tests {
   use super::*;
+  use crate::core::graphics::atlas::{BORDER, upload_border};
   use crate::core::tilemap::{TileData, TileFrame, TilesetImage};
   use std::time::Duration;
 
@@ -840,11 +822,10 @@ pub(crate) mod tests {
     let (image, layout) = pad_tileset(&t, &images, default_max_side()).expect("padded");
     assert_eq!(layout.cell, 32);
     assert_eq!(layout.columns, 2);
-    // Two cells a side, and 24 texels on each side (24 and a texture's 8
-    // of border make a whole cell)
-    assert_eq!(layout.margin, 24);
-    assert_eq!(layout.size, UVec2::splat(112));
-    assert_eq!((image.width(), image.height()), (112, 112));
+    // Two cells a side, no margin
+    assert_eq!(layout.margin, 0);
+    assert_eq!(layout.size, UVec2::splat(64));
+    assert_eq!((image.width(), image.height()), (64, 64));
     for id in 0..4u32 {
       let slot = layout.tile(id).expect("tile").slot;
       let o = layout.cell_origin(slot);
@@ -896,9 +877,21 @@ pub(crate) mod tests {
   }
 
   #[test]
+  fn a_small_padded_image_has_no_margin_and_sits_in_an_atlas_page() {
+    // One 64 px tile: a cell of 128 texels, the image 128 px, not 368
+    let mut images = Assets::new();
+    let t = marked_atlas(&mut images, 64, 1, 1);
+    let (image, layout) = pad_tileset(&t, &images, default_max_side()).expect("padded");
+    assert!(image.is_borderless() && !image.has_own_texture());
+    assert_eq!(layout.margin, 0);
+    assert_eq!(layout.size, UVec2::splat(128));
+    assert_eq!((image.width(), image.height()), (128, 128));
+    assert_eq!(upload_border(128, 128, true), BORDER, "a slot's border");
+  }
+
+  #[test]
   fn cells_are_whole_texels_of_every_mip_level_behind_a_texture_s_border() {
-    // Behind its texture's border (the atlas's 8 texels for a smaller
-    // image, none for one over 256 px), each cell must start on a whole
+    // In a texture of its own (no border), each cell must start on a whole
     // texel of every level down to one texel a cell, or zoomed out the
     // levels mix neighbours into a tile. And the texture's sides must be
     // whole cells: the GPU sizes a level by rounding down, so a level of
@@ -909,7 +902,13 @@ pub(crate) mod tests {
       let (image, layout) = pad_tileset(&t, &images, default_max_side()).expect("padded");
       let size = UVec2::new(image.width(), image.height());
       assert_eq!(size, layout.size);
-      let border = if image.has_own_texture() { 0 } else { BORDER };
+      // A small image in the atlas keeps a slot's border; a full atlas turns
+      // it away to a texture of its own without one, so check it as that
+      let border = if image.has_own_texture() {
+        upload_border(image.width(), image.height(), image.is_borderless())
+      } else {
+        0
+      };
       let texture = size + 2 * border;
       assert_eq!(
         texture % layout.cell,
