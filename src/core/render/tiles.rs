@@ -1068,8 +1068,9 @@ impl View<'_> {
     gathered.parts.clear();
     gathered.runs.clear();
     // An orthogonal grid's chunks over a box are exactly those it meets;
-    // another's are more, which each chunk's box sorts out
-    let exact = grid.shape == GridShape::Orthogonal;
+    // another's are more, which each chunk's box sorts out (from the boxes'
+    // steps, not worked out from each chunk's cells)
+    let boxes = (grid.shape != GridShape::Orthogonal).then(|| grid.chunk_boxes());
     for camera in cameras {
       // The camera's view in the layer's pixels, widened by how far a tile
       // may draw past its cell; then the signed chunks it meets, within
@@ -1083,7 +1084,8 @@ impl View<'_> {
       if !(first.x <= last.x && first.y <= last.y) {
         continue;
       }
-      let sees = |chunk: IVec2| exact || meets(grid.chunk_bounds(chunk), low, high);
+      let area = (low.as_dvec2(), high.as_dvec2());
+      let sees = |chunk: IVec2| boxes.as_ref().is_none_or(|boxes| boxes.meets(chunk, area));
       if tiles.bounds().is_some() {
         for y in first.y..=last.y {
           for x in first.x..=last.x {
@@ -1402,15 +1404,6 @@ fn chunks_keep_order(grid: &MapGrid) -> bool {
     GridShape::Oblique { skew } => skew.x == 0,
     GridShape::Staggered { .. } | GridShape::Hexagonal { .. } => false,
   }
-}
-
-/// Whether `bounds` meets the box `low..high`, touching included (as
-/// flooring a box's ends to chunks counts a chunk it touches)
-fn meets(bounds: Rect, low: Vec2, high: Vec2) -> bool {
-  bounds.x <= high.x
-    && bounds.x + bounds.width >= low.x
-    && bounds.y <= high.y
-    && bounds.y + bounds.height >= low.y
 }
 
 /// `camera`'s view under `to_layer`: the box its corners span there
