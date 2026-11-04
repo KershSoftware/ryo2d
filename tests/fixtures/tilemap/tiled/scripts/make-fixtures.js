@@ -1048,3 +1048,108 @@ File.remove(rasterScratch + ".tmx");
 var rasterFile = new TextFile(dir + "measured-raster.json", TextFile.WriteOnly);
 rasterFile.write('{"tiled": "' + tiled.version + '",\n "rows": [\n  ' + rasterRows.join(",\n  ") + "\n ]}\n");
 rasterFile.commit();
+
+// ---- tile collision shapes and the tileset's grid -----------------------------
+
+// What a tile's collision shapes are stored in when its tileset's grid is
+// isometric, and on oblique maps (`measured-collision.json`). Scripting
+// runs without Tiled's window, so the collision editor itself cannot be
+// read; what can be: the grid orientations a tileset takes (`orientations`:
+// each name and its value, a name Tiled lacks null), a tileset of 64 x 32
+// tiles whose grid is an isometric 64 x 32 one, written as TSX by hand
+// (scripting cannot set a grid's size), read and written back in both
+// formats (`stored`: the format, the grid read back and the polygon's
+// points), and the polygon as Tiled's own Godot 4 exporter writes it, from
+// the tile's centre in pixels, for that tile at cell (1, 1) of an
+// orthogonal and an isometric map, with the tileset's grid isometric and
+// orthogonal (`godot`: the map, the grid and the points; the exporter
+// refuses oblique maps, "Unsupported tile orientation")
+var shapeScratch = dir + "maps/make-fixtures-scratch";
+var shapePolygon = [[0, 0], [32, 0], [32, 32], [0, 32]];
+function shapeTsx(orientation) {
+  return '<?xml version="1.0" encoding="UTF-8"?>\n' +
+    '<tileset version="1.10" tiledversion="1.12.2" name="shapes" tilewidth="64" tileheight="32" tilecount="2" columns="2">\n' +
+    ' <grid orientation="' + orientation + '" width="64" height="32"/>\n' +
+    ' <image source="make-fixtures-scratch.png" width="128" height="32"/>\n' +
+    ' <tile id="0">\n' +
+    '  <objectgroup draworder="index" id="2">\n' +
+    '   <object id="1" x="0" y="0">\n' +
+    '    <polygon points="' + shapePolygon.map(function (p) { return p[0] + "," + p[1]; }).join(" ") + '"/>\n' +
+    "   </object>\n" +
+    "  </objectgroup>\n" +
+    " </tile>\n" +
+    "</tileset>\n";
+}
+function writeText(path, text) {
+  var out = new TextFile(path, TextFile.WriteOnly);
+  out.write(text);
+  out.commit();
+}
+function readShapes(orientation) {
+  writeText(shapeScratch + ".tsx", shapeTsx(orientation));
+  return tiled.tilesetFormat("tsx").read(shapeScratch + ".tsx");
+}
+function gridName(set) {
+  return set.orientation === Tileset.Isometric ? "isometric" : set.orientation === Tileset.Orthogonal ? "orthogonal" : String(set.orientation);
+}
+function polygonOf(set) {
+  var object = set.tile(0).objectGroup.objects[0];
+  return list(object.polygon.map(function (p) { return list([object.x + p.x, object.y + p.y]); }));
+}
+solidImage(128, 32, RED).save(shapeScratch + ".png");
+var orientationNames2 = ["Orthogonal", "Isometric", "Oblique", "Staggered", "Hexagonal"];
+var orientationRows = orientationNames2.map(function (name) {
+  var value = Tileset[name];
+  return '"' + name.toLowerCase() + '": ' + (value === undefined ? "null" : value);
+});
+var storedRows = [];
+var isoShapes = readShapes("isometric");
+var storedFormats = [["tsx", ".tsx"], ["json", ".tsj"]];
+for (var sf = 0; sf < storedFormats.length; sf++) {
+  var path = shapeScratch + "-back" + storedFormats[sf][1];
+  tiled.tilesetFormat(storedFormats[sf][0]).write(isoShapes, path);
+  var back = tiled.tilesetFormat(storedFormats[sf][0]).read(path);
+  File.remove(path);
+  storedRows.push('  {"format": "' + storedFormats[sf][0] + '", "grid": "' + gridName(back) + '", "points": ' + polygonOf(back) + "}");
+}
+// Godot's exporter wants the image and the scene inside a Godot project
+writeText(dir + "maps/project.godot", "config_version=5\n");
+var godotMaps = [
+  { name: "orthogonal", orientation: TileMap.Orthogonal, tile: [64, 32], size: [4, 4] },
+  { name: "isometric", orientation: I, tile: [64, 32], size: [4, 4] },
+];
+var godotRows = [];
+for (var gm = 0; gm < godotMaps.length; gm++) {
+  var grids = ["isometric", "orthogonal"];
+  for (var gg = 0; gg < grids.length; gg++) {
+    var map = sampleMap(godotMaps[gm]);
+    map.addTileset(readShapes(grids[gg]));
+    var layer = new TileLayer("ground");
+    map.addLayer(layer);
+    var edit = layer.edit();
+    edit.setTile(1, 1, map.tilesets[0].tile(0));
+    edit.apply();
+    tiled.mapFormat("tscn").write(map, shapeScratch + ".tscn");
+    var scene = new TextFile(shapeScratch + ".tscn", TextFile.ReadOnly);
+    var text = scene.readAll();
+    scene.close();
+    File.remove(shapeScratch + ".tscn");
+    var found = /polygon_0\/points = PackedVector2Array\(([^)]*)\)/.exec(text);
+    if (!found) throw new Error("make-fixtures.js: the Godot export of the " + godotMaps[gm].name + " map has no collision polygon");
+    var numbers = found[1].split(",").map(function (v) { return Number(v); });
+    var points = [];
+    for (var pn = 0; pn + 1 < numbers.length; pn += 2) points.push(list([numbers[pn], numbers[pn + 1]]));
+    godotRows.push('  {"map": "' + godotMaps[gm].name + '", "grid": "' + grids[gg] + '", "points": ' + list(points) + "}");
+  }
+}
+File.remove(dir + "maps/project.godot");
+File.remove(shapeScratch + ".tsx");
+File.remove(shapeScratch + ".png");
+var collisionFile = new TextFile(dir + "measured-collision.json", TextFile.WriteOnly);
+collisionFile.write(
+  '{"tiled": "' + tiled.version + '",\n "orientations": {' + orientationRows.join(", ") + "},\n" +
+    ' "polygon": ' + list(shapePolygon.map(list)) + ",\n" +
+    ' "stored": [\n' + storedRows.join(",\n") + "\n ],\n" +
+    ' "godot": [\n' + godotRows.join(",\n") + "\n ]}\n"
+);
+collisionFile.commit();

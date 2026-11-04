@@ -1,0 +1,13 @@
+{"tiled": "1.12.2",
+ "orientations": {"orthogonal": 0, "isometric": 1, "oblique": null, "staggered": null, "hexagonal": null},
+ "polygon": [[0, 0], [32, 0], [32, 32], [0, 32]],
+ "stored": [
+  {"format": "tsx", "grid": "isometric", "points": [[0, 0], [32, 0], [32, 32], [0, 32]]},
+  {"format": "json", "grid": "isometric", "points": [[0, 0], [32, 0], [32, 32], [0, 32]]}
+ ],
+ "godot": [
+  {"map": "orthogonal", "grid": "isometric", "points": [[-32, -16], [0, -16], [0, 16], [-32, 16]]},
+  {"map": "orthogonal", "grid": "orthogonal", "points": [[-32, -16], [0, -16], [0, 16], [-32, 16]]},
+  {"map": "isometric", "grid": "isometric", "points": [[-32, -16], [0, -16], [0, 16], [-32, 16]]},
+  {"map": "isometric", "grid": "orthogonal", "points": [[-32, -16], [0, -16], [0, 16], [-32, 16]]}
+ ]}

@@ -724,6 +724,48 @@ mod tests {
   }
 
   #[test]
+  fn a_tileset_s_isometric_grid_warns_once_where_its_tiles_have_shapes() {
+    // Measured (measured-collision.json): Tiled keeps a tile's shapes as
+    // written whatever its tileset's grid, and its exporters read them in
+    // the image's pixels; its collision editor draws them on the grid
+    let set = |grid: &str, shapes: bool| {
+      let group = if shapes {
+        r#","objectgroup":{"type":"objectgroup","objects":[{"id":1,"x":0,"y":0,"polygon":[{"x":32,"y":0},{"x":64,"y":16},{"x":32,"y":32},{"x":0,"y":16}]}]}"#
+      } else {
+        ""
+      };
+      format!(
+        r#"{{"firstgid":1,"name":"diamonds","tilewidth":64,"tileheight":32,"tilecount":1,"columns":0,
+          "grid":{{"orientation":"{grid}","width":64,"height":32}},"tiles":[
+          {{"id":0,"image":"images/gem.png","imagewidth":64,"imageheight":32{group}}}]}}"#
+      )
+    };
+    let cases = [
+      ("grid-a1c3.tmj", set("isometric", true), 1),
+      ("grid-b2d4.tmj", set("isometric", false), 0),
+      ("grid-c3e5.tmj", set("orthogonal", true), 0),
+    ];
+    for (file, set, expected) in cases {
+      let json = map_json("", &tile_layer(""), &set);
+      let mut world = world_over(files_with(&[(file, &json)]));
+      let map = load_in(&mut world, file).expect("loads");
+      let warned = warnings_about(file);
+      let count = warned
+        .iter()
+        .filter(|w| w.contains("isometric grid is not read"))
+        .count();
+      assert_eq!(count, expected, "{file}: {warned:#?}");
+      // The shape is read in the image's pixels
+      let TilesetSource::Embedded(set) = &map.tilesets[0] else {
+        panic!("not inline")
+      };
+      if let Some(shape) = set.tile(0).and_then(|t| t.shapes.first()) {
+        assert_eq!(shape.points[1], Vec2::new(64.0, 16.0), "{file}");
+      }
+    }
+  }
+
+  #[test]
   fn a_capsule_among_a_tile_s_collision_shapes_collides_as_its_outline() {
     let set = r#"{"firstgid":1,"name":"pill","tilewidth":16,"tileheight":16,"tilecount":1,"columns":0,"tiles":[
         {"id":0,"image":"images/gem.png","imagewidth":16,"imageheight":16,

@@ -1224,6 +1224,51 @@ mod tests {
   }
 
   #[test]
+  fn a_top_down_character_slides_along_a_diamond_wall_with_no_floor() {
+    use crate::core::ecs::IVec2;
+    use crate::core::physics::{TileCell, TileColliders};
+    let (mut world, mut s) = world(60);
+    // A wall of isometric diamonds, 64 x 32: lattice row 0, cells 0 to 9.
+    // Its upper side runs down and right at half a pixel a pixel, its
+    // normal 63° from up: a floor to a platformer's 45°, a wall top-down
+    let to_pixel =
+      glam::Affine2::from_cols(Vec2::new(32.0, 16.0), Vec2::new(-32.0, 16.0), Vec2::ZERO);
+    let mut wall = TileColliders::unbounded(Vec2::new(64.0, 32.0)).with_lattice(to_pixel);
+    for x in 0..10 {
+      wall.set(IVec2::new(x, 0), TileCell::Solid);
+    }
+    world.spawn((Transform::IDENTITY, wall));
+    // Above the wall's side, by lattice cell (4, -2)'s middle, heading down
+    let start = to_pixel.transform_point2(Vec2::new(4.5, -1.5));
+    let e = world
+      .spawn((
+        Transform::from_translation(start),
+        CharacterController::top_down(),
+        Collider::circle(10.0),
+      ))
+      .id();
+    let back = to_pixel.inverse();
+    let mut walled = false;
+    for _ in 0..60 {
+      world.get_mut::<Velocity>(e).unwrap().dx = 0.0;
+      world.get_mut::<Velocity>(e).unwrap().dy = 200.0;
+      run(&mut world, &mut s, 1);
+      let st = state(&world, e);
+      assert!(!st.on_floor && !st.on_ceiling, "never on a floor: {st:?}");
+      walled |= st.on_wall;
+      // Never into the wall: its middle stays above lattice row 0
+      let lattice = back.transform_point2(at(&world, e).translation);
+      assert!(lattice.y < 0.0, "inside the wall at {lattice}");
+    }
+    assert!(walled, "it met the wall");
+    let t = at(&world, e).translation;
+    assert!(
+      t.x > start.x + 40.0,
+      "slid along the wall, down and right: {t} from {start}"
+    );
+  }
+
+  #[test]
   fn a_dynamic_body_with_a_controller_is_warned_and_not_moved() {
     let (mut world, mut s) = world(60);
     let e = world

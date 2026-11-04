@@ -2,7 +2,7 @@
 name: ryo-physics
 description: Rapier2D physics integration - bodies, colliders, one-way colliders, triggers, joints, queries, contact state and collision messages.
 metadata:
-  version: 3.5.0
+  version: 3.6.0
 ---
 
 # Ryo2D Physics Specialist
@@ -133,6 +133,20 @@ A `TileColliders` grid (`ryo-character`, Tile colliders), which a tile map keeps
 - **Outlines, not cells:** solid, slope and shape cells merge into seamless outlines, so a long floor is one edge and nothing catches where two tiles meet. An authored shape (`CellShape`, from a tile's collision shapes in Tiled) joins the trace as solid cells do: where it meets a neighbour's edges along their shared side they cancel, so a row of half blocks or a ramp of shapes over solid ground is one outline. One-way cells and the top edges of one-way shapes make one-way segments, merged with those they line up with. Outlines are hollow: a body inside one is not pushed out.
 - **Packed by area:** the outlines starting in each 32 x 32-cell chunk are one collider (a `ColliderShape::Segments`, or a closed `Polyline` when the chunk starts one outline), and so are a chunk's flat one-way runs along one row, so a map's collider count follows its area, not its islands. Each collider's entity sits at its chunk's top-left, its points relative to it, so read its world geometry through its `GlobalTransform` (`Collider::world_bounds(global)`), never its points alone.
 - **Any size, signed cells:** cells are `IVec2`s stored by chunk, so a 10,000 x 64 level built with `TileColliders::new` collides, and `TileColliders::unbounded(tile_size)` holds negative cells too. A cell collides within 186,411 cells of (0, 0) on either axis (about 3 million px of 16 px tiles); `set` refuses one past that, logging it once. That reach is where the outline lattice's 32-bit points run out, not where f32 positions stay precise: a `Transform`'s f32 pixels are an eighth of a pixel apart a million px out (2^20), a quarter of a pixel at the reach (Rapier's f32 metres about 0.2 px), and a whole pixel past 8.4 million px (2^23), so slow movement steps visibly well before the reach; keep precise play within about a million px of the origin.
+- **Cells of other shapes:** `with_lattice(to_pixel)` places the cells through an `Affine2` from lattice units (cell (x, y) is the unit square at (x, y), y down) to the grid's space, instead of `tile_size` rectangles from the origin: a tile map's isometric, staggered and oblique layers do this with their grid's `Lattice::to_pixel` (`ryo-tilemap`, Collision), so diamonds and skewed cells merge into outlines along their own sides. The outlines are traced on the lattice's squares as always and their points mapped through it before the colliders are built, so the parts stay unturned and unscaled at their chunks' corners (physics builds their shapes ahead, which a sheared parent would stop, and one-way directions stay true). `lattice()` reads it back; `tile_size` is then only what the grid reports. A lattice that is not finite, or folds its cells flat, builds nothing (logged once). `NavigationGrid::block_tiles` blocks nothing for a lattice that turns or shears its cells, and logs that once.
+
+```rust
+// A wall of isometric diamonds, 64 x 32, built by hand: lattice row 0, cells 0 to 9
+let diamonds = MapGrid::new(GridShape::Isometric, UVec2::new(64, 32));
+if let Some(lattice) = diamonds.lattice() {
+  let mut wall = TileColliders::unbounded(Vec2::new(64.0, 32.0)).with_lattice(lattice.to_pixel);
+  for x in 0..10 {
+    wall.set(IVec2::new(x, 0), TileCell::Solid);
+  }
+  ctx.world.spawn((Transform::IDENTITY, wall));
+}
+```
+
 - **Edits reshape in place:** a changed cell retraces only the outlines through it, and only the colliders of the chunks whose outlines changed take their new shape, keeping their entity and their Rapier collider. Contacts carry through: a body resting anywhere on the map keeps resting, a character keeps its `CharacterState::floor`, and no `CollisionStopped` / `CollisionStarted` is sent for anything still touching. A collider is spawned only when its chunk gains its first outline, and despawned only when it loses its last.
 - **Which entity:** with no body on the map each part is its own fixed body, so collision messages, `CharacterHit` and `CharacterState::floor` name the part; its parent holds the `TileColliders` (a map's root, or a layer that collides on its own). With a kinematic `RigidBody` on that entity (or above it) they name the body, and the whole map moves.
 - **Ties with moving floors:** a character level with both fixed ground (a map's) and a kinematic or dynamic body (a moving platform) stands on the moving one and rides it, whichever collider was made first.

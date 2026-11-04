@@ -13,8 +13,8 @@ use serde_json::{Map, Number, Value};
 use super::build::MAX_DEPTH;
 use super::raw::{
   RawChunk, RawData, RawFrame, RawLayer, RawMap, RawObject, RawOffset, RawPoint, RawProperty,
-  RawTemplate, RawText, RawTile, RawTileset, RawTilesetRef, RawTransformations, RawWangColor,
-  RawWangSet, RawWangTile,
+  RawTemplate, RawText, RawTile, RawTileset, RawTilesetGrid, RawTilesetRef, RawTransformations,
+  RawWangColor, RawWangSet, RawWangTile,
 };
 
 type Parsed<T> = Result<T, String>;
@@ -219,6 +219,14 @@ impl<'a, 'i> Reader<'a, 'i> {
       properties: self.properties(node)?,
       ..RawTileset::default()
     };
+    if let Some(grid) = self.child(node, "grid") {
+      set.grid = Some(RawTilesetGrid {
+        orientation: self
+          .str(grid, "orientation")
+          .unwrap_or_default()
+          .to_string(),
+      });
+    }
     if let Some(offset) = self.child(node, "tileoffset") {
       set.tileoffset = RawOffset {
         x: self.num(offset, "x")?.unwrap_or(0),
@@ -1109,6 +1117,25 @@ mod tests {
         && error.contains("layer \"walls\" on a hexagonal map collides or casts shadows"),
       "{error}"
     );
+  }
+
+  #[test]
+  fn a_tsx_tileset_s_grid_is_read() {
+    let tsx = r#"<tileset name="g" tilewidth="64" tileheight="32" tilecount="1" columns="1">
+ <grid orientation="isometric" width="64" height="32"/>
+ <image source="a.png" width="64" height="32"/>
+</tileset>"#;
+    let set = super::parse_tsx(tsx).expect("parses");
+    assert_eq!(
+      set.grid.map(|g| g.orientation).as_deref(),
+      Some("isometric")
+    );
+    let none = super::parse_tsx(&tsx.replace(
+      r#" <grid orientation="isometric" width="64" height="32"/>"#,
+      "",
+    ))
+    .expect("parses");
+    assert!(none.grid.is_none());
   }
 
   #[test]

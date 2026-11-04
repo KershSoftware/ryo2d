@@ -442,6 +442,25 @@ pub(crate) fn build_tileset(
       &place,
     );
   }
+  let isometric = raw
+    .grid
+    .as_ref()
+    .is_some_and(|grid| grid.orientation == "isometric");
+  let shaped = raw.tiles.iter().any(|tile| {
+    tile
+      .objectgroup
+      .as_ref()
+      .is_some_and(|group| !group.objects.is_empty())
+  });
+  if isometric && shaped {
+    // Measured: Tiled keeps a tile's shapes as written whatever the grid,
+    // and its own exporters read them in the image's pixels; its collision
+    // editor, which scripting cannot read, draws them on this grid
+    px.unread.note(
+      "a tileset's isometric grid is not read: its tiles' collision shapes are read in their images' pixels, as Tiled's collision editor shows them on an orthogonal grid (set the tileset's orientation to orthogonal in Tiled to see them as they collide)",
+      &place,
+    );
+  }
   set.transparent = transparent(&path, &place, raw.transparentcolor.as_deref())?;
   let declared = raw.tilecount.unwrap_or(computed_count);
   if declared > MAX_TILES {

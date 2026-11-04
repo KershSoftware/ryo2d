@@ -950,6 +950,33 @@ fn a_map_saved_with_another_grid_respawns_its_layers() {
   for old in &shadows_before {
     assert!(maps.world.get_entity(*old).is_err(), "occluder {old} went");
   }
+  // and they follow the diamonds: the floor row's outline is the lattice
+  // rectangle of cells (0, 2) to (3, 2), taken through the new grid
+  let to_pixel = diamonds.lattice().expect("an isometric lattice").to_pixel;
+  let mut corners: Vec<(i32, i32)> = maps
+    .world
+    .query::<(&ChildOf, &Collider, &Transform)>()
+    .iter(&maps.world)
+    .filter(|(child_of, ..)| child_of.parent() == map)
+    .flat_map(|(_, collider, at)| {
+      match crate::core::physics::in_grid_space(collider.clone(), at.translation).shape {
+        crate::core::physics::ColliderShape::Polyline { points }
+        | crate::core::physics::ColliderShape::Segments { points, .. } => points,
+        other => panic!("an outline: {other:?}"),
+      }
+    })
+    .map(|p| {
+      let at = to_pixel.inverse().transform_point2(p);
+      assert!(
+        (at - at.round()).abs().max_element() < 1e-3,
+        "{p} is lattice {at}"
+      );
+      (at.x.round() as i32, at.y.round() as i32)
+    })
+    .collect();
+  corners.sort_unstable();
+  corners.dedup();
+  assert_eq!(corners, [(0, 2), (0, 3), (4, 2), (4, 3)]);
 }
 
 #[test]

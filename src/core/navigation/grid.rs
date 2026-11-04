@@ -68,6 +68,9 @@ pub struct NavigationGrid {
   generation: u64,
   /// Entities currently blocking cells
   blocking_entities: HashSet<Entity>,
+  /// `block_tiles` was handed tiles on a lattice that is not upright (and
+  /// logged it)
+  warned_lattice: bool,
 }
 
 impl NavigationGrid {
@@ -102,6 +105,7 @@ impl NavigationGrid {
       cells: vec![CellState::Walkable; (width * height) as usize],
       generation: 0,
       blocking_entities: HashSet::new(),
+      warned_lattice: false,
     }
   }
 
@@ -297,8 +301,28 @@ impl NavigationGrid {
   /// grid's chunks to filter them (O(chunks)), plus the cells under this
   /// grid, so a vast or unbounded tile grid costs its chunk count and what
   /// lies under it.
+  ///
+  /// Tiles on a lattice that turns or shears their cells (an isometric,
+  /// staggered or oblique map's, [`TileColliders::with_lattice`]) block
+  /// nothing: navigation over those maps isn't supported yet (logged once a
+  /// grid). An upright lattice's cells are its rectangles.
   pub fn block_tiles(&mut self, tiles: &TileColliders, origin: Vec2) {
-    let size = tiles.tile_size;
+    let (size, origin) = match tiles.lattice() {
+      None => (tiles.tile_size, origin),
+      Some(to) if to.matrix2.x_axis.y == 0.0 && to.matrix2.y_axis.x == 0.0 => (
+        Vec2::new(to.matrix2.x_axis.x, to.matrix2.y_axis.y),
+        origin + to.translation,
+      ),
+      Some(_) => {
+        if !std::mem::replace(&mut self.warned_lattice, true) {
+          crate::engine_warn!(
+            module: "Navigation",
+            "navigation over isometric, staggered and hexagonal maps isn't supported yet, nor over skewed oblique ones: a tile grid on such a map blocks no cells"
+          );
+        }
+        return;
+      }
+    };
     if !(size.is_finite() && size.min_element() > 0.0) {
       return;
     }
@@ -527,6 +551,62 @@ mod tests {
         GridCoord::new(25, 25)
       ]
     );
+  }
+
+  #[test]
+  fn navigation_refuses_a_non_orthogonal_map_with_one_warning() {
+    use crate::core::ecs::IVec2;
+    use crate::core::physics::{TileCell, TileColliders};
+    let warnings = || {
+      crate::core::dev_log::get_entries()
+        .iter()
+        .filter(|e| {
+          e.message
+            .contains("navigation over isometric, staggered and hexagonal maps isn't supported yet")
+        })
+        .count()
+    };
+    let before = warnings();
+    let walls = |to_pixel: glam::Affine2| {
+      let mut tiles = TileColliders::unbounded(Vec2::new(64.0, 32.0)).with_lattice(to_pixel);
+      for x in 0..4 {
+        tiles.set(IVec2::new(x, 1), TileCell::Solid);
+      }
+      tiles
+    };
+    // Isometric diamonds and skewed cells block nothing, and say so once
+    let diamonds = glam::Affine2::from_cols(
+      Vec2::new(32.0, 16.0),
+      Vec2::new(-32.0, 16.0),
+      Vec2::new(96.0, 0.0),
+    );
+    let skewed = glam::Affine2::from_cols(Vec2::new(64.0, 0.0), Vec2::new(8.0, 32.0), Vec2::ZERO);
+    let mut grid = NavigationGrid::new(512.0, 256.0, 16.0);
+    for to_pixel in [diamonds, skewed, diamonds] {
+      grid.block_tiles(&walls(to_pixel), Vec2::ZERO);
+    }
+    let (w, h) = grid.dimensions();
+    let blocked = (0..h as i32)
+      .flat_map(|y| (0..w as i32).map(move |x| GridCoord::new(x, y)))
+      .filter(|c| !grid.is_walkable(*c))
+      .count();
+    assert_eq!(blocked, 0, "no cell blocked");
+    assert_eq!(warnings() - before, 1, "warned once");
+    // An upright lattice's cells are its rectangles, moved by it
+    let upright = glam::Affine2::from_cols(
+      Vec2::new(64.0, 0.0),
+      Vec2::new(0.0, 32.0),
+      Vec2::new(16.0, 0.0),
+    );
+    grid.block_tiles(&walls(upright), Vec2::ZERO);
+    assert!(
+      !grid.is_walkable(GridCoord::new(1, 2)),
+      "x 16..272, y 32..64"
+    );
+    assert!(grid.is_walkable(GridCoord::new(0, 2)));
+    assert!(!grid.is_walkable(GridCoord::new(16, 3)));
+    assert!(grid.is_walkable(GridCoord::new(17, 3)));
+    assert_eq!(warnings() - before, 1);
   }
 
   #[test]

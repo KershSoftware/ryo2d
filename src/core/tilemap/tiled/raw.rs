@@ -80,6 +80,9 @@ pub(crate) struct RawTileset {
   /// The size tiles draw at (`tile`, or `grid`: scaled to the map's cells
   /// as `fillmode` says)
   pub tilerendersize: Option<String>,
+  /// The grid Tiled's tileset editor draws its overlays on (terrain and
+  /// collision shapes): `orthogonal` or `isometric`
+  pub grid: Option<RawTilesetGrid>,
   pub image: Option<String>,
   pub imagewidth: u32,
   pub imageheight: u32,
@@ -89,6 +92,13 @@ pub(crate) struct RawTileset {
   pub wangsets: Vec<RawWangSet>,
   pub transformations: RawTransformations,
   pub properties: Vec<RawProperty>,
+}
+
+/// A tileset's editor grid
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub(crate) struct RawTilesetGrid {
+  pub orientation: String,
 }
 
 /// What a tileset's Wang sets may do to a tile

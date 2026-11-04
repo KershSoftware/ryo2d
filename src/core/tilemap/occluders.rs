@@ -38,20 +38,21 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use glam::{IVec2, UVec2, Vec2};
+use glam::{Affine2, DVec2, IVec2, Vec2};
 
 use super::collision::LayerView;
 use super::kinds::{
-  Context, Layers, Part, Purpose, ShapeKey, ShapeSource, Stores, TilesetStamp, Tracked,
-  changed_chunks, layer_data, shapes_kept, sources, stamps, union_kinds,
+  CELLS, ChunkKinds, Context, GridKey, Layers, Part, Purpose, ShapeKey, ShapeSource, Stores,
+  TilesetStamp, Tracked, changed_chunks, lattice_of, layer_data, reindexing, scatter, shapes_kept,
+  sources, stamps, union_kinds,
 };
 use super::spawn::{IntGridKey, MapLayers, MapRoot, TileLayerData, root_map};
-use super::{CHUNK_SIZE, TileGrid};
+use super::{CHUNK_SIZE, Lattice, TileGrid};
 use crate::core::ecs::{
   Allow, ChildOf, Commands, Component, DetectChangesMut, Disabled, Entity, Has, Local, Query,
   Transform, World,
 };
-use crate::core::hash::FastMap;
+use crate::core::hash::{FastMap, FastSet};
 use crate::core::lighting::LightOccluder2D;
 use crate::core::physics::{Boundary, CellRect, GRID, PlacedEdge, Point, TileCell};
 
@@ -62,7 +63,8 @@ use crate::core::physics::{Boundary, CellRect, GRID, PlacedEdge, Point, TileCell
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MapOccluder {
   /// The chunk of the layers it was built from: signed, as
-  /// [`TileGrid::chunk_of`] gives it
+  /// [`TileGrid::chunk_of`] gives it; on a staggered map, a chunk of its
+  /// lattice's cells ([`Lattice::lattice_cell`](super::Lattice::lattice_cell))
   pub chunk: IVec2,
 }
 
@@ -72,7 +74,7 @@ pub struct MapOccluder {
 pub(crate) struct Lit {
   entity: Entity,
   index: usize,
-  cell: UVec2,
+  grid: GridKey,
   offset: [u32; 2],
   /// Its grid's bounds; `None` for an unbounded grid
   bounds: Option<CellRect>,
@@ -107,10 +109,10 @@ const SHADOW_CHUNKS: (i32, i32) = (
 /// A chain to spawn: where its entity goes, and its vertices around it
 type Chain = (Vec2, Vec<Vec2>);
 
-/// Layers sharing a cell size and offset, occluding as one
+/// Layers sharing a grid and offset, occluding as one
 #[derive(Debug)]
 struct Group {
-  cell: UVec2,
+  grid: GridKey,
   offset: [u32; 2],
   /// Its occluders' parent: its first layer
   parent: Entity,
@@ -135,16 +137,22 @@ struct Group {
   /// The chains a first build worked out, chunk by chunk in row order,
   /// until they spawn as it lands
   pending: Vec<(IVec2, Vec<Chain>)>,
+  /// On a staggered grid, whose chunks of cells straddle its lattice's: the
+  /// lattice, and the kinds of its cells by lattice chunk (a chunk all
+  /// `Empty` left out), which its chunks are built from. Its chunks are the
+  /// lattice's, and unbounded
+  lattice: Option<(Lattice, FastMap<IVec2, Box<ChunkKinds>>)>,
 }
 
 impl Group {
   fn new(lit: &Lit) -> Group {
+    let lattice = reindexing(&lit.grid.grid()).map(|lattice| (lattice, FastMap::default()));
     Group {
-      cell: lit.cell,
+      grid: lit.grid,
       offset: lit.offset,
       parent: lit.entity,
       parent_layer: lit.index,
-      bounds: lit.bounds,
+      bounds: lit.bounds.filter(|_| lattice.is_none()),
       layers: Vec::new(),
       kinds: FastMap::default(),
       shapes: FastMap::default(),
@@ -153,6 +161,7 @@ impl Group {
       edges: FastMap::default(),
       sides: FastMap::default(),
       pending: Vec::new(),
+      lattice,
     }
   }
 
@@ -195,6 +204,8 @@ pub(crate) struct MapShadows {
   overrides: Vec<(IntGridKey, TileCell)>,
   shapes: Arc<[Option<ShapeSource>]>,
   groups: Vec<Group>,
+  /// The layers warned about, by place: occluding on a hexagonal grid
+  warned: FastSet<usize>,
 }
 
 impl MapShadows {
@@ -340,36 +351,47 @@ fn chunk_chains(
     kinds,
     shapes,
     boundary,
+    lattice,
     ..
   } = group;
-  let mut classify = |at: IVec2, part: Part| {
-    union_kinds(
-      layers,
-      data,
-      (at, part),
-      (&mut *kinds, &mut *shapes),
-      &mut *boundary,
-      context,
-    )
+  let (cells, left, above) = match lattice {
+    // A staggered grid's kinds are kept by lattice chunk
+    Some((_, kept)) => {
+      let read = |at: IVec2| kept.get(&at).map_or([TileCell::Empty; CELLS], |c| **c);
+      (read(chunk), read(chunk - IVec2::X), read(chunk - IVec2::Y))
+    }
+    None => {
+      let mut classify = |at: IVec2, part: Part| {
+        union_kinds(
+          layers,
+          data,
+          (at, part),
+          (&mut *kinds, &mut *shapes),
+          &mut *boundary,
+          context,
+        )
+      };
+      let column = |x: i32| Part {
+        min: IVec2::new(x, 0),
+        max: IVec2::new(x + 1, side),
+      };
+      let row = |y: i32| Part {
+        min: IVec2::new(0, y),
+        max: IVec2::new(side, y + 1),
+      };
+      let cells = if own {
+        classify(chunk, Part::WHOLE)
+      } else {
+        let mut first = classify(chunk, column(0));
+        let top = classify(chunk, row(0));
+        first[..side as usize].copy_from_slice(&top[..side as usize]);
+        first
+      };
+      let left = classify(chunk - IVec2::X, column(side - 1));
+      let above = classify(chunk - IVec2::Y, row(side - 1));
+      (cells, left, above)
+    }
   };
-  let column = |x: i32| Part {
-    min: IVec2::new(x, 0),
-    max: IVec2::new(x + 1, side),
-  };
-  let row = |y: i32| Part {
-    min: IVec2::new(0, y),
-    max: IVec2::new(side, y + 1),
-  };
-  let cells = if own {
-    classify(chunk, Part::WHOLE)
-  } else {
-    let mut first = classify(chunk, column(0));
-    let top = classify(chunk, row(0));
-    first[..side as usize].copy_from_slice(&top[..side as usize]);
-    first
-  };
-  let left = classify(chunk - IVec2::X, column(side - 1));
-  let above = classify(chunk - IVec2::Y, row(side - 1));
   let at = |x: i32, y: i32| {
     let (lx, ly) = (x - min.x, y - min.y);
     let inside = |v: i32| (0..side).contains(&v);
@@ -406,12 +428,19 @@ fn chunk_chains(
     );
   }
   // The outlines run clockwise on screen; lighting's polygons the other way
+  // (mapped through a lattice that mirrors them, they run the other way
+  // round and still bound what occludes, which is all lighting reads)
   let edges: Vec<(Point, Point)> = placed.iter().map(|&(_, a, b)| (b, a)).collect();
-  let cell = group.cell.as_dvec2();
+  let grid = group.grid.grid();
+  let cell = grid.cell.as_dvec2();
+  let to_pixel = lattice_of(&grid);
   let origin = min.as_dvec2();
   let px = |(x, y): Point| {
-    let point = glam::DVec2::new(f64::from(x), f64::from(y)) / f64::from(GRID);
-    ((origin + point) * cell).as_vec2()
+    let point = DVec2::new(f64::from(x), f64::from(y)) / f64::from(GRID);
+    match to_pixel {
+      Some(to) => through(to, origin + point),
+      None => ((origin + point) * cell).as_vec2(),
+    }
   };
   let built = chains(&edges)
     .into_iter()
@@ -449,6 +478,72 @@ fn chunk_chains(
   (built, right, bottom)
 }
 
+/// `point` (lattice units) taken through the lattice `to`, worked out in
+/// f64 and rounded once
+fn through(to: Affine2, point: DVec2) -> Vec2 {
+  let (a, b) = (to.matrix2.x_axis.as_dvec2(), to.matrix2.y_axis.as_dvec2());
+  (a * point.x + b * point.y + to.translation.as_dvec2()).as_vec2()
+}
+
+/// On a staggered grid, the kinds of `changed` (storage chunks of its
+/// layers) set at their lattice cells in `group`'s kept kinds; returns the
+/// lattice chunks whose kinds changed, in no set order, each once. A
+/// lattice chunk left all `Empty` goes
+fn rescatter(
+  group: &mut Group,
+  data: &[Option<&TileLayerData>],
+  changed: &[IVec2],
+  context: &Context<'_>,
+) -> Vec<IVec2> {
+  let Group {
+    layers,
+    kinds,
+    shapes,
+    boundary,
+    lattice: Some((lattice, kept)),
+    ..
+  } = group
+  else {
+    return Vec::new();
+  };
+  let side = IVec2::splat(CHUNK_SIZE as i32);
+  let mut due: FastSet<IVec2> = FastSet::default();
+  for &chunk in changed {
+    let now = union_kinds(
+      layers,
+      data,
+      (chunk, Part::WHOLE),
+      (&mut *kinds, &mut *shapes),
+      &mut *boundary,
+      context,
+    );
+    for (at, kind) in scatter(lattice, chunk, &now) {
+      let (place, local) = (at.div_euclid(side), at.rem_euclid(side));
+      let slot = (local.y * side.x + local.x) as usize;
+      let cells = match kept.get_mut(&place) {
+        Some(cells) => cells,
+        None if kind == TileCell::Empty => continue,
+        None => kept
+          .entry(place)
+          .or_insert_with(|| Box::new([TileCell::Empty; CELLS])),
+      };
+      if cells[slot] != kind {
+        cells[slot] = kind;
+        due.insert(place);
+      }
+    }
+  }
+  for place in &due {
+    if kept
+      .get(place)
+      .is_some_and(|cells| cells.iter().all(|&c| c == TileCell::Empty))
+    {
+      kept.remove(place);
+    }
+  }
+  due.into_iter().collect()
+}
+
 /// Spawns `chains` as chunk `chunk`'s occluders, children of `parent`
 fn spawn_chains(
   commands: &mut Commands,
@@ -481,6 +576,13 @@ fn update(
   context: &Context<'_>,
   mut commands: Option<&mut Commands>,
 ) {
+  // A staggered grid's chunks are its lattice's: those its changed chunks'
+  // cells changed in
+  let changed = if group.lattice.is_some() {
+    rescatter(group, data, &changed, context)
+  } else {
+    changed
+  };
   // Row by row, so a chunk marks the ones right of and below it in time;
   // each with whether its own cells changed (else only those across a
   // border it owns did)
@@ -517,15 +619,31 @@ fn update(
   }
 }
 
-/// The occluding layers among `layers` into `planned`
-fn plan<'a>(layers: impl IntoIterator<Item = LayerView<'a>>, planned: &mut Vec<Lit>) {
+/// The occluding layers among `layers` into `planned`. An occluding layer
+/// on a hexagonal grid casts no shadows, and warns once (`warned`)
+fn plan<'a>(
+  map: Entity,
+  layers: impl IntoIterator<Item = LayerView<'a>>,
+  planned: &mut Vec<Lit>,
+  warned: &mut FastSet<usize>,
+) {
   planned.clear();
   for layer in layers {
     if layer.info.occludes.unwrap_or(layer.info.collides) {
+      if layer.data.grid.lattice().is_none() {
+        if warned.insert(layer.index) {
+          crate::engine_warn!(
+            module: "Tilemap",
+            "map {map}: layer \"{}\" casts shadows on a hexagonal grid; shadows from hexagonal layers aren't supported yet, so it casts none",
+            layer.info.name
+          );
+        }
+        continue;
+      }
       planned.push(Lit {
         entity: layer.entity,
         index: layer.index,
-        cell: layer.data.grid.cell,
+        grid: GridKey::of(&layer.data.grid),
         offset: [layer.info.offset.x.to_bits(), layer.info.offset.y.to_bits()],
         bounds: layer.data.tiles.bounds(),
         intgrid: layer.data.intgrid.is_some(),
@@ -552,7 +670,7 @@ fn build(
     let tracked = Tracked::unread((lit.index, lit.entity), view.data, context.overrides);
     match groups
       .iter_mut()
-      .find(|g| g.cell == lit.cell && g.offset == lit.offset)
+      .find(|g| g.grid == lit.grid && g.offset == lit.offset)
     {
       Some(group) => {
         // The largest bounds, or none with an unbounded layer
@@ -597,16 +715,13 @@ pub(crate) struct Prepared {
   state: MapShadows,
 }
 
-/// The shadows of a map as its layers (each with its place among them)
-/// will spawn: every chunk's chains. Pure: any thread
-pub(crate) fn prepare(layers: &[LayerView<'_>], inputs: Inputs) -> Prepared {
+/// The shadows of the map `map` as its layers (each with its place among
+/// them) will spawn: every chunk's chains. Pure: any thread
+pub(crate) fn prepare(map: Entity, layers: &[LayerView<'_>], inputs: Inputs) -> Prepared {
   let mut planned = Vec::new();
-  plan(layers.iter().copied(), &mut planned);
-  let context = Context {
-    shapes: &inputs.shapes,
-    overrides: &inputs.overrides,
-    purpose: Purpose::Occlusion,
-  };
+  let mut warned = FastSet::default();
+  plan(map, layers.iter().copied(), &mut planned, &mut warned);
+  let context = Context::new(&inputs.shapes, &inputs.overrides, Purpose::Occlusion);
   let groups = build(&planned, layers, &context, None);
   Prepared {
     state: MapShadows {
@@ -615,6 +730,7 @@ pub(crate) fn prepare(layers: &[LayerView<'_>], inputs: Inputs) -> Prepared {
       overrides: inputs.overrides,
       shapes: inputs.shapes,
       groups,
+      warned,
     },
   }
 }
@@ -735,7 +851,12 @@ pub(crate) fn sync_map_occluders(
     let Some(tile_map) = root_map(root, tile_maps.as_deref(), projects.as_deref()) else {
       continue;
     };
-    plan(views(map_layers, &layers), &mut planned);
+    let mut first_warnings = FastSet::default();
+    let warned = match state.as_mut() {
+      Some(state) => &mut state.bypass_change_detection().warned,
+      None => &mut first_warnings,
+    };
+    plan(map, views(map_layers, &layers), &mut planned, warned);
     let same = state.as_mut().is_some_and(|s| {
       let s = s.bypass_change_detection();
       s.layers == *planned
@@ -744,11 +865,7 @@ pub(crate) fn sync_map_occluders(
     });
     if same && let Some(mut state) = state {
       let state = state.bypass_change_detection();
-      let context = Context {
-        shapes: &state.shapes,
-        overrides: &root.intgrid_collision,
-        purpose: Purpose::Occlusion,
-      };
+      let context = Context::new(&state.shapes, &root.intgrid_collision, Purpose::Occlusion);
       for group in &mut state.groups {
         let changed = changed_chunks(&mut group.layers, &layers, context.overrides);
         if !changed.is_empty() {
@@ -761,19 +878,20 @@ pub(crate) fn sync_map_occluders(
     }
     // Built at once
     let shapes = sources(tile_map, tilesets);
-    let context = Context {
-      shapes: &shapes,
-      overrides: &root.intgrid_collision,
-      purpose: Purpose::Occlusion,
-    };
+    let context = Context::new(&shapes, &root.intgrid_collision, Purpose::Occlusion);
     let views: Vec<LayerView<'_>> = views(map_layers, &layers).collect();
     let groups = build(&planned, &views, &context, Some(&mut commands));
+    let warned = match &state {
+      Some(old) => old.warned.clone(),
+      None => first_warnings,
+    };
     let fresh = MapShadows {
       layers: planned.clone(),
       tilesets: stamps(tile_map, tilesets),
       overrides: root.intgrid_collision.clone(),
       shapes: Arc::clone(&shapes),
       groups,
+      warned,
     };
     match state {
       Some(mut state) => {
@@ -798,7 +916,7 @@ mod tests {
   use crate::core::asset::{Assets, Handle};
   use crate::core::ecs::{ChildOf, Disabled, Entity, GlobalTransform, Transform, World};
   use crate::core::lighting::{Light2D, LightOccluder2D, push_shadow_volumes};
-  use crate::core::physics::{Collider, Physics, TilePart};
+  use crate::core::physics::{Collider, Physics, TileCell, TilePart};
   use crate::core::render::batch::Triangles;
   use crate::core::tilemap::test_util::{MapWorld, layers_of, load_map as load};
   use crate::core::tilemap::{
@@ -1627,5 +1745,283 @@ mod tests {
         );
       }
     }
+  }
+
+  // ---- grids of a square lattice ------------------------------------------
+
+  /// Tiles the size of `cell`: a diamond filling its box (0), a rectangle
+  /// filling it (1) and the diamond's left half (2): a whole isometric or
+  /// staggered cell, a whole oblique cell, and half an isometric or
+  /// staggered cell cut along the lattice's diagonal
+  fn lattice_blocks(cell: UVec2) -> Tileset {
+    let (w, h) = (cell.x as f32, cell.y as f32);
+    let mut set = Tileset::new("lattice", cell, TilesetImage::Collection);
+    let shaped = |points: Vec<Vec2>| TileData {
+      shapes: vec![TileShape {
+        points,
+        ..TileShape::default()
+      }],
+      ..TileData::default()
+    };
+    let (top, right, bottom, left) = (
+      Vec2::new(w / 2.0, 0.0),
+      Vec2::new(w, h / 2.0),
+      Vec2::new(w / 2.0, h),
+      Vec2::new(0.0, h / 2.0),
+    );
+    set.insert_tile(0, shaped(vec![top, right, bottom, left]));
+    set.insert_tile(
+      1,
+      shaped(vec![
+        Vec2::ZERO,
+        Vec2::new(w, 0.0),
+        Vec2::new(w, h),
+        Vec2::new(0.0, h),
+      ]),
+    );
+    set.insert_tile(2, shaped(vec![top, bottom, left]));
+    set
+  }
+
+  /// A map of `shape` and `cell`-sized cells over `lattice_blocks` (`size`
+  /// cells, or infinite for none), its layer "ground" holding `tiles`
+  fn lattice_map(
+    shape: crate::core::tilemap::GridShape,
+    cell: UVec2,
+    size: Option<UVec2>,
+    tiles: &[(IVec2, u32)],
+  ) -> TileMap {
+    let mut map = match size {
+      Some(size) => TileMap::new(size, cell),
+      None => TileMap::infinite(cell),
+    }
+    .with_shape(shape);
+    let set = map.add_tileset(TilesetSource::Embedded(Arc::new(lattice_blocks(cell))));
+    let layer = map.add_tile_layer("ground");
+    if let Some(grid) = map.tiles_mut(layer) {
+      for &(cell, id) in tiles {
+        grid.set(cell, Some(Tile::new(set, id)));
+      }
+    }
+    map
+  }
+
+  /// The steps of the edges of the collider parts under `parent`, in its
+  /// space, each turned round (as lighting winds what outlines bound)
+  fn collision_steps(world: &mut World, parent: Entity) -> BTreeMap<Edge, usize> {
+    use crate::core::physics::{ColliderShape, in_grid_space};
+    let parts: Vec<Collider> = world
+      .query::<(&ChildOf, &Collider, &Transform)>()
+      .iter(world)
+      .filter(|(child_of, ..)| child_of.parent() == parent)
+      .map(|(_, c, at)| in_grid_space(c.clone(), at.translation))
+      .collect();
+    let rounded = |v: Vec2| {
+      assert!(
+        (v - v.round()).abs().max_element() < 1e-3,
+        "{v} off the pixel grid"
+      );
+      (v.x.round() as i32, v.y.round() as i32)
+    };
+    let mut all = BTreeMap::new();
+    for part in parts {
+      let edges: Vec<(Vec2, Vec2)> = match &part.shape {
+        ColliderShape::Polyline { points } => points.windows(2).map(|w| (w[0], w[1])).collect(),
+        ColliderShape::Segments { points, segments } => segments
+          .iter()
+          .map(|&[a, b]| (points[a as usize], points[b as usize]))
+          .collect(),
+        other => panic!("an outline: {other:?}"),
+      };
+      for (a, b) in edges {
+        add_steps(&mut all, rounded(b), rounded(a));
+      }
+    }
+    all
+  }
+
+  #[test]
+  fn shadows_follow_the_same_outlines_on_every_square_lattice_grid() {
+    use crate::core::tilemap::{GridShape, StaggerAxis, StaggerIndex};
+    let staggered = |axis, index| GridShape::Staggered { axis, index };
+    // A blob of whole cells with a half cell beside it, a lone cell, and
+    // (infinite maps) cells across chunk borders and at negative cells
+    let blob = [(1, 1, 0), (2, 1, 0), (1, 2, 0), (2, 2, 2), (4, 4, 0)];
+    let far = [(31, 6, 0), (32, 6, 0), (32, 7, 0), (-1, -1, 0), (-2, -1, 0)];
+    let cases = [
+      (
+        GridShape::Isometric,
+        UVec2::new(64, 32),
+        Some(UVec2::new(6, 6)),
+        false,
+      ),
+      (GridShape::Isometric, UVec2::new(32, 16), None, false),
+      (
+        staggered(StaggerAxis::Y, StaggerIndex::Odd),
+        UVec2::new(64, 32),
+        None,
+        false,
+      ),
+      (
+        staggered(StaggerAxis::X, StaggerIndex::Even),
+        UVec2::new(32, 64),
+        None,
+        false,
+      ),
+      (
+        staggered(StaggerAxis::Y, StaggerIndex::Even),
+        UVec2::new(64, 32),
+        Some(UVec2::new(6, 6)),
+        false,
+      ),
+      (
+        GridShape::Oblique {
+          skew: IVec2::new(8, 12),
+        },
+        UVec2::splat(32),
+        Some(UVec2::new(6, 6)),
+        true,
+      ),
+      (
+        GridShape::Oblique {
+          skew: IVec2::new(-10, 0),
+        },
+        UVec2::splat(32),
+        None,
+        true,
+      ),
+    ];
+    for (shape, cell, size, oblique) in cases {
+      let label = format!("{shape:?} {cell} {size:?}");
+      let tiles: Vec<(IVec2, u32)> = blob
+        .iter()
+        .chain(if size.is_none() { &far[..] } else { &[][..] })
+        // An oblique cell is whole as a rectangle (its half a diamond is
+        // not half the cell: it stays a shape)
+        .map(|&(x, y, id)| (IVec2::new(x, y), if oblique && id == 0 { 1 } else { id }))
+        .collect();
+      let map = lattice_map(shape, cell, size, &tiles);
+      let grid = map.grid();
+      let mut maps = MapWorld::new();
+      let handle = maps.world.resource_mut::<Assets<TileMap>>().add(map);
+      let map = maps.spawn(MapRoot::new(handle));
+      maps.frame();
+      let layer = layers_of(&mut maps.world, map)[0];
+      let found = occluders_of(&mut maps.world, layer);
+      assert_placed(&found);
+      let lit = steps(&found);
+      assert!(!lit.is_empty(), "{label}");
+      assert_eq!(lit, collision_steps(&mut maps.world, map), "{label}");
+      // The lone cell's outline, wound for lighting, is its cell's on the
+      // grid
+      let outline = grid.cell_outline(IVec2::new(4, 4));
+      let corners: Vec<(i32, i32)> = outline
+        .points()
+        .iter()
+        .rev()
+        .map(|p| (p.x.round() as i32, p.y.round() as i32))
+        .collect();
+      for (edge, n) in ring(&corners) {
+        assert_eq!(
+          lit.get(&edge),
+          Some(&n),
+          "{label}: cell (4, 4)'s edge {edge:?}"
+        );
+      }
+    }
+  }
+
+  #[test]
+  fn a_streamed_staggered_chunk_unloads_cleanly() {
+    use crate::core::physics::TileColliders;
+    use crate::core::tilemap::{GridShape, MapGrid, StaggerAxis, StaggerIndex, TileLayerData};
+    let shape = GridShape::Staggered {
+      axis: StaggerAxis::Y,
+      index: StaggerIndex::Odd,
+    };
+    let cell = UVec2::new(64, 32);
+    // A wall across the border of chunks (0, 0) and (1, 0), and blocks in
+    // each: the second chunk's cells straddle lattice chunks
+    let mut tiles: Vec<(IVec2, u32)> = (26..38).map(|x| (IVec2::new(x, 4), 0)).collect();
+    tiles.extend([(3, 3), (40, 10), (45, 30), (33, 0)].map(|(x, y)| (IVec2::new(x, y), 0)));
+    let left: Vec<(IVec2, u32)> = tiles.iter().copied().filter(|(c, _)| c.x < 32).collect();
+    let tiles_list = tiles.clone();
+    let mut maps = MapWorld::new();
+    let mut add = |map: TileMap| maps.world.resource_mut::<Assets<TileMap>>().add(map);
+    let (whole, half) = (
+      add(lattice_map(shape, cell, None, &tiles)),
+      add(lattice_map(shape, cell, None, &left)),
+    );
+    let streamed = maps.spawn(MapRoot::new(whole));
+    let without = maps.spawn(MapRoot::new(half));
+    maps.frame();
+    // What a map holds: its colliders' cells and storage, its parts' edges,
+    // and its occluders' edges and chunks
+    type State = (
+      Vec<(IVec2, TileCell)>,
+      usize,
+      BTreeMap<Edge, usize>,
+      BTreeMap<Edge, usize>,
+      Vec<IVec2>,
+    );
+    let state = |world: &mut World, map: Entity| -> State {
+      let tiles = world.get::<TileColliders>(map).cloned().expect("colliders");
+      let mut cells: Vec<(IVec2, TileCell)> = tiles.cells_in(tiles.extent()).collect();
+      cells.sort_by_key(|(c, _)| (c.y, c.x));
+      let layer = layers_of(world, map)[0];
+      let found = occluders_of(world, layer);
+      let mut chunks: Vec<IVec2> = found.iter().map(|f| f.chunk).collect();
+      chunks.sort_by_key(|c| (c.y, c.x));
+      chunks.dedup();
+      (
+        cells,
+        tiles.chunk_count(),
+        collision_steps(world, map),
+        steps(&found),
+        chunks,
+      )
+    };
+    let loaded = state(&mut maps.world, streamed);
+    let reference = state(&mut maps.world, without);
+    assert_ne!(loaded, reference);
+    // Its cells collide at their lattice cells
+    let lattice = MapGrid::new(shape, cell)
+      .lattice()
+      .expect("a staggered lattice");
+    let tiles = maps
+      .world
+      .get::<TileColliders>(streamed)
+      .cloned()
+      .expect("colliders");
+    for (at, _) in &tiles_list {
+      assert_eq!(
+        tiles.get(lattice.lattice_cell(*at)),
+        TileCell::Solid,
+        "{at}"
+      );
+    }
+
+    // The stream unloads chunk (1, 0) of the layer
+    let layer = layers_of(&mut maps.world, streamed)[0];
+    let cells = maps
+      .world
+      .get_mut::<TileLayerData>(layer)
+      .and_then(|mut data| data.tiles.unload_chunk(IVec2::new(1, 0)))
+      .expect("chunk (1, 0) was there");
+    maps.frame();
+    maps.frame();
+    assert_eq!(
+      state(&mut maps.world, streamed),
+      reference,
+      "as if never loaded"
+    );
+
+    // and loads it back
+    if let Some(mut data) = maps.world.get_mut::<TileLayerData>(layer) {
+      assert!(data.tiles.load_chunk(IVec2::new(1, 0), cells));
+    }
+    maps.frame();
+    maps.frame();
+    assert_eq!(state(&mut maps.world, streamed), loaded, "as it was");
   }
 }

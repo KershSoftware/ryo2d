@@ -39,15 +39,15 @@
 
 use std::sync::Arc;
 
-use glam::{IVec2, UVec2, Vec2};
+use glam::{IVec2, Vec2};
 
 use super::kinds::{
-  Context, Layers, Part, Purpose, ShapeKey, ShapeSink, ShapeSource, Stores, TilesetStamp, Tracked,
-  build_chunks, changed_chunks, chunk_origin, layer_data, shapes_kept, sources, stamps,
-  union_kinds,
+  CELLS, ChunkKinds, Context, GridKey, Layers, Part, Purpose, ShapeKey, ShapeSink, ShapeSource,
+  Stores, TilesetStamp, Tracked, build_chunks, changed_chunks, chunk_origin, lattice_of,
+  layer_data, reindexing, scatter, shapes_kept, sources, stamps, union_kinds,
 };
 use super::spawn::{IntGridKey, MapLayers, MapRoot, TileLayerData, root_map};
-use super::{LayerInfo, Properties, PropertyValue};
+use super::{LayerInfo, MapGrid, Properties, PropertyValue};
 use crate::core::ecs::{
   Allow, Commands, Component, DetectChangesMut, Disabled, Entity, Has, Local, Query, Without, World,
 };
@@ -66,19 +66,19 @@ impl ShapeSink for Pending {
   }
 }
 
-/// What a group of layers shares: a cell size, an offset and a material
-/// (floats by their bits)
+/// What a group of layers shares: a grid (its shape, cell size and
+/// origin), an offset and a material (floats by their bits)
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct GroupKey {
-  cell: UVec2,
+  grid: GridKey,
   offset: [u32; 2],
   material: [u32; 4],
 }
 
 impl GroupKey {
-  fn of(cell: UVec2, offset: Vec2, material: Material) -> GroupKey {
+  fn of(grid: &MapGrid, offset: Vec2, material: Material) -> GroupKey {
     GroupKey {
-      cell,
+      grid: GridKey::of(grid),
       offset: [offset.x.to_bits(), offset.y.to_bits()],
       material: [
         material.layer,
@@ -111,8 +111,8 @@ pub(crate) struct Planned {
   intgrid: bool,
 }
 
-/// Layers sharing a cell size, offset and material, and the grid they
-/// collide in
+/// Layers sharing a grid, offset and material, and the grid they collide
+/// in
 #[derive(Debug)]
 struct Group {
   key: GroupKey,
@@ -213,18 +213,19 @@ pub(super) struct LayerView<'a> {
 type Warned = FastSet<(Option<usize>, &'static str)>;
 
 /// The colliding layers among `layers` into `planned`, and the map's own
-/// group key. A property of the wrong type warns once, and so does a
-/// colliding layer with parallax, which collides where it would draw
-/// without it, parallax being a drawing effect, and an IntGrid override to
-/// `TileCell::Shape`, which names no shape and collides as nothing
+/// group key (`grid`, the map's grid). A property of the wrong type warns
+/// once, and so does a colliding layer with parallax, which collides where
+/// it would draw without it, parallax being a drawing effect, an IntGrid
+/// override to `TileCell::Shape`, which names no shape and collides as
+/// nothing, and a colliding layer on a hexagonal grid, which builds nothing
 /// (`warned`)
 fn plan<'a>(
   map: Entity,
   layers: impl IntoIterator<Item = LayerView<'a>>,
-  (collision, properties, tile_size, overrides): (
+  (collision, properties, grid, overrides): (
     bool,
     &Properties,
-    UVec2,
+    &MapGrid,
     &[(IntGridKey, TileCell)],
   ),
   warned: &mut Warned,
@@ -260,6 +261,16 @@ fn plan<'a>(
   planned.clear();
   if collision {
     for layer in layers.into_iter().filter(|l| l.info.collides) {
+      if layer.data.grid.lattice().is_none() {
+        if warned.insert((Some(layer.index), "hexagonal")) {
+          crate::engine_warn!(
+            module: "Tilemap",
+            "map {map}: layer \"{}\" collides on a hexagonal grid; hexagonal collision isn't supported yet, so it builds no colliders",
+            layer.info.name
+          );
+        }
+        continue;
+      }
       let material = Material::of(
         &layer.info.properties,
         map_material,
@@ -281,13 +292,24 @@ fn plan<'a>(
       planned.push(Planned {
         entity: layer.entity,
         index: layer.index,
-        key: GroupKey::of(layer.data.grid.cell, layer.info.offset, material),
+        key: GroupKey::of(&layer.data.grid, layer.info.offset, material),
         bounds: layer.data.tiles.bounds(),
         intgrid: layer.data.intgrid.is_some(),
       });
     }
   }
-  GroupKey::of(tile_size, Vec2::ZERO, map_material)
+  GroupKey::of(grid, Vec2::ZERO, map_material)
+}
+
+/// Warns, once a map (`warned`), that `context` met one-way tiles off an
+/// orthogonal grid, which collided both ways
+fn warn_both_ways(map: Entity, context: &Context<'_>, warned: &mut Warned) {
+  if context.both_ways.get() && warned.insert((None, "one_way")) {
+    crate::engine_warn!(
+      module: "Tilemap",
+      "map {map}: its one-way tiles collide both ways: one-way platforms are for orthogonal maps"
+    );
+  }
 }
 
 /// What a build of a map's groups makes: the groups, and the grid of each
@@ -341,14 +363,21 @@ fn build(
   }
   let mut grids = Vec::new();
   for (index, group) in groups.iter_mut().enumerate() {
-    let cell = group.key.cell.as_vec2();
-    let mut tiles = match group.bounds {
-      Some(bounds) => {
+    let grid = group.key.grid.grid();
+    let cell = grid.cell.as_vec2();
+    // A staggered grid's cells go to their lattice cells, which a rectangle
+    // from (0, 0) does not hold
+    let lattice = reindexing(&grid);
+    let mut tiles = match (group.bounds, lattice) {
+      (Some(bounds), None) => {
         let size = bounds.max.max(IVec2::ZERO).as_uvec2();
         TileColliders::new(size.x, size.y, cell)
       }
-      None => TileColliders::unbounded(cell),
+      _ => TileColliders::unbounded(cell),
     };
+    if let Some(to_pixel) = lattice_of(&grid) {
+      tiles = tiles.with_lattice(to_pixel);
+    }
     group.key.material().apply(&mut tiles);
     let data: Vec<Option<&TileLayerData>> = group
       .layers
@@ -371,6 +400,8 @@ fn build(
       shapes,
       ..
     } = group;
+    // A staggered grid's lattice chunks, gathered across its chunks
+    let mut gathered: FastMap<IVec2, Box<ChunkKinds>> = FastMap::default();
     for chunk in chunks {
       let cells = union_kinds(
         layers,
@@ -380,6 +411,26 @@ fn build(
         &mut pending,
         context,
       );
+      match &lattice {
+        Some(lattice) => {
+          for (at, kind) in scatter(lattice, chunk, &cells) {
+            if kind == TileCell::Empty {
+              continue;
+            }
+            let side = IVec2::splat(super::CHUNK_SIZE as i32);
+            let local = at.rem_euclid(side);
+            gathered
+              .entry(at.div_euclid(side))
+              .or_insert_with(|| Box::new([TileCell::Empty; CELLS]))
+              [(local.y * side.x + local.x) as usize] = kind;
+          }
+        }
+        None => tiles.put_chunk(chunk, &cells),
+      }
+    }
+    let mut gathered: Vec<(IVec2, Box<ChunkKinds>)> = gathered.into_iter().collect();
+    gathered.sort_unstable_by_key(|(c, _)| (c.y, c.x));
+    for (chunk, cells) in gathered {
       tiles.put_chunk(chunk, &cells);
     }
     for shape in pending.0 {
@@ -397,7 +448,8 @@ pub(crate) struct Inputs {
   pub(crate) collision: bool,
   pub(crate) overrides: Vec<(IntGridKey, TileCell)>,
   pub(crate) properties: Properties,
-  pub(crate) tile_size: UVec2,
+  /// The map's grid
+  pub(crate) grid: MapGrid,
   pub(crate) shapes: Arc<[Option<ShapeSource>]>,
   pub(crate) tilesets: Vec<TilesetStamp>,
 }
@@ -419,22 +471,19 @@ pub(crate) fn prepare(map: Entity, layers: &[LayerView<'_>], inputs: Inputs) -> 
     (
       inputs.collision,
       &inputs.properties,
-      inputs.tile_size,
+      &inputs.grid,
       &inputs.overrides,
     ),
     &mut warned,
     &mut planned,
   );
-  let context = Context {
-    shapes: &inputs.shapes,
-    overrides: &inputs.overrides,
-    purpose: Purpose::Collision,
-  };
+  let context = Context::new(&inputs.shapes, &inputs.overrides, Purpose::Collision);
   let built = build(map, (map_key, &planned, layers), &context, true);
+  warn_both_ways(map, &context, &mut warned);
   Prepared {
     state: MapCollision {
       layers: planned,
-      tile_size: inputs.tile_size,
+      grid: inputs.grid,
       tilesets: inputs.tilesets,
       overrides: inputs.overrides,
       shapes: inputs.shapes,
@@ -483,7 +532,8 @@ pub(crate) fn land(world: &mut World, map: Entity, layers: &[Entity], prepared: 
 #[derive(Component, Debug)]
 pub(crate) struct MapCollision {
   layers: Vec<Planned>,
-  tile_size: UVec2,
+  /// The map's grid
+  grid: MapGrid,
   tilesets: Vec<TilesetStamp>,
   overrides: Vec<(IntGridKey, TileCell)>,
   /// The tilesets' shapes it reads
@@ -513,12 +563,16 @@ impl MapCollision {
 /// Brings a group's grid up to its layers' tiles: the cells of every chunk
 /// whose version moved since it last looked, classified across its layers
 /// from the cells where they lie, setting only those whose kind changed,
-/// and every chunk its layers no longer have (unloaded) taken out whole
+/// and every chunk its layers no longer have (unloaded) taken out whole.
+/// On a staggered grid each cell is set at its lattice cell, and an
+/// unloaded chunk's cells leave one by one, since they straddle the
+/// lattice's chunks: those left holding nothing go
 fn update(group: &mut Group, tiles: &mut TileColliders, layers: &Layers, context: &Context<'_>) {
   let changed = changed_chunks(&mut group.layers, layers, context.overrides);
   if changed.is_empty() {
     return;
   }
+  let lattice = reindexing(&group.key.grid.grid());
   let data = layer_data(&group.layers, layers);
   let data: Vec<Option<&TileLayerData>> = data.iter().map(|d| d.as_deref()).collect();
   let Group {
@@ -539,7 +593,11 @@ fn update(group: &mut Group, tiles: &mut TileColliders, layers: &Layers, context
       tiles,
       context,
     );
-    let empty = [TileCell::Empty; super::kinds::CELLS];
+    if let Some(lattice) = &lattice {
+      tiles.set_cells(scatter(lattice, chunk, &now));
+      continue;
+    }
+    let empty = [TileCell::Empty; CELLS];
     // A chunk none of the group's grids has (unloaded) and nothing else
     // fills goes whole, its storage with it
     let gone = now == empty && data.iter().flatten().all(|d| !d.tiles.has_chunk(chunk));
@@ -638,7 +696,7 @@ pub(crate) fn sync_map_colliders(
       (
         root.collision,
         &tile_map.properties,
-        tile_map.tile_size,
+        &tile_map.grid(),
         &root.intgrid_collision,
       ),
       warned,
@@ -648,18 +706,14 @@ pub(crate) fn sync_map_colliders(
       let s = s.bypass_change_detection();
       !s.torn
         && s.layers == *planned
-        && s.tile_size == tile_map.tile_size
+        && s.grid == tile_map.grid()
         && s.overrides == root.intgrid_collision
         && shapes_kept(&mut s.tilesets, &s.shapes, tile_map, tilesets)
     });
     match state {
       Some(mut state) if same => {
         let state = state.bypass_change_detection();
-        let context = Context {
-          shapes: &state.shapes,
-          overrides: &root.intgrid_collision,
-          purpose: Purpose::Collision,
-        };
+        let context = Context::new(&state.shapes, &root.intgrid_collision, Purpose::Collision);
         for group in &mut state.groups {
           let Ok(mut tiles) = grids.get_mut(group.target) else {
             // Taken away by something else: all of it is built next step
@@ -668,11 +722,12 @@ pub(crate) fn sync_map_colliders(
           };
           update(group, &mut tiles, &layers, &context);
         }
+        warn_both_ways(map, &context, &mut state.warned_properties);
       }
       state => {
         // Built at once, so a map never lacks its colliders
         let shapes = sources(tile_map, tilesets);
-        let warned_properties = match &state {
+        let mut warned_properties = match &state {
           Some(old) => old.warned_properties.clone(),
           None => first_warnings,
         };
@@ -681,13 +736,10 @@ pub(crate) fn sync_map_colliders(
             commands.entity(target).try_remove::<TileColliders>();
           }
         }
-        let context = Context {
-          shapes: &shapes,
-          overrides: &root.intgrid_collision,
-          purpose: Purpose::Collision,
-        };
+        let context = Context::new(&shapes, &root.intgrid_collision, Purpose::Collision);
         let views: Vec<LayerView<'_>> = views(map_layers, &layers).collect();
         let built = build(map, (map_key, &planned, &views), &context, false);
+        warn_both_ways(map, &context, &mut warned_properties);
         for (group, tiles, _) in built.grids {
           commands
             .entity(built.groups[group].target)
@@ -695,7 +747,7 @@ pub(crate) fn sync_map_colliders(
         }
         let fresh = MapCollision {
           layers: planned.clone(),
-          tile_size: tile_map.tile_size,
+          grid: tile_map.grid(),
           tilesets: stamps(tile_map, tilesets),
           overrides: root.intgrid_collision.clone(),
           shapes: Arc::clone(&shapes),
@@ -734,8 +786,9 @@ mod tests {
   use crate::core::testing::HeadlessEngine;
   use crate::core::tilemap::test_util::{MapWorld, files_with, layers_of, load_map as load};
   use crate::core::tilemap::{
-    GridShape, IntGrid, LayerKind, MapGrid, MapRoot, MapsView, PropertyValue, Tile, TileData,
-    TileFlip, TileLayerData, TileMap, TileShape, Tileset, TilesetImage, TilesetSource,
+    GridShape, IntGrid, LayerKind, MapGrid, MapRoot, MapsView, PropertyValue, StaggerAxis,
+    StaggerIndex, Tile, TileData, TileFlip, TileLayerData, TileMap, TileShape, Tileset,
+    TilesetImage, TilesetSource,
   };
 
   /// Tile ids of `shapes`
@@ -2419,5 +2472,506 @@ mod tests {
     }
     println!("worst frame added {worst:.3} ms");
     assert!(worst < 0.5, "a frame took {worst:.3} ms more");
+  }
+
+  // ---- grids of a square lattice ------------------------------------------
+
+  /// Tile ids of `lattice_set`
+  const DIAMOND: u32 = 0;
+  const ONE_WAY_DIAMOND: u32 = 1;
+  const BOX: u32 = 2;
+  const ONE_WAY_BOX: u32 = 3;
+
+  /// Tiles the size of `cell`: a diamond filling its box (a whole isometric
+  /// or staggered cell), the same diamond one-way, a rectangle filling it
+  /// (a whole orthogonal or oblique cell) and that rectangle one-way
+  fn lattice_set(cell: UVec2) -> Tileset {
+    let (w, h) = (cell.x as f32, cell.y as f32);
+    let mut set = Tileset::new("lattice", cell, TilesetImage::Collection);
+    let diamond = vec![
+      Vec2::new(w / 2.0, 0.0),
+      Vec2::new(w, h / 2.0),
+      Vec2::new(w / 2.0, h),
+      Vec2::new(0.0, h / 2.0),
+    ];
+    let with = |points: Vec<Vec2>, one_way: bool| TileData {
+      shapes: vec![TileShape {
+        one_way,
+        ..shape(points, false)
+      }],
+      ..TileData::default()
+    };
+    set.insert_tile(DIAMOND, with(diamond.clone(), false));
+    set.insert_tile(ONE_WAY_DIAMOND, with(diamond, true));
+    set.insert_tile(BOX, with(rect(0.0, 0.0, w, h), false));
+    set.insert_tile(ONE_WAY_BOX, with(rect(0.0, 0.0, w, h), true));
+    set
+  }
+
+  /// A map of `shape` and `cell`-sized cells over `lattice_set`: `size`
+  /// cells, or infinite for none, with a tile layer of each name holding
+  /// the tiles listed
+  fn lattice_map(
+    shape: GridShape,
+    cell: UVec2,
+    size: Option<UVec2>,
+    layers: &[(&str, &[(IVec2, u32)])],
+  ) -> TileMap {
+    let mut map = match size {
+      Some(size) => TileMap::new(size, cell),
+      None => TileMap::infinite(cell),
+    }
+    .with_shape(shape);
+    let set = map.add_tileset(TilesetSource::Embedded(Arc::new(lattice_set(cell))));
+    for (name, tiles) in layers {
+      let layer = map.add_tile_layer(name);
+      let grid = map.tiles_mut(layer).expect("a tile layer");
+      for &(cell, id) in *tiles {
+        grid.set(cell, Some(Tile::new(set, id)));
+      }
+    }
+    map
+  }
+
+  /// The edges of `collider`, each from a point to the next as it runs
+  fn edges_of(collider: &Collider) -> Vec<(Vec2, Vec2)> {
+    match &collider.shape {
+      ColliderShape::Polyline { points } => points.windows(2).map(|w| (w[0], w[1])).collect(),
+      ColliderShape::Segments { points, segments } => segments
+        .iter()
+        .map(|&[a, b]| (points[a as usize], points[b as usize]))
+        .collect(),
+      ColliderShape::Segment { a, b } => vec![(*a, *b)],
+      _ => Vec::new(),
+    }
+  }
+
+  /// An edge between two whole lattice points
+  type LatticeEdge = ((i32, i32), (i32, i32));
+
+  /// The parts' edges under `parent` taken back through `to_pixel` to the
+  /// lattice, whose points are whole there, sorted
+  fn lattice_edges(world: &mut World, parent: Entity, to_pixel: glam::Affine2) -> Vec<LatticeEdge> {
+    let back = to_pixel.inverse();
+    let whole = |p: Vec2| {
+      let at = back.transform_point2(p);
+      assert!(
+        (at - at.round()).abs().max_element() < 1e-3,
+        "{p} is lattice point {at}, not a whole one"
+      );
+      (at.x.round() as i32, at.y.round() as i32)
+    };
+    let mut edges: Vec<LatticeEdge> = parts_of(world, parent)
+      .iter()
+      .flat_map(|(_, collider)| edges_of(collider))
+      .map(|(a, b)| (whole(a), whole(b)))
+      .collect();
+    edges.sort_unstable();
+    edges
+  }
+
+  /// The edges of the lattice rectangle `min..max` (cells), clockwise on
+  /// screen from its top-left, cut at every lattice point, sorted (as an
+  /// outline of whole cells runs, but cut where its straight runs merge)
+  fn rect_edges(min: (i32, i32), max: (i32, i32)) -> Vec<LatticeEdge> {
+    let mut edges = Vec::new();
+    for x in min.0..max.0 {
+      edges.push(((x, min.1), (x + 1, min.1)));
+      edges.push(((x + 1, max.1), (x, max.1)));
+    }
+    for y in min.1..max.1 {
+      edges.push(((max.0, y), (max.0, y + 1)));
+      edges.push(((min.0, y + 1), (min.0, y)));
+    }
+    edges.sort_unstable();
+    edges
+  }
+
+  /// `edges` cut at every whole lattice point between their ends, sorted
+  fn cut(edges: &[LatticeEdge]) -> Vec<LatticeEdge> {
+    let mut out = Vec::new();
+    for &(a, b) in edges {
+      let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+      let n = dx.abs().max(dy.abs()).max(1);
+      assert!(
+        dx == 0 || dy == 0,
+        "an outline edge along the lattice: {a:?} {b:?}"
+      );
+      for i in 0..n {
+        out.push((
+          (a.0 + dx * i / n, a.1 + dy * i / n),
+          (a.0 + dx * (i + 1) / n, a.1 + dy * (i + 1) / n),
+        ));
+      }
+    }
+    out.sort_unstable();
+    out
+  }
+
+  #[test]
+  fn an_isometric_wall_collides_along_its_diamonds() {
+    // A row of three whole diamonds on a 4 x 3 isometric map of 64 x 32
+    // cells, whose cell (0, 0)'s top vertex is at (96, 0)
+    let wall: Vec<(IVec2, u32)> = (0..3).map(|x| (IVec2::new(x, 1), DIAMOND)).collect();
+    let map = lattice_map(
+      GridShape::Isometric,
+      UVec2::new(64, 32),
+      Some(UVec2::new(4, 3)),
+      &[("walls", &wall)],
+    );
+    let grid = map.grid();
+    let to_pixel = grid.lattice().expect("an isometric lattice").to_pixel;
+    let mut maps = MapWorld::new();
+    let handle = add(&mut maps.world, map);
+    let map = maps.spawn(MapRoot::new(handle));
+    let tiles = colliders(&maps.world, map);
+    assert_eq!(tiles.lattice(), Some(to_pixel));
+    assert_eq!(tiles.bounds(), Some(CellRect::from_size(UVec2::new(4, 3))));
+    for x in 0..4 {
+      let kind = if x < 3 {
+        TileCell::Solid
+      } else {
+        TileCell::Empty
+      };
+      assert_eq!(tiles.get(IVec2::new(x, 1)), kind, "cell ({x}, 1)");
+    }
+    // One closed polyline round the row: the square lattice's outline
+    // taken through the grid, its part unturned at its chunk's corner
+    let parts = parts_of(&mut maps.world, map);
+    assert_eq!(parts.len(), 1, "{parts:?}");
+    let ColliderShape::Polyline { points } = &parts[0].1.shape else {
+      panic!("a polyline: {:?}", parts[0].1);
+    };
+    assert_eq!(points.first(), points.last(), "closed");
+    let corners = [(0.0, 1.0), (3.0, 1.0), (3.0, 2.0), (0.0, 2.0)]
+      .map(|(x, y)| to_pixel.transform_point2(Vec2::new(x, y)));
+    let expected = corners.map(|p| (p.x, p.y));
+    assert!(
+      same_points(&points[1..], &expected),
+      "{points:?} != {expected:?}"
+    );
+    // The diamonds' own corners: the left one's top-left vertex and the
+    // right one's bottom-right
+    assert_eq!(corners[0], grid.cell_outline(IVec2::new(0, 1)).points()[0]);
+    assert_eq!(corners[2], grid.cell_outline(IVec2::new(2, 1)).points()[2]);
+    let part = parts[0].0;
+    let at = maps.world.get::<Transform>(part).copied();
+    assert_eq!(
+      at.map(|t| (t.rotation, t.scale)),
+      Some((Transform::IDENTITY.rotation, Vec2::ONE))
+    );
+    assert_eq!(at.map(|t| t.translation), Some(to_pixel.translation));
+  }
+
+  #[test]
+  fn a_staggered_map_collides_as_the_isometric_map_of_the_same_cells() {
+    let cell = UVec2::new(64, 32);
+    // Cells across the staggered map's chunk borders and at negative cells
+    let cells = [
+      (0, 0),
+      (1, 0),
+      (0, 1),
+      (1, 1),
+      (2, 3),
+      (-1, -2),
+      (31, 5),
+      (32, 5),
+      (32, 6),
+      (5, 31),
+      (5, 32),
+      (-33, 40),
+    ]
+    .map(|(x, y)| IVec2::new(x, y));
+    for (axis, index) in [
+      (StaggerAxis::Y, StaggerIndex::Odd),
+      (StaggerAxis::Y, StaggerIndex::Even),
+      (StaggerAxis::X, StaggerIndex::Odd),
+      (StaggerAxis::X, StaggerIndex::Even),
+    ] {
+      let shape = GridShape::Staggered { axis, index };
+      let staggered: Vec<(IVec2, u32)> = cells.iter().map(|&c| (c, DIAMOND)).collect();
+      let stagger_map = lattice_map(shape, cell, None, &[("walls", &staggered)]);
+      let stagger_grid = stagger_map.grid();
+      let lattice = stagger_grid.lattice().expect("a staggered lattice");
+      let diamonds: Vec<(IVec2, u32)> = cells
+        .iter()
+        .map(|&c| (lattice.lattice_cell(c), DIAMOND))
+        .collect();
+      let iso_map = lattice_map(GridShape::Isometric, cell, None, &[("walls", &diamonds)]);
+      let iso_lattice = iso_map.grid().lattice().expect("an isometric lattice");
+      let mut maps = MapWorld::new();
+      let a = add(&mut maps.world, stagger_map);
+      let b = add(&mut maps.world, iso_map);
+      let a = maps.spawn(MapRoot::new(a));
+      let b = maps.spawn(MapRoot::new(b));
+      let label = format!("{axis:?} {index:?}");
+      let (sa, sb) = (colliders(&maps.world, a), colliders(&maps.world, b));
+      assert_eq!(sa.lattice(), Some(lattice.to_pixel), "{label}");
+      assert_eq!(sa.bounds(), None, "{label}: unbounded in the lattice");
+      for &c in &cells {
+        let at = lattice.lattice_cell(c);
+        assert_eq!(sa.get(at), TileCell::Solid, "{label}: {c} at {at}");
+        assert_eq!(sb.get(at), TileCell::Solid, "{label}: {at}");
+      }
+      assert_eq!(sa.extent(), sb.extent(), "{label}");
+      // The same outlines in the lattice, each where its grid puts it
+      let ea = lattice_edges(&mut maps.world, a, lattice.to_pixel);
+      let eb = lattice_edges(&mut maps.world, b, iso_lattice.to_pixel);
+      assert!(!ea.is_empty());
+      assert_eq!(ea, eb, "{label}");
+      // and through the staggered grid, on its diamonds' corners
+      let first = stagger_grid.cell_outline(cells[0]);
+      let mut seen = parts_of(&mut maps.world, a)
+        .iter()
+        .flat_map(|(_, c)| edges_of(c))
+        .flat_map(|(p, q)| [p, q])
+        .collect::<Vec<_>>();
+      seen.retain(|p| first.points().contains(p));
+      assert!(
+        !seen.is_empty(),
+        "{label}: an outline meets cell (0, 0)'s corners"
+      );
+    }
+  }
+
+  #[test]
+  fn an_oblique_map_collides_skewed() {
+    let wall: Vec<(IVec2, u32)> = (0..3).map(|x| (IVec2::new(x, 1), BOX)).collect();
+    for skew in [IVec2::new(8, 12), IVec2::new(-10, 0), IVec2::new(0, -12)] {
+      let map = lattice_map(
+        GridShape::Oblique { skew },
+        UVec2::splat(32),
+        Some(UVec2::new(4, 3)),
+        &[("walls", &wall)],
+      );
+      let grid = map.grid();
+      let to_pixel = grid.lattice().expect("an oblique lattice").to_pixel;
+      let mut maps = MapWorld::new();
+      let handle = add(&mut maps.world, map);
+      let map = maps.spawn(MapRoot::new(handle));
+      let tiles = colliders(&maps.world, map);
+      // The rectangle filling the unskewed cell is the whole cell, skewed
+      assert!((0..3).all(|x| tiles.get(IVec2::new(x, 1)) == TileCell::Solid));
+      let parts = parts_of(&mut maps.world, map);
+      assert_eq!(parts.len(), 1, "{skew}: {parts:?}");
+      let ColliderShape::Polyline { points } = &parts[0].1.shape else {
+        panic!("a polyline: {:?}", parts[0].1);
+      };
+      // A parallelogram: the cells' corners, each row skewed along by
+      // skew.x and each column down by skew.y
+      let expected = [(0, 1), (3, 1), (3, 2), (0, 2)]
+        .map(|(i, j)| ((32 * i + skew.x * j) as f32, (skew.y * i + 32 * j) as f32));
+      assert!(same_points(&points[1..], &expected), "{skew}: {points:?}");
+      // Running clockwise round the cells in the lattice, as on squares
+      assert_eq!(
+        cut(&lattice_edges(&mut maps.world, map, to_pixel)),
+        rect_edges((0, 1), (3, 2)),
+        "{skew}"
+      );
+    }
+  }
+
+  #[test]
+  fn an_edit_on_an_isometric_map_retraces_only_its_loops() {
+    // Diamonds in chunks 0, 1 and 2 of an infinite isometric map
+    let islands = [(2, 2), (40, 2), (41, 3), (70, 2)].map(|(x, y)| (IVec2::new(x, y), DIAMOND));
+    let map = lattice_map(
+      GridShape::Isometric,
+      UVec2::new(32, 16),
+      None,
+      &[("ground", &islands)],
+    );
+    let to_pixel = map.grid().lattice().expect("an isometric lattice").to_pixel;
+    let mut maps = MapWorld::new();
+    let handle = add(&mut maps.world, map);
+    let map = maps.spawn(MapRoot::new(handle));
+    // Each part by the lattice chunk its loops start in
+    let by_chunk = |world: &mut World| -> Vec<(IVec2, Entity, Collider)> {
+      let back = to_pixel.inverse();
+      let mut found: Vec<(IVec2, Entity, Collider)> = parts_of(world, map)
+        .into_iter()
+        .map(|(part, collider)| {
+          let first = edges_of(&collider).first().map_or(Vec2::ZERO, |e| e.0);
+          let at = back.transform_point2(first).round().as_ivec2();
+          (at.div_euclid(IVec2::splat(32)), part, collider)
+        })
+        .collect();
+      found.sort_by_key(|(chunk, ..)| (chunk.y, chunk.x));
+      found
+    };
+    let before = by_chunk(&mut maps.world);
+    let chunks: Vec<IVec2> = before.iter().map(|(c, ..)| *c).collect();
+    assert_eq!(chunks, [IVec2::ZERO, IVec2::new(1, 0), IVec2::new(2, 0)]);
+    // A diamond joins the two in chunk 1 into one loop
+    let mut view = MapsView::new(&mut maps.world);
+    assert!(view.set_tile(
+      map,
+      "ground",
+      IVec2::new(41, 2),
+      Some(Tile::new(0, DIAMOND))
+    ));
+    maps.step();
+    let after = by_chunk(&mut maps.world);
+    assert_eq!(after.len(), 3);
+    for ((chunk, part, collider), (_, was, old)) in after.iter().zip(&before) {
+      assert_eq!(part, was, "chunk {chunk}'s part took its shape in place");
+      if *chunk == IVec2::new(1, 0) {
+        assert_ne!(collider, old, "chunk {chunk} was retraced");
+        let ColliderShape::Polyline { points } = &collider.shape else {
+          panic!("one loop: {collider:?}");
+        };
+        // The L of three diamonds: six corners and the closing point
+        assert_eq!(points.len(), 7, "{points:?}");
+      } else {
+        assert_eq!(collider, old, "chunk {chunk} was left as it was");
+      }
+    }
+  }
+
+  #[test]
+  fn a_one_way_tile_off_an_orthogonal_map_collides_both_ways_and_warns_once() {
+    let cases = [
+      (GridShape::Isometric, UVec2::new(64, 32), ONE_WAY_DIAMOND),
+      (
+        GridShape::Staggered {
+          axis: StaggerAxis::Y,
+          index: StaggerIndex::Odd,
+        },
+        UVec2::new(64, 32),
+        ONE_WAY_DIAMOND,
+      ),
+      (
+        GridShape::Oblique {
+          skew: IVec2::new(8, 0),
+        },
+        UVec2::splat(32),
+        ONE_WAY_BOX,
+      ),
+    ];
+    // Only this test warns of one-way tiles; its maps may share an entity
+    let warnings = || {
+      crate::core::dev_log::get_entries()
+        .iter()
+        .filter(|e| e.message.contains("one-way tiles collide both ways"))
+        .count()
+    };
+    for (shape, cell, platform) in cases {
+      let before = warnings();
+      let ledges = [(IVec2::new(1, 1), platform), (IVec2::new(2, 1), platform)];
+      let map = lattice_map(shape, cell, Some(UVec2::new(6, 6)), &[("ledges", &ledges)]);
+      let lattice = map.grid().lattice().expect("a square lattice");
+      let mut maps = MapWorld::new();
+      let handle = add(&mut maps.world, map);
+      let map = maps.spawn(MapRoot::new(handle));
+      maps.frame();
+      let tiles = colliders(&maps.world, map);
+      for (cell, _) in ledges {
+        let at = lattice.lattice_cell(cell);
+        assert_eq!(
+          tiles.get(at),
+          TileCell::Solid,
+          "{shape:?}: {cell} collides both ways"
+        );
+      }
+      // Outlines round them, no one-way part
+      let parts = parts_of(&mut maps.world, map);
+      assert!(!parts.is_empty(), "{shape:?}");
+      assert!(parts.iter().all(|(_, c)| c.one_way.is_none()), "{shape:?}");
+      // More one-way tiles, by an edit, warn no more
+      let mut view = MapsView::new(&mut maps.world);
+      assert!(view.set_tile(
+        map,
+        "ledges",
+        IVec2::new(4, 4),
+        Some(Tile::new(0, platform))
+      ));
+      maps.step();
+      maps.frame();
+      assert_eq!(
+        colliders(&maps.world, map).get(lattice.lattice_cell(IVec2::new(4, 4))),
+        TileCell::Solid
+      );
+      assert_eq!(warnings() - before, 1, "{shape:?}: warned once for the map");
+    }
+    // On an orthogonal map they stay one-way, and nothing is said
+    let ledges = [(IVec2::new(1, 1), ONE_WAY_BOX)];
+    let map = lattice_map(
+      GridShape::Orthogonal,
+      UVec2::splat(16),
+      Some(UVec2::new(4, 4)),
+      &[("ledges", &ledges)],
+    );
+    let mut maps = MapWorld::new();
+    let handle = add(&mut maps.world, map);
+    let before = warnings();
+    let map = maps.spawn(MapRoot::new(handle));
+    maps.frame();
+    assert_eq!(
+      colliders(&maps.world, map).get(IVec2::new(1, 1)),
+      TileCell::OneWay
+    );
+    assert_eq!(warnings(), before);
+  }
+
+  #[test]
+  fn a_code_built_hex_layer_that_collides_warns_once_and_builds_nothing() {
+    use crate::core::tilemap::MapOccluder;
+    // A layer added while the map was orthogonal keeps colliding when the
+    // map moves onto a hexagonal grid; one added after does not
+    let mut map = TileMap::new(UVec2::new(6, 6), UVec2::splat(32));
+    let set = map.add_tileset(TilesetSource::Embedded(Arc::new(lattice_set(
+      UVec2::splat(32),
+    ))));
+    map.add_tile_layer("honeycomb-5d07");
+    let mut map = map.with_shape(GridShape::Hexagonal {
+      axis: StaggerAxis::Y,
+      index: StaggerIndex::Odd,
+      side: 12,
+    });
+    let quiet = map.add_tile_layer("hexfloor-5d07");
+    assert!(map.layers[0].info.collides && !map.layers[quiet].info.collides);
+    for layer in [0, quiet] {
+      let grid = map.tiles_mut(layer).expect("a tile layer");
+      for x in 0..4 {
+        grid.set(IVec2::new(x, 2), Some(Tile::new(set, BOX)));
+      }
+    }
+    let mut maps = MapWorld::new();
+    let handle = add(&mut maps.world, map);
+    let map = maps.spawn(MapRoot::new(handle));
+    maps.frame();
+    let mut view = MapsView::new(&mut maps.world);
+    assert!(view.set_tile(
+      map,
+      "honeycomb-5d07",
+      IVec2::new(1, 3),
+      Some(Tile::new(0, BOX))
+    ));
+    maps.step();
+    maps.frame();
+    let layers = layers_of(&mut maps.world, map);
+    for entity in std::iter::once(map).chain(layers) {
+      assert!(maps.world.get::<TileColliders>(entity).is_none());
+    }
+    assert_eq!(count_parts(&mut maps.world), 0);
+    assert_eq!(
+      maps.world.query::<&MapOccluder>().iter(&maps.world).count(),
+      0
+    );
+    let warned = |what: &str| {
+      crate::core::dev_log::get_entries()
+        .iter()
+        .filter(|e| e.message.contains("\"honeycomb-5d07\"") && e.message.contains(what))
+        .count()
+    };
+    assert_eq!(warned("hexagonal collision isn't supported yet"), 1);
+    assert_eq!(
+      warned("shadows from hexagonal layers aren't supported yet"),
+      1
+    );
+    let quiet = crate::core::dev_log::get_entries()
+      .iter()
+      .any(|e| e.message.contains("hexfloor-5d07"));
+    assert!(!quiet, "a layer that does not collide says nothing");
   }
 }

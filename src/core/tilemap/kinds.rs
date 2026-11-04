@@ -5,14 +5,15 @@
 //! group last read its layers. Pure but for the queries' aliases, so a
 //! map's first build can run off the main thread.
 
+use std::cell::Cell;
 use std::sync::Arc;
 
-use glam::{IVec2, Vec2};
+use glam::{DAffine2, DVec2, IVec2, Vec2};
 
 use super::spawn::{IntGridKey, TileLayerData};
 use super::{
-  CHUNK_SIZE, LayerInfo, LdtkProject, Tile, TileFlip, TileGrid, TileMap, Tileset, TilesetImage,
-  TilesetSource,
+  CHUNK_SIZE, GridShape, Lattice, LayerInfo, LdtkProject, MapGrid, Tile, TileFlip, TileGrid,
+  TileMap, Tileset, TilesetImage, TilesetSource,
 };
 use crate::core::asset::{AssetId, Assets};
 use crate::core::ecs::{Allow, DetectChanges, Disabled, Entity, Has, Query, Ref, Res};
@@ -194,14 +195,118 @@ fn drawn_size(tileset: &Tileset, id: u32) -> Vec2 {
   own.unwrap_or(tileset.tile_size).as_vec2()
 }
 
+/// A layer's grid as collision and shadows group layers by it: its shape,
+/// cell size and origin (by its bits)
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub(super) struct GridKey {
+  shape: GridShape,
+  cell: glam::UVec2,
+  origin: [u32; 2],
+}
+
+impl GridKey {
+  pub(super) fn of(grid: &MapGrid) -> GridKey {
+    GridKey {
+      shape: grid.shape,
+      cell: grid.cell,
+      origin: [grid.origin.x.to_bits(), grid.origin.y.to_bits()],
+    }
+  }
+
+  pub(super) fn grid(&self) -> MapGrid {
+    let origin = Vec2::new(
+      f32::from_bits(self.origin[0]),
+      f32::from_bits(self.origin[1]),
+    );
+    MapGrid::new(self.shape, self.cell).with_origin(origin)
+  }
+}
+
+/// The lattice a grid places its cells through for collision and shadows,
+/// lattice units to the layer's pixels: none for an orthogonal grid at the
+/// origin (its cells are rectangles of its cell size from it) and for a
+/// hexagonal one (which has none)
+pub(super) fn lattice_of(grid: &MapGrid) -> Option<glam::Affine2> {
+  if grid.shape == GridShape::Orthogonal && grid.origin == Vec2::ZERO {
+    return None;
+  }
+  grid.lattice().map(|lattice| lattice.to_pixel)
+}
+
+/// The lattice of a grid that indexes its cells otherwise than it does (a
+/// staggered grid's), whose storage chunks' cells straddle its chunks
+pub(super) fn reindexing(grid: &MapGrid) -> Option<Lattice> {
+  grid.lattice().filter(|lattice| lattice.reindexes())
+}
+
+/// How a layer's grid takes a tile's shapes from its image's pixels into
+/// its cell's square (the unit square of collision's grid)
+#[derive(Clone, Copy, Debug)]
+pub(super) enum Placement {
+  /// Upright rectangles of this size: an orthogonal grid's cells, and an
+  /// oblique grid's, whose shapes are taken in the cell unskewed (as
+  /// Tiled's collision editor shows them, over the unskewed image) and skew
+  /// with the grid
+  Cells(Vec2),
+  /// Through the grid's lattice: `to_square` takes a point of a tile image
+  /// standing in cell (0, 0) (from where its bottom-left goes, before its
+  /// tileset's offset) to lattice units from cell (0, 0)'s square's
+  /// corner. Every cell is that one moved along the lattice, so a tile's
+  /// shapes are the same in every cell
+  Lattice(DAffine2),
+  /// No square lattice (a hexagonal grid): its tiles collide as nothing
+  Nothing,
+}
+
+impl Placement {
+  /// How `grid` places its tiles' shapes
+  pub(super) fn of(grid: &MapGrid) -> Placement {
+    if let GridShape::Orthogonal | GridShape::Oblique { .. } = grid.shape {
+      return Placement::Cells(grid.cell.as_vec2());
+    }
+    let Some(lattice) = grid.lattice() else {
+      return Placement::Nothing;
+    };
+    let to = lattice.to_pixel;
+    let to_pixel = DAffine2::from_cols(
+      to.matrix2.x_axis.as_dvec2(),
+      to.matrix2.y_axis.as_dvec2(),
+      to.translation.as_dvec2(),
+    );
+    if to_pixel.matrix2.determinant() == 0.0 || !to_pixel.is_finite() {
+      return Placement::Nothing;
+    }
+    let anchor = grid.tile_anchor(IVec2::ZERO).as_dvec2();
+    let corner = lattice.lattice_cell(IVec2::ZERO).as_dvec2();
+    Placement::Lattice(
+      DAffine2::from_translation(-corner) * to_pixel.inverse() * DAffine2::from_translation(anchor),
+    )
+  }
+}
+
+/// Whether one-way tiles on `grid` are one-way: a platformer feature for
+/// orthogonal maps, which on every other grid collide both ways
+fn keeps_one_way(grid: &MapGrid) -> bool {
+  grid.shape == GridShape::Orthogonal
+}
+
 /// `points` (tile pixels from the tile image's top-left, y down) where the
-/// tile draws in its cell, in tiles from the cell's top-left: the tile
-/// stands on the cell's bottom edge from the left however large it is, the
-/// tileset's offset moves it, and its flips (diagonal first, then
-/// horizontal, then vertical, as Tiled composes them) turn it, as
-/// `render::tiles` draws it. `size` is the size the tile draws at and
-/// `offset` its tileset's
-fn placed(size: Vec2, offset: Vec2, tile: Tile, points: &[Vec2], cell: Vec2) -> Vec<Vec2> {
+/// tile draws in its cell, in units of the cell's square from its corner
+/// (an orthogonal cell's top-left, in tiles): the tile stands on the cell's
+/// bottom edge from the left however large it is (on an oblique grid in
+/// the cell unskewed, which skews with the grid; on isometric and
+/// staggered grids where `MapGrid::tile_anchor` puts it, taken back
+/// through the lattice), the tileset's offset moves it, and its
+/// flips (diagonal first, then horizontal, then vertical, as Tiled composes
+/// them) turn it, as `render::tiles` draws it. `size` is the size the tile
+/// draws at and `offset` its tileset's
+fn placed(
+  size: Vec2,
+  offset: Vec2,
+  tile: Tile,
+  points: &[Vec2],
+  placement: Placement,
+) -> Vec<Vec2> {
   let diagonal = tile.flip.contains(TileFlip::DIAGONAL);
   let drawn = if diagonal {
     Vec2::new(size.y, size.x)
@@ -218,8 +323,21 @@ fn placed(size: Vec2, offset: Vec2, tile: Tile, points: &[Vec2], cell: Vec2) -> 
       if tile.flip.contains(TileFlip::VERTICAL) {
         at.y = drawn.y - at.y;
       }
-      let px = Vec2::new(at.x + offset.x, cell.y - drawn.y + at.y + offset.y);
-      px / cell
+      match placement {
+        Placement::Cells(cell) => {
+          let px = Vec2::new(at.x + offset.x, cell.y - drawn.y + at.y + offset.y);
+          px / cell
+        }
+        Placement::Lattice(to_square) => {
+          // From the image's bottom-left, moved by the tileset's offset
+          let from = DVec2::new(
+            f64::from(at.x) + f64::from(offset.x),
+            f64::from(at.y) - f64::from(drawn.y) + f64::from(offset.y),
+          );
+          to_square.transform_point2(from).as_vec2()
+        }
+        Placement::Nothing => Vec2::ZERO,
+      }
     })
     .collect()
 }
@@ -387,24 +505,29 @@ fn classify(
   TileCell::Shape(index)
 }
 
-/// The cell kind `tile` is on cells of `cell` pixels, for `purpose`
+/// The cell kind `tile` is on cells its grid places as `placement`, for
+/// `purpose`. Off an orthogonal grid (`one_way_kept` false) a one-way tile
+/// collides both ways, noted in `both_ways`
 fn tile_kind(
   source: Option<&ShapeSource>,
   tile: Tile,
-  cell: Vec2,
-  purpose: Purpose,
+  (placement, one_way_kept): (Placement, bool),
+  (purpose, both_ways): (Purpose, &Cell<bool>),
   ids: &mut FastMap<ShapeKey, u16>,
   sink: &mut dyn ShapeSink,
 ) -> TileCell {
   let Some((source, data)) = source.and_then(|s| Some((s, s.tiles.get(&tile.id)?))) else {
     return TileCell::Empty;
   };
+  if let Placement::Nothing = placement {
+    return TileCell::Empty;
+  }
   let collected = |keep: &dyn Fn(&SourceShape) -> bool| -> Vec<Vec<Vec2>> {
     data
       .shapes
       .iter()
       .filter(|s| keep(s))
-      .map(|s| placed(data.size, source.offset, tile, &s.points, cell))
+      .map(|s| placed(data.size, source.offset, tile, &s.points, placement))
       .collect()
   };
   let (solid, one_way) = match purpose {
@@ -421,6 +544,10 @@ fn tile_kind(
     return classify(solid, false, ids, sink);
   }
   if !one_way.is_empty() {
+    if !one_way_kept {
+      both_ways.set(true);
+      return classify(one_way, false, ids, sink);
+    }
     return classify(one_way, true, ids, sink);
   }
   TileCell::Empty
@@ -679,6 +806,42 @@ pub(super) struct Context<'a> {
   pub(super) shapes: &'a [Option<ShapeSource>],
   pub(super) overrides: &'a [(IntGridKey, TileCell)],
   pub(super) purpose: Purpose,
+  /// Set when a one-way tile or IntGrid cell off an orthogonal grid was
+  /// made to collide both ways
+  pub(super) both_ways: Cell<bool>,
+}
+
+impl<'a> Context<'a> {
+  pub(super) fn new(
+    shapes: &'a [Option<ShapeSource>],
+    overrides: &'a [(IntGridKey, TileCell)],
+    purpose: Purpose,
+  ) -> Context<'a> {
+    Context {
+      shapes,
+      overrides,
+      purpose,
+      both_ways: Cell::new(false),
+    }
+  }
+}
+
+/// The cells of `chunk`'s kinds (a storage chunk of a layer on a grid
+/// whose `lattice` reindexes its cells) at their lattice cells, row by row
+/// from the chunk's first cell; nothing for a chunk past what an `i32`
+/// holds
+pub(super) fn scatter<'k>(
+  lattice: &'k Lattice,
+  chunk: IVec2,
+  kinds: &'k ChunkKinds,
+) -> impl Iterator<Item = (IVec2, TileCell)> + 'k {
+  let origin = chunk_origin(chunk);
+  origin.into_iter().flat_map(move |origin| {
+    kinds.iter().enumerate().map(move |(i, &kind)| {
+      let at = IVec2::new(i as i32 % SIDE, i as i32 / SIDE);
+      (lattice.lattice_cell(origin + at), kind)
+    })
+  })
 }
 
 /// The cells of a chunk, row by row
@@ -730,6 +893,12 @@ pub(super) fn chunk_kinds(
   out: &mut ChunkKinds,
 ) {
   let local = |x: i32, y: i32| (y * SIDE + x) as usize;
+  let placement = Placement::of(&data.grid);
+  let one_way_kept = keeps_one_way(&data.grid);
+  if let Placement::Nothing = placement {
+    // No square lattice to collide or cast shadows on
+    return;
+  }
   match &tracked.intgrid {
     Some(table) => {
       let (Some(origin), Some(intgrid)) = (chunk_origin(chunk), data.intgrid.as_ref()) else {
@@ -751,6 +920,10 @@ pub(super) fn chunk_kinds(
           }
           let kind = match (context.purpose, table.get(&value).copied()) {
             (_, None) | (Purpose::Occlusion, Some(TileCell::OneWay)) => continue,
+            (_, Some(TileCell::OneWay)) if !one_way_kept => {
+              context.both_ways.set(true);
+              TileCell::Solid
+            }
             (_, Some(kind)) => kind,
           };
           let slot = &mut out[local(x - origin.x, y - origin.y)];
@@ -762,7 +935,6 @@ pub(super) fn chunk_kinds(
       let Some(cells) = data.tiles.chunk_cells(chunk) else {
         return;
       };
-      let cell = data.grid.cell.as_vec2();
       // The tiles met last, by a hash of their value, in front of the map
       // of every tile's kind: a chunk holds few tiles, often over and over
       let mut met = [(0u32, TileCell::Empty); 32];
@@ -785,7 +957,9 @@ pub(super) fn chunk_kinds(
                 .shapes
                 .get(usize::from(tile.tileset))
                 .and_then(Option::as_ref);
-              tile_kind(source, tile, cell, context.purpose, shapes, sink)
+              let purpose = (context.purpose, &context.both_ways);
+              let place = (placement, one_way_kept);
+              tile_kind(source, tile, place, purpose, shapes, sink)
             });
             *slot = (raw, kind);
             kind

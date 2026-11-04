@@ -195,6 +195,12 @@ impl Lattice {
       }
     }
   }
+
+  /// Whether the grid indexes its cells otherwise than the lattice does (a
+  /// staggered grid), so a storage chunk's cells straddle lattice chunks
+  pub(crate) fn reindexes(&self) -> bool {
+    self.stagger.is_some()
+  }
 }
 
 /// Where a grid's storage chunks' boxes are (`MapGrid::chunk_boxes`): each

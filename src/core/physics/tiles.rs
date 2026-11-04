@@ -5,7 +5,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use glam::{IVec2, Mat2, UVec2};
+use glam::{Affine2, DVec2, IVec2, Mat2, UVec2};
 use rapier2d::prelude::SharedShape;
 
 use super::collider::{Collider, PrebuiltShape};
@@ -176,6 +176,13 @@ pub(crate) const GRID: i32 = 11520;
 /// metres, at 100 px a metre, about 0.2 px apart here), so precise play
 /// keeps within about a million px.
 pub(crate) const MAX_REACH: i32 = (i32::MAX / GRID) - 2;
+
+/// `point` taken through the lattice `to`, worked out in f64 and rounded
+/// once
+fn through(to: Affine2, point: DVec2) -> Vec2 {
+  let (a, b) = (to.matrix2.x_axis.as_dvec2(), to.matrix2.y_axis.as_dvec2());
+  (a * point.x + b * point.y + to.translation.as_dvec2()).as_vec2()
+}
 
 /// Cells in a chunk of a grid's storage: `CHUNK` a side, as the packing's
 const CELLS: usize = (CHUNK * CHUNK) as usize;
@@ -599,6 +606,13 @@ const MAX_CHANGES: usize = 1 << 16;
 /// Outlines are hollow: a body that ends up inside a solid region is not
 /// pushed out. `solid_rects()` trades the seamless floors for solid
 /// interiors (and rebuilds everything on any change).
+///
+/// A grid whose cells are not `tile_size` rectangles from the origin but
+/// parallelograms of one lattice (a tile map's isometric, staggered or
+/// oblique cells) takes the lattice with `with_lattice`: the outlines are
+/// traced on the lattice's squares as on any grid, and their points mapped
+/// through it before the colliders are built, so the parts still sit
+/// unturned and unscaled at their chunks' corners.
 #[derive(Component, Debug, Clone, PartialEq)]
 #[non_exhaustive]
 #[require(Transform)]
@@ -613,8 +627,11 @@ pub struct TileColliders {
   /// out: `extent` works it out from the chunks until `settle_extent`
   /// keeps it
   span_stale: bool,
-  /// One cell's size, px
+  /// One cell's size, px: where its cells are, unless it has a lattice
   pub tile_size: Vec2,
+  /// Lattice units to its space's pixels (`with_lattice`): its cells' place
+  /// in place of `tile_size`'s rectangles
+  lattice: Option<Affine2>,
   pub layer: u32,
   pub mask: u32,
   pub friction: f32,
@@ -711,6 +728,7 @@ impl TileColliders {
       span: CellRect::default(),
       span_stale: false,
       tile_size,
+      lattice: None,
       layer: 1,
       mask: u32::MAX,
       friction: 0.5,
@@ -940,6 +958,12 @@ impl TileColliders {
     Cells::new(&self.chunks, &self.shapes)
   }
 
+  /// How many chunks of cells it stores (tests: what an unload leaves)
+  #[cfg(test)]
+  pub(crate) fn chunk_count(&self) -> usize {
+    self.chunks.len()
+  }
+
   /// The cells of `chunk` (`CHUNK` rows of `CHUNK`), if the grid has it:
   /// for a builder comparing a chunk without a lookup per cell
   #[cfg(test)]
@@ -998,16 +1022,7 @@ impl TileColliders {
     let Some(cells) = self.chunks.remove(&chunk) else {
       return;
     };
-    // The cells of the chunks left: the same unless it was on their edge
-    let rect = chunk_rect(chunk);
-    let span = self.span;
-    if rect.min.x <= span.min.x
-      || rect.min.y <= span.min.y
-      || rect.max.x >= span.max.x
-      || rect.max.y >= span.max.y
-    {
-      self.span_stale = true;
-    }
+    self.forgot(chunk);
     let origin = chunk * CHUNK;
     let held = cells
       .iter()
@@ -1021,6 +1036,50 @@ impl TileColliders {
       }
     }
     self.generation = next_generation();
+  }
+
+  /// Marks the extent to be worked out again if `chunk`, just taken out,
+  /// was on its edge (the cells of the chunks left are the same otherwise)
+  fn forgot(&mut self, chunk: IVec2) {
+    let rect = chunk_rect(chunk);
+    let span = self.span;
+    if rect.min.x <= span.min.x
+      || rect.min.y <= span.min.y
+      || rect.max.x >= span.max.x
+      || rect.max.y >= span.max.y
+    {
+      self.span_stale = true;
+    }
+  }
+
+  /// Sets each cell to its value as `set` would, in order, then takes out
+  /// every chunk a cell was emptied in that holds nothing more, its storage
+  /// with it, as `unload_chunk` would (its cells were listed as changes as
+  /// they emptied): so cells a tile map scatters across the grid's chunks
+  /// (a staggered map's, whose chunks of cells straddle the lattice's) can
+  /// leave without their chunks staying. The extent is left to
+  /// `settle_extent`. True if a cell changed
+  pub(crate) fn set_cells(&mut self, cells: impl IntoIterator<Item = (IVec2, TileCell)>) -> bool {
+    let mut changed = false;
+    let mut emptied: Vec<IVec2> = Vec::new();
+    for (cell, value) in cells {
+      if !self.set(cell, value) {
+        continue;
+      }
+      changed = true;
+      let chunk = chunk_of(cell);
+      if value == TileCell::Empty && !emptied.contains(&chunk) {
+        emptied.push(chunk);
+      }
+    }
+    for chunk in emptied {
+      let left = self.chunks.get(&chunk);
+      if left.is_some_and(|cells| cells.iter().all(|&c| c == TileCell::Empty)) {
+        self.chunks.remove(&chunk);
+        self.forgot(chunk);
+      }
+    }
+    changed
   }
 
   /// The cells changed since the rebuild last took them in, in row order
@@ -1077,8 +1136,62 @@ impl TileColliders {
     self
   }
 
+  /// Places its cells through `to_pixel`, lattice units to its space's
+  /// pixels (cell (x, y) is the unit square at (x, y), y down), in place of
+  /// `tile_size` rectangles from the origin: what a tile map's isometric,
+  /// staggered and oblique layers give, their grid's `Lattice::to_pixel`.
+  /// Outlines, runs and shapes are worked out on the lattice's squares and
+  /// their points mapped through it; `tile_size` is left as what the grid
+  /// reports. A lattice that is not finite, or folds its cells flat, builds
+  /// nothing (logged). One-way cells keep their runs along their tops on
+  /// the lattice, facing out of them as the lattice turns them (a tile map
+  /// off an orthogonal grid makes its one-way tiles solid instead).
+  /// Navigation refuses a grid whose lattice is not upright.
+  pub fn with_lattice(mut self, to_pixel: Affine2) -> Self {
+    self.lattice = Some(to_pixel);
+    self
+  }
+
+  /// The lattice its cells are placed through (`with_lattice`), if any
+  pub fn lattice(&self) -> Option<Affine2> {
+    self.lattice
+  }
+
+  /// A cell corner in its space, px
   fn px(&self, (x, y): Corner) -> Vec2 {
-    Vec2::new(x as f32 * self.tile_size.x, y as f32 * self.tile_size.y)
+    match self.lattice {
+      Some(to) => through(to, DVec2::new(f64::from(x), f64::from(y))),
+      None => Vec2::new(x as f32 * self.tile_size.x, y as f32 * self.tile_size.y),
+    }
+  }
+
+  /// A point in tiles from cell (0, 0)'s top-left (a shape's) in its space,
+  /// px
+  fn place(&self, point: Vec2) -> Vec2 {
+    match self.lattice {
+      Some(to) => through(to, point.as_dvec2()),
+      None => point * self.tile_size,
+    }
+  }
+
+  /// A point of the outline grid in its space, px
+  fn point(&self, p: Point) -> Vec2 {
+    match self.lattice {
+      Some(to) => {
+        let grid = f64::from(GRID);
+        through(to, DVec2::new(f64::from(p.0) / grid, f64::from(p.1) / grid))
+      }
+      None => self.at(p, (0, 0)),
+    }
+  }
+
+  /// Whether its cells have somewhere to be: a finite, positive tile size,
+  /// or a finite lattice that does not fold them flat
+  fn placeable(&self) -> bool {
+    match self.lattice {
+      Some(to) => to.is_finite() && to.matrix2.determinant() != 0.0,
+      None => self.tile_size.is_finite() && self.tile_size.min_element() > 0.0,
+    }
   }
 
   fn material(&self, collider: Collider) -> Collider {
@@ -1098,9 +1211,14 @@ impl TileColliders {
   }
 
   /// The top-left of `chunk` (of `CHUNK` cells a side) in the map's
-  /// space, px: where a pack's part sits.
+  /// space, px: where a pack's part sits (on a lattice, where it takes the
+  /// chunk's first corner).
   fn origin(&self, chunk: (i32, i32)) -> Vec2 {
     let side = f64::from(CHUNK);
+    if let Some(to) = self.lattice {
+      let corner = DVec2::new(f64::from(chunk.0), f64::from(chunk.1)) * side;
+      return through(to, corner);
+    }
     Vec2::new(
       (f64::from(chunk.0) * side * f64::from(self.tile_size.x)) as f32,
       (f64::from(chunk.1) * side * f64::from(self.tile_size.y)) as f32,
@@ -1113,9 +1231,14 @@ impl TileColliders {
   /// out the chunk is.
   fn at(&self, (x, y): Point, chunk: (i32, i32)) -> Vec2 {
     let (grid, side) = (f64::from(GRID), f64::from(GRID) * f64::from(CHUNK));
-    let along = |p: i32, chunk: i32, tile: f32| {
-      ((f64::from(p) - f64::from(chunk) * side) / grid * f64::from(tile)) as f32
-    };
+    let from = |p: i32, chunk: i32| (f64::from(p) - f64::from(chunk) * side) / grid;
+    if let Some(to) = self.lattice {
+      // The lattice's step from the chunk's corner, without its translation
+      let step = DVec2::new(from(x, chunk.0), from(y, chunk.1));
+      let (a, b) = (to.matrix2.x_axis.as_dvec2(), to.matrix2.y_axis.as_dvec2());
+      return (a * step.x + b * step.y).as_vec2();
+    }
+    let along = |p: i32, chunk: i32, tile: f32| (from(p, chunk) * f64::from(tile)) as f32;
     Vec2::new(
       along(x, chunk.0, self.tile_size.x),
       along(y, chunk.1, self.tile_size.y),
@@ -1126,10 +1249,7 @@ impl TileColliders {
   /// from its first point to its last, solid from the side it faces (up,
   /// for a flat run).
   fn spawn_run(&self, commands: &mut Commands, map: Entity, points: &[Point]) -> Entity {
-    let (a, b) = (
-      self.at(points[0], (0, 0)),
-      self.at(points[points.len() - 1], (0, 0)),
-    );
+    let (a, b) = (self.point(points[0]), self.point(points[points.len() - 1]));
     let along = b - a;
     let facing = Vec2::new(along.y, -along.x).normalize_or(Vec2::NEG_Y);
     self.spawn(
@@ -1145,9 +1265,15 @@ impl TileColliders {
     if self.solid_rects {
       let runs = Runs::build(self.cells_view());
       for (min, cells) in solid_rects(self.cells_view()) {
-        let extent = self.px(cells);
-        let centre = self.px(min) + extent / 2.0;
-        let rect = Collider::rect(extent.x, extent.y).with_offset(centre.x, centre.y);
+        let rect = if self.lattice.is_some() {
+          // A rectangle of the lattice's squares: its corners mapped
+          let corners = [(0, 0), (cells.0, 0), cells, (0, cells.1)];
+          Collider::polygon(corners.map(|c| self.px((min.0 + c.0, min.1 + c.1))))
+        } else {
+          let extent = self.px(cells);
+          let centre = self.px(min) + extent / 2.0;
+          Collider::rect(extent.x, extent.y).with_offset(centre.x, centre.y)
+        };
         self.spawn(commands, map, rect);
       }
       self.cells_view().each(|x, y, cell| match cell {
@@ -1162,7 +1288,7 @@ impl TileColliders {
             .get(usize::from(shape))
             .map_or(&[][..], |(_, build)| &build.parts[..]);
           for part in parts {
-            let points = part.iter().map(|&p| (origin + p) * self.tile_size);
+            let points = part.iter().map(|&p| self.place(origin + p));
             self.spawn(commands, map, Collider::polygon(points));
           }
         }
@@ -1307,6 +1433,7 @@ impl TileColliders {
     Some(Traced {
       generation: self.generation,
       tile_size: self.tile_size,
+      lattice: self.lattice,
       content: Some((kept, built)),
     })
   }
@@ -1684,6 +1811,7 @@ pub(crate) fn in_grid_space(mut collider: Collider, by: Vec2) -> Collider {
 struct TileRecord {
   generation: u64,
   tile_size: [u32; 2],
+  lattice: Option<[u32; 6]>,
   layer: u32,
   mask: u32,
   friction: u32,
@@ -1696,6 +1824,7 @@ impl TileRecord {
     Self {
       generation: tiles.generation,
       tile_size: [tiles.tile_size.x.to_bits(), tiles.tile_size.y.to_bits()],
+      lattice: tiles.lattice.map(|to| to.to_cols_array().map(f32::to_bits)),
       layer: tiles.layer,
       mask: tiles.mask,
       friction: tiles.friction.to_bits(),
@@ -1739,6 +1868,7 @@ pub(crate) struct Traced {
   /// changed since
   generation: u64,
   tile_size: Vec2,
+  lattice: Option<Affine2>,
   content: Option<(Kept, Vec<BuiltPack>)>,
 }
 
@@ -1836,17 +1966,20 @@ pub(crate) fn rebuild_tile_colliders(
         // generation is stale. Either way it goes
         let traced = traced.and_then(|mut traced| {
           commands.entity(map).try_remove::<Traced>();
-          let current =
-            traced.generation == tiles.generation && traced.tile_size == tiles.tile_size;
+          let current = traced.generation == tiles.generation
+            && traced.tile_size == tiles.tile_size
+            && traced.lattice == tiles.lattice;
           (current && !tiles.solid_rects)
             .then(|| traced.content.take())
             .flatten()
         });
-        let kept = if !(tiles.tile_size.is_finite() && tiles.tile_size.min_element() > 0.0) {
-          physics.warn_once(
-            map,
-            "TileColliders needs a positive tile size; no colliders built",
-          );
+        let kept = if !tiles.placeable() {
+          let message = if tiles.lattice.is_some() {
+            "TileColliders needs a finite lattice that does not fold its cells flat; no colliders built"
+          } else {
+            "TileColliders needs a positive tile size; no colliders built"
+          };
+          physics.warn_once(map, message);
           None
         } else if let Some((mut kept, built)) = traced {
           for (key, at, collider, shape) in built {

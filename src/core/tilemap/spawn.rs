@@ -952,7 +952,7 @@ fn landing_job(world: &World, map: Entity) -> Option<LandingJob> {
       collision: root.collision,
       overrides: root.intgrid_collision.clone(),
       properties: asset.properties.clone(),
-      tile_size: asset.tile_size,
+      grid: asset.grid(),
       shapes: Arc::clone(&shapes),
       tilesets: tileset_stamps.clone(),
     },
@@ -1004,7 +1004,7 @@ impl LandingJob {
       })
       .collect();
     let collision = collision::prepare(self.map, &views, self.collision);
-    let shadows = occluders::prepare(&views, self.shadows);
+    let shadows = occluders::prepare(self.map, &views, self.shadows);
     drop(views);
     let paddings = self.pads.into_iter().filter_map(ToPad::pad).collect();
     Landed {
