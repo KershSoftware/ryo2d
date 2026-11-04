@@ -12,7 +12,7 @@ pub(crate) use chunks::{
   Band, ChunkCopy, ChunkKey, ChunkPart, ChunkRun, ChunkStamp, ChunkStore, KEEP_FRAMES, Planted,
   Spill, TileSlot,
 };
-pub(crate) use gpu::{Batch2D, unit_quad};
+pub(crate) use gpu::{Batch2D, Bound, unit_quad};
 pub(crate) use key::{BatchShader, DrawState, LightStep, PageKind, Sampling, Stream};
 pub use key::{BlendMode, Filter};
 pub(crate) use lines::{LineLook, line_color, line_points, push_polyline, trail_points};

@@ -11,8 +11,8 @@ use crate::core::graphics::{
   place_in_slot,
 };
 use crate::core::render::batch::{
-  Batch2D, BlendMode, Filter, LineLook, PolyPoint, PolyStyle, Sampling, Triangles, line_color,
-  push_polyline,
+  Batch2D, BlendMode, Bound, Filter, LineLook, PolyPoint, PolyStyle, Sampling, Triangles,
+  line_color, push_polyline,
 };
 use crate::core::render::{
   DrawKind, DrawList, PixelRect, SCENE_FORMAT, SpriteLook, SpriteShading, UI_FORMAT, plan_cameras,
@@ -647,8 +647,9 @@ fn a_render_target_sprite_draws_with_the_linear_body() {
   let mut encoder = device.create_command_encoder(&Default::default());
   {
     let mut pass = begin(&mut encoder, target_image);
+    let mut bound = Bound::default();
     for draw in batch.draws(world, false) {
-      batch.draw(&mut pass, draw, world, &sprites, target_size);
+      batch.draw(&mut pass, draw, world, &sprites, target_size, &mut bound);
     }
   }
   {
@@ -921,8 +922,9 @@ mod lines {
     {
       let view = old.create_view(&Default::default());
       let mut pass = begin(&mut encoder, &view);
+      let mut bound = Bound::default();
       for draw in batch.draws(UI_CAMERA, false) {
-        batch.draw(&mut pass, draw, UI_CAMERA, &sprites, IMAGE);
+        batch.draw(&mut pass, draw, UI_CAMERA, &sprites, IMAGE, &mut bound);
       }
     }
     {

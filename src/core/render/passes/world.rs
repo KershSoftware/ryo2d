@@ -1,6 +1,7 @@
 //! The world: entities, sprites and trails/lines drawn together in z order
 
 use crate::core::graphics::SpriteGpuRenderer;
+use crate::core::render::batch::Bound;
 use crate::core::render::{FrameInfo, PassScope, RenderContext, RenderPass, pass_ids};
 
 /// Draws the lit entities, sprites, trails and lines a camera sees onto its
@@ -80,7 +81,8 @@ fn replay(ctx: &mut RenderContext<'_>, lit: bool, label: &str) {
     occlusion_query_set: None,
     multiview_mask: None,
   });
+  let mut bound = Bound::default();
   for draw in draws {
-    batch.draw(&mut pass, draw, camera, sprites, image);
+    batch.draw(&mut pass, draw, camera, sprites, image, &mut bound);
   }
 }

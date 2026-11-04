@@ -27,6 +27,42 @@ use crate::core::shaders::custom::{CompiledShader, ShaderError, ShaderKind};
 /// when a frame needs more.
 const FIRST_CAPACITY: usize = 1024;
 
+/// What a render pass has bound so far, so each of its draws
+/// ([`Batch2D::draw`]) sets only the state that differs from the draw
+/// before: a run of tile chunk draws shares its pipeline, camera, page and
+/// tile slot, and sets only its instances. One per render pass, each
+/// starting with nothing bound
+#[derive(Default)]
+pub(crate) struct Bound<'a> {
+  scissor: Option<(u32, u32)>,
+  pipeline: Option<&'a wgpu::RenderPipeline>,
+  /// Each bind group set, and its dynamic offset
+  groups: [Option<(&'a wgpu::BindGroup, Option<u32>)>; 3],
+  /// The stream whose buffers vertex slot 0 (and the index buffer) hold
+  stream: Option<Stream>,
+}
+
+impl<'a> Bound<'a> {
+  /// Sets bind group `index` to `group` at its dynamic offset, unless the
+  /// pass has it there already
+  fn bind(
+    &mut self,
+    pass: &mut wgpu::RenderPass<'a>,
+    index: usize,
+    (group, offset): (&'a wgpu::BindGroup, Option<u32>),
+  ) {
+    if self.groups[index].is_some_and(|(set, at)| std::ptr::eq(set, group) && at == offset) {
+      return;
+    }
+    let offsets: &[u32] = match &offset {
+      Some(offset) => std::slice::from_ref(offset),
+      None => &[],
+    };
+    pass.set_bind_group(index as u32, group, offsets);
+    self.groups[index] = Some((group, offset));
+  }
+}
+
 /// The 2D batch: lays out the world's drawables per camera and draws them.
 pub(crate) struct Batch2D {
   format: wgpu::TextureFormat,
@@ -681,7 +717,7 @@ impl Batch2D {
   }
 
   /// Issue one of `camera`'s draws inside a render pass, sampling the pages
-  /// of `textures`.
+  /// of `textures`, setting only the state the pass has not `bound` already
   pub(crate) fn draw<'a>(
     &'a self,
     pass: &mut wgpu::RenderPass<'a>,
@@ -689,6 +725,7 @@ impl Batch2D {
     camera: Entity,
     textures: &'a SpriteGpuRenderer,
     image: (u32, u32),
+    bound: &mut Bound<'a>,
   ) {
     let page = match draw.stream {
       Stream::Quads => PageKind::of(draw.state.page),
@@ -734,26 +771,43 @@ impl Batch2D {
       None => None,
     };
     // Every draw covers the whole image
-    pass.set_scissor_rect(0, 0, image.0.max(1), image.1.max(1));
-    pass.set_pipeline(pipeline);
-    pass.set_bind_group(0, camera_group, &[]);
+    if bound.scissor != Some(image) {
+      pass.set_scissor_rect(0, 0, image.0.max(1), image.1.max(1));
+      bound.scissor = Some(image);
+    }
+    if !bound
+      .pipeline
+      .is_some_and(|set| std::ptr::eq(set, pipeline))
+    {
+      pass.set_pipeline(pipeline);
+      bound.pipeline = Some(pipeline);
+      // A pipeline of another layout may leave the groups unusable
+      bound.groups = [None; 3];
+    }
+    bound.bind(pass, 0, (camera_group, None));
     if let Some(group) = texture_group {
-      pass.set_bind_group(1, group, &[]);
+      bound.bind(pass, 1, (group, None));
     }
     if let Some((group, offset)) = slot {
-      pass.set_bind_group(2, group, &[offset]);
+      bound.bind(pass, 2, (group, Some(offset)));
     }
     match draw.stream {
       Stream::Quads => {
-        pass.set_vertex_buffer(0, self.quad.slice(..));
+        if bound.stream != Some(Stream::Quads) {
+          pass.set_vertex_buffer(0, self.quad.slice(..));
+          bound.stream = Some(Stream::Quads);
+        }
         let size = std::mem::size_of::<SpriteInstance>() as u64;
         let (start, end) = (u64::from(draw.range.start), u64::from(draw.range.end));
         pass.set_vertex_buffer(1, instances.slice(start * size..end * size));
         pass.draw(0..6, 0..draw.range.len() as u32);
       }
       Stream::Triangles => {
-        pass.set_vertex_buffer(0, self.vertices.buffer.slice(..));
-        pass.set_index_buffer(self.indices.buffer.slice(..), wgpu::IndexFormat::Uint32);
+        if bound.stream != Some(Stream::Triangles) {
+          pass.set_vertex_buffer(0, self.vertices.buffer.slice(..));
+          pass.set_index_buffer(self.indices.buffer.slice(..), wgpu::IndexFormat::Uint32);
+          bound.stream = Some(Stream::Triangles);
+        }
         pass.draw_indexed(draw.range.clone(), 0, 0..1);
       }
     }

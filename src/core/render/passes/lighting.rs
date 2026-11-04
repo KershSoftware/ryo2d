@@ -1,5 +1,6 @@
 //! 2D lighting: lights (each masked by its own shadows), then the lit scene
 
+use crate::core::render::batch::Bound;
 use crate::core::render::{FrameImage, FrameInfo, PassScope, RenderContext, RenderPass, pass_ids};
 
 /// Draws the camera's lights and their shadows from the batch into its
@@ -59,8 +60,10 @@ impl RenderPass for Lighting {
         multiview_mask: None,
       });
       if let Some(batch) = scene.batch {
+        let mut bound = Bound::default();
         for draw in batch.light_draws(entity) {
-          batch.draw(&mut pass, draw, entity, scene.sprites, camera.rect.size());
+          let size = camera.rect.size();
+          batch.draw(&mut pass, draw, entity, scene.sprites, size, &mut bound);
         }
       }
     }
