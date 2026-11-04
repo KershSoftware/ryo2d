@@ -686,7 +686,9 @@ island(TileMap.StaggerX, 24, 12, "maps/island-columns.tmx");
 
 // ---- the hex board -----------------------------------------------------------
 
-// 8 x 9 pointy-topped hexagons of 60 x 70 with sides of 35 (regular), in
+// 8 x 9 pointy-topped hexagons of 60 x 70 with sides of 35 (close to
+// regular, not quite: a regular hexagon 60 wide is 69.28 tall, which is why
+// a turned hex leaves a pinhole of a pixel at some of its corners), in
 // rows, odd rows half a hexagon right. The board is drawn from BOARD, a row
 // a string: g grass, t pines, T trees, f forest, r rocks, d dirt, D dirt
 // with trees, R dirt with rocks, k stone, s sand and c cacti. The sand's

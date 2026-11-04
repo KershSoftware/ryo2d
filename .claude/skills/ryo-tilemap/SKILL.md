@@ -104,7 +104,7 @@ The steps are the same on every grid; these come on top. The tile-grids demo (`e
 2. **Stand tall art on its cell with the tileset's offset.** A picture's bottom-left goes on its cell box's bottom-left, moved by the tileset's tile offset (section 10): set the offset so a wall's or a tree's base sits on the cell. A block a cell high (raised ground) is two tilesets of the same kind of picture: the blocks drawn a cell lower, their tops on the cells, and the props standing on the cells, so the cells characters walk, pick and collide on are the blocks' tops.
 3. **Draw collision shapes in the picture's pixels**, keeping the tileset's own grid orthogonal: a polygon on the four vertices of the cell's diamond, where the picture draws it, collides as the whole cell, so a row of walls is one seamless outline (section 8). Hexagonal layers neither collide nor cast shadows.
 4. **Y-sort the layer characters walk among** (`y_sort`), and give the character a sprite with `YSort` at that layer's z (the map's z plus the layer's index), anchored at its feet (`Anchor::BottomCenter`): it draws behind a tile whose cell's centre is below its feet and in front of one above (section 10).
-5. **Pick, outline and measure cells through the layer's grid:** `ctx.maps().grid(map, layer)` gives the cell under the pointer (the nearest hexagon on a hex map), its outline in the world to draw, and the board tools (section 6). Terrain paints on every grid but the hexagonal (section 7).
+5. **Pick, outline and measure cells through the layer's grid:** `ctx.maps().grid(map, layer)` gives the cell under the pointer (the cell whose outline holds it, the hexagon drawn there on a hex map), its outline in the world to draw, and the board tools (section 6). Terrain paints on every grid but the hexagonal (section 7).
 6. **Show the same place on another grid with another map**, saved by Tiled with that grid, spawned in place of the first, rather than reshaping a map that has spawned.
 
 **Keep big art small.** Every tileset draws from a padded copy in which each tile gets a power-of-two cell of side npot(T + max(T, 8)) texels, T the tileset's largest tile's longer side, with a cell's margin round the image and every mip level: about four times a tile's texels, up to sixteen just past a power of two (a 256 x 352 picture takes a 1024 x 1024 cell). It is made off the main thread on native platforms and within the landing frame on the web, in time in proportion. Kenney's Sketch Town at its own size padded to 352 MiB for 25 pictures and landed 0.4 s after its page opened; the demo halves its pictures and cuts their empty rows (128 x 128, 256 px cells: 22 MiB, landing in about 20 ms). A headless test waits for a landing in time rather than in steps (section 17).
@@ -333,7 +333,7 @@ maps.fill(self.map, "walls", IVec2::new(2, 2), IVec2::new(9, 3), Some(brick));
 <!-- self: board: Entity -->
 ```rust
 // The hexes a unit under the pointer can reach in two moves, and the line
-// to the hex clicked, each step a neighbour
+// from it to the hex at (9, 4), each step a neighbour
 let (x, y) = ctx.input.mouse_position();
 let pointer = ctx.camera().screen_to_world(Vec2::new(x, y));
 let maps = ctx.maps();

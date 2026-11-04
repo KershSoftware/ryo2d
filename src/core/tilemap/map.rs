@@ -129,8 +129,17 @@ pub struct MapObjectData {
   pub class: Option<String>,
   /// The top-left corner of the object's rectangle in map pixels (the origin
   /// of the points, for a polygon or polyline). A tile object loaded from
-  /// Tiled, whose own position is its alignment point, is moved here
+  /// Tiled, whose own position is its alignment point, is moved here.
+  ///
+  /// On isometric and oblique maps, whose objects Tiled stores in a space
+  /// of the grid's own, an object loaded from Tiled is at its projected
+  /// position: its rectangle, ellipse or capsule loads as a
+  /// [`Polygon`](ObjectShape::Polygon) of its projected outline, and a
+  /// polygon's or polyline's points are projected, each point a step from
+  /// this position (a point, text or tile object keeps its box)
   pub position: Vec2,
+  /// The width and height of the object's rectangle in pixels: zero for a
+  /// shape loaded as projected points on an isometric or oblique map
   pub size: Vec2,
   /// Radians, positive clockwise on screen (y down), turning the object about
   /// `position`

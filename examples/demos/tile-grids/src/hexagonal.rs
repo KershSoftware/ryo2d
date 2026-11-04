@@ -6,8 +6,9 @@
 //! stand unturned.
 //!
 //! The pointer picks the hex under it (`LayerGrid::cell_at_world`: the
-//! hex whose outline holds the point, so the nearest centre), outlined in
-//! white, and a click selects one, outlined in gold. Through the layer's
+//! hex whose drawn outline holds the point, which on these hexes, close to
+//! regular but not quite, is not always the one with the nearest centre),
+//! outlined in white, and a click selects one, outlined in gold. Through the layer's
 //! grid (`ctx.maps().grid`) the board then marks the selected hex's range
 //! and its ring at the Radius setting, the line from it to the hovered hex
 //! and the hovered hex's neighbours, each on an empty layer of its own the

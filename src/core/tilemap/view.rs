@@ -270,7 +270,9 @@ impl<'w> MapsView<'w> {
   /// set or color is not there, or the cell is outside a bounded layer (an
   /// unbounded one takes any cell, making the chunks the paint writes in,
   /// but for a cell so near the ends of `i32` that the cells the paint
-  /// reaches would not fit, a few cells from them).
+  /// reaches would not fit: a few cells from them, or on a staggered map,
+  /// whose lattice cells count up to half as far again, a few cells from
+  /// ±`i32::MAX / 4` or past it, on either axis).
   ///
   /// On an isometric or oblique map the paint works in the layer's cells, as
   /// on an orthogonal one. On a staggered map it works in the isometric

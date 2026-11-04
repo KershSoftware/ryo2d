@@ -88,8 +88,12 @@ pub struct MapGrid {
   /// A cell's size in pixels: Tiled's `tilewidth` and `tileheight` (an
   /// isometric cell's diamond box, a hexagon's box)
   pub cell: UVec2,
-  /// Where the shape's (0, 0) sits in the layer's pixels: cell (0, 0)'s
-  /// top-left corner, or on an isometric grid its top vertex
+  /// Where the shape's (0, 0) sits in the layer's pixels: on an isometric
+  /// grid cell (0, 0)'s top vertex; on the others the grid's unshifted
+  /// corner, which is cell (0, 0)'s top-left corner but on staggered and
+  /// hexagonal grids of [`StaggerIndex::Even`], whose cell (0, 0) is
+  /// shifted half a cell from it. A map from Tiled puts it at the map's
+  /// pixel (0, 0), but for a bounded isometric map ([`for_map`](Self::for_map))
   pub origin: Vec2,
 }
 
@@ -175,7 +179,14 @@ pub struct Lattice {
 }
 
 impl Lattice {
-  /// The lattice cell of a grid cell: the same cell, except on staggered maps
+  /// The lattice cell of a grid cell: the same cell, except on staggered maps.
+  ///
+  /// A staggered map's lattice cells count up to half as far again as its
+  /// grid cells (along axis Y a lattice cell is about (x + y / 2, y / 2 - x)),
+  /// so far out they pass what an `i32` holds and are clamped to it: the
+  /// round trip with [`grid_cell`](Self::grid_cell) holds for every cell
+  /// whose coordinates are both within about ±1.4e9, and breaks past that
+  /// along the diagonals.
   pub fn lattice_cell(&self, cell: IVec2) -> IVec2 {
     match self.stagger {
       None => cell,

@@ -24,12 +24,14 @@ impl TileFlip {
   pub const VERTICAL: TileFlip = TileFlip(2);
   /// Mirrored across the top-left to bottom-right diagonal
   pub const DIAGONAL: TileFlip = TileFlip(4);
-  /// On a hexagonal map, turned 60 degrees clockwise about the middle of
-  /// its cell's box, after any flip: the diagonal flip's bit, which Tiled
+  /// On a hexagonal map, turned 60 degrees clockwise after any flip, about
+  /// the tile's own middle where it stands unturned (its tileset's offset
+  /// included), as Tiled turns it: the diagonal flip's bit, which Tiled
   /// gives this meaning there
   pub const HEX_ROTATE_60: TileFlip = TileFlip(4);
-  /// On a hexagonal map, turned 120 degrees clockwise about the middle of
-  /// its cell's box, after any flip
+  /// On a hexagonal map, turned 120 degrees clockwise after any flip, about
+  /// the tile's own middle where it stands unturned (its tileset's offset
+  /// included), as Tiled turns it
   pub const HEX_ROTATE_120: TileFlip = TileFlip(8);
 
   /// Whether every flip in `other` is set here

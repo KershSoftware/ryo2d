@@ -481,7 +481,9 @@ pub(crate) struct TileLayerFrame<'a> {
 /// layer's z (where tiles leave their cells, as many as keep Tiled's
 /// order across tilesets and chunks: `View::draw_gathered`), a y-sorted
 /// layer's each row of them as one, sorted with the y-sorted entities at
-/// its z by the row's bottom edge. Chunks are built
+/// its z at its band's sort point (`MapGrid::band_y`: the row's bottom
+/// edge on an orthogonal grid, its cells' centre on the others), a cell
+/// with a sort point of its own alone. Chunks are built
 /// into the batch's [`ChunkStore`] when first seen and again when their
 /// tiles or what they are drawn from change. An image layer draws as one
 /// quad per view, its picture repeating across the view along the axes the
@@ -592,7 +594,7 @@ struct LayerDraw<'a> {
   z: i32,
   lit: bool,
   blend: BlendMode,
-  /// Drawn row by row, each sorted by its bottom edge
+  /// Drawn row by row, each sorted at its band's sort point (`band_y`)
   y_sorted: bool,
   /// The render layers it is on: its own, else its map's
   layers: RenderLayers,
@@ -1186,8 +1188,9 @@ impl View<'_> {
         self.push(layer, DrawOrder::plain(layer.z), piece, slot, only);
         continue;
       }
-      // Each row sorts by its bottom edge, at the layer's left (so every
-      // chunk of a row sorts alike, on a turned map too)
+      // Each row sorts at its band's sort point (`band_y`), or its one
+      // cell's own, at the layer's left (so every chunk of a band sorts
+      // alike, on a turned map too)
       for row in 0..self.rows.len() {
         let row = self.rows[row];
         if row.tileset != part.tileset {

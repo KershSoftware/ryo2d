@@ -43,7 +43,7 @@ Procgen's generators stay square. Their grids convert to square, isometric, stag
 - Tiled's text objects beyond their placement (`ObjectShape::Text` keeps the text; nothing draws it).
 - Streaming a world's levels automatically: worlds give positions, neighbours and `spawn_levels_in`, and when to load and unload stays the game's call.
 - LDtk level background images.
-- What `docs/backlog/tilemap.md` lists as limits: the landing frame's first draw, relabelling long split loops, lighting's lack of a spatial index, and the keep window's memory.
+- What `docs/backlog/tilemap.md` lists as limits: the landing frame's first draw, relabelling long split loops, lighting's lack of a spatial index, the keep window's memory, and big tiles' padding (cap the room past a big tile at what the mip levels of a tile drawn a pixel wide or more need, and clamp its texture's mip levels to match).
 
 ## Outside tile maps
 

@@ -435,7 +435,7 @@ ctx.world.spawn(MapRoot::new(map));
 <!-- given: result: ryo2d_procgen::GenerationResult, tileset: Handle<Tileset>, loaded: Tileset -->
 ```rust
 let Some(ground) = loaded.wang_set("ground") else { return };
-let map = result.grid().to_terrain_map(
+let Some(map) = result.grid().to_terrain_map(
   GridShape::Orthogonal,
   UVec2::splat(16),
   TilesetSource::Asset(tileset.clone()),
@@ -445,7 +445,11 @@ let map = result.grid().to_terrain_map(
     TileType::Water => Some("water"),
     _ => None,
   },
-);
+) else {
+  return;
+};
+let map = ctx.assets().add(map);
+ctx.world.spawn(MapRoot::new(map));
 ```
 
 A Wang position sits between cells, so it must pick one of their colours: a corner takes the highest-precedence colour of the up to four cells that meet there, an edge the higher of its two. Precedence is the set's colour order in Tiled (a higher colour covers a lower one, and every colour covers empty); outside the grid is empty. Adjacent cells then agree on what they share, so the tiling has no seams wherever the set has tiles. The visible effect: the higher colour grows half a cell into the lower one, and a one-cell strip of a lower colour between two higher ones is covered. Order the colours in Tiled to choose. A cell the set has no exact tile for (an incomplete set) takes the closest tile that fits, as Tiled's terrain brush picks it (`WangSet::best_tile`); only a cell no tile fits, or that the empty cell fits best, is left empty. A corner set is asked only for corners, an edge set only for edges. The corners and edges are worked out in the grid, the square lattice, so on an isometric or staggered map a cell's top edge is the side it shares with the cell above it in the grid, its diamond's top-right side. It takes the same grid shapes as `to_tile_map`, and returns `None` for a hexagonal one.

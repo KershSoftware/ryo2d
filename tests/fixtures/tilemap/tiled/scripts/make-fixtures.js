@@ -4,9 +4,18 @@
 // 16 x 16, of 8 x 4 and of 24 x 24, which straddle the engine's chunks of
 // 32, in every layer format, and a tile layer in a group), through Tiled's
 // own scripting API, in both formats; measured.json, where Tiled puts
-// the cells of isometric, staggered, hexagonal and oblique grids; and
-// measured-order.json, which of two overlapping tiles it draws over the
-// other on those grids.
+// the cells of isometric, staggered, hexagonal and oblique grids; maps of
+// every grid filled with tiles shaped like their cells (`maps/shape-*.tmj`,
+// `xml/maps/shape-*.tmx`: among them infinite maps, the sixteen hex flip
+// and turn combinations and a hexagonal layer that collides), a world of
+// two of them (`worlds/shape.world`), and `renders/shape-*.png`, what Tiled
+// draws of the bounded ones but the colliding one; maps of the same objects
+// on the four grids but the orthogonal (`maps/shape-objects-*`, with XML
+// twins) and measured-objects.json, where Tiled puts and draws them; measured-order.json, which of two overlapping
+// tiles it draws over the other on those grids; measured-raster.json, where
+// it draws a tile on isometric maps of odd cells; and
+// measured-collision.json, what a tile's collision shapes are stored in
+// when its tileset's grid is isometric, and on oblique maps.
 //
 // Regenerate (Tiled 1.12.2, from the repository root):
 //   /Applications/Tiled.app/Contents/MacOS/Tiled \
