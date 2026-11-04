@@ -11,10 +11,12 @@
 //!
 //! The tiles are Tiny Dungeon's, cut to each grid's cells in code (on the
 //! isometric and staggered grids its squares laid flat on the diamonds).
-//! Only the chosen grid's map is built: a first build of a map this size
-//! takes about 55 to 100 ms off the main thread. The HUD shows what the
-//! frames cost on the CPU (`FrameCost`); compare it with the record in a
-//! release build
+//! Only the chosen grid's map is built, as the page opens and when the
+//! Grid setting changes: its million cells are made on the main thread in
+//! that step (a hitch), then the engine works out its chunks, colliders and
+//! shadows off the main thread, the first build of a map this size taking
+//! about 55 to 100 ms before it lands. The HUD shows what the frames cost
+//! on the CPU (`FrameCost`); compare it with the record in a release build
 
 use demo_kit::prelude::*;
 
@@ -40,13 +42,20 @@ const DARK: Color = Color::rgb(25, 17, 22);
 /// The settings rows, for the notes under the panel
 const ROWS: usize = 2;
 
-/// The grids, as the Grid setting names them
+/// The grids, as the Grid setting names them, and as the HUD tells them
 const GRIDS: [&str; 5] = [
-  "Orthogonal 16",
-  "Isometric 32 x 16",
-  "Staggered 32 x 16",
-  "Hexagonal 16, side 8",
-  "Oblique 16, skew 4",
+  "Orthogonal",
+  "Isometric",
+  "Staggered",
+  "Hexagonal",
+  "Oblique",
+];
+const CELLS: [&str; 5] = [
+  "16 px squares",
+  "32 x 16 diamonds",
+  "32 x 16 staggered diamonds",
+  "16 x 16 hexagons of side 8",
+  "16 px squares skewed (4, 0)",
 ];
 
 fn shape(grid: usize) -> GridShape {
@@ -417,7 +426,7 @@ impl DemoPage for SpeedPage {
     );
     let landing = match self.landed_after {
       Some(steps) => format!("Landed {steps} steps after it was built"),
-      None => "Building: its chunks are worked out off the main thread".to_string(),
+      None => "Landing: its chunks are worked out off the main thread".to_string(),
     };
     let collides = if self.built == 3 {
       "Hexagonal layers neither collide nor cast shadows"
@@ -426,7 +435,7 @@ impl DemoPage for SpeedPage {
     };
     let lines = vec![
       (
-        format!("{}: 1024 x 1024 cells, four layers", GRIDS[self.built]),
+        format!("{}: 1024 x 1024 of them, four layers", CELLS[self.built]),
         Color::WHITE,
       ),
       (frame, HOT),

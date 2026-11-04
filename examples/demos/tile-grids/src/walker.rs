@@ -1,7 +1,7 @@
-//! What the pages on other grids share: a top-down character, Tiny
-//! Dungeon's hero scaled to the map's cells, y-sorted at a map layer's z so
-//! it walks behind and in front of what that layer draws; where a map's
-//! `player_start` stands; and a cell's outline drawn over the map
+//! The character the town, the island and the dungeon share: a top-down
+//! walker, Tiny Dungeon's hero scaled to the map's cells, y-sorted at a map
+//! layer's z so it walks behind and in front of what that layer draws; and
+//! where a map's `player_start` stands
 
 use demo_kit::prelude::*;
 
@@ -90,36 +90,4 @@ pub(crate) fn map_start(map: &TileMap) -> Option<Vec2> {
       .find(|object| object.class.as_deref() == Some("player_start"))
       .map(|object| layer.info.offset + object.position)
   })
-}
-
-/// Draws `outline` (a cell's, in the world) with `debug`, `width` screen
-/// pixels wide
-pub(crate) fn draw_outline(debug: &mut DebugDraw, outline: &CellOutline, color: Color, width: f32) {
-  let points = outline.points();
-  let Some(&first) = points.first() else {
-    return;
-  };
-  let mut closed = [first; 7];
-  closed[..points.len()].copy_from_slice(points);
-  closed[points.len()] = first;
-  debug.width(width).polyline(&closed[..=points.len()], color);
-}
-
-/// The cell under the pointer on `layer` of `map`, unless the pointer is
-/// over one of `covered` (the page's notes) or off the layer's cells
-/// (`bounds`, on a bounded map)
-pub(crate) fn hovered_cell(
-  ctx: &mut SceneContext,
-  map: Entity,
-  layer: &str,
-  covered: &[Rect],
-) -> Option<IVec2> {
-  let (mx, my) = ctx.input.mouse_position();
-  if covered.iter().any(|rect| rect.contains(mx, my)) {
-    return None;
-  }
-  let world = ctx.camera().screen_to_world(Vec2::new(mx, my));
-  let maps = ctx.maps();
-  let cell = maps.grid(map, layer)?.cell_at_world(world);
-  maps.bounds(map)?.contains(cell).then_some(cell)
 }

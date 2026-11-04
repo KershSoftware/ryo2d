@@ -17,14 +17,20 @@
 
 use demo_kit::prelude::*;
 
-use crate::shared::{DIM, GOOD, HOT, View, beside_panel, clear_to, hud, load};
-use crate::walker::{draw_outline, hovered_cell};
+use crate::shared::{
+  DIM, GOOD, HOT, View, beside_panel, clear_to, draw_outline, hovered_cell, hud, load,
+};
 
 /// The board
 const BOARD: &str = "maps/hex-board.tmx";
 /// Its layers: the terrain, and the marks over it, bottom first
 const TERRAIN: &str = "board";
 const MARKS: [&str; 4] = ["range", "ring", "neighbours", "line"];
+/// Each mark's place in `MARKS` and in the page's `marks`
+const RANGE: usize = 0;
+const RING: usize = 1;
+const NEIGHBOURS: usize = 2;
+const LINE: usize = 3;
 /// The view's background, should the map give none
 const NIGHT: Color = Color::rgb(36, 49, 63);
 /// The zoom the board fits the view at: 60 x 70 px a hex, a texel a pixel
@@ -89,18 +95,13 @@ impl HexPage {
     self.marked = Some(now);
     let grid = layer.grid;
     let radius = self.radius.max(0) as u32;
-    let mut wanted: [Vec<IVec2>; 4] = [
-      grid.range(self.selected, radius),
-      grid.ring(self.selected, radius),
-      self
-        .hover
-        .map(|hover| grid.neighbours(hover).collect())
-        .unwrap_or_default(),
-      self
-        .hover
-        .map(|hover| grid.line(self.selected, hover))
-        .unwrap_or_default(),
-    ];
+    let mut wanted: [Vec<IVec2>; 4] = Default::default();
+    wanted[RANGE] = grid.range(self.selected, radius);
+    wanted[RING] = grid.ring(self.selected, radius);
+    if let Some(hover) = self.hover {
+      wanted[NEIGHBOURS] = grid.neighbours(hover).collect();
+      wanted[LINE] = grid.line(self.selected, hover);
+    }
     for cells in &mut wanted {
       cells.retain(|cell| bounds.contains(*cell));
     }
@@ -212,7 +213,7 @@ impl DemoPage for HexPage {
     };
     let grid = layer.grid;
     let radius = self.radius.max(0) as u32;
-    let (range, ring) = (self.marks[0].1.len(), self.marks[1].1.len());
+    let (range, ring) = (self.marks[RANGE].1.len(), self.marks[RING].1.len());
     let mut lines = vec![
       (
         "Pointy hexagons of 60 x 70, sides of 35".to_string(),
@@ -237,7 +238,7 @@ impl DemoPage for HexPage {
           format!(
             "Distance: {} steps; the line {} hexes",
             grid.distance(self.selected, cell),
-            self.marks[3].1.len()
+            self.marks[LINE].1.len()
           ),
           GOOD,
         ));

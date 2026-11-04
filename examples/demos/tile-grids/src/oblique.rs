@@ -10,12 +10,14 @@
 
 use demo_kit::prelude::*;
 
-use crate::shared::{DIM, GOOD, HOT, View, beside_panel, clear_to, hud, load, wasd};
-use crate::walker::{Walk, draw_outline, face, hovered_cell, map_start, place_of, spawn_walker};
+use crate::shared::{
+  DIM, GOOD, HOT, View, beside_panel, clear_to, draw_outline, hovered_cell, hud, load, wasd,
+};
+use crate::walker::{Walk, face, map_start, place_of, spawn_walker};
 
 /// The dungeon at each skew, as the Skew setting names them
 const MAPS: [&str; 2] = ["maps/dungeon.tmx", "maps/dungeon-mirror.tmx"];
-const SKEWS: [&str; 2] = ["The map's own: 4, 0", "Its mirror: -4, 0"];
+const SKEWS: [&str; 2] = ["Own 4, 0", "Mirror -4, 0"];
 /// How far each row of cells sits across from the one above, in each map
 const SHIFTS: [i32; 2] = [4, -4];
 /// The layers: the floor, and the walls over it
@@ -132,7 +134,8 @@ impl DemoPage for ObliquePage {
       return;
     };
     if self.walker.is_none() && ctx.maps().is_ready(root) {
-      // At the walls' z: in front of the floor, sorted with nothing there
+      // Over the walls' z: drawn over the floor and the walls, which are
+      // flat, top-down art
       self.walker = Some(spawn_walker(ctx, self.start, KNIGHT, self.walls_z + 1));
     }
     if let Some(walker) = self.walker {

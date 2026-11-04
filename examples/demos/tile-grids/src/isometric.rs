@@ -18,8 +18,10 @@
 
 use demo_kit::prelude::*;
 
-use crate::shared::{DIM, GOOD, HOT, View, beside_panel, clear_to, hud, load, wasd};
-use crate::walker::{Walk, draw_outline, face, hovered_cell, map_start, place_of, spawn_walker};
+use crate::shared::{
+  DIM, GOOD, HOT, View, beside_panel, clear_to, draw_outline, hovered_cell, hud, load, wasd,
+};
+use crate::walker::{Walk, face, map_start, place_of, spawn_walker};
 
 /// The town
 const TOWN: &str = "maps/town.tmx";
@@ -84,9 +86,10 @@ impl TownPage {
     self.view.place(ctx, centre, zoom, jump);
   }
 
-  /// The left button paints water at `cell`, the right grass; water never
-  /// where the knight stands, which it would wall in (a painted cell turns
-  /// all water, its neighbours only part)
+  /// The left button paints water at `cell`, the right grass. Painting a
+  /// cell turns its four corners to water, so water would wall the knight
+  /// in on any cell sharing a corner with a cell it stands on: those are
+  /// refused
   fn paint(&mut self, ctx: &mut SceneContext, root: Entity, cell: IVec2) {
     let (left, right) = (
       ctx.input.mouse_down(MouseButton::Left),
@@ -102,11 +105,22 @@ impl TownPage {
     let walled_in = color == WATER
       && feet
         .zip(maps.grid(root, GROUND))
-        .is_some_and(|(at, layer)| touches(layer.outline_world(cell).points(), at, KNIGHT.radius));
+        .is_some_and(|(at, layer)| beside_knight(&layer, at, cell));
     if !walled_in && maps.set_terrain(root, GROUND, cell, TERRAIN, Some(color)) {
       self.painted += 1;
     }
   }
+}
+
+/// Whether `cell` shares a corner with a cell the knight's collider, at
+/// `feet`, reaches into (on an isometric grid, the cells round a cell by
+/// index)
+fn beside_knight(layer: &LayerGrid, feet: Vec2, cell: IVec2) -> bool {
+  let under = layer.cell_at_world(feet);
+  (-1..=1)
+    .flat_map(|dy| (-1..=1).map(move |dx| under + IVec2::new(dx, dy)))
+    .filter(|&stood| touches(layer.outline_world(stood).points(), feet, KNIGHT.radius))
+    .any(|stood| (cell - stood).abs().max_element() <= 1)
 }
 
 /// Whether a circle of `radius` at `at` reaches into the convex polygon

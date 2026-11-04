@@ -11,12 +11,16 @@
 
 use demo_kit::prelude::*;
 
-use crate::shared::{DIM, GOOD, HOT, View, beside_panel, clear_to, hud, load, wasd};
-use crate::walker::{Walk, draw_outline, face, hovered_cell, map_start, place_of, spawn_walker};
+use crate::shared::{
+  DIM, GOOD, HOT, View, beside_panel, clear_to, draw_outline, hovered_cell, hud, load, wasd,
+};
+use crate::walker::{Walk, face, map_start, place_of, spawn_walker};
 
 /// The island on each grid, as the Grid setting names them
 const MAPS: [&str; 2] = ["maps/island-rows.tmx", "maps/island-columns.tmx"];
-const GRIDS: [&str; 2] = ["Rows shifted (along y)", "Columns shifted (along x)"];
+const GRIDS: [&str; 2] = ["Rows (y)", "Columns (x)"];
+/// And as the HUD tells them
+const SHIFTED: [&str; 2] = ["rows shifted along y", "columns shifted along x"];
 /// The layers: the blocks, and the trees and rocks
 const GROUND: &str = "ground";
 const PROPS: &str = "props";
@@ -169,7 +173,7 @@ impl DemoPage for StaggeredPage {
     };
     let here = place_of(ctx, self.walker).and_then(|at| ctx.maps().world_to_cell(root, GROUND, at));
     let mut lines = vec![(
-      format!("Staggered diamonds of 116 x 55: {}", GRIDS[self.shown]),
+      format!("Staggered diamonds of 116 x 55, {}", SHIFTED[self.shown]),
       Color::WHITE,
     )];
     lines.extend(pointer);

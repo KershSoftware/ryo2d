@@ -1,6 +1,7 @@
 //! What the pages share: the files they load, the ground tile rule, the
 //! view each frames on screen (on whole screen pixels, so the pixel art
-//! stays crisp), panning input, and the HUD's boxes and labels
+//! stays crisp), panning input, the HUD's boxes and labels, and on the other
+//! grids the cell under the pointer and its outline
 
 use demo_kit::prelude::*;
 
@@ -213,4 +214,36 @@ pub(crate) fn beside_panel(ui: &UiContext, rows: usize) -> Rect {
   let x = ui.screen_size().0 as f32 * 0.55 + 8.0;
   let y = area.y + settings_panel_height(ui, rows) + 10.0;
   Rect::new(x, y, area.right() - x, area.bottom() - y)
+}
+
+/// Draws `outline` (a cell's, in the world) with `debug`, `width` screen
+/// pixels wide
+pub(crate) fn draw_outline(debug: &mut DebugDraw, outline: &CellOutline, color: Color, width: f32) {
+  let points = outline.points();
+  let Some(&first) = points.first() else {
+    return;
+  };
+  let mut closed = [first; 7];
+  closed[..points.len()].copy_from_slice(points);
+  closed[points.len()] = first;
+  debug.width(width).polyline(&closed[..=points.len()], color);
+}
+
+/// The cell under the pointer on `layer` of `map`, unless the pointer is
+/// over one of `covered` (the page's notes) or off the layer's cells
+/// (`bounds`, on a bounded map)
+pub(crate) fn hovered_cell(
+  ctx: &mut SceneContext,
+  map: Entity,
+  layer: &str,
+  covered: &[Rect],
+) -> Option<IVec2> {
+  let (mx, my) = ctx.input.mouse_position();
+  if covered.iter().any(|rect| rect.contains(mx, my)) {
+    return None;
+  }
+  let world = ctx.camera().screen_to_world(Vec2::new(mx, my));
+  let maps = ctx.maps();
+  let cell = maps.grid(map, layer)?.cell_at_world(world);
+  maps.bounds(map)?.contains(cell).then_some(cell)
 }
