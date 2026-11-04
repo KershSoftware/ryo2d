@@ -112,6 +112,10 @@ pub(crate) fn parse_headless(raw: Option<&str>, dev_build: bool) -> (bool, Optio
   }
 }
 
+/// The fewest steps a second `RYO_HEADLESS_HZ` takes (`0` aside, which is
+/// unpaced): slower, each step would sleep for seconds or longer
+const MIN_HEADLESS_HZ: f64 = 1.0;
+
 /// The most steps a second `RYO_HEADLESS_HZ` takes
 const MAX_HEADLESS_HZ: f64 = 10_000.0;
 
@@ -122,9 +126,9 @@ pub(crate) fn headless_pace_from_env() -> (Option<Duration>, Option<String>) {
   parse_headless_hz(std::env::var("RYO_HEADLESS_HZ").ok().as_deref())
 }
 
-/// Steps a second (a positive number up to 10,000, `60` or `59.94`), each
-/// step then taking at least its share of a second of wall time; unset,
-/// empty or `0` is unpaced
+/// Steps a second (a number from 1 to 10,000, `60` or `59.94`), each step
+/// then taking at least its share of a second of wall time; unset, empty or
+/// `0` is unpaced
 pub(crate) fn parse_headless_hz(raw: Option<&str>) -> (Option<Duration>, Option<String>) {
   let Some(raw) = raw else {
     return (None, None);
@@ -133,15 +137,19 @@ pub(crate) fn parse_headless_hz(raw: Option<&str>) -> (Option<Duration>, Option<
   if trimmed.is_empty() {
     return (None, None);
   }
-  match trimmed.parse::<f64>() {
-    Ok(0.0) => (None, None),
-    Ok(hz) if hz.is_finite() && hz > 0.0 && hz <= MAX_HEADLESS_HZ => {
-      (Some(Duration::from_secs_f64(1.0 / hz)), None)
+  let pace = match trimmed.parse::<f64>() {
+    Ok(0.0) => return (None, None),
+    Ok(hz) if (MIN_HEADLESS_HZ..=MAX_HEADLESS_HZ).contains(&hz) => {
+      Duration::try_from_secs_f64(1.0 / hz).ok()
     }
-    _ => (
+    _ => None,
+  };
+  match pace {
+    Some(pace) => (Some(pace), None),
+    None => (
       None,
       Some(format!(
-        "RYO_HEADLESS_HZ={raw:?} is invalid (expected steps a second like \"60\", up to 10000, or 0 for as fast as it can)"
+        "RYO_HEADLESS_HZ={raw:?} is invalid (expected steps a second from 1 to 10000, like \"60\", or 0 for as fast as it can)"
       )),
     ),
   }
@@ -267,7 +275,15 @@ mod tests {
       parse_headless_hz(Some("10000")),
       (Some(Duration::from_micros(100)), None)
     );
-    for raw in ["fast", "-60", "10001", "inf", "NaN", "60hz"] {
+    assert_eq!(
+      parse_headless_hz(Some("1")),
+      (Some(Duration::from_secs(1)), None)
+    );
+    // Below one step a second a step would sleep for seconds to days, and the
+    // tiniest values overflow a `Duration`
+    for raw in [
+      "fast", "-60", "10001", "inf", "NaN", "60hz", "0.5", "1e-6", "1e-20", "4.9e-324",
+    ] {
       let (pace, warning) = parse_headless_hz(Some(raw));
       assert_eq!(pace, None, "{raw:?}");
       assert!(
