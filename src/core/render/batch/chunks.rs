@@ -578,10 +578,28 @@ impl ChunkStore {
   /// engine's reads)
   #[cfg(not(target_arch = "wasm32"))]
   pub(crate) fn built_chunks(&self) -> impl Iterator<Item = (Entity, IVec2)> + '_ {
-    self.layers.iter().flat_map(|(&layer, chunks)| {
+    self.built_where(|_| true)
+  }
+
+  /// The chunks built with a tile that leaves its cell's box, each with its
+  /// layer, in no set order: built knowing how their tiles leave their
+  /// cells, as only a layer drawn in Tiled's order builds them (the headless
+  /// engine's reads)
+  #[cfg(not(target_arch = "wasm32"))]
+  pub(crate) fn spilling_chunks(&self) -> impl Iterator<Item = (Entity, IVec2)> + '_ {
+    self.built_where(|built| built.spill != Spill::None)
+  }
+
+  /// The chunks built that `keep` keeps, each with its layer
+  #[cfg(not(target_arch = "wasm32"))]
+  fn built_where(
+    &self,
+    keep: impl Fn(&Built) -> bool + Copy + 'static,
+  ) -> impl Iterator<Item = (Entity, IVec2)> + '_ {
+    self.layers.iter().flat_map(move |(&layer, chunks)| {
       chunks
         .iter()
-        .filter(|(_, built)| built.stamp.is_some())
+        .filter(move |(_, built)| built.stamp.is_some() && keep(built))
         .map(move |(&chunk, _)| (layer, chunk))
     })
   }

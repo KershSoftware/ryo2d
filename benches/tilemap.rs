@@ -24,29 +24,32 @@
 //!   the measure, as `benches/ui_render.rs`'s guard does; the engines step
 //!   in turn, one frame each, so a change in the machine's load moves them
 //!   alike. The median frame over the empty frame's median is held to
-//!   50 µs (the spec). Two rounds of engines, each against an empty frame of
-//!   its own (an engine stepping evicts the others' data, so a round holds
-//!   no more engines than the first). The orthogonal round: the map; the
-//!   same map built with unbounded layers (`TileMap::infinite`), held to
-//!   50 µs the same way; and with no target, the same map drawn only (no
-//!   collision, no shadows), colliding without shadows, casting shadows
-//!   without collision (which split what the map's child entities cost),
-//!   with its props layer y-sorted, and lit (a shadowed light following the
-//!   camera, against an empty lit scene), which shows what lighting's
-//!   gather of every map occluder costs. The grids' round: the map on each
-//!   other grid, held to 50 µs, and on the isometric grid with tall props
-//!   too (32 x 48 tiles of a tileset of their own on its plain props layer,
-//!   which leave their cells' tops, so the layer draws in Tiled's order),
-//!   held the same way, beside the orthogonal map again (held in the first
-//!   round), so the grids compare in one round. On another grid the camera
-//!   flies the orthogonal loop in cells, taken onto the grid's cells (so it
-//!   stays over the map, within an isometric map's diamond), at the rate
-//!   that keeps its average speed the orthogonal camera's (`Flight`). Each
-//!   map's tile draws a frame are printed beside its times; then each map's
-//!   entities and occluder chains, and its first build (its landing job,
-//!   the landing frame and the one after), stepped back to back. Then what
-//!   a padded tileset cache hit costs, an atlas's and a 1,000-tile
-//!   collection's;
+//!   50 µs (the spec). Two rounds of nine engines (`Round`), each against
+//!   an empty frame of its own: an engine stepping evicts the others' data,
+//!   so every held map steps in the same company. The orthogonal round: the
+//!   map; the same map built with unbounded layers (`TileMap::infinite`),
+//!   held to 50 µs the same way; and with no target, the same map drawn
+//!   only (no collision, no shadows), colliding without shadows, casting
+//!   shadows without collision (which split what the map's child entities
+//!   cost), with its props layer y-sorted, and lit (a shadowed light
+//!   following the camera, against an empty lit scene), which shows what
+//!   lighting's gather of every map occluder costs. The grids' round: the
+//!   map on each other grid, held to 50 µs, and on the isometric grid with
+//!   tall props too (32 x 48 tiles of a tileset of their own on its plain
+//!   props layer, which leave their cells' tops, so the layer draws in
+//!   Tiled's order, checked: every props chunk it draws was built knowing
+//!   its tiles leave their cells, as only that path builds them), held the
+//!   same way; beside them, so the grids compare in one round and the round
+//!   holds nine engines as the first, the orthogonal map, the same with
+//!   unbounded layers (held in the first round) and drawn only. On another
+//!   grid the camera flies the orthogonal loop in cells, taken onto the
+//!   grid's cells (so it stays over the map, within an isometric map's
+//!   diamond), at the rate that keeps its average speed the orthogonal
+//!   camera's (`Flight`). Each map's tile draws a frame are printed beside
+//!   its times; then each map's entities and occluder chains, and its first
+//!   build (its landing job, the landing frame and the one after), stepped
+//!   back to back, once. Then what a padded tileset cache hit costs, an
+//!   atlas's and a 1,000-tile collection's;
 //! - `edit`: on every grid but the hexagonal, one-tile edits on a
 //!   1024 x 1024 four-layer map of 16,000 islands with two loops each
 //!   spanning four chunks: a jagged skyline 128 cells wide and 32 high,
@@ -57,12 +60,13 @@
 //!   oblique grids; on the staggered grid its diamonds' isometric lattice,
 //!   from a lattice chunk whose shapes all lie in the map), so each loop
 //!   spans four lattice chunks on every grid; the camera stands over the
-//!   edited cells, each edit's chunk drawn (checked). Each loop is edited
-//!   400 times a way: a bump (a tile set on top of it and cleared again: it
-//!   stays one loop), and a split and a join (a cell cleared and set again:
-//!   the skyline's neck; the middle of the serpentine's first row, and of
-//!   its middle row, which splits it into halves of about 2,000 edges, the
-//!   worst split a loop of four chunks can have). Each edit is timed in
+//!   edited cells, each edit's chunk drawn in the last warm-up frame
+//!   (checked). Each loop is edited 400 times a way: a bump (a tile set on
+//!   top of it and cleared again: it stays one loop), and a split and a
+//!   join (a cell cleared and set again: the skyline's neck; the middle of
+//!   the serpentine's first row, and of its middle row, which splits it
+//!   into halves of about 2,000 edges, the worst split a loop of four
+//!   chunks can have). Each edit is timed in
 //!   three parts, each held to 100 µs (the spec): the chunk rebuild (the
 //!   render step of the frame after the edit, less the median render step
 //!   of the ordinary frames between edits: the chunk's instances built and
@@ -901,7 +905,47 @@ fn static_engine(show: Show, flight: &Flight) -> Option<(HeadlessEngine, Option<
     place_camera(&mut engine, flight.at(frame));
     engine.step().expect("a warm-up frame");
   }
+  if show == Show::Tall {
+    assert_drawn_in_order(&mut engine, "props");
+  }
   Some((engine, built))
+}
+
+/// The entity of `engine`'s tile layer named `name`
+fn layer_named(engine: &mut HeadlessEngine, name: &str) -> Entity {
+  let world = engine.world_mut();
+  world
+    .query::<(Entity, &LayerInfo)>()
+    .iter(world)
+    .find(|(_, info)| info.name == name)
+    .map(|(entity, _)| entity)
+    .unwrap_or_else(|| panic!("a {name} layer"))
+}
+
+/// That the layer named `name` draws through the in-order path: every chunk
+/// of it the last frame drew was built knowing its tiles leave their cells
+/// (`HeadlessEngine::spilling_tile_chunks`), which only a layer drawn in
+/// Tiled's order builds; so a change to which tilesets may leave their
+/// cells cannot turn the tall props into a plain layer unseen
+fn assert_drawn_in_order(engine: &mut HeadlessEngine, name: &str) {
+  let layer = layer_named(engine, name);
+  let spilling = engine.spilling_tile_chunks();
+  let drawn: BTreeSet<(i32, i32)> = engine
+    .tile_draws()
+    .into_iter()
+    .filter(|&(of, ..)| of == layer)
+    .map(|(_, chunk, ..)| (chunk.x, chunk.y))
+    .collect();
+  let plain: Vec<_> = drawn
+    .iter()
+    .filter(|&&(x, y)| !spilling.contains(&(layer, IVec2::new(x, y))))
+    .collect();
+  assert!(
+    !drawn.is_empty() && plain.is_empty(),
+    "static_frame: the {name} layer of tall art draws in Tiled's order: of the {} chunks it drew, \
+     {plain:?} were built as plain chunks",
+    drawn.len(),
+  );
 }
 
 /// One engine of the static guard and its frames: each one's step, render
@@ -916,47 +960,80 @@ struct Probe {
   draws: Vec<usize>,
 }
 
-/// The static frame guard: two rounds of engines, each against an empty
-/// frame of its own. The orthogonal map and its variants step as they
-/// always have; then the other grids' maps, beside the orthogonal map again
-/// (held in the first round), so a round holds no more engines than the
-/// first did (each engine stepping evicts the others' data)
-fn static_guard() {
-  static_round(
-    &[
-      Show::Empty,
-      Show::Map(Grid::Orthogonal),
-      Show::MapUnbounded,
-      Show::Drawn,
-      Show::YSorted,
-      Show::EmptyLit,
-      Show::MapLit,
-      Show::NoShadows,
-      Show::NoCollision,
-    ],
-    "the orthogonal round",
-  );
-  static_round(
-    &[
-      Show::Empty,
-      Show::Map(Grid::Orthogonal),
-      Show::Map(Grid::Isometric),
-      Show::Tall,
-      Show::Map(Grid::Staggered),
-      Show::Map(Grid::Hexagonal),
-      Show::Map(Grid::Oblique),
-    ],
-    "the grids' round",
-  );
+/// A round of the static guard's engines, each against an empty frame of
+/// its own and as many as the other (an engine stepping evicts the others'
+/// data, so every held map steps in the same company)
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Round {
+  /// The orthogonal map and its variants, as the guard has always stepped
+  /// them
+  Orthogonal,
+  /// The other grids' maps, beside the orthogonal map again and two of its
+  /// variants (fillers, held in the first round or with no target)
+  Grids,
 }
 
-/// One round of the static guard, `name`: the engines of `shows` (the
-/// first an empty frame) stepped in turn, each map's held frame held to the
-/// target, but the orthogonal map's in a round after the first
-fn static_round(shows: &[Show], name: &str) {
-  let first = name == "the orthogonal round";
+impl Round {
+  fn name(self) -> &'static str {
+    match self {
+      Round::Orthogonal => "the orthogonal round",
+      Round::Grids => "the grids' round",
+    }
+  }
+
+  /// Its engines' shows, the first an empty frame
+  fn shows(self) -> [Show; 9] {
+    match self {
+      Round::Orthogonal => [
+        Show::Empty,
+        Show::Map(Grid::Orthogonal),
+        Show::MapUnbounded,
+        Show::Drawn,
+        Show::YSorted,
+        Show::EmptyLit,
+        Show::MapLit,
+        Show::NoShadows,
+        Show::NoCollision,
+      ],
+      Round::Grids => [
+        Show::Empty,
+        Show::Map(Grid::Orthogonal),
+        Show::MapUnbounded,
+        Show::Drawn,
+        Show::Map(Grid::Isometric),
+        Show::Tall,
+        Show::Map(Grid::Staggered),
+        Show::Map(Grid::Hexagonal),
+        Show::Map(Grid::Oblique),
+      ],
+    }
+  }
+
+  /// Whether the round is the first to step `show`: every show in the
+  /// orthogonal round, and the other grids' in theirs
+  fn first_steps(self, show: Show) -> bool {
+    self == Round::Orthogonal || show.grid() != Grid::Orthogonal
+  }
+
+  /// Whether the round holds `show`'s frame to the target: a held map, in
+  /// the round that first steps it
+  fn holds(self, show: Show) -> bool {
+    show.held() && self.first_steps(show)
+  }
+}
+
+/// The static frame guard: the orthogonal round, then the grids' round
+fn static_guard() {
+  static_round(Round::Orthogonal);
+  static_round(Round::Grids);
+}
+
+/// One round of the static guard: its engines stepped in turn, each map
+/// it holds held to the target
+fn static_round(round: Round) {
+  let name = round.name();
   let mut probes = Vec::new();
-  for &show in shows {
+  for show in round.shows() {
     let flight = Flight::over(show.grid());
     let Some((engine, built)) = static_engine(show, &flight) else {
       return;
@@ -1038,10 +1115,9 @@ fn static_round(shows: &[Show], name: &str) {
       draws.first().copied().unwrap_or(0),
       draws.last().copied().unwrap_or(0),
     );
-    let again = !first && probe.show == Show::Map(Grid::Orthogonal);
-    if again {
-      eprintln!("static_frame (no target: the first round holds it): {line}");
-    } else if probe.show.held() {
+    if probe.show.held() && !round.holds(probe.show) {
+      eprintln!("static_frame (no target: the orthogonal round holds it): {line}");
+    } else if round.holds(probe.show) {
       let added = median(probe.steps.clone()).saturating_sub(base);
       let (met, held) = verdict(added, STATIC_TARGET);
       eprintln!(
@@ -1055,11 +1131,10 @@ fn static_round(shows: &[Show], name: &str) {
       eprintln!("static_frame (no target): {line}");
     }
   }
-  // The orthogonal map's entities and first build, once
-  let new = |show: Show| first || show != Show::Map(Grid::Orthogonal);
+  // Each map's entities and first build, once
   for probe in probes
     .iter_mut()
-    .filter(|probe| probe.show.has_map() && new(probe.show))
+    .filter(|probe| probe.show.has_map() && round.first_steps(probe.show))
   {
     let name = probe.show.name();
     let world = probe.engine.world_mut();
@@ -1071,10 +1146,7 @@ fn static_round(shows: &[Show], name: &str) {
       world.entities().len(),
     );
   }
-  for probe in probes
-    .iter()
-    .filter(|probe| probe.show.held() && new(probe.show))
-  {
+  for probe in probes.iter().filter(|probe| round.holds(probe.show)) {
     let Some(built) = &probe.built else { continue };
     eprintln!(
       "static_frame (no target): {}: its first build, stepped back to back: spawn to landed \
@@ -1366,19 +1438,19 @@ fn edit_engine(grid: Grid) -> Option<(HeadlessEngine, Entity)> {
   }
   engine.step_frames(WARM as u32).expect("the warm-up frames");
   let root = roots(&mut engine)[0];
-  let world = engine.world_mut();
-  let ground = world
-    .query::<(Entity, &LayerInfo)>()
-    .iter(world)
-    .find(|(_, info)| info.name == "ground")
-    .map(|(entity, _)| entity)
-    .expect("a ground layer");
-  let drawn = engine.tile_chunks();
+  let ground = layer_named(&mut engine, "ground");
+  let drawn: Vec<IVec2> = engine
+    .tile_draws()
+    .into_iter()
+    .filter(|&(layer, ..)| layer == ground)
+    .map(|(_, chunk, ..)| chunk)
+    .collect();
   for case in &cases {
     let chunk = TileGrid::chunk_of(case.cell);
     assert!(
-      drawn.contains(&(ground, chunk)),
-      "edit, the {} map: the camera at {at} draws chunk {chunk} of {}'s cell {}",
+      drawn.contains(&chunk),
+      "edit, the {} map: the last warm-up frame, its camera at {at}, drew chunk {chunk} of {}'s \
+       cell {}",
       grid.name(),
       case.name,
       case.cell,

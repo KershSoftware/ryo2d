@@ -670,6 +670,22 @@ impl HeadlessEngine {
     chunks
   }
 
+  /// The tile chunks the batch holds built with a tile leaving its cell's
+  /// box, each as its layer entity and chunk, sorted: only a layer drawn in
+  /// Tiled's order builds its chunks knowing that (benches that hold a map
+  /// to that path)
+  #[doc(hidden)]
+  pub fn spilling_tile_chunks(&self) -> Vec<(Entity, IVec2)> {
+    let mut chunks: Vec<(Entity, IVec2)> = self
+      .engine
+      .batch
+      .as_ref()
+      .map(|batch| batch.chunks().spilling_chunks().collect())
+      .unwrap_or_default();
+    chunks.sort_by_key(|&(layer, chunk)| (layer, chunk.y, chunk.x));
+    chunks
+  }
+
   /// The last frame's tile chunk draws, in draw order, each as its layer
   /// entity, chunk, tileset, and the instances of the tileset's part of the
   /// chunk it draws (the first, and how many) (tests of how a layer's
