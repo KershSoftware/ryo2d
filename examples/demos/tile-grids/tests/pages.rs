@@ -15,8 +15,9 @@
 //! (the HUD counts them, and the chunks in flight as new ground streams
 //! in), and coming back finds them as the player left them. The town and
 //! the hex board draw Kenney's pictures at their own size, each tileset
-//! padded to at most twice its art. The pages on the other grids have their
-//! own tests (`tests/grids.rs`)
+//! padded to at most twice its art, and the town's, the island's and the
+//! board's tile layers sample them linearly. The pages on the other grids
+//! have their own tests (`tests/grids.rs`)
 
 mod common;
 
@@ -35,6 +36,7 @@ const MEADOW: usize = 0;
 const PAINT: usize = 1;
 const ENDLESS: usize = 2;
 const TOWN: usize = 3;
+const STAGGERED: usize = 4;
 const HEX: usize = 5;
 const PAGES: usize = 8;
 
@@ -204,6 +206,41 @@ fn the_town_draws_kenney_s_pictures_at_their_own_size() {
     total <= 20 * 1024 * 1024,
     "the town's tilesets pad to {total} bytes"
   );
+  assert!(warnings().is_empty(), "{:#?}", warnings());
+}
+
+/// Each tile layer of the page's map, by name, with how it is sampled
+fn tile_layer_filters(engine: &mut HeadlessEngine, map: Entity) -> Vec<(String, Filter)> {
+  let world = engine.world_mut();
+  let mut layers = world.query::<(&MapLayerRef, &LayerInfo, Has<TileLayerData>)>();
+  let mut found: Vec<(usize, String, Filter)> = layers
+    .iter(world)
+    .filter(|(layer, _, tiles)| layer.map == map && *tiles)
+    .map(|(layer, info, _)| (layer.index, info.name.clone(), info.filter))
+    .collect();
+  found.sort_by_key(|(index, ..)| *index);
+  found
+    .into_iter()
+    .map(|(_, name, filter)| (name, filter))
+    .collect()
+}
+
+#[test]
+fn the_town_island_and_hex_board_sample_their_painted_art_smoothly() {
+  // The demo is pixel art, which samples tiles nearest: Kenney's painted
+  // pictures, drawn at a half and a quarter, ask their layers for linear
+  // sampling, so they read the smaller copies
+  for page in [TOWN, STAGGERED, HEX] {
+    let Some(mut engine) = engine_on(page) else {
+      return;
+    };
+    let map = spawned_map(&mut engine);
+    let layers = tile_layer_filters(&mut engine, map);
+    assert!(!layers.is_empty(), "page {}: tile layers", page + 1);
+    for (name, filter) in layers {
+      assert_eq!(filter, Filter::Linear, "page {}: layer {name:?}", page + 1);
+    }
+  }
   assert!(warnings().is_empty(), "{:#?}", warnings());
 }
 

@@ -8,6 +8,9 @@
 //! Tiles turned, flipped, animated, y-sorted, squashed or drawn as tile
 //! objects, and tiles seen through a turned camera, never show a neighbour's
 //! colour either, and a tile zoomed out a little keeps its outer texels.
+//! A layer's filter picks how its tiles and tile objects are sampled
+//! whatever the target: linear on the pixel-art target reads the smaller
+//! copies, nearest on the smooth one keeps the full-size texels.
 
 use std::sync::Arc;
 
@@ -1066,4 +1069,181 @@ fn a_tileset_that_grows_past_the_atlas_pads_again_and_draws_clean() {
   // 288 px and every smaller copy, down to one texel
   let own: u64 = (0..9).map(|k| (288u64 >> k).pow(2) * 4).sum();
   assert_eq!(padded_sizes(engine.world()), [size(own, 36)]);
+}
+
+/// A row of `count` [`SNUG`] tiles: A, white, stripes a texel wide of A and
+/// B in turn across (A first), green, then the neighbours' colours in turn
+fn striped_row(ctx: &mut SceneContext, count: u32) -> Tileset {
+  let side = SNUG;
+  let width = side.x * count;
+  let data: Vec<u8> = (0..width * side.y)
+    .flat_map(|i| {
+      let x = i % width;
+      match x / side.x {
+        0 => A,
+        2 if (x % side.x).is_multiple_of(2) => A,
+        2 => B,
+        1 => NEIGHBOURS[0],
+        3 => NEIGHBOURS[1],
+        tile => NEIGHBOURS[(tile % 2) as usize],
+      }
+    })
+    .collect();
+  let image = ctx.assets().add(Image::from_rgba(data, width, side.y));
+  let size = UVec2::new(width, side.y);
+  let mut set = Tileset::new("striped", side, TilesetImage::Atlas { image, size });
+  set.columns = count;
+  set.tile_count = count;
+  set
+}
+
+/// A checkerboard of A and stripes ([`striped_row`]'s tiles 0 and 2), its
+/// middle on the world's origin, on a tile layer sampled with `filter`, or
+/// as tile objects on an object layer sampled so
+struct Striped {
+  filter: Filter,
+  objects: bool,
+}
+
+impl Scene for Striped {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    ctx.look().tonemap = Tonemap::Clamp;
+    let set = striped_row(ctx, 36);
+    let cells = if self.objects { 8 } else { 64 };
+    let tile = |x: i32, y: i32| Tile::new(0, 2 * ((x + y) % 2) as u32);
+    let mut map = TileMap::new(UVec2::splat(cells), SNUG);
+    map.add_tileset(TilesetSource::Embedded(Arc::new(set)));
+    let layer = if self.objects {
+      let layer = map.add_object_layer("things");
+      let objects = (0..cells as i32)
+        .flat_map(|y| (0..cells as i32).map(move |x| (x, y)))
+        .map(|(x, y)| MapObjectData {
+          id: format!("{}", y * cells as i32 + x + 1),
+          name: String::new(),
+          class: None,
+          position: (IVec2::new(x, y).as_vec2()) * SNUG.as_vec2(),
+          size: SNUG.as_vec2(),
+          rotation: 0.0,
+          shape: ObjectShape::Rect,
+          tile: Some(tile(x, y)),
+          visible: true,
+          properties: Properties::default(),
+        })
+        .collect();
+      map.layers[layer].kind = LayerKind::Objects(objects);
+      layer
+    } else {
+      let layer = map.add_tile_layer("ground");
+      let grid = map.tiles_mut(layer).expect("tile layer");
+      for y in 0..cells as i32 {
+        for x in 0..cells as i32 {
+          grid.set(IVec2::new(x, y), Some(tile(x, y)));
+        }
+      }
+      layer
+    };
+    map.layers[layer].info.filter = self.filter;
+    let map = ctx.assets().add(map);
+    let half = (UVec2::splat(cells) * SNUG / 2).as_vec2();
+    ctx
+      .world
+      .spawn((MapRoot::new(map), Transform::from_xy(-half.x, -half.y)));
+  }
+}
+
+/// The frames of `scene` at each of `zooms` and each quarter-pixel camera
+/// offset, the camera clearing to black, each with where it was taken
+fn frames_of(
+  builder: EngineBuilder,
+  scene: impl Scene + 'static,
+  zooms: &[f32],
+) -> Option<Vec<(String, image::RgbaImage)>> {
+  let mut engine = HeadlessEngine::new_or_skip(builder.start_scene(scene))?;
+  crate::core::tilemap::test_util::step_until_maps_land(&mut engine);
+  engine.step_frames(2).unwrap();
+  let mut frames = Vec::new();
+  for &zoom in zooms {
+    for (qx, qy) in (0..4).flat_map(|x| (0..4).map(move |y| (x, y))) {
+      let offset = Vec2::new(qx as f32, qy as f32) * 0.25 / zoom;
+      let world = engine.world_mut();
+      let mut cameras = world.query_filtered::<(&mut Transform, &mut Camera2d), With<MainCamera>>();
+      for (mut transform, mut camera) in cameras.iter_mut(world) {
+        transform.translation = offset;
+        camera.zoom = zoom;
+        camera.clear = CameraClear::Color(Color::BLACK);
+      }
+      engine.step_frames(2).unwrap();
+      let at = format!("zoom {zoom}, offset ({qx}/4, {qy}/4) px");
+      frames.push((at, engine.frame().unwrap()));
+    }
+  }
+  Some(frames)
+}
+
+#[test]
+fn a_layer_s_filter_picks_its_sampling_whatever_the_target() {
+  // At a half and a quarter, stripes a texel wide sampled nearest show one
+  // of their colours a pixel, and sampled smoothly the level the zoom needs,
+  // their mix. On the pixel-art target a layer asking for linear sampling
+  // reads its smaller copies, as do tile objects on an object layer asking
+  // for it; on the smooth target a layer asking for nearest keeps the
+  // full-size texels. None shows a neighbour, the tiles being their own
+  // cells. A layer that asks for nothing draws exactly as a nearest one
+  const ZOOMS: [f32; 2] = [0.5, 0.25];
+  let pixel_art = || EngineBuilder::new().pixel_art(SIZE, SIZE);
+  let smooth = || EngineBuilder::new().resolution(SIZE, SIZE);
+  let striped = |filter, objects| Striped { filter, objects };
+  let Some(linear) = frames_of(pixel_art(), striped(Filter::Linear, false), &ZOOMS) else {
+    return;
+  };
+  let Some(objects) = frames_of(pixel_art(), striped(Filter::Linear, true), &ZOOMS) else {
+    return;
+  };
+  let Some(default) = frames_of(pixel_art(), striped(Filter::Default, false), &ZOOMS) else {
+    return;
+  };
+  let Some(nearest) = frames_of(pixel_art(), striped(Filter::Nearest, false), &ZOOMS) else {
+    return;
+  };
+  let Some(kept) = frames_of(smooth(), striped(Filter::Nearest, false), &ZOOMS) else {
+    return;
+  };
+  const BLACK: [u8; 4] = [0, 0, 0, 255];
+  let mut failures = Vec::new();
+  let cases = [
+    ("linear layer, pixel art", &linear, true),
+    ("linear tile objects, pixel art", &objects, true),
+    ("layer asking for nothing, pixel art", &default, false),
+    ("nearest layer, smooth target", &kept, false),
+  ];
+  for (name, frames, smoothed) in cases {
+    for (at, frame) in frames.iter() {
+      let pixels: Vec<[u8; 4]> = frame.pixels().map(|p| p.0).collect();
+      if let Some(p) = pixels.iter().find(|p| shows_a_neighbour(**p)) {
+        failures.push(format!("{name}, {at}: a neighbour's colour {p:?}"));
+      }
+      let mixes = pixels
+        .iter()
+        .filter(|p| ![A, B, BLACK].contains(*p))
+        .count();
+      if smoothed && mixes < pixels.len() / 4 {
+        failures.push(format!("{name}, {at}: only {mixes} pixels mix A and B"));
+      }
+      if !smoothed && mixes > 0 {
+        failures.push(format!("{name}, {at}: {mixes} pixels are neither A nor B"));
+      }
+      let solid = pixels.iter().filter(|p| **p == A).count();
+      if solid < 100 {
+        failures.push(format!("{name}, {at}: only {solid} pixels of A"));
+      }
+    }
+  }
+  for ((at, asked), (_, near)) in default.iter().zip(&nearest) {
+    if asked != near {
+      failures.push(format!(
+        "at {at}, the layer asking for nothing differs from a nearest one"
+      ));
+    }
+  }
+  assert!(failures.is_empty(), "sampling:\n{}", failures.join("\n"));
 }

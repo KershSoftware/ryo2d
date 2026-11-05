@@ -604,6 +604,8 @@ struct LayerDraw<'a> {
   z: i32,
   lit: bool,
   blend: BlendMode,
+  /// How its tiles are sampled (`LayerInfo::filter`)
+  filter: Filter,
   /// Drawn row by row, each sorted at its band's sort point (`band_y`)
   y_sorted: bool,
   /// The render layers it is on: its own, else its map's
@@ -831,7 +833,7 @@ impl TileDrawer {
               sprite: SpriteLook {
                 shading: SpriteShading::Plain,
                 blend: info.blend,
-                filter: Filter::Default,
+                filter: info.filter,
                 lit: info.lit,
               },
               y_sorted: info.y_sorted,
@@ -856,6 +858,7 @@ impl TileDrawer {
                 z,
                 lit: info.lit,
                 blend: info.blend,
+                filter: info.filter,
                 y_sorted: info.y_sorted,
                 layers: mask,
                 margin,
@@ -1365,7 +1368,7 @@ impl View<'_> {
         first,
         count,
         blend: layer.blend,
-        filter: Filter::Default,
+        filter: layer.filter,
         layers: layer.layers,
         min,
         max,
@@ -1502,8 +1505,11 @@ fn image_layer(
   if !(size.x > 0.0 && size.y > 0.0) {
     return;
   }
+  // An image layer samples as the presentation does (`LayerInfo::filter`
+  // is a tile or object layer's)
   let look = SpriteLook {
     shading: SpriteShading::Repeat,
+    filter: Filter::Default,
     ..style.sprite
   };
   // The copies `first..first + count` (in images along each axis)

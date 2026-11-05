@@ -139,6 +139,12 @@ save(platformer, tiled.tilesetFormat("tsx"), "tilesets/platformer.tsx");
 
 // ---- the other grids' tilesets -----------------------------------------------
 
+// The pages draw Sketch Town's and the Hexagon Pack's painted pictures at a
+// half and a quarter of their size, so the layers holding them ask for
+// linear sampling (the reserved property `filter`): the demo is pixel art,
+// which samples tiles nearest unless a layer asks otherwise
+var SMOOTH = "linear";
+
 // Kenney's Sketch Town, one picture a tile, cut to its bottom 256 rows
 // (scripts/derive-art.sh): blocks and props drawn for isometric cells of
 // 232 x 110, each picture standing 12 px left of its cell (Kenney's own
@@ -573,8 +579,8 @@ function nearRing(x, y) {
   return false;
 }
 var TOWN_START = [8, 6];
-var townGround = tileLayer("ground", { occludes: false });
-var townProps = tileLayer("props", { y_sort: true, occludes: false });
+var townGround = tileLayer("ground", { occludes: false, filter: SMOOTH });
+var townProps = tileLayer("props", { y_sort: true, occludes: false, filter: SMOOTH });
 var townGroundEdit = townGround.edit(), townPropsEdit = townProps.edit();
 for (var ty = 0; ty < TOWN; ty++) {
   for (var tx = 0; tx < TOWN; tx++) {
@@ -652,8 +658,8 @@ function island(axis, width, height, path) {
     var down = x % 2 == 1 ? ISO_HALF_H : 0;
     return [x * ISO_HALF_W + ISO_HALF_W, y * 2 * ISO_HALF_H + down + ISO_HALF_H];
   };
-  var ground = tileLayer("ground", { occludes: false });
-  var props = tileLayer("props", { y_sort: true, occludes: false });
+  var ground = tileLayer("ground", { occludes: false, filter: SMOOTH });
+  var props = tileLayer("props", { y_sort: true, occludes: false, filter: SMOOTH });
   var g = ground.edit(), p = props.edit();
   for (var y = 0; y < height; y++) {
     for (var x = 0; x < width; x++) {
@@ -727,7 +733,7 @@ board.staggerAxis = TileMap.StaggerY;
 board.staggerIndex = TileMap.StaggerOdd;
 board.hexSideLength = 70;
 board.addTileset(HX);
-var boardLayer = tileLayer("board", { collides: false, occludes: false });
+var boardLayer = tileLayer("board", { collides: false, occludes: false, filter: SMOOTH });
 var boardEdit = boardLayer.edit();
 for (var by = 0; by < BOARD.length; by++) {
   for (var bx = 0; bx < BOARD[by].length; bx++) {
@@ -742,7 +748,7 @@ for (var by = 0; by < BOARD.length; by++) {
 boardEdit.apply();
 board.addLayer(boardLayer);
 for (var mk = 0; mk < MARKS.length; mk++) {
-  var mark = tileLayer(MARKS[mk][0], { collides: false, occludes: false, mark: hexTile(MARKS[mk][1]) });
+  var mark = tileLayer(MARKS[mk][0], { collides: false, occludes: false, mark: hexTile(MARKS[mk][1]), filter: SMOOTH });
   mark.opacity = MARKS[mk][2];
   board.addLayer(mark);
 }

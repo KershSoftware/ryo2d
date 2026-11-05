@@ -4,6 +4,7 @@
  <tileset firstgid="15" source="../tilesets/sketch-town-props.tsx"/>
  <layer id="1" name="ground" width="16" height="16">
   <properties>
+   <property name="filter" value="linear"/>
    <property name="occludes" type="bool" value="false"/>
   </properties>
   <data encoding="csv">
@@ -27,6 +28,7 @@
  </layer>
  <layer id="2" name="props" width="16" height="16">
   <properties>
+   <property name="filter" value="linear"/>
    <property name="occludes" type="bool" value="false"/>
    <property name="y_sort" type="bool" value="true"/>
   </properties>

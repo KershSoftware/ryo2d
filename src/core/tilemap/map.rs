@@ -14,7 +14,7 @@ use crate::core::ecs::Component;
 use crate::core::graphics::Image;
 use crate::core::hash::FastMap;
 use crate::core::physics::CellRect;
-use crate::core::render::batch::BlendMode;
+use crate::core::render::batch::{BlendMode, Filter};
 use crate::core::ui::Color;
 
 /// Where a tileset of a map comes from
@@ -64,6 +64,10 @@ pub struct LayerInfo {
   pub parallax: Vec2,
   pub visible: bool,
   pub blend: BlendMode,
+  /// How a tile or object layer's tiles are sampled drawn at another size
+  /// (`Filter::Default`: nearest on the pixel-art target, smooth otherwise;
+  /// Tiled's `filter` property); image layers draw with the default
+  pub filter: Filter,
   /// Whether its tiles' shapes collide
   pub collides: bool,
   /// Whether its tiles' shapes block light; `None` means as `collides`
@@ -98,6 +102,7 @@ impl LayerInfo {
       parallax: Vec2::ONE,
       visible: true,
       blend: BlendMode::default(),
+      filter: Filter::Default,
       collides: true,
       occludes: None,
       y_sorted: false,

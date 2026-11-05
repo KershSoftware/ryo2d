@@ -23,7 +23,7 @@ mod tests {
   use crate::core::asset::{AssetServer, Assets, AssetsView, MemorySource, insert_registry, pump};
   use crate::core::ecs::kernel::World;
   use crate::core::graphics::Image;
-  use crate::core::render::batch::BlendMode;
+  use crate::core::render::batch::{BlendMode, Filter};
   use crate::core::tilemap::{
     GridShape, ImageLayer, LayerInfo, LayerKind, PropertyValue, StaggerAxis, StaggerIndex, Tile,
     TileFlip, TileMap, Tileset, TilesetImage, TilesetSource,
@@ -228,6 +228,62 @@ mod tests {
     assert_eq!(flips.occludes, None);
     assert!(!info(&map, "things").collides);
     assert!(matches!(layer(&map, "things").kind, LayerKind::Objects(_)));
+  }
+
+  #[test]
+  fn a_layer_s_filter_property_picks_how_its_tiles_are_sampled_in_both_formats() {
+    // A tile layer's and an object layer's `filter`, as a TMJ and a TMX
+    // file write it: "linear" and "nearest" (in any case), nothing, a value
+    // it does not know and a bool, which keep the default as a bad reserved
+    // property does
+    let cases: [(Option<(&str, &str)>, Filter); 6] = [
+      (Some(("string", "linear")), Filter::Linear),
+      (Some(("string", "nearest")), Filter::Nearest),
+      (Some(("string", "Linear")), Filter::Linear),
+      (None, Filter::Default),
+      (Some(("string", "smooth")), Filter::Default),
+      (Some(("bool", "true")), Filter::Default),
+    ];
+    for (property, expected) in cases {
+      let (json_props, xml_props) = match property {
+        Some((ty, value)) => {
+          let json_value = if ty == "string" {
+            format!("\"{value}\"")
+          } else {
+            value.to_string()
+          };
+          (
+            format!(r#","properties":[{{"name":"filter","type":"{ty}","value":{json_value}}}]"#),
+            format!(
+              r#"<properties><property name="filter" type="{ty}" value="{value}"/></properties>"#
+            ),
+          )
+        }
+        None => (String::new(), String::new()),
+      };
+      let json = format!(
+        r#"{{"type":"map","orientation":"orthogonal","width":2,"height":2,"tilewidth":16,"tileheight":16,"tilesets":[],
+          "layers":[{{"id":1,"name":"ground","type":"tilelayer","width":2,"height":2,"data":[0,0,0,0]{json_props}}},
+          {{"id":2,"name":"things","type":"objectgroup","objects":[]{json_props}}}]}}"#
+      );
+      let xml = format!(
+        r#"<map orientation="orthogonal" width="2" height="2" tilewidth="16" tileheight="16">
+ <layer id="1" name="ground" width="2" height="2">{xml_props}<data encoding="csv">0,0,0,0</data></layer>
+ <objectgroup id="2" name="things">{xml_props}</objectgroup>
+</map>"#
+      );
+      let mut world = world_over(files_with(&[("m.tmj", &json), ("m.tmx", &xml)]));
+      for path in ["m.tmj", "m.tmx"] {
+        let map = load_in(&mut world, path).unwrap_or_else(|e| panic!("{path}: {e}"));
+        for name in ["ground", "things"] {
+          assert_eq!(
+            info(&map, name).filter,
+            expected,
+            "{path}, layer {name}, filter {property:?}"
+          );
+        }
+      }
+    }
   }
 
   fn tileset_of(map: &TileMap, index: usize, world: &World) -> Tileset {

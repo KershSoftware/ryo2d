@@ -16,12 +16,12 @@ use crate::core::asset::{
 use crate::core::graphics::Image;
 use crate::core::hash::FastSet;
 use crate::core::physics::CellRect;
-use crate::core::render::batch::BlendMode;
+use crate::core::render::batch::{BlendMode, Filter};
 use crate::core::tilemap::map::tiles_bounds;
 use crate::core::tilemap::{
-  CHUNK_SIZE, GridShape, ImageLayer, LayerKind, MapGrid, MapLayer, StaggerAxis, StaggerIndex, Tile,
-  TileData, TileFlip, TileFrame, TileGrid, TileMap, TileShape, Tileset, TilesetImage,
-  TilesetSource,
+  CHUNK_SIZE, GridShape, ImageLayer, LayerKind, MapGrid, MapLayer, Properties, StaggerAxis,
+  StaggerIndex, Tile, TileData, TileFlip, TileFrame, TileGrid, TileMap, TileShape, Tileset,
+  TilesetImage, TilesetSource,
 };
 use crate::core::ui::Color;
 use glam::{IVec2, UVec2, Vec2};
@@ -788,6 +788,17 @@ fn max_layer_id(layers: &[RawLayer]) -> u32 {
     .unwrap_or(0)
 }
 
+/// A tile or object layer's `filter` property: "linear" or "nearest" (in
+/// any case). Absent, or any other value or type, keeps the default, as a
+/// reserved property of the wrong type does
+fn layer_filter(props: &Properties) -> Filter {
+  match props.string("filter") {
+    Some(value) if value.eq_ignore_ascii_case("linear") => Filter::Linear,
+    Some(value) if value.eq_ignore_ascii_case("nearest") => Filter::Nearest,
+    _ => Filter::Default,
+  }
+}
+
 fn blend_of(path: &AssetPath, place: &str, mode: Option<&str>) -> Result<BlendMode, AssetError> {
   match mode {
     None | Some("" | "normal") => Ok(BlendMode::Alpha),
@@ -957,6 +968,9 @@ impl Builder<'_, '_> {
     info.parallax = here.parallax;
     info.visible = here.visible;
     info.blend = here.blend;
+    if !matches!(kind, LayerKind::Image(_)) {
+      info.filter = layer_filter(&props);
+    }
     info.collides = props.bool("collides").unwrap_or(is_tiles && !hex_tiles);
     info.occludes = props.bool("occludes");
     info.y_sorted = props.bool("y_sort").unwrap_or(false);

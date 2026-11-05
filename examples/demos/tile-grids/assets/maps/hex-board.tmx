@@ -4,6 +4,7 @@
  <layer id="1" name="board" width="8" height="9">
   <properties>
    <property name="collides" type="bool" value="false"/>
+   <property name="filter" value="linear"/>
    <property name="occludes" type="bool" value="false"/>
   </properties>
   <data encoding="csv">
@@ -21,6 +22,7 @@
  <layer id="2" name="range" width="8" height="9" opacity="0.45">
   <properties>
    <property name="collides" type="bool" value="false"/>
+   <property name="filter" value="linear"/>
    <property name="mark" type="int" value="17"/>
    <property name="occludes" type="bool" value="false"/>
   </properties>
@@ -39,6 +41,7 @@
  <layer id="3" name="ring" width="8" height="9">
   <properties>
    <property name="collides" type="bool" value="false"/>
+   <property name="filter" value="linear"/>
    <property name="mark" type="int" value="21"/>
    <property name="occludes" type="bool" value="false"/>
   </properties>
@@ -57,6 +60,7 @@
  <layer id="4" name="neighbours" width="8" height="9">
   <properties>
    <property name="collides" type="bool" value="false"/>
+   <property name="filter" value="linear"/>
    <property name="mark" type="int" value="22"/>
    <property name="occludes" type="bool" value="false"/>
   </properties>
@@ -75,6 +79,7 @@
  <layer id="5" name="line" width="8" height="9">
   <properties>
    <property name="collides" type="bool" value="false"/>
+   <property name="filter" value="linear"/>
    <property name="mark" type="int" value="23"/>
    <property name="occludes" type="bool" value="false"/>
   </properties>
