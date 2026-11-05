@@ -13,14 +13,23 @@
 //! and its ring at the Radius setting, the line from it to the hovered hex
 //! and the hovered hex's neighbours, each on an empty layer of its own the
 //! map holds above the board, in the rim its `mark` property names; the
-//! HUD gives the distance between them. The board's layers neither collide
-//! nor cast shadows, so the board has no character
+//! HUD gives the distance between them.
+//!
+//! The board collides, and casts shadows, along its rocks' and stone's
+//! hexagons (each such tile's shape is its whole hexagon), so they stop the
+//! walker WASD walks. Its navigation grid (`ctx.maps().navigation`) blocks
+//! them from that collision, and the trees' `cost` property makes them
+//! dearer to cross, so hovering a hex shows the cheapest path to it from
+//! the walker's hex, a line through hex centres, with its length and cost
+//! in the HUD; a right click walks the walker along it
 
 use demo_kit::prelude::*;
 
 use crate::shared::{
-  DIM, GOOD, HOT, View, beside_panel, clear_to, draw_outline, hovered_cell, hud, load,
+  DIM, GOOD, HOT, PATH, View, beside_panel, clear_to, draw_outline, draw_path, hovered_cell, hud,
+  load, wasd,
 };
+use crate::walker::{CellPath, PathWalk, Walk, face, place_of, spawn_walker};
 
 /// The board
 const BOARD: &str = "maps/hex-board.tmx";
@@ -40,6 +49,27 @@ const ZOOM: f32 = 0.5;
 const FIRST: IVec2 = IVec2::new(4, 4);
 /// The settings rows, for the notes under the panel
 const ROWS: usize = 1;
+/// The hex the walker starts on
+const START: IVec2 = IVec2::new(1, 4);
+/// The walker: Tiny Dungeon's wizard, 64 px tall on hexes 140 tall (32
+/// screen pixels at the board's zoom). Its collider is under half a hex's
+/// side (35), so on a path between two hexes' centres it passes the
+/// corners of the rocks either side
+const WALKER: Walk = Walk {
+  sprite: 84,
+  scale: 4.0,
+  radius: 20.0,
+  speed: 240.0,
+};
+
+/// The cheapest path from the walker's hex to the hovered one, and the
+/// hexes it was found for
+struct Route {
+  from: IVec2,
+  to: IVec2,
+  /// `None` when nothing reaches the hovered hex: a rock, or walled off
+  path: Option<CellPath>,
+}
 
 pub(crate) struct HexPage {
   view: View,
@@ -53,6 +83,14 @@ pub(crate) struct HexPage {
   marked: Option<(IVec2, Option<IVec2>, i32)>,
   covered: Vec<Rect>,
   radius: i32,
+  /// The z the walker draws at: above the board and its marks
+  walker_z: i32,
+  walker: Option<Entity>,
+  /// The board as the walker crosses it, taken once it lands and again
+  /// when a save of its files changes it
+  nav: Option<NavigationGrid>,
+  route: Option<Route>,
+  walk: Option<PathWalk>,
 }
 
 impl HexPage {
@@ -66,6 +104,11 @@ impl HexPage {
       marked: None,
       covered: Vec::new(),
       radius: 2,
+      walker_z: MARKS.len() as i32 + 1,
+      walker: None,
+      nav: None,
+      route: None,
+      walk: None,
     }
   }
 
@@ -118,6 +161,28 @@ impl HexPage {
     }
   }
 
+  /// The cheapest path from the walker's hex, `from`, to the hovered one,
+  /// found again when either changes; none when it hovers no hex, or its
+  /// own
+  fn find_route(&mut self, from: Option<IVec2>) {
+    let (Some(from), Some(to)) = (from, self.hover.filter(|&hover| Some(hover) != from)) else {
+      self.route = None;
+      return;
+    };
+    if self
+      .route
+      .as_ref()
+      .is_some_and(|route| route.from == from && route.to == to)
+    {
+      return;
+    }
+    let path = self
+      .nav
+      .as_ref()
+      .and_then(|grid| CellPath::find(grid, from, to));
+    self.route = Some(Route { from, to, path });
+  }
+
   /// How the hovered hex's tile is turned, as the HUD says it
   fn turn_line(&self, ctx: &mut SceneContext, root: Entity) -> Option<String> {
     let tile = ctx.maps().tile(root, TERRAIN, self.hover?)?;
@@ -134,13 +199,39 @@ impl HexPage {
   }
 }
 
+/// The board's navigation grid: the tiles that collide (the rocks and the
+/// stone) blocked, and each other tile with a `cost` property that much
+/// dearer to enter
+fn board_navigation(ctx: &mut SceneContext, root: Entity) -> Option<NavigationGrid> {
+  let bounds = ctx.maps().bounds(root)?;
+  let mut grid = ctx.maps().navigation(root, TERRAIN, bounds)?;
+  let maps = ctx.maps();
+  for y in bounds.min.y..bounds.max.y {
+    for x in bounds.min.x..bounds.max.x {
+      let cell = IVec2::new(x, y);
+      let cost = maps
+        .tile(root, TERRAIN, cell)
+        .and_then(|tile| maps.tile_data(root, tile))
+        .and_then(|data| data.properties.float("cost"))
+        .map(|cost| cost as f32)
+        .filter(|cost| cost.is_finite() && *cost > 0.0);
+      if let Some(cost) = cost
+        && grid.is_walkable(cell.into())
+      {
+        grid.set(cell.into(), CellState::Difficult(cost));
+      }
+    }
+  }
+  Some(grid)
+}
+
 impl DemoPage for HexPage {
   fn name(&self) -> &str {
     "A hex board"
   }
 
   fn description(&self) -> &str {
-    "Pointy hexagons in rows: pick, select, and see a hex's range, ring, line and neighbours"
+    "Pointy hexagons in rows: a hex's range, ring, line and neighbours, and paths round the rocks"
   }
 
   fn settings(&mut self, s: &mut Settings) {
@@ -148,7 +239,10 @@ impl DemoPage for HexPage {
   }
 
   fn controls(&self) -> Vec<Control> {
-    vec![Control::mouse("Point at a hex, click to select it")]
+    vec![
+      wasd("Walk (pad: left stick)"),
+      Control::mouse("Point at a hex, click to select it, right-click to walk there"),
+    ]
   }
 
   fn enter(&mut self, ctx: &mut SceneContext) {
@@ -161,6 +255,7 @@ impl DemoPage for HexPage {
         return;
       };
       self.read_marks(data);
+      self.walker_z = data.layers.len() as i32;
       let size = data.grid().bounds_of(CellRect::from_size(data.size));
       (data.background, size)
     };
@@ -176,12 +271,30 @@ impl DemoPage for HexPage {
     self.view.place(ctx, centre, ZOOM, true);
   }
 
-  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) {
+  fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
     let Some(root) = self.root else {
       return;
     };
     if !ctx.maps().is_ready(root) {
       return;
+    }
+    let Some(layer) = ctx.maps().grid(root, TERRAIN) else {
+      return;
+    };
+    let walker = match self.walker {
+      Some(walker) => walker,
+      None => {
+        let walker = spawn_walker(ctx, layer.cell_center_world(START), WALKER, self.walker_z);
+        *self.walker.insert(walker)
+      }
+    };
+    let saved = ctx
+      .messages::<MapEvent>()
+      .iter()
+      .any(|event| matches!(event, MapEvent::Reloaded { map } if *map == root));
+    if saved || self.nav.is_none() {
+      self.nav = board_navigation(ctx, root);
+      self.route = None;
     }
     self.hover = hovered_cell(ctx, root, TERRAIN, &self.covered);
     if let Some(cell) = self.hover
@@ -190,13 +303,32 @@ impl DemoPage for HexPage {
       self.selected = cell;
     }
     self.mark(ctx, root);
-    let Some(layer) = ctx.maps().grid(root, TERRAIN) else {
-      return;
-    };
+
+    let feet = place_of(ctx, Some(walker));
+    self.find_route(feet.map(|at| layer.cell_at_world(at)));
+    let wanted = self.route.as_ref().and_then(|route| route.path.as_ref());
+    if let Some(path) = wanted
+      && ctx.input.mouse_pressed(MouseButton::Right)
+    {
+      let centres = path.centres.clone();
+      if let Some(walk) = self.walk.take() {
+        walk.stop(ctx);
+      }
+      self.walk = PathWalk::start(ctx, walker, centres);
+    }
+    self.walk = self.walk.take().and_then(|walk| walk.step(ctx, dt));
+    face(ctx, walker);
+
     let mut debug = ctx.debug_draw();
     draw_outline(&mut debug, &layer.outline_world(self.selected), HOT, 3.0);
     if let Some(cell) = self.hover {
       draw_outline(&mut debug, &layer.outline_world(cell), Color::WHITE, 2.0);
+    }
+    if let (Some(walk), Some(at)) = (&self.walk, feet) {
+      walk.draw(&mut debug, at, 2.0);
+    }
+    if let Some(path) = self.route.as_ref().and_then(|route| route.path.as_ref()) {
+      draw_path(&mut debug, None, &path.centres, 3.0);
     }
   }
 
@@ -243,6 +375,18 @@ impl DemoPage for HexPage {
           ),
           GOOD,
         ));
+        match self.route.as_ref().filter(|route| route.to == cell) {
+          Some(Route {
+            path: Some(path), ..
+          }) => lines.push((
+            format!("Path: {} hexes, cost {:.1}", path.cells.len(), path.cost),
+            PATH,
+          )),
+          Some(Route { path: None, .. }) => {
+            lines.push((format!("No path to hex {}, {}", cell.x, cell.y), PATH));
+          }
+          None => {}
+        }
         if let Some(turn) = self.turn_line(ctx, root) {
           lines.push((turn, DIM));
         }
@@ -251,6 +395,10 @@ impl DemoPage for HexPage {
     }
     lines.push((
       "Beige: the ring; grey: neighbours; red: the line".to_string(),
+      DIM,
+    ));
+    lines.push((
+      "Blue: the walker's path; trees cost 2, rocks block".to_string(),
       DIM,
     ));
     let notes = hud(ui, column.x, column.y, column.width, &lines);

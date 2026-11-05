@@ -3,9 +3,9 @@
  <tileset firstgid="1" source="../tilesets/hexagon-board.tsx"/>
  <layer id="1" name="board" width="8" height="9">
   <properties>
-   <property name="collides" type="bool" value="false"/>
+   <property name="collides" type="bool" value="true"/>
    <property name="filter" value="linear"/>
-   <property name="occludes" type="bool" value="false"/>
+   <property name="occludes" type="bool" value="true"/>
   </properties>
   <data encoding="csv">
 2,3,1,1,1,9,9,12,

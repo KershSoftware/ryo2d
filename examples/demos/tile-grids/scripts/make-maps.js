@@ -236,8 +236,11 @@ save(sketchProps, tiled.tilesetFormat("tsx"), "tilesets/sketch-town-props.tsx");
 
 // Kenney's Hexagon Pack: the hexagons the board uses, cut from its terrain
 // sheet (scripts/derive-art.sh), pointy-topped hexagons of 120 x 140 side
-// by side, 6 a row, in HEX_SHEET's order. Nothing collides: hexagonal
-// layers don't
+// by side, 6 a row, in HEX_SHEET's order. The rocks and the stone collide,
+// their shape the whole hexagon (a polygon on its corners, in the tile's
+// pixels: the tile fills its cell's box), and the trees and the forest
+// cost 2 to walk through (a float property `cost`, which the page sets on
+// its navigation grid)
 var HEX_SHEET = [
   "grass_05", "grass_10", "grass_12", "grass_13", "grass_11", "grass_14",
   "grass_15", "grass_16", "dirt_06", "dirt_11", "dirt_12", "dirt_14",
@@ -249,9 +252,30 @@ function hexTile(name) {
   if (id < 0) fail("no hexagon " + name + " in the board's sheet");
   return id;
 }
+var HEX_W = 120, HEX_H = 140, HEX_SIDE = 70;
+var HEX_ROCKS = ["grass_14", "grass_15", "grass_16", "dirt_16", "dirt_18", "dirt_17", "stone_07"];
+var HEX_TREES = ["grass_10", "grass_11", "grass_12", "grass_13", "dirt_11", "dirt_12", "dirt_13", "dirt_14"];
+// The cell's hexagon, clockwise from its top corner
+function hexagon() {
+  var slant = (HEX_H - HEX_SIDE) / 2;
+  var shape = new MapObject(MapObject.Polygon, "");
+  shape.x = 0;
+  shape.y = 0;
+  shape.polygon = [
+    Qt.point(HEX_W / 2, 0),
+    Qt.point(HEX_W, slant),
+    Qt.point(HEX_W, HEX_H - slant),
+    Qt.point(HEX_W / 2, HEX_H),
+    Qt.point(0, HEX_H - slant),
+    Qt.point(0, slant),
+  ];
+  return shape;
+}
 var hexTerrain = new Tileset("hexagon-board");
-hexTerrain.setTileSize(120, 140);
+hexTerrain.setTileSize(HEX_W, HEX_H);
 hexTerrain.imageFileName = file("kenney-hexagon-pack/hexagon-board.png");
+shapes(hexTerrain, HEX_ROCKS.map(hexTile), function () { return [hexagon()]; });
+for (var ht = 0; ht < HEX_TREES.length; ht++) hexTerrain.tile(hexTile(HEX_TREES[ht])).setFloatProperty("cost", 2);
 save(hexTerrain, tiled.tilesetFormat("tsx"), "tilesets/hexagon-board.tsx");
 
 // Tiny Dungeon, 16 px, for the oblique dungeon: its grey brick walls solid,
@@ -698,10 +722,11 @@ island(TileMap.StaggerX, 24, 12, "maps/island-columns.tmx");
 // dunes are turned by a hash of the cell, a sixth of a turn at a time (the
 // flags Tiled sets for 60 and 120 degrees, and both flips for a half turn),
 // so its ripples run three ways; nothing else is turned, its trees and
-// rocks standing up. Above the board, empty layers the page marks: the
-// selected hex's range (see-through) and ring, the hovered hex's
-// neighbours, and the line between them, each in rims of its own colour.
-// No layer collides or casts shadows: hexagonal layers do neither
+// rocks standing up. The board collides and casts shadows along its rocks'
+// and stone's hexagons. Above it, empty layers the page marks, which
+// neither collide nor cast shadows: the selected hex's range (see-through)
+// and ring, the hovered hex's neighbours, and the line between them, each
+// in rims of its own colour
 var BOARD = [
   "ttgggddD",
   "tTgggdDR",
@@ -728,12 +753,12 @@ var TURNS = [
 ];
 // The marks' rims: beige, red and grey; the range a see-through sand wash
 var MARKS = [["range", "sand_07", 0.45], ["ring", "sand_01", 1], ["neighbours", "stone_01", 1], ["line", "mars_01", 1]];
-var board = gridMap(TileMap.Hexagonal, 120, 140, 8, BOARD.length, "#24313f");
+var board = gridMap(TileMap.Hexagonal, HEX_W, HEX_H, 8, BOARD.length, "#24313f");
 board.staggerAxis = TileMap.StaggerY;
 board.staggerIndex = TileMap.StaggerOdd;
-board.hexSideLength = 70;
+board.hexSideLength = HEX_SIDE;
 board.addTileset(HX);
-var boardLayer = tileLayer("board", { collides: false, occludes: false, filter: SMOOTH });
+var boardLayer = tileLayer("board", { collides: true, occludes: true, filter: SMOOTH });
 var boardEdit = boardLayer.edit();
 for (var by = 0; by < BOARD.length; by++) {
   for (var bx = 0; bx < BOARD[by].length; bx++) {

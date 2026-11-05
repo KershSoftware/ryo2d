@@ -1,12 +1,17 @@
 //! The pages on the other grids without a window: the isometric town's
 //! knight draws behind a tall wall from the cell behind it and over it from
 //! the cell in front (pixels sampled where the two overlap), the town's
-//! walls stop it at their diamonds, and painting water never walls it in;
-//! the island's setting and the speed page's choice spawn another grid's
-//! map; the hex board picks the hex under the pointer, a click selects one,
-//! and the board marks the selected hex's range and ring, the line to the
-//! hovered hex and the hovered hex's neighbours, each as the layer's grid
-//! (`MapsView::grid`) works them out, with the distance in the HUD; and the
+//! walls stop it at their diamonds, painting water never walls it in, and
+//! Space walks it to the cell under the pointer by a path through a gate,
+//! round water painted since it last walked, until something unknown holds
+//! it up or the player steers; the island's setting and the speed page's
+//! choice spawn another grid's map; the hex board picks the hex under the
+//! pointer, a click selects one, and the board marks the selected hex's
+//! range and ring, the line to the hovered hex and the hovered hex's
+//! neighbours, each as the layer's grid (`MapsView::grid`) works them out,
+//! with the distance in the HUD; the board's rocks stop its walker and cast
+//! shadows, and the HUD gives the cheapest path to the hovered hex round
+//! them (trees costing 2, a rock none), which a right click walks; and the
 //! oblique map's knight stops at a skewed wall, on the map and on its
 //! mirror
 
@@ -27,6 +32,13 @@ const STAGGERED: usize = 4;
 const HEX: usize = 5;
 const OBLIQUE: usize = 6;
 const SPEED: usize = 7;
+/// The hex board's rocks and stone (`grass_14`, `_15`, `_16`, `dirt_16`,
+/// `_18`, `_17` and `stone_07`) and its trees (`grass_10` to `_13` and
+/// `dirt_11` to `_14`), by id in its sheet
+const HEX_ROCKS: [u32; 7] = [5, 6, 7, 13, 14, 15, 16];
+const HEX_TREES: [u32; 8] = [1, 2, 3, 4, 9, 10, 11, 12];
+/// The hex the board's walker starts on
+const HEX_START: IVec2 = IVec2::new(1, 4);
 /// The page's character (the one top-down walker), once it has one
 fn walker(engine: &mut HeadlessEngine) -> Option<Entity> {
   let world = engine.world_mut();
@@ -502,6 +514,225 @@ fn the_hex_board_picks_the_hex_under_the_pointer_and_shows_its_range() {
   assert!(warnings().is_empty(), "{:#?}", warnings());
 }
 
+/// The id of the board's tile at `cell`
+fn hex_tile(engine: &mut HeadlessEngine, map: Entity, cell: IVec2) -> Option<u32> {
+  MapsView::new(engine.world_mut())
+    .tile(map, "board", cell)
+    .map(|tile| tile.id)
+}
+
+/// Whether the board's `cell` holds rocks or stone
+fn is_rock(engine: &mut HeadlessEngine, map: Entity, cell: IVec2) -> bool {
+  hex_tile(engine, map, cell).is_some_and(|id| HEX_ROCKS.contains(&id))
+}
+
+/// Whether `cell`'s centre is in the board's view, clear of the notes
+fn in_view(engine: &mut HeadlessEngine, layer: &LayerGrid, cell: IVec2) -> bool {
+  let screen = to_screen(engine, layer.cell_center_world(cell));
+  (40.0..480.0).contains(&screen.x) && (110.0..540.0).contains(&screen.y)
+}
+
+/// The cheapest path from `from` to `to` on `grid`, and its cost: each
+/// step's cost as the grid gives it
+fn cheapest(grid: &NavigationGrid, from: IVec2, to: IVec2) -> Option<(Vec<IVec2>, f32)> {
+  let path: Vec<IVec2> = Pathfinder::new()
+    .find_path_grid(grid, from.into(), to.into())
+    .path()?
+    .waypoints()
+    .iter()
+    .map(|node| node.grid_coord.into())
+    .collect();
+  let cost = path
+    .windows(2)
+    .map(|step| {
+      grid
+        .neighbors(step[0].into())
+        .into_iter()
+        .find(|(cell, _)| IVec2::from(*cell) == step[1])
+        .map(|(_, cost)| cost)
+        .expect("each step to a neighbour")
+    })
+    .sum();
+  Some((path, cost))
+}
+
+/// The HUD after the pointer moves over `cell`
+fn hovering(engine: &mut HeadlessEngine, layer: &LayerGrid, cell: IVec2) -> String {
+  let at = to_screen(engine, layer.cell_center_world(cell));
+  engine.mouse_move(at.x, at.y);
+  engine.step_frames(3).unwrap();
+  engine.ui_snapshot()
+}
+
+#[test]
+fn the_hex_board_s_walker_paths_around_the_rocks() {
+  let Some(mut engine) = engine_on(HEX) else {
+    return;
+  };
+  let map = spawned_map(&mut engine);
+  let walker = wait_for_walker(&mut engine);
+  engine.step_frames(3).unwrap();
+  let layer = grid_of(&mut engine, map, "board");
+  let start = layer.cell_at_world(walker_at(&engine, walker));
+  assert_eq!(start, HEX_START, "the walker starts on its hex");
+
+  // The hex in the view whose straight line from the walker crosses the
+  // most rocks: one behind a clump of them
+  let cells = map_cells(&mut engine, map);
+  let (mut goal, mut most) = (None, 0);
+  for &cell in &cells {
+    if !in_view(&mut engine, &layer, cell) || is_rock(&mut engine, map, cell) {
+      continue;
+    }
+    let rocks = layer
+      .grid
+      .line(start, cell)
+      .into_iter()
+      .filter(|&on| is_rock(&mut engine, map, on))
+      .count();
+    if rocks > most {
+      (goal, most) = (Some(cell), rocks);
+    }
+  }
+  let goal = goal.expect("a hex in the view behind rocks");
+  assert!(
+    most >= 2,
+    "the line to {goal} crosses a clump: {most} rocks"
+  );
+
+  // The cheapest path as the board's tiles have it: rocks and stone
+  // blocked, trees costing 2
+  let bounds = MapsView::new(engine.world_mut())
+    .bounds(map)
+    .expect("the board's bounds");
+  let mut grid = NavigationGrid::for_layer(layer, bounds);
+  for &cell in &cells {
+    match hex_tile(&mut engine, map, cell) {
+      Some(id) if HEX_ROCKS.contains(&id) => grid.set(cell.into(), CellState::Blocked),
+      Some(id) if HEX_TREES.contains(&id) => grid.set(cell.into(), CellState::Difficult(2.0)),
+      _ => {}
+    }
+  }
+  let (path, cost) = cheapest(&grid, start, goal).expect("a path round the rocks");
+  for &cell in &path {
+    assert!(
+      grid.is_walkable(cell.into()) && !is_rock(&mut engine, map, cell),
+      "{cell} on the path is walkable, and no rock"
+    );
+  }
+
+  // Hovered, the HUD gives that path; a hex among the trees costs 2 to
+  // enter, and a rock has no path
+  let tree = cells
+    .iter()
+    .copied()
+    .find(|&cell| {
+      cell != start
+        && in_view(&mut engine, &layer, cell)
+        && hex_tile(&mut engine, map, cell).is_some_and(|id| HEX_TREES.contains(&id))
+    })
+    .expect("trees in the view");
+  let (to_tree, dear) = cheapest(&grid, start, tree).expect("a path to the trees");
+  assert!(
+    dear >= to_tree.len() as f32,
+    "entering trees costs 2: {dear}"
+  );
+  let rock = cells
+    .iter()
+    .copied()
+    .find(|&cell| in_view(&mut engine, &layer, cell) && is_rock(&mut engine, map, cell))
+    .expect("a rock in the view");
+  for (hex, line) in [
+    (
+      tree,
+      format!("Path: {} hexes, cost {dear:.1}", to_tree.len()),
+    ),
+    (rock, format!("No path to hex {}, {}", rock.x, rock.y)),
+    (goal, format!("Path: {} hexes, cost {cost:.1}", path.len())),
+  ] {
+    let shown = hovering(&mut engine, &layer, hex);
+    assert!(shown.contains(&line), "{line:?} in {shown}");
+  }
+
+  // A right click walks it hex by hex, never into a rock, and the walker
+  // stops on the goal's middle
+  engine.press_mouse(MouseButton::Right);
+  let mut walked = vec![start];
+  for frame in 0..600 {
+    engine.step().unwrap();
+    if frame == 0 {
+      engine.release_mouse(MouseButton::Right);
+    }
+    let cell = layer.cell_at_world(walker_at(&engine, walker));
+    assert!(
+      !is_rock(&mut engine, map, cell),
+      "the walker went into the rocks at {cell}"
+    );
+    if walked.last() != Some(&cell) {
+      walked.push(cell);
+    }
+  }
+  assert_eq!(walked, path, "the walker walks the path");
+  let feet = walker_at(&engine, walker);
+  let off = feet.distance(layer.cell_center_world(goal));
+  assert!(off < 6.0, "it stops on the goal's middle: {off} px off");
+  // Hovering its own hex, the HUD gives no path
+  let shown = engine.ui_snapshot();
+  assert!(
+    !shown.contains("Path:") && !shown.contains("No path"),
+    "{shown}"
+  );
+  assert!(warnings().is_empty(), "{:#?}", warnings());
+}
+
+#[test]
+fn the_hex_board_s_rocks_stop_the_walker() {
+  let Some(mut engine) = engine_on(HEX) else {
+    return;
+  };
+  let map = spawned_map(&mut engine);
+  let walker = wait_for_walker(&mut engine);
+  engine.mouse_move(900.0, 100.0);
+  engine.step_frames(3).unwrap();
+  let layer = grid_of(&mut engine, map, "board");
+  let start = layer.cell_at_world(walker_at(&engine, walker));
+  assert_eq!(start, HEX_START, "the walker starts on its hex");
+  let (radius, skin) = walker_reach(&engine, walker);
+  assert!(
+    radius < 35.0,
+    "its collider is under half a hex's side: {radius}"
+  );
+
+  // D walks it right, along its row, into the first rock there: it never
+  // goes into the rock's hexagon, and stops at it, its skin away
+  let rock = (1..8)
+    .map(|dx| start + IVec2::new(dx, 0))
+    .find(|&cell| is_rock(&mut engine, map, cell))
+    .expect("a rock to the walker's right");
+  let outline = layer.outline_world(rock);
+  engine.press_key(KeyCode::KeyD);
+  for _ in 0..120 {
+    engine.step().unwrap();
+    let at = walker_at(&engine, walker);
+    assert!(
+      layer.cell_at_world(at) != rock && distance_to(outline.points(), at) > 0.0,
+      "the walker at {at} went into the rock at {rock}"
+    );
+  }
+  engine.release_key(KeyCode::KeyD);
+  engine.step_frames(5).unwrap();
+  let gap = distance_to(outline.points(), walker_at(&engine, walker));
+  assert!(
+    (gap - (radius + skin)).abs() < 2.0,
+    "the walker stops at the rock's hexagon: {gap} from it, its radius {radius} and skin {skin}"
+  );
+  // And the rocks cast shadows: the board has shadow chains
+  let world = engine.world_mut();
+  let mut chains = world.query_filtered::<(), (With<MapOccluder>, With<LightOccluder2D>)>();
+  assert!(chains.iter(world).count() > 0, "the board's shadow chains");
+  assert!(warnings().is_empty(), "{:#?}", warnings());
+}
+
 #[test]
 fn the_oblique_character_collides_with_a_skewed_wall() {
   let Some(mut engine) = engine_on(OBLIQUE) else {
@@ -660,5 +891,221 @@ fn painting_water_never_walls_the_town_s_knight_in() {
   engine.release_key(KeyCode::KeyD);
   let moved = walker_at(&engine, walker).distance(feet);
   assert!(moved > 20.0, "the knight walks on: it moved {moved} px");
+  assert!(warnings().is_empty(), "{:#?}", warnings());
+}
+
+#[test]
+fn the_town_knight_walks_a_path_around_the_walls() {
+  let Some(mut engine) = engine_on(TOWN) else {
+    return;
+  };
+  let map = spawned_map(&mut engine);
+  let walker = wait_for_walker(&mut engine);
+  engine.step_frames(3).unwrap();
+  let layer = grid_of(&mut engine, map, "props");
+  let home = layer.cell_at_world(walker_at(&engine, walker));
+
+  // A wall in a run of walls, with open ground on either side of it: the
+  // side nearer the knight's start is inside the castle
+  let wall = map_cells(&mut engine, map)
+    .into_iter()
+    .find(|&cell| {
+      (-1..=1).all(|dy| collides_at(&mut engine, map, "props", cell + IVec2::new(0, dy)))
+        && open_ground(&mut engine, map, cell + IVec2::X)
+        && open_ground(&mut engine, map, cell - IVec2::X)
+    })
+    .expect("a wall in a run with open ground either side");
+  let (mut inside, mut outside) = (wall - IVec2::X, wall + IVec2::X);
+  if layer.grid.distance(home, outside) < layer.grid.distance(home, inside) {
+    (inside, outside) = (outside, inside);
+  }
+
+  // From outside, the pointer on the cell inside; Space walks the knight
+  // there, round the walls through a gate
+  teleport(&mut engine, walker, layer.cell_center_world(outside));
+  engine.step_frames(30).unwrap();
+  let at = to_screen(&mut engine, layer.cell_center_world(inside));
+  engine.mouse_move(at.x, at.y);
+  engine.step_frames(2).unwrap();
+  let shown = engine.ui_snapshot();
+  let line = format!("Pointer: cell {}, {}", inside.x, inside.y);
+  assert!(shown.contains(&line), "{line:?} in {shown}");
+  engine.tap_key(KeyCode::Space);
+  for _ in 0..900 {
+    engine.step().unwrap();
+    let cell = layer.cell_at_world(walker_at(&engine, walker));
+    assert!(
+      !collides_at(&mut engine, map, "props", cell)
+        && !collides_at(&mut engine, map, "ground", cell),
+      "the knight crossed a wall or water at {cell}"
+    );
+  }
+  let feet = walker_at(&engine, walker);
+  assert_eq!(
+    layer.cell_at_world(feet),
+    inside,
+    "the knight walked inside"
+  );
+  let off = feet.distance(layer.cell_center_world(inside));
+  assert!(off < 6.0, "it stops on the cell's middle: {off} px off");
+  assert!(warnings().is_empty(), "{:#?}", warnings());
+}
+
+/// The first of five cells in a row (along x) of the town's open ground,
+/// with open ground a cell deep all round them
+fn open_row(engine: &mut HeadlessEngine, map: Entity) -> IVec2 {
+  map_cells(engine, map)
+    .into_iter()
+    .find(|&home| {
+      (-1..=1).all(|dy| (-1..=5).all(|dx| open_ground(engine, map, home + IVec2::new(dx, dy))))
+    })
+    .expect("open ground round a row of five cells")
+}
+
+/// The pointer on the middle of the town's `cell`, where it is on screen
+fn point_at(engine: &mut HeadlessEngine, layer: &LayerGrid, cell: IVec2) -> Vec2 {
+  let at = to_screen(engine, layer.cell_center_world(cell));
+  engine.mouse_move(at.x, at.y);
+  engine.step_frames(2).unwrap();
+  at
+}
+
+#[test]
+fn the_town_knight_s_path_reads_water_painted_since_it_last_walked() {
+  let Some(mut engine) = engine_on(TOWN) else {
+    return;
+  };
+  let map = spawned_map(&mut engine);
+  let walker = wait_for_walker(&mut engine);
+  // The knight at the start of a row of open ground
+  let home = open_row(&mut engine, map);
+  let layer = grid_of(&mut engine, map, "props");
+  teleport(&mut engine, walker, layer.cell_center_world(home));
+  engine.step_frames(30).unwrap();
+  // Space on its own cell takes the town's grid, and walks nowhere
+  point_at(&mut engine, &layer, home);
+  engine.tap_key(KeyCode::Space);
+  engine.step_frames(5).unwrap();
+  // Then water painted in the middle of the row, and Space at its end:
+  // the knight walks round the water, on a grid taken again
+  let (water, goal) = (home + IVec2::new(2, 0), home + IVec2::new(4, 0));
+  let at = point_at(&mut engine, &layer, water);
+  click(&mut engine, at, MouseButton::Left);
+  assert!(
+    collides_at(&mut engine, map, "ground", water),
+    "water painted at {water}"
+  );
+  point_at(&mut engine, &layer, goal);
+  engine.tap_key(KeyCode::Space);
+  for _ in 0..600 {
+    engine.step().unwrap();
+    let cell = layer.cell_at_world(walker_at(&engine, walker));
+    assert!(
+      !collides_at(&mut engine, map, "ground", cell),
+      "the knight walked into the water at {cell}"
+    );
+  }
+  let feet = walker_at(&engine, walker);
+  assert_eq!(
+    layer.cell_at_world(feet),
+    goal,
+    "the knight walked round it"
+  );
+  assert!(warnings().is_empty(), "{:#?}", warnings());
+}
+
+#[test]
+fn the_town_knight_finds_its_way_round_water_painted_ahead_of_it() {
+  let Some(mut engine) = engine_on(TOWN) else {
+    return;
+  };
+  let map = spawned_map(&mut engine);
+  let walker = wait_for_walker(&mut engine);
+  let home = open_row(&mut engine, map);
+  let layer = grid_of(&mut engine, map, "props");
+  teleport(&mut engine, walker, layer.cell_center_world(home));
+  engine.step_frames(30).unwrap();
+
+  // Space at the row's end, then, as the knight sets off, water painted
+  // ahead of it on its way: it goes round
+  let (water, goal) = (home + IVec2::new(3, 0), home + IVec2::new(4, 0));
+  point_at(&mut engine, &layer, goal);
+  engine.tap_key(KeyCode::Space);
+  engine.step_frames(10).unwrap();
+  let at = point_at(&mut engine, &layer, water);
+  engine.press_mouse(MouseButton::Left);
+  engine.step().unwrap();
+  engine.release_mouse(MouseButton::Left);
+  assert!(
+    collides_at(&mut engine, map, "ground", water),
+    "water painted at {water} (the pointer at {at})"
+  );
+  for _ in 0..600 {
+    engine.step().unwrap();
+    let cell = layer.cell_at_world(walker_at(&engine, walker));
+    assert!(
+      !collides_at(&mut engine, map, "ground", cell),
+      "the knight walked into the water at {cell}"
+    );
+  }
+  let feet = walker_at(&engine, walker);
+  assert_eq!(layer.cell_at_world(feet), goal, "the knight went round it");
+  assert!(warnings().is_empty(), "{:#?}", warnings());
+}
+
+#[test]
+fn the_town_knight_s_walk_stops_when_held_up_or_steered() {
+  let Some(mut engine) = engine_on(TOWN) else {
+    return;
+  };
+  let map = spawned_map(&mut engine);
+  let walker = wait_for_walker(&mut engine);
+  let home = open_row(&mut engine, map);
+  let layer = grid_of(&mut engine, map, "props");
+  teleport(&mut engine, walker, layer.cell_center_world(home));
+  engine.step_frames(30).unwrap();
+  let walk_to = |engine: &mut HeadlessEngine, cell: IVec2| {
+    point_at(engine, &layer, cell);
+    engine.tap_key(KeyCode::Space);
+    engine.step_frames(5).unwrap();
+  };
+  let walking = |engine: &mut HeadlessEngine| {
+    let shown = engine.ui_snapshot();
+    let bound = engine.world().get::<MoveBindings>(walker).is_some();
+    (shown.contains("Walking to cell"), bound)
+  };
+
+  // Space along the row: it walks, its keys taken off while it does
+  let goal = home + IVec2::new(4, 0);
+  walk_to(&mut engine, goal);
+  assert_eq!(walking(&mut engine), (true, false), "the knight walks");
+
+  // Something the grid doesn't know in its way: it gives up after a second
+  // held up, short of the goal, its keys back
+  let block = layer.cell_center_world(home + IVec2::new(2, 0));
+  engine
+    .world_mut()
+    .spawn((Transform::from_translation(block), Collider::circle(60.0)));
+  engine.step_frames(180).unwrap();
+  assert_eq!(walking(&mut engine), (false, true), "the walk gave up");
+  let held = walker_at(&engine, walker);
+  assert!(
+    held.distance(block) < 60.0 + 30.0,
+    "held up at the block: {held}"
+  );
+
+  // Sent home, a movement key takes it over at once
+  walk_to(&mut engine, home);
+  assert_eq!(walking(&mut engine), (true, false), "the knight walks home");
+  engine.press_key(KeyCode::KeyS);
+  engine.step_frames(2).unwrap();
+  assert_eq!(walking(&mut engine), (false, true), "the player took over");
+  let before = walker_at(&engine, walker);
+  engine.step_frames(20).unwrap();
+  engine.release_key(KeyCode::KeyS);
+  assert!(
+    walker_at(&engine, walker).y > before.y + 20.0,
+    "and S walks it down"
+  );
   assert!(warnings().is_empty(), "{:#?}", warnings());
 }

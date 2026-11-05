@@ -19,6 +19,9 @@ pub(crate) const DIM: Color = Color::rgb(170, 170, 185);
 pub(crate) const HOT: Color = Color::XP_GOLD;
 /// Something that went well
 pub(crate) const GOOD: Color = Color::rgb(120, 230, 140);
+/// A path a character can walk, and the dark edge it is drawn on
+pub(crate) const PATH: Color = Color::rgb(110, 200, 255);
+const PATH_EDGE: Color = Color::rgb(18, 38, 66);
 /// The HUD's backing
 pub(crate) const BACKING: Color = Color::new(16, 16, 28, 235);
 
@@ -227,6 +230,23 @@ pub(crate) fn draw_outline(debug: &mut DebugDraw, outline: &CellOutline, color: 
   closed[..points.len()].copy_from_slice(points);
   closed[points.len()] = first;
   debug.width(width).polyline(&closed[..=points.len()], color);
+}
+
+/// Draws a path through `points` (from `from`, if given) with `debug`,
+/// `width` screen pixels wide, on a dark edge so it reads on any ground
+pub(crate) fn draw_path(debug: &mut DebugDraw, from: Option<Vec2>, points: &[Vec2], width: f32) {
+  let Some(&first) = points.first() else {
+    return;
+  };
+  for (color, width) in [(PATH_EDGE, width + 3.0), (PATH, width)] {
+    let mut pen = debug.width(width);
+    if let Some(from) = from {
+      pen.line(from, first, color);
+    }
+    if points.len() > 1 {
+      pen.polyline(points, color);
+    }
+  }
 }
 
 /// The cell under the pointer on `layer` of `map`, unless the pointer is

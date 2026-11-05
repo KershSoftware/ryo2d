@@ -1,11 +1,13 @@
-//! The character the town, the island and the dungeon share: a top-down
-//! walker, Tiny Dungeon's hero scaled to the map's cells, y-sorted at a map
-//! layer's z so it walks behind and in front of what that layer draws; and
-//! where a map's `player_start` stands
+//! The character the town, the island, the hex board and the dungeon
+//! share: a top-down walker, Tiny Dungeon's hero scaled to the map's cells,
+//! y-sorted at a map layer's z so it walks behind and in front of what that
+//! layer draws; where a map's `player_start` stands; and, for the town and
+//! the board, the cheapest path between two cells of a navigation grid and
+//! a walk along it
 
 use demo_kit::prelude::*;
 
-use crate::shared::{bindings, hero};
+use crate::shared::{bindings, draw_path, hero};
 
 /// A character's look and stride
 #[derive(Debug, Clone, Copy)]
@@ -90,4 +92,204 @@ pub(crate) fn map_start(map: &TileMap) -> Option<Vec2> {
       .find(|object| object.class.as_deref() == Some("player_start"))
       .map(|object| layer.info.offset + object.position)
   })
+}
+
+/// The cheapest path between two cells of a navigation grid
+pub(crate) struct CellPath {
+  /// Its cells, the start and the goal included
+  pub(crate) cells: Vec<IVec2>,
+  /// Their centres in the world
+  pub(crate) centres: Vec<Vec2>,
+  /// What the pathfinder found it costs: each step's length over the
+  /// grid's shortest step, times the cost of the cell it enters
+  pub(crate) cost: f32,
+}
+
+impl CellPath {
+  /// The cheapest path from `from` to `to` on `grid`; `None` when either
+  /// is blocked or off the grid, or nothing joins them
+  pub(crate) fn find(grid: &NavigationGrid, from: IVec2, to: IVec2) -> Option<CellPath> {
+    let path = Pathfinder::new()
+      .find_path_grid(grid, from.into(), to.into())
+      .path()?;
+    let cells: Vec<IVec2> = path
+      .waypoints()
+      .iter()
+      .map(|node| node.grid_coord.into())
+      .collect();
+    let centres = path
+      .waypoints()
+      .iter()
+      .map(|node| Vec2::new(node.x, node.y))
+      .collect();
+    let cost = cells
+      .windows(2)
+      .map(|step| step_cost(grid, step[0], step[1]))
+      .sum();
+    Some(CellPath {
+      cells,
+      centres,
+      cost,
+    })
+  }
+}
+
+/// What the grid charges for the step from `from` to its neighbour `to`
+fn step_cost(grid: &NavigationGrid, from: IVec2, to: IVec2) -> f32 {
+  grid
+    .neighbors(from.into())
+    .into_iter()
+    .find(|(cell, _)| IVec2::from(*cell) == to)
+    .map_or(0.0, |(_, cost)| cost)
+}
+
+/// How near a waypoint counts as reached, in world pixels
+const ARRIVE: f32 = 4.0;
+/// How far from the last waypoint the walker starts to slow, in world
+/// pixels
+const EASE: f32 = 40.0;
+/// How long a walk goes on coming no nearer its next waypoint, in seconds
+const PATIENCE: f32 = 1.0;
+/// How much nearer counts as getting there, in world pixels
+const PROGRESS: f32 = 0.5;
+
+/// A character walking a path waypoint to waypoint, by the `MoveIntent`
+/// it writes each step: straight at each waypoint, slowing into the last.
+/// `MoveBindings` fill the intent after the page's `update` and before the
+/// movement preset reads it, so they would overwrite it: the walk takes
+/// them off the character and puts them back when it stops. It stops on
+/// the last waypoint, when the player steers (a movement key or the pad),
+/// or when it has come no nearer its next waypoint for a second, held up
+/// by something the grid didn't know
+pub(crate) struct PathWalk {
+  walker: Entity,
+  route: Vec<Vec2>,
+  /// The waypoint it walks to
+  next: usize,
+  /// The character's bindings, while the walk has them
+  bindings: Option<MoveBindings>,
+  /// The nearest it has come to the next waypoint, and for how long it has
+  /// come no nearer
+  nearest: f32,
+  stalled: f32,
+}
+
+impl PathWalk {
+  /// `walker` sets off along `route` (world points); `None` for an empty
+  /// route or a character that is gone
+  pub(crate) fn start(ctx: &mut SceneContext, walker: Entity, route: Vec<Vec2>) -> Option<Self> {
+    if route.is_empty() {
+      return None;
+    }
+    let bindings = ctx
+      .world
+      .get_entity_mut(walker)
+      .ok()?
+      .take::<MoveBindings>();
+    Some(PathWalk {
+      walker,
+      route,
+      next: 0,
+      bindings,
+      nearest: f32::INFINITY,
+      stalled: 0.0,
+    })
+  }
+
+  /// One step of `dt` seconds; `None` once the walk has stopped
+  pub(crate) fn step(mut self, ctx: &mut SceneContext, dt: f32) -> Option<Self> {
+    let at = place_of(ctx, Some(self.walker));
+    let steered = self
+      .bindings
+      .as_ref()
+      .is_some_and(|bindings| steers(bindings, ctx.input));
+    let Some(at) = at.filter(|_| !steered) else {
+      self.stop(ctx);
+      return None;
+    };
+    while self
+      .route
+      .get(self.next)
+      .is_some_and(|&point| at.distance(point) <= ARRIVE)
+    {
+      self.next += 1;
+      self.nearest = f32::INFINITY;
+      self.stalled = 0.0;
+    }
+    let Some(&target) = self.route.get(self.next) else {
+      self.stop(ctx);
+      return None;
+    };
+    let distance = at.distance(target);
+    if distance < self.nearest - PROGRESS {
+      self.nearest = distance;
+      self.stalled = 0.0;
+    } else {
+      self.stalled += dt;
+      if self.stalled >= PATIENCE {
+        self.stop(ctx);
+        return None;
+      }
+    }
+    let direction = if self.next + 1 == self.route.len() {
+      steering::arrive(at, target, 1.0, EASE)
+    } else {
+      steering::seek(at, target, 1.0)
+    };
+    self.aim(ctx, direction);
+    Some(self)
+  }
+
+  /// Stops here: the character's intent still and its bindings back
+  pub(crate) fn stop(mut self, ctx: &mut SceneContext) {
+    self.aim(ctx, Vec2::ZERO);
+    if let Some(bindings) = self.bindings.take()
+      && let Ok(mut walker) = ctx.world.get_entity_mut(self.walker)
+    {
+      walker.insert(bindings);
+    }
+  }
+
+  /// The waypoints still ahead, the next first
+  pub(crate) fn ahead(&self) -> &[Vec2] {
+    self.route.get(self.next..).unwrap_or_default()
+  }
+
+  /// What is left of the walk, from the character's feet at `at`,
+  /// `width` screen pixels wide
+  pub(crate) fn draw(&self, debug: &mut DebugDraw, at: Vec2, width: f32) {
+    draw_path(debug, Some(at), self.ahead(), width);
+  }
+
+  fn aim(&self, ctx: &mut SceneContext, direction: Vec2) {
+    if let Some(mut intent) = ctx.world.get_mut::<MoveIntent>(self.walker) {
+      intent.direction = direction;
+    }
+  }
+}
+
+/// Whether the player steers with `bindings`: a movement key held, or the
+/// pad's left stick or D-pad
+fn steers(bindings: &MoveBindings, input: &Input) -> bool {
+  let keys = [
+    &bindings.left,
+    &bindings.right,
+    &bindings.up,
+    &bindings.down,
+  ];
+  let key = keys
+    .iter()
+    .any(|keys| keys.iter().any(|&key| input.key_down(key)));
+  let (x, y) = input.left_stick();
+  let pad = bindings.gamepad
+    && (Vec2::new(x, y).length() > 0.1
+      || [
+        GamepadButton::DPadLeft,
+        GamepadButton::DPadRight,
+        GamepadButton::DPadUp,
+        GamepadButton::DPadDown,
+      ]
+      .into_iter()
+      .any(|button| input.gamepad_button_down(button)));
+  key || pad
 }

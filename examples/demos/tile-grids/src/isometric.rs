@@ -13,14 +13,20 @@
 //! (`ctx.maps().grid`), outlined with `LayerGrid::outline_world`; the left
 //! button paints water there and the right grass, through the ground
 //! tileset's Wang set (`ctx.maps().set_terrain`), its edges picked from
-//! the corners round it, and the painted water collides at once
+//! the corners round it, and the painted water collides at once.
+//!
+//! Space walks the knight to the cell under the pointer, by the cheapest
+//! path round the walls and the water on the town's navigation grid
+//! (`ctx.maps().navigation`, which blocks what collides). The grid is taken
+//! again when the town's tiles change, a paint or a save of its files, and
+//! a walk under way whose way it now blocks finds another
 
 use demo_kit::prelude::*;
 
 use crate::shared::{
-  DIM, GOOD, HOT, View, beside_panel, clear_to, draw_outline, hovered_cell, hud, load, wasd,
+  DIM, GOOD, HOT, PATH, View, beside_panel, clear_to, draw_outline, hovered_cell, hud, load, wasd,
 };
-use crate::walker::{Walk, face, map_start, place_of, spawn_walker};
+use crate::walker::{CellPath, PathWalk, Walk, face, map_start, place_of, spawn_walker};
 
 /// The town
 const TOWN: &str = "maps/town.tmx";
@@ -60,6 +66,12 @@ pub(crate) struct TownPage {
   /// Where the page's notes are on screen: the pointer paints nothing there
   covered: Vec<Rect>,
   zoom: usize,
+  /// The town as the knight crosses it, taken when a walk needs it and
+  /// none is up to date
+  nav: Option<NavigationGrid>,
+  walk: Option<PathWalk>,
+  /// The cell the knight was last sent to, and whether a path reached it
+  goal: Option<(IVec2, bool)>,
 }
 
 impl TownPage {
@@ -74,6 +86,9 @@ impl TownPage {
       painted: 0,
       covered: Vec::new(),
       zoom: 0,
+      nav: None,
+      walk: None,
+      goal: None,
     }
   }
 
@@ -108,6 +123,35 @@ impl TownPage {
         .is_some_and(|(at, layer)| beside_knight(&layer, at, cell));
     if !walled_in && maps.set_terrain(root, GROUND, cell, TERRAIN, Some(color)) {
       self.painted += 1;
+    }
+  }
+
+  /// Takes the town's navigation grid, unless the one it has is up to date
+  fn take_grid(&mut self, ctx: &mut SceneContext, root: Entity) {
+    if self.nav.is_none() {
+      let bounds = ctx.maps().bounds(root);
+      self.nav = bounds.and_then(|bounds| ctx.maps().navigation(root, PROPS, bounds));
+    }
+  }
+
+  /// Sends the knight to `goal` by the cheapest path from its cell
+  fn walk_to(&mut self, ctx: &mut SceneContext, root: Entity, goal: IVec2) {
+    let Some(walker) = self.walker else {
+      return;
+    };
+    if let Some(walk) = self.walk.take() {
+      walk.stop(ctx);
+    }
+    self.take_grid(ctx, root);
+    let from = place_of(ctx, self.walker).and_then(|at| ctx.maps().world_to_cell(root, PROPS, at));
+    let path = self
+      .nav
+      .as_ref()
+      .zip(from)
+      .and_then(|(grid, from)| CellPath::find(grid, from, goal));
+    self.goal = Some((goal, path.is_some()));
+    if let Some(path) = path {
+      self.walk = PathWalk::start(ctx, walker, path.centres);
     }
   }
 }
@@ -159,6 +203,7 @@ impl DemoPage for TownPage {
   fn controls(&self) -> Vec<Control> {
     vec![
       wasd("Walk (pad: left stick)"),
+      Control::key(KeyCode::Space, "Walk to the pointer"),
       Control::mouse("Left paints water, right grass"),
     ]
   }
@@ -186,7 +231,7 @@ impl DemoPage for TownPage {
     self.follow(ctx, true);
   }
 
-  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) {
+  fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
     let Some(root) = self.root else {
       return;
     };
@@ -198,22 +243,56 @@ impl DemoPage for TownPage {
     }
     self.follow(ctx, false);
     self.hover = hovered_cell(ctx, root, PROPS, &self.covered);
-    let Some(cell) = self.hover else {
-      return;
-    };
-    self.paint(ctx, root, cell);
+    let painted = self.painted;
+    if let Some(cell) = self.hover {
+      self.paint(ctx, root, cell);
+    }
+    let saved = ctx
+      .messages::<MapEvent>()
+      .iter()
+      .any(|event| matches!(event, MapEvent::Reloaded { map } if *map == root));
+    if saved || self.painted != painted {
+      // The grid is out of date: a walk takes it again at once, and finds
+      // another way if this one is now blocked
+      self.nav = None;
+      if self.walk.is_some() {
+        self.take_grid(ctx, root);
+      }
+      let blocked = self
+        .walk
+        .as_ref()
+        .zip(self.nav.as_ref())
+        .is_some_and(|(walk, grid)| {
+          walk
+            .ahead()
+            .iter()
+            .any(|point| !grid.is_walkable(grid.world_to_grid(point.x, point.y)))
+        });
+      if blocked && let Some((goal, _)) = self.goal {
+        self.walk_to(ctx, root, goal);
+      }
+    }
+    if let Some(cell) = self.hover
+      && ctx.input.key_pressed(KeyCode::Space)
+    {
+      self.walk_to(ctx, root, cell);
+    }
+    self.walk = self.walk.take().and_then(|walk| walk.step(ctx, dt));
+
     let Some(layer) = ctx.maps().grid(root, PROPS) else {
       return;
     };
+    let feet = place_of(ctx, self.walker);
     let painting =
       ctx.input.mouse_down(MouseButton::Left) || ctx.input.mouse_down(MouseButton::Right);
-    let color = if painting { HOT } else { Color::WHITE };
-    draw_outline(
-      &mut ctx.debug_draw(),
-      &layer.outline_world(cell),
-      color,
-      2.0,
-    );
+    let mut debug = ctx.debug_draw();
+    if let (Some(walk), Some(at)) = (&self.walk, feet) {
+      walk.draw(&mut debug, at, 3.0);
+    }
+    if let Some(cell) = self.hover {
+      let color = if painting { HOT } else { Color::WHITE };
+      draw_outline(&mut debug, &layer.outline_world(cell), color, 2.0);
+    }
   }
 
   fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) {
@@ -231,19 +310,30 @@ impl DemoPage for TownPage {
       || "Knight: waiting for the map".to_string(),
       |cell| format!("Knight: cell {}, {}", cell.x, cell.y),
     );
-    let lines = vec![
+    let mut lines = vec![
       (
         "Isometric cells of 232 x 110; walls and trees y-sorted".to_string(),
         Color::WHITE,
       ),
       (pointer, GOOD),
       (walker, Color::WHITE),
+    ];
+    match self.goal {
+      Some((goal, true)) if self.walk.is_some() => {
+        lines.push((format!("Walking to cell {}, {}", goal.x, goal.y), PATH));
+      }
+      Some((goal, false)) => {
+        lines.push((format!("No path to cell {}, {}", goal.x, goal.y), PATH));
+      }
+      _ => {}
+    }
+    lines.extend([
       (format!("Cells painted: {}", self.painted), HOT),
       (
         "Walls and water stop the knight; painted water too".to_string(),
         DIM,
       ),
-    ];
+    ]);
     let column = beside_panel(ui, ROWS);
     let notes = hud(ui, column.x, column.y, column.width, &lines);
     self.covered.push(notes);
