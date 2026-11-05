@@ -1,8 +1,9 @@
 //! Allocations of map drawing, counted by a global allocator in this test
 //! binary: a padded tileset cache hit, a frame drawing a static map under a
 //! shadowed light (its camera still, then panning over chunks it has
-//! drawn) on every grid, and an idle frame of a streamed map whose chunks
-//! have landed, on orthogonal and on isometric cells.
+//! drawn) on every grid, its layers colliding (the hexagonal map's
+//! too), and an idle frame of a streamed map whose chunks have landed, on
+//! orthogonal and on isometric cells.
 //!
 //! A frame's allocations are told apart by their stacks: those made inside
 //! the GPU API (wgpu, naga and the Metal bindings, which allocate as they
@@ -197,7 +198,8 @@ enum Art {
   /// Hexagonal along x, flat-topped hexagons of 16 px with sides of 8, a
   /// row's unshifted cells painted before its shifted ones; a third of the
   /// tiles turned 60 degrees and a third 120, which reach past their
-  /// cells' boxes though the tiles fit them unturned
+  /// cells' boxes though the tiles fit them unturned. Its ground's tiles
+  /// are whole hexagons: its colliders the hexagons' sides
   Turned,
 }
 
@@ -225,16 +227,31 @@ impl Scene for StaticMap {
       return;
     }
     let mut set = atlas(&mut ctx.world.resource_mut::<Assets<Image>>(), 16, 4, 1);
+    // The ground fills its cell: the tile's square, or on the hexagonal grid
+    // its hexagon, a solid cell however it is turned
+    let ground = match self.art {
+      Art::Turned => [
+        (4.0, 0.0),
+        (12.0, 0.0),
+        (16.0, 8.0),
+        (12.0, 16.0),
+        (4.0, 16.0),
+        (0.0, 8.0),
+      ]
+      .map(|(x, y)| Vec2::new(x, y))
+      .to_vec(),
+      _ => vec![
+        Vec2::ZERO,
+        Vec2::new(16.0, 0.0),
+        Vec2::new(16.0, 16.0),
+        Vec2::new(0.0, 16.0),
+      ],
+    };
     set.insert_tile(
       GROUND,
       TileData {
         shapes: vec![TileShape {
-          points: vec![
-            Vec2::ZERO,
-            Vec2::new(16.0, 0.0),
-            Vec2::new(16.0, 16.0),
-            Vec2::new(0.0, 16.0),
-          ],
+          points: ground,
           ..TileShape::default()
         }],
         ..TileData::default()
@@ -298,7 +315,8 @@ impl Scene for StaticMap {
         transparent: None,
       }),
     });
-    // On the hexagonal grid the layers neither collide nor occlude
+    // On every grid the tile layers collide and cast shadows (on the
+    // hexagonal grid its shadows are still to come)
     for name in ["back", "ground", "props", "water"] {
       map.add_tile_layer(name);
     }

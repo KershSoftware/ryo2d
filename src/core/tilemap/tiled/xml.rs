@@ -795,7 +795,7 @@ mod tests {
     panic!("{name}: one has more lines than the other");
   }
 
-  const MAP_PAIRS: [&str; 66] = [
+  const MAP_PAIRS: [&str; 69] = [
     "image-layers",
     "lists",
     "tile-objects",
@@ -862,8 +862,11 @@ mod tests {
     "shape-hex-turns-odd",
     "shape-hex-turns-odd-offset",
     "shape-tall-odd-iso",
+    "shape-hex-collides",
+    "collide-hex-y-odd",
+    "collide-hex-x-even",
   ];
-  const SET_PAIRS: [&str; 10] = [
+  const SET_PAIRS: [&str; 12] = [
     "loot",
     "tiles",
     "items",
@@ -874,6 +877,8 @@ mod tests {
     "wang",
     "wang-turn",
     "shape-objects-tile",
+    "collide-hex-y",
+    "collide-hex-x",
   ];
 
   #[test]
@@ -1107,16 +1112,25 @@ mod tests {
         skew: IVec2::new(-10, 0)
       }
     );
-    // A hexagonal layer that collides is refused from TMX as from JSON
+  }
+
+  #[test]
+  fn a_hex_layer_that_collides_loads() {
+    // A hexagonal layer that collides loads from TMX as from JSON, and so
+    // does one that says nothing of it, colliding as on any grid
     let mut world = world_with(&[]);
-    let error = load_map(&mut world, "xml/maps/shape-hex-collides.tmx")
-      .err()
-      .unwrap_or_default();
-    assert!(
-      error.contains("shape-hex-collides.tmx")
-        && error.contains("layer \"walls\" on a hexagonal map collides or casts shadows"),
-      "{error}"
-    );
+    for name in [
+      "shape-hex-collides",
+      "collide-hex-y-odd",
+      "collide-hex-x-even",
+    ] {
+      let map = load_map(&mut world, &format!("xml/maps/{name}.tmx"))
+        .unwrap_or_else(|e| panic!("{name}: {e}"));
+      assert!(matches!(map.shape, GridShape::Hexagonal { .. }), "{name}");
+      for layer in &map.layers {
+        assert!(layer.info.collides, "{name}: {}", layer.info.name);
+      }
+    }
   }
 
   #[test]

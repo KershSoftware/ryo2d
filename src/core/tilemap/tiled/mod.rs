@@ -1324,47 +1324,49 @@ mod tests {
   }
 
   #[test]
-  fn a_hex_layer_that_collides_is_refused_and_one_that_does_not_loads() {
-    const REFUSAL: &str = "layer \"walls\" on a hexagonal map collides or casts shadows; hexagonal collision and shadows aren't supported yet: set its collides and occludes properties to false";
-    let error = match load_in(
+  fn a_hex_layer_that_collides_loads() {
+    // A hexagonal map's layer that says it collides loads colliding, and
+    // one that says nothing of it collides and casts shadows, as on any
+    // grid
+    let map = load_in(
       &mut world_over(files_with(&[])),
       "maps/shape-hex-collides.tmj",
-    ) {
-      Ok(_) => panic!("a hexagonal layer that collides loaded"),
-      Err(error) => error,
-    };
-    assert!(
-      error.contains("shape-hex-collides.tmj") && error.contains(REFUSAL),
-      "{error}"
-    );
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert!(matches!(map.shape, GridShape::Hexagonal { .. }));
+    for name in ["walls", "ground"] {
+      let info = info(&map, name);
+      assert!(
+        info.collides && info.occludes.unwrap_or(info.collides),
+        "{name}"
+      );
+    }
     let path = format!("{FIXTURES}/maps/shape-hex-collides.tmj");
     let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
     assert_eq!(text.matches(r#""name":"collides""#).count(), 1);
     let at = "maps/hex-walls.tmj";
-    // A layer that casts shadows is refused alike
+    // One that casts shadows loads too
     let occludes = text.replace(r#""name":"collides""#, r#""name":"occludes""#);
-    let error = load_text(at, &occludes).err().unwrap_or_default();
-    assert!(error.contains(REFUSAL), "{error}");
-    // One that says it does neither loads
+    let map = load_text(at, &occludes).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(info(&map, "walls").occludes, Some(true));
+    // and one that says it does neither does neither
     let neither = text.replace(r#""value":true"#, r#""value":false"#);
     let map = load_text(at, &neither).unwrap_or_else(|e| panic!("{e}"));
     assert!(!info(&map, "walls").collides);
-    // and one that says nothing of it loads not colliding, nor casting
-    // shadows, as the "ground" layer beside it does
-    let silent = text.replace(r#""name":"collides""#, r#""name":"note""#);
-    let map = load_text(at, &silent).unwrap_or_else(|e| panic!("{e}"));
-    for name in ["walls", "ground"] {
-      let info = info(&map, name);
-      assert!(
-        !info.collides && !info.occludes.unwrap_or(info.collides),
-        "{name}"
-      );
+    // The maps whose tiles have collision shapes load, their layer colliding
+    for name in ["collide-hex-y-odd", "collide-hex-x-even"] {
+      let map = load_in(
+        &mut world_over(files_with(&[])),
+        &format!("maps/{name}.tmj"),
+      )
+      .unwrap_or_else(|e| panic!("{name}: {e}"));
+      assert!(info(&map, "walls").collides, "{name}");
     }
-    // A tile layer added to a hexagonal map in code does not collide;
-    // on any other grid it does, as before
+    // A tile layer added to a hexagonal map in code collides, as on any
+    // other grid
     let mut hex = TileMap::new(UVec2::splat(4), UVec2::splat(32)).with_shape(map.shape);
     let walls = hex.add_tile_layer("walls");
-    assert!(!hex.layers[walls].info.collides);
+    assert!(hex.layers[walls].info.collides);
     let mut iso =
       TileMap::new(UVec2::splat(4), UVec2::new(64, 32)).with_shape(GridShape::Isometric);
     let walls = iso.add_tile_layer("walls");

@@ -64,7 +64,7 @@ Items from 4f to 6b were copied from their execution records. Items from earlier
     - `CellOutline`'s doc (`grid_shape.rs`, the tilemap module notes) says an outline starts at "the left one of a level top", but an axis-Y hex whose side is longer than its tile starts at the top edge's midpoint; nothing pins where outlines start off isometric.
     - `MapGrid::shape`, the `StaggerAxis` and `StaggerIndex` variants and the axis, index and side fields have no rustdoc.
     - `MapGrid::cell` (a size) shares its name with the `cell: IVec2` parameters (an index); rename it `cell_size`.
-    - `TileMap::with_shape` moves only the layers whose grid equals the old map grid: setting `shape` directly, or changing `size` or `tile_size` once layers exist, leaves stale layer grids (a stale isometric origin included), and the size case isn't documented. On a map with layers, `with_shape(Hexagonal)` leaves them colliding (a warning fires); its rustdoc should say to call it before adding layers.
+    - `TileMap::with_shape` moves only the layers whose grid equals the old map grid: setting `shape` directly, or changing `size` or `tile_size` once layers exist, leaves stale layer grids (a stale isometric origin included), and the size case isn't documented.
     - `rotated_cw` silently drops bit 8 (`HEX_ROTATE_120`); documented, and fine on square grids.
     - On a hex map whose side is longer than its tile, `bounds_of` (and the world rect) is 4 px taller than Tiled's map (in Limits).
     - `LayerGrid` ignores parallax and its docs don't say so: picking on a parallax layer won't match where it draws.
@@ -91,7 +91,7 @@ Items from 4f to 6b were copied from their execution records. Items from earlier
   - **Collision, streaming and reload.**
     - A folding oblique lattice (skew.x × skew.y = w × h) is refused at rebuild, but `trace()` still runs first off the main thread, and occluders build degenerate chains with no warning; check `placeable()` in both.
     - Odd-height staggered tiles classify a full diamond as a clipped shape, leaving half-pixel notches by the side vertices (in Limits; the demo's island coast shows it).
-    - The navigation warning names hexagonal maps, but hex layers never reach `block_tiles`.
+    - The navigation warning names hexagonal maps: hex layers' tile grids reach `block_tiles` and block nothing under it, until navigation reads hexagons.
     - Chunks in flight across a grid-changing reload carry the old grid in their `ChunkRequest`; on a reshape, call off every chunk out and ready, not only the file's.
     - The different-grids stream warning prints the shape with `{:?}`.
     - Tiled's correction reach on staggered terrain (two cells wider) is measured along the half-step axis only (said in the rustdoc).

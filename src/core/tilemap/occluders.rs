@@ -2024,4 +2024,80 @@ mod tests {
     maps.frame();
     assert_eq!(state(&mut maps.world, streamed), loaded, "as it was");
   }
+
+  #[test]
+  fn a_streamed_hex_chunk_unloads_cleanly() {
+    use crate::core::physics::TileColliders;
+    use crate::core::tilemap::test_util::whole_hex_set;
+    use crate::core::tilemap::{GridShape, StaggerAxis, StaggerIndex, TileLayerData};
+    let shape = GridShape::Hexagonal {
+      axis: StaggerAxis::Y,
+      index: StaggerIndex::Odd,
+      side: 70,
+    };
+    let cell = UVec2::new(120, 140);
+    // A wall across the border of chunks (0, 0) and (1, 0), and hexagons
+    // in each (whole ones: tile 0 of `whole_hex_set`)
+    let mut tiles: Vec<IVec2> = (26..38).map(|x| IVec2::new(x, 4)).collect();
+    tiles.extend([(3, 3), (40, 10), (45, 30), (33, 0)].map(|(x, y)| IVec2::new(x, y)));
+    let left: Vec<IVec2> = tiles.iter().copied().filter(|c| c.x < 32).collect();
+    let hex_map = |cells: &[IVec2]| {
+      let mut map = TileMap::infinite(cell).with_shape(shape);
+      let set = whole_hex_set(&map.grid());
+      let set = map.add_tileset(TilesetSource::Embedded(Arc::new(set)));
+      let layer = map.add_tile_layer("ground");
+      if let Some(grid) = map.tiles_mut(layer) {
+        for &at in cells {
+          grid.set(at, Some(Tile::new(set, 0)));
+        }
+      }
+      map
+    };
+    let mut maps = MapWorld::new();
+    let mut add = |map: TileMap| maps.world.resource_mut::<Assets<TileMap>>().add(map);
+    let (whole, half) = (add(hex_map(&tiles)), add(hex_map(&left)));
+    let streamed = maps.spawn(MapRoot::new(whole));
+    let without = maps.spawn(MapRoot::new(half));
+    maps.frame();
+    // What a map holds: its colliders' cells and storage, and its parts'
+    // edges (its shadows come with hexagonal shadows)
+    type State = (Vec<(IVec2, TileCell)>, usize, BTreeMap<Edge, usize>);
+    let state = |world: &mut World, map: Entity| -> State {
+      let tiles = world.get::<TileColliders>(map).cloned().expect("colliders");
+      let mut cells: Vec<(IVec2, TileCell)> = tiles.cells_in(tiles.extent()).collect();
+      cells.sort_by_key(|(c, _)| (c.y, c.x));
+      (cells, tiles.chunk_count(), collision_steps(world, map))
+    };
+    let loaded = state(&mut maps.world, streamed);
+    let reference = state(&mut maps.world, without);
+    assert_ne!(loaded, reference);
+    assert!(!loaded.2.is_empty());
+    for at in &tiles {
+      assert!(loaded.0.contains(&(*at, TileCell::Solid)), "{at}");
+    }
+
+    // The stream unloads chunk (1, 0) of the layer: the wall's edges close
+    // at the chunk's edge, as if its cells were never there
+    let layer = layers_of(&mut maps.world, streamed)[0];
+    let cells = maps
+      .world
+      .get_mut::<TileLayerData>(layer)
+      .and_then(|mut data| data.tiles.unload_chunk(IVec2::new(1, 0)))
+      .expect("chunk (1, 0) was there");
+    maps.frame();
+    maps.frame();
+    assert_eq!(
+      state(&mut maps.world, streamed),
+      reference,
+      "as if never loaded"
+    );
+
+    // and loads it back
+    if let Some(mut data) = maps.world.get_mut::<TileLayerData>(layer) {
+      assert!(data.tiles.load_chunk(IVec2::new(1, 0), cells));
+    }
+    maps.frame();
+    maps.frame();
+    assert_eq!(state(&mut maps.world, streamed), loaded, "as it was");
+  }
 }

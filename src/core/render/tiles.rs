@@ -38,7 +38,7 @@
 
 use std::hash::{DefaultHasher, Hash, Hasher};
 
-use glam::{Affine2, IVec2, Mat2, UVec2, Vec2};
+use glam::{Affine2, IVec2, UVec2, Vec2};
 
 use super::batch::{
   Band, BlendMode, ChunkCopy, ChunkKey, ChunkPart, ChunkRun, ChunkStamp, ChunkStore, Filter,
@@ -210,34 +210,6 @@ fn leaves(instance: &SpriteInstance, cell: Rect) -> Spill {
   }
 }
 
-/// The sines and cosines of a hexagonal tile's turns: none, 60, 120 and 180
-/// degrees clockwise on screen (y down)
-const HEX_TURNS: [(f32, f32); 4] = [
-  (0.0, 1.0),
-  (0.866_025_4, 0.5),
-  (0.866_025_4, -0.5),
-  (0.0, -1.0),
-];
-
-/// The turn a tile's flips make of its quad, as the matrix taking the
-/// tile's own axes (its width across, its height down) to the quad's: on a
-/// hexagonal grid the 60 and 120 degree turns clockwise (both, a half
-/// turn); elsewhere the diagonal flip, which swaps them
-fn quad_turn(flip: TileFlip, hex: bool) -> Mat2 {
-  if hex {
-    let turns = usize::from(flip.contains(TileFlip::HEX_ROTATE_60))
-      + 2 * usize::from(flip.contains(TileFlip::HEX_ROTATE_120));
-    let (sin, cos) = HEX_TURNS[turns];
-    // (1, 0) turns to (cos, sin): clockwise, y being down
-    return Mat2::from_cols(Vec2::new(cos, sin), Vec2::new(-sin, cos));
-  }
-  if flip.contains(TileFlip::DIAGONAL) {
-    Mat2::from_cols(Vec2::Y, Vec2::X)
-  } else {
-    Mat2::IDENTITY
-  }
-}
-
 /// Where a tile `size` pixels (unflipped) of a tileset offset `offset`
 /// draws in a cell of `grid` whose tile anchor is `anchor`, turned by
 /// `flip`: its quad's centre and its x and y axes. It stands on the anchor
@@ -253,7 +225,7 @@ fn placed(
   flip: TileFlip,
 ) -> (Vec2, Vec2, Vec2) {
   let hex = matches!(grid.shape, GridShape::Hexagonal { .. });
-  let turn = quad_turn(flip, hex);
+  let turn = flip.quad_turn(hex);
   // The tile as drawn: a diagonal flip swaps its sides
   let drawn = if !hex && flip.contains(TileFlip::DIAGONAL) {
     Vec2::new(size.y, size.x)
@@ -435,7 +407,7 @@ fn object_instance(
   } else {
     size
   };
-  let turn = quad_turn(flip, false);
+  let turn = flip.quad_turn(false);
   let x_axis = affine.transform_vector2(turn * Vec2::new(tile_size.x, 0.0));
   let y_axis = affine.transform_vector2(turn * Vec2::new(0.0, tile_size.y));
   instance.transform[0][..2].copy_from_slice(&x_axis.to_array());

@@ -980,6 +980,95 @@ fn a_map_saved_with_another_grid_respawns_its_layers() {
 }
 
 #[test]
+fn a_hex_tileset_saved_with_a_new_shape_rebuilds_its_colliders() {
+  use crate::core::tilemap::test_util::{FIXTURES, Px, union_border, whole_px};
+  // The hexagonal fixture: a clump of whole hexagons, and three tiles
+  // whose shape is a small triangle, each its own ring
+  let clump = [(2, 1), (3, 1), (3, 2)].map(|(x, y)| IVec2::new(x, y));
+  let triangles = [(6, 1), (6, 3), (1, 4)].map(|(x, y)| IVec2::new(x, y));
+  let files = files_with(&[]);
+  let (mut maps, map) = spawned(&files, "tiled/maps/collide-hex-y-odd.tmj", MapRoot::new);
+  maps.frame();
+  let grid = MapGrid::new(
+    GridShape::Hexagonal {
+      axis: crate::core::tilemap::StaggerAxis::Y,
+      index: crate::core::tilemap::StaggerIndex::Odd,
+      side: 70,
+    },
+    UVec2::new(120, 140),
+  );
+  // Each part's edges in the map's space, split into those on whole
+  // pixels and the rest (the triangles' rings, turned off the pixels)
+  let edges = |world: &mut World| -> (Vec<(Px, Px)>, usize) {
+    let mut whole = Vec::new();
+    let mut rest = 0;
+    let parts: Vec<Collider> = world
+      .query::<(&ChildOf, &Collider, &Transform)>()
+      .iter(world)
+      .filter(|(child_of, ..)| child_of.parent() == map)
+      .map(|(_, collider, at)| {
+        crate::core::physics::in_grid_space(collider.clone(), at.translation)
+      })
+      .collect();
+    for part in parts {
+      let crate::core::physics::ColliderShape::Segments { points, segments } = part.shape else {
+        panic!("a hexagonal part is segments: {part:?}");
+      };
+      for [a, b] in segments {
+        match (whole_px(points[a as usize]), whole_px(points[b as usize])) {
+          (Some(a), Some(b)) => whole.push((a, b)),
+          _ => rest += 1,
+        }
+      }
+    }
+    whole.sort_unstable();
+    (whole, rest)
+  };
+  let tiles = maps
+    .world
+    .get::<TileColliders>(map)
+    .cloned()
+    .expect("colliders");
+  for &cell in &triangles {
+    assert!(matches!(tiles.get(cell), TileCell::Shape(_)), "{cell}");
+  }
+  // The plain and the flipped triangles are on whole pixels, the turned
+  // one is not: the clump's border and the rings, 9 edges
+  let (whole, rest) = edges(&mut maps.world);
+  let border = union_border(&grid, &clump);
+  assert!(border.iter().all(|edge| whole.contains(edge)));
+  assert_eq!(whole.len() + rest, border.len() + 9);
+
+  // The tileset is saved with the triangle tile's shape made its whole
+  // hexagon, as tile 0's is
+  let path = format!("{FIXTURES}/tiled/tilesets/collide-hex-y.tsj");
+  let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
+  let mut json: serde_json::Value =
+    serde_json::from_str(&text).unwrap_or_else(|e| panic!("{path}: {e}"));
+  let hexagon = json["tiles"][0]["objectgroup"]["objects"][0]["polygon"].clone();
+  assert!(hexagon.is_array());
+  json["tiles"][1]["objectgroup"]["objects"][0]["polygon"] = hexagon;
+  let mut watch = Watch::new(&maps.world);
+  files.insert("tiled/tilesets/collide-hex-y.tsj", json.to_string());
+  watch.until_reloaded(&mut maps, map);
+  for _ in 0..3 {
+    maps.frame();
+  }
+  // Its cells are solid hexagons: their edges join the clump's border, as
+  // the outline of every solid cell, and the rings go
+  let tiles = maps
+    .world
+    .get::<TileColliders>(map)
+    .cloned()
+    .expect("colliders");
+  for &cell in &triangles {
+    assert_eq!(tiles.get(cell), TileCell::Solid, "{cell}");
+  }
+  let solid: Vec<IVec2> = clump.iter().chain(&triangles).copied().collect();
+  assert_eq!(edges(&mut maps.world), (union_border(&grid, &solid), 0));
+}
+
+#[test]
 fn a_broken_save_keeps_the_last_good_map() {
   let objects = [object(1, "a", (16, 0), "")];
   let first = [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1];

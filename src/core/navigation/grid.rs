@@ -68,8 +68,8 @@ pub struct NavigationGrid {
   generation: u64,
   /// Entities currently blocking cells
   blocking_entities: HashSet<Entity>,
-  /// `block_tiles` was handed tiles on a lattice that is not upright (and
-  /// logged it)
+  /// `block_tiles` was handed tiles on a lattice that is not upright, or on
+  /// hexagons (and logged it)
   warned_lattice: bool,
 }
 
@@ -303,17 +303,19 @@ impl NavigationGrid {
   /// lies under it.
   ///
   /// Tiles on a lattice that turns or shears their cells (an isometric,
-  /// staggered or oblique map's, [`TileColliders::with_lattice`]) block
-  /// nothing: navigation over those maps isn't supported yet (logged once a
-  /// grid). An upright lattice's cells are its rectangles.
+  /// staggered or oblique map's, [`TileColliders::with_lattice`]), or on
+  /// hexagons (a hexagonal map's), block nothing: navigation over those
+  /// maps isn't supported yet (logged once a grid). An upright lattice's
+  /// cells are its rectangles.
   pub fn block_tiles(&mut self, tiles: &TileColliders, origin: Vec2) {
-    let (size, origin) = match tiles.lattice() {
-      None => (tiles.tile_size, origin),
-      Some(to) if to.matrix2.x_axis.y == 0.0 && to.matrix2.y_axis.x == 0.0 => (
+    let upright = |to: glam::Affine2| to.matrix2.x_axis.y == 0.0 && to.matrix2.y_axis.x == 0.0;
+    let (size, origin) = match (tiles.hex(), tiles.lattice()) {
+      (None, None) => (tiles.tile_size, origin),
+      (None, Some(to)) if upright(to) => (
         Vec2::new(to.matrix2.x_axis.x, to.matrix2.y_axis.y),
         origin + to.translation,
       ),
-      Some(_) => {
+      _ => {
         if !std::mem::replace(&mut self.warned_lattice, true) {
           crate::engine_warn!(
             module: "Navigation",
@@ -591,6 +593,24 @@ mod tests {
       .filter(|c| !grid.is_walkable(*c))
       .count();
     assert_eq!(blocked, 0, "no cell blocked");
+    assert_eq!(warnings() - before, 1, "warned once");
+    // Hexagons block nothing either, and say nothing more
+    let hex = crate::core::physics::HexCells::new(
+      crate::core::tilemap::StaggerAxis::Y,
+      crate::core::tilemap::StaggerIndex::Odd,
+      glam::UVec2::splat(32),
+      16,
+    );
+    let mut hexes = TileColliders::unbounded(Vec2::splat(32.0)).with_hex(hex, Vec2::ZERO);
+    for x in 0..4 {
+      hexes.set(IVec2::new(x, 1), TileCell::Solid);
+    }
+    grid.block_tiles(&hexes, Vec2::ZERO);
+    let blocked = (0..h as i32)
+      .flat_map(|y| (0..w as i32).map(move |x| GridCoord::new(x, y)))
+      .filter(|c| !grid.is_walkable(*c))
+      .count();
+    assert_eq!(blocked, 0, "no cell blocked by hexagons");
     assert_eq!(warnings() - before, 1, "warned once");
     // An upright lattice's cells are its rectangles, moved by it
     let upright = glam::Affine2::from_cols(

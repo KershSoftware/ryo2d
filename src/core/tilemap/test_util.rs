@@ -215,3 +215,66 @@ pub(crate) fn step_until_maps_land(engine: &mut crate::core::testing::HeadlessEn
     std::thread::yield_now();
   }
 }
+
+/// A tileset for `grid` (a hexagonal one) of tiles its cell's size: tile 0
+/// whose collision shape is its whole hexagon, in the image's pixels as a
+/// tile standing in its cell draws it
+pub(crate) fn whole_hex_set(grid: &super::MapGrid) -> super::Tileset {
+  use glam::{IVec2, Vec2};
+  let mut set = super::Tileset::new("hexes", grid.cell, super::TilesetImage::Collection);
+  // The image's top-left as it stands in cell (0, 0)
+  let top_left = grid.tile_anchor(IVec2::ZERO) - Vec2::new(0.0, grid.cell.y as f32);
+  let points: Vec<Vec2> = grid
+    .cell_outline(IVec2::ZERO)
+    .points()
+    .iter()
+    .map(|&p| p - top_left)
+    .collect();
+  set.insert_tile(
+    0,
+    super::TileData {
+      shapes: vec![super::TileShape {
+        points,
+        ..super::TileShape::default()
+      }],
+      ..super::TileData::default()
+    },
+  );
+  set
+}
+
+/// A point of whole pixels
+pub(crate) type Px = (i32, i32);
+
+/// `p` as whole pixels, if it is one
+pub(crate) fn whole_px(p: glam::Vec2) -> Option<Px> {
+  ((p - p.round()).abs().max_element() < 1e-3).then(|| (p.x.round() as i32, p.y.round() as i32))
+}
+
+/// The border of the union of `cells` on `grid` (a grid whose corners are
+/// whole pixels), from their outlines: each side no other of them shares,
+/// clockwise round them, sorted
+pub(crate) fn union_border(grid: &super::MapGrid, cells: &[glam::IVec2]) -> Vec<(Px, Px)> {
+  let mut sides = Vec::new();
+  for &cell in cells {
+    let outline = grid.cell_outline(cell);
+    let points: Vec<Px> = outline
+      .points()
+      .iter()
+      .map(|&p| whole_px(p).expect("a corner on a whole pixel"))
+      .collect();
+    for i in 0..points.len() {
+      let (a, b) = (points[i], points[(i + 1) % points.len()]);
+      if a != b {
+        sides.push((a, b));
+      }
+    }
+  }
+  let mut border: Vec<(Px, Px)> = sides
+    .iter()
+    .copied()
+    .filter(|&(a, b)| !sides.contains(&(b, a)))
+    .collect();
+  border.sort_unstable();
+  border
+}

@@ -217,8 +217,8 @@ type Warned = FastSet<(Option<usize>, &'static str)>;
 /// once, and so does a colliding layer with parallax, which collides where
 /// it would draw without it, parallax being a drawing effect, an IntGrid
 /// override to `TileCell::Shape`, which names no shape and collides as
-/// nothing, and a colliding layer on a hexagonal grid, which builds nothing
-/// (`warned`)
+/// nothing, and a colliding layer of hexagons the collision tracer does not
+/// take (over 16,384 px, or under 2 px), which builds nothing (`warned`)
 fn plan<'a>(
   map: Entity,
   layers: impl IntoIterator<Item = LayerView<'a>>,
@@ -261,11 +261,12 @@ fn plan<'a>(
   planned.clear();
   if collision {
     for layer in layers.into_iter().filter(|l| l.info.collides) {
-      if layer.data.grid.lattice().is_none() {
+      let hex = layer.data.grid.hex_cells();
+      if hex.is_some_and(|hex| !hex.traceable()) {
         if warned.insert((Some(layer.index), "hexagonal")) {
           crate::engine_warn!(
             module: "Tilemap",
-            "map {map}: layer \"{}\" collides on a hexagonal grid; hexagonal collision isn't supported yet, so it builds no colliders",
+            "map {map}: layer \"{}\" has hexagonal cells over 16,384 px or under 2 px, which don't collide",
             layer.info.name
           );
         }
@@ -375,7 +376,9 @@ fn build(
       }
       _ => TileColliders::unbounded(cell),
     };
-    if let Some(to_pixel) = lattice_of(&grid) {
+    if let Some(hex) = grid.hex_cells() {
+      tiles = tiles.with_hex(hex, grid.origin);
+    } else if let Some(to_pixel) = lattice_of(&grid) {
       tiles = tiles.with_lattice(to_pixel);
     }
     group.key.material().apply(&mut tiles);
@@ -784,7 +787,9 @@ mod tests {
   };
   use crate::core::scene::{Scene, SceneContext};
   use crate::core::testing::HeadlessEngine;
-  use crate::core::tilemap::test_util::{MapWorld, files_with, layers_of, load_map as load};
+  use crate::core::tilemap::test_util::{
+    MapWorld, Px, files_with, layers_of, load_map as load, union_border, whole_hex_set, whole_px,
+  };
   use crate::core::tilemap::{
     GridShape, IntGrid, LayerKind, MapGrid, MapRoot, MapsView, PropertyValue, StaggerAxis,
     StaggerIndex, Tile, TileData, TileFlip, TileLayerData, TileMap, TileShape, Tileset,
@@ -2913,28 +2918,535 @@ mod tests {
     assert_eq!(warnings(), before);
   }
 
+  // ---- hexagonal grids ------------------------------------------------------
+
+  /// Tile ids of the hexagonal collision fixtures' tilesets: a tile whose
+  /// shape is its whole hexagon, one whose shape is a small triangle off
+  /// its middle, and one with no shape
+  const WHOLE_HEX: u32 = 0;
+  const TRIANGLE: u32 = 1;
+
+  /// A hexagonal collision fixture (`make-fixtures.js`' `collideHex`): its
+  /// files (JSON, then XML) and its XML tileset's, its clump of whole
+  /// hexagons, its triangle tiles (each with its flips), its tiles with no
+  /// shape, and the triangle in the tile's pixels
+  struct HexFixture {
+    files: [&'static str; 2],
+    xml_set: &'static str,
+    clump: [(i32, i32); 3],
+    triangles: [((i32, i32), TileFlip); 3],
+    blank: [(i32, i32); 10],
+    triangle: [(f32, f32); 3],
+  }
+
+  fn hex_fixtures() -> [HexFixture; 2] {
+    let (turned, flipped) = (TileFlip::HEX_ROTATE_60, TileFlip::HORIZONTAL);
+    [
+      HexFixture {
+        files: [
+          "tiled/maps/collide-hex-y-odd.tmj",
+          "tiled/xml/maps/collide-hex-y-odd.tmx",
+        ],
+        xml_set: "tiled/xml/tilesets/collide-hex-y.tsx",
+        clump: [(2, 1), (3, 1), (3, 2)],
+        triangles: [
+          ((6, 1), TileFlip::NONE),
+          ((6, 3), turned),
+          ((1, 4), flipped),
+        ],
+        blank: [
+          (1, 1),
+          (4, 1),
+          (2, 2),
+          (4, 2),
+          (5, 1),
+          (7, 1),
+          (5, 3),
+          (7, 3),
+          (0, 4),
+          (2, 4),
+        ],
+        triangle: [(72.0, 84.0), (96.0, 100.0), (70.0, 108.0)],
+      },
+      HexFixture {
+        files: [
+          "tiled/maps/collide-hex-x-even.tmj",
+          "tiled/xml/maps/collide-hex-x-even.tmx",
+        ],
+        xml_set: "tiled/xml/tilesets/collide-hex-x.tsx",
+        clump: [(1, 2), (2, 1), (2, 2)],
+        triangles: [
+          ((5, 1), TileFlip::NONE),
+          ((5, 3), turned),
+          ((2, 4), flipped),
+        ],
+        blank: [
+          (0, 2),
+          (1, 1),
+          (3, 1),
+          (3, 2),
+          (4, 1),
+          (6, 1),
+          (4, 3),
+          (6, 3),
+          (1, 4),
+          (3, 4),
+        ],
+        triangle: [(84.0, 72.0), (100.0, 96.0), (108.0, 70.0)],
+      },
+    ]
+  }
+
+  /// A map world over the fixtures, with `fixture`'s XML twins (which the
+  /// fixtures leave out), and its map at `file` spawned
+  fn hex_fixture_world(fixture: &HexFixture, file: &str) -> (MapWorld, Entity, MapGrid) {
+    let read = |path: &str| {
+      let path = format!("{}/{path}", crate::core::tilemap::test_util::FIXTURES);
+      std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"))
+    };
+    let (map, set) = (read(fixture.files[1]), read(fixture.xml_set));
+    let files = files_with(&[(fixture.files[1], &map), (fixture.xml_set, &set)]);
+    let mut maps = MapWorld::over(files);
+    let handle = load(&mut maps.world, file);
+    let grid = maps
+      .world
+      .resource::<Assets<TileMap>>()
+      .get(&handle)
+      .map(TileMap::grid)
+      .expect("the map loaded");
+    let map = maps.spawn(MapRoot::new(handle));
+    maps.frame();
+    (maps, map, grid)
+  }
+
+  /// Every edge of the parts under `parent`, in its space
+  fn all_edges(world: &mut World, parent: Entity) -> Vec<(Vec2, Vec2)> {
+    parts_of(world, parent)
+      .iter()
+      .flat_map(|(_, collider)| edges_of(collider))
+      .collect()
+  }
+
+  /// Whether `edges` (each once) chain into one closed ring through them all
+  fn one_closed_ring<P: Copy + PartialEq + std::fmt::Debug>(edges: &[(P, P)]) -> bool {
+    let Some(&(start, mut at)) = edges.first() else {
+      return false;
+    };
+    let mut used = vec![false; edges.len()];
+    used[0] = true;
+    for _ in 1..edges.len() {
+      let Some(next) = (0..edges.len()).find(|&i| !used[i] && edges[i].0 == at) else {
+        return false;
+      };
+      used[next] = true;
+      at = edges[next].1;
+    }
+    at == start
+  }
+
+  /// Whether `p` is inside the convex outline `points` (either way round)
+  fn inside_outline(points: &[Vec2], p: Vec2) -> bool {
+    let crosses: Vec<f32> = (0..points.len())
+      .map(|i| {
+        let (a, b) = (points[i], points[(i + 1) % points.len()]);
+        (b - a).perp_dot(p - a)
+      })
+      .filter(|c| c.abs() > 1e-3)
+      .collect();
+    crosses.iter().all(|&c| c > 0.0) || crosses.iter().all(|&c| c < 0.0)
+  }
+
+  /// The edges inside `cell`'s outline (their middles in it): a shape
+  /// cell's ring
+  fn edges_in(grid: &MapGrid, cell: IVec2, edges: &[(Vec2, Vec2)]) -> Vec<(Vec2, Vec2)> {
+    let outline = grid.cell_outline(cell);
+    edges
+      .iter()
+      .copied()
+      .filter(|&(a, b)| inside_outline(outline.points(), (a + b) / 2.0))
+      .collect()
+  }
+
+  /// Whether `edges` make one closed ring of exactly `n` points
+  fn ring_of(edges: &[(Vec2, Vec2)], n: usize) -> bool {
+    let mut points: Vec<Vec2> = Vec::new();
+    for &(a, _) in edges {
+      if !points.iter().any(|p| (*p - a).length() < 1e-3) {
+        points.push(a);
+      }
+    }
+    let starts = |p: Vec2| edges.iter().filter(|e| (e.0 - p).length() < 1e-3).count();
+    let ends = |p: Vec2| edges.iter().filter(|e| (e.1 - p).length() < 1e-3).count();
+    edges.len() == n && points.len() == n && points.iter().all(|&p| starts(p) == 1 && ends(p) == 1)
+  }
+
+  /// Where a point `p` of a tile image `size` px, its tileset offset none,
+  /// draws in `cell` of the hexagonal `grid` with `flip`: from where
+  /// `tile_anchor` stands the image, its flips mirroring it, then its
+  /// turns about the quad's middle, as `render::tiles` draws a tile
+  fn drawn(grid: &MapGrid, cell: IVec2, size: Vec2, flip: TileFlip, p: Vec2) -> Vec2 {
+    let anchor = grid.tile_anchor(cell);
+    let mut at = p;
+    if flip.contains(TileFlip::HORIZONTAL) {
+      at.x = size.x - at.x;
+    }
+    if flip.contains(TileFlip::VERTICAL) {
+      at.y = size.y - at.y;
+    }
+    let placed = anchor + Vec2::new(at.x, at.y - size.y);
+    let middle = anchor + Vec2::new(size.x / 2.0, -size.y / 2.0);
+    middle + flip.quad_turn(true) * (placed - middle)
+  }
+
   #[test]
-  fn a_code_built_hex_layer_that_collides_warns_once_and_builds_nothing() {
+  fn a_hex_layer_collides_along_its_hexagons() {
+    for fixture in hex_fixtures() {
+      for file in fixture.files {
+        let (mut maps, map, grid) = hex_fixture_world(&fixture, file);
+        let tiles = colliders(&maps.world, map);
+        assert_eq!(
+          tiles.bounds(),
+          Some(CellRect::from_size(UVec2::new(8, 6))),
+          "{file}"
+        );
+        let cell = |(x, y): (i32, i32)| IVec2::new(x, y);
+        let clump: Vec<IVec2> = fixture.clump.iter().map(|&c| cell(c)).collect();
+        for &c in &clump {
+          assert_eq!(tiles.get(c), TileCell::Solid, "{file}: {c}");
+        }
+        for &(c, _) in &fixture.triangles {
+          assert!(
+            matches!(tiles.get(cell(c)), TileCell::Shape(_)),
+            "{file}: {c:?} is {:?}",
+            tiles.get(cell(c))
+          );
+        }
+        for &c in &fixture.blank {
+          assert_eq!(tiles.get(cell(c)), TileCell::Empty, "{file}: {c:?}");
+        }
+        // One part: 21 edges in chunk (0, 0)
+        let parts = parts_of(&mut maps.world, map);
+        assert_eq!(parts.len(), 1, "{file}: {parts:?}");
+        let edges = all_edges(&mut maps.world, map);
+        // The clump's edges are its cells' union border, each once, and
+        // chain into one closed ring
+        let border = union_border(&grid, &clump);
+        assert_eq!(border.len(), 12, "{file}");
+        let corners: Vec<Px> = border.iter().map(|&(a, _)| a).collect();
+        let mut found: Vec<(Px, Px)> = edges
+          .iter()
+          .filter_map(|&(a, b)| Some((whole_px(a)?, whole_px(b)?)))
+          .filter(|(a, b)| corners.contains(a) && corners.contains(b))
+          .collect();
+        found.sort_unstable();
+        assert_eq!(found, border, "{file}");
+        assert!(one_closed_ring(&found), "{file}: {found:?}");
+        // Each triangle tile is a closed ring of three points in its cell
+        for &(c, flip) in &fixture.triangles {
+          let ring = edges_in(&grid, cell(c), &edges);
+          assert!(ring_of(&ring, 3), "{file}: {c:?} {flip:?}: {ring:?}");
+        }
+        // and the shapeless tiles add nothing
+        assert_eq!(edges.len(), 12 + 3 * 3, "{file}: {edges:?}");
+      }
+    }
+  }
+
+  #[test]
+  fn a_turned_hex_tile_s_shape_turns_with_its_art() {
+    for fixture in hex_fixtures() {
+      for file in fixture.files {
+        let (mut maps, map, grid) = hex_fixture_world(&fixture, file);
+        let edges = all_edges(&mut maps.world, map);
+        // The tiles are their cells' size
+        let size = grid.cell.as_vec2();
+        for &((x, y), flip) in &fixture.triangles {
+          let cell = IVec2::new(x, y);
+          let ring = edges_in(&grid, cell, &edges);
+          let points: Vec<Vec2> = ring.iter().map(|&(a, _)| a).collect();
+          // The plain triangle's points, flipped and turned as drawn
+          let expected = fixture
+            .triangle
+            .map(|(px, py)| drawn(&grid, cell, size, flip, Vec2::new(px, py)));
+          assert_eq!(points.len(), 3, "{file}: {cell} {flip:?}: {ring:?}");
+          for want in expected {
+            assert!(
+              points.iter().any(|p| (*p - want).length() < 1e-2),
+              "{file}: {cell} {flip:?}: {want} not among {points:?}"
+            );
+          }
+        }
+        // A whole hexagon is a solid cell however it is turned or flipped
+        let turns = [
+          TileFlip::HEX_ROTATE_60,
+          TileFlip::HEX_ROTATE_120,
+          TileFlip::HEX_ROTATE_60 | TileFlip::HEX_ROTATE_120,
+          TileFlip::HORIZONTAL | TileFlip::HEX_ROTATE_60,
+          TileFlip::VERTICAL,
+        ];
+        let spots = [(0, 0), (7, 0), (0, 5), (7, 5), (4, 5)];
+        let mut view = MapsView::new(&mut maps.world);
+        for (&(x, y), &flip) in spots.iter().zip(&turns) {
+          assert!(view.set_tile(
+            map,
+            "walls",
+            IVec2::new(x, y),
+            Some(Tile::new(0, WHOLE_HEX).with_flip(flip))
+          ));
+        }
+        maps.step();
+        let tiles = colliders(&maps.world, map);
+        for (&(x, y), &flip) in spots.iter().zip(&turns) {
+          assert_eq!(
+            tiles.get(IVec2::new(x, y)),
+            TileCell::Solid,
+            "{file}: {flip:?}"
+          );
+        }
+        // and a turned triangle tile is a shape still
+        let mut view = MapsView::new(&mut maps.world);
+        assert!(view.set_tile(
+          map,
+          "walls",
+          IVec2::new(4, 3),
+          Some(Tile::new(0, TRIANGLE).with_flip(TileFlip::HEX_ROTATE_120))
+        ));
+        maps.step();
+        let tiles = colliders(&maps.world, map);
+        assert!(matches!(tiles.get(IVec2::new(4, 3)), TileCell::Shape(_)));
+      }
+    }
+  }
+
+  /// An infinite map of `cell`-sized hexagons (axis Y, odd rows, side
+  /// `side`) over `whole_hex_set`, its layer "ground" holding whole
+  /// hexagons at `cells`
+  fn hex_map(cell: UVec2, side: u32, cells: &[IVec2]) -> TileMap {
+    let mut map = TileMap::infinite(cell).with_shape(GridShape::Hexagonal {
+      axis: StaggerAxis::Y,
+      index: StaggerIndex::Odd,
+      side,
+    });
+    let set = whole_hex_set(&map.grid());
+    let set = map.add_tileset(TilesetSource::Embedded(Arc::new(set)));
+    let layer = map.add_tile_layer("ground");
+    let grid = map.tiles_mut(layer).expect("a tile layer");
+    for &at in cells {
+      grid.set(at, Some(Tile::new(set, WHOLE_HEX)));
+    }
+    map
+  }
+
+  #[test]
+  fn an_edit_on_a_hex_map_rebuilds_only_its_parts() {
+    use crate::core::ecs::DetectChanges;
+    use crate::core::physics::Physics;
+    let cell = UVec2::new(120, 140);
+    // A clump well inside each of chunks (0, 0), (1, 0) and (-1, -1)
+    let clumps: Vec<IVec2> = [(5, 5), (6, 5), (6, 6)]
+      .into_iter()
+      .flat_map(|(x, y)| [(x, y), (x + 35, y), (x - 32, y - 32)])
+      .map(|(x, y)| IVec2::new(x, y))
+      .collect();
+    let map = hex_map(cell, 70, &clumps);
+    let grid = map.grid();
+    let mut maps = MapWorld::new();
+    let handle = add(&mut maps.world, map);
+    let map = maps.spawn(MapRoot::new(handle));
+    maps.frame();
+    // Each part: the chunk of the cell its edges' middle is in, its
+    // physics handle, when its collider last changed, and its shape
+    type Held = (Entity, IVec2, String, String, Option<ColliderShape>);
+    let held = |world: &mut World| -> Vec<Held> {
+      let mut found: Vec<Held> = parts_of(world, map)
+        .into_iter()
+        .map(|(part, collider)| {
+          let edges = edges_of(&collider);
+          let middle = edges.iter().map(|&(a, b)| a + b).sum::<Vec2>() / (2.0 * edges.len() as f32);
+          let chunk = grid.cell_at(middle).div_euclid(IVec2::splat(32));
+          let physics = world.resource::<Physics>();
+          let handle = format!(
+            "{:?}",
+            physics.collider_entries.get(&part).map(|e| e.handle)
+          );
+          let collider = world.entity(part).get_ref::<Collider>();
+          let changed = format!("{:?}", collider.as_ref().map(|c| c.last_changed()));
+          (
+            part,
+            chunk,
+            handle,
+            changed,
+            collider.map(|c| c.shape.clone()),
+          )
+        })
+        .collect();
+      found.sort_by_key(|(_, chunk, ..)| (chunk.y, chunk.x));
+      found
+    };
+    let before = held(&mut maps.world);
+    let chunks: Vec<IVec2> = before.iter().map(|(_, c, ..)| *c).collect();
+    assert_eq!(
+      chunks,
+      [IVec2::new(-1, -1), IVec2::ZERO, IVec2::new(1, 0)],
+      "a part a clump"
+    );
+    // A hexagon joins the clump in chunk (1, 0)
+    assert!(MapsView::new(&mut maps.world).set_tile(
+      map,
+      "ground",
+      IVec2::new(42, 5),
+      Some(Tile::new(0, WHOLE_HEX))
+    ));
+    maps.step();
+    let after = held(&mut maps.world);
+    assert_eq!(after.len(), before.len());
+    for ((part, chunk, handle, changed, shape), was) in after.iter().zip(&before) {
+      assert_eq!(
+        (part, chunk, handle),
+        (&was.0, &was.1, &was.2),
+        "kept its entity"
+      );
+      assert!(handle.starts_with("Some"), "{handle}");
+      if *chunk == IVec2::new(1, 0) {
+        assert_ne!(
+          shape, &was.4,
+          "chunk {chunk}'s part took its new shape in place"
+        );
+      } else {
+        assert_eq!(
+          (changed, shape),
+          (&was.3, &was.4),
+          "chunk {chunk}'s part was not touched"
+        );
+      }
+    }
+    // The edited clump's edges are its four cells' border
+    let edges: Vec<(Px, Px)> = edges_of(
+      &parts_of(&mut maps.world, map)
+        .into_iter()
+        .find(|(part, _)| *part == after[2].0)
+        .map(|(_, collider)| collider)
+        .expect("chunk (1, 0)'s part"),
+    )
+    .into_iter()
+    .filter_map(|(a, b)| Some((whole_px(a)?, whole_px(b)?)))
+    .collect();
+    let mut sorted = edges.clone();
+    sorted.sort_unstable();
+    let grown: Vec<IVec2> = [(40, 5), (41, 5), (41, 6), (42, 5)]
+      .map(|(x, y)| IVec2::new(x, y))
+      .to_vec();
+    assert_eq!(sorted, union_border(&grid, &grown));
+  }
+
+  #[test]
+  fn a_code_built_hex_layer_collides() {
     use crate::core::tilemap::MapOccluder;
     // A layer added while the map was orthogonal keeps colliding when the
-    // map moves onto a hexagonal grid; one added after does not
+    // map moves onto a hexagonal grid; one added after collides too, as on
+    // any grid
     let mut map = TileMap::new(UVec2::new(6, 6), UVec2::splat(32));
-    let set = map.add_tileset(TilesetSource::Embedded(Arc::new(lattice_set(
-      UVec2::splat(32),
-    ))));
     map.add_tile_layer("honeycomb-5d07");
     let mut map = map.with_shape(GridShape::Hexagonal {
       axis: StaggerAxis::Y,
       index: StaggerIndex::Odd,
       side: 12,
     });
-    let quiet = map.add_tile_layer("hexfloor-5d07");
-    assert!(map.layers[0].info.collides && !map.layers[quiet].info.collides);
-    for layer in [0, quiet] {
+    let set = map.add_tileset(TilesetSource::Embedded(Arc::new(whole_hex_set(
+      &map.grid(),
+    ))));
+    let floor = map.add_tile_layer("hexfloor-5d07");
+    assert!(map.layers[0].info.collides && map.layers[floor].info.collides);
+    for (layer, row) in [(0, 2), (floor, 4)] {
       let grid = map.tiles_mut(layer).expect("a tile layer");
       for x in 0..4 {
-        grid.set(IVec2::new(x, 2), Some(Tile::new(set, BOX)));
+        grid.set(IVec2::new(x, row), Some(Tile::new(set, WHOLE_HEX)));
       }
+    }
+    let grid = map.grid();
+    let mut maps = MapWorld::new();
+    let handle = add(&mut maps.world, map);
+    let map = maps.spawn(MapRoot::new(handle));
+    maps.frame();
+    let tiles = colliders(&maps.world, map);
+    for row in [2, 4] {
+      for x in 0..4 {
+        assert_eq!(tiles.get(IVec2::new(x, row)), TileCell::Solid);
+      }
+    }
+    let solid = |extra: &[IVec2]| -> Vec<IVec2> {
+      let mut cells: Vec<IVec2> = (0..4)
+        .flat_map(|x| [IVec2::new(x, 2), IVec2::new(x, 4)])
+        .collect();
+      cells.extend_from_slice(extra);
+      cells
+    };
+    let border = |world: &mut World| -> Vec<(Px, Px)> {
+      let mut edges: Vec<(Px, Px)> = all_edges(world, map)
+        .into_iter()
+        .filter_map(|(a, b)| Some((whole_px(a)?, whole_px(b)?)))
+        .collect();
+      edges.sort_unstable();
+      edges
+    };
+    assert_eq!(border(&mut maps.world), union_border(&grid, &solid(&[])));
+    // An edit collides at once: the cell between the rows joins them
+    let mut view = MapsView::new(&mut maps.world);
+    assert!(view.set_tile(
+      map,
+      "honeycomb-5d07",
+      IVec2::new(1, 3),
+      Some(Tile::new(0, WHOLE_HEX))
+    ));
+    maps.step();
+    maps.frame();
+    assert_eq!(
+      colliders(&maps.world, map).get(IVec2::new(1, 3)),
+      TileCell::Solid
+    );
+    assert_eq!(
+      border(&mut maps.world),
+      union_border(&grid, &solid(&[IVec2::new(1, 3)]))
+    );
+    // Shadows from hexagonal layers come later: each layer says so once
+    // and casts none, and nothing says collision is missing
+    assert_eq!(
+      maps.world.query::<&MapOccluder>().iter(&maps.world).count(),
+      0
+    );
+    let warned = |layer: &str, what: &str| {
+      crate::core::dev_log::get_entries()
+        .iter()
+        .filter(|e| e.message.contains(&format!("\"{layer}\"")) && e.message.contains(what))
+        .count()
+    };
+    for layer in ["honeycomb-5d07", "hexfloor-5d07"] {
+      assert_eq!(
+        warned(layer, "shadows from hexagonal layers aren't supported yet"),
+        1,
+        "{layer}"
+      );
+      assert_eq!(warned(layer, "collision"), 0, "{layer}");
+      assert_eq!(warned(layer, "collides"), 0, "{layer}");
+    }
+  }
+
+  #[test]
+  fn a_hex_grid_too_big_to_trace_warns_once_and_builds_nothing() {
+    // Hexagons 16,385 px across: three tiles of a colliding layer
+    let cell = UVec2::new(16_385, 16_000);
+    let mut map = TileMap::new(UVec2::new(4, 2), cell).with_shape(GridShape::Hexagonal {
+      axis: StaggerAxis::Y,
+      index: StaggerIndex::Odd,
+      side: 8_000,
+    });
+    let set = map.add_tileset(TilesetSource::Embedded(Arc::new(whole_hex_set(
+      &map.grid(),
+    ))));
+    let walls = map.add_tile_layer("walls-77c1");
+    let grid = map.tiles_mut(walls).expect("a tile layer");
+    for x in 0..3 {
+      grid.set(IVec2::new(x, 1), Some(Tile::new(set, WHOLE_HEX)));
     }
     let mut maps = MapWorld::new();
     let handle = add(&mut maps.world, map);
@@ -2943,9 +3455,9 @@ mod tests {
     let mut view = MapsView::new(&mut maps.world);
     assert!(view.set_tile(
       map,
-      "honeycomb-5d07",
-      IVec2::new(1, 3),
-      Some(Tile::new(0, BOX))
+      "walls-77c1",
+      IVec2::new(3, 1),
+      Some(Tile::new(0, WHOLE_HEX))
     ));
     maps.step();
     maps.frame();
@@ -2954,24 +3466,14 @@ mod tests {
       assert!(maps.world.get::<TileColliders>(entity).is_none());
     }
     assert_eq!(count_parts(&mut maps.world), 0);
-    assert_eq!(
-      maps.world.query::<&MapOccluder>().iter(&maps.world).count(),
-      0
-    );
-    let warned = |what: &str| {
-      crate::core::dev_log::get_entries()
-        .iter()
-        .filter(|e| e.message.contains("\"honeycomb-5d07\"") && e.message.contains(what))
-        .count()
-    };
-    assert_eq!(warned("hexagonal collision isn't supported yet"), 1);
-    assert_eq!(
-      warned("shadows from hexagonal layers aren't supported yet"),
-      1
-    );
-    let quiet = crate::core::dev_log::get_entries()
+    let warned = crate::core::dev_log::get_entries()
       .iter()
-      .any(|e| e.message.contains("hexfloor-5d07"));
-    assert!(!quiet, "a layer that does not collide says nothing");
+      .filter(|e| {
+        e.message
+          .contains("layer \"walls-77c1\" has hexagonal cells over 16,384 px")
+          && e.message.contains("which don't collide")
+      })
+      .count();
+    assert_eq!(warned, 1);
   }
 }

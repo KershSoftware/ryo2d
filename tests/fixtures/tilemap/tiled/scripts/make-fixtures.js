@@ -9,7 +9,9 @@
 // `xml/maps/shape-*.tmx`: among them infinite maps, the sixteen hex flip
 // and turn combinations and a hexagonal layer that collides), a world of
 // two of them (`worlds/shape.world`), and `renders/shape-*.png`, what Tiled
-// draws of the bounded ones but the colliding one; maps of the same objects
+// draws of the bounded ones but the colliding one; hexagonal maps of both
+// axes whose layer collides over tiles with collision shapes
+// (`maps/collide-hex-*`, with XML twins and external tilesets); maps of the same objects
 // on the four grids but the orthogonal (`maps/shape-objects-*`, with XML
 // twins) and measured-objects.json, where Tiled puts and draws them; measured-order.json, which of two overlapping
 // tiles it draws over the other on those grids; measured-raster.json, where
@@ -701,8 +703,8 @@ for (var tm = 0; tm < tallMaps.length; tm++) {
   })(tallMaps[tm]);
 }
 
-// A hexagonal map whose "walls" layer collides, which the engine refuses,
-// over a "ground" layer that says nothing of collision
+// A hexagonal map whose "walls" layer says it collides, over a "ground"
+// layer that says nothing of collision (and so collides, as on any grid)
 saveBoth("shape-hex-collides", function () {
   var made = shapeMap({ orientation: H, tile: [32, 32], size: [4, 4], axis: AY, index: ODD, side: 12, kind: "hex-y" });
   var ground = new TileLayer("ground");
@@ -716,6 +718,102 @@ saveBoth("shape-hex-collides", function () {
   edit.apply();
   return made[0];
 });
+
+// Hexagonal maps whose "walls" layer collides (`maps/collide-hex-*.tmj`,
+// with XML twins), each over an external tileset of three tiles the size
+// of its cell (`tilesets/collide-hex-*.tsj`, `xml/tilesets/collide-hex-*.tsx`):
+// tile 0 a hexagon whose collision shape is the whole hexagon, tile 1 one
+// with a small triangle off its middle as its shape, tile 2 one with no
+// shape. Each map holds a clump of three whole hexagons, the triangle tile
+// placed plain, turned 60 degrees and flipped horizontally, and shapeless
+// tiles round them. The tilesets are written by hand as TSX (scripting
+// cannot give a tile collision shapes), read by Tiled and saved by it in
+// both formats
+var collideHex = [
+  {
+    name: "collide-hex-y-odd", set: "collide-hex-y", kind: "hex-y",
+    orientation: H, tile: [120, 140], size: [8, 6], axis: AY, index: ODD, side: 70,
+    triangle: [[72, 84], [96, 100], [70, 108]],
+    clump: [[2, 1], [3, 1], [3, 2]],
+    triangles: [[6, 1, 0], [6, 3, Tile.FlippedAntiDiagonally], [1, 4, Tile.FlippedHorizontally]],
+    blank: [[1, 1], [4, 1], [2, 2], [4, 2], [5, 1], [7, 1], [5, 3], [7, 3], [0, 4], [2, 4]],
+  },
+  {
+    name: "collide-hex-x-even", set: "collide-hex-x", kind: "hex-x",
+    orientation: H, tile: [140, 120], size: [8, 6], axis: AX, index: EVEN, side: 70,
+    triangle: [[84, 72], [100, 96], [108, 70]],
+    clump: [[1, 2], [2, 1], [2, 2]],
+    triangles: [[5, 1, 0], [5, 3, Tile.FlippedAntiDiagonally], [2, 4, Tile.FlippedHorizontally]],
+    blank: [[0, 2], [1, 1], [3, 1], [3, 2], [4, 1], [6, 1], [4, 3], [6, 3], [1, 4], [3, 4]],
+  },
+];
+
+// The tileset of `c` as TSX: its image beside the other images, tiles 0
+// and 1 with their polygons in the image's pixels
+function collideHexTsx(c) {
+  var w = c.tile[0], h = c.tile[1];
+  var tile = function (id, points) {
+    return ' <tile id="' + id + '">\n' +
+      '  <objectgroup draworder="index" id="2">\n' +
+      '   <object id="1" x="0" y="0">\n' +
+      '    <polygon points="' + points.map(function (p) { return p[0] + "," + p[1]; }).join(" ") + '"/>\n' +
+      "   </object>\n" +
+      "  </objectgroup>\n" +
+      " </tile>\n";
+  };
+  return '<?xml version="1.0" encoding="UTF-8"?>\n' +
+    '<tileset version="1.10" tiledversion="1.12.2" name="' + c.set + '" tilewidth="' + w + '" tileheight="' + h + '" tilecount="3" columns="3">\n' +
+    ' <image source="../images/' + c.set + '.png" width="' + 3 * w + '" height="' + h + '"/>\n' +
+    tile(0, outline(c.kind, w, h, c.side)) +
+    tile(1, c.triangle) +
+    "</tileset>\n";
+}
+
+// The tileset's image: a blue hexagon, a green one with the triangle red,
+// a yellow one
+function collideHexImage(c) {
+  var w = c.tile[0], h = c.tile[1];
+  var hexagon = outline(c.kind, w, h, c.side);
+  var colours = [BLUE, GREEN, YELLOW];
+  var image = new Image(3 * w, h, Image.Format_ARGB32);
+  image.fill(0);
+  for (var t = 0; t < 3; t++)
+    for (var y = 0; y < h; y++)
+      for (var x = 0; x < w; x++)
+        if (covers(hexagon, x, y)) image.setPixel(t * w + x, y, t === 1 && covers(c.triangle, x, y) ? RED : colours[t]);
+  var path = "images/" + c.set + ".png";
+  if (!image.save(dir + path)) throw new Error("make-fixtures.js: " + path + ": not saved");
+}
+
+for (var ch = 0; ch < collideHex.length; ch++) {
+  (function (c) {
+    collideHexImage(c);
+    var scratch = dir + "tilesets/make-fixtures-scratch.tsx";
+    writeText(scratch, collideHexTsx(c));
+    var read = tiled.tilesetFormat("tsx").read(scratch);
+    File.remove(scratch);
+    save(read, tiled.tilesetFormat("json"), "tilesets/" + c.set + ".tsj");
+    save(read, tiled.tilesetFormat("tsx"), "xml/tilesets/" + c.set + ".tsx");
+    var formats = [
+      [tiled.mapFormat("json"), "maps", ".tmj", "../tilesets/" + c.set + ".tsj"],
+      [tiled.mapFormat("tmx"), "xml/maps", ".tmx", "../tilesets/" + c.set + ".tsx"],
+    ];
+    for (var f = 0; f < formats.length; f++) {
+      var map = sampleMap(c);
+      map.layerDataFormat = TileMap.CSV;
+      var set = external(formats[f][1], formats[f][3]);
+      map.addTileset(set);
+      var walls = new TileLayer("walls");
+      map.addLayer(walls);
+      var edit = walls.edit();
+      for (var i = 0; i < c.clump.length; i++) edit.setTile(c.clump[i][0], c.clump[i][1], set.tile(0));
+      for (var j = 0; j < c.triangles.length; j++) edit.setTile(c.triangles[j][0], c.triangles[j][1], set.tile(1), c.triangles[j][2]);
+      for (var k = 0; k < c.blank.length; k++) edit.setTile(c.blank[k][0], c.blank[k][1], set.tile(2));
+      edit.apply();
+      save(map, formats[f][0], formats[f][1] + "/" + c.name + formats[f][2]);
+    }
+  })(collideHex[ch]);
+}
 
 var shapeWorld = new TextFile(dir + "worlds/shape.world", TextFile.WriteOnly);
 shapeWorld.write(

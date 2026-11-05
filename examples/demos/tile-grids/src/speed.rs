@@ -187,7 +187,7 @@ fn atlas(sheet: &Image, grid: &MapGrid, ids: &[u32]) -> Image {
 
 /// The tileset over `grid`'s atlas: the rock tiles collide as their whole
 /// cell (the cell's outline in the tile's pixels), but on the hexagonal
-/// grid
+/// grid, whose map is drawn only, as the speed guards draw it
 fn tileset(image: Handle<Image>, grid: &MapGrid, count: u32) -> Tileset {
   let cell = grid.cell;
   let mut set = Tileset::new(
@@ -242,6 +242,12 @@ fn cave(grid: usize, set: TilesetSource) -> TileMap {
   let mut map = TileMap::new(UVec2::splat(BIG), cell_size(grid)).with_shape(shape(grid));
   let set = map.add_tileset(set);
   let layers: Vec<usize> = LAYERS.iter().map(|name| map.add_tile_layer(name)).collect();
+  // The hexagonal map is drawn only, as the speed guards draw it
+  if grid == 3 {
+    for &layer in &layers {
+      map.layers[layer].info.collides = false;
+    }
+  }
   // Each layer's tiles' first id in the atlas
   let (back, rock, props) = (0, BACK.len() as u32, (BACK.len() + ROCK.len()) as u32);
   let front = props + PROPS.len() as u32;
@@ -429,7 +435,7 @@ impl DemoPage for SpeedPage {
       None => "Landing: its chunks are worked out off the main thread".to_string(),
     };
     let collides = if self.built == 3 {
-      "Hexagonal layers neither collide nor cast shadows"
+      "Drawn only, as the speed guards draw it (hexagonal shadows come later)"
     } else {
       "The rock collides and casts shadows"
     };

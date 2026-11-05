@@ -2,12 +2,11 @@
 
 Tile maps load from Tiled and LDtk on every grid Tiled has (orthogonal, isometric, staggered, hexagonal and oblique), from files and built in code, bounded or infinite, and stream endless worlds round the cameras and anchors: drawing, objects, picking and the board tools, edits and Wang terrain, collision and shadows, y-sorting, streaming, worlds and hot reload follow each map's grid. Designs: `docs/specs/2026-10-29-tilemap-design.md` and `docs/specs/2026-10-31-tilemap-shapes-design.md`; using them from a game: the `ryo-tilemap` skill; what they cost, and their limits: `docs/backlog/tilemap.md`; a demo of each grid: `examples/demos/tile-grids`. This is what the designs left for later. Each is refused with a clear error, or warned once where a file is otherwise usable, until it is done.
 
-## Hexagonal collision and shadows
+## Hexagonal shadows
 
-A hexagonal map's tile layers neither collide nor cast shadows: one whose `collides` or `occludes` is true fails to load, naming the layer, and a hexagonal layer made to collide in code builds nothing, warned once a layer.
+A hexagonal map's tile layers collide (along their hexagons' sides, and their tiles' own shapes as rings of their own), but cast no shadows: an occluding hexagonal layer casts none, warned once a layer.
 
-- A hexagonal cell has six neighbours, so `TileColliders`' square outline trace (units one or two cells decide, `physics/tiles/outline.rs`), which isometric, staggered and oblique maps share through their square lattice (`MapGrid::lattice`), does not apply, and a hexagonal grid has no lattice.
-- It needs a hex grid kind that traces the boundary of hexagons the same way (shared edges cancel, loops stay seamless, an edit retraces only the loops through it, packing by chunk), or per-cell polygons merged across shared edges, with the character controller's floor and wall rules checked on hex outlines. Shadows would follow the same outlines. It is the largest piece left, and it is physics'.
+- Shadows would follow the sides collision keeps (`physics::Boundary` reads them a block at a time), as the other grids' shadows follow their outlines.
 
 ## Navigation off the orthogonal grid
 

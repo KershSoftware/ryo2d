@@ -13,7 +13,7 @@
 //! and its ring at the Radius setting, the line from it to the hovered hex
 //! and the hovered hex's neighbours, each on an empty layer of its own the
 //! map holds above the board, in the rim its `mark` property names; the
-//! HUD gives the distance between them. Hexagonal layers neither collide
+//! HUD gives the distance between them. The board's layers neither collide
 //! nor cast shadows, so the board has no character
 
 use demo_kit::prelude::*;

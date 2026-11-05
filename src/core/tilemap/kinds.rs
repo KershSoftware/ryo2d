@@ -1,6 +1,7 @@
 //! What a map's cell is, for collision or for light: tilesets read once
 //! into `ShapeSource`s (so another thread can read them), a tile's shapes
-//! placed where it draws and classified as a `TileCell`, IntGrid values by
+//! placed where it draws (on a hexagonal grid, turned as it is drawn) and
+//! classified as a `TileCell`, IntGrid values by
 //! their names, a group of layers' union, and which chunks changed since a
 //! group last read its layers. Pure but for the queries' aliases, so a
 //! map's first build can run off the main thread.
@@ -18,7 +19,9 @@ use super::{
 use crate::core::asset::{AssetId, Assets};
 use crate::core::ecs::{Allow, DetectChanges, Disabled, Entity, Has, Query, Ref, Res};
 use crate::core::hash::FastMap;
-use crate::core::physics::{Boundary, CellRect, CellShape, SlopeCorner, TileCell, TileColliders};
+use crate::core::physics::{
+  Boundary, CellRect, CellShape, HexCells, SlopeCorner, TileCell, TileColliders,
+};
 
 /// How near a point must be to a cell corner to count as on it, in tiles
 const EPSILON: f32 = 1e-4;
@@ -240,7 +243,8 @@ pub(super) fn reindexing(grid: &MapGrid) -> Option<Lattice> {
 }
 
 /// How a layer's grid takes a tile's shapes from its image's pixels into
-/// its cell's square (the unit square of collision's grid)
+/// its cell's square (the unit square of collision's grid), or on a
+/// hexagonal grid into its cell's box
 #[derive(Clone, Copy, Debug)]
 pub(super) enum Placement {
   /// Upright rectangles of this size: an orthogonal grid's cells, and an
@@ -254,8 +258,118 @@ pub(super) enum Placement {
   /// corner. Every cell is that one moved along the lattice, so a tile's
   /// shapes are the same in every cell
   Lattice(DAffine2),
-  /// No square lattice (a hexagonal grid): its tiles collide as nothing
+  /// Into a hexagonal cell's box, whose units a shape's are on a hexagonal
+  /// grid: from where `MapGrid::tile_anchor` stands the image, flipped,
+  /// then turned as drawing turns it
+  Hex(HexPlace),
+  /// Nowhere (a lattice that folds its cells flat or is not finite, or
+  /// hexagons the collision tracer does not take): its tiles collide as
+  /// nothing
   Nothing,
+}
+
+/// Where a hexagonal grid's cells take a tile, every cell alike, in pixels
+/// from the cell's box's top-left (`HexCells::cell_box`)
+#[derive(Clone, Copy, Debug)]
+pub(super) struct HexPlace {
+  /// Where a tile image's bottom-left stands (`MapGrid::tile_anchor`),
+  /// before its tileset's offset
+  anchor: DVec2,
+  /// The box's size: a shape's tile units
+  size: DVec2,
+  /// The cell's distinct corners (a side of length 0 shares one), the
+  /// first `count`
+  corners: [DVec2; 6],
+  count: usize,
+}
+
+impl HexPlace {
+  /// The place `grid` (a hexagonal grid, whose cells the tracer takes)
+  /// gives
+  fn of(grid: &MapGrid) -> Option<HexPlace> {
+    let hex = grid.hex_cells().filter(HexCells::traceable)?;
+    let (min, size) = hex.cell_box(IVec2::ZERO);
+    let corner = min.as_dvec2();
+    let anchor = (grid.tile_anchor(IVec2::ZERO) - grid.origin).as_dvec2() - corner;
+    let mut corners = [DVec2::ZERO; 6];
+    let mut count = 0;
+    for point in hex.corners(IVec2::ZERO) {
+      let point = point.as_dvec2() - corner;
+      if !corners[..count].contains(&point) {
+        corners[count] = point;
+        count += 1;
+      }
+    }
+    Some(HexPlace {
+      anchor,
+      size: size.as_dvec2(),
+      corners,
+      count,
+    })
+  }
+
+  /// `points` (tile pixels from its image's top-left, y down) where a tile
+  /// `size` px whose tileset's offset is `offset` stands in its cell,
+  /// flipped by `flip` (its mirrors, not its turns), in pixels from the
+  /// box's top-left
+  fn flipped(&self, (size, offset): (Vec2, Vec2), flip: TileFlip, points: &[Vec2]) -> Vec<DVec2> {
+    let (size, offset) = (size.as_dvec2(), offset.as_dvec2());
+    points
+      .iter()
+      .map(|p| {
+        let mut at = p.as_dvec2();
+        if flip.contains(TileFlip::HORIZONTAL) {
+          at.x = size.x - at.x;
+        }
+        if flip.contains(TileFlip::VERTICAL) {
+          at.y = size.y - at.y;
+        }
+        self.anchor + offset + DVec2::new(at.x, at.y - size.y)
+      })
+      .collect()
+  }
+
+  /// `flipped` points (as `flipped` gives them) turned by `flip`'s turns
+  /// about the tile's quad's middle, where it stands unturned (its
+  /// tileset's offset included), as drawing turns it, in the box's units
+  fn turned(&self, (size, offset): (Vec2, Vec2), flip: TileFlip, flipped: &[DVec2]) -> Vec<Vec2> {
+    let middle = self.anchor + offset.as_dvec2() + DVec2::new(0.5, -0.5) * size.as_dvec2();
+    let turn = flip.quad_turn(true).as_dmat2();
+    flipped
+      .iter()
+      .map(|&p| ((middle + turn * (p - middle)) / self.size).as_vec2())
+      .collect()
+  }
+
+  /// Whether `polygon` (pixels from the box's top-left, flipped and not
+  /// turned) is the cell's whole hexagon: without repeated points, its
+  /// points are the cell's distinct corners, each within half a pixel of
+  /// one, and no other
+  fn whole(&self, polygon: &[DVec2]) -> bool {
+    let near = |a: DVec2, b: DVec2| (a - b).abs().max_element() <= f64::from(EPSILON);
+    let mut ring: Vec<DVec2> = Vec::with_capacity(polygon.len());
+    for &p in polygon {
+      if ring.last().is_none_or(|&q| !near(q, p)) {
+        ring.push(p);
+      }
+    }
+    while ring.len() > 1
+      && ring
+        .first()
+        .zip(ring.last())
+        .is_some_and(|(&a, &b)| near(a, b))
+    {
+      ring.pop();
+    }
+    if ring.len() != self.count {
+      return false;
+    }
+    let mut met = [false; 6];
+    ring.iter().all(|&p| {
+      let found = (0..self.count).find(|&i| !met[i] && self.corners[i].distance(p) <= 0.5);
+      found.inspect(|&i| met[i] = true).is_some()
+    })
+  }
 }
 
 impl Placement {
@@ -263,6 +377,9 @@ impl Placement {
   pub(super) fn of(grid: &MapGrid) -> Placement {
     if let GridShape::Orthogonal | GridShape::Oblique { .. } = grid.shape {
       return Placement::Cells(grid.cell.as_vec2());
+    }
+    if let GridShape::Hexagonal { .. } = grid.shape {
+      return HexPlace::of(grid).map_or(Placement::Nothing, Placement::Hex);
     }
     let Some(lattice) = grid.lattice() else {
       return Placement::Nothing;
@@ -298,8 +415,9 @@ fn keeps_one_way(grid: &MapGrid) -> bool {
 /// staggered grids where `MapGrid::tile_anchor` puts it, taken back
 /// through the lattice), the tileset's offset moves it, and its
 /// flips (diagonal first, then horizontal, then vertical, as Tiled composes
-/// them) turn it, as `render::tiles` draws it. `size` is the size the tile
-/// draws at and `offset` its tileset's
+/// them) turn it, as `render::tiles` draws it; on a hexagonal grid in the
+/// units of its cell's box, its mirrors then its turns (`HexPlace`).
+/// `size` is the size the tile draws at and `offset` its tileset's
 fn placed(
   size: Vec2,
   offset: Vec2,
@@ -307,6 +425,10 @@ fn placed(
   points: &[Vec2],
   placement: Placement,
 ) -> Vec<Vec2> {
+  if let Placement::Hex(place) = placement {
+    let flipped = place.flipped((size, offset), tile.flip, points);
+    return place.turned((size, offset), tile.flip, &flipped);
+  }
   let diagonal = tile.flip.contains(TileFlip::DIAGONAL);
   let drawn = if diagonal {
     Vec2::new(size.y, size.x)
@@ -336,7 +458,7 @@ fn placed(
           );
           to_square.transform_point2(from).as_vec2()
         }
-        Placement::Nothing => Vec2::ZERO,
+        Placement::Hex(_) | Placement::Nothing => Vec2::ZERO,
       }
     })
     .collect()
@@ -496,6 +618,17 @@ fn classify(
       return TileCell::Slope(corner);
     }
   }
+  shape_of(polygons, one_way, ids, sink)
+}
+
+/// `polygons` as a shape's cell: the shape of the same polygons named
+/// already, else a new one
+fn shape_of(
+  polygons: Vec<Vec<Vec2>>,
+  one_way: bool,
+  ids: &mut FastMap<ShapeKey, u16>,
+  sink: &mut dyn ShapeSink,
+) -> TileCell {
   let key = ShapeKey::of(&polygons, one_way);
   if let Some(&index) = ids.get(&key) {
     return TileCell::Shape(index);
@@ -507,7 +640,9 @@ fn classify(
 
 /// The cell kind `tile` is on cells its grid places as `placement`, for
 /// `purpose`. Off an orthogonal grid (`one_way_kept` false) a one-way tile
-/// collides both ways, noted in `both_ways`
+/// collides both ways, noted in `both_ways`. On a hexagonal grid a tile
+/// with a polygon that is its cell's whole hexagon, as it stands flipped
+/// before its turns, is solid however turned; any other is its shape
 fn tile_kind(
   source: Option<&ShapeSource>,
   tile: Tile,
@@ -522,35 +657,41 @@ fn tile_kind(
   if let Placement::Nothing = placement {
     return TileCell::Empty;
   }
-  let collected = |keep: &dyn Fn(&SourceShape) -> bool| -> Vec<Vec<Vec2>> {
-    data
-      .shapes
-      .iter()
-      .filter(|s| keep(s))
-      .map(|s| placed(data.size, source.offset, tile, &s.points, placement))
-      .collect()
+  // The shapes read: for collision its solid ones, else its one-way ones
+  // (those not marked `occluder`); for light those marked, else all
+  let marked = data.shapes.iter().any(|s| s.occluder);
+  let read = |s: &SourceShape, one_way: bool| match purpose {
+    Purpose::Collision => !s.occluder && s.one_way == one_way,
+    Purpose::Occlusion => !one_way && s.occluder == marked,
   };
-  let (solid, one_way) = match purpose {
-    Purpose::Collision => (
-      collected(&|s| !s.occluder && !s.one_way),
-      collected(&|s| !s.occluder && s.one_way),
-    ),
-    Purpose::Occlusion => {
-      let marked = data.shapes.iter().any(|s| s.occluder);
-      (collected(&|s| s.occluder == marked), Vec::new())
-    }
+  let one_way_shapes = !data.shapes.iter().any(|s| read(s, false));
+  let shapes: Vec<&SourceShape> = data
+    .shapes
+    .iter()
+    .filter(|s| read(s, one_way_shapes))
+    .collect();
+  if shapes.is_empty() {
+    return TileCell::Empty;
+  }
+  if one_way_shapes && !one_way_kept {
+    both_ways.set(true);
+  }
+  let one_way = one_way_shapes && one_way_kept;
+  let polygons: Vec<Vec<Vec2>> = shapes
+    .iter()
+    .map(|s| placed(data.size, source.offset, tile, &s.points, placement))
+    .collect();
+  let Placement::Hex(place) = placement else {
+    return classify(polygons, one_way, ids, sink);
   };
-  if !solid.is_empty() {
-    return classify(solid, false, ids, sink);
+  let drawn = (data.size, source.offset);
+  let whole = shapes
+    .iter()
+    .any(|s| place.whole(&place.flipped(drawn, tile.flip, &s.points)));
+  if whole && !one_way {
+    return TileCell::Solid;
   }
-  if !one_way.is_empty() {
-    if !one_way_kept {
-      both_ways.set(true);
-      return classify(one_way, false, ids, sink);
-    }
-    return classify(one_way, true, ids, sink);
-  }
-  TileCell::Empty
+  shape_of(polygons, one_way, ids, sink)
 }
 
 /// The cell kind an IntGrid value's name gives by default
@@ -896,7 +1037,7 @@ pub(super) fn chunk_kinds(
   let placement = Placement::of(&data.grid);
   let one_way_kept = keeps_one_way(&data.grid);
   if let Placement::Nothing = placement {
-    // No square lattice to collide or cast shadows on
+    // No cells to collide or cast shadows on
     return;
   }
   match &tracked.intgrid {

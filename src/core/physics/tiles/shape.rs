@@ -39,6 +39,15 @@ pub(crate) struct ShapeBuild {
   pub(crate) parts: Vec<Vec<Vec2>>,
   /// A solid shape covering the cell's centre: navigation blocks the cell
   pub(crate) blocks: bool,
+  /// Its polygons as authored, each a closed ring (the edge back to its
+  /// first point implied), in tile units (a solid shape): a hexagonal
+  /// grid's shape cells collide as these, neither clipped to their cell
+  /// nor merged with anything. Each keeps its points' order, without
+  /// repeated points, brought within `REACH` of the cell; a polygon that
+  /// builds nothing in its cell here builds no ring
+  pub(crate) rings: Vec<Vec<Vec2>>,
+  /// How many edges `rings` hold
+  pub(crate) ring_edges: usize,
   /// It fell back to the hull of its points (logged)
   pub(crate) hulled: bool,
 }
@@ -97,6 +106,8 @@ impl ShapeBuild {
       build.tops.sort_unstable();
       return build;
     }
+    build.rings = shape.polygons.iter().filter_map(|p| ring(p)).collect();
+    build.ring_edges = build.rings.iter().map(Vec::len).sum();
     let centre = (GRID / 2, GRID / 2);
     build.blocks =
       edges.iter().any(|&(a, b)| on_segment(a, b, centre)) || winding(&edges, centre) != 0;
@@ -143,6 +154,34 @@ impl ShapeBuild {
 /// brought in to this (it can only nudge where an edge enters the cell by
 /// a hair), so the grid's sums stay well inside an `i64`.
 const REACH: f64 = 1024.0;
+
+/// `polygon` as a closed ring of a hexagonal grid's shape cell: its points
+/// brought within `REACH` of the cell, repeated ones (the closing one too)
+/// dropped, in its order. None for a polygon that builds nothing on a
+/// square cell (a point not finite, no area on the grid, or none of it in
+/// its cell)
+fn ring(polygon: &[Vec2]) -> Option<Vec<Vec2>> {
+  let mut snapped = authored(polygon)?;
+  if doubled_area(&snapped) < 0 {
+    snapped.reverse();
+  }
+  if doubled_area(&snapped) == 0 || fitted(&snapped).is_empty() {
+    return None;
+  }
+  let reach = REACH as f32;
+  let (low, high) = (Vec2::splat(-reach), Vec2::splat(1.0 + reach));
+  let mut ring: Vec<Vec2> = Vec::with_capacity(polygon.len());
+  for &p in polygon {
+    let p = p.clamp(low, high);
+    if ring.last() != Some(&p) {
+      ring.push(p);
+    }
+  }
+  while ring.len() > 1 && ring.first() == ring.last() {
+    ring.pop();
+  }
+  (ring.len() >= 3).then_some(ring)
+}
 
 /// `polygon` as authored, snapped to the grid (it may reach past the cell)
 /// and cleaned; None when a point is not finite or fewer than three

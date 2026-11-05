@@ -2,6 +2,17 @@
 
 use std::ops::BitOr;
 
+use glam::{Mat2, Vec2};
+
+/// The sines and cosines of a hexagonal tile's turns: none, 60, 120 and 180
+/// degrees clockwise on screen (y down)
+const HEX_TURNS: [(f32, f32); 4] = [
+  (0.0, 1.0),
+  (0.866_025_4, 0.5),
+  (0.866_025_4, -0.5),
+  (0.0, -1.0),
+];
+
 /// How a tile is mirrored or turned, as Tiled stores it: a diagonal flip
 /// (swap x and y) applied first, then horizontal, then vertical. A 90 degree
 /// turn is a diagonal and a horizontal flip.
@@ -80,6 +91,26 @@ impl TileFlip {
   /// These flips without those of `other`
   pub(crate) fn without(self, other: TileFlip) -> TileFlip {
     TileFlip(self.0 & !other.0)
+  }
+
+  /// The turn these flips make of a tile's quad, as the matrix taking the
+  /// tile's own axes (its width across, its height down) to the quad's: on
+  /// a hexagonal grid (`hex`) the 60 and 120 degree turns clockwise (both,
+  /// a half turn); elsewhere the diagonal flip, which swaps them. Drawing
+  /// turns a tile's quad by it, and collision its shapes
+  pub(crate) fn quad_turn(self, hex: bool) -> Mat2 {
+    if hex {
+      let turns = usize::from(self.contains(TileFlip::HEX_ROTATE_60))
+        + 2 * usize::from(self.contains(TileFlip::HEX_ROTATE_120));
+      let (sin, cos) = HEX_TURNS[turns];
+      // (1, 0) turns to (cos, sin): clockwise, y being down
+      return Mat2::from_cols(Vec2::new(cos, sin), Vec2::new(-sin, cos));
+    }
+    if self.contains(TileFlip::DIAGONAL) {
+      Mat2::from_cols(Vec2::Y, Vec2::X)
+    } else {
+      Mat2::IDENTITY
+    }
   }
 }
 

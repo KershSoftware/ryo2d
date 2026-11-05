@@ -9,8 +9,9 @@
 //! rows, the odd ones shifted) and oblique 16 px cells skewed 4 px across a
 //! row. Each map's tileset has tiles of its cell's size, the rock's
 //! collision shape a whole cell (the tile's rectangle, or on isometric and
-//! staggered grids its diamond). Hexagonal layers neither collide nor cast
-//! shadows, so a hexagonal map's static frame measures drawing alone, and
+//! staggered grids its diamond). The hexagonal map's layers are made not to
+//! collide (hexagonal layers cast no shadows yet, and their collision is
+//! not guarded here yet), so its static frame measures drawing alone, and
 //! it has no edit guard.
 //!
 //! Before criterion runs, four guards:
@@ -477,8 +478,9 @@ impl Grid {
     }
   }
 
-  /// Whether its maps collide and cast shadows: hexagonal layers do
-  /// neither
+  /// Whether its maps collide and cast shadows: the hexagonal map's layers
+  /// are made not to (hexagonal layers cast no shadows yet, and their
+  /// collision is not guarded here yet)
   fn collides(self) -> bool {
     self != Grid::Hexagonal
   }
@@ -601,6 +603,7 @@ fn map_of(
   for (index, (name, layer_cells)) in LAYER_NAMES.iter().zip(cells).enumerate() {
     let set = if index == 2 { last } else { first };
     let layer = map.add_tile_layer(name);
+    map.layers[layer].info.collides = grid.collides();
     let tiles = map.tiles_mut(layer).expect("a tile layer");
     for (i, id) in layer_cells.iter().enumerate() {
       if let Some(id) = id {
@@ -798,7 +801,7 @@ impl Show {
     match self {
       Show::Empty => "an empty frame".into(),
       Show::Map(Grid::Hexagonal) => format!(
-        "the {} map, drawn only (hexagonal layers neither collide nor cast shadows)",
+        "the {} map, drawn only (its layers made not to collide; hexagonal layers cast no shadows yet)",
         Grid::Hexagonal.name()
       ),
       Show::Map(grid) => format!("the {} map, colliding and casting shadows", grid.name()),

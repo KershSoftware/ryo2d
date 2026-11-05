@@ -886,18 +886,6 @@ impl Builder<'_, '_> {
       .px
       .read(&place, &raw.properties, raw.class.as_deref())?;
     let is_tiles = raw.ty == "tilelayer";
-    // Hexagonal collision and shadows aren't supported yet: a hexagonal
-    // map's tile layers do neither unless they say so, which is refused
-    let hex_tiles = is_tiles && self.hex();
-    if hex_tiles && (props.bool("collides") == Some(true) || props.bool("occludes") == Some(true)) {
-      return Err(AssetError::decode(
-        &path,
-        format!(
-          "layer {:?} on a hexagonal map collides or casts shadows; hexagonal collision and shadows aren't supported yet: set its collides and occludes properties to false",
-          raw.name
-        ),
-      ));
-    }
     let mut used = Vec::new();
     let kind = match raw.ty.as_str() {
       "tilelayer" => {
@@ -971,7 +959,7 @@ impl Builder<'_, '_> {
     if !matches!(kind, LayerKind::Image(_)) {
       info.filter = layer_filter(&props);
     }
-    info.collides = props.bool("collides").unwrap_or(is_tiles && !hex_tiles);
+    info.collides = props.bool("collides").unwrap_or(is_tiles);
     info.occludes = props.bool("occludes");
     info.y_sorted = props.bool("y_sort").unwrap_or(false);
     info.lit = props.bool("lit").unwrap_or(true);

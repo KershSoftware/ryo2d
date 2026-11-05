@@ -93,6 +93,28 @@ impl HexCells {
     }
   }
 
+  /// `cell`'s box: the corner of its hexagon's box nearest the origin
+  /// (shifted with its line, unlike `corner_of`), from the grid's origin,
+  /// and the box's size (a cell across by a step and a slant along,
+  /// swapped into place on axis X), what a shape cell's tile units span.
+  /// A corner past `i64` saturates, as `corners` do
+  pub(crate) fn cell_box(&self, cell: IVec2) -> (I64Vec2, I64Vec2) {
+    let (line, pos) = self.split(i64::from(cell.x), i64::from(cell.y));
+    let u = i128::from(pos) * 2 * i128::from(self.half) + i128::from(self.shift(line));
+    let v = i128::from(line) * i128::from(self.step);
+    let (across, along) = (2 * self.half, self.step + self.slant);
+    match self.axis {
+      StaggerAxis::Y => (
+        I64Vec2::new(narrow(u), narrow(v)),
+        I64Vec2::new(across, along),
+      ),
+      StaggerAxis::X => (
+        I64Vec2::new(narrow(v), narrow(u)),
+        I64Vec2::new(along, across),
+      ),
+    }
+  }
+
   /// Clockwise on screen from the top-most corner, as `CellOutline` gives
   /// them; a side of length 0 repeats its corner. Exact for any cell size
   /// and any cell (worked in `i128`; a corner past `i64` saturates, which
@@ -340,6 +362,22 @@ mod tests {
             }
           }
         }
+      }
+    }
+  }
+
+  #[test]
+  fn a_hex_cell_s_box_is_the_box_of_its_corners() {
+    for hex in grids() {
+      for (x, y) in [(0, 0), (1, 0), (0, 1), (3, -2), (-5, 7), (-1, -1), (40, 33)] {
+        let corners = hex.corners(IVec2::new(x, y));
+        let min = corners.iter().fold(I64Vec2::MAX, |a, &b| a.min(b));
+        let max = corners.iter().fold(I64Vec2::MIN, |a, &b| a.max(b));
+        assert_eq!(
+          hex.cell_box(IVec2::new(x, y)),
+          (min, max - min),
+          "{hex:?} ({x}, {y})"
+        );
       }
     }
   }

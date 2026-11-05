@@ -1269,6 +1269,61 @@ mod tests {
   }
 
   #[test]
+  fn a_top_down_character_slides_along_a_hex_wall_with_no_floor() {
+    use crate::core::ecs::IVec2;
+    use crate::core::physics::tiles::hex::{StaggerAxis, StaggerIndex};
+    use crate::core::physics::{HexCells, TileCell, TileColliders};
+    let (mut world, mut s) = world(60);
+    // A row of ten hexagons, 120 x 140 with sides of 70 (axis Y, row 0 not
+    // shifted): its top a zigzag of slanted sides, rising 35 px over 60
+    let cell = glam::UVec2::new(120, 140);
+    let hex = HexCells::new(StaggerAxis::Y, StaggerIndex::Odd, cell, 70);
+    let mut wall = TileColliders::unbounded(cell.as_vec2()).with_hex(hex, Vec2::ZERO);
+    for x in 0..10 {
+      wall.set(IVec2::new(x, 0), TileCell::Solid);
+    }
+    let outlines: Vec<Vec<Vec2>> = (0..10)
+      .map(|x| wall.cell_polygon(IVec2::new(x, 0)).points().to_vec())
+      .collect();
+    world.spawn((Transform::IDENTITY, wall));
+    // Above the slanted side right of cell 4's top corner (540, 0),
+    // heading down
+    let start = Vec2::new(555.0, -40.0);
+    let e = world
+      .spawn((
+        Transform::from_translation(start),
+        CharacterController::top_down(),
+        Collider::circle(10.0),
+      ))
+      .id();
+    let inside = |p: Vec2, points: &[Vec2]| {
+      (0..points.len()).all(|i| {
+        let (a, b) = (points[i], points[(i + 1) % points.len()]);
+        (b - a).perp_dot(p - a) > 0.0
+      })
+    };
+    let mut walled = false;
+    for _ in 0..60 {
+      world.get_mut::<Velocity>(e).unwrap().dx = 0.0;
+      world.get_mut::<Velocity>(e).unwrap().dy = 200.0;
+      run(&mut world, &mut s, 1);
+      let st = state(&world, e);
+      assert!(!st.on_floor && !st.on_ceiling, "never on a floor: {st:?}");
+      walled |= st.on_wall;
+      let at = at(&world, e).translation;
+      for points in &outlines {
+        assert!(!inside(at, points), "inside the wall at {at}");
+      }
+    }
+    assert!(walled, "it met the wall");
+    let t = at(&world, e).translation;
+    assert!(
+      t.x > start.x + 30.0 && t.y < 35.0,
+      "slid along the side, down and right: {t} from {start}"
+    );
+  }
+
+  #[test]
   fn a_dynamic_body_with_a_controller_is_warned_and_not_moved() {
     let (mut world, mut s) = world(60);
     let e = world
