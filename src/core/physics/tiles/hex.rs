@@ -103,9 +103,9 @@ impl HexCells {
       .map(|(x, y)| I64Vec2::new(narrow(x), narrow(y)))
   }
 
-  /// The corners as `i32` points, `None` where they don't fit
-  // used by the tile collision tracer
-  #[allow(dead_code)]
+  /// The corners as `i32` points, `None` where they don't fit (tests: the
+  /// colliders work from `corners`, and `reaches` decides what collides)
+  #[cfg(test)]
   pub(crate) fn points(&self, cell: IVec2) -> Option<[IVec2; 6]> {
     self.fit(i64::from(cell.x), i64::from(cell.y))
   }
@@ -133,6 +133,7 @@ impl HexCells {
     fits(u - 2 * h, u + 4 * h) && fits(v - step, v + 2 * step + slant)
   }
 
+  #[cfg(test)]
   fn fit(&self, x: i64, y: i64) -> Option<[IVec2; 6]> {
     let mut out = [IVec2::ZERO; 6];
     for (slot, (cx, cy)) in out.iter_mut().zip(self.corners_wide(x, y)) {

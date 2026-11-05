@@ -29,14 +29,17 @@
 //!
 //! A hexagonal grid traces no loops here: its units are its cells' six
 //! sides, each owned by whichever of its two cells comes first in row
-//! order, a side with one solid cell an edge clockwise round it
-//! (`HexSides`, `hex_owned_edges`, `each_hex_owner`), and its colliders
-//! hold those edges as they are (`pack::HexParts`), as `Boundary` reads them.
+//! order (a bounded grid's border by the cell inside it), a side with one
+//! solid cell an edge clockwise round it (`HexSides`, `hex_owned_edges`,
+//! `each_hex_owner`), and its colliders hold those edges as they are
+//! (`pack::HexParts`), as `Boundary` reads them.
 
 use glam::{I64Vec2, IVec2};
 
 use super::hex::{HexCells, StaggerAxis};
-use super::{CELLS, CHUNK, Cells, Few, GRID, MAX_REACH, Point, TileCell, chunk_of, local, sides};
+use super::{
+  CELLS, CHUNK, CellRect, Cells, Few, GRID, MAX_REACH, Point, TileCell, chunk_of, local, sides,
+};
 use crate::core::ecs::Entity;
 use crate::core::hash::FastMap;
 
@@ -441,16 +444,26 @@ pub(super) fn boundary_edges(cells: Cells) -> Vec<(Point, Point)> {
 /// across each side, and whether a cell owns that side (the cell across
 /// comes after it in row order: a later row, or the same row further
 /// right), by the parity of the cell's line. Every cell of a line steps
-/// alike, so two tables hold every cell's.
+/// alike, so two tables hold every cell's. On a bounded grid (`bounds`) a
+/// side between a cell inside the bounds and one outside belongs to the
+/// inside cell, whichever comes first: no part, and no `Boundary` block,
+/// sits outside a bounded grid.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct HexSides {
   pub(super) hex: HexCells,
   across: [[IVec2; 6]; 2],
   owns: [[bool; 6]; 2],
+  /// A bounded grid's bounds
+  bounds: Option<CellRect>,
+  /// The cells of `bounds` whose six neighbours all lie inside them (a
+  /// neighbour is at most a cell away each way), which own by the tables
+  /// alone
+  within: Option<CellRect>,
 }
 
 impl HexSides {
-  pub(super) fn of(hex: HexCells) -> Self {
+  /// `hex`'s sides on a grid of `bounds` (`None` for an unbounded one)
+  pub(super) fn of(hex: HexCells, bounds: Option<CellRect>) -> Self {
     let mut across = [[IVec2::ZERO; 6]; 2];
     let mut owns = [[false; 6]; 2];
     for parity in 0..2 {
@@ -464,7 +477,19 @@ impl HexSides {
         owns[parity][side] = (step.y, step.x) > (0, 0);
       }
     }
-    Self { hex, across, owns }
+    let within = bounds.map(|bounds| {
+      CellRect::new(
+        bounds.min.saturating_add(IVec2::ONE),
+        bounds.max.saturating_sub(IVec2::ONE),
+      )
+    });
+    Self {
+      hex,
+      across,
+      owns,
+      bounds,
+      within,
+    }
   }
 
   /// The table `cell`'s line reads
@@ -480,7 +505,19 @@ impl HexSides {
   /// cell from it, so within an `i32` for a cell a grid holds)
   pub(super) fn across(&self, cell: IVec2, side: usize) -> (IVec2, bool) {
     let parity = self.parity(cell);
-    (cell + self.across[parity][side], self.owns[parity][side])
+    let across = cell + self.across[parity][side];
+    let mut owned = self.owns[parity][side];
+    if let Some(bounds) = self.bounds
+      && !self.within.is_some_and(|within| within.contains(cell))
+    {
+      // On the border: a side shared with a cell outside the bounds is
+      // the inside cell's
+      let inside = bounds.contains(cell);
+      if inside != bounds.contains(across) {
+        owned = inside;
+      }
+    }
+    (across, owned)
   }
 }
 
@@ -531,8 +568,9 @@ pub(super) fn hex_owned_edges(
 /// one solid cell, in row order (by row, then column): each chunk's cells,
 /// and the cells just outside it that own sides of its cells, the column
 /// either side of it on its rows and the row above it, a cell past it each
-/// way (the owner of a side being its earlier cell)
-pub(super) fn each_hex_owner(cells: Cells, mut f: impl FnMut(IVec2)) {
+/// way (the owner of a side being its earlier cell). Of a bounded grid
+/// (`bounds`) only the cells inside it, which own its border
+pub(super) fn each_hex_owner(cells: Cells, bounds: Option<CellRect>, mut f: impl FnMut(IVec2)) {
   let chunks = cells.chunk_order();
   let in_row = |row: i32| {
     let start = chunks.partition_point(|c| c.y < row);
@@ -544,10 +582,16 @@ pub(super) fn each_hex_owner(cells: Cells, mut f: impl FnMut(IVec2)) {
   rows.sort_unstable();
   rows.dedup();
   let mut spans: Vec<(i32, i32)> = Vec::new();
+  // Clipped to the bounds: a line or a span past them holds no owner
+  let clip = |lo: i32, hi: i32, min: i32, max: i32| (lo.max(min), hi.min(max.saturating_sub(1)));
   for row in rows {
     let (now, below) = (in_row(row), in_row(row + 1));
     let last = row * CHUNK + CHUNK - 1;
     let first = if now.is_empty() { last } else { row * CHUNK };
+    let (first, last) = match bounds {
+      Some(bounds) => clip(first, last, bounds.min.y, bounds.max.y),
+      None => (first, last),
+    };
     for y in first..=last {
       // The owners on this line: each chunk's cells and one either side,
       // and on the row's last line those over the next row's chunks
@@ -568,6 +612,10 @@ pub(super) fn each_hex_owner(cells: Cells, mut f: impl FnMut(IVec2)) {
           hi = hi.max(spans[i].1);
           i += 1;
         }
+        let (lo, hi) = match bounds {
+          Some(bounds) => clip(lo, hi, bounds.min.x, bounds.max.x),
+          None => (lo, hi),
+        };
         for x in lo..=hi {
           f(IVec2::new(x, y));
         }
