@@ -127,6 +127,7 @@
 
 mod agent;
 mod grid;
+mod layer;
 mod path;
 mod pathfinder;
 pub mod steering;

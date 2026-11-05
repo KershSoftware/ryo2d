@@ -553,13 +553,17 @@ fn path_cost(grid: &NavigationGrid, path: &Path) -> f64 {
 }
 
 /// The shortest world distance between the centres of neighbouring cells of
-/// `area`, by the layer's own geometry
-fn shortest_step(layer: &LayerGrid, area: CellRect) -> f64 {
+/// `area` (`neighbours`), by the layer's own geometry
+fn shortest_step(
+  layer: &LayerGrid,
+  area: CellRect,
+  neighbours: impl Fn(IVec2) -> Vec<IVec2>,
+) -> f64 {
   let mut shortest = f64::INFINITY;
   for y in area.min.y..area.max.y {
     for x in area.min.x..area.max.x {
       let cell = IVec2::new(x, y);
-      for next in layer.grid.neighbours(cell) {
+      for next in neighbours(cell) {
         let length = layer
           .cell_center_world(cell)
           .as_dvec2()
@@ -571,15 +575,14 @@ fn shortest_step(layer: &LayerGrid, area: CellRect) -> f64 {
   shortest
 }
 
-/// The cheapest cost from `start` to `goal` through the hexagonal layer's
-/// own neighbours (`MapGrid::neighbours`), as `path_cost` counts it:
-/// Dijkstra over the walkable cells
+/// The cheapest cost from `start` to `goal` through `neighbours`, as
+/// `path_cost` counts it: Dijkstra over the walkable cells
 fn cheapest(
   grid: &NavigationGrid,
   layer: &LayerGrid,
   step: f64,
-  start: IVec2,
-  goal: IVec2,
+  (start, goal): (IVec2, IVec2),
+  neighbours: impl Fn(IVec2) -> Vec<IVec2>,
 ) -> Option<f64> {
   use std::cmp::Reverse;
   use std::collections::{BinaryHeap, HashMap};
@@ -594,7 +597,7 @@ fn cheapest(
     if best.get(&cell).is_some_and(|&b| b < cost) {
       continue;
     }
-    for next in layer.grid.neighbours(cell) {
+    for next in neighbours(cell) {
       if !grid.is_walkable(next.into()) {
         continue;
       }
@@ -674,7 +677,7 @@ fn hex_cells_have_six_neighbours_and_path_around_a_wall() {
   theirs.sort_unstable();
   assert_eq!(cells, theirs);
   assert_eq!(cells.len(), 6);
-  let step = shortest_step(&layer, window);
+  let step = shortest_step(&layer, window, |c| grid.neighbours(c).collect());
   assert_eq!(step, 120.0);
   assert_eq!(nav.cell_size(), 120.0);
   for &(cell, cost) in &around {
@@ -700,7 +703,9 @@ fn hex_cells_have_six_neighbours_and_path_around_a_wall() {
   for pair in cells.windows(2) {
     assert!(grid.neighbours(pair[0]).any(|n| n == pair[1]), "{pair:?}");
   }
-  let Some(best) = cheapest(&nav, &layer, step, from, to) else {
+  let Some(best) = cheapest(&nav, &layer, step, (from, to), |c| {
+    grid.neighbours(c).collect()
+  }) else {
     panic!("a way through the gap")
   };
   assert!((path_cost(&nav, &path) - best).abs() < 1e-3);
@@ -734,7 +739,7 @@ fn hex_paths_cross_negative_rows_and_columns_on_every_variant() {
           for _ in 0..140 {
             nav.set(seeded.cell(window).into(), CellState::Blocked);
           }
-          let step = shortest_step(&layer, window);
+          let step = shortest_step(&layer, window, |c| grid.neighbours(c).collect());
           assert!(
             (step - f64::from(nav.cell_size())).abs() < 1e-4 * step,
             "{grid:?}"
@@ -742,7 +747,9 @@ fn hex_paths_cross_negative_rows_and_columns_on_every_variant() {
           for _ in 0..5 {
             let from = seeded.open_cell(&nav, below);
             let to = seeded.open_cell(&nav, above);
-            let best = cheapest(&nav, &layer, step, from, to);
+            let best = cheapest(&nav, &layer, step, (from, to), |c| {
+              grid.neighbours(c).collect()
+            });
             match exact().find_path_grid(&nav, from.into(), to.into()) {
               PathResult::Found(path) => {
                 found += 1;
@@ -841,4 +848,88 @@ fn a_staggered_layer_grid_paths_in_its_own_cells() {
     }
   }
   assert!(found >= 12, "{found} of 20 paths found");
+}
+
+/// The eight cells round `cell` in `lattice`'s squares (a staggered grid's
+/// diamonds' lattice, or the grid's own cells), a diagonal only where both
+/// cells beside it are walkable on `grid` (any, without one)
+fn lattice_ways(lattice: Lattice, grid: Option<&NavigationGrid>, cell: IVec2) -> Vec<IVec2> {
+  let at = lattice.lattice_cell(cell);
+  let open = |d: IVec2| grid.is_none_or(|g| g.is_walkable(lattice.grid_cell(at + d).into()));
+  let mut out = Vec::new();
+  for dy in -1..=1 {
+    for dx in -1..=1 {
+      let way = IVec2::new(dx, dy);
+      if way == IVec2::ZERO
+        || (dx != 0 && dy != 0 && !(open(IVec2::new(dx, 0)) && open(IVec2::new(0, dy))))
+      {
+        continue;
+      }
+      out.push(lattice.grid_cell(at + way));
+    }
+  }
+  out
+}
+
+#[test]
+fn staggered_and_skewed_layer_grids_find_the_cheapest_path() {
+  let grids = [
+    MapGrid::new(
+      GridShape::Staggered {
+        axis: StaggerAxis::Y,
+        index: StaggerIndex::Odd,
+      },
+      UVec2::new(64, 32),
+    ),
+    MapGrid::new(
+      GridShape::Oblique {
+        skew: IVec2::new(12, -5),
+      },
+      UVec2::new(32, 24),
+    ),
+  ];
+  let window = CellRect::new(IVec2::new(-8, -10), IVec2::new(12, 14));
+  let mut seeded = Seeded(0x51ed_270b);
+  for grid in grids {
+    let Some(lattice) = grid.lattice() else {
+      panic!("{grid:?} has a lattice")
+    };
+    let layer = layer_of(grid);
+    let mut nav = NavigationGrid::for_layer(layer, window);
+    for _ in 0..90 {
+      nav.set(seeded.cell(window).into(), CellState::Blocked);
+    }
+    // The shortest step by the oracle's own measure, over an open grid
+    let step = shortest_step(&layer, window, |c| lattice_ways(lattice, None, c));
+    assert!(
+      (step - f64::from(nav.cell_size())).abs() < 1e-4 * step,
+      "{grid:?}"
+    );
+    let mut found = 0;
+    for _ in 0..40 {
+      let (from, to) = (
+        seeded.open_cell(&nav, window),
+        seeded.open_cell(&nav, window),
+      );
+      let best = cheapest(&nav, &layer, step, (from, to), |c| {
+        lattice_ways(lattice, Some(&nav), c)
+      });
+      match exact().find_path_grid(&nav, from.into(), to.into()) {
+        PathResult::Found(path) => {
+          found += 1;
+          let Some(best) = best else {
+            panic!("{grid:?}: a path Dijkstra does not find")
+          };
+          let cost = path_cost(&nav, &path);
+          assert!(
+            (cost - best).abs() < 1e-3,
+            "{grid:?} {from} to {to}: {cost} for {best}"
+          );
+        }
+        PathResult::NoPath => assert_eq!(best, None, "{grid:?} {from} to {to}"),
+        other => panic!("{grid:?} {from} to {to}: {other:?}"),
+      }
+    }
+    assert!(found >= 30, "{grid:?}: {found} of 40 paths found");
+  }
 }

@@ -3,10 +3,14 @@
 //! Provides a cell-based walkability map for A* pathfinding: square cells
 //! over the world, or a tile layer's own cells.
 
+use super::layer::{
+  LayerCells, WAYS, Ways, bounds, boxes, capped, hex_boxes, lattice_cells, mapped_bounds, overlap,
+  squared,
+};
 use crate::core::ecs::{Entity, GlobalTransform, IVec2, Vec2, Without, World};
 use crate::core::physics::{CellRect, Collider, TileCell, TileColliders, TilePart};
-use crate::core::tilemap::{GridShape, Lattice, LayerGrid, StaggerAxis};
-use glam::{Affine2, DAffine2, DMat2, DVec2};
+use crate::core::tilemap::{Lattice, LayerGrid};
+use glam::{Affine2, DAffine2, DVec2};
 use std::collections::HashSet;
 
 /// Cell walkability state
@@ -63,28 +67,6 @@ impl From<GridCoord> for IVec2 {
     IVec2::new(coord.x, coord.y)
   }
 }
-
-/// The most cells a layer grid's window holds: past it, each side longer
-/// than `WINDOW_SIDE` is cut to that about the window's centre
-const MAX_WINDOW_CELLS: u64 = 4_194_304;
-const WINDOW_SIDE: u32 = 2048;
-
-/// How near two transforms' elements are for tiles placed by one to be
-/// read as the cells of a layer placed by the other
-const SAME_TRANSFORM: f32 = 1e-4;
-
-/// The eight ways round a cell in a square lattice, cardinals first, in the
-/// square grid's order
-const WAYS: [(i32, i32); 8] = [
-  (-1, 0),
-  (1, 0),
-  (0, -1),
-  (0, 1),
-  (-1, -1),
-  (1, -1),
-  (-1, 1),
-  (1, 1),
-];
 
 /// A grid-based navigation map for pathfinding
 ///
@@ -170,8 +152,14 @@ impl NavigationGrid {
   /// through the lattice's squares). World positions convert through the
   /// layer's whole transform, turned or scaled.
   ///
+  /// A layer scaled to nothing, or whose transform is not finite, has no
+  /// world steps: each step costs 1 (times the entered cell's cost), with
+  /// no heuristic or tie-break, so a path is the fewest steps; every world
+  /// point reads cell (0, 0) and every centre is the transform's
+  /// translation (not a number, where it is not finite).
+  ///
   /// A window over 4,194,304 cells is cut down about its centre: each side
-  /// longer than 2048 cells to 2048 (logged).
+  /// longer than 2048 cells to 2048 (logged the first time in a run).
   pub fn for_layer(grid: LayerGrid, window: CellRect) -> NavigationGrid {
     let window = capped(window);
     let size = window.size();
@@ -479,19 +467,30 @@ impl NavigationGrid {
   ///   touch blocks nothing).
   /// - Otherwise each blocking cell's outline in the world (a diamond, a
   ///   skewed or turned cell, a hexagon) blocks every cell whose own
-  ///   outline shares some area with it.
+  ///   outline shares some area with it: outlines that only touch, by
+  ///   rounding's hair included, share none.
+  ///
+  /// A transform within a millionth of a right angle is read as that right
+  /// angle, which f32 can't hold exactly, so a map turned by one blocks the
+  /// cells its tiles line up with. Tiles placed by a transform scaled to
+  /// nothing or not finite block nothing (but a layer's own tiles by its
+  /// own finite transform, which block their cells).
   ///
   /// Only the cells of the tile grid's chunks under this grid are read: the
   /// cost is a look at each of the tile grid's chunks to filter them
   /// (O(chunks)), plus the cells under this grid, so a vast or unbounded
   /// tile grid costs its chunk count and what lies under it.
   pub fn block_tiles(&mut self, tiles: &TileColliders, to_world: Affine2) {
-    if let Some(layer) = self.layer {
-      if let Some(lattice) = layer.same_cells(tiles, to_world) {
-        self.block_own_cells(tiles, layer, lattice);
-        return;
-      }
-    } else if let Some((size, origin)) = upright_rects(tiles, to_world) {
+    if let Some(layer) = self.layer
+      && let Some(lattice) = layer.same_cells(tiles, to_world)
+    {
+      self.block_own_cells(tiles, layer, lattice);
+      return;
+    }
+    let to_world = squared(to_world);
+    if self.layer.is_none()
+      && let Some((size, origin)) = upright_rects(tiles, to_world)
+    {
       self.block_rects(tiles, size, origin);
       return;
     }
@@ -688,201 +687,6 @@ impl NavigationGrid {
   }
 }
 
-/// How a layer grid's cells neighbour
-#[derive(Debug, Clone, Copy)]
-enum Ways {
-  /// The eight ways round a cell of the grid's square lattice
-  Lattice(Lattice),
-  /// The six ways round a hexagon (`MapGrid::neighbours`), its lines rows
-  /// on axis Y and columns on axis X
-  Hex(StaggerAxis),
-}
-
-/// A layer grid's cells: how they neighbour, and where they are in the world
-#[derive(Debug, Clone, Copy)]
-struct LayerCells {
-  grid: LayerGrid,
-  ways: Ways,
-  /// The layer's pixels to the world
-  to_world: DAffine2,
-  /// The world to the layer's pixels; `None` where the layer is scaled to
-  /// nothing
-  to_local: Option<DAffine2>,
-  /// The lattice cells the window's cells take (the window itself, but on a
-  /// staggered grid)
-  lattice_window: CellRect,
-  /// The world offset between cells' centres per lattice cell, or on hex
-  /// per cell along a line and per line, over the shortest step
-  per: DMat2,
-  /// The world offset of a hexagon on an odd line beyond what `per` gives,
-  /// over the shortest step
-  odd: DVec2,
-  /// The shortest world distance between neighbouring cells' centres (1 on
-  /// a grid scaled or folded to nothing)
-  step: f64,
-  /// Each way's step cost, its length over the shortest: in `WAYS` order,
-  /// or on hex in `MapGrid::neighbours`' order
-  costs: [f32; 8],
-}
-
-impl LayerCells {
-  /// The grid's cells' geometry, its steps measured once: the centres are
-  /// affine in lattice cells, and on hex in a cell's position along its
-  /// line and its line (but for odd lines' shift)
-  fn new(grid: LayerGrid, window: CellRect) -> LayerCells {
-    let to_world = grid.to_world.as_daffine2();
-    let turn = to_world.matrix2;
-    let shape = grid.grid;
-    let (ways, per, odd, offsets, count) = match shape.lattice() {
-      // Hexagons, which make no lattice
-      None => {
-        let axis = match shape.shape {
-          GridShape::Hexagonal { axis, .. } => axis,
-          _ => StaggerAxis::Y,
-        };
-        let local = shape.with_origin(Vec2::ZERO);
-        let centre = |pos: i32, line: i32| local.cell_center(hex_cell(axis, pos, line)).as_dvec2();
-        let zero = centre(0, 0);
-        let (along, one_line, two_lines) = (
-          centre(1, 0) - zero,
-          centre(0, 1) - zero,
-          centre(0, 2) - zero,
-        );
-        let mut offsets = [DVec2::ZERO; 8];
-        for (offset, next) in offsets.iter_mut().zip(local.neighbours(IVec2::ZERO)) {
-          *offset = local.cell_center(next).as_dvec2() - zero;
-        }
-        let per = DMat2::from_cols(along, two_lines / 2.0);
-        (Ways::Hex(axis), per, one_line - two_lines / 2.0, offsets, 6)
-      }
-      Some(lattice) => {
-        let per = lattice.to_pixel.as_daffine2().matrix2;
-        let offsets = WAYS.map(|(x, y)| per * DVec2::new(f64::from(x), f64::from(y)));
-        (Ways::Lattice(lattice), per, DVec2::ZERO, offsets, 8)
-      }
-    };
-    let lengths = offsets.map(|offset| (turn * offset).length());
-    let shortest = lengths[..count]
-      .iter()
-      .copied()
-      .fold(f64::INFINITY, f64::min);
-    let measured = to_world.is_finite() && shortest.is_finite() && shortest > 1e-9;
-    let (step, scale) = if measured {
-      (shortest, 1.0 / shortest)
-    } else {
-      (1.0, 0.0)
-    };
-    let costs = if measured {
-      lengths.map(|length| (length * scale) as f32)
-    } else {
-      [1.0; 8]
-    };
-    let invertible = to_world.is_finite() && turn.determinant() != 0.0;
-    LayerCells {
-      grid,
-      ways,
-      to_world,
-      to_local: invertible.then(|| to_world.inverse()),
-      lattice_window: match ways {
-        Ways::Lattice(lattice) => lattice_span(lattice, window),
-        Ways::Hex(_) => window,
-      },
-      per: turn * per * scale,
-      odd: turn * odd * scale,
-      step,
-      costs,
-    }
-  }
-
-  /// `cell`'s world centre from cell (0, 0)'s, over the shortest step
-  fn offset(&self, cell: IVec2) -> DVec2 {
-    match self.ways {
-      Ways::Lattice(lattice) => self.per * lattice.lattice_cell(cell).as_dvec2(),
-      Ways::Hex(axis) => {
-        let (pos, line) = match axis {
-          StaggerAxis::Y => (cell.x, cell.y),
-          StaggerAxis::X => (cell.y, cell.x),
-        };
-        self.per * DVec2::new(f64::from(pos), f64::from(line))
-          + self.odd * f64::from(line.rem_euclid(2))
-      }
-    }
-  }
-
-  /// The grid cell of a cell of `near`'s rectangle (a lattice cell, but on
-  /// hex)
-  fn grid_cell(&self, cell: IVec2) -> IVec2 {
-    match self.ways {
-      Ways::Lattice(lattice) => lattice.grid_cell(cell),
-      Ways::Hex(_) => cell,
-    }
-  }
-
-  /// `cell`'s outline in the world and its length
-  fn outline(&self, cell: IVec2) -> ([DVec2; 6], usize) {
-    let outline = self.grid.grid.cell_outline(cell);
-    let points = outline.points();
-    let mut out = [DVec2::ZERO; 6];
-    for (point, corner) in out.iter_mut().zip(points) {
-      *point = self.to_world.transform_point2(corner.as_dvec2());
-    }
-    (out, points.len())
-  }
-
-  /// The cells whose outlines may meet the world box `lo` to `hi`, inside
-  /// `window`: a rectangle of lattice cells (`grid_cell` takes each to its
-  /// grid cell), or of cells on hex
-  fn near(&self, lo: DVec2, hi: DVec2, window: CellRect) -> Option<CellRect> {
-    let (lo, hi) = mapped_bounds(self.to_local?, lo, hi)?;
-    match self.ways {
-      Ways::Lattice(lattice) => {
-        let to_pixel = lattice.to_pixel.as_daffine2();
-        if to_pixel.matrix2.determinant() == 0.0 {
-          return None;
-        }
-        let (lo, hi) = mapped_bounds(to_pixel.inverse(), lo, hi)?;
-        Some(meet(lattice_cells(lo, hi), self.lattice_window))
-      }
-      Ways::Hex(_) => {
-        let hex = self.grid.grid.hex_cells()?;
-        let origin = self.grid.grid.origin.as_dvec2();
-        Some(meet(hex_boxes(hex, lo - origin, hi - origin)?, window))
-      }
-    }
-  }
-
-  /// Whether `tiles`, placed by `to_world`, are this layer's own cells:
-  /// `Some` with the lattice that takes a tile cell to its grid cell where
-  /// the tiles hold lattice cells, `None` where they are other cells
-  fn same_cells(&self, tiles: &TileColliders, to_world: Affine2) -> Option<Option<Lattice>> {
-    let near = self
-      .grid
-      .to_world
-      .to_cols_array()
-      .iter()
-      .zip(to_world.to_cols_array())
-      .all(|(a, b)| (a - b).abs() <= SAME_TRANSFORM);
-    if !near {
-      return None;
-    }
-    let grid = self.grid.grid;
-    match (tiles.hex(), tiles.lattice(), grid.lattice()) {
-      (Some((hex, origin)), _, _) => {
-        (grid.hex_cells() == Some(hex) && grid.origin == origin).then_some(None)
-      }
-      (None, Some(to_pixel), Some(lattice)) => {
-        (lattice.to_pixel == to_pixel).then_some(Some(lattice))
-      }
-      (None, None, Some(lattice)) => {
-        let size = tiles.tile_size;
-        let rects = Affine2::from_cols(Vec2::new(size.x, 0.0), Vec2::new(0.0, size.y), Vec2::ZERO);
-        (lattice.to_pixel == rects).then_some(Some(lattice))
-      }
-      _ => None,
-    }
-  }
-}
-
 /// Builder for creating NavigationGrid with a fluent API
 pub struct NavigationBuilder {
   world_width: f32,
@@ -934,59 +738,6 @@ impl NavigationBuilder {
     grid.rebuild_from_world(world);
     grid
   }
-}
-
-/// `window`, cut down about its centre if it holds over
-/// `MAX_WINDOW_CELLS` (logged): each side longer than `WINDOW_SIDE` to it
-fn capped(window: CellRect) -> CellRect {
-  let size = window.size();
-  if u64::from(size.x) * u64::from(size.y) <= MAX_WINDOW_CELLS {
-    return window;
-  }
-  crate::engine_warn!(
-    module: "Navigation",
-    "a navigation window of {} x {} cells is over the 4,194,304 cells a grid holds: it keeps the middle {} x {}",
-    size.x,
-    size.y,
-    size.x.min(WINDOW_SIDE),
-    size.y.min(WINDOW_SIDE)
-  );
-  let side = |min: i32, len: u32| {
-    let cut = len.saturating_sub(WINDOW_SIDE);
-    let start = i64::from(min) + i64::from(cut / 2);
-    (start as i32, (start + i64::from(len - cut)) as i32)
-  };
-  let (x0, x1) = side(window.min.x, size.x);
-  let (y0, y1) = side(window.min.y, size.y);
-  CellRect::new(IVec2::new(x0, y0), IVec2::new(x1, y1))
-}
-
-/// A hexagonal grid's cell by its position along its line and its line
-fn hex_cell(axis: StaggerAxis, pos: i32, line: i32) -> IVec2 {
-  match axis {
-    StaggerAxis::Y => IVec2::new(pos, line),
-    StaggerAxis::X => IVec2::new(line, pos),
-  }
-}
-
-/// The lattice cells of the window's cells: their box, which its corner
-/// cells reach (a staggered cell's lattice cell grows with its column and
-/// row, one coordinate or the other the other way)
-fn lattice_span(lattice: Lattice, window: CellRect) -> CellRect {
-  if window.is_empty() {
-    return CellRect::default();
-  }
-  let last = window.max - IVec2::ONE;
-  let corners = [
-    window.min,
-    IVec2::new(last.x, window.min.y),
-    IVec2::new(window.min.x, last.y),
-    last,
-  ]
-  .map(|cell| lattice.lattice_cell(cell));
-  let lo = corners.iter().fold(IVec2::MAX, |lo, &c| lo.min(c));
-  let hi = corners.iter().fold(IVec2::MIN, |hi, &c| hi.max(c));
-  CellRect::new(lo, hi.saturating_add(IVec2::ONE))
 }
 
 /// Where a tile grid's cells are upright rectangles in the world, as a
@@ -1044,104 +795,6 @@ fn tile_cells_near(
   }
 }
 
-/// The hexagons that may meet the box `lo` to `hi` (from the grid's
-/// origin): a cell's unshifted box corner (`HexCells::corner_of`) steps a
-/// cell across along one axis and a line along the other, and its hexagon
-/// lies within a cell and a half across and two lines along of it
-fn hex_boxes(hex: crate::core::physics::HexCells, lo: DVec2, hi: DVec2) -> Option<CellRect> {
-  let size = DVec2::new(
-    hex.corner_of(IVec2::X).x as f64,
-    hex.corner_of(IVec2::Y).y as f64,
-  );
-  boxes(lo, hi, size)
-}
-
-/// The cells of boxes of `size` from (0, 0) that may meet the box `lo` to
-/// `hi`, two more each way; `None` for boxes of no size
-fn boxes(lo: DVec2, hi: DVec2, size: DVec2) -> Option<CellRect> {
-  if !(size.is_finite() && size.min_element() > 0.0) {
-    return None;
-  }
-  let (lo, hi) = ((lo / size).floor(), (hi / size).floor());
-  Some(CellRect::new(
-    (lo.as_ivec2()).saturating_sub(IVec2::splat(2)),
-    (hi.as_ivec2()).saturating_add(IVec2::splat(3)),
-  ))
-}
-
-/// The lattice cells (unit squares) that may meet the box `lo` to `hi` in
-/// lattice units, one more each way
-fn lattice_cells(lo: DVec2, hi: DVec2) -> CellRect {
-  CellRect::new(
-    lo.floor().as_ivec2().saturating_sub(IVec2::ONE),
-    hi.floor().as_ivec2().saturating_add(IVec2::splat(2)),
-  )
-}
-
-/// The cells two rectangles share
-fn meet(a: CellRect, b: CellRect) -> CellRect {
-  CellRect::new(a.min.max(b.min), a.max.min(b.max))
-}
-
-/// The box round `points`; `None` for none, or any not finite
-fn bounds(points: impl IntoIterator<Item = DVec2>) -> Option<(DVec2, DVec2)> {
-  let mut points = points.into_iter();
-  let first = points.next()?;
-  let (lo, hi) = points.fold((first, first), |(lo, hi), p| (lo.min(p), hi.max(p)));
-  (lo.is_finite() && hi.is_finite()).then_some((lo, hi))
-}
-
-/// The box round the box `lo` to `hi` taken through `to`
-fn mapped_bounds(to: DAffine2, lo: DVec2, hi: DVec2) -> Option<(DVec2, DVec2)> {
-  bounds([lo, DVec2::new(hi.x, lo.y), hi, DVec2::new(lo.x, hi.y)].map(|p| to.transform_point2(p)))
-}
-
-/// Whether two convex polygons share some area, or with `edges`, meet at
-/// all (an edge or a corner touching counts): no axis of either's edges,
-/// nor with `edges` the world's axes, parts them
-fn overlap(a: &[DVec2], b: &[DVec2], edges: bool) -> bool {
-  if !edges && (area(a) == 0.0 || area(b) == 0.0) {
-    return false;
-  }
-  fn sides(polygon: &[DVec2]) -> impl Iterator<Item = DVec2> + '_ {
-    (0..polygon.len()).map(move |i| polygon[(i + 1) % polygon.len()] - polygon[i])
-  }
-  let world = if edges {
-    [DVec2::X, DVec2::Y]
-  } else {
-    [DVec2::ZERO; 2]
-  };
-  let axes = sides(a)
-    .chain(sides(b))
-    .map(DVec2::perp)
-    .chain(world)
-    .filter(|axis| *axis != DVec2::ZERO);
-  let project = |polygon: &[DVec2], axis: DVec2| {
-    polygon
-      .iter()
-      .map(|p| p.dot(axis))
-      .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), d| {
-        (lo.min(d), hi.max(d))
-      })
-  };
-  for axis in axes {
-    let ((a0, a1), (b0, b1)) = (project(a, axis), project(b, axis));
-    let (lo, hi) = (a0.max(b0), a1.min(b1));
-    if hi < lo || (!edges && hi <= lo) {
-      return false;
-    }
-  }
-  true
-}
-
-/// A polygon's area, either way round
-fn area(polygon: &[DVec2]) -> f64 {
-  let twice: f64 = (0..polygon.len())
-    .map(|i| polygon[i].perp_dot(polygon[(i + 1) % polygon.len()]))
-    .sum();
-  twice.abs() / 2.0
-}
-
 /// Bresenham's walk from `from` to `to`: whether `open` holds for every
 /// cell after `from`
 fn walk(from: IVec2, to: IVec2, open: impl Fn(IVec2) -> bool) -> bool {
@@ -1179,7 +832,7 @@ fn walk(from: IVec2, to: IVec2, open: impl Fn(IVec2) -> bool) -> bool {
 mod tests {
   use super::*;
   use crate::core::tilemap::{GridShape, MapGrid, StaggerAxis, StaggerIndex};
-  use glam::UVec2;
+  use glam::{DVec2, UVec2};
 
   #[test]
   fn block_tiles_blocks_exactly_the_solid_cells() {
@@ -1589,38 +1242,138 @@ mod tests {
   }
 
   #[test]
-  fn a_window_past_four_million_cells_shrinks_and_warns_once() {
-    let warnings = || {
-      crate::core::dev_log::get_entries()
-        .iter()
-        .filter(|e| e.message.contains("4,194,304 cells"))
-        .count()
-    };
-    let before = warnings();
+  fn a_map_turned_by_a_right_angle_blocks_one_cell_per_tile() {
+    use crate::core::ecs::Transform;
+    use std::f32::consts::{FRAC_PI_2, PI};
+    // Two walls of 16 px tiles along rows 2 and 4, the row between them a
+    // corridor one cell wide, and two tiles on their own, one far out
+    let corridor: Vec<IVec2> = (0..12).map(|x| IVec2::new(x, 3)).collect();
+    let solid: Vec<IVec2> = (0..12)
+      .flat_map(|x| [IVec2::new(x, 2), IVec2::new(x, 4)])
+      .chain([IVec2::new(-4, 7), IVec2::new(63, -47)])
+      .collect();
+    let mut tiles = TileColliders::unbounded(Vec2::splat(16.0));
+    for &at in &solid {
+      tiles.set(at, TileCell::Solid);
+    }
+    // The map stands at (48, -32), turned through its transform as an
+    // entity's is; a turned tile's cell on the grid, whose cell (0, 0) is
+    // at (-1280, -1280)
+    type Turned = fn(IVec2) -> IVec2;
+    let turns: [(f32, Turned); 2] = [
+      (FRAC_PI_2, |c| IVec2::new(-c.y - 1, c.x)),
+      (PI, |c| IVec2::new(-c.x - 1, -c.y - 1)),
+    ];
+    for (turn, turned) in turns {
+      let to_world = Transform::from_xy(48.0, -32.0)
+        .with_rotation(turn)
+        .to_affine();
+      let cell = |c: IVec2| GridCoord::from(turned(c) + IVec2::new(3, -2) + IVec2::splat(80));
+      let mut grid = NavigationGrid::with_origin(2560.0, 2560.0, 16.0, -1280.0, -1280.0);
+      grid.block_tiles(&tiles, to_world);
+      let mut expected: Vec<GridCoord> = solid.iter().map(|&c| cell(c)).collect();
+      expected.sort_by_key(|c| (c.y, c.x));
+      assert_eq!(blocked(&grid), expected, "turned by {turn}");
+      // The corridor stays open end to end
+      let (from, to) = (cell(corridor[0]), cell(corridor[corridor.len() - 1]));
+      let Some(path) = super::super::Pathfinder::new()
+        .find_path_grid(&grid, from, to)
+        .path()
+      else {
+        panic!("turned by {turn}: no path along the corridor")
+      };
+      assert_eq!(path.len(), corridor.len(), "turned by {turn}");
+    }
+  }
+
+  #[test]
+  fn tiles_under_a_coarser_layer_on_a_turned_map_block_the_cells_they_share() {
+    use crate::core::ecs::Transform;
+    // 16 px tiles under a layer of 32 px cells, both on a map far out and
+    // turned: a tile on a cell's border meets the next cell along an edge
+    // only, which rounding can put a hair either side
+    let to_world = Transform::from_xy(-2048.7, 931.1)
+      .with_rotation((-41f32).to_radians())
+      .with_scale(Vec2::splat(0.9))
+      .to_affine();
     let layer = LayerGrid {
-      grid: MapGrid::new(GridShape::Orthogonal, UVec2::splat(16)),
-      to_world: Affine2::IDENTITY,
+      grid: MapGrid::new(GridShape::Orthogonal, UVec2::splat(32)),
+      to_world,
     };
-    // 3000 x 3000 cells keep the 2048 x 2048 about their centre
-    let grid = NavigationGrid::for_layer(
-      layer,
-      CellRect::new(IVec2::new(-1000, 500), IVec2::new(2000, 3500)),
-    );
-    assert_eq!(grid.dimensions(), (2048, 2048));
-    assert_eq!(
-      grid.window(),
-      CellRect::new(IVec2::new(-524, 976), IVec2::new(1524, 3024))
-    );
-    assert_eq!(warnings() - before, 1, "warned once");
-    // A long window past the cap is cut along its long side only
-    let long = NavigationGrid::for_layer(layer, CellRect::new(IVec2::ZERO, IVec2::new(5000, 1000)));
-    assert_eq!(long.dimensions(), (2048, 1000));
-    assert_eq!(long.window().min, IVec2::new(1476, 0));
-    // One at the cap is kept
-    let at_cap =
-      NavigationGrid::for_layer(layer, CellRect::new(IVec2::ZERO, IVec2::new(4096, 1024)));
-    assert_eq!(at_cap.dimensions(), (4096, 1024));
-    assert_eq!(warnings() - before, 2, "the long window warned once");
+    let window = CellRect::new(IVec2::splat(-6), IVec2::splat(6));
+    let mut grid = NavigationGrid::for_layer(layer, window);
+    let mut tiles = TileColliders::unbounded(Vec2::splat(16.0));
+    let solid = |x: i32, y: i32| (x * 7 + y * 13).rem_euclid(5) == 0;
+    for y in -12..12 {
+      for x in -12..12 {
+        if solid(x, y) {
+          tiles.set(IVec2::new(x, y), TileCell::Solid);
+        }
+      }
+    }
+    grid.block_tiles(&tiles, to_world);
+    // The cells with one of 16 points spread over their square, in the
+    // layer's pixels, inside a solid tile (no point lies on a tile's edge)
+    let expected: Vec<GridCoord> = (window.min.y..window.max.y)
+      .flat_map(|y| (window.min.x..window.max.x).map(move |x| GridCoord::new(x, y)))
+      .filter(|cell| {
+        (0..16).any(|i| {
+          let p = Vec2::new(cell.x as f32, cell.y as f32) * 32.0
+            + Vec2::new((i % 4) as f32 + 0.5, (i / 4) as f32 + 0.5) * 8.0;
+          let tile = (p / 16.0).floor().as_ivec2();
+          solid(tile.x, tile.y)
+        })
+      })
+      .collect();
+    assert_eq!(blocked(&grid), expected);
+  }
+
+  #[test]
+  fn a_layer_scaled_to_nothing_or_not_finite_has_no_world_steps() {
+    let iso = MapGrid::new(GridShape::Isometric, UVec2::new(64, 32));
+    let Some(lattice) = iso.lattice() else {
+      panic!("an isometric grid has a lattice")
+    };
+    let flat = Affine2::from_scale_angle_translation(Vec2::ZERO, 0.0, Vec2::new(5.0, 7.0));
+    let broken = Affine2::from_cols(Vec2::NAN, Vec2::new(0.0, 1.0), Vec2::ZERO);
+    for (to_world, finite) in [(flat, true), (broken, false)] {
+      let layer = LayerGrid {
+        grid: iso,
+        to_world,
+      };
+      let window = CellRect::new(IVec2::splat(-4), IVec2::splat(4));
+      let mut grid = NavigationGrid::for_layer(layer, window);
+      // Steps of 1, no heuristic, every point cell (0, 0)
+      assert_eq!(grid.cell_size(), 1.0);
+      let (a, b) = (GridCoord::new(-3, -3), GridCoord::new(3, 3));
+      assert_eq!(grid.steps_between(a, b), Some(DVec2::ZERO));
+      assert_eq!(grid.world_to_grid(10.0, 20.0), GridCoord::new(0, 0));
+      let (x, y) = grid.grid_to_world(b);
+      if finite {
+        assert_eq!((x, y), (5.0, 7.0), "every centre at the translation");
+      }
+      // Its own tiles by its own transform block as its cells when that
+      // transform is a number; tiles by any other block nothing
+      let mut tiles =
+        TileColliders::unbounded(Vec2::new(64.0, 32.0)).with_lattice(lattice.to_pixel);
+      tiles.set(IVec2::new(2, -2), TileCell::Solid);
+      grid.block_tiles(&tiles, to_world);
+      grid.block_tiles(&tiles, Affine2::from_translation(Vec2::new(-9.0, 4.0)));
+      let expected = if finite {
+        vec![GridCoord::new(2, -2)]
+      } else {
+        Vec::new()
+      };
+      assert_eq!(blocked(&grid), expected);
+      // Each step costs 1: the fewest steps
+      let Some(path) = super::super::Pathfinder::new()
+        .find_path_grid(&grid, a, b)
+        .path()
+      else {
+        panic!("a path of unit steps")
+      };
+      assert_eq!(path.len(), 7);
+    }
   }
 
   #[test]
