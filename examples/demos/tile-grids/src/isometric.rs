@@ -24,7 +24,8 @@
 use demo_kit::prelude::*;
 
 use crate::shared::{
-  DIM, GOOD, HOT, PATH, View, beside_panel, clear_to, draw_outline, hovered_cell, hud, load, wasd,
+  DIM, GOOD, HOT, View, WALK, beside_panel, clear_to, draw_outline, hovered_cell, hud, load,
+  reloaded, wasd,
 };
 use crate::walker::{CellPath, PathWalk, Walk, face, map_start, place_of, spawn_walker};
 
@@ -247,11 +248,7 @@ impl DemoPage for TownPage {
     if let Some(cell) = self.hover {
       self.paint(ctx, root, cell);
     }
-    let saved = ctx
-      .messages::<MapEvent>()
-      .iter()
-      .any(|event| matches!(event, MapEvent::Reloaded { map } if *map == root));
-    if saved || self.painted != painted {
+    if reloaded(ctx, root) || self.painted != painted {
       // The grid is out of date: a walk takes it again at once, and finds
       // another way if this one is now blocked
       self.nav = None;
@@ -278,6 +275,14 @@ impl DemoPage for TownPage {
       self.walk_to(ctx, root, cell);
     }
     self.walk = self.walk.take().and_then(|walk| walk.step(ctx, dt));
+    // The player walking the knight themselves: the last Space is done with
+    let steered = self
+      .walker
+      .and_then(|walker| ctx.world.get::<MoveIntent>(walker))
+      .is_some_and(|intent| intent.direction != Vec2::ZERO);
+    if self.walk.is_none() && steered {
+      self.goal = None;
+    }
 
     let Some(layer) = ctx.maps().grid(root, PROPS) else {
       return;
@@ -287,7 +292,7 @@ impl DemoPage for TownPage {
       ctx.input.mouse_down(MouseButton::Left) || ctx.input.mouse_down(MouseButton::Right);
     let mut debug = ctx.debug_draw();
     if let (Some(walk), Some(at)) = (&self.walk, feet) {
-      walk.draw(&mut debug, at, 3.0);
+      walk.draw(&mut debug, at, WALK, 3.0);
     }
     if let Some(cell) = self.hover {
       let color = if painting { HOT } else { Color::WHITE };
@@ -320,10 +325,10 @@ impl DemoPage for TownPage {
     ];
     match self.goal {
       Some((goal, true)) if self.walk.is_some() => {
-        lines.push((format!("Walking to cell {}, {}", goal.x, goal.y), PATH));
+        lines.push((format!("Walking to cell {}, {}", goal.x, goal.y), WALK));
       }
       Some((goal, false)) => {
-        lines.push((format!("No path to cell {}, {}", goal.x, goal.y), PATH));
+        lines.push((format!("No path to cell {}, {}", goal.x, goal.y), WALK));
       }
       _ => {}
     }

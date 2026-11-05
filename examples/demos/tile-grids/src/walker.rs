@@ -143,7 +143,8 @@ fn step_cost(grid: &NavigationGrid, from: IVec2, to: IVec2) -> f32 {
     .map_or(0.0, |(_, cost)| cost)
 }
 
-/// How near a waypoint counts as reached, in world pixels
+/// How near a waypoint counts as reached, in world pixels (a waypoint
+/// before the last also counts once the walker has passed it)
 const ARRIVE: f32 = 4.0;
 /// How far from the last waypoint the walker starts to slow, in world
 /// pixels
@@ -160,10 +161,14 @@ const PROGRESS: f32 = 0.5;
 /// them off the character and puts them back when it stops. It stops on
 /// the last waypoint, when the player steers (a movement key or the pad),
 /// or when it has come no nearer its next waypoint for a second, held up
-/// by something the grid didn't know
+/// by something the grid didn't know. Call `stop` to end it early: a walk
+/// dropped instead leaves the character without its bindings
+#[must_use = "a walk dropped without `stop` leaves the character without its bindings"]
 pub(crate) struct PathWalk {
   walker: Entity,
   route: Vec<Vec2>,
+  /// Where the character was when it set off
+  origin: Vec2,
   /// The waypoint it walks to
   next: usize,
   /// The character's bindings, while the walk has them
@@ -175,12 +180,18 @@ pub(crate) struct PathWalk {
 }
 
 impl PathWalk {
-  /// `walker` sets off along `route` (world points); `None` for an empty
-  /// route or a character that is gone
+  /// `walker` sets off along `route` (world points), from the first
+  /// waypoint (the middle of the cell it stands in) unless it is already
+  /// past it toward the second; `None` for an empty route or a character
+  /// that is gone
+  #[must_use]
   pub(crate) fn start(ctx: &mut SceneContext, walker: Entity, route: Vec<Vec2>) -> Option<Self> {
-    if route.is_empty() {
-      return None;
-    }
+    let origin = place_of(ctx, Some(walker))?;
+    let ahead = match route.as_slice() {
+      [first, second, ..] => (*second - *first).dot(origin - *first) > 0.0,
+      [_] => false,
+      [] => return None,
+    };
     let bindings = ctx
       .world
       .get_entity_mut(walker)
@@ -189,7 +200,8 @@ impl PathWalk {
     Some(PathWalk {
       walker,
       route,
-      next: 0,
+      origin,
+      next: usize::from(ahead),
       bindings,
       nearest: f32::INFINITY,
       stalled: 0.0,
@@ -197,6 +209,7 @@ impl PathWalk {
   }
 
   /// One step of `dt` seconds; `None` once the walk has stopped
+  #[must_use]
   pub(crate) fn step(mut self, ctx: &mut SceneContext, dt: f32) -> Option<Self> {
     let at = place_of(ctx, Some(self.walker));
     let steered = self
@@ -207,11 +220,18 @@ impl PathWalk {
       self.stop(ctx);
       return None;
     };
-    while self
-      .route
-      .get(self.next)
-      .is_some_and(|&point| at.distance(point) <= ARRIVE)
-    {
+    while let Some(&point) = self.route.get(self.next) {
+      let last = self.next + 1 == self.route.len();
+      let from = self
+        .next
+        .checked_sub(1)
+        .and_then(|before| self.route.get(before))
+        .copied()
+        .unwrap_or(self.origin);
+      let passed = !last && (point - from).dot(at - point) > 0.0;
+      if at.distance(point) > ARRIVE && !passed {
+        break;
+      }
       self.next += 1;
       self.nearest = f32::INFINITY;
       self.stalled = 0.0;
@@ -255,10 +275,10 @@ impl PathWalk {
     self.route.get(self.next..).unwrap_or_default()
   }
 
-  /// What is left of the walk, from the character's feet at `at`,
-  /// `width` screen pixels wide
-  pub(crate) fn draw(&self, debug: &mut DebugDraw, at: Vec2, width: f32) {
-    draw_path(debug, Some(at), self.ahead(), width);
+  /// What is left of the walk, from the character's feet at `at`, in
+  /// `color`, `width` screen pixels wide
+  pub(crate) fn draw(&self, debug: &mut DebugDraw, at: Vec2, color: Color, width: f32) {
+    draw_path(debug, Some(at), self.ahead(), color, width);
   }
 
   fn aim(&self, ctx: &mut SceneContext, direction: Vec2) {

@@ -19,8 +19,10 @@ pub(crate) const DIM: Color = Color::rgb(170, 170, 185);
 pub(crate) const HOT: Color = Color::XP_GOLD;
 /// Something that went well
 pub(crate) const GOOD: Color = Color::rgb(120, 230, 140);
-/// A path a character can walk, and the dark edge it is drawn on
+/// A path a character could walk, the walk it is on, and the dark edge
+/// they are drawn on
 pub(crate) const PATH: Color = Color::rgb(110, 200, 255);
+pub(crate) const WALK: Color = Color::rgb(235, 135, 255);
 const PATH_EDGE: Color = Color::rgb(18, 38, 66);
 /// The HUD's backing
 pub(crate) const BACKING: Color = Color::new(16, 16, 28, 235);
@@ -232,13 +234,20 @@ pub(crate) fn draw_outline(debug: &mut DebugDraw, outline: &CellOutline, color: 
   debug.width(width).polyline(&closed[..=points.len()], color);
 }
 
-/// Draws a path through `points` (from `from`, if given) with `debug`,
-/// `width` screen pixels wide, on a dark edge so it reads on any ground
-pub(crate) fn draw_path(debug: &mut DebugDraw, from: Option<Vec2>, points: &[Vec2], width: f32) {
+/// Draws a path through `points` (from `from`, if given) with `debug`, in
+/// `color`, `width` screen pixels wide, on a dark edge so it reads on any
+/// ground
+pub(crate) fn draw_path(
+  debug: &mut DebugDraw,
+  from: Option<Vec2>,
+  points: &[Vec2],
+  color: Color,
+  width: f32,
+) {
   let Some(&first) = points.first() else {
     return;
   };
-  for (color, width) in [(PATH_EDGE, width + 3.0), (PATH, width)] {
+  for (color, width) in [(PATH_EDGE, width + 3.0), (color, width)] {
     let mut pen = debug.width(width);
     if let Some(from) = from {
       pen.line(from, first, color);
@@ -247,6 +256,15 @@ pub(crate) fn draw_path(debug: &mut DebugDraw, from: Option<Vec2>, points: &[Vec
       pen.polyline(points, color);
     }
   }
+}
+
+/// Whether a save of `map`'s files reached it this step
+/// (`MapEvent::Reloaded`), changing its tiles
+pub(crate) fn reloaded(ctx: &mut SceneContext, map: Entity) -> bool {
+  ctx
+    .messages::<MapEvent>()
+    .iter()
+    .any(|event| matches!(event, MapEvent::Reloaded { map: m } if *m == map))
 }
 
 /// The cell under the pointer on `layer` of `map`, unless the pointer is

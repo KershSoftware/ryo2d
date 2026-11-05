@@ -9,11 +9,11 @@
 //! pointer, a click selects one, and the board marks the selected hex's
 //! range and ring, the line to the hovered hex and the hovered hex's
 //! neighbours, each as the layer's grid (`MapsView::grid`) works them out,
-//! with the distance in the HUD; the board's rocks stop its walker and cast
-//! shadows, and the HUD gives the cheapest path to the hovered hex round
-//! them (trees costing 2, a rock none), which a right click walks; and the
-//! oblique map's knight stops at a skewed wall, on the map and on its
-//! mirror
+//! with the distance in the HUD; the board's rocks stop its walker and
+//! occlude, and the HUD gives the cheapest path to the hovered hex round
+//! them (trees costing 2, a rock none), which a right click walks, setting
+//! off forward from past its hex's middle; and the oblique map's knight
+//! stops at a skewed wall, on the map and on its mirror
 
 mod common;
 
@@ -676,12 +676,57 @@ fn the_hex_board_s_walker_paths_around_the_rocks() {
   let feet = walker_at(&engine, walker);
   let off = feet.distance(layer.cell_center_world(goal));
   assert!(off < 6.0, "it stops on the goal's middle: {off} px off");
+  assert!(
+    engine.world().get::<MoveBindings>(walker).is_some(),
+    "the walker has its keys back"
+  );
   // Hovering its own hex, the HUD gives no path
   let shown = engine.ui_snapshot();
   assert!(
     !shown.contains("Path:") && !shown.contains("No path"),
     "{shown}"
   );
+  assert!(warnings().is_empty(), "{:#?}", warnings());
+}
+
+#[test]
+fn the_hex_board_s_walker_sets_off_forward() {
+  let Some(mut engine) = engine_on(HEX) else {
+    return;
+  };
+  let map = spawned_map(&mut engine);
+  let walker = wait_for_walker(&mut engine);
+  engine.step_frames(3).unwrap();
+  let layer = grid_of(&mut engine, map, "board");
+  // The walker a little past its hex's middle toward the next hex on its
+  // row, which the pointer is on
+  let (here, next) = (HEX_START, HEX_START + IVec2::X);
+  assert!(!is_rock(&mut engine, map, next), "{next} is open");
+  let (from, to) = (layer.cell_center_world(here), layer.cell_center_world(next));
+  teleport(&mut engine, walker, from + (to - from) * 0.3);
+  engine.step_frames(3).unwrap();
+  assert_eq!(layer.cell_at_world(walker_at(&engine, walker)), here);
+  let shown = hovering(&mut engine, &layer, next);
+  assert!(
+    shown.contains("Path: 2 hexes"),
+    "the path to {next} in {shown}"
+  );
+
+  // A right click: it walks on toward the next hex, never back first
+  engine.press_mouse(MouseButton::Right);
+  let mut nearest = walker_at(&engine, walker).distance(to);
+  for frame in 0..20 {
+    engine.step().unwrap();
+    if frame == 0 {
+      engine.release_mouse(MouseButton::Right);
+    }
+    let away = walker_at(&engine, walker).distance(to);
+    assert!(
+      away <= nearest + 0.01,
+      "frame {frame}: the walker moved away from {next}, {away} px from it after {nearest}"
+    );
+    nearest = away;
+  }
   assert!(warnings().is_empty(), "{:#?}", warnings());
 }
 
@@ -726,7 +771,7 @@ fn the_hex_board_s_rocks_stop_the_walker() {
     (gap - (radius + skin)).abs() < 2.0,
     "the walker stops at the rock's hexagon: {gap} from it, its radius {radius} and skin {skin}"
   );
-  // And the rocks cast shadows: the board has shadow chains
+  // And the rocks occlude: the board has shadow chains
   let world = engine.world_mut();
   let mut chains = world.query_filtered::<(), (With<MapOccluder>, With<LightOccluder2D>)>();
   assert!(chains.iter(world).count() > 0, "the board's shadow chains");

@@ -15,19 +15,21 @@
 //! map holds above the board, in the rim its `mark` property names; the
 //! HUD gives the distance between them.
 //!
-//! The board collides, and casts shadows, along its rocks' and stone's
-//! hexagons (each such tile's shape is its whole hexagon), so they stop the
-//! walker WASD walks. Its navigation grid (`ctx.maps().navigation`) blocks
-//! them from that collision, and the trees' `cost` property makes them
-//! dearer to cross, so hovering a hex shows the cheapest path to it from
-//! the walker's hex, a line through hex centres, with its length and cost
-//! in the HUD; a right click walks the walker along it
+//! The board's rocks and stone collide and occlude along their hexagons
+//! (each such tile's shape is its whole hexagon), so they stop the walker
+//! WASD walks (the page has no light, so their shadows don't show). Its
+//! navigation grid (`ctx.maps().navigation`) blocks them from that
+//! collision, and the trees' `cost` property makes them dearer to cross,
+//! so hovering a hex shows the cheapest path to it from the walker's hex,
+//! a blue line through hex centres, with its length and cost in the HUD; a
+//! right click walks the walker along it, the walk still ahead drawn in
+//! violet
 
 use demo_kit::prelude::*;
 
 use crate::shared::{
-  DIM, GOOD, HOT, PATH, View, beside_panel, clear_to, draw_outline, draw_path, hovered_cell, hud,
-  load, wasd,
+  DIM, GOOD, HOT, PATH, View, WALK, beside_panel, clear_to, draw_outline, draw_path, hovered_cell,
+  hud, load, reloaded, wasd,
 };
 use crate::walker::{CellPath, PathWalk, Walk, face, place_of, spawn_walker};
 
@@ -288,11 +290,7 @@ impl DemoPage for HexPage {
         *self.walker.insert(walker)
       }
     };
-    let saved = ctx
-      .messages::<MapEvent>()
-      .iter()
-      .any(|event| matches!(event, MapEvent::Reloaded { map } if *map == root));
-    if saved || self.nav.is_none() {
+    if reloaded(ctx, root) || self.nav.is_none() {
       self.nav = board_navigation(ctx, root);
       self.route = None;
     }
@@ -324,11 +322,13 @@ impl DemoPage for HexPage {
     if let Some(cell) = self.hover {
       draw_outline(&mut debug, &layer.outline_world(cell), Color::WHITE, 2.0);
     }
-    if let (Some(walk), Some(at)) = (&self.walk, feet) {
-      walk.draw(&mut debug, at, 2.0);
-    }
+    // The walk under way over the path to the pointer: where they part,
+    // the blue shows where a right click would go instead
     if let Some(path) = self.route.as_ref().and_then(|route| route.path.as_ref()) {
-      draw_path(&mut debug, None, &path.centres, 3.0);
+      draw_path(&mut debug, None, &path.centres, PATH, 3.0);
+    }
+    if let (Some(walk), Some(at)) = (&self.walk, feet) {
+      walk.draw(&mut debug, at, WALK, 3.0);
     }
   }
 
@@ -398,9 +398,10 @@ impl DemoPage for HexPage {
       DIM,
     ));
     lines.push((
-      "Blue: the walker's path; trees cost 2, rocks block".to_string(),
+      "Blue: the path there; violet: the walk under way".to_string(),
       DIM,
     ));
+    lines.push(("Trees cost more to cross; rocks block".to_string(), DIM));
     let notes = hud(ui, column.x, column.y, column.width, &lines);
     self.covered.push(notes);
   }
