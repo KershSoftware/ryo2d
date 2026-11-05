@@ -2927,27 +2927,43 @@ mod tests {
   const TRIANGLE: u32 = 1;
 
   /// A hexagonal collision fixture (`make-fixtures.js`' `collideHex`): its
-  /// files (JSON, then XML) and its XML tileset's, its clump of whole
+  /// files (JSON, then XML) and its XML tilesets', its clump of whole
   /// hexagons, its triangle tiles (each with its flips), its tiles with no
-  /// shape, and the triangle in the tile's pixels
+  /// shape, the triangle in the tile's pixels, and its second tileset's
+  /// tile
   struct HexFixture {
     files: [&'static str; 2],
-    xml_set: &'static str,
+    xml_sets: [&'static str; 2],
     clump: [(i32, i32); 3],
     triangles: [((i32, i32), TileFlip); 3],
     blank: [(i32, i32); 10],
     triangle: [(f32, f32); 3],
+    tall: TallTile,
+  }
+
+  /// The second tileset's one tile: not its cell's size, its tileset moved
+  /// by an offset, its triangle in its pixels, and the cells it is placed
+  /// in with their flips
+  struct TallTile {
+    size: Vec2,
+    offset: Vec2,
+    triangle: [(f32, f32); 3],
+    cells: [((i32, i32), TileFlip); 2],
   }
 
   fn hex_fixtures() -> [HexFixture; 2] {
     let (turned, flipped) = (TileFlip::HEX_ROTATE_60, TileFlip::HORIZONTAL);
+    let (both, third) = (flipped | turned, TileFlip::HEX_ROTATE_120);
     [
       HexFixture {
         files: [
           "tiled/maps/collide-hex-y-odd.tmj",
           "tiled/xml/maps/collide-hex-y-odd.tmx",
         ],
-        xml_set: "tiled/xml/tilesets/collide-hex-y.tsx",
+        xml_sets: [
+          "tiled/xml/tilesets/collide-hex-y.tsx",
+          "tiled/xml/tilesets/collide-hex-y-tall.tsx",
+        ],
         clump: [(2, 1), (3, 1), (3, 2)],
         triangles: [
           ((6, 1), TileFlip::NONE),
@@ -2967,13 +2983,22 @@ mod tests {
           (2, 4),
         ],
         triangle: [(72.0, 84.0), (96.0, 100.0), (70.0, 108.0)],
+        tall: TallTile {
+          size: Vec2::new(80.0, 180.0),
+          offset: Vec2::new(6.0, -10.0),
+          triangle: [(20.0, 30.0), (60.0, 50.0), (30.0, 90.0)],
+          cells: [((4, 4), both), ((6, 5), third)],
+        },
       },
       HexFixture {
         files: [
           "tiled/maps/collide-hex-x-even.tmj",
           "tiled/xml/maps/collide-hex-x-even.tmx",
         ],
-        xml_set: "tiled/xml/tilesets/collide-hex-x.tsx",
+        xml_sets: [
+          "tiled/xml/tilesets/collide-hex-x.tsx",
+          "tiled/xml/tilesets/collide-hex-x-tall.tsx",
+        ],
         clump: [(1, 2), (2, 1), (2, 2)],
         triangles: [
           ((5, 1), TileFlip::NONE),
@@ -2993,6 +3018,12 @@ mod tests {
           (3, 4),
         ],
         triangle: [(84.0, 72.0), (100.0, 96.0), (108.0, 70.0)],
+        tall: TallTile {
+          size: Vec2::new(180.0, 80.0),
+          offset: Vec2::new(-10.0, 6.0),
+          triangle: [(30.0, 20.0), (50.0, 60.0), (90.0, 30.0)],
+          cells: [((4, 5), both), ((7, 4), third)],
+        },
       },
     ]
   }
@@ -3004,8 +3035,13 @@ mod tests {
       let path = format!("{}/{path}", crate::core::tilemap::test_util::FIXTURES);
       std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"))
     };
-    let (map, set) = (read(fixture.files[1]), read(fixture.xml_set));
-    let files = files_with(&[(fixture.files[1], &map), (fixture.xml_set, &set)]);
+    let [set, tall] = fixture.xml_sets;
+    let texts = [read(fixture.files[1]), read(set), read(tall)];
+    let files = files_with(&[
+      (fixture.files[1], &texts[0]),
+      (set, &texts[1]),
+      (tall, &texts[2]),
+    ]);
     let mut maps = MapWorld::over(files);
     let handle = load(&mut maps.world, file);
     let grid = maps
@@ -3067,6 +3103,52 @@ mod tests {
       .collect()
   }
 
+  /// The edges whose both ends are among `points` (within 1/100 px): the
+  /// ring through them
+  fn edges_through(points: &[Vec2], edges: &[(Vec2, Vec2)]) -> Vec<(Vec2, Vec2)> {
+    let among = |p: Vec2| points.iter().any(|q| (*q - p).length() < 1e-2);
+    edges
+      .iter()
+      .copied()
+      .filter(|&(a, b)| among(a) && among(b))
+      .collect()
+  }
+
+  /// Twice the signed area round `edges` (a closed ring's), y down:
+  /// positive when they run clockwise on screen, as tile outlines do
+  fn shoelace(edges: &[(Vec2, Vec2)]) -> f32 {
+    edges.iter().map(|&(a, b)| a.perp_dot(b)).sum()
+  }
+
+  /// Every ring of `fixture`'s shape tiles, as drawn on `grid`: the
+  /// triangle tiles' and the second tileset's, each with its cell and flips
+  fn fixture_rings(fixture: &HexFixture, grid: &MapGrid) -> Vec<(IVec2, TileFlip, [Vec2; 3])> {
+    let cell_size = grid.cell.as_vec2();
+    let mut rings = Vec::new();
+    for &((x, y), flip) in &fixture.triangles {
+      let cell = IVec2::new(x, y);
+      let points = fixture
+        .triangle
+        .map(|(px, py)| drawn(grid, cell, (cell_size, Vec2::ZERO), flip, Vec2::new(px, py)));
+      rings.push((cell, flip, points));
+    }
+    let tall = &fixture.tall;
+    for &((x, y), flip) in &tall.cells {
+      let cell = IVec2::new(x, y);
+      let points = tall.triangle.map(|(px, py)| {
+        drawn(
+          grid,
+          cell,
+          (tall.size, tall.offset),
+          flip,
+          Vec2::new(px, py),
+        )
+      });
+      rings.push((cell, flip, points));
+    }
+    rings
+  }
+
   /// Whether `edges` make one closed ring of exactly `n` points
   fn ring_of(edges: &[(Vec2, Vec2)], n: usize) -> bool {
     let mut points: Vec<Vec2> = Vec::new();
@@ -3080,12 +3162,19 @@ mod tests {
     edges.len() == n && points.len() == n && points.iter().all(|&p| starts(p) == 1 && ends(p) == 1)
   }
 
-  /// Where a point `p` of a tile image `size` px, its tileset offset none,
-  /// draws in `cell` of the hexagonal `grid` with `flip`: from where
-  /// `tile_anchor` stands the image, its flips mirroring it, then its
-  /// turns about the quad's middle, as `render::tiles` draws a tile
-  fn drawn(grid: &MapGrid, cell: IVec2, size: Vec2, flip: TileFlip, p: Vec2) -> Vec2 {
-    let anchor = grid.tile_anchor(cell);
+  /// Where a point `p` of a tile image `size` px whose tileset's offset is
+  /// `offset` draws in `cell` of the hexagonal `grid` with `flip`: from
+  /// where `tile_anchor` stands the image, moved by the offset, its flips
+  /// mirroring it, then its turns about the quad's middle where it stands
+  /// unturned, as `render::tiles` draws a tile
+  fn drawn(
+    grid: &MapGrid,
+    cell: IVec2,
+    (size, offset): (Vec2, Vec2),
+    flip: TileFlip,
+    p: Vec2,
+  ) -> Vec2 {
+    let anchor = grid.tile_anchor(cell) + offset;
     let mut at = p;
     if flip.contains(TileFlip::HORIZONTAL) {
       at.x = size.x - at.x;
@@ -3124,7 +3213,7 @@ mod tests {
         for &c in &fixture.blank {
           assert_eq!(tiles.get(cell(c)), TileCell::Empty, "{file}: {c:?}");
         }
-        // One part: 21 edges in chunk (0, 0)
+        // One part: 27 edges in chunk (0, 0)
         let parts = parts_of(&mut maps.world, map);
         assert_eq!(parts.len(), 1, "{file}: {parts:?}");
         let edges = all_edges(&mut maps.world, map);
@@ -3146,8 +3235,13 @@ mod tests {
           let ring = edges_in(&grid, cell(c), &edges);
           assert!(ring_of(&ring, 3), "{file}: {c:?} {flip:?}: {ring:?}");
         }
+        // and so is each of the second tileset's tiles, where it draws
+        for (cell, flip, points) in fixture_rings(&fixture, &grid).into_iter().skip(3) {
+          let ring = edges_through(&points, &edges);
+          assert!(ring_of(&ring, 3), "{file}: {cell} {flip:?}: {ring:?}");
+        }
         // and the shapeless tiles add nothing
-        assert_eq!(edges.len(), 12 + 3 * 3, "{file}: {edges:?}");
+        assert_eq!(edges.len(), 12 + 5 * 3, "{file}: {edges:?}");
       }
     }
   }
@@ -3167,7 +3261,7 @@ mod tests {
           // The plain triangle's points, flipped and turned as drawn
           let expected = fixture
             .triangle
-            .map(|(px, py)| drawn(&grid, cell, size, flip, Vec2::new(px, py)));
+            .map(|(px, py)| drawn(&grid, cell, (size, Vec2::ZERO), flip, Vec2::new(px, py)));
           assert_eq!(points.len(), 3, "{file}: {cell} {flip:?}: {ring:?}");
           for want in expected {
             assert!(
@@ -3175,6 +3269,17 @@ mod tests {
               "{file}: {cell} {flip:?}: {want} not among {points:?}"
             );
           }
+        }
+        // The tile of another size, moved by its tileset's offset, flipped
+        // and turned, and turned 120 degrees: its triangle mirrored, then
+        // turned about the middle of its quad where it stands unturned
+        for (cell, flip, points) in fixture_rings(&fixture, &grid).into_iter().skip(3) {
+          let ring = edges_through(&points, &edges);
+          assert_eq!(
+            ring.len(),
+            3,
+            "{file}: {cell} {flip:?}: {points:?} in {edges:?}"
+          );
         }
         // A whole hexagon is a solid cell however it is turned or flipped
         let turns = [
@@ -3214,6 +3319,139 @@ mod tests {
         maps.step();
         let tiles = colliders(&maps.world, map);
         assert!(matches!(tiles.get(IVec2::new(4, 3)), TileCell::Shape(_)));
+      }
+    }
+  }
+
+  #[test]
+  fn hex_tile_rings_wind_clockwise_after_any_flip_or_turn() {
+    for fixture in hex_fixtures() {
+      for file in fixture.files {
+        let (mut maps, map, grid) = hex_fixture_world(&fixture, file);
+        let edges = all_edges(&mut maps.world, map);
+        // Every shape tile's ring, plain, flipped, turned, or both, runs
+        // clockwise on screen round its shape
+        for (cell, flip, points) in fixture_rings(&fixture, &grid) {
+          let ring = edges_through(&points, &edges);
+          assert_eq!(ring.len(), 3, "{file}: {cell} {flip:?}: {ring:?}");
+          let area = shoelace(&ring);
+          assert!(
+            area > 0.0,
+            "{file}: {cell} {flip:?} runs anticlockwise: {area} {ring:?}"
+          );
+        }
+        // as the hexagons' own sides do round the clump
+        let clump: Vec<IVec2> = fixture
+          .clump
+          .iter()
+          .map(|&(x, y)| IVec2::new(x, y))
+          .collect();
+        let corners: Vec<Px> = union_border(&grid, &clump)
+          .iter()
+          .map(|&(a, _)| a)
+          .collect();
+        let border: Vec<(Vec2, Vec2)> = edges
+          .iter()
+          .copied()
+          .filter(|&(a, b)| {
+            [a, b]
+              .into_iter()
+              .all(|p| whole_px(p).is_some_and(|p| corners.contains(&p)))
+          })
+          .collect();
+        assert_eq!(border.len(), 12, "{file}");
+        assert!(shoelace(&border) > 0.0, "{file}");
+      }
+    }
+  }
+
+  #[test]
+  fn whole_hexagon_shapes_on_degenerate_grids_are_solid() {
+    let cell = UVec2::splat(32);
+    for (axis, index) in [
+      (StaggerAxis::Y, StaggerIndex::Odd),
+      (StaggerAxis::X, StaggerIndex::Even),
+    ] {
+      // Side 0: diamonds, two of whose six corners repeat; a side the
+      // cell's length or longer: rectangles in brick rows, whose six
+      // corners hold a point along each long side
+      for side in [0, 32, 40] {
+        let grid_shape = GridShape::Hexagonal { axis, index, side };
+        let mut map = TileMap::new(UVec2::new(6, 4), cell).with_shape(grid_shape);
+        let grid = map.grid();
+        // The image's top-left as a tile stands in cell (0, 0)
+        let top_left = grid.tile_anchor(IVec2::ZERO) - Vec2::new(0.0, cell.y as f32);
+        let outline: Vec<Vec2> = grid
+          .cell_outline(IVec2::ZERO)
+          .points()
+          .iter()
+          .map(|&p| p - top_left)
+          .collect();
+        // Its corners alone: repeats and points along a side dropped
+        let mut corners = outline.clone();
+        corners.dedup();
+        loop {
+          let n = corners.len();
+          let straight = (0..n).find(|&i| {
+            let (a, p, b) = (corners[(i + n - 1) % n], corners[i], corners[(i + 1) % n]);
+            p == a || (p - a).perp_dot(b - p) == 0.0
+          });
+          match straight {
+            Some(i) if n > 3 => {
+              corners.remove(i);
+            }
+            _ => break,
+          }
+        }
+        assert_eq!(corners.len(), 4, "{grid_shape:?}: {corners:?}");
+        let mut set = Tileset::new("degenerate", cell, TilesetImage::Collection);
+        for (id, points) in [(0, outline), (1, corners)] {
+          set.insert_tile(
+            id,
+            TileData {
+              shapes: vec![shape(points, false)],
+              ..TileData::default()
+            },
+          );
+        }
+        let set = map.add_tileset(TilesetSource::Embedded(Arc::new(set)));
+        let walls = map.add_tile_layer("walls");
+        // Turned, still whole (not flipped: on a grid whose side is longer
+        // than its tile, the hexagon is wider or taller than the image a
+        // flip mirrors across)
+        let placed = [
+          ((1, 1), 0, TileFlip::NONE),
+          ((2, 1), 1, TileFlip::NONE),
+          ((4, 2), 1, TileFlip::HEX_ROTATE_60),
+          (
+            (1, 3),
+            1,
+            TileFlip::HEX_ROTATE_60 | TileFlip::HEX_ROTATE_120,
+          ),
+        ];
+        let tiles = map.tiles_mut(walls).expect("a tile layer");
+        for &((x, y), id, flip) in &placed {
+          tiles.set(IVec2::new(x, y), Some(Tile::new(set, id).with_flip(flip)));
+        }
+        let mut maps = MapWorld::new();
+        let handle = add(&mut maps.world, map);
+        let map = maps.spawn(MapRoot::new(handle));
+        maps.frame();
+        let tiles = colliders(&maps.world, map);
+        let cells: Vec<IVec2> = placed
+          .iter()
+          .map(|&((x, y), ..)| IVec2::new(x, y))
+          .collect();
+        for &c in &cells {
+          assert_eq!(tiles.get(c), TileCell::Solid, "{grid_shape:?}: {c}");
+        }
+        // and they merge as solid cells do: the parts hold their border
+        let mut edges: Vec<(Px, Px)> = all_edges(&mut maps.world, map)
+          .into_iter()
+          .filter_map(|(a, b)| Some((whole_px(a)?, whole_px(b)?)))
+          .collect();
+        edges.sort_unstable();
+        assert_eq!(edges, union_border(&grid, &cells), "{grid_shape:?}");
       }
     }
   }

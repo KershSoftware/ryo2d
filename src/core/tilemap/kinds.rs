@@ -277,10 +277,23 @@ pub(super) struct HexPlace {
   anchor: DVec2,
   /// The box's size: a shape's tile units
   size: DVec2,
-  /// The cell's distinct corners (a side of length 0 shares one), the
-  /// first `count`
+  /// The cell's corners, repeats (a side of length 0's) and points along a
+  /// side (a long side's middle, on a grid whose side is the cell's length
+  /// or longer) dropped: the first `count`
   corners: [DVec2; 6],
   count: usize,
+}
+
+/// Whether `p` lies along the side from `a` to `b`, within `slack` of it
+/// and between its ends
+fn along((a, b): (DVec2, DVec2), p: DVec2, slack: f64) -> bool {
+  let side = b - a;
+  let length = side.length_squared();
+  if length == 0.0 {
+    return true;
+  }
+  let t = (p - a).dot(side) / length;
+  side.perp_dot(p - a).abs() <= slack * length.sqrt() && t > 0.0 && t < 1.0
 }
 
 impl HexPlace {
@@ -291,15 +304,23 @@ impl HexPlace {
     let (min, size) = hex.cell_box(IVec2::ZERO);
     let corner = min.as_dvec2();
     let anchor = (grid.tile_anchor(IVec2::ZERO) - grid.origin).as_dvec2() - corner;
-    let mut corners = [DVec2::ZERO; 6];
-    let mut count = 0;
+    let mut kept: Vec<DVec2> = Vec::with_capacity(6);
     for point in hex.corners(IVec2::ZERO) {
       let point = point.as_dvec2() - corner;
-      if !corners[..count].contains(&point) {
-        corners[count] = point;
-        count += 1;
+      if !kept.contains(&point) {
+        kept.push(point);
       }
     }
+    // Whole pixels: a point along a side is exactly on it
+    while let Some(i) = (0..kept.len()).find(|&i| {
+      let n = kept.len();
+      n > 3 && along((kept[(i + n - 1) % n], kept[(i + 1) % n]), kept[i], 0.0)
+    }) {
+      kept.remove(i);
+    }
+    let mut corners = [DVec2::ZERO; 6];
+    corners[..kept.len()].copy_from_slice(&kept);
+    let count = kept.len();
     Some(HexPlace {
       anchor,
       size: size.as_dvec2(),
@@ -342,9 +363,10 @@ impl HexPlace {
   }
 
   /// Whether `polygon` (pixels from the box's top-left, flipped and not
-  /// turned) is the cell's whole hexagon: without repeated points, its
-  /// points are the cell's distinct corners, each within half a pixel of
-  /// one, and no other
+  /// turned) is the cell's whole hexagon: without repeated points, and
+  /// points along a side (within half a pixel) that are no corner's, its
+  /// points are the cell's corners (`corners`), each within half a pixel
+  /// of one, and no other
   fn whole(&self, polygon: &[DVec2]) -> bool {
     let near = |a: DVec2, b: DVec2| (a - b).abs().max_element() <= f64::from(EPSILON);
     let mut ring: Vec<DVec2> = Vec::with_capacity(polygon.len());
@@ -360,6 +382,15 @@ impl HexPlace {
         .is_some_and(|(&a, &b)| near(a, b))
     {
       ring.pop();
+    }
+    let corners = &self.corners[..self.count];
+    let a_corner = |p: DVec2| corners.iter().any(|c| c.distance(p) <= 0.5);
+    while let Some(i) = (0..ring.len()).find(|&i| {
+      let n = ring.len();
+      let side = (ring[(i + n - 1) % n], ring[(i + 1) % n]);
+      n > 3 && !a_corner(ring[i]) && along(side, ring[i], 0.5)
+    }) {
+      ring.remove(i);
     }
     if ring.len() != self.count {
       return false;

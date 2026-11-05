@@ -12,7 +12,10 @@
 //! shape is also convex parts, as Rapier's polygons are convex: each
 //! polygon split by ear clipping into triangles, merged back across their
 //! diagonals while the merge stays convex (Hertel and Mehlhorn), so no
-//! polygon edge is cut, and each part clipped to the cell.
+//! polygon edge is cut, and each part clipped to the cell. A hexagonal
+//! grid's shape cells collide as `rings` instead: each polygon as
+//! authored, wherever it lies, wound clockwise on screen, one that touches
+//! or crosses itself its convex hull.
 
 use glam::DVec2;
 
@@ -41,10 +44,12 @@ pub(crate) struct ShapeBuild {
   pub(crate) blocks: bool,
   /// Its polygons as authored, each a closed ring (the edge back to its
   /// first point implied), in tile units (a solid shape): a hexagonal
-  /// grid's shape cells collide as these, neither clipped to their cell
-  /// nor merged with anything. Each keeps its points' order, without
-  /// repeated points, brought within `REACH` of the cell; a polygon that
-  /// builds nothing in its cell here builds no ring
+  /// grid's shape cells collide as these, wherever they lie, neither
+  /// clipped to their cell nor merged with anything. Each is wound
+  /// clockwise on screen, as outlines are round what they bound, without
+  /// repeated points, brought within `REACH` of the cell; one that touches
+  /// or crosses itself is its convex hull, and one with no area on the
+  /// grid builds none
   pub(crate) rings: Vec<Vec<Vec2>>,
   /// How many edges `rings` hold
   pub(crate) ring_edges: usize,
@@ -93,7 +98,7 @@ impl ShapeBuild {
     if tangled {
       crate::engine_warn!(
         module: "Physics",
-        "a CellShape polygon touches or crosses itself or another of its polygons; it collides as their convex hull"
+        "a CellShape polygon touches or crosses itself or another of its polygons: on a square grid the shape collides as the convex hull of them all; on a hexagonal grid each polygon is a ring of its own, one that touches or crosses itself its convex hull"
       );
     }
     if shape.one_way {
@@ -155,17 +160,16 @@ impl ShapeBuild {
 /// a hair), so the grid's sums stay well inside an `i64`.
 const REACH: f64 = 1024.0;
 
-/// `polygon` as a closed ring of a hexagonal grid's shape cell: its points
-/// brought within `REACH` of the cell, repeated ones (the closing one too)
-/// dropped, in its order. None for a polygon that builds nothing on a
-/// square cell (a point not finite, no area on the grid, or none of it in
-/// its cell)
+/// `polygon` as a closed ring of a hexagonal grid's shape cell, wherever it
+/// lies: its points brought within `REACH` of the cell, repeated ones (the
+/// closing one too) dropped, wound clockwise on screen, as an outline runs
+/// round what it bounds (particles and shadows read which side is solid
+/// from it); one that touches or crosses itself (on the grid) its convex
+/// hull. None for a point not finite, or no area on the grid
 fn ring(polygon: &[Vec2]) -> Option<Vec<Vec2>> {
-  let mut snapped = authored(polygon)?;
-  if doubled_area(&snapped) < 0 {
-    snapped.reverse();
-  }
-  if doubled_area(&snapped) == 0 || fitted(&snapped).is_empty() {
+  let snapped = authored(polygon)?;
+  let simple = simple(&snapped);
+  if simple && doubled_area(&snapped) == 0 {
     return None;
   }
   let reach = REACH as f32;
@@ -180,7 +184,52 @@ fn ring(polygon: &[Vec2]) -> Option<Vec<Vec2>> {
   while ring.len() > 1 && ring.first() == ring.last() {
     ring.pop();
   }
-  (ring.len() >= 3).then_some(ring)
+  if !simple {
+    hull(&snapped)?;
+    ring = float_hull(&ring);
+  }
+  let n = ring.len();
+  let area: f64 = (0..n)
+    .map(|i| ring[i].as_dvec2().perp_dot(ring[(i + 1) % n].as_dvec2()))
+    .sum();
+  if n < 3 || area == 0.0 {
+    return None;
+  }
+  if area < 0.0 {
+    ring.reverse();
+  }
+  Some(ring)
+}
+
+/// The convex hull of `points`, their own values kept (Andrew's monotone
+/// chain, worked in f64), points along a side dropped
+fn float_hull(points: &[Vec2]) -> Vec<Vec2> {
+  let mut sorted: Vec<DVec2> = points.iter().map(|p| p.as_dvec2()).collect();
+  sorted.sort_by(|a, b| a.x.total_cmp(&b.x).then(a.y.total_cmp(&b.y)));
+  sorted.dedup();
+  if sorted.len() < 3 {
+    return Vec::new();
+  }
+  let turn = |o: DVec2, a: DVec2, b: DVec2| (a - o).perp_dot(b - o);
+  let mut chain: Vec<DVec2> = Vec::with_capacity(2 * sorted.len());
+  for pass in 0..2 {
+    let start = chain.len();
+    let order: Box<dyn Iterator<Item = &DVec2>> = if pass == 0 {
+      Box::new(sorted.iter())
+    } else {
+      Box::new(sorted.iter().rev())
+    };
+    for &p in order {
+      while chain.len() >= start + 2
+        && turn(chain[chain.len() - 2], chain[chain.len() - 1], p) <= 0.0
+      {
+        chain.pop();
+      }
+      chain.push(p);
+    }
+    chain.pop();
+  }
+  chain.into_iter().map(|p| p.as_vec2()).collect()
 }
 
 /// `polygon` as authored, snapped to the grid (it may reach past the cell)
@@ -943,13 +992,12 @@ mod tests {
 
   #[test]
   fn degenerate_polygons_build_nothing() {
-    let polygons: [&[(f32, f32)]; 6] = [
+    let polygons: [&[(f32, f32)]; 5] = [
       &[],
       &[(0.0, 0.0), (1.0, 1.0)],
       &[(0.0, 0.0), (0.5, 0.5), (1.0, 1.0)],
       &[(0.0, 0.0), (f32::NAN, 0.0), (1.0, 1.0), (0.0, 1.0)],
-      // Wholly outside the cell, and thinner than the grid
-      &[(2.0, 2.0), (3.0, 2.0), (3.0, 3.0)],
+      // Thinner than the grid
       &[(0.0, 0.5), (1.0, 0.5), (1.0, 0.5 + 1e-6), (0.0, 0.5 + 1e-6)],
     ];
     for points in polygons {
@@ -958,6 +1006,67 @@ mod tests {
         assert_eq!(built, ShapeBuild::default(), "{points:?}");
       }
     }
+    // Wholly outside the cell, it builds nothing in it: only a hexagonal
+    // grid's ring, which collides as drawn wherever it lies
+    let outside = [(2.0, 2.0), (3.0, 2.0), (3.0, 3.0)];
+    assert_eq!(
+      ShapeBuild::of(&shape(&outside, true)),
+      ShapeBuild::default()
+    );
+    let ring: Vec<Vec2> = outside.iter().map(|&(x, y)| Vec2::new(x, y)).collect();
+    assert_eq!(
+      ShapeBuild::of(&shape(&outside, false)),
+      ShapeBuild {
+        rings: vec![ring],
+        ring_edges: 3,
+        ..ShapeBuild::default()
+      }
+    );
+  }
+
+  #[test]
+  fn rings_wind_clockwise_and_a_tangled_polygon_rings_as_its_hull() {
+    // Anticlockwise on screen (y down), it is turned round, its points kept
+    let anticlockwise = [(0.2, 0.2), (0.2, 0.8), (0.8, 0.5)];
+    let built = ShapeBuild::of(&shape(&anticlockwise, false));
+    let want: Vec<Vec2> = [(0.8, 0.5), (0.2, 0.8), (0.2, 0.2)]
+      .iter()
+      .map(|&(x, y)| Vec2::new(x, y))
+      .collect();
+    assert_eq!(built.rings, [want]);
+    // A bow tie crosses itself: its ring is its hull, clockwise
+    let bow_tie = [(0.2, 0.2), (0.8, 0.8), (0.8, 0.2), (0.2, 0.8)];
+    let built = ShapeBuild::of(&shape(&bow_tie, false));
+    assert!(built.hulled);
+    assert_eq!(built.rings.len(), 1, "{:?}", built.rings);
+    let ring = &built.rings[0];
+    let area: f32 = (0..ring.len())
+      .map(|i| ring[i].perp_dot(ring[(i + 1) % ring.len()]))
+      .sum();
+    assert!(area > 0.0, "clockwise: {ring:?}");
+    let mut corners: Vec<(i32, i32)> = ring
+      .iter()
+      .map(|p| ((p.x * 10.0).round() as i32, (p.y * 10.0).round() as i32))
+      .collect();
+    corners.sort_unstable();
+    assert_eq!(corners, [(2, 2), (2, 8), (8, 2), (8, 8)]);
+    // Two polygons that overlap stay two rings, each its own
+    let two = CellShape {
+      polygons: vec![
+        vec![
+          Vec2::new(0.1, 0.1),
+          Vec2::new(0.6, 0.1),
+          Vec2::new(0.6, 0.6),
+        ],
+        vec![
+          Vec2::new(0.4, 0.4),
+          Vec2::new(0.9, 0.4),
+          Vec2::new(0.9, 0.9),
+        ],
+      ],
+      one_way: false,
+    };
+    assert_eq!(ShapeBuild::of(&two).rings, two.polygons);
   }
 
   #[test]

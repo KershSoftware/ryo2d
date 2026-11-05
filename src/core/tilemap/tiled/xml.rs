@@ -866,7 +866,7 @@ mod tests {
     "collide-hex-y-odd",
     "collide-hex-x-even",
   ];
-  const SET_PAIRS: [&str; 12] = [
+  const SET_PAIRS: [&str; 14] = [
     "loot",
     "tiles",
     "items",
@@ -879,6 +879,8 @@ mod tests {
     "shape-objects-tile",
     "collide-hex-y",
     "collide-hex-x",
+    "collide-hex-y-tall",
+    "collide-hex-x-tall",
   ];
 
   #[test]

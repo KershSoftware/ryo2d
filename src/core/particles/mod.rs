@@ -1923,6 +1923,72 @@ mod tests {
   }
 
   #[test]
+  fn a_particle_falls_onto_a_flipped_hex_tile_s_shape_and_stops_on_it() {
+    use crate::core::ecs::{ChildOf, IVec2};
+    use crate::core::physics::{CellShape, HexCells, TileCell, TileColliders, TilePart};
+    use crate::core::tilemap::{StaggerAxis, StaggerIndex};
+    // A hexagonal map's rock: in cell (0, 0) of 120 x 140 hexagons of side
+    // 70 (its box from the origin), a triangle as a tile flipped
+    // horizontally places it, its points running anticlockwise. Its ring,
+    // as physics builds it, is the map's own part
+    let cell = glam::UVec2::new(120, 140);
+    let hex = HexCells::new(StaggerAxis::Y, StaggerIndex::Odd, cell, 70);
+    let mut tiles = TileColliders::unbounded(cell.as_vec2()).with_hex(hex, Vec2::ZERO);
+    let flipped = [(48.0, 84.0), (24.0, 100.0), (50.0, 108.0)]
+      .map(|(x, y): (f32, f32)| Vec2::new(x / 120.0, y / 140.0));
+    let rock = tiles.add_shape(CellShape {
+      polygons: vec![flipped.to_vec()],
+      one_way: false,
+    });
+    assert!(tiles.set(IVec2::ZERO, TileCell::Shape(rock)));
+    let parts = tiles.traced_parts();
+    let mut world = World::new();
+    let grid = world.spawn((Transform::IDENTITY, tiles)).id();
+    for (at, collider) in parts {
+      world.spawn((
+        Transform::from_xy(at.x, at.y),
+        collider,
+        TilePart,
+        ChildOf(grid),
+      ));
+    }
+    // A particle above the rock's top edge, from (24, 100) up to (48, 84):
+    // at x 36 the edge is at y 92
+    world.spawn((
+      Transform::from_translation(Vec2::new(36.0, 20.0)),
+      ParticleEmitter::new(test_sprite())
+        .with_mode(EmissionMode::Burst { count: 1 })
+        .with_speed(0.0, 0.0)
+        .with_lifetime(60.0, 60.0)
+        .with_gravity(0.0, 600.0)
+        .with_collision(CollisionConfig::sticky(RADIUS)),
+    ));
+    let mut system = ParticleSystem::new();
+    update(&mut system, &mut world, DT);
+    let mut last = system.particles[0].y;
+    assert!(last < 25.0, "it starts where it was spawned: y = {last}");
+    for step in 0..120 {
+      update(&mut system, &mut world, DT);
+      let p = &system.particles[0];
+      // It falls as gravity takes it, never jumping onto the rock
+      assert!(
+        p.y >= last - 1e-3 && p.y - last < 8.0,
+        "step {step}: from y {last} to {}",
+        p.y
+      );
+      last = p.y;
+    }
+    let p = &system.particles[0];
+    assert!(p.stuck, "it stuck on the rock");
+    assert!(
+      p.y > 92.0 - RADIUS - 2.0 && p.y < 92.0,
+      "on the rock's top edge, outside it: ({}, {})",
+      p.x,
+      p.y
+    );
+  }
+
+  #[test]
   fn a_fast_stick_particle_sticks_on_the_surface_it_crossed() {
     // 30 px an update through the floor's top: it sticks where it crossed,
     // its radius out, not where its move ended inside the floor

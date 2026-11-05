@@ -495,6 +495,21 @@ fn a_frame_drawing_a_hexagonal_map_of_turned_tiles_allocates_nothing() {
   static_frames_allocate_nothing(Art::Turned);
 }
 
+/// How many colliders `engine`'s tile grids built: the children of the
+/// entities holding a `TileColliders`
+fn tile_colliders(engine: &mut HeadlessEngine) -> usize {
+  let world = engine.world_mut();
+  let grids: Vec<Entity> = world
+    .query_filtered::<Entity, With<TileColliders>>()
+    .iter(world)
+    .collect();
+  world
+    .query::<(&ChildOf, &Collider)>()
+    .iter(world)
+    .filter(|(child_of, _)| grids.contains(&child_of.parent()))
+    .count()
+}
+
 /// The most draws a chunk's tileset takes in `engine`'s last frame, over
 /// its plain tile layers: one where each part draws whole, more where a
 /// layer draws its chunks' runs band by band
@@ -531,6 +546,12 @@ fn static_frames_allocate_nothing(art: Art) {
   // The path drawing it: a part a draw while its tiles fit or stand tall
   // on an isometric grid, its runs band by band while they reach across
   // on a staggered or hexagonal one
+  // The map collides on every grid, the hexagonal one too: its frame
+  // steps its colliders as well as drawing them
+  assert!(
+    tile_colliders(&mut map) > 0,
+    "{art:?}: the map built colliders"
+  );
   let most = draws_a_part(&mut map);
   match art {
     Art::Fitting | Art::Tall => assert_eq!(most, 1, "{art:?}: each part draws whole"),

@@ -1033,11 +1033,12 @@ fn a_hex_tileset_saved_with_a_new_shape_rebuilds_its_colliders() {
     assert!(matches!(tiles.get(cell), TileCell::Shape(_)), "{cell}");
   }
   // The plain and the flipped triangles are on whole pixels, the turned
-  // one is not: the clump's border and the rings, 9 edges
+  // ones are not: the clump's border, the triangles' rings (9 edges) and
+  // the second tileset's two turned tiles' rings (6 more)
   let (whole, rest) = edges(&mut maps.world);
   let border = union_border(&grid, &clump);
   assert!(border.iter().all(|edge| whole.contains(edge)));
-  assert_eq!(whole.len() + rest, border.len() + 9);
+  assert_eq!(whole.len() + rest, border.len() + 9 + 6);
 
   // The tileset is saved with the triangle tile's shape made its whole
   // hexagon, as tile 0's is
@@ -1055,7 +1056,8 @@ fn a_hex_tileset_saved_with_a_new_shape_rebuilds_its_colliders() {
     maps.frame();
   }
   // Its cells are solid hexagons: their edges join the clump's border, as
-  // the outline of every solid cell, and the rings go
+  // the outline of every solid cell, and their rings go (the second
+  // tileset's two stay)
   let tiles = maps
     .world
     .get::<TileColliders>(map)
@@ -1065,7 +1067,7 @@ fn a_hex_tileset_saved_with_a_new_shape_rebuilds_its_colliders() {
     assert_eq!(tiles.get(cell), TileCell::Solid, "{cell}");
   }
   let solid: Vec<IVec2> = clump.iter().chain(&triangles).copied().collect();
-  assert_eq!(edges(&mut maps.world), (union_border(&grid, &solid), 0));
+  assert_eq!(edges(&mut maps.world), (union_border(&grid, &solid), 6));
 }
 
 #[test]

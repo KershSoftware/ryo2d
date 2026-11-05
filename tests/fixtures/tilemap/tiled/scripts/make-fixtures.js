@@ -724,11 +724,14 @@ saveBoth("shape-hex-collides", function () {
 // of its cell (`tilesets/collide-hex-*.tsj`, `xml/tilesets/collide-hex-*.tsx`):
 // tile 0 a hexagon whose collision shape is the whole hexagon, tile 1 one
 // with a small triangle off its middle as its shape, tile 2 one with no
-// shape. Each map holds a clump of three whole hexagons, the triangle tile
-// placed plain, turned 60 degrees and flipped horizontally, and shapeless
-// tiles round them. The tilesets are written by hand as TSX (scripting
-// cannot give a tile collision shapes), read by Tiled and saved by it in
-// both formats
+// shape; and over a second external tileset (`collide-hex-*-tall`) of one
+// tile that is not its cell's size, with a tileset offset, whose shape is
+// a triangle. Each map holds a clump of three whole hexagons, the triangle
+// tile placed plain, turned 60 degrees and flipped horizontally, shapeless
+// tiles round them, and the other tile flipped horizontally and turned 60
+// degrees in one cell and turned 120 degrees in another. The tilesets are
+// written by hand as TSX (scripting cannot give a tile collision shapes),
+// read by Tiled and saved by it in both formats
 var collideHex = [
   {
     name: "collide-hex-y-odd", set: "collide-hex-y", kind: "hex-y",
@@ -737,6 +740,11 @@ var collideHex = [
     clump: [[2, 1], [3, 1], [3, 2]],
     triangles: [[6, 1, 0], [6, 3, Tile.FlippedAntiDiagonally], [1, 4, Tile.FlippedHorizontally]],
     blank: [[1, 1], [4, 1], [2, 2], [4, 2], [5, 1], [7, 1], [5, 3], [7, 3], [0, 4], [2, 4]],
+    tall: {
+      tile: [80, 180], offset: [6, -10],
+      triangle: [[20, 30], [60, 50], [30, 90]],
+      cells: [[4, 4, Tile.FlippedHorizontally | Tile.FlippedAntiDiagonally], [6, 5, Tile.RotatedHexagonal120]],
+    },
   },
   {
     name: "collide-hex-x-even", set: "collide-hex-x", kind: "hex-x",
@@ -745,6 +753,11 @@ var collideHex = [
     clump: [[1, 2], [2, 1], [2, 2]],
     triangles: [[5, 1, 0], [5, 3, Tile.FlippedAntiDiagonally], [2, 4, Tile.FlippedHorizontally]],
     blank: [[0, 2], [1, 1], [3, 1], [3, 2], [4, 1], [6, 1], [4, 3], [6, 3], [1, 4], [3, 4]],
+    tall: {
+      tile: [180, 80], offset: [-10, 6],
+      triangle: [[30, 20], [50, 60], [90, 30]],
+      cells: [[4, 5, Tile.FlippedHorizontally | Tile.FlippedAntiDiagonally], [7, 4, Tile.RotatedHexagonal120]],
+    },
   },
 ];
 
@@ -767,6 +780,35 @@ function collideHexTsx(c) {
     tile(0, outline(c.kind, w, h, c.side)) +
     tile(1, c.triangle) +
     "</tileset>\n";
+}
+
+// The second tileset of `c` as TSX: its one tile, the tileset's offset and
+// the tile's triangle
+function collideHexTallTsx(c) {
+  var w = c.tall.tile[0], h = c.tall.tile[1], name = c.set + "-tall";
+  return '<?xml version="1.0" encoding="UTF-8"?>\n' +
+    '<tileset version="1.10" tiledversion="1.12.2" name="' + name + '" tilewidth="' + w + '" tileheight="' + h + '" tilecount="1" columns="1">\n' +
+    ' <tileoffset x="' + c.tall.offset[0] + '" y="' + c.tall.offset[1] + '"/>\n' +
+    ' <image source="../images/' + name + '.png" width="' + w + '" height="' + h + '"/>\n' +
+    ' <tile id="0">\n' +
+    '  <objectgroup draworder="index" id="2">\n' +
+    '   <object id="1" x="0" y="0">\n' +
+    '    <polygon points="' + c.tall.triangle.map(function (p) { return p[0] + "," + p[1]; }).join(" ") + '"/>\n' +
+    "   </object>\n" +
+    "  </objectgroup>\n" +
+    " </tile>\n" +
+    "</tileset>\n";
+}
+
+// The second tileset's image: cyan, its triangle red
+function collideHexTallImage(c) {
+  var w = c.tall.tile[0], h = c.tall.tile[1];
+  var image = new Image(w, h, Image.Format_ARGB32);
+  image.fill(0);
+  for (var y = 0; y < h; y++)
+    for (var x = 0; x < w; x++) image.setPixel(x, y, covers(c.tall.triangle, x, y) ? RED : 0xff00ffff);
+  var path = "images/" + c.set + "-tall.png";
+  if (!image.save(dir + path)) throw new Error("make-fixtures.js: " + path + ": not saved");
 }
 
 // The tileset's image: a blue hexagon, a green one with the triangle red,
@@ -794,21 +836,33 @@ for (var ch = 0; ch < collideHex.length; ch++) {
     File.remove(scratch);
     save(read, tiled.tilesetFormat("json"), "tilesets/" + c.set + ".tsj");
     save(read, tiled.tilesetFormat("tsx"), "xml/tilesets/" + c.set + ".tsx");
+    collideHexTallImage(c);
+    writeText(scratch, collideHexTallTsx(c));
+    var tall = tiled.tilesetFormat("tsx").read(scratch);
+    File.remove(scratch);
+    save(tall, tiled.tilesetFormat("json"), "tilesets/" + c.set + "-tall.tsj");
+    save(tall, tiled.tilesetFormat("tsx"), "xml/tilesets/" + c.set + "-tall.tsx");
     var formats = [
-      [tiled.mapFormat("json"), "maps", ".tmj", "../tilesets/" + c.set + ".tsj"],
-      [tiled.mapFormat("tmx"), "xml/maps", ".tmx", "../tilesets/" + c.set + ".tsx"],
+      [tiled.mapFormat("json"), "maps", ".tmj", "../tilesets/" + c.set + ".tsj", "../tilesets/" + c.set + "-tall.tsj"],
+      [tiled.mapFormat("tmx"), "xml/maps", ".tmx", "../tilesets/" + c.set + ".tsx", "../tilesets/" + c.set + "-tall.tsx"],
     ];
     for (var f = 0; f < formats.length; f++) {
       var map = sampleMap(c);
       map.layerDataFormat = TileMap.CSV;
       var set = external(formats[f][1], formats[f][3]);
       map.addTileset(set);
+      var second = external(formats[f][1], formats[f][4]);
+      map.addTileset(second);
       var walls = new TileLayer("walls");
       map.addLayer(walls);
       var edit = walls.edit();
       for (var i = 0; i < c.clump.length; i++) edit.setTile(c.clump[i][0], c.clump[i][1], set.tile(0));
       for (var j = 0; j < c.triangles.length; j++) edit.setTile(c.triangles[j][0], c.triangles[j][1], set.tile(1), c.triangles[j][2]);
       for (var k = 0; k < c.blank.length; k++) edit.setTile(c.blank[k][0], c.blank[k][1], set.tile(2));
+      for (var m = 0; m < c.tall.cells.length; m++) {
+        var at = c.tall.cells[m];
+        edit.setTile(at[0], at[1], second.tile(0), at[2]);
+      }
       edit.apply();
       save(map, formats[f][0], formats[f][1] + "/" + c.name + formats[f][2]);
     }

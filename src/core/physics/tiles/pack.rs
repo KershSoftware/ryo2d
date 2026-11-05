@@ -17,11 +17,14 @@
 //! most B, else its 16 x 16 quarters are, each while it holds at most B,
 //! else a quarter's 8 x 8 blocks are, which never split. An edit rebuilds
 //! the parts owning its cell's six sides (its own among them), up to four,
-//! so about 4 x B edges at most: a shape costs Rapier about 80 ns an edge
-//! to build, a part about 3 ns a step to keep, and 128 is the largest
-//! budget that held an edit at a corner of four parts each just under it
-//! within 100 µs at the 99th percentile (the tile rebuild plus the fixed
-//! step after it).
+//! so about 4 x B edges where its blocks keep within the budget: a shape
+//! costs Rapier about 80 ns an edge to build, a part about 3 ns a step to
+//! keep, and 128 is the largest budget that held an edit at a corner of
+//! four parts each just under it within 100 µs at the 99th percentile (the
+//! tile rebuild plus the fixed step after it). A block holds the sides its
+//! cells own (at most about 190) and its shape cells' rings, which nothing
+//! bounds, so a block heavy with rings can hold more than B by as much as
+//! its art has, and an edit there costs more than that.
 //! A bounded grid's border belongs to the cells inside it, so no part sits
 //! outside the grid: a one-cell bump along a map's edge would otherwise
 //! make and drop parts in the chunks outside it at every edit.
@@ -473,12 +476,14 @@ pub(crate) fn hex_first_cell(key: PackKey) -> IVec2 {
 /// holds at most `HEX_PART_EDGES` (B) edges, where it can: a chunk is one
 /// part while it holds at most B; past that its quarters are parts, each
 /// while it holds at most B; past that the quarter's blocks are, which
-/// never split (a block's cells' sides are at most about 190, rings
-/// aside). Landing decides each box by its count,
+/// never split (a block's cells' sides are at most about 190; its shape
+/// cells' rings have no bound, so a block heavy with rings holds more than
+/// B, by as much as its art has). Landing decides each box by its count,
 /// and an edit that takes a part past B splits it; nothing merges back
 /// until a build afresh. An edit rebuilds the parts of the blocks owning
 /// its cells' sides, which lie in up to four chunks round its cell, so at
-/// most four parts of B edges (more only as one splits). A shape cell's
+/// most four parts of about B edges where their blocks keep within it
+/// (more as one splits, or in a block heavy with rings). A shape cell's
 /// rings count toward its part's edges, so rings can split a part.
 #[derive(Debug, Default)]
 pub(crate) struct HexParts {
