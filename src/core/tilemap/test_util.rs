@@ -171,6 +171,35 @@ impl MapWorld {
   }
 }
 
+/// A map world over the fixtures with `xml` (fixture files under
+/// `tiled/xml/`, which the fixtures leave out) added, and the map at `file`
+/// spawned and landed, with its grid
+pub(crate) fn world_with_xml(xml: &[&str], file: &str) -> (MapWorld, Entity, super::MapGrid) {
+  let texts: Vec<(&str, String)> = xml
+    .iter()
+    .map(|&path| {
+      let full = format!("{FIXTURES}/{path}");
+      let text = std::fs::read_to_string(&full).unwrap_or_else(|e| panic!("{full}: {e}"));
+      (path, text)
+    })
+    .collect();
+  let extra: Vec<(&str, &str)> = texts
+    .iter()
+    .map(|(path, text)| (*path, text.as_str()))
+    .collect();
+  let mut maps = MapWorld::over(files_with(&extra));
+  let handle = load_map(&mut maps.world, file);
+  let grid = maps
+    .world
+    .resource::<crate::core::asset::Assets<super::TileMap>>()
+    .get(&handle)
+    .map(super::TileMap::grid)
+    .expect("the map loaded");
+  let map = maps.spawn(super::MapRoot::new(handle));
+  maps.frame();
+  (maps, map, grid)
+}
+
 /// The map at `path`, loaded at once
 pub(crate) fn load_map(world: &mut World, path: &str) -> Handle<super::TileMap> {
   match AssetsView::new(world).load_now::<super::TileMap>(path) {

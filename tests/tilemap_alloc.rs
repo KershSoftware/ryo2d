@@ -1,8 +1,8 @@
 //! Allocations of map drawing, counted by a global allocator in this test
 //! binary: a padded tileset cache hit, a frame drawing a static map under a
 //! shadowed light (its camera still, then panning over chunks it has
-//! drawn) on every grid, its layers colliding (the hexagonal map's
-//! too), and an idle frame of a streamed map whose chunks have landed, on
+//! drawn) on every grid, its layers colliding and casting shadows (the
+//! hexagonal map's too), and an idle frame of a streamed map whose chunks have landed, on
 //! orthogonal and on isometric cells.
 //!
 //! A frame's allocations are told apart by their stacks: those made inside
@@ -199,7 +199,7 @@ enum Art {
   /// row's unshifted cells painted before its shifted ones; a third of the
   /// tiles turned 60 degrees and a third 120, which reach past their
   /// cells' boxes though the tiles fit them unturned. Its ground's tiles
-  /// are whole hexagons: its colliders the hexagons' sides
+  /// are whole hexagons: its colliders and shadows the hexagons' sides
   Turned,
 }
 
@@ -315,8 +315,7 @@ impl Scene for StaticMap {
         transparent: None,
       }),
     });
-    // On every grid the tile layers collide and cast shadows (on the
-    // hexagonal grid its shadows are still to come)
+    // On every grid the tile layers collide and cast shadows
     for name in ["back", "ground", "props", "water"] {
       map.add_tile_layer(name);
     }
@@ -510,6 +509,12 @@ fn tile_colliders(engine: &mut HeadlessEngine) -> usize {
     .count()
 }
 
+/// How many occluders `engine`'s maps keep from their tiles
+fn map_occluders(engine: &mut HeadlessEngine) -> usize {
+  let world = engine.world_mut();
+  world.query::<&MapOccluder>().iter(world).count()
+}
+
 /// The most draws a chunk's tileset takes in `engine`'s last frame, over
 /// its plain tile layers: one where each part draws whole, more where a
 /// layer draws its chunks' runs band by band
@@ -546,11 +551,16 @@ fn static_frames_allocate_nothing(art: Art) {
   // The path drawing it: a part a draw while its tiles fit or stand tall
   // on an isometric grid, its runs band by band while they reach across
   // on a staggered or hexagonal one
-  // The map collides on every grid, the hexagonal one too: its frame
-  // steps its colliders as well as drawing them
+  // The map collides and casts shadows on every grid, the hexagonal one
+  // too: its frame steps its colliders and casts its shadows as well as
+  // drawing them
   assert!(
     tile_colliders(&mut map) > 0,
     "{art:?}: the map built colliders"
+  );
+  assert!(
+    map_occluders(&mut map) > 0,
+    "{art:?}: the map built its shadows"
   );
   let most = draws_a_part(&mut map);
   match art {

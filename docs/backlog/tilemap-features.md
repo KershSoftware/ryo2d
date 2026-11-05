@@ -2,12 +2,6 @@
 
 Tile maps load from Tiled and LDtk on every grid Tiled has (orthogonal, isometric, staggered, hexagonal and oblique), from files and built in code, bounded or infinite, and stream endless worlds round the cameras and anchors: drawing, objects, picking and the board tools, edits and Wang terrain, collision and shadows, y-sorting, streaming, worlds and hot reload follow each map's grid. Designs: `docs/specs/2026-10-29-tilemap-design.md` and `docs/specs/2026-10-31-tilemap-shapes-design.md`; using them from a game: the `ryo-tilemap` skill; what they cost, and their limits: `docs/backlog/tilemap.md`; a demo of each grid: `examples/demos/tile-grids`. This is what the designs left for later. Each is refused with a clear error, or warned once where a file is otherwise usable, until it is done.
 
-## Hexagonal shadows
-
-A hexagonal map's tile layers collide (along their hexagons' sides, and their tiles' own shapes as rings of their own), but cast no shadows: an occluding hexagonal layer casts none, warned once a layer.
-
-- Shadows would follow the sides collision keeps (`physics::Boundary` reads them a block at a time), as the other grids' shadows follow their outlines.
-
 ## Navigation off the orthogonal grid
 
 `NavigationGrid::block_tiles` reads a square grid of upright rectangles. Over an isometric, staggered or hexagonal map, or an oblique one that is skewed, it blocks nothing, and the dev log warns once a navigation grid.

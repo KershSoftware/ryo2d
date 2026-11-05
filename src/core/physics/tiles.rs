@@ -1332,11 +1332,9 @@ impl TileColliders {
       let Some((_, build)) = self.shapes.get(usize::from(shape)) else {
         continue;
       };
-      let (min, size) = hex.cell_box(cell);
-      let (from, size) = ((min - corner).as_dvec2(), size.as_dvec2());
       for ring in &build.rings {
         let base = points.len() as u32;
-        points.extend(ring.iter().map(|p| (from + p.as_dvec2() * size).as_vec2()));
+        points.extend(hex_ring(hex, cell, corner, ring).map(DVec2::as_vec2));
         let n = ring.len() as u32;
         segments.extend((0..n).map(|i| [base + i, base + (i + 1) % n]));
       }
@@ -1791,10 +1789,29 @@ impl TileColliders {
   }
 }
 
+/// A hexagonal grid's shape cell `cell`'s ring (one of its shape's
+/// `ShapeBuild::rings`, in the units of its cell's box) in pixels from
+/// `corner` (the box corner of a part's or a block's first cell,
+/// `HexCells::corner_of`): laid over `cell`'s box (`HexCells::cell_box`),
+/// worked out in f64. A part's collider and a map's shadows place rings
+/// alike through it
+fn hex_ring(
+  hex: HexCells,
+  cell: IVec2,
+  corner: glam::I64Vec2,
+  ring: &[Vec2],
+) -> impl Iterator<Item = DVec2> + '_ {
+  let (min, size) = hex.cell_box(cell);
+  let (from, size) = ((min - corner).as_dvec2(), size.as_dvec2());
+  ring.iter().map(move |p| from + p.as_dvec2() * size)
+}
+
 /// Cells and authored shapes whose boundary is read a block at a time, by
 /// the outline code's units without its loops or colliders: what a tile
 /// map's light occluders are built from, so their edges meet and cancel as
-/// the outlines' do, across blocks too.
+/// the outlines' do, across blocks too. On a hexagonal grid (`with_hex`)
+/// the units are its colliders' (each cell's sides, by their owner) and a
+/// shape cell's own rings come apart (`hex_rings`).
 #[derive(Debug, Default)]
 pub(crate) struct Boundary {
   shapes: Vec<(CellShape, ShapeBuild)>,
@@ -1815,15 +1832,158 @@ impl Boundary {
   /// bounded grid's need never sit outside it. So an edit dirties the
   /// blocks holding its cell and those left of it and above it (its sides'
   /// owners), the opposite of squares, whose borders belong to the cells
-  /// right of and below them: `rebuilt_borders` reads a hexagonal block
-  /// whole. Points are whole pixels from the box of the block's first cell
+  /// right of and below them: `rebuilt_borders` reads a hexagonal block's
+  /// rim cells again, its first column, its last column and its last row,
+  /// whose sides reach the cells round it. Points are whole pixels from
+  /// the box of the block's first cell
   /// (`HexCells::corner_of`). Cells the tracer does not take
-  /// (`HexCells::traceable`) give nothing
-  // used by tile maps' shadows
-  #[allow(dead_code)]
+  /// (`HexCells::traceable`) give nothing. A shape cell's own polygons are
+  /// not among its units: `hex_rings` gives them, as its colliders hold
+  /// them
   pub(crate) fn with_hex(mut self, hex: HexCells) -> Self {
     self.hex = Some(hex);
     self
+  }
+
+  /// Pushes onto `out` the rings a hexagonal grid's (`with_hex`) cell
+  /// `cell` of kind `kind` collides as, one `Vec` each: a shape cell's
+  /// polygons (`ShapeBuild::rings`: each a closed ring, wound clockwise on
+  /// screen, its closing edge implied, laid over its cell's box as its
+  /// part's collider lays it), in pixels from the box of `first`'s
+  /// (`HexCells::corner_of`: the first cell of the block it is read in).
+  /// Nothing for any other cell, a one-way shape, a shape the boundary
+  /// lacks, off a hexagonal grid or on one the tracer does not take
+  pub(crate) fn hex_rings(
+    &self,
+    cell: IVec2,
+    kind: TileCell,
+    first: IVec2,
+    out: &mut Vec<Vec<DVec2>>,
+  ) {
+    let (Some(hex), TileCell::Shape(shape)) = (self.hex, kind) else {
+      return;
+    };
+    let Some((_, build)) = self.shapes.get(usize::from(shape)) else {
+      return;
+    };
+    if !hex.traceable() {
+      return;
+    }
+    let corner = hex.corner_of(first);
+    out.extend(
+      build
+        .rings
+        .iter()
+        .map(|ring| hex_ring(hex, cell, corner, ring).collect()),
+    );
+  }
+
+  /// The chains the edges of a hexagonal block (`placed`: as `placed_edges`
+  /// or `rebuilt_borders` gave them for the cells from `min` to `max`, read
+  /// through `at`) make, each a run of edges each going on from the last
+  /// one's end, clockwise round the solid cells as the edges run, straight
+  /// runs merged into one segment, and every edge in exactly one: from
+  /// each edge whose edge before it the block does not own, in the scan's
+  /// order, then round what is left, each a closed chain ending where it
+  /// starts. Three cells meet at each corner, so an edge's next one is
+  /// found from its cells, with no search: along the next side of its solid
+  /// cell, or where the cell across that side is solid too, along that
+  /// cell's side round the same corner. None off a hexagonal grid, or on
+  /// one whose cells have sides of length 0 (four cells meet at a point
+  /// there), whose edges a caller chains by their points
+  pub(crate) fn hex_chains(
+    &self,
+    at: impl Fn(i32, i32) -> TileCell,
+    min: (i32, i32),
+    max: (i32, i32),
+    bounds: Option<CellRect>,
+    placed: &[PlacedEdge],
+  ) -> Option<Vec<Vec<Point>>> {
+    const NONE: u32 = u32::MAX;
+    let hex = self.hex.filter(|hex| !hex.point_sides())?;
+    let sides = HexSides::of(hex, bounds);
+    let inside = |cell: IVec2| bounds.is_none_or(|bounds| bounds.contains(cell));
+    let solid = |cell: IVec2| inside(cell) && at(cell.x, cell.y) == TileCell::Solid;
+    // Each edge by its solid cell and that cell's side, the cell within a
+    // cell of the block
+    let origin = IVec2::new(min.0, min.1) - IVec2::ONE;
+    let (w, h) = (max.0 - min.0 + 2, max.1 - min.1 + 2);
+    if w <= 2 || h <= 2 || placed.is_empty() {
+      return Some(Vec::new());
+    }
+    let key = |cell: IVec2, side: usize| -> Option<usize> {
+      let local = cell - origin;
+      ((0..w).contains(&local.x) && (0..h).contains(&local.y))
+        .then(|| (local.y as usize * w as usize + local.x as usize) * 6 + side)
+    };
+    let mut index = vec![NONE; w as usize * h as usize * 6];
+    let mut owners: Vec<(IVec2, usize)> = Vec::with_capacity(placed.len());
+    for (i, &(place, ..)) in placed.iter().enumerate() {
+      let (x, y, side) = (
+        ((place >> 3) & 0x1FFF) as i32,
+        (place >> 16) as i32,
+        (place & 7) as usize,
+      );
+      let owner = IVec2::new(min.0 + x, min.1 + y);
+      let found = if solid(owner) {
+        (owner, side)
+      } else {
+        (sides.across(owner, side).0, (side + 3) % 6)
+      };
+      if let Some(slot) = key(found.0, found.1) {
+        index[slot] = i as u32;
+      }
+      owners.push(found);
+    }
+    // The edge each goes on to, if the block owns it
+    let next: Vec<u32> = owners
+      .iter()
+      .map(|&(cell, side)| {
+        let (across, _) = sides.across(cell, (side + 1) % 6);
+        let (cell, side) = if solid(across) {
+          (across, (side + 5) % 6)
+        } else {
+          (cell, (side + 1) % 6)
+        };
+        key(cell, side).map_or(NONE, |slot| index[slot])
+      })
+      .collect();
+    let mut follows = vec![false; placed.len()];
+    for &j in &next {
+      if j != NONE {
+        follows[j as usize] = true;
+      }
+    }
+    let mut used = vec![false; placed.len()];
+    let mut out = Vec::new();
+    let heads = (0..placed.len()).filter(|&i| !follows[i]);
+    let starts: Vec<usize> = heads.chain(0..placed.len()).collect();
+    for start in starts {
+      if used[start] {
+        continue;
+      }
+      used[start] = true;
+      let (_, a, b) = placed[start];
+      let mut chain = vec![a, b];
+      let mut at = next[start];
+      while at != NONE && !used[at as usize] {
+        used[at as usize] = true;
+        let (_, _, to) = placed[at as usize];
+        // A straight run is one segment
+        let (p, q) = (chain[chain.len() - 2], chain[chain.len() - 1]);
+        let (u, v) = (
+          (i64::from(q.0 - p.0), i64::from(q.1 - p.1)),
+          (i64::from(to.0 - q.0), i64::from(to.1 - q.1)),
+        );
+        if u.0 * v.1 - u.1 * v.0 == 0 && u.0 * v.0 + u.1 * v.1 > 0 {
+          chain.pop();
+        }
+        chain.push(to);
+        at = next[at as usize];
+      }
+      out.push(chain);
+    }
+    Some(out)
   }
 
   /// Adds a shape for `TileCell::Shape` cells to name, as
@@ -1892,7 +2052,12 @@ impl Boundary {
   /// (read only at the block's first column and row and the column and row
   /// across them), and every other unit's edges, which read the block's
   /// own cells alone, are taken from `kept`, all in the order a scan meets
-  /// them
+  /// them. On a hexagonal grid (`with_hex`), whose cells own the sides they
+  /// share with the cells right of them and below them, it is the cells
+  /// across its right and bottom borders, and left of its first column
+  /// below its first row, that may have changed: the units of its rim
+  /// cells (its first column, its last column and its last row) are worked
+  /// out again, and every other cell's taken from `kept`
   pub(crate) fn rebuilt_borders(
     &self,
     at: impl Fn(i32, i32) -> TileCell,
@@ -1902,10 +2067,8 @@ impl Boundary {
     kept: &[PlacedEdge],
     out: &mut Vec<PlacedEdge>,
   ) {
-    if self.hex.is_some() {
-      // A hexagonal block's units read the cells right of it and below it,
-      // not left and above: it is read whole
-      return self.placed_edges(at, min, max, bounds, out);
+    if let Some(hex) = self.hex {
+      return Self::hex_rebuilt_rims(hex, at, min, max, bounds, kept, out);
     }
     let cells = Cells::shapes_only(&self.shapes);
     let local = Self::local(&at, min, bounds);
@@ -1963,7 +2126,7 @@ impl Boundary {
     out: &mut impl UnitSink,
   ) {
     if let Some(hex) = self.hex {
-      return Self::hex_scan(hex, at, min, max, bounds, out);
+      return Self::hex_scan(hex, at, (min, max), bounds, false, out);
     }
     let cells = Cells::shapes_only(&self.shapes);
     let local = Self::local(&at, min, bounds);
@@ -1994,14 +2157,56 @@ impl Boundary {
     }
   }
 
-  /// A hexagonal block's units in row order, each cell's sides in turn
-  /// (`with_hex`), each edge handed to `out`
-  fn hex_scan(
+  /// The edges of a hexagonal block (`with_hex`) whose own cells have not
+  /// changed since `kept` was read from it, when the cells round it may
+  /// have (`rebuilt_borders`): its rim cells' units read again (the cells
+  /// whose sides reach past it: its first column, whose cells share sides
+  /// with the column left of it in the row below, its last column and its
+  /// last row), every other cell's taken from `kept`, merged in the scan's
+  /// order
+  fn hex_rebuilt_rims(
     hex: HexCells,
     at: impl Fn(i32, i32) -> TileCell,
     min: (i32, i32),
     max: (i32, i32),
     bounds: Option<CellRect>,
+    kept: &[PlacedEdge],
+    out: &mut Vec<PlacedEdge>,
+  ) {
+    let mut fresh = Vec::new();
+    Self::hex_scan(
+      hex,
+      at,
+      (min, max),
+      bounds,
+      true,
+      &mut Placed::new(&mut fresh),
+    );
+    let (w, h) = ((max.0 - min.0).min(0x1FFF), (max.1 - min.1).min(0xFFFF));
+    let rim = |place: u32| {
+      let (x, y) = (((place >> 3) & 0x1FFF) as i32, (place >> 16) as i32);
+      x == 0 || x == w - 1 || y == h - 1
+    };
+    // The places are the scan's order, and the two lists hold no cell both
+    let mut fresh = fresh.into_iter().peekable();
+    for &edge in kept.iter().filter(|edge| !rim(edge.0)) {
+      while let Some(next) = fresh.next_if(|next| next.0 < edge.0) {
+        out.push(next);
+      }
+      out.push(edge);
+    }
+    out.extend(fresh);
+  }
+
+  /// A hexagonal block's units in row order, each cell's sides in turn
+  /// (`with_hex`), each edge handed to `out`; with `rims` only its rim
+  /// cells' (`hex_rebuilt_rims`)
+  fn hex_scan(
+    hex: HexCells,
+    at: impl Fn(i32, i32) -> TileCell,
+    (min, max): ((i32, i32), (i32, i32)),
+    bounds: Option<CellRect>,
+    rims: bool,
     out: &mut impl UnitSink,
   ) {
     if !hex.traceable() {
@@ -2013,10 +2218,11 @@ impl Boundary {
     let from = hex.corner_of(IVec2::new(min.0, min.1));
     // The places `Placed` packs: 8,191 cells across and 65,535 down at most
     let (w, h) = ((max.0 - min.0).min(0x1FFF), (max.1 - min.1).min(0xFFFF));
+    let (last_x, last_y) = (min.0 + w - 1, min.1 + h - 1);
     for y in min.1..min.1 + h.max(0) {
       for x in min.0..min.0 + w.max(0) {
         let cell = IVec2::new(x, y);
-        if !inside(cell) {
+        if !inside(cell) || (rims && x != min.0 && x != last_x && y != last_y) {
           continue;
         }
         let mine = solid(cell);
@@ -3468,6 +3674,77 @@ mod tests {
   }
 
   #[test]
+  fn a_hex_boundary_gives_a_shape_cell_s_rings_as_its_part_holds_them() {
+    // Two triangles, one wound each way, in cell (3, -2) of 120 x 140
+    // hexagons, read in a block whose first cell is (0, -32)
+    let hex = HexCells::new(StaggerAxis::Y, StaggerIndex::Odd, UVec2::new(120, 140), 70);
+    let mut tiles = TileColliders::unbounded(Vec2::ONE).with_hex(hex, Vec2::ZERO);
+    let mut boundary = Boundary::default().with_hex(hex);
+    let polygons = vec![
+      vec![
+        Vec2::new(0.1, 0.1),
+        Vec2::new(0.3, 0.2),
+        Vec2::new(0.1, 0.4),
+      ],
+      vec![
+        Vec2::new(0.6, 0.6),
+        Vec2::new(70.0 / 120.0, 108.0 / 140.0),
+        Vec2::new(0.8, 100.0 / 140.0),
+      ],
+    ];
+    let shape = CellShape {
+      polygons,
+      one_way: false,
+    };
+    let kind = TileCell::Shape(tiles.add_shape(shape.clone()));
+    assert_eq!(TileCell::Shape(boundary.add_shape(shape)), kind);
+    let cell = IVec2::new(3, -2);
+    assert!(tiles.set(cell, kind));
+    let first = IVec2::new(0, -32);
+    let mut rings = Vec::new();
+    boundary.hex_rings(cell, kind, first, &mut rings);
+    assert_eq!(rings.len(), 2, "{rings:?}");
+    let corner = hex.corner_of(first).as_dvec2();
+    let mut edges: Vec<(Vec2, Vec2)> = rings
+      .iter()
+      .flat_map(|ring| {
+        (0..ring.len()).map(move |i| {
+          let at = |p: DVec2| (corner + p).as_vec2();
+          (at(ring[i]), at(ring[(i + 1) % ring.len()]))
+        })
+      })
+      .collect();
+    let mut held: Vec<(Vec2, Vec2)> = hex_part_lines(&tiles)
+      .into_iter()
+      .flat_map(|(_, lines)| lines)
+      .collect();
+    let key = |&(a, b): &(Vec2, Vec2)| {
+      let px = |v: f32| (v * 64.0).round() as i64;
+      (px(a.x), px(a.y), px(b.x), px(b.y))
+    };
+    edges.sort_by_key(key);
+    held.sort_by_key(key);
+    assert_eq!(edges.len(), held.len());
+    for (got, want) in edges.iter().zip(&held) {
+      let near = |p: Vec2, q: Vec2| (p - q).abs().max_element() < 1e-3;
+      assert!(
+        near(got.0, want.0) && near(got.1, want.1),
+        "{got:?} {want:?}"
+      );
+    }
+    // Nothing for any other cell or a one-way shape
+    let one_way = boundary.add_shape(CellShape {
+      one_way: true,
+      ..polygon(5, 0.0)
+    });
+    let mut none = Vec::new();
+    for other in [S, E, O, TileCell::Shape(one_way), TileCell::Shape(77)] {
+      boundary.hex_rings(cell, other, first, &mut none);
+    }
+    assert!(none.is_empty(), "{none:?}");
+  }
+
+  #[test]
   fn a_self_crossing_hex_shape_collides_as_its_hull() {
     // A bow tie in cell (2, 1) of 120 x 140 hexagons (row 1 shifted by
     // half a cell: its box from (300, 105))
@@ -3728,6 +4005,183 @@ mod tests {
       pieced.sort_unstable();
       assert_eq!(pieced, held, "bounded {hex:?} {round}");
     }
+  }
+
+  #[test]
+  fn hex_chains_hold_each_of_a_block_s_edges_once() {
+    // Each segment cut into its whole-pixel steps, so a straight run
+    // merged into one segment compares with its edges
+    fn steps(segments: impl Iterator<Item = (Point, Point)>) -> Vec<(Point, Point)> {
+      fn gcd(a: i32, b: i32) -> i32 {
+        if b == 0 { a.abs() } else { gcd(b, a % b) }
+      }
+      let mut all = Vec::new();
+      for (a, b) in segments {
+        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+        let n = gcd(dx, dy).max(1);
+        all.extend((0..n).map(|i| {
+          let at = |i: i32| (a.0 + dx * i / n, a.1 + dy * i / n);
+          (at(i), at(i + 1))
+        }));
+      }
+      all.sort_unstable();
+      all
+    }
+    let mut seed = 0x6c07_8965_u32;
+    let mut next = |n: u32| {
+      seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+      (seed >> 8) % n
+    };
+    let (mut chained, mut merged) = (0, 0);
+    for hex in hex_variants() {
+      let mut tiles = TileColliders::unbounded(Vec2::ONE).with_hex(hex, Vec2::ZERO);
+      for _ in 0..140 {
+        let at = IVec2::new(next(16) as i32 - 6, next(16) as i32 - 6);
+        tiles.set(at, [S, S, E, O][next(4) as usize]);
+      }
+      let boundary = Boundary::default().with_hex(hex);
+      let at = |x: i32, y: i32| tiles.get(IVec2::new(x, y));
+      let mut blocks: Vec<((i32, i32), (i32, i32))> = (0..40)
+        .map(|_| {
+          let min = (next(18) as i32 - 9, next(18) as i32 - 9);
+          (
+            min,
+            (min.0 + 1 + next(8) as i32, min.1 + 1 + next(8) as i32),
+          )
+        })
+        .collect();
+      // and, last, one holding every cell and the cells owning their sides
+      blocks.push(((-8, -8), (12, 12)));
+      let whole = blocks.len() - 1;
+      for (block, (min, max)) in blocks.into_iter().enumerate() {
+        let mut placed = Vec::new();
+        boundary.placed_edges(at, min, max, None, &mut placed);
+        let chains = boundary
+          .hex_chains(at, min, max, None, &placed)
+          .expect("three cells meet at each corner");
+        let segments = chains
+          .iter()
+          .flat_map(|chain| chain.windows(2).map(|pair| (pair[0], pair[1])));
+        let edges = placed.iter().map(|&(_, a, b)| (a, b));
+        assert_eq!(steps(segments), steps(edges), "{hex:?} {min:?} to {max:?}");
+        // No point a chain runs straight through: straight runs are one
+        // segment (a grid whose side is the cell's length or longer has
+        // them, along its rectangles' tops and bottoms)
+        for chain in &chains {
+          for w in chain.windows(3) {
+            let (u, v) = (
+              (w[1].0 - w[0].0, w[1].1 - w[0].1),
+              (w[2].0 - w[1].0, w[2].1 - w[1].1),
+            );
+            let straight = u.0 * v.1 == u.1 * v.0 && u.0 * v.0 + u.1 * v.1 > 0;
+            assert!(
+              !straight,
+              "{hex:?}: {chain:?} runs straight through {:?}",
+              w[1]
+            );
+          }
+        }
+        merged += placed.len() - chains.iter().map(|c| c.len() - 1).sum::<usize>();
+        chained += chains.len();
+        if block == whole {
+          // The whole boundary: closed loops alone
+          assert!(!chains.is_empty());
+          for chain in &chains {
+            assert_eq!(chain.first(), chain.last(), "{hex:?}: {chain:?}");
+          }
+        }
+      }
+    }
+    assert!(
+      chained > 500 && merged > 20,
+      "{chained} chains, {merged} edges merged"
+    );
+    // Sides of length 0, where four cells meet at a point: by points
+    let diamonds = HexCells::new(StaggerAxis::Y, StaggerIndex::Odd, UVec2::new(16, 16), 0);
+    assert!(diamonds.point_sides());
+    let mut tiles = TileColliders::unbounded(Vec2::ONE).with_hex(diamonds, Vec2::ZERO);
+    tiles.set(IVec2::ZERO, S);
+    let boundary = Boundary::default().with_hex(diamonds);
+    let at = |x: i32, y: i32| tiles.get(IVec2::new(x, y));
+    let mut placed = Vec::new();
+    boundary.placed_edges(at, (-1, -1), (2, 2), None, &mut placed);
+    assert!(!placed.is_empty());
+    assert_eq!(
+      boundary.hex_chains(at, (-1, -1), (2, 2), None, &placed),
+      None
+    );
+    assert_eq!(
+      Boundary::default().hex_chains(at, (0, 0), (1, 1), None, &[]),
+      None
+    );
+  }
+
+  #[test]
+  fn a_hex_block_s_rims_rebuilt_alone_give_its_edges_in_the_scan_s_order() {
+    // Blocks of hexagonal grids, bounded and not, the cells round each
+    // (above it too, which its cells' units never read) changed at random:
+    // its rims rebuilt from what it kept give its edges, places and order
+    // as a scan of it now gives them. An empty block keeps nothing
+    let mut seed = 0x2f6b_1d55_u32;
+    let mut next = |n: u32| {
+      seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+      (seed >> 8) % n
+    };
+    let kinds = [S, S, E, E, E, O];
+    let (mut rebuilt, mut scanned) = (0, 0);
+    for (round, hex) in hex_variants().into_iter().enumerate() {
+      let bounded = round % 2 == 0;
+      let (width, height) = (14u32, 12u32);
+      let mut tiles = if bounded {
+        TileColliders::new(width, height, Vec2::ONE)
+      } else {
+        TileColliders::unbounded(Vec2::ONE)
+      }
+      .with_hex(hex, Vec2::ZERO);
+      let bounds = tiles.bounds();
+      let (lo, hi) = if bounded { (0, 14) } else { (-6, 10) };
+      let cell = |next: &mut dyn FnMut(u32) -> u32| {
+        let span = (hi - lo) as u32;
+        IVec2::new(lo + next(span) as i32, lo + next(span) as i32)
+      };
+      for _ in 0..120 {
+        let at = cell(&mut next);
+        tiles.set(at, kinds[next(kinds.len() as u32) as usize]);
+      }
+      let boundary = Boundary::default().with_hex(hex);
+      for block in 0..60 {
+        // A block of 1 to 6 cells a side, within a bounded grid or past it
+        let min = (lo + next(10) as i32, lo + next(10) as i32);
+        let max = (min.0 + 1 + next(6) as i32, min.1 + 1 + next(6) as i32);
+        if block % 5 == 0 {
+          for y in min.1..max.1 {
+            for x in min.0..max.0 {
+              tiles.set(IVec2::new(x, y), E);
+            }
+          }
+        }
+        let mut kept = Vec::new();
+        let at = |x: i32, y: i32| tiles.get(IVec2::new(x, y));
+        boundary.placed_edges(at, min, max, bounds, &mut kept);
+        // The ring of cells round it, changed
+        for y in min.1 - 1..=max.1 {
+          for x in min.0 - 1..=max.0 {
+            let outside = x < min.0 || x >= max.0 || y < min.1 || y >= max.1;
+            if outside && next(2) == 0 {
+              tiles.set(IVec2::new(x, y), kinds[next(kinds.len() as u32) as usize]);
+            }
+          }
+        }
+        let at = |x: i32, y: i32| tiles.get(IVec2::new(x, y));
+        let (mut now, mut rims) = (Vec::new(), Vec::new());
+        boundary.placed_edges(at, min, max, bounds, &mut now);
+        boundary.rebuilt_borders(at, min, max, bounds, &kept, &mut rims);
+        assert_eq!(rims, now, "{hex:?} block {min:?} to {max:?}");
+        rebuilt += usize::from(rims != kept);
+        scanned += now.len();
+      }
+    }
+    assert!(rebuilt > 150 && scanned > 1500, "{rebuilt} {scanned}");
   }
 
   #[test]

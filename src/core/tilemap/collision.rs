@@ -3031,28 +3031,8 @@ mod tests {
   /// A map world over the fixtures, with `fixture`'s XML twins (which the
   /// fixtures leave out), and its map at `file` spawned
   fn hex_fixture_world(fixture: &HexFixture, file: &str) -> (MapWorld, Entity, MapGrid) {
-    let read = |path: &str| {
-      let path = format!("{}/{path}", crate::core::tilemap::test_util::FIXTURES);
-      std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"))
-    };
     let [set, tall] = fixture.xml_sets;
-    let texts = [read(fixture.files[1]), read(set), read(tall)];
-    let files = files_with(&[
-      (fixture.files[1], &texts[0]),
-      (set, &texts[1]),
-      (tall, &texts[2]),
-    ]);
-    let mut maps = MapWorld::over(files);
-    let handle = load(&mut maps.world, file);
-    let grid = maps
-      .world
-      .resource::<Assets<TileMap>>()
-      .get(&handle)
-      .map(TileMap::grid)
-      .expect("the map loaded");
-    let map = maps.spawn(MapRoot::new(handle));
-    maps.frame();
-    (maps, map, grid)
+    crate::core::tilemap::test_util::world_with_xml(&[fixture.files[1], set, tall], file)
   }
 
   /// Every edge of the parts under `parent`, in its space
@@ -3578,7 +3558,7 @@ mod tests {
   }
 
   #[test]
-  fn a_code_built_hex_layer_collides() {
+  fn a_code_built_hex_layer_collides_and_casts_shadows() {
     use crate::core::tilemap::MapOccluder;
     // A layer added while the map was orthogonal keeps colliding when the
     // map moves onto a hexagonal grid; one added after collides too, as on
@@ -3646,26 +3626,27 @@ mod tests {
       border(&mut maps.world),
       union_border(&grid, &solid(&[IVec2::new(1, 3)]))
     );
-    // Shadows from hexagonal layers come later: each layer says so once
-    // and casts none, and nothing says collision is missing
+    // The layers cast shadows as they collide, under the first of them,
+    // and nothing warns about either layer
+    let first = layers_of(&mut maps.world, map)[0];
+    let occluders: Vec<Entity> = maps
+      .world
+      .query::<(Entity, &MapOccluder, &ChildOf)>()
+      .iter(&maps.world)
+      .filter(|(_, _, child_of)| child_of.parent() == first)
+      .map(|(entity, ..)| entity)
+      .collect();
+    assert!(!occluders.is_empty());
     assert_eq!(
       maps.world.query::<&MapOccluder>().iter(&maps.world).count(),
-      0
+      occluders.len()
     );
-    let warned = |layer: &str, what: &str| {
-      crate::core::dev_log::get_entries()
-        .iter()
-        .filter(|e| e.message.contains(&format!("\"{layer}\"")) && e.message.contains(what))
-        .count()
-    };
     for layer in ["honeycomb-5d07", "hexfloor-5d07"] {
-      assert_eq!(
-        warned(layer, "shadows from hexagonal layers aren't supported yet"),
-        1,
-        "{layer}"
-      );
-      assert_eq!(warned(layer, "collision"), 0, "{layer}");
-      assert_eq!(warned(layer, "collides"), 0, "{layer}");
+      let warned = crate::core::dev_log::get_entries()
+        .iter()
+        .filter(|e| e.message.contains(&format!("\"{layer}\"")))
+        .count();
+      assert_eq!(warned, 0, "{layer}");
     }
   }
 
@@ -3704,14 +3685,24 @@ mod tests {
       assert!(maps.world.get::<TileColliders>(entity).is_none());
     }
     assert_eq!(count_parts(&mut maps.world), 0);
-    let warned = crate::core::dev_log::get_entries()
-      .iter()
-      .filter(|e| {
-        e.message
-          .contains("layer \"walls-77c1\" has hexagonal cells over 16,384 px")
-          && e.message.contains("which don't collide")
-      })
+    let warned = |what: &str| {
+      crate::core::dev_log::get_entries()
+        .iter()
+        .filter(|e| {
+          e.message
+            .contains("layer \"walls-77c1\" has hexagonal cells over 16,384 px")
+            && e.message.contains(what)
+        })
+        .count()
+    };
+    assert_eq!(warned("which don't collide"), 1);
+    // Nor do they cast shadows, which the layer says once too
+    assert_eq!(warned("which cast no shadows"), 1);
+    let occluders = maps
+      .world
+      .query::<&crate::core::tilemap::MapOccluder>()
+      .iter(&maps.world)
       .count();
-    assert_eq!(warned, 1);
+    assert_eq!(occluders, 0);
   }
 }

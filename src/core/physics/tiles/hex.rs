@@ -74,6 +74,12 @@ impl HexCells {
     self.traceable
   }
 
+  /// Whether two of a cell's sides have length 0 (a side of 0 along the
+  /// axis: its hexagons are diamonds, and four cells meet at a point)
+  pub(crate) fn point_sides(&self) -> bool {
+    self.step == self.slant
+  }
+
   /// Its stagger axis: lines are rows on Y, columns on X
   pub(crate) fn axis(&self) -> StaggerAxis {
     self.axis
