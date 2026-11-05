@@ -4,6 +4,44 @@ Small issues found while building each sub-project and left for later: deferred 
 
 Items from 4f to 6b were copied from their execution records. Items from earlier sub-projects come from notes kept at the time, and some may have been fixed since: check before working on one.
 
+## Big tiles at their own size (tile padding)
+
+- Owner decisions (2026-11-04):
+  - The owner chose to merge after the grid pages' hand-play. The hex board's seams drawn smooth (an even line between hexes, darker than the halved art's) are fine as they are.
+- Rulings the owner may revisit:
+  - Tile and object layers take a reserved `filter` property (`nearest` or `linear`; absent means the target's sampling), as `LayerInfo::filter`, per layer rather than per tileset. The grid pages set it to `linear`, so on the pixel-art target their painted art reads the smaller copies.
+  - An animation's frame cells are sized to the largest of its frames and the tile itself.
+  - Nearest-sampled tile objects keep their reads inside their padded cell, as chunk tiles do, not inside their texel rectangle.
+  - The sharp-edge test (`a_tile_zoomed_out_a_little_keeps_its_outer_texels_sharp`) needs each edge pixel at least 2/3 of the way from the inside colour to the ring (measured 0.71; one blurred read gives 0.51).
+  - The staggered island's map is 1,375 px tall (24 rows of 55 px half-steps, plus one), not the doubled 1,350, so a few coast and prop cells differ from the halved maps.
+  - The tilemap demo's pages 1 and 2 differ from before in about 3,000 to 5,000 single pixels. They draw at zoom 0.75, where every third pixel centre lands exactly on a texel boundary, and the new UVs break those ties the other way.
+- Deferred findings:
+  - **Packing and memory.**
+    - The image's sides needn't be multiples of the largest 2^K: each cell's own alignment suffices (`mip_chain` groups texels from 0, `write_mips` clamps to the GPU's level). Dropping it would take the castle-and-flowers collection from 2.23 to about 1.5 times its art. The design's §1 states the stricter rule.
+    - Animation cells carry room that is never painted (frames paint at the tile's size), and that room can lower K: a 64 x 64 tile with a 48 x 80 frame gets K 5 and 64 x 96 cells, where 64 x 64 with K 6 would do.
+    - `pack`'s first fit scans every shelf for every run at every width tried (about runs × shelves × 130): fine for real tilesets, slow for about 1,000 pictures of all different sizes.
+    - `padded.rs` is about 1,800 lines; `Block`, `Run`, `Shelf`, `pack` and `arrange` would sit well in a `padded/pack.rs` submodule.
+  - **Renderer.**
+    - A pixel-art game whose layers ask for `linear` builds the (Tile, Linear) pipeline in its first landing frame (about 0.85 ms); `Batch2D::new` pre-builds only the default sampling's.
+    - `gpu.rs`: the fallback `PipelineKey { shader: Sprite, ..key }` skips `PipelineKey::new`'s sampling normalisation (harmless while built-ins are always ready), and `light_key` passes `Nearest`, which `new` turns into `Linear`.
+    - `in_slot` (`gpu.rs`) restates the slot mapping `place_in_slot` (`sprite_gpu.rs`) does; a helper on `AtlasSlot` would keep them from drifting.
+    - `atlas.rs`: `own_border` and `first_border` restate `upload_border`'s rule inline; the small-borderless fallback borders the pixels twice.
+  - **Tests.**
+    - An atlas test asserts `(x - BORDER) % CELL == 0`, which is `x % 8` since `CELL == BORDER`; assert the slot origin instead.
+    - No test sends a borderless image through `slot` with a border-0 upload made ahead (`ImagePixels::prepared`).
+    - The atlas threshold is pinned at 192 and 320 px, not at exactly 256. A tileset shrinking from a texture of its own back into the atlas is right by reading, not pinned.
+    - The `filter` loader test writes TMX properties with `type="string"`, where Tiled writes string properties untyped; add an untyped case.
+    - The demo checks the island's `filter` on the rows map only, not `island-columns.tmx`.
+    - `frames_of` (`tile_bleeding.rs`) repeats `swept`'s camera sweep; a shared "frames over a sweep" helper would keep the interpolation steps in one place.
+  - **Docs.**
+    - The record's landing "before" (0.2 to 0.4 s) is the earlier demo README's figure, not re-measured by the new method (engine built to `MapIds`); the record doesn't say so.
+    - The `ryo-tilemap` skill's big-art paragraph keeps "up to about 1.7" and "at most about 2.5 times", where the record's Limit says 1.3 to 1.6 and about 2.2.
+    - The shimmer Limit's example (a 120 x 140 hexagon, K 5) is derived from the rules, not a record row.
+    - The skill's maps-built-in-code section doesn't say that a code-built layer sets `LayerInfo::filter`.
+  - **The demo.**
+    - The hex board's seams: with linear sampling at zoom 1/2, the unbroken dark line between hexes is a little darker in total than the nearest-sampled halved art's, and reads as a faint hex grid at 1x (rows 105 px apart put every odd row on a half pixel). Snapping smooth tiles' rows, or a board background closer to the art, would hide it.
+    - A `filter` layer property that is neither `nearest` nor `linear` (a typo) falls back to the target's sampling with no warning, as the other reserved properties do.
+
 ## Tile grid shapes (6b, stage 4)
 
 - Owner decisions (2026-11-04):
@@ -63,8 +101,6 @@ Items from 4f to 6b were copied from their execution records. Items from earlier
     - Unheld static rows in the record give medians only (no p99 or max).
   - **The demo.**
     - Turned 120 x 140 sand hexes (side 70) may leave 1 px pinholes at a few vertices (the art isn't a regular hexagon, which would be 138.56 tall at width 120; Tiled shows the same).
-    - The hex board's seams: with linear sampling at zoom 1/2 the unbroken dark line between hexes is a little darker in total than the nearest-sampled halved art's, and reads as a faint hex grid at 1x (rows 105 px apart put every odd row on a half pixel). Snapping smooth tiles' rows, or a board background closer to the art, would hide it.
-    - A `filter` layer property that is neither `nearest` nor `linear` (a typo) falls back to the target's sampling with no warning, as the other reserved properties do.
     - The speed page's grid switch builds a million cells on the main thread, a one-off hitch; the town's pointer readout lags its outline by a frame.
     - The tilemap demo's page 10 prints wall-clock timings, so its tour capture differs run to run (pre-existing).
     - One comment line in `make-fixtures.js` runs to about 130 columns.
