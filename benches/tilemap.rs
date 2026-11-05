@@ -8,11 +8,9 @@
 //! the odd ones), hexagons of 16 x 16 with sides of 8 (pointy-topped, in
 //! rows, the odd ones shifted) and oblique 16 px cells skewed 4 px across a
 //! row. Each map's tileset has tiles of its cell's size, the rock's
-//! collision shape a whole cell (the tile's rectangle, or on isometric and
-//! staggered grids its diamond). The hexagonal map's layers are made not to
-//! collide (hexagonal layers cast no shadows yet, and their collision is
-//! not guarded here yet), so its static frame measures drawing alone, and
-//! it has no edit guard.
+//! collision shape a whole cell (the tile's rectangle, on isometric and
+//! staggered grids its diamond, on the hexagonal grid its hexagon), so on
+//! every grid the map's layers collide and cast shadows.
 //!
 //! Before criterion runs, four guards:
 //! - `static_frame`: a 1024 x 1024 map of four layers (a background on
@@ -51,36 +49,53 @@
 //!   build (its landing job, the landing frame and the one after), stepped
 //!   back to back, once. Then what a padded tileset cache hit costs, an
 //!   atlas's and a 1,000-tile collection's;
-//! - `edit`: on every grid but the hexagonal, one-tile edits on a
-//!   1024 x 1024 four-layer map of 16,000 islands with two loops each
-//!   spanning four chunks: a jagged skyline 128 cells wide and 32 high,
-//!   whose column 99 holds only its bottom cell (a neck), and a one-cell
-//!   serpentine filling the same 4 x 1 chunks (the longest loop that area
-//!   can hold). The shapes are laid in the grid's square lattice (the cells
-//!   its collision traces in: the grid's own on orthogonal, isometric and
-//!   oblique grids; on the staggered grid its diamonds' isometric lattice,
-//!   from a lattice chunk whose shapes all lie in the map), so each loop
-//!   spans four lattice chunks on every grid; the camera stands over the
-//!   edited cells, each edit's chunk drawn in the last warm-up frame
-//!   (checked). Each loop is edited 400 times a way: a bump (a tile set on
-//!   top of it and cleared again: it stays one loop), and a split and a
-//!   join (a cell cleared and set again: the skyline's neck; the middle of
-//!   the serpentine's first row, and of its middle row, which splits it
-//!   into halves of about 2,000 edges, the worst split a loop of four
-//!   chunks can have). Each edit is timed in
-//!   three parts, each held to 100 µs (the spec): the chunk rebuild (the
-//!   render step of the frame after the edit, less the median render step
-//!   of the ordinary frames between edits: the chunk's instances built and
-//!   uploaded), the loop rebuild (the map's collision sync, which classifies
-//!   the chunk again, then physics' tile collider rebuild, which retraces
-//!   the loops through the cell and reshapes their chunk colliders, and its
-//!   collider sync, which builds the new shapes for Rapier; each run on the
-//!   engine's world in a schedule of its own, commands applied:
+//! - `edit`: on every grid, one-tile edits on a 1024 x 1024 four-layer map
+//!   of 16,000 islands with two loops each spanning four chunks: a jagged
+//!   skyline 128 cells wide and 32 high, whose column 99 holds only its
+//!   bottom cell (a neck), and a one-cell serpentine filling the same 4 x 1
+//!   chunks (the longest loop that area can hold). The shapes are laid in
+//!   the grid's square lattice (the cells its collision traces in: the
+//!   grid's own on orthogonal, isometric and oblique grids; on the
+//!   staggered grid its diamonds' isometric lattice, from a lattice chunk
+//!   whose shapes all lie in the map), so each loop spans four lattice
+//!   chunks; the hexagonal grid has no square lattice, and its shapes are
+//!   laid in its own cells, a row of hexagons for a row of cells, so each
+//!   loop spans four of its chunks. The camera stands over the edited
+//!   cells, each edit's chunk drawn in the last warm-up frame (checked).
+//!   Each loop is edited 400 times a way: a bump (a tile set on top of it
+//!   and cleared again: it stays one loop), and a split and a join (a cell
+//!   cleared and set again: the skyline's neck; the middle of the
+//!   serpentine's first row, and of its middle row, which splits it into
+//!   halves of about 2,000 edges, the worst split a loop of four chunks can
+//!   have). On the hexagonal map, whose colliders hold its cells' sides in
+//!   parts of at most 128 edges (a chunk, else its quarters, else their
+//!   blocks), each a side's earlier cell's, four cases more, each with the
+//!   camera over it, 400 edits each: a lone cell set and cleared where four
+//!   of the islands' chunks meet (its sides in four chunks' parts, and
+//!   their shadows built again); part churn, a lone cell set and cleared
+//!   where four empty chunks meet (four parts made and dropped again,
+//!   checked); a chunk of 127 edges taken past the budget by a lone cell,
+//!   which drops its one part and makes seven (its quarters', one of them
+//!   split into its blocks: checked), and set back, the chunk and the cells
+//!   giving its quarters an edge each emptied and filled again before each
+//!   such pair, so each starts as one part; and, with no target, a lone
+//!   cell set and cleared where four dense chunks meet (four cells in ten
+//!   rock). Each edit is timed in three parts, each held to 100 µs (the
+//!   spec): the chunk rebuild (the render step of the frame after the edit,
+//!   less the median render step of the ordinary frames between edits: the
+//!   chunk's instances built and uploaded), the loop rebuild (the map's
+//!   collision sync, which classifies the chunk again, then physics' tile
+//!   collider rebuild, which retraces the loops through the cell and
+//!   reshapes their chunk colliders, and its collider sync, which builds
+//!   the new shapes for Rapier; each run on the engine's world in a
+//!   schedule of its own, commands applied:
 //!   `ryo2d::core::tilemap::edit_schedules`) and the occluder rebuild (the
 //!   occluder sync, commands applied). A frame passes between edits, as in
-//!   a game, so their data is not in cache. Beside them, with no target: the
-//!   edit frame's whole step over an ordinary frame's, the loop and
-//!   occluder rebuilds of as many edits back to back (their data in cache);
+//!   a game, so their data is not in cache. Beside them, with no target:
+//!   the edit frame's whole step over an ordinary frame's, the loop and
+//!   occluder rebuilds of as many edits back to back (their data in cache),
+//!   and on the hexagonal map the loop and occluder rebuilds together, each
+//!   edit's sum;
 //! - `load`: on every grid, a 256 x 256 four-layer Tiled map (TMX, every
 //!   layer base64 and zlib) over an external TSX tileset and its PNG, read
 //!   from a `MemorySource`. Its load, from `load` to the map ready with its
@@ -147,12 +162,13 @@
 //! names (`isometric`, `staggered`, `hexagonal` or `oblique`; `tall`, the
 //! isometric map with tall props): `static_frame` steps the map engine with
 //! its camera flying, `edit` sets or clears the serpentine's cell and steps
-//! the engine (orthogonal for a hexagonal grid), `load` loads the map with
-//! its tileset and image in a fresh registry, `landing` (orthogonal) spawns
-//! the loaded map and times its landing frame, and `stream` (orthogonal or
-//! isometric) steps the endless world back to back, its camera crossing it
-//! (out and back along a leg of 4,000 frames, so a long profile stays
-//! within collision's reach of the origin).
+//! the engine, `load` loads the map with its tileset and image in a fresh
+//! registry, `landing` (orthogonal) spawns the loaded map and times its
+//! landing frame, and `stream` steps the endless world back to back, its
+//! camera crossing it (out and back along a leg of 4,000 frames, so a long
+//! profile stays within collision's reach of the origin). On a grid other
+//! than the orthogonal and the isometric, the streaming guard runs on that
+//! grid's endless world too, measured with no target.
 //!
 //! The guards' numbers move with the machine's load: run them on a quiet
 //! machine. Medians are read from where criterion writes its results
@@ -478,25 +494,31 @@ impl Grid {
     }
   }
 
-  /// Whether its maps collide and cast shadows: the hexagonal map's layers
-  /// are made not to (hexagonal layers cast no shadows yet, and their
-  /// collision is not guarded here yet)
-  fn collides(self) -> bool {
-    self != Grid::Hexagonal
-  }
-
   /// The rock tiles' collision shape, in their image's pixels: the cell's
-  /// diamond on isometric and staggered grids (a whole cell there), else
-  /// the tile's rectangle
+  /// diamond on isometric and staggered grids, its hexagon on the hexagonal
+  /// grid (a whole cell there), else the tile's rectangle
   fn rock(self) -> Vec<Vec2> {
     let (w, h) = (self.cell().x as f32, self.cell().y as f32);
-    match self {
-      Grid::Isometric | Grid::Staggered => vec![
+    match self.shape() {
+      GridShape::Isometric | GridShape::Staggered { .. } => vec![
         Vec2::new(w / 2.0, 0.0),
         Vec2::new(w, h / 2.0),
         Vec2::new(w / 2.0, h),
         Vec2::new(0.0, h / 2.0),
       ],
+      // Pointy-topped, in rows: its slanted sides span the height its
+      // upright ones leave
+      GridShape::Hexagonal { side, .. } => {
+        let slant = (h - side as f32) / 2.0;
+        vec![
+          Vec2::new(w / 2.0, 0.0),
+          Vec2::new(w, slant),
+          Vec2::new(w, h - slant),
+          Vec2::new(w / 2.0, h),
+          Vec2::new(0.0, h - slant),
+          Vec2::new(0.0, slant),
+        ]
+      }
       _ => vec![
         Vec2::ZERO,
         Vec2::new(w, 0.0),
@@ -524,9 +546,7 @@ const TALL: UVec2 = UVec2::new(32, 48);
 
 /// The grid the criterion benches step, for a profile of a grid's miss:
 /// `RYO_TILEMAP_GRID` (`isometric`, `staggered`, `hexagonal` or `oblique`;
-/// `tall` is the isometric map with tall props), else the orthogonal grid.
-/// `edit` takes the orthogonal grid for a hexagonal one, which does not
-/// collide, and `stream` the orthogonal grid for any but the isometric
+/// `tall` is the isometric map with tall props), else the orthogonal grid
 fn benched() -> Show {
   match std::env::var("RYO_TILEMAP_GRID").as_deref() {
     Ok("isometric") => Show::Map(Grid::Isometric),
@@ -603,7 +623,6 @@ fn map_of(
   for (index, (name, layer_cells)) in LAYER_NAMES.iter().zip(cells).enumerate() {
     let set = if index == 2 { last } else { first };
     let layer = map.add_tile_layer(name);
-    map.layers[layer].info.collides = grid.collides();
     let tiles = map.tiles_mut(layer).expect("a tile layer");
     for (i, id) in layer_cells.iter().enumerate() {
       if let Some(id) = id {
@@ -753,8 +772,8 @@ fn place_camera(engine: &mut HeadlessEngine, at: Vec2) {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Show {
   Empty,
-  /// The map on a grid's cells, colliding and casting shadows (drawn only
-  /// on a hexagonal grid): each grid's guarded one
+  /// The map on a grid's cells, colliding and casting shadows: each grid's
+  /// guarded one
   Map(Grid),
   /// The orthogonal map with unbounded layers, also guarded
   MapUnbounded,
@@ -800,10 +819,6 @@ impl Show {
   fn name(self) -> String {
     match self {
       Show::Empty => "an empty frame".into(),
-      Show::Map(Grid::Hexagonal) => format!(
-        "the {} map, drawn only (its layers made not to collide; hexagonal layers cast no shadows yet)",
-        Grid::Hexagonal.name()
-      ),
       Show::Map(grid) => format!("the {} map, colliding and casting shadows", grid.name()),
       Show::MapUnbounded => {
         "the orthogonal map with unbounded layers, colliding and casting shadows".into()
@@ -911,7 +926,30 @@ fn static_engine(show: Show, flight: &Flight) -> Option<(HeadlessEngine, Option<
   if show == Show::Tall {
     assert_drawn_in_order(&mut engine, "props");
   }
+  if show == Show::Map(Grid::Hexagonal) {
+    let rock = (0..BIG as i32)
+      .flat_map(|y| (0..BIG as i32).map(move |x| IVec2::new(x, y)))
+      .find(|cell| rocky(cell.x, cell.y))
+      .expect("a rock cell");
+    assert_whole_hexagon(&mut engine, rock, "static_frame");
+  }
   Some((engine, built))
+}
+
+/// That the hexagonal map's rock at `cell` collides as its whole cell
+/// (`TileCell::Solid` in the map's tile colliders), so its tiles' hexagon is
+/// their cell's: a polygon off the cell's corners collides as a shape of its
+/// own, a ring in its cell's part
+fn assert_whole_hexagon(engine: &mut HeadlessEngine, cell: IVec2, guard: &str) {
+  let world = engine.world_mut();
+  let solid = world
+    .query::<&TileColliders>()
+    .iter(world)
+    .any(|tiles| tiles.get(cell) == TileCell::Solid);
+  assert!(
+    solid,
+    "{guard}: the hexagonal map's rock at cell {cell} collides as its whole hexagon"
+  );
 }
 
 /// The entity of `engine`'s tile layer named `name`
@@ -1255,14 +1293,39 @@ fn padded_line() {
 
 // edit
 
-/// The edit map's loops: each in lattice chunks (0..4, row) of the ground
-/// layer, from the grid's `edit_origin`
+/// The edit map's loops: each in layout chunks (0..4, row) of the ground
+/// layer (`Layout`)
 const SKYLINE_ROW: i32 = 0;
 const SERPENTINE_ROW: i32 = 2;
 
 /// The skyline's column that holds only its bottom cell: the neck between
 /// its two parts, which clearing that cell splits
 const NECK: usize = 99;
+
+/// Cells a side of a chunk
+const CHUNK: i32 = CHUNK_SIZE as i32;
+
+/// The hexagonal map's own cases, in its cells: the islands are kept out
+/// of its first 5 x 5 chunks (a row of chunks more than on the other grids)
+const HEX_KEPT_OUT: i32 = 5 * CHUNK;
+/// A lone cell where four of the islands' chunks meet: its sides lie in
+/// the four chunks' parts, each a quarter of four islands
+const HEX_CORNER: IVec2 = IVec2::new(8 * CHUNK, 8 * CHUNK);
+/// A lone cell where four empty chunks meet (chunks 0 and 1 of rows 3 and
+/// 4, under the serpentine): each of its sides' owners is in a chunk of
+/// its own that holds nothing else, so setting it makes four parts and
+/// clearing it drops them
+const HEX_CHURN: IVec2 = IVec2::new(CHUNK, 4 * CHUNK);
+/// The chunk held at 127 edges (`budget_cells`), in the keep-out area under
+/// the serpentine, and the cell in it whose edit takes it past the budget
+/// (128 edges): in its first quarter's last block, which holds nothing till
+/// then
+const BUDGET_CHUNK: IVec2 = IVec2::new(3, 3);
+const BUDGET_CELL: IVec2 = IVec2::new(13, 13);
+/// The dense chunks (10..12 both ways), four cells in ten rock, and the
+/// lone cell where the four meet
+const DENSE: std::ops::Range<i32> = 10..12;
+const DENSE_CORNER: IVec2 = IVec2::new(11 * CHUNK, 11 * CHUNK);
 
 /// The skyline's column heights: a top in 1..=24 for each of 128 columns,
 /// but the neck's, 31
@@ -1280,116 +1343,280 @@ fn skyline_tops() -> Vec<i32> {
     .collect()
 }
 
-/// Where the edit map's shapes start in a grid's square lattice
-/// (`MapGrid::lattice`), the cell its collision traces in: the origin on
-/// orthogonal, isometric and oblique grids, whose cells are their lattice's;
-/// on the staggered grid a lattice chunk's corner whose shapes' lattice
-/// cells all lie in the map (its 1024 x 1024 cells make a diamond of
-/// lattice cells, not a rectangle from the origin)
-fn edit_origin(grid: Grid) -> IVec2 {
-  match grid {
-    Grid::Staggered => IVec2::new(320, -224),
-    _ => IVec2::ZERO,
+/// The hexagonal map's chunk at 127 edges, one part, and the cells round it
+/// that give each of its other three quarters one edge. Its first quarter
+/// holds 19 lone hexagons (six edges each, every side owned in it) in its
+/// two upper blocks and a pair (ten) in its lower left block: 124 edges. A
+/// hexagon right of the chunk on an odd row gives the cell left of it, on
+/// the chunk's last column, one edge (its left side, which that cell owns),
+/// once in the upper right quarter and once in the lower right; and one
+/// left of the chunk on an odd row gives the chunk's first cell of the row
+/// above, in its lower left quarter, one (that hexagon's upper right side).
+/// So `BUDGET_CELL`, a lone hexagon more, takes the chunk to 133 edges and
+/// its first quarter to 130, both past the budget: the chunk's part goes,
+/// and seven come, its other quarters' and its first quarter's four blocks
+fn budget_cells() -> Vec<IVec2> {
+  let first = BUDGET_CHUNK * CHUNK;
+  (0..21)
+    .map(|i| IVec2::new(1 + 2 * (i % 7), 1 + 2 * (i / 7)))
+    .filter(|&at| at != IVec2::new(11, 5) && at != IVec2::new(13, 5))
+    .chain([IVec2::new(1, 15), IVec2::new(2, 15)])
+    .chain([
+      IVec2::new(CHUNK, 1),
+      IVec2::new(CHUNK, 17),
+      IVec2::new(-1, 17),
+    ])
+    .map(|at| first + at)
+    .collect()
+}
+
+/// Where the edit map's shapes lie on a grid's cells. Off the hexagonal
+/// grid, in its square lattice (`MapGrid::lattice`), the cells its
+/// collision traces in, from `origin`: the origin on orthogonal, isometric
+/// and oblique grids, whose cells are their lattice's; on the staggered
+/// grid a lattice chunk's corner whose shapes' lattice cells all lie in the
+/// map (its 1024 x 1024 cells make a diamond of lattice cells, not a
+/// rectangle from the origin). The hexagonal grid has no square lattice:
+/// its shapes lie in its own cells from (0, 0), a row of hexagons for a row
+/// of cells
+struct Layout {
+  lattice: Option<Lattice>,
+  origin: IVec2,
+}
+
+impl Layout {
+  fn of(grid: Grid) -> Layout {
+    let origin = match grid {
+      Grid::Staggered => IVec2::new(320, -224),
+      _ => IVec2::ZERO,
+    };
+    let lattice = (grid != Grid::Hexagonal).then(|| {
+      grid
+        .map_grid(BIG)
+        .lattice()
+        .expect("every grid but the hexagonal has a square lattice")
+    });
+    Layout { lattice, origin }
+  }
+
+  /// The grid cell at layout cell `at`
+  fn cell(&self, at: IVec2) -> IVec2 {
+    let at = self.origin + at;
+    self.lattice.map_or(at, |lattice| lattice.grid_cell(at))
+  }
+
+  /// The layout cell at grid cell `cell`
+  fn at(&self, cell: IVec2) -> IVec2 {
+    self
+      .lattice
+      .map_or(cell, |lattice| lattice.lattice_cell(cell))
+      - self.origin
   }
 }
 
-/// The lattice of `grid`'s edit map, which every grid but the hexagonal has
-fn edit_lattice(grid: Grid) -> Lattice {
-  grid
-    .map_grid(BIG)
-    .lattice()
-    .expect("every grid that collides has a square lattice")
-}
+/// What a case's edits are called, and which of them each name takes: all
+/// of them, or every other from the first or the second
+type Kinds = &'static [(&'static str, Option<usize>)];
+/// A tile set on top of a loop and cleared again: it stays one loop
+const BUMP: Kinds = &[("a bump", None)];
+/// A cell of a loop cleared and set again: the loop splits in two, and the
+/// two join again
+const CUT: Kinds = &[("a split", Some(0)), ("a join", Some(1))];
+/// A lone cell set and cleared
+const LONE: Kinds = &[("set and cleared", None)];
+/// A lone cell set (parts made) and cleared (parts dropped)
+const CHURN: Kinds = &[("parts made", Some(0)), ("parts dropped", Some(1))];
+/// A cell taking its chunk past the budget (its part split), and cleared
+const PAST: Kinds = &[("past the budget", Some(0)), ("set back", Some(1))];
 
-/// One loop's edits: a tile set on top of it and cleared again (a bump: the
-/// loop stays one), or a cell of it cleared and set again (a cut: the loop
-/// splits in two, and the two join again)
+/// One case's edits: a cell set and cleared in turn (cleared first if it
+/// starts as rock)
 struct EditCase {
   name: &'static str,
   cell: IVec2,
+  /// The cell starts as rock
   cut: bool,
+  kinds: Kinds,
+  /// Cells emptied and filled with rock again before each pair of its
+  /// edits, so each pair starts alike (the chunk taken past the budget,
+  /// which never merges back into one part until it holds nothing)
+  reset: Vec<IVec2>,
+  /// Its medians are held to the target
+  held: bool,
+  /// It has a camera of its own, over its cell; else the camera stands
+  /// over the loops
+  apart: bool,
+  /// The colliders its first edit and its second leave, each counted from
+  /// those before it, as it is laid out to make and drop parts (checked)
+  laid_out: Option<[usize; 2]>,
+}
+
+impl EditCase {
+  /// A loop's edits at `cell`
+  fn of_loop(name: &'static str, cell: IVec2, cut: bool) -> EditCase {
+    EditCase {
+      name,
+      cell,
+      cut,
+      kinds: if cut { CUT } else { BUMP },
+      reset: Vec::new(),
+      held: true,
+      apart: false,
+      laid_out: None,
+    }
+  }
+
+  /// A case of the hexagonal map's own at `cell`, under its own camera
+  fn apart(name: &'static str, cell: IVec2, kinds: Kinds) -> EditCase {
+    EditCase {
+      name,
+      cell,
+      cut: false,
+      kinds,
+      reset: Vec::new(),
+      held: true,
+      apart: true,
+      laid_out: None,
+    }
+  }
 }
 
 /// The edits the guard makes on `grid`'s edit map: each loop's bump, and
 /// each loop's cut (the skyline's neck, the middle of the serpentine's first
 /// row, and the middle of its middle row, which splits it into halves of
 /// about 2,000 edges, the smaller given the other loop's id edge by edge),
-/// at the grid's cells of those lattice cells
-fn edit_cases(grid: Grid) -> [EditCase; 5] {
+/// at the grid's cells of those layout cells; on the hexagonal map its own
+/// cases too, the last with no target
+fn edit_cases(grid: Grid) -> Vec<EditCase> {
   let tops = skyline_tops();
-  let (lattice, origin) = (edit_lattice(grid), edit_origin(grid));
-  let at = |x: i32, y: i32| lattice.grid_cell(origin + IVec2::new(x, y));
+  let layout = Layout::of(grid);
+  let at = |x: i32, y: i32| layout.cell(IVec2::new(x, y));
   let skyline = |x: usize, y: i32| at(x as i32, SKYLINE_ROW * 32 + y);
   let serpentine = |x: i32, y: i32| at(x, SERPENTINE_ROW * 32 + y);
-  [
-    EditCase {
-      name: "the skyline",
-      cell: skyline(64, tops[64] - 1),
-      cut: false,
-    },
-    EditCase {
-      name: "the skyline",
-      cell: skyline(NECK, 31),
-      cut: true,
-    },
-    EditCase {
-      name: "the serpentine",
-      cell: serpentine(64, 0),
-      cut: false,
-    },
-    EditCase {
-      name: "the serpentine",
-      cell: serpentine(64, 1),
-      cut: true,
-    },
-    EditCase {
-      name: "the serpentine cut through its middle row",
-      cell: serpentine(64, 15),
-      cut: true,
-    },
-  ]
+  let mut cases = vec![
+    EditCase::of_loop("the skyline", skyline(64, tops[64] - 1), false),
+    EditCase::of_loop("the skyline", skyline(NECK, 31), true),
+    EditCase::of_loop("the serpentine", serpentine(64, 0), false),
+    EditCase::of_loop("the serpentine", serpentine(64, 1), true),
+    EditCase::of_loop(
+      "the serpentine cut through its middle row",
+      serpentine(64, 15),
+      true,
+    ),
+  ];
+  if grid == Grid::Hexagonal {
+    cases.extend([
+      EditCase::apart(
+        "a lone cell where four of the islands' chunks meet",
+        HEX_CORNER,
+        LONE,
+      ),
+      EditCase {
+        laid_out: Some([4, 0]),
+        ..EditCase::apart(
+          "part churn, a lone cell where four empty chunks meet",
+          HEX_CHURN,
+          CHURN,
+        )
+      },
+      EditCase {
+        reset: budget_cells(),
+        laid_out: Some([6, 5]),
+        ..EditCase::apart(
+          "a chunk of 127 edges in one part",
+          BUDGET_CHUNK * CHUNK + BUDGET_CELL,
+          PAST,
+        )
+      },
+      EditCase {
+        held: false,
+        ..EditCase::apart(
+          "a lone cell where four dense chunks meet",
+          DENSE_CORNER,
+          LONE,
+        )
+      },
+    ]);
+  }
+  cases
 }
 
-/// Whether the edit map's ground holds rock at lattice cell `at` (from the
-/// grid's `edit_origin`): 3 x 3 islands every 8 cells, kept out of lattice
-/// chunks 0..5 by 0..4, and in the 4 x 1 chunks of its row each the skyline
-/// (columns of `tops`) and the serpentine (every other row from row 1,
-/// joined at alternate ends)
-fn edit_rock(at: IVec2, tops: &[i32]) -> bool {
-  let column = 0..128;
-  if column.contains(&at.x) {
-    let y = at.y - SKYLINE_ROW * 32;
-    if (0..32).contains(&y) {
-      return y >= tops[at.x as usize];
-    }
-    let y = at.y - SERPENTINE_ROW * 32;
-    if (0..32).contains(&y) {
-      if y % 2 == 1 {
-        return true;
-      }
-      let end = if (y - 1) % 4 == 1 { 127 } else { 0 };
-      return y > 0 && at.x == end;
+/// What the edit map's ground holds, by layout cell: the skyline's column
+/// tops, and on the hexagonal map its own cases' cells
+struct Ground {
+  hexagonal: bool,
+  tops: Vec<i32>,
+  budget: Vec<IVec2>,
+}
+
+impl Ground {
+  fn of(grid: Grid) -> Ground {
+    let hexagonal = grid == Grid::Hexagonal;
+    Ground {
+      hexagonal,
+      tops: skyline_tops(),
+      budget: if hexagonal {
+        budget_cells()
+      } else {
+        Vec::new()
+      },
     }
   }
-  let (x, y) = (at.x.rem_euclid(8), at.y.rem_euclid(8));
-  let (bx, by) = (at.x - x, at.y - y);
-  let kept_out = (0..160).contains(&bx) && (0..128).contains(&by);
-  (2..5).contains(&x) && (2..5).contains(&y) && !kept_out
+
+  /// Whether the ground holds rock at layout cell `at`: 3 x 3 islands every
+  /// 8 cells, kept out of layout chunks 0..5 by 0..4 (0..5 by 0..5 on the
+  /// hexagonal map), and in the 4 x 1 chunks of its row each the skyline
+  /// (columns of `tops`) and the serpentine (every other row from row 1,
+  /// joined at alternate ends); on the hexagonal map the chunk at the
+  /// budget and the cells beside it (`budget_cells`), and the dense chunks
+  /// (four cells in ten, none at their corner) in place of their islands
+  fn rock(&self, at: IVec2) -> bool {
+    let column = 0..128;
+    if column.contains(&at.x) {
+      let y = at.y - SKYLINE_ROW * 32;
+      if (0..32).contains(&y) {
+        return y >= self.tops[at.x as usize];
+      }
+      let y = at.y - SERPENTINE_ROW * 32;
+      if (0..32).contains(&y) {
+        if y % 2 == 1 {
+          return true;
+        }
+        let end = if (y - 1) % 4 == 1 { 127 } else { 0 };
+        return y > 0 && at.x == end;
+      }
+    }
+    let mut rows = 0..128;
+    if self.hexagonal {
+      if self.budget.contains(&at) {
+        return true;
+      }
+      let chunk = at.div_euclid(IVec2::splat(CHUNK));
+      if DENSE.contains(&chunk.x) && DENSE.contains(&chunk.y) {
+        return at != DENSE_CORNER && hash(at.x, at.y, 6) % 10 < 4;
+      }
+      rows = 0..HEX_KEPT_OUT;
+    }
+    let (x, y) = (at.x.rem_euclid(8), at.y.rem_euclid(8));
+    let (bx, by) = (at.x - x, at.y - y);
+    let kept_out = (0..160).contains(&bx) && rows.contains(&by);
+    (2..5).contains(&x) && (2..5).contains(&y) && !kept_out
+  }
 }
 
 /// The edit map on `grid`'s cells: background on every cell; on the ground
-/// layer, at the lattice cells `edit_rock` takes, about 16,000 islands and
-/// the skyline and the serpentine, each loop in four lattice chunks; props
-/// and details as the cave map's where the ground is open
+/// layer, at the layout cells `Ground::rock` takes, about 16,000 islands
+/// and the skyline and the serpentine, each loop in four layout chunks;
+/// props and details as the cave map's where the ground is open
 fn edit_map(grid: Grid, set: TilesetSource) -> TileMap {
   let mut cells = cave_cells(BIG);
-  let (lattice, origin, tops) = (edit_lattice(grid), edit_origin(grid), skyline_tops());
+  let (layout, ground) = (Layout::of(grid), Ground::of(grid));
   let side = BIG as i32;
   for y in 0..side {
     for x in 0..side {
       let i = (y * side + x) as usize;
-      let at = lattice.lattice_cell(IVec2::new(x, y)) - origin;
-      cells[1][i] = edit_rock(at, &tops).then(|| pick(ROCK, hash(at.x, at.y, 5)));
+      let at = layout.at(IVec2::new(x, y));
+      cells[1][i] = ground.rock(at).then(|| pick(ROCK, hash(at.x, at.y, 5)));
       // Props and details only where the ground is open
       if cells[1][i].is_some() {
         cells[2][i] = None;
@@ -1414,25 +1641,58 @@ impl Scene for EditScene {
   }
 }
 
+/// Where the camera stands for `case` on `grid`'s edit map (`cases` its
+/// cases): over its own cell, if it is apart; else over the loops, on the
+/// orthogonal grid at (1024, 540) and off it at the middle of the loops'
+/// edited cells
+fn case_view(grid: Grid, cases: &[EditCase], case: &EditCase) -> Vec2 {
+  let map_grid = grid.map_grid(BIG);
+  if case.apart {
+    return map_grid.cell_center(case.cell);
+  }
+  if grid == Grid::Orthogonal {
+    return Vec2::new(1024.0, 540.0);
+  }
+  let centres = cases
+    .iter()
+    .filter(|case| !case.apart)
+    .map(|case| map_grid.cell_center(case.cell));
+  let (lo, hi) = centres.fold((Vec2::INFINITY, Vec2::NEG_INFINITY), |(lo, hi), c| {
+    (lo.min(c), hi.max(c))
+  });
+  (lo + hi) / 2.0
+}
+
+/// That the last frame of `engine` (its camera at `at`) drew the chunk that
+/// holds `case`'s cell: the background layer's, which has a tile on every
+/// cell (a chunk of the ground can be empty until the edit)
+fn assert_case_drawn(engine: &mut HeadlessEngine, grid: Grid, case: &EditCase, at: Vec2) {
+  let background = layer_named(engine, "background");
+  let chunk = TileGrid::chunk_of(case.cell);
+  let drawn = engine
+    .tile_draws()
+    .into_iter()
+    .any(|(layer, at, ..)| layer == background && at == chunk);
+  assert!(
+    drawn,
+    "edit, the {} map: the last warm-up frame, its camera at {at}, drew chunk {chunk} of {}'s \
+     cell {}",
+    grid.name(),
+    case.name,
+    case.cell,
+  );
+}
+
 /// An engine on `grid`'s edit map, landed and warmed up, its camera over
-/// both loops (each edit's chunk drawn); its map's root. None without a GPU
+/// both loops (each loop edit's chunk drawn); its map's root. None without
+/// a GPU
 fn edit_engine(grid: Grid) -> Option<(HeadlessEngine, Entity)> {
   let builder = EngineBuilder::new()
     .resolution(RESOLUTION.0, RESOLUTION.1)
     .start_scene(EditScene { grid });
   let mut engine = HeadlessEngine::new_or_skip(builder)?;
   let cases = edit_cases(grid);
-  // Off the orthogonal grid, the middle of the edited cells
-  let at = if grid == Grid::Orthogonal {
-    Vec2::new(1024.0, 540.0)
-  } else {
-    let map_grid = grid.map_grid(BIG);
-    let centres = cases.iter().map(|case| map_grid.cell_center(case.cell));
-    let (lo, hi) = centres.fold((Vec2::INFINITY, Vec2::NEG_INFINITY), |(lo, hi), c| {
-      (lo.min(c), hi.max(c))
-    });
-    (lo + hi) / 2.0
-  };
+  let at = case_view(grid, &cases, &cases[0]);
   place_camera(&mut engine, at);
   let start = Instant::now();
   while !landed(&mut engine) {
@@ -1441,23 +1701,12 @@ fn edit_engine(grid: Grid) -> Option<(HeadlessEngine, Entity)> {
   }
   engine.step_frames(WARM as u32).expect("the warm-up frames");
   let root = roots(&mut engine)[0];
-  let ground = layer_named(&mut engine, "ground");
-  let drawn: Vec<IVec2> = engine
-    .tile_draws()
-    .into_iter()
-    .filter(|&(layer, ..)| layer == ground)
-    .map(|(_, chunk, ..)| chunk)
-    .collect();
-  for case in &cases {
-    let chunk = TileGrid::chunk_of(case.cell);
-    assert!(
-      drawn.contains(&chunk),
-      "edit, the {} map: the last warm-up frame, its camera at {at}, drew chunk {chunk} of {}'s \
-       cell {}",
-      grid.name(),
-      case.name,
-      case.cell,
-    );
+  for case in cases.iter().filter(|case| !case.apart) {
+    assert_case_drawn(&mut engine, grid, case, at);
+  }
+  if grid == Grid::Hexagonal {
+    let neck = cases[1].cell;
+    assert_whole_hexagon(&mut engine, neck, "edit");
   }
   Some((engine, root))
 }
@@ -1471,7 +1720,34 @@ fn toggle(engine: &mut HeadlessEngine, root: Entity, cell: IVec2, i: usize, cut:
   assert!(changed, "the edit changes its cell");
 }
 
-/// One loop's edits: each part's times, and the ordinary frames'
+/// `cells` emptied and filled with rock again, each change taken in by
+/// `settle` (a frame, or the edit's systems run)
+fn refill(
+  engine: &mut HeadlessEngine,
+  root: Entity,
+  cells: &[IVec2],
+  settle: &mut dyn FnMut(&mut HeadlessEngine),
+) {
+  for tile in [None, Some(Tile::new(0, ROCK.start))] {
+    let mut maps = MapsView::new(engine.world_mut());
+    for &cell in cells {
+      maps.set_tile(root, "ground", cell, tile);
+    }
+    settle(engine);
+  }
+}
+
+/// How many colliders `engine`'s world holds: on the edit map, every one a
+/// part of its tile colliders
+fn colliders(engine: &mut HeadlessEngine) -> usize {
+  let world = engine.world_mut();
+  world
+    .query_filtered::<(), With<Collider>>()
+    .iter(world)
+    .count()
+}
+
+/// One case's edits: each part's times, and the ordinary frames'
 struct Edits {
   collision: Vec<Duration>,
   rebuild: Vec<Duration>,
@@ -1502,13 +1778,40 @@ fn step(engine: &mut HeadlessEngine) -> (Duration, Duration) {
   (engine.render_time(), start.elapsed())
 }
 
-fn edits(engine: &mut HeadlessEngine, root: Entity, cell: IVec2, cut: bool) -> Edits {
-  let [mut collision, mut rebuild, mut occluders]: [Schedule; 3] =
-    ryo2d::core::tilemap::edit_schedules();
-  // Their first runs set them up
-  for schedule in [&mut collision, &mut rebuild, &mut occluders] {
-    schedule.run(engine.world_mut());
-  }
+/// The colliders before `case`'s first two edits, after the first and
+/// after the second, each taken in by the edit's systems (`schedules`, set
+/// up; no frame)
+fn parts_through(
+  engine: &mut HeadlessEngine,
+  root: Entity,
+  case: &EditCase,
+  schedules: &mut [Schedule; 3],
+) -> [usize; 3] {
+  let mut settle = |engine: &mut HeadlessEngine| {
+    for schedule in schedules.iter_mut() {
+      schedule.run(engine.world_mut());
+    }
+  };
+  refill(engine, root, &case.reset, &mut settle);
+  let before = colliders(engine);
+  toggle(engine, root, case.cell, 0, case.cut);
+  settle(engine);
+  let first = colliders(engine);
+  toggle(engine, root, case.cell, 1, case.cut);
+  settle(engine);
+  [before, first, colliders(engine)]
+}
+
+/// `case`'s edits, each part timed by the edit's systems (`schedules`, set
+/// up), a frame before each edit and after it; then as many back to back
+fn edits(
+  engine: &mut HeadlessEngine,
+  root: Entity,
+  case: &EditCase,
+  schedules: &mut [Schedule; 3],
+) -> Edits {
+  let [collision, rebuild, occluders] = schedules;
+  let (cell, cut) = (case.cell, case.cut);
   let mut out = Edits {
     collision: Vec::with_capacity(EDITS),
     rebuild: Vec::with_capacity(EDITS),
@@ -1521,13 +1824,18 @@ fn edits(engine: &mut HeadlessEngine, root: Entity, cell: IVec2, cut: bool) -> E
     warm_occluders: Vec::with_capacity(EDITS),
   };
   for i in 0..EDITS {
+    if i.is_multiple_of(2) && !case.reset.is_empty() {
+      refill(engine, root, &case.reset, &mut |engine| {
+        engine.step().expect("a frame");
+      });
+    }
     let (render, whole) = step(engine);
     out.renders.push(render);
     out.steps.push(whole);
     toggle(engine, root, cell, i, cut);
-    out.collision.push(timed(&mut collision, engine));
-    out.rebuild.push(timed(&mut rebuild, engine));
-    out.occluders.push(timed(&mut occluders, engine));
+    out.collision.push(timed(collision, engine));
+    out.rebuild.push(timed(rebuild, engine));
+    out.occluders.push(timed(occluders, engine));
     let (render, whole) = step(engine);
     out.edit_renders.push(render);
     out.edit_steps.push(whole);
@@ -1535,10 +1843,17 @@ fn edits(engine: &mut HeadlessEngine, root: Entity, cell: IVec2, cut: bool) -> E
   // Back to back, no frame between: what the edits cost with their data
   // in cache
   for i in EDITS..2 * EDITS {
+    if i.is_multiple_of(2) && !case.reset.is_empty() {
+      refill(engine, root, &case.reset, &mut |engine| {
+        for schedule in [&mut *collision, &mut *rebuild, &mut *occluders] {
+          schedule.run(engine.world_mut());
+        }
+      });
+    }
     toggle(engine, root, cell, i, cut);
-    let collided = timed(&mut collision, engine) + timed(&mut rebuild, engine);
+    let collided = timed(collision, engine) + timed(rebuild, engine);
     out.warm_loops.push(collided);
-    out.warm_occluders.push(timed(&mut occluders, engine));
+    out.warm_occluders.push(timed(occluders, engine));
   }
   out
 }
@@ -1552,18 +1867,62 @@ fn picked(times: &[Duration], which: Option<usize>) -> Vec<Duration> {
   }
 }
 
-/// The edit guard: on every grid that collides, each loop's bump, split and
-/// join, each's chunk, loop and occluder rebuilds, each median held to
-/// 100 µs
+/// That `case` makes and drops the parts it is laid out to (`laid_out`):
+/// the hexagonal map's churn makes four parts and drops them, and its chunk
+/// at the budget, one part, splits into seven, one of which its set back
+/// drops; `parts` the colliders before its first edit, after it and after
+/// the second
+fn assert_parts(case: &EditCase, parts: [usize; 3]) {
+  let [before, first, second] = parts;
+  let Some([made, kept]) = case.laid_out else {
+    return;
+  };
+  assert!(
+    first == before + made && second == before + kept,
+    "edit, the hexagonal map, {}: the colliders before its first edit, after it and after the \
+     second: {before}, {first}, {second} (laid out for {}, {})",
+    case.name,
+    before + made,
+    before + kept,
+  );
+}
+
+/// The edit guard: on every grid, each loop's bump, split and join, each's
+/// chunk, loop and occluder rebuilds, each median held to 100 µs; on the
+/// hexagonal map its own cases too
 fn edit_guard() {
-  for grid in Grid::ALL.into_iter().filter(|grid| grid.collides()) {
+  for grid in Grid::ALL {
     let Some((mut engine, root)) = edit_engine(grid) else {
       return;
     };
     let map = format!("the {} map", grid.name());
-    for case in edit_cases(grid) {
+    let cases = edit_cases(grid);
+    let mut at = case_view(grid, &cases, &cases[0]);
+    for case in &cases {
       let (name, cell) = (case.name, case.cell);
-      let edits = edits(&mut engine, root, cell, case.cut);
+      let view = case_view(grid, &cases, case);
+      if view != at {
+        at = view;
+        place_camera(&mut engine, at);
+        engine.step_frames(WARM as u32).expect("the warm-up frames");
+        assert_case_drawn(&mut engine, grid, case, at);
+      }
+      let mut schedules = ryo2d::core::tilemap::edit_schedules();
+      // Their first runs set them up
+      for schedule in schedules.iter_mut() {
+        schedule.run(engine.world_mut());
+      }
+      if case.apart {
+        let parts = parts_through(&mut engine, root, case, &mut schedules);
+        assert_parts(case, parts);
+        eprintln!(
+          "edit guard, {map}, {name} (cell {cell}): its colliders before its first edit, after \
+           it and after the second, {}, {}, {}",
+          parts[0], parts[1], parts[2],
+        );
+        engine.step().expect("a frame");
+      }
+      let edits = edits(&mut engine, root, case, &mut schedules);
       let ordinary_render = median(edits.renders.clone());
       let ordinary_step = median(edits.steps.clone());
       let chunk = over(&edits.edit_renders, ordinary_render);
@@ -1573,14 +1932,7 @@ fn edit_guard() {
         .zip(&edits.rebuild)
         .map(|(a, b)| *a + *b)
         .collect();
-      // A bump's edits all keep one loop; a cut's split it and join it in
-      // turn
-      let kinds: &[(&str, Option<usize>)] = if case.cut {
-        &[("a split", Some(0)), ("a join", Some(1))]
-      } else {
-        &[("a bump", None)]
-      };
-      for &(kind, which) in kinds {
+      for &(kind, which) in case.kinds {
         eprintln!(
           "edit guard, {map}, {name}, {kind} (cell {cell}), {} edits, each beside an ordinary \
            frame: the collision sync {}; the tile collider rebuild and collider sync {}; the \
@@ -1597,15 +1949,31 @@ fn edit_guard() {
           shown(picked(&edits.warm_loops, which)),
           shown(picked(&edits.warm_occluders, which)),
         );
+        if grid == Grid::Hexagonal {
+          let together: Vec<Duration> = loops
+            .iter()
+            .zip(&edits.occluders)
+            .map(|(a, b)| *a + *b)
+            .collect();
+          eprintln!(
+            "edit (no target), {map}, {name}, {kind}: the loop and occluder rebuilds together, \
+             each edit's sum, {}",
+            shown_at(picked(&together, which), 99),
+          );
+        }
         for (part, times) in [
           ("the chunk rebuild", &chunk),
           ("the loop rebuild", &loops),
           ("the occluder rebuild", &edits.occluders),
         ] {
           let times = picked(times, which);
-          let held = median(times.clone());
-          let (met, verdict) = verdict(held, EDIT_TARGET);
-          let line = format!("{map}, {name}, {kind}, {part}: {}; {verdict}", shown(times));
+          let line = format!("{map}, {name}, {kind}, {part}: {}", shown(times.clone()));
+          if !case.held {
+            eprintln!("edit (no target): {line}");
+            continue;
+          }
+          let (met, verdict) = verdict(median(times), EDIT_TARGET);
+          let line = format!("{line}; {verdict}");
           eprintln!("edit: {line}");
           if !met {
             guards::miss(format!("edit, {line}"));
@@ -1620,9 +1988,7 @@ fn edit_guard() {
 /// after (on the orthogonal map, or `benched`'s grid's)
 fn edit_bench(c: &mut Criterion) {
   let mut made: Option<(HeadlessEngine, Entity, usize)> = None;
-  let grid = Some(benched().grid())
-    .filter(|grid| grid.collides())
-    .unwrap_or(Grid::Orthogonal);
+  let grid = benched().grid();
   let cell = edit_cases(grid)[2].cell;
   c.bench_function("edit", |b| {
     if made.is_none() {
@@ -1742,7 +2108,7 @@ fn tmx_infinite(cells: &[Vec<Option<u32>>; 4], tileset: &str, grid: Grid) -> Vec
 /// A TSX file of `grid`'s tileset over the image at `image` (relative to
 /// the tileset's folder): tiles of its cell's size, the rock tiles with a
 /// rectangle filling the tile, or on isometric and staggered grids a
-/// polygon on its diamond
+/// polygon on its diamond, and on the hexagonal grid one on its hexagon
 fn tsx(image: &str, grid: Grid) -> Vec<u8> {
   let tile = grid.cell();
   let (width, height) = (COLUMNS * tile.x, COLUMNS * tile.y);
@@ -1756,7 +2122,7 @@ fn tsx(image: &str, grid: Grid) -> Vec<u8> {
     COLUMNS * COLUMNS
   );
   let shape = match grid {
-    Grid::Isometric | Grid::Staggered => {
+    Grid::Isometric | Grid::Staggered | Grid::Hexagonal => {
       let points: Vec<String> = grid
         .rock()
         .iter()
@@ -2696,9 +3062,10 @@ fn teleport(
 }
 
 /// The streaming guard on `grid`'s cells: the endless world's step over an
-/// empty frame's median, its 99th percentile held to 0.5 ms; every frame
-/// shows no unfilled chunk and keeps its resident chunks within the radii
-fn stream_guard(grid: Grid) {
+/// empty frame's median, its 99th percentile held to 0.5 ms if `held` (else
+/// measured with no target); every frame shows no unfilled chunk and keeps
+/// its resident chunks within the radii
+fn stream_guard(grid: Grid, held: bool) {
   let (Some((mut empty, _)), Some((mut streamed, Some(root))), Some((mut baseline, _))) = (
     stream_engine(Crossed::Empty, grid),
     stream_engine(Crossed::Streamed, grid),
@@ -2803,20 +3170,27 @@ fn stream_guard(grid: Grid) {
     shown_at(empty_renders, 99),
   );
   let (all, renders) = added(|_| true);
-  let held = spread_at(all.clone(), 99).map_or(Duration::ZERO, |(_, p99, _)| p99);
-  let (met, verdict) = verdict(held, STREAM_TARGET);
+  let p99_added = spread_at(all.clone(), 99).map_or(Duration::ZERO, |(_, p99, _)| p99);
   let line = format!(
     "{world_name}: the endless world's step over the empty frame's median, {}; its render step \
      over the empty frame's, {}",
     shown_at(all, 99),
     shown_at(renders, 99),
   );
-  eprintln!(
-    "stream: {line}. Held, the 99th percentile: {:.1} µs, {verdict}",
-    us(held)
-  );
-  if !met {
-    guards::miss(format!("stream, {line}"));
+  if held {
+    let (met, verdict) = verdict(p99_added, STREAM_TARGET);
+    eprintln!(
+      "stream: {line}. Held, the 99th percentile: {:.1} µs, {verdict}",
+      us(p99_added)
+    );
+    if !met {
+      guards::miss(format!("stream, {line}"));
+    }
+  } else {
+    eprintln!(
+      "stream (no target): {line}. The 99th percentile: {:.1} µs",
+      us(p99_added)
+    );
   }
   // With no target, so one quiet run tells the machine's floor from the
   // stream's own cost: the 99th percentiles apart, and a static baseline
@@ -2949,13 +3323,11 @@ fn stream_guard(grid: Grid) {
 }
 
 /// The streaming bench: the endless world's engine stepped back to back,
-/// its camera crossing the world (the orthogonal world, or the isometric
-/// one if `benched`)
+/// its camera crossing the world (the orthogonal world, or `benched`'s
+/// grid's)
 fn stream_bench(c: &mut Criterion) {
   let mut made: Option<(HeadlessEngine, usize)> = None;
-  let grid = Some(benched().grid())
-    .filter(|&grid| grid == Grid::Isometric)
-    .unwrap_or(Grid::Orthogonal);
+  let grid = benched().grid();
   c.bench_function("stream", |b| {
     if made.is_none() {
       made = stream_engine(Crossed::Streamed, grid).map(|(engine, _)| (engine, 0));
@@ -2998,8 +3370,13 @@ fn main() {
     landing_guard(files);
   }
   if guards::runs(&["stream"]) {
-    stream_guard(Grid::Orthogonal);
-    stream_guard(Grid::Isometric);
+    stream_guard(Grid::Orthogonal, true);
+    stream_guard(Grid::Isometric, true);
+    // Any other grid `RYO_TILEMAP_GRID` names, with no target
+    let other = benched().grid();
+    if !matches!(other, Grid::Orthogonal | Grid::Isometric) {
+      stream_guard(other, false);
+    }
   }
   static_bench(&mut criterion);
   edit_bench(&mut criterion);

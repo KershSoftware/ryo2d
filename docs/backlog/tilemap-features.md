@@ -1,14 +1,6 @@
 # Tile Maps: What Stays for Later
 
-Tile maps load from Tiled and LDtk on every grid Tiled has (orthogonal, isometric, staggered, hexagonal and oblique), from files and built in code, bounded or infinite, and stream endless worlds round the cameras and anchors: drawing, objects, picking and the board tools, edits and Wang terrain, collision and shadows, y-sorting, streaming, worlds and hot reload follow each map's grid. Designs: `docs/specs/2026-10-29-tilemap-design.md` and `docs/specs/2026-10-31-tilemap-shapes-design.md`; using them from a game: the `ryo-tilemap` skill; what they cost, and their limits: `docs/backlog/tilemap.md`; a demo of each grid: `examples/demos/tile-grids`. This is what the designs left for later. Each is refused with a clear error, or warned once where a file is otherwise usable, until it is done.
-
-## Navigation off the orthogonal grid
-
-`NavigationGrid::block_tiles` reads a square grid of upright rectangles. Over an isometric, staggered or hexagonal map, or an oblique one that is skewed, it blocks nothing, and the dev log warns once a navigation grid.
-
-- Isometric, staggered and oblique maps could block by cell in their square lattice, with step costs from world distance.
-- Hexagonal maps need a hex graph (six neighbours) or a sampled square grid.
-- The design asks for paths over the loaded part of an infinite map, and across floors (below), on one graph linked at stairs.
+Tile maps load from Tiled and LDtk on every grid Tiled has (orthogonal, isometric, staggered, hexagonal and oblique), from files and built in code, bounded or infinite, and stream endless worlds round the cameras and anchors: drawing, objects, picking and the board tools, edits and Wang terrain, collision and shadows, navigation, y-sorting, streaming, worlds and hot reload follow each map's grid. Designs: `docs/specs/2026-10-29-tilemap-design.md` and `docs/specs/2026-10-31-tilemap-shapes-design.md`; using them from a game: the `ryo-tilemap` skill; what they cost, and their limits: `docs/backlog/tilemap.md`; a demo of each grid: `examples/demos/tile-grids`. This is what the designs left for later. Each is refused with a clear error, or warned once where a file is otherwise usable, until it is done.
 
 ## Floors
 
@@ -16,7 +8,7 @@ A layer belonging to a floor (raised ground, an upper storey, a bridge), on ever
 - characters draw in front of and behind that floor's tiles and the floors round it, every y-sorted layer of a map with floors sorting with the characters at one z;
 - an entity stands on the ground and its floor lifts its drawing; the cell under the mouse checks floors from the top down, through each floor's lift;
 - colliders on different floors never interact (a floor filter in physics, apart from the 32 layer and mask bits games own), and a light on a floor is blocked only by that floor's occluders;
-- characters change floors through stairs and ramps the designer marks.
+- characters change floors through stairs and ramps the designer marks, and paths cross floors on one navigation graph, linked at the stairs.
 
 Until then, raised ground a character stands on is drawn as the tile-grids demo's town draws it: blocks drawn a cell lower than their props, their tops on the cells, with one floor.
 

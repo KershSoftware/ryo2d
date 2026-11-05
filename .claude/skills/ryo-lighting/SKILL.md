@@ -2,7 +2,7 @@
 name: ryo-lighting
 description: 2D lighting - Light2D and LightOccluder2D entities (polygons and open chains), ctx.lighting() for ambient, atmosphere and on/off, shadows (tile maps' too), volumetric beams, sprite shadows and ambient occlusion.
 metadata:
-  version: 2.2.1
+  version: 2.3.0
 ---
 
 # Ryo2D Lighting Specialist
@@ -104,7 +104,7 @@ A tile map's layers cast shadows from their tiles (`ryo-tilemap`, Shadows):
 
 - A layer occludes as its `occludes` property says (a bool layer property in Tiled), or as it collides when that is left out; a map spawned `without_collision` still casts.
 - What blocks light is a tile's collision shapes, or only its shapes marked `occluder` if it has any (a bool property on the shape in Tiled's collision editor). An `occluder` shape blocks light and does not collide, so a tile that casts a shadow but lets the player through (foliage) has an `occluder` shape alone; tiles that collide but let the light through go on a layer whose `occludes` is false. An LDtk IntGrid's solid cells block whole and its slopes as their half cell.
-- The map builds the boundary of what occludes as `LightOccluder2D::chain`s, one or more for each 32 x 32-cell chunk, as children of its first occluding layer marked `MapOccluder { chunk }`. Tiles that touch cast no shadow between them. A tile edit rebuilds only the chains of the chunks it touches, and casts its shadow that frame.
+- The map builds the boundary of what occludes as `LightOccluder2D::chain`s, one or more for each 32 x 32-cell chunk, as children of its first occluding layer marked `MapOccluder { chunk }`. Tiles that touch cast no shadow between them, except a hexagonal tile with a shape of its own (a rock, a trunk: any shape but its whole hexagon), which casts its whole outline, unmerged with the hexes beside it: where that outline lies along a neighbour's side (a solid hex's, or another shape's), both cast there, so under a light whose shadows are not at full strength that stretch of shadow is darker. A tile edit rebuilds only the chains of the chunks it touches, and casts its shadow that frame.
 - Lights still need `with_shadows()` (or `with_soft_shadows`) to cast them.
 
 ## Ambient Light

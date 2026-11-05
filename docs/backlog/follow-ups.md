@@ -57,7 +57,6 @@ Items from 4f to 6b were copied from their execution records. Items from earlier
   - `Lattice` and `MapGrid::lattice()` are public, for procgen. Procgen on a staggered map lays its square grid as a diamond, corners empty.
   - A tile's `sort_offset` moves its sort point down when positive, as `YSort` does (the plan's example had it inverted).
   - Collision shapes on an isometric-grid tileset are read in the image's pixels, with one warning a file.
-  - The navigation warning names skewed oblique maps too.
   - `RYO_HEADLESS_HZ` paces a headless run's wall time per step (1 to 10,000 Hz, game time unchanged). `demo-tour` sets it to 60 so pages whose maps land in the background are captured landed; the tour takes about 1.5 s a page longer.
 - Deferred findings:
   - **Grid maths and docs.**
@@ -87,11 +86,10 @@ Items from 4f to 6b were copied from their execution records. Items from earlier
     - Per-cell and offset y-sort items sort at the layer's x = 0 through its transform (a rotated layer sorts by projection); say so in the skill's Limits.
     - On hex maps a tile object's bit 29 draws as a diagonal flip and its `HEX_ROTATE_120` bit (kept by the loader) is ignored (`object_instance`). Tiled's editor can't set these bits on tile objects, and how Tiled draws them is unmeasured: measure a hand-edited TMX through Tiled's headless render, then draw the turn or drop the bits.
     - The tall-props isometric static case meets 50 µs by only 0.5 to 3.0 µs on a quiet machine; a busier one misses.
-    - Streams on staggered, hex and oblique grids are unmeasured: the stream guard runs orthogonal and isometric worlds only, so their resident chunks and frame cost are unknown.
+    - Streams on staggered and oblique grids are unmeasured: the stream guard holds orthogonal and isometric worlds only, and runs a hexagonal one with no target under `RYO_TILEMAP_GRID=hexagonal` (in Limits).
   - **Collision, streaming and reload.**
     - A folding oblique lattice (skew.x × skew.y = w × h) is refused at rebuild, but `trace()` still runs first off the main thread, and occluders build degenerate chains with no warning; check `placeable()` in both.
     - Odd-height staggered tiles classify a full diamond as a clipped shape, leaving half-pixel notches by the side vertices (in Limits; the demo's island coast shows it).
-    - The navigation warning names hexagonal maps: hex layers' tile grids reach `block_tiles` and block nothing under it, until navigation reads hexagons.
     - Chunks in flight across a grid-changing reload carry the old grid in their `ChunkRequest`; on a reshape, call off every chunk out and ready, not only the file's.
     - The different-grids stream warning prints the shape with `{:?}`.
     - Tiled's correction reach on staggered terrain (two cells wider) is measured along the half-step axis only (said in the rustdoc).
@@ -127,7 +125,6 @@ Items from 4f to 6b were copied from their execution records. Items from earlier
     - Replacing a live stream's generator or store keeps the old chunks, and the root's going then saves them into the new store (in Limits; respawn the root to stream afresh).
     - A hostile save inflates about 100x (linear, no panic). Proposed: keep layers packed until `get`.
     - Hot-reload unloads (`before_reload`, `unload_gone`) skip the unload budget, a dev-time hitch (in Limits).
-    - A `NavigationGrid` over a streamed map treats unloaded chunks as open ground (in Limits; stage 5 owns infinite navigation windows).
     - Streaming on the web is unmeasured (generation within `web_budget` plus landing, all on the main thread).
   - **Tiled infinite maps under a stream.**
     - `listed_class_tiles` (`reload.rs`) splits class tiles by the file's chunks even for a bounded layer of a streamed map (a warned misuse): stale class tiles stay alive and removed ones never despawn. Fix: pass `file` only for unbounded layers, as `take_cells` does.

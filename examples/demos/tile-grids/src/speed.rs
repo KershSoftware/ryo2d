@@ -3,11 +3,10 @@
 //! `docs/backlog/tilemap.md`), built in code on the grid the Grid setting
 //! picks and flown over. It is 1024 x 1024 cells in four layers: a floor on
 //! every cell, cave rock where value noise is high (colliding and casting
-//! shadows, but on the hexagonal grid, whose layers do neither), props on
-//! about one open cell in 16 and small things on one in 64. Each grid's
-//! cells are as big as the guards': orthogonal 16 px, isometric and
-//! staggered diamonds of 32 x 16, hexagons of 16 x 16 with sides of 8, and
-//! oblique 16 px squares skewed 4 px a row.
+//! shadows), props on about one open cell in 16 and small things on one in
+//! 64. Each grid's cells are as big as the guards': orthogonal 16 px,
+//! isometric and staggered diamonds of 32 x 16, hexagons of 16 x 16 with
+//! sides of 8, and oblique 16 px squares skewed 4 px a row.
 //!
 //! The tiles are Tiny Dungeon's, cut to each grid's cells in code (on the
 //! isometric and staggered grids its squares laid flat on the diamonds).
@@ -186,8 +185,8 @@ fn atlas(sheet: &Image, grid: &MapGrid, ids: &[u32]) -> Image {
 }
 
 /// The tileset over `grid`'s atlas: the rock tiles collide as their whole
-/// cell (the cell's outline in the tile's pixels), but on the hexagonal
-/// grid, whose map is drawn only, as the speed guards draw it
+/// cell, the cell's outline in the tile's pixels (its diamond, its hexagon,
+/// else the tile's square), as the speed guards' do
 fn tileset(image: Handle<Image>, grid: &MapGrid, count: u32) -> Tileset {
   let cell = grid.cell;
   let mut set = Tileset::new(
@@ -200,27 +199,27 @@ fn tileset(image: Handle<Image>, grid: &MapGrid, count: u32) -> Tileset {
   );
   set.columns = count;
   set.tile_count = count;
-  if matches!(grid.shape, GridShape::Hexagonal { .. }) {
-    return set;
-  }
   let (w, h) = (cell.x as f32, cell.y as f32);
-  let points = if matches!(
-    grid.shape,
-    GridShape::Isometric | GridShape::Staggered { .. }
-  ) {
-    vec![
+  let points = match grid.shape {
+    GridShape::Isometric | GridShape::Staggered { .. } => vec![
       Vec2::new(w / 2.0, 0.0),
       Vec2::new(w, h / 2.0),
       Vec2::new(w / 2.0, h),
       Vec2::new(0.0, h / 2.0),
-    ]
-  } else {
-    vec![
+    ],
+    // A tile the size of its cell stands on the cell's box
+    GridShape::Hexagonal { .. } => {
+      let corner = grid.cell_bounds(IVec2::ZERO);
+      let corner = Vec2::new(corner.x, corner.y);
+      let outline = grid.cell_outline(IVec2::ZERO);
+      outline.points().iter().map(|&p| p - corner).collect()
+    }
+    _ => vec![
       Vec2::ZERO,
       Vec2::new(w, 0.0),
       Vec2::new(w, h),
       Vec2::new(0.0, h),
-    ]
+    ],
   };
   for i in 0..ROCK.len() {
     set.insert_tile(
@@ -242,12 +241,6 @@ fn cave(grid: usize, set: TilesetSource) -> TileMap {
   let mut map = TileMap::new(UVec2::splat(BIG), cell_size(grid)).with_shape(shape(grid));
   let set = map.add_tileset(set);
   let layers: Vec<usize> = LAYERS.iter().map(|name| map.add_tile_layer(name)).collect();
-  // The hexagonal map is drawn only, as the speed guards draw it
-  if grid == 3 {
-    for &layer in &layers {
-      map.layers[layer].info.collides = false;
-    }
-  }
   // Each layer's tiles' first id in the atlas
   let (back, rock, props) = (0, BACK.len() as u32, (BACK.len() + ROCK.len()) as u32);
   let front = props + PROPS.len() as u32;
@@ -434,11 +427,6 @@ impl DemoPage for SpeedPage {
       Some(steps) => format!("Landed {steps} steps after it was built"),
       None => "Landing: its chunks are worked out off the main thread".to_string(),
     };
-    let collides = if self.built == 3 {
-      "Drawn only, as the speed guards draw it (hexagonal shadows come later)"
-    } else {
-      "The rock collides and casts shadows"
-    };
     let lines = vec![
       (
         format!("{}: 1024 x 1024 of them, four layers", CELLS[self.built]),
@@ -446,7 +434,7 @@ impl DemoPage for SpeedPage {
       ),
       (frame, HOT),
       (landing, GOOD),
-      (collides.to_string(), DIM),
+      ("The rock collides and casts shadows".to_string(), DIM),
       (
         "Compare in a release build with docs/backlog/tilemap.md".to_string(),
         DIM,

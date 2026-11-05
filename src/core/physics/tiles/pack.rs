@@ -17,14 +17,26 @@
 //! most B, else its 16 x 16 quarters are, each while it holds at most B,
 //! else a quarter's 8 x 8 blocks are, which never split. An edit rebuilds
 //! the parts owning its cell's six sides (its own among them), up to four,
-//! so about 4 x B edges where its blocks keep within the budget: a shape
-//! costs Rapier about 80 ns an edge to build, a part about 3 ns a step to
-//! keep, and 128 is the largest budget that held an edit at a corner of
-//! four parts each just under it within 100 µs at the 99th percentile (the
-//! tile rebuild plus the fixed step after it). A block holds the sides its
-//! cells own (at most about 190) and its shape cells' rings, which nothing
-//! bounds, so a block heavy with rings can hold more than B by as much as
-//! its art has, and an edit there costs more than that.
+//! so about 4 x B edges where its blocks keep within the budget, and makes
+//! or drops a part where a box gains its first edge or loses its last: a
+//! shape costs Rapier about 80 ns an edge to build, a part about 3 ns a
+//! step to keep. Of the budgets tried, 128 is the largest that kept an edit
+//! at a corner of four parts each just under it within 100 µs at the 99th
+//! percentile (the tile rebuild plus the fixed step after it), in five runs
+//! of six, 116.1 µs in the sixth (the physics module notes). Measured in
+//! release (`docs/backlog/tilemap.md`): an idle fixed step over the speed
+//! guards' cave rock, 2,109 parts, takes 6.8 to 7.3 µs against 2.2 to 2.3
+//! for its 500 square parts, and a static map of it, with its shadow chains,
+//! misses the 50 µs a frame target (53.7 to 54.9 µs over an empty frame);
+//! the edit guard's loop rebuild (the map's collision sync, the tile
+//! rebuild and the collider sync) reads a median 53.5 to 54.6 µs for a cell
+//! where four of the islands' chunks meet (four quarter parts), 23.8 to
+//! 27.1 µs for part churn (four parts made, or dropped) and 38.2 to 38.8 µs
+//! for an edit that takes a chunk past B (its part dropped, seven made),
+//! each within its 100 µs target. A block holds the sides its cells own (at
+//! most about 190) and its shape cells' rings, which nothing bounds, so a
+//! block heavy with rings can hold more than B by as much as its art has,
+//! and an edit there costs more than that.
 //! A bounded grid's border belongs to the cells inside it, so no part sits
 //! outside the grid: a one-cell bump along a map's edge would otherwise
 //! make and drop parts in the chunks outside it at every edit.
@@ -476,15 +488,20 @@ pub(crate) fn hex_first_cell(key: PackKey) -> IVec2 {
 /// holds at most `HEX_PART_EDGES` (B) edges, where it can: a chunk is one
 /// part while it holds at most B; past that its quarters are parts, each
 /// while it holds at most B; past that the quarter's blocks are, which
-/// never split (a block's cells' sides are at most about 190; its shape
-/// cells' rings have no bound, so a block heavy with rings holds more than
-/// B, by as much as its art has). Landing decides each box by its count,
-/// and an edit that takes a part past B splits it; nothing merges back
-/// until a build afresh. An edit rebuilds the parts of the blocks owning
-/// its cells' sides, which lie in up to four chunks round its cell, so at
-/// most four parts of about B edges where their blocks keep within it
-/// (more as one splits, or in a block heavy with rings). A shape cell's
-/// rings count toward its part's edges, so rings can split a part.
+/// never split, so a block can hold more than B: its cells own at most
+/// about 190 sides (a dense pattern about B, a little more along the
+/// block's right column and last row), and its shape cells' rings have no
+/// bound, so a block heavy with rings holds more than B by as much as its
+/// art has. Landing decides each box by its count, and an edit that
+/// takes a part past B splits it (its part dropped and up to seven made:
+/// three quarters' and a quarter's four blocks); nothing merges back until
+/// a build afresh, or until the chunk holds no edge. An edit rebuilds the
+/// parts of the blocks owning its cells' sides, which lie in up to four
+/// chunks round its cell, so at most four parts of about B edges where
+/// their blocks keep within it (more as one splits, or in a block heavy
+/// with rings), and makes a part where a box held no edge till then, or
+/// drops one it empties. A shape cell's rings count toward its part's
+/// edges, so rings can split a part.
 #[derive(Debug, Default)]
 pub(crate) struct HexParts {
   chunks: FastMap<IVec2, HexChunk>,

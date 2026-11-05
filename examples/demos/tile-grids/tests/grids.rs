@@ -5,15 +5,16 @@
 //! Space walks it to the cell under the pointer by a path through a gate,
 //! round water painted since it last walked, until something unknown holds
 //! it up or the player steers; the island's setting and the speed page's
-//! choice spawn another grid's map; the hex board picks the hex under the
-//! pointer, a click selects one, and the board marks the selected hex's
-//! range and ring, the line to the hovered hex and the hovered hex's
-//! neighbours, each as the layer's grid (`MapsView::grid`) works them out,
-//! with the distance in the HUD; the board's rocks stop its walker and
-//! occlude, and the HUD gives the cheapest path to the hovered hex round
-//! them (trees costing 2, a rock none), which a right click walks, setting
-//! off forward from past its hex's middle; and the oblique map's knight
-//! stops at a skewed wall, on the map and on its mirror
+//! choice spawn another grid's map, the speed page's hexagonal rock
+//! colliding and casting shadows as whole hexagons; the hex board picks the
+//! hex under the pointer, a click selects one, and the board marks the
+//! selected hex's range and ring, the line to the hovered hex and the
+//! hovered hex's neighbours, each as the layer's grid (`MapsView::grid`)
+//! works them out, with the distance in the HUD; the board's rocks stop its
+//! walker and occlude, and the HUD gives the cheapest path to the hovered
+//! hex round them (trees costing 2, a rock none), which a right click
+//! walks, setting off forward from past its hex's middle; and the oblique
+//! map's knight stops at a skewed wall, on the map and on its mirror
 
 mod common;
 
@@ -878,6 +879,50 @@ fn the_staggered_and_speed_pages_land_their_maps() {
     let after = after.expect("the setting spawned another map");
     assert_ne!(before, after, "page {}: another grid", page + 1);
   }
+  assert!(warnings().is_empty(), "{:#?}", warnings());
+}
+
+#[test]
+fn the_speed_page_s_hexagonal_rock_collides_and_casts_shadows_as_whole_hexagons() {
+  let Some(mut engine) = engine_on(SPEED) else {
+    return;
+  };
+  spawned_map(&mut engine);
+  // The Grid setting's fourth choice
+  for _ in 0..3 {
+    engine.tap_key(KeyCode::ArrowRight);
+    engine.step_frames(2).unwrap();
+  }
+  let mut hex = None;
+  for _ in 0..LANDING {
+    step_resting(&mut engine);
+    let world = engine.world_mut();
+    let mut maps = world.query_filtered::<Entity, (With<MapRoot>, With<MapIds>)>();
+    let landed: Vec<Entity> = maps.iter(world).collect();
+    let [map] = landed[..] else { continue };
+    let shape = grid_of(&mut engine, map, "ground").grid.shape;
+    if matches!(shape, GridShape::Hexagonal { .. }) {
+      hex = Some(map);
+      break;
+    }
+  }
+  let map = hex.expect("the hexagonal map landed");
+  // Its first rock in row order
+  let ground = layer_grid(&mut engine, map, "ground");
+  let rock = (0..1024)
+    .flat_map(|y| (0..1024).map(move |x| IVec2::new(x, y)))
+    .find(|&cell| ground.get(cell).is_some())
+    .expect("a rock");
+  engine.step_frames(2).unwrap();
+  let world = engine.world_mut();
+  let kind = world.get::<TileColliders>(map).map(|tiles| tiles.get(rock));
+  assert_eq!(
+    kind,
+    Some(TileCell::Solid),
+    "the rock at {rock} collides as its whole hexagon"
+  );
+  let chains = world.query::<&MapOccluder>().iter(world).count();
+  assert!(chains > 0, "the hexagonal map casts shadows");
   assert!(warnings().is_empty(), "{:#?}", warnings());
 }
 

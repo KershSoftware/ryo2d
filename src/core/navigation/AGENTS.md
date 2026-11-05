@@ -44,7 +44,7 @@ Simpler and more predictable than navmesh: easy to debug, suits tile-based and a
 ### Why A* with Octile?
 
 - A* is optimal with an admissible heuristic; octile is exact for 8-directional movement
-- Tie-breaking produces straighter, visually pleasing paths, at the cost of a path sometimes a little dearer than the cheapest (the tests that compare costs with Dijkstra turn it off)
+- Tie-breaking produces straighter, visually pleasing paths, at the cost of a path sometimes a little dearer than the cheapest (the tests that compare costs with Dijkstra turn it off). `path_timing` (`pathfinder.rs`, ignored: run it in release with `--ignored --nocapture`) finds 100 paths across a 256 x 256 window of an orthogonal, an isometric and a hexagonal layer grid with 3 x 3 clumps blocked every 8 cells, and finds each again with the tie-break off: 3 orthogonal paths and 1 isometric came out dearer, by at most 0.27%, and no hexagonal one; a path took a median 0.66 to 0.70 ms orthogonal, 0.68 to 0.70 ms isometric and 0.81 to 0.83 ms hexagonal, the 99th percentile 3.4 to 4.7 ms (release, three runs; `docs/backlog/tilemap.md`)
 - Time-slicing scales to 100+ agents
 
 ### Layer grids: steps by world distance

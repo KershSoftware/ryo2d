@@ -291,7 +291,7 @@ Details: `src/core/audio/AGENTS.md`; usage: the `ryo-audio` skill; measurements:
 
 ## Tile Maps
 
-Levels made in Tiled and LDtk, read by the engine's own readers through the asset registry, spawned as entities and kept in step with their files (design: `docs/specs/2026-10-29-tilemap-design.md`, and `docs/specs/2026-10-31-tilemap-shapes-design.md` for the other grids and infinite maps; every grid Tiled has, orthogonal, isometric, staggered, hexagonal and oblique, on sparse, signed grids, so Tiled's infinite maps load and maps built in code grow wherever a tile is written; what stays for later, navigation off the orthogonal grid and floors among it, is `docs/backlog/tilemap-features.md`).
+Levels made in Tiled and LDtk, read by the engine's own readers through the asset registry, spawned as entities and kept in step with their files (design: `docs/specs/2026-10-29-tilemap-design.md`, and `docs/specs/2026-10-31-tilemap-shapes-design.md` for the other grids and infinite maps; every grid Tiled has, orthogonal, isometric, staggered, hexagonal and oblique, on sparse, signed grids, so Tiled's infinite maps load and maps built in code grow wherever a tile is written; what stays for later, floors among it, is `docs/backlog/tilemap-features.md`).
 
 ```
 TileMap      .tmx .tmj: layers over tilesets (or built in code)  ┐

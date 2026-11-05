@@ -736,6 +736,121 @@ mod tests {
     }
   }
 
+  /// Times 100 paths across a 256 x 256 window of each of three layer
+  /// grids, the speed guards' (`benches/tilemap.rs`): orthogonal cells of
+  /// 16 px, isometric ones of 32 x 16 and hexagons of 16 x 16 with sides of
+  /// 8 (pointy-topped, odd rows shifted), each with a 3 x 3 clump of
+  /// blocked cells every 8 (the edit guard's islands). Each path joins two
+  /// walkable cells picked from a fixed seed, with the pathfinder's
+  /// defaults but a node budget of the window's cells, so every one is
+  /// found. Prints each grid's median, 99th percentile and longest, and
+  /// the paths' median length; then how many came out dearer than the
+  /// cheapest (the same paths found with the tie-break off), and by how
+  /// much at most. Run it in release:
+  /// `cargo test --release -p ryo2d --lib path_timing -- --ignored --nocapture`
+  #[test]
+  #[ignore = "timing; run in release by hand"]
+  fn path_timing() {
+    use super::super::grid::CellState;
+    use std::time::Instant;
+    const SIDE: i32 = 256;
+    const PATHS: usize = 100;
+    let window = CellRect::new(IVec2::ZERO, IVec2::splat(SIDE));
+    let grids = [
+      ("orthogonal 16 px", GridShape::Orthogonal, UVec2::splat(16)),
+      (
+        "isometric 32 x 16",
+        GridShape::Isometric,
+        UVec2::new(32, 16),
+      ),
+      (
+        "hexagonal 16 x 16, side 8",
+        GridShape::Hexagonal {
+          axis: StaggerAxis::Y,
+          index: StaggerIndex::Odd,
+          side: 8,
+        },
+        UVec2::splat(16),
+      ),
+    ];
+    let pathfinder = Pathfinder::with_config(PathfinderConfig {
+      max_total_nodes: (SIDE * SIDE) as usize,
+      ..PathfinderConfig::default()
+    });
+    let cheapest = Pathfinder::with_config(PathfinderConfig {
+      tie_breaking: 0.0,
+      ..*pathfinder.config()
+    });
+    // A path's cost in steps: every cell here costs 1
+    let cost = |grid: &NavigationGrid, path: &Path| {
+      let steps: f32 = path
+        .waypoints()
+        .windows(2)
+        .map(|pair| pair[0].distance(&pair[1]))
+        .sum();
+      steps / grid.cell_size()
+    };
+    for (name, shape, cell) in grids {
+      let mut grid = NavigationGrid::for_layer(layer(shape, cell), window);
+      for y in 0..SIDE {
+        for x in 0..SIDE {
+          if (2..5).contains(&(x % 8)) && (2..5).contains(&(y % 8)) {
+            grid.set(GridCoord::new(x, y), CellState::Blocked);
+          }
+        }
+      }
+      let mut seed = 0x9e37_79b9_u32;
+      let mut next = || {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        (seed % SIDE as u32) as i32
+      };
+      let mut walkable = || loop {
+        let cell = GridCoord::new(next(), next());
+        if grid.is_walkable(cell) {
+          return cell;
+        }
+      };
+      let pairs: Vec<(GridCoord, GridCoord)> =
+        (0..PATHS).map(|_| (walkable(), walkable())).collect();
+      let (mut times, mut lengths) = (Vec::with_capacity(PATHS), Vec::with_capacity(PATHS));
+      let (mut dearer, mut most) = (0, (0.0f32, 0.0f32));
+      for (start, goal) in pairs {
+        let begin = Instant::now();
+        let found = pathfinder.find_path_grid(&grid, start, goal);
+        times.push(begin.elapsed());
+        let (Some(path), Some(best)) = (
+          found.path(),
+          cheapest.find_path_grid(&grid, start, goal).path(),
+        ) else {
+          panic!("{name}: no path from {start:?} to {goal:?}");
+        };
+        lengths.push(path.waypoints().len());
+        let (paid, least) = (cost(&grid, &path), cost(&grid, &best));
+        if paid > least + 1e-3 {
+          dearer += 1;
+          if paid / least > 1.0 + most.0 {
+            most = (paid / least - 1.0, paid - least);
+          }
+        }
+      }
+      times.sort_unstable();
+      lengths.sort_unstable();
+      let p99 = times[(PATHS * 99).div_ceil(100) - 1];
+      println!(
+        "{name}: {PATHS} paths across a 256 x 256 window: median {:?}, 99th percentile {p99:?}, \
+         longest {:?}; the paths' median length {} cells; {dearer} dearer than the cheapest, \
+         the most by {:.2}% ({:.2} steps)",
+        times[PATHS / 2],
+        times[PATHS - 1],
+        lengths[PATHS / 2],
+        most.0 * 100.0,
+        most.1,
+      );
+    }
+  }
+
   #[test]
   fn pathfinder_config_builders() {
     let config = PathfinderConfig::default()
