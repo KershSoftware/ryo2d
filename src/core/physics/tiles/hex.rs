@@ -68,8 +68,8 @@ impl HexCells {
   /// Whether the collision tracer takes these cells: none wider or taller
   /// than 16,384 px (the hexagon itself, where a side longer than its tile
   /// spreads it), and none that are flat: at least 2 px across and a step
-  /// of a pixel from line to line. So every side is under `i16::MAX` either
-  /// way, and a chunk's box is at most 2^19 px a side
+  /// of a pixel from line to line. So a chunk of 32 cells is at most 2^19
+  /// px a side, and its parts' points stay small
   pub(crate) fn traceable(&self) -> bool {
     self.traceable
   }
@@ -79,23 +79,11 @@ impl HexCells {
     self.axis
   }
 
-  /// The size of a box `cells` cells across by `cells` lines along, px
-  /// (each way at least 1): with the packing's chunk side, a chunk's box.
-  /// A chunk's 32 lines keep the stagger's phase, so each chunk's box is
-  /// its first cell's (`corner_of`) and the boxes tile the plane
-  pub(crate) fn chunk_box(&self, cells: i32) -> I64Vec2 {
-    let n = i64::from(cells);
-    let (across, along) = ((n * 2 * self.half).max(1), (n * self.step).max(1));
-    match self.axis {
-      StaggerAxis::Y => I64Vec2::new(across, along),
-      StaggerAxis::X => I64Vec2::new(along, across),
-    }
-  }
-
   /// The corner of `cell`'s box nearest the origin, unshifted (its position
   /// times a cell across, its line times a step), from the grid's origin:
-  /// a chunk's first cell gives its chunk's box's corner, and each corner
-  /// of a cell is at or past it either way
+  /// each corner of a cell, and of every cell after it in its line and
+  /// lines, is at or past it either way, so a tile part sits at its first
+  /// cell's (an even line count keeping the stagger's phase)
   pub(crate) fn corner_of(&self, cell: IVec2) -> I64Vec2 {
     let (line, pos) = self.split(i64::from(cell.x), i64::from(cell.y));
     let (u, v) = (pos * 2 * self.half, line * self.step);
@@ -315,27 +303,38 @@ mod tests {
   }
 
   #[test]
-  fn hex_chunk_boxes_start_at_their_first_cell_s_box() {
+  fn hex_parts_boxes_start_at_their_first_cell_s_corner() {
+    // A part's box: a chunk's (32 cells across by 32 lines along) or a
+    // block's, from its first cell's corner, holds every corner its cells
+    // have, within a cell past its far sides
     for hex in grids().into_iter().filter(HexCells::traceable) {
-      let size = hex.chunk_box(32);
-      for chunk in [IVec2::ZERO, IVec2::new(-1, 2), IVec2::new(3, -5)] {
-        let first = chunk * 32;
-        assert_eq!(
-          hex.corner_of(first),
-          chunk.as_i64vec2() * size,
-          "{hex:?} {chunk}"
-        );
-        // Every corner of the chunk's cells is in its box or within a cell
-        // past its far sides
+      let size = |n: i64| {
+        let (across, along) = (n * 2 * hex.half, n * hex.step);
+        match hex.axis {
+          StaggerAxis::Y => I64Vec2::new(across, along),
+          StaggerAxis::X => I64Vec2::new(along, across),
+        }
+      };
+      for (side, first) in [
+        (32, IVec2::ZERO),
+        (32, IVec2::new(-32, 64)),
+        (32, IVec2::new(96, -160)),
+        (16, IVec2::new(-16, 48)),
+        (8, IVec2::new(40, -8)),
+      ] {
         let corner = hex.corner_of(first);
-        let cell = hex.chunk_box(1);
-        for y in 0..32 {
-          for x in 0..32 {
+        assert_eq!(
+          corner,
+          first.as_i64vec2() / i64::from(side) * size(i64::from(side)),
+          "{hex:?} {first}"
+        );
+        for y in 0..side {
+          for x in 0..side {
             for p in hex.corners(first + IVec2::new(x, y)) {
               let at = p - corner;
               assert!(
-                at.cmpge(glam::I64Vec2::ZERO).all() && at.cmple(size + cell).all(),
-                "{hex:?} {chunk} {x} {y}: {at}"
+                at.cmpge(I64Vec2::ZERO).all() && at.cmple(size(i64::from(side)) + size(1)).all(),
+                "{hex:?} {first} {x} {y}: {at}"
               );
             }
           }

@@ -27,11 +27,11 @@
 //! several times the edit's own work (a one-cell serpentine over four
 //! chunks: about 0.5 ms).
 //!
-//! On a hexagonal grid (`HexCells`) the points are its corners' whole
-//! pixels from the grid's origin and the units are its cells' six sides,
-//! each owned by whichever of its two cells comes first in row order: a
-//! side with one solid cell is an edge, clockwise round it. Everything from
-//! the edges on (the loops, the edits, the splice) is the same.
+//! A hexagonal grid traces no loops here: its units are its cells' six
+//! sides, each owned by whichever of its two cells comes first in row
+//! order, a side with one solid cell an edge clockwise round it
+//! (`HexSides`, `hex_owned_edges`, `each_hex_owner`), and its colliders
+//! hold those edges as they are (`pack::HexParts`), as `Boundary` reads them.
 
 use glam::{I64Vec2, IVec2};
 
@@ -84,8 +84,7 @@ const UNTRACED: u32 = u32::MAX;
 const TAKEN: u32 = u32::MAX - 1;
 
 /// A boundary edge leaving a point: its step (an edge lies within one cell,
-/// so a step is at most `GRID` either way, or on a hexagonal grid the
-/// tracer takes, a side under `i16::MAX`) and its loop.
+/// so a step is at most `GRID` either way) and its loop.
 #[derive(Debug, Clone, Copy, Default)]
 struct Out {
   dx: i16,
@@ -485,16 +484,11 @@ impl HexSides {
   }
 }
 
-/// A side of a hexagonal grid's cell, named by the cell of its two that
-/// owns it and the side's index among that cell's: (row, column, side), so
-/// units sort in row order.
-pub(super) type HexUnit = (i32, i32, usize);
-
 /// The edge along side `side` of a cell whose corners are `corners` (from
 /// the grid's origin), where only one of the cell and the cell across is
 /// solid (`solid`: the cell itself): clockwise round the solid one, in
 /// points from `from`. None for a side of length 0, or one whose points
-/// pass an `i32` (never a side of a cell the tracer reaches).
+/// pass an `i32` (never a side of a cell that reaches).
 pub(super) fn hex_side_edge(
   corners: &[I64Vec2; 6],
   side: usize,
@@ -513,58 +507,32 @@ pub(super) fn hex_side_edge(
   Some(if solid { (a, b) } else { (b, a) })
 }
 
-/// The boundary edge of hex `unit` (one or none), whether a cell is solid
-/// read through `solid`, pushed onto `out`.
-fn hex_unit_edges(
+/// The boundary edges along the sides `cell` owns (each side with one solid
+/// cell, read through `solid`), in side order, pushed onto `out`: its units
+pub(super) fn hex_owned_edges(
   sides: &HexSides,
-  (y, x, side): HexUnit,
+  cell: IVec2,
   solid: &impl Fn(i32, i32) -> bool,
   out: &mut Vec<(Point, Point)>,
 ) {
-  let cell = IVec2::new(x, y);
-  let (across, _) = sides.across(cell, side);
-  let mine = solid(x, y);
-  if mine == solid(across.x, across.y) {
-    return;
-  }
-  let corners = sides.hex.corners(cell);
-  out.extend(hex_side_edge(&corners, side, mine, I64Vec2::ZERO));
-}
-
-/// The units of the hex cells `changed` (each cell's six sides), each once,
-/// in row order.
-fn hex_units_of(sides: &HexSides, changed: &[(IVec2, TileCell)]) -> Vec<HexUnit> {
-  let mut units = Vec::with_capacity(changed.len() * 6);
-  for &(cell, _) in changed {
-    for side in 0..6 {
-      // A side the cell across owns is that cell's opposite side
-      units.push(match sides.across(cell, side) {
-        (_, true) => (cell.y, cell.x, side),
-        (across, false) => (across.y, across.x, (side + 3) % 6),
-      });
+  let mine = solid(cell.x, cell.y);
+  let mut corners = None;
+  for side in 0..6 {
+    let (across, owned) = sides.across(cell, side);
+    if !owned || solid(across.x, across.y) == mine {
+      continue;
     }
+    let corners = corners.get_or_insert_with(|| sides.hex.corners(cell));
+    out.extend(hex_side_edge(corners, side, mine, I64Vec2::ZERO));
   }
-  units.sort_unstable();
-  units.dedup();
-  units
 }
 
-/// Every boundary edge of a hexagonal grid, owner by owner in row order
-/// (by row, then column), each owner's sides in turn. The units that can
-/// have an edge are those owned by a cell of a chunk there is or by the
-/// cells just outside it that own sides of its cells: the column either
-/// side of it on its rows, and the row above it, a cell past it each way.
-/// A cell whose corners or its neighbours' pass an `i32`
-/// (`HexCells::reaches`) is empty here, so no point leaves an `i32`, and a
-/// grid the tracer does not take has no edges.
-pub(super) fn hex_boundary_edges(cells: Cells, hex: HexCells) -> Vec<(Point, Point)> {
-  let mut edges = Vec::new();
-  if !hex.traceable() {
-    return edges;
-  }
-  let sides = HexSides::of(hex);
-  let read = cells.cached();
-  let solid = |x: i32, y: i32| read(x, y) == TileCell::Solid && hex.reaches(IVec2::new(x, y));
+/// Calls `f` with every cell of a hexagonal grid that can own a side with
+/// one solid cell, in row order (by row, then column): each chunk's cells,
+/// and the cells just outside it that own sides of its cells, the column
+/// either side of it on its rows and the row above it, a cell past it each
+/// way (the owner of a side being its earlier cell)
+pub(super) fn each_hex_owner(cells: Cells, mut f: impl FnMut(IVec2)) {
   let chunks = cells.chunk_order();
   let in_row = |row: i32| {
     let start = chunks.partition_point(|c| c.y < row);
@@ -601,49 +569,9 @@ pub(super) fn hex_boundary_edges(cells: Cells, hex: HexCells) -> Vec<(Point, Poi
           i += 1;
         }
         for x in lo..=hi {
-          let cell = IVec2::new(x, y);
-          let mine = solid(x, y);
-          let mut corners = None;
-          for side in 0..6 {
-            let (across, owned) = sides.across(cell, side);
-            if !owned || solid(across.x, across.y) == mine {
-              continue;
-            }
-            let corners = corners.get_or_insert_with(|| hex.corners(cell));
-            edges.extend(hex_side_edge(corners, side, mine, I64Vec2::ZERO));
-          }
+          f(IVec2::new(x, y));
         }
       }
-    }
-  }
-  edges
-}
-
-/// What went from `was` to `is` (a unit's edges before and after an edit)
-/// and what came, as many times as each, pushed onto `changes`.
-fn compare(was: &mut [Edge], is: &mut [Edge], changes: &mut Vec<(Point, Point, bool)>) {
-  if was == is {
-    return;
-  }
-  was.sort_unstable();
-  is.sort_unstable();
-  let (mut i, mut j) = (0, 0);
-  while i < was.len() || j < is.len() {
-    match (was.get(i), is.get(j)) {
-      (Some(a), Some(b)) if a == b => (i, j) = (i + 1, j + 1),
-      (Some(&(a, b)), Some(later)) if (a, b) < *later => {
-        changes.push((a, b, false));
-        i += 1;
-      }
-      (Some(&(a, b)), None) => {
-        changes.push((a, b, false));
-        i += 1;
-      }
-      (_, Some(&(a, b))) => {
-        changes.push((a, b, true));
-        j += 1;
-      }
-      (None, None) => break,
     }
   }
 }
@@ -737,10 +665,7 @@ enum Pick {
 impl Outlines {
   /// Every loop of the grid, traced whole.
   pub(crate) fn build(cells: Cells) -> Self {
-    let edges = match cells.hex {
-      Some(hex) => hex_boundary_edges(cells, hex),
-      None => boundary_edges(cells),
-    };
+    let edges = boundary_edges(cells);
     let mut outlines = Self::default();
     for &(a, b) in &edges {
       outlines.insert(a, b);
@@ -762,34 +687,40 @@ impl Outlines {
     let now = cells.cached();
     let prior = Before::new(changed);
     let before = |x: i32, y: i32| prior.get(x, y).unwrap_or_else(|| now(x, y));
+    // An edit changes the units of its cells only
+    let units = units_of(changed);
     let (mut was, mut is) = (Vec::new(), Vec::new());
     let mut changes: Vec<(Point, Point, bool)> = Vec::new();
-    match cells.hex {
-      // An edit changes the units of its cells only
-      None => {
-        for unit in units_of(changed) {
-          was.clear();
-          is.clear();
-          unit_edges(unit, &cells, &before, &mut was);
-          unit_edges(unit, &cells, &now, &mut is);
-          compare(&mut was, &mut is, &mut changes);
+    for unit in units {
+      was.clear();
+      is.clear();
+      unit_edges(unit, &cells, &before, &mut was);
+      unit_edges(unit, &cells, &now, &mut is);
+      if was == is {
+        continue;
+      }
+      was.sort_unstable();
+      is.sort_unstable();
+      // What went and what came, as many times as each
+      let (mut i, mut j) = (0, 0);
+      while i < was.len() || j < is.len() {
+        match (was.get(i), is.get(j)) {
+          (Some(a), Some(b)) if a == b => (i, j) = (i + 1, j + 1),
+          (Some(&(a, b)), Some(later)) if (a, b) < *later => {
+            changes.push((a, b, false));
+            i += 1;
+          }
+          (Some(&(a, b)), None) => {
+            changes.push((a, b, false));
+            i += 1;
+          }
+          (_, Some(&(a, b))) => {
+            changes.push((a, b, true));
+            j += 1;
+          }
+          (None, None) => break,
         }
       }
-      // On a hexagonal grid, its cells' six sides
-      Some(hex) if hex.traceable() => {
-        let sides = HexSides::of(hex);
-        let reach = |x: i32, y: i32| hex.reaches(IVec2::new(x, y));
-        let was_solid = |x: i32, y: i32| before(x, y) == TileCell::Solid && reach(x, y);
-        let is_solid = |x: i32, y: i32| now(x, y) == TileCell::Solid && reach(x, y);
-        for unit in hex_units_of(&sides, changed) {
-          was.clear();
-          is.clear();
-          hex_unit_edges(&sides, unit, &was_solid, &mut was);
-          hex_unit_edges(&sides, unit, &is_solid, &mut is);
-          compare(&mut was, &mut is, &mut changes);
-        }
-      }
-      Some(_) => {}
     }
     if changes.is_empty() {
       return retraced;
@@ -2326,212 +2257,6 @@ mod tests {
       traced.sort_unstable();
       boundary.sort_unstable();
       assert_eq!(traced, boundary);
-    }
-  }
-
-  use super::super::hex::{HexCells, StaggerAxis, StaggerIndex};
-  use super::super::tests::{
-    hex_point as point, hex_traced_edges, hex_variants, sides_with_one_solid,
-  };
-  use glam::UVec2;
-
-  /// An unbounded grid of `hex`'s cells, its origin at (0, 0)
-  fn hex_tiles(hex: HexCells) -> TileColliders {
-    TileColliders::unbounded(Vec2::ONE).with_hex(hex, Vec2::ZERO)
-  }
-
-  #[test]
-  fn a_hex_cell_traces_one_six_corner_loop() {
-    let hex = HexCells::new(StaggerAxis::Y, StaggerIndex::Odd, UVec2::new(16, 16), 8);
-    let mut tiles = hex_tiles(hex);
-    assert!(tiles.set(IVec2::new(3, -2), S));
-    let state = Outlines::build(tiles.cells_view());
-    let rings: Vec<Vec<Point>> = state
-      .loops()
-      .map(|(_, outline)| super::super::pack::ring(&outline.corners))
-      .collect();
-    assert_eq!(rings.len(), 1, "{rings:?}");
-    // Row -2 is not shifted: the cell's box is 16 px from x 48 and its
-    // rows step 12 px, its slants 4 px
-    let corners = [
-      (56, -24),
-      (64, -20),
-      (64, -12),
-      (56, -8),
-      (48, -12),
-      (48, -20),
-    ];
-    let ring = &rings[0];
-    let top = ring
-      .iter()
-      .position(|&p| p == corners[0])
-      .expect("its top-most corner");
-    let from_top: Vec<Point> = ring[top..].iter().chain(&ring[..top]).copied().collect();
-    assert_eq!(from_top, corners, "clockwise from the top");
-    let exact: Vec<Point> = hex.corners(IVec2::new(3, -2)).map(point).to_vec();
-    assert_eq!(from_top, exact);
-  }
-
-  #[test]
-  fn hex_outlines_are_the_sides_with_one_solid_cell() {
-    let mut seed = 0x6a09_e667_u32;
-    let mut next = |n: u32| {
-      seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-      (seed >> 8) % n
-    };
-    for hex in hex_variants() {
-      // Sparse sets over four chunks and more, then clumps, with cells
-      // that trace nothing on a hex grid among them
-      for round in 0..250 {
-        let (count, reach) = if round < 200 { (30, 40) } else { (60, 6) };
-        let mut tiles = hex_tiles(hex);
-        let mut solid = BTreeSet::new();
-        for _ in 0..count {
-          let at = (
-            next(2 * reach) as i32 - reach as i32,
-            next(2 * reach) as i32 - reach as i32,
-          );
-          let kind = [S, S, S, S, O, TileCell::Slope(SlopeCorner::TopLeft)][next(6) as usize];
-          tiles.set(IVec2::new(at.0, at.1), kind);
-          if kind == S {
-            solid.insert(at);
-          } else {
-            solid.remove(&at);
-          }
-        }
-        assert_eq!(
-          hex_traced_edges(&Outlines::build(tiles.cells_view())),
-          sides_with_one_solid(&hex, &solid),
-          "{hex:?} round {round}"
-        );
-      }
-    }
-  }
-
-  #[test]
-  fn edits_on_a_hex_grid_splice_to_what_a_whole_trace_gives() {
-    let mut seed = 0xbb67_ae85_u32;
-    let mut next = |n: u32| {
-      seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-      (seed >> 8) % n
-    };
-    let mut total = Splices::default();
-    for hex in hex_variants().into_iter().step_by(3) {
-      // Half the cells of a box over four chunks filled, then a walker
-      // setting one cell a step as it goes from cell to cell
-      let mut tiles = hex_tiles(hex);
-      for y in -12..12 {
-        for x in -12..12 {
-          if next(2) == 0 {
-            tiles.set(IVec2::new(x, y), S);
-          }
-        }
-      }
-      tiles.take_changes();
-      let mut state = Outlines::build(tiles.cells_view());
-      let mut at = IVec2::ZERO;
-      for step in 0..400 {
-        at = hex
-          .across(at, next(6) as usize)
-          .clamp(IVec2::splat(-16), IVec2::splat(15));
-        let kind = [S, S, E, E, O][next(5) as usize];
-        tiles.set(at, kind);
-        let changed = tiles.take_changes().expect("listed");
-        state.apply(tiles.cells_view(), &changed);
-        assert_eq!(
-          traced(&state),
-          traced(&Outlines::build(tiles.cells_view())),
-          "{hex:?} step {step}, {at}"
-        );
-      }
-      let s = state.splices;
-      assert_eq!(s.whole, 0, "{hex:?} {s:?}");
-      total.kept += s.kept;
-      total.splits += s.splits;
-      total.joins += s.joins;
-    }
-    assert!(
-      total.kept > 50 && total.splits > 10 && total.joins > 10,
-      "{total:?}"
-    );
-  }
-
-  #[test]
-  fn a_bounded_full_hex_grid_is_one_loop_round_its_border() {
-    for hex in hex_variants() {
-      let mut tiles = TileColliders::new(7, 5, Vec2::ONE).with_hex(hex, Vec2::ZERO);
-      let mut solid = BTreeSet::new();
-      for y in 0..5 {
-        for x in 0..7 {
-          assert!(tiles.set(xy(x, y), S));
-          solid.insert((x as i32, y as i32));
-        }
-      }
-      let state = Outlines::build(tiles.cells_view());
-      assert_eq!(state.loops().count(), 1, "{hex:?}");
-      assert_eq!(
-        hex_traced_edges(&state),
-        sides_with_one_solid(&hex, &solid),
-        "{hex:?}"
-      );
-    }
-  }
-
-  #[test]
-  fn degenerate_hex_grids_trace_closed_outlines_without_zero_length_edges() {
-    let each = |cell: (u32, u32), side: u32| {
-      [StaggerAxis::X, StaggerAxis::Y]
-        .into_iter()
-        .flat_map(move |axis| {
-          [StaggerIndex::Odd, StaggerIndex::Even]
-            .map(|index| HexCells::new(axis, index, UVec2::new(cell.0, cell.1), side))
-        })
-    };
-    let trace = |hex: HexCells, cells: &[(i32, i32)]| {
-      let mut tiles = hex_tiles(hex);
-      for &(x, y) in cells {
-        tiles.set(IVec2::new(x, y), S);
-      }
-      let state = Outlines::build(tiles.cells_view());
-      let solid = cells.iter().copied().collect();
-      assert_eq!(
-        hex_traced_edges(&state),
-        sides_with_one_solid(&hex, &solid),
-        "{hex:?} {cells:?}"
-      );
-      state
-        .loops()
-        .map(|(_, outline)| super::super::pack::ring(&outline.corners))
-        .collect::<Vec<_>>()
-    };
-    // Side 0: diamonds, two meeting only at the corner a side of length 0
-    // shrinks to are two loops, each of four corners
-    for hex in each((16, 16), 0) {
-      let cell = IVec2::new(2, -3);
-      let corners = hex.corners(cell);
-      let flat = (0..6)
-        .find(|&s| corners[s] == corners[(s + 1) % 6])
-        .expect("a side of length 0");
-      let across = hex.across(cell, flat);
-      let rings = trace(hex, &[(cell.x, cell.y), (across.x, across.y)]);
-      assert_eq!(rings.len(), 2, "{hex:?}");
-      assert!(
-        rings.iter().all(|ring| ring.len() == 4),
-        "{hex:?} {rings:?}"
-      );
-    }
-    // A side longer than the cell: rectangles in brick rows
-    for hex in each((16, 16), 24) {
-      let rings = trace(hex, &[(5, -7)]);
-      assert_eq!(rings.len(), 1);
-      assert_eq!(rings[0].len(), 4, "a rectangle: {hex:?} {rings:?}");
-      let rings = trace(hex, &[(0, 0), (1, 0), (0, 1), (1, 1), (-1, 1)]);
-      assert_eq!(rings.len(), 1, "{hex:?} {rings:?}");
-    }
-    // Odd sizes: a region's loop closes
-    for hex in each((15, 17), 7) {
-      let block: Vec<(i32, i32)> = (-1..3).flat_map(|y| (-2..2).map(move |x| (x, y))).collect();
-      assert_eq!(trace(hex, &block).len(), 1, "{hex:?}");
     }
   }
 }

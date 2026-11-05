@@ -7,12 +7,20 @@
 //! its own: the one-way rule measures a collider as a whole (its highest
 //! point along its direction holds a character, its lowest ends a drop), so
 //! only runs on one line can share one. An edit packs again only the chunks
-//! whose loops or runs it changed. On a hexagonal grid a loop's chunk is the
-//! chunk box (32 cells across by 32 lines along) holding its first corner.
+//! whose loops or runs it changed.
+//!
+//! A hexagonal grid's outlines have no straight runs to merge, so they are
+//! not traced into loops: each chunk's part holds the boundary edges along
+//! the sides its cells own (`HexParts`), and a chunk holding more than
+//! `HEX_PART_EDGES` of them is split into its blocks, a part each, so an
+//! edit rebuilds a few hundred edges at most (a shape costs Rapier about
+//! 80 ns an edge to build, a part about 3 ns a step to keep).
 
-use glam::I64Vec2;
+use glam::IVec2;
 
-use super::{GRID, Point, merge_straight_runs};
+use super::hex::HexCells;
+use super::outline::{HexSides, each_hex_owner, hex_owned_edges};
+use super::{Cells, GRID, Point, TileCell, merge_straight_runs};
 use crate::core::ecs::{Entity, EntityHashMap, Vec2};
 use crate::core::hash::FastMap;
 use crate::core::physics::collider::Collider;
@@ -34,6 +42,13 @@ pub(crate) enum PackKey {
   },
   /// A sloped one-way run, by its id
   Run(u32),
+  /// A hexagonal grid's chunk's edges (`block` none), or one block's of a
+  /// chunk split for its edge count (`HexParts`), by the block's index row
+  /// by row
+  Hex {
+    chunk: (i32, i32),
+    block: Option<u8>,
+  },
 }
 
 impl PackKey {
@@ -43,7 +58,7 @@ impl PackKey {
   pub(crate) fn chunk(self, first: Point) -> (i32, i32) {
     match self {
       PackKey::Loops(x, y) => (x, y),
-      PackKey::Row { chunk, .. } => chunk,
+      PackKey::Row { chunk, .. } | PackKey::Hex { chunk, .. } => chunk,
       PackKey::Run(_) => point_chunk(first),
     }
   }
@@ -54,15 +69,6 @@ impl PackKey {
 pub(crate) fn point_chunk((x, y): Point) -> (i32, i32) {
   let side = GRID * CHUNK;
   (x.div_euclid(side), y.div_euclid(side))
-}
-
-/// The chunk box holding a hexagonal grid's point (whole pixels from its
-/// origin), `size` a chunk's box (`HexCells::chunk_box`, at least 1 each
-/// way), rounding toward negative infinity.
-pub(crate) fn box_chunk((x, y): Point, size: I64Vec2) -> (i32, i32) {
-  // A quotient is at most the point, so within an `i32`
-  let chunk = |p: i32, side: i64| i64::from(p).div_euclid(side.max(1)) as i32;
-  (chunk(x, size.x), chunk(y, size.y))
 }
 
 /// A loop's corners as packed: straight runs merged, open (the edge back
@@ -271,6 +277,257 @@ impl Packs {
   }
 }
 
+/// Cells a side of the blocks a dense hexagonal chunk splits into
+pub(crate) const HEX_BLOCK: i32 = 8;
+
+/// The most boundary edges a hexagonal chunk's one part holds: past it, its
+/// parts are its blocks
+pub(crate) const HEX_PART_EDGES: usize = 512;
+
+/// Blocks a side of a chunk
+const BLOCKS: i32 = CHUNK / HEX_BLOCK;
+
+/// An edge, from its start to its end
+type Edge = (Point, Point);
+
+/// A hexagonal chunk's boundary edges, by the block of the cell owning each
+#[derive(Debug)]
+struct HexChunk {
+  /// Each block's edges, row by row of blocks, its cells' in row order
+  /// (each cell's sides in turn)
+  blocks: Vec<Vec<Edge>>,
+  /// How many edges in all
+  edges: usize,
+  /// Its parts are its blocks: it held more than `HEX_PART_EDGES` once
+  split: bool,
+}
+
+impl HexChunk {
+  fn new() -> Self {
+    Self {
+      blocks: vec![Vec::new(); (BLOCKS * BLOCKS) as usize],
+      edges: 0,
+      split: false,
+    }
+  }
+}
+
+/// The chunk and block (by its index) of `cell`
+fn hex_block(cell: IVec2) -> (IVec2, usize) {
+  let chunk = cell.div_euclid(IVec2::splat(CHUNK));
+  let at = cell.rem_euclid(IVec2::splat(CHUNK)) / HEX_BLOCK;
+  (chunk, (at.y * BLOCKS + at.x) as usize)
+}
+
+/// The first cell (its top-left) of hexagonal part `key`: its chunk's, or
+/// its block's
+pub(crate) fn hex_first_cell(key: PackKey) -> IVec2 {
+  let (chunk, block) = match key {
+    PackKey::Hex { chunk, block } => (chunk, block),
+    _ => ((0, 0), None),
+  };
+  let first = IVec2::new(chunk.0, chunk.1) * CHUNK;
+  match block {
+    Some(b) => first + IVec2::new(i32::from(b) % BLOCKS, i32::from(b) / BLOCKS) * HEX_BLOCK,
+    None => first,
+  }
+}
+
+/// A hexagonal grid's colliders: the boundary edges along the sides each
+/// cell owns (the earlier of a side's two cells in row order), kept by
+/// chunk and block, and each part's entity. A chunk is one part while it
+/// holds at most `HEX_PART_EDGES` edges; past that, its blocks holding any
+/// edge are a part each, and stay so (only a build afresh merges them). An
+/// edit rebuilds the blocks owning its cells' sides and only their parts.
+/// A block's edges could take a cell's own shape's rings too.
+#[derive(Debug, Default)]
+pub(crate) struct HexParts {
+  chunks: FastMap<IVec2, HexChunk>,
+  parts: FastMap<PackKey, Entity>,
+}
+
+/// What an edit changed of a hexagonal grid's parts.
+#[derive(Debug, Default)]
+pub(crate) struct HexChanges {
+  /// The parts to build again, or make: each holds an edge
+  pub(crate) rebuilt: Vec<PackKey>,
+  /// The parts gone, to despawn
+  pub(crate) gone: Vec<Entity>,
+}
+
+impl HexParts {
+  /// Every edge of the grid `cells` of `hex`'s cells, by chunk and block,
+  /// each chunk one part or its blocks by its edge count. A cell whose
+  /// corners or its neighbours' pass an `i32` (`HexCells::reaches`) is
+  /// empty here, and a grid the tracer does not take has none
+  pub(crate) fn build(cells: Cells, hex: HexCells) -> Self {
+    let mut parts = Self::default();
+    if !hex.traceable() {
+      return parts;
+    }
+    let sides = HexSides::of(hex);
+    let read = cells.cached();
+    let solid = |x: i32, y: i32| read(x, y) == TileCell::Solid && hex.reaches(IVec2::new(x, y));
+    let mut edges = Vec::new();
+    each_hex_owner(cells, |cell| {
+      edges.clear();
+      hex_owned_edges(&sides, cell, &solid, &mut edges);
+      if !edges.is_empty() {
+        let (chunk, block) = hex_block(cell);
+        let held = parts.chunks.entry(chunk).or_insert_with(HexChunk::new);
+        held.blocks[block].extend_from_slice(&edges);
+        held.edges += edges.len();
+      }
+    });
+    for held in parts.chunks.values_mut() {
+      held.split = held.edges > HEX_PART_EDGES;
+    }
+    parts
+  }
+
+  /// Takes in the cells at `changed` (now as `cells` holds them): the
+  /// blocks owning their sides are read again, and their chunks' parts
+  /// rebuilt (a chunk's one part, or the blocks' own once it is split, and
+  /// all of its blocks' as it splits)
+  pub(crate) fn apply(
+    &mut self,
+    cells: Cells,
+    hex: HexCells,
+    changed: &[(IVec2, TileCell)],
+  ) -> HexChanges {
+    let mut changes = HexChanges::default();
+    if !hex.traceable() || changed.is_empty() {
+      return changes;
+    }
+    let sides = HexSides::of(hex);
+    let mut dirty: Vec<(IVec2, usize)> = Vec::with_capacity(changed.len() * 2);
+    for &(cell, _) in changed {
+      for side in 0..6 {
+        let (across, owned) = sides.across(cell, side);
+        dirty.push(hex_block(if owned { cell } else { across }));
+      }
+    }
+    dirty.sort_unstable_by_key(|&(chunk, block)| (chunk.y, chunk.x, block));
+    dirty.dedup();
+    let read = cells.cached();
+    let solid = |x: i32, y: i32| read(x, y) == TileCell::Solid && hex.reaches(IVec2::new(x, y));
+    let Self { chunks, parts } = self;
+    let mut edges = Vec::new();
+    for group in dirty.chunk_by(|a, b| a.0 == b.0) {
+      let chunk = group[0].0;
+      let held = chunks.entry(chunk).or_insert_with(HexChunk::new);
+      for &(_, block) in group {
+        edges.clear();
+        let first = hex_first_cell(PackKey::Hex {
+          chunk: (chunk.x, chunk.y),
+          block: Some(block as u8),
+        });
+        for y in 0..HEX_BLOCK {
+          for x in 0..HEX_BLOCK {
+            hex_owned_edges(&sides, first + IVec2::new(x, y), &solid, &mut edges);
+          }
+        }
+        held.edges = held.edges - held.blocks[block].len() + edges.len();
+        held.blocks[block].clear();
+        held.blocks[block].extend_from_slice(&edges);
+      }
+      let key = |block: Option<usize>| PackKey::Hex {
+        chunk: (chunk.x, chunk.y),
+        block: block.map(|b| b as u8),
+      };
+      if held.edges == 0 {
+        // Its parts go, and the chunk with them
+        let all = std::iter::once(None).chain((0..held.blocks.len()).map(Some));
+        changes
+          .gone
+          .extend(all.filter_map(|block| parts.remove(&key(block))));
+        chunks.remove(&chunk);
+      } else if !held.split && held.edges <= HEX_PART_EDGES {
+        changes.rebuilt.push(key(None));
+      } else if !held.split {
+        // Past the budget: the chunk's part goes, its blocks are parts
+        held.split = true;
+        changes.gone.extend(parts.remove(&key(None)));
+        let filled = held
+          .blocks
+          .iter()
+          .enumerate()
+          .filter(|(_, e)| !e.is_empty());
+        changes
+          .rebuilt
+          .extend(filled.map(|(block, _)| key(Some(block))));
+      } else {
+        for &(_, block) in group {
+          if held.blocks[block].is_empty() {
+            changes.gone.extend(parts.remove(&key(Some(block))));
+          } else {
+            changes.rebuilt.push(key(Some(block)));
+          }
+        }
+      }
+    }
+    changes
+  }
+
+  /// Every part's key, chunk by chunk in row order, each chunk's blocks in
+  /// turn
+  pub(crate) fn keys(&self) -> Vec<PackKey> {
+    let mut chunks: Vec<(&IVec2, &HexChunk)> = self.chunks.iter().collect();
+    chunks.sort_unstable_by_key(|(chunk, _)| (chunk.y, chunk.x));
+    let mut keys = Vec::new();
+    for (chunk, held) in chunks {
+      let chunk = (chunk.x, chunk.y);
+      if held.split {
+        let filled = held
+          .blocks
+          .iter()
+          .enumerate()
+          .filter(|(_, e)| !e.is_empty());
+        keys.extend(filled.map(|(block, _)| PackKey::Hex {
+          chunk,
+          block: Some(block as u8),
+        }));
+      } else {
+        keys.push(PackKey::Hex { chunk, block: None });
+      }
+    }
+    keys
+  }
+
+  /// Part `key`'s edges, in the grid's points
+  pub(crate) fn edges(&self, key: PackKey) -> impl Iterator<Item = Edge> + '_ {
+    let (chunk, block) = match key {
+      PackKey::Hex { chunk, block } => (Some(IVec2::new(chunk.0, chunk.1)), block),
+      _ => (None, None),
+    };
+    let held = chunk.and_then(|chunk| self.chunks.get(&chunk));
+    let blocks: &[Vec<Edge>] = held.map_or(&[], |held| match block {
+      Some(b) => held
+        .blocks
+        .get(usize::from(b))
+        .map_or(&[], std::slice::from_ref),
+      None => &held.blocks,
+    });
+    blocks.iter().flatten().copied()
+  }
+
+  /// Part `key`'s entity
+  pub(crate) fn part(&self, key: PackKey) -> Option<Entity> {
+    self.parts.get(&key).copied()
+  }
+
+  /// Records `part` as part `key`'s entity
+  pub(crate) fn set_part(&mut self, key: PackKey, part: Entity) {
+    self.parts.insert(key, part);
+  }
+
+  /// Every part with its entity
+  #[cfg(test)]
+  pub(crate) fn parts(&self) -> impl Iterator<Item = (PackKey, Entity)> + '_ {
+    self.parts.iter().map(|(&key, &part)| (key, part))
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -281,19 +538,6 @@ mod tests {
     assert_eq!(loop_key(&[(0, 0), (GRID, 0)]), PackKey::Loops(0, 0));
     assert_eq!(loop_key(&[(side - 1, side)]), PackKey::Loops(0, 1));
     assert_eq!(loop_key(&[(side, 2 * side + 5)]), PackKey::Loops(1, 2));
-  }
-
-  #[test]
-  fn a_hex_loop_belongs_to_the_chunk_box_of_its_first_corner() {
-    let size = I64Vec2::new(512, 384);
-    assert_eq!(box_chunk((0, 0), size), (0, 0));
-    assert_eq!(box_chunk((511, 383), size), (0, 0));
-    assert_eq!(box_chunk((512, -1), size), (1, -1));
-    assert_eq!(box_chunk((-513, 769), size), (-2, 2));
-    assert_eq!(
-      box_chunk((i32::MIN, i32::MAX), size),
-      (-4_194_304, 5_592_405)
-    );
   }
 
   #[test]
