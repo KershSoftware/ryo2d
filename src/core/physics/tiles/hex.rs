@@ -47,22 +47,62 @@ impl HexCells {
     };
     // Rust's division, like Tiled's, rounds toward zero
     let raw = (i64::from(along) - i64::from(side)) / 2;
+    let (half, slant, step) = (i64::from(across) / 2, raw.max(0), raw + i64::from(side));
+    // The hexagon's own reach along the axis passes its tile's where its
+    // side is longer than the tile
+    let cap = i64::from(MAX_TRACED);
     HexCells {
       axis,
       index,
-      half: i64::from(across) / 2,
-      slant: raw.max(0),
-      step: raw + i64::from(side),
-      traceable: cell.x <= MAX_TRACED && cell.y <= MAX_TRACED,
+      half,
+      slant,
+      step,
+      traceable: cell.x <= MAX_TRACED
+        && cell.y <= MAX_TRACED
+        && half > 0
+        && step > 0
+        && step + slant <= cap,
     }
   }
 
   /// Whether the collision tracer takes these cells: none wider or taller
-  /// than 16,384 px
-  // used by the tile collision tracer
-  #[allow(dead_code)]
+  /// than 16,384 px (the hexagon itself, where a side longer than its tile
+  /// spreads it), and none that are flat: at least 2 px across and a step
+  /// of a pixel from line to line. So every side is under `i16::MAX` either
+  /// way, and a chunk's box is at most 2^19 px a side
   pub(crate) fn traceable(&self) -> bool {
     self.traceable
+  }
+
+  /// Its stagger axis: lines are rows on Y, columns on X
+  pub(crate) fn axis(&self) -> StaggerAxis {
+    self.axis
+  }
+
+  /// The size of a box `cells` cells across by `cells` lines along, px
+  /// (each way at least 1): with the packing's chunk side, a chunk's box.
+  /// A chunk's 32 lines keep the stagger's phase, so each chunk's box is
+  /// its first cell's (`corner_of`) and the boxes tile the plane
+  pub(crate) fn chunk_box(&self, cells: i32) -> I64Vec2 {
+    let n = i64::from(cells);
+    let (across, along) = ((n * 2 * self.half).max(1), (n * self.step).max(1));
+    match self.axis {
+      StaggerAxis::Y => I64Vec2::new(across, along),
+      StaggerAxis::X => I64Vec2::new(along, across),
+    }
+  }
+
+  /// The corner of `cell`'s box nearest the origin, unshifted (its position
+  /// times a cell across, its line times a step), from the grid's origin:
+  /// a chunk's first cell gives its chunk's box's corner, and each corner
+  /// of a cell is at or past it either way
+  pub(crate) fn corner_of(&self, cell: IVec2) -> I64Vec2 {
+    let (line, pos) = self.split(i64::from(cell.x), i64::from(cell.y));
+    let (u, v) = (pos * 2 * self.half, line * self.step);
+    match self.axis {
+      StaggerAxis::Y => I64Vec2::new(u, v),
+      StaggerAxis::X => I64Vec2::new(v, u),
+    }
   }
 
   /// Clockwise on screen from the top-most corner, as `CellOutline` gives
@@ -83,23 +123,26 @@ impl HexCells {
   }
 
   /// The cell across side `side` (corner `side` to corner `side + 1`), 0..6
-  // used by the tile collision tracer
-  #[allow(dead_code)]
   pub(crate) fn across(&self, cell: IVec2, side: usize) -> IVec2 {
     let (x, y) = self.across_at(i64::from(cell.x), i64::from(cell.y), side);
     IVec2::new(clamp_i32(x), clamp_i32(y))
   }
 
-  /// Whether every corner of `cell` and of its neighbours fits the tracer's i32 points
-  // used by the tile collision tracer
-  #[allow(dead_code)]
+  /// Whether every corner of `cell` and of its neighbours fits the tracer's
+  /// i32 points. Those corners span from a cell across before the cell's
+  /// box to two after it, and from a step before its line to its slanted
+  /// sides' end a step after: the box is worked out, not each corner
   pub(crate) fn reaches(&self, cell: IVec2) -> bool {
-    let (x, y) = (i64::from(cell.x), i64::from(cell.y));
-    self.fit(x, y).is_some()
-      && (0..6).all(|side| {
-        let (nx, ny) = self.across_at(x, y, side);
-        self.fit(nx, ny).is_some()
-      })
+    let (line, pos) = self.split(i64::from(cell.x), i64::from(cell.y));
+    let (h, slant, step) = (
+      i128::from(self.half),
+      i128::from(self.slant),
+      i128::from(self.step),
+    );
+    let u = i128::from(pos) * 2 * h + i128::from(self.shift(line));
+    let v = i128::from(line) * step;
+    let fits = |lo: i128, hi: i128| lo >= i128::from(i32::MIN) && hi <= i128::from(i32::MAX);
+    fits(u - 2 * h, u + 4 * h) && fits(v - step, v + 2 * step + slant)
   }
 
   fn fit(&self, x: i64, y: i64) -> Option<[IVec2; 6]> {
@@ -194,8 +237,129 @@ fn narrow(v: i128) -> i64 {
   v.clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64
 }
 
-// used by the tile collision tracer
-#[allow(dead_code)]
 fn clamp_i32(v: i64) -> i32 {
   v.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  /// Every grid the tests here hold the helpers to, small and huge cells
+  /// among them
+  fn grids() -> Vec<HexCells> {
+    let mut out = Vec::new();
+    for ((w, h), side) in [
+      ((16, 16), 8),
+      ((120, 140), 70),
+      ((15, 17), 7),
+      ((16, 16), 0),
+      ((16, 16), 24),
+      ((16_384, 16_384), 8192),
+      ((40_000, 30_000), 9),
+    ] {
+      for axis in [StaggerAxis::X, StaggerAxis::Y] {
+        for index in [StaggerIndex::Odd, StaggerIndex::Even] {
+          out.push(HexCells::new(axis, index, UVec2::new(w, h), side));
+        }
+      }
+    }
+    out
+  }
+
+  #[test]
+  fn hex_reach_is_whether_every_corner_of_a_cell_and_its_neighbours_fits() {
+    let fits = |hex: &HexCells, cell: IVec2| {
+      let all = |c: IVec2| {
+        hex
+          .corners(c)
+          .iter()
+          .all(|p| i32::try_from(p.x).is_ok() && i32::try_from(p.y).is_ok())
+      };
+      // The cells across, unclamped: a cell at i32's end has neighbours past it
+      let wide = |side: usize| {
+        let (x, y) = hex.across_at(i64::from(cell.x), i64::from(cell.y), side);
+        hex.fit(x, y).is_some()
+      };
+      all(cell) && (0..6).all(wide)
+    };
+    for hex in grids() {
+      // About each grid's limits on either axis, and near the origin
+      let limit = |v: i64| i32::try_from(v).unwrap_or(i32::MAX);
+      let step = i64::from(i32::MAX) / hex.step.max(1);
+      let across = i64::from(i32::MAX) / (2 * hex.half).max(1);
+      let mut at: Vec<i32> = vec![
+        0,
+        1,
+        -1,
+        2,
+        -2,
+        i32::MAX,
+        i32::MIN,
+        i32::MAX - 1,
+        i32::MIN + 1,
+      ];
+      for end in [step, across] {
+        for d in -3..=3 {
+          at.push(limit(end + d));
+          at.push(limit(-end + d));
+        }
+      }
+      for &x in &at {
+        for &y in &at {
+          let cell = IVec2::new(x, y);
+          assert_eq!(hex.reaches(cell), fits(&hex, cell), "{hex:?} {cell}");
+        }
+      }
+    }
+  }
+
+  #[test]
+  fn hex_chunk_boxes_start_at_their_first_cell_s_box() {
+    for hex in grids().into_iter().filter(HexCells::traceable) {
+      let size = hex.chunk_box(32);
+      for chunk in [IVec2::ZERO, IVec2::new(-1, 2), IVec2::new(3, -5)] {
+        let first = chunk * 32;
+        assert_eq!(
+          hex.corner_of(first),
+          chunk.as_i64vec2() * size,
+          "{hex:?} {chunk}"
+        );
+        // Every corner of the chunk's cells is in its box or within a cell
+        // past its far sides
+        let corner = hex.corner_of(first);
+        let cell = hex.chunk_box(1);
+        for y in 0..32 {
+          for x in 0..32 {
+            for p in hex.corners(first + IVec2::new(x, y)) {
+              let at = p - corner;
+              assert!(
+                at.cmpge(glam::I64Vec2::ZERO).all() && at.cmple(size + cell).all(),
+                "{hex:?} {chunk} {x} {y}: {at}"
+              );
+            }
+          }
+        }
+      }
+    }
+  }
+
+  #[test]
+  fn hex_cells_too_thin_flat_or_long_for_the_tracer_are_not_traceable() {
+    let cells =
+      |w, h, side| HexCells::new(StaggerAxis::Y, StaggerIndex::Odd, UVec2::new(w, h), side);
+    assert!(cells(16, 16, 8).traceable());
+    assert!(cells(2, 1, 1).traceable());
+    // Half a cell across rounds to nothing, or no step from line to line
+    assert!(!cells(1, 16, 8).traceable());
+    assert!(!cells(16, 1, 0).traceable());
+    assert!(!cells(16, 0, 0).traceable());
+    // A side so long the hexagon is taller than 16,384 px, though its tile is not
+    assert!(cells(16, 16, 32_000).traceable());
+    assert!(!cells(16, 16, 32_768).traceable());
+    // The same along x
+    let long = |side| HexCells::new(StaggerAxis::X, StaggerIndex::Even, UVec2::new(16, 16), side);
+    assert!(long(32_000).traceable());
+    assert!(!long(32_768).traceable());
+  }
 }

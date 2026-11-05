@@ -7,7 +7,10 @@
 //! its own: the one-way rule measures a collider as a whole (its highest
 //! point along its direction holds a character, its lowest ends a drop), so
 //! only runs on one line can share one. An edit packs again only the chunks
-//! whose loops or runs it changed.
+//! whose loops or runs it changed. On a hexagonal grid a loop's chunk is the
+//! chunk box (32 cells across by 32 lines along) holding its first corner.
+
+use glam::I64Vec2;
 
 use super::{GRID, Point, merge_straight_runs};
 use crate::core::ecs::{Entity, EntityHashMap, Vec2};
@@ -51,6 +54,15 @@ impl PackKey {
 pub(crate) fn point_chunk((x, y): Point) -> (i32, i32) {
   let side = GRID * CHUNK;
   (x.div_euclid(side), y.div_euclid(side))
+}
+
+/// The chunk box holding a hexagonal grid's point (whole pixels from its
+/// origin), `size` a chunk's box (`HexCells::chunk_box`, at least 1 each
+/// way), rounding toward negative infinity.
+pub(crate) fn box_chunk((x, y): Point, size: I64Vec2) -> (i32, i32) {
+  // A quotient is at most the point, so within an `i32`
+  let chunk = |p: i32, side: i64| i64::from(p).div_euclid(side.max(1)) as i32;
+  (chunk(x, size.x), chunk(y, size.y))
 }
 
 /// A loop's corners as packed: straight runs merged, open (the edge back
@@ -269,6 +281,19 @@ mod tests {
     assert_eq!(loop_key(&[(0, 0), (GRID, 0)]), PackKey::Loops(0, 0));
     assert_eq!(loop_key(&[(side - 1, side)]), PackKey::Loops(0, 1));
     assert_eq!(loop_key(&[(side, 2 * side + 5)]), PackKey::Loops(1, 2));
+  }
+
+  #[test]
+  fn a_hex_loop_belongs_to_the_chunk_box_of_its_first_corner() {
+    let size = I64Vec2::new(512, 384);
+    assert_eq!(box_chunk((0, 0), size), (0, 0));
+    assert_eq!(box_chunk((511, 383), size), (0, 0));
+    assert_eq!(box_chunk((512, -1), size), (1, -1));
+    assert_eq!(box_chunk((-513, 769), size), (-2, 2));
+    assert_eq!(
+      box_chunk((i32::MIN, i32::MAX), size),
+      (-4_194_304, 5_592_405)
+    );
   }
 
   #[test]

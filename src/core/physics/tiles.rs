@@ -22,10 +22,11 @@ mod pack;
 mod runs;
 mod shape;
 
-use outline::{Outlines, Unit, unit_edges};
+use hex::HexCells;
+use outline::{HexSides, Outlines, Unit, hex_side_edge, unit_edges};
 #[cfg(test)]
 use outline::{outlines, traced_outlines};
-use pack::{CHUNK, Geometry, PackKey, Packs, ends, loop_key, ring, run_key};
+use pack::{CHUNK, Geometry, PackKey, Packs, box_chunk, ends, loop_key, ring, run_key};
 use runs::Runs;
 #[cfg(test)]
 use runs::one_way_runs;
@@ -370,6 +371,9 @@ pub(crate) struct Cells<'a> {
   /// None for a `Boundary`'s, whose cells come through a closure
   chunks: Option<&'a Chunks>,
   shapes: &'a [(CellShape, ShapeBuild)],
+  /// A hexagonal grid's cells (`TileColliders::with_hex`): its outlines are
+  /// traced on its sides, and it has no one-way runs
+  hex: Option<HexCells>,
 }
 
 impl<'a> Cells<'a> {
@@ -377,6 +381,7 @@ impl<'a> Cells<'a> {
     Self {
       chunks: Some(chunks),
       shapes,
+      hex: None,
     }
   }
 
@@ -385,6 +390,7 @@ impl<'a> Cells<'a> {
     Self {
       chunks: None,
       shapes,
+      hex: None,
     }
   }
 
@@ -492,8 +498,11 @@ impl<'a> Cells<'a> {
     }
   }
 
-  /// A cell's one-way pieces, in cell points.
+  /// A cell's one-way pieces, in cell points; none on a hexagonal grid
   pub(crate) fn tops(&self, cell: TileCell) -> &'a [(Point, Point)] {
+    if self.hex.is_some() {
+      return &[];
+    }
     match cell {
       TileCell::OneWay => &ONE_WAY_TOP,
       TileCell::Shape(shape) => self
@@ -515,6 +524,23 @@ pub(crate) fn corners(cell: TileCell) -> &'static [Corner] {
     TileCell::Slope(SlopeCorner::TopLeft) => &[(0, 0), (1, 0), (0, 1)],
     TileCell::Slope(SlopeCorner::TopRight) => &[(0, 0), (1, 0), (1, 1)],
     TileCell::Empty | TileCell::OneWay | TileCell::Shape(_) => &[],
+  }
+}
+
+/// A cell's corners in its grid's space (`TileColliders::cell_polygon`): 4
+/// on a square lattice, 6 on a hexagonal grid.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct CellPolygon {
+  pub(crate) points: [Vec2; 6],
+  pub(crate) len: u8,
+}
+
+impl CellPolygon {
+  /// Its corners, clockwise on screen
+  // used by navigation's tile blocking
+  #[allow(dead_code)]
+  pub(crate) fn points(&self) -> &[Vec2] {
+    &self.points[..usize::from(self.len)]
   }
 }
 
@@ -633,6 +659,9 @@ pub struct TileColliders {
   /// Lattice units to its space's pixels (`with_lattice`): its cells' place
   /// in place of `tile_size`'s rectangles
   lattice: Option<Affine2>,
+  /// Hexagonal cells and the grid's origin in its space (`with_hex`): its
+  /// cells' place in place of the lattice's or `tile_size`'s
+  hex: Option<(HexCells, Vec2)>,
   pub layer: u32,
   pub mask: u32,
   pub friction: f32,
@@ -730,6 +759,7 @@ impl TileColliders {
       span_stale: false,
       tile_size,
       lattice: None,
+      hex: None,
       layer: 1,
       mask: u32::MAX,
       friction: 0.5,
@@ -956,7 +986,10 @@ impl TileColliders {
   }
 
   pub(crate) fn cells_view(&self) -> Cells<'_> {
-    Cells::new(&self.chunks, &self.shapes)
+    Cells {
+      hex: self.hex.map(|(hex, _)| hex),
+      ..Cells::new(&self.chunks, &self.shapes)
+    }
   }
 
   /// How many chunks of cells it stores (tests: what an unload leaves)
@@ -1158,6 +1191,87 @@ impl TileColliders {
     self.lattice
   }
 
+  /// Its cells are `hex`'s hexagons, `origin` being cell (0, 0)'s box
+  /// corner in its space, in place of `tile_size` rectangles or a lattice's
+  /// (a tile map's hexagonal layers). The outlines are traced on the
+  /// hexagons' sides: a point is a corner's whole pixels from `origin`, and
+  /// each pack's part sits at `origin` plus its chunk's box (32 cells
+  /// across by 32 lines along), its points relative to it. Only `Solid`
+  /// cells join the outlines; one-way, slope and shape cells trace nothing,
+  /// and there are no one-way runs (a tile map makes one-way tiles solid
+  /// off orthogonal grids). Hexagonal colliders always trace outlines:
+  /// `solid_rects` is ignored. A cell whose corners, or its neighbours',
+  /// pass an `i32` of pixels (`HexCells::reaches`) does not collide, as a
+  /// cell past `MAX_REACH` does not. A grid whose cells the tracer does not
+  /// take (`HexCells::traceable`: over 16,384 px, or flat) traces nothing,
+  /// logged once a map.
+  // used by tile maps' collision
+  #[allow(dead_code)]
+  pub(crate) fn with_hex(mut self, hex: HexCells, origin: Vec2) -> Self {
+    self.hex = Some((hex, origin));
+    self
+  }
+
+  /// Its hexagonal cells and their origin (`with_hex`), if any
+  // used by navigation's tile blocking
+  #[allow(dead_code)]
+  pub(crate) fn hex(&self) -> Option<(HexCells, Vec2)> {
+    self.hex
+  }
+
+  /// `cell`'s corners in its space, px (before its `Transform`), clockwise
+  /// on screen: the 4 of its square through the lattice (`with_lattice`)
+  /// or as a `tile_size` rectangle from the origin, or the 6 of its
+  /// hexagon (`with_hex`; a side of length 0 repeats its corner). Worked
+  /// out in f64 and rounded once
+  // used by navigation's tile blocking
+  #[allow(dead_code)]
+  pub(crate) fn cell_polygon(&self, cell: IVec2) -> CellPolygon {
+    let mut points = [Vec2::ZERO; 6];
+    if let Some((hex, origin)) = self.hex {
+      let origin = origin.as_dvec2();
+      for (point, corner) in points.iter_mut().zip(hex.corners(cell)) {
+        *point = (origin + corner.as_dvec2()).as_vec2();
+      }
+      return CellPolygon { points, len: 6 };
+    }
+    let at = cell.as_dvec2();
+    for (point, step) in points
+      .iter_mut()
+      .zip([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])
+    {
+      let corner = at + DVec2::new(step.0, step.1);
+      *point = match self.lattice {
+        Some(to) => through(to, corner),
+        None => (corner * self.tile_size.as_dvec2()).as_vec2(),
+      };
+    }
+    CellPolygon { points, len: 4 }
+  }
+
+  /// Rectangles in place of outlines: `solid_rects`, off hexagonal grids
+  fn rects_mode(&self) -> bool {
+    self.solid_rects && self.hex.is_none()
+  }
+
+  /// A hexagonal grid's chunk box, px (32 cells across by 32 lines along)
+  fn hex_box(hex: &HexCells) -> glam::I64Vec2 {
+    hex.chunk_box(CHUNK)
+  }
+
+  /// The pack of a loop through `corners`: by its first corner's chunk, on
+  /// a hexagonal grid the chunk box holding it
+  fn loop_pack(&self, corners: &[Point]) -> PackKey {
+    match self.hex {
+      Some((hex, _)) => {
+        let first = corners.first().copied().unwrap_or_default();
+        let (x, y) = box_chunk(first, Self::hex_box(&hex));
+        PackKey::Loops(x, y)
+      }
+      None => loop_key(corners),
+    }
+  }
+
   /// A cell corner in its space, px
   fn px(&self, (x, y): Corner) -> Vec2 {
     match self.lattice {
@@ -1175,8 +1289,13 @@ impl TileColliders {
     }
   }
 
-  /// A point of the outline grid in its space, px
+  /// A point of the outline grid in its space, px (on a hexagonal grid,
+  /// whole pixels from its origin)
   fn point(&self, p: Point) -> Vec2 {
+    if let Some((_, origin)) = self.hex {
+      let p = DVec2::new(f64::from(p.0), f64::from(p.1));
+      return (origin.as_dvec2() + p).as_vec2();
+    }
     match self.lattice {
       Some(to) => {
         let grid = f64::from(GRID);
@@ -1187,8 +1306,12 @@ impl TileColliders {
   }
 
   /// Whether its cells have somewhere to be: a finite, positive tile size,
-  /// or a finite lattice that does not fold them flat
+  /// or a finite lattice that does not fold them flat, or hexagons the
+  /// tracer takes from a finite origin
   fn placeable(&self) -> bool {
+    if let Some((hex, origin)) = self.hex {
+      return hex.traceable() && origin.is_finite();
+    }
     match self.lattice {
       Some(to) => to.is_finite() && to.matrix2.determinant() != 0.0,
       None => self.tile_size.is_finite() && self.tile_size.min_element() > 0.0,
@@ -1213,8 +1336,17 @@ impl TileColliders {
 
   /// The top-left of `chunk` (of `CHUNK` cells a side) in the map's
   /// space, px: where a pack's part sits (on a lattice, where it takes the
-  /// chunk's first corner).
+  /// chunk's first corner; on a hexagonal grid, the grid's origin plus the
+  /// chunk's box).
   fn origin(&self, chunk: (i32, i32)) -> Vec2 {
+    if let Some((hex, origin)) = self.hex {
+      let size = Self::hex_box(&hex);
+      let corner = DVec2::new(
+        (i64::from(chunk.0) * size.x) as f64,
+        (i64::from(chunk.1) * size.y) as f64,
+      );
+      return (origin.as_dvec2() + corner).as_vec2();
+    }
     let side = f64::from(CHUNK);
     if let Some(to) = self.lattice {
       let corner = DVec2::new(f64::from(chunk.0), f64::from(chunk.1)) * side;
@@ -1231,6 +1363,12 @@ impl TileColliders {
   /// the point stays small (and as exact as in chunk (0, 0)) however far
   /// out the chunk is.
   fn at(&self, (x, y): Point, chunk: (i32, i32)) -> Vec2 {
+    if let Some((hex, _)) = self.hex {
+      // Whole pixels from the chunk's box, exact in i64
+      let size = Self::hex_box(&hex);
+      let from = |p: i32, chunk: i32, side: i64| (i64::from(p) - i64::from(chunk) * side) as f32;
+      return Vec2::new(from(x, chunk.0, size.x), from(y, chunk.1, size.y));
+    }
     let (grid, side) = (f64::from(GRID), f64::from(GRID) * f64::from(CHUNK));
     let from = |p: i32, chunk: i32| (f64::from(p) - f64::from(chunk) * side) / grid;
     if let Some(to) = self.lattice {
@@ -1263,7 +1401,7 @@ impl TileColliders {
   /// Every part of the map; what an edit can rebuild in place is kept
   /// (none in `solid_rects` mode).
   fn spawn_all(&self, commands: &mut Commands, map: Entity) -> Option<Kept> {
-    if self.solid_rects {
+    if self.rects_mode() {
       let runs = Runs::build(self.cells_view());
       for (min, cells) in solid_rects(self.cells_view()) {
         let rect = if self.lattice.is_some() {
@@ -1332,7 +1470,7 @@ impl TileColliders {
     let mut order = Vec::new();
     let mut dirty = Vec::new();
     for (id, outline) in kept.outlines.loops() {
-      let key = loop_key(&outline.corners);
+      let key = self.loop_pack(&outline.corners);
       let chunk = key.chunk(outline.corners.first().copied().unwrap_or_default());
       kept.loop_packs.place(id, key, &mut dirty);
       dirty.clear();
@@ -1415,7 +1553,7 @@ impl TileColliders {
   /// tracing or building shapes (`Traced`); pure, so any thread can do it.
   /// None in `solid_rects` mode.
   pub(crate) fn trace(&self) -> Option<Traced> {
-    if self.solid_rects {
+    if self.rects_mode() {
       return None;
     }
     let mut kept = Kept {
@@ -1435,6 +1573,7 @@ impl TileColliders {
       generation: self.generation,
       tile_size: self.tile_size,
       lattice: self.lattice,
+      hex: self.hex,
       content: Some((kept, built)),
     })
   }
@@ -1459,7 +1598,7 @@ impl TileColliders {
     }
     for id in retraced.traced {
       if let Some(outline) = kept.outlines.get(id) {
-        let key = loop_key(&outline.corners);
+        let key = self.loop_pack(&outline.corners);
         kept.loop_packs.place(id, key, &mut dirty);
       }
     }
@@ -1562,9 +1701,29 @@ impl TileColliders {
 #[derive(Debug, Default)]
 pub(crate) struct Boundary {
   shapes: Vec<(CellShape, ShapeBuild)>,
+  /// A hexagonal grid's cells (`with_hex`), read by their sides
+  hex: Option<HexCells>,
 }
 
 impl Boundary {
+  /// Reads the cells as `hex`'s hexagons, by the same units as the
+  /// outlines on a hexagonal grid: each cell's sides, each owned by
+  /// whichever of its two cells comes first in row order, a side with one
+  /// solid cell an edge, clockwise round it (only `Solid` cells are solid).
+  /// A block gives the units its cells own (the sides they share with the
+  /// cell right of them and the row below) and, of a bounded grid, those
+  /// its cells share with cells outside the bounds, which own none: so an
+  /// unbounded grid's blocks must reach one block left of and above its
+  /// cells. Points are whole pixels from the box of the block's first cell
+  /// (`HexCells::corner_of`). Cells the tracer does not take
+  /// (`HexCells::traceable`) give nothing
+  // used by tile maps' shadows
+  #[allow(dead_code)]
+  pub(crate) fn with_hex(mut self, hex: HexCells) -> Self {
+    self.hex = Some(hex);
+    self
+  }
+
   /// Adds a shape for `TileCell::Shape` cells to name, as
   /// `TileColliders::add_shape` does (at most 65,535; past that it logs
   /// and returns `u16::MAX`, which names none).
@@ -1640,6 +1799,11 @@ impl Boundary {
     kept: &[PlacedEdge],
     out: &mut Vec<PlacedEdge>,
   ) {
+    if self.hex.is_some() {
+      // A hexagonal block's units read the cells right of it and below it,
+      // not left and above: it is read whole
+      return self.placed_edges(at, min, max, bounds, out);
+    }
     let cells = Cells::shapes_only(&self.shapes);
     let local = Self::local(&at, min, bounds);
     let (w, h) = (max.0 - min.0, max.1 - min.1);
@@ -1695,6 +1859,9 @@ impl Boundary {
     bounds: Option<CellRect>,
     out: &mut impl UnitSink,
   ) {
+    if let Some(hex) = self.hex {
+      return Self::hex_scan(hex, at, min, max, bounds, out);
+    }
     let cells = Cells::shapes_only(&self.shapes);
     let local = Self::local(&at, min, bounds);
     let (w, h) = (max.0 - min.0, max.1 - min.1);
@@ -1723,18 +1890,62 @@ impl Boundary {
       }
     }
   }
+
+  /// A hexagonal block's units in row order, each cell's sides in turn
+  /// (`with_hex`), each edge handed to `out`
+  fn hex_scan(
+    hex: HexCells,
+    at: impl Fn(i32, i32) -> TileCell,
+    min: (i32, i32),
+    max: (i32, i32),
+    bounds: Option<CellRect>,
+    out: &mut impl UnitSink,
+  ) {
+    if !hex.traceable() {
+      return;
+    }
+    let sides = HexSides::of(hex);
+    let inside = |cell: IVec2| bounds.is_none_or(|bounds| bounds.contains(cell));
+    let solid = |cell: IVec2| inside(cell) && at(cell.x, cell.y) == TileCell::Solid;
+    let from = hex.corner_of(IVec2::new(min.0, min.1));
+    for y in min.1..max.1 {
+      for x in min.0..max.0 {
+        let cell = IVec2::new(x, y);
+        if !inside(cell) {
+          continue;
+        }
+        let mine = solid(cell);
+        let mut corners = None;
+        for side in 0..6 {
+          // Its own sides, and those it shares with a cell outside the bounds
+          let (across, owned) = sides.across(cell, side);
+          if !(owned || !inside(across)) || solid(across) == mine {
+            continue;
+          }
+          let corners = corners.get_or_insert_with(|| hex.corners(cell));
+          if let Some(edge) = hex_side_edge(corners, side, mine, from) {
+            out.side(x - min.0, y - min.1, side, edge);
+          }
+        }
+      }
+    }
+  }
 }
 
 /// A boundary edge and its unit's place in a block's scan
 /// (`Boundary::placed_edges`): from the block's top-left, by row, then
 /// column, then the cell's inside, the border on its left and the border
 /// above it, packed as `y << 16 | x << 2 | kind` (0, 1 and 2), so the
-/// scan's order is the places' order
+/// scan's order is the places' order. On a hexagonal grid, by row, column
+/// and the side of the cell met, `y << 16 | x << 3 | side` (a block at most
+/// 8,191 cells across)
 pub(crate) type PlacedEdge = (u32, Point, Point);
 
 /// Where a block's scan hands each unit
 trait UnitSink {
   fn unit(&mut self, unit: Unit, cells: &Cells, at: &impl Fn(i32, i32) -> TileCell);
+  /// A hexagonal block's edge along side `side` of its cell (`x`, `y`)
+  fn side(&mut self, x: i32, y: i32, side: usize, edge: (Point, Point));
 }
 
 /// A scan's edges pushed as they come
@@ -1745,6 +1956,10 @@ struct Plain<'o>(&'o mut Vec<(Point, Point)>);
 impl UnitSink for Plain<'_> {
   fn unit(&mut self, unit: Unit, cells: &Cells, at: &impl Fn(i32, i32) -> TileCell) {
     unit_edges(unit, cells, at, self.0);
+  }
+
+  fn side(&mut self, _: i32, _: i32, _: usize, edge: (Point, Point)) {
+    self.0.push(edge);
   }
 }
 
@@ -1777,6 +1992,12 @@ impl UnitSink for Placed<'_> {
     self
       .out
       .extend(self.unit.iter().map(|&(a, b)| (place, a, b)));
+  }
+
+  fn side(&mut self, x: i32, y: i32, side: usize, (a, b): (Point, Point)) {
+    debug_assert!((0..0x2000).contains(&x) && (0..0x1_0000).contains(&y));
+    let place = ((y as u32) << 16) | ((x as u32) << 3) | side as u32;
+    self.out.push((place, a, b));
   }
 }
 
@@ -1813,6 +2034,7 @@ struct TileRecord {
   generation: u64,
   tile_size: [u32; 2],
   lattice: Option<[u32; 6]>,
+  hex: Option<(HexCells, [u32; 2])>,
   layer: u32,
   mask: u32,
   friction: u32,
@@ -1826,6 +2048,9 @@ impl TileRecord {
       generation: tiles.generation,
       tile_size: [tiles.tile_size.x.to_bits(), tiles.tile_size.y.to_bits()],
       lattice: tiles.lattice.map(|to| to.to_cols_array().map(f32::to_bits)),
+      hex: tiles
+        .hex
+        .map(|(hex, origin)| (hex, origin.to_array().map(f32::to_bits))),
       layer: tiles.layer,
       mask: tiles.mask,
       friction: tiles.friction.to_bits(),
@@ -1870,6 +2095,7 @@ pub(crate) struct Traced {
   generation: u64,
   tile_size: Vec2,
   lattice: Option<Affine2>,
+  hex: Option<(HexCells, Vec2)>,
   content: Option<(Kept, Vec<BuiltPack>)>,
 }
 
@@ -1969,13 +2195,16 @@ pub(crate) fn rebuild_tile_colliders(
           commands.entity(map).try_remove::<Traced>();
           let current = traced.generation == tiles.generation
             && traced.tile_size == tiles.tile_size
-            && traced.lattice == tiles.lattice;
-          (current && !tiles.solid_rects)
+            && traced.lattice == tiles.lattice
+            && traced.hex == tiles.hex;
+          (current && !tiles.rects_mode())
             .then(|| traced.content.take())
             .flatten()
         });
         let kept = if !tiles.placeable() {
-          let message = if tiles.lattice.is_some() {
+          let message = if tiles.hex.is_some() {
+            "TileColliders needs hexagons at least 2 px across, at most 16,384 px either way, with a step of a pixel or more from line to line, and a finite origin; no colliders built"
+          } else if tiles.lattice.is_some() {
             "TileColliders needs a finite lattice that does not fold its cells flat; no colliders built"
           } else {
             "TileColliders needs a positive tile size; no colliders built"
@@ -2588,6 +2817,270 @@ mod tests {
       Some(SlopeCorner::TopRight)
     );
     assert_eq!(SlopeCorner::from_name("sideways"), None);
+  }
+
+  use hex::{HexCells, StaggerAxis, StaggerIndex};
+  use std::collections::BTreeSet;
+
+  /// The hexagonal grids the tracer is held to: every axis and index, at
+  /// the cell sizes and sides that matter, sides of length 0 left out
+  pub(super) fn hex_variants() -> Vec<HexCells> {
+    let mut out = Vec::new();
+    for ((w, h), side) in [
+      ((16, 16), 8),
+      ((120, 140), 70),
+      ((15, 17), 7),
+      ((16, 16), 24),
+    ] {
+      for axis in [StaggerAxis::X, StaggerAxis::Y] {
+        for index in [StaggerIndex::Odd, StaggerIndex::Even] {
+          out.push(HexCells::new(axis, index, UVec2::new(w, h), side));
+        }
+      }
+    }
+    out
+  }
+
+  /// A hexagon's corner as an outline point
+  pub(super) fn hex_point(corner: glam::I64Vec2) -> Point {
+    (corner.x as i32, corner.y as i32)
+  }
+
+  /// The sides of `solid` cells whose cell across is not solid, clockwise
+  /// round the solid one, sides of length 0 left out, sorted: worked out
+  /// from `HexCells` alone
+  pub(super) fn sides_with_one_solid(
+    hex: &HexCells,
+    solid: &BTreeSet<(i32, i32)>,
+  ) -> Vec<(Point, Point)> {
+    let mut edges = Vec::new();
+    for &(x, y) in solid {
+      let cell = IVec2::new(x, y);
+      let corners = hex.corners(cell);
+      for side in 0..6 {
+        let across = hex.across(cell, side);
+        if solid.contains(&(across.x, across.y)) {
+          continue;
+        }
+        let (a, b) = (corners[side], corners[(side + 1) % 6]);
+        if a != b {
+          edges.push((hex_point(a), hex_point(b)));
+        }
+      }
+    }
+    edges.sort_unstable();
+    edges
+  }
+
+  /// Every loop's edges, sorted, each loop checked closed and without an
+  /// edge of length 0 (as traced, and as packed with straight runs merged)
+  pub(super) fn hex_traced_edges(state: &Outlines) -> Vec<(Point, Point)> {
+    let mut edges = Vec::new();
+    for (_, outline) in state.loops() {
+      let corners = &outline.corners;
+      assert_eq!(corners.first(), corners.last(), "closed: {corners:?}");
+      assert!(
+        corners.windows(2).all(|pair| pair[0] != pair[1]),
+        "no edge of length 0: {corners:?}"
+      );
+      let ring = ring(corners);
+      let n = ring.len();
+      assert!(
+        n >= 3 && (0..n).all(|i| ring[i] != ring[(i + 1) % n]),
+        "no point twice in a row: {ring:?}"
+      );
+      edges.extend(corners.windows(2).map(|pair| (pair[0], pair[1])));
+    }
+    edges.sort_unstable();
+    edges
+  }
+
+  #[test]
+  fn a_hex_boundary_gives_the_same_edges_as_its_outlines() {
+    let mut seed = 0x3c6e_f372_u32;
+    let mut next = |n: u32| {
+      seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+      (seed >> 8) % n
+    };
+    let variants = hex_variants();
+    // Unbounded, across chunks either side of 0: blocks of 8 from a block
+    // left of and above the cells to one past them, each block's edges in
+    // points from its first cell's box
+    for round in 0..50 {
+      let hex = variants[round % variants.len()];
+      let mut tiles = TileColliders::unbounded(Vec2::ONE).with_hex(hex, Vec2::ZERO);
+      let reach = if round % 2 == 0 { 40 } else { 8 };
+      for _ in 0..60 {
+        let at = IVec2::new(
+          next(2 * reach) as i32 - reach as i32,
+          next(2 * reach) as i32 - reach as i32,
+        );
+        tiles.set(at, [S, S, S, O][next(4) as usize]);
+      }
+      let traced = hex_traced_edges(&Outlines::build(tiles.cells_view()));
+      assert!(!traced.is_empty());
+      let boundary = Boundary::default().with_hex(hex);
+      let at = |x: i32, y: i32| tiles.get(IVec2::new(x, y));
+      let mut pieced = Vec::new();
+      for by in (-48..48).step_by(8) {
+        for bx in (-48..48).step_by(8) {
+          let (min, max) = ((bx, by), (bx + 8, by + 8));
+          let (mut block, mut placed, mut rebuilt) = (Vec::new(), Vec::new(), Vec::new());
+          boundary.edges(at, min, max, None, &mut block);
+          boundary.placed_edges(at, min, max, None, &mut placed);
+          boundary.rebuilt_borders(at, min, max, None, &placed, &mut rebuilt);
+          let unplaced: Vec<(Point, Point)> = placed.iter().map(|&(_, a, b)| (a, b)).collect();
+          assert_eq!(unplaced, block, "placed edges are the scan's");
+          assert_eq!(rebuilt, placed, "and its borders rebuilt give them");
+          assert!(
+            placed.windows(2).all(|pair| pair[0].0 <= pair[1].0),
+            "in order"
+          );
+          let from = hex.corner_of(IVec2::new(bx, by));
+          let moved = |(x, y): Point| {
+            (
+              (i64::from(x) + from.x) as i32,
+              (i64::from(y) + from.y) as i32,
+            )
+          };
+          pieced.extend(block.into_iter().map(|(a, b)| (moved(a), moved(b))));
+        }
+      }
+      pieced.sort_unstable();
+      assert_eq!(pieced, traced, "{hex:?} round {round}");
+    }
+    // Bounded, in blocks that do not divide it: the sides on its border
+    // against the cells outside it come too, whoever owns them
+    for (round, hex) in variants.into_iter().enumerate() {
+      let (w, h) = (13, 11);
+      let mut tiles = TileColliders::new(w, h, Vec2::ONE).with_hex(hex, Vec2::ZERO);
+      for y in 0..h {
+        for x in 0..w {
+          if next(3) > 0 {
+            tiles.set(xy(x, y), S);
+          }
+        }
+      }
+      let traced = hex_traced_edges(&Outlines::build(tiles.cells_view()));
+      let boundary = Boundary::default().with_hex(hex);
+      let bounds = Some(CellRect::from_size(UVec2::new(w, h)));
+      let at = |x: i32, y: i32| tiles.get(IVec2::new(x, y));
+      let mut pieced = Vec::new();
+      for by in (0..h as i32).step_by(4) {
+        for bx in (0..w as i32).step_by(4) {
+          let max = ((bx + 4).min(w as i32), (by + 4).min(h as i32));
+          let mut block = Vec::new();
+          boundary.edges(at, (bx, by), max, bounds, &mut block);
+          let from = hex.corner_of(IVec2::new(bx, by));
+          let moved = |(x, y): Point| {
+            (
+              (i64::from(x) + from.x) as i32,
+              (i64::from(y) + from.y) as i32,
+            )
+          };
+          pieced.extend(block.into_iter().map(|(a, b)| (moved(a), moved(b))));
+        }
+      }
+      pieced.sort_unstable();
+      assert_eq!(pieced, traced, "bounded {hex:?} {round}");
+    }
+  }
+
+  #[test]
+  fn a_hex_cell_past_the_reach_draws_but_does_not_collide() {
+    // 64 px cells: a cell 40,000,000 cells out has corners past i32 (and
+    // is past the grid's own reach): no loop, no part, no panic
+    let hex = HexCells::new(StaggerAxis::Y, StaggerIndex::Odd, UVec2::new(64, 64), 32);
+    let far = IVec2::new(40_000_000, 0);
+    assert!(!hex.reaches(far));
+    let mut tiles = TileColliders::unbounded(Vec2::splat(64.0)).with_hex(hex, Vec2::ZERO);
+    assert!(!tiles.set(far, S));
+    assert_eq!(Outlines::build(tiles.cells_view()).loops().count(), 0);
+    let packs = |tiles: &TileColliders| {
+      let traced = tiles.trace().expect("outlines");
+      traced.content.map_or(0, |(_, built)| built.len())
+    };
+    assert_eq!(packs(&tiles), 0);
+    // Cells of 16,384 px within the grid's reach whose corners pass i32
+    // from x 131,070: empty to the tracer, so a loop round the last cell
+    // that reaches closes beside them, and edits past it trace nothing
+    let hex = HexCells::new(
+      StaggerAxis::Y,
+      StaggerIndex::Odd,
+      UVec2::new(16_384, 16_384),
+      8192,
+    );
+    assert!(hex.traceable());
+    let last = (131_000..)
+      .take_while(|&x| hex.reaches(IVec2::new(x, 0)))
+      .last()
+      .expect("cells that reach");
+    assert!(last < MAX_REACH && last > 131_000, "{last}");
+    let mut tiles = TileColliders::unbounded(Vec2::ONE).with_hex(hex, Vec2::ZERO);
+    for x in last - 1..last + 3 {
+      assert!(tiles.set(IVec2::new(x, 0), S), "stored: {x}");
+    }
+    tiles.take_changes();
+    let mut state = Outlines::build(tiles.cells_view());
+    let reached = [(last - 1, 0), (last, 0)].into_iter().collect();
+    assert_eq!(
+      hex_traced_edges(&state),
+      sides_with_one_solid(&hex, &reached)
+    );
+    for (x, kind) in [(last + 1, E), (last + 5, S), (last, E), (last, S)] {
+      tiles.set(IVec2::new(x, 0), kind);
+      let changed = tiles.take_changes().expect("listed");
+      state.apply(tiles.cells_view(), &changed);
+      assert_eq!(
+        hex_traced_edges(&state),
+        hex_traced_edges(&Outlines::build(tiles.cells_view())),
+        "{x}"
+      );
+    }
+    assert_eq!(packs(&tiles), 1);
+  }
+
+  #[test]
+  fn hex_cell_polygons_are_their_corners_from_the_origin_and_squares_their_four() {
+    let hex = HexCells::new(StaggerAxis::X, StaggerIndex::Even, UVec2::new(120, 140), 70);
+    let origin = Vec2::new(5.0, -3.0);
+    let tiles = TileColliders::unbounded(Vec2::ONE).with_hex(hex, origin);
+    assert_eq!(tiles.hex(), Some((hex, origin)));
+    let cell = IVec2::new(-3, 7);
+    let polygon = tiles.cell_polygon(cell);
+    let corners: Vec<Vec2> = hex
+      .corners(cell)
+      .iter()
+      .map(|c| c.as_vec2() + origin)
+      .collect();
+    assert_eq!(polygon.points(), corners);
+    // Square grids: four corners, clockwise, through the lattice if any
+    let square = TileColliders::unbounded(Vec2::new(16.0, 8.0));
+    assert_eq!(square.hex(), None);
+    assert_eq!(
+      square.cell_polygon(IVec2::new(2, -1)).points(),
+      [
+        Vec2::new(32.0, -8.0),
+        Vec2::new(48.0, -8.0),
+        Vec2::new(48.0, 0.0),
+        Vec2::new(32.0, 0.0)
+      ]
+    );
+    let iso = Affine2::from_cols(
+      Vec2::new(32.0, 16.0),
+      Vec2::new(-32.0, 16.0),
+      Vec2::new(100.0, 0.0),
+    );
+    let diamonds = TileColliders::unbounded(Vec2::new(64.0, 32.0)).with_lattice(iso);
+    assert_eq!(
+      diamonds.cell_polygon(IVec2::new(1, 0)).points(),
+      [
+        Vec2::new(132.0, 16.0),
+        Vec2::new(164.0, 32.0),
+        Vec2::new(132.0, 48.0),
+        Vec2::new(100.0, 32.0)
+      ]
+    );
   }
 }
 
@@ -3709,6 +4202,68 @@ mod with_physics {
     corners.sort_unstable();
     corners.dedup();
     assert_eq!(corners, [(384, 256), (384, 272), (400, 256), (400, 272)]);
+  }
+
+  #[test]
+  fn hex_parts_sit_at_their_chunk_box_with_chunk_relative_vertices() {
+    use super::hex::{HexCells, StaggerAxis, StaggerIndex};
+    for (axis, index) in [
+      (StaggerAxis::Y, StaggerIndex::Odd),
+      (StaggerAxis::X, StaggerIndex::Even),
+    ] {
+      let hex = HexCells::new(axis, index, UVec2::new(16, 16), 8);
+      let origin = Vec2::new(5.0, -3.0);
+      let mut tiles = TileColliders::unbounded(Vec2::splat(16.0)).with_hex(hex, origin);
+      // A cell well inside chunk (0, 0) and one well inside chunk (-1, 2),
+      // whose corners are in those chunks' boxes: 32 cells across by 32
+      // lines along (512 px by 384 px)
+      let cells = [(IVec2::new(10, 12), (0, 0)), (IVec2::new(-20, 80), (-1, 2))];
+      for (cell, _) in cells {
+        assert!(tiles.set(cell, TileCell::Solid));
+      }
+      let size = hex.chunk_box(CHUNK).as_vec2();
+      let expected = match axis {
+        StaggerAxis::Y => Vec2::new(512.0, 384.0),
+        StaggerAxis::X => Vec2::new(384.0, 512.0),
+      };
+      assert_eq!(size, expected);
+      let (mut world, mut s) = world(60);
+      let map = world.spawn((Transform::IDENTITY, tiles)).id();
+      run(&mut world, &mut s, 1);
+      let mut query = world.query::<(&ChildOf, &Transform, &Collider)>();
+      let mut parts: Vec<(Vec2, Collider)> = query
+        .iter(&world)
+        .filter(|(child_of, ..)| child_of.parent() == map)
+        .map(|(_, at, collider)| (at.translation, collider.clone()))
+        .collect();
+      parts.sort_by(|a, b| a.0.x.total_cmp(&b.0.x));
+      assert_eq!(parts.len(), 2, "{axis:?}");
+      let mut cells = cells.to_vec();
+      cells.sort_by_key(|(_, chunk)| chunk.0);
+      for ((at, collider), (cell, chunk)) in parts.iter().zip(cells) {
+        let corner = Vec2::new(chunk.0 as f32, chunk.1 as f32) * size;
+        assert_eq!(*at, origin + corner, "{axis:?} {cell}");
+        let ColliderShape::Polyline { points } = &collider.shape else {
+          panic!("one loop is a closed polyline: {collider:?}");
+        };
+        assert!(
+          points
+            .iter()
+            .all(|p| p.cmpge(Vec2::splat(-16.0)).all() && p.cmple(size + 16.0).all()),
+          "{axis:?} {points:?}"
+        );
+        let mut got: Vec<(i32, i32)> = points.iter().map(|p| (p.x as i32, p.y as i32)).collect();
+        got.sort_unstable();
+        got.dedup();
+        let mut want: Vec<(i32, i32)> = hex
+          .corners(cell)
+          .iter()
+          .map(|c| (c.x as i32 - corner.x as i32, c.y as i32 - corner.y as i32))
+          .collect();
+        want.sort_unstable();
+        assert_eq!(got, want, "{axis:?} {cell}");
+      }
+    }
   }
 
   #[test]
