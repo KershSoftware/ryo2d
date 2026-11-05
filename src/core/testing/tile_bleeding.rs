@@ -483,7 +483,8 @@ fn animated(ctx: &mut SceneContext) {
 }
 
 /// A tile object of a 128 x 160 tile (A, from an atlas of four with
-/// neighbours, a texture of its own, its cells the tiles themselves)
+/// neighbours, a texture of its own, its cells the tiles' own width and a
+/// little taller than they are)
 /// centred on the world's origin
 fn tile_object(ctx: &mut SceneContext) {
   let size = UVec2::new(128, 160);

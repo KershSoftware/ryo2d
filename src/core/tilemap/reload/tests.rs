@@ -1573,8 +1573,9 @@ fn colour_of(tile: u32) -> [u8; 4] {
 #[test]
 fn a_tileset_padded_again_never_draws_its_old_image_with_new_places() {
   // 480 tiles of 32 px pad to 768 x 640 px, a texture of its own; 600 pad
-  // to 800 x 768 px, over a frame's upload budget, in more columns, so
-  // every tile's place in the padded image moves
+  // to 800 x 768 px, over a frame's upload budget, in more columns (25
+  // where there were 24): the first 24 tiles keep their texel places, but
+  // every tile's UVs change, since the image's size does
   let (set, image) = many(480);
   let data: Vec<u32> = (1..=32).collect();
   let layer = tiles(1, "ground", (8, 4), &data, "");
