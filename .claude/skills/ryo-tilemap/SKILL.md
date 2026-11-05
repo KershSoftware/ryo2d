@@ -301,6 +301,7 @@ for (entity, hits) in bricks {
 | `tile_data(map, tile) -> Option<TileData>` | what the tile's tileset says about it |
 | `world_to_cell(map, layer, world: Vec2) -> Option<IVec2>`, `cell_to_world(map, layer, cell) -> Option<Vec2>` | through the map's and the layer's transforms and the layer's grid (section 11): the cell whose outline holds the point; a cell's centre |
 | `grid(map, layer) -> Option<LayerGrid>` | the layer's grid and where its pixels are in the world, on every grid: picking, outlines in the world and the board tools (below) |
+| `navigation(map, layer, window: CellRect) -> Option<NavigationGrid>` | a navigation grid over a window of the layer's cells on any grid, the map's collision and a stream's chunks not landed blocked (section 8) |
 | `layer_entity(map, layer) -> Option<Entity>` | the layer's entity |
 | `bounds(map) -> Option<CellRect>`, `layer_bounds(map, layer) -> Option<CellRect>` | the cells the map, or a tile layer, covers as it is now: a bounded one's size; an unbounded one's cells holding tiles, class tiles included, following every edit (empty with none; it looks at every chunk, so on a map grown to many chunks read it when the map changes, not every frame) |
 | `spawn_levels_in(world, area: Rect) -> Vec<Entity>`, `spawn_levels_in_with(world, area, depth, configure)` | the levels of a world near a place, the second setting each root up (section 13) |
@@ -440,7 +441,20 @@ let kind: Option<TileCell> = lattice.and_then(|lattice| {
 - **A moving platform flush with the ground:** a character level with both the map's ground and a moving platform rides the platform.
 - **A disabled map** has no colliders; enabled, it builds them from its tiles as they then are, on the main thread (section 2).
 - **Long levels:** a grid holds the chunks its layers have, of any length: a 10,000 x 64 runner level collides end to end. A cell collides within 186,411 cells of (0, 0) on either axis (about 3 million px of 16 px tiles); a tile farther out, on an unbounded layer or on a bounded one long enough to reach it, draws and casts its shadow but does not collide, and the dev log says so once. That reach is where the outline lattice's 32-bit points run out, not where f32 positions stay precise: a `Transform`'s f32 pixels are an eighth of a pixel apart a million px out (2^20), a quarter of a pixel at the reach (Rapier's f32 metres about 0.2 px), and a whole pixel past 8.4 million px (2^23), so slow movement steps visibly well before the reach; keep precise play within about a million px of the origin.
-- **Navigation:** `NavigationGrid::rebuild_from_world` blocks a map's solid and slope cells, and the shape cells whose shape covers the cell's centre; one-way cells stay walkable. Navigation over isometric, staggered and hexagonal maps (and skewed oblique ones) isn't supported yet: their grids block nothing, and the dev log warns once a navigation grid.
+- **Navigation:** `ctx.maps().navigation(map, layer, window)` is a `NavigationGrid` over `window` (a `CellRect`, max exclusive) of a tile layer's own cells, on any grid: six neighbours on a hexagonal map, the eight of its square lattice on every other, each step costing its world distance, so an isometric path takes its screen distance (`ryo-game-dev`, Navigation). Every colliding layer of the map blocks it: solid and slope cells, and shape cells whose shape covers the cell's centre; one-way cells stay walkable (off an orthogonal map one-way tiles collide both ways, and block as solid ones). Its tiles are placed by the map's transform as it is now, so a map moved this frame blocks where it now is. On a streamed map every cell of a chunk not landed is blocked too (section 12). `None` until the map lands, or for a layer that is not a tile layer. The grid is a copy of the map as it is now: add the game's own obstacles (`block_collider`, `block_rect`) and costs (`set`), and take it again after an edit. It is `NavigationGrid::for_layer(ctx.maps().grid(map, layer)?, window)` with each of the map's `TileColliders` blocked through `block_tiles(&tiles, to_world)`, `to_world` the whole world transform of the entity holding it; `rebuild_from_world` blocks every collider in the world, tile maps through `block_tiles` with their `GlobalTransform`, onto a grid of any kind (on a square world grid a map's diamonds and hexagons block every square they share area with).
+
+<!-- self: board: Entity, paths: Option<NavigationGrid> -->
+```rust
+// The board's hexes as a navigation grid, its walls blocked and a marsh
+// hex costing three steps: taken again after the board changes
+let maps = ctx.maps();
+if let Some(bounds) = maps.bounds(self.board) {
+  self.paths = maps.navigation(self.board, "ground", bounds);
+}
+if let Some(paths) = &mut self.paths {
+  paths.set(GridCoord::new(4, 2), CellState::Difficult(3.0));
+}
+```
 
 ## 9. Shadows
 
@@ -629,9 +643,9 @@ ctx.world.spawn((
 - **The web has no threads:** the generator runs on the main thread, within `web_budget` (2 ms) of each frame, at least one chunk a frame. Keep it cheap there, or set a smaller budget and let chunks arrive over more frames.
 - **A Tiled infinite map streams too**, its saved chunks the hand-made part of the world and the generator filling everything else: spawn it with a `MapStream` as any map. Every engine chunk (32 x 32 cells) that any layer's Tiled chunk touches belongs to the file, the cells Tiled left empty included, so a deliberately empty plaza beside hand-made ground stays empty: the generator is never asked for those chunks, and fills only chunks the designer never touched. The file's chunks are resident from the start, wherever the anchors are: they draw, collide, take edits and count for `stream_ready`, and never unload, so a big hand-made area stays in memory. They land with the map (`MapEvent::Spawned`) and send no `ChunkEvent`. Since they never unload, a save game keeps their edits only through `save_changed_chunks`, which puts in each one changed since the map landed, or as the map's root goes; a stream given that `SavedChunks` puts them back as it starts.
 - A map built in code with tiles in its asset keeps those chunks the same way; one built empty with `TileMap::infinite` leaves every chunk to the stream. A map with no unbounded tile layer streams nothing, warned.
+- **Paths over a streamed map:** take a grid over the window of cells the game paths in, such as the cells within the load distance of the player, with `ctx.maps().navigation(map, layer, window)` (section 8). Every cell of a chunk not landed is blocked, so a path keeps to ground that has landed and never runs into a chunk not generated yet. The grid is a copy and does not follow the chunks as they come and go: take it again after `ChunkEvent`s or edits (example below). A grid filled with `rebuild_from_world` treats chunks not landed as open.
 - **Limits:**
   - A `ChunkOwned` entity goes only with the chunk it names. One tagged with a chunk not resident, or placed from a `Loaded` read after its chunk unloaded again, stays until that chunk next lands and unloads or the root goes; one that moves goes when the chunk it was tagged with unloads, wherever it is (change its `ChunkOwned` as it crosses into another chunk).
-  - A `NavigationGrid` built over a streamed map (`rebuild_from_world`) treats chunks not landed as open, and does not follow chunks as they come and go: rebuild it on `ChunkEvent`s, and keep paths within the resident chunks.
   - Replacing a live root's `MapStream` keeps the chunks the old generator made, and later unloads and the root's going put the player's changes into the new store: to stream afresh, despawn the old root (its changes go to the store it holds) and spawn a new one with its `MapRoot` and `MapStream` together.
   - A save of the map that makes a chunk hand-made where the player had changed the generated one leaves the player's copy in `SavedChunks`, and the next stream of the map puts it back over the new hand-made chunk: `remove` that chunk from the store.
   - Every anchor's area is checked against the others' each frame, so hundreds of anchors cost far more than their chunks; a few cost nothing to speak of.
@@ -668,6 +682,29 @@ for event in ctx.messages::<ChunkEvent>() {
       Renderable::image(self.slime.clone()),
       ChunkOwned { map, chunk },
     ));
+  }
+}
+```
+
+Paths kept to the landed ground on an orthogonal map, the grid taken again as its chunks come and go:
+
+<!-- self: world: Entity, player: Entity, paths: Option<NavigationGrid> -->
+```rust
+let chunks_moved = ctx.messages::<ChunkEvent>().iter().any(|event| match event {
+  ChunkEvent::Loaded { map, .. } | ChunkEvent::Unloading { map, .. } => *map == self.world,
+});
+if chunks_moved || self.paths.is_none() {
+  // The cells within 512 px of the player
+  let at = ctx.world.get::<Transform>(self.player).map(|t| t.translation).unwrap_or_default();
+  let maps = ctx.maps();
+  let near = Vec2::splat(512.0);
+  let corners = (
+    maps.world_to_cell(self.world, "ground", at - near),
+    maps.world_to_cell(self.world, "ground", at + near),
+  );
+  if let (Some(lo), Some(hi)) = corners {
+    let window = CellRect::new(lo, hi + IVec2::ONE);
+    self.paths = maps.navigation(self.world, "ground", window);
   }
 }
 ```

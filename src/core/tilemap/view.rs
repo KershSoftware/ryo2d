@@ -3,12 +3,14 @@
 use glam::{Affine2, IVec2, UVec2, Vec2};
 
 use super::edit::{self, LayerRef};
-use super::spawn::{self, MapIds, MapRoot};
+use super::spawn::{self, MapIds, MapLayers, MapRoot, TileLayerData};
 use super::stream;
 use super::world::{self, WorldRef};
-use super::{CellOutline, MapGrid, Tile, TileData, WorldLevel, wang};
+use super::{CHUNK_SIZE, CellOutline, MapGrid, Tile, TileData, TileGrid, WorldLevel, wang};
 use crate::core::ecs::{Entity, World};
-use crate::core::physics::CellRect;
+use crate::core::hash::FastSet;
+use crate::core::navigation::{CellState, GridCoord, NavigationGrid};
+use crate::core::physics::{CellRect, TileColliders};
 use crate::core::ui::Rect;
 
 /// A spawned tile layer's grid and where its pixels are in the world
@@ -407,6 +409,81 @@ impl<'w> MapsView<'w> {
     Some(self.grid(map, layer)?.cell_center_world(cell))
   }
 
+  /// A navigation grid over `window` (max exclusive) of `layer`'s own
+  /// cells ([`NavigationGrid::for_layer`] on [`grid`](Self::grid)): every
+  /// colliding layer of `map` blocks through
+  /// [`NavigationGrid::block_tiles`], and on a streamed map every cell of a
+  /// chunk not resident is `Blocked`. `None` until the map lands, or when
+  /// `layer` isn't a tile layer.
+  ///
+  /// The colliders are the map's [`TileColliders`]: its own, and those of
+  /// any layer colliding as a grid of its own (another grid, offset or
+  /// material), each placed by its entity's whole transform as it is now,
+  /// as `grid` reads the layer's, so a map moved this frame blocks where
+  /// its cells now are. Solid and slope cells block, and shape cells whose
+  /// shape covers the cell's centre; one-way cells stay walkable. A
+  /// disabled map has no colliders, so nothing blocks.
+  ///
+  /// On a map with a [`MapStream`](super::MapStream) a chunk the stream
+  /// has not landed has no tiles to collide with yet, so its cells of an
+  /// unbounded layer (the layers that stream) are `Blocked`, and a path
+  /// keeps to the ground that has landed. This holds from the stream's
+  /// first frame, the frame the map lands (or the frame after a
+  /// `MapStream` is put on a landed map), as
+  /// [`stream_status`](Self::stream_status) reads it. A map not streamed,
+  /// one whose `MapStream` was taken away included, blocks no chunk for
+  /// being absent.
+  ///
+  /// The grid is a copy of the map as it is now: the game adds its own
+  /// colliders ([`NavigationGrid::block_collider`]) and costs
+  /// ([`NavigationGrid::set`]), and takes the grid again after
+  /// [`ChunkEvent`](super::ChunkEvent)s or edits. It costs the window's
+  /// cells (8 bytes each; a window past 4,194,304 cells is cut down as
+  /// `for_layer` says) and the colliding cells in it.
+  ///
+  /// ```
+  /// use ryo2d::prelude::*;
+  ///
+  /// /// The way from one point to another over the board's hexes, round
+  /// /// its walls
+  /// fn route(ctx: &mut SceneContext<'_>, board: Entity, from: Vec2, to: Vec2) -> Option<Path> {
+  ///   let maps = ctx.maps();
+  ///   let grid = maps.navigation(board, "ground", maps.bounds(board)?)?;
+  ///   Pathfinder::new().find_path(&grid, from.x, from.y, to.x, to.y).path()
+  /// }
+  /// ```
+  pub fn navigation<'a>(
+    &self,
+    map: Entity,
+    layer: impl Into<LayerRef<'a>>,
+    window: CellRect,
+  ) -> Option<NavigationGrid> {
+    if !self.is_ready(map) {
+      return None;
+    }
+    let layer = layer.into();
+    let entity = edit::layer_entity(self.world, map, layer)?;
+    let unbounded = self
+      .world
+      .get::<TileLayerData>(entity)?
+      .tiles
+      .bounds()
+      .is_none();
+    let mut grid = NavigationGrid::for_layer(edit::layer_grid(self.world, map, layer)?, window);
+    if unbounded && let Some(resident) = stream::streamed_resident(self.world, map) {
+      block_unloaded(&mut grid, resident);
+    }
+    let layers = self.world.get::<MapLayers>(map).map_or(&[][..], |l| &l.0);
+    for &owner in std::iter::once(&map).chain(layers) {
+      if let Some(tiles) = self.world.get::<TileColliders>(owner)
+        && let Some(to_world) = edit::local_to_world(self.world, owner)
+      {
+        grid.block_tiles(tiles, to_world);
+      }
+    }
+    Some(grid)
+  }
+
   /// Spawns the levels of `world` (a Tiled world's handle, or a
   /// [`WorldRef`] for an LDtk world) that overlap `area`, in world pixels,
   /// at world depth 0, and returns the root entities it spawned this call.
@@ -451,6 +528,35 @@ impl<'w> MapsView<'w> {
     configure: impl FnMut(&WorldLevel, MapRoot) -> MapRoot,
   ) -> Vec<Entity> {
     world::spawn_levels_in(self.world, world.into(), area, depth, configure)
+  }
+}
+
+/// Blocks every cell of `grid`'s window in a chunk not in `resident`, a
+/// chunk at a time
+fn block_unloaded(grid: &mut NavigationGrid, resident: &FastSet<IVec2>) {
+  let window = grid.window();
+  if window.is_empty() {
+    return;
+  }
+  let last = window.max - IVec2::ONE;
+  let (first_chunk, last_chunk) = (TileGrid::chunk_of(window.min), TileGrid::chunk_of(last));
+  let side = CHUNK_SIZE as i32;
+  for cy in first_chunk.y..=last_chunk.y {
+    for cx in first_chunk.x..=last_chunk.x {
+      let chunk = IVec2::new(cx, cy);
+      if resident.contains(&chunk) {
+        continue;
+      }
+      // A chunk holds cells of `i32`: its first and last are cells
+      let origin = chunk * side;
+      let lo = window.min.max(origin);
+      let hi = last.min(origin + IVec2::splat(side - 1));
+      for y in lo.y..=hi.y {
+        for x in lo.x..=hi.x {
+          grid.set(GridCoord::new(x, y), CellState::Blocked);
+        }
+      }
+    }
   }
 }
 

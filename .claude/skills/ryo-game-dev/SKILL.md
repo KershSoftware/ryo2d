@@ -781,7 +781,7 @@ let grid = NavigationGrid::for_layer(layer, CellRect::new(IVec2::splat(-32), IVe
 let path = Pathfinder::new().find_path_grid(&grid, GridCoord::new(0, 0), GridCoord::new(10, 5));
 ```
 
-`grid.block_tiles(&tiles, global.affine())` blocks a map's colliding cells, its `TileColliders` placed by its entity's whole `GlobalTransform` (`rebuild_from_world` does it for every map).
+`grid.block_tiles(&tiles, global.affine())` blocks a map's colliding cells, its `TileColliders` placed by its entity's whole `GlobalTransform` (`rebuild_from_world` does it for every map). `ctx.maps().navigation(map, "ground", window)` does both at once: a grid over the layer's window with every colliding layer of the map blocked, and on a streamed map the chunks not landed (`ryo-tilemap`, section 8).
 
 `NavAgent::new(speed).with_smoothing(PathSmoothing::LineOfSight)`, `NavTarget::position(x, y)` / `NavTarget::follow(entity)`, and `steering::{separation, seek, flee, arrive, cohesion, alignment}`. See `src/core/navigation/AGENTS.md` and `ryo-api`.
 

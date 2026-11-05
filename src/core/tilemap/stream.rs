@@ -1963,6 +1963,15 @@ impl Resident<'_> {
   }
 }
 
+/// The chunks resident on the streamed map `map` as its stream's last frame
+/// left them, for a reader that takes every other chunk as not there yet
+/// (`MapsView::navigation`): `None` for a map with no `MapStream`, or
+/// before its stream's first frame, as `stream_status` reads it
+pub(crate) fn streamed_resident(world: &World, map: Entity) -> Option<&FastSet<IVec2>> {
+  world.get::<MapStream>(map)?;
+  world.get::<StreamState>(map).map(|state| &state.resident)
+}
+
 /// The status of the streamed map `map` (`MapsView::stream_status`):
 /// `None` with no `MapStream`, or before its stream's first frame
 pub(crate) fn stream_status(world: &World, map: Entity) -> Option<StreamStatus> {
