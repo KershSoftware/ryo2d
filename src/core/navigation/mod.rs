@@ -7,7 +7,8 @@
 //! The navigation system enables entities to find and follow paths through
 //! a game world, avoiding obstacles. It consists of:
 //!
-//! - [`NavigationGrid`] - A cell-based walkability map
+//! - [`NavigationGrid`] - A cell-based walkability map: square cells over
+//!   the world, or a tile layer's own cells
 //! - [`Pathfinder`] - A* algorithm with optional time-slicing
 //! - [`NavAgent`] - Component for entities that need pathfinding
 //! - [`NavTarget`] - Component to set navigation destinations
@@ -65,6 +66,23 @@
 //! let grid = NavigationBuilder::new(800.0, 600.0)
 //!     .with_cell_size(16.0)
 //!     .build_from_world(ctx.world);
+//! ```
+//!
+//! # Tile layers
+//!
+//! A grid can instead be a window of a tile layer's own cells, on any grid
+//! the layer has: six neighbours on hex, and on the others the eight of the
+//! layer's square lattice, each step costing its world distance over the
+//! shortest step, so an isometric path takes its screen distance.
+//! `GridCoord`s are then the layer's cells, signed:
+//!
+//! ```ignore
+//! if let Some(layer) = ctx.maps().grid(map, "ground") {
+//!     let window = CellRect::new(IVec2::splat(-32), IVec2::splat(32));
+//!     let mut grid = NavigationGrid::for_layer(layer, window);
+//!     // The map's colliding cells, placed by its whole world transform
+//!     grid.block_tiles(&tiles, map_global.affine());
+//! }
 //! ```
 //!
 //! # Pathfinding

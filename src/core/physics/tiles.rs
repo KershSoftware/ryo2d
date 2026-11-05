@@ -550,8 +550,6 @@ pub(crate) struct CellPolygon {
 
 impl CellPolygon {
   /// Its corners, clockwise on screen
-  // used by navigation's tile blocking
-  #[allow(dead_code)]
   pub(crate) fn points(&self) -> &[Vec2] {
     &self.points[..usize::from(self.len)]
   }
@@ -1190,7 +1188,8 @@ impl TileColliders {
   /// nothing (logged). One-way cells keep their runs along their tops on
   /// the lattice, facing out of them as the lattice turns them (a tile map
   /// off an orthogonal grid makes its one-way tiles solid instead).
-  /// Navigation refuses a grid whose lattice is not upright.
+  /// Navigation reads its cells by their outlines through the lattice
+  /// (`NavigationGrid::block_tiles`).
   pub fn with_lattice(mut self, to_pixel: Affine2) -> Self {
     self.lattice = Some(to_pixel);
     self
@@ -1242,8 +1241,6 @@ impl TileColliders {
   /// or as a `tile_size` rectangle from the origin, or the 6 of its
   /// hexagon (`with_hex`; a side of length 0 repeats its corner). Worked
   /// out in f64 and rounded once
-  // used by navigation's tile blocking
-  #[allow(dead_code)]
   pub(crate) fn cell_polygon(&self, cell: IVec2) -> CellPolygon {
     let mut points = [Vec2::ZERO; 6];
     if let Some((hex, origin)) = self.hex {

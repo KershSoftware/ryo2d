@@ -135,7 +135,7 @@ pub struct PathfindingState {
 }
 
 impl PathfindingState {
-  fn new(start: GridCoord, goal: GridCoord, grid_generation: u64) -> Self {
+  fn new(start: GridCoord, goal: GridCoord, grid: &NavigationGrid) -> Self {
     let mut state = PathfindingState {
       start,
       goal,
@@ -144,13 +144,13 @@ impl PathfindingState {
       came_from: HashMap::new(),
       g_scores: HashMap::new(),
       nodes_expanded: 0,
-      grid_generation,
+      grid_generation: grid.generation(),
     };
 
     state.g_scores.insert(start, 0.0);
     state.open_set.push(AStarNode {
       coord: start,
-      f_score: octile_distance(start, goal),
+      f_score: distance(grid, start, goal),
       g_score: 0.0,
     });
 
@@ -235,7 +235,7 @@ impl Pathfinder {
       ));
     }
 
-    let mut state = PathfindingState::new(start, goal, grid.generation());
+    let mut state = PathfindingState::new(start, goal, grid);
 
     loop {
       match self.step_pathfinding(grid, &mut state, usize::MAX) {
@@ -281,7 +281,7 @@ impl Pathfinder {
     let request_id = self.next_request_id;
     self.next_request_id += 1;
 
-    let state = PathfindingState::new(start, goal, grid.generation());
+    let state = PathfindingState::new(start, goal, grid);
     self.active_requests.insert(request_id, state);
 
     (request_id, PathResult::InProgress)
@@ -378,16 +378,11 @@ impl Pathfinder {
           state.came_from.insert(neighbor, current.coord);
           state.g_scores.insert(neighbor, tentative_g);
 
-          let h = octile_distance(neighbor, state.goal) * self.config.heuristic_weight;
+          let h = distance(grid, neighbor, state.goal) * self.config.heuristic_weight;
 
           // Tie-breaking using cross-product for straighter paths
-          let tie_break = {
-            let dx1 = neighbor.x - state.goal.x;
-            let dy1 = neighbor.y - state.goal.y;
-            let dx2 = state.start.x - state.goal.x;
-            let dy2 = state.start.y - state.goal.y;
-            ((dx1 * dy2 - dx2 * dy1) as f32).abs() * self.config.tie_breaking
-          };
+          let tie_break =
+            tie_break(grid, neighbor, state.start, state.goal) * self.config.tie_breaking;
 
           let f = tentative_g + h + tie_break;
 
@@ -451,6 +446,35 @@ impl Pathfinder {
   }
 }
 
+/// The heuristic's distance from `from` to `to`, in steps: octile on a
+/// square world grid; on a layer grid (`NavigationGrid::for_layer`) the
+/// straight world distance between the cells' centres over the shortest
+/// step, which no path of its steps undercuts
+fn distance(grid: &NavigationGrid, from: GridCoord, to: GridCoord) -> f32 {
+  match grid.steps_between(from, to) {
+    Some(offset) => offset.length() as f32,
+    None => octile_distance(from, to),
+  }
+}
+
+/// How far `neighbor` strays from the line from `start` to `goal`, for
+/// breaking ties toward straight paths: the cross product of their offsets
+/// from the goal, in cells on a square world grid, and on a layer grid
+/// between their world centres over the shortest step
+fn tie_break(grid: &NavigationGrid, neighbor: GridCoord, start: GridCoord, goal: GridCoord) -> f32 {
+  if let (Some(a), Some(b)) = (
+    grid.steps_between(goal, neighbor),
+    grid.steps_between(goal, start),
+  ) {
+    return a.perp_dot(b).abs() as f32;
+  }
+  let dx1 = neighbor.x - goal.x;
+  let dy1 = neighbor.y - goal.y;
+  let dx2 = start.x - goal.x;
+  let dy2 = start.y - goal.y;
+  ((dx1 * dy2 - dx2 * dy1) as f32).abs()
+}
+
 /// Octile distance heuristic (diagonal movement allowed)
 fn octile_distance(from: GridCoord, to: GridCoord) -> f32 {
   let dx = (from.x - to.x).abs() as f32;
@@ -467,6 +491,10 @@ fn octile_distance(from: GridCoord, to: GridCoord) -> f32 {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::core::ecs::{IVec2, UVec2, Vec2};
+  use crate::core::physics::CellRect;
+  use crate::core::tilemap::{GridShape, LayerGrid, MapGrid, StaggerAxis, StaggerIndex};
+  use glam::Affine2;
 
   #[test]
   fn octile_distance_cardinal() {
@@ -599,6 +627,113 @@ mod tests {
     assert!(found.is_found());
     assert!(!no_path.is_found());
     assert!(in_progress.is_in_progress());
+  }
+
+  fn layer(shape: GridShape, cell: UVec2) -> LayerGrid {
+    LayerGrid {
+      grid: MapGrid::new(shape, cell),
+      to_world: Affine2::IDENTITY,
+    }
+  }
+
+  #[test]
+  fn isometric_steps_cost_their_screen_distance() {
+    // Lattice axes (58, 27.5) and (-58, 27.5): a step along the lattice's
+    // diagonal is 55 px straight down, the shortest; a side step is 64.2 px,
+    // and one along the other diagonal 116 px across
+    let layer = layer(GridShape::Isometric, UVec2::new(116, 55));
+    let grid = NavigationGrid::for_layer(layer, CellRect::new(IVec2::splat(-3), IVec2::splat(10)));
+    let step_min = grid.cell_size();
+    assert_eq!(step_min, 55.0);
+    let around = grid.neighbors(GridCoord::new(0, 0));
+    assert_eq!(around.len(), 8);
+    let cost_to = |x: i32, y: i32| {
+      around
+        .iter()
+        .find(|(cell, _)| *cell == GridCoord::new(x, y))
+        .map_or(f32::NAN, |&(_, cost)| cost)
+    };
+    assert_eq!(cost_to(1, 1), 1.0);
+    assert!((cost_to(1, 0) - Vec2::new(58.0, 27.5).length() / 55.0).abs() < 1e-5);
+    assert!((cost_to(1, -1) - 116.0 / 55.0).abs() < 1e-5);
+    let Some(path) = Pathfinder::new()
+      .find_path_grid(&grid, GridCoord::new(0, 0), GridCoord::new(6, 6))
+      .path()
+    else {
+      panic!("a path")
+    };
+    let cells: Vec<GridCoord> = path.waypoints().iter().map(|w| w.grid_coord).collect();
+    let diagonal: Vec<GridCoord> = (0..=6).map(|i| GridCoord::new(i, i)).collect();
+    assert_eq!(cells, diagonal, "along the lattice diagonal");
+    let cost: f32 = path
+      .waypoints()
+      .windows(2)
+      .map(|pair| pair[0].distance(&pair[1]) / step_min)
+      .sum();
+    assert!((cost - 6.0 * 55.0 / step_min).abs() < 1e-3, "{cost}");
+  }
+
+  #[test]
+  fn a_layer_grid_breaks_ties_as_the_square_grid_does() {
+    // On an orthogonal layer of 16 px cells, the world centres over the
+    // shortest step are the cells' indices (plus a half), so the cross
+    // product is the square grid's, while the heuristic is the straight
+    // distance in steps where the square grid's is octile
+    let square = NavigationGrid::new(480.0, 320.0, 16.0);
+    let window = CellRect::new(IVec2::ZERO, IVec2::new(30, 20));
+    let on_layer =
+      NavigationGrid::for_layer(layer(GridShape::Orthogonal, UVec2::splat(16)), window);
+    let mut seed = 0x1234_5678_u32;
+    let mut cell = || {
+      let mut next = || {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        seed
+      };
+      GridCoord::new((next() % 30) as i32, (next() % 20) as i32)
+    };
+    for _ in 0..200 {
+      let (n, start, goal) = (cell(), cell(), cell());
+      assert_eq!(
+        tie_break(&on_layer, n, start, goal),
+        tie_break(&square, n, start, goal)
+      );
+    }
+    let (a, b) = (GridCoord::new(0, 0), GridCoord::new(3, 4));
+    assert_eq!(distance(&on_layer, a, b), 5.0);
+    assert_eq!(distance(&square, a, b), octile_distance(a, b));
+    // On a turned, scaled hex layer it is the cross product of the world
+    // centres' offsets, over the shortest step squared
+    let hex = LayerGrid {
+      grid: MapGrid::new(
+        GridShape::Hexagonal {
+          axis: StaggerAxis::X,
+          index: StaggerIndex::Even,
+          side: 20,
+        },
+        UVec2::new(40, 48),
+      ),
+      to_world: Affine2::from_scale_angle_translation(
+        Vec2::splat(1.5),
+        0.4,
+        Vec2::new(-30.0, 70.0),
+      ),
+    };
+    let on_hex = NavigationGrid::for_layer(hex, CellRect::new(IVec2::splat(-8), IVec2::splat(8)));
+    let step = on_hex.cell_size();
+    for _ in 0..200 {
+      let (n, start, goal) = (cell(), cell(), cell());
+      let centre = |c: GridCoord| hex.cell_center_world(IVec2::new(c.x - 15, c.y - 10));
+      let shifted = |c: GridCoord| GridCoord::new(c.x - 15, c.y - 10);
+      let (dn, ds) = (centre(n) - centre(goal), centre(start) - centre(goal));
+      let expected = dn.perp_dot(ds).abs() / (step * step);
+      let found = tie_break(&on_hex, shifted(n), shifted(start), shifted(goal));
+      assert!(
+        (found - expected).abs() <= 1e-3 * expected.max(1.0),
+        "{found} {expected}"
+      );
+    }
   }
 
   #[test]

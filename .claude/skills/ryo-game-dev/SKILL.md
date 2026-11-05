@@ -2,7 +2,7 @@
 name: ryo-game-dev
 description: Building games with Ryo2D - scenes, entities, queries, systems, resources, messages, time and input.
 metadata:
-  version: 2.7.0
+  version: 2.8.0
 ---
 
 # Ryo2D Game Developer
@@ -768,6 +768,20 @@ let grid = NavigationBuilder::new(800.0, 600.0)
   .with_cell_size(16.0)
   .build_from_world(ctx.world); // blocks every non-trigger Collider
 ```
+
+A grid can instead be a window of a tile layer's own cells, on any grid: six neighbours on hex, and each step costing its distance on screen, so an isometric path is the shortest one the player sees.
+
+<!-- given: map: Entity -->
+```rust
+let Some(layer) = ctx.maps().grid(map, "ground") else {
+  return;
+};
+// The layer's cells from (-32, -32) up to (32, 32): GridCoords are its cells
+let grid = NavigationGrid::for_layer(layer, CellRect::new(IVec2::splat(-32), IVec2::splat(32)));
+let path = Pathfinder::new().find_path_grid(&grid, GridCoord::new(0, 0), GridCoord::new(10, 5));
+```
+
+`grid.block_tiles(&tiles, global.affine())` blocks a map's colliding cells, its `TileColliders` placed by its entity's whole `GlobalTransform` (`rebuild_from_world` does it for every map).
 
 `NavAgent::new(speed).with_smoothing(PathSmoothing::LineOfSight)`, `NavTarget::position(x, y)` / `NavTarget::follow(entity)`, and `steering::{separation, seek, flee, arrive, cohesion, alignment}`. See `src/core/navigation/AGENTS.md` and `ryo-api`.
 
