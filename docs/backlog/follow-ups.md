@@ -8,7 +8,6 @@ Items from 4f to 6b were copied from their execution records. Items from earlier
 
 - Owner decisions (2026-11-04):
   - The owner hand-played the `tile-grids` demo's grid pages ("looks and feels good") and chose to merge.
-  - Big tiles' padding is the next piece of work, on its own, before hex collision and pathfinding: cap the room past a big tile at what the mip levels of a tile drawn a pixel wide or more need, and clamp its texture's mip levels (the Limit in `docs/backlog/tilemap.md`). Kenney's Sketch Town art took 577 MB of GPU memory at full size.
   - Not yet checked in Tiled: whether its collision editor draws an isometric-grid tileset's shapes on the diamond or in the image's pixels. The engine reads them in pixels and warns once a file; if Tiled draws them projected, the docs need a note on the difference.
 - Rulings the owner may revisit:
   - Hex picking follows the drawn outline, not the nearest centre: on hexes that aren't regular, a sliver by each vertex picks differently from Tiled's editor, which hands it to a neighbour.
@@ -21,7 +20,6 @@ Items from 4f to 6b were copied from their execution records. Items from earlier
   - A tile's `sort_offset` moves its sort point down when positive, as `YSort` does (the plan's example had it inverted).
   - Collision shapes on an isometric-grid tileset are read in the image's pixels, with one warning a file.
   - The navigation warning names skewed oblique maps too.
-  - Big tiles' padding was fixed in the demo (its art halved, 577 to 38 MiB of GPU memory), not in the engine.
   - `RYO_HEADLESS_HZ` paces a headless run's wall time per step (1 to 10,000 Hz, game time unchanged). `demo-tour` sets it to 60 so pages whose maps land in the background are captured landed; the tour takes about 1.5 s a page longer.
 - Deferred findings:
   - **Grid maths and docs.**
@@ -64,7 +62,9 @@ Items from 4f to 6b were copied from their execution records. Items from earlier
     - `benches/tilemap.rs` is about 2,950 lines; split it into `benches/tilemap/{static_frame,edit,load,stream}.rs` beside the guards.
     - Unheld static rows in the record give medians only (no p99 or max).
   - **The demo.**
-    - Turned 60 x 70 sand hexes leave 1 px pinholes at a few vertices (the art isn't a regular hexagon, which would be 69.28 tall at width 60; Tiled shows the same); the halved hex art shows a one-pixel stair on turned hexes at the board's edge.
+    - Turned 120 x 140 sand hexes (side 70) may leave 1 px pinholes at a few vertices (the art isn't a regular hexagon, which would be 138.56 tall at width 120; Tiled shows the same).
+    - The hex board's seams: with linear sampling at zoom 1/2 the unbroken dark line between hexes is a little darker in total than the nearest-sampled halved art's, and reads as a faint hex grid at 1x (rows 105 px apart put every odd row on a half pixel). Snapping smooth tiles' rows, or a board background closer to the art, would hide it.
+    - A `filter` layer property that is neither `nearest` nor `linear` (a typo) falls back to the target's sampling with no warning, as the other reserved properties do.
     - The speed page's grid switch builds a million cells on the main thread, a one-off hitch; the town's pointer readout lags its outline by a frame.
     - The tilemap demo's page 10 prints wall-clock timings, so its tour capture differs run to run (pre-existing).
     - One comment line in `make-fixtures.js` runs to about 130 columns.
