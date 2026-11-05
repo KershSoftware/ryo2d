@@ -32,7 +32,7 @@ const PAGE_SIZE: u32 = 2048;
 /// Maximum number of atlas pages before entries are evicted.
 const MAX_PAGES: usize = 8;
 /// Images larger than this on either side are standalone.
-const MAX_ATLAS_IMAGE: u32 = 256;
+pub(crate) const MAX_ATLAS_IMAGE: u32 = 256;
 /// Most entries evicted for a single placement before giving up (the image
 /// then falls back to a standalone texture rather than flushing the atlas).
 const MAX_EVICTIONS: usize = 64;

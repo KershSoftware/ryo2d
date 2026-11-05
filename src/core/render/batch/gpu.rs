@@ -11,8 +11,8 @@ use super::chunks::{ChunkBuffers, ChunkStore, SLOT_STRIDE};
 use super::pipelines::{self, PipelineKey, Pipelines};
 use super::polyline::{Triangles, Vertex2D};
 use super::{
-  BatchShader, BlendMode, Draw, DrawSource, DrawState, LightStep, PageKind, Placed, Sampling,
-  Stream, plan_draws,
+  BatchShader, BlendMode, Draw, DrawSource, DrawState, Filter, LightStep, PageKind, Placed,
+  Sampling, Stream, plan_draws,
 };
 use crate::core::ecs::Entity;
 use crate::core::graphics::camera_gpu::CameraUniforms;
@@ -171,17 +171,15 @@ impl Batch2D {
     );
     // Tile chunks' pipeline for a plain layer, made now rather than in the
     // frame the first map lands (about 0.85 ms there, measured headless)
-    pipelines.ensure(
-      device,
-      PipelineKey {
-        shader: BatchShader::Tile,
-        blend: BlendMode::default(),
-        stream: Stream::Quads,
-        page: PageKind::Srgb8,
-        format,
-      },
-      None,
+    let key = PipelineKey::new(
+      BatchShader::Tile,
+      BlendMode::default(),
+      Stream::Quads,
+      PageKind::Srgb8,
+      Filter::Default.resolve(presentation),
+      format,
     );
+    pipelines.ensure(device, key, None);
     Self {
       format,
       presentation,
@@ -466,13 +464,15 @@ impl Batch2D {
             }
             let instances = start..end;
             let (slot, _) = textures.slot(chunk.texture)?;
-            let key = PipelineKey {
-              shader: BatchShader::Tile,
-              blend: chunk.blend,
-              stream: Stream::Quads,
-              page: PageKind::of(Some(slot.page)),
+            let sampling = chunk.filter.resolve(presentation);
+            let key = PipelineKey::new(
+              BatchShader::Tile,
+              chunk.blend,
+              Stream::Quads,
+              PageKind::of(Some(slot.page)),
+              sampling,
               format,
-            };
+            );
             if ensured.is_none_or(|(last, _)| last != key) {
               pipelines.ensure(device, key, None);
               ensured = Some((key, BatchShader::Tile));
@@ -482,7 +482,7 @@ impl Batch2D {
                 page: Some(slot.page),
                 shader: BatchShader::Tile,
                 blend: chunk.blend,
-                sampling: chunk.filter.resolve(presentation),
+                sampling,
               },
               instances,
               slot: chunk.slot,
@@ -490,13 +490,14 @@ impl Batch2D {
           }
           DrawPayload::Glyph(index) => {
             let glyph = list.glyph(index)?;
-            let key = PipelineKey {
-              shader: glyph.shader,
-              blend: glyph.blend,
-              stream: Stream::Quads,
-              page: PageKind::Srgb8,
+            let key = PipelineKey::new(
+              glyph.shader,
+              glyph.blend,
+              Stream::Quads,
+              PageKind::Srgb8,
+              glyph.sampling,
               format,
-            };
+            );
             if ensured.is_none_or(|(last, _)| last != key) {
               pipelines.ensure(device, key, None);
               ensured = Some((key, glyph.shader));
@@ -525,13 +526,14 @@ impl Batch2D {
                 (Some(slot.page), sampling, BatchShader::LineTextured)
               }
             };
-            let key = PipelineKey {
+            let key = PipelineKey::new(
               shader,
-              blend: line.blend,
-              stream: Stream::Triangles,
-              page: PageKind::Srgb8,
+              line.blend,
+              Stream::Triangles,
+              PageKind::Srgb8,
+              sampling,
               format,
-            };
+            );
             if ensured.is_none_or(|(last, _)| last != key) {
               pipelines.ensure(device, key, None);
               ensured = Some((key, shader));
@@ -560,14 +562,17 @@ impl Batch2D {
           SpriteShading::Effect => BatchShader::SpriteEffect,
           SpriteShading::Custom(source) => BatchShader::Custom(source),
           SpriteShading::Repeat => BatchShader::Repeat,
+          SpriteShading::TileObject => BatchShader::TileObject,
         };
-        let key = PipelineKey {
-          shader: wanted,
-          blend: sprite.blend,
-          stream: Stream::Quads,
-          page: PageKind::of(Some(slot.page)),
+        let sampling = sprite.filter.resolve(presentation);
+        let key = PipelineKey::new(
+          wanted,
+          sprite.blend,
+          Stream::Quads,
+          PageKind::of(Some(slot.page)),
+          sampling,
           format,
-        };
+        );
         let shader = match ensured {
           Some((last, shader)) if last == key => shader,
           _ => {
@@ -596,6 +601,11 @@ impl Batch2D {
           let mut instance = sprite.instance;
           instance.uv_bounds = slot.uv;
           placed.push(instance);
+        } else if shader == BatchShader::TileObject {
+          // It reads inside its tile's cell, not just the tile's texels
+          let mut instance = place_in_slot(&sprite.instance, &slot, page_size, false);
+          instance.uv_bounds = in_slot(sprite.instance.uv_bounds, &slot);
+          placed.push(instance);
         } else {
           // Only built-in effects grow the quad; custom params are not effect ids
           let effects = shader == BatchShader::SpriteEffect;
@@ -605,7 +615,7 @@ impl Batch2D {
           page: Some(slot.page),
           shader,
           blend: sprite.blend,
-          sampling: sprite.filter.resolve(presentation),
+          sampling,
         }))
       };
       let next = plan_draws(list.items_for(camera), &mut drawn.lit, first, &mut place);
@@ -731,13 +741,14 @@ impl Batch2D {
       Stream::Quads => PageKind::of(draw.state.page),
       Stream::Triangles => PageKind::Srgb8,
     };
-    let key = PipelineKey {
-      shader: draw.state.shader,
-      blend: draw.state.blend,
-      stream: draw.stream,
+    let key = PipelineKey::new(
+      draw.state.shader,
+      draw.state.blend,
+      draw.stream,
       page,
-      format: self.format,
-    };
+      draw.state.sampling,
+      self.format,
+    );
     let (Some(pipeline), Some(camera_group)) =
       (self.pipelines.get(&key), self.camera_groups.get(&camera))
     else {
@@ -818,18 +829,12 @@ impl Batch2D {
   pub(crate) fn ensure_pipeline_for_test(
     &mut self,
     device: &wgpu::Device,
-    shader: BatchShader,
+    (shader, sampling): (BatchShader, Sampling),
     blend: BlendMode,
     stream: Stream,
     format: wgpu::TextureFormat,
   ) -> bool {
-    let key = PipelineKey {
-      shader,
-      blend,
-      stream,
-      page: PageKind::Srgb8,
-      format,
-    };
+    let key = PipelineKey::new(shader, blend, stream, PageKind::Srgb8, sampling, format);
     self.pipelines.ensure(device, key, None);
     self.pipelines.get(&key).is_some()
   }
@@ -844,13 +849,14 @@ impl Batch2D {
     blend: BlendMode,
     format: wgpu::TextureFormat,
   ) -> bool {
-    let key = PipelineKey {
-      shader: BatchShader::Custom(1),
+    let key = PipelineKey::new(
+      BatchShader::Custom(1),
       blend,
-      stream: Stream::Quads,
-      page: PageKind::Srgb8,
+      Stream::Quads,
+      PageKind::Srgb8,
+      Sampling::Linear,
       format,
-    };
+    );
     self.pipelines.ensure(device, key, Some(("test", wgsl)));
     let _ = device.poll(wgpu::PollType::wait_indefinitely());
     self.pipelines.settle(|_, _| {});
@@ -864,15 +870,23 @@ impl Batch2D {
   }
 }
 
+/// `bounds` (0..1 over an image) where the image sits in `slot`
+fn in_slot([u0, v0, u1, v1]: [f32; 4], slot: &AtlasSlot) -> [f32; 4] {
+  let [s0, t0, s1, t1] = slot.uv;
+  let (du, dv) = (s1 - s0, t1 - t0);
+  [s0 + u0 * du, t0 + v0 * dv, s0 + u1 * du, t0 + v1 * dv]
+}
+
 /// The pipeline key of a light-buffer draw.
 fn light_key(step: LightStep, format: wgpu::TextureFormat) -> PipelineKey {
-  PipelineKey {
-    shader: BatchShader::Light(step),
-    blend: BlendMode::Additive,
-    stream: step.stream(),
-    page: PageKind::Srgb8,
+  PipelineKey::new(
+    BatchShader::Light(step),
+    BlendMode::Additive,
+    step.stream(),
+    PageKind::Srgb8,
+    Sampling::Nearest,
     format,
-  }
+  )
 }
 
 /// A light-buffer draw of `range` (instances or indices, by the step's stream).

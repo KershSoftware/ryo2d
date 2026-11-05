@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 
 use super::polyline::Vertex2D;
-use super::{BatchShader, BlendMode, LightStep, PageKind, Stream};
+use super::{BatchShader, BlendMode, LightStep, PageKind, Sampling, Stream};
 use crate::core::graphics::SpriteInstance;
 use crate::core::render::UI_FORMAT;
 use crate::core::shaders::scope::Checked;
@@ -58,7 +58,111 @@ pub(crate) struct PipelineKey {
   pub(crate) blend: BlendMode,
   pub(crate) stream: Stream,
   pub(crate) page: PageKind,
+  /// The draw's sampling for the tile shaders, whose smooth draws read
+  /// inside their cells (`fs_tile`); `Sampling::Linear` for every other
+  /// shader, so no other pipeline is made twice
+  pub(crate) sampling: Sampling,
   pub(crate) format: wgpu::TextureFormat,
+}
+
+impl PipelineKey {
+  /// The key of a draw of `shader` sampled with `sampling` (kept for the
+  /// tile shaders alone)
+  pub(crate) fn new(
+    shader: BatchShader,
+    blend: BlendMode,
+    stream: Stream,
+    page: PageKind,
+    sampling: Sampling,
+    format: wgpu::TextureFormat,
+  ) -> Self {
+    let sampling = match shader {
+      BatchShader::Tile | BatchShader::TileObject => sampling,
+      _ => Sampling::Linear,
+    };
+    Self {
+      shader,
+      blend,
+      stream,
+      page,
+      sampling,
+      format,
+    }
+  }
+}
+
+/// Which of the batch's modules a built-in pipeline's stages come from
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Module {
+  Sprite,
+  Line,
+  Light,
+  Shadow,
+}
+
+/// The bind groups a built-in pipeline takes
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Groups {
+  /// Camera, then texture
+  Textured,
+  /// Camera, texture, then the tile slot (tile chunks)
+  Tile,
+  /// Camera only (untextured lines, lights and shadows)
+  Camera,
+}
+
+/// The module, bind groups and fragment entry of a built-in shader's
+/// pipeline for `key`; `None` for a game shader's (made from its own
+/// module) and for keys with no pipeline (sprites are quads, lines
+/// triangles). Tiles sampled smoothly read inside their cells at the level
+/// they need (`fs_tile` and its variants); tiles sampled nearest keep the
+/// sprite's entries
+fn built_in(key: &PipelineKey) -> Option<(Module, Groups, &'static str)> {
+  // Render targets hold linear premultiplied colour, whatever the blend;
+  // premultiplied textures take their colour as it is
+  let premultiplied = key.blend == BlendMode::Premultiplied;
+  let entry = |linear: &'static str, premultiplied_entry: &'static str, plain: &'static str| {
+    if key.page == PageKind::Linear {
+      linear
+    } else if premultiplied {
+      premultiplied_entry
+    } else {
+      plain
+    }
+  };
+  let sprite = entry("fs_base_linear", "fs_base_premultiplied", "fs_base");
+  let tile = match key.sampling {
+    Sampling::Nearest => sprite,
+    Sampling::Linear => entry("fs_tile_linear", "fs_tile_premultiplied", "fs_tile"),
+  };
+  let textured = |fragment| (Module::Sprite, Groups::Textured, fragment);
+  Some(match (key.shader, key.stream) {
+    (BatchShader::Sprite, Stream::Quads) => textured(sprite),
+    (BatchShader::SpriteEffect, Stream::Quads) => textured(entry(
+      "fs_effect_linear",
+      "fs_effect_premultiplied",
+      "fs_effect",
+    )),
+    // Tile objects are sprites; tile chunks are placed by `vs_tile`
+    // through their slot
+    (BatchShader::TileObject, Stream::Quads) => textured(tile),
+    (BatchShader::Tile, Stream::Quads) => (Module::Sprite, Groups::Tile, tile),
+    // Repeated image layers are images, never render targets
+    (BatchShader::Repeat, Stream::Quads) if premultiplied => textured("fs_repeat_premultiplied"),
+    (BatchShader::Repeat, Stream::Quads) => textured("fs_repeat"),
+    (BatchShader::Line, Stream::Triangles) => (Module::Line, Groups::Camera, "fs_main"),
+    (BatchShader::LineTextured, Stream::Triangles) => {
+      (Module::Line, Groups::Textured, "fs_textured")
+    }
+    (BatchShader::TextMask, Stream::Quads) => textured("fs_text_mask"),
+    (BatchShader::TextColor, Stream::Quads) => textured("fs_text_color"),
+    (BatchShader::TextMsdf, Stream::Quads) => textured("fs_text_msdf"),
+    (BatchShader::Light(LightStep::Shadow), Stream::Triangles) => {
+      (Module::Shadow, Groups::Camera, "fs_shadow")
+    }
+    (BatchShader::Light(step), Stream::Quads) => (Module::Light, Groups::Camera, step.fragment()),
+    _ => return None,
+  })
 }
 
 /// The layout sprite textures are bound with (group 1): the texture and its
@@ -215,74 +319,34 @@ impl Pipelines {
     let Entry::Vacant(slot) = self.built.entry(key) else {
       return;
     };
-    // Premultiplied textures take their colour as it is
-    let premultiplied = key.blend == BlendMode::Premultiplied;
-    let linear = key.page == PageKind::Linear;
-    let (module, layout, fragment) = match (key.shader, key.stream, premultiplied, linear) {
-      // Render targets hold linear premultiplied colour, whatever the blend
-      (BatchShader::Sprite, Stream::Quads, _, true) => {
-        (&self.sprite, &self.layout, "fs_base_linear")
-      }
-      (BatchShader::Sprite, Stream::Quads, false, false) => (&self.sprite, &self.layout, "fs_base"),
-      (BatchShader::Sprite, Stream::Quads, true, false) => {
-        (&self.sprite, &self.layout, "fs_base_premultiplied")
-      }
-      (BatchShader::SpriteEffect, Stream::Quads, _, true) => {
-        (&self.sprite, &self.layout, "fs_effect_linear")
-      }
-      (BatchShader::SpriteEffect, Stream::Quads, false, false) => {
-        (&self.sprite, &self.layout, "fs_effect")
-      }
-      (BatchShader::SpriteEffect, Stream::Quads, true, false) => {
-        (&self.sprite, &self.layout, "fs_effect_premultiplied")
-      }
-      // Tile chunks are placed by `vs_tile` and shaded as sprites
-      (BatchShader::Tile, Stream::Quads, _, true) => {
-        (&self.sprite, &self.tile_layout, "fs_base_linear")
-      }
-      (BatchShader::Tile, Stream::Quads, false, false) => {
-        (&self.sprite, &self.tile_layout, "fs_base")
-      }
-      (BatchShader::Tile, Stream::Quads, true, false) => {
-        (&self.sprite, &self.tile_layout, "fs_base_premultiplied")
-      }
-      // Repeated image layers are images, never render targets
-      (BatchShader::Repeat, Stream::Quads, false, _) => (&self.sprite, &self.layout, "fs_repeat"),
-      (BatchShader::Repeat, Stream::Quads, true, _) => {
-        (&self.sprite, &self.layout, "fs_repeat_premultiplied")
-      }
-      (BatchShader::Line, Stream::Triangles, _, _) => (&self.line, &self.camera_only, "fs_main"),
-      (BatchShader::LineTextured, Stream::Triangles, _, _) => {
-        (&self.line, &self.layout, "fs_textured")
-      }
-      (BatchShader::Custom(source), Stream::Quads, _, _) => {
-        let Some((name, wgsl)) = custom else {
-          return;
-        };
-        let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let module = custom_module(device, name, wgsl);
-        let pipeline = custom_pipeline(device, &self.layout, name, &module, key);
-        // Anything naga accepted but the device rejects is found by a
-        // later frame's `settle`, without waiting on the GPU here
-        slot.insert(Built {
-          state: Checked::pending(pipeline, scope),
-          custom: Some((name.to_string(), source)),
-        });
+    if let BatchShader::Custom(source) = key.shader {
+      let (Stream::Quads, Some((name, wgsl))) = (key.stream, custom) else {
         return;
-      }
-      (BatchShader::TextMask, Stream::Quads, _, _) => (&self.sprite, &self.layout, "fs_text_mask"),
-      (BatchShader::TextColor, Stream::Quads, _, _) => {
-        (&self.sprite, &self.layout, "fs_text_color")
-      }
-      (BatchShader::TextMsdf, Stream::Quads, _, _) => (&self.sprite, &self.layout, "fs_text_msdf"),
-      (BatchShader::Light(LightStep::Shadow), Stream::Triangles, _, _) => {
-        (&self.shadow, &self.camera_only, "fs_shadow")
-      }
-      (BatchShader::Light(step), Stream::Quads, _, _) => {
-        (&self.light, &self.camera_only, step.fragment())
-      }
-      // No such pipeline: sprites are quads and lines triangles
-      _ => return,
+      };
+      let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+      let module = custom_module(device, name, wgsl);
+      let pipeline = custom_pipeline(device, &self.layout, name, &module, key);
+      // Anything naga accepted but the device rejects is found by a later
+      // frame's `settle`, without waiting on the GPU here
+      slot.insert(Built {
+        state: Checked::pending(pipeline, scope),
+        custom: Some((name.to_string(), source)),
+      });
+      return;
+    }
+    let Some((module, groups, fragment)) = built_in(&key) else {
+      return;
+    };
+    let module = match module {
+      Module::Sprite => &self.sprite,
+      Module::Line => &self.line,
+      Module::Light => &self.light,
+      Module::Shadow => &self.shadow,
+    };
+    let layout = match groups {
+      Groups::Textured => &self.layout,
+      Groups::Tile => &self.tile_layout,
+      Groups::Camera => &self.camera_only,
     };
     let pipeline = batch_pipeline(device, layout, fragment, module, fragment, key);
     slot.insert(Built {
@@ -555,6 +619,62 @@ mod tests {
       (F::OneMinusDstAlpha, F::One)
     );
     assert_eq!(writes, wgpu::ColorWrites::COLOR);
+  }
+
+  #[test]
+  fn nearest_tile_draws_keep_the_sprite_fragment_stages() {
+    use crate::core::render::SCENE_FORMAT;
+    let key = |shader, blend, page, sampling| {
+      PipelineKey::new(shader, blend, Stream::Quads, page, sampling, SCENE_FORMAT)
+    };
+    let entry = |shader, blend, page, sampling| {
+      built_in(&key(shader, blend, page, sampling)).map(|(_, _, entry)| entry)
+    };
+    let (straight, premultiplied) = (BlendMode::Alpha, BlendMode::Premultiplied);
+    let (image, target) = (PageKind::Srgb8, PageKind::Linear);
+    for shader in [BatchShader::Tile, BatchShader::TileObject] {
+      for (blend, page, nearest, smooth) in [
+        (straight, image, "fs_base", "fs_tile"),
+        (
+          premultiplied,
+          image,
+          "fs_base_premultiplied",
+          "fs_tile_premultiplied",
+        ),
+        (straight, target, "fs_base_linear", "fs_tile_linear"),
+      ] {
+        let at = |sampling| entry(shader, blend, page, sampling);
+        assert_eq!(at(Sampling::Nearest), Some(nearest), "{shader:?} {blend:?}");
+        assert_eq!(at(Sampling::Linear), Some(smooth), "{shader:?} {blend:?}");
+      }
+    }
+    // Chunks bind their tile slot; tile objects are sprites
+    let groups = |shader| built_in(&key(shader, straight, image, Sampling::Linear));
+    assert_eq!(
+      groups(BatchShader::Tile).map(|(m, g, _)| (m, g)),
+      Some((Module::Sprite, Groups::Tile))
+    );
+    assert_eq!(
+      groups(BatchShader::TileObject).map(|(m, g, _)| (m, g)),
+      Some((Module::Sprite, Groups::Textured))
+    );
+    // Every other shader has one pipeline for either sampling
+    for shader in [
+      BatchShader::Sprite,
+      BatchShader::SpriteEffect,
+      BatchShader::Repeat,
+      BatchShader::TextMask,
+    ] {
+      assert_eq!(
+        key(shader, straight, image, Sampling::Nearest),
+        key(shader, straight, image, Sampling::Linear),
+        "{shader:?}"
+      );
+    }
+    assert_ne!(
+      key(BatchShader::Tile, straight, image, Sampling::Nearest),
+      key(BatchShader::Tile, straight, image, Sampling::Linear)
+    );
   }
 
   #[test]

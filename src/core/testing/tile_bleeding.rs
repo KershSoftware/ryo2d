@@ -4,6 +4,10 @@
 //! tiles, or a colour from a tile next to them in the tileset images. And on
 //! the pixel-art target a layer's origin snaps to a whole pixel, so a camera
 //! a fraction of a pixel off draws what it draws there.
+//!
+//! Tiles turned, flipped, animated, y-sorted, squashed or drawn as tile
+//! objects, and tiles seen through a turned camera, never show a neighbour's
+//! colour either, and a tile zoomed out a little keeps its outer texels.
 
 use std::sync::Arc;
 
@@ -28,26 +32,69 @@ const TILE: u32 = 16;
 
 /// A tileset of solid `side` px tiles in a row: `colours`, then `more`
 /// tiles of the neighbours' colours in turn
-fn row(ctx: &mut SceneContext, colours: [[u8; 4]; 2], more: u32, side: u32) -> Tileset {
+fn row(ctx: &mut SceneContext, colours: [[u8; 4]; 2], more: u32, side: UVec2) -> Tileset {
+  let picture = row_image(colours, more, side);
+  let size = UVec2::new(picture.width(), picture.height());
+  let image = ctx.assets().add(picture);
+  let mut set = Tileset::new("row", side, TilesetImage::Atlas { image, size });
+  set.columns = 2 + more;
+  set.tile_count = 2 + more;
+  set
+}
+
+/// [`row`]'s image
+fn row_image(colours: [[u8; 4]; 2], more: u32, side: UVec2) -> Image {
   let count = 2 + more;
   let colour = |tile: u32| match tile {
     0 | 1 => colours[tile as usize],
     _ => NEIGHBOURS[(tile % 2) as usize],
   };
-  let (width, height) = (side * count, side);
+  let (width, height) = (side.x * count, side.y);
   let data: Vec<u8> = (0..width * height)
-    .flat_map(|i| colour((i % width) / side))
+    .flat_map(|i| colour((i % width) / side.x))
     .collect();
-  let image = ctx.assets().add(Image::from_rgba(data, width, height));
-  let size = UVec2::new(width, height);
-  let mut set = Tileset::new(
-    "row",
-    UVec2::splat(side),
-    TilesetImage::Atlas { image, size },
-  );
-  set.columns = count;
-  set.tile_count = count;
-  set
+  Image::from_rgba(data, width, height)
+}
+
+/// The two tilesets a checkerboard draws from: A (the first's first tile,
+/// next to a white one) and B (the second's second, next to a green one),
+/// each with `more` tiles after those two
+fn pair(ctx: &mut SceneContext, more: u32, side: UVec2) -> Vec<Tileset> {
+  vec![
+    row(ctx, [A, NEIGHBOURS[0]], more, side),
+    row(ctx, [NEIGHBOURS[1], B], more, side),
+  ]
+}
+
+/// A map of `cells` cells of `cell` px on `shape` over `sets`, filled with
+/// `tile(x, y)`, its middle cell's centre on the world's origin, its root
+/// scaled by `scale`
+fn spawn_filled(
+  ctx: &mut SceneContext,
+  (shape, cell, cells): (GridShape, UVec2, u32),
+  sets: Vec<Tileset>,
+  tile: impl Fn(i32, i32) -> Tile,
+  scale: Vec2,
+) {
+  let mut map = TileMap::new(UVec2::splat(cells), cell).with_shape(shape);
+  for set in sets {
+    map.add_tileset(TilesetSource::Embedded(Arc::new(set)));
+  }
+  let layer = map.add_tile_layer("ground");
+  let grid = map.tiles_mut(layer).expect("tile layer");
+  for y in 0..cells as i32 {
+    for x in 0..cells as i32 {
+      grid.set(IVec2::new(x, y), Some(tile(x, y)));
+    }
+  }
+  let middle = MapGrid::for_map(shape, cell, UVec2::splat(cells), false)
+    .cell_center(IVec2::splat(cells as i32 / 2));
+  let map = ctx.assets().add(map);
+  let at = -middle * scale;
+  ctx.world.spawn((
+    MapRoot::new(map),
+    Transform::from_xy(at.x, at.y).with_scale(scale),
+  ));
 }
 
 /// A 128 x 128 map of `tile` px cells (4 x 4 chunks) filled with a
@@ -57,18 +104,18 @@ fn row(ctx: &mut SceneContext, colours: [[u8; 4]; 2], more: u32, side: u32) -> T
 /// tiles after those two
 struct Filled {
   more: u32,
-  tile: u32,
+  tile: UVec2,
 }
 
 impl Scene for Filled {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
     ctx.look().tonemap = Tonemap::Clamp;
-    let first = row(ctx, [A, NEIGHBOURS[0]], self.more, self.tile);
-    let second = row(ctx, [NEIGHBOURS[1], B], self.more, self.tile);
+    let sets = pair(ctx, self.more, self.tile);
     let cells = 128;
-    let mut map = TileMap::new(UVec2::splat(cells), UVec2::splat(self.tile));
-    map.add_tileset(TilesetSource::Embedded(Arc::new(first)));
-    map.add_tileset(TilesetSource::Embedded(Arc::new(second)));
+    let mut map = TileMap::new(UVec2::splat(cells), self.tile);
+    for set in sets {
+      map.add_tileset(TilesetSource::Embedded(Arc::new(set)));
+    }
     let layer = map.add_tile_layer("ground");
     let grid = map.tiles_mut(layer).expect("tile layer");
     for y in 0..cells as i32 {
@@ -82,21 +129,88 @@ impl Scene for Filled {
       }
     }
     let map = ctx.assets().add(map);
-    let half = (cells * self.tile / 2) as f32;
+    let half = (UVec2::splat(cells) * self.tile / 2).as_vec2();
     ctx
       .world
-      .spawn((MapRoot::new(map), Transform::from_xy(-half, -half)));
+      .spawn((MapRoot::new(map), Transform::from_xy(-half.x, -half.y)));
   }
 }
 
-/// Every camera zoom and quarter-pixel offset over `scene`: the ones where
-/// a pixel was neither A nor B, with the first such pixel. `own` says
-/// whether the scene's images have textures of their own (with every mip
-/// level) rather than places in the atlas (with four)
-fn seams(builder: EngineBuilder, scene: impl Scene + 'static, own: usize) -> Option<Vec<String>> {
+/// A scene that builds its world with a function
+struct Built(fn(&mut SceneContext));
+
+impl Scene for Built {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    ctx.look().tonemap = Tonemap::Clamp;
+    (self.0)(ctx);
+  }
+}
+
+/// What a sweep of camera zooms and quarter-pixel offsets looks at: the
+/// zooms, the camera's turn (radians) and which pixels are wrong
+struct Sweep {
+  zooms: Vec<f32>,
+  turn: f32,
+  wrong: fn([u8; 4]) -> bool,
+}
+
+impl Sweep {
+  /// Every pixel A or B, over a layer they fill
+  fn filled(zooms: &[f32]) -> Sweep {
+    Sweep {
+      zooms: zooms.to_vec(),
+      turn: 0.0,
+      wrong: |p| p != A && p != B,
+    }
+  }
+
+  /// No pixel showing a neighbour's colour ([`shows_a_neighbour`])
+  fn clean(zooms: &[f32]) -> Sweep {
+    Sweep {
+      wrong: shows_a_neighbour,
+      ..Sweep::filled(zooms)
+    }
+  }
+
+  /// The same through a camera turned `turn` radians
+  fn turned(self, turn: f32) -> Sweep {
+    Sweep { turn, ..self }
+  }
+}
+
+/// Whether pixel `p` holds some of a neighbour's colour: it is not A, B, a
+/// mix of them, or one of those darkened over the black background.
+/// Filters mix a texture's stored bytes, so a mix of A and B is a mix of
+/// their bytes; the one taking the pixel's red and blue predicts its green,
+/// of which A and B have little and the neighbours much
+fn shows_a_neighbour(p: [u8; 4]) -> bool {
+  let [r, g, b] = [p[0], p[1], p[2]].map(f32::from);
+  let (a, c) = (A.map(f32::from), B.map(f32::from));
+  let det = a[0] * c[2] - c[0] * a[2];
+  let of_a = (r * c[2] - c[0] * b) / det;
+  let of_b = (a[0] * b - r * a[2]) / det;
+  g - (of_a * a[1] + of_b * c[1]) > 12.0
+}
+
+/// Every camera zoom and quarter-pixel offset of `sweep` over `scene`, the
+/// camera clearing to black: the ones where a pixel was wrong, with the
+/// first such pixel. `own` says how many of the scene's images have
+/// textures of their own (with every mip level) rather than places in the
+/// atlas (with four)
+fn seams(
+  builder: EngineBuilder,
+  scene: impl Scene + 'static,
+  own: usize,
+  sweep: &Sweep,
+) -> Option<Vec<String>> {
   let mut engine = HeadlessEngine::new_or_skip(builder.start_scene(scene))?;
   crate::core::tilemap::test_util::step_until_maps_land(&mut engine);
   engine.step_frames(2).unwrap();
+  Some(swept(&mut engine, own, sweep))
+}
+
+/// `seams` over the engine's world as it is
+fn swept(engine: &mut HeadlessEngine, own: usize, sweep: &Sweep) -> Vec<String> {
   let gpu = engine.engine.sprite_gpu.as_ref().expect("renderer");
   assert_eq!(
     gpu.standalone_entity_count(),
@@ -104,7 +218,7 @@ fn seams(builder: EngineBuilder, scene: impl Scene + 'static, own: usize) -> Opt
     "how many images have textures of their own"
   );
   let mut found = Vec::new();
-  for scale in SCALES {
+  for &scale in &sweep.zooms {
     for (qx, qy) in (0..4).flat_map(|x| (0..4).map(move |y| (x, y))) {
       // Quarter pixels on screen, in world units
       let offset = Vec2::new(qx as f32, qy as f32) * 0.25 / scale;
@@ -112,14 +226,16 @@ fn seams(builder: EngineBuilder, scene: impl Scene + 'static, own: usize) -> Opt
       let mut cameras = world.query_filtered::<(&mut Transform, &mut Camera2d), With<MainCamera>>();
       for (mut transform, mut camera) in cameras.iter_mut(world) {
         transform.translation = offset;
+        transform.rotation = sweep.turn;
         camera.zoom = scale;
+        camera.clear = CameraClear::Color(Color::BLACK);
       }
       // Twice: the main camera is interpolated, and draws where it was
       engine.step_frames(2).unwrap();
       let frame = engine.frame().unwrap();
       let wrong: Vec<(u32, u32, [u8; 4])> = frame
         .enumerate_pixels()
-        .filter(|(_, _, p)| p.0 != A && p.0 != B)
+        .filter(|(_, _, p)| (sweep.wrong)(p.0))
         .map(|(x, y, p)| (x, y, p.0))
         .collect();
       if let Some(&(x, y, p)) = wrong.first() {
@@ -128,42 +244,419 @@ fn seams(builder: EngineBuilder, scene: impl Scene + 'static, own: usize) -> Opt
           wrong.len()
         ));
       }
+      // And the tiles show
+      let shown = frame.pixels().filter(|p| p.0 == A || p.0 == B).count();
+      if shown < 100 {
+        found.push(format!(
+          "zoom {scale}, offset ({qx}/4, {qy}/4) px: only {shown} pixels of A or B"
+        ));
+      }
     }
   }
-  Some(found)
+  found
 }
 
 #[test]
 fn no_seams_at_any_zoom_or_subpixel_camera() {
   // Pixel art samples nearest and snaps; a resolution-independent target
   // samples linearly, through the mips when zoomed out: the atlas's four
-  // levels, or every level of a texture of its own (98 more tiles make the
-  // padded images over the atlas's 256 px, and 254 more for 14 px tiles).
-  // Tiles of 14, 15 and 30 px sit just under a power of two, where a cell
-  // only two texels wider than its tile would let the mips reach a
-  // neighbour
+  // levels, or every level of a texture of its own (287 more tiles make the
+  // padded images of 14 to 16 px tiles 272 px, over the atlas's 256 px, and
+  // 98 more those of 30 px tiles 320 px). Tiles of 14, 15 and 30 px sit
+  // just under a power of two, where their cells are a texel or two wider
+  // than they are
   let pixel_art = || EngineBuilder::new().pixel_art(SIZE, SIZE);
   let linear = || EngineBuilder::new().resolution(SIZE, SIZE);
   let targets = [
     ("nearest", pixel_art(), TILE, 0),
     ("linear", linear(), TILE, 0),
-    ("linear, own textures", linear(), TILE, 98),
+    ("linear, own textures", linear(), TILE, 287),
     ("linear, 15 px", linear(), 15, 0),
-    ("linear, 15 px, own textures", linear(), 15, 98),
+    ("linear, 15 px, own textures", linear(), 15, 287),
     ("linear, 30 px", linear(), 30, 0),
     ("linear, 30 px, own textures", linear(), 30, 98),
     ("linear, 14 px", linear(), 14, 0),
-    ("linear, 14 px, own textures", linear(), 14, 254),
+    ("linear, 14 px, own textures", linear(), 14, 287),
   ];
   let mut failures = Vec::new();
   for (filter, builder, tile, more) in targets {
     let own = if more > 0 { 2 } else { 0 };
-    let Some(found) = seams(builder, Filled { more, tile }, own) else {
+    let tile = UVec2::splat(tile);
+    let sweep = Sweep::filled(&SCALES);
+    let Some(found) = seams(builder, Filled { more, tile }, own, &sweep) else {
       return;
     };
     failures.extend(found.into_iter().map(|f| format!("{filter}: {f}")));
   }
   assert!(failures.is_empty(), "seams:\n{}", failures.join("\n"));
+}
+
+/// `zooms` but those at which a tile `side` px on its shorter side draws
+/// under 4 pixels wide
+fn while_wide(zooms: &[f32], side: u32) -> Vec<f32> {
+  zooms
+    .iter()
+    .copied()
+    .filter(|zoom| side as f32 * zoom >= 4.0)
+    .collect()
+}
+
+/// A collection of twenty 12 x 20 images (A, B, and the neighbours' colours
+/// in turn) and one 72 x 72 (white): a 128 x 128 map of 12 x 20 cells holds
+/// A and B in a checkerboard
+fn mixed_collection(ctx: &mut SceneContext) {
+  let mut set = Tileset::new("mixed", UVec2::splat(72), TilesetImage::Collection);
+  let mut add = |id: u32, size: UVec2, [r, g, b, a]: [u8; 4]| {
+    let image = ctx
+      .assets()
+      .add(Image::solid_rect(size.x, size.y, r, g, b, a));
+    set.insert_tile(
+      id,
+      TileData {
+        image: Some((image, size)),
+        ..TileData::default()
+      },
+    );
+  };
+  for id in 0..20 {
+    let colour = match id {
+      0 => A,
+      1 => B,
+      _ => NEIGHBOURS[(id % 2) as usize],
+    };
+    add(id, UVec2::new(12, 20), colour);
+  }
+  add(20, UVec2::splat(72), NEIGHBOURS[0]);
+  set.tile_count = 21;
+  let tile = |x: i32, y: i32| Tile::new(0, ((x + y) % 2) as u32);
+  let shape = (GridShape::Orthogonal, UVec2::new(12, 20), 128);
+  spawn_filled(ctx, shape, vec![set], tile, Vec2::ONE);
+}
+
+#[test]
+fn big_tiles_and_mixed_collections_show_no_neighbour_at_any_zoom() {
+  // Through every level a zoom reads (the smooth target), wherever a tile
+  // is 4 pixels wide or more: 40 x 56 tiles in 48 x 64 cells (four clean
+  // levels) in a texture of their own (30 tiles); a collection mixing one
+  // 72 x 72 image with twenty 12 x 20 ones; and 40 x 56 tiles in the atlas
+  // (9 tiles), whose cells are the tiles themselves
+  const ZOOMS: [f32; 7] = [1.0, 0.5, 0.25, 0.125, 0.0625, 0.7, 0.3];
+  let linear = || EngineBuilder::new().resolution(SIZE, SIZE);
+  let big = UVec2::new(40, 56);
+  let mut failures = Vec::new();
+  for (name, more, own) in [("own texture", 28, 2), ("atlas", 7, 0)] {
+    let sweep = Sweep::filled(&while_wide(&ZOOMS, big.x));
+    let Some(found) = seams(linear(), Filled { more, tile: big }, own, &sweep) else {
+      return;
+    };
+    failures.extend(found.into_iter().map(|f| format!("{name}: {f}")));
+  }
+  let sweep = Sweep::filled(&while_wide(&ZOOMS, 12));
+  let Some(found) = seams(linear(), Built(mixed_collection), 0, &sweep) else {
+    return;
+  };
+  failures.extend(found.into_iter().map(|f| format!("mixed collection: {f}")));
+  assert!(failures.is_empty(), "neighbours:\n{}", failures.join("\n"));
+}
+
+/// A hexagonal map of 48 px tiles from the atlas, A and B in a
+/// checkerboard, turned by none, 60, 120 and 180 degrees in turn
+fn hex_turns(ctx: &mut SceneContext) {
+  let sets = pair(ctx, 2, UVec2::splat(48));
+  let turns = [
+    TileFlip::NONE,
+    TileFlip::HEX_ROTATE_60,
+    TileFlip::HEX_ROTATE_120,
+    TileFlip::HEX_ROTATE_60 | TileFlip::HEX_ROTATE_120,
+  ];
+  let tile = move |x: i32, y: i32| {
+    let set = ((x + y) % 2) as u16;
+    Tile::new(set, u32::from(set)).with_flip(turns[((x + 2 * y) % 4) as usize])
+  };
+  let shape = GridShape::Hexagonal {
+    axis: StaggerAxis::Y,
+    index: StaggerIndex::Odd,
+    side: 24,
+  };
+  spawn_filled(ctx, (shape, UVec2::splat(48), 32), sets, tile, Vec2::ONE);
+}
+
+/// The tiles of [`flips_and_y_sorted`], [`squashed`] and [`upright`]: their
+/// own size a whole number of texels of four levels, so their cells are
+/// the tiles themselves and only the shader keeps a zoomed-out read off
+/// the next cell
+const SNUG: UVec2 = UVec2::new(48, 64);
+
+/// 48 x 64 tiles in a texture of their own on an orthogonal map, A and B in
+/// a checkerboard under every flip in turn, and over them a y-sorted layer
+/// holding them on every third cell
+fn flips_and_y_sorted(ctx: &mut SceneContext) {
+  let sets = pair(ctx, 34, SNUG);
+  let flip = |x: i32, y: i32| {
+    let bits = (3 * x + y).rem_euclid(8);
+    let mut flip = TileFlip::NONE;
+    for (bit, one) in [
+      (1, TileFlip::HORIZONTAL),
+      (2, TileFlip::VERTICAL),
+      (4, TileFlip::DIAGONAL),
+    ] {
+      if bits & bit != 0 {
+        flip = flip | one;
+      }
+    }
+    flip
+  };
+  let tile = |x: i32, y: i32| {
+    let set = ((x + y) % 2) as u16;
+    Tile::new(set, u32::from(set)).with_flip(flip(x, y))
+  };
+  let cells = 64;
+  let mut map = TileMap::new(UVec2::splat(cells), SNUG);
+  for set in sets {
+    map.add_tileset(TilesetSource::Embedded(Arc::new(set)));
+  }
+  for name in ["ground", "sorted"] {
+    let layer = map.add_tile_layer(name);
+    let sorted = name == "sorted";
+    map.layers[layer].info.y_sorted = sorted;
+    let grid = map.tiles_mut(layer).expect("tile layer");
+    for y in 0..cells as i32 {
+      for x in 0..cells as i32 {
+        if !sorted || (x + y) % 3 == 0 {
+          grid.set(IVec2::new(x, y), Some(tile(x + i32::from(sorted), y)));
+        }
+      }
+    }
+  }
+  let map = ctx.assets().add(map);
+  let half = (UVec2::splat(cells) * SNUG / 2).as_vec2();
+  ctx
+    .world
+    .spawn((MapRoot::new(map), Transform::from_xy(-half.x, -half.y)));
+}
+
+/// A collection whose A and B tiles (40 x 56) animate through themselves
+/// and a 48 px picture of their colour, with neighbours of both sizes, in a
+/// checkerboard on an orthogonal map of 40 x 56 cells
+fn animated(ctx: &mut SceneContext) {
+  let (tall, square) = (UVec2::new(40, 56), UVec2::splat(48));
+  let pictures = [
+    (tall, A),
+    (square, A),
+    (square, NEIGHBOURS[0]),
+    (tall, NEIGHBOURS[1]),
+    (tall, B),
+    (square, B),
+    (square, NEIGHBOURS[1]),
+    (tall, NEIGHBOURS[0]),
+  ];
+  let mut set = Tileset::new("animated", tall.max(square), TilesetImage::Collection);
+  for (id, (size, [r, g, b, a])) in pictures.into_iter().enumerate() {
+    let image = ctx
+      .assets()
+      .add(Image::solid_rect(size.x, size.y, r, g, b, a));
+    set.insert_tile(
+      id as u32,
+      TileData {
+        image: Some((image, size)),
+        ..TileData::default()
+      },
+    );
+  }
+  set.tile_count = pictures.len() as u32;
+  for first in [0, 4] {
+    let mut data = set.tile(first).cloned().unwrap_or_default();
+    data.animation = [first, first + 1]
+      .map(|tile| TileFrame {
+        tile,
+        duration: std::time::Duration::from_millis(50),
+      })
+      .to_vec();
+    set.insert_tile(first, data);
+  }
+  let tile = |x: i32, y: i32| Tile::new(0, 4 * ((x + y) % 2) as u32);
+  let shape = (GridShape::Orthogonal, tall, 32);
+  spawn_filled(ctx, shape, vec![set], tile, Vec2::ONE);
+}
+
+/// A tile object of a 128 x 160 tile (A, from an atlas of four with
+/// neighbours, a texture of its own, its cells the tiles themselves)
+/// centred on the world's origin
+fn tile_object(ctx: &mut SceneContext) {
+  let size = UVec2::new(128, 160);
+  let set = row(ctx, [A, NEIGHBOURS[0]], 2, size);
+  let mut map = TileMap::new(UVec2::ONE, size);
+  map.add_tileset(TilesetSource::Embedded(Arc::new(set)));
+  let objects = map.add_object_layer("things");
+  map.layers[objects].kind = LayerKind::Objects(vec![MapObjectData {
+    id: "1".to_string(),
+    name: String::new(),
+    class: None,
+    position: -size.as_vec2() / 2.0,
+    size: size.as_vec2(),
+    rotation: 0.0,
+    shape: ObjectShape::Rect,
+    tile: Some(Tile::new(0, 0)),
+    visible: true,
+    properties: Properties::default(),
+  }]);
+  let map = ctx.assets().add(map);
+  ctx.world.spawn((MapRoot::new(map), Transform::IDENTITY));
+}
+
+#[test]
+fn turned_flipped_and_animated_tiles_and_tile_objects_show_no_neighbour() {
+  // On the smooth target, zoomed out to an eighth: hexagonal tiles turned
+  // 60 and 120 degrees; tiles flipped every way and a y-sorted layer over
+  // them; tiles animating through pictures of two sizes; and a tile object
+  // of a big tile, drawn as a sprite. No pixel shows a neighbour's colour
+  const ZOOMS: [f32; 4] = [1.0, 0.5, 0.25, 0.125];
+  let linear = || EngineBuilder::new().resolution(SIZE, SIZE);
+  let cases = [
+    ("hexagonal turns", Built(hex_turns), 0),
+    ("flips and a y-sorted layer", Built(flips_and_y_sorted), 2),
+    ("animated", Built(animated), 0),
+    ("tile object", Built(tile_object), 1),
+  ];
+  let mut failures = Vec::new();
+  for (name, scene, own) in cases {
+    let Some(found) = seams(linear(), scene, own, &Sweep::clean(&ZOOMS)) else {
+      return;
+    };
+    failures.extend(found.into_iter().map(|f| format!("{name}: {f}")));
+  }
+  assert!(failures.is_empty(), "neighbours:\n{}", failures.join("\n"));
+}
+
+/// 48 x 64 tiles in a texture of their own, A and B in a checkerboard, the
+/// map's transform squashing it to a quarter of its height
+fn squashed(ctx: &mut SceneContext) {
+  checkered(ctx, Vec2::new(1.0, 0.25));
+}
+
+/// The same, unsquashed
+fn upright(ctx: &mut SceneContext) {
+  checkered(ctx, Vec2::ONE);
+}
+
+/// 48 x 64 tiles in a texture of their own, A and B in a checkerboard, the
+/// map's root scaled by `scale`
+fn checkered(ctx: &mut SceneContext, scale: Vec2) {
+  let sets = pair(ctx, 34, SNUG);
+  let tile = |x: i32, y: i32| {
+    let set = ((x + y) % 2) as u16;
+    Tile::new(set, u32::from(set))
+  };
+  spawn_filled(ctx, (GridShape::Orthogonal, SNUG, 64), sets, tile, scale);
+}
+
+#[test]
+fn a_squashed_layer_and_a_turned_camera_show_no_neighbour() {
+  // A layer drawn at a quarter of its height reads a coarser level than its
+  // width alone asks; a camera turned 30 degrees reads each tile slanted.
+  // Neither shows a neighbour's colour
+  const ZOOMS: [f32; 3] = [1.0, 0.5, 0.25];
+  let linear = || EngineBuilder::new().resolution(SIZE, SIZE);
+  let mut failures = Vec::new();
+  let cases = [
+    ("squashed", Built(squashed), Sweep::clean(&ZOOMS)),
+    (
+      "turned camera",
+      Built(upright),
+      Sweep::clean(&ZOOMS).turned(30f32.to_radians()),
+    ),
+  ];
+  for (name, scene, sweep) in cases {
+    let Some(found) = seams(linear(), scene, 2, &sweep) else {
+      return;
+    };
+    failures.extend(found.into_iter().map(|f| format!("{name}: {f}")));
+  }
+  assert!(failures.is_empty(), "neighbours:\n{}", failures.join("\n"));
+}
+
+/// The ring's and the inside's colours of [`ringed`]'s tile
+const RING: [u8; 4] = [230, 20, 20, 255];
+const INSIDE: [u8; 4] = [20, 200, 20, 255];
+
+/// One 16 px tile whose outer ring of texels is `RING` and whose inside is
+/// `INSIDE`, in the cell at the world's origin
+fn ringed(ctx: &mut SceneContext) {
+  let data: Vec<u8> = (0..16 * 16u32)
+    .flat_map(|i| {
+      let (x, y) = (i % 16, i / 16);
+      if x == 0 || y == 0 || x == 15 || y == 15 {
+        RING
+      } else {
+        INSIDE
+      }
+    })
+    .collect();
+  let image = ctx.assets().add(Image::from_rgba(data, 16, 16));
+  let size = UVec2::splat(16);
+  let mut set = Tileset::new("ringed", size, TilesetImage::Atlas { image, size });
+  set.columns = 1;
+  set.tile_count = 1;
+  let mut map = TileMap::new(UVec2::ONE, size);
+  map.add_tileset(TilesetSource::Embedded(Arc::new(set)));
+  let layer = map.add_tile_layer("ground");
+  map
+    .tiles_mut(layer)
+    .expect("tile layer")
+    .set(IVec2::ZERO, Some(Tile::new(0, 0)));
+  let map = ctx.assets().add(map);
+  ctx.world.spawn((MapRoot::new(map), Transform::IDENTITY));
+}
+
+#[test]
+fn a_tile_zoomed_out_a_little_keeps_its_outer_texels_sharp() {
+  // At zoom 0.75 a pixel spans 4/3 texels, so the pixel at each of the
+  // tile's edges (on a whole pixel) covers the ring's texel and a third of
+  // the next: in proportion three quarters ring. Reading the two levels
+  // round the zoom's, each kept inside the cell at its own level, keeps
+  // about that; one read at the zoom's level, kept inside for the coarser
+  // one, would blur the ring into the inside, half and half. So each edge
+  // pixel is at least two thirds of the way from the inside to the ring
+  let builder = EngineBuilder::new()
+    .resolution(SIZE, SIZE)
+    .start_scene(Built(ringed));
+  let Some(mut engine) = HeadlessEngine::new_or_skip(builder) else {
+    return;
+  };
+  crate::core::tilemap::test_util::step_until_maps_land(&mut engine);
+  let world = engine.world_mut();
+  let mut cameras = world.query_filtered::<(&mut Transform, &mut Camera2d), With<MainCamera>>();
+  for (mut transform, mut camera) in cameras.iter_mut(world) {
+    // The tile's 12 pixels from pixel 26 to 38 on both axes
+    transform.translation = Vec2::splat(8.0);
+    camera.zoom = 0.75;
+  }
+  engine.step_frames(2).unwrap();
+  let frame = engine.frame().unwrap();
+  // How far `p` is from the inside's colour toward the ring's, in RGB
+  let along = |p: [u8; 4]| {
+    let from_inside = |c: [u8; 4]| [0, 1, 2].map(|i| f32::from(c[i]) - f32::from(INSIDE[i]));
+    let dot = |u: [f32; 3], v: [f32; 3]| u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
+    let (p, ring) = (from_inside(p), from_inside(RING));
+    dot(p, ring) / dot(ring, ring)
+  };
+  let mut blurred = Vec::new();
+  for x in [26, 37] {
+    for y in 29..=34 {
+      let p = frame.get_pixel(x, y).0;
+      if along(p) < 2.0 / 3.0 {
+        blurred.push(format!(
+          "({x}, {y}) {p:?}: {:.2} of the way to the ring",
+          along(p)
+        ));
+      }
+    }
+  }
+  assert!(
+    blurred.is_empty(),
+    "the ring blurred:\n{}",
+    blurred.join("\n")
+  );
 }
 
 /// A map whose one layer is an image repeated across and down from the
@@ -200,7 +693,7 @@ fn a_repeated_image_layer_shows_no_gaps_at_fractional_zoom() {
   // every pixel is the image's: copies one after another, never a gap
   // between two (at zoom 0.33 a copy is 5.28 pixels)
   let builder = EngineBuilder::new().pixel_art(SIZE, SIZE);
-  let Some(found) = seams(builder, Repeated, 0) else {
+  let Some(found) = seams(builder, Repeated, 0, &Sweep::filled(&SCALES)) else {
     return;
   };
   assert!(found.is_empty(), "gaps:\n{}", found.join("\n"));
@@ -490,4 +983,87 @@ fn half_pixel_steps_draw_without_seams_in_pixel_art() {
     "unlike Tiled:\n{}",
     failures.join("\n")
   );
+}
+
+/// The tileset [`grows`] adds and its image
+#[derive(Resource, Clone)]
+struct Grown(Handle<Tileset>, Handle<Image>);
+
+/// A 64 x 64 map of 40 px cells holding A and B in a checkerboard from a
+/// tileset asset of 9 tiles (A, B and seven neighbours), which pads into
+/// the atlas
+fn grows(ctx: &mut SceneContext) {
+  let mut set = row(ctx, [A, B], 7, UVec2::splat(40));
+  set.name = "grows-4e1b".to_string();
+  let TilesetImage::Atlas { image, .. } = set.image.clone() else {
+    return;
+  };
+  let handle = ctx.assets().add(set);
+  ctx.world.insert_resource(Grown(handle.clone(), image));
+  let cells = 64;
+  let mut map = TileMap::new(UVec2::splat(cells), UVec2::splat(40));
+  map.add_tileset(TilesetSource::Asset(handle));
+  let layer = map.add_tile_layer("ground");
+  let grid = map.tiles_mut(layer).expect("tile layer");
+  for y in 0..cells as i32 {
+    for x in 0..cells as i32 {
+      grid.set(IVec2::new(x, y), Some(Tile::new(0, ((x + y) % 2) as u32)));
+    }
+  }
+  let map = ctx.assets().add(map);
+  let half = (cells * 20) as f32;
+  ctx
+    .world
+    .spawn((MapRoot::new(map), Transform::from_xy(-half, -half)));
+}
+
+#[test]
+fn a_tileset_that_grows_past_the_atlas_pads_again_and_draws_clean() {
+  // Drawn at zoom 0.25 (a tile 10 pixels wide, reading level 2), a tileset
+  // of 9 tiles of 40 px pads into 40 px cells, 120 px, in the atlas. Its
+  // image replaced by one of 36 tiles, it pads again into 48 px cells (four
+  // clean levels), 288 px, a texture of its own with every level, and draws
+  // clean from it
+  use crate::core::tilemap::padded::{PaddedSize, padded_sizes};
+  let builder = EngineBuilder::new()
+    .resolution(SIZE, SIZE)
+    .start_scene(Built(grows));
+  let Some(mut engine) = HeadlessEngine::new_or_skip(builder) else {
+    return;
+  };
+  crate::core::tilemap::test_util::step_until_maps_land(&mut engine);
+  engine.step_frames(2).unwrap();
+  let sweep = Sweep::filled(&[0.25]);
+  let found = swept(&mut engine, 0, &sweep);
+  assert!(found.is_empty(), "in the atlas:\n{}", found.join("\n"));
+  let size = |bytes, tiles: u64| PaddedSize {
+    name: "grows-4e1b".to_string(),
+    bytes,
+    art_bytes: tiles * 40 * 40 * 4,
+  };
+  // 120 px and its three smaller copies
+  let atlas = (120 * 120 + 60 * 60 + 30 * 30 + 15 * 15) * 4;
+  assert_eq!(padded_sizes(engine.world()), [size(atlas, 9)]);
+
+  let Grown(set, picture) = engine.world().resource::<Grown>().clone();
+  let world = engine.world_mut();
+  let grown = row_image([A, B], 34, UVec2::splat(40));
+  let grown_size = UVec2::new(grown.width(), grown.height());
+  if let Some(image) = world.resource_mut::<Assets<Image>>().get_mut(&picture) {
+    *image = grown;
+  }
+  if let Some(tileset) = world.resource_mut::<Assets<Tileset>>().get_mut(&set) {
+    tileset.columns = 36;
+    tileset.tile_count = 36;
+    tileset.image = TilesetImage::Atlas {
+      image: picture.clone(),
+      size: grown_size,
+    };
+  }
+  engine.step_frames(2).unwrap();
+  let found = swept(&mut engine, 1, &sweep);
+  assert!(found.is_empty(), "padded again:\n{}", found.join("\n"));
+  // 288 px and every smaller copy, down to one texel
+  let own: u64 = (0..9).map(|k| (288u64 >> k).pow(2) * 4).sum();
+  assert_eq!(padded_sizes(engine.world()), [size(own, 36)]);
 }

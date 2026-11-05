@@ -142,6 +142,41 @@ fn fs_effect_linear(in: VertexOutput) -> @location(0) vec4<f32> {
     return ui_out(finish(effect_color(in), in.tint, in.emission));
 }
 
+// Smooth-sampled tiles (chunks through `vs_tile`, tile objects through
+// `vs_main`): the base entries, but each read kept inside the tile's padded
+// cell (`uv_bounds`) at the level it reads, the level capped at the cell's
+// clean levels (`effect_params.x`; `sample_cell`)
+fn sample_tile(in: VertexOutput) -> vec4<f32> {
+    return sample_cell(
+        sprite_texture,
+        sprite_sampler,
+        in.uv,
+        in.uv_bounds,
+        in.effect_params.x,
+        uv_ddx,
+        uv_ddy,
+    );
+}
+
+@fragment
+fn fs_tile(in: VertexOutput) -> @location(0) vec4<f32> {
+    take_derivatives(in.uv);
+    return ui_out(finish(sample_tile(in), in.tint, in.emission));
+}
+
+@fragment
+fn fs_tile_premultiplied(in: VertexOutput) -> @location(0) vec4<f32> {
+    take_derivatives(in.uv);
+    return ui_out(finish_premultiplied(sample_tile(in), in.tint, in.emission));
+}
+
+// A render-target page, as `fs_base_linear` reads one
+@fragment
+fn fs_tile_linear(in: VertexOutput) -> @location(0) vec4<f32> {
+    take_derivatives(in.uv);
+    return ui_out(finish_linear(sample_tile(in), in.tint, in.emission));
+}
+
 // The sprite's colour with its built-in effect applied
 fn effect_color(in: VertexOutput) -> vec4<f32> {
     let base = sample_sprite(in.uv, in.uv_bounds);

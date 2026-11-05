@@ -1612,7 +1612,7 @@ mod tests {
     use crate::core::tilemap::padded::PaddedCache;
     use crate::core::tilemap::test_util::MapWorld;
     // An atlas of 400 16 px tiles: its padding is a texture of its own
-    // (680 px), whose levels are worth making off the frame
+    // (320 px), whose levels are worth making off the frame
     let mut maps = MapWorld::new();
     maps.world.insert_resource(PaddedCache::default());
     let (cols, rows) = (20, 20);
@@ -1653,7 +1653,7 @@ mod tests {
     let images = maps.world.resource::<Assets<Image>>();
     let made = images
       .iter()
-      .filter(|(_, image)| image.width() > 320 && image.mips().is_some())
+      .filter(|(_, image)| image.is_borderless() && image.mips().is_some())
       .count();
     assert_eq!(made, 1, "the padded image's levels made ahead");
   }

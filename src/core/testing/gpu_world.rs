@@ -830,7 +830,7 @@ fn a_glyph_too_big_for_a_page_is_rasterized_once() {
 /// proof compares against)
 #[test]
 fn the_batch_pipelines_build_in_both_formats() {
-  use crate::core::render::batch::{BatchShader, BlendMode, LightStep, Stream};
+  use crate::core::render::batch::{BatchShader, BlendMode, LightStep, Sampling, Stream};
   use crate::core::render::{SCENE_FORMAT, UI_FORMAT};
   let Ok((device, _queue)) = crate::core::testing::shared_gpu() else {
     eprintln!("skipping: no GPU available");
@@ -839,23 +839,31 @@ fn the_batch_pipelines_build_in_both_formats() {
   let mut batch =
     crate::core::render::batch::Batch2D::new(&device, SCENE_FORMAT, Default::default());
   let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+  let (nearest, linear) = (Sampling::Nearest, Sampling::Linear);
   let shaders = [
-    (BatchShader::TextMask, Stream::Quads),
-    (BatchShader::TextColor, Stream::Quads),
-    (BatchShader::TextMsdf, Stream::Quads),
-    (BatchShader::Sprite, Stream::Quads),
-    (BatchShader::Tile, Stream::Quads),
-    (BatchShader::Repeat, Stream::Quads),
-    (BatchShader::Line, Stream::Triangles),
-    (BatchShader::Light(LightStep::Add), Stream::Quads),
-    (BatchShader::Light(LightStep::Shadow), Stream::Triangles),
+    (BatchShader::TextMask, linear, Stream::Quads),
+    (BatchShader::TextColor, linear, Stream::Quads),
+    (BatchShader::TextMsdf, linear, Stream::Quads),
+    (BatchShader::Sprite, linear, Stream::Quads),
+    (BatchShader::Tile, nearest, Stream::Quads),
+    (BatchShader::Tile, linear, Stream::Quads),
+    (BatchShader::TileObject, nearest, Stream::Quads),
+    (BatchShader::TileObject, linear, Stream::Quads),
+    (BatchShader::Repeat, linear, Stream::Quads),
+    (BatchShader::Line, linear, Stream::Triangles),
+    (BatchShader::Light(LightStep::Add), linear, Stream::Quads),
+    (
+      BatchShader::Light(LightStep::Shadow),
+      linear,
+      Stream::Triangles,
+    ),
   ];
-  for (shader, stream) in shaders {
+  for (shader, sampling, stream) in shaders {
     for blend in [BlendMode::Alpha, BlendMode::Premultiplied] {
       for format in [SCENE_FORMAT, UI_FORMAT] {
         assert!(
-          batch.ensure_pipeline_for_test(&device, shader, blend, stream, format),
-          "{shader:?} {blend:?} {format:?}"
+          batch.ensure_pipeline_for_test(&device, (shader, sampling), blend, stream, format),
+          "{shader:?} {sampling:?} {blend:?} {format:?}"
         );
       }
     }
@@ -1274,13 +1282,15 @@ fn a_despawned_map_frees_its_chunks() {
 
 #[test]
 fn a_large_tileset_draws_from_its_own_texture() {
-  // 100 tiles of 16 px pad into 32 px cells, ten a row, with no margin
-  // and no border: 320 px, over the atlas's 256 px, so the padded image is
-  // a texture of its own (mips too)
+  // 289 tiles of 16 px pad into 16 px cells, seventeen a row, with no
+  // margin and no border: 272 px, over the atlas's 256 px, so the padded
+  // image is a texture of its own (mips too)
+  fn colour(i: u32) -> [u8; 4] {
+    let (step, shade) = ((i % 100) as u8 * 2, (i / 100) as u8 * 60);
+    [step + 20, 250 - step, 90 + shade, 255]
+  }
   let Some(mut engine) = tile_engine(64, |ctx| {
-    let colours: Vec<[u8; 4]> = (0..100u8)
-      .map(|i| [i * 2 + 20, 250 - i * 2, 90, 255])
-      .collect();
+    let colours: Vec<[u8; 4]> = (0..289).map(colour).collect();
     let set = tile_row(ctx, 16, &colours);
     let mut map = TileMap::new(UVec2::splat(4), UVec2::splat(16));
     map.add_tileset(TilesetSource::Embedded(std::sync::Arc::new(set)));
@@ -1296,7 +1306,6 @@ fn a_large_tileset_draws_from_its_own_texture() {
   };
   engine.step_frames(2).unwrap();
   let frame = engine.frame().unwrap();
-  let colour = |i: u8| [i * 2 + 20, 250 - i * 2, 90, 255];
   assert_eq!(frame.get_pixel(8, 8).0, colour(0));
   assert_eq!(frame.get_pixel(24, 8).0, colour(57));
   assert_eq!(frame.get_pixel(40, 24).0, colour(99));

@@ -4,7 +4,10 @@
 // camera's parallax offset and where the padded image sits on its page, so
 // moving the map, moving the camera or the atlas moving the image changes
 // no instance. Animated tiles step through their frames on game time. The
-// fragment stage is the sprite's (`fs_base` and its variants).
+// fragment stage is the sprite's (`fs_base` and its variants) sampled
+// nearest, and `fs_tile` and its variants sampled smoothly, which read each
+// level inside the tile's cell, up to the tile's clean levels (the
+// instance's `transform2.z`, handed on as `effect_params.x`).
 //
 // Repeated image layers: one quad over the copies a camera sees, its UVs
 // counted in copies, the image wrapping along both axes (`vs_repeat`,
@@ -80,7 +83,8 @@ fn vs_tile(vertex: VertexInput, instance: InstanceInput) -> VertexOutput {
     out.uv_bounds = vec4<f32>(offset + bounds.xy * scale, offset + bounds.zw * scale);
 
     out.tint = instance.tint;
-    out.effect_params = vec4<f32>(0.0);
+    // The tile's clean levels, for `fs_tile`
+    out.effect_params = vec4<f32>(instance.transform2.z, 0.0, 0.0, 0.0);
     out.effect_extra = vec4<f32>(0.0);
     out.emission = instance.transform0.w + 1.0;
     return out;

@@ -104,6 +104,9 @@ pub(crate) enum BatchShader {
   /// image wrapping along both axes, placed with its layer's origin
   /// snapped (`tile.wgsl`)
   Repeat,
+  /// A tile object: a sprite of a tile, read inside its padded cell as a
+  /// chunk's tiles are
+  TileObject,
 }
 
 /// One draw of a light into a light buffer. A shadowed light draws, inside

@@ -17,22 +17,24 @@
 //!   is `[w, 0]` and row 1 `[0, h]` (w and h the tile's width and height);
 //!   with the diagonal flip they swap: row 0 `[0, w]`, row 1 `[h, 0]`. On a
 //!   hexagonal grid the diagonal bit and the 120 degree bit turn both rows
-//!   clockwise by 60 and 120 degrees instead. Row 2 is the centre. Row 1's
-//!   last two lanes are where pixel art draws the tile from there: Tiled's
-//!   raster rounding of a tile an isometric grid of odd sizes places on a
-//!   half pixel, zero everywhere else.
+//!   clockwise by 60 and 120 degrees instead. Row 2 is the centre, and its
+//!   third lane the tile's clean levels (`PaddedCell::levels`), which
+//!   `vs_tile` hands the tile fragment stages. Row 1's last two lanes are
+//!   where pixel art draws the tile from there: Tiled's raster rounding of a
+//!   tile an isometric grid of odd sizes places on a half pixel, zero
+//!   everywhere else.
 //! - `uv_rect`: the tile's texels in the padded image, 0..1 over the whole
 //!   image; flips are swaps of its min and max.
-//! - `uv_bounds`: the tile's padded cell in the same space.
+//! - `uv_bounds`: the tile's padded cell (`PaddedCell`) in the same space,
+//!   which every read keeps inside.
 //! - `tint`: the layer's tint, its alpha times the layer's opacity.
 //! - `effect_params`: `[0, 0, 0, 0]`; for an animated tile `[frames,
-//!   seconds per frame, step_u, step_v]`, a step being one cell in UV.
-//! - `effect_extra`: zero; for an animated tile `[c0, r0, columns, 0]`, the
-//!   first frame's cell's column and row and the padded image's cells per
-//!   row. `uv_rect` and `uv_bounds` are the first frame's. Frame `k` is cell
-//!   `first + k` counted row-major in the padded image, rows wrapping at
-//!   `columns`: its offset from the first frame is `((c0 + k) % columns -
-//!   c0, (c0 + k) / columns)` cells.
+//!   seconds per frame, step_u, step_v]`, a step being one frame's cell in
+//!   UV.
+//! - `effect_extra`: zero; for an animated tile `[0, 0, columns, 0]`.
+//!   `uv_rect` and `uv_bounds` are the first frame's. The frames sit in a
+//!   block of their own, `columns` cells a row (`PaddedAnimation`): frame
+//!   `k`'s offset from the first is `(k % columns, k / columns)` cells.
 
 use std::hash::{DefaultHasher, Hash, Hasher};
 
@@ -54,7 +56,7 @@ use crate::core::ecs::{
 };
 use crate::core::graphics::{Image, RenderLayers, SpriteGpuRenderer, SpriteInstance, TextureId};
 use crate::core::hash::{FastMap, FastSet};
-use crate::core::tilemap::padded::{PaddedCache, PaddedLayout, PaddedTile};
+use crate::core::tilemap::padded::{PaddedCache, PaddedCell, PaddedLayout, PaddedTile};
 use crate::core::tilemap::{
   CHUNK_SIZE, GridShape, ImageLayer, LayerInfo, MapGrid, MapLayerRef, MapLayers, MapObject,
   MapRoot, StaggerAxis, TileFlip, TileGrid, TileLayerData, Tileset, map_asset,
@@ -287,31 +289,35 @@ fn instance(
   );
 
   // An animated tile shows its first frame's cell; the draw steps from it
-  let slot = tile.animation.map_or(tile.slot, |a| a.first_slot);
+  let cell = tile.animation.map_or(tile.cell, |a| a.first);
   let diagonal = !hex && flip.contains(TileFlip::DIAGONAL);
-  let [u0, v0, u1, v1] = flipped_uv(layout, tile, slot, (flip, diagonal));
+  let [u0, v0, u1, v1] = flipped_uv(layout, tile, cell, (flip, diagonal));
   let mut instance = SpriteInstance::new()
     .with_uv(u0, v0, u1, v1)
     .with_tint(look.tint, look.opacity);
   instance.transform[0][..2].copy_from_slice(&x_axis.to_array());
   instance.transform[1][..2].copy_from_slice(&y_axis.to_array());
   instance.transform[2][..2].copy_from_slice(&centre.to_array());
+  instance.transform[2][2] = cell.levels as f32;
   // Where Tiled's raster puts a tile its grid places on a half pixel, for
   // pixel art
   let raster = grid.raster_offset(anchor, layout.tile_size);
   instance.transform[1][2..].copy_from_slice(&raster.to_array());
-  let image = layout.size.as_vec2();
-  let origin = layout.cell_origin(slot).as_vec2();
-  let cell_min = origin / image;
-  let cell_max = (origin + Vec2::splat(layout.cell as f32)) / image;
-  instance.uv_bounds = [cell_min.x, cell_min.y, cell_max.x, cell_max.y];
+  instance.uv_bounds = cell_bounds(layout, cell);
   if let Some(a) = tile.animation {
-    let step = Vec2::splat(layout.cell as f32) / image;
+    let step = a.first.size.as_vec2() / layout.size.as_vec2();
     instance.effect_params = [a.frames as f32, a.frame_duration, step.x, step.y];
-    let (column, row) = (slot % layout.columns, slot / layout.columns);
-    instance.effect_extra = [column as f32, row as f32, layout.columns as f32, 0.0];
+    instance.effect_extra = [0.0, 0.0, a.columns as f32, 0.0];
   }
   instance
+}
+
+/// `cell`'s place in the padded image of `layout`, 0..1 over the image
+fn cell_bounds(layout: &PaddedLayout, cell: PaddedCell) -> [f32; 4] {
+  let image = layout.size.as_vec2();
+  let min = cell.origin.as_vec2() / image;
+  let max = (cell.origin + cell.size).as_vec2() / image;
+  [min.x, min.y, max.x, max.y]
 }
 
 /// Whether a tile of one of `layouts` could leave its cell's box on `grid`,
@@ -354,20 +360,20 @@ fn may_spill(grid: &MapGrid, layouts: &[Option<PaddedLayout>]) -> bool {
   })
 }
 
-/// The UV rect (0..1 over the padded image) of `tile`'s texels in cell
-/// `slot`, its sides swapped for the flips' mirrors. Screen x shows the
+/// The UV rect (0..1 over the padded image) of `tile`'s texels, centred in
+/// `cell`, its sides swapped for the flips' mirrors. Screen x shows the
 /// tile's u, or its v under a `diagonal` flip, which swaps the axes (on a
 /// hexagonal grid the diagonal bit turns the tile instead, and its mirrors
 /// are its own)
 fn flipped_uv(
   layout: &PaddedLayout,
   tile: &PaddedTile,
-  slot: u32,
+  cell: PaddedCell,
   (flip, diagonal): (TileFlip, bool),
 ) -> [f32; 4] {
   let image = layout.size.as_vec2();
-  let origin = layout.cell_origin(slot).as_vec2();
-  let inset = ((UVec2::splat(layout.cell) - tile.size) / 2).as_vec2();
+  let origin = cell.origin.as_vec2();
+  let inset = (cell.size.saturating_sub(tile.size) / 2).as_vec2();
   let min = (origin + inset) / image;
   let max = (origin + inset + tile.size.as_vec2()) / image;
   let (mut u, mut v) = ((min.x, max.x), (min.y, max.y));
@@ -394,7 +400,9 @@ fn flipped_uv(
 /// A tile object's instance in the world: its tile (the frame for game
 /// time `time`, if animated) drawn over `size` pixels centred on the
 /// object's origin, placed by `affine` (the object's world transform), with
-/// the tile's flips and the layer's look
+/// the tile's flips and the layer's look. Drawn as a sprite
+/// (`SpriteShading::TileObject`), its `uv_bounds` its cell and its first
+/// effect lane the cell's clean levels, as a chunk's tile reads
 fn object_instance(
   affine: Affine2,
   size: Vec2,
@@ -403,22 +411,24 @@ fn object_instance(
   look: &LayerLook,
   time: f32,
 ) -> SpriteInstance {
-  let slot = match tile.animation {
+  let cell = match tile.animation {
     Some(a) if a.frames > 1 && a.frame_duration > 0.0 => {
       let beats = (time / a.frame_duration).floor();
       let k = beats
         .rem_euclid(a.frames as f32)
         .clamp(0.0, (a.frames - 1) as f32);
-      a.first_slot + k as u32
+      a.frame(k as u32)
     }
-    Some(a) => a.first_slot,
-    None => tile.slot,
+    Some(a) => a.first,
+    None => tile.cell,
   };
   let diagonal = flip.contains(TileFlip::DIAGONAL);
-  let [u0, v0, u1, v1] = flipped_uv(layout, tile, slot, (flip, diagonal));
+  let [u0, v0, u1, v1] = flipped_uv(layout, tile, cell, (flip, diagonal));
   let mut instance = SpriteInstance::new()
     .with_uv(u0, v0, u1, v1)
     .with_tint(look.tint, look.opacity);
+  instance.uv_bounds = cell_bounds(layout, cell);
+  instance.effect_params[0] = cell.levels as f32;
   // `size` is as drawn: a diagonal flip's quad runs the tile's width down
   let tile_size = if diagonal {
     Vec2::new(size.y, size.x)
@@ -736,7 +746,8 @@ impl TileDrawer {
             let texture = gpu
               .shown_image(handle.id(), images)
               .map(|shown| gpu.shown_texture(shown));
-            let reach = layout.offset.abs().max_element() as f32 + layout.cell as f32;
+            let reach =
+              layout.offset.abs().max_element() as f32 + layout.largest_cell.max_element() as f32;
             margin = margin.max(reach);
             layout.serial.hash(&mut paddings);
             layouts.push(Some(layout));
@@ -1637,7 +1648,10 @@ impl Objects<'_, '_> {
         only_camera: camera.map(|c| c.entity),
         payload: OrderedPayload::Sprite {
           texture,
-          look: style.sprite,
+          look: SpriteLook {
+            shading: SpriteShading::TileObject,
+            ..style.sprite
+          },
           instance,
           layers: style.layers,
         },
@@ -1741,14 +1755,19 @@ mod tests {
     (out[0].1, layout)
   }
 
+  /// Where `tile`'s picture starts in its padded image: centred in its cell
+  fn picture(tile: &PaddedTile) -> Vec2 {
+    (tile.cell.origin + (tile.cell.size - tile.size) / 2).as_vec2()
+  }
+
   #[test]
   fn each_flip_maps_the_tile_s_corners_as_tiled_does() {
     let (plain, layout) = one_tile(TileFlip::NONE, 16, 16);
     let tile = layout.tile(3).expect("tile");
-    let cell = layout.cell_origin(tile.slot).as_vec2() / layout.size.as_vec2();
+    let at = picture(tile) / layout.size.as_vec2();
     let px = Vec2::splat(1.0) / layout.size.as_vec2();
-    // The tile's own rect: 8 texels into its cell, 16 wide
-    let (u0, v0) = (cell.x + 8.0 * px.x, cell.y + 8.0 * px.y);
+    // The tile's own rect, 16 wide
+    let (u0, v0) = (at.x, at.y);
     let tile_uv = |fx: f32, fy: f32| Vec2::new(u0 + 16.0 * px.x * fx, v0 + 16.0 * px.y * fy);
     // Unflipped: corners show the same corners of the tile
     for ((_, uv), (fx, fy)) in
@@ -1806,7 +1825,7 @@ mod tests {
     // Tiled's "rotate right": diagonal and horizontal
     let (i, layout) = one_tile(TileFlip::DIAGONAL | TileFlip::HORIZONTAL, 16, 16);
     let tile = layout.tile(3).expect("tile");
-    let o = layout.cell_origin(tile.slot).as_vec2() + Vec2::splat(8.0);
+    let o = picture(tile);
     let (_, uv) = corners(&i)
       .into_iter()
       .min_by(|a, b| (a.0.x + a.0.y).total_cmp(&(b.0.x + b.0.y)))
@@ -1957,23 +1976,20 @@ mod tests {
     assert_eq!(still.effect_params, [0.0; 4]);
     assert_eq!(still.effect_extra, [0.0; 4]);
     let size = layout.size.as_vec2();
-    let step = layout.cell as f32 / size;
+    let step = anim.first.size.as_vec2() / size;
     assert_eq!(animated.effect_params, [3.0, 0.12, step.x, step.y]);
-    let first = layout.cell_origin(anim.first_slot).as_vec2() / size;
-    // The first frame's column and row (not its UV: the cells start a
-    // margin into the image)
-    let (column, row) = (
-      anim.first_slot % layout.columns,
-      anim.first_slot / layout.columns,
-    );
-    assert_eq!(
-      animated.effect_extra,
-      [column as f32, row as f32, layout.columns as f32, 0.0]
-    );
-    // The instance shows the first frame
+    // The frames' block: columns from its first column and row
+    assert_eq!(animated.effect_extra, [0.0, 0.0, anim.columns as f32, 0.0]);
+    // The instance shows the first frame, and carries its clean levels
+    let first = anim.first.origin.as_vec2() / size;
     let bounds = [first.x, first.y, first.x + step.x, first.y + step.y];
     assert_eq!(animated.uv_bounds, bounds);
-    assert!(animated.uv_rect[0] > bounds[0] && animated.uv_rect[2] < bounds[2]);
+    assert!(animated.uv_rect[0] >= bounds[0] && animated.uv_rect[2] <= bounds[2]);
+    assert_eq!(animated.transform[2][2], anim.first.levels as f32);
+    assert_eq!(
+      still.transform[2][2],
+      layout.tile(1).expect("tile").cell.levels as f32
+    );
   }
 
   fn tall_set(images: &mut Assets<Image>) -> Tileset {

@@ -1572,10 +1572,10 @@ fn colour_of(tile: u32) -> [u8; 4] {
 
 #[test]
 fn a_tileset_padded_again_never_draws_its_old_image_with_new_places() {
-  // 100 tiles of 32 px pad to 752 px, a texture of its own and over a
-  // frame's upload budget; 130 pad to more columns, so every tile's place
-  // in the padded image moves
-  let (set, image) = many(100);
+  // 480 tiles of 32 px pad to 768 x 640 px, a texture of its own; 600 pad
+  // to 800 x 768 px, over a frame's upload budget, in more columns, so
+  // every tile's place in the padded image moves
+  let (set, image) = many(480);
   let data: Vec<u32> = (1..=32).collect();
   let layer = tiles(1, "ground", (8, 4), &data, "");
   let map = format!(
@@ -1610,7 +1610,7 @@ fn a_tileset_padded_again_never_draws_its_old_image_with_new_places() {
   // its check and keeps its last good value), then the tileset. Until each
   // reload lands every frame shows the old padding, and from then on the
   // new one: no frame may mix them
-  let (set, image) = many(130);
+  let (set, image) = many(600);
   let picture = engine
     .assets()
     .load::<crate::core::graphics::Image>("r/many.png");
@@ -1626,7 +1626,7 @@ fn a_tileset_padded_again_never_draws_its_old_image_with_new_places() {
     }
     frames += 1;
     let height = engine.assets().get(&picture).map(|image| image.height());
-    if !saved && height == Some(17 * 32) {
+    if !saved && height == Some(75 * 32) {
       files.insert("r/many.tsj", set.clone());
       saved = true;
     }
@@ -1635,7 +1635,7 @@ fn a_tileset_padded_again_never_draws_its_old_image_with_new_places() {
     .world()
     .resource::<Assets<crate::core::tilemap::Tileset>>();
   let counts: Vec<u32> = tilesets.iter().map(|(_, t)| t.tile_count).collect();
-  assert!(counts.contains(&130), "the save landed: {counts:?}");
+  assert!(counts.contains(&600), "the save landed: {counts:?}");
 }
 
 /// The reload of a 1024 x 1024 map of four layers, one tile changed: how

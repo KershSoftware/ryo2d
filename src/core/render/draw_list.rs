@@ -66,6 +66,10 @@ pub(crate) enum SpriteShading {
   /// copies of the image, and its transform lanes' unused z hold the
   /// layer's origin, which pixel art snaps
   Repeat,
+  /// A tile object (`BatchShader::TileObject`): a tile from its tileset's
+  /// padded image, its `uv_bounds` the tile's cell and its first effect
+  /// lane the cell's clean levels, read as a chunk's tiles are
+  TileObject,
 }
 
 /// How a sprite is drawn, besides its texture and instance.
