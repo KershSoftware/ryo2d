@@ -28,11 +28,11 @@ const SEA: Color = Color::rgb(120, 185, 216);
 /// The walker: Tiny Dungeon's woman, scaled to the cells
 const WALKER: Walk = Walk {
   sprite: 99,
-  scale: 2.0,
-  radius: 10.0,
-  speed: 180.0,
+  scale: 4.0,
+  radius: 20.0,
+  speed: 360.0,
 };
-const ZOOM: f32 = 0.5;
+const ZOOM: f32 = 0.25;
 /// The settings rows, for the notes under the panel
 const ROWS: usize = 1;
 
@@ -173,7 +173,7 @@ impl DemoPage for StaggeredPage {
     };
     let here = place_of(ctx, self.walker).and_then(|at| ctx.maps().world_to_cell(root, GROUND, at));
     let mut lines = vec![(
-      format!("Staggered diamonds of 116 x 55, {}", SHIFTED[self.shown]),
+      format!("Staggered diamonds of 232 x 110, {}", SHIFTED[self.shown]),
       Color::WHITE,
     )];
     lines.extend(pointer);

@@ -1,22 +1,19 @@
 #!/usr/bin/env bash
-# Derives the tile grids demo's halved Kenney art from the packs' zips, as
+# Derives the tile grids demo's Kenney art from the packs' zips, as
 # assets/README.md records (ImageMagick 7):
 #
 #   scripts/derive-art.sh <Sketch Town's Tiles folder> <Hexagon Pack's Spritesheets folder>
 #
 # run from examples/demos/tile-grids, with each zip unzipped in a folder of
-# its own. It writes:
+# its own. It writes, at the packs' own size:
 #
-# - assets/kenney-sketch-town/<name>.png: each picture the pages use halved
-#   (256 x 352 to 128 x 176, a box filter: each texel the mean of four) and
-#   cut to its bottom 128 rows (the 48 above are empty in every one of
-#   them), so a picture is 128 x 128 and the engine pads it into a 256 px
-#   cell rather than a 1024 px one;
+# - assets/kenney-sketch-town/<name>.png: each picture the pages use (256 x
+#   352) cut to its bottom 256 rows (the 96 above are empty in every one of
+#   them), so a picture is 256 x 256;
 # - assets/kenney-hexagon-pack/hexagon-board.png: the hexagons the board
 #   uses, cut from the terrain sheet (120 x 140 each, 122 px apart across
-#   and 142 down), halved to 60 x 70 and laid out 6 a row in BOARD's order,
-#   which the board's tileset and `scripts/make-maps.js` (HEX_SHEET) number
-#   from 0.
+#   and 142 down) and laid out 6 a row in BOARD's order, which the board's
+#   tileset and `scripts/make-maps.js` (HEX_SHEET) number from 0.
 
 set -euo pipefail
 
@@ -38,7 +35,7 @@ sketch=(
 )
 mkdir -p "$out/kenney-sketch-town"
 for name in "${sketch[@]}"; do
-  magick "$tiles/$name.png" -filter Box -resize 50% -crop 128x128+0+48 +repage \
+  magick "$tiles/$name.png" -crop 256x256+0+96 +repage \
     -strip -define png:exclude-chunks=date,time "$out/kenney-sketch-town/$name.png"
 done
 
@@ -63,10 +60,10 @@ for i in "${!board[@]}"; do
   fi
   read -r x y <<<"$where"
   piece=$(printf "%s/%02d-%s.png" "$work" "$i" "$name")
-  magick "$sheets/hexagonTerrain_sheet.png" -crop "120x140+$x+$y" +repage -filter Box -resize 50% "$piece"
+  magick "$sheets/hexagonTerrain_sheet.png" -crop "120x140+$x+$y" +repage "$piece"
   pieces+=("$piece")
 done
 mkdir -p "$out/kenney-hexagon-pack"
-magick montage "${pieces[@]}" -tile 6x -geometry 60x70+0+0 -background none \
+magick montage "${pieces[@]}" -tile 6x -geometry 120x140+0+0 -background none \
   -strip -define png:exclude-chunks=date,time "$out/kenney-hexagon-pack/hexagon-board.png"
 echo "derive-art.sh: wrote ${#sketch[@]} Sketch Town pictures and the board's sheet of ${#board[@]} hexagons"

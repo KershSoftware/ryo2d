@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<map version="1.11" tiledversion="1.12.2" orientation="hexagonal" renderorder="right-down" width="8" height="9" tilewidth="60" tileheight="70" infinite="0" hexsidelength="35" staggeraxis="y" staggerindex="odd" backgroundcolor="#24313f" nextlayerid="6" nextobjectid="1">
+<map version="1.11" tiledversion="1.12.2" orientation="hexagonal" renderorder="right-down" width="8" height="9" tilewidth="120" tileheight="140" infinite="0" hexsidelength="70" staggeraxis="y" staggerindex="odd" backgroundcolor="#24313f" nextlayerid="6" nextobjectid="1">
  <tileset firstgid="1" source="../tilesets/hexagon-board.tsx"/>
  <layer id="1" name="board" width="8" height="9">
   <properties>

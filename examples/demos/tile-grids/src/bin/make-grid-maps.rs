@@ -47,7 +47,7 @@ const GRIDS: [(&str, &[&str]); 6] = [
   ),
   (
     "maps/hex-board.tmx",
-    &["\"orientation\":\"hexagonal\"", "\"hexsidelength\":35"],
+    &["\"orientation\":\"hexagonal\"", "\"hexsidelength\":70"],
   ),
   (
     "maps/dungeon.tmx",

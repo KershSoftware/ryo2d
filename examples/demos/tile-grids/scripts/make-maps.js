@@ -139,21 +139,19 @@ save(platformer, tiled.tilesetFormat("tsx"), "tilesets/platformer.tsx");
 
 // ---- the other grids' tilesets -----------------------------------------------
 
-// Kenney's Sketch Town, one picture a tile, halved and cut to its bottom
-// 128 rows (scripts/derive-art.sh): blocks and props drawn for isometric
-// cells of 116 x 55 (the pack's 232 x 110 halved; its diamond is 55 tall,
-// so the cell is too, and its half-cell steps fall on half pixels), each
-// picture standing 6 px left of its cell (Kenney's own tileset's offset,
-// halved). A block is a cell high, so it is two tilesets of the same
-// pictures' kind: the ground's blocks drawn a cell lower (offset y 58),
-// their tops on the cells, and the props standing on the cells (offset y
-// 3), so a prop stands on the block of its cell and the cells the
+// Kenney's Sketch Town, one picture a tile, cut to its bottom 256 rows
+// (scripts/derive-art.sh): blocks and props drawn for isometric cells of
+// 232 x 110, each picture standing 12 px left of its cell (Kenney's own
+// tileset's offset). A block is a cell high, so it is two tilesets of the
+// same pictures' kind: the ground's blocks drawn a cell lower (offset y
+// 116), their tops on the cells, and the props standing on the cells
+// (offset y 6), so a prop stands on the block of its cell and the cells the
 // characters walk, pick and collide on are the blocks' tops. Each
 // tileset's grid stays orthogonal: the collision shapes are in the
 // pictures' pixels
 var SKETCH = "kenney-sketch-town/";
-var ISO_W = 116, ISO_H = 55;
-var SKETCH_W = 128, SKETCH_H = 128, SKETCH_LEFT = 6;
+var ISO_W = 232, ISO_H = 110;
+var SKETCH_W = 256, SKETCH_H = 256, SKETCH_LEFT = 12;
 
 function collection(name, offsetY, files) {
   var set = new Tileset(name);
@@ -187,7 +185,7 @@ function diamond(offsetY) {
 // cell's in the map: top-left the diamond's top vertex, top-right its right
 // one, bottom-right its bottom, bottom-left its left. The pack's edges
 // cover every corner combination but the two diagonals. Water collides
-var GROUND_OFFSET = 58, PROPS_OFFSET = 3;
+var GROUND_OFFSET = 116, PROPS_OFFSET = 6;
 var GROUND_FILES = [
   ["grass_center_N", [1, 1, 1, 1]],
   ["water_center_N", [2, 2, 2, 2]],
@@ -231,9 +229,9 @@ shapes(sketchProps, [PROP.castle_wall_N, PROP.castle_wall_E, PROP.castle_tower_N
 save(sketchProps, tiled.tilesetFormat("tsx"), "tilesets/sketch-town-props.tsx");
 
 // Kenney's Hexagon Pack: the hexagons the board uses, cut from its terrain
-// sheet and halved (scripts/derive-art.sh), pointy-topped hexagons of 60 x
-// 70 side by side, 6 a row, in HEX_SHEET's order. Nothing collides:
-// hexagonal layers don't
+// sheet (scripts/derive-art.sh), pointy-topped hexagons of 120 x 140 side
+// by side, 6 a row, in HEX_SHEET's order. Nothing collides: hexagonal
+// layers don't
 var HEX_SHEET = [
   "grass_05", "grass_10", "grass_12", "grass_13", "grass_11", "grass_14",
   "grass_15", "grass_16", "dirt_06", "dirt_11", "dirt_12", "dirt_14",
@@ -246,7 +244,7 @@ function hexTile(name) {
   return id;
 }
 var hexTerrain = new Tileset("hexagon-board");
-hexTerrain.setTileSize(60, 70);
+hexTerrain.setTileSize(120, 140);
 hexTerrain.imageFileName = file("kenney-hexagon-pack/hexagon-board.png");
 save(hexTerrain, tiled.tilesetFormat("tsx"), "tilesets/hexagon-board.tsx");
 
@@ -546,7 +544,7 @@ function prop(roll, trees, rocks) {
 
 // ---- the isometric town ------------------------------------------------------
 
-// 16 x 16 isometric cells of 116 x 55 (an even width, which draws tall art
+// 16 x 16 isometric cells of 232 x 110 (an even width, which draws tall art
 // chunk by chunk). A castle wall rings cells 2 to 10 each way, a tower at
 // each corner and an open gate in each of its two front sides; trees and
 // rocks stand outside it and inside, clear of the walls; a pond lies right
@@ -609,18 +607,17 @@ save(town, tiled.mapFormat("tmx"), "maps/town.tmx");
 
 // ---- the staggered island ----------------------------------------------------
 
-// The same island on two staggered grids of 116 x 55 cells, each 1450 x
-// 675 px: rows shifted (staggered along y, odd rows half a cell right; 12
+// The same island on two staggered grids of 232 x 110 cells, each 2900 x
+// 1375 px: rows shifted (staggered along y, odd rows half a cell right; 12
 // x 24 cells) and columns shifted (along x, odd columns half a cell down; 24
 // x 12). Tiled steps staggered grids in whole pixels, half a cell rounding
-// down: rows 27 apart and shifted 58 along y, columns 58 apart and their
-// cells 54 apart, shifted 27, along x (the 55 px tiles reach a pixel above
-// those steps' 54 px diamonds). A cell is grass where its centre is inside
-// the island's outline (in pixels, so both grids show one island), else
-// sea, which collides; trees grow where a value noise of the centre is high
-// (groves at the same places on both), rocks by a hash of the cell. The
-// character starts in the middle
-var ISLAND_W = 1450, ISLAND_H = 675;
+// down, which these cells halve exactly: rows 55 apart and shifted 116
+// along y, columns 116 apart and their cells 110 apart, shifted 55, along
+// x. A cell is grass where its centre is inside the island's outline (in
+// pixels, so both grids show one island), else sea, which collides; trees
+// grow where a value noise of the centre is high (groves at the same places
+// on both), rocks by a hash of the cell. The character starts in the middle
+var ISLAND_W = 2900, ISLAND_H = 1375;
 // Half a cell across and along, in Tiled's whole pixels
 var ISO_HALF_W = Math.floor(ISO_W / 2), ISO_HALF_H = Math.floor(ISO_H / 2);
 
@@ -635,7 +632,7 @@ function noise(x, y, salt) {
   return top + (bottom - top) * sy;
 }
 function onIsland(px, py) {
-  var dx = (px - ISLAND_W / 2) / 530, dy = (py - ISLAND_H / 2) / 235;
+  var dx = (px - ISLAND_W / 2) / 1060, dy = (py - ISLAND_H / 2) / 470;
   var angle = Math.atan2(dy, dx);
   var edge = 1 + 0.12 * Math.sin(3 * angle + 0.5) + 0.08 * Math.sin(5 * angle + 2);
   return Math.sqrt(dx * dx + dy * dy) < edge;
@@ -666,9 +663,9 @@ function island(axis, width, height, path) {
         continue;
       }
       g.setTile(x, y, SG.tile(GROUND.grass_center_N));
-      var middle = Math.abs(c[0] - ISLAND_W / 2) < 150 && Math.abs(c[1] - ISLAND_H / 2) < 75;
+      var middle = Math.abs(c[0] - ISLAND_W / 2) < 300 && Math.abs(c[1] - ISLAND_H / 2) < 150;
       if (middle) continue;
-      var grove = noise(c[0] / 160, c[1] / 160, 31) > 0.62;
+      var grove = noise(c[0] / 320, c[1] / 320, 31) > 0.62;
       var id = grove ? prop(hash(x, y, 32) * 0.3, 0.3, 0) : prop(hash(x, y, 33), 0.03, 0.04);
       if (id !== null) p.setTile(x, y, SP.tile(id));
     }
@@ -686,8 +683,8 @@ island(TileMap.StaggerX, 24, 12, "maps/island-columns.tmx");
 
 // ---- the hex board -----------------------------------------------------------
 
-// 8 x 9 pointy-topped hexagons of 60 x 70 with sides of 35 (close to
-// regular, not quite: a regular hexagon 60 wide is 69.28 tall, which is why
+// 8 x 9 pointy-topped hexagons of 120 x 140 with sides of 70 (close to
+// regular, not quite: a regular hexagon 120 wide is 138.56 tall, which is why
 // a turned hex leaves a pinhole of a pixel at some of its corners), in
 // rows, odd rows half a hexagon right. The board is drawn from BOARD, a row
 // a string: g grass, t pines, T trees, f forest, r rocks, d dirt, D dirt
@@ -725,10 +722,10 @@ var TURNS = [
 ];
 // The marks' rims: beige, red and grey; the range a see-through sand wash
 var MARKS = [["range", "sand_07", 0.45], ["ring", "sand_01", 1], ["neighbours", "stone_01", 1], ["line", "mars_01", 1]];
-var board = gridMap(TileMap.Hexagonal, 60, 70, 8, BOARD.length, "#24313f");
+var board = gridMap(TileMap.Hexagonal, 120, 140, 8, BOARD.length, "#24313f");
 board.staggerAxis = TileMap.StaggerY;
 board.staggerIndex = TileMap.StaggerOdd;
-board.hexSideLength = 35;
+board.hexSideLength = 70;
 board.addTileset(HX);
 var boardLayer = tileLayer("board", { collides: false, occludes: false });
 var boardEdit = boardLayer.edit();

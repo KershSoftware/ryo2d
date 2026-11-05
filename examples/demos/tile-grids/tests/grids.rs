@@ -224,8 +224,8 @@ fn the_town_character_draws_behind_a_wall_and_in_front_of_it() {
   // than the character's radius
   let centre = layer.cell_center_world(wall);
   let (radius, _) = walker_reach(&engine, walker);
-  let behind = Vec2::new(centre.x, top - radius - 15.0);
-  let front = Vec2::new(centre.x, bottom + radius + 5.0);
+  let behind = Vec2::new(centre.x, top - radius - 30.0);
+  let front = Vec2::new(centre.x, bottom + radius + 10.0);
   assert_eq!(layer.cell_at_world(behind), wall - IVec2::ONE, "behind");
   assert_eq!(layer.cell_at_world(front), wall + IVec2::ONE, "in front");
 
@@ -257,8 +257,8 @@ fn the_town_character_draws_behind_a_wall_and_in_front_of_it() {
     teleport(&mut engine, walker, at);
     engine.step_frames(10).unwrap();
     let (a, b) = (
-      to_screen(&mut engine, at - Vec2::new(60.0, 90.0)),
-      to_screen(&mut engine, at + Vec2::new(60.0, 10.0)),
+      to_screen(&mut engine, at - Vec2::new(120.0, 180.0)),
+      to_screen(&mut engine, at + Vec2::new(120.0, 20.0)),
     );
     let area = Rect::new(a.x, a.y, b.x - a.x, b.y - a.y);
     let (hidden, shown) = &frames[i];
@@ -393,7 +393,7 @@ fn the_town_walls_stop_the_character() {
     &[KeyCode::KeyW, KeyCode::KeyD],
   );
   assert!(
-    (gap - (radius + skin)).abs() < 1.0,
+    (gap - (radius + skin)).abs() < 2.0,
     "the character stops at the walls' diamonds: {gap} from them, its radius {radius} and skin {skin}"
   );
   assert!(warnings().is_empty(), "{:#?}", warnings());
@@ -659,6 +659,6 @@ fn painting_water_never_walls_the_town_s_knight_in() {
   engine.step_frames(30).unwrap();
   engine.release_key(KeyCode::KeyD);
   let moved = walker_at(&engine, walker).distance(feet);
-  assert!(moved > 10.0, "the knight walks on: it moved {moved} px");
+  assert!(moved > 20.0, "the knight walks on: it moved {moved} px");
   assert!(warnings().is_empty(), "{:#?}", warnings());
 }

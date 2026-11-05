@@ -13,8 +13,10 @@
 //! rest on it. On the endless page the digger digs and builds with the
 //! mouse; leaving takes the changed chunks into the stream's `SavedChunks`
 //! (the HUD counts them, and the chunks in flight as new ground streams
-//! in), and coming back finds them as the player left them. The pages on
-//! the other grids have their own tests (`tests/grids.rs`)
+//! in), and coming back finds them as the player left them. The town and
+//! the hex board draw Kenney's pictures at their own size, each tileset
+//! padded to at most twice its art. The pages on the other grids have their
+//! own tests (`tests/grids.rs`)
 
 mod common;
 
@@ -23,6 +25,7 @@ use std::collections::BTreeSet;
 use common::{
   LANDING, click, engine_on, landed_maps, layer_grid, spawned_map, step_resting, warnings,
 };
+use ryo2d::core::tilemap::padded::{PaddedSize, padded_sizes};
 use ryo2d::prelude::*;
 use ryo2d::testing::HeadlessEngine;
 use tile_grids_demo::{Ball, ChunkLabel, Digger, Runner, demo};
@@ -31,6 +34,8 @@ use tile_grids_demo::{Ball, ChunkLabel, Digger, Runner, demo};
 const MEADOW: usize = 0;
 const PAINT: usize = 1;
 const ENDLESS: usize = 2;
+const TOWN: usize = 3;
+const HEX: usize = 5;
 const PAGES: usize = 8;
 
 /// The meadow's file
@@ -129,6 +134,100 @@ fn every_page_plays_for_five_seconds_without_a_warning() {
     let warned = warnings();
     assert!(warned.is_empty(), "page {}: {warned:#?}", page + 1);
   }
+}
+
+/// The tile size of the tileset `name` the map `file` draws with
+fn tile_size_of(engine: &mut HeadlessEngine, file: &str, name: &str) -> UVec2 {
+  let handle = engine
+    .assets()
+    .load_now::<TileMap>(file)
+    .unwrap_or_else(|_| panic!("the map {file}"));
+  let world = engine.world();
+  let map = world
+    .resource::<Assets<TileMap>>()
+    .get(&handle)
+    .unwrap_or_else(|| panic!("{file} is loaded"));
+  let tilesets = world.resource::<Assets<Tileset>>();
+  map
+    .tilesets
+    .iter()
+    .find_map(|source| match source {
+      TilesetSource::Asset(tileset) => tilesets
+        .get(tileset)
+        .filter(|tileset| tileset.name == name)
+        .map(|tileset| tileset.tile_size),
+      TilesetSource::Embedded(tileset) => (tileset.name == name).then_some(tileset.tile_size),
+    })
+    .unwrap_or_else(|| panic!("{file} draws with the tileset {name:?}"))
+}
+
+/// What the padding of the tileset `name` takes, once the page's map has
+/// landed with it
+fn padded_size(engine: &HeadlessEngine, name: &str) -> PaddedSize {
+  let sizes = padded_sizes(engine.world());
+  sizes
+    .iter()
+    .find(|size| size.name == name)
+    .cloned()
+    .unwrap_or_else(|| panic!("a padding of {name:?} in {sizes:?}"))
+}
+
+#[test]
+fn the_town_draws_kenney_s_pictures_at_their_own_size() {
+  let Some(mut engine) = engine_on(TOWN) else {
+    return;
+  };
+  spawned_map(&mut engine);
+  engine.step_frames(3).unwrap();
+  // The pack's pictures cut to their bottom 256 rows, not halved
+  for name in ["sketch-town-ground", "sketch-town-props"] {
+    assert_eq!(
+      tile_size_of(&mut engine, "maps/town.tmx", name),
+      UVec2::new(256, 256),
+      "{name}'s pictures"
+    );
+  }
+  // Padded at about their own size: each at most twice its art, both
+  // within 20 MiB
+  let mut total = 0;
+  for name in ["sketch-town-ground", "sketch-town-props"] {
+    let size = padded_size(&engine, name);
+    assert!(
+      size.bytes <= 2 * size.art_bytes,
+      "{name} pads to {} bytes, its art {}",
+      size.bytes,
+      size.art_bytes
+    );
+    total += size.bytes;
+  }
+  assert!(
+    total <= 20 * 1024 * 1024,
+    "the town's tilesets pad to {total} bytes"
+  );
+  assert!(warnings().is_empty(), "{:#?}", warnings());
+}
+
+#[test]
+fn the_hex_board_draws_its_hexagons_at_their_own_size() {
+  let Some(mut engine) = engine_on(HEX) else {
+    return;
+  };
+  spawned_map(&mut engine);
+  engine.step_frames(3).unwrap();
+  // The terrain sheet's hexagons as the pack draws them
+  assert_eq!(
+    tile_size_of(&mut engine, "maps/hex-board.tmx", "hexagon-board"),
+    UVec2::new(120, 140),
+    "the board's hexagons"
+  );
+  let size = padded_size(&engine, "hexagon-board");
+  assert!(
+    size.bytes <= 2 * size.art_bytes && size.bytes <= 8 * 1024 * 1024,
+    "the board pads to {} bytes, its art {}",
+    size.bytes,
+    size.art_bytes
+  );
+  assert!(warnings().is_empty(), "{:#?}", warnings());
 }
 
 /// The chunks resident on `map`: those its tile layers have, each once

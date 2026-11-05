@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<map version="1.11" tiledversion="1.12.2" orientation="isometric" renderorder="right-down" width="16" height="16" tilewidth="116" tileheight="55" infinite="0" backgroundcolor="#78b9d8" nextlayerid="4" nextobjectid="2">
+<map version="1.11" tiledversion="1.12.2" orientation="isometric" renderorder="right-down" width="16" height="16" tilewidth="232" tileheight="110" infinite="0" backgroundcolor="#78b9d8" nextlayerid="4" nextobjectid="2">
  <tileset firstgid="1" source="../tilesets/sketch-town-ground.tsx"/>
  <tileset firstgid="15" source="../tilesets/sketch-town-props.tsx"/>
  <layer id="1" name="ground" width="16" height="16">
@@ -50,7 +50,7 @@
 </data>
  </layer>
  <objectgroup id="3" name="objects">
-  <object id="1" name="start" type="player_start" x="467.5" y="357.5">
+  <object id="1" name="start" type="player_start" x="935" y="715">
    <point/>
   </object>
  </objectgroup>
