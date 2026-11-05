@@ -1,5 +1,7 @@
 //! The demo's pages without a window: each lands its map and plays for
-//! five seconds, without a warning or a failed map. The meadow is a Tiled
+//! five seconds, without a warning or a failed map, and the speed page
+//! does on its hexagonal grid too, its map colliding and casting shadows.
+//! The meadow is a Tiled
 //! infinite map streamed with a generator: its hand-made chunks lie at
 //! negative cells, the HUD tells them from the generated ones and counts
 //! the chunks resident and in flight, its runner runs on past the meadow's
@@ -38,6 +40,7 @@ const ENDLESS: usize = 2;
 const TOWN: usize = 3;
 const STAGGERED: usize = 4;
 const HEX: usize = 5;
+const SPEED: usize = 7;
 const PAGES: usize = 8;
 
 /// The meadow's file
@@ -136,6 +139,43 @@ fn every_page_plays_for_five_seconds_without_a_warning() {
     let warned = warnings();
     assert!(warned.is_empty(), "page {}: {warned:#?}", page + 1);
   }
+}
+
+#[test]
+fn the_speed_page_plays_for_five_seconds_on_its_hexagonal_grid_without_a_warning() {
+  let Some(mut engine) = engine_on(SPEED) else {
+    return;
+  };
+  spawned_map(&mut engine);
+  // The Grid setting's fourth choice
+  for _ in 0..3 {
+    engine.tap_key(KeyCode::ArrowRight);
+    engine.step_frames(2).unwrap();
+  }
+  let mut waited = 0;
+  loop {
+    let (landed, roots) = landed_maps(&mut engine);
+    if landed.len() == 1 && roots == 1 {
+      let map = spawned_map(&mut engine);
+      let grid = MapsView::new(engine.world_mut()).grid(map, "ground");
+      if grid.is_some_and(|grid| matches!(grid.grid.shape, GridShape::Hexagonal { .. })) {
+        break;
+      }
+    }
+    waited += 1;
+    assert!(waited < LANDING, "the hexagonal map never landed");
+    step_resting(&mut engine);
+  }
+  // Five seconds of its camera flying over the map
+  engine.step_frames(FRAMES).unwrap();
+  let (landed, roots) = landed_maps(&mut engine);
+  assert_eq!(
+    (landed.len(), roots),
+    (1, 1),
+    "maps landed {landed:?} of {roots} roots"
+  );
+  let warned = warnings();
+  assert!(warned.is_empty(), "{warned:#?}");
 }
 
 /// The tile size of the tileset `name` the map `file` draws with

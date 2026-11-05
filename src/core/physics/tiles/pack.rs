@@ -35,8 +35,12 @@
 //! for an edit that takes a chunk past B (its part dropped, seven made),
 //! each within its 100 µs target. A block holds the sides its cells own (at
 //! most about 190) and its shape cells' rings, which nothing bounds, so a
-//! block heavy with rings can hold more than B by as much as its art has,
-//! and an edit there costs more than that.
+//! block heavy with rings can hold more than B by as much as its art has:
+//! a chunk of inset hexagons, six ring edges a cell, holds 384 a block,
+//! and its loop rebuild reads a median 42.8 to 42.9 µs for a cell in a
+//! block's middle but 134.0 to 135.1 µs where four such blocks meet, past
+//! the 100 µs target (`hex_ring_heavy_edit_timing` in the tilemap's
+//! occluders, release; `docs/backlog/tilemap.md`).
 //! A bounded grid's border belongs to the cells inside it, so no part sits
 //! outside the grid: a one-cell bump along a map's edge would otherwise
 //! make and drop parts in the chunks outside it at every edit.
@@ -492,7 +496,9 @@ pub(crate) fn hex_first_cell(key: PackKey) -> IVec2 {
 /// about 190 sides (a dense pattern about B, a little more along the
 /// block's right column and last row), and its shape cells' rings have no
 /// bound, so a block heavy with rings holds more than B by as much as its
-/// art has. Landing decides each box by its count, and an edit that
+/// art has (384 for a block of inset hexagons, six ring edges a cell, whose
+/// edit where four such blocks meet costs past 100 µs: the module doc).
+/// Landing decides each box by its count, and an edit that
 /// takes a part past B splits it (its part dropped and up to seven made:
 /// three quarters' and a quarter's four blocks); nothing merges back until
 /// a build afresh, or until the chunk holds no edge. An edit rebuilds the

@@ -1216,7 +1216,9 @@ impl TileColliders {
   /// `pack::HEX_PART_EDGES` edges, rings' among them, where it can: a chunk
   /// of 32 x 32 cells is one part while it holds that many at most, else
   /// its 16 x 16 quarters are, else their 8 x 8 blocks (`pack::HexParts`),
-  /// so an edit rebuilds at most four parts of that size; a part sits at
+  /// so an edit rebuilds at most four parts of that size (more where an
+  /// edit takes a part past it, which splits it, and in a block heavy with
+  /// rings, which never splits); a part sits at
   /// `origin` plus its first cell's box corner, its points relative to it.
   /// Only `Solid` cells are solid; one-way and slope cells and one-way
   /// shapes add nothing, and there are no one-way runs (a tile map makes

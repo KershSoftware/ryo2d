@@ -95,7 +95,7 @@ Items from 4f to 6b were copied from their execution records. Items from earlier
     - Tiled's correction reach on staggered terrain (two cells wider) is measured along the half-step axis only (said in the rustdoc).
   - **The speed guards.**
     - `load_files` writes LOADS+1 files per grid (the extra one used only by orthogonal); orthogonal infinite loads now run after the level changes.
-    - `benches/tilemap.rs` is about 2,950 lines; split it into `benches/tilemap/{static_frame,edit,load,stream}.rs` beside the guards.
+    - `benches/tilemap.rs` is about 3,400 lines; split it into `benches/tilemap/{static_frame,edit,load,stream}.rs` beside the guards.
     - Unheld static rows in the record give medians only (no p99 or max).
   - **The demo.**
     - Turned 120 x 140 sand hexes (side 70) may leave 1 px pinholes at a few vertices (the art isn't a regular hexagon, which would be 138.56 tall at width 120; Tiled shows the same).

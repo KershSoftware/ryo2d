@@ -2817,4 +2817,156 @@ mod tests {
       "collision",
     );
   }
+
+  /// One-tile edits in a chunk of a hexagonal map full of tiles whose shape
+  /// is not their cell's hexagon (an inset hexagon, a ring of six edges a
+  /// cell, all counted toward a part's budget of 128 edges, so each 8 x 8
+  /// block holds 384 and none splits further), timed as the speed guards'
+  /// edit guard times its parts (`benches/tilemap.rs`, `edit_schedules`): a
+  /// frame before each edit, then the loop rebuild (the collision sync, the
+  /// tile collider rebuild and the collider sync) and the occluder rebuild
+  /// (the occluder sync), each on its own. The cases: a ring cell cleared
+  /// and set back in the middle of a block (its block's part rebuilt), and
+  /// one turned whole and back where four blocks meet (its sides' owners'
+  /// four blocks rebuilt). Prints each part's median, 99th percentile and
+  /// longest, the edges of the parts each edit rebuilt and the most a part
+  /// of the chunk holds. 16 px hexagons of side 8 in odd rows, as the
+  /// guards'. Run in release:
+  /// `cargo test --release -p ryo2d --lib hex_ring_heavy_edit_timing -- --ignored --nocapture`
+  #[test]
+  #[ignore = "a timing: run in release with --ignored --nocapture"]
+  fn hex_ring_heavy_edit_timing() {
+    use crate::core::ecs::{Schedule, With};
+    use crate::core::physics::ColliderShape;
+    use crate::core::tilemap::test_util::whole_hex_set;
+    use crate::core::tilemap::{GridShape, StaggerAxis, StaggerIndex};
+    use std::collections::HashMap;
+    use std::time::{Duration, Instant};
+    let cell = UVec2::splat(16);
+    let mut map = TileMap::new(UVec2::splat(128), cell).with_shape(GridShape::Hexagonal {
+      axis: StaggerAxis::Y,
+      index: StaggerIndex::Odd,
+      side: 8,
+    });
+    // Tile 0 is its whole hexagon (a solid cell); tile 1 an inset hexagon,
+    // clockwise on screen in its pixels, a shape of its own
+    let mut set = whole_hex_set(&map.grid());
+    let inset = [
+      (8.0, 2.0),
+      (14.0, 5.0),
+      (14.0, 11.0),
+      (8.0, 14.0),
+      (2.0, 11.0),
+      (2.0, 5.0),
+    ];
+    set.insert_tile(
+      1,
+      TileData {
+        shapes: vec![TileShape {
+          points: inset.iter().map(|&(x, y)| Vec2::new(x, y)).collect(),
+          ..TileShape::default()
+        }],
+        ..TileData::default()
+      },
+    );
+    set.tile_count = 2;
+    let set = map.add_tileset(TilesetSource::Embedded(Arc::new(set)));
+    let layer = map.add_tile_layer("ground");
+    // Chunk (1, 1) full of the inset tile
+    if let Some(grid) = map.tiles_mut(layer) {
+      grid.fill(IVec2::splat(32), IVec2::splat(63), Some(Tile::new(set, 1)));
+    }
+    let mut maps = MapWorld::new();
+    let handle = maps.world.resource_mut::<Assets<TileMap>>().add(map);
+    let map = maps.spawn(MapRoot::new(handle));
+    maps.frame();
+    // Each part's segments, by entity
+    let parts = |world: &mut World| -> HashMap<Entity, (usize, i64)> {
+      world
+        .query_filtered::<(Entity, &Collider), With<TilePart>>()
+        .iter(world)
+        .filter_map(|(entity, collider)| match &collider.shape {
+          ColliderShape::Segments { points, segments } => {
+            let sum: i64 = points.iter().map(|p| (p.x * 7.0 + p.y * 13.0) as i64).sum();
+            Some((entity, (segments.len(), sum)))
+          }
+          _ => None,
+        })
+        .collect()
+    };
+    let most = parts(&mut maps.world)
+      .values()
+      .map(|&(n, _)| n)
+      .max()
+      .unwrap_or(0);
+    println!(
+      "a chunk of 1,024 inset hexagons: {} parts, the most edges in one {most} (the budget 128)",
+      parts(&mut maps.world).len()
+    );
+    println!(
+      "| case | loop rebuild median / p99 / max | occluder rebuild median / p99 / max | edges rebuilt median / max |"
+    );
+    let cases = [
+      (
+        "a ring cell cleared and set back in a block's middle (36, 36)",
+        IVec2::new(36, 36),
+        None,
+      ),
+      (
+        "a ring cell turned whole and back where four blocks meet (40, 40)",
+        IVec2::new(40, 40),
+        Some(Tile::new(set, 0)),
+      ),
+    ];
+    for (name, at, edited) in cases {
+      let [mut collision, mut rebuild, mut occluders]: [Schedule; 3] =
+        crate::core::tilemap::edit_schedules();
+      for schedule in [&mut collision, &mut rebuild, &mut occluders] {
+        schedule.run(&mut maps.world);
+      }
+      let (mut loops, mut lights, mut edges) = (Vec::new(), Vec::new(), Vec::new());
+      for i in 0..400 {
+        maps.frame();
+        let before = parts(&mut maps.world);
+        let tile = if i % 2 == 0 {
+          edited
+        } else {
+          Some(Tile::new(set, 1))
+        };
+        assert!(
+          MapsView::new(&mut maps.world).set_tile(map, "ground", at, tile),
+          "{name}: the edit changes its cell"
+        );
+        let start = Instant::now();
+        collision.run(&mut maps.world);
+        rebuild.run(&mut maps.world);
+        let middle = Instant::now();
+        occluders.run(&mut maps.world);
+        let end = Instant::now();
+        loops.push(middle - start);
+        lights.push(end - middle);
+        let after = parts(&mut maps.world);
+        edges.push(
+          after
+            .iter()
+            .filter(|&(entity, shape)| before.get(entity) != Some(shape))
+            .map(|(_, &(n, _))| n)
+            .sum::<usize>(),
+        );
+      }
+      let stats = |mut times: Vec<Duration>| {
+        times.sort();
+        let p99 = times[(times.len() * 99).div_ceil(100) - 1];
+        (times[times.len() / 2], p99, times[times.len() - 1])
+      };
+      let (loop_mid, loop_99, loop_max) = stats(loops);
+      let (light_mid, light_99, light_max) = stats(lights);
+      edges.sort_unstable();
+      println!(
+        "| {name} | {loop_mid:.1?} / {loop_99:.1?} / {loop_max:.1?} | {light_mid:.1?} / {light_99:.1?} / {light_max:.1?} | {} / {} |",
+        edges[edges.len() / 2],
+        edges[edges.len() - 1]
+      );
+    }
+  }
 }

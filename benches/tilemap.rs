@@ -80,14 +80,15 @@
 //!   giving its quarters an edge each emptied and filled again before each
 //!   such pair, so each starts as one part; and, with no target, a lone
 //!   cell set and cleared where four dense chunks meet (four cells in ten
-//!   rock). Each edit is timed in three parts, each held to 100 µs (the
-//!   spec): the chunk rebuild (the render step of the frame after the edit,
-//!   less the median render step of the ordinary frames between edits: the
-//!   chunk's instances built and uploaded), the loop rebuild (the map's
-//!   collision sync, which classifies the chunk again, then physics' tile
-//!   collider rebuild, which retraces the loops through the cell and
-//!   reshapes their chunk colliders, and its collider sync, which builds
-//!   the new shapes for Rapier; each run on the engine's world in a
+//!   rock): the guard holds the islands map on every grid, and a dense
+//!   corner on none. Each edit is timed in three parts, each held to 100 µs
+//!   (the spec): the chunk rebuild (the render step of the frame after the
+//!   edit, less the median render step of the ordinary frames between
+//!   edits: the chunk's instances built and uploaded), the loop rebuild
+//!   (the map's collision sync, which classifies the chunk again, then
+//!   physics' tile collider rebuild, which retraces the loops through the
+//!   cell and reshapes their chunk colliders, and its collider sync, which
+//!   builds the new shapes for Rapier; each run on the engine's world in a
 //!   schedule of its own, commands applied:
 //!   `ryo2d::core::tilemap::edit_schedules`) and the occluder rebuild (the
 //!   occluder sync, commands applied). A frame passes between edits, as in
@@ -1447,7 +1448,8 @@ struct EditCase {
   /// over the loops
   apart: bool,
   /// The colliders its first edit and its second leave, each counted from
-  /// those before it, as it is laid out to make and drop parts (checked)
+  /// the colliders before its first edit, as it is laid out to make and
+  /// drop parts (checked)
   laid_out: Option<[usize; 2]>,
 }
 
