@@ -1344,3 +1344,79 @@ fn degenerate_grids_answer_without_panicking() {
     }
   }
 }
+
+/// The hexagonal grids the integer geometry is held to: every axis and
+/// index, at the cell sizes and sides that matter
+fn hex_variants() -> Vec<MapGrid> {
+  let mut out = Vec::new();
+  for (cell, side) in [
+    ((16, 16), 8),
+    ((120, 140), 70),
+    ((15, 17), 7),
+    ((16, 16), 0),
+    ((16, 16), 24),
+  ] {
+    for axis in [X, Y] {
+      for index in [Odd, Even] {
+        for origin in [Vec2::ZERO, Vec2::new(5.0, -3.0)] {
+          out.push(grid(hex(axis, index, side), cell.0, cell.1).with_origin(origin));
+        }
+      }
+    }
+  }
+  out
+}
+
+#[test]
+fn hex_cells_agree_with_cell_outlines_on_every_variant() {
+  for grid in hex_variants() {
+    let hex = grid.hex_cells().expect("hex");
+    for y in -40..40 {
+      for x in -40..40 {
+        let cell = IVec2::new(x, y);
+        let want = grid.cell_outline(cell);
+        let got: Vec<Vec2> = hex
+          .corners(cell)
+          .iter()
+          .map(|c| c.as_vec2() + grid.origin)
+          .collect();
+        assert_eq!(got, want.points(), "{:?} {cell}", grid.shape);
+      }
+    }
+  }
+}
+
+#[test]
+fn each_hex_side_is_its_neighbours_side_reversed() {
+  for grid in hex_variants() {
+    if matches!(grid.shape, GridShape::Hexagonal { side: 0, .. }) {
+      continue;
+    }
+    let hex = grid.hex_cells().expect("hex");
+    for y in -20..20 {
+      for x in -20..20 {
+        let c = IVec2::new(x, y);
+        let corners = hex.corners(c);
+        for s in 0..6 {
+          let n = hex.across(c, s);
+          let back = hex.corners(n);
+          let t = (s + 3) % 6;
+          assert_eq!(
+            (corners[s], corners[(s + 1) % 6]),
+            (back[(t + 1) % 6], back[t]),
+            "{:?} {c} side {s}",
+            grid.shape
+          );
+        }
+      }
+    }
+  }
+}
+
+#[test]
+fn hex_cells_refuse_cells_past_16384_px() {
+  use crate::core::physics::HexCells;
+  assert!(HexCells::new(Y, Odd, UVec2::new(16_385, 16), 8).is_none());
+  assert!(HexCells::new(Y, Odd, UVec2::new(16, 16_385), 8).is_none());
+  assert!(HexCells::new(Y, Odd, UVec2::new(16_384, 16_384), 8).is_some());
+}

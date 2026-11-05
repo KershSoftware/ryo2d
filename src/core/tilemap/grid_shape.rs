@@ -15,7 +15,8 @@
 use glam::{Affine2, DVec2, IVec2, UVec2, Vec2};
 
 use super::grid::CHUNK_SIZE;
-use crate::core::physics::CellRect;
+use crate::core::physics::{CellRect, HexCells};
+pub use crate::core::physics::{StaggerAxis, StaggerIndex};
 use crate::core::ui::Rect;
 
 /// How a map lays its cells out: Tiled's `orientation` and its parameters
@@ -43,22 +44,6 @@ pub enum GridShape {
   },
   /// Rectangles skewed: each row shifts x by `skew.x` pixels, each column shifts y by `skew.y`
   Oblique { skew: IVec2 },
-}
-
-/// Which lines of a staggered or hexagonal grid are shifted by half a
-/// cell: its rows (Y) or its columns (X)
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum StaggerAxis {
-  X,
-  Y,
-}
-
-/// Which of those lines are shifted, counting from 0 (negative lines
-/// alike): the odd ones or the even ones
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum StaggerIndex {
-  Odd,
-  Even,
 }
 
 /// A layer's grid in its own pixels (y down): the shape, a cell's size, and
@@ -367,6 +352,10 @@ impl MapGrid {
           .unwrap_or(0);
         corners.rotate_left(top);
         CellOutline::of(&corners.map(|corner| self.place(corner)))
+      }
+      GridShape::Hexagonal { .. } if let Some(hex) = self.hex_cells() => {
+        let corners = hex.corners(cell);
+        CellOutline::of(&corners.map(|corner| self.place(corner.as_dvec2())))
       }
       GridShape::Staggered { .. } | GridShape::Hexagonal { .. } => {
         let (outline, count) = self.lines().outline(cell);
@@ -846,6 +835,15 @@ impl MapGrid {
     let at = self.place(lo);
     let size = (hi - lo).as_vec2();
     Rect::new(at.x, at.y, size.x, size.y)
+  }
+
+  /// The hexagonal grid's cells in whole pixels; `None` off hex, or where
+  /// a cell is past 16,384 px
+  pub(crate) fn hex_cells(&self) -> Option<HexCells> {
+    match self.shape {
+      GridShape::Hexagonal { axis, index, side } => HexCells::new(axis, index, self.cell, side),
+      _ => None,
+    }
   }
 
   /// The staggered or hexagonal grid's lines; any other shape reads as a

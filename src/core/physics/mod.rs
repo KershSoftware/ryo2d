@@ -30,11 +30,14 @@ pub use events::{
 pub use joint::{Joint, JointAnchor, JointKind, JointMotor};
 pub use query::{Hit, Overlap, PointHit, QueryFilter, Touch};
 pub(crate) use sync::physics_enabled;
+pub(crate) use tiles::HexCells;
 #[cfg(test)]
 pub(crate) use tiles::in_grid_space;
 pub(crate) use tiles::{
   Boundary, GRID, PlacedEdge, Point, TilePart, Traced, rebuild_tile_colliders,
 };
 pub use tiles::{CellRect, CellShape, SlopeCorner, TileCell, TileColliders};
+#[doc(hidden)]
+pub use tiles::{StaggerAxis, StaggerIndex};
 pub use triggers::TriggerContents;
 pub use world::Physics;
