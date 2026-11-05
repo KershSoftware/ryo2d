@@ -9,7 +9,7 @@ use std::sync::Arc;
 use glam::{IVec2, UVec2, Vec2};
 
 use crate::core::asset::Assets;
-use crate::core::ecs::kernel::{MessageCursor, Messages};
+use crate::core::ecs::kernel::{Disabled, MessageCursor, Messages};
 use crate::core::ecs::{Entity, Transform, World};
 use crate::core::navigation::{NavigationGrid, PathResult, Pathfinder};
 use crate::core::physics::{CellRect, TileCell, TileColliders};
@@ -436,6 +436,10 @@ fn a_map_s_navigation_blocks_its_colliding_layers() {
   assert_eq!(moved.layer(), now);
   assert_ne!(moved.layer(), Some(floor));
   assert_eq!(blocked(&moved), expected);
+
+  // Disabled, the map has no colliders, so nothing blocks
+  maps.world.entity_mut(root).insert(Disabled);
+  assert_eq!(blocked(&navigation(&mut maps, root, "floor", bounds)), []);
 }
 
 #[test]
@@ -450,11 +454,11 @@ fn a_map_s_navigation_is_none_until_it_lands_and_off_tile_layers() {
   let handle = maps.world.resource_mut::<Assets<TileMap>>().add(map);
   let root = maps.world.spawn(MapRoot::new(handle)).id();
   let window = CellRect::from_size(UVec2::splat(4));
-  let view = MapsView::new(&mut maps.world);
+  let mut view = MapsView::new(&mut maps.world);
   assert!(view.navigation(root, "ground", window).is_none());
 
   maps.settle(root);
-  let view = MapsView::new(&mut maps.world);
+  let mut view = MapsView::new(&mut maps.world);
   assert!(view.navigation(root, "ground", window).is_some());
   assert!(view.navigation(root, 0_usize, window).is_some());
   assert!(view.navigation(root, "things", window).is_none());
@@ -466,6 +470,17 @@ fn a_map_s_navigation_is_none_until_it_lands_and_off_tile_layers() {
       .navigation(Entity::PLACEHOLDER, "ground", window)
       .is_none()
   );
+
+  // A Tiled map with an image layer, "sky", and groups, "outer" and
+  // "inner", whose layers load flattened out of them
+  let handle = crate::core::tilemap::test_util::load_map(&mut maps.world, "tiled/maps/nested.tmj");
+  let nested = maps.world.spawn(MapRoot::new(handle)).id();
+  maps.settle(nested);
+  let mut view = MapsView::new(&mut maps.world);
+  assert!(view.navigation(nested, "deep", window).is_some());
+  for layer in ["sky", "outer", "inner", "hidden"] {
+    assert!(view.navigation(nested, layer, window).is_none(), "{layer}");
+  }
 }
 
 /// A streamed map's cell side, and its chunk's, in pixels
@@ -538,6 +553,20 @@ fn anchor_in(world: &mut World, x: i32) -> Entity {
     .id()
 }
 
+/// The chunks of `map` that landed since `cursor` last read
+fn landed(world: &World, map: Entity, cursor: &mut MessageCursor<ChunkEvent>) -> Vec<IVec2> {
+  let Some(messages) = world.get_resource::<Messages<ChunkEvent>>() else {
+    return Vec::new();
+  };
+  cursor
+    .read(messages)
+    .filter_map(|event| match event {
+      ChunkEvent::Loaded { map: of, chunk } if *of == map => Some(*chunk),
+      _ => None,
+    })
+    .collect()
+}
+
 /// Runs frames until every chunk (x, 0) of `map`, for each of `xs`, has
 /// landed since `cursor` last read
 fn until_landed(
@@ -546,19 +575,19 @@ fn until_landed(
   cursor: &mut MessageCursor<ChunkEvent>,
   xs: &[i32],
 ) {
-  let mut landed = Vec::new();
+  let mut so_far = Vec::new();
   maps.frames_until(|world| {
-    if let Some(messages) = world.get_resource::<Messages<ChunkEvent>>() {
-      for event in cursor.read(messages) {
-        if let ChunkEvent::Loaded { map: of, chunk } = event
-          && *of == map
-        {
-          landed.push(*chunk);
-        }
-      }
-    }
-    xs.iter().all(|&x| landed.contains(&IVec2::new(x, 0)))
+    so_far.extend(landed(world, map, cursor));
+    xs.iter().all(|&x| so_far.contains(&IVec2::new(x, 0)))
   });
+}
+
+/// Moves `anchor` to the middle of chunk (x, 0)
+fn move_anchor(world: &mut World, anchor: Entity, x: i32) {
+  match world.get_mut::<Transform>(anchor) {
+    Some(mut at) => at.translation = Vec2::new((x as f32 + 0.5) * CHUNK, 0.5 * CHUNK),
+    None => panic!("{anchor} is an anchor"),
+  }
 }
 
 #[test]
@@ -618,13 +647,17 @@ fn a_streamed_map_s_navigation_blocks_unloaded_chunks_until_they_land() {
     PathResult::NoPath
   );
 
+  // West of chunk 0, chunk (-1, 0) isn't there either: its cells, all
+  // negative on x, are blocked up to chunk 0's first column
+  let west = CellRect::new(IVec2::new(-32, 0), IVec2::new(32, 32));
+  let grid = navigation(&mut maps, map, "ground", west);
+  let gone = cells(IVec2::new(-32, 0), IVec2::new(-1, 31));
+  assert_eq!(blocked(&grid), by_row([gone, walls_in(&[0])].concat()));
+
   // The anchors move into chunks 1 and 2, which land: a grid taken again
   // opens them, and a path crosses every chunk under each wall
-  for (anchor, x) in [(first, 1), (last, 2)] {
-    if let Some(mut at) = maps.world.get_mut::<Transform>(anchor) {
-      at.translation = Vec2::new((x as f32 + 0.5) * CHUNK, 0.5 * CHUNK);
-    }
-  }
+  move_anchor(&mut maps.world, first, 1);
+  move_anchor(&mut maps.world, last, 2);
   until_landed(&mut maps, map, &mut cursor, &[1, 2]);
   let grid = navigation(&mut maps, map, "ground", window);
   assert_eq!(blocked(&grid), by_row(walls_in(&[0, 1, 2, 3])));
@@ -633,6 +666,118 @@ fn a_streamed_map_s_navigation_blocks_unloaded_chunks_until_they_land() {
   };
   assert!(path.iter().all(|&at| grid.is_walkable(at.into())));
   assert!(path.iter().any(|at| at.y > 20), "{path:?}");
+}
+
+#[test]
+fn a_streamed_hex_map_s_navigation_blocks_the_chunks_not_landed() {
+  let mut map = TileMap::infinite(UVec2::new(32, 28)).with_shape(GridShape::Hexagonal {
+    axis: Y,
+    index: Odd,
+    side: 12,
+  });
+  map.add_tileset(blocks());
+  map.add_tile_layer("ground");
+  let mut maps = MapWorld::new();
+  let handle = maps.world.resource_mut::<Assets<TileMap>>().add(map);
+  let stream = MapStream {
+    load_distance: 100.0,
+    cameras: false,
+    ..MapStream::new(|_: ChunkRequest| ChunkTiles::default())
+  };
+  let root = maps.world.spawn((MapRoot::new(handle), stream)).id();
+  maps.settle(root);
+  // An anchor in the middle of chunk (0, 0), loading it alone
+  let Some(layer) = MapsView::new(&mut maps.world).grid(root, "ground") else {
+    panic!("the ground is a tile layer")
+  };
+  let at = layer.cell_center_world(IVec2::splat(16));
+  maps
+    .world
+    .spawn((Transform::from_translation(at), StreamAnchor));
+  maps.frames_until(|world| {
+    MapsView::new(world)
+      .stream_status(root)
+      .is_some_and(|status| status.resident == 1 && status.in_flight == 0)
+  });
+  // The cells of chunks (-2, 0), (-1, 0) and (1, 0) in the window are
+  // blocked, and the landed chunk, holding no tile, is open
+  let window = CellRect::new(IVec2::new(-40, 0), IVec2::new(64, 32));
+  let grid = navigation(&mut maps, root, "ground", window);
+  let west = cells(IVec2::new(-40, 0), IVec2::new(-1, 31));
+  let east = cells(IVec2::new(32, 0), IVec2::new(63, 31));
+  assert_eq!(blocked(&grid), by_row([west, east].concat()));
+}
+
+#[test]
+fn a_grid_taken_the_step_a_chunk_lands_blocks_its_walls() {
+  let mut maps = MapWorld::new();
+  let stream = MapStream {
+    load_distance: 100.0,
+    ..MapStream::new(walled)
+  };
+  let map = endless(&mut maps, Some(stream));
+  let mut cursor = MessageCursor::<ChunkEvent>::default();
+  let anchor = anchor_in(&mut maps.world, 0);
+  until_landed(&mut maps, map, &mut cursor, &[0]);
+
+  // The anchor moves into chunk 1. In the frame it lands, a grid taken
+  // before the fixed step, as a scene's update reading the `ChunkEvent`
+  // takes it, blocks its walls: the map's collision hasn't followed the
+  // landing yet, and the grid brings it up to date
+  move_anchor(&mut maps.world, anchor, 1);
+  let start = std::time::Instant::now();
+  loop {
+    maps.pre_update();
+    if landed(&maps.world, map, &mut cursor).contains(&IVec2::new(1, 0)) {
+      break;
+    }
+    maps.step();
+    maps.post_update();
+    maps.last();
+    assert!(
+      start.elapsed() < std::time::Duration::from_secs(5),
+      "chunk (1, 0) did not land in 5 s"
+    );
+    std::thread::sleep(std::time::Duration::from_millis(1));
+  }
+  let window = CellRect::new(IVec2::ZERO, IVec2::new(64, 32));
+  let grid = navigation(&mut maps, map, "ground", window);
+  assert_eq!(blocked(&grid), by_row(walls_in(&[0, 1])));
+}
+
+#[test]
+fn a_grid_taken_after_an_edit_in_the_same_update_reads_the_edit() {
+  let mut map = TileMap::new(UVec2::new(16, 8), UVec2::splat(16));
+  map.add_tileset(blocks());
+  let ground = map.add_tile_layer("ground");
+  let wall: Vec<IVec2> = (0..=5).map(|y| IVec2::new(5, y)).collect();
+  if let Some(grid) = map.tiles_mut(ground) {
+    for &at in &wall {
+      grid.set(at, Some(Tile::new(0, 0)));
+    }
+  }
+  let mut maps = MapWorld::new();
+  let root = spawn(&mut maps, map, Transform::IDENTITY);
+  let window = CellRect::from_size(UVec2::new(16, 8));
+  assert_eq!(
+    blocked(&navigation(&mut maps, root, "ground", window)),
+    wall
+  );
+
+  // In one update, with no step between: a wall put up, and a wall's cell
+  // taken down
+  let mut view = MapsView::new(&mut maps.world);
+  assert!(view.set_tile(root, "ground", IVec2::new(9, 4), Some(Tile::new(0, 0))));
+  assert!(view.set_tile(root, "ground", IVec2::new(5, 2), None));
+  let Some(grid) = view.navigation(root, "ground", window) else {
+    panic!("the ground is a tile layer")
+  };
+  let mut expected: Vec<IVec2> = wall
+    .into_iter()
+    .filter(|&at| at != IVec2::new(5, 2))
+    .collect();
+  expected.push(IVec2::new(9, 4));
+  assert_eq!(blocked(&grid), by_row(expected));
 }
 
 #[test]
@@ -715,14 +860,16 @@ fn navigation_on_an_isometric_map_matches_its_collision() {
 /// Times taking a navigation grid over a 256 x 256 window: of a 512 x 512
 /// hexagonal map whose colliding walls (3 x 3 clumps every 8 cells) share
 /// its floor's cells, and of an endless map streamed round one anchor, most
-/// of the window's chunks not landed. Run it in release: `cargo test
-/// --release -p ryo2d --lib navigation_window_timing -- --ignored --nocapture`
+/// of the window's chunks not landed; and the collision sync's idle pass
+/// each take runs first, over one map and over 16. Run it in release:
+/// `cargo test --release -p ryo2d --lib navigation_window_timing --
+/// --ignored --nocapture`
 #[test]
 #[ignore = "timing; run in release by hand"]
 fn navigation_window_timing() {
   use std::time::{Duration, Instant};
 
-  let median = |mut times: Vec<Duration>| {
+  let median_and_max = |mut times: Vec<Duration>| {
     times.sort();
     (times[times.len() / 2], times[times.len() - 1])
   };
@@ -734,7 +881,19 @@ fn navigation_window_timing() {
       times.push(start.elapsed());
       assert!(grid.is_some());
     }
-    median(times)
+    median_and_max(times)
+  };
+  let idle_sync = |maps: &mut MapWorld| {
+    let mut times = Vec::new();
+    for _ in 0..200 {
+      let start = Instant::now();
+      let ran = maps
+        .world
+        .run_system_cached(crate::core::tilemap::collision::sync_map_colliders);
+      times.push(start.elapsed());
+      assert!(ran.is_ok());
+    }
+    median_and_max(times)
   };
 
   const SIDE: i32 = 512;
@@ -772,6 +931,22 @@ fn navigation_window_timing() {
   assert_eq!(blocked(&grid).len(), 32 * 32 * 9);
   let (mid, max) = time(&mut maps, hexes, "floor", window);
   println!("a hex map's 256 x 256 window (median, max): {mid:?}, {max:?}");
+  let (mid, max) = idle_sync(&mut maps);
+  println!("the collision sync's idle pass, that map (median, max): {mid:?}, {max:?}");
+
+  // 16 small maps of a colliding wall each
+  let mut maps = MapWorld::new();
+  for _ in 0..16 {
+    let mut map = TileMap::new(UVec2::new(64, 64), UVec2::splat(16));
+    map.add_tileset(blocks());
+    let ground = map.add_tile_layer("ground");
+    if let Some(grid) = map.tiles_mut(ground) {
+      grid.fill(IVec2::new(8, 0), IVec2::new(8, 40), Some(Tile::new(0, 0)));
+    }
+    spawn(&mut maps, map, Transform::IDENTITY);
+  }
+  let (mid, max) = idle_sync(&mut maps);
+  println!("the collision sync's idle pass, 16 maps (median, max): {mid:?}, {max:?}");
 
   let mut maps = MapWorld::new();
   let map = endless(&mut maps, Some(MapStream::new(walled)));

@@ -2,6 +2,7 @@
 
 use glam::{Affine2, IVec2, UVec2, Vec2};
 
+use super::collision;
 use super::edit::{self, LayerRef};
 use super::spawn::{self, MapIds, MapLayers, MapRoot, TileLayerData};
 use super::stream;
@@ -416,6 +417,15 @@ impl<'w> MapsView<'w> {
   /// chunk not resident is `Blocked`. `None` until the map lands, or when
   /// `layer` isn't a tile layer.
   ///
+  /// It reads the map's collision as its tiles are now. The fixed step
+  /// brings a map's colliders up to its tiles after the scenes' `update`,
+  /// so this runs that sync first: a grid taken in `update` reads a chunk
+  /// that landed this frame and an edit made earlier in the same `update`.
+  /// The sync takes in every map's changes, as the step would (under a
+  /// microsecond a map when nothing changed), and the step then finds
+  /// nothing more to do; physics builds the changed colliders in that
+  /// step, as for any edit.
+  ///
   /// The colliders are the map's [`TileColliders`]: its own, and those of
   /// any layer colliding as a grid of its own (another grid, offset or
   /// material), each placed by its entity's whole transform as it is now,
@@ -437,9 +447,12 @@ impl<'w> MapsView<'w> {
   /// The grid is a copy of the map as it is now: the game adds its own
   /// colliders ([`NavigationGrid::block_collider`]) and costs
   /// ([`NavigationGrid::set`]), and takes the grid again after
-  /// [`ChunkEvent`](super::ChunkEvent)s or edits. It costs the window's
-  /// cells (8 bytes each; a window past 4,194,304 cells is cut down as
-  /// `for_layer` says) and the colliding cells in it.
+  /// [`ChunkEvent`](super::ChunkEvent)s or edits. A grid taken again is a
+  /// new grid, its `generation` counted afresh, so find the paths found on
+  /// an earlier one again rather than asking `Path::is_stale` of the new
+  /// one. It costs the window's cells (8 bytes each; a window past
+  /// 4,194,304 cells is cut down as `for_layer` says) and the colliding
+  /// cells in it.
   ///
   /// ```
   /// use ryo2d::prelude::*;
@@ -447,13 +460,14 @@ impl<'w> MapsView<'w> {
   /// /// The way from one point to another over the board's hexes, round
   /// /// its walls
   /// fn route(ctx: &mut SceneContext<'_>, board: Entity, from: Vec2, to: Vec2) -> Option<Path> {
-  ///   let maps = ctx.maps();
-  ///   let grid = maps.navigation(board, "ground", maps.bounds(board)?)?;
+  ///   let mut maps = ctx.maps();
+  ///   let bounds = maps.bounds(board)?;
+  ///   let grid = maps.navigation(board, "ground", bounds)?;
   ///   Pathfinder::new().find_path(&grid, from.x, from.y, to.x, to.y).path()
   /// }
   /// ```
   pub fn navigation<'a>(
-    &self,
+    &mut self,
     map: Entity,
     layer: impl Into<LayerRef<'a>>,
     window: CellRect,
@@ -461,15 +475,17 @@ impl<'w> MapsView<'w> {
     if !self.is_ready(map) {
       return None;
     }
-    let layer = layer.into();
-    let entity = edit::layer_entity(self.world, map, layer)?;
-    let unbounded = self
-      .world
-      .get::<TileLayerData>(entity)?
-      .tiles
-      .bounds()
-      .is_none();
-    let mut grid = NavigationGrid::for_layer(edit::layer_grid(self.world, map, layer)?, window);
+    let entity = edit::layer_entity(self.world, map, layer.into())?;
+    let data = self.world.get::<TileLayerData>(entity)?;
+    let unbounded = data.tiles.bounds().is_none();
+    let layer = LayerGrid {
+      grid: data.grid,
+      to_world: edit::local_to_world(self.world, entity)?,
+    };
+    // Its params (queries, optional stores, a local and commands) always
+    // validate, so it always runs
+    let _ = self.world.run_system_cached(collision::sync_map_colliders);
+    let mut grid = NavigationGrid::for_layer(layer, window);
     if unbounded && let Some(resident) = stream::streamed_resident(self.world, map) {
       block_unloaded(&mut grid, resident);
     }

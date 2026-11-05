@@ -1399,6 +1399,55 @@ mod tests {
   }
 
   #[test]
+  fn an_edit_synced_early_by_a_navigation_grid_collides_in_that_step() {
+    use crate::core::navigation::GridCoord;
+    use crate::core::physics::Physics;
+    let mut maps = MapWorld::new();
+    let map = floor_and_island(&mut maps);
+    let parts = parts_of(&mut maps.world, map);
+    let island_area = (Vec2::new(576.0, 0.0), Vec2::new(592.0, 16.0));
+    let island = part_in(&parts, island_area.0, island_area.1);
+    let floor_area = (Vec2::new(0.0, 48.0), Vec2::new(0.0, 64.0));
+    let floor = part_in(&parts, floor_area.0, floor_area.1);
+    let mut view = MapsView::new(&mut maps.world);
+    assert!(view.set_tile(map, "ground", IVec2::new(10, 1), Some(Tile::new(0, SOLID))));
+    assert!(view.set_tile(map, "ground", IVec2::new(39, 3), None));
+    // A navigation grid taken in the same update runs the collision sync
+    // ahead of the step, and reads the edits
+    let window = CellRect::from_size(UVec2::new(40, 4));
+    let Some(grid) = view.navigation(map, "ground", window) else {
+      panic!("the ground is a tile layer")
+    };
+    assert!(!grid.is_walkable(GridCoord::new(10, 1)));
+    assert!(grid.is_walkable(GridCoord::new(39, 3)));
+    let tiles = colliders(&maps.world, map);
+    assert_eq!(tiles.get(IVec2::new(10, 1)), TileCell::Solid);
+    assert_eq!(tiles.get(IVec2::new(39, 3)), TileCell::Empty);
+
+    // The step's own sync finds nothing more, and physics builds the
+    // changes in that step, once: the new block is registered, the floor
+    // took its new shape in place and the island was not touched, so
+    // nothing was built whole
+    maps.step();
+    let parts = parts_of(&mut maps.world, map);
+    let block = part_in(&parts, Vec2::new(160.0, 16.0), Vec2::new(176.0, 32.0));
+    let physics = maps.world.resource::<Physics>();
+    assert!(physics.collider_entries.contains_key(&block));
+    assert_eq!(part_in(&parts, floor_area.0, floor_area.1), floor);
+    assert_eq!(part_in(&parts, island_area.0, island_area.1), island);
+    let right = parts
+      .iter()
+      .find(|(e, _)| *e == floor)
+      .map(|(_, c)| match &c.shape {
+        ColliderShape::Polyline { points } | ColliderShape::Segments { points, .. } => {
+          points.iter().map(|p| p.x).fold(0.0, f32::max)
+        }
+        _ => 0.0,
+      });
+    assert_eq!(right, Some(39.0 * 16.0), "the floor lost its last cell");
+  }
+
+  #[test]
   fn an_edit_that_changes_no_cell_kind_changes_no_cell() {
     let mut maps = MapWorld::new();
     let map = floor_and_island(&mut maps);
