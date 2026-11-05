@@ -16,14 +16,12 @@ use crate::core::ecs::{
 };
 use crate::core::hash::{FastMap, FastSet};
 
-mod hex;
+pub(crate) mod hex;
 mod outline;
 mod pack;
 mod runs;
 mod shape;
 
-pub(crate) use hex::HexCells;
-pub use hex::{StaggerAxis, StaggerIndex};
 use outline::{Outlines, Unit, unit_edges};
 #[cfg(test)]
 use outline::{outlines, traced_outlines};

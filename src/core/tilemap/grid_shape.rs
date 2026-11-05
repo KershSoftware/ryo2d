@@ -12,11 +12,11 @@
 //! point on an edge picks the same cell along the whole edge. An
 //! orthogonal grid keeps the `f32` maths the engine has always used.
 
-use glam::{Affine2, DVec2, IVec2, UVec2, Vec2};
+use glam::{Affine2, DVec2, I64Vec2, IVec2, UVec2, Vec2};
 
 use super::grid::CHUNK_SIZE;
+pub use crate::core::physics::tiles::hex::{StaggerAxis, StaggerIndex};
 use crate::core::physics::{CellRect, HexCells};
-pub use crate::core::physics::{StaggerAxis, StaggerIndex};
 use crate::core::ui::Rect;
 
 /// How a map lays its cells out: Tiled's `orientation` and its parameters
@@ -353,17 +353,15 @@ impl MapGrid {
         corners.rotate_left(top);
         CellOutline::of(&corners.map(|corner| self.place(corner)))
       }
-      GridShape::Hexagonal { .. } if let Some(hex) = self.hex_cells() => {
-        let corners = hex.corners(cell);
+      GridShape::Hexagonal { .. } => {
+        let corners = self
+          .hex_cells()
+          .map_or([I64Vec2::ZERO; 6], |hex| hex.corners(cell));
         CellOutline::of(&corners.map(|corner| self.place(corner.as_dvec2())))
       }
-      GridShape::Staggered { .. } | GridShape::Hexagonal { .. } => {
-        let (outline, count) = self.lines().outline(cell);
-        let mut points = [Vec2::ZERO; 6];
-        for (point, &local) in points.iter_mut().zip(&outline[..count]) {
-          *point = self.place(local);
-        }
-        CellOutline::of(&points[..count])
+      GridShape::Staggered { .. } => {
+        let diamond = self.lines().diamond(cell);
+        CellOutline::of(&diamond.map(|local| self.place(local)))
       }
     }
   }
@@ -837,11 +835,12 @@ impl MapGrid {
     Rect::new(at.x, at.y, size.x, size.y)
   }
 
-  /// The hexagonal grid's cells in whole pixels; `None` off hex, or where
-  /// a cell is past 16,384 px
+  /// The hexagonal grid's cells in whole pixels; `None` off hex
   pub(crate) fn hex_cells(&self) -> Option<HexCells> {
     match self.shape {
-      GridShape::Hexagonal { axis, index, side } => HexCells::new(axis, index, self.cell, side),
+      GridShape::Hexagonal { axis, index, side } => {
+        Some(HexCells::new(axis, index, self.cell, side))
+      }
       _ => None,
     }
   }
@@ -1036,8 +1035,6 @@ impl MapGrid {
 struct Lines {
   axis: StaggerAxis,
   index: StaggerIndex,
-  /// Hexagons (6 points to an outline), not a staggered grid's diamonds
-  hex: bool,
   /// Half a cell across: a shifted line's shift, and half the step from a
   /// cell to the next along its line
   half: f64,
@@ -1053,10 +1050,10 @@ struct Lines {
 
 impl Lines {
   fn of(shape: GridShape, cell: UVec2) -> Lines {
-    let (axis, index, side, hex) = match shape {
-      GridShape::Hexagonal { axis, index, side } => (axis, index, side, true),
-      GridShape::Staggered { axis, index } => (axis, index, 0, false),
-      _ => (StaggerAxis::Y, StaggerIndex::Odd, 0, false),
+    let (axis, index, side) = match shape {
+      GridShape::Hexagonal { axis, index, side } => (axis, index, side),
+      GridShape::Staggered { axis, index } => (axis, index, 0),
+      _ => (StaggerAxis::Y, StaggerIndex::Odd, 0),
     };
     let (across, along) = match axis {
       StaggerAxis::Y => (cell.x, cell.y),
@@ -1069,7 +1066,6 @@ impl Lines {
     Lines {
       axis,
       index,
-      hex,
       half: half as f64,
       step: step as f64,
       slant: slant.max(0) as f64,
@@ -1120,41 +1116,24 @@ impl Lines {
     )
   }
 
-  /// A cell's outline, local, clockwise on screen from its top-most point:
-  /// built for axis Y, where a cell's top is a vertex, and for axis X
-  /// swapped into place and turned back clockwise
-  fn outline(&self, cell: IVec2) -> ([DVec2; 6], usize) {
+  /// A staggered diamond's outline, local, clockwise on screen from its
+  /// top-most point (a hexagon's is `HexCells::corners`): built for axis Y
+  /// and, for axis X, swapped into place and turned back clockwise
+  fn diamond(&self, cell: IVec2) -> [DVec2; 4] {
     let (line, pos) = self.split(cell);
     let corner = self.corner(line, pos);
     let (h, step, slant) = (self.half, self.step, self.slant);
-    let mut frame = [DVec2::ZERO; 6];
-    let count = if !self.hex {
-      frame[..4].copy_from_slice(&[
-        DVec2::new(h, 0.0),
-        DVec2::new(2.0 * h, slant),
-        DVec2::new(h, step + slant),
-        DVec2::new(0.0, slant),
-      ]);
-      4
-    } else {
-      frame = [
-        DVec2::new(h, 0.0),
-        DVec2::new(2.0 * h, slant),
-        DVec2::new(2.0 * h, step),
-        DVec2::new(h, step + slant),
-        DVec2::new(0.0, step),
-        DVec2::new(0.0, slant),
-      ];
-      6
-    };
-    let mut out = [DVec2::ZERO; 6];
-    for (slot, rel) in out.iter_mut().zip(&frame[..count]) {
-      *slot = self.xy(corner + *rel);
-    }
+    let frame = [
+      DVec2::new(h, 0.0),
+      DVec2::new(2.0 * h, slant),
+      DVec2::new(h, step + slant),
+      DVec2::new(0.0, slant),
+    ];
+    let mut out = frame.map(|rel| self.xy(corner + rel));
     if self.axis == StaggerAxis::X {
-      out[..count].reverse();
+      out.reverse();
     }
-    (out, count)
+    out
   }
 
   /// The cell whose outline holds the local point `p`: the band of lines it

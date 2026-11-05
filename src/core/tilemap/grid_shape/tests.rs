@@ -8,7 +8,7 @@ use glam::{IVec2, UVec2, Vec2};
 use serde_json::Value;
 
 use super::{GridShape, MapGrid, StaggerAxis, StaggerIndex};
-use crate::core::physics::CellRect;
+use crate::core::physics::{CellRect, HexCells};
 use crate::core::tilemap::grid::{CHUNK_SIZE, TileGrid};
 use crate::core::tilemap::test_util::FIXTURES;
 use crate::core::ui::Rect;
@@ -1367,21 +1367,86 @@ fn hex_variants() -> Vec<MapGrid> {
   out
 }
 
+/// A hexagon's corners in the grid's pixels worked out from Tiled's
+/// hexagonal renderer (`sideOffset`, `columnWidth`, `rowHeight`, the
+/// tile-to-pixel steps and the shift on staggered lines), with this
+/// engine's truncation: half a cell and the slant round toward zero, the
+/// slant clamped at 0. Built for axis Y, swapped and turned back clockwise
+/// for axis X. In `f64`, from the origin
+fn tiled_hex_corners(grid: &MapGrid, cell: IVec2) -> [glam::DVec2; 6] {
+  let GridShape::Hexagonal { axis, index, side } = grid.shape else {
+    unreachable!("a hexagonal grid");
+  };
+  let (w, h) = (i64::from(grid.cell.x), i64::from(grid.cell.y));
+  let (across, along) = if axis == Y { (w, h) } else { (h, w) };
+  let side = i64::from(side);
+  let side_offset = (along - side) / 2;
+  let row_height = side_offset + side;
+  let column_width = across / 2;
+  let (line, pos) = if axis == Y {
+    (i64::from(cell.y), i64::from(cell.x))
+  } else {
+    (i64::from(cell.x), i64::from(cell.y))
+  };
+  let shifted = (line.rem_euclid(2) == 1) == (index == Odd);
+  let u = pos * 2 * column_width + if shifted { column_width } else { 0 };
+  let v = line * row_height;
+  let (hw, slant) = (column_width, side_offset.max(0));
+  let frame = [
+    (hw, 0),
+    (2 * hw, slant),
+    (2 * hw, row_height),
+    (hw, row_height + slant),
+    (0, row_height),
+    (0, slant),
+  ];
+  let mut out = frame.map(|(du, dv)| {
+    let (a, b) = ((u + du) as f64, (v + dv) as f64);
+    if axis == Y {
+      glam::DVec2::new(a, b)
+    } else {
+      glam::DVec2::new(b, a)
+    }
+  });
+  if axis == X {
+    out.reverse();
+  }
+  out
+}
+
 #[test]
 fn hex_cells_agree_with_cell_outlines_on_every_variant() {
   for grid in hex_variants() {
-    let hex = grid.hex_cells().expect("hex");
-    for y in -40..40 {
-      for x in -40..40 {
-        let cell = IVec2::new(x, y);
-        let want = grid.cell_outline(cell);
-        let got: Vec<Vec2> = hex
-          .corners(cell)
-          .iter()
-          .map(|c| c.as_vec2() + grid.origin)
-          .collect();
-        assert_eq!(got, want.points(), "{:?} {cell}", grid.shape);
-      }
+    let GridShape::Hexagonal { axis, index, side } = grid.shape else {
+      continue;
+    };
+    let hex = HexCells::new(axis, index, grid.cell, side);
+    let far: &[IVec2] = if grid.cell.x == 16 {
+      &[IVec2::new(i32::MAX / 16 - 1, 5)]
+    } else if grid.cell.x == 120 {
+      &[IVec2::new(-(i32::MAX / 120), i32::MAX / 140)]
+    } else {
+      &[]
+    };
+    let near = (-40..40).flat_map(|y| (-40..40).map(move |x| IVec2::new(x, y)));
+    for cell in near.chain(far.iter().copied()) {
+      let want: Vec<Vec2> = tiled_hex_corners(&grid, cell)
+        .iter()
+        .map(|c| (*c + grid.origin.as_dvec2()).as_vec2())
+        .collect();
+      assert_eq!(
+        grid.cell_outline(cell).points(),
+        want,
+        "{:?} {cell}",
+        grid.shape
+      );
+      let exact: Vec<glam::DVec2> = hex.corners(cell).iter().map(|c| c.as_dvec2()).collect();
+      assert_eq!(
+        exact,
+        tiled_hex_corners(&grid, cell),
+        "{:?} {cell}",
+        grid.shape
+      );
     }
   }
 }
@@ -1389,18 +1454,25 @@ fn hex_cells_agree_with_cell_outlines_on_every_variant() {
 #[test]
 fn each_hex_side_is_its_neighbours_side_reversed() {
   for grid in hex_variants() {
-    if matches!(grid.shape, GridShape::Hexagonal { side: 0, .. }) {
-      continue;
-    }
     let hex = grid.hex_cells().expect("hex");
+    let flat = matches!(grid.shape, GridShape::Hexagonal { side: 0, .. });
     for y in -20..20 {
       for x in -20..20 {
         let c = IVec2::new(x, y);
         let corners = hex.corners(c);
         for s in 0..6 {
           let n = hex.across(c, s);
+          assert_eq!(
+            Some(n),
+            grid.neighbours(c).nth(s),
+            "{:?} {c} side {s}",
+            grid.shape
+          );
           let back = hex.corners(n);
           let t = (s + 3) % 6;
+          if flat {
+            continue;
+          }
           assert_eq!(
             (corners[s], corners[(s + 1) % 6]),
             (back[(t + 1) % 6], back[t]),
@@ -1414,9 +1486,17 @@ fn each_hex_side_is_its_neighbours_side_reversed() {
 }
 
 #[test]
-fn hex_cells_refuse_cells_past_16384_px() {
-  use crate::core::physics::HexCells;
-  assert!(HexCells::new(Y, Odd, UVec2::new(16_385, 16), 8).is_none());
-  assert!(HexCells::new(Y, Odd, UVec2::new(16, 16_385), 8).is_none());
-  assert!(HexCells::new(Y, Odd, UVec2::new(16_384, 16_384), 8).is_some());
+fn hex_cells_trace_only_cells_up_to_16384_px() {
+  let cells = |x, y| HexCells::new(Y, Odd, UVec2::new(x, y), 8);
+  assert!(!cells(16_385, 16).traceable());
+  assert!(!cells(16, 16_385).traceable());
+  assert!(cells(16_384, 16_384).traceable());
+  // Past that the corners are still exact, and `points` says where they don't fit i32
+  let big = cells(40_000, 30_000);
+  assert_eq!(
+    big.corners(IVec2::new(1, 1))[0],
+    glam::I64Vec2::new(80_000, 15_004)
+  );
+  assert!(big.points(IVec2::new(1, 1)).is_some());
+  assert!(big.points(IVec2::new(i32::MAX, 1)).is_none());
 }
