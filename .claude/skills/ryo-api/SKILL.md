@@ -2,7 +2,7 @@
 name: ryo-api
 description: Complete API reference for ryo2d::prelude - every exported type with its signatures and use, organised by area.
 metadata:
-  version: 2.21.0
+  version: 2.22.0
 ---
 
 # Ryo2D API Reference
@@ -1111,7 +1111,7 @@ Tiled and LDtk levels as registry assets, spawned by a `MapRoot` entity: tile la
 | `MapObject` (component, child of its object layer, `Transform` at its rectangle's centre) `{ map: Entity, id: String, name, class: Option<String>, shape: ObjectShape, size: Vec2, tile: Option<Tile>, visible: bool, properties }` | `reference(field: &str, world: &World) -> Option<Entity>` (an object-reference property's object, if alive). An `On<Add<MapObject>>` observer sees each as it arrives, the map's colliders and every object's entity already in |
 | `MapTile` (component, child of its tile layer at the cell's centre) `{ map: Entity, layer: usize, cell: IVec2, tile: Tile, class: String, properties }` | a class tile |
 | `MapIds` (component on the map entity) | `get(id: &str) -> Option<Entity>` |
-| `MapOccluder` (component) `{ chunk: IVec2 }` (signed, as `TileGrid::chunk_of` gives it; on a staggered map a chunk of its lattice's cells) | marks the `LightOccluder2D::chain`s a map keeps from its tiles (children of its first occluding layer); an edit rebuilds a chunk's |
+| `MapOccluder` (component) `{ chunk: IVec2 }` (signed, as `TileGrid::chunk_of` gives it; on a staggered map a chunk of its lattice's cells) | marks the `LightOccluder2D::chain`s a map keeps from its tiles (children of its first occluding layer); an edit rebuilds its chunk's chains (on a hexagonal map only the chains through the cells it changed) |
 | `WorldLevelOf` (component) `{ world: WorldRef, level: usize }` | marks a root `spawn_levels_in` spawned; despawn the root to unload the level (a disabled root keeps it) |
 | `enum WorldRef { Tiled(Handle<TileWorld>), Ldtk { project: Handle<LdtkProject>, world: String } }` | `From<&Handle<TileWorld>>`; a single-world LDtk project's world is "World" |
 | `enum MapEvent { Spawned { map }, Reloaded { map }, Failed { map, error: Arc<AssetError> } }` (message) | landed whole this frame; followed a saved file; did not load or land (sent once per failure) |
