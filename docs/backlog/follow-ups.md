@@ -6,6 +6,33 @@ Items from 4f to 6b were copied from their execution records. Items from earlier
 
 ## Hexagonal maps at speed
 
+- Owner decisions (2026-11-06):
+  - Merged with the hex static frame and edit targets met. The owner chose this pass at the hexagonal collision merge, ahead of floors.
+  - The three refactors below (under "Refactors") were held back from the branch and logged here at the owner's choice, not done before the merge.
+- Rulings the owner may revisit:
+  - **Physics' change scans stay as they were.** The design made them conditional on the hex static frame reading over 46 µs after the propagation marker. One run read 38.2 µs, and the final three read +44.4 to +47.8. In one session the head read 42.1 to 48.9 against the marker commit's 42.2 to 43.9 and main's 56.5 to 57.7, so they were left. On a busy machine the static frame has 2 to 8 µs of headroom under 50.
+  - **Despawn order.** Only hexagonal chunks, and `Group::clear`, despawn their chains newest first. Square, lattice and staggered chunks keep spawn order: an A/B on those grids was inconclusive (62 to 81 µs either way).
+  - **`HEX_WHOLE` = 64.** Above 64 changed cells a chunk reads (its own and those across its sides), a hexagonal chunk is chained again whole, as on side-0 grids and past twice the last whole chaining's count. This is a cost threshold, not a correctness one: it routes streamed landings to the whole path.
+  - **The ring-heavy bench cases each hold one median over both their edits** (cleared and set back, turned whole and back). A regression in one direction could hide behind the other's median. Today the 95th percentiles show both directions close.
+  - **One commit subject overstates a cause.** "the record says the busy runs were load" (ebb61fff) claims a cause that was never measured. The next commit's text corrects it, and the history was left as it is.
+- Deferred findings:
+  - **Refactors** (held back, the owner's choice above):
+    - `hex_chunk_chains` (`tilemap/occluders.rs`, 414 lines) mixes the halo classification, the solidity, the ring diff, the marks, whole chaining and the incremental merge. Split it into helpers over `&mut HexKept`, and move the occluder tests (the file is about 4,500 lines) to `occluders/tests.rs`.
+    - The incremental path's `point_of` copies `hex_side_edge`'s corner-to-point conversion (`physics/tiles/outline.rs`). Corner matching depends on the two staying identical, so share one helper.
+    - `HexChunk` (`physics/tiles/pack.rs`) takes a `rings: bool` selector through seven methods (`split`, `quarter_len`, `boxes`, `block_boxes`, `settle_quarter`, `settle_block`, `update`). `HexSplit::blocks` exists for sides, where it is always false, and `boxes` repeats `split()`'s kind selection. A two-variant kind enum and an immutable accessor would read better.
+  - **Code.**
+    - `place` (`tilemap/occluders.rs`) silently skips a `gone` entity missing from the chunk's list, which would leak a chain. Only the tests' `assert_kept_as_spawned` checks the invariant. A `debug_assert!` would surface it.
+    - `hold_previous` (`ecs/transform.rs` ~:192) walks at most 64 ancestors, where propagation's `start_below` walks up to the entity count. Note the bound, or share the constant.
+  - **Docs.**
+    - `ParentPlaced`'s docs say losing `ChildOf` or `Interpolated` no longer seeds a walk, but those removals still seed one. This is harmless.
+    - `assert_same_edges`' rustdoc says "and the same points", which now holds only by implication.
+  - **Tests missing or loose.**
+    - The kinematic map-root test never asserts that the root's `GlobalTransform` moved, and checks only the chains' globals.
+    - The same test's 1.5 px Rapier tolerance covers the pre-existing one-step lag below. Drop it to the epsilon once the lag is fixed.
+  - **Size.** `physics/tiles.rs` is about 8,400 lines, mostly tests. Move the hexagonal tests to a `tiles/` submodule, beside the hex methods' move listed under hexagonal collision below.
+- Pre-existing bugs:
+  - A map root carrying a kinematic body leaves its tile parts' `GlobalTransform`s one step behind their Rapier colliders. Its `Transform` also runs a step ahead of its stored global. Both are the same without the propagation marker.
+  - `core::audio::sound::tests::a_waiting_loop_keeps_its_pause_and_the_game_s` (`audio/sound.rs` ~:1452) fails only under full-suite load: a resume fade goes missing. It passes alone and in its 281-test audio suite.
 - Later levers:
   - **Square and lattice grids rebuild a chunk's shadow chains whole.** Their `chunk_chains` (`tilemap/occluders.rs`) classifies the chunk again, chains every edge and despawns and spawns every chain of each chunk an edit marks, as hexagonal chunks did before an edit rebuilt only the chains through the cells it changed. They meet the edit target, so it was left. The hexagonal way (each chunk keeping its solidity, its chain index per edge and its chain entities, and neighbours marked by the sides they own) would apply to them too.
   - **The fixed step after a hexagonal edit.** `hex_one_tile_edit_timing`'s own 100 µs at the 99th percentile varies from session to session and round to round: in interleaved runs at a 1-minute load near 3 main met it in all 24 readings and the head of the hex speed work in 20 of 24, while in earlier runs that night its islands' corner and four parts read above it in most readings, on both; what raised those was not measured (`docs/backlog/tilemap.md`, Hexagonal maps at speed, and its Limits). In the later runs the fixed step after the rebuild is 44.0 to 47.6 µs of the four parts' 54.2 to 60.0 at the median. Look into what that step pays for a reshaped part (Rapier's shape build and its broad phase), and whether the part budget should weigh it.
