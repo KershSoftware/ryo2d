@@ -5,7 +5,9 @@ use super::kernel::{
   Added, Changed, ChildOf, Children, Commands, DetectChanges, DetectChangesMut, Entities, Entity,
   Has, Local, Mut, Or, Query, Ref, RemovedComponents, With, Without,
 };
-use super::transform::{GlobalTransform, Interpolated, PreviousGlobalTransform, Transform};
+use super::transform::{
+  GlobalTransform, Interpolated, ParentPlaced, PreviousGlobalTransform, Transform,
+};
 
 type RootItem<'a> = (
   Entity,
@@ -16,8 +18,12 @@ type RootItem<'a> = (
   Has<PreviousGlobalTransform>,
 );
 
-/// Anything that can move an entity or change whether it is interpolated
-type Placement = Or<(Changed<Transform>, Changed<ChildOf>, Added<Interpolated>)>;
+/// Anything that can move an entity or change whether it is interpolated,
+/// bar the entities only their parent's walk places ([`ParentPlaced`])
+type Placement = (
+  Or<(Changed<Transform>, Changed<ChildOf>, Added<Interpolated>)>,
+  Without<ParentPlaced>,
+);
 
 type NodeItem<'a> = (
   Ref<'a, Transform>,
@@ -376,6 +382,44 @@ mod tests {
     assert!(close(
       global(&world, e).translation(),
       Vec2::new(30.0, 40.0)
+    ));
+  }
+
+  #[test]
+  fn a_parent_placed_child_s_own_transform_change_seeds_no_walk() {
+    let mut world = World::new();
+    let parent = world.spawn(Transform::from_xy(10.0, 0.0)).id();
+    let child = world
+      .spawn((Transform::from_xy(1.0, 0.0), ParentPlaced, ChildOf(parent)))
+      .id();
+    let mut s = schedule();
+    s.run(&mut world);
+    assert!(close(
+      global(&world, child).translation(),
+      Vec2::new(11.0, 0.0)
+    ));
+    world.get_mut::<Transform>(child).unwrap().translation = Vec2::new(5.0, 0.0);
+    s.run(&mut world);
+    assert!(close(
+      global(&world, child).translation(),
+      Vec2::new(11.0, 0.0)
+    ));
+  }
+
+  #[test]
+  fn a_parent_placed_child_moves_with_its_parent_the_frame_it_moves() {
+    let mut world = World::new();
+    let parent = world.spawn(Transform::from_xy(10.0, 0.0)).id();
+    let child = world
+      .spawn((Transform::from_xy(1.0, 0.0), ParentPlaced, ChildOf(parent)))
+      .id();
+    let mut s = schedule();
+    s.run(&mut world);
+    world.get_mut::<Transform>(parent).unwrap().translation = Vec2::new(20.0, 0.0);
+    s.run(&mut world);
+    assert!(close(
+      global(&world, child).translation(),
+      Vec2::new(21.0, 0.0)
     ));
   }
 

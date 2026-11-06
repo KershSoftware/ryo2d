@@ -175,6 +175,43 @@ fn place_on_insert(mut world: DeferredWorld, context: HookContext) {
   }
 }
 
+/// A `ParentPlaced` entity's own `ChildOf` seeds no walk, so under an
+/// interpolated ancestor it takes the `PreviousGlobalTransform` a walk
+/// would give it as it is spawned (skipping, as a fresh one does).
+fn hold_previous(mut world: DeferredWorld, context: HookContext) {
+  let entity = context.entity;
+  if world.get::<PreviousGlobalTransform>(entity).is_some() {
+    return;
+  }
+  let mut above = world.get::<ChildOf>(entity).map(ChildOf::parent);
+  let mut interpolated = false;
+  // A chain of more parents than this is a cycle
+  for _ in 0..64 {
+    let Some(parent) = above else { break };
+    if world.get::<Interpolated>(parent).is_some() {
+      interpolated = true;
+      break;
+    }
+    above = world.get::<ChildOf>(parent).map(ChildOf::parent);
+  }
+  if !interpolated {
+    return;
+  }
+  let local = world.get::<Transform>(entity).copied().unwrap_or_default();
+  let parent = world
+    .get::<ChildOf>(entity)
+    .and_then(|child_of| world.get::<GlobalTransform>(child_of.parent()))
+    .copied();
+  let global = parent.map_or_else(
+    || GlobalTransform::from_transform(&local),
+    |parent| parent.mul_transform(&local),
+  );
+  world
+    .commands()
+    .entity(entity)
+    .insert(PreviousGlobalTransform { global, skip: true });
+}
+
 /// World-space transform, computed by the engine from the hierarchy.
 #[derive(Component, Debug, Clone, Copy, PartialEq)]
 pub struct GlobalTransform(Affine2);
@@ -269,6 +306,25 @@ pub struct PreviousGlobalTransform {
   pub global: GlobalTransform,
   pub skip: bool,
 }
+
+/// The marker is public in a module nothing names, so the engine's systems
+/// can take it in their filters without it being part of the API
+mod parent_placed {
+  use super::{Component, hold_previous};
+
+  /// Marks an entity that only its parent's walk places: a child with no
+  /// children of its own whose `Transform` the engine sets and games don't
+  /// edit (a tile map's collider parts and shadow chains). Propagation's scan
+  /// for changes skips it, so a still map's thousands of such children cost
+  /// nothing a frame; a parent that moves still carries it, and `Transform`'s
+  /// insert hook places it where it is spawned or re-set. The cost: its own
+  /// `Transform`, `ChildOf` or `Interpolated` changing seeds no walk, so an
+  /// edit to them waits for its parent to move.
+  #[derive(Component, Debug, Clone, Copy, Default)]
+  #[component(on_insert = hold_previous)]
+  pub struct ParentPlaced;
+}
+pub(crate) use parent_placed::ParentPlaced;
 
 /// Opt an entity (and its descendants) into render interpolation.
 #[derive(Component, Debug, Clone, Copy, Default)]

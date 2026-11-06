@@ -2,7 +2,7 @@
 name: ryo-tilemap
 description: "Tile maps - the workflow from Tiled (.tmx, .tmj) or LDtk (.ldtk) through assets/ to a MapRoot entity, layers and the reserved layer properties (collides, occludes, y_sort, lit, filter), tilesets and typed tile data, objects and class tiles as entities, MapEvent, reading and editing tiles with ctx.maps() and Wang terrain, collision from tile shapes and IntGrids, tile shadows, y-sorting and parallax, worlds of levels, maps built in code and by procgen, endless worlds streamed from a generator (MapStream, StreamAnchor, ChunkEvent, SavedChunks, ChunkOwned), hot reload, the web, performance and testing."
 metadata:
-  version: 1.6.0
+  version: 1.7.0
 ---
 
 # Ryo2D Tile Maps
@@ -463,7 +463,7 @@ if let Some(paths) = &mut self.paths {
 - The map draws its occluders as the boundary of what occludes: `LightOccluder2D::chain`s, a chunk's worth each, children of the first occluding layer and marked `MapOccluder { chunk }` (an `IVec2`: chunks are signed, as `TileGrid::chunk_of` gives them, so cell -1 is in chunk -1; on a staggered map, chunks of its lattice's cells). A chunk owns the borders left of and above its cells, so the right and bottom edges of a chunk's last cells can be the next chunk's chains. Tiles that touch cast no shadow between them, so lit art shows no seam. Edits rebuild only the chains of the chunks they touch.
 - **Isometric, staggered and oblique maps** cast their shadows along the outlines they collide along (section 8): a wall of diamonds shadows from its diamonds' sides.
 - **Hexagonal maps** cast theirs along what they collide along (section 8): a clump of wall hexes shadows from the clump's outer sides, and a tile's own shape (a rock, a trunk) from its own outline, wherever it is drawn, turned and flipped with its tile (its `occluder` shapes alone, if it has any), unmerged with the hexes beside it: where that outline lies along a neighbour's side (a solid hex's, or another shape's), both cast there, so under a light whose shadows are not at full strength that stretch of shadow is darker. A side belongs to the earlier of its two hexes in row order, so the chains of a hex's sides on its left and above can be the chunk's on its left or above, and an edit next to a chunk's left or top edge builds that chunk's chains again too.
-- The map owns its chains: a game can find them by `MapOccluder`, and a change it makes to one lasts until its chunk changes. A disabled map casts nothing.
+- The map owns its chains: a game can find them by `MapOccluder`, and a change it makes to one lasts until its chunk changes. A chain's and a collider part's placement is the map's: a game's change to their `Transform` has no effect (they are placed by the map's own movement). A disabled map casts nothing.
 - Every lit frame gathers every map's occluders, and each shadowed light tests all of them (section 16).
 
 ## 10. Draw order, y-sorting and parallax

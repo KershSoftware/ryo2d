@@ -37,6 +37,7 @@ pub use property_tween::PropertyTween;
 pub use renderable::{BlobShadow, ContactShadow, DropShadow, RenderStyle, Renderable};
 pub use sprite_effects::SpriteEffect;
 pub use squash_stretch::{SquashAxis, SquashStretch};
+pub(crate) use transform::ParentPlaced;
 pub use transform::{Anchor, GlobalTransform, Interpolated, PreviousGlobalTransform, Transform};
 pub use tween::{Ease, Tween, TweenLoop, TweenSequence};
 pub use world_ext::WorldExt;

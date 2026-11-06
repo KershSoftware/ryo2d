@@ -62,8 +62,8 @@ use super::kinds::{
 use super::spawn::{IntGridKey, MapLayers, MapRoot, TileLayerData, root_map};
 use super::{CHUNK_SIZE, Lattice, TileGrid};
 use crate::core::ecs::{
-  Allow, ChildOf, Commands, Component, DetectChangesMut, Disabled, Entity, Has, Local, Query,
-  Transform, World,
+  Allow, ChildOf, Commands, Component, DetectChangesMut, Disabled, Entity, Has, Local,
+  ParentPlaced, Query, Transform, World,
 };
 use crate::core::hash::{FastMap, FastSet};
 use crate::core::lighting::LightOccluder2D;
@@ -72,7 +72,8 @@ use crate::core::physics::{Boundary, CellRect, GRID, HexCells, PlacedEdge, Point
 /// Marks an occluder a map keeps from its tiles: a child of the first layer
 /// of the layers occluding as one, rebuilt with its chunk. Games can find a
 /// map's shadows by it; the map owns them, so an edit to one lasts until
-/// its chunk changes
+/// its chunk changes. Only the map's walk places it: a change to its
+/// `Transform` has no effect
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MapOccluder {
   /// The chunk of the layers it was built from: signed, as
@@ -796,6 +797,7 @@ fn spawn_chains(
           Transform::from_translation(centre),
           LightOccluder2D::chain(vertices),
           MapOccluder { chunk },
+          ParentPlaced,
           ChildOf(parent),
         ))
         .id()
@@ -1022,6 +1024,7 @@ pub(crate) fn land(world: &mut World, map: Entity, layers: &[Entity], prepared: 
           Transform::from_translation(centre),
           LightOccluder2D::chain(vertices),
           MapOccluder { chunk },
+          ParentPlaced,
           ChildOf(parent),
         )
       })
@@ -1173,7 +1176,9 @@ mod tests {
 
   use super::*;
   use crate::core::asset::{Assets, Handle};
-  use crate::core::ecs::{ChildOf, Disabled, Entity, GlobalTransform, Transform, World};
+  use crate::core::ecs::{
+    ChildOf, Disabled, Entity, GlobalTransform, Or, Transform, With, Without, World,
+  };
   use crate::core::lighting::{Light2D, LightOccluder2D, push_shadow_volumes};
   use crate::core::physics::{Collider, Physics, TileCell, TilePart};
   use crate::core::render::batch::Triangles;
@@ -2512,6 +2517,117 @@ mod tests {
       .collect();
     closed.sort_unstable();
     closed
+  }
+
+  /// `entity`'s global transform as its ancestors' locals give it
+  fn composed(world: &World, entity: Entity) -> GlobalTransform {
+    let local = *world.get::<Transform>(entity).expect("a Transform");
+    match world.get::<ChildOf>(entity) {
+      Some(child_of) => composed(world, child_of.parent()).mul_transform(&local),
+      None => GlobalTransform::from_transform(&local),
+    }
+  }
+
+  #[test]
+  fn a_moved_map_carries_its_hex_parts_and_chains() {
+    let clumps: Vec<IVec2> = [(5, 5), (6, 5), (6, 6), (40, 9), (41, 9)]
+      .into_iter()
+      .map(|(x, y)| IVec2::new(x, y))
+      .collect();
+    for offset in [Vec2::ZERO, Vec2::new(13.0, -7.0)] {
+      let mut map = hex_map(&clumps);
+      map.layers[0].info.offset = offset;
+      let mut maps = MapWorld::new();
+      let handle = maps.world.resource_mut::<Assets<TileMap>>().add(map);
+      let map = maps.spawn(MapRoot::new(handle));
+      maps.frame();
+      let layer = layers_of(&mut maps.world, map)[0];
+      let before = lit_edges(&mut maps.world, layer);
+      assert!(!before.is_empty());
+
+      // Moved, turned and scaled in one frame
+      let root = Transform::from_xy(100.0, 50.0)
+        .with_rotation_degrees(30.0)
+        .with_uniform_scale(2.0);
+      *maps.world.get_mut::<Transform>(map).expect("root") = root;
+      maps.frame();
+      let at = GlobalTransform::from_transform(&root);
+      assert_eq!(*maps.world.get::<GlobalTransform>(map).unwrap(), at);
+
+      let near =
+        |a: &GlobalTransform, b: &GlobalTransform| a.affine().abs_diff_eq(b.affine(), 1e-3);
+      let mut carried = 0;
+      let placed: Vec<Entity> = maps
+        .world
+        .query_filtered::<Entity, Or<(With<TilePart>, With<MapOccluder>)>>()
+        .iter(&maps.world)
+        .collect();
+      for entity in placed {
+        let global = *maps.world.get::<GlobalTransform>(entity).unwrap();
+        let want = composed(&maps.world, entity);
+        assert!(
+          near(&global, &want),
+          "{entity}: {global:?} against {want:?}"
+        );
+        carried += 1;
+      }
+      assert!(carried > 0);
+
+      let after: Vec<(Vec2, Vec2)> = maps
+        .world
+        .query::<(&ChildOf, &MapOccluder, &GlobalTransform, &LightOccluder2D)>()
+        .iter(&maps.world)
+        .flat_map(|(_, _, global, occluder)| {
+          let affine = global.affine();
+          occluder
+            .edges()
+            .map(|(a, b)| (affine.transform_point2(b), affine.transform_point2(a)))
+            .collect::<Vec<_>>()
+        })
+        .collect();
+      let want: Vec<(Vec2, Vec2)> = before
+        .iter()
+        .map(|&(a, b)| {
+          let to = at.affine();
+          (to.transform_point2(a), to.transform_point2(b))
+        })
+        .collect();
+      assert_same_edges(&after, &want, "moved shadows");
+    }
+  }
+
+  #[test]
+  fn an_interpolated_map_s_rebuilt_chains_get_previous_transforms() {
+    use crate::core::ecs::{Interpolated, PreviousGlobalTransform};
+    let clumps: Vec<IVec2> = [(5, 5), (6, 5), (6, 6)]
+      .into_iter()
+      .map(|(x, y)| IVec2::new(x, y))
+      .collect();
+    let mut maps = MapWorld::new();
+    let handle = maps
+      .world
+      .resource_mut::<Assets<TileMap>>()
+      .add(hex_map(&clumps));
+    let map = maps.spawn(MapRoot::new(handle));
+    maps.world.entity_mut(map).insert(Interpolated);
+    maps.frame();
+    let unplaced = |world: &mut World| {
+      world
+        .query_filtered::<Entity, (With<MapOccluder>, Without<PreviousGlobalTransform>)>()
+        .iter(world)
+        .count()
+    };
+    assert_eq!(unplaced(&mut maps.world), 0, "the landed chains");
+    // A lone hexagon builds its chunk's chains again
+    assert!(MapsView::new(&mut maps.world).set_tile(
+      map,
+      "ground",
+      IVec2::new(10, 10),
+      Some(Tile::new(0, 0))
+    ));
+    maps.frame();
+    assert!(count::<MapOccluder>(&mut maps.world) > 1);
+    assert_eq!(unplaced(&mut maps.world), 0, "the rebuilt chains");
   }
 
   #[test]

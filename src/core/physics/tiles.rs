@@ -12,7 +12,7 @@ use super::collider::{Collider, PrebuiltShape};
 use super::world::Physics;
 use crate::core::ecs::{
   Allow, Changed, ChildOf, Children, Commands, Component, DetectChangesMut, Disabled, Entity,
-  EntityHashSet, Has, Or, Query, RemovedComponents, ResMut, Transform, Vec2, With,
+  EntityHashSet, Has, Or, ParentPlaced, Query, RemovedComponents, ResMut, Transform, Vec2, With,
 };
 use crate::core::hash::{FastMap, FastSet};
 
@@ -2312,8 +2312,11 @@ impl UnitSink for Placed<'_> {
   }
 }
 
-/// Marks a collider a `TileColliders` built; its parent owns it.
+/// Marks a collider a `TileColliders` built; its parent owns it. Only its
+/// parent's walk places it (`ParentPlaced`): a game's change to its
+/// `Transform` has no effect.
 #[derive(Component, Debug, Clone, Copy)]
+#[require(ParentPlaced)]
 pub(crate) struct TilePart;
 
 /// A part's collider moved by `by`, its part's translation, into its
@@ -4379,6 +4382,79 @@ mod with_physics {
       .into_iter()
       .map(|(_, collider)| collider)
       .collect()
+  }
+
+  #[test]
+  fn a_part_spawned_the_step_its_map_moved_is_placed_where_the_map_is_now() {
+    use super::hex::{HexCells, StaggerAxis, StaggerIndex};
+    let hex = HexCells::new(StaggerAxis::Y, StaggerIndex::Odd, UVec2::new(16, 16), 8);
+    let mut tiles = TileColliders::unbounded(Vec2::splat(16.0)).with_hex(hex, Vec2::ZERO);
+    tiles.set(IVec2::new(1, 1), TileCell::Solid);
+    let (mut world, mut s) = world(60);
+    let map = world.spawn((Transform::IDENTITY, tiles)).id();
+    run(&mut world, &mut s, 2);
+    let before = hex_parts(&mut world, map);
+    // Moved, and a wall in a chunk of its own, in one update
+    *world.get_mut::<Transform>(map).unwrap() =
+      Transform::from_xy(100.0, 50.0).with_rotation_degrees(30.0);
+    world
+      .get_mut::<TileColliders>(map)
+      .unwrap()
+      .set(IVec2::new(60, 60), TileCell::Solid);
+    run(&mut world, &mut s, 1);
+    let after = hex_parts(&mut world, map);
+    let fresh: Vec<Entity> = after
+      .iter()
+      .map(|&(_, part, ..)| part)
+      .filter(|part| before.iter().all(|&(_, kept, ..)| kept != *part))
+      .collect();
+    assert!(!fresh.is_empty(), "the wall's part is new");
+    let root = *world.get::<GlobalTransform>(map).unwrap();
+    for part in after.iter().map(|&(_, part, ..)| part) {
+      let local = *world.get::<Transform>(part).unwrap();
+      let want = root.mul_transform(&local);
+      let got = *world.get::<GlobalTransform>(part).unwrap();
+      assert!(
+        got.affine().abs_diff_eq(want.affine(), 1e-3),
+        "{part}: {got:?} against {want:?}"
+      );
+    }
+  }
+
+  #[test]
+  fn a_map_on_a_kinematic_body_carries_its_parts() {
+    let (mut world, mut s) = world(60);
+    let map = world
+      .spawn((
+        Transform::IDENTITY,
+        RigidBody::kinematic(),
+        Velocity::new(60.0, 0.0),
+        TileColliders::from_cells(4, 1, Vec2::splat(16.0), vec![TileCell::Solid; 4]),
+      ))
+      .id();
+    run(&mut world, &mut s, 60);
+    let moved = at(&world, map).translation.x;
+    assert!(moved > 30.0, "the body moved: {moved}");
+    let root = *world.get::<GlobalTransform>(map).unwrap();
+    let physics = world.resource::<Physics>();
+    let mut checked = 0;
+    for (part, entry) in physics.collider_entries.iter() {
+      let global = *world.get::<GlobalTransform>(*part).unwrap();
+      let local = *world.get::<Transform>(*part).unwrap();
+      let want = root.mul_transform(&local);
+      assert!(global.affine().abs_diff_eq(want.affine(), 1e-3));
+      let body = physics.colliders.get(entry.handle).unwrap();
+      let at = body.position().translation;
+      // Within a step's travel (1 px): the globals follow the body's
+      // write-back a step behind its colliders, as they did before
+      assert!(
+        (at.x - want.translation().x).abs() < 1.5 && (at.y - want.translation().y).abs() < 1.5,
+        "{part}: the collider at {at:?}, the part at {:?}",
+        want.translation()
+      );
+      checked += 1;
+    }
+    assert!(checked > 0);
   }
 
   #[test]
