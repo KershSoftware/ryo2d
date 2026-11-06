@@ -4527,18 +4527,22 @@ mod tests {
 
   /// One-tile edits in a chunk of a hexagonal map full of tiles whose shape
   /// is not their cell's hexagon (an inset hexagon, a ring of six edges a
-  /// cell, all counted toward a part's budget of 128 edges, so each 8 x 8
-  /// block holds 384 and none splits further), timed as the speed guards'
-  /// edit guard times its parts (`benches/tilemap.rs`, `edit_schedules`): a
-  /// frame before each edit, then the loop rebuild (the collision sync, the
-  /// tile collider rebuild and the collider sync) and the occluder rebuild
-  /// (the occluder sync), each on its own. The cases: a ring cell cleared
-  /// and set back in the middle of a block (its block's part rebuilt), and
-  /// one turned whole and back where four blocks meet (its sides' owners'
-  /// four blocks rebuilt). Prints each part's median, 99th percentile and
-  /// longest, the edges of the parts each edit rebuilt and the most a part
-  /// of the chunk holds. 16 px hexagons of side 8 in odd rows, as the
-  /// guards'. Run in release:
+  /// cell). Its rings are parts of their own, apart from its parts of
+  /// sides, each holding at most 128 edges where it can: the chunk's rings,
+  /// each quarter's and each 8 x 8 block's (384) pass that, so its 64
+  /// sub-blocks of 4 x 4 cells are its parts of rings, 96 edges each. Timed
+  /// as the speed guards' edit guard times its parts (`benches/tilemap.rs`,
+  /// `edit_schedules`): a frame before each edit, then the loop rebuild (the
+  /// collision sync, the tile collider rebuild and the collider sync) and
+  /// the occluder rebuild (the occluder sync), each on its own. The cases: a
+  /// ring cell cleared and set back in the middle of a block (its
+  /// sub-block's part of rings rebuilt, and no part of sides), and one
+  /// turned whole and back where four blocks meet (its sub-block's part of
+  /// rings rebuilt, and the chunk's part of sides, its six sides, made and
+  /// dropped; no other part of rings). Prints each part's median, 99th
+  /// percentile and longest, the edges of the parts each edit rebuilt and
+  /// the most a part of the chunk holds. 16 px hexagons of side 8 in odd
+  /// rows, as the guards'. Run in release:
   /// `cargo test --release -p ryo2d --lib hex_ring_heavy_edit_timing -- --ignored --nocapture`
   #[test]
   #[ignore = "a timing: run in release with --ignored --nocapture"]
