@@ -170,6 +170,47 @@ After the design's review the owner decided:
   - an endless streamed world, where edits survive leaving and coming back;
   - a speed page per grid.
 
+### Floors: details settled at planning (2026-11-06, my calls)
+
+Mapping the code for floors found what the calls above leave open. These settle it; the owner may revisit them.
+- **A floor's height and ground space.**
+  - A floor's height is the vertical part of the offset of its bottom layer (the first in draw order). The ground floor's height is always zero, so its layers keep their whole offset as before.
+  - A layer on a higher floor stands at its offset less its floor's height. Its objects, class tiles, colliders and shadow chains are therefore in ground space without further work, and the drawer adds the height back.
+  - A group layer's `floor` passes to its children, because designers group a storey's layers.
+- **Values.**
+  - `floor` (a layer's) and `stairs` (a tile's) are integers from 0 to 255. Any other value refuses the map with an error naming the layer or tile.
+  - Stairs lead up from their layer's floor. Stairs that name a floor the map lacks, their own floor or a lower one are warned once and stay plain tiles.
+  - LDtk layers have no properties, so LDtk maps have no floors. LDtk's world depths are not floors.
+- **What draws lifted.**
+  - An entity with `Floor` draws lifted by that floor's height on the map under it, and so does every entity below it in the hierarchy (a sprite on a child, a held torch).
+  - That covers sprites and their shadows, composites, world text, particles (at emission), trails (when recorded), and lights with their shadows.
+  - Lines and the physics overlay stay in ground space. A camera that follows a character adds the character's lift (`MapsView::drawn_lift`).
+- **Sorting.**
+  - On a map with floors, every y-sorted layer draws at the z of the map's first y-sorted layer (`MapsView::y_sort_z`).
+  - Rows and entities sort by their ground y. At an equal y the lower floor draws first.
+- **Stairs.**
+  - An entity opts in with `Climber`.
+  - A run of stair cells leads from its layer's floor to the floor its `stairs` names. Its top is the sides it shares with the upper floor's cells, and its bottom is the sides it shares with cells outside both the run and the upper floor.
+  - A climber's drawn height eases between the two floors' heights by its progress from bottom to top. The progress is worked out each frame from its drawn position, so it blends like movement.
+  - **A climber changes floor halfway along the run, not where it leaves the stairs** as the call above says. The upper floor's edge encloses its stairs, and the lower floor may have walls where the stairs arrive. Switching at the middle lets a character leave the stairs at both ends without opening either.
+  - A `FloorChanged` message names each change.
+- **Collision.**
+  - A higher floor's walkable footprint is the cells its layers fill plus the stairs that lead to it. The footprint is traced as a grid of its own on a `MapFloor` entity, and its hollow outline is the edge.
+  - On the ground floor, a raised area blocks only where the designer gives it collision, so a bridge can stand over open ground.
+- **Physics.**
+  - The floor filter is a Rapier hook reading the floor from each collider's spare user-data bits. It is set only on colliders off the ground floor and not on every floor, so ground-floor pairs keep Rapier's contact reuse.
+  - A collider's floor is its own entity's `Floor`, else its body's.
+  - Game queries see every floor unless filtered (`QueryFilter::on_floor`).
+  - A respawn takes the floor of the checkpoint it last touched.
+- **Lights.**
+  - A light on a floor is blocked by that floor's occluders and by occluders on every floor. The light and its shadows draw lifted.
+  - A light still brightens whatever lies under it on screen, whatever its floor: there is one light image per camera, and that is a recorded limit.
+  - A light on every floor draws at ground height.
+- **Paths.**
+  - `MapsView::navigation` gives one floor's grid.
+  - `MapsView::floor_navigation` gives every floor's grid, linked at each stair cell between the floors the stairs join, at no cost, since the cell is the same ground.
+  - Steps carry their floor (`PathNode::floor`). Smoothing never skips across a link.
+
 ## Stages
 
 6b merges in six stages (the owner's decision; the order and the cuts are my call). Each stage has its own plan, review and hand-play. Each merges with main working, its docs, module notes and skills current, and the new demo grown by its pages. A feature a later stage brings stays refused with a clear error until then.
