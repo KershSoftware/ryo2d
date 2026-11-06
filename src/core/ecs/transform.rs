@@ -177,7 +177,10 @@ fn place_on_insert(mut world: DeferredWorld, context: HookContext) {
 
 /// A `ParentPlaced` entity's own `ChildOf` seeds no walk, so under an
 /// interpolated ancestor it takes the `PreviousGlobalTransform` a walk
-/// would give it as it is spawned (skipping, as a fresh one does).
+/// would give it as it is spawned (skipping, as a fresh one does). The
+/// search for `Interpolated` stops at an ancestor without a `Transform`, as
+/// propagation's inheritance does. The stored global is never drawn while
+/// `skip` is set, so the entity's current one stands in.
 fn hold_previous(mut world: DeferredWorld, context: HookContext) {
   let entity = context.entity;
   if world.get::<PreviousGlobalTransform>(entity).is_some() {
@@ -185,9 +188,12 @@ fn hold_previous(mut world: DeferredWorld, context: HookContext) {
   }
   let mut above = world.get::<ChildOf>(entity).map(ChildOf::parent);
   let mut interpolated = false;
-  // A chain of more parents than this is a cycle
+  // Bounded, so a cycle (never valid) cannot hang the hook
   for _ in 0..64 {
     let Some(parent) = above else { break };
+    if world.get::<Transform>(parent).is_none() {
+      break;
+    }
     if world.get::<Interpolated>(parent).is_some() {
       interpolated = true;
       break;
@@ -197,19 +203,14 @@ fn hold_previous(mut world: DeferredWorld, context: HookContext) {
   if !interpolated {
     return;
   }
-  let local = world.get::<Transform>(entity).copied().unwrap_or_default();
-  let parent = world
-    .get::<ChildOf>(entity)
-    .and_then(|child_of| world.get::<GlobalTransform>(child_of.parent()))
-    .copied();
-  let global = parent.map_or_else(
-    || GlobalTransform::from_transform(&local),
-    |parent| parent.mul_transform(&local),
-  );
+  let global = world
+    .get::<GlobalTransform>(entity)
+    .copied()
+    .unwrap_or_default();
   world
     .commands()
     .entity(entity)
-    .insert(PreviousGlobalTransform { global, skip: true });
+    .try_insert(PreviousGlobalTransform { global, skip: true });
 }
 
 /// World-space transform, computed by the engine from the hierarchy.

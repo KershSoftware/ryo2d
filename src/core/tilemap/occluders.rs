@@ -73,7 +73,8 @@ use crate::core::physics::{Boundary, CellRect, GRID, HexCells, PlacedEdge, Point
 /// of the layers occluding as one, rebuilt with its chunk. Games can find a
 /// map's shadows by it; the map owns them, so an edit to one lasts until
 /// its chunk changes. Only the map's walk places it: a change to its
-/// `Transform` has no effect
+/// `Transform` is not applied until the map next moves, and a rebuild
+/// replaces it
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MapOccluder {
   /// The chunk of the layers it was built from: signed, as
@@ -1177,7 +1178,7 @@ mod tests {
   use super::*;
   use crate::core::asset::{Assets, Handle};
   use crate::core::ecs::{
-    ChildOf, Disabled, Entity, GlobalTransform, Or, Transform, With, Without, World,
+    ChildOf, Disabled, Entity, GlobalTransform, Has, Or, Transform, With, Without, World,
   };
   use crate::core::lighting::{Light2D, LightOccluder2D, push_shadow_volumes};
   use crate::core::physics::{Collider, Physics, TileCell, TilePart};
@@ -2519,13 +2520,97 @@ mod tests {
     closed
   }
 
-  /// `entity`'s global transform as its ancestors' locals give it
+  /// `entity`'s global transform as its ancestors' locals give it, from
+  /// the root's stored global (a body's write-back lands after its step's
+  /// propagation, so the root's `Transform` can be a step ahead of it)
   fn composed(world: &World, entity: Entity) -> GlobalTransform {
-    let local = *world.get::<Transform>(entity).expect("a Transform");
     match world.get::<ChildOf>(entity) {
-      Some(child_of) => composed(world, child_of.parent()).mul_transform(&local),
-      None => GlobalTransform::from_transform(&local),
+      Some(child_of) => {
+        let local = *world.get::<Transform>(entity).expect("a Transform");
+        composed(world, child_of.parent()).mul_transform(&local)
+      }
+      None => *world
+        .get::<GlobalTransform>(entity)
+        .expect("a GlobalTransform"),
     }
+  }
+
+  /// Every part's and chain's `GlobalTransform` is its root's global times
+  /// its ancestors' locals (1e-3); how many of each there are
+  fn assert_carried(world: &mut World) -> (usize, usize) {
+    let placed: Vec<(Entity, bool)> = world
+      .query_filtered::<(Entity, Has<TilePart>), Or<(With<TilePart>, With<MapOccluder>)>>()
+      .iter(world)
+      .collect();
+    let (mut parts, mut chains) = (0, 0);
+    for (entity, is_part) in placed {
+      let global = *world.get::<GlobalTransform>(entity).unwrap();
+      let want = composed(world, entity);
+      assert!(
+        global.affine().abs_diff_eq(want.affine(), 1e-3),
+        "{entity}: {global:?} against {want:?}"
+      );
+      if is_part {
+        parts += 1;
+      } else {
+        chains += 1;
+      }
+    }
+    (parts, chains)
+  }
+
+  #[test]
+  fn a_map_on_a_kinematic_body_carries_its_parts_and_chains() {
+    use crate::core::ecs::Velocity;
+    use crate::core::physics::RigidBody;
+    let clumps: Vec<IVec2> = [(5, 5), (6, 5), (6, 6), (40, 9), (41, 9)]
+      .into_iter()
+      .map(|(x, y)| IVec2::new(x, y))
+      .collect();
+    let mut maps = MapWorld::new();
+    let handle = maps
+      .world
+      .resource_mut::<Assets<TileMap>>()
+      .add(hex_map(&clumps));
+    let map = maps.spawn(MapRoot::new(handle));
+    maps.frame();
+    maps
+      .world
+      .entity_mut(map)
+      .insert((RigidBody::kinematic(), Velocity::new(60.0, 0.0)));
+    for _ in 0..30 {
+      maps.frame();
+    }
+    let moved = maps.world.get::<Transform>(map).unwrap().translation.x;
+    assert!(moved > 10.0, "physics moved the map root: {moved}");
+    let (parts, chains) = assert_carried(&mut maps.world);
+    assert!(parts > 0 && chains > 0, "{parts} parts, {chains} chains");
+    // The parts' colliders in Rapier sit where their parts do, within a
+    // step's travel (1 px): the globals follow the body's write-back a step
+    // behind its colliders (pre-existing: the same without the marker)
+    let physics = maps.world.resource::<Physics>();
+    let mut checked = 0;
+    for (part, entry) in physics.collider_entries.iter() {
+      let Some(global) = maps.world.get::<GlobalTransform>(*part) else {
+        continue;
+      };
+      if maps.world.get::<TilePart>(*part).is_none() {
+        continue;
+      }
+      let at = physics
+        .colliders
+        .get(entry.handle)
+        .unwrap()
+        .position()
+        .translation;
+      let want = global.translation();
+      assert!(
+        (at.x - want.x).abs() < 1.5 && (at.y - want.y).abs() < 1.5,
+        "{part}: the collider at {at:?}, the part at {want:?}"
+      );
+      checked += 1;
+    }
+    assert!(checked > 0);
   }
 
   #[test]
@@ -2554,30 +2639,14 @@ mod tests {
       let at = GlobalTransform::from_transform(&root);
       assert_eq!(*maps.world.get::<GlobalTransform>(map).unwrap(), at);
 
-      let near =
-        |a: &GlobalTransform, b: &GlobalTransform| a.affine().abs_diff_eq(b.affine(), 1e-3);
-      let mut carried = 0;
-      let placed: Vec<Entity> = maps
-        .world
-        .query_filtered::<Entity, Or<(With<TilePart>, With<MapOccluder>)>>()
-        .iter(&maps.world)
-        .collect();
-      for entity in placed {
-        let global = *maps.world.get::<GlobalTransform>(entity).unwrap();
-        let want = composed(&maps.world, entity);
-        assert!(
-          near(&global, &want),
-          "{entity}: {global:?} against {want:?}"
-        );
-        carried += 1;
-      }
-      assert!(carried > 0);
+      let (parts, chains) = assert_carried(&mut maps.world);
+      assert!(parts > 0 && chains > 0, "{parts} parts, {chains} chains");
 
       let after: Vec<(Vec2, Vec2)> = maps
         .world
-        .query::<(&ChildOf, &MapOccluder, &GlobalTransform, &LightOccluder2D)>()
+        .query::<(&MapOccluder, &GlobalTransform, &LightOccluder2D)>()
         .iter(&maps.world)
-        .flat_map(|(_, _, global, occluder)| {
+        .flat_map(|(_, global, occluder)| {
           let affine = global.affine();
           occluder
             .edges()

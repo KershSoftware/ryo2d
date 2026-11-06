@@ -2314,7 +2314,8 @@ impl UnitSink for Placed<'_> {
 
 /// Marks a collider a `TileColliders` built; its parent owns it. Only its
 /// parent's walk places it (`ParentPlaced`): a game's change to its
-/// `Transform` has no effect.
+/// `Transform` is not applied until the map next moves, and the map's
+/// rebuilds replace it.
 #[derive(Component, Debug, Clone, Copy)]
 #[require(ParentPlaced)]
 pub(crate) struct TilePart;
@@ -4422,7 +4423,7 @@ mod with_physics {
   }
 
   #[test]
-  fn a_map_on_a_kinematic_body_carries_its_parts() {
+  fn a_collider_grid_on_a_kinematic_body_keeps_its_parts_with_it() {
     let (mut world, mut s) = world(60);
     let map = world
       .spawn((

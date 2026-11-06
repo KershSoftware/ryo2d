@@ -424,6 +424,37 @@ mod tests {
   }
 
   #[test]
+  fn removing_interpolated_strips_a_parent_placed_child_s_previous_transform() {
+    let mut world = World::new();
+    let parent = world
+      .spawn((Transform::from_xy(10.0, 0.0), Interpolated))
+      .id();
+    let child = world
+      .spawn((Transform::from_xy(1.0, 0.0), ParentPlaced, ChildOf(parent)))
+      .id();
+    assert!(
+      world.get::<PreviousGlobalTransform>(child).is_some(),
+      "given at its spawn"
+    );
+    let mut s = schedule();
+    s.run(&mut world);
+    assert!(world.get::<PreviousGlobalTransform>(child).is_some());
+    world.entity_mut(parent).remove::<Interpolated>();
+    s.run(&mut world);
+    assert!(world.get::<PreviousGlobalTransform>(child).is_none());
+  }
+
+  #[test]
+  fn a_parent_placed_child_under_a_grouping_entity_gets_no_previous_transform() {
+    let mut world = World::new();
+    let group = world.spawn(Interpolated).id();
+    let child = world
+      .spawn((Transform::from_xy(1.0, 0.0), ParentPlaced, ChildOf(group)))
+      .id();
+    assert!(world.get::<PreviousGlobalTransform>(child).is_none());
+  }
+
+  #[test]
   fn removing_child_of_makes_the_entity_a_root_at_its_local_transform() {
     let mut world = World::new();
     let parent = world.spawn(Transform::from_xy(100.0, 0.0)).id();
