@@ -7010,13 +7010,13 @@ mod with_physics {
   /// warm), each timed in parts: the tile rebuild (`rebuild_tile_colliders`
   /// alone), the fixed step after it (physics taking in the reshaped
   /// parts), and both together, with the edges the rebuilt parts hold (of
-  /// sides and of rings). The
-  /// cases: the two loops' cells (in chunks split for their edges), an
-  /// island's cell at a corner of four of the islands' ordinary chunks, one
-  /// on a chunk's edge, 400 random cells each set and set back, and a
-  /// corner of four chunks each filled to just under the budget (each
-  /// edit rebuilding four parts of nearly the budget's edges). The target
-  /// is both together within 100 µs at the 99th percentile. Run in release:
+  /// sides and of rings). The cases: the two loops' cells (in chunks split
+  /// for their edges), an island's cell at a corner of four of the islands'
+  /// ordinary chunks, one on a chunk's edge, 400 random cells each set and
+  /// set back, and a corner of four chunks each filled to just under the
+  /// budget (each edit rebuilding four parts of nearly the budget's edges).
+  /// The target is both together within 100 µs at the 99th percentile.
+  /// Run in release:
   /// `cargo test --release -p ryo2d --lib hex_one_tile_edit_timing -- --ignored --nocapture`
   #[test]
   #[ignore = "a timing: run in release with --ignored --nocapture"]

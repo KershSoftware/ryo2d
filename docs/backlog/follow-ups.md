@@ -4,6 +4,11 @@ Small issues found while building each sub-project and left for later: deferred 
 
 Items from 4f to 6b were copied from their execution records. Items from earlier sub-projects come from notes kept at the time, and some may have been fixed since: check before working on one.
 
+## Hexagonal maps at speed
+
+- Later levers:
+  - **Square and lattice grids rebuild a chunk's shadow chains whole.** Their `chunk_chains` (`tilemap/occluders.rs`) classifies the chunk again, chains every edge and despawns and spawns every chain of each chunk an edit marks, as hexagonal chunks did before an edit rebuilt only the chains through the cells it changed. They meet the edit target, so it was left. The hexagonal way (each chunk keeping its solidity, its chain index per edge and its chain entities, and neighbours marked by the sides they own) would apply to them too.
+
 ## Hexagonal collision and pathfinding (6b, stage 5)
 
 - Owner decisions (2026-11-05):
@@ -17,15 +22,16 @@ Items from 4f to 6b were copied from their execution records. Items from earlier
       - keep still parts and chains out of propagation's scan;
       - use a per-group scratch in `hex_chains`;
       - weigh B against the static step.
+    - Hexagonal maps at speed (2026-11-06) met the held static and edit targets on every grid in three runs, the figures in `docs/backlog/tilemap.md`.
   - At hand-play the hex board's walker got a light, under a dusk ambient so the rocks' shadows show. Colliders round the board's rim stop the walker.
 - Rulings the owner may revisit:
-  - **No loops on hex.** Hex grids trace no outline loops, since a hex outline has nothing to merge. A hex chunk is one collider part while it holds at most B = 128 boundary edges. Past that it splits into 16 x 16 quarters, then into 8 x 8 blocks, and nothing merges back until the map reloads. An edit rebuilds at most four parts.
+  - **No loops on hex.** Hex grids trace no outline loops, since a hex outline has nothing to merge. A hex chunk is one collider part while it holds at most B = 128 boundary edges. Past that it splits into 16 x 16 quarters, then into 8 x 8 blocks, and nothing merges back until the map reloads. An edit rebuilds at most four parts of sides, plus the part of rings holding a cell whose rings changed.
     - This departs from the spec's "the tracing and splicing logic is reused" and "one packed part per chunk", on measurement.
-    - The price is about four times the parts on dense hex maps, which is the static-frame miss.
+    - The price is about four times the parts on dense hex maps: the static guard's cave rock lands 2,109 parts against 500 square, and the islands 4,080 against 1,020. Since still parts and chains are out of transform propagation's scan, the hex static frame meets its target with them.
   - **Bounded borders.** On a bounded grid, a side between an inside cell and an outside cell belongs to the inside cell, so there is no part or shadow block outside the grid.
   - **`HexCells`.** It gives exact corners for every cell size. `traceable()` refuses collision for cells taller than 16,384 px, cells under 2 px across, and zero steps.
   - **Own shapes on hex.**
-    - A hex tile's own shape goes into its cell's block as closed rings, not merged with its neighbours.
+    - A hex tile's own shape collides as closed rings in its chunk's parts of rings, apart from the sides, not merged with its neighbours. Parts of rings split by their own count, a block's past B into its 4 x 4 sub-blocks.
     - Rings wind clockwise after placement.
     - A self-crossing polygon collides as its hull.
     - A polygon collides as authored wherever it lies relative to its box. Square grids clip it.
@@ -43,9 +49,7 @@ Items from 4f to 6b were copied from their execution records. Items from earlier
   - **The hex board's rim** is one fixed `Collider::segments` built from the board's outline. It doesn't occlude. The demo-kit's scene cleanup puts the page's lighting back on leaving, not an `exit` hook.
 - Deferred findings:
   - **Speed** (see the owner's pass above).
-    - The above-left, right and above-right neighbour marks in `occluders.rs` ignore the stagger index, so a hex edit near a chunk edge always rebuilds one diagonal chunk it doesn't need.
-    - The chunk-edge comparison and the rims compare full tile kinds, though a hex side depends only on solidity. Painting along a chunk edge rebuilds neighbours for nothing.
-    - `hex_chains` (`physics/tiles.rs`) allocates its index and scratch on every chunk rebuild.
+    - `hex_chain_edges` (`physics/tiles.rs`), which chains a hex chunk's edges for shadows, allocates its index and scratch on every chunk rebuild.
   - **Docs.**
     - `docs/backlog/tilemap.md` (the "Every grid: the targets" paragraph, ~:330) says hex collision "is not guarded yet" and that the hex static frame "measures drawing alone". Both are false now. The bullet below it and the hexagonal section are right.
     - The ryo-tilemap skill (~:444) says "It is `NavigationGrid::for_layer(..)` with each `TileColliders` blocked" without naming the sync step. "Collides in that step" holds only for a grid taken in `update`; from an Update-phase system, physics builds it the next step.
@@ -61,11 +65,10 @@ Items from 4f to 6b were copied from their execution records. Items from earlier
     - `grid_shape.rs`'s hex arm has an unreachable `map_or([I64Vec2::ZERO; 6], ..)` fallback.
     - On square grids, `ShapeBuild`'s `ring()` builds rings for tangled and outside shapes that nothing reads.
     - A closed hex chain can keep one redundant vertex on a straight run.
-    - `src/core/physics/tiles.rs` is 7,323 lines. Move the hex `Boundary` methods (`hex_scan`, `hex_rebuilt_rims`, `hex_chains`, `hex_rings`) and `hex_pack`/`hex_repack` into a `tiles/hex` module.
+    - `src/core/physics/tiles.rs` is 8,404 lines. Move the hex `Boundary` methods (`hex_scan`, `hex_rebuilt_rims`, `hex_cell_edges`, `hex_chains`, `hex_chain_edges`, `hex_rings`) and `hex_pack`/`hex_repack` into a `tiles/hex` module.
   - **Tests missing or loose.**
     - The degenerate whole-hexagon test never flips a tile, so a flipped whole hexagon on side 0 or on a long side is unpinned.
     - The rims test (`physics/tiles.rs` ~:4133) alternates bounded and unbounded grids in step with the stagger index, so odd-index grids are only tested bounded and even-index only unbounded.
-    - No hex shadow test edits a bounded map.
     - The bench's split edit is checked once, not per pair, in the framed loop. The medians show each pair splits.
     - The tile-grids demo:
       - no test pins the walker's "take a passed waypoint" rule (a 900 px/s walker passes the path test either way);

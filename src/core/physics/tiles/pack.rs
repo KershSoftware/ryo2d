@@ -26,25 +26,28 @@
 //! step to keep. Of the budgets tried, 128 is the largest that kept an edit
 //! at a corner of four parts each just under it within 100 µs at the 99th
 //! percentile (the tile rebuild plus the fixed step after it), in five runs
-//! of six, 116.1 µs in the sixth (the physics module notes). Measured in
-//! release (`docs/backlog/tilemap.md`): an idle fixed step over the speed
-//! guards' cave rock, 2,109 parts, takes 6.8 to 7.3 µs against 2.2 to 2.3
-//! for its 500 square parts, and a static map of it, with its shadow chains,
-//! misses the 50 µs a frame target (53.7 to 54.9 µs over an empty frame);
-//! the edit guard's loop rebuild (the map's collision sync, the tile
-//! rebuild and the collider sync) reads a median 53.5 to 54.6 µs for a cell
-//! where four of the islands' chunks meet (four quarter parts), 23.8 to
-//! 27.1 µs for part churn (four parts made, or dropped) and 38.2 to 38.8 µs
-//! for an edit that takes a chunk past B (its part dropped, seven made),
-//! each within its 100 µs target. A block's cells own at most about 190
-//! sides, but its shape cells' rings have no bound, so a sub-block heavy
-//! with rings can hold more than B by as much as its art has: a chunk of
-//! inset hexagons, six ring edges a cell, holds 96 a sub-block, and its
-//! loop rebuild reads a median 10.8 to 11.9 µs for a cell in a block's
-//! middle and 13.9 to 14.5 µs for one turned whole where four blocks meet,
-//! where with each block's rings in its part of sides it read 42.8 to 42.9
-//! and 134.0 to 135.1 µs (`hex_ring_heavy_edit_timing` in the tilemap's
-//! occluders, release, three runs).
+//! of six, 116.1 µs in the sixth; timed again on 2026-11-06 it passed
+//! 100 µs in every run, 106.5 to 134.8 µs, unexplained (the physics module
+//! notes). Measured in release (`docs/backlog/tilemap.md`): an idle fixed
+//! step over the speed guards' cave rock, 2,109 parts, takes 6.08 to
+//! 6.25 µs against 1.92 to 2.04 for its 500 square parts, and a static map
+//! of it, with its shadow chains, meets the 50 µs a frame target (44.4 to
+//! 47.8 µs over an empty frame); the edit guard's loop rebuild (the map's
+//! collision sync, the tile rebuild and the collider sync) reads a median
+//! 55.4 to 55.9 µs for a cell where four of the islands' chunks meet (four
+//! quarter parts), 26.0 to 30.1 µs for part churn (four parts made, or
+//! dropped) and 41.5 to 42.7 µs for an edit that takes a chunk past B (its
+//! part dropped, seven made), each within its 100 µs target. A block's
+//! cells own at most about 190 sides, but its shape cells' rings have no
+//! bound, so a sub-block heavy with rings can hold more than B by as much
+//! as its art has: a chunk of inset hexagons, six ring edges a cell, holds
+//! 96 a sub-block, and its loop rebuild reads a median 11.2 to 12.9 µs for
+//! a cell in a block's middle and 15.0 to 16.2 µs for one turned whole
+//! where four blocks meet (in the edit guard, whose map is four layers of
+//! 1024 x 1024 cells, 30.7 to 30.8 and 35.4 to 35.9 µs), where with each
+//! block's rings in its part of sides it read 42.8 to 42.9 and 134.0 to
+//! 135.1 µs (`hex_ring_heavy_edit_timing` in the tilemap's occluders,
+//! release, three runs).
 //! A bounded grid's border belongs to the cells inside it, so no part sits
 //! outside the grid: a one-cell bump along a map's edge would otherwise
 //! make and drop parts in the chunks outside it at every edit.
