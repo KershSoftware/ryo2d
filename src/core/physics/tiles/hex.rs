@@ -333,9 +333,9 @@ mod tests {
 
   #[test]
   fn hex_parts_boxes_start_at_their_first_cell_s_corner() {
-    // A part's box: a chunk's (32 cells across by 32 lines along) or a
-    // block's, from its first cell's corner, holds every corner its cells
-    // have, within a cell past its far sides
+    // A part's box: a chunk's (32 cells across by 32 lines along), a
+    // quarter's, a block's or a sub-block's, from its first cell's corner,
+    // holds every corner its cells have, within a cell past its far sides
     for hex in grids().into_iter().filter(HexCells::traceable) {
       let size = |n: i64| {
         let (across, along) = (n * 2 * hex.half, n * hex.step);
@@ -350,6 +350,7 @@ mod tests {
         (32, IVec2::new(96, -160)),
         (16, IVec2::new(-16, 48)),
         (8, IVec2::new(40, -8)),
+        (4, IVec2::new(-36, 12)),
       ] {
         let corner = hex.corner_of(first);
         assert_eq!(

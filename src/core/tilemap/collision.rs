@@ -3242,9 +3242,15 @@ mod tests {
         for &c in &fixture.blank {
           assert_eq!(tiles.get(cell(c)), TileCell::Empty, "{file}: {c:?}");
         }
-        // One part: 27 edges in chunk (0, 0)
+        // Two parts in chunk (0, 0): the clump's 12 edges, and the shape
+        // tiles' rings, 15 edges
         let parts = parts_of(&mut maps.world, map);
-        assert_eq!(parts.len(), 1, "{file}: {parts:?}");
+        let mut counts: Vec<usize> = parts
+          .iter()
+          .map(|(_, collider)| edges_of(collider).len())
+          .collect();
+        counts.sort_unstable();
+        assert_eq!(counts, [12, 15], "{file}: {parts:?}");
         let edges = all_edges(&mut maps.world, map);
         // The clump's edges are its cells' union border, each once, and
         // chain into one closed ring

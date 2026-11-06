@@ -11,14 +11,17 @@
 //!
 //! A hexagonal grid's outlines have no straight runs to merge, so they are
 //! not traced into loops: its parts hold the boundary edges along the sides
-//! their cells own (`HexParts`), and the rings of its shape cells, each in
-//! its own cell's part, each part at most `HEX_PART_EDGES` (B, 128) edges
-//! where it can, in three levels: a chunk is one part while it holds at
-//! most B, else its 16 x 16 quarters are, each while it holds at most B,
-//! else a quarter's 8 x 8 blocks are, which never split. An edit rebuilds
-//! the parts owning its cell's six sides (its own among them), up to four,
-//! so about 4 x B edges where its blocks keep within the budget, and makes
-//! or drops a part where a box gains its first edge or loses its last: a
+//! their cells own (`HexParts`), and, in parts of their own, the rings of
+//! its shape cells, each part at most `HEX_PART_EDGES` (B, 128) edges where
+//! it can, a chunk's sides and its rings each split by their own count: a
+//! chunk is one part while it holds at most B, else its 16 x 16 quarters
+//! are, each while it holds at most B, else a quarter's 8 x 8 blocks are,
+//! whose sides never split, while a block's rings past B split into its
+//! 4 x 4 sub-blocks, which never split. An edit rebuilds the parts of sides
+//! owning its cell's six sides (its own among them), up to four, so about
+//! 4 x B edges where its blocks keep within the budget, and the part of
+//! rings holding its cell only where the cell's rings changed, and makes or
+//! drops a part where a box gains its first edge or loses its last: a
 //! shape costs Rapier about 80 ns an edge to build, a part about 3 ns a
 //! step to keep. Of the budgets tried, 128 is the largest that kept an edit
 //! at a corner of four parts each just under it within 100 µs at the 99th
@@ -33,14 +36,15 @@
 //! where four of the islands' chunks meet (four quarter parts), 23.8 to
 //! 27.1 µs for part churn (four parts made, or dropped) and 38.2 to 38.8 µs
 //! for an edit that takes a chunk past B (its part dropped, seven made),
-//! each within its 100 µs target. A block holds the sides its cells own (at
-//! most about 190) and its shape cells' rings, which nothing bounds, so a
-//! block heavy with rings can hold more than B by as much as its art has:
-//! a chunk of inset hexagons, six ring edges a cell, holds 384 a block,
-//! and its loop rebuild reads a median 42.8 to 42.9 µs for a cell in a
-//! block's middle but 134.0 to 135.1 µs where four such blocks meet, past
-//! the 100 µs target (`hex_ring_heavy_edit_timing` in the tilemap's
-//! occluders, release; `docs/backlog/tilemap.md`).
+//! each within its 100 µs target. A block's cells own at most about 190
+//! sides, but its shape cells' rings have no bound, so a sub-block heavy
+//! with rings can hold more than B by as much as its art has: a chunk of
+//! inset hexagons, six ring edges a cell, holds 96 a sub-block, and its
+//! loop rebuild reads a median 10.8 to 11.9 µs for a cell in a block's
+//! middle and 13.9 to 14.5 µs for one turned whole where four blocks meet,
+//! where with each block's rings in its part of sides it read 42.8 to 42.9
+//! and 134.0 to 135.1 µs (`hex_ring_heavy_edit_timing` in the tilemap's
+//! occluders, release, three runs).
 //! A bounded grid's border belongs to the cells inside it, so no part sits
 //! outside the grid: a one-cell bump along a map's edge would otherwise
 //! make and drop parts in the chunks outside it at every edit.
@@ -72,8 +76,13 @@ pub(crate) enum PackKey {
   /// A sloped one-way run, by its id
   Run(u32),
   /// A box of a hexagonal grid's chunk: the chunk's edges, or a quarter's
-  /// or a block's of a chunk split for its edge count (`HexParts`)
-  Hex { chunk: (i32, i32), part: HexBox },
+  /// or a block's of a chunk split for its edge count (`HexParts`); its
+  /// sides, or its shape cells' rings (`rings`)
+  Hex {
+    chunk: (i32, i32),
+    part: HexBox,
+    rings: bool,
+  },
 }
 
 impl PackKey {
@@ -302,17 +311,27 @@ impl Packs {
   }
 }
 
-/// Cells a side of the smallest box a hexagonal part holds: a chunk's
-/// quarters (16 x 16) split into these blocks, which never split
+/// Cells a side of the smallest box a part of a hexagonal chunk's sides
+/// holds: a chunk's quarters (16 x 16) split into these blocks, which
+/// never split for their sides
 pub(crate) const HEX_BLOCK: i32 = 8;
 
-/// The most boundary edges a hexagonal part holds (B): a chunk is one part
-/// while it holds at most this many, else its quarters are, each while it
-/// holds at most this many, else that quarter's blocks are
+/// The most edges a hexagonal part holds (B): a chunk's sides, and its
+/// rings apart, are one part while they hold at most this many, else its
+/// quarters' are, each while they hold at most this many, else that
+/// quarter's blocks' are (and a block's rings past it, its sub-blocks')
 pub(crate) const HEX_PART_EDGES: usize = 128;
 
 /// Blocks a side of a chunk
 const BLOCKS: i32 = CHUNK / HEX_BLOCK;
+
+/// Cells a side of a block's sub-blocks (4 x 4), the smallest box a part
+/// of rings holds: a block's rings past the budget split into these, which
+/// never split
+const HEX_SUB: i32 = 4;
+
+/// Sub-blocks a side of a chunk
+const SUBS: i32 = CHUNK / HEX_SUB;
 
 /// Cells a side of a chunk's quarter
 const QUARTER: i32 = CHUNK / 2;
@@ -329,6 +348,9 @@ pub(crate) enum HexBox {
   Quarter(u8),
   /// A block (8 x 8 cells), by index row by row over the chunk
   Block(u8),
+  /// A sub-block (4 x 4 cells), by index row by row over the chunk: parts
+  /// of rings only
+  Sub(u8),
 }
 
 /// The blocks of quarter `q`, by index
@@ -342,8 +364,26 @@ fn block_quarter(b: usize) -> usize {
   b / 8 * 2 + b % 4 / 2
 }
 
+/// The sub-blocks of block `b`, by index over the chunk, row by row
+fn block_subs(b: usize) -> [usize; 4] {
+  let first = b / 4 * 16 + b % 4 * 2;
+  [first, first + 1, first + 8, first + 9]
+}
+
+/// The block of sub-block `s`, and which of that block's four it is (row
+/// by row)
+fn sub_block(s: usize) -> (usize, usize) {
+  (s / 16 * 4 + s % 8 / 2, s / 8 % 2 * 2 + s % 2)
+}
+
+/// Which of its block's four sub-blocks `cell` is in (row by row)
+fn sub_of(cell: IVec2) -> usize {
+  let at = cell.rem_euclid(IVec2::splat(HEX_BLOCK)) / HEX_SUB;
+  (at.y * 2 + at.x) as usize
+}
+
 /// What a block of a hexagonal chunk holds: what its cells own
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default)]
 struct HexBlock {
   /// The boundary edges along its cells' sides, in row order (each cell's
   /// sides in turn)
@@ -351,24 +391,51 @@ struct HexBlock {
   /// Its shape cells with rings, in row order, each with its shape: each
   /// collides as its shape's rings (`ShapeBuild::rings`)
   rings: Vec<(IVec2, u16)>,
-  /// How many edges those rings hold
-  ring_edges: usize,
+  /// How many edges those rings hold in each of its four sub-blocks (row
+  /// by row)
+  ring_edges: [usize; 4],
 }
 
 impl HexBlock {
-  /// How many edges it holds, its rings' among them
-  fn len(&self) -> usize {
-    self.edges.len() + self.ring_edges
+  /// How many edges its sides hold, or its rings
+  fn len(&self, rings: bool) -> usize {
+    if rings {
+      self.ring_edges.iter().sum()
+    } else {
+      self.edges.len()
+    }
   }
 
   fn is_empty(&self) -> bool {
-    self.len() == 0
+    self.edges.is_empty() && self.rings.is_empty()
   }
 
   fn clear(&mut self) {
     self.edges.clear();
     self.rings.clear();
-    self.ring_edges = 0;
+    self.ring_edges = [0; 4];
+  }
+
+  /// Its shape cells with rings in its sub-block `s` (of its four, row by
+  /// row)
+  fn sub_rings(&self, s: usize) -> impl Iterator<Item = (IVec2, u16)> + '_ {
+    self
+      .rings
+      .iter()
+      .copied()
+      .filter(move |&(cell, _)| sub_of(cell) == s)
+  }
+
+  /// Its sub-blocks whose rings are not `other`'s, a bit each
+  fn subs_changed(&self, other: &Self) -> u8 {
+    if self.rings == other.rings && self.ring_edges == other.ring_edges {
+      return 0;
+    }
+    (0..4)
+      .filter(|&s| {
+        self.ring_edges[s] != other.ring_edges[s] || !self.sub_rings(s).eq(other.sub_rings(s))
+      })
+      .fold(0, |subs, s| subs | 1 << s)
   }
 
   /// Takes in what `cell` owns: the boundary edges along its sides (each
@@ -387,77 +454,213 @@ impl HexBlock {
       let n = cells.ring_edges(kind);
       if n > 0 && sides.hex.reaches(cell) {
         self.rings.push((cell, shape));
-        self.ring_edges += n;
+        self.ring_edges[sub_of(cell)] += n;
       }
     }
   }
 }
 
+/// How a hexagonal chunk's sides, or its rings, are split into parts: each
+/// level splits once it holds more than `HEX_PART_EDGES`, and stays split
+/// until a build afresh, or until the chunk holds none of them
+#[derive(Debug, Default)]
+struct HexSplit {
+  /// How many edges in all
+  edges: usize,
+  /// Its parts are its quarters'
+  chunk: bool,
+  /// Each quarter's parts are its blocks'
+  quarters: [bool; 4],
+  /// Each block's parts are its sub-blocks' (rings only)
+  blocks: [bool; (BLOCKS * BLOCKS) as usize],
+}
+
 /// A hexagonal chunk's boundary edges and rings, by the block of the cell
-/// owning each
+/// owning each, and how each kind is split into parts
 #[derive(Debug)]
 struct HexChunk {
   /// Each block's, row by row of blocks
   blocks: Vec<HexBlock>,
-  /// How many edges in all, its rings' among them
-  edges: usize,
-  /// Its parts are its quarters' (it held more than `HEX_PART_EDGES` once)
-  split: bool,
-  /// Each quarter's parts are its blocks (it held more than
-  /// `HEX_PART_EDGES` once, the chunk split)
-  quarters: [bool; 4],
+  /// Its sides' parts
+  sides: HexSplit,
+  /// Its rings' parts
+  rings: HexSplit,
 }
 
 impl HexChunk {
   fn new() -> Self {
     Self {
       blocks: vec![HexBlock::default(); (BLOCKS * BLOCKS) as usize],
-      edges: 0,
-      split: false,
-      quarters: [false; 4],
+      sides: HexSplit::default(),
+      rings: HexSplit::default(),
     }
   }
 
-  /// How many edges quarter `q` holds
-  fn quarter_edges(&self, q: usize) -> usize {
+  /// How its sides, or its rings, are split
+  fn split(&mut self, rings: bool) -> &mut HexSplit {
+    if rings {
+      &mut self.rings
+    } else {
+      &mut self.sides
+    }
+  }
+
+  /// How many edges of its sides, or its rings, quarter `q` holds
+  fn quarter_len(&self, rings: bool, q: usize) -> usize {
     quarter_blocks(q)
       .iter()
-      .map(|&b| self.blocks[b].len())
+      .map(|&b| self.blocks[b].len(rings))
       .sum()
   }
 
-  /// Its parts' boxes, each holding an edge: the chunk, or its quarters
-  /// and the blocks of those split
-  fn boxes(&self) -> Vec<HexBox> {
-    if !self.split {
-      return vec![HexBox::Chunk];
+  /// The boxes of its parts of sides, or of rings, each holding an edge:
+  /// the chunk, or its quarters and the blocks of those split (and the
+  /// sub-blocks of a block whose rings split)
+  fn boxes(&self, rings: bool, out: &mut Vec<HexBox>) {
+    let split = if rings { &self.rings } else { &self.sides };
+    if split.edges == 0 {
+      return;
     }
-    let mut boxes = Vec::new();
+    if !split.chunk {
+      out.push(HexBox::Chunk);
+      return;
+    }
     for q in 0..4 {
-      if self.quarters[q] {
-        let filled = quarter_blocks(q)
-          .into_iter()
-          .filter(|&b| !self.blocks[b].is_empty());
-        boxes.extend(filled.map(|b| HexBox::Block(b as u8)));
-      } else if self.quarter_edges(q) > 0 {
-        boxes.push(HexBox::Quarter(q as u8));
+      if split.quarters[q] {
+        for b in quarter_blocks(q) {
+          self.block_boxes(rings, b, out);
+        }
+      } else if self.quarter_len(rings, q) > 0 {
+        out.push(HexBox::Quarter(q as u8));
       }
     }
-    boxes
   }
 
-  /// Decides quarter `q`'s parts afresh (its chunk just split): its blocks'
-  /// if it holds more than `HEX_PART_EDGES`, else its own if any
-  fn settle_quarter(&mut self, q: usize, rebuilt: &mut Vec<HexBox>) {
-    let edges = self.quarter_edges(q);
+  /// The boxes of block `b`'s parts of sides, or of rings, each holding an
+  /// edge: its own, or its sub-blocks' where its rings split
+  fn block_boxes(&self, rings: bool, b: usize, out: &mut Vec<HexBox>) {
+    let block = &self.blocks[b];
+    if rings && self.rings.blocks[b] {
+      let held = block_subs(b).into_iter().zip(block.ring_edges);
+      out.extend(
+        held
+          .filter(|&(_, n)| n > 0)
+          .map(|(s, _)| HexBox::Sub(s as u8)),
+      );
+    } else if block.len(rings) > 0 {
+      out.push(HexBox::Block(b as u8));
+    }
+  }
+
+  /// Decides quarter `q`'s parts of sides, or of rings, afresh: its
+  /// blocks' if it holds more than `HEX_PART_EDGES`, else its own if any
+  fn settle_quarter(&mut self, rings: bool, q: usize, rebuilt: &mut Vec<HexBox>) {
+    let edges = self.quarter_len(rings, q);
     if edges > HEX_PART_EDGES {
-      self.quarters[q] = true;
-      let filled = quarter_blocks(q)
-        .into_iter()
-        .filter(|&b| !self.blocks[b].is_empty());
-      rebuilt.extend(filled.map(|b| HexBox::Block(b as u8)));
+      self.split(rings).quarters[q] = true;
+      for b in quarter_blocks(q) {
+        self.settle_block(rings, b, rebuilt);
+      }
     } else if edges > 0 {
       rebuilt.push(HexBox::Quarter(q as u8));
+    }
+  }
+
+  /// Decides block `b`'s parts afresh: its sides are one part, and its
+  /// rings are its sub-blocks' if they hold more than `HEX_PART_EDGES`,
+  /// else one part
+  fn settle_block(&mut self, rings: bool, b: usize, rebuilt: &mut Vec<HexBox>) {
+    if rings && self.blocks[b].len(true) > HEX_PART_EDGES {
+      self.rings.blocks[b] = true;
+    }
+    self.block_boxes(rings, b, rebuilt);
+  }
+
+  /// Decides each box's parts of sides, or of rings, by its count, as a
+  /// build afresh does
+  fn settle(&mut self, rings: bool, scratch: &mut Vec<HexBox>) {
+    let split = self.split(rings);
+    split.chunk = split.edges > HEX_PART_EDGES;
+    if split.chunk {
+      for q in 0..4 {
+        self.settle_quarter(rings, q, scratch);
+      }
+    }
+    scratch.clear();
+  }
+
+  /// Decides what an edit changed of its parts of sides, or of rings:
+  /// `moved` are the blocks whose sides (or rings) changed, in quarter
+  /// order, each with the sub-blocks whose rings changed, a bit each. The
+  /// parts to build again, or make, go in `rebuilt`, those to drop in
+  /// `gone` (all of a box's new parts as it splits)
+  fn update(
+    &mut self,
+    rings: bool,
+    moved: &[(usize, u8)],
+    rebuilt: &mut Vec<HexBox>,
+    gone: &mut Vec<HexBox>,
+  ) {
+    if moved.is_empty() {
+      return;
+    }
+    let split = self.split(rings);
+    if split.edges == 0 {
+      // Its parts go, and its splits with them
+      *split = HexSplit::default();
+      gone.push(HexBox::Chunk);
+      gone.extend((0..4).map(HexBox::Quarter));
+      gone.extend((0..BLOCKS * BLOCKS).map(|b| HexBox::Block(b as u8)));
+      if rings {
+        gone.extend((0..SUBS * SUBS).map(|s| HexBox::Sub(s as u8)));
+      }
+    } else if !split.chunk && split.edges <= HEX_PART_EDGES {
+      rebuilt.push(HexBox::Chunk);
+    } else if !split.chunk {
+      // Past the budget: the chunk's part goes, its quarters' come
+      split.chunk = true;
+      gone.push(HexBox::Chunk);
+      for q in 0..4 {
+        self.settle_quarter(rings, q, rebuilt);
+      }
+    } else {
+      for quarter in moved.chunk_by(|a, b| block_quarter(a.0) == block_quarter(b.0)) {
+        let q = block_quarter(quarter[0].0);
+        if !self.split(rings).quarters[q] {
+          // Gone empty, or past the budget (its blocks' parts come): the
+          // quarter's part goes
+          let edges = self.quarter_len(rings, q);
+          if edges == 0 || edges > HEX_PART_EDGES {
+            gone.push(HexBox::Quarter(q as u8));
+          }
+          self.settle_quarter(rings, q, rebuilt);
+          continue;
+        }
+        for &(b, subs) in quarter {
+          if rings && self.rings.blocks[b] {
+            let changed = block_subs(b)
+              .into_iter()
+              .enumerate()
+              .filter(|&(i, _)| subs & 1 << i != 0);
+            for (i, s) in changed {
+              let part = HexBox::Sub(s as u8);
+              if self.blocks[b].ring_edges[i] == 0 {
+                gone.push(part);
+              } else {
+                rebuilt.push(part);
+              }
+            }
+          } else {
+            // Gone empty, or its rings past the budget (its sub-blocks'
+            // parts come): the block's part goes
+            let edges = self.blocks[b].len(rings);
+            if edges == 0 || (rings && edges > HEX_PART_EDGES) {
+              gone.push(HexBox::Block(b as u8));
+            }
+            self.settle_block(rings, b, rebuilt);
+          }
+        }
+      }
     }
   }
 }
@@ -470,9 +673,9 @@ fn hex_block(cell: IVec2) -> (IVec2, usize) {
 }
 
 /// The first cell (its top-left) of hexagonal part `key`: its chunk's, its
-/// quarter's or its block's
+/// quarter's, its block's or its sub-block's
 pub(crate) fn hex_first_cell(key: PackKey) -> IVec2 {
-  let PackKey::Hex { chunk, part } = key else {
+  let PackKey::Hex { chunk, part, .. } = key else {
     return IVec2::ZERO;
   };
   let first = IVec2::new(chunk.0, chunk.1) * CHUNK;
@@ -482,32 +685,34 @@ pub(crate) fn hex_first_cell(key: PackKey) -> IVec2 {
     HexBox::Block(b) => {
       first + IVec2::new(i32::from(b) % BLOCKS, i32::from(b) / BLOCKS) * HEX_BLOCK
     }
+    HexBox::Sub(s) => first + IVec2::new(i32::from(s) % SUBS, i32::from(s) / SUBS) * HEX_SUB,
   }
 }
 
 /// A hexagonal grid's colliders: the boundary edges along the sides each
 /// cell owns (the earlier of a side's two cells in row order; of a side on
 /// a bounded grid's border, the cell inside it), and each shape cell's
-/// rings, its own, kept by chunk and block, and each part's entity. A part
-/// holds at most `HEX_PART_EDGES` (B) edges, where it can: a chunk is one
-/// part while it holds at most B; past that its quarters are parts, each
-/// while it holds at most B; past that the quarter's blocks are, which
-/// never split, so a block can hold more than B: its cells own at most
-/// about 190 sides (a dense pattern about B, a little more along the
-/// block's right column and last row), and its shape cells' rings have no
-/// bound, so a block heavy with rings holds more than B by as much as its
-/// art has (384 for a block of inset hexagons, six ring edges a cell, whose
-/// edit where four such blocks meet costs past 100 µs: the module doc).
-/// Landing decides each box by its count, and an edit that
-/// takes a part past B splits it (its part dropped and up to seven made:
-/// three quarters' and a quarter's four blocks); nothing merges back until
-/// a build afresh, or until the chunk holds no edge. An edit rebuilds the
-/// parts of the blocks owning its cells' sides, which lie in up to four
-/// chunks round its cell, so at most four parts of about B edges where
-/// their blocks keep within it (more as one splits, or in a block heavy
-/// with rings), and makes a part where a box held no edge till then, or
-/// drops one it empties. A shape cell's rings count toward its part's
-/// edges, so rings can split a part.
+/// rings, its own, kept by chunk and block, and each part's entity. A
+/// chunk's sides and its rings are parts apart, each holding at most
+/// `HEX_PART_EDGES` (B) edges where it can, its sides' and its rings' split
+/// each by their own count: a chunk's are one part while they hold at most
+/// B; past that its quarters' are, each while they hold at most B; past
+/// that the quarter's blocks' are. A block's sides never split: its cells
+/// own at most about 190 (a dense pattern about B, a little more along the
+/// block's right column and last row). A block's rings past B split into
+/// its four sub-blocks of 4 x 4 cells, which never split, so a sub-block
+/// heavy with rings holds more than B by as much as its art has (a block
+/// of inset hexagons, six ring edges a cell, holds 384, each of its
+/// sub-blocks 96). Landing decides each box by its count, and an edit that
+/// takes a part past B splits it (its part dropped and its box's parts
+/// made); nothing merges back until a build afresh, or until the chunk
+/// holds none of that kind. An edit rebuilds the parts of sides of the
+/// blocks owning its cells' sides, which lie in up to four chunks round
+/// its cell, so at most four parts of about B edges where their blocks
+/// keep within it (more as one splits), and the part of rings holding a
+/// cell only where that cell's rings changed, so an edit of sides beside
+/// cells heavy with rings rebuilds none of them; it makes a part where a
+/// box held no edge of its kind till then, or drops one it empties.
 #[derive(Debug, Default)]
 pub(crate) struct HexParts {
   chunks: FastMap<IVec2, HexChunk>,
@@ -546,20 +751,20 @@ impl HexParts {
       if !owned.is_empty() {
         let (chunk, block) = hex_block(cell);
         let held = parts.chunks.entry(chunk).or_insert_with(HexChunk::new);
+        held.sides.edges += owned.len(false);
+        held.rings.edges += owned.len(true);
         let into = &mut held.blocks[block];
         into.edges.extend_from_slice(&owned.edges);
         into.rings.extend_from_slice(&owned.rings);
-        into.ring_edges += owned.ring_edges;
-        held.edges += owned.len();
-      }
-    });
-    for held in parts.chunks.values_mut() {
-      held.split = held.edges > HEX_PART_EDGES;
-      if held.split {
-        for q in 0..4 {
-          held.quarters[q] = held.quarter_edges(q) > HEX_PART_EDGES;
+        for (n, more) in into.ring_edges.iter_mut().zip(owned.ring_edges) {
+          *n += more;
         }
       }
+    });
+    let mut scratch = Vec::new();
+    for held in parts.chunks.values_mut() {
+      held.settle(false, &mut scratch);
+      held.settle(true, &mut scratch);
     }
     parts
   }
@@ -567,8 +772,10 @@ impl HexParts {
   /// Takes in the cells at `changed` (now as `cells` holds them; `bounds`
   /// as `build` took them): the blocks owning their sides (and their own,
   /// which holds a shape cell's rings) are read again, and only the parts
-  /// whose boxes hold those blocks are rebuilt (all of a box's new parts as
-  /// it splits)
+  /// whose boxes hold what changed of those blocks are rebuilt: the parts
+  /// of sides of the blocks whose sides changed, and the parts of rings of
+  /// the blocks (or sub-blocks) whose rings changed (all of a box's new
+  /// parts as it splits)
   pub(crate) fn apply(
     &mut self,
     cells: Cells,
@@ -597,139 +804,135 @@ impl HexParts {
     let mut owned = HexBlock::default();
     let mut rebuilt: Vec<HexBox> = Vec::new();
     let mut gone: Vec<HexBox> = Vec::new();
-    let mut moved: Vec<(IVec2, usize)> = Vec::with_capacity(dirty.len());
+    // The blocks whose sides, and whose rings, the edit changed
+    let mut moved_sides: Vec<(usize, u8)> = Vec::with_capacity(dirty.len());
+    let mut moved_rings: Vec<(usize, u8)> = Vec::new();
     for group in dirty.chunk_by(|a, b| a.0 == b.0) {
       let chunk = group[0].0;
       let held = chunks.entry(chunk).or_insert_with(HexChunk::new);
-      // The blocks whose edges the edit changed
-      moved.clear();
+      moved_sides.clear();
+      moved_rings.clear();
       for &(_, block) in group {
         owned.clear();
         let first = hex_first_cell(PackKey::Hex {
           chunk: (chunk.x, chunk.y),
           part: HexBox::Block(block as u8),
+          rings: false,
         });
         for y in 0..HEX_BLOCK {
           for x in 0..HEX_BLOCK {
             owned.read(&sides, first + IVec2::new(x, y), (cells, &read), &solid);
           }
         }
-        if held.blocks[block] != owned {
-          held.edges = held.edges - held.blocks[block].len() + owned.len();
-          held.blocks[block].clone_from(&owned);
-          moved.push((chunk, block));
+        let was = &mut held.blocks[block];
+        let new_sides = was.edges != owned.edges;
+        let subs = was.subs_changed(&owned);
+        if new_sides {
+          held.sides.edges = held.sides.edges - was.len(false) + owned.len(false);
+          moved_sides.push((block, 0));
+        }
+        if subs != 0 {
+          held.rings.edges = held.rings.edges - was.len(true) + owned.len(true);
+          moved_rings.push((block, subs));
+        }
+        if new_sides || subs != 0 {
+          was.clone_from(&owned);
         }
       }
-      let group = &moved[..];
-      rebuilt.clear();
-      gone.clear();
-      if held.edges == 0 {
-        // Its parts go, and the chunk with them, its splits too
-        gone.push(HexBox::Chunk);
-        gone.extend((0..4).map(HexBox::Quarter));
-        gone.extend((0..BLOCKS * BLOCKS).map(|b| HexBox::Block(b as u8)));
-      } else if group.is_empty() {
-        // Nothing it holds changed
-      } else if !held.split && held.edges <= HEX_PART_EDGES {
-        rebuilt.push(HexBox::Chunk);
-      } else if !held.split {
-        // Past the budget: the chunk's part goes, its quarters' come
-        held.split = true;
-        gone.push(HexBox::Chunk);
-        for q in 0..4 {
-          held.settle_quarter(q, &mut rebuilt);
-        }
-      } else {
-        for quarter in group.chunk_by(|a, b| block_quarter(a.1) == block_quarter(b.1)) {
-          let q = block_quarter(quarter[0].1);
-          if held.quarters[q] {
-            for &(_, block) in quarter {
-              let part = HexBox::Block(block as u8);
-              if held.blocks[block].is_empty() {
-                gone.push(part);
-              } else {
-                rebuilt.push(part);
-              }
-            }
-          } else {
-            // Gone empty, or past the budget (its blocks' parts come): the
-            // quarter's part goes
-            let edges = held.quarter_edges(q);
-            if edges == 0 || edges > HEX_PART_EDGES {
-              gone.push(HexBox::Quarter(q as u8));
-            }
-            held.settle_quarter(q, &mut rebuilt);
-          }
-        }
+      for (rings, moved) in [(false, &moved_sides), (true, &moved_rings)] {
+        rebuilt.clear();
+        gone.clear();
+        held.update(rings, moved, &mut rebuilt, &mut gone);
+        let key = |part: HexBox| PackKey::Hex {
+          chunk: (chunk.x, chunk.y),
+          part,
+          rings,
+        };
+        changes
+          .gone
+          .extend(gone.iter().filter_map(|&part| parts.remove(&key(part))));
+        changes
+          .rebuilt
+          .extend(rebuilt.iter().map(|&part| key(part)));
       }
-      if held.edges == 0 {
+      if held.sides.edges == 0 && held.rings.edges == 0 {
         chunks.remove(&chunk);
       }
-      let key = |part: HexBox| PackKey::Hex {
-        chunk: (chunk.x, chunk.y),
-        part,
-      };
-      changes
-        .gone
-        .extend(gone.iter().filter_map(|&part| parts.remove(&key(part))));
-      changes
-        .rebuilt
-        .extend(rebuilt.iter().map(|&part| key(part)));
     }
     changes
   }
 
-  /// Every part's key, chunk by chunk in row order, each chunk's boxes in
-  /// turn
+  /// Every part's key, chunk by chunk in row order, each chunk's parts of
+  /// sides, then its parts of rings, box by box
   pub(crate) fn keys(&self) -> Vec<PackKey> {
     let mut chunks: Vec<(&IVec2, &HexChunk)> = self.chunks.iter().collect();
     chunks.sort_unstable_by_key(|(chunk, _)| (chunk.y, chunk.x));
-    let mut keys = Vec::new();
+    let (mut keys, mut boxes) = (Vec::new(), Vec::new());
     for (chunk, held) in chunks {
       let chunk = (chunk.x, chunk.y);
-      keys.extend(
-        held
-          .boxes()
-          .into_iter()
-          .map(|part| PackKey::Hex { chunk, part }),
-      );
+      for rings in [false, true] {
+        boxes.clear();
+        held.boxes(rings, &mut boxes);
+        keys.extend(
+          boxes
+            .iter()
+            .map(|&part| PackKey::Hex { chunk, part, rings }),
+        );
+      }
     }
     keys
   }
 
-  /// The blocks part `key` holds
-  fn part_blocks(&self, key: PackKey) -> Vec<&HexBlock> {
-    let (held, part) = match key {
-      PackKey::Hex { chunk, part } => (self.chunks.get(&IVec2::new(chunk.0, chunk.1)), part),
-      _ => (None, HexBox::Chunk),
+  /// The blocks part `key`'s box covers, and, for a sub-block, which of its
+  /// block's four it is
+  fn part_blocks(&self, key: PackKey) -> (Vec<&HexBlock>, Option<usize>) {
+    let PackKey::Hex { chunk, part, .. } = key else {
+      return (Vec::new(), None);
     };
-    held.map_or(Vec::new(), |held| {
-      let block = |b: usize| held.blocks.get(b);
-      match part {
-        HexBox::Chunk => held.blocks.iter().collect(),
-        HexBox::Quarter(q) => quarter_blocks(usize::from(q))
+    let Some(held) = self.chunks.get(&IVec2::new(chunk.0, chunk.1)) else {
+      return (Vec::new(), None);
+    };
+    let block = |b: usize| held.blocks.get(b);
+    match part {
+      HexBox::Chunk => (held.blocks.iter().collect(), None),
+      HexBox::Quarter(q) => (
+        quarter_blocks(usize::from(q))
           .into_iter()
           .filter_map(block)
           .collect(),
-        HexBox::Block(b) => block(usize::from(b)).into_iter().collect(),
+        None,
+      ),
+      HexBox::Block(b) => (block(usize::from(b)).into_iter().collect(), None),
+      HexBox::Sub(s) => {
+        let (b, i) = sub_block(usize::from(s));
+        (block(b).into_iter().collect(), Some(i))
       }
-    })
+    }
   }
 
-  /// Part `key`'s edges, in the grid's points
+  /// Part `key`'s edges, in the grid's points: a part of sides' (a part of
+  /// rings holds none)
   pub(crate) fn edges(&self, key: PackKey) -> impl Iterator<Item = Edge> + '_ {
-    self
-      .part_blocks(key)
+    let blocks = match key {
+      PackKey::Hex { rings: false, .. } => self.part_blocks(key).0,
+      _ => Vec::new(),
+    };
+    blocks
       .into_iter()
       .flat_map(|block| block.edges.iter().copied())
   }
 
-  /// Part `key`'s shape cells with rings, each with its shape
+  /// Part `key`'s shape cells with rings, each with its shape: a part of
+  /// rings' (a part of sides holds none)
   pub(crate) fn rings(&self, key: PackKey) -> impl Iterator<Item = (IVec2, u16)> + '_ {
-    self
-      .part_blocks(key)
+    let (blocks, sub) = match key {
+      PackKey::Hex { rings: true, .. } => self.part_blocks(key),
+      _ => (Vec::new(), None),
+    };
+    blocks
       .into_iter()
       .flat_map(|block| block.rings.iter().copied())
+      .filter(move |&(cell, _)| sub.is_none_or(|s| sub_of(cell) == s))
   }
 
   /// Part `key`'s entity
