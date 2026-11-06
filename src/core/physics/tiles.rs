@@ -3304,6 +3304,18 @@ mod tests {
     edges
   }
 
+  /// Every shape cell with rings `parts` holds, with its shape, sorted
+  fn held_rings(parts: &HexParts) -> Vec<(i32, i32, u16)> {
+    let mut rings: Vec<(i32, i32, u16)> = parts
+      .keys()
+      .into_iter()
+      .flat_map(|key| parts.rings(key))
+      .map(|(cell, shape)| (cell.x, cell.y, shape))
+      .collect();
+    rings.sort_unstable();
+    rings
+  }
+
   #[test]
   fn a_hex_cell_s_part_holds_its_six_sides() {
     let hex = HexCells::new(StaggerAxis::Y, StaggerIndex::Odd, UVec2::new(16, 16), 8);
@@ -4128,6 +4140,8 @@ mod tests {
       let changes = parts.apply(tiles.cells_view(), hex, tiles.bounds(), &changed);
       let fresh = HexParts::build(tiles.cells_view(), hex, tiles.bounds());
       assert_eq!(held_edges(parts), held_edges(&fresh));
+      assert_eq!(held_rings(parts), held_rings(&fresh));
+      assert_eq!(held_rings(parts).len(), 4, "its four rings");
       changes.rebuilt
     };
     // An edit that keeps quarter 0 at the budget keeps it one part
@@ -4143,6 +4157,8 @@ mod tests {
 
   #[test]
   fn hex_parts_edited_with_shape_cells_hold_what_a_fresh_build_does() {
+    use crate::core::ecs::{Entity, World};
+    use std::collections::BTreeMap;
     let mut seed = 0x510e_527f_u32;
     let mut next = |n: u32| {
       seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
@@ -4170,8 +4186,7 @@ mod tests {
       let keys = parts.keys();
       let unique: BTreeSet<PackKey> = keys.iter().copied().collect();
       assert_eq!(unique.len(), keys.len(), "a key twice: {keys:?}");
-      let (mut edges, mut rings) = (Vec::new(), Vec::new());
-      for key in keys {
+      for &key in &keys {
         let PackKey::Hex { rings: ring, .. } = key else {
           panic!("{key:?}");
         };
@@ -4180,16 +4195,124 @@ mod tests {
           e + r > 0 && (!ring || e == 0) && (ring || r == 0),
           "{key:?}: {e} {r}"
         );
-        edges.extend(parts.edges(key));
-        rings.extend(
-          parts
-            .rings(key)
-            .map(|(cell, shape)| (cell.x, cell.y, shape)),
-        );
       }
-      edges.sort_unstable();
-      rings.sort_unstable();
-      (edges, rings)
+      (held_edges(parts), held_rings(parts))
+    };
+    /// The ring splits the edits reached: a sub-block emptied, a block
+    /// split into sub-blocks, a quarter split into blocks, and a chunk
+    /// whose rings split, emptied, then one part again; and the chunks
+    /// whose split rings emptied
+    #[derive(Default)]
+    struct Seen {
+      emptied: usize,
+      into_subs: usize,
+      into_blocks: usize,
+      merged: usize,
+      reset: BTreeSet<(i32, i32)>,
+    }
+    // Applies the edits as the tile rebuild does, each part's entity kept:
+    // the parts gone are despawned, the rebuilt ones with none spawned. The
+    // parts gone are exactly those whose keys went, and every key ends with
+    // an entity
+    let apply = |parts: &mut HexParts,
+                 tiles: &mut TileColliders,
+                 hex: HexCells,
+                 (world, seen): (&mut World, &mut Seen),
+                 what: &str| {
+      let changed = tiles.take_changes().expect("listed");
+      let before: BTreeMap<PackKey, Entity> = parts.parts().collect();
+      let changes = parts.apply(tiles.cells_view(), hex, tiles.bounds(), &changed);
+      let after: BTreeSet<PackKey> = parts.keys().into_iter().collect();
+      let went: BTreeSet<Entity> = before
+        .iter()
+        .filter(|(key, _)| !after.contains(key))
+        .map(|(_, &part)| part)
+        .collect();
+      let gone: BTreeSet<Entity> = changes.gone.iter().copied().collect();
+      assert_eq!(
+        gone.len(),
+        changes.gone.len(),
+        "{hex:?} {what}: a part gone twice"
+      );
+      assert_eq!(
+        gone, went,
+        "{hex:?} {what}: the parts gone are those whose keys went"
+      );
+      for &key in &after {
+        if !before.contains_key(&key) {
+          assert!(
+            changes.rebuilt.contains(&key),
+            "{hex:?} {what}: {key:?} made"
+          );
+        }
+      }
+      for &key in &changes.rebuilt {
+        assert!(
+          after.contains(&key),
+          "{hex:?} {what}: {key:?} rebuilt, not held"
+        );
+        if parts.part(key).is_none() {
+          parts.set_part(key, world.spawn_empty().id());
+        }
+      }
+      let kept: BTreeSet<PackKey> = parts.parts().map(|(key, _)| key).collect();
+      assert_eq!(kept, after, "{hex:?} {what}: an entity a part");
+      // The ring splits it reached, chunk by chunk
+      let rings_of = |keys: &mut dyn Iterator<Item = PackKey>, chunk: (i32, i32)| -> Vec<HexBox> {
+        keys
+          .filter_map(|key| match key {
+            PackKey::Hex {
+              chunk: c,
+              part,
+              rings: true,
+            } if c == chunk => Some(part),
+            _ => None,
+          })
+          .collect()
+      };
+      let chunks: BTreeSet<(i32, i32)> = before
+        .keys()
+        .chain(&after)
+        .filter_map(|key| match *key {
+          PackKey::Hex { chunk, .. } => Some(chunk),
+          _ => None,
+        })
+        .collect();
+      for chunk in chunks {
+        let was = rings_of(&mut before.keys().copied(), chunk);
+        let now = rings_of(&mut after.iter().copied(), chunk);
+        let quarter_of = |b: u8| b / 8 * 2 + b % 4 / 2;
+        let block_of = |s: u8| s / 16 * 4 + s % 8 / 2;
+        for &part in was.iter().filter(|part| !now.contains(part)) {
+          match part {
+            HexBox::Sub(_) if !now.is_empty() => seen.emptied += 1,
+            HexBox::Block(b)
+              if now
+                .iter()
+                .any(|p| matches!(*p, HexBox::Sub(s) if block_of(s) == b)) =>
+            {
+              seen.into_subs += 1
+            }
+            HexBox::Quarter(q)
+              if now.iter().any(|p| match *p {
+                HexBox::Block(b) => quarter_of(b) == q,
+                HexBox::Sub(s) => quarter_of(block_of(s)) == q,
+                _ => false,
+              }) =>
+            {
+              seen.into_blocks += 1
+            }
+            _ => {}
+          }
+        }
+        if !was.is_empty() && !was.contains(&HexBox::Chunk) && now.is_empty() {
+          seen.reset.insert(chunk);
+        }
+        if now == [HexBox::Chunk] && seen.reset.remove(&chunk) {
+          seen.merged += 1;
+        }
+      }
+      changes
     };
     let mut grids = hex_variants();
     for (axis, index) in [
@@ -4198,7 +4321,9 @@ mod tests {
     ] {
       grids.push(HexCells::new(axis, index, UVec2::new(32, 32), 0));
     }
+    let mut seen = Seen::default();
     for hex in grids {
+      let mut world = World::new();
       let mut tiles = TileColliders::unbounded(Vec2::ONE).with_hex(hex, Vec2::ZERO);
       let shapes = [
         tiles.add_shape(polygon(3, 0.25)),
@@ -4208,7 +4333,10 @@ mod tests {
       ];
       let mut parts = HexParts::build(tiles.cells_view(), hex, tiles.bounds());
       tiles.take_changes();
-      let area = |x: u32, y: u32| IVec2::new(x as i32 + 20, y as i32 - 12);
+      // 40 x 24 cells across chunk borders either way, chunk (0, 0)'s and
+      // (0, -1)'s cells in two of their quarters
+      let (w, h) = (40, 24);
+      let area = |x: u32, y: u32| IVec2::new(x as i32 + 4, y as i32 - 12);
       let check = |tiles: &TileColliders, parts: &HexParts, what: &str| {
         let fresh = HexParts::build(tiles.cells_view(), hex, tiles.bounds());
         assert_eq!(held(parts), held(&fresh), "{hex:?} {what}");
@@ -4218,10 +4346,23 @@ mod tests {
         }
       };
       for round in 0..60 {
+        // Every tenth round, the area's cells in one of its four chunks
+        // emptied, so their rings go and come back unsplit
+        if round % 10 == 9 {
+          let chunk = IVec2::new(round / 10 % 2, round / 20 % 2 - 1);
+          for at in (0..w * h).map(|i| area(i % w, i / w)) {
+            if at.div_euclid(IVec2::splat(CHUNK)) == chunk {
+              tiles.set(at, TileCell::Empty);
+            }
+          }
+          let what = format!("round {round}, chunk {chunk} emptied");
+          apply(&mut parts, &mut tiles, hex, (&mut world, &mut seen), &what);
+          check(&tiles, &parts, &what);
+        }
         // A handful of cells set in a small area across chunk borders,
         // rings of 40 edges among them
-        for _ in 0..12 {
-          let at = area(next(24), next(24));
+        for _ in 0..16 {
+          let at = area(next(w), next(h));
           let kind = match next(7) {
             0 => TileCell::Empty,
             1..=4 => TileCell::Shape(shapes[next(4) as usize]),
@@ -4230,12 +4371,12 @@ mod tests {
           };
           tiles.set(at, kind);
         }
-        let changed = tiles.take_changes().expect("listed");
-        parts.apply(tiles.cells_view(), hex, tiles.bounds(), &changed);
-        check(&tiles, &parts, &format!("round {round}"));
+        let what = format!("round {round}");
+        apply(&mut parts, &mut tiles, hex, (&mut world, &mut seen), &what);
+        check(&tiles, &parts, &what);
         // A few shape cells turned to other shapes: only ring parts change
-        let held_shapes: Vec<(IVec2, u16)> = (0..24 * 24)
-          .map(|i| area(i % 24, i / 24))
+        let held_shapes: Vec<(IVec2, u16)> = (0..w * h)
+          .map(|i| area(i % w, i / w))
           .filter_map(|at| match tiles.get(at) {
             TileCell::Shape(shape) => Some((at, shape)),
             _ => None,
@@ -4250,21 +4391,30 @@ mod tests {
           let other = shapes[(from + 1 + next(3) as usize) % shapes.len()];
           tiles.set(at, TileCell::Shape(other));
         }
-        let Some(changed) = tiles.take_changes().filter(|c| !c.is_empty()) else {
-          continue;
-        };
-        let changes = parts.apply(tiles.cells_view(), hex, tiles.bounds(), &changed);
+        let what = format!("round {round}, shapes turned");
+        let changes = apply(&mut parts, &mut tiles, hex, (&mut world, &mut seen), &what);
         assert!(
           changes
             .rebuilt
             .iter()
             .all(|key| matches!(key, PackKey::Hex { rings: true, .. })),
-          "{hex:?} round {round}: shapes turned rebuild rings alone, {:?}",
+          "{hex:?} {what}: rebuilt rings alone, {:?}",
           changes.rebuilt
         );
-        check(&tiles, &parts, &format!("round {round}, shapes turned"));
+        check(&tiles, &parts, &what);
       }
     }
+    let Seen {
+      emptied,
+      into_subs,
+      into_blocks,
+      merged,
+      ..
+    } = seen;
+    assert!(
+      emptied > 0 && into_subs > 0 && into_blocks > 0 && merged > 0,
+      "sub-blocks emptied {emptied}, blocks split {into_subs}, quarters split {into_blocks}, chunks merged back {merged}"
+    );
   }
 
   #[test]
@@ -6297,6 +6447,98 @@ mod with_physics {
     }
   }
 
+  #[test]
+  fn a_cell_beside_ring_cells_turned_whole_rebuilds_no_ring_part() {
+    use super::hex::{HexCells, StaggerAxis, StaggerIndex};
+    use super::pack::{HexBox, HexParts};
+    use super::tests::{hex_parts_of, inset_hexagon};
+    // The ring-heavy chunk (1, 1), its rings in sub-blocks, and six inset
+    // hexagons round empty cell (71, 36) in chunk (2, 1), its rings one part.
+    // Cells that are not shapes, beside ring cells, turned whole and back:
+    // (31, 33), whose side with (32, 32) that ring cell's block owns, and
+    // (71, 36), whose own block holds the rings round it. Only parts of
+    // sides are rebuilt
+    let hex = HexCells::new(StaggerAxis::Y, StaggerIndex::Odd, UVec2::new(16, 16), 8);
+    let mut tiles = TileColliders::new(128, 128, Vec2::splat(16.0)).with_hex(hex, Vec2::ZERO);
+    let inset = TileCell::Shape(tiles.add_shape(inset_hexagon()));
+    for y in 32..64 {
+      for x in 32..64 {
+        tiles.set(xy(x, y), inset);
+      }
+    }
+    for (x, y) in [(70, 36), (72, 36), (70, 35), (71, 35), (70, 37), (71, 37)] {
+      tiles.set(xy(x, y), inset);
+    }
+    tiles.take_changes();
+    // The same edits on parts of their own, for what each rebuilds
+    let mut grid = tiles.clone();
+    let mut held = HexParts::build(grid.cells_view(), hex, grid.bounds());
+    let (mut world, mut s) = world(60);
+    let map = world.spawn((Transform::IDENTITY, tiles)).id();
+    run(&mut world, &mut s, 1);
+    let scattered = PackKey::Hex {
+      chunk: (2, 1),
+      part: HexBox::Chunk,
+      rings: true,
+    };
+    for (x, y, kind) in [
+      (31, 33, TileCell::Solid),
+      (31, 33, TileCell::Empty),
+      (71, 36, TileCell::Solid),
+      (71, 36, TileCell::Empty),
+    ] {
+      let at = IVec2::new(x, y);
+      assert!(grid.set(at, kind));
+      let changed = grid.take_changes().expect("listed");
+      let changes = held.apply(grid.cells_view(), hex, grid.bounds(), &changed);
+      assert_eq!(changes.rebuilt.is_empty(), kind == TileCell::Empty);
+      assert!(
+        changes
+          .rebuilt
+          .iter()
+          .all(|key| matches!(key, PackKey::Hex { rings: false, .. })),
+        "{at} set to {kind:?} rebuilt {:?}",
+        changes.rebuilt
+      );
+      let before = hex_parts(&mut world, map);
+      let rings: Vec<_> = before
+        .iter()
+        .filter(|(key, ..)| matches!(key, PackKey::Hex { rings: true, .. }))
+        .copied()
+        .collect();
+      assert_eq!(rings.len(), 64 + 1, "{rings:?}");
+      assert!(rings.iter().any(|&(key, ..)| key == scattered));
+      world.get_mut::<TileColliders>(map).unwrap().set(at, kind);
+      run(&mut world, &mut s, 1);
+      let after = hex_parts(&mut world, map);
+      // Every ring part keeps its entity, its shape and its collider, and
+      // parts of sides changed
+      for part in &rings {
+        assert!(
+          after.contains(part),
+          "{:?} kept its entity, its shape and its collider after {at} set to {kind:?}",
+          part.0
+        );
+      }
+      let sides = |parts: &[(PackKey, Entity, usize, u32)]| -> Vec<(PackKey, Entity, usize, u32)> {
+        let mut sides: Vec<_> = parts
+          .iter()
+          .filter(|(key, ..)| matches!(key, PackKey::Hex { rings: false, .. }))
+          .copied()
+          .collect();
+        sides.sort_unstable();
+        sides
+      };
+      assert_ne!(sides(&before), sides(&after), "{at} set to {kind:?}");
+      let fresh = hex_edges_by_chunk(hex_parts_of(world.get::<TileColliders>(map).unwrap()));
+      assert_eq!(
+        hex_held(&mut world, map, Vec2::ZERO),
+        fresh,
+        "{at} {kind:?}"
+      );
+    }
+  }
+
   /// A grid of `hex`'s cells with parts of every box and kind: a block of
   /// chunk (0, -1) full of inset hexagons (its rings in sub-blocks), 12-gons
   /// scattered over chunk (-1, 0) (its rings one part), a checkerboard over
@@ -6766,7 +7008,8 @@ mod with_physics {
   /// `edit_rock` layout; no frame passes between edits, so caches are
   /// warm), each timed in parts: the tile rebuild (`rebuild_tile_colliders`
   /// alone), the fixed step after it (physics taking in the reshaped
-  /// parts), and both together, with the edges the rebuilt parts hold. The
+  /// parts), and both together, with the edges the rebuilt parts hold (of
+  /// sides and of rings). The
   /// cases: the two loops' cells (in chunks split for their edges), an
   /// island's cell at a corner of four of the islands' ordinary chunks, one
   /// on a chunk's edge, 400 random cells each set and set back, and a
@@ -6874,16 +7117,19 @@ mod with_physics {
         rebuilds.push(middle - start);
         steps.push(end - middle);
         both.push(end - start);
+        // The edges of the parts rebuilt, of sides and of rings: each
+        // part's segments
         let after = hex_parts(&mut world, map);
-        let kept = world
-          .get::<TileBuild>(map)
-          .and_then(|build| build.kept.as_ref())
-          .expect("built");
         edges.push(
           after
             .iter()
             .filter(|part| !before.contains(part))
-            .map(|&(key, ..)| kept.hex.edges(key).count())
+            .map(
+              |&(_, part, ..)| match world.get::<Collider>(part).map(|c| &c.shape) {
+                Some(ColliderShape::Segments { segments, .. }) => segments.len(),
+                _ => 0,
+              },
+            )
             .sum::<usize>(),
         );
       }
