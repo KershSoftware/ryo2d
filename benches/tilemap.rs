@@ -69,34 +69,44 @@
 //!   halves of about 2,000 edges, the worst split a loop of four chunks can
 //!   have). On the hexagonal map, whose colliders hold its cells' sides in
 //!   parts of at most 128 edges (a chunk, else its quarters, else their
-//!   blocks), each a side's earlier cell's, four cases more, each with the
-//!   camera over it, 400 edits each: a lone cell set and cleared where four
-//!   of the islands' chunks meet (its sides in four chunks' parts, and
-//!   their shadows built again); part churn, a lone cell set and cleared
-//!   where four empty chunks meet (four parts made and dropped again,
-//!   checked); a chunk of 127 edges taken past the budget by a lone cell,
-//!   which drops its one part and makes seven (its quarters', one of them
-//!   split into its blocks: checked), and set back, the chunk and the cells
-//!   giving its quarters an edge each emptied and filled again before each
-//!   such pair, so each starts as one part; and, with no target, a lone
-//!   cell set and cleared where four dense chunks meet (four cells in ten
-//!   rock): the guard holds the islands map on every grid, and a dense
-//!   corner on none. Each edit is timed in three parts, each held to 100 µs
-//!   (the spec): the chunk rebuild (the render step of the frame after the
-//!   edit, less the median render step of the ordinary frames between
-//!   edits: the chunk's instances built and uploaded), the loop rebuild
-//!   (the map's collision sync, which classifies the chunk again, then
-//!   physics' tile collider rebuild, which retraces the loops through the
-//!   cell and reshapes their chunk colliders, and its collider sync, which
-//!   builds the new shapes for Rapier; each run on the engine's world in a
-//!   schedule of its own, commands applied:
+//!   blocks), each a side's earlier cell's, and its shape cells' rings in
+//!   parts of their own (split likewise, a block's past the budget into its
+//!   4 x 4 sub-blocks), six cases more, each with the camera over it, 400
+//!   edits each: a lone cell set and cleared where four of the islands'
+//!   chunks meet (its sides in four chunks' parts, and their shadows built
+//!   again); part churn, a lone cell set and cleared where four empty chunks
+//!   meet (four parts made and dropped again, checked); a chunk of 127 edges
+//!   taken past the budget by a lone cell, which drops its one part and
+//!   makes seven (its quarters', one of them split into its blocks:
+//!   checked), and set back, the chunk and the cells giving its quarters an
+//!   edge each emptied and filled again before each such pair, so each
+//!   starts as one part; with no target, a lone cell set and cleared where
+//!   four dense chunks meet (four cells in ten rock): the guard holds the
+//!   islands map on every grid, and a dense corner on none; and a chunk
+//!   heavy with rings, in the keep-out area apart from the islands, its
+//!   every cell a ring tile whose shape is a hexagon inset within its cell's
+//!   (six edges a cell, so each 8 x 8 block's rings, 384 edges, pass the
+//!   budget and its 64 sub-blocks are its parts of rings, 96 edges each:
+//!   checked once), edited twice: a ring cell in a block's middle cleared
+//!   and set back (its sub-block's part of rings rebuilt, no part made or
+//!   dropped: checked), and one where four blocks meet turned whole and back
+//!   (its sub-block's part of rings rebuilt, and the chunk's part of sides,
+//!   its six sides, made and dropped: checked). Each edit is timed in three
+//!   parts, each held to 100 µs (the spec): the chunk rebuild (the render
+//!   step of the frame after the edit, less the median render step of the
+//!   ordinary frames between edits: the chunk's instances built and
+//!   uploaded), the loop rebuild (the map's collision sync, which classifies
+//!   the chunk again, then physics' tile collider rebuild, which retraces
+//!   the loops through the cell and reshapes their chunk colliders, and its
+//!   collider sync, which builds the new shapes for Rapier; each run on the
+//!   engine's world in a schedule of its own, commands applied:
 //!   `ryo2d::core::tilemap::edit_schedules`) and the occluder rebuild (the
-//!   occluder sync, commands applied). A frame passes between edits, as in
-//!   a game, so their data is not in cache. Beside them, with no target:
-//!   the edit frame's whole step over an ordinary frame's, the loop and
-//!   occluder rebuilds of as many edits back to back (their data in cache),
-//!   and on the hexagonal map the loop and occluder rebuilds together, each
-//!   edit's sum;
+//!   occluder sync, commands applied). A frame passes between edits, as in a
+//!   game, so their data is not in cache. Beside them, with no target: the
+//!   edit frame's whole step over an ordinary frame's, the loop and occluder
+//!   rebuilds of as many edits back to back (their data in cache), and on
+//!   the hexagonal map the loop and occluder rebuilds together, each edit's
+//!   sum;
 //! - `load`: on every grid, a 256 x 256 four-layer Tiled map (TMX, every
 //!   layer base64 and zlib) over an external TSX tileset and its PNG, read
 //!   from a `MemorySource`. Its load, from `load` to the map ready with its
@@ -230,9 +240,11 @@ const DESPAWN: usize = 32;
 /// A 60 Hz frame: the landing's pace
 const FRAME: Duration = Duration::from_nanos(16_666_667);
 /// The tileset: 16 x 16 tiles of 16 px. Rock (a full-cell collision
-/// shape), background, props and foreground details
+/// shape), the edit map's ring tile (on the hexagonal grid a shape of its
+/// own: `Grid::ring`), background, props and foreground details
 const COLUMNS: u32 = 16;
 const ROCK: std::ops::Range<u32> = 0..8;
+const RING: u32 = 8;
 const BACK: std::ops::Range<u32> = 16..24;
 const PROPS: std::ops::Range<u32> = 32..48;
 const FRONT: std::ops::Range<u32> = 48..56;
@@ -394,8 +406,14 @@ fn atlas_pixels(tile: UVec2) -> Vec<u8> {
 }
 
 /// The tileset over `image`, `COLUMNS` x `COLUMNS` tiles of `tile` px, its
-/// rock tiles carrying `rock` as their collision shape (none without)
-fn tileset(image: Handle<Image>, tile: UVec2, rock: Option<Vec<Vec2>>) -> Tileset {
+/// rock tiles carrying `rock` as their collision shape and its ring tile
+/// `ring` (none without either)
+fn tileset(
+  image: Handle<Image>,
+  tile: UVec2,
+  rock: Option<Vec<Vec2>>,
+  ring: Option<Vec<Vec2>>,
+) -> Tileset {
   let mut set = Tileset::new(
     "bench",
     tile,
@@ -406,15 +424,16 @@ fn tileset(image: Handle<Image>, tile: UVec2, rock: Option<Vec<Vec2>>) -> Tilese
   );
   set.columns = COLUMNS;
   set.tile_count = COLUMNS * COLUMNS;
-  let Some(points) = rock else {
-    return set;
-  };
-  for id in ROCK {
+  let shaped = rock
+    .into_iter()
+    .flat_map(|points| ROCK.map(move |id| (id, points.clone())))
+    .chain(ring.map(|points| (RING, points)));
+  for (id, points) in shaped {
     set.insert_tile(
       id,
       TileData {
         shapes: vec![TileShape {
-          points: points.clone(),
+          points,
           ..TileShape::default()
         }],
         ..TileData::default()
@@ -529,6 +548,22 @@ impl Grid {
     }
   }
 
+  /// The ring tile's collision shape, on the hexagonal grid alone: a hexagon
+  /// inset within its cell's (`hex_ring_heavy_edit_timing`'s, in its image's
+  /// pixels, wound as `rock`'s), so the tile collides as a shape of its own,
+  /// a ring of six edges in its chunk's parts of rings
+  fn ring(self) -> Option<Vec<Vec2>> {
+    let inset = [
+      (8.0, 2.0),
+      (14.0, 5.0),
+      (14.0, 11.0),
+      (8.0, 14.0),
+      (2.0, 11.0),
+      (2.0, 5.0),
+    ];
+    (self == Grid::Hexagonal).then(|| inset.map(|(x, y)| Vec2::new(x, y)).to_vec())
+  }
+
   /// A bounded map's grid of `side` cells
   fn map_grid(self, side: u32) -> MapGrid {
     MapGrid::for_map(self.shape(), self.cell(), UVec2::splat(side), false)
@@ -636,19 +671,30 @@ fn map_of(
 }
 
 /// An atlas tileset of `tile` px tiles added to `ctx`'s stores, its rock
-/// tiles carrying `rock`
-fn add_atlas(ctx: &mut SceneContext, tile: UVec2, rock: Option<Vec<Vec2>>) -> TilesetSource {
+/// tiles carrying `rock` and its ring tile `ring`
+fn add_atlas(
+  ctx: &mut SceneContext,
+  tile: UVec2,
+  rock: Option<Vec<Vec2>>,
+  ring: Option<Vec<Vec2>>,
+) -> TilesetSource {
   let size = tile * COLUMNS;
   let image = ctx
     .assets()
     .add(Image::from_rgba(atlas_pixels(tile), size.x, size.y));
-  TilesetSource::Asset(ctx.assets().add(tileset(image, tile, rock)))
+  TilesetSource::Asset(ctx.assets().add(tileset(image, tile, rock, ring)))
 }
 
 /// `grid`'s tileset (tiles of its cell's size, the rock colliding as a
 /// whole cell) added to `ctx`'s stores
 fn add_tileset(ctx: &mut SceneContext, grid: Grid) -> TilesetSource {
-  add_atlas(ctx, grid.cell(), Some(grid.rock()))
+  add_atlas(ctx, grid.cell(), Some(grid.rock()), None)
+}
+
+/// The edit map's tileset: `grid`'s, and on the hexagonal grid its ring
+/// tile too (`Grid::ring`), which the chunk heavy with rings holds
+fn add_edit_tileset(ctx: &mut SceneContext, grid: Grid) -> TilesetSource {
+  add_atlas(ctx, grid.cell(), Some(grid.rock()), grid.ring())
 }
 
 /// The camera's path at `path` (radians along it): a long loop over most
@@ -860,7 +906,7 @@ impl Scene for BigScene {
     let grid = self.show.grid();
     let mut sets = vec![add_tileset(ctx, grid)];
     if self.show == Show::Tall {
-      sets.push(add_atlas(ctx, TALL, None));
+      sets.push(add_atlas(ctx, TALL, None, None));
     }
     let unbounded = self.show == Show::MapUnbounded;
     let mut map = map_of(BIG, grid, &sets, &cave_cells(BIG), unbounded);
@@ -950,6 +996,49 @@ fn assert_whole_hexagon(engine: &mut HeadlessEngine, cell: IVec2, guard: &str) {
   assert!(
     solid,
     "{guard}: the hexagonal map's rock at cell {cell} collides as its whole hexagon"
+  );
+}
+
+/// That the hexagonal edit map's chunk heavy with rings is what its cases
+/// edit: every cell a shape of its own (`TileCell::Shape` in the map's tile
+/// colliders), and its rings in parts of 4 x 4 cells, 96 edges each, as
+/// its 8 x 8 blocks' rings (384 each) pass the budget: 64 colliders sit in
+/// the chunk's box (from its first cell's to the next chunk's), and every
+/// one holds 96 edges
+fn assert_ring_heavy(engine: &mut HeadlessEngine) {
+  let first = RING_CHUNK * CHUNK;
+  let world = engine.world_mut();
+  let shapes = world.query::<&TileColliders>().iter(world).any(|tiles| {
+    (0..CHUNK * CHUNK).all(|i| {
+      let cell = first + IVec2::new(i % CHUNK, i / CHUNK);
+      matches!(tiles.get(cell), TileCell::Shape(_))
+    })
+  });
+  assert!(
+    shapes,
+    "edit: every cell of the hexagonal map's chunk {RING_CHUNK} heavy with rings collides as a \
+     shape of its own"
+  );
+  let grid = Grid::Hexagonal.map_grid(BIG);
+  let half = Grid::Hexagonal.cell().as_vec2() / 2.0;
+  let lo = grid.cell_center(first) - half;
+  let hi = grid.cell_center(first + IVec2::splat(CHUNK)) - half;
+  let edges: Vec<usize> = world
+    .query::<(&GlobalTransform, &Collider)>()
+    .iter(world)
+    .filter(|(at, _)| {
+      let at = at.translation();
+      at.cmpge(lo).all() && at.cmplt(hi).all()
+    })
+    .map(|(_, collider)| match &collider.shape {
+      ColliderShape::Segments { segments, .. } => segments.len(),
+      _ => 0,
+    })
+    .collect();
+  assert!(
+    edges.len() == 64 && edges.iter().all(|&n| n == 96),
+    "edit: the hexagonal map's chunk {RING_CHUNK} heavy with rings collides in 64 parts of rings \
+     of 4 x 4 cells, 96 edges each: its parts' edges {edges:?}"
   );
 }
 
@@ -1235,7 +1324,7 @@ fn padded_line() {
       side,
       side,
     ));
-    let set = tileset(image, grid.cell(), Some(grid.rock()));
+    let set = tileset(image, grid.cell(), Some(grid.rock()), None);
     TilesetSource::Asset(world.resource_mut::<Assets<Tileset>>().add(set))
   };
   let collection = {
@@ -1327,6 +1416,13 @@ const BUDGET_CELL: IVec2 = IVec2::new(13, 13);
 /// lone cell where the four meet
 const DENSE: std::ops::Range<i32> = 10..12;
 const DENSE_CORNER: IVec2 = IVec2::new(11 * CHUNK, 11 * CHUNK);
+/// The chunk heavy with rings, every cell the ring tile, in the keep-out
+/// area (no cell of it beside another chunk's rock), and its edited cells:
+/// one in a block's middle, and one where four blocks meet (as
+/// `hex_ring_heavy_edit_timing`'s)
+const RING_CHUNK: IVec2 = IVec2::new(4, 4);
+const RING_MIDDLE: IVec2 = IVec2::new(4, 4);
+const RING_CORNER: IVec2 = IVec2::new(8, 8);
 
 /// The skyline's column heights: a top in 1..=24 for each of 128 columns,
 /// but the neck's, 31
@@ -1429,14 +1525,25 @@ const LONE: Kinds = &[("set and cleared", None)];
 const CHURN: Kinds = &[("parts made", Some(0)), ("parts dropped", Some(1))];
 /// A cell taking its chunk past the budget (its part split), and cleared
 const PAST: Kinds = &[("past the budget", Some(0)), ("set back", Some(1))];
+/// A ring cell cleared and set back
+const RING_CUT: Kinds = &[("cleared and set back", None)];
+/// A ring cell turned whole (rock) and back
+const RING_WHOLE: Kinds = &[("turned whole and back", None)];
 
-/// One case's edits: a cell set and cleared in turn (cleared first if it
-/// starts as rock)
+/// What a case's edits put in its cell, in turn: a tile id, or nothing
+type Turns = [Option<u32>; 2];
+/// Rock set and cleared
+const SET: Turns = [Some(ROCK.start), None];
+/// Rock cleared and set again: the cell starts as rock
+const CLEARED: Turns = [None, Some(ROCK.start)];
+
+/// One case's edits: its cell's tile changed in turn (`turns`)
 struct EditCase {
   name: &'static str,
   cell: IVec2,
-  /// The cell starts as rock
-  cut: bool,
+  /// What its edits put in its cell, in turn, the second what it starts
+  /// with
+  turns: Turns,
   kinds: Kinds,
   /// Cells emptied and filled with rock again before each pair of its
   /// edits, so each pair starts alike (the chunk taken past the budget,
@@ -1459,7 +1566,7 @@ impl EditCase {
     EditCase {
       name,
       cell,
-      cut,
+      turns: if cut { CLEARED } else { SET },
       kinds: if cut { CUT } else { BUMP },
       reset: Vec::new(),
       held: true,
@@ -1473,7 +1580,7 @@ impl EditCase {
     EditCase {
       name,
       cell,
-      cut: false,
+      turns: SET,
       kinds,
       reset: Vec::new(),
       held: true,
@@ -1488,7 +1595,7 @@ impl EditCase {
 /// row, and the middle of its middle row, which splits it into halves of
 /// about 2,000 edges, the smaller given the other loop's id edge by edge),
 /// at the grid's cells of those layout cells; on the hexagonal map its own
-/// cases too, the last with no target
+/// cases too, all held but the dense corner
 fn edit_cases(grid: Grid) -> Vec<EditCase> {
   let tops = skyline_tops();
   let layout = Layout::of(grid);
@@ -1536,6 +1643,27 @@ fn edit_cases(grid: Grid) -> Vec<EditCase> {
           "a lone cell where four dense chunks meet",
           DENSE_CORNER,
           LONE,
+        )
+      },
+      // Its part of rings rebuilt, no part made or dropped
+      EditCase {
+        turns: [None, Some(RING)],
+        laid_out: Some([0, 0]),
+        ..EditCase::apart(
+          "a ring cell in a block's middle, in a chunk heavy with rings",
+          RING_CHUNK * CHUNK + RING_MIDDLE,
+          RING_CUT,
+        )
+      },
+      // Its part of rings rebuilt, and the chunk's part of sides, its six
+      // sides, made and dropped
+      EditCase {
+        turns: [Some(ROCK.start), Some(RING)],
+        laid_out: Some([1, 0]),
+        ..EditCase::apart(
+          "a ring cell where four blocks meet, in a chunk heavy with rings",
+          RING_CHUNK * CHUNK + RING_CORNER,
+          RING_WHOLE,
         )
       },
     ]);
@@ -1604,12 +1732,23 @@ impl Ground {
     let kept_out = (0..160).contains(&bx) && rows.contains(&by);
     (2..5).contains(&x) && (2..5).contains(&y) && !kept_out
   }
+
+  /// The ground's tile at layout cell `at`: on the hexagonal map the ring
+  /// tile throughout the chunk heavy with rings (`RING_CHUNK`, in the
+  /// keep-out area), else rock where `rock` takes it
+  fn tile(&self, at: IVec2) -> Option<u32> {
+    if self.hexagonal && at.div_euclid(IVec2::splat(CHUNK)) == RING_CHUNK {
+      return Some(RING);
+    }
+    self.rock(at).then(|| pick(ROCK, hash(at.x, at.y, 5)))
+  }
 }
 
 /// The edit map on `grid`'s cells: background on every cell; on the ground
 /// layer, at the layout cells `Ground::rock` takes, about 16,000 islands
-/// and the skyline and the serpentine, each loop in four layout chunks;
-/// props and details as the cave map's where the ground is open
+/// and the skyline and the serpentine, each loop in four layout chunks, and
+/// on the hexagonal map the chunk heavy with rings (`Ground::tile`); props
+/// and details as the cave map's where the ground is open
 fn edit_map(grid: Grid, set: TilesetSource) -> TileMap {
   let mut cells = cave_cells(BIG);
   let (layout, ground) = (Layout::of(grid), Ground::of(grid));
@@ -1618,7 +1757,7 @@ fn edit_map(grid: Grid, set: TilesetSource) -> TileMap {
     for x in 0..side {
       let i = (y * side + x) as usize;
       let at = layout.at(IVec2::new(x, y));
-      cells[1][i] = ground.rock(at).then(|| pick(ROCK, hash(at.x, at.y, 5)));
+      cells[1][i] = ground.tile(at);
       // Props and details only where the ground is open
       if cells[1][i].is_some() {
         cells[2][i] = None;
@@ -1636,7 +1775,7 @@ struct EditScene {
 
 impl Scene for EditScene {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
-    let set = add_tileset(ctx, self.grid);
+    let set = add_edit_tileset(ctx, self.grid);
     let map = edit_map(self.grid, set);
     let root = MapRoot::new(ctx.assets().add(map));
     ctx.world.spawn((Transform::IDENTITY, root));
@@ -1709,15 +1848,15 @@ fn edit_engine(grid: Grid) -> Option<(HeadlessEngine, Entity)> {
   if grid == Grid::Hexagonal {
     let neck = cases[1].cell;
     assert_whole_hexagon(&mut engine, neck, "edit");
+    assert_ring_heavy(&mut engine);
   }
   Some((engine, root))
 }
 
-/// The tile edit `i` puts at `cell`: rock, then nothing, in turn; nothing
-/// first for a cut, whose cell starts as rock
-fn toggle(engine: &mut HeadlessEngine, root: Entity, cell: IVec2, i: usize, cut: bool) {
-  let rock = i.is_multiple_of(2) != cut;
-  let tile = rock.then_some(Tile::new(0, ROCK.start));
+/// The tile edit `i` puts at `cell`: `turns`' first, then its second, in
+/// turn
+fn toggle(engine: &mut HeadlessEngine, root: Entity, cell: IVec2, i: usize, turns: Turns) {
+  let tile = turns[i % 2].map(|id| Tile::new(0, id));
   let changed = MapsView::new(engine.world_mut()).set_tile(root, "ground", cell, tile);
   assert!(changed, "the edit changes its cell");
 }
@@ -1796,10 +1935,10 @@ fn parts_through(
   };
   refill(engine, root, &case.reset, &mut settle);
   let before = colliders(engine);
-  toggle(engine, root, case.cell, 0, case.cut);
+  toggle(engine, root, case.cell, 0, case.turns);
   settle(engine);
   let first = colliders(engine);
-  toggle(engine, root, case.cell, 1, case.cut);
+  toggle(engine, root, case.cell, 1, case.turns);
   settle(engine);
   [before, first, colliders(engine)]
 }
@@ -1813,7 +1952,7 @@ fn edits(
   schedules: &mut [Schedule; 3],
 ) -> Edits {
   let [collision, rebuild, occluders] = schedules;
-  let (cell, cut) = (case.cell, case.cut);
+  let (cell, turns) = (case.cell, case.turns);
   let mut out = Edits {
     collision: Vec::with_capacity(EDITS),
     rebuild: Vec::with_capacity(EDITS),
@@ -1834,7 +1973,7 @@ fn edits(
     let (render, whole) = step(engine);
     out.renders.push(render);
     out.steps.push(whole);
-    toggle(engine, root, cell, i, cut);
+    toggle(engine, root, cell, i, turns);
     out.collision.push(timed(collision, engine));
     out.rebuild.push(timed(rebuild, engine));
     out.occluders.push(timed(occluders, engine));
@@ -1852,7 +1991,7 @@ fn edits(
         }
       });
     }
-    toggle(engine, root, cell, i, cut);
+    toggle(engine, root, cell, i, turns);
     let collided = timed(collision, engine) + timed(rebuild, engine);
     out.warm_loops.push(collided);
     out.warm_occluders.push(timed(occluders, engine));
@@ -1870,10 +2009,12 @@ fn picked(times: &[Duration], which: Option<usize>) -> Vec<Duration> {
 }
 
 /// That `case` makes and drops the parts it is laid out to (`laid_out`):
-/// the hexagonal map's churn makes four parts and drops them, and its chunk
-/// at the budget, one part, splits into seven, one of which its set back
-/// drops; `parts` the colliders before its first edit, after it and after
-/// the second
+/// the hexagonal map's churn makes four parts and drops them, its chunk at
+/// the budget, one part, splits into seven, one of which its set back
+/// drops, and its chunk heavy with rings rebuilds a part of rings with no
+/// part made or dropped, but for the part of sides a cell turned whole
+/// makes and turned back drops; `parts` the colliders before its first
+/// edit, after it and after the second
 fn assert_parts(case: &EditCase, parts: [usize; 3]) {
   let [before, first, second] = parts;
   let Some([made, kept]) = case.laid_out else {
@@ -2000,7 +2141,7 @@ fn edit_bench(c: &mut Criterion) {
       return;
     };
     b.iter(|| {
-      toggle(engine, *root, cell, *i, false);
+      toggle(engine, *root, cell, *i, SET);
       *i += 1;
       engine.step().expect("a frame")
     });
