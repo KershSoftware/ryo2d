@@ -2951,24 +2951,28 @@ mod tests {
   /// each within 1/100 px of its match (a shape's ring need not lie on
   /// whole pixels)
   fn assert_same_edges(a: &[(Vec2, Vec2)], b: &[(Vec2, Vec2)], label: &str) {
-    let near = |p: Vec2, q: Vec2| (p - q).abs().max_element() < 1e-2;
+    const NEAR: f32 = 1e-2;
+    let near = |p: Vec2, q: Vec2| (p - q).abs().max_element() < NEAR;
     assert_eq!(a.len(), b.len(), "{label}: {a:?} against {b:?}");
+    // `b` by its edges' first x, each of `a`'s looked for among those
+    // within reach of its own (a dense map has thousands of edges)
+    let mut order: Vec<usize> = (0..b.len()).collect();
+    order.sort_by(|&i, &j| b[i].0.x.total_cmp(&b[j].0.x));
     let mut used = vec![false; b.len()];
     for &(p, q) in a {
-      let found = (0..b.len()).find(|&i| !used[i] && near(b[i].0, p) && near(b[i].1, q));
+      let start = order.partition_point(|&i| b[i].0.x <= p.x - NEAR);
+      let found = order[start..]
+        .iter()
+        .copied()
+        .take_while(|&i| b[i].0.x < p.x + NEAR)
+        .find(|&i| !used[i] && near(b[i].0, p) && near(b[i].1, q));
       let Some(i) = found else {
         panic!("{label}: the edge {p} to {q} is not among {b:?}");
       };
       used[i] = true;
     }
-    let points =
-      |edges: &[(Vec2, Vec2)]| -> Vec<Vec2> { edges.iter().flat_map(|&(p, q)| [p, q]).collect() };
-    let (pa, pb) = (points(a), points(b));
-    for (from, to) in [(&pa, &pb), (&pb, &pa)] {
-      for &p in from {
-        assert!(to.iter().any(|&q| near(p, q)), "{label}: the point {p}");
-      }
-    }
+    // Each edge matched one of the other's as many, so every point of each
+    // is near one of the other's
   }
 
   /// The occluders among `found` that are closed chains (ending where they
@@ -3915,14 +3919,15 @@ mod tests {
               );
             }
           }
+          // and every chunk that did own one built what a fresh build casts
+          assert_as_fresh(
+            &mut maps,
+            layer,
+            painted_map(shape, cell, None, &cells),
+            &format!("{label} made {paint_now:?}"),
+          );
         }
       }
-      assert_as_fresh(
-        &mut maps,
-        layer,
-        painted_map(shape, cell, None, &cells),
-        &format!("{shape:?}"),
-      );
     }
   }
 
@@ -4067,6 +4072,180 @@ mod tests {
         12,
       );
     }
+  }
+
+  /// Paints each of `edits` on `map`'s "ground" (a cell outside a map
+  /// bounded to `size` left out), noted in `cells`, and runs one frame for
+  /// them all
+  fn paint_many(
+    maps: &mut MapWorld,
+    map: Entity,
+    cells: &mut BTreeMap<(i32, i32), Paint>,
+    size: Option<UVec2>,
+    edits: &[(IVec2, Paint)],
+  ) {
+    for &(cell, paint) in edits {
+      let outside =
+        size.is_some_and(|size| cell.cmplt(IVec2::ZERO).any() || cell.cmpge(size.as_ivec2()).any());
+      if outside {
+        continue;
+      }
+      MapsView::new(&mut maps.world).set_tile(map, "ground", cell, paint.tile());
+      if paint == Paint::Empty {
+        cells.remove(&(cell.y, cell.x));
+      } else {
+        cells.insert((cell.y, cell.x), paint);
+      }
+    }
+    maps.frame();
+  }
+
+  /// Seeded frames each painting 2 to 8 cells at once round the chunk
+  /// corners and rims at `near` (cells' columns and rows; `rims` those on a
+  /// chunk's edge) of a map of `shape`, bounded to `size` or infinite:
+  /// clusters of cells beside each other, and every other frame a rim cell
+  /// with its neighbour across the chunk's edge, each made empty, solid or
+  /// one of two shapes. After each frame the shadows are a fresh build's
+  fn paint_many_at_random(
+    shape: crate::core::tilemap::GridShape,
+    size: Option<UVec2>,
+    (near, rims): (&[i32], &[i32]),
+    seed: u32,
+    frames: usize,
+  ) {
+    let cell = UVec2::new(16, 18);
+    let Some(hex) = crate::core::tilemap::MapGrid::new(shape, cell).hex_cells() else {
+      panic!("{shape:?} is hexagonal");
+    };
+    let mut seed = seed;
+    let mut next = |n: u32| {
+      seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+      (seed >> 8) % n
+    };
+    let pick =
+      |from: &[i32], next: &mut dyn FnMut(u32) -> u32| from[next(from.len() as u32) as usize];
+    let mut cells = BTreeMap::new();
+    for _ in 0..24 {
+      let at = IVec2::new(pick(near, &mut next), pick(near, &mut next));
+      cells.insert((at.y, at.x), Paint::ALL[1 + next(3) as usize]);
+    }
+    let mut maps = MapWorld::new();
+    let (map, layer) = spawn_map(&mut maps, painted_map(shape, cell, size, &cells));
+    for frame in 0..frames {
+      let count = 2 + next(7) as usize;
+      let across_rim = frame % 2 == 0;
+      let anchor = match (across_rim, next(2)) {
+        (true, 0) => IVec2::new(pick(rims, &mut next), pick(near, &mut next)),
+        (true, _) => IVec2::new(pick(near, &mut next), pick(rims, &mut next)),
+        (false, _) => IVec2::new(pick(near, &mut next), pick(near, &mut next)),
+      };
+      let mut picked = vec![anchor];
+      if across_rim {
+        let chunk = TileGrid::chunk_of(anchor);
+        let first = next(6) as usize;
+        let beyond = (0..6)
+          .map(|s| hex.across(anchor, (first + s) % 6))
+          .find(|&c| TileGrid::chunk_of(c) != chunk);
+        picked.extend(beyond);
+      }
+      // The rest beside cells already picked
+      for _ in 0..64 {
+        if picked.len() >= count {
+          break;
+        }
+        let from = picked[next(picked.len() as u32) as usize];
+        let beside = hex.across(from, next(6) as usize);
+        if !picked.contains(&beside) {
+          picked.push(beside);
+        }
+      }
+      let edits: Vec<(IVec2, Paint)> = picked
+        .iter()
+        .map(|&at| (at, Paint::ALL[next(4) as usize]))
+        .collect();
+      paint_many(&mut maps, map, &mut cells, size, &edits);
+      assert_kept_as_spawned(&mut maps.world, map);
+      let label = format!("{shape:?} {size:?}: frame {frame}, {edits:?}");
+      assert_as_fresh(
+        &mut maps,
+        layer,
+        painted_map(shape, cell, size, &cells),
+        &label,
+      );
+    }
+    assert_parent_placed(&mut maps.world);
+  }
+
+  #[test]
+  fn hex_shadows_painted_several_cells_a_frame_round_chunk_rims_match_a_fresh_build() {
+    for (i, shape) in hex_grids().into_iter().enumerate() {
+      let seed = 0x5bd1_e995 + i as u32;
+      // Round the chunks that meet at (0, 0) and (32, 32) of an infinite
+      // map
+      paint_many_at_random(
+        shape,
+        None,
+        (&[-2, -1, 0, 1, 30, 31, 32, 33], &[-1, 0, 31, 32]),
+        seed,
+        40,
+      );
+      // and of a bounded one, to its far border
+      paint_many_at_random(
+        shape,
+        Some(UVec2::splat(40)),
+        (&[0, 1, 30, 31, 32, 33, 38, 39], &[0, 31, 32, 39]),
+        seed,
+        20,
+      );
+    }
+  }
+
+  #[test]
+  fn a_hex_edit_of_more_than_hex_whole_cells_in_a_kept_chunk_matches_a_fresh_build() {
+    let (shape, cell) = (guard_hex(), UVec2::splat(16));
+    let mut cells = full_rows(0);
+    let mut maps = MapWorld::new();
+    let (map, layer) = spawn_map(&mut maps, painted_map(shape, cell, None, &cells));
+    let kept = |world: &World| {
+      world.get::<MapShadows>(map).is_some_and(|s| {
+        s.groups
+          .iter()
+          .any(|g| g.hex_chunks.contains_key(&IVec2::ZERO))
+      })
+    };
+    assert!(kept(&maps.world), "chunk (0, 0) keeps what it read");
+    let before = by_entity(&mut maps.world, layer);
+    // Five rows of sixteen cells turned over in one frame, well inside the
+    // chunk: more cells than `HEX_WHOLE`
+    let edits: Vec<(IVec2, Paint)> = (8..13)
+      .flat_map(|y| (4..20).map(move |x| IVec2::new(x, y)))
+      .map(|at| {
+        let now = match cells.get(&(at.y, at.x)) {
+          Some(Paint::Solid) => Paint::Empty,
+          _ => Paint::Solid,
+        };
+        (at, now)
+      })
+      .collect();
+    assert!(edits.len() as u32 > HEX_WHOLE);
+    paint_many(&mut maps, map, &mut cells, None, &edits);
+    // Chained whole: every chain of the chunk is new
+    let after = by_entity(&mut maps.world, layer);
+    let chunk_chains: Vec<&Found> = after.values().filter(|f| f.chunk == IVec2::ZERO).collect();
+    assert!(!chunk_chains.is_empty());
+    assert!(
+      chunk_chains.iter().all(|f| !before.contains_key(&f.entity)),
+      "the chunk was chained whole"
+    );
+    assert!(kept(&maps.world), "and keeps what it read again");
+    assert_kept_as_spawned(&mut maps.world, map);
+    assert_parent_placed(&mut maps.world);
+    assert_as_fresh(
+      &mut maps,
+      layer,
+      painted_map(shape, cell, None, &cells),
+      "more than HEX_WHOLE cells at once",
+    );
   }
 
   #[test]
