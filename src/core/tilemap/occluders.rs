@@ -75,9 +75,9 @@ use crate::core::physics::{
 /// Marks an occluder a map keeps from its tiles: a child of the first layer
 /// of the layers occluding as one, rebuilt with its chunk. Games can find a
 /// map's shadows by it; the map owns them, so an edit to one lasts until a
-/// change to its chunk builds it again. Only the map's walk places it: a change to its
-/// `Transform` is not applied until the map next moves, and a rebuild
-/// replaces it
+/// change to its chunk builds it again. Only the map's walk places it: a
+/// change to its `Transform` is not applied until the map next moves, and
+/// a rebuild replaces it
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MapOccluder {
   /// The chunk of the layers it was built from: signed, as
@@ -696,7 +696,8 @@ fn chunk_chains(
 /// rings are spawned again only when its shape changed. The chunk is
 /// chained whole when it kept nothing, on a grid whose sides have length 0
 /// (chained by their points), when more than `HEX_WHOLE` cells changed, or
-/// once its chains pass twice what its last whole chaining made. Returns
+/// once its chains pass twice what its last whole chaining made (a
+/// backstop: the rule above keeps the count at a whole build's). Returns
 /// the occluders that go, the chains to spawn and, with `own`, the chunks
 /// whose cells own a side of one of its cells whose solidity changed
 fn hex_chunk_chains(
@@ -908,6 +909,11 @@ fn hex_chunk_chains(
         .collect(),
     )
   };
+  // Whole when nothing was kept, on sides of length 0, for a big edit, or
+  // once the chains pass twice the last whole chaining's. That last is a
+  // backstop, not what holds the count down: chaining again every chain
+  // through a changed cell's corner keeps the count a whole build's (an
+  // edge's next one is decided by the cells at its end), so it never trips
   let live = next.chains.iter().flatten().count();
   let whole =
     !had || hex.point_sides() || changed.count() > HEX_WHOLE || live > 2 * next.whole.max(1);

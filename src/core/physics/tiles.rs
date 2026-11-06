@@ -1878,19 +1878,8 @@ impl Boundary {
     );
   }
 
-  /// The chains the edges of a hexagonal block (`placed`: as `placed_edges`
-  /// or `rebuilt_borders` gave them for the cells from `min` to `max`, read
-  /// through `at`) make, each a run of edges each going on from the last
-  /// one's end, clockwise round the solid cells as the edges run, straight
-  /// runs merged into one segment, and every edge in exactly one: from
-  /// each edge whose edge before it the block does not own, in the scan's
-  /// order, then round what is left, each a closed chain ending where it
-  /// starts. Three cells meet at each corner, so an edge's next one is
-  /// found from its cells, with no search: along the next side of its solid
-  /// cell, or where the cell across that side is solid too, along that
-  /// cell's side round the same corner. None off a hexagonal grid, or on
-  /// one whose cells have sides of length 0 (four cells meet at a point
-  /// there), whose edges a caller chains by their points
+  /// The chains `hex_chain_edges` makes, as their points (`chain_points`:
+  /// straight runs merged into one segment)
   #[cfg(test)]
   pub(crate) fn hex_chains(
     &self,
@@ -1909,10 +1898,22 @@ impl Boundary {
     )
   }
 
-  /// The chains `hex_chains` makes, each as the places of its edges in
-  /// `placed`, in the order it runs them. Any subset of a block's edges
-  /// chains: an edge whose next one is not among them ends its chain, so a
-  /// caller can chain again only the edges an edit reached
+  /// The chains the edges of a hexagonal block (`placed`: as `placed_edges`
+  /// or `rebuilt_borders` gave them for the cells from `min` to `max`, read
+  /// through `at`) make, each as the places of its edges in `placed` in the
+  /// order it runs them (`chain_points` gives its points): a run of edges
+  /// each going on from the last one's end, clockwise round the solid cells
+  /// as the edges run, and every edge in exactly one: from each edge whose
+  /// edge before it is not among them, in the scan's order, then round what
+  /// is left, each a closed chain ending where it starts. Three cells meet
+  /// at each corner, so an edge's next one is found from its cells, with no
+  /// search: along the next side of its solid cell, or where the cell
+  /// across that side is solid too, along that cell's side round the same
+  /// corner. Any subset of a block's edges chains: an edge whose next one
+  /// is not among them ends its chain, so a caller can chain again only the
+  /// edges an edit reached. None off a hexagonal grid, or on one whose
+  /// cells have sides of length 0 (four cells meet at a point there), whose
+  /// edges a caller chains by their points
   pub(crate) fn hex_chain_edges(
     &self,
     at: impl Fn(i32, i32) -> TileCell,
