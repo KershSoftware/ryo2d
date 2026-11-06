@@ -26,9 +26,9 @@
 //! step to keep. Of the budgets tried, 128 is the largest that kept an edit
 //! at a corner of four parts each just under it within 100 µs at the 99th
 //! percentile (the tile rebuild plus the fixed step after it), in five runs
-//! of six, 116.1 µs in the sixth; timed again on 2026-11-06 it passed
-//! 100 µs in every run, 106.5 to 134.8 µs, and main's tip read the same in
-//! an A/B, so the rise came at a later commit than that choice (the physics
+//! of six, 116.1 µs in the sixth; timed again on 2026-11-06 it read 106.5
+//! to 134.8 µs in one session but 78.0 to 86.8 in a quieter one, on main as
+//! on this build (once 131.9): it swings with the machine (the physics
 //! module notes). Measured in release (`docs/backlog/tilemap.md`): an idle
 //! fixed step over the speed guards' cave rock, 2,109 parts, takes 6.08 to
 //! 6.25 µs against 1.92 to 2.04 for its 500 square parts, and a static map
