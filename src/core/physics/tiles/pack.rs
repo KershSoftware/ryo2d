@@ -27,9 +27,10 @@
 //! at a corner of four parts each just under it within 100 µs at the 99th
 //! percentile (the tile rebuild plus the fixed step after it), in five runs
 //! of six, 116.1 µs in the sixth; timed again on 2026-11-06 it passed
-//! 100 µs in every run, 106.5 to 134.8 µs, unexplained (the physics module
-//! notes). Measured in release (`docs/backlog/tilemap.md`): an idle fixed
-//! step over the speed guards' cave rock, 2,109 parts, takes 6.08 to
+//! 100 µs in every run, 106.5 to 134.8 µs, and main's tip read the same in
+//! an A/B, so the rise came at a later commit than that choice (the physics
+//! module notes). Measured in release (`docs/backlog/tilemap.md`): an idle
+//! fixed step over the speed guards' cave rock, 2,109 parts, takes 6.08 to
 //! 6.25 µs against 1.92 to 2.04 for its 500 square parts, and a static map
 //! of it, with its shadow chains, meets the 50 µs a frame target (44.4 to
 //! 47.8 µs over an empty frame); the edit guard's loop rebuild (the map's

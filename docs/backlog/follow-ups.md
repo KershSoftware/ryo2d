@@ -8,6 +8,7 @@ Items from 4f to 6b were copied from their execution records. Items from earlier
 
 - Later levers:
   - **Square and lattice grids rebuild a chunk's shadow chains whole.** Their `chunk_chains` (`tilemap/occluders.rs`) classifies the chunk again, chains every edge and despawns and spawns every chain of each chunk an edit marks, as hexagonal chunks did before an edit rebuilt only the chains through the cells it changed. They meet the edit target, so it was left. The hexagonal way (each chunk keeping its solidity, its chain index per edge and its chain entities, and neighbours marked by the sides they own) would apply to them too.
+  - **The fixed step after a hexagonal edit.** `hex_one_tile_edit_timing`'s islands' corner and four parts pass its own 100 µs at the 99th percentile (114.1 to 116.7 and 106.5 to 134.8 µs), on main as on this branch in an A/B (`docs/backlog/tilemap.md`, Hexagonal maps at speed, and its Limits). The fixed step after the rebuild is 31.0 to 60.8 µs of it at the median. Look into what that step pays for a reshaped part (Rapier's shape build and its broad phase), and whether the part budget should weigh it. A lead: in the A/B the commit with the propagation marker alone read the four parts lower (59.1 to 60.2 µs at the median, against 64.9 to 76.1 at the head), so the later changes may give back part of its saving there.
 
 ## Hexagonal collision and pathfinding (6b, stage 5)
 
@@ -49,7 +50,7 @@ Items from 4f to 6b were copied from their execution records. Items from earlier
   - **The hex board's rim** is one fixed `Collider::segments` built from the board's outline. It doesn't occlude. The demo-kit's scene cleanup puts the page's lighting back on leaving, not an `exit` hook.
 - Deferred findings:
   - **Speed** (see the owner's pass above).
-    - `hex_chain_edges` (`physics/tiles.rs`), which chains a hex chunk's edges for shadows, allocates its index and scratch on every chunk rebuild.
+    - `hex_chain_edges` (`physics/tiles.rs`), which chains a hex chunk's edges for shadows, allocates its index and scratch on every call: each edit's re-chain of the chains it reached, and each whole chaining.
   - **Docs.**
     - `docs/backlog/tilemap.md` (the "Every grid: the targets" paragraph, ~:330) says hex collision "is not guarded yet" and that the hex static frame "measures drawing alone". Both are false now. The bullet below it and the hexagonal section are right.
     - The ryo-tilemap skill (~:444) says "It is `NavigationGrid::for_layer(..)` with each `TileColliders` blocked" without naming the sync step. "Collides in that step" holds only for a grid taken in `update`; from an Update-phase system, physics builds it the next step.

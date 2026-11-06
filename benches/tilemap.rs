@@ -86,15 +86,15 @@
 //!   heavy with rings, in the keep-out area apart from the islands, its
 //!   every cell a ring tile whose shape is a hexagon inset within its cell's
 //!   (six edges a cell, so each 8 x 8 block's rings, 384 edges, pass the
-//!   budget and its 64 sub-blocks are its parts of rings, 96 edges each:
-//!   checked once), edited twice: a ring cell in a block's middle cleared
-//!   and set back (its sub-block's part of rings rebuilt, no part made or
-//!   dropped: checked), and one where four blocks meet turned whole and back
-//!   (its sub-block's part of rings rebuilt, and the chunk's part of sides,
-//!   its six sides, made and dropped: checked). Each edit is timed in three
-//!   parts, each held to 100 µs (the spec): the chunk rebuild (the render
-//!   step of the frame after the edit, less the median render step of the
-//!   ordinary frames between edits: the chunk's instances built and
+//!   budget and the chunk's 64 sub-blocks are its parts of rings, 96 edges
+//!   each: checked once), edited twice: a ring cell in a block's middle
+//!   cleared and set back (its sub-block's part of rings rebuilt, no part
+//!   made or dropped: checked), and one where four blocks meet turned whole
+//!   and back (its sub-block's part of rings rebuilt, and the chunk's part
+//!   of sides, its six sides, made and dropped: checked). Each edit is timed
+//!   in three parts, each held to 100 µs (the spec): the chunk rebuild (the
+//!   render step of the frame after the edit, less the median render step of
+//!   the ordinary frames between edits: the chunk's instances built and
 //!   uploaded), the loop rebuild (the map's collision sync, which classifies
 //!   the chunk again, then physics' tile collider rebuild, which retraces
 //!   the loops through the cell and reshapes their chunk colliders, and its
