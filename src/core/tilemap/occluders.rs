@@ -38,11 +38,12 @@
 //! right of and below them, and an unbounded group's chunks left of and
 //! above its cells hold their first sides; and each other tile's own
 //! shape, a closed chain of each of its rings, as its colliders hold them.
-//! A change to a chunk's cells along its first column, its first row or its
-//! last column builds again the chunks left of it, above it (above left and
-//! above right for that row's ends) or right of it, whose cells own sides
-//! of those: each reads only its rim cells' sides again (its first column,
-//! its last column and its last row), its other edges as it kept them.
+//! Each chunk keeps what its last build read (`HexKept`), so an edit's
+//! build works from the cells that changed: it reads again only the sides
+//! they reach, chains again only the chains through their corners, and
+//! spawns again only those and the rings of the cells whose shape changed.
+//! A rim cell whose solidity changed builds again the chunks whose cells
+//! own one of its sides, and only their chains through it.
 //!
 //! A map's first chains are worked out off the main thread with the rest
 //! of its landing (`spawn.rs`: `prepare`), and spawned as its layers do
@@ -67,12 +68,14 @@ use crate::core::ecs::{
 };
 use crate::core::hash::{FastMap, FastSet};
 use crate::core::lighting::LightOccluder2D;
-use crate::core::physics::{Boundary, CellRect, GRID, HexCells, PlacedEdge, Point, TileCell};
+use crate::core::physics::{
+  Boundary, CellRect, GRID, HexCells, HexSides, PlacedEdge, Point, TileCell, chain_points,
+};
 
 /// Marks an occluder a map keeps from its tiles: a child of the first layer
 /// of the layers occluding as one, rebuilt with its chunk. Games can find a
-/// map's shadows by it; the map owns them, so an edit to one lasts until
-/// its chunk changes. Only the map's walk places it: a change to its
+/// map's shadows by it; the map owns them, so an edit to one lasts until a
+/// change to its chunk builds it again. Only the map's walk places it: a change to its
 /// `Transform` is not applied until the map next moves, and a rebuild
 /// replaces it
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
@@ -133,27 +136,157 @@ fn chain_at(points: Vec<Vec2>) -> Chain {
   (centre, points.into_iter().map(|p| p - centre).collect())
 }
 
-/// The chunks round a chunk that read its cells, each by a bit of what a
-/// chunk's build returns when the cells they read changed kind: on a
-/// square lattice the chunks right of it and below it (a border belongs to
-/// the cells right of and below it); on a hexagonal grid, whose sides
-/// belong to the earlier of their two cells in row order, the chunks left
-/// of it, above it, above left, above right and right of it (whose cells
-/// in the row above own sides of its last column's)
-const ACROSS: [IVec2; 6] = [
-  IVec2::X,
-  IVec2::Y,
-  IVec2::NEG_X,
-  IVec2::NEG_Y,
-  IVec2::new(-1, -1),
-  IVec2::new(1, -1),
-];
-const RIGHT: u8 = 1 << 0;
-const BELOW: u8 = 1 << 1;
-const LEFT: u8 = 1 << 2;
-const ABOVE: u8 = 1 << 3;
-const ABOVE_LEFT: u8 = 1 << 4;
-const ABOVE_RIGHT: u8 = 1 << 5;
+/// A chunk's mark of the chunk `step` from it (each way -1, 0 or 1) to
+/// build again, the cells it reads having changed: a bit of the marks a
+/// chunk's build returns. On a square lattice the chunks right of it and
+/// below it read its cells (a border belongs to the cells right of and
+/// below it); on a hexagonal grid, whose sides belong to the earlier of
+/// their two cells in row order, the chunks whose cells own a side of a
+/// cell of its that changed
+const fn mark(step: IVec2) -> u16 {
+  1 << ((step.y + 1) * 3 + step.x + 1)
+}
+
+/// The cells a chunk's row of solidity holds (`Solidity`)
+const SIDE: usize = 32;
+const _: () = assert!(CHUNK_SIZE as usize == SIDE);
+
+/// The solidity a hexagonal chunk's sides read: its own cells', a row a
+/// word (bit x of word y), and that of the cells across the sides it owns,
+/// the column left of it and the column right of it (bit y) and the row
+/// below it from the cell left of its first column (bit x + 1). Only
+/// `Solid` cells are solid to a hexagonal side
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Solidity {
+  cells: [u32; SIDE],
+  left: u32,
+  right: u32,
+  below: u64,
+}
+
+impl Solidity {
+  /// Whether the cell at `(x, y)` from the chunk's first cell is solid
+  /// (outside what it reads, no)
+  fn at(&self, x: i32, y: i32) -> bool {
+    let inside = |v: i32| (0..SIDE as i32).contains(&v);
+    match (inside(x), inside(y)) {
+      (true, true) => (self.cells[y as usize] >> x) & 1 != 0,
+      (false, true) if x == -1 => (self.left >> y) & 1 != 0,
+      (false, true) if x == SIDE as i32 => (self.right >> y) & 1 != 0,
+      (_, false) if y == SIDE as i32 && (-1..=SIDE as i32).contains(&x) => {
+        (self.below >> (x + 1)) & 1 != 0
+      }
+      _ => false,
+    }
+  }
+
+  /// The cells solid in one of `self` and `other` and not the other
+  fn changed(&self, other: &Solidity) -> Solidity {
+    let mut cells = [0; SIDE];
+    for (y, row) in cells.iter_mut().enumerate() {
+      *row = self.cells[y] ^ other.cells[y];
+    }
+    Solidity {
+      cells,
+      left: self.left ^ other.left,
+      right: self.right ^ other.right,
+      below: self.below ^ other.below,
+    }
+  }
+
+  fn count(&self) -> u32 {
+    let rows: u32 = self.cells.iter().map(|row| row.count_ones()).sum();
+    rows + self.left.count_ones() + self.right.count_ones() + self.below.count_ones()
+  }
+
+  /// Whether none of its own cells is solid
+  fn none_inside(&self) -> bool {
+    self.cells.iter().all(|&row| row == 0)
+  }
+
+  /// Each cell it holds solid, from the chunk's first cell: its own by
+  /// row, then the column left of it, the column right of it and the row
+  /// below it
+  fn each(&self, mut f: impl FnMut(IVec2)) {
+    let mut bits = |mut word: u64, at: &dyn Fn(i32) -> IVec2| {
+      while word != 0 {
+        f(at(word.trailing_zeros() as i32));
+        word &= word - 1;
+      }
+    };
+    for (y, &row) in self.cells.iter().enumerate() {
+      bits(u64::from(row), &|x| IVec2::new(x, y as i32));
+    }
+    bits(u64::from(self.left), &|y| IVec2::new(-1, y));
+    bits(u64::from(self.right), &|y| IVec2::new(SIDE as i32, y));
+    bits(self.below, &|x| IVec2::new(x - 1, SIDE as i32));
+  }
+}
+
+/// What a hexagonal chunk's last build read, and the chains it spawned
+/// from that: an edit's build compares the chunk's cells with it, and
+/// builds again only what the cells that changed reach. A chunk none of
+/// whose cells is solid or shaped keeps none (its next build is whole)
+#[derive(Debug, Default)]
+struct HexKept {
+  read: Solidity,
+  /// Its shape cells within the group's bounds, each by its slot (y * 32 +
+  /// x) and its shape, in slot order
+  shapes: Vec<(u16, u16)>,
+  /// The chain each of its edges (`Group::edges`, by their place there)
+  /// runs in; none on a grid whose sides have length 0, chained whole at
+  /// each build
+  chain_of: Vec<u16>,
+  /// Each chain's occluder, by its index (`None`: an index free, or a chain
+  /// not yet spawned)
+  chains: Vec<Option<Entity>>,
+  /// How many chains its last whole chaining made
+  whole: usize,
+  /// Each shape cell's rings' occluders, by `slot << 16 | ring`
+  rings: FastMap<u32, Entity>,
+}
+
+impl HexKept {
+  /// Notes `entity` as the occluder spawned for `slot`
+  fn record(&mut self, slot: Slot, entity: Entity) {
+    match slot {
+      Slot::Side(id) => {
+        if let Some(chain) = self.chains.get_mut(usize::from(id)) {
+          *chain = Some(entity);
+        }
+      }
+      Slot::Ring(key) => {
+        self.rings.insert(key, entity);
+      }
+    }
+  }
+}
+
+/// A chain to spawn, with its slot in its hexagonal chunk's `HexKept` (none
+/// off a hexagonal grid)
+type Slotted = (Option<Slot>, Chain);
+
+/// Where a hexagonal chunk's new chain goes in its `HexKept`: a chain of
+/// its sides by index, or a ring by `slot << 16 | ring`
+#[derive(Clone, Copy, Debug)]
+enum Slot {
+  Side(u16),
+  Ring(u32),
+}
+
+/// What a hexagonal chunk's build changed: the occluders that go, the
+/// chains to spawn, each with its slot, and the chunks round it to build
+/// again (`mark` bits)
+struct HexBuilt {
+  gone: Vec<Entity>,
+  spawn: Vec<Slotted>,
+  marks: u16,
+}
+
+/// Changed cells (its own and those it reads round it) past which a
+/// hexagonal chunk is chained again whole: such a build reaches most of
+/// its chains anyway, as a streamed chunk landing or unloading does
+const HEX_WHOLE: u32 = 64;
 
 /// Layers sharing a grid and offset, occluding as one
 #[derive(Debug)]
@@ -171,7 +304,9 @@ struct Group {
   kinds: FastMap<u32, TileCell>,
   shapes: FastMap<ShapeKey, u16>,
   boundary: Boundary,
-  /// Each chunk's occluders, a chunk with none left out
+  /// Each chunk's occluders in the order they were spawned (so each is
+  /// despawned newest first, off the end of its parent's children), a
+  /// chunk with none left out
   chunks: FastMap<IVec2, Vec<Entity>>,
   /// Each chunk's boundary edges as it was last built (`Boundary`'s
   /// placed edges, from its top-left), a chunk with none left out: a chunk
@@ -180,20 +315,20 @@ struct Group {
   edges: FastMap<IVec2, Vec<PlacedEdge>>,
   /// Each chunk's sides, a chunk whose sides are all `Empty` left out
   sides: FastMap<IVec2, Sides>,
-  /// The chains a first build worked out, chunk by chunk (each once),
-  /// until they spawn as it lands
-  pending: Vec<(IVec2, Vec<Chain>)>,
+  /// The chains a first build worked out, chunk by chunk (each once), each
+  /// with its slot in its hexagonal chunk's `HexKept`, until they spawn as
+  /// it lands
+  pending: Vec<(IVec2, Vec<Slotted>)>,
   /// On a staggered grid, whose chunks of cells straddle its lattice's: the
   /// lattice, and the kinds of its cells by lattice chunk (a chunk all
   /// `Empty` left out), which its chunks are built from. Its chunks are the
   /// lattice's, and unbounded
   lattice: Option<(Lattice, FastMap<IVec2, Box<ChunkKinds>>)>,
   /// On a hexagonal grid, its cells (whose sides `boundary` reads, by their
-  /// owners) and each chunk's rims as it was last built, which the chunks
-  /// round it read: its first column, its first row and its last column (a
-  /// chunk whose rims are all `Empty` left out). `sides` stays empty
+  /// owners) and what each chunk's last build read and spawned (a chunk
+  /// none of whose cells is solid or shaped left out). `sides` stays empty
   hex: Option<HexCells>,
-  rims: FastMap<IVec2, [Vec<TileCell>; 3]>,
+  hex_chunks: FastMap<IVec2, HexKept>,
 }
 
 impl Group {
@@ -220,7 +355,7 @@ impl Group {
       pending: Vec::new(),
       lattice,
       hex,
-      rims: FastMap::default(),
+      hex_chunks: FastMap::default(),
     }
   }
 
@@ -243,14 +378,15 @@ impl Group {
     }
   }
 
-  /// Despawns every occluder
+  /// Despawns every occluder, each chunk's newest first
   fn clear(&mut self, commands: &mut Commands) {
     for (_, chunk) in self.chunks.drain() {
-      for occluder in chunk {
+      for occluder in chunk.into_iter().rev() {
         commands.entity(occluder).try_despawn();
       }
     }
     self.edges.clear();
+    self.hex_chunks.clear();
   }
 }
 
@@ -545,12 +681,24 @@ fn chunk_chains(
 /// those it owns: the column right of it, the row below it with a cell
 /// past it either way, and the column left of it (the cells down and to
 /// the left of its first column's). With `own` its own cells changed and
-/// are read whole; without, only cells round it did, so only its rim
-/// cells' sides (its first column, its last column and its last row) are
-/// read again (`Boundary::rebuilt_borders`), the others taken from those
-/// it kept (`Group::edges`), as when its own cells are all empty. Returns
-/// its chains and, with `own`, the chunks round it that read a rim of its
-/// cells that changed kind (`ACROSS` bits); without, none
+/// are read again; without, only cells round it did, and its own are as it
+/// kept them.
+///
+/// What it reads is compared with what the chunk kept (`HexKept`). The
+/// sides its cells own that reach a cell whose solidity changed are read
+/// again (`Boundary::hex_cell_edges`), every other edge kept; the chains
+/// through a corner of such a cell (one whose sides the chunk owns some
+/// of), those that lost or turned an edge among them, are chained again
+/// with the new edges (`Boundary::hex_chain_edges`), and only they are
+/// spawned again. An edge's next one is decided by the three cells at its
+/// end, so every other chain still runs as a whole build would run it, and
+/// the chunk holds as many chains as a whole build makes. A shape cell's
+/// rings are spawned again only when its shape changed. The chunk is
+/// chained whole when it kept nothing, on a grid whose sides have length 0
+/// (chained by their points), when more than `HEX_WHOLE` cells changed, or
+/// once its chains pass twice what its last whole chaining made. Returns
+/// the occluders that go, the chains to spawn and, with `own`, the chunks
+/// whose cells own a side of one of its cells whose solidity changed
 fn hex_chunk_chains(
   group: &mut Group,
   hex: HexCells,
@@ -558,23 +706,30 @@ fn hex_chunk_chains(
   own: bool,
   data: &[Option<&TileLayerData>],
   context: &Context<'_>,
-) -> (Vec<Chain>, u8) {
+) -> HexBuilt {
   let side = CHUNK_SIZE as i32;
   let last = side - 1;
   // `holds_chunk`: its cells, and the column and row past them either way,
   // are in an i32
   let min = chunk * side;
   let mut max = min + IVec2::splat(side);
-  if let Some(bounds) = group.bounds {
+  let bounds = group.bounds;
+  if let Some(bounds) = bounds {
     max = max.min(bounds.max);
   }
+  let (from, to) = ((min.x, min.y), (max.x, max.y));
+  let corner = group.grid.grid().origin.as_dvec2() + hex.corner_of(min).as_dvec2();
   let Group {
     layers,
     kinds,
     shapes,
     boundary,
+    chunks,
+    edges,
+    hex_chunks,
     ..
   } = group;
+  let kept = hex_chunks.remove(&chunk);
   let mut classify = |at: IVec2, part: Part| {
     union_kinds(
       layers,
@@ -589,132 +744,390 @@ fn hex_chunk_chains(
     min: IVec2::new(x0, y0),
     max: IVec2::new(x1, y1),
   };
-  let cells = classify(chunk, Part::WHOLE);
+  // Its own cells only when they changed, else as it kept them (a chunk
+  // that kept nothing has none solid or shaped)
+  let cells = own.then(|| classify(chunk, Part::WHOLE));
   let left = classify(chunk - IVec2::X, part((last, 0), (side, side)));
   let right = classify(chunk + IVec2::X, part((0, 0), (1, side)));
   let below = classify(chunk + IVec2::Y, part((0, 0), (side, 1)));
   let below_left = classify(chunk + IVec2::new(-1, 1), part((last, 0), (side, 1)));
   let below_right = classify(chunk + IVec2::ONE, part((0, 0), (1, 1)));
   let slot = |x: i32, y: i32| (y * side + x) as usize;
+  let solid = |kind: TileCell| kind == TileCell::Solid;
+  let mut now = Solidity::default();
+  match (&cells, &kept) {
+    (Some(cells), _) => {
+      for (y, row) in now.cells.iter_mut().enumerate() {
+        for x in 0..side {
+          if solid(cells[slot(x, y as i32)]) {
+            *row |= 1 << x;
+          }
+        }
+      }
+    }
+    (None, Some(kept)) => now.cells = kept.read.cells,
+    (None, None) => {}
+  }
+  for y in 0..side {
+    if solid(left[slot(last, y)]) {
+      now.left |= 1 << y;
+    }
+    if solid(right[slot(0, y)]) {
+      now.right |= 1 << y;
+    }
+  }
+  for x in 0..side {
+    if solid(below[slot(x, 0)]) {
+      now.below |= 1 << (x + 1);
+    }
+  }
+  if solid(below_left[slot(last, 0)]) {
+    now.below |= 1;
+  }
+  if solid(below_right[slot(0, 0)]) {
+    now.below |= 1 << (side + 1);
+  }
+  // Its shape cells, when its own cells were read
+  let now_shapes: Option<Vec<(u16, u16)>> = cells.as_ref().map(|cells| {
+    let mut found = Vec::new();
+    for y in 0..side {
+      for x in 0..side {
+        if let TileCell::Shape(shape) = cells[slot(x, y)]
+          && bounds.is_none_or(|b| b.contains(min + IVec2::new(x, y)))
+        {
+          found.push((slot(x, y) as u16, shape));
+        }
+      }
+    }
+    found
+  });
   let at = |x: i32, y: i32| {
-    let (lx, ly) = (x - min.x, y - min.y);
-    let inside = |v: i32| (0..side).contains(&v);
-    match (inside(lx), inside(ly)) {
-      (true, true) => cells[slot(lx, ly)],
-      (false, true) if lx == -1 => left[slot(last, ly)],
-      (false, true) if lx == side => right[slot(0, ly)],
-      (true, false) if ly == side => below[slot(lx, 0)],
-      (false, false) if ly == side && lx == -1 => below_left[slot(last, 0)],
-      (false, false) if ly == side && lx == side => below_right[slot(0, 0)],
-      _ => TileCell::Empty,
+    if now.at(x - min.x, y - min.y) {
+      TileCell::Solid
+    } else {
+      TileCell::Empty
     }
   };
-  let mut placed = Vec::new();
-  let (from, to) = ((min.x, min.y), (max.x, max.y));
-  let empty = own && cells.iter().all(|&c| c == TileCell::Empty);
-  if own && !empty {
-    group
-      .boundary
-      .placed_edges(at, from, to, group.bounds, &mut placed);
-  } else {
-    // Only its rim cells' sides can have changed: an empty chunk has no
-    // other edges
-    let kept = if empty { None } else { group.edges.get(&chunk) };
-    group.boundary.rebuilt_borders(
-      at,
-      from,
-      to,
-      group.bounds,
-      kept.map_or(&[][..], Vec::as_slice),
-      &mut placed,
-    );
-  }
-  let mut rings = Vec::new();
-  for y in min.y..max.y {
-    for x in min.x..max.x {
-      let (cell, kind) = (IVec2::new(x, y), cells[slot(x - min.x, y - min.y)]);
-      if matches!(kind, TileCell::Shape(_)) && group.bounds.is_none_or(|b| b.contains(cell)) {
-        group.boundary.hex_rings(cell, kind, min, &mut rings);
+  let sides = HexSides::of(hex, bounds);
+  let had = kept.is_some();
+  let mut next = kept.unwrap_or_default();
+  let changed = next.read.changed(&now);
+  let mut gone = Vec::new();
+  let mut spawn: Vec<Slotted> = Vec::new();
+
+  // The chunks whose cells own a side of a rim cell whose solidity changed
+  let mut marks = 0;
+  if own {
+    for (y, &row) in changed.cells.iter().enumerate() {
+      // Only its rim cells have sides another chunk's cells own
+      let rim = if y == 0 || y == SIDE - 1 {
+        u32::MAX
+      } else {
+        1 | (1 << (SIDE - 1))
+      };
+      let mut bits = row & rim;
+      while bits != 0 {
+        let cell = min + IVec2::new(bits.trailing_zeros() as i32, y as i32);
+        bits &= bits - 1;
+        for s in 0..6 {
+          let (across, owned) = sides.across(cell, s);
+          let step = TileGrid::chunk_of(across) - chunk;
+          if !owned && step != IVec2::ZERO {
+            marks |= mark(step);
+          }
+        }
       }
     }
   }
-  // The sides run clockwise on screen round their solid cell, and the
-  // rings round their shape; lighting's the other way
-  let corner = group.grid.grid().origin.as_dvec2() + hex.corner_of(min).as_dvec2();
-  let px = |(x, y): Point| (corner + DVec2::new(f64::from(x), f64::from(y))).as_vec2();
-  // Chained by their cells where three meet at each corner (each chain
-  // then turned round), else by their points
-  let mut built: Vec<Chain> = match group
-    .boundary
-    .hex_chains(at, from, to, group.bounds, &placed)
-  {
-    Some(found) => found
-      .into_iter()
-      .map(|chain| chain_at(chain.into_iter().rev().map(px).collect()))
-      .collect(),
-    None => {
-      let edges: Vec<(Point, Point)> = placed.iter().map(|&(_, a, b)| (b, a)).collect();
-      chains(&edges)
-        .into_iter()
-        .map(|chain| chain_at(chain.into_iter().map(px).collect()))
-        .collect()
+
+  // The rings of the cells whose shape changed, each a closed chain wound
+  // for lighting
+  if let Some(now_shapes) = now_shapes {
+    let old = std::mem::take(&mut next.shapes);
+    let (mut i, mut j) = (0, 0);
+    let mut rings = Vec::new();
+    loop {
+      let (went, came) = match (old.get(i).copied(), now_shapes.get(j).copied()) {
+        (None, None) => break,
+        (Some(o), Some(n)) if o.0 == n.0 => {
+          i += 1;
+          j += 1;
+          if o.1 == n.1 {
+            continue;
+          }
+          (Some(o.0), Some(n))
+        }
+        (Some(o), n) if n.is_none_or(|n| o.0 < n.0) => {
+          i += 1;
+          (Some(o.0), None)
+        }
+        (_, n) => {
+          j += 1;
+          (None, n)
+        }
+      };
+      if let Some(went) = went {
+        for ring in 0u32.. {
+          match next.rings.remove(&((u32::from(went) << 16) | ring)) {
+            Some(entity) => gone.push(entity),
+            None => break,
+          }
+        }
+      }
+      if let Some((at_slot, shape)) = came {
+        let place = i32::from(at_slot);
+        let cell = min + IVec2::new(place % side, place / side);
+        rings.clear();
+        boundary.hex_rings(cell, TileCell::Shape(shape), min, &mut rings);
+        for (ring, points) in rings.iter().filter(|ring| ring.len() > 1).enumerate() {
+          // Its first point, then the others backwards, back to the first
+          let n = points.len();
+          let chain = chain_at(
+            (0..=n)
+              .map(|k| (corner + points[(n - k) % n]).as_vec2())
+              .collect(),
+          );
+          let key = (u32::from(at_slot) << 16) | ring as u32;
+          spawn.push((Some(Slot::Ring(key)), chain));
+        }
+      }
     }
-  };
-  built.extend(rings.into_iter().filter(|ring| ring.len() > 1).map(|ring| {
-    // Its first point, then the others backwards, back to the first
-    let n = ring.len();
+    next.shapes = now_shapes;
+  }
+
+  // The sides: they run clockwise on screen round their solid cell,
+  // lighting's the other way. A chunk's chains are fewer than its edges,
+  // at most about 3,200, so an index fits a `u16`
+  let px = |(x, y): Point| (corner + DVec2::new(f64::from(x), f64::from(y))).as_vec2();
+  let side_chain = |placed: &[PlacedEdge], chain: &[u32]| {
     chain_at(
-      (0..=n)
-        .map(|i| (corner + ring[(n - i) % n]).as_vec2())
+      chain_points(placed, chain)
+        .into_iter()
+        .rev()
+        .map(px)
         .collect(),
     )
-  }));
+  };
+  let live = next.chains.iter().flatten().count();
+  let whole =
+    !had || hex.point_sides() || changed.count() > HEX_WHOLE || live > 2 * next.whole.max(1);
+  if whole {
+    // Every chain of its sides goes: those it kept, or with nothing kept
+    // every occluder it has (none of its cells was shaped: no rings)
+    if had {
+      gone.extend(next.chains.drain(..).flatten());
+    } else {
+      gone.extend(chunks.get(&chunk).into_iter().flatten().copied());
+    }
+    let empty = own && now.none_inside();
+    let mut placed = Vec::new();
+    if own && !empty {
+      boundary.placed_edges(at, from, to, bounds, &mut placed);
+    } else {
+      // Only its rim cells' sides can have changed: an empty chunk has no
+      // other edges
+      let kept_edges = if empty { None } else { edges.get(&chunk) };
+      boundary.rebuilt_borders(
+        at,
+        from,
+        to,
+        bounds,
+        kept_edges.map_or(&[][..], Vec::as_slice),
+        &mut placed,
+      );
+    }
+    next.chain_of.clear();
+    let count = match boundary.hex_chain_edges(at, from, to, bounds, &placed) {
+      // Chained by their cells where three meet at each corner
+      Some(found) => {
+        next.chain_of.resize(placed.len(), 0);
+        for (id, chain) in found.iter().enumerate() {
+          for &edge in chain {
+            next.chain_of[edge as usize] = id as u16;
+          }
+          spawn.push((Some(Slot::Side(id as u16)), side_chain(&placed, chain)));
+        }
+        found.len()
+      }
+      // else by their points, whole at every build
+      None => {
+        let lit: Vec<(Point, Point)> = placed.iter().map(|&(_, a, b)| (b, a)).collect();
+        let found = chains(&lit);
+        for (id, chain) in found.iter().enumerate() {
+          let chain = chain_at(chain.iter().map(|&p| px(p)).collect());
+          spawn.push((Some(Slot::Side(id as u16)), chain));
+        }
+        found.len()
+      }
+    };
+    next.chains = vec![None; count];
+    next.whole = count;
+    keep_edges(edges, chunk, placed);
+  } else if changed.count() > 0 {
+    let first = hex.corner_of(min);
+    let point_of = |p: glam::I64Vec2| -> Option<Point> {
+      let p = p.saturating_sub(first);
+      Some((i32::try_from(p.x).ok()?, i32::try_from(p.y).ok()?))
+    };
+    let in_chunk = |cell: IVec2| {
+      let local = cell - min;
+      (0..side).contains(&local.x)
+        && (0..side).contains(&local.y)
+        && bounds.is_none_or(|b| b.contains(cell))
+    };
+    let note = |rows: &mut [u32; SIDE], cell: IVec2| {
+      let local = cell - min;
+      in_chunk(cell) && {
+        rows[local.y as usize] |= 1 << local.x;
+        true
+      }
+    };
+    // The cells whose sides to read again (the owners of a changed cell's
+    // sides), the cells whose edges can pass a changed cell's corner (it
+    // and the cells beside it: three cells meet at each corner) and those
+    // corners, of each changed cell one of whose sides the chunk owns
+    let (mut dirty, mut near) = ([0u32; SIDE], [0u32; SIDE]);
+    let mut corners: Vec<Point> = Vec::new();
+    changed.each(|local| {
+      let cell = min + local;
+      let mut reached = false;
+      for s in 0..6 {
+        let (across, owned) = sides.across(cell, s);
+        reached |= note(&mut dirty, if owned { cell } else { across });
+      }
+      if reached {
+        note(&mut near, cell);
+        for s in 0..6 {
+          note(&mut near, sides.across(cell, s).0);
+        }
+        corners.extend(hex.corners(cell).into_iter().filter_map(point_of));
+      }
+    });
+    corners.sort_unstable();
+    corners.dedup();
+    let marked = |rows: &[u32; SIDE], place: u32| {
+      let (x, y) = ((place >> 3) & 0x1FFF, (place >> 16) as usize);
+      y < SIDE && x < SIDE as u32 && (rows[y] >> x) & 1 != 0
+    };
+    let mut fresh = Vec::new();
+    boundary.hex_cell_edges(
+      at,
+      from,
+      to,
+      bounds,
+      |x, y| (0..side).contains(&y) && (0..side).contains(&x) && (dirty[y as usize] >> x) & 1 != 0,
+      &mut fresh,
+    );
+    // The kept edges with those read again put in their place, in the
+    // scan's order, each with its chain (`NEW` for an edge read again
+    // that differs), and the chains reached: those that lost or turned an
+    // edge, and those through a changed cell's corner
+    const NEW: u16 = u16::MAX;
+    let old = edges.remove(&chunk).unwrap_or_default();
+    let mut placed = Vec::with_capacity(old.len() + fresh.len());
+    let mut chain_of = Vec::with_capacity(old.len() + fresh.len());
+    let mut reached = vec![false; next.chains.len()];
+    let mut fresh = fresh.into_iter().peekable();
+    for (k, &edge) in old.iter().enumerate() {
+      while let Some(new) = fresh.next_if(|new| new.0 < edge.0) {
+        placed.push(new);
+        chain_of.push(NEW);
+      }
+      let id = next.chain_of.get(k).copied().unwrap_or(NEW);
+      if !marked(&dirty, edge.0) {
+        placed.push(edge);
+        chain_of.push(id);
+        continue;
+      }
+      match fresh.next_if(|new| new.0 == edge.0) {
+        Some(new) if new == edge => {
+          placed.push(edge);
+          chain_of.push(id);
+        }
+        other => {
+          if let Some(hit) = reached.get_mut(usize::from(id)) {
+            *hit = true;
+          }
+          if let Some(new) = other {
+            placed.push(new);
+            chain_of.push(NEW);
+          }
+        }
+      }
+    }
+    for new in fresh {
+      placed.push(new);
+      chain_of.push(NEW);
+    }
+    let reaches =
+      |id: u16, reached: &[bool]| id == NEW || reached.get(usize::from(id)) != Some(&false);
+    for (i, &(place, a, b)) in placed.iter().enumerate() {
+      let id = chain_of[i];
+      if !reaches(id, &reached)
+        && marked(&near, place)
+        && (corners.binary_search(&a).is_ok() || corners.binary_search(&b).is_ok())
+      {
+        reached[usize::from(id)] = true;
+      }
+    }
+    // The chains reached go, and their edges and the new ones are chained
+    // again
+    let mut sub = Vec::new();
+    let mut back = Vec::new();
+    for (i, &edge) in placed.iter().enumerate() {
+      if reaches(chain_of[i], &reached) {
+        sub.push(edge);
+        back.push(i);
+      }
+    }
+    for (id, &hit) in reached.iter().enumerate() {
+      if hit && let Some(entity) = next.chains[id].take() {
+        gone.push(entity);
+      }
+    }
+    // Free indices, the lowest first
+    let mut free: Vec<u16> = (0..next.chains.len())
+      .rev()
+      .filter(|&id| next.chains[id].is_none())
+      .map(|id| id as u16)
+      .collect();
+    let found = boundary
+      .hex_chain_edges(at, from, to, bounds, &sub)
+      .unwrap_or_default();
+    for chain in &found {
+      let id = free.pop().unwrap_or_else(|| {
+        next.chains.push(None);
+        (next.chains.len() - 1) as u16
+      });
+      for &k in chain {
+        chain_of[back[k as usize]] = id;
+      }
+      spawn.push((Some(Slot::Side(id)), side_chain(&sub, chain)));
+    }
+    chain_of.shrink_to_fit();
+    next.chain_of = chain_of;
+    keep_edges(edges, chunk, placed);
+  }
+  next.read = now;
+  if !now.none_inside() || !next.shapes.is_empty() {
+    hex_chunks.insert(chunk, next);
+  }
+  HexBuilt { gone, spawn, marks }
+}
+
+/// Keeps `placed` as chunk `chunk`'s edges, for as long as the chunk is: no
+/// room past them (a chunk with none left out)
+fn keep_edges(
+  edges: &mut FastMap<IVec2, Vec<PlacedEdge>>,
+  chunk: IVec2,
+  mut placed: Vec<PlacedEdge>,
+) {
   if placed.is_empty() {
-    group.edges.remove(&chunk);
+    edges.remove(&chunk);
   } else {
-    // Kept for as long as the chunk is: no room past its edges
     placed.shrink_to_fit();
-    group.edges.insert(chunk, placed);
+    edges.insert(chunk, placed);
   }
-  if !own {
-    // Its own cells, its rims among them, are as they were
-    return (built, 0);
-  }
-  let (w, h) = ((max.x - min.x) as usize, (max.y - min.y) as usize);
-  let s = side as usize;
-  let rims: [Vec<TileCell>; 3] = [
-    (0..h).map(|y| cells[y * s]).collect(),
-    cells[..w].to_vec(),
-    (0..h).map(|y| cells[y * s + w - 1]).collect(),
-  ];
-  let old = group.rims.get(&chunk);
-  let was = |rim: usize| old.map(|o| &o[rim][..]);
-  let first_row_was = |x: usize| was(1).and_then(|r| r.get(x)).copied();
-  let mut across = 0;
-  // The chunk left of it reads its first column; the chunk above, its
-  // first row, and the chunks above left and above right that row's ends;
-  // the chunk right of it, its last column below its first row
-  if !same_side(was(0), &rims[0]) {
-    across |= LEFT;
-  }
-  if !same_side(was(1), &rims[1]) {
-    across |= ABOVE;
-  }
-  if first_row_was(0).unwrap_or(TileCell::Empty) != rims[1][0] {
-    across |= ABOVE_LEFT;
-  }
-  if first_row_was(w - 1).unwrap_or(TileCell::Empty) != rims[1][w - 1] {
-    across |= ABOVE_RIGHT;
-  }
-  if !same_side(was(2).map(|r| r.get(1..).unwrap_or(&[])), &rims[2][1..]) {
-    across |= RIGHT;
-  }
-  if rims.iter().all(|rim| same_side(None, rim)) {
-    group.rims.remove(&chunk);
-  } else {
-    group.rims.insert(chunk, rims);
-  }
-  (built, across)
 }
 
 /// `point` (lattice units) taken through the lattice `to`, worked out in
@@ -783,27 +1196,65 @@ fn rescatter(
   due.into_iter().collect()
 }
 
-/// Spawns `chains` as chunk `chunk`'s occluders, children of `parent`
-fn spawn_chains(
-  commands: &mut Commands,
-  parent: Entity,
+/// Despawns chunk `chunk`'s occluders `gone` with `commands`, newest
+/// first, so each comes off the end of its parent's children (bevy finds a
+/// child from the back), or every one of them for `None`, and spawns
+/// `chains` as its occluders, children of the group's parent, each noted at
+/// its slot in its hexagonal chunk's `HexKept`. Without `commands` (a first
+/// build, which has none to despawn) keeps the chains for the landing
+fn place(
+  group: &mut Group,
   chunk: IVec2,
-  chains: Vec<Chain>,
-) -> Vec<Entity> {
-  chains
-    .into_iter()
-    .map(|(centre, vertices)| {
-      commands
-        .spawn((
-          Transform::from_translation(centre),
-          LightOccluder2D::chain(vertices),
-          MapOccluder { chunk },
-          ParentPlaced,
-          ChildOf(parent),
-        ))
-        .id()
-    })
-    .collect()
+  gone: Option<Vec<Entity>>,
+  chains: Vec<Slotted>,
+  commands: Option<&mut Commands>,
+) {
+  let Some(commands) = commands else {
+    if !chains.is_empty() {
+      group.pending.push((chunk, chains));
+    }
+    return;
+  };
+  let list = group.chunks.entry(chunk).or_default();
+  match gone {
+    // A whole chunk of another grid, in the order they were spawned, as
+    // ever: newest first measured no better there, within the edit guard's
+    // spread on those grids
+    None => {
+      for occluder in list.drain(..) {
+        commands.entity(occluder).try_despawn();
+      }
+    }
+    Some(mut gone) if !gone.is_empty() => {
+      gone.sort_unstable();
+      for &occluder in list.iter().rev() {
+        if gone.binary_search(&occluder).is_ok() {
+          commands.entity(occluder).try_despawn();
+        }
+      }
+      list.retain(|occluder| gone.binary_search(occluder).is_err());
+    }
+    Some(_) => {}
+  }
+  let mut kept = group.hex_chunks.get_mut(&chunk);
+  for (slot, (centre, vertices)) in chains {
+    let occluder = commands
+      .spawn((
+        Transform::from_translation(centre),
+        LightOccluder2D::chain(vertices),
+        MapOccluder { chunk },
+        ParentPlaced,
+        ChildOf(group.parent),
+      ))
+      .id();
+    list.push(occluder);
+    if let (Some(kept), Some(slot)) = (kept.as_deref_mut(), slot) {
+      kept.record(slot, occluder);
+    }
+  }
+  if list.is_empty() {
+    group.chunks.remove(&chunk);
+  }
 }
 
 /// Works out the chunks of `group` that changed since it last looked (and
@@ -839,40 +1290,37 @@ fn update(
   let mut built: FastSet<IVec2> = FastSet::default();
   while let Some(((y, x), own)) = due.pop_first() {
     let chunk = IVec2::new(x, y);
-    let (chains, across) = match group.hex {
+    let marks = match group.hex {
+      // Only the chains it changed
       Some(hex) => {
         built.insert(chunk);
-        hex_chunk_chains(group, hex, chunk, own, data, context)
+        let HexBuilt { gone, spawn, marks } =
+          hex_chunk_chains(group, hex, chunk, own, data, context);
+        place(group, chunk, Some(gone), spawn, commands.as_deref_mut());
+        marks
       }
+      // Every chain of the chunk
       None => {
         let (chains, right, bottom) = chunk_chains(group, chunk, own, data, context);
-        let mut across = 0;
+        let chains = chains.into_iter().map(|chain| (None, chain)).collect();
+        place(group, chunk, None, chains, commands.as_deref_mut());
+        let mut marks = 0;
         if right {
-          across |= RIGHT;
+          marks |= mark(IVec2::X);
         }
         if bottom {
-          across |= BELOW;
+          marks |= mark(IVec2::Y);
         }
-        (chains, across)
+        marks
       }
     };
-    match commands.as_deref_mut() {
-      Some(commands) => {
-        for occluder in group.chunks.remove(&chunk).unwrap_or_default() {
-          commands.entity(occluder).try_despawn();
+    for dy in -1..=1 {
+      for dx in -1..=1 {
+        let step = IVec2::new(dx, dy);
+        let next = chunk + step;
+        if marks & mark(step) != 0 && group.holds_chunk(next) && !built.contains(&next) {
+          due.entry((next.y, next.x)).or_insert(false);
         }
-        if !chains.is_empty() {
-          let spawned = spawn_chains(commands, group.parent, chunk, chains);
-          group.chunks.insert(chunk, spawned);
-        }
-      }
-      None if chains.is_empty() => {}
-      None => group.pending.push((chunk, chains)),
-    }
-    for (bit, &step) in ACROSS.iter().enumerate() {
-      let next = chunk + step;
-      if across & (1 << bit) != 0 && group.holds_chunk(next) && !built.contains(&next) {
-        due.entry((next.y, next.x)).or_insert(false);
       }
     }
   }
@@ -1019,8 +1467,16 @@ pub(crate) fn land(world: &mut World, map: Entity, layers: &[Entity], prepared: 
       .iter()
       .map(|(chunk, chains)| (*chunk, chains.len()))
       .collect();
+    // On a hexagonal grid, where each goes in its chunk's `HexKept`
+    let slots: Vec<Option<Slot>> = match group.hex {
+      Some(_) => pending
+        .iter()
+        .flat_map(|(_, chains)| chains.iter().map(|(slot, _)| *slot))
+        .collect(),
+      None => Vec::new(),
+    };
     let bundles = pending.into_iter().flat_map(|(chunk, chains)| {
-      chains.into_iter().map(move |(centre, vertices)| {
+      chains.into_iter().map(move |(_, (centre, vertices))| {
         (
           Transform::from_translation(centre),
           LightOccluder2D::chain(vertices),
@@ -1034,10 +1490,20 @@ pub(crate) fn land(world: &mut World, map: Entity, layers: &[Entity], prepared: 
       .spawn_batch(bundles)
       .collect::<Vec<Entity>>()
       .into_iter();
+    let mut slots = slots.into_iter();
     for (chunk, count) in counts {
-      group
-        .chunks
-        .insert(chunk, spawned.by_ref().take(count).collect());
+      let occluders: Vec<Entity> = spawned.by_ref().take(count).collect();
+      match group.hex_chunks.get_mut(&chunk) {
+        Some(kept) => {
+          for (&occluder, slot) in occluders.iter().zip(slots.by_ref()) {
+            if let Some(slot) = slot {
+              kept.record(slot, occluder);
+            }
+          }
+        }
+        None => slots.by_ref().take(count).for_each(drop),
+      }
+      group.chunks.insert(chunk, occluders);
     }
   }
   if let Ok(mut entity) = world.get_entity_mut(map) {
@@ -2759,7 +3225,8 @@ mod tests {
       &part_edges(&mut maps.world, map),
       "before",
     );
-    // A lone hexagon in chunk (0, 0): only that chunk is built again
+    // A lone hexagon in chunk (0, 0): only that chunk is built again, and
+    // in it only the hexagon's chain is new
     assert!(MapsView::new(&mut maps.world).set_tile(
       map,
       "ground",
@@ -2778,9 +3245,11 @@ mod tests {
     }
     let near = in_chunk(&after, (0, 0));
     assert_eq!(near.len(), 2, "the clump's and the hexagon's: {after:#?}");
-    assert!(
-      near.iter().all(|e| !in_chunk(&before, (0, 0)).contains(e)),
-      "the edited chunk's occluders were built again"
+    let was = in_chunk(&before, (0, 0));
+    assert_eq!(
+      near.iter().filter(|e| was.contains(e)).count(),
+      1,
+      "the clump's chain kept its entity, the hexagon's is new"
     );
     assert_same_edges(
       &lit_edges(&mut maps.world, layer),
@@ -2789,7 +3258,8 @@ mod tests {
     );
     // A hexagon in chunk (1, 0)'s first column: its side on the left, and
     // the one on the upper left, belong to cells of chunk (0, 0), which is
-    // built again with it
+    // built again with it: each chunk gains the hexagon's chain of the
+    // sides it owns and keeps the chains it had
     let edge_cell = IVec2::new(32, 10);
     assert!(MapsView::new(&mut maps.world).set_tile(
       map,
@@ -2806,11 +3276,15 @@ mod tests {
       "chunk (-1, -1) kept its occluders"
     );
     for built in [(0, 0), (1, 0)] {
-      let now = in_chunk(&edged, built);
-      assert!(!now.is_empty(), "{built:?}");
+      let (now, was) = (in_chunk(&edged, built), in_chunk(&after, built));
       assert!(
-        now.iter().all(|e| !in_chunk(&after, built).contains(e)),
-        "chunk {built:?} was built again"
+        was.iter().all(|e| now.contains(e)),
+        "chunk {built:?} kept its chains"
+      );
+      assert_eq!(
+        now.len(),
+        was.len() + 1,
+        "chunk {built:?} gained the hexagon's"
       );
     }
     let left = grid
@@ -3001,6 +3475,869 @@ mod tests {
       &ring(&triangle),
       "collision",
     );
+  }
+
+  // ---- hexagonal edits that keep the chains they don't reach --------------
+
+  /// What a test paints a hexagonal cell with: nothing, its whole hexagon
+  /// (a solid cell), or one of two shapes of its own (tiles 1 and 2 of
+  /// `shaped_hex_set`)
+  #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+  enum Paint {
+    Empty,
+    Solid,
+    Inset,
+    Wedge,
+  }
+
+  impl Paint {
+    const ALL: [Paint; 4] = [Paint::Empty, Paint::Solid, Paint::Inset, Paint::Wedge];
+
+    fn tile(self) -> Option<Tile> {
+      match self {
+        Paint::Empty => None,
+        Paint::Solid => Some(Tile::new(0, 0)),
+        Paint::Inset => Some(Tile::new(0, 1)),
+        Paint::Wedge => Some(Tile::new(0, 2)),
+      }
+    }
+  }
+
+  /// `whole_hex_set` for `grid` with tile 1 an inset hexagon and tile 2 a
+  /// wedge, each a shape of its own, in fractions of the tile
+  fn shaped_hex_set(grid: &crate::core::tilemap::MapGrid) -> Tileset {
+    use crate::core::tilemap::test_util::whole_hex_set;
+    const INSET: [(f32, f32); 6] = [
+      (0.5, 0.125),
+      (0.875, 0.3125),
+      (0.875, 0.6875),
+      (0.5, 0.875),
+      (0.125, 0.6875),
+      (0.125, 0.3125),
+    ];
+    const WEDGE: [(f32, f32); 3] = [(0.25, 0.25), (0.75, 0.5), (0.25, 0.75)];
+    let mut set = whole_hex_set(grid);
+    let size = grid.cell.as_vec2();
+    for (id, points) in [(1, &INSET[..]), (2, &WEDGE[..])] {
+      set.insert_tile(
+        id,
+        TileData {
+          shapes: vec![TileShape {
+            points: points
+              .iter()
+              .map(|&(x, y)| Vec2::new(x, y) * size)
+              .collect(),
+            ..TileShape::default()
+          }],
+          ..TileData::default()
+        },
+      );
+    }
+    set.tile_count = 3;
+    set
+  }
+
+  /// A map of `shape` hexagons of `cell` px, bounded to `size` cells or
+  /// infinite, its layer "ground" painted at `cells`
+  fn painted_map(
+    shape: crate::core::tilemap::GridShape,
+    cell: UVec2,
+    size: Option<UVec2>,
+    cells: &BTreeMap<(i32, i32), Paint>,
+  ) -> TileMap {
+    let map = match size {
+      Some(size) => TileMap::new(size, cell),
+      None => TileMap::infinite(cell),
+    };
+    let mut map = map.with_shape(shape);
+    let set = shaped_hex_set(&map.grid());
+    map.add_tileset(TilesetSource::Embedded(Arc::new(set)));
+    let layer = map.add_tile_layer("ground");
+    if let Some(grid) = map.tiles_mut(layer) {
+      for (&(y, x), paint) in cells {
+        grid.set(IVec2::new(x, y), paint.tile());
+      }
+    }
+    map
+  }
+
+  /// Spawns `map` and returns it with its layer
+  fn spawn_map(maps: &mut MapWorld, map: TileMap) -> (Entity, Entity) {
+    let handle = maps.world.resource_mut::<Assets<TileMap>>().add(map);
+    let map = maps.spawn(MapRoot::new(handle));
+    let layer = layers_of(&mut maps.world, map)[0];
+    (map, layer)
+  }
+
+  /// Paints `cell` of `map`'s "ground" with `paint`, noted in `cells`, and
+  /// runs a frame
+  fn paint(
+    maps: &mut MapWorld,
+    map: Entity,
+    cells: &mut BTreeMap<(i32, i32), Paint>,
+    cell: IVec2,
+    paint: Paint,
+  ) {
+    assert!(
+      MapsView::new(&mut maps.world).set_tile(map, "ground", cell, paint.tile()),
+      "{cell} becomes {paint:?}"
+    );
+    if paint == Paint::Empty {
+      cells.remove(&(cell.y, cell.x));
+    } else {
+      cells.insert((cell.y, cell.x), paint);
+    }
+    maps.frame();
+  }
+
+  /// That the shadows of `layer` are what a map built afresh as `fresh`
+  /// casts, edge for edge, and each chunk holds at most twice the chains
+  /// its fresh build does (spawned, compared and despawned)
+  fn assert_as_fresh(maps: &mut MapWorld, layer: Entity, fresh: TileMap, label: &str) {
+    let (built, built_layer) = spawn_map(maps, fresh);
+    assert_same_edges(
+      &lit_edges(&mut maps.world, layer),
+      &lit_edges(&mut maps.world, built_layer),
+      label,
+    );
+    let per_chunk = |found: &[Found]| -> BTreeMap<(i32, i32), usize> {
+      let mut counts = BTreeMap::new();
+      for f in found {
+        *counts.entry((f.chunk.y, f.chunk.x)).or_insert(0) += 1;
+      }
+      counts
+    };
+    let edited = per_chunk(&occluders_of(&mut maps.world, layer));
+    let fresh = per_chunk(&occluders_of(&mut maps.world, built_layer));
+    for (chunk, &n) in &edited {
+      let most = 2 * fresh.get(chunk).copied().unwrap_or(0);
+      assert!(
+        n <= most,
+        "{label}: chunk {chunk:?} holds {n} chains, a fresh build {most} / 2"
+      );
+    }
+    maps.world.despawn(built);
+    maps.frame();
+  }
+
+  /// Whether a chain of `found` (its parent at `base` in the world) passes
+  /// through `point` (the world), at a vertex or along a segment
+  fn touches(found: &Found, base: Vec2, point: Vec2) -> bool {
+    found.occluder.edges().any(|(a, b)| {
+      let (a, b) = (base + found.at + a, base + found.at + b);
+      let (ab, ap) = (b - a, point - a);
+      let t = ap.dot(ab) / ab.length_squared().max(1e-6);
+      (-1e-4..=1.0 + 1e-4).contains(&t) && (a + ab * t - point).length() < 1e-3
+    })
+  }
+
+  /// The occluders under `layer` by entity
+  fn by_entity(world: &mut World, layer: Entity) -> BTreeMap<Entity, Found> {
+    occluders_of(world, layer)
+      .into_iter()
+      .map(|f| (f.entity, f))
+      .collect()
+  }
+
+  /// That every chain of `before` that passes through none of `corners`
+  /// (the world) is in `after` as it was: the same entity, place and
+  /// vertices
+  fn assert_kept_away_from(
+    before: &BTreeMap<Entity, Found>,
+    after: &BTreeMap<Entity, Found>,
+    base: Vec2,
+    corners: &[Vec2],
+    label: &str,
+  ) {
+    for (entity, was) in before {
+      if corners.iter().any(|&c| touches(was, base, c)) {
+        continue;
+      }
+      let Some(now) = after.get(entity) else {
+        panic!(
+          "{label}: chain {entity} (chunk {}) passes through no corner of the edit, yet went",
+          was.chunk
+        );
+      };
+      assert_eq!(now.at, was.at, "{label}: {entity}");
+      assert_eq!(
+        now.occluder.vertices(),
+        was.occluder.vertices(),
+        "{label}: {entity}"
+      );
+    }
+  }
+
+  /// Every map occluder carries `ParentPlaced`: its map's walk places it
+  fn assert_parent_placed(world: &mut World) {
+    let unplaced = world
+      .query_filtered::<Entity, (With<MapOccluder>, Without<ParentPlaced>)>()
+      .iter(world)
+      .count();
+    assert_eq!(unplaced, 0, "chains without ParentPlaced");
+  }
+
+  /// The hexagonal grids of 16 x 18 px cells and sides of 8 the edits run
+  /// on: either axis, either index
+  fn hex_grids() -> Vec<crate::core::tilemap::GridShape> {
+    use crate::core::tilemap::{GridShape, StaggerAxis, StaggerIndex};
+    [StaggerAxis::Y, StaggerAxis::X]
+      .into_iter()
+      .flat_map(|axis| {
+        [StaggerIndex::Odd, StaggerIndex::Even].map(|index| GridShape::Hexagonal {
+          axis,
+          index,
+          side: 8,
+        })
+      })
+      .collect()
+  }
+
+  /// The guards' grid: 16 px hexagons of side 8 in rows, the odd ones
+  /// shifted
+  fn guard_hex() -> crate::core::tilemap::GridShape {
+    use crate::core::tilemap::{GridShape, StaggerAxis, StaggerIndex};
+    GridShape::Hexagonal {
+      axis: StaggerAxis::Y,
+      index: StaggerIndex::Odd,
+      side: 8,
+    }
+  }
+
+  /// The serpentine's rows: every odd row of chunk (0, 0) full, from
+  /// column `from` to column 31
+  fn full_rows(from: i32) -> BTreeMap<(i32, i32), Paint> {
+    (1..32)
+      .step_by(2)
+      .flat_map(|y| (from..32).map(move |x| ((y, x), Paint::Solid)))
+      .collect()
+  }
+
+  #[test]
+  fn a_hex_edit_respawns_only_the_chains_through_its_cell() {
+    use crate::core::tilemap::MapGrid;
+    let (shape, cell) = (guard_hex(), UVec2::splat(16));
+    let mut cells = full_rows(0);
+    let mut maps = MapWorld::new();
+    let (map, layer) = spawn_map(&mut maps, painted_map(shape, cell, None, &cells));
+    let before = by_entity(&mut maps.world, layer);
+    assert!(before.len() >= 16, "a chain a row: {}", before.len());
+    // A cell in the middle of a row goes: only that row's chain passes
+    // through its corners
+    let edited = IVec2::new(16, 15);
+    paint(&mut maps, map, &mut cells, edited, Paint::Empty);
+    let after = by_entity(&mut maps.world, layer);
+    let corners = MapGrid::new(shape, cell)
+      .cell_outline(edited)
+      .points()
+      .to_vec();
+    let base = world_offset(&maps.world, layer);
+    assert_kept_away_from(&before, &after, base, &corners, "a row cut");
+    let kept = after.keys().filter(|e| before.contains_key(e)).count();
+    assert!(kept >= before.len() - 2, "kept {kept} of {}", before.len());
+    assert_parent_placed(&mut maps.world);
+    assert_as_fresh(
+      &mut maps,
+      layer,
+      painted_map(shape, cell, None, &cells),
+      "a row cut",
+    );
+  }
+
+  #[test]
+  fn a_hex_rim_edit_rebuilds_only_the_neighbour_chains_it_touches() {
+    use crate::core::tilemap::MapGrid;
+    let (shape, cell) = (guard_hex(), UVec2::splat(16));
+    // The rows run on through the chunk left of chunk (0, 0)
+    let mut cells = full_rows(-32);
+    let mut maps = MapWorld::new();
+    let (map, layer) = spawn_map(&mut maps, painted_map(shape, cell, None, &cells));
+    let before = by_entity(&mut maps.world, layer);
+    let left =
+      |found: &BTreeMap<Entity, Found>| found.values().filter(|f| f.chunk == IVec2::NEG_X).count();
+    assert!(left(&before) >= 16, "the left chunk's rows");
+    // Cell (0, 15)'s side on the left belongs to (-1, 15), in the chunk
+    // left of it: that chunk is built again, but only its row 15's chain
+    // passes through the cell's corners
+    let edited = IVec2::new(0, 15);
+    paint(&mut maps, map, &mut cells, edited, Paint::Empty);
+    let after = by_entity(&mut maps.world, layer);
+    let corners = MapGrid::new(shape, cell)
+      .cell_outline(edited)
+      .points()
+      .to_vec();
+    let base = world_offset(&maps.world, layer);
+    assert_kept_away_from(&before, &after, base, &corners, "a rim cell");
+    let kept_left = after
+      .iter()
+      .filter(|(e, f)| f.chunk == IVec2::NEG_X && before.contains_key(e))
+      .count();
+    assert!(
+      kept_left + 2 >= left(&before),
+      "the left chunk kept {kept_left} of {}",
+      left(&before)
+    );
+    assert_parent_placed(&mut maps.world);
+    assert_as_fresh(
+      &mut maps,
+      layer,
+      painted_map(shape, cell, None, &cells),
+      "a rim cell",
+    );
+  }
+
+  #[test]
+  fn ring_chains_of_unchanged_cells_keep_their_entities() {
+    let (shape, cell) = (guard_hex(), UVec2::splat(16));
+    // Chunk (0, 0) full of tiles whose shape is an inset hexagon, each a
+    // closed chain of its own
+    let mut cells: BTreeMap<(i32, i32), Paint> = (0..32)
+      .flat_map(|y| (0..32).map(move |x| ((y, x), Paint::Inset)))
+      .collect();
+    let mut maps = MapWorld::new();
+    let (map, layer) = spawn_map(&mut maps, painted_map(shape, cell, None, &cells));
+    let before = by_entity(&mut maps.world, layer);
+    assert_eq!(before.len(), 1024, "a ring a cell");
+    // A cell cleared: its ring goes, and nothing else
+    paint(&mut maps, map, &mut cells, IVec2::new(10, 10), Paint::Empty);
+    let cleared = by_entity(&mut maps.world, layer);
+    assert_eq!(cleared.len(), 1023);
+    assert!(
+      cleared.keys().all(|e| before.contains_key(e)),
+      "every other ring kept its entity"
+    );
+    // A cell given another shape: its ring alone is spawned again
+    paint(&mut maps, map, &mut cells, IVec2::new(20, 20), Paint::Wedge);
+    let turned = by_entity(&mut maps.world, layer);
+    assert_eq!(turned.len(), 1023);
+    let new: Vec<&Found> = turned
+      .values()
+      .filter(|f| !cleared.contains_key(&f.entity))
+      .collect();
+    assert_eq!(new.len(), 1, "one ring respawned");
+    assert_eq!(new[0].occluder.vertices().len(), 4, "the wedge, closed");
+    assert_eq!(
+      cleared.keys().filter(|e| !turned.contains_key(e)).count(),
+      1,
+      "one ring gone"
+    );
+    assert_parent_placed(&mut maps.world);
+    assert_as_fresh(
+      &mut maps,
+      layer,
+      painted_map(shape, cell, None, &cells),
+      "rings",
+    );
+  }
+
+  #[test]
+  fn hex_neighbour_marks_follow_side_ownership_on_every_variant() {
+    let cell = UVec2::new(16, 18);
+    // Four cells in ten solid over the chunks round chunk (0, 0), so every
+    // chunk has chains along its rims
+    let hash = |x: i32, y: i32| {
+      let h = (x as u32).wrapping_mul(0x9E37_79B9) ^ (y as u32).wrapping_mul(0x85EB_CA6B);
+      (h ^ (h >> 15)).wrapping_mul(0x2C1B_3C6D) >> 16
+    };
+    let start: BTreeMap<(i32, i32), Paint> = (-32..64)
+      .flat_map(|y| (-32..64).map(move |x| (x, y)))
+      .filter(|&(x, y)| hash(x, y) % 10 < 4)
+      .map(|(x, y)| ((y, x), Paint::Solid))
+      .collect();
+    // Each kind of rim cell: the corners, the first and last rows' and
+    // columns' middles, on lines of either parity
+    let rim = [
+      (0, 0),
+      (31, 0),
+      (0, 31),
+      (31, 31),
+      (15, 0),
+      (16, 0),
+      (15, 31),
+      (16, 31),
+      (0, 15),
+      (0, 16),
+      (31, 15),
+      (31, 16),
+    ];
+    for shape in hex_grids() {
+      let grid = crate::core::tilemap::MapGrid::new(shape, cell);
+      let Some(hex) = grid.hex_cells() else {
+        panic!("{shape:?} is hexagonal");
+      };
+      let mut cells = start.clone();
+      let mut maps = MapWorld::new();
+      let (map, layer) = spawn_map(&mut maps, painted_map(shape, cell, None, &cells));
+      for (x, y) in rim {
+        let at = IVec2::new(x, y);
+        let label = format!("{shape:?}, cell {at}");
+        // The chunks owning one of its sides: each side belongs to the
+        // earlier of its cells in row order
+        let owners: Vec<IVec2> = (0..6)
+          .map(|side| {
+            let across = hex.across(at, side);
+            let owner = if (across.y, across.x) < (at.y, at.x) {
+              across
+            } else {
+              at
+            };
+            TileGrid::chunk_of(owner)
+          })
+          .collect();
+        let was = cells.get(&(y, x)).copied().unwrap_or(Paint::Empty);
+        let flipped = if was == Paint::Solid {
+          Paint::Empty
+        } else {
+          Paint::Solid
+        };
+        for paint_now in [flipped, was] {
+          let before = by_entity(&mut maps.world, layer);
+          paint(&mut maps, map, &mut cells, at, paint_now);
+          let after = by_entity(&mut maps.world, layer);
+          for dy in -1..=1 {
+            for dx in -1..=1 {
+              let chunk = IVec2::new(dx, dy);
+              if chunk == IVec2::ZERO || owners.contains(&chunk) {
+                continue;
+              }
+              let of = |found: &BTreeMap<Entity, Found>| -> Vec<Entity> {
+                found
+                  .values()
+                  .filter(|f| f.chunk == chunk)
+                  .map(|f| f.entity)
+                  .collect()
+              };
+              assert!(!of(&before).is_empty(), "{label}: chunk {chunk} has chains");
+              assert_eq!(
+                of(&after),
+                of(&before),
+                "{label} made {paint_now:?}: chunk {chunk} owns none of its sides"
+              );
+            }
+          }
+        }
+      }
+      assert_as_fresh(
+        &mut maps,
+        layer,
+        painted_map(shape, cell, None, &cells),
+        &format!("{shape:?}"),
+      );
+    }
+  }
+
+  #[test]
+  fn a_shape_cell_painted_on_a_chunk_edge_rebuilds_no_neighbour() {
+    let (shape, cell) = (guard_hex(), UVec2::splat(16));
+    // The chunk left of chunk (0, 0) solid along its last columns, and a
+    // clump in chunk (0, 0)
+    let mut cells: BTreeMap<(i32, i32), Paint> = (4..16)
+      .flat_map(|y| (-4..0).map(move |x| ((y, x), Paint::Solid)))
+      .chain([((20, 5), Paint::Solid), ((20, 6), Paint::Solid)])
+      .collect();
+    let mut maps = MapWorld::new();
+    let (map, layer) = spawn_map(&mut maps, painted_map(shape, cell, None, &cells));
+    let left = |found: &BTreeMap<Entity, Found>| -> Vec<Entity> {
+      found
+        .values()
+        .filter(|f| f.chunk == IVec2::NEG_X)
+        .map(|f| f.entity)
+        .collect()
+    };
+    let start = by_entity(&mut maps.world, layer);
+    assert!(!left(&start).is_empty());
+    // A first-column cell beside the solid ones becomes a shape, then
+    // another: no cell's solidity changes, so only its ring is spawned
+    let edited = IVec2::new(0, 10);
+    let mut before = start.clone();
+    for shaped in [Paint::Inset, Paint::Wedge] {
+      paint(&mut maps, map, &mut cells, edited, shaped);
+      let after = by_entity(&mut maps.world, layer);
+      assert_eq!(
+        left(&after),
+        left(&start),
+        "{shaped:?}: the left chunk kept its chains"
+      );
+      let gone = before.keys().filter(|e| !after.contains_key(e)).count();
+      let new = after.keys().filter(|e| !before.contains_key(e)).count();
+      assert_eq!(new, 1, "{shaped:?}: its ring");
+      assert_eq!(
+        gone,
+        usize::from(shaped == Paint::Wedge),
+        "{shaped:?}: the ring before"
+      );
+      before = after;
+    }
+    assert_as_fresh(
+      &mut maps,
+      layer,
+      painted_map(shape, cell, None, &cells),
+      "a shape on a chunk's edge",
+    );
+  }
+
+  /// Random edits at `near` (cells' columns and rows) of a map of `shape`
+  /// (bounded to `size`, or infinite): each cell becomes empty, solid or
+  /// one of two shapes, and after each edit the shadows are a fresh
+  /// build's
+  fn edit_at_random(
+    shape: crate::core::tilemap::GridShape,
+    size: Option<UVec2>,
+    near: &[i32],
+    seed: u32,
+    edits: usize,
+  ) {
+    let cell = UVec2::new(16, 18);
+    let mut seed = seed;
+    let mut next = |n: u32| {
+      seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+      (seed >> 8) % n
+    };
+    let pick = |next: &mut dyn FnMut(u32) -> u32| {
+      let n = near.len() as u32;
+      IVec2::new(near[next(n) as usize], near[next(n) as usize])
+    };
+    let mut cells = BTreeMap::new();
+    for _ in 0..16 {
+      let at = pick(&mut next);
+      cells.insert((at.y, at.x), Paint::ALL[1 + next(3) as usize]);
+    }
+    let mut maps = MapWorld::new();
+    let (map, layer) = spawn_map(&mut maps, painted_map(shape, cell, size, &cells));
+    for edit in 0..edits {
+      let at = pick(&mut next);
+      let was = cells.get(&(at.y, at.x)).copied().unwrap_or(Paint::Empty);
+      let now = loop {
+        let now = Paint::ALL[next(4) as usize];
+        if now != was {
+          break now;
+        }
+      };
+      paint(&mut maps, map, &mut cells, at, now);
+      assert_kept_as_spawned(&mut maps.world, map);
+      let label = format!("{shape:?} {size:?}: edit {edit}, {at} {was:?} to {now:?}");
+      assert_as_fresh(
+        &mut maps,
+        layer,
+        painted_map(shape, cell, size, &cells),
+        &label,
+      );
+    }
+    assert_parent_placed(&mut maps.world);
+  }
+
+  #[test]
+  fn hex_shadows_edited_at_random_match_a_fresh_build_on_bounded_maps_and_every_variant() {
+    for (i, shape) in hex_grids().into_iter().enumerate() {
+      // Round a bounded map's first cells, the corner of its first four
+      // chunks and its far border
+      let seed = 0x2545_f491 + i as u32;
+      edit_at_random(
+        shape,
+        Some(UVec2::splat(40)),
+        &[0, 1, 31, 32, 33, 38, 39],
+        seed,
+        24,
+      );
+      // and round the chunks that meet at (0, 0) and (32, 32) of an
+      // infinite one
+      edit_at_random(shape, None, &[-2, -1, 0, 1, 31, 32, 33], seed, 24);
+    }
+  }
+
+  #[test]
+  fn a_side_zero_hex_map_edited_at_random_matches_a_fresh_build() {
+    use crate::core::tilemap::{GridShape, StaggerAxis, StaggerIndex};
+    // Diamonds: four cells meet at a point, and the chains go by points
+    for (axis, index) in [
+      (StaggerAxis::Y, StaggerIndex::Odd),
+      (StaggerAxis::X, StaggerIndex::Even),
+    ] {
+      let shape = GridShape::Hexagonal {
+        axis,
+        index,
+        side: 0,
+      };
+      edit_at_random(shape, None, &[-2, -1, 0, 1, 31, 32, 33], 0x0bad_5eed, 24);
+      edit_at_random(
+        shape,
+        Some(UVec2::splat(40)),
+        &[0, 1, 31, 32, 33, 38, 39],
+        0x0bad_5eed,
+        12,
+      );
+    }
+  }
+
+  #[test]
+  fn a_hex_chunk_edited_many_times_keeps_its_chain_count_near_a_fresh_build() {
+    use crate::core::physics::Boundary;
+    use std::collections::BTreeSet;
+    let (shape, cell) = (guard_hex(), UVec2::splat(16));
+    let Some(hex) = crate::core::tilemap::MapGrid::new(shape, cell).hex_cells() else {
+      panic!("hexagonal");
+    };
+    let mut seed = 0x6a09_e667_u32;
+    let mut next = |n: u32| {
+      seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+      (seed >> 8) % n
+    };
+    // Chunk (0, 0) four cells in ten solid
+    let mut solid: BTreeSet<(i32, i32)> = BTreeSet::new();
+    for y in 0..32 {
+      for x in 0..32 {
+        if next(10) < 4 {
+          solid.insert((y, x));
+        }
+      }
+    }
+    let mut cells: BTreeMap<(i32, i32), Paint> = solid.iter().map(|&c| (c, Paint::Solid)).collect();
+    let mut maps = MapWorld::new();
+    let (map, layer) = spawn_map(&mut maps, painted_map(shape, cell, None, &cells));
+    // What a fresh build of chunk (0, 0)'s cells chains its sides into
+    let boundary = Boundary::default().with_hex(hex);
+    let fresh = |solid: &BTreeSet<(i32, i32)>| {
+      let at = |x: i32, y: i32| {
+        if solid.contains(&(y, x)) {
+          TileCell::Solid
+        } else {
+          TileCell::Empty
+        }
+      };
+      let mut placed = Vec::new();
+      boundary.placed_edges(at, (0, 0), (32, 32), None, &mut placed);
+      boundary
+        .hex_chains(at, (0, 0), (32, 32), None, &placed)
+        .map_or(0, |chains| chains.len())
+    };
+    for edit in 0..500 {
+      let at = IVec2::new(next(32) as i32, next(32) as i32);
+      let now = if solid.remove(&(at.y, at.x)) {
+        Paint::Empty
+      } else {
+        solid.insert((at.y, at.x));
+        Paint::Solid
+      };
+      paint(&mut maps, map, &mut cells, at, now);
+      let chains = occluders_of(&mut maps.world, layer)
+        .iter()
+        .filter(|f| f.chunk == IVec2::ZERO)
+        .count();
+      let most = 2 * fresh(&solid);
+      assert!(
+        chains <= most,
+        "edit {edit} at {at}: {chains} chains, a fresh build {}",
+        most / 2
+      );
+      // and in fact as many: every chain stays a whole run of edges
+      assert_eq!(chains, most / 2, "edit {edit} at {at}");
+    }
+    assert_as_fresh(
+      &mut maps,
+      layer,
+      painted_map(shape, cell, None, &cells),
+      "500 edits",
+    );
+  }
+
+  #[test]
+  fn a_reloaded_hex_map_after_edits_casts_what_a_fresh_build_does() {
+    use crate::core::ecs::kernel::Messages;
+    use crate::core::tilemap::MapEvent;
+    use crate::core::tilemap::test_util::{FIXTURES, files_with};
+    let files = files_with(&[]);
+    let mut maps = MapWorld::over(files.clone());
+    let handle = load(&mut maps.world, "tiled/maps/collide-hex-y-odd.tmj");
+    let map = maps.spawn(MapRoot::new(handle.clone()));
+    maps.frame();
+    let layer = layers_of(&mut maps.world, map)[0];
+    // Edits that build its chunk's chains again, piece by piece
+    let whole = Some(Tile::new(0, 0));
+    for (x, y, tile) in [(0, 0, whole), (5, 5, whole), (3, 2, None), (6, 4, whole)] {
+      assert!(MapsView::new(&mut maps.world).set_tile(map, "walls", IVec2::new(x, y), tile));
+      maps.frame();
+    }
+    let all = |world: &mut World| -> Vec<Entity> {
+      let mut found: Vec<Entity> = world
+        .query_filtered::<Entity, With<MapOccluder>>()
+        .iter(world)
+        .collect();
+      found.sort();
+      found
+    };
+    let before = all(&mut maps.world);
+    assert!(!before.is_empty());
+    // The tileset saved with its triangle tile's shape made the whole
+    // hexagon its tile 0 has
+    let path = format!("{FIXTURES}/tiled/tilesets/collide-hex-y.tsj");
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
+    let mut json: serde_json::Value =
+      serde_json::from_str(&text).unwrap_or_else(|e| panic!("{path}: {e}"));
+    let hexagon = json["tiles"][0]["objectgroup"]["objects"][0]["polygon"].clone();
+    assert!(hexagon.is_array());
+    json["tiles"][1]["objectgroup"]["objects"][0]["polygon"] = hexagon;
+    let mut cursor = maps
+      .world
+      .resource::<Messages<MapEvent>>()
+      .get_cursor_current();
+    files.insert("tiled/tilesets/collide-hex-y.tsj", json.to_string());
+    maps.frames_until(|world| {
+      let messages = world.resource::<Messages<MapEvent>>();
+      cursor
+        .read(messages)
+        .any(|event| matches!(event, MapEvent::Reloaded { map: m } if *m == map))
+    });
+    for _ in 0..3 {
+      maps.frame();
+    }
+    let after = all(&mut maps.world);
+    assert!(!after.is_empty());
+    assert!(
+      after.iter().all(|e| !before.contains(e)),
+      "no chain from before the reload survives"
+    );
+    // As the same files spawned afresh cast them
+    let fresh = maps.spawn(MapRoot::new(handle));
+    maps.frame();
+    let fresh_layer = layers_of(&mut maps.world, fresh)[0];
+    let cells = |world: &World, layer: Entity| {
+      let Some(data) = world.get::<crate::core::tilemap::TileLayerData>(layer) else {
+        panic!("{layer} is a tile layer");
+      };
+      let extent = data.tiles.extent();
+      (extent.min.y..extent.max.y)
+        .flat_map(|y| (extent.min.x..extent.max.x).map(move |x| IVec2::new(x, y)))
+        .map(|cell| data.tiles.get(cell))
+        .collect::<Vec<_>>()
+    };
+    assert_eq!(
+      cells(&maps.world, layer),
+      cells(&maps.world, fresh_layer),
+      "the reload took the file's cells"
+    );
+    assert_same_edges(
+      &lit_edges(&mut maps.world, layer),
+      &lit_edges(&mut maps.world, fresh_layer),
+      "reloaded",
+    );
+    assert_parent_placed(&mut maps.world);
+  }
+
+  /// Every occluder the groups of `map` keep is in the world under its
+  /// chunk, and every map occluder in the world is kept; a hexagonal
+  /// chunk's kept chains and rings are among its occluders, and its edges
+  /// each have their chain
+  fn assert_kept_as_spawned(world: &mut World, map: Entity) {
+    let Some(shadows) = world.get::<MapShadows>(map) else {
+      panic!("{map} casts shadows");
+    };
+    for group in &shadows.groups {
+      for (chunk, kept) in &group.hex_chunks {
+        let listed = group.chunks.get(chunk).map_or(&[][..], Vec::as_slice);
+        for occluder in kept.chains.iter().flatten().chain(kept.rings.values()) {
+          assert!(
+            listed.contains(occluder),
+            "chunk {chunk}: {occluder} kept, not listed"
+          );
+        }
+        // (Sides of length 0 are chained by their points, whole each time)
+        let edges = group.edges.get(chunk).map_or(0, Vec::len);
+        if group.hex.is_some_and(|hex| !hex.point_sides()) {
+          assert_eq!(kept.chain_of.len(), edges, "chunk {chunk}: a chain an edge");
+        }
+      }
+    }
+    let mut kept: Vec<(IVec2, Entity)> = shadows
+      .groups
+      .iter()
+      .flat_map(|g| {
+        g.chunks
+          .iter()
+          .flat_map(|(chunk, entities)| entities.iter().map(|e| (*chunk, *e)))
+      })
+      .collect();
+    kept.sort_by_key(|&(c, e)| (c.y, c.x, e));
+    let mut spawned: Vec<(IVec2, Entity)> = world
+      .query::<(Entity, &MapOccluder)>()
+      .iter(world)
+      .map(|(e, o)| (o.chunk, e))
+      .collect();
+    spawned.sort_by_key(|&(c, e)| (c.y, c.x, e));
+    assert_eq!(kept, spawned);
+  }
+
+  #[test]
+  fn a_streamed_hex_chunk_landed_again_keeps_no_stale_chains() {
+    use crate::core::tilemap::TileLayerData;
+    // A wall across the border of chunks (0, 0) and (1, 0), hexagons in
+    // each, and a patch in chunk (1, 0)
+    let mut tiles: Vec<IVec2> = (26..38).map(|x| IVec2::new(x, 4)).collect();
+    tiles.extend([(3, 3), (40, 10), (45, 30), (33, 0)].map(|(x, y)| IVec2::new(x, y)));
+    tiles.extend((14..20).flat_map(|y| (40..48).map(move |x| IVec2::new(x, y))));
+    let mut maps = MapWorld::new();
+    let handle = maps
+      .world
+      .resource_mut::<Assets<TileMap>>()
+      .add(hex_map(&tiles));
+    let map = maps.spawn(MapRoot::new(handle));
+    maps.frame();
+    let layer = layers_of(&mut maps.world, map)[0];
+    let by_chunk = |found: &[Found]| -> BTreeMap<(i32, i32), BTreeMap<Edge, usize>> {
+      let mut chunks: BTreeMap<(i32, i32), Vec<Found>> = BTreeMap::new();
+      for f in found {
+        chunks
+          .entry((f.chunk.y, f.chunk.x))
+          .or_default()
+          .push(f.clone());
+      }
+      chunks
+        .into_iter()
+        .map(|(chunk, found)| (chunk, steps(&found)))
+        .collect()
+    };
+    let landed = occluders_of(&mut maps.world, layer);
+    let first_life: Vec<Entity> = landed
+      .iter()
+      .filter(|f| f.chunk == IVec2::X)
+      .map(|f| f.entity)
+      .collect();
+    assert!(!first_life.is_empty());
+    assert_kept_as_spawned(&mut maps.world, map);
+
+    // The stream unloads chunk (1, 0): none of its chains outlives it
+    let cells = maps
+      .world
+      .get_mut::<TileLayerData>(layer)
+      .and_then(|mut data| data.tiles.unload_chunk(IVec2::X))
+      .expect("chunk (1, 0) was there");
+    maps.frame();
+    maps.frame();
+    let away = occluders_of(&mut maps.world, layer);
+    assert!(away.iter().all(|f| !first_life.contains(&f.entity)));
+    assert_kept_as_spawned(&mut maps.world, map);
+    let Some(shadows) = maps.world.get::<MapShadows>(map) else {
+      panic!("{map} casts shadows");
+    };
+    assert!(
+      shadows
+        .groups
+        .iter()
+        .all(|g| !g.hex_chunks.contains_key(&IVec2::X)),
+      "nothing kept of its cells while it is away"
+    );
+
+    // and lands it again: its chains are a fresh build's, none of them
+    // from its first life
+    if let Some(mut data) = maps.world.get_mut::<TileLayerData>(layer) {
+      assert!(data.tiles.load_chunk(IVec2::X, cells));
+    }
+    maps.frame();
+    maps.frame();
+    let back = occluders_of(&mut maps.world, layer);
+    assert!(back.iter().all(|f| !first_life.contains(&f.entity)));
+    assert_eq!(by_chunk(&back), by_chunk(&landed), "as it first landed");
+    assert_kept_as_spawned(&mut maps.world, map);
+    assert_parent_placed(&mut maps.world);
   }
 
   /// One-tile edits in a chunk of a hexagonal map full of tiles whose shape

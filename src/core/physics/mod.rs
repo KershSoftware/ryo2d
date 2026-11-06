@@ -34,7 +34,8 @@ pub(crate) use tiles::hex::HexCells;
 #[cfg(test)]
 pub(crate) use tiles::in_grid_space;
 pub(crate) use tiles::{
-  Boundary, GRID, PlacedEdge, Point, TilePart, Traced, rebuild_tile_colliders,
+  Boundary, GRID, HexSides, PlacedEdge, Point, TilePart, Traced, chain_points,
+  rebuild_tile_colliders,
 };
 pub use tiles::{CellRect, CellShape, SlopeCorner, TileCell, TileColliders};
 pub use triggers::TriggerContents;

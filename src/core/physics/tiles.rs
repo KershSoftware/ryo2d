@@ -23,7 +23,8 @@ mod runs;
 mod shape;
 
 use hex::HexCells;
-use outline::{HexSides, Outlines, Unit, hex_side_edge, unit_edges};
+pub(crate) use outline::HexSides;
+use outline::{Outlines, Unit, hex_side_edge, unit_edges};
 #[cfg(test)]
 use outline::{outlines, traced_outlines};
 use pack::{
@@ -1890,6 +1891,7 @@ impl Boundary {
   /// cell's side round the same corner. None off a hexagonal grid, or on
   /// one whose cells have sides of length 0 (four cells meet at a point
   /// there), whose edges a caller chains by their points
+  #[cfg(test)]
   pub(crate) fn hex_chains(
     &self,
     at: impl Fn(i32, i32) -> TileCell,
@@ -1898,6 +1900,27 @@ impl Boundary {
     bounds: Option<CellRect>,
     placed: &[PlacedEdge],
   ) -> Option<Vec<Vec<Point>>> {
+    let chains = self.hex_chain_edges(at, min, max, bounds, placed)?;
+    Some(
+      chains
+        .iter()
+        .map(|chain| chain_points(placed, chain))
+        .collect(),
+    )
+  }
+
+  /// The chains `hex_chains` makes, each as the places of its edges in
+  /// `placed`, in the order it runs them. Any subset of a block's edges
+  /// chains: an edge whose next one is not among them ends its chain, so a
+  /// caller can chain again only the edges an edit reached
+  pub(crate) fn hex_chain_edges(
+    &self,
+    at: impl Fn(i32, i32) -> TileCell,
+    min: (i32, i32),
+    max: (i32, i32),
+    bounds: Option<CellRect>,
+    placed: &[PlacedEdge],
+  ) -> Option<Vec<Vec<u32>>> {
     const NONE: u32 = u32::MAX;
     let hex = self.hex.filter(|hex| !hex.point_sides())?;
     let sides = HexSides::of(hex, bounds);
@@ -1962,22 +1985,11 @@ impl Boundary {
         continue;
       }
       used[start] = true;
-      let (_, a, b) = placed[start];
-      let mut chain = vec![a, b];
+      let mut chain = vec![start as u32];
       let mut at = next[start];
       while at != NONE && !used[at as usize] {
         used[at as usize] = true;
-        let (_, _, to) = placed[at as usize];
-        // A straight run is one segment
-        let (p, q) = (chain[chain.len() - 2], chain[chain.len() - 1]);
-        let (u, v) = (
-          (i64::from(q.0 - p.0), i64::from(q.1 - p.1)),
-          (i64::from(to.0 - q.0), i64::from(to.1 - q.1)),
-        );
-        if u.0 * v.1 - u.1 * v.0 == 0 && u.0 * v.0 + u.1 * v.1 > 0 {
-          chain.pop();
-        }
-        chain.push(to);
+        chain.push(at);
         at = next[at as usize];
       }
       out.push(chain);
@@ -2041,6 +2053,24 @@ impl Boundary {
     out: &mut Vec<PlacedEdge>,
   ) {
     self.scan(at, min, max, bounds, &mut Placed::new(out));
+  }
+
+  /// The edges `placed_edges` gives of a hexagonal block's (`with_hex`)
+  /// cells that `read` takes (by their place from the block's top-left),
+  /// in the scan's order: the sides those cells own, worked out again
+  /// after an edit reached them. Nothing off a hexagonal grid
+  pub(crate) fn hex_cell_edges(
+    &self,
+    at: impl Fn(i32, i32) -> TileCell,
+    min: (i32, i32),
+    max: (i32, i32),
+    bounds: Option<CellRect>,
+    read: impl Fn(i32, i32) -> bool,
+    out: &mut Vec<PlacedEdge>,
+  ) {
+    if let Some(hex) = self.hex {
+      Self::hex_scan(hex, at, (min, max), bounds, read, &mut Placed::new(out));
+    }
   }
 
   /// The edges `placed_edges` gives now for a block whose own cells have
@@ -2125,7 +2155,7 @@ impl Boundary {
     out: &mut impl UnitSink,
   ) {
     if let Some(hex) = self.hex {
-      return Self::hex_scan(hex, at, (min, max), bounds, false, out);
+      return Self::hex_scan(hex, at, (min, max), bounds, |_, _| true, out);
     }
     let cells = Cells::shapes_only(&self.shapes);
     let local = Self::local(&at, min, bounds);
@@ -2173,19 +2203,17 @@ impl Boundary {
     out: &mut Vec<PlacedEdge>,
   ) {
     let mut fresh = Vec::new();
+    let (w, h) = ((max.0 - min.0).min(0x1FFF), (max.1 - min.1).min(0xFFFF));
+    let on_rim = |x: i32, y: i32| x == 0 || x == w - 1 || y == h - 1;
     Self::hex_scan(
       hex,
       at,
       (min, max),
       bounds,
-      true,
+      on_rim,
       &mut Placed::new(&mut fresh),
     );
-    let (w, h) = ((max.0 - min.0).min(0x1FFF), (max.1 - min.1).min(0xFFFF));
-    let rim = |place: u32| {
-      let (x, y) = (((place >> 3) & 0x1FFF) as i32, (place >> 16) as i32);
-      x == 0 || x == w - 1 || y == h - 1
-    };
+    let rim = |place: u32| on_rim(((place >> 3) & 0x1FFF) as i32, (place >> 16) as i32);
     // The places are the scan's order, and the two lists hold no cell both
     let mut fresh = fresh.into_iter().peekable();
     for &edge in kept.iter().filter(|edge| !rim(edge.0)) {
@@ -2198,14 +2226,15 @@ impl Boundary {
   }
 
   /// A hexagonal block's units in row order, each cell's sides in turn
-  /// (`with_hex`), each edge handed to `out`; with `rims` only its rim
-  /// cells' (`hex_rebuilt_rims`)
+  /// (`with_hex`), each edge handed to `out`: those of the cells `read`
+  /// takes, from the block's top-left (all of them for a whole scan, its
+  /// rim cells for `hex_rebuilt_rims`)
   fn hex_scan(
     hex: HexCells,
     at: impl Fn(i32, i32) -> TileCell,
     (min, max): ((i32, i32), (i32, i32)),
     bounds: Option<CellRect>,
-    rims: bool,
+    read: impl Fn(i32, i32) -> bool,
     out: &mut impl UnitSink,
   ) {
     if !hex.traceable() {
@@ -2217,11 +2246,10 @@ impl Boundary {
     let from = hex.corner_of(IVec2::new(min.0, min.1));
     // The places `Placed` packs: 8,191 cells across and 65,535 down at most
     let (w, h) = ((max.0 - min.0).min(0x1FFF), (max.1 - min.1).min(0xFFFF));
-    let (last_x, last_y) = (min.0 + w - 1, min.1 + h - 1);
     for y in min.1..min.1 + h.max(0) {
       for x in min.0..min.0 + w.max(0) {
         let cell = IVec2::new(x, y);
-        if !inside(cell) || (rims && x != min.0 && x != last_x && y != last_y) {
+        if !inside(cell) || !read(x - min.0, y - min.1) {
           continue;
         }
         let mine = solid(cell);
@@ -2251,6 +2279,32 @@ impl Boundary {
 /// and the side of the cell met, `y << 16 | x << 3 | side` (a block at most
 /// 8,191 cells across)
 pub(crate) type PlacedEdge = (u32, Point, Point);
+
+/// A chain of `placed`'s edges (`Boundary::hex_chain_edges`: each going on
+/// from the last one's end) as its points: its first edge's start, then
+/// each edge's end, a straight run merged into one segment
+pub(crate) fn chain_points(placed: &[PlacedEdge], chain: &[u32]) -> Vec<Point> {
+  let mut out = Vec::with_capacity(chain.len() + 1);
+  for (i, &edge) in chain.iter().enumerate() {
+    let (_, a, to) = placed[edge as usize];
+    if i == 0 {
+      out.push(a);
+      out.push(to);
+      continue;
+    }
+    // A straight run is one segment
+    let (p, q) = (out[out.len() - 2], out[out.len() - 1]);
+    let (u, v) = (
+      (i64::from(q.0 - p.0), i64::from(q.1 - p.1)),
+      (i64::from(to.0 - q.0), i64::from(to.1 - q.1)),
+    );
+    if u.0 * v.1 - u.1 * v.0 == 0 && u.0 * v.0 + u.1 * v.1 > 0 {
+      out.pop();
+    }
+    out.push(to);
+  }
+  out
+}
 
 /// Where a block's scan hands each unit
 trait UnitSink {

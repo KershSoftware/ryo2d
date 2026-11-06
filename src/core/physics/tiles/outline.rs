@@ -449,7 +449,7 @@ pub(super) fn boundary_edges(cells: Cells) -> Vec<(Point, Point)> {
 /// inside cell, whichever comes first: no part, and no `Boundary` block,
 /// sits outside a bounded grid.
 #[derive(Clone, Copy, Debug)]
-pub(super) struct HexSides {
+pub(crate) struct HexSides {
   pub(super) hex: HexCells,
   across: [[IVec2; 6]; 2],
   owns: [[bool; 6]; 2],
@@ -463,7 +463,7 @@ pub(super) struct HexSides {
 
 impl HexSides {
   /// `hex`'s sides on a grid of `bounds` (`None` for an unbounded one)
-  pub(super) fn of(hex: HexCells, bounds: Option<CellRect>) -> Self {
+  pub(crate) fn of(hex: HexCells, bounds: Option<CellRect>) -> Self {
     let mut across = [[IVec2::ZERO; 6]; 2];
     let mut owns = [[false; 6]; 2];
     for parity in 0..2 {
@@ -503,7 +503,7 @@ impl HexSides {
 
   /// The cell across `cell`'s side `side`, and whether `cell` owns it (one
   /// cell from it, so within an `i32` for a cell a grid holds)
-  pub(super) fn across(&self, cell: IVec2, side: usize) -> (IVec2, bool) {
+  pub(crate) fn across(&self, cell: IVec2, side: usize) -> (IVec2, bool) {
     let parity = self.parity(cell);
     let across = cell + self.across[parity][side];
     let mut owned = self.owns[parity][side];
