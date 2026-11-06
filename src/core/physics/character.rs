@@ -18,9 +18,10 @@ use rapier2d::prelude::{
 use super::body::RigidBody;
 use super::convert::{from_rapier, to_rapier};
 use super::world::Physics;
-use super::{one_way, sweep};
+use super::{hooks, one_way, sweep};
 use crate::core::ecs::{
-  Component, DetectChangesMut, Entity, Knockback, Query, Res, ResMut, Transform, Vec2, Velocity,
+  Component, DetectChangesMut, Entity, Floor, Knockback, Query, Res, ResMut, Transform, Vec2,
+  Velocity,
 };
 use crate::core::time::Time;
 
@@ -304,18 +305,20 @@ fn across(shape: &dyn Shape, pose: &Pose) -> Option<(f32, f32)> {
   ))
 }
 
-/// What a character's sweep of `shape` from `start` may hit: colliders
-/// enabled this tick (one disabled this tick stays in the broad phase until
-/// the step, and Rapier's filter never checks), one-way ones only when the
-/// character starts entirely on their solid side, and none of those while
-/// it drops through.
+/// What a character on `floor` sweeping `shape` from `start` may hit:
+/// colliders enabled this tick (one disabled this tick stays in the broad
+/// phase until the step, and Rapier's filter never checks) on floors that
+/// meet its own, one-way ones only when the character starts entirely on
+/// their solid side, and none of those while it drops through.
 fn solid(
   shape: &dyn Shape,
   start: Pose,
   dropping: bool,
+  floor: Floor,
 ) -> impl Fn(ColliderHandle, &RapierCollider) -> bool + '_ {
   move |_, collider| {
     collider.is_enabled()
+      && floor.meets(hooks::floor_of(collider.user_data))
       && match one_way::decode(collider.user_data) {
         None => true,
         Some(_) if dropping => false,
@@ -418,7 +421,7 @@ impl Physics {
     };
     // The body's next pose is the teleport's target; the collider still
     // holds the old pose until the step
-    let (start, shape, groups) = {
+    let (start, shape, groups, floor) = {
       let collider = self.colliders.get(collider_handle)?;
       let start = match (teleported, collider.position_wrt_parent()) {
         (true, Some(local)) => self.bodies.get(body_handle)?.next_position() * local,
@@ -428,6 +431,7 @@ impl Physics {
         start,
         collider.shared_shape().clone(),
         collider.collision_groups(),
+        hooks::floor_of(collider.user_data),
       )
     };
     let local = shape.compute_local_aabb();
@@ -494,7 +498,7 @@ impl Physics {
     let carried_by = state.floor.filter(|_| was_on_floor);
 
     // The move and the probe start where the step does
-    let solid_from_start = solid(&*shape, start, dropping);
+    let solid_from_start = solid(&*shape, start, dropping, floor);
     let filter = RapierFilter::default()
       .exclude_rigid_body(body_handle)
       .exclude_sensors()
@@ -513,7 +517,7 @@ impl Physics {
     let mut pushing_out = false;
     if state.stuck || desired.length() <= sweep::MIN_MOVE {
       let at = from_rapier(pose.translation);
-      pose.translation += to_rapier(self.coincident_nudge(entity, collider_handle, at));
+      pose.translation += to_rapier(self.coincident_nudge(entity, collider_handle, floor, at));
       let push_out = KinematicCharacterController {
         snap_to_ground: None,
         ..kcc
@@ -660,7 +664,7 @@ impl Physics {
     // The carry, past everything but the floor (it moves with the character),
     // starting where the move left it
     if let Some(carrier) = carrier {
-      let solid_from_moved = solid(&*shape, pose, dropping);
+      let solid_from_moved = solid(&*shape, pose, dropping, floor);
       let not_carrier = |handle: ColliderHandle, collider: &RapierCollider| {
         solid_from_moved(handle, collider) && collider.parent() != Some(carrier)
       };
@@ -738,8 +742,16 @@ impl Physics {
   /// and down, the higher right and up, a few hundredths of a pixel), each
   /// is pushed away from the other. Only what it touched at the last step
   /// is looked at (the narrow phase's pairs), so this walks its contacts and
-  /// makes no query. `at` is where the collider starts the step.
-  fn coincident_nudge(&self, entity: Entity, collider: ColliderHandle, at: Vec2) -> Vec2 {
+  /// makes no query; Rapier keeps the pairs it filtered out there, so one
+  /// on a floor that does not meet the character's `floor` is skipped. `at`
+  /// is where the collider starts the step.
+  fn coincident_nudge(
+    &self,
+    entity: Entity,
+    collider: ColliderHandle,
+    floor: Floor,
+    at: Vec2,
+  ) -> Vec2 {
     let mut side = 0.0;
     for pair in self.narrow_phase.contact_pairs_with(collider) {
       let other = if pair.collider1 == collider {
@@ -759,7 +771,11 @@ impl Physics {
         .parent()
         .and_then(|body| self.bodies.get(body))
         .is_some_and(|body| body.is_kinematic());
-      if !kinematic || !rapier.is_enabled() || rapier.is_sensor() {
+      if !kinematic
+        || !rapier.is_enabled()
+        || rapier.is_sensor()
+        || !floor.meets(hooks::floor_of(rapier.user_data))
+      {
         continue;
       }
       if let Some(owner) = self.owners.get(&other) {
@@ -1320,6 +1336,85 @@ mod tests {
     assert!(
       t.x > start.x + 30.0 && t.y < 35.0,
       "slid along the side, down and right: {t} from {start}"
+    );
+  }
+
+  #[test]
+  fn a_top_down_character_walks_through_a_wall_on_another_floor() {
+    // A second's walk right at 300 px/s at a ground wall whose left side
+    // is at x 90
+    let walk = |floor: Floor| {
+      let (mut world, mut s) = world(60);
+      world.spawn((Transform::from_xy(100.0, 0.0), Collider::rect(20.0, 400.0)));
+      let e = world
+        .spawn((
+          Transform::IDENTITY,
+          CharacterController::top_down(),
+          Collider::circle(10.0),
+          floor,
+        ))
+        .id();
+      for _ in 0..60 {
+        world.get_mut::<Velocity>(e).unwrap().dx = 300.0;
+        run(&mut world, &mut s, 1);
+      }
+      (at(&world, e).translation.x, state(&world, e).on_wall)
+    };
+    let (x, walled) = walk(Floor::On(1));
+    assert!(x > 250.0 && !walled, "walked through it: {x}");
+    let (x, walled) = walk(Floor::GROUND);
+    assert!(x <= 80.0 && walled, "stopped by it: {x}");
+  }
+
+  #[test]
+  fn characters_on_one_spot_on_different_floors_are_not_nudged_apart() {
+    // Two characters spawned on one point are moved apart before their
+    // push-out; on floors that do not meet, neither is in the other's way
+    let (mut world, mut s) = world(60);
+    let spot = Vec2::new(10.0, 20.0);
+    let pair = [Floor::GROUND, Floor::On(1)].map(|floor| {
+      world
+        .spawn((
+          Transform::from_translation(spot),
+          CharacterController::top_down(),
+          Collider::circle(10.0),
+          floor,
+        ))
+        .id()
+    });
+    run(&mut world, &mut s, 10);
+    for e in pair {
+      assert_eq!(at(&world, e).translation, spot, "{e} stayed put");
+    }
+  }
+
+  #[test]
+  fn a_platformer_stands_only_on_its_own_floor() {
+    let (mut world, mut s) = world(60);
+    // Floor 1's slab topped at 100, over the ground's topped at 300
+    let upper = floor(&mut world, 100.0);
+    world.entity_mut(upper).insert(Floor::On(1));
+    let ground = floor(&mut world, 300.0);
+    let walker = character(&mut world, -100.0, 0.0);
+    let climber = character(&mut world, 100.0, 0.0);
+    world.entity_mut(climber).insert(Floor::On(1));
+    for _ in 0..120 {
+      for e in [walker, climber] {
+        world.get_mut::<Velocity>(e).unwrap().dy += 980.0 / 60.0;
+      }
+      run(&mut world, &mut s, 1);
+    }
+    let st = state(&world, walker);
+    let y = at(&world, walker).translation.y;
+    assert!(
+      st.on_floor && st.floor == Some(ground) && (y - 280.0).abs() < 1.0,
+      "fell past floor 1's slab onto the ground's: {y}, {st:?}"
+    );
+    let st = state(&world, climber);
+    let y = at(&world, climber).translation.y;
+    assert!(
+      st.on_floor && st.floor == Some(upper) && (y - 80.0).abs() < 1.0,
+      "stands on its own floor's slab: {y}, {st:?}"
     );
   }
 

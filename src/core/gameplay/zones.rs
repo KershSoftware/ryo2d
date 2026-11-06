@@ -9,8 +9,9 @@ use super::platformer::PlatformerState;
 use super::top_down::TopDownState;
 use crate::core::ecs::pooling::{disable_descendants, enable_descendants};
 use crate::core::ecs::{
-  Added, Allow, Commands, Component, Disabled, Entity, EntityHashSet, GlobalTransform, Knockback,
-  Local, MessageReader, MessageWriter, Or, Query, Res, Transform, Vec2, Velocity, With, World,
+  Added, Allow, Commands, Component, DetectChangesMut, Disabled, Entity, EntityHashSet, Floor,
+  GlobalTransform, Knockback, Local, MessageReader, MessageWriter, Or, Query, Res, Transform, Vec2,
+  Velocity, With, World,
 };
 use crate::core::physics::{AngularVelocity, Collider, TriggerEntered};
 use crate::core::time::Time;
@@ -39,34 +40,43 @@ impl Pickup {
 
 /// Where a `KillZone` puts this entity back; a `Checkpoint` moves it. Put it
 /// on root entities (it sets `Transform.translation`).
+///
+/// It also keeps the floor to come back on: the floor of the checkpoint
+/// last reached (for a checkpoint on every floor, the floor it was reached
+/// on), else the floor `here()` found, else the ground floor. A respawn
+/// puts it in the entity's `Floor`.
 #[derive(Component, Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
 pub struct Respawn {
   pub point: Vec2,
+  pub(crate) floor: Floor,
   pub(crate) placed: bool,
 }
 
 impl Respawn {
-  /// The entity's position when the component is added.
+  /// The entity's position (and floor) when the component is added.
   pub fn here() -> Self {
     Self {
       point: Vec2::ZERO,
+      floor: Floor::GROUND,
       placed: false,
     }
   }
 
+  /// At `point`, on the ground floor until a checkpoint moves it.
   pub fn at(point: Vec2) -> Self {
     Self {
       point,
+      floor: Floor::GROUND,
       placed: true,
     }
   }
 }
 
 /// Writes `Killed` for what enters, once a step however many zones it
-/// entered. An entity with `Respawn` is put back at its point with its
-/// velocity, spin, knockback and preset state cleared; others only get the
-/// message, unless the zone is `despawning()`.
+/// entered. An entity with `Respawn` is put back at its point, on its
+/// floor, with its velocity, spin, knockback and preset state cleared;
+/// others only get the message, unless the zone is `despawning()`.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Default)]
 #[non_exhaustive]
 pub struct KillZone {
@@ -86,7 +96,8 @@ impl KillZone {
 }
 
 /// Moves the `Respawn` point of what enters to the checkpoint's position
-/// plus `offset`; writes `CheckpointReached` when the point changes.
+/// plus `offset`, on the checkpoint's floor; writes `CheckpointReached`
+/// when the point or its floor changes.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Default)]
 #[non_exhaustive]
 pub struct Checkpoint {
@@ -106,11 +117,13 @@ impl Checkpoint {
 
 /// Give `Respawn::here()` its entity's position: its `Transform`, which is
 /// what a respawn writes back (a world position on a root entity), and which
-/// is set on the step it was spawned, unlike `GlobalTransform`.
-pub(crate) fn place_respawn_points(mut points: Query<(&mut Respawn, &Transform)>) {
-  for (mut respawn, transform) in &mut points {
+/// is set on the step it was spawned, unlike `GlobalTransform`; and its
+/// floor.
+pub(crate) fn place_respawn_points(mut points: Query<(&mut Respawn, &Transform, Option<&Floor>)>) {
+  for (mut respawn, transform, floor) in &mut points {
     if !respawn.placed {
       respawn.point = transform.translation;
+      respawn.floor = floor.copied().unwrap_or_default();
       respawn.placed = true;
     }
   }
@@ -206,6 +219,7 @@ pub(crate) fn respawn_pickups(
 type Respawned = (
   &'static Respawn,
   &'static mut Transform,
+  Option<&'static mut Floor>,
   Option<&'static mut Velocity>,
   Option<&'static mut AngularVelocity>,
   Option<&'static mut Knockback>,
@@ -239,8 +253,19 @@ pub(crate) fn apply_kill_zones(
       zone: message.trigger,
     });
     match actors.get_mut(entity) {
-      Ok((respawn, mut transform, velocity, spin, knockback, platformer, top_down)) => {
+      Ok((respawn, mut transform, floor, velocity, spin, knockback, platformer, top_down)) => {
         transform.translation = respawn.point;
+        // Back on its floor: an entity without a `Floor` gains one only
+        // off the ground floor
+        match floor {
+          Some(mut floor) => {
+            floor.set_if_neq(respawn.floor);
+          }
+          None if respawn.floor != Floor::GROUND => {
+            commands.entity(entity).insert(respawn.floor);
+          }
+          None => {}
+        }
         if let Some(mut velocity) = velocity {
           *velocity = Velocity::zero();
         }
@@ -269,25 +294,31 @@ pub(crate) fn apply_kill_zones(
 
 pub(crate) fn apply_checkpoints(
   mut entered: MessageReader<TriggerEntered>,
-  checkpoints: Query<(&Checkpoint, &GlobalTransform)>,
+  checkpoints: Query<(&Checkpoint, &GlobalTransform, Option<&Floor>)>,
   colliders: Colliders,
-  mut respawns: Query<&mut Respawn>,
+  mut respawns: Query<(&mut Respawn, Option<&Floor>)>,
   mut reached: MessageWriter<CheckpointReached>,
 ) {
   for message in entered.read() {
-    let Ok((checkpoint, global)) = checkpoints.get(message.trigger) else {
+    let Ok((checkpoint, global, floor)) = checkpoints.get(message.trigger) else {
       continue;
     };
     if sensed(message, &colliders) {
       continue;
     }
     let entity = message.actor();
-    let Ok(mut respawn) = respawns.get_mut(entity) else {
+    let Ok((mut respawn, own_floor)) = respawns.get_mut(entity) else {
       continue;
     };
     let point = global.translation() + checkpoint.offset;
-    if !respawn.placed || respawn.point.distance(point) > 0.5 {
+    // A checkpoint on every floor was reached on the entity's own
+    let floor = match floor.copied().unwrap_or_default() {
+      Floor::Every => own_floor.copied().unwrap_or_default(),
+      floor => floor,
+    };
+    if !respawn.placed || respawn.point.distance(point) > 0.5 || respawn.floor != floor {
       respawn.point = point;
+      respawn.floor = floor;
       respawn.placed = true;
       reached.write(CheckpointReached {
         checkpoint: message.trigger,
@@ -640,6 +671,60 @@ mod tests {
         checkpoint: flag,
         entity: player
       }]
+    );
+  }
+
+  #[test]
+  fn a_respawn_returns_to_the_floor_of_its_last_checkpoint() {
+    let (mut world, mut s) = world(60);
+    // Right of the start, a checkpoint on floor 1 and a pit on every
+    // floor; left of it, a checkpoint and a pit on every floor; far right,
+    // another pit on every floor
+    zone(&mut world, 60.0, (Checkpoint::new(), Floor::On(1)));
+    zone(&mut world, 200.0, (KillZone::new(), Floor::Every));
+    zone(&mut world, -60.0, (Checkpoint::new(), Floor::Every));
+    zone(&mut world, -200.0, (KillZone::new(), Floor::Every));
+    zone(&mut world, 420.0, (KillZone::new(), Floor::Every));
+    // Placed on the ground floor, it goes up to floor 1 before the
+    // checkpoint, and to floor 2 after it, on into the pit
+    let player = mover(&mut world, 0.0, 300.0);
+    // With no floor, through the checkpoint on every floor into its pit
+    let walker = mover(&mut world, -20.0, -300.0);
+    // Placed on floor 4, it goes up to floor 5 before its pit
+    let climber = mover(&mut world, 300.0, 300.0);
+    world.entity_mut(climber).insert(Floor::On(4));
+    for e in [player, walker, climber] {
+      world.entity_mut(e).insert(Respawn::here());
+    }
+    run(&mut world, &mut s, 1);
+    world.entity_mut(player).insert(Floor::On(1));
+    run(&mut world, &mut s, 14);
+    let point = |world: &World, e: Entity| world.get::<Respawn>(e).unwrap().point;
+    assert_eq!(point(&world, player), Vec2::new(60.0, 0.0));
+    assert_eq!(point(&world, walker), Vec2::new(-60.0, 0.0));
+    world.entity_mut(player).insert(Floor::On(2));
+    world.entity_mut(climber).insert(Floor::On(5));
+    run(&mut world, &mut s, 30);
+    let killed: Vec<Entity> = read::<Killed>(&world).iter().map(|k| k.entity).collect();
+    assert_eq!(killed.len(), 3, "{killed:?}");
+
+    assert_eq!(at(&world, player).translation, Vec2::new(60.0, 0.0));
+    assert_eq!(
+      world.get::<Floor>(player),
+      Some(&Floor::On(1)),
+      "the checkpoint's floor"
+    );
+    assert_eq!(at(&world, walker).translation, Vec2::new(-60.0, 0.0));
+    assert_eq!(
+      world.get::<Floor>(walker),
+      None,
+      "a checkpoint on every floor keeps the floor it was reached on"
+    );
+    assert_eq!(at(&world, climber).translation, Vec2::new(300.0, 0.0));
+    assert_eq!(
+      world.get::<Floor>(climber),
+      Some(&Floor::On(4)),
+      "here() keeps the floor it was placed on"
     );
   }
 

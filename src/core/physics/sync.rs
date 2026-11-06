@@ -36,7 +36,7 @@ use crate::core::ecs::kernel::{CheckChangeTicks, Schedule, ScheduleLabel, Single
 use crate::core::ecs::propagate::propagate_transforms;
 use crate::core::ecs::{
   Added, Allow, Changed, ChildOf, Children, Commands, DetectChanges, DetectChangesMut, Disabled,
-  EcsSystemState, Entity, GlobalTransform, Has, IntoScheduleConfigs, MessageWriter, Mut, Or,
+  EcsSystemState, Entity, Floor, GlobalTransform, Has, IntoScheduleConfigs, MessageWriter, Mut, Or,
   ParamSet, Query, Ref, RemovedComponents, Res, ResMut, Resource, SystemChangeTick, Tick,
   Transform, Vec2, Velocity, With, Without, World, entity_order,
 };
@@ -63,6 +63,14 @@ type BodyRow<'a> = (
 );
 /// What places a body in the world (see `body_pose`)
 type BodyPlace<'a> = (&'a GlobalTransform, &'a Transform, Option<&'a ChildOf>);
+/// A collider as `sync_colliders` reads it: where it is, what it is, a
+/// shape built ahead and its own floor
+type ColliderRow<'a> = (
+  &'a GlobalTransform,
+  Ref<'a, Collider>,
+  Option<&'a PrebuiltShape>,
+  Option<&'a Floor>,
+);
 /// New or edited bodies, and every body (for the refused ones)
 type BodyRows<'a, 'w, 's> = (
   Query<'w, 's, BodyRow<'a>, Changed<RigidBody>>,
@@ -76,13 +84,14 @@ type Pushed = (
   With<RigidBody>,
   Or<(Changed<Velocity>, Changed<AngularVelocity>)>,
 );
-/// A collider edited, moved, scaled or reparented
+/// A collider edited, moved, scaled, reparented or moved to another floor
 type Resync = (
   With<Collider>,
   Or<(
     Changed<Collider>,
     Changed<GlobalTransform>,
     Changed<ChildOf>,
+    Changed<Floor>,
   )>,
 );
 /// A collider `sync_colliders` was told about by change detection, with
@@ -90,9 +99,18 @@ type Resync = (
 type ResyncRow<'a> = (
   Entity,
   Ref<'a, Collider>,
+  Option<Ref<'a, Floor>>,
   Option<Ref<'a, Transform>>,
   Has<RigidBody>,
   Has<ChildOf>,
+);
+/// A body with children whose `Floor` changed: the colliders below it that
+/// have none of their own take it
+type Refloored = (
+  With<RigidBody>,
+  With<Children>,
+  Changed<Floor>,
+  Allow<Disabled>,
 );
 /// A body whose world pose changed, with what tells the write-back's own
 /// move from any other (see `push_changes`)
@@ -240,7 +258,9 @@ pub(crate) fn placement(
 /// included); a body's colliders that stay become fixed and its joints
 /// inert. Entities that lost their `RigidBody` or their parent are
 /// remembered for `sync_colliders`, which finds the colliders at and below
-/// them a new owner, and bodies that lost their parent for `push_changes`.
+/// them a new owner, and so are entities that lost their `Floor` (the
+/// colliders there go back to the ground floor, or their body's floor);
+/// bodies that lost their parent are remembered for `push_changes`.
 /// An entity left without any of the three loses its logged warnings,
 /// registered or not.
 #[allow(clippy::too_many_arguments)] // one removal reader or query per input
@@ -250,6 +270,7 @@ pub(crate) fn forget_removed(
   mut colliders: RemovedComponents<Collider>,
   mut bodies: RemovedComponents<RigidBody>,
   mut detached: RemovedComponents<ChildOf>,
+  mut floors: RemovedComponents<Floor>,
   relinkable: Query<(), Relinkable>,
   kept: Query<(), (HasPhysics, Allow<Disabled>)>,
   has_body: Query<(), (With<RigidBody>, Allow<Disabled>)>,
@@ -281,6 +302,11 @@ pub(crate) fn forget_removed(
     }
     if has_body.contains(entity) {
       physics.recheck.insert(entity);
+    }
+  }
+  for entity in floors.read() {
+    if relinkable.contains(entity) {
+      physics.relink.insert(entity);
     }
   }
 }
@@ -478,13 +504,15 @@ pub(crate) fn register_bodies(
   }
 }
 
-/// Bring every collider that changed, moved, scaled or changed owner in line
-/// with the simulation. Owners change when a `RigidBody` appears or goes
-/// above a collider, or when a collider or an ancestor is reparented.
+/// Bring every collider that changed, moved, scaled, changed owner or
+/// changed floor in line with the simulation. Owners change when a
+/// `RigidBody` appears or goes above a collider, or when a collider or an
+/// ancestor is reparented. A collider's floor is its own entity's `Floor`,
+/// else its body's, else the ground floor.
 ///
 /// A root body's own collider that only the write-back moved (its
-/// `Transform` last changed at `Physics::write_tick`, its `Collider` not
-/// since, the body not in `Physics::recheck`) is skipped: it moved with its
+/// `Transform` last changed at `Physics::write_tick`, its `Collider` and
+/// `Floor` not since, the body not in `Physics::recheck`) is skipped: it moved with its
 /// body, and its placement relative to the body depends only on the
 /// entity's scale and the `Collider`. Every other source (waiting, new
 /// bodies, reparenting, relinking) is visited.
@@ -494,10 +522,12 @@ pub(crate) fn sync_colliders(
   changed: Query<ResyncRow, Resync>,
   new_bodies: Query<Entity, Added<RigidBody>>,
   reparented: Query<Entity, Changed<ChildOf>>,
+  refloored: Query<Entity, Refloored>,
   children: Query<&Children, Allow<Disabled>>,
   parents: Query<&ChildOf, Allow<Disabled>>,
   bodies: Query<BodyPlace, (With<RigidBody>, Allow<Disabled>)>,
-  colliders: Query<(&GlobalTransform, Ref<Collider>, Option<&PrebuiltShape>)>,
+  colliders: Query<ColliderRow>,
+  floors: Query<&Floor, Allow<Disabled>>,
   globals: Globals,
 ) {
   // Buffers kept between steps: this runs every step over every moving
@@ -512,10 +542,11 @@ pub(crate) fn sync_colliders(
   todo.extend(
     changed
       .iter()
-      .filter(|(entity, collider, transform, body, child)| {
+      .filter(|(entity, collider, floor, transform, body, child)| {
         let own_move = *body
           && !*child
           && !collider.is_changed()
+          && !floor.as_ref().is_some_and(|floor| floor.is_changed())
           && transform
             .as_ref()
             .is_some_and(|transform| Some(transform.last_changed()) == own)
@@ -528,6 +559,7 @@ pub(crate) fn sync_colliders(
   for root in new_bodies
     .iter()
     .chain(reparented.iter())
+    .chain(refloored.iter())
     .chain(relink.drain())
   {
     subtree(root, &children, &mut stack, &mut todo);
@@ -537,7 +569,7 @@ pub(crate) fn sync_colliders(
   todo.sort_unstable_by_key(entity_order);
   todo.dedup();
   for &entity in &todo {
-    let Ok((global, collider, prebuilt)) = colliders.get(entity) else {
+    let Ok((global, collider, prebuilt, own_floor)) = colliders.get(entity) else {
       continue;
     };
     #[cfg(test)]
@@ -553,11 +585,15 @@ pub(crate) fn sync_colliders(
     // by a later first registration (waiting on its body) the collider may
     // have changed
     let prebuilt = prebuilt.filter(|_| collider.is_added()).map(|p| &p.0);
+    let floor = own_floor
+      .or_else(|| body.and_then(|body| floors.get(body).ok()))
+      .copied()
+      .unwrap_or_default();
     physics.sync_collider_with(
       entity,
       body,
       placement(global, &collider, body_pose),
-      &collider,
+      (&collider, floor),
       prebuilt,
     );
   }
@@ -2105,6 +2141,164 @@ mod tests {
       at(&world, e).translation.y > 150.0,
       "the floor does not collide with layer 3"
     );
+  }
+
+  /// Where a ball dropped from 50 px above a slab topped at 100 is after
+  /// two seconds: 90 resting on it, past 150 through it.
+  fn dropped(ball_floor: Option<Floor>, slab_floor: Option<Floor>) -> f32 {
+    let (mut world, mut s) = world(60);
+    let slab = floor(&mut world, 100.0);
+    let b = ball(&mut world, 0.0, 50.0);
+    if let Some(f) = slab_floor {
+      world.entity_mut(slab).insert(f);
+    }
+    if let Some(f) = ball_floor {
+      world.entity_mut(b).insert(f);
+    }
+    run(&mut world, &mut s, 120);
+    at(&world, b).translation.y
+  }
+
+  fn rests(y: f32) -> bool {
+    (y - 90.0).abs() < 1.0
+  }
+
+  #[test]
+  fn colliders_on_different_floors_never_touch() {
+    let through = dropped(Some(Floor::On(1)), None);
+    assert!(
+      through > 150.0,
+      "falls through the ground's slab: {through}"
+    );
+    let on = dropped(Some(Floor::GROUND), None);
+    assert!(rests(on), "rests on it: {on}");
+    let both = dropped(Some(Floor::On(1)), Some(Floor::On(1)));
+    assert!(rests(both), "one floor's colliders touch: {both}");
+    let below = dropped(None, Some(Floor::On(1)));
+    assert!(below > 150.0, "the slab's floor counts too: {below}");
+    // Put on floor 1 as it falls, moved by the write-back alone until then
+    let (mut world, mut s) = world(60);
+    floor(&mut world, 100.0);
+    let b = ball(&mut world, 0.0, 50.0);
+    run(&mut world, &mut s, 5);
+    world.entity_mut(b).insert(Floor::On(1));
+    run(&mut world, &mut s, 115);
+    let y = at(&world, b).translation.y;
+    assert!(y > 150.0, "falls through once on floor 1: {y}");
+  }
+
+  #[test]
+  fn a_collider_on_every_floor_meets_all_of_them() {
+    for slab in [None, Some(Floor::On(2)), Some(Floor::On(255))] {
+      let y = dropped(Some(Floor::Every), slab);
+      assert!(rests(y), "on {slab:?}: {y}");
+    }
+    let y = dropped(Some(Floor::On(3)), Some(Floor::Every));
+    assert!(rests(y), "a slab on every floor holds it: {y}");
+  }
+
+  #[test]
+  fn a_body_s_floor_applies_to_its_child_colliders() {
+    // A body with a ball on a child, over a ground slab topped at 100
+    let scene = |body_floor: Option<Floor>, own: Option<Floor>| {
+      let (mut world, s) = world(60);
+      floor(&mut world, 100.0);
+      let body = world
+        .spawn((Transform::from_xy(0.0, 50.0), RigidBody::dynamic()))
+        .id();
+      let part = world
+        .spawn((Transform::IDENTITY, Collider::circle(10.0), ChildOf(body)))
+        .id();
+      if let Some(f) = body_floor {
+        world.entity_mut(body).insert(f);
+      }
+      if let Some(f) = own {
+        world.entity_mut(part).insert(f);
+      }
+      (world, s, body)
+    };
+    let (mut world, mut s, body) = scene(Some(Floor::On(1)), None);
+    run(&mut world, &mut s, 120);
+    let y = at(&world, body).translation.y;
+    assert!(y > 150.0, "the child takes its body's floor: {y}");
+
+    let (mut world, mut s, body) = scene(Some(Floor::On(1)), Some(Floor::GROUND));
+    run(&mut world, &mut s, 120);
+    let y = at(&world, body).translation.y;
+    assert!(rests(y), "its own floor comes first: {y}");
+
+    // A change to the body's floor reaches the child
+    let (mut world, mut s, body) = scene(None, None);
+    run(&mut world, &mut s, 120);
+    world.entity_mut(body).insert(Floor::On(1));
+    run(&mut world, &mut s, 60);
+    let y = at(&world, body).translation.y;
+    assert!(y > 150.0, "the body's new floor dropped the child: {y}");
+
+    // So does its removal: back on the ground floor, it lands
+    let (mut world, mut s, body) = scene(Some(Floor::On(1)), None);
+    run(&mut world, &mut s, 5);
+    world.entity_mut(body).remove::<Floor>();
+    run(&mut world, &mut s, 120);
+    let y = at(&world, body).translation.y;
+    assert!(rests(y), "on the ground floor again: {y}");
+  }
+
+  #[test]
+  fn a_trigger_on_another_floor_sees_nothing() {
+    let (mut world, mut s) = world(60);
+    let zone = world
+      .spawn((
+        Transform::IDENTITY,
+        Collider::rect(40.0, 40.0).as_trigger(),
+        Floor::On(1),
+      ))
+      .id();
+    // Inside it from the start, on the ground floor
+    let mover = world
+      .spawn((
+        Transform::IDENTITY,
+        RigidBody::kinematic(),
+        Collider::rect(10.0, 10.0),
+      ))
+      .id();
+    run(&mut world, &mut s, 10);
+    let entered = read::<TriggerEntered>(&world);
+    assert!(entered.is_empty(), "{entered:?}");
+    world.entity_mut(zone).insert(Floor::Every);
+    run(&mut world, &mut s, 2);
+    let entered = read::<TriggerEntered>(&world);
+    assert!(
+      entered
+        .iter()
+        .any(|m| m.trigger == zone && m.actor() == mover),
+      "on every floor it sees the mover: {entered:?}"
+    );
+  }
+
+  #[test]
+  fn changing_a_floor_refilters_a_resting_pair() {
+    let (mut world, mut s) = world(60);
+    floor(&mut world, 100.0);
+    let lower = floor(&mut world, 300.0);
+    let b = ball(&mut world, 0.0, 50.0);
+    run(&mut world, &mut s, 600);
+    assert!(world.resource::<Physics>().is_sleeping(b), "asleep at 90");
+    world.entity_mut(b).insert(Floor::On(1));
+    run(&mut world, &mut s, 20);
+    let y = at(&world, b).translation.y;
+    assert!(y > 130.0, "fell through the slab it slept on: {y}");
+    // Removed: back on the ground floor, it lands on the lower slab
+    world.entity_mut(b).remove::<Floor>();
+    run(&mut world, &mut s, 600);
+    let y = at(&world, b).translation.y;
+    assert!((y - 290.0).abs() < 1.0, "on the lower slab: {y}");
+    assert!(world.resource::<Physics>().is_sleeping(b), "asleep at 290");
+    // The other side's floor changing drops it too
+    world.entity_mut(lower).insert(Floor::On(2));
+    run(&mut world, &mut s, 20);
+    let y = at(&world, b).translation.y;
+    assert!(y > 330.0, "fell through the slab whose floor changed: {y}");
   }
 
   #[test]

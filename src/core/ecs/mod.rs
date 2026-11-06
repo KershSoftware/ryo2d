@@ -14,6 +14,7 @@ pub mod transform;
 pub mod world_ext;
 
 mod components;
+mod floor;
 pub(crate) mod knockback;
 mod lerp;
 mod material;
@@ -27,6 +28,7 @@ mod y_sort;
 pub use glam::{IVec2, Mat4, UVec2, Vec2, Vec3, Vec4};
 
 pub use components::{Velocity, ZLayer};
+pub use floor::Floor;
 pub use kernel::*;
 pub use knockback::Knockback;
 pub use lerp::Lerp;

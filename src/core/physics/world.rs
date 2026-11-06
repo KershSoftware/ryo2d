@@ -23,10 +23,12 @@ use super::body::{BodyKind, RigidBody};
 use super::collider::Collider;
 use super::config::PhysicsConfig;
 use super::convert::{from_rapier, pose, poses_differ, to_rapier};
+use super::hooks::{self, EngineHooks};
 use super::joint::{Joint, generic_joint, has_invalid_drive};
-use super::one_way::{self, OneWayHooks};
 use super::shape;
-use crate::core::ecs::{Entity, EntityHashMap, EntityHashSet, Resource, Tick, Vec2, entity_order};
+use crate::core::ecs::{
+  Entity, EntityHashMap, EntityHashSet, Floor, Resource, Tick, Vec2, entity_order,
+};
 
 /// A collision event with its first contact, captured during the step.
 struct Captured {
@@ -165,6 +167,8 @@ pub(crate) struct ColliderEntry {
   pub(crate) body: Option<Entity>,
   /// The component last applied
   pub(crate) collider: Collider,
+  /// The floor last applied: its own entity's `Floor`, else its body's
+  pub(crate) floor: Floor,
   /// The pose last applied: relative to the body when attached, else world.
   /// Updated only when applied, so drift below the tolerance never adds up
   pub(crate) pose: (Vec2, f32),
@@ -272,8 +276,9 @@ pub struct Physics {
   pub(crate) waiting: EntityHashSet,
   /// Bodies refused for a non-finite pose; retried every step
   pub(crate) refused: EntityHashSet,
-  /// Entities that lost their `RigidBody` or their parent since the last
-  /// step: the colliders at and below them may belong to another body now
+  /// Entities that lost their `RigidBody`, their parent or their `Floor`
+  /// since the last step: the colliders at and below them may belong to
+  /// another body, or another floor, now
   pub(crate) relink: EntityHashSet,
   /// The work list `register_bodies`, `sync_colliders` and `sync_joints`
   /// sort into `entity_order`, and `sync_colliders`' walk stack, kept between
@@ -382,11 +387,11 @@ fn active_types() -> ActiveCollisionTypes {
 }
 
 /// Apply the material half of an edited `Collider` (everything but its
-/// shape and placement): only fields that changed are written.
+/// shape and placement) and its floor: only what changed is written.
 fn apply_material(
   rapier: &mut rapier2d::prelude::Collider,
-  old: &Collider,
-  new: &Collider,
+  (old, old_floor): (&Collider, Floor),
+  (new, floor): (&Collider, Floor),
   density: f32,
 ) {
   if old.friction != new.friction {
@@ -407,9 +412,20 @@ fn apply_material(
   if old.is_trigger != new.is_trigger {
     rapier.set_sensor(new.is_trigger);
   }
-  if old.one_way != new.one_way {
-    rapier.user_data = one_way::encode(new.one_way);
-    rapier.set_active_hooks(one_way::hooks(new.one_way));
+  if old.one_way != new.one_way || old_floor != floor {
+    rapier.user_data = hooks::user_data(new, floor);
+    rapier.set_active_hooks(hooks::active_hooks(new, floor));
+  }
+  if old_floor != floor {
+    // Neither write above marks a change, so Rapier would keep its verdict
+    // on a pair at rest: a change of groups has it filter the pair again
+    // (and wake the bodies on both sides, so one resting on it can fall)
+    let groups = rapier.collision_groups();
+    rapier.set_collision_groups(InteractionGroups {
+      memberships: !groups.memberships,
+      ..groups
+    });
+    rapier.set_collision_groups(groups);
   }
   if old.force_threshold != new.force_threshold {
     rapier.set_active_events(events(new));
@@ -649,7 +665,7 @@ impl Physics {
     entity: Entity,
     body: Option<(Entity, RigidBodyHandle)>,
     placement: Placement,
-    collider: &Collider,
+    (collider, floor): (&Collider, Floor),
     prebuilt: Option<&SharedShape>,
   ) {
     if !placement.is_finite() {
@@ -659,7 +675,7 @@ impl Physics {
       );
       return;
     }
-    let Some(builder) = self.collider_builder(collider, placement.map, prebuilt) else {
+    let Some(builder) = self.collider_builder(collider, floor, placement.map, prebuilt) else {
       self.warn_once(
         entity,
         "a degenerate collider shape (zero scale included) is not simulated",
@@ -680,6 +696,7 @@ impl Physics {
         handle,
         body,
         collider: collider.clone(),
+        floor,
         pose: (placement.translation, placement.rotation),
         map: placement.map,
       },
@@ -694,12 +711,13 @@ impl Physics {
     );
   }
 
-  /// Rapier's collider for `collider` with `map` applied to its shape (the
-  /// shape built ahead, `prebuilt`, when `map` applies nothing), or `None`
-  /// when the shape is degenerate.
+  /// Rapier's collider for `collider` on `floor` with `map` applied to its
+  /// shape (the shape built ahead, `prebuilt`, when `map` applies nothing),
+  /// or `None` when the shape is degenerate.
   fn collider_builder(
     &self,
     collider: &Collider,
+    floor: Floor,
     map: Mat2,
     prebuilt: Option<&SharedShape>,
   ) -> Option<ColliderBuilder> {
@@ -717,8 +735,8 @@ impl Physics {
       .collision_groups(groups(collider))
       .active_collision_types(active_types())
       .active_events(events(collider))
-      .user_data(one_way::encode(collider.one_way))
-      .active_hooks(one_way::hooks(collider.one_way))
+      .user_data(hooks::user_data(collider, floor))
+      .active_hooks(hooks::active_hooks(collider, floor))
       .contact_force_event_threshold(finite_or(collider.force_threshold.unwrap_or(0.0), 0.0));
     Some(match collider.mass {
       Some(mass) => builder.mass(finite_or(mass, 0.0).max(0.0)),
@@ -726,7 +744,7 @@ impl Physics {
     })
   }
 
-  /// `sync_collider_with` with no shape built ahead.
+  /// `sync_collider_with` on the ground floor, with no shape built ahead.
   #[cfg(test)]
   pub(crate) fn sync_collider(
     &mut self,
@@ -735,23 +753,23 @@ impl Physics {
     placement: Placement,
     collider: &Collider,
   ) {
-    self.sync_collider_with(entity, body, placement, collider, None);
+    self.sync_collider_with(entity, body, placement, (collider, Floor::GROUND), None);
   }
 
-  /// Bring a collider in line with its component, its body and its
-  /// placement: register it, move it to another body (or none), rebuild its
-  /// shape when the shape or scale changed, move it, and apply material
-  /// edits. A collider whose body is not simulated yet waits out of the
-  /// simulation (retried every step), leaving any body it was on; a shape
-  /// that becomes degenerate leaves the simulation until it is valid again.
-  /// A collider registering takes `prebuilt` for its shape when given (its
-  /// `PrebuiltShape`) and its placement applies no scale or mirroring.
+  /// Bring a collider in line with its component, its floor, its body and
+  /// its placement: register it, move it to another body (or none), rebuild
+  /// its shape when the shape or scale changed, move it, and apply material
+  /// and floor edits. A collider whose body is not simulated yet waits out
+  /// of the simulation (retried every step), leaving any body it was on; a
+  /// shape that becomes degenerate leaves the simulation until it is valid
+  /// again. A collider registering takes `prebuilt` for its shape when given
+  /// (its `PrebuiltShape`) and its placement applies no scale or mirroring.
   pub(crate) fn sync_collider_with(
     &mut self,
     entity: Entity,
     body: Option<Entity>,
     placement: Placement,
-    collider: &Collider,
+    (collider, floor): (&Collider, Floor),
     prebuilt: Option<&SharedShape>,
   ) {
     if collider
@@ -776,7 +794,7 @@ impl Physics {
     };
     self.waiting.remove(&entity);
     let Some(entry) = self.collider_entries.get(&entity) else {
-      self.add_collider(entity, parent, placement, collider, prebuilt);
+      self.add_collider(entity, parent, placement, (collider, floor), prebuilt);
       if let Some(entry) = self.collider_entries.get(&entity) {
         let handle = entry.handle;
         self.follow_body(handle);
@@ -788,7 +806,8 @@ impl Physics {
     let reshape = entry.collider.shape != collider.shape || maps_differ(entry.map, placement.map);
     let reparent = entry.body != body;
     let follows = self.follows_body(entry.handle);
-    if !moved && !reshape && !reparent && follows && entry.collider == *collider {
+    let refloored = entry.floor != floor;
+    if !moved && !reshape && !reparent && follows && !refloored && entry.collider == *collider {
       return;
     }
     if !placement.is_finite() {
@@ -798,7 +817,7 @@ impl Physics {
       );
       return;
     }
-    let (handle, old) = (entry.handle, entry.collider.clone());
+    let (handle, old, old_floor) = (entry.handle, entry.collider.clone(), entry.floor);
     if reshape {
       let Some(shape) = shape::build(&collider.shape, placement.map) else {
         self.remove_collider(entity);
@@ -839,11 +858,12 @@ impl Physics {
           rapier.set_position(placement.pose());
         }
       }
-      apply_material(rapier, &old, collider, density);
+      apply_material(rapier, (&old, old_floor), (collider, floor), density);
     }
     if let Some(entry) = self.collider_entries.get_mut(&entity) {
       entry.body = body;
       entry.collider = collider.clone();
+      entry.floor = floor;
       if moved || reparent {
         entry.pose = (placement.translation, placement.rotation);
       }
@@ -1365,7 +1385,7 @@ impl Physics {
       &mut self.multibody_joints,
       &mut self.soft_bodies,
       &mut self.ccd_solver,
-      &OneWayHooks,
+      &EngineHooks,
       &self.collector,
     );
     for handle in self.forced.drain(..) {

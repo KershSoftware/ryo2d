@@ -1,6 +1,6 @@
 # AGENTS.md - ECS Module
 
-Ryo2D's ECS is `bevy_ecs` 0.20, presented as Ryo2D's own: `kernel.rs` re-exports a curated list of kernel types (`World`, `Entity`, `Query`, `Commands`, `Resource`, `Message`, `ChildOf`, `Disabled`, ...), and the rest of the module holds Ryo2D's components (`Transform` and friends, `Renderable`, `Velocity`, the juice components), `WorldExt`, `Pool`, propagation and interpolation. Skills: `ryo-ecs-internals` (contributors), `ryo-game-dev` (games), `ryo-animation` (tweens).
+Ryo2D's ECS is `bevy_ecs` 0.20, presented as Ryo2D's own: `kernel.rs` re-exports a curated list of kernel types (`World`, `Entity`, `Query`, `Commands`, `Resource`, `Message`, `ChildOf`, `Disabled`, ...), and the rest of the module holds Ryo2D's components (`Transform` and friends, `Renderable`, `Velocity`, `Floor` (a storey, which physics filters by), the juice components), `WorldExt`, `Pool`, propagation and interpolation. Skills: `ryo-ecs-internals` (contributors), `ryo-game-dev` (games), `ryo-animation` (tweens).
 
 ## The Kernel Name
 

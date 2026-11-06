@@ -1,8 +1,8 @@
 ---
 name: ryo-physics
-description: Rapier2D physics integration - bodies, colliders, one-way colliders, triggers, joints, queries, contact state and collision messages.
+description: Rapier2D physics integration - bodies, colliders, one-way colliders, layers, masks and floors (storeys), triggers, joints, queries, contact state and collision messages.
 metadata:
-  version: 3.7.0
+  version: 3.8.0
 ---
 
 # Ryo2D Physics Specialist
@@ -183,9 +183,33 @@ Collider::circle(8.0).with_layer(PLAYER).with_mask(ENEMY | WALL)
 
 Queries use `QueryFilter::with_mask`, which is matched against the collider's layer only.
 
+### Floors (storeys)
+
+Storeys (raised ground, an upper floor, a bridge) have a filter of their own, apart from the 32 layer and mask bits, which stay yours. `Floor::On(n)` puts an entity on storey `n`; `Floor::GROUND` (`On(0)`) is where everything without a `Floor` is, and `Floor::Every` puts an entity on every storey at once. **Colliders on floors that do not meet never interact**: no contacts, no collision or trigger messages, and a character's sweep passes through. A floor meets its own number, and `Every` meets all of them (`a.meets(b)`). The layer and mask test still applies to the pairs that do meet. (`Floor` is a storey; `CharacterState::floor` and `on_floor` are the ground underfoot.)
+
+- A collider is on its own entity's `Floor`, else its body's (so a body's `Floor` covers the colliders on its children), else the ground floor. A tile grid's parts are on `TileColliders::floor` (`with_floor`; the ground floor by default), never on the map entity's `Floor`.
+- Insert, change or remove `Floor` at any time: the next step filters again, pairs at rest included, so a crate sleeping on a ledge falls when either moves to another storey.
+- Only colliders on a storey above the ground (not on `Every`) are checked, which turns off Rapier's reuse of their pairs' contacts from step to step; pairs on the ground floor cost what they always did.
+
+<!-- given: x: f32, y: f32 -->
+```rust
+// A crate on the first storey up, and a pressure plate that every storey sets off
+ctx.world.spawn((
+  Transform::from_xy(x, y),
+  RigidBody::dynamic(),
+  Collider::rect(16.0, 16.0),
+  Floor::On(1),
+));
+ctx.world.spawn((
+  Transform::from_xy(x, y + 40.0),
+  Collider::rect(32.0, 8.0).as_trigger(),
+  Floor::Every,
+));
+```
+
 ## Triggers
 
-`as_trigger()` colliders detect but never push. A trigger overlap is not a collision: it sends `TriggerEntered` / `TriggerExited` (once per body, however many colliders it has, with its trigger colliders counted apart from its solid ones; `actor()` is the body that entered or left) and shows in `physics.overlaps(zone)`; the engine also keeps a `TriggerContents` component on every trigger (added after its first step), listing the bodies inside in entry order (`entities()`, `contains(e)`, `len()`, `is_empty()`). Pickups, zones, pressure plates and sensors are triggers on a fixed body (or no body). Two overlapping triggers each get a message. What can set a trigger off is the layer and mask test, as for any pair.
+`as_trigger()` colliders detect but never push. A trigger overlap is not a collision: it sends `TriggerEntered` / `TriggerExited` (once per body, however many colliders it has, with its trigger colliders counted apart from its solid ones; `actor()` is the body that entered or left) and shows in `physics.overlaps(zone)`; the engine also keeps a `TriggerContents` component on every trigger (added after its first step), listing the bodies inside in entry order (`entities()`, `contains(e)`, `len()`, `is_empty()`). Pickups, zones, pressure plates and sensors are triggers on a fixed body (or no body). Two overlapping triggers each get a message. What can set a trigger off is the layer and mask test and the floor, as for any pair: a trigger on one storey sees nothing on another, and one on `Floor::Every` sees every storey.
 
 Ready-made behaviours go on trigger colliders: `Pickup`, `KillZone` and `Checkpoint` with `Respawn` (`ryo-character`).
 
@@ -244,6 +268,7 @@ All on `&Physics` (`ctx.physics()`), in pixels, and they see the world as the la
 // Signatures
 let filter = QueryFilter::new().excluding(looker); // skips a body (all its colliders) or one collider
 let filter = QueryFilter::new().with_mask(WALL | ENEMY).with_triggers();
+let filter = QueryFilter::new().on_floor(Floor::On(1)); // storey 1 and colliders on every storey
 
 physics.raycast(origin, direction, max_distance, &filter) -> Option<Hit>
 physics.raycast_all(origin, direction, max_distance, &filter) -> Vec<Hit>           // nearest first
@@ -253,7 +278,7 @@ physics.overlap_shape(&shape, position, rotation, &filter) -> Vec<Overlap>
 physics.nearest(point, max_distance, &filter) -> Option<PointHit>
 ```
 
-- `QueryFilter` defaults to every layer and **skips triggers** (a trigger zone does not block a line of sight); `with_triggers()` includes them; `with_mask(bits)` matches colliders whose layer meets the bits; `excluding(entity)` can be called repeatedly.
+- `QueryFilter` defaults to every layer on every storey and **skips triggers** (a trigger zone does not block a line of sight); `with_triggers()` includes them; `with_mask(bits)` matches colliders whose layer meets the bits; `on_floor(floor)` matches colliders on a floor that meets it (that storey's, and those on `Floor::Every`); `excluding(entity)` can be called repeatedly.
 - `Hit { collider, body, point, normal, distance }`. A ray starting inside a collider hits it at distance 0 with a zero normal; a shape that starts overlapping hits at distance 0.
 - `Overlap { collider, body }`. `PointHit { collider, body, point, inside }`: `nearest` reports the closest surface point, and `inside` is true when the query point is inside the collider.
 - The direction need not be normalised; a zero or non-finite one, or a negative range, returns nothing.
@@ -387,3 +412,5 @@ Write the `Transform`; the body teleports on the next physics step. Call `ctx.sk
 - Do not scale a body with a collider for a visual effect; scale a child sprite.
 - A `Collider` without a `RigidBody` is fixed: it does not move when its `Transform` changes except by teleport.
 - Forces last one step; call them every step.
+- Queries see every storey unless you say `on_floor`: a line of sight on the ground floor is blocked by a wall upstairs until it does.
+- A `Floor` on a parent that is neither a body nor a collider reaches nothing: put it on the body (or the collider). A tile map's parts take `TileColliders::floor`, not a `Floor` on the map.

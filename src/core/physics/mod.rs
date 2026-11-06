@@ -7,6 +7,7 @@ mod config;
 pub(crate) mod convert;
 pub(crate) mod debug;
 mod events;
+mod hooks;
 mod joint;
 mod one_way;
 mod query;

@@ -3,8 +3,7 @@
 //! sweep applies.
 
 use rapier2d::prelude::{
-  ActiveHooks, Collider as RapierCollider, ContactModificationContext, PhysicsHooks, Pose, Shape,
-  Vector,
+  ActiveHooks, Collider as RapierCollider, ContactModificationContext, Pose, Shape, Vector,
 };
 
 use super::convert::to_rapier;
@@ -18,7 +17,8 @@ pub(crate) const ONE_WAY_ANGLE: f32 = std::f32::consts::FRAC_PI_4;
 const FLAG: u128 = 1 << 64;
 
 /// A one-way direction as Rapier user data: the flag bit, then the unit
-/// direction's `y` and `x` bits. A missing or zero direction is 0.
+/// direction's `y` and `x` bits (bits 0 to 64; the floor's are above them,
+/// `hooks.rs`). A missing or zero direction is 0.
 pub(crate) fn encode(direction: Option<Vec2>) -> u128 {
   match direction.and_then(Vec2::try_normalize) {
     Some(d) => FLAG | (u128::from(d.y.to_bits()) << 32) | u128::from(d.x.to_bits()),
@@ -44,32 +44,28 @@ pub(crate) fn hooks(direction: Option<Vec2>) -> ActiveHooks {
   }
 }
 
-/// The step's contact hook: a contact with a one-way collider pushes only
-/// while its normal points along the collider's direction. Rapier tracks
-/// each crossing in the manifold, so a body part-way through is not snapped
-/// back.
-pub(crate) struct OneWayHooks;
-
-impl PhysicsHooks for OneWayHooks {
-  fn modify_solver_contacts(&self, context: &mut ContactModificationContext) {
-    let (Some(c1), Some(c2)) = (
-      context.colliders.get(context.collider1),
-      context.colliders.get(context.collider2),
-    ) else {
-      return;
-    };
-    // `update_as_oneway_platform` compares the normal leaving collider 1, in
-    // collider 1's own space
-    let allowed = if let Some(local) = decode(c1.user_data) {
-      to_rapier(local)
-    } else if let Some(local) = decode(c2.user_data) {
-      let world = c2.position().rotation.transform_vector(to_rapier(local));
-      c1.position().rotation.inverse().transform_vector(-world)
-    } else {
-      return;
-    };
-    context.update_as_oneway_platform(allowed, ONE_WAY_ANGLE);
-  }
+/// The step's contact hook (through `hooks::EngineHooks`): a contact with
+/// a one-way collider pushes only while its normal points along the
+/// collider's direction. Rapier tracks each crossing in the manifold, so a
+/// body part-way through is not snapped back.
+pub(crate) fn modify_contacts(context: &mut ContactModificationContext) {
+  let (Some(c1), Some(c2)) = (
+    context.colliders.get(context.collider1),
+    context.colliders.get(context.collider2),
+  ) else {
+    return;
+  };
+  // `update_as_oneway_platform` compares the normal leaving collider 1, in
+  // collider 1's own space
+  let allowed = if let Some(local) = decode(c1.user_data) {
+    to_rapier(local)
+  } else if let Some(local) = decode(c2.user_data) {
+    let world = c2.position().rotation.transform_vector(to_rapier(local));
+    c1.position().rotation.inverse().transform_vector(-world)
+  } else {
+    return;
+  };
+  context.update_as_oneway_platform(allowed, ONE_WAY_ANGLE);
 }
 
 /// How far a character may sit inside a one-way collider's top and still

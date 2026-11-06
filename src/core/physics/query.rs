@@ -9,17 +9,20 @@ use rapier2d::prelude::{
 
 use super::collider::ColliderShape;
 use super::convert::{from_rapier, pose, to_rapier};
+use super::hooks::floor_of;
 use super::shape;
 use super::world::{Owner, Physics, Push, first_contact};
-use crate::core::ecs::{Entity, Vec2};
+use crate::core::ecs::{Entity, Floor, Vec2};
 
-/// What a query may hit. The default hits every layer and skips triggers
-/// (so a line of sight is not blocked by a trigger zone).
+/// What a query may hit. The default hits every layer on every floor and
+/// skips triggers (so a line of sight is not blocked by a trigger zone).
 #[derive(Debug, Clone, PartialEq)]
 pub struct QueryFilter {
   mask: u32,
   excluded: Vec<Entity>,
   triggers: bool,
+  /// `Every` sees colliders on every floor
+  floor: Floor,
 }
 
 impl Default for QueryFilter {
@@ -28,6 +31,7 @@ impl Default for QueryFilter {
       mask: u32::MAX,
       excluded: Vec::new(),
       triggers: false,
+      floor: Floor::Every,
     }
   }
 }
@@ -52,6 +56,13 @@ impl QueryFilter {
   /// Hit triggers too.
   pub fn with_triggers(mut self) -> Self {
     self.triggers = true;
+    self
+  }
+
+  /// Hit only colliders on floors that meet `floor`: those on it and those
+  /// on every floor. By default a query sees every floor.
+  pub fn on_floor(mut self, floor: Floor) -> Self {
+    self.floor = floor;
     self
   }
 }
@@ -101,6 +112,7 @@ impl Physics {
   fn with_queries<R>(&self, filter: &QueryFilter, f: impl FnOnce(QueryPipeline<'_>) -> R) -> R {
     let passes = |handle: ColliderHandle, collider: &RapierCollider| {
       u32::from(collider.collision_groups().memberships) & filter.mask != 0
+        && filter.floor.meets(floor_of(collider.user_data))
         && self.owners.get(&handle).is_some_and(|owner| {
           !filter.excluded.contains(&owner.collider) && !filter.excluded.contains(&owner.body)
         })
@@ -635,6 +647,54 @@ mod tests {
         .collider,
       floor_e
     );
+  }
+
+  #[test]
+  fn queries_see_every_floor_unless_filtered() {
+    use crate::core::ecs::Floor;
+    let (mut world, mut s) = world(60);
+    let upper = world
+      .spawn((
+        Transform::from_xy(0.0, 100.0),
+        Collider::rect(40.0, 20.0),
+        Floor::On(1),
+      ))
+      .id();
+    let every = world
+      .spawn((
+        Transform::from_xy(200.0, 100.0),
+        Collider::rect(40.0, 20.0),
+        Floor::Every,
+      ))
+      .id();
+    run(&mut world, &mut s, 1);
+    let physics = world.resource::<Physics>();
+    let down_from = |x: f32, filter: &QueryFilter| {
+      physics
+        .raycast(Vec2::new(x, 0.0), Vec2::Y, 1000.0, filter)
+        .map(|hit| hit.collider)
+    };
+    assert_eq!(
+      down_from(0.0, &QueryFilter::new()),
+      Some(upper),
+      "every floor by default"
+    );
+    assert_eq!(
+      down_from(0.0, &QueryFilter::new().on_floor(Floor::GROUND)),
+      None
+    );
+    assert_eq!(
+      down_from(0.0, &QueryFilter::new().on_floor(Floor::On(1))),
+      Some(upper)
+    );
+    for filter in [
+      QueryFilter::new(),
+      QueryFilter::new().on_floor(Floor::GROUND),
+      QueryFilter::new().on_floor(Floor::On(7)),
+      QueryFilter::new().on_floor(Floor::Every),
+    ] {
+      assert_eq!(down_from(200.0, &filter), Some(every), "{filter:?}");
+    }
   }
 
   #[test]

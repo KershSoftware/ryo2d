@@ -12,7 +12,8 @@ use super::collider::{Collider, PrebuiltShape};
 use super::world::Physics;
 use crate::core::ecs::{
   Allow, Changed, ChildOf, Children, Commands, Component, DetectChangesMut, Disabled, Entity,
-  EntityHashSet, Has, Or, ParentPlaced, Query, RemovedComponents, ResMut, Transform, Vec2, With,
+  EntityHashSet, Floor, Has, Or, ParentPlaced, Query, RemovedComponents, ResMut, Transform, Vec2,
+  With,
 };
 use crate::core::hash::{FastMap, FastSet};
 
@@ -642,6 +643,10 @@ const MAX_CHANGES: usize = 1 << 16;
 /// it builds them again from the cells as they then are; so does removing
 /// the component.
 ///
+/// Its colliders are on its `floor` (`with_floor`; the ground floor by
+/// default), each carrying it as its `Floor`: a map entity's own `Floor`
+/// does not reach them. Changing it rebuilds them all.
+///
 /// Outlines are hollow: a body that ends up inside a solid region is not
 /// pushed out. `solid_rects()` trades the seamless floors for solid
 /// interiors (and rebuilds everything on any change).
@@ -676,6 +681,8 @@ pub struct TileColliders {
   hex: Option<(HexCells, Vec2)>,
   pub layer: u32,
   pub mask: u32,
+  /// The floor its parts are on (each part carries it as its `Floor`)
+  pub floor: Floor,
   pub friction: f32,
   pub restitution: f32,
   /// Build merged rectangles instead of outlines
@@ -774,6 +781,7 @@ impl TileColliders {
       hex: None,
       layer: 1,
       mask: u32::MAX,
+      floor: Floor::GROUND,
       friction: 0.5,
       restitution: 0.0,
       solid_rects: false,
@@ -1163,6 +1171,12 @@ impl TileColliders {
     self
   }
 
+  /// Put its parts on `floor` (the ground floor by default).
+  pub fn with_floor(mut self, floor: Floor) -> Self {
+    self.floor = floor;
+    self
+  }
+
   pub fn with_friction(mut self, friction: f32) -> Self {
     self.friction = friction;
     self
@@ -1427,11 +1441,17 @@ impl TileColliders {
       .with_restitution(self.restitution)
   }
 
-  /// A part of the map, in its space with the grid's material.
+  /// A part of the map, in its space with the grid's material and floor.
   fn spawn(&self, commands: &mut Commands, map: Entity, collider: Collider) -> Entity {
     let collider = self.material(collider);
     commands
-      .spawn((Transform::IDENTITY, collider, TilePart, ChildOf(map)))
+      .spawn((
+        Transform::IDENTITY,
+        collider,
+        self.floor,
+        TilePart,
+        ChildOf(map),
+      ))
       .id()
   }
 
@@ -1593,8 +1613,8 @@ impl TileColliders {
   }
 
   /// Spawns pack `key`'s part at `at`, `collider` with the grid's material
-  /// (and its shape built ahead, if any), as the part of the pack's
-  /// members.
+  /// and floor (and its shape built ahead, if any), as the part of the
+  /// pack's members.
   #[allow(clippy::too_many_arguments)] // the part, then where it goes
   fn spawn_pack(
     &self,
@@ -1610,6 +1630,7 @@ impl TileColliders {
     let part = (
       Transform::from_xy(at.x, at.y),
       collider,
+      self.floor,
       TilePart,
       ChildOf(map),
     );
@@ -2414,6 +2435,7 @@ struct TileRecord {
   hex: Option<(HexCells, [u32; 2])>,
   layer: u32,
   mask: u32,
+  floor: Floor,
   friction: u32,
   restitution: u32,
   solid_rects: bool,
@@ -2430,6 +2452,7 @@ impl TileRecord {
         .map(|(hex, origin)| (hex, origin.to_array().map(f32::to_bits))),
       layer: tiles.layer,
       mask: tiles.mask,
+      floor: tiles.floor,
       friction: tiles.friction.to_bits(),
       restitution: tiles.restitution.to_bits(),
       solid_rects: tiles.solid_rects,
@@ -5739,6 +5762,43 @@ mod with_physics {
     let after = ids(&mut world, map);
     assert_eq!(after.len(), 1);
     assert_ne!(after, before);
+  }
+
+  #[test]
+  fn a_tile_grid_s_floor_goes_on_every_part() {
+    let floors = |world: &mut World, map: Entity| {
+      let mut query = world.query_filtered::<(&ChildOf, Option<&Floor>), With<TilePart>>();
+      query
+        .iter(world)
+        .filter(|(child_of, _)| child_of.parent() == map)
+        .map(|(_, floor)| floor.copied())
+        .collect::<Vec<_>>()
+    };
+    // Outlines and one-way runs in packs, and rectangles
+    for grid in [islands(), islands().solid_rects()] {
+      let (mut world, mut s) = world(60);
+      let map = world
+        .spawn((Transform::IDENTITY, grid.with_floor(Floor::On(2))))
+        .id();
+      run(&mut world, &mut s, 1);
+      let before = ids(&mut world, map);
+      let on = floors(&mut world, map);
+      assert!(
+        on.len() > 1 && on.iter().all(|&f| f == Some(Floor::On(2))),
+        "{on:?}"
+      );
+      world.get_mut::<TileColliders>(map).unwrap().floor = Floor::On(3);
+      run(&mut world, &mut s, 1);
+      let after = ids(&mut world, map);
+      assert!(
+        after.len() == before.len() && after.iter().all(|e| !before.contains(e)),
+        "rebuilt"
+      );
+      let on = floors(&mut world, map);
+      assert!(on.iter().all(|&f| f == Some(Floor::On(3))), "{on:?}");
+    }
+    let default = TileColliders::new(1, 1, Vec2::splat(16.0));
+    assert_eq!(default.floor, Floor::GROUND);
   }
 
   /// 600 islands and a one-way run, as a grid
