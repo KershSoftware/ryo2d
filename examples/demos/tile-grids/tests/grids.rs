@@ -13,8 +13,11 @@
 //! works them out, with the distance in the HUD; the board's rocks stop its
 //! walker and occlude, and the HUD gives the cheapest path to the hovered
 //! hex round them (trees costing 2, a rock none), which a right click
-//! walks, setting off forward from past its hex's middle; and the oblique
-//! map's knight stops at a skewed wall, on the map and on its mirror
+//! walks, setting off forward from past its hex's middle; the board's edge
+//! stops the walker on its border hexes, and the walker carries a light
+//! that casts shadows, the marks' rims unlit, the page's lighting put back
+//! when it is left; and the oblique map's knight stops at a skewed wall, on
+//! the map and on its mirror
 
 mod common;
 
@@ -776,6 +779,151 @@ fn the_hex_board_s_rocks_stop_the_walker() {
   let world = engine.world_mut();
   let mut chains = world.query_filtered::<(), (With<MapOccluder>, With<LightOccluder2D>)>();
   assert!(chains.iter(world).count() > 0, "the board's shadow chains");
+  assert!(warnings().is_empty(), "{:#?}", warnings());
+}
+
+#[test]
+fn the_hex_board_s_edge_stops_the_walker() {
+  let Some(mut engine) = engine_on(HEX) else {
+    return;
+  };
+  let map = spawned_map(&mut engine);
+  let walker = wait_for_walker(&mut engine);
+  engine.mouse_move(900.0, 100.0);
+  engine.step_frames(3).unwrap();
+  let layer = grid_of(&mut engine, map, "board");
+  let bounds = MapsView::new(engine.world_mut())
+    .bounds(map)
+    .expect("the board's bounds");
+  let start = layer.cell_at_world(walker_at(&engine, walker));
+  assert_eq!(start, HEX_START, "the walker starts on its hex");
+  let (radius, skin) = walker_reach(&engine, walker);
+
+  // The nearest edge is left of the start, past the open border hex on
+  // its row: A held for three seconds, far longer than it takes to cross
+  // that hex, never takes the walker off the board
+  let border = IVec2::new(bounds.min.x, start.y);
+  assert_eq!(
+    start.x - border.x,
+    1,
+    "the start is one hex from the left edge"
+  );
+  assert!(!is_rock(&mut engine, map, border), "{border} is open");
+  engine.press_key(KeyCode::KeyA);
+  for frame in 0..180 {
+    engine.step().unwrap();
+    let at = walker_at(&engine, walker);
+    let cell = layer.cell_at_world(at);
+    assert!(
+      bounds.contains(cell),
+      "frame {frame}: the walker at {at} left the board, on {cell}"
+    );
+  }
+  engine.release_key(KeyCode::KeyA);
+  engine.step_frames(5).unwrap();
+
+  // It reached the border hex, and stopped at the board's outer side,
+  // its skin away: the edge lies on the hex's own side, not further in
+  let at = walker_at(&engine, walker);
+  assert_eq!(
+    layer.cell_at_world(at),
+    border,
+    "the walker reached {border}"
+  );
+  let outer = layer
+    .outline_world(border)
+    .points()
+    .iter()
+    .map(|corner| corner.x)
+    .fold(f32::INFINITY, f32::min);
+  let gap = at.x - outer;
+  assert!(
+    (gap - (radius + skin)).abs() < 2.0,
+    "the walker stops at the board's edge: {gap} from it, its radius {radius} and skin {skin}"
+  );
+  assert!(warnings().is_empty(), "{:#?}", warnings());
+}
+
+/// The scene's lighting settings, all of them (the latch that keeps
+/// automatic lighting on once a light has been seen included), as their
+/// `Debug` shows them
+fn lighting_state(engine: &HeadlessEngine) -> String {
+  format!("{:?}", *engine.world().resource::<LightingSettings>())
+}
+
+/// Every light in the world, and the entity that carries it
+fn lights(engine: &mut HeadlessEngine) -> Vec<(Entity, Light2D)> {
+  let world = engine.world_mut();
+  let mut lights = world.query::<(Entity, &Light2D)>();
+  lights
+    .iter(world)
+    .map(|(entity, light)| (entity, light.clone()))
+    .collect()
+}
+
+#[test]
+fn the_hex_board_s_walker_carries_a_light_and_leaving_puts_the_lighting_back() {
+  let Some(mut engine) = engine_on(STAGGERED) else {
+    return;
+  };
+  spawned_map(&mut engine);
+  engine.step_frames(10).unwrap();
+  let before = lighting_state(&engine);
+  assert!(lights(&mut engine).is_empty(), "the island has no light");
+
+  // On the hex board the walker carries a light that casts shadows, as a
+  // component or on a child, and the page lowers the ambient
+  engine.tap_key(KeyCode::BracketRight);
+  engine.step_frames(2).unwrap();
+  let map = spawned_map(&mut engine);
+  let walker = wait_for_walker(&mut engine);
+  engine.step_frames(10).unwrap();
+  let children: Vec<Entity> = engine
+    .world()
+    .get::<Children>(walker)
+    .map(|children| children.iter().copied().collect())
+    .unwrap_or_default();
+  let carried: Vec<Light2D> = lights(&mut engine)
+    .into_iter()
+    .filter(|(entity, _)| *entity == walker || children.contains(entity))
+    .map(|(_, light)| light)
+    .collect();
+  assert_eq!(carried.len(), 1, "the walker carries one light");
+  assert!(carried[0].casts_shadows(), "its light casts shadows");
+  assert_ne!(
+    lighting_state(&engine),
+    before,
+    "the hex board sets its own lighting"
+  );
+  // The marks' rims draw unlit, so they read in the dusk; the range's wash
+  // is lit, so the shadows under it still show
+  for (name, lit) in [
+    ("range", true),
+    ("ring", false),
+    ("neighbours", false),
+    ("line", false),
+  ] {
+    let layer = MapsView::new(engine.world_mut())
+      .layer_entity(map, name)
+      .unwrap_or_else(|| panic!("the layer {name:?}"));
+    let info = engine.world().get::<LayerInfo>(layer).expect("its info");
+    assert_eq!(info.lit, lit, "the {name} layer is lit: {lit}");
+  }
+
+  // Paging back, the lighting is as it was before the board was entered
+  engine.tap_key(KeyCode::BracketLeft);
+  engine.step_frames(2).unwrap();
+  spawned_map(&mut engine);
+  engine.step_frames(10).unwrap();
+  assert!(
+    lights(&mut engine).is_empty(),
+    "the light went with the page"
+  );
+  assert_eq!(
+    lighting_state(&engine),
+    before,
+    "the lighting is put back on leaving"
+  );
   assert!(warnings().is_empty(), "{:#?}", warnings());
 }
 

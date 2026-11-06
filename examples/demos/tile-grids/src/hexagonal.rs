@@ -17,8 +17,15 @@
 //!
 //! The board's rocks and stone collide and occlude along their hexagons
 //! (each such tile's shape is its whole hexagon), so they stop the walker
-//! WASD walks (the page has no light, so their shadows don't show). Its
-//! navigation grid (`ctx.maps().navigation`) blocks them from that
+//! WASD walks, and the lantern it carries (a `Light2D` with shadows) casts
+//! their hexagonal shadows, which turn and stretch as it walks. The page
+//! sets a dusk ambient for the lantern to light (its scene's cleanup puts
+//! the lighting back when the page is left); the marks' rims are unlit
+//! (their layers' `lit` property is false), so they read in the dusk, and
+//! the range's wash is lit, so the shadows under it show. A collider round
+//! the board's outer edge, made from the layer grid's own hex outlines,
+//! keeps the walker on the board; it casts no shadow. The board's
+//! navigation grid (`ctx.maps().navigation`) blocks the rocks from their
 //! collision, and the trees' `cost` property makes them dearer to cross,
 //! so hovering a hex shows the cheapest path to it from the walker's hex,
 //! a blue line through hex centres, with its length and cost in the HUD; a
@@ -63,6 +70,18 @@ const WALKER: Walk = Walk {
   radius: 20.0,
   speed: 240.0,
 };
+/// The light the walker carries, at its feet: warm, reaching about three
+/// hexes, casting the rocks' shadows
+const LANTERN_COLOR: Color = Color::rgb(255, 222, 170);
+const LANTERN_RADIUS: f32 = 420.0;
+const LANTERN_INTENSITY: f32 = 1.5;
+const LANTERN_FALLOFF: f32 = 1.5;
+/// The board's light away from the lantern: a cool dusk, dim enough for
+/// the lantern and its shadows to read and light enough to read the board
+const DUSK: Color = Color::rgb(150, 165, 210);
+const DUSK_INTENSITY: f32 = 0.35;
+/// How near two corners of the board's rim count as one, in world pixels
+const SAME_CORNER: f32 = 0.5;
 
 /// The cheapest path from the walker's hex to the hovered one, and the
 /// hexes it was found for
@@ -88,6 +107,9 @@ pub(crate) struct HexPage {
   /// The z the walker draws at: above the board and its marks
   walker_z: i32,
   walker: Option<Entity>,
+  /// The collider round the board's outer edge, made once it lands and
+  /// again when a save of its files changes it
+  rim: Option<Entity>,
   /// The board as the walker crosses it, taken once it lands and again
   /// when a save of its files changes it
   nav: Option<NavigationGrid>,
@@ -108,6 +130,7 @@ impl HexPage {
       radius: 2,
       walker_z: MARKS.len() as i32 + 1,
       walker: None,
+      rim: None,
       nav: None,
       route: None,
       walk: None,
@@ -227,6 +250,53 @@ fn board_navigation(ctx: &mut SceneContext, root: Entity) -> Option<NavigationGr
   Some(grid)
 }
 
+/// The light the walker carries
+fn lantern() -> Light2D {
+  Light2D::point(LANTERN_COLOR, LANTERN_RADIUS)
+    .with_intensity(LANTERN_INTENSITY)
+    .with_falloff(LANTERN_FALLOFF)
+    .with_shadows()
+}
+
+/// The board's outer edge as one fixed collider, in the world: each side
+/// of a hex of `bounds` with no hex of `bounds` across it (the hex there
+/// is the one whose centre is this one's, mirrored in the side's middle),
+/// the sides joined at the corners they share. The sides are the layer
+/// grid's own outlines, where the map's collision and navigation lie. It
+/// stops the walker, and casts no shadow: an unseen wall's shadow would
+/// look out of place. The navigation grid reads only the map's tile
+/// colliders, so it never sees this one, and needn't: no path leaves the
+/// board
+fn board_rim(layer: &LayerGrid, bounds: CellRect) -> Collider {
+  let mut corners: Vec<Vec2> = Vec::new();
+  let mut sides: Vec<[u32; 2]> = Vec::new();
+  let mut corner = |at: Vec2| {
+    let index = corners
+      .iter()
+      .position(|seen| seen.distance(at) < SAME_CORNER)
+      .unwrap_or_else(|| {
+        corners.push(at);
+        corners.len() - 1
+      });
+    index as u32
+  };
+  for y in bounds.min.y..bounds.max.y {
+    for x in bounds.min.x..bounds.max.x {
+      let cell = IVec2::new(x, y);
+      let centre = layer.cell_center_world(cell);
+      let outline = layer.outline_world(cell);
+      let points = outline.points();
+      for (i, &a) in points.iter().enumerate() {
+        let b = points[(i + 1) % points.len()];
+        if !bounds.contains(layer.cell_at_world(a + b - centre)) {
+          sides.push([corner(a), corner(b)]);
+        }
+      }
+    }
+  }
+  Collider::segments(corners, sides)
+}
+
 impl DemoPage for HexPage {
   fn name(&self) -> &str {
     "A hex board"
@@ -262,6 +332,11 @@ impl DemoPage for HexPage {
       (data.background, size)
     };
     clear_to(ctx, background.unwrap_or(NIGHT));
+    // Dusk, for the walker's lantern to light; the page's scene cleanup
+    // puts the lighting back when the page is left
+    ctx
+      .lighting()
+      .set_ambient(AmbientLight::new(DUSK, DUSK_INTENSITY));
     self.root = Some(
       ctx
         .world
@@ -287,12 +362,28 @@ impl DemoPage for HexPage {
       Some(walker) => walker,
       None => {
         let walker = spawn_walker(ctx, layer.cell_center_world(START), WALKER, self.walker_z);
+        if let Ok(mut entity) = ctx.world.get_entity_mut(walker) {
+          entity.insert(lantern());
+        }
         *self.walker.insert(walker)
       }
     };
-    if reloaded(ctx, root) || self.nav.is_none() {
+    let reload = reloaded(ctx, root);
+    if reload || self.nav.is_none() {
       self.nav = board_navigation(ctx, root);
       self.route = None;
+    }
+    if reload || self.rim.is_none() {
+      if let Some(rim) = self.rim.take() {
+        ctx.world.despawn(rim);
+      }
+      let bounds = ctx.maps().bounds(root);
+      self.rim = bounds.map(|bounds| {
+        ctx
+          .world
+          .spawn((Transform::IDENTITY, board_rim(&layer, bounds)))
+          .id()
+      });
     }
     self.hover = hovered_cell(ctx, root, TERRAIN, &self.covered);
     if let Some(cell) = self.hover

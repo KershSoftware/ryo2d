@@ -726,7 +726,9 @@ island(TileMap.StaggerX, 24, 12, "maps/island-columns.tmx");
 // and stone's hexagons. Above it, empty layers the page marks, which
 // neither collide nor cast shadows: the selected hex's range (see-through)
 // and ring, the hovered hex's neighbours, and the line between them, each
-// in rims of its own colour
+// in rims of its own colour. The rims are unlit, drawn at full brightness
+// under the page's dusk and its walker's light; the range is lit, so the
+// shadows under it still show
 var BOARD = [
   "ttgggddD",
   "tTgggdDR",
@@ -751,8 +753,12 @@ var TURNS = [
   Tile.FlippedHorizontally | Tile.FlippedVertically | Tile.FlippedAntiDiagonally,
   Tile.FlippedHorizontally | Tile.FlippedVertically | Tile.RotatedHexagonal120,
 ];
-// The marks' rims: beige, red and grey; the range a see-through sand wash
-var MARKS = [["range", "sand_07", 0.45], ["ring", "sand_01", 1], ["neighbours", "stone_01", 1], ["line", "mars_01", 1]];
+// The marks' rims: beige, red and grey, unlit; the range a see-through sand
+// wash, lit
+var MARKS = [
+  ["range", "sand_07", 0.45, true], ["ring", "sand_01", 1, false],
+  ["neighbours", "stone_01", 1, false], ["line", "mars_01", 1, false],
+];
 var board = gridMap(TileMap.Hexagonal, HEX_W, HEX_H, 8, BOARD.length, "#24313f");
 board.staggerAxis = TileMap.StaggerY;
 board.staggerIndex = TileMap.StaggerOdd;
@@ -773,7 +779,9 @@ for (var by = 0; by < BOARD.length; by++) {
 boardEdit.apply();
 board.addLayer(boardLayer);
 for (var mk = 0; mk < MARKS.length; mk++) {
-  var mark = tileLayer(MARKS[mk][0], { collides: false, occludes: false, mark: hexTile(MARKS[mk][1]), filter: SMOOTH });
+  var markProperties = { collides: false, occludes: false, mark: hexTile(MARKS[mk][1]), filter: SMOOTH };
+  if (!MARKS[mk][3]) markProperties.lit = false;
+  var mark = tileLayer(MARKS[mk][0], markProperties);
   mark.opacity = MARKS[mk][2];
   board.addLayer(mark);
 }
