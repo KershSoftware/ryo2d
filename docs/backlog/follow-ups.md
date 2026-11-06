@@ -4,6 +4,79 @@ Small issues found while building each sub-project and left for later: deferred 
 
 Items from 4f to 6b were copied from their execution records. Items from earlier sub-projects come from notes kept at the time, and some may have been fixed since: check before working on one.
 
+## Hexagonal collision and pathfinding (6b, stage 5)
+
+- Owner decisions (2026-11-05):
+  - The owner chose to merge with the hex speed misses recorded in `docs/backlog/tilemap.md`'s Limits. A short hexagonal performance pass is the next piece of work, before floors.
+    - The two held misses are the hex static frame (+53.7 to +54.9 µs against 50) and the serpentine's occluder rebuild (121 to 144 µs against 100). The tilemap bench fails its verdict on every run until they are fixed.
+    - Two unheld figures are past their targets too: ring-heavy parts (loop rebuild 134 µs where four blocks meet, occluder rebuild about 345 µs) and the hex stream's 99th percentile (550 to 598 µs).
+    - The Limits list the levers. Each comes from a deferred finding below:
+      - re-chain only rims and keep chain entities;
+      - mark diagonal neighbours by the stagger index;
+      - compare rims by solidity alone;
+      - keep still parts and chains out of propagation's scan;
+      - use a per-group scratch in `hex_chains`;
+      - weigh B against the static step.
+  - At hand-play the hex board's walker got a light, under a dusk ambient so the rocks' shadows show. Colliders round the board's rim stop the walker.
+- Rulings the owner may revisit:
+  - **No loops on hex.** Hex grids trace no outline loops, since a hex outline has nothing to merge. A hex chunk is one collider part while it holds at most B = 128 boundary edges. Past that it splits into 16 x 16 quarters, then into 8 x 8 blocks, and nothing merges back until the map reloads. An edit rebuilds at most four parts.
+    - This departs from the spec's "the tracing and splicing logic is reused" and "one packed part per chunk", on measurement.
+    - The price is about four times the parts on dense hex maps, which is the static-frame miss.
+  - **Bounded borders.** On a bounded grid, a side between an inside cell and an outside cell belongs to the inside cell, so there is no part or shadow block outside the grid.
+  - **`HexCells`.** It gives exact corners for every cell size. `traceable()` refuses collision for cells taller than 16,384 px, cells under 2 px across, and zero steps.
+  - **Own shapes on hex.**
+    - A hex tile's own shape goes into its cell's block as closed rings, not merged with its neighbours.
+    - Rings wind clockwise after placement.
+    - A self-crossing polygon collides as its hull.
+    - A polygon collides as authored wherever it lies relative to its box. Square grids clip it.
+    - A polygon whose cleaned corners match the cell's hexagon within 0.5 px collides as the whole cell.
+  - **The doubled shadow.** A shape tile's outline lying on a neighbour's side casts twice, darkening shadows with partial alpha. This is a recorded Limit.
+  - **Step costs.** Navigation off the square grid costs a step by its world distance over the shortest step. The same measure feeds the heuristic and the tie-break.
+  - **The tie-break.** It is added to the cost estimate, so a path can come out up to 0.27% dearer than the cheapest, on every grid kind. Square grids behaved the same before this stage. This is a recorded Limit.
+  - **Window cap.** A navigation window is capped at 4,194,304 cells, shrinking to 2048 x 2048, with a warning once per process.
+  - **Turned maps.** Transforms within 1e-6 of a right angle snap to it, and an overlap within 1e-6 of a polygon's extent counts as touching.
+  - **`MapsView::navigation`.**
+    - It runs the collision sync itself before reading `TileColliders`, so a grid taken in `update` reads that step's landings and edits.
+    - It takes `&mut self`.
+    - It places colliders with `edit::local_to_world`, not `GlobalTransform`, so it agrees with `MapsView::grid` on a map moved this frame.
+  - **Nothing blocks before a stream's first frame.** This is in `navigation`'s rustdoc.
+  - **The hex board's rim** is one fixed `Collider::segments` built from the board's outline. It doesn't occlude. The demo-kit's scene cleanup puts the page's lighting back on leaving, not an `exit` hook.
+- Deferred findings:
+  - **Speed** (see the owner's pass above).
+    - The above-left, right and above-right neighbour marks in `occluders.rs` ignore the stagger index, so a hex edit near a chunk edge always rebuilds one diagonal chunk it doesn't need.
+    - The chunk-edge comparison and the rims compare full tile kinds, though a hex side depends only on solidity. Painting along a chunk edge rebuilds neighbours for nothing.
+    - `hex_chains` (`physics/tiles.rs`) allocates its index and scratch on every chunk rebuild.
+  - **Docs.**
+    - `docs/backlog/tilemap.md` (the "Every grid: the targets" paragraph, ~:330) says hex collision "is not guarded yet" and that the hex static frame "measures drawing alone". Both are false now. The bullet below it and the hexagonal section are right.
+    - The ryo-tilemap skill (~:444) says "It is `NavigationGrid::for_layer(..)` with each `TileColliders` blocked" without naming the sync step. "Collides in that step" holds only for a grid taken in `update`; from an Update-phase system, physics builds it the next step.
+    - The navigation module notes' "Why A* with Octile?" heading now covers three heuristics. Rename it "The heuristic".
+    - The Limit "Shadows reach all but the first and last chunk of `i32`'s cells" (`docs/backlog/tilemap.md` ~:630) and `SHADOW_CHUNKS`' doc describe only the square reads ("the column left of it and the row above"). On hex the guarantee also covers the right column and the row below.
+    - `tests/tilemap_alloc.rs:5` is a 90-column doc line; rewrap it with its neighbours.
+  - **Code.**
+    - `MapsView::navigation` (`view.rs` ~:487) drops `run_system_cached`'s `Result`. It should warn once on `Err`, so a future failure doesn't silently read last step's colliders.
+    - Navigation's `world_to_grid` snaps a near-right-angle transform and `LayerGrid::cell_at_world` doesn't, so on a right-angle-turned map the two can disagree by about 1e-8, relative, at an exact cell boundary.
+    - Hex line of sight walks `MapGrid::line`, which picks by nearest centre. On hexes that aren't regular, a smoothed segment can brush a blocked hex's vertex sliver. Name LOS in the hex-line follow-up (grid shapes, "Hex lines' straightness").
+    - On hex, polygons that merely overlap still log the hull warning and set `hulled`, though their rings stay separate. The flag's name is off for hex.
+    - `HexCells` corners clamp to i64 past 2^63: a u32 cell width near 4e9 with |pos| near 2^31. They are clamped, not wrapped, and never traced.
+    - `grid_shape.rs`'s hex arm has an unreachable `map_or([I64Vec2::ZERO; 6], ..)` fallback.
+    - On square grids, `ShapeBuild`'s `ring()` builds rings for tangled and outside shapes that nothing reads.
+    - A closed hex chain can keep one redundant vertex on a straight run.
+    - `src/core/physics/tiles.rs` is 7,323 lines. Move the hex `Boundary` methods (`hex_scan`, `hex_rebuilt_rims`, `hex_chains`, `hex_rings`) and `hex_pack`/`hex_repack` into a `tiles/hex` module.
+  - **Tests missing or loose.**
+    - The degenerate whole-hexagon test never flips a tile, so a flipped whole hexagon on side 0 or on a long side is unpinned.
+    - The rims test (`physics/tiles.rs` ~:4133) alternates bounded and unbounded grids in step with the stagger index, so odd-index grids are only tested bounded and even-index only unbounded.
+    - No hex shadow test edits a bounded map.
+    - The bench's split edit is checked once, not per pair, in the framed loop. The medians show each pair splits.
+    - The tile-grids demo:
+      - no test pins the walker's "take a passed waypoint" rule (a 900 px/s walker passes the path test either way);
+      - the edge test drives only the left edge;
+      - no test rebuilds the rim on a map reload.
+  - **Demo polish.** The walker's light spreads past the hex board onto the background. On the top row the walker's head tucks under the description bar.
+- Pre-existing bugs seen:
+  - The ignored square timing test `one_tile_edit_timing` fails: its grid makes more than 65,536 changes, so `take_changes()` returns `None`. One `take_changes()` at the top of `time_edit` fixes it.
+  - The ryo-lighting skill (~:23) and the lighting module notes (~:14) say lighting stays on across scene changes after `SceneCleanup::LIGHTING`. The cleanup resets `LightingSettings` whole, its automatic-on switch included, so lighting is off after a scene change until a light exists again.
+  - `cargo test --release -p ryo2d --lib` warns of a dead `kept_in_mut` (`src/core/ui/fragment.rs`) in release builds only.
+
 ## Big tiles at their own size (tile padding)
 
 - Owner decisions (2026-11-04):
