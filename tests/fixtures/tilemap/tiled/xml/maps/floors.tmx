@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<map version="1.10" tiledversion="1.12.2" orientation="isometric" renderorder="right-down" width="8" height="8" tilewidth="64" tileheight="32" infinite="0" nextlayerid="6" nextobjectid="2">
+ <tileset firstgid="1" name="shape-diamond-64x32" tilewidth="64" tileheight="32" tilecount="4" columns="4">
+  <grid orientation="orthogonal" width="0" height="0"/>
+  <image source="../../images/shape-diamond-64x32.png" width="256" height="32"/>
+  <tile id="1">
+   <properties>
+    <property name="stairs" type="int" value="1"/>
+   </properties>
+  </tile>
+ </tileset>
+ <layer id="1" name="ground" width="8" height="8">
+  <data encoding="csv">
+1,1,1,1,1,1,1,1,
+1,1,1,1,1,1,1,1,
+1,1,1,1,1,1,1,1,
+1,1,1,1,1,1,1,1,
+1,1,1,1,1,1,1,1,
+1,1,1,1,2,1,1,1,
+1,1,1,1,2,1,1,1,
+1,1,1,1,1,1,1,1
+</data>
+ </layer>
+ <group id="2" name="upper" offsetx="0" offsety="-32">
+  <properties>
+   <property name="floor" type="int" value="1"/>
+  </properties>
+  <layer id="3" name="upper-ground" width="8" height="8">
+   <data encoding="csv">
+0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,
+0,0,0,3,3,3,0,0,
+0,0,0,3,3,3,0,0,
+0,0,0,3,3,3,0,0,
+0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0
+</data>
+  </layer>
+  <objectgroup draworder="index" id="4" name="upper-things">
+   <object id="1" name="lamp" x="144" y="112" visible="0">
+    <point/>
+   </object>
+  </objectgroup>
+ </group>
+ <layer id="5" name="roof" width="8" height="8" offsetx="0" offsety="-64">
+  <properties>
+   <property name="floor" type="int" value="2"/>
+  </properties>
+  <data encoding="csv">
+0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,
+0,0,0,0,4,0,0,0,
+0,0,0,0,4,0,0,0,
+0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0
+</data>
+ </layer>
+</map>

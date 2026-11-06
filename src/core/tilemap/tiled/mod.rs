@@ -383,6 +383,166 @@ mod tests {
     assert_eq!(ids, [1, 3, 5, 7, 8]);
   }
 
+  /// The floors fixture's TMX twin (the fixture tree leaves out `xml/`)
+  fn floors_xml() -> String {
+    let path = format!("{FIXTURES}/xml/maps/floors.tmx");
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"))
+  }
+
+  #[test]
+  fn a_layer_s_floor_and_a_tile_s_stairs_load() {
+    let xml = floors_xml();
+    let mut world = world_over(files_with(&[("xml/maps/floors.tmx", &xml)]));
+    for path in ["maps/floors.tmj", "xml/maps/floors.tmx"] {
+      let map = load_in(&mut world, path).unwrap_or_else(|e| panic!("{path}: {e}"));
+      let floors: Vec<(&str, u8)> = map
+        .layers
+        .iter()
+        .map(|l| (l.info.name.as_str(), l.info.floor))
+        .collect();
+      assert_eq!(
+        floors,
+        [
+          ("ground", 0),
+          ("upper-ground", 1),
+          ("upper-things", 1),
+          ("roof", 2)
+        ],
+        "{path}"
+      );
+      let offsets: Vec<Vec2> = map.layers.iter().map(|l| l.info.offset).collect();
+      assert_eq!(
+        offsets,
+        [
+          Vec2::ZERO,
+          Vec2::new(0.0, -32.0),
+          Vec2::new(0.0, -32.0),
+          Vec2::new(0.0, -64.0)
+        ],
+        "{path}"
+      );
+      let set = tileset_of(&map, 0, &world);
+      let stairs: Vec<Option<u8>> = (0..4)
+        .map(|id| set.tile(id).and_then(|tile| tile.stairs))
+        .collect();
+      assert_eq!(stairs, [None, Some(1), None, None], "{path}");
+      for y in [5, 6] {
+        assert_eq!(cell(&map, "ground", 4, y), Some(Tile::new(0, 1)), "{path}");
+      }
+    }
+  }
+
+  #[test]
+  fn a_group_layer_s_floor_and_offset_pass_to_its_children() {
+    // A storey made as a group: its floor and offset reach its layers, a
+    // nested group's too, but a layer with a floor of its own keeps it
+    let floor = |n: u8| {
+      (
+        format!(r#","properties":[{{"name":"floor","type":"int","value":{n}}}]"#),
+        format!(r#"<properties><property name="floor" type="int" value="{n}"/></properties>"#),
+      )
+    };
+    let ((storey_j, storey_x), (mast_j, mast_x), (hold_j, hold_x)) = (floor(2), floor(3), floor(0));
+    let json = format!(
+      r#"{{"type":"map","orientation":"orthogonal","width":2,"height":2,"tilewidth":16,"tileheight":16,"tilesets":[],
+        "layers":[
+          {{"id":1,"name":"ground","type":"tilelayer","width":2,"height":2,"data":[0,0,0,0]}},
+          {{"id":2,"name":"storey","type":"group","offsetx":4,"offsety":-48{storey_j},"layers":[
+            {{"id":3,"name":"deck","type":"tilelayer","width":2,"height":2,"data":[0,0,0,0]}},
+            {{"id":4,"name":"mast","type":"tilelayer","width":2,"height":2,"data":[0,0,0,0],"offsety":-16{mast_j}}},
+            {{"id":5,"name":"rigging","type":"group","offsety":-8,"layers":[
+              {{"id":6,"name":"flag","type":"objectgroup","objects":[]}}]}},
+            {{"id":7,"name":"hold","type":"tilelayer","width":2,"height":2,"data":[0,0,0,0]{hold_j}}}]}},
+          {{"id":8,"name":"sky","type":"tilelayer","width":2,"height":2,"data":[0,0,0,0]}}]}}"#
+    );
+    let xml = format!(
+      r#"<map orientation="orthogonal" width="2" height="2" tilewidth="16" tileheight="16">
+ <layer id="1" name="ground" width="2" height="2"><data encoding="csv">0,0,0,0</data></layer>
+ <group id="2" name="storey" offsetx="4" offsety="-48">{storey_x}
+  <layer id="3" name="deck" width="2" height="2"><data encoding="csv">0,0,0,0</data></layer>
+  <layer id="4" name="mast" width="2" height="2" offsety="-16">{mast_x}<data encoding="csv">0,0,0,0</data></layer>
+  <group id="5" name="rigging" offsety="-8"><objectgroup id="6" name="flag"/></group>
+  <layer id="7" name="hold" width="2" height="2">{hold_x}<data encoding="csv">0,0,0,0</data></layer>
+ </group>
+ <layer id="8" name="sky" width="2" height="2"><data encoding="csv">0,0,0,0</data></layer>
+</map>"#
+    );
+    let mut world = world_over(files_with(&[("m.tmj", &json), ("m.tmx", &xml)]));
+    for path in ["m.tmj", "m.tmx"] {
+      let map = load_in(&mut world, path).unwrap_or_else(|e| panic!("{path}: {e}"));
+      let layers: Vec<(&str, u8, Vec2)> = map
+        .layers
+        .iter()
+        .map(|l| (l.info.name.as_str(), l.info.floor, l.info.offset))
+        .collect();
+      assert_eq!(
+        layers,
+        [
+          ("ground", 0, Vec2::ZERO),
+          ("deck", 2, Vec2::new(4.0, -48.0)),
+          ("mast", 3, Vec2::new(4.0, -64.0)),
+          ("flag", 2, Vec2::new(4.0, -56.0)),
+          ("hold", 0, Vec2::new(4.0, -48.0)),
+          ("sky", 0, Vec2::ZERO),
+        ],
+        "{path}"
+      );
+    }
+  }
+
+  #[test]
+  fn a_floor_that_is_not_a_whole_number_from_0_to_255_refuses_the_map() {
+    let mut world = world_over(files_with(&[]));
+    // A tile layer on floor "two", and a group on floor 300
+    for (path, refusal) in [
+      (
+        "maps/bad-floor.tmj",
+        r#"layer "upper": property "floor": "two" is not a whole number from 0 to 255"#,
+      ),
+      (
+        "maps/floor-300.tmj",
+        r#"layer "tower": property "floor": 300 is not a whole number from 0 to 255"#,
+      ),
+    ] {
+      match load_in(&mut world, path) {
+        Ok(_) => panic!("{path} loaded"),
+        Err(error) => assert!(error.contains(refusal), "{path}: {error}"),
+      }
+    }
+    // Neither is a fraction, a negative, or a bool; a whole float is a floor
+    for (value, floor) in [
+      (r#""type":"float","value":1.5"#, None),
+      (r#""type":"int","value":-1"#, None),
+      (r#""type":"bool","value":true"#, None),
+      (r#""type":"float","value":3.0"#, Some(3)),
+      (r#""type":"int","value":255"#, Some(255)),
+    ] {
+      let props = format!(r#","properties":[{{"name":"floor",{value}}}]"#);
+      let loaded = load_json(&map_json("", &tile_layer(&props), ""));
+      match (floor, loaded) {
+        (Some(floor), Ok(map)) => assert_eq!(info(&map, "ground").floor, floor, "{value}"),
+        (None, Err(error)) => assert!(
+          error.contains(r#"layer "ground": property "floor""#),
+          "{value}: {error}"
+        ),
+        (_, loaded) => panic!("{value}: {:?}", loaded.map(|m| info(&m, "ground").floor)),
+      }
+    }
+    // A tile's stairs the same, the tile named in its tileset
+    let steps = r#"{"firstgid":1,"name":"steps","tilewidth":16,"tileheight":16,"tilecount":16,"columns":4,
+        "image":"images/tiles.png","imagewidth":64,"imageheight":64,
+        "tiles":[
+          {"id":1,"properties":[{"name":"stairs","type":"int","value":1}]},
+          {"id":2,"properties":[{"name":"stairs","type":"int","value":-1}]}]}"#;
+    let error = failure(&map_json("", &tile_layer(""), steps));
+    assert!(
+      error.contains(
+        r#"tileset "steps", tile 2: property "stairs": -1 is not a whole number from 0 to 255"#
+      ),
+      "{error}"
+    );
+  }
+
   #[test]
   fn image_layers_load_their_image() {
     let mut world = world_over(files_with(&[]));

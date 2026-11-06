@@ -249,6 +249,55 @@ fn a_layer_grid_is_none_for_a_layer_that_is_not_a_tile_layer() {
 }
 
 #[test]
+fn a_floor_s_world_lift_follows_the_map_s_transform() {
+  use crate::core::ecs::Floor;
+  let mut maps = MapWorld::new();
+  let mut map = TileMap::new(UVec2::new(4, 3), UVec2::splat(16));
+  map.add_tile_layer("ground");
+  let upper = map.add_tile_layer("upper");
+  map.layers[upper].info.floor = 1;
+  map.layers[upper].info.offset = Vec2::new(0.0, -32.0);
+  // Moved, turned a quarter and doubled
+  let turned = Transform::from_xy(50.0, 20.0)
+    .with_rotation(std::f32::consts::FRAC_PI_2)
+    .with_uniform_scale(2.0);
+  let floored = spawn(&mut maps, map, turned);
+  let plain = spawn(
+    &mut maps,
+    TileMap::new(UVec2::new(4, 3), UVec2::splat(16)),
+    turned,
+  );
+  let close = |a: Option<Vec2>, b: Vec2| a.is_some_and(|a| (a - b).length() < 1e-3);
+
+  let view = MapsView::new(&mut maps.world);
+  assert_eq!(
+    view.floors(floored).and_then(|f| f.lift(Floor::On(1))),
+    Some(Vec2::new(0.0, -32.0)),
+    "in map pixels"
+  );
+  // In the world the floor's up is the map's, its height doubled; where
+  // the map stands adds nothing to a height
+  let lift = view.lift(floored, Floor::On(1));
+  assert!(close(lift, Vec2::new(64.0, 0.0)), "{lift:?}");
+  assert_eq!(view.lift(floored, Floor::GROUND), Some(Vec2::ZERO));
+  assert_eq!(view.lift(floored, Floor::On(2)), None);
+  assert_eq!(view.lift(floored, Floor::Every), None);
+  // A map without floors has the ground floor alone, and one not landed
+  // none
+  assert!(view.floors(plain).is_none());
+  assert_eq!(view.lift(plain, Floor::GROUND), Some(Vec2::ZERO));
+  assert_eq!(view.lift(plain, Floor::On(1)), None);
+  assert_eq!(view.lift(Entity::PLACEHOLDER, Floor::GROUND), None);
+
+  // Turned upside down, the height follows at once
+  if let Some(mut transform) = maps.world.get_mut::<Transform>(floored) {
+    transform.rotation = std::f32::consts::PI;
+  }
+  let lift = MapsView::new(&mut maps.world).lift(floored, Floor::On(1));
+  assert!(close(lift, Vec2::new(0.0, 64.0)), "{lift:?}");
+}
+
+#[test]
 fn hex_board_tools_work_through_the_layer() {
   let shape = GridShape::Hexagonal {
     axis: Y,

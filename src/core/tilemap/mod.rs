@@ -3,13 +3,15 @@
 //! live in [`TileGrid`]s of chunks by signed chunk coordinate, bounded or
 //! unbounded, whose edits mark chunks dirty. A [`MapRoot`]
 //! entity spawns a map's layers, objects and class tiles as its children,
-//! read and edited through [`MapsView`] (`ctx.maps()`). A [`MapStream`]
+//! read and edited through [`MapsView`] (`ctx.maps()`); layers on floors
+//! above the ground stand in ground space ([`MapFloors`]). A [`MapStream`]
 //! streams an infinite map's chunks from a generator around the cameras
 //! and [`StreamAnchor`]s, keeping the chunks a player changed in
 //! [`SavedChunks`].
 
 mod collision;
 mod edit;
+mod floors;
 mod grid;
 mod grid_shape;
 mod jobs;
@@ -36,6 +38,7 @@ use crate::core::ecs::{IntoScheduleConfigs, Schedule};
 use crate::core::schedule::{EngineSchedules, FixedSet, Phase, PostUpdateSet};
 
 pub use edit::LayerRef;
+pub use floors::MapFloors;
 pub use grid::{CHUNK_SIZE, TileGrid};
 pub use grid_shape::{CellOutline, GridShape, Lattice, MapGrid, StaggerAxis, StaggerIndex};
 pub use ldtk::{

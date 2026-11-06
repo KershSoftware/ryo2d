@@ -1,8 +1,8 @@
 ---
 name: ryo-tilemap
-description: "Tile maps - the workflow from Tiled (.tmx, .tmj) or LDtk (.ldtk) through assets/ to a MapRoot entity, layers and the reserved layer properties (collides, occludes, y_sort, lit, filter), tilesets and typed tile data, objects and class tiles as entities, MapEvent, reading and editing tiles with ctx.maps() and Wang terrain, collision from tile shapes and IntGrids, tile shadows, y-sorting and parallax, worlds of levels, maps built in code and by procgen, endless worlds streamed from a generator (MapStream, StreamAnchor, ChunkEvent, SavedChunks, ChunkOwned), hot reload, the web, performance and testing."
+description: "Tile maps - the workflow from Tiled (.tmx, .tmj) or LDtk (.ldtk) through assets/ to a MapRoot entity, layers and the reserved layer properties (collides, occludes, y_sort, lit, filter, floor), storeys (MapFloors), tilesets and typed tile data, objects and class tiles as entities, MapEvent, reading and editing tiles with ctx.maps() and Wang terrain, collision from tile shapes and IntGrids, tile shadows, y-sorting and parallax, worlds of levels, maps built in code and by procgen, endless worlds streamed from a generator (MapStream, StreamAnchor, ChunkEvent, SavedChunks, ChunkOwned), hot reload, the web, performance and testing."
 metadata:
-  version: 1.7.0
+  version: 1.8.0
 ---
 
 # Ryo2D Tile Maps
@@ -127,10 +127,23 @@ The demo's pages: **An isometric town** (Sketch Town's walls and trees on a y-so
 
 What lands, all of it children of the map entity:
 
-- **A child per layer**, bottom first, with `MapLayerRef { map, index, name }`, the layer's `LayerInfo` as a component, and a `Transform` at the layer's offset; a tile layer also has `TileLayerData` (its cells), an image layer `ImageLayer`.
+- **A child per layer**, bottom first, with `MapLayerRef { map, index, name }`, the layer's `LayerInfo` as a component, and a `Transform` at the layer's offset (on a storey above the ground, its offset less the storey's height: below); a tile layer also has `TileLayerData` (its cells), an image layer `ImageLayer`.
 - **Objects**, children of their object layer, each with a `MapObject` (section 5); **class tiles**, children of their tile layer, each with a `MapTile`.
 - **The colliders** (children of the map, or of a layer that collides on its own) and **the shadow chains** (`MapOccluder`, children of the first occluding layer), which the map keeps in step with its tiles.
 - `MapIds` on the map entity: its objects' entities by their editor id.
+- `MapFloors` on the map entity, when some layer is on a floor above the ground (its `floor` property, section 3): each storey's height, `lift(Floor) -> Option<Vec2>` (in map pixels; `Floor::GROUND` gives zero, a floor no layer is on `None`), `floors()` (ascending, the ground floor first) and `highest()`. A map with every layer on the ground floor has none, and lands as it always has.
+
+**Storeys stand in ground space.** A storey's height is how far up Tiled draws it: the vertical offset of its bottom layer (the first on it in draw order), as designers shift upper storeys in Tiled. A layer on a storey above the ground stands at its offset less that height, so what it holds (objects, class tiles, colliders, shadow chains) sits in ground space, where the characters stand: a point object marking a spot on the upper floor is at that spot's ground position, not where the floor draws it. A layer on the ground floor keeps its whole offset. `ctx.maps().floors(map)` reads the `MapFloors`, and `ctx.maps().lift(map, floor)` gives a storey's height in the world, through the map's transform as it is now:
+
+<!-- given: map: Entity -->
+```rust
+// How far up the first storey is, on the map as it is turned and scaled now
+let maps = ctx.maps();
+let storeys = maps.floors(map).map_or(1, |floors| floors.floors().count());
+if let Some(up) = maps.lift(map, Floor::On(1)) {
+  game_info!("{storeys} storeys, the first {} px up", up.length());
+}
+```
 
 Then:
 
@@ -156,7 +169,7 @@ What the editor gives a layer carries over:
 - **LDtk:** an IntGrid layer draws its auto-tiles and collides by its values; each layer keeps its own grid size, so a level may mix an 8 px collision grid with 16 px art.
 - **LDtk's stacked, offset and translucent tiles** draw as the editor shows them. Rules and stamps stack several tiles in a cell, a rule can move its tiles off the grid or fade them, and a layer holds one tile a cell, so such a layer loads with sub-layers: one for each distinct stack depth, offset and alpha its tiles need, named `Ground#1`, `Ground#2` and on, with `LayerInfo::part_of` naming the layer's editor id. They are parts of the layer, not layers of their own: each draws with the layer's settings as they are now (visibility, `y_sorted`, `lit`, parallax, blend, tint, its entity's `RenderLayers` and `Disabled`), at its z, just after it, its own offset and opacity over the layer's, so a game sets a flag on the layer alone and the whole layer follows, and a y-sorted layer's stacked tiles sort with a character as its own do. They are listed after the editor's layers in `MapLayers`, so every layer keeps the index and z LDtk's order gives it whatever stacking a save adds. The IntGrid and the collision are the layer's own. Edits by the layer's name (`set_tile`, `fill`, `set_terrain`) replace the whole cell, clearing what its sub-layers held there, and `tile` reads the layer's own tile. A layer has 16 sub-layers at most: past that, the tiles left over draw in the nearest, and the dev log says how many.
 
-Five layer properties are reserved; the engine reads them into the layer's `LayerInfo`:
+Six layer properties are reserved; the engine reads them into the layer's `LayerInfo`:
 
 | Property | Type | Default | What it does |
 |---|---|---|---|
@@ -165,10 +178,11 @@ Five layer properties are reserved; the engine reads them into the layer's `Laye
 | `y_sort` | bool | false | Its tiles sort with the characters by y, by where each stands (section 10) |
 | `lit` | bool | true | Lights and the ambient shade it; false draws it at full brightness |
 | `filter` | string | left out: the target's (nearest for pixel art, smooth otherwise) | How a tile or object layer's tiles are sampled drawn at another size: `linear` reads the padded copy's smaller copies (painted art drawn zoomed out), `nearest` keeps the full-size texels (pixel art); image layers sample as the target does |
+| `floor` | int | 0, the ground floor | The storey the layer is on: raised ground, an upper floor, a bridge. A whole number from 0 to 255 (a float with no fraction counts); any other value refuses the map, naming the layer. A storey's height is its bottom layer's vertical offset, and its layers stand in ground space (section 2) |
 
-- **In Tiled:** select the layer and, in its Properties, add a custom property of type bool with the name (of type string for `filter`). Properties on a group layer are its own and do not pass to its children: set them on the tile layers. A layer class from the Tiled project (section 4) can give these as its members' defaults.
+- **In Tiled:** select the layer and, in its Properties, add a custom property of type bool with the name (of type string for `filter`, int for `floor`). Properties on a group layer are its own and do not pass to its children: set them on the tile layers. `floor` is the exception, as designers group a storey's layers: set `floor` and the offset on the group, and each of its layers is on that storey at that height (nested groups too; a layer with a `floor` of its own keeps it). A layer class from the Tiled project (section 4) can give these as its members' defaults.
 - **Hexagonal maps:** their tile layers collide and cast shadows as on every grid (sections 8 and 9), a tile layer added in code (`add_tile_layer`) too. Hexagons over 16,384 px, or under 2 px across, neither collide nor cast shadows: the dev log warns once per layer, `layer "walls" has hexagonal cells over 16,384 px or under 2 px, which don't collide` (and `..., which cast no shadows` for a layer that occludes).
-- **In LDtk:** layers have no custom properties. IntGrid layers collide, by the names of their values (section 8); every other layer neither collides nor occludes; no layer is y-sorted, every layer is lit, and every layer samples as the target does. To change a flag, set it on the layer entity's `LayerInfo` once the map has landed: drawing, collision and shadows read it from there and rebuild. A reload of the file puts the file's flags back.
+- **In LDtk:** layers have no custom properties. IntGrid layers collide, by the names of their values (section 8); every other layer neither collides nor occludes; no layer is y-sorted, every layer is lit, every layer samples as the target does, and every layer is on the ground floor (LDtk's world depths are levels, not storeys). To change a flag, set it on the layer entity's `LayerInfo` once the map has landed: drawing, collision and shadows read it from there and rebuild. A reload of the file puts the file's flags back.
 
 <!-- given: map: Entity -->
 ```rust
@@ -197,12 +211,12 @@ And on a tileset's collision shapes (the objects in Tiled's tile collision edito
 | `one_way` | bool | The shape is solid only from above: things jump up through it and land on it |
 | `occluder` | bool | The shape blocks light and does not collide |
 
-A material property of the wrong type is warned once, and what is under it counts (the map's, else the default); a reserved flag of another type than bool counts as left out, as does a `filter` other than the string `linear` or `nearest` (in any case). All other properties are the game's, read from `LayerInfo::properties`, `TileMap::properties`, a tile's data or an object.
+A material property of the wrong type is warned once, and what is under it counts (the map's, else the default); a reserved flag of another type than bool counts as left out, as does a `filter` other than the string `linear` or `nearest` (in any case); a `floor` that is not a whole number from 0 to 255 refuses the map: `layer "roof": property "floor": "two" is not a whole number from 0 to 255`. All other properties are the game's, read from `LayerInfo::properties`, `TileMap::properties`, a tile's data or an object.
 
 ## 4. Tilesets and tile data
 
 - **A cell holds a `Tile { tileset, id, flip }`:** `tileset` indexes the map's tilesets (`TileMap::tilesets`), `id` is the tile in it, and `flip` is its `TileFlip`, the flips as Tiled stores them: a diagonal flip first, then horizontal, then vertical (a 90° turn is a diagonal and a horizontal flip; `TileFlip::rotated_cw()` turns one). On a hexagonal map Tiled turns tiles instead of flipping them diagonally: the diagonal bit is a 60° turn clockwise (`TileFlip::HEX_ROTATE_60`, the same bit as `DIAGONAL`) and a fourth bit a 120° one (`HEX_ROTATE_120`), applied after the flips, both together a half turn; `rotated_hex_cw()` turns a hexagonal tile 60° (six turns come back to where they started). Tiled ignores the 120° bit on every other grid, and so does the load. A turned hexagonal tile draws turned as in Tiled, about its own middle (section 10). A layer may mix tilesets, and every tile keeps the flips and turns the editor gave it.
-- **What a tile carries:** `ctx.maps().tile_data(map, tile) -> Option<TileData>` gives its `class`, `properties`, `shapes` (its collision shapes, each `TileShape { points, one_way, occluder, properties }` in tile pixels from the top-left), `animation` (`TileFrame { tile, duration }`), `probability`, `sort_offset` (the reserved tile property of that name, in pixels, 0 unless set: where the tile sorts on a y-sorted layer, section 10) and `image` (a collection tileset's own picture). A loaded `Tileset` reads the same with `tile(id)`.
+- **What a tile carries:** `ctx.maps().tile_data(map, tile) -> Option<TileData>` gives its `class`, `properties`, `shapes` (its collision shapes, each `TileShape { points, one_way, occluder, properties }` in tile pixels from the top-left), `animation` (`TileFrame { tile, duration }`), `probability`, `sort_offset` (the reserved tile property of that name, in pixels, 0 unless set: where the tile sorts on a y-sorted layer, section 10), `stairs` (the reserved int tile property of that name: the storey a stair or ramp tile leads up to from its layer's floor, `None` unless set; a whole number from 0 to 255, any other value refusing the map, naming the tileset and tile: `tileset "steps", tile 2: property "stairs": -1 is not a whole number from 0 to 255`) and `image` (a collection tileset's own picture). A loaded `Tileset` reads the same with `tile(id)`.
 - **Typed properties:** `Properties` reads `bool`, `int` (an `i64`; a whole float counts), `float` (an `f64`; an int counts), `string` and `color` by name, and `get(name) -> Option<&PropertyValue>` for the rest: `File(path)` as written, `Object(id)` (a reference to an object), `Enum { ty, value }`, `Class { ty, fields }` and `List` (Tiled 1.12's list properties, each item read by its own type, nested lists too, and an enum's flags). They keep the order they were written in (`iter()`).
 - **Classes and enums from the Tiled project.** Tiled keeps custom classes, enums and the members' defaults in its project file, and a map it saves writes only the members a designer changed. Put the project at `assets/project.tiled-project`, or name it in `Ryo.toml` (`[tilemap] tiled_project = "tiled/game.tiled-project"`) or with `EngineBuilder::tiled_project(path)`: a member a file leaves out then takes the project's default (a list member's too; a list the file writes replaces it whole), nested classes layer, and enums read by name (flags as a `List`). Without it what the file wrote is kept, and the dev log names the class once per file. Saving the project reloads the maps. Classes holding members of classes multiply: one thing's properties may resolve to at most 65,536 values and a file's to 4,194,304, past which the map fails to load, naming the place.
 - **LDtk** writes every field with its type in the project, so nothing more is needed for entities and levels. A tileset's per-tile data reads as Tiled's tile classes and properties do, so the same game code serves both editors: a tile's enum tags (the tileset's tag enum, "Enum tags" in LDtk's tileset panel) give it its class, the first of its tags in the enum's order (one tag is the usual case, and `with_entity_tiles` and class checks then work for LDtk levels too), and a bool property `true` for each of its tags (for a tile with several: `data.properties.bool("Water")`); its custom data, LDtk's one free text a tile, is the string property `custom_data`, as written (parse it yourself if it holds JSON).
@@ -303,6 +317,7 @@ for (entity, hits) in bricks {
 | `grid(map, layer) -> Option<LayerGrid>` | the layer's grid and where its pixels are in the world, on every grid: picking, outlines in the world and the board tools (below) |
 | `navigation(map, layer, window: CellRect) -> Option<NavigationGrid>` | a navigation grid over a window of the layer's cells on any grid, the map's collision and a stream's chunks not landed blocked (section 8) |
 | `layer_entity(map, layer) -> Option<Entity>` | the layer's entity |
+| `floors(map) -> Option<&MapFloors>`, `lift(map, Floor) -> Option<Vec2>` | the map's storeys and their heights in its pixels (`None` with every layer on the ground floor); a storey's height in the world, through the map's transform as it is now (section 2) |
 | `bounds(map) -> Option<CellRect>`, `layer_bounds(map, layer) -> Option<CellRect>` | the cells the map, or a tile layer, covers as it is now: a bounded one's size; an unbounded one's cells holding tiles, class tiles included, following every edit (empty with none; it looks at every chunk, so on a map grown to many chunks read it when the map changes, not every frame) |
 | `spawn_levels_in(world, area: Rect) -> Vec<Entity>`, `spawn_levels_in_with(world, area, depth, configure)` | the levels of a world near a place, the second setting each root up (section 13) |
 

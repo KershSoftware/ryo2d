@@ -795,7 +795,7 @@ mod tests {
     panic!("{name}: one has more lines than the other");
   }
 
-  const MAP_PAIRS: [&str; 69] = [
+  const MAP_PAIRS: [&str; 70] = [
     "image-layers",
     "lists",
     "tile-objects",
@@ -865,6 +865,7 @@ mod tests {
     "shape-hex-collides",
     "collide-hex-y-odd",
     "collide-hex-x-even",
+    "floors",
   ];
   const SET_PAIRS: [&str; 14] = [
     "loot",

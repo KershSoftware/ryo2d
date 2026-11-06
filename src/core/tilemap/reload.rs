@@ -12,21 +12,24 @@
 //! keeps its entity and takes the file's cells, and only the chunks whose
 //! tiles or IntGrid values differ move their versions, so only they draw,
 //! collide and occlude again, each in place (a chunk collider keeps its
-//! entity and handle, so contacts and a character's floor carry through).
-//! A kept object or image layer whose offset changed moves (a Tiled
-//! group's offset lands on its layers). A layer new to the file, or whose
-//! kind changed, or a tile layer whose size, grid or offset changed,
-//! spawns afresh, and one gone despawns. Objects reconcile by id
-//! (`reconcile`) and class tiles by layer and cell, each judged against
-//! what the file said before (`MapApplied`): one the file left as it was
-//! keeps its entity untouched, one it changed is updated in place (its
-//! components put over, so it keeps what the game added), a new one spawns
-//! and a removed one despawns. The file wins over the game's tile edits
-//! (dug tiles come back), but an object or class tile the game despawned
-//! stays despawned until a save adds or changes it.
+//! entity and handle, so contacts and a character's floor carry through). A
+//! kept object or image layer whose place changed moves (a Tiled group's
+//! offset lands on its layers; a layer on a storey above the ground stands
+//! at its offset less the storey's height, its bottom layer's). A layer new
+//! to the file, or whose kind changed, or a tile layer whose size, grid,
+//! offset, storey (`LayerInfo::floor`) or place changed, spawns afresh, and
+//! one gone despawns. The map's `MapFloors` follows the file. Objects
+//! reconcile by id (`reconcile`) and class tiles by layer and cell, each
+//! judged against what the file said before (`MapApplied`): one the file
+//! left as it was keeps its entity untouched, one it changed is updated in
+//! place (its components put over, so it keeps what the game added), a new
+//! one spawns and a removed one despawns. The file wins over the game's
+//! tile edits (dug tiles come back), but an object or class tile the game
+//! despawned stays despawned until a save adds or changes it.
 
 use glam::{IVec2, UVec2, Vec2};
 
+use super::floors::{MapFloors, ground_offset};
 use super::spawn::{
   ClassTile, ClassTiles, LayerRest, LayerTiles, MapLayers, MapSource, child_of, class_tiles,
   inherit_tile_data, map_asset, object_parts, plan_layer, send, spawn_class_tile, spawn_layer,
@@ -73,14 +76,17 @@ fn source_id(root: &MapRoot) -> UntypedAssetId {
 }
 
 /// What keeps a layer's entity through a reload: the same kind, and for a
-/// tile layer the same bounds (or none), grid and offset (an object or
-/// image layer keeps its entity through an offset change, and moves)
+/// tile layer the same bounds (or none), grid, offset, floor and place in
+/// ground space (an object or image layer keeps its entity whatever its
+/// offset and floor, and moves to its place)
 #[derive(Clone, Debug, PartialEq)]
 enum LayerShape {
   Tiles {
     bounds: Option<CellRect>,
     grid: MapGrid,
     offset: Vec2,
+    floor: u8,
+    ground: Vec2,
   },
   Objects,
   Image,
@@ -91,18 +97,24 @@ enum LayerShape {
 struct FileLayer {
   id: u32,
   shape: LayerShape,
-  /// A kept object or image layer whose offset changed moves (a Tiled
-  /// group's offset lands on its layers); a tile layer's is in its shape
-  offset: Vec2,
+  /// Where its entity stands: its offset, less its floor's height above
+  /// the ground floor. A kept object or image layer whose place changed
+  /// moves (a Tiled group's offset lands on its layers, and a floor's
+  /// height is its bottom layer's); a tile layer's is in its shape
+  ground: Vec2,
 }
 
 impl FileLayer {
-  fn of(layer: &MapLayer) -> FileLayer {
+  /// `layer` of a map whose floors are `floors`
+  fn of(layer: &MapLayer, floors: Option<&MapFloors>) -> FileLayer {
+    let ground = ground_offset(&layer.info, floors);
     let shape = match &layer.kind {
       LayerKind::Tiles { tiles, grid, .. } => LayerShape::Tiles {
         bounds: tiles.bounds(),
         grid: *grid,
         offset: layer.info.offset,
+        floor: layer.info.floor,
+        ground,
       },
       LayerKind::Objects(_) => LayerShape::Objects,
       LayerKind::Image(_) => LayerShape::Image,
@@ -110,7 +122,7 @@ impl FileLayer {
     FileLayer {
       id: layer.info.id,
       shape,
-      offset: layer.info.offset,
+      ground,
     }
   }
 }
@@ -144,9 +156,14 @@ pub(crate) struct MapApplied {
 }
 
 impl MapApplied {
-  /// Of a map's layers as its files give them, at the loads `stamp`
-  /// (its class tiles are noted as they are taken out, `note_class_tiles`)
-  pub(crate) fn new(stamp: Vec<Option<u64>>, layers: &[MapLayer]) -> MapApplied {
+  /// Of a map's layers as its files give them, with their floors, at the
+  /// loads `stamp` (its class tiles are noted as they are taken out,
+  /// `note_class_tiles`)
+  pub(crate) fn new(
+    stamp: Vec<Option<u64>>,
+    layers: &[MapLayer],
+    floors: Option<&MapFloors>,
+  ) -> MapApplied {
     let mut objects = FastMap::default();
     for layer in layers {
       if let LayerKind::Objects(list) = &layer.kind {
@@ -162,7 +179,10 @@ impl MapApplied {
     }
     MapApplied {
       stamp,
-      layers: layers.iter().map(FileLayer::of).collect(),
+      layers: layers
+        .iter()
+        .map(|layer| FileLayer::of(layer, floors))
+        .collect(),
       objects,
       class_tiles: FastMap::default(),
     }
@@ -344,6 +364,7 @@ pub(crate) fn apply_reload(world: &mut World, map: Entity) {
   };
   let mut layers = asset.layers.clone();
   inherit_tile_data(world, &root, &mut layers);
+  let floors = MapFloors::of(layers.iter().map(|layer| &layer.info));
   let classes = class_tiles(world, asset, &root.entity_tiles);
   // A streamed map's reload reaches the file's chunks alone
   let streamed = world
@@ -366,7 +387,10 @@ pub(crate) fn apply_reload(world: &mut World, map: Entity) {
     old.entry(file.id).or_insert((entity, file));
   }
   if let Some(file) = &streamed {
-    let new: Vec<FileLayer> = layers.iter().map(FileLayer::of).collect();
+    let new: Vec<FileLayer> = layers
+      .iter()
+      .map(|layer| FileLayer::of(layer, floors.as_ref()))
+      .collect();
     let reshaped = unbounded_shapes(&applied.layers) != unbounded_shapes(&new);
     before_reload(world, map, file, reshaped);
   }
@@ -380,7 +404,7 @@ pub(crate) fn apply_reload(world: &mut World, map: Entity) {
     if world.get_entity(map).is_err() {
       return;
     }
-    let file = FileLayer::of(&layer);
+    let file = FileLayer::of(&layer, floors.as_ref());
     let was = old.remove(&file.id).filter(|(entity, _)| {
       world
         .get::<MapLayerRef>(*entity)
@@ -392,10 +416,10 @@ pub(crate) fn apply_reload(world: &mut World, map: Entity) {
     let kept = was.filter(|(_, then)| then.shape == file.shape);
     let (entity, rest) = match kept {
       Some((entity, then)) => {
-        if then.offset != file.offset
+        if then.ground != file.ground
           && let Some(mut transform) = world.get_mut::<Transform>(entity)
         {
-          transform.translation = file.offset;
+          transform.translation = file.ground;
         }
         let rest = update_layer(
           world,
@@ -406,7 +430,13 @@ pub(crate) fn apply_reload(world: &mut World, map: Entity) {
         );
         (entity, rest)
       }
-      None => spawn_layer(world, map, index, plan_layer(layer, &classes)),
+      None => spawn_layer(
+        world,
+        map,
+        index,
+        plan_layer(layer, &classes),
+        floors.as_ref(),
+      ),
     };
     let kept = kept.is_some();
     match rest {
@@ -514,6 +544,12 @@ pub(crate) fn apply_reload(world: &mut World, map: Entity) {
     return;
   };
   root_entity.insert((MapIds { objects: ids }, MapLayers(entities.clone())));
+  match floors {
+    Some(floors) => replace(world, map, floors),
+    None => {
+      root_entity.remove::<MapFloors>();
+    }
+  }
   for &entity in &matched.despawn {
     let _ = world.try_despawn(entity);
   }

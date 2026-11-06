@@ -49,7 +49,8 @@ impl IntGrid {
 }
 
 /// What every kind of layer has. A spawned map's layer entities carry it
-/// as a component (their `Transform` carries the offset)
+/// as a component (their `Transform` carries the offset, less the floor's
+/// height on a floor above the ground: [`MapFloors`](super::MapFloors))
 #[derive(Component, Clone, Debug, PartialEq)]
 pub struct LayerInfo {
   pub id: u32,
@@ -57,6 +58,12 @@ pub struct LayerInfo {
   pub class: Option<String>,
   /// Shift in pixels
   pub offset: Vec2,
+  /// The storey it is on: 0 is the ground floor (Tiled's reserved `floor`
+  /// property, which a group passes to its layers). On a higher floor the
+  /// layer stands in ground space, its offset less its floor's height
+  /// ([`MapFloors`](super::MapFloors)), so what it holds sits where
+  /// characters stand. Read as the map lands
+  pub floor: u8,
   pub opacity: f32,
   pub tint: Color,
   /// How much of the camera's motion the layer follows; one is fixed to the
@@ -97,6 +104,7 @@ impl LayerInfo {
       name: name.into(),
       class: None,
       offset: Vec2::ZERO,
+      floor: 0,
       opacity: 1.0,
       tint: Color::WHITE,
       parallax: Vec2::ONE,

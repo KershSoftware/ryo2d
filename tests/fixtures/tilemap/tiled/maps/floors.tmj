@@ -1,0 +1,152 @@
+{ "compressionlevel":-1,
+ "height":8,
+ "infinite":false,
+ "layers":[
+        {
+         "data":[1, 1, 1, 1, 1, 1, 1, 1,
+            1, 1, 1, 1, 1, 1, 1, 1,
+            1, 1, 1, 1, 1, 1, 1, 1,
+            1, 1, 1, 1, 1, 1, 1, 1,
+            1, 1, 1, 1, 1, 1, 1, 1,
+            1, 1, 1, 1, 2, 1, 1, 1,
+            1, 1, 1, 1, 2, 1, 1, 1,
+            1, 1, 1, 1, 1, 1, 1, 1],
+         "height":8,
+         "id":1,
+         "name":"ground",
+         "opacity":1,
+         "type":"tilelayer",
+         "visible":true,
+         "width":8,
+         "x":0,
+         "y":0
+        }, 
+        {
+         "id":2,
+         "layers":[
+                {
+                 "data":[0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 3, 3, 3, 0, 0,
+                    0, 0, 0, 3, 3, 3, 0, 0,
+                    0, 0, 0, 3, 3, 3, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0],
+                 "height":8,
+                 "id":3,
+                 "name":"upper-ground",
+                 "opacity":1,
+                 "type":"tilelayer",
+                 "visible":true,
+                 "width":8,
+                 "x":0,
+                 "y":0
+                }, 
+                {
+                 "draworder":"index",
+                 "id":4,
+                 "name":"upper-things",
+                 "objects":[
+                        {
+                         "height":0,
+                         "id":1,
+                         "name":"lamp",
+                         "opacity":1,
+                         "point":true,
+                         "rotation":0,
+                         "type":"",
+                         "visible":false,
+                         "width":0,
+                         "x":144,
+                         "y":112
+                        }],
+                 "opacity":1,
+                 "type":"objectgroup",
+                 "visible":true,
+                 "x":0,
+                 "y":0
+                }],
+         "name":"upper",
+         "offsetx":0,
+         "offsety":-32,
+         "opacity":1,
+         "properties":[
+                {
+                 "name":"floor",
+                 "type":"int",
+                 "value":1
+                }],
+         "type":"group",
+         "visible":true,
+         "x":0,
+         "y":0
+        }, 
+        {
+         "data":[0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 4, 0, 0, 0,
+            0, 0, 0, 0, 4, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0],
+         "height":8,
+         "id":5,
+         "name":"roof",
+         "offsetx":0,
+         "offsety":-64,
+         "opacity":1,
+         "properties":[
+                {
+                 "name":"floor",
+                 "type":"int",
+                 "value":2
+                }],
+         "type":"tilelayer",
+         "visible":true,
+         "width":8,
+         "x":0,
+         "y":0
+        }],
+ "nextlayerid":6,
+ "nextobjectid":2,
+ "orientation":"isometric",
+ "renderorder":"right-down",
+ "tiledversion":"1.12.2",
+ "tileheight":32,
+ "tilesets":[
+        {
+         "columns":4,
+         "firstgid":1,
+         "grid":
+            {
+             "height":0,
+             "orientation":"orthogonal",
+             "width":0
+            },
+         "image":"..\/images\/shape-diamond-64x32.png",
+         "imageheight":32,
+         "imagewidth":256,
+         "margin":0,
+         "name":"shape-diamond-64x32",
+         "spacing":0,
+         "tilecount":4,
+         "tileheight":32,
+         "tiles":[
+                {
+                 "id":1,
+                 "properties":[
+                        {
+                         "name":"stairs",
+                         "type":"int",
+                         "value":1
+                        }]
+                }],
+         "tilewidth":64
+        }],
+ "tilewidth":64,
+ "type":"map",
+ "version":"1.10",
+ "width":8
+}

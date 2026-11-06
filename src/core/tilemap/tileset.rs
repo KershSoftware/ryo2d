@@ -77,6 +77,9 @@ pub struct TileData {
   /// on a y-sorted layer (the reserved tile property `sort_offset`;
   /// negative moves it up)
   pub sort_offset: f32,
+  /// The floor a stair or ramp tile leads up to from its layer's floor
+  /// (the reserved tile property `stairs`); `None` for a plain tile
+  pub stairs: Option<u8>,
   /// The tile's own image and its size, for collection tilesets
   pub image: Option<(Handle<Image>, UVec2)>,
 }
@@ -90,6 +93,7 @@ impl Default for TileData {
       animation: Vec::new(),
       probability: 1.0,
       sort_offset: 0.0,
+      stairs: None,
       image: None,
     }
   }

@@ -4,11 +4,12 @@ use glam::{Affine2, IVec2, UVec2, Vec2};
 
 use super::collision;
 use super::edit::{self, LayerRef};
+use super::floors::MapFloors;
 use super::spawn::{self, MapIds, MapLayers, MapRoot, TileLayerData};
 use super::stream;
 use super::world::{self, WorldRef};
 use super::{CHUNK_SIZE, CellOutline, MapGrid, Tile, TileData, TileGrid, WorldLevel, wang};
-use crate::core::ecs::{Entity, World};
+use crate::core::ecs::{Entity, Floor, World};
 use crate::core::hash::FastSet;
 use crate::core::navigation::{CellState, GridCoord, NavigationGrid};
 use crate::core::physics::{CellRect, TileColliders};
@@ -384,6 +385,41 @@ impl<'w> MapsView<'w> {
   /// ```
   pub fn grid<'a>(&self, map: Entity, layer: impl Into<LayerRef<'a>>) -> Option<LayerGrid> {
     edit::layer_grid(self.world, map, layer.into())
+  }
+
+  /// `map`'s floors and their heights, in its own pixels: `None` for a
+  /// map not landed, or with no layer above the ground floor
+  pub fn floors(&self, map: Entity) -> Option<&MapFloors> {
+    if !self.is_ready(map) {
+      return None;
+    }
+    self.world.get::<MapFloors>(map)
+  }
+
+  /// The floor's height as a world vector, through the map's transform as
+  /// it is now: how far up the map draws `floor`, which follows the map
+  /// moved, turned or scaled. `GROUND` gives zero on any landed map; a
+  /// floor no layer of `map` is on, `Every`, or a map not landed gives
+  /// `None` ([`MapFloors::lift`])
+  ///
+  /// ```
+  /// use ryo2d::prelude::*;
+  ///
+  /// /// Where a marker at a ground position draws on the map's first storey
+  /// fn on_first_storey(ctx: &mut SceneContext<'_>, map: Entity, ground: Vec2) -> Option<Vec2> {
+  ///   Some(ground + ctx.maps().lift(map, Floor::On(1))?)
+  /// }
+  /// ```
+  pub fn lift(&self, map: Entity, floor: Floor) -> Option<Vec2> {
+    if !self.is_ready(map) {
+      return None;
+    }
+    let lift = match self.world.get::<MapFloors>(map) {
+      Some(floors) => floors.lift(floor)?,
+      None if floor == Floor::GROUND => Vec2::ZERO,
+      None => return None,
+    };
+    Some(edit::local_to_world(self.world, map)?.transform_vector2(lift))
   }
 
   /// The cell of a tile layer under the world position `world` (the one

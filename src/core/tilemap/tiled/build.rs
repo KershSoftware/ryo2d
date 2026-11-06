@@ -19,9 +19,9 @@ use crate::core::physics::CellRect;
 use crate::core::render::batch::{BlendMode, Filter};
 use crate::core::tilemap::map::tiles_bounds;
 use crate::core::tilemap::{
-  CHUNK_SIZE, GridShape, ImageLayer, LayerKind, MapGrid, MapLayer, Properties, StaggerAxis,
-  StaggerIndex, Tile, TileData, TileFlip, TileFrame, TileGrid, TileMap, TileShape, Tileset,
-  TilesetImage, TilesetSource,
+  CHUNK_SIZE, GridShape, ImageLayer, LayerKind, MapGrid, MapLayer, Properties, PropertyValue,
+  StaggerAxis, StaggerIndex, Tile, TileData, TileFlip, TileFrame, TileGrid, TileMap, TileShape,
+  Tileset, TilesetImage, TilesetSource,
 };
 use crate::core::ui::Color;
 use glam::{IVec2, UVec2, Vec2};
@@ -343,6 +343,7 @@ fn tile_data(
       .float("sort_offset")
       .filter(|offset| offset.is_finite())
       .map_or(0.0, |offset| offset as f32),
+    stairs: storey(&properties, "stairs").map_err(|what| fail(path, place, what))?,
     properties,
     probability: raw.probability.unwrap_or(1.0),
     ..TileData::default()
@@ -508,6 +509,8 @@ struct Inherit {
   parallax: Vec2,
   visible: bool,
   blend: BlendMode,
+  /// The nearest group's floor that names one
+  floor: Option<u8>,
 }
 
 struct Builder<'p, 'a> {
@@ -799,6 +802,31 @@ fn layer_filter(props: &Properties) -> Filter {
   }
 }
 
+/// A reserved property naming a floor (a layer's `floor`, a tile's
+/// `stairs`): a whole number from 0 to 255, a float with no fraction
+/// counting; `None` left out. Any other value is an error, saying what is
+/// wrong
+fn storey(props: &Properties, name: &str) -> Result<Option<u8>, String> {
+  let Some(value) = props.get(name) else {
+    return Ok(None);
+  };
+  match props.int(name).and_then(|n| u8::try_from(n).ok()) {
+    Some(floor) => Ok(Some(floor)),
+    None => {
+      let written = match value {
+        PropertyValue::Int(n) => n.to_string(),
+        PropertyValue::Float(f) => f.to_string(),
+        PropertyValue::Bool(b) => b.to_string(),
+        PropertyValue::String(text) => format!("{text:?}"),
+        other => format!("{other:?}"),
+      };
+      Err(format!(
+        "property {name:?}: {written} is not a whole number from 0 to 255"
+      ))
+    }
+  }
+}
+
 fn blend_of(path: &AssetPath, place: &str, mode: Option<&str>) -> Result<BlendMode, AssetError> {
   match mode {
     None | Some("" | "normal") => Ok(BlendMode::Alpha),
@@ -865,6 +893,12 @@ impl Builder<'_, '_> {
         .ok_or_else(|| fail(&path, &place, format!("tintcolor {text:?} is not a color")))?,
       None => Color::WHITE,
     };
+    // Read before a group recurses: a group's floor passes to its layers
+    // that name none (its other properties are its own)
+    let props = self
+      .px
+      .read(&place, &raw.properties, raw.class.as_deref())?;
+    let floor = storey(&props, "floor").map_err(|what| fail(&path, &place, what))?;
     let here = Inherit {
       offset: inherit.offset + Vec2::new(raw.offsetx, raw.offsety),
       opacity: inherit.opacity * raw.opacity.unwrap_or(1.0),
@@ -877,14 +911,12 @@ impl Builder<'_, '_> {
       } else {
         own_blend
       },
+      floor: floor.or(inherit.floor),
     };
     if raw.ty == "group" {
       return self.layers(raw.layers, here, depth + 1, cx);
     }
     let id = self.layer_id(&raw, &place)?;
-    let props = self
-      .px
-      .read(&place, &raw.properties, raw.class.as_deref())?;
     let is_tiles = raw.ty == "tilelayer";
     let mut used = Vec::new();
     let kind = match raw.ty.as_str() {
@@ -951,6 +983,7 @@ impl Builder<'_, '_> {
     let mut info = crate::core::tilemap::LayerInfo::new(id, raw.name);
     info.class = raw.class.filter(|c| !c.is_empty());
     info.offset = here.offset;
+    info.floor = here.floor.unwrap_or(0);
     info.opacity = here.opacity;
     info.tint = here.tint;
     info.parallax = here.parallax;
@@ -1378,6 +1411,7 @@ pub(crate) fn build_map(
     parallax: Vec2::ONE,
     visible: true,
     blend: BlendMode::Alpha,
+    floor: None,
   };
   builder.layers(raw.layers, inherit, 0, cx)?;
   map.layers = builder.layers;

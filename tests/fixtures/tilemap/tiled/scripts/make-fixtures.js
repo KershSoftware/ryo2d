@@ -17,7 +17,10 @@
 // tiles it draws over the other on those grids; measured-raster.json, where
 // it draws a tile on isometric maps of odd cells; and
 // measured-collision.json, what a tile's collision shapes are stored in
-// when its tileset's grid is isometric, and on oblique maps.
+// when its tileset's grid is isometric, and on oblique maps; and a map of
+// storeys (`maps/floors.tmj`, with its XML twin and `renders/floors.png`)
+// and two whose floor is out of range (`maps/bad-floor.tmj`,
+// `maps/floor-300.tmj`).
 //
 // Regenerate (Tiled 1.12.2, from the repository root):
 //   /Applications/Tiled.app/Contents/MacOS/Tiled \
@@ -1314,3 +1317,84 @@ collisionFile.write(
     ' "godot": [\n' + godotRows.join(",\n") + "\n ]}\n"
 );
 collisionFile.commit();
+
+// ---- floors -------------------------------------------------------------------
+
+// A map of storeys, in both formats (`maps/floors.tmj`, `xml/maps/floors.tmx`),
+// with `renders/floors.png`, what Tiled draws of it: an isometric 8 x 8 map
+// of 64 x 32 diamonds whose "ground" layer (on floor 0, as a layer is that
+// says nothing) is red, but for two green tiles whose `stairs` is 1 leading
+// up to the block of the group "upper" (`floor` 1, drawn 32 px up): its
+// tile layer "upper-ground", blue, and its object layer "upper-things",
+// holding the point "lamp" at cell (4, 3)'s centre (hidden, as markers
+// are, so the render shows the tiles alone); and a tile layer "roof"
+// (`floor` 2, drawn 64 px up), yellow. And two maps whose layer's floor is
+// not a whole number from 0 to 255: `maps/bad-floor.tmj`, its tile layer
+// "upper" on floor "two", and `maps/floor-300.tmj`, its group "tower" on
+// floor 300
+function floorsMap() {
+  var map = sampleMap({ orientation: I, tile: [64, 32], size: [8, 8] });
+  map.layerDataFormat = TileMap.CSV;
+  var set = shapeTileset("shape-diamond-64x32", "diamond", 64, 32, 0, shapeColours);
+  set.tile(1).setProperty("stairs", 1);
+  map.addTileset(set);
+  var ground = new TileLayer("ground");
+  map.addLayer(ground);
+  var edit = ground.edit();
+  for (var y = 0; y < 8; y++) for (var x = 0; x < 8; x++) edit.setTile(x, y, set.tile(0));
+  edit.setTile(4, 5, set.tile(1));
+  edit.setTile(4, 6, set.tile(1));
+  edit.apply();
+  var upper = new GroupLayer("upper");
+  upper.offset = Qt.point(0, -32);
+  upper.setProperty("floor", 1);
+  map.addLayer(upper);
+  // A tile layer joins a group at no size
+  var block = new TileLayer("upper-ground");
+  upper.addLayer(block);
+  block.resize(Qt.size(8, 8));
+  var blockEdit = block.edit();
+  for (var by = 2; by <= 4; by++) for (var bx = 3; bx <= 5; bx++) blockEdit.setTile(bx, by, set.tile(2));
+  blockEdit.apply();
+  var things = new ObjectGroup("upper-things");
+  things.drawOrder = ObjectGroup.IndexOrder;
+  upper.addLayer(things);
+  var lamp = new MapObject("lamp");
+  lamp.shape = MapObject.Point;
+  lamp.x = 144;
+  lamp.y = 112;
+  lamp.visible = false;
+  things.addObject(lamp);
+  var roof = new TileLayer("roof");
+  roof.offset = Qt.point(0, -64);
+  roof.setProperty("floor", 2);
+  map.addLayer(roof);
+  var roofEdit = roof.edit();
+  roofEdit.setTile(4, 2, set.tile(3));
+  roofEdit.setTile(4, 3, set.tile(3));
+  roofEdit.apply();
+  return map;
+}
+saveBoth("floors", floorsMap);
+renderTo("floors", floorsMap());
+
+// A 2 x 2 orthogonal map of one tile layer, `inside` a group if given,
+// whose (or whose group's) floor is `floor`
+function badFloorMap(layer, floor, inside) {
+  var map = sampleMap({ orientation: TileMap.Orthogonal, tile: [16, 16], size: [2, 2] });
+  map.layerDataFormat = TileMap.CSV;
+  var tiles = new TileLayer(layer);
+  if (inside) {
+    var group = new GroupLayer(inside);
+    group.setProperty("floor", floor);
+    map.addLayer(group);
+    group.addLayer(tiles);
+    tiles.resize(Qt.size(2, 2));
+  } else {
+    tiles.setProperty("floor", floor);
+    map.addLayer(tiles);
+  }
+  return map;
+}
+save(badFloorMap("upper", "two"), tiled.mapFormat("json"), "maps/bad-floor.tmj");
+save(badFloorMap("top", 300, "tower"), tiled.mapFormat("json"), "maps/floor-300.tmj");

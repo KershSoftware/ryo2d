@@ -9,6 +9,7 @@ use std::sync::Arc;
 use glam::{IVec2, Vec2};
 
 use super::collision::{self, LayerView};
+use super::floors::{MapFloors, ground_offset};
 use super::jobs::Worker;
 use super::kinds::{TilesetStamp, sources, stamps, stamps_match};
 use super::occluders;
@@ -197,7 +198,8 @@ impl MapRoot {
 }
 
 /// A layer of a spawned map: a child of the map entity, carrying the layer's
-/// [`LayerInfo`] and a `Transform` at its offset, and [`TileLayerData`] for a
+/// [`LayerInfo`] and a `Transform` at its offset (less its floor's height on
+/// a floor above the ground: [`MapFloors`]), and [`TileLayerData`] for a
 /// tile layer or [`ImageLayer`] for an image layer
 #[derive(Component, Clone, Debug, PartialEq, Eq)]
 pub struct MapLayerRef {
@@ -911,11 +913,12 @@ pub(crate) struct LandingJob {
   pads: Vec<ToPad>,
 }
 
-/// What a map lands with: its layers as they spawn, its colliders and
-/// shadows worked out for them, what a reload compares with, and its
-/// tilesets' paddings made ahead
+/// What a map lands with: its layers as they spawn, its floors, its
+/// colliders and shadows worked out for them, what a reload compares with,
+/// and its tilesets' paddings made ahead
 pub(crate) struct Landed {
   layers: Vec<PlannedLayer>,
+  floors: Option<MapFloors>,
   collision: collision::Prepared,
   shadows: occluders::Prepared,
   applied: MapApplied,
@@ -979,7 +982,8 @@ impl LandingJob {
     if self.collision.properties.get(PANICKING_LANDING).is_some() {
       panic!("a test's landing that always panics");
     }
-    let mut applied = MapApplied::new(self.stamp, &self.layers);
+    let floors = MapFloors::of(self.layers.iter().map(|layer| &layer.info));
+    let mut applied = MapApplied::new(self.stamp, &self.layers, floors.as_ref());
     let layers: Vec<PlannedLayer> = self
       .layers
       .into_iter()
@@ -1009,6 +1013,7 @@ impl LandingJob {
     let paddings = self.pads.into_iter().filter_map(ToPad::pad).collect();
     Landed {
       layers,
+      floors,
       collision,
       shadows,
       applied,
@@ -1054,14 +1059,17 @@ pub(crate) enum LayerRest {
 }
 
 /// Spawns `planned` as layer `index` of `map`, a child of it at the
-/// layer's offset
+/// layer's offset, less its floor's height on a floor above the ground
+/// (`floors`, the map's)
 pub(crate) fn spawn_layer(
   world: &mut World,
   map: Entity,
   index: usize,
   PlannedLayer { info, content }: PlannedLayer,
+  floors: Option<&MapFloors>,
 ) -> (Entity, LayerRest) {
-  let layer = child_of(world, map, Transform::from_translation(info.offset));
+  let at = ground_offset(&info, floors);
+  let layer = child_of(world, map, Transform::from_translation(at));
   let layer_ref = MapLayerRef {
     map,
     index,
@@ -1312,6 +1320,7 @@ fn land(world: &mut World, map: Entity, landed: Landed) {
   }
   let Landed {
     layers: planned,
+    floors,
     collision,
     shadows,
     applied,
@@ -1339,7 +1348,7 @@ fn land(world: &mut World, map: Entity, landed: Landed) {
     if !alive(world, map) {
       return;
     }
-    let (layer, rest) = spawn_layer(world, map, index, planned);
+    let (layer, rest) = spawn_layer(world, map, index, planned, floors.as_ref());
     layers.push(layer);
     match rest {
       LayerRest::Tiles(grid, found) => tile_layers.push((layer, index, grid, found)),
@@ -1369,6 +1378,10 @@ fn land(world: &mut World, map: Entity, landed: Landed) {
   root
     .insert((MapIds { objects: ids }, MapLayers(layers.clone()), applied))
     .remove::<MapFailed>();
+  match floors {
+    Some(floors) => root.insert(floors),
+    None => root.remove::<MapFloors>(),
+  };
   // Its colliders and shadows before anything observes its objects
   collision::land(world, map, &layers, collision);
   occluders::land(world, map, &layers, shadows);
@@ -1414,6 +1427,7 @@ fn root_discarded(mut world: DeferredWorld, context: HookContext) {
       MapFailed,
       MapLanding,
       MapApplied,
+      MapFloors,
       StreamState,
       ClassTable,
     )>();
@@ -3264,6 +3278,166 @@ mod tests {
         assert_eq!(maps.world_to_cell(map, "ground", at), Some(cell), "{cell}");
       }
     }
+  }
+
+  #[test]
+  fn a_higher_floor_s_layers_stand_in_ground_space() {
+    use crate::core::ecs::Floor;
+    use crate::core::tilemap::MapFloors;
+    let mut world = world_over(files_with(&[]));
+    let handle = AssetsView::new(&mut world)
+      .load_now::<TileMap>("tiled/maps/floors.tmj")
+      .expect("floors.tmj loads");
+    let asset = world
+      .resource::<Assets<TileMap>>()
+      .get(&handle)
+      .cloned()
+      .expect("the map");
+    let map = world
+      .spawn((MapRoot::new(handle), Transform::from_xy(100.0, 50.0)))
+      .id();
+    Frames::new().run(&mut world);
+
+    let floors = world.get::<MapFloors>(map).cloned().expect("its floors");
+    assert_eq!(floors.lift(Floor::GROUND), Some(Vec2::ZERO));
+    assert_eq!(floors.lift(Floor::On(1)), Some(Vec2::new(0.0, -32.0)));
+    assert_eq!(floors.lift(Floor::On(2)), Some(Vec2::new(0.0, -64.0)));
+    assert_eq!(floors.lift(Floor::On(3)), None);
+    assert_eq!(floors.lift(Floor::Every), None);
+    assert_eq!(
+      floors.floors().collect::<Vec<_>>(),
+      [Floor::GROUND, Floor::On(1), Floor::On(2)]
+    );
+    assert_eq!(floors.highest(), Floor::On(2));
+
+    // Each layer stands at its offset less its floor's lift: the ground
+    // floor's at its offset, the higher floors' in ground space
+    let layers = layers_of(&mut world, map);
+    assert_eq!(
+      layer_names(&mut world, map),
+      ["ground", "upper-ground", "upper-things", "roof"]
+    );
+    let lifts = [0.0, -32.0, -32.0, -64.0];
+    for (index, (&layer, lift)) in layers.iter().zip(lifts).enumerate() {
+      let offset = asset.layers[index].info.offset;
+      assert_eq!(
+        translation(&world, layer),
+        offset - Vec2::new(0.0, lift),
+        "layer {index}"
+      );
+    }
+    assert_eq!(translation(&world, layers[1]), Vec2::ZERO);
+
+    // The lamp stands where Tiled puts it, at cell (4, 3)'s centre in
+    // ground space, not 32 px up where its floor draws
+    let (lamp, _) = object(&mut world, map, "lamp");
+    assert_eq!(parent(&world, lamp), Some(layers[2]));
+    let centre = asset.grid().cell_center(IVec2::new(4, 3));
+    assert_eq!(centre, Vec2::new(288.0, 128.0));
+    assert!(close(global(&world, lamp), Vec2::new(100.0, 50.0) + centre));
+  }
+
+  #[test]
+  fn a_floor_s_height_is_its_bottom_layer_s_vertical_offset() {
+    use crate::core::ecs::Floor;
+    use crate::core::tilemap::MapFloors;
+    let mut world = crate::core::testing::asset_world();
+    let mut map = TileMap::new(UVec2::new(4, 3), UVec2::splat(16));
+    map.add_tile_layer("ground");
+    for (name, offset) in [
+      ("deck", Vec2::new(4.0, -32.0)),
+      ("rail", Vec2::new(0.0, -40.0)),
+    ] {
+      let index = map.add_tile_layer(name);
+      map.layers[index].info.floor = 1;
+      map.layers[index].info.offset = offset;
+    }
+    let map = spawn_code_map(&mut world, map, MapRoot::new);
+    Frames::new().run(&mut world);
+
+    let lift = world
+      .get::<MapFloors>(map)
+      .and_then(|floors| floors.lift(Floor::On(1)));
+    assert_eq!(lift, Some(Vec2::new(0.0, -32.0)), "the bottom layer's");
+    let layers = layers_of(&mut world, map);
+    // The bottom layer keeps its offset across; the second stands 8 px
+    // above it
+    assert_eq!(translation(&world, layers[1]), Vec2::new(4.0, 0.0));
+    assert_eq!(translation(&world, layers[2]), Vec2::new(0.0, -8.0));
+  }
+
+  #[test]
+  fn a_map_without_floors_lands_as_before() {
+    use crate::core::tilemap::MapFloors;
+    let mut world = crate::core::testing::asset_world();
+    let mut map = code_map();
+    map.layers[0].info.offset = Vec2::new(0.0, -32.0);
+    map.layers[1].info.offset = Vec2::new(3.0, 5.0);
+    if let LayerKind::Objects(objects) = &mut map.layers[1].kind {
+      let mut spot = object_data("1", "spot", &[]);
+      spot.position = Vec2::new(16.0, 8.0);
+      objects.push(spot);
+    }
+    let top = map.add_tile_layer("top");
+    map.layers[top].info.offset = Vec2::new(-2.0, -16.0);
+    let handle = world.resource_mut::<Assets<TileMap>>().add(map);
+    let map = world
+      .spawn((MapRoot::new(handle), Transform::from_xy(100.0, 50.0)))
+      .id();
+    Frames::new().run(&mut world);
+
+    assert!(world.get::<MapFloors>(map).is_none());
+    let layers = layers_of(&mut world, map);
+    assert_eq!(layers.len(), 3);
+    for &layer in &layers {
+      let info = world.get::<LayerInfo>(layer).expect("layer info");
+      assert_eq!(info.floor, 0);
+      assert_eq!(translation(&world, layer), info.offset, "{}", info.name);
+    }
+    assert_eq!(translation(&world, layers[0]), Vec2::new(0.0, -32.0));
+    let (spot, _) = object(&mut world, map, "spot");
+    assert_eq!(global(&world, spot), Vec2::new(119.0, 63.0));
+  }
+
+  #[test]
+  fn a_code_built_map_has_floors_too() {
+    use crate::core::ecs::Floor;
+    use crate::core::tilemap::MapFloors;
+    let mut world = crate::core::testing::asset_world();
+    let mut map = TileMap::new(UVec2::new(4, 3), UVec2::splat(16));
+    map.add_tileset(TilesetSource::Embedded(Arc::new(classed_tileset())));
+    map.add_tile_layer("ground");
+    let upper = map.add_tile_layer("upper");
+    map.layers[upper].info.floor = 1;
+    map.layers[upper].info.offset = Vec2::new(0.0, -16.0);
+    map
+      .tiles_mut(upper)
+      .expect("upper")
+      .set(IVec2::new(2, 1), Some(Tile::new(0, 1)));
+    let handle = world.resource_mut::<Assets<TileMap>>().add(map);
+    let map = world
+      .spawn((
+        MapRoot::new(handle).with_entity_tiles(&["brick"]),
+        Transform::from_xy(100.0, 0.0),
+      ))
+      .id();
+    Frames::new().run(&mut world);
+
+    let lift = world
+      .get::<MapFloors>(map)
+      .and_then(|floors| floors.lift(Floor::On(1)));
+    assert_eq!(lift, Some(Vec2::new(0.0, -16.0)));
+    let layers = layers_of(&mut world, map);
+    assert_eq!(translation(&world, layers[1]), Vec2::ZERO);
+    // The brick stands at its cell's centre in ground space
+    let bricks = class_tiles_of(&mut world, map);
+    let [(cell, brick, _)] = bricks.as_slice() else {
+      panic!("one brick, not {}", bricks.len())
+    };
+    assert_eq!(*cell, IVec2::new(2, 1));
+    assert_eq!(parent(&world, *brick), Some(layers[1]));
+    assert_eq!(translation(&world, *brick), Vec2::new(40.0, 24.0));
+    assert_eq!(global(&world, *brick), Vec2::new(140.0, 24.0));
   }
 
   #[test]

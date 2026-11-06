@@ -829,6 +829,133 @@ fn layers_new_removed_moved_or_reshaped_respawn_and_the_rest_keep_their_entities
   );
 }
 
+#[test]
+fn a_reload_that_moves_a_layer_to_another_floor_respawns_it_in_ground_space() {
+  use crate::core::ecs::Floor;
+  use crate::core::tilemap::MapFloors;
+  // "ground" on the ground floor; "upper" (offset `upper_y`), "rail"
+  // (-32) and "things" (-16) on `floor`
+  let level = |floor: u8, upper_y: i32| {
+    let on = format!(r#","properties":[{{"name":"floor","type":"int","value":{floor}}}]"#);
+    let things = things(4, &[object(1, "a", (16, 0), "")]).replace(
+      r#""type":"objectgroup""#,
+      &format!(r#""type":"objectgroup","offsety":-16{on}"#),
+    );
+    map_of(
+      (4, 3),
+      &[
+        tiles(1, "ground", (4, 3), &[1; 12], ""),
+        tiles(
+          2,
+          "upper",
+          (4, 3),
+          &[2; 12],
+          &format!(r#","offsety":{upper_y}{on}"#),
+        ),
+        tiles(
+          3,
+          "rail",
+          (4, 3),
+          &[3; 12],
+          &format!(r#","offsety":-32{on}"#),
+        ),
+        things,
+      ],
+    )
+  };
+  let files = files_with(&[("r/set.tsj", SET), ("r/m.tmj", &level(0, -16))]);
+  let (mut maps, map) = spawned(&files, "r/m.tmj", MapRoot::new);
+  let lift = |world: &World| {
+    world
+      .get::<MapFloors>(map)
+      .map(|floors| floors.lift(Floor::On(1)))
+  };
+  let places = |world: &mut World| -> Vec<Vec2> {
+    layers_of(world, map)
+      .iter()
+      .map(|&layer| translation(world, layer))
+      .collect()
+  };
+  let first = layers_of(&mut maps.world, map);
+  let (a, _) = object_named(&mut maps.world, map, "a");
+  assert_eq!(lift(&maps.world), None, "no floors yet");
+  assert_eq!(
+    places(&mut maps.world),
+    [
+      Vec2::ZERO,
+      Vec2::new(0.0, -16.0),
+      Vec2::new(0.0, -32.0),
+      Vec2::new(0.0, -16.0)
+    ]
+  );
+
+  // Saved with the three on floor 1: its height is "upper"'s offset, and
+  // its layers stand in ground space; the tile layers respawn, the object
+  // layer moves, its object kept
+  let mut watch = Watch::new(&maps.world);
+  files.insert("r/m.tmj", level(1, -16));
+  watch.until_reloaded(&mut maps, map);
+  let second = layers_of(&mut maps.world, map);
+  assert_eq!(lift(&maps.world), Some(Some(Vec2::new(0.0, -16.0))));
+  assert_eq!(second[0], first[0], "ground kept");
+  assert_ne!(second[1], first[1], "upper respawned");
+  assert_ne!(second[2], first[2], "rail respawned");
+  assert_eq!(second[3], first[3], "things kept");
+  assert_eq!(
+    places(&mut maps.world),
+    [Vec2::ZERO, Vec2::ZERO, Vec2::new(0.0, -16.0), Vec2::ZERO]
+  );
+  assert_eq!(id_of(&maps.world, map, "1"), Some(a));
+  assert_eq!(translation(&maps.world, a), Vec2::new(24.0, 8.0));
+  assert_eq!(
+    maps
+      .world
+      .get::<LayerInfo>(second[2])
+      .map(|info| info.floor),
+    Some(1)
+  );
+
+  // "upper" raised: the floor's height follows it, so "rail" stands
+  // elsewhere in ground space though its own offset and floor did not
+  // change, and respawns; "things" moves
+  let mut watch = Watch::new(&maps.world);
+  files.insert("r/m.tmj", level(1, -24));
+  watch.until_reloaded(&mut maps, map);
+  let third = layers_of(&mut maps.world, map);
+  assert_eq!(lift(&maps.world), Some(Some(Vec2::new(0.0, -24.0))));
+  assert_eq!(third[0], first[0], "ground kept");
+  assert_ne!(third[1], second[1], "upper respawned");
+  assert_ne!(third[2], second[2], "rail respawned");
+  assert_eq!(third[3], first[3], "things kept");
+  assert_eq!(
+    places(&mut maps.world),
+    [
+      Vec2::ZERO,
+      Vec2::ZERO,
+      Vec2::new(0.0, -8.0),
+      Vec2::new(0.0, 8.0)
+    ]
+  );
+
+  // Back on the ground floor: no floors, every layer at its offset
+  let mut watch = Watch::new(&maps.world);
+  files.insert("r/m.tmj", level(0, -16));
+  watch.until_reloaded(&mut maps, map);
+  let fourth = layers_of(&mut maps.world, map);
+  assert_eq!(lift(&maps.world), None);
+  assert_eq!(fourth[3], first[3], "things kept");
+  assert_eq!(
+    places(&mut maps.world),
+    [
+      Vec2::ZERO,
+      Vec2::new(0.0, -16.0),
+      Vec2::new(0.0, -32.0),
+      Vec2::new(0.0, -16.0)
+    ]
+  );
+  assert_eq!(id_of(&maps.world, map, "1"), Some(a));
+}
+
 /// The map's class tiles: each one's cell, entity, parent and place in
 /// its layer, by row
 fn class_tiles_of(world: &mut World, map: Entity) -> Vec<(IVec2, Entity, Entity, Vec2)> {
