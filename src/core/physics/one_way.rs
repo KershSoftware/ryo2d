@@ -153,6 +153,31 @@ mod tests {
   }
 
   #[test]
+  fn a_one_way_platform_on_a_floor_holds_only_that_floor_s_bodies() {
+    use crate::core::ecs::Floor;
+    // A one-way platform on floor 1 at the origin, a ground floor ball and
+    // a floor 1 ball falling onto it from above (both hooks run for the
+    // second pair: the floor filter keeps it, the one-way rule shapes it)
+    let (mut world, mut s) = world(60);
+    world.spawn((
+      Transform::IDENTITY,
+      Collider::rect(200.0, 10.0).one_way(),
+      Floor::On(1),
+    ));
+    let ground = ball(&mut world, -50.0, -60.0);
+    let upper = ball(&mut world, 50.0, -60.0);
+    world.entity_mut(upper).insert(Floor::On(1));
+    run(&mut world, &mut s, 120);
+    let y = at(&world, ground).translation.y;
+    assert!(y > 50.0, "the ground floor ball fell through: {y}");
+    let y = at(&world, upper).translation.y;
+    assert!(
+      (y + 15.0).abs() < 1.0,
+      "the floor 1 ball landed on top: {y}"
+    );
+  }
+
+  #[test]
   fn a_crate_tossed_up_through_a_one_way_platform_lands_on_top() {
     let (mut world, mut s) = world(60);
     platform(&mut world, Collider::rect(200.0, 10.0).one_way());

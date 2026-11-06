@@ -7,11 +7,12 @@ use super::kernel::Component;
 
 /// The storey an entity is on. Colliders on floors that do not meet never
 /// interact: no contacts, no trigger entries, and a character's sweep
-/// passes through them. This is apart from the 32 collision layer and mask
-/// bits, which stay the game's.
+/// passes through them. This is independent of the 32 collision layer and
+/// mask bits, which stay the game's.
 ///
 /// An entity without one is on the ground floor (`Floor::GROUND`). A
-/// collider takes its own entity's `Floor`, else its body's. `Every` puts
+/// collider takes its own entity's `Floor`, else its body's (a tile grid's
+/// parts take their grid's `TileColliders::floor`). `Every` puts
 /// an entity on every floor at once, for a trigger that should catch
 /// whatever floor enters it.
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq, Hash)]

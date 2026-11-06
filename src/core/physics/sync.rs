@@ -30,6 +30,7 @@ use super::events::{
   TriggerExited,
 };
 use super::joint::Joint;
+use super::tiles::TilePart;
 use super::triggers::update_trigger_contents;
 use super::world::{Physics, Placement, WriteBack};
 use crate::core::ecs::kernel::{CheckChangeTicks, Schedule, ScheduleLabel, SingleThreadedExecutor};
@@ -64,12 +65,13 @@ type BodyRow<'a> = (
 /// What places a body in the world (see `body_pose`)
 type BodyPlace<'a> = (&'a GlobalTransform, &'a Transform, Option<&'a ChildOf>);
 /// A collider as `sync_colliders` reads it: where it is, what it is, a
-/// shape built ahead and its own floor
+/// shape built ahead, its own floor and whether a tile grid built it
 type ColliderRow<'a> = (
   &'a GlobalTransform,
   Ref<'a, Collider>,
   Option<&'a PrebuiltShape>,
   Option<&'a Floor>,
+  Has<TilePart>,
 );
 /// New or edited bodies, and every body (for the refused ones)
 type BodyRows<'a, 'w, 's> = (
@@ -508,7 +510,8 @@ pub(crate) fn register_bodies(
 /// changed floor in line with the simulation. Owners change when a
 /// `RigidBody` appears or goes above a collider, or when a collider or an
 /// ancestor is reparented. A collider's floor is its own entity's `Floor`,
-/// else its body's, else the ground floor.
+/// else its body's, else the ground floor; a tile grid's part takes only
+/// its own (its grid gives it one off the ground floor).
 ///
 /// A root body's own collider that only the write-back moved (its
 /// `Transform` last changed at `Physics::write_tick`, its `Collider` and
@@ -569,7 +572,7 @@ pub(crate) fn sync_colliders(
   todo.sort_unstable_by_key(entity_order);
   todo.dedup();
   for &entity in &todo {
-    let Ok((global, collider, prebuilt, own_floor)) = colliders.get(entity) else {
+    let Ok((global, collider, prebuilt, own_floor, part)) = colliders.get(entity) else {
       continue;
     };
     #[cfg(test)]
@@ -586,7 +589,11 @@ pub(crate) fn sync_colliders(
     // have changed
     let prebuilt = prebuilt.filter(|_| collider.is_added()).map(|p| &p.0);
     let floor = own_floor
-      .or_else(|| body.and_then(|body| floors.get(body).ok()))
+      .or_else(|| {
+        body
+          .filter(|_| !part)
+          .and_then(|body| floors.get(body).ok())
+      })
       .copied()
       .unwrap_or_default();
     physics.sync_collider_with(

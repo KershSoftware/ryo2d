@@ -644,8 +644,9 @@ const MAX_CHANGES: usize = 1 << 16;
 /// the component.
 ///
 /// Its colliders are on its `floor` (`with_floor`; the ground floor by
-/// default), each carrying it as its `Floor`: a map entity's own `Floor`
-/// does not reach them. Changing it rebuilds them all.
+/// default): off the ground floor each carries it as its `Floor`, and on
+/// it they carry none. Neither the map entity's `Floor` nor its body's
+/// reaches them. Changing it rebuilds them all.
 ///
 /// Outlines are hollow: a body that ends up inside a solid region is not
 /// pushed out. `solid_rects()` trades the seamless floors for solid
@@ -681,7 +682,8 @@ pub struct TileColliders {
   hex: Option<(HexCells, Vec2)>,
   pub layer: u32,
   pub mask: u32,
-  /// The floor its parts are on (each part carries it as its `Floor`)
+  /// The floor its parts are on (off the ground floor, each part carries
+  /// it as its `Floor`)
   pub floor: Floor,
   pub friction: f32,
   pub restitution: f32,
@@ -1444,15 +1446,19 @@ impl TileColliders {
   /// A part of the map, in its space with the grid's material and floor.
   fn spawn(&self, commands: &mut Commands, map: Entity, collider: Collider) -> Entity {
     let collider = self.material(collider);
-    commands
-      .spawn((
-        Transform::IDENTITY,
-        collider,
-        self.floor,
-        TilePart,
-        ChildOf(map),
-      ))
-      .id()
+    let part = commands
+      .spawn((Transform::IDENTITY, collider, TilePart, ChildOf(map)))
+      .id();
+    self.put_on_floor(commands, part);
+    part
+  }
+
+  /// Give a part off the ground floor the grid's `Floor`; one on the ground
+  /// floor has none, so a map without floors costs what it always did.
+  fn put_on_floor(&self, commands: &mut Commands, part: Entity) {
+    if self.floor != Floor::GROUND {
+      commands.entity(part).insert(self.floor);
+    }
   }
 
   /// The top-left of `chunk` (of `CHUNK` cells a side) in the map's
@@ -1630,7 +1636,6 @@ impl TileColliders {
     let part = (
       Transform::from_xy(at.x, at.y),
       collider,
-      self.floor,
       TilePart,
       ChildOf(map),
     );
@@ -1638,6 +1643,7 @@ impl TileColliders {
       Some(shape) => commands.spawn((part, PrebuiltShape(shape))).id(),
       None => commands.spawn(part).id(),
     };
+    self.put_on_floor(commands, part);
     self.adopt(kept, key, part);
   }
 
@@ -5777,30 +5783,84 @@ mod with_physics {
     // Outlines and one-way runs in packs, and rectangles
     for grid in [islands(), islands().solid_rects()] {
       let (mut world, mut s) = world(60);
-      let map = world
-        .spawn((Transform::IDENTITY, grid.with_floor(Floor::On(2))))
-        .id();
+      assert_eq!(grid.floor, Floor::GROUND, "the ground floor by default");
+      let map = world.spawn((Transform::IDENTITY, grid)).id();
       run(&mut world, &mut s, 1);
-      let before = ids(&mut world, map);
+      let mut before = ids(&mut world, map);
       let on = floors(&mut world, map);
       assert!(
-        on.len() > 1 && on.iter().all(|&f| f == Some(Floor::On(2))),
-        "{on:?}"
+        on.len() > 1 && on.iter().all(Option::is_none),
+        "ground parts carry no Floor: {on:?}"
       );
-      world.get_mut::<TileColliders>(map).unwrap().floor = Floor::On(3);
-      run(&mut world, &mut s, 1);
-      let after = ids(&mut world, map);
-      assert!(
-        after.len() == before.len() && after.iter().all(|e| !before.contains(e)),
-        "rebuilt"
-      );
-      let on = floors(&mut world, map);
-      assert!(on.iter().all(|&f| f == Some(Floor::On(3))), "{on:?}");
+      // Off the ground floor, to another floor and back
+      for (floor, want) in [
+        (Floor::On(2), Some(Floor::On(2))),
+        (Floor::On(3), Some(Floor::On(3))),
+        (Floor::GROUND, None),
+      ] {
+        world.get_mut::<TileColliders>(map).unwrap().floor = floor;
+        run(&mut world, &mut s, 1);
+        let after = ids(&mut world, map);
+        assert!(
+          after.len() == before.len() && after.iter().all(|e| !before.contains(e)),
+          "rebuilt for {floor:?}"
+        );
+        let on = floors(&mut world, map);
+        assert!(on.iter().all(|&f| f == want), "{floor:?}: {on:?}");
+        before = after;
+      }
     }
-    let default = TileColliders::new(1, 1, Vec2::splat(16.0));
-    assert_eq!(default.floor, Floor::GROUND);
   }
 
+  #[test]
+  fn a_map_s_own_floor_never_reaches_its_ground_parts() {
+    // A ground floor grid topped at 100 on a kinematic map body on floor 1
+    let (mut world, mut s) = world(60);
+    let map = world
+      .spawn((
+        Transform::from_xy(-200.0, 100.0),
+        RigidBody::kinematic(),
+        Floor::On(1),
+        row(25),
+      ))
+      .id();
+    let b = ball(&mut world, 0.0, 50.0);
+    run(&mut world, &mut s, 120);
+    let y = at(&world, b).translation.y;
+    assert!(
+      (y - 90.0).abs() < 1.0,
+      "a ground floor ball rests on it: {y}"
+    );
+    let parts = ids(&mut world, map);
+    assert!(!parts.is_empty());
+    let physics = world.resource::<Physics>();
+    for part in parts {
+      assert!(
+        world.get::<Floor>(part).is_none(),
+        "{part} carries no Floor"
+      );
+      assert_eq!(physics.collider_entries[&part].floor, Floor::GROUND);
+    }
+  }
+
+  #[test]
+  fn a_grid_on_another_floor_lets_a_ground_floor_ball_fall_through() {
+    // A grid on floor 1 topped at 100, under balls on the ground floor and
+    // on floor 1
+    let (mut world, mut s) = world(60);
+    world.spawn((
+      Transform::from_xy(-200.0, 100.0),
+      row(25).with_floor(Floor::On(1)),
+    ));
+    let ground = ball(&mut world, -50.0, 50.0);
+    let upper = ball(&mut world, 50.0, 50.0);
+    world.entity_mut(upper).insert(Floor::On(1));
+    run(&mut world, &mut s, 120);
+    let y = at(&world, ground).translation.y;
+    assert!(y > 150.0, "the ground floor ball fell through: {y}");
+    let y = at(&world, upper).translation.y;
+    assert!((y - 90.0).abs() < 1.0, "the floor 1 ball rests on it: {y}");
+  }
   /// 600 islands and a one-way run, as a grid
   fn islands() -> TileColliders {
     let (w, h) = (120u32, 40u32);

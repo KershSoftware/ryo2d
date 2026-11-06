@@ -305,7 +305,7 @@ fn across(shape: &dyn Shape, pose: &Pose) -> Option<(f32, f32)> {
   ))
 }
 
-/// What a character on `floor` sweeping `shape` from `start` may hit:
+/// What a character on `storey` sweeping `shape` from `start` may hit:
 /// colliders enabled this tick (one disabled this tick stays in the broad
 /// phase until the step, and Rapier's filter never checks) on floors that
 /// meet its own, one-way ones only when the character starts entirely on
@@ -314,11 +314,11 @@ fn solid(
   shape: &dyn Shape,
   start: Pose,
   dropping: bool,
-  floor: Floor,
+  storey: Floor,
 ) -> impl Fn(ColliderHandle, &RapierCollider) -> bool + '_ {
   move |_, collider| {
     collider.is_enabled()
-      && floor.meets(hooks::floor_of(collider.user_data))
+      && storey.meets(hooks::floor_of(collider.user_data))
       && match one_way::decode(collider.user_data) {
         None => true,
         Some(_) if dropping => false,
@@ -421,7 +421,7 @@ impl Physics {
     };
     // The body's next pose is the teleport's target; the collider still
     // holds the old pose until the step
-    let (start, shape, groups, floor) = {
+    let (start, shape, groups, storey) = {
       let collider = self.colliders.get(collider_handle)?;
       let start = match (teleported, collider.position_wrt_parent()) {
         (true, Some(local)) => self.bodies.get(body_handle)?.next_position() * local,
@@ -498,7 +498,7 @@ impl Physics {
     let carried_by = state.floor.filter(|_| was_on_floor);
 
     // The move and the probe start where the step does
-    let solid_from_start = solid(&*shape, start, dropping, floor);
+    let solid_from_start = solid(&*shape, start, dropping, storey);
     let filter = RapierFilter::default()
       .exclude_rigid_body(body_handle)
       .exclude_sensors()
@@ -517,7 +517,7 @@ impl Physics {
     let mut pushing_out = false;
     if state.stuck || desired.length() <= sweep::MIN_MOVE {
       let at = from_rapier(pose.translation);
-      pose.translation += to_rapier(self.coincident_nudge(entity, collider_handle, floor, at));
+      pose.translation += to_rapier(self.coincident_nudge(entity, collider_handle, storey, at));
       let push_out = KinematicCharacterController {
         snap_to_ground: None,
         ..kcc
@@ -664,7 +664,7 @@ impl Physics {
     // The carry, past everything but the floor (it moves with the character),
     // starting where the move left it
     if let Some(carrier) = carrier {
-      let solid_from_moved = solid(&*shape, pose, dropping, floor);
+      let solid_from_moved = solid(&*shape, pose, dropping, storey);
       let not_carrier = |handle: ColliderHandle, collider: &RapierCollider| {
         solid_from_moved(handle, collider) && collider.parent() != Some(carrier)
       };
@@ -743,13 +743,13 @@ impl Physics {
   /// is pushed away from the other. Only what it touched at the last step
   /// is looked at (the narrow phase's pairs), so this walks its contacts and
   /// makes no query; Rapier keeps the pairs it filtered out there, so one
-  /// on a floor that does not meet the character's `floor` is skipped. `at`
-  /// is where the collider starts the step.
+  /// on a floor that does not meet the character's `storey` is skipped.
+  /// `at` is where the collider starts the step.
   fn coincident_nudge(
     &self,
     entity: Entity,
     collider: ColliderHandle,
-    floor: Floor,
+    storey: Floor,
     at: Vec2,
   ) -> Vec2 {
     let mut side = 0.0;
@@ -774,7 +774,7 @@ impl Physics {
       if !kinematic
         || !rapier.is_enabled()
         || rapier.is_sensor()
-        || !floor.meets(hooks::floor_of(rapier.user_data))
+        || !storey.meets(hooks::floor_of(rapier.user_data))
       {
         continue;
       }
@@ -1343,7 +1343,7 @@ mod tests {
   fn a_top_down_character_walks_through_a_wall_on_another_floor() {
     // A second's walk right at 300 px/s at a ground wall whose left side
     // is at x 90
-    let walk = |floor: Floor| {
+    let walk = |storey: Floor| {
       let (mut world, mut s) = world(60);
       world.spawn((Transform::from_xy(100.0, 0.0), Collider::rect(20.0, 400.0)));
       let e = world
@@ -1351,7 +1351,7 @@ mod tests {
           Transform::IDENTITY,
           CharacterController::top_down(),
           Collider::circle(10.0),
-          floor,
+          storey,
         ))
         .id();
       for _ in 0..60 {
@@ -1372,13 +1372,13 @@ mod tests {
     // push-out; on floors that do not meet, neither is in the other's way
     let (mut world, mut s) = world(60);
     let spot = Vec2::new(10.0, 20.0);
-    let pair = [Floor::GROUND, Floor::On(1)].map(|floor| {
+    let pair = [Floor::GROUND, Floor::On(1)].map(|storey| {
       world
         .spawn((
           Transform::from_translation(spot),
           CharacterController::top_down(),
           Collider::circle(10.0),
-          floor,
+          storey,
         ))
         .id()
     });
