@@ -4,6 +4,48 @@ Small issues found while building each sub-project and left for later: deferred 
 
 Items from 4f to 6b were copied from their execution records. Items from earlier sub-projects come from notes kept at the time, and some may have been fixed since: check before working on one.
 
+## Floors (6b, stage 6)
+
+- Owner decisions (2026-11-07):
+  - Merged after the scripted tour (113 of 125 pages byte-identical to main; the town's page changed as meant, the rest run-to-run noise), with every held static and edit target met on every grid.
+  - The owner approved, one-time each, deleting `target/debug/incremental` and then all of `target/debug` mid-branch, when the disk neared the 40 GiB floor.
+- Rulings the owner may revisit (the spec's "Floors: details settled at planning" records the design ones):
+  - **A climber changes floor halfway along a run**, not where it leaves the stairs; its drawn height eases by its progress from the run's foot (the side farthest from its top along the run) to its top. A run meets its upper floor only at its top.
+  - **A stair link costs 1e-3 of the grid's shortest step**, not nothing, so a path crosses a run once.
+  - **Two public navigation constructors beyond the plan:** `FloorNavigation::new` and `NavigationGrid::on_floor`, so a game can build a floor graph without a tile map.
+  - **Stair runs live in a crate-internal `MapStairs`**, not in `MapFloors`, so `MapFloors`' derived `PartialEq` stays honest.
+  - **A higher floor's objects and class tiles carry its `Floor`** on every spawn path (the plan named none). A game that carries one (a key picked up) sets or removes its `Floor`.
+  - **A floor a game or a respawn sets wins over the stairs** that step; `climb_stairs` runs before `gameplay::apply_kill_zones`, ordered through a crate-only re-export.
+  - **Plain tile draws take their layer's floor in the tie**, so a higher storey's plain layer draws after ground-floor draws at its z.
+  - **Every skill the branch changed was bumped once**, ryo-particles included though the plan's list did not name it.
+- Limits recorded (`docs/backlog/tilemap.md`, Floors):
+  - **Sorting on a storey:** a character standing on a y-sorted storey in the back half of a cell is cut at the waist by its own cell's block (rows sort at cell middles). The demo sorts its knight half a cell down while lifted. An engine rule needs the entity's floor in the row comparison, or breaks bridges (a character under a bridge must stay behind its deck): a later lever.
+  - **Physics pays about 1% in a scene without floors** (the A/B in the record). Take the floor read out of the per-collider resync, and skip the floor systems, while no `Floor` exists.
+  - A light brightens every floor under it (one light image per camera); a light on every floor draws at ground height; shadows draw at the light's lift.
+  - Lines and the F2 overlay stay in ground space; particles collide by layer, not floor; a burst spawned and fired in one update fires low.
+  - Floor searches are synchronous only; a link ignores a stair cell's own cost, so differing `Difficult` costs per floor can still cross a run twice.
+  - A cell whose only tile on a storey is a class tile is a hole in its edge; picking and the footprint disagree on hidden layers and class tiles.
+  - Any stair cell change rebuilds every run of the map (14.7 µs at 64 runs, about 60 at 256): a run's ends read the storey above, so a per-layer rebuild would be wrong.
+- Deferred findings:
+  - **Code.**
+    - `add_collider`, `sync_collider_with` and `apply_material` (`physics/world.rs`) take `(collider, floor)` tuples; a small struct, or the floor in `Placement`, would read better.
+    - The floor rule (own `Floor`, else the body's) is copied in `gameplay/zones.rs` and `physics/sync.rs`; the code doesn't say they must change together (the module notes do).
+    - The `TileColliders` floor-mismatch warning (`physics/tiles.rs` ~:2575) spends the entity's whole `warn_once` budget, so a later serious warning for it goes unlogged; give it its own key, and check before formatting.
+    - `MapStairs::runs` is `pub(crate)` and assignable; a private field with an accessor would make `put` its only writer by construction.
+    - `FloorNavigation::neighbors` collects the grid's `Vec` into a new one, two allocations an expansion; untimed.
+    - `MapArea::of` reads `TileGrid::extent()` for every tile layer of every map with floors on each run with seeds; on a stale unbounded span it recomputes until settled.
+    - A game's own respawn cannot restore the storey (`Respawn`'s recorded floor is crate-internal).
+    - `src/core/tilemap/collision.rs` is about 5,100 lines, mostly tests; move them to `collision/tests.rs`.
+  - **Tests missing or loose.**
+    - No tests for picking's edge cases (a disabled layer entity, a floor whose bottom layer is an object layer, a floor with no tile layer, a floor layer at another offset) or for parallax combined with a lift.
+    - `tests/tilemap_alloc.rs`' floor walk compares moving frames with still ones in one world, so it can't catch an allocation both make; its climber eases but never changes floor in the measured frames.
+  - **Demo.** The town's violet route line always draws on top, crossing the raised ground while the knight is behind it.
+  - **Docs.** The plan's `cargo test --test integration physics` and `tilemap` filters match no test (the integration suite has no such modules).
+- Breaking changes: `record_trail_points` is `pub(crate)` (was `pub`, not in the prelude); `LayerInfo`, `TileData` and `PathNode` literals gain `floor`/`stairs`.
+- Pre-existing bugs:
+  - `EntityDrawer::collect` builds its entity query every frame, so any frame drawing sprites allocates; keep the query between frames.
+  - `cargo doc` with warnings as errors fails on two broken links in `src/core/tilemap/padded.rs`.
+
 ## Hexagonal maps at speed
 
 - Owner decisions (2026-11-06):
