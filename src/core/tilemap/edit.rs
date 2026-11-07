@@ -1,7 +1,8 @@
 //! Finding a spawned map's layers, and reading and editing their cells.
 
-use glam::{Affine2, IVec2};
+use glam::{Affine2, IVec2, Vec2};
 
+use super::floors::MapFloors;
 use super::grid::fill_cap;
 use super::spawn::{
   ClassTile, LayerTiles, MapIds, MapLayerRef, MapLayers, MapRoot, MapTile, TileLayerData,
@@ -9,8 +10,10 @@ use super::spawn::{
 };
 use super::stream::{note_class_edit, resident_chunks};
 use super::view::LayerGrid;
-use super::{CHUNK_SIZE, LayerInfo, Properties, Tile, TileGrid};
-use crate::core::ecs::{ChildOf, DetectChangesMut, Entity, Resource, Transform, World};
+use super::{CHUNK_SIZE, ImageLayer, LayerInfo, Properties, Tile, TileGrid};
+use crate::core::ecs::{
+  ChildOf, DetectChangesMut, Disabled, Entity, Floor, Resource, Transform, World,
+};
 use crate::core::hash::FastSet;
 use crate::core::physics::CellRect;
 
@@ -612,10 +615,105 @@ pub(crate) fn local_to_world(world: &World, entity: Entity) -> Option<Affine2> {
 /// A tile layer's grid and where its pixels lie in the world, through its
 /// transform and its ancestors' as they are now
 pub(crate) fn layer_grid(world: &World, map: Entity, layer: LayerRef<'_>) -> Option<LayerGrid> {
-  let entity = layer_entity(world, map, layer)?;
-  let grid = world.get::<TileLayerData>(entity)?.grid;
+  entity_grid(world, layer_entity(world, map, layer)?)
+}
+
+/// [`layer_grid`] of the tile layer entity `layer`
+fn entity_grid(world: &World, layer: Entity) -> Option<LayerGrid> {
+  let grid = world.get::<TileLayerData>(layer)?.grid;
   Some(LayerGrid {
     grid,
-    to_world: local_to_world(world, entity)?,
+    to_world: local_to_world(world, layer)?,
   })
+}
+
+/// The z a map at `root_z` draws its layer `index` at
+pub(crate) fn layer_z(root_z: i32, index: usize) -> i32 {
+  root_z.saturating_add(i32::try_from(index).unwrap_or(i32::MAX))
+}
+
+/// The z `map`'s y-sorted layers draw at (`MapsView::y_sort_z`): its first
+/// y-sorted tile or object layer's (an image layer sorts nothing, and an
+/// LDtk sub-layer sorts as its layer), which on a map with floors every
+/// y-sorted layer draws at; `None` with none, or until the map lands
+pub(crate) fn y_sort_z(world: &World, map: Entity) -> Option<i32> {
+  let root = world.get::<MapRoot>(map)?;
+  let layers = &world.get::<MapLayers>(map)?.0;
+  let sorts = |layer: Entity| {
+    world.get::<ImageLayer>(layer).is_none()
+      && world
+        .get::<LayerInfo>(layer)
+        .is_some_and(|info| info.y_sorted && info.part_of.is_none())
+  };
+  let first = layers.iter().find(|&&layer| sorts(layer))?;
+  Some(layer_z(root.z, world.get::<MapLayerRef>(*first)?.index))
+}
+
+/// The floor and ground cell drawn under the world point `point` on `map`
+/// (`MapsView::floor_cell_at_world`): floors from the highest down, each
+/// through its bottom tile layer's grid lifted by its height; a floor above
+/// the ground answers only where one of its tile layers on that grid that
+/// draws (visible, not disabled) holds a tile (a class tile too), the
+/// ground floor anywhere
+pub(crate) fn floor_cell_at_world(
+  world: &World,
+  map: Entity,
+  point: Vec2,
+) -> Option<(Floor, IVec2)> {
+  world.get::<MapIds>(map)?;
+  let layers = &world.get::<MapLayers>(map)?.0;
+  let floors = world.get::<MapFloors>(map);
+  // A floor's tile layers, bottom first (a sub-layer draws as its layer)
+  let on = |number: u8| {
+    layers.iter().copied().filter(move |&layer| {
+      world.get::<TileLayerData>(layer).is_some()
+        && world
+          .get::<LayerInfo>(layer)
+          .is_some_and(|info| info.floor == number && info.part_of.is_none())
+    })
+  };
+  let highest = floors
+    .and_then(|floors| floors.highest().number())
+    .unwrap_or(0);
+  for number in (0..=highest).rev() {
+    let floor = Floor::On(number);
+    let lift = match floors {
+      Some(floors) => floors.lift(floor),
+      None => Some(Vec2::ZERO),
+    };
+    let (Some(lift), Some(bottom)) = (lift, on(number).next()) else {
+      continue;
+    };
+    let Some(ground) = entity_grid(world, bottom) else {
+      continue;
+    };
+    // The grid where the floor draws: lifted in the layer's pixels, which
+    // are the map's turned and scaled, as the drawer lifts it
+    let drawn = LayerGrid {
+      grid: ground.grid,
+      to_world: ground.to_world * Affine2::from_translation(lift),
+    };
+    let Some(cell) = drawn.try_cell_at_world(point) else {
+      continue;
+    };
+    if number == 0 {
+      return Some((floor, cell));
+    }
+    let holds = on(number).any(|layer| {
+      let draws = world.get::<Disabled>(layer).is_none()
+        && world
+          .get::<LayerInfo>(layer)
+          .is_some_and(|info| info.visible);
+      draws
+        && entity_grid(world, layer) == Some(ground)
+        && (world
+          .get::<TileLayerData>(layer)
+          .is_some_and(|data| data.tiles.get(cell).is_some())
+          || class_tile_at(world, layer, cell).is_some())
+    });
+    if holds {
+      return Some((floor, cell));
+    }
+  }
+  None
 }

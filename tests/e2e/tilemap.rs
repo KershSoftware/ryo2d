@@ -2426,3 +2426,344 @@ fn tile_objects_on_an_isometric_y_sorted_layer_sort_by_their_feet() {
   engine.step().unwrap();
   assert_pixels(&engine.frame().unwrap(), expect(36));
 }
+
+// ---- floors -------------------------------------------------------------------
+
+#[test]
+fn a_floor_s_tiles_draw_lifted_where_tiled_draws_them() {
+  // The floors fixture: an isometric map whose group "upper" (floor 1) is
+  // drawn 32 px up and whose "roof" (floor 2) 64 px up, though their layers
+  // stand in ground space. Tiled's render adds the roof's 64 px as a margin
+  // on top, so its bottom is the map's: the engine's frame of it from
+  // there (pixel art, zoom 1) is the render, pixel for pixel
+  let name = "floors";
+  let tiled = tiled_render(name);
+  let size = (tiled.width(), tiled.height());
+  let Some((mut engine, _, bounds)) = tiled_engine(name, size) else {
+    return;
+  };
+  let top = bounds.y + bounds.height - size.1 as f32;
+  let centre = Vec2::new(bounds.x, top) + Vec2::new(size.0 as f32, size.1 as f32) / 2.0;
+  if let Some(mut camera) = CameraMut::main(engine.world_mut()) {
+    camera.set_position(centre.x, centre.y);
+  }
+  engine.step_frames(3).unwrap();
+  let frame = engine.frame().unwrap();
+  let unlike = unlike_tiled(&frame, &tiled);
+  if !unlike.is_empty() {
+    let path = std::env::temp_dir().join(format!("ryo2d-{name}.png"));
+    let _ = frame.save(&path);
+    panic!(
+      "{name}: {} pixels differ from Tiled's render (the frame is at {}), the first: {:#?}",
+      unlike.len(),
+      path.display(),
+      &unlike[..unlike.len().min(8)]
+    );
+  }
+
+  // A floor's other layers keep their own offsets: on floor 1, "deck" 16 px
+  // up (its height) holds a red tile at (1, 5), and "rail" 24 px up (8 px
+  // above the deck where it stands) a green one at (4, 5); an image layer
+  // on the floor at (40, 20). Each draws at its own offset, as Tiled does
+  let Some(frame) = render(|ctx| {
+    let set = solid(ctx, &[RED, GREEN]);
+    let mut tiles = map(vec![set], &[]);
+    for (name, offset, tile) in [
+      ("deck", -16.0, (IVec2::new(1, 5), Tile::new(0, 0))),
+      ("rail", -24.0, (IVec2::new(4, 5), Tile::new(0, 1))),
+    ] {
+      let layer = tiles.add_tile_layer(name);
+      tiles.layers[layer].info.floor = 1;
+      tiles.layers[layer].info.offset = Vec2::new(0.0, offset);
+      put(&mut tiles, layer, &[tile]);
+    }
+    let image = red_blue(ctx);
+    let sign = image_layer(
+      &mut tiles,
+      "sign",
+      image,
+      Vec2::new(40.0, 20.0),
+      (false, false),
+    );
+    tiles.layers[sign].info.floor = 1;
+    spawn(ctx, tiles, Vec2::ZERO);
+  }) else {
+    return;
+  };
+  assert_pixels(&frame, |x, y| {
+    let inside = |x0, y0, w, h| (x0..x0 + w).contains(&x) && (y0..y0 + h).contains(&y);
+    if inside(8, 24, 8, 8) {
+      Some(RED)
+    } else if inside(32, 16, 8, 8) {
+      Some(GREEN)
+    } else if inside(40, 20, 8, 8) {
+      Some(RED)
+    } else if inside(48, 20, 8, 8) {
+      Some(BLUE)
+    } else {
+      None
+    }
+  });
+}
+
+#[test]
+fn a_lifted_chunk_is_not_culled_while_its_drawing_shows() {
+  // A floor-1 layer 320 px up holds one red tile at cell (2, 41): where it
+  // stands, y 328 to 336, is in the second row of chunks, which the
+  // camera's 64 px never reach; lifted, it draws at y 8 to 16, and its
+  // chunk is not culled for where it stands
+  let Some(frame) = render(|ctx| {
+    let set = solid(ctx, &[RED]);
+    let mut tiles = TileMap::new(UVec2::new(SIZE / CELL, 48), UVec2::splat(CELL));
+    tiles.add_tileset(TilesetSource::Embedded(Arc::new(set)));
+    tiles.add_tile_layer("ground");
+    let upper = tiles.add_tile_layer("upper");
+    tiles.layers[upper].info.floor = 1;
+    tiles.layers[upper].info.offset = Vec2::new(0.0, -320.0);
+    put(&mut tiles, upper, &[(IVec2::new(2, 41), Tile::new(0, 0))]);
+    spawn(ctx, tiles, Vec2::ZERO);
+  }) else {
+    return;
+  };
+  assert_pixels(&frame, |x, y| {
+    ((16..24).contains(&x) && (8..16).contains(&y)).then_some(RED)
+  });
+}
+
+/// An engine whose setup spawns the map `make` builds at the origin at z 4,
+/// stepped until it lands, with the map's entity
+fn floored(
+  make: impl Fn(&mut SceneContext) -> TileMap + Send + 'static,
+) -> Option<(HeadlessEngine, Entity)> {
+  let spawned = Moved::default();
+  let kept = spawned.clone();
+  let engine = engine(move |ctx| {
+    let tiles = make(ctx);
+    let handle = ctx.assets().add(tiles);
+    let map = ctx
+      .world
+      .spawn((MapRoot::new(handle).with_z(4), Transform::IDENTITY))
+      .id();
+    *kept.lock().unwrap() = Some(map);
+  })?;
+  let map = spawned.lock().unwrap().expect("spawned");
+  Some((engine, map))
+}
+
+/// Spawns a blue character `size` px on the ground floor, its left at `x`
+/// and its feet at `feet`, y-sorted at `map`'s y-sorted z: after the map
+/// landed, so its entity's index is above its layers'
+fn ground_character(
+  engine: &mut HeadlessEngine,
+  map: Entity,
+  (x, feet): (f32, f32),
+  size: UVec2,
+) -> Entity {
+  let world = engine.world_mut();
+  let Some(z) = MapsView::new(world).y_sort_z(map) else {
+    panic!("{map} has a y-sorted layer");
+  };
+  let blue = world.resource_mut::<Assets<Image>>().add(Image::solid_rect(
+    size.x, size.y, BLUE[0], BLUE[1], BLUE[2], 255,
+  ));
+  world
+    .spawn((
+      Transform::from_xy(x, feet - size.y as f32),
+      Renderable::image(blue)
+        .with_anchor(Anchor::TopLeft)
+        .with_z_order(z),
+      YSort::new(),
+    ))
+    .id()
+}
+
+/// Puts the feet of `character` (16 px high) at `feet`, its left where it
+/// was, and draws
+fn walk_to(engine: &mut HeadlessEngine, character: Entity, feet: f32) -> image::RgbaImage {
+  let mut transform = engine.world_mut().get_mut::<Transform>(character).unwrap();
+  transform.translation.y = feet - 16.0;
+  engine.step_frames(2).unwrap();
+  engine.frame().unwrap()
+}
+
+#[test]
+fn a_character_sorts_with_a_raised_floor_from_both_sides() {
+  // A y-sorted block on floor 1, 8 px up: its row of red tiles on cells
+  // (2..6, 3) stands with its bottom edge at y 32 and draws at y 16 to 24.
+  // A blue character 16 px square on the ground floor, at the map's
+  // y-sorted z, sorts with the row by where both stand: south of it (feet
+  // at 36) it draws in front; north of it (feet at 28, below the row's
+  // drawing but behind where the row stands) behind
+  let Some((mut engine, map)) = floored(|ctx| {
+    let set = solid(ctx, &[RED]);
+    let mut tiles = map(vec![set], &[]);
+    let block = tiles.add_tile_layer("block");
+    tiles.layers[block].info.floor = 1;
+    tiles.layers[block].info.offset = Vec2::new(0.0, -8.0);
+    tiles.layers[block].info.y_sorted = true;
+    let row: Vec<(IVec2, Tile)> = (2..6)
+      .map(|x| (IVec2::new(x, 3), Tile::new(0, 0)))
+      .collect();
+    put(&mut tiles, block, &row);
+    tiles
+  }) else {
+    return;
+  };
+  assert_eq!(MapsView::new(engine.world_mut()).y_sort_z(map), Some(5));
+  let character = ground_character(&mut engine, map, (24.0, 36.0), UVec2::splat(16));
+  let expect = |feet: u32| {
+    move |x: u32, y: u32| {
+      let block = (16..48).contains(&x) && (16..24).contains(&y);
+      let blue = (24..40).contains(&x) && (feet - 16..feet).contains(&y);
+      match (block, blue) {
+        (true, true) => Some(if feet > 32 { BLUE } else { RED }),
+        (true, false) => Some(RED),
+        (false, true) => Some(BLUE),
+        (false, false) => None,
+      }
+    }
+  };
+  for feet in [36, 28] {
+    let frame = walk_to(&mut engine, character, feet as f32);
+    assert_pixels(&frame, expect(feet));
+  }
+}
+
+#[test]
+fn under_a_bridge_the_upper_floor_draws_over_the_lower() {
+  // A bridge on floor 1, 8 px up: a y-sorted row of red tiles across cells
+  // (0..8, 4), standing at y 40 and drawn at y 24 to 32. A blue character
+  // 16 px square on the ground floor walks under it with its feet at y 40
+  // too: at one ground y the lower floor draws first, so the bridge covers
+  // its head, though its entity is newer than the bridge's layer (which a
+  // tie would otherwise draw first)
+  let Some((mut engine, map)) = floored(|ctx| {
+    let set = solid(ctx, &[RED]);
+    let mut tiles = map(vec![set], &[]);
+    let bridge = tiles.add_tile_layer("bridge");
+    tiles.layers[bridge].info.floor = 1;
+    tiles.layers[bridge].info.offset = Vec2::new(0.0, -8.0);
+    tiles.layers[bridge].info.y_sorted = true;
+    let row: Vec<(IVec2, Tile)> = (0..8)
+      .map(|x| (IVec2::new(x, 4), Tile::new(0, 0)))
+      .collect();
+    put(&mut tiles, bridge, &row);
+    tiles
+  }) else {
+    return;
+  };
+  let character = ground_character(&mut engine, map, (24.0, 40.0), UVec2::splat(16));
+  let frame = walk_to(&mut engine, character, 40.0);
+  assert_pixels(&frame, |x, y| {
+    if (24..32).contains(&y) {
+      Some(RED)
+    } else {
+      ((24..40).contains(&x) && (32..40).contains(&y)).then_some(BLUE)
+    }
+  });
+}
+
+#[test]
+fn on_a_map_with_floors_every_y_sorted_layer_draws_at_one_z() {
+  // Two y-sorted layers: "props" on the ground floor (layer 1) and "deck"
+  // on floor 1, 4 px up (layer 2). A tall red props tile (8 x 16) at cell
+  // (2, 4) stands at y 40 and draws at y 24 to 40; a green deck tile at
+  // (2, 3) stands at y 32 and draws at y 20 to 28. Both draw at the first
+  // y-sorted layer's z, so the props tile, standing further south, covers
+  // the deck's where they overlap; at a z of its own, one higher, the deck
+  // would draw over it
+  let Some((mut engine, map)) = floored(|ctx| {
+    let image = ctx.assets().add(Image::solid_rect(
+      CELL,
+      2 * CELL,
+      RED[0],
+      RED[1],
+      RED[2],
+      255,
+    ));
+    let size = UVec2::new(CELL, 2 * CELL);
+    let mut tall = Tileset::new("tall", size, TilesetImage::Atlas { image, size });
+    tall.columns = 1;
+    tall.tile_count = 1;
+    let green = solid(ctx, &[GREEN]);
+    let mut tiles = map(vec![tall, green], &[]);
+    let props = tiles.add_tile_layer("props");
+    tiles.layers[props].info.y_sorted = true;
+    put(&mut tiles, props, &[(IVec2::new(2, 4), Tile::new(0, 0))]);
+    let deck = tiles.add_tile_layer("deck");
+    tiles.layers[deck].info.floor = 1;
+    tiles.layers[deck].info.offset = Vec2::new(0.0, -4.0);
+    tiles.layers[deck].info.y_sorted = true;
+    put(&mut tiles, deck, &[(IVec2::new(2, 3), Tile::new(1, 0))]);
+    tiles
+  }) else {
+    return;
+  };
+  assert_eq!(MapsView::new(engine.world_mut()).y_sort_z(map), Some(5));
+  engine.step_frames(2).unwrap();
+  assert_pixels(&engine.frame().unwrap(), |x, y| {
+    if !(16..24).contains(&x) {
+      None
+    } else if (24..40).contains(&y) {
+      Some(RED)
+    } else {
+      (20..24).contains(&y).then_some(GREEN)
+    }
+  });
+}
+
+#[test]
+fn a_floor_s_tile_objects_draw_lifted_and_sort_at_their_ground_feet() {
+  // A y-sorted object layer on floor 1, 8 px up, holds a red tile object
+  // 8 x 16 whose rectangle stands at (16, 24) to (24, 40): it draws at y 16
+  // to 32 and sorts at its feet where it stands, y 40. A blue character 16
+  // px square on the ground floor, at the map's y-sorted z, with its feet
+  // at y 36 (in front of the drawn feet, behind the standing ones) draws
+  // behind it, and at y 44 in front
+  let Some((mut engine, map)) = floored(|ctx| {
+    let image = ctx.assets().add(Image::solid_rect(
+      CELL,
+      2 * CELL,
+      RED[0],
+      RED[1],
+      RED[2],
+      255,
+    ));
+    let size = UVec2::new(CELL, 2 * CELL);
+    let mut set = Tileset::new("tall", size, TilesetImage::Atlas { image, size });
+    set.columns = 1;
+    set.tile_count = 1;
+    let mut tiles = map(vec![set], &[]);
+    let things = tiles.add_object_layer("things");
+    let tree = tile_object(
+      "1",
+      Vec2::new(16.0, 24.0),
+      Vec2::new(8.0, 16.0),
+      Tile::new(0, 0),
+    );
+    tiles.layers[things].kind = LayerKind::Objects(vec![tree]);
+    tiles.layers[things].info.floor = 1;
+    tiles.layers[things].info.offset = Vec2::new(0.0, -8.0);
+    tiles.layers[things].info.y_sorted = true;
+    tiles
+  }) else {
+    return;
+  };
+  let character = ground_character(&mut engine, map, (12.0, 36.0), UVec2::splat(16));
+  let expect = |feet: u32| {
+    move |x: u32, y: u32| {
+      let tree = (16..24).contains(&x) && (16..32).contains(&y);
+      let blue = (12..28).contains(&x) && (feet - 16..feet).contains(&y);
+      match (tree, blue) {
+        (true, true) => Some(if feet > 40 { BLUE } else { RED }),
+        (true, false) => Some(RED),
+        (false, true) => Some(BLUE),
+        (false, false) => None,
+      }
+    }
+  };
+  for feet in [36, 44] {
+    let frame = walk_to(&mut engine, character, feet as f32);
+    assert_pixels(&frame, expect(feet));
+  }
+}

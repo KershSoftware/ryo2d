@@ -38,6 +38,7 @@ use crate::core::ecs::{IntoScheduleConfigs, Schedule};
 use crate::core::schedule::{EngineSchedules, FixedSet, Phase, PostUpdateSet};
 
 pub use edit::LayerRef;
+pub(crate) use edit::{layer_z, y_sort_z};
 pub use floors::MapFloors;
 pub use grid::{CHUNK_SIZE, TileGrid};
 pub use grid_shape::{CellOutline, GridShape, Lattice, MapGrid, StaggerAxis, StaggerIndex};

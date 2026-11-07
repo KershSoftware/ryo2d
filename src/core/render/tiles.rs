@@ -8,7 +8,8 @@
 //! and where the tileset's image sits in the atlas: they hold layer-local
 //! pixels (each tile standing where the layer's grid places it, y down) and
 //! UVs over the whole padded tileset image. The draw applies the map's
-//! transform, the camera's parallax and the image's slot.
+//! transform (a layer above the ground floor's lifted by its floor's
+//! height), the camera's parallax and the image's slot.
 //!
 //! # Instance lanes
 //!
@@ -51,15 +52,16 @@ use crate::core::asset::{AssetId, Assets, Handle};
 use crate::core::ecs::interpolate::render_global;
 use crate::core::ecs::kernel::QueryState;
 use crate::core::ecs::{
-  Allow, Children, DetectChangesMut, Disabled, Entity, GlobalTransform, Has, Mut,
+  Allow, Children, DetectChangesMut, Disabled, Entity, Floor, GlobalTransform, Has, Mut,
   PreviousGlobalTransform, World,
 };
 use crate::core::graphics::{Image, RenderLayers, SpriteGpuRenderer, SpriteInstance, TextureId};
 use crate::core::hash::{FastMap, FastSet};
 use crate::core::tilemap::padded::{PaddedCache, PaddedCell, PaddedLayout, PaddedTile};
 use crate::core::tilemap::{
-  CHUNK_SIZE, GridShape, ImageLayer, LayerInfo, MapGrid, MapLayerRef, MapLayers, MapObject,
-  MapRoot, StaggerAxis, TileFlip, TileGrid, TileLayerData, Tileset, map_asset,
+  CHUNK_SIZE, GridShape, ImageLayer, LayerInfo, MapFloors, MapGrid, MapLayerRef, MapLayers,
+  MapObject, MapRoot, StaggerAxis, TileFlip, TileGrid, TileLayerData, Tileset, layer_z, map_asset,
+  y_sort_z,
 };
 use crate::core::ui::{Color, Rect};
 
@@ -418,8 +420,10 @@ fn object_instance(
 
 /// A spawned map, disabled ones too (their tilesets stay padded)
 type MapItem = (
+  Entity,
   &'static MapRoot,
   &'static MapLayers,
+  Option<&'static MapFloors>,
   &'static GlobalTransform,
   Option<&'static PreviousGlobalTransform>,
   Option<&'static RenderLayers>,
@@ -472,6 +476,12 @@ pub(crate) struct TileLayerFrame<'a> {
 /// editor says (one quad for every camera when it neither repeats nor has
 /// parallax, else one per camera); an object layer draws its visible tile
 /// objects as sprites.
+///
+/// A layer above the ground floor stands in ground space and draws lifted
+/// by its floor's height (`MapFloors::lift`), where Tiled draws it; its
+/// rows and tile objects sort where they stand, and at one sort y the lower
+/// floor's draw first. On a map with floors every y-sorted layer draws at
+/// the first one's z (`y_sort_z`), so characters there sort with them all.
 ///
 /// Image layers go straight into the draw list. Chunks, rows and tile
 /// objects take their places among the entities' draws
@@ -574,6 +584,11 @@ struct LayerDraw<'a> {
   /// What its chunks are built from besides their tiles
   stamp: u64,
   z: i32,
+  /// The floor it is on (its draws' ties at one sort y go by it)
+  floor: u8,
+  /// Where its pixels stand in the world before its floor's lift: what its
+  /// rows sort by
+  ground: Affine2,
   lit: bool,
   blend: BlendMode,
   /// How its tiles are sampled (`LayerInfo::filter`)
@@ -628,6 +643,11 @@ struct Gathered {
 /// How an image or object layer draws
 struct LayerStyle {
   z: i32,
+  /// The floor it is on
+  floor: u8,
+  /// On a floor above the ground, the floor's height in the world, which
+  /// its tile objects draw lifted by (they sort where they stand)
+  lift: Option<Vec2>,
   look: LayerLook,
   sprite: SpriteLook,
   y_sorted: bool,
@@ -701,7 +721,9 @@ impl TileDrawer {
         else {
           return;
         };
-        for (root, map_layers, global, previous, render_layers, disabled) in maps.iter(world) {
+        for (map, root, map_layers, floors, global, previous, render_layers, disabled) in
+          maps.iter(world)
+        {
           let Some(asset) = map_asset(world, root) else {
             continue;
           };
@@ -734,6 +756,9 @@ impl TileDrawer {
           let paddings = paddings.finish();
           let map_layers_mask = render_layers.copied().unwrap_or_default();
           let map_affine = render_global(global, previous, frame.alpha).affine();
+          // On a map with floors every y-sorted layer draws at the first's
+          // z, so the characters there sort with every floor's rows
+          let sorted_z = floors.and_then(|_| y_sort_z(world, map));
           for &entity in &map_layers.0 {
             let Ok((
               layer_ref,
@@ -791,16 +816,31 @@ impl TileDrawer {
               tint: info.tint,
               opacity: info.opacity * part.map_or(1.0, |part| part.opacity),
             };
-            let index = i32::try_from(layer_ref.index).unwrap_or(i32::MAX);
-            let z = root.z.saturating_add(index);
+            let z = match sorted_z {
+              Some(z) if info.y_sorted && image.is_none() => z,
+              _ => layer_z(root.z, layer_ref.index),
+            };
             let mut affine = render_global(layer_global, layer_previous, frame.alpha).affine();
             if let Some(part) = part {
               affine *= Affine2::from_translation(part.offset);
             }
+            // A layer above the ground floor stands in ground space, where
+            // its rows and objects sort, and draws lifted by its floor's
+            // height (in its map's pixels, which are its own)
+            let ground = affine;
+            let lift = floors
+              .filter(|_| info.floor > 0)
+              .and_then(|floors| floors.lift(Floor::On(info.floor)));
+            if let Some(lift) = lift {
+              affine *= Affine2::from_translation(lift);
+            }
+            let floor = floors.map_or(0, |_| info.floor);
             let origin = asset.parallax_origin;
             let views = views(frame.cameras, mask, (map_affine, origin), info.parallax);
             let style = LayerStyle {
               z,
+              floor,
+              lift: lift.map(|lift| ground.transform_vector2(lift)),
               look,
               sprite: SpriteLook {
                 shading: SpriteShading::Plain,
@@ -828,6 +868,8 @@ impl TileDrawer {
                 look,
                 stamp: stamp.finish(),
                 z,
+                floor,
+                ground,
                 lit: info.lit,
                 blend: info.blend,
                 filter: info.filter,
@@ -1029,6 +1071,7 @@ impl View<'_> {
       return;
     }
     let to_layer = placed.inverse();
+    let ground = moved(layer.ground, offset);
     let tiles = &layer.data.tiles;
     let grid = &layer.data.grid;
     // The chunks the layer reaches: all of a bounded layer's, the span of
@@ -1079,7 +1122,7 @@ impl View<'_> {
           for x in first.x..=last.x {
             let chunk = IVec2::new(x, y);
             if sees(chunk) {
-              self.chunk(layer, chunk, view, (&placed, slot), only);
+              self.chunk(layer, chunk, view, (&placed, &ground, slot), only);
             }
           }
         }
@@ -1088,7 +1131,7 @@ impl View<'_> {
         // view's chunks or the layer's, whichever are fewer
         for chunk in tiles.chunks_within(first, last) {
           if sees(chunk) {
-            self.chunk(layer, chunk, view, (&placed, slot), only);
+            self.chunk(layer, chunk, view, (&placed, &ground, slot), only);
           }
         }
       }
@@ -1100,14 +1143,15 @@ impl View<'_> {
 
   /// Pushes `chunk` of `layer` for `view` (built first if it changed),
   /// each tileset's tiles through the view's slot for it: whole, or row by
-  /// row for a y-sorted layer. A layer drawn in Tiled's order gathers it
-  /// instead, for `draw_gathered`
+  /// row for a y-sorted layer, each row sorted where it stands (`ground`,
+  /// the layer's place before its floor's lift). A layer drawn in Tiled's
+  /// order gathers it instead, for `draw_gathered`
   fn chunk(
     &mut self,
     layer: &LayerDraw<'_>,
     chunk: IVec2,
     view: u64,
-    (placed, slot): (&Affine2, TileSlot),
+    (placed, ground, slot): (&Affine2, &Affine2, TileSlot),
     only: Option<Entity>,
   ) {
     let tiles = &layer.data.tiles;
@@ -1171,12 +1215,19 @@ impl View<'_> {
       if !layer.y_sorted {
         let bounds = world_box(placed, part.min, part.max);
         let piece = (chunk, part.tileset, 0, part.count, bounds);
-        self.push(layer, DrawOrder::plain(layer.z), piece, slot, only);
+        self.push(
+          layer,
+          DrawOrder::plain(layer.z, layer.floor),
+          piece,
+          slot,
+          only,
+        );
         continue;
       }
       // Each row sorts at its band's sort point (`band_y`), or its one
       // cell's own, at the layer's left (so every chunk of a band sorts
-      // alike, on a turned map too)
+      // alike, on a turned map too), where it stands: a floor's lift moves
+      // its drawing, not its place among the characters
       for row in 0..self.rows.len() {
         let row = self.rows[row];
         if row.tileset != part.tileset {
@@ -1185,9 +1236,9 @@ impl View<'_> {
         let layer_y = row
           .sort
           .unwrap_or_else(|| grid.band_y(grid.sort_band_of(row.band)));
-        let sort_y = placed.transform_point2(Vec2::new(0.0, layer_y)).y;
+        let sort_y = ground.transform_point2(Vec2::new(0.0, layer_y)).y;
         let bounds = world_box(placed, row.min, row.max);
-        let order = DrawOrder::y_sorted(layer.z, sort_y);
+        let order = DrawOrder::y_sorted(layer.z, sort_y, layer.floor);
         let piece = (chunk, part.tileset, row.first, row.count, bounds);
         self.push(layer, order, piece, slot, only);
       }
@@ -1217,7 +1268,7 @@ impl View<'_> {
     (placed, slot): (&Affine2, TileSlot),
     only: Option<Entity>,
   ) {
-    let order = DrawOrder::plain(layer.z);
+    let order = DrawOrder::plain(layer.z, layer.floor);
     let spill = self
       .gathered
       .chunks
@@ -1373,7 +1424,13 @@ impl View<'_> {
       draw.max = draw.max.max(max);
       return;
     }
-    self.push(layer, DrawOrder::plain(layer.z), piece, slot, only);
+    self.push(
+      layer,
+      DrawOrder::plain(layer.z, layer.floor),
+      piece,
+      slot,
+      only,
+    );
   }
 }
 
@@ -1568,7 +1625,8 @@ impl Objects<'_, '_> {
   /// Pushes `entity`, if it is a visible tile object whose tile has a
   /// picture, for each of `views` whose cameras may see it: among the
   /// entities at the layer's z, sorted by its bottom edge on a y-sorted
-  /// layer
+  /// layer; on a floor above the ground drawn lifted by the floor's height,
+  /// and sorted where it stands
   fn draw<'c>(
     &mut self,
     entity: Entity,
@@ -1591,7 +1649,8 @@ impl Objects<'_, '_> {
     let Some(padded) = layout.tile(tile.id) else {
       return;
     };
-    let affine = render_global(global, previous, frame.alpha).affine();
+    let ground = render_global(global, previous, frame.alpha).affine();
+    let affine = style.lift.map_or(ground, |lift| moved(ground, lift));
     for (camera, offset) in views {
       let placed = moved(affine, offset);
       let instance = object_instance(
@@ -1612,10 +1671,11 @@ impl Objects<'_, '_> {
         continue;
       }
       let order = if style.y_sorted {
-        let feet = placed.transform_point2(Vec2::new(0.0, object.size.y * 0.5));
-        DrawOrder::y_sorted(style.z, feet.y)
+        let stands = moved(ground, offset);
+        let feet = stands.transform_point2(Vec2::new(0.0, object.size.y * 0.5));
+        DrawOrder::y_sorted(style.z, feet.y, style.floor)
       } else {
-        DrawOrder::plain(style.z)
+        DrawOrder::plain(style.z, style.floor)
       };
       let index = self.draws.len() as u32;
       self.draws.push(OrderedDraw {

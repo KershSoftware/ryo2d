@@ -22,7 +22,12 @@ use crate::core::ui::Rect;
 /// layer's.
 ///
 /// `to_world` is the layer's transform and its map's as they were when it
-/// was read: a map that moves later needs reading again.
+/// was read: a map that moves later needs reading again. It is in ground
+/// space: a layer on a floor above the ground stands where the characters
+/// on that floor do, its floor's height below where it draws
+/// ([`MapsView::lift`]), so its cells are those characters' cells; the cell
+/// drawn under the pointer, through every floor, is
+/// [`MapsView::floor_cell_at_world`]'s.
 ///
 /// ```
 /// use ryo2d::prelude::*;
@@ -368,8 +373,10 @@ impl<'w> MapsView<'w> {
 
   /// A tile layer's grid and where its pixels are in the world, through
   /// the map's and the layer's transforms as they are now: for picking,
-  /// outlines in the world, and the board tools of any grid. `None` for a
-  /// map not landed, a layer it lacks or one that is not a tile layer
+  /// outlines in the world, and the board tools of any grid. In ground
+  /// space: a layer on a floor above the ground draws its floor's height
+  /// higher ([`LayerGrid`]). `None` for a map not landed, a layer it lacks
+  /// or one that is not a tile layer
   ///
   /// ```
   /// use ryo2d::prelude::*;
@@ -420,6 +427,57 @@ impl<'w> MapsView<'w> {
       None => return None,
     };
     Some(edit::local_to_world(self.world, map)?.transform_vector2(lift))
+  }
+
+  /// The z a map's y-sorted layers draw at, for characters to sort with
+  /// them: on a map with floors every y-sorted layer's (the first's), else
+  /// the first y-sorted layer's. `None` when no layer is y-sorted, or for a
+  /// map not landed. The first y-sorted layer is the bottom-most tile or
+  /// object layer whose `y_sorted` is set (an image layer sorts nothing),
+  /// and its z is the map's ([`MapRoot::with_z`]) plus its index
+  ///
+  /// ```
+  /// use ryo2d::prelude::*;
+  ///
+  /// /// A hero who walks behind and in front of the map's y-sorted rows,
+  /// /// every floor's on a map with floors
+  /// fn spawn_hero(ctx: &mut SceneContext<'_>, map: Entity, hero: Handle<Image>, at: Vec2) {
+  ///   let z = ctx.maps().y_sort_z(map).unwrap_or(0);
+  ///   ctx.world.spawn((
+  ///     Transform::from_translation(at),
+  ///     Renderable::image(hero).with_z_order(z),
+  ///     YSort::new(),
+  ///   ));
+  /// }
+  /// ```
+  pub fn y_sort_z(&self, map: Entity) -> Option<i32> {
+    edit::y_sort_z(self.world, map)
+  }
+
+  /// The floor and ground cell drawn under a world point: floors from the
+  /// highest down, each through its lift and its bottom tile layer's grid;
+  /// a higher floor answers only where one of its tile layers on that grid
+  /// holds a tile; the ground floor answers anywhere. The cell is the
+  /// floor's bottom tile layer's, in ground space: where a character on
+  /// that floor stands to be drawn there ([`grid`](Self::grid)'s cells). A
+  /// layer that does not draw (hidden by `LayerInfo::visible`, or its
+  /// entity disabled) holds no tile here, so a roof hidden while the player
+  /// is inside lets the pointer through to the floor under it. Through the
+  /// map's transform as it is now; `None` for a map not landed, or with no
+  /// tile layer on the ground floor where nothing above answers
+  ///
+  /// ```
+  /// use ryo2d::prelude::*;
+  ///
+  /// /// The floor and cell under the pointer, for a click to walk to
+  /// fn clicked_cell(ctx: &mut SceneContext<'_>, map: Entity) -> Option<(Floor, IVec2)> {
+  ///   let (x, y) = ctx.input.mouse_position();
+  ///   let pointer = ctx.camera().screen_to_world(Vec2::new(x, y));
+  ///   ctx.maps().floor_cell_at_world(map, pointer)
+  /// }
+  /// ```
+  pub fn floor_cell_at_world(&self, map: Entity, world: Vec2) -> Option<(Floor, IVec2)> {
+    edit::floor_cell_at_world(self.world, map, world)
   }
 
   /// The cell of a tile layer under the world position `world` (the one

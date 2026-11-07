@@ -15,8 +15,8 @@ use crate::core::navigation::{NavigationGrid, PathResult, Pathfinder};
 use crate::core::physics::{CellRect, TileCell, TileColliders};
 use crate::core::tilemap::test_util::{MapWorld, whole_hex_set};
 use crate::core::tilemap::{
-  ChunkEvent, ChunkRequest, ChunkTiles, GridShape, LayerGrid, MapRoot, MapStream, MapsView,
-  StaggerAxis, StaggerIndex, StreamAnchor, Tile, TileData, TileMap, TileShape, Tileset,
+  ChunkEvent, ChunkRequest, ChunkTiles, GridShape, LayerGrid, LayerInfo, MapRoot, MapStream,
+  MapsView, StaggerAxis, StaggerIndex, StreamAnchor, Tile, TileData, TileMap, TileShape, Tileset,
   TilesetImage, TilesetSource,
 };
 
@@ -295,6 +295,214 @@ fn a_floor_s_world_lift_follows_the_map_s_transform() {
   }
   let lift = MapsView::new(&mut maps.world).lift(floored, Floor::On(1));
   assert!(close(lift, Vec2::new(0.0, 64.0)), "{lift:?}");
+}
+
+/// A map of storeys on `shape`: "ground" on the ground floor, empty; on
+/// floor 1, two cells' height up, "upper" with a tile at (3, 4) and, on its
+/// grid, "upper-props" with one at (5, 4); and on floor 2, three cells'
+/// height up, "roof", empty
+fn storeys(shape: GridShape, cell: UVec2) -> TileMap {
+  let mut map = TileMap::new(UVec2::new(8, 8), cell).with_shape(shape);
+  map.add_tileset(tileset());
+  map.add_tile_layer("ground");
+  let up = |cells: f32| Vec2::new(0.0, -cells * cell.y as f32);
+  for (name, floor, height, tile) in [
+    ("upper", 1, 2.0, Some(IVec2::new(3, 4))),
+    ("upper-props", 1, 2.0, Some(IVec2::new(5, 4))),
+    ("roof", 2, 3.0, None),
+  ] {
+    let index = map.add_tile_layer(name);
+    map.layers[index].info.floor = floor;
+    map.layers[index].info.offset = up(height);
+    if let (Some(at), Some(grid)) = (tile, map.tiles_mut(index)) {
+      grid.set(at, Some(tile_for(index)));
+    }
+  }
+  map
+}
+
+/// `map`'s layer `name`'s grid (in ground space) and `floor`'s lift, in the
+/// world as the map is now
+fn floor_grid(maps: &mut MapWorld, map: Entity, name: &str, floor: u8) -> (LayerGrid, Vec2) {
+  use crate::core::ecs::Floor;
+  let view = MapsView::new(&mut maps.world);
+  match (view.grid(map, name), view.lift(map, Floor::On(floor))) {
+    (Some(grid), Some(lift)) => (grid, lift),
+    _ => panic!("{map} has {name} on floor {floor}"),
+  }
+}
+
+#[test]
+fn picking_checks_floors_from_the_top_down() {
+  use crate::core::ecs::Floor;
+  let (block, prop) = (IVec2::new(3, 4), IVec2::new(5, 4));
+  for (shape, cell) in shapes() {
+    let label = format!("{shape:?} {cell}");
+    let mut maps = MapWorld::new();
+    let map = spawn(&mut maps, storeys(shape, cell), placed());
+    let (ground, _) = floor_grid(&mut maps, map, "ground", 0);
+    let (upper, lift) = floor_grid(&mut maps, map, "upper", 1);
+    let view = MapsView::new(&mut maps.world);
+    let pick = |at: Vec2| view.floor_cell_at_world(map, at);
+
+    // On a floor-1 tile, drawn lifted: that floor and the tile's cell, on
+    // the bottom layer and on another of the floor's layers on its grid
+    let on_block = upper.cell_center_world(block) + lift;
+    assert_eq!(pick(on_block), Some((Floor::On(1), block)), "{label}");
+    let on_prop = upper.cell_center_world(prop) + lift;
+    assert_eq!(pick(on_prop), Some((Floor::On(1), prop)), "{label}");
+    // Beside it, where floor 1 holds no tile, the ground cell drawn there,
+    // which is not the floor's cell lifted off it
+    let beside = upper.cell_center_world(block + IVec2::X) + lift;
+    let under = ground.cell_at_world(beside);
+    assert_eq!(pick(beside), Some((Floor::GROUND, under)), "{label}");
+    assert_ne!(under, block + IVec2::X, "{label}");
+    // Where the block stands on the ground, its drawing lifted off it
+    let stands = upper.cell_center_world(block);
+    assert_eq!(pick(stands), Some((Floor::GROUND, block)), "{label}");
+
+    // A roof tile drawn over the block's: the top floor answers first
+    let (roof, roof_lift) = floor_grid(&mut maps, map, "roof", 2);
+    let over = roof.cell_at_world(on_block - roof_lift);
+    let mut view = MapsView::new(&mut maps.world);
+    assert!(
+      view.set_tile(map, "roof", over, Some(tile_for(9))),
+      "{label}"
+    );
+    let picked = view.floor_cell_at_world(map, on_block);
+    assert_eq!(picked, Some((Floor::On(2), over)), "{label}");
+    // Hidden, as a roof is while the player is inside, it draws nothing,
+    // and the floor under it answers again
+    let roof_layer = view.layer_entity(map, "roof");
+    let hidden = roof_layer.and_then(|layer| maps.world.get_mut::<LayerInfo>(layer));
+    if let Some(mut info) = hidden {
+      info.visible = false;
+    }
+    let view = MapsView::new(&mut maps.world);
+    let picked = view.floor_cell_at_world(map, on_block);
+    assert_eq!(picked, Some((Floor::On(1), block)), "{label}");
+  }
+  // A map without floors has the ground floor alone, and one not landed
+  // none
+  let mut maps = MapWorld::new();
+  let plain = spawn(
+    &mut maps,
+    map_of(
+      GridShape::Isometric,
+      UVec2::new(64, 32),
+      Some(UVec2::new(4, 4)),
+    ),
+    placed(),
+  );
+  let at = ground(&mut maps, plain).cell_center_world(IVec2::new(2, 1));
+  let view = MapsView::new(&mut maps.world);
+  let picked = view.floor_cell_at_world(plain, at);
+  assert_eq!(picked, Some((Floor::GROUND, IVec2::new(2, 1))));
+  assert_eq!(view.floor_cell_at_world(Entity::PLACEHOLDER, at), None);
+}
+
+#[test]
+fn picking_through_floors_follows_a_moved_map() {
+  use crate::core::ecs::Floor;
+  let block = IVec2::new(3, 4);
+  for (shape, cell) in [
+    (GridShape::Orthogonal, UVec2::splat(16)),
+    (GridShape::Isometric, UVec2::new(64, 32)),
+    (
+      GridShape::Hexagonal {
+        axis: Y,
+        index: Odd,
+        side: 12,
+      },
+      UVec2::new(32, 28),
+    ),
+  ] {
+    let mut maps = MapWorld::new();
+    let map = spawn(&mut maps, storeys(shape, cell), Transform::IDENTITY);
+    let (upper, lift) = floor_grid(&mut maps, map, "upper", 1);
+    let was = upper.cell_center_world(block) + lift;
+    let view = MapsView::new(&mut maps.world);
+    assert_eq!(
+      view.floor_cell_at_world(map, was),
+      Some((Floor::On(1), block))
+    );
+
+    // Moved, turned a quarter and doubled, before anything propagates: the
+    // floor is lifted along the map's own up, and picking follows at once
+    if let Some(mut transform) = maps.world.get_mut::<Transform>(map) {
+      *transform = Transform::from_xy(-70.0, 30.0)
+        .with_rotation(std::f32::consts::FRAC_PI_2)
+        .with_uniform_scale(2.0);
+    }
+    let (upper, lift) = floor_grid(&mut maps, map, "upper", 1);
+    assert!(lift.x.abs() > lift.y.abs(), "{shape:?}: {lift}");
+    let now = upper.cell_center_world(block) + lift;
+    let view = MapsView::new(&mut maps.world);
+    let picked = view.floor_cell_at_world(map, now);
+    assert_eq!(picked, Some((Floor::On(1), block)), "{shape:?}");
+    let left = view.floor_cell_at_world(map, was);
+    assert_ne!(left, Some((Floor::On(1), block)), "{shape:?}");
+  }
+}
+
+#[test]
+fn y_sort_z_is_the_first_y_sorted_layer_s() {
+  let mut maps = MapWorld::new();
+  // Without floors: an image layer marked y-sorted draws as a picture and
+  // sorts nothing, so the first that sorts is "props", layer 2
+  let mut map = TileMap::new(UVec2::new(4, 3), UVec2::splat(16));
+  map.add_tileset(tileset());
+  map.add_tile_layer("ground");
+  let mut sky = crate::core::tilemap::LayerInfo::new(50, "sky");
+  sky.y_sorted = true;
+  map.layers.push(crate::core::tilemap::MapLayer {
+    info: sky,
+    kind: crate::core::tilemap::LayerKind::Image(crate::core::tilemap::ImageLayer {
+      image: None,
+      repeat_x: false,
+      repeat_y: false,
+      transparent: None,
+    }),
+  });
+  for name in ["props", "trees"] {
+    let index = map.add_tile_layer(name);
+    map.layers[index].info.y_sorted = true;
+  }
+  let handle = maps.world.resource_mut::<Assets<TileMap>>().add(map);
+  let root = maps.world.spawn(MapRoot::new(handle).with_z(3)).id();
+  assert_eq!(MapsView::new(&mut maps.world).y_sort_z(root), None);
+  maps.settle(root);
+  assert_eq!(MapsView::new(&mut maps.world).y_sort_z(root), Some(5));
+
+  // With floors: a y-sorted object layer on floor 1 is the first, though a
+  // ground-floor layer above it sorts too
+  let mut map = TileMap::new(UVec2::new(4, 3), UVec2::splat(16));
+  map.add_tileset(tileset());
+  map.add_tile_layer("ground");
+  let things = map.add_object_layer("upper-things");
+  map.layers[things].info.floor = 1;
+  map.layers[things].info.offset = Vec2::new(0.0, -16.0);
+  map.layers[things].info.y_sorted = true;
+  let props = map.add_tile_layer("props");
+  map.layers[props].info.y_sorted = true;
+  let handle = maps.world.resource_mut::<Assets<TileMap>>().add(map);
+  let floored = maps.world.spawn(MapRoot::new(handle).with_z(-2)).id();
+  maps.settle(floored);
+  let view = MapsView::new(&mut maps.world);
+  assert!(view.floors(floored).is_some());
+  assert_eq!(view.y_sort_z(floored), Some(-1));
+
+  // No layer y-sorted
+  let plain = spawn(
+    &mut maps,
+    map_of(
+      GridShape::Orthogonal,
+      UVec2::splat(16),
+      Some(UVec2::new(4, 3)),
+    ),
+    Transform::IDENTITY,
+  );
+  assert_eq!(MapsView::new(&mut maps.world).y_sort_z(plain), None);
 }
 
 #[test]

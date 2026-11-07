@@ -54,32 +54,38 @@ const ELLIPSE_SIZE: u32 = 128;
 const ELLIPSE_ID: &str = "\u{1}shadow-ellipse";
 
 /// Where an entity falls in the draw order: by z layer, then in each layer
-/// plain sprites before y-sorted ones, and y-sorted ones by their sort y.
+/// plain sprites before y-sorted ones, y-sorted ones by their sort y, then
+/// the lower floor (storey) first.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct DrawOrder {
-  z: i32,
+  pub z: i32,
   /// The sort y of a y-sorted entity
-  sort_y: Option<f32>,
+  pub sort_y: Option<f32>,
+  /// The floor it is drawn on, 0 the ground floor
+  pub floor: u8,
 }
 
 impl DrawOrder {
-  pub(crate) fn plain(z: i32) -> Self {
-    Self { z, sort_y: None }
-  }
-
-  pub(crate) fn y_sorted(z: i32, sort_y: f32) -> Self {
+  pub(crate) fn plain(z: i32, floor: u8) -> Self {
     Self {
       z,
-      sort_y: Some(sort_y),
+      sort_y: None,
+      floor,
     }
   }
 
-  pub(crate) fn z(&self) -> i32 {
-    self.z
+  pub(crate) fn y_sorted(z: i32, sort_y: f32, floor: u8) -> Self {
+    Self {
+      z,
+      sort_y: Some(sort_y),
+      floor,
+    }
   }
 
-  /// By layer and sort y. Ties (a layer's plain sprites, y-sorted ones at
-  /// one sort y) are broken by `entity_order` where the drawables are sorted
+  /// By layer, sort y, then floor, so at one sort y (where a character
+  /// stands under a bridge) the lower floor draws first. Ties (a layer's
+  /// plain sprites, y-sorted ones at one sort y, on one floor) are broken
+  /// by `entity_order` where the drawables are sorted
   pub(crate) fn cmp(&self, other: &Self) -> std::cmp::Ordering {
     use std::cmp::Ordering;
     self
@@ -91,6 +97,7 @@ impl DrawOrder {
         (Some(_), None) => Ordering::Greater,
         (Some(a), Some(b)) => a.total_cmp(&b),
       })
+      .then_with(|| self.floor.cmp(&other.floor))
   }
 }
 
@@ -146,7 +153,7 @@ impl OrderedDraw {
   }
 
   fn push(&self, list: &mut DrawList) {
-    let z = self.order.z();
+    let z = self.order.z;
     match self.payload {
       OrderedPayload::Chunk(chunk) => list.push_chunk(self.lit, z, self.only_camera, chunk),
       OrderedPayload::Sprite {
@@ -318,8 +325,9 @@ fn in_draw_order<'w>(
             Some(y_sort) => DrawOrder::y_sorted(
               renderable.z_order,
               y_sort_key(y_sort, renderable, global.translation().y, images),
+              0,
             ),
-            None => DrawOrder::plain(renderable.z_order),
+            None => DrawOrder::plain(renderable.z_order, 0),
           };
           let drawable = Drawable {
             entity,
@@ -894,7 +902,7 @@ fn y_sort_key(
 
 #[cfg(test)]
 mod draw_order_tests {
-  use super::{DrawOrder, DrawableItem, in_draw_order, y_sort_key};
+  use super::{DrawOrder, DrawableItem, draws_before, in_draw_order, y_sort_key};
   use crate::core::asset::Assets;
   use crate::core::ecs::test_util::{MAX_UNRELATED, Other, insert_unrelated};
   use crate::core::ecs::{Anchor, Entity, GlobalTransform, Renderable, World, YSort};
@@ -987,24 +995,58 @@ mod draw_order_tests {
   #[test]
   fn layers_then_plain_then_sort_y() {
     let mut orders = [
-      DrawOrder::y_sorted(0, 50.0),
-      DrawOrder::plain(1),
-      DrawOrder::y_sorted(0, -20.0),
-      DrawOrder::plain(0),
-      DrawOrder::y_sorted(i32::MAX, 1e9),
-      DrawOrder::plain(i32::MIN),
+      DrawOrder::y_sorted(0, 50.0, 0),
+      DrawOrder::plain(1, 0),
+      DrawOrder::y_sorted(0, -20.0, 0),
+      DrawOrder::plain(0, 0),
+      DrawOrder::y_sorted(i32::MAX, 1e9, 0),
+      DrawOrder::plain(i32::MIN, 0),
     ];
     orders.sort_by(|a, b| a.cmp(b));
     assert_eq!(
       orders,
       [
-        DrawOrder::plain(i32::MIN),
-        DrawOrder::plain(0),
-        DrawOrder::y_sorted(0, -20.0),
-        DrawOrder::y_sorted(0, 50.0),
-        DrawOrder::plain(1),
-        DrawOrder::y_sorted(i32::MAX, 1e9),
+        DrawOrder::plain(i32::MIN, 0),
+        DrawOrder::plain(0, 0),
+        DrawOrder::y_sorted(0, -20.0, 0),
+        DrawOrder::y_sorted(0, 50.0, 0),
+        DrawOrder::plain(1, 0),
+        DrawOrder::y_sorted(i32::MAX, 1e9, 0),
       ]
     );
+  }
+
+  #[test]
+  fn equal_sort_y_draws_the_lower_floor_first() {
+    let mut orders = [
+      DrawOrder::y_sorted(0, 10.0, 1),
+      DrawOrder::y_sorted(0, 10.0, 0),
+      DrawOrder::y_sorted(0, 5.0, 2),
+      DrawOrder::plain(0, 1),
+      DrawOrder::plain(0, 0),
+      DrawOrder::y_sorted(0, 10.0, 255),
+    ];
+    orders.sort_by(|a, b| a.cmp(b));
+    // The sort y first: a higher floor further up draws before a lower one
+    // further down; at one sort y the lower floor first
+    assert_eq!(
+      orders,
+      [
+        DrawOrder::plain(0, 0),
+        DrawOrder::plain(0, 1),
+        DrawOrder::y_sorted(0, 5.0, 2),
+        DrawOrder::y_sorted(0, 10.0, 0),
+        DrawOrder::y_sorted(0, 10.0, 1),
+        DrawOrder::y_sorted(0, 10.0, 255),
+      ]
+    );
+    // The floor goes before the entities' order: a row of an upper floor
+    // tied on an older entity still draws after a newer one on the ground
+    let mut world = World::new();
+    let (older, newer) = (world.spawn_empty().id(), world.spawn_empty().id());
+    let ground = (DrawOrder::y_sorted(0, 10.0, 0), newer);
+    let upper = (DrawOrder::y_sorted(0, 10.0, 1), older);
+    assert!(draws_before(ground, upper));
+    assert!(!draws_before(upper, ground));
   }
 }
