@@ -1,16 +1,6 @@
 # Tile Maps: What Stays for Later
 
-Tile maps load from Tiled and LDtk on every grid Tiled has (orthogonal, isometric, staggered, hexagonal and oblique), from files and built in code, bounded or infinite, and stream endless worlds round the cameras and anchors: drawing, objects, picking and the board tools, edits and Wang terrain, collision and shadows, navigation, y-sorting, streaming, worlds and hot reload follow each map's grid. Designs: `docs/specs/2026-10-29-tilemap-design.md` and `docs/specs/2026-10-31-tilemap-shapes-design.md`; using them from a game: the `ryo-tilemap` skill; what they cost, and their limits: `docs/backlog/tilemap.md`; a demo of each grid: `examples/demos/tile-grids`. This is what the designs left for later. Each is refused with a clear error, or warned once where a file is otherwise usable, until it is done.
-
-## Floors
-
-A layer belonging to a floor (raised ground, an upper storey, a bridge), on every grid:
-- characters draw in front of and behind that floor's tiles and the floors round it, every y-sorted layer of a map with floors sorting with the characters at one z;
-- an entity stands on the ground and its floor lifts its drawing; the cell under the mouse checks floors from the top down, through each floor's lift;
-- colliders on different floors never interact (a floor filter in physics, apart from the 32 layer and mask bits games own), and a light on a floor is blocked only by that floor's occluders;
-- characters change floors through stairs and ramps the designer marks, and paths cross floors on one navigation graph, linked at the stairs.
-
-Until then, raised ground a character stands on is drawn as the tile-grids demo's town draws it: blocks drawn a cell lower than their props, their tops on the cells, with one floor.
+Tile maps load from Tiled and LDtk on every grid Tiled has (orthogonal, isometric, staggered, hexagonal and oblique), from files and built in code, bounded or infinite, and stream endless worlds round the cameras and anchors: drawing, objects, picking and the board tools, edits and Wang terrain, collision and shadows, navigation, y-sorting, streaming, worlds and hot reload follow each map's grid. A map's layers stand on storeys (raised ground, upper floors, bridges), each colliding, casting shadows and drawn lifted on its own, which characters climb between by stairs and ramps and paths cross. Designs: `docs/specs/2026-10-29-tilemap-design.md` and `docs/specs/2026-10-31-tilemap-shapes-design.md`; using them from a game: the `ryo-tilemap` skill; what they cost, and their limits: `docs/backlog/tilemap.md`; a demo of each grid: `examples/demos/tile-grids`. This is what the designs left for later. Each is refused with a clear error, or warned once where a file is otherwise usable, until it is done.
 
 ## Terrain painting on hexagonal maps
 
@@ -28,7 +18,7 @@ Procgen's generators stay square. Their grids convert to square, isometric, stag
 - Tiled's text objects beyond their placement (`ObjectShape::Text` keeps the text; nothing draws it).
 - Streaming a world's levels automatically: worlds give positions, neighbours and `spawn_levels_in`, and when to load and unload stays the game's call.
 - LDtk level background images.
-- What `docs/backlog/tilemap.md` lists as limits: the landing frame's first draw, relabelling long split loops, lighting's lack of a spatial index, the keep window's memory.
+- What `docs/backlog/tilemap.md` lists as limits: the landing frame's first draw, relabelling long split loops, lighting's lack of a spatial index and of a light image per storey, the keep window's memory.
 
 ## Outside tile maps
 

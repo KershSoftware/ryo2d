@@ -112,10 +112,11 @@ A tile map's layers cast shadows from their tiles (`ryo-tilemap`, Shadows):
 
 A light or occluder is on a storey (raised ground, an upper floor, a bridge; `ryo-tilemap`, Floors) as any entity is: by its own `Floor`, else its nearest ancestor's, else the ground floor (`Floor::GROUND`).
 
-- **A light on a storey is blocked only by that storey's occluders and by those on every storey** (`Floor::Every`). A light on the ground floor is blocked by the ground floor's and every storey's, as before; a light on `Every` is blocked by all of them.
+- **A light on a storey is blocked only by that storey's occluders and by those on every storey** (`Floor::Every`). A light on the ground floor is blocked by the ground floor's occluders (every occluder without a `Floor`, as in a game without storeys) and by those on every storey; a light on `Every` is blocked by all of them.
 - **A game's own occluders without a `Floor` are on the ground floor**, so they stop blocking a light once it is on a higher storey. Give a wall on a storey that storey's `Floor`, or `Floor::Every` for one that should block every storey's lights.
 - **A light and its shadows draw lifted** by its storey's height on the map with floors under it, as its storey's tiles and characters do, so they line up with that storey's art. Shadows are cast where the light and its occluders stand, on the ground, then drawn lifted with the light. A light held by a character (a child entity) is on the character's storey and goes up with it.
 - **A light on `Every` draws at ground height.**
+- **Shadows draw at the light's height, not the occluder's.** An occluder's own lift is not read, so where the two differ its shadow sits off its art: on two maps that give one storey different heights (a light over one, a wall of the other), for a light off every map with floors (drawn where it stands) among a storey's occluders, and for a light on `Every` (drawn at ground height) facing a higher storey's occluders. Keep a storey at one height on every map, and its lights and walls over a map with floors.
 - **A light still brightens whatever lies under it on screen, whatever its storey**: there is one light image per camera, so a torch on an upper floor lights the ground-floor art drawn beneath it (without the ground floor's shadows), and a ground light lights an upper floor drawn over it. Only shadows are kept per storey.
 
 <!-- given: hero_look: Handle<Image> -->

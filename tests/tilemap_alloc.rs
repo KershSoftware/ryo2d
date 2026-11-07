@@ -1,11 +1,11 @@
 //! Allocations of map drawing, counted by a global allocator in this test
-//! binary: a padded tileset cache hit, a frame drawing a static map under a
+//! binary: a padded tileset cache hit; a frame drawing a static map under a
 //! shadowed light (its camera still, then panning over chunks it has
 //! drawn) on every grid, its layers colliding and casting shadows (the
-//! hexagonal map's too), and with a storey under a second light on it, an
-//! idle frame of a streamed map whose chunks have landed, on
-//! orthogonal and on isometric cells, and a frame of characters walking on
-//! a map's storeys, drawn lifted.
+//! hexagonal map's too), and the same map with a storey under a second
+//! light on that storey; an idle frame of a streamed map whose chunks have
+//! landed, on orthogonal and on isometric cells; and a frame of characters
+//! walking on a map's storeys, drawn lifted.
 //!
 //! A frame's allocations are told apart by their stacks: those made inside
 //! the GPU API (wgpu, naga and the Metal bindings, which allocate as they

@@ -1065,4 +1065,174 @@ mod tests {
       assert_eq!(MapsView::new(&mut maps.world).drawn_lift(sword), Vec2::ZERO);
     }
   }
+
+  /// Times what floors add to a frame: 64 climbers, each with a child,
+  /// walking a 256 x 256 isometric map of 32 x 16 cells with 64 raised
+  /// floors (16 x 16 cells, 16 px up), each up and down a run of two stairs
+  /// onto its own floor and back. Each step the climbers move, then
+  /// `climb_stairs` runs (the fixed step's), then `lift_floored` twice (the
+  /// fixed step's and the frame's), each in a schedule of its own, commands
+  /// applied. Run it in release: `cargo test --release -p ryo2d --lib
+  /// floors_frame_timing -- --ignored --nocapture`
+  #[test]
+  #[ignore = "timing; run in release by hand"]
+  fn floors_frame_timing() {
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    use glam::{IVec2, UVec2};
+
+    use crate::core::asset::Assets;
+    use crate::core::ecs::{MessageCursor, Messages, Schedule};
+    use crate::core::tilemap::stairs::{FloorChanged, MapStairs, climb_stairs};
+    use crate::core::tilemap::test_util::MapWorld;
+    use crate::core::tilemap::{
+      GridShape, MapRoot, Tile, TileData, TileMap, Tileset, TilesetImage, TilesetSource,
+    };
+
+    const SIDE: i32 = 256;
+    const CLIMBERS: usize = 64;
+    /// How far a climber walks a step, in map pixels (120 px/s at 60 Hz)
+    const SPEED: f32 = 2.0;
+    let mut set = Tileset::new("steps", UVec2::new(32, 16), TilesetImage::Collection);
+    let stairs = TileData {
+      stairs: Some(1),
+      ..TileData::default()
+    };
+    set.insert_tile(1, stairs);
+    let mut map =
+      TileMap::new(UVec2::splat(SIDE as u32), UVec2::new(32, 16)).with_shape(GridShape::Isometric);
+    let set = map.add_tileset(TilesetSource::Embedded(Arc::new(set)));
+    let ground = map.add_tile_layer("ground");
+    let upper = map.add_tile_layer("upper");
+    map.layers[upper].info.floor = 1;
+    map.layers[upper].info.offset = Vec2::new(0.0, -16.0);
+    // Each raised floor's first cell, 32 cells apart
+    let corners: Vec<IVec2> = (0..8)
+      .flat_map(|j| (0..8).map(move |i| IVec2::new(32 * i + 8, 32 * j + 8)))
+      .collect();
+    if let Some(tiles) = map.tiles_mut(ground) {
+      tiles.fill(IVec2::ZERO, IVec2::splat(SIDE - 1), Some(Tile::new(set, 0)));
+      // Two stairs leading into each floor's side, halfway along it
+      for &corner in &corners {
+        for dx in [-2, -1] {
+          tiles.set(corner + IVec2::new(dx, 8), Some(Tile::new(set, 1)));
+        }
+      }
+    }
+    if let Some(tiles) = map.tiles_mut(upper) {
+      for &corner in &corners {
+        tiles.fill(corner, corner + IVec2::splat(15), Some(Tile::new(set, 0)));
+      }
+    }
+    let grid = map.grid();
+    let mut maps = MapWorld::new();
+    let handle = maps.world.resource_mut::<Assets<TileMap>>().add(map);
+    let root = maps.spawn(MapRoot::new(handle));
+    let runs = maps
+      .world
+      .get::<MapStairs>(root)
+      .map_or(0, |stairs| stairs.runs.len());
+    assert_eq!(runs, corners.len(), "a run onto each floor");
+
+    // Each climber walks from three cells before its stairs' foot to three
+    // cells onto its floor and back, starting at its own place on the way
+    let ways: Vec<(Vec2, Vec2)> = corners
+      .iter()
+      .map(|&corner| {
+        let from = grid.cell_center(corner + IVec2::new(-5, 8));
+        let to = grid.cell_center(corner + IVec2::new(3, 8));
+        (from, to)
+      })
+      .collect();
+    let climbers: Vec<Entity> = (0..CLIMBERS)
+      .map(|_| {
+        let climber = maps.world.spawn((Transform::IDENTITY, Climber)).id();
+        maps
+          .world
+          .spawn((Transform::from_xy(0.0, -8.0), ChildOf(climber)));
+        climber
+      })
+      .collect();
+    let walk = |maps: &mut MapWorld, step: usize| {
+      for (i, (&climber, &(from, to))) in climbers.iter().zip(&ways).enumerate() {
+        let length = from.distance(to);
+        let along = (step as f32 * SPEED / length + i as f32 / CLIMBERS as f32 * 2.0) % 2.0;
+        let at = from.lerp(to, if along < 1.0 { along } else { 2.0 - along });
+        let placed = Transform::from_translation(at);
+        if let Some(mut transform) = maps.world.get_mut::<Transform>(climber) {
+          *transform = placed;
+        }
+        if let Some(mut global) = maps.world.get_mut::<GlobalTransform>(climber) {
+          *global = GlobalTransform::from_transform(&placed);
+        }
+      }
+    };
+
+    let mut climb = Schedule::default();
+    climb.add_systems(climb_stairs);
+    let mut lift_step = Schedule::default();
+    lift_step.add_systems(lift_floored);
+    let mut lift_frame = Schedule::default();
+    lift_frame.add_systems(lift_floored);
+    let mut cursor = MessageCursor::<FloorChanged>::default();
+    let (mut climbs, mut steps, mut frames, mut all) =
+      (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let (mut changes, mut easing) = (0, 0);
+    const WARM: usize = 200;
+    const TIMED: usize = 2_000;
+    for step in 0..WARM + TIMED {
+      walk(&mut maps, step);
+      let start = Instant::now();
+      climb.run(&mut maps.world);
+      let climbed = start.elapsed();
+      maps.world.resource_mut::<Time>().set_in_fixed(true);
+      let start = Instant::now();
+      lift_step.run(&mut maps.world);
+      let lifted = start.elapsed();
+      maps.world.resource_mut::<Time>().set_in_fixed(false);
+      let start = Instant::now();
+      lift_frame.run(&mut maps.world);
+      let drawn = start.elapsed();
+      // The floor changes and the climbers eased along their stairs, read
+      // outside the measure
+      let changed = cursor
+        .read(maps.world.resource::<Messages<FloorChanged>>())
+        .count();
+      maps.world.resource_mut::<Messages<FloorChanged>>().update();
+      let eased = climbers
+        .iter()
+        .filter_map(|&climber| maps.world.get::<DrawLift>(climber))
+        .filter(|drawn| drawn.lift.y < -0.01 && drawn.lift.y > -15.99)
+        .count();
+      if step >= WARM {
+        climbs.push(climbed);
+        steps.push(lifted);
+        frames.push(drawn);
+        all.push(climbed + lifted + drawn);
+        changes += changed;
+        easing += eased;
+      }
+    }
+    assert!(changes > TIMED / 2, "climbers change floor: {changes}");
+    assert!(easing > TIMED, "climbers ease along their stairs: {easing}");
+
+    let median_and_p99 = |mut times: Vec<Duration>| {
+      times.sort();
+      (times[times.len() / 2], times[times.len() * 99 / 100])
+    };
+    println!(
+      "{CLIMBERS} climbers on {runs} runs of a {SIDE} x {SIDE} isometric map, {TIMED} steps: {changes} floor changes, {:.1} climbers on stairs a step",
+      easing as f32 / TIMED as f32
+    );
+    for (name, times) in [
+      ("climb_stairs", climbs),
+      ("lift_floored, the fixed step's", steps),
+      ("lift_floored, the frame's", frames),
+      ("all three, a frame's floors", all),
+    ] {
+      let (median, p99) = median_and_p99(times);
+      println!("{name} (median, 99th percentile): {median:?}, {p99:?}");
+    }
+  }
 }
