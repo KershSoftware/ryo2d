@@ -23,14 +23,14 @@ use winit::window::Window;
 use crate::core::asset::{AssetLoader, AssetServer, AssetSource, DiskSource, insert_registry};
 use crate::core::audio::{AudioEngine, VolumeKind, audio_system, default_mixer};
 use crate::core::capture::{AutoCaptureConfig, CaptureReport, CaptureState};
-use crate::core::config::{
-  DebugConfig, DebugStats, DisplayMode, FrameTimings, OverlayMode, SmoothedDebugStats,
-  SmoothedFrameTimings,
-};
+use crate::core::config::DisplayMode;
 use crate::core::console::{
   CommandRegistry, ConsoleCommandBuilder, ConsoleState, register_builtins,
 };
 use crate::core::cursor::CursorRequest;
+use crate::core::diagnostics::{
+  DebugConfig, DebugStats, FrameTimings, OverlayMode, SmoothedDebugStats, SmoothedFrameTimings,
+};
 use crate::core::ecs::interpolate::snapshot_previous_transforms;
 use crate::core::ecs::propagate::propagate_transforms;
 use crate::core::ecs::{

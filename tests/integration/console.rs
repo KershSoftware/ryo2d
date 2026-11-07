@@ -17,7 +17,7 @@ fn make_registry_with_builtins() -> CommandRegistry {
 }
 
 fn make_context<'a>(console: &'a mut ConsoleState, time_scale: &'a mut f32) -> CommandContext<'a> {
-  use ryo2d::core::config::DebugConfig;
+  use ryo2d::core::diagnostics::DebugConfig;
   CommandContext {
     console,
     debug_config: Box::leak(Box::new(DebugConfig::default())),

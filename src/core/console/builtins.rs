@@ -551,7 +551,7 @@ fn get_wan_ip() -> Option<String> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::core::config::DebugConfig;
+  use crate::core::diagnostics::DebugConfig;
 
   fn make_test_context<'a>(
     console: &'a mut super::super::ConsoleState,

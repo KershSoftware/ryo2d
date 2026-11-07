@@ -1185,7 +1185,7 @@ fn an_engine_with_hot_reload_reloads_a_saved_asset_file() {
 
 #[test]
 fn the_engine_publishes_what_its_frames_cost() {
-  use crate::core::config::FrameCost;
+  use crate::core::diagnostics::FrameCost;
   use crate::core::testing::HeadlessEngine;
 
   let Some(mut engine) = HeadlessEngine::new_or_skip(

@@ -474,7 +474,7 @@ impl HeadlessEngine {
 
   /// The engine's debug switches, for a test to turn an overlay on
   #[cfg(test)]
-  pub(crate) fn debug_config_mut(&mut self) -> &mut crate::core::config::DebugConfig {
+  pub(crate) fn debug_config_mut(&mut self) -> &mut crate::core::diagnostics::DebugConfig {
     self.engine.debug_config_mut()
   }
 

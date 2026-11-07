@@ -140,7 +140,7 @@ pub struct WorkspaceConfig {
 
 /// Debug configuration options for development.
 ///
-/// See [`crate::core::config::debug::DebugConfig`] for the engine-level config.
+/// See [`crate::core::diagnostics::DebugConfig`] for the engine-level config.
 /// This struct mirrors those options for TOML deserialization.
 #[derive(Debug, Clone)]
 pub struct DebugConfig {

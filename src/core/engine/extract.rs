@@ -5,8 +5,7 @@ use web_time::Instant;
 
 use super::{Engine, PresentOutcome, SceneHost};
 use crate::core::asset::{Asset, AssetEvent, AssetId};
-use crate::core::config::DebugStats;
-use crate::core::config::debug::{OverlayFlags, overlay_shapes};
+use crate::core::diagnostics::{DebugStats, OverlayFlags, overlay_shapes};
 use crate::core::ecs::interpolate::render_global;
 use crate::core::ecs::kernel::{MessageCursor, Messages};
 use crate::core::ecs::kernel::{QueryState, SystemIdMarker};

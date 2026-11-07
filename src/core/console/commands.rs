@@ -11,7 +11,7 @@ use std::collections::HashMap;
 
 use super::ConsoleState;
 use crate::core::capture::CaptureTarget;
-use crate::core::config::DebugConfig;
+use crate::core::diagnostics::DebugConfig;
 use crate::core::ecs::Resource;
 
 /// Result of executing a console command

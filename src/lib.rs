@@ -80,7 +80,7 @@ pub mod prelude {
   pub use crate::core::ecs::*;
 
   // Clocks, phases and what frames cost
-  pub use crate::core::config::FrameCost;
+  pub use crate::core::diagnostics::FrameCost;
   pub use crate::core::schedule::{FixedSet, Phase, PostUpdateSet, SceneScheduleError, UpdateSet};
   pub use crate::core::time::Time;
 

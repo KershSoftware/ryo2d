@@ -8,7 +8,7 @@ use rapier2d::prelude::{
 
 use super::convert::from_rapier;
 use super::world::Physics;
-use crate::core::config::debug::colors;
+use crate::core::diagnostics::colors;
 use crate::core::render::DebugDraw;
 use crate::core::ui::Color;
 

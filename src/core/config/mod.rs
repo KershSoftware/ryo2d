@@ -4,9 +4,7 @@
 //! - [`Workspace`] - Project discovery and Ryo.toml parsing
 //! - [`SaveManager`] - saves: system state (`system.json` user settings) and
 //!   compressed game data
-//! - Debug visualization and frame timing utilities
 
-pub mod debug;
 pub(crate) mod resolve;
 pub mod save;
 pub(crate) mod save_location;
@@ -22,10 +20,4 @@ pub use workspace::{
 pub use save::{
   DisplayMode, GameSaveData, Resolution, SaveManager, SystemState, UserPreference,
   UserPreferenceFilter, compress_data, decompress_data, parse_resolution,
-};
-
-// Debug utilities (re-export with prefix to avoid conflict with workspace::DebugConfig)
-pub use debug::{
-  DebugConfig, DebugStats, FrameCost, FrameTimings, OverlayMode, SmoothedDebugStats,
-  SmoothedFrameTimings, render_fps_counter, render_frame_timing, render_stats, time_block,
 };

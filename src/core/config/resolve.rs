@@ -13,7 +13,8 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use super::debug::DebugConfig;
+use crate::core::diagnostics::DebugConfig;
+
 use super::save::{
   DisplayMode, SystemState, UserPreference, UserPreferenceFilter, parse_resolution,
 };

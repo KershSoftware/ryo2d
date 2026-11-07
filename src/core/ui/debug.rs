@@ -1,7 +1,7 @@
 //! The `debug:ui` overlay: every widget the UI recorded this frame, outlined
 //! with its id.
 
-use crate::core::config::debug as overlay;
+use crate::core::diagnostics as overlay;
 use crate::core::ecs::kernel::World;
 use crate::core::render::UiRenderStats;
 use crate::core::text::TextStyle;
@@ -412,7 +412,7 @@ mod tests {
 
   #[test]
   fn the_rebuilds_overlay_stacks_above_the_engine_overlays() {
-    use crate::core::config::debug::{
+    use crate::core::diagnostics::{
       SmoothedDebugStats, SmoothedFrameTimings, render_fps_counter, render_frame_timing,
       render_stats,
     };
