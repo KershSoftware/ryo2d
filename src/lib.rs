@@ -212,7 +212,7 @@ pub mod prelude {
   pub use crate::core::tilemap::{
     CHUNK_SIZE, CellOutline, ChunkEvent, ChunkOwned, ChunkRequest, ChunkTiles, GridShape,
     ImageLayer, IntGrid, IntGridKey, Lattice, LayerGrid, LayerInfo, LayerKind, LayerRef, LdtkLevel,
-    LdtkLoader, LdtkProject, MapEvent, MapFloors, MapGrid, MapIds, MapLayer, MapLayerRef,
+    LdtkLoader, LdtkProject, MapEvent, MapFloor, MapFloors, MapGrid, MapIds, MapLayer, MapLayerRef,
     MapObject, MapObjectData, MapOccluder, MapRoot, MapStream, MapTile, MapsView, Neighbour,
     NeighbourDirection, ObjectShape, Properties, PropertyValue, SavedChunks, StaggerAxis,
     StaggerIndex, StreamAnchor, StreamStatus, Tile, TileData, TileFlip, TileFrame, TileGrid,

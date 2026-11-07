@@ -101,13 +101,14 @@ pub(super) fn stamps_match(
       .all(|(stamp, source)| stamp.matches(source, assets))
 }
 
-/// Whether what was built from `shapes` still stands for `map`'s tilesets:
-/// their stamps match, or they moved (an image reloaded, or a tileset saved
-/// with other tile data) and the tilesets give the same shapes, so the
-/// stamps are brought up to date and nothing is built again
+/// Whether what was built from `shapes` (and `stairs`, for what reads
+/// them) still stands for `map`'s tilesets: their stamps match, or they
+/// moved (an image reloaded, or a tileset saved with other tile data) and
+/// the tilesets give the same shapes and stairs, so the stamps are brought
+/// up to date and nothing is built again
 pub(super) fn shapes_kept(
   stamps: &mut Vec<TilesetStamp>,
-  shapes: &[Option<ShapeSource>],
+  (shapes, stairs): (&[Option<ShapeSource>], Option<&[Option<StairSource>]>),
   map: &TileMap,
   assets: Option<&Assets<Tileset>>,
 ) -> bool {
@@ -117,8 +118,51 @@ pub(super) fn shapes_kept(
   if *sources(map, assets) != *shapes {
     return false;
   }
+  if stairs.is_some_and(|stairs| *stair_sources(map, assets) != *stairs) {
+    return false;
+  }
   *stamps = self::stamps(map, assets);
   true
+}
+
+/// A tileset's stairs, taken from it once (so another thread can read
+/// them): each stair tile's id and the floor it leads up to
+#[derive(Debug, Default, PartialEq)]
+pub(super) struct StairSource {
+  tiles: FastMap<u32, u8>,
+}
+
+impl StairSource {
+  fn of(tileset: &Tileset) -> StairSource {
+    StairSource {
+      tiles: tileset
+        .tiles()
+        .filter_map(|(id, data)| Some((id, data.stairs?)))
+        .collect(),
+    }
+  }
+}
+
+/// The stairs of a map's tilesets, by index (`None` for one not in its
+/// store)
+pub(super) fn stair_sources(
+  map: &TileMap,
+  assets: Option<&Assets<Tileset>>,
+) -> Arc<[Option<StairSource>]> {
+  map
+    .tilesets
+    .iter()
+    .map(|source| match source {
+      TilesetSource::Asset(handle) => assets.and_then(|a| a.get(handle)).map(StairSource::of),
+      TilesetSource::Embedded(tileset) => Some(StairSource::of(tileset)),
+    })
+    .collect()
+}
+
+/// The floor `tile` is stairs up to, by its tileset's stairs (`stairs`)
+fn stairs_of(stairs: &[Option<StairSource>], tile: Tile) -> Option<u8> {
+  let source = stairs.get(usize::from(tile.tileset))?.as_ref()?;
+  source.tiles.get(&tile.id).copied()
 }
 
 /// What placing and classifying a tileset's tiles reads, taken from it once
@@ -978,6 +1022,9 @@ pub(super) struct Context<'a> {
   pub(super) shapes: &'a [Option<ShapeSource>],
   pub(super) overrides: &'a [(IntGridKey, TileCell)],
   pub(super) purpose: Purpose,
+  /// The map's tilesets' stairs, by index, for the floors' footprints
+  /// (`footprint_kinds`); none unless given (`with_stairs`)
+  pub(super) stairs: &'a [Option<StairSource>],
   /// Set when a one-way tile or IntGrid cell off an orthogonal grid was
   /// made to collide both ways
   pub(super) both_ways: Cell<bool>,
@@ -993,8 +1040,14 @@ impl<'a> Context<'a> {
       shapes,
       overrides,
       purpose,
+      stairs: &[],
       both_ways: Cell::new(false),
     }
+  }
+
+  /// The context reading `stairs`, the map's tilesets' stairs
+  pub(super) fn with_stairs(self, stairs: &'a [Option<StairSource>]) -> Context<'a> {
+    Context { stairs, ..self }
   }
 }
 
@@ -1167,6 +1220,63 @@ pub(super) fn union_kinds(
         context,
         &mut out,
       );
+    }
+  }
+  out
+}
+
+/// What a layer gives a floor's footprint (`footprint_kinds`)
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum Footing {
+  /// Every cell holding a tile: a layer on that floor
+  Tiles,
+  /// The cells of its tiles that are stairs up to that floor: a lower
+  /// floor's layer
+  Stairs,
+}
+
+/// The cells of `chunk` in floor `floor`'s footprint, across its layers
+/// (`data` in the group's order, `None` for a layer gone, each giving what
+/// `footing` says): `Solid` where a layer on the floor holds a tile, or a
+/// lower floor's layer a tile that is stairs up to it (the context's
+/// stairs); every other cell `Empty`. A layer whose grid places no cells
+/// (`Placement::Nothing`) gives none
+pub(super) fn footprint_kinds(
+  data: &[Option<&TileLayerData>],
+  footing: &[Footing],
+  (chunk, floor): (IVec2, u8),
+  context: &Context<'_>,
+) -> ChunkKinds {
+  let mut out = [TileCell::Empty; CELLS];
+  for (data, &footing) in data.iter().zip(footing) {
+    let Some(data) = data else {
+      continue;
+    };
+    if let Placement::Nothing = Placement::of(&data.grid) {
+      continue;
+    }
+    let Some(cells) = data.tiles.chunk_cells(chunk) else {
+      continue;
+    };
+    // The cell value met last, and whether it is stairs up to the floor: a
+    // chunk holds few tiles, often over and over
+    let mut met = (0u32, false);
+    for (slot, &raw) in out.iter_mut().zip(cells) {
+      if raw == 0 {
+        continue;
+      }
+      let held = match footing {
+        Footing::Tiles => true,
+        Footing::Stairs if met.0 == raw => met.1,
+        Footing::Stairs => {
+          let up = TileGrid::decode(raw).and_then(|tile| stairs_of(context.stairs, tile));
+          met = (raw, up == Some(floor));
+          met.1
+        }
+      };
+      if held {
+        *slot = TileCell::Solid;
+      }
     }
   }
   out

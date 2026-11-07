@@ -6,7 +6,9 @@
 //! draw order on it; the ground floor's is zero. A layer above the ground
 //! floor stands in ground space, at its offset less its floor's height, so
 //! its objects, class tiles, colliders and shadows sit where characters
-//! stand, and drawing is to add the height back.
+//! stand, and drawing is to add the height back. Each floor above the
+//! ground collides on grids of its own, and has an edge ([`MapFloor`]) that
+//! keeps what is on it from walking off.
 //!
 //! An entity on a floor stands in ground space too: [`lift_floored`]
 //! gives it, and everything below it in the hierarchy, its floor's height
@@ -83,6 +85,32 @@ impl MapFloors {
   pub fn highest(&self) -> Floor {
     self.floors().last().unwrap_or(Floor::GROUND)
   }
+}
+
+/// A child of the map in ground space holding one higher floor's edge: the
+/// floor's footprint traced as a grid of its own (`TileColliders`, floor On(floor)).
+///
+/// The footprint is the cells the floor's tile layers fill, and the stairs
+/// up to it on lower floors' layers, where the floor's bottom tile layer
+/// stands. Its outline keeps what is on that floor on it: a character there
+/// walks inside it, and cannot walk off into the air. The map keeps it in
+/// step with its tiles, and takes it away with its colliders.
+///
+/// ```
+/// use ryo2d::prelude::*;
+///
+/// /// Whether a tile collider part a character met is a raised floor's
+/// /// edge, rather than a wall
+/// fn is_floor_edge(world: &World, part: Entity) -> bool {
+///   world
+///     .get::<ChildOf>(part)
+///     .is_some_and(|parent| world.get::<MapFloor>(parent.parent()).is_some())
+/// }
+/// ```
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MapFloor {
+  /// The floor whose edge it holds, 1 and up
+  pub floor: u8,
 }
 
 /// Where the layer `info` stands in its map: its offset, less its floor's

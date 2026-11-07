@@ -9,7 +9,7 @@ use super::layer::{
 };
 use crate::core::ecs::{Entity, GlobalTransform, IVec2, Vec2, Without, World};
 use crate::core::physics::{CellRect, Collider, TileCell, TileColliders, TilePart};
-use crate::core::tilemap::{Lattice, LayerGrid};
+use crate::core::tilemap::{Lattice, LayerGrid, MapFloor};
 use glam::{Affine2, DAffine2, DVec2};
 use std::collections::HashSet;
 
@@ -670,7 +670,8 @@ impl NavigationGrid {
   /// grids block exactly their solid and slope cells (and the shape cells
   /// `block_tiles` blocks), placed by their entity's whole world transform:
   /// their outline colliders would block their whole bounding boxes, so
-  /// those are skipped.
+  /// those are skipped. A tile map's raised floor's edge (`MapFloor`)
+  /// blocks nothing: its cells are where that floor can be walked.
   pub fn rebuild_from_world(&mut self, world: &mut World) {
     self.clear();
     let mut colliders =
@@ -680,7 +681,7 @@ impl NavigationGrid {
         self.block_collider(global, collider, entity);
       }
     }
-    let mut maps = world.query::<(&GlobalTransform, &TileColliders)>();
+    let mut maps = world.query_filtered::<(&GlobalTransform, &TileColliders), Without<MapFloor>>();
     for (global, tiles) in maps.iter(world) {
       self.block_tiles(tiles, global.affine());
     }

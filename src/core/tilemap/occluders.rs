@@ -1596,7 +1596,7 @@ pub(crate) fn sync_map_occluders(
       let s = s.bypass_change_detection();
       s.layers == *planned
         && s.overrides == root.intgrid_collision
-        && shapes_kept(&mut s.tilesets, &s.shapes, tile_map, tilesets)
+        && shapes_kept(&mut s.tilesets, (&s.shapes, None), tile_map, tilesets)
     });
     if same && let Some(mut state) = state {
       let state = state.bypass_change_detection();

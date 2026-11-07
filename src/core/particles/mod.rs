@@ -104,6 +104,7 @@ use crate::core::ecs::{
 use crate::core::graphics::{BatchCollector, Image, SpriteDraw, SpriteInstance};
 use crate::core::messages::register_message;
 use crate::core::physics::{Collider, ColliderShape, TileColliders, TilePart};
+use crate::core::tilemap::MapFloor;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
@@ -654,7 +655,13 @@ impl ParticleSystem {
       self.colliders.extend(
         query
           .iter(world)
-          .filter(|(_, _, collider, ..)| !collider.is_trigger)
+          .filter(|(_, _, collider, parent, tile_part)| {
+            // A tile map's raised floor's edge keeps characters on their
+            // storey, and is no surface
+            let edge = *tile_part
+              && parent.is_some_and(|parent| world.get::<MapFloor>(parent.parent()).is_some());
+            !collider.is_trigger && !edge
+          })
           .map(|(entity, global, collider, parent, tile_part)| {
             // A tile part's cell, from the grid it was built from, in
             // world pixels
@@ -1906,6 +1913,26 @@ mod tests {
     let first = messages.get_cursor().read(messages).next().cloned();
     let first = first.expect("the bounce was told");
     assert_eq!((first.normal_x, first.normal_y), (0.0, -1.0));
+  }
+
+  #[test]
+  fn a_raised_floor_s_edge_is_no_surface_for_particles() {
+    // The floor's grid held as a tile map's raised floor's edge: a particle
+    // falls through it
+    let config = CollisionConfig::bouncy(RADIUS, 0.5);
+    let (mut system, mut world) = tile_part_scene(config, Vec2::new(100.0, 40.0), 600.0);
+    let grids: Vec<Entity> = world
+      .query_filtered::<Entity, crate::core::ecs::With<TileColliders>>()
+      .iter(&world)
+      .collect();
+    for grid in grids {
+      world.entity_mut(grid).insert(MapFloor { floor: 1 });
+    }
+    for _ in 0..60 {
+      update(&mut system, &mut world, DT);
+    }
+    let p = &system.particles[0];
+    assert!(p.y > 100.0 && !p.touching, "it fell through: y = {}", p.y);
   }
 
   #[test]

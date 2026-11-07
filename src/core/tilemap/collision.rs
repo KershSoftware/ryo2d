@@ -3,17 +3,30 @@
 //!
 //! A tile layer collides when its `LayerInfo::collides` is set and its
 //! root has not turned collision off. Colliding layers are grouped by their
-//! cell size, offset and collision material (`collision_layer`,
+//! cell size, floor, place and collision material (`collision_layer`,
 //! `collision_mask`, `friction`, `restitution`: a layer's properties over
-//! its map's): the group of the map's own tile size, no offset and the
-//! map's material unions into one `TileColliders` on the map entity, and
-//! any other group (an LDtk IntGrid of 8 px cells under 16 px art, a layer
-//! shifted by an offset, an ice layer) gets its own on its first layer's
-//! entity, whose `Transform` carries the offset. A cell takes the
-//! strongest kind across its group: `Solid`, then `Shape`, then `Slope`,
-//! then `OneWay`; of two shapes (or two slopes) the upper layer's wins.
-//! What a cell is comes from `kinds.rs`: an IntGrid layer's values by name,
-//! any other layer's tiles' collision shapes placed where they draw.
+//! its map's), its place being where it stands in ground space (its
+//! offset, less its floor's height above the ground floor): the group of
+//! the map's own tile size on the ground floor, no offset and the map's
+//! material unions into one `TileColliders` on the map entity, and any
+//! other group (an LDtk IntGrid of 8 px cells under 16 px art, a layer
+//! shifted by an offset, an ice layer, a higher floor's layers) gets its
+//! own on its first layer's entity, whose `Transform` carries the place.
+//! Each grid is on its floor (`TileColliders::floor`), so floors collide
+//! apart. A cell takes the strongest kind across its group: `Solid`, then
+//! `Shape`, then `Slope`, then `OneWay`; of two shapes (or two slopes) the
+//! upper layer's wins. What a cell is comes from `kinds.rs`: an IntGrid
+//! layer's values by name, any other layer's tiles' collision shapes placed
+//! where they draw.
+//!
+//! Each floor above the ground has an edge: its footprint (the cells its
+//! tile layers fill, and the stairs up to it on lower floors' layers),
+//! `Solid` cells traced as a grid of their own on a [`MapFloor`] child of
+//! the map where the floor's layers stand, with the map's material, on that
+//! floor. Outlines are hollow, so a character on the floor stays inside its
+//! edge, and the floor's walls, a grid of their own, keep their outlines.
+//! On the ground floor the edge is nothing: a raised floor blocks only
+//! where its own tiles collide, so a bridge stands over open ground.
 //!
 //! A map's first grids are made off the main thread, with the rest of its
 //! landing (`spawn.rs`): `prepare` classifies every cell from the map's
@@ -32,24 +45,28 @@
 //!
 //! Each step, every chunk whose version moved since the group last looked
 //! is classified again and only the cells whose kind changed are set, so
-//! the tile colliders rebuild only the outlines an edit touched. A change
-//! of what the colliders are built from (which layers collide, their cell
-//! sizes, offsets, materials or bounds, the tilesets' content, the IntGrid
-//! overrides) builds every group again.
+//! the tile colliders rebuild only the outlines an edit touched, a floor's
+//! edge too. A change of what the colliders are built from (which layers
+//! collide, their cell sizes, floors, places, materials or bounds, the
+//! tilesets' shapes and stairs, the IntGrid overrides) builds every group
+//! again.
 
 use std::sync::Arc;
 
 use glam::{IVec2, Vec2};
 
+use super::floors::{MapFloor, MapFloors, ground_offset};
 use super::kinds::{
-  CELLS, ChunkKinds, Context, GridKey, Layers, Part, Purpose, ShapeKey, ShapeSink, ShapeSource,
-  Stores, TilesetStamp, Tracked, build_chunks, changed_chunks, chunk_origin, lattice_of,
-  layer_data, reindexing, scatter, shapes_kept, sources, stamps, union_kinds,
+  CELLS, ChunkKinds, Context, Footing, GridKey, Layers, Part, Purpose, ShapeKey, ShapeSink,
+  ShapeSource, StairSource, Stores, TilesetStamp, Tracked, build_chunks, changed_chunks,
+  chunk_origin, footprint_kinds, lattice_of, layer_data, reindexing, scatter, shapes_kept, sources,
+  stair_sources, stamps, union_kinds,
 };
-use super::spawn::{IntGridKey, MapLayers, MapRoot, TileLayerData, root_map};
+use super::spawn::{IntGridKey, MapLayers, MapRoot, TileLayerData, child_of, root_map};
 use super::{LayerInfo, MapGrid, Properties, PropertyValue};
 use crate::core::ecs::{
-  Allow, Commands, Component, DetectChangesMut, Disabled, Entity, Has, Local, Query, Without, World,
+  Allow, ChildOf, Commands, Component, DetectChangesMut, Disabled, Entity, Floor, Has, Local,
+  Query, Transform, Without, World,
 };
 use crate::core::hash::{FastMap, FastSet};
 use crate::core::physics::{CellRect, CellShape, TileCell, TileColliders, Traced};
@@ -67,18 +84,26 @@ impl ShapeSink for Pending {
 }
 
 /// What a group of layers shares: a grid (its shape, cell size and
-/// origin), an offset and a material (floats by their bits)
+/// origin), a floor, where its layers stand in the map (their ground
+/// offset, `floors::ground_offset`), a material (floats by their bits), and
+/// whether it is a higher floor's edge (its footprint) rather than its
+/// layers' collision
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct GroupKey {
   grid: GridKey,
+  floor: u8,
   offset: [u32; 2],
   material: [u32; 4],
+  edge: bool,
 }
 
 impl GroupKey {
-  fn of(grid: &MapGrid, offset: Vec2, material: Material) -> GroupKey {
+  /// The key of colliding layers on `grid`, on `floor`, standing at
+  /// `offset`
+  fn of(grid: &MapGrid, (floor, offset): (u8, Vec2), material: Material) -> GroupKey {
     GroupKey {
       grid: GridKey::of(grid),
+      floor,
       offset: [offset.x.to_bits(), offset.y.to_bits()],
       material: [
         material.layer,
@@ -86,7 +111,16 @@ impl GroupKey {
         material.friction.to_bits(),
         material.restitution.to_bits(),
       ],
+      edge: false,
     }
+  }
+
+  /// Where its layers stand in the map
+  fn offset(&self) -> Vec2 {
+    Vec2::new(
+      f32::from_bits(self.offset[0]),
+      f32::from_bits(self.offset[1]),
+    )
   }
 
   fn material(&self) -> Material {
@@ -99,8 +133,9 @@ impl GroupKey {
   }
 }
 
-/// A colliding layer as the colliders were built from it: its place among
-/// the map's layers and its entity (a stand-in until the layers spawn)
+/// A colliding layer, or a layer a higher floor's footprint reads, as the
+/// colliders were built from it: its place among the map's layers and its
+/// entity (a stand-in until the layers spawn)
 #[derive(Clone, PartialEq, Debug)]
 pub(crate) struct Planned {
   entity: Entity,
@@ -109,24 +144,50 @@ pub(crate) struct Planned {
   /// Its grid's bounds; `None` for an unbounded grid
   bounds: Option<CellRect>,
   intgrid: bool,
+  /// What it gives the footprint, for a layer of a floor's edge; `None`
+  /// for a colliding layer
+  footing: Option<Footing>,
 }
 
-/// Layers sharing a grid, offset and material, and the grid they collide
-/// in
+/// Layers sharing a grid, floor, place and material, and the grid they
+/// collide in; or the layers of a higher floor's footprint, and its edge
 #[derive(Debug)]
 struct Group {
   key: GroupKey,
-  /// Where its `TileColliders` is: the map, or its first layer
+  /// Where its `TileColliders` is: the map, its first layer, or for a
+  /// floor's edge a `MapFloor` entity of its own
   target: Entity,
   target_layer: Option<usize>,
   /// The cells its grid holds: its layers' largest bounds (all bounded
   /// grids start at (0, 0)), or `None` with an unbounded layer
   bounds: Option<CellRect>,
   layers: Vec<Tracked>,
+  /// What each layer gives the footprint, for a floor's edge; empty for
+  /// collision
+  footing: Vec<Footing>,
   /// Each tile's kind (by its cell's value), its shapes numbered in this
   /// group's grid
   kinds: FastMap<u32, TileCell>,
   shapes: FastMap<ShapeKey, u16>,
+}
+
+impl Group {
+  /// The kinds of `chunk` across the group's layers (`data`, in its
+  /// order): their collision, or for a floor's edge its footprint
+  fn kinds_of(
+    &mut self,
+    data: &[Option<&TileLayerData>],
+    chunk: IVec2,
+    sink: &mut dyn ShapeSink,
+    context: &Context<'_>,
+  ) -> ChunkKinds {
+    if self.key.edge {
+      return footprint_kinds(data, &self.footing, (chunk, self.key.floor), context);
+    }
+    let at = (chunk, Part::WHOLE);
+    let kinds = (&mut self.kinds, &mut self.shapes);
+    union_kinds(&self.layers, data, at, kinds, sink, context)
+  }
 }
 
 /// The collision material properties give
@@ -212,22 +273,38 @@ pub(super) struct LayerView<'a> {
 /// the map's) and the property's name
 type Warned = FastSet<(Option<usize>, &'static str)>;
 
-/// The colliding layers among `layers` into `planned`, and the map's own
-/// group key (`grid`, the map's grid). A property of the wrong type warns
-/// once, and so does a colliding layer with parallax, which collides where
-/// it would draw without it, parallax being a drawing effect, an IntGrid
-/// override to `TileCell::Shape`, which names no shape and collides as
-/// nothing, and a colliding layer of hexagons the collision tracer does not
-/// take (over 16,384 px, or under 2 px), which builds nothing (`warned`)
+/// Warns, once a layer (`warned`), that its hexagons are more than the
+/// collision tracer takes (over 16,384 px, or under 2 px)
+fn warn_untraceable(map: Entity, layer: &LayerView<'_>, warned: &mut Warned) {
+  if warned.insert((Some(layer.index), "hexagonal")) {
+    crate::engine_warn!(
+      module: "Tilemap",
+      "map {map}: layer \"{}\" has hexagonal cells over 16,384 px or under 2 px, which don't collide",
+      layer.info.name
+    );
+  }
+}
+
+/// The colliding layers among `layers` into `planned`, each keyed on its
+/// floor and where it stands (`floors`, the map's), then the layers of each
+/// higher floor's footprint (`plan_edge`), and the map's own group key
+/// (`grid`, the map's grid, on the ground floor). A property of the wrong
+/// type warns once, and so does a colliding layer with parallax, which
+/// collides where it would draw without it, parallax being a drawing
+/// effect, an IntGrid override to `TileCell::Shape`, which names no shape
+/// and collides as nothing, and a colliding layer of hexagons the collision
+/// tracer does not take (over 16,384 px, or under 2 px), which builds
+/// nothing (`warned`)
 fn plan<'a>(
   map: Entity,
-  layers: impl IntoIterator<Item = LayerView<'a>>,
+  layers: impl Iterator<Item = LayerView<'a>> + Clone,
   (collision, properties, grid, overrides): (
     bool,
     &Properties,
     &MapGrid,
     &[(IntGridKey, TileCell)],
   ),
+  floors: Option<&MapFloors>,
   warned: &mut Warned,
   planned: &mut Vec<Planned>,
 ) -> GroupKey {
@@ -259,47 +336,121 @@ fn plan<'a>(
     warn(warned, None, name, value, wanted)
   });
   planned.clear();
-  if collision {
-    for layer in layers.into_iter().filter(|l| l.info.collides) {
-      let hex = layer.data.grid.hex_cells();
-      if hex.is_some_and(|hex| !hex.traceable()) {
-        if warned.insert((Some(layer.index), "hexagonal")) {
-          crate::engine_warn!(
-            module: "Tilemap",
-            "map {map}: layer \"{}\" has hexagonal cells over 16,384 px or under 2 px, which don't collide",
-            layer.info.name
-          );
-        }
-        continue;
-      }
-      let material = Material::of(
-        &layer.info.properties,
-        map_material,
-        |name, value, wanted| {
-          let place = Some((layer.index, layer.info.name.as_str()));
-          warn(warned, place, name, value, wanted)
-        },
+  if !collision {
+    return GroupKey::of(grid, (0, Vec2::ZERO), map_material);
+  }
+  for layer in layers.clone().filter(|l| l.info.collides) {
+    let hex = layer.data.grid.hex_cells();
+    if hex.is_some_and(|hex| !hex.traceable()) {
+      warn_untraceable(map, &layer, warned);
+      continue;
+    }
+    let material = Material::of(
+      &layer.info.properties,
+      map_material,
+      |name, value, wanted| {
+        let place = Some((layer.index, layer.info.name.as_str()));
+        warn(warned, place, name, value, wanted)
+      },
+    );
+    let parallax = layer.info.parallax;
+    if parallax != Vec2::ONE && warned.insert((Some(layer.index), "parallax")) {
+      crate::engine_warn!(
+        module: "Tilemap",
+        "map {map}: layer \"{}\" collides and has parallax {}, {}: collision ignores parallax, so it collides where it would draw with parallax 1, not where it draws",
+        layer.info.name,
+        parallax.x,
+        parallax.y
       );
-      let parallax = layer.info.parallax;
-      if parallax != Vec2::ONE && warned.insert((Some(layer.index), "parallax")) {
-        crate::engine_warn!(
-          module: "Tilemap",
-          "map {map}: layer \"{}\" collides and has parallax {}, {}: collision ignores parallax, so it collides where it would draw with parallax 1, not where it draws",
-          layer.info.name,
-          parallax.x,
-          parallax.y
+    }
+    let stands = (layer.info.floor, ground_offset(layer.info, floors));
+    planned.push(Planned {
+      entity: layer.entity,
+      index: layer.index,
+      key: GroupKey::of(&layer.data.grid, stands, material),
+      bounds: layer.data.tiles.bounds(),
+      intgrid: layer.data.intgrid.is_some(),
+      footing: None,
+    });
+  }
+  if let Some(floors) = floors {
+    for floor in floors.floors().filter_map(|floor| floor.number()) {
+      if floor > 0 {
+        plan_edge(
+          map,
+          layers.clone(),
+          (floor, floors),
+          map_material,
+          (warned, planned),
         );
       }
-      planned.push(Planned {
-        entity: layer.entity,
-        index: layer.index,
-        key: GroupKey::of(&layer.data.grid, layer.info.offset, material),
-        bounds: layer.data.tiles.bounds(),
-        intgrid: layer.data.intgrid.is_some(),
-      });
     }
   }
-  GroupKey::of(grid, Vec2::ZERO, map_material)
+  GroupKey::of(grid, (0, Vec2::ZERO), map_material)
+}
+
+/// The layers of floor `floor`'s footprint among `layers` into `planned`:
+/// the tile layers on it standing where its bottom tile layer does (on its
+/// grid, at its ground offset), all their tiles, and the tile layers of
+/// lower floors standing there, their stairs up to it. A layer on it
+/// standing elsewhere is left out, warned once a map (`warned`); a floor
+/// with no tile layer has no footprint, nor does one whose hexagons the
+/// tracer does not take
+fn plan_edge<'a>(
+  map: Entity,
+  layers: impl Iterator<Item = LayerView<'a>> + Clone,
+  (floor, floors): (u8, &MapFloors),
+  material: Material,
+  (warned, planned): (&mut Warned, &mut Vec<Planned>),
+) {
+  let Some(bottom) = layers.clone().find(|l| l.info.floor == floor) else {
+    return;
+  };
+  if bottom
+    .data
+    .grid
+    .hex_cells()
+    .is_some_and(|hex| !hex.traceable())
+  {
+    warn_untraceable(map, &bottom, warned);
+    return;
+  }
+  // The edge's key where a layer stands: the bottom tile layer's, or
+  // another for a layer elsewhere
+  let stands = |layer: &LayerView<'_>| {
+    let at = (floor, ground_offset(layer.info, Some(floors)));
+    GroupKey {
+      edge: true,
+      ..GroupKey::of(&layer.data.grid, at, material)
+    }
+  };
+  let key = stands(&bottom);
+  for layer in layers {
+    let footing = match layer.info.floor.cmp(&floor) {
+      std::cmp::Ordering::Equal => Footing::Tiles,
+      std::cmp::Ordering::Less => Footing::Stairs,
+      std::cmp::Ordering::Greater => continue,
+    };
+    if stands(&layer) != key {
+      if footing == Footing::Tiles && warned.insert((None, "floor edge")) {
+        crate::engine_warn!(
+          module: "Tilemap",
+          "map {map}: layer \"{}\" on floor {floor} stands elsewhere than the floor's bottom tile layer \"{}\" (another grid or offset), so the floor's edge leaves its cells out",
+          layer.info.name,
+          bottom.info.name
+        );
+      }
+      continue;
+    }
+    planned.push(Planned {
+      entity: layer.entity,
+      index: layer.index,
+      key,
+      bounds: layer.data.tiles.bounds(),
+      intgrid: layer.data.intgrid.is_some(),
+      footing: Some(footing),
+    });
+  }
 }
 
 /// Warns, once a map (`warned`), that `context` met one-way tiles off an
@@ -327,9 +478,11 @@ fn joined(a: Option<CellRect>, b: Option<CellRect>) -> Option<CellRect> {
 }
 
 /// Every group of a map's colliding layers (`planned`, read through
-/// `views`), built from their tiles as they are: each group's grid holds
-/// the chunks its layers have, each classified across them from the cells
-/// where they lie. Traced if `trace`
+/// `views`), and each higher floor's edge, built from their tiles as they
+/// are: each group's grid holds the chunks its layers have, each
+/// classified across them from the cells where they lie, on the group's
+/// floor. A floor's edge has no target until its entity spawns. Traced if
+/// `trace`
 fn build(
   map: Entity,
   (map_key, planned, views): (GroupKey, &[Planned], &[LayerView<'_>]),
@@ -347,15 +500,21 @@ fn build(
       Some(group) => {
         group.bounds = joined(group.bounds, layer.bounds);
         group.layers.push(tracked);
+        group.footing.extend(layer.footing);
       }
       None => {
-        let own = layer.key != map_key;
+        let own = layer.key != map_key && !layer.key.edge;
         groups.push(Group {
           key: layer.key,
-          target: if own { layer.entity } else { map },
+          target: match (layer.key.edge, own) {
+            (true, _) => Entity::PLACEHOLDER,
+            (false, true) => layer.entity,
+            (false, false) => map,
+          },
           target_layer: own.then_some(layer.index),
           bounds: layer.bounds,
           layers: vec![tracked],
+          footing: layer.footing.into_iter().collect(),
           kinds: FastMap::default(),
           shapes: FastMap::default(),
         });
@@ -382,6 +541,7 @@ fn build(
       tiles = tiles.with_lattice(to_pixel);
     }
     group.key.material().apply(&mut tiles);
+    tiles.floor = Floor::On(group.key.floor);
     let data: Vec<Option<&TileLayerData>> = group
       .layers
       .iter()
@@ -397,23 +557,10 @@ fn build(
     chunks.sort_unstable_by_key(|c| (c.y, c.x));
     chunks.dedup();
     let mut pending = Pending(Vec::new());
-    let Group {
-      layers,
-      kinds,
-      shapes,
-      ..
-    } = group;
     // A staggered grid's lattice chunks, gathered across its chunks
     let mut gathered: FastMap<IVec2, Box<ChunkKinds>> = FastMap::default();
     for chunk in chunks {
-      let cells = union_kinds(
-        layers,
-        &data,
-        (chunk, Part::WHOLE),
-        (&mut *kinds, &mut *shapes),
-        &mut pending,
-        context,
-      );
+      let cells = group.kinds_of(&data, chunk, &mut pending, context);
       match &lattice {
         Some(lattice) => {
           for (at, kind) in scatter(lattice, chunk, &cells) {
@@ -446,7 +593,8 @@ fn build(
 }
 
 /// What a map's first build reads besides its layers: its root's settings,
-/// its own properties and tile size, and its tilesets' shapes and stamps
+/// its own properties and tile size, and its tilesets' shapes, stairs and
+/// stamps
 pub(crate) struct Inputs {
   pub(crate) collision: bool,
   pub(crate) overrides: Vec<(IntGridKey, TileCell)>,
@@ -454,6 +602,7 @@ pub(crate) struct Inputs {
   /// The map's grid
   pub(crate) grid: MapGrid,
   pub(crate) shapes: Arc<[Option<ShapeSource>]>,
+  pub(crate) stairs: Arc<[Option<StairSource>]>,
   pub(crate) tilesets: Vec<TilesetStamp>,
 }
 
@@ -464,8 +613,14 @@ pub(crate) struct Prepared {
 }
 
 /// The collision of the map `map` as its layers (each with its place among
-/// them) will spawn: every grid classified and traced. Pure: any thread
-pub(crate) fn prepare(map: Entity, layers: &[LayerView<'_>], inputs: Inputs) -> Prepared {
+/// them) will spawn, on its floors (`floors`): every grid classified and
+/// traced. Pure: any thread
+pub(crate) fn prepare(
+  map: Entity,
+  layers: &[LayerView<'_>],
+  inputs: Inputs,
+  floors: Option<&MapFloors>,
+) -> Prepared {
   let mut warned = Warned::default();
   let mut planned = Vec::new();
   let map_key = plan(
@@ -477,10 +632,12 @@ pub(crate) fn prepare(map: Entity, layers: &[LayerView<'_>], inputs: Inputs) -> 
       &inputs.grid,
       &inputs.overrides,
     ),
+    floors,
     &mut warned,
     &mut planned,
   );
-  let context = Context::new(&inputs.shapes, &inputs.overrides, Purpose::Collision);
+  let context =
+    Context::new(&inputs.shapes, &inputs.overrides, Purpose::Collision).with_stairs(&inputs.stairs);
   let built = build(map, (map_key, &planned, layers), &context, true);
   warn_both_ways(map, &context, &mut warned);
   Prepared {
@@ -490,6 +647,7 @@ pub(crate) fn prepare(map: Entity, layers: &[LayerView<'_>], inputs: Inputs) -> 
       tilesets: inputs.tilesets,
       overrides: inputs.overrides,
       shapes: inputs.shapes,
+      stairs: inputs.stairs,
       groups: built.groups,
       torn: false,
       warned_properties: warned,
@@ -499,7 +657,8 @@ pub(crate) fn prepare(map: Entity, layers: &[LayerView<'_>], inputs: Inputs) -> 
 }
 
 /// Puts a map's prepared collision on it and its layers (`layers`, the
-/// entities its layers spawned as, by place), as the map lands
+/// entities its layers spawned as, by place), and its floors' edges on
+/// entities of their own, as the map lands
 pub(crate) fn land(world: &mut World, map: Entity, layers: &[Entity], prepared: Prepared) {
   let Prepared { mut state, grids } = prepared;
   for planned in &mut state.layers {
@@ -508,10 +667,14 @@ pub(crate) fn land(world: &mut World, map: Entity, layers: &[Entity], prepared: 
     }
   }
   for group in &mut state.groups {
-    group.target = group
-      .target_layer
-      .and_then(|index| layers.get(index).copied())
-      .unwrap_or(map);
+    group.target = if group.key.edge {
+      spawn_edge(world, map, &group.key)
+    } else {
+      group
+        .target_layer
+        .and_then(|index| layers.get(index).copied())
+        .unwrap_or(map)
+    };
     for tracked in &mut group.layers {
       tracked.relink(layers);
     }
@@ -530,6 +693,51 @@ pub(crate) fn land(world: &mut World, map: Entity, layers: &[Entity], prepared: 
   }
 }
 
+/// The edge of the floor `key` is the edge of, as it lands: a child of
+/// `map` where the floor's layers stand, a [`MapFloor`] (`PLACEHOLDER` for a
+/// map gone)
+fn spawn_edge(world: &mut World, map: Entity, key: &GroupKey) -> Entity {
+  if world.get_entity(map).is_err() {
+    return Entity::PLACEHOLDER;
+  }
+  let edge = child_of(world, map, Transform::from_translation(key.offset()));
+  if let Ok(mut entity) = world.get_entity_mut(edge) {
+    entity.insert(MapFloor { floor: key.floor });
+  }
+  edge
+}
+
+/// Despawns the floors' edges `map`'s collision spawned, as its root goes
+/// (put over or taken away), so a root landing at once in its place never
+/// leaves them behind; the next step takes the rest
+pub(crate) fn drop_edges(world: &mut World, map: Entity) {
+  let Some(state) = world.get::<MapCollision>(map) else {
+    return;
+  };
+  let edges: Vec<Entity> = state
+    .groups
+    .iter()
+    .filter(|group| group.key.edge)
+    .map(|group| group.target)
+    .collect();
+  for edge in edges {
+    let _ = world.try_despawn(edge);
+  }
+}
+
+/// Takes down what `groups` put on: each grid from the map or its layer,
+/// and a floor's edge with its entity
+fn take_down(groups: &[Group], commands: &mut Commands) {
+  for group in groups {
+    let mut target = commands.entity(group.target);
+    if group.key.edge {
+      target.try_despawn();
+    } else {
+      target.try_remove::<TileColliders>();
+    }
+  }
+}
+
 /// A map's collision: what it was built from, its groups, and what it has
 /// warned about. On the map entity
 #[derive(Component, Debug)]
@@ -539,8 +747,9 @@ pub(crate) struct MapCollision {
   grid: MapGrid,
   tilesets: Vec<TilesetStamp>,
   overrides: Vec<(IntGridKey, TileCell)>,
-  /// The tilesets' shapes it reads
+  /// The tilesets' shapes and stairs it reads
   shapes: Arc<[Option<ShapeSource>]>,
+  stairs: Arc<[Option<StairSource>]>,
   groups: Vec<Group>,
   /// Its colliders were taken away (the map disabled, or one went missing):
   /// the next step builds them all
@@ -549,16 +758,9 @@ pub(crate) struct MapCollision {
 }
 
 impl MapCollision {
-  /// The entities holding a `TileColliders` of this map's
-  fn targets(&self) -> impl Iterator<Item = Entity> + '_ {
-    self.groups.iter().map(|g| g.target)
-  }
-
-  /// Takes every `TileColliders` this map put on
+  /// Takes every `TileColliders` this map put on, and its floors' edges
   fn tear_down(&mut self, commands: &mut Commands) {
-    for target in self.targets() {
-      commands.entity(target).try_remove::<TileColliders>();
-    }
+    take_down(&self.groups, commands);
     self.torn = true;
   }
 }
@@ -578,24 +780,11 @@ fn update(group: &mut Group, tiles: &mut TileColliders, layers: &Layers, context
   let lattice = reindexing(&group.key.grid.grid());
   let data = layer_data(&group.layers, layers);
   let data: Vec<Option<&TileLayerData>> = data.iter().map(|d| d.as_deref()).collect();
-  let Group {
-    layers: tracked,
-    kinds,
-    shapes,
-    ..
-  } = group;
   for chunk in changed {
     if chunk_origin(chunk).is_none() {
       continue;
     }
-    let now = union_kinds(
-      tracked,
-      &data,
-      (chunk, Part::WHOLE),
-      (&mut *kinds, &mut *shapes),
-      tiles,
-      context,
-    );
+    let now = group.kinds_of(&data, chunk, &mut *tiles, context);
     if let Some(lattice) = &lattice {
       tiles.set_cells(scatter(lattice, chunk, &now));
       continue;
@@ -621,6 +810,7 @@ type Maps<'w, 's> = Query<
     Entity,
     &'static MapRoot,
     Option<&'static MapLayers>,
+    Option<&'static MapFloors>,
     Option<&'static mut MapCollision>,
     Has<Disabled>,
   ),
@@ -634,7 +824,7 @@ type Grids<'w, 's> = Query<'w, 's, &'static mut TileColliders, Allow<Disabled>>;
 fn views<'a>(
   map_layers: &'a MapLayers,
   layers: &'a Layers,
-) -> impl Iterator<Item = LayerView<'a>> + 'a {
+) -> impl Iterator<Item = LayerView<'a>> + Clone + 'a {
   map_layers
     .0
     .iter()
@@ -669,7 +859,7 @@ pub(crate) fn sync_map_colliders(
     state.tear_down(&mut commands);
     commands.entity(map).try_remove::<MapCollision>();
   }
-  for (map, root, map_layers, mut state, disabled) in &mut maps {
+  for (map, root, map_layers, floors, mut state, disabled) in &mut maps {
     let Some(map_layers) = map_layers else {
       // The root was put over or taken away, and its layers with it
       if let Some(mut state) = state {
@@ -702,21 +892,24 @@ pub(crate) fn sync_map_colliders(
         &tile_map.grid(),
         &root.intgrid_collision,
       ),
+      floors,
       warned,
       &mut planned,
     );
     let same = state.as_mut().is_some_and(|s| {
       let s = s.bypass_change_detection();
+      let read = (&s.shapes[..], Some(&s.stairs[..]));
       !s.torn
         && s.layers == *planned
         && s.grid == tile_map.grid()
         && s.overrides == root.intgrid_collision
-        && shapes_kept(&mut s.tilesets, &s.shapes, tile_map, tilesets)
+        && shapes_kept(&mut s.tilesets, read, tile_map, tilesets)
     });
     match state {
       Some(mut state) if same => {
         let state = state.bypass_change_detection();
-        let context = Context::new(&state.shapes, &root.intgrid_collision, Purpose::Collision);
+        let context = Context::new(&state.shapes, &root.intgrid_collision, Purpose::Collision)
+          .with_stairs(&state.stairs);
         for group in &mut state.groups {
           let Ok(mut tiles) = grids.get_mut(group.target) else {
             // Taken away by something else: all of it is built next step
@@ -730,23 +923,33 @@ pub(crate) fn sync_map_colliders(
       state => {
         // Built at once, so a map never lacks its colliders
         let shapes = sources(tile_map, tilesets);
+        let stairs = stair_sources(tile_map, tilesets);
         let mut warned_properties = match &state {
           Some(old) => old.warned_properties.clone(),
           None => first_warnings,
         };
         if let Some(old) = &state {
-          for target in old.targets() {
-            commands.entity(target).try_remove::<TileColliders>();
-          }
+          take_down(&old.groups, &mut commands);
         }
-        let context = Context::new(&shapes, &root.intgrid_collision, Purpose::Collision);
+        let context =
+          Context::new(&shapes, &root.intgrid_collision, Purpose::Collision).with_stairs(&stairs);
         let views: Vec<LayerView<'_>> = views(map_layers, &layers).collect();
-        let built = build(map, (map_key, &planned, &views), &context, false);
+        let Built { mut groups, grids } = build(map, (map_key, &planned, &views), &context, false);
         warn_both_ways(map, &context, &mut warned_properties);
-        for (group, tiles, _) in built.grids {
-          commands
-            .entity(built.groups[group].target)
-            .try_insert(tiles);
+        for (group, tiles, _) in grids {
+          let group = &mut groups[group];
+          if !group.key.edge {
+            commands.entity(group.target).try_insert(tiles);
+            continue;
+          }
+          // A floor's edge on an entity of its own, linked to the map before
+          // anything a game observes goes on it
+          let at = Transform::from_translation(group.key.offset());
+          group.target = commands.spawn((at, ChildOf(map))).id();
+          let edge = MapFloor {
+            floor: group.key.floor,
+          };
+          commands.entity(group.target).try_insert((edge, tiles));
         }
         let fresh = MapCollision {
           layers: planned.clone(),
@@ -754,7 +957,8 @@ pub(crate) fn sync_map_colliders(
           tilesets: stamps(tile_map, tilesets),
           overrides: root.intgrid_collision.clone(),
           shapes: Arc::clone(&shapes),
-          groups: built.groups,
+          stairs: Arc::clone(&stairs),
+          groups,
           torn: false,
           warned_properties,
         };
@@ -777,9 +981,9 @@ mod tests {
 
   use crate::core::asset::{Assets, AssetsView, Handle};
   use crate::core::ecs::Transform;
-  use crate::core::ecs::{ChildOf, Disabled, Entity, World};
+  use crate::core::ecs::{ChildOf, Disabled, Entity, Floor, World};
   use crate::core::engine::EngineBuilder;
-  use crate::core::gameplay::{MoveIntent, PlatformerMovement};
+  use crate::core::gameplay::{MoveIntent, PlatformerMovement, TopDownMovement};
   use crate::core::physics::CharacterState;
   use crate::core::physics::{
     CellRect, Collider, ColliderShape, SlopeCorner, TileCell, TileColliders, TilePart,
@@ -791,9 +995,9 @@ mod tests {
     MapWorld, Px, files_with, layers_of, load_map as load, union_border, whole_hex_set, whole_px,
   };
   use crate::core::tilemap::{
-    GridShape, IntGrid, LayerKind, MapGrid, MapRoot, MapsView, PropertyValue, StaggerAxis,
-    StaggerIndex, Tile, TileData, TileFlip, TileLayerData, TileMap, TileShape, Tileset,
-    TilesetImage, TilesetSource,
+    GridShape, IntGrid, LayerKind, MapFloor, MapGrid, MapRoot, MapsView, PropertyValue,
+    StaggerAxis, StaggerIndex, Tile, TileData, TileFlip, TileLayerData, TileMap, TileShape,
+    Tileset, TilesetImage, TilesetSource,
   };
 
   /// Tile ids of `shapes`
@@ -3759,5 +3963,853 @@ mod tests {
       .iter(&maps.world)
       .count();
     assert_eq!(occluders, 0);
+  }
+
+  // ---- floors ---------------------------------------------------------------
+
+  /// A tile with no shapes, a solid block, and stairs up to floors 1 and 2
+  const PLAIN: Tile = Tile {
+    tileset: 0,
+    id: 9,
+    flip: TileFlip::NONE,
+  };
+  const WALL: Tile = Tile {
+    tileset: 0,
+    id: SOLID,
+    flip: TileFlip::NONE,
+  };
+  const UP_1: Tile = Tile {
+    tileset: 1,
+    id: 0,
+    flip: TileFlip::NONE,
+  };
+  const UP_2: Tile = Tile {
+    tileset: 1,
+    id: 1,
+    flip: TileFlip::NONE,
+  };
+
+  /// Floor 1's height in the maps with floors: its bottom layer's offset
+  const UP: Vec2 = Vec2::new(0.0, -32.0);
+
+  /// 16 px stairs: tile 0 up to floor 1, tile 1 up to floor 2
+  fn stairs_set() -> Tileset {
+    let mut set = Tileset::new("stairs", UVec2::splat(16), TilesetImage::Collection);
+    for (id, to) in [(0, 1), (1, 2)] {
+      let stairs = TileData {
+        stairs: Some(to),
+        ..TileData::default()
+      };
+      set.insert_tile(id, stairs);
+    }
+    set
+  }
+
+  /// A tile layer of a map with floors: its name, floor, offset and tiles
+  type Storey<'a> = (&'a str, u8, Vec2, &'a [(IVec2, Tile)]);
+
+  /// A map of `size` 16 px cells (infinite for none) over `shapes` and
+  /// `stairs_set`, with a tile layer for each of `layers`
+  fn storeyed(size: Option<UVec2>, layers: &[Storey<'_>]) -> TileMap {
+    let cell = UVec2::splat(16);
+    let mut map = match size {
+      Some(size) => TileMap::new(size, cell),
+      None => TileMap::infinite(cell),
+    };
+    map.add_tileset(TilesetSource::Embedded(Arc::new(shapes())));
+    map.add_tileset(TilesetSource::Embedded(Arc::new(stairs_set())));
+    for &(name, floor, offset, tiles) in layers {
+      let layer = map.add_tile_layer(name);
+      map.layers[layer].info.floor = floor;
+      map.layers[layer].info.offset = offset;
+      let grid = map.tiles_mut(layer).expect("a tile layer");
+      for &(cell, tile) in tiles {
+        grid.set(cell, Some(tile));
+      }
+    }
+    map
+  }
+
+  /// The cells from `min` to `max` (both included), each holding `tile`
+  fn block(min: (i32, i32), max: (i32, i32), tile: Tile) -> Vec<(IVec2, Tile)> {
+    (min.1..=max.1)
+      .flat_map(|y| (min.0..=max.0).map(move |x| (IVec2::new(x, y), tile)))
+      .collect()
+  }
+
+  /// `cells`, by row
+  fn by_row(mut cells: Vec<IVec2>) -> Vec<IVec2> {
+    cells.sort_by_key(|c| (c.y, c.x));
+    cells.dedup();
+    cells
+  }
+
+  /// The cells of `tiles`, by row
+  fn cells_of(tiles: &[(IVec2, Tile)]) -> Vec<IVec2> {
+    by_row(tiles.iter().map(|(cell, _)| *cell).collect())
+  }
+
+  /// The edges of the floors above the ground under `map`: each `MapFloor`
+  /// child's floor and entity, by floor
+  fn floor_edges(world: &mut World, map: Entity) -> Vec<(u8, Entity)> {
+    let mut found: Vec<(u8, Entity)> = world
+      .query::<(Entity, &MapFloor, &ChildOf)>()
+      .iter(world)
+      .filter(|(_, _, child_of)| child_of.parent() == map)
+      .map(|(entity, edge, _)| (edge.floor, entity))
+      .collect();
+    found.sort();
+    found
+  }
+
+  /// The entity holding floor `floor`'s edge under `map`
+  fn edge_of(world: &mut World, map: Entity, floor: u8) -> Entity {
+    let edges = floor_edges(world, map);
+    match edges.iter().find(|(of, _)| *of == floor) {
+      Some(&(_, edge)) => edge,
+      None => panic!("{map} has no edge of floor {floor}: {edges:?}"),
+    }
+  }
+
+  /// The `Solid` cells of `tiles`, by row
+  fn solid_cells(tiles: &TileColliders) -> Vec<IVec2> {
+    let extent = tiles.extent();
+    (extent.min.y..extent.max.y)
+      .flat_map(|y| (extent.min.x..extent.max.x).map(move |x| IVec2::new(x, y)))
+      .filter(|&cell| tiles.get(cell) == TileCell::Solid)
+      .collect()
+  }
+
+  /// Where `entity` stands in its parent
+  fn place(world: &World, entity: Entity) -> Vec2 {
+    world
+      .get::<Transform>(entity)
+      .map_or(Vec2::NAN, |at| at.translation)
+  }
+
+  /// The border of the union of the lattice squares `cells`, each side
+  /// running clockwise on screen round its square, as outlines run, sorted
+  fn square_border(cells: &[IVec2]) -> Vec<LatticeEdge> {
+    let mut sides = Vec::new();
+    for c in cells {
+      let (x, y) = (c.x, c.y);
+      sides.extend([
+        ((x, y), (x + 1, y)),
+        ((x + 1, y), (x + 1, y + 1)),
+        ((x + 1, y + 1), (x, y + 1)),
+        ((x, y + 1), (x, y)),
+      ]);
+    }
+    let mut border: Vec<LatticeEdge> = sides
+      .iter()
+      .copied()
+      .filter(|&(a, b)| !sides.contains(&(b, a)))
+      .collect();
+    border.sort_unstable();
+    border
+  }
+
+  /// The warnings in the dev log holding every one of `words`
+  fn warned(words: &[&str]) -> usize {
+    crate::core::dev_log::get_entries()
+      .iter()
+      .filter(|entry| words.iter().all(|word| entry.message.contains(word)))
+      .count()
+  }
+
+  /// An engine with `map` spawned and landed, and the map's entity
+  fn engine_with(map: TileMap) -> Option<(HeadlessEngine, Entity)> {
+    let builder = EngineBuilder::new().resolution(320, 180).start_scene(Empty);
+    let mut engine = HeadlessEngine::new_or_skip(builder)?;
+    let handle = engine
+      .world_mut()
+      .resource_mut::<Assets<TileMap>>()
+      .add(map);
+    let map = engine.world_mut().spawn(MapRoot::new(handle)).id();
+    crate::core::tilemap::test_util::step_until_maps_land(&mut engine);
+    Some((engine, map))
+  }
+
+  /// A top-down character 10 px across standing at `at`, on `floor` (none:
+  /// the ground floor)
+  fn walker(engine: &mut HeadlessEngine, at: Vec2, floor: Option<Floor>) -> Entity {
+    let mut walker = engine.world_mut().spawn((
+      Transform::from_translation(at),
+      Collider::circle(5.0),
+      TopDownMovement::default(),
+    ));
+    if let Some(floor) = floor {
+      walker.insert(floor);
+    }
+    walker.id()
+  }
+
+  /// `steps` frames of `walkers` heading along `direction`; where each then
+  /// stands
+  fn walk(
+    engine: &mut HeadlessEngine,
+    walkers: &[Entity],
+    direction: Vec2,
+    steps: usize,
+  ) -> Vec<Vec2> {
+    for _ in 0..steps {
+      for &walker in walkers {
+        if let Some(mut intent) = engine.world_mut().get_mut::<MoveIntent>(walker) {
+          intent.direction = direction;
+        }
+      }
+      engine.step().expect("a frame");
+    }
+    walkers
+      .iter()
+      .map(|&walker| place(engine.world_mut(), walker))
+      .collect()
+  }
+
+  #[test]
+  fn layers_on_different_floors_collide_on_their_own_grids() {
+    // "ground" and "upper" (floor 1, 0 px up) at one offset, the origin
+    let mut maps = MapWorld::new();
+    let handle = add(
+      &mut maps.world,
+      storeyed(
+        Some(UVec2::new(8, 4)),
+        &[
+          ("ground", 0, Vec2::ZERO, &[(IVec2::new(1, 2), WALL)]),
+          ("upper", 1, Vec2::ZERO, &[(IVec2::new(5, 2), WALL)]),
+        ],
+      ),
+    );
+    let map = maps.spawn(MapRoot::new(handle));
+    let layers = layers_of(&mut maps.world, map);
+    // Each floor's wall in a grid of its own, on that floor
+    let ground = colliders(&maps.world, map);
+    assert_eq!(ground.floor, Floor::GROUND);
+    assert_eq!(solid_cells(&ground), [IVec2::new(1, 2)]);
+    assert!(maps.world.get::<TileColliders>(layers[0]).is_none());
+    let upper = colliders(&maps.world, layers[1]);
+    assert_eq!(upper.floor, Floor::On(1));
+    assert_eq!(solid_cells(&upper), [IVec2::new(5, 2)]);
+    // and in physics: the floor 1 grid's parts are on floor 1, the ground
+    // floor's on none
+    let floors = |world: &mut World, holder: Entity| -> Vec<Option<Floor>> {
+      let parts = parts_of(world, holder);
+      parts
+        .iter()
+        .map(|(part, _)| world.get::<Floor>(*part).copied())
+        .collect()
+    };
+    assert_eq!(floors(&mut maps.world, map), [None]);
+    assert_eq!(floors(&mut maps.world, layers[1]), [Some(Floor::On(1))]);
+
+    // A ground layer and a floor 1 layer both drawn 32 px up (floor 1's
+    // height), and a floor 1 layer drawn at the origin above its floor's
+    // bottom layer: each floor's layers group where they stand in ground
+    // space, never with another floor's or in the map's own grid
+    let handle = add(
+      &mut maps.world,
+      storeyed(
+        Some(UVec2::new(8, 4)),
+        &[
+          ("ground", 0, Vec2::ZERO, &[(IVec2::new(0, 3), WALL)]),
+          ("ledge", 0, UP, &[(IVec2::new(1, 3), WALL)]),
+          ("upper", 1, UP, &[(IVec2::new(2, 3), WALL)]),
+          ("rail", 1, Vec2::ZERO, &[(IVec2::new(3, 3), WALL)]),
+        ],
+      ),
+    );
+    let map = maps.spawn(MapRoot::new(handle));
+    let layers = layers_of(&mut maps.world, map);
+    let grid = |world: &World, holder: Entity| {
+      let tiles = colliders(world, holder);
+      (place(world, holder), tiles.floor, solid_cells(&tiles))
+    };
+    let one = |x: i32| vec![IVec2::new(x, 3)];
+    assert_eq!(grid(&maps.world, map), (Vec2::ZERO, Floor::GROUND, one(0)));
+    assert!(maps.world.get::<TileColliders>(layers[0]).is_none());
+    assert_eq!(grid(&maps.world, layers[1]), (UP, Floor::GROUND, one(1)));
+    assert_eq!(
+      grid(&maps.world, layers[2]),
+      (Vec2::ZERO, Floor::On(1), one(2))
+    );
+    assert_eq!(
+      grid(&maps.world, layers[3]),
+      (Vec2::new(0.0, 32.0), Floor::On(1), one(3))
+    );
+  }
+
+  #[test]
+  fn a_raised_floor_s_edge_keeps_a_character_on_it() {
+    // Floor 1 raised over open ground: 6 x 4 cells, from (64, 48) to
+    // (160, 112) where it stands
+    let ground = block((0, 0), (19, 9), PLAIN);
+    let raised = block((4, 3), (9, 6), PLAIN);
+    let map = storeyed(
+      Some(UVec2::new(20, 10)),
+      &[
+        ("ground", 0, Vec2::ZERO, &ground),
+        ("raised", 1, UP, &raised),
+      ],
+    );
+    let Some((mut engine, map)) = engine_with(map) else {
+      return;
+    };
+    // The edge is no wall to navigation built from the whole world
+    let mut paths = crate::core::navigation::NavigationGrid::new(320.0, 160.0, 16.0);
+    paths.rebuild_from_world(engine.world_mut());
+    for cell in cells_of(&ground) {
+      assert!(paths.is_walkable(cell.into()), "{cell}");
+    }
+    let on_top = walker(&mut engine, Vec2::new(112.0, 80.0), Some(Floor::On(1)));
+    let below = walker(&mut engine, Vec2::new(24.0, 80.0), None);
+    // Heading right, the one on top stops at the floor's edge (its radius
+    // in), and the one on the ground walks on under it
+    let at = walk(&mut engine, &[on_top, below], Vec2::X, 90);
+    assert!((at[0].x - 155.0).abs() < 1.0, "on top at {}", at[0]);
+    assert!(at[1].x > 200.0, "below at {}", at[1]);
+    // The edge holds it in on every side
+    let at = walk(&mut engine, &[on_top], Vec2::NEG_Y, 60);
+    assert!((at[0].y - 53.0).abs() < 1.0, "on top at {}", at[0]);
+    let at = walk(&mut engine, &[on_top], Vec2::NEG_X, 90);
+    assert!((at[0].x - 69.0).abs() < 1.0, "on top at {}", at[0]);
+    let at = walk(&mut engine, &[on_top], Vec2::Y, 60);
+    assert!((at[0].y - 107.0).abs() < 1.0, "on top at {}", at[0]);
+    // nor to the map's own navigation
+    let window = CellRect::from_size(UVec2::new(20, 10));
+    let Some(grid) = MapsView::new(engine.world_mut()).navigation(map, "ground", window) else {
+      panic!("{map} has a ground layer");
+    };
+    for cell in cells_of(&ground) {
+      assert!(grid.is_walkable(cell.into()), "{cell}");
+    }
+  }
+
+  #[test]
+  fn the_floor_filter_holds_between_tiles_and_entities() {
+    // A floor 1 wall down column 8 (128 to 144 px where it stands) of a
+    // raised floor
+    let ground = block((0, 0), (19, 9), PLAIN);
+    let raised = block((2, 2), (13, 7), PLAIN);
+    let wall = block((8, 2), (8, 7), WALL);
+    let map = storeyed(
+      Some(UVec2::new(20, 10)),
+      &[
+        ("ground", 0, Vec2::ZERO, &ground),
+        ("raised", 1, UP, &raised),
+        ("walls", 1, UP, &wall),
+      ],
+    );
+    let Some((mut engine, _)) = engine_with(map) else {
+      return;
+    };
+    // One on floor 1 and one on the ground, standing at one spot
+    let upper = walker(&mut engine, Vec2::new(80.0, 80.0), Some(Floor::On(1)));
+    let lower = walker(&mut engine, Vec2::new(80.0, 80.0), None);
+    let at = walk(&mut engine, &[upper, lower], Vec2::X, 60);
+    assert!(
+      (at[0].x - 123.0).abs() < 1.0,
+      "the wall stops the one on floor 1: {}",
+      at[0]
+    );
+    assert!(
+      at[1].x > 150.0,
+      "the one on the ground walks through it: {}",
+      at[1]
+    );
+  }
+
+  #[test]
+  fn stairs_join_the_upper_floor_s_footprint() {
+    // Floor 1 over (4, 3) to (8, 6), with stairs up to it on the ground at
+    // (3, 4) and (3, 5); floor 2 over (5, 4) to (6, 5), with stairs up to it
+    // from floor 1 at (8, 6) and from the ground at (10, 4)
+    let mut ground = block((0, 0), (11, 7), PLAIN);
+    ground.extend([
+      (IVec2::new(3, 4), UP_1),
+      (IVec2::new(3, 5), UP_1),
+      (IVec2::new(10, 4), UP_2),
+    ]);
+    let mut upper = block((4, 3), (8, 6), PLAIN);
+    upper.push((IVec2::new(8, 6), UP_2));
+    // Stairs on floor 2 naming floor 1 lead down: a plain tile there
+    let mut roof = block((5, 4), (6, 5), PLAIN);
+    roof.push((IVec2::new(11, 1), UP_1));
+    // Ground stairs on a layer standing 16 px right are on no edge's grid,
+    // and a floor 1 layer standing 8 px right is left out of its edge
+    let steps = [(IVec2::new(1, 4), UP_1)];
+    let awning = [(IVec2::new(0, 0), PLAIN)];
+    let map = storeyed(
+      Some(UVec2::new(12, 8)),
+      &[
+        ("ground", 0, Vec2::ZERO, &ground),
+        ("steps", 0, Vec2::new(16.0, 0.0), &steps),
+        ("upper", 1, UP, &upper),
+        ("awning-3f1", 1, Vec2::new(8.0, -32.0), &awning),
+        ("roof", 2, Vec2::new(0.0, -64.0), &roof),
+      ],
+    );
+    let mut maps = MapWorld::new();
+    let handle = add(&mut maps.world, map);
+    let map = maps.spawn(MapRoot::new(handle));
+    maps.frame();
+    let floors: Vec<u8> = floor_edges(&mut maps.world, map)
+      .iter()
+      .map(|(floor, _)| *floor)
+      .collect();
+    assert_eq!(floors, [1, 2]);
+    let first = edge_of(&mut maps.world, map, 1);
+    let tiles = colliders(&maps.world, first);
+    assert_eq!(tiles.floor, Floor::On(1));
+    let mut want = cells_of(&upper);
+    want.extend([IVec2::new(3, 4), IVec2::new(3, 5)]);
+    let want = by_row(want);
+    assert_eq!(solid_cells(&tiles), want);
+    // One outline round the floor and its stairs
+    let to_pixel = glam::Affine2::from_scale(Vec2::splat(16.0));
+    assert_eq!(
+      cut(&lattice_edges(&mut maps.world, first, to_pixel)),
+      square_border(&want)
+    );
+    let second = edge_of(&mut maps.world, map, 2);
+    let second = colliders(&maps.world, second);
+    assert_eq!(second.floor, Floor::On(2));
+    let mut want = cells_of(&roof);
+    want.extend([IVec2::new(8, 6), IVec2::new(10, 4)]);
+    assert_eq!(solid_cells(&second), by_row(want));
+    assert_eq!(warned(&["\"awning-3f1\"", "floor 1"]), 1);
+  }
+
+  #[test]
+  fn a_floor_s_edge_follows_edits() {
+    use crate::core::ecs::DetectChanges;
+    // Islands of floor 1 in chunks 0, 1 and 2
+    let mut raised = Vec::new();
+    for x in [4, 36, 68] {
+      raised.extend(block((x, 2), (x + 3, 5), PLAIN));
+    }
+    let map = storeyed(
+      Some(UVec2::new(96, 8)),
+      &[("ground", 0, Vec2::ZERO, &[]), ("raised", 1, UP, &raised)],
+    );
+    let mut maps = MapWorld::new();
+    let handle = add(&mut maps.world, map);
+    let map = maps.spawn(MapRoot::new(handle));
+    let edge = edge_of(&mut maps.world, map, 1);
+    // Each of the edge's parts: its chunks, when its collider last changed
+    // and its shape
+    type Part = (Entity, Vec<IVec2>, String, Option<ColliderShape>);
+    let parts = |world: &mut World| -> Vec<Part> {
+      parts_by_chunk(world, edge)
+        .into_iter()
+        .map(|(part, chunks, _)| {
+          let collider = world.entity(part).get_ref::<Collider>();
+          let changed = format!("{:?}", collider.as_ref().map(|c| c.last_changed()));
+          (part, chunks, changed, collider.map(|c| c.shape.clone()))
+        })
+        .collect()
+    };
+    let before = parts(&mut maps.world);
+    let mut chunks: Vec<Vec<IVec2>> = before.iter().map(|part| part.1.clone()).collect();
+    chunks.sort_by_key(|chunks| chunks.first().map(|c| (c.y, c.x)));
+    let (left, middle, right) = (IVec2::ZERO, IVec2::new(1, 0), IVec2::new(2, 0));
+    assert_eq!(chunks, [vec![left], vec![middle], vec![right]]);
+
+    // Floor 1 painted a cell wider in chunk 1: only that chunk's part takes
+    // a new shape, the others untouched
+    let cell = IVec2::new(40, 3);
+    assert!(MapsView::new(&mut maps.world).set_tile(map, "raised", cell, Some(PLAIN)));
+    maps.step();
+    assert_eq!(colliders(&maps.world, edge).get(cell), TileCell::Solid);
+    let after = parts(&mut maps.world);
+    assert_eq!(after.len(), before.len());
+    for (part, chunks, changed, shape) in &before {
+      let Some((_, _, now_changed, now_shape)) = after.iter().find(|p| p.0 == *part) else {
+        panic!("chunk {chunks:?}'s part went");
+      };
+      if chunks[..] == [middle] {
+        assert_ne!(
+          now_shape, shape,
+          "the painted chunk's part took its new shape"
+        );
+      } else {
+        assert_eq!((now_changed, now_shape), (changed, shape), "{chunks:?}");
+      }
+    }
+    // A cell cleared in chunk 2 leaves the edge too, which keeps its entity
+    let cell = IVec2::new(68, 2);
+    assert!(MapsView::new(&mut maps.world).set_tile(map, "raised", cell, None));
+    maps.step();
+    assert_eq!(colliders(&maps.world, edge).get(cell), TileCell::Empty);
+    assert_eq!(edge_of(&mut maps.world, map, 1), edge);
+  }
+
+  #[test]
+  fn a_reload_rebuilds_a_floor_s_edge() {
+    // gid 1 a plain tile, gid 3 stairs up to floor 1
+    const SET: &str = r#"{"type":"tileset","name":"set","tilewidth":16,"tileheight":16,
+      "tilecount":16,"columns":4,"image":"../tiled/images/tiles.png","imagewidth":64,
+      "imageheight":64,"tiles":[{"id":2,"properties":[{"name":"stairs","type":"int","value":1}]}]}"#;
+    // A 6 x 4 map of the tile layers "ground" and "upper" (`upper` its
+    // extra fields), each of gids row by row
+    let level = |ground: &[u32], upper: &[u32], extra: &str| {
+      let layer = |id: u32, name: &str, data: &[u32], extra: &str| {
+        let data: Vec<String> = data.iter().map(u32::to_string).collect();
+        format!(
+          r#"{{"id":{id},"name":"{name}","type":"tilelayer","width":6,"height":4,"data":[{}]{extra}}}"#,
+          data.join(",")
+        )
+      };
+      format!(
+        r#"{{"type":"map","orientation":"orthogonal","width":6,"height":4,"tilewidth":16,
+          "tileheight":16,"tilesets":[{{"firstgid":1,"source":"set.tsj"}}],"layers":[{},{}]}}"#,
+        layer(1, "ground", ground, ""),
+        layer(2, "upper", upper, extra)
+      )
+    };
+    // "upper" on `floor`, drawn 32 px up and `x` px right
+    let on = |floor: u8, x: i32| {
+      format!(
+        r#","offsetx":{x},"offsety":-32,"properties":[{{"name":"floor","type":"int","value":{floor}}}]"#
+      )
+    };
+    let gids = |cells: &[(i32, i32)], gid: u32| -> Vec<u32> {
+      let mut data = vec![0; 24];
+      for &(x, y) in cells {
+        data[(y * 6 + x) as usize] = gid;
+      }
+      data
+    };
+    let cells = |list: &[(i32, i32)]| -> Vec<IVec2> {
+      by_row(list.iter().map(|&(x, y)| IVec2::new(x, y)).collect())
+    };
+    let raised = [(1, 1), (2, 1), (3, 1), (1, 2), (2, 2), (3, 2)];
+    let first = level(&[0; 24], &gids(&raised, 1), &on(1, 0));
+    let files = files_with(&[("r/set.tsj", SET), ("r/m.tmj", &first)]);
+    let mut maps = MapWorld::over(files.clone());
+    let handle = load(&mut maps.world, "r/m.tmj");
+    let map = maps.spawn(MapRoot::new(handle));
+    // Each edge: its floor, where it stands and its cells
+    let edges = |world: &mut World| -> Vec<(u8, Vec2, Vec<IVec2>)> {
+      floor_edges(world, map)
+        .into_iter()
+        .map(|(floor, edge)| {
+          (
+            floor,
+            place(world, edge),
+            solid_cells(&colliders(world, edge)),
+          )
+        })
+        .collect()
+    };
+    assert_eq!(edges(&mut maps.world), [(1, Vec2::ZERO, cells(&raised))]);
+    let edge = edge_of(&mut maps.world, map, 1);
+
+    // Saved with floor 1 a cell larger and stairs up to it on the ground:
+    // the edge takes both in, in place
+    let larger = [&raised[..], &[(4, 1)]].concat();
+    let stairs = gids(&[(0, 1)], 3);
+    files.insert("r/m.tmj", level(&stairs, &gids(&larger, 1), &on(1, 0)));
+    let want = [(1, Vec2::ZERO, cells(&[&larger[..], &[(0, 1)]].concat()))];
+    maps.frames_until(|world| edges(world) == want);
+    assert_eq!(
+      edge_of(&mut maps.world, map, 1),
+      edge,
+      "built again in place"
+    );
+
+    // Moved 16 px right: its layer respawns there, and the edge with it,
+    // the ground's stairs no longer on its grid
+    files.insert("r/m.tmj", level(&stairs, &gids(&larger, 1), &on(1, 16)));
+    let want = [(1, Vec2::new(16.0, 0.0), cells(&larger))];
+    maps.frames_until(|world| edges(world) == want);
+
+    // Moved up to floor 2: floor 1's edge goes, and floor 2 has one, which
+    // the ground's stairs up to floor 1 do not join
+    files.insert("r/m.tmj", level(&stairs, &gids(&larger, 1), &on(2, 0)));
+    let want = [(2, Vec2::ZERO, cells(&larger))];
+    maps.frames_until(|world| edges(world) == want);
+  }
+
+  #[test]
+  fn a_streamed_floor_s_edge_follows_its_chunks() {
+    use crate::core::tilemap::{ChunkRequest, ChunkTiles, MapStream, StreamAnchor};
+    /// Floor 1 raised over a 4 x 4 block of every chunk
+    fn raise(_: ChunkRequest) -> ChunkTiles {
+      let mut tiles = ChunkTiles::default();
+      for y in 2..6 {
+        for x in 2..6 {
+          tiles.set("raised", UVec2::new(x, y), Some(PLAIN));
+        }
+      }
+      tiles
+    }
+    let map = storeyed(
+      None,
+      &[("ground", 0, Vec2::ZERO, &[]), ("raised", 1, UP, &[])],
+    );
+    let mut maps = MapWorld::new();
+    let handle = add(&mut maps.world, map);
+    let stream = MapStream {
+      cameras: false,
+      ..MapStream::new(raise)
+    };
+    let map = maps.world.spawn((MapRoot::new(handle), stream)).id();
+    maps.settle(map);
+    let middle = |chunk: IVec2| (chunk.as_vec2() + 0.5) * 32.0 * 16.0;
+    let anchor = maps
+      .world
+      .spawn((
+        Transform::from_translation(middle(IVec2::ZERO)),
+        StreamAnchor,
+      ))
+      .id();
+    // The chunks the edge's parts start in, and the chunks resident, by row
+    let state = |world: &mut World| -> (Vec<IVec2>, Vec<IVec2>) {
+      let edge = edge_of(world, map, 1);
+      let parts = parts_by_chunk(world, edge)
+        .into_iter()
+        .flat_map(|(_, chunks, _)| chunks)
+        .collect();
+      let layer = layers_of(world, map)[1];
+      let resident = world
+        .get::<TileLayerData>(layer)
+        .map(|data| data.tiles.chunk_coords().collect())
+        .unwrap_or_default();
+      (by_row(parts), by_row(resident))
+    };
+    // The chunks round the anchor land, each with its part of the edge
+    let around: Vec<IVec2> = by_row(
+      (-1..=1)
+        .flat_map(|y| (-1..=1).map(move |x| IVec2::new(x, y)))
+        .collect(),
+    );
+    maps.frames_until(|world| {
+      let (parts, resident) = state(world);
+      resident == around && parts == resident
+    });
+    // Four chunks on, the chunks behind it unload and the chunks ahead
+    // land, the edge's parts following them
+    if let Some(mut at) = maps.world.get_mut::<Transform>(anchor) {
+      at.translation = middle(IVec2::new(4, 0));
+    }
+    maps.frames_until(|world| {
+      let (parts, resident) = state(world);
+      resident.contains(&IVec2::new(5, 0)) && !resident.contains(&IVec2::ZERO) && parts == resident
+    });
+  }
+
+  #[test]
+  fn a_floor_s_edge_traces_on_every_grid() {
+    // An L of floor 1 cells; its edge is the border of their union on the
+    // grid, where floor 1's layers stand
+    let cells: Vec<IVec2> = [(1, 1), (2, 1), (3, 1), (1, 2), (1, 3)]
+      .map(|(x, y)| IVec2::new(x, y))
+      .to_vec();
+    let hex = |axis, index| GridShape::Hexagonal {
+      axis,
+      index,
+      side: 12,
+    };
+    let staggered = |axis, index| GridShape::Staggered { axis, index };
+    for (shape, cell) in [
+      (GridShape::Orthogonal, UVec2::splat(16)),
+      (GridShape::Isometric, UVec2::new(64, 32)),
+      (
+        staggered(StaggerAxis::Y, StaggerIndex::Odd),
+        UVec2::new(64, 32),
+      ),
+      (
+        staggered(StaggerAxis::X, StaggerIndex::Even),
+        UVec2::new(64, 32),
+      ),
+      (hex(StaggerAxis::Y, StaggerIndex::Odd), UVec2::splat(32)),
+      (hex(StaggerAxis::X, StaggerIndex::Even), UVec2::splat(32)),
+      (
+        GridShape::Oblique {
+          skew: IVec2::new(8, 0),
+        },
+        UVec2::splat(32),
+      ),
+    ] {
+      let label = format!("{shape:?}");
+      let upper: Vec<(IVec2, u32)> = cells.iter().map(|&c| (c, 9)).collect();
+      let mut map = lattice_map(
+        shape,
+        cell,
+        Some(UVec2::new(6, 6)),
+        &[("ground", &[]), ("upper", &upper)],
+      );
+      map.layers[1].info.floor = 1;
+      map.layers[1].info.offset = Vec2::new(0.0, -(cell.y as f32));
+      let grid = map.grid();
+      let mut maps = MapWorld::new();
+      let handle = add(&mut maps.world, map);
+      let map = maps.spawn(MapRoot::new(handle));
+      maps.frame();
+      let edge = edge_of(&mut maps.world, map, 1);
+      assert_eq!(colliders(&maps.world, edge).floor, Floor::On(1), "{label}");
+      let layer = layers_of(&mut maps.world, map)[1];
+      assert_eq!(
+        place(&maps.world, edge),
+        place(&maps.world, layer),
+        "{label}"
+      );
+      // The edge's outline, and the border of the floor's cells, alike
+      let outline = |world: &mut World, cells: &[IVec2]| match (grid.hex_cells(), grid.lattice()) {
+        (Some(_), _) => {
+          let mut edges: Vec<(Px, Px)> = all_edges(world, edge)
+            .into_iter()
+            .filter_map(|(a, b)| Some((whole_px(a)?, whole_px(b)?)))
+            .collect();
+          edges.sort_unstable();
+          (edges, union_border(&grid, cells))
+        }
+        (None, Some(lattice)) => {
+          // On the lattice's squares, in lattice points
+          let squares: Vec<IVec2> = cells.iter().map(|&c| lattice.lattice_cell(c)).collect();
+          let traced = cut(&lattice_edges(world, edge, lattice.to_pixel));
+          (traced, square_border(&squares))
+        }
+        (None, None) => panic!("{label} has a lattice"),
+      };
+      let (traced, border) = outline(&mut maps.world, &cells);
+      assert_eq!(traced, border, "{label}");
+      // and after an edit filling the L's corner
+      let corner = IVec2::new(2, 2);
+      let tile = Some(Tile::new(0, 9));
+      assert!(MapsView::new(&mut maps.world).set_tile(map, "upper", corner, tile));
+      maps.step();
+      let (traced, border) = outline(&mut maps.world, &[&cells[..], &[corner]].concat());
+      assert_eq!(traced, border, "{label}: edited");
+    }
+  }
+
+  #[test]
+  fn a_map_without_floors_keeps_its_groups() {
+    // A floor and an island sharing the map's grid, a shifted layer and an
+    // icy one: three grids, on the map and on the shifted and icy layers
+    let ground: Vec<(IVec2, u32)> = (0..40).map(|x| (IVec2::new(x, 3), SOLID)).collect();
+    let mut map = code_map(
+      UVec2::new(40, 4),
+      &[
+        ("ground", &ground),
+        ("island", &[(IVec2::new(5, 1), SOLID)]),
+        ("shifted", &[(IVec2::new(10, 0), SOLID)]),
+        ("ice", &[(IVec2::new(20, 1), SOLID)]),
+      ],
+    );
+    map.layers[2].info.offset = Vec2::new(4.0, -32.0);
+    map.layers[3]
+      .info
+      .properties
+      .insert("friction", PropertyValue::Float(0.0));
+    let mut maps = MapWorld::new();
+    let handle = add(&mut maps.world, map);
+    let map = maps.spawn(MapRoot::new(handle));
+    maps.frame();
+    let layers = layers_of(&mut maps.world, map);
+    assert!(
+      maps
+        .world
+        .get::<crate::core::tilemap::MapFloors>(map)
+        .is_none()
+    );
+    assert!(floor_edges(&mut maps.world, map).is_empty());
+    assert_eq!(maps.world.query::<&MapFloor>().iter(&maps.world).count(), 0);
+    let mut holders: Vec<Entity> = maps
+      .world
+      .query::<(Entity, &TileColliders)>()
+      .iter(&maps.world)
+      .map(|(entity, _)| entity)
+      .collect();
+    holders.sort();
+    let mut want = vec![map, layers[2], layers[3]];
+    want.sort();
+    assert_eq!(holders, want);
+    let shared = colliders(&maps.world, map);
+    let mut floor = vec![IVec2::new(5, 1)];
+    floor.extend((0..40).map(|x| IVec2::new(x, 3)));
+    assert_eq!(solid_cells(&shared), floor);
+    assert_eq!(
+      (shared.friction, place(&maps.world, map)),
+      (0.5, Vec2::ZERO)
+    );
+    let shifted = colliders(&maps.world, layers[2]);
+    assert_eq!(solid_cells(&shifted), [IVec2::new(10, 0)]);
+    assert_eq!(place(&maps.world, layers[2]), Vec2::new(4.0, -32.0));
+    let ice = colliders(&maps.world, layers[3]);
+    assert_eq!(solid_cells(&ice), [IVec2::new(20, 1)]);
+    assert_eq!(ice.friction, 0.0);
+    for tiles in [&shared, &shifted, &ice] {
+      assert_eq!(tiles.floor, Floor::GROUND);
+    }
+    // A part for each grid's loops starting in a chunk, none on a floor
+    let parts: Vec<Entity> = maps
+      .world
+      .query_filtered::<Entity, crate::core::ecs::With<TilePart>>()
+      .iter(&maps.world)
+      .collect();
+    assert_eq!(parts.len(), 3);
+    for part in parts {
+      assert!(maps.world.get::<Floor>(part).is_none());
+    }
+  }
+
+  #[test]
+  fn a_discarded_map_takes_its_floor_edges_with_it() {
+    let raised = block((2, 1), (4, 2), PLAIN);
+    let mut maps = MapWorld::new();
+    let handle = add(
+      &mut maps.world,
+      storeyed(
+        Some(UVec2::new(8, 4)),
+        &[("ground", 0, Vec2::ZERO, &[]), ("raised", 1, UP, &raised)],
+      ),
+    );
+    let edges = |world: &mut World| world.query::<&MapFloor>().iter(world).count();
+    let map = maps.spawn(MapRoot::new(handle.clone()));
+    assert_eq!(edges(&mut maps.world), 1);
+    assert!(count_parts(&mut maps.world) > 0);
+
+    // Disabled, its edge goes with its colliders; enabled, it is back
+    maps.world.entity_mut(map).insert(Disabled);
+    maps.frame();
+    assert_eq!(edges(&mut maps.world), 0);
+    assert_eq!(count_parts(&mut maps.world), 0);
+    maps.world.entity_mut(map).remove::<Disabled>();
+    maps.frame();
+    assert_eq!(edges(&mut maps.world), 1);
+    assert!(count_parts(&mut maps.world) > 0);
+
+    // Put over by another root landing before any fixed step: the old edge
+    // goes, and the new map's comes
+    maps
+      .world
+      .entity_mut(map)
+      .insert(MapRoot::new(handle.clone()));
+    assert!(!MapsView::new(&mut maps.world).is_ready(map), "taken down");
+    let start = std::time::Instant::now();
+    while !MapsView::new(&mut maps.world).is_ready(map) {
+      maps.pre_update();
+      assert!(start.elapsed().as_secs() < 5, "{map} never landed again");
+      std::thread::yield_now();
+    }
+    assert_eq!(floor_edges(&mut maps.world, map).len(), 1);
+    assert_eq!(edges(&mut maps.world), 1);
+
+    // Its root taken away
+    maps.world.entity_mut(map).remove::<MapRoot>();
+    maps.frame();
+    maps.frame();
+    assert_eq!(edges(&mut maps.world), 0);
+    assert_eq!(count_parts(&mut maps.world), 0);
+
+    // Despawned
+    let map = maps.spawn(MapRoot::new(handle));
+    assert_eq!(edges(&mut maps.world), 1);
+    maps.world.despawn(map);
+    maps.frame();
+    assert_eq!(edges(&mut maps.world), 0);
+    assert_eq!(count_parts(&mut maps.world), 0);
   }
 }

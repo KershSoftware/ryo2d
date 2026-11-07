@@ -11,7 +11,7 @@ use glam::{IVec2, Vec2};
 use super::collision::{self, LayerView};
 use super::floors::{MapFloors, ground_offset};
 use super::jobs::Worker;
-use super::kinds::{TilesetStamp, sources, stamps, stamps_match};
+use super::kinds::{TilesetStamp, sources, stair_sources, stamps, stamps_match};
 use super::occluders;
 use super::padded::{self, PaddedCache, ToPad};
 use super::reload::{MapApplied, content_stamp};
@@ -983,6 +983,7 @@ fn landing_job(world: &World, map: Entity) -> Option<LandingJob> {
       properties: asset.properties.clone(),
       grid: asset.grid(),
       shapes: Arc::clone(&shapes),
+      stairs: stair_sources(asset, tilesets),
       tilesets: tileset_stamps.clone(),
     },
     shadows: occluders::Inputs {
@@ -1033,7 +1034,7 @@ impl LandingJob {
         _ => None,
       })
       .collect();
-    let collision = collision::prepare(self.map, &views, self.collision);
+    let collision = collision::prepare(self.map, &views, self.collision, floors.as_ref());
     let shadows = occluders::prepare(self.map, &views, self.shadows);
     drop(views);
     let paddings = self.pads.into_iter().filter_map(ToPad::pad).collect();
@@ -1442,8 +1443,10 @@ fn root_discarded(mut world: DeferredWorld, context: HookContext) {
   }
   super::stream::save_changed(&world, map);
   world.commands().queue(move |world: &mut World| {
-    // Its chunks go with it, and the entities they own
+    // Its chunks go with it, and the entities they own, and its floors'
+    // edges
     super::stream::despawn_chunk_owned(world, map);
+    collision::drop_edges(world, map);
     let Ok(mut entity) = world.get_entity_mut(map) else {
       return;
     };

@@ -412,5 +412,5 @@ Write the `Transform`; the body teleports on the next physics step. Call `ctx.sk
 - Do not scale a body with a collider for a visual effect; scale a child sprite.
 - A `Collider` without a `RigidBody` is fixed: it does not move when its `Transform` changes except by teleport.
 - Forces last one step; call them every step.
-- Queries see every storey unless you say `on_floor`: a line of sight on the ground floor is blocked by a wall upstairs until it does.
+- Queries see every storey unless you say `on_floor`: a line of sight on the ground floor is blocked by a wall upstairs, or by the rim of a tile map's raised storey (its edge, `ryo-tilemap`), until it does.
 - A `Floor` on a parent that is neither a body nor a collider reaches nothing: put it on the body (or the collider). A tile map's parts take `TileColliders::floor`, not a `Floor` on the map.

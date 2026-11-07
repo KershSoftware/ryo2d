@@ -546,12 +546,14 @@ impl<'w> MapsView<'w> {
   /// step, as for any edit.
   ///
   /// The colliders are the map's [`TileColliders`]: its own, and those of
-  /// any layer colliding as a grid of its own (another grid, offset or
+  /// any layer colliding as a grid of its own (another grid, place, floor or
   /// material), each placed by its entity's whole transform as it is now,
   /// as `grid` reads the layer's, so a map moved this frame blocks where
   /// its cells now are. Solid and slope cells block, and shape cells whose
-  /// shape covers the cell's centre; one-way cells stay walkable. A
-  /// disabled map has no colliders, so nothing blocks.
+  /// shape covers the cell's centre; one-way cells stay walkable. A higher
+  /// floor's edge ([`MapFloor`](super::MapFloor)) is not one of them: it
+  /// marks where that floor can be walked, and blocks nothing. A disabled
+  /// map has no colliders, so nothing blocks.
   ///
   /// On a map with a [`MapStream`](super::MapStream) a chunk the stream
   /// has not landed has no tiles to collide with yet, so its cells of an
