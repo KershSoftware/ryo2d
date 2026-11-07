@@ -288,3 +288,23 @@ Breaking changes are fine (owner's standing rule).
 - **Live vsync** depends on reconfiguring the surface on every backend. A backend that refuses it is logged, and the change applies at next start.
 - **Windows renames** can fail while another process holds the file. The retry covers scanners, not a file another program keeps open.
 - **Network folders** can make directory syncs and renames slower or non-atomic. Native guarantees assume a local disk.
+
+## Details settled at planning (2026-11-07, my calls)
+
+The code maps made at planning settled these. The owner may revisit any of them.
+
+- **Damaged settings file.** It is set aside to `system.json.damaged`. The settings backup is used if it parses; otherwise the defaults are.
+- **Headless runs** read and write settings in their memory store as well (never on disk), so tests can watch the file.
+- **Backup rotation** always reads and verifies the current file first. A slot list's header check does not count as verified.
+- **Temporary files** are named `<name>.<pid>-<n>.tmp`, so a game launched twice cannot interleave writes. Recovery picks the newest verified temp, by its header's save time.
+- **Gaps in version steps.** `EngineBuilder::build` returns an `Engine`, not a `Result`, so a gap panics at the `save_versions` or `game_settings_versioned` call, naming the type and the missing step.
+- **A newer container format** is reported as `NewerVersion { found, current: 2 }`.
+- **`SaveFinished`** carries `op: SaveOp { Save, Delete }`.
+- **A failed directory sync** after the final rename warns and reports success, since the data is in place.
+- **Window size in `Settings`** is in logical pixels, like the builder's `window_size`.
+- **Old error type.** Until the old API is removed, the old `SaveError` is renamed `SaveManagerError`.
+- **Game sections** store only their top-level fields that differ from `T::default()`, as `"game": { "<key>": { "version": N, "value": {…} } }`.
+- **Page-hidden flush.** The settings writer also flushes on `Occluded(true)` (the web's `visibilitychange`, and minimising or covering on native) and on `suspended`.
+- **Web mechanism.** `ryo2d::project!()` is a proc macro in `ryo2d-derive`, and games pass its result to `EngineBuilder::project(..)`. It reads the calling crate's Ryo.toml at compile time. Native release builds keep the `RYO_EMBED_*` values.
+- **The project table** is one file, `src/core/config/project_table.rs`. The crate interprets it, and `src/build.rs` includes it with its own macro to list the embed keys. `ResolvedSettings` and the builder's overrides stay hand-written, and a test checks that every entry reaches them.
+- **The saves demo's Upgrades page** writes its version-1 save from the old struct, as an older build would. There is no import API, so this keeps the page on public API on the web as well.
