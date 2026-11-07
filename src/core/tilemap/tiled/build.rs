@@ -343,7 +343,7 @@ fn tile_data(
       .float("sort_offset")
       .filter(|offset| offset.is_finite())
       .map_or(0.0, |offset| offset as f32),
-    stairs: storey(&properties, "stairs").map_err(|what| fail(path, place, what))?,
+    stairs: storey("stairs", properties.get("stairs")).map_err(|what| fail(path, place, what))?,
     properties,
     probability: raw.probability.unwrap_or(1.0),
     ..TileData::default()
@@ -802,28 +802,43 @@ fn layer_filter(props: &Properties) -> Filter {
   }
 }
 
-/// A reserved property naming a floor (a layer's `floor`, a tile's
-/// `stairs`): a whole number from 0 to 255, a float with no fraction
-/// counting; `None` left out. Any other value is an error, saying what is
-/// wrong
-fn storey(props: &Properties, name: &str) -> Result<Option<u8>, String> {
-  let Some(value) = props.get(name) else {
+/// The reserved property `name` naming a floor (a layer's `floor`, a
+/// tile's `stairs`), `value`: a whole number from 0 to 255, a float with no
+/// fraction counting; `None` left out. Any other value is an error, saying
+/// what is wrong
+fn storey(name: &str, value: Option<&PropertyValue>) -> Result<Option<u8>, String> {
+  let Some(value) = value else {
     return Ok(None);
   };
-  match props.int(name).and_then(|n| u8::try_from(n).ok()) {
+  match value.whole().and_then(|n| u8::try_from(n).ok()) {
     Some(floor) => Ok(Some(floor)),
-    None => {
-      let written = match value {
-        PropertyValue::Int(n) => n.to_string(),
-        PropertyValue::Float(f) => f.to_string(),
-        PropertyValue::Bool(b) => b.to_string(),
-        PropertyValue::String(text) => format!("{text:?}"),
-        other => format!("{other:?}"),
-      };
-      Err(format!(
-        "property {name:?}: {written} is not a whole number from 0 to 255"
-      ))
-    }
+    None => Err(format!(
+      "property {name:?}: {} is not a whole number from 0 to 255",
+      as_tiled_shows(value)
+    )),
+  }
+}
+
+/// A property's value as Tiled shows it, for an error
+fn as_tiled_shows(value: &PropertyValue) -> String {
+  match value {
+    PropertyValue::Int(n) => n.to_string(),
+    PropertyValue::Float(f) => f.to_string(),
+    PropertyValue::Bool(b) => b.to_string(),
+    PropertyValue::String(text) | PropertyValue::File(text) => format!("{text:?}"),
+    PropertyValue::Color(c) => format!("#{:02x}{:02x}{:02x}{:02x}", c.a, c.r, c.g, c.b),
+    PropertyValue::Object(id) => format!("object {id}"),
+    PropertyValue::Enum { value, .. } => value.clone(),
+    PropertyValue::Class { ty, .. } if ty.is_empty() => "a class".to_string(),
+    PropertyValue::Class { ty, .. } => format!("a {ty}"),
+    PropertyValue::List(items) => format!(
+      "[{}]",
+      items
+        .iter()
+        .map(as_tiled_shows)
+        .collect::<Vec<_>>()
+        .join(", ")
+    ),
   }
 }
 
@@ -893,12 +908,17 @@ impl Builder<'_, '_> {
         .ok_or_else(|| fail(&path, &place, format!("tintcolor {text:?} is not a color")))?,
       None => Color::WHITE,
     };
-    // Read before a group recurses: a group's floor passes to its layers
-    // that name none (its other properties are its own)
-    let props = self
-      .px
-      .read(&place, &raw.properties, raw.class.as_deref())?;
-    let floor = storey(&props, "floor").map_err(|what| fail(&path, &place, what))?;
+    let group = raw.ty == "group";
+    // A group's floor (its own, or its class's default) passes to its
+    // layers that name none; its other properties are its own, not read
+    let group_floor = if group {
+      let floor = self
+        .px
+        .read_one(&place, &raw.properties, raw.class.as_deref(), "floor")?;
+      storey("floor", floor.as_ref()).map_err(|what| fail(&path, &place, what))?
+    } else {
+      None
+    };
     let here = Inherit {
       offset: inherit.offset + Vec2::new(raw.offsetx, raw.offsety),
       opacity: inherit.opacity * raw.opacity.unwrap_or(1.0),
@@ -911,12 +931,16 @@ impl Builder<'_, '_> {
       } else {
         own_blend
       },
-      floor: floor.or(inherit.floor),
+      floor: group_floor.or(inherit.floor),
     };
-    if raw.ty == "group" {
+    if group {
       return self.layers(raw.layers, here, depth + 1, cx);
     }
     let id = self.layer_id(&raw, &place)?;
+    let props = self
+      .px
+      .read(&place, &raw.properties, raw.class.as_deref())?;
+    let floor = storey("floor", props.get("floor")).map_err(|what| fail(&path, &place, what))?;
     let is_tiles = raw.ty == "tilelayer";
     let mut used = Vec::new();
     let kind = match raw.ty.as_str() {
@@ -983,7 +1007,7 @@ impl Builder<'_, '_> {
     let mut info = crate::core::tilemap::LayerInfo::new(id, raw.name);
     info.class = raw.class.filter(|c| !c.is_empty());
     info.offset = here.offset;
-    info.floor = here.floor.unwrap_or(0);
+    info.floor = floor.or(here.floor).unwrap_or(0);
     info.opacity = here.opacity;
     info.tint = here.tint;
     info.parallax = here.parallax;

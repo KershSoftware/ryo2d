@@ -435,14 +435,19 @@ mod tests {
   #[test]
   fn a_group_layer_s_floor_and_offset_pass_to_its_children() {
     // A storey made as a group: its floor and offset reach its layers, a
-    // nested group's too, but a layer with a floor of its own keeps it
+    // nested group's too, but a layer with a floor of its own keeps it. The
+    // group's other reserved properties are its own: none reach its layers
     let floor = |n: u8| {
       (
         format!(r#","properties":[{{"name":"floor","type":"int","value":{n}}}]"#),
         format!(r#"<properties><property name="floor" type="int" value="{n}"/></properties>"#),
       )
     };
-    let ((storey_j, storey_x), (mast_j, mast_x), (hold_j, hold_x)) = (floor(2), floor(3), floor(0));
+    let ((mast_j, mast_x), (hold_j, hold_x)) = (floor(3), floor(0));
+    let storey_j = r#","properties":[{"name":"floor","type":"int","value":2},
+      {"name":"collides","type":"bool","value":false},{"name":"y_sort","type":"bool","value":true}]"#;
+    let storey_x = r#"<properties><property name="floor" type="int" value="2"/>
+      <property name="collides" type="bool" value="false"/><property name="y_sort" type="bool" value="true"/></properties>"#;
     let json = format!(
       r#"{{"type":"map","orientation":"orthogonal","width":2,"height":2,"tilewidth":16,"tileheight":16,"tilesets":[],
         "layers":[
@@ -487,7 +492,102 @@ mod tests {
         ],
         "{path}"
       );
+      // Tile layers collide as they do by default, and nothing is y-sorted
+      let flags: Vec<(&str, bool, bool)> = map
+        .layers
+        .iter()
+        .map(|l| (l.info.name.as_str(), l.info.collides, l.info.y_sorted))
+        .collect();
+      assert_eq!(
+        flags,
+        [
+          ("ground", true, false),
+          ("deck", true, false),
+          ("mast", true, false),
+          ("flag", false, false),
+          ("hold", true, false),
+          ("sky", true, false),
+        ],
+        "{path}"
+      );
     }
+  }
+
+  /// A project whose enum Mood has two values, whose class Storey puts a
+  /// layer on floor 1, and whose class Attic on floor "high"
+  const STOREY_PROJECT: &str = r#"{"propertyTypes":[
+    {"name":"Mood","type":"enum","values":["calm","angry"],"valuesAsFlags":false},
+    {"name":"Storey","type":"class","members":[{"name":"floor","type":"int","value":1}]},
+    {"name":"Attic","type":"class","members":[{"name":"floor","type":"string","value":"high"}]}]}"#;
+
+  /// A map holding the group "storey" of `fields` (each followed by a
+  /// comma), around the tile layer "ground"
+  fn group_json(fields: &str) -> String {
+    let group = format!(
+      r#"{{"id":2,"name":"storey","type":"group",{fields}"layers":[{}]}}"#,
+      tile_layer("")
+    );
+    map_json("", &group, "")
+  }
+
+  /// The map `json` loaded as `path` over the fixtures and `STOREY_PROJECT`
+  fn load_storeys(path: &str, json: &str) -> Result<TileMap, String> {
+    let mut world = world_over(files_with(&[
+      (path, json),
+      ("project.tiled-project", STOREY_PROJECT),
+    ]));
+    load_in(&mut world, path)
+  }
+
+  #[test]
+  fn a_group_with_a_property_the_project_cannot_read_still_loads() {
+    // An enum value the project no longer has: a layer is refused for it,
+    // as before, and a group, whose other properties are not read, is not
+    let mood = r#""properties":[{"name":"mood","type":"int","propertytype":"Mood","value":5}],"#;
+    let layer = map_json(
+      "",
+      &tile_layer(&format!(",{}", mood.trim_end_matches(','))),
+      "",
+    );
+    let error = load_storeys("m.tmj", &layer).expect_err("a layer's bad enum refuses");
+    assert!(error.contains(r#"property "mood""#), "{error}");
+    let map = load_storeys("m.tmj", &group_json(mood)).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(info(&map, "ground").floor, 0);
+    assert!(info(&map, "ground").properties.get("mood").is_none());
+  }
+
+  #[test]
+  fn a_group_whose_class_the_project_lacks_neither_warns_nor_refuses() {
+    let group = load_storeys("ghost-group.tmj", &group_json(r#""class":"Ghost","#));
+    assert_eq!(group.map(|map| info(&map, "ground").floor), Ok(0));
+    assert_eq!(warnings_about("ghost-group.tmj"), Vec::<String>::new());
+    // A layer of the class is warned about, as before
+    let layer = map_json("", &tile_layer(r#","class":"Ghost""#), "");
+    load_storeys("ghost-layer.tmj", &layer).unwrap_or_else(|e| panic!("{e}"));
+    let warned = warnings_about("ghost-layer.tmj");
+    assert!(
+      warned.len() == 1 && warned[0].contains("class `Ghost`"),
+      "{warned:?}"
+    );
+  }
+
+  #[test]
+  fn a_group_class_s_floor_default_puts_its_layers_on_that_floor() {
+    let floor_of = |fields: &str| {
+      load_storeys("m.tmj", &group_json(fields)).map(|map| info(&map, "ground").floor)
+    };
+    assert_eq!(floor_of(r#""class":"Storey","#), Ok(1));
+    // What the group writes lies over the class's default
+    let written = r#""class":"Storey","properties":[{"name":"floor","type":"int","value":2}],"#;
+    assert_eq!(floor_of(written), Ok(2));
+    // A class's default that is no floor refuses the map, naming the group
+    let error = floor_of(r#""class":"Attic","#).expect_err("floor \"high\"");
+    assert!(
+      error.contains(
+        r#"layer "storey": property "floor": "high" is not a whole number from 0 to 255"#
+      ),
+      "{error}"
+    );
   }
 
   #[test]
@@ -527,6 +627,28 @@ mod tests {
         ),
         (_, loaded) => panic!("{value}: {:?}", loaded.map(|m| info(&m, "ground").floor)),
       }
+    }
+    // A value of another type shows as Tiled shows it
+    for (value, shown) in [
+      (r##""type":"color","value":"#ff102030""##, "#ff102030"),
+      (r#""type":"file","value":"up.png""#, r#""up.png""#),
+      (
+        r#""type":"string","propertytype":"Material","value":"metal""#,
+        "metal",
+      ),
+      (
+        r#""type":"class","propertytype":"Drop","value":{}"#,
+        "a Drop",
+      ),
+    ] {
+      let props = format!(r#","properties":[{{"name":"floor",{value}}}]"#);
+      let error = failure(&map_json("", &tile_layer(&props), ""));
+      assert!(
+        error.contains(&format!(
+          r#"property "floor": {shown} is not a whole number from 0 to 255"#
+        )),
+        "{value}: {error}"
+      );
     }
     // A tile's stairs the same, the tile named in its tileset
     let steps = r#"{"firstgid":1,"name":"steps","tilewidth":16,"tileheight":16,"tilecount":16,"columns":4,

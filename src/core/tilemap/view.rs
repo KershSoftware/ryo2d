@@ -397,16 +397,16 @@ impl<'w> MapsView<'w> {
   }
 
   /// The floor's height as a world vector, through the map's transform as
-  /// it is now: how far up the map draws `floor`, which follows the map
-  /// moved, turned or scaled. `GROUND` gives zero on any landed map; a
-  /// floor no layer of `map` is on, `Every`, or a map not landed gives
-  /// `None` ([`MapFloors::lift`])
+  /// it is now (turned and scaled with the map; where it stands adds
+  /// nothing): what the floor is drawn lifted by. `GROUND` gives zero on
+  /// any landed map; a floor no layer of `map` is on, `Every`, or a map not
+  /// landed gives `None` ([`MapFloors::lift`])
   ///
   /// ```
   /// use ryo2d::prelude::*;
   ///
-  /// /// Where a marker at a ground position draws on the map's first storey
-  /// fn on_first_storey(ctx: &mut SceneContext<'_>, map: Entity, ground: Vec2) -> Option<Vec2> {
+  /// /// A ground position raised by the map's first storey's height
+  /// fn raised(ctx: &mut SceneContext<'_>, map: Entity, ground: Vec2) -> Option<Vec2> {
   ///   Some(ground + ctx.maps().lift(map, Floor::On(1))?)
   /// }
   /// ```

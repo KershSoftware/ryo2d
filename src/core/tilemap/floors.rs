@@ -1,12 +1,12 @@
 //! Storeys: a map's layers on floors above the ground (raised ground, upper
-//! floors, bridges), each floor drawn as high as Tiled draws it.
+//! floors, bridges), each floor as high as Tiled draws it.
 //!
 //! A layer's floor is its `LayerInfo::floor`. A floor's height (its lift)
 //! is the vertical part of the offset of its bottom layer, the first in
 //! draw order on it; the ground floor's is zero. A layer above the ground
 //! floor stands in ground space, at its offset less its floor's height, so
 //! its objects, class tiles, colliders and shadows sit where characters
-//! stand, and drawing adds the height back.
+//! stand, and drawing is to add the height back.
 
 use glam::Vec2;
 
@@ -22,7 +22,7 @@ use crate::core::ecs::{Component, Floor};
 /// ```
 /// use ryo2d::prelude::*;
 ///
-/// /// How far up the map draws its first storey, in its own pixels
+/// /// How high the map's first storey is, in its own pixels
 /// fn first_storey(ctx: &mut SceneContext<'_>, map: Entity) -> Option<Vec2> {
 ///   ctx.maps().floors(map)?.lift(Floor::On(1))
 /// }
@@ -52,8 +52,9 @@ impl MapFloors {
     (lifts.len() > 1).then_some(MapFloors { lifts })
   }
 
-  /// The floor's height as drawn, in map pixels: `GROUND` gives
-  /// `Some(Vec2::ZERO)`; a floor no layer is on, or `Every`, gives `None`
+  /// The floor's height in map pixels, what it is drawn lifted by: `GROUND`
+  /// gives `Some(Vec2::ZERO)`; a floor no layer is on, or `Every`, gives
+  /// `None`
   pub fn lift(&self, floor: Floor) -> Option<Vec2> {
     let number = usize::from(floor.number()?);
     self.lifts.get(number).copied().flatten()

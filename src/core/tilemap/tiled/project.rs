@@ -246,6 +246,36 @@ impl<'a> Props<'a> {
     }
     result.map_err(|e| AssetError::decode(&self.path, format!("{place}: {e}")))
   }
+
+  /// The property `name` alone of something of `class`: the one written
+  /// (over the class's default for it, as `read` lays them), else that
+  /// default, converted as `read` converts it; `None` if neither is there.
+  /// Nothing else of the thing's properties is converted or counted against
+  /// the file, and a class the project lacks is not warned about: for a
+  /// group layer, whose `floor` is the engine's and whose other properties
+  /// are not read
+  pub(crate) fn read_one(
+    &self,
+    place: &str,
+    raw: &[RawProperty],
+    class: Option<&str>,
+    name: &str,
+  ) -> Result<Option<PropertyValue>, AssetError> {
+    let written = raw.iter().find(|p| p.name == name);
+    let default = class
+      .filter(|c| !c.is_empty())
+      .and_then(|class| self.project?.classes.get(class))
+      .and_then(|def| def.members.iter().find(|m| m.name == name));
+    let (ty, custom, value) = match (written, default) {
+      (Some(p), Some(m)) => (&p.ty, p.propertytype.as_deref(), merge(&m.value, &p.value)),
+      (Some(p), None) => (&p.ty, p.propertytype.as_deref(), p.value.clone()),
+      (None, Some(m)) => (&m.ty, m.property_type.as_deref(), m.value.clone()),
+      (None, None) => return Ok(None),
+    };
+    let context = (self.project, &mut Vec::new(), &mut Budget::thing());
+    convert(ty, custom, &value, context, 0)
+      .map_err(|e| AssetError::decode(&self.path, format!("{place}: property {name:?}: {e}")))
+  }
 }
 
 /// The properties of `raw`, for a thing of class `class`, resolved against

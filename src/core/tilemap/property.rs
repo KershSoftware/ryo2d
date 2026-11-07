@@ -28,6 +28,17 @@ pub enum PropertyValue {
   List(Vec<PropertyValue>),
 }
 
+impl PropertyValue {
+  /// A whole number: an int, or a float with no fraction
+  pub(crate) fn whole(&self) -> Option<i64> {
+    match self {
+      PropertyValue::Int(i) => Some(*i),
+      PropertyValue::Float(f) if f.fract() == 0.0 && f.abs() < 9.0e15 => Some(*f as i64),
+      _ => None,
+    }
+  }
+}
+
 /// Named properties in the order they were added
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Properties {
@@ -50,11 +61,7 @@ impl Properties {
 
   /// An int property; a float with no fraction counts
   pub fn int(&self, name: &str) -> Option<i64> {
-    match self.get(name)? {
-      PropertyValue::Int(i) => Some(*i),
-      PropertyValue::Float(f) if f.fract() == 0.0 && f.abs() < 9.0e15 => Some(*f as i64),
-      _ => None,
-    }
+    self.get(name)?.whole()
   }
 
   /// A float property; an int counts
