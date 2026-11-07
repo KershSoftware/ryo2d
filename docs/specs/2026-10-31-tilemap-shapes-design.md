@@ -191,6 +191,7 @@ Mapping the code for floors found what the calls above leave open. These settle 
 - **Stairs.**
   - An entity opts in with `Climber`.
   - A run of stair cells leads from its layer's floor to the floor its `stairs` names. Its top is the sides it shares with the upper floor's cells, and its bottom is the sides it shares with cells outside both the run and the upper floor.
+    - *Ruled in building (2026-11-07):* the bottom is the run's foot, the farthest of those outside sides from its top along the run, so the lift eases over the run's whole length (`stairs.rs`, `ends`; tilemap module notes).
   - A climber's drawn height eases between the two floors' heights by its progress from bottom to top. The progress is worked out each frame from its drawn position, so it blends like movement.
   - **A climber changes floor halfway along the run, not where it leaves the stairs** as the call above says. The upper floor's edge encloses its stairs, and the lower floor may have walls where the stairs arrive. Switching at the middle lets a character leave the stairs at both ends without opening either.
   - A `FloorChanged` message names each change.
@@ -209,6 +210,7 @@ Mapping the code for floors found what the calls above leave open. These settle 
 - **Paths.**
   - `MapsView::navigation` gives one floor's grid.
   - `MapsView::floor_navigation` gives every floor's grid, linked at each stair cell between the floors the stairs join, at no cost, since the cell is the same ground.
+    - *Ruled in building (2026-11-07):* a link costs a tie-breaking 1e-3 of the grid's shortest step (`LINK_COST`), so a path crosses a run of stairs once (navigation module notes).
   - Steps carry their floor (`PathNode::floor`). Smoothing never skips across a link.
 
 ## Stages
