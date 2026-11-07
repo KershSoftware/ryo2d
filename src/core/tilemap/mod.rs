@@ -24,6 +24,7 @@ pub mod padded;
 mod property;
 mod reload;
 mod spawn;
+mod stairs;
 mod stream;
 #[cfg(test)]
 pub(crate) mod test_util;
@@ -56,6 +57,7 @@ pub use spawn::{
   IntGridKey, MapEvent, MapIds, MapLayerRef, MapObject, MapRoot, MapTile, TileLayerData,
 };
 pub(crate) use spawn::{MapLayers, follow_chunk_swaps, map_asset, spawn_maps};
+pub use stairs::{Climber, FloorChanged};
 pub(crate) use stream::stream_maps;
 pub use stream::{
   ChunkEvent, ChunkOwned, ChunkRequest, ChunkTiles, MapStream, SavedChunks, StreamAnchor,
@@ -107,6 +109,12 @@ pub(crate) fn register_tilemap_systems(schedules: &mut EngineSchedules) {
     collision::sync_map_colliders
       .in_set(FixedSet::Movement)
       .before(crate::core::physics::rebuild_tile_colliders),
+  );
+  schedules.add_systems(
+    Phase::FixedUpdate,
+    (stairs::sync_stair_runs, stairs::climb_stairs)
+      .chain()
+      .in_set(FixedSet::Movement),
   );
   schedules.add_systems(
     Phase::PostUpdate,

@@ -291,6 +291,28 @@ if let Some(state) = ctx.world.get::<CharacterState>(self.player)
 - **Edits keep the ground:** a tile edit (`ctx.maps().set_tile`, Wang painting, a reload of the map's file) reshapes only the parts whose outlines changed, in place, so a character standing anywhere on the map keeps its `floor`, and no `CollisionStopped` / `CollisionStarted` is sent for it. A tileset save that changes collision shapes rebuilds the map's parts whole (new entities, `floor` names the new one), though nothing falls through; on a map with storeys, so does one that changes stairs.
 - **A moving platform flush with the ground:** a character level with both the map's ground and a moving platform (a kinematic or dynamic body) rides the platform, so a lift sitting in the floor carries a character who walks onto it.
 
+## Climbing between storeys
+
+On a tile map with storeys (`ryo-tilemap`, Floors), a character climbs from one to another on stairs: tiles whose `stairs` property names the storey they lead up to, painted on the lower storey's layer as a run sticking out from the upper storey (`ryo-tilemap`, Stairs). Give the character `Climber`:
+
+- **It changes storey halfway along a run**, in the fixed step before physics: onto the upper storey once it is halfway up or more, back onto the lower one below that, so that step's sweep already meets the new storey's walls and edge and no longer the old one's. Halfway, because the upper storey's edge encloses its stairs and the lower storey may have walls where the stairs arrive: the character steps off the run at either end without either being opened. A character on the upper storey stays inside its edge, stairs included, and one on the lower storey walks round the stairs' sides as the ground's walls allow.
+- **`FloorChanged { entity, from, to }`** names each change (`ryo-messages`), for footsteps on a new surface, music or a camera zone. `update` reads it one step after it is written, like the movement messages.
+- **It draws eased** between the two storeys' heights by how far up the run it is, with its children, worked out from where it draws each frame; its `Transform` stays on the ground, as on any storey.
+- **Where it is read:** where the last step left it, so the change lands one step after it crosses the middle (a character at 160 px/s moves under 3 px a step at 60 Hz). A teleport onto a run's upper half changes the storey of a climber on either of its storeys the next step; a teleport elsewhere keeps the storey, so set its `Floor` yourself.
+- **Without `Climber`** a character keeps its storey on stairs: an enemy that should stay on the ground floor walks over the stairs' cells as plain ground.
+
+<!-- given: at: Vec2 -->
+```rust
+// A player who walks the town's storeys: it climbs the stairs it reaches
+ctx.world.spawn((
+  Transform::from_translation(at),
+  Collider::circle(6.0),
+  TopDownMovement::default(),
+  MoveBindings::default(),
+  Climber,
+));
+```
+
 ## Knockback
 
 `Knockback::apply(ctx.world, entity, direction, force)` pushes in a direction with a force (px/s) that decays (see `ryo-animation`). What the push does depends on the target:
@@ -309,7 +331,8 @@ The knockback system runs in `FixedSet::Movement`, after `update`: a hit applied
 ```
 Scene::update, then the scene's FixedUpdate systems     your Velocity / MoveIntent / Transform writes
 FixedSet::Movement                                       zone behaviours (last step's triggers), tile rebuilds,
-                                                         bindings -> MoveIntent, knockback, presets -> Velocity
+                                                         bindings -> MoveIntent, knockback, presets -> Velocity,
+                                                         climbers change storey on stairs
 FixedSet::Physics                                        characters swept, bodies stepped, messages written
 ```
 

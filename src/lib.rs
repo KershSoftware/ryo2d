@@ -210,15 +210,16 @@ pub mod prelude {
 
   // Tilemaps
   pub use crate::core::tilemap::{
-    CHUNK_SIZE, CellOutline, ChunkEvent, ChunkOwned, ChunkRequest, ChunkTiles, GridShape,
-    ImageLayer, IntGrid, IntGridKey, Lattice, LayerGrid, LayerInfo, LayerKind, LayerRef, LdtkLevel,
-    LdtkLoader, LdtkProject, MapEvent, MapFloor, MapFloors, MapGrid, MapIds, MapLayer, MapLayerRef,
-    MapObject, MapObjectData, MapOccluder, MapRoot, MapStream, MapTile, MapsView, Neighbour,
-    NeighbourDirection, ObjectShape, Properties, PropertyValue, SavedChunks, StaggerAxis,
-    StaggerIndex, StreamAnchor, StreamStatus, Tile, TileData, TileFlip, TileFrame, TileGrid,
-    TileLayerData, TileMap, TileShape, TileTransformations, TileWorld, TileWorldLoader,
-    TiledMapLoader, TiledTilesetLoader, Tileset, TilesetImage, TilesetSource, URect, WangColor,
-    WangKind, WangSet, WangTile, WorldLayout, WorldLevel, WorldLevelOf, WorldRef,
+    CHUNK_SIZE, CellOutline, ChunkEvent, ChunkOwned, ChunkRequest, ChunkTiles, Climber,
+    FloorChanged, GridShape, ImageLayer, IntGrid, IntGridKey, Lattice, LayerGrid, LayerInfo,
+    LayerKind, LayerRef, LdtkLevel, LdtkLoader, LdtkProject, MapEvent, MapFloor, MapFloors,
+    MapGrid, MapIds, MapLayer, MapLayerRef, MapObject, MapObjectData, MapOccluder, MapRoot,
+    MapStream, MapTile, MapsView, Neighbour, NeighbourDirection, ObjectShape, Properties,
+    PropertyValue, SavedChunks, StaggerAxis, StaggerIndex, StreamAnchor, StreamStatus, Tile,
+    TileData, TileFlip, TileFrame, TileGrid, TileLayerData, TileMap, TileShape,
+    TileTransformations, TileWorld, TileWorldLoader, TiledMapLoader, TiledTilesetLoader, Tileset,
+    TilesetImage, TilesetSource, URect, WangColor, WangKind, WangSet, WangTile, WorldLayout,
+    WorldLevel, WorldLevelOf, WorldRef,
   };
 
   // Render pipeline

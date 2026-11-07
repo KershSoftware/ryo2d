@@ -160,7 +160,7 @@ pub(super) fn stair_sources(
 }
 
 /// The floor `tile` is stairs up to, by its tileset's stairs (`stairs`)
-fn stairs_of(stairs: &[Option<StairSource>], tile: Tile) -> Option<u8> {
+pub(super) fn stairs_of(stairs: &[Option<StairSource>], tile: Tile) -> Option<u8> {
   let source = stairs.get(usize::from(tile.tileset))?.as_ref()?;
   source.tiles.get(&tile.id).copied()
 }

@@ -261,6 +261,11 @@ impl Time {
     self.in_fixed = in_fixed;
   }
 
+  /// Whether a fixed step is running
+  pub(crate) fn in_fixed(&self) -> bool {
+    self.in_fixed
+  }
+
   /// The instant the current frame started, for frame pacing.
   pub fn frame_start(&self) -> Option<Instant> {
     self.frame_start

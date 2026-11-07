@@ -12,23 +12,28 @@
 //!
 //! An entity on a floor stands in ground space too: [`lift_floored`]
 //! gives it, and everything below it in the hierarchy, its floor's height
-//! on the map under it ([`DrawLift`]), which the draw sites add.
+//! on the map under it ([`DrawLift`]), which the draw sites add; a climber
+//! on stairs, a height eased between its stairs' two floors (`stairs.rs`).
 
 use glam::{Affine2, Vec2};
 
 use super::LayerInfo;
 use super::spawn::{MapLayers, TileLayerData};
+use super::stairs::{Climber, StairRun};
+use crate::core::ecs::interpolate::render_global;
 use crate::core::ecs::{
   Allow, Changed, ChildOf, Children, Commands, Component, DetectChangesMut, Disabled, DrawLift,
-  Entity, Floor, GlobalTransform, Local, Or, ParentPlaced, Query, RemovedComponents, Transform,
-  With, Without, entity_order,
+  Entity, Floor, GlobalTransform, Local, Or, ParentPlaced, PreviousGlobalTransform, Query,
+  RemovedComponents, Res, Transform, With, Without, entity_order,
 };
+use crate::core::time::Time;
 
 /// A map's floors and their heights, on its [`MapRoot`](super::MapRoot)
 /// entity when some layer is above the ground floor (a map without one has
 /// none). A floor's height is how far up Tiled draws it, in map pixels:
 /// the vertical offset of its bottom layer. Read it in the world, through
 /// the map's transform, with [`MapsView::lift`](super::MapsView::lift).
+/// Two maps' floors are equal when their heights are.
 ///
 /// ```
 /// use ryo2d::prelude::*;
@@ -38,11 +43,22 @@ use crate::core::ecs::{
 ///   ctx.maps().floors(map)?.lift(Floor::On(1))
 /// }
 /// ```
-#[derive(Component, Clone, Debug, PartialEq)]
+#[derive(Component, Clone, Debug)]
 pub struct MapFloors {
   /// Each floor's height by its number, `None` for a floor no layer is on;
   /// the ground floor's is zero
   lifts: Vec<Option<Vec2>>,
+  /// The map's runs of stairs, brought up to its tiles each fixed step
+  /// (`stairs::sync_stair_runs`)
+  pub(crate) runs: Vec<StairRun>,
+}
+
+impl PartialEq for MapFloors {
+  /// Equal heights: the runs are worked out from the tiles, so a reload
+  /// that keeps the heights keeps the component, and its runs follow
+  fn eq(&self, other: &MapFloors) -> bool {
+    self.lifts == other.lifts
+  }
 }
 
 impl MapFloors {
@@ -60,7 +76,10 @@ impl MapFloors {
       }
       lifts[floor].get_or_insert(Vec2::new(0.0, info.offset.y));
     }
-    (lifts.len() > 1).then_some(MapFloors { lifts })
+    (lifts.len() > 1).then_some(MapFloors {
+      lifts,
+      runs: Vec::new(),
+    })
   }
 
   /// The floor's height in map pixels, what it is drawn lifted by: `GROUND`
@@ -152,8 +171,8 @@ const MAX_DEPTH: usize = 256;
 
 /// A map with floors, for finding the map under an entity: the box its tile
 /// layers' cells cover, in its pixels
-struct MapArea {
-  map: Entity,
+pub(super) struct MapArea {
+  pub(super) map: Entity,
   /// The map's pixels to the world, and back
   to_world: Affine2,
   to_map: Affine2,
@@ -207,10 +226,27 @@ impl MapArea {
   }
 
   /// Whether the world point `at` lies over the map's cells
-  fn holds(&self, at: Vec2) -> bool {
-    let local = self.to_map.transform_point2(at);
+  pub(super) fn holds(&self, at: Vec2) -> bool {
+    let local = self.local(at);
     local.cmpge(self.min).all() && local.cmple(self.max).all()
   }
+
+  /// The world point `at` in the map's pixels
+  pub(super) fn local(&self, at: Vec2) -> Vec2 {
+    self.to_map.transform_point2(at)
+  }
+}
+
+/// The areas of the maps with floors (`maps`) into `areas`, in entity
+/// order, for finding the map under an entity: the first that holds it
+pub(super) fn find_areas(areas: &mut Vec<MapArea>, maps: &Maps, tiles: &TileLayers) {
+  areas.clear();
+  areas.extend(
+    maps
+      .iter()
+      .filter_map(|(map, _, global, layers)| MapArea::of(map, global, layers, tiles)),
+  );
+  areas.sort_unstable_by_key(|area| entity_order(&area.map));
 }
 
 /// What `lift_floored` keeps between runs, so a warm run allocates nothing
@@ -266,7 +302,7 @@ type Relinked<'w, 's> = Query<
 >;
 
 /// The maps with floors, and those moved, turned or given new floors
-type Maps<'w, 's> = Query<
+pub(super) type Maps<'w, 's> = Query<
   'w,
   's,
   (
@@ -287,7 +323,7 @@ type MapsChanged<'w, 's> = Query<
 >;
 
 /// A map's tile layers, where they stand in its pixels
-type TileLayers<'w, 's> = Query<'w, 's, (&'static Transform, &'static TileLayerData)>;
+pub(super) type TileLayers<'w, 's> = Query<'w, 's, (&'static Transform, &'static TileLayerData)>;
 
 /// The hierarchy, walked down from an entity on a floor (stopping at the
 /// entities on a floor of their own) and up from a loose one
@@ -302,6 +338,19 @@ type HasFloor<'w, 's> = Query<'w, 's, (), (With<Floor>, Allow<Disabled>)>;
 
 /// Every entity's lift, disabled ones' too
 type Lifts<'w, 's> = Query<'w, 's, &'static mut DrawLift, Allow<Disabled>>;
+
+/// The climbers, whose lift eases with where they draw on stairs (from
+/// where they stood the step before, for an interpolated one), and the
+/// clocks
+type Climbing<'w, 's> = (
+  Query<
+    'w,
+    's,
+    (Entity, Option<&'static PreviousGlobalTransform>),
+    (With<Climber>, Without<ParentPlaced>, Allow<Disabled>),
+  >,
+  Option<Res<'w, Time>>,
+);
 
 /// After transforms propagate, in each fixed step (before trails record,
 /// so a trail spawned on a floor records its first point lifted) and each
@@ -318,11 +367,18 @@ type Lifts<'w, 's> = Query<'w, 's, &'static mut DrawLift, Allow<Disabled>>;
 /// `Children` changed, and every entity on a floor once a map with floors
 /// moved, turned, or gained or lost its floors; an entity that lost its
 /// `Floor`, or a lifted one moved to another parent or given children,
-/// takes the lift of its nearest ancestor on a floor, or none. A map's
-/// box changing on its own (cells landing or edited past it, the map
-/// disabled) reaches an entity when it next moves. With no entity on a
-/// floor and none lifted it costs two empty looks, so maps and entities
-/// without floors pay nothing for it
+/// takes the lift of its nearest ancestor on a floor, or none. A map with
+/// floors enabled again lifts everything on a floor again too. A map's box
+/// changing on its own (cells landing or edited past it, the map disabled)
+/// reaches an entity when it next moves.
+///
+/// A [`Climber`] is lifted again on every run while a map with floors is
+/// there: on a run of stairs of one of its floors it takes the run's two
+/// floors' heights eased by how far up it is, where it draws (each frame,
+/// between the last two steps by the overstep, as the draw sites place it;
+/// in a fixed step, where the step left it). With no entity on a floor and
+/// none lifted it costs two empty looks, so maps and entities without
+/// floors pay nothing for it
 #[allow(clippy::too_many_arguments)] // one query or removal reader per input
 pub(crate) fn lift_floored(
   floored: Floored,
@@ -331,11 +387,13 @@ pub(crate) fn lift_floored(
   (maps, maps_changed, tiles): (Maps, MapsChanged, TileLayers),
   (children, parents, has_floor): Tree,
   mut lifts: Lifts,
-  (mut unfloored, mut unparented, mut unmapped): (
+  (mut unfloored, mut unparented, mut unmapped, mut enabled): (
     RemovedComponents<Floor>,
     RemovedComponents<ChildOf>,
     RemovedComponents<MapFloors>,
+    RemovedComponents<Disabled>,
   ),
+  (climbers, time): Climbing,
   mut commands: Commands,
   mut state: Local<Lifting>,
 ) {
@@ -343,6 +401,7 @@ pub(crate) fn lift_floored(
     unfloored.clear();
     unparented.clear();
     unmapped.clear();
+    enabled.clear();
     return;
   }
   let Lifting {
@@ -352,13 +411,22 @@ pub(crate) fn lift_floored(
     stack,
   } = &mut *state;
 
-  // A map with floors moved, turned, landed or went: everything on a floor
-  // stands somewhere else on it
+  // A map with floors moved, turned, landed, went or was enabled again:
+  // everything on a floor stands somewhere else on it
   let unmapped = unmapped.read().count() > 0;
-  if unmapped || !maps_changed.is_empty() {
+  let enabled = enabled
+    .read()
+    .filter(|&entity| maps.contains(entity))
+    .count()
+    > 0;
+  if unmapped || enabled || !maps_changed.is_empty() {
     seeds.extend(floored.iter().map(|(entity, ..)| entity));
   } else {
     seeds.extend(restood.iter());
+    // A climber's lift on stairs moves with where it draws
+    if !maps.is_empty() {
+      seeds.extend(climbers.iter().map(|(entity, _)| entity));
+    }
   }
   loose.extend(unfloored.read());
   loose.extend(
@@ -395,20 +463,24 @@ pub(crate) fn lift_floored(
 
   seeds.sort_unstable_by_key(entity_order);
   seeds.dedup();
-  areas.clear();
-  areas.extend(
-    maps
-      .iter()
-      .filter_map(|(map, _, global, layers)| MapArea::of(map, global, layers, &tiles)),
-  );
-  areas.sort_unstable_by_key(|area| entity_order(&area.map));
+  find_areas(areas, &maps, &tiles);
+  // Where a climber draws: blended by the frame's overstep, or in a fixed
+  // step where it stands
+  let alpha = time
+    .as_deref()
+    .filter(|time| !time.in_fixed())
+    .map(|time| time.fixed.overstep_fraction());
   for &seed in seeds.iter() {
     // Despawned, or its floor taken since
     let Ok((_, &floor, global)) = floored.get(seed) else {
       continue;
     };
-    let lift = global.map_or(Vec2::ZERO, |global| {
-      lift_at(areas, &maps, floor, global.translation())
+    let lift = global.map_or(Vec2::ZERO, |global| match climbers.get(seed) {
+      Ok((_, previous)) => {
+        let drawn = alpha.map_or(*global, |alpha| render_global(global, previous, alpha));
+        lift_at(areas, &maps, floor, (drawn.translation(), true))
+      }
+      Err(_) => lift_at(areas, &maps, floor, (global.translation(), false)),
     });
     let drawn = DrawLift { lift, floor };
     write_down(
@@ -425,13 +497,20 @@ pub(crate) fn lift_floored(
 
 /// The lift of an entity on `floor` standing at `at` (world): the floor's
 /// height on the first of `areas` that holds it, through that map's
-/// transform; zero off every one, and for a floor the map lacks or `Every`
-fn lift_at(areas: &[MapArea], maps: &Maps, floor: Floor, at: Vec2) -> Vec2 {
+/// transform, or for a climber (`climbs`) on a run of stairs of that floor
+/// the run's two floors' heights eased by how far up it is; zero off every
+/// one, and for a floor the map lacks or `Every`
+fn lift_at(areas: &[MapArea], maps: &Maps, floor: Floor, (at, climbs): (Vec2, bool)) -> Vec2 {
   areas
     .iter()
     .find(|area| area.holds(at))
     .and_then(|area| {
       let (_, floors, ..) = maps.get(area.map).ok()?;
+      if climbs && let Some((run, up)) = floors.climbing(area.local(at), floor) {
+        let low = world_lift(Some(floors), Floor::On(run.from), area.to_world)?;
+        let high = world_lift(Some(floors), Floor::On(run.to), area.to_world)?;
+        return Some(low.lerp(high, up));
+      }
       world_lift(Some(floors), floor, area.to_world)
     })
     .unwrap_or(Vec2::ZERO)
@@ -928,6 +1007,28 @@ mod tests {
       let view = MapsView::new(&mut maps.world);
       assert_eq!(view.drawn_lift(both), Vec2::new(0.0, -32.0));
       assert_eq!(view.drawn_lift(second), Vec2::new(0.0, -8.0));
+    }
+
+    #[test]
+    fn a_still_entity_takes_its_lift_when_its_map_is_enabled_again() {
+      let mut maps = MapWorld::new();
+      let map = storeyed(&mut maps, Transform::IDENTITY);
+      maps.world.entity_mut(map).insert(Disabled);
+      // A lamp put on floor 1 while its map is put away stands over no map
+      let lamp = maps
+        .world
+        .spawn((Transform::from_xy(20.0, 30.0), Floor::On(1)))
+        .id();
+      maps.frame();
+      let unlifted = DrawLift {
+        lift: Vec2::ZERO,
+        floor: Floor::On(1),
+      };
+      assert_eq!(drawn(&maps.world, lamp), Some(unlifted));
+      // The map enabled again: the lamp, standing still, draws lifted
+      maps.world.entity_mut(map).remove::<Disabled>();
+      maps.frame();
+      assert_eq!(drawn(&maps.world, lamp), Some(UP));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 ---
 name: ryo-tilemap
-description: "Tile maps - the workflow from Tiled (.tmx, .tmj) or LDtk (.ldtk) through assets/ to a MapRoot entity, layers and the reserved layer properties (collides, occludes, y_sort, lit, filter, floor), storeys (MapFloors) and the entities on them (Floor, drawn lifted), tilesets and typed tile data, objects and class tiles as entities, MapEvent, reading and editing tiles with ctx.maps() and Wang terrain, collision from tile shapes and IntGrids, tile shadows, y-sorting and parallax, worlds of levels, maps built in code and by procgen, endless worlds streamed from a generator (MapStream, StreamAnchor, ChunkEvent, SavedChunks, ChunkOwned), hot reload, the web, performance and testing."
+description: "Tile maps - the workflow from Tiled (.tmx, .tmj) or LDtk (.ldtk) through assets/ to a MapRoot entity, layers and the reserved layer properties (collides, occludes, y_sort, lit, filter, floor), storeys (MapFloors) and the entities on them (Floor, drawn lifted), stairs and ramps that characters climb between storeys (Climber, FloorChanged), tilesets and typed tile data, objects and class tiles as entities, MapEvent, reading and editing tiles with ctx.maps() and Wang terrain, collision from tile shapes and IntGrids, tile shadows, y-sorting and parallax, worlds of levels, maps built in code and by procgen, endless worlds streamed from a generator (MapStream, StreamAnchor, ChunkEvent, SavedChunks, ChunkOwned), hot reload, the web, performance and testing."
 metadata:
   version: 1.8.0
 ---
@@ -216,7 +216,7 @@ A material property of the wrong type is warned once, and what is under it count
 ## 4. Tilesets and tile data
 
 - **A cell holds a `Tile { tileset, id, flip }`:** `tileset` indexes the map's tilesets (`TileMap::tilesets`), `id` is the tile in it, and `flip` is its `TileFlip`, the flips as Tiled stores them: a diagonal flip first, then horizontal, then vertical (a 90° turn is a diagonal and a horizontal flip; `TileFlip::rotated_cw()` turns one). On a hexagonal map Tiled turns tiles instead of flipping them diagonally: the diagonal bit is a 60° turn clockwise (`TileFlip::HEX_ROTATE_60`, the same bit as `DIAGONAL`) and a fourth bit a 120° one (`HEX_ROTATE_120`), applied after the flips, both together a half turn; `rotated_hex_cw()` turns a hexagonal tile 60° (six turns come back to where they started). Tiled ignores the 120° bit on every other grid, and so does the load. A turned hexagonal tile draws turned as in Tiled, about its own middle (section 10). A layer may mix tilesets, and every tile keeps the flips and turns the editor gave it.
-- **What a tile carries:** `ctx.maps().tile_data(map, tile) -> Option<TileData>` gives its `class`, `properties`, `shapes` (its collision shapes, each `TileShape { points, one_way, occluder, properties }` in tile pixels from the top-left), `animation` (`TileFrame { tile, duration }`), `probability`, `sort_offset` (the reserved tile property of that name, in pixels, 0 unless set: where the tile sorts on a y-sorted layer, section 10), `stairs` (the reserved int tile property of that name: the storey a stair or ramp tile leads up to from its layer's floor, whose edge it joins (section 8), `None` unless set; a whole number from 0 to 255, any other value refusing the map, naming the tileset and tile: `tileset "steps", tile 2: property "stairs": -1 is not a whole number from 0 to 255`) and `image` (a collection tileset's own picture). A loaded `Tileset` reads the same with `tile(id)`.
+- **What a tile carries:** `ctx.maps().tile_data(map, tile) -> Option<TileData>` gives its `class`, `properties`, `shapes` (its collision shapes, each `TileShape { points, one_way, occluder, properties }` in tile pixels from the top-left), `animation` (`TileFrame { tile, duration }`), `probability`, `sort_offset` (the reserved tile property of that name, in pixels, 0 unless set: where the tile sorts on a y-sorted layer, section 10), `stairs` (the reserved int tile property of that name: the storey a stair or ramp tile leads up to from its layer's floor, whose edge it joins (section 8) and which a `Climber` climbs (section 10, Stairs), `None` unless set; a whole number from 0 to 255, any other value refusing the map, naming the tileset and tile: `tileset "steps", tile 2: property "stairs": -1 is not a whole number from 0 to 255`) and `image` (a collection tileset's own picture). A loaded `Tileset` reads the same with `tile(id)`.
 - **Typed properties:** `Properties` reads `bool`, `int` (an `i64`; a whole float counts), `float` (an `f64`; an int counts), `string` and `color` by name, and `get(name) -> Option<&PropertyValue>` for the rest: `File(path)` as written, `Object(id)` (a reference to an object), `Enum { ty, value }`, `Class { ty, fields }` and `List` (Tiled 1.12's list properties, each item read by its own type, nested lists too, and an enum's flags). They keep the order they were written in (`iter()`).
 - **Classes and enums from the Tiled project.** Tiled keeps custom classes, enums and the members' defaults in its project file, and a map it saves writes only the members a designer changed. Put the project at `assets/project.tiled-project`, or name it in `Ryo.toml` (`[tilemap] tiled_project = "tiled/game.tiled-project"`) or with `EngineBuilder::tiled_project(path)`: a member a file leaves out then takes the project's default (a list member's too; a list the file writes replaces it whole), nested classes layer, and enums read by name (flags as a `List`). Without it what the file wrote is kept, and the dev log names the class once per file. Saving the project reloads the maps. Classes holding members of classes multiply: one thing's properties may resolve to at most 65,536 values and a file's to 4,194,304, past which the map fails to load, naming the place.
 - **LDtk** writes every field with its type in the project, so nothing more is needed for entities and levels. A tileset's per-tile data reads as Tiled's tile classes and properties do, so the same game code serves both editors: a tile's enum tags (the tileset's tag enum, "Enum tags" in LDtk's tileset panel) give it its class, the first of its tags in the enum's order (one tag is the usual case, and `with_entity_tiles` and class checks then work for LDtk levels too), and a bool property `true` for each of its tags (for a tile with several: `data.properties.bool("Water")`); its custom data, LDtk's one free text a tile, is the string property `custom_data`, as written (parse it yourself if it holds JSON).
@@ -556,7 +556,7 @@ An entity's `Transform` is where it stands on the ground, on every storey. Give 
 - **What a map spawns on a storey is on it.** Objects and class tiles of a layer on storey `n` (`n` from 1) carry `Floor::On(n)`, from its landing, an edit (a class tile placed by `set_tile`), a stream's chunks and a reload (an object layer moved to another storey takes its objects with it): so a sprite or collider the game gives a class tile on the bridge is on the bridge. The layers themselves, and what the ground floor holds, carry no `Floor`. A tile object draws through its layer, lifted once. One a game takes off its layer (a key picked up and carried) keeps its layer's `Floor`: the game that carries it sets its `Floor` to the carrier's, or removes it.
 - **What draws lifted:** the entity and everything below it in the hierarchy, down to a child with a `Floor` of its own: sprites with their drop, blob and contact shadows, tiled runs, composite tiles, world text (`Text2d`) and lights with their shadows (section 9), so a sprite on a child, a held weapon, a torch and a name tag all go up with the character. A trail records the lifted point, from its first. Particles start at the lifted point, then fly, collide and are attracted where things stand: a lifted emitter's sparks meet colliders a storey's height below its drawn surface. A burst spawned and fired in the same `update` fires before its lift is known, where it stands: fire it on a later step, or spawn it unparented and without a `Floor` where the holder draws (its position plus `drawn_lift`).
 - **What stays in ground space:** `Line2D` lines, the F2 overlay (colliders are where the entity stands, a storey's height under its sprite), debug draws, and every gameplay position: `GlobalTransform`, physics, triggers, cells (`grid`, `world_to_cell`). Sorting stays there too: a y-sorted character sorts by where its feet stand, so its order never jumps as it changes storey, and at one ground y the lower storey draws first (above).
-- **When:** the lift is worked out after transforms propagate, in each fixed step and each frame, for the entities whose `Floor`, position or children changed (and every one when a map with floors moves or changes its storeys), so a storey or position changed in `update` draws lifted that frame. A map's cells changing on their own (a stream landing chunks, an edit past its box) or the map being disabled reaches an entity standing still when it next moves. `ctx.maps().drawn_lift(entity)` reads the lift (zero when not lifted), as it was last worked out.
+- **When:** the lift is worked out after transforms propagate, in each fixed step and each frame, for the entities whose `Floor`, position or children changed (and every one when a map with floors moves or changes its storeys), so a storey or position changed in `update` draws lifted that frame. A map's cells changing on their own (a stream landing chunks, an edit past its box) or the map being disabled reaches an entity standing still when it next moves; a map enabled again lifts everything on it at once. `ctx.maps().drawn_lift(entity)` reads the lift (zero when not lifted), as it was last worked out.
 - **A camera that follows a character** adds its lift, or it centres a storey's height under the sprite:
 
 <!-- given: hero: Entity -->
@@ -566,6 +566,51 @@ let stands = ctx.world.get::<GlobalTransform>(hero).map(GlobalTransform::transla
 if let Some(stands) = stands {
   let at = stands + ctx.maps().drawn_lift(hero);
   ctx.camera().set_position(at.x, at.y);
+}
+```
+
+### Stairs (and ramps)
+
+Stairs and ramps are the same tiles to the engine: a tile whose reserved int property `stairs` names a storey (section 4) leads up to it from the storey of the layer it is painted on. Paint them on a lower storey's layer that stands where the upper storey's bottom tile layer does (its grid, and its offset less its storey's height: the ground layer, for the first storey up), as a run sticking out from the upper storey's cells. They join the upper storey's edge (section 8), so what is up there walks down them and no further.
+
+- **A run** is a set of stair cells on one layer leading to one storey, joined through their sides. Its top is where it meets the upper storey's cells (the middle of the sides it shares with them), and its bottom is its foot: the side it shares with neither that is farthest from the top along the run. A run of three cells leading right into a storey climbs from its left side to its right.
+- **`Climber`** opts an entity in (it brings a `Floor`, the ground floor unless you give one). Each fixed step, a climber on a run, on either of its storeys, **changes storey halfway along it**: onto the upper storey once it is halfway up or more, back onto the lower one below that. Each change is a `FloorChanged { entity, from, to }` message (`ryo-messages`), and physics filters by the new storey in that same step. An entity without `Climber` keeps its storey on stairs: a crate pushed onto them, or an NPC you move between storeys yourself.
+- **Why halfway, not at the ends:** the upper storey's edge encloses its stairs, and the lower storey may have walls where the stairs arrive (the cliff under a raised garden, the wall under a balcony). Switching at the middle lets a character step off the run at both ends without either being opened.
+- **Its drawn height eases** along the run, from the lower storey's height at the foot to the upper one's at the top, by how far up it is, and its children (its sprite, a held torch) with it. It is worked out every frame from where the climber draws, between fixed steps too, so it rises as smoothly as it walks. `drawn_lift` reads it, so a camera that adds it climbs with the character. Sorting keeps where the feet stand, as on any storey.
+- **When:** the runs follow edits (`set_tile`, `fill`, Wang painting), hot reloads, tilesets saved with other stairs and streamed chunks, at the next fixed step. A climber is placed by where the last step left it, so it changes storey one step after crossing the middle.
+- **Warnings:** stairs naming a storey the map lacks, their own or a lower one stay plain tiles, warned once a map (`stairs on layer "ground" lead to floor 5, which is not a floor of the map above the layer's floor 0, so they are plain tiles`). A run that leads nowhere changes no one's storey, warned once a map (`stairs on layer "ground" up to floor 1 lead nowhere (they ...)`): stairs on a layer standing elsewhere than the upper storey's bottom tile layer, a run that shares no side with the upper storey's cells or shares every side with them, or one that meets them as much on one side as on the other (a cell between two of them).
+- **Limit: a run meets its upper storey only at its top.** Stairs running along a platform's face, touching it down their long side, take their top from that side and climb across themselves; turn them out from the face, so they meet it only at their top end.
+
+<!-- given: at: Vec2, art: Handle<Image> -->
+```rust
+// A top-down hero who walks up and down the map's stairs; its sprite, a
+// child, draws at its eased height
+let hero = ctx
+  .world
+  .spawn((
+    Transform::from_translation(at),
+    Collider::circle(5.0),
+    TopDownMovement::default(),
+    Climber,
+  ))
+  .id();
+ctx.world.spawn((
+  Transform::from_xy(0.0, -8.0),
+  Renderable::image(art).with_anchor(Anchor::BottomCenter),
+  ChildOf(hero),
+));
+```
+
+<!-- self: hero: Entity, upstairs: bool -->
+```rust
+fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+  // Whether the hero is upstairs, kept as it goes up or down a storey
+  for change in ctx.messages::<FloorChanged>() {
+    if change.entity == self.hero {
+      self.upstairs = change.to != Floor::GROUND;
+    }
+  }
+  SceneAction::Continue
 }
 ```
 

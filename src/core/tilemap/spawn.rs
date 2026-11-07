@@ -1449,7 +1449,7 @@ fn root_discarded(mut world: DeferredWorld, context: HookContext) {
   super::stream::save_changed(&world, map);
   world.commands().queue(move |world: &mut World| {
     // Its chunks go with it, and the entities they own, and its floors'
-    // edges
+    // edges and what its stairs were read from
     super::stream::despawn_chunk_owned(world, map);
     collision::drop_edges(world, map);
     let Ok(mut entity) = world.get_entity_mut(map) else {
@@ -1462,6 +1462,7 @@ fn root_discarded(mut world: DeferredWorld, context: HookContext) {
       MapLanding,
       MapApplied,
       MapFloors,
+      super::stairs::MapStairs,
       StreamState,
       ClassTable,
     )>();

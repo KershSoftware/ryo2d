@@ -190,6 +190,7 @@ Storeys (raised ground, an upper floor, a bridge) have a filter of their own, in
 - A collider is on its own entity's `Floor`, else its body's (so a body's `Floor` covers the colliders on its children), else the ground floor. A tile grid's parts are on `TileColliders::floor` (`with_floor`; the ground floor by default), never on the map entity's `Floor` or its body's.
 - Insert, change or remove `Floor` at any time: the next step filters again, pairs at rest included, so a crate sleeping on a ledge falls when either moves to another storey.
 - Only colliders on a storey above the ground (not on `Every`) are checked, which turns off Rapier's reuse of their pairs' contacts from step to step; pairs on the ground floor cost what they always did.
+- On a tile map's stairs a `Climber` changes its own `Floor` halfway along the run, before that step's physics (`ryo-tilemap`, Stairs; `ryo-character`, Climbing between storeys).
 
 <!-- given: x: f32, y: f32 -->
 ```rust
