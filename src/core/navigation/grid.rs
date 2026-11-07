@@ -7,7 +7,7 @@ use super::layer::{
   LayerCells, WAYS, Ways, bounds, boxes, capped, hex_boxes, lattice_cells, mapped_bounds, overlap,
   squared,
 };
-use crate::core::ecs::{Entity, GlobalTransform, IVec2, Vec2, Without, World};
+use crate::core::ecs::{Entity, Floor, GlobalTransform, IVec2, Vec2, Without, World};
 use crate::core::physics::{CellRect, Collider, TileCell, TileColliders, TilePart};
 use crate::core::tilemap::{Lattice, LayerGrid};
 use glam::{Affine2, DAffine2, DVec2};
@@ -75,7 +75,13 @@ impl From<GridCoord> for IVec2 {
 /// [`NavigationBuilder`]), or a window of a tile layer's own cells on any
 /// grid ([`for_layer`](Self::for_layer)), whose neighbours, step costs,
 /// line of sight and world positions follow the layer's grid.
-#[derive(Debug)]
+///
+/// A grid is on a floor ([`floor`](Self::floor)): the ground floor unless
+/// it was made for another ([`on_floor`](Self::on_floor), or
+/// [`MapsView::navigation`](crate::core::tilemap::MapsView::navigation) on
+/// a layer above the ground). The nodes of the paths found on it carry
+/// that floor.
+#[derive(Debug, Clone)]
 pub struct NavigationGrid {
   /// Width of the grid in cells
   width: u32,
@@ -96,6 +102,8 @@ pub struct NavigationGrid {
   generation: u64,
   /// Entities currently blocking cells
   blocking_entities: HashSet<Entity>,
+  /// The floor whose cells it holds
+  floor: Floor,
 }
 
 impl NavigationGrid {
@@ -132,6 +140,7 @@ impl NavigationGrid {
       cells: vec![CellState::Walkable; (width * height) as usize],
       generation: 0,
       blocking_entities: HashSet::new(),
+      floor: Floor::GROUND,
     }
   }
 
@@ -175,6 +184,7 @@ impl NavigationGrid {
       cells: vec![CellState::Walkable; size.x as usize * size.y as usize],
       generation: 0,
       blocking_entities: HashSet::new(),
+      floor: Floor::GROUND,
     }
   }
 
@@ -192,6 +202,21 @@ impl NavigationGrid {
   /// The layer it was made over (`for_layer`), `None` for a square world grid
   pub fn layer(&self) -> Option<LayerGrid> {
     self.layer.map(|layer| layer.grid)
+  }
+
+  /// The floor whose cells it holds: the ground floor unless it was made
+  /// for another. The nodes of a path found on it carry it
+  /// ([`PathNode::floor`](super::PathNode::floor))
+  pub fn floor(&self) -> Floor {
+    self.floor
+  }
+
+  /// The grid as the grid of `floor`: what its paths' nodes carry, and
+  /// where a [`FloorNavigation`](super::FloorNavigation) puts it. Its cells
+  /// stay as they are
+  pub fn on_floor(mut self, floor: Floor) -> NavigationGrid {
+    self.floor = floor;
+    self
   }
 
   /// Get the grid dimensions

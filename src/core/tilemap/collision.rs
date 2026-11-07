@@ -63,7 +63,11 @@ use super::kinds::{
   stair_sources, stamps, union_kinds,
 };
 use super::spawn::{IntGridKey, MapLayers, MapRoot, TileLayerData, child_of, root_map};
-use super::{LayerInfo, MapGrid, Properties, PropertyValue};
+use super::{
+  CHUNK_SIZE, LayerInfo, LdtkProject, MapGrid, Properties, PropertyValue, TileGrid, TileMap,
+  Tileset,
+};
+use crate::core::asset::Assets;
 use crate::core::ecs::{
   Allow, ChildOf, Commands, Component, DetectChangesMut, Disabled, Entity, Floor, Has, Local,
   Query, Transform, Without, World,
@@ -509,6 +513,130 @@ fn plan_edge<'a>(
       intgrid: layer.data.intgrid.is_some(),
       footing: Some(footing),
     });
+  }
+}
+
+/// A floor's footprint (a floor above the ground) on a map as its tiles
+/// are now, read as its edge reads them: its `FootprintRule` over the map's
+/// enabled tile layers, each layer giving what `footprint_kinds` takes from
+/// it, its stairs by the map's tilesets as they are now. It reads what the
+/// edge does whether or not the map collides
+pub(super) struct Footprint<'w> {
+  world: &'w World,
+  map: Entity,
+  floor: u8,
+  /// The floor's bottom tile layer's entity
+  bottom: Entity,
+  /// The layers giving it something, and what each gives
+  layers: Vec<(&'w TileLayerData, Footing)>,
+}
+
+impl<'w> Footprint<'w> {
+  /// Floor `floor`'s footprint on `map`; `None` for a floor with no
+  /// footprint (no tile layer, or hexagons the tracer does not take) or a
+  /// map not landed
+  pub(super) fn of(world: &'w World, map: Entity, floor: u8) -> Option<Footprint<'w>> {
+    let floors = world.get::<MapFloors>(map);
+    let layers: Vec<(&LayerInfo, &TileLayerData, Entity)> = world
+      .get::<MapLayers>(map)?
+      .0
+      .iter()
+      .filter(|&&entity| world.get::<Disabled>(entity).is_none())
+      .filter_map(|&entity| {
+        let info = world.get::<LayerInfo>(entity)?;
+        Some((info, world.get::<TileLayerData>(entity)?, entity))
+      })
+      .collect();
+    let stands = |info: &LayerInfo| ground_offset(info, floors);
+    let rule = FootprintRule::of(
+      floor,
+      layers
+        .iter()
+        .map(|(info, data, _)| (info.floor, data.grid, stands(info))),
+    )
+    .ok()?;
+    let bottom = layers.get(rule.bottom)?.2;
+    let layers = layers
+      .iter()
+      .filter_map(|&(info, data, _)| {
+        let gives = rule.footing(info.floor, &data.grid, stands(info))?;
+        Some((data, gives))
+      })
+      .collect();
+    Some(Footprint {
+      world,
+      map,
+      floor,
+      bottom,
+      layers,
+    })
+  }
+
+  /// The floor's bottom tile layer's entity: the footprint's cells are its
+  pub(super) fn bottom(&self) -> Entity {
+    self.bottom
+  }
+
+  /// Each of its cells in `within` (any, for `None`) to `open`
+  pub(super) fn cells(&self, within: Option<CellRect>, mut open: impl FnMut(IVec2)) {
+    if within.is_some_and(|area| area.is_empty()) {
+      return;
+    }
+    let world = self.world;
+    let stairs = match world.get::<MapRoot>(self.map) {
+      Some(root)
+        if self
+          .layers
+          .iter()
+          .any(|&(_, gives)| gives == Footing::Stairs) =>
+      {
+        root_map(
+          root,
+          world.get_resource::<Assets<TileMap>>(),
+          world.get_resource::<Assets<LdtkProject>>(),
+        )
+        .map(|tile_map| stair_sources(tile_map, world.get_resource::<Assets<Tileset>>()))
+        .unwrap_or_default()
+      }
+      _ => Arc::default(),
+    };
+    // The chunks any of its layers has, those under `within` alone
+    let span = within.map(|area| {
+      (
+        TileGrid::chunk_of(area.min),
+        TileGrid::chunk_of(area.max - IVec2::ONE),
+      )
+    });
+    let under =
+      |chunk: &IVec2| span.is_none_or(|(lo, hi)| chunk.cmpge(lo).all() && chunk.cmple(hi).all());
+    let mut chunks: Vec<IVec2> = self
+      .layers
+      .iter()
+      .flat_map(|(data, _)| data.tiles.chunk_coords())
+      .filter(under)
+      .collect();
+    chunks.sort_unstable_by_key(|chunk| (chunk.y, chunk.x));
+    chunks.dedup();
+    let data: Vec<Option<&TileLayerData>> = self.layers.iter().map(|&(d, _)| Some(d)).collect();
+    let footing: Vec<Footing> = self.layers.iter().map(|&(_, gives)| gives).collect();
+    let context = Context::new(&[], &[], Purpose::Collision).with_stairs(&stairs);
+    let side = CHUNK_SIZE as usize;
+    for chunk in chunks {
+      let Some(origin) = chunk_origin(chunk) else {
+        continue;
+      };
+      let kinds = footprint_kinds(&data, &footing, (chunk, self.floor), &context);
+      for (index, kind) in kinds.iter().enumerate() {
+        if *kind == TileCell::Empty {
+          continue;
+        }
+        // Within the chunk, whose cells are `i32`s
+        let cell = origin + IVec2::new((index % side) as i32, (index / side) as i32);
+        if within.is_none_or(|area| area.contains(cell)) {
+          open(cell);
+        }
+      }
+    }
   }
 }
 

@@ -85,6 +85,21 @@
 //! }
 //! ```
 //!
+//! # Floors
+//!
+//! A grid is on a floor ([`NavigationGrid::floor`]), and each [`PathNode`]
+//! carries its grid's. A [`FloorNavigation`] is a grid for each floor over
+//! the same cells, joined at [`StairLink`]s, so a path can climb from one
+//! floor to another; a tile map with storeys gives one
+//! (`MapsView::floor_navigation`), and a game can make one itself:
+//!
+//! ```ignore
+//! let floors = ctx.maps().floor_navigation(map, bounds)?;
+//! let result = pathfinder.find_floor_path(&floors, from, Floor::GROUND, to, Floor::On(1));
+//! // Each waypoint's `floor` is the floor to be on there: it changes
+//! // between two waypoints at a stair cell
+//! ```
+//!
 //! # Pathfinding
 //!
 //! Find paths synchronously or with time-slicing for many agents:
@@ -126,6 +141,7 @@
 //! ```
 
 mod agent;
+mod floors;
 mod grid;
 mod layer;
 mod path;
@@ -134,6 +150,7 @@ pub mod steering;
 
 // Re-export public API
 pub use agent::{NavAgent, NavAgentState, NavTarget};
+pub use floors::{FloorNavigation, StairLink};
 pub use grid::{CellState, GridCoord, NavigationBuilder, NavigationGrid};
 pub use path::{Path, PathNode, PathSmoothing};
 pub use pathfinder::{PathResult, Pathfinder, PathfinderConfig, PathfindingState};

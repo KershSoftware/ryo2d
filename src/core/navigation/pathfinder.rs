@@ -2,10 +2,14 @@
 //!
 //! Provides efficient pathfinding for grid-based navigation.
 
+use super::floors::FloorNavigation;
 use super::grid::{GridCoord, NavigationGrid};
 use super::path::{Path, PathNode, PathSmoothing};
+use crate::core::ecs::{Floor, Vec2};
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::fmt::Debug;
+use std::hash::Hash;
 
 /// Result of a pathfinding request
 #[derive(Debug, Clone, PartialEq)]
@@ -44,21 +48,21 @@ impl PathResult {
 
 /// Node in the A* open set
 #[derive(Debug, Clone)]
-struct AStarNode {
-  coord: GridCoord,
+struct AStarNode<K> {
+  coord: K,
   f_score: f32, // g + h
   g_score: f32, // Cost from start
 }
 
-impl PartialEq for AStarNode {
+impl<K: PartialEq> PartialEq for AStarNode<K> {
   fn eq(&self, other: &Self) -> bool {
     self.coord == other.coord
   }
 }
 
-impl Eq for AStarNode {}
+impl<K: Eq> Eq for AStarNode<K> {}
 
-impl Ord for AStarNode {
+impl<K: Eq> Ord for AStarNode<K> {
   fn cmp(&self, other: &Self) -> Ordering {
     // Reverse ordering for min-heap (BinaryHeap is max-heap by default)
     other
@@ -68,9 +72,66 @@ impl Ord for AStarNode {
   }
 }
 
-impl PartialOrd for AStarNode {
+impl<K: Eq> PartialOrd for AStarNode<K> {
   fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
     Some(self.cmp(other))
+  }
+}
+
+/// What the A* core searches: one grid's cells (`GridCoord`), or a
+/// `FloorNavigation`'s floors' cells
+pub(super) trait Graph {
+  /// A node: a cell, or a floor's cell
+  type Key: Copy + Eq + Hash + Debug;
+
+  /// Each node a step from `at` leads to, with the step's cost
+  fn neighbors(&self, at: Self::Key) -> Vec<(Self::Key, f32)>;
+
+  /// The heuristic from `from` to `to`, which no path between them undercuts
+  fn distance(&self, from: Self::Key, to: Self::Key) -> f32;
+
+  /// How far `at` strays from the line from `start` to `goal`
+  fn tie_break(&self, at: Self::Key, start: Self::Key, goal: Self::Key) -> f32;
+
+  /// The path node standing for `at`
+  fn node(&self, at: Self::Key) -> PathNode;
+
+  /// What changes whenever any of its cells does
+  fn generation(&self) -> u64;
+
+  /// The grid of `floor`'s cells, for smoothing a path's run on it
+  fn grid_of(&self, floor: Floor) -> Option<&NavigationGrid>;
+}
+
+impl Graph for NavigationGrid {
+  type Key = GridCoord;
+
+  fn neighbors(&self, at: GridCoord) -> Vec<(GridCoord, f32)> {
+    NavigationGrid::neighbors(self, at)
+  }
+
+  fn distance(&self, from: GridCoord, to: GridCoord) -> f32 {
+    distance(self, from, to)
+  }
+
+  fn tie_break(&self, at: GridCoord, start: GridCoord, goal: GridCoord) -> f32 {
+    tie_break(self, at, start, goal)
+  }
+
+  fn node(&self, at: GridCoord) -> PathNode {
+    let (x, y) = self.grid_to_world(at);
+    PathNode {
+      floor: self.floor(),
+      ..PathNode::new(x, y, at)
+    }
+  }
+
+  fn generation(&self) -> u64 {
+    NavigationGrid::generation(self)
+  }
+
+  fn grid_of(&self, floor: Floor) -> Option<&NavigationGrid> {
+    (floor == self.floor()).then_some(self)
   }
 }
 
@@ -121,22 +182,22 @@ impl PathfinderConfig {
   }
 }
 
-/// State for an in-progress pathfinding request (for time-slicing)
+/// A search in progress over a graph's nodes `K`: the A* core's state
 #[derive(Debug)]
-pub struct PathfindingState {
-  start: GridCoord,
-  goal: GridCoord,
-  open_set: BinaryHeap<AStarNode>,
-  closed_set: HashSet<GridCoord>,
-  came_from: HashMap<GridCoord, GridCoord>,
-  g_scores: HashMap<GridCoord, f32>,
+struct Search<K> {
+  start: K,
+  goal: K,
+  open_set: BinaryHeap<AStarNode<K>>,
+  closed_set: HashSet<K>,
+  came_from: HashMap<K, K>,
+  g_scores: HashMap<K, f32>,
   nodes_expanded: usize,
   grid_generation: u64,
 }
 
-impl PathfindingState {
-  fn new(start: GridCoord, goal: GridCoord, grid: &NavigationGrid) -> Self {
-    let mut state = PathfindingState {
+impl<K: Copy + Eq + Hash> Search<K> {
+  fn new<G: Graph<Key = K>>(start: K, goal: K, graph: &G) -> Self {
+    let mut search = Search {
       start,
       goal,
       open_set: BinaryHeap::new(),
@@ -144,18 +205,24 @@ impl PathfindingState {
       came_from: HashMap::new(),
       g_scores: HashMap::new(),
       nodes_expanded: 0,
-      grid_generation: grid.generation(),
+      grid_generation: graph.generation(),
     };
 
-    state.g_scores.insert(start, 0.0);
-    state.open_set.push(AStarNode {
+    search.g_scores.insert(start, 0.0);
+    search.open_set.push(AStarNode {
       coord: start,
-      f_score: distance(grid, start, goal),
+      f_score: graph.distance(start, goal),
       g_score: 0.0,
     });
 
-    state
+    search
   }
+}
+
+/// State for an in-progress pathfinding request (for time-slicing)
+#[derive(Debug)]
+pub struct PathfindingState {
+  search: Search<GridCoord>,
 }
 
 /// A* pathfinder with optional time-slicing
@@ -235,14 +302,89 @@ impl Pathfinder {
       ));
     }
 
-    let mut state = PathfindingState::new(start, goal, grid);
+    let mut search = Search::new(start, goal, grid);
 
     loop {
-      match self.step_pathfinding(grid, &mut state, usize::MAX) {
+      match self.step_pathfinding(grid, &mut search, usize::MAX) {
         PathResult::InProgress => continue,
         result => {
           return self.apply_smoothing(result, grid);
         }
+      }
+    }
+  }
+
+  /// Find a path across floors, from the world point `start` on
+  /// `start_floor` to `goal` on `goal_floor`, each point read through its
+  /// floor's grid ([`find_floor_path_grid`](Self::find_floor_path_grid))
+  ///
+  /// ```
+  /// use ryo2d::prelude::*;
+  ///
+  /// /// The way from where the hero stands to a point clicked on the
+  /// /// map's first storey, up its stairs
+  /// fn route_up(ctx: &mut SceneContext<'_>, map: Entity, hero: Vec2, clicked: Vec2) -> Option<Path> {
+  ///   let mut maps = ctx.maps();
+  ///   let bounds = maps.bounds(map)?;
+  ///   let floors = maps.floor_navigation(map, bounds)?;
+  ///   Pathfinder::new()
+  ///     .find_floor_path(&floors, hero, Floor::GROUND, clicked, Floor::On(1))
+  ///     .path()
+  /// }
+  /// ```
+  pub fn find_floor_path(
+    &self,
+    nav: &FloorNavigation,
+    start: Vec2,
+    start_floor: Floor,
+    goal: Vec2,
+    goal_floor: Floor,
+  ) -> PathResult {
+    let cell = |floor: Floor, at: Vec2| Some(nav.grid(floor)?.world_to_grid(at.x, at.y));
+    match (cell(start_floor, start), cell(goal_floor, goal)) {
+      (Some(from), Some(to)) => {
+        self.find_floor_path_grid(nav, (start_floor, from), (goal_floor, to))
+      }
+      _ => PathResult::InvalidEndpoints,
+    }
+  }
+
+  /// Find a path across floors from a floor's cell to a floor's cell: on
+  /// each floor through its grid's steps, and from one floor to another
+  /// at a stair link, a step at no cost between the link's cell on the two
+  /// floors. The path's nodes carry their floor, which changes between
+  /// two nodes at the link's cell. An end on a floor without a grid, out
+  /// of its grid or blocked is `InvalidEndpoints`.
+  ///
+  /// The search is the same A* as [`find_path_grid`](Self::find_path_grid)'s,
+  /// with its heuristic and tie-break measured on the lowest floor's grid
+  /// (every floor's cells lie where its cells do, and a link joins one
+  /// cell), and its node budget (`max_total_nodes`) for the whole search.
+  /// Smoothing works within each run of nodes on one floor, on that
+  /// floor's grid, and keeps the two nodes at each link.
+  pub fn find_floor_path_grid(
+    &self,
+    nav: &FloorNavigation,
+    start: (Floor, GridCoord),
+    goal: (Floor, GridCoord),
+  ) -> PathResult {
+    let (Some(from), Some(to)) = (nav.key(start), nav.key(goal)) else {
+      return PathResult::InvalidEndpoints;
+    };
+    for (floor, cell) in [start, goal] {
+      let open = nav.grid(floor).is_some_and(|grid| grid.is_walkable(cell));
+      if !open {
+        return PathResult::InvalidEndpoints;
+      }
+    }
+    if from == to {
+      return PathResult::Found(Path::new(vec![nav.node(from)], Graph::generation(nav)));
+    }
+    let mut search = Search::new(from, to, nav);
+    loop {
+      match self.step_pathfinding(nav, &mut search, usize::MAX) {
+        PathResult::InProgress => continue,
+        result => return self.apply_smoothing(result, nav),
       }
     }
   }
@@ -281,8 +423,10 @@ impl Pathfinder {
     let request_id = self.next_request_id;
     self.next_request_id += 1;
 
-    let state = PathfindingState::new(start, goal, grid);
-    self.active_requests.insert(request_id, state);
+    let search = Search::new(start, goal, grid);
+    self
+      .active_requests
+      .insert(request_id, PathfindingState { search });
 
     (request_id, PathResult::InProgress)
   }
@@ -297,11 +441,11 @@ impl Pathfinder {
 
     if let Some(mut state) = self.active_requests.remove(&request_id) {
       // Check if grid has changed since we started
-      if state.grid_generation != grid.generation() {
+      if state.search.grid_generation != grid.generation() {
         return PathResult::NoPath; // Path is invalid, caller should restart
       }
 
-      let result = self.step_pathfinding(grid, &mut state, max_nodes);
+      let result = self.step_pathfinding(grid, &mut state.search, max_nodes);
 
       match &result {
         PathResult::InProgress => {
@@ -326,67 +470,67 @@ impl Pathfinder {
   }
 
   /// Perform one step of A* pathfinding
-  fn step_pathfinding(
+  fn step_pathfinding<G: Graph>(
     &self,
-    grid: &NavigationGrid,
-    state: &mut PathfindingState,
+    graph: &G,
+    search: &mut Search<G::Key>,
     max_nodes: usize,
   ) -> PathResult {
     let mut nodes_this_step = 0;
 
-    while let Some(current) = state.open_set.pop() {
+    while let Some(current) = search.open_set.pop() {
       // Already processed?
-      if state.closed_set.contains(&current.coord) {
+      if search.closed_set.contains(&current.coord) {
         continue;
       }
 
       // Found goal?
-      if current.coord == state.goal {
-        return PathResult::Found(self.reconstruct_path(grid, state));
+      if current.coord == search.goal {
+        return PathResult::Found(self.reconstruct_path(graph, search));
       }
 
-      state.closed_set.insert(current.coord);
-      state.nodes_expanded += 1;
+      search.closed_set.insert(current.coord);
+      search.nodes_expanded += 1;
       nodes_this_step += 1;
 
       // Check limits
-      if state.nodes_expanded > self.config.max_total_nodes {
+      if search.nodes_expanded > self.config.max_total_nodes {
         return PathResult::TooExpensive;
       }
 
       if nodes_this_step >= max_nodes {
         // Put current back for next iteration
-        state.open_set.push(current);
+        search.open_set.push(current);
         return PathResult::InProgress;
       }
 
       // Expand neighbors
-      for (neighbor, move_cost) in grid.neighbors(current.coord) {
-        if state.closed_set.contains(&neighbor) {
+      for (neighbor, move_cost) in graph.neighbors(current.coord) {
+        if search.closed_set.contains(&neighbor) {
           continue;
         }
 
         let tentative_g = current.g_score + move_cost;
 
-        let is_better = state
+        let is_better = search
           .g_scores
           .get(&neighbor)
           .map(|&g| tentative_g < g)
           .unwrap_or(true);
 
         if is_better {
-          state.came_from.insert(neighbor, current.coord);
-          state.g_scores.insert(neighbor, tentative_g);
+          search.came_from.insert(neighbor, current.coord);
+          search.g_scores.insert(neighbor, tentative_g);
 
-          let h = distance(grid, neighbor, state.goal) * self.config.heuristic_weight;
+          let h = graph.distance(neighbor, search.goal) * self.config.heuristic_weight;
 
           // Tie-breaking using cross-product for straighter paths
           let tie_break =
-            tie_break(grid, neighbor, state.start, state.goal) * self.config.tie_breaking;
+            graph.tie_break(neighbor, search.start, search.goal) * self.config.tie_breaking;
 
           let f = tentative_g + h + tie_break;
 
-          state.open_set.push(AStarNode {
+          search.open_set.push(AStarNode {
             coord: neighbor,
             f_score: f,
             g_score: tentative_g,
@@ -400,40 +544,37 @@ impl Pathfinder {
   }
 
   /// Reconstruct path from the came_from map
-  fn reconstruct_path(&self, grid: &NavigationGrid, state: &PathfindingState) -> Path {
+  fn reconstruct_path<G: Graph>(&self, graph: &G, search: &Search<G::Key>) -> Path {
     let mut path_coords = Vec::new();
-    let mut current = state.goal;
+    let mut current = search.goal;
 
-    while current != state.start {
+    while current != search.start {
       path_coords.push(current);
-      if let Some(&prev) = state.came_from.get(&current) {
+      if let Some(&prev) = search.came_from.get(&current) {
         current = prev;
       } else {
         break;
       }
     }
-    path_coords.push(state.start);
+    path_coords.push(search.start);
     path_coords.reverse();
 
     let waypoints: Vec<PathNode> = path_coords
       .into_iter()
-      .map(|coord| {
-        let (x, y) = grid.grid_to_world(coord);
-        PathNode::new(x, y, coord)
-      })
+      .map(|coord| graph.node(coord))
       .collect();
 
-    Path::new(waypoints, state.grid_generation)
+    Path::new(waypoints, search.grid_generation)
   }
 
   /// Apply configured smoothing to a path result
-  fn apply_smoothing(&self, result: PathResult, grid: &NavigationGrid) -> PathResult {
+  fn apply_smoothing<G: Graph>(&self, result: PathResult, graph: &G) -> PathResult {
     match result {
       PathResult::Found(mut path) => {
         match self.config.default_smoothing {
           PathSmoothing::None => {}
           PathSmoothing::LineOfSight => {
-            path.smooth_line_of_sight(grid);
+            path.smooth_runs_line_of_sight(|floor| graph.grid_of(floor));
           }
           PathSmoothing::Spline => {
             path.smooth_spline(4); // 4 segments per waypoint
@@ -450,7 +591,7 @@ impl Pathfinder {
 /// square world grid; on a layer grid (`NavigationGrid::for_layer`) the
 /// straight world distance between the cells' centres over the shortest
 /// step, which no path of its steps undercuts
-fn distance(grid: &NavigationGrid, from: GridCoord, to: GridCoord) -> f32 {
+pub(super) fn distance(grid: &NavigationGrid, from: GridCoord, to: GridCoord) -> f32 {
   match grid.steps_between(from, to) {
     Some(offset) => offset.length() as f32,
     None => octile_distance(from, to),
@@ -461,7 +602,12 @@ fn distance(grid: &NavigationGrid, from: GridCoord, to: GridCoord) -> f32 {
 /// breaking ties toward straight paths: the cross product of their offsets
 /// from the goal, in cells on a square world grid, and on a layer grid
 /// between their world centres over the shortest step
-fn tie_break(grid: &NavigationGrid, neighbor: GridCoord, start: GridCoord, goal: GridCoord) -> f32 {
+pub(super) fn tie_break(
+  grid: &NavigationGrid,
+  neighbor: GridCoord,
+  start: GridCoord,
+  goal: GridCoord,
+) -> f32 {
   if let (Some(a), Some(b)) = (
     grid.steps_between(goal, neighbor),
     grid.steps_between(goal, start),

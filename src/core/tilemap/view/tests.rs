@@ -11,7 +11,7 @@ use glam::{IVec2, UVec2, Vec2};
 use crate::core::asset::Assets;
 use crate::core::ecs::kernel::{Disabled, MessageCursor, Messages};
 use crate::core::ecs::{Entity, Transform, World};
-use crate::core::navigation::{NavigationGrid, PathResult, Pathfinder};
+use crate::core::navigation::{GridCoord, NavigationGrid, PathResult, Pathfinder};
 use crate::core::physics::{CellRect, TileCell, TileColliders};
 use crate::core::tilemap::test_util::{MapWorld, whole_hex_set};
 use crate::core::tilemap::{
@@ -1112,6 +1112,430 @@ fn navigation_on_an_isometric_map_matches_its_collision() {
     by_row(expected.map(|(x, y)| IVec2::new(x, y)).to_vec())
   );
   assert_eq!(blocked(&grid), blocking);
+}
+
+/// 16 px tiles for storeys: tile 0 plain ground, 1 a solid block and 2
+/// stairs up to floor 1
+fn storey_tiles() -> TilesetSource {
+  let mut set = Tileset::new("storeys", UVec2::splat(16), TilesetImage::Collection);
+  set.tile_count = 3;
+  set.insert_tile(
+    1,
+    TileData {
+      shapes: vec![TileShape {
+        points: vec![
+          Vec2::ZERO,
+          Vec2::new(16.0, 0.0),
+          Vec2::splat(16.0),
+          Vec2::new(0.0, 16.0),
+        ],
+        ..TileShape::default()
+      }],
+      ..TileData::default()
+    },
+  );
+  set.insert_tile(
+    2,
+    TileData {
+      stairs: Some(1),
+      ..TileData::default()
+    },
+  );
+  TilesetSource::Embedded(Arc::new(set))
+}
+
+const PLAIN: u32 = 0;
+const WALL: u32 = 1;
+const UP_1: u32 = 2;
+
+/// A layer of `map` on `floor`, offset by `offset`, holding `tiles`
+fn storey_layer(map: &mut TileMap, name: &str, floor: u8, offset: Vec2, tiles: &[(IVec2, u32)]) {
+  let layer = map.add_tile_layer(name);
+  map.layers[layer].info.floor = floor;
+  map.layers[layer].info.offset = offset;
+  if let Some(grid) = map.tiles_mut(layer) {
+    for &(at, id) in tiles {
+      grid.set(at, Some(Tile::new(0, id)));
+    }
+  }
+}
+
+/// The cells from `min` to `max` (both included), each holding `id`
+fn filled(min: (i32, i32), max: (i32, i32), id: u32) -> Vec<(IVec2, u32)> {
+  cells(IVec2::new(min.0, min.1), IVec2::new(max.0, max.1))
+    .into_iter()
+    .map(|at| (at, id))
+    .collect()
+}
+
+/// Floor 1's height in `hall`
+const UP: Vec2 = Vec2::new(0.0, -32.0);
+
+/// 20 x 10 cells of 16 px: "ground" on the ground floor, plain
+/// all over, with walls at (3, 7) and at (9, 4), under floor 1, and stairs
+/// up to floor 1 at (6, 4) and (7, 4); on floor 1, 32 px up, "upper" over
+/// (8, 3) to (13, 6) with a wall at (12, 5), and on its grid
+/// "upper-props" with a tile at (15, 1)
+fn hall() -> TileMap {
+  let mut map = TileMap::new(UVec2::new(20, 10), UVec2::splat(16));
+  map.add_tileset(storey_tiles());
+  let mut ground = filled((0, 0), (19, 9), PLAIN);
+  ground.extend([
+    (IVec2::new(3, 7), WALL),
+    (IVec2::new(9, 4), WALL),
+    (IVec2::new(6, 4), UP_1),
+    (IVec2::new(7, 4), UP_1),
+  ]);
+  storey_layer(&mut map, "ground", 0, Vec2::ZERO, &ground);
+  let mut upper = filled((8, 3), (13, 6), PLAIN);
+  upper.push((IVec2::new(12, 5), WALL));
+  storey_layer(&mut map, "upper", 1, UP, &upper);
+  storey_layer(
+    &mut map,
+    "upper-props",
+    1,
+    UP,
+    &[(IVec2::new(15, 1), PLAIN)],
+  );
+  map
+}
+
+/// The walkable cells of `grid`'s window, by row
+fn open(grid: &NavigationGrid) -> Vec<IVec2> {
+  let window = grid.window();
+  cells(window.min, window.max - IVec2::ONE)
+    .into_iter()
+    .filter(|&cell| grid.is_walkable(cell.into()))
+    .collect()
+}
+
+/// `hall`'s floor 1 footprint: its tile layers' cells and the stairs up to
+/// it
+fn hall_footprint() -> Vec<IVec2> {
+  let mut cells = cells(IVec2::new(8, 3), IVec2::new(13, 6));
+  cells.extend([IVec2::new(6, 4), IVec2::new(7, 4), IVec2::new(15, 1)]);
+  by_row(cells)
+}
+
+#[test]
+fn a_floor_s_navigation_blocks_only_that_floor() {
+  use crate::core::ecs::Floor;
+  use crate::core::tilemap::MapFloor;
+  let mut maps = MapWorld::new();
+  let map = spawn(&mut maps, hall(), placed());
+  let Some(bounds) = MapsView::new(&mut maps.world).bounds(map) else {
+    panic!("{map} landed")
+  };
+  let edges = maps.world.query::<&MapFloor>().iter(&maps.world).count();
+  assert_eq!(edges, 1, "floor 1 has its edge");
+  let (wall, under, upper_wall) = (IVec2::new(3, 7), IVec2::new(9, 4), IVec2::new(12, 5));
+
+  // The ground floor's grid: its own walls block, the one under floor 1
+  // too, but neither floor 1's wall nor its edge, and floor 1's footprint
+  // leaves the ground open
+  let ground = navigation(&mut maps, map, "ground", bounds);
+  assert_eq!(ground.floor(), Floor::GROUND);
+  assert_eq!(blocked(&ground), by_row(vec![wall, under]));
+
+  // Floor 1's: its own wall blocks, and the ground's wall under it does not
+  let upper = navigation(&mut maps, map, "upper", bounds);
+  assert_eq!(upper.floor(), Floor::On(1));
+  assert!(!upper.is_walkable(upper_wall.into()));
+  assert!(upper.is_walkable(under.into()));
+  // Any layer on floor 1 gives floor 1's grid
+  let props = navigation(&mut maps, map, "upper-props", bounds);
+  assert_eq!(props.floor(), Floor::On(1));
+  assert_eq!(blocked(&props), blocked(&upper));
+
+  // A path on each floor keeps to its own floor's walls: on the ground
+  // through the floor-1 wall's cell, on floor 1 through the ground wall's
+  let Some(below) = path_cells(&ground, IVec2::new(11, 5), IVec2::new(13, 5)) else {
+    panic!("a way along the ground")
+  };
+  assert!(below.contains(&upper_wall), "{below:?}");
+  let Some(above) = path_cells(&upper, IVec2::new(8, 4), IVec2::new(10, 4)) else {
+    panic!("a way along floor 1")
+  };
+  assert!(above.contains(&under), "{above:?}");
+  // The nodes of a path on a floor's grid carry that floor
+  let Some(path) = Pathfinder::new()
+    .find_path_grid(&upper, GridCoord::new(8, 4), GridCoord::new(10, 4))
+    .path()
+  else {
+    panic!("a way along floor 1")
+  };
+  assert!(path.waypoints().iter().all(|n| n.floor == Floor::On(1)));
+}
+
+#[test]
+fn an_upper_floor_s_navigation_is_open_only_on_its_footprint() {
+  let upper_wall = IVec2::new(12, 5);
+  let mut maps = MapWorld::new();
+  let map = spawn(&mut maps, hall(), placed());
+  let window = CellRect::new(IVec2::splat(-2), IVec2::new(22, 12));
+  // Floor 1's tile layers' cells and the stairs up to it, less its wall;
+  // every other cell is in the air
+  let upper = navigation(&mut maps, map, "upper", window);
+  let mut expected = hall_footprint();
+  expected.retain(|&cell| cell != upper_wall);
+  assert_eq!(open(&upper), expected);
+  // A path from the stairs' foot keeps to it
+  let Some(path) = path_cells(&upper, IVec2::new(6, 4), IVec2::new(13, 3)) else {
+    panic!("a way over floor 1")
+  };
+  assert!(path.iter().all(|cell| expected.contains(cell)), "{path:?}");
+
+  // A map without collision has no walls and no edge, but its floors keep
+  // their footprints
+  let handle = maps.world.resource_mut::<Assets<TileMap>>().add(hall());
+  let quiet = maps.spawn(MapRoot::new(handle).without_collision());
+  assert_eq!(
+    open(&navigation(&mut maps, quiet, "upper", window)),
+    hall_footprint()
+  );
+  assert_eq!(blocked(&navigation(&mut maps, quiet, "ground", window)), []);
+
+  // On every grid, the footprint is the floor's cells and its stairs
+  for (shape, cell) in shapes() {
+    let mut map = TileMap::new(UVec2::new(12, 10), cell).with_shape(shape);
+    map.add_tileset(storey_tiles());
+    let mut ground = filled((0, 0), (11, 9), PLAIN);
+    ground.extend([(IVec2::new(3, 5), UP_1), (IVec2::new(4, 5), UP_1)]);
+    storey_layer(&mut map, "ground", 0, Vec2::ZERO, &ground);
+    let up = Vec2::new(0.0, -2.0 * cell.y as f32);
+    storey_layer(&mut map, "deck", 1, up, &filled((5, 3), (8, 7), PLAIN));
+    let root = spawn(&mut maps, map, placed());
+    let deck = navigation(
+      &mut maps,
+      root,
+      "deck",
+      CellRect::new(IVec2::splat(-1), IVec2::new(13, 11)),
+    );
+    let mut expected = cells(IVec2::new(5, 3), IVec2::new(8, 7));
+    expected.extend([IVec2::new(3, 5), IVec2::new(4, 5)]);
+    assert_eq!(open(&deck), by_row(expected), "{shape:?} {cell}");
+  }
+
+  // A layer on floor 1 standing elsewhere (12 px right of the floor's
+  // bottom layer) reads the footprint under its cells' centres: its cell
+  // (x, y)'s centre is over the floor's (x + 1, y). Floor 1's wall, a cell
+  // wide, overlaps two of its cells, (11, 5) and (12, 5)
+  let mut shifted = hall();
+  storey_layer(&mut shifted, "awning", 1, UP + Vec2::new(12.0, 0.0), &[]);
+  let root = spawn(&mut maps, shifted, Transform::IDENTITY);
+  let awning = navigation(&mut maps, root, "awning", window);
+  let walled = [IVec2::new(11, 5), IVec2::new(12, 5)];
+  let under: Vec<IVec2> = hall_footprint()
+    .into_iter()
+    .map(|c| c - IVec2::X)
+    .filter(|c| !walled.contains(c))
+    .collect();
+  assert_eq!(open(&awning), by_row(under));
+}
+
+#[test]
+fn navigation_on_a_map_without_floors_is_unchanged() {
+  use crate::core::ecs::Floor;
+  use crate::core::tilemap::{MapFloors, MapLayers, edit};
+  for (shape, cell) in [
+    (GridShape::Orthogonal, UVec2::splat(16)),
+    (GridShape::Isometric, UVec2::new(64, 32)),
+    (
+      GridShape::Hexagonal {
+        axis: Y,
+        index: Odd,
+        side: 12,
+      },
+      UVec2::new(32, 28),
+    ),
+  ] {
+    // Walls on the ground, stairs that lead nowhere (plain tiles on a map
+    // without floors), and a rock layer standing a cell over, colliding on
+    // its own layer
+    // Tile 0 its whole cell, 1 plain and 2 stairs up to floor 1
+    let mut map = TileMap::new(UVec2::new(12, 10), cell).with_shape(shape);
+    let mut set = whole_hex_set(&map.grid());
+    set.insert_tile(1, TileData::default());
+    set.insert_tile(
+      2,
+      TileData {
+        stairs: Some(1),
+        ..TileData::default()
+      },
+    );
+    set.tile_count = 3;
+    map.add_tileset(TilesetSource::Embedded(Arc::new(set)));
+    let mut tiles = filled((0, 0), (11, 9), 1);
+    tiles.extend(filled((5, 1), (5, 7), 0));
+    tiles.push((IVec2::new(2, 2), 2));
+    storey_layer(&mut map, "ground", 0, Vec2::ZERO, &tiles);
+    let over = Vec2::new(cell.x as f32, 0.0);
+    storey_layer(&mut map, "rocks", 0, over, &[(IVec2::new(1, 6), 0)]);
+    let mut maps = MapWorld::new();
+    let root = spawn(&mut maps, map, placed());
+    assert!(maps.world.get::<MapFloors>(root).is_none());
+    let window = CellRect::new(IVec2::splat(-2), IVec2::new(14, 12));
+    let grid = navigation(&mut maps, root, "ground", window);
+    assert_eq!(grid.floor(), Floor::GROUND, "{shape:?}");
+
+    // The grid as navigation always made it: the layer's cells, with every
+    // tile grid of the map and its layers blocked
+    let layer = ground(&mut maps, root);
+    let mut made = NavigationGrid::for_layer(layer, window);
+    let layers = maps
+      .world
+      .get::<MapLayers>(root)
+      .map_or(Vec::new(), |l| l.0.clone());
+    for owner in std::iter::once(root).chain(layers) {
+      if let (Some(tiles), Some(to_world)) = (
+        maps.world.get::<TileColliders>(owner),
+        edit::local_to_world(&maps.world, owner),
+      ) {
+        made.block_tiles(tiles, to_world);
+      }
+    }
+    assert!(!blocked(&made).is_empty(), "{shape:?}");
+    assert_eq!(blocked(&grid), blocked(&made), "{shape:?}");
+    let (from, to) = (IVec2::new(1, 4), IVec2::new(10, 4));
+    assert_eq!(path_cells(&grid, from, to), path_cells(&made, from, to));
+  }
+}
+
+#[test]
+fn a_map_s_floor_navigation_joins_its_floors_at_its_stairs() {
+  use crate::core::ecs::Floor;
+  use crate::core::navigation::StairLink;
+  // `hall`, with a floor 2 standing 5 px right of the ground's cells,
+  // which the floors' grids leave out
+  let mut map = hall();
+  storey_layer(
+    &mut map,
+    "loft-left-out",
+    2,
+    Vec2::new(5.0, -64.0),
+    &filled((9, 4), (10, 5), PLAIN),
+  );
+  let mut maps = MapWorld::new();
+  let handle = maps.world.resource_mut::<Assets<TileMap>>().add(map);
+  let root = maps.world.spawn((MapRoot::new(handle), placed())).id();
+  // Landed by `PreUpdate` alone: no fixed step has read its stairs yet
+  let start = std::time::Instant::now();
+  while !MapsView::new(&mut maps.world).is_ready(root) {
+    maps.pre_update();
+    assert!(start.elapsed().as_secs() < 5, "{root} lands");
+    std::thread::yield_now();
+  }
+  assert!(
+    maps
+      .world
+      .get::<crate::core::tilemap::stairs::MapStairs>(root)
+      .is_none()
+  );
+  let Some(bounds) = MapsView::new(&mut maps.world).bounds(root) else {
+    panic!("{root} landed")
+  };
+  let Some(nav) = MapsView::new(&mut maps.world).floor_navigation(root, bounds) else {
+    panic!("{root} has floors to navigate")
+  };
+  let floors: Vec<Floor> = nav.grids().map(|grid| grid.floor()).collect();
+  assert_eq!(floors, [Floor::GROUND, Floor::On(1)]);
+  assert!(nav.grid(Floor::On(2)).is_none());
+  let link = |x: i32| StairLink {
+    cell: GridCoord::new(x, 4),
+    lower: Floor::GROUND,
+    upper: Floor::On(1),
+  };
+  assert_eq!(nav.links(), [link(6), link(7)]);
+  // Each floor's grid is that floor's `navigation`
+  for (floor, layer) in [(Floor::GROUND, "ground"), (Floor::On(1), "upper")] {
+    let Some(grid) = nav.grid(floor) else {
+      panic!("{floor:?} has a grid")
+    };
+    let alone = navigation(&mut maps, root, layer, bounds);
+    assert_eq!(grid.layer(), alone.layer(), "{floor:?}");
+    assert_eq!(blocked(grid), blocked(&alone), "{floor:?}");
+  }
+  // The floor left out warns once a map
+  let warned = || {
+    crate::core::dev_log::get_entries()
+      .iter()
+      .filter(|e| e.message.contains("loft-left-out") && e.message.contains("navigation"))
+      .count()
+  };
+  assert_eq!(warned(), 1);
+  assert!(
+    MapsView::new(&mut maps.world)
+      .floor_navigation(root, bounds)
+      .is_some()
+  );
+  assert_eq!(warned(), 1);
+
+  // A path from a ground point to a floor-1 point climbs the stairs
+  let Some(layer) = MapsView::new(&mut maps.world).grid(root, "ground") else {
+    panic!("a ground layer")
+  };
+  let (from, to) = (IVec2::new(2, 6), IVec2::new(11, 4));
+  let Some(path) = Pathfinder::new()
+    .find_floor_path(
+      &nav,
+      layer.cell_center_world(from),
+      Floor::GROUND,
+      layer.cell_center_world(to),
+      Floor::On(1),
+    )
+    .path()
+  else {
+    panic!("a way up the stairs")
+  };
+  let nodes = path.waypoints();
+  let changes: Vec<usize> = (1..nodes.len())
+    .filter(|&i| nodes[i - 1].floor != nodes[i].floor)
+    .collect();
+  assert_eq!(changes.len(), 1, "{nodes:?}");
+  let at = nodes[changes[0]].grid_coord;
+  assert!(
+    at == GridCoord::new(6, 4) || at == GridCoord::new(7, 4),
+    "{at:?}"
+  );
+  assert_eq!(nodes[changes[0] - 1].grid_coord, at);
+  assert_eq!(
+    (nodes[0].floor, nodes[nodes.len() - 1].floor),
+    (Floor::GROUND, Floor::On(1))
+  );
+
+  // A map without floors has its ground floor's grid alone; one with no
+  // tile layer on the ground floor has none
+  let plain = spawn(
+    &mut maps,
+    map_of(
+      GridShape::Isometric,
+      UVec2::new(64, 32),
+      Some(UVec2::new(4, 4)),
+    ),
+    placed(),
+  );
+  let window = CellRect::from_size(UVec2::splat(4));
+  let Some(nav) = MapsView::new(&mut maps.world).floor_navigation(plain, window) else {
+    panic!("a map without floors has its ground's grid")
+  };
+  let alone = navigation(&mut maps, plain, "ground", window);
+  let grids: Vec<_> = nav.grids().map(|g| (g.floor(), g.layer())).collect();
+  assert_eq!(grids, [(Floor::GROUND, alone.layer())]);
+  assert!(nav.links().is_empty());
+  let mut lofty = TileMap::new(UVec2::new(4, 4), UVec2::splat(16));
+  lofty.add_tileset(storey_tiles());
+  storey_layer(&mut lofty, "only-up", 1, UP, &filled((0, 0), (3, 3), PLAIN));
+  let lofty = spawn(&mut maps, lofty, placed());
+  assert!(
+    MapsView::new(&mut maps.world)
+      .floor_navigation(lofty, window)
+      .is_none()
+  );
+  assert!(
+    MapsView::new(&mut maps.world)
+      .floor_navigation(Entity::PLACEHOLDER, window)
+      .is_none()
+  );
 }
 
 /// Times taking a navigation grid over a 256 x 256 window: of a 512 x 512

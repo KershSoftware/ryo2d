@@ -3,6 +3,7 @@
 //! Represents computed paths and provides smoothing options.
 
 use super::grid::{GridCoord, NavigationGrid};
+use crate::core::ecs::Floor;
 
 /// A waypoint in a path
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -13,11 +14,23 @@ pub struct PathNode {
   pub y: f32,
   /// Grid coordinate this node corresponds to
   pub grid_coord: GridCoord,
+  /// The floor it is on: its grid's ([`NavigationGrid::floor`]). A path
+  /// across floors ([`Pathfinder::find_floor_path`](super::Pathfinder::find_floor_path))
+  /// changes floor between two nodes at one stair cell, one on each floor,
+  /// so a character following it changes floor as the stairs do
+  pub floor: Floor,
 }
 
 impl PathNode {
+  /// A node at the world point (`x`, `y`) of `grid_coord`, on the ground
+  /// floor
   pub fn new(x: f32, y: f32, grid_coord: GridCoord) -> Self {
-    PathNode { x, y, grid_coord }
+    PathNode {
+      x,
+      y,
+      grid_coord,
+      floor: Floor::GROUND,
+    }
   }
 
   /// Calculate squared distance to another node
@@ -173,32 +186,32 @@ impl Path {
     self.grid_generation != current_generation
   }
 
-  /// Apply line-of-sight smoothing to remove unnecessary waypoints
+  /// Apply line-of-sight smoothing to remove unnecessary waypoints: each
+  /// waypoint is joined to the furthest after it in sight on `grid`.
+  /// Only the runs of waypoints on the grid's floor are smoothed, each on
+  /// its own: a path across floors keeps the two waypoints where it
+  /// changes floor, and its runs on other floors as they are
   pub fn smooth_line_of_sight(&mut self, grid: &NavigationGrid) {
+    self.smooth_runs_line_of_sight(|floor| (floor == grid.floor()).then_some(grid));
+  }
+
+  /// Line-of-sight smoothing of each run of waypoints on one floor, on
+  /// that floor's grid (`grid_of`; a run on a floor without one is kept as
+  /// it is), never across a change of floor
+  pub(super) fn smooth_runs_line_of_sight<'g>(
+    &mut self,
+    grid_of: impl Fn(Floor) -> Option<&'g NavigationGrid>,
+  ) {
     if self.waypoints.len() < 3 {
       return;
     }
 
     let mut smoothed = Vec::with_capacity(self.waypoints.len());
-    smoothed.push(self.waypoints[0]);
-
-    let mut current_idx = 0;
-
-    while current_idx < self.waypoints.len() - 1 {
-      // Find the furthest waypoint with line-of-sight from current
-      let mut furthest_visible = current_idx + 1;
-
-      for check_idx in (current_idx + 2)..self.waypoints.len() {
-        if grid.line_of_sight(
-          self.waypoints[current_idx].grid_coord,
-          self.waypoints[check_idx].grid_coord,
-        ) {
-          furthest_visible = check_idx;
-        }
+    for run in self.waypoints.chunk_by(|a, b| a.floor == b.floor) {
+      match grid_of(run[0].floor) {
+        Some(grid) => smooth_run_line_of_sight(run, grid, &mut smoothed),
+        None => smoothed.extend_from_slice(run),
       }
-
-      smoothed.push(self.waypoints[furthest_visible]);
-      current_idx = furthest_visible;
     }
 
     self.waypoints = smoothed;
@@ -210,64 +223,90 @@ impl Path {
 
   /// Apply Catmull-Rom spline smoothing
   ///
-  /// This interpolates additional points along the path for smoother movement.
+  /// This interpolates additional points along the path for smoother
+  /// movement: within each run of waypoints on one floor, each keeping its
+  /// first and last, so a path across floors changes floor between the
+  /// same two waypoints as before. An added waypoint is on its run's floor.
   pub fn smooth_spline(&mut self, segments_per_waypoint: usize) {
     if self.waypoints.len() < 2 || segments_per_waypoint == 0 {
       return;
     }
 
     let mut smoothed = Vec::new();
-
-    // Add extra control points at start and end for the spline
-    let p0 = if self.waypoints.len() > 1 {
-      PathNode::new(
-        2.0 * self.waypoints[0].x - self.waypoints[1].x,
-        2.0 * self.waypoints[0].y - self.waypoints[1].y,
-        self.waypoints[0].grid_coord,
-      )
-    } else {
-      self.waypoints[0]
-    };
-
-    let pn = if self.waypoints.len() > 1 {
-      let last = self.waypoints.len() - 1;
-      PathNode::new(
-        2.0 * self.waypoints[last].x - self.waypoints[last - 1].x,
-        2.0 * self.waypoints[last].y - self.waypoints[last - 1].y,
-        self.waypoints[last].grid_coord,
-      )
-    } else {
-      self.waypoints[self.waypoints.len() - 1]
-    };
-
-    // Build extended points array
-    let mut points = vec![p0];
-    points.extend(self.waypoints.iter().cloned());
-    points.push(pn);
-
-    // Interpolate between each pair of original waypoints
-    for i in 1..(points.len() - 2) {
-      let p0 = &points[i - 1];
-      let p1 = &points[i];
-      let p2 = &points[i + 1];
-      let p3 = &points[i + 2];
-
-      for j in 0..segments_per_waypoint {
-        let t = j as f32 / segments_per_waypoint as f32;
-        let (x, y) = catmull_rom((p0.x, p0.y), (p1.x, p1.y), (p2.x, p2.y), (p3.x, p3.y), t);
-        smoothed.push(PathNode::new(x, y, p1.grid_coord));
-      }
-    }
-
-    // Always include the final waypoint
-    if let Some(last) = self.waypoints.last() {
-      smoothed.push(*last);
+    for run in self.waypoints.chunk_by(|a, b| a.floor == b.floor) {
+      smooth_run_spline(run, segments_per_waypoint, &mut smoothed);
     }
 
     self.waypoints = smoothed;
     self.total_length = Self::calculate_length(&self.waypoints);
     self.current_index = 0;
   }
+}
+
+/// `run`'s waypoints into `out`, each joined to the furthest after it in
+/// sight on `grid`
+fn smooth_run_line_of_sight(run: &[PathNode], grid: &NavigationGrid, out: &mut Vec<PathNode>) {
+  out.push(run[0]);
+
+  let mut current_idx = 0;
+
+  while current_idx < run.len() - 1 {
+    // Find the furthest waypoint with line-of-sight from current
+    let mut furthest_visible = current_idx + 1;
+
+    for check_idx in (current_idx + 2)..run.len() {
+      if grid.line_of_sight(run[current_idx].grid_coord, run[check_idx].grid_coord) {
+        furthest_visible = check_idx;
+      }
+    }
+
+    out.push(run[furthest_visible]);
+    current_idx = furthest_visible;
+  }
+}
+
+/// `run`'s waypoints into `out` along a Catmull-Rom spline through them,
+/// `segments` to each pair, its last waypoint kept
+fn smooth_run_spline(run: &[PathNode], segments: usize, out: &mut Vec<PathNode>) {
+  if run.len() < 2 {
+    out.extend_from_slice(run);
+    return;
+  }
+
+  // Add extra control points at start and end for the spline
+  let last = run.len() - 1;
+  let p0 = PathNode {
+    x: 2.0 * run[0].x - run[1].x,
+    y: 2.0 * run[0].y - run[1].y,
+    ..run[0]
+  };
+  let pn = PathNode {
+    x: 2.0 * run[last].x - run[last - 1].x,
+    y: 2.0 * run[last].y - run[last - 1].y,
+    ..run[last]
+  };
+
+  // Build extended points array
+  let mut points = vec![p0];
+  points.extend(run.iter().cloned());
+  points.push(pn);
+
+  // Interpolate between each pair of original waypoints
+  for i in 1..(points.len() - 2) {
+    let p0 = &points[i - 1];
+    let p1 = &points[i];
+    let p2 = &points[i + 1];
+    let p3 = &points[i + 2];
+
+    for j in 0..segments {
+      let t = j as f32 / segments as f32;
+      let (x, y) = catmull_rom((p0.x, p0.y), (p1.x, p1.y), (p2.x, p2.y), (p3.x, p3.y), t);
+      out.push(PathNode { x, y, ..*p1 });
+    }
+  }
+
+  // Always include the final waypoint
+  out.push(run[last]);
 }
 
 /// Catmull-Rom spline interpolation

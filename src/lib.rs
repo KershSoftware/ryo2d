@@ -258,8 +258,9 @@ pub mod prelude {
 
   // Navigation and pathfinding
   pub use crate::core::navigation::{
-    CellState, GridCoord, NavAgent, NavAgentState, NavTarget, NavigationBuilder, NavigationGrid,
-    Path, PathNode, PathResult, PathSmoothing, Pathfinder, PathfinderConfig, steering,
+    CellState, FloorNavigation, GridCoord, NavAgent, NavAgentState, NavTarget, NavigationBuilder,
+    NavigationGrid, Path, PathNode, PathResult, PathSmoothing, Pathfinder, PathfinderConfig,
+    StairLink, steering,
   };
 
   // State machines

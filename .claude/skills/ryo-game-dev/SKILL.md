@@ -2,7 +2,7 @@
 name: ryo-game-dev
 description: Building games with Ryo2D - scenes, entities, queries, systems, resources, messages, time and input.
 metadata:
-  version: 2.8.0
+  version: 2.9.0
 ---
 
 # Ryo2D Game Developer
@@ -781,7 +781,36 @@ let grid = NavigationGrid::for_layer(layer, CellRect::new(IVec2::splat(-32), IVe
 let path = Pathfinder::new().find_path_grid(&grid, GridCoord::new(0, 0), GridCoord::new(10, 5));
 ```
 
-`grid.block_tiles(&tiles, global.affine())` blocks a map's colliding cells, its `TileColliders` placed by its entity's whole `GlobalTransform` (`rebuild_from_world` does it for every map). `ctx.maps().navigation(map, "ground", window)` does both at once: a grid over the layer's window with every colliding layer of the map blocked, and on a streamed map the chunks not landed (`ryo-tilemap`, section 8).
+`grid.block_tiles(&tiles, global.affine())` blocks a map's colliding cells, its `TileColliders` placed by its entity's whole `GlobalTransform` (`rebuild_from_world` does it for every map). `ctx.maps().navigation(map, "ground", window)` does both at once: a grid over the layer's window with every colliding layer of the map blocked, and on a streamed map the chunks not landed (`ryo-tilemap`, section 8). On a map with storeys it gives the grid of that layer's storey: only that storey's walls block, and above the ground only its footprint is open.
+
+**Paths across storeys.** Each `PathNode` carries its `floor` (the grid's, `NavigationGrid::floor`: the ground floor unless the grid was made for another). A `FloorNavigation` is a grid per storey over the same cells, joined at `StairLink`s (a cell where stairs join two storeys, crossed at no cost); `ctx.maps().floor_navigation(map, window)` takes one from a map's storeys and stairs, and `Pathfinder::find_floor_path` (world points, each with its floor) or `find_floor_path_grid` searches it. The path's floor changes between two nodes at a stair cell, so a character following it changes floor where the stairs do; smoothing never skips across that change. A game can build a floor graph without a tile map, from grids it puts on their floors:
+
+```rust
+// Two levels of 20 x 15 cells, the upper open only over its gallery,
+// joined by a ladder at (4, 7)
+let ground = NavigationGrid::new(320.0, 240.0, 16.0);
+let mut gallery = NavigationGrid::new(320.0, 240.0, 16.0).on_floor(Floor::On(1));
+for y in 0..15 {
+  for x in 0..20 {
+    if !(4..12).contains(&x) || !(5..9).contains(&y) {
+      gallery.set(GridCoord::new(x, y), CellState::Blocked);
+    }
+  }
+}
+let ladder = StairLink { cell: GridCoord::new(4, 7), lower: Floor::GROUND, upper: Floor::On(1) };
+let levels = FloorNavigation::new(vec![ground, gallery], vec![ladder]);
+let path = Pathfinder::new().find_floor_path_grid(
+  &levels,
+  (Floor::GROUND, GridCoord::new(1, 1)),
+  (Floor::On(1), GridCoord::new(10, 6)),
+);
+for node in path.path().iter().flat_map(|path| path.waypoints()) {
+  // Walk to (node.x, node.y), and put the agent on node.floor there
+  let _ = (node.x, node.y, node.floor);
+}
+```
+
+The grids must cover the same cells, as a map's storeys do: the search measures every storey's cells by the lowest's.
 
 `NavAgent::new(speed).with_smoothing(PathSmoothing::LineOfSight)`, `NavTarget::position(x, y)` / `NavTarget::follow(entity)`, and `steering::{separation, seek, flee, arrive, cohesion, alignment}`. See `src/core/navigation/AGENTS.md` and `ryo-api`.
 

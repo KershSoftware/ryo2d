@@ -6,12 +6,15 @@ use super::collision;
 use super::edit::{self, LayerRef};
 use super::floors::{self, MapFloors};
 use super::spawn::{self, MapIds, MapLayers, MapRoot, TileLayerData};
+use super::stairs::{self, MapStairs};
 use super::stream;
 use super::world::{self, WorldRef};
-use super::{CHUNK_SIZE, CellOutline, MapGrid, Tile, TileData, TileGrid, WorldLevel, wang};
-use crate::core::ecs::{DrawLift, Entity, Floor, World};
+use super::{
+  CHUNK_SIZE, CellOutline, LayerInfo, MapGrid, Tile, TileData, TileGrid, WorldLevel, wang,
+};
+use crate::core::ecs::{Disabled, DrawLift, Entity, Floor, Resource, World};
 use crate::core::hash::FastSet;
-use crate::core::navigation::{CellState, GridCoord, NavigationGrid};
+use crate::core::navigation::{CellState, FloorNavigation, GridCoord, NavigationGrid, StairLink};
 use crate::core::physics::{CellRect, TileColliders};
 use crate::core::ui::Rect;
 
@@ -597,22 +600,150 @@ impl<'w> MapsView<'w> {
       return None;
     }
     let entity = edit::layer_entity(self.world, map, layer.into())?;
+    self.world.get::<TileLayerData>(entity)?;
+    // Its params (queries, optional stores, a local and commands) always
+    // validate, so it always runs
+    let _ = self.world.run_system_cached(collision::sync_map_colliders);
+    self.layer_navigation(map, entity, window)
+  }
+
+  /// Every floor's navigation grid over `window` (max exclusive) of the
+  /// ground floor's cells, joined at the map's stairs: what
+  /// [`Pathfinder::find_floor_path`](crate::core::navigation::Pathfinder::find_floor_path)
+  /// searches for a path that climbs from floor to floor. `None` until the
+  /// map lands, or when no tile layer is on its ground floor.
+  ///
+  /// Each floor's grid is [`navigation`](Self::navigation)'s for its bottom
+  /// tile layer (its first enabled one): on the ground floor its own
+  /// colliders, and on a floor above its footprint, less its own
+  /// colliders. A floor whose bottom tile layer stands elsewhere than the
+  /// ground floor's (another grid, or another offset in ground space) is
+  /// left out, and the dev log warns once a map. Each cell of a run of
+  /// stairs is a [`StairLink`](crate::core::navigation::StairLink) between
+  /// the floor its layer is on and the floor it leads up to, a step at no
+  /// cost, since it is the same ground. A map without floors gives its
+  /// ground floor's grid alone.
+  ///
+  /// Like `navigation`, it brings the map's collision, and its stairs, up
+  /// to its tiles first, so a grid taken in `update` reads the edits made
+  /// before it; and it is a copy, taken again after edits or
+  /// [`ChunkEvent`](super::ChunkEvent)s.
+  ///
+  /// ```
+  /// use ryo2d::prelude::*;
+  ///
+  /// /// The way from a point on the ground to one on the map's first storey,
+  /// /// up its stairs: each step's floor is the floor to be on there
+  /// fn climb(ctx: &mut SceneContext<'_>, map: Entity, from: Vec2, to: Vec2) -> Vec<(Vec2, Floor)> {
+  ///   let mut maps = ctx.maps();
+  ///   let Some(bounds) = maps.bounds(map) else {
+  ///     return Vec::new();
+  ///   };
+  ///   let Some(floors) = maps.floor_navigation(map, bounds) else {
+  ///     return Vec::new();
+  ///   };
+  ///   match Pathfinder::new().find_floor_path(&floors, from, Floor::GROUND, to, Floor::On(1)) {
+  ///     PathResult::Found(path) => path
+  ///       .waypoints()
+  ///       .iter()
+  ///       .map(|node| (Vec2::new(node.x, node.y), node.floor))
+  ///       .collect(),
+  ///     _ => Vec::new(),
+  ///   }
+  /// }
+  /// ```
+  pub fn floor_navigation(&mut self, map: Entity, window: CellRect) -> Option<FloorNavigation> {
+    if !self.is_ready(map) {
+      return None;
+    }
+    let layers = self.world.get::<MapLayers>(map)?.0.clone();
+    let world = &*self.world;
+    // A floor's bottom tile layer: its first enabled one
+    let bottom_of = |number: u8| {
+      layers.iter().copied().find(|&layer| {
+        world.get::<Disabled>(layer).is_none()
+          && world.get::<TileLayerData>(layer).is_some()
+          && world
+            .get::<LayerInfo>(layer)
+            .is_some_and(|info| info.floor == number)
+      })
+    };
+    let ground = edit::entity_grid(world, bottom_of(0)?)?;
+    let numbers: Vec<u8> = match world.get::<MapFloors>(map) {
+      Some(floors) => floors.floors().filter_map(|floor| floor.number()).collect(),
+      None => vec![0],
+    };
+    let (mut bottoms, mut left_out) = (Vec::with_capacity(numbers.len()), None);
+    for number in numbers {
+      let Some(bottom) = bottom_of(number) else {
+        continue;
+      };
+      if edit::entity_grid(world, bottom) == Some(ground) {
+        bottoms.push(bottom);
+      } else {
+        left_out = left_out.or(Some((number, bottom)));
+      }
+    }
+    if let Some((number, bottom)) = left_out {
+      warn_left_out(self.world, map, number, bottom);
+    }
+    // Both always validate (queries, optional stores, a local and
+    // commands), so they always run
+    let _ = self.world.run_system_cached(collision::sync_map_colliders);
+    let _ = self.world.run_system_cached(stairs::sync_stair_runs);
+    let grids = bottoms
+      .into_iter()
+      .filter_map(|bottom| self.layer_navigation(map, bottom, window))
+      .collect();
+    let links = self
+      .world
+      .get::<MapStairs>(map)
+      .map_or(Vec::new(), |stairs| {
+        stairs
+          .runs
+          .iter()
+          .flat_map(|run| {
+            run.cells.iter().map(|&cell| StairLink {
+              cell: cell.into(),
+              lower: Floor::On(run.from),
+              upper: Floor::On(run.to),
+            })
+          })
+          .collect()
+      });
+    Some(FloorNavigation::new(grids, links))
+  }
+
+  /// [`navigation`](Self::navigation) over the tile layer entity `entity`
+  /// of `map`, whose collision is synced: the grid of the layer's floor
+  fn layer_navigation(
+    &self,
+    map: Entity,
+    entity: Entity,
+    window: CellRect,
+  ) -> Option<NavigationGrid> {
     let data = self.world.get::<TileLayerData>(entity)?;
     let unbounded = data.tiles.bounds().is_none();
     let layer = LayerGrid {
       grid: data.grid,
       to_world: edit::local_to_world(self.world, entity)?,
     };
-    // Its params (queries, optional stores, a local and commands) always
-    // validate, so it always runs
-    let _ = self.world.run_system_cached(collision::sync_map_colliders);
-    let mut grid = NavigationGrid::for_layer(layer, window);
+    let number = self
+      .world
+      .get::<LayerInfo>(entity)
+      .map_or(0, |info| info.floor);
+    let floor = Floor::On(number);
+    let mut grid = NavigationGrid::for_layer(layer, window).on_floor(floor);
+    if number > 0 {
+      block_off_footprint(self.world, map, number, &mut grid);
+    }
     if unbounded && let Some(resident) = stream::streamed_resident(self.world, map) {
       block_unloaded(&mut grid, resident);
     }
     let layers = self.world.get::<MapLayers>(map).map_or(&[][..], |l| &l.0);
     for &owner in std::iter::once(&map).chain(layers) {
       if let Some(tiles) = self.world.get::<TileColliders>(owner)
+        && tiles.floor.meets(floor)
         && let Some(to_world) = edit::local_to_world(self.world, owner)
       {
         grid.block_tiles(tiles, to_world);
@@ -665,6 +796,74 @@ impl<'w> MapsView<'w> {
     configure: impl FnMut(&WorldLevel, MapRoot) -> MapRoot,
   ) -> Vec<Entity> {
     world::spawn_levels_in(self.world, world.into(), area, depth, configure)
+  }
+}
+
+/// Blocks every cell of `grid` (a grid of floor `floor`, above the ground)
+/// outside the floor's footprint on `map`: all of them where the floor has
+/// none. On the cells of the floor's bottom tile layer the footprint's
+/// cells stay open cell for cell; on any other layer's (one of the floor's
+/// standing elsewhere) the cells whose centre is over a footprint cell
+fn block_off_footprint(world: &World, map: Entity, floor: u8, grid: &mut NavigationGrid) {
+  let window = grid.window();
+  let size = window.size();
+  let (width, height) = (size.x as usize, size.y as usize);
+  // The window's cells by row from its first, whose offsets are `u32`s
+  let place = |cell: IVec2| {
+    let at = (cell - window.min).as_uvec2();
+    at.y as usize * width + at.x as usize
+  };
+  let mut open = vec![false; width * height];
+  if let Some(footprint) = collision::Footprint::of(world, map, floor) {
+    let bottom = edit::entity_grid(world, footprint.bottom());
+    if bottom.is_some() && bottom == grid.layer() {
+      footprint.cells(Some(window), |cell| open[place(cell)] = true);
+    } else if let Some(bottom) = bottom {
+      let mut cells = FastSet::default();
+      footprint.cells(None, |cell| {
+        cells.insert(cell);
+      });
+      for y in window.min.y..window.max.y {
+        for x in window.min.x..window.max.x {
+          let (cx, cy) = grid.grid_to_world(GridCoord::new(x, y));
+          let under = bottom.try_cell_at_world(Vec2::new(cx, cy));
+          if under.is_some_and(|under| cells.contains(&under)) {
+            open[place(IVec2::new(x, y))] = true;
+          }
+        }
+      }
+    }
+  }
+  for y in window.min.y..window.max.y {
+    for x in window.min.x..window.max.x {
+      if !open[place(IVec2::new(x, y))] {
+        grid.set(GridCoord::new(x, y), CellState::Blocked);
+      }
+    }
+  }
+}
+
+/// The maps whose floors' navigation left a floor out, each warned about
+/// once
+#[derive(Resource, Default)]
+struct FloorsLeftOut(FastSet<Entity>);
+
+/// Warns, once a map, that `map`'s floors' navigation leaves floor `number`
+/// out, its bottom tile layer `bottom` standing elsewhere than the ground
+/// floor's
+fn warn_left_out(world: &mut World, map: Entity, number: u8, bottom: Entity) {
+  world.init_resource::<FloorsLeftOut>();
+  let first = world
+    .get_resource_mut::<FloorsLeftOut>()
+    .is_some_and(|mut warned| warned.0.insert(map));
+  if first {
+    let name = world
+      .get::<LayerInfo>(bottom)
+      .map_or("?", |info| info.name.as_str());
+    crate::engine_warn!(
+      module: "Tilemap",
+      "map {map}: floor {number}'s bottom tile layer {name:?} stands elsewhere than the ground floor's (another grid or offset), so the floors' navigation leaves floor {number} out (this map warns once)"
+    );
   }
 }
 

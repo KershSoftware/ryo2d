@@ -619,7 +619,7 @@ pub(crate) fn layer_grid(world: &World, map: Entity, layer: LayerRef<'_>) -> Opt
 }
 
 /// [`layer_grid`] of the tile layer entity `layer`
-fn entity_grid(world: &World, layer: Entity) -> Option<LayerGrid> {
+pub(crate) fn entity_grid(world: &World, layer: Entity) -> Option<LayerGrid> {
   let grid = world.get::<TileLayerData>(layer)?.grid;
   Some(LayerGrid {
     grid,
