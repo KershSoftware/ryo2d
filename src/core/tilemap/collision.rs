@@ -48,8 +48,8 @@
 //! the tile colliders rebuild only the outlines an edit touched, a floor's
 //! edge too. A change of what the colliders are built from (which layers
 //! collide, their cell sizes, floors, places, materials or bounds, the
-//! tilesets' shapes and stairs, the IntGrid overrides) builds every group
-//! again.
+//! tilesets' shapes, their stairs on a map whose floors have footprints,
+//! the IntGrid overrides) builds every group again.
 
 use std::sync::Arc;
 
@@ -542,6 +542,8 @@ fn build(
     }
     group.key.material().apply(&mut tiles);
     tiles.floor = Floor::On(group.key.floor);
+    // A floor's edge is in nothing's way but what is on that floor
+    tiles.surface = !group.key.edge;
     let data: Vec<Option<&TileLayerData>> = group
       .layers
       .iter()
@@ -896,9 +898,12 @@ pub(crate) fn sync_map_colliders(
       warned,
       &mut planned,
     );
+    // Stairs matter only to a map whose floors have footprints: a tileset
+    // saved with other stairs builds nothing again on any other
+    let footprints = planned.iter().any(|layer| layer.footing.is_some());
     let same = state.as_mut().is_some_and(|s| {
       let s = s.bypass_change_detection();
-      let read = (&s.shapes[..], Some(&s.stairs[..]));
+      let read = (&s.shapes[..], footprints.then_some(&s.stairs[..]));
       !s.torn
         && s.layers == *planned
         && s.grid == tile_map.grid()
@@ -923,7 +928,11 @@ pub(crate) fn sync_map_colliders(
       state => {
         // Built at once, so a map never lacks its colliders
         let shapes = sources(tile_map, tilesets);
-        let stairs = stair_sources(tile_map, tilesets);
+        let stairs = if footprints {
+          stair_sources(tile_map, tilesets)
+        } else {
+          Arc::default()
+        };
         let mut warned_properties = match &state {
           Some(old) => old.warned_properties.clone(),
           None => first_warnings,
@@ -4377,6 +4386,21 @@ mod tests {
     want.extend([IVec2::new(8, 6), IVec2::new(10, 4)]);
     assert_eq!(solid_cells(&second), by_row(want));
     assert_eq!(warned(&["\"awning-3f1\"", "floor 1"]), 1);
+
+    // Stairs painted on the ground beside floor 1 join its edge, and stairs
+    // painted over leave it, in that step
+    let mut view = MapsView::new(&mut maps.world);
+    assert!(view.set_tile(map, "ground", IVec2::new(9, 4), Some(UP_1)));
+    assert!(view.set_tile(map, "ground", IVec2::new(3, 5), Some(PLAIN)));
+    maps.step();
+    let mut want = cells_of(&upper);
+    want.extend([IVec2::new(3, 4), IVec2::new(9, 4)]);
+    let want = by_row(want);
+    assert_eq!(solid_cells(&colliders(&maps.world, first)), want);
+    assert_eq!(
+      cut(&lattice_edges(&mut maps.world, first, to_pixel)),
+      square_border(&want)
+    );
   }
 
   #[test]
@@ -4443,47 +4467,63 @@ mod tests {
     assert_eq!(edge_of(&mut maps.world, map, 1), edge);
   }
 
+  /// A 6 x 4 Tiled map (JSON) over `set.tsj` beside it, with a tile layer
+  /// for each of `layers`: its name, its gids row by row and its extra
+  /// fields
+  fn small_level(layers: &[(&str, &[u32], &str)]) -> String {
+    let layers: Vec<String> = layers
+      .iter()
+      .enumerate()
+      .map(|(i, (name, data, extra))| {
+        let data: Vec<String> = data.iter().map(u32::to_string).collect();
+        format!(
+          r#"{{"id":{},"name":"{name}","type":"tilelayer","width":6,"height":4,"data":[{}]{extra}}}"#,
+          i + 1,
+          data.join(",")
+        )
+      })
+      .collect();
+    format!(
+      r#"{{"type":"map","orientation":"orthogonal","width":6,"height":4,"tilewidth":16,
+        "tileheight":16,"tilesets":[{{"firstgid":1,"source":"set.tsj"}}],"layers":[{}]}}"#,
+      layers.join(",")
+    )
+  }
+
+  /// A 6 x 4 layer's gids: `gid` at `cells`, nothing elsewhere
+  fn small_gids(cells: &[(i32, i32)], gid: u32) -> Vec<u32> {
+    let mut data = vec![0; 24];
+    for &(x, y) in cells {
+      data[(y * 6 + x) as usize] = gid;
+    }
+    data
+  }
+
+  /// A layer's extra fields putting it on `floor`, drawn 32 px up and `x`
+  /// px right
+  fn floor_fields(floor: u8, x: i32) -> String {
+    format!(
+      r#","offsetx":{x},"offsety":-32,"properties":[{{"name":"floor","type":"int","value":{floor}}}]"#
+    )
+  }
+
+  /// The cells listed, by row
+  fn cells_at(list: &[(i32, i32)]) -> Vec<IVec2> {
+    by_row(list.iter().map(|&(x, y)| IVec2::new(x, y)).collect())
+  }
+
   #[test]
   fn a_reload_rebuilds_a_floor_s_edge() {
     // gid 1 a plain tile, gid 3 stairs up to floor 1
     const SET: &str = r#"{"type":"tileset","name":"set","tilewidth":16,"tileheight":16,
       "tilecount":16,"columns":4,"image":"../tiled/images/tiles.png","imagewidth":64,
       "imageheight":64,"tiles":[{"id":2,"properties":[{"name":"stairs","type":"int","value":1}]}]}"#;
-    // A 6 x 4 map of the tile layers "ground" and "upper" (`upper` its
-    // extra fields), each of gids row by row
+    // "ground", and "upper" on a floor
     let level = |ground: &[u32], upper: &[u32], extra: &str| {
-      let layer = |id: u32, name: &str, data: &[u32], extra: &str| {
-        let data: Vec<String> = data.iter().map(u32::to_string).collect();
-        format!(
-          r#"{{"id":{id},"name":"{name}","type":"tilelayer","width":6,"height":4,"data":[{}]{extra}}}"#,
-          data.join(",")
-        )
-      };
-      format!(
-        r#"{{"type":"map","orientation":"orthogonal","width":6,"height":4,"tilewidth":16,
-          "tileheight":16,"tilesets":[{{"firstgid":1,"source":"set.tsj"}}],"layers":[{},{}]}}"#,
-        layer(1, "ground", ground, ""),
-        layer(2, "upper", upper, extra)
-      )
-    };
-    // "upper" on `floor`, drawn 32 px up and `x` px right
-    let on = |floor: u8, x: i32| {
-      format!(
-        r#","offsetx":{x},"offsety":-32,"properties":[{{"name":"floor","type":"int","value":{floor}}}]"#
-      )
-    };
-    let gids = |cells: &[(i32, i32)], gid: u32| -> Vec<u32> {
-      let mut data = vec![0; 24];
-      for &(x, y) in cells {
-        data[(y * 6 + x) as usize] = gid;
-      }
-      data
-    };
-    let cells = |list: &[(i32, i32)]| -> Vec<IVec2> {
-      by_row(list.iter().map(|&(x, y)| IVec2::new(x, y)).collect())
+      small_level(&[("ground", ground, ""), ("upper", upper, extra)])
     };
     let raised = [(1, 1), (2, 1), (3, 1), (1, 2), (2, 2), (3, 2)];
-    let first = level(&[0; 24], &gids(&raised, 1), &on(1, 0));
+    let first = level(&[0; 24], &small_gids(&raised, 1), &floor_fields(1, 0));
     let files = files_with(&[("r/set.tsj", SET), ("r/m.tmj", &first)]);
     let mut maps = MapWorld::over(files.clone());
     let handle = load(&mut maps.world, "r/m.tmj");
@@ -4501,15 +4541,16 @@ mod tests {
         })
         .collect()
     };
-    assert_eq!(edges(&mut maps.world), [(1, Vec2::ZERO, cells(&raised))]);
+    assert_eq!(edges(&mut maps.world), [(1, Vec2::ZERO, cells_at(&raised))]);
     let edge = edge_of(&mut maps.world, map, 1);
 
     // Saved with floor 1 a cell larger and stairs up to it on the ground:
     // the edge takes both in, in place
-    let larger = [&raised[..], &[(4, 1)]].concat();
-    let stairs = gids(&[(0, 1)], 3);
-    files.insert("r/m.tmj", level(&stairs, &gids(&larger, 1), &on(1, 0)));
-    let want = [(1, Vec2::ZERO, cells(&[&larger[..], &[(0, 1)]].concat()))];
+    let larger = small_gids(&[&raised[..], &[(4, 1)]].concat(), 1);
+    let stairs = small_gids(&[(0, 1)], 3);
+    files.insert("r/m.tmj", level(&stairs, &larger, &floor_fields(1, 0)));
+    let grown = [&raised[..], &[(4, 1)]].concat();
+    let want = [(1, Vec2::ZERO, cells_at(&[&grown[..], &[(0, 1)]].concat()))];
     maps.frames_until(|world| edges(world) == want);
     assert_eq!(
       edge_of(&mut maps.world, map, 1),
@@ -4519,15 +4560,118 @@ mod tests {
 
     // Moved 16 px right: its layer respawns there, and the edge with it,
     // the ground's stairs no longer on its grid
-    files.insert("r/m.tmj", level(&stairs, &gids(&larger, 1), &on(1, 16)));
-    let want = [(1, Vec2::new(16.0, 0.0), cells(&larger))];
+    files.insert("r/m.tmj", level(&stairs, &larger, &floor_fields(1, 16)));
+    let want = [(1, Vec2::new(16.0, 0.0), cells_at(&grown))];
     maps.frames_until(|world| edges(world) == want);
 
     // Moved up to floor 2: floor 1's edge goes, and floor 2 has one, which
     // the ground's stairs up to floor 1 do not join
-    files.insert("r/m.tmj", level(&stairs, &gids(&larger, 1), &on(2, 0)));
-    let want = [(2, Vec2::ZERO, cells(&larger))];
+    files.insert("r/m.tmj", level(&stairs, &larger, &floor_fields(2, 0)));
+    let want = [(2, Vec2::ZERO, cells_at(&grown))];
     maps.frames_until(|world| edges(world) == want);
+  }
+
+  #[test]
+  fn a_tileset_saved_with_new_stairs_moves_an_edge_and_leaves_maps_without_floors_alone() {
+    use crate::core::ecs::kernel::{MessageCursor, Messages};
+    use crate::core::physics::{CollisionStarted, CollisionStopped, RigidBody};
+    // Tile 0 a solid block, tile 2 a plain tile or stairs up to floor 1
+    let set = |stairs: bool| {
+      let up = if stairs {
+        r#",{"id":2,"properties":[{"name":"stairs","type":"int","value":1}]}"#
+      } else {
+        ""
+      };
+      format!(
+        r#"{{"type":"tileset","name":"set","tilewidth":16,"tileheight":16,"tilecount":16,
+          "columns":4,"image":"../tiled/images/tiles.png","imagewidth":64,"imageheight":64,
+          "tiles":[{{"id":0,"objectgroup":{{"type":"objectgroup","objects":[
+            {{"id":1,"x":0,"y":0,"width":16,"height":16}}]}}}}{up}]}}"#
+      )
+    };
+    // A map with floor 1 raised beside a tile 2 on the ground, and a map
+    // without floors: a solid row, and a tile 2 over it
+    let raised = [(1, 1), (2, 1), (3, 1), (1, 2), (2, 2), (3, 2)];
+    let beside = (0, 1);
+    let storeyed = small_level(&[
+      ("ground", &small_gids(&[beside], 3), ""),
+      ("upper", &small_gids(&raised, 2), &floor_fields(1, 0)),
+    ]);
+    let mut ground = small_gids(&[(0, 3), (1, 3), (2, 3), (3, 3), (4, 3), (5, 3)], 1);
+    ground[2 * 6 + 2] = 3;
+    let plain = small_level(&[("ground", &ground, "")]);
+    let first = set(false);
+    let files = files_with(&[
+      ("r/set.tsj", &first),
+      ("r/a.tmj", &storeyed),
+      ("r/b.tmj", &plain),
+    ]);
+    let mut maps = MapWorld::over(files.clone());
+    let (a, b) = (
+      load(&mut maps.world, "r/a.tmj"),
+      load(&mut maps.world, "r/b.tmj"),
+    );
+    let with_floors = maps.spawn(MapRoot::new(a));
+    let without = maps
+      .world
+      .spawn((MapRoot::new(b), Transform::from_xy(200.0, 0.0)))
+      .id();
+    maps.settle(without);
+    // A box comes to rest on the map without floors
+    maps.world.spawn((
+      Transform::from_xy(240.0, 30.0),
+      RigidBody::dynamic(),
+      Collider::rect(8.0, 8.0),
+    ));
+    for _ in 0..90 {
+      maps.frame();
+    }
+    let edge_cells = |world: &mut World| {
+      let edge = edge_of(world, with_floors, 1);
+      solid_cells(&colliders(world, edge))
+    };
+    assert_eq!(edge_cells(&mut maps.world), cells_at(&raised));
+    let parts = parts_of(&mut maps.world, without);
+    assert!(!parts.is_empty());
+    let cursor = |world: &World| {
+      let started = world
+        .resource::<Messages<CollisionStarted>>()
+        .get_cursor_current();
+      let stopped = world
+        .resource::<Messages<CollisionStopped>>()
+        .get_cursor_current();
+      (started, stopped)
+    };
+    let mut cursors = cursor(&maps.world);
+    let mut sent = 0;
+    let mut count = |world: &World,
+                     (started, stopped): &mut (
+      MessageCursor<CollisionStarted>,
+      MessageCursor<CollisionStopped>,
+    )| {
+      sent += started
+        .read(world.resource::<Messages<CollisionStarted>>())
+        .count();
+      sent += stopped
+        .read(world.resource::<Messages<CollisionStopped>>())
+        .count();
+    };
+
+    // Tile 2 saved as stairs up to floor 1: the map with floors' edge takes
+    // the ground's stairs in; the map without floors keeps its parts, and
+    // nothing resting on it is touched
+    files.insert("r/set.tsj", set(true));
+    let want = cells_at(&[&raised[..], &[beside]].concat());
+    maps.frames_until(|world| {
+      count(world, &mut cursors);
+      edge_cells(world) == want
+    });
+    for _ in 0..3 {
+      maps.frame();
+      count(&maps.world, &mut cursors);
+    }
+    assert_eq!(parts_of(&mut maps.world, without), parts);
+    assert_eq!(sent, 0, "collision messages sent again");
   }
 
   #[test]

@@ -262,10 +262,10 @@ let level = ctx.world.spawn((Transform::from_xy(0.0, 0.0), tiles)).id();
 
 ### Map collision
 
-A spawned tile map keeps a `TileColliders` for its colliding layers: on the map entity for the layers of its own cell size, no offset and one material, and on a layer's entity for a layer with any of those of its own (`ryo-tilemap`, Collision). Everything above holds for them, and:
+A spawned tile map keeps a `TileColliders` for its colliding layers: on the map entity for the ground floor's layers of its own cell size, no offset and one material, and on a layer's entity for a layer with any of those of its own or on a storey above the ground, each grid on its layers' storey (`TileColliders::floor`, so a character on one storey passes another's walls, `ryo-physics`, Floors). Each storey above the ground also has an edge, its footprint traced as a grid of its own on a `MapFloor` child of the map, on that storey: its hollow outline keeps a character on the storey from walking off into the air (`ryo-tilemap`, Collision). Everything above holds for them, and:
 
 - **Place characters when the map lands**, at a point the designer marked (a `player_start` object), on `MapEvent::Spawned` or once `ctx.maps().is_ready(map)`. The colliders come with the map, so a character placed then stands on its ground from its first move. Physics queries see the world as the last step left it, so a ray cast in the `update` that reads `Spawned` misses the map: do not snap a spawn point to the ground that way.
-- **What `floor` names:** with no body on the map, `CharacterState::floor` (like `CharacterHit` and the collision messages) names one of the map's collider parts: a child of the entity holding the `TileColliders`, which is the `MapRoot` entity, or a layer entity with its `MapLayerRef`. The character demo's readout says "ground" (or "one-way shelf", when `floor_one_way`) for such a floor:
+- **What `floor` names:** with no body on the map, `CharacterState::floor` (like `CharacterHit` and the collision messages) names one of the map's collider parts: a child of the entity holding the `TileColliders`, which is the `MapRoot` entity, a layer entity with its `MapLayerRef`, or a storey's edge with its `MapFloor`, whose own parent is the map (a character on a storey meets the edge at its rim, in `CharacterHit` and the collision messages). The character demo's readout says "ground" (or "one-way shelf", when `floor_one_way`) for such a floor:
 
 <!-- self: player: Entity -->
 ```rust
@@ -274,9 +274,13 @@ if let Some(state) = ctx.world.get::<CharacterState>(self.player)
 {
   let holder = ctx.world.get::<ChildOf>(floor).map(ChildOf::parent);
   let on_a_map = holder.is_some_and(|holder| ctx.world.get::<TileColliders>(holder).is_some());
-  let map = holder.and_then(|holder| match ctx.world.get::<MapLayerRef>(holder) {
-    Some(layer) => Some(layer.map),                       // a layer colliding on its own
-    None => ctx.world.get::<MapRoot>(holder).map(|_| holder), // the map's own grid
+  let map = holder.and_then(|holder| {
+    let world = &*ctx.world;
+    match (world.get::<MapLayerRef>(holder), world.get::<MapFloor>(holder)) {
+      (Some(layer), _) => Some(layer.map), // a layer colliding on its own
+      (None, Some(_)) => world.get::<ChildOf>(holder).map(ChildOf::parent), // a storey's edge
+      (None, None) => world.get::<MapRoot>(holder).map(|_| holder), // the map's own grid
+    }
   });
   if on_a_map {
     game_info!("on map {map:?}, one-way: {}", state.floor_one_way);
@@ -284,7 +288,7 @@ if let Some(state) = ctx.world.get::<CharacterState>(self.player)
 }
 ```
 
-- **Edits keep the ground:** a tile edit (`ctx.maps().set_tile`, Wang painting, a reload of the map's file) reshapes only the parts whose outlines changed, in place, so a character standing anywhere on the map keeps its `floor`, and no `CollisionStopped` / `CollisionStarted` is sent for it. A tileset save that changes collision shapes rebuilds the map's parts whole (new entities, `floor` names the new one), though nothing falls through.
+- **Edits keep the ground:** a tile edit (`ctx.maps().set_tile`, Wang painting, a reload of the map's file) reshapes only the parts whose outlines changed, in place, so a character standing anywhere on the map keeps its `floor`, and no `CollisionStopped` / `CollisionStarted` is sent for it. A tileset save that changes collision shapes rebuilds the map's parts whole (new entities, `floor` names the new one), though nothing falls through; on a map with storeys, so does one that changes stairs.
 - **A moving platform flush with the ground:** a character level with both the map's ground and a moving platform (a kinematic or dynamic body) rides the platform, so a lift sitting in the floor carries a character who walks onto it.
 
 ## Knockback

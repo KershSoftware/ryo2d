@@ -689,6 +689,10 @@ pub struct TileColliders {
   pub restitution: f32,
   /// Build merged rectangles instead of outlines
   pub solid_rects: bool,
+  /// Whether its cells are things in the way, which particles meet and
+  /// navigation goes round: false for a tile map storey's edge, whose
+  /// outline only keeps what is on that storey on it (the tile map sets it)
+  pub(crate) surface: bool,
   /// Changes whenever the cells do (and is fresh for every new grid), so a
   /// rebuild can tell what it has already built
   generation: u64,
@@ -787,6 +791,7 @@ impl TileColliders {
       friction: 0.5,
       restitution: 0.0,
       solid_rects: false,
+      surface: true,
       generation,
       shapes: Vec::new(),
       shape_refs: 0,

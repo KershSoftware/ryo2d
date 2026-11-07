@@ -983,7 +983,12 @@ fn landing_job(world: &World, map: Entity) -> Option<LandingJob> {
       properties: asset.properties.clone(),
       grid: asset.grid(),
       shapes: Arc::clone(&shapes),
-      stairs: stair_sources(asset, tilesets),
+      // Stairs matter only to a map with floors
+      stairs: if asset.layers.iter().any(|layer| layer.info.floor > 0) {
+        stair_sources(asset, tilesets)
+      } else {
+        Arc::default()
+      },
       tilesets: tileset_stamps.clone(),
     },
     shadows: occluders::Inputs {

@@ -96,6 +96,13 @@ impl MapFloors {
 /// walks inside it, and cannot walk off into the air. The map keeps it in
 /// step with its tiles, and takes it away with its colliders.
 ///
+/// An edit keeps the entity, but every full rebuild of the map's collision
+/// replaces it: the map enabled again, a change of its layers, their
+/// places, floors or materials (a reload), a tileset saved with other
+/// shapes or stairs.
+/// Don't keep the entity: find it again (a `MapFloor` whose `ChildOf` is
+/// the map) when it is needed, or after `MapEvent::Reloaded`.
+///
 /// ```
 /// use ryo2d::prelude::*;
 ///

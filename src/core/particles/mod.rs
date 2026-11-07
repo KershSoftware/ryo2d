@@ -104,7 +104,6 @@ use crate::core::ecs::{
 use crate::core::graphics::{BatchCollector, Image, SpriteDraw, SpriteInstance};
 use crate::core::messages::register_message;
 use crate::core::physics::{Collider, ColliderShape, TileColliders, TilePart};
-use crate::core::tilemap::MapFloor;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
@@ -655,25 +654,30 @@ impl ParticleSystem {
       self.colliders.extend(
         query
           .iter(world)
-          .filter(|(_, _, collider, parent, tile_part)| {
-            // A tile map's raised floor's edge keeps characters on their
-            // storey, and is no surface
-            let edge = *tile_part
-              && parent.is_some_and(|parent| world.get::<MapFloor>(parent.parent()).is_some());
-            !collider.is_trigger && !edge
-          })
-          .map(|(entity, global, collider, parent, tile_part)| {
-            // A tile part's cell, from the grid it was built from, in
-            // world pixels
-            let cell = parent
+          .filter(|(_, _, collider, ..)| !collider.is_trigger)
+          .filter_map(|(entity, global, collider, parent, tile_part)| {
+            // A tile part's grid, the one it was built from
+            let grid = parent
               .filter(|_| tile_part)
-              .and_then(|parent| world.get::<TileColliders>(parent.parent()))
+              .and_then(|parent| world.get::<TileColliders>(parent.parent()));
+            // A tile map storey's edge, which keeps characters on their
+            // storey, is no surface
+            if grid.is_some_and(|grid| !grid.surface) {
+              return None;
+            }
+            // The part's cell, in world pixels
+            let cell = grid
               .map(|grid| {
                 let scale = global.scale().abs().min_element();
                 grid.tile_size.min_element() * scale
               })
               .filter(|cell| cell.is_finite() && *cell > 0.0);
-            ParticleCollider::from_component(entity, global, (collider, cell), edges)
+            Some(ParticleCollider::from_component(
+              entity,
+              global,
+              (collider, cell),
+              edges,
+            ))
           }),
       );
     }
@@ -1917,16 +1921,12 @@ mod tests {
 
   #[test]
   fn a_raised_floor_s_edge_is_no_surface_for_particles() {
-    // The floor's grid held as a tile map's raised floor's edge: a particle
-    // falls through it
+    // The floor's grid made a tile map storey's edge, no surface: a
+    // particle falls through it
     let config = CollisionConfig::bouncy(RADIUS, 0.5);
     let (mut system, mut world) = tile_part_scene(config, Vec2::new(100.0, 40.0), 600.0);
-    let grids: Vec<Entity> = world
-      .query_filtered::<Entity, crate::core::ecs::With<TileColliders>>()
-      .iter(&world)
-      .collect();
-    for grid in grids {
-      world.entity_mut(grid).insert(MapFloor { floor: 1 });
+    for mut grid in world.query::<&mut TileColliders>().iter_mut(&mut world) {
+      grid.surface = false;
     }
     for _ in 0..60 {
       update(&mut system, &mut world, DT);
