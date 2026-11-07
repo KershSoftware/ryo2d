@@ -431,8 +431,9 @@ impl<'w> MapsView<'w> {
   /// `GlobalTransform` stands; the first such map in entity order where
   /// maps overlap). Zero for an entity not lifted: on the ground floor, off
   /// every map with floors, or without a `Floor` above it. Worked out after
-  /// transforms propagate each frame, so a camera that follows a character
-  /// adds it to the character's `GlobalTransform` to centre where it draws
+  /// transforms propagate, each fixed step and each frame; a camera that
+  /// follows a character adds it to the character's `GlobalTransform` to
+  /// centre where it draws
   ///
   /// ```
   /// use ryo2d::prelude::*;

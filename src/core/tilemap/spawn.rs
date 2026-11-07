@@ -25,7 +25,7 @@ use super::{
 use crate::core::asset::{AssetError, AssetPath, AssetServer, Assets, Handle, LoadState};
 use crate::core::ecs::kernel::{DeferredWorld, HookContext, QueryState};
 use crate::core::ecs::{
-  Allow, ChildOf, Component, DetectChangesMut, Disabled, Entity, Local, Message, Messages,
+  Allow, ChildOf, Component, DetectChangesMut, Disabled, Entity, Floor, Local, Message, Messages,
   Transform, With, Without, World,
 };
 use crate::core::graphics::Image;
@@ -225,7 +225,9 @@ pub struct TileLayerData {
 /// at the centre of its rectangle (its point, for a point; the origin of its
 /// points, for a polygon or polyline, which Tiled gives no size) and turned
 /// by its rotation. A polygon's or polyline's points are relative to the
-/// `Transform`.
+/// `Transform`. On a layer on a floor above the ground it stands in ground
+/// space, on that floor (`Floor::On`), so a collider or sprite the game
+/// gives it is on that floor and draws lifted.
 ///
 /// An observer of `Add<MapObject>` sees each object as it arrives, its
 /// fields filled. By then the map's layers, its colliders and shadows and
@@ -295,7 +297,9 @@ impl MapObject {
 /// in its layer's tiles: a child of its layer, its `Transform` at the
 /// cell's centre on the layer's grid ([`MapGrid::cell_center`]). The map
 /// spawns one for each such tile in the file, and `ctx.maps()` one for each
-/// it places; placing another tile on the cell, or clearing it, despawns it
+/// it places; placing another tile on the cell, or clearing it, despawns it.
+/// On a layer on a floor above the ground it is on that floor
+/// (`Floor::On`), as an object is
 #[derive(Component, Clone, Debug)]
 pub struct MapTile {
   pub map: Entity,
@@ -726,7 +730,7 @@ pub(crate) struct ClassTile {
 }
 
 /// Spawns `tile` as a child of `layer` (the map's layer `index`, its cells
-/// on `grid`) at its cell's centre
+/// on `grid`) at its cell's centre, on the layer's floor (`layer_child`)
 pub(crate) fn spawn_class_tile(
   world: &mut World,
   map: Entity,
@@ -743,9 +747,31 @@ pub(crate) fn spawn_class_tile(
     class: tile.class,
     properties: tile.properties,
   };
-  let entity = child_of(world, layer, Transform::from_translation(centre));
+  let entity = layer_child(world, layer, Transform::from_translation(centre));
   if let Ok(mut spawned) = world.get_entity_mut(entity) {
     spawned.insert(component);
+  }
+  entity
+}
+
+/// The floor the layer entity `layer` is on (`LayerInfo::floor`), 0 for
+/// the ground floor or an entity that is no layer
+pub(crate) fn layer_floor(world: &World, layer: Entity) -> u8 {
+  world.get::<LayerInfo>(layer).map_or(0, |info| info.floor)
+}
+
+/// A child of the layer entity `layer` at `transform` (`child_of`), an
+/// object or class tile: on a layer above the ground floor it is on that
+/// floor (`Floor::On`), so it collides there and draws lifted as the
+/// layer's tiles do; on the ground floor it has no `Floor`. The layer
+/// itself has none, so the lift never walks its collider parts and chains
+pub(crate) fn layer_child(world: &mut World, layer: Entity, transform: Transform) -> Entity {
+  let floor = layer_floor(world, layer);
+  let entity = child_of(world, layer, transform);
+  if floor > 0
+    && let Ok(mut spawned) = world.get_entity_mut(entity)
+  {
+    spawned.insert(Floor::On(floor));
   }
   entity
 }
@@ -1367,7 +1393,7 @@ fn land(world: &mut World, map: Entity, landed: Landed) {
         break;
       }
       let (component, transform) = object_parts(map, object);
-      let entity = child_of(world, layer, transform);
+      let entity = layer_child(world, layer, transform);
       ids.insert(component.id.clone(), entity);
       objects.push((entity, component));
     }

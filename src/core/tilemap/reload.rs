@@ -31,9 +31,9 @@ use glam::{IVec2, UVec2, Vec2};
 
 use super::floors::{MapFloors, ground_offset};
 use super::spawn::{
-  ClassTile, ClassTiles, LayerRest, LayerTiles, MapLayers, MapSource, child_of, class_tiles,
-  inherit_tile_data, map_asset, object_parts, plan_layer, send, spawn_class_tile, spawn_layer,
-  take_class_tiles,
+  ClassTile, ClassTiles, LayerRest, LayerTiles, MapLayers, MapSource, class_tiles,
+  inherit_tile_data, layer_child, layer_floor, map_asset, object_parts, plan_layer, send,
+  spawn_class_tile, spawn_layer, take_class_tiles,
 };
 use super::stream::{StreamState, before_reload, file_chunks};
 use super::{
@@ -44,7 +44,7 @@ use super::{
 use crate::core::asset::{Asset, AssetEvent, AssetServer, UntypedAssetId};
 use crate::core::ecs::kernel::{MessageCursor, Messages, QueryState};
 use crate::core::ecs::{
-  Allow, ChildOf, Component, DetectChangesMut, Disabled, Entity, Local, Transform, World,
+  Allow, ChildOf, Component, DetectChangesMut, Disabled, Entity, Floor, Local, Transform, World,
 };
 use crate::core::hash::{FastMap, FastSet};
 use crate::core::physics::CellRect;
@@ -382,6 +382,11 @@ pub(crate) fn apply_reload(world: &mut World, map: Entity) {
     .get::<MapLayers>(map)
     .map(|layers| layers.0.clone())
     .unwrap_or_default();
+  // The floor each layer was on, for the objects that stay through it
+  let old_floors: FastMap<Entity, u8> = old_layers
+    .iter()
+    .map(|&layer| (layer, layer_floor(world, layer)))
+    .collect();
   let mut old: FastMap<u32, (Entity, &FileLayer)> = FastMap::default();
   for (file, &entity) in applied.layers.iter().zip(&old_layers) {
     old.entry(file.id).or_insert((entity, file));
@@ -507,6 +512,15 @@ pub(crate) fn apply_reload(world: &mut World, map: Entity) {
     })
     .unwrap_or_default();
   existing.sort_by_key(|(_, entity)| *entity);
+  // The floor each object stood on, its layer's before the reload
+  let was_on: Vec<(Entity, u8)> = existing
+    .iter()
+    .map(|&(_, entity)| {
+      let layer = world.get::<ChildOf>(entity).map(ChildOf::parent);
+      let floor = layer.and_then(|layer| old_floors.get(&layer).copied());
+      (entity, floor.unwrap_or(0))
+    })
+    .collect();
   let was_in = |id: &str| applied.objects.get(id);
   let matched = reconcile(&existing, &objects, |i| {
     let (_, layer, kept) = homes[i];
@@ -536,7 +550,7 @@ pub(crate) fn apply_reload(world: &mut World, map: Entity) {
       continue;
     }
     let (component, transform) = object_parts(map, objects[i].clone());
-    let entity = child_of(world, layer, transform);
+    let entity = layer_child(world, layer, transform);
     ids.insert(component.id.clone(), entity);
     arriving.push((entity, component));
   }
@@ -561,6 +575,15 @@ pub(crate) fn apply_reload(world: &mut World, map: Entity) {
     if let Ok(mut object) = world.get_entity_mut(entity) {
       object.insert((component, transform));
     }
+  }
+  // An object that stays follows its layer to another floor
+  for (entity, was) in was_on {
+    if gone.contains(&entity) {
+      continue;
+    }
+    let layer = world.get::<ChildOf>(entity).map(ChildOf::parent);
+    let now = layer.map_or(0, |layer| layer_floor(world, layer));
+    follow_floor(world, entity, was, now);
   }
   for (entity, component) in arriving {
     if let Ok(mut object) = world.get_entity_mut(entity) {
@@ -605,6 +628,25 @@ pub(crate) fn apply_reload(world: &mut World, map: Entity) {
     class_tiles,
   });
   send(world, MapEvent::Reloaded { map });
+}
+
+/// An object kept through a reload whose layer was on floor `was` and is
+/// now on `now`: on a floor above the ground it is on that floor
+/// (`Floor::On`); back on the ground floor it loses the floor its layer
+/// gave it (a `Floor` the game gave it otherwise stays). A layer that kept
+/// its floor leaves the object's `Floor` as the game has it
+fn follow_floor(world: &mut World, entity: Entity, was: u8, now: u8) {
+  if was == now {
+    return;
+  }
+  let Ok(mut object) = world.get_entity_mut(entity) else {
+    return;
+  };
+  if now > 0 {
+    object.insert(Floor::On(now));
+  } else if object.get::<Floor>() == Some(&Floor::On(was)) {
+    object.remove::<Floor>();
+  }
 }
 
 /// Puts `value` on `entity` if it holds another (or none)

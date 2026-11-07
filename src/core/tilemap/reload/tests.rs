@@ -956,6 +956,131 @@ fn a_reload_that_moves_a_layer_to_another_floor_respawns_it_in_ground_space() {
   assert_eq!(id_of(&maps.world, map, "1"), Some(a));
 }
 
+#[test]
+fn a_higher_floor_s_class_tiles_and_objects_are_on_that_floor() {
+  use crate::core::ecs::Floor;
+  // "ground" on the ground floor with a coin at (0, 2), and "low", an
+  // object layer there with "b"; "upper" with a coin at (1, 0) on
+  // `upper`, and "things" with `objects` on `floor`, both 16 px up
+  let level = |upper: u8, floor: u8, objects: &[String]| {
+    let on = |floor: u8| {
+      format!(r#","offsety":-16,"properties":[{{"name":"floor","type":"int","value":{floor}}}]"#)
+    };
+    let things = things(3, objects).replace(
+      r#""type":"objectgroup""#,
+      &format!(r#""type":"objectgroup"{}"#, on(floor)),
+    );
+    let low = things_named(4, "low", &[object(9, "b", (0, 16), "")]);
+    let mut ground = [0; 12];
+    ground[8] = 6;
+    let mut raised = [0; 12];
+    raised[1] = 6;
+    map_of(
+      (4, 3),
+      &[
+        tiles(1, "ground", (4, 3), &ground, ""),
+        tiles(2, "upper", (4, 3), &raised, &on(upper)),
+        things,
+        low,
+      ],
+    )
+  };
+  let first = [object(1, "a", (16, 0), "")];
+  let files = files_with(&[("r/set.tsj", SET), ("r/m.tmj", &level(1, 1, &first))]);
+  let (mut maps, map) = spawned(&files, "r/m.tmj", |h| {
+    MapRoot::new(h).with_entity_tiles(&["coin"])
+  });
+  let floor_of = |world: &World, entity: Entity| world.get::<Floor>(entity).copied();
+  let coin_at = |world: &mut World, cell: IVec2| -> Entity {
+    match class_tiles_of(world, map)
+      .iter()
+      .find(|(at, ..)| *at == cell)
+    {
+      Some(&(_, entity, ..)) => entity,
+      None => panic!("no coin at {cell}"),
+    }
+  };
+
+  // Landed: what the higher floor's layers hold is on floor 1; what the
+  // ground floor's hold, and the layers themselves, on none
+  let (a_entity, _) = object_named(&mut maps.world, map, "a");
+  let (b_entity, _) = object_named(&mut maps.world, map, "b");
+  let raised = coin_at(&mut maps.world, IVec2::new(1, 0));
+  let low = coin_at(&mut maps.world, IVec2::new(0, 2));
+  assert_eq!(floor_of(&maps.world, a_entity), Some(Floor::On(1)));
+  assert_eq!(floor_of(&maps.world, raised), Some(Floor::On(1)));
+  assert_eq!(floor_of(&maps.world, b_entity), None);
+  assert_eq!(floor_of(&maps.world, low), None);
+  for layer in layers_of(&mut maps.world, map) {
+    assert_eq!(floor_of(&maps.world, layer), None, "layer {layer}");
+  }
+
+  // A coin placed by an edit on each floor
+  let coin = Tile::new(0, 5);
+  let mut view = MapsView::new(&mut maps.world);
+  assert!(view.set_tile(map, "upper", IVec2::new(2, 0), Some(coin)));
+  assert!(view.set_tile(map, "ground", IVec2::new(3, 2), Some(coin)));
+  let placed = coin_at(&mut maps.world, IVec2::new(2, 0));
+  assert_eq!(floor_of(&maps.world, placed), Some(Floor::On(1)));
+  let placed_low = coin_at(&mut maps.world, IVec2::new(3, 2));
+  assert_eq!(floor_of(&maps.world, placed_low), None);
+
+  // Saved with "a" moved and a new "c": both on floor 1
+  let moved = [object(1, "a", (32, 0), ""), object(2, "c", (0, 0), "")];
+  let mut watch = Watch::new(&maps.world);
+  files.insert("r/m.tmj", level(1, 1, &moved));
+  watch.until_reloaded(&mut maps, map);
+  let (c_entity, _) = object_named(&mut maps.world, map, "c");
+  assert_eq!(id_of(&maps.world, map, "1"), Some(a_entity), "a kept");
+  for entity in [
+    a_entity,
+    c_entity,
+    coin_at(&mut maps.world, IVec2::new(1, 0)),
+  ] {
+    assert_eq!(
+      floor_of(&maps.world, entity),
+      Some(Floor::On(1)),
+      "{entity}"
+    );
+  }
+
+  // Both layers moved to floor 2: the kept objects follow, and "upper"
+  // respawns with its coin there
+  let mut watch = Watch::new(&maps.world);
+  files.insert("r/m.tmj", level(2, 2, &moved));
+  watch.until_reloaded(&mut maps, map);
+  for entity in [
+    a_entity,
+    c_entity,
+    coin_at(&mut maps.world, IVec2::new(1, 0)),
+  ] {
+    assert_eq!(
+      floor_of(&maps.world, entity),
+      Some(Floor::On(2)),
+      "{entity}"
+    );
+  }
+  assert_eq!(floor_of(&maps.world, b_entity), None);
+
+  // Back on the ground floor, they are on none
+  let mut watch = Watch::new(&maps.world);
+  files.insert("r/m.tmj", level(0, 0, &moved));
+  watch.until_reloaded(&mut maps, map);
+  assert_eq!(id_of(&maps.world, map, "1"), Some(a_entity), "a kept");
+  for entity in [
+    a_entity,
+    c_entity,
+    coin_at(&mut maps.world, IVec2::new(1, 0)),
+  ] {
+    assert_eq!(floor_of(&maps.world, entity), None, "{entity}");
+  }
+}
+
+/// An object layer's JSON, named
+fn things_named(id: u32, name: &str, objects: &[String]) -> String {
+  things(id, objects).replace(r#""name":"things""#, &format!(r#""name":"{name}""#))
+}
+
 /// The map's class tiles: each one's cell, entity, parent and place in
 /// its layer, by row
 fn class_tiles_of(world: &mut World, map: Entity) -> Vec<(IVec2, Entity, Entity, Vec2)> {

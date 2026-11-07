@@ -97,8 +97,10 @@ pub fn edit_schedules() -> [Schedule; 3] {
 /// with the tiles before the tile colliders rebuild (so an edit made in
 /// `update` collides in that step), occluders before transforms propagate
 /// (so an edit casts its shadow that frame), and the entities on floors
-/// lifted after transforms propagate, before the cameras (so they draw
-/// lifted where they stand that frame)
+/// lifted after transforms propagate: in each fixed step before trails
+/// record (so a trail spawned on a floor records its first point lifted,
+/// and an emitter emits lifted from its next step), and each frame before
+/// the cameras (so they draw lifted where they stand that frame)
 pub(crate) fn register_tilemap_systems(schedules: &mut EngineSchedules) {
   schedules.add_systems(
     Phase::FixedUpdate,
@@ -109,6 +111,12 @@ pub(crate) fn register_tilemap_systems(schedules: &mut EngineSchedules) {
   schedules.add_systems(
     Phase::PostUpdate,
     occluders::sync_map_occluders.before(PostUpdateSet::Transforms),
+  );
+  schedules.add_systems(
+    Phase::FixedUpdate,
+    floors::lift_floored
+      .after(FixedSet::Transforms)
+      .before(FixedSet::Trails),
   );
   schedules.add_systems(
     Phase::PostUpdate,

@@ -2842,3 +2842,89 @@ fn a_floor_entity_draws_lifted_by_its_floor_s_height() {
     }
   }
 }
+
+#[test]
+fn a_class_tile_sprite_on_a_floor_draws_lifted() {
+  // A coin, a tile of a class the root registers, at cell (3, 5) of a
+  // layer on floor 1, 16 px up: it spawns on floor 1 at its cell's centre
+  // where it stands, (28, 44), and the blue sprite 8 px square the game
+  // gives it draws 16 px up, at (24, 24) to (32, 32)
+  let Some(mut engine) = engine(|ctx| {
+    let mut set = solid(ctx, &[RED]);
+    set.insert_tile(
+      0,
+      TileData {
+        class: Some("coin".to_string()),
+        ..TileData::default()
+      },
+    );
+    let mut tiles = map(vec![set], &[]);
+    let upper = tiles.add_tile_layer("upper");
+    tiles.layers[upper].info.floor = 1;
+    tiles.layers[upper].info.offset = Vec2::new(0.0, -16.0);
+    put(&mut tiles, upper, &[(IVec2::new(3, 5), Tile::new(0, 0))]);
+    let handle = ctx.assets().add(tiles);
+    ctx.world.spawn((
+      MapRoot::new(handle).with_entity_tiles(&["coin"]),
+      Transform::IDENTITY,
+    ));
+  }) else {
+    return;
+  };
+  let world = engine.world_mut();
+  let coins: Vec<Entity> = world
+    .query::<(Entity, &MapTile)>()
+    .iter(world)
+    .map(|(entity, _)| entity)
+    .collect();
+  let [coin] = coins[..] else {
+    panic!("one coin, not {coins:?}");
+  };
+  assert_eq!(world.get::<Floor>(coin), Some(&Floor::On(1)));
+  let blue = world
+    .resource_mut::<Assets<Image>>()
+    .add(Image::solid_rect(8, 8, BLUE[0], BLUE[1], BLUE[2], 255));
+  world.entity_mut(coin).insert(Renderable::image(blue));
+  engine.step_frames(2).unwrap();
+  assert_pixels(&engine.frame().unwrap(), |x, y| {
+    ((24..32).contains(&x) && (24..32).contains(&y)).then_some(BLUE)
+  });
+}
+
+#[test]
+fn a_tile_object_on_a_floor_is_lifted_once() {
+  // A red tile object 8 px square standing at (16, 32) to (24, 40) on an
+  // object layer on floor 1, 16 px up: its entity is on floor 1 and lifted
+  // 16 px, and its tile, which the layer draws lifted, draws 16 px up, at
+  // y 16 to 24, not twice that
+  let Some((mut engine, map)) = floored(|ctx| {
+    let set = solid(ctx, &[RED]);
+    let mut tiles = map(vec![set], &[]);
+    let things = tiles.add_object_layer("things");
+    let crate_ = tile_object(
+      "1",
+      Vec2::new(16.0, 32.0),
+      Vec2::splat(8.0),
+      Tile::new(0, 0),
+    );
+    tiles.layers[things].kind = LayerKind::Objects(vec![crate_]);
+    tiles.layers[things].info.floor = 1;
+    tiles.layers[things].info.offset = Vec2::new(0.0, -16.0);
+    tiles
+  }) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  let world = engine.world_mut();
+  let Some(object) = world.get::<MapIds>(map).and_then(|ids| ids.get("1")) else {
+    panic!("the object spawned");
+  };
+  assert_eq!(world.get::<Floor>(object), Some(&Floor::On(1)));
+  assert_eq!(
+    MapsView::new(world).drawn_lift(object),
+    Vec2::new(0.0, -16.0)
+  );
+  assert_pixels(&engine.frame().unwrap(), |x, y| {
+    ((16..24).contains(&x) && (16..24).contains(&y)).then_some(RED)
+  });
+}

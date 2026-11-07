@@ -185,6 +185,8 @@ CollisionConfig::new(2.0)
 
 Contact entry is tracked per particle, not per collider: sliding from a floor into a wall does not notify again. Collisions are checked at particle positions once per update, so very fast particles can pass through thin boxes and circles; an edge also stops a particle whose move crossed it.
 
+**On a storey of a tile map** (an emitter with a `Floor`, or held by an entity with one, `ryo-tilemap`), particles start where the emitter draws, its storey's height up, but colliders and attractors stay where their entities stand: a lifted emitter's sparks pass through the storey's drawn surface and meet the colliders a storey's height below. A burst spawned and fired in the same `update` fires before its lift is known, where the emitter stands: fire it on a later step, or spawn it without a `Floor` at the point it should draw from.
+
 `ParticleCollision` is a message; read it after `update`:
 
 <!-- self: particles: ParticleSystem -->

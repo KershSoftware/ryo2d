@@ -17,9 +17,9 @@ use glam::{Affine2, Vec2};
 use super::LayerInfo;
 use super::spawn::{MapLayers, TileLayerData};
 use crate::core::ecs::{
-  Changed, ChildOf, Children, Commands, Component, DetectChangesMut, DrawLift, Entity, Floor,
-  GlobalTransform, Local, Or, ParentPlaced, Query, RemovedComponents, Transform, With, Without,
-  entity_order,
+  Allow, Changed, ChildOf, Children, Commands, Component, DetectChangesMut, Disabled, DrawLift,
+  Entity, Floor, GlobalTransform, Local, Or, ParentPlaced, Query, RemovedComponents, Transform,
+  With, Without, entity_order,
 };
 
 /// A map's floors and their heights, on its [`MapRoot`](super::MapRoot)
@@ -193,9 +193,15 @@ pub(crate) struct Lifting {
 }
 
 /// An entity on a floor and where it stands. A map's own collider parts
-/// and shadow chains are drawn by their layers, and stay out of the scan
-type Floored<'w, 's> =
-  Query<'w, 's, (Entity, &'static Floor, Option<&'static GlobalTransform>), Without<ParentPlaced>>;
+/// and shadow chains are drawn by their layers, and stay out of the scan.
+/// Every query of the lift sees disabled entities too, so a pool's or a
+/// put-away entity's lift keeps step with its hierarchy
+type Floored<'w, 's> = Query<
+  'w,
+  's,
+  (Entity, &'static Floor, Option<&'static GlobalTransform>),
+  (Without<ParentPlaced>, Allow<Disabled>),
+>;
 
 /// An entity on a floor whose floor, place or children changed
 type Restood<'w, 's> = Query<
@@ -206,6 +212,7 @@ type Restood<'w, 's> = Query<
     With<Floor>,
     Without<ParentPlaced>,
     Or<(Changed<Floor>, Changed<GlobalTransform>, Changed<Children>)>,
+    Allow<Disabled>,
   ),
 >;
 
@@ -219,6 +226,7 @@ type Relinked<'w, 's> = Query<
     With<DrawLift>,
     Without<Floor>,
     Or<(Changed<ChildOf>, Changed<Children>)>,
+    Allow<Disabled>,
   ),
 >;
 
@@ -249,15 +257,23 @@ type TileLayers<'w, 's> = Query<'w, 's, (&'static Transform, &'static TileLayerD
 /// The hierarchy, walked down from an entity on a floor (stopping at the
 /// entities on a floor of their own) and up from a loose one
 type Tree<'w, 's> = (
-  Query<'w, 's, &'static Children>,
-  Query<'w, 's, &'static ChildOf>,
-  Query<'w, 's, (), With<Floor>>,
+  Query<'w, 's, &'static Children, Allow<Disabled>>,
+  Query<'w, 's, &'static ChildOf, Allow<Disabled>>,
+  HasFloor<'w, 's>,
 );
 
-/// `PostUpdate`, after transforms propagate, before the cameras: every
-/// entity on a floor draws lifted by its floor's height on the map under
-/// it, and so does everything below it in the hierarchy ([`DrawLift`]),
-/// down to an entity on a floor of its own.
+/// Whether an entity has a `Floor` of its own
+type HasFloor<'w, 's> = Query<'w, 's, (), (With<Floor>, Allow<Disabled>)>;
+
+/// Every entity's lift, disabled ones' too
+type Lifts<'w, 's> = Query<'w, 's, &'static mut DrawLift, Allow<Disabled>>;
+
+/// After transforms propagate, in each fixed step (before trails record,
+/// so a trail spawned on a floor records its first point lifted) and each
+/// frame (`PostUpdate`, before the cameras): every entity on a floor draws
+/// lifted by its floor's height on the map under it, and so does
+/// everything below it in the hierarchy ([`DrawLift`]), down to an entity
+/// on a floor of its own; disabled entities too, so their lift keeps step.
 ///
 /// The map under an entity is the first map with floors, in entity order,
 /// whose tile layers' box of cells holds where it stands
@@ -267,9 +283,11 @@ type Tree<'w, 's> = (
 /// `Children` changed, and every entity on a floor once a map with floors
 /// moved, turned, or gained or lost its floors; an entity that lost its
 /// `Floor`, or a lifted one moved to another parent or given children,
-/// takes the lift of its nearest ancestor on a floor, or none. With no
-/// entity on a floor and none lifted it costs two empty looks, so maps and
-/// entities without floors pay nothing for it
+/// takes the lift of its nearest ancestor on a floor, or none. A map's
+/// box changing on its own (cells landing or edited past it, the map
+/// disabled) reaches an entity when it next moves. With no entity on a
+/// floor and none lifted it costs two empty looks, so maps and entities
+/// without floors pay nothing for it
 #[allow(clippy::too_many_arguments)] // one query or removal reader per input
 pub(crate) fn lift_floored(
   floored: Floored,
@@ -277,7 +295,7 @@ pub(crate) fn lift_floored(
   relinked: Relinked,
   (maps, maps_changed, tiles): (Maps, MapsChanged, TileLayers),
   (children, parents, has_floor): Tree,
-  mut lifts: Query<&mut DrawLift>,
+  mut lifts: Lifts,
   (mut unfloored, mut unparented, mut unmapped): (
     RemovedComponents<Floor>,
     RemovedComponents<ChildOf>,
@@ -387,7 +405,7 @@ fn lift_at(areas: &[MapArea], maps: &Maps, floor: Floor, at: Vec2) -> Vec2 {
 /// The nearest ancestor of `entity` on a floor
 fn floored_ancestor(
   entity: Entity,
-  parents: &Query<&ChildOf>,
+  parents: &Query<&ChildOf, Allow<Disabled>>,
   floored: &Floored,
 ) -> Option<Entity> {
   let mut child = entity;
@@ -407,8 +425,8 @@ fn floored_ancestor(
 fn write_down(
   root: Entity,
   drawn: DrawLift,
-  (children, has_floor): (&Query<&Children>, &Query<(), With<Floor>>),
-  lifts: &mut Query<&mut DrawLift>,
+  (children, has_floor): (&Query<&Children, Allow<Disabled>>, &HasFloor),
+  lifts: &mut Lifts,
   commands: &mut Commands,
   stack: &mut Vec<Entity>,
 ) {
@@ -498,8 +516,10 @@ mod tests {
     use glam::{UVec2, Vec2};
 
     use crate::core::asset::Assets;
+    use crate::core::ecs::kernel::Disabled;
     use crate::core::ecs::{
-      Anchor, ChildOf, DrawLift, Entity, Floor, Renderable, Transform, World, YSort,
+      Anchor, ChildOf, DrawLift, Entity, Floor, IntoScheduleConfigs, Renderable, Transform, World,
+      YSort,
     };
     use crate::core::graphics::Image;
     use crate::core::render::draw_orders;
@@ -507,14 +527,22 @@ mod tests {
     use crate::core::tilemap::{MapRoot, MapsView, TileMap};
 
     /// A map of 4 x 3 cells of 16 px (0..64 by 0..48 in its pixels) placed
-    /// by `transform`: "ground" on the ground floor and "upper" on floor
-    /// 1, 32 px up; landed
+    /// by `transform`: "ground" on the ground floor, "upper" on floor 1,
+    /// 32 px up, and "roof" on floor 2, 64 px up; landed
     fn storeyed(maps: &mut MapWorld, transform: Transform) -> Entity {
+      storeyed_at(maps, transform, 32.0)
+    }
+
+    /// `storeyed`, its floor 1 `height` px up
+    fn storeyed_at(maps: &mut MapWorld, transform: Transform, height: f32) -> Entity {
       let mut map = TileMap::new(UVec2::new(4, 3), UVec2::splat(16));
       map.add_tile_layer("ground");
       let upper = map.add_tile_layer("upper");
       map.layers[upper].info.floor = 1;
-      map.layers[upper].info.offset = Vec2::new(0.0, -32.0);
+      map.layers[upper].info.offset = Vec2::new(0.0, -height);
+      let roof = map.add_tile_layer("roof");
+      map.layers[roof].info.floor = 2;
+      map.layers[roof].info.offset = Vec2::new(0.0, -64.0);
       spawn(maps, map, transform)
     }
 
@@ -757,6 +785,154 @@ mod tests {
         orders(&mut maps.world),
         [(ground, Some(30.0), 0), (upper, Some(30.0), 1)]
       );
+    }
+
+    #[test]
+    fn a_trail_spawned_on_a_floor_records_its_first_point_lifted() {
+      use crate::core::ecs::propagate::propagate_transforms;
+      use crate::core::schedule::{FixedSet, Phase};
+      use crate::core::systems::record_trail_points;
+      use crate::core::trail::Trail2D;
+      use crate::core::ui::Color;
+      let mut maps = MapWorld::new();
+      // The step's propagation and trails, as the engine places them
+      maps.schedules().add_systems(
+        Phase::FixedUpdate,
+        (
+          propagate_transforms.in_set(FixedSet::Transforms),
+          record_trail_points.in_set(FixedSet::Trails),
+        ),
+      );
+      storeyed(&mut maps, Transform::IDENTITY);
+      // A bolt fired on floor 1 records its first point, in its first
+      // step, where it draws
+      let bolt = maps
+        .world
+        .spawn((
+          Transform::from_xy(20.0, 30.0),
+          Floor::On(1),
+          Trail2D::new(Color::WHITE, 2.0),
+        ))
+        .id();
+      maps.step();
+      let points: Vec<(f32, f32)> = maps
+        .world
+        .get::<Trail2D>(bolt)
+        .map(|trail| trail.points().iter().map(|p| (p.x, p.y)).collect())
+        .unwrap_or_default();
+      assert_eq!(points, [(20.0, -2.0)]);
+      assert_eq!(drawn(&maps.world, bolt), Some(UP));
+    }
+
+    #[test]
+    fn an_entity_on_every_floor_draws_unlifted_and_sorts_with_the_ground() {
+      let mut maps = MapWorld::new();
+      storeyed(&mut maps, Transform::IDENTITY);
+      let trigger = maps
+        .world
+        .spawn((Transform::from_xy(20.0, 30.0), Floor::Every))
+        .id();
+      let child = maps
+        .world
+        .spawn((Transform::IDENTITY, ChildOf(trigger)))
+        .id();
+      maps.frame();
+      let every = DrawLift {
+        lift: Vec2::ZERO,
+        floor: Floor::Every,
+      };
+      for entity in [trigger, child] {
+        assert_eq!(drawn(&maps.world, entity), Some(every), "{entity}");
+      }
+      assert_eq!(every.draw_floor(), 0);
+    }
+
+    #[test]
+    fn a_child_moved_between_floored_parents_takes_its_new_parent_s_lift() {
+      let mut maps = MapWorld::new();
+      storeyed(&mut maps, Transform::IDENTITY);
+      let world = &mut maps.world;
+      let low = world
+        .spawn((Transform::from_xy(20.0, 30.0), Floor::On(1)))
+        .id();
+      let high = world
+        .spawn((Transform::from_xy(40.0, 30.0), Floor::On(2)))
+        .id();
+      let lamp = world.spawn((Transform::IDENTITY, ChildOf(low))).id();
+      let flame = world.spawn((Transform::IDENTITY, ChildOf(lamp))).id();
+      maps.frame();
+      assert_eq!(drawn(&maps.world, flame), Some(UP));
+      // Handed from the one on floor 1 to the one on floor 2
+      maps.world.entity_mut(lamp).insert(ChildOf(high));
+      maps.frame();
+      let higher = DrawLift {
+        lift: Vec2::new(0.0, -64.0),
+        floor: Floor::On(2),
+      };
+      for entity in [lamp, flame] {
+        assert_eq!(drawn(&maps.world, entity), Some(higher), "{entity}");
+      }
+      assert_eq!(drawn(&maps.world, low), Some(UP));
+    }
+
+    #[test]
+    fn where_maps_with_floors_overlap_the_first_lifts() {
+      let mut maps = MapWorld::new();
+      // The first map's floor 1 is 32 px up; the second's, 40 px right
+      // and spawned later, 8 px up
+      storeyed(&mut maps, Transform::IDENTITY);
+      storeyed_at(&mut maps, Transform::from_xy(40.0, 0.0), 8.0);
+      let world = &mut maps.world;
+      let both = world
+        .spawn((Transform::from_xy(50.0, 20.0), Floor::On(1)))
+        .id();
+      let second = world
+        .spawn((Transform::from_xy(80.0, 20.0), Floor::On(1)))
+        .id();
+      maps.frame();
+      let view = MapsView::new(&mut maps.world);
+      assert_eq!(view.drawn_lift(both), Vec2::new(0.0, -32.0));
+      assert_eq!(view.drawn_lift(second), Vec2::new(0.0, -8.0));
+    }
+
+    #[test]
+    fn a_disabled_child_keeps_its_lift_in_step_with_its_parent() {
+      use crate::core::ecs::DetectChanges;
+      let mut maps = MapWorld::new();
+      storeyed(&mut maps, Transform::IDENTITY);
+      let hero = maps
+        .world
+        .spawn((Transform::from_xy(20.0, 30.0), Floor::On(1)))
+        .id();
+      // A sheathed sword, disabled while it is put away
+      let sword = maps
+        .world
+        .spawn((Transform::IDENTITY, ChildOf(hero), Disabled))
+        .id();
+      maps.frame();
+      assert_eq!(drawn(&maps.world, sword), Some(UP));
+      let changed = |world: &World| {
+        world
+          .entity(sword)
+          .get_ref::<DrawLift>()
+          .map(|lift| lift.last_changed())
+      };
+      let then = changed(&maps.world);
+      // The hero walks on, on the same floor: the sword's lift is not
+      // written again
+      for x in [24.0, 28.0] {
+        if let Some(mut transform) = maps.world.get_mut::<Transform>(hero) {
+          transform.translation.x = x;
+        }
+        maps.frame();
+      }
+      assert_eq!(changed(&maps.world), then);
+      // Down on the ground floor, the sword's lift goes with the hero's
+      maps.world.entity_mut(hero).insert(Floor::GROUND);
+      maps.frame();
+      assert_eq!(drawn(&maps.world, sword), None);
+      maps.world.entity_mut(sword).remove::<Disabled>();
+      assert_eq!(MapsView::new(&mut maps.world).drawn_lift(sword), Vec2::ZERO);
     }
   }
 }
