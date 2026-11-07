@@ -4,17 +4,21 @@
 use glam::Vec2;
 
 use super::{Light2D, LightOccluder2D};
-use crate::core::ecs::GlobalTransform;
+use crate::core::ecs::{Floor, GlobalTransform};
 use crate::core::graphics::{RenderLayers, SpriteInstance};
 use crate::core::render::DrawLight;
 use crate::core::render::batch::Triangles;
 
-/// A light where it is drawn this frame, and the layers that see it.
+/// A light where it stands this frame, the layers that see it, and its
+/// floor and lift: it casts shadows where it stands, from the occluders on
+/// floors that meet its own, and it and its shadows draw `lift` up.
 #[derive(Debug, Clone)]
 pub(crate) struct FrameLight {
   pub(crate) position: Vec2,
   pub(crate) light: Light2D,
   pub(crate) layers: RenderLayers,
+  pub(crate) floor: Floor,
+  pub(crate) lift: Vec2,
 }
 
 /// `v` if finite, else `default`.
@@ -67,22 +71,31 @@ pub(crate) fn light_instance(position: Vec2, light: &Light2D) -> Option<SpriteIn
   Some(instance)
 }
 
-/// `light`'s draw-list item with its shadow volumes from `occluders` in
-/// `triangles`, if it can light anything.
+/// `light`'s draw-list item with its shadow volumes from `occluders` (each
+/// on its floor) in `triangles`, all drawn lifted, if it can light
+/// anything.
 pub(crate) fn light_item(
   light: &FrameLight,
-  occluders: &[(GlobalTransform, &LightOccluder2D)],
+  occluders: &[(GlobalTransform, &LightOccluder2D, Floor)],
   triangles: &mut Triangles,
 ) -> Option<DrawLight> {
-  let instance = light_instance(light.position, &light.light)?;
+  let drawn = light.position + light.lift;
+  let instance = light_instance(drawn, &light.light)?;
   let reach = Vec2::splat(light.light.radius());
-  let shadows = super::push_shadow_volumes(light.position, &light.light, occluders, triangles);
+  let shadows = super::push_shadow_volumes(
+    light.position,
+    light.lift,
+    &light.light,
+    light.floor,
+    occluders,
+    triangles,
+  );
   let [r, g, b, _] = light.light.shadow_color().to_linear();
   Some(DrawLight {
     instance,
     layers: light.layers,
-    min: light.position - reach,
-    max: light.position + reach,
+    min: drawn - reach,
+    max: drawn + reach,
     shadows,
     coloured: r + g + b > 0.0,
   })
@@ -128,11 +141,13 @@ mod tests {
       position: Vec2::ZERO,
       light: light.with_shadows(),
       layers: RenderLayers::default(),
+      floor: Floor::GROUND,
+      lift: Vec2::ZERO,
     };
     let occluder = LightOccluder2D::rect(4.0, 16.0);
     let at = GlobalTransform::from_transform(&Transform::from_xy(40.0, 0.0));
     let mut triangles = Triangles::default();
-    let item = light_item(&frame, &[(at, &occluder)], &mut triangles);
+    let item = light_item(&frame, &[(at, &occluder, Floor::GROUND)], &mut triangles);
     (item, triangles)
   }
 

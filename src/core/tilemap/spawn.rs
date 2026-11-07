@@ -1040,7 +1040,7 @@ impl LandingJob {
       })
       .collect();
     let collision = collision::prepare(self.map, &views, self.collision, floors.as_ref());
-    let shadows = occluders::prepare(self.map, &views, self.shadows);
+    let shadows = occluders::prepare(self.map, &views, self.shadows, floors.as_ref());
     drop(views);
     let paddings = self.pads.into_iter().filter_map(ToPad::pad).collect();
     Landed {

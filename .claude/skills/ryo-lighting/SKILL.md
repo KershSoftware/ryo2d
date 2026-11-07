@@ -1,8 +1,8 @@
 ---
 name: ryo-lighting
-description: 2D lighting - Light2D and LightOccluder2D entities (polygons and open chains), ctx.lighting() for ambient, atmosphere and on/off, shadows (tile maps' too), volumetric beams, sprite shadows and ambient occlusion.
+description: 2D lighting - Light2D and LightOccluder2D entities (polygons and open chains), ctx.lighting() for ambient, atmosphere and on/off, shadows (tile maps' too), lights and shadows on storeys (Floor), volumetric beams, sprite shadows and ambient occlusion.
 metadata:
-  version: 2.3.0
+  version: 2.4.0
 ---
 
 # Ryo2D Lighting Specialist
@@ -68,7 +68,7 @@ if let Some(mut light) = ctx.world.get_mut::<Light2D>(self.torch) {
 }
 ```
 
-Lights are placed at their entity's `GlobalTransform` translation (a child entity follows its parent); on an interpolated entity they are blended with its sprite, so a light carried by a player does not jitter.
+Lights are placed at their entity's `GlobalTransform` translation (a child entity follows its parent), drawn lifted on a storey (Floors, below); on an interpolated entity they are blended with its sprite, so a light carried by a player does not jitter.
 
 ## Shadows
 
@@ -106,6 +106,33 @@ A tile map's layers cast shadows from their tiles (`ryo-tilemap`, Shadows):
 - What blocks light is a tile's collision shapes, or only its shapes marked `occluder` if it has any (a bool property on the shape in Tiled's collision editor). An `occluder` shape blocks light and does not collide, so a tile that casts a shadow but lets the player through (foliage) has an `occluder` shape alone; tiles that collide but let the light through go on a layer whose `occludes` is false. An LDtk IntGrid's solid cells block whole and its slopes as their half cell.
 - The map builds the boundary of what occludes as `LightOccluder2D::chain`s, one or more for each 32 x 32-cell chunk, as children of its first occluding layer marked `MapOccluder { chunk }`. Tiles that touch cast no shadow between them, except a hexagonal tile with a shape of its own (a rock, a trunk: any shape but its whole hexagon), which casts its whole outline, unmerged with the hexes beside it: where that outline lies along a neighbour's side (a solid hex's, or another shape's), both cast there, so under a light whose shadows are not at full strength that stretch of shadow is darker. A tile edit rebuilds only the chains of the chunks it touches, and casts its shadow that frame.
 - Lights still need `with_shadows()` (or `with_soft_shadows`) to cast them.
+- On a map with storeys (`ryo-tilemap`), each storey's layers cast on their own: a higher storey's chains carry its `Floor::On(n)` (Floors, below).
+
+## Floors
+
+A light or occluder is on a storey (raised ground, an upper floor, a bridge; `ryo-tilemap`, Floors) as any entity is: by its own `Floor`, else its nearest ancestor's, else the ground floor (`Floor::GROUND`).
+
+- **A light on a storey is blocked only by that storey's occluders and by those on every storey** (`Floor::Every`). A light on the ground floor is blocked by the ground floor's and every storey's, as before; a light on `Every` is blocked by all of them.
+- **A game's own occluders without a `Floor` are on the ground floor**, so they stop blocking a light once it is on a higher storey. Give a wall on a storey that storey's `Floor`, or `Floor::Every` for one that should block every storey's lights.
+- **A light and its shadows draw lifted** by its storey's height on the map with floors under it, as its storey's tiles and characters do, so they line up with that storey's art. Shadows are cast where the light and its occluders stand, on the ground, then drawn lifted with the light. A light held by a character (a child entity) is on the character's storey and goes up with it.
+- **A light on `Every` draws at ground height.**
+- **A light still brightens whatever lies under it on screen, whatever its storey**: there is one light image per camera, so a torch on an upper floor lights the ground-floor art drawn beneath it (without the ground floor's shadows), and a ground light lights an upper floor drawn over it. Only shadows are kept per storey.
+
+<!-- given: hero_look: Handle<Image> -->
+```rust
+// A hero on the first storey up, holding a torch: the torch is on that
+// storey too, and draws lifted with the hero
+let hero = ctx.world.spawn((
+  Transform::from_xy(320.0, 240.0),
+  Renderable::image(hero_look),
+  Floor::On(1),
+)).id();
+ctx.spawn_child(hero, (Transform::from_xy(8.0, -12.0), Light2D::torch(160.0).with_shadows()));
+// A pillar on that storey blocks the torch, not the ground floor's lights
+ctx.world.spawn((Transform::from_xy(400.0, 240.0), LightOccluder2D::rect(16.0, 16.0), Floor::On(1)));
+// A wall that blocks every storey's lights
+ctx.world.spawn((Transform::from_xy(500.0, 240.0), LightOccluder2D::rect(16.0, 64.0), Floor::Every));
+```
 
 ## Ambient Light
 

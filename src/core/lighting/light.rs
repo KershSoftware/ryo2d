@@ -38,6 +38,11 @@ use crate::core::ui::Color;
 /// Lights are rendered additively to a light accumulation buffer, which
 /// is then multiplied with the scene. A light with `RenderLayers` lights
 /// only the cameras on those layers (by default, layer 0).
+///
+/// On a storey (a `Floor` of its own or its nearest ancestor's) a light is
+/// blocked only by the occluders on a floor that meets it, and it draws
+/// lifted with its shadows by the storey's height on the map under it; it
+/// still brightens whatever lies under it on screen, whatever its storey.
 #[derive(Component, Debug, Clone, PartialEq)]
 pub enum Light2D {
   /// A point light that emits light in all directions

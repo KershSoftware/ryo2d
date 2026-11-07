@@ -257,6 +257,98 @@ fn a_shadow_darkens_only_its_own_light() {
   );
 }
 
+/// The frame after two steps of the floor lit by `setup`, over a map of 8 x
+/// 4 cells of 16 px covering the window whose floor 1 draws 16 px up, its
+/// layers empty so it draws nothing; stepped until the map has landed
+fn storeyed(mut setup: impl FnMut(&mut SceneContext) + Send + 'static) -> Option<image::RgbaImage> {
+  let scene = Lit(Box::new(move |ctx| {
+    let mut map = TileMap::new(UVec2::new(8, 4), UVec2::splat(16));
+    map.add_tile_layer("ground");
+    let upper = map.add_tile_layer("upper");
+    map.layers[upper].info.floor = 1;
+    map.layers[upper].info.offset = Vec2::new(0.0, -16.0);
+    let handle = ctx.assets().add(map);
+    ctx.world.spawn((Transform::IDENTITY, MapRoot::new(handle)));
+    setup(ctx);
+  }));
+  let builder = EngineBuilder::new().resolution(128, 64).start_scene(scene);
+  let mut engine = HeadlessEngine::new_or_skip(builder)?;
+  let start = std::time::Instant::now();
+  loop {
+    engine.step().unwrap();
+    let world = engine.world_mut();
+    let roots: Vec<Entity> = world
+      .query_filtered::<Entity, With<MapRoot>>()
+      .iter(world)
+      .collect();
+    if roots
+      .iter()
+      .all(|&root| MapsView::new(world).is_ready(root))
+    {
+      break;
+    }
+    assert!(start.elapsed().as_secs() < 5, "the map did not land in 5 s");
+    std::thread::yield_now();
+  }
+  engine.step_frames(2).unwrap();
+  Some(engine.frame().unwrap())
+}
+
+/// A light on floor 1 standing at (16, 48), so drawn at (16, 32), beside a
+/// 4 x 8 wall standing at (32, 48) on `wall`'s floor (`None`: no `Floor`,
+/// the ground floor)
+fn floor_light(wall: Option<Floor>) -> Option<image::RgbaImage> {
+  storeyed(move |ctx| {
+    ctx
+      .lighting()
+      .set_ambient(AmbientLight::with_intensity(0.0));
+    ctx.world.spawn((
+      Transform::from_xy(16.0, 48.0),
+      Light2D::point(Color::WHITE, 100.0).with_shadows(),
+      Floor::On(1),
+    ));
+    let at = Transform::from_xy(32.0, 48.0);
+    let occluder = LightOccluder2D::rect(4.0, 8.0);
+    match wall {
+      Some(floor) => ctx.world.spawn((at, occluder, floor)),
+      None => ctx.world.spawn((at, occluder)),
+    };
+  })
+}
+
+#[test]
+fn a_floor_light_and_its_shadows_draw_lifted() {
+  let (Some(own), Some(ground), Some(every)) = (
+    floor_light(Some(Floor::On(1))),
+    floor_light(None),
+    floor_light(Some(Floor::Every)),
+  ) else {
+    return;
+  };
+  let red = |frame: &image::RgbaImage, x: u32, y: u32| frame.get_pixel(x, y).0[0];
+  // The light draws 16 px up: as bright 16.5 px above (16, 32) as below
+  // (pixel (x, y) is lit at its centre, (x + 0.5, y + 0.5))
+  let (above, below) = (red(&ground, 16, 15), red(&ground, 16, 48));
+  assert!(
+    above > 100 && above.abs_diff(below) <= 2,
+    "{above} above, {below} below"
+  );
+  // Its floor's wall casts behind where the wall draws, (32, 32): its shadow
+  // draws lifted with it, and not behind where the wall stands
+  let (lifted, standing) = ((48, 32), (48, 48));
+  let shade = red(&own, lifted.0, lifted.1);
+  let lit = red(&own, standing.0, standing.1);
+  assert!(
+    shade < 10 && lit > 100,
+    "behind it drawn {shade}, standing {lit}"
+  );
+  // A ground floor wall does not block it; an every floor wall does
+  let open = red(&ground, lifted.0, lifted.1);
+  assert!(open > 100, "past the ground floor's wall {open}");
+  let blocked = red(&every, lifted.0, lifted.1);
+  assert!(blocked < 10, "behind every floor's wall {blocked}");
+}
+
 /// The red byte at (80, 32) behind `occluders` stacked occluders, under a
 /// light whose shadow keeps half its light.
 fn behind(occluders: usize) -> Option<u8> {

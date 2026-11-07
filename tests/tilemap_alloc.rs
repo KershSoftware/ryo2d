@@ -2,7 +2,8 @@
 //! binary: a padded tileset cache hit, a frame drawing a static map under a
 //! shadowed light (its camera still, then panning over chunks it has
 //! drawn) on every grid, its layers colliding and casting shadows (the
-//! hexagonal map's too), an idle frame of a streamed map whose chunks have landed, on
+//! hexagonal map's too), and with a storey under a second light on it, an
+//! idle frame of a streamed map whose chunks have landed, on
 //! orthogonal and on isometric cells, and a frame of characters walking on
 //! a map's storeys, drawn lifted.
 //!
@@ -170,6 +171,9 @@ const GROUND: u32 = 1;
 const PROP: u32 = 2;
 const WATER: u32 = 3;
 const SIDE: u32 = 128;
+/// Where the floored static map's light on floor 1 stands from the map's
+/// middle
+const FLOOR_LIGHT: Vec2 = Vec2::new(48.0, 24.0);
 
 /// A scene with the static map (or nothing, `empty`) under a shadowed
 /// light: four tile layers of 128 x 128 cells over an atlas, the third
@@ -177,10 +181,13 @@ const SIDE: u32 = 128;
 /// light is in both, so each frame is lit and the map's frame differs only
 /// by the map (its shadow chains among them). Its tiles fit their cells
 /// (`Art::Fitting`), or its plain layers draw in Tiled's order across
-/// tilesets and chunks (the other `Art`s)
+/// tilesets and chunks (the other `Art`s). With `floored`, a fifth tile
+/// layer of blocks is on floor 1, 32 px up, and a second shadowed light
+/// is on floor 1 in both
 struct StaticMap {
   empty: bool,
   art: Art,
+  floored: bool,
 }
 
 /// The static map's grid, and how its 16 px tiles sit in their cells
@@ -225,6 +232,13 @@ impl Scene for StaticMap {
       Transform::from_translation(centre),
       Light2D::point(Color::WHITE, 240.0).with_shadows(),
     ));
+    if self.floored {
+      ctx.world.spawn((
+        Transform::from_translation(centre + FLOOR_LIGHT),
+        Light2D::point(Color::WHITE, 200.0).with_shadows(),
+        Floor::On(1),
+      ));
+    }
     if self.empty {
       return;
     }
@@ -321,6 +335,11 @@ impl Scene for StaticMap {
     for name in ["back", "ground", "props", "water"] {
       map.add_tile_layer(name);
     }
+    if self.floored {
+      let upper = map.add_tile_layer("upper");
+      map.layers[upper].info.floor = 1;
+      map.layers[upper].info.offset = Vec2::new(0.0, -32.0);
+    }
     let side = SIDE as i32;
     for y in 0..side {
       for x in 0..side {
@@ -343,6 +362,9 @@ impl Scene for StaticMap {
           put(3, PROP);
         } else if (x + y) % 13 == 0 {
           put(4, WATER);
+        }
+        if self.floored && (x / 4 + y / 6) % 5 == 1 {
+          put(5, GROUND);
         }
       }
     }
@@ -473,27 +495,32 @@ fn look_at(engine: &mut HeadlessEngine, at: Vec2) {
 
 #[test]
 fn a_frame_drawing_a_static_map_allocates_nothing() {
-  static_frames_allocate_nothing(Art::Fitting);
+  static_frames_allocate_nothing(Art::Fitting, false);
+}
+
+#[test]
+fn a_lit_frame_drawing_a_static_map_with_floors_allocates_nothing() {
+  static_frames_allocate_nothing(Art::Fitting, true);
 }
 
 #[test]
 fn a_frame_drawing_an_isometric_map_of_tall_tiles_in_tileds_order_allocates_nothing() {
-  static_frames_allocate_nothing(Art::Tall);
+  static_frames_allocate_nothing(Art::Tall, false);
 }
 
 #[test]
 fn a_frame_drawing_a_staggered_map_of_wide_tiles_run_by_run_allocates_nothing() {
-  static_frames_allocate_nothing(Art::Wide);
+  static_frames_allocate_nothing(Art::Wide, false);
 }
 
 #[test]
 fn a_frame_drawing_a_y_sorted_oblique_map_cell_by_cell_allocates_nothing() {
-  static_frames_allocate_nothing(Art::Sheared);
+  static_frames_allocate_nothing(Art::Sheared, false);
 }
 
 #[test]
 fn a_frame_drawing_a_hexagonal_map_of_turned_tiles_allocates_nothing() {
-  static_frames_allocate_nothing(Art::Turned);
+  static_frames_allocate_nothing(Art::Turned, false);
 }
 
 /// How many colliders `engine`'s tile grids built: the children of the
@@ -539,15 +566,20 @@ fn draws_a_part(engine: &mut HeadlessEngine) -> usize {
   parts.values().copied().max().unwrap_or(0)
 }
 
-/// A frame drawing the static map of `art`, still and panning over chunks
-/// it has drawn, makes no allocation of the engine's own an empty frame
-/// does not, and its own path none inside the GPU API
-fn static_frames_allocate_nothing(art: Art) {
-  let centre = StaticMap { empty: true, art }.centre();
-  let (Some(mut empty), Some(mut map)) = (
-    engine(StaticMap { empty: true, art }, centre),
-    engine(StaticMap { empty: false, art }, centre),
-  ) else {
+/// A frame drawing the static map of `art` (`floored`, with a storey and a
+/// light on it), still and panning over chunks it has drawn, makes no
+/// allocation of the engine's own an empty frame does not, and its own
+/// path none inside the GPU API
+fn static_frames_allocate_nothing(art: Art, floored: bool) {
+  let scene = |empty| StaticMap {
+    empty,
+    art,
+    floored,
+  };
+  let centre = scene(true).centre();
+  let (Some(mut empty), Some(mut map)) =
+    (engine(scene(true), centre), engine(scene(false), centre))
+  else {
     return;
   };
   // The path drawing it: a part a draw while its tiles fit or stand tall
@@ -564,6 +596,23 @@ fn static_frames_allocate_nothing(art: Art) {
     map_occluders(&mut map) > 0,
     "{art:?}: the map built its shadows"
   );
+  if floored {
+    // Shadows on both floors, and a light on floor 1 drawn lifted
+    let world = map.world_mut();
+    let floors: Vec<Option<Floor>> = world
+      .query::<(&MapOccluder, Option<&Floor>)>()
+      .iter(world)
+      .map(|(_, floor)| floor.copied())
+      .collect();
+    assert!(floors.contains(&None) && floors.contains(&Some(Floor::On(1))));
+    let lights: Vec<Entity> = world
+      .query_filtered::<Entity, (With<Light2D>, With<Floor>)>()
+      .iter(world)
+      .collect();
+    let view = MapsView::new(world);
+    assert_eq!(lights.len(), 1);
+    assert_eq!(view.drawn_lift(lights[0]), Vec2::new(0.0, -32.0));
+  }
   let most = draws_a_part(&mut map);
   match art {
     Art::Fitting | Art::Tall => assert_eq!(most, 1, "{art:?}: each part draws whole"),
@@ -591,8 +640,9 @@ fn static_frames_allocate_nothing(art: Art) {
     let (drawn, nothing) = (traced(&mut map), traced(&mut empty));
     let own = |frame: &Frame| frame.own.values().sum::<usize>();
     println!(
-      "{art:?}, frame {frame} at {at}: the map's frame {} allocations ({} the engine's own), an \
+      "{art:?}{}, frame {frame} at {at}: the map's frame {} allocations ({} the engine's own), an \
        empty frame {} ({} its own); {} tile draws, at most {} a part",
+      if floored { " with floors" } else { "" },
       drawn.count,
       own(&drawn),
       nothing.count,

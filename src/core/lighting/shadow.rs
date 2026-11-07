@@ -6,19 +6,25 @@ use std::ops::Range;
 use glam::Vec2;
 
 use super::{Light2D, LightOccluder2D};
-use crate::core::ecs::GlobalTransform;
+use crate::core::ecs::{Floor, GlobalTransform};
 use crate::core::render::batch::{Triangles, Vertex2D};
 
-/// Push the shadow volumes `light` at `position` casts from `occluders`
-/// into `triangles`; returns their index range (empty when it casts none).
+/// Push the shadow volumes `light` at `position` on `floor` casts from
+/// `occluders` (each on its floor) into `triangles`, drawn `lift` up;
+/// returns their index range (empty when it casts none).
 ///
+/// Only occluders on a floor that meets the light's block it. The volumes
+/// are cast where the light and its occluders stand, then every vertex and
+/// the light's position move by `lift`, so they draw where the light does.
 /// Each vertex carries what `shadow.wgsl` needs: the light's position (in
 /// `uv`), its radius and shadow softness (in `params`), and its shadow
 /// colour in linear light, whose alpha is the shadow's strength.
 pub(crate) fn push_shadow_volumes(
   position: Vec2,
+  lift: Vec2,
   light: &Light2D,
-  occluders: &[(GlobalTransform, &LightOccluder2D)],
+  floor: Floor,
+  occluders: &[(GlobalTransform, &LightOccluder2D, Floor)],
   triangles: &mut Triangles,
 ) -> Range<u32> {
   let start = triangles.indices.len() as u32;
@@ -35,16 +41,17 @@ pub(crate) fn push_shadow_volumes(
   // A softness that is not finite draws hard shadows
   let softness = light.shadow_softness();
   let softness = if softness.is_finite() { softness } else { 0.0 };
+  let drawn = position + lift;
   let vertex = |at: Vec2| Vertex2D {
-    position: at.into(),
-    uv: position.into(),
+    position: (at + lift).into(),
+    uv: drawn.into(),
     color: light.shadow_color().to_linear(),
     params: [radius, softness, 0.0, 0.0],
     across: [0.0; 2],
     bounds: [0.0; 4],
   };
-  for (transform, occluder) in occluders {
-    if !occluder.is_enabled() {
+  for (transform, occluder, on) in occluders {
+    if !occluder.is_enabled() || !floor.meets(*on) {
       continue;
     }
     let center = transform.translation();
@@ -147,7 +154,15 @@ mod tests {
     let occluder = LightOccluder2D::rect(4.0, 16.0);
     let at = GlobalTransform::from_transform(&crate::core::ecs::Transform::from_xy(40.0, 0.0));
     let mut triangles = Triangles::default();
-    let range = push_shadow_volumes(Vec2::ZERO, &light, &[(at, &occluder)], &mut triangles);
+    let placed = [(at, &occluder, Floor::GROUND)];
+    let range = push_shadow_volumes(
+      Vec2::ZERO,
+      Vec2::ZERO,
+      &light,
+      Floor::GROUND,
+      &placed,
+      &mut triangles,
+    );
     assert!(
       !range.is_empty() && range.len().is_multiple_of(6),
       "{range:?}"
@@ -172,22 +187,44 @@ mod tests {
     let occluder = LightOccluder2D::rect(4.0, 16.0);
     let at = GlobalTransform::from_transform(&crate::core::ecs::Transform::from_xy(40.0, 0.0));
     let mut triangles = Triangles::default();
-    assert!(push_shadow_volumes(Vec2::ZERO, &light, &[(at, &occluder)], &mut triangles).is_empty());
+    let placed = [(at, &occluder, Floor::GROUND)];
+    let range = push_shadow_volumes(
+      Vec2::ZERO,
+      Vec2::ZERO,
+      &light,
+      Floor::GROUND,
+      &placed,
+      &mut triangles,
+    );
+    assert!(range.is_empty());
   }
 
   /// The shadow quads `occluders` (each at its position) cast from a light
-  /// at `from`, each as its four corners, sorted
+  /// at `from`, each as its four corners, sorted, all on the ground floor
   fn quads(from: Vec2, occluders: &[(Vec2, &LightOccluder2D)]) -> Vec<[[u32; 2]; 4]> {
-    let light = Light2D::point(crate::core::ui::Color::WHITE, 200.0).with_shadows();
-    let placed: Vec<(GlobalTransform, &LightOccluder2D)> = occluders
+    let grounded: Vec<(Vec2, &LightOccluder2D, Floor)> = occluders
       .iter()
-      .map(|(at, occluder)| {
-        let transform = crate::core::ecs::Transform::from_translation(*at);
-        (GlobalTransform::from_transform(&transform), *occluder)
+      .map(|&(at, occluder)| (at, occluder, Floor::GROUND))
+      .collect();
+    floor_quads(Floor::GROUND, from, &grounded)
+  }
+
+  /// `quads` of a light on `floor`, each occluder on its own floor
+  fn floor_quads(
+    floor: Floor,
+    from: Vec2,
+    occluders: &[(Vec2, &LightOccluder2D, Floor)],
+  ) -> Vec<[[u32; 2]; 4]> {
+    let light = Light2D::point(crate::core::ui::Color::WHITE, 200.0).with_shadows();
+    let placed: Vec<(GlobalTransform, &LightOccluder2D, Floor)> = occluders
+      .iter()
+      .map(|&(at, occluder, on)| {
+        let transform = crate::core::ecs::Transform::from_translation(at);
+        (GlobalTransform::from_transform(&transform), occluder, on)
       })
       .collect();
     let mut triangles = Triangles::default();
-    push_shadow_volumes(from, &light, &placed, &mut triangles);
+    push_shadow_volumes(from, Vec2::ZERO, &light, floor, &placed, &mut triangles);
     let bits = |v: &crate::core::render::batch::Vertex2D| v.position.map(f32::to_bits);
     let mut quads: Vec<[[u32; 2]; 4]> = triangles
       .vertices
@@ -252,5 +289,63 @@ mod tests {
     assert_eq!(quads(Vec2::new(0.0, 50.0), &[(Vec2::ZERO, &top)]).len(), 1);
     assert_eq!(top.edges().count(), 1);
     assert!(!top.is_closed() && polygon.is_closed());
+  }
+
+  #[test]
+  fn a_light_on_a_floor_is_blocked_only_by_that_floor_s_occluders() {
+    let wall = LightOccluder2D::rect(4.0, 16.0);
+    let at = Vec2::new(40.0, 0.0);
+    let cast = floor_quads(Floor::GROUND, Vec2::ZERO, &[(at, &wall, Floor::GROUND)]);
+    assert!(!cast.is_empty());
+    let on_first =
+      |wall_floor: Floor| floor_quads(Floor::On(1), Vec2::ZERO, &[(at, &wall, wall_floor)]);
+    assert!(on_first(Floor::GROUND).is_empty(), "the ground floor's");
+    assert!(on_first(Floor::On(2)).is_empty(), "the floor above's");
+    assert_eq!(on_first(Floor::On(1)), cast, "its own floor's");
+    assert_eq!(on_first(Floor::Every), cast, "every floor's");
+    // Nor does a ground floor light meet floor 1's
+    let ground = floor_quads(Floor::GROUND, Vec2::ZERO, &[(at, &wall, Floor::On(1))]);
+    assert!(ground.is_empty());
+
+    // Lifted, every vertex and the light it knows move by the lift: the
+    // volumes are those cast where it stands
+    let light = Light2D::point(crate::core::ui::Color::WHITE, 200.0).with_shadows();
+    let placed = [(
+      GlobalTransform::from_transform(&crate::core::ecs::Transform::from_translation(at)),
+      &wall,
+      Floor::On(1),
+    )];
+    let from = Vec2::new(5.0, 3.0);
+    let lift = Vec2::new(0.0, -32.0);
+    let (mut standing, mut lifted) = (Triangles::default(), Triangles::default());
+    push_shadow_volumes(
+      from,
+      Vec2::ZERO,
+      &light,
+      Floor::On(1),
+      &placed,
+      &mut standing,
+    );
+    let range = push_shadow_volumes(from, lift, &light, Floor::On(1), &placed, &mut lifted);
+    assert!(!range.is_empty());
+    assert_eq!(lifted.indices, standing.indices);
+    assert_eq!(lifted.vertices.len(), standing.vertices.len());
+    for (up, there) in lifted.vertices.iter().zip(&standing.vertices) {
+      assert_eq!(Vec2::from(up.position), Vec2::from(there.position) + lift);
+      assert_eq!(Vec2::from(up.uv), from + lift);
+      assert_eq!((up.color, up.params), (there.color, there.params));
+    }
+  }
+
+  #[test]
+  fn a_light_on_every_floor_is_blocked_by_all() {
+    let wall = LightOccluder2D::rect(4.0, 16.0);
+    let at = Vec2::new(40.0, 0.0);
+    let cast = floor_quads(Floor::GROUND, Vec2::ZERO, &[(at, &wall, Floor::GROUND)]);
+    assert!(!cast.is_empty());
+    for floor in [Floor::GROUND, Floor::On(1), Floor::On(255), Floor::Every] {
+      let quads = floor_quads(Floor::Every, Vec2::ZERO, &[(at, &wall, floor)]);
+      assert_eq!(quads, cast, "{floor:?}");
+    }
   }
 }

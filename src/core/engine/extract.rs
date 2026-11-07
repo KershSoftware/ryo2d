@@ -11,8 +11,8 @@ use crate::core::ecs::interpolate::render_global;
 use crate::core::ecs::kernel::{MessageCursor, Messages};
 use crate::core::ecs::kernel::{QueryState, SystemIdMarker};
 use crate::core::ecs::{
-  DetectChangesMut, Entity, GlobalTransform, IsResource, Mut, Observer, PreviousGlobalTransform,
-  Vec2, World, shaders_of,
+  DetectChangesMut, DrawLift, Entity, Floor, GlobalTransform, IsResource, Mut, Observer,
+  PreviousGlobalTransform, Vec2, World, shaders_of,
 };
 use crate::core::graphics::camera_gpu::CameraGlobals;
 use crate::core::graphics::camera_mut::main_view;
@@ -160,7 +160,8 @@ impl Engine {
         lighting.set_ambient(*settings.ambient());
         lighting.set_atmosphere(settings.atmosphere().clone());
         let mut effects = self.world.resource_mut::<EffectsManager>();
-        let lights_at = lights.iter().map(|l| (l.position, &l.light));
+        // Where each light draws, lifted on a floor
+        let lights_at = lights.iter().map(|l| (l.position + l.lift, &l.light));
         crate::core::lighting::update_god_rays(
           &mut effects,
           lights_at,
@@ -702,8 +703,20 @@ fn game_entity_count(world: &World) -> u32 {
     .sum()
 }
 
-/// The lights to draw this frame, at their world positions (blended for
-/// interpolated entities, like their sprites), with the layers that see them.
+/// The floor a light or occluder is on and how far up it draws: its
+/// `DrawLift` (its own floor's, or its nearest ancestor's with one), else
+/// its own `Floor` unlifted, else the ground floor
+fn floor_and_lift(drawn: Option<&DrawLift>, floor: Option<&Floor>) -> (Floor, Vec2) {
+  match (drawn, floor) {
+    (Some(drawn), _) => (drawn.floor, drawn.lift),
+    (None, Some(&floor)) => (floor, Vec2::ZERO),
+    (None, None) => (Floor::GROUND, Vec2::ZERO),
+  }
+}
+
+/// The lights to draw this frame, where they stand (blended for
+/// interpolated entities, like their sprites), with the layers that see
+/// them and their floors and lifts.
 fn lights_to_draw(world: &mut World, alpha: f32, out: &mut Vec<FrameLight>) {
   out.clear();
   out.extend(
@@ -713,12 +726,19 @@ fn lights_to_draw(world: &mut World, alpha: f32, out: &mut Vec<FrameLight>) {
         Option<&PreviousGlobalTransform>,
         &Light2D,
         Option<&RenderLayers>,
+        Option<&DrawLift>,
+        Option<&Floor>,
       )>()
       .iter(world)
-      .map(|(global, previous, light, layers)| FrameLight {
-        position: render_global(global, previous, alpha).translation(),
-        light: light.clone(),
-        layers: layers.copied().unwrap_or_default(),
+      .map(|(global, previous, light, layers, drawn, floor)| {
+        let (floor, lift) = floor_and_lift(drawn, floor);
+        FrameLight {
+          position: render_global(global, previous, alpha).translation(),
+          light: light.clone(),
+          layers: layers.copied().unwrap_or_default(),
+          floor,
+          lift,
+        }
       }),
   );
 }
@@ -727,21 +747,28 @@ pub(super) type OccluderItem = (
   &'static GlobalTransform,
   Option<&'static PreviousGlobalTransform>,
   &'static LightOccluder2D,
+  Option<&'static DrawLift>,
+  Option<&'static Floor>,
 );
 
-/// Every occluder where it is drawn (blended for interpolated entities, its
-/// rotation kept), borrowed from the world rather than copied.
+/// Every occluder where it stands (blended for interpolated entities, its
+/// rotation kept) and on its floor, borrowed from the world rather than
+/// copied. Shadows are cast where occluders stand, so their lift is not
+/// needed: a light's shadows draw by its own.
 fn occluders_to_draw<'w>(
   world: &'w World,
   query: &mut QueryState<OccluderItem>,
   alpha: f32,
-  out: &mut Vec<(GlobalTransform, &'w LightOccluder2D)>,
+  out: &mut Vec<(GlobalTransform, &'w LightOccluder2D, Floor)>,
 ) {
   out.clear();
   out.extend(
     query
       .iter(world)
-      .map(|(global, previous, occluder)| (render_global(global, previous, alpha), occluder)),
+      .map(|(global, previous, occluder, drawn, floor)| {
+        let (floor, _) = floor_and_lift(drawn, floor);
+        (render_global(global, previous, alpha), occluder, floor)
+      }),
   );
 }
 
@@ -775,5 +802,94 @@ mod tests {
     let mut occluders = Vec::new();
     occluders_to_draw(&world, &mut query, 0.5, &mut occluders);
     assert_eq!(occluders[0].0.translation(), Vec2::new(5.0, 0.0));
+  }
+
+  #[test]
+  fn a_held_light_on_a_floor_casts_that_floor_s_shadows_drawn_lifted() {
+    use crate::core::asset::Assets;
+    use crate::core::ecs::ChildOf;
+    use crate::core::lighting::{light_item, push_shadow_volumes};
+    use crate::core::render::batch::Triangles;
+    use crate::core::tilemap::test_util::MapWorld;
+    use crate::core::tilemap::{MapRoot, TileMap};
+
+    let mut maps = MapWorld::new();
+    // A map of 8 x 4 cells of 16 px whose floor 1 draws 32 px up, its layers
+    // empty
+    let mut map = TileMap::new(glam::UVec2::new(8, 4), glam::UVec2::splat(16));
+    map.add_tile_layer("ground");
+    let upper = map.add_tile_layer("upper");
+    map.layers[upper].info.floor = 1;
+    map.layers[upper].info.offset = Vec2::new(0.0, -32.0);
+    let handle = maps.world.resource_mut::<Assets<TileMap>>().add(map);
+    maps.spawn(MapRoot::new(handle));
+    // A hero on floor 1 holding a torch (a child), among walls on floor 1,
+    // on the ground floor (no `Floor`) and on every floor
+    let world = &mut maps.world;
+    let hero = world
+      .spawn((Transform::from_xy(60.0, 40.0), Floor::On(1)))
+      .id();
+    let torch = Light2D::point(Color::WHITE, 100.0).with_shadows();
+    world.spawn((Transform::from_xy(4.0, 0.0), torch, ChildOf(hero)));
+    let wall = LightOccluder2D::rect(4.0, 16.0);
+    world.spawn((Transform::from_xy(100.0, 40.0), wall.clone(), Floor::On(1)));
+    world.spawn((Transform::from_xy(20.0, 40.0), wall.clone()));
+    world.spawn((Transform::from_xy(64.0, 10.0), wall, Floor::Every));
+    maps.frame();
+
+    let mut lights = Vec::new();
+    lights_to_draw(&mut maps.world, 1.0, &mut lights);
+    let [torch] = lights.as_slice() else {
+      panic!("one light: {lights:?}");
+    };
+    let lift = Vec2::new(0.0, -32.0);
+    assert_eq!(torch.position, Vec2::new(64.0, 40.0), "where it stands");
+    assert_eq!((torch.floor, torch.lift), (Floor::On(1), lift));
+    let mut query = maps.world.query::<OccluderItem>();
+    let mut occluders = Vec::new();
+    occluders_to_draw(&maps.world, &mut query, 1.0, &mut occluders);
+    let mut floors: Vec<(i32, Floor)> = occluders
+      .iter()
+      .map(|(at, _, floor)| (at.translation().x as i32, *floor))
+      .collect();
+    floors.sort_by_key(|&(x, _)| x);
+    assert_eq!(
+      floors,
+      [(20, Floor::GROUND), (64, Floor::Every), (100, Floor::On(1))]
+    );
+
+    // It casts from floor 1's wall and every floor's, where it stands, and
+    // draws them and itself lifted
+    let mut drawn = Triangles::default();
+    let Some(item) = light_item(torch, &occluders, &mut drawn) else {
+      panic!("a usable light");
+    };
+    let theirs: Vec<_> = occluders
+      .iter()
+      .filter(|(.., floor)| *floor != Floor::GROUND)
+      .cloned()
+      .collect();
+    let mut standing = Triangles::default();
+    let (light, at) = (&torch.light, torch.position);
+    push_shadow_volumes(at, Vec2::ZERO, light, Floor::Every, &theirs, &mut standing);
+    assert!(!standing.indices.is_empty());
+    assert_eq!(item.shadows.len(), standing.indices.len());
+    assert_eq!(drawn.vertices.len(), standing.vertices.len());
+    for (up, there) in drawn.vertices.iter().zip(&standing.vertices) {
+      assert_eq!(Vec2::from(up.position), Vec2::from(there.position) + lift);
+      assert_eq!(Vec2::from(up.uv), at + lift);
+    }
+    // The ground floor's wall casts for a light on the ground
+    let ground: Vec<_> = occluders
+      .iter()
+      .filter(|(.., floor)| *floor == Floor::GROUND)
+      .cloned()
+      .collect();
+    let mut grounded = Triangles::default();
+    push_shadow_volumes(at, Vec2::ZERO, light, Floor::GROUND, &ground, &mut grounded);
+    assert!(!grounded.indices.is_empty());
+    assert_eq!(item.instance.transform[2][..2], [64.0, 8.0]);
+    let reach = Vec2::splat(100.0);
+    assert_eq!((item.min, item.max), (at + lift - reach, at + lift + reach));
   }
 }

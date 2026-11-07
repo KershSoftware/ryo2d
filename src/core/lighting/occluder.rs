@@ -36,6 +36,9 @@ use crate::core::ecs::Vec2;
 /// counter-clockwise order on screen for correct shadow casting: an edge
 /// casts when it faces away from the light, its outside being on its right
 /// as it runs on screen (y down).
+///
+/// An occluder is on its own `Floor`, else its nearest ancestor's, else the
+/// ground floor, and blocks only the lights on a floor that meets it.
 #[derive(Component, Debug, Clone, PartialEq)]
 pub struct LightOccluder2D {
   /// The vertices of the occluder polygon (local space, relative to entity transform)

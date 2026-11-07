@@ -204,6 +204,7 @@ pub struct Engine {
   occluders: Vec<(
     crate::core::ecs::GlobalTransform,
     &'static crate::core::lighting::LightOccluder2D,
+    crate::core::ecs::Floor,
   )>,
   /// The occluders' query, made the first lit frame
   occluder_query: Option<crate::core::ecs::kernel::QueryState<extract::OccluderItem>>,

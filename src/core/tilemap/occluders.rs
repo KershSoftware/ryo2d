@@ -4,8 +4,9 @@
 //! A layer occludes when its `LayerInfo::occludes` says so, else when it
 //! collides (`collides`); a disabled map (or layer) has no occluders, and
 //! enabling it builds them from its tiles as they then are. Occluding
-//! layers sharing a cell size and offset occlude as one: each cell takes
-//! the strongest kind across them, as collision's union does. What a cell
+//! layers sharing a grid, a floor and where they stand (their ground
+//! offset, `floors::ground_offset`) occlude as one: each cell takes the
+//! strongest kind across them, as collision's union does. What a cell
 //! occludes with: a tile's shapes marked `occluder`, else its collision
 //! shapes (one-way ones too: light does not care which way a platform lets
 //! bodies through), all placed where it draws as collision places them; an
@@ -19,10 +20,12 @@
 //! art beyond it. Each chunk owns the borders on the left of and above its
 //! cells (and the grid's right and bottom ones where it reaches them); its
 //! edges are chained into open chains (`LightOccluder2D::chain`), each a
-//! child of the group's first layer marked `MapOccluder` with its chunk, its
-//! entity at the centre of its corners' box (the light's reach test reads
-//! the entity's position less the chain's extent, its farthest corner from
-//! there). A chunk whose version moved is built again, and
+//! child of the group's first layer marked `MapOccluder` with its chunk
+//! (and `Floor::On` on a floor above the ground, so it blocks only the
+//! lights on a floor that meets it), its entity at the centre of its
+//! corners' box (the light's reach test reads the entity's position less
+//! the chain's extent, its farthest corner from there). A chunk whose
+//! version moved is built again, and
 //! so is the chunk right of it or below it when the cells it shares a
 //! border with changed kind (that one only at the border, its other edges
 //! as it kept them); every other chunk keeps its occluders. Chunks
@@ -55,6 +58,7 @@ use std::sync::Arc;
 use glam::{Affine2, DVec2, IVec2, Vec2};
 
 use super::collision::LayerView;
+use super::floors::{MapFloors, ground_offset};
 use super::kinds::{
   CELLS, ChunkKinds, Context, GridKey, Layers, Part, Purpose, ShapeKey, ShapeSource, Stores,
   TilesetStamp, Tracked, changed_chunks, lattice_of, layer_data, reindexing, scatter, shapes_kept,
@@ -63,7 +67,7 @@ use super::kinds::{
 use super::spawn::{IntGridKey, MapLayers, MapRoot, TileLayerData, root_map};
 use super::{CHUNK_SIZE, Lattice, TileGrid};
 use crate::core::ecs::{
-  Allow, ChildOf, Commands, Component, DetectChangesMut, Disabled, Entity, Has, Local,
+  Allow, ChildOf, Commands, Component, DetectChangesMut, Disabled, Entity, Floor, Has, Local,
   ParentPlaced, Query, Transform, World,
 };
 use crate::core::hash::{FastMap, FastSet};
@@ -73,11 +77,13 @@ use crate::core::physics::{
 };
 
 /// Marks an occluder a map keeps from its tiles: a child of the first layer
-/// of the layers occluding as one, rebuilt with its chunk. Games can find a
-/// map's shadows by it; the map owns them, so an edit to one lasts until a
-/// change to its chunk builds it again. Only the map's walk places it: a
-/// change to its `Transform` is not applied until the map next moves, and
-/// a rebuild replaces it
+/// of the layers occluding as one, rebuilt with its chunk; one of a floor
+/// above the ground carries that floor (`Floor::On`), so it blocks only the
+/// lights on that floor and on every floor. Games can find a map's shadows
+/// by it; the map owns them, so an edit to one lasts until a change to its
+/// chunk builds it again. Only the map's walk places it: a change to its
+/// `Transform` is not applied until the map next moves, and a rebuild
+/// replaces it
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MapOccluder {
   /// The chunk of the layers it was built from: signed, as
@@ -93,6 +99,9 @@ pub(crate) struct Lit {
   entity: Entity,
   index: usize,
   grid: GridKey,
+  floor: u8,
+  /// Where it stands in the map: its ground offset
+  /// (`floors::ground_offset`), by its bits
   offset: [u32; 2],
   /// Its grid's bounds; `None` for an unbounded grid
   bounds: Option<CellRect>,
@@ -288,10 +297,14 @@ struct HexBuilt {
 /// its chains anyway, as a streamed chunk landing or unloading does
 const HEX_WHOLE: u32 = 64;
 
-/// Layers sharing a grid and offset, occluding as one
+/// Layers sharing a grid, a floor and where they stand, occluding as one
 #[derive(Debug)]
 struct Group {
   grid: GridKey,
+  /// Its layers' floor: its chains are on it (`Floor::On`, none on the
+  /// ground floor)
+  floor: u8,
+  /// Where its layers stand: their ground offset, by its bits
   offset: [u32; 2],
   /// Its occluders' parent: its first layer
   parent: Entity,
@@ -338,6 +351,7 @@ impl Group {
     let hex = grid.hex_cells();
     Group {
       grid: lit.grid,
+      floor: lit.floor,
       offset: lit.offset,
       parent: lit.entity,
       parent_layer: lit.index,
@@ -1244,15 +1258,17 @@ fn place(
   }
   let mut kept = group.hex_chunks.get_mut(&chunk);
   for (slot, (centre, vertices)) in chains {
-    let occluder = commands
-      .spawn((
-        Transform::from_translation(centre),
-        LightOccluder2D::chain(vertices),
-        MapOccluder { chunk },
-        ParentPlaced,
-        ChildOf(group.parent),
-      ))
-      .id();
+    let chain = (
+      Transform::from_translation(centre),
+      LightOccluder2D::chain(vertices),
+      MapOccluder { chunk },
+      ParentPlaced,
+      ChildOf(group.parent),
+    );
+    let occluder = match group.floor {
+      0 => commands.spawn(chain).id(),
+      floor => commands.spawn((chain, Floor::On(floor))).id(),
+    };
     list.push(occluder);
     if let (Some(kept), Some(slot)) = (kept.as_deref_mut(), slot) {
       kept.record(slot, occluder);
@@ -1332,13 +1348,15 @@ fn update(
   }
 }
 
-/// The occluding layers among `layers` into `planned`, on every grid. An
+/// The occluding layers among `layers` into `planned`, on every grid, each
+/// on its floor and standing where `floors` (the map's) puts it. An
 /// occluding layer of hexagons the tracer does not take
 /// (`HexCells::traceable`: over 16,384 px, or under 2 px) casts no
 /// shadows, as it does not collide, and warns once (`warned`)
 fn plan<'a>(
   map: Entity,
   layers: impl IntoIterator<Item = LayerView<'a>>,
+  floors: Option<&MapFloors>,
   planned: &mut Vec<Lit>,
   warned: &mut FastSet<usize>,
 ) {
@@ -1356,11 +1374,13 @@ fn plan<'a>(
         }
         continue;
       }
+      let stands = ground_offset(layer.info, floors);
       planned.push(Lit {
         entity: layer.entity,
         index: layer.index,
         grid: GridKey::of(&layer.data.grid),
-        offset: [layer.info.offset.x.to_bits(), layer.info.offset.y.to_bits()],
+        floor: layer.info.floor,
+        offset: [stands.x.to_bits(), stands.y.to_bits()],
         bounds: layer.data.tiles.bounds(),
         intgrid: layer.data.intgrid.is_some(),
       });
@@ -1386,7 +1406,7 @@ fn build(
     let tracked = Tracked::unread((lit.index, lit.entity), view.data, context.overrides);
     match groups
       .iter_mut()
-      .find(|g| g.grid == lit.grid && g.offset == lit.offset)
+      .find(|g| g.grid == lit.grid && g.floor == lit.floor && g.offset == lit.offset)
     {
       Some(group) => {
         // The largest bounds, or none with an unbounded layer
@@ -1432,11 +1452,23 @@ pub(crate) struct Prepared {
 }
 
 /// The shadows of the map `map` as its layers (each with its place among
-/// them) will spawn: every chunk's chains. Pure: any thread
-pub(crate) fn prepare(map: Entity, layers: &[LayerView<'_>], inputs: Inputs) -> Prepared {
+/// them) will spawn on its floors (`floors`): every chunk's chains. Pure:
+/// any thread
+pub(crate) fn prepare(
+  map: Entity,
+  layers: &[LayerView<'_>],
+  inputs: Inputs,
+  floors: Option<&MapFloors>,
+) -> Prepared {
   let mut planned = Vec::new();
   let mut warned = FastSet::default();
-  plan(map, layers.iter().copied(), &mut planned, &mut warned);
+  plan(
+    map,
+    layers.iter().copied(),
+    floors,
+    &mut planned,
+    &mut warned,
+  );
   let context = Context::new(&inputs.shapes, &inputs.overrides, Purpose::Occlusion);
   let groups = build(&planned, layers, &context, None);
   Prepared {
@@ -1492,10 +1524,14 @@ pub(crate) fn land(world: &mut World, map: Entity, layers: &[Entity], prepared: 
         )
       })
     });
-    let mut spawned = world
-      .spawn_batch(bundles)
-      .collect::<Vec<Entity>>()
-      .into_iter();
+    // A higher floor's chains are on it
+    let spawned: Vec<Entity> = match group.floor {
+      0 => world.spawn_batch(bundles).collect(),
+      floor => world
+        .spawn_batch(bundles.map(|chain| (chain, Floor::On(floor))))
+        .collect(),
+    };
+    let mut spawned = spawned.into_iter();
     let mut slots = slots.into_iter();
     for (chunk, count) in counts {
       let occluders: Vec<Entity> = spawned.by_ref().take(count).collect();
@@ -1524,6 +1560,7 @@ type Maps<'w, 's> = Query<
     Entity,
     &'static MapRoot,
     Option<&'static MapLayers>,
+    Option<&'static MapFloors>,
     Option<&'static mut MapShadows>,
     Has<Disabled>,
   ),
@@ -1563,7 +1600,7 @@ pub(crate) fn sync_map_occluders(
   mut commands: Commands,
 ) {
   let tilesets = tilesets.as_deref();
-  for (map, root, map_layers, mut state, disabled) in &mut maps {
+  for (map, root, map_layers, floors, mut state, disabled) in &mut maps {
     let Some(map_layers) = map_layers else {
       // The root was put over or taken away, and its layers with it
       if let Some(mut state) = state {
@@ -1591,7 +1628,13 @@ pub(crate) fn sync_map_occluders(
       Some(state) => &mut state.bypass_change_detection().warned,
       None => &mut first_warnings,
     };
-    plan(map, views(map_layers, &layers), &mut planned, warned);
+    plan(
+      map,
+      views(map_layers, &layers),
+      floors,
+      &mut planned,
+      warned,
+    );
     let same = state.as_mut().is_some_and(|s| {
       let s = s.bypass_change_detection();
       s.layers == *planned
@@ -2050,15 +2093,16 @@ mod tests {
   /// from a light of `radius` at `from`
   fn shadowed_by(radius: f32, point: Vec2, from: Vec2, occluders: &[Found]) -> bool {
     let light = Light2D::point(crate::core::ui::Color::WHITE, radius).with_shadows();
-    let placed: Vec<(GlobalTransform, &LightOccluder2D)> = occluders
+    let placed: Vec<(GlobalTransform, &LightOccluder2D, Floor)> = occluders
       .iter()
       .map(|f| {
         let at = GlobalTransform::from_transform(&Transform::from_translation(f.at));
-        (at, &f.occluder)
+        (at, &f.occluder, Floor::GROUND)
       })
       .collect();
     let mut triangles = Triangles::default();
-    push_shadow_volumes(from, &light, &placed, &mut triangles);
+    let ground = Floor::GROUND;
+    push_shadow_volumes(from, Vec2::ZERO, &light, ground, &placed, &mut triangles);
     triangles.indices.chunks(3).any(|t| {
       let corner = |i: u32| Vec2::from(triangles.vertices[i as usize].position);
       let (a, b, c) = (corner(t[0]), corner(t[1]), corner(t[2]));
@@ -2349,6 +2393,64 @@ mod tests {
     assert_eq!(count::<MapOccluder>(&mut maps.world), 0);
     assert_eq!(count::<LightOccluder2D>(&mut maps.world), 0);
     assert!(maps.world.resource::<Physics>().collider_entries.is_empty());
+  }
+
+  #[test]
+  fn map_shadow_chains_carry_their_floor() {
+    let mut maps = MapWorld::new();
+    // Four layers of 4 x 2 cells over `blocks`, a solid block each, in
+    // column `i` of layer `i`:
+    // - "ground", on the ground floor;
+    // - "upper", floor 1's bottom layer, 32 px up: it stands where "ground"
+    //   does, on another floor;
+    // - "ledge", on the ground floor 32 px up, drawn where "upper" is;
+    // - "rail", on floor 1 drawn where "ground" is, so it stands 32 px
+    //   below floor 1's bottom layer
+    let mut map = TileMap::new(UVec2::new(4, 2), UVec2::splat(16));
+    map.add_tileset(TilesetSource::Embedded(Arc::new(blocks())));
+    let storeys = [
+      ("ground", 0, 0.0),
+      ("upper", 1, -32.0),
+      ("ledge", 0, -32.0),
+      ("rail", 1, 0.0),
+    ];
+    for (i, (name, floor, up)) in storeys.into_iter().enumerate() {
+      let layer = map.add_tile_layer(name);
+      map.layers[layer].info.floor = floor;
+      map.layers[layer].info.offset = Vec2::new(0.0, up);
+      put(&mut map, layer, (i as i32, 0), 0);
+    }
+    let handle = maps.world.resource_mut::<Assets<TileMap>>().add(map);
+    let map = maps.spawn(MapRoot::new(handle));
+    let layers = layers_of(&mut maps.world, map);
+    let block = |x: i32| ring(&[(x, 0), (x, 16), (x + 16, 16), (x + 16, 0)]);
+    let floor_of = |world: &World, found: &[Found]| -> Vec<Option<Floor>> {
+      found
+        .iter()
+        .map(|f| world.get::<Floor>(f.entity).copied())
+        .collect()
+    };
+    // Each layer occludes on its own, its chains under it, those of a layer
+    // on floor 1 on floor 1
+    let on = [None, Some(Floor::On(1)), None, Some(Floor::On(1))];
+    for (i, (&layer, floor)) in layers.iter().zip(on).enumerate() {
+      let found = occluders_of(&mut maps.world, layer);
+      assert_eq!(steps(&found), block(16 * i as i32), "layer {i}");
+      let floors = floor_of(&maps.world, &found);
+      assert!(floors.iter().all(|&f| f == floor), "layer {i}: {floors:?}");
+    }
+
+    // An edit builds floor 1's chains again on floor 1
+    let block_tile = Some(Tile::new(0, 0));
+    assert!(MapsView::new(&mut maps.world).set_tile(map, "upper", IVec2::new(1, 1), block_tile));
+    maps.frame();
+    let found = occluders_of(&mut maps.world, layers[1]);
+    assert_eq!(steps(&found), ring(&[(16, 0), (16, 32), (32, 32), (32, 0)]));
+    let floors = floor_of(&maps.world, &found);
+    assert!(
+      floors.iter().all(|&f| f == Some(Floor::On(1))),
+      "{floors:?}"
+    );
   }
 
   /// A white floor over the window, no ambient light, then `setup`
