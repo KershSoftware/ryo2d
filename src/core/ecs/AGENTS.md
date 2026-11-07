@@ -1,6 +1,6 @@
 # AGENTS.md - ECS Module
 
-Ryo2D's ECS is `bevy_ecs` 0.20, presented as Ryo2D's own: `kernel.rs` re-exports a curated list of kernel types (`World`, `Entity`, `Query`, `Commands`, `Resource`, `Message`, `ChildOf`, `Disabled`, ...), and the rest of the module holds Ryo2D's components (`Transform` and friends, `Renderable`, `Velocity`, `Floor` (a storey, which physics filters by), the juice components), `WorldExt`, `Pool`, propagation and interpolation. Skills: `ryo-ecs-internals` (contributors), `ryo-game-dev` (games), `ryo-animation` (tweens).
+Ryo2D's ECS is `bevy_ecs` 0.20, presented as Ryo2D's own: `kernel.rs` re-exports a curated list of kernel types (`World`, `Entity`, `Query`, `Commands`, `Resource`, `Message`, `ChildOf`, `Disabled`, ...), and the rest of the module holds Ryo2D's components (`Transform` and friends, `Renderable`, `Velocity`, `Floor` (a storey, which physics filters by and drawing lifts by, with the crate's `DrawLift`), the juice components), `WorldExt`, `Pool`, propagation and interpolation. Skills: `ryo-ecs-internals` (contributors), `ryo-game-dev` (games), `ryo-animation` (tweens).
 
 ## The Kernel Name
 
@@ -55,6 +55,12 @@ Game systems: `EngineBuilder::add_systems(phase, systems)` for the whole run (an
 - **Hierarchy** is the kernel's `ChildOf(parent)` / `Children`. Spawn a child with `world.spawn_child(parent, bundle)` (`WorldExt`, also `ctx.spawn_child`) or `(bundle, ChildOf(parent))`. Reparent by inserting `ChildOf`; remove it to detach (the local transform becomes the world one), or call `detach_keep_world(entity)` to keep the entity where it is. Despawning a parent despawns its descendants. Nothing checks for cycles longer than an entity parenting itself: never make an entity its own ancestor.
 - Physics bodies may sit anywhere in the hierarchy (see `physics/AGENTS.md`); `Respawn` (gameplay) writes a world position into `Transform.translation`, so it belongs on root entities.
 
+## Floors (`floor.rs`)
+
+- `Floor` (public) is the storey an entity is on; physics filters colliders by it (`physics/AGENTS.md`). An entity's `Transform` is where it stands on the ground: a `Floor` never moves it.
+- `DrawLift { lift, floor }` (`pub(crate)`) is how far up an entity draws, a world vector, and the storey its draw order ties on (`draw_floor`: `Every` as 0). The tile map module's `lift_floored` (`tilemap/floors.rs`, `PostUpdate` after `PostUpdateSet::Transforms`, before `Camera`) alone writes it: on every entity with a `Floor` (not `ParentPlaced`: a map's own parts are drawn by their layers) and every descendant, down to one with a `Floor` of its own, the floor's height on the map with floors under the entity (zero off every one); absent on the ground floor, unlifted. So a sprite on a child, a held item, a name tag draw lifted with their entity. Its rules (what it rescans, removal) are in the tilemap module notes.
+- Every draw site adds `lift` after interpolating (`render_global(..) + lift`: sprites with their shadows and tiled runs, composite tiles, world text), and particles and trails add it where they record a point (emission, `record_trail_points`). Sorting keeps the ground: a y-sort key and `YSort`'s depth scale read where the entity stands, and `DrawOrder::floor` takes `draw_floor`. Lines and the debug overlays stay in ground space.
+
 ## Interpolation
 
 - Opt in with the `Interpolated` marker; it covers the entity's descendants.
@@ -62,7 +68,7 @@ Game systems: `EngineBuilder::add_systems(phase, systems)` for the whole run (an
 - `FixedSet::Snapshot` (first in each step) copies `GlobalTransform` into `PreviousGlobalTransform` and clears `skip`.
 - At render, `render_global(global, previous, time.fixed.overstep_fraction())` blends previous to current (linear translation and scale, shortest-arc rotation); with `skip` set or no previous, it is the current transform. The blend keeps exact whatever did not change: a still entity draws exactly where it is, and a moving one keeps an unchanged axis, rotation and scale. Without that, a still camera on a half pixel drew a pixel off on the frames that blended it (a fixed step ran) and not on the others, so a whole map jittered by a pixel. Gameplay never reads a blend: `GlobalTransform` is always the true state.
 - After a teleport, `skip_interpolation(entity)` (`WorldExt`, `ctx.skip_interpolation`) draws the new position at once; interpolation resumes from the next step.
-- Everything an interpolated entity draws (single sprites, tiled runs, composite tiles, lights, occluders, lines) is placed at `render_global`, so it stays together. Trail points are recorded world positions and are not blended.
+- Everything an interpolated entity draws (single sprites, tiled runs, composite tiles, lights, occluders, lines) is placed at `render_global`, so it stays together; on a floor, `DrawLift::lift` is added after the blend (Floors, above). Trail points are recorded world positions and are not blended.
 
 ## Disabled and Pooling
 

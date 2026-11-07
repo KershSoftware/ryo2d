@@ -28,6 +28,7 @@ mod y_sort;
 pub use glam::{IVec2, Mat4, UVec2, Vec2, Vec3, Vec4};
 
 pub use components::{Velocity, ZLayer};
+pub(crate) use floor::DrawLift;
 pub use floor::Floor;
 pub use kernel::*;
 pub use knockback::Knockback;

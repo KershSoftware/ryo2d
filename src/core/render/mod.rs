@@ -71,6 +71,8 @@ pub(crate) use draw_list::{
   SpriteLook, SpriteShading, reach,
 };
 pub(crate) use entities::EntityDrawer;
+#[cfg(test)]
+pub(crate) use entities::draw_orders;
 pub use frame::FrameInfo;
 pub(crate) use frame::{
   CameraDraw, FrameImage, FrameScene, LightingFrame, PixelRect, TRANSITION_VISIBLE, plan_cameras,

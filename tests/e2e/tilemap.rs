@@ -2767,3 +2767,78 @@ fn a_floor_s_tile_objects_draw_lifted_and_sort_at_their_ground_feet() {
     assert_pixels(&frame, expect(feet));
   }
 }
+
+#[test]
+fn a_floor_entity_draws_lifted_by_its_floor_s_height() {
+  // A map whose floor 1 is 32 px up, and on floor 1 a blue sprite 8 px
+  // square standing with its feet at (32, 52), a blob shadow under them,
+  // and its child's green composite tile 4 px square at (40, 44). On the
+  // ground floor the sprite draws at its Transform; on floor 1 everything
+  // it draws, its shadow and its child's too, draws 32 px up
+  let Some((mut engine, _)) = floored(|_| {
+    let mut tiles = map(vec![], &[]);
+    let upper = tiles.add_tile_layer("upper");
+    tiles.layers[upper].info.floor = 1;
+    tiles.layers[upper].info.offset = Vec2::new(0.0, -32.0);
+    tiles
+  }) else {
+    return;
+  };
+  let world = engine.world_mut();
+  let (blue, green) = {
+    let mut images = world.resource_mut::<Assets<Image>>();
+    (
+      images.add(Image::solid_rect(8, 8, BLUE[0], BLUE[1], BLUE[2], 255)),
+      images.add(Image::solid_rect(4, 4, GREEN[0], GREEN[1], GREEN[2], 255)),
+    )
+  };
+  let hero = world
+    .spawn((
+      Transform::from_xy(32.0, 52.0),
+      Renderable::image(blue)
+        .with_anchor(Anchor::BottomCenter)
+        .with_blob_shadow(BlobShadow::circle(6.0)),
+      Floor::On(1),
+    ))
+    .id();
+  world.spawn((
+    Transform::from_xy(8.0, -8.0),
+    CompositeTileBuilder::new().cap(green, 0.0, 0.0).build(),
+    ChildOf(hero),
+  ));
+  engine.step_frames(2).unwrap();
+  let lifted = engine.frame().unwrap();
+  engine.world_mut().entity_mut(hero).insert(Floor::GROUND);
+  engine.step_frames(2).unwrap();
+  let ground = engine.frame().unwrap();
+
+  // On the ground floor: the sprite at its Transform, the composite at its
+  // child's, and the shadow showing under the sprite's feet
+  let background = ground.get_pixel(SIZE - 1, SIZE - 1).0;
+  let inside = |x: u32, y: u32, (x0, y0, w, h): (u32, u32, u32, u32)| {
+    (x0..x0 + w).contains(&x) && (y0..y0 + h).contains(&y)
+  };
+  for y in 0..SIZE {
+    for x in 0..SIZE {
+      let at = ground.get_pixel(x, y).0;
+      if inside(x, y, (28, 44, 8, 8)) {
+        assert_eq!(at, BLUE, "the sprite at ({x}, {y})");
+      } else if inside(x, y, (40, 44, 4, 4)) {
+        assert_eq!(at, GREEN, "the composite at ({x}, {y})");
+      } else if y < 32 {
+        assert_eq!(at, background, "nothing up at ({x}, {y})");
+      }
+    }
+  }
+  assert_ne!(ground.get_pixel(32, 53).0, background, "the blob shadow");
+  // On floor 1: the same, every pixel 32 px up
+  for y in 0..SIZE {
+    for x in 0..SIZE {
+      let want = match y + 32 {
+        below if below < SIZE => ground.get_pixel(x, below).0,
+        _ => background,
+      };
+      assert_eq!(lifted.get_pixel(x, y).0, want, "({x}, {y})");
+    }
+  }
+}

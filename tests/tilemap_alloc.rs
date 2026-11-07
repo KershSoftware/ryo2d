@@ -2,8 +2,9 @@
 //! binary: a padded tileset cache hit, a frame drawing a static map under a
 //! shadowed light (its camera still, then panning over chunks it has
 //! drawn) on every grid, its layers colliding and casting shadows (the
-//! hexagonal map's too), and an idle frame of a streamed map whose chunks have landed, on
-//! orthogonal and on isometric cells.
+//! hexagonal map's too), an idle frame of a streamed map whose chunks have landed, on
+//! orthogonal and on isometric cells, and a frame of characters walking on
+//! a map's storeys, drawn lifted.
 //!
 //! A frame's allocations are told apart by their stacks: those made inside
 //! the GPU API (wgpu, naga and the Metal bindings, which allocate as they
@@ -23,6 +24,7 @@ use std::backtrace::Backtrace;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use ryo2d::core::tilemap::padded::PaddedTilesets;
 use ryo2d::prelude::*;
@@ -779,6 +781,207 @@ fn idle_streamed_frames_allocate_nothing(isometric: bool) {
       drawn.map_gpu.is_empty(),
       "frame {frame}: the map's path made GPU allocations: {:#?}",
       drawn.map_gpu
+    );
+  }
+}
+
+/// A scene of characters walking on a map's storeys under a shadowed
+/// light: a map of 64 x 64 cells of 16 px whose "upper" layer is on floor
+/// 1, 32 px up, holding a y-sorted block, and twelve characters, eight on
+/// floor 1 and four on the ground floor, each a y-sorted sprite with a blob
+/// shadow, a child sprite and a grandchild sprite, walking every step while
+/// `walking` is set
+struct FloorWalk {
+  walking: Arc<AtomicBool>,
+  walkers: Vec<Entity>,
+  steps: u32,
+}
+
+impl Scene for FloorWalk {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    ctx.world.spawn((
+      Transform::from_xy(512.0, 512.0),
+      Light2D::point(Color::WHITE, 240.0).with_shadows(),
+    ));
+    let set = atlas(&mut ctx.world.resource_mut::<Assets<Image>>(), 16, 4, 1);
+    let set = TilesetSource::Asset(ctx.assets().add(set));
+    let mut map = TileMap::new(UVec2::splat(64), UVec2::splat(16));
+    let set = map.add_tileset(set);
+    let ground = map.add_tile_layer("ground");
+    let upper = map.add_tile_layer("upper");
+    map.layers[upper].info.floor = 1;
+    map.layers[upper].info.offset = Vec2::new(0.0, -32.0);
+    map.layers[upper].info.y_sorted = true;
+    for y in 0..64 {
+      for x in 0..64 {
+        let cell = IVec2::new(x, y);
+        let tiles = map.tiles_mut(ground).expect("a tile layer");
+        tiles.set(cell, Some(Tile::new(set, BACK)));
+        if (24..40).contains(&x) && (24..40).contains(&y) {
+          let tiles = map.tiles_mut(upper).expect("a tile layer");
+          tiles.set(cell, Some(Tile::new(set, PROP)));
+        }
+      }
+    }
+    let handle = ctx.assets().add(map);
+    ctx
+      .world
+      .spawn((Transform::IDENTITY, MapRoot::new(handle).with_z(2)));
+    let (body, hat) = {
+      let mut images = ctx.world.resource_mut::<Assets<Image>>();
+      (
+        images.add(Image::solid_rect(12, 16, 200, 80, 40, 255)),
+        images.add(Image::solid_rect(8, 4, 40, 80, 200, 255)),
+      )
+    };
+    for i in 0..12 {
+      let floor = if i < 8 { Floor::On(1) } else { Floor::GROUND };
+      let at = Vec2::new(400.0 + 16.0 * i as f32, 420.0 + 12.0 * i as f32);
+      let walker = ctx
+        .world
+        .spawn((
+          Transform::from_translation(at),
+          Renderable::image(body.clone())
+            .with_anchor(Anchor::BottomCenter)
+            .with_z_order(3)
+            .with_blob_shadow(BlobShadow::circle(6.0)),
+          YSort::new(),
+          floor,
+        ))
+        .id();
+      let head = ctx.world.spawn_child(
+        walker,
+        (
+          Transform::from_xy(0.0, -16.0),
+          Renderable::image(hat.clone()).with_z_order(3),
+        ),
+      );
+      ctx.world.spawn_child(
+        head,
+        (
+          Transform::from_xy(2.0, -2.0),
+          Renderable::image(hat.clone()).with_z_order(3),
+        ),
+      );
+      self.walkers.push(walker);
+    }
+  }
+
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    if !self.walking.load(Ordering::Relaxed) {
+      return SceneAction::Continue;
+    }
+    // Back and forth along x, 64 steps each way, over the map's cells
+    self.steps += 1;
+    let t = (self.steps % 128) as f32;
+    let dx = if t < 64.0 { t } else { 128.0 - t };
+    for (i, &walker) in self.walkers.iter().enumerate() {
+      if let Some(mut transform) = ctx.world.get_mut::<Transform>(walker) {
+        transform.translation.x = 400.0 + 16.0 * i as f32 + dx;
+      }
+    }
+    SceneAction::Continue
+  }
+}
+
+#[test]
+fn a_frame_with_entities_moving_on_floors_allocates_nothing() {
+  let walking = Arc::new(AtomicBool::new(true));
+  let builder = EngineBuilder::new()
+    .resolution(640, 360)
+    .start_scene(FloorWalk {
+      walking: walking.clone(),
+      walkers: Vec::new(),
+      steps: 0,
+    });
+  let Some(mut engine) = HeadlessEngine::new_or_skip(builder) else {
+    return;
+  };
+  look_at(&mut engine, Vec2::new(512.0, 512.0));
+  let start = std::time::Instant::now();
+  loop {
+    engine.step().expect("a frame");
+    let world = engine.world_mut();
+    let roots: Vec<Entity> = world
+      .query_filtered::<Entity, With<MapRoot>>()
+      .iter(world)
+      .collect();
+    let view = MapsView::new(world);
+    if roots.iter().all(|&root| view.is_ready(root)) {
+      break;
+    }
+    assert!(
+      start.elapsed() < std::time::Duration::from_secs(10),
+      "the map landed"
+    );
+  }
+  engine.step_frames(30).expect("the warm-up frames, walking");
+
+  // The walkers on floor 1, and what they hold, draw lifted
+  let world = engine.world_mut();
+  let floored: Vec<Entity> = world
+    .query_filtered::<(Entity, &Floor), With<Renderable>>()
+    .iter(world)
+    .filter(|(_, floor)| **floor == Floor::On(1))
+    .map(|(entity, _)| entity)
+    .collect();
+  assert_eq!(floored.len(), 8, "eight walkers on floor 1");
+  let mut lifted = floored.clone();
+  for _ in 0..2 {
+    let below: Vec<Entity> = world
+      .query::<(Entity, &ChildOf)>()
+      .iter(world)
+      .filter(|(entity, child_of)| lifted.contains(&child_of.parent()) && !lifted.contains(entity))
+      .map(|(entity, _)| entity)
+      .collect();
+    lifted.extend(below);
+  }
+  assert_eq!(lifted.len(), 24, "each with a child and a grandchild");
+  let view = MapsView::new(world);
+  for &entity in &lifted {
+    assert_eq!(view.drawn_lift(entity), Vec2::new(0.0, -32.0), "{entity}");
+  }
+
+  // Each frame the walkers move (their lifts found again on the map under
+  // them, down their hierarchies, and drawn there) against one where they
+  // stand still, in the same world: the frames draw the same entities
+  // through the same queries, so any allocation the moving frame makes and
+  // the still one does not is the walk's. (A frame drawing sprites makes
+  // allocations an empty frame does not, finding their archetypes afresh
+  // in the entity query, floors or not)
+  let walker = floored[0];
+  let at = |engine: &mut HeadlessEngine| {
+    let world = engine.world_mut();
+    world
+      .get::<GlobalTransform>(walker)
+      .map(GlobalTransform::translation)
+  };
+  for frame in 0..6 {
+    walking.store(true, Ordering::Relaxed);
+    let before = at(&mut engine);
+    let moving = traced(&mut engine);
+    assert_ne!(at(&mut engine), before, "frame {frame}: the walkers moved");
+    walking.store(false, Ordering::Relaxed);
+    let still = traced(&mut engine);
+    let own = |frame: &Frame| frame.own.values().sum::<usize>();
+    println!(
+      "frame {frame}: walking on floors {} allocations ({} the engine's own), standing still {} \
+       ({} its own)",
+      moving.count,
+      own(&moving),
+      still.count,
+      own(&still),
+    );
+    let more = more(&moving, &still);
+    assert!(
+      more.is_empty(),
+      "frame {frame}: walking on floors made allocations of the engine's own standing still did \
+       not: {more:#?}"
+    );
+    assert!(
+      moving.map_gpu.is_empty(),
+      "frame {frame}: the map's path made GPU allocations: {:#?}",
+      moving.map_gpu
     );
   }
 }

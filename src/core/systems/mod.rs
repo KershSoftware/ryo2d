@@ -9,7 +9,7 @@ mod tween;
 pub use animation::animate_sprites;
 pub use skeleton::update_skeletons;
 pub use squash_stretch::update_squash_stretch;
-pub use trail::record_trail_points;
+pub(crate) use trail::record_trail_points;
 pub use tween::{update_property_tweens, update_tween_sequences, update_tweens};
 
 use crate::core::ecs::IntoScheduleConfigs;

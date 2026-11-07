@@ -21,8 +21,9 @@
 //! target's size; the camera drawing into that target skips it.
 //!
 //! Positions come from `GlobalTransform`, interpolated by the frame's alpha
-//! for entities with `PreviousGlobalTransform`. A single sprite is placed by
-//! its `Renderable::anchor`; tiled runs and composite parts are laid out from
+//! for entities with `PreviousGlobalTransform`, and lifted by `DrawLift` on
+//! a floor (sorted where they stand). A single sprite is placed by its
+//! `Renderable::anchor`; tiled runs and composite parts are laid out from
 //! the entity's position.
 
 use std::collections::HashSet;
@@ -34,8 +35,8 @@ use crate::core::asset::{AssetId, Assets};
 use crate::core::ecs::interpolate::render_global;
 use crate::core::ecs::kernel::QueryState;
 use crate::core::ecs::{
-  Entity, GlobalTransform, Material, PreviousGlobalTransform, RenderStyle, Renderable, Shader,
-  ShaderParams, SpriteEffect, SpriteShader, Vec2, World, YSort, entity_order, shaders_of,
+  DrawLift, Entity, GlobalTransform, Material, PreviousGlobalTransform, RenderStyle, Renderable,
+  Shader, ShaderParams, SpriteEffect, SpriteShader, Vec2, World, YSort, entity_order, shaders_of,
 };
 use crate::core::graphics::TileDirection;
 use crate::core::graphics::atlas::Showing;
@@ -184,6 +185,7 @@ type DrawableItem = (
   Option<&'static Material>,
   Option<&'static YSort>,
   Option<&'static RenderLayers>,
+  Option<&'static DrawLift>,
 );
 
 /// One entity's components, borrowed from the world for the frame.
@@ -196,6 +198,8 @@ struct Drawable<'w> {
   material: Option<&'w Material>,
   y_sort: Option<&'w YSort>,
   layers: RenderLayers,
+  /// How far up it draws from where it stands (on a floor)
+  lift: Vec2,
 }
 
 /// Turns the world's renderable entities into draw list sprites.
@@ -234,6 +238,7 @@ impl EntityDrawer {
       Option<&PreviousGlobalTransform>,
       &CompositeTile,
       Option<&RenderLayers>,
+      Option<&DrawLift>,
     )>();
     let world: &World = world;
     let images = images_of(world);
@@ -292,9 +297,10 @@ impl EntityDrawer {
     out.shows = None;
     out.filter = Filter::Default;
     out.lit = true;
-    for (global, previous, composite, layers) in composites.iter(world) {
+    for (global, previous, composite, layers, lift) in composites.iter(world) {
       out.layers = layers.copied().unwrap_or_default();
-      collect_composite(&frame, global, previous, composite, &mut out);
+      let lift = lift.map_or(Vec2::ZERO, |drawn| drawn.lift);
+      collect_composite(&frame, global, previous, lift, composite, &mut out);
     }
     let count = items.len();
     self.items = recycle(items);
@@ -320,14 +326,16 @@ fn in_draw_order<'w>(
       .iter(world)
       .filter(|(_, renderable, ..)| renderable.visible)
       .map(
-        |(entity, renderable, global, previous, material, y_sort, layers)| {
+        |(entity, renderable, global, previous, material, y_sort, layers, lift)| {
+          // Sorted where it stands, its floor breaking ties
+          let floor = lift.map_or(0, DrawLift::draw_floor);
           let order = match y_sort {
             Some(y_sort) => DrawOrder::y_sorted(
               renderable.z_order,
               y_sort_key(y_sort, renderable, global.translation().y, images),
-              0,
+              floor,
             ),
-            None => DrawOrder::plain(renderable.z_order, 0),
+            None => DrawOrder::plain(renderable.z_order, floor),
           };
           let drawable = Drawable {
             entity,
@@ -337,6 +345,7 @@ fn in_draw_order<'w>(
             material,
             y_sort,
             layers: layers.copied().unwrap_or_default(),
+            lift: lift.map_or(Vec2::ZERO, |drawn| drawn.lift),
           };
           (order, drawable)
         },
@@ -346,6 +355,20 @@ fn in_draw_order<'w>(
     a.cmp(b)
       .then_with(|| entity_order(&x.entity).cmp(&entity_order(&y.entity)))
   });
+}
+
+/// Each visible renderable of `world` with its draw order, in the order
+/// the frame draws them
+#[cfg(test)]
+pub(crate) fn draw_orders(world: &mut World) -> Vec<(Entity, DrawOrder)> {
+  let mut drawables = world.query::<DrawableItem>();
+  let world: &World = world;
+  let mut items = Vec::new();
+  in_draw_order(&mut drawables, world, (images_of(world), &[]), &mut items);
+  items
+    .iter()
+    .map(|(order, drawable)| (drawable.entity, *order))
+    .collect()
 }
 
 /// Where and how one texture is drawn, in world units: its quad's centre,
@@ -657,17 +680,20 @@ fn collect_entity(frame: &EntityFrame, drawable: &Drawable<'_>, out: &mut Emitte
     previous,
     material,
     y_sort,
+    lift,
     ..
   } = *drawable;
   let z = renderable.z_order;
 
-  // Between the last two fixed steps for interpolated entities
+  // Between the last two fixed steps for interpolated entities, lifted by
+  // its floor's height; its depth scale goes by where it stands
   let drawn = render_global(global, previous, frame.alpha);
-  let position = drawn.translation();
+  let ground = drawn.translation();
+  let position = ground + lift;
   let rotation = drawn.rotation();
   let mut scale = drawn.scale();
   if let Some(y_sort) = y_sort {
-    let (depth_x, depth_y) = y_sort.calculate_depth_scale(position.y);
+    let (depth_x, depth_y) = y_sort.calculate_depth_scale(ground.y);
     scale *= Vec2::new(depth_x, depth_y);
   }
   let (pivot_x, pivot_y) = renderable.anchor.to_pivot();
@@ -822,11 +848,13 @@ fn collect_entity(frame: &EntityFrame, drawable: &Drawable<'_>, out: &mut Emitte
 }
 
 /// A multi-part tile: static parts once, tiled parts repeated, each part at
-/// the composite's `z_order`, laid out from the entity's position.
+/// the composite's `z_order`, laid out from the entity's position (lifted
+/// by `lift`, on a floor).
 fn collect_composite(
   frame: &EntityFrame,
   global: &GlobalTransform,
   previous: Option<&PreviousGlobalTransform>,
+  lift: Vec2,
   composite: &CompositeTile,
   out: &mut Emitter<'_>,
 ) {
@@ -837,7 +865,7 @@ fn collect_composite(
   let global = &render_global(global, previous, frame.alpha);
 
   let z = composite.z_order;
-  let origin = global.translation();
+  let origin = global.translation() + lift;
   let scale = global.scale();
 
   for part in &composite.parts {

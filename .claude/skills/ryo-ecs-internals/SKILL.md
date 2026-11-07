@@ -2,7 +2,7 @@
 name: ryo-ecs-internals
 description: Working on Ryo2D's ECS (bevy_ecs presented as ryo2d::ecs) - kernel re-exports, components, propagation, interpolation, pooling and engine systems.
 metadata:
-  version: 2.2.0
+  version: 2.3.0
 ---
 
 # Ryo2D ECS Internals
@@ -31,6 +31,7 @@ src/core/ecs/
   world_ext.rs       WorldExt (spawn_child, detach_keep_world, skip_interpolation), despawn_game_entities
   pooling.rs         Pool, PoolConfig, PoolExhaustedPolicy, PoolStats
   components.rs      Velocity, ZLayer
+  floor.rs           Floor (a storey), DrawLift (crate: how far up an entity on a floor draws)
   renderable.rs      Renderable, RenderStyle, DropShadow, BlobShadow, ContactShadow
   material.rs        Material, SpriteShader, Shader (an asset: a game's WGSL), ShaderParams, ParamValue
   sprite_effects.rs  SpriteEffect
@@ -90,6 +91,12 @@ A resource must be `Send + Sync`. The scene stack is not (its scenes are not `Se
 - **Render**: extraction calls `render_global(global, previous, time.fixed.overstep_fraction())`; gameplay never sees a blend.
 
 Changing the transform model means changing all four places and their tests (`propagate.rs`, `transform.rs`, `interpolate.rs`, `tests/integration/transform.rs`).
+
+## Floors
+
+- `Floor` (`floor.rs`, in the prelude through `ecs`) is the storey an entity is on: `On(u8)` or `Every`, `GROUND` (`On(0)`) by default and for an entity without one. Physics filters colliders by it (`ryo-physics`). It never moves the entity: its `Transform` is where it stands on the ground.
+- `DrawLift { lift: Vec2, floor: Floor }` (`pub(crate)`, same file) is how far up an entity draws, a world vector, and the storey its draw order ties on (`draw_floor()`, `Every` as 0). Only the tile map module writes it: `lift_floored` (`tilemap/floors.rs`, `PostUpdate`, after `PostUpdateSet::Transforms`, before `Camera`) puts it on every entity with a `Floor` (not `ParentPlaced`) and on every descendant, down to one with a `Floor` of its own: the floor's height on the map with floors under the entity, zero off every one; on the ground floor, unlifted, it removes it. Games read it as `ctx.maps().drawn_lift(entity)`.
+- Readers add `lift` to where the entity draws, after `render_global`: sprites and their shadows, tiled runs, composite tiles, world text; particles at emission and trails as they record (`record_trail_points`, crate-internal for that reason: a public system cannot name a crate type). Sort keys and `YSort`'s depth scale keep the ground position; `DrawOrder::floor` takes `draw_floor()`. Lines and debug overlays stay in ground space. A new draw site for entities takes `Option<&DrawLift>` in its query and adds the lift the same way.
 
 ## Change-Detection Discipline
 

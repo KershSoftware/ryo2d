@@ -3,6 +3,8 @@
 //! "Floor" here is a storey (raised ground, an upper floor, a bridge), not
 //! the surface underfoot that `CharacterState::floor` names.
 
+use glam::Vec2;
+
 use super::kernel::Component;
 
 /// The storey an entity is on. Colliders on floors that do not meet never
@@ -48,6 +50,26 @@ impl Floor {
       Floor::On(n) => Some(n),
       Floor::Every => None,
     }
+  }
+}
+
+/// How far up an entity draws, and on which storey: its own `Floor`'s, or
+/// that of its nearest ancestor with one. Written by the tile map's
+/// `lift_floored` on an entity with a `Floor` and every descendant below
+/// it, and absent on the ground floor; each draw site adds `lift` to where
+/// the entity stands, and the draw order ties on `floor`.
+#[derive(Component, Clone, Copy, Debug, PartialEq)]
+pub(crate) struct DrawLift {
+  /// In the world: the storey's height through the transform of the map
+  /// under the entity, zero off every map with floors
+  pub(crate) lift: Vec2,
+  pub(crate) floor: Floor,
+}
+
+impl DrawLift {
+  /// The storey the draw order ties on: `Every` draws as the ground floor
+  pub(crate) fn draw_floor(&self) -> u8 {
+    self.floor.number().unwrap_or(0)
   }
 }
 

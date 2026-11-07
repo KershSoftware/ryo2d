@@ -25,7 +25,7 @@ use glam::Vec2;
 
 use crate::core::asset::{AssetId, Assets};
 use crate::core::ecs::interpolate::render_global;
-use crate::core::ecs::{Entity, GlobalTransform, PreviousGlobalTransform, World};
+use crate::core::ecs::{DrawLift, Entity, GlobalTransform, PreviousGlobalTransform, World};
 use crate::core::graphics::{
   GlyphPage, Image, RenderLayers, SpriteGpuRenderer, SpriteInstance, images_of,
 };
@@ -1281,6 +1281,7 @@ type WorldTextItem = (
   &'static TextBounds,
   Option<&'static TextReveal>,
   Option<&'static RenderLayers>,
+  Option<&'static DrawLift>,
 );
 
 /// The frame's world text, per camera
@@ -1322,10 +1323,12 @@ pub(crate) fn emit_world_text(
   } else {
     1.0
   };
-  for (entity, global, previous, text, state, bounds, reveal, layers) in query.iter(world) {
+  for (entity, global, previous, text, state, bounds, reveal, layers, lift) in query.iter(world) {
+    // Lifted by its floor's height, on a floor
     let drawn = render_global(global, previous, frame.alpha);
+    let lift = lift.map_or(Vec2::ZERO, |drawn| drawn.lift);
     let matrix = drawn.affine().matrix2;
-    let (axis_x, axis_y, position) = (matrix.x_axis, matrix.y_axis, drawn.translation());
+    let (axis_x, axis_y, position) = (matrix.x_axis, matrix.y_axis, drawn.translation() + lift);
     if !(axis_x.is_finite() && axis_y.is_finite() && position.is_finite()) {
       if targets.warned.insert(hash_of(&("non-finite", entity))) {
         engine_warn!(module: "text", "{entity:?}: Text2d has a non-finite position, scale or rotation; not drawn");
@@ -1829,6 +1832,89 @@ mod tests {
         })
         .count();
       assert_eq!(warnings, 1, "once for the font, over every glyph and frame");
+    }
+
+    #[test]
+    fn world_text_on_a_floor_draws_lifted() {
+      use crate::core::ecs::{DrawLift, Floor};
+      use crate::core::graphics::{Camera2d, CameraView};
+      let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+        eprintln!("skipping: no GPU available");
+        return;
+      };
+      let mut world = World::new();
+      world.insert_resource(Fonts::with_builtins());
+      world.insert_resource(TextEffects::default());
+      world.insert_resource(TextIcons::default());
+      let mut engine = TextEngine::new();
+      let name = world
+        .spawn((Transform::from_xy(20.0, 60.0), Text2d::new("Hi")))
+        .id();
+      layout_world_text(&mut world, &mut engine, &PromptContext::default());
+      // A camera over (0, 0) to (100, 100)
+      let camera = Camera2d::default();
+      let view = CameraView::compute(
+        Vec2::new(50.0, 50.0),
+        0.0,
+        &camera,
+        Vec2::ZERO,
+        Vec2::new(100.0, 100.0),
+      );
+      let (mut cameras, mut targetless) = (Vec::new(), Vec::new());
+      let seen = world.spawn_empty().id();
+      crate::core::render::plan_cameras(
+        [(seen, &camera, &view, None)].into_iter(),
+        (100, 100),
+        true,
+        None,
+        &mut cameras,
+        &mut targetless,
+      );
+      let mut sprites = SpriteGpuRenderer::new(&device, &queue);
+      let mut raster = GlyphRasterizer::new();
+      let mut warned = HashSet::new();
+      // Where each glyph's quad is centred
+      let mut glyphs = |world: &mut World| -> Vec<Vec2> {
+        let mut list = DrawList::default();
+        let mut targets = TextTargets {
+          raster: &mut raster,
+          sprites: &mut sprites,
+          device: &device,
+          queue: &queue,
+          list: &mut list,
+          warned: &mut warned,
+        };
+        let frame = WorldTextFrame {
+          cameras: &cameras,
+          render_scale: 1.0,
+          alpha: 1.0,
+          game_time: 0.0,
+        };
+        emit_world_text(world, &engine, &frame, &mut targets);
+        list
+          .glyphs_from(0)
+          .iter()
+          .map(|glyph| {
+            Vec2::new(
+              glyph.instance.transform[2][0],
+              glyph.instance.transform[2][1],
+            )
+          })
+          .collect()
+      };
+      let standing = glyphs(&mut world);
+      assert!(!standing.is_empty(), "the text drew");
+      // Held on floor 1, which draws 32 px up: every glyph draws 32 px up
+      world.entity_mut(name).insert(DrawLift {
+        lift: Vec2::new(0.0, -32.0),
+        floor: Floor::On(1),
+      });
+      let lifted = glyphs(&mut world);
+      let expected: Vec<Vec2> = standing
+        .iter()
+        .map(|at| *at + Vec2::new(0.0, -32.0))
+        .collect();
+      assert_eq!(lifted, expected);
     }
 
     #[test]

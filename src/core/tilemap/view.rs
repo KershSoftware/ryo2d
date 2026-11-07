@@ -4,12 +4,12 @@ use glam::{Affine2, IVec2, UVec2, Vec2};
 
 use super::collision;
 use super::edit::{self, LayerRef};
-use super::floors::MapFloors;
+use super::floors::{self, MapFloors};
 use super::spawn::{self, MapIds, MapLayers, MapRoot, TileLayerData};
 use super::stream;
 use super::world::{self, WorldRef};
 use super::{CHUNK_SIZE, CellOutline, MapGrid, Tile, TileData, TileGrid, WorldLevel, wang};
-use crate::core::ecs::{Entity, Floor, World};
+use crate::core::ecs::{DrawLift, Entity, Floor, World};
 use crate::core::hash::FastSet;
 use crate::core::navigation::{CellState, GridCoord, NavigationGrid};
 use crate::core::physics::{CellRect, TileColliders};
@@ -421,12 +421,36 @@ impl<'w> MapsView<'w> {
     if !self.is_ready(map) {
       return None;
     }
-    let lift = match self.world.get::<MapFloors>(map) {
-      Some(floors) => floors.lift(floor)?,
-      None if floor == Floor::GROUND => Vec2::ZERO,
-      None => return None,
-    };
-    Some(edit::local_to_world(self.world, map)?.transform_vector2(lift))
+    let to_world = edit::local_to_world(self.world, map)?;
+    floors::world_lift(self.world.get::<MapFloors>(map), floor, to_world)
+  }
+
+  /// How far up `entity` draws, a world vector: what an entity with a
+  /// [`Floor`], and everything below it in the hierarchy, is drawn lifted
+  /// by, its storey's height on the map with floors under it (where its
+  /// `GlobalTransform` stands; the first such map in entity order where
+  /// maps overlap). Zero for an entity not lifted: on the ground floor, off
+  /// every map with floors, or without a `Floor` above it. Worked out after
+  /// transforms propagate each frame, so a camera that follows a character
+  /// adds it to the character's `GlobalTransform` to centre where it draws
+  ///
+  /// ```
+  /// use ryo2d::prelude::*;
+  ///
+  /// /// The camera on the hero where it draws, on whatever storey it is
+  /// fn follow(ctx: &mut SceneContext<'_>, hero: Entity) {
+  ///   let Some(at) = ctx.world.get::<GlobalTransform>(hero).map(|g| g.translation()) else {
+  ///     return;
+  ///   };
+  ///   let at = at + ctx.maps().drawn_lift(hero);
+  ///   ctx.camera().set_position(at.x, at.y);
+  /// }
+  /// ```
+  pub fn drawn_lift(&self, entity: Entity) -> Vec2 {
+    self
+      .world
+      .get::<DrawLift>(entity)
+      .map_or(Vec2::ZERO, |drawn| drawn.lift)
   }
 
   /// The z a map's y-sorted layers draw at, for characters to sort with

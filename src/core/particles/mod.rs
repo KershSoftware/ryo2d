@@ -98,7 +98,9 @@ pub use particle::Particle;
 use std::collections::HashMap;
 
 use crate::core::asset::AssetId;
-use crate::core::ecs::{ChildOf, Entity, GlobalTransform, Has, SpriteEffect, Vec2, World};
+use crate::core::ecs::{
+  ChildOf, DrawLift, Entity, GlobalTransform, Has, SpriteEffect, Vec2, World,
+};
 use crate::core::graphics::{BatchCollector, Image, SpriteDraw, SpriteInstance};
 use crate::core::messages::register_message;
 use crate::core::physics::{Collider, ColliderShape, TileColliders, TilePart};
@@ -611,11 +613,17 @@ impl ParticleSystem {
   /// may write [`ParticleCollision`] messages.
   pub fn update(&mut self, world: &mut World, dt: f32) {
     let emitter_data: Vec<(Entity, f32, f32, f32, f32, Option<CollisionConfig>)> = world
-      .query::<(Entity, &GlobalTransform, &ParticleEmitter)>()
+      .query::<(
+        Entity,
+        &GlobalTransform,
+        &ParticleEmitter,
+        Option<&DrawLift>,
+      )>()
       .iter(world)
-      .filter(|(_, _, emitter)| emitter.enabled)
-      .map(|(entity, global, emitter)| {
-        let position = global.translation();
+      .filter(|(_, _, emitter, _)| emitter.enabled)
+      .map(|(entity, global, emitter, lift)| {
+        // Emitted where it draws: lifted by its floor's height, on a floor
+        let position = global.translation() + lift.map_or(Vec2::ZERO, |drawn| drawn.lift);
         (
           entity,
           position.x,
@@ -1334,6 +1342,30 @@ mod tests {
     assert_eq!(system.particle_count(), 3);
     for p in &system.particles {
       assert_eq!((p.x, p.y), (300.0, 200.0));
+    }
+  }
+
+  #[test]
+  fn a_floor_emitter_emits_at_its_lifted_point() {
+    // An emitter held on floor 1, which draws 32 px up: its particles
+    // start where it draws, and fly on from there
+    let mut system = ParticleSystem::with_seed(2);
+    let mut world = World::new();
+    let lift = crate::core::ecs::DrawLift {
+      lift: Vec2::new(0.0, -32.0),
+      floor: crate::core::ecs::Floor::On(1),
+    };
+    world.spawn((
+      Transform::from_xy(300.0, 200.0),
+      ParticleEmitter::new(test_sprite())
+        .with_mode(EmissionMode::Burst { count: 3 })
+        .with_speed(0.0, 0.0),
+      lift,
+    ));
+    update(&mut system, &mut world, 0.016);
+    assert_eq!(system.particle_count(), 3);
+    for p in &system.particles {
+      assert_eq!((p.x, p.y), (300.0, 168.0));
     }
   }
 
