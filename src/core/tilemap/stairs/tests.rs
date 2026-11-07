@@ -861,6 +861,88 @@ fn a_climber_respawned_from_the_stairs_keeps_its_checkpoint_s_floor() {
 }
 
 #[test]
+fn a_kill_zone_s_respawn_wins_over_a_climb_in_the_same_step() {
+  use crate::core::gameplay::Killed;
+  let mut maps = MapWorld::new();
+  maps.world.insert_resource(crate::core::input::Input::new());
+  crate::core::gameplay::register_gameplay_systems(maps.schedules());
+  land(&mut maps, hall());
+  // A checkpoint on the ground left of the stairs, a top-down climber
+  // standing in it, and a trap on the ground floor whose left side (x 116)
+  // the climber's edge reaches in the step its middle passes the run's
+  // halfway line (x 112)
+  maps.world.spawn((
+    Transform::from_xy(64.0, 72.0),
+    Collider::rect(24.0, 24.0).as_trigger(),
+    Checkpoint::new(),
+  ));
+  let hero = maps
+    .world
+    .spawn((
+      Transform::from_xy(64.0, 72.0),
+      Collider::circle(5.0),
+      TopDownMovement::default(),
+      Respawn::here(),
+      Climber,
+    ))
+    .id();
+  maps.world.spawn((
+    Transform::from_xy(122.0, 72.0),
+    Collider::rect(12.0, 24.0).as_trigger(),
+    KillZone::new(),
+    Floor::GROUND,
+  ));
+  for _ in 0..5 {
+    maps.frame();
+  }
+  let mut killed = MessageCursor::<Killed>::default();
+  let mut cursor = MessageCursor::<FloorChanged>::default();
+  // It walks up the run until the trap springs
+  let mut sprung = None;
+  for _ in 0..60 {
+    if let Some(mut intent) = maps.world.get_mut::<MoveIntent>(hero) {
+      intent.direction = Vec2::X;
+    }
+    maps.frame();
+    let deaths = killed
+      .read(maps.world.resource::<Messages<Killed>>())
+      .count();
+    let climbed = changes(&maps.world, &mut cursor);
+    if deaths > 0 {
+      sprung = Some(climbed);
+      break;
+    }
+    assert!(climbed.is_empty(), "it climbs before the trap: {climbed:?}");
+  }
+  // In that step the stairs put it on floor 1, then the trap put it back
+  // at its checkpoint on the checkpoint's floor: the respawn wins because
+  // it runs after the stairs (its `set_if_neq` writes nothing were the
+  // floor still the ground)
+  let up = FloorChanged {
+    entity: hero,
+    from: Floor::GROUND,
+    to: Floor::On(1),
+  };
+  assert_eq!(sprung, Some(vec![up]), "the climb and the trap in one step");
+  // (that step's walk moved it on from the checkpoint a little)
+  let back = maps
+    .world
+    .get::<Transform>(hero)
+    .map_or(Vec2::NAN, |t| t.translation);
+  assert!(back.distance(Vec2::new(64.0, 72.0)) < 2.0, "back at {back}");
+  assert_eq!(floor_of(&maps.world, hero), Some(Floor::GROUND));
+  if let Some(mut intent) = maps.world.get_mut::<MoveIntent>(hero) {
+    intent.direction = Vec2::ZERO;
+  }
+  for _ in 0..5 {
+    maps.frame();
+  }
+  assert_eq!(floor_of(&maps.world, hero), Some(Floor::GROUND));
+  assert!(changes(&maps.world, &mut cursor).is_empty());
+  assert!(near(lift_of(&mut maps.world, hero), Vec2::ZERO));
+}
+
+#[test]
 fn a_climber_on_every_floor_or_another_floor_passes_over_stairs() {
   // The hall with floor 2, 64 px up, over (10, 4) to (12, 5)
   let (ground, upper) = hall_with(&[(6, 4), (7, 4)]);

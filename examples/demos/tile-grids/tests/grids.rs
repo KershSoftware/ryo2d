@@ -7,10 +7,11 @@
 //! it up or the player steers; the knight climbs the town's ramp onto its
 //! raised ground (floor 1, a block up) and back, changing floor once each
 //! way and drawn lifted up there, draws behind the raised ground and in
-//! front of it from the ground, the pointer picks raised cells where they
-//! draw, and a click on one walks the knight there up the ramp; the
-//! island's setting and the speed page's
-//! choice spawn another grid's map, the speed page's hexagonal rock
+//! front of it from the ground, draws whole up there behind its cell's
+//! middle (sorted half a cell down while lifted), the pointer picks raised
+//! cells where they draw, and a click on one walks the knight there up the
+//! ramp; the island's setting and the speed page's choice spawn another
+//! grid's map, the speed page's hexagonal rock
 //! colliding and casting shadows as whole hexagons; the hex board picks the
 //! hex under the pointer, a click selects one, and the board marks the
 //! selected hex's range and ring, the line to the hovered hex and the
@@ -1586,6 +1587,103 @@ fn the_town_character_draws_behind_and_in_front_of_the_raised_floor() {
     },
   );
   assert_eq!(floor_of(&engine, walker), Floor::GROUND, "on the ground");
+  assert!(warnings().is_empty(), "{:#?}", warnings());
+}
+
+#[test]
+fn the_town_knight_on_a_raised_cell_s_back_half_draws_over_its_block() {
+  let Some(mut engine) = engine_on(TOWN) else {
+    return;
+  };
+  let map = spawned_map(&mut engine);
+  let walker = wait_for_walker(&mut engine);
+  let sprite = walker_sprite(&mut engine, walker);
+  engine.tap_key(KeyCode::ArrowRight);
+  engine.mouse_move(900.0, 100.0);
+  // Up the ramp onto the raised ground
+  let (_, top, foot) = town_ramp(&mut engine, map);
+  let layer = grid_of(&mut engine, map, RAISED);
+  teleport(&mut engine, walker, layer.cell_center_world(foot));
+  engine.step_frames(5).unwrap();
+  walk_straight(&mut engine, walker, layer.cell_center_world(top));
+  assert_eq!(
+    floor_of(&engine, walker),
+    Floor::On(1),
+    "on the raised ground"
+  );
+
+  // A raised cell with raised ground all round it, and the knight's feet a
+  // quarter of a cell behind its middle (in its back half, above the middle
+  // on screen) and a quarter in front of it. Rows sort at their cells'
+  // middles, so behind it the knight sorts before its own cell's block,
+  // which would cut it off at the waist: the town sorts it half a cell
+  // down while it draws lifted, and it draws whole there as in front
+  let raised = raised_cells(&mut engine, map);
+  let cell = raised
+    .iter()
+    .copied()
+    .find(|&cell| {
+      (-1..=1)
+        .flat_map(|dy| (-1..=1).map(move |dx| cell + IVec2::new(dx, dy)))
+        .all(|near| raised.contains(&near))
+    })
+    .expect("a raised cell with raised ground all round it");
+  let (top_y, bottom_y) = layer
+    .outline_world(cell)
+    .points()
+    .iter()
+    .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), p| {
+      (lo.min(p.y), hi.max(p.y))
+    });
+  let quarter = Vec2::new(0.0, (bottom_y - top_y) / 4.0);
+  let centre = layer.cell_center_world(cell);
+  let (behind, front) = (centre - quarter, centre + quarter);
+  assert_eq!(layer.cell_at_world(behind), cell);
+  assert_eq!(layer.cell_at_world(front), cell);
+  // The knight's pixels with its feet at `at`, where the frames with its
+  // sprite shown and hidden differ, and where its feet draw on screen
+  let mut knight = |at: Vec2| {
+    let hidden = shot(&mut engine, walker, sprite, at, false);
+    let shown = shot(&mut engine, walker, sprite, at, true);
+    let drawn = at + MapsView::new(engine.world_mut()).drawn_lift(walker);
+    let (a, b) = (
+      to_screen(&mut engine, drawn - Vec2::new(120.0, 180.0)),
+      to_screen(&mut engine, drawn + Vec2::new(120.0, 20.0)),
+    );
+    let area = Rect::new(a.x, a.y, b.x - a.x, b.y - a.y);
+    (
+      differing(&hidden, &shown, area, 0),
+      to_screen(&mut engine, drawn),
+    )
+  };
+  let (in_front, front_feet) = knight(front);
+  let (in_back, back_feet) = knight(behind);
+  assert!(in_front.len() >= 50, "the knight draws: {}", in_front.len());
+  // Its lower half: the rows below the middle of the knight drawn in front,
+  // measured from its feet
+  let (first, last) = in_front
+    .iter()
+    .fold((u32::MAX, 0), |(lo, hi), &(_, y)| (lo.min(y), hi.max(y)));
+  let waist = (first + last) as f32 / 2.0 - front_feet.y;
+  let lower = |pixels: &BTreeSet<(u32, u32)>, feet: Vec2| {
+    pixels
+      .iter()
+      .filter(|&&(_, y)| y as f32 >= feet.y + waist)
+      .count()
+  };
+  assert!(
+    in_back.len() * 10 >= in_front.len() * 9,
+    "behind its cell's middle the knight draws whole: {} pixels, {} in front",
+    in_back.len(),
+    in_front.len()
+  );
+  assert!(
+    lower(&in_back, back_feet) * 10 >= lower(&in_front, front_feet) * 9,
+    "and is not cut at the waist: {} pixels below it, {} in front",
+    lower(&in_back, back_feet),
+    lower(&in_front, front_feet)
+  );
+  assert_eq!(floor_of(&engine, walker), Floor::On(1));
   assert!(warnings().is_empty(), "{:#?}", warnings());
 }
 

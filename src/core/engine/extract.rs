@@ -892,4 +892,116 @@ mod tests {
     let reach = Vec2::splat(100.0);
     assert_eq!((item.min, item.max), (at + lift - reach, at + lift + reach));
   }
+
+  #[test]
+  fn a_map_chain_s_own_floor_filters_shadows() {
+    use std::sync::Arc;
+
+    use glam::{IVec2, UVec2};
+
+    use crate::core::asset::Assets;
+    use crate::core::ecs::{Has, With};
+    use crate::core::lighting::{light_item, push_shadow_volumes};
+    use crate::core::render::batch::Triangles;
+    use crate::core::tilemap::test_util::MapWorld;
+    use crate::core::tilemap::{
+      MapOccluder, MapRoot, Tile, TileData, TileMap, TileShape, Tileset, TilesetImage,
+      TilesetSource,
+    };
+
+    // A map of 8 x 4 cells of 16 px with a solid block on the ground floor
+    // at (1, 1), and one on floor 1, 32 px up, at (6, 1)
+    let mut set = Tileset::new("blocks", UVec2::splat(16), TilesetImage::Collection);
+    let points = vec![
+      Vec2::ZERO,
+      Vec2::new(16.0, 0.0),
+      Vec2::splat(16.0),
+      Vec2::new(0.0, 16.0),
+    ];
+    let block = TileData {
+      shapes: vec![TileShape {
+        points,
+        ..TileShape::default()
+      }],
+      ..TileData::default()
+    };
+    set.insert_tile(0, block);
+    let mut map = TileMap::new(UVec2::new(8, 4), UVec2::splat(16));
+    map.add_tileset(TilesetSource::Embedded(Arc::new(set)));
+    let ground = map.add_tile_layer("ground");
+    let upper = map.add_tile_layer("upper");
+    map.layers[upper].info.floor = 1;
+    map.layers[upper].info.offset = Vec2::new(0.0, -32.0);
+    for (layer, x) in [(ground, 1), (upper, 6)] {
+      if let Some(tiles) = map.tiles_mut(layer) {
+        tiles.set(IVec2::new(x, 1), Some(Tile::new(0, 0)));
+      }
+    }
+    let mut maps = MapWorld::new();
+    let handle = maps.world.resource_mut::<Assets<TileMap>>().add(map);
+    maps.spawn(MapRoot::new(handle));
+    // A shadowed light between the blocks on each floor
+    let light = Light2D::point(Color::WHITE, 200.0).with_shadows();
+    maps
+      .world
+      .spawn((Transform::from_xy(64.0, 24.0), light.clone()));
+    maps
+      .world
+      .spawn((Transform::from_xy(64.0, 24.0), light, Floor::On(1)));
+    maps.frame();
+
+    // The map's chains: floor 1's carry its `Floor` and, left out of the
+    // lift, no `DrawLift`, so each is on its own floor; the ground floor's
+    // carry neither
+    let mut chains = maps
+      .world
+      .query_filtered::<(Option<&Floor>, Has<DrawLift>), With<MapOccluder>>();
+    let mut floors: Vec<Option<Floor>> = chains
+      .iter(&maps.world)
+      .map(|(floor, lifted)| {
+        assert!(!lifted, "a map's chain draws through its layer");
+        floor.copied()
+      })
+      .collect();
+    floors.sort_by_key(|floor| floor.and_then(Floor::number));
+    assert_eq!(floors, [None, Some(Floor::On(1))]);
+    // The lights, each on its floor, then the occluders, each on its own
+    let mut lights = Vec::new();
+    lights_to_draw(&mut maps.world, 1.0, &mut lights);
+    let mut lit: Vec<Floor> = lights.iter().map(|light| light.floor).collect();
+    lit.sort_by_key(|floor| floor.number());
+    assert_eq!(lit, [Floor::GROUND, Floor::On(1)]);
+    let mut query = maps.world.query::<OccluderItem>();
+    let mut occluders = Vec::new();
+    occluders_to_draw(&maps.world, &mut query, 1.0, &mut occluders);
+    let mut drawn: Vec<Floor> = occluders.iter().map(|(.., floor)| *floor).collect();
+    drawn.sort_by_key(|floor| floor.number());
+    assert_eq!(drawn, [Floor::GROUND, Floor::On(1)]);
+
+    // Each light casts from its own floor's chain alone
+    for light in &lights {
+      let mut cast = Triangles::default();
+      let Some(item) = light_item(light, &occluders, &mut cast) else {
+        panic!("a usable light: {light:?}");
+      };
+      let volumes = |floor: Floor| {
+        let theirs: Vec<_> = occluders
+          .iter()
+          .filter(|(.., on)| *on == floor)
+          .cloned()
+          .collect();
+        let mut standing = Triangles::default();
+        let (at, light) = (light.position, &light.light);
+        push_shadow_volumes(at, Vec2::ZERO, light, Floor::Every, &theirs, &mut standing);
+        standing.indices.len()
+      };
+      let other = if light.floor == Floor::GROUND {
+        Floor::On(1)
+      } else {
+        Floor::GROUND
+      };
+      assert!(volumes(light.floor) > 0 && volumes(other) > 0);
+      assert_eq!(item.shadows.len(), volumes(light.floor), "{light:?}");
+    }
+  }
 }
