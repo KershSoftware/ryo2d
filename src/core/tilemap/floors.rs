@@ -19,7 +19,7 @@ use glam::{Affine2, Vec2};
 
 use super::LayerInfo;
 use super::spawn::{MapLayers, TileLayerData};
-use super::stairs::{Climber, StairRun};
+use super::stairs::{Climber, Stairs};
 use crate::core::ecs::interpolate::render_global;
 use crate::core::ecs::{
   Allow, Changed, ChildOf, Children, Commands, Component, DetectChangesMut, Disabled, DrawLift,
@@ -33,7 +33,6 @@ use crate::core::time::Time;
 /// none). A floor's height is how far up Tiled draws it, in map pixels:
 /// the vertical offset of its bottom layer. Read it in the world, through
 /// the map's transform, with [`MapsView::lift`](super::MapsView::lift).
-/// Two maps' floors are equal when their heights are.
 ///
 /// ```
 /// use ryo2d::prelude::*;
@@ -43,22 +42,11 @@ use crate::core::time::Time;
 ///   ctx.maps().floors(map)?.lift(Floor::On(1))
 /// }
 /// ```
-#[derive(Component, Clone, Debug)]
+#[derive(Component, Clone, Debug, PartialEq)]
 pub struct MapFloors {
   /// Each floor's height by its number, `None` for a floor no layer is on;
   /// the ground floor's is zero
   lifts: Vec<Option<Vec2>>,
-  /// The map's runs of stairs, brought up to its tiles each fixed step
-  /// (`stairs::sync_stair_runs`)
-  pub(crate) runs: Vec<StairRun>,
-}
-
-impl PartialEq for MapFloors {
-  /// Equal heights: the runs are worked out from the tiles, so a reload
-  /// that keeps the heights keeps the component, and its runs follow
-  fn eq(&self, other: &MapFloors) -> bool {
-    self.lifts == other.lifts
-  }
 }
 
 impl MapFloors {
@@ -76,10 +64,7 @@ impl MapFloors {
       }
       lifts[floor].get_or_insert(Vec2::new(0.0, info.offset.y));
     }
-    (lifts.len() > 1).then_some(MapFloors {
-      lifts,
-      runs: Vec::new(),
-    })
+    (lifts.len() > 1).then_some(MapFloors { lifts })
   }
 
   /// The floor's height in map pixels, what it is drawn lifted by: `GROUND`
@@ -340,8 +325,8 @@ type HasFloor<'w, 's> = Query<'w, 's, (), (With<Floor>, Allow<Disabled>)>;
 type Lifts<'w, 's> = Query<'w, 's, &'static mut DrawLift, Allow<Disabled>>;
 
 /// The climbers, whose lift eases with where they draw on stairs (from
-/// where they stood the step before, for an interpolated one), and the
-/// clocks
+/// where they stood the step before, for an interpolated one), the maps'
+/// stairs, and the clocks
 type Climbing<'w, 's> = (
   Query<
     'w,
@@ -349,6 +334,7 @@ type Climbing<'w, 's> = (
     (Entity, Option<&'static PreviousGlobalTransform>),
     (With<Climber>, Without<ParentPlaced>, Allow<Disabled>),
   >,
+  Stairs<'w, 's>,
   Option<Res<'w, Time>>,
 );
 
@@ -393,7 +379,7 @@ pub(crate) fn lift_floored(
     RemovedComponents<MapFloors>,
     RemovedComponents<Disabled>,
   ),
-  (climbers, time): Climbing,
+  (climbers, stairs, time): Climbing,
   mut commands: Commands,
   mut state: Local<Lifting>,
 ) {
@@ -478,9 +464,9 @@ pub(crate) fn lift_floored(
     let lift = global.map_or(Vec2::ZERO, |global| match climbers.get(seed) {
       Ok((_, previous)) => {
         let drawn = alpha.map_or(*global, |alpha| render_global(global, previous, alpha));
-        lift_at(areas, &maps, floor, (drawn.translation(), true))
+        lift_at(areas, &maps, floor, (drawn.translation(), Some(&stairs)))
       }
-      Err(_) => lift_at(areas, &maps, floor, (global.translation(), false)),
+      Err(_) => lift_at(areas, &maps, floor, (global.translation(), None)),
     });
     let drawn = DrawLift { lift, floor };
     write_down(
@@ -497,16 +483,24 @@ pub(crate) fn lift_floored(
 
 /// The lift of an entity on `floor` standing at `at` (world): the floor's
 /// height on the first of `areas` that holds it, through that map's
-/// transform, or for a climber (`climbs`) on a run of stairs of that floor
-/// the run's two floors' heights eased by how far up it is; zero off every
-/// one, and for a floor the map lacks or `Every`
-fn lift_at(areas: &[MapArea], maps: &Maps, floor: Floor, (at, climbs): (Vec2, bool)) -> Vec2 {
+/// transform, or for a climber (the maps' `stairs` given) on a run of
+/// stairs of that floor the run's two floors' heights eased by how far up
+/// it is; zero off every one, and for a floor the map lacks or `Every`
+fn lift_at(
+  areas: &[MapArea],
+  maps: &Maps,
+  floor: Floor,
+  (at, stairs): (Vec2, Option<&Stairs>),
+) -> Vec2 {
   areas
     .iter()
     .find(|area| area.holds(at))
     .and_then(|area| {
       let (_, floors, ..) = maps.get(area.map).ok()?;
-      if climbs && let Some((run, up)) = floors.climbing(area.local(at), floor) {
+      let climbing = stairs
+        .and_then(|stairs| stairs.get(area.map).ok())
+        .and_then(|stairs| stairs.climbing(area.local(at), floor));
+      if let Some((run, up)) = climbing {
         let low = world_lift(Some(floors), Floor::On(run.from), area.to_world)?;
         let high = world_lift(Some(floors), Floor::On(run.to), area.to_world)?;
         return Some(low.lerp(high, up));

@@ -389,13 +389,75 @@ fn plan<'a>(
   GroupKey::of(grid, (0, Vec2::ZERO), map_material)
 }
 
-/// The layers of floor `floor`'s footprint among `layers` into `planned`:
-/// the tile layers on it standing where its bottom tile layer does (on its
-/// grid, at its ground offset), all their tiles, and the tile layers of
-/// lower floors standing there, their stairs up to it. A layer on it
-/// standing elsewhere is left out, warned once a map (`warned`); a floor
-/// with no tile layer has no footprint, nor does one whose hexagons the
-/// tracer does not take
+/// A higher floor's footprint rule: which of a map's enabled tile layers
+/// give the floor's footprint, and what each gives. Its edge (`plan_edge`)
+/// and its stairs (`stairs.rs`) both read it, so they agree
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(super) struct FootprintRule {
+  floor: u8,
+  /// Its bottom tile layer, the first on it, by its place among the
+  /// layers the rule was made from
+  pub(super) bottom: usize,
+  /// Where the bottom tile layer stands: its grid, and its ground offset by
+  /// its bits
+  stands: (GridKey, [u32; 2]),
+}
+
+/// Why a floor has no footprint
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum NoFootprint {
+  /// No tile layer is on it
+  NoTileLayer,
+  /// Its bottom tile layer (by its place among the layers given) has
+  /// hexagons the collision tracer does not take
+  Untraceable(usize),
+}
+
+impl FootprintRule {
+  /// The rule of floor `floor` over a map's enabled tile layers in their
+  /// order (`layers`: each one's floor, grid and ground offset). Its bottom
+  /// tile layer is the first on it; the floor has no footprint without one,
+  /// or with one of hexagons the tracer does not take
+  pub(super) fn of(
+    floor: u8,
+    layers: impl Iterator<Item = (u8, MapGrid, Vec2)>,
+  ) -> Result<FootprintRule, NoFootprint> {
+    let (bottom, (_, grid, offset)) = layers
+      .enumerate()
+      .find(|(_, (on, ..))| *on == floor)
+      .ok_or(NoFootprint::NoTileLayer)?;
+    if grid.hex_cells().is_some_and(|hex| !hex.traceable()) {
+      return Err(NoFootprint::Untraceable(bottom));
+    }
+    Ok(FootprintRule {
+      floor,
+      bottom,
+      stands: (GridKey::of(&grid), [offset.x.to_bits(), offset.y.to_bits()]),
+    })
+  }
+
+  /// What a tile layer on floor `on`, on `grid` at the ground offset
+  /// `offset`, gives the footprint: every tile, for a layer on the floor;
+  /// its stairs up to the floor, for one on a lower floor; nothing for one
+  /// above it, or standing elsewhere than its bottom tile layer
+  pub(super) fn footing(&self, on: u8, grid: &MapGrid, offset: Vec2) -> Option<Footing> {
+    if (GridKey::of(grid), [offset.x.to_bits(), offset.y.to_bits()]) != self.stands {
+      return None;
+    }
+    match on.cmp(&self.floor) {
+      std::cmp::Ordering::Equal => Some(Footing::Tiles),
+      std::cmp::Ordering::Less => Some(Footing::Stairs),
+      std::cmp::Ordering::Greater => None,
+    }
+  }
+}
+
+/// The layers of floor `floor`'s footprint among `layers` into `planned`,
+/// by its `FootprintRule`: the tile layers on it standing where its bottom
+/// tile layer does, all their tiles, and the tile layers of lower floors
+/// standing there, their stairs up to it. A layer on it standing elsewhere
+/// is left out, warned once a map (`warned`); a floor with no tile layer
+/// has no footprint, nor does one whose hexagons the tracer does not take
 fn plan_edge<'a>(
   map: Entity,
   layers: impl Iterator<Item = LayerView<'a>> + Clone,
@@ -403,36 +465,33 @@ fn plan_edge<'a>(
   material: Material,
   (warned, planned): (&mut Warned, &mut Vec<Planned>),
 ) {
-  let Some(bottom) = layers.clone().find(|l| l.info.floor == floor) else {
-    return;
-  };
-  if bottom
-    .data
-    .grid
-    .hex_cells()
-    .is_some_and(|hex| !hex.traceable())
-  {
-    warn_untraceable(map, &bottom, warned);
-    return;
-  }
-  // The edge's key where a layer stands: the bottom tile layer's, or
-  // another for a layer elsewhere
-  let stands = |layer: &LayerView<'_>| {
-    let at = (floor, ground_offset(layer.info, Some(floors)));
-    GroupKey {
-      edge: true,
-      ..GroupKey::of(&layer.data.grid, at, material)
+  let stands = |layer: &LayerView<'_>| ground_offset(layer.info, Some(floors));
+  let rule = FootprintRule::of(
+    floor,
+    layers
+      .clone()
+      .map(|layer| (layer.info.floor, layer.data.grid, stands(&layer))),
+  );
+  let rule = match rule {
+    Ok(rule) => rule,
+    Err(NoFootprint::NoTileLayer) => return,
+    Err(NoFootprint::Untraceable(bottom)) => {
+      if let Some(bottom) = layers.clone().nth(bottom) {
+        warn_untraceable(map, &bottom, warned);
+      }
+      return;
     }
   };
-  let key = stands(&bottom);
+  let Some(bottom) = layers.clone().nth(rule.bottom) else {
+    return;
+  };
+  let key = GroupKey {
+    edge: true,
+    ..GroupKey::of(&bottom.data.grid, (floor, stands(&bottom)), material)
+  };
   for layer in layers {
-    let footing = match layer.info.floor.cmp(&floor) {
-      std::cmp::Ordering::Equal => Footing::Tiles,
-      std::cmp::Ordering::Less => Footing::Stairs,
-      std::cmp::Ordering::Greater => continue,
-    };
-    if stands(&layer) != key {
-      if footing == Footing::Tiles && warned.insert((None, "floor edge")) {
+    let Some(footing) = rule.footing(layer.info.floor, &layer.data.grid, stands(&layer)) else {
+      if layer.info.floor == floor && warned.insert((None, "floor edge")) {
         crate::engine_warn!(
           module: "Tilemap",
           "map {map}: layer \"{}\" on floor {floor} stands elsewhere than the floor's bottom tile layer \"{}\" (another grid or offset), so the floor's edge leaves its cells out",
@@ -441,7 +500,7 @@ fn plan_edge<'a>(
         );
       }
       continue;
-    }
+    };
     planned.push(Planned {
       entity: layer.entity,
       index: layer.index,

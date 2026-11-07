@@ -114,7 +114,8 @@ pub(crate) fn register_tilemap_systems(schedules: &mut EngineSchedules) {
     Phase::FixedUpdate,
     (stairs::sync_stair_runs, stairs::climb_stairs)
       .chain()
-      .in_set(FixedSet::Movement),
+      .in_set(FixedSet::Movement)
+      .before(crate::core::gameplay::apply_kill_zones),
   );
   schedules.add_systems(
     Phase::PostUpdate,

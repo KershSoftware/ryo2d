@@ -8,14 +8,14 @@ use crate::core::ecs::{
   ChildOf, Entity, Floor, Interpolated, MessageCursor, Messages, Transform, World,
 };
 use crate::core::engine::EngineBuilder;
-use crate::core::gameplay::{MoveIntent, TopDownMovement};
+use crate::core::gameplay::{Checkpoint, KillZone, MoveIntent, Respawn, TopDownMovement};
 use crate::core::physics::Collider;
 use crate::core::scene::Scene;
 use crate::core::testing::HeadlessEngine;
 use crate::core::tilemap::test_util::MapWorld;
 use crate::core::tilemap::{
-  GridShape, MapFloors, MapRoot, MapsView, StaggerAxis, StaggerIndex, Tile, TileData, TileFlip,
-  TileMap, TileShape, Tileset, TilesetImage, TilesetSource,
+  GridShape, LayerKind, MapFloor, MapFloors, MapGrid, MapRoot, MapsView, StaggerAxis, StaggerIndex,
+  Tile, TileData, TileFlip, TileMap, TileShape, Tileset, TilesetImage, TilesetSource,
 };
 use crate::core::time::Time;
 use crate::core::trail::Trail2D;
@@ -134,8 +134,8 @@ type Summary = (u8, u8, Vec<IVec2>, Vec2, Vec2);
 /// The runs of `map`, by their floors and first cell
 fn runs(world: &World, map: Entity) -> Vec<StairRun> {
   let mut runs = world
-    .get::<MapFloors>(map)
-    .map(|floors| floors.runs.clone())
+    .get::<super::MapStairs>(map)
+    .map(|stairs| stairs.runs.clone())
     .unwrap_or_default();
   runs.sort_by_key(|run| (run.from, run.to, run.cells.first().map(|c| (c.y, c.x))));
   runs
@@ -759,4 +759,189 @@ fn a_climber_climbs_stairs_on_a_hexagonal_map() {
     floors,
     [(Floor::GROUND, Floor::On(1)), (Floor::On(1), Floor::GROUND)]
   );
+}
+
+#[test]
+fn a_teleported_climber_keeps_the_floor_its_game_gave_it() {
+  let mut maps = MapWorld::new();
+  land(&mut maps, hall());
+  let mut cursor = MessageCursor::<FloorChanged>::default();
+  // A climber three quarters up the run, on floor 1 by now
+  let hero = climber_at(&mut maps, Vec2::new(120.0, 72.0));
+  for _ in 0..3 {
+    maps.frame();
+  }
+  assert_eq!(floor_of(&maps.world, hero), Some(Floor::On(1)));
+  assert_eq!(changes(&maps.world, &mut cursor).len(), 1);
+  // The game teleports it onto the ground floor's cells and sets its floor
+  // with it, ahead of the step's movement (as `update` does): the stairs,
+  // which still see it where the last step left it, leave that floor be
+  if let Some(mut transform) = maps.world.get_mut::<Transform>(hero) {
+    transform.translation = Vec2::new(40.0, 40.0);
+  }
+  maps.world.entity_mut(hero).insert(Floor::GROUND);
+  for _ in 0..3 {
+    maps.frame();
+  }
+  assert_eq!(floor_of(&maps.world, hero), Some(Floor::GROUND));
+  assert!(changes(&maps.world, &mut cursor).is_empty());
+  assert!(near(lift_of(&mut maps.world, hero), Vec2::ZERO));
+}
+
+#[test]
+fn a_climber_respawned_from_the_stairs_keeps_its_checkpoint_s_floor() {
+  let Some((mut engine, _)) = engine_with(hall()) else {
+    return;
+  };
+  // A checkpoint on the ground left of the stairs, and a top-down climber
+  // standing in it
+  engine.world_mut().spawn((
+    Transform::from_xy(64.0, 72.0),
+    Collider::rect(24.0, 24.0).as_trigger(),
+    Checkpoint::new(),
+  ));
+  let hero = engine
+    .world_mut()
+    .spawn((
+      Transform::from_xy(64.0, 72.0),
+      Collider::circle(5.0),
+      TopDownMovement::default(),
+      Respawn::here(),
+      Climber,
+    ))
+    .id();
+  let mut cursor = MessageCursor::<FloorChanged>::default();
+  let mut seen = Vec::new();
+  // `frames` frames, each frame's floor changes kept in `seen`
+  let mut run = |engine: &mut HeadlessEngine, frames: usize, seen: &mut Vec<FloorChanged>| {
+    for _ in 0..frames {
+      engine.step().expect("a frame");
+      seen.extend(changes(engine.world(), &mut cursor));
+    }
+  };
+  let at = |engine: &HeadlessEngine| {
+    engine
+      .world()
+      .get::<Transform>(hero)
+      .map_or(Vec2::NAN, |t| t.translation)
+  };
+  let head = |engine: &mut HeadlessEngine, direction: Vec2| {
+    if let Some(mut intent) = engine.world_mut().get_mut::<MoveIntent>(hero) {
+      intent.direction = direction;
+    }
+  };
+  // It walks up past halfway and stops on the run's upper half, on floor 1
+  head(&mut engine, Vec2::X);
+  for _ in 0..60 {
+    run(&mut engine, 1, &mut seen);
+    if at(&engine).x >= 112.0 {
+      break;
+    }
+  }
+  head(&mut engine, Vec2::ZERO);
+  run(&mut engine, 10, &mut seen);
+  let stopped = at(&engine);
+  assert!((112.0..128.0).contains(&stopped.x), "stopped at {stopped}");
+  assert_eq!(floor_of(engine.world(), hero), Some(Floor::On(1)));
+  assert_eq!(seen.len(), 1, "{seen:?}");
+  // A trap on every floor springs under it: it is put back at the
+  // checkpoint, on the checkpoint's floor, and stays there
+  engine.world_mut().spawn((
+    Transform::from_translation(stopped),
+    Collider::rect(24.0, 24.0).as_trigger(),
+    KillZone::new(),
+    Floor::Every,
+  ));
+  seen.clear();
+  run(&mut engine, 10, &mut seen);
+  let back = at(&engine);
+  assert!(near(back, Vec2::new(64.0, 72.0)), "back at {back}");
+  assert_eq!(floor_of(engine.world(), hero), Some(Floor::GROUND));
+  assert!(seen.is_empty(), "{seen:?}");
+}
+
+#[test]
+fn a_climber_on_every_floor_or_another_floor_passes_over_stairs() {
+  // The hall with floor 2, 64 px up, over (10, 4) to (12, 5)
+  let (ground, upper) = hall_with(&[(6, 4), (7, 4)]);
+  let roof = block((10, 4), (12, 5), PLAIN);
+  let mut maps = MapWorld::new();
+  land(
+    &mut maps,
+    storeyed(&[
+      ("ground", 0, Vec2::ZERO, &ground),
+      ("upper", 1, UP, &upper),
+      ("roof", 2, HIGH, &roof),
+    ]),
+  );
+  let mut cursor = MessageCursor::<FloorChanged>::default();
+  // Three quarters up the run up to floor 1: one climber on every floor,
+  // and one on floor 2, neither of the run's floors
+  let on = |maps: &mut MapWorld, floor: Floor| {
+    maps
+      .world
+      .spawn((Transform::from_xy(120.0, 72.0), Climber, floor))
+      .id()
+  };
+  let every = on(&mut maps, Floor::Every);
+  let high = on(&mut maps, Floor::On(2));
+  for x in [104.0, 120.0, 100.0] {
+    for climber in [every, high] {
+      move_to(&mut maps, climber, Vec2::new(x, 72.0));
+    }
+    assert_eq!(floor_of(&maps.world, every), Some(Floor::Every));
+    assert!(near(lift_of(&mut maps.world, every), Vec2::ZERO));
+    assert_eq!(floor_of(&maps.world, high), Some(Floor::On(2)));
+    assert!(near(lift_of(&mut maps.world, high), HIGH));
+  }
+  assert!(changes(&maps.world, &mut cursor).is_empty());
+}
+
+#[test]
+fn stairs_up_to_a_floor_without_an_edge_lead_nowhere() {
+  // Floor 1 only an object layer, 32 px up: no tile layer, so no footprint
+  // and no edge
+  let (ground, _) = hall_with(&[(6, 4), (7, 4)]);
+  let mut objects = storeyed(&[("ground-q2m", 0, Vec2::ZERO, &ground)]);
+  let props = objects.add_object_layer("props-q2m");
+  objects.layers[props].info.floor = 1;
+  objects.layers[props].info.offset = UP;
+  let mut maps = MapWorld::new();
+  let map = land(&mut maps, objects);
+  assert!(runs(&maps.world, map).is_empty());
+  assert_eq!(warned(&["ground-q2m", "lead nowhere", "no tile layer"]), 1);
+
+  // Floor 1's bottom tile layer of hexagons too big to trace, its next a
+  // plain layer standing where the ground does: the floor has no edge (its
+  // bottom tile layer decides), so its stairs lead nowhere too
+  let (ground, upper) = hall_with(&[(6, 4), (7, 4)]);
+  let mut hexes = storeyed(&[
+    ("ground-k8v", 0, Vec2::ZERO, &ground),
+    ("tower-k8v", 1, UP, &[]),
+    ("upper-k8v", 1, UP, &upper),
+  ]);
+  if let LayerKind::Tiles { grid, .. } = &mut hexes.layers[1].kind {
+    let shape = GridShape::Hexagonal {
+      axis: StaggerAxis::Y,
+      index: StaggerIndex::Odd,
+      side: 8_000,
+    };
+    *grid = MapGrid::new(shape, UVec2::new(16_385, 16_000));
+  }
+  let map = land(&mut maps, hexes);
+  let edges = maps
+    .world
+    .query::<(&MapFloor, &ChildOf)>()
+    .iter(&maps.world)
+    .filter(|(_, child_of)| child_of.parent() == map)
+    .count();
+  assert_eq!(edges, 0, "no edge on floor 1");
+  assert!(runs(&maps.world, map).is_empty());
+  assert_eq!(warned(&["ground-k8v", "lead nowhere", "hexagons"]), 1);
+  // A climber on them keeps the ground floor
+  let hero = climber_at(&mut maps, Vec2::new(120.0, 72.0));
+  for _ in 0..3 {
+    maps.frame();
+  }
+  assert_eq!(floor_of(&maps.world, hero), Some(Floor::GROUND));
 }

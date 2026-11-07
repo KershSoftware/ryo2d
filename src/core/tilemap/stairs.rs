@@ -6,8 +6,9 @@
 //! from the layer's floor to the floor its tiles name. Its top is the
 //! middle of the sides it shares with that floor's footprint, and its
 //! bottom its foot: the side it shares with neither that is farthest from
-//! its top along the run. A map's runs are in its [`MapFloors`], brought up
-//! to its tiles and tilesets each fixed step ([`sync_stair_runs`]).
+//! its top along the run. A map with floors keeps its runs in a
+//! [`MapStairs`] beside its [`MapFloors`], brought up to its tiles and
+//! tilesets each fixed step ([`sync_stair_runs`]).
 //!
 //! An entity with [`Climber`] changes floor halfway along a run
 //! ([`climb_stairs`]), and draws eased between the two floors' heights by
@@ -17,17 +18,18 @@ use std::sync::Arc;
 
 use glam::{IVec2, Vec2};
 
+use super::collision::{FootprintRule, NoFootprint};
 use super::floors::{self, MapArea, MapFloors, ground_offset};
 use super::kinds::{
-  GridKey, Layers, Placement, StairSource, Stores, TilesetStamp, Tracked, changed_chunks,
+  Footing, GridKey, Layers, Placement, StairSource, Stores, TilesetStamp, Tracked, changed_chunks,
   chunk_origin, stair_sources, stairs_of, stamps, stamps_match,
 };
 use super::spawn::{MapLayers, MapRoot, root_map};
 use super::{CHUNK_SIZE, LayerInfo, MapGrid, TileGrid, TileLayerData, TileMap, Tileset};
 use crate::core::asset::Assets;
 use crate::core::ecs::{
-  Allow, Commands, Component, DetectChanges, DetectChangesMut, Disabled, Entity, Floor,
-  GlobalTransform, Local, Message, MessageWriter, Query, With, Without,
+  Allow, Commands, Component, DetectChanges, Disabled, Entity, Floor, GlobalTransform, Local,
+  Message, MessageWriter, Query, Ref, With, Without,
 };
 use crate::core::hash::{FastMap, FastSet};
 
@@ -117,7 +119,7 @@ impl StairRun {
   }
 }
 
-impl MapFloors {
+impl MapStairs {
   /// The run under the map point `at` (ground space) that something on
   /// `floor` climbs, one of its two floors, and how far up it `at` is
   pub(crate) fn climbing(&self, at: Vec2, floor: Floor) -> Option<(&StairRun, f32)> {
@@ -152,9 +154,9 @@ impl Place {
     }
   }
 
-  /// Whether it stands where `other` does: on its grid, at its offset
-  fn stands_with(&self, other: &Place) -> bool {
-    self.grid == other.grid && self.offset == other.offset
+  /// What it gives floor `to`'s footprint, by the floor's rule
+  fn footing(&self, rule: &FootprintRule) -> Option<Footing> {
+    rule.footing(self.floor, &self.grid.grid(), self.offset())
   }
 
   fn offset(&self) -> Vec2 {
@@ -186,8 +188,13 @@ impl ReadLayer {
     let Ok((_, data, _)) = layers.get(self.place.entity) else {
       return false;
     };
+    // A grid that places nothing gives a footprint no cells, nor stairs
+    let placed = placed(&data.grid);
     for chunk in changed {
       self.cells.remove(&chunk);
+      if !placed {
+        continue;
+      }
       let found = stair_cells(&data.tiles, chunk, stairs);
       if !found.is_empty() {
         self.cells.insert(chunk, found);
@@ -195,6 +202,12 @@ impl ReadLayer {
     }
     true
   }
+}
+
+/// Whether `grid` places its cells (`Placement`): a lattice that folds them
+/// flat, or hexagons the collision tracer does not take, place none
+fn placed(grid: &MapGrid) -> bool {
+  !matches!(Placement::of(grid), Placement::Nothing)
 }
 
 /// The cells of `chunk` of `tiles` holding stairs (by the tilesets'
@@ -224,11 +237,13 @@ fn stair_cells(tiles: &TileGrid, chunk: IVec2, stairs: &[Option<StairSource>]) -
   found
 }
 
-/// What a map's runs were read from, on the map entity beside its
-/// `MapFloors`: each tile layer with the stair cells its chunks held, its
-/// tilesets' stairs, and what it has warned of
+/// A map's runs of stairs, on the map entity beside its `MapFloors`, and
+/// what they were read from: each tile layer with the stair cells its
+/// chunks held, its tilesets' stairs, and what it has warned of
 #[derive(Component, Default)]
 pub(crate) struct MapStairs {
+  /// The runs, as its tiles were when last read
+  pub(crate) runs: Vec<StairRun>,
   layers: Vec<ReadLayer>,
   tilesets: Vec<TilesetStamp>,
   stairs: Arc<[Option<StairSource>]>,
@@ -263,19 +278,21 @@ type StairMaps<'w, 's> = Query<
     Entity,
     &'static MapRoot,
     &'static MapLayers,
-    &'static mut MapFloors,
+    Ref<'static, MapFloors>,
     Option<&'static mut MapStairs>,
   ),
 >;
+
+/// Each map's stairs, by its entity
+pub(super) type Stairs<'w, 's> = Query<'w, 's, &'static MapStairs>;
 
 /// `FixedSet::Movement`, before `climb_stairs`: each map with floors' runs
 /// brought up to its tiles and tilesets. The chunks whose version moved
 /// since it last looked are read again, and the runs made again from the
 /// stair cells when any did; a change of what they are read from (a new
 /// `MapFloors`, the map's tile layers, their floors, grids or places, the
-/// tilesets' stairs) reads every chunk again. The runs are written without
-/// change detection, so nothing is lifted again for them. A disabled map is
-/// left as it is, and caught up once enabled. A map without floors costs
+/// tilesets' stairs) reads every chunk again. A disabled map is left as it
+/// is, and caught up once enabled. A map without floors costs
 /// nothing; an idle step, a look at each tile layer's version and the
 /// tilesets' stamps
 pub(crate) fn sync_stair_runs(
@@ -290,13 +307,12 @@ pub(crate) fn sync_stair_runs(
     commands.entity(map).try_remove::<MapStairs>();
   }
   let tilesets = tilesets.as_deref();
-  for (map, root, map_layers, mut floors, state) in &mut maps {
+  for (map, root, map_layers, floors, state) in &mut maps {
     let Some(tile_map) = root_map(root, tile_maps.as_deref(), projects.as_deref()) else {
       continue;
     };
     // Landed, or reloaded with other floors: its runs are to make
     let replaced = floors.is_changed();
-    let floors = floors.bypass_change_detection();
     places.clear();
     places.extend(
       map_layers
@@ -305,8 +321,7 @@ pub(crate) fn sync_stair_runs(
         .enumerate()
         .filter_map(|(index, &entity)| {
           let (info, data, disabled) = layers.get(entity).ok()?;
-          let placed = !matches!(Placement::of(&data.grid), Placement::Nothing);
-          (!disabled && placed).then(|| (index, Place::of(entity, info, &data.grid, floors)))
+          (!disabled).then(|| (index, Place::of(entity, info, &data.grid, &floors)))
         }),
     );
     let mut fresh = None;
@@ -335,6 +350,7 @@ pub(crate) fn sync_stair_runs(
         .collect();
     }
     let MapStairs {
+      runs,
       layers: read,
       stairs,
       warned,
@@ -345,8 +361,7 @@ pub(crate) fn sync_stair_runs(
       changed |= layer.read_changes(&layers, stairs);
     }
     if changed || replaced || !kept {
-      let runs = runs_of(map, read, &layers, floors, warned);
-      floors.runs = runs;
+      *runs = runs_of(map, read, &layers, &floors, warned);
     }
     if let Some(state) = fresh {
       commands.entity(map).try_insert(state);
@@ -354,12 +369,15 @@ pub(crate) fn sync_stair_runs(
   }
 }
 
-/// The runs of a map's tile layers (`read`, with their stair cells) on its
-/// `floors`: the stair cells of each layer leading to one floor, joined
-/// through their sides. Stairs naming a floor the map lacks, their own
-/// floor or a lower one stay plain tiles, and a run standing elsewhere
-/// than its floor's bottom tile layer, or with no top or no bottom, leads
-/// nowhere and is left out: each warned once a map (`warned`)
+/// The runs of a map's tile layers (`read`, its enabled tile layers in
+/// order, with their stair cells) on its `floors`: the stair cells of each
+/// layer leading to one floor, joined through their sides. Which layers
+/// give a floor's footprint and its stairs is the floor's
+/// `FootprintRule`, as for its edge. Stairs naming a floor the map lacks,
+/// their own floor or a lower one stay plain tiles; a run leads nowhere,
+/// and is left out, when the floor has no footprint, when its layer gives
+/// the footprint no stairs (standing elsewhere), or with no top, no
+/// bottom or no way up: each warned once a map (`warned`)
 fn runs_of(
   map: Entity,
   read: &[ReadLayer],
@@ -371,6 +389,20 @@ fn runs_of(
     layers
       .get(layer.place.entity)
       .map_or(String::new(), |(info, ..)| info.name.clone())
+  };
+  // Each floor's footprint rule, worked out once
+  let mut rules: Vec<(u8, Result<FootprintRule, NoFootprint>)> = Vec::new();
+  let mut rule_of = |to: u8| {
+    if let Some(&(_, rule)) = rules.iter().find(|(of, _)| *of == to) {
+      return rule;
+    }
+    let places = read.iter().map(|layer| {
+      let place = &layer.place;
+      (place.floor, place.grid.grid(), place.offset())
+    });
+    let rule = FootprintRule::of(to, places);
+    rules.push((to, rule));
+    rule
   };
   // The stair cells of each layer by the floor they lead to
   let mut leading: Vec<(usize, u8, Vec<IVec2>)> = Vec::new();
@@ -387,10 +419,17 @@ fn runs_of(
         }
         continue;
       }
-      // Floor `to`'s bottom tile layer, where its footprint stands
-      let bottom = read.iter().find(|other| other.place.floor == to);
-      if !bottom.is_some_and(|bottom| bottom.place.stands_with(&layer.place)) {
-        let why = "stand elsewhere than that floor's bottom tile layer, on another grid or at another offset";
+      let why = match rule_of(to) {
+        Ok(rule) if layer.place.footing(&rule) == Some(Footing::Stairs) => None,
+        Ok(_) => Some(
+          "they stand elsewhere than that floor's bottom tile layer, on another grid or at another offset",
+        ),
+        Err(NoFootprint::NoTileLayer) => Some("that floor has no tile layer to climb onto"),
+        Err(NoFootprint::Untraceable(_)) => {
+          Some("that floor's hexagons don't collide, so it has no edge to climb into")
+        }
+      };
+      if let Some(why) = why {
         warn_nowhere(map, warned, (|| name(layer), to), why);
         continue;
       }
@@ -410,15 +449,19 @@ fn runs_of(
     .collect();
   let mut runs = Vec::new();
   for (index, to, mut cells) in leading {
+    let Ok(rule) = rule_of(to) else {
+      continue;
+    };
     let layer = &read[index];
     cells.sort_unstable_by_key(|c| (c.y, c.x));
-    // Floor `to`'s tile layers standing there: its footprint, with its
-    // stairs
+    // The cells of floor `to`'s tile layers the rule takes whole: its
+    // footprint, with its stairs
     let upper: Vec<&TileLayerData> = read
       .iter()
-      .filter(|other| other.place.floor == to && other.place.stands_with(&layer.place))
+      .filter(|other| other.place.footing(&rule) == Some(Footing::Tiles))
       .filter_map(|other| layers.get(other.place.entity).ok())
       .map(|(_, data, _)| data.into_inner())
+      .filter(|data| placed(&data.grid))
       .collect();
     let footprint = |cell: IVec2| {
       stairs_up.contains(&(to, cell)) || upper.iter().any(|data| data.tiles.get(cell).is_some())
@@ -454,7 +497,7 @@ fn warn_nowhere(
   if warned.insert("nowhere") {
     crate::engine_warn!(
       module: "Tilemap",
-      "map {map}: stairs on layer \"{}\" up to floor {to} lead nowhere (they {why}), so they change no climber's floor",
+      "map {map}: stairs on layer \"{}\" up to floor {to} lead nowhere ({why}), so they change no climber's floor",
       layer()
     );
   }
@@ -520,15 +563,15 @@ fn ends(
     }
   }
   if tops == 0 {
-    return Err("share no side with that floor's cells");
+    return Err("they share no side with that floor's cells");
   }
   if outside.is_empty() {
-    return Err("share every side with that floor's cells");
+    return Err("they share every side with that floor's cells");
   }
   let top = top / tops as f32;
   let middle = outside.iter().sum::<Vec2>() / outside.len() as f32;
   if (top - middle).length() < 1e-3 {
-    return Err("meet that floor as much on one side as on the other");
+    return Err("they meet that floor as much on one side as on the other");
   }
   let up = (top - middle).normalize();
   let foot = outside
@@ -543,27 +586,34 @@ fn ends(
 /// halfway up it or more, and onto its lower floor below that, by where the
 /// last step left it (`GlobalTransform`) on the map with floors under it.
 /// A change is written to its `Floor` (which this step's physics filters
-/// by) and sent as a [`FloorChanged`]. With no climber, or no map with
-/// stairs, it returns at once
+/// by) and sent as a [`FloorChanged`]. A climber whose `Floor` something
+/// else wrote since this last ran (a game's teleport in `update`) is left
+/// to that write for the step: the stairs still see it where it stood.
+/// Ordered before the kill zones' respawns, which then win over it in the
+/// step. With no climber, or no map with stairs, it returns at once
 pub(crate) fn climb_stairs(
   mut climbers: Query<(Entity, &mut Floor, &GlobalTransform), With<Climber>>,
-  (maps, tiles): (floors::Maps, floors::TileLayers),
+  (maps, tiles, stairs): (floors::Maps, floors::TileLayers, Stairs),
   mut changes: MessageWriter<FloorChanged>,
   mut areas: Local<Vec<MapArea>>,
 ) {
-  if climbers.is_empty() || maps.iter().all(|(_, floors, ..)| floors.runs.is_empty()) {
+  if climbers.is_empty() || stairs.iter().all(|stairs| stairs.runs.is_empty()) {
     return;
   }
   floors::find_areas(&mut areas, &maps, &tiles);
   for (entity, mut floor, global) in &mut climbers {
+    // Set by something else since the stairs last looked: that write wins
+    if floor.is_changed() {
+      continue;
+    }
     let at = global.translation();
     let Some(area) = areas.iter().find(|area| area.holds(at)) else {
       continue;
     };
-    let Ok((_, map_floors, ..)) = maps.get(area.map) else {
+    let Ok(map_stairs) = stairs.get(area.map) else {
       continue;
     };
-    let Some((run, up)) = map_floors.climbing(area.local(at), *floor) else {
+    let Some((run, up)) = map_stairs.climbing(area.local(at), *floor) else {
       continue;
     };
     let now = Floor::On(if up >= 0.5 { run.to } else { run.from });

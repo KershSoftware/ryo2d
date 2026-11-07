@@ -16,10 +16,10 @@ pub use intent::{MoveBindings, MoveIntent, read_move_bindings};
 pub use knockback::update_knockback;
 pub use platformer::{Dash, PlatformerMovement, PlatformerState, WallJump, platformer_movement};
 pub use top_down::{TopDownMovement, TopDownState, top_down_movement};
+pub(crate) use zones::apply_kill_zones;
 pub use zones::{Checkpoint, KillZone, Pickup, Respawn};
 use zones::{
-  apply_checkpoints, apply_kill_zones, collect_pickups, place_respawn_points, respawn_pickups,
-  warn_untriggered,
+  apply_checkpoints, collect_pickups, place_respawn_points, respawn_pickups, warn_untriggered,
 };
 
 use crate::core::ecs::IntoScheduleConfigs;
