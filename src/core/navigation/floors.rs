@@ -7,8 +7,11 @@ use super::pathfinder::{Graph, distance, tie_break};
 use crate::core::ecs::Floor;
 
 /// Stairs joining two floors at one cell: a path steps from the cell on one
-/// floor to the same cell on the other at no cost, since it is the same
-/// ground. A tile map's stairs give one for each of their cells
+/// floor to the same cell on the other for next to nothing (a thousandth
+/// of the grid's shortest step), since it is the same ground: just enough
+/// that of paths otherwise as cheap the search takes the one changing floor
+/// least, so a path crosses a run of stairs once. A tile map's stairs give
+/// one for each of their cells
 /// ([`MapsView::floor_navigation`](crate::core::tilemap::MapsView::floor_navigation)).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StairLink {
@@ -19,6 +22,13 @@ pub struct StairLink {
   /// The floor they lead up to
   pub upper: Floor,
 }
+
+/// What a step across a stair link costs, in the grid's shortest steps:
+/// next to nothing, as the link joins one cell, but more than nothing, so
+/// among paths of equal ground cost the search takes the one crossing the
+/// fewest links, and a path never steps off a run of stairs and back on.
+/// It only raises costs, so the ground heuristic stays admissible
+const LINK_COST: f32 = 1e-3;
 
 /// A navigation grid for each floor, over the same cells, joined at stair
 /// cells ([`StairLink`]): what [`Pathfinder::find_floor_path`](super::Pathfinder::find_floor_path)
@@ -177,11 +187,11 @@ impl Graph for FloorNavigation {
       .into_iter()
       .map(|(cell, cost)| (FloorCell { cell, ..at }, cost))
       .collect();
-    // The same ground on the floor a link leads to, at no cost
+    // The same ground on the floor a link leads to, for next to nothing
     for to in self.ways_from(at) {
       let onto = FloorCell { grid: to, ..at };
       if self.grid_at(onto).is_some_and(|g| g.is_walkable(at.cell)) {
-        out.push((onto, 0.0));
+        out.push((onto, LINK_COST));
       }
     }
     out

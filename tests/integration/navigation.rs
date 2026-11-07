@@ -1103,13 +1103,20 @@ fn a_path_climbs_stairs_to_another_floor_and_back() {
   assert_eq!((node[0].floor, node[0].grid_coord), above);
 }
 
+/// What the search charges for a step across a stair link, in steps: a
+/// thousandth of one, so that of paths otherwise as cheap it takes the one
+/// changing floor least
+const LINK_COST: f64 = 1e-3;
+
 /// What a path across floors costs: `path_cost` with each step on the
-/// floor it enters, a step onto another floor at a link costing nothing
+/// floor it enters, a step onto another floor at a link costing
+/// `LINK_COST`
 fn floor_path_cost(nav: &FloorNavigation, path: &Path) -> f64 {
   path
     .waypoints()
     .windows(2)
     .map(|pair| match nav.grid(pair[1].floor) {
+      Some(_) if pair[0].floor != pair[1].floor => LINK_COST,
       Some(grid) => {
         f64::from(pair[0].distance(&pair[1])) / f64::from(grid.cell_size())
           * f64::from(grid.cost(pair[1].grid_coord))
@@ -1126,7 +1133,7 @@ type FloorCell = (Floor, IVec2);
 /// `floor_path_cost` counts it: `cheapest`'s Dijkstra over the walkable
 /// cells of every floor, each stepping to its `neighbours` on its floor's
 /// grid, and from a link's cell onto the same cell of the link's other
-/// floor at no cost
+/// floor for `LINK_COST`
 fn cheapest_across_floors(
   nav: &FloorNavigation,
   layer: &LayerGrid,
@@ -1184,7 +1191,7 @@ fn cheapest_across_floors(
         continue;
       };
       if nav.grid(other).is_some_and(|g| g.is_walkable(link.cell)) {
-        next.push((number(other), cell, cost));
+        next.push((number(other), cell, cost + LINK_COST));
       }
     }
     for (on, to, through) in next {
@@ -1391,4 +1398,95 @@ fn smoothing_never_skips_across_a_stair_link() {
   let mut expected = vec![raw.waypoints()[0], raw.waypoints()[at]];
   expected.extend_from_slice(&raw.waypoints()[at + 1..]);
   assert_eq!(on_ground.waypoints(), &expected[..]);
+}
+
+#[test]
+fn a_path_crosses_a_long_stair_run_once() {
+  // A run of stairs leading right into a platform on floor 1: along it
+  // every cell is open on both floors at the same cost, so the ground cost
+  // alone does not say where to change floor
+  let window = CellRect::new(IVec2::ZERO, IVec2::new(22, 12));
+  let grids = [
+    MapGrid::new(GridShape::Orthogonal, UVec2::splat(16)),
+    MapGrid::new(GridShape::Isometric, UVec2::new(64, 32)),
+    MapGrid::new(
+      GridShape::Hexagonal {
+        axis: StaggerAxis::Y,
+        index: StaggerIndex::Odd,
+        side: 8,
+      },
+      UVec2::splat(16),
+    ),
+  ];
+  let mut seeded = Seeded(0x1357_9bdf);
+  let mut found = 0;
+  for grid in grids {
+    let layer = layer_of(grid);
+    for _ in 0..150 {
+      // From 3 to 12 cells long and 1 to 3 wide, with walls about the
+      // ground and stray open cells on floor 1, off the run
+      let (len, wide) = (3 + seeded.below(10) as i32, 1 + seeded.below(3) as i32);
+      let foot = IVec2::new(1 + seeded.below(4) as i32, 1 + seeded.below(6) as i32);
+      let run = cells_of(CellRect::new(foot, foot + IVec2::new(len, wide)));
+      let platform = CellRect::new(IVec2::new(foot.x + len, 0), window.max);
+      let mut ground = NavigationGrid::for_layer(layer, window);
+      let mut upper = NavigationGrid::for_layer(layer, window).on_floor(Floor::On(1));
+      for cell in cells_of(window) {
+        if !platform.contains(cell) && !run.contains(&cell) {
+          upper.set(cell.into(), CellState::Blocked);
+        }
+      }
+      for _ in 0..seeded.below(30) {
+        let cell = seeded.cell(window);
+        if !run.contains(&cell) {
+          ground.set(cell.into(), CellState::Blocked);
+        }
+      }
+      for _ in 0..seeded.below(20) {
+        let cell = seeded.cell(window);
+        if !run.contains(&cell) {
+          upper.set(cell.into(), CellState::Walkable);
+        }
+      }
+      let links = run
+        .iter()
+        .map(|&cell| StairLink {
+          cell: cell.into(),
+          lower: Floor::GROUND,
+          upper: Floor::On(1),
+        })
+        .collect();
+      let nav = FloorNavigation::new(vec![ground, upper], links);
+      let below = CellRect::new(IVec2::ZERO, IVec2::new(platform.min.x, window.max.y));
+      let ends = [
+        (Floor::GROUND, GridCoord::from(seeded.cell(below))),
+        (Floor::On(1), GridCoord::from(seeded.cell(platform))),
+      ];
+      let open =
+        |(floor, cell): (Floor, GridCoord)| nav.grid(floor).is_some_and(|g| g.is_walkable(cell));
+      if !ends.into_iter().all(open) {
+        continue;
+      }
+      for pathfinder in [Pathfinder::new(), exact()] {
+        for (from, to) in [(ends[0], ends[1]), (ends[1], ends[0])] {
+          let Some(path) = pathfinder.find_floor_path_grid(&nav, from, to).path() else {
+            continue;
+          };
+          found += 1;
+          let crossed = crossings(&nav, grid, &path);
+          assert_eq!(
+            crossed.len(),
+            1,
+            "{grid:?} {from:?} to {to:?}: {:?}",
+            path
+              .waypoints()
+              .iter()
+              .map(|n| (n.floor, n.grid_coord))
+              .collect::<Vec<_>>()
+          );
+        }
+      }
+    }
+  }
+  assert!(found >= 1000, "{found} paths found");
 }

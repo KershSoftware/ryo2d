@@ -1538,6 +1538,92 @@ fn a_map_s_floor_navigation_joins_its_floors_at_its_stairs() {
   );
 }
 
+#[test]
+fn a_floor_without_a_footprint_is_blocked_everywhere() {
+  use crate::core::ecs::Floor;
+  // `hall` with floor 1's tile layers disabled: no tile layer gives the
+  // floor a footprint, so a grid of one of them is all in the air
+  let mut maps = MapWorld::new();
+  let map = spawn(&mut maps, hall(), placed());
+  let view = MapsView::new(&mut maps.world);
+  let upper: Vec<Entity> = ["upper", "upper-props"]
+    .into_iter()
+    .filter_map(|name| view.layer_entity(map, name))
+    .collect();
+  assert_eq!(upper.len(), 2);
+  for layer in upper {
+    maps.world.entity_mut(layer).insert(Disabled);
+  }
+  let window = CellRect::new(IVec2::splat(-2), IVec2::new(22, 12));
+  let grid = navigation(&mut maps, map, "upper", window);
+  assert_eq!(grid.floor(), Floor::On(1));
+  assert_eq!(open(&grid), []);
+  assert_eq!(blocked(&grid).len(), 24 * 14);
+}
+
+/// A generator for a streamed map with a storey: in every chunk a wall
+/// down "ground"'s column 16 from row 0 to row 20, as `walled`, and on
+/// floor 1 "upper"'s cells (2, 2) to (5, 5)
+fn storeyed_chunk(_: ChunkRequest) -> ChunkTiles {
+  let mut tiles = ChunkTiles::default();
+  for y in 0..=20 {
+    tiles.set("ground", UVec2::new(16, y), Some(Tile::new(0, WALL)));
+  }
+  for y in 2..=5 {
+    for x in 2..=5 {
+      tiles.set("upper", UVec2::new(x, y), Some(Tile::new(0, PLAIN)));
+    }
+  }
+  tiles
+}
+
+#[test]
+fn a_streamed_map_s_floor_navigation_blocks_unloaded_chunks_on_every_floor() {
+  use crate::core::ecs::Floor;
+  let mut map = TileMap::infinite(UVec2::splat(16));
+  map.add_tileset(storey_tiles());
+  map.add_tile_layer("ground");
+  let upper = map.add_tile_layer("upper");
+  map.layers[upper].info.floor = 1;
+  map.layers[upper].info.offset = UP;
+  let mut maps = MapWorld::new();
+  let handle = maps.world.resource_mut::<Assets<TileMap>>().add(map);
+  let stream = MapStream {
+    cameras: false,
+    load_distance: 100.0,
+    ..MapStream::new(storeyed_chunk)
+  };
+  let root = maps.world.spawn((MapRoot::new(handle), stream)).id();
+  maps.settle(root);
+  // Anchors in chunks 0 and 3, each loading only the chunk it is in
+  let mut cursor = MessageCursor::<ChunkEvent>::default();
+  anchor_in(&mut maps.world, 0);
+  anchor_in(&mut maps.world, 3);
+  until_landed(&mut maps, root, &mut cursor, &[0, 3]);
+
+  // One chunk tall, across chunks 0 to 3: every cell of chunks 1 and 2 is
+  // blocked on both floors' grids
+  let window = CellRect::new(IVec2::ZERO, IVec2::new(128, 32));
+  let Some(nav) = MapsView::new(&mut maps.world).floor_navigation(root, window) else {
+    panic!("{root} has floors to navigate")
+  };
+  let (Some(ground), Some(upper)) = (nav.grid(Floor::GROUND), nav.grid(Floor::On(1))) else {
+    panic!("both floors have grids")
+  };
+  let gap = cells(IVec2::new(32, 0), IVec2::new(95, 31));
+  assert_eq!(
+    blocked(ground),
+    by_row([walls_in(&[0, 3]), gap.clone()].concat())
+  );
+  assert!(gap.iter().all(|&cell| !upper.is_walkable(cell.into())));
+  // Floor 1 open on its landed cells alone
+  let decks: Vec<IVec2> = [0, 3]
+    .into_iter()
+    .flat_map(|x| cells(IVec2::new(x * 32 + 2, 2), IVec2::new(x * 32 + 5, 5)))
+    .collect();
+  assert_eq!(open(upper), by_row(decks));
+}
+
 /// Times taking a navigation grid over a 256 x 256 window: of a 512 x 512
 /// hexagonal map whose colliding walls (3 x 3 clumps every 8 cells) share
 /// its floor's cells, and of an endless map streamed round one anchor, most

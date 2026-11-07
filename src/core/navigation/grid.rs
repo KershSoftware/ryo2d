@@ -659,7 +659,7 @@ impl NavigationGrid {
   }
 
   /// The world box round this grid's cells; `None` when it has none
-  fn world_bounds(&self) -> Option<(DVec2, DVec2)> {
+  pub(crate) fn world_bounds(&self) -> Option<(DVec2, DVec2)> {
     let Some(layer) = &self.layer else {
       let origin = DVec2::new(f64::from(self.origin_x), f64::from(self.origin_y));
       let size =

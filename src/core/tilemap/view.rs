@@ -620,29 +620,43 @@ impl<'w> MapsView<'w> {
   /// ground floor's (another grid, or another offset in ground space) is
   /// left out, and the dev log warns once a map. Each cell of a run of
   /// stairs is a [`StairLink`](crate::core::navigation::StairLink) between
-  /// the floor its layer is on and the floor it leads up to, a step at no
-  /// cost, since it is the same ground. A map without floors gives its
-  /// ground floor's grid alone.
+  /// the floor its layer is on and the floor it leads up to, a step for
+  /// next to nothing, since it is the same ground. A map without floors
+  /// gives its ground floor's grid alone. Its grids are in ground space:
+  /// a point on them is where a character on that floor stands, and the
+  /// cell drawn under the pointer is [`floor_cell_at_world`](Self::floor_cell_at_world)'s.
   ///
   /// Like `navigation`, it brings the map's collision, and its stairs, up
   /// to its tiles first, so a grid taken in `update` reads the edits made
   /// before it; and it is a copy, taken again after edits or
-  /// [`ChunkEvent`](super::ChunkEvent)s.
+  /// [`ChunkEvent`](super::ChunkEvent)s. To add the game's own obstacles
+  /// or costs, clone its [`grids`](crate::core::navigation::FloorNavigation::grids),
+  /// change them, and make it again with
+  /// `FloorNavigation::new(grids, nav.links().to_vec())`.
   ///
   /// ```
   /// use ryo2d::prelude::*;
   ///
-  /// /// The way from a point on the ground to one on the map's first storey,
-  /// /// up its stairs: each step's floor is the floor to be on there
-  /// fn climb(ctx: &mut SceneContext<'_>, map: Entity, from: Vec2, to: Vec2) -> Vec<(Vec2, Floor)> {
+  /// /// The way from where the hero stands to the cell clicked, up or down
+  /// /// the stairs: each step's floor is the floor to be on there
+  /// fn climb(ctx: &mut SceneContext<'_>, map: Entity, hero: Entity) -> Vec<(Vec2, Floor)> {
+  ///   let Some(at) = ctx.world.get::<Transform>(hero).map(|t| t.translation) else {
+  ///     return Vec::new();
+  ///   };
+  ///   let on = ctx.world.get::<Floor>(hero).copied().unwrap_or_default();
+  ///   let (x, y) = ctx.input.mouse_position();
+  ///   let pointer = ctx.camera().screen_to_world(Vec2::new(x, y));
   ///   let mut maps = ctx.maps();
-  ///   let Some(bounds) = maps.bounds(map) else {
+  ///   let (Some((floor, cell)), Some(bounds)) = (maps.floor_cell_at_world(map, pointer), maps.bounds(map)) else {
   ///     return Vec::new();
   ///   };
   ///   let Some(floors) = maps.floor_navigation(map, bounds) else {
   ///     return Vec::new();
   ///   };
-  ///   match Pathfinder::new().find_floor_path(&floors, from, Floor::GROUND, to, Floor::On(1)) {
+  ///   let Some(start) = floors.grid(on).map(|grid| grid.world_to_grid(at.x, at.y)) else {
+  ///     return Vec::new();
+  ///   };
+  ///   match Pathfinder::new().find_floor_path_grid(&floors, (on, start), (floor, cell.into())) {
   ///     PathResult::Found(path) => path
   ///       .waypoints()
   ///       .iter()
@@ -803,7 +817,8 @@ impl<'w> MapsView<'w> {
 /// outside the floor's footprint on `map`: all of them where the floor has
 /// none. On the cells of the floor's bottom tile layer the footprint's
 /// cells stay open cell for cell; on any other layer's (one of the floor's
-/// standing elsewhere) the cells whose centre is over a footprint cell
+/// standing elsewhere) the cells whose centre is over a footprint cell,
+/// the footprint read only in the bottom layer's chunks under `grid`
 fn block_off_footprint(world: &World, map: Entity, floor: u8, grid: &mut NavigationGrid) {
   let window = grid.window();
   let size = window.size();
@@ -818,9 +833,11 @@ fn block_off_footprint(world: &World, map: Entity, floor: u8, grid: &mut Navigat
     let bottom = edit::entity_grid(world, footprint.bottom());
     if bottom.is_some() && bottom == grid.layer() {
       footprint.cells(Some(window), |cell| open[place(cell)] = true);
-    } else if let Some(bottom) = bottom {
+    } else if let Some(bottom) = bottom
+      && let Some(under) = cells_under(&bottom, grid)
+    {
       let mut cells = FastSet::default();
-      footprint.cells(None, |cell| {
+      footprint.cells(Some(under), |cell| {
         cells.insert(cell);
       });
       for y in window.min.y..window.max.y {
@@ -841,6 +858,41 @@ fn block_off_footprint(world: &World, map: Entity, floor: u8, grid: &mut Navigat
       }
     }
   }
+}
+
+/// The cells of `layer`'s chunks whose cells may lie under `grid`'s cells
+/// in the world (`MapGrid::chunks_over`, a superset); `None` for a grid of
+/// no cells, or a layer scaled to nothing or not finite
+fn cells_under(layer: &LayerGrid, grid: &NavigationGrid) -> Option<CellRect> {
+  let (lo, hi) = grid.world_bounds()?;
+  let to_local = layer.to_world.as_daffine2();
+  if !to_local.is_finite() || to_local.matrix2.determinant() == 0.0 {
+    return None;
+  }
+  let to_local = to_local.inverse();
+  let corners = [
+    lo,
+    glam::DVec2::new(hi.x, lo.y),
+    hi,
+    glam::DVec2::new(lo.x, hi.y),
+  ]
+  .map(|corner| to_local.transform_point2(corner));
+  let (min, max) = corners
+    .iter()
+    .fold((corners[0], corners[0]), |(min, max), &c| {
+      (min.min(c), max.max(c))
+    });
+  let size = max - min;
+  let local = Rect::new(min.x as f32, min.y as f32, size.x as f32, size.y as f32);
+  let (first, last) = layer.grid.chunks_over(local);
+  if first.cmpgt(last).any() {
+    return None;
+  }
+  let side = IVec2::splat(CHUNK_SIZE as i32);
+  Some(CellRect::new(
+    first.saturating_mul(side),
+    (last + IVec2::ONE).saturating_mul(side),
+  ))
 }
 
 /// The maps whose floors' navigation left a floor out, each warned about

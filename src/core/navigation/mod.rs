@@ -90,11 +90,14 @@
 //! A grid is on a floor ([`NavigationGrid::floor`]), and each [`PathNode`]
 //! carries its grid's. A [`FloorNavigation`] is a grid for each floor over
 //! the same cells, joined at [`StairLink`]s, so a path can climb from one
-//! floor to another; a tile map with storeys gives one
-//! (`MapsView::floor_navigation`), and a game can make one itself:
+//! floor to another. A game can make one itself ([`FloorNavigation::new`]),
+//! and a tile map with storeys gives one (`MapsView::floor_navigation`),
+//! as here:
 //!
 //! ```ignore
 //! let floors = ctx.maps().floor_navigation(map, bounds)?;
+//! // `from` and `to` where characters stand on those floors (their
+//! // `Transform`s), not where they draw
 //! let result = pathfinder.find_floor_path(&floors, from, Floor::GROUND, to, Floor::On(1));
 //! // Each waypoint's `floor` is the floor to be on there: it changes
 //! // between two waypoints at a stair cell

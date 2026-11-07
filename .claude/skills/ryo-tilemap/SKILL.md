@@ -500,26 +500,31 @@ if let Some(paths) = &mut self.paths {
 }
 ```
 
-- **Paths across storeys:** `ctx.maps().floor_navigation(map, window)` is a `FloorNavigation`: each storey's grid (`navigation` of its bottom tile layer, its first enabled one) over `window` of the ground floor's cells, joined at every cell of the map's runs of stairs (section 10, Stairs) by a `StairLink { cell, lower, upper }` crossed at no cost, since it is the same ground. `Pathfinder::find_floor_path(&floors, from, from_floor, to, to_floor)` (world points, each read through its storey's grid) or `find_floor_path_grid(&floors, (floor, cell), (floor, cell))` searches it with the same A* as one grid, its node budget for the whole search. Each `PathNode` carries its `floor`, which changes between two nodes at a stair cell, one on each storey: a character following the path changes floor where the stairs do (a `Climber` does it by itself as it crosses the run; anything else sets its `Floor` as it reaches the node). Smoothing works within each storey's run of nodes and keeps the two nodes at the stairs. It brings the map's collision and its stairs up to its tiles first, as `navigation` does. A storey whose bottom tile layer stands elsewhere than the ground floor's (another grid, or another place in ground space) is left out, warned once a map; a map without storeys gives its ground floor's grid alone; `None` until the map lands, or with no tile layer on the ground floor. Like `navigation` it is a copy: take it again after edits.
+- **Paths across storeys:** `ctx.maps().floor_navigation(map, window)` is a `FloorNavigation`: each storey's grid (`navigation` of its bottom tile layer, its first enabled one) over `window` of the ground floor's cells, joined at every cell of the map's runs of stairs (section 10, Stairs) by a `StairLink { cell, lower, upper }`, crossed for a thousandth of a step: next to nothing, since it is the same ground, but enough that of paths otherwise as cheap the search takes the one changing storey least, so a path crosses a run of stairs once (a link step pays no cell's cost, so give a stair cell the same cost on both storeys' grids, or a path steps onto it on the cheaper one and crosses there). `Pathfinder::find_floor_path(&floors, from, from_floor, to, to_floor)` or `find_floor_path_grid(&floors, (floor, cell), (floor, cell))` searches it with the same A* as one grid, its node budget for the whole search, in one call: a search across storeys is not time-sliced (there is no `start_pathfinding` for it). `find_floor_path`'s points are in ground space, each read through its storey's grid: where a character on that storey stands (its `Transform`), not where it draws; a point clicked on a storey's art is a storey's height off, so a click goes through `floor_cell_at_world` (section 6) into `find_floor_path_grid`. Each `PathNode` carries its `floor`, which changes between two nodes at a stair cell, one on each storey: a character following the path changes floor where the stairs do (a `Climber` does it by itself as it crosses the run; anything else sets its `Floor` as it reaches the node). Smoothing works within each storey's run of nodes and keeps the two nodes at the stairs. It brings the map's collision and its stairs up to its tiles first, as `navigation` does. A storey whose bottom tile layer stands elsewhere than the ground floor's (another grid, or another place in ground space) is left out, warned once a map; a map without storeys gives its ground floor's grid alone; `None` until the map lands, or with no tile layer on the ground floor. Like `navigation` it is a copy: take it again after edits, and for the game's own obstacles or costs clone its `grids()`, change them, and make it again with `FloorNavigation::new(grids, floors.links().to_vec())`.
 
 <!-- self: town: Entity, hero: Entity, route: Option<Path> -->
 ```rust
-// The way from where the hero stands, on the storey it is on, to a cell
-// of the first storey, up the stairs
-let at = ctx.world.get::<Transform>(self.hero).map(|t| t.translation).unwrap_or_default();
-let on = ctx.world.get::<Floor>(self.hero).copied().unwrap_or_default();
-let mut maps = ctx.maps();
-if let Some(bounds) = maps.bounds(self.town)
-  && let Some(floors) = maps.floor_navigation(self.town, bounds)
-{
-  let goal = (Floor::On(1), GridCoord::new(12, 4));
-  self.route = match floors.grid(on) {
-    Some(grid) => {
-      let start = (on, grid.world_to_grid(at.x, at.y));
-      Pathfinder::new().find_floor_path_grid(&floors, start, goal).path()
-    }
-    None => None,
-  };
+// On a click, the way from where the hero stands, on the storey it is on,
+// to the cell drawn under the pointer, on whichever storey that is
+if ctx.input.mouse_pressed(MouseButton::Left) {
+  let at = ctx.world.get::<Transform>(self.hero).map(|t| t.translation).unwrap_or_default();
+  let on = ctx.world.get::<Floor>(self.hero).copied().unwrap_or_default();
+  let (x, y) = ctx.input.mouse_position();
+  let pointer = ctx.camera().screen_to_world(Vec2::new(x, y));
+  let mut maps = ctx.maps();
+  if let Some((floor, cell)) = maps.floor_cell_at_world(self.town, pointer)
+    && let Some(bounds) = maps.bounds(self.town)
+    && let Some(floors) = maps.floor_navigation(self.town, bounds)
+  {
+    self.route = match floors.grid(on) {
+      Some(grid) => {
+        let start = (on, grid.world_to_grid(at.x, at.y));
+        let goal = (floor, GridCoord::from(cell));
+        Pathfinder::new().find_floor_path_grid(&floors, start, goal).path()
+      }
+      None => None,
+    };
+  }
 }
 ```
 

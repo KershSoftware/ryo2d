@@ -295,11 +295,7 @@ impl Pathfinder {
 
     // Same cell = already there
     if start == goal {
-      let (x, y) = grid.grid_to_world(start);
-      return PathResult::Found(Path::new(
-        vec![PathNode::new(x, y, start)],
-        grid.generation(),
-      ));
+      return PathResult::Found(Path::new(vec![Graph::node(grid, start)], grid.generation()));
     }
 
     let mut search = Search::new(start, goal, grid);
@@ -316,19 +312,32 @@ impl Pathfinder {
 
   /// Find a path across floors, from the world point `start` on
   /// `start_floor` to `goal` on `goal_floor`, each point read through its
-  /// floor's grid ([`find_floor_path_grid`](Self::find_floor_path_grid))
+  /// floor's grid ([`find_floor_path_grid`](Self::find_floor_path_grid)).
+  ///
+  /// The points are in ground space: where a character on that floor
+  /// stands (its `Transform`), not where it draws. A storey draws its
+  /// height above its ground, so a point picked on a storey's art is a
+  /// storey's height off its cell: a click goes through
+  /// [`MapsView::floor_cell_at_world`](crate::core::tilemap::MapsView::floor_cell_at_world)
+  /// into `find_floor_path_grid` instead.
   ///
   /// ```
   /// use ryo2d::prelude::*;
   ///
-  /// /// The way from where the hero stands to a point clicked on the
-  /// /// map's first storey, up its stairs
-  /// fn route_up(ctx: &mut SceneContext<'_>, map: Entity, hero: Vec2, clicked: Vec2) -> Option<Path> {
+  /// /// The way from where the hero stands to where the guard stands,
+  /// /// each on its own storey
+  /// fn route_to(ctx: &mut SceneContext<'_>, map: Entity, hero: Entity, guard: Entity) -> Option<Path> {
+  ///   let stand = |entity: Entity| {
+  ///     let at = ctx.world.get::<Transform>(entity)?.translation;
+  ///     let floor = ctx.world.get::<Floor>(entity).copied().unwrap_or_default();
+  ///     Some((at, floor))
+  ///   };
+  ///   let ((from, from_floor), (to, to_floor)) = (stand(hero)?, stand(guard)?);
   ///   let mut maps = ctx.maps();
   ///   let bounds = maps.bounds(map)?;
   ///   let floors = maps.floor_navigation(map, bounds)?;
   ///   Pathfinder::new()
-  ///     .find_floor_path(&floors, hero, Floor::GROUND, clicked, Floor::On(1))
+  ///     .find_floor_path(&floors, from, from_floor, to, to_floor)
   ///     .path()
   /// }
   /// ```
@@ -351,17 +360,43 @@ impl Pathfinder {
 
   /// Find a path across floors from a floor's cell to a floor's cell: on
   /// each floor through its grid's steps, and from one floor to another
-  /// at a stair link, a step at no cost between the link's cell on the two
-  /// floors. The path's nodes carry their floor, which changes between
-  /// two nodes at the link's cell. An end on a floor without a grid, out
-  /// of its grid or blocked is `InvalidEndpoints`.
+  /// at a stair link, a step between the link's cell on the two floors
+  /// for next to nothing (a thousandth of a step, so of paths otherwise as
+  /// cheap the one changing floor least: a path crosses a run of stairs
+  /// once). The path's nodes carry their floor, which changes between two
+  /// nodes at the link's cell. An end on a floor without a grid, out of
+  /// its grid or blocked is `InvalidEndpoints`.
   ///
   /// The search is the same A* as [`find_path_grid`](Self::find_path_grid)'s,
   /// with its heuristic and tie-break measured on the lowest floor's grid
   /// (every floor's cells lie where its cells do, and a link joins one
   /// cell), and its node budget (`max_total_nodes`) for the whole search.
   /// Smoothing works within each run of nodes on one floor, on that
-  /// floor's grid, and keeps the two nodes at each link.
+  /// floor's grid, and keeps the two nodes at each link. It runs to the end
+  /// in one call: a floor search is not time-sliced (there is no
+  /// `start_pathfinding` across floors), whatever `max_nodes_per_frame`
+  /// says.
+  ///
+  /// ```
+  /// use ryo2d::prelude::*;
+  ///
+  /// /// The way from where the hero stands to the cell clicked, on
+  /// /// whichever storey is drawn under the pointer
+  /// fn route_up(ctx: &mut SceneContext<'_>, map: Entity, hero: Entity) -> Option<Path> {
+  ///   let at = ctx.world.get::<Transform>(hero)?.translation;
+  ///   let on = ctx.world.get::<Floor>(hero).copied().unwrap_or_default();
+  ///   let (x, y) = ctx.input.mouse_position();
+  ///   let pointer = ctx.camera().screen_to_world(Vec2::new(x, y));
+  ///   let mut maps = ctx.maps();
+  ///   let (floor, cell) = maps.floor_cell_at_world(map, pointer)?;
+  ///   let bounds = maps.bounds(map)?;
+  ///   let floors = maps.floor_navigation(map, bounds)?;
+  ///   let start = floors.grid(on)?.world_to_grid(at.x, at.y);
+  ///   Pathfinder::new()
+  ///     .find_floor_path_grid(&floors, (on, start), (floor, cell.into()))
+  ///     .path()
+  /// }
+  /// ```
   pub fn find_floor_path_grid(
     &self,
     nav: &FloorNavigation,
@@ -412,11 +447,7 @@ impl Pathfinder {
 
     // Same cell = already there
     if start == goal {
-      let (x, y) = grid.grid_to_world(start);
-      let result = PathResult::Found(Path::new(
-        vec![PathNode::new(x, y, start)],
-        grid.generation(),
-      ));
+      let result = PathResult::Found(Path::new(vec![Graph::node(grid, start)], grid.generation()));
       return (0, self.apply_smoothing(result, grid));
     }
 
@@ -668,6 +699,33 @@ mod tests {
 
     let path = result.path().unwrap();
     assert_eq!(path.len(), 1);
+  }
+
+  #[test]
+  fn a_path_on_a_floor_s_grid_carries_its_floor_one_node_or_more() {
+    let grid = NavigationGrid::new(100.0, 100.0, 10.0).on_floor(Floor::On(1));
+    let mut pathfinder = Pathfinder::new();
+    let floors = |result: PathResult| -> Vec<Floor> {
+      match result {
+        PathResult::Found(path) => path.waypoints().iter().map(|n| n.floor).collect(),
+        other => panic!("{other:?}"),
+      }
+    };
+    let (here, there) = (GridCoord::new(2, 3), GridCoord::new(7, 3));
+    // One node, from each entry point: its cell is its goal
+    assert_eq!(
+      floors(pathfinder.find_path_grid(&grid, here, here)),
+      [Floor::On(1)]
+    );
+    assert_eq!(
+      floors(pathfinder.find_path(&grid, 25.0, 35.0, 25.0, 35.0)),
+      [Floor::On(1)]
+    );
+    let (_, sliced) = pathfinder.start_pathfinding(&grid, 25.0, 35.0, 25.0, 35.0);
+    assert_eq!(floors(sliced), [Floor::On(1)]);
+    // More
+    let found = floors(pathfinder.find_path_grid(&grid, here, there));
+    assert!(found.len() > 1 && found.iter().all(|&f| f == Floor::On(1)));
   }
 
   #[test]
