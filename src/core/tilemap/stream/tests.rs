@@ -1153,6 +1153,57 @@ fn chunks_landing_in_the_map_s_own_landing_frame_spawn_their_class_tiles() {
 }
 
 #[test]
+fn a_streamed_class_tile_on_a_higher_floor_is_on_that_floor() {
+  use crate::core::ecs::Floor;
+  // "ground" on the ground floor with a coin at (3, 3) of every chunk, and
+  // "upper" on floor 1, 32 px up, with one at (5, 5)
+  let generator = |request: ChunkRequest| {
+    let mut tiles = a_coin_a_chunk(request);
+    tiles.set("upper", UVec2::new(5, 5), Some(COIN));
+    tiles
+  };
+  let mut map = infinite(&["ground", "upper"]);
+  map.layers[1].info.floor = 1;
+  map.layers[1].info.offset = Vec2::new(0.0, -32.0);
+  let mut maps = MapWorld::new();
+  let map = spawn(&mut maps, map, MapStream::new(generator), |root| {
+    root.with_entity_tiles(&["coin"])
+  });
+  let anchor = anchor_at(&mut maps, IVec2::ZERO);
+  until_idle(&mut maps, map);
+  maps.frame();
+  // Each chunk's coins, as their chunks land and again after a move: the
+  // upper layer's on floor 1, the ground's on none
+  let floors_of = |world: &mut World| -> Vec<(IVec2, Option<Floor>)> {
+    let mut found: Vec<(IVec2, Option<Floor>)> = world
+      .query::<(&MapTile, Option<&Floor>)>()
+      .iter(world)
+      .map(|(tile, floor)| (tile.cell, floor.copied()))
+      .collect();
+    found.sort_by_key(|(cell, _)| (cell.y, cell.x));
+    found
+  };
+  let expected = |middle: IVec2| -> Vec<(IVec2, Option<Floor>)> {
+    let mut coins: Vec<(IVec2, Option<Floor>)> = around(middle, 1)
+      .into_iter()
+      .flat_map(|chunk| {
+        [
+          (chunk * 32 + IVec2::new(3, 3), None),
+          (chunk * 32 + IVec2::new(5, 5), Some(Floor::On(1))),
+        ]
+      })
+      .collect();
+    coins.sort_by_key(|(cell, _)| (cell.y, cell.x));
+    coins
+  };
+  assert_eq!(floors_of(&mut maps.world), expected(IVec2::ZERO));
+  move_to(&mut maps.world, anchor, IVec2::new(20, 0));
+  until_idle(&mut maps, map);
+  maps.frame();
+  assert_eq!(floors_of(&mut maps.world), expected(IVec2::new(20, 0)));
+}
+
+#[test]
 fn a_bounded_map_given_a_stream_streams_nothing_and_warns_once() {
   let calls = Arc::new(AtomicUsize::new(0));
   let counted = Arc::clone(&calls);

@@ -2,7 +2,7 @@
 name: ryo-particles
 description: Particle system - emitters, attractors, collisions, presets for visual effects.
 metadata:
-  version: 2.1.2
+  version: 2.2.0
 ---
 
 # Ryo2D Particle System Specialist
