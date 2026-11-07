@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use glam::{IVec2, UVec2, Vec2};
 
-use super::{Climber, FloorChanged, StairRun};
+use super::{Climber, FloorChanged, MapStairs, StairRun};
 use crate::core::asset::Assets;
 use crate::core::ecs::{
   ChildOf, Entity, Floor, Interpolated, MessageCursor, Messages, Transform, World,
@@ -134,7 +134,7 @@ type Summary = (u8, u8, Vec<IVec2>, Vec2, Vec2);
 /// The runs of `map`, by their floors and first cell
 fn runs(world: &World, map: Entity) -> Vec<StairRun> {
   let mut runs = world
-    .get::<super::MapStairs>(map)
+    .get::<MapStairs>(map)
     .map(|stairs| stairs.runs.clone())
     .unwrap_or_default();
   runs.sort_by_key(|run| (run.from, run.to, run.cells.first().map(|c| (c.y, c.x))));
@@ -274,7 +274,7 @@ fn stairs_join_into_runs_with_a_bottom_and_a_top() {
   // A map without floors has none, nor floors to keep them in
   let plain = land(&mut maps, storeyed(&[("ground", 0, Vec2::ZERO, &ground)]));
   assert!(maps.world.get::<MapFloors>(plain).is_none());
-  assert!(maps.world.get::<super::MapStairs>(plain).is_none());
+  assert!(maps.world.get::<MapStairs>(plain).is_none());
 }
 
 #[test]
@@ -1026,4 +1026,248 @@ fn stairs_up_to_a_floor_without_an_edge_lead_nowhere() {
     maps.frame();
   }
   assert_eq!(floor_of(&maps.world, hero), Some(Floor::GROUND));
+}
+
+/// What a climber on `floor` at the map point `at` climbs, found by looking
+/// at every run of `stairs` in turn, as climbing did before its index: the
+/// first run holding `at` with `floor` one of its two floors, by its place
+/// in the runs, and how far up it `at` is
+fn scanned(stairs: &MapStairs, at: Vec2, floor: Floor) -> Option<(usize, f32)> {
+  let number = floor.number()?;
+  stairs
+    .runs
+    .iter()
+    .enumerate()
+    .find(|(_, run)| (run.from == number || run.to == number) && run.holds(at))
+    .map(|(index, run)| (index, run.progress(at)))
+}
+
+/// What `stairs` says a climber on `floor` at `at` climbs, the run by its
+/// place in the runs
+fn climbed(stairs: &MapStairs, at: Vec2, floor: Floor) -> Option<(usize, f32)> {
+  let (run, up) = stairs.climbing(at, floor)?;
+  let index = stairs.runs.iter().position(|of| std::ptr::eq(of, run))?;
+  Some((index, up))
+}
+
+/// `map`'s stairs answer as a look at every run would, at points 4 px apart
+/// over its 20 x 10 cells and a cell round them, on floors 0 to 3 and every
+/// floor; and the answers at `at` for floors 0, 1 and 2
+fn answers(maps: &MapWorld, map: Entity, at: Vec2) -> [Option<(usize, f32)>; 3] {
+  let Some(stairs) = maps.world.get::<MapStairs>(map) else {
+    panic!("{map} has stairs")
+  };
+  let floors = [0, 1, 2, 3].map(Floor::On);
+  for y in -4..44 {
+    for x in -4..84 {
+      let point = Vec2::new(x as f32, y as f32) * 4.0 + 1.0;
+      for floor in floors.into_iter().chain([Floor::Every]) {
+        assert_eq!(
+          climbed(stairs, point, floor),
+          scanned(stairs, point, floor),
+          "at {point} on {floor:?}"
+        );
+      }
+    }
+  }
+  [0, 1, 2].map(|n| climbed(stairs, at, Floor::On(n)))
+}
+
+/// The run of `map` numbered `index` in its stairs, by its floors
+fn floors_of(maps: &MapWorld, map: Entity, index: usize) -> (u8, u8) {
+  let run = &runs_unsorted(&maps.world, map)[index];
+  (run.from, run.to)
+}
+
+/// The runs of `map` as its stairs keep them, unsorted
+fn runs_unsorted(world: &World, map: Entity) -> Vec<StairRun> {
+  world
+    .get::<MapStairs>(map)
+    .map(|stairs| stairs.runs.clone())
+    .unwrap_or_default()
+}
+
+#[test]
+fn a_cell_in_two_runs_answers_for_each_floor() {
+  // Cell (7, 4) holds stairs on the ground up to floor 1, whose block
+  // begins right of it, and on floor 1 up to floor 2, whose roof ends left
+  // of it: two runs of one cell on two floors, climbing opposite ways
+  let mut upper = block((8, 3), (13, 6), PLAIN);
+  upper.push((IVec2::new(7, 4), UP_2));
+  let mut maps = MapWorld::new();
+  let map = land(
+    &mut maps,
+    storeyed(&[
+      ("ground", 0, Vec2::ZERO, &[(IVec2::new(7, 4), UP_1)]),
+      ("upper", 1, UP, &upper),
+      ("roof", 2, HIGH, &block((4, 3), (6, 5), PLAIN)),
+    ]),
+  );
+  let want: Vec<Summary> = vec![
+    (
+      0,
+      1,
+      cells(&[(7, 4)]),
+      Vec2::new(112.0, 72.0),
+      Vec2::new(128.0, 72.0),
+    ),
+    (
+      1,
+      2,
+      cells(&[(7, 4)]),
+      Vec2::new(128.0, 72.0),
+      Vec2::new(112.0, 72.0),
+    ),
+  ];
+  let got = summaries(&maps.world, map);
+  assert!(same_runs(&got, &want), "{got:?}");
+  // A quarter of the way across the cell from its left: a quarter up the
+  // run to floor 1, three quarters up the run to floor 2. On floor 1 the
+  // point is on both runs, and the first of them in the map's runs answers
+  let at = Vec2::new(116.0, 72.0);
+  let [ground, first, second] = answers(&maps, map, at);
+  let (index, up) = ground.expect("the ground floor climbs to floor 1");
+  assert_eq!(floors_of(&maps, map, index), (0, 1));
+  assert!((up - 0.25).abs() < 1e-5, "{up}");
+  let (index, up) = second.expect("floor 2 climbs down to floor 1");
+  assert_eq!(floors_of(&maps, map, index), (1, 2));
+  assert!((up - 0.75).abs() < 1e-5, "{up}");
+  let (index, _) = first.expect("floor 1 is on both runs");
+  assert_eq!(index, 0, "the first run answers for floor 1");
+
+  // Runs standing at two places: on the ground up to floor 1 as before,
+  // and on a ground floor layer standing 8 px right ("east"), where floor
+  // 2 stands too, up to floor 2. The point 12 px into the ground's cell
+  // (7, 4) is 4 px into the east layer's: three quarters up the one,
+  // a quarter up the other
+  let mut maps = MapWorld::new();
+  let east = Vec2::new(8.0, 0.0);
+  let map = land(
+    &mut maps,
+    storeyed(&[
+      ("ground", 0, Vec2::ZERO, &[(IVec2::new(7, 4), UP_1)]),
+      ("upper", 1, UP, &block((8, 3), (13, 6), PLAIN)),
+      ("east", 0, east, &[(IVec2::new(7, 4), UP_2)]),
+      ("roof", 2, HIGH + east, &block((8, 3), (10, 5), PLAIN)),
+    ]),
+  );
+  let at = Vec2::new(124.0, 72.0);
+  let [ground, first, second] = answers(&maps, map, at);
+  let (index, up) = first.expect("floor 1 climbs down to the ground");
+  assert_eq!(floors_of(&maps, map, index), (0, 1));
+  assert!((up - 0.75).abs() < 1e-5, "{up}");
+  let (index, up) = second.expect("floor 2 climbs down to the ground");
+  assert_eq!(floors_of(&maps, map, index), (0, 2));
+  assert!((up - 0.25).abs() < 1e-5, "{up}");
+  assert!(ground.is_some(), "the ground floor is on both runs");
+}
+
+#[test]
+fn stairs_follow_a_streamed_map_s_chunks() {
+  use crate::core::tilemap::{ChunkEvent, ChunkRequest, ChunkTiles, MapStream, StreamAnchor};
+  /// A chunk's side in pixels
+  const CHUNK: f32 = 32.0 * 16.0;
+  /// Every chunk holds the hall: two stairs on the ground leading right
+  /// into floor 1's block
+  fn hall_chunk(_: ChunkRequest) -> ChunkTiles {
+    let mut tiles = ChunkTiles::default();
+    let (ground, upper) = hall_with(&[(6, 4), (7, 4)]);
+    for (layer, cells) in [("ground", ground), ("upper", upper)] {
+      for (cell, tile) in cells {
+        tiles.set(layer, cell.as_uvec2(), Some(tile));
+      }
+    }
+    tiles
+  }
+  let map = with_layers(
+    TileMap::infinite(UVec2::splat(16)),
+    TilesetSource::Embedded(Arc::new(steps())),
+    &[("ground", 0, Vec2::ZERO, &[]), ("upper", 1, UP, &[])],
+  );
+  let mut maps = MapWorld::new();
+  let handle = maps.world.resource_mut::<Assets<TileMap>>().add(map);
+  // Each anchor loads only the chunk it is in, and a chunk unloads once no
+  // anchor is in it
+  let stream = MapStream {
+    cameras: false,
+    load_distance: 100.0,
+    unload_distance: 200.0,
+    ..MapStream::new(hall_chunk)
+  };
+  let map = maps.world.spawn((MapRoot::new(handle), stream)).id();
+  maps.settle(map);
+  let anchor_in = |world: &mut World, x: i32| {
+    let at = Vec2::new((x as f32 + 0.5) * CHUNK, 0.5 * CHUNK);
+    world
+      .spawn((Transform::from_translation(at), StreamAnchor))
+      .id()
+  };
+  // Chunks -2, 0 and 2 land, each with its run: in chunk 0, its foot at
+  // x 96 and its top at x 128
+  let middle = anchor_in(&mut maps.world, 0);
+  for x in [-2, 2] {
+    anchor_in(&mut maps.world, x);
+  }
+  let mut cursor = MessageCursor::<ChunkEvent>::default();
+  let mut loaded = 0;
+  maps.frames_until(|world| {
+    loaded += cursor
+      .read(world.resource::<Messages<ChunkEvent>>())
+      .filter(|event| matches!(event, ChunkEvent::Loaded { .. }))
+      .count();
+    loaded == 3 && runs(world, map).len() == 3
+  });
+  let firsts: Vec<IVec2> = runs(&maps.world, map)
+    .iter()
+    .map(|run| run.cells[0])
+    .collect();
+  assert_eq!(firsts, cells(&[(-58, 4), (6, 4), (70, 4)]));
+  // A climber a quarter up chunk 0's run eases a quarter of floor 1's
+  // height, and one a quarter up chunk 2's too
+  let here = climber_at(&mut maps, Vec2::new(104.0, 72.0));
+  let there = climber_at(&mut maps, Vec2::new(104.0 + 2.0 * CHUNK, 72.0));
+  maps.frame();
+  maps.frame();
+  for climber in [here, there] {
+    let lift = lift_of(&mut maps.world, climber);
+    assert!(near(lift, UP / 4.0), "{climber}: {lift}");
+  }
+
+  // Chunk 0's anchor gone, chunk 0 unloads and its run goes with it. The
+  // map still spans chunks -2 to 2, so the climber there still stands on
+  // it, and now on no stairs: it draws on the ground, and walking up to
+  // where the run's top was leaves it there
+  maps.world.despawn(middle);
+  maps.frames_until(|world| {
+    cursor
+      .read(world.resource::<Messages<ChunkEvent>>())
+      .any(|event| matches!(event, ChunkEvent::Unloading { chunk, .. } if *chunk == IVec2::ZERO))
+  });
+  maps.frame();
+  // Something on floor 1 there draws a storey up: the map is under it
+  let crate_on_floor = maps
+    .world
+    .spawn((Transform::from_xy(104.0, 72.0), Floor::On(1)))
+    .id();
+  maps.frame();
+  assert_eq!(lift_of(&mut maps.world, crate_on_floor), UP);
+  let firsts: Vec<IVec2> = runs(&maps.world, map)
+    .iter()
+    .map(|run| run.cells[0])
+    .collect();
+  assert_eq!(firsts, cells(&[(-58, 4), (70, 4)]));
+  let Some(stairs) = maps.world.get::<MapStairs>(map) else {
+    panic!("{map} keeps its stairs")
+  };
+  assert!(
+    stairs
+      .climbing(Vec2::new(104.0, 72.0), Floor::GROUND)
+      .is_none()
+  );
+  assert_eq!(lift_of(&mut maps.world, here), Vec2::ZERO);
+  move_to(&mut maps, here, Vec2::new(124.0, 72.0));
+  assert_eq!(floor_of(&maps.world, here), Some(Floor::GROUND));
+  assert_eq!(lift_of(&mut maps.world, here), Vec2::ZERO);
+  let lift = lift_of(&mut maps.world, there);
+  assert!(near(lift, UP / 4.0), "{lift}");
 }

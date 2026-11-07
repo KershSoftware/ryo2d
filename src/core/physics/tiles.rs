@@ -11,9 +11,9 @@ use rapier2d::prelude::SharedShape;
 use super::collider::{Collider, PrebuiltShape};
 use super::world::Physics;
 use crate::core::ecs::{
-  Allow, Changed, ChildOf, Children, Commands, Component, DetectChangesMut, Disabled, Entity,
-  EntityHashSet, Floor, Has, Or, ParentPlaced, Query, RemovedComponents, ResMut, Transform, Vec2,
-  With,
+  Allow, Changed, ChildOf, Children, Commands, Component, DetectChanges, DetectChangesMut,
+  Disabled, Entity, EntityHashSet, Floor, Has, Or, ParentPlaced, Query, Ref, RemovedComponents,
+  ResMut, Transform, Vec2, With,
 };
 use crate::core::hash::{FastMap, FastSet};
 
@@ -646,7 +646,8 @@ const MAX_CHANGES: usize = 1 << 16;
 /// Its colliders are on its `floor` (`with_floor`; the ground floor by
 /// default): off the ground floor each carries it as its `Floor`, and on
 /// it they carry none. Neither the map entity's `Floor` nor its body's
-/// reaches them. Changing it rebuilds them all.
+/// reaches them: a `Floor` on the map entity unlike its `floor` is warned
+/// of once. Changing it rebuilds them all.
 ///
 /// Outlines are hollow: a body that ends up inside a solid region is not
 /// pushed out. `solid_rects()` trades the seamless floors for solid
@@ -2538,6 +2539,7 @@ type Maps<'w, 's> = Query<
     Option<&'static mut TileColliders>,
     Option<&'static mut TileBuild>,
     Option<&'static mut Traced>,
+    Option<Ref<'static, Floor>>,
     Has<Disabled>,
   ),
   (Or<(With<TileColliders>, With<TileBuild>)>, Allow<Disabled>),
@@ -2556,7 +2558,8 @@ type Kids<'w, 's> = Query<'w, 's, &'static Children, Allow<Disabled>>;
 /// or when the cells changed too often to list). A grid traced ahead
 /// (`Traced`, of its generation) is built from the trace. A step with
 /// nothing to rebuild costs a look at each map and at the parts given a
-/// parent since.
+/// parent since. A map entity whose own `Floor` is not its grid's `floor`
+/// is warned of once, as either changes: the parts never take it.
 pub(crate) fn rebuild_tile_colliders(
   mut maps: Maps,
   parts: Parts,
@@ -2568,7 +2571,17 @@ pub(crate) fn rebuild_tile_colliders(
 ) {
   // Maps whose parts are all cleared (and built again)
   let mut cleared = EntityHashSet::default();
-  for (map, tiles, build, traced, disabled) in &mut maps {
+  for (map, tiles, build, traced, floor, disabled) in &mut maps {
+    if let (Some(tiles), Some(floor)) = (&tiles, &floor)
+      && (tiles.is_changed() || floor.is_changed())
+      && **floor != tiles.floor
+    {
+      let message = format!(
+        "TileColliders keeps its colliders on its own floor ({:?}), not on the entity's Floor ({:?}): set theirs with TileColliders::with_floor",
+        tiles.floor, **floor
+      );
+      physics.warn_once(map, &message);
+    }
     let Some(mut tiles) = tiles.filter(|_| !disabled) else {
       if build.is_some() {
         commands.entity(map).remove::<TileBuild>();
@@ -5846,6 +5859,85 @@ mod with_physics {
       );
       assert_eq!(physics.collider_entries[&part].floor, Floor::GROUND);
     }
+  }
+
+  #[test]
+  fn a_floor_on_a_grid_s_entity_unlike_its_own_warns_once_naming_with_floor() {
+    let warnings = |world: &World| world.resource::<Physics>().warnings;
+    // The dev log's warnings naming `with_floor` and saying `floors` (the
+    // grid's and the entity's), which no other test's say
+    let warned = |map: Entity, floors: &str| {
+      crate::core::dev_log::get_entries()
+        .iter()
+        .filter(|entry| {
+          let message = &entry.message;
+          message.contains(&format!("{map}:"))
+            && message.contains(floors)
+            && message.contains("TileColliders::with_floor")
+        })
+        .count()
+    };
+    let floor_of_parts = |world: &mut World, map: Entity| {
+      let mut query = world.query::<(&ChildOf, Option<&Floor>)>();
+      query
+        .iter(world)
+        .filter(|(child_of, _)| child_of.parent() == map)
+        .map(|(_, floor)| floor.copied())
+        .collect::<Vec<_>>()
+    };
+    let (mut world, mut s) = world(60);
+    // The entity's floor and the grid's agree: nothing to say
+    world.spawn((
+      Transform::IDENTITY,
+      Floor::On(1),
+      row(5).with_floor(Floor::On(1)),
+    ));
+    run(&mut world, &mut s, 3);
+    assert_eq!(warnings(&world), 0);
+
+    // A floor on the entity that the grid's is not: its parts stay on the
+    // grid's, and it warns once however long it stays
+    let map = world
+      .spawn((Transform::from_xy(0.0, 200.0), Floor::On(7), row(5)))
+      .id();
+    run(&mut world, &mut s, 5);
+    assert_eq!(warnings(&world), 1);
+    assert_eq!(
+      warned(map, "own floor (On(0)), not on the entity's Floor (On(7))"),
+      1
+    );
+    let parts = floor_of_parts(&mut world, map);
+    assert!(
+      !parts.is_empty() && parts.iter().all(Option::is_none),
+      "{parts:?}"
+    );
+
+    // One given to a built grid later warns too, once, and a grid edited
+    // under it says nothing more
+    let later = world
+      .spawn((
+        Transform::from_xy(0.0, 400.0),
+        row(5).with_floor(Floor::On(5)),
+      ))
+      .id();
+    run(&mut world, &mut s, 2);
+    assert_eq!(warnings(&world), 1);
+    world.entity_mut(later).insert(Floor::Every);
+    run(&mut world, &mut s, 3);
+    assert_eq!(warnings(&world), 2);
+    assert_eq!(
+      warned(
+        later,
+        "own floor (On(5)), not on the entity's Floor (Every)"
+      ),
+      1
+    );
+    world
+      .get_mut::<TileColliders>(later)
+      .unwrap()
+      .set(IVec2::new(2, 0), TileCell::Empty);
+    run(&mut world, &mut s, 3);
+    assert_eq!(warnings(&world), 2);
   }
 
   #[test]

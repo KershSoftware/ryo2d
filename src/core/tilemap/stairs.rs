@@ -8,7 +8,8 @@
 //! bottom its foot: the side it shares with neither that is farthest from
 //! its top along the run. A map with floors keeps its runs in a
 //! [`MapStairs`] beside its [`MapFloors`], brought up to its tiles and
-//! tilesets each fixed step ([`sync_stair_runs`]).
+//! tilesets each fixed step ([`sync_stair_runs`]), with an index of their
+//! cells, so a climber's run is looked up where it stands.
 //!
 //! An entity with [`Climber`] changes floor halfway along a run
 //! ([`climb_stairs`]), and draws eased between the two floors' heights by
@@ -103,7 +104,10 @@ pub(crate) struct StairRun {
 }
 
 impl StairRun {
-  /// Whether the map point `at` (ground space) is on one of its cells
+  /// Whether the map point `at` (ground space) is on one of its cells. The
+  /// tests' look at every run in turn, which `MapStairs::climbing`'s index
+  /// answers as
+  #[cfg(test)]
   pub(crate) fn holds(&self, at: Vec2) -> bool {
     let cell = self.grid.cell_at(at - self.offset);
     self
@@ -121,16 +125,88 @@ impl StairRun {
 
 impl MapStairs {
   /// The run under the map point `at` (ground space) that something on
-  /// `floor` climbs, one of its two floors, and how far up it `at` is
+  /// `floor` climbs, one of its two floors, and how far up it `at` is: the
+  /// first such run in `runs`, looked up by the cell `at` is in at each
+  /// place runs stand, so it costs the same however many runs the map has,
+  /// and allocates nothing
   pub(crate) fn climbing(&self, at: Vec2, floor: Floor) -> Option<(&StairRun, f32)> {
     let number = floor.number()?;
-    self
-      .runs
-      .iter()
-      .filter(|run| run.from == number || run.to == number)
-      .find(|run| run.holds(at))
-      .map(|run| (run, run.progress(at)))
+    let mut first: Option<usize> = None;
+    for place in &self.index {
+      let cell = place.grid.cell_at(at - place.offset);
+      let start = place
+        .cells
+        .partition_point(|&(of, _)| (of.y, of.x) < (cell.y, cell.x));
+      let found = place.cells[start..]
+        .iter()
+        .take_while(|&&(of, _)| of == cell)
+        .map(|&(_, run)| run)
+        .find(|&run| {
+          self
+            .runs
+            .get(run)
+            .is_some_and(|run| run.from == number || run.to == number)
+        });
+      first = match (first, found) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+      };
+    }
+    let run = self.runs.get(first?)?;
+    Some((run, run.progress(at)))
   }
+
+  /// Its runs made again: `runs`, and the index of their cells
+  fn put(&mut self, runs: Vec<StairRun>) {
+    self.index = index_of(&runs);
+    self.runs = runs;
+  }
+}
+
+/// Where some of a map's runs stand (their layers' grid and ground
+/// offset), and their cells there
+#[derive(Debug)]
+struct StairPlace {
+  key: (GridKey, [u32; 2]),
+  grid: MapGrid,
+  offset: Vec2,
+  /// Each cell of a run standing here, with the run's index in the runs,
+  /// by row, then by run: a cell in several runs (up from one floor and on
+  /// from the next, on two layers) is here once for each, in their order
+  cells: Vec<(IVec2, usize)>,
+}
+
+/// The index of `runs`' cells: the places they stand at, each with its
+/// runs' cells
+fn index_of(runs: &[StairRun]) -> Vec<StairPlace> {
+  let mut places: Vec<StairPlace> = Vec::new();
+  for (index, run) in runs.iter().enumerate() {
+    let key = (
+      GridKey::of(&run.grid),
+      [run.offset.x.to_bits(), run.offset.y.to_bits()],
+    );
+    let at = match places.iter().position(|place| place.key == key) {
+      Some(at) => at,
+      None => {
+        places.push(StairPlace {
+          key,
+          grid: run.grid,
+          offset: run.offset,
+          cells: Vec::new(),
+        });
+        places.len() - 1
+      }
+    };
+    places[at]
+      .cells
+      .extend(run.cells.iter().map(|&cell| (cell, index)));
+  }
+  for place in &mut places {
+    place
+      .cells
+      .sort_unstable_by_key(|&(cell, run)| (cell.y, cell.x, run));
+  }
+  places
 }
 
 /// A tile layer the runs read: its entity, floor and where it stands (its
@@ -237,13 +313,17 @@ fn stair_cells(tiles: &TileGrid, chunk: IVec2, stairs: &[Option<StairSource>]) -
   found
 }
 
-/// A map's runs of stairs, on the map entity beside its `MapFloors`, and
-/// what they were read from: each tile layer with the stair cells its
-/// chunks held, its tilesets' stairs, and what it has warned of
+/// A map's runs of stairs, on the map entity beside its `MapFloors`, with
+/// the index of their cells, and what they were read from: each tile layer
+/// with the stair cells its chunks held, its tilesets' stairs, and what it
+/// has warned of
 #[derive(Component, Default)]
 pub(crate) struct MapStairs {
-  /// The runs, as its tiles were when last read
+  /// The runs, as its tiles were when last read (written with `put`, which
+  /// indexes them)
   pub(crate) runs: Vec<StairRun>,
+  /// Their cells, by place
+  index: Vec<StairPlace>,
   layers: Vec<ReadLayer>,
   tilesets: Vec<TilesetStamp>,
   stairs: Arc<[Option<StairSource>]>,
@@ -288,11 +368,11 @@ pub(super) type Stairs<'w, 's> = Query<'w, 's, &'static MapStairs>;
 
 /// `FixedSet::Movement`, before `climb_stairs`: each map with floors' runs
 /// brought up to its tiles and tilesets. The chunks whose version moved
-/// since it last looked are read again, and the runs made again from the
-/// stair cells when any did; a change of what they are read from (a new
-/// `MapFloors`, the map's tile layers, their floors, grids or places, the
-/// tilesets' stairs) reads every chunk again. A disabled map is left as it
-/// is, and caught up once enabled. A map without floors costs
+/// since it last looked are read again, and every run made again from the
+/// stair cells, and indexed, when any did; a change of what they are read
+/// from (a new `MapFloors`, the map's tile layers, their floors, grids or
+/// places, the tilesets' stairs) reads every chunk again. A disabled map is
+/// left as it is, and caught up once enabled. A map without floors costs
 /// nothing; an idle step, a look at each tile layer's version and the
 /// tilesets' stamps
 pub(crate) fn sync_stair_runs(
@@ -350,18 +430,21 @@ pub(crate) fn sync_stair_runs(
         .collect();
     }
     let MapStairs {
-      runs,
       layers: read,
       stairs,
       warned,
       ..
-    } = state;
+    } = &mut *state;
     let mut changed = false;
     for layer in read.iter_mut() {
       changed |= layer.read_changes(&layers, stairs);
     }
+    // Every run is made again, whichever layer changed: a run's top and
+    // foot depend on its upper floor's layers and the other layers' stairs
+    // too
     if changed || replaced || !kept {
-      *runs = runs_of(map, read, &layers, &floors, warned);
+      let runs = runs_of(map, read, &layers, &floors, warned);
+      state.put(runs);
     }
     if let Some(state) = fresh {
       commands.entity(map).try_insert(state);

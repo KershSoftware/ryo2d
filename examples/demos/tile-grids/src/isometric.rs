@@ -80,10 +80,6 @@ const KNIGHT: Walk = Walk {
 const ZOOMS: [f32; 2] = [0.25, 0.5];
 /// The settings rows, for the notes under the panel
 const ROWS: usize = 1;
-/// How far below its feet the knight sorts while it is drawn lifted, up the
-/// ramp or on the raised ground: half a cell, as the raised ground's tree
-/// does, so it never draws under the block it stands on
-const LIFTED_SORT: f32 = 55.0;
 
 pub(crate) struct TownPage {
   view: View,
@@ -229,11 +225,12 @@ fn legs(ctx: &mut SceneContext, root: Entity, path: &CellPath) -> Vec<(Floor, Ve
   legs
 }
 
-/// Sorts the knight's sprite half a cell down while it is drawn lifted, and
-/// where its feet are on the ground (`LIFTED_SORT`)
-fn sort_where_it_stands(ctx: &mut SceneContext, walker: Entity) {
+/// Sorts the knight's sprite where its feet are on the ground, and while it
+/// is drawn lifted, up the ramp or on the raised ground, half a cell further
+/// down (`lifted_sort`)
+fn sort_where_it_stands(ctx: &mut SceneContext, root: Entity, walker: Entity) {
   let lifted = ctx.maps().drawn_lift(walker) != Vec2::ZERO;
-  let offset = if lifted { LIFTED_SORT } else { 0.0 };
+  let offset = if lifted { lifted_sort(ctx, root) } else { 0.0 };
   let sprites: Vec<Entity> = ctx
     .world
     .get::<Children>(walker)
@@ -246,6 +243,16 @@ fn sort_where_it_stands(ctx: &mut SceneContext, walker: Entity) {
       y_sort.sort_offset = offset;
     }
   }
+}
+
+/// How far below its feet the knight sorts while it is drawn lifted: half
+/// the town's cell height (55 px on its cells 110 px tall), as the raised
+/// ground's tree does, so it never draws under the block it stands on
+fn lifted_sort(ctx: &mut SceneContext, root: Entity) -> f32 {
+  ctx
+    .maps()
+    .grid(root, RAISED)
+    .map_or(0.0, |layer| layer.grid.cell.y as f32 / 2.0)
 }
 
 /// What the HUD calls `floor`
@@ -346,7 +353,7 @@ impl DemoPage for TownPage {
     }
     if let Some(walker) = self.walker {
       face(ctx, walker);
-      sort_where_it_stands(ctx, walker);
+      sort_where_it_stands(ctx, root, walker);
     }
     self.follow(ctx, false);
     self.hover = hovered_floor_cell(ctx, root, &self.covered);

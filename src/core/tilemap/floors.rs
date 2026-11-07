@@ -1072,8 +1072,11 @@ mod tests {
   /// onto its own floor and back. Each step the climbers move, then
   /// `climb_stairs` runs (the fixed step's), then `lift_floored` twice (the
   /// fixed step's and the frame's), each in a schedule of its own, commands
-  /// applied. Run it in release: `cargo test --release -p ryo2d --lib
-  /// floors_frame_timing -- --ignored --nocapture`
+  /// applied. Then what an edit off the stairs costs them: a ground cell
+  /// far from the stairs, set and set back, and `sync_stair_runs` after
+  /// each, reading its chunk again and making every run again. Run it in
+  /// release: `cargo test --release -p ryo2d --lib floors_frame_timing --
+  /// --ignored --nocapture`
   #[test]
   #[ignore = "timing; run in release by hand"]
   fn floors_frame_timing() {
@@ -1084,10 +1087,10 @@ mod tests {
 
     use crate::core::asset::Assets;
     use crate::core::ecs::{MessageCursor, Messages, Schedule};
-    use crate::core::tilemap::stairs::{FloorChanged, MapStairs, climb_stairs};
+    use crate::core::tilemap::stairs::{FloorChanged, MapStairs, climb_stairs, sync_stair_runs};
     use crate::core::tilemap::test_util::MapWorld;
     use crate::core::tilemap::{
-      GridShape, MapRoot, Tile, TileData, TileMap, Tileset, TilesetImage, TilesetSource,
+      GridShape, MapRoot, MapsView, Tile, TileData, TileMap, Tileset, TilesetImage, TilesetSource,
     };
 
     const SIDE: i32 = 256;
@@ -1234,5 +1237,32 @@ mod tests {
       let (median, p99) = median_and_p99(times);
       println!("{name} (median, 99th percentile): {median:?}, {p99:?}");
     }
+
+    // An edit off the stairs, in the far corner's chunk, set and set back:
+    // each sync reads that chunk again and makes every run again
+    let mut sync = Schedule::default();
+    sync.add_systems(sync_stair_runs);
+    sync.run(&mut maps.world);
+    let far = IVec2::splat(SIDE - 4);
+    let mut rebuilds = Vec::new();
+    for edit in 0..WARM + TIMED {
+      let tile = (edit % 2 == 1).then(|| Tile::new(set, 0));
+      MapsView::new(&mut maps.world).set_tile(root, "ground", far, tile);
+      let start = Instant::now();
+      sync.run(&mut maps.world);
+      let took = start.elapsed();
+      if edit >= WARM {
+        rebuilds.push(took);
+      }
+    }
+    let runs = maps
+      .world
+      .get::<MapStairs>(root)
+      .map_or(0, |stairs| stairs.runs.len());
+    assert_eq!(runs, corners.len(), "the runs made again");
+    let (median, p99) = median_and_p99(rebuilds);
+    println!(
+      "sync_stair_runs after an edit off the stairs, every run made again (median, 99th percentile): {median:?}, {p99:?}"
+    );
   }
 }

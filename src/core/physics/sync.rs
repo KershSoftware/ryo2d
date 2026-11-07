@@ -571,6 +571,9 @@ pub(crate) fn sync_colliders(
   // sources after the query can repeat an entity
   todo.sort_unstable_by_key(entity_order);
   todo.dedup();
+  // With no `Floor` anywhere (an archetype look) every collider is on the
+  // ground floor, and no body's floor is looked up
+  let any_floors = !floors.is_empty();
   for &entity in &todo {
     let Ok((global, collider, prebuilt, own_floor, part)) = colliders.get(entity) else {
       continue;
@@ -591,7 +594,7 @@ pub(crate) fn sync_colliders(
     let floor = own_floor
       .or_else(|| {
         body
-          .filter(|_| !part)
+          .filter(|_| any_floors && !part)
           .and_then(|body| floors.get(body).ok())
       })
       .copied()

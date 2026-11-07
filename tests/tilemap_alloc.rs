@@ -840,12 +840,22 @@ fn idle_streamed_frames_allocate_nothing(isometric: bool) {
 /// 1, 32 px up, holding a y-sorted block, and twelve characters, eight on
 /// floor 1 and four on the ground floor, each a y-sorted sprite with a blob
 /// shadow, a child sprite and a grandchild sprite, walking every step while
-/// `walking` is set
+/// `walking` is set. Two stairs on the ground lead into the block's left
+/// side at row 32 (their foot at x 352, their top at x 384), and a climber
+/// with a child sprite walks their lower half, on the ground floor and
+/// drawn eased part-way up
 struct FloorWalk {
   walking: Arc<AtomicBool>,
   walkers: Vec<Entity>,
+  climber: Option<Entity>,
   steps: u32,
 }
+
+/// The ground tile `FloorWalk`'s tileset makes stairs up to floor 1
+const STAIRS: u32 = GROUND;
+/// The row of `FloorWalk`'s stairs, and where its climber stands on it
+const STAIR_ROW: i32 = 32;
+const CLIMBER_Y: f32 = 16.0 * STAIR_ROW as f32 + 8.0;
 
 impl Scene for FloorWalk {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
@@ -853,7 +863,12 @@ impl Scene for FloorWalk {
       Transform::from_xy(512.0, 512.0),
       Light2D::point(Color::WHITE, 240.0).with_shadows(),
     ));
-    let set = atlas(&mut ctx.world.resource_mut::<Assets<Image>>(), 16, 4, 1);
+    let mut set = atlas(&mut ctx.world.resource_mut::<Assets<Image>>(), 16, 4, 1);
+    let stairs = TileData {
+      stairs: Some(1),
+      ..TileData::default()
+    };
+    set.insert_tile(STAIRS, stairs);
     let set = TilesetSource::Asset(ctx.assets().add(set));
     let mut map = TileMap::new(UVec2::splat(64), UVec2::splat(16));
     let set = map.add_tileset(set);
@@ -872,6 +887,10 @@ impl Scene for FloorWalk {
           tiles.set(cell, Some(Tile::new(set, PROP)));
         }
       }
+    }
+    let tiles = map.tiles_mut(ground).expect("a tile layer");
+    for x in [22, 23] {
+      tiles.set(IVec2::new(x, STAIR_ROW), Some(Tile::new(set, STAIRS)));
     }
     let handle = ctx.assets().add(map);
     ctx
@@ -915,6 +934,25 @@ impl Scene for FloorWalk {
       );
       self.walkers.push(walker);
     }
+    let climber = ctx
+      .world
+      .spawn((
+        Transform::from_xy(356.0, CLIMBER_Y),
+        Renderable::image(body.clone())
+          .with_anchor(Anchor::BottomCenter)
+          .with_z_order(3),
+        YSort::new(),
+        Climber,
+      ))
+      .id();
+    ctx.world.spawn_child(
+      climber,
+      (
+        Transform::from_xy(0.0, -16.0),
+        Renderable::image(hat.clone()).with_z_order(3),
+      ),
+    );
+    self.climber = Some(climber);
   }
 
   fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
@@ -930,6 +968,13 @@ impl Scene for FloorWalk {
         transform.translation.x = 400.0 + 16.0 * i as f32 + dx;
       }
     }
+    // The climber between 356 and 364, an eighth to three eighths up
+    // the stairs: never halfway, so it keeps the ground floor
+    if let Some(climber) = self.climber
+      && let Some(mut transform) = ctx.world.get_mut::<Transform>(climber)
+    {
+      transform.translation.x = 356.0 + dx / 8.0;
+    }
     SceneAction::Continue
   }
 }
@@ -942,6 +987,7 @@ fn a_frame_with_entities_moving_on_floors_allocates_nothing() {
     .start_scene(FloorWalk {
       walking: walking.clone(),
       walkers: Vec::new(),
+      climber: None,
       steps: 0,
     });
   let Some(mut engine) = HeadlessEngine::new_or_skip(builder) else {
@@ -992,13 +1038,28 @@ fn a_frame_with_entities_moving_on_floors_allocates_nothing() {
     assert_eq!(view.drawn_lift(entity), Vec2::new(0.0, -32.0), "{entity}");
   }
 
+  // The climber, on the ground floor, draws eased part-way up its stairs
+  let climber = world
+    .query_filtered::<Entity, With<Climber>>()
+    .single(world)
+    .expect("one climber");
+  let eased = |engine: &mut HeadlessEngine| {
+    let world = engine.world_mut();
+    let floor = world.get::<Floor>(climber).copied();
+    let lift = MapsView::new(world).drawn_lift(climber);
+    floor == Some(Floor::GROUND) && lift.x == 0.0 && lift.y < -1.0 && lift.y > -13.0
+  };
+  assert!(eased(&mut engine), "the climber draws part-way up");
+
   // Each frame the walkers move (their lifts found again on the map under
   // them, down their hierarchies, and drawn there) against one where they
   // stand still, in the same world: the frames draw the same entities
   // through the same queries, so any allocation the moving frame makes and
   // the still one does not is the walk's. (A frame drawing sprites makes
   // allocations an empty frame does not, finding their archetypes afresh
-  // in the entity query, floors or not)
+  // in the entity query, floors or not.) The climber looks its stairs up
+  // in both frames, so neither may allocate in the stairs or the lift at
+  // all
   let walker = floored[0];
   let at = |engine: &mut HeadlessEngine| {
     let world = engine.world_mut();
@@ -1027,6 +1088,20 @@ fn a_frame_with_entities_moving_on_floors_allocates_nothing() {
       more.is_empty(),
       "frame {frame}: walking on floors made allocations of the engine's own standing still did \
        not: {more:#?}"
+    );
+    assert!(
+      eased(&mut engine),
+      "frame {frame}: the climber draws part-way up"
+    );
+    let storeys: Vec<&String> = moving
+      .own
+      .keys()
+      .chain(still.own.keys())
+      .filter(|site| site.contains("tilemap::stairs") || site.contains("tilemap::floors"))
+      .collect();
+    assert!(
+      storeys.is_empty(),
+      "frame {frame}: the stairs or the lift allocated: {storeys:#?}"
     );
     assert!(
       moving.map_gpu.is_empty(),
