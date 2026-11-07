@@ -18,10 +18,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// The Tiled files the script writes, relative to `assets/`
-const TILESETS: [&str; 5] = [
+const TILESETS: [&str; 6] = [
   "tilesets/platformer.tsx",
   "tilesets/sketch-town-ground.tsx",
   "tilesets/sketch-town-props.tsx",
+  "tilesets/sketch-town-raised.tsx",
   "tilesets/hexagon-board.tsx",
   "tilesets/dungeon.tsx",
 ];

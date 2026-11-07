@@ -1,7 +1,8 @@
 //! What the pages share: the files they load, the ground tile rule, the
 //! view each frames on screen (on whole screen pixels, so the pixel art
 //! stays crisp), panning input, the HUD's boxes and labels, and on the other
-//! grids the cell under the pointer and its outline
+//! grids the cell under the pointer (through a map's storeys) and its
+//! outline
 
 use demo_kit::prelude::*;
 
@@ -224,13 +225,28 @@ pub(crate) fn beside_panel(ui: &UiContext, rows: usize) -> Rect {
 /// Draws `outline` (a cell's, in the world) with `debug`, `width` screen
 /// pixels wide
 pub(crate) fn draw_outline(debug: &mut DebugDraw, outline: &CellOutline, color: Color, width: f32) {
+  draw_outline_lifted(debug, outline, Vec2::ZERO, color, width);
+}
+
+/// Draws `outline` moved by `lift`, a storey's height, so a cell of a
+/// raised floor is outlined where it draws (debug draws stay where things
+/// stand)
+pub(crate) fn draw_outline_lifted(
+  debug: &mut DebugDraw,
+  outline: &CellOutline,
+  lift: Vec2,
+  color: Color,
+  width: f32,
+) {
   let points = outline.points();
   let Some(&first) = points.first() else {
     return;
   };
-  let mut closed = [first; 7];
-  closed[..points.len()].copy_from_slice(points);
-  closed[points.len()] = first;
+  let mut closed = [first + lift; 7];
+  for (to, point) in closed.iter_mut().zip(points) {
+    *to = *point + lift;
+  }
+  closed[points.len()] = first + lift;
   debug.width(width).polyline(&closed[..=points.len()], color);
 }
 
@@ -265,6 +281,24 @@ pub(crate) fn reloaded(ctx: &mut SceneContext, map: Entity) -> bool {
     .messages::<MapEvent>()
     .iter()
     .any(|event| matches!(event, MapEvent::Reloaded { map: m } if *m == map))
+}
+
+/// The floor and cell drawn under the pointer on `map`, through each
+/// storey's height (`MapsView::floor_cell_at_world`), unless the pointer is
+/// over one of `covered` (the page's notes) or off the map's cells
+pub(crate) fn hovered_floor_cell(
+  ctx: &mut SceneContext,
+  map: Entity,
+  covered: &[Rect],
+) -> Option<(Floor, IVec2)> {
+  let (mx, my) = ctx.input.mouse_position();
+  if covered.iter().any(|rect| rect.contains(mx, my)) {
+    return None;
+  }
+  let world = ctx.camera().screen_to_world(Vec2::new(mx, my));
+  let maps = ctx.maps();
+  let (floor, cell) = maps.floor_cell_at_world(map, world)?;
+  maps.bounds(map)?.contains(cell).then_some((floor, cell))
 }
 
 /// The cell under the pointer on `layer` of `map`, unless the pointer is

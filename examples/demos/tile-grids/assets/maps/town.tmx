@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<map version="1.11" tiledversion="1.12.2" orientation="isometric" renderorder="right-down" width="16" height="16" tilewidth="232" tileheight="110" infinite="0" backgroundcolor="#78b9d8" nextlayerid="4" nextobjectid="2">
+<map version="1.11" tiledversion="1.12.2" orientation="isometric" renderorder="right-down" width="16" height="16" tilewidth="232" tileheight="110" infinite="0" backgroundcolor="#78b9d8" nextlayerid="6" nextobjectid="2">
  <tileset firstgid="1" source="../tilesets/sketch-town-ground.tsx"/>
  <tileset firstgid="15" source="../tilesets/sketch-town-props.tsx"/>
+ <tileset firstgid="26" source="../tilesets/sketch-town-raised.tsx"/>
  <layer id="1" name="ground" width="16" height="16">
   <properties>
    <property name="filter" value="linear"/>
@@ -38,11 +39,11 @@
 0,0,17,15,15,15,15,15,15,15,17,0,0,0,0,0,
 0,0,16,0,0,0,0,0,0,0,16,0,0,0,0,0,
 0,0,16,0,0,0,0,0,22,0,16,0,0,0,0,0,
-0,0,16,0,0,0,0,21,0,0,16,0,0,0,24,0,
-23,0,16,0,0,23,0,0,0,0,18,0,0,0,0,0,
-22,0,16,0,0,0,0,0,0,0,16,0,0,0,25,0,
-22,0,16,0,0,22,0,0,21,0,16,0,0,0,0,0,
-0,0,16,0,0,0,0,0,0,0,16,0,0,20,0,0,
+0,0,16,0,0,0,0,21,0,0,16,0,0,0,0,0,
+23,0,16,0,0,23,0,0,0,0,18,0,26,26,26,0,
+22,0,16,0,0,0,0,0,0,0,16,0,26,26,26,0,
+22,0,16,0,0,22,0,0,21,0,16,0,26,26,26,0,
+0,0,16,0,0,0,0,0,0,0,16,0,28,27,28,0,
 0,0,17,15,15,15,19,15,15,15,17,0,0,0,0,0,
 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,23,
 22,0,0,0,0,0,20,20,0,0,0,0,0,0,0,22,
@@ -51,7 +52,59 @@
 20,23,0,0,0,0,0,0,20,22,0,0,0,0,22,0
 </data>
  </layer>
- <objectgroup id="3" name="objects">
+ <layer id="3" name="raised" width="16" height="16" offsetx="0" offsety="-110">
+  <properties>
+   <property name="filter" value="linear"/>
+   <property name="floor" type="int" value="1"/>
+   <property name="occludes" type="bool" value="false"/>
+   <property name="y_sort" type="bool" value="true"/>
+  </properties>
+  <data encoding="csv">
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,0,
+0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,0,
+0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,0,
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+</data>
+ </layer>
+ <layer id="4" name="raised-props" width="16" height="16" offsetx="0" offsety="-110">
+  <properties>
+   <property name="filter" value="linear"/>
+   <property name="floor" type="int" value="1"/>
+   <property name="occludes" type="bool" value="false"/>
+   <property name="y_sort" type="bool" value="true"/>
+  </properties>
+  <data encoding="csv">
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,0,0,0,0,29,0,0,0,
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+</data>
+ </layer>
+ <objectgroup id="5" name="objects">
   <object id="1" name="start" type="player_start" x="935" y="715">
    <point/>
   </object>

@@ -48,15 +48,16 @@ const MEADOW_FILE: &str = "maps/endless-meadow.tmx";
 
 /// The map each page lands within five seconds, named by its tile layers:
 /// the meadow's `scenery`, `water` and `ground`, the paint page's `ground`,
-/// the endless world's `backdrop`, `scenery` and `ground`, the town's and
-/// the island's `ground` and `props`, the hex board's `board` and its
-/// marks, the oblique dungeon's `floor` and `walls`, and the speed page's
-/// four layers
+/// the endless world's `backdrop`, `scenery` and `ground`, the town's
+/// `ground` and `props` and its raised ground's `raised` and
+/// `raised-props` (on floor 1), the island's `ground` and `props`, the hex
+/// board's `board` and its marks, the oblique dungeon's `floor` and
+/// `walls`, and the speed page's four layers
 const LANDS: [&[&str]; PAGES] = [
   &["scenery", "water", "ground"],
   &["ground"],
   &["backdrop", "scenery", "ground"],
-  &["ground", "props"],
+  &["ground", "props", "raised", "raised-props"],
   &["ground", "props"],
   &["board", "range", "ring", "neighbours", "line"],
   &["floor", "walls"],
@@ -214,6 +215,14 @@ fn padded_size(engine: &HeadlessEngine, name: &str) -> PaddedSize {
     .unwrap_or_else(|| panic!("a padding of {name:?} in {sizes:?}"))
 }
 
+/// The town's tilesets: the ground's blocks, the props, and the raised
+/// ground's pieces on the ground floor (its body and its ramp)
+const TOWN_TILESETS: [&str; 3] = [
+  "sketch-town-ground",
+  "sketch-town-props",
+  "sketch-town-raised",
+];
+
 #[test]
 fn the_town_draws_kenney_s_pictures_at_their_own_size() {
   let Some(mut engine) = engine_on(TOWN) else {
@@ -222,17 +231,17 @@ fn the_town_draws_kenney_s_pictures_at_their_own_size() {
   spawned_map(&mut engine);
   engine.step_frames(3).unwrap();
   // The pack's pictures cut to their bottom 256 rows, not halved
-  for name in ["sketch-town-ground", "sketch-town-props"] {
+  for name in TOWN_TILESETS {
     assert_eq!(
       tile_size_of(&mut engine, "maps/town.tmx", name),
       UVec2::new(256, 256),
       "{name}'s pictures"
     );
   }
-  // Padded at about their own size: each at most twice its art, both
+  // Padded at about their own size: each at most twice its art, all
   // within 20 MiB
   let mut total = 0;
-  for name in ["sketch-town-ground", "sketch-town-props"] {
+  for name in TOWN_TILESETS {
     let size = padded_size(&engine, name);
     assert!(
       size.bytes <= 2 * size.art_bytes,

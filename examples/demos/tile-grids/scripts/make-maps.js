@@ -234,6 +234,26 @@ shapes(sketchProps, [PROP.castle_wall_N, PROP.castle_wall_E, PROP.castle_tower_N
 });
 save(sketchProps, tiled.tilesetFormat("tsx"), "tilesets/sketch-town-props.tsx");
 
+// The town's raised ground's own pieces, standing on the cells as the props
+// do. On the ground floor: its body, a grass block colliding as its cell's
+// diamond, which the raised ground's own block (the ground's grass drawn a
+// block up, on floor 1) draws over exactly, so the ground floor is walled
+// where the raised ground stands; the ramp up to it, the path slope rising
+// toward the map's -y (up and right on screen), whose int property
+// `stairs` leads up to floor 1; and bushes colliding as their cells'
+// diamonds, which wall the ramp's sides on the ground. On the raised
+// ground: a tree whose reserved float property `sort_offset` sorts it half
+// a cell down, as the page sorts the knight while it is up there (a row
+// sorts at its cells' middles, so a character standing in the back half of
+// a raised cell would draw under the block it stands on)
+var RAISED_FILES = ["grass_center_N", "grass_pathSlope_E", "rocks_grass_N", "tree_single_N"];
+var RAISED_BODY = 0, RAISED_RAMP = 1, RAISED_BUSH = 2, RAISED_TREE = 3;
+var sketchRaised = collection("sketch-town-raised", PROPS_OFFSET, RAISED_FILES);
+shapes(sketchRaised, [RAISED_BODY, RAISED_BUSH], function () { return [diamond(PROPS_OFFSET)]; });
+sketchRaised.tile(RAISED_RAMP).setProperty("stairs", 1);
+sketchRaised.tile(RAISED_TREE).setFloatProperty("sort_offset", ISO_H / 2);
+save(sketchRaised, tiled.tilesetFormat("tsx"), "tilesets/sketch-town-raised.tsx");
+
 // Kenney's Hexagon Pack: the hexagons the board uses, cut from its terrain
 // sheet (scripts/derive-art.sh), pointy-topped hexagons of 120 x 140 side
 // by side, 6 a row, in HEX_SHEET's order. The rocks and the stone collide,
@@ -529,6 +549,7 @@ save(meadow, tiled.mapFormat("tmx"), "maps/endless-meadow.tmx");
 
 var SG = external("tilesets/sketch-town-ground.tsx");
 var SP = external("tilesets/sketch-town-props.tsx");
+var SR = external("tilesets/sketch-town-raised.tsx");
 var HX = external("tilesets/hexagon-board.tsx");
 var DG = external("tilesets/dungeon.tsx");
 
@@ -581,11 +602,28 @@ function prop(roll, trees, rocks) {
 // of it, its water at the corners (map points) in TOWN_POND and its edges picked
 // from the Wang set's corners. The ground collides where it is water, the
 // props where they are walls; the props are y-sorted. The character starts
-// inside, by the right-hand gate
+// inside, by the right-hand gate.
+//
+// Right of the castle, below the pond, raised ground: 3 x 3 cells a block
+// up, on floor 1 (the reserved layer property `floor`), its layers drawn a
+// block (the cells' height, 110 px) up by their offset, which is the
+// floor's height. `raised` holds its blocks (the ground's grass), y-sorted
+// so the characters walk behind it and in front of it, and `raised-props`
+// a tree on its back corner. On the ground floor the props layer holds the
+// raised ground's body under each of its cells, which collides there, and
+// the ramp up to it, sticking out from the middle of its front-left side
+// (down and left on screen), walled on the ground by a bush on each side;
+// the ramp's own cell stays open, since a climber is on floor 1 by the
+// time it reaches the top. No tree or rock stands on or beside it
 var TOWN = 16, RING_MIN = 2, RING_MAX = 10;
+var RAISED_MIN = [12, 6], RAISED_MAX = [14, 8];
+var TOWN_RAMP = [13, 9];
+var TOWN_BUSHES = [[12, 9], [14, 9]];
+var RAISED_TREE_AT = [12, 6];
 var town = gridMap(TileMap.Isometric, ISO_W, ISO_H, TOWN, TOWN, "#78b9d8");
 town.addTileset(SG);
 town.addTileset(SP);
+town.addTileset(SR);
 var TOWN_POND = new CellSet();
 for (var qx = 13; qx <= 15; qx++) for (var qy = 1; qy <= 4; qy++) TOWN_POND.add(qx, qy);
 TOWN_POND.add(12, 2);
@@ -602,16 +640,46 @@ function nearRing(x, y) {
   for (var dy = -1; dy <= 1; dy++) for (var dx = -1; dx <= 1; dx++) if (onRing(x + dx, y + dy)) return true;
   return false;
 }
+function onRaised(x, y) {
+  return x >= RAISED_MIN[0] && x <= RAISED_MAX[0] && y >= RAISED_MIN[1] && y <= RAISED_MAX[1];
+}
+function onRamp(x, y) {
+  return x == TOWN_RAMP[0] && y == TOWN_RAMP[1];
+}
+function nearRaised(x, y) {
+  for (var dy = -1; dy <= 1; dy++) {
+    for (var dx = -1; dx <= 1; dx++) if (onRaised(x + dx, y + dy) || onRamp(x + dx, y + dy)) return true;
+  }
+  return false;
+}
 var TOWN_START = [8, 6];
 var townGround = tileLayer("ground", { occludes: false, filter: SMOOTH });
 var townProps = tileLayer("props", { y_sort: true, occludes: false, filter: SMOOTH });
+var townRaised = tileLayer("raised", { floor: 1, y_sort: true, occludes: false, filter: SMOOTH });
+var townRaisedProps = tileLayer("raised-props", { floor: 1, y_sort: true, occludes: false, filter: SMOOTH });
+townRaised.offset = Qt.point(0, -ISO_H);
+townRaisedProps.offset = Qt.point(0, -ISO_H);
 var townGroundEdit = townGround.edit(), townPropsEdit = townProps.edit();
+var townRaisedEdit = townRaised.edit(), townRaisedPropsEdit = townRaisedProps.edit();
 for (var ty = 0; ty < TOWN; ty++) {
   for (var tx = 0; tx < TOWN; tx++) {
     var corners = pondCorners(tx, ty);
     townGroundEdit.setTile(tx, ty, SG.tile(cornerTile(corners)));
     var wet = corners.indexOf(2) >= 0;
     var propId = null;
+    if (onRaised(tx, ty)) {
+      townPropsEdit.setTile(tx, ty, SR.tile(RAISED_BODY));
+      townRaisedEdit.setTile(tx, ty, SG.tile(GROUND.grass_center_N));
+      continue;
+    }
+    if (onRamp(tx, ty)) {
+      townPropsEdit.setTile(tx, ty, SR.tile(RAISED_RAMP));
+      continue;
+    }
+    if (TOWN_BUSHES.some(function (at) { return at[0] == tx && at[1] == ty; })) {
+      townPropsEdit.setTile(tx, ty, SR.tile(RAISED_BUSH));
+      continue;
+    }
     if (onRing(tx, ty)) {
       var corner = (tx == RING_MIN || tx == RING_MAX) && (ty == RING_MIN || ty == RING_MAX);
       if (corner) propId = PROP.castle_tower_N;
@@ -620,17 +688,23 @@ for (var ty = 0; ty < TOWN; ty++) {
       else if (tx == RING_MAX && ty == 6) propId = PROP.castle_gateOpen_N;
       else if (ty == RING_MAX && tx == 6) propId = PROP.castle_gateOpen_E;
       else propId = ty == RING_MIN || ty == RING_MAX ? PROP.castle_wall_N : PROP.castle_wall_E;
-    } else if (!wet && !nearRing(tx, ty) && Math.abs(tx - TOWN_START[0]) + Math.abs(ty - TOWN_START[1]) > 1) {
+    } else if (!wet && !nearRing(tx, ty) && !nearRaised(tx, ty) &&
+      Math.abs(tx - TOWN_START[0]) + Math.abs(ty - TOWN_START[1]) > 1) {
       var inside = tx > RING_MIN && tx < RING_MAX && ty > RING_MIN && ty < RING_MAX;
       propId = prop(hash(tx, ty, 21), inside ? 0.14 : 0.24, 0.05);
     }
     if (propId !== null) townPropsEdit.setTile(tx, ty, SP.tile(propId));
   }
 }
+townRaisedPropsEdit.setTile(RAISED_TREE_AT[0], RAISED_TREE_AT[1], SR.tile(RAISED_TREE));
 townGroundEdit.apply();
 townPropsEdit.apply();
+townRaisedEdit.apply();
+townRaisedPropsEdit.apply();
 town.addLayer(townGround);
 town.addLayer(townProps);
+town.addLayer(townRaised);
+town.addLayer(townRaisedProps);
 // An isometric map's objects are placed in tile heights along its axes
 addStart(town, (TOWN_START[0] + 0.5) * ISO_H, (TOWN_START[1] + 0.5) * ISO_H);
 save(town, tiled.mapFormat("tmx"), "maps/town.tmx");
@@ -826,4 +900,4 @@ function dungeonMap(skew, path) {
 dungeonMap(4, "maps/dungeon.tmx");
 dungeonMap(-4, "maps/dungeon-mirror.tmx");
 
-tiled.log("make-maps.js: wrote the project's classes, 5 tilesets and 7 maps");
+tiled.log("make-maps.js: wrote the project's classes, 6 tilesets and 7 maps");

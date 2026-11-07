@@ -4,7 +4,12 @@
 //! walls stop it at their diamonds, painting water never walls it in, and
 //! Space walks it to the cell under the pointer by a path through a gate,
 //! round water painted since it last walked, until something unknown holds
-//! it up or the player steers; the island's setting and the speed page's
+//! it up or the player steers; the knight climbs the town's ramp onto its
+//! raised ground (floor 1, a block up) and back, changing floor once each
+//! way and drawn lifted up there, draws behind the raised ground and in
+//! front of it from the ground, the pointer picks raised cells where they
+//! draw, and a click on one walks the knight there up the ramp; the
+//! island's setting and the speed page's
 //! choice spawn another grid's map, the speed page's hexagonal rock
 //! colliding and casting shadows as whole hexagons; the hex board picks the
 //! hex under the pointer, a click selects one, and the board marks the
@@ -174,15 +179,24 @@ fn to_screen(engine: &mut HeadlessEngine, at: Vec2) -> Vec2 {
 }
 
 /// The frame's pixels in `area` (screen pixels) where `a` and `b` differ
-fn differing(a: &RgbaImage, b: &RgbaImage, area: Rect) -> BTreeSet<(u32, u32)> {
+/// by more than `by` in some channel
+fn differing(a: &RgbaImage, b: &RgbaImage, area: Rect, by: u8) -> BTreeSet<(u32, u32)> {
   let (x0, y0) = (area.x.max(0.0) as u32, area.y.max(0.0) as u32);
   let x1 = (area.right() as u32).min(a.width());
   let y1 = (area.bottom() as u32).min(a.height());
   (y0..y1)
     .flat_map(|y| (x0..x1).map(move |x| (x, y)))
-    .filter(|&(x, y)| a.get_pixel(x, y) != b.get_pixel(x, y))
+    .filter(|&(x, y)| {
+      let (p, q) = (a.get_pixel(x, y).0, b.get_pixel(x, y).0);
+      p.iter().zip(q).any(|(&p, q)| p.abs_diff(q) > by)
+    })
     .collect()
 }
+
+/// How far a pixel may change before it counts as drawn over: a picture's
+/// smooth edge, its texels all but clear, moves what lies under it by a
+/// unit or two
+const FAINT: u8 = 4;
 
 /// The frame with the character's feet at `at`, its sprite shown or not
 fn shot(
@@ -202,6 +216,110 @@ fn shot(
     "the character stays where it was put"
   );
   engine.frame().unwrap()
+}
+
+/// Where the character's feet go straight above and below the middle of
+/// the cell `at` of `layer`, clear of its diamond by more than its
+/// `radius`: in the cell behind it (above it on screen) and the cell in
+/// front of it (below it)
+fn behind_and_in_front(layer: &LayerGrid, at: IVec2, radius: f32) -> (Vec2, Vec2) {
+  let (top, bottom) = layer
+    .outline_world(at)
+    .points()
+    .iter()
+    .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), p| {
+      (lo.min(p.y), hi.max(p.y))
+    });
+  let centre = layer.cell_center_world(at);
+  let behind = Vec2::new(centre.x, top - radius - 30.0);
+  let front = Vec2::new(centre.x, bottom + radius + 10.0);
+  assert_eq!(layer.cell_at_world(behind), at - IVec2::ONE, "behind");
+  assert_eq!(layer.cell_at_world(front), at + IVec2::ONE, "in front");
+  (behind, front)
+}
+
+/// Asserts the character draws behind what `remove` takes away (`what`)
+/// with its feet at `behind`, and over it at `front`: the frames at each
+/// place, the sprite hidden and shown, with it and then without it, are
+/// compared where the character and it overlap on screen
+fn drawn_behind_and_in_front(
+  engine: &mut HeadlessEngine,
+  (walker, sprite): (Entity, Entity),
+  (behind, front): (Vec2, Vec2),
+  what: &str,
+  remove: impl FnOnce(&mut HeadlessEngine),
+) {
+  let mut frames = Vec::new();
+  for at in [behind, front] {
+    frames.push((
+      shot(engine, walker, sprite, at, false),
+      shot(engine, walker, sprite, at, true),
+    ));
+  }
+  remove(engine);
+  let mut bare = Vec::new();
+  for at in [behind, front] {
+    bare.push((
+      shot(engine, walker, sprite, at, false),
+      shot(engine, walker, sprite, at, true),
+    ));
+  }
+
+  for (i, (at, name)) in [(behind, "behind"), (front, "in front of")]
+    .into_iter()
+    .enumerate()
+  {
+    // Around the character on screen: where the character draws (shown
+    // against hidden, without `what`) and where `what` draws (with it
+    // against without), and where both do
+    teleport(engine, walker, at);
+    engine.step_frames(10).unwrap();
+    let (a, b) = (
+      to_screen(engine, at - Vec2::new(120.0, 180.0)),
+      to_screen(engine, at + Vec2::new(120.0, 20.0)),
+    );
+    let area = Rect::new(a.x, a.y, b.x - a.x, b.y - a.y);
+    let (hidden, shown) = &frames[i];
+    let (bare_hidden, bare_shown) = &bare[i];
+    let character = differing(bare_hidden, bare_shown, area, 0);
+    let art = differing(hidden, bare_hidden, area, FAINT);
+    let both: Vec<(u32, u32)> = character.intersection(&art).copied().collect();
+    assert!(
+      both.len() >= 20,
+      "{name} {what}: the character and it overlap on screen ({} pixels)",
+      both.len()
+    );
+    let covered = both
+      .iter()
+      .filter(|&&(x, y)| shown.get_pixel(x, y) == hidden.get_pixel(x, y))
+      .count();
+    let over = both
+      .iter()
+      .filter(|&&(x, y)| shown.get_pixel(x, y) == bare_shown.get_pixel(x, y))
+      .count();
+    if at == behind {
+      // Behind it, it draws over the knight: no pixel where they overlap
+      // shows the knight as it draws in the open, and nearly all show it
+      // alone (the rest are its outline's see-through texels, the knight
+      // faint behind them)
+      assert_eq!(
+        over, 0,
+        "behind {what}, the knight never draws over it where they overlap"
+      );
+      assert!(
+        covered * 10 >= both.len() * 9,
+        "behind {what}, it covers the knight: {covered} of {} pixels",
+        both.len()
+      );
+    } else {
+      assert_eq!(
+        over,
+        both.len(),
+        "in front of {what}, the character draws over it where they overlap"
+      );
+      assert!(covered < both.len(), "and so it shows");
+    }
+  }
 }
 
 #[test]
@@ -229,95 +347,17 @@ fn the_town_character_draws_behind_a_wall_and_in_front_of_it() {
     })
     .expect("a wall with open ground behind it and in front of it");
   let layer = grid_of(&mut engine, map, "props");
-  let outline = layer.outline_world(wall);
-  let (top, bottom) = outline
-    .points()
-    .iter()
-    .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), p| {
-      (lo.min(p.y), hi.max(p.y))
-    });
-  // Straight above and below its middle, clear of its diamond by more
-  // than the character's radius
-  let centre = layer.cell_center_world(wall);
   let (radius, _) = walker_reach(&engine, walker);
-  let behind = Vec2::new(centre.x, top - radius - 30.0);
-  let front = Vec2::new(centre.x, bottom + radius + 10.0);
-  assert_eq!(layer.cell_at_world(behind), wall - IVec2::ONE, "behind");
-  assert_eq!(layer.cell_at_world(front), wall + IVec2::ONE, "in front");
-
-  // The frames at each place, the sprite hidden and shown, with the wall
-  // and then without it
-  let mut frames = Vec::new();
-  for at in [behind, front] {
-    frames.push((
-      shot(&mut engine, walker, sprite, at, false),
-      shot(&mut engine, walker, sprite, at, true),
-    ));
-  }
-  MapsView::new(engine.world_mut()).set_tile(map, "props", wall, None);
-  let mut bare = Vec::new();
-  for at in [behind, front] {
-    bare.push((
-      shot(&mut engine, walker, sprite, at, false),
-      shot(&mut engine, walker, sprite, at, true),
-    ));
-  }
-
-  for (i, (at, name)) in [(behind, "behind"), (front, "in front of")]
-    .into_iter()
-    .enumerate()
-  {
-    // Around the character on screen: where it draws (shown against
-    // hidden, the wall gone) and where the wall draws (with it against
-    // without), and where both do
-    teleport(&mut engine, walker, at);
-    engine.step_frames(10).unwrap();
-    let (a, b) = (
-      to_screen(&mut engine, at - Vec2::new(120.0, 180.0)),
-      to_screen(&mut engine, at + Vec2::new(120.0, 20.0)),
-    );
-    let area = Rect::new(a.x, a.y, b.x - a.x, b.y - a.y);
-    let (hidden, shown) = &frames[i];
-    let (bare_hidden, bare_shown) = &bare[i];
-    let character = differing(bare_hidden, bare_shown, area);
-    let wall_art = differing(hidden, bare_hidden, area);
-    let both: Vec<(u32, u32)> = character.intersection(&wall_art).copied().collect();
-    assert!(
-      both.len() >= 20,
-      "{name} the wall: the character and the wall overlap on screen ({} pixels)",
-      both.len()
-    );
-    let covered = both
-      .iter()
-      .filter(|&&(x, y)| shown.get_pixel(x, y) == hidden.get_pixel(x, y))
-      .count();
-    let over = both
-      .iter()
-      .filter(|&&(x, y)| shown.get_pixel(x, y) == bare_shown.get_pixel(x, y))
-      .count();
-    if at == behind {
-      // Behind it, the wall draws over the knight: no pixel where they
-      // overlap shows the knight as it draws in the open, and nearly all
-      // show the wall alone (the rest are its outline's see-through
-      // texels, the knight faint behind them)
-      assert_eq!(
-        over, 0,
-        "behind the wall, the knight never draws over it where they overlap"
-      );
-      assert!(
-        covered * 10 >= both.len() * 9,
-        "behind the wall, the wall covers the knight: {covered} of {} pixels",
-        both.len()
-      );
-    } else {
-      assert_eq!(
-        over,
-        both.len(),
-        "in front of the wall, the character draws over it where they overlap"
-      );
-      assert!(covered < both.len(), "and so it shows");
-    }
-  }
+  let places = behind_and_in_front(&layer, wall, radius);
+  drawn_behind_and_in_front(
+    &mut engine,
+    (walker, sprite),
+    places,
+    "the wall",
+    |engine| {
+      MapsView::new(engine.world_mut()).set_tile(map, "props", wall, None);
+    },
+  );
   assert!(warnings().is_empty(), "{:#?}", warnings());
 }
 
@@ -1344,6 +1384,320 @@ fn the_town_knight_s_walk_stops_when_held_up_or_steered() {
   assert!(
     walker_at(&engine, walker).y > before.y + 20.0,
     "and S walks it down"
+  );
+  assert!(warnings().is_empty(), "{:#?}", warnings());
+}
+
+/// The town's raised ground, on floor 1
+const RAISED: &str = "raised";
+
+/// The town's ramp up to its raised ground: the stair cell on the props
+/// layer (its tile leads up to floor 1), the raised cell it leads onto and
+/// the cell at its foot
+fn town_ramp(engine: &mut HeadlessEngine, map: Entity) -> (IVec2, IVec2, IVec2) {
+  let cells = map_cells(engine, map);
+  let maps = MapsView::new(engine.world_mut());
+  let ramp = cells
+    .into_iter()
+    .find(|&cell| {
+      maps
+        .tile(map, "props", cell)
+        .and_then(|tile| maps.tile_data(map, tile))
+        .is_some_and(|data| data.stairs == Some(1))
+    })
+    .expect("a ramp up to floor 1 on the props layer");
+  let top = [IVec2::X, IVec2::Y, -IVec2::X, -IVec2::Y]
+    .into_iter()
+    .map(|side| ramp + side)
+    .find(|&cell| maps.tile(map, RAISED, cell).is_some())
+    .expect("the raised cell the ramp leads onto");
+  (ramp, top, ramp * 2 - top)
+}
+
+/// The raised ground's cells
+fn raised_cells(engine: &mut HeadlessEngine, map: Entity) -> Vec<IVec2> {
+  let grid = layer_grid(engine, map, RAISED);
+  map_cells(engine, map)
+    .into_iter()
+    .filter(|&cell| grid.get(cell).is_some())
+    .collect()
+}
+
+/// The floor changes of `walker` sent since `cursor` last read, from and to
+fn floor_changes(
+  engine: &HeadlessEngine,
+  cursor: &mut MessageCursor<FloorChanged>,
+  walker: Entity,
+) -> Vec<(Floor, Floor)> {
+  engine
+    .world()
+    .get_resource::<Messages<FloorChanged>>()
+    .map(|messages| {
+      cursor
+        .read(messages)
+        .filter(|change| change.entity == walker)
+        .map(|change| (change.from, change.to))
+        .collect()
+    })
+    .unwrap_or_default()
+}
+
+fn floor_of(engine: &HeadlessEngine, walker: Entity) -> Floor {
+  *engine
+    .world()
+    .get::<Floor>(walker)
+    .expect("the character has a floor")
+}
+
+/// Walks the character straight to `to` (its feet), as a path walk does:
+/// its keys taken off and its intent aimed there each step; returns the
+/// floor changes on the way (read each step: a message lasts two updates)
+fn walk_straight(engine: &mut HeadlessEngine, walker: Entity, to: Vec2) -> Vec<(Floor, Floor)> {
+  engine
+    .world_mut()
+    .entity_mut(walker)
+    .remove::<MoveBindings>();
+  let mut cursor = MessageCursor::<FloorChanged>::default();
+  floor_changes(engine, &mut cursor, walker);
+  let mut changes = Vec::new();
+  for _ in 0..600 {
+    let at = walker_at(engine, walker);
+    let direction = if at.distance(to) < 3.0 {
+      Vec2::ZERO
+    } else {
+      steering::arrive(at, to, 1.0, 40.0)
+    };
+    if let Some(mut intent) = engine.world_mut().get_mut::<MoveIntent>(walker) {
+      intent.direction = direction;
+    }
+    if direction == Vec2::ZERO {
+      for _ in 0..5 {
+        engine.step().unwrap();
+        changes.extend(floor_changes(engine, &mut cursor, walker));
+      }
+      return changes;
+    }
+    engine.step().unwrap();
+    changes.extend(floor_changes(engine, &mut cursor, walker));
+  }
+  panic!(
+    "the character never reached {to}: it is at {}",
+    walker_at(engine, walker)
+  );
+}
+
+#[test]
+fn the_town_character_climbs_the_stairs_onto_the_raised_floor_and_back() {
+  let Some(mut engine) = engine_on(TOWN) else {
+    return;
+  };
+  let map = spawned_map(&mut engine);
+  let walker = wait_for_walker(&mut engine);
+  engine.mouse_move(900.0, 100.0);
+  let (_, top, foot) = town_ramp(&mut engine, map);
+  let layer = grid_of(&mut engine, map, RAISED);
+  let lift = MapsView::new(engine.world_mut())
+    .lift(map, Floor::On(1))
+    .expect("the raised ground's height");
+  assert!(lift.y < -100.0, "the raised ground is a block up: {lift}");
+
+  // From the ground at the ramp's foot, up it onto the raised ground
+  teleport(&mut engine, walker, layer.cell_center_world(foot));
+  engine.step_frames(5).unwrap();
+  assert_eq!(floor_of(&engine, walker), Floor::GROUND, "on the ground");
+  let up = walk_straight(&mut engine, walker, layer.cell_center_world(top));
+  assert_eq!(
+    up,
+    [(Floor::GROUND, Floor::On(1))],
+    "one change of floor, up"
+  );
+  assert_eq!(
+    floor_of(&engine, walker),
+    Floor::On(1),
+    "on the raised ground"
+  );
+  let drawn = MapsView::new(engine.world_mut()).drawn_lift(walker);
+  assert!(
+    drawn.distance(lift) < 0.5,
+    "drawn lifted by the raised ground's height: {drawn}, the ground's {lift}"
+  );
+
+  // And back down to the foot
+  let down = walk_straight(&mut engine, walker, layer.cell_center_world(foot));
+  assert_eq!(
+    down,
+    [(Floor::On(1), Floor::GROUND)],
+    "one change of floor, down"
+  );
+  assert_eq!(
+    floor_of(&engine, walker),
+    Floor::GROUND,
+    "on the ground again"
+  );
+  let drawn = MapsView::new(engine.world_mut()).drawn_lift(walker);
+  assert_eq!(drawn, Vec2::ZERO, "drawn where it stands");
+  assert!(warnings().is_empty(), "{:#?}", warnings());
+}
+
+#[test]
+fn the_town_character_draws_behind_and_in_front_of_the_raised_floor() {
+  let Some(mut engine) = engine_on(TOWN) else {
+    return;
+  };
+  let map = spawned_map(&mut engine);
+  let walker = wait_for_walker(&mut engine);
+  let sprite = walker_sprite(&mut engine, walker);
+  engine.tap_key(KeyCode::ArrowRight);
+  engine.mouse_move(900.0, 100.0);
+
+  // A raised cell with open ground in the cell behind it (above it on
+  // screen) and in the cell in front of it (below it): the knight on the
+  // ground walks behind the raised block, a block up, and in front of it
+  let raised = raised_cells(&mut engine, map)
+    .into_iter()
+    .find(|&cell| {
+      open_ground(&mut engine, map, cell - IVec2::ONE)
+        && open_ground(&mut engine, map, cell + IVec2::ONE)
+    })
+    .expect("a raised cell with open ground behind it and in front of it");
+  let layer = grid_of(&mut engine, map, RAISED);
+  let (radius, _) = walker_reach(&engine, walker);
+  let places = behind_and_in_front(&layer, raised, radius);
+  // The raised ground tinted, so its grass reads apart from the ground's
+  // where they look alike
+  let world = engine.world_mut();
+  let mut layers = world.query::<(&MapLayerRef, &mut LayerInfo)>();
+  for (layer, mut info) in layers.iter_mut(world) {
+    if layer.map == map && layer.name == RAISED {
+      info.tint = Color::rgb(255, 110, 110);
+    }
+  }
+  // Without it: the raised block, and the block under it that collides on
+  // the ground
+  drawn_behind_and_in_front(
+    &mut engine,
+    (walker, sprite),
+    places,
+    "the raised ground",
+    |engine| {
+      let mut maps = MapsView::new(engine.world_mut());
+      maps.set_tile(map, RAISED, raised, None);
+      maps.set_tile(map, "props", raised, None);
+    },
+  );
+  assert_eq!(floor_of(&engine, walker), Floor::GROUND, "on the ground");
+  assert!(warnings().is_empty(), "{:#?}", warnings());
+}
+
+#[test]
+fn the_town_picks_cells_on_the_raised_floor() {
+  let Some(mut engine) = engine_on(TOWN) else {
+    return;
+  };
+  let map = spawned_map(&mut engine);
+  let walker = wait_for_walker(&mut engine);
+  // The knight by the ramp, the view on it
+  let (_, _, foot) = town_ramp(&mut engine, map);
+  let layer = grid_of(&mut engine, map, RAISED);
+  teleport(&mut engine, walker, layer.cell_center_world(foot));
+  engine.step_frames(60).unwrap();
+  let lift = MapsView::new(engine.world_mut())
+    .lift(map, Floor::On(1))
+    .expect("the raised ground's height");
+
+  // Each raised cell, pointed at where it draws (its middle a block up):
+  // the pointer picks it on the raised ground, not the cell of the ground
+  // that lies there
+  for cell in raised_cells(&mut engine, map) {
+    let drawn = layer.cell_center_world(cell) + lift;
+    assert_ne!(
+      layer.cell_at_world(drawn),
+      cell,
+      "drawn above where it stands"
+    );
+    assert_eq!(
+      MapsView::new(engine.world_mut()).floor_cell_at_world(map, drawn),
+      Some((Floor::On(1), cell)),
+      "picked through the lift"
+    );
+    let at = to_screen(&mut engine, drawn);
+    engine.mouse_move(at.x, at.y);
+    engine.step_frames(2).unwrap();
+    let shown = engine.ui_snapshot();
+    let line = format!("Pointer: cell {}, {} on the raised ground", cell.x, cell.y);
+    assert!(shown.contains(&line), "{line:?} in {shown}");
+  }
+  // And the ground at the ramp's foot, on the ground
+  let at = to_screen(&mut engine, layer.cell_center_world(foot));
+  engine.mouse_move(at.x, at.y);
+  engine.step_frames(2).unwrap();
+  let shown = engine.ui_snapshot();
+  let line = format!("Pointer: cell {}, {} on the ground", foot.x, foot.y);
+  assert!(shown.contains(&line), "{line:?} in {shown}");
+  assert!(warnings().is_empty(), "{:#?}", warnings());
+}
+
+#[test]
+fn the_town_walks_a_path_up_the_stairs() {
+  let Some(mut engine) = engine_on(TOWN) else {
+    return;
+  };
+  let map = spawned_map(&mut engine);
+  let walker = wait_for_walker(&mut engine);
+  let (ramp, top, foot) = town_ramp(&mut engine, map);
+  let layer = grid_of(&mut engine, map, RAISED);
+  let lift = MapsView::new(engine.world_mut())
+    .lift(map, Floor::On(1))
+    .expect("the raised ground's height");
+  // The raised cell farthest from the ramp's top, and the knight on the
+  // ground two cells out from the ramp's foot
+  let goal = raised_cells(&mut engine, map)
+    .into_iter()
+    .max_by_key(|&cell| layer.grid.distance(top, cell))
+    .expect("raised cells");
+  let start = foot + (foot - ramp);
+  assert!(
+    open_ground(&mut engine, map, start),
+    "open ground at {start}"
+  );
+  teleport(&mut engine, walker, layer.cell_center_world(start));
+  engine.step_frames(60).unwrap();
+
+  // A click on the raised cell where it draws: the knight walks there, up
+  // the ramp
+  let mut cursor = MessageCursor::<FloorChanged>::default();
+  floor_changes(&engine, &mut cursor, walker);
+  let at = to_screen(&mut engine, layer.cell_center_world(goal) + lift);
+  click(&mut engine, at, MouseButton::Left);
+  let shown = engine.ui_snapshot();
+  let line = format!(
+    "Walking to cell {}, {} on the raised ground",
+    goal.x, goal.y
+  );
+  assert!(shown.contains(&line), "{line:?} in {shown}");
+  engine.mouse_move(900.0, 100.0);
+  let mut changes = floor_changes(&engine, &mut cursor, walker);
+  for _ in 0..900 {
+    engine.step().unwrap();
+    changes.extend(floor_changes(&engine, &mut cursor, walker));
+  }
+  let feet = walker_at(&engine, walker);
+  assert_eq!(
+    layer.cell_at_world(feet),
+    goal,
+    "the knight walked to the cell"
+  );
+  let off = feet.distance(layer.cell_center_world(goal));
+  assert!(off < 6.0, "it stops on the cell's middle: {off} px off");
+  assert_eq!(
+    floor_of(&engine, walker),
+    Floor::On(1),
+    "on the raised ground"
+  );
+  assert_eq!(
+    changes,
+    [(Floor::GROUND, Floor::On(1))],
+    "up the ramp, once"
   );
   assert!(warnings().is_empty(), "{:#?}", warnings());
 }

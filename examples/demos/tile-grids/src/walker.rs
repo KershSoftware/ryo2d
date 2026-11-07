@@ -1,9 +1,10 @@
 //! The character the town, the island, the hex board and the dungeon
 //! share: a top-down walker, Tiny Dungeon's hero scaled to the map's cells,
 //! y-sorted at a map layer's z so it walks behind and in front of what that
-//! layer draws; where a map's `player_start` stands; and, for the town and
-//! the board, the cheapest path between two cells of a navigation grid and
-//! a walk along it
+//! layer draws, and where it draws, for a camera to follow, on whatever
+//! floor it is; where a map's `player_start` stands; and, for the town and
+//! the board, the cheapest path between two cells of a navigation grid, or
+//! across a map's floors by its stairs, and a walk along it
 
 use demo_kit::prelude::*;
 
@@ -80,6 +81,16 @@ pub(crate) fn place_of(ctx: &SceneContext, walker: Option<Entity>) -> Option<Vec
     .map(|transform| transform.translation)
 }
 
+/// Where the character draws, once it has spawned: where it stands (its
+/// `GlobalTransform`) lifted by the height of the floor it is on, or as
+/// far up a flight of stairs as it has climbed, so a camera that follows
+/// it keeps its sprite in the middle on every floor
+pub(crate) fn drawn_at(ctx: &mut SceneContext, walker: Option<Entity>) -> Option<Vec2> {
+  let walker = walker?;
+  let stands = ctx.world.get::<GlobalTransform>(walker)?.translation();
+  Some(stands + ctx.maps().drawn_lift(walker))
+}
+
 /// Where the designer's `player_start` stands in the map's pixels: on
 /// isometric and oblique maps the loader has already projected it
 pub(crate) fn map_start(map: &TileMap) -> Option<Vec2> {
@@ -94,11 +105,16 @@ pub(crate) fn map_start(map: &TileMap) -> Option<Vec2> {
   })
 }
 
-/// The cheapest path between two cells of a navigation grid
+/// The cheapest path between two cells of a navigation grid, or of a
+/// map's floors
 pub(crate) struct CellPath {
   /// Its cells, the start and the goal included
   pub(crate) cells: Vec<IVec2>,
-  /// Their centres in the world
+  /// The floor each is on: a path across floors has two at a stair cell,
+  /// one on each floor, where it changes floor
+  pub(crate) floors: Vec<Floor>,
+  /// Their centres in the world, where a character on their floor stands
+  /// (its storey's height below where it draws)
   pub(crate) centres: Vec<Vec2>,
   /// What the pathfinder found it costs: each step's length over the
   /// grid's shortest step, times the cost of the cell it enters
@@ -112,25 +128,41 @@ impl CellPath {
     let path = Pathfinder::new()
       .find_path_grid(grid, from.into(), to.into())
       .path()?;
-    let cells: Vec<IVec2> = path
-      .waypoints()
-      .iter()
-      .map(|node| node.grid_coord.into())
-      .collect();
-    let centres = path
-      .waypoints()
-      .iter()
-      .map(|node| Vec2::new(node.x, node.y))
-      .collect();
-    let cost = cells
-      .windows(2)
-      .map(|step| step_cost(grid, step[0], step[1]))
+    Some(CellPath::along(&path, |_| Some(grid)))
+  }
+
+  /// The cheapest path from `from` to `to`, each a floor and its cell,
+  /// across the floors of `floors`, climbing and coming down their stairs;
+  /// `None` when either is blocked or off its floor, or nothing joins them
+  pub(crate) fn find_across(
+    floors: &FloorNavigation,
+    from: (Floor, IVec2),
+    to: (Floor, IVec2),
+  ) -> Option<CellPath> {
+    let path = Pathfinder::new()
+      .find_floor_path_grid(floors, (from.0, from.1.into()), (to.0, to.1.into()))
+      .path()?;
+    Some(CellPath::along(&path, |floor| floors.grid(floor)))
+  }
+
+  /// `path`'s cells, floors, centres and cost, each step's cost read from
+  /// the grid of its floor (`grid_of`); a step from one floor to another,
+  /// on the stairs, costs nothing
+  fn along<'a>(path: &Path, grid_of: impl Fn(Floor) -> Option<&'a NavigationGrid>) -> CellPath {
+    let nodes = path.waypoints();
+    let cells: Vec<IVec2> = nodes.iter().map(|node| node.grid_coord.into()).collect();
+    let floors: Vec<Floor> = nodes.iter().map(|node| node.floor).collect();
+    let centres = nodes.iter().map(|node| Vec2::new(node.x, node.y)).collect();
+    let cost = (1..nodes.len())
+      .filter(|&i| floors[i - 1] == floors[i])
+      .map(|i| grid_of(floors[i]).map_or(0.0, |grid| step_cost(grid, cells[i - 1], cells[i])))
       .sum();
-    Some(CellPath {
+    CellPath {
       cells,
+      floors,
       centres,
       cost,
-    })
+    }
   }
 }
 

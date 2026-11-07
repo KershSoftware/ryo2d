@@ -32,6 +32,7 @@ sketch=(
   grass_waterConvex_N grass_waterConvex_E grass_waterConvex_S grass_waterConvex_W
   castle_wall_N castle_wall_E castle_tower_N castle_gateOpen_N castle_gateOpen_E
   tree_single_N tree_single_E tree_multiple_N tree_multiple_E rocks_grass_N rocks_grass_E
+  grass_pathSlope_E
 )
 mkdir -p "$out/kenney-sketch-town"
 for name in "${sketch[@]}"; do

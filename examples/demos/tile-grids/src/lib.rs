@@ -8,8 +8,10 @@
 //! generator, where a digger digs and builds and finds it all as it left it
 //! when it comes back (`SavedChunks`); then the other grids Tiled has: an
 //! isometric town of tall walls and trees a knight walks behind and in
-//! front of, or along a path to the pointer, its terrain painted with the
-//! mouse; an island on a staggered grid, its rows or its columns shifted; a
+//! front of, and raised ground a block up, on a floor of its own, that it
+//! climbs a ramp onto, walking there by itself along a path up the ramp to
+//! the pointer, the town's terrain painted with the mouse; an island on a
+//! staggered grid, its rows or its columns shifted; a
 //! hex board that picks, selects and shows a hex's range, ring, line and
 //! neighbours, its sand turned in sixths, and walks a walker by the
 //! cheapest path round its rocks; a skewed oblique dungeon and its mirror;
@@ -18,7 +20,7 @@
 //! The maps are files in `assets/` written by Tiled through
 //! `src/bin/make-grid-maps.rs` (the speed page's are built in code); the
 //! generators' noise is `ryo2d-procgen`'s. A library, so its tests drive
-//! the pages headlessly. Floors join these later
+//! the pages headlessly
 
 mod endless;
 mod hexagonal;
