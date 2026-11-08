@@ -168,12 +168,13 @@ pub(crate) fn folder_from_project_name(name: &str) -> String {
 
 /// The name the browser keeps a game's saves under: `[release] save_folder`
 /// when it can name a folder, else `[project] name` as `ryo2d build` turns it
-/// into a folder name, else the window title (warned once: games on one site
-/// then share saves by title).
+/// into a folder name, else the window title (with `warn_on_title`, warned
+/// once a process: games on one site then share saves by title).
 pub(crate) fn store_name(
   release_save_folder: Option<&str>,
   project_name: Option<&str>,
   title: &str,
+  warn_on_title: bool,
 ) -> String {
   if let Some(folder) = release_save_folder.filter(|folder| valid_save_folder(folder)) {
     return folder.to_string();
@@ -184,12 +185,14 @@ pub(crate) fn store_name(
   {
     return folder;
   }
-  static WARNED: std::sync::Once = std::sync::Once::new();
-  WARNED.call_once(|| {
-    crate::engine_warn!(
-      "web saves are named after the window title; set [project] name so other games on the same site don't share them"
-    );
-  });
+  if warn_on_title {
+    static WARNED: std::sync::Once = std::sync::Once::new();
+    WARNED.call_once(|| {
+      crate::engine_warn!(
+        "web saves are named after the window title; set [project] name so other games on the same site don't share them"
+      );
+    });
+  }
   title.to_string()
 }
 
@@ -363,20 +366,20 @@ mod tests {
   #[test]
   fn the_store_name_prefers_save_folder_then_name_then_title() {
     assert_eq!(
-      store_name(Some("Studio/Hopper"), Some("Hopper"), "Title"),
+      store_name(Some("Studio/Hopper"), Some("Hopper"), "Title", true),
       "Studio/Hopper"
     );
     // An invalid save folder falls through to the name
     assert_eq!(
-      store_name(Some("../x"), Some("Star: Hopper"), "T"),
+      store_name(Some("../x"), Some("Star: Hopper"), "T", true),
       "Star- Hopper"
     );
     assert_eq!(
-      store_name(None, Some("Star Hopper"), "Title"),
+      store_name(None, Some("Star Hopper"), "Title", true),
       "Star Hopper"
     );
-    assert_eq!(store_name(None, Some("  "), "Title"), "Title");
-    assert_eq!(store_name(None, None, "Other"), "Other");
+    assert_eq!(store_name(None, Some("  "), "Title", true), "Title");
+    assert_eq!(store_name(None, None, "Other", true), "Other");
     // Warned once a process, however many games fall back
     let warned = crate::core::dev_log::get_entries()
       .iter()
@@ -387,6 +390,27 @@ mod tests {
       })
       .count();
     assert_eq!(warned, 1);
+  }
+
+  fn title_warnings() -> usize {
+    crate::core::dev_log::get_entries()
+      .iter()
+      .filter(|entry| {
+        entry
+          .message
+          .contains("web saves are named after the window title")
+      })
+      .count()
+  }
+
+  #[test]
+  fn a_title_fallback_warns_only_when_asked() {
+    let before = title_warnings();
+    assert_eq!(store_name(None, None, "Quiet", false), "Quiet");
+    assert_eq!(title_warnings(), before);
+    assert_eq!(store_name(None, None, "Loud", true), "Loud");
+    assert_eq!(store_name(None, None, "Loud", true), "Loud");
+    assert_eq!(title_warnings(), 1);
   }
 
   #[test]

@@ -1842,7 +1842,7 @@ impl EngineBuilder {
     let (project, game_name, game_version, names) = match (embedded, on_disk, file) {
       (Some(embedded), ..) => {
         let folder = compiled_embedded_value("RYO_EMBED_SAVE_FOLDER").map(str::to_string);
-        (embedded, None, None, Some((folder, None)))
+        (embedded, None, None, (folder, None))
       }
       (None, Some(ws), _) => {
         let config = ws.config();
@@ -1850,21 +1850,21 @@ impl EngineBuilder {
           ProjectLayer::from_workspace(ws),
           Some(config.name.clone()),
           config.version.clone(),
-          Some((
+          (
             config.release.save_folder.clone(),
             Some(config.name.clone()),
-          )),
+          ),
         )
       }
-      (None, None, Some(file)) => (file.layer, None, None, Some((file.save_folder, file.name))),
+      (None, None, Some(file)) => (file.layer, None, None, (file.save_folder, file.name)),
       (None, None, None) => match workspace {
         Some(ws) => (
           ProjectLayer::from_workspace(ws),
           Some(ws.config().name.clone()),
           ws.config().version.clone(),
-          None,
+          (None, None),
         ),
-        None => (ProjectLayer::default(), None, None, None),
+        None => (ProjectLayer::default(), None, None, (None, None)),
       },
     };
 
@@ -1888,10 +1888,13 @@ impl EngineBuilder {
       }
     }
 
-    let store_name = match names {
-      Some((folder, name)) => store_name(folder.as_deref(), name.as_deref(), &settings.title),
-      None => settings.title.clone(),
-    };
+    let (folder, name) = names;
+    let store_name = store_name(
+      folder.as_deref(),
+      name.as_deref(),
+      &settings.title,
+      cfg!(target_arch = "wasm32"),
+    );
 
     let mut config = self.config;
     config.presentation = settings.presentation();
