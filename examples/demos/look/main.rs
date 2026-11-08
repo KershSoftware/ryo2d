@@ -5,6 +5,7 @@ use demo_kit::prelude::*;
 
 fn main() {
   Demo::new("Look")
+    .configure(|b| b.project(ryo2d::project!()))
     .resolution(960, 640)
     .page(GlowPage::default)
     .page(CurvesPage::default)

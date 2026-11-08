@@ -3,6 +3,7 @@
 
 fn main() {
   let demo = audio_demo::demo();
+  let demo = demo.configure(|b| b.project(ryo2d::project!()));
   // The web has no file system: the assets are built into the demo
   #[cfg(target_arch = "wasm32")]
   let demo = demo.configure(|b| b.asset_source(audio_demo::embedded()));

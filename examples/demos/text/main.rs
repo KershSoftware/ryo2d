@@ -6,6 +6,7 @@ use demo_kit::prelude::*;
 
 fn main() {
   Demo::new("Text")
+    .configure(|b| b.project(ryo2d::project!()))
     .resolution(960, 640)
     .page(FontsPage::default)
     .page(RichPage::default)

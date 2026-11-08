@@ -8,6 +8,7 @@ use demo_kit::prelude::*;
 
 fn main() {
   Demo::new("Physics")
+    .configure(|b| b.project(ryo2d::project!()))
     .resolution(960, 640)
     .page(ShapesPage::default)
     .page(JointsPage::default)

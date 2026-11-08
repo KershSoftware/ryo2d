@@ -1,0 +1,18 @@
+[package]
+name = "saves-demo"
+version = "0.1.0"
+edition = "2024"
+description = "Saves demo - slots, upgrades from older saves, recovery from damage and live settings"
+
+[lib]
+name = "saves_demo"
+path = "src/lib.rs"
+
+[[bin]]
+name = "saves-demo"
+path = "src/main.rs"
+
+[dependencies]
+ryo2d = { path = "../../.." }
+demo-kit = { path = "../../demo-kit" }
+serde = { version = "1", features = ["derive"] }

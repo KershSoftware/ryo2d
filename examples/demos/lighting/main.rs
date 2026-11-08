@@ -402,7 +402,7 @@ Ambient darkness is the room's base light: 1 is pitch black."
 fn main() {
   Demo::new("Lighting")
     .resolution(1280, 720)
-    .configure(|b| b.target_fps(60))
+    .configure(|b| b.target_fps(60).project(ryo2d::project!()))
     .page(PendulumPage::new)
     .run();
 }
