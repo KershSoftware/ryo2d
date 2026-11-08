@@ -14,12 +14,16 @@ impl GameOverScene {
   pub fn new(survival_time: f32) -> Self {
     Self {
       survival_time,
-      best_time: load_best_time(),
+      best_time: 0.0,
     }
   }
 }
 
 impl Scene for GameOverScene {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    self.best_time = load_best_time(ctx);
+  }
+
   fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
     // Restart game: Confirm (Space, Enter, A), or Start on a pad
     if ctx.input.action_pressed("ui.confirm")

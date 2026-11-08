@@ -32,7 +32,7 @@ impl MenuScene {
   /// Create a new menu scene
   pub fn new() -> Self {
     Self {
-      high_score: load_high_score(),
+      high_score: 0,
       intro: None,
       starting: false,
       root: None,
@@ -72,6 +72,7 @@ impl Default for MenuScene {
 impl Scene for MenuScene {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
     use_game_look(ctx);
+    self.high_score = load_high_score(ctx);
 
     ctx
       .camera()

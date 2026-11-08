@@ -15,13 +15,6 @@ fn launched(world: &mut World) -> Option<Entity> {
 
 #[test]
 fn a_ball_leaving_past_a_bottom_corner_is_lost() {
-  // Losing a life can end the game, which saves the high score: run from an
-  // empty folder, so the player's save is never touched (the working
-  // directory is the process's; this file has one test)
-  let folder = std::env::temp_dir().join(format!("breakout-lost-{}", std::process::id()));
-  std::fs::create_dir_all(&folder).unwrap();
-  std::env::set_current_dir(&folder).unwrap();
-
   let Some(mut engine) = HeadlessEngine::new_or_skip(
     EngineBuilder::new()
       .resolution(SCREEN_WIDTH, SCREEN_HEIGHT)
@@ -66,7 +59,4 @@ fn a_ball_leaving_past_a_bottom_corner_is_lost() {
     launched(engine.world_mut()).is_none(),
     "a new ball waits on the paddle"
   );
-
-  drop(engine);
-  let _ = std::fs::remove_dir_all(&folder);
 }

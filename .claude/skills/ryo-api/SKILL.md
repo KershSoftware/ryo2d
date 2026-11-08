@@ -1218,9 +1218,8 @@ Two persistence tiers: player settings in `system.json` (`SystemState`) and game
 
 <!-- with: #[derive(serde::Serialize, serde::Deserialize)] struct Progress { level: u32 } -->
 ```rust
-let saves = Workspace::discover()?.create_save_manager()?;
-saves.save_game("slot1", &Progress { level: 3 })?;
-let loaded: GameSaveData<Progress> = saves.load_game("slot1")?;
+ctx.saves().save("slot1", Progress { level: 3 })?;
+let loaded: Loaded<Progress> = ctx.saves().load("slot1")?;
 ```
 
 See `ryo-config-save`.

@@ -4,7 +4,6 @@
 //! files the web build embeds, with no file on disk
 
 use std::path::PathBuf;
-use std::sync::OnceLock;
 
 use breakout::prelude::*;
 use breakout::{EMBEDDED, embedded};
@@ -24,23 +23,8 @@ const LETTERS: [(char, &str, u32, u32); 8] = [
   ('S', "Silver", 3, 200),
 ];
 
-/// Runs from an empty folder (the process's working directory, so every
-/// test shares it): a game over saves the high score there, the player's is
-/// never touched, and no asset is on disk, so every file the game reads is
-/// the embedded one
-fn empty_folder() {
-  static FOLDER: OnceLock<PathBuf> = OnceLock::new();
-  FOLDER.get_or_init(|| {
-    let folder = std::env::temp_dir().join(format!("breakout-levels-{}", std::process::id()));
-    std::fs::create_dir_all(&folder).unwrap();
-    std::env::set_current_dir(&folder).unwrap();
-    folder
-  });
-}
-
 /// A game on `level`, its files read from the embedded copies as on the web
 fn engine_on(level: u32) -> Option<HeadlessEngine> {
-  empty_folder();
   HeadlessEngine::new_or_skip(
     EngineBuilder::new()
       .resolution(SCREEN_WIDTH, SCREEN_HEIGHT)
@@ -207,7 +191,6 @@ fn levels_load_on_the_web_from_embedded_files() {
 
 /// A game on `level` over `files`
 fn engine_over(files: MemorySource, level: u32) -> Option<HeadlessEngine> {
-  empty_folder();
   HeadlessEngine::new_or_skip(
     EngineBuilder::new()
       .resolution(SCREEN_WIDTH, SCREEN_HEIGHT)

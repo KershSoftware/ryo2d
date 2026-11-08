@@ -126,20 +126,16 @@ difficulty = "normal"
 let workspace = Workspace::discover()?;        // finds Ryo.toml (up to 3 parents)
 let config = workspace.config();
 let difficulty = config.env_str("difficulty").unwrap_or("normal");
-let saves = workspace.create_save_manager()?;  // SaveManager over the save folder
 ```
 
 ## System State
 
 `SystemState` holds the six volume settings (`master_volume`, `music_volume`, `sfx_volume`, `ui_volume`, `voice_volume`, `ambience_volume`), `width`, `height`, `display_mode: DisplayMode`, `vsync: Option<bool>`, `show_fps: Option<bool>`, `bindings` (the player's input bindings, below) and `env` (typed JSON values). In the file the resolution is one `"1280x720"` key.
 
-<!-- given: saves: SaveManager, workspace: Workspace -->
 ```rust
-let mut settings = saves.load_or_create_system(&workspace.config().system)?;
-settings.master_volume = 0.5;
-settings.display_mode = DisplayMode::BorderlessFullscreen;
-settings.set_env("language", "en");
-saves.save_system(&settings)?;
+let mut settings = ctx.settings();
+settings.set_volume(VolumeKind::Master, 0.5);
+settings.set_display_mode(DisplayMode::BorderlessFullscreen);
 ```
 
 - `load_or_create_system(&defaults)` creates the file from `[system]` when missing and merges new `env` keys into an existing one; `load_or_create_system_filtered(&defaults, &filter)` writes only the filtered keys to a new file. Both return the volumes and display mode the file doesn't hold as `defaults` gives them (the game's `[system]`, as the engine plays them), not the engine's 1.0; `load_system()` takes no defaults and gives the engine's.
@@ -170,7 +166,6 @@ EngineBuilder::new()
 ## Game Data
 
 <!-- with: use serde::{Deserialize, Serialize}; -->
-<!-- given: saves: SaveManager -->
 ```rust
 #[derive(Serialize, Deserialize)]
 struct Progress {
@@ -180,10 +175,10 @@ struct Progress {
 }
 
 let progress = Progress { level: 3, score: 1200, unlocked: vec!["dash".to_string()] };
-saves.save_game("slot1", &progress)?;                        // slot1.ryo-save
-let progress: Progress = saves.load_game("slot1")?.data;    // GameSaveData<Progress>
-let slots = saves.list_game_saves()?;
-saves.delete_game("slot1")?;
+ctx.saves().save("slot1", progress)?;                      // slot1.ryo-save
+let progress: Progress = ctx.saves().load("slot1")?.data;  // Loaded<Progress>
+let slots = ctx.saves().list()?;
+ctx.saves().delete("slot1")?;
 ```
 
 - `GameSaveData<T>` wraps the data with `timestamp` (Unix seconds), `name`, `play_time` (seconds) and `metadata`; write them with `save_game_with_info(slot, GameSaveData::new(&data).with_name("Forest").with_play_time(secs).with_metadata("chapter", "2"))`.
@@ -196,14 +191,11 @@ saves.delete_game("slot1")?;
 ### Settings Screen
 
 ```rust
-struct Settings {
-  saves: SaveManager,
-  state: SystemState,
-}
+struct SettingsScreen;
 
-impl Scene for Settings {
+impl Scene for SettingsScreen {
   fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction {
-    let mut volume_changed = false;
+    let mut volume = ctx.settings().volume(VolumeKind::Master);
     let mut picked = None;
     ui.panel()
       .focus_scope()
@@ -211,27 +203,21 @@ impl Scene for Settings {
       .width(300.0)
       .gap(8.0)
       .show(|ui| {
-        volume_changed = ui
-          .slider(&mut self.state.master_volume, 0.0..=1.0)
+        ui.slider(&mut volume, 0.0..=1.0)
           .step(0.05)
           .label("Volume")
           .show_value()
-          .show()
-          .changed();
+          .show();
         for (i, mode) in DisplayMode::all().iter().enumerate() {
           if ui.button(mode.display_name()).id(i).fill_width().clicked() {
             picked = Some(*mode);
           }
         }
       });
-    if volume_changed {
-      ctx.audio().set_volume_setting(VolumeKind::Master, self.state.master_volume);
-      self.saves.save_system(&self.state).ok();
-    }
+    let mut settings = ctx.settings();
+    settings.set_volume(VolumeKind::Master, volume);
     if let Some(mode) = picked {
-      self.state.display_mode = mode;
-      ctx.request_display_mode(mode);
-      self.saves.save_system(&self.state).ok();
+      settings.set_display_mode(mode);
     }
     if ui.back() {
       return SceneAction::Pop;
@@ -247,14 +233,14 @@ A tabbed settings screen with rebinding rows is `ryo-ui`'s settings recipe.
 
 `update` runs every fixed step with the constant timestep, so a timer in it counts game time (it stops while paused).
 
-<!-- with: #[derive(serde::Serialize)] struct Progress { level: u32 } -->
-<!-- self: autosave_timer: f32, saves: SaveManager, progress: Progress -->
+<!-- with: #[derive(Clone, serde::Serialize)] struct Progress { level: u32 } -->
+<!-- self: autosave_timer: f32, progress: Progress -->
 ```rust
-fn update(&mut self, _ctx: &mut SceneContext, dt: f32) -> SceneAction {
+fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
   self.autosave_timer += dt;
   if self.autosave_timer >= 60.0 {
     self.autosave_timer = 0.0;
-    self.saves.save_game("autosave", &self.progress).ok();
+    ctx.saves().save("autosave", self.progress.clone()).ok();
   }
   SceneAction::Continue
 }
@@ -273,10 +259,9 @@ struct LevelSave {
 ```
 
 <!-- with: #[derive(serde::Deserialize)] struct LevelSave { enemies: Vec<(f32, f32, i32)> } #[derive(Component)] struct Enemy { health: i32 } -->
-<!-- self: saves: SaveManager -->
 ```rust
 fn on_enter(&mut self, ctx: &mut SceneContext) {
-  if let Ok(save) = self.saves.load_game::<LevelSave>("level") {
+  if let Ok(save) = ctx.saves().load::<LevelSave>("level") {
     for (x, y, health) in save.data.enemies {
       ctx.world.spawn((Transform::from_xy(x, y), Enemy { health }));
     }

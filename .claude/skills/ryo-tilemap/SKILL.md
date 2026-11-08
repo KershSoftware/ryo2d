@@ -870,7 +870,7 @@ if chunks_moved || self.paths.is_none() {
 Keeping the player's changes in a save game, with `SaveManager` (`ryo-config-save`; the game adds `serde`):
 
 <!-- with: use serde::{Deserialize, Serialize}; -->
-<!-- self: world: Entity, saves: SaveManager, chunks: SavedChunks -->
+<!-- self: world: Entity, chunks: SavedChunks -->
 <!-- given: map: Handle<TileMap>, stream: MapStream -->
 ```rust
 /// What a save game holds of the world
@@ -880,7 +880,7 @@ struct WorldSave {
 }
 
 // Entering the world: the chunks the player changed, from the last save
-self.chunks = match self.saves.load_game::<WorldSave>("world") {
+self.chunks = match ctx.saves().load::<WorldSave>("world") {
   Ok(save) => save.data.chunks,
   Err(_) => SavedChunks::default(),
 };
@@ -891,7 +891,7 @@ self.world = ctx.world.spawn((MapRoot::new(map), stream)).id();
 // Saving: the changed chunks still round the player go in, then the store is written
 ctx.maps().save_changed_chunks(self.world);
 let save = WorldSave { chunks: self.chunks.clone() };
-if let Err(error) = self.saves.save_game("world", &save) {
+if let Err(error) = ctx.saves().save("world", save) {
   game_warn!("the world was not saved: {error}");
 }
 ```

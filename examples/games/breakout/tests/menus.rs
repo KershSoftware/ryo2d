@@ -1,6 +1,3 @@
-use std::path::PathBuf;
-use std::sync::OnceLock;
-
 use breakout::scenes::{GameScene, PauseScene};
 use ryo2d::core::dev_log::LogLevel;
 use ryo2d::prelude::*;
@@ -22,22 +19,8 @@ impl Scene for Under {
   }
 }
 
-/// An empty folder to run from, so saves are written there and the player's
-/// are never touched, and no UI file is on disk, so the embedded copies load.
-/// The working directory is the process's, so both tests share one folder.
-fn empty_folder() {
-  static FOLDER: OnceLock<PathBuf> = OnceLock::new();
-  FOLDER.get_or_init(|| {
-    let folder = std::env::temp_dir().join(format!("breakout-menus-{}", std::process::id()));
-    std::fs::create_dir_all(&folder).unwrap();
-    std::env::set_current_dir(&folder).unwrap();
-    folder
-  });
-}
-
 #[test]
 fn the_hud_shows_the_score_through_its_bindings() {
-  empty_folder();
   let Some(mut engine) = HeadlessEngine::new_or_skip(
     EngineBuilder::new()
       .resolution(800, 600)
@@ -71,7 +54,6 @@ impl AssetSource for NoFolder {
 
 #[test]
 fn the_hud_shows_where_there_is_no_folder_to_read_as_on_the_web() {
-  empty_folder();
   let Some(mut engine) = HeadlessEngine::new_or_skip(
     EngineBuilder::new()
       .resolution(800, 600)
@@ -100,8 +82,6 @@ fn the_hud_shows_where_there_is_no_folder_to_read_as_on_the_web() {
 
 #[test]
 fn the_pause_menu_is_navigable_by_pad() {
-  empty_folder();
-
   let Some(mut engine) = HeadlessEngine::new_or_skip(
     EngineBuilder::new()
       .resolution(800, 600)
@@ -154,7 +134,6 @@ impl Scene for LoopUnder {
 #[test]
 fn the_pause_menu_holds_the_game_s_sounds() {
   use ryo2d::core::audio::AudioLogKind;
-  empty_folder();
   let Some(mut engine) = HeadlessEngine::new_or_skip(
     EngineBuilder::new()
       .resolution(800, 600)

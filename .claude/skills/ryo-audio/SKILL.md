@@ -265,8 +265,8 @@ The engine loads `audio/mixer.mixer.ron` (`MIXER_PATH`) at start if the game has
 Six settings, one per standard bus, are what a settings menu shows: `VolumeKind::Master`, `Music`, `Sfx`, `Ui`, `Voice` (dialogue) and `Ambience`. A game's own bus takes the setting of the standard bus it is under.
 
 ```rust
-ctx.audio().set_volume_setting(VolumeKind::Music, 0.5); // playing sounds follow at once
-let music = ctx.audio().volume_setting(VolumeKind::Music);
+ctx.settings().set_volume(VolumeKind::Music, 0.5); // playing sounds follow at once
+let music = ctx.settings().volume(VolumeKind::Music);
 ```
 
 **The curve.** A setting runs from 0 to 1 and is the square root of the amplitude, so its gain is dB = 40·log10(v) (`volume_to_db`):
@@ -283,32 +283,27 @@ A linear slider leaves 50% at only -6 dB and puts everything below -12 dB in its
 A settings screen:
 
 ```rust
-struct AudioSettings {
-  saves: SaveManager,
-  state: SystemState,
-}
+struct AudioSettings;
 
 impl Scene for AudioSettings {
   fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction {
-    let state = &mut self.state;
+    let mut settings = ctx.settings();
     let mut moved = Vec::new();
     ui.panel().focus_scope().anchor(Anchor::Center).width(320.0).gap(8.0).show(|ui| {
-      for (kind, label, value) in [
-        (VolumeKind::Master, "Master", &mut state.master_volume),
-        (VolumeKind::Music, "Music", &mut state.music_volume),
-        (VolumeKind::Sfx, "Effects", &mut state.sfx_volume),
-        (VolumeKind::Voice, "Dialogue", &mut state.voice_volume),
+      for (kind, label) in [
+        (VolumeKind::Master, "Master"),
+        (VolumeKind::Music, "Music"),
+        (VolumeKind::Sfx, "Effects"),
+        (VolumeKind::Voice, "Dialogue"),
       ] {
-        if ui.slider(value, 0.0..=1.0).id(label).step(0.05).label(label).show_value().show().changed() {
-          moved.push((kind, *value));
+        let mut value = settings.volume(kind);
+        if ui.slider(&mut value, 0.0..=1.0).id(label).step(0.05).label(label).show_value().show().changed() {
+          moved.push((kind, value));
         }
       }
     });
-    for &(kind, value) in &moved {
-      ctx.audio().set_volume_setting(kind, value);
-    }
-    if !moved.is_empty() {
-      self.saves.save_system(&self.state).ok();
+    for (kind, value) in moved {
+      settings.set_volume(kind, value);
     }
     if ui.back() {
       return SceneAction::Pop;

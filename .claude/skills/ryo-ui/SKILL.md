@@ -505,7 +505,7 @@ enum Pause {
 impl Scene for PauseMenu {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
     // The slider starts where the player's setting is
-    self.volume = ctx.audio().volume_setting(VolumeKind::Master);
+    self.volume = ctx.settings().volume(VolumeKind::Master);
     // The level's sounds are held while this menu is on top, as it does not
     // update the level (Scene::holds_audio_below). To freeze its tweens and
     // animation too, pause the game clock here (`ctx.time.game.pause()`) and
@@ -563,7 +563,7 @@ impl Scene for PauseMenu {
       });
       if changed {
         // The player's master setting: playing sounds follow at once
-        ctx.audio().set_volume_setting(VolumeKind::Master, self.volume);
+        ctx.settings().set_volume(VolumeKind::Master, self.volume);
       }
       // Back closes the innermost first: the modal now, the menu after
       if done || ui.back() {
@@ -1552,7 +1552,7 @@ impl Scene for NodeSettings {
         // Applied as it changes; the others are read when needed
         Some("master") => {
           if let Some(volume) = ctx.world.get::<UiValue>(event.node).map(|v| v.0) {
-            ctx.audio().set_volume_setting(VolumeKind::Master, volume);
+            ctx.settings().set_volume(VolumeKind::Master, volume);
           }
         }
         _ => {}

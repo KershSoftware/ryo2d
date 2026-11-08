@@ -3,42 +3,24 @@
 use ryo2d::prelude::*;
 use serde::{Deserialize, Serialize};
 
+const SLOT: &str = "highscore";
+
 /// High score save data
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct HighScoreData {
   pub high_score: u32,
 }
 
-/// Load the high score from the save file
-///
-/// Returns 0 if no save file exists or if loading fails
-pub fn load_high_score() -> u32 {
-  // Use workspace configuration for save paths
-  let Ok(workspace) = Workspace::discover() else {
-    return 0;
-  };
-
-  let Ok(save_manager) = workspace.create_save_manager() else {
-    return 0;
-  };
-
-  if let Ok(data) = save_manager.load_game::<HighScoreData>("highscore") {
-    return data.data.high_score;
-  }
-  0
+/// The saved high score, or 0 when there is none or it does not load
+pub fn load_high_score(ctx: &mut SceneContext) -> u32 {
+  ctx
+    .saves()
+    .load::<HighScoreData>(SLOT)
+    .map(|loaded| loaded.data.high_score)
+    .unwrap_or(0)
 }
 
-/// Save the high score to disk
-pub fn save_high_score(score: u32) {
-  // Use workspace configuration for save paths
-  let Ok(workspace) = Workspace::discover() else {
-    return;
-  };
-
-  let Ok(save_manager) = workspace.create_save_manager() else {
-    return;
-  };
-
-  let data = HighScoreData { high_score: score };
-  let _ = save_manager.save_game("highscore", &data);
+/// Save the high score; the write finishes in the background
+pub fn save_high_score(ctx: &mut SceneContext, score: u32) {
+  let _ = ctx.saves().save(SLOT, HighScoreData { high_score: score });
 }

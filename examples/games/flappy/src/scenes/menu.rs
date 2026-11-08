@@ -34,7 +34,7 @@ impl MenuScene {
       .unwrap_or(false);
 
     Self {
-      high_score: load_high_score(),
+      high_score: 0,
       debug_enabled,
       bird_flap: None,
       anim_timer: 0.0,
@@ -54,6 +54,7 @@ impl Default for MenuScene {
 impl Scene for MenuScene {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
     use_game_look(ctx);
+    self.high_score = load_high_score(ctx);
 
     ctx
       .camera()

@@ -1,32 +1,14 @@
 //! Breakout's menus and HUD with caching on and off: two engines driven by
 //! the same input must draw and behave the same, frame by frame
 
-use std::collections::BTreeSet;
-use std::path::PathBuf;
-use std::sync::OnceLock;
-
 use breakout::scenes::{GameScene, MenuScene};
 use ryo2d::prelude::*;
 use ryo2d::testing::{HeadlessEngine, StepOutcome};
-
-/// An empty folder to run from, so the high score is saved there and the
-/// player's is never touched, and no UI file is on disk, so the embedded
-/// copies load (as do the levels, from `embedded()`). The working directory is the
-/// process's, so the tests share one folder.
-fn game_folder() {
-  static FOLDER: OnceLock<PathBuf> = OnceLock::new();
-  FOLDER.get_or_init(|| {
-    let folder = std::env::temp_dir().join(format!("breakout-cache-{}", std::process::id()));
-    std::fs::create_dir_all(&folder).unwrap();
-    std::env::set_current_dir(&folder).unwrap();
-    folder
-  });
-}
+use std::collections::BTreeSet;
 
 /// One engine with caching on and one with it off, both starting on the
 /// scene `start` makes, as the game runs (`main.rs`)
 fn both<S: Scene + 'static>(start: fn() -> S) -> Option<Pair> {
-  game_folder();
   let make = |cache: bool| {
     let builder = EngineBuilder::new()
       .resolution(1280, 720)

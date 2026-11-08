@@ -81,10 +81,13 @@ impl DemoPage for BusesPage {
         voice: load(ctx, "sounds/voice.sound.ron")?,
       })
     })();
-    let mut audio = ctx.audio();
     // The sliders start where the game's settings are
-    self.found = VolumeKind::ALL.map(|kind| audio.volume_setting(kind));
+    {
+      let settings = ctx.settings();
+      self.found = VolumeKind::ALL.map(|kind| settings.volume(kind));
+    }
     self.levels = self.found;
+    let mut audio = ctx.audio();
     if let Some(sounds) = &self.sounds {
       audio.play_music(&sounds.theme);
       // A loop: it stops, fading out, as the page closes
@@ -94,18 +97,20 @@ impl DemoPage for BusesPage {
 
   fn exit(&mut self, ctx: &mut SceneContext) {
     // The other pages start from the game's mix
-    let mut audio = ctx.audio();
+    let mut settings = ctx.settings();
     for (kind, level) in VolumeKind::ALL.into_iter().zip(self.found) {
-      audio.set_volume_setting(kind, level);
+      settings.set_volume(kind, level);
     }
   }
 
   fn update(&mut self, ctx: &mut SceneContext, _dt: f32) {
     self.frame += 1;
-    let mut audio = ctx.audio();
-    for (kind, level) in VolumeKind::ALL.into_iter().zip(self.levels) {
-      if audio.volume_setting(kind) != level {
-        audio.set_volume_setting(kind, level);
+    {
+      let mut settings = ctx.settings();
+      for (kind, level) in VolumeKind::ALL.into_iter().zip(self.levels) {
+        if settings.volume(kind) != level {
+          settings.set_volume(kind, level);
+        }
       }
     }
     let Some(sounds) = &self.sounds else {
@@ -141,10 +146,11 @@ impl DemoPage for BusesPage {
     ui.draw_text("voices_on", voices_x, y, DIM);
     y += 28.0;
 
+    let settings = VolumeKind::ALL.map(|kind| ctx.settings().volume(kind));
+    let master_setting = ctx.settings().volume(VolumeKind::Master);
     let mut audio = ctx.audio();
-    let master_db = volume_to_db(audio.volume_setting(VolumeKind::Master));
-    for kind in VolumeKind::ALL {
-      let setting = audio.volume_setting(kind);
+    let master_db = volume_to_db(master_setting);
+    for (kind, setting) in VolumeKind::ALL.into_iter().zip(settings) {
       let gain = volume_to_db(setting);
       // A bus under master adds its gain to master's
       let heard = if kind == VolumeKind::Master {

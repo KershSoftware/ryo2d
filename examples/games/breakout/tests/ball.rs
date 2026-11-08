@@ -15,13 +15,6 @@ fn ball(world: &mut World) -> Option<(f32, f32)> {
 
 #[test]
 fn a_brick_sends_the_ball_back_down() {
-  // A lost game saves the high score: run from an empty folder, so the
-  // player's save is never touched (the working directory is the
-  // process's; this file has one test)
-  let folder = std::env::temp_dir().join(format!("breakout-ball-{}", std::process::id()));
-  std::fs::create_dir_all(&folder).unwrap();
-  std::env::set_current_dir(&folder).unwrap();
-
   let Some(mut engine) = HeadlessEngine::new_or_skip(
     EngineBuilder::new()
       .resolution(SCREEN_WIDTH, SCREEN_HEIGHT)
@@ -77,7 +70,4 @@ fn a_brick_sends_the_ball_back_down() {
   }
   assert!(broken_at.is_some(), "the ball reached the bricks");
   assert!(back_down, "the ball came back down to the paddle");
-
-  drop(engine);
-  let _ = std::fs::remove_dir_all(&folder);
 }

@@ -561,7 +561,7 @@ impl Scene for GameScene {
       if *timer >= DEATH_DELAY {
         let is_new_high_score = self.score > self.high_score;
         if is_new_high_score {
-          save_high_score(self.score);
+          save_high_score(ctx, self.score);
           self.high_score = self.score;
         }
         return SceneAction::Switch(Box::new(GameOverScene::new(

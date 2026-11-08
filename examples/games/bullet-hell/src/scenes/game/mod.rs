@@ -187,7 +187,7 @@ impl GameScene {
       platforms: Vec::new(),
       barriers: Vec::new(),
       survival_time: 0.0,
-      best_time: save::load_best_time(),
+      best_time: 0.0,
       player_lives: PLAYER_MAX_LIVES,
       player_invincible: false,
       player_sprite: None,
@@ -222,6 +222,7 @@ impl GameScene {
 
 impl Scene for GameScene {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
+    self.best_time = save::load_best_time(ctx);
     self.load_sprites(ctx);
     // Use fixed design resolution for consistent gameplay
     // Display settings only affect window scaling, not game logic
@@ -349,7 +350,7 @@ impl Scene for GameScene {
       if new_timer <= 0.0 {
         // Effect complete, transition to game over
         ctx.effects().clear();
-        save_best_time(self.survival_time);
+        save_best_time(ctx, self.survival_time);
         return SceneAction::Switch(Box::new(GameOverScene::new(self.survival_time)));
       }
       self.death_effect_timer = Some(new_timer);

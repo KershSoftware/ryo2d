@@ -201,7 +201,12 @@ fn a_slider_sets_its_volume_setting() {
     return;
   };
   engine.step_frames(3).unwrap();
-  let master = |engine: &mut HeadlessEngine| audio(engine).volume_setting(VolumeKind::Master);
+  let master = |engine: &mut HeadlessEngine| {
+    engine
+      .world()
+      .resource::<Settings>()
+      .volume(VolumeKind::Master)
+  };
   assert_eq!(master(&mut engine), 0.89, "as the demo's Ryo.toml sets it");
   // The panel has the focus, on its first row: Master, a step of 0.05
   // down

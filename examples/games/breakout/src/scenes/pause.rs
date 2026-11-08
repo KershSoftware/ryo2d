@@ -17,10 +17,6 @@ const PAUSE_EMBEDDED: &str = include_str!("../../assets/ui/pause.ui.ron");
 pub struct PauseScene {
   score: u32,
   high_score: u32,
-  /// System state for volume controls
-  settings: SystemState,
-  /// Track if we need to save settings
-  settings_changed: bool,
   /// The menu's tree, when its file loaded
   root: Option<Entity>,
 }
@@ -28,42 +24,16 @@ pub struct PauseScene {
 impl PauseScene {
   /// Create a new pause scene
   pub fn new(score: u32, high_score: u32) -> Self {
-    // Try to load existing settings, or use defaults
-    let settings = if let Ok(workspace) = Workspace::discover() {
-      if let Ok(save_manager) = workspace.create_save_manager() {
-        save_manager.load_system().unwrap_or_default()
-      } else {
-        SystemState::new()
-      }
-    } else {
-      SystemState::new()
-    };
-
     Self {
       score,
       high_score,
-      settings,
-      settings_changed: false,
       root: None,
     }
   }
 
-  /// Save the volumes if they changed, and go back to the game
-  fn resume(&mut self) -> SceneAction {
-    if self.settings_changed {
-      if let Ok(workspace) = Workspace::discover()
-        && let Ok(save_manager) = workspace.create_save_manager()
-      {
-        let _ = save_manager.save_system(&self.settings);
-      }
-      self.settings_changed = false;
-    }
-    SceneAction::Pop
-  }
-
   /// Save the high score and go back to the main menu
-  fn quit_to_menu(&self) -> SceneAction {
-    save_high_score(self.high_score);
+  fn quit_to_menu(&self, ctx: &mut SceneContext) -> SceneAction {
+    save_high_score(ctx, self.high_score);
     SceneAction::ResetWith(
       Box::new(MenuScene::new()),
       Transition::fade(Duration::from_millis(300)),
@@ -77,11 +47,18 @@ impl Scene for PauseScene {
     let Some(root) = self.root else {
       return;
     };
-    // The sliders run 0-100; the volumes are applied as they change
-    let s = &self.settings;
-    ctx.ui_set(root, "master", s.master_volume * 100.0);
-    ctx.ui_set(root, "music", s.music_volume * 100.0);
-    ctx.ui_set(root, "sfx", s.sfx_volume * 100.0);
+    // The sliders run 0-100; the settings take the volumes as they change
+    let (master, music, sfx) = {
+      let settings = ctx.settings();
+      (
+        settings.volume(VolumeKind::Master),
+        settings.volume(VolumeKind::Music),
+        settings.volume(VolumeKind::Sfx),
+      )
+    };
+    ctx.ui_set(root, "master", master * 100.0);
+    ctx.ui_set(root, "music", music * 100.0);
+    ctx.ui_set(root, "sfx", sfx * 100.0);
     ctx.ui_set(root, "score", self.score);
   }
 
@@ -91,11 +68,11 @@ impl Scene for PauseScene {
       .input
       .gamepad_button_pressed_and_consume(GamepadButton::Start)
     {
-      return self.resume();
+      return SceneAction::Pop;
     }
     // Q is a keyboard shortcut back to the menu
     if ctx.input.key_pressed_and_consume(KeyCode::KeyQ) {
-      return self.quit_to_menu();
+      return self.quit_to_menu(ctx);
     }
     SceneAction::Continue
   }
@@ -118,21 +95,11 @@ impl Scene for PauseScene {
             continue;
           };
           let kind = match name {
-            "master" => {
-              self.settings.master_volume = value;
-              VolumeKind::Master
-            }
-            "music" => {
-              self.settings.music_volume = value;
-              VolumeKind::Music
-            }
-            _ => {
-              self.settings.sfx_volume = value;
-              VolumeKind::Sfx
-            }
+            "master" => VolumeKind::Master,
+            "music" => VolumeKind::Music,
+            _ => VolumeKind::Sfx,
           };
-          ctx.audio().set_volume_setting(kind, value);
-          self.settings_changed = true;
+          ctx.settings().set_volume(kind, value);
         }
         (UiEventKind::Clicked, _, Some("resume")) => action = Some(Choice::Resume),
         (UiEventKind::Clicked, _, Some("menu")) => action = Some(Choice::Menu),
@@ -146,10 +113,10 @@ impl Scene for PauseScene {
       action = Some(Choice::Resume);
     }
     match action {
-      Some(Choice::Resume) => self.resume(),
-      Some(Choice::Menu) => self.quit_to_menu(),
+      Some(Choice::Resume) => SceneAction::Pop,
+      Some(Choice::Menu) => self.quit_to_menu(ctx),
       Some(Choice::Desktop) => {
-        save_high_score(self.high_score);
+        save_high_score(ctx, self.high_score);
         SceneAction::Quit
       }
       None => SceneAction::Continue,

@@ -3,33 +3,15 @@
 //! same pixels every frame, and the UI renderer draws them in one or two
 //! draws. The debug spot check stays on in the engine with fragments.
 
-use std::path::PathBuf;
-use std::sync::OnceLock;
-
 use breakout::scenes::{GameScene, MenuScene};
 use ryo2d::prelude::*;
 use ryo2d::testing::PixelPair;
-
-/// An empty folder to run from, so the high score is saved there and the
-/// player's is never touched, and no UI file is on disk, so the embedded
-/// copies load (as do the levels, from `embedded()`). The working directory is the
-/// process's, so the tests share one folder.
-fn game_folder() {
-  static FOLDER: OnceLock<PathBuf> = OnceLock::new();
-  FOLDER.get_or_init(|| {
-    let folder = std::env::temp_dir().join(format!("breakout-fragments-{}", std::process::id()));
-    std::fs::create_dir_all(&folder).unwrap();
-    std::env::set_current_dir(&folder).unwrap();
-    folder
-  });
-}
 
 /// Most UI draws a frame may make: the UI renderer draws once per texture
 /// run, and the game's text sits on one glyph page
 const MAX_DRAWS: u32 = 2;
 
 fn pair<S: Scene + 'static>(start: fn() -> S) -> Option<PixelPair> {
-  game_folder();
   PixelPair::fragments(move || {
     EngineBuilder::new()
       .resolution(1280, 720)

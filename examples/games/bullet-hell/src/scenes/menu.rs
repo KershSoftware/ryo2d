@@ -19,9 +19,7 @@ impl Default for MenuScene {
 
 impl MenuScene {
   pub fn new() -> Self {
-    Self {
-      best_time: load_best_time(),
-    }
+    Self { best_time: 0.0 }
   }
 }
 
@@ -29,7 +27,7 @@ impl Scene for MenuScene {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
     use_game_look(ctx);
 
-    self.best_time = load_best_time();
+    self.best_time = load_best_time(ctx);
 
     // Declare game commands (idempotent - can be called multiple times)
     ctx.console().declare(

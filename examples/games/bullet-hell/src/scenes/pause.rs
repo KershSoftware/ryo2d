@@ -31,10 +31,8 @@ impl PauseScene {
 impl Scene for PauseScene {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
     let modes = DisplayMode::all();
-    self.selected_display_mode_idx = modes
-      .iter()
-      .position(|m| *m == ctx.display_mode())
-      .unwrap_or(0);
+    let current = ctx.settings().display_mode();
+    self.selected_display_mode_idx = modes.iter().position(|m| *m == current).unwrap_or(0);
     ctx.ui_theme().modify(|theme| {
       theme.variants.insert(
         "pause-item".to_string(),
@@ -219,8 +217,7 @@ impl PauseScene {
 
     if apply {
       let display_mode = modes[self.selected_display_mode_idx];
-      crate::save::save_display_mode(display_mode);
-      ctx.request_display_mode(display_mode);
+      ctx.settings().set_display_mode(display_mode);
       self.settings_open = false;
     }
     if back {

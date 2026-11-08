@@ -858,7 +858,7 @@ impl GameScene {
       // Game over - update high score
       if self.score > self.high_score {
         self.high_score = self.score;
-        save_high_score(self.score);
+        save_high_score(ctx, self.score);
       }
     } else {
       // Defer ball respawn to next frame to avoid rendering issues
@@ -953,7 +953,7 @@ impl GameScene {
     // Not while the level's bricks are on their way, nor when none will come
     if self.level_map.is_none() && !self.level_failed && self.blocks_remaining == 0 {
       // Level complete! Save high score
-      save_high_score(self.high_score);
+      save_high_score(ctx, self.high_score);
 
       // Check if player beat all levels
       if self.level >= MAX_LEVEL {
@@ -1042,9 +1042,9 @@ impl Scene for GameScene {
     self.show_hud(ctx);
   }
 
-  fn on_exit(&mut self, _ctx: &mut SceneContext) {
+  fn on_exit(&mut self, ctx: &mut SceneContext) {
     // Save high score on exit
-    save_high_score(self.high_score);
+    save_high_score(ctx, self.high_score);
   }
 
   fn on_pause(&mut self, _ctx: &mut SceneContext) {
@@ -1137,7 +1137,7 @@ impl Scene for GameScene {
         self.game_over = true;
         if self.score > self.high_score {
           self.high_score = self.score;
-          save_high_score(self.score);
+          save_high_score(ctx, self.score);
         }
       } else {
         // Wait for any input to return to menu
@@ -1167,7 +1167,7 @@ impl Scene for GameScene {
         // Update high score one final time
         if self.score > self.high_score {
           self.high_score = self.score;
-          save_high_score(self.score);
+          save_high_score(ctx, self.score);
         }
         return SceneAction::Continue;
       }
