@@ -254,7 +254,7 @@ assets = "assets"
 
 # =============================================================================
 # USER-FACING DEFAULTS
-# Written and prioritized read from system.json when `.with_user_preferences` set
+# Players' changes to these are kept in system.json (only what differs from here)
 # =============================================================================
 
 [system]
@@ -553,5 +553,17 @@ mod tests {
       1.0,
       "the engine's default"
     );
+  }
+
+  #[test]
+  fn a_new_game_s_ryo_toml_reads_without_a_warning() {
+    let mut warnings = Vec::new();
+    let read = crate::core::config::Workspace::read_toml(
+      &generate_ryo_toml("game"),
+      std::path::PathBuf::from("game"),
+      &mut |warning| warnings.push(warning),
+    );
+    assert!(read.is_ok());
+    assert!(warnings.is_empty(), "{warnings:?}");
   }
 }

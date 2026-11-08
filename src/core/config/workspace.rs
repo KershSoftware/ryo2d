@@ -57,6 +57,9 @@
 //! debug_mode = false
 //! ```
 //!
+//! A key that a known section doesn't have warns, naming the nearest known
+//! key; `[env]` and the game's own sections are free-form.
+//!
 //! # Example
 //!
 //! ```rust,ignore
@@ -75,11 +78,14 @@
 //! }
 //! ```
 
-use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
+use super::project::{ProjectLayer, toml_value, warn_unknown_keys};
+use super::resolve::set;
+use crate::core::diagnostics::DebugConfig;
 use crate::core::error::EngineError;
 
 /// Configuration filename (case-insensitive on lookup)
@@ -98,10 +104,9 @@ pub struct Workspace {
   root: PathBuf,
   /// Parsed configuration
   config: WorkspaceConfig,
-  /// `[debug] dev_window_keys` as written in Ryo.toml, if present (read by
-  /// the CLI, which the web build does not have)
-  #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-  dev_window_keys_setting: Option<bool>,
+  /// The project settings as Ryo.toml (or the embedded values) sets them,
+  /// without defaults
+  project: ProjectLayer,
   /// Save directory of a release build (`ryo2d build`); `None` in dev
   release_save_dir: Option<PathBuf>,
 }
@@ -124,7 +129,8 @@ pub struct WorkspaceConfig {
   pub save_data: PathBuf,
   /// Path to assets directory relative to workspace root
   pub assets: PathBuf,
-  /// Debug configuration options
+  /// The debug switches the project sets (`[debug]`, plus `[system] show_fps`
+  /// and `console`), over the engine's defaults
   pub debug: DebugConfig,
   /// System defaults for user configuration (from the `[system]` section)
   pub system: SystemDefaults,
@@ -136,56 +142,6 @@ pub struct WorkspaceConfig {
   pub tiled_project: Option<String>,
   /// Game-specific environment variables from [env] section
   pub env: std::collections::HashMap<String, toml::Value>,
-}
-
-/// Debug configuration options for development.
-///
-/// See [`crate::core::diagnostics::DebugConfig`] for the engine-level config.
-/// This struct mirrors those options for TOML deserialization.
-#[derive(Debug, Clone)]
-pub struct DebugConfig {
-  /// Whether to render collision boundaries
-  pub show_colliders: bool,
-  /// Whether to draw velocity vectors on physics entities
-  pub show_velocities: bool,
-  /// Whether to draw entity origin points
-  pub show_origins: bool,
-  /// Whether to display frame timing breakdown
-  pub show_frame_timing: bool,
-  /// Whether to display debug statistics overlay
-  pub show_stats: bool,
-  /// Whether to display FPS counter
-  pub show_fps: bool,
-  /// Whether to disable the F1-F5 debug key toggles
-  pub disable_debug_keys: bool,
-  /// Whether to open the flamegraph profiler window (requires --features profiler)
-  pub enable_profiler: bool,
-  /// Whether to open the logger dev window at startup (shows engine/game logs in real-time)
-  pub logger_window: bool,
-  /// Whether to enable dev hotkeys (F9=logger, F10=profiler, F12=frame capture).
-  /// Defaults to true in debug builds, false in release builds.
-  pub dev_window_keys: bool,
-}
-
-impl Default for DebugConfig {
-  fn default() -> Self {
-    Self {
-      show_colliders: false,
-      show_velocities: false,
-      show_origins: false,
-      show_frame_timing: false,
-      show_stats: false,
-      show_fps: false,
-      disable_debug_keys: false,
-      enable_profiler: false, // Disabled by default (requires explicit opt-in)
-      logger_window: false,   // Disabled by default (requires explicit opt-in)
-      // Dev window keys (F9/F10/F12) enabled by default in debug builds only
-      #[cfg(debug_assertions)]
-      dev_window_keys: true,
-      #[cfg(not(debug_assertions))]
-      dev_window_keys: false,
-    }
-  }
 }
 
 /// Release/distribution configuration options.
@@ -275,93 +231,6 @@ impl Default for SystemDefaults {
   }
 }
 
-/// Raw TOML structure for deserialization
-#[derive(Debug, Deserialize, Default)]
-struct RyoToml {
-  project: Option<ProjectSection>,
-  paths: Option<PathsSection>,
-  system: Option<SystemSection>,
-  debug: Option<DebugSection>,
-  release: Option<ReleaseSection>,
-  tilemap: Option<TilemapSection>,
-  /// Game-specific environment variables (arbitrary key-value pairs)
-  #[serde(default)]
-  env: std::collections::HashMap<String, toml::Value>,
-}
-
-#[derive(Debug, Deserialize, Default)]
-struct ProjectSection {
-  name: Option<String>,
-  version: Option<String>,
-  /// Window title (defaults to name if not specified)
-  title: Option<String>,
-  /// Project description (optional, for tooling)
-  description: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Default)]
-struct PathsSection {
-  entry_point: Option<String>,
-  save_data: Option<String>,
-  assets: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Default)]
-struct DebugSection {
-  show_colliders: Option<bool>,
-  show_velocities: Option<bool>,
-  show_origins: Option<bool>,
-  show_frame_timing: Option<bool>,
-  disable_debug_keys: Option<bool>,
-  enable_profiler: Option<bool>,
-  logger_window: Option<bool>,
-  dev_window_keys: Option<bool>,
-}
-
-/// Raw TOML [tilemap] section
-#[derive(Debug, Deserialize, Default)]
-struct TilemapSection {
-  /// Asset path of the Tiled project file (empty or absent: the default)
-  tiled_project: Option<String>,
-}
-
-/// Raw TOML [release] section for build/distribution settings
-#[derive(Debug, Deserialize, Default)]
-struct ReleaseSection {
-  /// Path to custom application icon (PNG). If not specified, uses Ryo2D default.
-  logo: Option<String>,
-  /// Keep save data beside the game instead of the OS user data folder.
-  portable: Option<bool>,
-  /// Per-game folder name under the OS user data folder.
-  save_folder: Option<String>,
-}
-
-/// Raw TOML [system] section for user-facing defaults
-#[derive(Debug, Deserialize, Default)]
-struct SystemSection {
-  resolution: Option<String>,
-  pixel_art: Option<bool>,
-  vsync: Option<bool>,
-  /// Display mode (windowed, exclusive_fullscreen, borderless_fullscreen)
-  display_mode: Option<String>,
-  master_volume: Option<f32>,
-  music_volume: Option<f32>,
-  sfx_volume: Option<f32>,
-  ui_volume: Option<f32>,
-  voice_volume: Option<f32>,
-  ambience_volume: Option<f32>,
-  /// The audio device's buffer in frames (0 or absent: the device's)
-  audio_buffer_frames: Option<u32>,
-  /// Whether to display FPS counter (user preference)
-  show_fps: Option<bool>,
-  /// Whether to enable the developer console (toggled with backtick key)
-  console: Option<bool>,
-  /// Target FPS when the window is unfocused. 0 = use target_fps. Default: 0.
-  target_background_fps: Option<u32>,
-  /// Whether to continue rendering when the window is unfocused (default: true)
-  background_rendering: Option<bool>,
-}
-
 impl Workspace {
   /// Discover workspace by searching for `ryo.toml` from current directory.
   ///
@@ -375,7 +244,7 @@ impl Workspace {
   /// Returns an error if the current directory cannot be determined.
   pub fn discover() -> Result<Self, EngineError> {
     let cwd = std::env::current_dir().map_err(|e| EngineError::WorkspaceError(e.to_string()))?;
-    let mut workspace = match Self::from_embedded(&cwd, super::resolve::compiled_embedded_value) {
+    let mut workspace = match Self::from_embedded(&cwd, super::project::compiled_embedded_value) {
       Some(release) => release,
       None => Self::discover_from(&cwd)?,
     };
@@ -392,46 +261,13 @@ impl Workspace {
     root: &Path,
     lookup: impl Fn(&str) -> Option<&'a str>,
   ) -> Option<Self> {
-    let layer = super::resolve::ProjectLayer::from_embedded(&lookup)?;
+    let project = ProjectLayer::from_embedded(&lookup)?;
     let mut config = WorkspaceConfig::default();
-
-    if let Some(title) = layer.title {
-      config.title = title;
-    }
-
-    let system = &mut config.system;
-    if layer.resolution.is_some() {
-      system.resolution = layer.resolution;
-    }
-    set(&mut system.vsync, layer.vsync);
-    set(&mut system.pixel_art, layer.pixel_art);
-    set(&mut system.display_mode, layer.display_mode);
-    set(&mut system.master_volume, layer.master_volume);
-    set(&mut system.music_volume, layer.music_volume);
-    set(&mut system.sfx_volume, layer.sfx_volume);
-    set(&mut system.ui_volume, layer.ui_volume);
-    set(&mut system.voice_volume, layer.voice_volume);
-    set(&mut system.ambience_volume, layer.ambience_volume);
-    system.audio_buffer_frames = layer.audio_buffer_frames.filter(|&frames| frames > 0);
-    set(&mut system.show_fps, layer.show_fps);
-    set(&mut system.dev_console, layer.dev_console);
-    set(&mut system.target_background_fps, layer.background_fps);
-    set(&mut system.background_rendering, layer.background_rendering);
-
-    let debug = &mut config.debug;
-    set(&mut debug.show_fps, layer.show_fps);
-    set(&mut debug.show_colliders, layer.show_colliders);
-    set(&mut debug.show_velocities, layer.show_velocities);
-    set(&mut debug.show_origins, layer.show_origins);
-    set(&mut debug.show_frame_timing, layer.show_frame_timing);
-    set(&mut debug.disable_debug_keys, layer.disable_debug_keys);
-    set(&mut debug.enable_profiler, layer.enable_profiler);
-    set(&mut debug.logger_window, layer.logger_window);
-    set(&mut debug.dev_window_keys, layer.dev_window_keys);
+    set(&mut config.title, project.title.clone());
+    config.apply_project(&project);
 
     config.release.portable = lookup("RYO_EMBED_PORTABLE") == Some("true");
     config.release.save_folder = lookup("RYO_EMBED_SAVE_FOLDER").map(str::to_string);
-    config.tiled_project = layer.tiled_project;
 
     let env = embedded_env(lookup("RYO_EMBED_ENV"));
     config.env = env
@@ -447,7 +283,38 @@ impl Workspace {
     Some(Workspace {
       root: root.to_path_buf(),
       config,
-      dev_window_keys_setting: layer.dev_window_keys,
+      project,
+      release_save_dir: None,
+    })
+  }
+
+  /// The workspace a Ryo.toml's text describes, rooted at `root`: the one
+  /// reader of Ryo.toml text. A key a known section doesn't have, or a value
+  /// of the wrong type or text, warns once a run; the value is left unset.
+  ///
+  /// # Errors
+  ///
+  /// [`EngineError::WorkspaceError`] when the text is not TOML.
+  pub(crate) fn from_toml_str(text: &str, root: PathBuf) -> Result<Workspace, EngineError> {
+    Self::read_toml(text, root, &mut warn_once)
+  }
+
+  /// [`from_toml_str`](Self::from_toml_str), telling `warn` of each problem.
+  pub(crate) fn read_toml(
+    text: &str,
+    root: PathBuf,
+    warn: &mut dyn FnMut(String),
+  ) -> Result<Workspace, EngineError> {
+    let table: toml::Table = text.parse().map_err(|e| {
+      EngineError::WorkspaceError(format!("Failed to parse {CONFIG_FILENAME}: {e}"))
+    })?;
+    warn_unknown_keys(&table, warn);
+    let project = ProjectLayer::from_toml(&table, warn);
+    let config = Self::build_config(&root, &table, &project, warn)?;
+    Ok(Workspace {
+      root,
+      config,
+      project,
       release_save_dir: None,
     })
   }
@@ -525,41 +392,24 @@ impl Workspace {
     let contents = fs::read_to_string(config_path)
       .map_err(|e| EngineError::WorkspaceError(format!("Failed to read {}: {}", config_name, e)))?;
 
-    let raw: RyoToml = toml::from_str(&contents).map_err(|e| {
-      EngineError::WorkspaceError(format!("Failed to parse {}: {}", config_name, e))
-    })?;
-
-    let dev_window_keys_setting = raw.debug.as_ref().and_then(|d| d.dev_window_keys);
-    let config = Self::build_config(root, raw)?;
-    Ok(Workspace {
-      root: root.to_path_buf(),
-      config,
-      dev_window_keys_setting,
-      release_save_dir: None,
-    })
+    Self::from_toml_str(&contents, root.to_path_buf())
   }
 
   /// Create workspace with default settings (no config file).
   fn from_path_with_defaults(root: &Path) -> Result<Self, EngineError> {
-    let raw = RyoToml::default();
-    let config = Self::build_config(root, raw)?;
-    Ok(Workspace {
-      root: root.to_path_buf(),
-      config,
-      dev_window_keys_setting: None,
-      release_save_dir: None,
-    })
+    Self::from_toml_str("", root.to_path_buf())
   }
 
-  /// Build configuration from raw TOML, applying defaults.
-  fn build_config(root: &Path, raw: RyoToml) -> Result<WorkspaceConfig, EngineError> {
-    let project = raw.project.unwrap_or_default();
-    let paths = raw.paths.unwrap_or_default();
-    let debug_section = raw.debug.unwrap_or_default();
-    let release_section = raw.release.unwrap_or_default();
-
+  /// Build configuration from a Ryo.toml's table and its project settings,
+  /// applying defaults.
+  fn build_config(
+    root: &Path,
+    table: &toml::Table,
+    project: &ProjectLayer,
+    warn: &mut dyn FnMut(String),
+  ) -> Result<WorkspaceConfig, EngineError> {
     // Project name: from config, or directory name
-    let name = project.name.unwrap_or_else(|| {
+    let name = toml_value::<String>(table, "project", "name", warn).unwrap_or_else(|| {
       root
         .file_name()
         .and_then(|n| n.to_str())
@@ -568,151 +418,49 @@ impl Workspace {
     });
 
     // Window title: from [project].title, fall back to name
-    let title = project.title.unwrap_or_else(|| name.clone());
-
-    // Project description (optional)
-    let description = project.description;
+    let title = project.title.clone().unwrap_or_else(|| name.clone());
 
     // Entry point: from config, or inferred
-    let entry_point = match paths.entry_point {
-      Some(ep) => PathBuf::from(ep),
+    let entry_point = match toml_value(table, "paths", "entry_point", warn) {
+      Some(entry_point) => entry_point,
       None => Self::infer_entry_point(root)?,
     };
 
-    // Save data: from config, or default
-    let save_data = PathBuf::from(paths.save_data.unwrap_or_else(|| "data".to_string()));
-
-    // Assets: from config, or default
-    let assets = PathBuf::from(paths.assets.unwrap_or_else(|| "assets".to_string()));
-
-    // Debug config
-    // Dev window keys default to true in debug builds, false in release
-    #[cfg(debug_assertions)]
-    let dev_window_keys_default = true;
-    #[cfg(not(debug_assertions))]
-    let dev_window_keys_default = false;
-
-    // System defaults (for system.json generation)
-    // Combines [system] + [info] sections (user-facing settings only)
-    let system_section = raw.system.unwrap_or_default();
-
-    let debug = DebugConfig {
-      show_colliders: debug_section.show_colliders.unwrap_or(false),
-      show_velocities: debug_section.show_velocities.unwrap_or(false),
-      show_origins: debug_section.show_origins.unwrap_or(false),
-      show_frame_timing: debug_section.show_frame_timing.unwrap_or(false),
-      show_stats: false,                                  // Always off by default
-      show_fps: system_section.show_fps.unwrap_or(false), // From [system] section
-      disable_debug_keys: debug_section.disable_debug_keys.unwrap_or(false),
-      enable_profiler: debug_section.enable_profiler.unwrap_or(false),
-      logger_window: debug_section.logger_window.unwrap_or(false), // Default false (opt-in)
-      dev_window_keys: debug_section
-        .dev_window_keys
-        .unwrap_or(dev_window_keys_default),
+    let env: HashMap<String, toml::Value> = match table.get("env") {
+      Some(toml::Value::Table(env)) => env.clone().into_iter().collect(),
+      Some(_) => {
+        warn("Ryo.toml: `env` is not a section, ignoring it".to_string());
+        HashMap::new()
+      }
+      None => HashMap::new(),
     };
 
-    let engine_defaults = SystemDefaults::default();
-
-    // Parse display_mode from string
-    let display_mode = if let Some(mode_str) = &system_section.display_mode {
-      super::save::DisplayMode::from_config_name(mode_str).unwrap_or(engine_defaults.display_mode)
-    } else {
-      engine_defaults.display_mode
+    let mut config = WorkspaceConfig {
+      name,
+      title,
+      description: toml_value(table, "project", "description", warn),
+      version: toml_value(table, "project", "version", warn),
+      entry_point,
+      save_data: toml_value(table, "paths", "save_data", warn)
+        .unwrap_or_else(|| PathBuf::from("data")),
+      assets: toml_value(table, "paths", "assets", warn).unwrap_or_else(|| PathBuf::from("assets")),
+      release: ReleaseConfig {
+        logo: project.icon.clone(),
+        portable: toml_value(table, "release", "portable", warn).unwrap_or(false),
+        save_folder: toml_value(table, "release", "save_folder", warn),
+      },
+      ..WorkspaceConfig::default()
     };
+    config.apply_project(project);
 
-    // Game-specific env: convert toml::Value → serde_json::Value for SystemDefaults
-    let env_json: HashMap<String, serde_json::Value> = raw
-      .env
+    // Game-specific env: as JSON for SystemDefaults, as written for WorkspaceConfig
+    config.system.env = env
       .iter()
       .filter_map(|(k, v)| serde_json::to_value(v).ok().map(|jv| (k.clone(), jv)))
       .collect();
+    config.env = env;
 
-    let system = SystemDefaults {
-      resolution: system_section
-        .resolution
-        .as_deref()
-        .and_then(|s| {
-          let parsed = super::save::parse_resolution(s);
-          if parsed.is_none() {
-            eprintln!(
-              "[ryo2d] Warning: Malformed resolution '{}' in Ryo.toml, using engine defaults",
-              s
-            );
-          }
-          parsed
-        })
-        .or(engine_defaults.resolution),
-      pixel_art: system_section
-        .pixel_art
-        .unwrap_or(engine_defaults.pixel_art),
-      vsync: system_section.vsync.unwrap_or(engine_defaults.vsync),
-      display_mode,
-      master_volume: system_section
-        .master_volume
-        .unwrap_or(engine_defaults.master_volume),
-      music_volume: system_section
-        .music_volume
-        .unwrap_or(engine_defaults.music_volume),
-      sfx_volume: system_section
-        .sfx_volume
-        .unwrap_or(engine_defaults.sfx_volume),
-      ui_volume: system_section
-        .ui_volume
-        .unwrap_or(engine_defaults.ui_volume),
-      voice_volume: system_section
-        .voice_volume
-        .unwrap_or(engine_defaults.voice_volume),
-      ambience_volume: system_section
-        .ambience_volume
-        .unwrap_or(engine_defaults.ambience_volume),
-      // 0 frames is no fixed buffer
-      audio_buffer_frames: system_section
-        .audio_buffer_frames
-        .filter(|&frames| frames > 0),
-      // show_fps is a user preference, stored in [system] section
-      show_fps: system_section.show_fps.unwrap_or(engine_defaults.show_fps),
-      // console is in [system] section so it works in both debug and release builds
-      dev_console: system_section
-        .console
-        .unwrap_or(engine_defaults.dev_console),
-      target_background_fps: system_section
-        .target_background_fps
-        .unwrap_or(engine_defaults.target_background_fps),
-      background_rendering: system_section
-        .background_rendering
-        .unwrap_or(engine_defaults.background_rendering),
-      env: env_json,
-    };
-
-    // Game-specific env (pass through as-is for WorkspaceConfig)
-    let env = raw.env;
-
-    // Release config
-    let release = ReleaseConfig {
-      logo: release_section.logo.map(PathBuf::from),
-      portable: release_section.portable.unwrap_or(false),
-      save_folder: release_section.save_folder,
-    };
-
-    let tiled_project = raw
-      .tilemap
-      .and_then(|section| section.tiled_project)
-      .filter(|path| !path.is_empty());
-
-    Ok(WorkspaceConfig {
-      name,
-      title,
-      description,
-      version: project.version,
-      entry_point,
-      save_data,
-      assets,
-      debug,
-      system,
-      release,
-      tiled_project,
-      env,
-    })
+    Ok(config)
   }
 
   /// Infer entry point by checking common locations.
@@ -734,10 +482,10 @@ impl Workspace {
     Ok(PathBuf::from("src/main.rs"))
   }
 
-  /// The `[debug] dev_window_keys` value Ryo.toml sets explicitly, if any.
-  #[cfg(not(target_arch = "wasm32"))]
-  pub(crate) fn dev_window_keys_setting(&self) -> Option<bool> {
-    self.dev_window_keys_setting
+  /// The project settings as Ryo.toml (or, in a release build, the embedded
+  /// values) sets them, without defaults.
+  pub(crate) fn project(&self) -> &ProjectLayer {
+    &self.project
   }
 
   /// Get the workspace root directory.
@@ -840,7 +588,11 @@ impl Default for WorkspaceConfig {
       entry_point: PathBuf::from("src/main.rs"),
       save_data: PathBuf::from("data"),
       assets: PathBuf::from("assets"),
-      debug: DebugConfig::default(),
+      // A project's console is off unless `[system] console` turns it on
+      debug: DebugConfig {
+        dev_console: false,
+        ..DebugConfig::default()
+      },
       system: SystemDefaults::default(),
       release: ReleaseConfig::default(),
       tiled_project: None,
@@ -910,10 +662,62 @@ impl WorkspaceConfig {
   }
 }
 
-/// Overwrite `target` when an embedded value is present.
-fn set<T>(target: &mut T, value: Option<T>) {
-  if let Some(value) = value {
-    *target = value;
+impl WorkspaceConfig {
+  /// Take the settings the project sets, keeping the defaults for the rest.
+  /// `[system] show_fps` also shows the FPS counter.
+  fn apply_project(&mut self, project: &ProjectLayer) {
+    let system = &mut self.system;
+    system.resolution = project.resolution;
+    set(&mut system.pixel_art, project.pixel_art);
+    set(&mut system.vsync, project.vsync);
+    set(&mut system.display_mode, project.display_mode);
+    set(&mut system.master_volume, project.master_volume);
+    set(&mut system.music_volume, project.music_volume);
+    set(&mut system.sfx_volume, project.sfx_volume);
+    set(&mut system.ui_volume, project.ui_volume);
+    set(&mut system.voice_volume, project.voice_volume);
+    set(&mut system.ambience_volume, project.ambience_volume);
+    // 0 frames is no fixed buffer
+    system.audio_buffer_frames = project.audio_buffer_frames.filter(|&frames| frames > 0);
+    set(&mut system.show_fps, project.show_fps);
+    set(&mut system.dev_console, project.dev_console);
+    set(&mut system.target_background_fps, project.background_fps);
+    set(
+      &mut system.background_rendering,
+      project.background_rendering,
+    );
+
+    let debug = &mut self.debug;
+    set(&mut debug.show_fps, project.show_fps);
+    set(&mut debug.dev_console, project.dev_console);
+    set(&mut debug.show_colliders, project.show_colliders);
+    set(&mut debug.show_velocities, project.show_velocities);
+    set(&mut debug.show_origins, project.show_origins);
+    set(&mut debug.show_frame_timing, project.show_frame_timing);
+    set(&mut debug.disable_debug_keys, project.disable_debug_keys);
+    set(&mut debug.enable_profiler, project.enable_profiler);
+    set(&mut debug.logger_window, project.logger_window);
+    set(&mut debug.dev_window_keys, project.dev_window_keys);
+
+    // Empty is no project: the default one
+    self.tiled_project = project
+      .tiled_project
+      .clone()
+      .filter(|path| !path.is_empty());
+  }
+}
+
+/// Log a Ryo.toml warning, once a run: games read the workspace again (a
+/// menu that calls `Workspace::discover`), and one misspelt key needs one line.
+fn warn_once(message: String) {
+  static WARNED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+  let first = WARNED
+    .get_or_init(Default::default)
+    .lock()
+    .map(|mut warned| warned.insert(message.clone()))
+    .unwrap_or(true);
+  if first {
+    crate::engine_warn!("{message}");
   }
 }
 
@@ -1134,7 +938,7 @@ mod tests {
 
   #[test]
   fn debug_config_defaults() {
-    let config = DebugConfig::default();
+    let config = WorkspaceConfig::default().debug;
     assert!(!config.show_colliders);
     assert!(!config.show_velocities);
     assert!(!config.show_origins);
@@ -1175,40 +979,57 @@ mod tests {
     assert!(!config.debug.disable_debug_keys);
   }
 
+  fn read(text: &str) -> (Workspace, Vec<String>) {
+    let mut warnings = Vec::new();
+    let workspace = Workspace::read_toml(text, PathBuf::from("game"), &mut |warning| {
+      warnings.push(warning)
+    })
+    .unwrap();
+    (workspace, warnings)
+  }
+
   #[test]
   fn debug_section_parses_disable_debug_keys_true() {
-    let toml_str = r#"
-      disable_debug_keys = true
-    "#;
-    let section: DebugSection = toml::from_str(toml_str).unwrap();
-    assert_eq!(section.disable_debug_keys, Some(true));
+    let (ws, _) = read("[debug]\ndisable_debug_keys = true\n");
+    assert!(ws.config().debug.disable_debug_keys);
+    assert_eq!(ws.project.disable_debug_keys, Some(true));
   }
 
   #[test]
   fn debug_section_parses_disable_debug_keys_false() {
-    let toml_str = r#"
-      disable_debug_keys = false
-    "#;
-    let section: DebugSection = toml::from_str(toml_str).unwrap();
-    assert_eq!(section.disable_debug_keys, Some(false));
+    let (ws, _) = read("[debug]\ndisable_debug_keys = false\n");
+    assert!(!ws.config().debug.disable_debug_keys);
+    assert_eq!(ws.project.disable_debug_keys, Some(false));
   }
 
   #[test]
   fn debug_section_defaults_disable_debug_keys_to_none() {
-    let toml_str = r#"
-      show_colliders = true
-    "#;
-    let section: DebugSection = toml::from_str(toml_str).unwrap();
-    assert_eq!(section.disable_debug_keys, None);
+    let (ws, _) = read("[debug]\nshow_colliders = true\n");
+    assert_eq!(ws.project.disable_debug_keys, None);
+    assert!(!ws.config().debug.disable_debug_keys);
+    assert!(ws.config().debug.show_colliders);
   }
 
   #[test]
   fn debug_section_parses_enable_profiler() {
-    let toml_str = r#"
-      enable_profiler = true
-    "#;
-    let section: DebugSection = toml::from_str(toml_str).unwrap();
-    assert_eq!(section.enable_profiler, Some(true));
+    let (ws, _) = read("[debug]\nenable_profiler = true\n");
+    assert!(ws.config().debug.enable_profiler);
+  }
+
+  #[test]
+  fn system_show_fps_also_shows_the_fps_counter() {
+    let (ws, _) = read("[system]\nshow_fps = true\nconsole = true\n");
+    assert!(ws.config().system.show_fps);
+    assert!(ws.config().debug.show_fps);
+    assert!(ws.config().system.dev_console);
+    assert!(ws.config().debug.dev_console);
+  }
+
+  #[test]
+  fn a_project_without_a_console_setting_has_none() {
+    let (ws, _) = read("");
+    assert!(!ws.config().system.dev_console);
+    assert!(!ws.config().debug.dev_console);
   }
 
   #[test]
@@ -1219,26 +1040,20 @@ mod tests {
   }
 
   // ==========================================================================
-  // SystemSection resolution string parsing tests
+  // Resolution strings
   // ==========================================================================
 
   #[test]
   fn system_section_parses_resolution_string() {
-    let toml_str = r#"
-      resolution = "800x600"
-      vsync = true
-    "#;
-    let section: SystemSection = toml::from_str(toml_str).unwrap();
-    assert_eq!(section.resolution, Some("800x600".to_string()));
+    let (ws, warnings) = read("[system]\nresolution = \"800x600\"\nvsync = true\n");
+    assert_eq!(ws.config().system.resolution, Some((800, 600)));
+    assert!(warnings.is_empty(), "{warnings:?}");
   }
 
   #[test]
   fn system_section_resolution_absent_is_none() {
-    let toml_str = r#"
-      vsync = true
-    "#;
-    let section: SystemSection = toml::from_str(toml_str).unwrap();
-    assert_eq!(section.resolution, None);
+    let (ws, _) = read("[system]\nvsync = true\n");
+    assert_eq!(ws.config().system.resolution, None);
   }
 
   #[test]
@@ -1249,31 +1064,110 @@ mod tests {
 
   #[test]
   fn system_defaults_resolution_parsed_from_toml() {
-    // Simulate what Workspace::discover does: parse SystemSection then merge
-    let section: SystemSection = toml::from_str(r#"resolution = "1920x1080""#).unwrap();
-    let engine_defaults = SystemDefaults::default();
-
-    let resolved = section
-      .resolution
-      .as_deref()
-      .and_then(super::super::save::parse_resolution)
-      .or(engine_defaults.resolution);
-
-    assert_eq!(resolved, Some((1920, 1080)));
+    let (ws, _) = read("[system]\nresolution = \"1920x1080\"\n");
+    assert_eq!(ws.config().system.resolution, Some((1920, 1080)));
   }
 
   #[test]
   fn system_defaults_malformed_resolution_falls_back() {
-    let section: SystemSection = toml::from_str(r#"resolution = "garbage""#).unwrap();
-    let engine_defaults = SystemDefaults::default();
+    let (ws, warnings) = read("[system]\nresolution = \"garbage\"\n");
+    assert_eq!(ws.config().system.resolution, None);
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+  }
 
-    let resolved = section
-      .resolution
-      .as_deref()
-      .and_then(super::super::save::parse_resolution)
-      .or(engine_defaults.resolution);
+  // ==========================================================================
+  // The Ryo.toml reader
+  // ==========================================================================
 
-    // Malformed string produces None, engine_defaults.resolution is also None
-    assert_eq!(resolved, None);
+  #[test]
+  fn malformed_toml_is_an_error() {
+    let result = Workspace::from_toml_str("[system\nvsync = true\n", PathBuf::from("game"));
+    assert!(matches!(result, Err(EngineError::WorkspaceError(_))));
+  }
+
+  #[test]
+  fn disk_and_text_read_the_same_way() {
+    let text = "[project]\nname = \"Hopper\"\n\n[system]\nresolution = \"640x360\"\n";
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Ryo.toml"), text).unwrap();
+
+    let from_disk = Workspace::from_path(dir.path()).unwrap();
+    let from_text = Workspace::from_toml_str(text, dir.path().to_path_buf()).unwrap();
+
+    assert_eq!(from_disk.project, from_text.project);
+    assert_eq!(from_disk.name(), "Hopper");
+    assert_eq!(from_text.config().system.resolution, Some((640, 360)));
+  }
+
+  #[test]
+  fn a_misspelt_key_warns_with_the_nearest_known_key() {
+    let (ws, warnings) = read("[system]\nvsyn = true\n");
+    assert_eq!(
+      warnings,
+      ["Ryo.toml: unknown key `vsyn` in [system] (did you mean `vsync`?)"]
+    );
+    assert!(warnings[0].contains("`vsync`"));
+    assert_eq!(ws.project.vsync, None);
+  }
+
+  #[test]
+  fn an_unknown_key_with_no_near_known_key_warns_without_a_guess() {
+    let (_, warnings) = read("[system]\nwidth = 800\n");
+    assert_eq!(warnings, ["Ryo.toml: unknown key `width` in [system]"]);
+  }
+
+  #[test]
+  fn keys_outside_known_sections_do_not_warn() {
+    let (_, warnings) = read("[env]\nfoo = 1\n\n[custom]\nx = 2\n");
+    assert!(warnings.is_empty(), "{warnings:?}");
+  }
+
+  #[test]
+  fn a_misspelt_key_warns_once_a_run() {
+    let text = "[debug]\nshow_coliders_once_a_run = true\n";
+    Workspace::from_toml_str(text, PathBuf::from("game")).unwrap();
+    Workspace::from_toml_str(text, PathBuf::from("game")).unwrap();
+    let warned = crate::core::dev_log::get_entries()
+      .iter()
+      .filter(|entry| entry.message.contains("`show_coliders_once_a_run`"))
+      .count();
+    assert_eq!(warned, 1);
+  }
+
+  /// Every `Ryo.toml` under `dir`, leaving out build output
+  fn ryo_tomls(dir: &Path, found: &mut Vec<PathBuf>) {
+    for entry in fs::read_dir(dir).unwrap().flatten() {
+      let path = entry.path();
+      let name = entry.file_name().to_string_lossy().to_lowercase();
+      if path.is_dir() {
+        if name != "target" && name != "dist" {
+          ryo_tomls(&path, found);
+        }
+      } else if name == "ryo.toml" {
+        found.push(path);
+      }
+    }
+  }
+
+  #[test]
+  fn every_example_ryo_toml_parses_without_a_warning() {
+    let mut files = Vec::new();
+    ryo_tomls(
+      &Path::new(env!("CARGO_MANIFEST_DIR")).join("examples"),
+      &mut files,
+    );
+    assert!(files.len() > 20, "found only {files:?}");
+
+    let mut warnings = Vec::new();
+    for file in &files {
+      let text = fs::read_to_string(file).unwrap();
+      let root = file.parent().unwrap().to_path_buf();
+      Workspace::read_toml(&text, root, &mut |warning| {
+        warnings.push(format!("{}: {warning}", file.display()))
+      })
+      .unwrap();
+    }
+
+    assert!(warnings.is_empty(), "{warnings:#?}");
   }
 }

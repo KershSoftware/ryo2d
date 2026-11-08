@@ -559,7 +559,6 @@ impl Engine {
       ambience_volume,
       audio_buffer_frames,
       tiled_project,
-      disable_debug_keys,
       game_name,
       game_version,
       console_builder,
@@ -623,6 +622,7 @@ impl Engine {
       config.debug.dev_window_keys = false;
     }
 
+    let debug_keys_enabled = !config.debug.disable_debug_keys && !headless;
     let initial_overlay_mode = OverlayMode::from_flags(
       config.debug.show_fps,
       config.debug.show_frame_timing,
@@ -784,7 +784,7 @@ impl Engine {
       overlay_mode: initial_overlay_mode,
       debug_stats: DebugStats::default(),
       smoothed_stats: SmoothedDebugStats::default(),
-      debug_keys_enabled: !disable_debug_keys && !headless,
+      debug_keys_enabled,
       last_fps_log: Instant::now(),
       #[cfg(feature = "profiler")]
       profiler_window: None,
@@ -1804,7 +1804,8 @@ impl EngineBuilder {
     workspace: Option<&crate::core::config::Workspace>,
     headless: bool,
   ) -> ResolvedBuild {
-    use crate::core::config::resolve::{ProjectLayer, compiled_embedded_value, resolve_settings};
+    use crate::core::config::project::{ProjectLayer, compiled_embedded_value};
+    use crate::core::config::resolve::resolve_settings;
 
     let initial_scene = self
       .initial_scene
@@ -1857,6 +1858,7 @@ impl EngineBuilder {
     config.debug.show_colliders = settings.show_colliders;
     config.debug.show_velocities = settings.show_velocities;
     config.debug.show_origins = settings.show_origins;
+    config.debug.disable_debug_keys = settings.disable_debug_keys;
     config.debug.show_frame_timing = settings.show_frame_timing;
     config.debug.enable_profiler = settings.enable_profiler;
     config.debug.logger_window = settings.logger_window;
@@ -1882,7 +1884,6 @@ impl EngineBuilder {
       ambience_volume: settings.ambience_volume,
       audio_buffer_frames: settings.audio_buffer_frames,
       tiled_project: settings.tiled_project,
-      disable_debug_keys: settings.disable_debug_keys,
       game_name,
       game_version,
       console_builder: self.console_builder,
@@ -1916,7 +1917,6 @@ struct ResolvedBuild {
   audio_buffer_frames: Option<u32>,
   /// The Tiled project's asset path (`None`: the default)
   tiled_project: Option<String>,
-  disable_debug_keys: bool,
   game_name: Option<String>,
   game_version: Option<String>,
   console_builder: Option<ConsoleCommandBuilder>,

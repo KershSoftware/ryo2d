@@ -1,11 +1,6 @@
-[game]
+[project]
 name = "UI Demo"
-
-[window]
 title = "Ryo2D UI Demo"
-
-[display]
-mode = "Fit"
 
 [system]
 console = true

@@ -1,12 +1,4 @@
-[game]
+[project]
 name = "Validated Animator Demo"
-version = "0.1.0"
-
-[window]
 title = "Ryo2D Validated Animator Demo"
-width = 800
-height = 600
-resizable = true
-
-[display]
-mode = "Fit"
+version = "0.1.0"

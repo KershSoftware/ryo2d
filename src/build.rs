@@ -2,39 +2,33 @@
 //! lists the agent skills the CLI ships.
 //!
 //! `ryo2d build` passes RYO_EMBED_* environment variables to cargo; the engine
-//! reads them with `option_env!` (see `core::config::resolve::COMPILED_EMBEDDED`).
-//! Build scripts can't import crate code, so this list is kept in sync by a test.
+//! reads them with `option_env!`. Build scripts can't import crate code, so
+//! this script includes the project table (`core/config/project_table.rs`),
+//! which the crate reads too, with a `project_settings!` of its own that keeps
+//! only the embed keys.
 
-const EMBEDDED_KEYS: &[&str] = &[
-  "RYO_EMBED_RESOLUTION",
-  "RYO_EMBED_PIXEL_ART",
-  "RYO_EMBED_VSYNC",
-  "RYO_EMBED_DISPLAY_MODE",
-  "RYO_EMBED_MASTER_VOLUME",
-  "RYO_EMBED_MUSIC_VOLUME",
-  "RYO_EMBED_SFX_VOLUME",
-  "RYO_EMBED_UI_VOLUME",
-  "RYO_EMBED_VOICE_VOLUME",
-  "RYO_EMBED_AMBIENCE_VOLUME",
-  "RYO_EMBED_AUDIO_BUFFER_FRAMES",
-  "RYO_EMBED_CONSOLE",
-  "RYO_EMBED_TITLE",
-  "RYO_EMBED_SHOW_FPS",
-  "RYO_EMBED_SHOW_COLLIDERS",
-  "RYO_EMBED_SHOW_VELOCITIES",
-  "RYO_EMBED_SHOW_ORIGINS",
-  "RYO_EMBED_SHOW_FRAME_TIMING",
-  "RYO_EMBED_DISABLE_DEBUG_KEYS",
-  "RYO_EMBED_ENABLE_PROFILER",
-  "RYO_EMBED_DEV_WINDOW_KEYS",
-  "RYO_EMBED_LOGGER_WINDOW",
-  "RYO_EMBED_BACKGROUND_FPS",
-  "RYO_EMBED_BACKGROUND_RENDERING",
-  "RYO_EMBED_TILED_PROJECT",
-  "RYO_EMBED_PORTABLE",
-  "RYO_EMBED_SAVE_FOLDER",
-  "RYO_EMBED_ENV",
-];
+macro_rules! project_settings {
+  (
+    settings {
+      $(
+        $field:ident : $ty:ty = $section:ident . $key:ident
+        $(, embed $embed:literal)? , sample $sample:expr ;
+      )*
+    }
+    workspace_keys {
+      $( $ws_section:ident . $ws_key:ident $(embed $ws_embed:literal)? ),* $(,)?
+    }
+    env embed $env_embed:literal ;
+  ) => {
+    const EMBEDDED_KEYS: &[&str] = &[
+      $($($embed,)?)*
+      $($($ws_embed,)?)*
+      $env_embed,
+    ];
+  };
+}
+
+include!("core/config/project_table.rs");
 
 fn main() {
   for key in EMBEDDED_KEYS {

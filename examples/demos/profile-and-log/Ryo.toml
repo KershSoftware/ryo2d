@@ -1,12 +1,9 @@
 # Profile and Log Demo Configuration
-name = "Profile and Log Demo"
-description = "Demo for the Ryo2D profiler and logger windows"
 
-[window]
+[project]
+name = "Profile and Log Demo"
 title = "Profile and Log Demo"
-width = 1280
-height = 720
-show_fps = true
+description = "Demo for the Ryo2D profiler and logger windows"
 
 [debug]
 logger_window = true

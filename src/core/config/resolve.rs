@@ -15,10 +15,8 @@ use std::path::PathBuf;
 
 use crate::core::diagnostics::DebugConfig;
 
-use super::save::{
-  DisplayMode, SystemState, UserPreference, UserPreferenceFilter, parse_resolution,
-};
-use super::workspace::Workspace;
+use super::project::ProjectLayer;
+use super::save::{DisplayMode, SystemState, UserPreference, UserPreferenceFilter};
 use crate::core::graphics::screen::{Presentation, initial_window_size};
 
 /// Engine default resolution.
@@ -54,40 +52,6 @@ pub(crate) struct BuilderOverrides {
   pub background_fps: Option<u32>,
   pub background_rendering: Option<bool>,
   pub icon: Option<PathBuf>,
-  pub tiled_project: Option<String>,
-}
-
-/// Settings from the project: `Ryo.toml` in dev, embedded values in release.
-/// `None` = not provided.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub(crate) struct ProjectLayer {
-  pub title: Option<String>,
-  pub resolution: Option<(u32, u32)>,
-  pub pixel_art: Option<bool>,
-  pub display_mode: Option<DisplayMode>,
-  pub vsync: Option<bool>,
-  pub master_volume: Option<f32>,
-  pub music_volume: Option<f32>,
-  pub sfx_volume: Option<f32>,
-  pub ui_volume: Option<f32>,
-  pub voice_volume: Option<f32>,
-  pub ambience_volume: Option<f32>,
-  /// The audio device's buffer in frames (0: the device's default)
-  pub audio_buffer_frames: Option<u32>,
-  pub show_fps: Option<bool>,
-  pub show_colliders: Option<bool>,
-  pub show_velocities: Option<bool>,
-  pub show_origins: Option<bool>,
-  pub show_frame_timing: Option<bool>,
-  pub enable_profiler: Option<bool>,
-  pub disable_debug_keys: Option<bool>,
-  pub logger_window: Option<bool>,
-  pub dev_window_keys: Option<bool>,
-  pub dev_console: Option<bool>,
-  pub background_fps: Option<u32>,
-  pub background_rendering: Option<bool>,
-  pub icon: Option<PathBuf>,
-  /// The Tiled project's asset path (empty: none)
   pub tiled_project: Option<String>,
 }
 
@@ -338,164 +302,17 @@ fn sanitize_volume(volume: f32, default: f32) -> f32 {
 }
 
 /// Overwrite `target` when a layer provides a value.
-fn set<T>(target: &mut T, value: Option<T>) {
+pub(super) fn set<T>(target: &mut T, value: Option<T>) {
   if let Some(value) = value {
     *target = value;
   }
 }
 
-impl ProjectLayer {
-  /// Values from a workspace's `Ryo.toml` (dev builds).
-  pub(crate) fn from_workspace(workspace: &Workspace) -> Self {
-    let config = workspace.config();
-    let system = &config.system;
-    let debug = &config.debug;
-    ProjectLayer {
-      title: Some(config.title.clone()),
-      resolution: system.resolution,
-      pixel_art: Some(system.pixel_art),
-      display_mode: Some(system.display_mode),
-      vsync: Some(system.vsync),
-      master_volume: Some(system.master_volume),
-      music_volume: Some(system.music_volume),
-      sfx_volume: Some(system.sfx_volume),
-      ui_volume: Some(system.ui_volume),
-      voice_volume: Some(system.voice_volume),
-      ambience_volume: Some(system.ambience_volume),
-      audio_buffer_frames: system.audio_buffer_frames,
-      show_fps: Some(system.show_fps),
-      show_colliders: Some(debug.show_colliders),
-      show_velocities: Some(debug.show_velocities),
-      show_origins: Some(debug.show_origins),
-      show_frame_timing: Some(debug.show_frame_timing),
-      enable_profiler: Some(debug.enable_profiler),
-      disable_debug_keys: Some(debug.disable_debug_keys),
-      logger_window: Some(debug.logger_window),
-      dev_window_keys: Some(debug.dev_window_keys),
-      dev_console: Some(system.dev_console),
-      background_fps: Some(system.target_background_fps),
-      background_rendering: Some(system.background_rendering),
-      icon: config
-        .release
-        .logo
-        .as_ref()
-        .map(|logo| workspace.root().join(logo)),
-      tiled_project: config.tiled_project.clone(),
-    }
-  }
-
-  /// Values `ryo2d build` embedded (release builds); `None` when the binary
-  /// wasn't built by `ryo2d build`. Malformed values are skipped with a warning.
-  pub(crate) fn from_embedded<'a>(lookup: impl Fn(&str) -> Option<&'a str>) -> Option<Self> {
-    let resolution = lookup("RYO_EMBED_RESOLUTION")?;
-    Some(ProjectLayer {
-      title: lookup("RYO_EMBED_TITLE").map(str::to_string),
-      resolution: parse_resolution(resolution).or_else(|| {
-        warn_malformed("RYO_EMBED_RESOLUTION", resolution);
-        None
-      }),
-      display_mode: lookup("RYO_EMBED_DISPLAY_MODE").and_then(|mode| {
-        DisplayMode::from_config_name(mode).or_else(|| {
-          warn_malformed("RYO_EMBED_DISPLAY_MODE", mode);
-          None
-        })
-      }),
-      vsync: parse_embedded(&lookup, "RYO_EMBED_VSYNC"),
-      pixel_art: parse_embedded(&lookup, "RYO_EMBED_PIXEL_ART"),
-      master_volume: parse_embedded(&lookup, "RYO_EMBED_MASTER_VOLUME"),
-      music_volume: parse_embedded(&lookup, "RYO_EMBED_MUSIC_VOLUME"),
-      sfx_volume: parse_embedded(&lookup, "RYO_EMBED_SFX_VOLUME"),
-      ui_volume: parse_embedded(&lookup, "RYO_EMBED_UI_VOLUME"),
-      voice_volume: parse_embedded(&lookup, "RYO_EMBED_VOICE_VOLUME"),
-      ambience_volume: parse_embedded(&lookup, "RYO_EMBED_AMBIENCE_VOLUME"),
-      audio_buffer_frames: parse_embedded(&lookup, "RYO_EMBED_AUDIO_BUFFER_FRAMES"),
-      show_fps: parse_embedded(&lookup, "RYO_EMBED_SHOW_FPS"),
-      show_colliders: parse_embedded(&lookup, "RYO_EMBED_SHOW_COLLIDERS"),
-      show_velocities: parse_embedded(&lookup, "RYO_EMBED_SHOW_VELOCITIES"),
-      show_origins: parse_embedded(&lookup, "RYO_EMBED_SHOW_ORIGINS"),
-      show_frame_timing: parse_embedded(&lookup, "RYO_EMBED_SHOW_FRAME_TIMING"),
-      enable_profiler: parse_embedded(&lookup, "RYO_EMBED_ENABLE_PROFILER"),
-      disable_debug_keys: parse_embedded(&lookup, "RYO_EMBED_DISABLE_DEBUG_KEYS"),
-      logger_window: parse_embedded(&lookup, "RYO_EMBED_LOGGER_WINDOW"),
-      dev_window_keys: parse_embedded(&lookup, "RYO_EMBED_DEV_WINDOW_KEYS"),
-      dev_console: parse_embedded(&lookup, "RYO_EMBED_CONSOLE"),
-      background_fps: parse_embedded(&lookup, "RYO_EMBED_BACKGROUND_FPS"),
-      background_rendering: parse_embedded(&lookup, "RYO_EMBED_BACKGROUND_RENDERING"),
-      icon: None,
-      tiled_project: lookup("RYO_EMBED_TILED_PROJECT")
-        .filter(|path| !path.is_empty())
-        .map(str::to_string),
-    })
-  }
-}
-
-/// Environment variables `ryo2d build` embeds, paired with their compile-time
-/// values. `RYO_EMBED_RESOLUTION` is always set by `ryo2d build` and marks a
-/// binary built that way. Each key is written once so the name and the
-/// `option_env!` argument can't drift apart. `RYO_EMBED_PORTABLE` and
-/// `RYO_EMBED_SAVE_FOLDER` are read by `save_location`, and `RYO_EMBED_ENV` (a
-/// JSON object) by `Workspace::from_embedded`, not the settings layers.
-macro_rules! compiled_embedded {
-  ($($key:literal),* $(,)?) => { &[$(($key, option_env!($key))),*] };
-}
-
-pub(crate) const COMPILED_EMBEDDED: &[(&str, Option<&str>)] = compiled_embedded![
-  "RYO_EMBED_RESOLUTION",
-  "RYO_EMBED_PIXEL_ART",
-  "RYO_EMBED_VSYNC",
-  "RYO_EMBED_DISPLAY_MODE",
-  "RYO_EMBED_MASTER_VOLUME",
-  "RYO_EMBED_MUSIC_VOLUME",
-  "RYO_EMBED_SFX_VOLUME",
-  "RYO_EMBED_UI_VOLUME",
-  "RYO_EMBED_VOICE_VOLUME",
-  "RYO_EMBED_AMBIENCE_VOLUME",
-  "RYO_EMBED_AUDIO_BUFFER_FRAMES",
-  "RYO_EMBED_CONSOLE",
-  "RYO_EMBED_TITLE",
-  "RYO_EMBED_SHOW_FPS",
-  "RYO_EMBED_SHOW_COLLIDERS",
-  "RYO_EMBED_SHOW_VELOCITIES",
-  "RYO_EMBED_SHOW_ORIGINS",
-  "RYO_EMBED_SHOW_FRAME_TIMING",
-  "RYO_EMBED_DISABLE_DEBUG_KEYS",
-  "RYO_EMBED_ENABLE_PROFILER",
-  "RYO_EMBED_DEV_WINDOW_KEYS",
-  "RYO_EMBED_LOGGER_WINDOW",
-  "RYO_EMBED_BACKGROUND_FPS",
-  "RYO_EMBED_BACKGROUND_RENDERING",
-  "RYO_EMBED_TILED_PROJECT",
-  "RYO_EMBED_PORTABLE",
-  "RYO_EMBED_SAVE_FOLDER",
-  "RYO_EMBED_ENV",
-];
-
-/// A value embedded into this binary by `ryo2d build`.
-pub(crate) fn compiled_embedded_value(name: &str) -> Option<&'static str> {
-  COMPILED_EMBEDDED
-    .iter()
-    .find(|(key, _)| *key == name)
-    .and_then(|(_, value)| *value)
-}
-
-fn parse_embedded<'a, T: std::str::FromStr>(
-  lookup: &impl Fn(&str) -> Option<&'a str>,
-  name: &str,
-) -> Option<T> {
-  let raw = lookup(name)?;
-  raw.parse().ok().or_else(|| {
-    warn_malformed(name, raw);
-    None
-  })
-}
-
-fn warn_malformed(name: &str, value: &str) {
-  eprintln!("[ryo2d] Warning: Malformed embedded value {name}='{value}', using the default");
-}
-
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::core::config::project::sample_layers;
+  use crate::core::config::workspace::Workspace;
 
   #[test]
   fn out_of_range_volumes_are_clamped_and_non_finite_ones_default() {
@@ -800,98 +617,16 @@ tiled_project = "maps/game.tiled-project"
     );
   }
 
-  fn embedded(name: &str) -> Option<&'static str> {
-    match name {
-      "RYO_EMBED_RESOLUTION" => Some("800x600"),
-      "RYO_EMBED_VSYNC" => Some("false"),
-      "RYO_EMBED_DISPLAY_MODE" => Some("exclusive_fullscreen"),
-      "RYO_EMBED_MASTER_VOLUME" => Some("0.3"),
-      "RYO_EMBED_MUSIC_VOLUME" => Some("0.4"),
-      "RYO_EMBED_SFX_VOLUME" => Some("0.5"),
-      "RYO_EMBED_UI_VOLUME" => Some("0.6"),
-      "RYO_EMBED_VOICE_VOLUME" => Some("0.7"),
-      "RYO_EMBED_AMBIENCE_VOLUME" => Some("0.8"),
-      "RYO_EMBED_AUDIO_BUFFER_FRAMES" => Some("256"),
-      "RYO_EMBED_CONSOLE" => Some("true"),
-      "RYO_EMBED_TITLE" => Some("Shipped"),
-      "RYO_EMBED_SHOW_FPS" => Some("true"),
-      "RYO_EMBED_SHOW_COLLIDERS" => Some("true"),
-      "RYO_EMBED_SHOW_VELOCITIES" => Some("true"),
-      "RYO_EMBED_SHOW_ORIGINS" => Some("true"),
-      "RYO_EMBED_SHOW_FRAME_TIMING" => Some("true"),
-      "RYO_EMBED_DISABLE_DEBUG_KEYS" => Some("true"),
-      "RYO_EMBED_ENABLE_PROFILER" => Some("true"),
-      "RYO_EMBED_DEV_WINDOW_KEYS" => Some("true"),
-      "RYO_EMBED_LOGGER_WINDOW" => Some("true"),
-      "RYO_EMBED_BACKGROUND_FPS" => Some("15"),
-      "RYO_EMBED_BACKGROUND_RENDERING" => Some("false"),
-      "RYO_EMBED_TILED_PROJECT" => Some("maps/game.tiled-project"),
-      _ => None,
+  #[test]
+  fn every_table_entry_reaches_the_resolved_settings() {
+    let defaults = resolve_settings(&ProjectLayer::default(), &BuilderOverrides::default(), None);
+    for (name, layer) in sample_layers() {
+      let resolved = resolve_settings(&layer, &BuilderOverrides::default(), None);
+      assert_ne!(
+        resolved, defaults,
+        "`{name}` doesn't reach the resolved settings"
+      );
     }
-  }
-
-  #[test]
-  fn from_embedded_reads_every_key() {
-    let layer = ProjectLayer::from_embedded(embedded).unwrap();
-    assert_eq!(layer.title.as_deref(), Some("Shipped"));
-    assert_eq!(layer.resolution, Some((800, 600)));
-    assert_eq!(layer.vsync, Some(false));
-    assert_eq!(layer.display_mode, Some(DisplayMode::ExclusiveFullscreen));
-    assert_eq!(layer.master_volume, Some(0.3));
-    assert_eq!(layer.music_volume, Some(0.4));
-    assert_eq!(layer.sfx_volume, Some(0.5));
-    assert_eq!(layer.ui_volume, Some(0.6));
-    assert_eq!(layer.voice_volume, Some(0.7));
-    assert_eq!(layer.ambience_volume, Some(0.8));
-    assert_eq!(layer.audio_buffer_frames, Some(256));
-    assert_eq!(layer.dev_console, Some(true));
-    assert_eq!(layer.show_fps, Some(true));
-    assert_eq!(layer.show_colliders, Some(true));
-    assert_eq!(layer.show_velocities, Some(true));
-    assert_eq!(layer.show_origins, Some(true));
-    assert_eq!(layer.show_frame_timing, Some(true));
-    assert_eq!(layer.disable_debug_keys, Some(true));
-    assert_eq!(layer.enable_profiler, Some(true));
-    assert_eq!(layer.dev_window_keys, Some(true));
-    assert_eq!(layer.logger_window, Some(true));
-    assert_eq!(layer.background_fps, Some(15));
-    assert_eq!(layer.background_rendering, Some(false));
-    assert_eq!(
-      layer.tiled_project.as_deref(),
-      Some("maps/game.tiled-project")
-    );
-    assert_eq!(layer.icon, None);
-  }
-
-  #[test]
-  fn from_embedded_is_none_without_a_ryo2d_build() {
-    assert_eq!(ProjectLayer::from_embedded(|_| None), None);
-  }
-
-  #[test]
-  fn malformed_embedded_value_only_drops_that_setting() {
-    let layer = ProjectLayer::from_embedded(|name| match name {
-      "RYO_EMBED_MASTER_VOLUME" => Some("loud"),
-      "RYO_EMBED_RESOLUTION" => Some("huge"),
-      "RYO_EMBED_DISPLAY_MODE" => Some("sideways"),
-      other => embedded(other),
-    })
-    .unwrap();
-    assert_eq!(layer.master_volume, None);
-    assert_eq!(layer.resolution, None);
-    assert_eq!(layer.display_mode, None);
-    assert_eq!(layer.music_volume, Some(0.4));
-    assert_eq!(layer.disable_debug_keys, Some(true));
-  }
-
-  #[test]
-  fn compiled_table_has_unique_embed_keys() {
-    let keys: Vec<&str> = COMPILED_EMBEDDED.iter().map(|(key, _)| *key).collect();
-    let unique: std::collections::HashSet<&str> = keys.iter().copied().collect();
-    assert_eq!(keys.len(), 28);
-    assert_eq!(unique.len(), keys.len());
-    assert!(keys.iter().all(|key| key.starts_with("RYO_EMBED_")));
-    assert_eq!(compiled_embedded_value("RYO_EMBED_NOT_A_KEY"), None);
   }
 
   #[test]

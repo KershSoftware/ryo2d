@@ -35,7 +35,7 @@ pub fn execute(args: &[String]) -> CliResult<()> {
   // This allows all examples to share compiled dependencies
   let target_dir = find_workspace_target_dir(workspace.root());
 
-  let embedded = embedded_config_env(config, workspace.dev_window_keys_setting());
+  let embedded = embedded_config_env(&workspace);
   for warning in release_tool_warnings(&embedded) {
     Output::warning(&warning);
   }
@@ -145,89 +145,34 @@ fn checked_save_folder(config: &crate::core::config::WorkspaceConfig) -> CliResu
 }
 
 /// Ryo.toml values passed to the release build; the engine reads them with
-/// `option_env!` (see `core::config::resolve::COMPILED_EMBEDDED`).
-fn embedded_config_env(
-  config: &crate::core::config::WorkspaceConfig,
-  dev_window_keys: Option<bool>,
+/// `option_env!` (`core::config::project`). Each setting the project sets
+/// ships as its table entry's embed key, the title as the workspace resolves
+/// it and the console off unless Ryo.toml turns it on (as in dev), and also:
+/// - `RYO_EMBED_RESOLUTION` always (the engine's default when unset), as it
+///   marks a binary `ryo2d build` made;
+/// - `RYO_EMBED_DEV_WINDOW_KEYS` only from an explicit Ryo.toml value, else
+///   `false`, so a release never takes a dev build's default;
+/// - `RYO_EMBED_PORTABLE`, `RYO_EMBED_SAVE_FOLDER` (the folder name, from
+///   [`release_save_folder`]) and `RYO_EMBED_ENV` (`[env]` as JSON).
+pub(crate) fn embedded_config_env(
+  workspace: &crate::core::config::Workspace,
 ) -> Vec<(&'static str, String)> {
-  let system = &config.system;
-  let debug = &config.debug;
-  let display_mode = match system.display_mode {
-    crate::core::config::DisplayMode::Windowed => "windowed",
-    crate::core::config::DisplayMode::ExclusiveFullscreen => "exclusive_fullscreen",
-    crate::core::config::DisplayMode::BorderlessFullscreen => "borderless_fullscreen",
-  };
-  vec![
-    (
-      "RYO_EMBED_RESOLUTION",
-      system
-        .resolution
-        .map(|(w, h)| format!("{}x{}", w, h))
-        .unwrap_or_else(|| "1280x720".to_string()),
-    ),
-    ("RYO_EMBED_PIXEL_ART", system.pixel_art.to_string()),
-    ("RYO_EMBED_VSYNC", system.vsync.to_string()),
-    ("RYO_EMBED_DISPLAY_MODE", display_mode.to_string()),
-    ("RYO_EMBED_MASTER_VOLUME", system.master_volume.to_string()),
-    ("RYO_EMBED_MUSIC_VOLUME", system.music_volume.to_string()),
-    ("RYO_EMBED_SFX_VOLUME", system.sfx_volume.to_string()),
-    ("RYO_EMBED_UI_VOLUME", system.ui_volume.to_string()),
-    ("RYO_EMBED_VOICE_VOLUME", system.voice_volume.to_string()),
-    (
-      "RYO_EMBED_AMBIENCE_VOLUME",
-      system.ambience_volume.to_string(),
-    ),
-    // 0 is the device's own buffer
-    (
-      "RYO_EMBED_AUDIO_BUFFER_FRAMES",
-      system.audio_buffer_frames.unwrap_or(0).to_string(),
-    ),
-    ("RYO_EMBED_CONSOLE", system.dev_console.to_string()),
-    ("RYO_EMBED_TITLE", config.title.clone()),
-    ("RYO_EMBED_SHOW_FPS", system.show_fps.to_string()),
-    ("RYO_EMBED_SHOW_COLLIDERS", debug.show_colliders.to_string()),
-    (
-      "RYO_EMBED_SHOW_VELOCITIES",
-      debug.show_velocities.to_string(),
-    ),
-    ("RYO_EMBED_SHOW_ORIGINS", debug.show_origins.to_string()),
-    (
-      "RYO_EMBED_SHOW_FRAME_TIMING",
-      debug.show_frame_timing.to_string(),
-    ),
-    (
-      "RYO_EMBED_DISABLE_DEBUG_KEYS",
-      debug.disable_debug_keys.to_string(),
-    ),
-    (
-      "RYO_EMBED_ENABLE_PROFILER",
-      debug.enable_profiler.to_string(),
-    ),
-    (
-      "RYO_EMBED_DEV_WINDOW_KEYS",
-      dev_window_keys.unwrap_or(false).to_string(),
-    ),
-    ("RYO_EMBED_LOGGER_WINDOW", debug.logger_window.to_string()),
-    (
-      "RYO_EMBED_BACKGROUND_FPS",
-      system.target_background_fps.to_string(),
-    ),
-    (
-      "RYO_EMBED_BACKGROUND_RENDERING",
-      system.background_rendering.to_string(),
-    ),
-    // empty is no project: the default one
-    (
-      "RYO_EMBED_TILED_PROJECT",
-      config.tiled_project.clone().unwrap_or_default(),
-    ),
-    ("RYO_EMBED_PORTABLE", config.release.portable.to_string()),
-    ("RYO_EMBED_SAVE_FOLDER", release_save_folder(config)),
-    (
-      "RYO_EMBED_ENV",
-      serde_json::to_string(&system.env).unwrap_or_else(|_| "{}".to_string()),
-    ),
-  ]
+  use crate::core::config::project::ProjectLayer;
+  use crate::core::config::resolve::DEFAULT_RESOLUTION;
+
+  let config = workspace.config();
+  let mut project = ProjectLayer::from_workspace(workspace);
+  project.resolution.get_or_insert(DEFAULT_RESOLUTION);
+  project.dev_window_keys.get_or_insert(false);
+
+  let mut env = project.to_embedded_env();
+  env.push(("RYO_EMBED_PORTABLE", config.release.portable.to_string()));
+  env.push(("RYO_EMBED_SAVE_FOLDER", release_save_folder(config)));
+  env.push((
+    "RYO_EMBED_ENV",
+    serde_json::to_string(&config.system.env).unwrap_or_else(|_| "{}".to_string()),
+  ));
+  env
 }
 
 /// Create a distributable release bundle
@@ -524,39 +469,56 @@ EXAMPLE:
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::core::config::WorkspaceConfig;
-  use crate::core::config::resolve::{COMPILED_EMBEDDED, ProjectLayer};
+  use crate::core::config::project::{EMBED_KEYS, ProjectLayer, sample_table};
+  use crate::core::config::{Workspace, WorkspaceConfig};
 
-  fn embedded_value(env: &[(&'static str, String)], key: &str) -> String {
+  /// A workspace from Ryo.toml text, with no folder on disk
+  fn workspace(toml: &str) -> Workspace {
+    Workspace::from_toml_str(toml, PathBuf::from("game")).unwrap()
+  }
+
+  fn embedded_value(env: &[(&'static str, String)], key: &str) -> Option<String> {
     env
       .iter()
       .find(|(name, _)| *name == key)
       .map(|(_, value)| value.clone())
-      .unwrap()
+  }
+
+  fn lookup_in<'a>(env: &'a [(&'static str, String)]) -> impl Fn(&str) -> Option<&'a str> + 'a {
+    move |name| {
+      env
+        .iter()
+        .find(|(key, _)| *key == name)
+        .map(|(_, value)| value.as_str())
+    }
   }
 
   #[test]
   fn save_folder_defaults_to_the_project_name() {
-    let config = WorkspaceConfig {
-      name: "Star Hopper".to_string(),
-      ..Default::default()
-    };
-    let env = embedded_config_env(&config, None);
-    assert_eq!(embedded_value(&env, "RYO_EMBED_SAVE_FOLDER"), "Star Hopper");
-    assert_eq!(embedded_value(&env, "RYO_EMBED_PORTABLE"), "false");
+    let env = embedded_config_env(&workspace("[project]\nname = \"Star Hopper\"\n"));
+    assert_eq!(
+      embedded_value(&env, "RYO_EMBED_SAVE_FOLDER").as_deref(),
+      Some("Star Hopper")
+    );
+    assert_eq!(
+      embedded_value(&env, "RYO_EMBED_PORTABLE").as_deref(),
+      Some("false")
+    );
   }
 
   #[test]
   fn save_folder_override_and_portable_are_embedded() {
-    let mut config = WorkspaceConfig::default();
-    config.release.save_folder = Some("Studio/Hopper".to_string());
-    config.release.portable = true;
-    let env = embedded_config_env(&config, None);
+    let env = embedded_config_env(&workspace(
+      "[release]\nsave_folder = \"Studio/Hopper\"\nportable = true\n",
+    ));
     assert_eq!(
-      embedded_value(&env, "RYO_EMBED_SAVE_FOLDER"),
-      "Studio/Hopper"
+      embedded_value(&env, "RYO_EMBED_SAVE_FOLDER").as_deref(),
+      Some("Studio/Hopper")
     );
-    assert_eq!(embedded_value(&env, "RYO_EMBED_PORTABLE"), "true");
+    assert_eq!(
+      embedded_value(&env, "RYO_EMBED_PORTABLE").as_deref(),
+      Some("true")
+    );
   }
 
   #[test]
@@ -580,9 +542,13 @@ mod tests {
       checked_save_folder(&config).ok().as_deref(),
       Some("Squash-Stretch Demo")
     );
-    config.release.save_folder = Some("Studio/Game".to_string());
-    let env = embedded_config_env(&config, None);
-    assert_eq!(embedded_value(&env, "RYO_EMBED_SAVE_FOLDER"), "Studio/Game");
+    let env = embedded_config_env(&workspace(
+      "[project]\nname = \"Squash/Stretch Demo\"\n\n[release]\nsave_folder = \"Studio/Game\"\n",
+    ));
+    assert_eq!(
+      embedded_value(&env, "RYO_EMBED_SAVE_FOLDER").as_deref(),
+      Some("Studio/Game")
+    );
     config.release.save_folder = None;
     config.name = "..".to_string();
     assert!(matches!(
@@ -607,42 +573,41 @@ mod tests {
 
   #[test]
   fn embedded_env_covers_every_key_the_engine_reads() {
-    let mut names: Vec<&str> = embedded_config_env(&WorkspaceConfig::default(), None)
+    let every = toml::to_string(&sample_table()).unwrap();
+    let mut names: Vec<&str> = embedded_config_env(&workspace(&every))
       .into_iter()
       .map(|(name, _)| name)
       .collect();
-    let mut expected: Vec<&str> = COMPILED_EMBEDDED.iter().map(|(key, _)| *key).collect();
+    let mut expected: Vec<&str> = EMBED_KEYS.to_vec();
     names.sort_unstable();
     expected.sort_unstable();
     assert_eq!(names, expected);
   }
 
   #[test]
+  fn a_project_that_sets_nothing_still_ships_the_release_marker_and_the_fixed_keys() {
+    let env = embedded_config_env(&workspace(""));
+    let value = |key| embedded_value(&env, key);
+    assert_eq!(value("RYO_EMBED_RESOLUTION").as_deref(), Some("1280x720"));
+    assert_eq!(value("RYO_EMBED_DEV_WINDOW_KEYS").as_deref(), Some("false"));
+    assert_eq!(value("RYO_EMBED_CONSOLE").as_deref(), Some("false"));
+    assert_eq!(value("RYO_EMBED_TITLE").as_deref(), Some("game"));
+    assert_eq!(value("RYO_EMBED_ENV").as_deref(), Some("{}"));
+    assert_eq!(value("RYO_EMBED_SAVE_FOLDER").as_deref(), Some("game"));
+  }
+
+  #[test]
   fn embedded_display_title_and_volumes_round_trip() {
     use crate::core::config::DisplayMode;
-    let mut config = WorkspaceConfig {
-      title: "Hopper".to_string(),
-      ..Default::default()
-    };
-    config.system.display_mode = DisplayMode::BorderlessFullscreen;
-    config.system.resolution = Some((800, 600));
-    config.system.master_volume = 0.3;
-    config.system.music_volume = 0.4;
-    config.system.sfx_volume = 0.5;
-    config.system.ui_volume = 0.6;
-    config.system.voice_volume = 0.7;
-    config.system.ambience_volume = 0.8;
-    config.system.audio_buffer_frames = Some(256);
-    config.tiled_project = Some("maps/game.tiled-project".to_string());
+    let ws = workspace(
+      "[project]\ntitle = \"Hopper\"\n\n[system]\ndisplay_mode = \"borderless_fullscreen\"\n\
+       resolution = \"800x600\"\nmaster_volume = 0.3\nmusic_volume = 0.4\nsfx_volume = 0.5\n\
+       ui_volume = 0.6\nvoice_volume = 0.7\nambience_volume = 0.8\naudio_buffer_frames = 256\n\n\
+       [tilemap]\ntiled_project = \"maps/game.tiled-project\"\n",
+    );
 
-    let env = embedded_config_env(&config, None);
-    let layer = ProjectLayer::from_embedded(|name| {
-      env
-        .iter()
-        .find(|(key, _)| *key == name)
-        .map(|(_, value)| value.as_str())
-    })
-    .unwrap();
+    let env = embedded_config_env(&ws);
+    let layer = ProjectLayer::from_embedded(lookup_in(&env)).unwrap();
 
     assert_eq!(layer.display_mode, Some(DisplayMode::BorderlessFullscreen));
     assert_eq!(layer.resolution, Some((800, 600)));
@@ -658,37 +623,21 @@ mod tests {
       layer.tiled_project.as_deref(),
       Some("maps/game.tiled-project")
     );
-    // Unset, it ships as 0: the device's own buffer
-    config.system.audio_buffer_frames = None;
-    let env = embedded_config_env(&config, None);
-    let workspace =
-      crate::core::config::Workspace::from_embedded(std::path::Path::new("."), |name| {
-        env
-          .iter()
-          .find(|(key, _)| *key == name)
-          .map(|(_, value)| value.as_str())
-      });
+    // Unset, the device's own buffer and the default Tiled project ship as nothing
+    let env = embedded_config_env(&workspace("[project]\ntitle = \"Hopper\"\n"));
+    let workspace = Workspace::from_embedded(std::path::Path::new("."), lookup_in(&env));
     assert_eq!(
-      workspace.map(|ws| ws.config().system.audio_buffer_frames),
+      workspace
+        .as_ref()
+        .map(|ws| ws.config().system.audio_buffer_frames),
       Some(None)
     );
-    // Unset, the Tiled project ships empty: none
-    config.tiled_project = None;
-    let env = embedded_config_env(&config, None);
-    let lookup = |name: &str| {
-      env
-        .iter()
-        .find(|(key, _)| *key == name)
-        .map(|(_, value)| value.as_str())
-    };
-    assert_eq!(
-      ProjectLayer::from_embedded(lookup).map(|layer| layer.tiled_project),
-      Some(None)
-    );
-    let workspace =
-      crate::core::config::Workspace::from_embedded(std::path::Path::new("."), lookup);
     assert_eq!(
       workspace.map(|ws| ws.config().tiled_project.clone()),
+      Some(None)
+    );
+    assert_eq!(
+      ProjectLayer::from_embedded(lookup_in(&env)).map(|layer| layer.tiled_project),
       Some(None)
     );
   }
@@ -714,22 +663,13 @@ mod tests {
 
   #[test]
   fn embedded_debug_and_background_settings_reach_the_engine() {
-    let mut config = WorkspaceConfig::default();
-    config.debug.disable_debug_keys = true;
-    config.debug.enable_profiler = true;
-    config.debug.dev_window_keys = true;
-    config.debug.logger_window = true;
-    config.system.target_background_fps = 15;
-    config.system.background_rendering = false;
+    let ws = workspace(
+      "[debug]\ndisable_debug_keys = true\nenable_profiler = true\ndev_window_keys = true\n\
+       logger_window = true\n\n[system]\ntarget_background_fps = 15\nbackground_rendering = false\n",
+    );
 
-    let env = embedded_config_env(&config, Some(true));
-    let layer = ProjectLayer::from_embedded(|name| {
-      env
-        .iter()
-        .find(|(key, _)| *key == name)
-        .map(|(_, value)| value.as_str())
-    })
-    .unwrap();
+    let env = embedded_config_env(&ws);
+    let layer = ProjectLayer::from_embedded(lookup_in(&env)).unwrap();
 
     assert_eq!(layer.disable_debug_keys, Some(true));
     assert_eq!(layer.enable_profiler, Some(true));
@@ -739,30 +679,28 @@ mod tests {
     assert_eq!(layer.background_rendering, Some(false));
   }
 
-  fn embedded_dev_window_keys(toml: &str) -> String {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("Ryo.toml"), toml).unwrap();
-    let workspace = crate::core::config::Workspace::from_path(dir.path()).unwrap();
-    embedded_config_env(workspace.config(), workspace.dev_window_keys_setting())
-      .into_iter()
-      .find(|(key, _)| *key == "RYO_EMBED_DEV_WINDOW_KEYS")
-      .map(|(_, value)| value)
-      .unwrap()
+  fn embedded_dev_window_keys(toml: &str) -> Option<String> {
+    embedded_value(
+      &embedded_config_env(&workspace(toml)),
+      "RYO_EMBED_DEV_WINDOW_KEYS",
+    )
   }
 
   #[test]
   fn absent_dev_window_keys_embeds_false() {
     assert_eq!(
-      embedded_dev_window_keys("[project]\nname = \"g\"\n\n[debug]\nshow_fps = true\n"),
-      "false"
+      embedded_dev_window_keys("[project]\nname = \"g\"\n\n[debug]\nshow_colliders = true\n")
+        .as_deref(),
+      Some("false")
     );
   }
 
   #[test]
   fn explicit_dev_window_keys_is_embedded() {
     assert_eq!(
-      embedded_dev_window_keys("[project]\nname = \"g\"\n\n[debug]\ndev_window_keys = true\n"),
-      "true"
+      embedded_dev_window_keys("[project]\nname = \"g\"\n\n[debug]\ndev_window_keys = true\n")
+        .as_deref(),
+      Some("true")
     );
   }
 
@@ -790,16 +728,10 @@ mod tests {
       "[env]\ndifficulty = \"hard\"\nlives = 3\nhard_mode = true\nspeed = 1.5\n",
     )
     .unwrap();
-    let workspace = crate::core::config::Workspace::from_path(dir.path()).unwrap();
-    let env = embedded_config_env(workspace.config(), None);
+    let workspace = Workspace::from_path(dir.path()).unwrap();
+    let env = embedded_config_env(&workspace);
 
-    let shipped = crate::core::config::Workspace::from_embedded(dir.path(), |name| {
-      env
-        .iter()
-        .find(|(key, _)| *key == name)
-        .map(|(_, value)| value.as_str())
-    })
-    .unwrap();
+    let shipped = Workspace::from_embedded(dir.path(), lookup_in(&env)).unwrap();
 
     let config = shipped.config();
     assert_eq!(config.env_str("difficulty"), Some("hard"));
@@ -816,7 +748,7 @@ mod tests {
     let target = dir.path().join("target").join("release");
     std::fs::create_dir_all(&target).unwrap();
     std::fs::write(target.join(binary), b"a game").unwrap();
-    let workspace = crate::core::config::Workspace::from_path(dir.path()).unwrap();
+    let workspace = Workspace::from_path(dir.path()).unwrap();
     create_release_bundle(&workspace, "g", "g", &dir.path().join("no-icon.png")).unwrap();
     let licenses = dir
       .path()
@@ -833,23 +765,8 @@ mod tests {
   }
 
   #[test]
-  fn build_script_tracks_exactly_the_embedded_keys() {
-    // The quoted names inside src/build.rs's EMBEDDED_KEYS array
+  fn the_build_script_reads_the_project_table() {
     let script = include_str!("../../build.rs");
-    let list = script
-      .split_once("const EMBEDDED_KEYS: &[&str] = &[")
-      .and_then(|(_, rest)| rest.split_once("];"))
-      .map(|(list, _)| list)
-      .expect("src/build.rs declares EMBEDDED_KEYS");
-    let mut tracked: Vec<&str> = list
-      .lines()
-      .map(str::trim)
-      .filter(|line| !line.starts_with("//"))
-      .filter_map(|line| line.strip_prefix('"')?.split_once('"').map(|(key, _)| key))
-      .collect();
-    let mut compiled: Vec<&str> = COMPILED_EMBEDDED.iter().map(|(key, _)| *key).collect();
-    tracked.sort_unstable();
-    compiled.sort_unstable();
-    assert_eq!(tracked, compiled);
+    assert!(script.contains("include!(\"core/config/project_table.rs\")"));
   }
 }

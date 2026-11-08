@@ -18,6 +18,8 @@ pub struct DebugConfig {
   pub show_velocities: bool,
   /// Whether to draw entity origin points (small crosshairs at transform position)
   pub show_origins: bool,
+  /// Whether the F1-F5 debug key toggles are off (read once, at start)
+  pub disable_debug_keys: bool,
   /// Whether to outline every UI widget with its id (`debug:ui`; runtime only)
   pub show_ui_debug: bool,
   /// Whether to outline the UI node subtrees rebuilt each frame, fading,
@@ -62,6 +64,7 @@ impl Default for DebugConfig {
       show_stats: false,
       show_velocities: false,
       show_origins: false,
+      disable_debug_keys: false,
       show_ui_debug: false,
       show_ui_rebuilds: false,
       enable_profiler: false, // Disabled by default (opt-in)
@@ -96,6 +99,7 @@ mod tests {
     assert!(!config.show_stats);
     assert!(!config.show_velocities);
     assert!(!config.show_origins);
+    assert!(!config.disable_debug_keys);
     // enable_profiler defaults to false (opt-in)
     assert!(!config.enable_profiler);
     assert!(config.ui_cache, "UI node trees are cached by default");

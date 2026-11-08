@@ -533,7 +533,7 @@ pub(crate) fn nearest<'a>(
 
 /// Edits between two words: inserting, deleting or changing a character,
 /// or swapping two neighbours (`gpa` is one edit from `gap`)
-fn edit_distance(a: &[char], b: &[char]) -> usize {
+pub(crate) fn edit_distance(a: &[char], b: &[char]) -> usize {
   let width = b.len() + 1;
   let mut d: Vec<usize> = vec![0; (a.len() + 1) * width];
   for (i, row) in d.chunks_mut(width).enumerate() {

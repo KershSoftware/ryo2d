@@ -422,7 +422,7 @@ fn ryo_toml_settings_apply_without_builder_calls() {
   assert_eq!(r.config.title, "From Toml");
   assert!(r.config.debug.show_colliders);
   assert!(r.config.debug.show_fps);
-  assert!(r.disable_debug_keys);
+  assert!(r.config.debug.disable_debug_keys);
   assert_eq!(r.config.target_background_fps, 5);
 }
 
@@ -574,7 +574,7 @@ fn engine_builder_debug_keys_enabled_by_default() {
   let resolved = EngineBuilder::new()
     .start_scene(EmptyScene)
     .resolve_in(None, false);
-  assert!(!resolved.disable_debug_keys);
+  assert!(!resolved.config.debug.disable_debug_keys);
 }
 
 #[test]

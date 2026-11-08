@@ -401,6 +401,15 @@ impl DisplayMode {
     }
   }
 
+  /// The name a config file gives this mode (the one `from_config_name` reads).
+  pub(crate) fn config_name(&self) -> &'static str {
+    match self {
+      DisplayMode::Windowed => "windowed",
+      DisplayMode::ExclusiveFullscreen => "exclusive_fullscreen",
+      DisplayMode::BorderlessFullscreen => "borderless_fullscreen",
+    }
+  }
+
   /// Returns all available display modes for UI selection
   pub fn all() -> &'static [DisplayMode] {
     &[

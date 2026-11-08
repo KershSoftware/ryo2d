@@ -3,7 +3,7 @@
 use std::path::{Component, Path, PathBuf};
 use std::sync::OnceLock;
 
-use super::resolve::compiled_embedded_value;
+use super::project::compiled_embedded_value;
 
 /// Whether `name` can name a per-game folder under the OS user data directory.
 ///

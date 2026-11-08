@@ -5,16 +5,14 @@
 //! - [`SaveManager`] - saves: system state (`system.json` user settings) and
 //!   compressed game data
 
+pub(crate) mod project;
 pub(crate) mod resolve;
 pub mod save;
 pub(crate) mod save_location;
 pub mod workspace;
 
 // Workspace types
-pub use workspace::{
-  CONFIG_FILENAME, DebugConfig as WorkspaceDebugConfig, ReleaseConfig, SystemDefaults, Workspace,
-  WorkspaceConfig,
-};
+pub use workspace::{CONFIG_FILENAME, ReleaseConfig, SystemDefaults, Workspace, WorkspaceConfig};
 
 // Save system types
 pub use save::{

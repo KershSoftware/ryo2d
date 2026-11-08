@@ -1,7 +1,7 @@
 # Networking - Multiplayer Platformer Demo
 # Two players battle on a single platform
 
-[game]
+[project]
 name = "Networking - Multiplayer Demo"
 version = "0.1.0"
 

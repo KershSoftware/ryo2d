@@ -12,7 +12,7 @@ assets = "assets"
 
 # =============================================================================
 # USER-FACING DEFAULTS
-# Written and prioritized read from system.json when `.with_user_preferences` set
+# Players' changes to these are kept in system.json (only what differs from here)
 # =============================================================================
 
 [system]

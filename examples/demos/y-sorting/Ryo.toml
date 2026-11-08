@@ -10,12 +10,11 @@ assets = "assets"
 
 # ==============================================================================
 # USER-FACING DEFAULTS
-# Values here are written to system.json on first run.
-# Players can override these in system.json; their changes persist.
+# Players' changes to these are kept in system.json (only what differs from here)
 # ==============================================================================
 
 [system]
-# Default window resolution (user can change in system.json)
+# The game's resolution; a player's window size is kept apart, in system.json
 # Using small resolution with integer scaling for pixel-perfect look
 resolution = "320x240"
 # Enable VSync for smoother rendering (recommended)
