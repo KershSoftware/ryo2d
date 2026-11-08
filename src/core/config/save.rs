@@ -90,7 +90,7 @@ use super::resolve::{
   DEFAULT_AMBIENCE_VOLUME, DEFAULT_MASTER_VOLUME, DEFAULT_MUSIC_VOLUME, DEFAULT_RESOLUTION,
   DEFAULT_SFX_VOLUME, DEFAULT_UI_VOLUME, DEFAULT_VOICE_VOLUME, StoredPreferences,
 };
-use crate::core::error::{SaveError, SaveResult};
+use crate::core::error::{SaveManagerError, SaveManagerResult};
 
 // ============================================================================
 // System Field Filter
@@ -297,10 +297,12 @@ fn clean_f32(value: f32) -> f64 {
 }
 
 /// A `SystemState` as the JSON object `system.json` stores.
-fn system_state_map(state: &SystemState) -> SaveResult<serde_json::Map<String, serde_json::Value>> {
-  match serde_json::to_value(state).map_err(|e| SaveError::Serialization(e.to_string()))? {
+fn system_state_map(
+  state: &SystemState,
+) -> SaveManagerResult<serde_json::Map<String, serde_json::Value>> {
+  match serde_json::to_value(state).map_err(|e| SaveManagerError::Serialization(e.to_string()))? {
     serde_json::Value::Object(map) => Ok(map),
-    _ => Err(SaveError::Serialization(
+    _ => Err(SaveManagerError::Serialization(
       "system state did not serialize to a JSON object".to_string(),
     )),
   }
@@ -851,10 +853,10 @@ impl SaveManager {
   /// Create a new save manager with the given save directory.
   ///
   /// The directory will be created if it doesn't exist.
-  pub fn new(save_dir: impl Into<PathBuf>) -> SaveResult<Self> {
+  pub fn new(save_dir: impl Into<PathBuf>) -> SaveManagerResult<Self> {
     let save_dir = save_dir.into();
     if cfg!(target_arch = "wasm32") {
-      return Err(SaveError::Unsupported);
+      return Err(SaveManagerError::Unsupported);
     }
     fs::create_dir_all(&save_dir)?;
     Ok(SaveManager {
@@ -881,7 +883,7 @@ impl SaveManager {
   /// Change the save directory at runtime.
   ///
   /// The new directory will be created if it doesn't exist.
-  pub fn set_save_dir(&mut self, path: impl Into<PathBuf>) -> SaveResult<()> {
+  pub fn set_save_dir(&mut self, path: impl Into<PathBuf>) -> SaveManagerResult<()> {
     let new_dir = path.into();
     fs::create_dir_all(&new_dir)?;
     self.save_dir = new_dir;
@@ -902,7 +904,7 @@ impl SaveManager {
   /// [`load_or_create_system`](Self::load_or_create_system) holds the game's
   /// defaults for the settings the file lacks, so saving it adds those that
   /// differ from the engine's. When no file exists, writes the full state.
-  pub fn save_system(&self, state: &SystemState) -> SaveResult<()> {
+  pub fn save_system(&self, state: &SystemState) -> SaveManagerResult<()> {
     let path = self.system_path();
 
     if path.exists() {
@@ -953,7 +955,7 @@ impl SaveManager {
   /// get the engine's defaults. A file from before the format version (an
   /// older engine's) has its volumes converted to today's curve in the state
   /// returned; the file is left as it is until it is saved.
-  pub fn load_system(&self) -> SaveResult<SystemState> {
+  pub fn load_system(&self) -> SaveManagerResult<SystemState> {
     let path = self.system_path();
     if !path.exists() {
       return Ok(SystemState::new());
@@ -986,7 +988,7 @@ impl SaveManager {
   pub fn load_or_create_system(
     &self,
     defaults: &super::workspace::SystemDefaults,
-  ) -> SaveResult<SystemState> {
+  ) -> SaveManagerResult<SystemState> {
     let path = self.system_path();
 
     if !path.exists() {
@@ -1006,7 +1008,7 @@ impl SaveManager {
   fn load_existing_system(
     &self,
     defaults: &super::workspace::SystemDefaults,
-  ) -> SaveResult<SystemState> {
+  ) -> SaveManagerResult<SystemState> {
     let mut raw: RawSystemFile = self.read_json_file(&self.system_path())?;
     raw.warn_if_resolution_malformed();
     let upgraded = raw.upgrade();
@@ -1033,7 +1035,7 @@ impl SaveManager {
     seed: &SystemState,
     filter: &UserPreferenceFilter,
     defaults: &super::workspace::SystemDefaults,
-  ) -> SaveResult<Option<StoredPreferences>> {
+  ) -> SaveManagerResult<Option<StoredPreferences>> {
     let path = self.system_path();
     if !path.exists() {
       self.write_filtered_system(seed, filter, !seed.env.is_empty())?;
@@ -1072,7 +1074,7 @@ impl SaveManager {
     state: &SystemState,
     filter: &UserPreferenceFilter,
     include_env: bool,
-  ) -> SaveResult<()> {
+  ) -> SaveManagerResult<()> {
     let filtered = system_state_map(state)?
       .into_iter()
       .filter(|(key, _)| match key.as_str() {
@@ -1102,10 +1104,10 @@ impl SaveManager {
   fn write_system_map(
     &self,
     mut map: serde_json::Map<String, serde_json::Value>,
-  ) -> SaveResult<()> {
+  ) -> SaveManagerResult<()> {
     map.insert(FORMAT_KEY.to_string(), SYSTEM_FORMAT.into());
     let json = serde_json::to_string_pretty(&serde_json::Value::Object(map))
-      .map_err(|e| SaveError::Serialization(e.to_string()))?;
+      .map_err(|e| SaveManagerError::Serialization(e.to_string()))?;
     let mut file = File::create(self.system_path())?;
     file.write_all(json.as_bytes())?;
     file.flush()?;
@@ -1127,7 +1129,7 @@ impl SaveManager {
     &self,
     defaults: &super::workspace::SystemDefaults,
     filter: &UserPreferenceFilter,
-  ) -> SaveResult<SystemState> {
+  ) -> SaveManagerResult<SystemState> {
     if !self.system_path().exists() {
       self.write_filtered_system(
         &SystemState::from_defaults(defaults),
@@ -1151,7 +1153,7 @@ impl SaveManager {
   ///
   /// The data is wrapped in `GameSaveData` which adds metadata
   /// like timestamp and play time.
-  pub fn save_game<T: Serialize>(&self, slot: &str, data: &T) -> SaveResult<()> {
+  pub fn save_game<T: Serialize>(&self, slot: &str, data: &T) -> SaveManagerResult<()> {
     self.save_game_with_info(slot, GameSaveData::new(data))
   }
 
@@ -1160,18 +1162,18 @@ impl SaveManager {
     &self,
     slot: &str,
     save: GameSaveData<&T>,
-  ) -> SaveResult<()> {
+  ) -> SaveManagerResult<()> {
     self.validate_slot_name(slot)?;
     let path = self.save_dir.join(format!("{}.{}", slot, GAME_EXTENSION));
     self.write_save_file(&path, &save)
   }
 
   /// Load game data from a named slot.
-  pub fn load_game<T: DeserializeOwned>(&self, slot: &str) -> SaveResult<GameSaveData<T>> {
+  pub fn load_game<T: DeserializeOwned>(&self, slot: &str) -> SaveManagerResult<GameSaveData<T>> {
     self.validate_slot_name(slot)?;
     let path = self.save_dir.join(format!("{}.{}", slot, GAME_EXTENSION));
     if !path.exists() {
-      return Err(SaveError::NotFound(path));
+      return Err(SaveManagerError::NotFound(path));
     }
     self.read_save_file(&path)
   }
@@ -1185,7 +1187,7 @@ impl SaveManager {
   }
 
   /// Delete a game save.
-  pub fn delete_game(&self, slot: &str) -> SaveResult<()> {
+  pub fn delete_game(&self, slot: &str) -> SaveManagerResult<()> {
     self.validate_slot_name(slot)?;
     let path = self.save_dir.join(format!("{}.{}", slot, GAME_EXTENSION));
     if path.exists() {
@@ -1195,7 +1197,7 @@ impl SaveManager {
   }
 
   /// List all game save slots.
-  pub fn list_game_saves(&self) -> SaveResult<Vec<String>> {
+  pub fn list_game_saves(&self) -> SaveManagerResult<Vec<String>> {
     self.list_saves_with_extension(GAME_EXTENSION)
   }
 
@@ -1206,16 +1208,16 @@ impl SaveManager {
   /// Save arbitrary serializable data to a custom file.
   ///
   /// Use this for custom save formats that neither system state nor game data covers.
-  pub fn save_raw<T: Serialize>(&self, filename: &str, data: &T) -> SaveResult<()> {
+  pub fn save_raw<T: Serialize>(&self, filename: &str, data: &T) -> SaveManagerResult<()> {
     let path = self.save_dir.join(filename);
     self.write_save_file(&path, data)
   }
 
   /// Load arbitrary data from a custom file.
-  pub fn load_raw<T: DeserializeOwned>(&self, filename: &str) -> SaveResult<T> {
+  pub fn load_raw<T: DeserializeOwned>(&self, filename: &str) -> SaveManagerResult<T> {
     let path = self.save_dir.join(filename);
     if !path.exists() {
-      return Err(SaveError::NotFound(path));
+      return Err(SaveManagerError::NotFound(path));
     }
     self.read_save_file(&path)
   }
@@ -1225,9 +1227,9 @@ impl SaveManager {
   // ==========================================================================
 
   /// Write data as pretty-printed JSON (for `SystemState`)
-  fn write_json_file<T: Serialize>(&self, path: &Path, data: &T) -> SaveResult<()> {
-    let json =
-      serde_json::to_string_pretty(data).map_err(|e| SaveError::Serialization(e.to_string()))?;
+  fn write_json_file<T: Serialize>(&self, path: &Path, data: &T) -> SaveManagerResult<()> {
+    let json = serde_json::to_string_pretty(data)
+      .map_err(|e| SaveManagerError::Serialization(e.to_string()))?;
     let mut file = File::create(path)?;
     file.write_all(json.as_bytes())?;
     file.flush()?;
@@ -1235,17 +1237,18 @@ impl SaveManager {
   }
 
   /// Read data from JSON file (for `SystemState`)
-  fn read_json_file<T: DeserializeOwned>(&self, path: &Path) -> SaveResult<T> {
+  fn read_json_file<T: DeserializeOwned>(&self, path: &Path) -> SaveManagerResult<T> {
     let json = fs::read_to_string(path)?;
     let data =
-      serde_json::from_str(&json).map_err(|e| SaveError::Deserialization(e.to_string()))?;
+      serde_json::from_str(&json).map_err(|e| SaveManagerError::Deserialization(e.to_string()))?;
     Ok(data)
   }
 
   /// Write compressed save file with header (for game data)
-  fn write_save_file<T: Serialize>(&self, path: &Path, data: &T) -> SaveResult<()> {
+  fn write_save_file<T: Serialize>(&self, path: &Path, data: &T) -> SaveManagerResult<()> {
     // Serialize to RON format
-    let serialized = ron::to_string(data).map_err(|e| SaveError::Serialization(e.to_string()))?;
+    let serialized =
+      ron::to_string(data).map_err(|e| SaveManagerError::Serialization(e.to_string()))?;
 
     // Compress the serialized data
     let compressed = self.compress(serialized.as_bytes())?;
@@ -1261,14 +1264,14 @@ impl SaveManager {
   }
 
   /// Read compressed save file with header verification (for game data)
-  fn read_save_file<T: DeserializeOwned>(&self, path: &Path) -> SaveResult<T> {
+  fn read_save_file<T: DeserializeOwned>(&self, path: &Path) -> SaveManagerResult<T> {
     let mut file = File::open(path)?;
 
     // Read and verify magic bytes
     let mut magic = [0u8; 4];
     file.read_exact(&mut magic)?;
     if &magic != MAGIC {
-      return Err(SaveError::Deserialization(
+      return Err(SaveManagerError::Deserialization(
         "Invalid save file format".into(),
       ));
     }
@@ -1278,7 +1281,7 @@ impl SaveManager {
     file.read_exact(&mut version_bytes)?;
     let version = u32::from_le_bytes(version_bytes);
     if version != SAVE_VERSION {
-      return Err(SaveError::VersionMismatch {
+      return Err(SaveManagerError::VersionMismatch {
         expected: SAVE_VERSION,
         found: version,
       });
@@ -1293,31 +1296,31 @@ impl SaveManager {
 
     // Deserialize from RON
     let data = ron::from_str(&String::from_utf8_lossy(&decompressed))
-      .map_err(|e| SaveError::Deserialization(e.to_string()))?;
+      .map_err(|e| SaveManagerError::Deserialization(e.to_string()))?;
 
     Ok(data)
   }
 
-  fn compress(&self, data: &[u8]) -> SaveResult<Vec<u8>> {
+  fn compress(&self, data: &[u8]) -> SaveManagerResult<Vec<u8>> {
     let mut encoder = DeflateEncoder::new(Vec::new(), Compression::new(self.compression_level));
     encoder
       .write_all(data)
-      .map_err(|e| SaveError::Compression(e.to_string()))?;
+      .map_err(|e| SaveManagerError::Compression(e.to_string()))?;
     encoder
       .finish()
-      .map_err(|e| SaveError::Compression(e.to_string()))
+      .map_err(|e| SaveManagerError::Compression(e.to_string()))
   }
 
-  fn decompress(&self, data: &[u8]) -> SaveResult<Vec<u8>> {
+  fn decompress(&self, data: &[u8]) -> SaveManagerResult<Vec<u8>> {
     let mut decoder = DeflateDecoder::new(data);
     let mut decompressed = Vec::new();
     decoder
       .read_to_end(&mut decompressed)
-      .map_err(|e| SaveError::Decompression(e.to_string()))?;
+      .map_err(|e| SaveManagerError::Decompression(e.to_string()))?;
     Ok(decompressed)
   }
 
-  fn validate_slot_name(&self, slot: &str) -> SaveResult<()> {
+  fn validate_slot_name(&self, slot: &str) -> SaveManagerResult<()> {
     // Prevent path traversal and invalid characters
     if slot.is_empty()
       || slot.contains('/')
@@ -1325,12 +1328,12 @@ impl SaveManager {
       || slot.contains("..")
       || slot.starts_with('.')
     {
-      return Err(SaveError::InvalidSlot(slot.to_string()));
+      return Err(SaveManagerError::InvalidSlot(slot.to_string()));
     }
     Ok(())
   }
 
-  fn list_saves_with_extension(&self, ext: &str) -> SaveResult<Vec<String>> {
+  fn list_saves_with_extension(&self, ext: &str) -> SaveManagerResult<Vec<String>> {
     let mut saves = Vec::new();
     for entry in fs::read_dir(&self.save_dir)? {
       let entry = entry?;
@@ -1355,23 +1358,23 @@ impl SaveManager {
 /// Compress data using DEFLATE compression.
 ///
 /// Useful for manual compression of game data outside the save system.
-pub fn compress_data(data: &[u8]) -> SaveResult<Vec<u8>> {
+pub fn compress_data(data: &[u8]) -> SaveManagerResult<Vec<u8>> {
   let mut encoder = DeflateEncoder::new(Vec::new(), Compression::default());
   encoder
     .write_all(data)
-    .map_err(|e| SaveError::Compression(e.to_string()))?;
+    .map_err(|e| SaveManagerError::Compression(e.to_string()))?;
   encoder
     .finish()
-    .map_err(|e| SaveError::Compression(e.to_string()))
+    .map_err(|e| SaveManagerError::Compression(e.to_string()))
 }
 
 /// Decompress DEFLATE compressed data.
-pub fn decompress_data(data: &[u8]) -> SaveResult<Vec<u8>> {
+pub fn decompress_data(data: &[u8]) -> SaveManagerResult<Vec<u8>> {
   let mut decoder = DeflateDecoder::new(data);
   let mut decompressed = Vec::new();
   decoder
     .read_to_end(&mut decompressed)
-    .map_err(|e| SaveError::Decompression(e.to_string()))?;
+    .map_err(|e| SaveManagerError::Decompression(e.to_string()))?;
   Ok(decompressed)
 }
 
@@ -1573,8 +1576,8 @@ mod tests {
     let dir = tempdir().unwrap();
     let manager = SaveManager::new(dir.path()).unwrap();
 
-    let result: SaveResult<GameSaveData<TestGameData>> = manager.load_game("nonexistent");
-    assert!(matches!(result, Err(SaveError::NotFound(_))));
+    let result: SaveManagerResult<GameSaveData<TestGameData>> = manager.load_game("nonexistent");
+    assert!(matches!(result, Err(SaveManagerError::NotFound(_))));
   }
 
   #[test]

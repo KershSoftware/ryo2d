@@ -46,6 +46,8 @@ struct Fault {
 }
 
 #[derive(Debug, Clone, Copy)]
+// Made only by the fault helpers, which only tests have
+#[cfg_attr(not(test), allow(dead_code))]
 enum FaultKind {
   /// The nth call fails
   Once,
@@ -81,6 +83,7 @@ impl State {
     trip
   }
 
+  #[cfg(test)]
   fn add(&mut self, op: FaultOp, nth: usize, kind: FaultKind) {
     self.faults.push(Fault {
       op,
@@ -121,16 +124,19 @@ impl MemorySaves {
     self.lock().files.remove(name);
   }
 
+  #[cfg(test)]
   /// The `nth` call of `op` (0-based, counted from now) fails
   pub(crate) fn fail(&self, op: FaultOp, nth: usize) {
     self.lock().add(op, nth, FaultKind::Once);
   }
 
+  #[cfg(test)]
   /// Every call of `op` from the `nth` on (0-based, counted from now) fails
   pub(crate) fn fail_from(&self, op: FaultOp, nth: usize) {
     self.lock().add(op, nth, FaultKind::From);
   }
 
+  #[cfg(test)]
   /// The `nth` write (0-based, counted from now) stores only its first `keep`
   /// bytes, then fails, as a crash part way through it would leave the file
   pub(crate) fn crash_write(&self, nth: usize, keep: usize) {
@@ -139,23 +145,27 @@ impl MemorySaves {
       .add(FaultOp::Write, nth, FaultKind::Torn { keep });
   }
 
+  #[cfg(test)]
   /// The next `times` renames fail with `PermissionDenied`, as when another
   /// process holds the file
   pub(crate) fn deny_rename(&self, times: usize) {
     self.lock().denied_renames = times;
   }
 
+  #[cfg(test)]
   /// Every file operation takes at least `per_op`
   pub(crate) fn slow(&self, per_op: Duration) {
     self.lock().per_op = per_op;
   }
 
+  #[cfg(test)]
   /// File operations run so far (direct access through `put`, `get`, `names`
   /// and `remove` is not counted)
   pub(crate) fn ops(&self) -> usize {
     self.lock().ops
   }
 
+  #[cfg(test)]
   /// Writes tried so far, failed ones included
   pub(crate) fn writes(&self) -> usize {
     self.lock().writes

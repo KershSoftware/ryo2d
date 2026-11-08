@@ -15,6 +15,7 @@ use crate::core::messages::{SceneMessages, register_message};
 use crate::core::physics::Physics;
 use crate::core::render::Look;
 use crate::core::render::{DebugDraw, RenderPipeline};
+use crate::core::saves::SavesView;
 use crate::core::schedule::{Phase, SceneScheduleError, SceneSchedules};
 use crate::core::shaders::EffectsManager;
 use crate::core::text::Fonts;
@@ -121,6 +122,24 @@ impl SceneContext<'_> {
   /// ```
   pub fn audio(&mut self) -> AudioView<'_> {
     AudioView::new(self.world)
+  }
+
+  // --- saves ---
+
+  /// The game's saves: save, load, list and delete slots. A save is checked
+  /// and queued here, and written on a thread of its own (a `SaveFinished`
+  /// message reports it); a load is immediate. The view borrows the context,
+  /// so take it for each use:
+  ///
+  /// ```
+  /// use ryo2d::prelude::*;
+  ///
+  /// fn best(ctx: &mut SceneContext<'_>) -> u32 {
+  ///   ctx.saves().load::<u32>("best").map_or(0, |saved| saved.data)
+  /// }
+  /// ```
+  pub fn saves(&self) -> SavesView<'_> {
+    SavesView::new(self.world)
   }
 
   // --- maps ---

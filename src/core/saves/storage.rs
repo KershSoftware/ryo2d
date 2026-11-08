@@ -2,7 +2,10 @@
 
 use std::io;
 
+#[cfg(not(target_arch = "wasm32"))]
+use crossbeam_channel::RecvTimeoutError;
 use crossbeam_channel::{Receiver, TryRecvError};
+use web_time::Instant;
 
 use super::replace;
 
@@ -31,10 +34,15 @@ pub(crate) trait FileOps: Send + Sync {
 /// The outcome of a write, a removal or a rename: finished, or still running
 /// in a backend that commits asynchronously (the browser)
 #[derive(Debug)]
+#[must_use = "a write's completion carries its result"]
 pub(crate) enum Completion {
   /// The work has finished
   Done(io::Result<()>),
   /// The work finishes later and sends its result here
+  #[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the browser's storage commits later")
+  )]
   Pending(Receiver<io::Result<()>>),
 }
 
@@ -52,7 +60,30 @@ impl Completion {
     }
   }
 
+  /// The result once the work has finished, waiting for it until
+  /// `deadline`, else the completion back. The web cannot block, so there it
+  /// polls once
+  pub(crate) fn wait_until(self, deadline: Instant) -> Result<io::Result<()>, Completion> {
+    #[cfg(target_arch = "wasm32")]
+    {
+      let _ = deadline;
+      self.poll()
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    match self {
+      Completion::Done(result) => Ok(result),
+      Completion::Pending(receiver) => {
+        match receiver.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+          Ok(result) => Ok(result),
+          Err(RecvTimeoutError::Timeout) => Err(Completion::Pending(receiver)),
+          Err(RecvTimeoutError::Disconnected) => Ok(Err(dropped())),
+        }
+      }
+    }
+  }
+
   /// Blocks until the work has finished
+  #[cfg(test)]
   pub(crate) fn wait(self) -> io::Result<()> {
     match self {
       Completion::Done(result) => result,
@@ -157,6 +188,22 @@ mod tests {
     send.send(Err(io::Error::other("full"))).unwrap();
     assert!(Completion::Pending(receive).wait().is_err());
     assert!(Completion::Done(Ok(())).wait().is_ok());
+  }
+
+  #[test]
+  fn waiting_for_a_pending_completion_stops_at_its_deadline() {
+    let (send, receive) = crossbeam_channel::bounded(1);
+    let soon = Instant::now() + std::time::Duration::from_millis(10);
+    let pending = match Completion::Pending(receive).wait_until(soon) {
+      Err(still) => still,
+      Ok(result) => panic!("resolved before its work landed: {result:?}"),
+    };
+    send.send(Ok(())).unwrap();
+    assert!(matches!(pending.wait_until(Instant::now()), Ok(Ok(()))));
+    assert!(matches!(
+      Completion::Done(Ok(())).wait_until(Instant::now()),
+      Ok(Ok(()))
+    ));
   }
 
   #[test]

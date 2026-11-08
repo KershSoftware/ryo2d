@@ -57,6 +57,10 @@ use crate::core::render::{
   DrawList, EntityDrawer, RenderPipeline, UiResolution, UiSpace, begin_debug_fixed_step,
   end_debug_fixed_step,
 };
+use crate::core::saves::versions::VersionRegistry;
+use crate::core::saves::{
+  MemorySaves, QUIT_FLUSH_GIVE_UP, QUIT_FLUSH_WARN, SaveService, SaveVersions, drain_save_results,
+};
 use crate::core::scene::{PhysicsPaused, Scene, SceneManager};
 use crate::core::schedule::{EngineSchedules, FixedSet, Phase, PostUpdateSet, UpdateSet};
 use crate::core::shaders::EffectsManager;
@@ -341,6 +345,10 @@ pub struct Engine {
   offscreen_pace: Option<std::time::Duration>,
   game_name: Option<String>,
   game_version: Option<String>,
+  /// The store a headless engine (or a builder's `memory_saves`) keeps saves
+  /// in, for `HeadlessEngine::saves`
+  #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+  memory_saves: Option<MemorySaves>,
 }
 
 /// Result of rendering and presenting one frame.
@@ -477,6 +485,7 @@ fn register_engine_systems(schedules: &mut EngineSchedules) {
     )
       .chain(),
   );
+  schedules.add_systems(Phase::PreUpdate, drain_save_results);
   schedules.add_systems(
     Phase::FixedUpdate,
     (begin_debug_fixed_step, snapshot_previous_transforms)
@@ -561,6 +570,8 @@ impl Engine {
       workspace,
       asset_source,
       hot_reload,
+      save_versions,
+      memory_saves,
     } = resolved;
 
     let initial_size = (config.width, config.height);
@@ -668,6 +679,13 @@ impl Engine {
       command_registry,
       audio_engine,
     );
+    // Headless saves stay in memory, never on disk
+    let memory_saves = memory_saves.or_else(|| headless.then(MemorySaves::new));
+    let saves = SaveService::new(save_versions);
+    if let Some(storage) = save_storage(memory_saves.as_ref(), workspace.as_ref()) {
+      saves.set_storage(storage);
+    }
+    world.insert_resource(saves);
     if let Some(project) = tiled_project {
       let server = world.resource::<AssetServer>();
       server.register_loader(crate::core::tilemap::TiledMapLoader::with_project(
@@ -802,6 +820,7 @@ impl Engine {
       game_version,
       bindings_saver,
       bindings_save_warned: false,
+      memory_saves,
     }
   }
 
@@ -941,6 +960,7 @@ impl Engine {
 
     // However the loop ended, finish in-flight writes and report frames that
     // were never presented
+    self.flush_saves();
     let reports = self.capture.finish();
     self.report_captures(reports);
     if let Some(error) = fatal {
@@ -976,6 +996,21 @@ impl Engine {
   #[cfg(not(target_arch = "wasm32"))]
   pub(crate) fn fixed_timestep(&self) -> std::time::Duration {
     self.world.resource::<Time>().fixed.timestep_duration()
+  }
+
+  /// Finishes the queued save writes as the engine quits: warns after 3 s
+  /// and gives up after 10 s. Called on every way out; once the writes are
+  /// done it returns at once
+  pub(crate) fn flush_saves(&self) {
+    if let Some(saves) = self.world.get_resource::<SaveService>() {
+      saves.flush(QUIT_FLUSH_WARN, QUIT_FLUSH_GIVE_UP);
+    }
+  }
+
+  /// The store the saves are kept in, when it is memory (headless)
+  #[cfg(not(target_arch = "wasm32"))]
+  pub(crate) fn memory_saves(&self) -> Option<&MemorySaves> {
+    self.memory_saves.as_ref()
   }
 
   /// The window (or offscreen target) is now `width x height` physical
@@ -1325,6 +1360,13 @@ impl Engine {
   }
 }
 
+impl Drop for Engine {
+  fn drop(&mut self) {
+    // A save queued just before the engine goes still lands
+    self.flush_saves();
+  }
+}
+
 /// Builder pattern for Engine configuration
 pub struct EngineBuilder {
   /// Builder-only settings (target FPS, fixed rate, window mode, ...).
@@ -1346,6 +1388,10 @@ pub struct EngineBuilder {
   asset_source: Option<Box<dyn AssetSource>>,
   /// Whether changed asset files reload (`None`: in windowed debug builds)
   hot_reload: Option<bool>,
+  /// The saved types' versions, registered as `save_versions` is called
+  save_versions: VersionRegistry,
+  /// Where the saves are kept instead of the save folder
+  memory_saves: Option<MemorySaves>,
 }
 
 impl EngineBuilder {
@@ -1360,6 +1406,8 @@ impl EngineBuilder {
       schedules: EngineSchedules::new(),
       asset_source: None,
       hot_reload: None,
+      save_versions: VersionRegistry::default(),
+      memory_saves: None,
     }
   }
 
@@ -1641,6 +1689,43 @@ impl EngineBuilder {
     self
   }
 
+  /// Registers the versions of a saved type `T`: its current version and a
+  /// typed step from each older version, so `ctx.saves().load::<T>(..)`
+  /// upgrades an older save through the steps. A type never registered is
+  /// version 1. Registering `T` again replaces its versions
+  ///
+  /// ```
+  /// use ryo2d::prelude::*;
+  /// use serde::{Deserialize, Serialize};
+  ///
+  /// #[derive(Serialize, Deserialize)]
+  /// struct HeroV1 { hp: u32 }
+  /// #[derive(Serialize, Deserialize)]
+  /// struct Hero { hp: u32, mp: u32 }
+  ///
+  /// let builder = EngineBuilder::new().save_versions(
+  ///   SaveVersions::<Hero>::new(2).step(1, |old: HeroV1| Hero { hp: old.hp, mp: 0 }),
+  /// );
+  /// ```
+  ///
+  /// # Panics
+  ///
+  /// Here, at the call, when the versions have a gap: a step is missing, out
+  /// of range or given twice, or the current version is 0
+  pub fn save_versions<T: 'static>(mut self, versions: SaveVersions<T>) -> Self {
+    self.save_versions.register(versions);
+    self
+  }
+
+  /// Keeps the saves in `store`, in memory, never on disk. A headless engine
+  /// keeps its saves in memory anyway, in a store of its own without this; a
+  /// test gives one to plant saves before the engine starts, or to read what
+  /// the game wrote (`HeadlessEngine::saves` gives the store either way)
+  pub fn memory_saves(mut self, store: MemorySaves) -> Self {
+    self.memory_saves = Some(store);
+    self
+  }
+
   /// Set the initial scene that will run when the engine starts.
   pub fn start_scene(mut self, scene: impl Scene + 'static) -> Self {
     self.initial_scene = Some(Box::new(scene));
@@ -1810,6 +1895,8 @@ impl EngineBuilder {
       hot_reload: self
         .hot_reload
         .unwrap_or(cfg!(debug_assertions) && !headless),
+      save_versions: self.save_versions,
+      memory_saves: self.memory_saves,
     }
   }
 }
@@ -1845,6 +1932,10 @@ struct ResolvedBuild {
   asset_source: Option<Box<dyn AssetSource>>,
   /// Whether changed asset files reload
   hot_reload: bool,
+  /// The saved types' versions
+  save_versions: VersionRegistry,
+  /// Where the saves are kept instead of the save folder
+  memory_saves: Option<MemorySaves>,
 }
 
 impl Default for EngineBuilder {
@@ -1872,6 +1963,38 @@ fn apply_launch_overrides(
     && icon_path.exists()
   {
     config.icon_path = Some(icon_path);
+  }
+}
+
+/// Where the saves are kept: `memory` when given, else the project's save
+/// folder (native); `None` (saves unavailable) without either
+fn save_storage(
+  memory: Option<&MemorySaves>,
+  workspace: Option<&crate::core::config::Workspace>,
+) -> Option<Arc<dyn crate::core::saves::storage::Storage>> {
+  if let Some(memory) = memory {
+    return Some(Arc::new(memory.clone()));
+  }
+  #[cfg(not(target_arch = "wasm32"))]
+  {
+    use crate::core::saves::files::FileStorage;
+    let folder = workspace?.save_location();
+    match FileStorage::new(folder.clone()) {
+      Ok(storage) => Some(Arc::new(storage)),
+      Err(error) => {
+        engine_warn!(
+          module: "Saves",
+          "saves are unavailable: could not create the save folder {} ({error})",
+          folder.display()
+        );
+        None
+      }
+    }
+  }
+  #[cfg(target_arch = "wasm32")]
+  {
+    let _ = workspace;
+    None
   }
 }
 
@@ -1917,6 +2040,8 @@ fn load_user_preferences(
   }
 }
 
+#[cfg(test)]
+mod saves_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

@@ -24,6 +24,7 @@ struct Step {
   from: u32,
   /// Takes the text and whether it is a format-1 save, whose data is in `data`
   ron: RonStep,
+  #[cfg_attr(not(test), expect(dead_code, reason = "settings sections'"))]
   json: JsonStep,
 }
 
@@ -217,6 +218,7 @@ impl VersionRegistry {
   /// A settings section `key` as `T`, upgraded from `version`: the value and
   /// the version it was upgraded from, if it was. Errors name `key` as their
   /// slot.
+  #[cfg_attr(not(test), expect(dead_code, reason = "settings sections'"))]
   pub(crate) fn decode_json<T: DeserializeOwned + 'static>(
     &self,
     key: &str,

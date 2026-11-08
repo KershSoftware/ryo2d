@@ -820,7 +820,9 @@ impl ApplicationHandler<EngineEvent> for Engine {
 
   fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
     // Last event on every exit path. On macOS, Cmd+Q exits the process right
-    // after this without returning from `run_app`, so captures are flushed here.
+    // after this without returning from `run_app`, so queued saves are written
+    // and captures flushed here.
+    self.flush_saves();
     let reports = self.capture.finish();
     self.report_captures(reports);
     #[cfg(not(target_arch = "wasm32"))]

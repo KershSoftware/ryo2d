@@ -17,6 +17,7 @@ use crate::core::engine::{Engine, EngineBuilder, FrameOutcome};
 use crate::core::graphics::{ScreenMapping, WgpuRenderer};
 use crate::core::input::{GamepadButton, InputEvent, Stick};
 use crate::core::render::UiRenderStats;
+use crate::core::saves::MemorySaves;
 use crate::core::ui::nav::nav_targets;
 use crate::core::ui::widgets::scroll::drawn_bars;
 use crate::core::ui::{Rect, UiEvent, UiId};
@@ -253,6 +254,14 @@ impl HeadlessEngine {
   /// and add assets between steps. Queued loads arrive in a step's pump
   pub fn assets(&mut self) -> AssetsView<'_> {
     AssetsView::new(self.engine.world_mut())
+  }
+
+  /// The store the engine keeps its saves in: a headless engine's saves are
+  /// in memory, never on disk. Plant a save in it or read what the game wrote,
+  /// by file name (`slot1.ryo-save`); `EngineBuilder::memory_saves` gives the
+  /// engine a store before it starts
+  pub fn saves(&self) -> MemorySaves {
+    self.engine.memory_saves().cloned().unwrap_or_default()
   }
 
   /// Hold `key` down from the next step until [`release_key`](Self::release_key).

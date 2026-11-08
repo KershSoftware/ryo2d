@@ -27,9 +27,9 @@ pub enum EngineError {
   #[error("Render error: {0}")]
   Render(String),
 
-  /// Save/load error
+  /// The old save manager's error
   #[error(transparent)]
-  Save(#[from] SaveError),
+  Save(#[from] SaveManagerError),
 
   /// Workspace configuration error
   #[error("Workspace error: {0}")]
@@ -51,9 +51,10 @@ pub enum ImageError {
   Decode(#[from] image::ImageError),
 }
 
-/// Save/load system errors
+/// The old save manager's errors (`SaveManager`; the saves themselves give
+/// `saves::SaveError`)
 #[derive(Error, Debug)]
-pub enum SaveError {
+pub enum SaveManagerError {
   /// Failed to serialize data
   #[error("Serialization failed: {0}")]
   Serialization(String),
@@ -91,8 +92,8 @@ pub enum SaveError {
   Unsupported,
 }
 
-/// Result type for save operations
-pub type SaveResult<T> = Result<T, SaveError>;
+/// Result type for the old save manager's operations
+pub type SaveManagerResult<T> = Result<T, SaveManagerError>;
 
 /// Errors that can occur while capturing a frame
 #[derive(Error, Debug)]
