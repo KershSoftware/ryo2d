@@ -8,10 +8,13 @@ use std::sync::Arc;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use super::service::SaveService;
+use super::service::{JobKind, SaveService};
 use super::{SaveError, SaveHeader};
-use crate::core::ecs::kernel::{MessageWriter, Res, SystemParam};
+use crate::core::ecs::kernel::{MessageWriter, Res, ResMut, SystemParam};
 use crate::core::ecs::{Message, World};
+use crate::core::settings::SettingsSaveFailed;
+use crate::core::settings::file::FILE_NAME;
+use crate::core::settings::persist::SettingsWriter;
 
 /// What a save says about itself besides its data, for a slot list: a display
 /// name, the play time and the game's labels
@@ -299,11 +302,14 @@ fn save<T: Serialize + Send + 'static>(
   self::service(service)?.save(slot, data, info)
 }
 
-/// Sends a [`SaveFinished`] for each save and delete the writer has finished
-/// (`Phase::PreUpdate`)
+/// Sends a [`SaveFinished`] for each save and delete the writer has finished,
+/// and gives the settings file's results to the settings writer, which may
+/// send a [`SettingsSaveFailed`] (`Phase::PreUpdate`)
 pub(crate) fn drain_save_results(
   service: Option<Res<SaveService>>,
+  mut settings_writer: Option<ResMut<SettingsWriter>>,
   mut messages: MessageWriter<SaveFinished>,
+  mut settings_failed: MessageWriter<SettingsSaveFailed>,
 ) {
   let Some(service) = service else {
     return;
@@ -311,6 +317,12 @@ pub(crate) fn drain_save_results(
   for finished in service.drain() {
     if let Some(message) = finished.message() {
       messages.write(message);
+    } else if let JobKind::Named { name } = &finished.kind
+      && name == FILE_NAME
+      && let Some(writer) = settings_writer.as_mut()
+      && let Some(failed) = writer.finished(finished.id, &finished.result)
+    {
+      settings_failed.write(failed);
     }
   }
 }

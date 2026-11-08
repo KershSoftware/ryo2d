@@ -10,7 +10,7 @@ mod frame;
 mod slow_frame;
 mod window;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use web_time::Instant;
 
@@ -37,7 +37,7 @@ use crate::core::diagnostics::{
 use crate::core::ecs::interpolate::snapshot_previous_transforms;
 use crate::core::ecs::propagate::propagate_transforms;
 use crate::core::ecs::{
-  FallbackErrorHandler, IntoScheduleConfigs, Message, Resource, ScheduleSystem, World,
+  FallbackErrorHandler, IntoScheduleConfigs, Message, Mut, Resource, ScheduleSystem, World,
 };
 use crate::core::error::{EngineError, EngineResult};
 use crate::core::gameplay::register_gameplay_systems;
@@ -67,7 +67,8 @@ use crate::core::saves::{
 use crate::core::scene::{PhysicsPaused, Scene, SceneManager};
 use crate::core::schedule::{EngineSchedules, FixedSet, Phase, PostUpdateSet, UpdateSet};
 use crate::core::settings::apply::AppliedSettings;
-use crate::core::settings::file::SettingsFile;
+use crate::core::settings::file::{FORMAT as SETTINGS_FORMAT, SettingsFile};
+use crate::core::settings::persist::SettingsWriter;
 use crate::core::settings::sections::SectionRegistry;
 use crate::core::settings::{EngineValues, Settings};
 use crate::core::shaders::EffectsManager;
@@ -178,9 +179,6 @@ pub(crate) fn frame_rate_summary(vsync: bool, target_fps: u32) -> String {
 /// The main engine struct
 pub struct Engine {
   config: EngineConfig,
-  /// Saves the player's changed input bindings (see `UserPreference::Bindings`)
-  bindings_saver: Option<crate::core::config::SaveManager>,
-  bindings_save_warned: bool,
   window: Option<Arc<Window>>,
   renderer: Option<WgpuRenderer>,
   world: World,
@@ -346,10 +344,6 @@ pub struct Engine {
   pending_vsync: Option<bool>,
   /// The engine's settings as last applied
   applied_settings: AppliedSettings,
-  /// The settings file as read at start-up, whose unknown keys and sections
-  /// a write keeps
-  #[expect(dead_code, reason = "the settings writer's")]
-  settings_file: SettingsFile,
   /// Built headless (`HeadlessEngine`, `RYO_HEADLESS`): no wall-clock overlays
   headless: bool,
   /// Run the frame's logic but do not draw it (an unfocused window with
@@ -580,11 +574,10 @@ impl Engine {
       pending_resources,
       mut schedules,
       saved_bindings,
-      bindings_saver,
       workspace,
       asset_source,
       hot_reload,
-      settings_file,
+      settings_writer,
       saves,
       memory_saves,
     } = resolved;
@@ -691,6 +684,9 @@ impl Engine {
     );
     world.insert_resource(saves);
     world.insert_resource(settings);
+    if let Some(writer) = settings_writer {
+      world.insert_resource(writer);
+    }
     if let Some(project) = tiled_project {
       let server = world.resource::<AssetServer>();
       server.register_loader(crate::core::tilemap::TiledMapLoader::with_project(
@@ -819,7 +815,6 @@ impl Engine {
       vsync,
       pending_vsync: None,
       applied_settings,
-      settings_file,
       headless,
       skip_present: false,
       offscreen_run: false,
@@ -828,8 +823,6 @@ impl Engine {
       game_name,
       game_version,
       store_name,
-      bindings_saver,
-      bindings_save_warned: false,
       memory_saves,
     }
   }
@@ -968,8 +961,9 @@ impl Engine {
       }
     }
 
-    // However the loop ended, finish in-flight writes and report frames that
-    // were never presented
+    // However the loop ended, write the settings, finish in-flight writes
+    // and report frames that were never presented
+    self.flush_settings();
     self.flush_saves();
     let reports = self.capture.finish();
     self.report_captures(reports);
@@ -1006,6 +1000,48 @@ impl Engine {
   #[cfg(not(target_arch = "wasm32"))]
   pub(crate) fn fixed_timestep(&self) -> std::time::Duration {
     self.world.resource::<Time>().fixed.timestep_duration()
+  }
+
+  /// Writes the settings file now if what it keeps changed (the game quits
+  /// or is hidden), with the bindings changed since the last frame. On the
+  /// way out it runs before `flush_saves`, which then waits for it too
+  pub(crate) fn flush_settings(&mut self) {
+    if !self.world.contains_resource::<SettingsWriter>() {
+      return;
+    }
+    let bindings = self.changed_bindings();
+    self.with_settings_writer(|writer, settings, saves| {
+      if let Some(map) = bindings {
+        writer.set_bindings(map);
+      }
+      writer.flush_now(settings, saves);
+    });
+  }
+
+  /// Runs `f` on the settings writer with the settings and the saves; does
+  /// nothing in a build that keeps no settings
+  pub(crate) fn with_settings_writer(
+    &mut self,
+    f: impl FnOnce(&mut SettingsWriter, &Settings, &SaveService),
+  ) {
+    self
+      .world
+      .try_resource_scope(|world, mut writer: Mut<SettingsWriter>| {
+        if let (Some(settings), Some(saves)) = (
+          world.get_resource::<Settings>(),
+          world.get_resource::<SaveService>(),
+        ) {
+          f(&mut writer, settings, saves);
+        }
+      });
+  }
+
+  /// The player's bindings that differ from the defaults, when they changed
+  /// since the last call
+  pub(crate) fn changed_bindings(&mut self) -> Option<BTreeMap<String, Vec<String>>> {
+    let mut input = self.world.get_resource_mut::<Input>()?;
+    let actions = input.actions_mut();
+    actions.take_dirty().then(|| actions.saved_map())
   }
 
   /// Finishes the queued save writes as the engine quits: warns after 3 s
@@ -1372,7 +1408,8 @@ impl Engine {
 
 impl Drop for Engine {
   fn drop(&mut self) {
-    // A save queued just before the engine goes still lands
+    // A setting changed or a save queued just before the engine goes still lands
+    self.flush_settings();
     self.flush_saves();
   }
 }
@@ -1604,10 +1641,11 @@ impl EngineBuilder {
   /// defaults, and the player's file applies over the settings in the filter
   /// (only the keys it holds). The file keeps only what the player changed,
   /// so a default changed later reaches every setting the player never
-  /// touched. Without a filter or a game settings section
-  /// ([`game_settings`](Self::game_settings)), `system.json` is never read.
-  /// A headless build keeps it in its memory store, never on disk. Repeated
-  /// calls combine their filters.
+  /// touched. It is written a second after the last change to what it keeps,
+  /// and at once when the game quits or is hidden. Without a filter or a game
+  /// settings section ([`game_settings`](Self::game_settings)), `system.json`
+  /// is never read or written. A headless build keeps it in its memory store,
+  /// never on disk. Repeated calls combine their filters.
   pub fn with_user_preferences(
     mut self,
     filter: impl Into<crate::core::config::UserPreferenceFilter>,
@@ -1947,28 +1985,28 @@ impl EngineBuilder {
     let kept = combined_filter(&self.user_preferences);
     let reads_file = !kept.is_empty() || !self.sections.is_empty();
     let mut player = Settings::new(player_defaults(&settings), kept, self.sections);
-    let mut settings_file = SettingsFile::default();
     let mut saved_bindings = None;
-    if reads_file {
+    // The file is written by the same rule as it is read: when the game
+    // keeps anything (headless builds into their memory store)
+    let settings_writer = reads_file.then(|| {
       // An older file's `env` is compared with the project's, as it was seeded from it
       let project_env = workspace
         .map(|ws| ws.config().system.env.clone().into_iter().collect())
         .unwrap_or_default();
-      if let Some(file) = read_settings_file(&saves, &project_env) {
-        let mut warnings = Vec::new();
-        player.apply_file(&file, &mut warnings);
-        for warning in warnings {
-          engine_warn!(module: "Settings", "{warning}");
-        }
-        if player.is_kept(UserPreference::Bindings) {
-          saved_bindings = file.bindings.clone();
-        }
-        settings_file = file;
+      let (file, unread) = read_settings_file(&saves, &project_env);
+      let file = file.unwrap_or_default();
+      let mut warnings = Vec::new();
+      player.apply_file(&file, &mut warnings);
+      for warning in warnings {
+        engine_warn!(module: "Settings", "{warning}");
       }
-    }
-    let bindings_saver = workspace
-      .filter(|_| !headless && player.is_kept(UserPreference::Bindings))
-      .and_then(|ws| ws.create_save_manager().ok());
+      if player.is_kept(UserPreference::Bindings) {
+        saved_bindings = file.bindings.clone();
+      }
+      // A file this engine could not fully read is never overwritten
+      let read_only = unread || file.format > SETTINGS_FORMAT;
+      SettingsWriter::new(file, read_only, &player)
+    });
 
     let mut config = self.config;
     config.presentation = settings.presentation();
@@ -2002,7 +2040,7 @@ impl EngineBuilder {
       config,
       initial_scene,
       settings: player,
-      settings_file,
+      settings_writer,
       audio_buffer_frames: settings.audio_buffer_frames,
       tiled_project: settings.tiled_project,
       game_name,
@@ -2012,7 +2050,6 @@ impl EngineBuilder {
       pending_resources: self.pending_resources,
       schedules: self.schedules,
       saved_bindings,
-      bindings_saver,
       workspace: workspace.cloned(),
       asset_source: self.asset_source,
       hot_reload: self
@@ -2031,9 +2068,9 @@ struct ResolvedBuild {
   /// The player's settings: the resolved defaults with the settings file
   /// applied
   settings: Settings,
-  /// The settings file as read (empty without one), which the next write
-  /// keeps the unknown keys of
-  settings_file: SettingsFile,
+  /// Writes the settings file, over the file as read (`None`: the game keeps
+  /// no settings, and the file is neither read nor written)
+  settings_writer: Option<SettingsWriter>,
   /// The audio device's buffer in frames; `None`: the device's default
   audio_buffer_frames: Option<u32>,
   /// The Tiled project's asset path (`None`: the default)
@@ -2046,9 +2083,7 @@ struct ResolvedBuild {
   pending_resources: Vec<WorldSetup>,
   schedules: EngineSchedules,
   /// The player's saved input bindings, when bindings are a user preference
-  saved_bindings: Option<std::collections::BTreeMap<String, Vec<String>>>,
-  /// Where changed bindings are saved (`None`: headless, web or not enabled)
-  bindings_saver: Option<crate::core::config::SaveManager>,
+  saved_bindings: Option<BTreeMap<String, Vec<String>>>,
   /// The project, found once (`None`: no working directory)
   workspace: Option<crate::core::config::Workspace>,
   /// Where assets load from (`None`: the project's asset folder)
@@ -2160,23 +2195,26 @@ fn player_defaults(settings: &crate::core::config::resolve::ResolvedSettings) ->
 
 /// The settings file, read through the save storage. A damaged file is set
 /// aside as `system.json.damaged` and its newest whole copy (the backup)
-/// read instead, else none: the defaults. Warns of what it could not read
+/// read instead, else none: the defaults. Warns of what it could not read.
+/// The flag is true when the file stays where it is unread (it could not be
+/// read, or set aside), so it must not be overwritten
 fn read_settings_file(
   saves: &SaveService,
   project_env: &serde_json::Map<String, serde_json::Value>,
-) -> Option<SettingsFile> {
+) -> (Option<SettingsFile>, bool) {
   use crate::core::saves::storage::{Origin, Recovery};
   use crate::core::settings::file::{self, DAMAGED_NAME, FILE_NAME, Parsed};
 
   let found = match saves.recover_named(FILE_NAME, file::verify) {
-    Ok(Recovery::Missing) => return None,
+    Ok(Recovery::Missing) => return (None, false),
     Ok(Recovery::Damaged) => None,
     Ok(Recovery::Found { bytes, from }) => Some((bytes, from)),
     Err(error) => {
       engine_warn!(module: "Settings", "could not read {FILE_NAME} ({error}); using the defaults");
-      return None;
+      return (None, true);
     }
   };
+  let mut unread = false;
   // Another copy is read when the file itself is damaged, or gone in a crash
   if found
     .as_ref()
@@ -2193,10 +2231,13 @@ fn read_settings_file(
           engine_warn!(module: "Settings", "the backup of {FILE_NAME} is damaged; {then}");
         }
       }
-      Ok(Err(error)) => engine_warn!(
-        module: "Settings",
-        "{FILE_NAME} is damaged and could not be set aside ({error}); {then}"
-      ),
+      Ok(Err(error)) => {
+        unread = true;
+        engine_warn!(
+          module: "Settings",
+          "{FILE_NAME} is damaged and could not be set aside ({error}); {then}"
+        );
+      }
       // Renamed, or renaming in a store that commits later
       Ok(Ok(())) | Err(_) => engine_warn!(
         module: "Settings",
@@ -2204,18 +2245,20 @@ fn read_settings_file(
       ),
     }
   }
-  let (bytes, _) = found?;
+  let Some((bytes, _)) = found else {
+    return (None, unread);
+  };
   match file::parse(&bytes, project_env) {
     Parsed::Read { file, warnings } | Parsed::Newer { file, warnings } => {
       for warning in warnings {
         engine_warn!(module: "Settings", "{warning}");
       }
-      Some(file)
+      (Some(file), unread)
     }
     // Not met: a copy that verified is a JSON object
     Parsed::Damaged(reason) => {
       engine_warn!(module: "Settings", "could not read {FILE_NAME} ({reason}); using the defaults");
-      None
+      (None, true)
     }
   }
 }

@@ -235,7 +235,6 @@ impl JobMeta {
 #[derive(Debug)]
 pub(crate) struct Finished {
   /// The id its queueing returned
-  #[cfg_attr(not(test), expect(dead_code, reason = "the settings writer's"))]
   pub(crate) id: u64,
   pub(crate) kind: JobKind,
   pub(crate) result: Result<(), Arc<SaveError>>,
@@ -526,7 +525,6 @@ impl SaveService {
   /// Queues a crash-safe write of the file `name` (the settings' file) on
   /// the same writer as the saves; returns the job's id, which its
   /// [`Finished`] carries
-  #[cfg_attr(not(test), expect(dead_code, reason = "the settings writer's"))]
   pub(crate) fn write_named(
     &self,
     name: &str,

@@ -123,6 +123,7 @@ pub fn register_engine_messages(world: &mut World) {
   register_message::<crate::core::tilemap::FloorChanged>(world);
   register_message::<crate::core::tilemap::ChunkEvent>(world);
   register_message::<crate::core::saves::SaveFinished>(world);
+  register_message::<crate::core::settings::SettingsSaveFailed>(world);
 }
 
 #[cfg(test)]

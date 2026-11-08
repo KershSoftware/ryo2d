@@ -5,6 +5,7 @@ use winit::keyboard::KeyCode;
 
 use crate::core::audio::VolumeKind;
 use crate::core::scene::{SceneAction, SceneContext};
+use crate::core::settings::persist::{DEBOUNCE, SettingsSaveFailed, SettingsWriter};
 
 struct EmptyScene;
 
@@ -428,17 +429,51 @@ fn first_run_writes_no_settings_file_until_a_setting_changes() {
   );
 
   let store = MemorySaves::new();
-  let Some(mut engine) = crate::core::testing::HeadlessEngine::new_or_skip(
+  if let Some(mut engine) = crate::core::testing::HeadlessEngine::new_or_skip(
     EngineBuilder::new()
       .resolution(64, 64)
       .memory_saves(store.clone())
       .with_user_preferences(all())
       .start_scene(EmptyScene),
-  ) else {
-    return;
-  };
-  engine.step_frames(3).unwrap();
-  assert_eq!(store.get("system.json"), None, "nothing changed");
+  ) {
+    engine.step_frames(3).unwrap();
+    assert_eq!(store.get("system.json"), None, "nothing changed");
+  }
+
+  // A kept setting changes: the file is written once the second is up,
+  // holding only that key
+  let store = MemorySaves::new();
+  let mut engine = EngineBuilder::new()
+    .resolution(64, 64)
+    .memory_saves(store.clone())
+    .with_user_preferences(all())
+    .start_scene(EmptyScene)
+    .build_headless();
+  engine.apply_settings();
+  engine.save_settings(Instant::now() + DEBOUNCE);
+  engine.flush_saves();
+  assert_eq!(store.get("system.json"), None, "still nothing changed");
+  engine
+    .world
+    .resource_mut::<Settings>()
+    .set_volume(VolumeKind::Master, 0.5);
+  engine.apply_settings();
+  engine.save_settings(Instant::now());
+  engine.flush_saves();
+  assert_eq!(store.get("system.json"), None, "not before the second is up");
+  engine.save_settings(Instant::now() + DEBOUNCE);
+  engine.flush_saves();
+  assert_eq!(store.writes(), 1);
+  assert_eq!(
+    settings_written(&store),
+    serde_json::json!({"format_version": 3, "master_volume": 0.5})
+  );
+}
+
+/// The settings file in `store`, as JSON
+fn settings_written(store: &MemorySaves) -> serde_json::Value {
+  let bytes = store.get("system.json").expect("system.json is written");
+  serde_json::from_slice(&bytes).unwrap()
 }
 
 #[test]
@@ -1546,4 +1581,233 @@ fn a_game_section_registered_on_the_builder_is_readable_in_the_first_scene() {
       scale: 2
     })
   );
+}
+
+/// A build keeping every setting, its saves and settings in `store`
+fn keeping_all(store: &MemorySaves) -> Engine {
+  EngineBuilder::new()
+    .memory_saves(store.clone())
+    .with_user_preferences(crate::core::config::UserPreferenceFilter::all())
+    .start_scene(EmptyScene)
+    .build_headless()
+}
+
+/// Rebinds `jump` (bound to Space) in slot 0
+fn rebind_jump(engine: &mut Engine, key: KeyCode) {
+  use crate::core::input::Binding;
+  let mut input = engine.world.resource_mut::<Input>();
+  let actions = input.actions_mut();
+  if actions.bindings("jump").is_empty() {
+    actions.bind("jump", [Binding::Key(KeyCode::Space)]);
+  }
+  actions.rebind("jump", 0, Binding::Key(key));
+}
+
+#[test]
+fn bindings_land_in_the_same_file_as_the_settings() {
+  let store = MemorySaves::new();
+  let mut engine = keeping_all(&store);
+  rebind_jump(&mut engine, KeyCode::KeyJ);
+  engine
+    .world
+    .resource_mut::<Settings>()
+    .set_volume(VolumeKind::Music, 0.5);
+  engine.apply_settings();
+  let now = Instant::now();
+  engine.save_settings(now);
+  engine.save_settings(now + DEBOUNCE);
+  engine.flush_saves();
+  assert_eq!(store.writes(), 1, "one write for both");
+  assert_eq!(
+    settings_written(&store),
+    serde_json::json!({
+      "format_version": 3,
+      "music_volume": 0.5,
+      "bindings": {"jump": ["Key:KeyJ"]}
+    })
+  );
+}
+
+#[test]
+fn a_binding_set_back_to_its_default_leaves_the_file() {
+  let store = MemorySaves::new();
+  let mut engine = keeping_all(&store);
+  rebind_jump(&mut engine, KeyCode::KeyJ);
+  let now = Instant::now();
+  engine.save_settings(now);
+  engine.save_settings(now + DEBOUNCE);
+  engine.flush_saves();
+  assert_eq!(
+    settings_written(&store)["bindings"],
+    serde_json::json!({"jump": ["Key:KeyJ"]})
+  );
+
+  rebind_jump(&mut engine, KeyCode::Space);
+  let now = now + DEBOUNCE * 2;
+  engine.save_settings(now);
+  engine.save_settings(now + DEBOUNCE);
+  engine.flush_saves();
+  assert_eq!(store.writes(), 2);
+  assert_eq!(
+    settings_written(&store),
+    serde_json::json!({"format_version": 3})
+  );
+}
+
+/// Turns the music down in its first update, and quits
+struct MusicDownAndQuit;
+
+impl Scene for MusicDownAndQuit {
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    ctx.settings().set_volume(VolumeKind::Music, 0.3);
+    SceneAction::Quit
+  }
+}
+
+#[test]
+fn quitting_writes_a_pending_change_at_once() {
+  let store = MemorySaves::new();
+  let mut engine = keeping_all(&store);
+  engine
+    .world
+    .resource_mut::<Settings>()
+    .set_volume(VolumeKind::Sfx, 0.25);
+  engine.apply_settings();
+  engine.save_settings(Instant::now());
+  engine.flush_saves();
+  assert_eq!(store.get("system.json"), None, "the second is not up");
+  // Closing the window ends the loop with no frame left to apply this
+  engine.world.resource_mut::<Settings>().set_vsync(false);
+  drop(engine);
+  assert_eq!(store.writes(), 1);
+  assert_eq!(
+    settings_written(&store),
+    serde_json::json!({"format_version": 3, "sfx_volume": 0.25, "vsync": false})
+  );
+
+  // A run that quits in the frame that changed a setting has written it by
+  // the time the run returns
+  if crate::core::testing::shared_gpu().is_err() {
+    eprintln!("skipping the offscreen run: no GPU available");
+    return;
+  }
+  let store = MemorySaves::new();
+  let mut engine = EngineBuilder::new()
+    .resolution(32, 32)
+    .memory_saves(store.clone())
+    .with_user_preferences(crate::core::config::UserPreferenceFilter::all())
+    .start_scene(MusicDownAndQuit)
+    .build_headless();
+  engine.prepare_offscreen_run(AutoCaptureConfig::default(), InputScript::default());
+  assert!(!engine.run_offscreen_frames().unwrap());
+  assert_eq!(
+    settings_written(&store),
+    serde_json::json!({"format_version": 3, "music_volume": 0.3})
+  );
+}
+
+fn settings_warnings(needle: &str) -> usize {
+  crate::core::dev_log::get_entries()
+    .iter()
+    .filter(|entry| entry.level == crate::core::dev_log::LogLevel::Warn)
+    .filter(|entry| entry.message.contains(needle))
+    .count()
+}
+
+#[test]
+fn a_failed_settings_write_warns_once_and_sends_settings_save_failed() {
+  use crate::core::ecs::{MessageCursor, Messages};
+  use crate::core::saves::SaveError;
+  use crate::core::saves::memory::FaultOp;
+
+  let store = MemorySaves::new();
+  store.fail_from(FaultOp::Write, 0);
+  let mut engine = keeping_all(&store);
+  let mut cursor = MessageCursor::<SettingsSaveFailed>::default();
+  for (round, volume) in [0.5, 0.25].into_iter().enumerate() {
+    engine
+      .world
+      .resource_mut::<Settings>()
+      .set_volume(VolumeKind::Music, volume);
+    engine.apply_settings();
+    engine.save_settings(Instant::now() + DEBOUNCE);
+    engine.flush_saves();
+    engine.schedules.run(Phase::PreUpdate, &mut engine.world);
+    let messages = engine.world.resource::<Messages<SettingsSaveFailed>>();
+    let failed: Vec<_> = cursor.read(messages).cloned().collect();
+    assert_eq!(failed.len(), 1, "round {round}: {failed:?}");
+    assert!(
+      matches!(&*failed[0].error, SaveError::Io { path, .. } if path == "system.json"),
+      "{:?}",
+      failed[0].error
+    );
+  }
+  assert_eq!(settings_warnings("could not save the settings"), 1);
+  assert_eq!(store.get("system.json"), None);
+  // The game keeps running, at the player's setting
+  assert_eq!(
+    engine.world.resource::<Settings>().volume(VolumeKind::Music),
+    0.25
+  );
+}
+
+#[test]
+fn a_newer_settings_file_is_never_overwritten() {
+  use crate::core::saves::memory::FaultOp;
+
+  let newer = r#"{"format_version": 4, "music_volume": 0.2, "shiny": true}"#;
+  let store = MemorySaves::new();
+  store.put("system.json", newer);
+  let mut engine = keeping_all(&store);
+  assert!(engine.world.resource::<SettingsWriter>().read_only);
+  assert_eq!(
+    engine.world.resource::<Settings>().volume(VolumeKind::Music),
+    0.2,
+    "the settings it knows are read"
+  );
+  engine
+    .world
+    .resource_mut::<Settings>()
+    .set_volume(VolumeKind::Music, 0.7);
+  engine.apply_settings();
+  engine.save_settings(Instant::now() + DEBOUNCE);
+  drop(engine);
+  assert_eq!(store.get("system.json"), Some(newer.as_bytes().to_vec()));
+  assert_eq!(store.writes(), 0);
+
+  // A damaged file that could not be set aside is not replaced either
+  let store = MemorySaves::new();
+  store.put("system.json", "not json");
+  store.fail(FaultOp::Rename, 0);
+  let mut engine = keeping_all(&store);
+  assert!(engine.world.resource::<SettingsWriter>().read_only);
+  engine.world.resource_mut::<Settings>().set_show_fps(true);
+  engine.apply_settings();
+  engine.save_settings(Instant::now() + DEBOUNCE);
+  drop(engine);
+  assert_eq!(store.get("system.json"), Some(b"not json".to_vec()));
+  assert_eq!(store.writes(), 0);
+  assert_eq!(
+    settings_warnings("so the settings changed this session are not saved"),
+    2,
+    "once a run"
+  );
+}
+
+#[test]
+fn a_build_that_keeps_nothing_never_writes_settings() {
+  let store = MemorySaves::new();
+  let mut engine = EngineBuilder::new()
+    .memory_saves(store.clone())
+    .start_scene(EmptyScene)
+    .build_headless();
+  assert!(!engine.world.contains_resource::<SettingsWriter>());
+  engine
+    .world
+    .resource_mut::<Settings>()
+    .set_volume(VolumeKind::Music, 0.5);
+  engine.apply_settings();
+  engine.save_settings(Instant::now() + DEBOUNCE);
+  drop(engine);
+  assert!(store.names().is_empty(), "{:?}", store.names());
 }

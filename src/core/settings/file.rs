@@ -185,7 +185,6 @@ pub(crate) fn parse(bytes: &[u8], project_env: &Map<String, Value>) -> Parsed {
 /// `file` as format 3: pretty JSON ending in a line feed, with its keys in
 /// order: the format, the engine's settings, the bindings, the game sections
 /// and the keys this engine does not know
-#[cfg_attr(not(test), expect(dead_code, reason = "the settings writer's"))]
 pub(crate) fn render(file: &SettingsFile) -> Vec<u8> {
   let values = &file.values;
   let mut entries = vec![(FORMAT_KEY.to_string(), FORMAT.to_string())];

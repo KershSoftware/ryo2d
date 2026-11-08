@@ -190,6 +190,11 @@ impl Settings {
     &self.values
   }
 
+  /// Whether the game registered any section
+  pub(crate) fn has_sections(&self) -> bool {
+    !self.sections.is_empty()
+  }
+
   /// Applies the kept values and the sections `file` holds. A section that
   /// does not read keeps its value, with a warning.
   pub(crate) fn apply_file(&mut self, file: &SettingsFile, warnings: &mut Vec<String>) {
@@ -228,7 +233,6 @@ impl Settings {
   /// volume compared as the file keeps it, to two decimals), the kept
   /// bindings and the game sections, with `base`'s unknown keys and
   /// sections carried over
-  #[cfg_attr(not(test), expect(dead_code, reason = "the settings writer's"))]
   pub(crate) fn to_file(&self, base: &SettingsFile) -> SettingsFile {
     let (now, defaults) = (&self.values, &self.defaults);
     let kept = |preference, differs: bool| differs && self.is_kept(preference);

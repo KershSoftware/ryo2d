@@ -25,6 +25,7 @@ use crate::core::scene::SceneAction;
 use crate::core::schedule::Phase;
 use crate::core::settings::Settings;
 use crate::core::settings::apply::diff;
+use crate::core::settings::persist::SettingsWriter;
 use crate::core::shaders::EffectsManager;
 use crate::core::text::TextIcons;
 use crate::core::time::Time;
@@ -37,7 +38,7 @@ use crate::core::ui::theme::{Theme, load_skin, refresh_skins, use_followed};
 use crate::core::ui::widgets::rebind::note_swap;
 use crate::core::ui::{ThemeSound, ThemeSoundSource, UiContext, UiInput, UiTheme};
 use crate::core::window::WindowRequest;
-use crate::{engine_warn, profile_scope};
+use crate::profile_scope;
 
 /// The UI's direction actions: Up, Down, Left, Right
 const NAV_DIRECTIONS: [&str; 4] = ["ui.up", "ui.down", "ui.left", "ui.right"];
@@ -107,7 +108,7 @@ impl Engine {
         .resource_mut::<Input>()
         .end_fixed_steps(step > 0 || paused);
       self.apply_settings();
-      self.save_changed_bindings();
+      self.save_settings(Instant::now());
     }
     self.frame_timings.update = update_start.elapsed();
 
@@ -152,7 +153,8 @@ impl Engine {
   /// Applies what changed in `Settings` since the last check: the volumes
   /// at once, the display mode and window size (only while windowed) as
   /// window requests and vsync for the renderer, both after the frame, and
-  /// the FPS counter. A frame with no change costs one change check
+  /// the FPS counter; and tells the settings writer. A frame with no change
+  /// costs one change check
   pub(crate) fn apply_settings(&mut self) {
     let Some(ticks) = self.world.get_resource_change_ticks::<Settings>() else {
       return;
@@ -164,6 +166,8 @@ impl Engine {
     if !changed {
       return;
     }
+    let seen = Instant::now();
+    self.with_settings_writer(|writer, settings, _| writer.observe(seen, settings));
     let Some(settings) = self.world.get_resource::<Settings>() else {
       return;
     };
@@ -212,30 +216,28 @@ impl Engine {
     }
   }
 
-  /// Write the player's bindings to `system.json` when they changed this frame
-  /// (only with `UserPreference::Bindings`). A failure warns once.
-  fn save_changed_bindings(&mut self) {
-    if self.bindings_saver.is_none() {
-      return;
-    }
-    let mut input = self.world.resource_mut::<Input>();
-    if !input.actions_mut().take_dirty() {
-      return;
-    }
-    let bindings = input.actions().saved_map();
-    let Some(saver) = &self.bindings_saver else {
+  /// Takes the player's changed bindings into the settings writer, and
+  /// writes the settings file once the last change to what it keeps is a
+  /// second old. An idle frame costs a lookup and two checks
+  pub(crate) fn save_settings(&mut self, now: Instant) {
+    let Some(due) = self
+      .world
+      .get_resource::<SettingsWriter>()
+      .map(|writer| writer.is_due(now))
+    else {
       return;
     };
-    let result = saver.load_system().and_then(|mut state| {
-      state.bindings = bindings;
-      saver.save_system(&state)
-    });
-    if let Err(e) = result
-      && !self.bindings_save_warned
-    {
-      self.bindings_save_warned = true;
-      engine_warn!(module: "input", "could not save bindings: {e}");
+    let bindings = self.changed_bindings();
+    if !due && bindings.is_none() {
+      return;
     }
+    self.with_settings_writer(|writer, settings, saves| {
+      if let Some(map) = bindings {
+        writer.set_bindings(map);
+        writer.observe(now, settings);
+      }
+      writer.tick(now, settings, saves);
+    });
   }
 
   /// Queue gamepad connections, buttons, triggers and sticks from gilrs.

@@ -241,7 +241,7 @@ pub mod prelude {
   };
 
   // Settings
-  pub use crate::core::settings::Settings;
+  pub use crate::core::settings::{Settings, SettingsSaveFailed};
 
   // Preferences and the old save manager
   pub use crate::core::config::{

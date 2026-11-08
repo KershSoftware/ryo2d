@@ -129,9 +129,9 @@ The service sends a job and records what it is for (`JobKind`: a slot's save or 
 ## Results
 
 - **`drain`** moves the writer's results into `Finished` (`id`, `kind`, `result: Result<(), Arc<SaveError>>`), mapping an `io::Error` to `Io { path: file }`, or to `StorageFull` for `ErrorKind::StorageFull`, and a panicked job to `Serialize`. A job whose storage returned a `Pending` completion is kept and polled with `try_recv` at each later `drain`; it is reported once it resolves, never waited on. A slot's entry is cleared when the result of its latest generation is drained.
-- **`drain_save_results`** (`Phase::PreUpdate`) sends a `SaveFinished { slot, op, result }` for each slot job's result (`Finished::message`); a named file's result has no message, and nothing reads it there.
+- **`drain_save_results`** (`Phase::PreUpdate`) sends a `SaveFinished { slot, op, result }` for each slot job's result (`Finished::message`). A named file's result has no message: `system.json`'s goes to the settings writer (`SettingsWriter::finished`, settings module notes), which gives a `SettingsSaveFailed` for the system to send when it failed; another name's is dropped.
 - **`flush(warn_after, give_up)`** waits for the writer to go idle, warning after `warn_after` with the files still being written; at `give_up` it stops waiting, then waits for the pending completions until the same deadline (`wait_until`: polled once on the web), logs the files still unfinished and returns them. Its results stay for the next `drain`. Once a flush has given up, a later one waits no more and warns no more; once everything is written, one returns at once.
-- **The quit flush** is `Engine::flush_saves` (`flush(3 s, 10 s)`), run from `ApplicationHandler::exiting` (before the capture flush; macOS's Cmd+Q exits right after it), at the end of `run_offscreen_frames`, and from `Drop for Engine`, so a dropped `HeadlessEngine` finishes its saves too.
+- **The quit flush** is `Engine::flush_saves` (`flush(3 s, 10 s)`), run from `ApplicationHandler::exiting` (before the capture flush; macOS's Cmd+Q exits right after it), at the end of `run_offscreen_frames`, and from `Drop for Engine`, so a dropped `HeadlessEngine` finishes its saves too. Each runs right after `Engine::flush_settings`, which queues a pending settings write, so the flush waits for that too.
 
 ## Testing
 

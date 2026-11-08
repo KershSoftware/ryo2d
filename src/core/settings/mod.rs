@@ -8,9 +8,11 @@
 
 pub(crate) mod apply;
 pub(crate) mod file;
+pub(crate) mod persist;
 mod resource;
 pub(crate) mod sections;
 
+pub use persist::SettingsSaveFailed;
 pub use resource::Settings;
 
 use crate::core::audio::VolumeKind;

@@ -794,6 +794,8 @@ impl ApplicationHandler<EngineEvent> for Engine {
         engine_debug!(module: "Window", "Occluded: {}", occluded);
         if *occluded {
           self.drop_hidden_slow_frame();
+          // The web's page hidden, which may be the last the game hears
+          self.flush_settings();
         }
       }
       WindowEvent::Focused(focused) => {
@@ -908,10 +910,17 @@ impl ApplicationHandler<EngineEvent> for Engine {
     }
   }
 
+  fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
+    // The app goes to the background (mobile), and may be killed there
+    self.flush_settings();
+  }
+
   fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
     // Last event on every exit path. On macOS, Cmd+Q exits the process right
-    // after this without returning from `run_app`, so queued saves are written
-    // and captures flushed here.
+    // after this without returning from `run_app`, so the settings and queued
+    // saves are written and captures flushed here. The settings go first, so
+    // the saves' flush waits for them too.
+    self.flush_settings();
     self.flush_saves();
     let reports = self.capture.finish();
     self.report_captures(reports);
