@@ -436,7 +436,6 @@ mod tests {
   use crate::core::audio::VolumeKind;
   use crate::core::config::UserPreferenceFilter;
   use crate::core::saves::SaveInfo;
-  use crate::core::saves::service::Finished;
   use crate::core::saves::storage::Origin;
   use crate::core::saves::versions::VersionRegistry;
   use crate::core::settings::file::SettingsFile;
@@ -491,8 +490,14 @@ mod tests {
     saves
   }
 
-  fn slot_results(finished: Vec<Finished>) -> Vec<Result<(), Arc<SaveError>>> {
-    finished
+  /// The slots' results, once the writer has sent every job's (their
+  /// commits released, so the flush waits for nothing else): a job's result
+  /// goes out only after its commit is made, and `drain` never waits
+  fn settled_results(saves: &SaveService) -> Vec<Result<(), Arc<SaveError>>> {
+    let unfinished = saves.flush(Duration::from_secs(5), Duration::from_secs(5));
+    assert!(unfinished.is_empty(), "still writing {unfinished:?}");
+    saves
+      .drain()
       .into_iter()
       .filter_map(|finished| finished.message())
       .map(|message| message.result)
@@ -525,7 +530,7 @@ mod tests {
       Hero { level: 3 }
     );
     browser.release(Ok(()));
-    let results = slot_results(saves.drain());
+    let results = settled_results(&saves);
     assert!(matches!(results[..], [Ok(())]), "{results:?}");
     assert!(!saves.is_writing("browser-hero"));
     assert_eq!(
@@ -602,13 +607,13 @@ mod tests {
       .unwrap();
     browser.wait_for(1);
     browser.release(Ok(()));
-    saves.drain();
+    assert!(matches!(settled_results(&saves)[..], [Ok(())]));
     saves
       .save("browser-full", Hero { level: 2 }, SaveInfo::new())
       .unwrap();
     browser.wait_for(1);
     browser.release(Err(IdbFailure::Quota));
-    let results = slot_results(saves.drain());
+    let results = settled_results(&saves);
     assert!(
       matches!(results[..], [Err(ref error)] if matches!(**error, SaveError::StorageFull)),
       "{results:?}"
