@@ -73,23 +73,21 @@ pub fn execute(args: &[String]) -> CliResult<()> {
   Ok(())
 }
 
-/// Get version from Ryo.toml [project].version, falling back to Cargo.toml [package].version
+/// The version: Ryo.toml's `[project] version` as the workspace read it, else
+/// Cargo.toml's `[package] version`
 fn get_project_version(workspace: &crate::core::config::Workspace) -> Option<String> {
-  // Try Ryo.toml first
-  if let Some(version) = read_version_from_toml(&workspace.root().join("Ryo.toml"), "project") {
-    return Some(version);
-  }
-
-  // Fall back to Cargo.toml
-  read_version_from_toml(&workspace.root().join("Cargo.toml"), "package")
+  workspace
+    .config()
+    .version
+    .clone()
+    .or_else(|| cargo_package_version(&workspace.root().join("Cargo.toml")))
 }
 
-/// Read version field from a TOML file's specified section
-fn read_version_from_toml(path: &Path, section: &str) -> Option<String> {
-  let contents = fs::read_to_string(path).ok()?;
-  let parsed: toml::Value = contents.parse().ok()?;
-  parsed
-    .get(section)?
+/// `[package] version` of a Cargo.toml
+fn cargo_package_version(path: &Path) -> Option<String> {
+  let manifest: toml::Table = fs::read_to_string(path).ok()?.parse().ok()?;
+  manifest
+    .get("package")?
     .get("version")?
     .as_str()
     .map(String::from)
@@ -341,6 +339,31 @@ EXAMPLE:
 mod tests {
   use super::*;
   use crate::cli::commands::licenses::{FONT_LICENSES, LICENSES_DIR};
+
+  #[test]
+  fn the_version_comes_from_the_workspace_s_ryo_toml() {
+    // Read as the workspace read it, not from a file named Ryo.toml on disk
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = crate::core::config::Workspace::from_toml_str(
+      "[project]\nversion = \"1.2.3\"\n",
+      dir.path().to_path_buf(),
+    )
+    .unwrap();
+    assert_eq!(get_project_version(&workspace).as_deref(), Some("1.2.3"));
+  }
+
+  #[test]
+  fn without_a_project_version_the_cargo_version_is_used() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(
+      dir.path().join("Cargo.toml"),
+      "[package]\nname = \"g\"\nversion = \"0.4.0\"\n",
+    )
+    .unwrap();
+    let workspace =
+      crate::core::config::Workspace::from_toml_str("", dir.path().to_path_buf()).unwrap();
+    assert_eq!(get_project_version(&workspace).as_deref(), Some("0.4.0"));
+  }
 
   #[test]
   fn the_exported_zip_carries_the_font_licences() {

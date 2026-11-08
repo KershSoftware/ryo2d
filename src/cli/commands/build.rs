@@ -1,7 +1,7 @@
 //! Build command - creates a production release
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use super::licenses::write_font_licenses;
@@ -40,16 +40,7 @@ pub fn execute(args: &[String]) -> CliResult<()> {
     Output::warning(&warning);
   }
 
-  // Run cargo build --release with embedded config values from [system] and [info]
-  let status = Command::new("cargo")
-    .arg("build")
-    .arg("--release")
-    // Use shared target directory for dependency caching
-    .env("CARGO_TARGET_DIR", &target_dir)
-    .envs(embedded)
-    // [release] section values - icon path for Windows .exe embedding
-    .env("RYO_EMBED_ICON", &icon_path)
-    .current_dir(workspace.root())
+  let status = release_build_command(&workspace, &target_dir, &embedded, &icon_path)
     .status()
     .map_err(|e| CliError::CommandFailed {
       command: "cargo build".to_string(),
@@ -68,6 +59,32 @@ pub fn execute(args: &[String]) -> CliResult<()> {
   Output::success(&format!("release build of {}", project_name));
 
   Ok(())
+}
+
+/// The `cargo build --release` that compiles the game with the `embedded`
+/// Ryo.toml values baked in. Every embed key it doesn't set is removed, so a
+/// `RYO_EMBED_*` variable left in the shell never reaches the shipped game.
+fn release_build_command(
+  workspace: &crate::core::config::Workspace,
+  target_dir: &Path,
+  embedded: &[(&'static str, String)],
+  icon_path: &Path,
+) -> Command {
+  let mut command = Command::new("cargo");
+  command
+    .arg("build")
+    .arg("--release")
+    // Use shared target directory for dependency caching
+    .env("CARGO_TARGET_DIR", target_dir);
+  for key in crate::core::config::project::EMBED_KEYS {
+    command.env_remove(key);
+  }
+  command
+    .envs(embedded.iter().map(|(key, value)| (key, value)))
+    // [release] section values - icon path for Windows .exe embedding
+    .env("RYO_EMBED_ICON", icon_path)
+    .current_dir(workspace.root());
+  command
 }
 
 /// Warnings for developer tools the embedded config would ship to players.
@@ -761,6 +778,30 @@ mod tests {
         Some(text),
         "release/licenses/{name}"
       );
+    }
+  }
+
+  #[test]
+  fn the_release_build_sets_or_clears_every_embed_key() {
+    use std::ffi::{OsStr, OsString};
+    let ws = workspace("[project]\nname = \"g\"\n\n[system]\nvsync = false\n");
+    let embedded = embedded_config_env(&ws);
+
+    let command = release_build_command(
+      &ws,
+      std::path::Path::new("target"),
+      &embedded,
+      std::path::Path::new("icon.png"),
+    );
+
+    let envs: std::collections::HashMap<OsString, Option<OsString>> = command
+      .get_envs()
+      .map(|(key, value)| (key.to_owned(), value.map(OsStr::to_owned)))
+      .collect();
+    for key in EMBED_KEYS {
+      // Set to the project's value, or removed: never left to the shell
+      let expected = embedded_value(&embedded, key).map(OsString::from);
+      assert_eq!(envs.get(OsStr::new(key)), Some(&expected), "{key}");
     }
   }
 

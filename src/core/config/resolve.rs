@@ -630,6 +630,128 @@ tiled_project = "maps/game.tiled-project"
   }
 
   #[test]
+  fn every_builder_override_reaches_the_resolved_settings() {
+    // Listed field by field, so a new override can't be left out of the test
+    let BuilderOverrides {
+      title,
+      resolution,
+      pixel_art,
+      window_size,
+      display_mode,
+      vsync,
+      show_fps,
+      show_colliders,
+      show_velocities,
+      show_origins,
+      background_fps,
+      background_rendering,
+      icon,
+      tiled_project,
+    } = BuilderOverrides {
+      title: Some("Builder".to_string()),
+      resolution: Some((640, 480)),
+      pixel_art: Some(true),
+      window_size: Some((1024, 768)),
+      display_mode: Some(DisplayMode::ExclusiveFullscreen),
+      vsync: Some(false),
+      show_fps: Some(true),
+      show_colliders: Some(true),
+      show_velocities: Some(true),
+      show_origins: Some(true),
+      background_fps: Some(30),
+      background_rendering: Some(false),
+      icon: Some(PathBuf::from("builder.png")),
+      tiled_project: Some("builder.tiled-project".to_string()),
+    };
+    let none = BuilderOverrides::default;
+    let overrides = [
+      ("title", BuilderOverrides { title, ..none() }),
+      (
+        "resolution",
+        BuilderOverrides {
+          resolution,
+          ..none()
+        },
+      ),
+      (
+        "pixel_art",
+        BuilderOverrides {
+          pixel_art,
+          ..none()
+        },
+      ),
+      (
+        "window_size",
+        BuilderOverrides {
+          window_size,
+          ..none()
+        },
+      ),
+      (
+        "display_mode",
+        BuilderOverrides {
+          display_mode,
+          ..none()
+        },
+      ),
+      ("vsync", BuilderOverrides { vsync, ..none() }),
+      ("show_fps", BuilderOverrides { show_fps, ..none() }),
+      (
+        "show_colliders",
+        BuilderOverrides {
+          show_colliders,
+          ..none()
+        },
+      ),
+      (
+        "show_velocities",
+        BuilderOverrides {
+          show_velocities,
+          ..none()
+        },
+      ),
+      (
+        "show_origins",
+        BuilderOverrides {
+          show_origins,
+          ..none()
+        },
+      ),
+      (
+        "background_fps",
+        BuilderOverrides {
+          background_fps,
+          ..none()
+        },
+      ),
+      (
+        "background_rendering",
+        BuilderOverrides {
+          background_rendering,
+          ..none()
+        },
+      ),
+      ("icon", BuilderOverrides { icon, ..none() }),
+      (
+        "tiled_project",
+        BuilderOverrides {
+          tiled_project,
+          ..none()
+        },
+      ),
+    ];
+
+    let defaults = resolve_settings(&ProjectLayer::default(), &none(), None);
+    for (name, builder) in overrides {
+      let resolved = resolve_settings(&ProjectLayer::default(), &builder, None);
+      assert_ne!(
+        resolved, defaults,
+        "`{name}` doesn't reach the resolved settings"
+      );
+    }
+  }
+
+  #[test]
   fn seed_state_carries_resolved_values() {
     let s = resolve_settings(&project_with_everything(), &builder_with_everything(), None);
     let mut env = HashMap::new();
