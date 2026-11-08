@@ -53,6 +53,31 @@ fn display_mode_of(fullscreen: Option<&winit::window::Fullscreen>) -> DisplayMod
   }
 }
 
+/// One change a window request makes to the window
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum WindowStep {
+  Mode(DisplayMode),
+  /// The inner size in physical pixels
+  Size(u32, u32),
+}
+
+/// The changes `request` makes to the window, in the order to make them: a
+/// return to a window before the size, so the size lands on the window, and
+/// fullscreen after it, so fullscreen covers the screen (on Windows the last
+/// resize wins, a fullscreen window's too)
+fn window_steps(request: &WindowRequest) -> [Option<WindowStep>; 2] {
+  let mode = request.display_mode.map(WindowStep::Mode);
+  let size = request
+    .width
+    .zip(request.height)
+    .map(|(width, height)| WindowStep::Size(width, height));
+  if request.display_mode == Some(DisplayMode::Windowed) {
+    [mode, size]
+  } else {
+    [size, mode]
+  }
+}
+
 /// Whether `event` is a gesture of the player's that browsers let a page
 /// start sound in, for the web's audio unlock: a key pressed, a mouse button,
 /// or a touch lifted
@@ -215,46 +240,52 @@ impl Engine {
     self.vsync = vsync;
   }
 
-  /// Apply pending window configuration changes from the game: the display
-  /// mode first, so a size asked for with a window lands on the window
+  /// Apply pending window configuration changes from the game, the display
+  /// mode and the size in `window_steps`' order
   fn apply_window_request(&mut self, window: &Arc<Window>, request: WindowRequest) {
-    if let Some(mode) = request.display_mode {
-      match mode {
-        DisplayMode::Windowed => {
-          window.set_fullscreen(None);
-          window.set_decorations(true);
-        }
-        DisplayMode::ExclusiveFullscreen => {
-          // The current monitor's native resolution
-          if let Some(monitor) = window.current_monitor()
-            && let Some(video_mode) = native_mode(monitor.video_modes(), mode_size_refresh)
-          {
-            window.set_fullscreen(Some(winit::window::Fullscreen::Exclusive(video_mode)));
+    for step in window_steps(&request).into_iter().flatten() {
+      match step {
+        WindowStep::Mode(mode) => self.apply_display_mode(window, mode),
+        // A resolution request sizes the window; the game's resolution stays
+        WindowStep::Size(width, height) => {
+          let new_size = winit::dpi::PhysicalSize::new(width, height);
+          if let Some(actual_size) = window.request_inner_size(new_size) {
+            self.last_window_size = (actual_size.width, actual_size.height);
           }
         }
-        DisplayMode::BorderlessFullscreen => {
-          // Clear maximized first (see the F5 toggle below)
-          window.set_maximized(false);
-          window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(
-            window.current_monitor(),
-          )));
-        }
-      }
-      self.set_display_mode(mode);
-      self.surface_needs_reconfigure = true;
-    }
-
-    // A resolution request sizes the window; the game's resolution stays
-    if let (Some(width), Some(height)) = (request.width, request.height) {
-      let new_size = winit::dpi::PhysicalSize::new(width, height);
-      if let Some(actual_size) = window.request_inner_size(new_size) {
-        self.last_window_size = (actual_size.width, actual_size.height);
       }
     }
 
     if let Some(scale) = request.ui_scale {
       self.apply_ui_scale(scale);
     }
+  }
+
+  /// Put the window in `mode`
+  fn apply_display_mode(&mut self, window: &Arc<Window>, mode: DisplayMode) {
+    match mode {
+      DisplayMode::Windowed => {
+        window.set_fullscreen(None);
+        window.set_decorations(true);
+      }
+      DisplayMode::ExclusiveFullscreen => {
+        // The current monitor's native resolution
+        if let Some(monitor) = window.current_monitor()
+          && let Some(video_mode) = native_mode(monitor.video_modes(), mode_size_refresh)
+        {
+          window.set_fullscreen(Some(winit::window::Fullscreen::Exclusive(video_mode)));
+        }
+      }
+      DisplayMode::BorderlessFullscreen => {
+        // Clear maximized first (see the F5 toggle below)
+        window.set_maximized(false);
+        window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(
+          window.current_monitor(),
+        )));
+      }
+    }
+    self.set_display_mode(mode);
+    self.surface_needs_reconfigure = true;
   }
 
   /// The window as the OS left it (a resize, a fullscreen toggle of the
@@ -1071,6 +1102,47 @@ mod tests {
       should_present(false, true, true),
       "throttled with background rendering"
     );
+  }
+
+  #[test]
+  fn a_size_lands_on_a_window_and_never_shrinks_a_fullscreen_one() {
+    use WindowStep::{Mode, Size};
+    // The steps in the order they are taken
+    let steps = |display_mode, size: Option<(u32, u32)>| {
+      let request = WindowRequest {
+        width: size.map(|(width, _)| width),
+        height: size.map(|(_, height)| height),
+        display_mode,
+        ui_scale: None,
+      };
+      window_steps(&request)
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+    };
+    let size = Some((800, 600));
+    // Back to a window first, then the size, so it lands on the window
+    assert_eq!(
+      steps(Some(DisplayMode::Windowed), size),
+      [Mode(DisplayMode::Windowed), Size(800, 600)]
+    );
+    // Fullscreen last: it covers the screen whatever size was asked
+    for mode in [
+      DisplayMode::BorderlessFullscreen,
+      DisplayMode::ExclusiveFullscreen,
+    ] {
+      assert_eq!(
+        steps(Some(mode), size),
+        [Size(800, 600), Mode(mode)],
+        "{mode:?}"
+      );
+    }
+    assert_eq!(
+      steps(Some(DisplayMode::BorderlessFullscreen), None),
+      [Mode(DisplayMode::BorderlessFullscreen)]
+    );
+    assert_eq!(steps(None, size), [Size(800, 600)]);
+    assert_eq!(steps(None, None), []);
   }
 
   #[test]
