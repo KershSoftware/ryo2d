@@ -124,23 +124,7 @@ fn release_save_folder(config: &crate::core::config::WorkspaceConfig) -> String 
     .release
     .save_folder
     .clone()
-    .unwrap_or_else(|| folder_from_project_name(&config.name))
-}
-
-/// Make a project name one folder: path separators, control characters and
-/// `<>:"|?*` become `-`, then surrounding whitespace and trailing dots go.
-fn folder_from_project_name(name: &str) -> String {
-  let replaced: String = name
-    .chars()
-    .map(|c| {
-      if c.is_control() || "/\\<>:\"|?*".contains(c) {
-        '-'
-      } else {
-        c
-      }
-    })
-    .collect();
-  replaced.trim().trim_end_matches(['.', ' ']).to_string()
+    .unwrap_or_else(|| crate::core::config::save_location::folder_from_project_name(&config.name))
 }
 
 /// [`release_save_folder`], rejected before building when it can't name a folder.
@@ -175,14 +159,9 @@ pub(crate) fn embedded_config_env(
   workspace: &crate::core::config::Workspace,
 ) -> Vec<(&'static str, String)> {
   use crate::core::config::project::ProjectLayer;
-  use crate::core::config::resolve::DEFAULT_RESOLUTION;
 
   let config = workspace.config();
-  let mut project = ProjectLayer::from_workspace(workspace);
-  project.resolution.get_or_insert(DEFAULT_RESOLUTION);
-  project.dev_window_keys.get_or_insert(false);
-
-  let mut env = project.to_embedded_env();
+  let mut env = ProjectLayer::for_release(workspace).to_embedded_env();
   env.push(("RYO_EMBED_PORTABLE", config.release.portable.to_string()));
   env.push(("RYO_EMBED_SAVE_FOLDER", release_save_folder(config)));
   env.push((
@@ -510,6 +489,31 @@ mod tests {
     }
   }
 
+  /// Resolve a Ryo.toml as the web does (the compiled-in file) and as a release
+  /// of it does (the values `ryo2d build` embeds)
+  fn web_and_release_resolve(text: &'static str) {
+    use crate::core::config::ProjectFile;
+    use crate::core::config::resolve::{BuilderOverrides, resolve_settings};
+
+    let env = embedded_config_env(&workspace(text));
+    let release = ProjectLayer::from_embedded(lookup_in(&env)).unwrap();
+    let web = ProjectFile::from_toml(text).read().unwrap().layer;
+    assert_eq!(
+      resolve_settings(&web, &BuilderOverrides::default(), None),
+      resolve_settings(&release, &BuilderOverrides::default(), None),
+    );
+  }
+
+  #[test]
+  fn a_web_style_resolve_matches_the_release_resolve_of_the_same_ryo_toml() {
+    web_and_release_resolve(include_str!("../../../tests/fixtures/project/Ryo.toml"));
+    // Nothing set but the name: the unset values resolve alike too
+    web_and_release_resolve("[project]\nname = \"Bare\"\n");
+    web_and_release_resolve(
+      "[project]\nname = \"Titled\"\ntitle = \"The Title\"\n[system]\nconsole = true\n[debug]\ndev_window_keys = true\n",
+    );
+  }
+
   #[test]
   fn save_folder_defaults_to_the_project_name() {
     let env = embedded_config_env(&workspace("[project]\nname = \"Star Hopper\"\n"));
@@ -536,17 +540,6 @@ mod tests {
       embedded_value(&env, "RYO_EMBED_PORTABLE").as_deref(),
       Some("true")
     );
-  }
-
-  #[test]
-  fn project_names_become_a_single_folder() {
-    assert_eq!(
-      folder_from_project_name("Squash/Stretch Demo"),
-      "Squash-Stretch Demo"
-    );
-    assert_eq!(folder_from_project_name("Game: Remix"), "Game- Remix");
-    assert_eq!(folder_from_project_name("Breakout"), "Breakout");
-    assert_eq!(folder_from_project_name("  Hopper. . "), "Hopper");
   }
 
   #[test]

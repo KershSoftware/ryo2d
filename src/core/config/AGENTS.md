@@ -6,7 +6,7 @@ See skill `ryo-config-save` for Ryo.toml layout and the save API.
 
 `EngineBuilder::resolve_in` (`engine/mod.rs`) calls `resolve::resolve_settings` (pure, unit-tested). Lowest to highest:
 1. Engine defaults (`ResolvedSettings::defaults`)
-2. Project values: Ryo.toml (dev) or `RYO_EMBED_*` values from `ryo2d build` (release) - `ProjectLayer` (Project Settings, below)
+2. Project values - `ProjectLayer` (Project Settings, below), from the first of: `RYO_EMBED_*` values from `ryo2d build` (release); the Ryo.toml `Workspace::discover()` found on disk (dev); the game's compiled-in Ryo.toml (`ProjectFile`, below: the web, or a native run with no Ryo.toml found); none
 3. Builder calls - `BuilderOverrides`
 4. `system.json` preferences - only with `.with_user_preferences(filter)`, only keys present in the file and in the (combined) filter - `StoredPreferences`
 
@@ -31,6 +31,14 @@ Each project setting (a Ryo.toml key that becomes an engine setting) is declared
 `ProjectLayer::from_workspace` adds what a dev workspace fills in: the title's fallbacks (`[project] name`, then the folder's name), no console unless `[system] console` turns it on, and the logo as a path from the root. `ryo2d build` (`embedded_config_env`) embeds that layer and the special values: `RYO_EMBED_RESOLUTION` always (1280x720 when unset), `RYO_EMBED_DEV_WINDOW_KEYS` from an explicit value only (else `false`), `RYO_EMBED_PORTABLE`, `RYO_EMBED_SAVE_FOLDER` (computed) and `RYO_EMBED_ENV`. A setting the project leaves unset ships as nothing and resolves to the engine's default, as in dev; the build's cargo command removes every embed key it doesn't set (`release_build_command`), so a `RYO_EMBED_*` variable left in the shell never ships. `TILED_PROJECT` empty and `AUDIO_BUFFER_FRAMES` 0 still mean none.
 
 Adding a setting: its line in the table, a `ResolvedSettings` field that `resolve_settings` sets from the layer (and `BuilderOverrides` if it has a builder call), the copy in `EngineBuilder::resolve_in`, and `WorkspaceConfig::apply_project` if the public config shows it. `every_table_entry_reaches_the_resolved_settings` fails until `resolve_settings` uses it; the Ryo.toml reader, the embedding, `src/build.rs` and the misspelt-key check need nothing more.
+
+## Project File
+
+`ryo2d::project!()` (a proc macro in `ryo2d-derive`, exported at the crate root) compiles the calling crate's `Ryo.toml` (else `ryo.toml`, or the path it is given, relative to `CARGO_MANIFEST_DIR`) into the binary as a `ProjectFile` with `include_str!`, so cargo tracks the file; no file gives `ProjectFile::none()`. The game hands it to `EngineBuilder::project`. Its expansion names `::ryo2d::core::config::ProjectFile`, so it works only outside the `ryo2d` crate.
+
+`resolve_in` reads the file only when there are no embedded values and no Ryo.toml on disk (`Workspace::has_config_file`), through `Workspace::from_toml_str`. It resolves as a release build of the same Ryo.toml: `ProjectLayer::for_release` is the one layer both `embedded_config_env` and the file use (resolution always set, dev window keys off unless set, no icon value). The one difference: a file has no folder to name an unnamed project after, so its title falls back to `[project] name` and then the engine's. `RYO_EMBED_RESOLUTION` stays the release marker for native code; a `ProjectFile` never switches it on. `a_web_style_resolve_matches_the_release_resolve_of_the_same_ryo_toml` (`cli/commands/build.rs`) holds the two paths together.
+
+`save_location::store_name` names the browser's save store: `[release] save_folder` when valid, else `[project] name` made a folder name (`folder_from_project_name`), else the window title, warned once a process. `resolve_in` computes it into `ResolvedBuild` and the `Engine` keeps it.
 
 ## Save Location
 

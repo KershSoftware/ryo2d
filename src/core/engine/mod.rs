@@ -23,7 +23,7 @@ use winit::window::Window;
 use crate::core::asset::{AssetLoader, AssetServer, AssetSource, DiskSource, insert_registry};
 use crate::core::audio::{AudioEngine, VolumeKind, audio_system, default_mixer};
 use crate::core::capture::{AutoCaptureConfig, CaptureReport, CaptureState};
-use crate::core::config::DisplayMode;
+use crate::core::config::{DisplayMode, ProjectFile};
 use crate::core::console::{
   CommandRegistry, ConsoleCommandBuilder, ConsoleState, register_builtins,
 };
@@ -345,6 +345,9 @@ pub struct Engine {
   offscreen_pace: Option<std::time::Duration>,
   game_name: Option<String>,
   game_version: Option<String>,
+  /// The name the browser keeps the saves under
+  #[allow(dead_code)]
+  store_name: String,
   /// The store a headless engine (or a builder's `memory_saves`) keeps saves
   /// in, for `HeadlessEngine::saves`
   #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
@@ -561,6 +564,7 @@ impl Engine {
       tiled_project,
       game_name,
       game_version,
+      store_name,
       console_builder,
       pending_resources,
       mut schedules,
@@ -818,6 +822,7 @@ impl Engine {
       offscreen_pace: None,
       game_name,
       game_version,
+      store_name,
       bindings_saver,
       bindings_save_warned: false,
       memory_saves,
@@ -1392,6 +1397,8 @@ pub struct EngineBuilder {
   save_versions: VersionRegistry,
   /// Where the saves are kept instead of the save folder
   memory_saves: Option<MemorySaves>,
+  /// The game's Ryo.toml compiled in, for where none is found on disk
+  project_file: ProjectFile,
 }
 
 impl EngineBuilder {
@@ -1408,6 +1415,7 @@ impl EngineBuilder {
       hot_reload: None,
       save_versions: VersionRegistry::default(),
       memory_saves: None,
+      project_file: ProjectFile::none(),
     }
   }
 
@@ -1726,6 +1734,16 @@ impl EngineBuilder {
     self
   }
 
+  /// Gives the game's Ryo.toml, compiled in with `ryo2d::project!()`, for
+  /// builds with no Ryo.toml to read: the web, or a native run with none in
+  /// the working directory or above. The values resolve as a `ryo2d build` of
+  /// the same file does. A build's own values and a Ryo.toml on disk come
+  /// first.
+  pub fn project(mut self, file: ProjectFile) -> Self {
+    self.project_file = file;
+    self
+  }
+
   /// Set the initial scene that will run when the engine starts.
   pub fn start_scene(mut self, scene: impl Scene + 'static) -> Self {
     self.initial_scene = Some(Box::new(scene));
@@ -1806,22 +1824,48 @@ impl EngineBuilder {
   ) -> ResolvedBuild {
     use crate::core::config::project::{ProjectLayer, compiled_embedded_value};
     use crate::core::config::resolve::resolve_settings;
+    use crate::core::config::save_location::store_name;
 
     let initial_scene = self
       .initial_scene
       .expect("EngineBuilder requires a scene - call .start_scene() before .build()");
 
-    let (project, game_name, game_version) = match (
-      ProjectLayer::from_embedded(compiled_embedded_value),
-      workspace,
-    ) {
-      (Some(embedded), _) => (embedded, None, None),
-      (None, Some(ws)) => (
-        ProjectLayer::from_workspace(ws),
-        Some(ws.config().name.clone()),
-        ws.config().version.clone(),
-      ),
-      (None, None) => (ProjectLayer::default(), None, None),
+    let embedded = ProjectLayer::from_embedded(compiled_embedded_value);
+    let on_disk = workspace.filter(|ws| ws.has_config_file());
+    let file = if embedded.is_none() && on_disk.is_none() {
+      self.project_file.read()
+    } else {
+      None
+    };
+
+    // `names`: what names the browser's store, from the layer that won
+    let (project, game_name, game_version, names) = match (embedded, on_disk, file) {
+      (Some(embedded), ..) => {
+        let folder = compiled_embedded_value("RYO_EMBED_SAVE_FOLDER").map(str::to_string);
+        (embedded, None, None, Some((folder, None)))
+      }
+      (None, Some(ws), _) => {
+        let config = ws.config();
+        (
+          ProjectLayer::from_workspace(ws),
+          Some(config.name.clone()),
+          config.version.clone(),
+          Some((
+            config.release.save_folder.clone(),
+            Some(config.name.clone()),
+          )),
+        )
+      }
+      (None, None, Some(file)) => (file.layer, None, None, Some((file.save_folder, file.name))),
+      (None, None, None) => match workspace {
+        Some(ws) => (
+          ProjectLayer::from_workspace(ws),
+          Some(ws.config().name.clone()),
+          ws.config().version.clone(),
+          None,
+        ),
+        None => (ProjectLayer::default(), None, None, None),
+      },
     };
 
     let mut settings = resolve_settings(&project, &self.overrides, None);
@@ -1843,6 +1887,11 @@ impl EngineBuilder {
         bindings_saver = ws.create_save_manager().ok();
       }
     }
+
+    let store_name = match names {
+      Some((folder, name)) => store_name(folder.as_deref(), name.as_deref(), &settings.title),
+      None => settings.title.clone(),
+    };
 
     let mut config = self.config;
     config.presentation = settings.presentation();
@@ -1886,6 +1935,7 @@ impl EngineBuilder {
       tiled_project: settings.tiled_project,
       game_name,
       game_version,
+      store_name,
       console_builder: self.console_builder,
       pending_resources: self.pending_resources,
       schedules: self.schedules,
@@ -1919,6 +1969,8 @@ struct ResolvedBuild {
   tiled_project: Option<String>,
   game_name: Option<String>,
   game_version: Option<String>,
+  /// The name the browser keeps the saves under
+  store_name: String,
   console_builder: Option<ConsoleCommandBuilder>,
   pending_resources: Vec<WorldSetup>,
   schedules: EngineSchedules,

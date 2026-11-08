@@ -1,0 +1,17 @@
+[project]
+name = "Fixture Game"
+
+[system]
+resolution = "1600x900"
+vsync = false
+master_volume = 0.5
+display_mode = "borderless_fullscreen"
+
+[debug]
+show_colliders = true
+
+[release]
+save_folder = "Studio/Fixture"
+
+[env]
+difficulty = "hard"

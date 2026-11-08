@@ -53,6 +53,9 @@ pub mod core;
 pub use core::ecs;
 #[cfg(not(target_arch = "wasm32"))]
 pub use core::testing;
+/// Compiles the game's Ryo.toml into the binary: `ryo2d::project!()`, for
+/// [`core::engine::EngineBuilder::project`]
+pub use ryo2d_derive::project;
 
 // Re-export puffin so that profile_scope!/profile_function! macros resolve
 // the `::puffin` path in downstream crates without requiring a direct dependency.

@@ -8,6 +8,9 @@
 #[path = "integration/support.rs"]
 mod support;
 
+#[path = "integration/project_file.rs"]
+mod project_file;
+
 #[path = "integration/lighting.rs"]
 mod lighting;
 

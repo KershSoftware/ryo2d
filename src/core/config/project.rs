@@ -164,6 +164,22 @@ impl ProjectLayer {
   }
 }
 
+impl ProjectLayer {
+  /// A workspace's project values as a release build has them (what
+  /// `ryo2d build` embeds): the resolution is always set, the dev window keys
+  /// are off unless Ryo.toml turns them on, and the icon is not a value (a
+  /// release finds icon.png beside the game).
+  pub(crate) fn for_release(workspace: &Workspace) -> Self {
+    let mut layer = Self::from_workspace(workspace);
+    layer.icon = None;
+    layer
+      .resolution
+      .get_or_insert(super::resolve::DEFAULT_RESOLUTION);
+    layer.dev_window_keys.get_or_insert(false);
+    layer
+  }
+}
+
 /// A type a table entry can have: read from Ryo.toml, and embedded as text.
 pub(crate) trait TableValue: Sized {
   /// The value a Ryo.toml gives; `None` for the wrong type or text

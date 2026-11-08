@@ -388,3 +388,56 @@ struct FieldInfo {
   ty: Type,
   is_required: bool,
 }
+
+/// Compiles the calling crate's Ryo.toml into the binary, as a
+/// `ryo2d::core::config::ProjectFile` for `EngineBuilder::project`.
+///
+/// `project!()` looks for `Ryo.toml`, then `ryo.toml`, in the crate's folder
+/// (`CARGO_MANIFEST_DIR`) and gives `ProjectFile::none()` when neither exists.
+/// `project!("config/Game.toml")` names a path relative to that folder, which
+/// must exist. The file is included with `include_str!`, so cargo rebuilds
+/// when it changes.
+#[proc_macro]
+pub fn project(input: TokenStream) -> TokenStream {
+  let explicit = if input.is_empty() {
+    None
+  } else {
+    match syn::parse::<syn::LitStr>(input) {
+      Ok(path) => Some(path),
+      Err(error) => return error.to_compile_error().into(),
+    }
+  };
+  let Some(manifest_dir) = std::env::var_os("CARGO_MANIFEST_DIR") else {
+    return quote!(compile_error!("ryo2d::project!() needs CARGO_MANIFEST_DIR; build with cargo");)
+      .into();
+  };
+  let manifest_dir = std::path::PathBuf::from(manifest_dir);
+
+  let found = match &explicit {
+    Some(path) => {
+      let file = manifest_dir.join(path.value());
+      if !file.is_file() {
+        let message = format!("ryo2d::project!: {} is not a file", file.display());
+        return syn::Error::new(path.span(), message)
+          .to_compile_error()
+          .into();
+      }
+      Some(file)
+    }
+    None => ["Ryo.toml", "ryo.toml"]
+      .iter()
+      .map(|name| manifest_dir.join(name))
+      .find(|file| file.is_file()),
+  };
+
+  match found {
+    Some(file) => {
+      let file = file.to_string_lossy().into_owned();
+      quote!(::ryo2d::core::config::ProjectFile::from_toml(
+        include_str!(#file)
+      ))
+      .into()
+    }
+    None => quote!(::ryo2d::core::config::ProjectFile::none()).into(),
+  }
+}

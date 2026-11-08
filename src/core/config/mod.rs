@@ -6,10 +6,13 @@
 //!   compressed game data
 
 pub(crate) mod project;
+mod project_file;
 pub(crate) mod resolve;
 pub mod save;
 pub(crate) mod save_location;
 pub mod workspace;
+
+pub use project_file::ProjectFile;
 
 // Workspace types
 pub use workspace::{CONFIG_FILENAME, ReleaseConfig, SystemDefaults, Workspace, WorkspaceConfig};

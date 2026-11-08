@@ -1211,3 +1211,56 @@ fn the_engine_publishes_what_its_frames_cost() {
     "the total holds its phases: {cost:?}"
   );
 }
+
+const FILE_TOML: &str = "[project]\nname = \"File Game\"\n[system]\nresolution = \"1600x900\"\n";
+
+#[test]
+fn a_project_file_gives_the_project_values_where_there_is_no_ryo_toml() {
+  let r = EngineBuilder::new()
+    .project(crate::core::config::ProjectFile::from_toml(FILE_TOML))
+    .start_scene(EmptyScene)
+    .resolve_in(None, false);
+  assert_eq!((r.config.width, r.config.height), (1600, 900));
+  assert_eq!(r.config.title, "File Game");
+  assert_eq!(r.store_name, "File Game");
+  // The default dev window keys are for dev builds; a project file resolves
+  // as a release build does
+  assert!(!r.config.debug.dev_window_keys);
+}
+
+#[test]
+fn a_project_file_without_a_name_names_the_store_after_the_title() {
+  let r = EngineBuilder::new()
+    .project(crate::core::config::ProjectFile::from_toml(
+      "[system]\nvsync = false\n",
+    ))
+    .title("Untitled Hopper")
+    .start_scene(EmptyScene)
+    .resolve_in(None, false);
+  assert_eq!(r.store_name, "Untitled Hopper");
+}
+
+#[test]
+fn a_workspace_without_a_ryo_toml_leaves_the_project_file_to_decide() {
+  let (_dir, ws) = temp_workspace("", None);
+  std::fs::remove_file(_dir.path().join("Ryo.toml")).unwrap();
+  let r = EngineBuilder::new()
+    .project(crate::core::config::ProjectFile::from_toml(FILE_TOML))
+    .start_scene(EmptyScene)
+    .resolve_in(Some(&ws), false);
+  assert_eq!((r.config.width, r.config.height), (1600, 900));
+}
+
+#[test]
+fn a_dev_build_prefers_the_ryo_toml_on_disk() {
+  let (_dir, ws) = temp_workspace(
+    "[project]\nname = \"Disk Game\"\n[system]\nresolution = \"800x600\"\n",
+    None,
+  );
+  let r = EngineBuilder::new()
+    .project(crate::core::config::ProjectFile::from_toml(FILE_TOML))
+    .start_scene(EmptyScene)
+    .resolve_in(Some(&ws), false);
+  assert_eq!((r.config.width, r.config.height), (800, 600));
+  assert_eq!(r.config.title, "Disk Game");
+}

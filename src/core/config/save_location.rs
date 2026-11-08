@@ -150,6 +150,49 @@ pub(crate) fn enter_bundle_dir() {
   }
 }
 
+/// Make a project name one folder: path separators, control characters and
+/// `<>:"|?*` become `-`, then surrounding whitespace and trailing dots go.
+pub(crate) fn folder_from_project_name(name: &str) -> String {
+  let replaced: String = name
+    .chars()
+    .map(|c| {
+      if c.is_control() || "/\\<>:\"|?*".contains(c) {
+        '-'
+      } else {
+        c
+      }
+    })
+    .collect();
+  replaced.trim().trim_end_matches(['.', ' ']).to_string()
+}
+
+/// The name the browser keeps a game's saves under: `[release] save_folder`
+/// when it can name a folder, else `[project] name` as `ryo2d build` turns it
+/// into a folder name, else the window title (warned once: games on one site
+/// then share saves by title).
+pub(crate) fn store_name(
+  release_save_folder: Option<&str>,
+  project_name: Option<&str>,
+  title: &str,
+) -> String {
+  if let Some(folder) = release_save_folder.filter(|folder| valid_save_folder(folder)) {
+    return folder.to_string();
+  }
+  if let Some(folder) = project_name
+    .map(folder_from_project_name)
+    .filter(|folder| valid_save_folder(folder))
+  {
+    return folder;
+  }
+  static WARNED: std::sync::Once = std::sync::Once::new();
+  WARNED.call_once(|| {
+    crate::engine_warn!(
+      "web saves are named after the window title; set [project] name so other games on the same site don't share them"
+    );
+  });
+  title.to_string()
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -304,6 +347,46 @@ mod tests {
       release_save_dir(lookup, &game_dir(), os_data()),
       Some(game_dir().join("data"))
     );
+  }
+
+  #[test]
+  fn project_names_become_a_single_folder() {
+    assert_eq!(
+      folder_from_project_name("Squash/Stretch Demo"),
+      "Squash-Stretch Demo"
+    );
+    assert_eq!(folder_from_project_name("Game: Remix"), "Game- Remix");
+    assert_eq!(folder_from_project_name("Breakout"), "Breakout");
+    assert_eq!(folder_from_project_name("  Hopper. . "), "Hopper");
+  }
+
+  #[test]
+  fn the_store_name_prefers_save_folder_then_name_then_title() {
+    assert_eq!(
+      store_name(Some("Studio/Hopper"), Some("Hopper"), "Title"),
+      "Studio/Hopper"
+    );
+    // An invalid save folder falls through to the name
+    assert_eq!(
+      store_name(Some("../x"), Some("Star: Hopper"), "T"),
+      "Star- Hopper"
+    );
+    assert_eq!(
+      store_name(None, Some("Star Hopper"), "Title"),
+      "Star Hopper"
+    );
+    assert_eq!(store_name(None, Some("  "), "Title"), "Title");
+    assert_eq!(store_name(None, None, "Other"), "Other");
+    // Warned once a process, however many games fall back
+    let warned = crate::core::dev_log::get_entries()
+      .iter()
+      .filter(|entry| {
+        entry
+          .message
+          .contains("web saves are named after the window title")
+      })
+      .count();
+    assert_eq!(warned, 1);
   }
 
   #[test]
