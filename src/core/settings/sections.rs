@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 use super::file::{RawSection, bad_value};
 use crate::core::saves::versions::VersionRegistry;
@@ -140,9 +140,9 @@ impl SectionRegistry {
 
   /// Loads the sections `stored` holds, upgrading older versions. The
   /// current version holds only the fields that differ from the default, so
-  /// they are merged over the default's; an older version's value goes to
-  /// the steps as it is. A section that does not read keeps its value, with
-  /// a warning.
+  /// they are merged over the default's (unless the entry is whole); an
+  /// older version's value goes to the steps as it is. A section that does
+  /// not read keeps its value, with a warning.
   pub(crate) fn apply(
     &mut self,
     stored: &BTreeMap<String, RawSection>,
@@ -152,7 +152,7 @@ impl SectionRegistry {
       let Some(raw) = stored.get(&section.key) else {
         continue;
       };
-      let value = if raw.version == section.value.current(&self.versions) {
+      let value = if !raw.whole && raw.version == section.value.current(&self.versions) {
         merged(raw.value.clone(), section.value.default_json().ok())
       } else {
         raw.value.clone()
@@ -172,7 +172,7 @@ impl SectionRegistry {
 
   /// The sections to store: `base`'s sections that are not registered, and
   /// each registered one that differs from its default, at its current
-  /// version
+  /// version (see `stored_value`)
   pub(crate) fn store(&self, base: &BTreeMap<String, RawSection>) -> BTreeMap<String, RawSection> {
     let mut stored: BTreeMap<String, RawSection> = base
       .iter()
@@ -182,9 +182,14 @@ impl SectionRegistry {
     for section in &self.sections {
       match (section.value.json(), section.value.default_json()) {
         (Ok(value), Ok(default)) => {
-          if let Some(value) = changed(value, &default) {
+          if let Some((value, whole)) = stored_value(value, &default) {
             let version = section.value.current(&self.versions);
-            stored.insert(section.key.clone(), RawSection { version, value });
+            let raw = RawSection {
+              version,
+              whole,
+              value,
+            };
+            stored.insert(section.key.clone(), raw);
           } else if let Some(unread) = &section.unread {
             stored.insert(section.key.clone(), unread.clone());
           }
@@ -218,18 +223,34 @@ fn merged(stored: Value, default: Option<Value>) -> Value {
   }
 }
 
-/// What a section stores of `value`: for an object, the fields that differ
-/// from the default's, otherwise the whole value; `None` when nothing differs
-fn changed(value: Value, default: &Value) -> Option<Value> {
-  match (value, default) {
-    (Value::Object(fields), Value::Object(defaults)) => {
-      let fields: Map<String, Value> = fields
-        .into_iter()
-        .filter(|(key, field)| defaults.get(key) != Some(field))
-        .collect();
-      (!fields.is_empty()).then_some(Value::Object(fields))
+/// What a section stores of `value`, and whether it is the whole value:
+/// `None` when it equals the default. An object stores the fields that differ
+/// from the default's when merging them back over the default gives `value`
+/// again; an object they cannot express (a field skipped when `None`, a key
+/// taken out of a map, another enum variant), or whose default is not an
+/// object, is stored whole. Any other value is stored as it is, since a load
+/// merges only objects.
+fn stored_value(value: Value, default: &Value) -> Option<(Value, bool)> {
+  if value == *default {
+    return None;
+  }
+  let diff = match (&value, default) {
+    (Value::Object(fields), Value::Object(defaults)) => Value::Object(
+      fields
+        .iter()
+        .filter(|(key, field)| defaults.get(*key) != Some(*field))
+        .map(|(key, field)| (key.clone(), field.clone()))
+        .collect(),
+    ),
+    _ => {
+      let whole = value.is_object();
+      return Some((value, whole));
     }
-    (value, default) => (value != *default).then_some(value),
+  };
+  if merged(diff.clone(), Some(default.clone())) == value {
+    Some((diff, false))
+  } else {
+    Some((value, true))
   }
 }
 
@@ -280,6 +301,7 @@ mod tests {
       stored.get("unlocked"),
       Some(&RawSection {
         version: 1,
+        whole: false,
         value: json!([3, 5]),
       })
     );

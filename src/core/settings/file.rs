@@ -26,6 +26,9 @@ pub(crate) struct FileValues {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct RawSection {
   pub(crate) version: u32,
+  /// Whether `value` is the whole value rather than the fields that differ
+  /// from the default's
+  pub(crate) whole: bool,
   pub(crate) value: Value,
 }
 
@@ -141,6 +144,7 @@ pub(crate) fn parse(bytes: &[u8], project_env: &Map<String, Value>) -> Parsed {
         ENV_SECTION.to_string(),
         RawSection {
           version: 1,
+          whole: false,
           value: Value::Object(changed),
         },
       );
@@ -208,10 +212,11 @@ pub(crate) fn render(file: &SettingsFile) -> Vec<u8> {
       .sections
       .iter()
       .map(|(key, section)| {
-        let fields = vec![
-          ("version".to_string(), section.version.to_string()),
-          ("value".to_string(), pretty(&section.value, 3)),
-        ];
+        let mut fields = vec![("version".to_string(), section.version.to_string())];
+        if section.whole {
+          fields.push(("whole".to_string(), "true".to_string()));
+        }
+        fields.push(("value".to_string(), pretty(&section.value, 3)));
         (key.clone(), object(fields, 2))
       })
       .collect();
@@ -367,8 +372,8 @@ fn read_bindings(
   Some(bindings)
 }
 
-/// The game sections, each `{"version": N, "value": ...}`. A section of
-/// another shape is left out, with a warning.
+/// The game sections, each `{"version": N, "value": ...}` with an optional
+/// `"whole": true`. A section of another shape is left out, with a warning.
 fn read_sections(value: Value, warnings: &mut Vec<String>) -> BTreeMap<String, RawSection> {
   let Value::Object(entries) = value else {
     warnings.push(bad_value(
@@ -380,10 +385,12 @@ fn read_sections(value: Value, warnings: &mut Vec<String>) -> BTreeMap<String, R
   let mut sections = BTreeMap::new();
   for (key, entry) in entries {
     let version = entry.get("version").and_then(Value::as_u64);
-    match (version, entry.get("value")) {
-      (Some(version), Some(value)) => {
+    let whole = entry.get("whole").map_or(Some(false), Value::as_bool);
+    match (version, whole, entry.get("value")) {
+      (Some(version), Some(whole), Some(value)) => {
         let section = RawSection {
           version: u32::try_from(version).unwrap_or(u32::MAX),
+          whole,
           value: value.clone(),
         };
         sections.insert(key, section);
@@ -527,7 +534,16 @@ mod tests {
       "video".into(),
       RawSection {
         version: 2,
+        whole: false,
         value: json!({"scale": 2}),
+      },
+    );
+    file.sections.insert(
+      "names".into(),
+      RawSection {
+        version: 1,
+        whole: true,
+        value: json!({}),
       },
     );
     file.unknown.insert("later".into(), json!({"x": [1, 2]}));

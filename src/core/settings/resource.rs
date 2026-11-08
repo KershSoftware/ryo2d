@@ -346,6 +346,32 @@ mod tests {
     Settings::new(defaults, UserPreferenceFilter::all(), sections)
   }
 
+  /// Registers `T` as the section `s`, changes it, writes the file and loads
+  /// it into fresh settings: the file's `game.s` entry, and the settings
+  fn section_round_trip<T>(change: impl FnOnce(&mut T)) -> (Value, Settings)
+  where
+    T: Default + Serialize + serde::de::DeserializeOwned + Send + Sync + 'static,
+  {
+    let make = || {
+      let mut sections = SectionRegistry::default();
+      sections.register::<T>("s", None);
+      Settings::new(
+        EngineValues::default(),
+        UserPreferenceFilter::all(),
+        sections,
+      )
+    };
+    let mut settings = make();
+    change(settings.game_mut::<T>());
+    let bytes = file::render(&settings.to_file(&SettingsFile::default()));
+    let mut loaded = make();
+    let mut warnings = Vec::new();
+    loaded.apply_file(&read(&bytes, &Map::new()), &mut warnings);
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let json: Value = serde_json::from_slice(&bytes).unwrap();
+    (json["game"]["s"].clone(), loaded)
+  }
+
   #[test]
   fn a_setting_changed_from_its_default_is_the_only_engine_key_written() {
     let mut settings = settings(EngineValues::default());
@@ -447,6 +473,7 @@ mod tests {
       base.sections.get("env"),
       Some(&RawSection {
         version: 1,
+        whole: false,
         value: json!({"difficulty": "hard"}),
       })
     );
@@ -698,6 +725,87 @@ mod tests {
     assert_eq!(
       written(&settings, &base),
       json!({"format_version": 3, "game": {"video": {"version": 1, "value": {"subtitles": false}}}})
+    );
+  }
+
+  #[test]
+  fn a_section_field_skipped_when_none_keeps_the_player_s_none() {
+    #[derive(Debug, PartialEq, Serialize, Deserialize)]
+    struct Hud {
+      #[serde(skip_serializing_if = "Option::is_none")]
+      limit: Option<u32>,
+      scale: u32,
+    }
+
+    impl Default for Hud {
+      fn default() -> Self {
+        Hud {
+          limit: Some(5),
+          scale: 1,
+        }
+      }
+    }
+
+    let (entry, loaded) = section_round_trip::<Hud>(|hud| hud.limit = None);
+    assert_eq!(
+      loaded.game::<Hud>(),
+      &Hud {
+        limit: None,
+        scale: 1
+      }
+    );
+    assert_eq!(
+      entry,
+      json!({"version": 1, "whole": true, "value": {"scale": 1}})
+    );
+  }
+
+  #[test]
+  fn a_map_section_keeps_a_removed_default_key_removed() {
+    #[derive(Debug, PartialEq, Serialize, Deserialize)]
+    #[serde(transparent)]
+    struct Names(std::collections::BTreeMap<String, u32>);
+
+    impl Default for Names {
+      fn default() -> Self {
+        Names([("a".to_string(), 1), ("b".to_string(), 2)].into())
+      }
+    }
+
+    let (entry, loaded) = section_round_trip::<Names>(|names| {
+      names.0.remove("a");
+      names.0.insert("c".into(), 3);
+    });
+    assert_eq!(
+      loaded.game::<Names>(),
+      &Names([("b".to_string(), 2), ("c".to_string(), 3)].into())
+    );
+    assert_eq!(
+      entry,
+      json!({"version": 1, "whole": true, "value": {"b": 2, "c": 3}})
+    );
+  }
+
+  #[test]
+  fn an_enum_section_keeps_the_player_s_variant() {
+    #[derive(Debug, PartialEq, Serialize, Deserialize)]
+    enum Control {
+      Mouse { sensitivity: u32 },
+      Pad { dead_zone: u32 },
+    }
+
+    impl Default for Control {
+      fn default() -> Self {
+        Control::Mouse { sensitivity: 5 }
+      }
+    }
+
+    let (entry, loaded) =
+      section_round_trip::<Control>(|control| *control = Control::Pad { dead_zone: 2 });
+    assert_eq!(loaded.game::<Control>(), &Control::Pad { dead_zone: 2 });
+    assert_eq!(
+      entry,
+      json!({"version": 1, "whole": true, "value": {"Pad": {"dead_zone": 2}}})
     );
   }
 
