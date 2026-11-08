@@ -93,7 +93,21 @@ use frame::{
 pub(crate) enum EngineEvent {
   /// The web's asynchronous GPU setup finished
   GpuReady(Box<Result<WgpuRenderer, crate::core::graphics::GpuError>>),
+  /// The browser's save store opened, or did not within its time
+  #[cfg(target_arch = "wasm32")]
+  StoreLoaded(Box<Result<WebStore, crate::core::saves::SaveError>>),
 }
+
+/// The browser's save store, as it opens
+#[cfg(target_arch = "wasm32")]
+type WebStore = crate::core::saves::browser::BrowserStorage<crate::core::saves::idb::IdbStore>;
+
+/// The web's start-up: the GPU and the browser's store, until both arrive
+#[cfg(target_arch = "wasm32")]
+type WebStartup = crate::core::saves::browser::StartupGate<
+  Box<Result<WgpuRenderer, crate::core::graphics::GpuError>>,
+  Box<Result<WebStore, crate::core::saves::SaveError>>,
+>;
 
 /// Configuration for the engine
 #[derive(Debug, Clone)]
@@ -333,9 +347,12 @@ pub struct Engine {
   scale_factor: f64,
   // Why the window's GPU setup failed, returned from `run`
   startup_error: Option<crate::core::graphics::GpuError>,
-  // Delivers the web's asynchronous GPU setup to the event loop
+  // Delivers the web's asynchronous GPU setup and save store to the event loop
   #[cfg(target_arch = "wasm32")]
   proxy: Option<EventLoopProxy<EngineEvent>>,
+  /// The first scene waits for both
+  #[cfg(target_arch = "wasm32")]
+  startup: WebStartup,
   last_window_size: (u32, u32),
   // The window has a zero side: frames run but nothing is drawn
   minimized: bool,
@@ -357,7 +374,7 @@ pub struct Engine {
   game_name: Option<String>,
   game_version: Option<String>,
   /// The name the browser keeps the saves under
-  #[allow(dead_code)]
+  #[cfg(target_arch = "wasm32")]
   store_name: String,
   /// The store a headless engine (or a builder's `memory_saves`) keeps saves
   /// in, for `HeadlessEngine::saves`
@@ -569,7 +586,10 @@ impl Engine {
       tiled_project,
       game_name,
       game_version,
+      #[cfg(target_arch = "wasm32")]
       store_name,
+      #[cfg(not(target_arch = "wasm32"))]
+        store_name: _,
       console_builder,
       pending_resources,
       mut schedules,
@@ -810,6 +830,8 @@ impl Engine {
       startup_error: None,
       #[cfg(target_arch = "wasm32")]
       proxy: None,
+      #[cfg(target_arch = "wasm32")]
+      startup: WebStartup::new(),
       last_window_size: initial_size,
       minimized: false,
       vsync,
@@ -822,6 +844,7 @@ impl Engine {
       offscreen_pace: None,
       game_name,
       game_version,
+      #[cfg(target_arch = "wasm32")]
       store_name,
       memory_saves,
     }
@@ -1051,6 +1074,57 @@ impl Engine {
     if let Some(saves) = self.world.get_resource::<SaveService>() {
       saves.flush(QUIT_FLUSH_WARN, QUIT_FLUSH_GIVE_UP);
     }
+  }
+
+  /// The browser's store arrived (the web's start-up, before the first
+  /// scene): the saves keep their files in it, and the settings file is read
+  /// from it and applied as `Engine::new` applies it. A store that did not
+  /// open leaves saves unavailable, and the settings at their defaults for
+  /// the session
+  #[cfg(any(target_arch = "wasm32", test))]
+  pub(crate) fn store_arrived(
+    &mut self,
+    store: Result<Arc<dyn crate::core::saves::storage::Storage>, crate::core::saves::SaveError>,
+  ) {
+    let read = {
+      let Some(saves) = self.world.get_resource::<SaveService>() else {
+        return;
+      };
+      if !crate::core::saves::browser::install(saves, store)
+        || !self.world.contains_resource::<SettingsWriter>()
+      {
+        return;
+      }
+      // The web never kept a file of an older format, whose `env` is
+      // compared with the project's
+      read_settings_file(saves, &serde_json::Map::new())
+    };
+    let mut settings = self.world.resource_mut::<Settings>();
+    let (writer, bindings) = apply_settings_file(read, &mut settings);
+    let values = *settings.values();
+    self.world.insert_resource(writer);
+    if let Some(mut audio) = self.world.get_resource_mut::<AudioEngine>() {
+      for (kind, volume) in VolumeKind::ALL.into_iter().zip(values.volumes) {
+        audio.set_volume_setting(kind, volume);
+      }
+    }
+    if let Some(saved) = &bindings {
+      self
+        .world
+        .resource_mut::<Input>()
+        .actions_mut()
+        .load_saved(saved);
+    }
+    self.vsync = values.vsync;
+    if !self.headless {
+      let debug = &mut self.config.debug;
+      debug.show_fps = values.show_fps;
+      self.overlay_mode =
+        OverlayMode::from_flags(values.show_fps, debug.show_frame_timing, debug.show_stats);
+    }
+    // The page sizes the canvas, and fullscreen waits for the player's
+    // gesture, so the window is not asked again for what the file holds
+    self.applied_settings = AppliedSettings::new(values);
   }
 
   /// The store the saves are kept in, when it is memory (headless)
@@ -1993,19 +2067,10 @@ impl EngineBuilder {
       let project_env = workspace
         .map(|ws| ws.config().system.env.clone().into_iter().collect())
         .unwrap_or_default();
-      let (file, unread) = read_settings_file(&saves, &project_env);
-      let file = file.unwrap_or_default();
-      let mut warnings = Vec::new();
-      player.apply_file(&file, &mut warnings);
-      for warning in warnings {
-        engine_warn!(module: "Settings", "{warning}");
-      }
-      if player.is_kept(UserPreference::Bindings) {
-        saved_bindings = file.bindings.clone();
-      }
-      // A file this engine could not fully read is never overwritten
-      let read_only = unread || file.format > SETTINGS_FORMAT;
-      SettingsWriter::new(file, read_only, &player)
+      let (writer, bindings) =
+        apply_settings_file(read_settings_file(&saves, &project_env), &mut player);
+      saved_bindings = bindings;
+      writer
     });
 
     let mut config = self.config;
@@ -2078,6 +2143,10 @@ struct ResolvedBuild {
   game_name: Option<String>,
   game_version: Option<String>,
   /// The name the browser keeps the saves under
+  #[cfg_attr(
+    all(not(target_arch = "wasm32"), not(test)),
+    expect(dead_code, reason = "only the web names a store; tests check the name")
+  )]
   store_name: String,
   console_builder: Option<ConsoleCommandBuilder>,
   pending_resources: Vec<WorldSetup>,
@@ -2193,28 +2262,66 @@ fn player_defaults(settings: &crate::core::config::resolve::ResolvedSettings) ->
   }
 }
 
+/// The settings file as [`read_settings_file`] found it
+struct SettingsRead {
+  /// `None`: none was read, so the defaults stand
+  file: Option<SettingsFile>,
+  /// The file stays where it is unread (it could not be read, or set
+  /// aside), so it must not be overwritten
+  unread: bool,
+  /// A damaged file's set-aside, while the storage commits it (the
+  /// browser's)
+  aside: Option<crate::core::saves::storage::Completion>,
+}
+
+/// Applies the settings file read to `settings`, warning of its bad values;
+/// returns the writer over it and the player's saved bindings, when kept
+fn apply_settings_file(
+  read: SettingsRead,
+  settings: &mut Settings,
+) -> (SettingsWriter, Option<BTreeMap<String, Vec<String>>>) {
+  let file = read.file.unwrap_or_default();
+  let mut warnings = Vec::new();
+  settings.apply_file(&file, &mut warnings);
+  for warning in warnings {
+    engine_warn!(module: "Settings", "{warning}");
+  }
+  let bindings = if settings.is_kept(UserPreference::Bindings) {
+    file.bindings.clone()
+  } else {
+    None
+  };
+  // A file this engine could not fully read is never overwritten
+  let read_only = read.unread || file.format > SETTINGS_FORMAT;
+  let writer = SettingsWriter::new(file, read_only, settings).after_set_aside(read.aside);
+  (writer, bindings)
+}
+
 /// The settings file, read through the save storage. A damaged file is set
 /// aside as `system.json.damaged` and its newest whole copy (the backup)
-/// read instead, else none: the defaults. Warns of what it could not read.
-/// The flag is true when the file stays where it is unread (it could not be
-/// read, or set aside), so it must not be overwritten
+/// read instead, else none: the defaults. Warns of what it could not read
 fn read_settings_file(
   saves: &SaveService,
   project_env: &serde_json::Map<String, serde_json::Value>,
-) -> (Option<SettingsFile>, bool) {
+) -> SettingsRead {
   use crate::core::saves::storage::{Origin, Recovery};
   use crate::core::settings::file::{self, DAMAGED_NAME, FILE_NAME, Parsed};
 
+  let mut read = SettingsRead {
+    file: None,
+    unread: false,
+    aside: None,
+  };
   let found = match saves.recover_named(FILE_NAME, file::verify) {
-    Ok(Recovery::Missing) => return (None, false),
+    Ok(Recovery::Missing) => return read,
     Ok(Recovery::Damaged) => None,
     Ok(Recovery::Found { bytes, from }) => Some((bytes, from)),
     Err(error) => {
       engine_warn!(module: "Settings", "could not read {FILE_NAME} ({error}); using the defaults");
-      return (None, true);
+      read.unread = true;
+      return read;
     }
   };
-  let mut unread = false;
   // Another copy is read when the file itself is damaged, or gone in a crash
   if found
     .as_ref()
@@ -2232,35 +2339,41 @@ fn read_settings_file(
         }
       }
       Ok(Err(error)) => {
-        unread = true;
+        read.unread = true;
         engine_warn!(
           module: "Settings",
           "{FILE_NAME} is damaged and could not be set aside ({error}); {then}"
         );
       }
-      // Renamed, or renaming in a store that commits later
-      Ok(Ok(())) | Err(_) => engine_warn!(
-        module: "Settings",
-        "{FILE_NAME} is damaged: set aside as {DAMAGED_NAME}; {then}"
-      ),
+      result => {
+        // Renaming in a store that commits later: the writer waits for it
+        if let Err(pending) = result {
+          read.aside = Some(pending);
+        }
+        engine_warn!(
+          module: "Settings",
+          "{FILE_NAME} is damaged: set aside as {DAMAGED_NAME}; {then}"
+        );
+      }
     }
   }
   let Some((bytes, _)) = found else {
-    return (None, unread);
+    return read;
   };
   match file::parse(&bytes, project_env) {
     Parsed::Read { file, warnings } | Parsed::Newer { file, warnings } => {
       for warning in warnings {
         engine_warn!(module: "Settings", "{warning}");
       }
-      (Some(file), unread)
+      read.file = Some(file);
     }
     // Not met: a copy that verified is a JSON object
     Parsed::Damaged(reason) => {
       engine_warn!(module: "Settings", "could not read {FILE_NAME} ({reason}); using the defaults");
-      (None, true)
+      read.unread = true;
     }
   }
+  read
 }
 
 #[cfg(test)]

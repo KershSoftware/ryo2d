@@ -88,12 +88,18 @@ puffin = { version = "0.19", optional = true }
 # Optional WebRTC transport for NAT traversal (enable with --features matchbox)
 matchbox_socket = { version = "0.10", optional = true, features = ["ggrs"] }
 
-# The web build: the browser's event loop, futures and panics, and its
-# random-number backend (gilrs picks its web gamepad backend by target)
+# The web build: the browser's event loop, futures and panics, IndexedDB for
+# the saves, and its random-number backend (gilrs picks its web gamepad
+# backend by target)
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "=0.2.129"
 wasm-bindgen-futures = "0.4.79"
-web-sys = { version = "0.3.106", features = ["Window", "Document", "Element", "HtmlCanvasElement", "CssStyleDeclaration", "console", "Navigator", "UserActivation"] }
+js-sys = "0.3.106"
+web-sys = { version = "0.3.106", features = [
+  "Window", "Document", "Element", "HtmlCanvasElement", "CssStyleDeclaration", "console", "Navigator", "UserActivation",
+  "IdbFactory", "IdbOpenDbRequest", "IdbDatabase", "IdbObjectStore", "IdbTransaction", "IdbTransactionMode", "IdbRequest",
+  "IdbVersionChangeEvent", "IdbKeyRange", "DomException", "Event", "EventTarget",
+] }
 console_error_panic_hook = "0.1.7"
 # The web is single-threaded: let wgpu's types be Send + Sync there too
 wgpu = { version = "30.0.1", features = ["fragile-send-sync-non-atomic-wasm"] }

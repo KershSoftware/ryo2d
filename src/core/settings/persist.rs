@@ -10,6 +10,7 @@ use web_time::Instant;
 use super::file::{self, FILE_NAME, SettingsFile};
 use super::{EngineValues, Settings};
 use crate::core::ecs::{Message, Resource};
+use crate::core::saves::storage::Completion;
 use crate::core::saves::{SaveError, SaveService};
 
 /// How long after the last change the settings file is written
@@ -51,6 +52,9 @@ pub(crate) struct SettingsWriter {
   stored: Vec<u8>,
   /// The latest write queued, until its result comes back
   queued: Option<Queued>,
+  /// The set-aside of a damaged file while the storage commits it (the
+  /// browser's): nothing is written until it lands
+  aside: Option<Completion>,
 }
 
 struct Queued {
@@ -72,7 +76,16 @@ impl SettingsWriter {
       changed_at: None,
       stored: text,
       queued: None,
+      aside: None,
     }
+  }
+
+  /// Holds writes until `aside`, the set-aside of a damaged file still
+  /// committing, lands; if it fails, the file stays where it is and is never
+  /// written this session
+  pub(crate) fn after_set_aside(mut self, aside: Option<Completion>) -> SettingsWriter {
+    self.aside = aside;
+    self
   }
 
   /// What the file keeps changed at `now`: it is written a second later,
@@ -162,8 +175,12 @@ impl SettingsWriter {
   }
 
   /// Queues the file `settings` give, when it differs from the latest
-  /// queued or stored; true when it was queued
+  /// queued or stored; true when it was queued. While a set-aside commits it
+  /// waits, keeping the change for the next tick
   fn write(&mut self, settings: &Settings, saves: &SaveService) -> bool {
+    if !self.aside_settled() {
+      return false;
+    }
     self.changed_at = None;
     let text = self.render(settings);
     self.noted.clone_from(&text);
@@ -184,6 +201,31 @@ impl SettingsWriter {
     let id = saves.write_named(FILE_NAME, text.clone(), file::verify);
     self.queued = Some(Queued { id, text });
     true
+  }
+
+  /// False while the set-aside of a damaged file is still committing. One
+  /// that failed left the damaged file in place, so it is never overwritten
+  fn aside_settled(&mut self) -> bool {
+    let Some(aside) = self.aside.take() else {
+      return true;
+    };
+    match aside.poll() {
+      Ok(Ok(())) => true,
+      Ok(Err(error)) => {
+        self.read_only = true;
+        if !std::mem::replace(&mut self.warned, true) {
+          crate::engine_warn!(
+            module: "Settings",
+            "the damaged {FILE_NAME} could not be set aside ({error}); it is left as it is, and no setting changed this session is saved"
+          );
+        }
+        true
+      }
+      Err(pending) => {
+        self.aside = Some(pending);
+        false
+      }
+    }
   }
 }
 

@@ -1811,3 +1811,154 @@ fn a_build_that_keeps_nothing_never_writes_settings() {
   drop(engine);
   assert!(store.names().is_empty(), "{:?}", store.names());
 }
+
+/// An engine started as the web starts it: no save storage until the
+/// browser's arrives
+fn started_as_on_the_web(builder: EngineBuilder) -> Engine {
+  Engine::new(builder.hot_reload(false).resolve_in(None, false), true)
+}
+
+fn keeping_all_on_the_web() -> Engine {
+  started_as_on_the_web(
+    EngineBuilder::new()
+      .with_user_preferences(crate::core::config::UserPreferenceFilter::all())
+      .start_scene(EmptyScene),
+  )
+}
+
+#[test]
+fn the_browser_store_arriving_reads_the_settings_and_keeps_the_saves() {
+  use crate::core::audio::AudioEngine;
+  use crate::core::saves::browser::fake::FakeIdb;
+  use crate::core::saves::{SaveError, SaveInfo};
+
+  let file = br#"{"format_version": 3, "music_volume": 0.3, "vsync": false, "bindings": {"jump": ["Key:KeyJ"]}}"#;
+  let (browser, storage) = FakeIdb::opened(&[("system.json", file)]);
+  let mut engine = keeping_all_on_the_web();
+  assert!(matches!(
+    engine
+      .world
+      .resource::<SaveService>()
+      .save("web-slot", 1u32, SaveInfo::new()),
+    Err(SaveError::Unavailable)
+  ));
+  assert_eq!(
+    engine
+      .world
+      .resource::<Settings>()
+      .volume(VolumeKind::Music),
+    1.0
+  );
+
+  engine.store_arrived(Ok(Arc::new(storage)));
+  let settings = engine.world.resource::<Settings>();
+  assert_eq!(settings.volume(VolumeKind::Music), 0.3);
+  assert!(!settings.vsync());
+  assert_eq!(engine.applied_settings.values, *settings.values());
+  assert!(!engine.vsync);
+  assert_eq!(
+    engine
+      .world
+      .resource::<AudioEngine>()
+      .volume_setting(VolumeKind::Music),
+    0.3,
+    "before any sound plays"
+  );
+  assert_eq!(
+    engine
+      .world
+      .resource_mut::<Input>()
+      .actions_mut()
+      .saved_map()["jump"],
+    ["Key:KeyJ"]
+  );
+  // What was read is not written back
+  engine.apply_settings();
+  engine.save_settings(Instant::now() + DEBOUNCE);
+  assert!(browser.waiting().is_empty());
+
+  // The saves go to the browser's store
+  let saves = engine.world.resource::<SaveService>();
+  saves.save("web-slot", 7u32, SaveInfo::new()).unwrap();
+  browser.wait_for(1);
+  browser.release(Ok(()));
+  engine.flush_saves();
+  assert!(browser.db().contains_key("web-slot.ryo-save"));
+}
+
+#[test]
+fn a_damaged_settings_file_in_the_browser_is_written_only_once_its_set_aside_lands() {
+  use crate::core::saves::browser::IdbFailure;
+  use crate::core::saves::browser::fake::FakeIdb;
+
+  let damaged: &[(&str, &[u8])] = &[
+    ("system.json", b"not json"),
+    (
+      "system.json.bak",
+      br#"{"format_version": 3, "music_volume": 0.4}"#,
+    ),
+  ];
+  let set_aside = vec![
+    crate::core::saves::browser::IdbOp::Put("system.json.damaged".into(), b"not json".to_vec()),
+    crate::core::saves::browser::IdbOp::Delete("system.json".into()),
+  ];
+  let change_music = |engine: &mut Engine, volume: f32| {
+    engine
+      .world
+      .resource_mut::<Settings>()
+      .set_volume(VolumeKind::Music, volume);
+    engine.apply_settings();
+  };
+  // Whether the writer queues a write, the second being up
+  let write_due = |engine: &mut Engine| {
+    let mut queued = false;
+    engine.with_settings_writer(|writer, settings, saves| {
+      queued = writer.tick(Instant::now() + DEBOUNCE, settings, saves);
+    });
+    queued
+  };
+
+  // The set-aside fails in the browser: the file is never overwritten
+  let (browser, storage) = FakeIdb::opened(damaged);
+  let mut engine = keeping_all_on_the_web();
+  engine.store_arrived(Ok(Arc::new(storage)));
+  assert_eq!(
+    engine
+      .world
+      .resource::<Settings>()
+      .volume(VolumeKind::Music),
+    0.4,
+    "the backup's"
+  );
+  assert_eq!(browser.waiting(), std::slice::from_ref(&set_aside));
+  change_music(&mut engine, 0.6);
+  assert!(!write_due(&mut engine), "no write while it commits");
+  browser.release(Err(IdbFailure::Other("set-aside-refused-in-test".into())));
+  assert!(!write_due(&mut engine));
+  assert!(engine.world.resource::<SettingsWriter>().read_only);
+  drop(engine);
+  assert!(browser.waiting().is_empty());
+  assert_eq!(browser.db()["system.json"], b"not json");
+  assert_eq!(settings_warnings("set-aside-refused-in-test"), 1);
+
+  // It lands: the change waiting for it is written
+  let (browser, storage) = FakeIdb::opened(damaged);
+  let mut engine = keeping_all_on_the_web();
+  engine.store_arrived(Ok(Arc::new(storage)));
+  change_music(&mut engine, 0.6);
+  assert!(!write_due(&mut engine));
+  assert_eq!(browser.waiting(), [set_aside]);
+  browser.release(Ok(()));
+  assert!(write_due(&mut engine), "the change kept for it");
+  browser.wait_for(1);
+  browser.release(Ok(()));
+  engine.flush_saves();
+  drop(engine);
+  let db = browser.db();
+  assert_eq!(db["system.json.damaged"], b"not json");
+  assert_eq!(
+    serde_json::from_slice::<serde_json::Value>(&db["system.json"]).unwrap(),
+    serde_json::json!({"format_version": 3, "music_volume": 0.6})
+  );
+  assert!(db.contains_key("system.json.bak"), "the backup stays");
+}

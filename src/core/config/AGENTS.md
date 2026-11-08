@@ -38,7 +38,7 @@ Adding a setting: its line in the table, a `ResolvedSettings` field that `resolv
 
 `resolve_in` reads the file only when there are no embedded values and no Ryo.toml on disk (`Workspace::has_config_file`), through `Workspace::from_toml_str`. It resolves as a release build of the same Ryo.toml: `ProjectLayer::for_release` is the one layer both `embedded_config_env` and the file use (resolution always set, dev window keys off unless set, no icon value). The one difference: a file has no folder to name an unnamed project after, so its title falls back to `[project] name` and then the engine's. `RYO_EMBED_RESOLUTION` stays the release marker for native code; a `ProjectFile` never switches it on. `a_web_style_resolve_matches_the_release_resolve_of_the_same_ryo_toml` (`cli/commands/build.rs`) holds the two paths together.
 
-`save_location::store_name` names the browser's save store: `[release] save_folder` when valid, else `[project] name` made a folder name (`folder_from_project_name`), else the window title, warned once a process. `resolve_in` computes it into `ResolvedBuild` and the `Engine` keeps it.
+`save_location::store_name` names the browser's save store: `[release] save_folder` when valid, else `[project] name` made a folder name (`folder_from_project_name`), else the window title, warned once a process. `resolve_in` computes it into `ResolvedBuild`, and the web's `Engine` keeps it to open the browser's store (saves module notes).
 
 ## Save Location
 

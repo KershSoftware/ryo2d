@@ -6,15 +6,23 @@
 //! carries a header, checksums and the game's data as compressed RON, the
 //! game's data versions upgrade older data through typed steps, and the
 //! storage layer keeps slot names, the crash-safe replace and recover order,
-//! and the storage backends (a native folder and an in-memory store that can
-//! inject faults for tests).
+//! and the storage backends (a native folder, the browser's IndexedDB
+//! mirrored in memory, and an in-memory store that can inject faults for
+//! tests).
 
 use std::time::Duration;
 
+#[cfg_attr(
+  all(not(target_arch = "wasm32"), not(test)),
+  expect(dead_code, reason = "only the web keeps its saves in the browser")
+)]
+pub(crate) mod browser;
 pub(crate) mod container;
 mod error;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod files;
+#[cfg(target_arch = "wasm32")]
+pub(crate) mod idb;
 pub(crate) mod memory;
 pub(crate) mod replace;
 mod service;

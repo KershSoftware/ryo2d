@@ -39,10 +39,6 @@ pub(crate) enum Completion {
   /// The work has finished
   Done(io::Result<()>),
   /// The work finishes later and sends its result here
-  #[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the browser's storage commits later")
-  )]
   Pending(Receiver<io::Result<()>>),
 }
 

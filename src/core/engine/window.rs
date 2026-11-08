@@ -204,6 +204,31 @@ impl Engine {
     }
   }
 
+  /// The web's GPU set-up arrived: start the engine on it, or stop
+  fn gpu_arrived(
+    &mut self,
+    event_loop: &ActiveEventLoop,
+    gpu: Result<WgpuRenderer, crate::core::graphics::GpuError>,
+  ) {
+    match gpu {
+      Ok(renderer) => {
+        if let Some(window) = self.window.clone() {
+          let size = window.inner_size();
+          self.finish_gpu_setup(event_loop, window, renderer);
+          // The page sized the canvas while the GPU was on its way
+          if size.width > 0 && size.height > 0 {
+            self.resize_window(size.width, size.height);
+          }
+        }
+      }
+      Err(error) => {
+        crate::engine_error!(module: "Render", "{}", error);
+        self.startup_error = Some(error);
+        event_loop.exit();
+      }
+    }
+  }
+
   fn renderer_settings(&self) -> RendererSettings {
     RendererSettings {
       presentation: self.config.presentation,
@@ -636,9 +661,13 @@ impl ApplicationHandler<EngineEvent> for Engine {
         event_loop.exit();
       }
     }
-    // The web sets the GPU up asynchronously; `user_event` finishes it
+    // The web sets the GPU up asynchronously, and opens the browser's save
+    // store alongside it (read whole, so loads stay synchronous);
+    // `user_event` finishes once both have arrived
     #[cfg(target_arch = "wasm32")]
     {
+      use crate::core::saves::idb::{OPEN_TIMEOUT, open_in_time};
+
       let proxy = self.proxy.clone();
       let gpu_window = Arc::clone(&window);
       wasm_bindgen_futures::spawn_local(async move {
@@ -647,30 +676,38 @@ impl ApplicationHandler<EngineEvent> for Engine {
           let _ = proxy.send_event(EngineEvent::GpuReady(Box::new(result)));
         }
       });
+      let proxy = self.proxy.clone();
+      let store_name = self.store_name.clone();
+      wasm_bindgen_futures::spawn_local(async move {
+        let store = open_in_time(&store_name, OPEN_TIMEOUT).await;
+        if let Some(proxy) = proxy {
+          let _ = proxy.send_event(EngineEvent::StoreLoaded(Box::new(store)));
+        }
+      });
       self.window = Some(window);
       self.cursor_resolver.window_reset();
     }
   }
 
   fn user_event(&mut self, event_loop: &ActiveEventLoop, event: EngineEvent) {
+    #[cfg(target_arch = "wasm32")]
+    {
+      match event {
+        EngineEvent::GpuReady(gpu) => self.startup.gpu_ready(gpu),
+        EngineEvent::StoreLoaded(store) => self.startup.store_ready(store),
+      }
+      // The first scene waits for both, so it loads from the store
+      let Some((gpu, store)) = self.startup.take() else {
+        return;
+      };
+      self.store_arrived(
+        (*store).map(|store| Arc::new(store) as Arc<dyn crate::core::saves::storage::Storage>),
+      );
+      self.gpu_arrived(event_loop, *gpu);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
     match event {
-      EngineEvent::GpuReady(result) => match *result {
-        Ok(renderer) => {
-          if let Some(window) = self.window.clone() {
-            let size = window.inner_size();
-            self.finish_gpu_setup(event_loop, window, renderer);
-            // The page sized the canvas while the GPU was on its way
-            if size.width > 0 && size.height > 0 {
-              self.resize_window(size.width, size.height);
-            }
-          }
-        }
-        Err(error) => {
-          crate::engine_error!(module: "Render", "{}", error);
-          self.startup_error = Some(error);
-          event_loop.exit();
-        }
-      },
+      EngineEvent::GpuReady(gpu) => self.gpu_arrived(event_loop, *gpu),
     }
   }
 
