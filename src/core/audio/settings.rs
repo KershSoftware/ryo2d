@@ -11,16 +11,15 @@ pub(crate) const SILENCE_DB: f32 = -60.0;
 
 /// One of the player's six volume settings, each on its standard bus (a
 /// game's own buses take the setting of the standard bus they are under).
-/// A settings menu sets them with `ctx.audio().set_volume_setting(kind,
-/// value)`, from 0 (silent) to 1 (the mix as designed), and saves them in
-/// `SystemState`:
+/// A settings menu sets them with `ctx.settings().set_volume(kind, value)`,
+/// from 0 (silent) to 1 (the mix as designed); the engine plays the change and
+/// saves it in `system.json`:
 ///
 /// ```
 /// use ryo2d::prelude::*;
 ///
-/// fn music_slider(ctx: &mut SceneContext<'_>, settings: &mut SystemState, value: f32) {
-///   ctx.audio().set_volume_setting(VolumeKind::Music, value);
-///   settings.music_volume = ctx.audio().volume_setting(VolumeKind::Music);
+/// fn music_slider(ctx: &mut SceneContext<'_>, value: f32) {
+///   ctx.settings().set_volume(VolumeKind::Music, value);
 /// }
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

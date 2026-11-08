@@ -166,7 +166,7 @@ pub(crate) fn embedded_config_env(
   env.push(("RYO_EMBED_SAVE_FOLDER", release_save_folder(config)));
   env.push((
     "RYO_EMBED_ENV",
-    serde_json::to_string(&config.system.env).unwrap_or_else(|_| "{}".to_string()),
+    serde_json::to_string(&config.env_json()).unwrap_or_else(|_| "{}".to_string()),
   ));
   env
 }
@@ -637,9 +637,7 @@ mod tests {
     let env = embedded_config_env(&workspace("[project]\ntitle = \"Hopper\"\n"));
     let workspace = Workspace::from_embedded(std::path::Path::new("."), lookup_in(&env));
     assert_eq!(
-      workspace
-        .as_ref()
-        .map(|ws| ws.config().system.audio_buffer_frames),
+      ProjectLayer::from_embedded(lookup_in(&env)).map(|layer| layer.audio_buffer_frames),
       Some(None)
     );
     assert_eq!(

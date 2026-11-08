@@ -232,7 +232,7 @@ pub mod prelude {
   };
 
   // Workspace and config
-  pub use crate::core::config::{SystemDefaults, Workspace, WorkspaceConfig};
+  pub use crate::core::config::{Workspace, WorkspaceConfig};
 
   // Saves
   pub use crate::core::saves::{
@@ -243,10 +243,9 @@ pub mod prelude {
   // Settings
   pub use crate::core::settings::{Settings, SettingsSaveFailed};
 
-  // Preferences and the old save manager
-  pub use crate::core::config::{
-    DisplayMode, GameSaveData, Resolution, SaveManager, SystemState, UserPreference,
-    UserPreferenceFilter, compress_data, decompress_data, parse_resolution,
+  // Preferences
+  pub use crate::core::config::preferences::{
+    DisplayMode, Resolution, UserPreference, UserPreferenceFilter, parse_resolution,
   };
 
   // UI
@@ -265,9 +264,7 @@ pub mod prelude {
   };
 
   // Errors
-  pub use crate::core::error::{
-    EngineError, EngineResult, ImageError, SaveManagerError, SaveManagerResult,
-  };
+  pub use crate::core::error::{EngineError, EngineResult, ImageError};
   pub use crate::core::graphics::GpuError;
 
   // Navigation and pathfinding

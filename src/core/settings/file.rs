@@ -531,7 +531,14 @@ mod tests {
   #[test]
   fn a_rendered_file_reads_back_the_same() {
     let mut file = SettingsFile::default();
-    file.values.volumes = [Some(0.25), None, Some(0.0), None, None, Some(1.0)];
+    file.values.volumes = [
+      Some(0.25),
+      Some(0.5),
+      Some(0.0),
+      Some(0.3),
+      Some(0.6),
+      Some(1.0),
+    ];
     file.values.window_size = Some((1600, 900));
     file.values.display_mode = Some(DisplayMode::ExclusiveFullscreen);
     file.values.vsync = Some(false);

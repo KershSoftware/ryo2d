@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use super::engine::AudioEngine;
-use super::{AudioClip, Mixer, Music, Sound, Voice, VolumeKind};
+use super::{AudioClip, Mixer, Music, Sound, Voice};
 use crate::core::asset::{AssetId, Assets, Handle};
 use crate::core::ecs::kernel::Mut;
 use crate::core::ecs::{Entity, Vec2, World};
@@ -177,24 +177,6 @@ impl<'w> AudioView<'w> {
         engine.play(world, playable, &options)
       })
       .unwrap_or_default()
-  }
-
-  /// Set the player's volume setting `kind`, from 0 (silent) to 1 (the mix
-  /// as designed), on the perceptual curve: 0.5 is about -12 dB. Playing
-  /// sounds follow it at once (smoothed over 10 ms). A value below 0 or
-  /// above 1 is clamped, and one that is not a number is the kind's default
-  pub fn set_volume_setting(&mut self, kind: VolumeKind, value: f32) {
-    if let Some(mut engine) = self.world.get_resource_mut::<AudioEngine>() {
-      engine.set_volume_setting(kind, value);
-    }
-  }
-
-  /// The player's volume setting `kind`, from 0 to 1
-  pub fn volume_setting(&self, kind: VolumeKind) -> f32 {
-    self
-      .world
-      .get_resource::<AudioEngine>()
-      .map_or(kind.default_value(), |engine| engine.volume_setting(kind))
   }
 
   /// Set `bus`'s volume in dB, in place of the mixer's (at most +24; -60

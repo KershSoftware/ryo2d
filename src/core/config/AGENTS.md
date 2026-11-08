@@ -1,6 +1,17 @@
 # AGENTS.md - Config Module
 
-See skill `ryo-config-save` for Ryo.toml layout and the save API.
+See skill `ryo-config-save` for the Ryo.toml layout, the player's settings and the saves.
+
+The project's configuration, and the types that say which of the player's saved settings a game uses. The player's settings (`system.json`) are in `core/settings` and the game's saves in `core/saves`; this module only supplies their defaults and filter.
+
+| File | What |
+|------|------|
+| `workspace.rs` | `Workspace` (discovery, the save location, `from_toml_str`, the embedded workspace) and `WorkspaceConfig`: name, title, paths, `debug`, `release`, `tiled_project` and `[env]` (`env_json` gives it as JSON) |
+| `project.rs`, `project_table.rs` | `ProjectLayer` and the table that declares each project setting (Project Settings, below) |
+| `resolve.rs` | `resolve_settings` (pure): the layers into `ResolvedSettings`, and the engine's default values |
+| `preferences.rs` | `UserPreference`, `UserPreferenceFilter`, `DisplayMode`, `Resolution` and `parse_resolution` (all in the prelude) |
+| `project_file.rs` | `ProjectFile`, the Ryo.toml compiled into a game (Project File, below) |
+| `save_location.rs` | Where release saves go and the browser store's name (Save Location, below) |
 
 ## Configuration Precedence
 
@@ -11,8 +22,7 @@ See skill `ryo-config-save` for Ryo.toml layout and the save API.
 
 Those are the game's defaults. `resolve_in` makes the player's `Settings` from them and applies `system.json` over the settings the (combined) `with_user_preferences` filter keeps, only keys present in the file (`settings/AGENTS.md`, In the engine).
 
-- A missing system.json key is "no preference", not a default. `SaveManager::load_or_create_system` (and `_filtered`) return the game's `[system]` value for a missing volume or display mode (as the engine plays it), `load_system` the engine's; the window size and an absent vsync or show_fps are never filled from the project
-- `system.json` carries `format_version` (`SYSTEM_FORMAT`, 2; written by every save). A file without it is format 1, from an engine whose volumes were amplitudes (20·log10 v dB): `RawSystemFile::upgrade` converts each saved volume to √v (the same dB on the 40·log10 v curve, two decimals) as any load reads it, and the loads that write (`load_or_create_system*`) save it with the version at once, as the file loads with the engine's defaults, so the save adds no key. That save is best effort (`save_loaded_system`): a file that cannot be written (read-only, on read-only media) still loads, converted, warned once a run, and is converted again at each load. A file is converted once; `load_system` converts only what it returns
+- A missing system.json key is "no preference", not a default: the setting keeps the game's value, and the window size and an absent vsync or show_fps are never filled from the project. The file's format, its older formats (the version 1 volume conversion among them) and its writing are in `settings/AGENTS.md`
 - The engine never seeds `system.json`: the file keeps what the player changed, so a later builder or `[system]` change reaches every setting the player never touched. Headless builds read it from their memory store, never the disk
 - Filter with `UserPreference` / `UserPreferenceFilter` (`all()`, `none()`, or an array of fields):
   - `Resolution` is the player's window size; the game's resolution (the pixel-art target or design area) always comes from the project and builder layers. Leave it out to keep the window the game picks
@@ -38,7 +48,7 @@ Adding a setting: its line in the table, a `ResolvedSettings` field that `resolv
 
 `resolve_in` reads the file only when there are no embedded values and no Ryo.toml on disk (`Workspace::has_config_file`), through `Workspace::from_toml_str`. It resolves as a release build of the same Ryo.toml: `ProjectLayer::for_release` is the one layer both `embedded_config_env` and the file use (resolution always set, dev window keys off unless set, no icon value). The one difference: a file has no folder to name an unnamed project after, so its title falls back to `[project] name` and then the engine's. `RYO_EMBED_RESOLUTION` stays the release marker for native code; a `ProjectFile` never switches it on. `a_web_style_resolve_matches_the_release_resolve_of_the_same_ryo_toml` (`cli/commands/build.rs`) holds the two paths together.
 
-`save_location::store_name` names the browser's save store: `[release] save_folder` when valid, else `[project] name` made a folder name (`folder_from_project_name`), else the window title, warned once a process. `resolve_in` computes it into `ResolvedBuild`, and the web's `Engine` keeps it to open the browser's store (saves module notes).
+`save_location::store_name` names the browser's save store: `[release] save_folder` when valid, else `[project] name` made a folder name (`folder_from_project_name`), else the window title, warned once a process. `resolve_in` computes it into `ResolvedBuild`, and the web's `Engine` keeps it to open the browser's store (`saves/AGENTS.md`).
 
 ## Save Location
 

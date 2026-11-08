@@ -3,7 +3,7 @@
 
 use super::engine::AudioEngine;
 use super::voice::VoiceState;
-use super::{AudioClip, PlayOptions, Playable, Sound, Voice, VolumeKind};
+use super::{AudioClip, PlayOptions, Playable, Sound, Voice};
 use crate::core::asset::Handle;
 use crate::core::ecs::kernel::{
   Deferred, DeferredWorld, Mut, Res, SystemBuffer, SystemMeta, SystemParam,
@@ -172,26 +172,6 @@ impl Audio<'_, '_> {
       self.queue.push(Queued::BusVolume(bus.to_string(), db));
     }
   }
-
-  /// Set the player's volume setting `kind`, from 0 (silent) to 1, as
-  /// [`AudioView::set_volume_setting`](super::AudioView::set_volume_setting)
-  /// does, once the buffer applies. [`volume_setting`](Self::volume_setting)
-  /// reads it back at once
-  pub fn set_volume_setting(&mut self, kind: VolumeKind, value: f32) {
-    if self.engine.is_some() {
-      self.queue.push(Queued::Setting(kind, value));
-    }
-  }
-
-  /// The player's volume setting `kind`, from 0 to 1: the last this system
-  /// set (clamped, NaN the default), else the engine's
-  pub fn volume_setting(&self, kind: VolumeKind) -> f32 {
-    match (&self.engine, self.queue.setting(kind)) {
-      (_, Some(value)) => kind.sanitize(value),
-      (Some(engine), None) => engine.volume_setting(kind),
-      (None, None) => kind.default_value(),
-    }
-  }
 }
 
 /// What a play queued by [`Audio`] plays
@@ -214,7 +194,6 @@ pub(crate) enum Queued {
   Snapshot(String),
   ClearSnapshot,
   BusVolume(String, f32),
-  Setting(VolumeKind, f32),
 }
 
 impl Queued {
@@ -237,14 +216,6 @@ pub struct AudioQueue(Vec<Queued>);
 impl AudioQueue {
   fn push(&mut self, queued: Queued) {
     self.0.push(queued);
-  }
-
-  /// The last volume setting `kind` was queued at
-  fn setting(&self, kind: VolumeKind) -> Option<f32> {
-    self.0.iter().rev().find_map(|queued| match *queued {
-      Queued::Setting(queued, value) if queued == kind => Some(value),
-      _ => None,
-    })
   }
 }
 
@@ -306,8 +277,7 @@ mod tests {
   use crate::core::asset::{Assets, Handle};
   use crate::core::audio::{
     AudioClip, AudioEmitter, AudioEngine, AudioLogEntry, AudioLogKind, AudioView, LimitRule, Mixer,
-    SnapshotBus, SnapshotDef, Sound, SoundClip, Voice, VoiceLimit, VolumeKind, in_scene,
-    release_scene,
+    SnapshotBus, SnapshotDef, Sound, SoundClip, Voice, VoiceLimit, in_scene, release_scene,
   };
   use crate::core::ecs::kernel::{
     IntoScheduleConfigs, LogLevel, Res, ResMut, Resource, Schedule, ScheduleBuildSettings,
@@ -777,18 +747,10 @@ mod tests {
     });
     let mut schedule = schedule();
     schedule.add_systems(|mut audio: Audio| {
-      audio.set_volume_setting(VolumeKind::Music, 0.5);
-      assert_eq!(audio.volume_setting(VolumeKind::Music), 0.5);
-      audio.set_volume_setting(VolumeKind::Sfx, 7.0);
-      assert_eq!(audio.volume_setting(VolumeKind::Sfx), 1.0, "clamped");
       audio.set_bus_volume("sfx", -6.0);
       audio.snapshot("hushed");
     });
     schedule.run(&mut world);
-    assert_eq!(
-      AudioView::new(&mut world).volume_setting(VolumeKind::Music),
-      0.5
-    );
     let buses = world.resource::<AudioEngine>().buses();
     let bus = |name: &str| buses.iter().find(|bus| bus.name == name).cloned();
     assert_eq!(bus("sfx").map(|bus| bus.base_db), Some(-6.0));
@@ -837,7 +799,6 @@ mod tests {
     schedule.add_systems(
       |mut audio: Audio, clip: Res<Clip>, mut played: ResMut<Played>| {
         played.0.push(audio.play(&clip.0));
-        assert_eq!(audio.volume_setting(VolumeKind::Ui), 1.0);
       },
     );
     schedule.run(&mut world);

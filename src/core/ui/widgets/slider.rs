@@ -39,7 +39,7 @@ impl<'a> UiContext<'a> {
   /// ```ignore
   /// let volume = ui.slider(&mut settings.volume, 0.0..=1.0).step(0.05).show();
   /// if volume.changed() {
-  ///     ctx.audio().set_volume_setting(VolumeKind::Master, settings.volume);
+  ///     ctx.settings().set_volume(VolumeKind::Master, settings.volume);
   /// }
   /// ```
   #[track_caller]

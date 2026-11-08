@@ -27,10 +27,6 @@ pub enum EngineError {
   #[error("Render error: {0}")]
   Render(String),
 
-  /// The old save manager's error
-  #[error(transparent)]
-  Save(#[from] SaveManagerError),
-
   /// Workspace configuration error
   #[error("Workspace error: {0}")]
   WorkspaceError(String),
@@ -50,50 +46,6 @@ pub enum ImageError {
   #[error(transparent)]
   Decode(#[from] image::ImageError),
 }
-
-/// The old save manager's errors (`SaveManager`; the saves themselves give
-/// `saves::SaveError`)
-#[derive(Error, Debug)]
-pub enum SaveManagerError {
-  /// Failed to serialize data
-  #[error("Serialization failed: {0}")]
-  Serialization(String),
-
-  /// Failed to deserialize data
-  #[error("Deserialization failed: {0}")]
-  Deserialization(String),
-
-  /// Failed to compress data
-  #[error("Compression failed: {0}")]
-  Compression(String),
-
-  /// Failed to decompress data
-  #[error("Decompression failed: {0}")]
-  Decompression(String),
-
-  /// I/O error during save/load
-  #[error("I/O error: {0}")]
-  Io(#[from] std::io::Error),
-
-  /// Save data version mismatch
-  #[error("Version mismatch: save is v{found}, expected v{expected}")]
-  VersionMismatch { expected: u32, found: u32 },
-
-  /// Save file not found
-  #[error("Save not found: {0}")]
-  NotFound(PathBuf),
-
-  /// Invalid save slot
-  #[error("Invalid save slot: {0}")]
-  InvalidSlot(String),
-
-  /// Saving to disk is not available on this platform (the web)
-  #[error("saving to disk is not available on the web")]
-  Unsupported,
-}
-
-/// Result type for the old save manager's operations
-pub type SaveManagerResult<T> = Result<T, SaveManagerError>;
 
 /// Errors that can occur while capturing a frame
 #[derive(Error, Debug)]

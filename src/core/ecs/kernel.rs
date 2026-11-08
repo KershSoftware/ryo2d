@@ -46,7 +46,6 @@ pub(crate) use bevy_ecs::system::{Deferred, SystemBuffer, SystemMeta, SystemPara
 // A schedule that fails to build on conflicting systems (tests)
 #[cfg(test)]
 pub(crate) use bevy_ecs::schedule::{LogLevel, ScheduleBuildSettings};
-// Named apart from the public player-settings `SystemState` (config/save.rs)
 pub(crate) use bevy_ecs::system::SystemState as EcsSystemState;
 // Resources live on hidden entities; `IsResource` marks them so world-wide
 // entity sweeps can leave them alone.

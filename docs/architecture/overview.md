@@ -364,8 +364,8 @@ Details: `src/core/ui/AGENTS.md`; the designs: `docs/specs/2026-10-16-ui-interac
 
 | What | File | API |
 |------|------|-----|
-| Player settings (resolution, display mode, vsync, volumes, FPS, console, input bindings) | `system.json`, uncompressed JSON | `SystemState`, `UserPreference`, `EngineBuilder::with_user_preferences` |
-| Game data | `{slot}.ryo-save`: magic `RYO2`, version, DEFLATE-compressed RON | `SaveManager`, `GameSaveData<T>` |
+| Player settings (resolution, display mode, vsync, volumes, FPS, console, input bindings) | `system.json`, uncompressed JSON | `ctx.settings()` (`Settings`), `UserPreference`, `EngineBuilder::with_user_preferences` |
+| Game data | `{slot}.ryo-save`, written crash-safely, with a checksum | `ctx.saves()` (`SavesView`), `Saves` |
 
 Settings resolve in order: engine defaults, `Ryo.toml`, `EngineBuilder` calls, then the saved `system.json` preferences the game asks for. Saves go to the OS user data folder, or `data/` beside the game with `[release] portable`. The engine does not snapshot the world; a game saves the state it needs as its own data.
 

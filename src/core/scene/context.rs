@@ -639,26 +639,6 @@ impl SceneContext<'_> {
       .unwrap_or_default()
   }
 
-  /// Request a display mode change, applied after the frame.
-  pub fn request_display_mode(&mut self, mode: DisplayMode) {
-    self.window().display_mode = Some(mode);
-  }
-
-  /// Request a resolution change, applied after the frame.
-  pub fn request_resolution(&mut self, width: u32, height: u32) {
-    let mut window = self.window();
-    window.width = Some(width);
-    window.height = Some(height);
-  }
-
-  /// Request a resolution and display mode change together.
-  pub fn request_display_change(&mut self, width: u32, height: u32, mode: DisplayMode) {
-    let mut window = self.window();
-    window.width = Some(width);
-    window.height = Some(height);
-    window.display_mode = Some(mode);
-  }
-
   /// Request a UI scale in render pixels per UI unit, or `None` for the
   /// automatic scale (UI units equal to screen units at any display
   /// scale). Applied after the frame.

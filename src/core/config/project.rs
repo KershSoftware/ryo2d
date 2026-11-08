@@ -9,7 +9,7 @@
 
 use std::path::PathBuf;
 
-use super::save::{DisplayMode, parse_resolution};
+use super::preferences::{DisplayMode, parse_resolution};
 use super::workspace::Workspace;
 use crate::core::ui::file::vocab::edit_distance;
 
@@ -153,7 +153,7 @@ impl ProjectLayer {
     let config = workspace.config();
     ProjectLayer {
       title: Some(config.title.clone()),
-      dev_console: Some(config.system.dev_console),
+      dev_console: Some(config.debug.dev_console),
       icon: config
         .release
         .logo

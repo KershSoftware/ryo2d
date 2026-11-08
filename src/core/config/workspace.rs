@@ -31,7 +31,7 @@
 //! save_data = "data"
 //! assets = "assets"
 //!
-//! [system]  # Defaults for system.json (user-facing settings)
+//! [system]  # The game's defaults for the player's settings
 //! resolution = "1920x1080"
 //! vsync = true
 //! display_mode = "windowed"
@@ -71,11 +71,8 @@
 //! // Or load from explicit path
 //! let workspace = Workspace::from_path("./my_game")?;
 //!
-//! // Access system defaults from Ryo.toml [system] section
-//! let system_defaults = &workspace.config().system;
-//! if let Some((width, height)) = system_defaults.resolution {
-//!     println!("Default resolution: {width}x{height}");
-//! }
+//! // Read what Ryo.toml names
+//! println!("Title: {}", workspace.config().title);
 //! ```
 
 use std::collections::{HashMap, HashSet};
@@ -132,8 +129,6 @@ pub struct WorkspaceConfig {
   /// The debug switches the project sets (`[debug]`, plus `[system] show_fps`
   /// and `console`), over the engine's defaults
   pub debug: DebugConfig,
-  /// System defaults for user configuration (from the `[system]` section)
-  pub system: SystemDefaults,
   /// Release/distribution configuration (from the `[release]` section)
   pub release: ReleaseConfig,
   /// The Tiled project (an asset path) naming the class and enum types of
@@ -158,77 +153,6 @@ pub struct ReleaseConfig {
   /// Folder under the OS user data folder for this game's saves
   /// (`[release] save_folder`); `None` uses `[project] name`.
   pub save_folder: Option<String>,
-}
-
-/// System defaults for user configuration (system.json).
-///
-/// These values from the `[system]` section in Ryo.toml define the
-/// developer defaults for user-facing settings. Builder calls and saved system.json
-/// preferences override them (see `EngineBuilder::with_user_preferences`). They seed a new
-/// system.json in dev builds.
-///
-/// **Mapped section:** `[system]` only
-/// **Not mapped:** `[debug]`, `[project]`, `[paths]`, `[env]` (dev-only)
-#[derive(Debug, Clone)]
-pub struct SystemDefaults {
-  /// Resolution as (width, height). None = not set, use engine defaults (1280x720).
-  pub resolution: Option<(u32, u32)>,
-  /// Whether `resolution` is a pixel-art target (scaled by whole numbers)
-  pub pixel_art: bool,
-  /// Default VSync setting
-  pub vsync: bool,
-  /// Default display mode (windowed, exclusive_fullscreen, borderless_fullscreen)
-  pub display_mode: super::save::DisplayMode,
-  /// Default master volume (0.0 - 1.0)
-  pub master_volume: f32,
-  /// Default music volume (0.0 - 1.0)
-  pub music_volume: f32,
-  /// Default SFX volume (0.0 - 1.0)
-  pub sfx_volume: f32,
-  /// Default interface sounds volume (0.0 - 1.0)
-  pub ui_volume: f32,
-  /// Default dialogue volume (0.0 - 1.0)
-  pub voice_volume: f32,
-  /// Default ambience volume (0.0 - 1.0)
-  pub ambience_volume: f32,
-  /// The audio device's buffer, in frames; `None` leaves the device's
-  /// default (a smaller buffer is lower latency, a larger one safer)
-  pub audio_buffer_frames: Option<u32>,
-  /// Default show FPS setting (from the `[system]` section)
-  pub show_fps: bool,
-  /// Whether to enable the developer console (toggled with backtick key).
-  /// Unlike debug settings, this is available in both debug and release builds.
-  pub dev_console: bool,
-  /// Target FPS when the window is unfocused. 0 = use target_fps. Default: 0.
-  pub target_background_fps: u32,
-  /// Whether to continue rendering when the window is unfocused. Default: true.
-  pub background_rendering: bool,
-  /// Environment variables from `[env]` section, converted to JSON-compatible types.
-  /// Seeded into `SystemState.env` when creating a new `system.json`.
-  pub env: HashMap<String, serde_json::Value>,
-}
-
-impl Default for SystemDefaults {
-  fn default() -> Self {
-    SystemDefaults {
-      resolution: None,
-      pixel_art: false,
-      vsync: true,
-      display_mode: super::save::DisplayMode::Windowed,
-      master_volume: super::resolve::DEFAULT_MASTER_VOLUME,
-      music_volume: super::resolve::DEFAULT_MUSIC_VOLUME,
-      sfx_volume: super::resolve::DEFAULT_SFX_VOLUME,
-      ui_volume: super::resolve::DEFAULT_UI_VOLUME,
-      voice_volume: super::resolve::DEFAULT_VOICE_VOLUME,
-      ambience_volume: super::resolve::DEFAULT_AMBIENCE_VOLUME,
-      audio_buffer_frames: None,
-      show_fps: false,
-      dev_console: false, // Disabled by default, enable in Ryo.toml [system] section
-      target_background_fps: 0,
-      background_rendering: true,
-      env: HashMap::new(),
-    }
-  }
 }
 
 impl Workspace {
@@ -278,7 +202,6 @@ impl Workspace {
           .map(|value| (key.clone(), value))
       })
       .collect();
-    config.system.env = env;
 
     Some(Workspace {
       root: root.to_path_buf(),
@@ -453,11 +376,6 @@ impl Workspace {
     };
     config.apply_project(project);
 
-    // Game-specific env: as JSON for SystemDefaults, as written for WorkspaceConfig
-    config.system.env = env
-      .iter()
-      .filter_map(|(k, v)| serde_json::to_value(v).ok().map(|jv| (k.clone(), jv)))
-      .collect();
     config.env = env;
 
     Ok(config)
@@ -558,24 +476,6 @@ impl Workspace {
     self.config.save_data = path.into();
     self.release_save_dir = None;
   }
-
-  /// Create a `SaveManager` configured for this workspace.
-  ///
-  /// The save manager will use [`save_location`](Self::save_location): the OS
-  /// user folder in release builds, `[paths] save_data` in dev builds.
-  /// The directory will be created if it doesn't exist.
-  ///
-  /// # Example
-  ///
-  /// ```rust,ignore
-  /// let workspace = Workspace::discover()?;
-  /// let save_manager = workspace.create_save_manager()?;
-  /// save_manager.save_game("slot1", &my_data)?;
-  /// ```
-  pub fn create_save_manager(&self) -> Result<super::save::SaveManager, EngineError> {
-    let save_dir = self.save_data_dir()?;
-    super::save::SaveManager::new(save_dir).map_err(EngineError::Save)
-  }
 }
 
 impl Default for WorkspaceConfig {
@@ -593,7 +493,6 @@ impl Default for WorkspaceConfig {
         dev_console: false,
         ..DebugConfig::default()
       },
-      system: SystemDefaults::default(),
       release: ReleaseConfig::default(),
       tiled_project: None,
       env: std::collections::HashMap::new(),
@@ -656,6 +555,16 @@ impl WorkspaceConfig {
     self.env.get(key).and_then(|v| v.as_float())
   }
 
+  /// `[env]` as JSON values, the form `system.json` once seeded it in and
+  /// `ryo2d build` embeds it in.
+  pub(crate) fn env_json(&self) -> HashMap<String, serde_json::Value> {
+    self
+      .env
+      .iter()
+      .filter_map(|(k, v)| serde_json::to_value(v).ok().map(|jv| (k.clone(), jv)))
+      .collect()
+  }
+
   /// Check if an environment variable exists.
   pub fn has_env(&self, key: &str) -> bool {
     self.env.contains_key(key)
@@ -666,27 +575,6 @@ impl WorkspaceConfig {
   /// Take the settings the project sets, keeping the defaults for the rest.
   /// `[system] show_fps` also shows the FPS counter.
   fn apply_project(&mut self, project: &ProjectLayer) {
-    let system = &mut self.system;
-    system.resolution = project.resolution;
-    set(&mut system.pixel_art, project.pixel_art);
-    set(&mut system.vsync, project.vsync);
-    set(&mut system.display_mode, project.display_mode);
-    set(&mut system.master_volume, project.master_volume);
-    set(&mut system.music_volume, project.music_volume);
-    set(&mut system.sfx_volume, project.sfx_volume);
-    set(&mut system.ui_volume, project.ui_volume);
-    set(&mut system.voice_volume, project.voice_volume);
-    set(&mut system.ambience_volume, project.ambience_volume);
-    // 0 frames is no fixed buffer
-    system.audio_buffer_frames = project.audio_buffer_frames.filter(|&frames| frames > 0);
-    set(&mut system.show_fps, project.show_fps);
-    set(&mut system.dev_console, project.dev_console);
-    set(&mut system.target_background_fps, project.background_fps);
-    set(
-      &mut system.background_rendering,
-      project.background_rendering,
-    );
-
     let debug = &mut self.debug;
     set(&mut debug.show_fps, project.show_fps);
     set(&mut debug.dev_console, project.dev_console);
@@ -735,7 +623,7 @@ fn embedded_env(raw: Option<&str>) -> HashMap<String, serde_json::Value> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::core::config::save::DisplayMode;
+  use crate::core::config::DisplayMode;
   use std::env;
 
   #[test]
@@ -800,15 +688,11 @@ mod tests {
     assert_eq!(config.env_str("difficulty"), Some("hard"));
     assert_eq!(config.env_bool("debug_scene"), Some(false));
     assert_eq!(config.env_int("lives"), Some(3));
+    assert_eq!(ws.project.resolution, Some((800, 600)));
+    assert_eq!(ws.project.master_volume, Some(0.3));
     assert_eq!(
-      config.system.env.get("difficulty"),
-      Some(&serde_json::json!("hard"))
-    );
-    assert_eq!(config.system.resolution, Some((800, 600)));
-    assert_eq!(config.system.master_volume, 0.3);
-    assert_eq!(
-      config.system.display_mode,
-      DisplayMode::BorderlessFullscreen
+      ws.project.display_mode,
+      Some(DisplayMode::BorderlessFullscreen)
     );
     assert_eq!(config.title, "Hopper");
     assert!(config.debug.show_colliders);
@@ -844,8 +728,7 @@ mod tests {
     })
     .unwrap();
     assert!(ws.config().env.is_empty());
-    assert!(ws.config().system.env.is_empty());
-    assert_eq!(ws.config().system.resolution, Some((800, 600)));
+    assert_eq!(ws.project.resolution, Some((800, 600)));
   }
 
   #[test]
@@ -897,45 +780,6 @@ mod tests {
     assert_eq!(workspace.root(), cwd);
   }
 
-  // ==========================================================================
-  // SystemDefaults tests
-  // ==========================================================================
-
-  #[test]
-  fn system_defaults_engine_values() {
-    let defaults = SystemDefaults::default();
-
-    // Engine defaults: no resolution set (falls back to 1280x720)
-    assert_eq!(defaults.resolution, None);
-    // VSync on, windowed
-    assert!(defaults.vsync);
-    assert_eq!(defaults.display_mode, DisplayMode::Windowed);
-    // Audio: every volume 1.0 (the mix as designed), the device's own buffer
-    assert_eq!(defaults.master_volume, 1.0);
-    assert_eq!(defaults.music_volume, 1.0);
-    assert_eq!(defaults.sfx_volume, 1.0);
-    assert_eq!(defaults.ui_volume, 1.0);
-    assert_eq!(defaults.voice_volume, 1.0);
-    assert_eq!(defaults.ambience_volume, 1.0);
-    assert_eq!(defaults.audio_buffer_frames, None);
-    // FPS off by default
-    assert!(!defaults.show_fps);
-  }
-
-  #[test]
-  fn system_defaults_clone() {
-    let defaults = SystemDefaults::default();
-    let cloned = defaults.clone();
-
-    assert_eq!(cloned.resolution, defaults.resolution);
-    assert_eq!(cloned.vsync, defaults.vsync);
-    assert_eq!(cloned.display_mode, defaults.display_mode);
-    assert_eq!(cloned.master_volume, defaults.master_volume);
-    assert_eq!(cloned.music_volume, defaults.music_volume);
-    assert_eq!(cloned.sfx_volume, defaults.sfx_volume);
-    assert_eq!(cloned.show_fps, defaults.show_fps);
-  }
-
   #[test]
   fn debug_config_defaults() {
     let config = WorkspaceConfig::default().debug;
@@ -949,15 +793,6 @@ mod tests {
   }
 
   #[test]
-  fn workspace_config_system_defaults_included() {
-    let config = WorkspaceConfig::default();
-    // System defaults should be engine defaults (no resolution set)
-    assert_eq!(config.system.resolution, None);
-    assert_eq!(config.system.master_volume, 1.0);
-    assert!(!config.system.show_fps);
-  }
-
-  #[test]
   fn workspace_config_debug_defaults_included() {
     let config = WorkspaceConfig::default();
     assert!(!config.debug.show_colliders);
@@ -967,9 +802,7 @@ mod tests {
 
   #[test]
   fn workspace_config_show_fps_in_system() {
-    // show_fps is now in [system] section, not [info]
     let config = WorkspaceConfig::default();
-    assert!(!config.system.show_fps);
     assert!(!config.debug.show_fps);
   }
 
@@ -1019,16 +852,16 @@ mod tests {
   #[test]
   fn system_show_fps_also_shows_the_fps_counter() {
     let (ws, _) = read("[system]\nshow_fps = true\nconsole = true\n");
-    assert!(ws.config().system.show_fps);
+    assert_eq!(ws.project.show_fps, Some(true));
     assert!(ws.config().debug.show_fps);
-    assert!(ws.config().system.dev_console);
+    assert_eq!(ws.project.dev_console, Some(true));
     assert!(ws.config().debug.dev_console);
   }
 
   #[test]
   fn a_project_without_a_console_setting_has_none() {
     let (ws, _) = read("");
-    assert!(!ws.config().system.dev_console);
+    assert_eq!(ws.project.dev_console, None);
     assert!(!ws.config().debug.dev_console);
   }
 
@@ -1046,32 +879,26 @@ mod tests {
   #[test]
   fn system_section_parses_resolution_string() {
     let (ws, warnings) = read("[system]\nresolution = \"800x600\"\nvsync = true\n");
-    assert_eq!(ws.config().system.resolution, Some((800, 600)));
+    assert_eq!(ws.project.resolution, Some((800, 600)));
     assert!(warnings.is_empty(), "{warnings:?}");
   }
 
   #[test]
   fn system_section_resolution_absent_is_none() {
     let (ws, _) = read("[system]\nvsync = true\n");
-    assert_eq!(ws.config().system.resolution, None);
-  }
-
-  #[test]
-  fn system_defaults_resolution_none_when_not_set() {
-    let defaults = SystemDefaults::default();
-    assert_eq!(defaults.resolution, None);
+    assert_eq!(ws.project.resolution, None);
   }
 
   #[test]
   fn system_defaults_resolution_parsed_from_toml() {
     let (ws, _) = read("[system]\nresolution = \"1920x1080\"\n");
-    assert_eq!(ws.config().system.resolution, Some((1920, 1080)));
+    assert_eq!(ws.project.resolution, Some((1920, 1080)));
   }
 
   #[test]
   fn system_defaults_malformed_resolution_falls_back() {
     let (ws, warnings) = read("[system]\nresolution = \"garbage\"\n");
-    assert_eq!(ws.config().system.resolution, None);
+    assert_eq!(ws.project.resolution, None);
     assert_eq!(warnings.len(), 1, "{warnings:?}");
   }
 
@@ -1096,7 +923,7 @@ mod tests {
 
     assert_eq!(from_disk.project, from_text.project);
     assert_eq!(from_disk.name(), "Hopper");
-    assert_eq!(from_text.config().system.resolution, Some((640, 360)));
+    assert_eq!(from_text.project.resolution, Some((640, 360)));
   }
 
   #[test]

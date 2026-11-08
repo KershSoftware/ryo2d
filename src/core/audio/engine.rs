@@ -2285,6 +2285,7 @@ impl EngineState {
     self.refresh_gains();
   }
 
+  #[cfg(test)]
   pub(crate) fn volume_setting(&self, kind: VolumeKind) -> f32 {
     self.settings.get(kind)
   }
@@ -3622,7 +3623,6 @@ impl EngineState {
           self.apply_mixer(world, server);
           self.set_bus_volume(&bus, db);
         }
-        Queued::Setting(kind, value) => self.set_volume_setting(kind, value),
       }
     }
   }
@@ -7759,7 +7759,9 @@ mod tests {
   #[test]
   fn a_mixer_that_lands_before_the_unlock_is_built_at_it() {
     let mut world = locked_world();
-    AudioView::new(&mut world).set_volume_setting(VolumeKind::Master, 0.5);
+    world
+      .resource_mut::<AudioEngine>()
+      .set_volume_setting(VolumeKind::Master, 0.5);
     AudioView::new(&mut world).set_mixer(Mixer {
       buses: vec![BusDef::new("ambience/rain")],
       ..Default::default()

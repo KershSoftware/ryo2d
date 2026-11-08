@@ -2065,7 +2065,7 @@ impl EngineBuilder {
     let settings_writer = reads_file.then(|| {
       // An older file's `env` is compared with the project's, as it was seeded from it
       let project_env = workspace
-        .map(|ws| ws.config().system.env.clone().into_iter().collect())
+        .map(|ws| ws.config().env_json().into_iter().collect())
         .unwrap_or_default();
       let (writer, bindings) =
         apply_settings_file(read_settings_file(&saves, &project_env), &mut player);

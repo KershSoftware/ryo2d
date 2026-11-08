@@ -15,8 +15,8 @@ use std::path::PathBuf;
 
 use crate::core::diagnostics::DebugConfig;
 
+use super::preferences::DisplayMode;
 use super::project::ProjectLayer;
-use super::save::DisplayMode;
 use crate::core::graphics::screen::Presentation;
 
 /// Engine default resolution.

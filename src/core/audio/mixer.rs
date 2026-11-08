@@ -1890,7 +1890,9 @@ mod tests {
   #[test]
   fn a_custom_bus_takes_its_parents_setting() {
     let (mut world, _files) = world_with_mixer(MIXER);
-    AudioView::new(&mut world).set_volume_setting(VolumeKind::Sfx, 0.5);
+    world
+      .resource_mut::<AudioEngine>()
+      .set_volume_setting(VolumeKind::Sfx, 0.5);
     let footsteps = bus(&world, "sfx/footsteps");
     assert_eq!(footsteps.parent.as_deref(), Some("sfx"));
     assert_eq!(footsteps.setting_db, 0.0, "a game's bus has no setting");
@@ -1927,7 +1929,9 @@ mod tests {
     let clip = clip(&mut world, 1.0);
     let sound = looping(&mut world, clip, "sfx");
     let voice = AudioView::new(&mut world).play(&sound);
-    AudioView::new(&mut world).set_volume_setting(VolumeKind::Sfx, 0.5);
+    world
+      .resource_mut::<AudioEngine>()
+      .set_volume_setting(VolumeKind::Sfx, 0.5);
     audio_step(&mut world, FRAME);
     let gains = bus_gains(&world, "sfx");
     let Some(gain) = gains.last() else {
@@ -1937,7 +1941,9 @@ mod tests {
     assert_eq!(gain.fade, MIN_FADE);
     assert!(voice.is_playing(), "{voice:?}");
     assert_eq!(
-      AudioView::new(&mut world).volume_setting(VolumeKind::Sfx),
+      world
+        .resource::<AudioEngine>()
+        .volume_setting(VolumeKind::Sfx),
       0.5
     );
   }
@@ -1956,23 +1962,31 @@ mod tests {
       (0.5, 0.5, -12.04),
     ];
     for (value, setting, db) in cases {
-      let mut audio = AudioView::new(&mut world);
-      audio.set_volume_setting(VolumeKind::Sfx, 0.25);
-      audio.set_volume_setting(VolumeKind::Sfx, value);
-      assert_eq!(audio.volume_setting(VolumeKind::Sfx), setting, "{value}");
+      let mut engine = world.resource_mut::<AudioEngine>();
+      engine.set_volume_setting(VolumeKind::Sfx, 0.25);
+      engine.set_volume_setting(VolumeKind::Sfx, value);
+      assert_eq!(engine.volume_setting(VolumeKind::Sfx), setting, "{value}");
       let sfx = bus(&world, "sfx");
       assert!(close(sfx.gain_db, db), "{value}: {sfx:?}");
       let logged = bus_gains(&world, "sfx").pop().map(|entry| entry.gain_db);
       assert!(logged.is_some_and(|gain| close(gain, db)), "{value}");
     }
     // 0 is kira's silence exactly
-    AudioView::new(&mut world).set_volume_setting(VolumeKind::Sfx, 0.0);
+    world
+      .resource_mut::<AudioEngine>()
+      .set_volume_setting(VolumeKind::Sfx, 0.0);
     assert_eq!(bus(&world, "sfx").gain_db, -60.0);
     // NaN is each kind's own default: master's is 1, the mix as designed
-    AudioView::new(&mut world).set_volume_setting(VolumeKind::Master, 0.5);
-    AudioView::new(&mut world).set_volume_setting(VolumeKind::Master, f32::NAN);
+    world
+      .resource_mut::<AudioEngine>()
+      .set_volume_setting(VolumeKind::Master, 0.5);
+    world
+      .resource_mut::<AudioEngine>()
+      .set_volume_setting(VolumeKind::Master, f32::NAN);
     assert_eq!(
-      AudioView::new(&mut world).volume_setting(VolumeKind::Master),
+      world
+        .resource::<AudioEngine>()
+        .volume_setting(VolumeKind::Master),
       1.0
     );
     assert!(close(bus(&world, "master").gain_db, 0.0));
@@ -1981,7 +1995,9 @@ mod tests {
   #[test]
   fn gain_layers_add_in_db() {
     let (mut world, _files) = world_with_mixer(MIXER);
-    AudioView::new(&mut world).set_volume_setting(VolumeKind::Sfx, 0.5);
+    world
+      .resource_mut::<AudioEngine>()
+      .set_volume_setting(VolumeKind::Sfx, 0.5);
     let sfx = bus(&world, "sfx");
     assert_eq!(
       (sfx.base_db, sfx.snapshot_db, sfx.duck_db),
@@ -1999,7 +2015,9 @@ mod tests {
     AudioView::new(&mut world).set_bus_volume("sfx", 6.0);
     assert!(close(bus(&world, "sfx").gain_db, 6.0 - 12.04 - 3.0 - 9.0));
     // A silent layer silences the bus, whatever the others add
-    AudioView::new(&mut world).set_volume_setting(VolumeKind::Sfx, 0.0);
+    world
+      .resource_mut::<AudioEngine>()
+      .set_volume_setting(VolumeKind::Sfx, 0.0);
     assert_eq!(bus(&world, "sfx").gain_db, -60.0);
     // A custom bus's own volume
     AudioView::new(&mut world).set_bus_volume("sfx/footsteps", -10.0);
@@ -2281,14 +2299,22 @@ mod tests {
       }
     };
     // The voice slider reaches the NPC's reverb
-    AudioView::new(&mut world).set_volume_setting(VolumeKind::Voice, 0.5);
+    world
+      .resource_mut::<AudioEngine>()
+      .set_volume_setting(VolumeKind::Voice, 0.5);
     assert!(close(send_gain(&world, "voice/npc"), -6.0 - 12.04));
-    AudioView::new(&mut world).set_volume_setting(VolumeKind::Voice, 0.0);
+    world
+      .resource_mut::<AudioEngine>()
+      .set_volume_setting(VolumeKind::Voice, 0.0);
     assert_eq!(send_gain(&world, "voice/npc"), -60.0, "silent");
     // The sfx slider does not scale it: the reverb's track has only its
     // own gain
-    AudioView::new(&mut world).set_volume_setting(VolumeKind::Voice, 1.0);
-    AudioView::new(&mut world).set_volume_setting(VolumeKind::Sfx, 0.5);
+    world
+      .resource_mut::<AudioEngine>()
+      .set_volume_setting(VolumeKind::Voice, 1.0);
+    world
+      .resource_mut::<AudioEngine>()
+      .set_volume_setting(VolumeKind::Sfx, 0.5);
     assert!(close(send_gain(&world, "voice/npc"), -6.0));
     let reverb = bus(&world, "sfx/reverb");
     assert_eq!(reverb.gain_db, -2.0);
@@ -2521,7 +2547,9 @@ mod tests {
     let (mut world, _files) = world_with_mixer(SNAPSHOTS);
     AudioView::new(&mut world).snapshot("pause");
     run(&mut world, 0.4);
-    AudioView::new(&mut world).set_volume_setting(VolumeKind::Music, 0.5);
+    world
+      .resource_mut::<AudioEngine>()
+      .set_volume_setting(VolumeKind::Music, 0.5);
     let music = bus(&world, "music");
     assert!(
       close(music.gain_db, -6.0 + volume_to_db(0.5)),
@@ -2778,7 +2806,9 @@ mod tests {
     assert_eq!(last, Some(Duration::from_millis(100)), "{gains:?}");
     // Back on fast frames the smoothing is the minimum again
     run(&mut world, 0.4);
-    AudioView::new(&mut world).set_volume_setting(VolumeKind::Music, 0.5);
+    world
+      .resource_mut::<AudioEngine>()
+      .set_volume_setting(VolumeKind::Music, 0.5);
     assert_eq!(
       bus_gains(&world, "music").last().map(|e| e.fade),
       Some(MIN_FADE)

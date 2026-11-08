@@ -6,16 +6,16 @@ pub use crate::core::config::DisplayMode;
 
 /// Pending window configuration change requested by the game.
 ///
-/// Set through `ctx.window()` or the `SceneContext::request_*` helpers.
-/// The engine will apply these changes after the current update.
+/// Set through `ctx.window()` (`request_ui_scale`); the window's size and display
+/// mode are the player's `Settings`. The engine applies a change after the current update.
 #[derive(Resource, Debug, Clone, Default)]
 pub struct WindowRequest {
   /// New resolution width (None = no change)
-  pub width: Option<u32>,
+  pub(crate) width: Option<u32>,
   /// New resolution height (None = no change)
-  pub height: Option<u32>,
+  pub(crate) height: Option<u32>,
   /// New display mode (None = no change)
-  pub display_mode: Option<DisplayMode>,
+  pub(crate) display_mode: Option<DisplayMode>,
   /// A new UI scale (`None`: no change): `Some(Some(s))` is `s` render
   /// pixels per UI unit, `Some(None)` the automatic scale
   pub ui_scale: Option<Option<f32>>,
@@ -25,19 +25,6 @@ impl WindowRequest {
   /// Create a new empty window request
   pub fn new() -> Self {
     Self::default()
-  }
-
-  /// Request a resolution change
-  pub fn with_resolution(mut self, width: u32, height: u32) -> Self {
-    self.width = Some(width);
-    self.height = Some(height);
-    self
-  }
-
-  /// Request a display mode change
-  pub fn with_display_mode(mut self, mode: DisplayMode) -> Self {
-    self.display_mode = Some(mode);
-    self
   }
 
   /// Check if any change is requested

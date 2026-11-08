@@ -83,7 +83,7 @@ The fixtures are `tests/fixtures/saves/system-format1.json` and `system-format2.
 
 **The window into `Settings`** (`engine/window.rs`): the `Resized` arm reads `window.fullscreen()` (`display_mode_of`) and, while windowed and not minimised, the logical inner size, into `follow_os_window`. A mode that differs from the engine's goes through `set_display_mode`, the one funnel for the game's requests, F5 and the OS, which updates the engine, `WindowInfo` and `Settings` and the applied values together, so nothing is asked of the window again (no echo). The size goes into `Settings` (when it differs) and the applied values the same way. The web's canvas is sized by the page, not the player, so its size is not taken.
 
-**Beside `Settings`:** `WindowRequest`'s width, height and display mode and `ctx.request_display_mode` still work (a display mode they apply reaches `Settings` through `set_display_mode`, a size through the `Resized` arm).
+**Beside `Settings`:** `WindowRequest`'s width, height and display mode are crate-internal: the game asks for a window through `Settings`, and `WindowRequest` keeps only the UI scale (`ctx.request_ui_scale`) for the game.
 
 ## Saving (`persist.rs`)
 
