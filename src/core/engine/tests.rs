@@ -3,6 +3,7 @@
 use super::*;
 use winit::keyboard::KeyCode;
 
+use crate::core::audio::VolumeKind;
 use crate::core::scene::{SceneAction, SceneContext};
 
 struct EmptyScene;
@@ -25,16 +26,6 @@ fn temp_workspace(
   }
   let workspace = crate::core::config::Workspace::from_path(dir.path()).unwrap();
   (dir, workspace)
-}
-
-#[test]
-fn an_empty_preference_filter_still_creates_system_json() {
-  let (dir, ws) = temp_workspace("", None);
-  let _ = EngineBuilder::new()
-    .with_user_preferences(crate::core::config::UserPreferenceFilter::none())
-    .start_scene(EmptyScene)
-    .resolve_in(Some(&ws), false);
-  assert!(dir.path().join("data/system.json").exists());
 }
 
 #[test]
@@ -105,41 +96,83 @@ fn missing_preference_keys_fall_through_to_builder_and_project() {
     .resolve_in(Some(&ws), false);
   assert_eq!((r.config.width, r.config.height), (800, 600));
   assert_eq!(r.config.display_mode, DisplayMode::BorderlessFullscreen);
-  assert!(!r.vsync);
-  assert_eq!(r.master_volume, 0.3);
+  assert!(!r.settings.vsync());
+  assert_eq!(r.settings.volume(VolumeKind::Master), 0.3);
   assert!(r.config.debug.show_fps);
 }
 
 #[test]
-fn saved_preference_beats_builder() {
-  let (_dir, ws) = temp_workspace("", Some(r#"{"resolution": "1600x900"}"#));
-  let r = EngineBuilder::new()
-    .resolution(800, 600)
-    .with_user_preferences(crate::core::config::UserPreferenceFilter::all())
-    .start_scene(EmptyScene)
-    .resolve_in(Some(&ws), false);
-  // The saved resolution sizes the window; the game keeps its own
+fn the_player_file_overrides_the_project_for_kept_settings_only() {
+  use crate::core::config::{UserPreference, UserPreferenceFilter};
+  let store = MemorySaves::new();
+  store.put(
+    "system.json",
+    r#"{"format_version": 3, "master_volume": 0.1, "music_volume": 0.2, "resolution": "1600x900", "display_mode": "windowed", "vsync": true}"#,
+  );
+  let (_dir, ws) = temp_workspace("[system]\nmusic_volume = 0.4\n", None);
+  let resolve = |filter: UserPreferenceFilter| {
+    EngineBuilder::new()
+      .resolution(800, 600)
+      .display_mode(DisplayMode::BorderlessFullscreen)
+      .vsync(false)
+      .memory_saves(store.clone())
+      .with_user_preferences(filter)
+      .start_scene(EmptyScene)
+      .resolve_in(Some(&ws), false)
+  };
+
+  let r = resolve(UserPreferenceFilter::all());
+  assert_eq!(r.settings.volume(VolumeKind::Master), 0.1);
+  assert_eq!(r.settings.volume(VolumeKind::Music), 0.2);
+  assert!(r.settings.vsync());
+  assert_eq!(r.config.display_mode, DisplayMode::Windowed);
+  // The player's window size sizes the window; the game keeps its resolution
   assert_eq!(r.config.window_size, Some((1600, 900)));
   assert_eq!((r.config.width, r.config.height), (800, 600));
+
+  // Settings outside the filter come from the builder and Ryo.toml
+  let r = resolve(UserPreferenceFilter::only([UserPreference::MasterVolume]));
+  assert_eq!(r.settings.volume(VolumeKind::Master), 0.1);
+  assert_eq!(r.settings.volume(VolumeKind::Music), 0.4);
+  assert!(!r.settings.vsync());
+  assert_eq!(r.config.display_mode, DisplayMode::BorderlessFullscreen);
+  assert_eq!(r.config.window_size, Some((800, 600)));
 }
 
 #[test]
-fn a_headless_build_ignores_saved_preferences() {
-  let (_dir, ws) = temp_workspace("", Some(r#"{"resolution": "1600x900"}"#));
+fn a_headless_engine_reads_settings_from_its_memory_store_and_never_from_disk() {
+  let all = crate::core::config::UserPreferenceFilter::all;
+  let on_disk = r#"{"format_version": 3, "music_volume": 0.2, "resolution": "1920x1080"}"#;
+  let (dir, ws) = temp_workspace("", Some(on_disk));
+  let store = MemorySaves::new();
+  store.put(
+    "system.json",
+    r#"{"format_version": 3, "music_volume": 0.6}"#,
+  );
   let r = EngineBuilder::new()
-    .resolution(800, 600)
-    .with_user_preferences(crate::core::config::UserPreferenceFilter::all())
+    .resolution(320, 180)
+    .memory_saves(store)
+    .with_user_preferences(all())
     .start_scene(EmptyScene)
     .resolve_in(Some(&ws), true);
-  assert_eq!((r.config.width, r.config.height), (800, 600));
+  assert_eq!(r.settings.volume(VolumeKind::Music), 0.6, "the store's");
+  assert_eq!(r.config.window_size, Some((320, 180)), "not the disk's");
 
-  // Nor does it seed a system.json
-  let (dir, ws) = temp_workspace("", None);
-  let _ = EngineBuilder::new()
-    .with_user_preferences(crate::core::config::UserPreferenceFilter::all())
+  // Its own store, when it is given none
+  let r = EngineBuilder::new()
+    .with_user_preferences(all())
     .start_scene(EmptyScene)
     .resolve_in(Some(&ws), true);
-  assert!(!dir.path().join("data/system.json").exists());
+  assert_eq!(r.settings.volume(VolumeKind::Music), 1.0);
+  let files: Vec<_> = std::fs::read_dir(dir.path().join("data"))
+    .unwrap()
+    .map(|entry| entry.unwrap().file_name())
+    .collect();
+  assert_eq!(files, ["system.json"], "the save folder is untouched");
+  assert_eq!(
+    std::fs::read_to_string(dir.path().join("data/system.json")).unwrap(),
+    on_disk
+  );
 }
 
 #[test]
@@ -170,26 +203,33 @@ fn an_old_system_json_without_the_new_volumes_takes_the_defaults() {
       .start_scene(EmptyScene)
       .resolve_in(Some(&ws), false)
   };
+  let volumes =
+    |r: &ResolvedBuild, kinds: [VolumeKind; 3]| kinds.map(|kind| r.settings.volume(kind));
   let r = resolve("[system]\nui_volume = 0.5\n", old);
   assert_eq!(
-    (r.master_volume, r.music_volume, r.sfx_volume),
-    (0.63, 0.77, 0.84),
+    volumes(&r, [VolumeKind::Master, VolumeKind::Music, VolumeKind::Sfx]),
+    [0.63, 0.77, 0.84],
     "converted to today's curve at the same loudness"
   );
-  assert_eq!(r.ui_volume, 0.5, "Ryo.toml's default");
   assert_eq!(
-    (r.voice_volume, r.ambience_volume),
-    (1.0, 1.0),
-    "the engine's, with none in Ryo.toml"
+    volumes(
+      &r,
+      [VolumeKind::Ui, VolumeKind::Voice, VolumeKind::Ambience]
+    ),
+    [0.5, 1.0, 1.0],
+    "Ryo.toml's default, then the engine's with none in Ryo.toml"
   );
-  // Saved, they win over Ryo.toml, and corrupted ones are cleaned
+  // Saved, they win over Ryo.toml, and a bad one is the default
   let r = resolve(
     "[system]\nui_volume = 0.5\n",
     r#"{"format_version": 2, "ui_volume": 0.2, "voice_volume": 7.0, "ambience_volume": -1.0}"#,
   );
   assert_eq!(
-    (r.ui_volume, r.voice_volume, r.ambience_volume),
-    (0.2, 1.0, 0.0)
+    volumes(
+      &r,
+      [VolumeKind::Ui, VolumeKind::Voice, VolumeKind::Ambience]
+    ),
+    [0.2, 1.0, 1.0]
   );
 }
 
@@ -276,7 +316,7 @@ const MAP_WITH_CRATE: &str = r#"{"type":"map","orientation":"orthogonal","width"
 
 #[test]
 fn the_engine_applies_the_six_volume_settings_at_start() {
-  use crate::core::audio::{AudioEngine, VolumeKind};
+  use crate::core::audio::AudioEngine;
   let (_dir, ws) = temp_workspace(
     "[system]\nmaster_volume = 0.3\nmusic_volume = 0.4\nsfx_volume = 0.5\nui_volume = 0.6\nvoice_volume = 0.7\nambience_volume = 0.9\n",
     None,
@@ -372,19 +412,33 @@ fn headless_engines_pick_the_same_variations() {
 }
 
 #[test]
-fn first_run_seeds_system_json_from_builder_and_project() {
+fn first_run_writes_no_settings_file_until_a_setting_changes() {
+  let all = crate::core::config::UserPreferenceFilter::all;
   let (dir, ws) = temp_workspace("[system]\nmaster_volume = 0.3\n", None);
   let r = EngineBuilder::new()
     .resolution(800, 600)
-    .with_user_preferences(crate::core::config::UserPreferenceFilter::all())
+    .with_user_preferences(all())
     .start_scene(EmptyScene)
     .resolve_in(Some(&ws), false);
   assert_eq!((r.config.width, r.config.height), (800, 600));
-  let raw: serde_json::Value =
-    serde_json::from_str(&std::fs::read_to_string(dir.path().join("data/system.json")).unwrap())
-      .unwrap();
-  assert_eq!(raw["resolution"], "800x600");
-  assert_eq!(raw["master_volume"], 0.3);
+  assert_eq!(r.settings.volume(VolumeKind::Master), 0.3);
+  assert!(
+    !dir.path().join("data/system.json").exists(),
+    "the project's defaults are not the player's"
+  );
+
+  let store = MemorySaves::new();
+  let Some(mut engine) = crate::core::testing::HeadlessEngine::new_or_skip(
+    EngineBuilder::new()
+      .resolution(64, 64)
+      .memory_saves(store.clone())
+      .with_user_preferences(all())
+      .start_scene(EmptyScene),
+  ) else {
+    return;
+  };
+  engine.step_frames(3).unwrap();
+  assert_eq!(store.get("system.json"), None, "nothing changed");
 }
 
 #[test]
@@ -437,36 +491,48 @@ fn builder_title_beats_ryo_toml_even_when_it_is_the_engine_default() {
 }
 
 #[test]
-fn headless_resolve_never_reads_or_creates_system_json() {
-  let (dir, ws) = temp_workspace("", None);
-  EngineBuilder::new()
-    .with_user_preferences(crate::core::config::UserPreferenceFilter::all())
-    .start_scene(EmptyScene)
-    .resolve_in(Some(&ws), true);
-  assert!(!dir.path().join("data/system.json").exists());
+fn a_damaged_settings_file_is_set_aside_and_the_backup_used() {
+  let all = crate::core::config::UserPreferenceFilter::all;
+  let store = MemorySaves::new();
+  store.put("system.json", "not json");
+  store.put(
+    "system.json.bak",
+    r#"{"format_version": 3, "music_volume": 0.4}"#,
+  );
+  let resolve = || {
+    EngineBuilder::new()
+      .memory_saves(store.clone())
+      .with_user_preferences(all())
+      .start_scene(EmptyScene)
+      .resolve_in(None, true)
+  };
+  let r = resolve();
+  assert_eq!(r.settings.volume(VolumeKind::Music), 0.4, "the backup's");
+  assert_eq!(store.get("system.json.damaged"), Some(b"not json".to_vec()));
+  assert_eq!(store.get("system.json"), None);
+  assert!(store.get("system.json.bak").is_some(), "the backup stays");
 
-  let (_dir, ws) = temp_workspace("", Some(r#"{"resolution": "1920x1080"}"#));
-  let r = EngineBuilder::new()
-    .resolution(320, 180)
-    .with_user_preferences(crate::core::config::UserPreferenceFilter::all())
-    .start_scene(EmptyScene)
-    .resolve_in(Some(&ws), true);
-  assert_eq!((r.config.width, r.config.height), (320, 180));
-}
+  // Without a good backup: the defaults, the older damaged file replaced
+  store.put("system.json", "[1, 2]");
+  store.remove("system.json.bak");
+  let r = resolve();
+  assert_eq!(r.settings.volume(VolumeKind::Music), 1.0);
+  assert_eq!(store.get("system.json.damaged"), Some(b"[1, 2]".to_vec()));
+  assert_eq!(store.get("system.json"), None);
 
-#[test]
-fn unreadable_system_json_is_ignored_and_left_alone() {
+  // In the save folder on disk
   let (dir, ws) = temp_workspace("", Some("not json"));
   let r = EngineBuilder::new()
     .resolution(800, 600)
-    .with_user_preferences(crate::core::config::UserPreferenceFilter::all())
+    .with_user_preferences(all())
     .start_scene(EmptyScene)
     .resolve_in(Some(&ws), false);
   assert_eq!((r.config.width, r.config.height), (800, 600));
   assert_eq!(
-    std::fs::read_to_string(dir.path().join("data/system.json")).unwrap(),
+    std::fs::read_to_string(dir.path().join("data/system.json.damaged")).unwrap(),
     "not json"
   );
+  assert!(!dir.path().join("data/system.json").exists());
 }
 
 #[test]
@@ -482,7 +548,7 @@ fn unusable_save_dir_falls_back_to_project_settings() {
     .start_scene(EmptyScene)
     .resolve_in(Some(&ws), false);
   assert_eq!((r.config.width, r.config.height), (800, 600));
-  assert_eq!(r.master_volume, 0.3);
+  assert_eq!(r.settings.volume(VolumeKind::Master), 0.3);
 }
 
 #[test]
@@ -501,10 +567,10 @@ fn repeated_builder_calls_and_filters() {
     .with_user_preferences([UserPreference::Resolution])
     .start_scene(EmptyScene)
     .resolve_in(Some(&ws), false);
-  assert_eq!(r.master_volume, 0.2);
+  assert_eq!(r.settings.volume(VolumeKind::Master), 0.2);
   assert_eq!(r.config.window_size, Some((1600, 900)));
   // Vsync isn't in either filter: the last builder call wins
-  assert!(r.vsync);
+  assert!(r.settings.vsync());
 }
 
 #[test]
@@ -1263,4 +1329,221 @@ fn a_dev_build_prefers_the_ryo_toml_on_disk() {
     .resolve_in(Some(&ws), false);
   assert_eq!((r.config.width, r.config.height), (800, 600));
   assert_eq!(r.config.title, "Disk Game");
+}
+
+/// Turns the music down in its update
+struct MusicDown;
+
+impl Scene for MusicDown {
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    ctx.settings().set_volume(VolumeKind::Music, 0.3);
+    SceneAction::Continue
+  }
+}
+
+#[test]
+fn a_volume_change_reaches_the_mixer_that_frame() {
+  use crate::core::audio::AudioEngine;
+  use crate::core::testing::HeadlessEngine;
+
+  let Some(mut engine) = HeadlessEngine::new_or_skip(
+    EngineBuilder::new()
+      .resolution(64, 64)
+      .start_scene(MusicDown),
+  ) else {
+    return;
+  };
+  let music = |engine: &HeadlessEngine| {
+    engine
+      .world()
+      .resource::<AudioEngine>()
+      .volume_setting(VolumeKind::Music)
+  };
+  assert_eq!(music(&engine), 1.0);
+  engine.step().unwrap();
+  assert_eq!(music(&engine), 0.3);
+}
+
+#[test]
+fn settings_changes_become_window_and_renderer_requests() {
+  use crate::core::audio::AudioEngine;
+
+  let mut engine = EngineBuilder::new()
+    .start_scene(EmptyScene)
+    .build_headless();
+  // A HiDPI window, and the overlay a windowed run shows
+  engine.scale_factor = 2.0;
+  engine.headless = false;
+  {
+    let mut settings = engine.world.resource_mut::<Settings>();
+    settings.set_volume(VolumeKind::Sfx, 0.25);
+    settings.set_window_size(800, 600);
+    settings.set_vsync(false);
+    settings.set_show_fps(true);
+  }
+  engine.apply_settings();
+  assert_eq!(
+    engine
+      .world
+      .resource::<AudioEngine>()
+      .volume_setting(VolumeKind::Sfx),
+    0.25
+  );
+  let request = std::mem::take(&mut *engine.world.resource_mut::<WindowRequest>());
+  assert_eq!(
+    (request.width, request.height),
+    (Some(1600), Some(1200)),
+    "the window's physical size"
+  );
+  assert_eq!(request.display_mode, None);
+  assert_eq!(engine.pending_vsync.take(), Some(false));
+  assert!(engine.config.debug.show_fps);
+  assert_eq!(engine.overlay_mode, OverlayMode::FpsOnly);
+
+  // Nothing changed since: nothing is asked again
+  engine.apply_settings();
+  assert!(!engine.world.resource::<WindowRequest>().has_changes());
+  assert_eq!(engine.pending_vsync, None);
+
+  // Fullscreen: the mode goes at once, the window size waits for a window
+  {
+    let mut settings = engine.world.resource_mut::<Settings>();
+    settings.set_display_mode(DisplayMode::BorderlessFullscreen);
+    settings.set_window_size(1024, 768);
+  }
+  engine.apply_settings();
+  let request = std::mem::take(&mut *engine.world.resource_mut::<WindowRequest>());
+  assert_eq!(
+    request.display_mode,
+    Some(DisplayMode::BorderlessFullscreen)
+  );
+  assert_eq!((request.width, request.height), (None, None));
+  engine
+    .world
+    .resource_mut::<Settings>()
+    .set_display_mode(DisplayMode::Windowed);
+  engine.apply_settings();
+  let request = std::mem::take(&mut *engine.world.resource_mut::<WindowRequest>());
+  assert_eq!(request.display_mode, Some(DisplayMode::Windowed));
+  assert_eq!((request.width, request.height), (Some(2048), Some(1536)));
+
+  engine.world.resource_mut::<Settings>().set_show_fps(false);
+  engine.apply_settings();
+  assert!(!engine.config.debug.show_fps);
+  assert_eq!(engine.overlay_mode, OverlayMode::Off);
+}
+
+#[test]
+fn the_vsync_setting_picks_the_present_mode() {
+  use crate::core::graphics::renderer::present_mode_for;
+  use wgpu::PresentMode::{Fifo, Immediate, Mailbox};
+
+  let every = [Fifo, Mailbox, Immediate];
+  assert_eq!(present_mode_for(true, &every), Fifo);
+  assert_eq!(present_mode_for(false, &every), Mailbox);
+  assert_eq!(present_mode_for(false, &[Fifo, Immediate]), Immediate);
+  assert_eq!(present_mode_for(false, &[Fifo]), Fifo);
+
+  // The setting reaches the renderer after the frame
+  let mut engine = EngineBuilder::new()
+    .start_scene(EmptyScene)
+    .build_headless();
+  assert!(engine.vsync);
+  engine.world.resource_mut::<Settings>().set_vsync(false);
+  engine.apply_settings();
+  assert_eq!(engine.pending_vsync, Some(false));
+  engine.apply_headless_requests();
+  assert!(!engine.vsync);
+  assert_eq!(engine.pending_vsync, None);
+}
+
+#[test]
+fn an_os_fullscreen_change_updates_settings_without_echo() {
+  let mut engine = EngineBuilder::new()
+    .with_user_preferences(crate::core::config::UserPreferenceFilter::all())
+    .start_scene(EmptyScene)
+    .build_headless();
+  engine.apply_settings();
+
+  engine.follow_os_window(DisplayMode::BorderlessFullscreen, None);
+  assert_eq!(
+    engine.world.resource::<Settings>().display_mode(),
+    DisplayMode::BorderlessFullscreen
+  );
+  assert_eq!(
+    engine.world.resource::<WindowInfo>().display_mode,
+    DisplayMode::BorderlessFullscreen
+  );
+  engine.apply_settings();
+  assert!(
+    !engine.world.resource::<WindowRequest>().has_changes(),
+    "the window is already there"
+  );
+
+  // Back in a window, which the player drags to a new size
+  engine.follow_os_window(DisplayMode::Windowed, Some((900, 500)));
+  let settings = engine.world.resource::<Settings>();
+  assert_eq!(settings.display_mode(), DisplayMode::Windowed);
+  assert_eq!(settings.window_size(), (900, 500));
+  engine.apply_settings();
+  assert!(!engine.world.resource::<WindowRequest>().has_changes());
+
+  // A size while fullscreen is the screen's, not the player's window
+  engine.follow_os_window(DisplayMode::ExclusiveFullscreen, Some((1920, 1080)));
+  assert_eq!(
+    engine.world.resource::<Settings>().window_size(),
+    (900, 500)
+  );
+  engine.apply_settings();
+  assert!(!engine.world.resource::<WindowRequest>().has_changes());
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+struct Video {
+  subtitles: bool,
+  scale: u32,
+}
+
+impl Default for Video {
+  fn default() -> Self {
+    Video {
+      subtitles: true,
+      scale: 1,
+    }
+  }
+}
+
+/// Reads the `Video` section as it enters
+struct ReadsVideo(Arc<std::sync::Mutex<Option<Video>>>);
+
+impl Scene for ReadsVideo {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    *self.0.lock().unwrap() = Some(ctx.settings().game::<Video>().clone());
+  }
+}
+
+#[test]
+fn a_game_section_registered_on_the_builder_is_readable_in_the_first_scene() {
+  let store = MemorySaves::new();
+  store.put(
+    "system.json",
+    r#"{"format_version": 3, "game": {"video": {"version": 1, "value": {"scale": 2}}}}"#,
+  );
+  let seen = Arc::new(std::sync::Mutex::new(None));
+  let Some(_engine) = crate::core::testing::HeadlessEngine::new_or_skip(
+    EngineBuilder::new()
+      .resolution(64, 64)
+      .memory_saves(store)
+      .game_settings::<Video>("video")
+      .start_scene(ReadsVideo(Arc::clone(&seen))),
+  ) else {
+    return;
+  };
+  assert_eq!(
+    *seen.lock().unwrap(),
+    Some(Video {
+      subtitles: true,
+      scale: 2
+    })
+  );
 }

@@ -12,15 +12,19 @@ use super::{Engine, FrameOutcome, PresentOutcome, QuitRequested, SceneHost};
 use crate::core::asset::AssetsView;
 use crate::core::audio::AudioEngine;
 use crate::core::capture::CaptureTarget;
+use crate::core::config::DisplayMode;
 use crate::core::console::{CommandContext, CommandRegistry, CommandResult};
 use crate::core::diagnostics as overlays;
 use crate::core::diagnostics::FrameCost;
+use crate::core::diagnostics::OverlayMode;
 use crate::core::ecs::kernel::{CheckChangeTicks, DetectChanges};
 use crate::core::ecs::{On, Res, ResMut, Resource, World};
 use crate::core::input::{Binding, Input, InputEvent};
 use crate::core::messages::update_messages;
 use crate::core::scene::SceneAction;
 use crate::core::schedule::Phase;
+use crate::core::settings::Settings;
+use crate::core::settings::apply::diff;
 use crate::core::shaders::EffectsManager;
 use crate::core::text::TextIcons;
 use crate::core::time::Time;
@@ -32,6 +36,7 @@ use crate::core::ui::nav::{NavInput, resolve_focus};
 use crate::core::ui::theme::{Theme, load_skin, refresh_skins, use_followed};
 use crate::core::ui::widgets::rebind::note_swap;
 use crate::core::ui::{ThemeSound, ThemeSoundSource, UiContext, UiInput, UiTheme};
+use crate::core::window::WindowRequest;
 use crate::{engine_warn, profile_scope};
 
 /// The UI's direction actions: Up, Down, Left, Right
@@ -101,6 +106,7 @@ impl Engine {
         .world
         .resource_mut::<Input>()
         .end_fixed_steps(step > 0 || paused);
+      self.apply_settings();
       self.save_changed_bindings();
     }
     self.frame_timings.update = update_start.elapsed();
@@ -141,6 +147,69 @@ impl Engine {
     self
       .world
       .insert_resource(FrameCost::of(&self.smoothed_timings));
+  }
+
+  /// Applies what changed in `Settings` since the last check: the volumes
+  /// at once, the display mode and window size (only while windowed) as
+  /// window requests and vsync for the renderer, both after the frame, and
+  /// the FPS counter. A frame with no change costs one change check
+  pub(crate) fn apply_settings(&mut self) {
+    let Some(ticks) = self.world.get_resource_change_ticks::<Settings>() else {
+      return;
+    };
+    let now = self.world.change_tick();
+    let changed = self.applied_settings.check(ticks.changed, now);
+    // A change made after this check is newer than `now`
+    self.world.increment_change_tick();
+    if !changed {
+      return;
+    }
+    let Some(settings) = self.world.get_resource::<Settings>() else {
+      return;
+    };
+    let now = *settings.values();
+    let changes = diff(&self.applied_settings.values, &now);
+    let applied = &mut self.applied_settings.values;
+
+    if !changes.volumes.is_empty()
+      && let Some(mut audio) = self.world.get_resource_mut::<AudioEngine>()
+    {
+      for &(kind, volume) in &changes.volumes {
+        audio.set_volume_setting(kind, volume);
+      }
+    }
+    applied.volumes = now.volumes;
+
+    let mut request = self.world.resource_mut::<WindowRequest>();
+    if let Some(mode) = changes.display_mode {
+      request.display_mode = Some(mode);
+      applied.display_mode = mode;
+    }
+    // A fullscreen window keeps the size for when it is windowed again
+    if let Some((width, height)) = changes.window_size
+      && now.display_mode == DisplayMode::Windowed
+    {
+      let size = winit::dpi::LogicalSize::new(width, height).to_physical::<u32>(self.scale_factor);
+      request.width = Some(size.width);
+      request.height = Some(size.height);
+      applied.window_size = (width, height);
+    }
+
+    if let Some(vsync) = changes.vsync {
+      self.pending_vsync = Some(vsync);
+      applied.vsync = vsync;
+    }
+
+    if let Some(show) = changes.show_fps {
+      applied.show_fps = show;
+      // Wall-clock overlays would make headless frames differ run to run
+      if !self.headless {
+        let debug = &mut self.config.debug;
+        debug.show_fps = show;
+        self.overlay_mode =
+          OverlayMode::from_flags(show, debug.show_frame_timing, debug.show_stats);
+      }
+    }
   }
 
   /// Write the player's bindings to `system.json` when they changed this frame

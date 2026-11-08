@@ -17,6 +17,7 @@ use crate::core::render::Look;
 use crate::core::render::{DebugDraw, RenderPipeline};
 use crate::core::saves::SavesView;
 use crate::core::schedule::{Phase, SceneScheduleError, SceneSchedules};
+use crate::core::settings::Settings;
 use crate::core::shaders::EffectsManager;
 use crate::core::text::Fonts;
 use crate::core::tilemap::MapsView;
@@ -140,6 +141,23 @@ impl SceneContext<'_> {
   /// ```
   pub fn saves(&self) -> SavesView<'_> {
     SavesView::new(self.world)
+  }
+
+  // --- settings ---
+
+  /// The player's settings: the volumes, the window size, the display mode,
+  /// vsync, the FPS counter and the game's own sections. A change applies
+  /// the same frame, after the scene's update:
+  ///
+  /// ```
+  /// use ryo2d::prelude::*;
+  ///
+  /// fn mute_music(ctx: &mut SceneContext<'_>) {
+  ///   ctx.settings().set_volume(VolumeKind::Music, 0.0);
+  /// }
+  /// ```
+  pub fn settings(&mut self) -> Mut<'_, Settings> {
+    self.world.resource_mut::<Settings>()
   }
 
   // --- maps ---

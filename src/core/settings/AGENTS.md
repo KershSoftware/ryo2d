@@ -1,13 +1,14 @@
 # AGENTS.md - Settings Module
 
-The player's settings: the `Settings` resource and its file, `system.json`. The resource holds the engine's settings (the six volumes, the window size, the display mode, vsync and the FPS counter) and the game's own typed sections. The file keeps only the kept settings that differ from the game's defaults, so a default changed later in Ryo.toml or on the builder reaches every setting the player never touched. Files from older engines (formats 1 and 2) convert as they load. The code here is pure: nothing in it touches the engine, a world or the disk. The design is `docs/specs/2026-11-07-saves-and-settings-design.md` (where it and the code differ, the code is current).
+The player's settings: the `Settings` resource and its file, `system.json`. The resource holds the engine's settings (the six volumes, the window size, the display mode, vsync and the FPS counter) and the game's own typed sections. The file keeps only the kept settings that differ from the game's defaults, so a default changed later in Ryo.toml or on the builder reaches every setting the player never touched. Files from older engines (formats 1 and 2) convert as they load. The code here is pure: nothing in it touches the engine, a world or the disk; the engine (`engine/`) reads the file through the save service and applies what changes (In the engine, below). The design is `docs/specs/2026-11-07-saves-and-settings-design.md` (where it and the code differ, the code is current).
 
 | File | What |
 |------|------|
 | `mod.rs` | The exports (`Settings` is public and in the prelude; the rest is crate-internal) and `EngineValues`, the engine's settings as one value |
+| `apply.rs` | `AppliedSettings` (the values the engine last applied, and the change check) and `diff`, which gives the `SettingsChanges` to apply |
 | `resource.rs` | `Settings`: the getters and sanitising setters, `reset`, `reset_all`, `is_kept`, `game`/`game_mut`, and for the engine `new`, `apply_file` and `to_file` |
 | `sections.rs` | `SectionRegistry`: the game's sections by key and type, their versions, and how they load from and store into the file |
-| `file.rs` | `SettingsFile`, `parse` (any format, to `Parsed`), `render` (format 3), and the conversions from formats 1 and 2. Its tests' `fixtures` module holds the format-1 and format-2 fixtures |
+| `file.rs` | `SettingsFile`, `parse` (any format, to `Parsed`), `render` (format 3), the conversions from formats 1 and 2, the file's names (`FILE_NAME`, `DAMAGED_NAME`) and the storage's `verify`. Its tests' `fixtures` module holds the format-1 and format-2 fixtures |
 
 ## The resource
 
@@ -17,7 +18,7 @@ The player's settings: the `Settings` resource and its file, `system.json`. The 
 - **Window size** is in logical pixels, like the builder's `window_size`.
 - **`reset(preference)`** puts one setting back to the game's default; `reset(UserPreference::Bindings)` does nothing, since bindings live in the actions (`ctx.actions().reset_defaults()`). **`reset_all`** puts every engine setting back, and every section to its type's `Default`.
 - **`game::<T>()` / `game_mut::<T>()`** find the section by type and panic for an unregistered one: `"Settings::game::<{type}>: register it with EngineBuilder::game_settings"`.
-- **For the engine:** `Settings::new(defaults, kept, sections)` starts at the defaults. `apply_file(&file, &mut warnings)` applies the file's values for kept settings only (others last for the session) and loads the registered sections. `to_file(&base)` is the file to write: the kept values that differ from the defaults (a volume compared at two decimals, as the file keeps it), `base`'s bindings when `Bindings` is kept, the sections, and `base`'s unknown keys and unregistered sections as they were.
+- **For the engine:** `Settings::new(defaults, kept, sections)` starts at the defaults; `values()` gives the engine's settings as one `EngineValues`. `apply_file(&file, &mut warnings)` applies the file's values for kept settings only (others last for the session) and loads the registered sections. `to_file(&base)` is the file to write: the kept values that differ from the defaults (a volume compared at two decimals, as the file keeps it), `base`'s bindings when `Bindings` is kept, the sections, and `base`'s unknown keys and unregistered sections as they were.
 
 ## Game sections
 
@@ -57,6 +58,33 @@ The keys:
 
 The fixtures are `tests/fixtures/saves/system-format1.json` and `system-format2.json` (their README says how they were made; never regenerate them).
 
+## In the engine
+
+**Start-up** (`EngineBuilder::resolve_in`, `engine/mod.rs`):
+
+- **Defaults.** `resolve_settings` gives the resolved settings (engine defaults, then the project, then the builder); `player_defaults` turns them into the game's `EngineValues`. The default window size is the window the game opens (`initial_window_size` of the presentation, resolution and builder `window_size`), in logical pixels.
+- **Kept.** The kept filter is every `with_user_preferences` filter combined. The builder's `game_settings::<T>(key)` and `game_settings_versioned::<T>(key, versions)` register sections into the builder's `SectionRegistry` at the call (so a gap in the versions panics there), and it moves into `Settings`.
+- **The file is read** when the filter is not empty or a section is registered, through the save service the engine uses for saves, so a headless build reads its `MemorySaves` (the builder's `memory_saves`, else a fresh one) and never the disk; a native build reads the save folder's `FileStorage`. `resolve_in` makes the `SaveService` (with its storage) for this, and `Engine::new` puts it in the world.
+- **Reading** (`read_settings_file`): `recover_named("system.json", file::verify)`, where a copy verifies when it is a JSON object. A damaged file (the current file not verifying) is set aside to `system.json.damaged` with `set_aside_named` (replacing an older one), and the newest whole copy is read instead: the backup when it verifies, else none, and the defaults are used. The engine warns which. A file that is gone (a crash between the replace's renames) is not set aside and not warned about. The parse's warnings (bad values, a newer format) and the sections' are logged; a file of a newer format is read like any other (`file.format` says it is newer).
+- **Applied:** `apply_file` over the defaults; the file's `bindings` go to `saved_bindings` (loaded into the actions in `Engine::new`) when `Bindings` is kept. The engine config takes the window size, display mode and FPS counter from `Settings`, `Engine::new` the volumes (onto the `AudioEngine` before it enters the world) and vsync. The file as read stays on the engine (`settings_file`), so a write can carry its unknown keys and sections over. An `[env]` the project has is the `project_env` an older file's `env` is compared with, as the old engine seeded the file from it.
+- **Nothing is written at start-up:** a first run leaves no file.
+
+**The resource** is inserted in `Engine::new` before the game's own resources; scenes reach it with `ctx.settings()` (`Mut<Settings>`), systems with `Res`/`ResMut<Settings>`.
+
+**Each frame** `Engine::apply_settings` (`engine/frame.rs`) runs after the fixed steps (so after `Scene::update` and the UI pass), before the quit return, so a change in the last frame applies too:
+
+- **The change check** is the frame's idle cost: `AppliedSettings::check` compares the resource's change tick with the world's tick at the last check, and the engine then moves the world's tick on, so a change made after the check (even outside a system, in the same tick) is newer. Only when it changed does `diff` compare the values with what was last applied.
+- **Volumes** go to `AudioEngine::set_volume_setting` at once.
+- **Display mode and window size** go into `WindowRequest`, applied in `about_to_wait` (`apply_window_request`: the mode first, then the size, so a size asked for with a return to a window lands on the window). The window size is converted to physical pixels with the engine's scale factor, and goes only when the new mode is windowed: while fullscreen it stays unapplied, and is asked for when the game makes the window windowed again.
+- **Vsync** sets `Engine::pending_vsync`, which `about_to_wait` (and headless, `apply_headless_requests`) applies through `WgpuRenderer::set_vsync` before updating `Engine::vsync`. `set_vsync` reconfigures the surface with `present_mode_for` (on: `Fifo`; off: `Mailbox`, else `Immediate`, else `Fifo`, as `new` picks it) and updates `presentation_blocks`, which the frame pacing reads; an offscreen renderer and the web do nothing.
+- **The FPS counter** sets the overlay flags as F1 does (`config.debug.show_fps`, then `OverlayMode::from_flags`), except in headless builds, whose frames carry no wall-clock overlays.
+
+**The window into `Settings`** (`engine/window.rs`): the `Resized` arm reads `window.fullscreen()` (`display_mode_of`) and, while windowed and not minimised, the logical inner size, into `follow_os_window`. A mode that differs from the engine's goes through `set_display_mode`, the one funnel for the game's requests, F5 and the OS, which updates the engine, `WindowInfo` and `Settings` and the applied values together, so nothing is asked of the window again (no echo). The size goes into `Settings` (when it differs) and the applied values the same way. The web's canvas is sized by the page, not the player, so its size is not taken.
+
+**Beside `Settings`:** changed bindings are written by `Engine::save_changed_bindings` through the old `SaveManager` (`bindings_saver`, native and not headless, when `Bindings` is kept), and `WindowRequest`'s width, height and display mode and `ctx.request_display_mode` still work (a display mode they apply reaches `Settings` through `set_display_mode`, a size through the `Resized` arm).
+
 ## Testing
+
+`apply.rs`'s tests: a diff holds each changed setting and nothing else, and the change check sees a change once. `engine/tests.rs`: a volume set in `update` reaches the mixer that frame; each setting becomes its request (physical window size, the size held while fullscreen, vsync, the FPS overlay); `present_mode_for` and vsync reaching the engine after the frame; an OS fullscreen change and resize reach `Settings` with no echo; the player's file over the project for kept settings only; a damaged file set aside with the backup used (in memory and on disk); a headless engine reading its memory store, never the disk; a game section read in the first scene; and a first run writing no file. `engine/window.rs`: `display_mode_of`.
 
 `resource.rs`'s tests: only a changed key is written; a setting set back to its default leaves the file; a project default changed later reaches a setting the player never set; volumes clamp and NaN is the default; both fixtures convert (format 1's volumes and `env`, format 2 keeping only `master_volume` and `env`); unknown keys and sections survive a write in the rendered order; a bad value warns and the rest applies; a setting not kept is neither read nor written; a section round-trips only its changed fields, upgrades with its steps, and is kept while it does not read; sections the diff cannot express (a field skipped when `None`, a key removed from a map, another enum variant) round-trip whole; an unregistered section panics with the hint; `reset` and `reset_all`. `file.rs`'s: a newer format, damaged bytes, the legacy forms, and a full file rendering and reading back the same. `sections.rs`'s: a non-object section stored whole, and a second registration replacing the first.

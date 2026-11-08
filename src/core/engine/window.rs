@@ -21,6 +21,7 @@ use crate::core::graphics::renderer::RendererSettings;
 use crate::core::graphics::screen::initial_window_size;
 use crate::core::input::{Input, InputEvent};
 use crate::core::render::RenderPipeline;
+use crate::core::settings::Settings;
 use crate::core::window::{WindowInfo, WindowRequest};
 use crate::{engine_debug, engine_info, engine_warn};
 
@@ -40,6 +41,15 @@ fn cursor_grab_for_focus(
   } else {
     // Lost focus: release cursor so user can interact with other windows
     Some((CursorGrabMode::None, true))
+  }
+}
+
+/// The display mode a window in `fullscreen` (`Window::fullscreen`) is in
+fn display_mode_of(fullscreen: Option<&winit::window::Fullscreen>) -> DisplayMode {
+  match fullscreen {
+    None => DisplayMode::Windowed,
+    Some(winit::window::Fullscreen::Borderless(_)) => DisplayMode::BorderlessFullscreen,
+    Some(winit::window::Fullscreen::Exclusive(_)) => DisplayMode::ExclusiveFullscreen,
   }
 }
 
@@ -182,26 +192,32 @@ impl Engine {
     self.refresh_ui_space();
   }
 
-  /// Apply the window requests that still make sense without a window.
-  /// Only UI scale does; resolution and display mode requests are ignored.
+  /// Apply the window requests that still make sense without a window: UI
+  /// scale, and a vsync setting (which an offscreen renderer ignores).
+  /// Resolution and display mode requests are ignored.
   #[cfg(not(target_arch = "wasm32"))]
   pub(crate) fn apply_headless_requests(&mut self) {
     let request = std::mem::take(&mut *self.world.resource_mut::<WindowRequest>());
     if let Some(scale) = request.ui_scale {
       self.apply_ui_scale(scale);
     }
+    self.apply_pending_vsync();
   }
 
-  /// Apply pending window configuration changes from the game.
-  fn apply_window_request(&mut self, window: &Arc<Window>, request: WindowRequest) {
-    // A resolution request sizes the window; the game's resolution stays
-    if let (Some(width), Some(height)) = (request.width, request.height) {
-      let new_size = winit::dpi::PhysicalSize::new(width, height);
-      if let Some(actual_size) = window.request_inner_size(new_size) {
-        self.last_window_size = (actual_size.width, actual_size.height);
-      }
+  /// Turn vsync on or off as the settings last asked
+  fn apply_pending_vsync(&mut self) {
+    let Some(vsync) = self.pending_vsync.take() else {
+      return;
+    };
+    if let Some(renderer) = &mut self.renderer {
+      renderer.set_vsync(vsync);
     }
+    self.vsync = vsync;
+  }
 
+  /// Apply pending window configuration changes from the game: the display
+  /// mode first, so a size asked for with a window lands on the window
+  fn apply_window_request(&mut self, window: &Arc<Window>, request: WindowRequest) {
     if let Some(mode) = request.display_mode {
       match mode {
         DisplayMode::Windowed => {
@@ -228,14 +244,51 @@ impl Engine {
       self.surface_needs_reconfigure = true;
     }
 
+    // A resolution request sizes the window; the game's resolution stays
+    if let (Some(width), Some(height)) = (request.width, request.height) {
+      let new_size = winit::dpi::PhysicalSize::new(width, height);
+      if let Some(actual_size) = window.request_inner_size(new_size) {
+        self.last_window_size = (actual_size.width, actual_size.height);
+      }
+    }
+
     if let Some(scale) = request.ui_scale {
       self.apply_ui_scale(scale);
     }
   }
 
+  /// The window as the OS left it (a resize, a fullscreen toggle of the
+  /// OS's), into `Settings` as already applied, so nothing is asked of the
+  /// window again: its display mode, and while windowed its logical size
+  pub(super) fn follow_os_window(&mut self, mode: DisplayMode, logical_size: Option<(u32, u32)>) {
+    if mode != self.config.display_mode {
+      self.set_display_mode(mode);
+    }
+    if mode == DisplayMode::Windowed
+      && let Some((width, height)) = logical_size
+    {
+      if let Some(mut settings) = self.world.get_resource_mut::<Settings>()
+        && settings.window_size() != (width, height)
+      {
+        settings.set_window_size(width, height);
+      }
+      if let Some(settings) = self.world.get_resource::<Settings>() {
+        self.applied_settings.values.window_size = settings.window_size();
+      }
+    }
+  }
+
+  /// The window is now in `mode` (the game's request, F5 or the OS): the
+  /// engine, `WindowInfo` and `Settings` follow, the last as already applied
   fn set_display_mode(&mut self, mode: DisplayMode) {
     self.config.display_mode = mode;
     self.world.resource_mut::<WindowInfo>().display_mode = mode;
+    if let Some(mut settings) = self.world.get_resource_mut::<Settings>()
+      && settings.display_mode() != mode
+    {
+      settings.set_display_mode(mode);
+    }
+    self.applied_settings.values.display_mode = mode;
   }
 
   /// Show a cursor: a system icon, or a sprite's (made once, then cached).
@@ -693,7 +746,13 @@ impl ApplicationHandler<EngineEvent> for Engine {
       }
       WindowEvent::Resized(new_size) => {
         self.resize_window(new_size.width, new_size.height);
-        if let Some(window) = &self.window {
+        if let Some(window) = self.window.clone() {
+          // The page sizes the web's canvas, not the player
+          let windowed_size = (!self.minimized && !cfg!(target_arch = "wasm32")).then(|| {
+            let size = new_size.to_logical::<u32>(window.scale_factor());
+            (size.width, size.height)
+          });
+          self.follow_os_window(display_mode_of(window.fullscreen().as_ref()), windowed_size);
           window.request_redraw();
         }
       }
@@ -847,6 +906,7 @@ impl ApplicationHandler<EngineEvent> for Engine {
       return;
     }
 
+    self.apply_pending_vsync();
     if let Some(window) = self.window.clone() {
       let request = std::mem::take(&mut *self.world.resource_mut::<WindowRequest>());
       if request.has_changes() {
@@ -1010,6 +1070,16 @@ mod tests {
     assert!(
       should_present(false, true, true),
       "throttled with background rendering"
+    );
+  }
+
+  #[test]
+  fn the_os_fullscreen_state_maps_to_a_display_mode() {
+    use winit::window::Fullscreen;
+    assert_eq!(display_mode_of(None), DisplayMode::Windowed);
+    assert_eq!(
+      display_mode_of(Some(&Fullscreen::Borderless(None))),
+      DisplayMode::BorderlessFullscreen
     );
   }
 

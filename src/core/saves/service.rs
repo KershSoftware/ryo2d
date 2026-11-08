@@ -549,7 +549,6 @@ impl SaveService {
   }
 
   /// The newest whole copy of the file `name`; `Missing` with no storage
-  #[cfg_attr(not(test), expect(dead_code, reason = "the settings reader's"))]
   pub(crate) fn recover_named(
     &self,
     name: &str,
@@ -562,7 +561,6 @@ impl SaveService {
   }
 
   /// Renames the file `name` to `to`, replacing `to`
-  #[cfg_attr(not(test), expect(dead_code, reason = "the settings reader's"))]
   pub(crate) fn set_aside_named(&self, name: &str, to: &str) -> Completion {
     match self.storage() {
       Some(storage) => storage.set_aside(name, to),

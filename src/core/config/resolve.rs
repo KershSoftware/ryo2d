@@ -7,17 +7,17 @@
 //! 2. Project values: `Ryo.toml` in dev, or the values `ryo2d build` embedded
 //!    from it in release builds
 //! 3. `EngineBuilder` calls
-//! 4. Saved player preferences in `system.json` - only keys present in the file
-//!    and in the `with_user_preferences` filter
+//!
+//! The result is the game's defaults. The player's settings file applies over
+//! the settings the game keeps, in `Settings` (`crate::core::settings`).
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::core::diagnostics::DebugConfig;
 
 use super::project::ProjectLayer;
-use super::save::{DisplayMode, SystemState, UserPreference, UserPreferenceFilter};
-use crate::core::graphics::screen::{Presentation, initial_window_size};
+use super::save::DisplayMode;
+use crate::core::graphics::screen::Presentation;
 
 /// Engine default resolution.
 pub(crate) const DEFAULT_RESOLUTION: (u32, u32) = (1280, 720);
@@ -55,24 +55,6 @@ pub(crate) struct BuilderOverrides {
   pub tiled_project: Option<String>,
 }
 
-/// Player preferences present in `system.json`; `None` = key absent or malformed.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub(crate) struct StoredPreferences {
-  /// The window size the player picked
-  pub resolution: Option<(u32, u32)>,
-  pub display_mode: Option<DisplayMode>,
-  pub vsync: Option<bool>,
-  pub master_volume: Option<f32>,
-  pub music_volume: Option<f32>,
-  pub sfx_volume: Option<f32>,
-  pub ui_volume: Option<f32>,
-  pub voice_volume: Option<f32>,
-  pub ambience_volume: Option<f32>,
-  pub show_fps: Option<bool>,
-  /// The player's changed input bindings (action name to binding texts)
-  pub bindings: Option<std::collections::BTreeMap<String, Vec<String>>>,
-}
-
 /// Final value of every layered setting.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ResolvedSettings {
@@ -84,7 +66,7 @@ pub(crate) struct ResolvedSettings {
   pub resolution_set: bool,
   /// Whether `resolution` is a pixel-art target
   pub pixel_art: bool,
-  /// The window's logical size, when a layer or the player picked one
+  /// The window's logical size, when a layer picked one
   pub window_size: Option<(u32, u32)>,
   pub display_mode: DisplayMode,
   pub vsync: bool,
@@ -161,35 +143,12 @@ impl ResolvedSettings {
       Presentation::ResolutionIndependent
     }
   }
-
-  /// The `system.json` contents a new file is seeded with: its resolution is
-  /// the window the game opens.
-  pub(crate) fn to_system_state(&self, env: HashMap<String, serde_json::Value>) -> SystemState {
-    let (width, height) =
-      initial_window_size(self.presentation(), self.resolution, self.window_size);
-    SystemState {
-      master_volume: self.master_volume,
-      music_volume: self.music_volume,
-      sfx_volume: self.sfx_volume,
-      ui_volume: self.ui_volume,
-      voice_volume: self.voice_volume,
-      ambience_volume: self.ambience_volume,
-      width,
-      height,
-      display_mode: self.display_mode,
-      vsync: Some(self.vsync),
-      show_fps: Some(self.show_fps),
-      env,
-      bindings: Default::default(),
-    }
-  }
 }
 
-/// Layer project values, builder calls and saved preferences over the engine defaults.
+/// Layer project values and builder calls over the engine defaults.
 pub(crate) fn resolve_settings(
   project: &ProjectLayer,
   builder: &BuilderOverrides,
-  prefs: Option<(&StoredPreferences, &UserPreferenceFilter)>,
 ) -> ResolvedSettings {
   let mut s = ResolvedSettings::defaults();
 
@@ -248,40 +207,6 @@ pub(crate) fn resolve_settings(
     s.tiled_project = builder.tiled_project.clone();
   }
 
-  if let Some((prefs, filter)) = prefs {
-    // The player's resolution sizes the window; the game's resolution is the project's
-    if filter.contains(UserPreference::Resolution) && prefs.resolution.is_some() {
-      s.window_size = prefs.resolution;
-    }
-    if filter.contains(UserPreference::DisplayMode) {
-      set(&mut s.display_mode, prefs.display_mode);
-    }
-    if filter.contains(UserPreference::Vsync) {
-      set(&mut s.vsync, prefs.vsync);
-    }
-    if filter.contains(UserPreference::MasterVolume) {
-      set(&mut s.master_volume, prefs.master_volume);
-    }
-    if filter.contains(UserPreference::MusicVolume) {
-      set(&mut s.music_volume, prefs.music_volume);
-    }
-    if filter.contains(UserPreference::SfxVolume) {
-      set(&mut s.sfx_volume, prefs.sfx_volume);
-    }
-    if filter.contains(UserPreference::UiVolume) {
-      set(&mut s.ui_volume, prefs.ui_volume);
-    }
-    if filter.contains(UserPreference::VoiceVolume) {
-      set(&mut s.voice_volume, prefs.voice_volume);
-    }
-    if filter.contains(UserPreference::AmbienceVolume) {
-      set(&mut s.ambience_volume, prefs.ambience_volume);
-    }
-    if filter.contains(UserPreference::ShowFps) {
-      set(&mut s.show_fps, prefs.show_fps);
-    }
-  }
-
   s.master_volume = sanitize_volume(s.master_volume, DEFAULT_MASTER_VOLUME);
   s.music_volume = sanitize_volume(s.music_volume, DEFAULT_MUSIC_VOLUME);
   s.sfx_volume = sanitize_volume(s.sfx_volume, DEFAULT_SFX_VOLUME);
@@ -326,7 +251,7 @@ mod tests {
       ..ProjectLayer::default()
     };
 
-    let s = resolve_settings(&project, &BuilderOverrides::default(), None);
+    let s = resolve_settings(&project, &BuilderOverrides::default());
 
     assert_eq!(s.master_volume, DEFAULT_MASTER_VOLUME);
     assert_eq!(s.music_volume, 1.0);
@@ -386,25 +311,9 @@ mod tests {
     }
   }
 
-  fn prefs_with_everything() -> StoredPreferences {
-    StoredPreferences {
-      resolution: Some((1920, 1080)),
-      display_mode: Some(DisplayMode::Windowed),
-      vsync: Some(true),
-      master_volume: Some(0.1),
-      music_volume: Some(0.2),
-      sfx_volume: Some(0.9),
-      ui_volume: Some(0.15),
-      voice_volume: Some(0.25),
-      ambience_volume: Some(0.35),
-      show_fps: Some(false),
-      bindings: None,
-    }
-  }
-
   #[test]
   fn defaults_apply_when_no_layer_sets_anything() {
-    let s = resolve_settings(&ProjectLayer::default(), &BuilderOverrides::default(), None);
+    let s = resolve_settings(&ProjectLayer::default(), &BuilderOverrides::default());
     assert_eq!(s.title, "Ryo2D");
     assert_eq!(s.resolution, (1280, 720));
     assert_eq!(s.display_mode, DisplayMode::Windowed);
@@ -421,11 +330,7 @@ mod tests {
 
   #[test]
   fn project_overrides_defaults() {
-    let s = resolve_settings(
-      &project_with_everything(),
-      &BuilderOverrides::default(),
-      None,
-    );
+    let s = resolve_settings(&project_with_everything(), &BuilderOverrides::default());
     assert_eq!(s.title, "Project");
     assert_eq!(s.resolution, (800, 600));
     assert_eq!(s.display_mode, DisplayMode::BorderlessFullscreen);
@@ -447,7 +352,7 @@ mod tests {
 
   #[test]
   fn builder_overrides_project() {
-    let s = resolve_settings(&project_with_everything(), &builder_with_everything(), None);
+    let s = resolve_settings(&project_with_everything(), &builder_with_everything());
     assert_eq!(s.title, "Builder");
     assert_eq!(s.resolution, (640, 480));
     assert_eq!(s.display_mode, DisplayMode::ExclusiveFullscreen);
@@ -458,86 +363,6 @@ mod tests {
     assert_eq!(s.tiled_project.as_deref(), Some("builder.tiled-project"));
     // The builder has no volume setters, so the project's volumes stay
     assert_eq!(s.master_volume, 0.3);
-  }
-
-  #[test]
-  fn preferences_override_builder() {
-    let prefs = prefs_with_everything();
-    let filter = UserPreferenceFilter::all();
-    let s = resolve_settings(
-      &project_with_everything(),
-      &builder_with_everything(),
-      Some((&prefs, &filter)),
-    );
-    assert_eq!(
-      s.resolution,
-      (640, 480),
-      "the player picks the window, not the game"
-    );
-    assert_eq!(s.window_size, Some((1920, 1080)));
-    assert_eq!(s.display_mode, DisplayMode::Windowed);
-    assert!(s.vsync);
-    assert_eq!(
-      (s.master_volume, s.music_volume, s.sfx_volume),
-      (0.1, 0.2, 0.9)
-    );
-    assert_eq!(
-      (s.ui_volume, s.voice_volume, s.ambience_volume),
-      (0.15, 0.25, 0.35)
-    );
-    assert!(!s.show_fps);
-  }
-
-  #[test]
-  fn the_project_picks_the_art_and_the_player_picks_the_window() {
-    let project = ProjectLayer {
-      resolution: Some((320, 180)),
-      pixel_art: Some(true),
-      ..Default::default()
-    };
-    let prefs = StoredPreferences {
-      resolution: Some((1920, 1080)),
-      ..Default::default()
-    };
-    let filter = UserPreferenceFilter::all();
-    let s = resolve_settings(
-      &project,
-      &BuilderOverrides::default(),
-      Some((&prefs, &filter)),
-    );
-    assert!(s.pixel_art);
-    assert_eq!(s.resolution, (320, 180), "the art's size");
-    assert_eq!(s.window_size, Some((1920, 1080)), "the player's window");
-  }
-
-  #[test]
-  fn preferences_outside_the_filter_are_ignored() {
-    let prefs = prefs_with_everything();
-    let filter = UserPreferenceFilter::only([UserPreference::MasterVolume]);
-    let s = resolve_settings(
-      &project_with_everything(),
-      &builder_with_everything(),
-      Some((&prefs, &filter)),
-    );
-    assert_eq!(s.master_volume, 0.1);
-    assert_eq!(s.resolution, (640, 480));
-    assert!(!s.vsync);
-    assert_eq!(s.music_volume, 0.4);
-  }
-
-  #[test]
-  fn absent_preferences_fall_through_to_builder_and_project() {
-    let prefs = StoredPreferences::default();
-    let filter = UserPreferenceFilter::all();
-    let s = resolve_settings(
-      &project_with_everything(),
-      &builder_with_everything(),
-      Some((&prefs, &filter)),
-    );
-    assert_eq!(s.resolution, (640, 480));
-    assert!(!s.vsync);
-    assert_eq!(s.master_volume, 0.3);
-    assert!(s.show_fps);
   }
 
   #[test]
@@ -619,9 +444,9 @@ tiled_project = "maps/game.tiled-project"
 
   #[test]
   fn every_table_entry_reaches_the_resolved_settings() {
-    let defaults = resolve_settings(&ProjectLayer::default(), &BuilderOverrides::default(), None);
+    let defaults = resolve_settings(&ProjectLayer::default(), &BuilderOverrides::default());
     for (name, layer) in sample_layers() {
-      let resolved = resolve_settings(&layer, &BuilderOverrides::default(), None);
+      let resolved = resolve_settings(&layer, &BuilderOverrides::default());
       assert_ne!(
         resolved, defaults,
         "`{name}` doesn't reach the resolved settings"
@@ -741,36 +566,13 @@ tiled_project = "maps/game.tiled-project"
       ),
     ];
 
-    let defaults = resolve_settings(&ProjectLayer::default(), &none(), None);
+    let defaults = resolve_settings(&ProjectLayer::default(), &none());
     for (name, builder) in overrides {
-      let resolved = resolve_settings(&ProjectLayer::default(), &builder, None);
+      let resolved = resolve_settings(&ProjectLayer::default(), &builder);
       assert_ne!(
         resolved, defaults,
         "`{name}` doesn't reach the resolved settings"
       );
     }
-  }
-
-  #[test]
-  fn seed_state_carries_resolved_values() {
-    let s = resolve_settings(&project_with_everything(), &builder_with_everything(), None);
-    let mut env = HashMap::new();
-    env.insert("difficulty".to_string(), serde_json::json!("hard"));
-
-    let state = s.to_system_state(env);
-
-    assert_eq!((state.width, state.height), (640, 480));
-    assert_eq!(state.display_mode, DisplayMode::ExclusiveFullscreen);
-    assert_eq!(state.vsync, Some(false));
-    assert_eq!(state.show_fps, Some(true));
-    assert_eq!(
-      (state.master_volume, state.music_volume, state.sfx_volume),
-      (0.3, 0.4, 0.5)
-    );
-    assert_eq!(
-      (state.ui_volume, state.voice_volume, state.ambience_volume),
-      (0.6, 0.7, 0.8)
-    );
-    assert_eq!(state.get_env_str("difficulty"), Some("hard"));
   }
 }

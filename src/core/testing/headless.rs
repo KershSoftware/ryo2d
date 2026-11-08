@@ -256,10 +256,11 @@ impl HeadlessEngine {
     AssetsView::new(self.engine.world_mut())
   }
 
-  /// The store the engine keeps its saves in: a headless engine's saves are
-  /// in memory, never on disk. Plant a save in it or read what the game wrote,
-  /// by file name (`slot1.ryo-save`); `EngineBuilder::memory_saves` gives the
-  /// engine a store before it starts
+  /// The store the engine keeps its saves and settings in: a headless
+  /// engine's are in memory, never on disk. Plant a save or settings in it or
+  /// read what the game wrote, by file name (`slot1.ryo-save`,
+  /// `system.json`); `EngineBuilder::memory_saves` gives the engine a store
+  /// before it starts
   pub fn saves(&self) -> MemorySaves {
     self.engine.memory_saves().cloned().unwrap_or_default()
   }

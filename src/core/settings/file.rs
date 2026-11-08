@@ -9,6 +9,16 @@ use crate::core::config::DisplayMode;
 
 /// The format this engine writes
 pub(crate) const FORMAT: u32 = 3;
+/// The settings file's name in the save storage
+pub(crate) const FILE_NAME: &str = "system.json";
+/// What a damaged settings file is renamed to, replacing an older one
+pub(crate) const DAMAGED_NAME: &str = "system.json.damaged";
+
+/// The storage's check of a copy of the settings file: whole when it is a
+/// JSON object, as [`parse`] reads it. No copy is newer than another
+pub(crate) fn verify(bytes: &[u8]) -> Option<u64> {
+  matches!(serde_json::from_slice::<Value>(bytes), Ok(Value::Object(_))).then_some(0)
+}
 
 /// The values a file holds for the engine's settings: `None` for a key it
 /// lacks or whose value was bad
@@ -175,6 +185,7 @@ pub(crate) fn parse(bytes: &[u8], project_env: &Map<String, Value>) -> Parsed {
 /// `file` as format 3: pretty JSON ending in a line feed, with its keys in
 /// order: the format, the engine's settings, the bindings, the game sections
 /// and the keys this engine does not know
+#[cfg_attr(not(test), expect(dead_code, reason = "the settings writer's"))]
 pub(crate) fn render(file: &SettingsFile) -> Vec<u8> {
   let values = &file.values;
   let mut entries = vec![(FORMAT_KEY.to_string(), FORMAT.to_string())];

@@ -6,22 +6,9 @@
 //! game's defaults, so a default changed later reaches every setting the
 //! player never touched. Files from older engines convert as they load.
 
-#[cfg_attr(
-  not(test),
-  expect(
-    dead_code,
-    reason = "the engine reads and writes the settings file through it"
-  )
-)]
+pub(crate) mod apply;
 pub(crate) mod file;
 mod resource;
-#[cfg_attr(
-  not(test),
-  expect(
-    dead_code,
-    reason = "the engine registers, loads and stores sections through it"
-  )
-)]
 pub(crate) mod sections;
 
 pub use resource::Settings;

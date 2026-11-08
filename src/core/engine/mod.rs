@@ -14,6 +14,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use web_time::Instant;
 
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+
 use gilrs::Gilrs;
 use winit::event_loop::EventLoop;
 #[cfg(target_arch = "wasm32")]
@@ -23,7 +26,7 @@ use winit::window::Window;
 use crate::core::asset::{AssetLoader, AssetServer, AssetSource, DiskSource, insert_registry};
 use crate::core::audio::{AudioEngine, VolumeKind, audio_system, default_mixer};
 use crate::core::capture::{AutoCaptureConfig, CaptureReport, CaptureState};
-use crate::core::config::{DisplayMode, ProjectFile};
+use crate::core::config::{DisplayMode, ProjectFile, UserPreference};
 use crate::core::console::{
   CommandRegistry, ConsoleCommandBuilder, ConsoleState, register_builtins,
 };
@@ -63,6 +66,10 @@ use crate::core::saves::{
 };
 use crate::core::scene::{PhysicsPaused, Scene, SceneManager};
 use crate::core::schedule::{EngineSchedules, FixedSet, Phase, PostUpdateSet, UpdateSet};
+use crate::core::settings::apply::AppliedSettings;
+use crate::core::settings::file::SettingsFile;
+use crate::core::settings::sections::SectionRegistry;
+use crate::core::settings::{EngineValues, Settings};
 use crate::core::shaders::EffectsManager;
 use crate::core::systems::{record_trail_points, register_juice_systems};
 use crate::core::text::{GlyphRasterizer, TextEngine, advance_text_reveal};
@@ -335,6 +342,16 @@ pub struct Engine {
   // The window has a zero side: frames run but nothing is drawn
   minimized: bool,
   vsync: bool,
+  /// A vsync setting to apply to the renderer after the frame
+  pending_vsync: Option<bool>,
+  /// The engine's settings as last applied
+  applied_settings: AppliedSettings,
+  /// The settings file as read at start-up, whose unknown keys and sections
+  /// a write keeps
+  #[expect(dead_code, reason = "the settings writer's")]
+  settings_file: SettingsFile,
+  /// Built headless (`HeadlessEngine`, `RYO_HEADLESS`): no wall-clock overlays
+  headless: bool,
   /// Run the frame's logic but do not draw it (an unfocused window with
   /// background rendering off)
   skip_present: bool,
@@ -553,13 +570,7 @@ impl Engine {
     let ResolvedBuild {
       mut config,
       initial_scene,
-      vsync,
-      master_volume,
-      music_volume,
-      sfx_volume,
-      ui_volume,
-      voice_volume,
-      ambience_volume,
+      settings,
       audio_buffer_frames,
       tiled_project,
       game_name,
@@ -573,7 +584,8 @@ impl Engine {
       workspace,
       asset_source,
       hot_reload,
-      save_versions,
+      settings_file,
+      saves,
       memory_saves,
     } = resolved;
 
@@ -665,17 +677,11 @@ impl Engine {
     if headless {
       audio_engine.seed(crate::core::audio::HEADLESS_SEED);
     }
-    let volumes = [
-      master_volume,
-      music_volume,
-      sfx_volume,
-      ui_volume,
-      voice_volume,
-      ambience_volume,
-    ];
-    for (kind, volume) in VolumeKind::ALL.into_iter().zip(volumes) {
-      audio_engine.set_volume_setting(kind, volume);
+    for kind in VolumeKind::ALL {
+      audio_engine.set_volume_setting(kind, settings.volume(kind));
     }
+    let vsync = settings.vsync();
+    let applied_settings = AppliedSettings::new(*settings.values());
     init_world_resources(
       &mut world,
       &config,
@@ -683,13 +689,8 @@ impl Engine {
       command_registry,
       audio_engine,
     );
-    // Headless saves stay in memory, never on disk
-    let memory_saves = memory_saves.or_else(|| headless.then(MemorySaves::new));
-    let saves = SaveService::new(save_versions);
-    if let Some(storage) = save_storage(memory_saves.as_ref(), workspace.as_ref()) {
-      saves.set_storage(storage);
-    }
     world.insert_resource(saves);
+    world.insert_resource(settings);
     if let Some(project) = tiled_project {
       let server = world.resource::<AssetServer>();
       server.register_loader(crate::core::tilemap::TiledMapLoader::with_project(
@@ -816,6 +817,10 @@ impl Engine {
       last_window_size: initial_size,
       minimized: false,
       vsync,
+      pending_vsync: None,
+      applied_settings,
+      settings_file,
+      headless,
       skip_present: false,
       offscreen_run: false,
       offscreen_refused: false,
@@ -1399,6 +1404,8 @@ pub struct EngineBuilder {
   memory_saves: Option<MemorySaves>,
   /// The game's Ryo.toml compiled in, for where none is found on disk
   project_file: ProjectFile,
+  /// The game's settings sections, registered as `game_settings` is called
+  sections: SectionRegistry,
 }
 
 impl EngineBuilder {
@@ -1416,6 +1423,7 @@ impl EngineBuilder {
       save_versions: VersionRegistry::default(),
       memory_saves: None,
       project_file: ProjectFile::none(),
+      sections: SectionRegistry::default(),
     }
   }
 
@@ -1586,16 +1594,20 @@ impl EngineBuilder {
     self
   }
 
-  /// Let saved player preferences in `system.json` override settings when the
-  /// engine is built (this only chooses which ones may).
+  /// Chooses which of the player's settings (`Settings`, `ctx.settings()`)
+  /// the settings file, `system.json`, keeps; the others last for the
+  /// session.
   ///
   /// Startup settings resolve in one order, each layer overriding only what it
   /// sets: engine defaults → `Ryo.toml` (dev) or the values `ryo2d build`
-  /// embedded from it (release) → `EngineBuilder` calls → saved player
-  /// preferences in `system.json` (only keys present in the file and in the
-  /// filter). Without `with_user_preferences`, `system.json` is never read. A
-  /// new `system.json` is seeded from the resolved settings. Headless builds
-  /// never read or write it, and repeated calls combine their filters.
+  /// embedded from it (release) → `EngineBuilder` calls. Those are the game's
+  /// defaults, and the player's file applies over the settings in the filter
+  /// (only the keys it holds). The file keeps only what the player changed,
+  /// so a default changed later reaches every setting the player never
+  /// touched. Without a filter or a game settings section
+  /// ([`game_settings`](Self::game_settings)), `system.json` is never read.
+  /// A headless build keeps it in its memory store, never on disk. Repeated
+  /// calls combine their filters.
   pub fn with_user_preferences(
     mut self,
     filter: impl Into<crate::core::config::UserPreferenceFilter>,
@@ -1725,10 +1737,52 @@ impl EngineBuilder {
     self
   }
 
-  /// Keeps the saves in `store`, in memory, never on disk. A headless engine
-  /// keeps its saves in memory anyway, in a store of its own without this; a
-  /// test gives one to plant saves before the engine starts, or to read what
-  /// the game wrote (`HeadlessEngine::saves` gives the store either way)
+  /// Registers `T` as the game's own settings section `key`: scenes read it
+  /// with `ctx.settings().game::<T>()` and change it with
+  /// `ctx.settings().game_mut::<T>()`. It starts at `T::default()`, and the
+  /// settings file keeps the fields that differ from it. Registering a key
+  /// or a type again replaces it
+  ///
+  /// ```
+  /// use ryo2d::prelude::*;
+  /// use serde::{Deserialize, Serialize};
+  ///
+  /// #[derive(Default, Serialize, Deserialize)]
+  /// struct Video { subtitles: bool }
+  ///
+  /// let builder = EngineBuilder::new().game_settings::<Video>("video");
+  /// ```
+  pub fn game_settings<T>(mut self, key: &str) -> Self
+  where
+    T: Default + Serialize + DeserializeOwned + Send + Sync + 'static,
+  {
+    self.sections.register::<T>(key, None);
+    self
+  }
+
+  /// [`game_settings`](Self::game_settings) for a section whose type changed
+  /// over the game's versions: an older section in the settings file upgrades
+  /// through the typed steps of `versions`, as a save does
+  /// ([`save_versions`](Self::save_versions)). Fields left at their default
+  /// were never written, so an older section type should carry
+  /// `#[serde(default)]`
+  ///
+  /// # Panics
+  ///
+  /// Here, at the call, when the versions have a gap
+  pub fn game_settings_versioned<T>(mut self, key: &str, versions: SaveVersions<T>) -> Self
+  where
+    T: Default + Serialize + DeserializeOwned + Send + Sync + 'static,
+  {
+    self.sections.register(key, Some(versions));
+    self
+  }
+
+  /// Keeps the saves and the settings file (`system.json`) in `store`, in
+  /// memory, never on disk. A headless engine keeps them in memory anyway, in
+  /// a store of its own without this; a test gives one to plant saves or
+  /// settings before the engine starts, or to read what the game wrote
+  /// (`HeadlessEngine::saves` gives the store either way)
   pub fn memory_saves(mut self, store: MemorySaves) -> Self {
     self.memory_saves = Some(store);
     self
@@ -1768,8 +1822,8 @@ impl EngineBuilder {
   ///
   /// With `RYO_HEADLESS=1` in a dev build the engine is built like a
   /// `HeadlessEngine` (sound on the silent mock backend, its variations
-  /// seeded so runs repeat; no gamepads, user preferences or wall-clock
-  /// overlays) but keeps `RYO_CAPTURE_*` and `RYO_INPUT`, and `run` renders
+  /// seeded so runs repeat; saves and settings in memory; no gamepads or
+  /// wall-clock overlays) but keeps `RYO_CAPTURE_*` and `RYO_INPUT`, and `run` renders
   /// offscreen, each step taking at least its share of a second when
   /// `RYO_HEADLESS_HZ` is set.
   pub fn build(self) -> Engine {
@@ -1790,8 +1844,8 @@ impl EngineBuilder {
   }
 
   /// Build an engine for `testing::HeadlessEngine`: sound on the silent mock
-  /// backend; no gamepads, hot reload, user preferences, capture env vars or
-  /// wall-clock overlays.
+  /// backend; saves and settings in memory; no gamepads, hot reload, capture
+  /// env vars or wall-clock overlays.
   #[cfg(not(target_arch = "wasm32"))]
   pub(crate) fn build_headless(self) -> Engine {
     self.build_engine(true)
@@ -1815,8 +1869,9 @@ impl EngineBuilder {
   /// [`resolve`](Self::resolve) against an explicit workspace (`None` = no project files).
   ///
   /// Order: engine defaults → embedded values (release) or Ryo.toml (dev) →
-  /// builder calls → saved preferences present in system.json and in the
-  /// `with_user_preferences` filters. Headless builds never touch system.json.
+  /// builder calls, the game's defaults → the player's settings file over the
+  /// settings the `with_user_preferences` filters keep, read through the save
+  /// storage (a headless build's memory store, never the disk).
   fn resolve_in(
     self,
     workspace: Option<&crate::core::config::Workspace>,
@@ -1868,25 +1923,7 @@ impl EngineBuilder {
       },
     };
 
-    let mut settings = resolve_settings(&project, &self.overrides, None);
-    let mut saved_bindings = None;
-    let mut bindings_saver = None;
-    if !headless
-      && !self.user_preferences.is_empty()
-      && let Some(ws) = workspace
-    {
-      let filter = combined_filter(&self.user_preferences);
-      let bindings_enabled = filter.contains(crate::core::config::UserPreference::Bindings);
-      if let Some(prefs) = load_user_preferences(ws, &filter, &settings) {
-        if bindings_enabled {
-          saved_bindings = prefs.bindings.clone();
-        }
-        settings = resolve_settings(&project, &self.overrides, Some((&prefs, &filter)));
-      }
-      if bindings_enabled {
-        bindings_saver = ws.create_save_manager().ok();
-      }
-    }
+    let settings = resolve_settings(&project, &self.overrides);
 
     let (folder, name) = names;
     let store_name = store_name(
@@ -1896,17 +1933,54 @@ impl EngineBuilder {
       cfg!(target_arch = "wasm32"),
     );
 
+    // Headless saves and settings stay in memory, never on disk
+    let memory_saves = self
+      .memory_saves
+      .or_else(|| headless.then(MemorySaves::new));
+    let saves = SaveService::new(self.save_versions);
+    if let Some(storage) = save_storage(memory_saves.as_ref(), workspace) {
+      saves.set_storage(storage);
+    }
+
+    // The player's settings: the resolved values as the defaults, then the
+    // settings file, read when the game keeps any setting or section
+    let kept = combined_filter(&self.user_preferences);
+    let reads_file = !kept.is_empty() || !self.sections.is_empty();
+    let mut player = Settings::new(player_defaults(&settings), kept, self.sections);
+    let mut settings_file = SettingsFile::default();
+    let mut saved_bindings = None;
+    if reads_file {
+      // An older file's `env` is compared with the project's, as it was seeded from it
+      let project_env = workspace
+        .map(|ws| ws.config().system.env.clone().into_iter().collect())
+        .unwrap_or_default();
+      if let Some(file) = read_settings_file(&saves, &project_env) {
+        let mut warnings = Vec::new();
+        player.apply_file(&file, &mut warnings);
+        for warning in warnings {
+          engine_warn!(module: "Settings", "{warning}");
+        }
+        if player.is_kept(UserPreference::Bindings) {
+          saved_bindings = file.bindings.clone();
+        }
+        settings_file = file;
+      }
+    }
+    let bindings_saver = workspace
+      .filter(|_| !headless && player.is_kept(UserPreference::Bindings))
+      .and_then(|ws| ws.create_save_manager().ok());
+
     let mut config = self.config;
     config.presentation = settings.presentation();
-    config.window_size = settings.window_size;
+    config.window_size = Some(player.window_size());
     config.title = settings.title;
     config.width = settings.resolution.0;
     config.height = settings.resolution.1;
-    config.display_mode = settings.display_mode;
+    config.display_mode = player.display_mode();
     config.target_background_fps = settings.background_fps;
     config.background_rendering = settings.background_rendering;
     config.icon_path = settings.icon;
-    config.debug.show_fps = settings.show_fps;
+    config.debug.show_fps = player.show_fps();
     config.debug.show_colliders = settings.show_colliders;
     config.debug.show_velocities = settings.show_velocities;
     config.debug.show_origins = settings.show_origins;
@@ -1927,13 +2001,8 @@ impl EngineBuilder {
     ResolvedBuild {
       config,
       initial_scene,
-      vsync: settings.vsync,
-      master_volume: settings.master_volume,
-      music_volume: settings.music_volume,
-      sfx_volume: settings.sfx_volume,
-      ui_volume: settings.ui_volume,
-      voice_volume: settings.voice_volume,
-      ambience_volume: settings.ambience_volume,
+      settings: player,
+      settings_file,
       audio_buffer_frames: settings.audio_buffer_frames,
       tiled_project: settings.tiled_project,
       game_name,
@@ -1949,8 +2018,8 @@ impl EngineBuilder {
       hot_reload: self
         .hot_reload
         .unwrap_or(cfg!(debug_assertions) && !headless),
-      save_versions: self.save_versions,
-      memory_saves: self.memory_saves,
+      saves,
+      memory_saves,
     }
   }
 }
@@ -1959,13 +2028,12 @@ impl EngineBuilder {
 struct ResolvedBuild {
   config: EngineConfig,
   initial_scene: Box<dyn Scene>,
-  vsync: bool,
-  master_volume: f32,
-  music_volume: f32,
-  sfx_volume: f32,
-  ui_volume: f32,
-  voice_volume: f32,
-  ambience_volume: f32,
+  /// The player's settings: the resolved defaults with the settings file
+  /// applied
+  settings: Settings,
+  /// The settings file as read (empty without one), which the next write
+  /// keeps the unknown keys of
+  settings_file: SettingsFile,
   /// The audio device's buffer in frames; `None`: the device's default
   audio_buffer_frames: Option<u32>,
   /// The Tiled project's asset path (`None`: the default)
@@ -1987,9 +2055,10 @@ struct ResolvedBuild {
   asset_source: Option<Box<dyn AssetSource>>,
   /// Whether changed asset files reload
   hot_reload: bool,
-  /// The saved types' versions
-  save_versions: VersionRegistry,
-  /// Where the saves are kept instead of the save folder
+  /// The saves, on their storage, holding the saved types' versions
+  saves: SaveService,
+  /// The store a headless engine (or a builder's `memory_saves`) keeps its
+  /// saves and settings in
   memory_saves: Option<MemorySaves>,
 }
 
@@ -2066,30 +2135,86 @@ fn combined_filter(
   )
 }
 
-/// Saved preferences, seeding `system.json` from `seed` when it doesn't exist.
-/// Errors are reported and treated as "no saved preferences".
-fn load_user_preferences(
-  workspace: &crate::core::config::Workspace,
-  filter: &crate::core::config::UserPreferenceFilter,
-  seed: &crate::core::config::resolve::ResolvedSettings,
-) -> Option<crate::core::config::resolve::StoredPreferences> {
-  let defaults = &workspace.config().system;
-  let result = workspace
-    .create_save_manager()
-    .map_err(|e| e.to_string())
-    .and_then(|manager| {
-      manager
-        .load_preferences_or_seed(
-          &seed.to_system_state(defaults.env.clone()),
-          filter,
-          defaults,
-        )
-        .map_err(|e| e.to_string())
-    });
-  match result {
-    Ok(prefs) => prefs,
-    Err(e) => {
-      eprintln!("[ryo2d] Warning: Couldn't load user preferences ({e}), using project settings");
+/// The player's settings at the resolved values: the game's defaults
+fn player_defaults(settings: &crate::core::config::resolve::ResolvedSettings) -> EngineValues {
+  EngineValues {
+    volumes: [
+      settings.master_volume,
+      settings.music_volume,
+      settings.sfx_volume,
+      settings.ui_volume,
+      settings.voice_volume,
+      settings.ambience_volume,
+    ],
+    // The window the game opens when the player has not picked one
+    window_size: crate::core::graphics::screen::initial_window_size(
+      settings.presentation(),
+      settings.resolution,
+      settings.window_size,
+    ),
+    display_mode: settings.display_mode,
+    vsync: settings.vsync,
+    show_fps: settings.show_fps,
+  }
+}
+
+/// The settings file, read through the save storage. A damaged file is set
+/// aside as `system.json.damaged` and its newest whole copy (the backup)
+/// read instead, else none: the defaults. Warns of what it could not read
+fn read_settings_file(
+  saves: &SaveService,
+  project_env: &serde_json::Map<String, serde_json::Value>,
+) -> Option<SettingsFile> {
+  use crate::core::saves::storage::{Origin, Recovery};
+  use crate::core::settings::file::{self, DAMAGED_NAME, FILE_NAME, Parsed};
+
+  let found = match saves.recover_named(FILE_NAME, file::verify) {
+    Ok(Recovery::Missing) => return None,
+    Ok(Recovery::Damaged) => None,
+    Ok(Recovery::Found { bytes, from }) => Some((bytes, from)),
+    Err(error) => {
+      engine_warn!(module: "Settings", "could not read {FILE_NAME} ({error}); using the defaults");
+      return None;
+    }
+  };
+  // Another copy is read when the file itself is damaged, or gone in a crash
+  if found
+    .as_ref()
+    .is_none_or(|(_, from)| *from != Origin::Current)
+  {
+    let then = match &found {
+      None => "using the defaults",
+      Some((_, Origin::Backup)) => "using its backup",
+      Some(_) => "using its newest whole copy",
+    };
+    match saves.set_aside_named(FILE_NAME, DAMAGED_NAME).poll() {
+      Ok(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+        if found.is_none() {
+          engine_warn!(module: "Settings", "the backup of {FILE_NAME} is damaged; {then}");
+        }
+      }
+      Ok(Err(error)) => engine_warn!(
+        module: "Settings",
+        "{FILE_NAME} is damaged and could not be set aside ({error}); {then}"
+      ),
+      // Renamed, or renaming in a store that commits later
+      Ok(Ok(())) | Err(_) => engine_warn!(
+        module: "Settings",
+        "{FILE_NAME} is damaged: set aside as {DAMAGED_NAME}; {then}"
+      ),
+    }
+  }
+  let (bytes, _) = found?;
+  match file::parse(&bytes, project_env) {
+    Parsed::Read { file, warnings } | Parsed::Newer { file, warnings } => {
+      for warning in warnings {
+        engine_warn!(module: "Settings", "{warning}");
+      }
+      Some(file)
+    }
+    // Not met: a copy that verified is a JSON object
+    Parsed::Damaged(reason) => {
+      engine_warn!(module: "Settings", "could not read {FILE_NAME} ({reason}); using the defaults");
       None
     }
   }

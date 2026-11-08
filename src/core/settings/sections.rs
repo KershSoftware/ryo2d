@@ -117,6 +117,11 @@ impl SectionRegistry {
     });
   }
 
+  /// Whether no section is registered
+  pub(crate) fn is_empty(&self) -> bool {
+    self.sections.is_empty()
+  }
+
   pub(crate) fn get<T: 'static>(&self) -> Option<&T> {
     self
       .sections
@@ -173,6 +178,7 @@ impl SectionRegistry {
   /// The sections to store: `base`'s sections that are not registered, and
   /// each registered one that differs from its default, at its current
   /// version (see `stored_value`)
+  #[cfg_attr(not(test), expect(dead_code, reason = "the settings writer's"))]
   pub(crate) fn store(&self, base: &BTreeMap<String, RawSection>) -> BTreeMap<String, RawSection> {
     let mut stored: BTreeMap<String, RawSection> = base
       .iter()

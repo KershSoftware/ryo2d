@@ -499,8 +499,8 @@ mod tests {
     let release = ProjectLayer::from_embedded(lookup_in(&env)).unwrap();
     let web = ProjectFile::from_toml(text).read().unwrap().layer;
     assert_eq!(
-      resolve_settings(&web, &BuilderOverrides::default(), None),
-      resolve_settings(&release, &BuilderOverrides::default(), None),
+      resolve_settings(&web, &BuilderOverrides::default()),
+      resolve_settings(&release, &BuilderOverrides::default()),
     );
   }
 

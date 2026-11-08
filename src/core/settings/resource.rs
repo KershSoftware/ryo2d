@@ -163,13 +163,6 @@ impl Settings {
 
 /// What the engine uses: making the settings, and reading and writing the
 /// settings file
-#[cfg_attr(
-  not(test),
-  expect(
-    dead_code,
-    reason = "the engine makes the settings and keeps their file through it"
-  )
-)]
 impl Settings {
   /// Settings at `defaults`, keeping the `kept` ones and the `sections` in
   /// the file
@@ -190,6 +183,11 @@ impl Settings {
       kept,
       sections,
     }
+  }
+
+  /// The engine's settings as they are now
+  pub(crate) fn values(&self) -> &EngineValues {
+    &self.values
   }
 
   /// Applies the kept values and the sections `file` holds. A section that
@@ -230,6 +228,7 @@ impl Settings {
   /// volume compared as the file keeps it, to two decimals), the kept
   /// bindings and the game sections, with `base`'s unknown keys and
   /// sections carried over
+  #[cfg_attr(not(test), expect(dead_code, reason = "the settings writer's"))]
   pub(crate) fn to_file(&self, base: &SettingsFile) -> SettingsFile {
     let (now, defaults) = (&self.values, &self.defaults);
     let kept = |preference, differs: bool| differs && self.is_kept(preference);

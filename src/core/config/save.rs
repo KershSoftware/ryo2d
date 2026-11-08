@@ -88,7 +88,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::resolve::{
   DEFAULT_AMBIENCE_VOLUME, DEFAULT_MASTER_VOLUME, DEFAULT_MUSIC_VOLUME, DEFAULT_RESOLUTION,
-  DEFAULT_SFX_VOLUME, DEFAULT_UI_VOLUME, DEFAULT_VOICE_VOLUME, StoredPreferences,
+  DEFAULT_SFX_VOLUME, DEFAULT_UI_VOLUME, DEFAULT_VOICE_VOLUME,
 };
 use crate::core::error::{SaveManagerError, SaveManagerResult};
 
@@ -589,22 +589,6 @@ impl RawSystemFile {
       .or_else(|| self.display.as_ref().and_then(|d| d.vsync))
   }
 
-  fn stored_preferences(&self) -> StoredPreferences {
-    StoredPreferences {
-      resolution: self.resolution(),
-      display_mode: self.display_mode(),
-      vsync: self.vsync(),
-      master_volume: self.master_volume,
-      music_volume: self.music_volume,
-      sfx_volume: self.sfx_volume,
-      ui_volume: self.ui_volume,
-      voice_volume: self.voice_volume,
-      ambience_volume: self.ambience_volume,
-      show_fps: self.show_fps,
-      bindings: self.bindings.clone(),
-    }
-  }
-
   /// Bring a file written in an older format up to [`SYSTEM_FORMAT`]: a
   /// format 1 file's volumes are amplitudes, each converted to the setting
   /// heard at the same dB on today's curve (√v, to two decimals as the file
@@ -1028,38 +1012,6 @@ impl SaveManager {
     let mut state = raw.into_state_over(defaults);
     state.env = stored.env;
     Ok(state)
-  }
-
-  /// Read the saved preferences, or seed a new `system.json` from `seed`.
-  ///
-  /// - No file: writes the keys of `seed` that are in `filter` (plus `env` when
-  ///   `seed.env` isn't empty) and returns `Ok(None)` - the seed already is
-  ///   what the game resolved, so there is nothing to override.
-  /// - File present: adds `env` keys from `defaults` it doesn't have yet and
-  ///   returns the preferences it holds; a file in an older format has its
-  ///   volumes converted and is saved with the version.
-  /// - Unparsable file: returns the error and leaves the file untouched.
-  pub(crate) fn load_preferences_or_seed(
-    &self,
-    seed: &SystemState,
-    filter: &UserPreferenceFilter,
-    defaults: &super::workspace::SystemDefaults,
-  ) -> SaveManagerResult<Option<StoredPreferences>> {
-    let path = self.system_path();
-    if !path.exists() {
-      self.write_filtered_system(seed, filter, !seed.env.is_empty())?;
-      return Ok(None);
-    }
-
-    let mut raw: RawSystemFile = self.read_json_file(&path)?;
-    raw.warn_if_resolution_malformed();
-    let upgraded = raw.upgrade();
-    let prefs = raw.stored_preferences();
-    let mut state = raw.into_state();
-    if state.merge_defaults(defaults) || upgraded {
-      self.save_loaded_system(&state);
-    }
-    Ok(Some(prefs))
   }
 
   /// Save `state`, a loaded `system.json` converted or given new `env` keys,
@@ -1810,23 +1762,11 @@ mod tests {
   }
 
   // ==========================================================================
-  // Stored preferences, seeding and missing-key saves
+  // Bindings, conversions and missing-key saves
   // ==========================================================================
 
   fn write_system_json(dir: &std::path::Path, json: &str) {
     std::fs::write(dir.join("system.json"), json).unwrap();
-  }
-
-  /// The stored preferences, read through the loader the engine uses
-  /// (default defaults, so nothing is merged or written).
-  fn stored_preferences(manager: &SaveManager) -> Option<StoredPreferences> {
-    manager
-      .load_preferences_or_seed(
-        &SystemState::new(),
-        &UserPreferenceFilter::all(),
-        &super::super::workspace::SystemDefaults::default(),
-      )
-      .unwrap()
   }
 
   fn read_system_json(dir: &std::path::Path) -> serde_json::Value {
@@ -1873,165 +1813,6 @@ mod tests {
     assert!(!text.contains("bindings"));
   }
 
-  #[test]
-  fn stored_preferences_report_only_present_keys() {
-    let dir = tempdir().unwrap();
-    let manager = SaveManager::new(dir.path()).unwrap();
-    write_system_json(
-      dir.path(),
-      r#"{"format_version": 2, "master_volume": 0.5, "resolution": "1600x900"}"#,
-    );
-
-    let prefs = stored_preferences(&manager).unwrap();
-
-    assert_eq!(prefs.master_volume, Some(0.5));
-    assert_eq!(prefs.resolution, Some((1600, 900)));
-    assert_eq!(prefs.music_volume, None);
-    assert_eq!(prefs.sfx_volume, None);
-    assert_eq!(prefs.display_mode, None);
-    assert_eq!(prefs.vsync, None);
-    assert_eq!(prefs.show_fps, None);
-  }
-
-  #[test]
-  fn stored_preferences_are_none_without_a_file() {
-    let dir = tempdir().unwrap();
-    let manager = SaveManager::new(dir.path()).unwrap();
-    // No file: nothing is stored (the call seeds a new one)
-    assert_eq!(stored_preferences(&manager), None);
-  }
-
-  #[test]
-  fn stored_preferences_read_legacy_nested_display() {
-    let dir = tempdir().unwrap();
-    let manager = SaveManager::new(dir.path()).unwrap();
-    write_system_json(
-      dir.path(),
-      r#"{"display": {"width": 1920, "height": 1080, "display_mode": "borderless_fullscreen", "vsync": false}}"#,
-    );
-
-    let prefs = stored_preferences(&manager).unwrap();
-
-    assert_eq!(prefs.resolution, Some((1920, 1080)));
-    assert_eq!(prefs.display_mode, Some(DisplayMode::BorderlessFullscreen));
-    assert_eq!(prefs.vsync, Some(false));
-  }
-
-  #[test]
-  fn stored_preferences_ignore_a_malformed_resolution() {
-    let dir = tempdir().unwrap();
-    let manager = SaveManager::new(dir.path()).unwrap();
-    write_system_json(
-      dir.path(),
-      r#"{"format_version": 2, "resolution": "big", "master_volume": 0.5}"#,
-    );
-
-    let prefs = stored_preferences(&manager).unwrap();
-
-    assert_eq!(prefs.resolution, None);
-    assert_eq!(prefs.master_volume, Some(0.5));
-  }
-
-  #[test]
-  fn seeding_writes_the_filtered_keys_of_the_seed_state() {
-    let dir = tempdir().unwrap();
-    let manager = SaveManager::new(dir.path()).unwrap();
-    let mut seed = SystemState::new();
-    seed.width = 800;
-    seed.height = 600;
-    seed.master_volume = 0.3;
-    seed.vsync = Some(false);
-    let filter =
-      UserPreferenceFilter::only([UserPreference::Resolution, UserPreference::MasterVolume]);
-
-    let prefs = manager
-      .load_preferences_or_seed(
-        &seed,
-        &filter,
-        &super::super::workspace::SystemDefaults::default(),
-      )
-      .unwrap();
-
-    assert_eq!(prefs, None);
-    let raw = read_system_json(dir.path());
-    assert_eq!(raw["resolution"], "800x600");
-    assert_eq!(raw["master_volume"], 0.3);
-    assert!(raw.get("vsync").is_none());
-    assert!(raw.get("display_mode").is_none());
-    assert!(raw.get("env").is_none());
-  }
-
-  #[test]
-  fn an_existing_file_is_not_reseeded() {
-    let dir = tempdir().unwrap();
-    let manager = SaveManager::new(dir.path()).unwrap();
-    write_system_json(dir.path(), r#"{"format_version": 2, "master_volume": 0.5}"#);
-    let mut seed = SystemState::new();
-    seed.master_volume = 0.3;
-
-    let prefs = manager
-      .load_preferences_or_seed(
-        &seed,
-        &UserPreferenceFilter::all(),
-        &super::super::workspace::SystemDefaults::default(),
-      )
-      .unwrap()
-      .unwrap();
-
-    assert_eq!(prefs.master_volume, Some(0.5));
-    let raw = read_system_json(dir.path());
-    assert_eq!(raw["master_volume"], 0.5);
-    assert!(raw.get("resolution").is_none());
-  }
-
-  #[test]
-  fn new_env_keys_are_merged_into_an_existing_file() {
-    let dir = tempdir().unwrap();
-    let manager = SaveManager::new(dir.path()).unwrap();
-    write_system_json(dir.path(), r#"{"format_version": 2, "master_volume": 0.5}"#);
-    let mut env = HashMap::new();
-    env.insert("difficulty".to_string(), serde_json::json!("hard"));
-    let defaults = super::super::workspace::SystemDefaults {
-      env,
-      ..super::super::workspace::SystemDefaults::default()
-    };
-
-    manager
-      .load_preferences_or_seed(&SystemState::new(), &UserPreferenceFilter::all(), &defaults)
-      .unwrap();
-
-    let raw = read_system_json(dir.path());
-    assert_eq!(raw["env"]["difficulty"], "hard");
-    assert_eq!(raw["master_volume"], 0.5);
-    assert!(raw.get("resolution").is_none());
-  }
-
-  #[test]
-  fn a_failed_env_merge_write_keeps_the_loaded_preferences() {
-    let dir = tempdir().unwrap();
-    let manager = SaveManager::new(dir.path()).unwrap();
-    write_system_json(dir.path(), r#"{"format_version": 2, "master_volume": 0.5}"#);
-    let path = dir.path().join("system.json");
-    let mut perms = std::fs::metadata(&path).unwrap().permissions();
-    perms.set_readonly(true);
-    std::fs::set_permissions(&path, perms).unwrap();
-    if std::fs::OpenOptions::new().write(true).open(&path).is_ok() {
-      return; // running as a user the read-only flag doesn't bind (e.g. root)
-    }
-    let mut env = HashMap::new();
-    env.insert("difficulty".to_string(), serde_json::json!("hard"));
-    let defaults = super::super::workspace::SystemDefaults {
-      env,
-      ..super::super::workspace::SystemDefaults::default()
-    };
-
-    let prefs = manager
-      .load_preferences_or_seed(&SystemState::new(), &UserPreferenceFilter::all(), &defaults)
-      .unwrap();
-
-    assert_eq!(prefs.and_then(|p| p.master_volume), Some(0.5));
-  }
-
   /// A player's settings from before the format version that cannot be
   /// rewritten (a read-only file) still load, converted, for the game's
   /// own load as for the engine's: the conversion's save is best effort
@@ -2064,61 +1845,6 @@ mod tests {
       old,
       "left as it was"
     );
-  }
-
-  #[test]
-  fn env_merge_flattens_a_legacy_file_without_losing_settings() {
-    let dir = tempdir().unwrap();
-    let manager = SaveManager::new(dir.path()).unwrap();
-    write_system_json(
-      dir.path(),
-      r#"{"format_version": 2, "master_volume": 0.5, "display": {"width": 1920, "height": 1080, "display_mode": "borderless_fullscreen", "vsync": false}}"#,
-    );
-    let mut env = HashMap::new();
-    env.insert("difficulty".to_string(), serde_json::json!("hard"));
-    let defaults = super::super::workspace::SystemDefaults {
-      env,
-      ..super::super::workspace::SystemDefaults::default()
-    };
-
-    let prefs = manager
-      .load_preferences_or_seed(&SystemState::new(), &UserPreferenceFilter::all(), &defaults)
-      .unwrap()
-      .unwrap();
-
-    // The preferences come from the legacy layout...
-    assert_eq!(prefs.resolution, Some((1920, 1080)));
-    assert_eq!(prefs.display_mode, Some(DisplayMode::BorderlessFullscreen));
-    assert_eq!(prefs.vsync, Some(false));
-    // ...and the rewrite adds env in the flat layout with the same values
-    let raw = read_system_json(dir.path());
-    assert!(raw.get("display").is_none());
-    assert_eq!(raw["resolution"], "1920x1080");
-    assert_eq!(raw["display_mode"], "borderless_fullscreen");
-    assert_eq!(raw["vsync"], false);
-    assert_eq!(raw["master_volume"], 0.5);
-    assert_eq!(raw["env"]["difficulty"], "hard");
-  }
-
-  #[test]
-  fn malformed_file_is_an_error_and_left_alone() {
-    for contents in ["not json", r#"{"vsync": "yes"}"#] {
-      let dir = tempdir().unwrap();
-      let manager = SaveManager::new(dir.path()).unwrap();
-      write_system_json(dir.path(), contents);
-
-      let result = manager.load_preferences_or_seed(
-        &SystemState::new(),
-        &UserPreferenceFilter::all(),
-        &super::super::workspace::SystemDefaults::default(),
-      );
-
-      assert!(result.is_err(), "{contents} should not parse");
-      assert_eq!(
-        std::fs::read_to_string(dir.path().join("system.json")).unwrap(),
-        contents
-      );
-    }
   }
 
   #[test]
@@ -2282,20 +2008,6 @@ mod tests {
     assert_eq!(volumes(&manager.load_system().unwrap()), converted);
     assert_eq!(read_system_json(dir.path()), raw);
 
-    // The engine's startup read converts and saves too
-    let dir = tempdir().unwrap();
-    let manager = SaveManager::new(dir.path()).unwrap();
-    write_system_json(dir.path(), old);
-    let prefs = stored_preferences(&manager).unwrap();
-    assert_eq!(
-      (prefs.master_volume, prefs.music_volume, prefs.sfx_volume),
-      (Some(0.5), Some(0.8), Some(0.55))
-    );
-    assert_eq!(prefs.ui_volume, None, "still no preference");
-    assert_eq!(read_system_json(dir.path()), raw);
-    let prefs = stored_preferences(&manager).unwrap();
-    assert_eq!(prefs.master_volume, Some(0.5), "not converted again");
-
     // A plain load converts what it returns and leaves the file alone
     let dir = tempdir().unwrap();
     let manager = SaveManager::new(dir.path()).unwrap();
@@ -2329,10 +2041,10 @@ mod tests {
 }"#;
     write_system_json(dir.path(), previous);
 
-    let prefs = stored_preferences(&manager).unwrap();
-    assert_eq!(prefs.resolution, Some((1280, 720)));
-    assert_eq!(prefs.vsync, Some(true));
-    assert_eq!(prefs.show_fps, Some(false));
+    let state = manager.load_system().unwrap();
+    assert_eq!((state.width, state.height), (1280, 720));
+    assert_eq!(state.vsync, Some(true));
+    assert_eq!(state.show_fps, Some(false));
 
     // Saved again, its keys are kept, its volumes converted to today's curve
     // (√v, the same loudness) and the format version added

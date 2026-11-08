@@ -143,6 +143,16 @@ struct RendererParts {
   presentation_blocks: bool,
 }
 
+/// The present mode for `vsync`: on, `Fifo`, which waits for the display
+/// (every surface supports it); off, `Mailbox`, else `Immediate`, else `Fifo`
+pub(crate) fn present_mode_for(vsync: bool, supported: &[wgpu::PresentMode]) -> wgpu::PresentMode {
+  let off = [wgpu::PresentMode::Mailbox, wgpu::PresentMode::Immediate];
+  match off.into_iter().find(|mode| supported.contains(mode)) {
+    Some(mode) if !vsync => mode,
+    _ => wgpu::PresentMode::Fifo,
+  }
+}
+
 /// How the window renderer is set up.
 #[derive(Debug, Clone, Copy)]
 pub struct RendererSettings {
@@ -299,18 +309,9 @@ impl WgpuRenderer {
       .or_else(|| surface_caps.formats.first().copied())
       .ok_or_else(|| GpuError::CreateSurface("the surface supports no format".to_string()))?;
 
-    // VSync on: Fifo, which waits for the display (every surface supports
-    // it). Off: Mailbox, else Immediate, paced to target_fps by the engine
-    let supports = |mode| surface_caps.present_modes.contains(&mode);
-    let present_mode = if vsync.unwrap_or(true) {
-      wgpu::PresentMode::Fifo
-    } else if supports(wgpu::PresentMode::Mailbox) {
-      wgpu::PresentMode::Mailbox
-    } else if supports(wgpu::PresentMode::Immediate) {
-      wgpu::PresentMode::Immediate
-    } else {
-      wgpu::PresentMode::Fifo
-    };
+    // With vsync off, presenting does not wait: the engine paces the frames
+    // to target_fps
+    let present_mode = present_mode_for(vsync.unwrap_or(true), &surface_caps.present_modes);
 
     let config = wgpu::SurfaceConfiguration {
       usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -622,6 +623,27 @@ impl WgpuRenderer {
       self.mapping.with_physical((new_width, new_height)),
       ui_image,
     );
+  }
+
+  /// Turns vsync on (presenting waits for the display) or off: the window
+  /// surface is reconfigured with the present mode for it. An offscreen
+  /// target has no present mode, and the browser paces the web's frames, so
+  /// both do nothing.
+  pub fn set_vsync(&mut self, vsync: bool) {
+    if cfg!(target_arch = "wasm32") {
+      return;
+    }
+    let (PresentTarget::Surface { surface, config }, Some(adapter)) =
+      (&mut self.target, &self.adapter)
+    else {
+      return;
+    };
+    let mode = present_mode_for(vsync, &surface.get_capabilities(adapter).present_modes);
+    if mode != config.present_mode {
+      config.present_mode = mode;
+      surface.configure(&self.device, config);
+    }
+    self.presentation_blocks = mode == wgpu::PresentMode::Fifo;
   }
 
   /// Follow a new mapping with a UI image of `ui_image` pixels: reconfigure
