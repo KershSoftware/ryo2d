@@ -240,6 +240,9 @@ pub mod prelude {
     SavesView,
   };
 
+  // Settings
+  pub use crate::core::settings::Settings;
+
   // Preferences and the old save manager
   pub use crate::core::config::{
     DisplayMode, GameSaveData, Resolution, SaveManager, SystemState, UserPreference,

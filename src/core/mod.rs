@@ -45,6 +45,7 @@ pub mod state_machine;
 pub mod config;
 pub mod diagnostics;
 pub mod saves;
+pub mod settings;
 
 // Profiling instrumentation
 pub mod profiler;
