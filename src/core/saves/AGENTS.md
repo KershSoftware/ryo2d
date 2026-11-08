@@ -1,16 +1,53 @@
 # AGENTS.md - Saves Module
 
-Game saves, from the slot name down to the bytes on disk. This layer keeps files whole: a crash at any point leaves a whole, verified copy of either the old or the new bytes, and recovery finds it. The design is `docs/specs/2026-11-07-saves-and-settings-design.md` (where it and the code differ, the code is current).
+Game saves, from the slot name down to the bytes on disk. The save file carries a header, checksums and the game's data version, and older data upgrades through typed steps. The storage layer keeps files whole: a crash at any point leaves a whole, verified copy of either the old or the new bytes, and recovery finds it. The design is `docs/specs/2026-11-07-saves-and-settings-design.md` (where it and the code differ, the code is current).
 
 | File | What |
 |------|------|
-| `mod.rs` | The exports: `SaveError` and `MemorySaves` are public; the rest is crate-internal |
+| `mod.rs` | The exports: `SaveError`, `SaveHeader`, `SaveVersions` and `MemorySaves` are public; the rest is crate-internal |
 | `error.rs` | `SaveError`, a `thiserror` enum whose causes are its `source()` |
+| `container.rs` | The save file: `SaveHeader`, `encode`, `read_header`, `verify`, `decode` (to a `Body`), `peek_format`; format 1 read as well. Its tests' `fixtures` module holds the format-1 fixture and its `LegacyFixture` type for other tests |
+| `versions.rs` | `SaveVersions<T>` (a type's current version and its steps) and `VersionRegistry` (by type: `register`, `current`, `decode_ron`, `decode_json`) |
 | `slot.rs` | The slot rule (`check_new`), older names still reachable (`is_legacy`), and the file names: `file_name`, `backup_name`, `temp_name`, `is_temp_of` |
 | `storage.rs` | The seam: `FileOps`, `Storage` (implemented for every `FileOps` backend), `Completion`, `Recovery`, `Origin` |
 | `replace.rs` | The order of writing, recovering, removing and setting aside a file (`safe_replace`, `recover`, `remove_all`, `set_aside`) |
 | `files.rs` | `FileStorage`, a native folder (not on the web) |
 | `memory.rs` | `MemorySaves`, the in-memory store, with its faults for tests (`FaultOp`) |
+
+## The save file
+
+Format 2, every integer a little-endian u32:
+
+| Bytes | Content |
+|---|---|
+| 0-4 | `RYO2` |
+| 4-8 | the format, 2 |
+| 8-12 | the header's length H |
+| 12-16 | the body's length B |
+| 16-20 | the header's CRC-32 |
+| 20-24 | the body's CRC-32 |
+| 24 on | the header (`SaveHeader` as JSON), then the body (RON deflated at level 6) |
+
+The CRC is `flate2::Crc`. The header holds the format, the data version, the save time (Unix seconds), the play time, the name, the labels and the engine version; `encode` writes it with format 2 whatever the header says, and a read takes the format from the prefix. The body is the RON of the data itself.
+
+- `read_header` checks the magic, the format, the lengths up to the header and the header's CRC only, so a slot list reads a save whose body is cut off or damaged.
+- `verify` checks the whole file (the exact length and both CRCs; format 1 by parsing all of it) and returns the save time, as `Storage`'s `verify` wants. It is `None` for a file of a newer format.
+- `decode` checks the whole file and inflates the body.
+- `peek_format` is the format of any file with the magic, newer ones included, so a newer save can be refused as `NewerVersion` rather than taken for damage.
+- Errors: no magic (or format 0) is `Corrupt { reason: "not a Ryo2D save" }`; a format above 2 is `NewerVersion { found, current: 2 }`; anything else wrong is `Corrupt` with its reason. The container does not know the slot, so `Corrupt`'s `slot` is empty for the caller to fill.
+
+Format 1, the old save manager's, is `RYO2`, 1, then the deflated RON of `GameSaveData<T>`: `(data: .., timestamp, name, play_time, metadata)`. `read_header` parses everything but `data` (`IgnoredAny`) into a header with format 1, version 1, the labels from `metadata` and an empty engine version. `decode` returns the whole RON with `Body::legacy` set; the text is taken lossily, as the old reader did. Format 1 has no checksum: a cut-off file fails the RON parse.
+
+`tests/fixtures/saves/` holds a format-1 save written by the old code, and `system.json` at formats 1 and 2; its README says how they were made. Never regenerate them.
+
+## Versions
+
+A game gives each versioned type a `SaveVersions<T>`: `new(current)`, then `step(from, |old: A| -> B)` for every version from 1 to `current - 1`. A type never registered is version 1, as is every format-1 save.
+
+- Each step keeps two conversions built from the one closure: RON text to RON text (`ron::from_str` of A, then `ron::to_string` of B) for saves, and `serde_json::Value` to `Value` for settings sections. Data passes between steps serialized, so a step's B and the next step's A need only agree on their shape.
+- `VersionRegistry::register` panics, naming the type, when `current` is 0, on two steps from one version, on a step outside 1 to `current - 1` and on a missing step (`"SaveVersions<{type}>: missing step from version {n}"`). So a gap fails as the types are registered, never at a player's load. A second registration of a type replaces the first.
+- `decode_ron::<T>(version, &body)` runs the steps from `version` and returns the value and `Some(version)` when it upgraded. A legacy body is unwrapped through a typed `{ data: A }` wrapper by the first step it meets, or by the final read when the type is still version 1. A version above the current one is `NewerVersion`, version 0 is `Corrupt`, and data that does not read (in a step, as `StepFailed` naming the step, or at the end) is `Deserialize` with an empty slot.
+- `decode_json::<T>(key, version, value)` is the same for a settings section, and its errors name `key` as the slot.
 
 ## Slot names
 
@@ -67,4 +104,4 @@ Two writers on one folder (a game launched twice) can fail each other's saves: o
 
 ## Testing
 
-`replace.rs`'s tests run a replace with a fault at every step: each `FaultOp` failing at each call, a torn write, and a cut-off wrapper that stops every operation from the kth on (as a process that died there leaves the store), and check a fresh `recover` finds the old or the new copy whole. `files.rs` runs the same order on a real folder, and two writers on one folder.
+`container.rs`'s tests round-trip a save, cut off and flip bytes in each region, refuse a foreign file and a newer format, and read the format-1 fixture. `versions.rs`'s tests upgrade through two steps, refuse a newer version, panic at registration on each mistake, and upgrade the fixture and JSON sections. `replace.rs`'s tests run a replace with a fault at every step: each `FaultOp` failing at each call, a torn write, and a cut-off wrapper that stops every operation from the kth on (as a process that died there leaves the store), and check a fresh `recover` finds the old or the new copy whole. `files.rs` runs the same order on a real folder, and two writers on one folder.
