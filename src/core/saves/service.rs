@@ -475,6 +475,8 @@ impl SaveService {
         from_backup,
       });
     }
+    // File names order `a-b.ryo-save` before `a.ryo-save`
+    slots.sort_by(|a, b| a.slot.cmp(&b.slot));
     Ok(slots)
   }
 
@@ -500,7 +502,6 @@ impl SaveService {
     let storage = storage.ok_or(SaveError::Unavailable)?;
     let file = file_name(slot);
     let generation = self.shared.begin(&file, PendingOp::Delete);
-    let shared = Arc::clone(&self.shared);
     let meta = JobMeta {
       kind: JobKind::Delete {
         slot: slot.to_string(),
@@ -508,10 +509,9 @@ impl SaveService {
       file: file.clone(),
       generation: Some(generation),
     };
+    // Never skipped for a later save: the deleted save would become that
+    // save's backup
     self.queue(meta, move || {
-      if shared.superseded(&file, generation) {
-        return JobEnd::Done(Ok(()));
-      }
       JobEnd::from_completion(storage.remove_all(&file), &file)
     });
     Ok(())
@@ -967,6 +967,33 @@ mod tests {
   }
 
   #[test]
+  fn a_save_after_a_delete_leaves_no_backup_of_the_deleted_save() {
+    let store = MemorySaves::new();
+    let service = service(&store);
+    service.save("s", hero(1), SaveInfo::new()).unwrap();
+    settle(&service);
+
+    store.slow(Duration::from_millis(20));
+    // Keeps the writer busy while the delete and the new save are queued
+    service.write_named("blocker", b"x".to_vec(), |_| Some(0));
+    service.delete("s").unwrap();
+    service.save("s", hero(2), SaveInfo::new()).unwrap();
+    let finished = settle(&service);
+    let ops: Vec<_> = finished.iter().map(|f| (f.op, f.result.is_ok())).collect();
+    assert_eq!(ops, [(SaveOp::Delete, true), (SaveOp::Save, true)]);
+
+    assert_eq!(
+      store.get("s.ryo-save.bak"),
+      None,
+      "the deleted save is gone"
+    );
+    let loaded = service.load::<Hero>("s").unwrap();
+    assert_eq!(loaded.data, hero(2));
+    assert!(!loaded.from_backup);
+    assert_eq!(store.names(), ["blocker", "s.ryo-save"]);
+  }
+
+  #[test]
   fn pending_writes_finish_before_flush_returns() {
     let store = MemorySaves::new();
     let service = service(&store);
@@ -1287,6 +1314,9 @@ mod tests {
       )
       .unwrap();
     service.save("a", hero(1), SaveInfo::new()).unwrap();
+    // `-` sorts before the `.` of `.ryo-save`, so file names alone would put
+    // `a-b` first
+    service.save("a-b", hero(1), SaveInfo::new()).unwrap();
     settle(&service);
     // A save still queued is listed too
     store.slow(Duration::from_millis(20));
@@ -1294,8 +1324,8 @@ mod tests {
 
     let slots = service.list().unwrap();
     let names: Vec<_> = slots.iter().map(|slot| slot.slot.as_str()).collect();
-    assert_eq!(names, ["a", "b", "c"]);
-    let b = &slots[1];
+    assert_eq!(names, ["a", "a-b", "b", "c"]);
+    let b = &slots[2];
     assert_eq!(b.header.name.as_deref(), Some("Chapter two"));
     assert_eq!(b.header.play_time, 90);
     assert_eq!(b.header.labels["area"], "caves");
