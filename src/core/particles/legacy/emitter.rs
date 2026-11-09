@@ -201,7 +201,7 @@ pub struct ParticleEmitter {
   // Features
   // =========================================================================
   /// Optional collision configuration (imported from collision.rs)
-  pub collision: Option<super::collision::CollisionConfig>,
+  pub collision: Option<crate::core::particles::collision::CollisionConfig>,
   /// Layer bits given to every particle this emitter spawns.
   ///
   /// Attractors with a non-zero `layer_mask` only affect particles whose layer
@@ -391,7 +391,10 @@ impl ParticleEmitter {
     self
   }
 
-  pub fn with_collision(mut self, config: super::collision::CollisionConfig) -> Self {
+  pub fn with_collision(
+    mut self,
+    config: crate::core::particles::collision::CollisionConfig,
+  ) -> Self {
     self.collision = Some(config);
     self
   }

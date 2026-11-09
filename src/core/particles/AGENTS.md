@@ -19,7 +19,7 @@ Particles go into the `render` batch and sort by `z_order` (default 0) with enti
 
 ## Collisions
 
-`ParticleEmitter::with_collision(CollisionConfig)` makes `ParticleSystem::update` collide that emitter's particles with the world (all in `mod.rs`, config types in `collision.rs`):
+`ParticleEmitter::with_collision(CollisionConfig)` makes `ParticleSystem::update` collide that emitter's particles with the world (in `legacy/mod.rs`, the geometry in `contact.rs`, config types in `collision.rs`):
 
 - **Colliders** - entities with `GlobalTransform` + `Collider`, gathered once per update and only when some emitter has a collision config. Trigger colliders and `Disabled` entities are skipped. No `RigidBody` is needed. Geometry is the collider as physics places it (its entity's world transform, then its `offset` and `rotation`):
   - a circle is a circle;

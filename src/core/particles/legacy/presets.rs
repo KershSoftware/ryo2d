@@ -2,11 +2,11 @@
 //!
 //! Ready-to-use emitter configurations for common effects.
 
-use super::collision::CollisionConfig;
 use super::emitter::{EmissionMode, EmissionShape, ParticleEmitter};
 use crate::core::asset::Handle;
 use crate::core::ecs::SpriteEffect;
 use crate::core::graphics::Image;
+use crate::core::particles::collision::CollisionConfig;
 use crate::core::ui::Color;
 
 impl ParticleEmitter {
