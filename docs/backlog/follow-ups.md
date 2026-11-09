@@ -2,7 +2,100 @@
 
 Small issues found while building each sub-project and left for later: deferred review findings, known limits and pre-existing bugs seen along the way. Each line names where it came from. Remove a line when it is fixed.
 
-Items from 4f to 6b were copied from their execution records. Items from earlier sub-projects come from notes kept at the time, and some may have been fixed since: check before working on one.
+Items from 4f on were copied from their execution records. Items from earlier sub-projects come from notes kept at the time, and some may have been fixed since: check before working on one.
+
+## Saves and settings
+
+- Owner decisions (2026-11-08):
+  - The design was left to "however a professional engine would handle it" (spec `docs/specs/2026-11-07-saves-and-settings-design.md`).
+  - Merged after the scripted tour (all 129 pages render; every page that differs from main also differs between two branch runs, and the saves demo's four pages are new), before the hand checks below.
+  - The owner approved, one-time, deleting all of `target/debug` mid-branch when the disk fell to 37 GiB.
+- Still to check by hand:
+  - **The saves demo in a browser** (`./dev.sh web saves`): save, reload the tab and load on Slots and Upgrades; change a setting and reload. `src/core/saves/idb.rs` has only been compiled, never run in a browser.
+  - **Native window settings across a restart:** a resized window, and windowed → borderless → windowed with a saved size (`request_inner_size` right after `set_fullscreen(None)` is unverified on macOS and X11); F5 and F1 kept.
+- Rulings the owner may revisit (the spec's "Details settled at planning" records the design ones):
+  - **A save written by a newer container format is refused** with `NewerVersion`, never treated as damaged and never overwritten, so a player who downgrades cannot save into that slot.
+  - **A save clears every leftover temporary file of its slot**, as the spec says, so two copies of a game saving one slot can fail each other's saves (see Limits).
+  - **A browser write completes as `Completion::Pending`**, polled each frame and never waited on, on the web or at quit.
+  - **The settings file is read and set aside through `SaveService`** (`recover_named`, `set_aside_named`), beside its writes.
+  - **The player's preferences are proven by the settings tests**, not by a column of the project table; a test proves every builder override reaches the settings.
+  - **A web build resolves `dev_window_keys` as a release build does** (unset is off), so web debug builds lose the dev window keys by default.
+  - **The warning for a store named after the window title fires only on the web**, where the name keys the browser's storage.
+  - **A game section the field diff cannot express is stored whole**, marked `"whole": true`.
+  - **An unreadable settings file makes the writer read-only** for the session, as a newer one and a damaged one that could not be set aside do.
+  - **A Ryo.toml value of the wrong type warns and is dropped** (it was a hard error). Demos whose stray sections moved into `[project]` save to new release folders and show new console names.
+  - Test and sequencing calls: a `MemorySaves::fail_from` fault helper; a test that every example's Ryo.toml parses without a warning, in place of a manual run; named-write results routed to the settings writer by the persistence task; the old bindings saver kept for one task (it wrote nothing); a disk-backed frames A/B added in the final fix wave.
+- Limits recorded (`docs/backlog/saves.md`, Limits):
+  - **The web:** a save serializes on the frame and saves of a slot are not coalesced; closing the tab right after a save can lose it; the first scene waits up to 2 s for the database to open, then for the whole store's read, which has no time limit; a saved fullscreen and window size are not restored; vsync does nothing.
+  - **Native crash safety assumes a local disk** (atomic renames, `fsync` of the file and its folder).
+  - **A setting equal to the default when written leaves the file**, so a default changed later moves a setting the player had set to the old default.
+  - **Every backup rotation reads and verifies the current file**, and a save reads it twice on the writer thread (the newer-format check, then the rotation): read it once.
+  - **Two copies of a game saving one slot can fail each other's saves**; the folder always ends with a verified save.
+  - **On the web, `[env]` is readable only by parsing `ProjectFile::text()`**: give it an API.
+  - **Saving a `SavedChunks` clone through `ctx.saves()` serializes the shared store under its lock** on native, so a chunk unloading then waits.
+  - **The figures are from a busy machine** (load 5 to 7.6), all but one against the memory store: measure again on a quiet machine.
+- Deferred findings:
+  - **Crash safety (`src/core/saves/replace.rs`).**
+    - `safe_replace` aborts on a read error of the current file (~:58), while the module notes say an unreadable current is passed over: document it, or treat it as unverified.
+    - `recover` returns the current file's read error instead of falling back to a whole backup (~:88).
+    - A stale verified temporary file beats a newer backup: compare their age.
+    - `remove_all` removes the temporary files before the backup, so a delete cut short after a crash between steps 2 and 3 can bring back an older backup: remove the backup first.
+    - `exists()` is true when only a torn temporary file exists, while `load` gives `NotFound`.
+    - `InvalidSlot`'s message misleads for Windows device names.
+  - **Save service (`src/core/saves/service.rs`).**
+    - A save overtaken by a later save of its slot reports `Ok` even when the later one fails (as the plan specified).
+    - A panicking storage is reported as a `Serialize` error.
+    - The newer-format check on a save ignores read errors, which could let `safe_replace` overwrite a newer file: return `Io`, as `refuse_newer` does.
+    - The step turning a pending completion into a result is written twice.
+    - The `Publish` guard is built inside the job closure, so a dropped job would hang a load.
+    - `FaultKind` (`memory.rs`) keeps an item-level `allow(dead_code)`.
+    - `EngineBuilder::memory_saves` is replaced by the browser store on the web.
+  - **Settings.**
+    - The console's `debug:fps` changes the FPS overlay without updating `Settings::show_fps` (F1 does update it).
+    - A window size a game sets while fullscreen, or in a late system, can be replaced by an OS resize before the next apply.
+    - A first run can write `resolution` when the OS adjusts the window before the first frame: treat the OS size before the first frame as the default, or say so in the settings notes.
+    - An unread raw section comes back after the player changes that section and changes it back: clear `unread` in `get_mut` and `reset_all`.
+    - `"format_version": 2.0` (a float) reads as format 1, so its volumes get a square root.
+    - A settings write that fails at quit is never logged: drain the results after the quit flush and warn.
+    - `stored` can stop matching the disk when two writes are in flight and the later fails: clear it on any failure.
+    - A build with no storage warns once, then sends `SettingsSaveFailed` on every write.
+  - **The browser store (`src/core/saves/browser.rs`, `idb.rs`).**
+    - "system.json is damaged: set aside" is logged before the set-aside commit lands, and a failed set-aside is reported only at the first write.
+    - A store that does not open gives two warnings, then a `SettingsSaveFailed` for every change: make the writer read-only and quiet after a failed install.
+    - No `onversionchange` or `onblocked` handler; the default durability.
+  - **Config and project files.**
+    - `config` borrows `edit_distance` from `ui/file/vocab.rs` for misspelt-key suggestions: move it to a neutral helper.
+    - `error_chain` is written twice (settings and `shaders/custom.rs`): move it to `core::error`.
+    - Ryo.toml warnings say "Ryo.toml", not the path found, and `ryo2d dev` warns in both the CLI and the game.
+    - `ProjectFile::read` parses the TOML a second time to find `[project] name`, and drops `[project] version` (`game_version` is `None`; only the console shows it).
+    - An unnamed project's title differs between the web and release builds (documented, untested).
+  - **Tests missing or loose.**
+    - The final rename's retry (`safe_replace` step 3) is never exercised: add a no-current or damaged-current case with `deny_rename(3)`.
+    - Untested container paths: format 0 ("not a Ryo2D save"), `encode` overriding a caller's format, `StepFailed` as the `Deserialize` source.
+    - The `Saves` system parameter is never used by a test.
+    - `the_build_script_reads_the_project_table` checks only the `include!` line, and the workspace keys `build_config` reads by string literal are not tied to the table by a test.
+    - The `project!` macro's compile errors have no `compile_fail` test.
+    - Settings cases untested: format 1's rounding of a non-square value, `register(None)` replacing a versioned chain, a format-1 volume above 1, `#[serde(flatten)]` sections, and the branch storing an object whole over a non-object default.
+    - Pixel-art coverage shrank: the old test of the project picking the art and the player the window is ported for `Fit` only.
+    - No fake browser store calls `done` synchronously inside a commit, so deadlock-freedom and a synchronous failure's rollback are untested; `store_arrived(Err)` is untested through the engine.
+    - Exact `dev_log` warning counts across tests are fragile, and the saves demo's page tests read the shared dev log (a flake risk in parallel runs).
+    - Breakout's restart test checks only the high score, not a volume surviving the restart; bullet-hell's game over relies on reading its own queued save, untested.
+    - The demo's Recovery test checks the engine's backup, not the page's load path, and its D and Y keys' `std::fs` paths are untested.
+    - The filter tests moved from `config_resolution.rs` into `preferences.rs` unit tests (coverage intact).
+  - **Demo (`examples/demos/saves`).**
+    - The Upgrades page shows V1 and V3 but not each step's change, which the spec asks for: add the V2 step.
+    - The Recovery page doesn't say that a settings change before a restart rewrites the damaged `system.json` from memory.
+    - `random_hero` repeats across runs; `v1_to_v2`, `v2_to_v3` and `HeroV1::rowan` are `pub` where `pub(crate)` would do.
+  - **Docs.**
+    - `SceneContext::window()`'s rustdoc (`src/core/scene/context.rs:331`) still says "resolution, display mode, UI scale".
+    - `WorkspaceConfig::env_json`'s rustdoc names removed history ("the form system.json once seeded it in").
+    - `tests/fixtures/saves/README.md` names `SaveManager` without saying it was removed.
+    - `docs/backlog/saves.md` names causes of the machine's load that no log shows, infers "ticks every 41.7 ns", draws its noise rule from three round medians, and has one line in the first person; `testing/headless.rs` (~:535) has a doc fragment.
+- Breaking changes: the old save manager, settings state and window and volume setters are gone (`ctx.saves()` and `ctx.settings()` replace them); `system.json` is format 3 (formats 1 and 2 convert as they load) and saves are container format 2 (format 1 still loads); demos given a `[project]` name save to new release folders.
+- Pre-existing bugs:
+  - Bullet-hell saves its survival time at every game over (`scenes/game/mod.rs:353`), so its "best time" is the last run's.
+  - Exported zips never carried the game's version (toml 0.9 parsed the document as a value): fixed on this branch.
+  - `cargo doc` with warnings as errors still fails on `src/core/tilemap/padded.rs` (see Floors).
 
 ## Floors (6b, stage 6)
 
