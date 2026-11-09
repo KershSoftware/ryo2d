@@ -96,7 +96,8 @@ Also `with_rotation(min, max)`, `with_angular_velocity(min, max)`, `with_effect(
 ```rust
 ParticleEffect::new(sprite.clone()).with_rate(30.0); // particles per second
 ParticleEffect::new(sprite.clone()).with_rate(0.0).with_burst(Burst::at(0.0, 50.0)).with_looping(false); // one burst
-ParticleEffect::new(sprite.clone()).with_rate(0.0).with_burst(Burst::at(0.0, 20.0).with_cycles(5, 0.5));
+// 5 bursts, 0.5 s apart: a burst fires only within its cycle, so the cycle lasts 2.5 s
+ParticleEffect::new(sprite.clone()).with_rate(0.0).with_burst(Burst::at(0.0, 20.0).with_cycles(5, 0.5)).with_duration(2.5).with_looping(false);
 
 EmitShape::Point;
 EmitShape::Line { length: 100.0 };

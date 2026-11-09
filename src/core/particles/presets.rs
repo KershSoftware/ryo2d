@@ -121,7 +121,7 @@ impl ParticleEffect {
       .sized((8.0, 16.0), (2.0, 4.0))
       .with_speed((100.0, 300.0))
       .fade(Color::new(255, 200, 100, 255), Color::new(255, 50, 0, 0))
-      .with_drag(2.0)
+      .with_drag(1.0)
       .with_effect(SpriteEffect::glow_with_intensity(
         Color::new(255, 150, 50, 255),
         3.0,
@@ -230,7 +230,7 @@ impl ParticleEffect {
       .with_lifetime((0.3, 0.8))
       .sized((4.0, 8.0), (12.0, 20.0))
       .fade(Color::new(180, 160, 140, 150), Color::new(150, 130, 110, 0))
-      .with_drag(3.0)
+      .with_drag(1.0)
   }
 
   /// Tumbling confetti, played once.
@@ -319,6 +319,9 @@ mod tests {
     assert_eq!(boom.bursts[0].count.max, 40.0);
     assert!(!boom.looping);
     assert_eq!(boom.rate, 0.0);
+    // The scene-driven presets' drag was clamped to 1
+    assert_eq!(boom.drag, 1.0);
+    assert_eq!(ParticleEffect::dust(img()).drag, 1.0);
 
     let sparks = ParticleEffect::sparks(img());
     let collision = sparks.collision.expect("sparks collide");

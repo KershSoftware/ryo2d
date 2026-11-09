@@ -102,6 +102,24 @@ fn bursts_fire_on_time_with_their_cycles() {
 }
 
 #[test]
+fn five_bursts_half_a_second_apart_need_a_cycle_that_holds_them() {
+  // The repeating burst the particles skill shows: a burst fires only
+  // within its cycle, so five 0.5 s apart take a cycle of 2.5 s
+  let mut world = testing::world();
+  let effect = still(&mut world, 10.0)
+    .with_burst(Burst::at(0.0, 20.0).with_cycles(5, 0.5))
+    .with_duration(2.5)
+    .with_looping(false);
+  let emitter = spawn(&mut world, effect, 0.0, 0.0);
+  steps(&mut world, 30);
+  assert_eq!(count(&world, emitter), 40, "at 0 and 0.5 s");
+  steps(&mut world, 90);
+  assert_eq!(count(&world, emitter), 100, "the fifth at 2 s");
+  steps(&mut world, 240);
+  assert_eq!(count(&world, emitter), 100, "five bursts, no more");
+}
+
+#[test]
 fn a_hitch_fires_every_burst_it_owes() {
   // Bursts 5 ms apart, three or four to each 16.7 ms step
   let mut world = testing::world();
