@@ -717,6 +717,20 @@ impl HeadlessEngine {
       .contains_resource::<crate::core::settings::persist::SettingsWriter>()
   }
 
+  /// Keeps the saves and the settings file in the folder `dir` on disk from
+  /// now on, as a windowed game keeps them in its save folder (made if
+  /// missing), in place of the memory store, which [`saves`](Self::saves)
+  /// still gives (`benches/saves.rs`, for a write's disk cost)
+  #[doc(hidden)]
+  pub fn save_to_folder(&mut self, dir: impl Into<std::path::PathBuf>) -> std::io::Result<()> {
+    let storage = crate::core::saves::files::FileStorage::new(dir.into())?;
+    self
+      .world()
+      .resource::<crate::core::saves::SaveService>()
+      .set_storage(std::sync::Arc::new(storage));
+    Ok(())
+  }
+
   /// The last frame's render step on the CPU (building, uploading and
   /// encoding the frame; not the UI pass)
   #[doc(hidden)]

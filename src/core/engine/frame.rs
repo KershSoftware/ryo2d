@@ -302,14 +302,9 @@ impl Engine {
       hit
     };
 
+    let mut next_overlay = false;
     if self.debug_keys_enabled {
-      if pressed(KeyCode::F1) {
-        self.overlay_mode = self.overlay_mode.next();
-        let (show_fps, show_frame_timing, show_stats) = self.overlay_mode.to_flags();
-        self.config.debug.show_fps = show_fps;
-        self.config.debug.show_frame_timing = show_frame_timing;
-        self.config.debug.show_stats = show_stats;
-      }
+      next_overlay = pressed(KeyCode::F1);
       if pressed(KeyCode::F2) {
         self.config.debug.show_colliders = !self.config.debug.show_colliders;
       }
@@ -349,6 +344,27 @@ impl Engine {
         self.capture.request(CaptureTarget::Default);
       }
     }
+    if next_overlay {
+      self.next_overlay();
+    }
+  }
+
+  /// F1: the next overlay mode. The FPS counter is the player's setting, so
+  /// a change to it goes into `Settings` and the applied values together, as
+  /// F5's display mode does, and is not applied again
+  pub(super) fn next_overlay(&mut self) {
+    self.overlay_mode = self.overlay_mode.next();
+    let (show_fps, show_frame_timing, show_stats) = self.overlay_mode.to_flags();
+    let debug = &mut self.config.debug;
+    debug.show_fps = show_fps;
+    debug.show_frame_timing = show_frame_timing;
+    debug.show_stats = show_stats;
+    if let Some(mut settings) = self.world.get_resource_mut::<Settings>()
+      && settings.show_fps() != show_fps
+    {
+      settings.set_show_fps(show_fps);
+    }
+    self.applied_settings.values.show_fps = show_fps;
   }
 
   /// The developer console: animation, input while open, commands.

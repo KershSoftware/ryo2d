@@ -1,8 +1,9 @@
 //! Saves and settings against the spec's two speed targets, in a headless
 //! engine (`HeadlessEngine`, which keeps its saves and `system.json` in
-//! memory, so the disk's own cost is not in these figures).
+//! memory, so the disk's own cost is not in these figures, but for
+//! `frames_during_a_write_disk`'s).
 //!
-//! Before criterion runs, three guards and three records:
+//! Before criterion runs, three guards and four records:
 //! - `save_handoff_1kb` and `save_handoff_1mb`: the `save` call alone
 //!   (`ctx.saves().save`: the slot check, the header, queueing the job).
 //!   The data is a list of items whose RON text is 1 KB or 1 MB long, cloned
@@ -23,6 +24,11 @@
 //!   reaches both. The verdict is "within noise" when the pooled medians
 //!   differ by no more than the spread of the no-write medians across the
 //!   rounds, else the difference;
+//! - `frames_during_a_write_disk`, recorded: the same, with the engine's
+//!   saves in a temporary folder on the local disk
+//!   (`HeadlessEngine::save_to_folder`), so each write is the save folder's:
+//!   the temporary file written and synced, the current file read and
+//!   checked, the renames and the folder's sync;
 //! - `load_100kb` and `load_1mb`, recorded: `load` of a saved slot (the
 //!   store's read, the checks, the inflate, RON and the upgrade check), and
 //!   the size of the save file written, with its RON text's.
@@ -239,7 +245,7 @@ fn frames_without_write(engine: &mut HeadlessEngine, frames: usize, times: &mut 
   }
 }
 
-fn frames_record(engine: &mut HeadlessEngine) {
+fn frames_record(engine: &mut HeadlessEngine, name: &str) {
   let data = items(MB);
   let (mut all_a, mut all_b) = (Vec::new(), Vec::new());
   let mut a_medians = Vec::new();
@@ -262,7 +268,7 @@ fn frames_record(engine: &mut HeadlessEngine) {
     let (ma, mb) = (median(&mut a), median(&mut b));
     let p95 = |times: &[Duration]| times[times.len() * 95 / 100];
     println!(
-      "frames_during_a_write round {round}: no write median {:.1} us (p95 {:.1}, {frames_a} frames), write median {:.1} us (p95 {:.1}, {frames_b} frames), difference {:+.1} us",
+      "{name} round {round}: no write median {:.1} us (p95 {:.1}, {frames_a} frames), write median {:.1} us (p95 {:.1}, {frames_b} frames), difference {:+.1} us",
       us(ma),
       us(p95(&a)),
       us(mb),
@@ -283,7 +289,7 @@ fn frames_record(engine: &mut HeadlessEngine) {
     format!("differs by {diff:+.1} us ({:+.1}%)", diff / us(ma) * 100.0)
   };
   println!(
-    "frames_during_a_write: pooled no write {:.1} us, write {:.1} us, difference {diff:+.1} us, no-write medians spread {:.1} us: {verdict}",
+    "{name}: pooled no write {:.1} us, write {:.1} us, difference {diff:+.1} us, no-write medians spread {:.1} us: {verdict}",
     us(ma),
     us(mb),
     us(spread),
@@ -333,7 +339,9 @@ fn main() {
     .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
     .unwrap_or_else(|_| "uptime unavailable".into());
   println!("machine: {load}");
-  println!("saves bench: save hand-off, idle settings, frames during a write, loads");
+  println!(
+    "saves bench: save hand-off, idle settings, frames during a write (memory, disk), loads"
+  );
   let results = guards::results_dir();
   let mut criterion = Criterion::default()
     .sample_size(20)
@@ -348,7 +356,24 @@ fn main() {
   if guards::runs(&["frames_during_a_write"])
     && let Some(mut engine) = engine(false)
   {
-    frames_record(&mut engine);
+    frames_record(&mut engine, "frames_during_a_write");
+  }
+  if guards::runs(&["frames_during_a_write_disk"])
+    && let Some(mut engine) = engine(false)
+  {
+    let folder = tempfile::tempdir().expect("a temporary folder");
+    engine
+      .save_to_folder(folder.path())
+      .expect("a save folder on disk");
+    println!(
+      "frames_during_a_write_disk: saves in {}",
+      folder.path().display()
+    );
+    frames_record(&mut engine, "frames_during_a_write_disk");
+    let size = std::fs::metadata(folder.path().join(SLOT_FILE)).map_or(0, |file| file.len());
+    println!("frames_during_a_write_disk: the save file is {size} B on disk");
+    // Its last writes finish before the folder goes
+    drop(engine);
   }
   if guards::runs(&["load_100kb", "load_1mb"])
     && let Some(mut engine) = engine(false)

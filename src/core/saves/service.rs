@@ -15,7 +15,7 @@ use web_time::{Instant, SystemTime};
 use super::SaveError;
 use super::container::{self, FORMAT, SaveHeader};
 use super::slot::{backup_name, check_new, file_name, is_legacy, is_temp_of};
-use super::storage::{Completion, Origin, Recovery, Storage};
+use super::storage::{Completion, Origin, Recovery, Storage, Verify};
 use super::versions::VersionRegistry;
 use super::view::{Loaded, SaveFinished, SaveInfo, SaveOp, SaveSlot};
 use super::writer::{Writer, lock};
@@ -332,22 +332,15 @@ impl SaveService {
     };
     let file = file_name(slot);
     let encoded = Arc::new(Encoded::default());
-    let generation = self.shared.begin(
-      &file,
-      PendingOp::Save {
-        header: header.clone(),
-        encoded: Arc::clone(&encoded),
-      },
-    );
-    let shared = Arc::clone(&self.shared);
-    let meta = JobMeta {
-      kind: JobKind::Save {
-        slot: slot.to_string(),
-      },
-      file: file.clone(),
-      generation: Some(generation),
+    let op = PendingOp::Save {
+      header: header.clone(),
+      encoded: Arc::clone(&encoded),
     };
-    self.queue(meta, move || {
+    let kind = JobKind::Save {
+      slot: slot.to_string(),
+    };
+    let shared = Arc::clone(&self.shared);
+    self.queue_slot(kind, file.clone(), op, move |generation| {
       let mut publish = Publish {
         encoded,
         done: false,
@@ -390,11 +383,7 @@ impl SaveService {
       Queued::Nothing => {}
     }
     let storage = storage.ok_or(SaveError::Unavailable)?;
-    refuse_newer(storage.as_ref(), &file)?;
-    match storage
-      .recover(&file, &container::verify)
-      .map_err(|error| io_error(&file, error))?
-    {
+    match stored_copy(storage.as_ref(), &file, &container::verify)? {
       Recovery::Missing => Err(SaveError::NotFound(slot.to_string())),
       Recovery::Damaged => Err(damaged(slot)),
       Recovery::Found { bytes, from } => {
@@ -500,17 +489,12 @@ impl SaveService {
     check_reachable(slot, storage.as_deref())?;
     let storage = storage.ok_or(SaveError::Unavailable)?;
     let file = file_name(slot);
-    let generation = self.shared.begin(&file, PendingOp::Delete);
-    let meta = JobMeta {
-      kind: JobKind::Delete {
-        slot: slot.to_string(),
-      },
-      file: file.clone(),
-      generation: Some(generation),
+    let kind = JobKind::Delete {
+      slot: slot.to_string(),
     };
     // Never skipped for a later save: the deleted save would become that
     // save's backup
-    self.queue(meta, move || {
+    self.queue_slot(kind, file.clone(), PendingOp::Delete, move |_| {
       JobEnd::from_completion(storage.remove_all(&file), &file)
     });
     Ok(())
@@ -647,6 +631,32 @@ impl SaveService {
     id
   }
 
+  /// Records `op` as the slot's latest and sends `job`, given its
+  /// generation, as [`queue`](Self::queue) does. The generation is taken
+  /// under the results' lock too, so a slot's jobs are sent in generation
+  /// order: no job runs after a later one of its slot, whose result may
+  /// already be drained (taking the entry that would have said it is
+  /// superseded)
+  fn queue_slot(
+    &self,
+    kind: JobKind,
+    file: String,
+    op: PendingOp,
+    job: impl FnOnce(u64) -> JobEnd + Send + 'static,
+  ) {
+    let mut results = lock(&self.results);
+    let generation = self.shared.begin(&file, op);
+    #[cfg(test)]
+    after_begin();
+    let id = self.writer.send(&file, move || job(generation));
+    let meta = JobMeta {
+      kind,
+      file,
+      generation: Some(generation),
+    };
+    results.jobs.insert(id, meta);
+  }
+
   /// Moves the writer's results into `ready`, and the storage's late
   /// commits that have landed
   fn collect(&self, results: &mut Results) {
@@ -752,26 +762,38 @@ fn newer_format(storage: &dyn Storage, file: &str) -> Option<u32> {
   container::peek_format(&bytes).filter(|found| *found > FORMAT)
 }
 
-/// `NewerVersion` when a newer engine wrote `file`: its backup is not taken
-/// in its place
-fn refuse_newer(storage: &dyn Storage, file: &str) -> Result<(), SaveError> {
-  let bytes = storage.read(file).map_err(|error| io_error(file, error))?;
-  match bytes.and_then(|bytes| container::peek_format(&bytes)) {
-    Some(found) if found > FORMAT => Err(newer(found)),
-    _ => Ok(()),
+/// The newest copy of `file` that `verify` accepts, reading the current
+/// copy once: a current copy a newer engine wrote is `NewerVersion`, its
+/// backup not taken in its place, and only a current copy that is missing or
+/// fails `verify` sends the search on to the temporary files and the backup
+fn stored_copy(
+  storage: &dyn Storage,
+  file: &str,
+  verify: Verify<'_>,
+) -> Result<Recovery, SaveError> {
+  if let Some(bytes) = storage.read(file).map_err(|error| io_error(file, error))? {
+    if let Some(found) = container::peek_format(&bytes).filter(|found| *found > FORMAT) {
+      return Err(newer(found));
+    }
+    if verify(&bytes).is_some() {
+      return Ok(Recovery::Found {
+        bytes,
+        from: Origin::Current,
+      });
+    }
   }
+  storage
+    .recover(file, verify)
+    .map_err(|error| io_error(file, error))
 }
 
 /// The newest copy of `file` whose header reads (a slot list checks no more)
 fn stored_header(storage: &dyn Storage, file: &str) -> Result<Recovery, SaveError> {
-  refuse_newer(storage, file)?;
-  storage
-    .recover(file, &|bytes| {
-      container::read_header(bytes)
-        .ok()
-        .map(|header| header.saved_at)
-    })
-    .map_err(|error| io_error(file, error))
+  stored_copy(storage, file, &|bytes| {
+    container::read_header(bytes)
+      .ok()
+      .map(|header| header.saved_at)
+  })
 }
 
 fn encode<T: Serialize>(header: &SaveHeader, data: &T) -> Result<Vec<u8>, SaveError> {
@@ -823,6 +845,21 @@ fn in_slot(error: SaveError, slot: &str) -> SaveError {
       source,
     },
     other => other,
+  }
+}
+
+#[cfg(test)]
+thread_local! {
+  /// A test's pause on this thread once a slot's generation is taken, before
+  /// its job is sent
+  static AFTER_BEGIN: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+    const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn after_begin() {
+  if let Some(pause) = AFTER_BEGIN.with_borrow_mut(Option::take) {
+    pause();
   }
 }
 
@@ -939,6 +976,54 @@ mod tests {
       assert_eq!((result.slot.as_str(), result.op), ("a", SaveOp::Save));
       assert!(result.result.is_ok(), "{result:?}");
     }
+  }
+
+  #[test]
+  fn saves_of_one_slot_from_two_threads_land_in_generation_order() {
+    let store = MemorySaves::new();
+    let service = Arc::new(service(&store));
+    let (reached, at_pause) = crossbeam_channel::bounded(1);
+    let (go, released) = crossbeam_channel::bounded::<()>(1);
+
+    // The first save takes its generation, then waits before its job goes
+    let first = std::thread::spawn({
+      let service = Arc::clone(&service);
+      move || {
+        AFTER_BEGIN.with_borrow_mut(|pause| {
+          *pause = Some(Box::new(move || {
+            reached.send(()).unwrap();
+            released.recv().unwrap();
+          }));
+        });
+        service.save("a", hero(1), SaveInfo::new()).unwrap();
+      }
+    });
+    at_pause.recv().unwrap();
+
+    // The second save takes the later generation
+    let (returned, second_done) = crossbeam_channel::bounded(1);
+    let second = std::thread::spawn({
+      let service = Arc::clone(&service);
+      move || {
+        service.save("a", hero(2), SaveInfo::new()).unwrap();
+        returned.send(()).unwrap();
+      }
+    });
+    // If its job could go ahead of the first's, it lands and is drained
+    // before the first's job is sent
+    if second_done.recv_timeout(Duration::from_millis(200)).is_ok() {
+      settle(&service);
+    }
+    go.send(()).unwrap();
+    first.join().unwrap();
+    second.join().unwrap();
+    settle(&service);
+
+    assert_eq!(
+      service.load::<Hero>("a").unwrap().data,
+      hero(2),
+      "the later generation's save stands"
+    );
   }
 
   #[test]
@@ -1329,6 +1414,97 @@ mod tests {
     assert!(slots.iter().all(|slot| !slot.from_backup));
     assert_eq!(service.info("b").unwrap(), b.header);
     settle(&service);
+  }
+
+  /// Memory storage that counts the reads of each file
+  mod counted {
+    use std::collections::HashMap;
+    use std::io;
+    use std::sync::Mutex;
+
+    use crate::core::saves::memory::MemorySaves;
+    use crate::core::saves::storage::FileOps;
+
+    #[derive(Default)]
+    pub(super) struct CountedReads {
+      pub(super) files: MemorySaves,
+      reads: Mutex<HashMap<String, usize>>,
+    }
+
+    impl CountedReads {
+      pub(super) fn reads(&self, name: &str) -> usize {
+        self.reads.lock().unwrap().get(name).copied().unwrap_or(0)
+      }
+
+      pub(super) fn forget(&self) {
+        self.reads.lock().unwrap().clear();
+      }
+    }
+
+    impl FileOps for CountedReads {
+      fn read(&self, name: &str) -> io::Result<Option<Vec<u8>>> {
+        *self
+          .reads
+          .lock()
+          .unwrap()
+          .entry(name.to_string())
+          .or_default() += 1;
+        FileOps::read(&self.files, name)
+      }
+      fn write_synced(&self, name: &str, bytes: &[u8]) -> io::Result<()> {
+        self.files.write_synced(name, bytes)
+      }
+      fn rename(&self, from: &str, to: &str) -> io::Result<()> {
+        self.files.rename(from, to)
+      }
+      fn remove(&self, name: &str) -> io::Result<()> {
+        FileOps::remove(&self.files, name)
+      }
+      fn names(&self) -> io::Result<Vec<String>> {
+        FileOps::names(&self.files)
+      }
+      fn sync_dir(&self) -> io::Result<()> {
+        self.files.sync_dir()
+      }
+    }
+  }
+
+  #[test]
+  fn a_slot_list_info_and_load_read_each_save_once() {
+    let storage = Arc::new(counted::CountedReads::default());
+    let service = service_over(storage.clone(), VersionRegistry::default());
+    // Twice, so each slot has a backup too
+    for level in [1, 2] {
+      for slot in ["a", "b", "c"] {
+        service.save(slot, hero(level), SaveInfo::new()).unwrap();
+      }
+      settle(&service);
+    }
+
+    storage.forget();
+    assert_eq!(service.list().unwrap().len(), 3);
+    for slot in ["a", "b", "c"] {
+      let file = format!("{slot}.ryo-save");
+      assert_eq!(storage.reads(&file), 1, "{file} read once by the list");
+      assert_eq!(storage.reads(&format!("{file}.bak")), 0, "{file}'s backup");
+    }
+
+    storage.forget();
+    assert_eq!(service.info("b").unwrap().version, 1);
+    assert_eq!(storage.reads("b.ryo-save"), 1, "read once by info");
+
+    storage.forget();
+    assert_eq!(service.load::<Hero>("a").unwrap().data, hero(2));
+    assert_eq!(storage.reads("a.ryo-save"), 1, "read once by a load");
+    assert_eq!(storage.reads("a.ryo-save.bak"), 0);
+
+    // A current copy whose header is damaged falls back to the backup
+    let mut bytes = storage.files.get("c.ryo-save").unwrap();
+    bytes[30] ^= 0xff;
+    storage.files.put("c.ryo-save", bytes);
+    let slots = service.list().unwrap();
+    assert!(slots[2].from_backup, "{:?}", slots[2]);
+    assert_eq!(service.load::<Hero>("c").unwrap().data, hero(1));
   }
 
   #[test]

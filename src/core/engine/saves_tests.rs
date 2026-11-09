@@ -110,6 +110,38 @@ fn dropping_the_engine_finishes_pending_saves() {
   assert!(crate::core::saves::container::verify(&bytes).is_some());
 }
 
+struct Idle;
+
+impl Scene for Idle {
+  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    SceneAction::Continue
+  }
+}
+
+#[test]
+fn a_headless_engine_given_a_folder_saves_on_disk() {
+  let Some(mut engine) = HeadlessEngine::new_or_skip(EngineBuilder::new().start_scene(Idle)) else {
+    return;
+  };
+  let dir = tempfile::tempdir().unwrap();
+  let folder = dir.path().join("saves");
+  engine.save_to_folder(&folder).unwrap();
+  SavesView::new(engine.world())
+    .save("disk", Progress { level: 7 })
+    .unwrap();
+  let deadline = std::time::Instant::now() + Duration::from_secs(5);
+  while SavesView::new(engine.world()).is_writing("disk") && std::time::Instant::now() < deadline {
+    engine.step().unwrap();
+    std::thread::sleep(Duration::from_millis(1));
+  }
+
+  let bytes = std::fs::read(folder.join("disk.ryo-save")).unwrap();
+  assert!(crate::core::saves::container::verify(&bytes).is_some());
+  let loaded = SavesView::new(engine.world()).load::<Progress>("disk");
+  assert_eq!(loaded.unwrap().data, Progress { level: 7 });
+  assert!(engine.saves().names().is_empty(), "not in the memory store");
+}
+
 /// Set in the copy of the test binary run from a project folder
 const CHILD: &str = "RYO_SAVES_TEST_IN_PROJECT";
 

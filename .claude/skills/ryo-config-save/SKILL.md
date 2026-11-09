@@ -533,7 +533,7 @@ fn on_enter(&mut self, ctx: &mut SceneContext) {
 
 - **On the web a save costs its frame:** there are no threads, so the frame that calls `save` serializes, compresses and writes it, and saves of one slot are not coalesced. Keep web saves small, or save at quiet moments.
 - **Closing a browser tab right after a save may lose it:** browsers do not wait for storage writes at unload. `SaveFinished` arrives once the write has landed.
-- **The web's first scene waits for the browser's store**, up to 2 s. Storage that is blocked or slow to answer (some private modes) starts the game with saves `Unavailable` and settings lasting only the session, with one warning.
+- **The web's first scene waits for the browser's store:** up to 2 s for it to open, then for every save in it to be read, however long that takes. Storage that is blocked or slow to open (some private modes) starts the game with saves `Unavailable` and settings lasting only the session, with one warning; a store holding a lot delays the first scene while it is read.
 - **A saved fullscreen is not requested when a web game loads:** browsers enter fullscreen only from the player's gesture. The page sizes the canvas, so the window size is not kept there, and vsync does nothing on the web.
 - **Storage is per site:** games served from one origin (itch.io, `trunk serve` on localhost) share the browser's storage, so give each its own `[release] save_folder` or `[project] name`.
 - **The native guarantees assume a local disk:** a network folder can make renames and disk syncs slow or not atomic.

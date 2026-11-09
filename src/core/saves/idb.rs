@@ -5,8 +5,6 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::future::Future;
-use std::pin::pin;
-use std::task::Poll;
 use std::time::Duration;
 
 use js_sys::{Array, Promise, Uint8Array};
@@ -19,14 +17,14 @@ use web_sys::{
 };
 
 use super::SaveError;
-use super::browser::{BrowserStorage, IdbBackend, IdbFailure, IdbOp};
+use super::browser::{BrowserStorage, IdbBackend, IdbFailure, IdbOp, open_then_read};
 
 /// The object store the files are kept in
 const FILES: &str = "files";
 /// The database's version: 1 made the object store
 const VERSION: u32 = 1;
-/// How long the start-up waits for the store before the game starts with
-/// saves unavailable
+/// How long the start-up waits for the database to open before the game
+/// starts with saves unavailable
 pub(crate) const OPEN_TIMEOUT: Duration = Duration::from_secs(2);
 
 thread_local! {
@@ -93,29 +91,21 @@ fn queue(transaction: &IdbTransaction, ops: Vec<IdbOp>) -> Result<(), JsValue> {
   Ok(())
 }
 
-/// [`open_browser_store`], or `Unavailable` when it takes longer than
-/// `limit` (storage blocked, or the browser slow to answer)
+/// The game's store: its database opened within `limit`, else `Unavailable`
+/// (storage blocked, or the browser slow to answer), then every file in it
+/// read, however long that takes
 pub(crate) async fn open_in_time(
   name: &str,
   limit: Duration,
 ) -> Result<BrowserStorage<IdbStore>, SaveError> {
-  let mut open = pin!(open_browser_store(name));
-  let mut timeout = pin!(sleep(limit));
-  std::future::poll_fn(|context| {
-    if let Poll::Ready(store) = open.as_mut().poll(context) {
-      return Poll::Ready(store);
-    }
-    timeout
-      .as_mut()
-      .poll(context)
-      .map(|()| Err(SaveError::Unavailable))
+  open_then_read(open_database(name), sleep(limit), |database| {
+    read_store(name, database)
   })
   .await
 }
 
-/// Opens the game's database, making it on the first run, and reads every
-/// file in it
-pub(crate) async fn open_browser_store(name: &str) -> Result<BrowserStorage<IdbStore>, SaveError> {
+/// Opens the game's database, making it on the first run
+async fn open_database(name: &str) -> Result<IdbDatabase, SaveError> {
   let factory = web_sys::window()
     .and_then(|window| window.indexed_db().ok().flatten())
     .ok_or(SaveError::Unavailable)?;
@@ -140,10 +130,18 @@ pub(crate) async fn open_browser_store(name: &str) -> Result<BrowserStorage<IdbS
     }
   });
   request.set_onupgradeneeded(Some(on_upgrade.unchecked_ref()));
-  let database: IdbDatabase = settle(&request)
+  settle(&request)
     .await
     .and_then(JsCast::dyn_into)
-    .map_err(|error| open_error(name, &error))?;
+    .map_err(|error| open_error(name, &error))
+}
+
+/// Every file in the open database, as the store's mirror; the database is
+/// kept for the store's commits
+async fn read_store(
+  name: &str,
+  database: IdbDatabase,
+) -> Result<BrowserStorage<IdbStore>, SaveError> {
   let files = read_all(&database)
     .await
     .map_err(|error| open_error(name, &error))?;

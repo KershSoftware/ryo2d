@@ -1469,6 +1469,43 @@ fn settings_changes_become_window_and_renderer_requests() {
 }
 
 #[test]
+fn f1_keeps_the_fps_setting_in_step_with_the_overlay() {
+  use crate::core::config::UserPreferenceFilter;
+
+  let mut engine = EngineBuilder::new()
+    .with_user_preferences(UserPreferenceFilter::all())
+    .start_scene(EmptyScene)
+    .build_headless();
+  engine.headless = false;
+  engine.apply_settings();
+  for (mode, fps) in [
+    (OverlayMode::FpsOnly, true),
+    (OverlayMode::FrameTiming, false),
+    (OverlayMode::FullStats, false),
+    (OverlayMode::Off, false),
+    (OverlayMode::FpsOnly, true),
+  ] {
+    engine.next_overlay();
+    assert_eq!(engine.overlay_mode, mode);
+    assert_eq!(
+      engine.world.resource::<Settings>().show_fps(),
+      fps,
+      "{mode:?}"
+    );
+    assert_eq!(engine.applied_settings.values.show_fps, fps, "{mode:?}");
+    // Already applied: nothing changes
+    engine.apply_settings();
+    assert_eq!(engine.overlay_mode, mode);
+  }
+
+  // The player's settings screen now turns off the counter F1 showed
+  engine.world.resource_mut::<Settings>().set_show_fps(false);
+  engine.apply_settings();
+  assert_eq!(engine.overlay_mode, OverlayMode::Off);
+  assert!(!engine.config.debug.show_fps);
+}
+
+#[test]
 fn the_vsync_setting_picks_the_present_mode() {
   use crate::core::graphics::renderer::present_mode_for;
   use wgpu::PresentMode::{Fifo, Immediate, Mailbox};

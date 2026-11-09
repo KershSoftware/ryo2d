@@ -5,8 +5,11 @@
 //! backend is `idb.rs`.
 
 use std::collections::{BTreeMap, VecDeque};
+use std::future::Future;
 use std::io;
+use std::pin::pin;
 use std::sync::{Arc, Mutex};
+use std::task::Poll;
 
 use super::slot::backup_name;
 use super::storage::{Completion, Origin, Recovery, Storage, Verify};
@@ -289,6 +292,41 @@ pub(crate) fn install(saves: &SaveService, store: Result<Arc<dyn Storage>, SaveE
       false
     }
   }
+}
+
+/// The browser store's start-up: `open` (the database) has until `timeout`
+/// to finish, else the store is `Unavailable`; once it has opened, `read`
+/// (every file in it) is waited for however long it takes, and the first
+/// scene waits with it
+pub(crate) async fn open_then_read<D, F, R>(
+  open: impl Future<Output = Result<D, SaveError>>,
+  timeout: impl Future<Output = ()>,
+  read: impl FnOnce(D) -> R,
+) -> Result<F, SaveError>
+where
+  R: Future<Output = Result<F, SaveError>>,
+{
+  let database = in_time(open, timeout).await?;
+  read(database).await
+}
+
+/// `work`'s result, or `Unavailable` when `timeout` finishes first
+async fn in_time<T>(
+  work: impl Future<Output = Result<T, SaveError>>,
+  timeout: impl Future<Output = ()>,
+) -> Result<T, SaveError> {
+  let mut work = pin!(work);
+  let mut timeout = pin!(timeout);
+  std::future::poll_fn(|context| {
+    if let Poll::Ready(result) = work.as_mut().poll(context) {
+      return Poll::Ready(result);
+    }
+    timeout
+      .as_mut()
+      .poll(context)
+      .map(|()| Err(SaveError::Unavailable))
+  })
+  .await
 }
 
 /// The web's start-up: the first scene waits until the GPU and the browser
@@ -690,6 +728,61 @@ mod tests {
     ));
     gate.store_ready(Ok(3));
     assert!(!gate.ready());
+  }
+
+  /// Ready with `value` at its `polls`th poll, waking itself until then
+  fn after<T: Unpin>(polls: usize, value: T) -> impl Future<Output = T> {
+    let (mut left, mut value) = (polls, Some(value));
+    std::future::poll_fn(move |context| {
+      left = left.saturating_sub(1);
+      if left == 0 {
+        Poll::Ready(value.take().expect("polled once ready"))
+      } else {
+        context.waker().wake_by_ref();
+        Poll::Pending
+      }
+    })
+  }
+
+  #[test]
+  fn a_store_that_opens_in_time_is_read_however_long_the_read_takes() {
+    let store = pollster::block_on(open_then_read(
+      after(1, Ok("db")),
+      after(3, ()),
+      |database| after(50, Ok(vec![database])),
+    ));
+    assert_eq!(store.unwrap(), ["db"]);
+  }
+
+  #[test]
+  fn a_store_that_does_not_open_in_time_is_unavailable_and_never_read() {
+    let read = std::cell::Cell::new(false);
+    let store = pollster::block_on(open_then_read(
+      std::future::pending::<Result<&str, SaveError>>(),
+      after(2, ()),
+      |database| {
+        read.set(true);
+        std::future::ready(Ok(database))
+      },
+    ));
+    assert!(matches!(store, Err(SaveError::Unavailable)), "{store:?}");
+    assert!(!read.get());
+
+    // An open or a read that fails says why
+    let failed = |path: &str| SaveError::Io {
+      path: path.into(),
+      source: io::Error::other("refused"),
+    };
+    let store = pollster::block_on(open_then_read(
+      after(1, Err::<&str, _>(failed("open"))),
+      std::future::pending(),
+      |database| std::future::ready(Ok(database)),
+    ));
+    assert!(matches!(store, Err(SaveError::Io { path, .. }) if path == "open"));
+    let store = pollster::block_on(open_then_read(after(1, Ok("db")), after(2, ()), |_| {
+      after(5, Err::<&str, _>(failed("read")))
+    }));
+    assert!(matches!(store, Err(SaveError::Io { path, .. }) if path == "read"));
   }
 
   #[test]
