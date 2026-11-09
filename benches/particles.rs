@@ -10,9 +10,12 @@
 //!   turn, interleaved (an engine stepping evicts the others' data), the
 //!   GPU drained outside the measure, each scene's median step over the
 //!   empty frame's median held to its target (`TEN_K_TARGET`,
-//!   `HUNDRED_TARGET`, `COLLIDE_TARGET`), the spec's. Beside each it prints
-//!   the 95th percentile and, with no target, the frame's particle systems'
-//!   own time (`HeadlessEngine::particle_systems_time`, the profiler's
+//!   `HUNDRED_TARGET`, `COLLIDE_TARGET`), the spec's, and to the
+//!   scene-driven system's figure for the same scene (`TEN_K_BEFORE`,
+//!   `HUNDRED_BEFORE`, `COLLIDE_BEFORE`), so a regression against it fails
+//!   the run. Beside each it prints the 95th percentile and, with no
+//!   target, the frame's particle systems' own time
+//!   (`HeadlessEngine::particle_systems_time`, the profiler's
 //!   `cpu:particles` and `render:particles` scopes) and its render step over
 //!   the empty frame's;
 //! - `particles_idle`: the particle systems' own work with no emitters
@@ -66,6 +69,15 @@ const MAP: u32 = 64;
 const TEN_K_TARGET: Duration = Duration::from_micros(1_000);
 const HUNDRED_TARGET: Duration = Duration::from_micros(1_200);
 const COLLIDE_TARGET: Duration = Duration::from_micros(1_000);
+/// The scene-driven system this one replaced, on the same scenes: the
+/// medians of three rounds of its bench (at `d127c8ab`), each scene's median
+/// step over the empty frame's, run alternately with this bench in one
+/// session on the record machine (`docs/backlog/particles.md`, "After").
+/// That bench no longer exists here, so its figures are held as constants;
+/// like the targets, they are for that machine
+const TEN_K_BEFORE: Duration = Duration::from_nanos(669_300);
+const HUNDRED_BEFORE: Duration = Duration::from_nanos(704_800);
+const COLLIDE_BEFORE: Duration = Duration::from_nanos(285_300);
 /// The spec's no-emitters frame: the particle systems' own time
 const IDLE_TARGET: Duration = Duration::from_micros(1);
 /// The no-emitters guard: batches, and runs in each
@@ -137,6 +149,17 @@ impl Show {
       Show::Ten => Some(TEN_K_TARGET),
       Show::Grid => Some(HUNDRED_TARGET),
       Show::Collide => Some(COLLIDE_TARGET),
+    }
+  }
+
+  /// The scene-driven system's median frame over the empty frame's on this
+  /// scene (the empty frame has none)
+  fn before(self) -> Option<Duration> {
+    match self {
+      Show::Empty => None,
+      Show::Ten => Some(TEN_K_BEFORE),
+      Show::Grid => Some(HUNDRED_BEFORE),
+      Show::Collide => Some(COLLIDE_BEFORE),
     }
   }
 }
@@ -344,7 +367,7 @@ fn median(times: &[Duration]) -> Duration {
 
 /// The guard: every scene's engine and an empty one stepped in turn,
 /// `ROUNDS` times, each scene's median step over the empty frame's median
-/// held to its target
+/// held to its target and to the scene-driven system's figure
 fn guard() {
   let mut probes = Vec::new();
   for show in [Show::Empty, Show::Ten, Show::Grid, Show::Collide] {
@@ -393,26 +416,27 @@ fn guard() {
       .collect();
     let (held, p95) = spread(over);
     let target = probe.show.target().expect("every scene has a target");
-    let (word, met) = if held <= target {
-      ("met", true)
-    } else {
-      ("missed", false)
-    };
+    let before = probe.show.before().expect("every scene has a before");
+    let word = |limit: Duration| if held <= limit { "met" } else { "missed" };
     let line = format!(
       "{}, {} particles live: the step over the empty frame's median, median {:.1} µs, 95th \
-       percentile {:.1}, target {} µs: {word}; cpu:particles median {:.1} µs, render:particles \
-       median {:.1} µs, the render step over the empty frame's {:+.1} µs",
+       percentile {:.1}, target {} µs: {}, the scene-driven system's {:.1} µs: {}; \
+       cpu:particles median {:.1} µs, render:particles median {:.1} µs, the render step over \
+       the empty frame's {:+.1} µs",
       probe.show.name(),
       probe.live.load(Ordering::Relaxed),
       us(held),
       us(p95),
       target.as_micros(),
+      word(target),
+      us(before),
+      word(before),
       us(median(&probe.cpu)),
       us(median(&probe.draw)),
       us(median(&probe.render)) - us(empty_render),
     );
     eprintln!("{line}");
-    if !met {
+    if held > target || held > before {
       guards::miss(line);
     }
   }
