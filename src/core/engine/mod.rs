@@ -52,7 +52,9 @@ use crate::core::input::Input;
 use crate::core::input_script::InputScript;
 use crate::core::lighting::{LightingRenderer, LightingSettings};
 use crate::core::messages::{register_engine_messages, register_message};
-use crate::core::particles::{PARTICLE_HEADLESS_SEED, ParticleStore, step_particles};
+use crate::core::particles::{
+  PARTICLE_HEADLESS_SEED, ParticleStore, step_particles, step_unscaled_particles,
+};
 use crate::core::physics::sync::register_physics_systems;
 use crate::core::physics::{Physics, PhysicsConfig};
 use crate::core::render::batch::Batch2D;
@@ -568,6 +570,8 @@ fn register_engine_systems(schedules: &mut EngineSchedules) {
       (advance_parallax, advance_text_reveal, update_effects_system)
         .chain()
         .in_set(PostUpdateSet::Extract),
+      // Unscaled emitters, on the frame's real time
+      step_unscaled_particles.in_set(PostUpdateSet::Extract),
       // After the scene's update and the cameras (the listener)
       audio_system.after(PostUpdateSet::Camera),
     ),

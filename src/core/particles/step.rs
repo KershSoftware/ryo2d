@@ -1,20 +1,22 @@
-//! The engine's particle step: every emitter spawns, moves and removes its
-//! particles once per fixed step.
+//! The engine's particle steps: every game-time emitter spawns, moves and
+//! removes its particles once per fixed step (`step_particles`), and every
+//! unscaled emitter on real time once a frame (`step_unscaled_particles`).
 
 use std::f32::consts::TAU;
+use std::time::Duration;
 
 use glam::{Mat2, Vec2};
 
 use super::effect::{Burst, EmitShape, ParticleEffect};
-use super::emitter::ParticleEmitter;
+use super::emitter::{EmitterFinished, Finish, ParticleEmitter, Pending};
 use super::pool::{EmitterPool, NewParticle};
 use super::rng::ParticleRng;
 use super::store::ParticleStore;
 use crate::core::asset::{AssetId, AssetServer, Assets};
 use crate::core::ecs::kernel::EcsSystemState;
 use crate::core::ecs::{
-  DrawLift, Entity, GlobalTransform, Local, PreviousGlobalTransform, Query, Res, ResMut, World,
-  entity_order,
+  DrawLift, Entity, GlobalTransform, Local, Messages, Mut, PreviousGlobalTransform, Query, Res,
+  ResMut, World, entity_order,
 };
 use crate::core::time::Time;
 
@@ -30,6 +32,10 @@ const MAX_CYCLES: u32 = 1_000;
 /// The most burst firings one emitter works through in a step (bursts a
 /// hair apart); the rest are counted as fired, spawning nothing
 const MAX_FIRINGS: u32 = 10_000;
+
+/// The most steps an unscaled emitter takes in a frame; a longer frame's
+/// time beyond them is dropped
+pub(crate) const MAX_UNSCALED_STEPS: u32 = 8;
 
 /// An effect as the step runs it: the effect with every problem clamped
 /// (`sanitized`), for the asset version it was made from, with its angles
@@ -76,7 +82,7 @@ impl Compiled {
   }
 }
 
-/// The emitters the step runs: enabled ones (the default filter leaves
+/// The emitters the steps run: enabled ones (the default filter leaves
 /// `Disabled` out), where they stand
 type Emitters<'w, 's> = Query<
   'w,
@@ -95,91 +101,299 @@ type StepParams<'w, 's> = (
   Option<Res<'w, Assets<ParticleEffect>>>,
   Option<Res<'w, AssetServer>>,
   Option<Res<'w, Time>>,
+  Option<ResMut<'w, Messages<EmitterFinished>>>,
   Emitters<'w, 's>,
 );
 
-/// What the step keeps between runs, so a steady step allocates nothing:
+/// What a step keeps between runs, so a steady step allocates nothing:
 /// its parameters' state (the emitter query among them), the emitters in
-/// entity order, and per-particle scratch
+/// entity order, per-particle scratch, and the emitters going
 #[derive(Default)]
 pub(crate) struct StepState {
   params: Option<EcsSystemState<StepParams<'static, 'static>>>,
   order: Vec<(u32, Entity)>,
-  /// Whether each particle of the emitter being stepped lives on
+  scratch: Scratch,
+  /// Emitters that finished in an earlier step and asked to despawn then
+  despawn: Vec<Entity>,
+}
+
+/// Per-particle scratch for the emitter being stepped
+#[derive(Default)]
+struct Scratch {
+  /// Whether each particle lives on
   keep: Vec<bool>,
   /// The part of the step each particle spawned in it lived
   partial: Vec<f32>,
 }
 
 /// The fixed step's particles (`FixedSet::Particles`, after propagation and
-/// floors): each enabled emitter whose effect is loaded, in entity order,
-/// spawns what its effect owes this step and moves and ages its particles,
-/// and the dead leave. An emitter of a scene the stack holds (or of no
-/// scene, while any is held) is frozen, as is one at speed 0
+/// floors): each enabled game-time emitter whose effect is loaded, in
+/// entity order, does what the game asked of it, spawns what its effect
+/// owes this step, and moves and ages its particles, and the dead leave.
+/// An emitter of a scene the stack holds (or of no scene, while any is
+/// held) is frozen, as is one at speed 0; unscaled emitters step in
+/// [`step_unscaled_particles`]. Emitters that finish report it, and those
+/// that finished in an earlier step and asked to despawn go
 pub(crate) fn step_particles(world: &mut World, mut state: Local<StepState>) {
   let StepState {
     params,
     order,
-    keep,
-    partial,
+    scratch,
+    despawn,
   } = &mut *state;
   let params = params.get_or_insert_with(|| EcsSystemState::new(world));
-  let Ok((store, effects, server, time, mut emitters)) = params.get_mut(world) else {
-    return;
-  };
-  let (Some(mut store), Some(effects), Some(time)) = (store, effects, time) else {
-    return;
-  };
-  let store = &mut *store;
-  let timestep = time.fixed.timestep();
-  store.step += 1;
-  let step = store.step;
-  // What was kept for effects no longer loaded goes
+  if let Ok((store, effects, server, time, mut finished, mut emitters)) = params.get_mut(world)
+    && let (Some(mut store), Some(effects), Some(time)) = (store, effects, time)
+  {
+    let timestep = time.fixed.timestep();
+    store.step += 1;
+    let step = store.step;
+    forget_unloaded(&mut store, &effects);
+
+    order.clear();
+    order.extend(
+      emitters
+        .iter()
+        .filter(|(_, emitter, ..)| !emitter.unscaled)
+        .map(|(entity, ..)| entity_order(&entity)),
+    );
+    order.sort_unstable();
+    let mut pass = Pass {
+      store: &mut store,
+      effects: &effects,
+      server: server.as_deref(),
+      finished: &mut finished,
+      scratch,
+      despawn,
+    };
+    for &(_, entity) in order.iter() {
+      let Ok((entity, mut emitter, global, lift, previous)) = emitters.get_mut(entity) else {
+        continue;
+      };
+      let Some(slot) = pass.ready(entity, &mut emitter) else {
+        continue;
+      };
+      if pass
+        .store
+        .pools
+        .get(slot)
+        .is_none_or(|pool| pass.store.holds(pool.scope))
+      {
+        continue;
+      }
+      let dt = timestep * emitter.speed();
+      if dt <= 0.0 {
+        continue;
+      }
+      let continuous = pass
+        .store
+        .pools
+        .get(slot)
+        .is_some_and(|pool| pool.last_step == Some(step - 1));
+      let place = Place {
+        global,
+        lift,
+        previous,
+      };
+      pass.step_emitter(entity, slot, &mut emitter, place, dt, continuous);
+      if let Some(pool) = pass.store.pools.get_mut(slot) {
+        pool.last_step = Some(step);
+      }
+    }
+  }
+  despawn_finished(world, despawn);
+}
+
+/// The frame's unscaled emitters (`PostUpdateSet::Extract`): each enabled
+/// one whose effect is loaded, in entity order, adds the frame's real time
+/// times its speed to its own clock, and takes a step of the fixed step's
+/// length for each step's worth in it, at most [`MAX_UNSCALED_STEPS`] (the
+/// time beyond them is dropped). Its pool keeps how far it is through its
+/// next step, for the drawer. A paused clock, hitstop and held scenes do
+/// not hold them; one at speed 0 is frozen
+pub(crate) fn step_unscaled_particles(world: &mut World, mut state: Local<StepState>) {
+  let StepState {
+    params,
+    order,
+    scratch,
+    despawn,
+  } = &mut *state;
+  let params = params.get_or_insert_with(|| EcsSystemState::new(world));
+  if let Ok((store, effects, server, time, mut finished, mut emitters)) = params.get_mut(world)
+    && let (Some(mut store), Some(effects), Some(time)) = (store, effects, time)
+  {
+    store.frame += 1;
+    let frame = store.frame;
+    order.clear();
+    order.extend(
+      emitters
+        .iter()
+        .filter(|(_, emitter, ..)| emitter.unscaled)
+        .map(|(entity, ..)| entity_order(&entity)),
+    );
+    if !order.is_empty() {
+      order.sort_unstable();
+      forget_unloaded(&mut store, &effects);
+      let timestep = time.fixed.timestep();
+      let length = time.fixed.timestep_duration();
+      let real = time.real.delta_duration();
+      let mut pass = Pass {
+        store: &mut store,
+        effects: &effects,
+        server: server.as_deref(),
+        finished: &mut finished,
+        scratch,
+        despawn,
+      };
+      for &(_, entity) in order.iter() {
+        let Ok((entity, mut emitter, global, lift, previous)) = emitters.get_mut(entity) else {
+          continue;
+        };
+        let Some(slot) = pass.ready(entity, &mut emitter) else {
+          continue;
+        };
+        let speed = emitter.speed();
+        if speed <= 0.0 || length.is_zero() {
+          continue;
+        }
+        let Some(pool) = pass.store.pools.get_mut(slot) else {
+          continue;
+        };
+        // Its stream spreads along its move from where it stood in its last
+        // step, if it ran in the frame before
+        let mut continuous = pool.last_step.is_some_and(|last| last + 1 >= frame);
+        pool.last_step = Some(frame);
+        pool.clock = pool.clock.saturating_add(scaled(real, speed));
+        let place = Place {
+          global,
+          lift,
+          previous,
+        };
+        let mut steps = 0;
+        while steps < MAX_UNSCALED_STEPS
+          && pass
+            .store
+            .pools
+            .get(slot)
+            .is_some_and(|pool| pool.clock >= length)
+        {
+          if !pass.step_emitter(entity, slot, &mut emitter, place, timestep, continuous) {
+            break;
+          }
+          continuous = true;
+          steps += 1;
+          if let Some(pool) = pass.store.pools.get_mut(slot) {
+            pool.clock = pool.clock.saturating_sub(length);
+          }
+        }
+        if let Some(pool) = pass.store.pools.get_mut(slot) {
+          if pool.clock >= length {
+            // The steps past the most a frame takes are dropped
+            let left = pool.clock.as_nanos() % length.as_nanos();
+            pool.clock = Duration::from_nanos(u64::try_from(left).unwrap_or(0));
+          }
+          let fraction = pool.clock.as_secs_f64() / length.as_secs_f64();
+          pool.fraction = fraction.clamp(0.0, 0.999_999) as f32;
+        }
+      }
+    }
+  }
+  despawn_finished(world, despawn);
+}
+
+/// `real` time times an emitter's `speed` (0 to 100)
+fn scaled(real: Duration, speed: f32) -> Duration {
+  Duration::try_from_secs_f64(real.as_secs_f64() * f64::from(speed)).unwrap_or(Duration::ZERO)
+}
+
+/// Drops what the store kept for effects no longer loaded
+fn forget_unloaded(store: &mut ParticleStore, effects: &Assets<ParticleEffect>) {
   store
     .compiled
     .retain(|id, _| effects.version(*id).is_some());
   store
     .warned_budget
     .retain(|id| effects.version(*id).is_some());
+}
 
-  order.clear();
-  order.extend(emitters.iter().map(|(entity, ..)| entity_order(&entity)));
-  order.sort_unstable();
-  for &(_, entity) in order.iter() {
-    let Ok((entity, mut emitter, global, lift, previous)) = emitters.get_mut(entity) else {
-      continue;
-    };
-    // An effect still loading has no cycle yet: nothing to do or warn about
+/// Despawns the emitters that finished in an earlier step and asked to go,
+/// with their children
+fn despawn_finished(world: &mut World, despawn: &mut Vec<Entity>) {
+  for entity in despawn.drain(..) {
+    // One may have gone with a parent despawned before it
+    let _ = world.try_despawn(entity);
+  }
+}
+
+/// Where an emitter stands as its step runs
+#[derive(Clone, Copy)]
+struct Place<'a> {
+  global: &'a GlobalTransform,
+  lift: Option<&'a DrawLift>,
+  previous: Option<&'a PreviousGlobalTransform>,
+}
+
+/// What stepping one emitter shares with the others of its pass
+struct Pass<'a, 'w> {
+  store: &'a mut ParticleStore,
+  effects: &'a Assets<ParticleEffect>,
+  server: Option<&'a AssetServer>,
+  finished: &'a mut Option<ResMut<'w, Messages<EmitterFinished>>>,
+  scratch: &'a mut Scratch,
+  despawn: &'a mut Vec<Entity>,
+}
+
+impl Pass<'_, '_> {
+  /// The slot of `entity`'s emitter, when its effect is loaded: an effect
+  /// still loading has no cycle yet, so there is nothing to do or warn
+  /// about. An emitter added while the world had no store takes a slot now
+  fn ready(&mut self, entity: Entity, emitter: &mut Mut<ParticleEmitter>) -> Option<usize> {
     let id = emitter.effect.id();
-    let (Some(version), Some(effect)) = (effects.version(id), effects.get(id)) else {
-      continue;
-    };
-    if store
+    self.effects.version(id)?;
+    self.effects.get(id)?;
+    if self
+      .store
       .pool(emitter.slot)
       .is_none_or(|pool| pool.entity != entity)
     {
-      // Added while the world had no store
-      emitter.slot = store.take_slot(entity);
+      emitter.slot = self.store.take_slot(entity);
     }
     let slot = emitter.slot as usize;
-    if store
-      .pools
-      .get(slot)
-      .is_none_or(|pool| store.holds(pool.scope))
+    (slot < self.store.pools.len()).then_some(slot)
+  }
+
+  /// Steps `entity`'s emitter, in `slot`, by `dt` seconds of its time: what
+  /// the game asked of it, then its emission, then every particle; it
+  /// reports a finish. `continuous`: it stepped in the step before, so its
+  /// stream may spread along its move. Returns false, doing nothing else,
+  /// when it finished in an earlier step and asked to despawn: it goes now
+  fn step_emitter(
+    &mut self,
+    entity: Entity,
+    slot: usize,
+    emitter: &mut Mut<ParticleEmitter>,
+    place: Place,
+    dt: f32,
+    continuous: bool,
+  ) -> bool {
+    if emitter.despawn_when_finished && emitter.finish == Finish::Reported && emitter.is_finished()
     {
-      continue;
+      self.despawn.push(entity);
+      return false;
     }
-    let dt = timestep * emitter.speed();
-    if dt <= 0.0 {
-      continue;
-    }
-    if store
+    let id = emitter.effect.id();
+    let (Some(version), Some(effect)) = (self.effects.version(id), self.effects.get(id)) else {
+      return true;
+    };
+    if self
+      .store
       .compiled
       .get(&id)
       .is_none_or(|compiled| compiled.version != version)
     {
-      let compiled = Compiled::new(effect, version, || effect_name(server.as_deref(), id));
-      store.compiled.insert(id, compiled);
+      let server = self.server;
+      let compiled = Compiled::new(effect, version, || effect_name(server, id));
+      self.store.compiled.insert(id, compiled);
     }
     let ParticleStore {
       pools,
@@ -188,9 +402,9 @@ pub(crate) fn step_particles(world: &mut World, mut state: Local<StepState>) {
       budget,
       warned_budget,
       ..
-    } = &mut *store;
+    } = &mut *self.store;
     let (Some(pool), Some(fx)) = (pools.get_mut(slot), compiled.get(&id)) else {
-      continue;
+      return true;
     };
 
     // A new effect starts its emission over
@@ -200,7 +414,7 @@ pub(crate) fn step_particles(world: &mut World, mut state: Local<StepState>) {
       pool.cycling = false;
       pool.carry = 0.0;
       pool.fired.clear();
-      pool.playing = true;
+      pool.ended = false;
     }
     if !pool.seeded {
       let seed = emitter.seed.or(fx.effect.seed).unwrap_or(pool.engine_seed);
@@ -208,23 +422,45 @@ pub(crate) fn step_particles(world: &mut World, mut state: Local<StepState>) {
       pool.seeded = true;
     }
 
+    // What the game asked for since the last step
+    let pending = emitter.pending;
+    if pending != Pending::default() {
+      emitter.pending = Pending::default();
+    }
+    if pending.clear || pending.restart {
+      *live = live.saturating_sub(count(pool.main.len()));
+      pool.main.clear();
+      pool.bounds = None;
+    }
+    // Restarted, or played after its one cycle ended: the cycle from 0
+    if pending.restart || (emitter.playing && pool.ended) {
+      pool.time = Some(0.0);
+      pool.cycling = true;
+      pool.carry = 0.0;
+      pool.fired.clear();
+      pool.ended = false;
+    }
+
     // Emitted where it draws: lifted by its floor's height, on a floor
-    let position = global.translation() + lift.map_or(Vec2::ZERO, |drawn| drawn.lift);
+    let position = place.global.translation() + place.lift.map_or(Vec2::ZERO, |drawn| drawn.lift);
     // Spread along the move only from where it was last step, and not
     // across a teleport: `skip_interpolation` marks the emitter (whenever it
     // is called) and sets an interpolated entity's `skip` (within the step)
-    let teleported = emitter.teleported || previous.is_some_and(|p| p.skip);
+    let teleported = emitter.teleported || place.previous.is_some_and(|p| p.skip);
     if emitter.teleported {
       emitter.teleported = false;
     }
-    let spread = pool.last_step == Some(step - 1) && !teleported;
+    let spread = continuous && !teleported;
     let from = match pool.last {
       Some(last) if spread => last,
       _ => position,
     };
 
     let room = (fx.effect.max_particles as usize).saturating_sub(pool.main.len());
-    let wanted = emission(pool, &fx.effect, f64::from(dt), room);
+    let looping = fx.effect.looping && !emitter.once;
+    let mut playing = emitter.playing;
+    let emitted = emission(pool, &fx.effect, looping, &mut playing, f64::from(dt), room);
+    let wanted = emitted.saturating_add((pending.burst as usize).min(room.saturating_sub(emitted)));
     let free = budget.saturating_sub(*live) as usize;
     let granted = wanted.min(free);
     if granted < wanted && warned_budget.insert(id) {
@@ -232,11 +468,13 @@ pub(crate) fn step_particles(world: &mut World, mut state: Local<StepState>) {
         module: "Particles",
         "The particle budget of {} is full: spawns of {} are dropped until particles die (raise it with EngineBuilder::particle_budget)",
         budget,
-        effect_name(server.as_deref(), id)
+        effect_name(self.server, id)
       );
     }
     let born = pool.main.len();
+    let Scratch { keep, partial } = &mut *self.scratch;
     partial.clear();
+    let global = place.global;
     if position.is_finite() && from.is_finite() {
       let linear = global.affine().matrix2;
       let frame = Frame {
@@ -253,12 +491,22 @@ pub(crate) fn step_particles(world: &mut World, mut state: Local<StepState>) {
     let died = advance(pool, fx, dt, born, partial, keep);
     *live = live.saturating_sub(count(died));
     pool.last = Some(position);
-    pool.last_step = Some(step);
 
     let alive = count(pool.main.len());
     if emitter.alive != alive {
       emitter.alive = alive;
     }
+    if emitter.playing != playing {
+      emitter.playing = playing;
+    }
+    // Not playing, nothing alive and no burst to come: reported once
+    if emitter.is_finished() && emitter.finish == Finish::Armed {
+      emitter.finish = Finish::Reported;
+      if let Some(messages) = self.finished.as_mut() {
+        messages.write(EmitterFinished { entity });
+      }
+    }
+    true
   }
 }
 
@@ -277,10 +525,18 @@ fn effect_name(server: Option<&AssetServer>, id: AssetId<ParticleEffect>) -> Str
 /// Moves `pool`'s cycle on by `dt` seconds and counts the particles it owes
 /// for them, at most `room`: the rate's whole particles (its fraction
 /// carried) and each burst firing due by the step's end, every cycle and
-/// repeat included. The start delay comes first; a one-cycle effect stops
-/// playing as its cycle ends, and a looping one starts its bursts over
-fn emission(pool: &mut EmitterPool, effect: &ParticleEffect, dt: f64, room: usize) -> usize {
-  if !pool.playing {
+/// repeat included. Nothing while not `playing`. The start delay comes
+/// first; a one-cycle run (not `looping`) ends with its cycle, clearing
+/// `playing`, and a looping one starts its bursts over
+fn emission(
+  pool: &mut EmitterPool,
+  effect: &ParticleEffect,
+  looping: bool,
+  playing: &mut bool,
+  dt: f64,
+  room: usize,
+) -> usize {
+  if !*playing {
     return 0;
   }
   let duration = f64::from(effect.duration);
@@ -291,7 +547,7 @@ fn emission(pool: &mut EmitterPool, effect: &ParticleEffect, dt: f64, room: usiz
   // The rate runs from the first cycle's start: to its end for one cycle,
   // on through every cycle when looping (where time below 0 after the
   // first is a cycle begun early, not the delay)
-  let active = if effect.looping {
+  let active = if looping {
     let delay = if pool.cycling { 0.0 } else { (-t0).max(0.0) };
     (dt - delay).max(0.0)
   } else {
@@ -331,8 +587,9 @@ fn emission(pool: &mut EmitterPool, effect: &ParticleEffect, dt: f64, room: usiz
       break;
     }
     // The cycle ends in this step
-    if !effect.looping {
-      pool.playing = false;
+    if !looping {
+      pool.ended = true;
+      *playing = false;
       break;
     }
     t1 -= duration;

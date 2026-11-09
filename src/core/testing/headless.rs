@@ -159,14 +159,33 @@ impl HeadlessEngine {
 
   /// Run one frame: exactly one fixed update, then render.
   pub fn step(&mut self) -> Result<StepOutcome, HeadlessError> {
+    let dt = self.engine.fixed_timestep();
+    self.frame_of(dt)
+  }
+
+  /// Run one frame `real` long: as many fixed updates as the game clock's
+  /// time allows (none in a pause or hitstop, two in a frame two fixed
+  /// steps long), then render, as a window's frame of that length would.
+  ///
+  /// # Panics
+  ///
+  /// Panics if the frame fails to render.
+  #[doc(hidden)]
+  pub fn step_real(&mut self, real: Duration) {
+    if let Err(error) = self.frame_of(real) {
+      panic!("a headless frame failed: {error}");
+    }
+  }
+
+  /// One frame of `real` time
+  fn frame_of(&mut self, real: Duration) -> Result<StepOutcome, HeadlessError> {
     if self.quit {
       return Ok(StepOutcome::Quit);
     }
     if let Some(on) = self.ui_spot_check {
       crate::core::ui::nodes::set_spot_check(self.engine.world_mut(), on);
     }
-    let dt = self.engine.fixed_timestep();
-    let outcome = self.engine.frame(Some(dt));
+    let outcome = self.engine.frame(Some(real));
     self.engine.apply_headless_requests();
     for key in self.pending_releases.drain(..) {
       self.engine.input_mut().queue(InputEvent::Key {

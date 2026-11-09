@@ -1,16 +1,17 @@
 //! Test worlds for the particle step.
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::time::Duration;
 
 use super::effect::ParticleEffect;
-use super::emitter::ParticleEmitter;
-use super::step::step_particles;
+use super::emitter::{EmitterFinished, ParticleEmitter};
+use super::step::{step_particles, step_unscaled_particles};
 use super::store::{DEFAULT_PARTICLE_BUDGET, ParticleStore};
 use crate::core::asset::{Assets, Handle};
 use crate::core::ecs::interpolate::snapshot_previous_transforms;
 use crate::core::ecs::kernel::SingleThreadedExecutor;
 use crate::core::ecs::propagate::propagate_transforms;
-use crate::core::ecs::{Entity, IntoScheduleConfigs, Mut, Resource, Schedule, World};
+use crate::core::ecs::{Entity, IntoScheduleConfigs, Messages, Mut, Resource, Schedule, World};
 use crate::core::graphics::Image;
 use crate::core::messages::register_engine_messages;
 use crate::core::time::Time;
@@ -18,6 +19,10 @@ use crate::core::time::Time;
 /// The systems `step` runs, kept so their state lasts from step to step
 #[derive(Resource)]
 struct StepSchedule(Schedule);
+
+/// The systems `frame` runs, kept as `StepSchedule` is
+#[derive(Resource)]
+struct FrameSchedule(Schedule);
 
 /// A world the particle step runs in: a 60 Hz clock, the engine's
 /// messages, the image and effect stores, and a store with the default
@@ -40,6 +45,10 @@ pub(crate) fn world() -> World {
       .chain(),
   );
   world.insert_resource(StepSchedule(schedule));
+  let mut schedule = Schedule::default();
+  schedule.set_executor(SingleThreadedExecutor::new());
+  schedule.add_systems((propagate_transforms, step_unscaled_particles).chain());
+  world.insert_resource(FrameSchedule(schedule));
   world
 }
 
@@ -69,6 +78,25 @@ pub(crate) fn steps(world: &mut World, n: usize) {
   for _ in 0..n {
     step(world);
   }
+}
+
+/// One frame of `real` time for the unscaled emitters: the clock advances,
+/// transforms propagate, the unscaled particles step, then queued commands
+/// apply (no fixed step runs)
+pub(crate) fn frame(world: &mut World, real: Duration) {
+  world.resource_mut::<Time>().advance(real);
+  world.resource_scope(|world, mut schedule: Mut<FrameSchedule>| {
+    schedule.0.run(world);
+  });
+  world.flush();
+}
+
+/// How far `emitter`'s pool is through its next unscaled step
+pub(crate) fn fraction(world: &World, emitter: Entity) -> f32 {
+  world
+    .get::<ParticleEmitter>(emitter)
+    .and_then(|emitter| world.resource::<ParticleStore>().pool(emitter.slot))
+    .map_or(0.0, |pool| pool.fraction)
 }
 
 /// Where interpolation's snapshot leaves an emitter at the start of a
@@ -131,6 +159,20 @@ pub(crate) fn particles(world: &World, emitter: Entity) -> Vec<Seen> {
 /// How many particles `emitter` has
 pub(crate) fn count(world: &World, emitter: Entity) -> usize {
   particles(world, emitter).len()
+}
+
+/// The emitters reported finished so far, in order (a test world never
+/// advances its message buffers)
+pub(crate) fn finished(world: &World) -> Vec<Entity> {
+  world
+    .get_resource::<Messages<EmitterFinished>>()
+    .map_or_else(Vec::new, |messages| {
+      messages
+        .get_cursor()
+        .read(messages)
+        .map(|finished| finished.entity)
+        .collect()
+    })
 }
 
 /// The dev log's particle warnings are shared by every test in the

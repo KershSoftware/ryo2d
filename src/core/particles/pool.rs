@@ -1,5 +1,7 @@
 //! Particle storage: one emitter's particles, field by field, in spawn order.
 
+use std::time::Duration;
+
 use glam::Vec2;
 
 use super::effect::ParticleEffect;
@@ -181,8 +183,14 @@ pub(crate) struct EmitterPool {
   pub(crate) last_step: Option<u64>,
   /// The scene that added it, whose hold holds it; `None`: none's
   pub(crate) scope: Option<u64>,
-  /// Whether it emits (a finished one-cycle effect does not)
-  pub(crate) playing: bool,
+  /// Its one cycle ended (`ParticleEmitter::once`, or an effect that does
+  /// not loop): playing it again starts the cycle over
+  pub(crate) ended: bool,
+  /// An unscaled emitter's real time (times its speed) not yet stepped
+  pub(crate) clock: Duration,
+  /// How far an unscaled emitter is through its next step (its `clock`
+  /// over the step's length, below 1), as the drawer blends it
+  pub(crate) fraction: f32,
 }
 
 impl EmitterPool {
@@ -204,7 +212,9 @@ impl EmitterPool {
       last: None,
       last_step: None,
       scope: None,
-      playing: true,
+      ended: false,
+      clock: Duration::ZERO,
+      fraction: 0.0,
     }
   }
 
@@ -239,7 +249,9 @@ impl EmitterPool {
     self.last = None;
     self.last_step = None;
     self.scope = None;
-    self.playing = true;
+    self.ended = false;
+    self.clock = Duration::ZERO;
+    self.fraction = 0.0;
   }
 }
 

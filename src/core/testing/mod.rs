@@ -74,10 +74,40 @@ pub use gpu::shared_gpu;
 
 use std::time::Duration;
 
+use glam::Vec2;
+
 use crate::core::asset::{AssetServer, MemorySource, insert_registry};
 use crate::core::audio::{AudioEngine, audio_system};
-use crate::core::ecs::World;
+use crate::core::ecs::{Entity, World};
+use crate::core::particles::ParticleStore;
+use crate::core::particles::emitter::ParticleEmitter;
 use crate::core::time::Time;
+
+/// Where the particles of `emitter` (an entity with an engine particle
+/// emitter) are, as its last step left them, oldest first; none without an
+/// emitter or a particle store
+#[doc(hidden)]
+pub fn particle_positions(world: &World, emitter: Entity) -> Vec<Vec2> {
+  let Some(slot) = world
+    .get::<ParticleEmitter>(emitter)
+    .map(|emitter| emitter.slot)
+  else {
+    return Vec::new();
+  };
+  world
+    .get_resource::<ParticleStore>()
+    .and_then(|store| store.pool(slot))
+    .filter(|pool| pool.entity == emitter)
+    .map_or_else(Vec::new, |pool| {
+      let particles = &pool.main;
+      particles
+        .x
+        .iter()
+        .zip(&particles.y)
+        .map(|(&x, &y)| Vec2::new(x, y))
+        .collect()
+    })
+}
 
 /// A world with the asset registry, as the engine's world starts: an
 /// `AssetServer` over an empty `MemorySource`, and a store for each of the

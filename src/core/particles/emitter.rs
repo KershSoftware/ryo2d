@@ -1,10 +1,11 @@
-//! The particle emitter: a component that places an effect in the world.
+//! The particle emitter: a component that places an effect in the world,
+//! and the message that reports its end.
 
 use super::effect::ParticleEffect;
 use super::store::{NO_SLOT, ParticleStore};
 use crate::core::asset::Handle;
 use crate::core::ecs::kernel::{DeferredWorld, HookContext};
-use crate::core::ecs::{Component, Transform};
+use crate::core::ecs::{Component, Entity, Message, Transform};
 
 /// The fastest an emitter runs, as a multiple of game time (the game
 /// clock's own speed limit)
@@ -17,6 +18,18 @@ pub(crate) const MAX_SPEED: f32 = 100.0;
 /// particles; a `Disabled` emitter is frozen. Each emitter draws from its
 /// own random stream, seeded by [`with_seed`](Self::with_seed), else the
 /// effect's `seed`, else the engine (fixed in a headless run).
+///
+/// It runs on game time: a paused clock, hitstop and a scene held under
+/// another (a pause menu) freeze it, and slow motion slows it. One made
+/// [`unscaled`](Self::unscaled) runs on real time through all of them.
+///
+/// The game controls it with [`play`](Self::play), [`stop`](Self::stop),
+/// [`clear`](Self::clear), [`restart`](Self::restart) and
+/// [`burst`](Self::burst), each done in its next step. It is finished when
+/// it is not playing (stopped, or its one cycle over) and has no live
+/// particles: an [`EmitterFinished`] message reports each finish, and one
+/// made [`despawn_when_finished`](Self::despawn_when_finished) despawns its
+/// entity, with its children, in the step after.
 #[derive(Component, Debug, Clone)]
 #[require(Transform)]
 #[component(on_insert = emitter_inserted, on_discard = emitter_discarded)]
@@ -27,8 +40,20 @@ pub struct ParticleEmitter {
   pub(crate) seed: Option<u64>,
   /// Its draw order among sprites, over the effect's
   z: Option<i32>,
-  /// Its time as a multiple of game time
+  /// Its time as a multiple of game time (of real time when unscaled)
   speed: f32,
+  /// It runs on real time, through pauses, hitstop and held scenes
+  pub(crate) unscaled: bool,
+  /// It plays one cycle, even of a looping effect
+  pub(crate) once: bool,
+  /// Its entity is despawned in the step after it finishes
+  pub(crate) despawn_when_finished: bool,
+  /// Whether it emits: `stop` and the end of its one cycle clear it
+  pub(crate) playing: bool,
+  /// What happens at its next finish
+  pub(crate) finish: Finish,
+  /// What the game asked of it since its last step, done by its next
+  pub(crate) pending: Pending,
   /// Its live particles, as the last step left them
   pub(crate) alive: u32,
   /// Its pool in the store, given by the `on_insert` hook
@@ -38,18 +63,54 @@ pub struct ParticleEmitter {
   pub(crate) teleported: bool,
 }
 
+/// Whether an emitter's next finish is reported
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Finish {
+  /// Its next finish sends [`EmitterFinished`]
+  Armed,
+  /// Made stopped: it has nothing to report until it plays
+  Idle,
+  /// Its finish was reported: one that despawns when finished goes in its
+  /// next step, unless `play` or `restart` armed it again
+  Reported,
+}
+
+/// Controls asked for since an emitter's last step
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Pending {
+  /// Remove the live particles
+  pub(crate) clear: bool,
+  /// Remove the live particles and start the cycle over, bursts and all
+  pub(crate) restart: bool,
+  /// Particles to add, whatever the effect emits
+  pub(crate) burst: u32,
+}
+
+/// A [`ParticleEmitter`] finished: it is not playing (stopped, or its one
+/// cycle over) and its last particle has died. Sent once per finish, by the
+/// step it finishes in; `play` and `restart` arm it again. An emitter made
+/// `despawn_when_finished` is still there in the step after (a scene's
+/// `update` can read it), and is despawned by that step's particles.
+#[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EmitterFinished {
+  /// The emitter's entity
+  pub entity: Entity,
+}
+
 impl ParticleEmitter {
   /// An emitter playing `effect`.
-  #[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "exported with the engine's emitter")
-  )]
   pub fn new(effect: Handle<ParticleEffect>) -> Self {
     Self {
       effect,
       seed: None,
       z: None,
       speed: 1.0,
+      unscaled: false,
+      once: false,
+      despawn_when_finished: false,
+      playing: true,
+      finish: Finish::Armed,
+      pending: Pending::default(),
       alive: 0,
       slot: NO_SLOT,
       teleported: false,
@@ -57,55 +118,124 @@ impl ParticleEmitter {
   }
 
   /// Fixes its random seed, over the effect's, so it repeats.
-  #[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "exported with the engine's emitter")
-  )]
   pub fn with_seed(mut self, seed: u64) -> Self {
     self.seed = Some(seed);
     self
   }
 
   /// Sets its draw order among sprites, over the effect's `z`.
-  #[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "exported with the engine's emitter")
-  )]
   pub fn with_z(mut self, z: i32) -> Self {
     self.z = Some(z);
     self
   }
 
-  /// Runs its time at `speed` times game time (0 to 100; a value that is
-  /// not a number, or negative, stops it).
-  #[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "exported with the engine's emitter")
-  )]
+  /// Runs its time at `speed` times game time, or real time when unscaled
+  /// (0 to 100; a value that is not a number, or negative, stops it).
   pub fn with_speed(mut self, speed: f32) -> Self {
     self.speed = allowed_speed(speed);
     self
   }
 
+  /// Runs it on real time: a paused clock, hitstop, slow motion and a
+  /// scene held under another leave it running (for a menu's effects).
+  /// It steps once a frame, in fixed steps of the game's step length (at
+  /// most 8 a frame; a longer frame's time beyond them is dropped).
+  pub fn unscaled(mut self) -> Self {
+    self.unscaled = true;
+    self
+  }
+
+  /// Starts it stopped: it emits nothing until [`play`](Self::play), and
+  /// reports no finish before it has played.
+  pub fn stopped(mut self) -> Self {
+    self.playing = false;
+    self.finish = Finish::Idle;
+    self
+  }
+
+  /// Plays one cycle of its effect, even of a looping one, and stops.
+  pub fn once(mut self) -> Self {
+    self.once = true;
+    self
+  }
+
+  /// Despawns its entity, with its children, in the step after it
+  /// finishes (see [`is_finished`](Self::is_finished)).
+  pub fn despawn_when_finished(mut self) -> Self {
+    self.despawn_when_finished = true;
+    self
+  }
+
+  /// Plays it: a stopped emitter resumes where it stopped, and one whose
+  /// one cycle ended plays its cycle again from the start. Its next finish
+  /// is reported.
+  pub fn play(&mut self) {
+    self.playing = true;
+    self.finish = Finish::Armed;
+  }
+
+  /// Stops it emitting. Its live particles carry on, moving, colliding
+  /// and dying as before.
+  pub fn stop(&mut self) {
+    self.playing = false;
+  }
+
+  /// Removes its live particles in its next step. It carries on emitting
+  /// if it plays.
+  pub fn clear(&mut self) {
+    self.pending.clear = true;
+  }
+
+  /// Removes its live particles and starts its cycle over at 0 (the start
+  /// delay skipped), every burst due again, and plays it. Its next finish
+  /// is reported.
+  pub fn restart(&mut self) {
+    self.pending.restart = true;
+    self.play();
+  }
+
+  /// Adds `count` particles in its next step, whatever its effect emits
+  /// and whether or not it plays, within the effect's `max_particles` and
+  /// the engine's budget (the rest are dropped).
+  pub fn burst(&mut self, count: u32) {
+    self.pending.burst = self.pending.burst.saturating_add(count);
+  }
+
+  /// Runs its time at `speed` times game time, or real time when unscaled,
+  /// from its next step (0 to 100; a value that is not a number, or
+  /// negative, stops it).
+  pub fn set_speed(&mut self, speed: f32) {
+    self.speed = allowed_speed(speed);
+  }
+
+  /// Whether it emits: not after [`stop`](Self::stop), nor once its one
+  /// cycle is over.
+  pub fn is_playing(&self) -> bool {
+    self.playing
+  }
+
+  /// Whether it is finished: not playing, with no live particles (as its
+  /// last step left them) and no burst still to add.
+  pub fn is_finished(&self) -> bool {
+    !self.playing && self.alive == 0 && self.pending.burst == 0
+  }
+
+  /// Whether it runs on real time ([`unscaled`](Self::unscaled)).
+  pub fn is_unscaled(&self) -> bool {
+    self.unscaled
+  }
+
   /// Its draw order, if it sets its own.
-  #[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "exported with the engine's emitter")
-  )]
   pub fn z(&self) -> Option<i32> {
     self.z
   }
 
   /// How many of its particles are alive, as the last step left them.
-  #[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "exported with the engine's emitter")
-  )]
   pub fn alive(&self) -> u32 {
     self.alive
   }
 
-  /// Its time as a multiple of game time.
+  /// Its time as a multiple of game time (real time when unscaled).
   pub fn speed(&self) -> f32 {
     self.speed
   }
@@ -166,10 +296,45 @@ mod tests {
     assert_eq!(emitter.z(), None);
     assert_eq!(emitter.speed(), 1.0);
     assert_eq!(emitter.alive(), 0);
-    let emitter = emitter.with_seed(9).with_z(3).with_speed(0.5);
+    assert!(emitter.is_playing() && !emitter.is_finished() && !emitter.is_unscaled());
+    assert!(!emitter.once && !emitter.despawn_when_finished);
+    let emitter = emitter
+      .with_seed(9)
+      .with_z(3)
+      .with_speed(0.5)
+      .unscaled()
+      .once()
+      .despawn_when_finished();
     assert_eq!(emitter.seed, Some(9));
     assert_eq!(emitter.z(), Some(3));
     assert_eq!(emitter.speed(), 0.5);
+    assert!(emitter.is_unscaled() && emitter.once && emitter.despawn_when_finished);
+    let stopped = ParticleEmitter::new(effect()).stopped();
+    assert!(!stopped.is_playing());
+    assert_eq!(stopped.finish, Finish::Idle, "nothing to report yet");
+  }
+
+  #[test]
+  fn controls_wait_for_the_next_step() {
+    let mut emitter = ParticleEmitter::new(effect());
+    emitter.clear();
+    emitter.burst(3);
+    emitter.burst(u32::MAX);
+    assert_eq!(
+      emitter.pending,
+      Pending {
+        clear: true,
+        restart: false,
+        burst: u32::MAX
+      }
+    );
+    emitter.stop();
+    assert!(!emitter.is_playing());
+    assert!(!emitter.is_finished(), "a burst is still to come");
+    emitter.finish = Finish::Reported;
+    emitter.restart();
+    assert!(emitter.is_playing() && emitter.pending.restart);
+    assert_eq!(emitter.finish, Finish::Armed);
   }
 
   #[test]
@@ -185,6 +350,9 @@ mod tests {
         ParticleEmitter::new(effect()).with_speed(asked).speed(),
         kept
       );
+      let mut emitter = ParticleEmitter::new(effect());
+      emitter.set_speed(asked);
+      assert_eq!(emitter.speed(), kept);
     }
   }
 }

@@ -12,6 +12,7 @@ use crate::core::graphics::{CameraMut, Image, RenderTargets, ScreenMapping};
 use crate::core::input::{Actions, Input};
 use crate::core::lighting::LightingSettings;
 use crate::core::messages::{SceneMessages, register_message};
+use crate::core::particles::ParticlesView;
 use crate::core::physics::Physics;
 use crate::core::render::Look;
 use crate::core::render::{DebugDraw, RenderPipeline};
@@ -141,6 +142,23 @@ impl SceneContext<'_> {
   /// ```
   pub fn saves(&self) -> SavesView<'_> {
     SavesView::new(self.world)
+  }
+
+  // --- particles ---
+
+  /// The engine's particles: play an effect once where something happened,
+  /// read the live count against the budget, or clear every particle. The
+  /// view borrows the context, so take it for each use:
+  ///
+  /// ```
+  /// use ryo2d::prelude::*;
+  ///
+  /// fn explode(ctx: &mut SceneContext<'_>, sparks: &Handle<ParticleEffect>, at: Vec2) {
+  ///   ctx.particles().play_at(sparks, at);
+  /// }
+  /// ```
+  pub fn particles(&mut self) -> ParticlesView<'_> {
+    ParticlesView::new(self.world)
   }
 
   // --- settings ---

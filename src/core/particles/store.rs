@@ -50,6 +50,9 @@ pub(crate) struct ParticleStore {
   /// Steps run, counting from 1: a pool stepped in step `n - 1` was
   /// stepped in the previous step
   pub(crate) step: u64,
+  /// Frames the unscaled emitters ran in, counting from 1: an unscaled
+  /// emitter's pool records the last it ran in
+  pub(crate) frame: u64,
 }
 
 impl ParticleStore {
@@ -67,23 +70,16 @@ impl ParticleStore {
       scope: None,
       held: Vec::new(),
       step: 0,
+      frame: 0,
     }
   }
 
   /// Live particles over every emitter
-  #[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "read by the particles view and the stats")
-  )]
   pub(crate) fn live(&self) -> u32 {
     self.live
   }
 
   /// The most live particles allowed at once
-  #[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "read by the particles view and the stats")
-  )]
   pub(crate) fn budget(&self) -> u32 {
     self.budget
   }
@@ -100,7 +96,6 @@ impl ParticleStore {
   }
 
   /// Removes every live particle (the emitters carry on emitting)
-  #[cfg_attr(not(test), expect(dead_code, reason = "used by ParticlesView::clear"))]
   pub(crate) fn clear_all(&mut self) {
     for pool in &mut self.pools {
       pool.main.clear();

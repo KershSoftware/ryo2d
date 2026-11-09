@@ -83,3 +83,6 @@ mod ui_fragments;
 
 #[path = "e2e/tilemap.rs"]
 mod tilemap;
+
+#[path = "e2e/particles.rs"]
+mod particles;

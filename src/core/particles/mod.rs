@@ -86,7 +86,11 @@ mod attractor;
 mod collision;
 mod contact;
 mod effect;
-pub(crate) mod emitter;
+// The engine-driven emitter, public (and hidden) so tests outside the crate
+// can place one while the prelude's `ParticleEmitter` is the scene-driven
+// system's
+#[doc(hidden)]
+pub mod emitter;
 mod legacy;
 mod noise;
 mod pool;
@@ -100,15 +104,18 @@ mod testing;
 #[cfg(test)]
 mod tests;
 mod value;
+mod view;
 
 pub use attractor::{AttractorType, ParticleAttractor};
 pub use collision::{
   CollisionConfig, CollisionResponse, MIN_BOUNCE_EVENT_SPEED, ParticleCollision,
 };
 pub use effect::{Burst, DrawOrder, EmitShape, ParticleEffect};
+pub use emitter::EmitterFinished;
 pub use legacy::{EmissionMode, EmissionShape, Particle, ParticleEmitter, ParticleSystem};
 pub(crate) use scope::{hold_scenes, in_scene, release_scene};
-pub(crate) use step::step_particles;
+pub(crate) use step::{step_particles, step_unscaled_particles};
 pub use store::DEFAULT_PARTICLE_BUDGET;
 pub(crate) use store::{PARTICLE_HEADLESS_SEED, ParticleStore};
 pub use value::{ColorRange, Curve, CurveKey, Gradient, GradientKey, ValueRange};
+pub use view::{Particles, ParticlesView};
