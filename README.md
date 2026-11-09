@@ -146,7 +146,7 @@ fn main() -> EngineResult<()> {
 - **Shadow System** — Hard shadows, soft shadows, drop/blob/contact shadows, ambient occlusion
 - **Trails and Lines** — Motion trails and shapes with joins, caps, fade and taper effects
 - **Debug Drawing** — `ctx.debug_draw()` lines, rectangles, circles, arrows and crosses, one pixel wide at any zoom
-- **Particles** — GPU-batched particle system with emitters, attractors, and presets
+- **Particles** — Engine-driven effects simulated on the CPU and drawn through the sprite batch: effects built in code or hot-reloaded from files, emission shapes, curves and gradients over life, sprite sheets, collisions, sub-emitters, attractors and presets
 - **Post-Processing** — Shader pipeline (bloom, CRT, vignette, chromatic aberration, etc.)
 - **Render Pipeline** — Pass-based, per camera then per frame; games toggle built-in passes or add their own
 - **Resolution Model** — Resolution-independent (sharp at any window size and on HiDPI) or pixel art (a fixed target scaled by whole numbers)

@@ -2,7 +2,7 @@
 name: ryo-api
 description: Complete API reference for ryo2d::prelude - every exported type with its signatures and use, organised by area.
 metadata:
-  version: 2.24.0
+  version: 2.25.0
 ---
 
 # Ryo2D API Reference
@@ -169,7 +169,7 @@ pub enum RenderStyle { Single, Tiled { direction: TileDirection, target_size: f3
 | `with_blend(BlendMode)`, `with_filter(Filter)`, `with_lighting(bool)` | how it is drawn (shadows always blend `Alpha`) |
 | `with_emission(f32)` | multiplies the sprite's light (default 1). Above 1 it glows past white and feeds bloom; a lit sprite is still darkened by lighting, so to glow in the dark add `with_lighting(false)`. |
 
-Blend and filter modes (on `Renderable`, `ParticleEmitter`, `SpriteDraw`, `ParallaxLayer`, `Trail2D`, `Line2D`):
+Blend and filter modes (on `Renderable`, `ParticleEffect`, `SpriteDraw`, `ParallaxLayer`, `Trail2D`, `Line2D`):
 
 | `BlendMode` | Result |
 |---|---|
@@ -331,13 +331,13 @@ pub struct Time { pub real: RealClock, pub game: GameClock, pub fixed: FixedCloc
 | `First` | advance clocks, publish `Input`, advance message buffers |
 | `PreUpdate` | a running scene transition, then the asset pump (loads and reloads land, unheld assets are freed, `AssetEvent`s sent), then tile maps (those whose assets are ready start landing, landings that came back land with `MapEvent::Spawned`, spawned maps follow saved files with `MapEvent::Reloaded`, streamed maps unload (keeping the chunks a player changed, despawning their `ChunkOwned` entities) and land chunks round their anchors with `ChunkEvent`s, class tiles follow the chunks); then the console |
 | UI pass | `Scene::ui` for visible scenes, bottom-up; input it consumes never reaches gameplay |
-| `FixedUpdate` × 0..N | `FixedSet::Snapshot` → `Juice` → `Scene` (`Scene::update`) → `Game` (scene and game systems) → `Movement` (climbers changing storey on tile maps' stairs, before the kill zones' respawns; trigger behaviours, tile maps' collision kept in step with their tiles, tile collider rebuilds, movement input, knockback, movement presets) → `Physics` (one system: the whole physics step) → `Transforms` → `Trails` |
+| `FixedUpdate` × 0..N | `FixedSet::Snapshot` → `Juice` → `Scene` (`Scene::update`) → `Game` (scene and game systems) → `Movement` (climbers changing storey on tile maps' stairs, before the kill zones' respawns; trigger behaviours, tile maps' collision kept in step with their tiles, tile collider rebuilds, movement input, knockback, movement presets) → `Physics` (one system: the whole physics step) → `Transforms` → `Particles` (emitters spawn, particles move and die) → `Trails` |
 | `Update` | `UpdateSet::Game` (scene per-frame systems) |
-| `PostUpdate` | tile maps' shadows kept in step with their tiles, then `PostUpdateSet::Transforms` → `Camera` (shake, then every camera's `CameraView`) → `Extract` |
-| render | draw list from the world, `Scene::render`, render pipeline |
+| `PostUpdate` | tile maps' shadows kept in step with their tiles, then `PostUpdateSet::Transforms` → `Camera` (shake, then every camera's `CameraView`) → `Extract` (unscaled particle emitters step here) |
+| render | draw list from the world, `Scene::render`, the engine's particles, render pipeline |
 | `Last` | tracker clearing |
 
-- `enum FixedSet { Snapshot, Juice, Scene, Game, Movement, Physics, Transforms, Trails }`, `enum UpdateSet { Game }`, `enum PostUpdateSet { Transforms, Camera, Extract }`: order your systems with `.in_set(..)`, `.before(..)`, `.after(..)`.
+- `enum FixedSet { Snapshot, Juice, Scene, Game, Movement, Physics, Transforms, Particles, Trails }`, `enum UpdateSet { Game }`, `enum PostUpdateSet { Transforms, Camera, Extract }`: order your systems with `.in_set(..)`, `.before(..)`, `.after(..)`.
 - Game-wide systems: `EngineBuilder::add_systems(phase, systems)` (any phase; in `FixedUpdate`/`Update`, a call whose systems are not ordered against anything outside it runs in its `Game` set; one that names a set or another call's system (`.in_set`, `.before`, `.after`) keeps exactly that order). Scene-owned systems: `ctx.add_systems(Phase::FixedUpdate | Phase::Update, systems)`, dropped when the scene leaves the stack.
 - Every schedule is single-threaded.
 
@@ -354,7 +354,7 @@ pub trait Scene: 'static {
   fn on_resume(&mut self, ctx: &mut SceneContext, returned: Option<Box<dyn Any>>) {}
   fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction { SceneAction::Continue } // each fixed step
   fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction { SceneAction::Continue } // once a frame, before the steps
-  fn render(&mut self, gpu: &mut GpuRenderContext) {}                    // GPU-batched sprites, particles, parallax
+  fn render(&mut self, gpu: &mut GpuRenderContext) {}                    // GPU-batched sprites, parallax
   fn is_transparent(&self) -> bool { false }  // scenes below are drawn and get `ui`
   fn updates_below(&self) -> bool { false }   // scenes below keep updating and running their systems
   fn is_physics_paused(&self) -> bool { false }
@@ -406,6 +406,7 @@ pub struct SceneContext<'a> {
 | `audio(&mut self) -> AudioView<'_>` | the audio engine: play sounds and music, snapshots, bus volumes (see [Audio](#audio)); it borrows the world like `assets()` |
 | `saves(&self) -> SavesView<'_>` | the game's saves: save, load, list and delete slots (see [Config, settings and saves](#config-settings-and-saves)); it borrows the context, so take it for each use |
 | `settings(&mut self) -> Mut<'_, Settings>` | the player's settings: volumes, window size, display mode, vsync, the FPS counter and the game's sections; a change applies that frame and saves itself |
+| `particles(&mut self) -> ParticlesView<'_>` | the engine's particles: play an effect once, read the live count against the budget, clear them (see [Particles](#particles)); it borrows the world like `assets()` |
 | `maps(&mut self) -> MapsView<'_>` | spawned tile maps: read and edit tiles, Wang terrain, cell conversions, world levels (see [Tilemaps](#tilemaps)); it borrows the world like `assets()` |
 | `add_systems<M>(&mut self, phase: Phase, systems: impl IntoScheduleConfigs<ScheduleSystem, M>) -> Result<(), SceneScheduleError>` | scene-owned systems, run in `FixedSet::Game` / `UpdateSet::Game`; add them once, in `on_enter`. Refused, adding nothing: other phases (`SceneScheduleError::UnsupportedPhase`), a place they never run, such as `.after(FixedSet::Physics)` (`EngineSet`, naming the set), and the same line adding the same systems in a later callback (`AlreadyAdded`, with its location). `SceneScheduleError` is in the prelude |
 | `messages<T: Message + Clone>(&mut self) -> Vec<T>` | messages written since this scene last read `T` |
@@ -528,6 +529,7 @@ EngineBuilder::new()
 | `background_fps(u32)`, `background_rendering(bool)` | unfocused behaviour |
 | `pixel_art(w: u32, h: u32)`, `window_size(w: u32, h: u32)`, `resizable(bool)`, `display_mode(DisplayMode)`, `ui_scale(Option<f32>)`, `ui_resolution(UiResolution)` | presentation; `ui_scale(None)` (default) keeps UI units equal to screen units, `Some(s)` is `s` render pixels per UI unit; `UiResolution::Render` (default) or `Window` |
 | `ui_theme(Theme)` | the starting UI theme (default `Theme::dark()`) |
+| `particle_budget(u32)` | the most particles alive at once, over every emitter (default `DEFAULT_PARTICLE_BUDGET`, 20,000); a spawn past it is dropped, with one warning per effect |
 | `asset_loader(impl AssetLoader)` | a loader for the game's own asset type, registering the type too; for an extension an engine loader of the same type takes, the game's wins |
 | `asset_source(impl AssetSource)` | read assets from this source instead of the project's `assets/` folder (a test's `MemorySource`) |
 | `tiled_project(&str)` | the Tiled project (an asset path) whose class and enum types Tiled maps use; over `[tilemap] tiled_project`, default `project.tiled-project` at the asset root |
@@ -575,7 +577,8 @@ Engine messages (all `Message + Clone`):
 | `KnockbackStarted` / `KnockbackFinished` | `entity` | written in `FixedSet::Movement`; a finish once however it ends (decayed, `stop()`, a head-on hit) |
 | `SquashStretchStarted` / `SquashStretchFinished` | `entity` | |
 | `AssetEvent<T>` (one per asset type) | `Added { id }`, `Modified { id }`, `Removed { id }`, `Failed { id, error }`, `ReloadFailed { id, error }` | the asset pump (`PreUpdate`) put an asset in its store, changed it, freed it, or could not load or reload it; `load_now` sends its own at once (see [Assets](#assets)) |
-| `ParticleCollision` | see [Particles](#particles) | |
+| `ParticleCollision` | see [Particles](#particles) | a particle met a collider, in the particle step (`FixedSet::Particles`), so a scene's `update` reads it on the next step |
+| `EmitterFinished` | `entity` | an emitter stopped (or ended its one cycle) and its last particle died, once per finish, in the particle step (see [Particles](#particles)) |
 | `MapEvent` | `Spawned { map }`, `Reloaded { map }`, `Failed { map, error: Arc<AssetError> }` | a tile map landed whole (layers, objects, colliders, shadows), followed a saved file, or did not load (see [Tilemaps](#tilemaps)) |
 | `FloorChanged` | `entity`, `from: Floor`, `to: Floor` | a `Climber` changed storey halfway along a tile map's stairs, in `FixedSet::Movement` (see [Tilemaps](#tilemaps)) |
 | `ChunkEvent` | `Loaded { map, chunk: IVec2 }`, `Unloading { map, chunk, changed: Option<ChunkTiles> }` | a streamed map's chunk landed (its class tiles in), or unloaded: gone from the map by the time it is read, `changed` holding its tiles if the player changed it (see [Tilemaps](#tilemaps)) |
@@ -708,7 +711,7 @@ Other cameras are edited through their components (`Camera2d`, `Transform`, `Cam
 - `CameraShake` (component, trauma-based): `new(max_offset, decay_rate)`, `with_intensity_curve(Ease)`, `add_trauma(f32)`, `configure(max_offset, decay_rate)`, `trauma()`, `reset()`, `offset() -> Vec2`, `set_curve(Ease)`, `curve()`.
 - `CameraView` (component the engine computes each frame in `PostUpdateSet::Camera` from the interpolated transform): `view_proj: Mat4`, `center`, `rotation`, `scale` (screen units per world unit), `shake`, `rect_min`, `rect_size` (the viewport in screen units), `bounds: CameraBounds` (encloses a rotated view); `world_to_screen(Vec2) -> Vec2`, `screen_to_world(Vec2) -> Vec2`, `is_visible(min: Vec2, max: Vec2) -> bool`.
 - `CameraBounds { left, right, top, bottom }`: `width()`, `height()`, `contains(x, y)`.
-- `RenderLayers` (component on drawables and cameras): `layer(n)` (0..=31), `all()`, `none()`, `with(n)`, `intersects(&other)`. Default `layer(0)`. A camera draws the entities, composite tiles, trails and lines that share a layer with it; `Scene::render` sprites, particles, parallax and debug overlays are on layer 0.
+- `RenderLayers` (component on drawables and cameras): `layer(n)` (0..=31), `all()`, `none()`, `with(n)`, `intersects(&other)`. Default `layer(0)`. A camera draws the entities, composite tiles, particle emitters, trails and lines that share a layer with it; `Scene::render` sprites, parallax and debug overlays are on layer 0.
 
 Render targets: `RenderTargets` (resource, `ctx.render_targets()`) records textures; the GPU textures follow at the next frame.
 
@@ -955,7 +958,7 @@ One registry for every asset type. `AssetServer` (a resource; systems take `Res<
 - `Progress { loaded, failed, pending }` (`Copy`, `Eq`, `Default`): `is_done()` (nothing pending), `fraction()` (the share loaded or failed; 1 for an empty group). `AssetStats { types: Vec<TypeStats> }`, `TypeStats { name, loaded, loading, failed }`, one per registered type.
 - `enum AssetEvent<T: Asset> { Added { id }, Modified { id }, Removed { id }, Failed { id, error: Arc<AssetError> }, ReloadFailed { id, error } }` (`Clone`, `Debug`): a message per asset type (`ctx.messages::<AssetEvent<Image>>()`, `MessageReader<AssetEvent<T>>`). The pump sends them in `PreUpdate`, `load_now` its own at once; an asset's events come in the order its changes happened, `Removed` last, and only for an asset that was `Added` (a load dropped before it landed, or a failed one, is freed with no event).
 - `AssetPath` (`Clone`, `Eq`, `Hash`, `Ord`, `Display`): `parse(&str) -> Result<AssetPath, AssetError>` (`\` to `/`, `.` dropped, `..` resolved; absolute or leaving the root is `InvalidPath`), `as_str()`, `extensions()` (longest first: `"ui.ron"`, `"ron"`), `parent()`.
-- The engine's types and loaders, in every registry: `Image` (`ImageLoader`: `png`, `jpg`, `jpeg`, `bmp`, `gif`, `webp`, `tga`, `tif`, `tiff`, `qoi`, `ico`, `svg`; settings `ImageSettings { svg: SvgSize }`, `enum SvgSize { Native (default), Scale(f32), Fit { width: u32, height: u32 } }`), `Shader` (`ShaderLoader`: `wgsl`), `Font` (`FontLoader`: `ttf`, `otf`, `ttc`; `FontSettings { face: u32 }`), `BitmapFont` (`BitmapFontLoader`: `bitmap.ron`), `UiFile` (`UiFileLoader`: `ui.ron`), `Theme` (`ThemeLoader`: `theme.ron`), `AudioClip` (`AudioClipLoader`: `wav`, `ogg`, `mp3`, `flac`; settings `AudioClipSettings { mode: ClipMode }`), `Sound` (`SoundLoader`: `sound.ron`), `Music` (`MusicLoader`: `music.ron`) and `Mixer` (`MixerLoader`: `mixer.ron`), see [Audio](#audio); `TileMap` (`TiledMapLoader`: `tmx`, `tmj`), `Tileset` (`TiledTilesetLoader`: `tsx`, `tsj`), `LdtkProject` (`LdtkLoader`: `ldtk`) and `TileWorld` (`TileWorldLoader`: `world`), see [Tilemaps](#tilemaps). A path's loader is the one taking its longest extension.
+- The engine's types and loaders, in every registry: `Image` (`ImageLoader`: `png`, `jpg`, `jpeg`, `bmp`, `gif`, `webp`, `tga`, `tif`, `tiff`, `qoi`, `ico`, `svg`; settings `ImageSettings { svg: SvgSize }`, `enum SvgSize { Native (default), Scale(f32), Fit { width: u32, height: u32 } }`), `Shader` (`ShaderLoader`: `wgsl`), `Font` (`FontLoader`: `ttf`, `otf`, `ttc`; `FontSettings { face: u32 }`), `BitmapFont` (`BitmapFontLoader`: `bitmap.ron`), `UiFile` (`UiFileLoader`: `ui.ron`), `Theme` (`ThemeLoader`: `theme.ron`), `AudioClip` (`AudioClipLoader`: `wav`, `ogg`, `mp3`, `flac`; settings `AudioClipSettings { mode: ClipMode }`), `Sound` (`SoundLoader`: `sound.ron`), `Music` (`MusicLoader`: `music.ron`) and `Mixer` (`MixerLoader`: `mixer.ron`), see [Audio](#audio); `ParticleEffect` (`ParticleEffectLoader`: `particles.ron`), see [Particles](#particles); `TileMap` (`TiledMapLoader`: `tmx`, `tmj`), `Tileset` (`TiledTilesetLoader`: `tsx`, `tsj`), `LdtkProject` (`LdtkLoader`: `ldtk`) and `TileWorld` (`TileWorldLoader`: `world`), see [Tilemaps](#tilemaps). A path's loader is the one taking its longest extension.
 - A type of your own: `trait Asset: Send + Sync + 'static {}`, and for files a loader registered with `EngineBuilder::asset_loader(loader)`:
 
   ```rust
@@ -1013,7 +1016,7 @@ Bloom's `threshold` is linear luminance, 0 or more and unbounded above (default 
 
 ## Trails and lines
 
-- `with_emission(f32)` (default 1) on `Trail2D`, `Line2D`, `ParticleEmitter` and `Renderable` multiplies the colour's light: above 1 it glows past white and feeds bloom. `Trail2D` and `Line2D` read it with `emission()`; `Renderable` and `ParticleEmitter` have a public `emission` field.
+- `with_emission(f32)` (default 1) on `Trail2D`, `Line2D`, `ParticleEffect` and `Renderable` multiplies the colour's light: above 1 it glows past white and feeds bloom. `Trail2D` and `Line2D` read it with `emission()`; `Renderable` and `ParticleEffect` have a public `emission` field.
 - `Trail2D` (component, on an entity with a `Transform`): records the entity's world position every fixed step (points are world space). Constructors `new(Color, width)`, `bullet(Color)`, `swipe(Color, w)`, `particle(Color)`, `laser(Color, w)`, `fading_laser(Color, w, fade_time)`, `lightning(Color, w)`, `fire(Color, w)`, `energy(Color, w)`; builders `with_length(max_points)` (≤ 128), `with_end_width`, `with_taper(ratio)`, `with_fade(bool)`, `with_end_color`, `with_min_distance`, `with_emit_interval`, `with_lifetime(secs)`, `with_fade_distance(px)`, `with_texture(Handle<Image>)`, `with_texture_mode(TextureMode)`, `with_tile_length`, `with_style(TrailStyle)`, `with_effect(TrailEffect)`, `with_cap(LineCap)`, `with_join(LineJoin)`, `with_blend(BlendMode)`, `with_filter(Filter)` (textured trails), `with_lighting(bool)`, `with_z_order(i32)`; control `set_enabled`, `set_visible`, `set_recording`, `clear`, `push_point(x, y)`, `push_point_back`, `populate_line(..)`, `update(x, y, dt)`, plus getters/setters for each setting.
 - `Line2D` (component, on an entity with a `Transform`): drawn at the entity's world position (points are offsets from it). `new(points: Vec<Vec2>, Color, width)`, `segment(start, end, Color, w)`, `horizontal(y, x0, x1, Color, w)`, `vertical(x, y0, y1, Color, w)`, `rect(x, y, w, h, Color, line_w)`, `circle(center, r, Color, w, segments)`, `arc(..)`, `quadratic_bezier(..)`, `bezier(..)`, `arrow(start, end, Color, w, head)`; builders `with_end_color`, `with_end_width`, `with_taper`, `with_closed(bool)`, `with_z_order`, `with_style`, `with_cap`, `with_join(LineJoin)`, `with_blend(BlendMode)`, `with_lighting(bool)`; editing `points_mut`, `set_points`, `push_point`, `pop_point`, `clear`; `length()`, `point_at_distance(d)`, `color_at(t)`, `width_at(t)`.
 - `TrailPoint { x, y, age }`: `new(x, y)`.
@@ -1057,21 +1060,72 @@ The engine advances each `Skeleton`'s controller (or standalone animator) every 
 
 ## Particles
 
-The scene owns a `ParticleSystem`; emitters and attractors are components.
+An effect (`ParticleEffect`, an asset) says how a kind of particle is born, moves, looks and ends; an emitter (`ParticleEmitter`, a component) places one in the world. The engine runs and draws them: game-time emitters in `FixedSet::Particles`, unscaled ones in `PostUpdateSet::Extract`, each drawn as one run. A game calls nothing each frame. Angles in effects are degrees.
 
-| `ParticleSystem` | |
+| `ParticlesView` (`ctx.particles()`; `ParticlesView::new(&mut World)` in an exclusive system) | |
 |---|---|
-| `new()`, `with_seed(u64)` | |
-| `update(&mut self, world: &mut World, dt: f32)` | call in `update` |
-| `collect_for_render(&mut self, world: &World, collector: &mut BatchCollector)` | call in `render`: `collect_for_render(gpu.world, gpu.batch)`; particles are centred on their position, in world space |
-| `particle_count()`, `clear()`, `clear_emitter(Entity)` | |
+| `play_at(&mut self, effect: &Handle<ParticleEffect>, position: Vec2) -> Entity` | an emitter entity that plays one cycle of `effect`, even a looping one, and despawns when its last particle dies, sending `EmitterFinished` first |
+| `count(&self) -> u32`, `budget(&self) -> u32` | live particles over every emitter; the most allowed at once |
+| `clear(&mut self)` | removes every live particle at once; the emitters carry on |
 
-- `ParticleEmitter` (component; emits from its entity's `GlobalTransform`) with public fields for every setting (`mode`, `shape`, `sprite`, `enabled`, lifetime/size/color/speed/rotation ranges, `gravity`, `drag`, `z_order`, `effect`, `blend`, `filter`, `lighting`, `collision`, `layer`, `max_particles`). `new(Handle<Image>)`, `with_mode(EmissionMode)`, `with_shape(EmissionShape)`, `with_lifetime(min, max)`, `with_size(min, max)`, `with_end_size(min, max)`, `with_color(start, end)`, `with_speed(min, max)`, `with_rotation(min, max)`, `with_angular_velocity(min, max)`, `with_gravity(x, y)`, `with_drag(f32)`, `with_z_order(i32)`, `with_effect(SpriteEffect)`, `with_blend(BlendMode)`, `with_filter(Filter)`, `with_lighting(bool)`, `with_layer(u32)`, `with_collision(CollisionConfig)`, `with_max_particles(u32)`, `one_shot()`, `set_enabled(bool)`, `reset()`, `burst(count)`, `is_finished()`. Presets (each `(Handle<Image>) -> Self`): `fire`, `flame_small`, `smoke`, `smoke_thick`, `magic`, `magic_heal`, `rain`, `snow`, `sparks`, `dust`, `confetti`, `bubbles`, `comet_trail`, `exhaust`; `explosion(sprite, count)`, `explosion_debris(sprite, count)`.
-- `enum EmissionMode { Continuous { rate }, Burst { count }, BurstRepeating { count, interval, repeats: Option<u32> } }`.
-- `enum EmissionShape { Point, Line { start_x, start_y, end_x, end_y }, Circle { radius, hollow }, Rectangle { width, height }, Cone { direction, spread, min_speed, max_speed } }` (radians).
+- `Particles` (a `SystemParam`: `mut particles: Particles`): `play_at(&mut self, effect, position) -> Entity` (spawned through the system's commands, the entity reserved at once), `count()`, `budget()`.
+- `EngineBuilder::particle_budget(max: u32)` (default `DEFAULT_PARTICLE_BUDGET: u32 = 20_000`): a spawn past it is dropped, with one warning per effect; live particles are never cut short.
+
+| `ParticleEmitter` (component, requires `Transform`) | |
+|---|---|
+| `new(effect: Handle<ParticleEffect>)` | plays `effect` at its entity's `GlobalTransform` (lifted on a floor); public field `effect` |
+| `with_seed(u64)`, `with_z(i32)` | its random stream's seed, over the effect's; its draw order, over the effect's `z` |
+| `with_speed(f32)`, `set_speed(&mut self, f32)` | its time as a multiple of game time, or real time when unscaled (0 to 100; not a number or negative stops it) |
+| `unscaled()` | runs on real time through a paused clock, hitstop, slow motion and held scenes (at most 8 steps a frame) |
+| `stopped()` | emits nothing until `play`, and reports no finish before it has played |
+| `once()` | plays one cycle, even of a looping effect |
+| `despawn_when_finished()` | despawns its entity, with its children, in the step after it finishes |
+| `play(&mut self)` | a stopped emitter resumes where it stopped; one whose one cycle ended plays it again from the start; arms `EmitterFinished` |
+| `stop(&mut self)` | stops emitting; live particles carry on |
+| `clear(&mut self)` | removes its live particles in its next step |
+| `restart(&mut self)` | removes them and starts its cycle over at 0 (the start delay skipped), every burst due again; arms `EmitterFinished` |
+| `burst(&mut self, count: u32)` | adds `count` particles in its next step, whatever its effect emits and whether or not it plays, within `max_particles` and the budget. A `stopped()` emitter never reports `EmitterFinished` nor despawns: only `play` or `restart` arm it |
+| `is_playing() -> bool`, `is_finished() -> bool`, `is_unscaled() -> bool`, `alive() -> u32`, `speed() -> f32`, `z() -> Option<i32>` | finished: not playing, no live particles and no burst to add; `alive` as the last step left it |
+
+`ctx.skip_interpolation(entity)` also marks a `ParticleEmitter` on the entity, `Interpolated` or not: its next step spawns at the new place only, so a teleport never streaks. Despawning an emitter, or taking the component off, removes its particles. A `Disabled` emitter is frozen and hidden.
+
+| `ParticleEffect` (asset; public fields, `.particles.ron` files through `ParticleEffectLoader`) | Default | |
+|---|---|---|
+| `new(image: Handle<Image>)` | | presets below |
+| `with_rate(f32)`, `with_rate_per_distance(f32)` | 10, 0 | particles per second; per pixel the emitter moves (a `World` effect's spread along the move, none across a teleport) |
+| `with_burst(Burst)` | none | adds to `bursts: Vec<Burst>` |
+| `with_duration(f32)`, `with_looping(bool)`, `with_start_delay(f32)` | 1, `true`, 0 | one cycle, in seconds |
+| `with_prewarm(bool)` | `false` | starts a looping effect as if it had played a cycle (at most 10 s, run in its first step) |
+| `with_max_particles(u32)` | 1000 | per emitter |
+| `with_shape(EmitShape)` | `Point` | where particles are born; turns and scales with the emitter |
+| `with_direction(direction_deg: f32, spread_deg: f32)`, `outward()` | 0, 360 | 0 is right, 90 is down; `outward` travels away from the shape's centre |
+| `with_lifetime(impl Into<ValueRange>)`, `with_speed(..)`, `with_size(..)` | (1, 2), (0, 50), (8, 16) | |
+| `with_rotation(..)`, `with_angular_velocity(..)` | 0, 0 | degrees, degrees per second (fields `rotation_deg`, `angular_velocity_deg`) |
+| `with_inherit_velocity(f32)` | 0 | the share of the emitter's velocity a `World` effect's particle starts with |
+| `with_color(impl Into<ColorRange>)` | white | a `Color`, or `(Color, Color)` for a random mix |
+| `with_color_over_life(Gradient)` | white to transparent | multiplies the start colour |
+| `with_size_over_life(Curve)`, `with_speed_over_life(Curve)` | 1, 1 | multiply the start size; the velocity by the curve's change each step |
+| `with_gravity(x: f32, y: f32)`, `with_drag(f32)` | 0, 0 | pixels per second squared; fraction of speed lost per second |
+| `with_radial_acceleration(impl Into<ValueRange>)`, `with_tangential_acceleration(..)` | 0, 0 | about the emitter, one value per particle |
+| `with_noise(NoiseForce)`, `with_space(Space)` | none, `World` | a `Local` effect ignores `inherit_velocity`, collisions and attractors |
+| `with_blend(BlendMode)`, `with_filter(Filter)`, `with_lighting(bool)`, `with_emission(f32)` | `Alpha`, `Default`, `true`, 1 | field `lit` for the third |
+| `with_effect(SpriteEffect)`, `with_z(i32)`, `with_draw_order(DrawOrder)`, `with_frames(Flipbook)`, `with_align(ParticleAlign)` | none, 0, `NewestOnTop`, none, `None` | |
+| `with_collision(CollisionConfig)`, `on_death(SubEmitter)`, `on_collision(SubEmitter)` | none | |
+| `with_layer(u32)`, `with_seed(u64)` | 0, none | the bits attractors' layer masks test (a camera's layers are the entity's `RenderLayers`); a fixed stream |
+
+Presets (each `(Handle<Image>) -> ParticleEffect`): `fire`, `flame_small`, `smoke`, `smoke_thick`, `magic`, `magic_heal`, `rain`, `snow`, `sparks`, `dust`, `confetti`, `bubbles`, `comet_trail`, `exhaust`; `explosion(image, count: u32)`, `explosion_debris(image, count: u32)`. `sparks`, `dust`, `confetti` and the explosions are one burst, played once.
+
+- `enum EmitShape { Point, Circle { radius, arc_deg, thickness }, Rect { size: Vec2, thickness }, Line { length } }` (`thickness` 0 is the edge only, 1 the whole area).
+- `Burst { time, count: ValueRange, cycles, interval }`: `Burst::at(time: f32, count: impl Into<ValueRange>)`, `with_cycles(cycles: u32, interval: f32)` (0 cycles repeats until the emitter stops; a burst fires only within its cycle).
+- `ValueRange { min, max }`: `new(min, max)`, `constant(v)`; `From<f32>`, `From<(f32, f32)>`; a min above its max samples the min. `ColorRange { a, b }`: `new(a, b)`, `constant(c)`; `From<Color>`, `From<(Color, Color)>`.
+- `Curve`: `new(impl IntoIterator<Item = (f32, f32)>)`, `eased(impl IntoIterator<Item = (f32, f32, Ease)>)`, `constant(v)`, `keys() -> &[CurveKey]`, `sample(t) -> f32`. `CurveKey { t, value, ease }`. `Gradient`: `new(impl IntoIterator<Item = (f32, Color)>)`, `constant(c)`, `keys() -> &[GradientKey]`, `sample(t) -> Color`. `GradientKey { t, color }`.
+- `Flipbook { columns, rows, count, mode: FrameMode, random_start }`: `new(columns: u32, rows: u32)`, `with_count(u32)`, `at_fps(f32)`, `random_start()`. `enum FrameMode { OverLife, Fps(f32) }`.
+- `enum ParticleAlign { None, Velocity { stretch: f32 } }` (the prelude's name for `particles::Align`; a length of `size + speed × stretch`). `enum DrawOrder { NewestOnTop, OldestOnTop }`. `enum Space { World, Local }`. `NoiseForce { strength, frequency, speed }`: `new(strength, frequency)`, `with_speed(f32)`.
+- `SubEmitter { effect: Handle<ParticleEffect>, count: ValueRange, inherit_velocity: f32 }`: `new(effect, count: impl Into<ValueRange>)`, `with_inherit_velocity(f32)`. `on_death` plays where a particle dies, `on_collision` on any contact that would send a `ParticleCollision`; one level deep.
 - `ParticleAttractor { attractor_type, layer_mask, enabled }` (component): `new(AttractorType)`, `point(strength, radius)`, `gravity_well(strength, radius)`, `line(x0, y0, x1, y1, strength, radius)`, `area(w, h, fx, fy)`, `vortex(strength, radius)`, `spiral(strength, radius, inward_pull)`, `turbulence(strength, scale, speed)`, `with_layer_mask(u32)`, `with_enabled(bool)`. `enum AttractorType { Point { strength, radius, falloff }, Line { .. }, Area { .. }, Vortex { .. }, Turbulence { .. } }`.
 - `CollisionConfig { radius, collision_mask, response, send_events }`: `new(radius)`, `with_mask(u32)`, `with_response(CollisionResponse)`, `with_events()`, `die_on_hit(r)`, `bouncy(r, restitution)`, `sticky(r)`. `enum CollisionResponse { Die, Bounce { .. }, Stick, Event }` (`bounce(restitution)`, `restitution()`). Particles collide with `Collider` entities.
 - `ParticleCollision { emitter_entity, collider_entity, position_x, position_y, normal_x, normal_y, velocity_x, velocity_y }` is a message (`ctx.messages::<ParticleCollision>()`); a bounce writes one only above `MIN_BOUNCE_EVENT_SPEED` (20 px/s).
+- `EmitterFinished { entity }` is a message, sent once per finish in the step the emitter finishes (`despawn_when_finished` despawns in the next; an unscaled emitter can do both in one frame).
 
 See `ryo-particles`.
 

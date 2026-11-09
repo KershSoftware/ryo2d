@@ -21,7 +21,7 @@ UI:
 
 Everything draws on the GPU, the UI included: `UiContext` records commands, and the batch draws them through the UI camera into the compositor's UI image (`render/AGENTS.md`). Text is laid out by the text module (`src/core/text/AGENTS.md`); this module keeps the glyph pages its bitmaps are placed in.
 
-**Draw order:** entities, world text, `Scene::render` sprites (particles, parallax) and trails/lines sort together by `z_order`. Equal z: entity, then world text, then `render` sprite, then trail/line; within a kind, entities by entity index (`ecs::entity_order`, so `z_order` puts one in front) and the others in submission order. Lighting, the transition fade, post-processing and the UI follow; the UI is composited last, untouched by effects. Parallax layers need a negative z to sit behind entities at z 0. A map's tile chunks, y-sorted rows and tile objects sort as entities (`EntityDrawer` merges them in from `TileDrawer`); its image layers as `render` sprites.
+**Draw order:** entities, world text, `Scene::render` sprites, the engine's particle runs, parallax and trails/lines sort together by `z_order`. Equal z: entity, then world text, then `render` sprite, particle run and parallax, then trail/line; within a kind, entities by entity index (`ecs::entity_order`, so `z_order` puts one in front) and the others in submission order. Lighting, the transition fade, post-processing and the UI follow; the UI is composited last, untouched by effects. Parallax layers need a negative z to sit behind entities at z 0. A map's tile chunks, y-sorted rows and tile objects sort as entities (`EntityDrawer` merges them in from `TileDrawer`); its image layers as `render` sprites.
 
 ## Resources
 

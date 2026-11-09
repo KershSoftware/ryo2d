@@ -2,7 +2,7 @@
 name: ryo-renderer
 description: Working on the wgpu renderer, shaders, and GPU batching.
 metadata:
-  version: 2.2.4
+  version: 2.3.0
 ---
 
 # Ryo2D Renderer Specialist
@@ -30,10 +30,10 @@ You help developers work on the rendering system.
 
 The world is read fresh every frame; there is no render cache to invalidate. Everything is gathered once, in world space, and sorted once; each camera then keeps what it sees. `present_frame` (after `PostUpdate`) does:
 
-1. Scenes' `Scene::render(gpu)` hooks fill the `BatchCollector` (particles, many-sprite effects), in world space; lights are gathered at their positions.
+1. Scenes' `Scene::render(gpu)` hooks fill the `BatchCollector` (many-sprite effects), in world space; lights are gathered at their positions.
 2. The render targets' GPU textures follow `RenderTargets`; the cameras are planned (`plan_cameras`): texture cameras, then window cameras, each by `order`. The first window camera draws straight into the scene image when it covers the window and clears; every other window camera gets an image of its own, sized to its viewport (`CameraImages`); a texture camera draws straight into its target, or, when its viewport covers only part of it, into an image of its own placed in that part after its passes.
 3. Each camera gets a uniform buffer (`CameraUniforms`, one `CameraGlobals` each: `view_proj`, `resolution` = its image size, `game_time`, `real_time`, `snap`), bound as group 0 by the batch, lights and shadows alike.
-4. The `Scene::render` sprites join the frame's `DrawList`; each `ParallaxLayer` is laid out for every camera on its layers from that camera's view (items for that camera alone, `only_camera`).
+4. The `Scene::render` sprites join the frame's `DrawList`, then the engine's particles (`ParticleDrawer`: one run item per emitter a camera on its `RenderLayers` sees, its particles blended between their last two steps); each `ParallaxLayer` is laid out for every camera on its layers from that camera's view (items for that camera alone, `only_camera`).
 5. One query over the renderables (plus `CompositeTile`) adds the entities, skipping quads no camera on the entity's layers can see. `Disabled` entities are skipped by the query itself.
 6. World text: `Text2d`s whose text, style or fonts changed are laid out again, and each camera that sees a block gets its glyphs (made at the size that camera sees) as glyph items for that camera alone.
 7. The UI: unless its image is kept, the UI renderer builds the frame's UI commands (rects, sprites, lines, text) into instances of its own in painter's order; it does not use the frame's draw list or the batch's cameras.
@@ -132,9 +132,9 @@ For screen-wide effects written in WGSL, use a custom post-process effect (see C
 
 ## Draw Order
 
-Everything in the world draws on the GPU in one z-sorted list, which each camera filters by `RenderLayers` and its view: entities (`Renderable`, `CompositeTile`, shadows), world text (`Text2d`), `Scene::render` sprites (particles), parallax layers and `Trail2D`/`Line2D` all sort by `z_order`. Equal z draws entity, then world text, then sprite (`Scene::render`, parallax), then trail/line. Within a kind, entities tie by entity index (`ecs::entity_order`), never by query order, which changes whenever an archetype is made; the other kinds go in submission order. To keep one sprite in front of another, give it a higher `z_order`. Consecutive drawables with equal draw states merge into one draw call, so 10,000 sprites cost a handful of draws. The UI is a separate layer on top: its own camera, image and composite step (below).
+Everything in the world draws on the GPU in one z-sorted list, which each camera filters by `RenderLayers` and its view: entities (`Renderable`, `CompositeTile`, shadows), world text (`Text2d`), `Scene::render` sprites, particle runs, parallax layers and `Trail2D`/`Line2D` all sort by `z_order`. Equal z draws entity, then world text, then sprite (`Scene::render`, particle runs, parallax), then trail/line. Within a kind, entities tie by entity index (`ecs::entity_order`), never by query order, which changes whenever an archetype is made; the other kinds go in submission order. To keep one sprite in front of another, give it a higher `z_order`. Consecutive drawables with equal draw states merge into one draw call, so 10,000 sprites cost a handful of draws. The UI is a separate layer on top: its own camera, image and composite step (below).
 
-Particles, parallax and trails default to z 0: give them an explicit z to sit behind or in front of entities; `Scene::render` sprites do not sit behind entities automatically. `z_order` picks the layer; `YSort` orders entities by y within their layer, after the layer's plain sprites; world text, sprites, particles and trails at the same z draw after the layer's entities. Debug shapes (`DebugDraw`, the overlays, `draw_skeleton`) are unlit on top at `i32::MAX`; the transition fade covers the world but not the UI. Nothing in the frame is drawn on the CPU (`Image::draw` is a CPU blit the dev windows use for their own pixel buffers).
+Particles (the effect's `z`, or the emitter's `with_z`), parallax and trails default to z 0: give them an explicit z to sit behind or in front of entities; `Scene::render` sprites do not sit behind entities automatically. `z_order` picks the layer; `YSort` orders entities by y within their layer, after the layer's plain sprites; world text, sprites, particles and trails at the same z draw after the layer's entities. Debug shapes (`DebugDraw`, the overlays, `draw_skeleton`) are unlit on top at `i32::MAX`; the transition fade covers the world but not the UI. Nothing in the frame is drawn on the CPU (`Image::draw` is a CPU blit the dev windows use for their own pixel buffers).
 
 ## The 2D Batch
 
@@ -188,22 +188,22 @@ Give parallax layers a negative z (e.g. -100..-20) so they sit behind entities a
 
 Games use `Scene::render`, called once per frame for every visible scene, bottom-up:
 
-<!-- with: struct Particle { x: f32, y: f32, rotation: f32, size: f32, z_order: i32 } -->
-<!-- self: particles: Vec<Particle>, particle_sprite: Handle<Image> -->
+<!-- with: struct Bullet { x: f32, y: f32, rotation: f32, size: f32, z_order: i32 } -->
+<!-- self: bullets: Vec<Bullet>, bullet_sprite: Handle<Image> -->
 ```rust
 fn render(&mut self, gpu: &mut GpuRenderContext) {
   // A texture uploads the first time a frame draws it, and lives while its image does
-  for particle in &self.particles {
+  for bullet in &self.bullets {
     // Centre and size in world units
     let instance = SpriteInstance::new()
-      .with_transform(particle.x, particle.y, particle.rotation, particle.size, particle.size);
-    let draw = SpriteDraw { z: particle.z_order, blend: BlendMode::Additive, ..Default::default() };
-    gpu.add_sprite(&self.particle_sprite, instance, draw);
+      .with_transform(bullet.x, bullet.y, bullet.rotation, bullet.size, bullet.size);
+    let draw = SpriteDraw { z: bullet.z_order, blend: BlendMode::Additive, ..Default::default() };
+    gpu.add_sprite(&self.bullet_sprite, instance, draw);
   }
 }
 ```
 
-`gpu` also carries `world` (read-only) and `camera()` (the main camera's `CameraView`; to fix something on screen, place it with `camera().screen_to_world`). `SpriteDraw` carries z, blend, filter, lighting, whether the instance has an effect, and an emission that multiplies the instance's. Positions are world space, on render layer 0; nothing here is interpolated, so move particles in `update` and draw where they are.
+`gpu` also carries `world` (read-only) and `camera()` (the main camera's `CameraView`; to fix something on screen, place it with `camera().screen_to_world`). `SpriteDraw` carries z, blend, filter, lighting, whether the instance has an effect, and an emission that multiplies the instance's. Positions are world space, on render layer 0; nothing here is interpolated, so move them in `update` and draw where they are. The engine's particles do not come through here: the engine steps and draws them (`ryo-particles`).
 
 ## WGSL Shaders
 
@@ -241,7 +241,7 @@ fn fs_base(in: VertexOutput) -> @location(0) vec4<f32> {
 
 The `tonemap` pass (`render/passes/tonemap.rs`, `core/tonemap.wgsl`) turns the linear HDR image into the display image, in this order: exposure (`Look::exposure` plus the auto-exposure EV), white balance (temperature, tint), contrast and saturation, the curve (`Tonemap`: `Soft` by default, `Clamp`, `Aces`, `AgX`), lift/gamma/gain on the display colour, then sRGB encoding and the LUT. `Tonemap::apply` in `look.rs` mirrors the shader on the CPU: change them together (`every_curve_on_the_gpu_matches_tonemap_apply` pins them). The WGSL `Look` struct names its field `auto_exposure` (`auto` is reserved). A `ColorLut` is a 3D texture that follows its sprite's hot reload. Auto-exposure (`exposure.rs`) runs two compute dispatches (a luminance histogram of the scene, then a reduction into a stored EV the tonemap binds); it adapts in real time. Games reach the look with `ctx.look()`.
 
-Emission multiplies a drawable's light: `Renderable::with_emission(4.0)` (also on `ParticleEmitter`, `Trail2D`, `Line2D`, `SpriteInstance` and `SpriteDraw`) makes it glow past white, and bloom picks up what exceeds its luminance threshold (default 1.0). A lit sprite is still darkened by lighting; add `with_lighting(false)` to glow in the dark. The sprite shader keeps it in the instance's `transform0.w` as `emission - 1`.
+Emission multiplies a drawable's light: `Renderable::with_emission(4.0)` (also on `ParticleEffect`, `Trail2D`, `Line2D`, `SpriteInstance` and `SpriteDraw`) makes it glow past white, and bloom picks up what exceeds its luminance threshold (default 1.0). A lit sprite is still darkened by lighting; add `with_lighting(false)` to glow in the dark. The sprite shader keeps it in the instance's `transform0.w` as `emission - 1`.
 
 ## Effect Stages
 
@@ -349,7 +349,7 @@ Write every buffer (`queue.write_buffer`) before beginning the render pass that 
 
 ## Tips
 
-- Trails, lines and particles sort with entities by z: give them one that matches what they should sit behind or in front of
+- Trails, lines and particle emitters sort with entities by z: give them one that matches what they should sit behind or in front of
 - Keep shaders simple for mobile compatibility
 - Instance buffers are more efficient than individual draws
 

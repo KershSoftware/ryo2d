@@ -115,7 +115,7 @@ Items from 4f on were copied from their execution records. Items from earlier su
   - **Sorting on a storey:** a character standing on a y-sorted storey in the back half of a cell is cut at the waist by its own cell's block (rows sort at cell middles). The demo sorts its knight half a cell down while lifted. An engine rule needs the entity's floor in the row comparison, or breaks bridges (a character under a bridge must stay behind its deck): a later lever.
   - **Physics pays about 1% in a scene without floors** (the A/B in the record). Take the floor read out of the per-collider resync, and skip the floor systems, while no `Floor` exists.
   - A light brightens every floor under it (one light image per camera); a light on every floor draws at ground height; shadows draw at the light's lift.
-  - Lines and the F2 overlay stay in ground space; particles collide by layer, not floor; a burst spawned and fired in one update fires low.
+  - Lines and the F2 overlay stay in ground space; particles collide by layer, not floor.
   - Floor searches are synchronous only; a link ignores a stair cell's own cost, so differing `Difficult` costs per floor can still cross a run twice.
   - A cell whose only tile on a storey is a class tile is a hole in its edge; picking and the footprint disagree on hidden layers and class tiles.
   - Any stair cell change rebuilds every run of the map (14.7 µs at 64 runs, about 60 at 256): a run's ends read the storey above, so a per-layer rebuild would be wrong.

@@ -2,7 +2,7 @@
 name: ryo-messages
 description: Messages - typed, buffered notifications between scenes and systems; the engine's message types and how to define, write and read your own.
 metadata:
-  version: 2.8.0
+  version: 2.9.0
 ---
 
 # Ryo2D Messages
@@ -113,7 +113,7 @@ A reader ordered after the writer in the same schedule sees the message the same
 | Tile maps (`MapEvent`: a map landed, followed a saved file, or failed; `ChunkEvent`: a streamed map's chunk landed or unloaded) | `PreUpdate`, after the asset pump | this frame's `ui` and steps |
 | The UI pass (`UiReloaded`, then `UiListBind`, before any tree is drawn; `UiEvent` as each scene's node trees are walked, or after `ui` for embedded trees) | once a frame, before the fixed steps | this frame's `ui` and steps |
 | The saves (`SaveFinished` for each save and delete finished since the last frame; `SettingsSaveFailed` for a failed `system.json` write) | `PreUpdate`, once a frame | this frame's `ui` and steps |
-| `ParticleSystem::update` (`ParticleCollision`) | where the scene calls it | after that call |
+| The particle step (`ParticleCollision`, `EmitterFinished`) | each fixed step, in `FixedSet::Particles`: after `Scene::update`, physics and propagation; an `unscaled` emitter's once a frame, in `PostUpdateSet::Extract` | the next step's `update` |
 
 The trigger behaviours (`Pickup`, `KillZone`, `Checkpoint`) read the previous step's `TriggerEntered` in `FixedSet::Movement`, so `PickedUp`, `Killed` and `CheckpointReached` come one step after the overlap, and `update` reads them one step after that. While physics is paused (`PhysicsPaused`) no collision or trigger messages are written; the behaviours keep running and still act on an entry that arrived just before the pause.
 
@@ -150,7 +150,8 @@ All are in the prelude and registered at engine build; `AssetEvent<T>` is regist
 | `CheckpointReached` | `checkpoint`, `entity` | a `Checkpoint` moved `entity`'s `Respawn` point |
 | `SquashStretchStarted` / `SquashStretchFinished` | `entity` | a squash starts / recovers |
 | `AssetEvent<T>` (one type per asset type: `AssetEvent<Image>`, `AssetEvent<Font>`, ...) | `Added { id }`, `Modified { id }`, `Removed { id }`, `Failed { id, error }`, `ReloadFailed { id, error }` (`id: AssetId<T>`, `error: Arc<AssetError>`) | an asset landed in its store (or was added in code), changed (reloaded, a dependency reloaded, or `get_mut`), was freed (its last handle dropped, if it had landed), did not load (it loads again when its file changes), or failed to reload and kept its last good value. An asset's events come in the order its changes happened (see `ryo-assets`) |
-| `ParticleCollision` | `emitter_entity`, `collider_entity`, `position_x/y`, `normal_x/y`, `velocity_x/y` | a particle hits a collider (see `ryo-particles`) |
+| `ParticleCollision` | `emitter_entity`, `collider_entity`, `position_x/y`, `normal_x/y`, `velocity_x/y` | a particle hits a collider, in the particle step (see `ryo-particles`) |
+| `EmitterFinished` | `entity` | an emitter is not playing (stopped, or its one cycle over) and its last particle died, once per finish, in the step it finishes; `despawn_when_finished` despawns the entity in the next step, and an unscaled emitter can do both within one frame (see `ryo-particles`) |
 | `MapEvent` | `Spawned { map }`, `Reloaded { map }`, `Failed { map, error: Arc<AssetError> }` | a tile map landed whole (its layers, objects, colliders and shadows arrived this frame), followed a saved file, or did not load or land (once per failure; see `ryo-tilemap`) |
 | `FloorChanged` | `entity`, `from: Floor`, `to: Floor` | a `Climber` changed storey halfway along a tile map's stairs (onto the upper storey halfway up, back down halfway down), once per change; that step's physics already has it on `to` (see `ryo-tilemap`, Stairs) |
 | `ChunkEvent` | `Loaded { map, chunk: IVec2 }`, `Unloading { map, chunk, changed: Option<ChunkTiles> }` | a streamed map's chunk landed this frame, its class tiles in, or unloaded this frame: by the time it is read the chunk's tiles, class tiles and `ChunkOwned` entities are gone (its colliders and shadows within the frame), and `changed` holds its tiles when the player changed it since it landed, else `None`; in a frame that does both, a map's `Loaded` come before its `Unloading` (see `ryo-tilemap`, Streaming an endless world) |

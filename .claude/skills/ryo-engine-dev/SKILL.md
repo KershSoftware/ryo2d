@@ -2,7 +2,7 @@
 name: ryo-engine-dev
 description: Working on the Ryo2D engine - the frame's phases, module map, resources, public API, crates and testing.
 metadata:
-  version: 2.6.0
+  version: 2.7.0
 ---
 
 # Ryo2D Engine Developer
@@ -61,7 +61,8 @@ Engine::frame
 │   ├─ Physics        one system running PhysicsSchedule: forget, track disabled, propagate, register,
 │   │                 sync colliders, push, move characters, sync joints, step, read back, messages,
 │   │                 trigger contents
-│   ├─ Transforms     propagation
+│   ├─ Transforms     propagation, then the tile maps' floor lift
+│   ├─ Particles      step_particles: game-time emitters spawn, their particles move and die
 │   └─ Trails         trail point recording; later debug shapes last one frame
 ├─ settings           Engine::apply_settings: a changed Settings goes to the mixer, the window
 │                     request, vsync and the FPS overlay; Engine::save_settings: the changed
@@ -69,11 +70,12 @@ Engine::frame
 ├─ Update             UpdateSet::Game: the scenes' own Update schedules; builder systems by default
 ├─ PostUpdate         tile maps' occluder sync, then Transforms (propagation) → Camera (shake on
 │                     real time, every CameraView)
-│                     → Extract (parallax auto-scroll, timed effects, text reveals); after Camera,
+│                     → Extract (parallax auto-scroll, timed effects, text reveals, unscaled particle
+│                     emitters on real time); after Camera,
 │                     audio_system: voice commands, mixer rebuilds, reloads, music, the listener
 │                     and emitters, the game clock's holds and rates, the mock backend's render
 ├─ render             present_frame (engine/extract.rs): Scene::render (GPU batches), queries
-│                     the world into the draw list (world space, sorted once: sprites, entities,
+│                     the world into the draw list (world space, sorted once: sprites, particle runs, entities,
 │                     tile maps' visible chunks, built into the batch's chunk store when changed,
 │                     trails and lines as polylines, world text; parallax and debug shapes per camera),
 │                     the UI: UI commands, then the UI renderer (its own instances), then the UI image,
@@ -96,7 +98,7 @@ Engine::frame
 
 | In the world (resources) | Engine-owned (fields of `Engine`) |
 |--------------------------|-----------------------------------|
-| `Time`, `Input`, `ScreenMapping`, `AssetServer` and one `Assets<T>` per asset type, `AudioEngine` (kira's manager, the buses and the voices; `ctx.audio()`), `SaveService` (the storage, the version chains and the save thread; `ctx.saves()`), `Settings` (the player's settings; `ctx.settings()`), `SettingsWriter` (when the game keeps settings), `EffectsManager`, `LightingSettings`, `Look`, `WindowRequest`, `CursorRequest`, `WindowInfo`, `RenderPipeline`, `RenderTargets`, `Fonts`, `TextIcons`, `TextEffects`, `Gpu` (after GPU init), `PhysicsPaused`, `PhysicsConfig`, `Physics`, `CommandRegistry`, `FallbackErrorHandler`, `Messages<T>` per type | The window, the wgpu renderer (with the camera images), the sprite textures, the 2D batch and the lighting renderer, the camera uniforms, the draw list, the tile drawer (`render/tiles.rs`; the padded tilesets it shares with map landings are the crate's `PaddedCache` resource), the text engine (layout cache), the UI's image sizes (`ImageSizes`, the image store's follower) and the frame's UI commands, console state, debug config and overlays, dev windows, gilrs, capture state |
+| `Time`, `Input`, `ScreenMapping`, `AssetServer` and one `Assets<T>` per asset type, `AudioEngine` (kira's manager, the buses and the voices; `ctx.audio()`), `ParticleStore` (the emitters' pools, the live count and the budget; `ctx.particles()`), `SaveService` (the storage, the version chains and the save thread; `ctx.saves()`), `Settings` (the player's settings; `ctx.settings()`), `SettingsWriter` (when the game keeps settings), `EffectsManager`, `LightingSettings`, `Look`, `WindowRequest`, `CursorRequest`, `WindowInfo`, `RenderPipeline`, `RenderTargets`, `Fonts`, `TextIcons`, `TextEffects`, `Gpu` (after GPU init), `PhysicsPaused`, `PhysicsConfig`, `Physics`, `CommandRegistry`, `FallbackErrorHandler`, `Messages<T>` per type | The window, the wgpu renderer (with the camera images), the sprite textures, the 2D batch and the lighting renderer, the camera uniforms, the draw list, the particle drawer, the tile drawer (`render/tiles.rs`; the padded tilesets it shares with map landings are the crate's `PaddedCache` resource), the text engine (layout cache), the UI's image sizes (`ImageSizes`, the image store's follower) and the frame's UI commands, console state, debug config and overlays, dev windows, gilrs, capture state |
 | Non-send `SceneHost` (the scene stack), taken out by the scene systems while they run | |
 
 - `init_world_resources` (`engine/mod.rs`) inserts the resources when the engine is built, windowed or headless; `Gpu` follows in `init_gpu`.

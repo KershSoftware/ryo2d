@@ -88,9 +88,11 @@ pub(crate) struct Pending {
 
 /// A [`ParticleEmitter`] finished: it is not playing (stopped, or its one
 /// cycle over) and its last particle has died. Sent once per finish, by the
-/// step it finishes in; `play` and `restart` arm it again. An emitter made
-/// `despawn_when_finished` is still there in the step after (a scene's
-/// `update` can read it), and is despawned by that step's particles.
+/// step it finishes in; `play` and `restart` arm it again. A game-time
+/// emitter made `despawn_when_finished` is still there in the step after
+/// (a scene's `update` can read it), and is despawned by that step's
+/// particles. An unscaled one can do both within one frame, so its entity
+/// may be gone when this is read.
 #[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EmitterFinished {
   /// The emitter's entity
@@ -196,7 +198,10 @@ impl ParticleEmitter {
 
   /// Adds `count` particles in its next step, whatever its effect emits
   /// and whether or not it plays, within the effect's `max_particles` and
-  /// the engine's budget (the rest are dropped).
+  /// the engine's budget (the rest are dropped). An emitter made
+  /// [`stopped`](Self::stopped) never reports [`EmitterFinished`] and never
+  /// despawns for it: only [`play`](Self::play) and
+  /// [`restart`](Self::restart) arm that.
   pub fn burst(&mut self, count: u32) {
     self.pending.burst = self.pending.burst.saturating_add(count);
   }

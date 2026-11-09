@@ -260,8 +260,8 @@ impl SubEmitter {
 pub struct ParticleEffect {
   /// Particles per second, on top of the bursts
   pub rate: f32,
-  /// Particles per pixel the emitter moves, on top of the rate, spread
-  /// along its move (none across a teleport)
+  /// Particles per pixel the emitter moves, on top of the rate: a `World`
+  /// effect's spawns spread along its move (none across a teleport)
   pub rate_per_distance: f32,
   /// Particles released at set moments of each cycle
   pub bursts: Vec<Burst>,
@@ -349,7 +349,8 @@ pub struct ParticleEffect {
   /// that tells of it (as a [`ParticleCollision`](super::ParticleCollision)
   /// would, whether or not events are on), if any
   pub on_collision: Option<SubEmitter>,
-  /// Render layer
+  /// The bits an attractor's layer mask tests (a camera's layers are the
+  /// emitter entity's `RenderLayers`)
   pub layer: u32,
   /// Fixed random seed, so the effect repeats
   pub seed: Option<u64>,
@@ -676,7 +677,7 @@ impl ParticleEffect {
     self
   }
 
-  /// Sets the render layer.
+  /// Sets the bits an attractor's layer mask tests.
   pub fn with_layer(mut self, layer: u32) -> Self {
     self.layer = layer;
     self

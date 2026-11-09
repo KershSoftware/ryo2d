@@ -2,7 +2,7 @@
 name: ryo-lighting
 description: 2D lighting - Light2D and LightOccluder2D entities (polygons and open chains), ctx.lighting() for ambient, atmosphere and on/off, shadows (tile maps' too), lights and shadows on storeys (Floor), volumetric beams, sprite shadows and ambient occlusion.
 metadata:
-  version: 2.4.0
+  version: 2.5.0
 ---
 
 # Ryo2D Lighting Specialist
@@ -204,7 +204,7 @@ ctx.effects().disable_ambient_occlusion();
 
 ## What Gets Lit
 
-The world (entities, `Scene::render` GPU sprites, trails and lines) is drawn first and lit. Anything with `.with_lighting(false)` (a `Renderable`, `Trail2D`, `Line2D`, particles) draws at full brightness over the lit scene (lasers, magic, glowing pickups); post-processing still applies. Give it `with_emission(n)` with n above 1 to glow past white and feed bloom. The UI is never lit.
+The world (entities, `Scene::render` GPU sprites, particles, trails and lines) is drawn first and lit. Anything with `.with_lighting(false)` (a `Renderable`, `Trail2D`, `Line2D`, or a `ParticleEffect`, whose `lit` field sets it for all its particles) draws at full brightness over the lit scene (lasers, magic, glowing pickups); post-processing still applies. Give it `with_emission(n)` with n above 1 to glow past white and feed bloom. The UI is never lit.
 
 ## Pipeline
 

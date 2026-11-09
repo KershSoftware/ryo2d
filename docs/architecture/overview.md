@@ -32,7 +32,7 @@ The world is Ryo2D's ECS: `bevy_ecs` 0.20, exposed through `ryo2d::ecs` and the 
 
 | Resources (in the world) | Engine-owned |
 |---|---|
-| `Time`, `Input`, `ScreenMapping`, `AssetServer` and one `Assets<T>` per asset type, `AudioEngine`, `SaveService` (`ctx.saves()`), `Settings` (`ctx.settings()`) and its `SettingsWriter`, `EffectsManager`, `LightingSettings`, `Look`, `WindowRequest`, `CursorRequest`, `WindowInfo`, `RenderPipeline`, `RenderTargets`, `Gpu` (once the GPU is up), `Physics`, `PhysicsConfig`, `PhysicsPaused`, the console's `CommandRegistry`, one `Messages<T>` per message type, and the game's own resources | the window, the renderers (sprite, lighting, trail, compositor, post-process, the tile drawer), gilrs, the dev windows, frame capture, the console overlay and the debug flags; the scene stack sits in the world as a non-send value that only the scene systems take out |
+| `Time`, `Input`, `ScreenMapping`, `AssetServer` and one `Assets<T>` per asset type, `AudioEngine`, `ParticleStore` (`ctx.particles()`), `SaveService` (`ctx.saves()`), `Settings` (`ctx.settings()`) and its `SettingsWriter`, `EffectsManager`, `LightingSettings`, `Look`, `WindowRequest`, `CursorRequest`, `WindowInfo`, `RenderPipeline`, `RenderTargets`, `Gpu` (once the GPU is up), `Physics`, `PhysicsConfig`, `PhysicsPaused`, the console's `CommandRegistry`, one `Messages<T>` per message type, and the game's own resources | the window, the renderers (sprite, lighting, trail, compositor, post-process, the tile and particle drawers), gilrs, the dev windows, frame capture, the console overlay and the debug flags; the scene stack sits in the world as a non-send value that only the scene systems take out |
 
 In 0.20 a resource is a component on a hidden entity marked `IsResource`, so engine sweeps over "every entity" filter it out. Cameras are entities too (`Camera2d` + `Transform`); the main one (`MainCamera`) is spawned with the world and survives world cleanup.
 
@@ -69,17 +69,19 @@ Engine::frame()
  │        Physics ...... one system: forget removed, track disabled, propagate, register bodies,
  │                       sync colliders, push changes, move characters, sync joints, step,
  │                       read back, messages, trigger contents
- │        Transforms ... propagate GlobalTransform
+ │        Transforms ... propagate GlobalTransform, then the tile maps' floor lift
+ │        Particles .... game-time emitters spawn, their particles move and die
  │        Trails ....... record trail points
  ├─ settings ..... a changed Settings applies (volumes to the mixer, the window's size and mode
  │                 to its request, vsync, the FPS overlay); a second after the last change
  │                 the settings writer queues system.json on the save service
  ├─ Update ....... UpdateSet::Game: the scenes' own per-frame systems; builder ones by default
  ├─ PostUpdate ... tile maps' occluder sync, then Transforms (propagation), Camera (shake, every
- │                 camera's view), Extract (timed effects);
+ │                 camera's view), Extract (timed effects, unscaled particle emitters on real time);
  │                 audio_system after Camera (voices, buses, music, listener and emitters, game clock)
  ├─ render ....... Scene::render, query the world into the draw list (tile maps' visible chunks
- │                 from the batch's chunk store), plan the cameras, run the RenderPipeline
+ │                 from the batch's chunk store; one run per visible particle emitter), plan
+ │                 the cameras, run the RenderPipeline
  └─ Last ......... physics removal and re-enable bookkeeping, clear change trackers
 ```
 
@@ -137,7 +139,7 @@ SceneManager (engine-owned stack over the one shared world)
 
 ## Messages
 
-- A message type derives `Message`. The engine's (`CollisionStarted`/`Stopped`, `TriggerEntered`/`Exited`, `ContactForce`, `JointBroken`, `MovementEvent`, `PickedUp`, `Killed`, `CheckpointReached`, `TweenStarted`/`Completed`, `KnockbackStarted`/`Finished`, `SquashStretchStarted`/`Finished`, `ParticleCollision`, `MapEvent`, `UiEvent`, `UiReloaded`, `UiListBind`) are registered at build, and each asset type's `AssetEvent<T>` with its type; a game's register with `EngineBuilder::add_message::<T>()` or on the first `ctx.write_message`.
+- A message type derives `Message`. The engine's (`CollisionStarted`/`Stopped`, `TriggerEntered`/`Exited`, `ContactForce`, `JointBroken`, `MovementEvent`, `PickedUp`, `Killed`, `CheckpointReached`, `TweenStarted`/`Completed`, `KnockbackStarted`/`Finished`, `SquashStretchStarted`/`Finished`, `ParticleCollision`, `EmitterFinished`, `MapEvent`, `UiEvent`, `UiReloaded`, `UiListBind`) are registered at build, and each asset type's `AssetEvent<T>` with its type; a game's register with `EngineBuilder::add_message::<T>()` or on the first `ctx.write_message`.
 - Buffers advance in `First`, but only once a fixed step has run since the last advance: a message stays readable until two fixed steps have run after it was written, so every reader, per-frame or fixed-step, sees it at any frame rate. While no fixed step runs (the game clock paused) nothing is dropped.
 - Systems use `MessageWriter<T>` / `MessageReader<T>`; scenes use `ctx.write_message(m)` and `ctx.messages::<T>()`, which keeps a cursor per scene so each scene sees each message once.
 - Modules define no message type they do not write; games define their own notifications.
@@ -178,7 +180,7 @@ Rapier2D 0.36 behind the public `Physics` resource, which mirrors the ECS: compo
 
 ## Rendering
 
-`present_frame` builds each frame from the world by query; there is no render cache but one, the tile chunks: each 32 x 32-cell chunk of a tile layer keeps its instances in the batch's chunk store, built again only when its tiles or look change, while where it draws is read every frame. Drawables are gathered once, in world space, and sorted once: the scenes' `Scene::render` sprites, every visible `Renderable` (at its interpolated `GlobalTransform`, placed by its `Anchor`), trails and lines (as joined polylines), lights and occluders; parallax layers and debug shapes are laid out per camera. Then each camera keeps what it sees (its `RenderLayers`, its view's bounds) and one 2D batch (`render/batch`) lays it into draws, and the pass-based `RenderPipeline` (`RenderPipeline::default_2d()`) runs on one command encoder with one submit: the camera passes once per camera, then the frame passes once. Everything is drawn on the GPU through each camera's view-projection matrix, the UI included: it is recorded as commands, built by a UI renderer of its own (`render/ui_renderer`) into an image of its own through a UI camera, and composited last.
+`present_frame` builds each frame from the world by query; there is no render cache but one, the tile chunks: each 32 x 32-cell chunk of a tile layer keeps its instances in the batch's chunk store, built again only when its tiles or look change, while where it draws is read every frame. Drawables are gathered once, in world space, and sorted once: the scenes' `Scene::render` sprites, one run per visible particle emitter, every visible `Renderable` (at its interpolated `GlobalTransform`, placed by its `Anchor`), trails and lines (as joined polylines), lights and occluders; parallax layers and debug shapes are laid out per camera. Then each camera keeps what it sees (its `RenderLayers`, its view's bounds) and one 2D batch (`render/batch`) lays it into draws, and the pass-based `RenderPipeline` (`RenderPipeline::default_2d()`) runs on one command encoder with one submit: the camera passes once per camera, then the frame passes once. Everything is drawn on the GPU through each camera's view-projection matrix, the UI included: it is recorded as commands, built by a UI renderer of its own (`render/ui_renderer`) into an image of its own through a UI camera, and composited last.
 
 ```
 gather once (world space, sorted) ──→ cameras in render order: texture cameras, then window cameras (by order)
@@ -199,7 +201,7 @@ The world is drawn in linear HDR: every colour in the API is sRGB and is decoded
 | Pass (`pass_ids`) | Scope | Draws |
 |------|-------|-------|
 | `clear` | camera | Clears the camera's image (background, a colour, or transparent so the cameras below show) |
-| `world` | camera | The camera's lit batch draws: entities, `Scene::render` sprites (particles), parallax, trails, lines and debug shapes, in one z-sorted list |
+| `world` | camera | The camera's lit batch draws: entities, `Scene::render` sprites, the engine's particles, parallax, trails, lines and debug shapes, in one z-sorted list |
 | `lighting` | camera | 2D lighting with point lights and shadows, in the camera's own light buffers |
 | `unlit_world` | camera | Anything `with_lighting(false)` (sprites, particles, trails, lines) and debug shapes, by z |
 | `cameras` | frame | Window cameras' own images into their viewports, in order |
@@ -215,7 +217,7 @@ Games reach the pipeline through `ctx.render_pipeline()` to toggle built-in pass
 
 - **Cameras:** `Camera2d { zoom, projection, viewport, order, target, clear }` on an entity with a `Transform`; the engine computes each camera's `CameraView` (view-projection, bounds) from its interpolated transform and shake every frame. Every camera has one uniform buffer that the batch, lights and shadows all draw through, so shake, rotation and zoom move them together. Split screen and minimaps are window cameras with viewports; `RenderTargets` gives textures that texture cameras render into (first, so a sprite showing one shows this frame's image) and `Renderable::render_target` shows.
 - **Textures:** every texture has one `TextureId` in the texture registry (images by asset id, named pixel textures, render targets). Sprite images live in shared atlas pages with four mip levels (8-pixel borders on an 8-pixel grid, levels averaged in linear light); large images get textures of their own with full mip chains; render targets are `Rgba16Float` pages of their own (linear light). Two samplers (nearest; trilinear) and a bind group per page and sampler, made with the page.
-- **Batching:** one batch with two streams: instanced quads (128 bytes: affine world transform, UV rect, tint, effect parameters, UV bounds) and indexed triangles (trails, lines and debug shapes). Consecutive drawables with equal draw states (page, shader, blend mode, sampling) merge into one draw; at equal z an entity draws before a `Scene::render` sprite, then trails and lines. Each camera's visible quads get a range of the instance buffer.
+- **Batching:** one batch with two streams: instanced quads (128 bytes: affine world transform, UV rect, tint, effect parameters, UV bounds) and indexed triangles (trails, lines and debug shapes). Consecutive drawables with equal draw states (page, shader, blend mode, sampling) merge into one draw; at equal z an entity draws before a `Scene::render` sprite or a particle run, then trails and lines. Each camera's visible quads get a range of the instance buffer.
 - **Blend and filter modes:** `BlendMode::{Alpha, Premultiplied, Additive, Multiply, Screen}` and `Filter::{Default, Nearest, Linear}` on sprites, particles, batch sprites, parallax layers, trails and lines. Every batch shader writes premultiplied colour, so each mode is one fixed blend state; `Filter::Default` is nearest for pixel art and linear otherwise.
 - **World text** draws are batch items too: glyphs from the glyph pages (`TextMask`, `TextColor`, `TextMsdf`) share the batch's streams, sorting and merging. The UI has a renderer of its own: one instance format for rects, glyphs, sprites and line triangles, one pipeline that clips in the shader, and a draw only where a bound texture changes. See [Text and UI](#text-and-ui).
 - **Bind groups** are made with the resources they bind (per camera, per texture page and sampler, or cached by the frame resources a pass binds), never per frame; tests count them.
@@ -292,6 +294,10 @@ ctx.audio().play(&sound) -> Voice -> its bus's track -> .. -> master -> device (
 - **No device** (headless, or a device that failed to open): the same mixer runs silently on kira's mock backend, rendered by the frame's time; headless runs are seeded, so tests repeat and assert on the audio log. **The web** opens the device at the player's first click, tap or key.
 
 Details: `src/core/audio/AGENTS.md`; usage: the `ryo-audio` skill; measurements: `docs/backlog/audio.md`.
+
+## Particles
+
+A game describes a kind of particle once, as a `ParticleEffect` asset (built in code or read from a hot-reloading `.particles.ron` file), and places it with `ParticleEmitter` entities; `ctx.particles().play_at` plays one once where something happened. The engine does the rest, with no per-frame call from the game. One `step_particles` system in `FixedSet::Particles`, after propagation and floors, runs every game-time emitter in entity order, each from its own random stream: spawns, forces, attractors, collisions through a grid of the colliders, sub-emitters, removal, then `ParticleCollision` and `EmitterFinished`. Unscaled emitters step once a frame on real time, in `PostUpdateSet::Extract`. A game-time emitter freezes with its scene, as sounds do. Each frame `ParticleDrawer` pushes one run per emitter a camera sees into the draw list, its particles blended between their last two steps. The simulation runs on the CPU, one pool of field-by-field arrays per emitter, within a budget of live particles (`EngineBuilder::particle_budget`, 20,000 by default). See `src/core/particles/AGENTS.md`; measured figures and limits are in `docs/backlog/particles.md`.
 
 ## Tile Maps
 
@@ -458,7 +464,8 @@ Client-server multiplayer with listen-server support. See [the network architect
 | `graphics/` | Images and sprites, animation, cameras and shake, render targets, render layers, the screen mapping, parallax, tiled and composite rendering, the texture registry and atlas, the sprite renderer |
 | `render/` | The render pipeline, passes, the draw list, the frame's camera plan, the 2D batch (`batch/`: keys, planning, pipelines, polylines) and debug drawing |
 | `shaders/` | The engine's WGSL and its shared includes, post-process effects and custom shaders |
-| `lighting/`, `trail/`, `particles/`, `skeleton/` | Feature renderers (lighting) and components (trails and lines, particles, skeletons) |
+| `lighting/`, `trail/`, `skeleton/` | Feature renderers (lighting) and components (trails and lines, skeletons) |
+| `particles/` | Particle effects (assets), emitters, the fixed step and the unscaled pass, collisions and attractors, sub-emitters, the drawer |
 | `tilemap/` | Tile maps: the data model, the Tiled and LDtk readers, maps spawned as entities and landed off the main thread, reads and edits with Wang terrain, collision and occluders kept in step with the tiles, worlds, hot reload; drawn by `render/tiles.rs` |
 | `physics/` | Rapier integration, colliders, bodies, joints, the character controller, one-way colliders, triggers, tile colliders |
 | `gameplay/` | Movement input and presets, knockback, trigger behaviours |

@@ -1,8 +1,8 @@
 ---
 name: ryo-assets
-description: "Assets - loading images, SVG, shaders, fonts, UI files, themes, audio (clips, sound and music definitions, the mixer) and tile maps (Tiled maps, tilesets and worlds, LDtk projects) through the registry (load_now and load), asset paths, handles and what keeps an asset alive, load states and loading screens, embedded assets with add, hot reload and AssetEvent, custom asset types and loaders, and the debug checker."
+description: "Assets - loading images, SVG, shaders, fonts, UI files, themes, audio (clips, sound and music definitions, the mixer), particle effects and tile maps (Tiled maps, tilesets and worlds, LDtk projects) through the registry (load_now and load), asset paths, handles and what keeps an asset alive, load states and loading screens, embedded assets with add, hot reload and AssetEvent, custom asset types and loaders, and the debug checker."
 metadata:
-  version: 1.5.0
+  version: 1.6.0
 ---
 
 # Ryo2D Assets
@@ -43,7 +43,7 @@ fn on_enter(&mut self, ctx: &mut SceneContext) {
 
 ### Paths
 
-Asset paths are relative to the project's `assets/` folder (an example's own `assets/`): `"player.png"` is `assets/player.png`, `"ui/menu.ui.ron"` is `assets/ui/menu.ui.ron`. Paths inside asset files (a UI file's imports and images, a theme's skin images and sounds, a bitmap font's sheet, a sound definition's clips, a music definition's intro and loop) are asset paths too. Tiled and LDtk files are the exception: they write paths relative to their own folder (`../images/ground.png` in `maps/level1.tmx`), as the editors save them, and the loaders read them so. `\` becomes `/`, `.` segments go and `..` resolves within the path; an absolute path, or one that leaves `assets/`, fails with `AssetError::InvalidPath`.
+Asset paths are relative to the project's `assets/` folder (an example's own `assets/`): `"player.png"` is `assets/player.png`, `"ui/menu.ui.ron"` is `assets/ui/menu.ui.ron`. Paths inside asset files (a UI file's imports and images, a theme's skin images and sounds, a bitmap font's sheet, a sound definition's clips, a music definition's intro and loop, a particle effect's image and sub-effects) are asset paths too. Tiled and LDtk files are the exception: they write paths relative to their own folder (`../images/ground.png` in `maps/level1.tmx`), as the editors save them, and the loaders read them so. `\` becomes `/`, `.` segments go and `..` resolves within the path; an absolute path, or one that leaves `assets/`, fails with `AssetError::InvalidPath`.
 
 ### Types and files
 
@@ -59,6 +59,7 @@ Asset paths are relative to the project's `assets/` folder (an example's own `as
 | `Sound` | `sound.ron`: how a sound plays (clips and their weights, bus, level, pitch, limits, fades, spatial settings), its clips loaded with it (`ryo-audio`) | |
 | `Music` | `music.ron`: an intro and a loop, or one clip with a loop region (`ryo-audio`) | |
 | `Mixer` | `mixer.ron`: the buses, effects, sends, snapshots and ducking; the engine loads `audio/mixer.mixer.ron` (`MIXER_PATH`) at start if the game has one (`ryo-audio`) | |
+| `ParticleEffect` | `particles.ron`: how a kind of particle is born, moves, looks and ends (`ryo-particles`), its image and sub-effects loaded with it | |
 | `TileMap` | `tmx`, `tmj`: a Tiled map of any grid (orthogonal, isometric, staggered, hexagonal or oblique), of a fixed size or infinite (its chunks in every layer format), its tilesets, images, templates and the Tiled project loaded or read with it (`ryo-tilemap`); spawn it with a `MapRoot` | |
 | `Tileset` | `tsx`, `tsj`: a Tiled tileset, its images loaded with it | |
 | `LdtkProject` | `ldtk`: an LDtk project, its `.ldtkl` level files and tileset images loaded with it | |
@@ -88,7 +89,7 @@ if let Some(backdrop) = &self.backdrop
 
 **An asset lives while a handle to it does.** When the last handle drops, the next pump frees it (`AssetEvent::Removed` too, if it was in its store; a load that failed or never landed is freed with no event), and its texture goes with it.
 
-- Hold what a scene uses in the scene (`backdrop: Option<Handle<Image>>`) or in what uses it: a `Renderable` holds its image, a `ParticleEmitter` its sprite, a node tree its UI file, a font role its font, a followed theme its theme. Leaving the scene drops them, and what nothing else holds is freed at the next pump; an asset the next scene loads in its `on_enter` is kept, as the scene enters before that pump runs.
+- Hold what a scene uses in the scene (`backdrop: Option<Handle<Image>>`) or in what uses it: a `Renderable` holds its image, a `ParticleEmitter` its effect (and the effect its image), a node tree its UI file, a font role its font, a followed theme its theme. Leaving the scene drops them, and what nothing else holds is freed at the next pump; an asset the next scene loads in its `on_enter` is kept, as the scene enters before that pump runs.
 - Hold what the whole game uses in a resource, which outlives every scene:
 
   ```rust
@@ -232,6 +233,7 @@ In debug builds with a window the engine watches `assets/`: a saved file reloads
 - **A saved shader keeps drawing its last version until the new one is compiled.** A shader already drawn compiles its new version on a thread of the renderer's own (about 70 to 130 ms of GPU compile on Metal for new WGSL) and draws it from the start of the frame after, so a save brings no hitch (frames cost about 0.1 ms more while it compiles, as measured) and nothing draws plain meanwhile. A shader first drawn after the save, or one with no version that ever drew, compiles in its first frame. On the web there are no threads to compile on, so there the next frame compiles it.
 - The assets that hold a reloaded one are checked again: a UI file importing the saved file, a theme whose skin image changed, a bitmap font whose sheet did, a sound definition whose clip did.
 - **Audio reloads into what is playing:** a saved clip switches its loops and the music playing it where they are, a saved definition retunes its playing loops, and a saved mixer rebuilds the buses with the loops carrying on (`ryo-audio`, Hot reload).
+- **Particle effects reload into what is playing:** a saved `.particles.ron` changes live particles' over-life values, forces, look and collisions at the next step, and its spawn values apply to new particles (`ryo-particles`, Effect files).
 - **Tile maps follow their files:** a saved map, tileset, template, Tiled project or LDtk project or level file brings every map spawned from it to the save in the frame it lands, keeping the entities, objects and game state the save left alone, and sends `MapEvent::Reloaded` (`ryo-tilemap`, Hot reload).
 - A reload that fails (a typo in a file) keeps the last good value and warns once, naming the file and, where its format gives one, the line and column: ``could not load "shaders/glow.wgsl": 16:3: expected `;`, found "let"``. Fix the file and save again. A shader is compiled as its file loads, so a `.wgsl` file that does not compile fails as any other file does. A removed file keeps its asset as it was.
 - `ctx.assets().server().reload(path)` asks for the same reload by hand (a headless test, a console command).

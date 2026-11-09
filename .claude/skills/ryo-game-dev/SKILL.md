@@ -2,7 +2,7 @@
 name: ryo-game-dev
 description: Building games with Ryo2D - scenes, entities, queries, systems, resources, messages, time and input.
 metadata:
-  version: 2.10.0
+  version: 2.11.0
 ---
 
 # Ryo2D Game Developer
@@ -121,7 +121,7 @@ Every method has a default; implement what the scene needs.
 | `on_enter(ctx)` | The scene becomes active: spawn entities, set the camera, load sounds, add systems |
 | `update(ctx, dt) -> SceneAction` | Every fixed step (`dt` is the constant timestep) while the scene is active |
 | `ui(ui, ctx) -> SceneAction` | Once per frame, **before** the fixed steps, for every visible scene bottom-up: draw UI, handle UI input |
-| `render(gpu)` | Once per frame for visible scenes: GPU-batched extras (particles, many-sprite effects) |
+| `render(gpu)` | Once per frame for visible scenes: GPU-batched extras (many-sprite effects) |
 | `on_pause(ctx)` / `on_resume(ctx, returned)` | Another scene is pushed on top / the one above popped |
 | `on_exit(ctx)` | The scene leaves the stack |
 | `is_transparent()` | Scenes below are still drawn and still get `ui` (overlays, HUDs), but only the top scene's widgets take input |
@@ -273,7 +273,7 @@ fn add_score(mut coins: MessageReader<CoinCollected>, mut score: ResMut<Score>) 
 ```
 
 - A message stays readable until two fixed steps have run after it was written, so per-frame and fixed-step readers both see it; each scene and each reader sees it once. Read a type in one place per scene.
-- Engine messages: `CollisionStarted`/`CollisionStopped` and `TriggerEntered`/`TriggerExited` (physics), `MovementEvent`, `PickedUp`, `Killed`, `CheckpointReached` (gameplay), `TweenStarted`/`TweenCompleted`, `KnockbackStarted`/`KnockbackFinished`, `SquashStretchStarted`/`SquashStretchFinished`, `ParticleCollision`, `MapEvent` (a tile map landed, reloaded or failed: `ryo-tilemap`), `ChunkEvent` (a streamed map's chunk landed or unloaded: `ryo-tilemap`), and an `AssetEvent<T>` per asset type (`ryo-assets`). Details: `ryo-messages`.
+- Engine messages: `CollisionStarted`/`CollisionStopped` and `TriggerEntered`/`TriggerExited` (physics), `MovementEvent`, `PickedUp`, `Killed`, `CheckpointReached` (gameplay), `TweenStarted`/`TweenCompleted`, `KnockbackStarted`/`KnockbackFinished`, `SquashStretchStarted`/`SquashStretchFinished`, `ParticleCollision` and `EmitterFinished` (`ryo-particles`), `MapEvent` (a tile map landed, reloaded or failed: `ryo-tilemap`), `ChunkEvent` (a streamed map's chunk landed or unloaded: `ryo-tilemap`), and an `AssetEvent<T>` per asset type (`ryo-assets`). Details: `ryo-messages`.
 
 <!-- self: score: u32 -->
 <!-- given: player: Entity -->
@@ -358,7 +358,7 @@ fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
 
 - Transitions run on real time, once a frame, so a fade finishes even with the game clock paused or slowed.
 - While one runs, `update` is not called and a scene change returned from `ui` is ignored (only `Quit` applies): a second click during a fade does not start another.
-- A pushed scene that does not `updates_below` stops the scenes below, pauses physics and holds their sounds: their voices on the buses that pause with the game (`sfx`, `voice`, `ambience`), and the voices of the emitters they added, wait where they are until a `Pop` (`holds_audio_below` returning `false` leaves them audible). The pushed scene's own sounds, the music, `persist` voices and `ui` play on. Engine animation and tweens keep running: pause the game clock to freeze them too.
+- A pushed scene that does not `updates_below` stops the scenes below, pauses physics and holds their sounds: their voices on the buses that pause with the game (`sfx`, `voice`, `ambience`), and the voices of the emitters they added, wait where they are until a `Pop` (`holds_audio_below` returning `false` leaves them audible). The pushed scene's own sounds, the music, `persist` voices and `ui` play on. The particles of the emitters they added freeze the same way, and an `unscaled` emitter keeps running. Engine animation and tweens keep running: pause the game clock to freeze them too.
 - A pause menu: a transparent pushed scene whose `ui` draws a focus-scoped menu and returns `SceneAction::Pop` on Resume or `ui.back()` (`ryo-ui`'s pause menu recipe). Scenes under it still draw, but only the top scene's widgets take input, so its buttons win the clicks.
 - Cleanup on `Switch`/`Reset` (not on `Push`/`Pop`): `SceneCleanup` flags `WORLD`, `CAMERA`, `EFFECTS`, `LIGHTING`, `TIME`, `MUSIC`, `MESSAGES`; `DEFAULT` is all but `MUSIC` (so a track carries on from menu to game), plus `NONE` and `ALL`. Combine with `|`, remove with `-`: `SceneCleanup::DEFAULT - SceneCleanup::WORLD` keeps the entities.
 - A scene's console commands and systems leave with it, and so do its sounds as it exits by any action (`Pop` too): its loops stop with their fade, as do its one-shots with more than 2 s left (not on `ui`), and its shorter one-shots finish (`ryo-audio`, Voices).
@@ -372,12 +372,12 @@ fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
 - Crisp versus smooth: `.with_filter(Filter::Nearest)` keeps hard texels when scaled (pixel art in a smooth game), `.with_filter(Filter::Linear)` smooths (a portrait in a pixel-art game); `Filter::Default` follows the presentation. Linear sprites drawn small stay smooth (mipmaps).
 - Glows and light: `.with_blend(BlendMode::Additive)` adds light (fire, sparks, lasers); `Multiply` darkens, `Screen` lightens (a 0..1 formula: over pixels brighter than white it dims them; use `Additive` for light above white). `.with_lighting(false)` keeps a sprite at full brightness in the dark.
 
-Additive particles and trails:
+Additive particles and trails (a burst effect, played once: `play_at` despawns its emitter when it has finished):
 
 <!-- given: x: f32, y: f32, spark: Handle<Image> -->
 ```rust
 let sparks = ctx.assets().add(ParticleEffect::sparks(spark).with_blend(BlendMode::Additive).with_lighting(false));
-ctx.world.spawn((Transform::from_xy(x, y), ParticleEmitter::new(sparks)));
+ctx.particles().play_at(&sparks, Vec2::new(x, y));
 ctx.world.spawn((Transform::from_xy(x, y), Trail2D::laser(Color::CYAN, 3.0).with_blend(BlendMode::Additive)));
 ```
 
@@ -755,7 +755,7 @@ ctx.look().auto_exposure = Some(AutoExposure {
 });
 ```
 
-`with_emission` multiplies a drawable's light (also on particles, trails and lines). Bloom picks up what is brighter than white (its threshold is linear luminance, default 1.0), so emission above 1 and lights with intensity above 1 glow. A LUT is a strip of N tiles of N x N (`ColorLut::identity_strip(32)` makes a neutral one to paint over).
+`with_emission` multiplies a drawable's light (also on particle effects, trails and lines). Bloom picks up what is brighter than white (its threshold is linear luminance, default 1.0), so emission above 1 and lights with intensity above 1 glow. A LUT is a strip of N tiles of N x N (`ColorLut::identity_strip(32)` makes a neutral one to paint over).
 
 ## Navigation
 
@@ -838,7 +838,7 @@ fn player_is_drawn_at_spawn() {
 }
 ```
 
-- Same scene, steps and input give identical frames: seed your RNG and use `ParticleSystem::with_seed(n)`.
+- Same scene, steps and input give identical frames: seed your RNG. Particles repeat with no seeding in a headless run; `ParticleEmitter::with_seed(n)` fixes one emitter's stream whatever else the scene adds.
 - Pads and menus: `tap_pad(GamepadButton::DPadDown)`, `press_pad`, `set_stick(Stick::Left, x, y)`, `wheel(dx, dy)`, `trackpad(dx, dy)` (logical pixels); `ui_focused()`, `ui_focusables()` and `focus_ui(id)` check pad navigation. `ryo2d::testing::UiHarness` tests a UI function without a GPU (`ryo-ui`, Testing UI).
 - Headless runs play sound silently on kira's mock backend (everything works; `ryo-audio`, Testing), and have no real gamepads (the pad methods drive a virtual one); saves and `system.json` stay in a memory store, never on disk (`engine.saves()` plants and reads them); `Ryo.toml` is honoured. `engine.world()` / `world_mut()` reach the world between steps.
 
