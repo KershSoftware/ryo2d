@@ -748,3 +748,24 @@ fn a_run_sorts_by_z_with_entities() {
   );
   assert_eq!(engine.debug_stats().sprite_count, 4, "the square and three");
 }
+
+#[test]
+fn a_sheet_frame_draws_its_cell() {
+  // A 2 x 1 sheet, red then blue, played over a 100 s life: a particle in
+  // the first half of it draws the red cell only
+  let Some((mut engine, _)) = stage((64, 64), |ctx| {
+    let sheet = Image::from_rgba(vec![255, 0, 0, 255, 0, 0, 255, 255], 2, 1);
+    let sheet = ctx.assets().add(sheet);
+    let fx = still(ctx, 16.0, Color::WHITE)
+      .with_frames(Flipbook::new(2, 1))
+      .with_filter(Filter::Nearest);
+    let fx = ParticleEffect { image: sheet, ..fx };
+    vec![emitter_at(ctx, fx, 32.0, 32.0)]
+  }) else {
+    return;
+  };
+  engine.step_frames(3).unwrap();
+  let red = [255, 0, 0, 255];
+  assert_eq!(pixel(&engine, 28.0, 32.0), red, "left of its centre");
+  assert_eq!(pixel(&engine, 36.0, 32.0), red, "right of its centre");
+}

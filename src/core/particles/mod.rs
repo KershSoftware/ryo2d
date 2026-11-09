@@ -95,7 +95,9 @@ pub use collision::{
   CollisionConfig, CollisionResponse, MIN_BOUNCE_EVENT_SPEED, ParticleCollision,
 };
 pub(crate) use draw::ParticleDrawer;
-pub use effect::{Burst, DrawOrder, EmitShape, NoiseForce, ParticleEffect, Space};
+pub use effect::{
+  Align, Burst, DrawOrder, EmitShape, Flipbook, FrameMode, NoiseForce, ParticleEffect, Space,
+};
 pub use emitter::{EmitterFinished, ParticleEmitter};
 pub(crate) use scope::{hold_scenes, in_scene, release_scene};
 pub(crate) use step::{step_particles, step_unscaled_particles};

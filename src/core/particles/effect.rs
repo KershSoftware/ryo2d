@@ -83,6 +83,90 @@ pub enum Space {
   Local,
 }
 
+/// A sprite sheet the particles' image is cut into, and how a particle
+/// plays through its frames. Frames run left to right, then down.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Flipbook {
+  /// Frames across the sheet
+  pub columns: u32,
+  /// Frames down the sheet
+  pub rows: u32,
+  /// Frames played; 0 plays them all (`columns` x `rows`)
+  pub count: u32,
+  /// How the frame follows time
+  pub mode: FrameMode,
+  /// Each particle starts at a frame of its own, fixed for its life
+  pub random_start: bool,
+}
+
+impl Flipbook {
+  /// A sheet of `columns` by `rows` frames, played once over each
+  /// particle's life.
+  pub fn new(columns: u32, rows: u32) -> Self {
+    Self {
+      columns,
+      rows,
+      count: 0,
+      mode: FrameMode::OverLife,
+      random_start: false,
+    }
+  }
+
+  /// Plays only the first `count` frames of the sheet.
+  pub fn with_count(mut self, count: u32) -> Self {
+    self.count = count;
+    self
+  }
+
+  /// Plays `fps` frames per second of the particle's age, looping.
+  pub fn at_fps(mut self, fps: f32) -> Self {
+    self.mode = FrameMode::Fps(fps);
+    self
+  }
+
+  /// Starts each particle at a frame of its own.
+  pub fn random_start(mut self) -> Self {
+    self.random_start = true;
+    self
+  }
+
+  /// The frames played: `count`, or the whole sheet when it is 0 or past it
+  /// (at least 1)
+  pub(crate) fn frames(&self) -> u32 {
+    let cells = u64::from(self.columns.max(1)) * u64::from(self.rows.max(1));
+    let cells = u32::try_from(cells).unwrap_or(u32::MAX);
+    if self.count == 0 || self.count > cells {
+      cells
+    } else {
+      self.count
+    }
+  }
+}
+
+/// How a [`Flipbook`]'s frame follows a particle's time.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub enum FrameMode {
+  /// Once through the frames over the particle's life
+  #[default]
+  OverLife,
+  /// This many frames per second of the particle's age, looping
+  Fps(f32),
+}
+
+/// How a particle turns.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub enum Align {
+  /// By its own rotation and spin
+  #[default]
+  None,
+  /// To face where it moves, ignoring rotation and spin, stretched along
+  /// its travel: its length is its size plus its speed times `stretch`
+  Velocity {
+    /// Pixels of length per pixel per second of speed
+    stretch: f32,
+  },
+}
+
 /// Which particle is drawn over which.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DrawOrder {
@@ -177,6 +261,10 @@ pub struct ParticleEffect {
   pub z: i32,
   /// Which particle covers which
   pub draw_order: DrawOrder,
+  /// The image as a sprite sheet the particle plays through, if any
+  pub frames: Option<Flipbook>,
+  /// How a particle turns
+  pub align: Align,
   /// Collision with the world, if any
   pub collision: Option<CollisionConfig>,
   /// Render layer
@@ -258,6 +346,8 @@ impl ParticleEffect {
       effect: None,
       z: 0,
       draw_order: DrawOrder::NewestOnTop,
+      frames: None,
+      align: Align::None,
       collision: None,
       layer: 0,
       seed: None,
@@ -463,6 +553,18 @@ impl ParticleEffect {
     self
   }
 
+  /// Cuts the image into a sprite sheet each particle plays through.
+  pub fn with_frames(mut self, frames: Flipbook) -> Self {
+    self.frames = Some(frames);
+    self
+  }
+
+  /// Sets how particles turn.
+  pub fn with_align(mut self, align: Align) -> Self {
+    self.align = align;
+    self
+  }
+
   /// Sets which particle covers which.
   pub fn with_draw_order(mut self, draw_order: DrawOrder) -> Self {
     self.draw_order = draw_order;
@@ -588,6 +690,25 @@ impl ParticleEffect {
         "frequency and speed must not be negative",
       );
     }
+    if let Some(frames) = &self.frames {
+      report(
+        "frames",
+        frames.columns == 0 || frames.rows == 0,
+        "columns and rows must be above 0",
+      );
+      report(
+        "frames",
+        u64::from(frames.count) > u64::from(frames.columns) * u64::from(frames.rows),
+        "count is more than columns times rows",
+      );
+      if let FrameMode::Fps(fps) = frames.mode {
+        report("frames", !finite(fps) || fps <= 0.0, "fps must be above 0");
+      }
+    }
+    if let Align::Velocity { stretch } = self.align {
+      report("align", !finite(stretch), "stretch is not a number");
+      report("align", stretch < 0.0, "stretch is negative");
+    }
     report("emission", !finite(self.emission), "is not a number");
     report("emission", self.emission < 0.0, "is negative");
     report(
@@ -684,6 +805,21 @@ impl ParticleEffect {
       noise.strength = num(noise.strength, 0.0);
       noise.frequency = non_negative(noise.frequency, 0.0);
       noise.speed = non_negative(noise.speed, 0.0);
+    }
+    if let Some(frames) = &mut fx.frames {
+      frames.columns = frames.columns.max(1);
+      frames.rows = frames.rows.max(1);
+      if frames.count > frames.frames() {
+        frames.count = 0;
+      }
+      if let FrameMode::Fps(fps) = frames.mode
+        && !(fps.is_finite() && fps > 0.0)
+      {
+        frames.mode = FrameMode::OverLife;
+      }
+    }
+    if let Align::Velocity { stretch } = &mut fx.align {
+      *stretch = non_negative(*stretch, 0.0);
     }
     fx.emission = non_negative(fx.emission, 1.0);
     if fx.space == Space::Local {
@@ -799,6 +935,28 @@ mod tests {
       thickness: 2.0,
     });
     assert!(starts_with(&fx.problems(), "shape:"));
+  }
+
+  #[test]
+  fn bad_sheets_and_alignment_are_reported_and_clamped() {
+    let bad = [
+      ParticleEffect::new(image()).with_frames(Flipbook::new(0, 2)),
+      ParticleEffect::new(image()).with_frames(Flipbook::new(2, 0)),
+      ParticleEffect::new(image()).with_frames(Flipbook::new(2, 2).with_count(5)),
+      ParticleEffect::new(image()).with_frames(Flipbook::new(2, 2).at_fps(0.0)),
+      ParticleEffect::new(image()).with_frames(Flipbook::new(2, 2).at_fps(f32::NAN)),
+    ];
+    for fx in bad {
+      assert!(starts_with(&fx.problems(), "frames:"), "{:?}", fx.frames);
+      let clean = fx.sanitized();
+      assert!(clean.problems().is_empty(), "{:?}", clean.problems());
+      assert!(clean.frames.is_some_and(|book| book.frames() >= 1));
+    }
+    for stretch in [-1.0, f32::NAN] {
+      let fx = ParticleEffect::new(image()).with_align(Align::Velocity { stretch });
+      assert!(starts_with(&fx.problems(), "align:"));
+      assert!(fx.sanitized().problems().is_empty());
+    }
   }
 
   #[test]

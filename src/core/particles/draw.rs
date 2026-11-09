@@ -3,6 +3,7 @@
 
 use glam::Vec2;
 
+use super::effect::{Align, DrawOrder, Flipbook, FrameMode};
 use super::emitter::ParticleEmitter;
 use super::pool::{EmitterPool, Pool};
 use super::space::LocalFrame;
@@ -53,7 +54,7 @@ impl ParticleDrawer {
   /// Pushes each enabled emitter's particles into `list` as one run, in
   /// entity order: at the emitter's z (else its effect's), on its entity's
   /// `RenderLayers`, with its effect's blend, filter, lit flag and sprite
-  /// effect, in spawn order (the newest on top). A pool whose box, grown by
+  /// effect, in spawn order (the newest on top unless the effect says otherwise). A pool whose box, grown by
   /// the largest a particle of its effect draws, meets no camera's view on
   /// its layers is skipped, as is one whose image draws nothing (not
   /// loaded, in a release build). Each particle sits blended between its
@@ -146,11 +147,12 @@ impl ParticleDrawer {
       else {
         continue;
       };
-      // Spawn order: the newest last, drawn on top
-      instances.extend(
-        (0..particles.len())
-          .map(|i| instance_for(particles, i, compiled, fraction, local.as_ref())),
-      );
+      // Spawn order puts the newest last, on top; `OldestOnTop` reverses it
+      let (len, order) = (particles.len(), effect.draw_order);
+      instances.extend((0..len).map(|k| {
+        let i = drawn_index(order, k, len);
+        instance_for(particles, i, compiled, fraction, local.as_ref())
+      }));
       let shading = if effect.effect.is_some() {
         SpriteShading::Effect
       } else {
@@ -188,6 +190,33 @@ fn drawn_fraction(pool: &EmitterPool, unscaled: bool, step: u64, alpha: f32) -> 
   }
 }
 
+/// The particle drawn `k`th of `len` kept in spawn order, the oldest first
+fn drawn_index(order: DrawOrder, k: usize, len: usize) -> usize {
+  match order {
+    DrawOrder::NewestOnTop => k,
+    DrawOrder::OldestOnTop => len - 1 - k,
+  }
+}
+
+/// The frame of `book` particle `seed`, `age` s into a `t` fraction of its
+/// life, plays: its start offset (from its seed, when random) added
+/// modulo the frames played
+fn sheet_frame(book: &Flipbook, seed: u32, age: f32, t: f32) -> u32 {
+  let count = book.frames();
+  let base = match book.mode {
+    FrameMode::OverLife => ((t * count as f32) as u32).min(count - 1),
+    // A saturating cast: NaN and negatives are 0
+    FrameMode::Fps(fps) => (age * fps) as u32,
+  };
+  let start = if book.random_start {
+    let h = seed.wrapping_mul(0x9E37_79B1);
+    (h ^ (h >> 15)).wrapping_mul(0x85EB_CA6B) >> 8
+  } else {
+    0
+  };
+  (base % count + start % count) % count
+}
+
 /// Particle `i` of `pool` as drawn: blended `alpha` of the way from where it
 /// was the step before to where it is (through its emitter's `local` frame
 /// for a `Local` effect's), a quad `size` across scaled by the effect's
@@ -213,7 +242,33 @@ pub(crate) fn instance_for(
     None => (x, y, pool.rotation[i]),
   };
   let size = pool.size[i] * effect.size_over_life.lookup(t);
-  let mut instance = SpriteInstance::new().with_transform(x, y, rotation, size, size);
+  // Facing its travel (in its frame, for a `Local` particle), stretched
+  // with its speed; at rest it keeps its own rotation
+  let (rotation, length) = match effect.align {
+    Align::Velocity { stretch } => {
+      let velocity = Vec2::new(pool.vx[i], pool.vy[i]);
+      let speed = velocity.length();
+      if speed > 1e-6 {
+        let heading = velocity.y.atan2(velocity.x);
+        let heading = match local {
+          Some(frame) => frame.world_rotation(heading),
+          None => heading,
+        };
+        (heading, size + speed * stretch)
+      } else {
+        (rotation, size)
+      }
+    }
+    Align::None => (rotation, size),
+  };
+  let mut instance = SpriteInstance::new().with_transform(x, y, rotation, length, size);
+  if let Some(book) = &effect.frames {
+    let k = sheet_frame(book, pool.seed[i], pool.age[i], t);
+    let (columns, rows) = (book.columns.max(1), book.rows.max(1));
+    let (column, row) = ((k % columns) as f32, (k / columns) as f32);
+    let (w, h) = (1.0 / columns as f32, 1.0 / rows as f32);
+    instance = instance.with_uv(column * w, row * h, (column + 1.0) * w, (row + 1.0) * h);
+  }
   let (start, tint) = (pool.color[i], effect.color_over_life.lookup(t));
   instance.tint = std::array::from_fn(|c| start[c] * tint[c]);
   if let Some(sprite_effect) = &effect.effect {
@@ -372,5 +427,144 @@ mod tests {
     let want: [f32; 4] = std::array::from_fn(|c| start[c] * tint[c]);
     assert_eq!(half.tint, want);
     assert!(want[0] < 0.3 && want[3] < 0.5, "faded: {want:?}");
+  }
+
+  /// The effect with a sheet of `columns` by `rows`, and the UV cell of
+  /// `instance`'s quad as (column, row) of that sheet
+  fn cell(instance: &SpriteInstance, columns: u32, rows: u32) -> (u32, u32) {
+    let [u, v, ..] = instance.uv_rect;
+    (
+      (u * columns as f32).round() as u32,
+      (v * rows as f32).round() as u32,
+    )
+  }
+
+  #[test]
+  fn sheet_frames_follow_life() {
+    let fx = compiled(|fx| fx.with_frames(Flipbook::new(2, 2)));
+    let mut pool = Pool::default();
+    pool.push(&particle(Vec2::ZERO));
+    let mut at = |age: f32| {
+      pool.age[0] = age;
+      let instance = instance_for(&pool, 0, &fx, 1.0, None);
+      assert!(
+        (instance.uv_rect[2] - instance.uv_rect[0] - 0.5).abs() < 1e-6,
+        "a cell is half the sheet across"
+      );
+      cell(&instance, 2, 2)
+    };
+    // Lifetime 2 s, four frames: each lasts half a second
+    assert_eq!(at(0.0), (0, 0));
+    assert_eq!(at(0.6), (1, 0));
+    assert_eq!(at(1.1), (0, 1));
+    assert_eq!(at(1.9), (1, 1));
+    assert_eq!(at(2.0), (1, 1), "the last frame holds at the end of life");
+
+    // A count short of the grid stops at it
+    let fx = compiled(|fx| fx.with_frames(Flipbook::new(2, 2).with_count(3)));
+    pool.age[0] = 1.9;
+    assert_eq!(cell(&instance_for(&pool, 0, &fx, 1.0, None), 2, 2), (0, 1));
+  }
+
+  #[test]
+  fn sheet_frames_follow_a_frame_rate_and_wrap() {
+    let fx = compiled(|fx| fx.with_frames(Flipbook::new(4, 1).at_fps(4.0)));
+    let mut pool = Pool::default();
+    pool.push(&particle(Vec2::ZERO));
+    let mut at = |age: f32| {
+      pool.age[0] = age;
+      cell(&instance_for(&pool, 0, &fx, 1.0, None), 4, 1).0
+    };
+    assert_eq!(at(0.0), 0);
+    assert_eq!(at(0.3), 1);
+    assert_eq!(at(0.8), 3);
+    assert_eq!(at(1.0), 0, "past the last frame it wraps");
+    assert_eq!(at(1.3), 1);
+  }
+
+  #[test]
+  fn a_random_start_offsets_frames_per_particle() {
+    let plain = compiled(|fx| fx.with_frames(Flipbook::new(8, 1).at_fps(1.0)));
+    let random = compiled(|fx| fx.with_frames(Flipbook::new(8, 1).at_fps(1.0).random_start()));
+    let mut pool = Pool::default();
+    for seed in 0..16u32 {
+      pool.push(&NewParticle {
+        seed: seed.wrapping_mul(0x9E37_79B9),
+        ..particle(Vec2::ZERO)
+      });
+    }
+    let frames = |pool: &Pool, fx: &Compiled| {
+      (0..pool.len())
+        .map(|i| cell(&instance_for(pool, i, fx, 1.0, None), 8, 1).0)
+        .collect::<Vec<_>>()
+    };
+    assert!(
+      frames(&pool, &plain).iter().all(|&k| k == 0),
+      "all start at 0"
+    );
+    let offset = frames(&pool, &random);
+    assert!(
+      offset.iter().any(|&k| k != offset[0]),
+      "particles start apart: {offset:?}"
+    );
+    assert_eq!(offset, frames(&pool, &random), "each keeps its own offset");
+    // The offset only shifts the frame: a second on, each is one further
+    pool.age.iter_mut().for_each(|age| *age = 1.0);
+    let later = frames(&pool, &random);
+    for (before, after) in offset.iter().zip(&later) {
+      assert_eq!(*after, (before + 1) % 8);
+    }
+  }
+
+  #[test]
+  fn aligned_particles_point_along_their_velocity_and_stretch_with_speed() {
+    let fx = compiled(|fx| fx.with_align(Align::Velocity { stretch: 0.1 }));
+    let mut pool = Pool::default();
+    pool.push(&NewParticle {
+      rotation: 1.0,
+      spin: 5.0,
+      ..particle(Vec2::ZERO)
+    });
+    pool.vx[0] = 0.0;
+    pool.vy[0] = 30.0;
+    let down = instance_for(&pool, 0, &fx, 1.0, None);
+    // Length 10 + 30 * 0.1 along +y, 10 wide, whatever its rotation
+    assert!(close(x_axis(&down), Vec2::new(0.0, 13.0)), "{down:?}");
+    let y_axis = Vec2::new(down.transform[1][0], down.transform[1][1]);
+    assert!(close(y_axis, Vec2::new(-10.0, 0.0)), "{y_axis}");
+
+    pool.vx[0] = -40.0;
+    pool.vy[0] = 0.0;
+    let left = instance_for(&pool, 0, &fx, 1.0, None);
+    assert!(close(x_axis(&left), Vec2::new(-14.0, 0.0)), "{left:?}");
+
+    // At rest it keeps its own rotation, with no NaN
+    pool.vx[0] = 0.0;
+    pool.vy[0] = 0.0;
+    let still = instance_for(&pool, 0, &fx, 1.0, None);
+    assert!(
+      close(x_axis(&still), Vec2::from_angle(1.0) * 10.0),
+      "{still:?}"
+    );
+
+    // Through a turned emitter's frame the direction turns with it
+    use crate::core::ecs::{GlobalTransform, Transform};
+    let at = Transform::from_xy(0.0, 0.0).with_rotation(FRAC_PI_2);
+    let frame = LocalFrame::drawn(&GlobalTransform::from_transform(&at), None, None, 1.0);
+    pool.vx[0] = 20.0;
+    let turned = instance_for(&pool, 0, &fx, 1.0, Some(&frame));
+    assert!(close(x_axis(&turned), Vec2::new(0.0, 12.0)), "{turned:?}");
+  }
+
+  #[test]
+  fn oldest_on_top_reverses_the_draw_order() {
+    let order = |draw_order, len| {
+      (0..len)
+        .map(|k| drawn_index(draw_order, k, len))
+        .collect::<Vec<_>>()
+    };
+    assert_eq!(order(DrawOrder::NewestOnTop, 4), [0, 1, 2, 3]);
+    assert_eq!(order(DrawOrder::OldestOnTop, 4), [3, 2, 1, 0]);
+    assert_eq!(order(DrawOrder::OldestOnTop, 0), Vec::<usize>::new());
   }
 }
