@@ -1,5 +1,6 @@
 //! Particle storage: one emitter's particles, field by field, in spawn order.
 
+use std::ops::Range;
 use std::time::Duration;
 
 use glam::Vec2;
@@ -17,6 +18,15 @@ pub(crate) const STUCK: u8 = 1;
 /// A particle's flag: it touched a collider in its last step, so a bounce
 /// or a pass-through tells only of an entry
 pub(crate) const TOUCHING: u8 = 1 << 1;
+
+/// A pool of at least this many particles compacts by runs (see
+/// [`Pool::retain`]). Below it the particle-by-particle loop costs a few
+/// microseconds at most, and was measured faster when many die at once
+const RUN_COMPACTION: usize = 4_096;
+
+/// A run of survivors shorter than this is copied particle by particle:
+/// fourteen `copy_within` calls cost more than copying a few
+const SHORT_RUN: usize = 8;
 
 /// One new particle's starting values, for [`Pool::push`]
 #[derive(Debug, Clone, Copy)]
@@ -104,35 +114,91 @@ impl Pool {
     self.flags.push(0);
   }
 
-  /// Keeps the particles `keep` is true for (asked by index, in order) and
-  /// moves them down over the others, in the order they were in: never a
-  /// swap with the last, which would change which particle draws over which
+  /// Keeps the particles `keep` is true for (asked by index, in order, once
+  /// each) and moves them down over the others, in the order they were in:
+  /// never a swap with the last, which would change which particle draws
+  /// over which. A small pool copies particle by particle; a large one,
+  /// where nearly every survivor moves on a step that loses its oldest,
+  /// moves each run of survivors at once. The arrays keep their room
   pub(crate) fn retain(&mut self, mut keep: impl FnMut(usize) -> bool) {
     let len = self.len();
     let mut kept = 0;
-    for i in 0..len {
-      if !keep(i) {
-        continue;
+    if len < RUN_COMPACTION {
+      for i in 0..len {
+        if !keep(i) {
+          continue;
+        }
+        if kept != i {
+          self.copy_particle(i, kept);
+        }
+        kept += 1;
       }
-      if kept != i {
-        self.x[kept] = self.x[i];
-        self.y[kept] = self.y[i];
-        self.px[kept] = self.px[i];
-        self.py[kept] = self.py[i];
-        self.vx[kept] = self.vx[i];
-        self.vy[kept] = self.vy[i];
-        self.age[kept] = self.age[i];
-        self.lifetime[kept] = self.lifetime[i];
-        self.size[kept] = self.size[i];
-        self.rotation[kept] = self.rotation[i];
-        self.spin[kept] = self.spin[i];
-        self.color[kept] = self.color[i];
-        self.seed[kept] = self.seed[i];
-        self.flags[kept] = self.flags[i];
+    } else {
+      let mut i = 0;
+      while i < len {
+        if !keep(i) {
+          i += 1;
+          continue;
+        }
+        let from = i;
+        i += 1;
+        while i < len && keep(i) {
+          i += 1;
+        }
+        let count = i - from;
+        if from != kept {
+          if count < SHORT_RUN {
+            for offset in 0..count {
+              self.copy_particle(from + offset, kept + offset);
+            }
+          } else {
+            self.copy_run(from..i, kept);
+          }
+        }
+        kept += count;
+        // Past the particle that ended the run, already asked
+        i += 1;
       }
-      kept += 1;
     }
     self.truncate(kept);
+  }
+
+  /// Particle `from`, every field, over particle `to`
+  #[inline(always)]
+  fn copy_particle(&mut self, from: usize, to: usize) {
+    self.x[to] = self.x[from];
+    self.y[to] = self.y[from];
+    self.px[to] = self.px[from];
+    self.py[to] = self.py[from];
+    self.vx[to] = self.vx[from];
+    self.vy[to] = self.vy[from];
+    self.age[to] = self.age[from];
+    self.lifetime[to] = self.lifetime[from];
+    self.size[to] = self.size[from];
+    self.rotation[to] = self.rotation[from];
+    self.spin[to] = self.spin[from];
+    self.color[to] = self.color[from];
+    self.seed[to] = self.seed[from];
+    self.flags[to] = self.flags[from];
+  }
+
+  /// The particles of `run`, every field, moved down to start at `to`
+  #[inline(never)]
+  fn copy_run(&mut self, run: Range<usize>, to: usize) {
+    self.x.copy_within(run.clone(), to);
+    self.y.copy_within(run.clone(), to);
+    self.px.copy_within(run.clone(), to);
+    self.py.copy_within(run.clone(), to);
+    self.vx.copy_within(run.clone(), to);
+    self.vy.copy_within(run.clone(), to);
+    self.age.copy_within(run.clone(), to);
+    self.lifetime.copy_within(run.clone(), to);
+    self.size.copy_within(run.clone(), to);
+    self.rotation.copy_within(run.clone(), to);
+    self.spin.copy_within(run.clone(), to);
+    self.color.copy_within(run.clone(), to);
+    self.seed.copy_within(run.clone(), to);
+    self.flags.copy_within(run, to);
   }
 
   fn truncate(&mut self, len: usize) {
@@ -363,6 +429,116 @@ mod tests {
     assert_eq!(pool.color[1], [0.3, 0.0, 0.0, 1.0]);
     assert_eq!(pool.seed, [1, 3, 5]);
     assert_eq!(pool.flags, [0; 3]);
+  }
+
+  /// A pool of `n` particles, each field of each one a value of its own,
+  /// and that particle's fields as they should read
+  fn distinct(n: usize) -> Pool {
+    let mut pool = Pool::default();
+    for i in 0..n {
+      pool.push(&at(i as f32));
+      pool.px[i] = i as f32 + 0.25;
+      pool.py[i] = i as f32 + 0.5;
+      pool.age[i] = i as f32 + 0.75;
+      pool.flags[i] = i as u8;
+    }
+    pool
+  }
+
+  /// That `pool` holds the particles `survivors` of a `distinct` pool, in
+  /// that order, every field array the same length and in step
+  fn assert_holds(pool: &Pool, survivors: &[usize], case: &str) {
+    assert_eq!(pool.len(), survivors.len(), "{case}");
+    let expected = distinct(survivors.iter().max().map_or(0, |last| last + 1));
+    let fields = |p: &Pool, i: usize| {
+      let [r, g, b, a] = p.color[i];
+      [
+        p.x[i],
+        p.y[i],
+        p.px[i],
+        p.py[i],
+        p.vx[i],
+        p.vy[i],
+        p.age[i],
+        p.lifetime[i],
+        p.size[i],
+        p.rotation[i],
+        p.spin[i],
+        r,
+        g,
+        b,
+        a,
+        p.seed[i] as f32,
+        f32::from(p.flags[i]),
+      ]
+    };
+    for (at, &was) in survivors.iter().enumerate() {
+      assert_eq!(fields(pool, at), fields(&expected, was), "{case}: {at}");
+    }
+    let lengths = [
+      pool.y.len(),
+      pool.px.len(),
+      pool.py.len(),
+      pool.vx.len(),
+      pool.vy.len(),
+      pool.age.len(),
+      pool.lifetime.len(),
+      pool.size.len(),
+      pool.rotation.len(),
+      pool.spin.len(),
+      pool.color.len(),
+      pool.seed.len(),
+      pool.flags.len(),
+    ];
+    assert_eq!(
+      lengths,
+      [survivors.len(); 13],
+      "{case}: the arrays' lengths"
+    );
+  }
+
+  /// Through the particle-by-particle path and the run path alike
+  #[test]
+  fn retain_keeps_every_field_in_step_whatever_dies() {
+    type Dies = fn(usize, usize) -> bool;
+    let cases: [(&str, Dies); 10] = [
+      ("a dead prefix", |i, n| i < n / 5),
+      ("a dead middle", |i, n| (n / 2..n / 2 + n / 5).contains(&i)),
+      ("a dead suffix", |i, n| i >= n * 4 / 5),
+      ("everything dead", |_, _| true),
+      ("nothing dead", |_, _| false),
+      ("the first dead", |i, _| i == 0),
+      ("the last dead", |i, n| i == n - 1),
+      ("every other one dead", |i, _| i % 2 == 0),
+      ("runs shorter than a move", |i, _| i % SHORT_RUN / 2 == 1),
+      ("long and short runs", |i, n| {
+        i % 50 == 7 || (i > n / 2 && i % 3 == 0)
+      }),
+    ];
+    for n in [
+      200,
+      RUN_COMPACTION - 1,
+      RUN_COMPACTION,
+      RUN_COMPACTION + 500,
+    ] {
+      for (case, dies) in cases {
+        let mut pool = distinct(n);
+        let room = pool.x.capacity();
+        let mut asked = Vec::with_capacity(n);
+        pool.retain(|i| {
+          asked.push(i);
+          !dies(i, n)
+        });
+        assert_eq!(
+          asked,
+          (0..n).collect::<Vec<_>>(),
+          "{n}, {case}: asked in order"
+        );
+        let survivors: Vec<usize> = (0..n).filter(|&i| !dies(i, n)).collect();
+        assert_holds(&pool, &survivors, &format!("{n}, {case}"));
+        assert_eq!(pool.x.capacity(), room, "{n}, {case}: the room is kept");
+      }
+    }
   }
 
   #[test]
