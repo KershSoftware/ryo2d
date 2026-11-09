@@ -85,8 +85,10 @@
 mod attractor;
 mod collision;
 mod contact;
+mod effect;
 mod legacy;
 mod noise;
+mod presets;
 mod rng;
 mod value;
 
@@ -94,5 +96,6 @@ pub use attractor::{AttractorType, ParticleAttractor};
 pub use collision::{
   CollisionConfig, CollisionResponse, MIN_BOUNCE_EVENT_SPEED, ParticleCollision,
 };
+pub use effect::{Burst, DrawOrder, EmitShape, ParticleEffect};
 pub use legacy::{EmissionMode, EmissionShape, Particle, ParticleEmitter, ParticleSystem};
 pub use value::{ColorRange, Curve, CurveKey, Gradient, GradientKey, ValueRange};
