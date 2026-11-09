@@ -2,7 +2,7 @@
 name: ryo-tilemap
 description: "Tile maps - the workflow from Tiled (.tmx, .tmj) or LDtk (.ldtk) through assets/ to a MapRoot entity, layers and the reserved layer properties (collides, occludes, y_sort, lit, filter, floor), storeys (MapFloors) and the entities on them (Floor, drawn lifted), stairs and ramps that characters climb between storeys (Climber, FloorChanged), tilesets and typed tile data, objects and class tiles as entities, MapEvent, reading and editing tiles with ctx.maps() and Wang terrain, collision from tile shapes and IntGrids, tile shadows, y-sorting and parallax, worlds of levels, maps built in code and by procgen, endless worlds streamed from a generator (MapStream, StreamAnchor, ChunkEvent, SavedChunks, ChunkOwned), hot reload, the web, performance and testing."
 metadata:
-  version: 1.8.0
+  version: 1.9.0
 ---
 
 # Ryo2D Tile Maps
@@ -867,7 +867,7 @@ if chunks_moved || self.paths.is_none() {
 }
 ```
 
-Keeping the player's changes in a save game, with `SaveManager` (`ryo-config-save`; the game adds `serde`):
+Keeping the player's changes in a save game, with `ctx.saves()` (`ryo-config-save`; the game adds `serde`). `save` serializes its data after the call, on the save thread (natively), and a clone of `SavedChunks` is the same store, so the save holds the store as it stands when it is written:
 
 <!-- with: use serde::{Deserialize, Serialize}; -->
 <!-- self: world: Entity, chunks: SavedChunks -->

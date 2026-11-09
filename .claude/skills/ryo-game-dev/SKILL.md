@@ -2,7 +2,7 @@
 name: ryo-game-dev
 description: Building games with Ryo2D - scenes, entities, queries, systems, resources, messages, time and input.
 metadata:
-  version: 2.9.0
+  version: 2.10.0
 ---
 
 # Ryo2D Game Developer
@@ -140,7 +140,7 @@ Entities are not drawn by `render`: anything with `Transform` + `Renderable` is 
 | `ctx.time` | `&mut Time` | `real`, `game` and `fixed` clocks |
 | `ctx.input` | `&mut Input` | Keyboard, mouse, gamepad, text |
 
-Helpers: `assets()` (the asset registry: `load_now`, `load`, `add`, `get`; `ryo-assets`), `audio()` (play sounds and music, volume settings, snapshots; `ryo-audio`), `maps()` (spawned tile maps: read and edit tiles, Wang terrain, cells and world positions, world levels; `ryo-tilemap`), `camera()` (the main camera: position, zoom, rotation, shake, screen/world conversion), `actions()` (bind and rebind input actions), `ui_theme()` (the UI theme), `follow_ui_theme(handle)` (follow a `.theme.ron` asset), `render_targets()`, `add_systems`, `messages::<T>()`, `write_message`, `resource`, `resource_mut`, `resource_or_default`, `insert_resource`, `effects()`, `lighting()`, `look()`, `render_pipeline()`, `window()`, `cursor()`, `console()`, `spawn_child`, `skip_interpolation`, `screen_size()`, `request_display_mode`, `request_resolution`, `set_cursor*`. The accessors return `Mut<..>`; bind one for several calls: `let mut fx = ctx.effects();`.
+Helpers: `assets()` (the asset registry: `load_now`, `load`, `add`, `get`; `ryo-assets`), `audio()` (play sounds and music, snapshots; `ryo-audio`), `saves()` (save, load, list and delete game saves; `ryo-config-save`), `settings()` (the player's settings: volumes, window size, display mode, vsync, the FPS counter and the game's own sections, applied at once and saved by the engine; `ryo-config-save`), `maps()` (spawned tile maps: read and edit tiles, Wang terrain, cells and world positions, world levels; `ryo-tilemap`), `camera()` (the main camera: position, zoom, rotation, shake, screen/world conversion), `actions()` (bind and rebind input actions), `ui_theme()` (the UI theme), `follow_ui_theme(handle)` (follow a `.theme.ron` asset), `render_targets()`, `add_systems`, `messages::<T>()`, `write_message`, `resource`, `resource_mut`, `resource_or_default`, `insert_resource`, `effects()`, `lighting()`, `look()`, `render_pipeline()`, `window()`, `cursor()`, `console()`, `spawn_child`, `skip_interpolation`, `screen_size()`, `request_ui_scale`, `set_cursor*`. The accessors return `Mut<..>`; bind one for several calls: `let mut fx = ctx.effects();`.
 
 **`time` and `input` are taken out of the world for the length of a callback.** Use the fields; `ctx.world.resource::<Time>()` panics inside a callback. Systems see them as resources (`Res<Time>`) as usual.
 
@@ -323,7 +323,7 @@ fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
 }
 ```
 
-- `bind` sets an action's defaults; bindings the player changed (a `ui.rebind` row, `ctx.actions().rebind(..)`) stay, and binding again is harmless. `ctx.actions().reset_defaults()` puts them back. With `EngineBuilder::with_user_preferences([UserPreference::Bindings])` they are saved between runs.
+- `bind` sets an action's defaults; bindings the player changed (a `ui.rebind` row, `ctx.actions().rebind(..)`) stay, and binding again is harmless. `ctx.actions().reset_defaults()` puts them back. With `EngineBuilder::with_user_preferences([UserPreference::Bindings])` they are kept between runs in `system.json`, written a second after they change.
 - Show what triggers an action with `ui.prompt("jump")` or `[prompt=jump]` in markup: a key on the keyboard, the right button for the pad's family.
 - Raw input is still there: `ctx.input.key_pressed(KeyCode::Space)`, `key_down`, `mouse_pressed(MouseButton::Left)`, `mouse_position()` (screen space: `ctx.camera().screen_to_world(Vec2::new(mx, my))` for the world).
 - One-shots (`action_pressed`, `key_pressed`, `mouse_pressed`, ...) are seen by the first fixed step of a frame; a press in a frame with no step reaches the next step. Handle a press once, in `update` or in a system.
@@ -722,7 +722,7 @@ Resolution comes from `Ryo.toml` (`[system] resolution`) or `EngineBuilder::reso
 
 Choose a resolution (fit) for most games: one fixed canvas, laid out once, filling any window. Choose pixel art for low-resolution art that must stay crisp and grid-aligned (every pixel the same size). Leave the resolution unset when screen space should be the window's own pixels (a UI that reflows, a tool).
 
-`EngineBuilder::window_size(w, h)` sets the window's initial size and `resizable(bool)` whether the player can resize it. A saved `resolution` preference picks the window size, not the game's. `DisplayMode` (`Windowed`, `ExclusiveFullscreen`, `BorderlessFullscreen`) is how the window appears: `ctx.request_display_mode(DisplayMode::BorderlessFullscreen)`. Builder overrides (`resolution`, `pixel_art`, `window_size`, `target_fps`, `vsync`, `fixed_hz`) beat `Ryo.toml`; saved player preferences beat both when `with_user_preferences` includes them (`ryo-config-save`).
+`EngineBuilder::window_size(w, h)` sets the window's initial size and `resizable(bool)` whether the player can resize it. The window's size and display mode are the player's settings: `ctx.settings().set_window_size(w, h)` (logical pixels) and `ctx.settings().set_display_mode(DisplayMode::BorderlessFullscreen)` (`Windowed`, `ExclusiveFullscreen`, `BorderlessFullscreen`), applied after the frame; a resize or fullscreen toggle by the player updates them too. With `UserPreference::Resolution` kept, the window size the player chose is saved and opens the next run, in place of the game's. Builder overrides (`resolution`, `pixel_art`, `window_size`, `target_fps`, `vsync`, `fixed_hz`) beat `Ryo.toml`; the player's saved settings beat both for what `with_user_preferences` keeps (`ryo-config-save`).
 
 ## Glow, Mood and the Look
 
@@ -842,7 +842,7 @@ fn player_is_drawn_at_spawn() {
 
 - Same scene, steps and input give identical frames: seed your RNG and use `ParticleSystem::with_seed(n)`.
 - Pads and menus: `tap_pad(GamepadButton::DPadDown)`, `press_pad`, `set_stick(Stick::Left, x, y)`, `wheel(dx, dy)`, `trackpad(dx, dy)` (logical pixels); `ui_focused()`, `ui_focusables()` and `focus_ui(id)` check pad navigation. `ryo2d::testing::UiHarness` tests a UI function without a GPU (`ryo-ui`, Testing UI).
-- Headless runs play sound silently on kira's mock backend (everything works; `ryo-audio`, Testing), and have no real gamepads (the pad methods drive a virtual one) or user preferences; `Ryo.toml` is honoured. `engine.world()` / `world_mut()` reach the world between steps.
+- Headless runs play sound silently on kira's mock backend (everything works; `ryo-audio`, Testing), and have no real gamepads (the pad methods drive a virtual one); saves and `system.json` stay in a memory store, never on disk (`engine.saves()` plants and reads them); `Ryo.toml` is honoured. `engine.world()` / `world_mut()` reach the world between steps.
 
 ## Pitfalls
 

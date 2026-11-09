@@ -2,7 +2,7 @@
 name: ryo-api
 description: Complete API reference for ryo2d::prelude - every exported type with its signatures and use, organised by area.
 metadata:
-  version: 2.23.0
+  version: 2.24.0
 ---
 
 # Ryo2D API Reference
@@ -15,7 +15,7 @@ Conventions: 2D with +Y down, units are pixels, rotation is radians unless a nam
 use ryo2d::prelude::*;
 ```
 
-Contents: [ECS kernel](#ecs-kernel) · [Transform and hierarchy](#transform-and-hierarchy) · [Engine components](#engine-components) · [Juice](#juice-tweens-knockback-squash) · [Pooling](#pooling) · [Time](#time) · [Phases](#phases-and-sets) · [Scenes](#scenes) · [SceneContext](#scenecontext) · [EngineBuilder](#enginebuilder) · [Messages](#messages) · [Input](#input) · [Audio](#audio) · [Cameras](#cameras) · [Images](#images) · [Sprite animation](#sprite-animation) · [GPU sprites and parallax](#gpu-sprites-and-parallax) · [Composite tiles](#composite-tiles) · [Physics](#physics) · [Characters and gameplay](#characters-and-gameplay) · [Lighting](#lighting) · [Assets](#assets) · [Window and cursor](#window-and-cursor) · [Post-processing](#post-processing) · [Trails and lines](#trails-and-lines) · [Debug drawing](#debug-drawing) · [Skeletons](#skeletal-animation) · [Particles](#particles) · [Tilemaps](#tilemaps) · [Render pipeline](#render-pipeline) · [Config and saves](#config-and-saves) · [Text](#text) · [UI](#ui) · [Errors](#errors) · [Navigation](#navigation) · [State machines](#state-machines) · [Networking](#networking) · [Profiling, console, logging](#profiling-console-logging) · [Optional crates](#optional-crates) · [Testing](#testing-ryo2dtesting)
+Contents: [ECS kernel](#ecs-kernel) · [Transform and hierarchy](#transform-and-hierarchy) · [Engine components](#engine-components) · [Juice](#juice-tweens-knockback-squash) · [Pooling](#pooling) · [Time](#time) · [Phases](#phases-and-sets) · [Scenes](#scenes) · [SceneContext](#scenecontext) · [EngineBuilder](#enginebuilder) · [Messages](#messages) · [Input](#input) · [Audio](#audio) · [Cameras](#cameras) · [Images](#images) · [Sprite animation](#sprite-animation) · [GPU sprites and parallax](#gpu-sprites-and-parallax) · [Composite tiles](#composite-tiles) · [Physics](#physics) · [Characters and gameplay](#characters-and-gameplay) · [Lighting](#lighting) · [Assets](#assets) · [Window and cursor](#window-and-cursor) · [Post-processing](#post-processing) · [Trails and lines](#trails-and-lines) · [Debug drawing](#debug-drawing) · [Skeletons](#skeletal-animation) · [Particles](#particles) · [Tilemaps](#tilemaps) · [Render pipeline](#render-pipeline) · [Config, settings and saves](#config-settings-and-saves) · [Text](#text) · [UI](#ui) · [Errors](#errors) · [Navigation](#navigation) · [State machines](#state-machines) · [Networking](#networking) · [Profiling, console, logging](#profiling-console-logging) · [Optional crates](#optional-crates) · [Testing](#testing-ryo2dtesting)
 
 ---
 
@@ -403,7 +403,9 @@ pub struct SceneContext<'a> {
 | Helper | |
 |---|---|
 | `assets(&mut self) -> AssetsView<'_>` | the asset registry: load, add and read assets (see [Assets](#assets)); it borrows the world, so take it, use it and let it go |
-| `audio(&mut self) -> AudioView<'_>` | the audio engine: play sounds and music, the player's volume settings, snapshots (see [Audio](#audio)); it borrows the world like `assets()` |
+| `audio(&mut self) -> AudioView<'_>` | the audio engine: play sounds and music, snapshots, bus volumes (see [Audio](#audio)); it borrows the world like `assets()` |
+| `saves(&self) -> SavesView<'_>` | the game's saves: save, load, list and delete slots (see [Config, settings and saves](#config-settings-and-saves)); it borrows the context, so take it for each use |
+| `settings(&mut self) -> Mut<'_, Settings>` | the player's settings: volumes, window size, display mode, vsync, the FPS counter and the game's sections; a change applies that frame and saves itself |
 | `maps(&mut self) -> MapsView<'_>` | spawned tile maps: read and edit tiles, Wang terrain, cell conversions, world levels (see [Tilemaps](#tilemaps)); it borrows the world like `assets()` |
 | `add_systems<M>(&mut self, phase: Phase, systems: impl IntoScheduleConfigs<ScheduleSystem, M>) -> Result<(), SceneScheduleError>` | scene-owned systems, run in `FixedSet::Game` / `UpdateSet::Game`; add them once, in `on_enter`. Refused, adding nothing: other phases (`SceneScheduleError::UnsupportedPhase`), a place they never run, such as `.after(FixedSet::Physics)` (`EngineSet`, naming the set), and the same line adding the same systems in a later callback (`AlreadyAdded`, with its location). `SceneScheduleError` is in the prelude |
 | `messages<T: Message + Clone>(&mut self) -> Vec<T>` | messages written since this scene last read `T` |
@@ -436,13 +438,13 @@ pub struct SceneContext<'a> {
 | `ui_list_refresh(&mut self, list: Entity)`, `ui_list_refresh_row(&mut self, list: Entity, index: usize)` | send `UiListBind` again next frame for every pooled row, or for item `index`'s row if pooled; the rows keep drawing until bound |
 | `ui_list_scroll_to(&mut self, list: Entity, index: usize)`, `ui_list_focus(&mut self, list: Entity, index: usize)` | scroll a list node by the least that shows item `index`'s row (a jump further than a view lands one view short, then eases); `ui_list_focus` also focuses the row's first focusable node, up to two frames after it is bound |
 | `ui_list_index(&self, node: Entity) -> Option<usize>` | the item of the list row `node` is in (itself or the nearest row above it), to map a `UiEvent` to its item. Each `ui_list_*` call on a node that is not a list warns once and does nothing |
-| `window(&mut self) -> Mut<'_, WindowRequest>`, `cursor(&mut self) -> Mut<'_, CursorRequest>` | requests applied after the frame |
+| `window(&mut self) -> Mut<'_, WindowRequest>`, `cursor(&mut self) -> Mut<'_, CursorRequest>` | the UI scale and cursor requests, applied after the frame (the window's size and display mode are `settings()`) |
 | `console(&mut self) -> ConsoleScope<'_>` | scene-scoped console handlers |
 | `spawn_child(&mut self, parent: Entity, bundle: impl Bundle) -> Entity` | |
 | `skip_interpolation(&mut self, entity: Entity)` | |
 | `screen_size() -> (f32, f32)`, `screen_width()`, `screen_height()` | screen space: the window in logical pixels, or the pixel-art target |
 | `scale_factor() -> f64`, `display_mode() -> DisplayMode` | from `WindowInfo` |
-| `request_display_mode(DisplayMode)`, `request_resolution(w, h)`, `request_display_change(w, h, DisplayMode)`, `request_ui_scale(Option<f32>)` | window changes; the UI scale is render pixels per UI unit, `None` for automatic |
+| `request_ui_scale(Option<f32>)` | the UI scale, render pixels per UI unit (`None`: automatic), applied after the frame |
 | `set_cursor(CursorStyle)`, `set_cursor_visible(bool)`, `show_cursor()`, `hide_cursor()`, `set_cursor_confined(bool)` (not on macOS or the web: the cursor stays free, warned once), `cursor_confinement_supported() -> bool`, `set_cursor_locked(bool)`, `set_custom_cursor(&Handle<Image>, hot_x: u16, hot_y: u16)`, `set_custom_cursor_centered(&Handle<Image>)` (an image not loaded leaves the cursor as it is) | cursor |
 
 Helpers that return `Mut<..>` borrow the context: chain one call (`ctx.effects().set_bloom(0.6)`) or bind `let mut fx = ctx.effects();` for several.
@@ -534,7 +536,11 @@ EngineBuilder::new()
 | `ui_fragments(bool)` | whether node trees keep the layout and resolved output of their unchanged subtrees and copy them (default `true`; only while `ui_cache` is on); `false` replays and resolves every unchanged subtree every frame, the same UI slower, to rule the copies out of a UI bug (also `DebugConfig::ui_fragments`, the console's `ui:fragments on\|off`) |
 | `ui_retain(bool)` | whether the renderer keeps the UI image while the UI is unchanged and reuses unchanged texts' glyphs (default `true`); `false` draws the whole UI every frame, the same pixels slower, to rule retention out of a rendering bug (also `DebugConfig::ui_retain`, the console's `ui:retain on\|off`) |
 | `show_colliders(bool)`, `show_fps(bool)`, `show_velocities(bool)`, `show_origins(bool)` | debug overlays |
-| `with_user_preferences(impl Into<UserPreferenceFilter>)` | let saved `system.json` values override |
+| `with_user_preferences(impl Into<UserPreferenceFilter>)` | which player settings `system.json` keeps (the others last for the session); repeated calls combine |
+| `save_versions<T: 'static>(SaveVersions<T>)` | a saved type's current version and its upgrade steps; a gap panics here, at the call |
+| `game_settings::<T>(key: &str)`, `game_settings_versioned::<T>(key: &str, SaveVersions<T>)` | the game's own settings section `key` (`T: Default + Serialize + DeserializeOwned + Send + Sync + 'static`), kept in `system.json` |
+| `memory_saves(MemorySaves)` | keep the saves and `system.json` in this in-memory store, never on disk (tests; a headless engine has its own anyway) |
+| `project(ProjectFile)` | the game's Ryo.toml compiled in with `ryo2d::project!()`, for builds with no Ryo.toml to read (the web) |
 | `insert_resource(impl Resource)` | resource for every scene and system |
 | `add_systems<M>(Phase, impl IntoScheduleConfigs<ScheduleSystem, M>)` | game-wide systems |
 | `add_message::<T: Message>()` | register a message type up front |
@@ -542,7 +548,7 @@ EngineBuilder::new()
 | `start_scene(impl Scene + 'static)` | first scene |
 | `build(self) -> Engine`, then `Engine::run(self) -> EngineResult<()>` | |
 
-Settings resolve in order: engine defaults, `Ryo.toml` (or values embedded by `ryo2d build`), builder calls, then saved preferences allowed by `with_user_preferences`.
+Settings resolve in order: engine defaults, `Ryo.toml` (or values embedded by `ryo2d build`, or the `project` file), builder calls, then the player's `system.json` values for the settings `with_user_preferences` keeps.
 
 The resolution model: `resolution(w, h)` (or `[system] resolution` in `Ryo.toml`) fixes screen space at `w`x`h` units: the UI, the mouse and `ctx.screen_size()` use it, and the main camera's `Projection::Fit` shows exactly that world area. The frame renders at the window's physical resolution, scaled by any factor to fit the window and centred with bars where the aspect ratios differ (`Presentation::Fit`), so it fills a full-screen window and stays sharp. `pixel_art(w, h)` instead renders into a `w`x`h` target scaled by a whole number, centred with bars, nearest sampling, sprites snapped to whole target pixels. With neither, the game is resolution-independent: the world renders at the window's physical size, the main camera keeps 1280x720 world units in view (a wider window shows more world), and screen space is the window in logical pixels. `window_size(w, h)` sets the window's starting logical size (by default the resolution, shrunk to fit 1280x720 when larger; for pixel art the largest whole multiple that fits 1280x720).
 
@@ -575,6 +581,8 @@ Engine messages (all `Message + Clone`):
 | `ChunkEvent` | `Loaded { map, chunk: IVec2 }`, `Unloading { map, chunk, changed: Option<ChunkTiles> }` | a streamed map's chunk landed (its class tiles in), or unloaded: gone from the map by the time it is read, `changed` holding its tiles if the player changed it (see [Tilemaps](#tilemaps)) |
 | `UiEvent` | `node: Entity, name: Option<String>, action: Option<String>, kind: UiEventKind` | a UI node was clicked, changed, dropped on, focused ... (see [Node trees](#node-trees)); also triggered on the node as an entity event |
 | `UiListBind` | `list, row: Entity, index: usize` | a list node gave a pooled row an item, at the start of the UI pass; the row is drawn from the next frame; also triggered on the row |
+| `SaveFinished` | `slot: String`, `op: SaveOp` (`Save`, `Delete`), `result: Result<(), Arc<SaveError>>` | a save or delete finished (`PreUpdate`), once per call, in a frame after it; saves of one slot overtaken before they were written report `Ok` |
+| `SettingsSaveFailed` | `error: Arc<SaveError>` | `system.json` could not be written (`PreUpdate`); the settings still apply, and the engine tries again at the next change and at quit |
 
 - Scenes: `ctx.messages::<T>()` returns a `Vec<T>` of what arrived since this scene last read `T` (each scene sees each message once); `ctx.write_message(m)`.
 - Systems: `MessageWriter<T>::write(m)`, `MessageReader<T>::read()`.
@@ -611,7 +619,7 @@ Engine messages (all `Message + Clone`):
 | `enum PadFamily { Xbox (default), PlayStation, Nintendo }` | `from_name(&str)`: PlayStation for "dualsense", "dualshock", "playstation", "sony", "ps4", "ps5"; Nintendo for "nintendo", "switch", "pro controller", "joy-con" |
 
 - The UI's actions are bound by the engine and may be rebound: `ui.up`, `ui.down`, `ui.left`, `ui.right` (arrows, D-pad, left stick), `ui.confirm` (Enter, numpad Enter, Space, South), `ui.back` (Escape, East), `ui.next` (Tab; Shift goes back), `ui.tab_next` (E, right bumper), `ui.tab_prev` (Q, left bumper).
-- Saved bindings: with `EngineBuilder::with_user_preferences([UserPreference::Bindings])` the bindings that differ from the defaults are kept in `system.json`, loaded at startup and saved when they change.
+- Saved bindings: with `EngineBuilder::with_user_preferences([UserPreference::Bindings])` the bindings that differ from the defaults are kept in `system.json`, loaded at startup and written with the settings a second after they change.
 - `enum GamepadButton { South, East, West, North, LeftBumper, RightBumper, LeftTrigger, RightTrigger, LeftStick, RightStick, Select, Start, Guide, DPadUp, DPadDown, DPadLeft, DPadRight }`.
 - `enum InputEvent { Key { key, pressed }, Text(String), MouseButton { button, pressed }, MouseMove { x, y }, RawMouseMotion { dx, dy }, Scroll(MouseScrollDelta) (a wheel's lines), ScrollPixels { x, y } (a trackpad already in logical pixels; Scroll(PixelDelta) is winit's physical pixels, divided by the window's scale factor), ImeEnabled, ImeDisabled, ImePreedit { text, cursor }, ImeCommit(String), GamepadConnected { id, name }, GamepadDisconnected(id), GamepadButton { id, button, pressed }, GamepadTrigger { id, button, value }, GamepadAxis { id, axis, value }, PadButton { button: GamepadButton, pressed }, PadStick { stick: Stick, x, y } }`: what the window, gamepads, `RYO_INPUT` scripts and the headless harness queue. `PadButton` and `PadStick` carry no gilrs id (scripted and headless input): they drive the tracked pad, or a virtual pad named "Virtual pad" when none is connected.
 
@@ -629,7 +637,6 @@ A mixer on kira 0.12. Clips, sound definitions, music and the mixer are registry
 | `play_emitter(&mut self, entity: Entity) -> Voice` | the entity's `AudioEmitter`, following it; a sound still loading waits as `play`'s does, starting where the entity is; stopped voice if it has none or is disabled |
 | `play_music(&mut self, music: &Handle<Music>)` | the one music player: crossfades over the new track's `crossfade` (fades in over `fade_in` from silence); the track already playing plays on (a paused one resumes); a loading track takes over once loaded; a failed one warns once and changes nothing |
 | `stop_music(&mut self, fade: Duration)`, `pause_music(&mut self)`, `resume_music(&mut self)`, `current_music(&self) -> Option<AssetId<Music>>` | `stop_music` also forgets a track still loading; `current_music` is the track playing, paused or waiting to load |
-| `set_volume_setting(&mut self, kind: VolumeKind, value: f32)`, `volume_setting(&self, kind: VolumeKind) -> f32` | the player's settings, 0 to 1 on the curve `volume_to_db`; playing sounds follow at once. Clamped; NaN is the kind's default |
 | `set_bus_volume(&mut self, bus: &str, db: f32)` | in place of the mixer's volume for the session, through reloads (at most +24); the setting, snapshot and duck still apply |
 | `snapshot(&mut self, name: &str)`, `clear_snapshot(&mut self)` | blend to the mixer's snapshot over its `blend`, or back; an unknown name warns once |
 | `set_mixer(&mut self, mixer: Mixer)` | build the buses from a mixer made in code, at once; one that fails its check is warned about and changes nothing |
@@ -641,8 +648,7 @@ A mixer on kira 0.12. Clips, sound definitions, music and the mixer are registry
 | `Audio<'w, 's>` (a `SystemParam`: `mut audio: Audio` in a system) | |
 |---|---|
 | `play<'a>(&mut self, sound: impl Into<Playable<'a>>) -> Voice`, `play_at<'a>(&mut self, sound, position: Vec2) -> Voice`, `play_with<'a>(&mut self, sound, options: PlayOptions) -> Voice`, `play_emitter(&mut self, entity: Entity) -> Voice` | as `AudioView`'s, deferred: queued in the system's buffer and applied where its commands apply (in a scene's section: the scene's voice; from a phase's system: the engine's). The voice returned reports playing until then, takes changes that apply after its start (a plain one is heard from its first audio), and is stopped from then if the play is refused. A `play_emitter` whose entity is not an emitter yet as it applies (spawned by the same system's `Commands`, declared after `Audio`) waits for the next audio update, and is refused there if it still is not |
-| `snapshot(&mut self, name: &str)`, `clear_snapshot(&mut self)`, `set_bus_volume(&mut self, bus: &str, db: f32)`, `set_volume_setting(&mut self, kind: VolumeKind, value: f32)` | as `AudioView`'s, as the buffer applies |
-| `volume_setting(&self, kind: VolumeKind) -> f32` | the last this system set (clamped), else the engine's |
+| `snapshot(&mut self, name: &str)`, `clear_snapshot(&mut self)`, `set_bus_volume(&mut self, bus: &str, db: f32)` | as `AudioView`'s, as the buffer applies |
 
 `Audio` reads the engine and never borrows it mutably, so systems that play sound do not conflict. In a world without an `AudioEngine` every voice it returns is already stopped.
 
@@ -659,7 +665,7 @@ A mixer on kira 0.12. Clips, sound definitions, music and the mixer are registry
 - `Mixer { buses: Vec<BusDef>, snapshots: Vec<SnapshotDef>, ducks: Vec<DuckDef>, on_focus_loss: FocusLoss }` (`Default` = the standard layout; an asset from `.mixer.ron`). The standard buses always exist: `master`, and under it `music`, `sfx`, `ui`, `voice`, `ambience` (`sfx`, `voice`, `ambience` pause with the game; `sfx`, `ambience` follow time scale). `MIXER_PATH` = `"audio/mixer.mixer.ron"`, loaded at start if present. A save or `set_mixer` builds a new tree: loops move to it, one-shots finish on the old one, which rings out its reverbs' and delays' tails (at most 10 s; at most four old trees at once) before it goes.
 - `BusDef { name, volume_db, effects: Vec<EffectDef>, sends: Vec<(String, f32)>, pauses_with_game: Option<bool>, follows_time_scale: Option<bool>, limit: Option<u16> }`: `new(name)`. `enum EffectDef { LowPass { cutoff, resonance }, HighPass { cutoff, resonance }, Eq { kind: EqKind, frequency, gain_db, q }, Reverb { feedback, damping, stereo_width, mix }, Delay { seconds, feedback_db, mix }, Compressor { threshold_db, ratio, attack, release, makeup_db, mix }, Distortion { kind: DistortionKind, drive_db, mix } }`; `enum EqKind { Bell, LowShelf, HighShelf }`, `enum DistortionKind { HardClip (default), SoftClip }`; `enum FocusLoss { Keep (default), Duck(f32), Mute }`.
 - `SnapshotDef`, `SnapshotBus`, `DuckDef` (a mixer made in code): `SnapshotDef { name, blend: f32, buses: Vec<(String, SnapshotBus)> }`, `SnapshotBus { volume_db: f32, low_pass: Option<f32> }`, `DuckDef { trigger, target, by_db: f32, attack: f32, release: f32 }`.
-- `enum VolumeKind { Master, Music, Sfx, Ui, Voice, Ambience }`: `ALL`, `bus() -> &'static str`, `default_value() -> f32` (1 for every kind, the mix as designed). `volume_to_db(v: f32) -> f32`: 40·log10(v) (amplitude v²): 1 is 0 dB, 0.5 about -12 dB, 0 silent (-60).
+- `enum VolumeKind { Master, Music, Sfx, Ui, Voice, Ambience }`: `ALL`, `bus() -> &'static str`, `default_value() -> f32` (1 for every kind, the mix as designed). `volume_to_db(v: f32) -> f32`: 40·log10(v) (amplitude v²): 1 is 0 dB, 0.5 about -12 dB, 0 silent (-60). The player's volume settings are `Settings`: `ctx.settings().set_volume(kind, v)` and `volume(kind)` (see [Config, settings and saves](#config-settings-and-saves)); playing sounds follow in the frame they change.
 - `AudioClip` (`Clone`; `.wav`, `.ogg`, `.mp3`, `.flac`, mono or stereo): `duration() -> Duration`, `sample_rate() -> u32`, `is_streamed() -> bool`, `from_frames(sample_rate: u32, frames: &[[f32; 2]]) -> Result<AudioClip, AudioClipError>` (`AudioClipError::ZeroSampleRate` for a rate of 0, `#[non_exhaustive]`). `AudioClipSettings { mode: ClipMode }`, `enum ClipMode { Auto (default: decode up to 10 s, stream longer), Decode, Stream }` (the web decodes every clip). Loaders: `AudioClipLoader`, `SoundLoader`, `MusicLoader`, `MixerLoader`.
 
 See `ryo-audio`.
@@ -972,7 +978,7 @@ One registry for every asset type. `AssetServer` (a resource; systems take `Res<
 
 ## Window and cursor
 
-- `WindowRequest { width, height, display_mode, ui_scale: Option<Option<f32>> }` (resource, `ctx.window()`): `new()`, `with_resolution(w, h)`, `with_display_mode(DisplayMode)`, `has_changes()`, `clear()`. Prefer the `ctx.request_*` helpers.
+- `WindowRequest { pub ui_scale: Option<Option<f32>> }` (resource, `ctx.window()`; its window size and display mode are the engine's, set from `Settings`): `new()`, `has_changes()`, `clear()`. Prefer `ctx.request_ui_scale`. The window's size and display mode are the player's settings: `ctx.settings().set_window_size(w, h)`, `set_display_mode(mode)`.
 - `WindowInfo { scale_factor: f64, display_mode: DisplayMode }` (resource kept current by the engine).
 - `CursorRequest { cursor, custom_cursor, visible, confined, locked }` (resource, `ctx.cursor()`): `has_changes()`. Prefer the `ctx.set_cursor*` helpers. The cursor you set (`ctx.set_cursor`, `ctx.set_custom_cursor`) stays until you set another; the engine shows it except over the developer console, where the console's cursor shows, and gives it back the frame the pointer leaves.
 - `enum CursorStyle { Default, Text, Crosshair, Pointer, ResizeHorizontal, ResizeVertical, ResizeNeSw, ResizeNwSe, Move, NotAllowed, Grab, Grabbing, Wait, Progress, Help, Cell, ZoomIn, ZoomOut }`.
@@ -1197,29 +1203,52 @@ See `ryo-renderer`.
 
 ---
 
-## Config and saves
+## Config, settings and saves
 
-Two persistence tiers: player settings in `system.json` (`SystemState`) and game data in slots (`GameSaveData<T>`).
+Three homes: the project's `Ryo.toml` (`Workspace`), the player's settings (`Settings`, kept in `system.json`) and the game's saves (`ctx.saves()`, one `<slot>.ryo-save` a slot). The engine writes `system.json` and the save files; the game only sets values and calls `save`. See `ryo-config-save` for the guide and the limits.
 
-| `SaveManager` | |
+| `SavesView<'w>` (`ctx.saves()`; `SavesView::new(&World)`) and `Saves<'w>` (a `SystemParam`: `saves: Saves`) | |
 |---|---|
-| `new(save_dir) -> SaveResult<Self>`; usually `Workspace::discover()?.create_save_manager()?` | |
-| `save_system(&SystemState)`, `load_system() -> SaveResult<SystemState>`, `load_or_create_system(&SystemDefaults)`, `load_or_create_system_filtered(&SystemDefaults, &UserPreferenceFilter)`, `has_system_save()` | settings |
-| `save_game<T: Serialize>(slot, &T)`, `save_game_with_info(slot, GameSaveData<&T>)`, `load_game<T: DeserializeOwned>(slot) -> SaveResult<GameSaveData<T>>`, `has_game_save(slot)`, `delete_game(slot)`, `list_game_saves() -> SaveResult<Vec<String>>` | compressed `.ryo-save` slots |
-| `save_raw(filename, &T)`, `load_raw(filename)` | arbitrary files |
-| `save_dir()`, `set_save_dir(path)`, `set_compression_level(0..9)` | |
+| `save<T: Serialize + Send + 'static>(&self, slot: &str, data: T) -> Result<(), SaveError>` | checks the slot and queues the save, which is serialized, compressed and written crash-safely on the save thread (on the frame, on the web), in call order; fails at once only for `InvalidSlot` or `Unavailable`; a `SaveFinished` reports the write |
+| `save_with<T: Serialize + Send + 'static>(&self, slot: &str, data: T, info: SaveInfo) -> Result<(), SaveError>` | with a display name, play time and labels for the slot list |
+| `load<T: DeserializeOwned + 'static>(&self, slot: &str) -> Result<Loaded<T>, SaveError>` | at once; a queued save loads as queued; upgraded through the `save_versions` steps; a damaged save loads its backup (`from_backup`, warned), both damaged is `Corrupt`; a newer build's is `NewerVersion`; one that does not read as `T` is `Deserialize` |
+| `info(&self, slot: &str) -> Result<SaveHeader, SaveError>` | the header, without the data |
+| `list(&self) -> Result<Vec<SaveSlot>, SaveError>` | every slot with its header, sorted by slot, queued ones included; reads headers only; a damaged or newer slot is left out |
+| `exists(&self, slot: &str) -> bool`, `is_writing(&self, slot: &str) -> bool` | a save is kept or queued; from a save or delete until its `SaveFinished` |
+| `delete(&self, slot: &str) -> Result<(), SaveError>` | queues the removal of the save and its backup, after the slot's earlier saves |
 
-- `SystemState { master_volume, music_volume, sfx_volume, ui_volume, voice_volume, ambience_volume, width, height, display_mode, vsync: Option<bool>, show_fps: Option<bool>, bindings: BTreeMap<String, Vec<String>>, env }` (the volumes are the player's settings, 0 to 1 on the audio curve; see [Audio](#audio)) (`bindings`: action name to binding texts such as `"Key:Space"`, only those the player changed): `new()`, `from_defaults(&SystemDefaults)`, `merge_defaults(..)`, `set_env(key, value)`, `get_env`, `get_env_str`, `get_env_bool`, `get_env_i64`, `get_env_f64`.
-- `GameSaveData<T> { data, timestamp, name, play_time, metadata }`: `new(data)`, `with_name`, `with_play_time(secs)`, `with_metadata(k, v)`.
-- `enum UserPreference { MasterVolume, MusicVolume, SfxVolume, UiVolume, VoiceVolume, AmbienceVolume, Resolution, DisplayMode, Vsync, ShowFps, Bindings }` (`all()`; the saved volumes are applied to the audio engine at startup; with `Bindings` enabled the engine loads the saved bindings at startup and saves them when they change); `UserPreferenceFilter`: `all()`, `none()`, `only(iter)`, `contains`, `is_empty`, `len`.
-- `enum DisplayMode { Windowed, ExclusiveFullscreen, BorderlessFullscreen }` (`all()`, `display_name()`); `Resolution { width, height }` (`new`, `common()`, `display_name()`); `parse_resolution("1280x720") -> Option<(u32, u32)>`; `compress_data(&[u8])`, `decompress_data(&[u8])`.
-- `Workspace` (`Ryo.toml` project): `discover()`, `discover_from(dir)`, `from_path(root)`, `root()`, `name()`, `config() -> &WorkspaceConfig`, `entry_point()`, `assets_dir()`, `save_location()`, `save_data_dir()`, `set_save_data_path(p)`, `create_save_manager()`, `env_str/env_bool/env_int/env_float(key)`, `has_env(key)`, `has_config_file()`.
-- `WorkspaceConfig { name, title, description, version, entry_point, save_data, assets, debug, system: SystemDefaults, release, env }`; `SystemDefaults { resolution, pixel_art, vsync, display_mode, master_volume, music_volume, sfx_volume, ui_volume, voice_volume, ambience_volume, audio_buffer_frames: Option<u32>, show_fps, dev_console, target_background_fps, background_rendering, env }` (`audio_buffer_frames`: the audio device's buffer, `None` for the device's own; smaller is lower latency, larger safer).
+- Slot names: 1 to 64 of `a`-`z`, `0`-`9`, `-` and `_`, not a Windows device name (`con`, `prn`, `aux`, `nul`, `com1`-`com9`, `lpt1`-`lpt9`). An older engine's save under another name still loads, lists and deletes on native.
+- `SaveInfo { name: Option<String>, play_time: u64, labels: BTreeMap<String, String> }` (`Default`): `new()`, `name(impl Into<String>)`, `play_time(secs: u64)`, `label(key: impl Into<String>, value: impl Into<String>)`.
+- `Loaded<T> { data: T, header: SaveHeader, from_backup: bool, upgraded_from: Option<u32> }`; `SaveSlot { slot: String, header: SaveHeader, from_backup: bool }`.
+- `SaveHeader { format: u32, version: u32, saved_at: u64, play_time: u64, name: Option<String>, labels: BTreeMap<String, String>, engine_version: String }`: the file format (2, or 1 for an older engine's save), the data version, the save time in Unix seconds, and an empty `engine_version` in format 1.
+- `SaveFinished { slot, op: SaveOp, result: Result<(), Arc<SaveError>> }` (message), `enum SaveOp { Save, Delete }`: see [Messages](#messages).
+- `SaveVersions<T>`: `new(current: u32)`, `step<A: DeserializeOwned + 'static, B: Serialize + 'static>(self, from: u32, convert: impl Fn(A) -> B + Send + Sync + 'static) -> Self` (version `from`'s value into `from + 1`'s; the last step yields `T`). Registered with `EngineBuilder::save_versions` or `game_settings_versioned`; a type never registered is version 1. A missing, duplicate or out-of-range step, or version 0, panics at the registering call.
+- On quit the engine finishes queued saves (warning after 3 s, giving up after 10 s).
+
+| `Settings` (resource; `ctx.settings() -> Mut<'_, Settings>`, `Res<Settings>` / `ResMut<Settings>` in systems) | |
+|---|---|
+| `volume(&self, kind: VolumeKind) -> f32`, `set_volume(&mut self, kind: VolumeKind, value: f32)` | 0 to 1 on the curve `volume_to_db`; clamped, NaN is the game's default |
+| `window_size(&self) -> (u32, u32)`, `set_window_size(&mut self, width: u32, height: u32)` | the window's size in logical pixels while windowed, each side at least 1 |
+| `display_mode(&self) -> DisplayMode`, `set_display_mode(&mut self, mode: DisplayMode)` | |
+| `vsync(&self) -> bool`, `set_vsync(&mut self, vsync: bool)` | reconfigures the surface (nothing on the web) |
+| `show_fps(&self) -> bool`, `set_show_fps(&mut self, show: bool)` | the FPS counter |
+| `reset(&mut self, preference: UserPreference)`, `reset_all(&mut self)` | back to the game's defaults (`reset_all` also puts each section to its `Default`); bindings reset with `ctx.actions().reset_defaults()` |
+| `is_kept(&self, preference: UserPreference) -> bool` | whether `system.json` keeps it (`with_user_preferences`) |
+| `game<T: 'static>(&self) -> &T`, `game_mut<T: 'static>(&mut self) -> &mut T` | the game's section of type `T`; panics for a type not registered with `game_settings` |
+
+- A change applies the same frame, after the fixed steps (the window's after the frame), and is written a second after the last change to what the file keeps, and at once when the game quits or is hidden. The player's resizes and fullscreen toggles (the OS, F5) update `Settings` too.
+- `system.json` (format 3) keeps the kept settings that differ from the game's defaults, the bindings that differ from theirs, and the sections' changed fields; formats 1 and 2 convert as they load. `SettingsSaveFailed { error: Arc<SaveError> }` (message) reports a failed write.
+- `enum UserPreference { MasterVolume, MusicVolume, SfxVolume, UiVolume, VoiceVolume, AmbienceVolume, Resolution, DisplayMode, Vsync, ShowFps, Bindings }` (`all()`; `Resolution` is the player's window size); `UserPreferenceFilter`: `all()` (also `Default`), `none()`, `only(iter)`, `contains`, `is_empty`, `len`, and `From` an array, `Vec` or slice of `UserPreference`.
+- `enum DisplayMode { Windowed, ExclusiveFullscreen, BorderlessFullscreen }` (`all()`, `display_name()`); `Resolution { width, height }` (`new`, `common()`, `display_name()`); `parse_resolution("1280x720") -> Option<(u32, u32)>`.
+- `Workspace` (`Ryo.toml` project; native only, `discover()` fails on the web): `discover()`, `discover_from(dir)`, `from_path(root)`, `root()`, `name()`, `config() -> &WorkspaceConfig`, `entry_point()`, `assets_dir()`, `save_location()`, `save_data_dir()`, `set_save_data_path(p)`, `has_config_file()`.
+- `WorkspaceConfig { name, title, description, version, entry_point, save_data, assets, debug: DebugConfig, release: ReleaseConfig, tiled_project: Option<String>, env }`: `env_str/env_bool/env_int/env_float(key)`, `has_env(key)`; `ReleaseConfig { logo, portable, save_folder }` (`ryo2d::core::config`).
+- `ryo2d::project!()`, or `project!("path/from/the/crate.toml")`: the crate's `Ryo.toml` compiled in as a `ryo2d::core::config::ProjectFile` (`from_toml(&'static str)`, `none()`, `is_none()`, `text()`), for `EngineBuilder::project`.
 
 <!-- with: #[derive(serde::Serialize, serde::Deserialize)] struct Progress { level: u32 } -->
 ```rust
 ctx.saves().save("slot1", Progress { level: 3 })?;
 let loaded: Loaded<Progress> = ctx.saves().load("slot1")?;
+ctx.settings().set_volume(VolumeKind::Music, 0.5);
 ```
 
 See `ryo-config-save`.
@@ -1470,17 +1499,17 @@ A screen written in a `.ui.ron` file loads into the same `UiNode`. The guide is 
 
 | Type | Variants | Alias |
 |---|---|---|
-| `EngineError` | `Window(String)`, `Render(String)`, `Save(SaveError)`, `WorkspaceError(String)`, `Gpu(GpuError)` | `EngineResult<T>` |
+| `EngineError` | `Window(String)`, `Render(String)`, `WorkspaceError(String)`, `Gpu(GpuError)` | `EngineResult<T>` |
 | `GpuError` | `NoAdapter`, `RequestDevice`, `CreateSurface`, `DeviceLost` (`String`) | |
 | `AssetError` | `NotFound`, `Io`, `Decode`, `NoLoader`, `Dependency`, `Cycle`, `InvalidPath` (see [Assets](#assets)); shared as `Arc<AssetError>` | |
 | `ImageError` | `Decode(image::ImageError)` (from `Image::decode`) | |
 | `MusicJoinError` | `StreamedIntro`, `StreamedLoop`, `Rates { intro, looped }`, `EmptyLoop` (from `Music::intro_and_loop`; a failed audio file is an `AssetError`) | |
 | `AudioClipError` | `ZeroSampleRate` (from `AudioClip::from_frames`) | |
-| `SaveError` | `Serialization`, `Deserialization`, `Compression`, `Decompression` (`String`), `Io(io::Error)`, `NotFound(PathBuf)`, `InvalidSlot(String)` | `SaveResult<T>` |
+| `SaveError` | `Io { path: String, source: io::Error }`, `Corrupt { slot: String, reason: String }`, `NewerVersion { found: u32, current: u32 }`, `NotFound(String)`, `InvalidSlot(String)`, `StorageFull`, `Unavailable`, `Serialize(Box<dyn Error + Send + Sync>)`, `Deserialize { slot: String, source: Box<dyn Error + Send + Sync> }` (see [Config, settings and saves](#config-settings-and-saves)); shared as `Arc<SaveError>` in messages | |
 | `NetworkError` | `InitError`, `ConnectionError`, `SendError`, `ReceiveError`, `TransportError` (`String`) | `NetworkResult<T>` |
 | `ReplicationError` | `SerializationError`, `DeserializationError` (`String`), `TypeMismatch { expected, found }`, `UnknownComponent(ComponentTypeId)`, `EntityNotFound(u64)` | `ReplicationResult<T>` |
 
-All are `thiserror` enums (`Display`, `Error`); `SaveError` and `GpuError` convert into `EngineError` with `?`.
+All are `thiserror` enums (`Display`, `Error`); `GpuError` converts into `EngineError` with `?`.
 
 ---
 
@@ -1580,6 +1609,8 @@ See the `ryo-procgen` skill and `crates/ryo2d-procgen/AGENTS.md`, `crates/ryo2d-
 | `frame_count()`, `resize(w, h)` | `resize` as if the window became `w`x`h` physical pixels |
 | `world()` / `world_mut()` | the world between steps |
 | `assets() -> AssetsView<'_>` | the asset registry between steps; loads queued with `load` land in a step's pump |
+| `saves() -> MemorySaves` | the in-memory store a headless engine keeps its saves and `system.json` in (never the disk); `EngineBuilder::memory_saves(store)` gives one before the engine starts |
+| `MemorySaves` (`Clone`: the same store, `Default`) | `new()`, `put(name: &str, bytes: impl Into<Vec<u8>>)`, `get(name: &str) -> Option<Vec<u8>>`, `names() -> Vec<String>`, `remove(name: &str)`: files by name (`slot1.ryo-save`, `system.json`), to plant an old or damaged save and read what the game wrote |
 | `press_key` / `release_key` / `tap_key` / `type_text(&str)` | keyboard input (`KeyCode`) |
 | `press_mouse` / `release_mouse` / `mouse_move(x, y)` | mouse input (screen space) |
 | `mouse_move_window(x, y)` | the pointer at physical window pixels, mapped like a real cursor |

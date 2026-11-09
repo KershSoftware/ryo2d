@@ -2,7 +2,7 @@
 name: ryo-engine-dev
 description: Working on the Ryo2D engine - the frame's phases, module map, resources, public API, crates and testing.
 metadata:
-  version: 2.5.2
+  version: 2.6.0
 ---
 
 # Ryo2D Engine Developer
@@ -40,7 +40,9 @@ Engine::frame
 │                     files), stream_maps (streamed maps unload chunks far from every anchor,
 │                     ask the chunk builder thread for the missing ones near them and land
 │                     those back, nearest first, ChunkEvent) and follow_chunk_swaps (class
-│                     tiles follow the chunks loaded and unloaded whole); then the console
+│                     tiles follow the chunks loaded and unloaded whole); beside them
+│                     drain_save_results (finished saves as SaveFinished, the settings
+│                     file's results to its writer, SettingsSaveFailed); then the console
 │                     (animation, input, commands)
 ├─ UI pass            resolve first, once a frame, against last frame's UI records: the
 │                     pointer, the wheel, then focus and navigation from the ui.* actions;
@@ -61,6 +63,9 @@ Engine::frame
 │   │                 trigger contents
 │   ├─ Transforms     propagation
 │   └─ Trails         trail point recording; later debug shapes last one frame
+├─ settings           Engine::apply_settings: a changed Settings goes to the mixer, the window
+│                     request, vsync and the FPS overlay; Engine::save_settings: the changed
+│                     bindings, then the settings writer's debounced system.json write
 ├─ Update             UpdateSet::Game: the scenes' own Update schedules; builder systems by default
 ├─ PostUpdate         tile maps' occluder sync, then Transforms (propagation) → Camera (shake on
 │                     real time, every CameraView)
@@ -91,12 +96,12 @@ Engine::frame
 
 | In the world (resources) | Engine-owned (fields of `Engine`) |
 |--------------------------|-----------------------------------|
-| `Time`, `Input`, `ScreenMapping`, `AssetServer` and one `Assets<T>` per asset type, `AudioEngine` (kira's manager, the buses and the voices; `ctx.audio()`), `EffectsManager`, `LightingSettings`, `Look`, `WindowRequest`, `CursorRequest`, `WindowInfo`, `RenderPipeline`, `RenderTargets`, `Fonts`, `TextIcons`, `TextEffects`, `Gpu` (after GPU init), `PhysicsPaused`, `PhysicsConfig`, `Physics`, `CommandRegistry`, `FallbackErrorHandler`, `Messages<T>` per type | The window, the wgpu renderer (with the camera images), the sprite textures, the 2D batch and the lighting renderer, the camera uniforms, the draw list, the tile drawer (`render/tiles.rs`; the padded tilesets it shares with map landings are the crate's `PaddedCache` resource), the text engine (layout cache), the UI's image sizes (`ImageSizes`, the image store's follower) and the frame's UI commands, console state, debug config and overlays, dev windows, gilrs, capture state |
+| `Time`, `Input`, `ScreenMapping`, `AssetServer` and one `Assets<T>` per asset type, `AudioEngine` (kira's manager, the buses and the voices; `ctx.audio()`), `SaveService` (the storage, the version chains and the save thread; `ctx.saves()`), `Settings` (the player's settings; `ctx.settings()`), `SettingsWriter` (when the game keeps settings), `EffectsManager`, `LightingSettings`, `Look`, `WindowRequest`, `CursorRequest`, `WindowInfo`, `RenderPipeline`, `RenderTargets`, `Fonts`, `TextIcons`, `TextEffects`, `Gpu` (after GPU init), `PhysicsPaused`, `PhysicsConfig`, `Physics`, `CommandRegistry`, `FallbackErrorHandler`, `Messages<T>` per type | The window, the wgpu renderer (with the camera images), the sprite textures, the 2D batch and the lighting renderer, the camera uniforms, the draw list, the tile drawer (`render/tiles.rs`; the padded tilesets it shares with map landings are the crate's `PaddedCache` resource), the text engine (layout cache), the UI's image sizes (`ImageSizes`, the image store's follower) and the frame's UI commands, console state, debug config and overlays, dev windows, gilrs, capture state |
 | Non-send `SceneHost` (the scene stack), taken out by the scene systems while they run | |
 
 - `init_world_resources` (`engine/mod.rs`) inserts the resources when the engine is built, windowed or headless; `Gpu` follows in `init_gpu`.
 - Scene callbacks get `Time` and `Input` as `SceneContext` fields, taken out of the world for the callback (`SceneContext::scoped`); `ctx.assets()` is an `AssetsView` borrowing the world (the `AssetServer` and the stores stay resources), and `ctx.audio()` an `AudioView` over the `AudioEngine` resource. Systems always see them as resources. Cameras are entities (`Camera2d`); the main one (`MainCamera`) is spawned with the world and survives world cleanup, and `ctx.camera()` edits it.
-- Per-frame requests from scenes to the window go through resources (`WindowRequest`, `CursorRequest`) applied in `about_to_wait` (`engine/window.rs`), never by borrowing the window during a callback. The window's cursor is resolved there too (`CursorResolver`): the console's per-frame override (`Engine::console_cursor`, `None` = no opinion), else the game's last cursor, applied only when it changes and once more when the left button is released.
+- Per-frame requests from scenes to the window go through resources applied in `about_to_wait` (`engine/window.rs`), never by borrowing the window during a callback: `WindowRequest` carries the game's UI scale and, crate-internally, the window size and display mode `Engine::apply_settings` takes from `Settings`; `CursorRequest` the cursor. The window's own changes (a resize, the OS's or F5's fullscreen) flow back into `Settings` through `Engine::set_display_mode` and `follow_os_window`, so nothing is asked of the window twice. The window's cursor is resolved there too (`CursorResolver`): the console's per-frame override (`Engine::console_cursor`, `None` = no opinion), else the game's last cursor, applied only when it changes and once more when the left button is released.
 
 ## Module Map (`src/core/`)
 
@@ -123,10 +128,13 @@ Engine::frame
 | `hash.rs` | The engine's fast hasher (`FastHasher`, `FastMap`, `FastSet`, `fast_hash`) for keys it makes itself: ids, the UI's memory and layout maps, the text caches; never SipHash, never saved |
 | `asset/` | The asset registry: `AssetId` and `Handle`, the `Assets<T>` stores, `AssetServer` (keys, loaders, sources, worker threads), the pump (`pump.rs`), the watcher and its debounce (`watch.rs`), the engine's loaders (`loaders/`); `src/core/asset/AGENTS.md` |
 | `audio/` | The audio engine on kira: `AudioEngine` (device or mock backend, the voice table, limits, holds, reloads, the web's unlock), the bus tree and mixer, snapshots and ducks, spatial sound, the music player, the streamed clips' decoder (`stream.rs`), `audio_system`; `src/core/audio/AGENTS.md` |
-| `config/` | `Ryo.toml` workspace, user preferences (`system.json`), saves |
+| `config/` | The project: `Workspace` and `Ryo.toml` reading (misspelt keys warned), the project-settings table declared once (`project_table.rs`: Ryo.toml, `RYO_EMBED_*`, `src/build.rs`), `resolve_settings`, `ProjectFile` (`ryo2d::project!()`), the save location and the browser store's name, the preference filter; `src/core/config/AGENTS.md` |
+| `saves/` | Game saves: `SavesView` / `Saves`, the save service and its writer thread, the checksummed save file, `SaveVersions`, the crash-safe replace and recover, the folder, browser (IndexedDB) and memory stores; `src/core/saves/AGENTS.md` |
+| `settings/` | The player's settings: `Settings` and its game sections, `system.json` (format 3, older formats converted), the debounced `SettingsWriter`; `src/core/settings/AGENTS.md` |
+| `diagnostics/` | The runtime `DebugConfig`, frame timings (`FrameCost`) and the F1 overlays' drawing; `src/core/diagnostics/AGENTS.md` |
 | `console/` | Developer console and commands |
 | `capture/` | Frame capture to PNG (`RYO_CAPTURE_*`) |
-| `testing/` | `HeadlessEngine` (pad, wheel, trackpad and UI-focus helpers), `UiHarness` (UI frames without a GPU), `shared_gpu` |
+| `testing/` | `HeadlessEngine` (pad, wheel, trackpad and UI-focus helpers, its in-memory saves), `UiHarness` (UI frames without a GPU), `shared_gpu`, `MemorySaves` |
 | `network/` | Client/server, replication, RPC (`ryo-network`) |
 | `windows/` | Dev tool windows (profiler, logger); they draw `CpuText` (JetBrains Mono through the text module), with no hand-made font |
 | `window.rs`, `cursor.rs` | Window modes and requests, cursor requests |

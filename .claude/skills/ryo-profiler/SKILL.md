@@ -2,7 +2,7 @@
 name: ryo-profiler
 description: Profiling Ryo2D games and engine - puffin integration, profiler window, performance analysis.
 metadata:
-  version: 1.1.1
+  version: 1.2.0
 ---
 
 # Ryo2D Profiler Specialist
@@ -56,7 +56,7 @@ fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction {
 - The values are smoothed over about 50 frames (a plain mean until then), so a change shows within a second at 60 fps; `frames()` counts the frames measured, and `fps()` is 0 until the second frame.
 - Compare a feature on and off on the same machine to see what it costs: the tilemap demo's Big map page shows the map's cost this way, the frame with the map against the frame without it, with the rest of the total (total less update, render and present) as "other".
 - `update_ms()` is the UI pass and the fixed steps alone; the asset pump, map spawning and transform propagation are in `total_ms()` only.
-- The raw measurement of each frame is `ryo2d::core::config::FrameTimings { update, physics, render, present, wait, total }` (`Duration`s), what the engine smooths; its `wait` is the time spent waiting for the window's next image, which `present` and `total` leave out.
+- The raw measurement of each frame is `ryo2d::core::diagnostics::FrameTimings { update, physics, render, present, wait, total }` (`Duration`s), what the engine smooths; its `wait` is the time spent waiting for the window's next image, which `present` and `total` leave out.
 
 ## Instrumenting Code
 
@@ -148,7 +148,7 @@ This compiles with the profiler feature but doesn't auto-open. Press **F10** to 
 |------|---------|
 | `src/core/profiler.rs` | Macros, init, new_frame |
 | `src/core/windows/profiler_window.rs` | Windowed flamegraph viewer |
-| `src/core/config/debug.rs` | `enable_profiler` config option |
+| `src/core/diagnostics/flags.rs` | `DebugConfig::enable_profiler`, the runtime switch (set from `[debug] enable_profiler` in Ryo.toml) |
 | `src/cli/commands/dev.rs` | `--profiler` CLI flag handling |
 
 ### How Data Flows

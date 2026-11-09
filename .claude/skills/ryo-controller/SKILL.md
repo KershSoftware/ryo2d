@@ -2,7 +2,7 @@
 name: ryo-controller
 description: Gamepad/controller input with gilrs - buttons, sticks, triggers, actions and stick directions, pad families and button prompts, the last-used device, and scripted or headless pad input.
 metadata:
-  version: 2.1.1
+  version: 2.2.0
 ---
 
 # Ryo2D Gamepad/Controller Specialist
@@ -72,7 +72,7 @@ fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
 
 - `action_pressed` / `action_held` / `action_released` follow the one-shot rules of what they bind (seen by the first fixed step of a frame).
 - **Stick directions** are digital: `StickDirection { stick: Stick::Left | Stick::Right, direction: Direction::Up | Down | Left | Right }` goes down past 0.5 deflection and comes up below 0.4, so a stick flick is one press. Read one directly with `ctx.input.stick_direction_pressed(dir)` (`_down`, `_released`).
-- **Rebinding:** `ctx.actions().rebind("jump", 0, Binding::Pad(GamepadButton::North))` replaces slot 0 (past the end it adds one); if another action of the same group (`ui.*` or the game's) had that binding, the two swap and the other's name is returned. `reset_defaults()` puts every action back. `Binding::to_config()` / `parse` are the saved text (`"Pad:South"`, `"Stick:LeftUp"`). With `EngineBuilder::with_user_preferences([UserPreference::Bindings])` the player's bindings are saved in `system.json` (`ryo-config-save`).
+- **Rebinding:** `ctx.actions().rebind("jump", 0, Binding::Pad(GamepadButton::North))` replaces slot 0 (past the end it adds one); if another action of the same group (`ui.*` or the game's) had that binding, the two swap and the other's name is returned. `reset_defaults()` puts every action back. `Binding::to_config()` / `parse` are the saved text (`"Pad:South"`, `"Stick:LeftUp"`). With `EngineBuilder::with_user_preferences([UserPreference::Bindings])` the bindings that differ from the defaults are kept in `system.json`: written with the player's settings a second after they change, and loaded at startup (`ryo-config-save`).
 - **The UI's actions** are pre-bound: `ui.up/down/left/right` (arrows, D-pad, left stick), `ui.confirm` (Enter, Space, South), `ui.back` (Escape, East), `ui.next` (Tab), `ui.tab_next` / `ui.tab_prev` (E / Q and the bumpers). Menus inside a focus scope are played with them; with no scope on screen the D-pad, the stick and A stay gameplay's (`ryo-ui`, Focus and Navigation).
 
 ## Prompts and Pad Families

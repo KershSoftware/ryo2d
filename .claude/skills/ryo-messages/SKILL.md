@@ -2,7 +2,7 @@
 name: ryo-messages
 description: Messages - typed, buffered notifications between scenes and systems; the engine's message types and how to define, write and read your own.
 metadata:
-  version: 2.7.0
+  version: 2.8.0
 ---
 
 # Ryo2D Messages
@@ -112,6 +112,7 @@ A reader ordered after the writer in the same schedule sees the message the same
 | The asset pump (`AssetEvent<T>` for each asset type: loads, reloads, frees and failures); `load_now` writes its own `Added` or `Failed` at once | `PreUpdate`, once a frame | this frame's `ui` and steps |
 | Tile maps (`MapEvent`: a map landed, followed a saved file, or failed; `ChunkEvent`: a streamed map's chunk landed or unloaded) | `PreUpdate`, after the asset pump | this frame's `ui` and steps |
 | The UI pass (`UiReloaded`, then `UiListBind`, before any tree is drawn; `UiEvent` as each scene's node trees are walked, or after `ui` for embedded trees) | once a frame, before the fixed steps | this frame's `ui` and steps |
+| The saves (`SaveFinished` for each save and delete finished since the last frame; `SettingsSaveFailed` for a failed `system.json` write) | `PreUpdate`, once a frame | this frame's `ui` and steps |
 | `ParticleSystem::update` (`ParticleCollision`) | where the scene calls it | after that call |
 
 The trigger behaviours (`Pickup`, `KillZone`, `Checkpoint`) read the previous step's `TriggerEntered` in `FixedSet::Movement`, so `PickedUp`, `Killed` and `CheckpointReached` come one step after the overlap, and `update` reads them one step after that. While physics is paused (`PhysicsPaused`) no collision or trigger messages are written; the behaviours keep running and still act on an entry that arrived just before the pause.
@@ -155,6 +156,8 @@ All are in the prelude and registered at engine build; `AssetEvent<T>` is regist
 | `ChunkEvent` | `Loaded { map, chunk: IVec2 }`, `Unloading { map, chunk, changed: Option<ChunkTiles> }` | a streamed map's chunk landed this frame, its class tiles in, or unloaded this frame: by the time it is read the chunk's tiles, class tiles and `ChunkOwned` entities are gone (its colliders and shadows within the frame), and `changed` holds its tiles when the player changed it since it landed, else `None`; in a frame that does both, a map's `Loaded` come before its `Unloading` (see `ryo-tilemap`, Streaming an endless world) |
 | `UiEvent` | `node`, `name`, `action`, `kind: UiEventKind` (`Clicked`, `SecondaryClicked`, `Changed`, `Submitted`, `Dropped { source }`, `Back`, `FocusGained`, `FocusLost`) | a UI node reported something, during the UI pass, before the fixed steps (see `ryo-ui`, Nodes). A scene reads its own nodes' with `ctx.ui_events()`, which shares this message's cursor |
 | `UiListBind` | `list` (the list node), `row` (the pooled row), `index` (the item) | a UI list node gave one of its pooled rows an item (a new row, a row reused for another item, or `ctx.ui_list_refresh`), at the start of the UI pass, before any tree is drawn. The game fills the row (`ctx.ui_set(row, ..)`) in `ui`, and the row is drawn from the next frame. Every list's binds reach every scene: keep to your list's `list`. Also triggered on the row as an entity event (see `ryo-ui`, Virtual Lists) |
+| `SaveFinished` | `slot: String`, `op: SaveOp` (`Save`, `Delete`), `result: Result<(), Arc<SaveError>>` | a save or delete finished, once per call, in a frame after it: `Ok`, or why it failed; saves of one slot that follow each other faster than they are written write only the last, and the ones before it report `Ok` (see `ryo-config-save`) |
+| `SettingsSaveFailed` | `error: Arc<SaveError>` | the player's settings file, `system.json`, could not be written (a full disk, a read-only folder), once per failed write; the settings still apply, and the engine tries again at the next change and when the game quits (see `ryo-config-save`) |
 | `UiReloaded` | `root: Entity`, `replaced: Option<Entity>` | a UI node tree was brought in line with its changed `.ui.ron` file (saved while hot reload is on, debug builds with a window, or reloaded with `ctx.assets().server().reload(path)`), once per root, before that frame's UI pass. `replaced` is the old root when the file gave the root a new kind, so a game holding it swaps in `root`. Nodes the file gave a new kind are new entities, so a game that filled a placeholder fills it again here (see `ryo-ui`, Files) |
 
 <!-- with: #[derive(Component)] struct Coin; #[derive(Component)] struct Spikes; -->

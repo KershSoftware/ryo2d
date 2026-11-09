@@ -2,7 +2,7 @@
 name: ryo-audio
 description: "Audio - the workflow from a DAW export through assets/ and a .sound.ron definition to ctx.audio().play, voices and voice limits, the mixer file (buses, effects, sends, snapshots, ducking), the player's volume settings and their curve, 2D spatial sound with listeners and emitters, pause and time scale, music with intros, loops and crossfades, hot reload, the web's first-gesture unlock, latency, and testing with audio_world and the audio log."
 metadata:
-  version: 2.5.4
+  version: 2.6.0
 ---
 
 # Ryo2D Audio
@@ -147,7 +147,7 @@ let over = engine.is_stopped();            // ended, or never started
 | From an `AudioEmitter` | Its entity | The entity is despawned, disabled (a pool putting it back) or loses its emitter: its loops and its paused or held one-shots stop with their `fade_out`, and its one-shots playing play out whatever their length (a death cry as it despawns) |
 | `play_music` | The engine's music player | It is replaced or stopped, or a scene whose `cleanup_on_exit` includes `SceneCleanup::MUSIC` is switched away from or reset (cleanup does not run on `Pop`) |
 
-**From a system**, take `Audio` as a parameter. It has `play`, `play_with`, `play_at` and `play_emitter`, and `snapshot`, `clear_snapshot`, `set_bus_volume`, `set_volume_setting` and `volume_setting`:
+**From a system**, take `Audio` as a parameter. It has `play`, `play_with`, `play_at` and `play_emitter`, and `snapshot`, `clear_snapshot` and `set_bus_volume` (the player's volume settings are `Settings`: `ResMut<Settings>` in a system, section 6):
 
 ```rust
 #[derive(Component)]
@@ -173,7 +173,7 @@ fn footsteps(mut audio: Audio, time: Res<Time>, mut walkers: Query<(&mut Footste
 - **Its plays are deferred.** `Audio` reads the engine without borrowing it mutably, so systems that play sound run beside each other with no conflict. Each play is queued and applied where the system's commands apply (the end of its schedule, or a sync point before a system ordered after it).
 - **Each play returns its `Voice` at once.** Until the play applies, the voice reports playing. Changes made to it meanwhile apply after its start, so a plain `set_volume` in the same system is heard from its first audio. A play refused as it applies leaves the voice stopped.
 - **`play_emitter` of an entity the system spawns, or despawns, works in either order.** bevy applies a system's `Audio` and `Commands` in the order they are declared, so with `Audio` first a spawned entity does not exist yet as the play applies: such a play waits for the engine's next audio update and plays there. With `Commands` first a despawn applies before the play (a barrel that plays its blast and despawns): the play sounds where the emitter last was, unfollowed, a one-shot playing out and a loop ending with its fade. One whose entity is still no emitter by the next update (gone before, disabled, no `AudioEmitter`) plays nothing, logged as refused (`emitter`) and warned once in debug builds.
-- **Ownership is the scene rule:** a play applied in a scene's section (a system the scene added with `ctx.add_systems`) belongs to that scene; one from a system added to a phase on the `EngineBuilder` is the engine's. An observer with `Audio` applies its plays at the world's next flush, which may be outside the scene that triggered it, so a loop it plays can outlive that scene: play scene-owned loops from the scene's code. `volume_setting` reads back what the system set at once.
+- **Ownership is the scene rule:** a play applied in a scene's section (a system the scene added with `ctx.add_systems`) belongs to that scene; one from a system added to a phase on the `EngineBuilder` is the engine's. An observer with `Audio` applies its plays at the world's next flush, which may be outside the scene that triggered it, so a loop it plays can outlive that scene: play scene-owned loops from the scene's code.
 - An exclusive system (`&mut World`) plays at once with `AudioView::new(world).play(&handle)`; music, `set_mixer` and `seed` are `AudioView`'s.
 
 ## 4. Voice limits and priority
@@ -262,10 +262,10 @@ The engine loads `audio/mixer.mixer.ron` (`MIXER_PATH`) at start if the game has
 
 ## 6. The player's volume settings
 
-Six settings, one per standard bus, are what a settings menu shows: `VolumeKind::Master`, `Music`, `Sfx`, `Ui`, `Voice` (dialogue) and `Ambience`. A game's own bus takes the setting of the standard bus it is under.
+Six settings, one per standard bus, are what a settings menu shows: `VolumeKind::Master`, `Music`, `Sfx`, `Ui`, `Voice` (dialogue) and `Ambience`. A game's own bus takes the setting of the standard bus it is under. They are the player's settings, in `ctx.settings()` (`Settings`, `ryo-config-save`; `ResMut<Settings>` in a system): a change is heard that frame and saves itself.
 
 ```rust
-ctx.settings().set_volume(VolumeKind::Music, 0.5); // playing sounds follow at once
+ctx.settings().set_volume(VolumeKind::Music, 0.5); // playing sounds follow this frame
 let music = ctx.settings().volume(VolumeKind::Music);
 ```
 
@@ -275,12 +275,12 @@ let music = ctx.settings().volume(VolumeKind::Music);
 |---|---|---|---|---|---|---|---|
 | Gain | 0 dB | -2 dB | -6 dB | -12 dB | -24 dB | -40 dB | silent |
 
-A linear slider leaves 50% at only -6 dB and puts everything below -12 dB in its bottom quarter; on this curve 50% is about -12 dB, near half as loud (loudness halves at about -10 dB), and each halving of the setting is the same 12 dB step. 0 is exact silence; a value outside 0 to 1 is clamped, and one that is not a number is the kind's default.
+A linear slider leaves 50% at only -6 dB and puts everything below -12 dB in its bottom quarter; on this curve 50% is about -12 dB, near half as loud (loudness halves at about -10 dB), and each halving of the setting is the same 12 dB step. 0 is exact silence; a value outside 0 to 1 is clamped, and one that is not a number is the game's default for that setting.
 
 - **Defaults** come from `Ryo.toml` (`[system] master_volume = 1.0`, `music_volume`, `sfx_volume`, `ui_volume`, `voice_volume`, `ambience_volume`); without them every setting is 1, the mix as designed, and `ryo2d init` writes 1.0. A game that wants headroom on master sets less there (0.89 is about -2 dB).
-- **Saving:** `SystemState` keeps the six as `master_volume`, `music_volume`, `sfx_volume`, `ui_volume`, `voice_volume` and `ambience_volume` (`ryo-config-save`). With `EngineBuilder::with_user_preferences` allowing them (`UserPreference::MasterVolume` .. `AmbienceVolume`), the engine applies the saved values at start. A saved value is a point on this curve. A `system.json` from before its `format_version` (an engine whose volumes were amplitudes, 20·log10(v) dB) has each volume converted once as it loads to √v, which is heard at the same dB, and is saved with the version, so a player's settings keep their loudness. A setting the file lacks is the game's `[system]` default.
+- **Saving:** with `EngineBuilder::with_user_preferences` keeping them (`UserPreference::MasterVolume` .. `AmbienceVolume`), `system.json` keeps each volume the player moved away from the game's default, as `master_volume`, `music_volume`, `sfx_volume`, `ui_volume`, `voice_volume` and `ambience_volume`, written a second after the slider stops (`ryo-config-save`). The engine applies the saved values at start, before any sound plays. A saved value is a point on this curve. A `system.json` from before its `format_version` (an engine whose volumes were amplitudes, 20·log10(v) dB) has each volume converted once as it loads to √v, which is heard at the same dB, and is written in today's format at the next save, so a player's settings keep their loudness. A setting the file lacks is the game's default (`[system]`, or 1).
 
-A settings screen:
+A settings screen, setting a volume only when its slider moved:
 
 ```rust
 struct AudioSettings;

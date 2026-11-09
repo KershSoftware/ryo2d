@@ -2,7 +2,7 @@
 name: ryo-ui
 description: Build game UI - widgets as builders in the Scene::ui hook, or node trees (UiNode) spawned once as entities - laid out in rows, columns and grids, with focus scopes for keyboard and gamepad navigation, scroll areas, popups and modals, drag and drop, themes, UI events and the input the UI consumes. Use when creating HUDs, menus, settings screens, inventories, dialogue or any in-game interface.
 metadata:
-  version: 4.8.1
+  version: 4.9.0
 ---
 
 # Ryo2D UI Specialist
@@ -591,6 +591,12 @@ impl Scene for PauseMenu {
 ```rust
 const TABS: [&str; 3] = ["Audio", "Video", "Controls"];
 const WINDOWS: [&str; 3] = ["Windowed", "Borderless", "Fullscreen"];
+/// The display mode of each `WINDOWS` entry
+const MODES: [DisplayMode; 3] = [
+  DisplayMode::Windowed,
+  DisplayMode::BorderlessFullscreen,
+  DisplayMode::ExclusiveFullscreen,
+];
 /// The game's actions and their labels
 const ACTIONS: [(&str, &str); 4] = [
   ("move_left", "Move left"),
@@ -599,24 +605,10 @@ const ACTIONS: [(&str, &str); 4] = [
   ("attack", "Attack"),
 ];
 
+/// The screen keeps only its tab: the values are the player's settings
+#[derive(Default)]
 struct SettingsScreen {
   tab: usize,
-  music: f32,
-  effects: f32,
-  window: usize,
-  vsync: bool,
-}
-
-impl Default for SettingsScreen {
-  fn default() -> Self {
-    Self {
-      tab: 0,
-      music: 0.6,
-      effects: 0.8,
-      window: 0,
-      vsync: true,
-    }
-  }
 }
 
 /// The game's actions with their default bindings. `bind` again is
@@ -651,6 +643,16 @@ impl Scene for SettingsScreen {
 
   fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction {
     let heading = ui.theme().text.heading.style();
+    // The widgets edit copies of the player's settings
+    let (mut music, mut effects, mut window, mut vsync) = {
+      let settings = ctx.settings();
+      (
+        settings.volume(VolumeKind::Music),
+        settings.volume(VolumeKind::Sfx),
+        MODES.iter().position(|&mode| mode == settings.display_mode()).unwrap_or(0),
+        settings.vsync(),
+      )
+    };
     let mut reset = false;
     ui.panel()
       .focus_scope()
@@ -668,12 +670,12 @@ impl Scene for SettingsScreen {
           .gap(10.0)
           .show(|ui| match self.tab {
             0 => {
-              ui.slider(&mut self.music, 0.0..=1.0)
+              ui.slider(&mut music, 0.0..=1.0)
                 .step(0.05)
                 .label("Music")
                 .show_value()
                 .show();
-              ui.slider(&mut self.effects, 0.0..=1.0)
+              ui.slider(&mut effects, 0.0..=1.0)
                 .step(0.05)
                 .label("Effects")
                 .show_value()
@@ -681,9 +683,9 @@ impl Scene for SettingsScreen {
             }
             1 => {
               setting_row(ui, "Window", |ui| {
-                ui.dropdown(&mut self.window, &WINDOWS).width(200.0).show();
+                ui.dropdown(&mut window, &WINDOWS).width(200.0).show();
               });
-              ui.toggle(&mut self.vsync, "VSync").show();
+              ui.toggle(&mut vsync, "VSync").show();
             }
             _ => {
               for (action, label) in ACTIONS {
@@ -698,6 +700,21 @@ impl Scene for SettingsScreen {
           "[prompt=ui.tab_prev] [prompt=ui.tab_next] Switch tab    [prompt=ui.back] Back",
         ));
       });
+    // Only what the player changed goes back, so an untouched frame sets
+    // nothing; a change applies this frame and saves itself a second later
+    let mut settings = ctx.settings();
+    if music != settings.volume(VolumeKind::Music) {
+      settings.set_volume(VolumeKind::Music, music);
+    }
+    if effects != settings.volume(VolumeKind::Sfx) {
+      settings.set_volume(VolumeKind::Sfx, effects);
+    }
+    if MODES[window] != settings.display_mode() {
+      settings.set_display_mode(MODES[window]);
+    }
+    if vsync != settings.vsync() {
+      settings.set_vsync(vsync);
+    }
     if reset {
       ctx.actions().reset_defaults();
     }
@@ -709,7 +726,7 @@ impl Scene for SettingsScreen {
 }
 ```
 
-To keep the player's bindings between runs, build the engine with `.with_user_preferences([UserPreference::Bindings])`: bindings that differ from the defaults are saved to `system.json` when they change and loaded at startup (`ryo-config-save`).
+The volumes, the display mode and vsync are the player's settings (`ctx.settings()`): a change is heard or seen that frame and saves itself, for the settings the game keeps. To keep them and the player's bindings between runs, build the engine with `.with_user_preferences([UserPreference::MusicVolume, UserPreference::SfxVolume, UserPreference::DisplayMode, UserPreference::Vsync, UserPreference::Bindings])`: the settings and bindings that differ from the game's defaults are written to `system.json` a second after they change and loaded at startup (`ryo-config-save`).
 
 ### Inventory grid with drag and drop and equipment
 
@@ -1463,6 +1480,13 @@ impl Scene for NodeMenu {
 
 ```rust
 const PAGES: [&str; 2] = ["Audio", "Video"];
+const WINDOWS: [&str; 3] = ["Windowed", "Borderless", "Fullscreen"];
+/// The display mode of each `WINDOWS` entry
+const MODES: [DisplayMode; 3] = [
+  DisplayMode::Windowed,
+  DisplayMode::BorderlessFullscreen,
+  DisplayMode::ExclusiveFullscreen,
+];
 
 /// Each tab's rows are a column, hidden unless its tab is picked
 #[derive(Default)]
@@ -1481,14 +1505,19 @@ fn setting(label: &str, widget: UiNode) -> UiNode {
 }
 
 impl NodeSettings {
-  fn tree() -> UiNode {
+  /// The rows, starting at the player's settings
+  fn tree(settings: &Settings) -> UiNode {
+    let window = MODES
+      .iter()
+      .position(|&mode| mode == settings.display_mode())
+      .unwrap_or(0);
     let audio = UiNode::column()
       .fill_width()
       .gap(10.0)
       .name("page-0")
       .child(setting(
         "Master",
-        UiNode::slider(0.0..=1.0, 1.0)
+        UiNode::slider(0.0..=1.0, settings.volume(VolumeKind::Master))
           .step(0.05)
           .show_value()
           .width(200.0)
@@ -1502,9 +1531,9 @@ impl NodeSettings {
       .hidden()
       .child(setting(
         "Window",
-        UiNode::dropdown(&["Windowed", "Borderless", "Fullscreen"], 0).width(200.0),
+        UiNode::dropdown(&WINDOWS, window).width(200.0).name("window"),
       ))
-      .child(UiNode::toggle("VSync", true).name("vsync"));
+      .child(UiNode::toggle("VSync", settings.vsync()).name("vsync"));
     UiNode::panel()
       .focus_scope()
       .anchor(Anchor::Center)
@@ -1526,7 +1555,8 @@ impl NodeSettings {
 
 impl Scene for NodeSettings {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
-    let root = ctx.spawn_ui(Self::tree());
+    let tree = Self::tree(&ctx.settings());
+    let root = ctx.spawn_ui(tree);
     self.pages = (0..PAGES.len())
       .filter_map(|i| ctx.find_ui_in(root, &format!("page-{i}")))
       .collect();
@@ -1549,10 +1579,21 @@ impl Scene for NodeSettings {
             }
           }
         }
-        // Applied as it changes; the others are read when needed
+        // The player's settings, set as each widget changes (and saved by
+        // the engine); the others are read when needed
         Some("master") => {
           if let Some(volume) = ctx.world.get::<UiValue>(event.node).map(|v| v.0) {
             ctx.settings().set_volume(VolumeKind::Master, volume);
+          }
+        }
+        Some("window") => {
+          if let Some(i) = ctx.world.get::<UiIndex>(event.node).map(|i| i.0) {
+            ctx.settings().set_display_mode(MODES[i]);
+          }
+        }
+        Some("vsync") => {
+          if let Some(on) = ctx.world.get::<UiChecked>(event.node).map(|c| c.0) {
+            ctx.settings().set_vsync(on);
           }
         }
         _ => {}

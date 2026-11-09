@@ -2,7 +2,7 @@
 name: ryo-cli
 description: Using the ryo2d CLI for building, running, and developing games.
 metadata:
-  version: 1.3.0
+  version: 1.4.0
 ---
 
 # Ryo2D CLI Specialist
@@ -42,7 +42,7 @@ my_game/
 ├── main.rs            # Game entry point
 ├── build.rs           # Build script (Windows icon embedding)
 ├── src/               # Additional modules (optional)
-├── data/              # Save data (auto-generated at runtime)
+├── data/              # Saves and system.json in dev builds (written at runtime; don't commit)
 └── assets/            # Game assets (sprites, sounds, music, ...)
 ```
 
@@ -72,7 +72,7 @@ show_colliders = false
 `ryo2d build` writes `release/` with the game binary, `assets/`, `levels/`, `icon.png` and `licenses/` (plus `data/` when `[release] portable = true`). The game runs from that folder wherever it's launched from, and saves to the OS user data folder unless portable - see the `ryo-config-save` skill.
 
 - **`licenses/` holds the licences of the fonts the engine builds into every game** (feature `default-fonts`): Inter and JetBrains Mono (SIL Open Font License 1.1, which asks that every copy of the fonts carries its notice and licence) and m5x7 (CC0), with a README naming them. Ship the folder with the game; `ryo2d export` always puts it in the zip. Add your own fonts' and assets' licences beside it.
-- The `ryo2d` command has no web build: a game you build for the web yourself must ship the same licence files (copy `release/licenses/` from a `ryo2d build`).
+- The `ryo2d` command has no web build: a game you build for the web yourself must ship the same licence files (copy `release/licenses/` from a `ryo2d build`), and hands the engine its Ryo.toml with `EngineBuilder::project(ryo2d::project!())`, since the browser has none to read (`ryo-config-save`).
 
 ## Development Workflow
 
@@ -133,7 +133,7 @@ When working ON the engine (not a game), use root scripts:
 ./dev.sh web lighting   # serve a demo in the browser (WebGPU) with trunk
 ```
 
-`./dev web <demo>` builds the demo for `wasm32-unknown-unknown` and serves it with trunk (`cargo install trunk --locked`), opening the browser; trunk rebuilds on engine and demo edits. Only demos with an `index.html` and `Trunk.toml` run on the web (`lighting` today). `check` and `lint` also build the engine for wasm32. The `ryo2d` command has no web build yet.
+`./dev web <demo>` builds the demo for `wasm32-unknown-unknown` and serves it with trunk (`cargo install trunk --locked`), opening the browser; trunk rebuilds on engine and demo edits. Only demos with an `index.html` and `Trunk.toml` run on the web (`audio`, `character`, `lighting`, `look`, `physics`, `saves`, `text`, `tilemap`); each compiles its Ryo.toml in with `ryo2d::project!()`. `check` and `lint` also build the engine for wasm32. The `ryo2d` command has no web build yet.
 
 | Context | Tool |
 |---------|------|
@@ -143,7 +143,7 @@ When working ON the engine (not a game), use root scripts:
 
 ## Configuration Priority
 
-Startup settings resolve in one order, each layer overriding only what it sets: engine defaults -> `Ryo.toml` (dev) or the values `ryo2d build` embedded from it (release) -> `EngineBuilder` calls -> saved player preferences in `system.json` (only with `with_user_preferences`).
+Startup settings resolve in one order, each layer overriding only what it sets: engine defaults -> `Ryo.toml` (dev), the values `ryo2d build` embedded from it (release) or the Ryo.toml compiled in with `ryo2d::project!()` (the web) -> `EngineBuilder` calls -> the player's settings in `system.json` (only those `with_user_preferences` keeps). The file holds only what the player changed, so a later change to `Ryo.toml` or the builder reaches every setting the player never touched; `ryo2d dev` and `cargo run` keep it in `data/`.
 
 ## Dev Build Performance
 

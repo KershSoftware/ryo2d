@@ -51,7 +51,7 @@ Bevy clamps the change ticks of the systems in its own `Schedules` resource only
 
 ## Cursor (`cursor.rs`)
 
-- Deferred requests avoid borrowing the window during scene callbacks: `ctx.set_cursor*()` / `show_cursor()` / `hide_cursor()` write the `CursorRequest` resource (`ctx.cursor()`), applied in `about_to_wait()` (`engine/window.rs`). The window's cursor is resolved there by `CursorResolver` (`cursor.rs`): the console's per-frame override (`Engine::console_cursor`, set by `console_tick` from `ConsoleState::desired_cursor`; `None` = no opinion), else the game's last cursor, which persists without being asked again. It is applied only when it differs from what was last shown, and again when the left button is released (macOS applies a new icon lazily). A game cursor that cannot be created falls back to the default once (`CursorResolver::fell_back`). `WindowRequest` (`ctx.window()`) works the same way for resolution, display mode and UI scale.
+- Deferred requests avoid borrowing the window during scene callbacks: `ctx.set_cursor*()` / `show_cursor()` / `hide_cursor()` write the `CursorRequest` resource (`ctx.cursor()`), applied in `about_to_wait()` (`engine/window.rs`). The window's cursor is resolved there by `CursorResolver` (`cursor.rs`): the console's per-frame override (`Engine::console_cursor`, set by `console_tick` from `ConsoleState::desired_cursor`; `None` = no opinion), else the game's last cursor, which persists without being asked again. It is applied only when it differs from what was last shown, and again when the left button is released (macOS applies a new icon lazily). A game cursor that cannot be created falls back to the default once (`CursorResolver::fell_back`). `WindowRequest` (`ctx.window()`) works the same way: the game sets only its UI scale (`ctx.request_ui_scale`); its window size and display mode are crate-internal, written by `Engine::apply_settings` from the player's `Settings` (`settings/AGENTS.md`), and the window's own changes flow back into `Settings`.
 - Demo: `examples/demos/cursor/`
 
 ## Related Skills
@@ -61,3 +61,5 @@ Bevy clamps the change ticks of the systems in its own `Schedules` resource only
 - Messages (`messages/`): skill `ryo-messages`
 - Audio (`audio/`): skill `ryo-audio`, and its own module notes (`audio/AGENTS.md`)
 - Tile maps (`tilemap/`): skill `ryo-tilemap`, and its own module notes (`tilemap/AGENTS.md`)
+- Project configuration (`config/`), the player's settings (`settings/`) and game saves (`saves/`): skill `ryo-config-save`, and their own module notes
+- Debug overlays and frame timings (`diagnostics/`): its own module notes, and skill `ryo-profiler` for profiling

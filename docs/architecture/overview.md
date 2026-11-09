@@ -32,7 +32,7 @@ The world is Ryo2D's ECS: `bevy_ecs` 0.20, exposed through `ryo2d::ecs` and the 
 
 | Resources (in the world) | Engine-owned |
 |---|---|
-| `Time`, `Input`, `ScreenMapping`, `AssetServer` and one `Assets<T>` per asset type, `AudioEngine`, `EffectsManager`, `LightingSettings`, `Look`, `WindowRequest`, `CursorRequest`, `WindowInfo`, `RenderPipeline`, `RenderTargets`, `Gpu` (once the GPU is up), `Physics`, `PhysicsConfig`, `PhysicsPaused`, the console's `CommandRegistry`, one `Messages<T>` per message type, and the game's own resources | the window, the renderers (sprite, lighting, trail, compositor, post-process, the tile drawer), gilrs, the dev windows, frame capture, the console overlay and the debug flags; the scene stack sits in the world as a non-send value that only the scene systems take out |
+| `Time`, `Input`, `ScreenMapping`, `AssetServer` and one `Assets<T>` per asset type, `AudioEngine`, `SaveService` (`ctx.saves()`), `Settings` (`ctx.settings()`) and its `SettingsWriter`, `EffectsManager`, `LightingSettings`, `Look`, `WindowRequest`, `CursorRequest`, `WindowInfo`, `RenderPipeline`, `RenderTargets`, `Gpu` (once the GPU is up), `Physics`, `PhysicsConfig`, `PhysicsPaused`, the console's `CommandRegistry`, one `Messages<T>` per message type, and the game's own resources | the window, the renderers (sprite, lighting, trail, compositor, post-process, the tile drawer), gilrs, the dev windows, frame capture, the console overlay and the debug flags; the scene stack sits in the world as a non-send value that only the scene systems take out |
 
 In 0.20 a resource is a component on a hidden entity marked `IsResource`, so engine sweeps over "every entity" filter it out. Cameras are entities too (`Camera2d` + `Transform`); the main one (`MainCamera`) is spawned with the world and survives world cleanup.
 
@@ -50,7 +50,8 @@ Engine::frame()
  │                 reloads land, unheld assets are freed, their AssetEvents are sent; then tile
  │                 maps: ready maps start landing (worked out on the map builder thread),
  │                 landings that came back land whole (MapEvent::Spawned), spawned maps follow
- │                 saved files (MapEvent::Reloaded); then the console
+ │                 saved files (MapEvent::Reloaded); beside them, finished saves become
+ │                 SaveFinished messages; then the console
  ├─ UI pass ...... resolve the pointer, the wheel and focus against last frame's UI records;
  │                 Scene::ui for visible scenes (bottom-up; only the top scene's widgets take
  │                 input), debug overlays, console
@@ -70,6 +71,9 @@ Engine::frame()
  │                       read back, messages, trigger contents
  │        Transforms ... propagate GlobalTransform
  │        Trails ....... record trail points
+ ├─ settings ..... a changed Settings applies (volumes to the mixer, the window's size and mode
+ │                 to its request, vsync, the FPS overlay); a second after the last change
+ │                 the settings writer queues system.json on the save service
  ├─ Update ....... UpdateSet::Game: the scenes' own per-frame systems; builder ones by default
  ├─ PostUpdate ... tile maps' occluder sync, then Transforms (propagation), Camera (shake, every
  │                 camera's view), Extract (timed effects);
@@ -146,7 +150,7 @@ winit / gilrs / RYO_INPUT / headless harness
 ```
 
 - One-shots (`key_pressed`, `mouse_pressed`, ...) are seen by the first fixed step of a frame only; a press in a frame that runs no step waits for the next step, except while the game clock is paused, when it is dropped (gameplay never saw it).
-- **Actions** (`Actions` in `Input`, `ctx.actions()`): named bindings to keys, mouse buttons, pad buttons and stick directions (digital past 0.5 deflection), read with `action_pressed` / `action_held` / `action_released`. Rebinding swaps a collision inside a group (`ui.*` or the game's); with `UserPreference::Bindings` the player's bindings are saved in `system.json`. The UI navigates with the `ui.*` actions, which the engine binds and games may rebind.
+- **Actions** (`Actions` in `Input`, `ctx.actions()`): named bindings to keys, mouse buttons, pad buttons and stick directions (digital past 0.5 deflection), read with `action_pressed` / `action_held` / `action_released`. Rebinding swaps a collision inside a group (`ui.*` or the game's); with `UserPreference::Bindings` the bindings that differ from the defaults are kept in `system.json`, written with the player's settings a second after they change. The UI navigates with the `ui.*` actions, which the engine binds and games may rebind.
 - `last_device()` follows the newest key, mouse or pad input; prompts and the UI's focus ring follow it, and `PadFamily` (from the pad's name) labels the buttons. Scripted and headless pad input arrives as id-less `PadButton` / `PadStick` events on the tracked pad, or a virtual one.
 - `consume_key` / `consume_mouse` / `consume_text` hide an input, held state included, for the rest of the frame. The UI pass consumes what its widgets and navigation use.
 - `block_pointer` / `block_all` / `unblock` gate input for gameplay.
@@ -239,7 +243,7 @@ Details: `src/core/text/AGENTS.md`, `src/core/ui/AGENTS.md`, `src/core/render/AG
 
 ### The web build
 
-The engine builds for `wasm32-unknown-unknown` and runs in browsers with WebGPU: winit starts the app asynchronously (the GPU arrives as an event), time comes from `web-time`, file-backed features (hot reload, saves, the clipboard, reading asset files) are compiled out or report `Unsupported`, so a web game embeds its assets and adds them, and with no threads the asset pump runs queued loads itself, at most 4 ms a frame. `./dev.sh web <demo>` serves a demo with trunk (demos with an `index.html` and `Trunk.toml`); `check` and `lint` build the engine for wasm32 too. The `ryo2d` command has no web build yet.
+The engine builds for `wasm32-unknown-unknown` and runs in browsers with WebGPU: winit starts the app asynchronously (the GPU arrives as an event), time comes from `web-time`, file-backed features (hot reload, the clipboard, reading asset files) are compiled out or report `Unsupported`, so a web game embeds its assets and adds them, and with no threads the asset pump runs queued loads itself, at most 4 ms a frame. The game's Ryo.toml is compiled in with `ryo2d::project!()` (`EngineBuilder::project`) and resolves as a release build of the same file would. Saves and `system.json` live in the browser's IndexedDB, mirrored in memory: the store is read alongside the GPU's start-up, before the first scene (up to 2 s, else the game starts with saves unavailable), so loads stay synchronous, and with no threads a save is encoded on the frame that calls it. `./dev.sh web <demo>` serves a demo with trunk (demos with an `index.html` and `Trunk.toml`); `check` and `lint` build the engine for wasm32 too. The `ryo2d` command has no web build yet.
 
 ## Assets
 
@@ -364,10 +368,15 @@ Details: `src/core/ui/AGENTS.md`; the designs: `docs/specs/2026-10-16-ui-interac
 
 | What | File | API |
 |------|------|-----|
-| Player settings (resolution, display mode, vsync, volumes, FPS, console, input bindings) | `system.json`, uncompressed JSON | `ctx.settings()` (`Settings`), `UserPreference`, `EngineBuilder::with_user_preferences` |
-| Game data | `{slot}.ryo-save`, written crash-safely, with a checksum | `ctx.saves()` (`SavesView`), `Saves` |
+| The player's settings (the six volumes, window size, display mode, vsync, the FPS counter), the input bindings and the game's own typed sections | `system.json` (format 3): only what differs from the game's defaults | `ctx.settings()` (`Settings`), `EngineBuilder::with_user_preferences`, `game_settings`; bindings through `ctx.actions()` |
+| Game data | `<slot>.ryo-save`: a checksummed header and compressed RON, with a backup | `ctx.saves()` (`SavesView`), the `Saves` parameter, `SaveFinished`; `EngineBuilder::save_versions` |
 
-Settings resolve in order: engine defaults, `Ryo.toml`, `EngineBuilder` calls, then the saved `system.json` preferences the game asks for. Saves go to the OS user data folder, or `data/` beside the game with `[release] portable`. The engine does not snapshot the world; a game saves the state it needs as its own data.
+- **Saves** are checked and queued on the main thread, and serialized, compressed and written on one save thread, in call order per slot (coalesced when a slot is saved faster than it is written). Each write is crash-safe: a temporary file flushed to disk, the previous save kept as the backup only if it verifies, then a rename; recovery finds a whole copy of the old or new save after a crash at any step. Loads are synchronous and see queued saves. A type's data version and its typed upgrade steps (`SaveVersions`) carry older saves forward; a newer build's save is refused as `NewerVersion`. The quit flush finishes queued writes (warning at 3 s, giving up at 10 s).
+- **Settings** are one live resource: a change applies the same frame, after the fixed steps, and the settings writer writes `system.json` a second after the last change (at once on quit, or when the window is hidden), through the same crash-safe path. The window's own changes (resize, fullscreen) flow back into `Settings`. Older files (formats 1 and 2) convert as they load; a damaged file is set aside, and a newer one is never overwritten.
+- **Where:** the dev save folder (`[paths] save_data`), the OS user data folder in release (or `data/` beside the game with `[release] portable`), IndexedDB on the web, and memory in headless runs (`ryo2d::testing::MemorySaves`). Behind one crate-internal storage seam.
+- Settings resolve in order: engine defaults, the project (`Ryo.toml`, the values `ryo2d build` embedded, or `ryo2d::project!()`), `EngineBuilder` calls, then the player's `system.json` values for the settings the game keeps. The engine does not snapshot the world; a game saves the state it needs as its own data.
+
+Details: `src/core/saves/AGENTS.md`, `src/core/settings/AGENTS.md`, `src/core/config/AGENTS.md`; the design: `docs/specs/2026-11-07-saves-and-settings-design.md`.
 
 ## Dev Tools
 
@@ -398,7 +407,7 @@ Settings resolve in order: engine defaults, `Ryo.toml`, `EngineBuilder` calls, t
 | `ryo2d check-ui [files]` | Check UI files (`*.ui.ron`) without running the game |
 | `ryo2d netplay` | Start a signalling server for netplay testing |
 
-The CLI finds the workspace by searching up for `Ryo.toml` and embeds its configuration at build time through `RYO_EMBED_*` variables.
+The CLI finds the workspace by searching up for `Ryo.toml` and embeds its configuration at build time through `RYO_EMBED_*` variables. Each project setting is declared once (`src/core/config/project_table.rs`): the Ryo.toml reader, the embedding, the build script and the misspelt-key warning follow from it. A web build compiles its Ryo.toml in with `ryo2d::project!()` instead.
 
 ### Ryo.toml
 
@@ -406,7 +415,8 @@ The CLI finds the workspace by searching up for `Ryo.toml` and embeds its config
 |---------|-------|------|
 | `[project]` | name, title, version, description | build time |
 | `[paths]` | entry point, assets, save data | build time |
-| `[system]` | defaults for `system.json`: resolution, vsync, display mode, volumes, FPS, console | first run, then the player's |
+| `[system]` | the game's settings: resolution, vsync, display mode, volumes, FPS, console; the player's settings start from them | every run: the player's file keeps only what the player changed |
+| `[tilemap]` | the Tiled project | load time |
 | `[debug]` | overlay flags, debug keys, profiler, logger, dev window keys | development |
 | `[release]` | logo, portable saves, save folder | build time |
 | `[env]` | game-specific values | game code |
@@ -458,7 +468,10 @@ Client-server multiplayer with listen-server support. See [the network architect
 | `audio/` | The audio engine: the device or mock backend, the bus tree and mix, voices and limits, spatial sound, music, the streamed clips' decoder |
 | `text/` | Fonts, text styles, rich text and markup, layout, glyph rasterization, effects and reveal, world text (`Text2d`), `CpuText` for the dev windows |
 | `ui/` | `UiContext` and absolute drawing, ids, memory, layout (Taffy), containers and widgets, popups and modals, the pointer and focus resolve, the theme, UI tweens |
-| `config/` | Workspace (`Ryo.toml`), settings, saves |
+| `config/` | The project: `Workspace` (`Ryo.toml`), the project-settings table, resolution of the settings, `ProjectFile`, the save location |
+| `saves/` | Game saves: the save service and thread, the save file, versions and upgrades, the folder, browser and memory stores |
+| `settings/` | The player's settings (`Settings`), `system.json` and its writer |
+| `diagnostics/` | The runtime debug flags, frame timings (`FrameCost`) and the overlays' drawing |
 | `console/`, `windows/`, `capture/`, `dev_log.rs`, `profiler.rs` | Developer tools |
 | `window.rs`, `cursor.rs` | Window and cursor requests |
 | `network/` | Networking |
