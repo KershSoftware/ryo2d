@@ -24,6 +24,12 @@
 //!   and read the live count against the engine's budget
 //!   ([`DEFAULT_PARTICLE_BUDGET`] unless `EngineBuilder::particle_budget`
 //!   sets another).
+//! - An effect can be written in a `.particles.ron` file
+//!   ([`ParticleEffectLoader`](crate::core::asset::ParticleEffectLoader) has
+//!   its form): saved while the game runs, its over-life values, forces,
+//!   look and collisions apply to live particles at the next step; its
+//!   spawn values apply to new particles, and a broken save keeps the last
+//!   good effect.
 //!
 //! # Types
 //!

@@ -5,7 +5,7 @@
 
 use std::fmt;
 
-use serde::de::{self, SeqAccess, Visitor};
+use serde::de::{self, IgnoredAny, MapAccess, SeqAccess, Visitor, value::MapAccessDeserializer};
 use serde::ser::SerializeTuple;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -19,8 +19,8 @@ const TABLE_SIZE: usize = 64;
 ///
 /// Reads from RON as a number (fixed) or `(min, max)`. A reversed or NaN range
 /// samples its `min`.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[serde(from = "ValueRangeRepr", into = "ValueRangeRepr")]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(into = "ValueRangeRepr")]
 pub struct ValueRange {
   /// Lowest value drawn
   pub min: f32,
@@ -28,19 +28,53 @@ pub struct ValueRange {
   pub max: f32,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize)]
 #[serde(untagged)]
 enum ValueRangeRepr {
   One(f32),
   Pair(f32, f32),
 }
 
-impl From<ValueRangeRepr> for ValueRange {
-  fn from(repr: ValueRangeRepr) -> Self {
-    match repr {
-      ValueRangeRepr::One(value) => Self::constant(value),
-      ValueRangeRepr::Pair(min, max) => Self::new(min, max),
+impl<'de> Deserialize<'de> for ValueRange {
+  /// A visitor, not an untagged enum: a value of the wrong form is reported
+  /// as what was expected, where it stands
+  fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+    struct RangeVisitor;
+
+    impl<'de> Visitor<'de> for RangeVisitor {
+      type Value = ValueRange;
+
+      fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("a number, or a (min, max) pair of numbers")
+      }
+
+      fn visit_f64<E: de::Error>(self, value: f64) -> Result<ValueRange, E> {
+        Ok(ValueRange::constant(value as f32))
+      }
+
+      fn visit_i64<E: de::Error>(self, value: i64) -> Result<ValueRange, E> {
+        Ok(ValueRange::constant(value as f32))
+      }
+
+      fn visit_u64<E: de::Error>(self, value: u64) -> Result<ValueRange, E> {
+        Ok(ValueRange::constant(value as f32))
+      }
+
+      fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<ValueRange, A::Error> {
+        let min = seq
+          .next_element::<f32>()?
+          .ok_or_else(|| de::Error::invalid_length(0, &self))?;
+        let max = seq
+          .next_element::<f32>()?
+          .ok_or_else(|| de::Error::invalid_length(1, &self))?;
+        if seq.next_element::<IgnoredAny>()?.is_some() {
+          return Err(de::Error::invalid_length(3, &self));
+        }
+        Ok(ValueRange::new(min, max))
+      }
     }
+
+    deserializer.deserialize_any(RangeVisitor)
   }
 }
 
@@ -105,8 +139,8 @@ impl From<(f32, f32)> for ValueRange {
 /// A random colour between `a` and `b`, one blend for all four channels.
 ///
 /// Reads from RON as a `Color` (fixed) or `(Color, Color)`.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[serde(from = "ColorRangeRepr", into = "ColorRangeRepr")]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(into = "ColorRangeRepr")]
 pub struct ColorRange {
   /// One end of the range
   pub a: Color,
@@ -114,19 +148,44 @@ pub struct ColorRange {
   pub b: Color,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize)]
 #[serde(untagged)]
 enum ColorRangeRepr {
   Pair(Color, Color),
   One(Color),
 }
 
-impl From<ColorRangeRepr> for ColorRange {
-  fn from(repr: ColorRangeRepr) -> Self {
-    match repr {
-      ColorRangeRepr::One(color) => Self::constant(color),
-      ColorRangeRepr::Pair(a, b) => Self::new(a, b),
+impl<'de> Deserialize<'de> for ColorRange {
+  /// A visitor, as for [`ValueRange`]
+  fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+    struct RangeVisitor;
+
+    impl<'de> Visitor<'de> for RangeVisitor {
+      type Value = ColorRange;
+
+      fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("a colour, or a pair of colours")
+      }
+
+      fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<ColorRange, A::Error> {
+        Color::deserialize(MapAccessDeserializer::new(map)).map(ColorRange::constant)
+      }
+
+      fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<ColorRange, A::Error> {
+        let a = seq
+          .next_element::<Color>()?
+          .ok_or_else(|| de::Error::invalid_length(0, &self))?;
+        let b = seq
+          .next_element::<Color>()?
+          .ok_or_else(|| de::Error::invalid_length(1, &self))?;
+        if seq.next_element::<IgnoredAny>()?.is_some() {
+          return Err(de::Error::invalid_length(3, &self));
+        }
+        Ok(ColorRange::new(a, b))
+      }
     }
+
+    deserializer.deserialize_any(RangeVisitor)
   }
 }
 

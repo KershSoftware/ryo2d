@@ -674,7 +674,7 @@ fn is_lowercase(name: &str) -> bool {
 }
 
 /// `#rrggbb` or `#rrggbbaa`, either case
-fn parse_hex(text: &str) -> Option<Color> {
+pub(crate) fn parse_hex(text: &str) -> Option<Color> {
   let digits = text.strip_prefix('#')?;
   if !matches!(digits.len(), 6 | 8) || !digits.chars().all(|c| c.is_ascii_hexdigit()) {
     return None;

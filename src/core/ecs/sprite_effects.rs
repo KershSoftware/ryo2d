@@ -28,7 +28,8 @@ use crate::core::ui::Color;
 ///
 /// Sprite effects are processed in order. Some effects may be combined,
 /// while others (like color replacement) will override previous color effects.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum SpriteEffect {
   /// Draw an outline around the sprite's visible pixels
   ///

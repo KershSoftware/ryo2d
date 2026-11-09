@@ -13,7 +13,9 @@ use crate::core::particles::testing::{
   self, Seen, collision_particles, collisions, count, death_particles, finished, particle_warnings,
   particles, step, steps,
 };
+use crate::core::particles::value::Gradient;
 use crate::core::physics::Collider;
+use crate::core::ui::Color;
 
 const DT: f32 = 1.0 / 60.0;
 const RADIUS: f32 = 2.0;
@@ -515,4 +517,63 @@ fn sub_particles_live_in_their_own_effect_s_space() {
     "in the world: {:?}, {last:?}",
     puffs[0]
   );
+}
+
+/// A reserved slot of the effects' store with no value in it yet: an effect
+/// still loading
+fn loading_effect(world: &World) -> Handle<ParticleEffect> {
+  world
+    .resource::<Assets<ParticleEffect>>()
+    .ledger()
+    .lock()
+    .unwrap_or_else(std::sync::PoisonError::into_inner)
+    .reserve()
+}
+
+/// `emitter`'s effect's `on_death`, now playing `effect` (a game's change,
+/// or a saved file's)
+fn play_on_death(world: &mut World, emitter: Entity, effect: Handle<ParticleEffect>, n: f32) {
+  let id = match world.get::<ParticleEmitter>(emitter) {
+    Some(emitter) => emitter.effect.id(),
+    None => panic!("no emitter"),
+  };
+  if let Some(parent) = world.resource_mut::<Assets<ParticleEffect>>().get_mut(id) {
+    parent.on_death = Some(SubEmitter::new(effect, n));
+  }
+}
+
+#[test]
+fn a_sub_effect_still_loading_leaves_the_last_one_s_particles_playing() {
+  let mut world = testing::world();
+  let old = sub(&mut world, 100.0);
+  let effect = one(&mut world, 0.0, 0.05).on_death(SubEmitter::new(old.clone(), 5.0));
+  let emitter = spawn(&mut world, effect, 0.0, 0.0);
+  steps(&mut world, 10);
+  let before = death_particles(&world, emitter);
+  assert_eq!(before.len(), 5, "{before:?}");
+
+  // The parent names a sub-effect that has not loaded: the old particles
+  // keep stepping by the effect they play
+  let new = loading_effect(&world);
+  play_on_death(&mut world, emitter, new.clone(), 5.0);
+  steps(&mut world, 3);
+  let waiting = death_particles(&world, emitter);
+  assert_eq!(waiting.len(), 5, "not cleared: {waiting:?}");
+  assert_eq!(live(&world), 5, "still counted");
+  for (was, now) in before.iter().zip(&waiting) {
+    assert!(now.age > was.age, "still stepping: {now:?}");
+    assert_eq!(now.color[0], now.color[2], "still its old look: {now:?}");
+  }
+
+  // Once it lands the pool adopts it, its particles following it
+  let lands = still(&mut world, 200.0).with_color_over_life(Gradient::constant(Color::BLUE));
+  world
+    .resource_mut::<Assets<ParticleEffect>>()
+    .insert(new.id(), lands);
+  step(&mut world);
+  let after = death_particles(&world, emitter);
+  assert_eq!(after.len(), 5, "{after:?}");
+  for particle in &after {
+    assert_eq!(particle.color, [0.0, 0.0, 1.0, 1.0], "{particle:?}");
+  }
 }

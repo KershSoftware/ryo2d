@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use glam::{Mat2, Vec2};
 
+use super::collision::CollisionResponse;
 use super::effect::{Burst, EmitShape, ParticleEffect, Space};
 use super::emitter::{EmitterFinished, Finish, ParticleEmitter, Pending};
 use super::forces::{Acting, Own, Surroundings};
@@ -67,6 +68,10 @@ pub(crate) struct Compiled {
   pub(crate) largest_size: f32,
   /// `speed_over_life` at birth, which a particle's start speed is scaled by
   pub(crate) birth_speed: f32,
+  /// Its particles stick where they hit: its collision is `Stick`. Stuck
+  /// particles of an effect that no longer sticks (a reload dropped its
+  /// collision, or changed its response) move on
+  pub(crate) sticks: bool,
   /// It was warned about, played as a sub-effect, for sub-emitters of its
   /// own (which are ignored)
   pub(crate) warned_nested: bool,
@@ -92,12 +97,18 @@ impl Compiled {
       .windows(2)
       .any(|pair| pair[0].value != pair[1].value);
     let largest_size = effect.size.largest().max(0.0) * effect.size_over_life.largest();
+    let sticks = effect.collides()
+      && effect
+        .collision
+        .as_ref()
+        .is_some_and(|collision| collision.response == CollisionResponse::Stick);
     Self {
       direction: effect.direction_deg.to_radians(),
       spread: effect.spread_deg.to_radians(),
       speed_varies,
       largest_size,
       birth_speed: effect.speed_over_life.lookup(0.0),
+      sticks,
       warned_nested: false,
       version,
       effect,
@@ -1004,6 +1015,10 @@ pub(super) fn advance(
       }
       keep.push(false);
       continue;
+    }
+    if p.flags[i] & STUCK != 0 && !fx.sticks {
+      // Its effect no longer sticks (a reload): it moves again
+      p.flags[i] &= !STUCK;
     }
     if p.flags[i] & STUCK != 0 {
       // Stuck where it hit: it only ages

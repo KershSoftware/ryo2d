@@ -6,7 +6,9 @@ use crate::core::graphics::{Presentation, SlotPage};
 ///
 /// Colours are premultiplied by alpha on the way out of every shader, so
 /// each mode is one fixed blend state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(
+  Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
+)]
 pub enum BlendMode {
   /// Ordinary transparency
   #[default]

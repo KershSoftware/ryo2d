@@ -4,6 +4,8 @@
 //! non-trigger `Collider` whose layer shares a bit with [`CollisionConfig::collision_mask`].
 //! Particles ignore the collider on their own emitter's entity.
 
+use serde::Deserialize;
+
 use crate::core::ecs::{Entity, Message};
 
 /// How a particle responds to collision.
@@ -51,7 +53,12 @@ impl CollisionResponse {
 pub const MIN_BOUNCE_EVENT_SPEED: f32 = 20.0;
 
 /// Configuration for particle collisions.
-#[derive(Debug, Clone)]
+///
+/// A `.particles.ron` file writes it as `(radius:, mask:, response:, events:)`,
+/// every field optional; `response` is `Die`, `Bounce(0.6)` (the restitution,
+/// 0 to 1), `Stick` or `Event`.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(try_from = "CollisionFile")]
 pub struct CollisionConfig {
   /// Collision radius for the particle
   pub radius: f32,
@@ -71,6 +78,65 @@ impl Default for CollisionConfig {
       response: CollisionResponse::Die,
       send_events: false,
     }
+  }
+}
+
+/// A collision as a `.particles.ron` file writes it
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename = "CollisionConfig")]
+struct CollisionFile {
+  #[serde(default = "default_radius")]
+  radius: f32,
+  #[serde(default = "every_layer")]
+  mask: u32,
+  #[serde(default)]
+  response: ResponseFile,
+  #[serde(default)]
+  events: bool,
+}
+
+/// A collision's response as a file writes it
+#[derive(Default, Deserialize)]
+enum ResponseFile {
+  #[default]
+  Die,
+  /// The restitution, 0 to 1
+  Bounce(f32),
+  Stick,
+  Event,
+}
+
+fn default_radius() -> f32 {
+  CollisionConfig::default().radius
+}
+
+fn every_layer() -> u32 {
+  CollisionConfig::default().collision_mask
+}
+
+impl TryFrom<CollisionFile> for CollisionConfig {
+  type Error = String;
+
+  fn try_from(file: CollisionFile) -> Result<Self, String> {
+    let response = match file.response {
+      ResponseFile::Die => CollisionResponse::Die,
+      ResponseFile::Bounce(restitution) if (0.0..=1.0).contains(&restitution) => {
+        CollisionResponse::bounce(restitution)
+      }
+      ResponseFile::Bounce(restitution) => {
+        return Err(format!(
+          "collision: the restitution {restitution} is not within 0 to 1"
+        ));
+      }
+      ResponseFile::Stick => CollisionResponse::Stick,
+      ResponseFile::Event => CollisionResponse::Event,
+    };
+    Ok(Self {
+      radius: file.radius,
+      collision_mask: file.mask,
+      response,
+      send_events: file.events,
+    })
   }
 }
 

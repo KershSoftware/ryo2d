@@ -161,9 +161,10 @@ impl Stepper<'_> {
     );
   }
 
-  /// One sub pool's step: it plays its parent's sub-effect (`emitter`), or,
-  /// once that has none, the last it had, so its particles live out their
-  /// lives, and loses them once that effect is no longer loaded. Each of
+  /// One sub pool's step: it plays its parent's sub-effect (`emitter`) once
+  /// that is compiled, or, until then (still loading) or once its parent
+  /// has none, the last it had, so its particles live out their lives, and
+  /// loses them once that effect is no longer loaded. Each of
   /// the step's triggers of its `kind` spawns `emitter.count` particles of
   /// the sub-effect (drawn from the emitter's stream, `rng`) where the
   /// particle was, in the sub-effect's space, each with its share of the
@@ -179,9 +180,14 @@ impl Stepper<'_> {
     noise_seed: u32,
     frame: &Frame,
   ) {
-    if let Some(emitter) = emitter {
-      sub.effect = Some(emitter.effect.id());
+    // A sub-effect still loading is adopted once it is compiled: until then
+    // the particles the pool has go on by the effect they play
+    if let Some(new) = emitter.map(|emitter| emitter.effect.id())
+      && self.compiled.contains_key(&new)
+    {
+      sub.effect = Some(new);
     }
+    let emitter = emitter.filter(|emitter| sub.effect == Some(emitter.effect.id()));
     let Scratch { keep, triggers, .. } = &mut *self.scratch;
     let fired = match kind {
       Kind::Death => &triggers.deaths,

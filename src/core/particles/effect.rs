@@ -3,7 +3,7 @@
 use glam::Vec2;
 use serde::{Deserialize, Serialize};
 
-use super::collision::CollisionConfig;
+use super::collision::{CollisionConfig, CollisionResponse};
 use super::value::{ColorRange, Curve, Gradient, ValueRange};
 use crate::core::asset::{Asset, Handle};
 use crate::core::ecs::SpriteEffect;
@@ -13,6 +13,7 @@ use crate::core::ui::Color;
 
 /// Where in the emitter's space particles are born.
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum EmitShape {
   /// The emitter's position
   #[default]
@@ -21,16 +22,19 @@ pub enum EmitShape {
   Circle {
     /// Radius
     radius: f32,
-    /// Angle covered, 0 to 360 degrees
+    /// Angle covered, 0 to 360 degrees (a file leaving it out: the full circle)
+    #[serde(default = "full_circle")]
     arc_deg: f32,
-    /// 0 is the rim only, 1 fills the disc
+    /// 0 is the rim only, 1 fills the disc (a file leaving it out: filled)
+    #[serde(default = "filled")]
     thickness: f32,
   },
   /// A rectangle centred on the emitter
   Rect {
     /// Width and height
     size: Vec2,
-    /// 0 is the outline only, 1 fills the rectangle
+    /// 0 is the outline only, 1 fills the rectangle (a file leaving it out: filled)
+    #[serde(default = "filled")]
     thickness: f32,
   },
   /// A horizontal line centred on the emitter
@@ -40,16 +44,38 @@ pub enum EmitShape {
   },
 }
 
+fn full_circle() -> f32 {
+  360.0
+}
+
+fn filled() -> f32 {
+  1.0
+}
+
+fn one_cycle() -> u32 {
+  1
+}
+
+fn normal_noise_speed() -> f32 {
+  1.0
+}
+
 /// Particles released at one moment, and optionally again.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Burst {
-  /// Seconds into the cycle
+  /// Seconds into the cycle (a file leaving it out: 0)
+  #[serde(default)]
   pub time: f32,
   /// How many particles
   pub count: ValueRange,
-  /// How many times it fires; 0 repeats until the emitter stops
+  /// How many times it fires; 0 repeats until the emitter stops (a file
+  /// leaving it out: 1)
+  #[serde(default = "one_cycle")]
   pub cycles: u32,
-  /// Seconds between repeats (above 0 unless `cycles` is 1)
+  /// Seconds between repeats (above 0 unless `cycles` is 1; a file leaving
+  /// it out: 0)
+  #[serde(default)]
   pub interval: f32,
 }
 
@@ -86,16 +112,20 @@ pub enum Space {
 /// A sprite sheet the particles' image is cut into, and how a particle
 /// plays through its frames. Frames run left to right, then down.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Flipbook {
   /// Frames across the sheet
   pub columns: u32,
   /// Frames down the sheet
   pub rows: u32,
   /// Frames played; 0 plays them all (`columns` x `rows`)
+  #[serde(default)]
   pub count: u32,
   /// How the frame follows time
+  #[serde(default)]
   pub mode: FrameMode,
   /// Each particle starts at a frame of its own, fixed for its life
+  #[serde(default)]
   pub random_start: bool,
 }
 
@@ -155,6 +185,7 @@ pub enum FrameMode {
 
 /// How a particle turns.
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum Align {
   /// By its own rotation and spin
   #[default]
@@ -168,7 +199,7 @@ pub enum Align {
 }
 
 /// Which particle is drawn over which.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum DrawOrder {
   /// Younger particles cover older ones
   #[default]
@@ -189,7 +220,7 @@ pub enum DrawOrder {
 /// sub-effect's `max_particles` and the engine's budget. The sub-effect's
 /// emission (rate, bursts, cycle, prewarm), its `seed` and its own
 /// `inherit_velocity` play no part.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SubEmitter {
   /// The effect played
   pub effect: Handle<ParticleEffect>,
@@ -222,8 +253,10 @@ impl SubEmitter {
 /// How a kind of particle is born, moves, looks and ends.
 ///
 /// Angles are in degrees. Build one with [`ParticleEffect::new`] and the `with_*`
-/// builders, or start from a preset such as [`ParticleEffect::fire`].
-#[derive(Debug, Clone)]
+/// builders, start from a preset such as [`ParticleEffect::fire`], or load one
+/// from a `.particles.ron` file
+/// ([`ParticleEffectLoader`](crate::core::asset::ParticleEffectLoader)).
+#[derive(Debug, Clone, PartialEq)]
 pub struct ParticleEffect {
   /// Particles per second, on top of the bursts
   pub rate: f32,
@@ -326,13 +359,16 @@ pub struct ParticleEffect {
 /// the noise at its place: the particles of one seed move the same way
 /// each run
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NoiseForce {
   /// Acceleration at the field's strongest, in pixels per second squared
   pub strength: f32,
   /// How fast the field changes over space: the swirls are about
   /// `1 / frequency` pixels across
   pub frequency: f32,
-  /// How fast the field changes over a particle's age
+  /// How fast the field changes over a particle's age (a file leaving it
+  /// out: 1)
+  #[serde(default = "normal_noise_speed")]
   pub speed: f32,
 }
 
@@ -779,6 +815,24 @@ impl ParticleEffect {
       self.collision.is_some() && self.space == Space::Local,
       "a Local effect does not collide",
     );
+    if let Some(collision) = &self.collision {
+      report(
+        "collision",
+        !finite(collision.radius),
+        "radius is not a number",
+      );
+      report("collision", collision.radius < 0.0, "radius is negative");
+      if let CollisionResponse::Bounce {
+        restitution_percent,
+      } = collision.response
+      {
+        report(
+          "collision",
+          restitution_percent > 100,
+          "restitution is above 1",
+        );
+      }
+    }
     for (field, sub) in [
       ("on_death", &self.on_death),
       ("on_collision", &self.on_collision),
@@ -900,6 +954,15 @@ impl ParticleEffect {
     fx.emission = non_negative(fx.emission, 1.0);
     if fx.space == Space::Local {
       fx.collision = None;
+    }
+    if let Some(collision) = &mut fx.collision {
+      collision.radius = non_negative(collision.radius, CollisionConfig::default().radius);
+      if let CollisionResponse::Bounce {
+        restitution_percent,
+      } = &mut collision.response
+      {
+        *restitution_percent = (*restitution_percent).min(100);
+      }
     }
     for sub in [&mut fx.on_death, &mut fx.on_collision]
       .into_iter()
@@ -1120,6 +1183,34 @@ mod tests {
     // Any finite strength is allowed
     let strong = ParticleEffect::new(image()).with_noise(NoiseForce::new(-50.0, 0.1));
     assert!(strong.problems().is_empty());
+  }
+
+  #[test]
+  fn collision_values_are_checked_and_clamped() {
+    for radius in [f32::NAN, f32::INFINITY, -1.0] {
+      let fx = ParticleEffect::new(image()).with_collision(CollisionConfig::new(radius));
+      assert!(starts_with(&fx.problems(), "collision:"), "{radius}");
+      let clean = fx.sanitized();
+      assert!(clean.problems().is_empty(), "{:?}", clean.problems());
+      let r = clean.collision.map_or(-1.0, |c| c.radius);
+      assert!(r.is_finite() && r >= 0.0, "{radius}: {r}");
+    }
+    let wild = CollisionConfig::new(2.0).with_response(CollisionResponse::Bounce {
+      restitution_percent: 250,
+    });
+    let fx = ParticleEffect::new(image()).with_collision(wild);
+    assert!(starts_with(&fx.problems(), "collision:"));
+    let clean = fx.sanitized();
+    assert!(clean.problems().is_empty(), "{:?}", clean.problems());
+    assert_eq!(
+      clean.collision.map(|c| c.response),
+      Some(CollisionResponse::Bounce {
+        restitution_percent: 100
+      })
+    );
+    let bounced =
+      ParticleEffect::new(image()).with_collision(CollisionConfig::bouncy(2.0, f32::NAN));
+    assert!(bounced.problems().is_empty(), "bounce() clamps");
   }
 
   #[test]
