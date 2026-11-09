@@ -85,6 +85,7 @@
 mod attractor;
 mod collision;
 mod contact;
+mod draw;
 mod effect;
 mod forces;
 // The engine-driven emitter, public (and hidden) so tests outside the crate
@@ -111,6 +112,7 @@ pub use attractor::{AttractorType, ParticleAttractor};
 pub use collision::{
   CollisionConfig, CollisionResponse, MIN_BOUNCE_EVENT_SPEED, ParticleCollision,
 };
+pub(crate) use draw::ParticleDrawer;
 pub use effect::{Burst, DrawOrder, EmitShape, ParticleEffect};
 pub use emitter::EmitterFinished;
 pub use legacy::{EmissionMode, EmissionShape, Particle, ParticleEmitter, ParticleSystem};

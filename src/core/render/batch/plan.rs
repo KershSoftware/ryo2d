@@ -31,6 +31,9 @@ pub(crate) enum DrawSource {
 pub(crate) enum Placed {
   /// The next quad instance, drawn with this state
   Quad(DrawState),
+  /// The next `count` quad instances, all drawn with this state (a run):
+  /// numbered and merged as single quads are
+  Quads { state: DrawState, count: u32 },
   /// These triangle indices, drawn with this state
   Triangles {
     state: DrawState,
@@ -49,11 +52,12 @@ pub(crate) enum Placed {
 ///
 /// `place` is asked once per item, in draw order: it puts the item in its
 /// stream and says where, or returns `None` to drop it. Quads are numbered
-/// from `first_quad` in the order placed. Consecutive quads with equal
-/// states merge into one draw, as do consecutive triangle items with equal
-/// states and adjacent index ranges; anything else starts a new draw. A
-/// chunk is a draw of its own (its instances are in the chunk arena, under
-/// a slot of its own) and takes no quad number.
+/// from `first_quad` in the order placed, a run's one after another.
+/// Consecutive quads with equal states merge into one draw (a run's with
+/// the quads around it), as do consecutive triangle items with equal states
+/// and adjacent index ranges; anything else starts a new draw. A chunk is a
+/// draw of its own (its instances are in the chunk arena, under a slot of
+/// its own) and takes no quad number.
 /// Returns the number the next quad would get.
 pub(crate) fn plan_draws<'i>(
   items: impl IntoIterator<Item = &'i DrawItem>,
@@ -69,6 +73,12 @@ pub(crate) fn plan_draws<'i>(
       Some(Placed::Quad(state)) => {
         next_quad += 1;
         (Stream::Quads, state, next_quad - 1..next_quad)
+      }
+      Some(Placed::Quads { count: 0, .. }) => continue,
+      Some(Placed::Quads { state, count }) => {
+        let first = next_quad;
+        next_quad += count;
+        (Stream::Quads, state, first..next_quad)
       }
       Some(Placed::Triangles { state, indices }) => (Stream::Triangles, state, indices),
       Some(Placed::Chunk {
@@ -219,6 +229,49 @@ mod tests {
         (Stream::Triangles, 18..24)
       ]
     );
+  }
+
+  #[test]
+  fn a_run_numbers_its_quads_and_merges_with_neighbours() {
+    let sprite = state(0, BlendMode::Alpha);
+    let placed = [
+      Placed::Quad(sprite),
+      Placed::Quads {
+        state: sprite,
+        count: 3,
+      },
+      Placed::Quad(sprite),
+    ];
+    let mut out = Vec::new();
+    let mut i = 0;
+    let next = plan_draws(list(3).items(), &mut out, 0, |_| {
+      i += 1;
+      Some(placed[i - 1].clone())
+    });
+    assert_eq!(quads(&out), [(sprite, 0..5)], "one draw of five quads");
+    assert_eq!(next, 5);
+
+    // A run of another state is a draw of its own, numbered on; an empty
+    // run adds nothing
+    let additive = state(0, BlendMode::Additive);
+    let placed = [
+      Placed::Quad(sprite),
+      Placed::Quads {
+        state: additive,
+        count: 2,
+      },
+      Placed::Quads {
+        state: sprite,
+        count: 0,
+      },
+    ];
+    let mut i = 0;
+    let next = plan_draws(list(3).items(), &mut out, 10, |_| {
+      i += 1;
+      Some(placed[i - 1].clone())
+    });
+    assert_eq!(quads(&out), [(sprite, 10..11), (additive, 11..13)]);
+    assert_eq!(next, 13);
   }
 
   #[test]

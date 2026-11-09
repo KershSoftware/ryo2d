@@ -90,7 +90,6 @@ impl ParticleStore {
   }
 
   /// `effect` as the step last compiled it
-  #[cfg_attr(not(test), expect(dead_code, reason = "read by the particle drawer"))]
   pub(crate) fn compiled(&self, effect: AssetId<ParticleEffect>) -> Option<&Compiled> {
     self.compiled.get(&effect)
   }

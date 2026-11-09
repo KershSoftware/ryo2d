@@ -52,12 +52,15 @@ pub(crate) struct Compiled {
   /// Whether `speed_over_life` changes over life (a constant one leaves
   /// velocities alone)
   pub(crate) speed_varies: bool,
+  /// The largest a particle draws: its largest start size times the size
+  /// curve's largest value (the drawer grows a pool's box by it)
+  pub(crate) largest_size: f32,
 }
 
 impl Compiled {
   /// `effect`'s `version`, clamped, after one warning naming `name()` and
   /// what was clamped if it had problems
-  fn new(effect: &ParticleEffect, version: u64, name: impl FnOnce() -> String) -> Self {
+  pub(crate) fn new(effect: &ParticleEffect, version: u64, name: impl FnOnce() -> String) -> Self {
     let problems = effect.problems();
     if !problems.is_empty() {
       crate::engine_warn!(
@@ -73,10 +76,12 @@ impl Compiled {
       .keys()
       .windows(2)
       .any(|pair| pair[0].value != pair[1].value);
+    let largest_size = effect.size.largest().max(0.0) * effect.size_over_life.largest();
     Self {
       direction: effect.direction_deg.to_radians(),
       spread: effect.spread_deg.to_radians(),
       speed_varies,
+      largest_size,
       version,
       effect,
     }
@@ -141,6 +146,7 @@ struct Scratch {
 /// finish report it, and those that finished in an earlier step and asked
 /// to despawn go
 pub(crate) fn step_particles(world: &mut World, mut state: Local<StepState>) {
+  crate::profile_scope!("cpu:particles");
   let StepState {
     params,
     order,
@@ -227,6 +233,7 @@ pub(crate) fn step_particles(world: &mut World, mut state: Local<StepState>) {
 /// next step, for the drawer. A paused clock, hitstop and held scenes do
 /// not hold them; one at speed 0 is frozen
 pub(crate) fn step_unscaled_particles(world: &mut World, mut state: Local<StepState>) {
+  crate::profile_scope!("cpu:particles");
   let StepState {
     params,
     order,

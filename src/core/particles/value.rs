@@ -313,6 +313,15 @@ impl Curve {
     f32::lerp(&a.value, &b.value, b.ease.apply(u))
   }
 
+  /// The largest magnitude [`lookup`](Self::lookup) gives anywhere (an
+  /// eased segment can overshoot its keys)
+  pub(crate) fn largest(&self) -> f32 {
+    self
+      .table
+      .iter()
+      .fold(0.0, |most, value| most.max(value.abs()))
+  }
+
   /// The value at `t` read from the 64-entry table.
   pub(crate) fn lookup(&self, t: f32) -> f32 {
     let (i, frac) = table_position(t);
@@ -434,7 +443,6 @@ impl Gradient {
   }
 
   /// The colour at `t` as channels in 0..1, read from the 64-entry table.
-  #[cfg_attr(not(test), expect(dead_code, reason = "used by the particle drawer"))]
   pub(crate) fn lookup(&self, t: f32) -> [f32; 4] {
     let (i, frac) = table_position(t);
     let (a, b) = (self.table[i], self.table[(i + 1).min(TABLE_SIZE - 1)]);

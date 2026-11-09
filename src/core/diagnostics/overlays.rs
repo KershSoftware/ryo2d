@@ -79,8 +79,13 @@ pub struct DebugStats {
   /// Number of draw calls issued by the `world`, `unlit_world`, `lighting`
   /// and `ui` passes
   pub draw_calls: u32,
-  /// Number of sprites submitted for rendering
+  /// Number of sprites submitted for rendering (the engine's particles
+  /// among them)
   pub sprite_count: u32,
+  /// Live particles over every emitter
+  pub particles: u32,
+  /// The most live particles allowed at once (`EngineBuilder::particle_budget`)
+  pub particle_budget: u32,
 }
 
 /// Smoothed debug statistics for stable overlay display.
@@ -94,6 +99,11 @@ pub struct SmoothedDebugStats {
   pub draw_calls: f64,
   /// Smoothed sprite count
   pub sprite_count: f64,
+  /// Smoothed live particle count
+  pub particles: f64,
+  /// The particle budget, as the last frame had it (a setting, not
+  /// smoothed: it would climb from 0 at start)
+  pub particle_budget: u32,
   /// Smoothing factor (0.0 = no change, 1.0 = instant update)
   alpha: f64,
 }
@@ -104,6 +114,8 @@ impl Default for SmoothedDebugStats {
       entity_count: 0.0,
       draw_calls: 0.0,
       sprite_count: 0.0,
+      particles: 0.0,
+      particle_budget: 0,
       alpha: 0.05, // Smooth over ~20 frames
     }
   }
@@ -117,6 +129,8 @@ impl SmoothedDebugStats {
     self.draw_calls = self.alpha * (raw.draw_calls as f64) + (1.0 - self.alpha) * self.draw_calls;
     self.sprite_count =
       self.alpha * (raw.sprite_count as f64) + (1.0 - self.alpha) * self.sprite_count;
+    self.particles = self.alpha * (raw.particles as f64) + (1.0 - self.alpha) * self.particles;
+    self.particle_budget = raw.particle_budget;
   }
 }
 
@@ -204,6 +218,10 @@ fn overlay_style() -> TextStyle {
 /// Space below an overlay's rows
 const OVERLAY_MARGIN: f32 = 8.0;
 
+/// Rows of the stats overlay: entities, sprites, batches, particles and
+/// the separator
+const STATS_ROWS: f32 = 5.0;
+
 /// Distance between overlay rows: a line of text plus the label padding
 /// above and below, so the panels touch instead of overlapping
 pub(crate) fn row_pitch(ui: &UiContext) -> f32 {
@@ -235,7 +253,7 @@ pub(crate) fn overlay_stack_top(
     top = top.min(height - pitch - offset);
   }
   if stats {
-    top = top.min(height - frame_timing_height(ui) - pitch * 4.0 - OVERLAY_MARGIN);
+    top = top.min(height - frame_timing_height(ui) - pitch * STATS_ROWS - OVERLAY_MARGIN);
   }
   top
 }
@@ -319,13 +337,14 @@ pub(crate) fn render_frame_timing(
   }
 }
 
-/// Render debug stats (entity/sprite/batch counts) in the bottom-left corner.
+/// Render debug stats (entity, sprite, batch and particle counts) in the
+/// bottom-left corner.
 ///
 /// Positioned above the frame timing overlay (FPS counter is not shown when stats are visible).
 pub(crate) fn render_stats(ui: &mut UiContext, stats: &SmoothedDebugStats, screen_height: u32) {
   let pitch = row_pitch(ui);
   // Position above frame timing only (FPS counter not shown when frame timing is visible)
-  let base_y = screen_height as f32 - frame_timing_height(ui) - pitch * 4.0 - OVERLAY_MARGIN;
+  let base_y = screen_height as f32 - frame_timing_height(ui) - pitch * STATS_ROWS - OVERLAY_MARGIN;
   let x = 4.0;
   let white = Color::rgb(255, 255, 255);
   let dim = Color::rgb(180, 180, 180);
@@ -341,6 +360,14 @@ pub(crate) fn render_stats(ui: &mut UiContext, stats: &SmoothedDebugStats, scree
     ),
     (
       format!("Batches:  {:5}", stats.draw_calls.round() as u32),
+      white,
+    ),
+    (
+      format!(
+        "Particles: {} / {}",
+        stats.particles.round() as u32,
+        stats.particle_budget
+      ),
       white,
     ),
     (SEPARATOR.to_string(), dim),
@@ -391,6 +418,61 @@ mod tests {
     }
     let last = panels[4];
     assert!(last.y + last.height <= 720.0, "on screen");
+  }
+
+  #[cfg(feature = "default-fonts")]
+  #[test]
+  fn the_stats_show_particles_against_the_budget() {
+    use crate::core::ui::immediate::{UiCommand, UiCommands};
+    let (mut commands, mut text) = (
+      UiCommands::default(),
+      crate::core::ui::test_util::text_engine(),
+    );
+    let mut ui = crate::core::ui::test_util::context(&mut commands, &mut text, (1280.0, 720.0));
+    let raw = DebugStats {
+      particles: 1234,
+      particle_budget: 20_000,
+      ..DebugStats::default()
+    };
+    let mut stats = SmoothedDebugStats::default();
+    stats.update(&raw);
+    assert_eq!(stats.particle_budget, 20_000, "the budget is not smoothed");
+    for _ in 0..400 {
+      stats.update(&raw);
+    }
+    render_stats(&mut ui, &stats, 720);
+    render_frame_timing(&mut ui, &SmoothedFrameTimings::default(), 720);
+    let top = overlay_stack_top(&ui, (true, false, true), 720);
+    drop(ui);
+    let texts: Vec<String> = commands
+      .commands()
+      .filter_map(|c| match c {
+        UiCommand::Text { layout, .. } => Some(layout.text().to_string()),
+        _ => None,
+      })
+      .collect();
+    assert!(
+      texts.iter().any(|t| t == "Particles: 1234 / 20000"),
+      "{texts:?}"
+    );
+    // Five stats rows over the frame timing's five, clear of each other,
+    // the top row where the stack's top says
+    let panels: Vec<Rect> = commands
+      .commands()
+      .filter_map(|c| match c {
+        UiCommand::Rect { rect, .. } => Some(*rect),
+        _ => None,
+      })
+      .collect();
+    assert_eq!(panels.len(), 10);
+    for pair in panels.windows(2) {
+      assert!(
+        pair[0].y + pair[0].height <= pair[1].y + 0.01,
+        "rows overlap: {pair:?}"
+      );
+    }
+    // A panel is padded 4 px above its text
+    assert!((panels[0].y + 4.0 - top).abs() < 0.01, "{top} {panels:?}");
   }
 
   #[test]
@@ -501,6 +583,7 @@ mod tests {
       entity_count: 100,
       draw_calls: 10,
       sprite_count: 500,
+      ..DebugStats::default()
     };
 
     // After first update, values should move toward raw

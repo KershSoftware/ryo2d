@@ -22,6 +22,7 @@ use crate::core::graphics::{
 };
 use crate::core::graphics::{ParallaxLayer, parallax};
 use crate::core::lighting::{FrameLight, Light2D, LightOccluder2D, LightingSettings};
+use crate::core::particles::{DEFAULT_PARTICLE_BUDGET, ParticleStore};
 use crate::core::render::batch::{Filter, LineLook, line_points, push_polyline, trail_points};
 use crate::core::render::scratch::recycle;
 use crate::core::render::text::{
@@ -123,7 +124,7 @@ impl Engine {
       )
     };
 
-    let (entity_sprites, lights, ui_kept, ui_frame) = {
+    let (entity_sprites, particles_drawn, lights, ui_kept, ui_frame) = {
       profile_scope!("cpu:render");
 
       // The scenes' GPU-batched sprites
@@ -221,6 +222,17 @@ impl Engine {
         &mut gpu,
         images_of(&self.world),
       );
+      // The engine's particles: one run per emitter the cameras see
+      let particles_drawn = {
+        profile_scope!("render:particles");
+        self.particle_drawer.collect(
+          &mut self.world,
+          &mut self.draw_list,
+          &mut gpu,
+          alpha,
+          &self.camera_draws,
+        )
+      };
       // Parallax layers, laid out for each camera from its own view
       let mut quads = std::mem::take(&mut self.parallax);
       let mut parallax_layers = self
@@ -547,15 +559,24 @@ impl Engine {
       };
       self.ui_retain.stats.instances_written = ui_frame.map_or(0, |frame| frame.written());
       self.text.end_frame();
-      (entity_sprites, lights, ui_kept, ui_frame)
+      (entity_sprites, particles_drawn, lights, ui_kept, ui_frame)
     };
 
     let ui_draws = ui_frame.map_or(0, |frame| frame.draw_count());
     self.ui_draw_count = ui_draws as u32;
+    let (particles, particle_budget) = self
+      .world
+      .get_resource::<ParticleStore>()
+      .map_or((0, DEFAULT_PARTICLE_BUDGET), |store| {
+        (store.live(), store.budget())
+      });
+    let sprites = (entity_sprites + self.batch_collector.sprite_count()) as u32;
     self.debug_stats = DebugStats {
       entity_count: game_entity_count(&self.world),
       draw_calls: (batch.draw_count() + ui_draws) as u32,
-      sprite_count: (entity_sprites + self.batch_collector.sprite_count()) as u32,
+      sprite_count: sprites.saturating_add(particles_drawn),
+      particles,
+      particle_budget,
     };
     self.frame_timings.render = render_start.elapsed();
 

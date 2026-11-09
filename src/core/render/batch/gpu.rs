@@ -393,10 +393,11 @@ impl Batch2D {
   /// Makes the list's textures resident, and `extra_textures` (the UI
   /// renderer's sprites) with them, and writes the tile chunks built while
   /// the frame was gathered and the frame's tile slots; then, per camera,
-  /// remaps the sprites it sees into their atlas slots in draw order, in a
-  /// range of the instance buffer of its own, and merges consecutive
-  /// drawables with equal draw states into draws (trails and lines by their
-  /// index ranges; each chunk a draw of its own, from the chunk arena).
+  /// remaps the sprites it sees into their atlas slots in draw order (a
+  /// run's quads one after another, its slot found once), in a range of the
+  /// instance buffer of its own, and merges consecutive drawables with equal
+  /// draw states into draws (trails and lines by their index ranges; each
+  /// chunk a draw of its own, from the chunk arena).
   /// Call once per frame, after [`sync_cameras`](Self::sync_cameras) and
   /// after the frame's triangles and chunks are built.
   pub(crate) fn prepare(
@@ -451,6 +452,54 @@ impl Batch2D {
       let mut place = |item: &DrawItem| {
         let index = match item.payload {
           DrawPayload::Sprite(index) => index,
+          DrawPayload::Run(index) => {
+            // An emitter's particles: its texture's slot found once, each
+            // quad placed in it, all drawn with one state
+            let run = list.run(index)?;
+            let quads = list.run_quads(run);
+            let count = u32::try_from(quads.len()).ok()?;
+            let (slot, page_size) = match last {
+              Some((texture, slot, size)) if texture == run.texture => (slot, size),
+              _ => {
+                let (slot, size) = textures.slot(run.texture)?;
+                last = Some((run.texture, slot, size));
+                (slot, size)
+              }
+            };
+            let shader = match run.shading {
+              SpriteShading::Effect => BatchShader::SpriteEffect,
+              _ => BatchShader::Sprite,
+            };
+            let sampling = run.filter.resolve(presentation);
+            let key = PipelineKey::new(
+              shader,
+              run.blend,
+              Stream::Quads,
+              PageKind::of(Some(slot.page)),
+              sampling,
+              format,
+            );
+            if ensured.is_none_or(|(last, _)| last != key) {
+              pipelines.ensure(device, key, None);
+              ensured = Some((key, shader));
+            }
+            // Only built-in effects grow the quad
+            let effects = shader == BatchShader::SpriteEffect;
+            placed.extend(
+              quads
+                .iter()
+                .map(|quad| place_in_slot(quad, &slot, page_size, effects)),
+            );
+            return Some(Placed::Quads {
+              state: DrawState {
+                page: Some(slot.page),
+                shader,
+                blend: run.blend,
+                sampling,
+              },
+              count,
+            });
+          }
           DrawPayload::Chunk(index) => {
             // Its instances are in the chunk arena; its slot places them
             // and maps their UVs into the image's place

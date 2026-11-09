@@ -213,6 +213,8 @@ pub struct Engine {
   lighting: Option<LightingRenderer>,
   entity_drawer: EntityDrawer,
   pub(crate) tile_drawer: crate::core::render::tiles::TileDrawer,
+  /// The engine's particles, one run per emitter (its query kept)
+  particle_drawer: crate::core::particles::ParticleDrawer,
   // Text layout (synced with `Fonts`), the glyph rasterizer for that
   // registry and the text warnings already given
   text: TextEngine,
@@ -773,6 +775,7 @@ impl Engine {
       lighting: None,
       entity_drawer: EntityDrawer::default(),
       tile_drawer: Default::default(),
+      particle_drawer: Default::default(),
       text: TextEngine::new(),
       glyph_raster: GlyphRasterizer::new(),
       text_warned: Default::default(),
@@ -1475,8 +1478,8 @@ impl Engine {
     }
   }
 
-  /// The stats of the last frame, for tests.
-  #[cfg(test)]
+  /// The stats of the last frame (tests, and the headless engine's reads)
+  #[cfg(not(target_arch = "wasm32"))]
   pub(crate) fn debug_stats(&self) -> &DebugStats {
     &self.debug_stats
   }

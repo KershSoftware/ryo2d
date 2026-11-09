@@ -750,6 +750,14 @@ impl HeadlessEngine {
     Ok(())
   }
 
+  /// The last frame's statistics, as the F1 stats show them unsmoothed:
+  /// entities, draw calls, sprites submitted (the engine's particles among
+  /// them), live particles and the particle budget
+  #[doc(hidden)]
+  pub fn debug_stats(&self) -> crate::core::diagnostics::DebugStats {
+    self.engine.debug_stats().clone()
+  }
+
   /// The last frame's render step on the CPU (building, uploading and
   /// encoding the frame; not the UI pass)
   #[doc(hidden)]

@@ -38,6 +38,8 @@ pub(crate) enum DrawPayload {
   Glyph(usize),
   /// Index into the list's tile chunks
   Chunk(usize),
+  /// Index into the list's runs (an emitter's particles)
+  Run(usize),
 }
 
 /// One drawable and where it sorts.
@@ -174,6 +176,26 @@ pub(crate) struct DrawChunk {
   pub(crate) slot: u32,
 }
 
+/// A run of quads of one texture and look, waiting to be drawn: an
+/// emitter's particles. Sorts as one sprite item; its instances, world-space
+/// quads in the list's run instances, are placed in the texture's atlas slot
+/// one after another when the batch is prepared.
+#[derive(Debug, Clone)]
+pub(crate) struct DrawRun {
+  pub(crate) texture: TextureId,
+  /// [`SpriteShading::Plain`] or [`SpriteShading::Effect`]
+  pub(crate) shading: SpriteShading,
+  pub(crate) blend: BlendMode,
+  pub(crate) filter: Filter,
+  /// The cameras on these layers draw it
+  pub(crate) layers: RenderLayers,
+  /// The world box its quads stay inside
+  pub(crate) min: Vec2,
+  pub(crate) max: Vec2,
+  /// Its instances in the list's run instances
+  pub(crate) instances: Range<u32>,
+}
+
 /// A light waiting to be drawn into the light buffers of the lit cameras
 /// that see it.
 #[derive(Debug, Clone)]
@@ -202,6 +224,9 @@ pub(crate) struct DrawList {
   triangles: Vec<DrawTriangles>,
   glyphs: Vec<DrawGlyph>,
   chunks: Vec<DrawChunk>,
+  runs: Vec<DrawRun>,
+  /// The runs' instances, each run's a range of them
+  run_instances: Vec<SpriteInstance>,
   lights: Vec<DrawLight>,
   next_sequence: u32,
   sorted: bool,
@@ -216,6 +241,8 @@ impl DrawList {
     self.triangles.clear();
     self.glyphs.clear();
     self.chunks.clear();
+    self.runs.clear();
+    self.run_instances.clear();
     self.lights.clear();
     self.next_sequence = 0;
     self.sorted = true;
@@ -304,6 +331,20 @@ impl DrawList {
     let payload = DrawPayload::Chunk(self.chunks.len());
     self.chunks.push(chunk);
     self.push_item(lit, z, DrawKind::Entity, payload, only_camera);
+  }
+
+  /// The runs' instances, for a drawer to add a run's to before it pushes
+  /// the run ([`push_run`](Self::push_run)); emptied with the list.
+  pub(crate) fn run_instances(&mut self) -> &mut Vec<SpriteInstance> {
+    &mut self.run_instances
+  }
+
+  /// Add a run at `z`, sorted as one sprite item, for the cameras on its
+  /// layers that see its box; `lit` ones draw before lighting.
+  pub(crate) fn push_run(&mut self, lit: bool, z: i32, run: DrawRun) {
+    let payload = DrawPayload::Run(self.runs.len());
+    self.runs.push(run);
+    self.push_item(lit, z, DrawKind::Sprite, payload, None);
   }
 
   /// How many glyphs the frame holds
@@ -401,6 +442,22 @@ impl DrawList {
     self.chunks.get(index)
   }
 
+  /// The run a [`DrawPayload::Run`] index refers to.
+  pub(crate) fn run(&self, index: usize) -> Option<&DrawRun> {
+    self.runs.get(index)
+  }
+
+  /// `run`'s instances (none for a range the list does not hold).
+  pub(crate) fn run_quads(&self, run: &DrawRun) -> &[SpriteInstance] {
+    let range = run.instances.start as usize..run.instances.end as usize;
+    self.run_instances.get(range).unwrap_or(&[])
+  }
+
+  /// The textures the frame's runs draw.
+  pub(crate) fn run_textures(&self) -> impl Iterator<Item = TextureId> + '_ {
+    self.runs.iter().map(|run| run.texture)
+  }
+
   /// The textures the frame's tile chunks draw.
   pub(crate) fn chunk_textures(&self) -> impl Iterator<Item = TextureId> + '_ {
     self.chunks.iter().map(|chunk| chunk.texture)
@@ -463,6 +520,9 @@ impl DrawList {
       }),
       DrawPayload::Chunk(index) => self.chunks.get(index).is_some_and(|chunk| {
         chunk.layers.intersects(&camera.layers) && camera.view.is_visible(chunk.min, chunk.max)
+      }),
+      DrawPayload::Run(index) => self.runs.get(index).is_some_and(|run| {
+        run.layers.intersects(&camera.layers) && camera.view.is_visible(run.min, run.max)
       }),
     }
   }
@@ -751,6 +811,100 @@ mod tests {
     assert_eq!(list.chunk_textures().count(), 5);
     list.clear();
     assert!(list.chunk(0).is_none());
+  }
+
+  /// A run of texture 7, on `layers`, inside `min`..`max`, of no instances
+  fn run_item(layers: RenderLayers, min: Vec2, max: Vec2) -> DrawRun {
+    DrawRun {
+      texture: TextureId::for_test(7),
+      shading: SpriteShading::Plain,
+      blend: BlendMode::Additive,
+      filter: Filter::Default,
+      layers,
+      min,
+      max,
+      instances: 0..0,
+    }
+  }
+
+  #[test]
+  fn a_run_sorts_as_one_sprite_item() {
+    let mut list = DrawList::default();
+    // Pushed out of order: a trail, the run, then an entity, all at z 0
+    line(&mut list, true, 0);
+    let instances = list.run_instances();
+    let first = instances.len() as u32;
+    instances.extend([SpriteInstance::new(); 3]);
+    let run = DrawRun {
+      instances: first..first + 3,
+      ..run_item(RenderLayers::default(), Vec2::ZERO, Vec2::ONE)
+    };
+    list.push_run(true, 0, run);
+    push(&mut list, DrawKind::Entity, 0, 0);
+
+    list.sorted();
+
+    let order: Vec<_> = list
+      .items()
+      .iter()
+      .map(|item| (item.kind, item.payload))
+      .collect();
+    assert_eq!(
+      order,
+      [
+        (DrawKind::Entity, DrawPayload::Sprite(0)),
+        (DrawKind::Sprite, DrawPayload::Run(0)),
+        (DrawKind::Trail, DrawPayload::Triangles(0)),
+      ]
+    );
+    let run = list.run(0).expect("the run pushed");
+    assert_eq!(list.run_quads(run).len(), 3, "its instances, as one item");
+    assert_eq!(
+      list.run_textures().collect::<Vec<_>>(),
+      [TextureId::for_test(7)]
+    );
+  }
+
+  #[test]
+  fn a_camera_sees_a_run_by_its_layers_and_box() {
+    use crate::core::ecs::World;
+    let mut world = World::new();
+    let camera = test_camera(world.spawn_empty().id());
+    let inside = (Vec2::new(40.0, 40.0), Vec2::new(60.0, 60.0));
+    let outside = (Vec2::splat(200.0), Vec2::splat(300.0));
+    let mut list = DrawList::default();
+    list.push_run(
+      true,
+      1,
+      run_item(RenderLayers::default(), inside.0, inside.1),
+    );
+    // Off its layers, then outside its view
+    list.push_run(
+      true,
+      1,
+      run_item(RenderLayers::layer(1), inside.0, inside.1),
+    );
+    list.push_run(
+      true,
+      1,
+      run_item(RenderLayers::default(), outside.0, outside.1),
+    );
+    // Unlit, on its layer among others
+    let layers = RenderLayers::layer(1).with(0);
+    list.push_run(false, 1, run_item(layers, inside.0, inside.1));
+    list.sorted();
+    let lit: Vec<_> = list.items_for(&camera).map(|item| item.payload).collect();
+    assert_eq!(lit, [DrawPayload::Run(0)]);
+    let unlit: Vec<_> = list
+      .unlit_items_for(&camera)
+      .map(|item| item.payload)
+      .collect();
+    assert_eq!(unlit, [DrawPayload::Run(3)]);
+
+    list.run_instances().push(SpriteInstance::new());
+    list.clear();
+    assert!(list.run(0).is_none());
+    assert!(list.run_instances().is_empty(), "emptied with the list");
   }
 
   #[test]
