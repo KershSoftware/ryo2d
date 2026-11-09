@@ -211,8 +211,13 @@ pub(crate) fn step_particles(world: &mut World, mut state: Local<StepState>) {
     // Emitted where it draws: lifted by its floor's height, on a floor
     let position = global.translation() + lift.map_or(Vec2::ZERO, |drawn| drawn.lift);
     // Spread along the move only from where it was last step, and not
-    // across a teleport
-    let spread = pool.last_step == Some(step - 1) && !previous.is_some_and(|p| p.skip);
+    // across a teleport: `skip_interpolation` marks the emitter (whenever it
+    // is called) and sets an interpolated entity's `skip` (within the step)
+    let teleported = emitter.teleported || previous.is_some_and(|p| p.skip);
+    if emitter.teleported {
+      emitter.teleported = false;
+    }
+    let spread = pool.last_step == Some(step - 1) && !teleported;
     let from = match pool.last {
       Some(last) if spread => last,
       _ => position,

@@ -5,6 +5,7 @@ use super::kernel::{
 };
 use super::transform::{GlobalTransform, PreviousGlobalTransform};
 use crate::core::graphics::MainCamera;
+use crate::core::particles::emitter::ParticleEmitter;
 
 pub trait WorldExt {
   /// Spawn `bundle` as a child of `parent`.
@@ -12,6 +13,8 @@ pub trait WorldExt {
   /// Remove the entity from its parent, keeping its world position.
   fn detach_keep_world(&mut self, entity: Entity);
   /// Draw the entity at its new transform on the next frame instead of sliding there.
+  /// A particle emitter on it spawns only at its new place in its next step,
+  /// leaving no streak along the jump.
   fn skip_interpolation(&mut self, entity: Entity);
 }
 
@@ -37,6 +40,11 @@ impl WorldExt for World {
   fn skip_interpolation(&mut self, entity: Entity) {
     if let Some(mut previous) = self.get_mut::<PreviousGlobalTransform>(entity) {
       previous.skip = true;
+    }
+    // Interpolated or not, and called inside a step or between steps (the
+    // step's snapshot clears `skip` before particles run)
+    if let Some(mut emitter) = self.get_mut::<ParticleEmitter>(entity) {
+      emitter.teleported = true;
     }
   }
 }
@@ -208,5 +216,27 @@ mod tests {
     // No-op on an entity without the component
     let plain = world.spawn(Transform::IDENTITY).id();
     world.skip_interpolation(plain);
+  }
+
+  #[test]
+  fn skip_interpolation_marks_a_particle_emitter_interpolated_or_not() {
+    use crate::core::asset::Assets;
+    use crate::core::graphics::Image;
+    use crate::core::particles::ParticleEffect;
+    use crate::core::particles::emitter::ParticleEmitter;
+
+    let image = Assets::<Image>::new().add(Image::solid_rect(8, 8, 255, 255, 255, 255));
+    let effect = Assets::<ParticleEffect>::new().add(ParticleEffect::new(image));
+    let mut world = World::new();
+    let plain = world.spawn(ParticleEmitter::new(effect.clone())).id();
+    let smooth = world
+      .spawn((ParticleEmitter::new(effect), Interpolated))
+      .id();
+    propagate(&mut world);
+    for e in [plain, smooth] {
+      assert!(!world.get::<ParticleEmitter>(e).unwrap().teleported);
+      world.skip_interpolation(e);
+      assert!(world.get::<ParticleEmitter>(e).unwrap().teleported);
+    }
   }
 }

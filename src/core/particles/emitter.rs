@@ -33,6 +33,9 @@ pub struct ParticleEmitter {
   pub(crate) alive: u32,
   /// Its pool in the store, given by the `on_insert` hook
   pub(crate) slot: u32,
+  /// Moved with `skip_interpolation` since its last step: its next step
+  /// spawns where it stands, with no spread along the jump, and clears it
+  pub(crate) teleported: bool,
 }
 
 impl ParticleEmitter {
@@ -49,6 +52,7 @@ impl ParticleEmitter {
       speed: 1.0,
       alive: 0,
       slot: NO_SLOT,
+      teleported: false,
     }
   }
 
@@ -129,6 +133,7 @@ fn emitter_inserted(mut world: DeferredWorld, context: HookContext) {
   if let Some(mut emitter) = world.get_mut::<ParticleEmitter>(entity) {
     emitter.slot = slot;
     emitter.alive = 0;
+    emitter.teleported = false;
   }
 }
 

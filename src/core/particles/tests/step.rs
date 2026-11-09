@@ -600,6 +600,58 @@ fn a_teleported_or_re_enabled_emitter_does_not_streak() {
 }
 
 #[test]
+fn a_plain_emitter_teleported_between_steps_does_not_streak() {
+  // Not interpolated, and moved between fixed steps (from an `Update`
+  // system or a `ui` hook, say): `skip_interpolation` still marks the jump
+  let mut world = testing::world();
+  let effect = plain(&mut world)
+    .with_rate(600.0)
+    .with_speed(0.0)
+    .with_lifetime(10.0);
+  let emitter = spawn(&mut world, effect, 0.0, 0.0);
+  steps(&mut world, 2);
+  moved_to(&mut world, emitter, 1000.0);
+  world.skip_interpolation(emitter);
+  step(&mut world);
+  for seen in newest(&world, emitter, 10) {
+    assert_eq!(seen.x, 1000.0, "no streak along the jump");
+    assert_eq!(seen.age, 0.0);
+  }
+
+  // The mark lasts one step: the next move spreads as usual
+  moved_to(&mut world, emitter, 1100.0);
+  step(&mut world);
+  let spawned = newest(&world, emitter, 10);
+  for (i, seen) in spawned.iter().enumerate() {
+    let f = (i + 1) as f32 / 10.0;
+    assert!(close(seen.x, 1000.0 + 100.0 * f, 1e-3), "{i}: {seen:?}");
+  }
+
+  // An interpolated one marked between steps keeps the mark through the
+  // next step's snapshot, which clears `PreviousGlobalTransform.skip`
+  let effect = plain(&mut world)
+    .with_rate(600.0)
+    .with_speed(0.0)
+    .with_lifetime(10.0);
+  let effect = testing::effect(&mut world, effect);
+  let smooth = world
+    .spawn((
+      Transform::from_xy(0.0, 300.0),
+      Interpolated,
+      ParticleEmitter::new(effect),
+    ))
+    .id();
+  steps(&mut world, 2);
+  moved_to(&mut world, smooth, 1000.0);
+  world.skip_interpolation(smooth);
+  snapshot(&mut world);
+  step(&mut world);
+  for seen in newest(&world, smooth, 10) {
+    assert_eq!(seen.x, 1000.0, "no streak after the snapshot");
+  }
+}
+
+#[test]
 fn an_effect_still_loading_emits_nothing_until_it_lands() {
   let _log = testing::log_lock();
   let warnings = particle_warnings().len();
