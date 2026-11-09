@@ -7,7 +7,6 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ParticleRng(u64);
 
-#[cfg_attr(not(test), expect(dead_code, reason = "used by the particle step"))]
 impl ParticleRng {
   /// A stream starting from `seed`.
   pub(crate) fn new(seed: u64) -> Self {

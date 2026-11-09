@@ -3,12 +3,13 @@
 use std::any::Any;
 use std::time::Duration;
 
-use crate::core::audio::{hold_scenes, in_scene, release_scene};
+use crate::core::audio;
 use crate::core::console::CommandRegistry;
 use crate::core::ecs::World;
 use crate::core::ecs::kernel::CheckChangeTicks;
 use crate::core::graphics::GpuRenderContext;
 use crate::core::messages::SceneMessages;
+use crate::core::particles;
 use crate::core::schedule::SceneSchedules;
 use crate::core::time::Time;
 use crate::core::ui::UiContext;
@@ -143,12 +144,20 @@ enum TransitionPhase {
 /// it registered, and the voices it played: its loops, its paused or held
 /// one-shots and its one-shots with more than 2 s left (but on `ui`) stop
 /// with their fades, and the rest of its playing one-shots play to their
-/// end.
+/// end. The particle emitters it added that outlive it belong to no scene.
 fn release_scope(world: &mut World, scope_id: u64) {
   if let Some(mut registry) = world.get_resource_mut::<CommandRegistry>() {
     registry.clear_scope(scope_id);
   }
-  release_scene(world, scope_id);
+  audio::release_scene(world, scope_id);
+  particles::release_scene(world, scope_id);
+}
+
+/// Run `f` as scene `scope`'s code: the voices it plays and the particle
+/// emitters it adds are that scene's (`audio::in_scene`,
+/// `particles::in_scene`)
+fn in_scene<R>(world: &mut World, scope: u64, f: impl FnOnce(&mut World) -> R) -> R {
+  audio::in_scene(world, scope, |world| particles::in_scene(world, scope, f))
 }
 
 impl SceneManager {
@@ -672,14 +681,16 @@ impl SceneManager {
     self.sync_audio_holds(world);
   }
 
-  /// Tell the audio engine which scenes are not heard: those not updated
-  /// (below `update_from`), when the top scene `holds_audio_below`.
+  /// Tell the audio engine which scenes are not heard, and the particle
+  /// store which scenes' emitters are frozen: those not updated (below
+  /// `update_from`), when the top scene `holds_audio_below`.
   fn sync_audio_holds(&self, world: &mut World) {
     let held = match self.scenes.last() {
       Some(top) if top.scene.holds_audio_below() => &self.scenes[..self.update_from()],
       _ => &[],
     };
-    hold_scenes(world, held.iter().map(|slot| slot.scope_id));
+    audio::hold_scenes(world, held.iter().map(|slot| slot.scope_id));
+    particles::hold_scenes(world, held.iter().map(|slot| slot.scope_id));
   }
 }
 
@@ -2236,6 +2247,71 @@ mod tests {
     assert_eq!(kira_of(&world, level), Some(Playing), "let go at the pop");
   }
 
+  /// Spawns a particle emitter of its effect as it enters, noting it; it
+  /// holds the scenes below it, and leaves the world as it was when it
+  /// exits (its emitter outlives it)
+  struct SpawnsParticles(
+    crate::core::asset::Handle<crate::core::particles::ParticleEffect>,
+    Arc<Mutex<Vec<crate::core::ecs::Entity>>>,
+  );
+
+  impl Scene for SpawnsParticles {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
+      let emitter = crate::core::particles::emitter::ParticleEmitter::new(self.0.clone());
+      let entity = ctx.world.spawn((emitter, Transform::IDENTITY)).id();
+      self.1.lock().unwrap().push(entity);
+    }
+
+    fn cleanup_on_exit(&self) -> SceneCleanup {
+      SceneCleanup::NONE
+    }
+  }
+
+  /// Particle emitters follow their scene as its voices do: the level's is
+  /// held under the pause menu while the menu's own is not, a pop lets the
+  /// level's go, and the menu's, outliving its scene, belongs to none
+  #[test]
+  fn a_pushed_pause_menu_holds_the_level_s_particle_emitters() {
+    use crate::core::asset::Assets;
+    use crate::core::graphics::Image;
+    use crate::core::particles::emitter::ParticleEmitter;
+    use crate::core::particles::{ParticleEffect, ParticleStore};
+
+    let mut world = world();
+    let image = world
+      .resource_mut::<Assets<Image>>()
+      .add(Image::solid_rect(8, 8, 255, 255, 255, 255));
+    let effect = world
+      .resource_mut::<Assets<ParticleEffect>>()
+      .add(ParticleEffect::new(image));
+    let spawned: Arc<Mutex<Vec<crate::core::ecs::Entity>>> = Arc::default();
+    let mut m =
+      SceneManager::with_scene(Box::new(SpawnsParticles(effect.clone(), spawned.clone())));
+    m.enter_initial(&mut world);
+    m.push(
+      Box::new(SpawnsParticles(effect, spawned.clone())),
+      &mut world,
+    );
+    let [level, menu] = spawned.lock().unwrap()[..] else {
+      panic!("two emitters: {:?}", spawned.lock().unwrap());
+    };
+    let scope_of = |world: &World, entity| {
+      let store = world.resource::<ParticleStore>();
+      let slot = world.get::<ParticleEmitter>(entity).map(|e| e.slot)?;
+      store.pool(slot).map(|pool| pool.scope)
+    };
+    let held = |world: &World, entity| {
+      scope_of(world, entity).is_some_and(|scope| world.resource::<ParticleStore>().holds(scope))
+    };
+    assert_eq!(scope_of(&world, level), Some(Some(1)), "the level's");
+    assert_eq!(scope_of(&world, menu), Some(Some(2)), "the menu's");
+    assert!(held(&world, level), "the level's is held");
+    assert!(!held(&world, menu), "the menu's steps on");
+    m.pop(&mut world, None);
+    assert!(!held(&world, level), "let go at the pop");
+    assert_eq!(scope_of(&world, menu), Some(None), "of no scene now");
+  }
+
   /// The level's emitter is held under a pause menu that spawns none
   #[test]
   fn the_level_s_emitter_is_held_under_a_pause_menu() {
@@ -2598,6 +2674,10 @@ mod tests {
           Phase::FixedUpdate,
           logs("physics").before(FixedSet::Physics),
         ));
+        push(ctx.add_systems(
+          Phase::FixedUpdate,
+          logs("particles").before(FixedSet::Particles),
+        ));
         push(ctx.add_systems(Phase::FixedUpdate, logs("trails").before(FixedSet::Trails)));
         push(ctx.add_systems(Phase::Update, logs("update").in_set(UpdateSet::Game)));
       },
@@ -2613,7 +2693,15 @@ mod tests {
     ran.sort_unstable();
     assert_eq!(
       ran,
-      ["game", "juice", "physics", "scene", "trails", "update"]
+      [
+        "game",
+        "juice",
+        "particles",
+        "physics",
+        "scene",
+        "trails",
+        "update"
+      ]
     );
   }
 

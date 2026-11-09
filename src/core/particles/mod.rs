@@ -86,10 +86,19 @@ mod attractor;
 mod collision;
 mod contact;
 mod effect;
+pub(crate) mod emitter;
 mod legacy;
 mod noise;
+mod pool;
 mod presets;
 mod rng;
+mod scope;
+mod step;
+mod store;
+#[cfg(test)]
+mod testing;
+#[cfg(test)]
+mod tests;
 mod value;
 
 pub use attractor::{AttractorType, ParticleAttractor};
@@ -98,4 +107,8 @@ pub use collision::{
 };
 pub use effect::{Burst, DrawOrder, EmitShape, ParticleEffect};
 pub use legacy::{EmissionMode, EmissionShape, Particle, ParticleEmitter, ParticleSystem};
+pub(crate) use scope::{hold_scenes, in_scene, release_scene};
+pub(crate) use step::step_particles;
+pub use store::DEFAULT_PARTICLE_BUDGET;
+pub(crate) use store::{PARTICLE_HEADLESS_SEED, ParticleStore};
 pub use value::{ColorRange, Curve, CurveKey, Gradient, GradientKey, ValueRange};

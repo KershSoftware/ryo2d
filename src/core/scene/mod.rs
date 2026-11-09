@@ -476,6 +476,10 @@ pub(crate) fn init_world_resources_for_tests(world: &mut crate::core::ecs::World
   register_builtins(&mut commands);
   world.insert_resource(commands);
   world.insert_resource(PhysicsPaused(false));
+  world.insert_resource(crate::core::particles::ParticleStore::new(
+    crate::core::particles::DEFAULT_PARTICLE_BUDGET,
+    crate::core::particles::PARTICLE_HEADLESS_SEED,
+  ));
   register_engine_messages(world);
 }
 

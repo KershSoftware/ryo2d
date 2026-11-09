@@ -67,8 +67,10 @@ pub trait Asset: Send + Sync + 'static {}
 /// [`crate::core::tilemap::TiledTilesetLoader`], and
 /// [`crate::core::tilemap::LdtkProject`] with
 /// [`crate::core::tilemap::LdtkLoader`], and [`crate::core::tilemap::TileWorld`]
-/// with [`crate::core::tilemap::TileWorldLoader`], are registered too. A game's
-/// loaders are added after, so for an extension both take, the game's wins
+/// with [`crate::core::tilemap::TileWorldLoader`], are registered too, and
+/// [`crate::core::particles::ParticleEffect`]'s store, for effects made in
+/// code. A game's loaders are added after, so for an extension both take,
+/// the game's wins
 pub(crate) fn insert_registry(world: &mut crate::core::ecs::World, server: AssetServer) {
   server.register_asset::<crate::core::graphics::Image>(world);
   server.register_loader(ImageLoader);
@@ -98,5 +100,6 @@ pub(crate) fn insert_registry(world: &mut crate::core::ecs::World, server: Asset
   server.register_loader(crate::core::tilemap::TileWorldLoader);
   server.register_asset::<crate::core::tilemap::LdtkProject>(world);
   server.register_loader(crate::core::tilemap::LdtkLoader);
+  server.register_asset::<crate::core::particles::ParticleEffect>(world);
   world.insert_resource(server);
 }

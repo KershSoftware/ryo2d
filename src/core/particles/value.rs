@@ -69,13 +69,11 @@ impl ValueRange {
   }
 
   /// Draws a value from the range.
-  #[cfg_attr(not(test), expect(dead_code, reason = "used by the particle step"))]
   pub(crate) fn sample(&self, rng: &mut ParticleRng) -> f32 {
     rng.range(self.min, self.max)
   }
 
   /// The largest value the range can give (0 when not finite).
-  #[cfg_attr(not(test), expect(dead_code, reason = "used by the particle step"))]
   pub(crate) fn largest(&self) -> f32 {
     if !self.min.is_finite() {
       0.0
@@ -149,7 +147,6 @@ impl ColorRange {
   }
 
   /// Draws a colour as channels in 0..1.
-  #[cfg_attr(not(test), expect(dead_code, reason = "used by the particle step"))]
   pub(crate) fn sample(&self, rng: &mut ParticleRng) -> [f32; 4] {
     let t = if self.a == self.b {
       0.0
@@ -317,7 +314,6 @@ impl Curve {
   }
 
   /// The value at `t` read from the 64-entry table.
-  #[cfg_attr(not(test), expect(dead_code, reason = "used by the particle step"))]
   pub(crate) fn lookup(&self, t: f32) -> f32 {
     let (i, frac) = table_position(t);
     f32::lerp(
@@ -438,7 +434,7 @@ impl Gradient {
   }
 
   /// The colour at `t` as channels in 0..1, read from the 64-entry table.
-  #[cfg_attr(not(test), expect(dead_code, reason = "used by the particle step"))]
+  #[cfg_attr(not(test), expect(dead_code, reason = "used by the particle drawer"))]
   pub(crate) fn lookup(&self, t: f32) -> [f32; 4] {
     let (i, frac) = table_position(t);
     let (a, b) = (self.table[i], self.table[(i + 1).min(TABLE_SIZE - 1)]);

@@ -68,6 +68,10 @@ pub enum FixedSet {
   Physics,
   /// Transform propagation
   Transforms,
+  /// The particle step: emitters spawn, and their particles move and die
+  /// (after propagation and floors, so an emitter spawned this step emits
+  /// from where it stands)
+  Particles,
   /// Trail point recording
   Trails,
 }
@@ -129,6 +133,7 @@ impl EngineSchedules {
         FixedSet::Movement,
         FixedSet::Physics,
         FixedSet::Transforms,
+        FixedSet::Particles,
         FixedSet::Trails,
       )
         .chain(),
@@ -321,7 +326,7 @@ enum Placement {
 }
 
 /// The engine's sets a scene's systems may name, and their names.
-fn engine_sets() -> [(InternedSystemSet, &'static str); 12] {
+fn engine_sets() -> [(InternedSystemSet, &'static str); 13] {
   [
     (FixedSet::Snapshot.intern(), "FixedSet::Snapshot"),
     (FixedSet::Juice.intern(), "FixedSet::Juice"),
@@ -330,6 +335,7 @@ fn engine_sets() -> [(InternedSystemSet, &'static str); 12] {
     (FixedSet::Movement.intern(), "FixedSet::Movement"),
     (FixedSet::Physics.intern(), "FixedSet::Physics"),
     (FixedSet::Transforms.intern(), "FixedSet::Transforms"),
+    (FixedSet::Particles.intern(), "FixedSet::Particles"),
     (FixedSet::Trails.intern(), "FixedSet::Trails"),
     (UpdateSet::Game.intern(), "UpdateSet::Game"),
     (
@@ -354,6 +360,7 @@ fn holds(phase: Phase, placement: Placement, set: InternedSystemSet) -> bool {
       FixedSet::Movement,
       FixedSet::Physics,
       FixedSet::Transforms,
+      FixedSet::Particles,
       FixedSet::Trails,
     ]),
     (Phase::Update, Placement::In) => set == UpdateSet::Game.intern(),
@@ -601,11 +608,24 @@ mod tests {
       Phase::FixedUpdate,
       push("transforms").in_set(FixedSet::Transforms),
     );
+    s.add_systems(Phase::FixedUpdate, push("trails").in_set(FixedSet::Trails));
+    s.add_systems(
+      Phase::FixedUpdate,
+      push("particles").in_set(FixedSet::Particles),
+    );
     s.add_systems(Phase::FixedUpdate, push("game").in_set(FixedSet::Game));
     s.run(Phase::FixedUpdate, &mut world);
     assert_eq!(
       world.resource::<Log>().0,
-      ["snapshot", "game", "movement", "physics", "transforms"]
+      [
+        "snapshot",
+        "game",
+        "movement",
+        "physics",
+        "transforms",
+        "particles",
+        "trails"
+      ]
     );
   }
 

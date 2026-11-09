@@ -377,7 +377,6 @@ impl ParticleEffect {
   }
 
   /// Every value the effect has that is not allowed, each starting with its field's name.
-  #[cfg_attr(not(test), expect(dead_code, reason = "used by the particle step"))]
   pub(crate) fn problems(&self) -> Vec<String> {
     let mut out = Vec::new();
     let mut report = |field: &str, bad: bool, what: &str| {
@@ -482,7 +481,6 @@ impl ParticleEffect {
   }
 
   /// A copy with every problem clamped to the nearest allowed value.
-  #[cfg_attr(not(test), expect(dead_code, reason = "used by the particle step"))]
   pub(crate) fn sanitized(&self) -> ParticleEffect {
     let mut fx = self.clone();
     let num = |v: f32, default: f32| if v.is_finite() { v } else { default };

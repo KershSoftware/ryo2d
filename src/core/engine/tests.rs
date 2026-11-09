@@ -412,6 +412,76 @@ fn headless_engines_pick_the_same_variations() {
   assert_eq!(first, picks(), "a second headless run picks the same");
 }
 
+/// A burst of 8 from an emitter spawned in `engine`, after one fixed step:
+/// each particle's velocity, as the store keeps them
+fn particles_after_a_step(engine: &mut Engine) -> Vec<(f32, f32)> {
+  use crate::core::asset::Assets;
+  use crate::core::ecs::Transform;
+  use crate::core::graphics::Image;
+  use crate::core::particles::emitter::ParticleEmitter;
+  use crate::core::particles::{Burst, ParticleEffect, ParticleStore};
+
+  let image = engine
+    .world
+    .resource_mut::<Assets<Image>>()
+    .add(Image::solid_rect(8, 8, 255, 255, 255, 255));
+  let effect = ParticleEffect::new(image)
+    .with_rate(0.0)
+    .with_burst(Burst::at(0.0, 8.0));
+  let effect = engine
+    .world
+    .resource_mut::<Assets<ParticleEffect>>()
+    .add(effect);
+  let emitter = engine
+    .world
+    .spawn((Transform::from_xy(10.0, 20.0), ParticleEmitter::new(effect)))
+    .id();
+  engine.schedules.run(Phase::FixedUpdate, &mut engine.world);
+  let slot = engine
+    .world
+    .get::<ParticleEmitter>(emitter)
+    .map_or(u32::MAX, |e| e.slot);
+  let store = engine.world.resource::<ParticleStore>();
+  store.pool(slot).map_or_else(Vec::new, |pool| {
+    let p = &pool.main;
+    p.vx.iter().copied().zip(p.vy.iter().copied()).collect()
+  })
+}
+
+/// The engine steps particles in its fixed step with no scene code, within
+/// the builder's budget, and a headless engine seeds them the same way on
+/// every run
+#[test]
+fn engines_step_particles_within_the_builder_s_budget() {
+  use crate::core::particles::{DEFAULT_PARTICLE_BUDGET, ParticleStore};
+
+  let headless = || {
+    EngineBuilder::new()
+      .start_scene(EmptyScene)
+      .build_headless()
+  };
+  let mut engine = headless();
+  assert_eq!(
+    engine.world.resource::<ParticleStore>().budget(),
+    DEFAULT_PARTICLE_BUDGET
+  );
+  let first = particles_after_a_step(&mut engine);
+  assert_eq!(first.len(), 8, "the burst, in the engine's own step");
+  assert_eq!(engine.world.resource::<ParticleStore>().live(), 8);
+  assert_eq!(
+    particles_after_a_step(&mut headless()),
+    first,
+    "a second headless run spawns the same"
+  );
+
+  let mut engine = EngineBuilder::new()
+    .particle_budget(5)
+    .start_scene(EmptyScene)
+    .build_headless();
+  assert_eq!(engine.world.resource::<ParticleStore>().budget(), 5);
+  assert_eq!(particles_after_a_step(&mut engine).len(), 5);
+}
+
 #[test]
 fn first_run_writes_no_settings_file_until_a_setting_changes() {
   let all = crate::core::config::UserPreferenceFilter::all;

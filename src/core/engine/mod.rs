@@ -52,6 +52,7 @@ use crate::core::input::Input;
 use crate::core::input_script::InputScript;
 use crate::core::lighting::{LightingRenderer, LightingSettings};
 use crate::core::messages::{register_engine_messages, register_message};
+use crate::core::particles::{PARTICLE_HEADLESS_SEED, ParticleStore, step_particles};
 use crate::core::physics::sync::register_physics_systems;
 use crate::core::physics::{Physics, PhysicsConfig};
 use crate::core::render::batch::Batch2D;
@@ -142,6 +143,9 @@ pub struct EngineConfig {
   /// Whether to keep drawing when the window is unfocused (the game keeps
   /// running either way). Default: true.
   pub background_rendering: bool,
+  /// The most particles alive at once, over every emitter (default
+  /// [`DEFAULT_PARTICLE_BUDGET`](crate::core::particles::DEFAULT_PARTICLE_BUDGET))
+  pub particle_budget: u32,
 }
 
 impl Default for EngineConfig {
@@ -163,6 +167,7 @@ impl Default for EngineConfig {
       ui_resolution: UiResolution::default(),
       target_background_fps: 0,
       background_rendering: true,
+      particle_budget: crate::core::particles::DEFAULT_PARTICLE_BUDGET,
     }
   }
 }
@@ -443,13 +448,15 @@ fn handle_system_error(error: crate::core::ecs::SystemError, ctx: crate::core::e
 }
 
 /// Insert the resources scene callbacks and systems expect (the GPU ones
-/// follow in `Engine::init_gpu`).
+/// follow in `Engine::init_gpu`). The particle store holds the config's
+/// budget, its emitters' engine seeds drawn from `particle_seed`.
 pub(crate) fn init_world_resources(
   world: &mut World,
   config: &EngineConfig,
   registry: AssetServer,
   commands: CommandRegistry,
   audio: AudioEngine,
+  particle_seed: u64,
 ) {
   let (w, h) = (config.width, config.height);
   world.insert_resource(Time::new(config.fixed_hz));
@@ -458,6 +465,7 @@ pub(crate) fn init_world_resources(
   spawn_main_camera(world, glam::Vec2::new(w as f32, h as f32));
   insert_registry(world, registry);
   world.insert_resource(audio);
+  world.insert_resource(ParticleStore::new(config.particle_budget, particle_seed));
   world.insert_resource(EffectsManager::new());
   world.insert_resource(crate::core::render::Look::default());
   world.insert_resource(LightingSettings::default());
@@ -538,6 +546,10 @@ fn register_engine_systems(schedules: &mut EngineSchedules) {
   schedules.add_systems(
     Phase::FixedUpdate,
     propagate_transforms.in_set(FixedSet::Transforms),
+  );
+  schedules.add_systems(
+    Phase::FixedUpdate,
+    step_particles.in_set(FixedSet::Particles),
   );
   schedules.add_systems(
     Phase::FixedUpdate,
@@ -690,6 +702,12 @@ impl Engine {
     if headless {
       audio_engine.seed(crate::core::audio::HEADLESS_SEED);
     }
+    // And seeds its particle emitters the same way each time
+    let particle_seed = if headless {
+      PARTICLE_HEADLESS_SEED
+    } else {
+      rand::random()
+    };
     for kind in VolumeKind::ALL {
       audio_engine.set_volume_setting(kind, settings.volume(kind));
     }
@@ -701,6 +719,7 @@ impl Engine {
       registry,
       command_registry,
       audio_engine,
+      particle_seed,
     );
     world.insert_resource(saves);
     world.insert_resource(settings);
@@ -1636,6 +1655,16 @@ impl EngineBuilder {
   /// number is warned about and treated as `None`.
   pub fn ui_scale(mut self, scale: Option<f32>) -> Self {
     self.config.ui_scale = scale;
+    self
+  }
+
+  /// The most particles alive at once, over every emitter (default
+  /// [`DEFAULT_PARTICLE_BUDGET`](crate::core::particles::DEFAULT_PARTICLE_BUDGET),
+  /// 20,000). A safety cap, not a quality setting: a spawn past it is
+  /// dropped, with one warning per effect, and live particles are never cut
+  /// short.
+  pub fn particle_budget(mut self, max: u32) -> Self {
+    self.config.particle_budget = max;
     self
   }
 
