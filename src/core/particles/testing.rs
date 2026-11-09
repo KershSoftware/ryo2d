@@ -6,10 +6,12 @@ use std::time::Duration;
 use glam::Vec2;
 
 use super::collision::ParticleCollision;
+use super::contact::{ColliderQuery, ParticleCollider, gather_colliders};
 use super::draw::instance_for;
 use super::effect::ParticleEffect;
 use super::emitter::{EmitterFinished, ParticleEmitter};
 use super::pool::{EmitterPool, Pool, STUCK, SubPool, TOUCHING};
+use super::rng::ParticleRng;
 use super::space::LocalFrame;
 use super::step::{Compiled, step_particles, step_unscaled_particles};
 use super::store::{DEFAULT_PARTICLE_BUDGET, ParticleStore};
@@ -18,11 +20,12 @@ use crate::core::ecs::interpolate::snapshot_previous_transforms;
 use crate::core::ecs::kernel::SingleThreadedExecutor;
 use crate::core::ecs::propagate::propagate_transforms;
 use crate::core::ecs::{
-  DrawLift, Entity, GlobalTransform, IntoScheduleConfigs, Messages, Mut, PreviousGlobalTransform,
-  Resource, Schedule, World,
+  ChildOf, DrawLift, Entity, GlobalTransform, IVec2, IntoScheduleConfigs, Messages, Mut,
+  PreviousGlobalTransform, QueryState, Resource, Schedule, Transform, World,
 };
 use crate::core::graphics::Image;
 use crate::core::messages::register_engine_messages;
+use crate::core::physics::{Collider, SlopeCorner, TileCell, TileColliders, TilePart};
 use crate::core::time::Time;
 
 /// The systems `step` runs, kept so their state lasts from step to step
@@ -287,4 +290,71 @@ pub(crate) fn particle_warnings() -> Vec<String> {
     .filter(|entry| entry.module.as_deref() == Some("Particles"))
     .map(|entry| entry.message)
     .collect()
+}
+
+/// Spawns a busy level's colliders, for comparing ways of meeting them, and
+/// propagates their transforms: a tile map's parts (64 x 48 cells of 16
+/// px from (40, 24), its bottom rows ground with holes and the rest a
+/// scatter of solid, sloped and one-way cells), circles and boxes (some
+/// turned) among them, an open zigzag, and a game's closed polyline arena
+/// round it all. It spans about (-48, -48) to (1100, 840), and repeats
+pub(crate) fn busy_level(world: &mut World) {
+  let mut rng = ParticleRng::new(0xB05_1E7E1);
+  let mut tiles = TileColliders::new(64, 48, Vec2::splat(16.0));
+  let corners = [
+    SlopeCorner::BottomLeft,
+    SlopeCorner::BottomRight,
+    SlopeCorner::TopLeft,
+    SlopeCorner::TopRight,
+  ];
+  for y in 0..48 {
+    for x in 0..64 {
+      let roll = rng.next_f32();
+      let ground = y >= 44 && roll < 0.9;
+      let cell = if ground || roll < 0.22 {
+        TileCell::Solid
+      } else if roll < 0.26 {
+        TileCell::Slope(corners[(rng.next_u64() % 4) as usize])
+      } else if roll < 0.30 {
+        TileCell::OneWay
+      } else {
+        TileCell::Empty
+      };
+      tiles.set(IVec2::new(x, y), cell);
+    }
+  }
+  let parts = tiles.traced_parts();
+  let map = world.spawn((Transform::from_xy(40.0, 24.0), tiles)).id();
+  for (at, part) in parts {
+    world.spawn((Transform::from_xy(at.x, at.y), part, TilePart, ChildOf(map)));
+  }
+  for n in 0..16 {
+    let at = Vec2::new(rng.range(0.0, 1100.0), rng.range(0.0, 800.0));
+    let shape = if n % 2 == 0 {
+      Collider::circle(rng.range(6.0, 40.0))
+    } else {
+      let turn = if n % 4 == 1 { rng.range(0.0, 3.0) } else { 0.0 };
+      Collider::rect(rng.range(8.0, 80.0), rng.range(8.0, 80.0)).with_rotation(turn)
+    };
+    world.spawn((Transform::from_xy(at.x, at.y), shape));
+  }
+  let zigzag = (0..12).map(|i| {
+    Vec2::new(
+      60.0 + i as f32 * 90.0,
+      if i % 2 == 0 { 380.0 } else { 440.0 },
+    )
+  });
+  world.spawn((Transform::IDENTITY, Collider::polyline(zigzag)));
+  let (x0, y0, x1, y1) = (-48.0, -48.0, 1100.0, 840.0);
+  let arena = [(x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0)].map(|(x, y)| Vec2::new(x, y));
+  world.spawn((Transform::IDENTITY, Collider::polyline(arena)));
+  step(world);
+}
+
+/// `world`'s colliders and their edges, gathered as a step gathers them
+pub(crate) fn gathered(world: &mut World) -> (Vec<ParticleCollider>, Vec<(Vec2, Vec2)>) {
+  let mut query: ColliderQuery = QueryState::new(world);
+  let (mut colliders, mut edges) = (Vec::new(), Vec::new());
+  gather_colliders(world, &mut query, &mut colliders, &mut edges);
+  (colliders, edges)
 }

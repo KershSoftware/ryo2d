@@ -131,7 +131,8 @@ type StepParams<'w, 's> = (
 /// What a step keeps between runs, so a steady step allocates nothing:
 /// its parameters' state (the emitter query among them), the emitters in
 /// entity order, per-particle scratch, the emitters going, and the
-/// attractors and colliders it gathers (with their queries)
+/// attractors and colliders it gathers (with their queries, and the grid
+/// the colliders are rebuilt into whenever they are gathered)
 #[derive(Default)]
 pub(crate) struct StepState {
   params: Option<EcsSystemState<StepParams<'static, 'static>>>,

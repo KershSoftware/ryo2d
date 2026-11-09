@@ -149,22 +149,62 @@ impl ParticleCollider {
   }
 
   /// Test a particle circle at `(x, y)`, which was at `from` before this
+  /// update moved it, against this collider, reading only its edges among
+  /// `among` (indices into the system's `edges`, ascending, of any
+  /// collider, as a grid query lists them). The contact is the one over
+  /// all of its edges when `among` holds every one whose box comes within
+  /// the particle's radius, or a tile part's reach, of its move, and a hair
+  /// further for a corner's 1e-3 (as `ColliderGrid::query_move` finds them)
+  pub(crate) fn contact_among(
+    &self,
+    edges: &[(Vec2, Vec2)],
+    among: &[u32],
+    from: Vec2,
+    at: (f32, f32),
+    radius: f32,
+  ) -> Option<Contact> {
+    let own = match self.geometry {
+      ColliderGeometry::Edges { start, end, .. } => {
+        let after = &among[among.partition_point(|&edge| edge < start)..];
+        &after[..after.partition_point(|&edge| edge < end)]
+      }
+      _ => &[],
+    };
+    let own = own
+      .iter()
+      .filter_map(|&edge| edges.get(edge as usize).copied());
+    self.contact_over(own, from, at, radius)
+  }
+
+  /// Test a particle circle at `(x, y)`, which was at `from` before this
   /// update moved it, against this collider (whose edges, if any, are in
-  /// `edges`).
+  /// `edges`), reading every edge of its own
+  #[cfg(test)]
   pub(crate) fn contact(
     &self,
     edges: &[(Vec2, Vec2)],
     from: Vec2,
-    (x, y): (f32, f32),
+    at: (f32, f32),
     radius: f32,
   ) -> Option<Contact> {
+    let own = match self.geometry {
+      ColliderGeometry::Edges { start, end, .. } => edges.get(start as usize..end as usize)?,
+      _ => &[],
+    };
+    self.contact_over(own.iter().copied(), from, at, radius)
+  }
+
+  /// The contact of a particle circle at `(x, y)`, which was at `from`
+  /// before this update moved it, with this collider, reading `own` as its
+  /// edges (for an edges collider: all of them, or those that may matter,
+  /// in their order)
+  fn contact_over<I>(&self, own: I, from: Vec2, (x, y): (f32, f32), radius: f32) -> Option<Contact>
+  where
+    I: Iterator<Item = (Vec2, Vec2)> + Clone,
+  {
     let (normal_x, normal_y, point_x, point_y) = match self.geometry {
       ColliderGeometry::Edges {
-        start,
-        end,
-        min,
-        max,
-        solid,
+        min, max, solid, ..
       } => {
         let to = Vec2::new(x, y);
         // Its move, give or take how far it is met, misses the edges' box:
@@ -174,12 +214,10 @@ impl ParticleCollider {
         if low.x > max.x || low.y > max.y || high.x < min.x || high.y < min.y {
           return None;
         }
-        let edges = edges.get(start as usize..end as usize)?;
         let (_, point, normal) = match solid {
-          Some(reach) => solid_contact(edges, (from, to), radius, reach)?,
-          None => edges
-            .iter()
-            .filter_map(|&(a, b)| edge_contact(a, b, from, to, radius))
+          Some(reach) => solid_contact(own, (from, to), radius, reach)?,
+          None => own
+            .filter_map(|(a, b)| edge_contact(a, b, from, to, radius))
             .min_by(|a, b| a.0.total_cmp(&b.0))?,
         };
         (normal.x, normal.y, point.x, point.y)
@@ -317,9 +355,11 @@ pub(crate) fn edge_contact(
 /// normal, or at a corner the sum of its two edges' normals), the particle
 /// is in the ground and goes out there (ranked 0); if it is on the outer
 /// side within `radius`, it touches (ranked by distance over radius).
-/// Ground deeper than `reach` from this part's edges is not judged
+/// Ground deeper than `reach` from this part's edges is not judged. Edges
+/// further from the move than `reach` and `radius` (and the 1e-3 a corner
+/// is found within) play no part, so `edges` may leave them out
 pub(crate) fn solid_contact(
-  edges: &[(Vec2, Vec2)],
+  edges: impl Iterator<Item = (Vec2, Vec2)> + Clone,
   (from, to): (Vec2, Vec2),
   radius: f32,
   reach: f32,
@@ -331,7 +371,7 @@ pub(crate) fn solid_contact(
   };
   // Crossed into the ground this update
   let mut crossed: Option<(f32, Vec2, Vec2)> = None;
-  for &(a, b) in edges {
+  for (a, b) in edges.clone() {
     let Some(normal) = outward(a, b) else {
       continue;
     };
@@ -356,7 +396,7 @@ pub(crate) fn solid_contact(
     a + along * u
   };
   let mut best: Option<(f32, Vec2)> = None;
-  for &(a, b) in edges {
+  for (a, b) in edges.clone() {
     if outward(a, b).is_none() {
       continue;
     }
@@ -371,7 +411,7 @@ pub(crate) fn solid_contact(
     return None;
   }
   let mut normal = Vec2::ZERO;
-  for &(a, b) in edges {
+  for (a, b) in edges {
     if let Some(n) = outward(a, b)
       && nearest(a, b).distance(point) <= 1e-3
     {
@@ -397,17 +437,15 @@ pub(crate) fn solid_contact(
   Some((distance / radius, point, facing))
 }
 
-/// Colliders a particle can hit, in gather order.
-///
-/// Skips the collider on the particle's own emitter entity, which particles spawn inside.
-pub(crate) fn candidate_colliders<'a>(
-  colliders: &'a [ParticleCollider],
+/// Whether particles of the emitter on `emitter`, colliding by `config`,
+/// can hit `collider`: one on a layer the config's mask takes, and never the
+/// collider on their own emitter's entity, which they spawn inside
+pub(crate) fn can_hit(
+  collider: &ParticleCollider,
   emitter: Entity,
-  config: &'a CollisionConfig,
-) -> impl Iterator<Item = &'a ParticleCollider> {
-  colliders.iter().filter(move |collider| {
-    collider.entity != emitter && collider.layer & config.collision_mask != 0
-  })
+  config: &CollisionConfig,
+) -> bool {
+  collider.entity != emitter && collider.layer & config.collision_mask != 0
 }
 
 /// The query `gather_colliders` runs; keep it between runs.

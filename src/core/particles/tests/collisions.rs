@@ -7,8 +7,10 @@ use crate::core::ecs::kernel::Disabled;
 use crate::core::ecs::{ChildOf, Entity, GlobalTransform, Transform, World};
 use crate::core::particles::ParticleEmitter;
 use crate::core::particles::collision::{CollisionConfig, CollisionResponse, ParticleCollision};
-use crate::core::particles::contact::CONTACT_SKIN;
+use crate::core::particles::contact::{CONTACT_SKIN, ColliderGeometry, Contact, ParticleCollider};
 use crate::core::particles::effect::{Burst, ParticleEffect};
+use crate::core::particles::grid::{Candidates, ColliderGrid};
+use crate::core::particles::rng::ParticleRng;
 use crate::core::particles::testing::{
   self, Seen, collisions, count, edit, frame, particles, step, steps,
 };
@@ -938,4 +940,81 @@ fn an_unscaled_emitter_s_particles_collide_too() {
   assert_eq!(hits.len(), 1);
   assert_eq!(hits[0].emitter_entity, emitter);
   assert_eq!(hits[0].collider_entity, floor);
+}
+
+// The collision grid
+
+/// A contact field by field, bit for bit
+fn exactly(contact: Option<Contact>) -> Option<(Entity, [u32; 4])> {
+  contact.map(|c| {
+    let fields = [c.normal_x, c.normal_y, c.point_x, c.point_y];
+    (c.collider, fields.map(f32::to_bits))
+  })
+}
+
+/// Which kind of geometry a collider is, for counting what a test met
+fn kind(collider: &ParticleCollider) -> usize {
+  match collider.geometry {
+    ColliderGeometry::Box { .. } => 0,
+    ColliderGeometry::Circle { .. } => 1,
+    ColliderGeometry::Edges { solid: Some(_), .. } => 2,
+    ColliderGeometry::Edges { solid: None, .. } => 3,
+  }
+}
+
+#[test]
+fn the_grid_finds_what_brute_force_finds() {
+  // Seeded moves over a busy level, mostly short, some long: every
+  // collider's contact over the grid's candidates (none for a collider it
+  // leaves out) is the contact over all of its edges
+  let mut world = testing::world();
+  testing::busy_level(&mut world);
+  let (colliders, edges) = testing::gathered(&mut world);
+  let mut grid = ColliderGrid::default();
+  grid.rebuild(&colliders, &edges);
+  let mut near = Candidates::default();
+  let mut rng = ParticleRng::new(0x6_121D);
+  const MOVES: usize = 10_000;
+  for radius in [2.0, 6.0] {
+    let (mut met, mut kinds, mut read) = (0, [0; 4], 0);
+    for n in 0..MOVES {
+      let from = Vec2::new(rng.range(-80.0, 1130.0), rng.range(-80.0, 870.0));
+      let longest = match rng.next_f32() {
+        roll if roll < 0.7 => 12.0,
+        roll if roll < 0.95 => 60.0,
+        _ => 400.0,
+      };
+      let along = Vec2::from_angle(rng.range(0.0, std::f32::consts::TAU));
+      let to = from + along * rng.range(0.0, longest);
+      grid.query_move(from, to, radius, &mut near);
+      read += near.edges.len();
+      for (k, collider) in colliders.iter().enumerate() {
+        let all = collider.contact(&edges, from, (to.x, to.y), radius);
+        let candidate = near.colliders.binary_search(&(k as u32)).is_ok();
+        let among = candidate
+          .then(|| collider.contact_among(&edges, &near.edges, from, (to.x, to.y), radius))
+          .flatten();
+        assert_eq!(
+          exactly(among),
+          exactly(all),
+          "move {n} at radius {radius}, from {from} to {to}: collider {k}, {:?}",
+          collider.geometry
+        );
+        if all.is_some() {
+          met += 1;
+          kinds[kind(collider)] += 1;
+        }
+      }
+    }
+    assert!(met > 1_000, "radius {radius}: only {met} contacts");
+    assert!(
+      kinds.iter().all(|&n| n > 0),
+      "radius {radius}: contacts by box, circle, solid and two-sided edges: {kinds:?}"
+    );
+    assert!(
+      read < MOVES * edges.len() / 20,
+      "the grid leaves most edges out: {read} read of {} edges a move",
+      edges.len()
+    );
+  }
 }

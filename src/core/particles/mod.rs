@@ -78,6 +78,7 @@ mod draw;
 mod effect;
 mod emitter;
 mod forces;
+mod grid;
 mod noise;
 mod pool;
 mod presets;
