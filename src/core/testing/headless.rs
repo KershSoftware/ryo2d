@@ -705,6 +705,18 @@ impl HeadlessEngine {
     self.engine.tile_drawer.chunk_draws().collect()
   }
 
+  /// One frame's settings work with nothing changed: the engine's change
+  /// check and the settings writer's tick (`benches/saves.rs`). Whether the
+  /// engine has a settings writer
+  #[doc(hidden)]
+  pub fn idle_settings(&mut self) -> bool {
+    self.engine.apply_settings();
+    self.engine.save_settings(web_time::Instant::now());
+    self
+      .world()
+      .contains_resource::<crate::core::settings::persist::SettingsWriter>()
+  }
+
   /// The last frame's render step on the CPU (building, uploading and
   /// encoding the frame; not the UI pass)
   #[doc(hidden)]

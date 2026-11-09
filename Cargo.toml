@@ -152,6 +152,10 @@ harness = false
 name = "tilemap"
 harness = false
 
+[[bench]]
+name = "saves"
+harness = false
+
 # Dev builds: optimize dependencies and engine for performance, keep game code light for fast iteration
 # The engine's pixel operations (parallax, sprite blitting) need full optimization
 [profile.dev]
