@@ -2,8 +2,9 @@
 //! 1080): 10,000 particles from one emitter, 100 emitters of 100 particles
 //! in a grid, and 2,000 particles bouncing on a 64 x 64 tile map's colliders.
 //!
-//! Each scene owns a `ParticleSystem::with_seed(7)`, updates it in
-//! `Scene::update` and draws it in `Scene::render`. Before criterion runs, a
+//! Each scene adds its effect once and places it with emitters seeded with
+//! `ParticleEmitter::with_seed(7)`; the engine steps and draws them, and the
+//! scene reads the live count in `Scene::update`. Before criterion runs, a
 //! guard steps every scene's engine and an empty engine in turn, interleaved
 //! (an engine stepping evicts the others' data), the GPU drained outside the
 //! measure, and prints each scene's step over the empty frame (median and
@@ -19,6 +20,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
 use criterion::Criterion;
+use ryo2d::core::ecs::kernel::ChildOf;
 use ryo2d::prelude::*;
 use ryo2d::testing::{HeadlessEngine, shared_gpu};
 
@@ -84,34 +86,46 @@ impl Show {
   }
 }
 
-/// A scene owning a particle system, and the live count it last saw
+/// A scene of the bench, and the live count it last saw
 struct ParticleScene {
   show: Show,
-  system: ParticleSystem,
   live: Arc<AtomicUsize>,
+}
+
+/// An effect of the bench: `rate` a second from a point in every direction,
+/// living 2 s, up to `max` alive, each particle shrinking to nothing and
+/// fading out over its life (as the scene-driven system's defaults did)
+fn effect(sprite: Handle<Image>, rate: f32, max: u32) -> ParticleEffect {
+  ParticleEffect::new(sprite)
+    .with_rate(rate)
+    .with_lifetime(2.0)
+    .with_max_particles(max)
+    .with_size_over_life(Curve::new([(0.0, 1.0), (1.0, 0.0)]))
+}
+
+/// An emitter of `effect` at `(x, y)`, seeded so every run repeats
+fn emitter(x: f32, y: f32, effect: &Handle<ParticleEffect>) -> (Transform, ParticleEmitter) {
+  (
+    Transform::from_xy(x, y),
+    ParticleEmitter::new(effect.clone()).with_seed(7),
+  )
 }
 
 /// One emitter: 5,000 a second living 2 s, up to 10,000
 fn spawn_10k(ctx: &mut SceneContext, sprite: Handle<Image>) {
-  ctx.world.spawn((
-    Transform::from_xy(960.0, 540.0),
-    ParticleEmitter::new(sprite)
-      .with_mode(EmissionMode::Continuous { rate: 5_000.0 })
-      .with_lifetime(2.0, 2.0)
-      .with_max_particles(10_000),
-  ));
+  let effect = ctx.assets().add(effect(sprite, 5_000.0, 10_000));
+  ctx.world.spawn(emitter(960.0, 540.0, &effect));
 }
 
 /// 100 emitters in a 10 x 10 grid: 50 a second living 2 s, up to 100 each
 fn spawn_100x100(ctx: &mut SceneContext, sprite: Handle<Image>) {
+  let effect = ctx.assets().add(effect(sprite, 50.0, 100));
   for row in 0..10 {
     for column in 0..10 {
-      ctx.world.spawn((
-        Transform::from_xy(210.0 + 150.0 * column as f32, 90.0 + 90.0 * row as f32),
-        ParticleEmitter::new(sprite.clone())
-          .with_mode(EmissionMode::Continuous { rate: 50.0 })
-          .with_lifetime(2.0, 2.0)
-          .with_max_particles(100),
+      ctx.world.spawn(emitter(
+        210.0 + 150.0 * column as f32,
+        90.0 + 90.0 * row as f32,
+        &effect,
       ));
     }
   }
@@ -119,8 +133,8 @@ fn spawn_100x100(ctx: &mut SceneContext, sprite: Handle<Image>) {
 
 /// A 64 x 64 map of 16 px tiles with a solid border and 8 platforms, its
 /// `TileColliders` built by hand, and one emitter above it: 1,000 a second
-/// living 2 s (the cap raised from the default 1,000 to hold them), bouncing,
-/// falling at 400 px/s^2
+/// living 2 s (the effect's cap raised from the default 1,000 to hold them),
+/// bouncing, falling at 400 px/s^2
 fn spawn_collide_2k(ctx: &mut SceneContext, sprite: Handle<Image>) {
   let mut tiles = TileColliders::new(MAP, MAP, Vec2::splat(TILE));
   let last = MAP as i32 - 1;
@@ -149,14 +163,15 @@ fn spawn_collide_2k(ctx: &mut SceneContext, sprite: Handle<Image>) {
   ctx
     .world
     .spawn((Transform::from_xy(origin.x, origin.y), tiles));
-  ctx.world.spawn((
-    Transform::from_xy(origin.x + side / 2.0, origin.y + 3.0 * TILE),
-    ParticleEmitter::new(sprite)
-      .with_mode(EmissionMode::Continuous { rate: 1_000.0 })
-      .with_lifetime(2.0, 2.0)
+  let effect = ctx.assets().add(
+    effect(sprite, 1_000.0, 2_000)
       .with_gravity(0.0, 400.0)
-      .with_max_particles(2_000)
       .with_collision(CollisionConfig::bouncy(2.0, 0.5)),
+  );
+  ctx.world.spawn(emitter(
+    origin.x + side / 2.0,
+    origin.y + 3.0 * TILE,
+    &effect,
   ));
 }
 
@@ -176,16 +191,10 @@ impl Scene for ParticleScene {
     }
   }
 
-  fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
-    self.system.update(ctx.world, dt);
-    self
-      .live
-      .store(self.system.particle_count(), Ordering::Relaxed);
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    let live = ctx.particles().count();
+    self.live.store(live as usize, Ordering::Relaxed);
     SceneAction::Continue
-  }
-
-  fn render(&mut self, gpu: &mut GpuRenderContext) {
-    self.system.collect_for_render(gpu.world, gpu.batch);
   }
 }
 
@@ -204,7 +213,6 @@ fn engine_of(show: Show) -> Option<Probe> {
     .resolution(RESOLUTION.0, RESOLUTION.1)
     .start_scene(ParticleScene {
       show,
-      system: ParticleSystem::with_seed(7),
       live: live.clone(),
     });
   let mut engine = HeadlessEngine::new_or_skip(builder)?;
@@ -226,6 +234,17 @@ fn engine_of(show: Show) -> Option<Probe> {
     show.name(),
     show.live()
   );
+  if show == Show::Collide {
+    // The tile map's colliders, the parts the engine builds as children of
+    // its `TileColliders`: without one the particles fall through the map
+    let world = engine.world_mut();
+    let mut colliders = world.query_filtered::<&ChildOf, With<Collider>>();
+    let parts = colliders
+      .iter(world)
+      .filter(|child_of| world.get::<TileColliders>(child_of.parent()).is_some())
+      .count();
+    assert!(parts > 0, "{}: the tile map has no colliders", show.name());
+  }
   Some(Probe { show, engine, live })
 }
 

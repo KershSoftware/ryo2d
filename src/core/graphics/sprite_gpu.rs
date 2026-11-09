@@ -1374,12 +1374,6 @@ impl BatchCollector {
     }
   }
 
-  /// The collected instances, in submission order (tests).
-  #[cfg(test)]
-  pub(crate) fn instances(&self) -> impl Iterator<Item = &SpriteInstance> {
-    self.items.iter().map(|item| &item.instance)
-  }
-
   /// Get the total number of sprites collected
   pub fn sprite_count(&self) -> usize {
     self.items.len()

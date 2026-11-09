@@ -376,10 +376,8 @@ Additive particles and trails:
 
 <!-- given: x: f32, y: f32, spark: Handle<Image> -->
 ```rust
-ctx.world.spawn((
-  Transform::from_xy(x, y),
-  ParticleEmitter::sparks(spark).with_blend(BlendMode::Additive).with_lighting(false),
-));
+let sparks = ctx.assets().add(ParticleEffect::sparks(spark).with_blend(BlendMode::Additive).with_lighting(false));
+ctx.world.spawn((Transform::from_xy(x, y), ParticleEmitter::new(sparks)));
 ctx.world.spawn((Transform::from_xy(x, y), Trail2D::laser(Color::CYAN, 3.0).with_blend(BlendMode::Additive)));
 ```
 

@@ -1,99 +1,80 @@
-//! GPU Particle System
+//! Particles
 //!
-//! A full-featured particle system with CPU simulation and GPU rendering.
+//! A CPU simulation the engine runs in its fixed step and draws through the
+//! 2D batch, one run per emitter: a game describes a kind of particle once,
+//! as a [`ParticleEffect`] asset, and places it with [`ParticleEmitter`]
+//! entities. No call from the game steps or draws them.
 //!
 //! # Overview
 //!
-//! This particle system uses **CPU simulation + GPU rendering**:
-//! - Particles are simulated on the CPU (physics, attractors, collisions)
-//! - Rendering uses the existing `SpriteGpuRenderer` with instanced drawing
-//! - Supports 10k+ particles at 60fps
-//!
-//! A scene owns a [`ParticleSystem`]: it calls `update(ctx.world, dt)` from
-//! `Scene::update` and `collect_for_render` from `Scene::render`. The engine
-//! does not drive particles itself.
+//! - Each fixed step, every enabled emitter (in entity order, each from its
+//!   own random stream) spawns its effect's particles at its
+//!   `GlobalTransform`, moves them under gravity, drag, the effect's curves
+//!   and the [`ParticleAttractor`]s around it, collides them with the
+//!   world's colliders when the effect has a [`CollisionConfig`], and
+//!   removes the dead. An emitter made `unscaled` steps on real time
+//!   instead, through pauses and held scenes.
+//! - Each frame, every emitter with live particles that a camera sees joins
+//!   the draw list as one run of sprites, at the emitter's z (else its
+//!   effect's), each particle blended between its last two steps.
+//! - [`ParticlesView`] (`ctx.particles()`) and the [`Particles`] system
+//!   parameter play an effect once where something happened (`play_at`),
+//!   and read the live count against the engine's budget
+//!   ([`DEFAULT_PARTICLE_BUDGET`] unless `EngineBuilder::particle_budget`
+//!   sets another).
 //!
 //! # Types
 //!
 //! | Type | Description |
 //! |------|-------------|
-//! | [`ParticleSystem`] | Simulates every emitter's particles and batches them for drawing |
-//! | [`Particle`] | Individual particle data (velocity, lifetime, color) |
-//! | [`ParticleEmitter`] (component) | Spawns particles with configurable shapes and rates |
-//! | [`ParticleAttractor`] (component) | Force fields that affect particle motion |
+//! | [`ParticleEffect`] (asset) | How a kind of particle is born, moves, looks and ends; presets such as [`ParticleEffect::fire`] |
+//! | [`ParticleEmitter`] (component) | Plays an effect at its entity: `play`, `stop`, `burst`, `once`, `despawn_when_finished` |
+//! | [`ParticleAttractor`] (component) | A force field that pulls, swirls or pushes particles |
+//! | [`CollisionConfig`] | How an effect's particles meet colliders, and whether they report [`ParticleCollision`] |
+//! | [`EmitterFinished`] (message) | An emitter stopped and its last particle died |
 //!
-//! # Quick Start
+//! # Quick start
 //!
-//! ```ignore
+//! ```
 //! use ryo2d::prelude::*;
 //!
-//! // The scene owns the system
-//! struct Level { particles: ParticleSystem }
-//!
-//! fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
-//!     self.particles.update(ctx.world, dt);
-//!     SceneAction::Continue
-//! }
-//!
-//! fn render(&mut self, gpu: &mut GpuRenderContext) {
-//!     self.particles.collect_for_render(gpu.world, gpu.batch);
-//! }
-//!
-//! // Spawn a fire effect
-//! let fire_sprite = ctx.assets().load::<Image>("particle.png");
-//! ctx.world.spawn((
+//! fn enter(ctx: &mut SceneContext<'_>) -> Handle<ParticleEffect> {
+//!   let spark = ctx
+//!     .assets()
+//!     .add(Image::solid_circle(16, 255, 255, 255, 255));
+//!   // A fire that burns where its entity stands, until it is despawned
+//!   let fire = ctx.assets().add(ParticleEffect::fire(spark.clone()));
+//!   ctx.world.spawn((
 //!     Transform::from_xy(100.0, 100.0),
-//!     ParticleEmitter::fire(fire_sprite),
-//! ));
-//!
-//! // One-shot explosion
-//! ctx.world.spawn((
-//!     Transform::from_xy(x, y),
-//!     ParticleEmitter::explosion(spark_sprite, 50).one_shot(),
-//! ));
-//!
-//! // Custom emitter with attractor
-//! ctx.world.spawn((
-//!     Transform::from_xy(x, y),
-//!     ParticleEmitter::new(sprite)
-//!         .with_mode(EmissionMode::Continuous { rate: 30.0 })
-//!         .with_shape(EmissionShape::Circle { radius: 20.0, hollow: true })
-//!         .with_lifetime(1.0, 2.0)
-//!         .with_color(Color::CYAN, Color::TRANSPARENT),
-//! ));
-//!
-//! // Attractor that pulls particles
-//! ctx.world.spawn((
-//!     Transform::from_xy(mouse_x, mouse_y),
+//!     ParticleEmitter::new(fire),
+//!   ));
+//!   // A ring of cyan particles drifting outward
+//!   let ring = ctx.assets().add(
+//!     ParticleEffect::new(spark.clone())
+//!       .with_rate(30.0)
+//!       .with_shape(EmitShape::Circle { radius: 20.0, arc_deg: 360.0, thickness: 0.0 })
+//!       .outward()
+//!       .with_lifetime((1.0, 2.0))
+//!       .with_color(Color::CYAN),
+//!   );
+//!   ctx.world.spawn((Transform::from_xy(300.0, 100.0), ParticleEmitter::new(ring)));
+//!   // An attractor pulling particles towards it
+//!   ctx.world.spawn((
+//!     Transform::from_xy(200.0, 200.0),
 //!     ParticleAttractor::point(200.0, 100.0),
-//! ));
+//!   ));
+//!   // Kept for bursts: `ctx.particles().play_at(&boom, at)` plays it once
+//!   ctx.assets().add(ParticleEffect::explosion(spark, 50))
+//! }
 //! ```
-//!
-//! # Built-in Presets
-//!
-//! | Preset | Description |
-//! |--------|-------------|
-//! | `ParticleEmitter::fire(sprite)` | Upward orange-yellow flames |
-//! | `ParticleEmitter::smoke(sprite)` | Slow expanding gray particles |
-//! | `ParticleEmitter::explosion(sprite, count)` | Radial burst with trails |
-//! | `ParticleEmitter::magic(sprite)` | Glowing wandering sparkles |
-//! | `ParticleEmitter::rain(sprite)` | Downward streaks |
-//! | `ParticleEmitter::sparks(sprite)` | Bouncing bright particles |
-//! | `ParticleEmitter::snow(sprite)` | Gentle floating descent |
-//! | `ParticleEmitter::confetti(sprite)` | Multi-colored tumbling |
 
 mod attractor;
 mod collision;
 mod contact;
 mod draw;
 mod effect;
+mod emitter;
 mod forces;
-// The engine-driven emitter, public (and hidden) so tests outside the crate
-// can place one while the prelude's `ParticleEmitter` is the scene-driven
-// system's
-#[doc(hidden)]
-pub mod emitter;
-mod legacy;
 mod noise;
 mod pool;
 mod presets;
@@ -114,8 +95,7 @@ pub use collision::{
 };
 pub(crate) use draw::ParticleDrawer;
 pub use effect::{Burst, DrawOrder, EmitShape, ParticleEffect};
-pub use emitter::EmitterFinished;
-pub use legacy::{EmissionMode, EmissionShape, Particle, ParticleEmitter, ParticleSystem};
+pub use emitter::{EmitterFinished, ParticleEmitter};
 pub(crate) use scope::{hold_scenes, in_scene, release_scene};
 pub(crate) use step::{step_particles, step_unscaled_particles};
 pub use store::DEFAULT_PARTICLE_BUDGET;

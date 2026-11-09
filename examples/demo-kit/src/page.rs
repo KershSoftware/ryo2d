@@ -57,6 +57,6 @@ pub trait DemoPage: 'static {
   /// widgets) `update` does not see.
   fn ui(&mut self, _ui: &mut UiContext, _ctx: &mut SceneContext) {}
 
-  /// GPU drawing (particles, batched sprites), once a frame
+  /// The page's own GPU drawing (batched sprites), once a frame
   fn render(&mut self, _gpu: &mut GpuRenderContext) {}
 }

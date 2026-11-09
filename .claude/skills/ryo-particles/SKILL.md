@@ -18,8 +18,7 @@ Particles are scene-driven: the engine never runs them. The scene owns a `Partic
 ```rust
 #[derive(Default)]
 struct Level {
-  particles: ParticleSystem,
-  spark: Option<Handle<Image>>,
+  boom: Option<Handle<ParticleEffect>>,
 }
 
 impl Scene for Level {
@@ -27,22 +26,23 @@ impl Scene for Level {
     // An asset path, relative to assets/ (see ryo-assets)
     match ctx.assets().load_now::<Image>("particle.png") {
       Ok(spark) => {
-        ctx.world.spawn((Transform::from_xy(400.0, 500.0), ParticleEmitter::fire(spark.clone())));
-        self.spark = Some(spark); // for the emitters spawned later
+        // The engine spawns, simulates and draws the fire's particles
+        let fire = ctx.assets().add(ParticleEffect::fire(spark.clone()));
+        ctx.world.spawn((Transform::from_xy(400.0, 500.0), ParticleEmitter::new(fire)));
+        // For the bursts played later
+        self.boom = Some(ctx.assets().add(ParticleEffect::explosion(spark, 50)));
       }
       Err(error) => game_warn!("no particle sprite: {error}"),
     }
   }
 
-  fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
-    // Spawns, simulates, applies attractors and collisions
-    self.particles.update(ctx.world, dt);
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    if ctx.input.mouse_pressed(MouseButton::Left) && let Some(boom) = &self.boom {
+      let (x, y) = ctx.input.mouse_position();
+      let at = ctx.camera().screen_to_world(Vec2::new(x, y));
+      ctx.particles().play_at(boom, at);
+    }
     SceneAction::Continue
-  }
-
-  fn render(&mut self, gpu: &mut GpuRenderContext) {
-    // Add the particles to the batch (their sprites upload when first drawn)
-    self.particles.collect_for_render(gpu.world, gpu.batch);
   }
 }
 ```
@@ -76,14 +76,15 @@ An emitter is an entity with `Transform` + `ParticleEmitter`. It emits at its `G
 
 <!-- given: sprite: Handle<Image> -->
 ```rust
-ParticleEmitter::new(sprite)
-  .with_mode(EmissionMode::Continuous { rate: 30.0 })
-  .with_shape(EmissionShape::Circle { radius: 10.0, hollow: false })
-  .with_lifetime(1.0, 2.0)
-  .with_size(4.0, 8.0)
-  .with_end_size(1.0, 2.0)
-  .with_color(Color::CYAN, Color::TRANSPARENT)
-  .with_speed(20.0, 60.0)
+ParticleEffect::new(sprite)
+  .with_rate(30.0)
+  .with_shape(EmitShape::Circle { radius: 10.0, arc_deg: 360.0, thickness: 1.0 })
+  .outward()
+  .with_lifetime((1.0, 2.0))
+  .with_size((4.0, 8.0))
+  .with_size_over_life(Curve::new([(0.0, 1.0), (1.0, 0.25)]))
+  .with_color_over_life(Gradient::new([(0.0, Color::CYAN), (1.0, Color::TRANSPARENT)]))
+  .with_speed((20.0, 60.0))
   .with_gravity(0.0, -20.0)
   .with_drag(0.5)
   .with_max_particles(300)
@@ -91,16 +92,17 @@ ParticleEmitter::new(sprite)
 
 Also `with_rotation(min, max)`, `with_angular_velocity(min, max)`, `with_effect(SpriteEffect)`, `with_layer(bits)`, `with_collision(CollisionConfig)`, and `one_shot()` (turns any mode into a single burst). Ranges whose min is above the max sample the min.
 
+<!-- given: sprite: Handle<Image> -->
 ```rust
-EmissionMode::Continuous { rate: 30.0 }; // particles per second
-EmissionMode::Burst { count: 50 }; // one burst
-EmissionMode::BurstRepeating { count: 20, interval: 0.5, repeats: Some(5) };
+ParticleEffect::new(sprite.clone()).with_rate(30.0); // particles per second
+ParticleEffect::new(sprite.clone()).with_rate(0.0).with_burst(Burst::at(0.0, 50.0)).with_looping(false); // one burst
+ParticleEffect::new(sprite.clone()).with_rate(0.0).with_burst(Burst::at(0.0, 20.0).with_cycles(5, 0.5));
 
-EmissionShape::Point;
-EmissionShape::Line { start_x: -50.0, start_y: 0.0, end_x: 50.0, end_y: 0.0 };
-EmissionShape::Circle { radius: 20.0, hollow: true }; // hollow = edge only
-EmissionShape::Rectangle { width: 800.0, height: 10.0 };
-EmissionShape::Cone { direction: -std::f32::consts::FRAC_PI_2, spread: 0.6, min_speed: 50.0, max_speed: 120.0 };
+EmitShape::Point;
+EmitShape::Line { length: 100.0 };
+EmitShape::Circle { radius: 20.0, arc_deg: 360.0, thickness: 0.0 }; // thickness 0 = edge only
+EmitShape::Rect { size: Vec2::new(800.0, 10.0), thickness: 1.0 };
+ParticleEffect::new(sprite).with_direction(-90.0, 34.0).with_speed((50.0, 120.0)); // a cone, in degrees
 ```
 
 Runtime control on the component: `set_enabled(bool)`, `reset()` (lets a burst fire again), `burst(count)`, `is_finished()`.
@@ -110,25 +112,16 @@ Runtime control on the component: `set_enabled(bool)`, `reset()` (lets a burst f
 Nothing despawns finished emitters; check `is_finished()`:
 
 <!-- given: x: f32, y: f32 -->
-<!-- self: spark: Handle<Image>, bursts: Vec<Entity>, particles: ParticleSystem -->
+<!-- self: boom: Handle<ParticleEffect> -->
 ```rust
-let boom = ctx
-  .world
-  .spawn((Transform::from_xy(x, y), ParticleEmitter::explosion(self.spark.clone(), 50)))
-  .id();
-self.bursts.push(boom);
+// One cycle of the effect, then its emitter despawns itself
+ctx.particles().play_at(&self.boom, Vec2::new(x, y));
 
-// later, after self.particles.update(..)
-self.bursts.retain(|&entity| {
-  let done = ctx
-    .world
-    .get::<ParticleEmitter>(entity)
-    .is_none_or(|emitter| emitter.is_finished());
-  if done {
-    ctx.world.despawn(entity);
-  }
-  !done
-});
+// The same, spelled out
+ctx.world.spawn((
+  Transform::from_xy(x, y),
+  ParticleEmitter::new(self.boom.clone()).once().despawn_when_finished(),
+));
 ```
 
 ### Disabled emitters
@@ -189,9 +182,7 @@ Contact entry is tracked per particle, not per collider: sliding from a floor in
 
 `ParticleCollision` is a message; read it after `update`:
 
-<!-- self: particles: ParticleSystem -->
 ```rust
-self.particles.update(ctx.world, dt);
 for hit in ctx.messages::<ParticleCollision>() {
   // hit.emitter_entity, hit.collider_entity
   // hit.position_x / position_y: the particle at contact
@@ -204,14 +195,14 @@ for hit in ctx.messages::<ParticleCollision>() {
 
 <!-- given: sprite: Handle<Image> -->
 ```rust
-ParticleEmitter::new(sprite).with_effect(SpriteEffect::glow_with_intensity(Color::new(100, 150, 255, 255), 6.0, 1.0));
+ParticleEffect::new(sprite).with_effect(SpriteEffect::glow_with_intensity(Color::new(100, 150, 255, 255), 6.0, 1.0));
 ```
 
 How particles draw (fields `blend`, `filter`, `lighting` on the emitter):
 
 <!-- given: spark: Handle<Image> -->
 ```rust
-ParticleEmitter::sparks(spark)
+ParticleEffect::sparks(spark)
   .with_blend(BlendMode::Additive)   // fire, sparks, magic: overlapping particles add up to bright cores
   .with_filter(Filter::Linear)       // smooth when scaled; Filter::Nearest keeps hard texels
   .with_lighting(false)              // full brightness in the dark (glowing embers)

@@ -378,8 +378,9 @@ pub trait Scene: 'static {
     SceneAction::Continue
   }
 
-  /// Add GPU-batched sprites (parallax backgrounds, particles, many-sprite
-  /// effects) for this frame.
+  /// Add GPU-batched sprites (parallax backgrounds, many-sprite effects)
+  /// for this frame. Entities and particle emitters need none: the engine
+  /// draws them.
   fn render(&mut self, _gpu: &mut GpuRenderContext) {}
 
   /// Whether scenes below this one are also drawn and receive `ui`.

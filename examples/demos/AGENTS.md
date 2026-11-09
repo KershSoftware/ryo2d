@@ -86,7 +86,7 @@ impl DemoPage for Glow {
 | `settings(s)` | every frame, before `update` | declare the panel's rows; rows may change with other values |
 | `update(ctx, dt)` | every fixed step (`dt` is the timestep) | gameplay: read settings fields and `ctx.input` |
 | `ui(ui, ctx)` | once a frame, in the UI pass before the fixed steps | page UI under the shell's; read keys for it with `ui.input()` or actions (`ui.consume_key(key)` keys `update` must not also see), and use `ui.back()` for the page's own Back |
-| `render(gpu)` | once a frame | GPU batches: `particles.collect_for_render(gpu.world, gpu.camera, gpu.batch)` for a page-owned `ParticleSystem` (updated in `update`) |
+| `render(gpu)` | once a frame | the page's own GPU batches (`gpu.batch`); the engine draws entities and particle emitters itself |
 
 - `Settings`: `float(label, &mut f32, range, step)`, `int(label, &mut i32, range)`, `choice(label, &mut usize, &[&str])`, `toggle(label, &mut bool)`, `angle(label, &mut f32, step)` (degrees, wrapping round past 0 and 360).
 - `Control::key(KeyCode, desc)`, `Control::keys("WASD", &[..], desc)`, `Control::mouse(desc)`.

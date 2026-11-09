@@ -169,11 +169,8 @@ pub struct GameScene {
   background_tiles: Vec<Entity>,
   bg_tile_height: f32,
   rain_emitter: Option<Entity>,
-  rain_sprite: Option<Handle<Image>>,
-  dust_sprite: Option<Handle<Image>>,
-
-  // Particle system
-  particle_system: ParticleSystem,
+  /// The dust motes every lamp's emitter plays, added with the first lamp
+  dust_effect: Option<Handle<ParticleEffect>>,
 
   /// The game's sounds, loaded as it enters
   sounds: Option<Sounds>,
@@ -274,9 +271,7 @@ impl GameScene {
       background_tiles: Vec::new(),
       bg_tile_height: 0.0,
       rain_emitter: None,
-      rain_sprite: None,
-      dust_sprite: None,
-      particle_system: ParticleSystem::new(),
+      dust_effect: None,
       sounds: None,
       previous_leap_states: HashMap::new(),
       remote_best_heights: HashMap::new(),
@@ -342,9 +337,7 @@ impl GameScene {
       background_tiles: Vec::new(),
       bg_tile_height: 0.0,
       rain_emitter: None,
-      rain_sprite: None,
-      dust_sprite: None,
-      particle_system: ParticleSystem::new(),
+      dust_effect: None,
       sounds: None,
       previous_leap_states: HashMap::new(),
       remote_best_heights: HashMap::new(),
@@ -410,9 +403,7 @@ impl GameScene {
       background_tiles: Vec::new(),
       bg_tile_height: 0.0,
       rain_emitter: None,
-      rain_sprite: None,
-      dust_sprite: None,
-      particle_system: ParticleSystem::new(),
+      dust_effect: None,
       sounds: None,
       previous_leap_states: HashMap::new(),
       remote_best_heights: HashMap::new(),
@@ -491,9 +482,7 @@ impl GameScene {
       background_tiles: Vec::new(),
       bg_tile_height: 0.0,
       rain_emitter: None,
-      rain_sprite: None,
-      dust_sprite: None,
-      particle_system: ParticleSystem::new(),
+      dust_effect: None,
       sounds: None,
       previous_leap_states: HashMap::new(),
       remote_best_heights: HashMap::new(),
@@ -733,43 +722,47 @@ impl GameScene {
       .id();
     self.platform_lamps.push(inner_lamp);
 
-    // Create dust sprite if not already created
-    if self.dust_sprite.is_none() {
-      self.dust_sprite = Some(
-        ctx
+    // Dust motes floating gently in the light, one effect for every lamp
+    let dust = match &self.dust_effect {
+      Some(dust) => dust.clone(),
+      None => {
+        let dust_sprite = ctx
           .assets()
-          .add(Image::solid_rect(2, 2, 255, 240, 200, 120)),
-      );
-    }
-
-    // Dust mote particle emitter - gentle floating particles in the light
-    if let Some(ref dust_sprite) = self.dust_sprite {
-      let dust_emitter = ctx
-        .world
-        .spawn((
-          Transform::from_xy(lamp_x, lamp_y),
-          ParticleEmitter::new(dust_sprite.clone())
-            .with_mode(EmissionMode::Continuous { rate: 3.0 }) // Sparse, gentle
-            .with_shape(EmissionShape::Circle {
+          .add(Image::solid_rect(2, 2, 255, 240, 200, 120));
+        let dust = ctx.assets().add(
+          ParticleEffect::new(dust_sprite)
+            .with_rate(3.0) // Sparse, gentle
+            .with_shape(EmitShape::Circle {
               radius: LAMP_LIGHT_RADIUS * 0.6,
-              hollow: false,
+              arc_deg: 360.0,
+              thickness: 1.0,
             })
-            .with_lifetime(3.0, 6.0)
-            .with_size(1.0, 3.0)
-            .with_end_size(0.5, 1.5)
-            .with_speed(2.0, 8.0) // Very slow drift
-            .with_color(
-              Color::new(255, 240, 200, 80), // Warm, semi-transparent
-              Color::new(255, 220, 180, 0),  // Fade to invisible
-            )
+            .outward()
+            .with_lifetime((3.0, 6.0))
+            .with_size((1.0, 3.0))
+            .with_size_over_life(Curve::new([(0.0, 1.0), (1.0, 0.5)])) // Shrinking to half
+            .with_speed((2.0, 8.0)) // Very slow drift
+            .with_color_over_life(Gradient::new([
+              (0.0, Color::new(255, 240, 200, 80)), // Warm, semi-transparent
+              (1.0, Color::new(255, 220, 180, 0)),  // Fade to invisible
+            ]))
             .with_gravity(0.0, -5.0) // Gentle upward drift
-            .with_drag(2.0),
-          PlatformLamp::new(lamp_x, lamp_y, phase, platform_width, speed_mult)
-            .with_platform_entity(platform_entity),
-        ))
-        .id();
-      self.lamp_dust_emitters.push(dust_emitter);
-    }
+            .with_drag(1.0),
+        );
+        self.dust_effect = Some(dust.clone());
+        dust
+      }
+    };
+    let dust_emitter = ctx
+      .world
+      .spawn((
+        Transform::from_xy(lamp_x, lamp_y),
+        ParticleEmitter::new(dust),
+        PlatformLamp::new(lamp_x, lamp_y, phase, platform_width, speed_mult)
+          .with_platform_entity(platform_entity),
+      ))
+      .id();
+    self.lamp_dust_emitters.push(dust_emitter);
   }
 
   fn update_lamps(&mut self, ctx: &mut SceneContext) {
@@ -868,50 +861,51 @@ impl GameScene {
   }
 
   fn spawn_rain(&mut self, ctx: &mut SceneContext) {
-    // Create particle sprite
     let rain_sprite = ctx.assets().add(Image::solid_circle(8, 255, 255, 255, 255));
-    self.rain_sprite = Some(rain_sprite.clone());
 
-    // Use the built-in rain preset with wider coverage
-    // Add glow effect so rain is visible even with dark lighting
-    let emitter = ParticleEmitter::rain(rain_sprite)
-      .with_mode(EmissionMode::Continuous { rate: 300.0 })
-      .with_lifetime(2.5, 3.0) // Long enough to fall the full screen height
-      .with_shape(EmissionShape::Line {
-        start_x: -self.screen_width,
-        start_y: -50.0, // Above emitter
-        end_x: self.screen_width,
-        end_y: -50.0,
-      })
-      .with_z_order(Z_PLATFORM - 1) // Above background, below platforms
-      .with_effect(SpriteEffect::glow_with_intensity(
-        Color::new(180, 200, 255, 255), // Blue-white glow
-        3.0,
-        0.8,
-      ));
+    // The built-in rain preset across twice the screen's width, glowing so
+    // the rain shows even in dark lighting
+    let rain = ctx.assets().add(
+      ParticleEffect::rain(rain_sprite)
+        .with_rate(300.0)
+        .with_lifetime((2.5, 3.0)) // Long enough to fall the full screen height
+        .with_shape(EmitShape::Line {
+          length: self.screen_width * 2.0,
+        })
+        .with_z(Z_PLATFORM - 1) // Above background, below platforms
+        .with_effect(SpriteEffect::glow_with_intensity(
+          Color::new(180, 200, 255, 255), // Blue-white glow
+          3.0,
+          0.8,
+        )),
+    );
 
-    // Position emitter at top of visible camera area
     let rain_entity = ctx
       .world
       .spawn((
-        Transform::from_xy(
-          self.screen_width / 2.0,
-          self.camera_y - self.screen_height / 2.0,
-        ),
-        emitter,
+        Transform::from_translation(self.rain_origin()),
+        ParticleEmitter::new(rain),
       ))
       .id();
 
     self.rain_emitter = Some(rain_entity);
   }
 
+  /// Where the rain falls from: just above the top of the camera's view
+  fn rain_origin(&self) -> Vec2 {
+    Vec2::new(
+      self.screen_width / 2.0,
+      self.camera_y - self.screen_height / 2.0 - 50.0,
+    )
+  }
+
   fn update_rain(&mut self, ctx: &mut SceneContext) {
-    // Keep rain emitter above the camera
+    // Keep the rain emitter above the camera
+    let origin = self.rain_origin();
     if let Some(rain_entity) = self.rain_emitter
       && let Some(mut transform) = ctx.world.get_mut::<Transform>(rain_entity)
     {
-      transform.translation.x = self.screen_width / 2.0;
-      transform.translation.y = self.camera_y - self.screen_height / 2.0; // Top of visible area
+      transform.translation = origin;
     }
   }
 
@@ -2283,9 +2277,6 @@ impl GameScene {
     self.update_player_squish(ctx);
     self.update_lamps(ctx);
     self.update_charge_indicator(ctx);
-
-    // Update particle system
-    self.particle_system.update(ctx.world, dt);
   }
 
   fn update_host(&mut self, ctx: &mut SceneContext, dt: f32) {
@@ -2521,9 +2512,6 @@ impl GameScene {
     self.update_player_squish(ctx);
     self.update_lamps(ctx);
     self.update_charge_indicator(ctx);
-
-    // Update particle system
-    self.particle_system.update(ctx.world, dt);
 
     // Track remote players' best heights and slots on the host side
     let local_id = self.local_client_id;
@@ -2959,9 +2947,6 @@ impl GameScene {
     self.update_player_squish(ctx);
     self.update_lamps(ctx);
     self.update_charge_indicator(ctx);
-
-    // Update particle system
-    self.particle_system.update(ctx.world, dt);
   }
 
   fn broadcast_positions(&mut self, ctx: &mut SceneContext) {
@@ -3470,13 +3455,6 @@ impl Scene for GameScene {
       }
     }
     SceneAction::Continue
-  }
-
-  fn render(&mut self, gpu: &mut GpuRenderContext) {
-    // Collect particles for rendering
-    self
-      .particle_system
-      .collect_for_render(gpu.world, gpu.batch);
   }
 }
 

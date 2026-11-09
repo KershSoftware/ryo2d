@@ -9,7 +9,6 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use ryo2d::core::particles::emitter::ParticleEmitter;
 use ryo2d::prelude::*;
 use ryo2d::testing::{HeadlessEngine, particle_positions};
 

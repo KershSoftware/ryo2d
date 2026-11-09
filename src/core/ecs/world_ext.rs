@@ -5,7 +5,7 @@ use super::kernel::{
 };
 use super::transform::{GlobalTransform, PreviousGlobalTransform};
 use crate::core::graphics::MainCamera;
-use crate::core::particles::emitter::ParticleEmitter;
+use crate::core::particles::ParticleEmitter;
 
 pub trait WorldExt {
   /// Spawn `bundle` as a child of `parent`.
@@ -222,8 +222,7 @@ mod tests {
   fn skip_interpolation_marks_a_particle_emitter_interpolated_or_not() {
     use crate::core::asset::Assets;
     use crate::core::graphics::Image;
-    use crate::core::particles::ParticleEffect;
-    use crate::core::particles::emitter::ParticleEmitter;
+    use crate::core::particles::{ParticleEffect, ParticleEmitter};
 
     let image = Assets::<Image>::new().add(Image::solid_rect(8, 8, 255, 255, 255, 255));
     let effect = Assets::<ParticleEffect>::new().add(ParticleEffect::new(image));

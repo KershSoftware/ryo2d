@@ -1,9 +1,9 @@
 //! Attractors pulling the engine's particles, by layer.
 
 use crate::core::ecs::{Transform, World};
+use crate::core::particles::ParticleEmitter;
 use crate::core::particles::attractor::ParticleAttractor;
 use crate::core::particles::effect::{Burst, ParticleEffect};
-use crate::core::particles::emitter::ParticleEmitter;
 use crate::core::particles::testing::{self, particles, steps};
 
 /// One motionless particle at the origin and a strong point attractor 100px to its right.

@@ -1,7 +1,5 @@
-//! Built-in particle effect presets.
-//!
-//! Each reproduces the look of the matching [`ParticleEmitter`](super::ParticleEmitter)
-//! preset as a [`ParticleEffect`].
+//! Built-in particle effect presets: [`ParticleEffect`]s to place as they
+//! are, or to start from and change with the `with_*` builders.
 
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 

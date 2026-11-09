@@ -81,8 +81,6 @@ pub struct MenuScene {
   host_mode: HostMode,
 
   rain_emitter: Option<Entity>,
-  rain_sprite: Option<Handle<Image>>,
-  particle_system: ParticleSystem,
 
   // Fairy lights
   fairy_lights: Vec<(Entity, MenuFairyLight)>,
@@ -103,8 +101,6 @@ impl MenuScene {
       pending_scene: None,
       host_mode: HostMode::Lan,
       rain_emitter: None,
-      rain_sprite: None,
-      particle_system: ParticleSystem::new(),
       fairy_lights: Vec::new(),
       elapsed_time: 0.0,
       screen_width: 0.0,
@@ -113,31 +109,32 @@ impl MenuScene {
   }
 
   fn spawn_rain(&mut self, ctx: &mut SceneContext) {
-    // Create particle sprite
     let rain_sprite = ctx.assets().add(Image::solid_circle(8, 255, 255, 255, 255));
-    self.rain_sprite = Some(rain_sprite.clone());
 
-    // Use the built-in rain preset with wider coverage
-    // Add glow effect so rain is visible even with dark lighting
-    let emitter = ParticleEmitter::rain(rain_sprite)
-      .with_mode(EmissionMode::Continuous { rate: 80.0 })
-      .with_shape(EmissionShape::Line {
-        start_x: -self.screen_width / 2.0,
-        start_y: -50.0, // Above emitter
-        end_x: self.screen_width / 2.0,
-        end_y: -50.0,
-      })
-      .with_z_order(Z_PLATFORM - 1) // Above background, below platforms
-      .with_effect(SpriteEffect::glow_with_intensity(
-        Color::new(180, 200, 255, 255), // Blue-white glow
-        3.0,
-        0.8,
-      ));
+    // The built-in rain preset across the screen's width, glowing so the
+    // rain shows even in dark lighting
+    let rain = ctx.assets().add(
+      ParticleEffect::rain(rain_sprite)
+        .with_rate(80.0)
+        .with_shape(EmitShape::Line {
+          length: self.screen_width,
+        })
+        .with_z(Z_PLATFORM - 1) // Above background, below platforms
+        .with_effect(SpriteEffect::glow_with_intensity(
+          Color::new(180, 200, 255, 255), // Blue-white glow
+          3.0,
+          0.8,
+        )),
+    );
 
-    // Position emitter at top of visible area (camera is at screen center)
+    // Just above the top of the visible area (the camera is at the
+    // screen's centre)
     let rain_entity = ctx
       .world
-      .spawn((Transform::from_xy(self.screen_width / 2.0, 0.0), emitter))
+      .spawn((
+        Transform::from_xy(self.screen_width / 2.0, -50.0),
+        ParticleEmitter::new(rain),
+      ))
       .id();
 
     self.rain_emitter = Some(rain_entity);
@@ -299,9 +296,6 @@ impl Scene for MenuScene {
       }
     }
 
-    // Update particle system
-    self.particle_system.update(ctx.world, dt);
-
     // Check for pending scene switch
     if let Some(scene) = self.pending_scene.take() {
       return SceneAction::Switch(scene);
@@ -441,12 +435,5 @@ impl Scene for MenuScene {
       return SceneAction::Quit;
     }
     SceneAction::Continue
-  }
-
-  fn render(&mut self, gpu: &mut GpuRenderContext) {
-    // Collect particles for rendering (uses Z_PLATFORM - 1 set in emitter)
-    self
-      .particle_system
-      .collect_for_render(gpu.world, gpu.batch);
   }
 }

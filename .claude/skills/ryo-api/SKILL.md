@@ -456,11 +456,12 @@ A complete scene:
 <!-- with: #[derive(Component)] struct Player { speed: f32 } fn move_players(time: Res<Time>, mut players: Query<(&Player, &mut Transform)>) {} -->
 ```rust
 #[derive(Default)]
-struct Level { player: Option<Entity>, particles: ParticleSystem }
+struct Level { player: Option<Entity>, sparks: Option<Handle<ParticleEffect>> }
 
 impl Scene for Level {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
     let sprite = ctx.assets().add(Image::solid_rect(16, 16, 255, 255, 255, 255));
+    self.sparks = Some(ctx.assets().add(ParticleEffect::sparks(sprite.clone())));
     let player = ctx.world.spawn((
       Transform::from_xy(320.0, 180.0),
       Renderable::image(sprite).with_z_order(10),
@@ -475,15 +476,18 @@ impl Scene for Level {
     ctx.lighting().set_ambient(AmbientLight::night());
   }
 
-  fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
     for hit in ctx.messages::<CollisionStarted>() {
       if let Some(player) = self.player && hit.involves(player) {
         Knockback::apply(ctx.world, player, Vec2::new(-1.0, 0.0), 300.0);
         ctx.time.game.hitstop(0.05);
         ctx.camera().add_trauma(0.4);
+        let at = ctx.world.get::<Transform>(player).map(|t| t.translation);
+        if let (Some(sparks), Some(at)) = (&self.sparks, at) {
+          ctx.particles().play_at(sparks, at);
+        }
       }
     }
-    self.particles.update(ctx.world, dt);
     SceneAction::Continue
   }
 
@@ -492,10 +496,6 @@ impl Scene for Level {
       return SceneAction::Quit;
     }
     SceneAction::Continue
-  }
-
-  fn render(&mut self, gpu: &mut GpuRenderContext) {
-    self.particles.collect_for_render(gpu.world, gpu.batch);
   }
 }
 ```

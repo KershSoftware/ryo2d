@@ -2257,7 +2257,7 @@ mod tests {
 
   impl Scene for SpawnsParticles {
     fn on_enter(&mut self, ctx: &mut SceneContext) {
-      let emitter = crate::core::particles::emitter::ParticleEmitter::new(self.0.clone());
+      let emitter = crate::core::particles::ParticleEmitter::new(self.0.clone());
       let entity = ctx.world.spawn((emitter, Transform::IDENTITY)).id();
       self.1.lock().unwrap().push(entity);
     }
@@ -2274,8 +2274,7 @@ mod tests {
   fn a_pushed_pause_menu_holds_the_level_s_particle_emitters() {
     use crate::core::asset::Assets;
     use crate::core::graphics::Image;
-    use crate::core::particles::emitter::ParticleEmitter;
-    use crate::core::particles::{ParticleEffect, ParticleStore};
+    use crate::core::particles::{ParticleEffect, ParticleEmitter, ParticleStore};
 
     let mut world = world();
     let image = world

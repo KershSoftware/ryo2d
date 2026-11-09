@@ -7,8 +7,8 @@ use glam::Vec2;
 use crate::core::asset::{Assets, Handle};
 use crate::core::ecs::kernel::Disabled;
 use crate::core::ecs::{Entity, Interpolated, Transform, World, WorldExt};
+use crate::core::particles::ParticleEmitter;
 use crate::core::particles::effect::{Burst, EmitShape, ParticleEffect};
-use crate::core::particles::emitter::ParticleEmitter;
 use crate::core::particles::scope;
 use crate::core::particles::store::{DEFAULT_PARTICLE_BUDGET, ParticleStore};
 use crate::core::particles::testing::{

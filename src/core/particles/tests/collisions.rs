@@ -5,10 +5,10 @@ use glam::Vec2;
 
 use crate::core::ecs::kernel::Disabled;
 use crate::core::ecs::{ChildOf, Entity, GlobalTransform, Transform, World};
+use crate::core::particles::ParticleEmitter;
 use crate::core::particles::collision::{CollisionConfig, CollisionResponse, ParticleCollision};
 use crate::core::particles::contact::CONTACT_SKIN;
 use crate::core::particles::effect::{Burst, ParticleEffect};
-use crate::core::particles::emitter::ParticleEmitter;
 use crate::core::particles::testing::{
   self, Seen, collisions, count, edit, frame, particles, step, steps,
 };

@@ -32,9 +32,11 @@
 //! injected with `press_key`/`tap_key`/`press_mouse`/`mouse_move` is queued
 //! like window events and seen from the next step; the engine's own debug
 //! keys (F1-F5, F9, F10, F12) are inert headless. Seed any randomness your
-//! scene uses if you compare frames exactly: `ParticleSystem::new()` seeds
-//! from entropy, so use `ParticleSystem::with_seed` for frames containing
-//! particles.
+//! scene uses if you compare frames exactly. Particles need no seed: a
+//! headless engine seeds them from a fixed seed, so the same emitters added
+//! in the same order repeat run to run, and
+//! [`ParticleEmitter::with_seed`](crate::core::particles::ParticleEmitter::with_seed)
+//! fixes one emitter's particles whatever else the scene adds.
 //!
 //! [`UiHarness`] runs UI frames with no window or GPU at all: a UI function
 //! of `&mut UiContext` over scripted pointer, wheel and `ui.*` action input,
@@ -79,8 +81,8 @@ use glam::Vec2;
 use crate::core::asset::{AssetServer, MemorySource, insert_registry};
 use crate::core::audio::{AudioEngine, audio_system};
 use crate::core::ecs::{Entity, World};
+use crate::core::particles::ParticleEmitter;
 use crate::core::particles::ParticleStore;
-use crate::core::particles::emitter::ParticleEmitter;
 use crate::core::time::Time;
 
 /// Where the particles of `emitter` (an entity with an engine particle

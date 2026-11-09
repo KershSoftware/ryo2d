@@ -418,8 +418,7 @@ fn particles_after_a_step(engine: &mut Engine) -> Vec<(f32, f32)> {
   use crate::core::asset::Assets;
   use crate::core::ecs::Transform;
   use crate::core::graphics::Image;
-  use crate::core::particles::emitter::ParticleEmitter;
-  use crate::core::particles::{Burst, ParticleEffect, ParticleStore};
+  use crate::core::particles::{Burst, ParticleEffect, ParticleEmitter, ParticleStore};
 
   let image = engine
     .world

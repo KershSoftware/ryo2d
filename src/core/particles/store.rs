@@ -180,8 +180,8 @@ mod tests {
   use crate::core::asset::{Assets, Handle};
   use crate::core::ecs::{Transform, World};
   use crate::core::graphics::Image;
+  use crate::core::particles::ParticleEmitter;
   use crate::core::particles::effect::ParticleEffect;
-  use crate::core::particles::emitter::ParticleEmitter;
 
   fn effect(world: &mut World) -> Handle<ParticleEffect> {
     let mut images = Assets::<Image>::new();
