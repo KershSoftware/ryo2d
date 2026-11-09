@@ -9,7 +9,8 @@ use glam::{Mat2, Vec2};
 
 use super::effect::{Burst, EmitShape, ParticleEffect};
 use super::emitter::{EmitterFinished, Finish, ParticleEmitter, Pending};
-use super::pool::{EmitterPool, NewParticle};
+use super::forces::{Acting, Surroundings};
+use super::pool::{EmitterPool, NewParticle, STUCK};
 use super::rng::ParticleRng;
 use super::store::ParticleStore;
 use crate::core::asset::{AssetId, AssetServer, Assets};
@@ -107,7 +108,8 @@ type StepParams<'w, 's> = (
 
 /// What a step keeps between runs, so a steady step allocates nothing:
 /// its parameters' state (the emitter query among them), the emitters in
-/// entity order, per-particle scratch, and the emitters going
+/// entity order, per-particle scratch, the emitters going, and the
+/// attractors and colliders it gathers (with their queries)
 #[derive(Default)]
 pub(crate) struct StepState {
   params: Option<EcsSystemState<StepParams<'static, 'static>>>,
@@ -115,6 +117,7 @@ pub(crate) struct StepState {
   scratch: Scratch,
   /// Emitters that finished in an earlier step and asked to despawn then
   despawn: Vec<Entity>,
+  surroundings: Surroundings,
 }
 
 /// Per-particle scratch for the emitter being stepped
@@ -127,25 +130,32 @@ struct Scratch {
 }
 
 /// The fixed step's particles (`FixedSet::Particles`, after propagation and
-/// floors): each enabled game-time emitter whose effect is loaded, in
-/// entity order, does what the game asked of it, spawns what its effect
-/// owes this step, and moves and ages its particles, and the dead leave.
-/// An emitter of a scene the stack holds (or of no scene, while any is
-/// held) is frozen, as is one at speed 0; unscaled emitters step in
-/// [`step_unscaled_particles`]. Emitters that finish report it, and those
-/// that finished in an earlier step and asked to despawn go
+/// floors): the enabled attractors are gathered, and the colliders if any
+/// emitter collides; each enabled game-time emitter whose effect is
+/// loaded, in entity order, does what the game asked of it, spawns what
+/// its effect owes this step, and moves, ages and collides its particles,
+/// and the dead leave. An emitter of a scene the stack holds (or of no
+/// scene, while any is held) is frozen, as is one at speed 0; unscaled
+/// emitters step in [`step_unscaled_particles`]. The step's collisions are
+/// told as one batch, and the attractors' time moves on. Emitters that
+/// finish report it, and those that finished in an earlier step and asked
+/// to despawn go
 pub(crate) fn step_particles(world: &mut World, mut state: Local<StepState>) {
   let StepState {
     params,
     order,
     scratch,
     despawn,
+    surroundings,
   } = &mut *state;
   let params = params.get_or_insert_with(|| EcsSystemState::new(world));
+  surroundings.gather(world, false);
+  let mut stepped = None;
   if let Ok((store, effects, server, time, mut finished, mut emitters)) = params.get_mut(world)
     && let (Some(mut store), Some(effects), Some(time)) = (store, effects, time)
   {
     let timestep = time.fixed.timestep();
+    stepped = Some(timestep);
     store.step += 1;
     let step = store.step;
     forget_unloaded(&mut store, &effects);
@@ -165,6 +175,7 @@ pub(crate) fn step_particles(world: &mut World, mut state: Local<StepState>) {
       finished: &mut finished,
       scratch,
       despawn,
+      surroundings,
     };
     for &(_, entity) in order.iter() {
       let Ok((entity, mut emitter, global, lift, previous)) = emitters.get_mut(entity) else {
@@ -201,6 +212,10 @@ pub(crate) fn step_particles(world: &mut World, mut state: Local<StepState>) {
       }
     }
   }
+  surroundings.tell_collisions(world);
+  if let Some(timestep) = stepped {
+    surroundings.advance_attractors(world, timestep);
+  }
   despawn_finished(world, despawn);
 }
 
@@ -217,8 +232,10 @@ pub(crate) fn step_unscaled_particles(world: &mut World, mut state: Local<StepSt
     order,
     scratch,
     despawn,
+    surroundings,
   } = &mut *state;
   let params = params.get_or_insert_with(|| EcsSystemState::new(world));
+  surroundings.gather(world, true);
   if let Ok((store, effects, server, time, mut finished, mut emitters)) = params.get_mut(world)
     && let (Some(mut store), Some(effects), Some(time)) = (store, effects, time)
   {
@@ -244,6 +261,7 @@ pub(crate) fn step_unscaled_particles(world: &mut World, mut state: Local<StepSt
         finished: &mut finished,
         scratch,
         despawn,
+        surroundings,
       };
       for &(_, entity) in order.iter() {
         let Ok((entity, mut emitter, global, lift, previous)) = emitters.get_mut(entity) else {
@@ -298,6 +316,7 @@ pub(crate) fn step_unscaled_particles(world: &mut World, mut state: Local<StepSt
       }
     }
   }
+  surroundings.tell_collisions(world);
   despawn_finished(world, despawn);
 }
 
@@ -341,6 +360,7 @@ struct Pass<'a, 'w> {
   finished: &'a mut Option<ResMut<'w, Messages<EmitterFinished>>>,
   scratch: &'a mut Scratch,
   despawn: &'a mut Vec<Entity>,
+  surroundings: &'a mut Surroundings,
 }
 
 impl Pass<'_, '_> {
@@ -488,7 +508,8 @@ impl Pass<'_, '_> {
       spawn(pool, fx, &frame, granted, partial);
     }
     *live = live.saturating_add(count(pool.main.len() - born));
-    let died = advance(pool, fx, dt, born, partial, keep);
+    let mut acting = self.surroundings.acting(entity, &fx.effect);
+    let died = advance(pool, fx, dt, (born, partial), keep, &mut acting);
     *live = live.saturating_sub(count(died));
     pool.last = Some(position);
 
@@ -764,17 +785,18 @@ fn unit_axes(linear: Mat2) -> Mat2 {
 }
 
 /// Steps `pool`'s particles: those before `born` by `dt`, those spawned
-/// this step by the part of it they lived (`partial`). Each ages, takes its
-/// gravity, its drag and its speed curve's change, spins, and moves from
-/// where it was; the dead then leave in order, and the box round the rest
-/// is kept. Returns how many died
+/// this step by the part of it they lived (`partial`). Each ages, takes
+/// the attractors' pull (`acting`), its gravity, its drag and its speed
+/// curve's change, spins, moves from where it was, and meets the colliders
+/// if it lives on; a stuck one only ages. The dead then leave in order,
+/// and the box round the rest is kept. Returns how many died
 fn advance(
   pool: &mut EmitterPool,
   fx: &Compiled,
   dt: f32,
-  born: usize,
-  partial: &[f32],
+  (born, partial): (usize, &[f32]),
   keep: &mut Vec<bool>,
+  acting: &mut Acting,
 ) -> usize {
   let effect = &fx.effect;
   let curve = &effect.speed_over_life;
@@ -792,27 +814,39 @@ fn advance(
     let was = p.age[i];
     let age = was + step;
     p.age[i] = age;
-    let mut velocity = Vec2::new(p.vx[i], p.vy[i]);
-    velocity += effect.gravity * step;
-    velocity *= (1.0 - effect.drag * step).max(0.0);
-    if fx.speed_varies {
-      let life = p.lifetime[i];
-      let before = curve.lookup(was / life);
-      if before != 0.0 {
-        let ratio = curve.lookup(age / life) / before;
-        if ratio.is_finite() {
-          velocity *= ratio;
+    let mut alive = age < p.lifetime[i];
+    if p.flags[i] & STUCK != 0 {
+      // Stuck where it hit: it only ages
+      p.px[i] = p.x[i];
+      p.py[i] = p.y[i];
+    } else {
+      let from = Vec2::new(p.x[i], p.y[i]);
+      let mut velocity = Vec2::new(p.vx[i], p.vy[i]);
+      velocity += acting.pull(from) * step;
+      velocity += effect.gravity * step;
+      velocity *= (1.0 - effect.drag * step).max(0.0);
+      if fx.speed_varies {
+        let life = p.lifetime[i];
+        let before = curve.lookup(was / life);
+        if before != 0.0 {
+          let ratio = curve.lookup(age / life) / before;
+          if ratio.is_finite() {
+            velocity *= ratio;
+          }
         }
       }
+      p.rotation[i] += p.spin[i] * step;
+      p.px[i] = from.x;
+      p.py[i] = from.y;
+      p.x[i] += velocity.x * step;
+      p.y[i] += velocity.y * step;
+      p.vx[i] = velocity.x;
+      p.vy[i] = velocity.y;
+      // One that dies of age this step meets nothing
+      if alive {
+        alive = acting.collide(p, i, from);
+      }
     }
-    p.rotation[i] += p.spin[i] * step;
-    p.px[i] = p.x[i];
-    p.py[i] = p.y[i];
-    p.x[i] += velocity.x * step;
-    p.y[i] += velocity.y * step;
-    p.vx[i] = velocity.x;
-    p.vy[i] = velocity.y;
-    let alive = age < p.lifetime[i];
     keep.push(alive);
     if alive {
       let (now, then) = (Vec2::new(p.x[i], p.y[i]), Vec2::new(p.px[i], p.py[i]));

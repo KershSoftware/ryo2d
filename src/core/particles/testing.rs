@@ -3,8 +3,10 @@
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
+use super::collision::ParticleCollision;
 use super::effect::ParticleEffect;
 use super::emitter::{EmitterFinished, ParticleEmitter};
+use super::pool::{Pool, STUCK, TOUCHING};
 use super::step::{step_particles, step_unscaled_particles};
 use super::store::{DEFAULT_PARTICLE_BUDGET, ParticleStore};
 use crate::core::asset::{Assets, Handle};
@@ -121,6 +123,10 @@ pub(crate) struct Seen {
   pub size: f32,
   /// As drawn now: the start colour times the effect's gradient
   pub color: [f32; 4],
+  /// Stuck where it hit a collider
+  pub stuck: bool,
+  /// Touched a collider in its last step
+  pub touching: bool,
 }
 
 /// `emitter`'s particles, oldest first
@@ -151,6 +157,8 @@ pub(crate) fn particles(world: &World, emitter: Entity) -> Vec<Seen> {
         age: p.age[i],
         size: p.size[i] * size,
         color: std::array::from_fn(|c| p.color[i][c] * tint[c]),
+        stuck: p.flags[i] & STUCK != 0,
+        touching: p.flags[i] & TOUCHING != 0,
       }
     })
     .collect()
@@ -159,6 +167,28 @@ pub(crate) fn particles(world: &World, emitter: Entity) -> Vec<Seen> {
 /// How many particles `emitter` has
 pub(crate) fn count(world: &World, emitter: Entity) -> usize {
   particles(world, emitter).len()
+}
+
+/// Changes `emitter`'s particles as a test places them (index 0 the
+/// oldest); nothing if it has no pool
+pub(crate) fn edit(world: &mut World, emitter: Entity, f: impl FnOnce(&mut Pool)) {
+  let Some(slot) = world.get::<ParticleEmitter>(emitter).map(|e| e.slot) else {
+    return;
+  };
+  let mut store = world.resource_mut::<ParticleStore>();
+  if let Some(pool) = store.pools.get_mut(slot as usize).filter(|p| p.used) {
+    f(&mut pool.main);
+  }
+}
+
+/// The particle collisions written so far, in order (a test world never
+/// advances its message buffers)
+pub(crate) fn collisions(world: &World) -> Vec<ParticleCollision> {
+  world
+    .get_resource::<Messages<ParticleCollision>>()
+    .map_or_else(Vec::new, |messages| {
+      messages.get_cursor().read(messages).cloned().collect()
+    })
 }
 
 /// The emitters reported finished so far, in order (a test world never

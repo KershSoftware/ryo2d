@@ -86,6 +86,7 @@ mod attractor;
 mod collision;
 mod contact;
 mod effect;
+mod forces;
 // The engine-driven emitter, public (and hidden) so tests outside the crate
 // can place one while the prelude's `ParticleEmitter` is the scene-driven
 // system's

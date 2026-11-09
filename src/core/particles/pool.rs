@@ -9,6 +9,14 @@ use super::rng::ParticleRng;
 use crate::core::asset::AssetId;
 use crate::core::ecs::Entity;
 
+/// A particle's flag: it stuck where it hit a collider
+/// (`CollisionResponse::Stick`), and from then on only ages
+pub(crate) const STUCK: u8 = 1;
+
+/// A particle's flag: it touched a collider in its last step, so a bounce
+/// or a pass-through tells only of an entry
+pub(crate) const TOUCHING: u8 = 1 << 1;
+
 /// One new particle's starting values, for [`Pool::push`]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct NewParticle {
@@ -48,7 +56,7 @@ pub(crate) struct Pool {
   pub(crate) color: Vec<[f32; 4]>,
   /// The particle's own random bits, for values it keeps all its life
   pub(crate) seed: Vec<u32>,
-  /// State bits a later step sets (collisions)
+  /// Its collision state: [`STUCK`] and [`TOUCHING`]
   pub(crate) flags: Vec<u8>,
 }
 

@@ -6,7 +6,7 @@
 use crate::core::ecs::Component;
 
 /// Type of attractor force.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum AttractorType {
   /// Point attractor - pulls/pushes particles toward/away from a point.
   Point {
@@ -241,7 +241,32 @@ impl ParticleAttractor {
       return (0.0, 0.0);
     }
 
-    match &self.attractor_type {
+    self
+      .attractor_type
+      .force(self.time, attractor_x, attractor_y, particle_x, particle_y)
+  }
+
+  /// Update internal time (for turbulence animation).
+  pub(crate) fn update(&mut self, dt: f32) {
+    if let AttractorType::Turbulence { speed, .. } = &self.attractor_type {
+      self.time += dt * speed;
+    }
+  }
+}
+
+impl AttractorType {
+  /// The force an attractor of this type at `time` (its turbulence's)
+  /// applies to a particle, whatever its layer: (force_x, force_y) in
+  /// pixels per second squared.
+  pub(crate) fn force(
+    &self,
+    time: f32,
+    attractor_x: f32,
+    attractor_y: f32,
+    particle_x: f32,
+    particle_y: f32,
+  ) -> (f32, f32) {
+    match self {
       AttractorType::Point {
         strength,
         radius,
@@ -362,21 +387,14 @@ impl ParticleAttractor {
       } => {
         // Simple pseudo-noise using sin/cos
         // For proper turbulence, integrate with noise crate
-        let sx = particle_x / scale + self.time * 0.5;
-        let sy = particle_y / scale + self.time * 0.7;
+        let sx = particle_x / scale + time * 0.5;
+        let sy = particle_y / scale + time * 0.7;
 
         let fx = (sx.sin() * 1.5 + (sy * 2.3).cos()) * strength;
         let fy = (sy.cos() * 1.5 + (sx * 2.1).sin()) * strength;
 
         (fx, fy)
       }
-    }
-  }
-
-  /// Update internal time (for turbulence animation).
-  pub(crate) fn update(&mut self, dt: f32) {
-    if let AttractorType::Turbulence { speed, .. } = &self.attractor_type {
-      self.time += dt * speed;
     }
   }
 }
