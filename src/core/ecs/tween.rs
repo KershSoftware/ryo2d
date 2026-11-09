@@ -27,6 +27,7 @@
 use super::kernel::Component;
 use super::transform::Transform;
 use crate::core::ui::Color;
+use serde::{Deserialize, Serialize};
 use std::f32::consts::PI;
 use std::sync::Arc;
 
@@ -34,7 +35,7 @@ use std::sync::Arc;
 ///
 /// Each function maps an input `t` in range [0.0, 1.0] to an output value,
 /// where 0.0 represents the start and 1.0 represents the end.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum Ease {
   /// Linear interpolation (no easing)
   #[default]
@@ -1065,6 +1066,13 @@ impl TweenSequence {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn ease_reads_and_writes_by_name() {
+    let ease: Ease = ron::from_str("InQuad").unwrap();
+    assert_eq!(ease, Ease::InQuad);
+    assert_eq!(ron::to_string(&Ease::OutBounce).unwrap(), "OutBounce");
+  }
 
   // ===== Easing Function Tests =====
 

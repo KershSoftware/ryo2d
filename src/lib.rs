@@ -207,8 +207,9 @@ pub mod prelude {
 
   // Particles
   pub use crate::core::particles::{
-    AttractorType, CollisionConfig, CollisionResponse, EmissionMode, EmissionShape,
-    MIN_BOUNCE_EVENT_SPEED, ParticleAttractor, ParticleCollision, ParticleEmitter, ParticleSystem,
+    AttractorType, CollisionConfig, CollisionResponse, ColorRange, Curve, CurveKey, EmissionMode,
+    EmissionShape, Gradient, GradientKey, MIN_BOUNCE_EVENT_SPEED, ParticleAttractor,
+    ParticleCollision, ParticleEmitter, ParticleSystem, ValueRange,
   };
 
   // Tilemaps
