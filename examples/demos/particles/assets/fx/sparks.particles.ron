@@ -1,0 +1,21 @@
+// Sparks thrown from a point: a burst a second, falling and bouncing off
+// whatever they meet. Edit and save while the demo runs to see it change.
+(
+  image: "fx/spark.png",
+  rate: 0,
+  bursts: [(time: 0.0, count: (10, 14))],
+  duration: 1.0,
+  looping: true,
+  prewarm: true,
+  direction_deg: -90,
+  spread_deg: 70,
+  lifetime: (1.6, 2.4),
+  speed: (180, 320),
+  size: (10, 16),
+  color: ("#ffe08a", "#ffb347"),
+  color_over_life: [(0.0, "#ffe08a"), (0.7, "#ff9a2e"), (1.0, "#ff6a1a00")],
+  gravity: (0, 700),
+  blend: Additive,
+  align: Velocity(stretch: 0.012),
+  collision: (radius: 3, response: Bounce(0.6)),
+)

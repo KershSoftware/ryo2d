@@ -1,0 +1,20 @@
+// Embers that drift up, then fall and stay where they land until they die.
+(
+  image: "fx/spark.png",
+  rate: 14,
+  duration: 4.0,
+  prewarm: true,
+  shape: Circle(radius: 28),
+  direction_deg: -90,
+  spread_deg: 50,
+  lifetime: (3.0, 5.0),
+  speed: (90, 170),
+  size: (6, 10),
+  color: ("#ffb347", "#ff5a1f"),
+  color_over_life: [(0.0, "#ffd27a"), (0.7, "#ff6a1a"), (1.0, "#ff000000")],
+  gravity: (0, 260),
+  drag: 0.2,
+  blend: Additive,
+  emission: 1.5,
+  collision: (radius: 2, response: Stick),
+)

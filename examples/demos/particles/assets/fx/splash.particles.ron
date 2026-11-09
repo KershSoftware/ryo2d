@@ -1,0 +1,17 @@
+// Drops thrown up where rain lands: rain.particles.ron plays it through its
+// on_collision. On its own it is a small fountain.
+(
+  image: "fx/spark.png",
+  rate: 24,
+  shape: Line(length: 30),
+  direction_deg: -90,
+  spread_deg: 140,
+  lifetime: (0.25, 0.5),
+  speed: (60, 170),
+  size: (6, 10),
+  color: ("#bfe3ff", "#e8f4ff"),
+  color_over_life: [(0.0, "#e8f4ff"), (1.0, "#bfe3ff00")],
+  size_over_life: [(0.0, 1.0), (1.0, 0.3)],
+  gravity: (0, 600),
+  blend: Additive,
+)

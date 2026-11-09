@@ -1,0 +1,19 @@
+// Rain along a line: each drop dies where it lands and plays a splash.
+(
+  image: "fx/spark.png",
+  rate: 90,
+  duration: 1.5,
+  prewarm: true,
+  shape: Line(length: 420),
+  direction_deg: 80,
+  spread_deg: 0,
+  lifetime: (1.0, 1.3),
+  speed: (520, 650),
+  size: (5, 8),
+  color: ("#8fb8ff", "#b5d0ff"),
+  color_over_life: [(0.0, "#b5d0ff"), (1.0, "#8fb8ff")],
+  max_particles: 400,
+  align: Velocity(stretch: 0.03),
+  collision: (radius: 2, response: Die),
+  on_collision: (effect: "fx/splash.particles.ron", count: (2, 4)),
+)
