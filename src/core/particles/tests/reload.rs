@@ -247,6 +247,39 @@ fn a_reload_that_stops_sticking_lets_stuck_particles_go() {
   );
 }
 
+/// The file naming a sub-effect that has sub-emitters of its own is told
+/// of it as it loads. The warning joins the log the tests that count
+/// particle warnings read, so this holds their lock
+#[test]
+fn a_sub_effect_with_sub_emitters_of_its_own_loads_with_a_warning() {
+  let _log = testing::log_lock();
+  let parent = "fx/warn-parent.particles.ron";
+  let nested = "fx/warn-nested.particles.ron";
+  let warned = || {
+    testing::particle_warnings()
+      .iter()
+      .filter(|message| {
+        message.contains(parent) && message.contains(nested) && message.contains("own")
+      })
+      .count()
+  };
+  let before = warned();
+  let (mut world, _files) = world_over(&[
+    (
+      parent,
+      r#"(image: "fx/spark.png", on_death: (effect: "fx/warn-nested.particles.ron", count: 1))"#,
+    ),
+    (
+      nested,
+      r#"(image: "fx/spark.png", on_death: (effect: "fx/warn-leaf.particles.ron", count: 1))"#,
+    ),
+    ("fx/warn-leaf.particles.ron", r#"(image: "fx/spark.png")"#),
+  ]);
+  // It still loads
+  let _effect = loaded(&mut world, parent);
+  assert_eq!(warned(), before + 1, "warned once, naming both");
+}
+
 #[test]
 fn a_sub_effect_s_reload_reaches_its_parent() {
   const PUFF: &str = "fx/puff.particles.ron";

@@ -1140,32 +1140,4 @@ mod tests {
     let reloaded = world.resource::<Assets<ParticleEffect>>().get(&handle);
     assert_eq!(reloaded.map(|effect| effect.rate), Some(90.0));
   }
-
-  #[test]
-  fn a_sub_effect_with_sub_emitters_of_its_own_loads_with_a_warning() {
-    let parent = "fx/warn-parent.particles.ron";
-    let nested = "fx/warn-nested.particles.ron";
-    let mut world = registry_over(files(&[
-      (
-        parent,
-        r#"(image: "fx/spark.png", on_death: (effect: "fx/warn-nested.particles.ron", count: 1))"#,
-      ),
-      (
-        nested,
-        r#"(image: "fx/spark.png", on_death: (effect: "fx/warn-leaf.particles.ron", count: 1))"#,
-      ),
-      ("fx/warn-leaf.particles.ron", r#"(image: "fx/spark.png")"#),
-    ]));
-    let effect = AssetsView::new(&mut world).load_now::<ParticleEffect>(parent);
-    assert!(effect.is_ok(), "it still loads");
-    let warned = dev_log::get_entries()
-      .into_iter()
-      .filter(|entry| {
-        entry.message.contains(parent)
-          && entry.message.contains(nested)
-          && entry.message.contains("own")
-      })
-      .count();
-    assert_eq!(warned, 1, "warned once, naming both");
-  }
 }
