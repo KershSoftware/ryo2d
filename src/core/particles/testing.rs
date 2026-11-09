@@ -9,9 +9,9 @@ use super::collision::ParticleCollision;
 use super::draw::instance_for;
 use super::effect::ParticleEffect;
 use super::emitter::{EmitterFinished, ParticleEmitter};
-use super::pool::{Pool, STUCK, TOUCHING};
+use super::pool::{EmitterPool, Pool, STUCK, SubPool, TOUCHING};
 use super::space::LocalFrame;
-use super::step::{step_particles, step_unscaled_particles};
+use super::step::{Compiled, step_particles, step_unscaled_particles};
 use super::store::{DEFAULT_PARTICLE_BUDGET, ParticleStore};
 use crate::core::asset::{Assets, Handle};
 use crate::core::ecs::interpolate::snapshot_previous_transforms;
@@ -146,8 +146,39 @@ pub(crate) fn particles(world: &World, emitter: Entity) -> Vec<Seen> {
   let Some(pool) = store.pool(emitter.slot) else {
     return Vec::new();
   };
-  let compiled = pool.effect.and_then(|id| store.compiled(id));
-  let p = &pool.main;
+  seen(&pool.main, pool.effect.and_then(|id| store.compiled(id)))
+}
+
+/// The particles `emitter`'s effect's `on_death` played, oldest first, as
+/// its pool keeps them: in the world, or in the emitter's frame for a
+/// `Local` sub-effect
+pub(crate) fn death_particles(world: &World, emitter: Entity) -> Vec<Seen> {
+  sub_particles(world, emitter, |pool| &pool.death)
+}
+
+/// The particles `emitter`'s effect's `on_collision` played, as
+/// [`death_particles`]
+pub(crate) fn collision_particles(world: &World, emitter: Entity) -> Vec<Seen> {
+  sub_particles(world, emitter, |pool| &pool.collision)
+}
+
+fn sub_particles(
+  world: &World,
+  emitter: Entity,
+  which: impl Fn(&EmitterPool) -> &SubPool,
+) -> Vec<Seen> {
+  let Some(emitter) = world.get::<ParticleEmitter>(emitter) else {
+    return Vec::new();
+  };
+  let store = world.resource::<ParticleStore>();
+  let Some(sub) = store.pool(emitter.slot).map(which) else {
+    return Vec::new();
+  };
+  seen(&sub.particles, sub.effect.and_then(|id| store.compiled(id)))
+}
+
+/// `p`'s particles as a test sees them, drawn by `compiled`
+fn seen(p: &Pool, compiled: Option<&Compiled>) -> Vec<Seen> {
   (0..p.len())
     .map(|i| {
       let t = p.age[i] / p.lifetime[i];

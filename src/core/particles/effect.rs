@@ -177,6 +177,48 @@ pub enum DrawOrder {
   OldestOnTop,
 }
 
+/// Another effect a particle plays where it dies or meets a collider: a
+/// burst of the sub-effect's particles, born with its shape, direction and
+/// start values where the particle was, each also taking a share of the
+/// particle's velocity.
+///
+/// Sub-effects go one level deep: a sub-effect's own `on_death` and
+/// `on_collision` are ignored (with a warning). Its particles live in the
+/// emitter's pool, move, collide and look as the sub-effect says, draw at
+/// the emitter's z just over its own particles, and count against the
+/// sub-effect's `max_particles` and the engine's budget. The sub-effect's
+/// emission (rate, bursts, cycle, prewarm), its `seed` and its own
+/// `inherit_velocity` play no part.
+#[derive(Debug, Clone)]
+pub struct SubEmitter {
+  /// The effect played
+  pub effect: Handle<ParticleEffect>,
+  /// How many of its particles each death or collision spawns
+  pub count: ValueRange,
+  /// The share of the particle's velocity (before a collision's response)
+  /// each spawned particle starts with, on top of its own
+  pub inherit_velocity: f32,
+}
+
+impl SubEmitter {
+  /// Plays `count` particles of `effect`, none of the particle's velocity
+  /// inherited.
+  pub fn new(effect: Handle<ParticleEffect>, count: impl Into<ValueRange>) -> Self {
+    Self {
+      effect,
+      count: count.into(),
+      inherit_velocity: 0.0,
+    }
+  }
+
+  /// Sets the share of the particle's velocity each spawned particle starts
+  /// with.
+  pub fn with_inherit_velocity(mut self, inherit_velocity: f32) -> Self {
+    self.inherit_velocity = inherit_velocity;
+    self
+  }
+}
+
 /// How a kind of particle is born, moves, looks and ends.
 ///
 /// Angles are in degrees. Build one with [`ParticleEffect::new`] and the `with_*`
@@ -267,6 +309,13 @@ pub struct ParticleEffect {
   pub align: Align,
   /// Collision with the world, if any
   pub collision: Option<CollisionConfig>,
+  /// The effect each particle plays where its life ends or a `Die`
+  /// collision removes it, if any
+  pub on_death: Option<SubEmitter>,
+  /// The effect each particle plays where it meets a collider in a way
+  /// that tells of it (as a [`ParticleCollision`](super::ParticleCollision)
+  /// would, whether or not events are on), if any
+  pub on_collision: Option<SubEmitter>,
   /// Render layer
   pub layer: u32,
   /// Fixed random seed, so the effect repeats
@@ -349,6 +398,8 @@ impl ParticleEffect {
       frames: None,
       align: Align::None,
       collision: None,
+      on_death: None,
+      on_collision: None,
       layer: 0,
       seed: None,
     }
@@ -577,6 +628,18 @@ impl ParticleEffect {
     self
   }
 
+  /// Plays a sub-effect where each particle dies.
+  pub fn on_death(mut self, sub: SubEmitter) -> Self {
+    self.on_death = Some(sub);
+    self
+  }
+
+  /// Plays a sub-effect where each particle meets a collider.
+  pub fn on_collision(mut self, sub: SubEmitter) -> Self {
+    self.on_collision = Some(sub);
+    self
+  }
+
   /// Sets the render layer.
   pub fn with_layer(mut self, layer: u32) -> Self {
     self.layer = layer;
@@ -716,6 +779,19 @@ impl ParticleEffect {
       self.collision.is_some() && self.space == Space::Local,
       "a Local effect does not collide",
     );
+    for (field, sub) in [
+      ("on_death", &self.on_death),
+      ("on_collision", &self.on_collision),
+    ] {
+      if let Some(sub) = sub {
+        report(field, !range_finite(&sub.count), "count is not a number");
+        report(
+          field,
+          !finite(sub.inherit_velocity),
+          "inherit_velocity is not a number",
+        );
+      }
+    }
 
     for burst in &self.bursts {
       report(
@@ -825,6 +901,13 @@ impl ParticleEffect {
     if fx.space == Space::Local {
       fx.collision = None;
     }
+    for sub in [&mut fx.on_death, &mut fx.on_collision]
+      .into_iter()
+      .flatten()
+    {
+      sub.count = range(sub.count, ValueRange::constant(0.0));
+      sub.inherit_velocity = num(sub.inherit_velocity, 0.0);
+    }
 
     for burst in &mut fx.bursts {
       burst.time = num(burst.time, 0.0);
@@ -910,6 +993,7 @@ mod tests {
     assert_eq!(fx.z, 0);
     assert_eq!(fx.draw_order, DrawOrder::NewestOnTop);
     assert!(fx.collision.is_none());
+    assert!(fx.on_death.is_none() && fx.on_collision.is_none());
     assert_eq!(fx.layer, 0);
     assert!(fx.seed.is_none());
     assert!(fx.problems().is_empty());
@@ -1036,5 +1120,33 @@ mod tests {
     // Any finite strength is allowed
     let strong = ParticleEffect::new(image()).with_noise(NoiseForce::new(-50.0, 0.1));
     assert!(strong.problems().is_empty());
+  }
+
+  #[test]
+  fn sub_emitters_are_built_checked_and_clamped() {
+    let sub = Assets::<ParticleEffect>::new().add(ParticleEffect::new(image()));
+    let plain = SubEmitter::new(sub.clone(), 4.0);
+    assert_eq!(plain.count, ValueRange::constant(4.0));
+    assert_eq!(plain.inherit_velocity, 0.0);
+    assert_eq!(plain.with_inherit_velocity(0.5).inherit_velocity, 0.5);
+
+    let fx = ParticleEffect::new(image())
+      .on_death(SubEmitter::new(sub.clone(), (f32::NAN, 2.0)))
+      .on_collision(SubEmitter::new(sub, 3.0).with_inherit_velocity(f32::INFINITY));
+    let problems = fx.problems();
+    assert!(starts_with(&problems, "on_death:"), "{problems:?}");
+    assert!(starts_with(&problems, "on_collision:"), "{problems:?}");
+    let clean = fx.sanitized();
+    assert!(clean.problems().is_empty(), "{:?}", clean.problems());
+    let death = clean.on_death.as_ref().map(|sub| sub.count);
+    assert!(death.is_some_and(|count| count.min.is_finite() && count.max.is_finite()));
+    let hit = clean.on_collision.as_ref().map(|sub| sub.inherit_velocity);
+    assert_eq!(hit, Some(0.0));
+
+    // A negative count spawns nothing, as a burst's does
+    let image = image();
+    let sub = Assets::<ParticleEffect>::new().add(ParticleEffect::new(image.clone()));
+    let negative = ParticleEffect::new(image).on_death(SubEmitter::new(sub, -3.0));
+    assert!(negative.problems().is_empty());
   }
 }

@@ -51,15 +51,17 @@ pub(crate) struct ParticleDrawer {
 }
 
 impl ParticleDrawer {
-  /// Pushes each enabled emitter's particles into `list` as one run, in
-  /// entity order: at the emitter's z (else its effect's), on its entity's
-  /// `RenderLayers`, with its effect's blend, filter, lit flag and sprite
-  /// effect, in spawn order (the newest on top unless the effect says otherwise). A pool whose box, grown by
-  /// the largest a particle of its effect draws, meets no camera's view on
-  /// its layers is skipped, as is one whose image draws nothing (not
-  /// loaded, in a release build). Each particle sits blended between its
-  /// last two steps by `alpha`, the fixed step's fraction (an unscaled
-  /// pool by its own). Returns how many particles it submitted.
+  /// Pushes each enabled emitter's particles into `list`, in entity order:
+  /// its own as one run, then each of its sub-effects' as one more just
+  /// over it, all at the emitter's z (else its effect's) and on its
+  /// entity's `RenderLayers`, each with its own effect's blend, filter, lit
+  /// flag and sprite effect, in spawn order (the newest on top unless the
+  /// effect says otherwise). A run whose box, grown by the largest a
+  /// particle of its effect draws, meets no camera's view on its layers is
+  /// skipped, as is one whose image draws nothing (not loaded, in a release
+  /// build). Each particle sits blended between its last two steps by
+  /// `alpha`, the fixed step's fraction (an unscaled pool by its own).
+  /// Returns how many particles it submitted.
   pub(crate) fn collect(
     &mut self,
     world: &mut World,
@@ -106,70 +108,98 @@ impl ParticleDrawer {
       else {
         continue;
       };
-      let (Some((low, high)), Some(compiled)) =
-        (pool.bounds, pool.effect.and_then(|id| store.compiled(id)))
-      else {
-        continue;
-      };
-      let particles = &pool.main;
-      if particles.len() == 0 {
-        continue;
-      }
-      // Grown by the largest a particle draws, so one at its edge counts
-      let grow = Vec2::splat(compiled.largest_size);
-      let (min, max) = (low - grow, high + grow);
-      let seen = cameras
-        .iter()
-        .any(|camera| camera.layers.intersects(&drawn.layers) && camera.view.is_visible(min, max));
-      if !seen {
-        continue;
-      }
-      let effect = &compiled.effect;
-      // The checker while its image is not loaded (debug builds), or
-      // nothing, as the scenes' sprites draw
-      let Some(texture) = textures.texture_of(effect.image.id(), images) else {
-        continue;
-      };
+      // Every run of the emitter at its z, else its own effect's
+      let z = drawn.z.or_else(|| {
+        let main = pool.effect.and_then(|id| store.compiled(id));
+        main.map(|compiled| compiled.effect.z)
+      });
       let fraction = drawn_fraction(pool, drawn.unscaled, store.step, alpha);
-      // A `Local` effect's particles draw through the emitter as it draws
-      let local = match pool.local {
-        Some(_) => match query.get(world, drawn.order.1) {
-          Ok((.., global, previous, lift)) => {
-            Some(LocalFrame::drawn(global, previous, lift, alpha))
+      // Its own particles, then its sub-effects' just over them: each a run
+      // with its own effect's look
+      let (death, collision) = (&pool.death, &pool.collision);
+      let runs = [
+        (&pool.main, pool.effect, pool.bounds, pool.local.is_some()),
+        (
+          &death.particles,
+          death.effect,
+          death.bounds,
+          death.local.is_some(),
+        ),
+        (
+          &collision.particles,
+          collision.effect,
+          collision.bounds,
+          collision.local.is_some(),
+        ),
+      ];
+      // A `Local` effect's particles draw through the emitter as it draws,
+      // found for the first run that needs it
+      let mut frame = None;
+      for (particles, effect, bounds, in_frame) in runs {
+        let (Some((low, high)), Some(compiled)) =
+          (bounds, effect.and_then(|id| store.compiled(id)))
+        else {
+          continue;
+        };
+        if particles.len() == 0 {
+          continue;
+        }
+        // Grown by the largest a particle draws, so one at its edge counts
+        let grow = Vec2::splat(compiled.largest_size);
+        let (min, max) = (low - grow, high + grow);
+        let seen = cameras.iter().any(|camera| {
+          camera.layers.intersects(&drawn.layers) && camera.view.is_visible(min, max)
+        });
+        if !seen {
+          continue;
+        }
+        let effect = &compiled.effect;
+        // The checker while its image is not loaded (debug builds), or
+        // nothing, as the scenes' sprites draw
+        let Some(texture) = textures.texture_of(effect.image.id(), images) else {
+          continue;
+        };
+        let local = if in_frame {
+          if frame.is_none() {
+            let Ok((.., global, previous, lift)) = query.get(world, drawn.order.1) else {
+              continue;
+            };
+            frame = Some(LocalFrame::drawn(global, previous, lift, alpha));
           }
-          Err(_) => continue,
-        },
-        None => None,
-      };
-      let instances = list.run_instances();
-      let start = instances.len();
-      let (Ok(first), Ok(end)) = (u32::try_from(start), u32::try_from(start + particles.len()))
-      else {
-        continue;
-      };
-      // Spawn order puts the newest last, on top; `OldestOnTop` reverses it
-      let (len, order) = (particles.len(), effect.draw_order);
-      instances.extend((0..len).map(|k| {
-        let i = drawn_index(order, k, len);
-        instance_for(particles, i, compiled, fraction, local.as_ref())
-      }));
-      let shading = if effect.effect.is_some() {
-        SpriteShading::Effect
-      } else {
-        SpriteShading::Plain
-      };
-      let run = DrawRun {
-        texture,
-        shading,
-        blend: effect.blend,
-        filter: effect.filter,
-        layers: drawn.layers,
-        min,
-        max,
-        instances: first..end,
-      };
-      list.push_run(effect.lit, drawn.z.unwrap_or(effect.z), run);
-      submitted = submitted.saturating_add(end - first);
+          frame
+        } else {
+          None
+        };
+        let instances = list.run_instances();
+        let start = instances.len();
+        let (Ok(first), Ok(end)) = (u32::try_from(start), u32::try_from(start + particles.len()))
+        else {
+          continue;
+        };
+        // Spawn order puts the newest last, on top; `OldestOnTop` reverses it
+        let (len, order) = (particles.len(), effect.draw_order);
+        instances.extend((0..len).map(|k| {
+          let i = drawn_index(order, k, len);
+          instance_for(particles, i, compiled, fraction, local.as_ref())
+        }));
+        let shading = if effect.effect.is_some() {
+          SpriteShading::Effect
+        } else {
+          SpriteShading::Plain
+        };
+        let run = DrawRun {
+          texture,
+          shading,
+          blend: effect.blend,
+          filter: effect.filter,
+          layers: drawn.layers,
+          min,
+          max,
+          instances: first..end,
+        };
+        list.push_run(effect.lit, z.unwrap_or(effect.z), run);
+        submitted = submitted.saturating_add(end - first);
+      }
     }
     submitted
   }

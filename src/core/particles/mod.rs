@@ -12,8 +12,10 @@
 //!   `GlobalTransform`, moves them under gravity, drag, the effect's curves
 //!   and the [`ParticleAttractor`]s around it, collides them with the
 //!   world's colliders when the effect has a [`CollisionConfig`], and
-//!   removes the dead. An emitter made `unscaled` steps on real time
-//!   instead, through pauses and held scenes.
+//!   removes the dead. Where a particle dies or meets a collider, its
+//!   effect can play another, a [`SubEmitter`]'s, one level deep. An
+//!   emitter made `unscaled` steps on real time instead, through pauses and
+//!   held scenes.
 //! - Each frame, every emitter with live particles that a camera sees joins
 //!   the draw list as one run of sprites, at the emitter's z (else its
 //!   effect's), each particle blended between its last two steps.
@@ -31,6 +33,7 @@
 //! | [`ParticleEmitter`] (component) | Plays an effect at its entity: `play`, `stop`, `burst`, `once`, `despawn_when_finished` |
 //! | [`ParticleAttractor`] (component) | A force field that pulls, swirls or pushes particles |
 //! | [`CollisionConfig`] | How an effect's particles meet colliders, and whether they report [`ParticleCollision`] |
+//! | [`SubEmitter`] | A burst of another effect where an effect's particle dies (`on_death`) or meets a collider (`on_collision`) |
 //! | [`EmitterFinished`] (message) | An emitter stopped and its last particle died |
 //!
 //! # Quick start
@@ -83,6 +86,7 @@ mod scope;
 mod space;
 mod step;
 mod store;
+mod sub;
 #[cfg(test)]
 mod testing;
 #[cfg(test)]
@@ -97,6 +101,7 @@ pub use collision::{
 pub(crate) use draw::ParticleDrawer;
 pub use effect::{
   Align, Burst, DrawOrder, EmitShape, Flipbook, FrameMode, NoiseForce, ParticleEffect, Space,
+  SubEmitter,
 };
 pub use emitter::{EmitterFinished, ParticleEmitter};
 pub(crate) use scope::{hold_scenes, in_scene, release_scene};

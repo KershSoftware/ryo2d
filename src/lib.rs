@@ -211,7 +211,7 @@ pub mod prelude {
     Curve, CurveKey, DEFAULT_PARTICLE_BUDGET, DrawOrder, EmitShape, EmitterFinished, Flipbook,
     FrameMode, Gradient, GradientKey, MIN_BOUNCE_EVENT_SPEED, NoiseForce, ParticleAttractor,
     ParticleCollision, ParticleEffect, ParticleEmitter, Particles, ParticlesView, Space,
-    ValueRange,
+    SubEmitter, ValueRange,
   };
 
   // Tilemaps

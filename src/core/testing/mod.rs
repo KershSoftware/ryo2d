@@ -87,8 +87,9 @@ use crate::core::time::Time;
 
 /// Where the particles of `emitter` (an entity with an engine particle
 /// emitter) are in the world, as its last step left them, oldest first (a
-/// `Local` effect's through the emitter's frame in that step); none without
-/// an emitter or a particle store
+/// `Local` effect's through the emitter's frame in that step): its effect's
+/// own, not those its sub-effects played; none without an emitter or a
+/// particle store
 #[doc(hidden)]
 pub fn particle_positions(world: &World, emitter: Entity) -> Vec<Vec2> {
   let Some(slot) = world

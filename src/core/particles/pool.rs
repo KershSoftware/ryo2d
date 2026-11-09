@@ -153,6 +153,35 @@ impl Pool {
   }
 }
 
+/// The particles a sub-effect plays in an emitter's pool (those its own
+/// particles' deaths, or collisions, spawned), drawn as a run of their own
+#[derive(Debug, Default)]
+pub(crate) struct SubPool {
+  pub(crate) particles: Pool,
+  /// The sub-effect they play: the parent effect's, or, once it has none,
+  /// the last it had, so they live out their lives
+  pub(crate) effect: Option<AssetId<ParticleEffect>>,
+  /// The box round them, as `EmitterPool::bounds`
+  pub(crate) bounds: Option<(Vec2, Vec2)>,
+  /// The emitter's frame in its last step, while they live in it (a
+  /// `Local` sub-effect's), as `EmitterPool::local`
+  pub(crate) local: Option<LocalFrame>,
+}
+
+impl SubPool {
+  /// Removes every particle, keeping the arrays' room
+  pub(crate) fn clear(&mut self) {
+    self.particles.clear();
+    self.bounds = None;
+  }
+
+  fn reset(&mut self) {
+    self.clear();
+    self.effect = None;
+    self.local = None;
+  }
+}
+
 /// One emitter's particles and where its emission stands. Kept by slot in
 /// the [`ParticleStore`](super::store::ParticleStore); a freed slot's pool
 /// keeps its arrays' room for the next emitter to take it.
@@ -163,6 +192,10 @@ pub(crate) struct EmitterPool {
   /// Whether an emitter holds the slot
   pub(crate) used: bool,
   pub(crate) main: Pool,
+  /// The particles its effect's `on_death` played
+  pub(crate) death: SubPool,
+  /// The particles its effect's `on_collision` played
+  pub(crate) collision: SubPool,
   /// The emitter's own random stream, seeded in its first step with an
   /// effect (`seeded`)
   pub(crate) rng: ParticleRng,
@@ -214,6 +247,8 @@ impl EmitterPool {
       entity: Entity::PLACEHOLDER,
       used: false,
       main: Pool::default(),
+      death: SubPool::default(),
+      collision: SubPool::default(),
       rng: ParticleRng::new(0),
       seeded: false,
       noise_seed: 0,
@@ -249,10 +284,25 @@ impl EmitterPool {
     self.reset();
   }
 
+  /// Every particle it holds: its own and its sub-effects'
+  pub(crate) fn len(&self) -> usize {
+    self.main.len() + self.death.particles.len() + self.collision.particles.len()
+  }
+
+  /// Removes every particle, its sub-effects' too, keeping the arrays' room
+  pub(crate) fn clear(&mut self) {
+    self.main.clear();
+    self.bounds = None;
+    self.death.clear();
+    self.collision.clear();
+  }
+
   fn reset(&mut self) {
     self.entity = Entity::PLACEHOLDER;
     self.used = false;
     self.main.clear();
+    self.death.reset();
+    self.collision.reset();
     self.rng = ParticleRng::new(0);
     self.seeded = false;
     self.noise_seed = 0;

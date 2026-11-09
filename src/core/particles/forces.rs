@@ -17,6 +17,7 @@ use super::emitter::ParticleEmitter;
 use super::noise::noise_force;
 use super::pool::{Pool, STUCK, TOUCHING};
 use super::store::ParticleStore;
+use super::sub::Trigger;
 use crate::core::asset::{AssetId, Assets};
 use crate::core::ecs::{Entity, GlobalTransform, QueryState, World};
 use crate::core::messages::register_message;
@@ -114,7 +115,7 @@ impl Surroundings {
       }
       *stepping = true;
       if let (Some(store), Some(effects)) = (store, effects)
-        && collides(store, effects, emitter.effect.id())
+        && meets_colliders(store, effects, emitter)
       {
         collide = true;
         break;
@@ -179,6 +180,16 @@ impl Surroundings {
     }
   }
 
+  /// How many collisions are waiting to be told
+  pub(crate) fn told(&self) -> usize {
+    self.collisions.len()
+  }
+
+  /// Forgets the collisions found since [`told`](Self::told) said `told`
+  pub(crate) fn forget_told_since(&mut self, told: usize) {
+    self.collisions.truncate(told);
+  }
+
   /// Writes the pass's collisions as one batch
   pub(crate) fn tell_collisions(&mut self, world: &mut World) {
     if self.collisions.is_empty() {
@@ -206,20 +217,52 @@ impl Surroundings {
   }
 }
 
-/// Whether `effect` collides: as the step compiled it, or, compiled in this
-/// step for the first time or for a new version, as its asset says
+/// Whether `emitter`'s particles meet colliders: its effect's, or those of
+/// a sub-effect, one its effect names or one its pool's sub-effect
+/// particles still play
+fn meets_colliders(
+  store: &ParticleStore,
+  effects: &Assets<ParticleEffect>,
+  emitter: &ParticleEmitter,
+) -> bool {
+  let id = emitter.effect.id();
+  if collides(store, effects, id) {
+    return true;
+  }
+  let named = current(store, effects, id)
+    .into_iter()
+    .flat_map(|effect| [&effect.on_death, &effect.on_collision])
+    .flatten()
+    .map(|sub| sub.effect.id());
+  let pooled = store
+    .pool(emitter.slot)
+    .into_iter()
+    .flat_map(|pool| [pool.death.effect, pool.collision.effect])
+    .flatten();
+  named.chain(pooled).any(|sub| collides(store, effects, sub))
+}
+
+/// `effect` as the step compiled it, or, to be compiled in this step for
+/// the first time or for a new version, as its asset says
+fn current<'a>(
+  store: &'a ParticleStore,
+  effects: &'a Assets<ParticleEffect>,
+  effect: AssetId<ParticleEffect>,
+) -> Option<&'a ParticleEffect> {
+  let version = effects.version(effect)?;
+  match store.compiled.get(&effect) {
+    Some(compiled) if compiled.version == version => Some(&compiled.effect),
+    _ => effects.get(effect),
+  }
+}
+
+/// Whether `effect` collides, as [`current`] finds it
 fn collides(
   store: &ParticleStore,
   effects: &Assets<ParticleEffect>,
   effect: AssetId<ParticleEffect>,
 ) -> bool {
-  let Some(version) = effects.version(effect) else {
-    return false;
-  };
-  match store.compiled.get(&effect) {
-    Some(compiled) if compiled.version == version => compiled.effect.collides(),
-    _ => effects.get(effect).is_some_and(ParticleEffect::collides),
-  }
+  current(store, effects, effect).is_some_and(ParticleEffect::collides)
 }
 
 /// What an emitter's own effect does to its particles in a step: the radial,
@@ -297,33 +340,39 @@ impl Acting<'_> {
     })
   }
 
-  /// How many collisions are waiting to be told
-  pub(crate) fn told(&self) -> usize {
-    self.collisions.len()
-  }
-
-  /// Forgets the collisions found since [`told`](Self::told) said `told`
-  pub(crate) fn forget_told_since(&mut self, told: usize) {
-    self.collisions.truncate(told);
-  }
-
   /// Meets particle `i` of `p`, which moved from `from` this step, with
   /// the colliders, in gather order, and responds: `Die` removes it,
   /// `Bounce` reflects it off every collider it overlaps in turn, `Stick`
   /// holds it on the surface its radius out (`STUCK`), and `Event` lets it
-  /// pass. `Die`, `Stick` and `Event` stop at the first contact. A
-  /// collision is told (with the particle's place and velocity before the
-  /// response) for `Die` and `Stick` with events on, for a bounce's entry
-  /// at `MIN_BOUNCE_EVENT_SPEED` or faster with events on (one a step),
-  /// and for an `Event`'s entry; an entry is a step touching a collider
-  /// after one touching none (`TOUCHING`). Returns whether it lives
+  /// pass. `Die`, `Stick` and `Event` stop at the first contact. A contact
+  /// tells of itself for `Die` and `Stick`, for a bounce's entry at
+  /// `MIN_BOUNCE_EVENT_SPEED` or faster (one a step), and for an `Event`'s
+  /// entry; an entry is a step touching a collider after one touching none
+  /// (`TOUCHING`). Such a contact is told as a collision (with the
+  /// particle's place and velocity before the response) when events are
+  /// on, or always for an `Event`, and is returned as the particle's hit
+  /// whether or not they are
   #[inline]
-  pub(crate) fn collide(&mut self, p: &mut Pool, i: usize, from: Vec2) -> bool {
+  pub(crate) fn collide(&mut self, p: &mut Pool, i: usize, from: Vec2) -> Met {
     match &self.collide {
       Some(collide) => collide.meet(p, i, from, self.collisions),
-      None => true,
+      None => Met {
+        alive: true,
+        hit: None,
+      },
     }
   }
+}
+
+/// What meeting the colliders did to a particle in its step
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Met {
+  /// Whether it lives on (a `Die` removes it)
+  pub(crate) alive: bool,
+  /// Its contact that told of itself, if any: the place on the surface,
+  /// its radius out (as `Stick` places it), and its velocity before the
+  /// response
+  pub(crate) hit: Option<Trigger>,
 }
 
 impl Collide<'_> {
@@ -335,12 +384,19 @@ impl Collide<'_> {
     i: usize,
     from: Vec2,
     collisions: &mut Vec<ParticleCollision>,
-  ) -> bool {
+  ) -> Met {
     let config = self.config;
     let was_touching = p.flags[i] & TOUCHING != 0;
     p.flags[i] &= !TOUCHING;
-    // One bounce event a step, even when a corner touches two colliders
-    let mut bounce_told = false;
+    // One bounce told a step, even when a corner touches two colliders
+    let mut hit = None;
+    // The contact as it tells of itself
+    let tell = |p: &Pool, contact: &Contact| {
+      let at = Vec2::new(contact.point_x, contact.point_y)
+        + Vec2::new(contact.normal_x, contact.normal_y) * config.radius;
+      let velocity = Vec2::new(p.vx[i], p.vy[i]);
+      Trigger { at, velocity }
+    };
     // Bounce resolves every overlapping collider in turn (a particle
     // resting on a floor must still hit a wall); the other responses stop
     // at the first contact
@@ -355,7 +411,10 @@ impl Collide<'_> {
           if config.send_events {
             collisions.push(told(self.emitter, p, i, &contact));
           }
-          return false;
+          return Met {
+            alive: false,
+            hit: Some(tell(p, &contact)),
+          };
         }
         CollisionResponse::Bounce { .. } => {
           let (nx, ny) = (contact.normal_x, contact.normal_y);
@@ -363,13 +422,11 @@ impl Collide<'_> {
           if speed_along_normal < 0.0 {
             // Entry only: a particle resting on a surface stays touching
             // and stays quiet
-            if config.send_events
-              && !was_touching
-              && !bounce_told
-              && -speed_along_normal >= MIN_BOUNCE_EVENT_SPEED
-            {
-              collisions.push(told(self.emitter, p, i, &contact));
-              bounce_told = true;
+            if !was_touching && hit.is_none() && -speed_along_normal >= MIN_BOUNCE_EVENT_SPEED {
+              if config.send_events {
+                collisions.push(told(self.emitter, p, i, &contact));
+              }
+              hit = Some(tell(p, &contact));
             }
             let impulse = (1.0 + config.response.restitution()) * speed_along_normal;
             p.vx[i] -= impulse * nx;
@@ -383,24 +440,29 @@ impl Collide<'_> {
           if config.send_events {
             collisions.push(told(self.emitter, p, i, &contact));
           }
+          let hit = tell(p, &contact);
           // On the surface, its radius out, as a bounce is placed: not
           // where a fast move ended past it
-          p.x[i] = contact.point_x + contact.normal_x * config.radius;
-          p.y[i] = contact.point_y + contact.normal_y * config.radius;
+          p.x[i] = hit.at.x;
+          p.y[i] = hit.at.y;
           p.vx[i] = 0.0;
           p.vy[i] = 0.0;
           p.flags[i] |= STUCK;
-          return true;
+          return Met {
+            alive: true,
+            hit: Some(hit),
+          };
         }
         CollisionResponse::Event => {
-          if !was_touching {
+          let hit = (!was_touching).then(|| {
             collisions.push(told(self.emitter, p, i, &contact));
-          }
-          return true;
+            tell(p, &contact)
+          });
+          return Met { alive: true, hit };
         }
       }
     }
-    true
+    Met { alive: true, hit }
   }
 }
 

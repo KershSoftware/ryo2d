@@ -10,17 +10,18 @@ use glam::{Mat2, Vec2};
 use super::effect::{Burst, EmitShape, ParticleEffect, Space};
 use super::emitter::{EmitterFinished, Finish, ParticleEmitter, Pending};
 use super::forces::{Acting, Own, Surroundings};
-use super::pool::{EmitterPool, NewParticle, STUCK};
+use super::pool::{EmitterPool, NewParticle, Pool, STUCK};
 use super::rng::ParticleRng;
 use super::space::{self, LocalFrame};
-use super::store::ParticleStore;
+use super::store::{Budget, ParticleStore};
+use super::sub::{Triggers, compile_subs};
 use crate::core::asset::{AssetId, AssetServer, Assets};
 use crate::core::ecs::kernel::EcsSystemState;
 use crate::core::ecs::{
   DrawLift, Entity, GlobalTransform, Local, Messages, Mut, PreviousGlobalTransform, Query, Res,
   ResMut, World, entity_order,
 };
-use crate::core::hash::FastSet;
+use crate::core::hash::FastMap;
 use crate::core::time::Time;
 
 /// How far past a step's end a burst may fall, or the rate's next particle,
@@ -64,6 +65,11 @@ pub(crate) struct Compiled {
   /// The largest a particle draws: its largest start size times the size
   /// curve's largest value (the drawer grows a pool's box by it)
   pub(crate) largest_size: f32,
+  /// `speed_over_life` at birth, which a particle's start speed is scaled by
+  pub(crate) birth_speed: f32,
+  /// It was warned about, played as a sub-effect, for sub-emitters of its
+  /// own (which are ignored)
+  pub(crate) warned_nested: bool,
 }
 
 impl Compiled {
@@ -91,6 +97,8 @@ impl Compiled {
       spread: effect.spread_deg.to_radians(),
       speed_varies,
       largest_size,
+      birth_speed: effect.speed_over_life.lookup(0.0),
+      warned_nested: false,
       version,
       effect,
     }
@@ -136,11 +144,13 @@ pub(crate) struct StepState {
 
 /// Per-particle scratch for the emitter being stepped
 #[derive(Default)]
-struct Scratch {
+pub(super) struct Scratch {
   /// Whether each particle lives on
-  keep: Vec<bool>,
+  pub(super) keep: Vec<bool>,
   /// The part of the step each particle spawned in it lived
-  partial: Vec<f32>,
+  pub(super) partial: Vec<f32>,
+  /// Where its own particles died or met colliders, for its sub-effects
+  pub(super) triggers: Triggers,
 }
 
 /// The fixed step's particles (`FixedSet::Particles`, after propagation and
@@ -418,19 +428,10 @@ impl Pass<'_, '_> {
       return false;
     }
     let id = emitter.effect.id();
-    let (Some(version), Some(effect)) = (self.effects.version(id), self.effects.get(id)) else {
+    if !self.store.compile(self.effects, self.server, id) {
       return true;
-    };
-    if self
-      .store
-      .compiled
-      .get(&id)
-      .is_none_or(|compiled| compiled.version != version)
-    {
-      let server = self.server;
-      let compiled = Compiled::new(effect, version, || effect_name(server, id));
-      self.store.compiled.insert(id, compiled);
     }
+    compile_subs(self.store, self.effects, self.server, id, slot);
     let ParticleStore {
       pools,
       compiled,
@@ -439,6 +440,7 @@ impl Pass<'_, '_> {
       warned_budget,
       ..
     } = &mut *self.store;
+    let compiled = &*compiled;
     let (Some(pool), Some(fx)) = (pools.get_mut(slot), compiled.get(&id)) else {
       return true;
     };
@@ -465,9 +467,8 @@ impl Pass<'_, '_> {
       emitter.pending = Pending::default();
     }
     if pending.clear || pending.restart {
-      *live = live.saturating_sub(count(pool.main.len()));
-      pool.main.clear();
-      pool.bounds = None;
+      *live = live.saturating_sub(count(pool.len()));
+      pool.clear();
     }
     // Restarted, or played after its one cycle ended: the cycle from 0
     if pending.restart || (emitter.playing && pool.ended) {
@@ -496,7 +497,7 @@ impl Pass<'_, '_> {
     let linear = place.global.affine().matrix2;
     // A `Local` effect's particles live in the emitter's frame
     let local = (fx.effect.space == Space::Local).then(|| LocalFrame::new(position, linear));
-    space::settle(pool, local.as_ref());
+    space::settle(&mut pool.main, pool.local, local.as_ref());
     let mut frame = Frame {
       from,
       to: position,
@@ -510,12 +511,16 @@ impl Pass<'_, '_> {
     let mut playing = emitter.playing;
     let mut stepper = Stepper {
       id,
-      server: self.server,
-      live,
-      budget: *budget,
-      warned_budget,
+      budget: Budget {
+        live,
+        budget: *budget,
+        warned: warned_budget,
+        server: self.server,
+      },
       scratch: self.scratch,
-      acting: self.surroundings.acting(entity, &fx.effect),
+      compiled,
+      surroundings: self.surroundings,
+      entity,
     };
     // A prewarmed loop starts as if it had been playing where it stands
     if fx.effect.prewarm && looping && playing && pool.time.is_none() {
@@ -527,7 +532,8 @@ impl Pass<'_, '_> {
     pool.last = Some(position);
     pool.local = local;
 
-    let alive = count(pool.main.len());
+    // Its sub-effects' particles count: it is finished once they are gone
+    let alive = count(pool.len());
     if emitter.alive != alive {
       emitter.alive = alive;
     }
@@ -546,24 +552,26 @@ impl Pass<'_, '_> {
 }
 
 /// What one emitter's steps share while it is stepped: its effect, the
-/// store's live count, budget and budget warnings, the scratch, and what
-/// acts on its particles
-struct Stepper<'a> {
-  id: AssetId<ParticleEffect>,
-  server: Option<&'a AssetServer>,
-  live: &'a mut u32,
-  budget: u32,
-  warned_budget: &'a mut FastSet<AssetId<ParticleEffect>>,
-  scratch: &'a mut Scratch,
-  acting: Acting<'a>,
+/// budget, the scratch, the compiled effects (its sub-effects among them),
+/// and the surroundings that act on its particles
+pub(super) struct Stepper<'a> {
+  pub(super) id: AssetId<ParticleEffect>,
+  pub(super) budget: Budget<'a>,
+  pub(super) scratch: &'a mut Scratch,
+  pub(super) compiled: &'a FastMap<AssetId<ParticleEffect>, Compiled>,
+  pub(super) surroundings: &'a mut Surroundings,
+  /// The emitter's entity, whose own collider its particles never meet
+  pub(super) entity: Entity,
 }
 
 impl Stepper<'_> {
   /// One step of `pool`'s particles along `frame`: its emission (while
   /// `playing`; one cycle unless `looping`) and `burst` more, within its
   /// effect's `max_particles` and the budget, are spawned, and every
-  /// particle moves on. A `Local` effect's box is kept in the world, round
-  /// its particles in this step's frame and in the last's
+  /// particle moves on; then its sub-effects play where its particles died
+  /// or met colliders, and their particles move on. A `Local` effect's box
+  /// is kept in the world, round its particles in this step's frame and in
+  /// the last's
   fn particles(
     &mut self,
     pool: &mut EmitterPool,
@@ -579,23 +587,18 @@ impl Stepper<'_> {
     let dt = f64::from(frame.dt);
     let emitted = emission(pool, &fx.effect, looping, playing, dt, room, distance);
     let wanted = emitted.saturating_add((burst as usize).min(room.saturating_sub(emitted)));
-    let free = self.budget.saturating_sub(*self.live) as usize;
-    let granted = wanted.min(free);
-    if granted < wanted && self.warned_budget.insert(self.id) {
-      crate::engine_warn!(
-        module: "Particles",
-        "The particle budget of {} is full: spawns of {} are dropped until particles die (raise it with EngineBuilder::particle_budget)",
-        self.budget,
-        effect_name(self.server, self.id)
-      );
-    }
+    let granted = self.budget.grant(self.id, wanted);
     let born = pool.main.len();
-    let Scratch { keep, partial } = &mut *self.scratch;
+    let Scratch {
+      keep,
+      partial,
+      triggers,
+    } = &mut *self.scratch;
     partial.clear();
     if frame.to.is_finite() && frame.from.is_finite() {
       spawn(pool, fx, frame, granted, partial);
     }
-    *self.live = self.live.saturating_add(count(pool.main.len() - born));
+    self.budget.born(pool.main.len() - born);
     let own = Own {
       centre: if frame.local.is_some() {
         Vec2::ZERO
@@ -604,29 +607,27 @@ impl Stepper<'_> {
       },
       noise_seed: pool.noise_seed,
     };
-    let died = advance(
-      pool,
+    triggers.arm(&fx.effect, self.compiled);
+    let mut acting = self.surroundings.acting(self.entity, &fx.effect);
+    let (died, bounds) = advance(
+      &mut pool.main,
       fx,
       frame.dt,
       (born, partial),
       keep,
-      (&mut self.acting, &own),
+      (&mut acting, &own),
+      Some(triggers),
     );
-    *self.live = self.live.saturating_sub(count(died));
-    if let Some(now) = &frame.local {
-      let then = pool.local.unwrap_or(*now);
-      pool.bounds = pool.bounds.map(|inside| {
-        let (a, b) = (now.world_box(inside), then.world_box(inside));
-        (a.0.min(b.0), a.1.max(b.1))
-      });
-    }
+    self.budget.gone(died);
+    pool.bounds = space::world_bounds(bounds, frame.local.as_ref(), pool.local);
+    self.subs(pool, fx, frame);
   }
 
   /// Runs the first `min(duration, 10)` seconds of `pool`'s looping cycle
   /// where `frame` ends, before the emitter's first step: in steps of
   /// `frame.dt`, or [`MAX_PREWARM_STEPS`] longer ones when it would take
   /// more, its start delay skipped and the collisions it finds told to no
-  /// one
+  /// one. Its sub-effects play as in any step (they tell no one either)
   fn prewarm(&mut self, pool: &mut EmitterPool, fx: &Compiled, frame: &Frame, playing: &mut bool) {
     pool.time = Some(0.0);
     pool.cycling = true;
@@ -638,11 +639,11 @@ impl Stepper<'_> {
       spread: true,
       ..*frame
     };
-    let told = self.acting.told();
+    let told = self.surroundings.told();
     for _ in 0..steps {
       self.particles(pool, fx, &still, true, playing, 0);
     }
-    self.acting.forget_told_since(told);
+    self.surroundings.forget_told_since(told);
   }
 }
 
@@ -658,12 +659,12 @@ fn prewarm_steps(seconds: f32, dt: f32) -> (u32, f32) {
   }
 }
 
-fn count(n: usize) -> u32 {
+pub(super) fn count(n: usize) -> u32 {
   u32::try_from(n).unwrap_or(u32::MAX)
 }
 
 /// How a warning names an effect: by its asset path, or as made in code
-fn effect_name(server: Option<&AssetServer>, id: AssetId<ParticleEffect>) -> String {
+pub(super) fn effect_name(server: Option<&AssetServer>, id: AssetId<ParticleEffect>) -> String {
   server.and_then(|server| server.path(id)).map_or_else(
     || String::from("an effect added in code"),
     |path| format!("the particle effect \"{path}\""),
@@ -785,14 +786,14 @@ fn due_firings(burst: &Burst, t: f64, duration: f64) -> u32 {
 /// mirrored, not stretched). A `Local` effect's start at the emitter in
 /// its frame (`local`)
 #[derive(Clone, Copy)]
-struct Frame {
-  from: Vec2,
-  to: Vec2,
-  linear: Mat2,
-  unit: Mat2,
-  dt: f32,
-  spread: bool,
-  local: Option<LocalFrame>,
+pub(super) struct Frame {
+  pub(super) from: Vec2,
+  pub(super) to: Vec2,
+  pub(super) linear: Mat2,
+  pub(super) unit: Mat2,
+  pub(super) dt: f32,
+  pub(super) spread: bool,
+  pub(super) local: Option<LocalFrame>,
 }
 
 impl Frame {
@@ -820,9 +821,7 @@ impl Frame {
 /// effect's share of the emitter's velocity; a `Local` effect's start at
 /// the emitter, in its frame
 fn spawn(pool: &mut EmitterPool, fx: &Compiled, frame: &Frame, n: usize, partial: &mut Vec<f32>) {
-  let effect = &fx.effect;
-  let birth_speed = effect.speed_over_life.lookup(0.0);
-  let inherited = frame.inherited(effect.inherit_velocity);
+  let inherited = frame.inherited(fx.effect.inherit_velocity);
   let to_local = frame.local.map(|local| local.axes.transpose());
   for i in 0..n {
     let (at, lived) = if frame.spread {
@@ -834,40 +833,57 @@ fn spawn(pool: &mut EmitterPool, fx: &Compiled, frame: &Frame, n: usize, partial
     } else {
       (frame.to, 0.0)
     };
-    let rng = &mut pool.rng;
-    let point = shape_point(&effect.shape, rng);
-    let heading = if effect.outward {
-      point
-        .try_normalize()
-        .unwrap_or_else(|| Vec2::from_angle(rng.range(0.0, TAU)))
-    } else {
-      let half = fx.spread * 0.5;
-      Vec2::from_angle(fx.direction + rng.range(-half, half))
-    };
-    let heading = (frame.unit * heading).try_normalize().unwrap_or(heading);
-    let speed = effect.speed.sample(rng) * birth_speed;
-    let lifetime = effect.lifetime.sample(rng);
-    let size = effect.size.sample(rng);
-    let rotation = effect.rotation_deg.sample(rng).to_radians();
-    let spin = effect.angular_velocity_deg.sample(rng).to_radians();
-    let color = effect.color.sample(rng);
-    let seed = (rng.next_u64() >> 32) as u32;
-    let (offset, velocity) = (frame.linear * point, heading * speed);
+    let new = sample_particle(fx, &mut pool.rng, frame.linear, frame.unit);
     let (position, velocity) = match to_local {
-      Some(to_local) => (to_local * offset, to_local * velocity),
-      None => (at + offset, velocity + inherited),
+      Some(to_local) => (to_local * new.position, to_local * new.velocity),
+      None => (at + new.position, new.velocity + inherited),
     };
     pool.main.push(&NewParticle {
       position,
       velocity,
-      lifetime,
-      size,
-      rotation,
-      spin,
-      color,
-      seed,
+      ..new
     });
     partial.push(lived);
+  }
+}
+
+/// One particle of `fx` as `rng` draws it, in the world's axes: its
+/// `position` its offset from where it is born (a point of the shape
+/// through the emitter's `linear` part), its `velocity` its own (its
+/// direction through the emitter's `unit` axes), and its other start values
+pub(super) fn sample_particle(
+  fx: &Compiled,
+  rng: &mut ParticleRng,
+  linear: Mat2,
+  unit: Mat2,
+) -> NewParticle {
+  let effect = &fx.effect;
+  let point = shape_point(&effect.shape, rng);
+  let heading = if effect.outward {
+    point
+      .try_normalize()
+      .unwrap_or_else(|| Vec2::from_angle(rng.range(0.0, TAU)))
+  } else {
+    let half = fx.spread * 0.5;
+    Vec2::from_angle(fx.direction + rng.range(-half, half))
+  };
+  let heading = (unit * heading).try_normalize().unwrap_or(heading);
+  let speed = effect.speed.sample(rng) * fx.birth_speed;
+  let lifetime = effect.lifetime.sample(rng);
+  let size = effect.size.sample(rng);
+  let rotation = effect.rotation_deg.sample(rng).to_radians();
+  let spin = effect.angular_velocity_deg.sample(rng).to_radians();
+  let color = effect.color.sample(rng);
+  let seed = (rng.next_u64() >> 32) as u32;
+  NewParticle {
+    position: linear * point,
+    velocity: heading * speed,
+    lifetime,
+    size,
+    rotation,
+    spin,
+    color,
+    seed,
   }
 }
 
@@ -947,23 +963,25 @@ fn unit_axes(linear: Mat2) -> Mat2 {
   }
 }
 
-/// Steps `pool`'s particles: those before `born` by `dt`, those spawned
-/// this step by the part of it they lived (`partial`). Each ages, takes
-/// the attractors' pull (`acting`), its gravity, its drag and its speed
-/// curve's change, spins, moves from where it was, and meets the colliders
-/// if it lives on; a stuck one only ages. The dead then leave in order,
-/// and the box round the rest is kept. Returns how many died
-fn advance(
-  pool: &mut EmitterPool,
+/// Steps the particles of `p`: those before `born` by `dt`, those spawned
+/// this step by the part of it they lived (`partial`; none past its end).
+/// Each ages, and one whose life ends dies where it stood as the step
+/// began; the rest take the attractors' pull (`acting`), their gravity,
+/// their drag and their speed curve's change, spin, move from where they
+/// were, and meet the colliders; a stuck one only ages. Deaths and
+/// collisions that tell of themselves go to `triggers`, if given. The dead
+/// then leave in order. Returns how many died, and the box round the rest
+pub(super) fn advance(
+  p: &mut Pool,
   fx: &Compiled,
   dt: f32,
   (born, partial): (usize, &[f32]),
   keep: &mut Vec<bool>,
   (acting, own): (&mut Acting, &Own),
-) -> usize {
+  mut triggers: Option<&mut Triggers>,
+) -> (usize, Option<(Vec2, Vec2)>) {
   let effect = &fx.effect;
   let curve = &effect.speed_over_life;
-  let p = &mut pool.main;
   let n = p.len();
   keep.clear();
   let mut min = Vec2::splat(f32::INFINITY);
@@ -978,6 +996,14 @@ fn advance(
     let age = was + step;
     p.age[i] = age;
     let mut alive = age < p.lifetime[i];
+    if !alive {
+      // No last move, which could carry it past a wall uncollided
+      if let Some(triggers) = triggers.as_deref_mut() {
+        triggers.died(Vec2::new(p.x[i], p.y[i]), Vec2::new(p.vx[i], p.vy[i]));
+      }
+      keep.push(false);
+      continue;
+    }
     if p.flags[i] & STUCK != 0 {
       // Stuck where it hit: it only ages
       p.px[i] = p.x[i];
@@ -1006,10 +1032,11 @@ fn advance(
       p.y[i] += velocity.y * step;
       p.vx[i] = velocity.x;
       p.vy[i] = velocity.y;
-      // One that dies of age this step meets nothing
-      if alive {
-        alive = acting.collide(p, i, from);
+      let met = acting.collide(p, i, from);
+      if let Some(triggers) = triggers.as_deref_mut() {
+        triggers.met(&met);
       }
+      alive = met.alive;
     }
     keep.push(alive);
     if alive {
@@ -1019,6 +1046,6 @@ fn advance(
     }
   }
   p.retain(|i| keep.get(i).copied().unwrap_or(false));
-  pool.bounds = (min.x <= max.x && min.y <= max.y).then_some((min, max));
-  n - p.len()
+  let bounds = (min.x <= max.x && min.y <= max.y).then_some((min, max));
+  (n - p.len(), bounds)
 }

@@ -769,3 +769,46 @@ fn a_sheet_frame_draws_its_cell() {
   assert_eq!(pixel(&engine, 28.0, 32.0), red, "left of its centre");
   assert_eq!(pixel(&engine, 36.0, 32.0), red, "right of its centre");
 }
+
+#[test]
+fn a_sub_effect_draws_over_its_parent_at_the_emitter_s_z() {
+  // White particles born at (32, 32) every 0.05 s, each dying 0.1 s later
+  // into a red one standing there: the red run draws over the white one,
+  // at the emitter's z (0) and not its own (5), so under a blue square at
+  // z 1 on the right
+  let Some((mut engine, _)) = stage((64, 64), |ctx| {
+    let blue = ctx.assets().add(Image::solid_rect(8, 8, 0, 0, 255, 255));
+    let square = Renderable::image(blue).with_z_order(1);
+    let square = ctx
+      .world
+      .spawn((Transform::from_xy(38.0, 32.0), square))
+      .id();
+    let red = still(ctx, 16.0, Color::rgb(220, 30, 40)).with_z(5);
+    let red = ctx.assets().add(red);
+    let white = still(ctx, 16.0, Color::WHITE)
+      .with_duration(0.05)
+      .with_lifetime(0.1)
+      .on_death(SubEmitter::new(red, 1.0));
+    vec![square, emitter_at(ctx, white, 32.0, 32.0)]
+  }) else {
+    return;
+  };
+  engine.step_frames(20).unwrap();
+  assert_eq!(
+    pixel(&engine, 30.0, 32.0),
+    RED,
+    "over its parent's particles"
+  );
+  assert_eq!(
+    pixel(&engine, 38.0, 32.0),
+    [0, 0, 255, 255],
+    "under the square at z 1"
+  );
+  let stats = engine.debug_stats();
+  assert!(
+    stats.sprite_count > 3 && stats.sprite_count == stats.particles + 1,
+    "every particle submitted, the square too: {} of {}",
+    stats.sprite_count,
+    stats.particles
+  );
+}

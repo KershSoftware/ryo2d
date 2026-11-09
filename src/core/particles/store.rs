@@ -4,8 +4,8 @@
 use super::effect::ParticleEffect;
 use super::pool::EmitterPool;
 use super::rng::ParticleRng;
-use super::step::Compiled;
-use crate::core::asset::AssetId;
+use super::step::{Compiled, count, effect_name};
+use crate::core::asset::{AssetId, AssetServer, Assets};
 use crate::core::ecs::{Entity, Resource};
 use crate::core::hash::{FastMap, FastSet};
 
@@ -94,11 +94,32 @@ impl ParticleStore {
     self.compiled.get(&effect)
   }
 
+  /// Compiles the effect `id` unless its current version is compiled
+  /// already; false when it is not loaded
+  pub(crate) fn compile(
+    &mut self,
+    effects: &Assets<ParticleEffect>,
+    server: Option<&AssetServer>,
+    id: AssetId<ParticleEffect>,
+  ) -> bool {
+    let (Some(version), Some(effect)) = (effects.version(id), effects.get(id)) else {
+      return false;
+    };
+    if self
+      .compiled
+      .get(&id)
+      .is_none_or(|compiled| compiled.version != version)
+    {
+      let compiled = Compiled::new(effect, version, || effect_name(server, id));
+      self.compiled.insert(id, compiled);
+    }
+    true
+  }
+
   /// Removes every live particle (the emitters carry on emitting)
   pub(crate) fn clear_all(&mut self) {
     for pool in &mut self.pools {
-      pool.main.clear();
-      pool.bounds = None;
+      pool.clear();
     }
     self.live = 0;
   }
@@ -167,10 +188,49 @@ impl ParticleStore {
     if !pool.used || pool.entity != entity {
       return;
     }
-    let count = u32::try_from(pool.main.len()).unwrap_or(u32::MAX);
+    // Its sub-effects' particles go with its own
+    let count = u32::try_from(pool.len()).unwrap_or(u32::MAX);
     self.live = self.live.saturating_sub(count);
     pool.release();
     self.free.push(slot);
+  }
+}
+
+/// The store's live count against its budget, and the effects warned about
+/// dropping spawns at it, as one emitter's step spawns and removes particles
+pub(crate) struct Budget<'a> {
+  pub(super) live: &'a mut u32,
+  pub(super) budget: u32,
+  pub(super) warned: &'a mut FastSet<AssetId<ParticleEffect>>,
+  /// For naming an effect in a warning
+  pub(super) server: Option<&'a AssetServer>,
+}
+
+impl Budget<'_> {
+  /// How many of `wanted` spawns of the effect `id` the budget has room
+  /// for: the rest are dropped, with one warning per effect
+  pub(crate) fn grant(&mut self, id: AssetId<ParticleEffect>, wanted: usize) -> usize {
+    let free = self.budget.saturating_sub(*self.live) as usize;
+    let granted = wanted.min(free);
+    if granted < wanted && self.warned.insert(id) {
+      crate::engine_warn!(
+        module: "Particles",
+        "The particle budget of {} is full: spawns of {} are dropped until particles die (raise it with EngineBuilder::particle_budget)",
+        self.budget,
+        effect_name(self.server, id)
+      );
+    }
+    granted
+  }
+
+  /// `n` particles were born
+  pub(crate) fn born(&mut self, n: usize) {
+    *self.live = self.live.saturating_add(count(n));
+  }
+
+  /// `n` particles died, or were removed
+  pub(crate) fn gone(&mut self, n: usize) {
+    *self.live = self.live.saturating_sub(count(n));
   }
 }
 

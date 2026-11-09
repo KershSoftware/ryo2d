@@ -3,7 +3,7 @@
 
 use glam::{Mat2, Vec2};
 
-use super::pool::{EmitterPool, Pool};
+use super::pool::Pool;
 use crate::core::ecs::interpolate::render_global;
 use crate::core::ecs::{DrawLift, GlobalTransform, PreviousGlobalTransform};
 
@@ -106,17 +106,18 @@ fn rigid_axes(linear: Mat2) -> Mat2 {
   Mat2::from_cols(x, y)
 }
 
-/// Keeps `pool`'s particles in its effect's space as a step begins (its
-/// effect changed space since its last step): stored in the world, they
-/// move into `now`, the emitter's frame this step, for a `Local` effect;
-/// stored in its last step's frame, they move out into the world for a
-/// `World` one. Each stays where it was, going the way it went
-pub(crate) fn settle(pool: &mut EmitterPool, now: Option<&LocalFrame>) {
-  match (pool.local, now) {
+/// Keeps the particles of `p` in their effect's space as a step begins
+/// (the effect changed space since their last step, which left them in
+/// `last`, the emitter's frame then, or in the world when `None`): stored in
+/// the world, they move into `now`, the emitter's frame this step, for a
+/// `Local` effect; stored in the last step's frame, they move out into the
+/// world for a `World` one. Each stays where it was, going the way it went
+pub(crate) fn settle(p: &mut Pool, last: Option<LocalFrame>, now: Option<&LocalFrame>) {
+  match (last, now) {
     (None, Some(frame)) => {
       let turn = frame.axes.transpose();
       carry(
-        &mut pool.main,
+        p,
         |at| frame.local_point(at),
         |v| turn * v,
         |r| frame.local_rotation(r),
@@ -124,7 +125,7 @@ pub(crate) fn settle(pool: &mut EmitterPool, now: Option<&LocalFrame>) {
     }
     (Some(last), None) => {
       carry(
-        &mut pool.main,
+        p,
         |at| last.world_point(at),
         |v| last.axes * v,
         |r| last.world_rotation(r),
@@ -132,6 +133,25 @@ pub(crate) fn settle(pool: &mut EmitterPool, now: Option<&LocalFrame>) {
     }
     _ => {}
   }
+}
+
+/// The world box round particles whose box in their space is `bounds`:
+/// for particles living in the emitter's frame (`now`, this step's), round
+/// them in this step's frame and in `then`, the last step's (this step's
+/// when `None`); for particles in the world, `bounds` itself
+pub(crate) fn world_bounds(
+  bounds: Option<(Vec2, Vec2)>,
+  now: Option<&LocalFrame>,
+  then: Option<LocalFrame>,
+) -> Option<(Vec2, Vec2)> {
+  let Some(now) = now else {
+    return bounds;
+  };
+  let then = then.unwrap_or(*now);
+  bounds.map(|inside| {
+    let (a, b) = (now.world_box(inside), then.world_box(inside));
+    (a.0.min(b.0), a.1.max(b.1))
+  })
 }
 
 /// Moves every particle of `p` into another space: its places by `place`,
