@@ -85,6 +85,8 @@ fn names(filter: &str, bench: &str, exact: bool) -> bool {
 }
 
 /// Note a missed target, `what`
+// Only the benches that have targets use it
+#[allow(dead_code)]
 pub fn miss(what: String) {
   MISSED
     .lock()
