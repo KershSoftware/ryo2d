@@ -6,6 +6,7 @@ use std::f32::consts::TAU;
 use std::time::Duration;
 
 use glam::{Mat2, Vec2};
+use web_time::Instant;
 
 use super::collision::CollisionResponse;
 use super::effect::{Burst, EmitShape, ParticleEffect, Space};
@@ -178,6 +179,14 @@ pub(super) struct Scratch {
 /// to despawn go
 pub(crate) fn step_particles(world: &mut World, mut state: Local<StepState>) {
   crate::profile_scope!("cpu:particles");
+  let start = Instant::now();
+  run_particle_step(world, &mut state);
+  note_step_time(world, start.elapsed());
+}
+
+/// The fixed step's work, kept apart from its system so the no-emitters
+/// bench times just this (`HeadlessEngine::idle_particle_systems`)
+pub(crate) fn run_particle_step(world: &mut World, state: &mut StepState) {
   let StepState {
     params,
     order,
@@ -265,6 +274,14 @@ pub(crate) fn step_particles(world: &mut World, mut state: Local<StepState>) {
 /// not hold them; one at speed 0 is frozen
 pub(crate) fn step_unscaled_particles(world: &mut World, mut state: Local<StepState>) {
   crate::profile_scope!("cpu:particles");
+  let start = Instant::now();
+  run_unscaled_step(world, &mut state);
+  note_unscaled_time(world, start.elapsed());
+}
+
+/// The unscaled pass's work, kept apart from its system as the fixed
+/// step's is
+pub(crate) fn run_unscaled_step(world: &mut World, state: &mut StepState) {
   let StepState {
     params,
     order,
@@ -361,6 +378,20 @@ pub(crate) fn step_unscaled_particles(world: &mut World, mut state: Local<StepSt
 /// `real` time times an emitter's `speed` (0 to 100)
 fn scaled(real: Duration, speed: f32) -> Duration {
   Duration::try_from_secs_f64(real.as_secs_f64() * f64::from(speed)).unwrap_or(Duration::ZERO)
+}
+
+/// Notes how long the fixed step took (`ParticleTimes`)
+fn note_step_time(world: &mut World, took: Duration) {
+  if let Some(mut store) = world.get_resource_mut::<ParticleStore>() {
+    store.times.step = took;
+  }
+}
+
+/// Notes how long the unscaled pass took (`ParticleTimes`)
+fn note_unscaled_time(world: &mut World, took: Duration) {
+  if let Some(mut store) = world.get_resource_mut::<ParticleStore>() {
+    store.times.unscaled = took;
+  }
 }
 
 /// Drops what the store kept for effects no longer loaded

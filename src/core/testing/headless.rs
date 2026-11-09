@@ -16,6 +16,7 @@ use crate::core::ecs::{Entity, World};
 use crate::core::engine::{Engine, EngineBuilder, FrameOutcome};
 use crate::core::graphics::{ScreenMapping, WgpuRenderer};
 use crate::core::input::{GamepadButton, InputEvent, Stick};
+use crate::core::particles::StepState;
 use crate::core::render::UiRenderStats;
 use crate::core::saves::MemorySaves;
 use crate::core::ui::nav::nav_targets;
@@ -64,6 +65,10 @@ pub struct HeadlessEngine {
   /// The node cache's debug spot checks, set before each step when asked
   /// for (`None`: as the engine has them, on in debug builds)
   ui_spot_check: Option<bool>,
+  /// The particle systems' kept states when run outside a frame
+  /// (`idle_particle_systems`), so only their first run makes them
+  idle_step: StepState,
+  idle_unscaled: StepState,
 }
 
 impl HeadlessEngine {
@@ -132,6 +137,8 @@ impl HeadlessEngine {
       pending_releases: Vec::new(),
       pending_pad_releases: Vec::new(),
       ui_spot_check: None,
+      idle_step: StepState::default(),
+      idle_unscaled: StepState::default(),
     })
   }
 
@@ -763,6 +770,29 @@ impl HeadlessEngine {
   #[doc(hidden)]
   pub fn render_time(&self) -> Duration {
     self.engine.render_time()
+  }
+
+  /// The particle systems' time on the CPU when they last ran: the fixed
+  /// step and the unscaled pass together (the profiler's `cpu:particles`),
+  /// and the drawer (its `render:particles`) (`benches/particles.rs`)
+  #[doc(hidden)]
+  pub fn particle_systems_time(&self) -> (Duration, Duration) {
+    self.engine.particle_times()
+  }
+
+  /// `calls` runs of the particle systems outside a frame, as an idle
+  /// frame runs them (the fixed step, the unscaled pass and the drawer):
+  /// their time, altogether, for the no-emitters guard of
+  /// `benches/particles.rs`, with no timers of the frame's in the measure
+  #[doc(hidden)]
+  pub fn idle_particle_systems(&mut self, calls: u32) -> Duration {
+    let start = web_time::Instant::now();
+    for _ in 0..calls {
+      self
+        .engine
+        .run_particle_systems(&mut self.idle_step, &mut self.idle_unscaled);
+    }
+    start.elapsed()
   }
 
   /// The last frame's UI pass on the CPU: the scenes' UI, the node walk,

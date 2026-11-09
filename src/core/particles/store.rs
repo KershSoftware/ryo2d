@@ -1,6 +1,8 @@
 //! The particle store: every emitter's pool, the live count against the
 //! budget, the compiled effects, and the scenes' holds.
 
+use std::time::Duration;
+
 use super::effect::ParticleEffect;
 use super::pool::EmitterPool;
 use super::rng::ParticleRng;
@@ -29,6 +31,8 @@ pub(crate) const NO_SLOT: u32 = u32::MAX;
 /// held (as audio's emitters are, `audio::hold_scenes`).
 #[derive(Resource, Debug)]
 pub(crate) struct ParticleStore {
+  /// How long the systems took when they last ran
+  pub(crate) times: ParticleTimes,
   /// Pools by slot; a free one keeps its arrays' room
   pub(crate) pools: Vec<EmitterPool>,
   /// Free slots, the last freed taken first
@@ -55,11 +59,25 @@ pub(crate) struct ParticleStore {
   pub(crate) frame: u64,
 }
 
+/// How long the particle systems took when they last ran: `step` the
+/// fixed step, `unscaled` the unscaled pass and `draw` the drawer, the
+/// work of the `cpu:particles` and `render:particles` scopes, for
+/// `HeadlessEngine::particle_systems_time` (`benches/particles.rs`)
+// Read only by the native test harness
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ParticleTimes {
+  pub(crate) step: Duration,
+  pub(crate) unscaled: Duration,
+  pub(crate) draw: Duration,
+}
+
 impl ParticleStore {
   /// An empty store holding at most `budget` live particles, its engine
   /// seeds drawn from `seed`
   pub(crate) fn new(budget: u32, seed: u64) -> Self {
     Self {
+      times: ParticleTimes::default(),
       pools: Vec::new(),
       free: Vec::new(),
       live: 0,

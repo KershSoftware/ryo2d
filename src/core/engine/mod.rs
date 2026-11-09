@@ -55,6 +55,8 @@ use crate::core::messages::{register_engine_messages, register_message};
 use crate::core::particles::{
   PARTICLE_HEADLESS_SEED, ParticleStore, step_particles, step_unscaled_particles,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use crate::core::particles::{StepState, run_particle_step, run_unscaled_step};
 use crate::core::physics::sync::register_physics_systems;
 use crate::core::physics::{Physics, PhysicsConfig};
 use crate::core::render::batch::Batch2D;
@@ -1343,6 +1345,37 @@ impl Engine {
   #[cfg(not(target_arch = "wasm32"))]
   pub(crate) fn ui_pass_time(&self) -> std::time::Duration {
     self.ui_pass_time
+  }
+
+  /// What the particle systems took when they last ran, on the CPU: the
+  /// fixed step and the unscaled pass together, and the drawer (the
+  /// `cpu:particles` and `render:particles` scopes)
+  #[cfg(not(target_arch = "wasm32"))]
+  pub(crate) fn particle_times(&self) -> (std::time::Duration, std::time::Duration) {
+    self
+      .world
+      .get_resource::<ParticleStore>()
+      .map_or(Default::default(), |store| {
+        (store.times.step + store.times.unscaled, store.times.draw)
+      })
+  }
+
+  /// One run of the particle systems outside a frame (the fixed step, the
+  /// unscaled pass and the drawer), on `step` and `unscaled` as their kept
+  /// states, as an idle frame runs them (`benches/particles.rs`)
+  #[cfg(not(target_arch = "wasm32"))]
+  pub(crate) fn run_particle_systems(&mut self, step: &mut StepState, unscaled: &mut StepState) {
+    run_particle_step(&mut self.world, step);
+    run_unscaled_step(&mut self.world, unscaled);
+    if let Some(gpu) = self.sprite_gpu.as_mut() {
+      self.particle_drawer.collect(
+        &mut self.world,
+        &mut self.draw_list,
+        gpu,
+        0.0,
+        &self.camera_draws,
+      );
+    }
   }
 
   /// The UI commands the last frame recorded

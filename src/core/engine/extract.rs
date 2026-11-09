@@ -225,13 +225,19 @@ impl Engine {
       // The engine's particles: one run per emitter the cameras see
       let particles_drawn = {
         profile_scope!("render:particles");
-        self.particle_drawer.collect(
+        let start = Instant::now();
+        let drawn = self.particle_drawer.collect(
           &mut self.world,
           &mut self.draw_list,
           &mut gpu,
           alpha,
           &self.camera_draws,
-        )
+        );
+        let took = start.elapsed();
+        if let Some(mut store) = self.world.get_resource_mut::<ParticleStore>() {
+          store.times.draw = took;
+        }
+        drawn
       };
       // Parallax layers, laid out for each camera from its own view
       let mut quads = std::mem::take(&mut self.parallax);

@@ -113,6 +113,8 @@ pub use effect::{
 pub use emitter::{EmitterFinished, ParticleEmitter};
 pub(crate) use scope::{hold_scenes, in_scene, release_scene};
 pub(crate) use step::{step_particles, step_unscaled_particles};
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use step::{StepState, run_particle_step, run_unscaled_step};
 pub use store::DEFAULT_PARTICLE_BUDGET;
 pub(crate) use store::{PARTICLE_HEADLESS_SEED, ParticleStore};
 pub use value::{ColorRange, Curve, CurveKey, Gradient, GradientKey, ValueRange};
