@@ -73,6 +73,11 @@ impl ValueRange {
     rng.range(self.min, self.max)
   }
 
+  /// The value `t` of the way from `min` to `max`.
+  pub(crate) fn at(&self, t: f32) -> f32 {
+    self.min + (self.max - self.min) * t
+  }
+
   /// The largest value the range can give (0 when not finite).
   pub(crate) fn largest(&self) -> f32 {
     if !self.min.is_finite() {

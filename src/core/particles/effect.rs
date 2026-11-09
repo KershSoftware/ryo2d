@@ -151,6 +151,14 @@ pub struct ParticleEffect {
   pub gravity: Vec2,
   /// Fraction of speed lost per second
   pub drag: f32,
+  /// Acceleration away from the emitter, in pixels per second squared (a
+  /// negative value pulls in): each particle keeps one value from the range
+  pub radial_acceleration: ValueRange,
+  /// Acceleration round the emitter, counter-clockwise on screen when
+  /// positive: each particle keeps one value from the range
+  pub tangential_acceleration: ValueRange,
+  /// A smooth, changing force field, if any
+  pub noise: Option<NoiseForce>,
   /// Whether particles live in the world or in the emitter's own frame
   pub space: Space,
   /// The image each particle draws
@@ -175,6 +183,37 @@ pub struct ParticleEffect {
   pub layer: u32,
   /// Fixed random seed, so the effect repeats
   pub seed: Option<u64>,
+}
+
+/// A smooth force field that changes with time, pushing each particle by
+/// the noise at its place: the particles of one seed move the same way
+/// each run
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct NoiseForce {
+  /// Acceleration at the field's strongest, in pixels per second squared
+  pub strength: f32,
+  /// How fast the field changes over space: the swirls are about
+  /// `1 / frequency` pixels across
+  pub frequency: f32,
+  /// How fast the field changes over a particle's age
+  pub speed: f32,
+}
+
+impl NoiseForce {
+  /// A field of `strength` and `frequency` that changes at speed 1.
+  pub fn new(strength: f32, frequency: f32) -> Self {
+    Self {
+      strength,
+      frequency,
+      speed: 1.0,
+    }
+  }
+
+  /// Sets how fast the field changes over a particle's age.
+  pub fn with_speed(mut self, speed: f32) -> Self {
+    self.speed = speed;
+    self
+  }
 }
 
 impl Asset for ParticleEffect {}
@@ -207,6 +246,9 @@ impl ParticleEffect {
       speed_over_life: Curve::constant(1.0),
       gravity: Vec2::ZERO,
       drag: 0.0,
+      radial_acceleration: ValueRange::constant(0.0),
+      tangential_acceleration: ValueRange::constant(0.0),
+      noise: None,
       space: Space::World,
       image,
       blend: BlendMode::Alpha,
@@ -361,6 +403,24 @@ impl ParticleEffect {
     self
   }
 
+  /// Sets the acceleration away from the emitter.
+  pub fn with_radial_acceleration(mut self, acceleration: impl Into<ValueRange>) -> Self {
+    self.radial_acceleration = acceleration.into();
+    self
+  }
+
+  /// Sets the acceleration round the emitter.
+  pub fn with_tangential_acceleration(mut self, acceleration: impl Into<ValueRange>) -> Self {
+    self.tangential_acceleration = acceleration.into();
+    self
+  }
+
+  /// Sets the noise force.
+  pub fn with_noise(mut self, noise: NoiseForce) -> Self {
+    self.noise = Some(noise);
+    self
+  }
+
   /// Sets whether particles live in the world or in the emitter's frame.
   pub fn with_space(mut self, space: Space) -> Self {
     self.space = space;
@@ -506,6 +566,28 @@ impl ParticleEffect {
     );
     report("drag", !finite(self.drag), "is not a number");
     report("drag", self.drag < 0.0, "is negative");
+    report(
+      "radial_acceleration",
+      !range_finite(&self.radial_acceleration),
+      "is not a number",
+    );
+    report(
+      "tangential_acceleration",
+      !range_finite(&self.tangential_acceleration),
+      "is not a number",
+    );
+    if let Some(noise) = &self.noise {
+      report(
+        "noise",
+        !(finite(noise.strength) && finite(noise.frequency) && finite(noise.speed)),
+        "has a value that is not a number",
+      );
+      report(
+        "noise",
+        noise.frequency < 0.0 || noise.speed < 0.0,
+        "frequency and speed must not be negative",
+      );
+    }
     report("emission", !finite(self.emission), "is not a number");
     report("emission", self.emission < 0.0, "is negative");
     report(
@@ -596,6 +678,13 @@ impl ParticleEffect {
     fx.inherit_velocity = num(fx.inherit_velocity, 0.0);
     fx.gravity = Vec2::new(num(fx.gravity.x, 0.0), num(fx.gravity.y, 0.0));
     fx.drag = non_negative(fx.drag, 0.0);
+    fx.radial_acceleration = range(fx.radial_acceleration, ValueRange::constant(0.0));
+    fx.tangential_acceleration = range(fx.tangential_acceleration, ValueRange::constant(0.0));
+    if let Some(noise) = &mut fx.noise {
+      noise.strength = num(noise.strength, 0.0);
+      noise.frequency = non_negative(noise.frequency, 0.0);
+      noise.speed = non_negative(noise.speed, 0.0);
+    }
     fx.emission = non_negative(fx.emission, 1.0);
     if fx.space == Space::Local {
       fx.collision = None;
@@ -773,5 +862,21 @@ mod tests {
     let fx = ParticleEffect::new(image()).with_direction(90.0, 10.0);
     assert_eq!(fx.direction_deg, 90.0);
     assert_eq!(fx.spread_deg, 10.0);
+  }
+
+  #[test]
+  fn force_values_are_checked_and_clamped() {
+    let fx = ParticleEffect::new(image())
+      .with_radial_acceleration((f32::NAN, 1.0))
+      .with_tangential_acceleration(f32::INFINITY)
+      .with_noise(NoiseForce::new(f32::NAN, -2.0).with_speed(-1.0));
+    assert_eq!(fx.problems().len(), 4);
+    let clean = fx.sanitized();
+    assert!(clean.problems().is_empty());
+    assert_eq!(clean.noise, Some(NoiseForce::new(0.0, 0.0).with_speed(0.0)));
+
+    // Any finite strength is allowed
+    let strong = ParticleEffect::new(image()).with_noise(NoiseForce::new(-50.0, 0.1));
+    assert!(strong.problems().is_empty());
   }
 }

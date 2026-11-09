@@ -48,7 +48,6 @@ fn fade(t: f32) -> f32 {
 }
 
 /// Gradient noise at `(x, y)` in `[-1, 1]`; `0.0` for a non-finite point.
-#[cfg_attr(not(test), expect(dead_code, reason = "used by the particle step"))]
 pub(crate) fn noise2(seed: u32, x: f32, y: f32) -> f32 {
   if !x.is_finite() || !y.is_finite() {
     return 0.0;
@@ -79,7 +78,6 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 
 /// A force in `[-1, 1]` per axis from two noise fields, sampled at
 /// `at * frequency + time`.
-#[cfg_attr(not(test), expect(dead_code, reason = "used by the particle step"))]
 pub(crate) fn noise_force(seed: u32, at: Vec2, time: f32, frequency: f32) -> Vec2 {
   let p = at * frequency + Vec2::splat(time);
   Vec2::new(noise2(seed, p.x, p.y), noise2(seed ^ 0x9E37_79B9, p.x, p.y))

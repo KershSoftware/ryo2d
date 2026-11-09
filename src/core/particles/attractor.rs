@@ -3,6 +3,9 @@
 //! Attractors influence particle motion, creating effects like gravity wells,
 //! vortices, and turbulence.
 
+use glam::Vec2;
+
+use super::noise::noise_force;
 use crate::core::ecs::Component;
 
 /// Type of attractor force.
@@ -385,15 +388,13 @@ impl AttractorType {
         scale,
         speed: _,
       } => {
-        // Simple pseudo-noise using sin/cos
-        // For proper turbulence, integrate with noise crate
-        let sx = particle_x / scale + time * 0.5;
-        let sy = particle_y / scale + time * 0.7;
-
-        let fx = (sx.sin() * 1.5 + (sy * 2.3).cos()) * strength;
-        let fy = (sy.cos() * 1.5 + (sx * 2.1).sin()) * strength;
-
-        (fx, fy)
+        let frequency = if scale.is_finite() && *scale > 0.0 {
+          1.0 / scale
+        } else {
+          0.0
+        };
+        let force = noise_force(0, Vec2::new(particle_x, particle_y), time, frequency) * *strength;
+        (force.x, force.y)
       }
     }
   }
@@ -498,5 +499,24 @@ mod tests {
     let (fx, fy) = attractor.calculate_force(0.0, 0.0, 200.0, 0.0, 0);
     assert_eq!(fx, 0.0);
     assert_eq!(fy, 0.0);
+  }
+
+  #[test]
+  fn turbulence_uses_smooth_noise() {
+    let attractor = ParticleAttractor::turbulence(100.0, 50.0, 1.0);
+    let at = |x: f32, time: f32| attractor.attractor_type.force(time, 0.0, 0.0, x, 20.0);
+    // Smooth in space and in time, and bounded by the strength
+    for i in 0..100 {
+      let x = i as f32 * 3.7;
+      let (fx, fy) = at(x, 0.5);
+      assert!(fx.abs() <= 100.0 && fy.abs() <= 100.0);
+      let (nx, ny) = at(x + 0.05, 0.5);
+      assert!((fx - nx).abs() < 2.0 && (fy - ny).abs() < 2.0);
+      let (tx, ty) = at(x, 0.5 + 0.001);
+      assert!((fx - tx).abs() < 2.0 && (fy - ty).abs() < 2.0);
+    }
+    // It varies, and repeats
+    assert_ne!(at(10.0, 0.0), at(80.0, 0.0));
+    assert_eq!(at(10.0, 0.3), at(10.0, 0.3));
   }
 }

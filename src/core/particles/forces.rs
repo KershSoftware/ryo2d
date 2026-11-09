@@ -14,6 +14,7 @@ use super::contact::{
 };
 use super::effect::{ParticleEffect, Space};
 use super::emitter::ParticleEmitter;
+use super::noise::noise_force;
 use super::pool::{Pool, STUCK, TOUCHING};
 use super::store::ParticleStore;
 use crate::core::asset::{AssetId, Assets};
@@ -218,6 +219,49 @@ fn collides(
   match store.compiled.get(&effect) {
     Some(compiled) if compiled.version == version => compiled.effect.collides(),
     _ => effects.get(effect).is_some_and(ParticleEffect::collides),
+  }
+}
+
+/// What an emitter's own effect does to its particles in a step: the radial,
+/// tangential and noise forces, about where the emitter stands (the origin
+/// of a `Local` effect's frame)
+pub(crate) struct Own {
+  pub(crate) centre: Vec2,
+  /// The emitter's seed folded to 32 bits
+  pub(crate) noise_seed: u32,
+}
+
+/// A stable value in `[0, 1)` from a particle's `seed`, different for each
+/// `salt` so two values of one particle are not alike
+fn unit_hash(seed: u32, salt: u32) -> f32 {
+  let mut h = seed ^ salt.wrapping_mul(0x9E37_79B9);
+  h ^= h >> 16;
+  h = h.wrapping_mul(0x7FEB_352D);
+  h ^= h >> 15;
+  h = h.wrapping_mul(0x846C_A68B);
+  h ^= h >> 16;
+  (h >> 8) as f32 / (1u32 << 24) as f32
+}
+
+impl Own {
+  /// The acceleration of the particle with `seed` at `at`, `age` seconds
+  /// old, in pixels per second squared
+  #[inline]
+  pub(crate) fn force(&self, effect: &ParticleEffect, seed: u32, at: Vec2, age: f32) -> Vec2 {
+    let mut force = Vec2::ZERO;
+    let (radial, tangential) = (&effect.radial_acceleration, &effect.tangential_acceleration);
+    if radial.min != 0.0 || radial.max != 0.0 || tangential.min != 0.0 || tangential.max != 0.0 {
+      // Straight out from the centre; none at the centre itself
+      let out = (at - self.centre).normalize_or_zero();
+      // +y is down: counter-clockwise on screen from the right is up
+      let round = Vec2::new(out.y, -out.x);
+      force += out * radial.at(unit_hash(seed, 1)) + round * tangential.at(unit_hash(seed, 2));
+    }
+    if let Some(noise) = &effect.noise {
+      force +=
+        noise_force(self.noise_seed, at, age * noise.speed, noise.frequency) * noise.strength;
+    }
+    force
   }
 }
 

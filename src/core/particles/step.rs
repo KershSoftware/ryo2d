@@ -9,7 +9,7 @@ use glam::{Mat2, Vec2};
 
 use super::effect::{Burst, EmitShape, ParticleEffect, Space};
 use super::emitter::{EmitterFinished, Finish, ParticleEmitter, Pending};
-use super::forces::{Acting, Surroundings};
+use super::forces::{Acting, Own, Surroundings};
 use super::pool::{EmitterPool, NewParticle, STUCK};
 use super::rng::ParticleRng;
 use super::space::{self, LocalFrame};
@@ -455,6 +455,7 @@ impl Pass<'_, '_> {
     if !pool.seeded {
       let seed = emitter.seed.or(fx.effect.seed).unwrap_or(pool.engine_seed);
       pool.rng = ParticleRng::new(seed);
+      pool.noise_seed = (seed ^ (seed >> 32)) as u32;
       pool.seeded = true;
     }
 
@@ -595,7 +596,22 @@ impl Stepper<'_> {
       spawn(pool, fx, frame, granted, partial);
     }
     *self.live = self.live.saturating_add(count(pool.main.len() - born));
-    let died = advance(pool, fx, frame.dt, (born, partial), keep, &mut self.acting);
+    let own = Own {
+      centre: if frame.local.is_some() {
+        Vec2::ZERO
+      } else {
+        frame.to
+      },
+      noise_seed: pool.noise_seed,
+    };
+    let died = advance(
+      pool,
+      fx,
+      frame.dt,
+      (born, partial),
+      keep,
+      (&mut self.acting, &own),
+    );
     *self.live = self.live.saturating_sub(count(died));
     if let Some(now) = &frame.local {
       let then = pool.local.unwrap_or(*now);
@@ -943,7 +959,7 @@ fn advance(
   dt: f32,
   (born, partial): (usize, &[f32]),
   keep: &mut Vec<bool>,
-  acting: &mut Acting,
+  (acting, own): (&mut Acting, &Own),
 ) -> usize {
   let effect = &fx.effect;
   let curve = &effect.speed_over_life;
@@ -971,6 +987,7 @@ fn advance(
       let mut velocity = Vec2::new(p.vx[i], p.vy[i]);
       velocity += acting.pull(from) * step;
       velocity += effect.gravity * step;
+      velocity += own.force(effect, p.seed[i], from, age) * step;
       velocity *= (1.0 - effect.drag * step).max(0.0);
       if fx.speed_varies {
         let life = p.lifetime[i];

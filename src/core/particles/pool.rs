@@ -167,6 +167,8 @@ pub(crate) struct EmitterPool {
   /// effect (`seeded`)
   pub(crate) rng: ParticleRng,
   pub(crate) seeded: bool,
+  /// Its seed folded to 32 bits, for the noise force
+  pub(crate) noise_seed: u32,
   /// Drawn from the store's stream as the emitter was added: its seed when
   /// neither it nor its effect fixes one
   pub(crate) engine_seed: u64,
@@ -214,6 +216,7 @@ impl EmitterPool {
       main: Pool::default(),
       rng: ParticleRng::new(0),
       seeded: false,
+      noise_seed: 0,
       engine_seed: 0,
       bounds: None,
       effect: None,
@@ -252,6 +255,7 @@ impl EmitterPool {
     self.main.clear();
     self.rng = ParticleRng::new(0);
     self.seeded = false;
+    self.noise_seed = 0;
     self.engine_seed = 0;
     self.bounds = None;
     self.effect = None;
