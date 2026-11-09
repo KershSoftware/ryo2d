@@ -671,9 +671,11 @@ impl SceneManager {
   }
 
   /// Write the stack's pauses into the world: `is_physics_paused` into the
-  /// `PhysicsPaused` resource, and the scenes whose voices the audio engine
-  /// holds (see [`Scene::holds_audio_below`]). The stack's changes do the
-  /// second as they happen; this follows a scene whose answers changed.
+  /// `PhysicsPaused` resource, the scenes whose voices the audio engine
+  /// holds (see [`Scene::holds_audio_below`]) and the scenes whose particle
+  /// emitters are frozen. The stack's changes do the last two as they
+  /// happen; this follows a scene whose answers changed, and a transition
+  /// starting or ending.
   pub fn sync_pauses(&self, world: &mut World) {
     if let Some(mut paused) = world.get_resource_mut::<PhysicsPaused>() {
       paused.0 = self.is_physics_paused();
@@ -681,16 +683,23 @@ impl SceneManager {
     self.sync_audio_holds(world);
   }
 
-  /// Tell the audio engine which scenes are not heard, and the particle
-  /// store which scenes' emitters are frozen: those not updated (below
-  /// `update_from`), when the top scene `holds_audio_below`.
+  /// Tell the audio engine which scenes are not heard: those not updated
+  /// (below `update_from`), when the top scene `holds_audio_below`. Tell the
+  /// particle store which scenes' emitters are frozen: every scene that does
+  /// not update, so those below `update_from`, and all of them while a
+  /// transition runs.
   fn sync_audio_holds(&self, world: &mut World) {
-    let held = match self.scenes.last() {
+    let unheard = match self.scenes.last() {
       Some(top) if top.scene.holds_audio_below() => &self.scenes[..self.update_from()],
       _ => &[],
     };
-    audio::hold_scenes(world, held.iter().map(|slot| slot.scope_id));
-    particles::hold_scenes(world, held.iter().map(|slot| slot.scope_id));
+    audio::hold_scenes(world, unheard.iter().map(|slot| slot.scope_id));
+    let frozen = if self.is_transitioning() {
+      &self.scenes[..]
+    } else {
+      &self.scenes[..self.update_from()]
+    };
+    particles::hold_scenes(world, frozen.iter().map(|slot| slot.scope_id));
   }
 }
 
@@ -2267,7 +2276,7 @@ mod tests {
     }
   }
 
-  /// Particle emitters follow their scene as its voices do: the level's is
+  /// Particle emitters are held with their scene: the level's is
   /// held under the pause menu while the menu's own is not, a pop lets the
   /// level's go, and the menu's, outliving its scene, belongs to none
   #[test]

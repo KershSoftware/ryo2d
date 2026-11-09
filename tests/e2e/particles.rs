@@ -1,5 +1,5 @@
 //! The engine's particles over time: a paused clock, hitstop, a pause menu
-//! over the game, unscaled emitters, half speed, scene changes and frame
+//! over the game, a scene transition, unscaled emitters, half speed, scene changes and frame
 //! rates, read back as particle positions; and drawn: where they are,
 //! between steps, on their render layers, culled, hidden when disabled, in
 //! a stable order and by z among entities, read back as pixels.
@@ -27,9 +27,16 @@ struct Board {
   pop: bool,
   /// The level switches to an empty scene in its next update
   switch: bool,
+  /// The level pushes a scene that leaves it audible in its next update
+  push_audible: bool,
+  /// The level pushes a scene through a fade in its next update
+  push_faded: bool,
 }
 
 type Shared = Arc<Mutex<Board>>;
+
+/// Each half of the tests' fade: 12 frames at 60 Hz
+const FADE: Duration = Duration::from_millis(200);
 
 /// The effects the scenes play
 #[derive(Clone, Copy, Default, PartialEq)]
@@ -135,6 +142,12 @@ impl Scene for Level {
     if std::mem::take(&mut board.switch) {
       return SceneAction::Switch(Box::new(Empty));
     }
+    if std::mem::take(&mut board.push_audible) {
+      return SceneAction::Push(Box::new(Audible));
+    }
+    if std::mem::take(&mut board.push_faded) {
+      return SceneAction::PushWith(Box::new(Overlay), Transition::fade(FADE));
+    }
     SceneAction::Continue
   }
 }
@@ -169,6 +182,24 @@ struct Empty;
 impl Scene for Empty {
   fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
     SceneAction::Continue
+  }
+}
+
+/// A scene over the level that stops it updating and leaves it audible
+struct Audible;
+
+impl Scene for Audible {
+  fn holds_audio_below(&self) -> bool {
+    false
+  }
+}
+
+/// A scene over the level that keeps it updating
+struct Overlay;
+
+impl Scene for Overlay {
+  fn updates_below(&self) -> bool {
+    true
   }
 }
 
@@ -274,6 +305,50 @@ fn a_pause_menu_freezes_the_game_s_particles_but_not_its_own() {
   assert!(
     oldest(&engine, game).x > held[0].x,
     "the game's move on after the menu pops"
+  );
+}
+
+#[test]
+fn a_scene_that_stops_the_level_freezes_its_particles_though_it_leaves_it_audible() {
+  let Some((mut engine, board)) = engine(Setup::default()) else {
+    return;
+  };
+  engine.step_frames(10).unwrap();
+  ask(&board, |b| b.push_audible = true);
+  engine.step_frames(5).unwrap();
+  let game = entity(&board, |b| b.game);
+  let held = positions(&engine, game);
+
+  engine.step_frames(30).unwrap();
+  assert_eq!(
+    positions(&engine, game),
+    held,
+    "the level does not update, so its particles are held"
+  );
+}
+
+#[test]
+fn a_scene_transition_freezes_particles_until_it_ends() {
+  let Some((mut engine, board)) = engine(Setup::default()) else {
+    return;
+  };
+  engine.step_frames(10).unwrap();
+  ask(&board, |b| b.push_faded = true);
+  // The level's update starts the fade, in this frame's step
+  engine.step_frames(1).unwrap();
+  let game = entity(&board, |b| b.game);
+  let held = positions(&engine, game);
+
+  engine.step_frames(6).unwrap();
+  assert_eq!(positions(&engine, game), held, "held as it fades out");
+  // Past the midpoint, where the overlay was pushed
+  engine.step_frames(12).unwrap();
+  assert_eq!(positions(&engine, game), held, "held as it fades in");
+
+  engine.step_frames(20).unwrap();
+  assert!(
+    oldest(&engine, game).x > held[0].x,
+    "the level updates under the overlay, so its particles move on after the fade"
   );
 }
 

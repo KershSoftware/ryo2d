@@ -1,6 +1,7 @@
-//! Which scene an emitter belongs to, and the scenes the stack holds: the
-//! rule audio's emitters follow (`audio::in_scene`, `hold_scenes`), so a
-//! scene that is not updated has its particles frozen with it.
+//! Which scene an emitter belongs to, and the scenes that do not update:
+//! a game-time emitter steps only while its scene updates, so a scene
+//! stopped under another has its particles frozen with it, as has every
+//! scene during a transition.
 
 use super::store::ParticleStore;
 use crate::core::ecs::World;
@@ -21,9 +22,9 @@ pub(crate) fn in_scene<R>(world: &mut World, scope: u64, f: impl FnOnce(&mut Wor
   result
 }
 
-/// The stack holds the scenes `scopes` (those it does not update, under a
-/// top scene that holds them): the emitters they added are frozen, and so
-/// are emitters of no scene while any is held, until they update again.
+/// The scenes `scopes` do not update (a scene above stops them, or a
+/// transition runs): the emitters they added are frozen, and so are
+/// emitters of no scene while any is held, until they update again.
 /// Called as the stack changes and after each step; the store is touched
 /// only when the scenes held change
 pub(crate) fn hold_scenes(world: &mut World, scopes: impl Iterator<Item = u64> + Clone) {

@@ -19,9 +19,11 @@ pub(crate) const MAX_SPEED: f32 = 100.0;
 /// own random stream, seeded by [`with_seed`](Self::with_seed), else the
 /// effect's `seed`, else the engine (fixed in a headless run).
 ///
-/// It runs on game time: a paused clock, hitstop and a scene held under
-/// another (a pause menu) freeze it, and slow motion slows it. One made
-/// [`unscaled`](Self::unscaled) runs on real time through all of them.
+/// It runs on game time: a paused clock and hitstop freeze it, and slow
+/// motion slows it. It steps only while its scene updates, so not under a
+/// scene that stops it (a pause menu) and not during a scene transition.
+/// One made [`unscaled`](Self::unscaled) runs on real time through all of
+/// them.
 ///
 /// The game controls it with [`play`](Self::play), [`stop`](Self::stop),
 /// [`clear`](Self::clear), [`restart`](Self::restart) and
@@ -138,8 +140,9 @@ impl ParticleEmitter {
     self
   }
 
-  /// Runs it on real time: a paused clock, hitstop, slow motion and a
-  /// scene held under another leave it running (for a menu's effects).
+  /// Runs it on real time: a paused clock, hitstop, slow motion, a scene
+  /// stopped under another and a scene transition leave it running (for a
+  /// menu's effects).
   /// It steps once a frame, in fixed steps of the game's step length (at
   /// most 8 a frame; a longer frame's time beyond them is dropped).
   pub fn unscaled(mut self) -> Self {
