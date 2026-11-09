@@ -520,6 +520,26 @@ fn particles_draw_where_they_are() {
 }
 
 #[test]
+fn a_local_particle_draws_with_its_emitter() {
+  let Some((mut engine, placed)) = stage((128, 64), |ctx| {
+    let fx = still(ctx, 16.0, Color::WHITE).with_space(Space::Local);
+    vec![emitter_at(ctx, fx, 32.0, 32.0)]
+  }) else {
+    return;
+  };
+  engine.step_frames(3).unwrap();
+  assert_eq!(pixel(&engine, 32.0, 32.0), WHITE);
+  let emitter = nth(&placed, 0);
+  if let Some(mut transform) = engine.world_mut().get_mut::<Transform>(emitter) {
+    transform.translation.x = 96.0;
+  }
+  engine.step_frames(2).unwrap();
+  assert_eq!(pixel(&engine, 96.0, 32.0), WHITE, "where its emitter is");
+  assert_eq!(pixel(&engine, 32.0, 32.0), BLACK, "not where it was born");
+  assert_eq!(positions(&engine, emitter), [Vec2::new(96.0, 32.0)]);
+}
+
+#[test]
 fn render_layers_choose_the_cameras() {
   // The main camera (layer 0) on the left half and a layer 1 camera on the
   // right, both over (16, 16), where a green particle is on layer 0 and a

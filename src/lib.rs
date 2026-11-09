@@ -210,7 +210,7 @@ pub mod prelude {
     AttractorType, Burst, CollisionConfig, CollisionResponse, ColorRange, Curve, CurveKey,
     DEFAULT_PARTICLE_BUDGET, DrawOrder, EmitShape, EmitterFinished, Gradient, GradientKey,
     MIN_BOUNCE_EVENT_SPEED, ParticleAttractor, ParticleCollision, ParticleEffect, ParticleEmitter,
-    Particles, ParticlesView, ValueRange,
+    Particles, ParticlesView, Space, ValueRange,
   };
 
   // Tilemaps

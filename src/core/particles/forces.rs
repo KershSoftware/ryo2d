@@ -12,7 +12,7 @@ use super::collision::{
 use super::contact::{
   CONTACT_SKIN, ColliderQuery, Contact, ParticleCollider, candidate_colliders, gather_colliders,
 };
-use super::effect::ParticleEffect;
+use super::effect::{ParticleEffect, Space};
 use super::emitter::ParticleEmitter;
 use super::pool::{Pool, STUCK, TOUCHING};
 use super::store::ParticleStore;
@@ -140,7 +140,8 @@ impl Surroundings {
 
   /// What acts on the particles of the emitter on `emitter`, playing
   /// `effect`: the attractors pulling its layer and, if it collides, the
-  /// colliders it can hit (never its own entity's)
+  /// colliders it can hit (never its own entity's). Nothing acts on a
+  /// `Local` effect's, which live in their emitter's frame
   pub(crate) fn acting<'a>(
     &'a mut self,
     emitter: Entity,
@@ -156,9 +157,12 @@ impl Surroundings {
       ..
     } = self;
     near.clear();
-    near.extend(fields.iter().filter(|field| field.pulls(effect.layer)));
     candidates.clear();
-    let collide = effect.collision.as_ref().map(|config| {
+    let world = effect.space == Space::World;
+    if world {
+      near.extend(fields.iter().filter(|field| field.pulls(effect.layer)));
+    }
+    let collide = effect.collision.as_ref().filter(|_| world).map(|config| {
       candidates.extend(candidate_colliders(colliders, emitter, config).copied());
       Collide {
         config,
@@ -212,10 +216,8 @@ fn collides(
     return false;
   };
   match store.compiled.get(&effect) {
-    Some(compiled) if compiled.version == version => compiled.effect.collision.is_some(),
-    _ => effects
-      .get(effect)
-      .is_some_and(|effect| effect.collision.is_some()),
+    Some(compiled) if compiled.version == version => compiled.effect.collides(),
+    _ => effects.get(effect).is_some_and(ParticleEffect::collides),
   }
 }
 
@@ -249,6 +251,16 @@ impl Acting<'_> {
         .force(field.time, field.at.x, field.at.y, at.x, at.y);
       sum + Vec2::new(x, y)
     })
+  }
+
+  /// How many collisions are waiting to be told
+  pub(crate) fn told(&self) -> usize {
+    self.collisions.len()
+  }
+
+  /// Forgets the collisions found since [`told`](Self::told) said `told`
+  pub(crate) fn forget_told_since(&mut self, told: usize) {
+    self.collisions.truncate(told);
   }
 
   /// Meets particle `i` of `p`, which moved from `from` this step, with

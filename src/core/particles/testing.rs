@@ -3,17 +3,24 @@
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
+use glam::Vec2;
+
 use super::collision::ParticleCollision;
+use super::draw::instance_for;
 use super::effect::ParticleEffect;
 use super::emitter::{EmitterFinished, ParticleEmitter};
 use super::pool::{Pool, STUCK, TOUCHING};
+use super::space::LocalFrame;
 use super::step::{step_particles, step_unscaled_particles};
 use super::store::{DEFAULT_PARTICLE_BUDGET, ParticleStore};
 use crate::core::asset::{Assets, Handle};
 use crate::core::ecs::interpolate::snapshot_previous_transforms;
 use crate::core::ecs::kernel::SingleThreadedExecutor;
 use crate::core::ecs::propagate::propagate_transforms;
-use crate::core::ecs::{Entity, IntoScheduleConfigs, Messages, Mut, Resource, Schedule, World};
+use crate::core::ecs::{
+  DrawLift, Entity, GlobalTransform, IntoScheduleConfigs, Messages, Mut, PreviousGlobalTransform,
+  Resource, Schedule, World,
+};
 use crate::core::graphics::Image;
 use crate::core::messages::register_engine_messages;
 use crate::core::time::Time;
@@ -129,7 +136,8 @@ pub(crate) struct Seen {
   pub touching: bool,
 }
 
-/// `emitter`'s particles, oldest first
+/// `emitter`'s particles, oldest first, as its pool keeps them: in the
+/// world, or in the emitter's frame for a `Local` effect
 pub(crate) fn particles(world: &World, emitter: Entity) -> Vec<Seen> {
   let Some(emitter) = world.get::<ParticleEmitter>(emitter) else {
     return Vec::new();
@@ -160,6 +168,34 @@ pub(crate) fn particles(world: &World, emitter: Entity) -> Vec<Seen> {
         stuck: p.flags[i] & STUCK != 0,
         touching: p.flags[i] & TOUCHING != 0,
       }
+    })
+    .collect()
+}
+
+/// Where `emitter`'s particles draw, `alpha` of the way between their last
+/// two steps, oldest first: a `Local` effect's through the emitter's frame
+/// as it draws, as the drawer places them
+pub(crate) fn drawn(world: &World, emitter: Entity, alpha: f32) -> Vec<Vec2> {
+  let Some(slot) = world.get::<ParticleEmitter>(emitter).map(|e| e.slot) else {
+    return Vec::new();
+  };
+  let store = world.resource::<ParticleStore>();
+  let Some(pool) = store.pool(slot) else {
+    return Vec::new();
+  };
+  let Some(compiled) = pool.effect.and_then(|id| store.compiled(id)) else {
+    return Vec::new();
+  };
+  let local = pool.local.and_then(|_| {
+    let global = world.get::<GlobalTransform>(emitter)?;
+    let previous = world.get::<PreviousGlobalTransform>(emitter);
+    let lift = world.get::<DrawLift>(emitter);
+    Some(LocalFrame::drawn(global, previous, lift, alpha))
+  });
+  (0..pool.main.len())
+    .map(|i| {
+      let instance = instance_for(&pool.main, i, compiled, alpha, local.as_ref());
+      Vec2::new(instance.transform[2][0], instance.transform[2][1])
     })
     .collect()
 }

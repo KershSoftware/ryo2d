@@ -6,6 +6,7 @@ use glam::Vec2;
 
 use super::effect::ParticleEffect;
 use super::rng::ParticleRng;
+use super::space::LocalFrame;
 use crate::core::asset::AssetId;
 use crate::core::ecs::Entity;
 
@@ -187,6 +188,9 @@ pub(crate) struct EmitterPool {
   pub(crate) fired: Vec<u32>,
   /// Where it emitted from in the step it last stepped
   pub(crate) last: Option<Vec2>,
+  /// The emitter's frame in the step it last stepped, while its particles
+  /// live in it (a `Local` effect's); `None` while they live in the world
+  pub(crate) local: Option<LocalFrame>,
   /// The store's step it last stepped in
   pub(crate) last_step: Option<u64>,
   /// The scene that added it, whose hold holds it; `None`: none's
@@ -218,6 +222,7 @@ impl EmitterPool {
       carry: 0.0,
       fired: Vec::new(),
       last: None,
+      local: None,
       last_step: None,
       scope: None,
       ended: false,
@@ -255,6 +260,7 @@ impl EmitterPool {
     self.carry = 0.0;
     self.fired.clear();
     self.last = None;
+    self.local = None;
     self.last_step = None;
     self.scope = None;
     self.ended = false;

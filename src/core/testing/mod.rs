@@ -86,8 +86,9 @@ use crate::core::particles::ParticleStore;
 use crate::core::time::Time;
 
 /// Where the particles of `emitter` (an entity with an engine particle
-/// emitter) are, as its last step left them, oldest first; none without an
-/// emitter or a particle store
+/// emitter) are in the world, as its last step left them, oldest first (a
+/// `Local` effect's through the emitter's frame in that step); none without
+/// an emitter or a particle store
 #[doc(hidden)]
 pub fn particle_positions(world: &World, emitter: Entity) -> Vec<Vec2> {
   let Some(slot) = world
@@ -106,7 +107,10 @@ pub fn particle_positions(world: &World, emitter: Entity) -> Vec<Vec2> {
         .x
         .iter()
         .zip(&particles.y)
-        .map(|(&x, &y)| Vec2::new(x, y))
+        .map(|(&x, &y)| {
+          let at = Vec2::new(x, y);
+          pool.local.map_or(at, |frame| frame.world_point(at))
+        })
         .collect()
     })
 }

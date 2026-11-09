@@ -72,6 +72,17 @@ impl Burst {
   }
 }
 
+/// Where an effect's particles live once born.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum Space {
+  /// In the world: they stay where they were born as the emitter moves on
+  #[default]
+  World,
+  /// In the emitter's own frame: they move and turn with it, and their
+  /// forces act in that frame. They don't collide or feel attractors
+  Local,
+}
+
 /// Which particle is drawn over which.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DrawOrder {
@@ -90,6 +101,9 @@ pub enum DrawOrder {
 pub struct ParticleEffect {
   /// Particles per second, on top of the bursts
   pub rate: f32,
+  /// Particles per pixel the emitter moves, on top of the rate, spread
+  /// along its move (none across a teleport)
+  pub rate_per_distance: f32,
   /// Particles released at set moments of each cycle
   pub bursts: Vec<Burst>,
   /// Seconds in one cycle
@@ -98,6 +112,10 @@ pub struct ParticleEffect {
   pub looping: bool,
   /// Seconds before the first cycle starts
   pub start_delay: f32,
+  /// Starts a looping effect as if it had played a cycle already (at most
+  /// 10 s of it): the first step its emitter plays it in runs that much
+  /// first, its start delay skipped
+  pub prewarm: bool,
   /// Most live particles one emitter keeps
   pub max_particles: u32,
   /// Where particles are born
@@ -118,6 +136,9 @@ pub struct ParticleEffect {
   pub rotation_deg: ValueRange,
   /// Spin in degrees per second
   pub angular_velocity_deg: ValueRange,
+  /// The share of the emitter's velocity a particle starts with, on top of
+  /// its own (a `World` effect's)
+  pub inherit_velocity: f32,
   /// Tint picked per particle
   pub color: ColorRange,
   /// Tint multiplier over the particle's life
@@ -130,6 +151,8 @@ pub struct ParticleEffect {
   pub gravity: Vec2,
   /// Fraction of speed lost per second
   pub drag: f32,
+  /// Whether particles live in the world or in the emitter's own frame
+  pub space: Space,
   /// The image each particle draws
   pub image: Handle<Image>,
   /// How particles blend with what is behind them
@@ -161,10 +184,12 @@ impl ParticleEffect {
   pub fn new(image: Handle<Image>) -> Self {
     Self {
       rate: 10.0,
+      rate_per_distance: 0.0,
       bursts: Vec::new(),
       duration: 1.0,
       looping: true,
       start_delay: 0.0,
+      prewarm: false,
       max_particles: 1000,
       shape: EmitShape::Point,
       direction_deg: 0.0,
@@ -175,12 +200,14 @@ impl ParticleEffect {
       size: ValueRange::new(8.0, 16.0),
       rotation_deg: ValueRange::constant(0.0),
       angular_velocity_deg: ValueRange::constant(0.0),
+      inherit_velocity: 0.0,
       color: ColorRange::constant(Color::WHITE),
       color_over_life: Gradient::new([(0.0, Color::WHITE), (1.0, Color::TRANSPARENT)]),
       size_over_life: Curve::constant(1.0),
       speed_over_life: Curve::constant(1.0),
       gravity: Vec2::ZERO,
       drag: 0.0,
+      space: Space::World,
       image,
       blend: BlendMode::Alpha,
       filter: Filter::Default,
@@ -198,6 +225,12 @@ impl ParticleEffect {
   /// Sets the particles per second.
   pub fn with_rate(mut self, rate: f32) -> Self {
     self.rate = rate;
+    self
+  }
+
+  /// Sets the particles per pixel the emitter moves.
+  pub fn with_rate_per_distance(mut self, rate_per_distance: f32) -> Self {
+    self.rate_per_distance = rate_per_distance;
     self
   }
 
@@ -222,6 +255,12 @@ impl ParticleEffect {
   /// Sets the seconds before the first cycle.
   pub fn with_start_delay(mut self, start_delay: f32) -> Self {
     self.start_delay = start_delay;
+    self
+  }
+
+  /// Starts a looping effect as if it had played a cycle already.
+  pub fn with_prewarm(mut self, prewarm: bool) -> Self {
+    self.prewarm = prewarm;
     self
   }
 
@@ -280,6 +319,12 @@ impl ParticleEffect {
     self
   }
 
+  /// Sets the share of the emitter's velocity a particle starts with.
+  pub fn with_inherit_velocity(mut self, inherit_velocity: f32) -> Self {
+    self.inherit_velocity = inherit_velocity;
+    self
+  }
+
   /// Sets the tint picked per particle.
   pub fn with_color(mut self, color: impl Into<ColorRange>) -> Self {
     self.color = color.into();
@@ -313,6 +358,12 @@ impl ParticleEffect {
   /// Sets the fraction of speed lost per second.
   pub fn with_drag(mut self, drag: f32) -> Self {
     self.drag = drag;
+    self
+  }
+
+  /// Sets whether particles live in the world or in the emitter's frame.
+  pub fn with_space(mut self, space: Space) -> Self {
+    self.space = space;
     self
   }
 
@@ -376,6 +427,12 @@ impl ParticleEffect {
     self
   }
 
+  /// Whether its particles meet colliders: it has a collision and lives in
+  /// the world
+  pub(crate) fn collides(&self) -> bool {
+    self.collision.is_some() && self.space == Space::World
+  }
+
   /// Every value the effect has that is not allowed, each starting with its field's name.
   pub(crate) fn problems(&self) -> Vec<String> {
     let mut out = Vec::new();
@@ -390,10 +447,25 @@ impl ParticleEffect {
 
     report("rate", !finite(self.rate), "is not a number");
     report("rate", self.rate < 0.0, "is negative");
+    report(
+      "rate_per_distance",
+      !finite(self.rate_per_distance),
+      "is not a number",
+    );
+    report(
+      "rate_per_distance",
+      self.rate_per_distance < 0.0,
+      "is negative",
+    );
     report("duration", !finite(self.duration), "is not a number");
     report("duration", self.duration <= 0.0, "must be above 0");
     report("start_delay", !finite(self.start_delay), "is not a number");
     report("start_delay", self.start_delay < 0.0, "is negative");
+    report(
+      "prewarm",
+      self.prewarm && !self.looping,
+      "needs a looping effect",
+    );
     report("max_particles", self.max_particles == 0, "must be above 0");
     report(
       "direction_deg",
@@ -423,6 +495,11 @@ impl ParticleEffect {
       "is not a number",
     );
     report(
+      "inherit_velocity",
+      !finite(self.inherit_velocity),
+      "is not a number",
+    );
+    report(
       "gravity",
       !(finite(self.gravity.x) && finite(self.gravity.y)),
       "is not a number",
@@ -431,6 +508,11 @@ impl ParticleEffect {
     report("drag", self.drag < 0.0, "is negative");
     report("emission", !finite(self.emission), "is not a number");
     report("emission", self.emission < 0.0, "is negative");
+    report(
+      "collision",
+      self.collision.is_some() && self.space == Space::Local,
+      "a Local effect does not collide",
+    );
 
     for burst in &self.bursts {
       report(
@@ -498,8 +580,10 @@ impl ParticleEffect {
     };
 
     fx.rate = non_negative(fx.rate, 10.0);
+    fx.rate_per_distance = non_negative(fx.rate_per_distance, 0.0);
     fx.duration = num(fx.duration, 1.0).max(0.01);
     fx.start_delay = non_negative(fx.start_delay, 0.0);
+    fx.prewarm = fx.prewarm && fx.looping;
     fx.max_particles = fx.max_particles.max(1);
     fx.direction_deg = num(fx.direction_deg, 0.0);
     fx.spread_deg = num(fx.spread_deg, 360.0).clamp(0.0, 360.0);
@@ -509,9 +593,13 @@ impl ParticleEffect {
     fx.size = non_negative_range(fx.size, ValueRange::new(8.0, 16.0));
     fx.rotation_deg = range(fx.rotation_deg, ValueRange::constant(0.0));
     fx.angular_velocity_deg = range(fx.angular_velocity_deg, ValueRange::constant(0.0));
+    fx.inherit_velocity = num(fx.inherit_velocity, 0.0);
     fx.gravity = Vec2::new(num(fx.gravity.x, 0.0), num(fx.gravity.y, 0.0));
     fx.drag = non_negative(fx.drag, 0.0);
     fx.emission = non_negative(fx.emission, 1.0);
+    if fx.space == Space::Local {
+      fx.collision = None;
+    }
 
     for burst in &mut fx.bursts {
       burst.time = num(burst.time, 0.0);
@@ -562,10 +650,12 @@ mod tests {
   fn defaults_match_the_table() {
     let fx = ParticleEffect::new(image());
     assert_eq!(fx.rate, 10.0);
+    assert_eq!(fx.rate_per_distance, 0.0);
     assert!(fx.bursts.is_empty());
     assert_eq!(fx.duration, 1.0);
     assert!(fx.looping);
     assert_eq!(fx.start_delay, 0.0);
+    assert!(!fx.prewarm);
     assert_eq!(fx.max_particles, 1000);
     assert_eq!(fx.shape, EmitShape::Point);
     assert_eq!(fx.direction_deg, 0.0);
@@ -576,6 +666,7 @@ mod tests {
     assert_eq!(fx.size, ValueRange::new(8.0, 16.0));
     assert_eq!(fx.rotation_deg, ValueRange::constant(0.0));
     assert_eq!(fx.angular_velocity_deg, ValueRange::constant(0.0));
+    assert_eq!(fx.inherit_velocity, 0.0);
     assert_eq!(fx.color, ColorRange::constant(Color::WHITE));
     assert_eq!(
       fx.color_over_life,
@@ -585,6 +676,7 @@ mod tests {
     assert_eq!(fx.speed_over_life, Curve::constant(1.0));
     assert_eq!(fx.gravity, Vec2::ZERO);
     assert_eq!(fx.drag, 0.0);
+    assert_eq!(fx.space, Space::World);
     assert_eq!(fx.blend, BlendMode::Alpha);
     assert_eq!(fx.filter, Filter::Default);
     assert!(fx.lit);
@@ -606,6 +698,10 @@ mod tests {
     assert!(starts_with(&fx.problems(), "rate:"));
     let fx = ParticleEffect::new(image()).with_duration(0.0);
     assert!(starts_with(&fx.problems(), "duration:"));
+    let fx = ParticleEffect::new(image()).with_rate_per_distance(-1.0);
+    assert!(starts_with(&fx.problems(), "rate_per_distance:"));
+    let fx = ParticleEffect::new(image()).with_inherit_velocity(f32::NAN);
+    assert!(starts_with(&fx.problems(), "inherit_velocity:"));
     let fx = ParticleEffect::new(image()).with_burst(Burst::at(0.0, 5.0).with_cycles(0, 0.0));
     assert!(starts_with(&fx.problems(), "bursts:"));
     let fx = ParticleEffect::new(image()).with_shape(EmitShape::Circle {
@@ -620,6 +716,8 @@ mod tests {
   fn sanitized_effects_have_no_problems() {
     let fx = ParticleEffect::new(image())
       .with_rate(-1.0)
+      .with_rate_per_distance(f32::NAN)
+      .with_inherit_velocity(f32::INFINITY)
       .with_duration(0.0)
       .with_start_delay(-2.0)
       .with_max_particles(0)
@@ -645,6 +743,8 @@ mod tests {
     assert_eq!(clean.bursts[1].interval, 0.01);
     for v in [
       clean.rate,
+      clean.rate_per_distance,
+      clean.inherit_velocity,
       clean.duration,
       clean.direction_deg,
       clean.speed.min,

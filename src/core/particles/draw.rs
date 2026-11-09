@@ -5,20 +5,27 @@ use glam::Vec2;
 
 use super::emitter::ParticleEmitter;
 use super::pool::{EmitterPool, Pool};
+use super::space::LocalFrame;
 use super::step::Compiled;
 use super::store::ParticleStore;
 use crate::core::asset::Assets;
 use crate::core::ecs::kernel::QueryState;
-use crate::core::ecs::{Entity, World, entity_order};
+use crate::core::ecs::{
+  DrawLift, Entity, GlobalTransform, PreviousGlobalTransform, World, entity_order,
+};
 use crate::core::graphics::{Image, RenderLayers, SpriteGpuRenderer, SpriteInstance};
 use crate::core::render::{CameraDraw, DrawList, DrawRun, SpriteShading};
 
 /// The emitters drawn: enabled ones (the default filter leaves `Disabled`
-/// out, so a disabled emitter's particles are hidden), with their layers
+/// out, so a disabled emitter's particles are hidden), with their layers,
+/// and where they stand for a `Local` effect's particles
 type DrawnEmitter = (
   Entity,
   &'static ParticleEmitter,
   Option<&'static RenderLayers>,
+  &'static GlobalTransform,
+  Option<&'static PreviousGlobalTransform>,
+  Option<&'static DrawLift>,
 );
 
 /// What the drawer reads of an emitter, in the order it draws them
@@ -77,15 +84,17 @@ impl ParticleDrawer {
       return 0;
     };
     self.order.clear();
-    self
-      .order
-      .extend(query.iter(world).map(|(entity, emitter, layers)| Drawn {
-        order: entity_order(&entity),
-        slot: emitter.slot,
-        unscaled: emitter.is_unscaled(),
-        z: emitter.z(),
-        layers: layers.copied().unwrap_or_default(),
-      }));
+    self.order.extend(
+      query
+        .iter(world)
+        .map(|(entity, emitter, layers, ..)| Drawn {
+          order: entity_order(&entity),
+          slot: emitter.slot,
+          unscaled: emitter.is_unscaled(),
+          z: emitter.z(),
+          layers: layers.copied().unwrap_or_default(),
+        }),
+    );
     self.order.sort_unstable_by_key(|drawn| drawn.order);
 
     let mut submitted = 0u32;
@@ -121,6 +130,16 @@ impl ParticleDrawer {
         continue;
       };
       let fraction = drawn_fraction(pool, drawn.unscaled, store.step, alpha);
+      // A `Local` effect's particles draw through the emitter as it draws
+      let local = match pool.local {
+        Some(_) => match query.get(world, drawn.order.1) {
+          Ok((.., global, previous, lift)) => {
+            Some(LocalFrame::drawn(global, previous, lift, alpha))
+          }
+          Err(_) => continue,
+        },
+        None => None,
+      };
       let instances = list.run_instances();
       let start = instances.len();
       let (Ok(first), Ok(end)) = (u32::try_from(start), u32::try_from(start + particles.len()))
@@ -128,8 +147,10 @@ impl ParticleDrawer {
         continue;
       };
       // Spawn order: the newest last, drawn on top
-      instances
-        .extend((0..particles.len()).map(|i| instance_for(particles, i, compiled, fraction)));
+      instances.extend(
+        (0..particles.len())
+          .map(|i| instance_for(particles, i, compiled, fraction, local.as_ref())),
+      );
       let shading = if effect.effect.is_some() {
         SpriteShading::Effect
       } else {
@@ -168,22 +189,31 @@ fn drawn_fraction(pool: &EmitterPool, unscaled: bool, step: u64, alpha: f32) -> 
 }
 
 /// Particle `i` of `pool` as drawn: blended `alpha` of the way from where it
-/// was the step before to where it is, a quad `size` across scaled by the
-/// effect's size curve at its age, turned by its rotation, its start colour
-/// times the effect's gradient channel by channel, with the effect's sprite
+/// was the step before to where it is (through its emitter's `local` frame
+/// for a `Local` effect's), a quad `size` across scaled by the effect's
+/// size curve at its age, turned by its rotation, its start colour times
+/// the effect's gradient channel by channel, with the effect's sprite
 /// effect and emission (as the scenes' sprites take them).
 pub(crate) fn instance_for(
   pool: &Pool,
   i: usize,
   compiled: &Compiled,
   alpha: f32,
+  local: Option<&LocalFrame>,
 ) -> SpriteInstance {
   let effect = &compiled.effect;
   let t = pool.age[i] / pool.lifetime[i];
   let x = pool.px[i] + (pool.x[i] - pool.px[i]) * alpha;
   let y = pool.py[i] + (pool.y[i] - pool.py[i]) * alpha;
+  let (x, y, rotation) = match local {
+    Some(frame) => {
+      let at = frame.world_point(Vec2::new(x, y));
+      (at.x, at.y, frame.world_rotation(pool.rotation[i]))
+    }
+    None => (x, y, pool.rotation[i]),
+  };
   let size = pool.size[i] * effect.size_over_life.lookup(t);
-  let mut instance = SpriteInstance::new().with_transform(x, y, pool.rotation[i], size, size);
+  let mut instance = SpriteInstance::new().with_transform(x, y, rotation, size, size);
   let (start, tint) = (pool.color[i], effect.color_over_life.lookup(t));
   instance.tint = std::array::from_fn(|c| start[c] * tint[c]);
   if let Some(sprite_effect) = &effect.effect {
@@ -265,10 +295,42 @@ mod tests {
     // It moved from (10, 20) to (30, 60) in its last step
     pool.x[0] = 30.0;
     pool.y[0] = 60.0;
-    let at = |alpha| centre(&instance_for(&pool, 0, &fx, alpha));
+    let at = |alpha| centre(&instance_for(&pool, 0, &fx, alpha, None));
     assert_eq!(at(0.5), Vec2::new(20.0, 40.0), "halfway");
     assert_eq!(at(0.0), Vec2::new(10.0, 20.0), "where it was");
     assert_eq!(at(1.0), Vec2::new(30.0, 60.0), "where it is");
+  }
+
+  #[test]
+  fn a_local_instance_draws_through_its_emitter_s_frame() {
+    use crate::core::ecs::{GlobalTransform, Transform};
+
+    let fx = compiled(|fx| fx);
+    let mut pool = Pool::default();
+    pool.push(&NewParticle {
+      rotation: 0.25,
+      ..particle(Vec2::new(10.0, 0.0))
+    });
+    pool.x[0] = 20.0;
+    // An emitter at (100, 50), turned a quarter and scaled, which never
+    // stretches its frame
+    let at = Transform::from_xy(100.0, 50.0)
+      .with_rotation(FRAC_PI_2)
+      .with_uniform_scale(3.0);
+    let frame = LocalFrame::drawn(&GlobalTransform::from_transform(&at), None, None, 1.0);
+    let local = |alpha| instance_for(&pool, 0, &fx, alpha, Some(&frame));
+    assert!(
+      close(centre(&local(1.0)), Vec2::new(100.0, 70.0)),
+      "{:?}",
+      local(1.0)
+    );
+    assert!(
+      close(centre(&local(0.5)), Vec2::new(100.0, 65.0)),
+      "blended in its frame"
+    );
+    // Turned with its emitter
+    let turned = Vec2::from_angle(FRAC_PI_2 + 0.25) * 10.0;
+    assert!(close(x_axis(&local(1.0)), turned), "{:?}", local(1.0));
   }
 
   #[test]
@@ -293,7 +355,7 @@ mod tests {
     });
 
     // Born: its start size and colour, turned a quarter
-    let born = instance_for(&pool, 0, &fx, 1.0);
+    let born = instance_for(&pool, 0, &fx, 1.0, None);
     assert!(close(x_axis(&born), Vec2::new(0.0, 10.0)), "{born:?}");
     assert_eq!(born.tint, [0.5, 1.0, 0.25, 0.8]);
     assert_eq!(born.effect_params[0], 3.0, "with its effect");
@@ -301,7 +363,7 @@ mod tests {
 
     // Halfway through its life: scaled by the curves there, channel by channel
     pool.age[0] = 1.0;
-    let half = instance_for(&pool, 0, &fx, 1.0);
+    let half = instance_for(&pool, 0, &fx, 1.0, None);
     let size = 10.0 * fx.effect.size_over_life.lookup(0.5);
     assert!((size - 6.0).abs() < 0.01, "the curve halfway: {size}");
     assert!(close(x_axis(&half), Vec2::new(0.0, size)), "{half:?}");
