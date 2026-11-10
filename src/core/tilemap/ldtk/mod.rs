@@ -1427,12 +1427,13 @@ mod tests {
         layer["parallaxScaling"] = true.into();
       }
     }
+    let log = crate::core::testing::capture_log();
     let mut world = world_over(files_at("", &[("warn-e5f6.ldtk", value.to_string())]));
     load_in(&mut world, "warn-e5f6.ldtk").expect("loads");
-    let warned: Vec<String> = crate::core::dev_log::get_entries()
+    let warned: Vec<String> = log
+      .warnings()
       .into_iter()
-      .filter(|e| e.message.contains("warn-e5f6.ldtk"))
-      .map(|e| e.message)
+      .filter(|message| message.contains("warn-e5f6.ldtk"))
       .collect();
     let count = |what: &str| warned.iter().filter(|w| w.contains(what)).count();
     assert_eq!(count("parallax layer's scaling"), 1, "{warned:#?}");

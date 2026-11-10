@@ -377,6 +377,9 @@ pub struct Engine {
   /// Where a windowed native engine keeps its log file (the save folder)
   #[cfg(not(target_arch = "wasm32"))]
   log_folder: Option<std::path::PathBuf>,
+  /// The log scope of the thread that built the engine: its frames log in
+  /// it, and so do the threads it spawns (0 in a game; a test's capture)
+  log_scope: u64,
   /// Run the frame's logic but do not draw it (an unfocused window with
   /// background rendering off)
   skip_present: bool,
@@ -624,6 +627,11 @@ impl Engine {
       saves,
       memory_saves,
     } = resolved;
+
+    // The log is installed before anything logs; another `log` logger set
+    // first is kept, and said once on stderr
+    crate::core::logging::ensure();
+    let log_scope = crate::core::logging::current_scope();
 
     let initial_size = (config.width, config.height);
     #[cfg(not(target_arch = "wasm32"))]
@@ -876,6 +884,7 @@ impl Engine {
       headless,
       #[cfg(not(target_arch = "wasm32"))]
       log_folder,
+      log_scope,
       skip_present: false,
       offscreen_run: false,
       offscreen_refused: false,
@@ -930,9 +939,12 @@ impl Engine {
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
-      event_loop
+      let ran = event_loop
         .run_app(&mut self)
-        .map_err(|e| EngineError::Window(format!("Event loop error: {}", e)))?;
+        .map_err(|e| EngineError::Window(format!("Event loop error: {}", e)));
+      // Lines logged after the loop's last event reach the file too
+      crate::core::logging::flush_log_file();
+      ran?;
       match self.startup_error.take() {
         Some(error) => Err(EngineError::Gpu(error)),
         None => Ok(()),

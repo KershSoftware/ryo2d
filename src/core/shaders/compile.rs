@@ -109,14 +109,15 @@ impl<D: Send + 'static> Compiler<D> {
       let gate = self.gate.clone();
       let spawned = std::thread::Builder::new()
         .name("ryo2d shader compiler".into())
-        .spawn(move || {
+        .spawn(crate::core::logging::scoped(move || {
+          log::debug!("the shader compiler thread started");
           for job in inbox {
             gate.wait();
             if done.send(run(job)).is_err() {
               break;
             }
           }
-        });
+        }));
       match spawned {
         Ok(_) => self.jobs = Some(jobs),
         Err(error) => {

@@ -33,6 +33,7 @@ use web_time::Instant;
 pub use capture::{LogCapture, capture_log, capture_log_bounded};
 use levels::Levels;
 pub use record::{LogRecord, Origin};
+pub(crate) use scope::{current_scope, in_scope, scoped};
 
 /// The `log` crate, for the prelude's macros in a game crate.
 #[doc(hidden)]
@@ -165,9 +166,15 @@ pub fn level(target: &str) -> LevelFilter {
 /// Opens the log file in `folder` (`<folder>/logs/latest.log`) and installs
 /// the panic hook that writes a panic to it. Returns the path used. A file
 /// that cannot be had is said once on stderr, and the game runs without it.
+/// With another `log` logger in first there is none: the engine's outputs
+/// are off, and opening would only empty `latest.log` and push the last
+/// run's out.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn open_log_file(folder: &std::path::Path) -> Option<std::path::PathBuf> {
   ensure();
+  if !installed_by_engine() {
+    return None;
+  }
   match file::open(folder) {
     Ok(path) => {
       panic::install_hook();
@@ -196,15 +203,32 @@ pub(crate) fn flush_log_file() {
 }
 
 /// Sets this thread's frame number, which its records carry.
-#[cfg_attr(
-  not(test),
-  expect(
-    dead_code,
-    reason = "the engine sets it each frame once it moves to this log"
-  )
-)]
 pub(crate) fn set_frame(frame: u64) {
   FRAME.with(|cell| cell.set(Some(frame)));
+}
+
+/// Sets `target`'s level for a test, putting the one before back when the
+/// guard drops (on a panic too). Tests share the logger, so a test that
+/// changes a level holds one of these.
+#[cfg(test)]
+pub(crate) fn level_for_test(target: &'static str, level: LevelFilter) -> TestLevel {
+  let before = self::level(target);
+  set_level(target, level);
+  TestLevel { target, before }
+}
+
+/// Puts a target's level back when dropped; see [`level_for_test`].
+#[cfg(test)]
+pub(crate) struct TestLevel {
+  target: &'static str,
+  before: LevelFilter,
+}
+
+#[cfg(test)]
+impl Drop for TestLevel {
+  fn drop(&mut self) {
+    set_level(self.target, self.before);
+  }
 }
 
 /// Whether the engine's logger is the process's (false when another was set

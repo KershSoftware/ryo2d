@@ -91,6 +91,40 @@ fn a_scene_saves_and_loads_through_ctx_saves_and_reads_save_finished() {
 }
 
 #[test]
+fn a_save_writer_s_warning_is_captured() {
+  const WRITER: &str = "ryo2d::core::saves::writer";
+  let store = MemorySaves::new();
+  store.fail_from(crate::core::saves::memory::FaultOp::Write, 0);
+  // Opened before the engine, so its save writer logs into this scope
+  let log = crate::core::testing::capture_log();
+  let _debug = crate::core::logging::level_for_test(WRITER, log::LevelFilter::Debug);
+  let (scene, seen) = saver();
+  let Some(mut engine) = HeadlessEngine::new_or_skip(
+    EngineBuilder::new()
+      .memory_saves(store.clone())
+      .start_scene(scene),
+  ) else {
+    return;
+  };
+  let deadline = std::time::Instant::now() + Duration::from_secs(5);
+  while seen.lock().unwrap().finished.is_empty() && std::time::Instant::now() < deadline {
+    engine.step().unwrap();
+    std::thread::sleep(Duration::from_millis(1));
+  }
+  let finished = seen.lock().unwrap().finished.clone();
+  assert_eq!(finished.len(), 1, "{finished:?}");
+  assert!(finished[0].result.is_err(), "the store refused the write");
+  let said = log.from_target(WRITER);
+  assert!(
+    said
+      .iter()
+      .any(|r| r.message.contains("save writer thread started")),
+    "{said:?}"
+  );
+  assert!(said.iter().all(|r| r.scope == log.scope()));
+}
+
+#[test]
 fn dropping_the_engine_finishes_pending_saves() {
   let store = MemorySaves::new();
   store.slow(Duration::from_millis(100));

@@ -56,3 +56,31 @@ fn capture_matches_the_presented_frame() {
     "captured image differs from the presented frame"
   );
 }
+
+#[test]
+fn the_capture_writer_logs_into_its_engine_s_scope() {
+  const WRITER: &str = "ryo2d::core::capture::writer";
+  // Opened before the engine, so its capture writer logs into this scope
+  let log = crate::core::testing::capture_log();
+  let _debug = crate::core::logging::level_for_test(WRITER, log::LevelFilter::Debug);
+  let builder = EngineBuilder::new().resolution(32, 32).start_scene(Fixture);
+  let Some(mut engine) = HeadlessEngine::new_or_skip(builder) else {
+    return;
+  };
+  engine.step_frames(1).unwrap();
+  let dir = tempfile::tempdir().unwrap();
+  let path = dir.path().join("t5-writer.png");
+  engine
+    .engine
+    .capture
+    .request(CaptureTarget::Path(path.clone()));
+  engine.step_frames(2).unwrap();
+  engine.engine.capture.finish();
+  assert!(path.exists(), "the capture was written");
+
+  let said = log.from_target(WRITER);
+  assert_eq!(said.len(), 1, "{said:?}");
+  assert!(said[0].message.contains("t5-writer.png"), "{said:?}");
+  assert_eq!(said[0].scope, log.scope());
+  assert_eq!(said[0].frame, None, "a worker's record carries no frame");
+}

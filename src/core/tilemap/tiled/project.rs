@@ -237,8 +237,7 @@ impl<'a> Props<'a> {
       } else {
         "needs a Tiled project, and there is none"
       };
-      crate::engine_warn!(
-        module: "Tiled",
+      log::warn!(
         "{}: class `{name}` {why}, so its members keep what the file wrote and its defaults are not filled in (name the project in Ryo.toml [tilemap] tiled_project, or EngineBuilder::tiled_project, or save it as {DEFAULT_PROJECT} at the asset root)",
         self.path
       );

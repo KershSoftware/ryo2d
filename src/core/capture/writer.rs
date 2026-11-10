@@ -32,7 +32,10 @@ pub fn write_png(image: &RgbaImage, path: &Path) -> CaptureResult<()> {
 
 /// Write the PNG on a background thread so encoding never stalls a frame.
 pub fn spawn_write(image: RgbaImage, path: PathBuf) -> JoinHandle<CaptureResult<PathBuf>> {
-  std::thread::spawn(move || write_png(&image, &path).map(|()| path))
+  std::thread::spawn(crate::core::logging::scoped(move || {
+    log::debug!("writing the capture {}", path.display());
+    write_png(&image, &path).map(|()| path)
+  }))
 }
 
 #[cfg(test)]

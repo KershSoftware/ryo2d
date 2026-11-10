@@ -69,13 +69,16 @@ impl Watching {
     let watched = roots.canonical.clone();
     let (notes, noted) = unbounded();
     let to_debounce = notes.clone();
-    let watcher =
-      notify::recommended_watcher(move |result| note_changes(result, &roots, &to_debounce))
-        .and_then(|mut watcher| {
-          watcher
-            .watch(&watched, RecursiveMode::Recursive)
-            .map(|()| watcher)
-        });
+    // notify calls back on a thread of its own: in this thread's scope too
+    let scope = crate::core::logging::current_scope();
+    let watcher = notify::recommended_watcher(move |result| {
+      crate::core::logging::in_scope(scope, || note_changes(result, &roots, &to_debounce));
+    })
+    .and_then(|mut watcher| {
+      watcher
+        .watch(&watched, RecursiveMode::Recursive)
+        .map(|()| watcher)
+    });
     let watcher = match watcher {
       Ok(watcher) => watcher,
       Err(error) => {
@@ -87,9 +90,13 @@ impl Watching {
         return None;
       }
     };
+    let named = root.display().to_string();
     let thread = std::thread::Builder::new()
       .name("ryo2d-asset-watch".to_owned())
-      .spawn(move || debounce(noted, changed));
+      .spawn(crate::core::logging::scoped(move || {
+        log::debug!("watching the asset folder {named} for changes");
+        debounce(noted, changed);
+      }));
     match thread {
       Ok(thread) => Some(Watching {
         _watcher: watcher,
@@ -606,6 +613,36 @@ mod tests {
     };
     assert_eq!(said(LogLevel::Warn), 0);
     assert_eq!(said(LogLevel::Debug), 1);
+  }
+
+  #[test]
+  fn the_file_watcher_logs_into_its_engine_s_scope() {
+    // Opened before the server starts watching, so its threads join it
+    let log = crate::core::testing::capture_log();
+    let _debug =
+      crate::core::logging::level_for_test("ryo2d::core::asset::watch", log::LevelFilter::Debug);
+    let folder = Folder::new(&[("a.txt", "one")]);
+    let named = folder.dir.path().display().to_string();
+    let start = Instant::now();
+    while log.containing(&named) == 0 {
+      assert!(
+        start.elapsed() < PATIENCE,
+        "the watch never said it started"
+      );
+      std::thread::sleep(Duration::from_millis(2));
+    }
+    let said = log.from_target("ryo2d::core::asset::watch");
+    assert!(
+      said
+        .iter()
+        .any(|r| r.message.contains("watching the asset folder")),
+      "{said:?}"
+    );
+    assert!(
+      said
+        .iter()
+        .all(|r| r.scope == log.scope() && r.frame.is_none())
+    );
   }
 
   #[test]

@@ -93,7 +93,7 @@ impl AssetLoader for TiledMapLoader {
     let project = TiledProject::for_loader(cx, self.project.as_deref())?;
     let mut px = Props::new(path.clone(), project.as_ref());
     let map = build_map(raw, cx, &mut px)?;
-    px.unread.warn(&path, "Tiled");
+    px.unread.warn(&path);
     Ok(map)
   }
 
@@ -126,7 +126,7 @@ impl AssetLoader for TiledTilesetLoader {
     let project = TiledProject::for_loader(cx, self.project.as_deref())?;
     let mut px = Props::new(path.clone(), project.as_ref());
     let mut set = build_tileset(raw, cx, &mut px)?;
-    px.unread.warn(&path, "Tiled");
+    px.unread.warn(&path);
     set.dependency_places = px.places;
     Ok(set)
   }

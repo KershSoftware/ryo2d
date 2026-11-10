@@ -2095,17 +2095,57 @@ fn a_headless_engine_opens_no_log_file() {
   assert!(!ws.save_location().join("logs").exists());
   assert!(!dir.path().join("logs").exists());
 
-  // And after a frame, in the project the tests run in
-  let Ok(project) = crate::core::config::Workspace::discover() else {
-    return;
-  };
-  let logs = project.save_location().join("logs");
-  if let Some(mut engine) = crate::core::testing::HeadlessEngine::new_or_skip(
-    EngineBuilder::new()
-      .resolution(64, 64)
-      .start_scene(EmptyScene),
-  ) {
-    engine.step_frames(1).unwrap();
-    assert!(!logs.exists(), "{}", logs.display());
+  // A windowed engine on the same project keeps its log in the save
+  // folder, which it opens only when it runs
+  let resolved = EngineBuilder::new()
+    .resolution(64, 64)
+    .start_scene(EmptyScene)
+    .resolve_in(Some(&ws), false);
+  let engine = Engine::new(resolved, false);
+  assert_eq!(engine.log_folder, Some(ws.save_location()));
+  drop(engine);
+  assert!(!ws.save_location().join("logs").exists());
+}
+
+/// Warns each update, so the log has a record from every frame
+struct Ticking;
+
+impl Scene for Ticking {
+  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    crate::warn!("t5 tick");
+    SceneAction::Continue
   }
+}
+
+#[test]
+fn two_engines_stamp_their_own_frames() {
+  let run = |frames: u64| {
+    std::thread::spawn(move || {
+      let log = crate::core::testing::capture_log();
+      let mut engine = EngineBuilder::new()
+        .resolution(32, 32)
+        .start_scene(Ticking)
+        .build_headless();
+      let dt = engine.fixed_timestep();
+      for _ in 0..frames {
+        engine.frame(Some(dt));
+      }
+      let ticks: Vec<_> = log
+        .records()
+        .into_iter()
+        .filter(|r| r.message == "t5 tick")
+        .collect();
+      assert!(ticks.iter().all(|r| r.scope == log.scope()));
+      (
+        ticks.len() as u64,
+        ticks.last().and_then(|r| r.frame),
+        engine.world.resource::<Time>().frame_count(),
+      )
+    })
+  };
+  let (three, five) = (run(3), run(5));
+  let three = three.join().expect("the first engine's thread");
+  let five = five.join().expect("the second engine's thread");
+  assert_eq!(three, (3, Some(3), 3));
+  assert_eq!(five, (5, Some(5), 5));
 }

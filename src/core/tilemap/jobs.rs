@@ -92,15 +92,16 @@ impl<T: Send + 'static> Worker<T> {
     if self.jobs.is_none() && !self.inline {
       let (jobs, inbox) = crossbeam_channel::unbounded::<Job<T>>();
       let done = self.done_sender.clone();
-      let spawned = std::thread::Builder::new()
-        .name(self.name.into())
-        .spawn(move || {
-          for job in inbox {
-            if done.send(run(job)).is_err() {
-              break;
+      let spawned =
+        std::thread::Builder::new()
+          .name(self.name.into())
+          .spawn(crate::core::logging::scoped(move || {
+            for job in inbox {
+              if done.send(run(job)).is_err() {
+                break;
+              }
             }
-          }
-        });
+          }));
       match spawned {
         Ok(_) => self.jobs = Some(jobs),
         // Expected on the web, so not a warning

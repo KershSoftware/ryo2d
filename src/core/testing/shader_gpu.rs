@@ -527,6 +527,35 @@ fn a_blend_mode_first_drawn_while_the_new_version_compiles_is_compiled_too() {
 }
 
 #[test]
+fn a_shader_compile_warning_is_captured() {
+  const COMPILER: &str = "ryo2d::core::shaders::compile";
+  // Opened before the engine, so its compile thread logs into this scope
+  let log = crate::core::testing::capture_log();
+  let _debug = crate::core::logging::level_for_test(COMPILER, log::LevelFilter::Debug);
+  let name = "t5-wgsl-error.wgsl";
+  let Some((mut engine, shader)) = shaded(name, fill(GREEN)) else {
+    return;
+  };
+  let broken = "fn sprite(in: SpriteIn, params: Params) -> vec4<f32> { return nope_t5; }";
+  change(&mut engine, &shader, name, broken.to_string());
+  // The new version compiles on the thread, fails, and is warned about
+  step_until(
+    &mut engine,
+    |_, _| {},
+    |_| warnings(name) > 0 && !log.from_target(COMPILER).is_empty(),
+  );
+  let said = log.from_target(COMPILER);
+  assert!(
+    said
+      .iter()
+      .any(|r| r.message.contains("shader compiler thread started")),
+    "{said:?}"
+  );
+  assert!(said.iter().all(|r| r.scope == log.scope()));
+  assert_eq!(pixel(&engine, 12, 12), GREEN, "the last good version draws");
+}
+
+#[test]
 fn a_change_the_gpu_rejects_draws_the_last_good_shader_in_every_frame() {
   let name = "t14c-rejected.wgsl";
   let Some((mut engine, shader)) = shaded(name, fill(GREEN)) else {

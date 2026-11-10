@@ -144,17 +144,19 @@ impl<T: Send + 'static> Writer<T> {
       let (jobs, inbox) = crossbeam_channel::unbounded::<Job<T>>();
       let done = self.done_sender.clone();
       let in_flight = Arc::clone(&self.in_flight);
-      let spawned = std::thread::Builder::new()
-        .name(self.name.into())
-        .spawn(move || {
-          // Every queued job runs, even once no one reads the results: a save
-          // sent before the engine went still lands
-          for job in inbox {
-            let id = job.0;
-            let _ = done.send(run(job));
-            in_flight.finish(id);
-          }
-        });
+      let spawned =
+        std::thread::Builder::new()
+          .name(self.name.into())
+          .spawn(crate::core::logging::scoped(move || {
+            log::debug!("the save writer thread started");
+            // Every queued job runs, even once no one reads the results: a save
+            // sent before the engine went still lands
+            for job in inbox {
+              let id = job.0;
+              let _ = done.send(run(job));
+              in_flight.finish(id);
+            }
+          }));
       match spawned {
         Ok(_) => state.jobs = Some(jobs),
         // Expected on the web, so not a warning

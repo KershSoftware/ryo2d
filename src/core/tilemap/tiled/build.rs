@@ -120,14 +120,14 @@ impl Unread {
   }
 
   /// Warns once for each feature noted, then forgets them
-  pub(crate) fn warn(&mut self, path: &AssetPath, module: &str) {
+  pub(crate) fn warn(&mut self, path: &AssetPath) {
     for (what, place, more) in self.0.drain(..) {
       let more = match more {
         0 => String::new(),
         1 => " and 1 place more".to_string(),
         n => format!(" and {n} places more"),
       };
-      crate::engine_warn!(module: module, "{path}: {what} (at {place}{more})");
+      log::warn!("{path}: {what} (at {place}{more})");
     }
   }
 }

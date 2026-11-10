@@ -25,13 +25,6 @@ pub(super) fn replace_scope(scope: u64) -> u64 {
 
 /// Runs `f` with this thread's scope set to `scope`, then puts the earlier
 /// one back (on a panic too).
-#[cfg_attr(
-  not(test),
-  expect(
-    dead_code,
-    reason = "the engine's spawned threads take it up when they move to this log"
-  )
-)]
 pub(crate) fn in_scope<R>(scope: u64, f: impl FnOnce() -> R) -> R {
   struct Restore(u64);
   impl Drop for Restore {
@@ -41,6 +34,14 @@ pub(crate) fn in_scope<R>(scope: u64, f: impl FnOnce() -> R) -> R {
   }
   let _restore = Restore(replace_scope(scope));
   f()
+}
+
+/// `f`, to run on another thread in this thread's scope: the scope is read
+/// here, on the spawning thread. Every thread the engine spawns runs its body
+/// through this.
+pub(crate) fn scoped<R>(f: impl FnOnce() -> R) -> impl FnOnce() -> R {
+  let scope = current_scope();
+  move || in_scope(scope, f)
 }
 
 /// A scope no one has had: never 0, never repeated.
@@ -67,5 +68,13 @@ mod tests {
     let before = current_scope();
     assert_eq!(in_scope(scope, current_scope), scope);
     assert_eq!(current_scope(), before);
+  }
+
+  #[test]
+  fn scoped_takes_the_spawning_thread_s_scope() {
+    let scope = new_scope();
+    let body = in_scope(scope, || scoped(current_scope));
+    let seen = std::thread::spawn(body).join().expect("a thread");
+    assert_eq!(seen, scope);
   }
 }

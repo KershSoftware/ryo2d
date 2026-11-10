@@ -402,6 +402,27 @@ fn the_generator_runs_off_the_main_thread() {
 }
 
 #[test]
+fn a_tile_map_job_s_warning_is_captured() {
+  // Opened before the world, so the chunk builder logs into this scope
+  let log = crate::core::testing::capture_log();
+  let generator = |request| {
+    crate::warn!("t5 chunk generated");
+    floors(request)
+  };
+  let mut maps = MapWorld::new();
+  let map = spawn(
+    &mut maps,
+    infinite(&["ground"]),
+    MapStream::new(generator),
+    |r| r,
+  );
+  anchor_at(&mut maps, IVec2::ZERO);
+  until_idle(&mut maps, map);
+  assert_eq!(log.containing("t5 chunk generated"), 9, "a warning a chunk");
+  assert!(log.records().iter().all(|r| r.scope == log.scope()));
+}
+
+#[test]
 fn chunks_land_nearest_first_and_within_the_frame_budget() {
   let mut maps = MapWorld::new();
   let stream = MapStream {

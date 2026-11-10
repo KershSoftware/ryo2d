@@ -1238,7 +1238,7 @@ pub(super) fn build_project(
     worlds.push(layout);
     levels.extend(built);
   }
-  defs.unread.borrow_mut().warn(&path, "LDtk");
+  defs.unread.borrow_mut().warn(&path);
   Ok(LdtkProject {
     levels,
     worlds,

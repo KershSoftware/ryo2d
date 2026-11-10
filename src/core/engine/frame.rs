@@ -61,7 +61,20 @@ pub(crate) struct PendingDelta(pub(crate) Option<Duration>);
 
 impl Engine {
   /// One frame. `real_delta` of `None` means wall clock.
+  ///
+  /// It runs in the engine's log scope, and its records carry its number:
+  /// the game clock's frame count once the frame has advanced it.
   pub(crate) fn frame(&mut self, real_delta: Option<Duration>) -> FrameOutcome {
+    let number = self
+      .world
+      .get_resource::<Time>()
+      .map_or(0, Time::frame_count)
+      + 1;
+    crate::core::logging::set_frame(number);
+    crate::core::logging::in_scope(self.log_scope, || self.frame_in_scope(real_delta))
+  }
+
+  fn frame_in_scope(&mut self, real_delta: Option<Duration>) -> FrameOutcome {
     if let Some(message) = self.renderer.as_ref().and_then(|r| r.take_fault()) {
       crate::engine_error!(module: "Render", "{}", message);
       return FrameOutcome::Fatal(message);

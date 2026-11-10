@@ -65,11 +65,11 @@ impl Workers {
       let queue = self.queue.clone();
       let thread = std::thread::Builder::new()
         .name(format!("ryo2d-assets-{n}"))
-        .spawn(move || {
+        .spawn(crate::core::logging::scoped(move || {
           for job in queue.iter() {
             run(job);
           }
-        });
+        }));
       match thread {
         Ok(_) => started += 1,
         Err(error) => {

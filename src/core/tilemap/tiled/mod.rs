@@ -24,6 +24,7 @@ mod tests {
   use crate::core::ecs::kernel::World;
   use crate::core::graphics::Image;
   use crate::core::render::batch::{BlendMode, Filter};
+  use crate::core::testing::{LogCapture, capture_log};
   use crate::core::tilemap::{
     GridShape, ImageLayer, LayerInfo, LayerKind, PropertyValue, StaggerAxis, StaggerIndex, Tile,
     TileFlip, TileMap, Tileset, TilesetImage, TilesetSource,
@@ -558,13 +559,17 @@ mod tests {
 
   #[test]
   fn a_group_whose_class_the_project_lacks_neither_warns_nor_refuses() {
+    let log = capture_log();
     let group = load_storeys("ghost-group.tmj", &group_json(r#""class":"Ghost","#));
     assert_eq!(group.map(|map| info(&map, "ground").floor), Ok(0));
-    assert_eq!(warnings_about("ghost-group.tmj"), Vec::<String>::new());
+    assert_eq!(
+      warnings_about(&log, "ghost-group.tmj"),
+      Vec::<String>::new()
+    );
     // A layer of the class is warned about, as before
     let layer = map_json("", &tile_layer(r#","class":"Ghost""#), "");
     load_storeys("ghost-layer.tmj", &layer).unwrap_or_else(|e| panic!("{e}"));
-    let warned = warnings_about("ghost-layer.tmj");
+    let warned = warnings_about(&log, "ghost-layer.tmj");
     assert!(
       warned.len() == 1 && warned[0].contains("class `Ghost`"),
       "{warned:?}"
@@ -991,17 +996,44 @@ mod tests {
     );
   }
 
-  /// The dev log's warnings naming `file`
-  fn warnings_about(file: &str) -> Vec<String> {
-    crate::core::dev_log::get_entries()
+  /// The warnings `log` caught naming `file`
+  fn warnings_about(log: &LogCapture, file: &str) -> Vec<String> {
+    log
+      .warnings()
       .into_iter()
-      .filter(|e| e.message.contains(file))
-      .map(|e| e.message)
+      .filter(|message| message.contains(file))
       .collect()
   }
 
   #[test]
+  fn an_asset_worker_s_warning_is_captured() {
+    // Opened before the server, so its workers log into the test's scope
+    let log = capture_log();
+    let file = "worker-4e2a.tmj";
+    let json = grid_json("orthogonal", r#""renderorder":"left-up","#);
+    let mut world = world_over(files_with(&[(file, &json)]));
+    let handle = AssetsView::new(&mut world).load::<TileMap>(file);
+    let start = Instant::now();
+    while world.resource::<Assets<TileMap>>().get(&handle).is_none() {
+      assert!(
+        start.elapsed() < Duration::from_secs(5),
+        "the map never loaded"
+      );
+      std::thread::sleep(Duration::from_millis(1));
+      pump(&mut world);
+    }
+    let warned = warnings_about(&log, file);
+    assert_eq!(warned.len(), 1, "{warned:#?}");
+    assert!(
+      warned[0].contains("render order \"left-up\""),
+      "{warned:#?}"
+    );
+    assert!(log.records().iter().all(|r| r.scope == log.scope()));
+  }
+
+  #[test]
   fn editor_features_drawn_otherwise_warn_once_a_file_naming_each() {
+    let log = capture_log();
     // A right-up render order; an inline tileset whose tiles render at the
     // grid's size, with two tiles drawing parts of their images and one
     // with a polyline collision shape; two top-down object layers whose
@@ -1028,7 +1060,7 @@ mod tests {
     );
     let mut world = world_over(files_with(&[("warn-b7e1.tmj", &json)]));
     load_in(&mut world, "warn-b7e1.tmj").expect("loads");
-    let warned = warnings_about("warn-b7e1.tmj");
+    let warned = warnings_about(&log, "warn-b7e1.tmj");
     let count = |what: &str| warned.iter().filter(|w| w.contains(what)).count();
     assert_eq!(count("render order \"right-up\""), 1, "{warned:#?}");
     assert_eq!(count("tile render size"), 1, "{warned:#?}");
@@ -1054,7 +1086,7 @@ mod tests {
     );
     let mut world = world_over(files_with(&[("warn-c2d4.tmj", &json)]));
     load_in(&mut world, "warn-c2d4.tmj").expect("loads");
-    let warned = warnings_about("warn-c2d4.tmj");
+    let warned = warnings_about(&log, "warn-c2d4.tmj");
     assert!(
       !warned.iter().any(|w| w.contains("top down")),
       "{warned:#?}"
@@ -1063,6 +1095,7 @@ mod tests {
 
   #[test]
   fn a_tileset_s_isometric_grid_warns_once_where_its_tiles_have_shapes() {
+    let log = capture_log();
     // Measured (measured-collision.json): Tiled keeps a tile's shapes as
     // written whatever its tileset's grid, and its exporters read them in
     // the image's pixels; its collision editor draws them on the grid
@@ -1087,7 +1120,7 @@ mod tests {
       let json = map_json("", &tile_layer(""), &set);
       let mut world = world_over(files_with(&[(file, &json)]));
       let map = load_in(&mut world, file).expect("loads");
-      let warned = warnings_about(file);
+      let warned = warnings_about(&log, file);
       let count = warned
         .iter()
         .filter(|w| w.contains("isometric grid is not read"))
@@ -1657,6 +1690,7 @@ mod tests {
 
   #[test]
   fn render_order_warns_only_on_orthogonal_and_oblique_maps() {
+    let log = capture_log();
     // Tiled draws orthogonal and oblique maps in their render order and
     // every other grid right-down whatever it says (measured)
     for (orientation, warns) in [
@@ -1670,7 +1704,7 @@ mod tests {
       let json = grid_json(orientation, r#""renderorder":"left-up","#);
       let mut world = world_over(files_with(&[(&file, &json)]));
       load_in(&mut world, &file).unwrap_or_else(|e| panic!("{e}"));
-      let warned = warnings_about(&file);
+      let warned = warnings_about(&log, &file);
       let count = warned
         .iter()
         .filter(|w| w.contains("render order \"left-up\""))
