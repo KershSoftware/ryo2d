@@ -1,7 +1,8 @@
 //! The outputs: each takes the record in turn, after its one format.
 //!
 //! No output holds a lock while another writes: the ring and each capture
-//! have their own mutex, held only for their push, and stderr's is std's own.
+//! have their own mutex, held only for their push, the file has its own, held
+//! only for its write and flush, and stderr's is std's own.
 
 use std::sync::atomic::AtomicU64;
 #[cfg(not(dev_tools))]
@@ -33,6 +34,10 @@ pub(super) fn emit(mut record: LogRecord) {
 
   #[cfg(target_arch = "wasm32")]
   browser_console(&record);
+
+  // The file takes every record, a captured one too
+  #[cfg(not(target_arch = "wasm32"))]
+  super::file::write(&record);
 
   match sink {
     Some(sink) => sink.push(record),

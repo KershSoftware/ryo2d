@@ -374,6 +374,9 @@ pub struct Engine {
   applied_settings: AppliedSettings,
   /// Built headless (`HeadlessEngine`, `RYO_HEADLESS`): no wall-clock overlays
   headless: bool,
+  /// Where a windowed native engine keeps its log file (the save folder)
+  #[cfg(not(target_arch = "wasm32"))]
+  log_folder: Option<std::path::PathBuf>,
   /// Run the frame's logic but do not draw it (an unfocused window with
   /// background rendering off)
   skip_present: bool,
@@ -623,6 +626,11 @@ impl Engine {
     } = resolved;
 
     let initial_size = (config.width, config.height);
+    #[cfg(not(target_arch = "wasm32"))]
+    let log_folder = workspace
+      .as_ref()
+      .filter(|_| !headless)
+      .map(crate::core::config::Workspace::save_location);
 
     // Tell players and developers where settings and saves are kept
     if !headless && let Some(workspace) = &workspace {
@@ -866,6 +874,8 @@ impl Engine {
       pending_vsync: None,
       applied_settings,
       headless,
+      #[cfg(not(target_arch = "wasm32"))]
+      log_folder,
       skip_present: false,
       offscreen_run: false,
       offscreen_refused: false,
@@ -891,6 +901,9 @@ impl Engine {
     if self.offscreen_run {
       return self.run_offscreen();
     }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    self.open_log_file();
 
     Self::print_startup_banner(&self.config, self.vsync);
 
@@ -924,6 +937,19 @@ impl Engine {
         Some(error) => Err(EngineError::Gpu(error)),
         None => Ok(()),
       }
+    }
+  }
+
+  /// A windowed native engine keeps the log in its save folder and writes a
+  /// panic to it. A file that cannot be had is said once and the game runs
+  /// without it.
+  #[cfg(not(target_arch = "wasm32"))]
+  fn open_log_file(&self) {
+    let Some(folder) = &self.log_folder else {
+      return;
+    };
+    if let Some(path) = crate::core::logging::open_log_file(folder) {
+      log::info!("Log file: {}", path.display());
     }
   }
 

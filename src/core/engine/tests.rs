@@ -531,7 +531,11 @@ fn first_run_writes_no_settings_file_until_a_setting_changes() {
   engine.apply_settings();
   engine.save_settings(Instant::now());
   engine.flush_saves();
-  assert_eq!(store.get("system.json"), None, "not before the second is up");
+  assert_eq!(
+    store.get("system.json"),
+    None,
+    "not before the second is up"
+  );
   engine.save_settings(Instant::now() + DEBOUNCE);
   engine.flush_saves();
   assert_eq!(store.writes(), 1);
@@ -1854,7 +1858,10 @@ fn a_failed_settings_write_warns_once_and_sends_settings_save_failed() {
   assert_eq!(store.get("system.json"), None);
   // The game keeps running, at the player's setting
   assert_eq!(
-    engine.world.resource::<Settings>().volume(VolumeKind::Music),
+    engine
+      .world
+      .resource::<Settings>()
+      .volume(VolumeKind::Music),
     0.25
   );
 }
@@ -1869,7 +1876,10 @@ fn a_newer_settings_file_is_never_overwritten() {
   let mut engine = keeping_all(&store);
   assert!(engine.world.resource::<SettingsWriter>().read_only);
   assert_eq!(
-    engine.world.resource::<Settings>().volume(VolumeKind::Music),
+    engine
+      .world
+      .resource::<Settings>()
+      .volume(VolumeKind::Music),
     0.2,
     "the settings it knows are read"
   );
@@ -2069,4 +2079,33 @@ fn a_damaged_settings_file_in_the_browser_is_written_only_once_its_set_aside_lan
     serde_json::json!({"format_version": 3, "music_volume": 0.6})
   );
   assert!(db.contains_key("system.json.bak"), "the backup stays");
+}
+
+#[test]
+fn a_headless_engine_opens_no_log_file() {
+  // Built on a project, a headless engine reads no folder for a log
+  let (dir, ws) = temp_workspace("", None);
+  let resolved = EngineBuilder::new()
+    .resolution(64, 64)
+    .start_scene(EmptyScene)
+    .resolve_in(Some(&ws), true);
+  let engine = Engine::new(resolved, true);
+  assert_eq!(engine.log_folder, None);
+  drop(engine);
+  assert!(!ws.save_location().join("logs").exists());
+  assert!(!dir.path().join("logs").exists());
+
+  // And after a frame, in the project the tests run in
+  let Ok(project) = crate::core::config::Workspace::discover() else {
+    return;
+  };
+  let logs = project.save_location().join("logs");
+  if let Some(mut engine) = crate::core::testing::HeadlessEngine::new_or_skip(
+    EngineBuilder::new()
+      .resolution(64, 64)
+      .start_scene(EmptyScene),
+  ) {
+    engine.step_frames(1).unwrap();
+    assert!(!logs.exists(), "{}", logs.display());
+  }
 }

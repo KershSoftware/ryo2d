@@ -962,6 +962,8 @@ impl ApplicationHandler<EngineEvent> for Engine {
     let reports = self.capture.finish();
     self.report_captures(reports);
     #[cfg(not(target_arch = "wasm32"))]
+    crate::core::logging::flush_log_file();
+    #[cfg(not(target_arch = "wasm32"))]
     if self.capture.exit_with_failure() {
       std::process::exit(1);
     }
@@ -974,6 +976,9 @@ impl ApplicationHandler<EngineEvent> for Engine {
     } else {
       winit::event_loop::ControlFlow::Poll
     });
+
+    #[cfg(not(target_arch = "wasm32"))]
+    crate::core::logging::tick_log_file();
 
     // Report finished captures and honour RYO_CAPTURE_EXIT
     let reports = self.capture.poll_writes();

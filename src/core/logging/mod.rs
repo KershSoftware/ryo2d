@@ -12,9 +12,13 @@
 //! keeps it, and the engine's outputs stay off.
 
 mod capture;
+#[cfg(not(target_arch = "wasm32"))]
+mod file;
 mod levels;
 mod macros;
 mod outputs;
+#[cfg(not(target_arch = "wasm32"))]
+mod panic;
 mod record;
 #[cfg(dev_tools)]
 mod ring;
@@ -156,6 +160,39 @@ pub fn level(target: &str) -> LevelFilter {
   LOGGER
     .get()
     .map_or(LevelFilter::Off, |logger| logger.levels().of(target))
+}
+
+/// Opens the log file in `folder` (`<folder>/logs/latest.log`) and installs
+/// the panic hook that writes a panic to it. Returns the path used. A file
+/// that cannot be had is said once on stderr, and the game runs without it.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn open_log_file(folder: &std::path::Path) -> Option<std::path::PathBuf> {
+  ensure();
+  match file::open(folder) {
+    Ok(path) => {
+      panic::install_hook();
+      Some(path)
+    }
+    Err(error) => {
+      report(&format!(
+        "no log file in {} ({error}); the game runs without one",
+        folder.display()
+      ));
+      None
+    }
+  }
+}
+
+/// Once a frame: the file's waiting lines go to disk when it is time.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn tick_log_file() {
+  file::tick();
+}
+
+/// At exit: everything waiting goes to disk.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn flush_log_file() {
+  file::flush();
 }
 
 /// Sets this thread's frame number, which its records carry.
