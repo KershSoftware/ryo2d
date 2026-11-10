@@ -674,8 +674,7 @@ impl SceneManager {
   /// `PhysicsPaused` resource, the scenes whose voices the audio engine
   /// holds (see [`Scene::holds_audio_below`]) and the scenes whose particle
   /// emitters are frozen. The stack's changes do the last two as they
-  /// happen; this follows a scene whose answers changed, and a transition
-  /// starting or ending.
+  /// happen; this follows a scene whose answers changed.
   pub fn sync_pauses(&self, world: &mut World) {
     if let Some(mut paused) = world.get_resource_mut::<PhysicsPaused>() {
       paused.0 = self.is_physics_paused();
@@ -685,21 +684,17 @@ impl SceneManager {
 
   /// Tell the audio engine which scenes are not heard: those not updated
   /// (below `update_from`), when the top scene `holds_audio_below`. Tell the
-  /// particle store which scenes' emitters are frozen: every scene that does
-  /// not update, so those below `update_from`, and all of them while a
-  /// transition runs.
+  /// particle store which scenes' emitters are frozen: those below
+  /// `update_from`, whatever `holds_audio_below` says. A scene transition
+  /// holds neither.
   fn sync_audio_holds(&self, world: &mut World) {
+    let stopped = &self.scenes[..self.update_from()];
     let unheard = match self.scenes.last() {
-      Some(top) if top.scene.holds_audio_below() => &self.scenes[..self.update_from()],
+      Some(top) if top.scene.holds_audio_below() => stopped,
       _ => &[],
     };
     audio::hold_scenes(world, unheard.iter().map(|slot| slot.scope_id));
-    let frozen = if self.is_transitioning() {
-      &self.scenes[..]
-    } else {
-      &self.scenes[..self.update_from()]
-    };
-    particles::hold_scenes(world, frozen.iter().map(|slot| slot.scope_id));
+    particles::hold_scenes(world, stopped.iter().map(|slot| slot.scope_id));
   }
 }
 

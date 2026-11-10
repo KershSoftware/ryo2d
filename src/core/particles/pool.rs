@@ -32,6 +32,8 @@ const SHORT_RUN: usize = 8;
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct NewParticle {
   pub(crate) position: Vec2,
+  /// Where the draw starts it, in the step it is born
+  pub(crate) previous: Vec2,
   pub(crate) velocity: Vec2,
   pub(crate) lifetime: f32,
   pub(crate) size: f32,
@@ -95,13 +97,12 @@ impl Pool {
     self.flags.clear();
   }
 
-  /// Adds a particle at the end (the newest), aged 0, where it was the
-  /// step before being where it starts
+  /// Adds a particle at the end (the newest), aged 0
   pub(crate) fn push(&mut self, new: &NewParticle) {
     self.x.push(new.position.x);
     self.y.push(new.position.y);
-    self.px.push(new.position.x);
-    self.py.push(new.position.y);
+    self.px.push(new.previous.x);
+    self.py.push(new.previous.y);
     self.vx.push(new.velocity.x);
     self.vy.push(new.velocity.y);
     self.age.push(0.0);
@@ -396,6 +397,7 @@ mod tests {
   fn at(x: f32) -> NewParticle {
     NewParticle {
       position: Vec2::new(x, -x),
+      previous: Vec2::new(x, -x),
       velocity: Vec2::new(x * 2.0, 1.0),
       lifetime: x + 10.0,
       size: x + 1.0,

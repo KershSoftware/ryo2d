@@ -254,3 +254,4 @@ The code maps made at planning settled these. The owner may revisit any of them.
 - **The collision grid's cell** is twice the mean edge length, clamped to 16 to 256 world units. Results must equal testing every edge.
 - **Presets** keep their values. A line's old offset from the emitter is dropped, since the emitter places the line.
 - **The before-and-after benches** are 10,000 particles from one emitter, 100 emitters of 100, and 2,000 bouncing particles over a 64×64 tile map.
+- Particles keep moving through a scene transition, as physics, tweens, trails and audio do; only a scene that stops theirs holds them. (Settled at review, 2026-11-09.)

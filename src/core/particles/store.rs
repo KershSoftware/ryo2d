@@ -28,7 +28,7 @@ pub(crate) const NO_SLOT: u32 = u32::MAX;
 /// emitter keeps it, so the step finds a pool without a lookup), and what
 /// they share: the live count and its budget, the stream emitters' engine
 /// seeds come from, each effect compiled once per version, and the scenes
-/// held (those that do not update).
+/// held (those a scene above stops).
 #[derive(Resource, Debug)]
 pub(crate) struct ParticleStore {
   /// How long the systems took when they last ran
@@ -48,7 +48,7 @@ pub(crate) struct ParticleStore {
   pub(crate) warned_budget: FastSet<AssetId<ParticleEffect>>,
   /// The scene whose code runs now: an emitter added meanwhile is its
   scope: Option<u64>,
-  /// The scenes held: those that do not update
+  /// The scenes held: those a scene above stops
   held: Vec<u64>,
   /// Steps run, counting from 1: a pool stepped in step `n - 1` was
   /// stepped in the previous step
@@ -148,8 +148,8 @@ impl ParticleStore {
     std::mem::replace(&mut self.scope, scope)
   }
 
-  /// Hold the emitters of the scenes in `scopes` (those that do not
-  /// update), and the emitters of no scene while there are any; let the
+  /// Hold the emitters of the scenes in `scopes` (those a scene above
+  /// stops), and the emitters of no scene while there are any; let the
   /// rest go
   pub(crate) fn hold_scopes(&mut self, scopes: impl Iterator<Item = u64>) {
     self.held.clear();

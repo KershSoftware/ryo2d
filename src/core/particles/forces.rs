@@ -564,6 +564,7 @@ mod tests {
       let to = from + along * rng.range(0.0, longest);
       pool.push(&NewParticle {
         position: to,
+        previous: to,
         velocity: (to - from) * 60.0,
         lifetime: 1.0,
         size: 1.0,

@@ -1076,7 +1076,7 @@ An effect (`ParticleEffect`, an asset) says how a kind of particle is born, move
 | `new(effect: Handle<ParticleEffect>)` | plays `effect` at its entity's `GlobalTransform` (lifted on a floor); public field `effect` |
 | `with_seed(u64)`, `with_z(i32)` | its random stream's seed, over the effect's; its draw order, over the effect's `z` |
 | `with_speed(f32)`, `set_speed(&mut self, f32)` | its time as a multiple of game time, or real time when unscaled (0 to 100; not a number or negative stops it) |
-| `unscaled()` | runs on real time through a paused clock, hitstop, slow motion, held scenes and scene transitions (at most 8 steps a frame) |
+| `unscaled()` | runs on real time through a paused clock, hitstop, slow motion and held scenes (at most 8 steps a frame) |
 | `stopped()` | emits nothing until `play`, and reports no finish before it has played |
 | `once()` | plays one cycle, even of a looping effect |
 | `despawn_when_finished()` | despawns its entity, with its children, in the step after it finishes |
@@ -1087,7 +1087,7 @@ An effect (`ParticleEffect`, an asset) says how a kind of particle is born, move
 | `burst(&mut self, count: u32)` | adds `count` particles in its next step, whatever its effect emits and whether or not it plays, within `max_particles` and the budget. A `stopped()` emitter never reports `EmitterFinished` nor despawns: only `play` or `restart` arm it |
 | `is_playing() -> bool`, `is_finished() -> bool`, `is_unscaled() -> bool`, `alive() -> u32`, `speed() -> f32`, `z() -> Option<i32>` | finished: not playing, no live particles and no burst to add; `alive` as the last step left it |
 
-`ctx.skip_interpolation(entity)` also marks a `ParticleEmitter` on the entity, `Interpolated` or not: its next step spawns at the new place only, so a teleport never streaks. Despawning an emitter, or taking the component off, removes its particles. A `Disabled` emitter is frozen and hidden. A game-time emitter steps only while its scene updates, so not under a scene that stops it and not during a scene transition; an emitter added outside every scene is held while any scene is held.
+`ctx.skip_interpolation(entity)` also marks a `ParticleEmitter` on the entity, `Interpolated` or not: its next step spawns at the new place only, so a teleport never streaks. Despawning an emitter, or taking the component off, removes its particles. A `Disabled` emitter is frozen and hidden. A game-time emitter steps while its scene updates, so not under a scene that stops it; a scene transition doesn't stop it; an emitter added outside every scene is held while any scene is held.
 
 | `ParticleEffect` (asset; public fields, `.particles.ron` files through `ParticleEffectLoader`) | Default | |
 |---|---|---|

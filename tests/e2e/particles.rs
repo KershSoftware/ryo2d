@@ -328,7 +328,7 @@ fn a_scene_that_stops_the_level_freezes_its_particles_though_it_leaves_it_audibl
 }
 
 #[test]
-fn a_scene_transition_freezes_particles_until_it_ends() {
+fn particles_keep_moving_through_a_scene_transition() {
   let Some((mut engine, board)) = engine(Setup::default()) else {
     return;
   };
@@ -337,18 +337,27 @@ fn a_scene_transition_freezes_particles_until_it_ends() {
   // The level's update starts the fade, in this frame's step
   engine.step_frames(1).unwrap();
   let game = entity(&board, |b| b.game);
-  let held = positions(&engine, game);
+  let start = oldest(&engine, game).x;
 
+  // A pixel a step, give or take the step a frame's rounding can shift
   engine.step_frames(6).unwrap();
-  assert_eq!(positions(&engine, game), held, "held as it fades out");
+  let fading_out = oldest(&engine, game).x;
+  assert!(
+    fading_out - start >= 5.0,
+    "they move as it fades out: {start} to {fading_out}"
+  );
   // Past the midpoint, where the overlay was pushed
   engine.step_frames(12).unwrap();
-  assert_eq!(positions(&engine, game), held, "held as it fades in");
+  let fading_in = oldest(&engine, game).x;
+  assert!(
+    fading_in - fading_out >= 11.0,
+    "they move as it fades in: {fading_out} to {fading_in}"
+  );
 
   engine.step_frames(20).unwrap();
   assert!(
-    oldest(&engine, game).x > held[0].x,
-    "the level updates under the overlay, so its particles move on after the fade"
+    oldest(&engine, game).x - fading_in >= 19.0,
+    "the level updates under the overlay, so they move on after the fade"
   );
 }
 

@@ -229,6 +229,7 @@ impl Stepper<'_> {
           };
           sub.particles.push(&NewParticle {
             position: trigger.at + offset,
+            previous: trigger.at + offset,
             velocity: velocity + inherited,
             ..new
           });

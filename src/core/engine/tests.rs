@@ -452,8 +452,10 @@ fn particles_after_a_step(engine: &mut Engine) -> Vec<(f32, f32)> {
 /// every run
 #[test]
 fn engines_step_particles_within_the_builder_s_budget() {
-  use crate::core::particles::{DEFAULT_PARTICLE_BUDGET, ParticleStore};
+  use crate::core::particles::{DEFAULT_PARTICLE_BUDGET, ParticleStore, testing};
 
+  // The budget of 5 drops spawns, which warns
+  let _log = testing::log_lock();
   let headless = || {
     EngineBuilder::new()
       .start_scene(EmptyScene)

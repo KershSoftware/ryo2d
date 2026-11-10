@@ -8,11 +8,11 @@ use crate::core::asset::{Assets, Handle};
 use crate::core::ecs::kernel::Disabled;
 use crate::core::ecs::{Entity, Interpolated, Transform, World, WorldExt};
 use crate::core::particles::ParticleEmitter;
-use crate::core::particles::effect::{Burst, EmitShape, ParticleEffect};
+use crate::core::particles::effect::{Burst, EmitShape, ParticleEffect, Space};
 use crate::core::particles::scope;
 use crate::core::particles::store::{DEFAULT_PARTICLE_BUDGET, ParticleStore};
 use crate::core::particles::testing::{
-  self, Seen, count, particle_warnings, particles, snapshot, step, steps,
+  self, Seen, count, drawn, particle_warnings, particles, snapshot, step, steps,
 };
 use crate::core::particles::value::{Curve, Gradient};
 use crate::core::ui::Color;
@@ -562,6 +562,136 @@ fn a_moving_emitter_spreads_its_stream() {
     let mut ages: Vec<f32> = spawned.iter().map(|s| s.age).collect();
     ages.dedup();
     assert_eq!(ages.len(), 10, "distinct ages");
+  }
+}
+
+/// An `Interpolated` emitter of `effect` at the origin, one step old and
+/// snapshotted, ready for a move
+fn interpolated_emitter(world: &mut World, effect: Handle<ParticleEffect>) -> Entity {
+  let emitter = world
+    .spawn((
+      Transform::from_xy(0.0, 0.0),
+      Interpolated,
+      ParticleEmitter::new(effect),
+    ))
+    .id();
+  step(world);
+  snapshot(world);
+  emitter
+}
+
+#[test]
+fn a_moving_interpolated_emitter_s_new_particles_never_draw_ahead_of_it() {
+  let mut world = testing::world();
+  let effect = plain(&mut world)
+    .with_rate(600.0)
+    .with_speed(0.0)
+    .with_lifetime(10.0);
+  let effect = testing::effect(&mut world, effect);
+  let emitter = interpolated_emitter(&mut world, effect);
+  moved_to(&mut world, emitter, 100.0);
+  step(&mut world);
+  assert_eq!(count(&world, emitter), 20);
+
+  // Drawn at the ship's place as the step begins, and at their own as it ends
+  let simulated = newest(&world, emitter, 10);
+  let (start, end) = (drawn(&world, emitter, 0.0), drawn(&world, emitter, 1.0));
+  for (i, seen) in simulated.iter().enumerate() {
+    let f = (i + 1) as f32 / 10.0;
+    assert!(close(seen.x, 100.0 * f, 1e-3), "{i}: spread: {seen:?}");
+    assert_eq!(start[10 + i].x, 0.0, "{i}: at the emitter it leaves");
+    assert!(close(end[10 + i].x, seen.x, 1e-3), "{i}: {:?}", end[10 + i]);
+  }
+
+  // Next step they stand where they were put, with no slide back
+  snapshot(&mut world);
+  moved_to(&mut world, emitter, 200.0);
+  step(&mut world);
+  let start = drawn(&world, emitter, 0.0);
+  for (i, seen) in simulated.iter().enumerate() {
+    assert!(
+      close(start[10 + i].x, seen.x, 1e-3),
+      "{i}: {:?}",
+      start[10 + i]
+    );
+  }
+}
+
+#[test]
+fn a_moving_interpolated_emitter_s_new_particles_keep_their_place_in_its_shape() {
+  let mut world = testing::world();
+  let effect = plain(&mut world)
+    .with_rate(600.0)
+    .with_speed(0.0)
+    .with_lifetime(10.0)
+    .with_shape(EmitShape::Circle {
+      radius: 5.0,
+      arc_deg: 360.0,
+      thickness: 1.0,
+    });
+  let effect = testing::effect(&mut world, effect);
+  let emitter = interpolated_emitter(&mut world, effect);
+  moved_to(&mut world, emitter, 100.0);
+  step(&mut world);
+
+  let (start, end) = (drawn(&world, emitter, 0.0), drawn(&world, emitter, 1.0));
+  for i in 0..10 {
+    let (start, end) = (start[10 + i], end[10 + i]);
+    assert!(
+      start.length() <= 5.0 + 1e-3,
+      "{i}: round the origin: {start}"
+    );
+    let f = (i + 1) as f32 / 10.0;
+    assert!(
+      (end - start - Vec2::new(100.0 * f, 0.0)).length() < 1e-3,
+      "{i}: its offset kept: {start} to {end}"
+    );
+  }
+}
+
+#[test]
+fn only_a_spread_interpolated_stream_draws_from_the_emitter_s_last_place() {
+  let mut world = testing::world();
+  let stream = plain(&mut world)
+    .with_rate(600.0)
+    .with_speed(0.0)
+    .with_lifetime(10.0);
+  let local = stream.clone().with_space(Space::Local);
+  let stream = testing::effect(&mut world, stream);
+
+  // A teleport does not spread: they stand at the new place
+  let teleported = interpolated_emitter(&mut world, stream.clone());
+  moved_to(&mut world, teleported, 1000.0);
+  world.skip_interpolation(teleported);
+  step(&mut world);
+  for alpha in [0.0, 0.5, 1.0] {
+    for at in &drawn(&world, teleported, alpha)[10..] {
+      assert_eq!(at.x, 1000.0, "at {alpha}");
+    }
+  }
+
+  // A plain emitter draws where it stands, so its stream draws where placed
+  let plain_emitter = emitter_of(&mut world, stream, Transform::from_xy(0.0, 0.0));
+  step(&mut world);
+  moved_to(&mut world, plain_emitter, 100.0);
+  step(&mut world);
+  let simulated = newest(&world, plain_emitter, 10);
+  for alpha in [0.0, 0.5, 1.0] {
+    let at = drawn(&world, plain_emitter, alpha);
+    for (i, seen) in simulated.iter().enumerate() {
+      assert_eq!(at[10 + i].x, seen.x, "{i} at {alpha}");
+    }
+  }
+
+  // A `Local` stream's particles are born at the frame's origin, whichever
+  // way the frame moves: they draw with the emitter
+  let local = testing::effect(&mut world, local);
+  let carried = interpolated_emitter(&mut world, local);
+  moved_to(&mut world, carried, 100.0);
+  step(&mut world);
+  for (alpha, x) in [(0.0, 0.0), (0.5, 50.0), (1.0, 100.0)] {
+    let at = drawn(&world, carried, alpha);
+    assert!(close(at[at.len() - 1].x, x, 1e-3), "at {alpha}: {at:?}");
   }
 }
 

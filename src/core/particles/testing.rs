@@ -276,7 +276,8 @@ pub(crate) fn finished(world: &World) -> Vec<Entity> {
 }
 
 /// The dev log's particle warnings are shared by every test in the
-/// process: a test that counts them, or expects none, holds this
+/// process: a test that writes one (a clamped effect, a full budget, a
+/// nested sub-effect) or counts them, expecting some or none, holds this
 pub(crate) fn log_lock() -> MutexGuard<'static, ()> {
   static LOCK: Mutex<()> = Mutex::new(());
   LOCK.lock().unwrap_or_else(PoisonError::into_inner)

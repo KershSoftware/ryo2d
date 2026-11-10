@@ -332,6 +332,7 @@ mod tests {
   fn particle(at: Vec2) -> NewParticle {
     NewParticle {
       position: at,
+      previous: at,
       velocity: Vec2::ZERO,
       lifetime: 2.0,
       size: 10.0,

@@ -548,6 +548,7 @@ impl Pass<'_, '_> {
       unit: unit_axes(linear),
       dt,
       spread,
+      interpolated: place.previous.is_some_and(|p| !p.skip),
       local,
     };
     let looping = fx.effect.looping && !emitter.once;
@@ -827,7 +828,8 @@ fn due_firings(burst: &Burst, t: f64, duration: f64) -> u32 {
 /// `to` when `spread`, else all at `to`, the shape through the emitter's
 /// `linear` part and directions through its `unit` axes (turned and
 /// mirrored, not stretched). A `Local` effect's start at the emitter in
-/// its frame (`local`)
+/// its frame (`local`). An `interpolated` emitter draws between `from` and
+/// `to`, so its spread particles draw from `from` too and none leads it
 #[derive(Clone, Copy)]
 pub(super) struct Frame {
   pub(super) from: Vec2,
@@ -836,6 +838,7 @@ pub(super) struct Frame {
   pub(super) unit: Mat2,
   pub(super) dt: f32,
   pub(super) spread: bool,
+  pub(super) interpolated: bool,
   pub(super) local: Option<LocalFrame>,
 }
 
@@ -861,8 +864,10 @@ impl Frame {
 /// `partial` the part of the step each lived: spread along the move, the
 /// `i`th of `n` is placed at `(i + 1) / n` of it and lived the rest of the
 /// step, so a moving stream leaves an even line. Each starts with the
-/// effect's share of the emitter's velocity; a `Local` effect's start at
-/// the emitter, in its frame
+/// effect's share of the emitter's velocity, and draws from where it is
+/// placed, or from the emitter's start of the step when the emitter is
+/// drawn between steps; a `Local` effect's start at the emitter, in its
+/// frame
 fn spawn(pool: &mut EmitterPool, fx: &Compiled, frame: &Frame, n: usize, partial: &mut Vec<f32>) {
   let inherited = frame.inherited(fx.effect.inherit_velocity);
   let to_local = frame.local.map(|local| local.axes.transpose());
@@ -877,12 +882,27 @@ fn spawn(pool: &mut EmitterPool, fx: &Compiled, frame: &Frame, n: usize, partial
       (frame.to, 0.0)
     };
     let new = sample_particle(fx, &mut pool.rng, frame.linear, frame.unit);
-    let (position, velocity) = match to_local {
-      Some(to_local) => (to_local * new.position, to_local * new.velocity),
-      None => (at + new.position, new.velocity + inherited),
+    let (position, previous, velocity) = match to_local {
+      Some(to_local) => {
+        let position = to_local * new.position;
+        (position, position, to_local * new.velocity)
+      }
+      None => {
+        let drawn_from = if frame.spread && frame.interpolated {
+          frame.from
+        } else {
+          at
+        };
+        (
+          at + new.position,
+          drawn_from + new.position,
+          new.velocity + inherited,
+        )
+      }
     };
     pool.main.push(&NewParticle {
       position,
+      previous,
       velocity,
       ..new
     });
@@ -920,6 +940,7 @@ pub(super) fn sample_particle(
   let seed = (rng.next_u64() >> 32) as u32;
   NewParticle {
     position: linear * point,
+    previous: linear * point,
     velocity: heading * speed,
     lifetime,
     size,
@@ -1007,7 +1028,8 @@ fn unit_axes(linear: Mat2) -> Mat2 {
 }
 
 /// Steps the particles of `p`: those before `born` by `dt`, those spawned
-/// this step by the part of it they lived (`partial`; none past its end).
+/// this step by the part of it they lived (`partial`; none past its end),
+/// keeping the place they were given to draw from.
 /// Each ages, and one whose life ends dies where it stood as the step
 /// began; the rest take the attractors' pull (`acting`), their gravity,
 /// their drag and their speed curve's change, spin, move from where they
@@ -1073,8 +1095,10 @@ pub(super) fn advance(
         }
       }
       p.rotation[i] += p.spin[i] * step;
-      p.px[i] = from.x;
-      p.py[i] = from.y;
+      if i < born {
+        p.px[i] = from.x;
+        p.py[i] = from.y;
+      }
       p.x[i] += velocity.x * step;
       p.y[i] += velocity.y * step;
       p.vx[i] = velocity.x;
