@@ -107,12 +107,14 @@ impl ConsoleScope<'_> {
     }
   }
 
-  /// Print a line to the console.
+  /// Print a line to the console, at once. From inside a command's handler
+  /// it lands before the lines the handler prints through its `Command`,
+  /// which go to the console when the handler returns.
   pub fn print(&mut self, text: impl Into<String>) {
     self.print_colored(text, super::colors::TEXT);
   }
 
-  /// Print a line to the console in `color`.
+  /// Print a line to the console in `color`, at once (as [`print`](Self::print)).
   pub fn print_colored(&mut self, text: impl Into<String>, color: Color) {
     #[cfg(dev_tools)]
     if let Some(mut console) = self.world.get_resource_mut::<super::Console>() {

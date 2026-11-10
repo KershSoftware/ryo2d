@@ -2075,6 +2075,13 @@ mod console {
   fn engine(builder: EngineBuilder) -> Option<Engine> {
     let (device, queue) = crate::core::testing::shared_gpu().ok()?;
     let mut e = builder.resolution(64, 64).build_headless();
+    // On before the start scene enters, so what it plays is in the log
+    if let Some(mut audio) = e
+      .world
+      .get_resource_mut::<crate::core::audio::AudioEngine>()
+    {
+      audio.set_logging(true);
+    }
     e.init_gpu(WgpuRenderer::new_offscreen(device, queue, 64, 64), 1.0);
     Some(e)
   }
@@ -2218,12 +2225,13 @@ mod console {
   }
 
   /// The emitter `game:burst` played last
-  #[derive(Resource)]
-  struct Burst(Entity);
+  #[derive(Resource, Clone, Copy)]
+  struct Burst(Entity, u32);
 
   #[derive(Default)]
   struct Bursts {
     fx: Option<crate::core::asset::Handle<ParticleEffect>>,
+    clip: Option<crate::core::asset::Handle<crate::core::audio::AudioClip>>,
   }
 
   impl Scene for Bursts {
@@ -2232,12 +2240,18 @@ mod console {
         .assets()
         .add(Image::solid_rect(8, 8, 255, 255, 255, 255));
       self.fx = Some(ctx.assets().add(ParticleEffect::new(image)));
+      // Four seconds of silence: still playing when its scene is held
+      let silence = vec![[0.0; 2]; 4 * 48_000];
+      let clip = crate::core::audio::AudioClip::from_frames(48_000, &silence).ok();
+      self.clip = clip.map(|clip| ctx.assets().add(clip));
       ctx.console().command(
         ("game:burst", "Play a burst"),
         |scene: &mut Bursts, ctx, _| {
           let fx = scene.fx.clone().ok_or("no effect")?;
+          let clip = scene.clip.clone().ok_or("no clip")?;
           let burst = ctx.particles().play_at(&fx, glam::Vec2::ZERO);
-          ctx.world.insert_resource(Burst(burst));
+          let voice = ctx.audio().play(&clip).id();
+          ctx.world.insert_resource(Burst(burst, voice));
           Ok(())
         },
       );
@@ -2264,7 +2278,19 @@ mod console {
     step(&mut e);
     let scope = frame::with_host(&mut e.world, |_, host| host.scenes.top_scope());
     assert!(e.console_run("game:burst").is_empty());
-    let burst = e.world.resource::<Burst>().0;
+    let Burst(burst, voice) = *e.world.resource::<Burst>();
+    assert_ne!(voice, 0, "the sound started");
+    // The voice's pauses and resumes in the audio log
+    let holds = |e: &Engine| -> Vec<crate::core::audio::AudioLogKind> {
+      use crate::core::audio::AudioLogKind::{Pause, Resume};
+      e.world
+        .resource::<crate::core::audio::AudioEngine>()
+        .log()
+        .iter()
+        .filter(|entry| entry.voice == voice && matches!(entry.kind, Pause | Resume))
+        .map(|entry| entry.kind)
+        .collect()
+    };
     let held = |e: &Engine| {
       let slot = e
         .world
@@ -2281,8 +2307,72 @@ mod console {
     e.console_run("test:push");
     step(&mut e);
     assert_eq!(held(&e), (scope, true), "held while its scene is");
+    use crate::core::audio::AudioLogKind::{Pause, Resume};
+    assert_eq!(holds(&e), [Pause], "its sound is held with its scene");
     e.console_run("test:pop");
     step(&mut e);
     assert_eq!(held(&e), (scope, false));
+    assert_eq!(holds(&e), [Pause, Resume], "and let go with it");
+  }
+
+  #[test]
+  fn a_closed_console_does_no_per_frame_work() {
+    let Some(mut e) = engine(EngineBuilder::new().start_scene(EmptyScene)) else {
+      return;
+    };
+    for _ in 0..3 {
+      step(&mut e);
+    }
+    let ticks = |e: &Engine| {
+      let ticks = e
+        .world
+        .get_resource_change_ticks::<Console>()
+        .map(|ticks| (ticks.added, ticks.changed));
+      (ticks, e.world.archetypes().len())
+    };
+    let before = ticks(&e);
+    for _ in 0..60 {
+      step(&mut e);
+    }
+    assert_eq!(
+      ticks(&e),
+      before,
+      "neither changed nor taken out and put back"
+    );
+    // Open, it is worked on each frame
+    e.world.resource_mut::<Console>().toggle();
+    let open = ticks(&e);
+    step(&mut e);
+    assert_ne!(ticks(&e), open);
+  }
+
+  #[test]
+  fn a_scene_entry_whose_scene_has_left_says_so_and_goes() {
+    use crate::core::console::{Handler, erase};
+    let Some(mut e) = engine(EngineBuilder::new().start_scene(EmptyScene)) else {
+      return;
+    };
+    // An entry no scene on the stack owns, as a release that missed it would leave
+    e.world.resource_mut::<ConsoleCommands>().add(
+      CommandSpec::new("game:orphan", "Left behind"),
+      Handler::Scene {
+        scope: 9_999,
+        call: erase(|_: &mut EmptyScene, _, _| Ok(())),
+      },
+    );
+    assert_eq!(
+      e.console_run("game:orphan"),
+      ["game:orphan: the scene that registered it has left"]
+    );
+    assert!(
+      e.world
+        .resource::<ConsoleCommands>()
+        .find("game:orphan")
+        .is_none()
+    );
+    assert_eq!(
+      e.console_run("game:orphan"),
+      ["Unknown command: game:orphan. Type 'help'."]
+    );
   }
 }

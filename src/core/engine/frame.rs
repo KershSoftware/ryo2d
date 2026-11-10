@@ -384,18 +384,22 @@ impl Engine {
   /// The developer console: animation, input while open, and the line
   /// typed, run as a command.
   fn console_tick(&mut self) {
-    let real_dt = self.world.resource::<Time>().real.delta();
-    let to_screen = self.console_pixel_scale();
-    if !self.world.contains_resource::<Console>() {
+    // A closed console does nothing a frame: it is neither touched nor
+    // taken out of the world (its clock and scroll ease wait for it)
+    if !self
+      .world
+      .get_resource::<Console>()
+      .is_some_and(|console| console.visible)
+    {
+      self.console_cursor = None;
       return;
     }
+    let real_dt = self.world.resource::<Time>().real.delta();
+    let to_screen = self.console_pixel_scale();
     let submitted = self
       .world
       .resource_scope(|world, mut console: Mut<Console>| {
         console.update(real_dt);
-        if !console.visible {
-          return None;
-        }
         // A trackpad moves the console as far as the pointer would, converted
         // as the UI converts the pointer
         console.set_pixel_scale(to_screen);
@@ -840,7 +844,12 @@ impl Engine {
           .draw(&mut ui, &self.world, dt, self.ui_retain.stats, top);
       }
       // The console over everything
-      if let Some(mut console) = self.world.get_resource_mut::<Console>() {
+      if self
+        .world
+        .get_resource::<Console>()
+        .is_some_and(|c| c.visible)
+        && let Some(mut console) = self.world.get_resource_mut::<Console>()
+      {
         console.render(&mut ui, width, height);
       }
       ui.end_scene();

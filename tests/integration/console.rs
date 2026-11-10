@@ -444,12 +444,32 @@ fn log_level_shows_and_sets() {
     e.console_run(&format!("log:level {target}")),
     [format!("{target}: debug")]
   );
-  let all = e.console_run("log:level").join("\n");
-  for part in ["game", "engine", "library", target] {
-    assert!(all.contains(part), "{part} in {all}");
+  let all = e.console_run("log:level");
+  let at = |line: &str| {
+    all
+      .iter()
+      .position(|l| l.trim() == line)
+      .unwrap_or_else(|| panic!("{line} in {all:#?}"))
+  };
+  let (defaults, overrides) = (at("defaults:"), at("overrides:"));
+  for name in ["game", "engine", "library"] {
+    let line = all
+      .iter()
+      .position(|l| l.trim_start().starts_with(&format!("{name}: ")))
+      .unwrap_or_else(|| panic!("{name} in {all:#?}"));
+    assert!(
+      defaults < line && line < overrides,
+      "{name} is a default: {all:#?}"
+    );
   }
+  let own = at(&format!("{target}: debug"));
+  assert!(own > overrides, "{target} is an override: {all:#?}");
   let bad = e.console_run(&format!("log:level {target} loud"));
   assert_eq!(bad.len(), 1, "{bad:?}");
+  assert!(
+    bad[0].contains("usage: log:level [target] [level]") && bad[0].contains("trace"),
+    "{bad:?}"
+  );
   assert_eq!(
     level(target),
     log::LevelFilter::Debug,
@@ -509,4 +529,98 @@ fn no_command_names_an_ip() {
   assert!(help.len() > 10, "{help:?}");
   assert!(help.iter().all(|line| !line.contains(":ip")), "{help:?}");
   assert_eq!(e.console_run("system:ip:lan"), unknown("system:ip:lan"));
+}
+
+#[test]
+fn a_change_of_scene_asked_for_during_a_transition_says_it_was_dropped() {
+  let Some(mut e) = engine(
+    stack_commands(EngineBuilder::new())
+      .console_command(("test:fade", "Fade to Pause"), |_, cmd| {
+        cmd.act(SceneAction::PushWith(
+          Box::new(Pause),
+          Transition::fade(std::time::Duration::from_secs(5)),
+        ));
+        Ok(())
+      })
+      .start_scene(Plain),
+  ) else {
+    return;
+  };
+  assert!(e.console_run("test:fade").is_empty());
+  assert_eq!(
+    e.console_run("test:push-upper"),
+    ["test:push-upper: a scene transition is running; its Push was dropped"]
+  );
+  let scenes = e.console_run("system:scenes").join("\n");
+  assert!(!scenes.contains("Upper"), "{scenes}");
+}
+
+/// Prints through the console and through the command
+struct Printer;
+impl Scene for Printer {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    ctx.console().command(
+      ("game:print", "Print both ways"),
+      |_: &mut Printer, ctx, cmd| {
+        cmd.print("through the command");
+        ctx.console().print("through the console");
+        Ok(())
+      },
+    );
+  }
+}
+
+#[test]
+fn a_line_printed_through_the_console_comes_before_the_command_s_own() {
+  let Some(mut e) = engine(EngineBuilder::new().start_scene(Printer)) else {
+    return;
+  };
+  assert_eq!(
+    e.console_run("game:print"),
+    ["through the console", "through the command"]
+  );
+}
+
+/// Removes a built-in as it enters, and reports removing an unknown name
+struct Remover;
+impl Scene for Remover {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    assert!(ctx.console().remove("system:version"));
+    ctx.console().command(
+      ("game:remove-nothing", "Remove an unknown name"),
+      |_: &mut Remover, ctx, cmd| {
+        cmd.print(format!("removed {}", ctx.console().remove("game:nothing")));
+        Ok(())
+      },
+    );
+  }
+}
+
+#[test]
+fn a_scene_can_remove_a_built_in_and_removing_an_unknown_name_is_false() {
+  let Some(mut e) = engine(
+    EngineBuilder::new()
+      .remove_console_command("game:never-added")
+      .start_scene(Remover),
+  ) else {
+    return;
+  };
+  assert_eq!(e.console_run("system:version"), unknown("system:version"));
+  let help = e.console_run("help").join("\n");
+  assert!(!help.contains("system:version"), "{help}");
+  assert!(
+    help.contains("system:timescale"),
+    "the builder's unknown removal took nothing: {help}"
+  );
+  assert_eq!(e.console_run("game:remove-nothing"), ["removed false"]);
+}
+
+#[test]
+fn a_command_that_pops_the_last_scene_quits() {
+  let Some(mut e) = engine(stack_commands(EngineBuilder::new()).start_scene(Plain)) else {
+    return;
+  };
+  assert_eq!(e.step().unwrap(), StepOutcome::Running);
+  assert!(e.console_run("test:pop").is_empty());
+  assert_eq!(e.step().unwrap(), StepOutcome::Quit);
 }

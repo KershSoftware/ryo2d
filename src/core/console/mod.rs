@@ -34,6 +34,8 @@ pub(crate) use builtins::add_builtins;
 pub(crate) use command::WorldHandler;
 #[cfg(dev_tools)]
 pub(crate) use dispatch::run_line;
+#[cfg(all(dev_tools, test))]
+pub(crate) use registry::erase;
 #[cfg(dev_tools)]
 pub(crate) use registry::{ConsoleCommands, EngineHooks, Handler, valid_name};
 

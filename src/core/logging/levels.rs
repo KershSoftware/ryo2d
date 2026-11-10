@@ -15,6 +15,16 @@ pub(crate) struct Levels {
   overrides: Vec<(String, LevelFilter)>,
 }
 
+/// The levels as `log:level` lists them
+#[cfg(dev_tools)]
+#[derive(Debug)]
+pub(crate) struct LevelReport {
+  /// `game`, `engine` and `library`: each origin's default
+  pub(crate) defaults: [(&'static str, LevelFilter); 3],
+  /// `(target prefix, level)`, in the order set
+  pub(crate) overrides: Vec<(String, LevelFilter)>,
+}
+
 const LEVEL_NAMES: &str = "off, error, warn, info, debug, trace";
 
 impl Levels {
@@ -85,8 +95,13 @@ impl Levels {
   }
 
   /// Sets the level of `target` and everything under it, replacing an
-  /// earlier override of the same target.
+  /// earlier override of the same target. `game`, the root of every game
+  /// target, sets the game's default: there is no override beside it.
   pub(crate) fn set(&mut self, target: &str, level: LevelFilter) {
+    if target == "game" {
+      self.game = level;
+      return;
+    }
     match self
       .overrides
       .iter_mut()
@@ -97,19 +112,37 @@ impl Levels {
     }
   }
 
-  /// The defaults (`game`, `engine`, `library`), then each target's own
-  /// level, in the order they were set
+  /// The default level of `origin`'s targets: those under no override
   #[cfg(dev_tools)]
-  pub(crate) fn report(&self) -> Vec<(String, LevelFilter)> {
-    [
-      ("game", self.game),
-      ("engine", self.engine),
-      ("library", self.library),
-    ]
-    .into_iter()
-    .map(|(name, level)| (name.to_owned(), level))
-    .chain(self.overrides.iter().cloned())
-    .collect()
+  pub(crate) fn default(&self, origin: Origin) -> LevelFilter {
+    match origin {
+      Origin::Game => self.game,
+      Origin::Engine => self.engine,
+      Origin::Library => self.library,
+    }
+  }
+
+  /// Sets the default level of `origin`'s targets
+  #[cfg(dev_tools)]
+  pub(crate) fn set_default(&mut self, origin: Origin, level: LevelFilter) {
+    match origin {
+      Origin::Game => self.game = level,
+      Origin::Engine => self.engine = level,
+      Origin::Library => self.library = level,
+    }
+  }
+
+  /// The three defaults and each target's own level, in the order set
+  #[cfg(dev_tools)]
+  pub(crate) fn report(&self) -> LevelReport {
+    LevelReport {
+      defaults: [
+        ("game", self.game),
+        ("engine", self.engine),
+        ("library", self.library),
+      ],
+      overrides: self.overrides.clone(),
+    }
   }
 
   /// The most verbose level any target logs at: `log`'s global maximum.
@@ -139,6 +172,31 @@ pub(crate) fn parse_level(text: &str) -> Option<LevelFilter> {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[cfg(dev_tools)]
+  #[test]
+  fn the_three_defaults_are_set_by_origin_and_game_is_its_default() {
+    let mut levels = Levels::defaults();
+    levels.set_default(Origin::Engine, LevelFilter::Debug);
+    assert_eq!(levels.of("ryo2d::core::console"), LevelFilter::Debug);
+    assert_eq!(levels.default(Origin::Engine), LevelFilter::Debug);
+    levels.set_default(Origin::Library, LevelFilter::Error);
+    assert_eq!(levels.of("wgpu_core"), LevelFilter::Error);
+    // The prefix `game` is the game's default, not an override beside it
+    levels.set("game", LevelFilter::Trace);
+    assert_eq!(levels.default(Origin::Game), LevelFilter::Trace);
+    assert_eq!(levels.of("game::menu"), LevelFilter::Trace);
+    let report = levels.report();
+    assert!(report.overrides.is_empty(), "{:?}", report.overrides);
+    assert_eq!(
+      report.defaults,
+      [
+        ("game", LevelFilter::Trace),
+        ("engine", LevelFilter::Debug),
+        ("library", LevelFilter::Error)
+      ]
+    );
+  }
 
   #[test]
   fn the_defaults_are_info_for_game_and_engine_and_warn_for_libraries() {

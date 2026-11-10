@@ -29,10 +29,12 @@ A scene's entries go when its slot leaves the stack (pop, switch, reset, clear):
 2. The line is split; the first word, lower-cased, is the name. An empty line (or `""`) does nothing; an unknown name prints `Unknown command: <name>. Type 'help'.` in red.
 3. `find` clones the spec and the handler (`Arc`s) out, so nothing of the registry is borrowed while the handler runs: a handler may add or remove commands, or pop its own scene.
 4. The handler runs (above). A scene entry whose scope has no slot prints an error and its scope's entries are removed.
-5. Its printed lines go to the console, then an `Err` text in red.
-6. A scene action it asked for goes through `SceneManager::handle_action` and `sync_pauses`, as `update`'s does: a builder's or a built-in's always, a scene's only from the top scene (a lower scene's is dropped with a red line, as `update` drops one). During a transition only `Quit` applies. A stack left empty, or `cmd.quit()`, asks the engine to quit (`console_quit_requested`).
+5. Its printed lines go to the console, then an `Err` text in red. A line the handler prints through `ctx.console().print` goes in at once, so it comes before the command's own lines, which are buffered in `Command` until the handler returns.
+6. A scene action it asked for goes through `SceneManager::handle_action` and `sync_pauses`, as `update`'s does: a builder's or a built-in's always, a scene's only from the top scene (a lower scene's is dropped with a red line, as `update` drops one). During a transition only `Quit` applies; a scene change asked for then is dropped with a red line. A stack left empty, or `cmd.quit()`, asks the engine to quit (`console_quit_requested`).
 
-The console runs once a frame in `console_tick`, after `PreUpdate` and before the UI pass, on real time, so commands work while the game is paused.
+The console runs once a frame in `console_tick`, after `PreUpdate` and before the UI pass, on real time, so commands work while the game is paused. A closed console does no work a frame: `console_tick` and the UI pass only read it, so the resource is neither changed nor taken out of the world (`a_closed_console_does_no_per_frame_work`); its clock and scroll ease stand still until it opens.
+
+`log:level`: `game`, `engine` and `library` name the three origin defaults (`logging::set_default_level`); any other word is a target prefix with an override. `game` is also the root of the game's targets, and `Levels::set("game", ..)` sets the game default too, so there is never an override named `game`. The listing shows a `defaults:` block and an `overrides:` block.
 
 Tests drive it through `HeadlessEngine::console_run` (doc-hidden, dev tools): the line is echoed, run, and the lines printed after the echo are returned (`Console::capture`/`take_captured`).
 

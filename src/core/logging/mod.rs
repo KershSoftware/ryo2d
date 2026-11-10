@@ -168,11 +168,34 @@ pub fn level(target: &str) -> LevelFilter {
 /// The defaults (`game`, `engine`, `library`) and each target's own level,
 /// for the console's `log:level`
 #[cfg(dev_tools)]
-pub(crate) fn level_report() -> Vec<(String, LevelFilter)> {
+pub(crate) fn level_report() -> Option<levels::LevelReport> {
+  ensure();
+  LOGGER.get().map(|logger| logger.levels().report())
+}
+
+/// The default level of `origin`'s targets (those under no override of
+/// their own)
+#[cfg(dev_tools)]
+pub(crate) fn default_level(origin: Origin) -> LevelFilter {
   ensure();
   LOGGER
     .get()
-    .map_or_else(Vec::new, |logger| logger.levels().report())
+    .map_or(LevelFilter::Off, |logger| logger.levels().default(origin))
+}
+
+/// Sets the default level of `origin`'s targets, at once
+#[cfg(dev_tools)]
+pub(crate) fn set_default_level(origin: Origin, level: LevelFilter) {
+  ensure();
+  let Some(logger) = LOGGER.get() else { return };
+  let mut levels = logger
+    .levels
+    .write()
+    .unwrap_or_else(PoisonError::into_inner);
+  levels.set_default(origin, level);
+  if installed_by_engine() {
+    log::set_max_level(levels.most_verbose());
+  }
 }
 
 /// Opens the log file in `folder` (`<folder>/logs/latest.log`) and installs
@@ -226,14 +249,53 @@ pub(crate) fn set_frame(frame: u64) {
 /// test (a second on the same thread would wait on the first).
 #[cfg(test)]
 pub(crate) fn level_for_test(target: &'static str, level: LevelFilter) -> TestLevel {
-  static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
-  let turn = TURN.lock().unwrap_or_else(PoisonError::into_inner);
+  let turn = LEVEL_TURN.lock().unwrap_or_else(PoisonError::into_inner);
   let before = self::level(target);
   set_level(target, level);
   TestLevel {
     target,
     before,
     _turn: turn,
+  }
+}
+
+/// The turn level-changing tests take, one at a time
+#[cfg(test)]
+static LEVEL_TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// For a test that changes levels through the console (the defaults
+/// included): every level as it is now, put back when the guard drops, and
+/// the turn [`level_for_test`] takes held until then.
+#[cfg(all(test, dev_tools))]
+pub(crate) fn levels_for_test() -> TestLevels {
+  let turn = LEVEL_TURN.lock().unwrap_or_else(PoisonError::into_inner);
+  ensure();
+  TestLevels {
+    before: LOGGER.get().map(|logger| logger.levels().clone()),
+    _turn: turn,
+  }
+}
+
+/// Puts every level back when dropped; see [`levels_for_test`].
+#[cfg(all(test, dev_tools))]
+pub(crate) struct TestLevels {
+  before: Option<Levels>,
+  _turn: std::sync::MutexGuard<'static, ()>,
+}
+
+#[cfg(all(test, dev_tools))]
+impl Drop for TestLevels {
+  fn drop(&mut self) {
+    if let (Some(before), Some(logger)) = (self.before.take(), LOGGER.get()) {
+      let mut levels = logger
+        .levels
+        .write()
+        .unwrap_or_else(PoisonError::into_inner);
+      *levels = before;
+      if installed_by_engine() {
+        log::set_max_level(levels.most_verbose());
+      }
+    }
   }
 }
 

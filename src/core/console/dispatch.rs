@@ -80,8 +80,17 @@ pub(crate) fn run_line(world: &mut World, hooks: &mut EngineHooks<'_>, line: &st
         ),
         colors::ERROR,
       );
-    } else if !apply(world, action) {
-      *hooks.quit = true;
+    } else {
+      let kind = action.kind();
+      match apply(world, action) {
+        Applied::Done => {}
+        Applied::Quit => *hooks.quit = true,
+        Applied::Waiting => print(
+          world,
+          format!("{name}: a scene transition is running; its {kind} was dropped"),
+          colors::ERROR,
+        ),
+      }
     }
   }
   if cmd.quit_requested() {
@@ -120,23 +129,37 @@ fn run_scene(
   }
 }
 
-/// Apply `action` to the stack, as a scene's `update` action is; `false`
-/// once the game should quit. A scene change waits out a running transition
-/// as the UI's does: only a quit gets through.
-fn apply(world: &mut World, action: SceneAction) -> bool {
+/// What applying an action came to
+enum Applied {
+  Done,
+  /// The game should quit: a quit, or a stack left empty
+  Quit,
+  /// A scene transition is running: the change was dropped, as the UI's is
+  Waiting,
+}
+
+/// Apply `action` to the stack, as a scene's `update` action is. A scene
+/// change waits out a running transition as the UI's does: only a quit gets
+/// through.
+fn apply(world: &mut World, action: SceneAction) -> Applied {
   let Some(mut host) = world.remove_non_send::<SceneHost>() else {
-    return !matches!(action, SceneAction::Quit);
+    return match action {
+      SceneAction::Quit => Applied::Quit,
+      _ => Applied::Done,
+    };
   };
   let scenes = &mut host.scenes;
-  let keep_running = if scenes.is_transitioning() && !matches!(action, SceneAction::Quit) {
-    true
-  } else {
-    let keep_running = scenes.handle_action(action, world);
+  let applied = if scenes.is_transitioning() && !matches!(action, SceneAction::Quit) {
+    Applied::Waiting
+  } else if scenes.handle_action(action, world) {
     scenes.sync_pauses(world);
-    keep_running
+    Applied::Done
+  } else {
+    scenes.sync_pauses(world);
+    Applied::Quit
   };
   world.insert_non_send(host);
-  keep_running
+  applied
 }
 
 fn print(world: &mut World, text: String, color: crate::core::ui::Color) {
