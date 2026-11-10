@@ -309,7 +309,7 @@ pub struct Engine {
   #[cfg(not(target_arch = "wasm32"))]
   ui_pass_log: frame::UiPassLog,
   // Developer tools
-  console_state: ConsoleState,
+  pub(crate) console_state: ConsoleState,
   console_quit_requested: bool,
   /// The console's cursor override this frame (`None` = no opinion)
   console_cursor: Option<crate::core::cursor::CursorStyle>,

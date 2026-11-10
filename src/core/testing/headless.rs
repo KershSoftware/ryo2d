@@ -765,6 +765,23 @@ impl HeadlessEngine {
     self.engine.debug_stats().clone()
   }
 
+  /// Print `lines` lines of 80 characters to the console (for
+  /// `benches/dev_tools.rs`)
+  #[doc(hidden)]
+  pub fn console_fill(&mut self, lines: usize) {
+    let text = "x".repeat(80);
+    for _ in 0..lines {
+      self.engine.console_state.print(text.as_str());
+    }
+  }
+
+  /// Open or close the console without its toggle key (for
+  /// `benches/dev_tools.rs`)
+  #[doc(hidden)]
+  pub fn console_open(&mut self, open: bool) {
+    self.engine.console_state.visible = open;
+  }
+
   /// The last frame's render step on the CPU (building, uploading and
   /// encoding the frame; not the UI pass)
   #[doc(hidden)]

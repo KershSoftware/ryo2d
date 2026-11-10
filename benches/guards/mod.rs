@@ -96,6 +96,8 @@ pub fn miss(what: String) {
 
 /// Once every bench has run: with a target missed, print each miss and how
 /// to profile it (`profile`), and fail the run
+// Only the benches that have targets use it
+#[allow(dead_code)]
 pub fn verdict(bench: &str, profile: &str) {
   let missed = MISSED
     .lock()
