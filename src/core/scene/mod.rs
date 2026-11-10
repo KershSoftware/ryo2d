@@ -325,7 +325,7 @@ pub fn downcast_return<T: Any>(returned: Option<Box<dyn Any>>) -> Option<T> {
 /// on_resume  when the scene above pops
 /// on_exit    when the scene leaves the stack
 /// ```
-pub trait Scene: 'static {
+pub trait Scene: Any + 'static {
   /// Called when this scene becomes the active scene.
   ///
   /// Spawn entities, configure the camera and lighting, load sounds, and add

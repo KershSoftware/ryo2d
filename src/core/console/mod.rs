@@ -36,9 +36,13 @@
 //! ```
 
 mod builtins;
+mod command;
 mod commands;
+#[cfg(dev_tools)]
+mod registry;
 
 pub use builtins::register_builtins;
+pub use command::{Command, CommandSpec};
 pub use commands::{
   CommandContext, CommandFn, CommandInfo, CommandRegistry, CommandResult, ConsoleCommandBuilder,
 };
