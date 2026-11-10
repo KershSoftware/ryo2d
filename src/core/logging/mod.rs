@@ -143,7 +143,9 @@ fn report(line: &str) {
 }
 
 /// Sets the level of `target` and every target under it (`game::menu` covers
-/// `game::menu::options`), at once and without a restart.
+/// `game::menu::options`), at once and without a restart. `game`, `engine`
+/// and `library` set the default of every game (`game::…`), engine
+/// (`ryo2d…`, `ryo2d_…`) or other target with no nearer level of its own.
 pub fn set_level(target: &str, level: LevelFilter) {
   ensure();
   let Some(logger) = LOGGER.get() else { return };
@@ -157,12 +159,13 @@ pub fn set_level(target: &str, level: LevelFilter) {
   }
 }
 
-/// The level `target` logs at.
+/// The level `target` logs at; for `game`, `engine` and `library`, that
+/// origin's default.
 pub fn level(target: &str) -> LevelFilter {
   ensure();
   LOGGER
     .get()
-    .map_or(LevelFilter::Off, |logger| logger.levels().of(target))
+    .map_or(LevelFilter::Off, |logger| logger.levels().read(target))
 }
 
 /// The defaults (`game`, `engine`, `library`) and each target's own level,
@@ -171,31 +174,6 @@ pub fn level(target: &str) -> LevelFilter {
 pub(crate) fn level_report() -> Option<levels::LevelReport> {
   ensure();
   LOGGER.get().map(|logger| logger.levels().report())
-}
-
-/// The default level of `origin`'s targets (those under no override of
-/// their own)
-#[cfg(dev_tools)]
-pub(crate) fn default_level(origin: Origin) -> LevelFilter {
-  ensure();
-  LOGGER
-    .get()
-    .map_or(LevelFilter::Off, |logger| logger.levels().default(origin))
-}
-
-/// Sets the default level of `origin`'s targets, at once
-#[cfg(dev_tools)]
-pub(crate) fn set_default_level(origin: Origin, level: LevelFilter) {
-  ensure();
-  let Some(logger) = LOGGER.get() else { return };
-  let mut levels = logger
-    .levels
-    .write()
-    .unwrap_or_else(PoisonError::into_inner);
-  levels.set_default(origin, level);
-  if installed_by_engine() {
-    log::set_max_level(levels.most_verbose());
-  }
 }
 
 /// Opens the log file in `folder` (`<folder>/logs/latest.log`) and installs

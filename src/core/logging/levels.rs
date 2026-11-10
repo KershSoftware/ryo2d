@@ -39,23 +39,36 @@ impl Levels {
   }
 
   /// Reads `RYO_LOG`'s text over the defaults: comma-separated entries, each
-  /// a level (for every origin) or `target=level`. A bad entry is skipped and
-  /// gives one line in the second value.
+  /// a level (for every origin) or `target=level` (`game`, `engine` and
+  /// `library` naming the defaults, as in [`set`](Self::set)). Order does
+  /// not matter: the bare level applies first (the last one, if there are
+  /// several), then every `target=level`. A bad entry is skipped and gives
+  /// one line in the second value.
   pub(crate) fn parse(text: &str) -> (Self, Vec<String>) {
     let mut levels = Self::defaults();
     let mut problems = Vec::new();
-    for entry in text.split(',').map(str::trim).filter(|e| !e.is_empty()) {
+    let entries: Vec<&str> = text
+      .split(',')
+      .map(str::trim)
+      .filter(|e| !e.is_empty())
+      .collect();
+    let mut bare = None;
+    for entry in entries.iter().filter(|entry| !entry.contains('=')) {
+      match parse_level(entry) {
+        Some(level) => bare = Some(level),
+        None => problems.push(format!(
+          "RYO_LOG: `{entry}` is not a level ({LEVEL_NAMES}); skipped"
+        )),
+      }
+    }
+    if let Some(level) = bare {
+      levels.game = level;
+      levels.engine = level;
+      levels.library = level;
+    }
+    for entry in entries {
       match entry.split_once('=') {
-        None => match parse_level(entry) {
-          Some(level) => {
-            levels.game = level;
-            levels.engine = level;
-            levels.library = level;
-          }
-          None => problems.push(format!(
-            "RYO_LOG: `{entry}` is not a level ({LEVEL_NAMES}); skipped"
-          )),
-        },
+        None => {}
         Some((target, level)) => {
           let target = target.trim();
           if target.is_empty() {
@@ -94,12 +107,24 @@ impl Levels {
     }
   }
 
+  /// The level `target` is read as: for `game`, `engine` and `library`,
+  /// that origin's default; for any other target, [`of`](Self::of).
+  pub(crate) fn read(&self, target: &str) -> LevelFilter {
+    match reserved(target) {
+      Some(origin) => self.default(origin),
+      None => self.of(target),
+    }
+  }
+
   /// Sets the level of `target` and everything under it, replacing an
-  /// earlier override of the same target. `game`, the root of every game
-  /// target, sets the game's default: there is no override beside it.
+  /// earlier override of the same target. `game`, `engine` and `library`
+  /// set that origin's default instead (every `game::…` target; every
+  /// `ryo2d…` and `ryo2d_…` one; every other one), for each target of it
+  /// with no nearer override. So a crate whose target is exactly `engine`
+  /// or `library` cannot be set at its root, though its sub-targets can.
   pub(crate) fn set(&mut self, target: &str, level: LevelFilter) {
-    if target == "game" {
-      self.game = level;
+    if let Some(origin) = reserved(target) {
+      self.set_default(origin, level);
       return;
     }
     match self
@@ -113,7 +138,6 @@ impl Levels {
   }
 
   /// The default level of `origin`'s targets: those under no override
-  #[cfg(dev_tools)]
   pub(crate) fn default(&self, origin: Origin) -> LevelFilter {
     match origin {
       Origin::Game => self.game,
@@ -123,7 +147,6 @@ impl Levels {
   }
 
   /// Sets the default level of `origin`'s targets
-  #[cfg(dev_tools)]
   pub(crate) fn set_default(&mut self, origin: Origin, level: LevelFilter) {
     match origin {
       Origin::Game => self.game = level,
@@ -155,6 +178,17 @@ impl Levels {
   }
 }
 
+/// The origin whose default a reserved word names: `game`, `engine` or
+/// `library`
+fn reserved(target: &str) -> Option<Origin> {
+  match target {
+    "game" => Some(Origin::Game),
+    "engine" => Some(Origin::Engine),
+    "library" => Some(Origin::Library),
+    _ => None,
+  }
+}
+
 /// A level by its name, in any case (`off` to `trace`)
 pub(crate) fn parse_level(text: &str) -> Option<LevelFilter> {
   [
@@ -172,6 +206,61 @@ pub(crate) fn parse_level(text: &str) -> Option<LevelFilter> {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn engine_and_library_set_their_defaults_in_ryo_log() {
+    let (levels, problems) = Levels::parse("engine=debug");
+    assert!(problems.is_empty(), "{problems:?}");
+    assert_eq!(levels.of("ryo2d::core::audio"), LevelFilter::Debug);
+    assert_eq!(levels.of("ryo2d_procgen::tilemap"), LevelFilter::Debug);
+    assert_eq!(levels.of("wgpu_core"), LevelFilter::Warn);
+    assert_eq!(levels.read("engine"), LevelFilter::Debug);
+
+    let (levels, _) = Levels::parse("library=error");
+    assert_eq!(levels.of("wgpu_core"), LevelFilter::Error);
+    assert_eq!(levels.read("library"), LevelFilter::Error);
+    assert_eq!(levels.of("ryo2d::core::audio"), LevelFilter::Info);
+
+    // A nearer override still wins over the engine's default
+    let (levels, _) = Levels::parse("engine=debug,ryo2d::core::audio=warn");
+    assert_eq!(levels.of("ryo2d::core::audio::voice"), LevelFilter::Warn);
+    assert_eq!(levels.of("ryo2d::core::render"), LevelFilter::Debug);
+  }
+
+  #[test]
+  fn the_order_of_ryo_log_s_entries_does_not_matter() {
+    let read = |text: &str| {
+      let (levels, problems) = Levels::parse(text);
+      assert!(problems.is_empty(), "{problems:?}");
+      (
+        levels.read("game"),
+        levels.read("engine"),
+        levels.read("library"),
+      )
+    };
+    let expected = (LevelFilter::Debug, LevelFilter::Warn, LevelFilter::Warn);
+    assert_eq!(read("game=debug,warn"), expected);
+    assert_eq!(read("warn,game=debug"), expected);
+    // The last bare level wins, still under the named entries
+    assert_eq!(read("trace,game=debug,warn"), expected);
+  }
+
+  #[test]
+  fn the_three_words_set_the_defaults_through_set() {
+    let mut levels = Levels::defaults();
+    levels.set("engine", LevelFilter::Debug);
+    levels.set("library", LevelFilter::Error);
+    levels.set("game", LevelFilter::Trace);
+    assert_eq!(levels.of("ryo2d::core::console"), LevelFilter::Debug);
+    assert_eq!(levels.of("ryo2d_procgen"), LevelFilter::Debug);
+    assert_eq!(levels.of("wgpu_core"), LevelFilter::Error);
+    assert_eq!(levels.of("game::menu"), LevelFilter::Trace);
+    assert!(levels.overrides.is_empty(), "{:?}", levels.overrides);
+    // A crate whose target is exactly `engine` cannot be set at its root,
+    // but its sub-targets can
+    levels.set("engine::physics", LevelFilter::Off);
+    assert_eq!(levels.of("engine::physics::step"), LevelFilter::Off);
+  }
 
   #[cfg(dev_tools)]
   #[test]

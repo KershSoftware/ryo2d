@@ -34,7 +34,7 @@ A scene's entries go when its slot leaves the stack (pop, switch, reset, clear):
 
 The console runs once a frame in `console_tick`, after `PreUpdate` and before the UI pass, on real time, so commands work while the game is paused. A closed console does no work a frame: `console_tick` and the UI pass only read it, so the resource is neither changed nor taken out of the world (`a_closed_console_does_no_per_frame_work`); its clock and scroll ease stand still until it opens.
 
-`log:level`: `game`, `engine` and `library` name the three origin defaults (`logging::set_default_level`); any other word is a target prefix with an override. `game` is also the root of the game's targets, and `Levels::set("game", ..)` sets the game default too, so there is never an override named `game`. The listing shows a `defaults:` block and an `overrides:` block.
+`log:level`: it calls `logging::set_level`/`level` as they are, where `game`, `engine` (every `ryo2d…` and `ryo2d_…` target) and `library` name the three origin defaults, as everywhere a level is set (`RYO_LOG` included; logging module notes, Levels); any other word is a target prefix with an override. The listing shows a `defaults:` block and an `overrides:` block.
 
 Tests drive it through `HeadlessEngine::console_run` (doc-hidden, dev tools): the line is echoed, run, and the lines printed after the echo are returned (`Console::capture`/`take_captured`).
 

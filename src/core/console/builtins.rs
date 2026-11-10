@@ -17,7 +17,6 @@ use crate::core::capture::CaptureTarget;
 use crate::core::diagnostics::{DebugConfig, OverlayMode};
 use crate::core::ecs::World;
 use crate::core::engine::SceneHost;
-use crate::core::logging::Origin;
 use crate::core::settings::Settings;
 use crate::core::time::{GameClock, Time};
 
@@ -479,21 +478,11 @@ fn level_name(level: LevelFilter) -> String {
   level.as_str().to_ascii_lowercase()
 }
 
-/// The origin a default's name stands for: `game`, `engine` or `library`
-fn origin_named(name: &str) -> Option<Origin> {
-  match name {
-    "game" => Some(Origin::Game),
-    "engine" => Some(Origin::Engine),
-    "library" => Some(Origin::Library),
-    _ => None,
-  }
-}
-
-/// `log:level`: `game`, `engine` and `library` name the three defaults (the
-/// level of every target of that origin with no override of its own); any
-/// other word is a target prefix with a level of its own
+/// `log:level`: `game`, `engine` and `library` name the three defaults (as
+/// everywhere a level is set); any other word is a target prefix with a
+/// level of its own
 fn log_level(_: &mut World, _: &mut EngineHooks<'_>, cmd: &mut Command<'_>) -> Result<(), String> {
-  use crate::core::logging::{default_level, level, set_default_level, set_level};
+  use crate::core::logging::{level, set_level};
   let target = cmd.args().first().cloned();
   let new_level = match cmd.args().len() {
     0 | 1 => None,
@@ -517,19 +506,10 @@ fn log_level(_: &mut World, _: &mut EngineHooks<'_>, cmd: &mut Command<'_>) -> R
     }
     return Ok(());
   };
-  let shown = match (origin_named(&target), new_level) {
-    (Some(origin), Some(new)) => {
-      set_default_level(origin, new);
-      new
-    }
-    (Some(origin), None) => default_level(origin),
-    (None, Some(new)) => {
-      set_level(&target, new);
-      new
-    }
-    (None, None) => level(&target),
-  };
-  cmd.print(format!("{target}: {}", level_name(shown)));
+  if let Some(new) = new_level {
+    set_level(&target, new);
+  }
+  cmd.print(format!("{target}: {}", level_name(level(&target))));
   Ok(())
 }
 
@@ -703,7 +683,7 @@ mod tests {
     );
     log::debug!(target: "ryo2d::core::console::level_test", "an engine debug line");
     let listing = rig.run("log:level");
-    rig.run("log:level library error");
+    // Read back only: lowering a default would hide other tests' warnings
     let library = rig.run("log:level library");
     drop(levels);
     assert_eq!(log.containing("an engine debug line"), 1);
@@ -718,7 +698,7 @@ mod tests {
         .all(|line| !line.contains("engine")),
       "the default is no override: {listing:?}"
     );
-    assert_eq!(library, ["library: error"]);
+    assert_eq!(library, ["library: warn"]);
   }
 
   #[test]
