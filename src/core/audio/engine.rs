@@ -6503,8 +6503,8 @@ mod tests {
   use super::*;
   use crate::core::asset::{Assets, AssetsView, AudioClipSettings, ClipMode, MemorySource};
   use crate::core::audio::{AudioListener, AudioView, BusDef, Falloff};
-  use crate::core::dev_log::{self, LogLevel};
   use crate::core::ecs::World;
+  use crate::core::testing::LogCapture;
   use crate::core::testing::{audio_step, audio_world, audio_world_over};
   use crate::core::time::Time;
 
@@ -6554,9 +6554,11 @@ mod tests {
   }
 
   /// Warnings that a clip at `path` could not be decoded as a stream
-  fn undecodable_warnings(path: &str) -> usize {
+  fn undecodable_warnings(captured: &LogCapture, path: &str) -> usize {
     let named = format!("{path}:");
-    warnings(|message| message.starts_with(&named) && message.contains("could not be decoded"))
+    warnings(captured, |message| {
+      message.starts_with(&named) && message.contains("could not be decoded")
+    })
   }
 
   fn tone(world: &mut World, mode: ClipMode) -> Handle<AudioClip> {
@@ -6573,10 +6575,11 @@ mod tests {
       .add(AudioClip::from_frames(48_000, &vec![[0.1, 0.1]; 48_000]).unwrap())
   }
 
-  fn warnings(matching: impl Fn(&str) -> bool) -> usize {
-    dev_log::get_entries()
+  fn warnings(captured: &LogCapture, matching: impl Fn(&str) -> bool) -> usize {
+    captured
+      .records()
       .iter()
-      .filter(|entry| entry.level == LogLevel::Warn && matching(&entry.message))
+      .filter(|r| r.level == log::Level::Warn && matching(&r.message))
       .count()
   }
 
@@ -6682,6 +6685,7 @@ mod tests {
 
   #[test]
   fn a_device_that_fails_falls_back_to_the_mock_with_one_warning() {
+    let captured = crate::core::testing::capture_log();
     let mut world = audio_world();
     let mut engine = AudioEngine::new_failing_device();
     assert!(engine.is_mock());
@@ -6694,13 +6698,15 @@ mod tests {
     }
     assert!(voice.is_playing(), "the mock plays: {voice:?}");
     assert_eq!(AudioView::new(&mut world).voices_on("sfx"), 1);
-    let about_the_device =
-      warnings(|message| message.contains("audio device") && message.contains(FAILING_DEVICE));
+    let about_the_device = warnings(&captured, |message| {
+      message.contains("audio device") && message.contains(FAILING_DEVICE)
+    });
     assert_eq!(about_the_device, 1);
   }
 
   #[test]
   fn a_stream_error_warns_once() {
+    let captured = crate::core::testing::capture_log();
     let mut world = audio_world();
     {
       let mut engine = world.resource_mut::<AudioEngine>();
@@ -6713,13 +6719,13 @@ mod tests {
       .inject_stream_error("unplugged (stream error seam 3)");
     audio_step(&mut world, FRAME);
     assert_eq!(
-      warnings(|message| message.contains("(stream error seam")),
+      warnings(&captured, |message| message.contains("(stream error seam")),
       1
     );
     // kira may not get the stream back (no device to reopen), so the
     // warning does not promise sound
     assert_eq!(
-      warnings(|message| {
+      warnings(&captured, |message| {
         message.contains("(stream error seam")
           && message.contains("sound may have stopped")
           && message.contains("restart the game if it is silent")
@@ -6737,6 +6743,7 @@ mod tests {
   /// sound ahead, so the advice to would be noise
   #[test]
   fn a_ui_sound_still_loading_is_refused_without_a_warning() {
+    let captured = crate::core::testing::capture_log();
     let files = MemorySource::new();
     files.insert("ui/early-click.wav", fixture("tone.wav"));
     files.insert(
@@ -6775,7 +6782,9 @@ mod tests {
     assert_eq!(refused[1].0, "ui/early-back.sound.ron");
     let about = |path: &str| {
       let named = format!("{path}:");
-      warnings(|message| message.starts_with(&named) && message.contains("still loading"))
+      warnings(&captured, |message| {
+        message.starts_with(&named) && message.contains("still loading")
+      })
     };
     assert_eq!(about("ui/early-click.wav"), 0);
     assert_eq!(about("ui/early-back.sound.ron"), 0);
@@ -6812,6 +6821,7 @@ mod tests {
   /// once, by its path
   #[test]
   fn a_streamed_clip_that_cannot_decode_stops_and_warns_once() {
+    let captured = crate::core::testing::capture_log();
     let (mut world, _, clip) = gone_bad("surround-in-code.wav", &fixture("surround.wav"));
     let voice = AudioView::new(&mut world).play(&clip);
     // It starts: the stream decodes on its own thread, and fails there
@@ -6825,13 +6835,14 @@ mod tests {
       .collect();
     assert_eq!(stops, [MIN_FADE], "{log:#?}");
     assert_eq!(AudioView::new(&mut world).voices_on("sfx"), 0);
-    assert_eq!(undecodable_warnings("surround-in-code.wav"), 1);
+    assert_eq!(undecodable_warnings(&captured, "surround-in-code.wav"), 1);
   }
 
   /// Once a clip's stream has failed to decode, it is not played again (no
   /// decoder thread is started for it) until it reloads
   #[test]
   fn a_clip_known_undecodable_is_refused_until_it_reloads() {
+    let captured = crate::core::testing::capture_log();
     let (mut world, files, clip) = gone_bad("undecodable-reloaded.wav", b"not audio at all");
     let first = AudioView::new(&mut world).play(&clip);
     wait_until_stopped(&mut world, &first);
@@ -6865,7 +6876,10 @@ mod tests {
     let reloaded = AudioView::new(&mut world).play(&clip);
     assert!(reloaded.is_playing(), "{reloaded:?}");
     wait_until_stopped(&mut world, &reloaded);
-    assert_eq!(undecodable_warnings("undecodable-reloaded.wav"), 1);
+    assert_eq!(
+      undecodable_warnings(&captured, "undecodable-reloaded.wav"),
+      1
+    );
   }
 
   /// A stream whose file's reader fails partway (its storage failing from
@@ -6875,6 +6889,7 @@ mod tests {
   /// path, and refuses the clip afterwards until it reloads
   #[test]
   fn a_stream_that_fails_as_it_plays_fades_out() {
+    let captured = crate::core::testing::capture_log();
     let files = MemorySource::new();
     files.insert("fails-midway.ogg", fixture("tone-3s.ogg"));
     let mut world = audio_world_over(files);
@@ -6903,7 +6918,7 @@ mod tests {
     };
     assert_eq!(stops(&defined), [Duration::from_millis(50)]);
     assert_eq!(stops(&bare), [MIN_FADE]);
-    assert_eq!(undecodable_warnings("fails-midway.ogg"), 1);
+    assert_eq!(undecodable_warnings(&captured, "fails-midway.ogg"), 1);
     let again = AudioView::new(&mut world).play(&clip);
     assert!(again.is_stopped(), "{again:?}");
     let last = log(&world).pop();
@@ -6961,11 +6976,12 @@ mod tests {
   /// it is warned about once
   #[test]
   fn a_stream_that_cannot_open_reports_once_and_ends() {
+    let captured = crate::core::testing::capture_log();
     let (mut world, clip) = garbled("cannot-open.wav");
     let voice = AudioView::new(&mut world).play(&clip);
     assert!(voice.is_playing(), "{voice:?}");
     wait_until_stopped(&mut world, &voice);
-    assert_eq!(undecodable_warnings("cannot-open.wav"), 1);
+    assert_eq!(undecodable_warnings(&captured, "cannot-open.wav"), 1);
     let entries: Vec<(AudioLogKind, Duration)> = log(&world)
       .iter()
       .filter(|entry| entry.voice == voice.id())
@@ -6985,11 +7001,12 @@ mod tests {
   /// the log is on
   #[test]
   fn a_clip_that_cannot_open_is_named_by_its_path_with_the_log_off() {
+    let captured = crate::core::testing::capture_log();
     let (mut world, clip) = garbled("garbled-at-play.wav");
     world.resource_mut::<AudioEngine>().set_logging(false);
     let voice = AudioView::new(&mut world).play(&clip);
     wait_until_stopped(&mut world, &voice);
-    assert_eq!(undecodable_warnings("garbled-at-play.wav"), 1);
+    assert_eq!(undecodable_warnings(&captured, "garbled-at-play.wav"), 1);
   }
 
   /// Where `voice` is, in seconds from the start of what it plays
@@ -7530,6 +7547,7 @@ mod tests {
   /// switch
   #[test]
   fn a_waiting_track_that_cannot_switch_at_the_unlock_starts_as_it_was() {
+    let captured = crate::core::testing::capture_log();
     let mut world = locked_world();
     let clip = second(&mut world);
     let theme = world
@@ -7554,7 +7572,8 @@ mod tests {
     assert_eq!(AudioView::new(&mut world).current_music(), Some(theme.id()));
     let name = format!("{:?}:", theme.id());
     assert_eq!(
-      warnings(|message| message.starts_with(&name) && message.contains("could not switch")),
+      warnings(&captured, |message| message.starts_with(&name)
+        && message.contains("could not switch")),
       1
     );
   }
@@ -7637,8 +7656,10 @@ mod tests {
   }
 
   /// Warnings about the crowded loops (named by their clip) saying `text`
-  fn crowded_warnings(text: &str) -> usize {
-    warnings(|message| message.starts_with("crowded.wav:") && message.contains(text))
+  fn crowded_warnings(captured: &LogCapture, text: &str) -> usize {
+    warnings(captured, |message| {
+      message.starts_with("crowded.wav:") && message.contains(text)
+    })
   }
 
   /// A rebuild that moves more loops onto one bus than kira's track holds
@@ -7647,6 +7668,7 @@ mod tests {
   /// still has no room warns no more
   #[test]
   fn a_loop_with_no_room_on_the_rebuilt_bus_plays_on_warned_once() {
+    let captured = crate::core::testing::capture_log();
     let (files, mixer) = crowded_files();
     let mut world = audio_world_over(files);
     AudioView::new(&mut world).set_mixer(mixer);
@@ -7658,17 +7680,18 @@ mod tests {
     let engine = world.resource::<AudioEngine>();
     assert_eq!(engine.sounds_on("sfx"), 128, "kira's room on the track");
     let stuck = "could not move to the rebuilt buses";
-    assert_eq!(crowded_warnings(stuck), 12);
+    assert_eq!(crowded_warnings(&captured, stuck), 12);
     assert!(voices.iter().all(Voice::is_playing), "the 12 play on");
     AudioView::new(&mut world).set_mixer(Mixer::default());
     audio_step(&mut world, FRAME);
-    assert_eq!(crowded_warnings(stuck), 12, "warned once each");
+    assert_eq!(crowded_warnings(&captured, stuck), 12, "warned once each");
   }
 
   /// The same crowding at the web's unlock: the loops that waited for it
   /// and find no room there end, each refused (`unlock`) and warned once
   #[test]
   fn a_waiting_loop_with_no_room_at_the_unlock_ends_refused() {
+    let captured = crate::core::testing::capture_log();
     let (files, mixer) = crowded_files();
     let mut world = audio_world_over(files);
     let mut engine = AudioEngine::new_locked();
@@ -7690,7 +7713,7 @@ mod tests {
     assert_eq!(refused.len(), 12, "{refused:?}");
     assert!(refused.iter().all(|reason| reason.starts_with("unlock")));
     assert_eq!(voices.iter().filter(|voice| voice.is_stopped()).count(), 12);
-    assert_eq!(crowded_warnings("could not start with it"), 12);
+    assert_eq!(crowded_warnings(&captured, "could not start with it"), 12);
   }
 
   /// The web's unlock is not a pause: it logs no bus's Pause, whether the

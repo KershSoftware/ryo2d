@@ -951,13 +951,11 @@ mod tests {
 
   #[test]
   fn a_misspelt_key_warns_once_a_run() {
+    let log = crate::core::testing::capture_log();
     let text = "[debug]\nshow_coliders_once_a_run = true\n";
     Workspace::from_toml_str(text, PathBuf::from("game")).unwrap();
     Workspace::from_toml_str(text, PathBuf::from("game")).unwrap();
-    let warned = crate::core::dev_log::get_entries()
-      .iter()
-      .filter(|entry| entry.message.contains("`show_coliders_once_a_run`"))
-      .count();
+    let warned = log.containing("`show_coliders_once_a_run`");
     assert_eq!(warned, 1);
   }
 

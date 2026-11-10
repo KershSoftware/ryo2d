@@ -9,9 +9,8 @@
 //! ground's Wang set is complete: painting and erasing with it gives exactly
 //! the corners asked for, with no seams and no correction.
 
-use ryo2d::core::dev_log::{self, LogLevel};
 use ryo2d::prelude::*;
-use ryo2d::testing::HeadlessEngine;
+use ryo2d::testing::{HeadlessEngine, LogCapture};
 
 /// The character demo's `PLATFORMER_LEVEL` (examples/demos/character):
 /// `#` solid, `=` one-way, `/` and `\` slopes
@@ -82,14 +81,9 @@ fn engine() -> Option<HeadlessEngine> {
   )
 }
 
-/// Every warning or error in the dev log. It is the process's, so the other
-/// tests' land in it too; none of them expects one either
-fn warnings() -> Vec<String> {
-  dev_log::get_entries()
-    .into_iter()
-    .filter(|entry| entry.level >= LogLevel::Warn)
-    .map(|entry| entry.message)
-    .collect()
+/// Every warning and error `log` captured
+fn warnings(log: &LogCapture) -> Vec<String> {
+  log.warnings_and_errors()
 }
 
 fn load<T: Asset>(engine: &mut HeadlessEngine, path: &str) -> Handle<T> {
@@ -229,7 +223,7 @@ fn assert_slope(points: &[Vec2], side: f32, left_out: Vec2, id: u32) {
 }
 
 /// Spawns a root and steps until its map lands
-fn land(engine: &mut HeadlessEngine, root: MapRoot, what: &str) {
+fn land(log: &LogCapture, engine: &mut HeadlessEngine, root: MapRoot, what: &str) {
   let entity = engine.world_mut().spawn((Transform::default(), root)).id();
   for _ in 0..600 {
     engine.step().unwrap();
@@ -238,11 +232,12 @@ fn land(engine: &mut HeadlessEngine, root: MapRoot, what: &str) {
       return;
     }
   }
-  panic!("{what} never landed: {:#?}", warnings());
+  panic!("{what} never landed: {:#?}", warnings(log));
 }
 
 #[test]
 fn every_file_loads_and_spawns_without_an_error_or_a_warning() {
+  let log = ryo2d::testing::capture_log();
   let Some(mut engine) = engine() else {
     return;
   };
@@ -256,13 +251,18 @@ fn every_file_loads_and_spawns_without_an_error_or_a_warning() {
   load::<TileWorld>(&mut engine, WORLD);
   let project = load::<LdtkProject>(&mut engine, LDTK);
   for (path, handle) in handles {
-    land(&mut engine, MapRoot::new(handle), path);
+    land(&log, &mut engine, MapRoot::new(handle), path);
   }
   for level in LDTK_LEVELS {
-    land(&mut engine, MapRoot::ldtk(project.clone(), level), level);
+    land(
+      &log,
+      &mut engine,
+      MapRoot::ldtk(project.clone(), level),
+      level,
+    );
   }
   engine.step_frames(10).unwrap();
-  assert!(warnings().is_empty(), "{:#?}", warnings());
+  assert!(warnings(&log).is_empty(), "{:#?}", warnings(&log));
 }
 
 #[test]
@@ -512,6 +512,7 @@ fn corners(set: &WangSet, tile: Option<Tile>) -> Option<[u8; 4]> {
 
 #[test]
 fn painting_and_erasing_the_ground_gives_exactly_the_corners_asked_for() {
+  let log = ryo2d::testing::capture_log();
   let Some(mut engine) = engine() else {
     return;
   };
@@ -533,7 +534,7 @@ fn painting_and_erasing_the_ground_gives_exactly_the_corners_asked_for() {
   assert!(
     engine.world().get::<MapIds>(root).is_some(),
     "the platformer never landed: {:#?}",
-    warnings()
+    warnings(&log)
   );
   // Paint and erase cells of the open sky, far from the level's ground, in
   // a fixed order. A paint sets a cell's four corners and an erase clears
@@ -578,7 +579,7 @@ fn painting_and_erasing_the_ground_gives_exactly_the_corners_asked_for() {
       }
     }
   }
-  assert!(warnings().is_empty(), "{:#?}", warnings());
+  assert!(warnings(&log).is_empty(), "{:#?}", warnings(&log));
 }
 
 #[test]

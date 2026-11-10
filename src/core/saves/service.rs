@@ -914,11 +914,12 @@ mod tests {
       .collect()
   }
 
-  fn warnings_containing(needle: &str) -> usize {
-    crate::core::dev_log::get_entries()
+  /// How many warnings `log` captured contain `needle`
+  fn warnings_containing(log: &crate::core::testing::LogCapture, needle: &str) -> usize {
+    log
+      .warnings()
       .iter()
-      .filter(|entry| entry.level == crate::core::dev_log::LogLevel::Warn)
-      .filter(|entry| entry.message.contains(needle))
+      .filter(|message| message.contains(needle))
       .count()
   }
 
@@ -1100,6 +1101,7 @@ mod tests {
 
   #[test]
   fn flush_warns_then_gives_up() {
+    let log = crate::core::testing::capture_log();
     let store = MemorySaves::new();
     let service = service(&store);
     store.slow(Duration::from_secs(1));
@@ -1110,7 +1112,7 @@ mod tests {
     assert_eq!(unfinished, ["gives-up.ryo-save"]);
     assert!(started.elapsed() < Duration::from_millis(900));
     assert_eq!(
-      warnings_containing("gives-up.ryo-save"),
+      warnings_containing(&log, "gives-up.ryo-save"),
       2,
       "one warning while waiting, one on giving up"
     );
@@ -1214,6 +1216,7 @@ mod tests {
 
   #[test]
   fn a_slot_damaged_on_disk_loads_from_its_backup_with_a_warning() {
+    let log = crate::core::testing::capture_log();
     let store = MemorySaves::new();
     let service = service(&store);
     for level in [1, 2] {
@@ -1233,10 +1236,10 @@ mod tests {
     let loaded = service.load::<Hero>("damaged-slot").unwrap();
     assert_eq!(loaded.data, hero(1));
     assert!(loaded.from_backup);
-    assert_eq!(warnings_containing("damaged-slot"), 1);
+    assert_eq!(warnings_containing(&log, "damaged-slot"), 1);
     service.load::<Hero>("damaged-slot").unwrap();
     assert_eq!(
-      warnings_containing("damaged-slot"),
+      warnings_containing(&log, "damaged-slot"),
       1,
       "warned once per slot"
     );

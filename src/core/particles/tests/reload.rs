@@ -248,15 +248,14 @@ fn a_reload_that_stops_sticking_lets_stuck_particles_go() {
 }
 
 /// The file naming a sub-effect that has sub-emitters of its own is told
-/// of it as it loads. The warning joins the log the tests that count
-/// particle warnings read, so this holds their lock
+/// of it as it loads
 #[test]
 fn a_sub_effect_with_sub_emitters_of_its_own_loads_with_a_warning() {
-  let _log = testing::log_lock();
+  let log = crate::core::testing::capture_log();
   let parent = "fx/warn-parent.particles.ron";
   let nested = "fx/warn-nested.particles.ron";
   let warned = || {
-    testing::particle_loader_warnings()
+    testing::particle_loader_warnings(&log)
       .iter()
       .filter(|message| {
         message.contains(parent) && message.contains(nested) && message.contains("own")

@@ -4,7 +4,6 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use ryo2d::core::dev_log;
 use ryo2d::prelude::*;
 use ryo2d::testing::HeadlessEngine;
 
@@ -99,6 +98,7 @@ fn a_saved_file_reloads_its_trees_in_place() {
 
 #[test]
 fn a_broken_save_keeps_the_trees_and_warns_once() {
+  let log = ryo2d::testing::capture_log();
   let files = MemorySource::new();
   files.insert("ui/broken-save.ui.ron", menu(100));
   let Some((mut engine, seen)) = start(&files, "ui/broken-save.ui.ron") else {
@@ -118,10 +118,7 @@ fn a_broken_save_keeps_the_trees_and_warns_once() {
     "the same button, as it was"
   );
   assert!(seen.lock().unwrap().reloaded.is_empty());
-  let warnings = dev_log::get_entries()
-    .iter()
-    .filter(|entry| entry.message.contains("ui/broken-save.ui.ron"))
-    .count();
+  let warnings = log.containing("ui/broken-save.ui.ron");
   assert_eq!(warnings, 1, "warned once for the one mistake");
 }
 

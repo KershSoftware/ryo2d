@@ -426,16 +426,14 @@ mod tests {
 
   #[test]
   fn an_unbound_prompt_shows_a_question_mark_and_warns_once() {
+    let log = crate::core::testing::capture_log();
     let context = prompts_with(InputDevice::Gamepad, &[]);
     let text = RichText::new("Use ").prompt("t14_unbound_action");
     for _ in 0..2 {
       let resolved = resolve_prompts(&text, &context, Color::YELLOW);
       assert_eq!(resolved.as_str(), "Use [?]");
     }
-    let warnings = crate::core::dev_log::get_entries()
-      .iter()
-      .filter(|e| e.message.contains("t14_unbound_action"))
-      .count();
+    let warnings = log.containing("t14_unbound_action");
     assert_eq!(warnings, 1);
   }
 

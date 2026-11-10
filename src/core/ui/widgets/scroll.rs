@@ -1114,6 +1114,7 @@ mod tests {
 
   #[test]
   fn a_bad_scroll_offset_is_ignored_and_warned_once() {
+    let log = crate::core::testing::capture_log();
     let mut d = UiDriver::new((300.0, 300.0));
     let mut list = UiId::NONE;
     for _ in 0..3 {
@@ -1128,10 +1129,7 @@ mod tests {
     });
     assert_eq!(d.frame(|ui| ui.scroll_offset(list)).y, 50.0);
     assert!(d.memory.peek_state::<ScrollState>(UiId::NONE).is_none());
-    let warnings = crate::core::dev_log::get_entries()
-      .iter()
-      .filter(|e| e.message.contains("scroll offset that is not finite"))
-      .count();
+    let warnings = log.containing("scroll offset that is not finite");
     assert_eq!(warnings, 1);
   }
 

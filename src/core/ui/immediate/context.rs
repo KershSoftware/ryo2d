@@ -2421,6 +2421,7 @@ mod tests {
 
   #[test]
   fn clips_nest_without_a_limit_and_an_empty_pop_warns_once() {
+    let log = crate::core::testing::capture_log();
     let (mut commands, mut text) = (UiCommands::default(), text_engine());
     let mut ui = context(&mut commands, &mut text);
     for i in 0..40 {
@@ -2436,10 +2437,7 @@ mod tests {
       commands.commands().next().and_then(UiCommand::clip),
       Some(Rect::new(39.0, 0.0, 161.0, 100.0))
     );
-    let warned = crate::core::dev_log::get_entries()
-      .iter()
-      .filter(|e| e.message.contains("pop_clip with no clip"))
-      .count();
+    let warned = log.containing("pop_clip with no clip");
     assert_eq!(warned, 1);
   }
 

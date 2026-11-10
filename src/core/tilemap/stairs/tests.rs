@@ -199,12 +199,9 @@ fn changes(world: &World, cursor: &mut MessageCursor<FloorChanged>) -> Vec<Floor
     .collect()
 }
 
-/// The warnings in the dev log holding every one of `words`
-fn warned(words: &[&str]) -> usize {
-  crate::core::dev_log::get_entries()
-    .iter()
-    .filter(|entry| words.iter().all(|word| entry.message.contains(word)))
-    .count()
+/// How many records `log` captured hold every one of `words`
+fn warned(log: &crate::core::testing::LogCapture, words: &[&str]) -> usize {
+  log.containing_all(words)
 }
 
 struct Empty;
@@ -492,6 +489,7 @@ fn a_non_climber_keeps_its_floor_on_stairs() {
 
 #[test]
 fn stairs_to_a_missing_floor_or_down_warn_once_and_stay_plain() {
+  let log = crate::core::testing::capture_log();
   // Floors 0, 1 and 2: stairs up to floor 5 (which the map lacks) on the
   // ground, up to floor 1 on floor 1 (its own) and on floor 2 (leading
   // down), each beside the floor above it
@@ -511,7 +509,7 @@ fn stairs_to_a_missing_floor_or_down_warn_once_and_stay_plain() {
     ]),
   );
   assert!(runs(&maps.world, map).is_empty());
-  assert_eq!(warned(&["ground-w5p", "plain tiles"]), 1);
+  assert_eq!(warned(&log, &["ground-w5p", "plain tiles"]), 1);
   // A climber on each keeps its floor
   let on = |maps: &mut MapWorld, x: f32, y: f32, floor: Floor| {
     maps
@@ -537,11 +535,12 @@ fn stairs_to_a_missing_floor_or_down_warn_once_and_stay_plain() {
     maps.frame();
   }
   assert!(runs(&maps.world, map).is_empty());
-  assert_eq!(warned(&["w5p", "plain tiles"]), 1);
+  assert_eq!(warned(&log, &["w5p", "plain tiles"]), 1);
 }
 
 #[test]
 fn a_run_that_leads_nowhere_is_warned_once_and_ignored() {
+  let log = crate::core::testing::capture_log();
   // Floor 1 over (8, 3) to (13, 6), and two cells more at (14, 8) and
   // (16, 8). Stairs up to it on the ground: at (2, 2), touching none of its
   // cells (no top); at (10, 5), under it, every side on its cells (no
@@ -561,7 +560,7 @@ fn a_run_that_leads_nowhere_is_warned_once_and_ignored() {
     ]),
   );
   assert!(runs(&maps.world, map).is_empty());
-  assert_eq!(warned(&["n4z", "lead nowhere"]), 1);
+  assert_eq!(warned(&log, &["n4z", "lead nowhere"]), 1);
   // A climber on any of them keeps its floor
   let walkers = [(40.0, 40.0), (168.0, 88.0), (248.0, 136.0), (128.0, 72.0)];
   let walkers: Vec<Entity> = walkers
@@ -584,7 +583,7 @@ fn a_run_that_leads_nowhere_is_warned_once_and_ignored() {
   for _ in 0..3 {
     maps.frame();
   }
-  assert_eq!(warned(&["n4z", "lead nowhere"]), 1);
+  assert_eq!(warned(&log, &["n4z", "lead nowhere"]), 1);
 }
 
 #[test]
@@ -981,6 +980,7 @@ fn a_climber_on_every_floor_or_another_floor_passes_over_stairs() {
 
 #[test]
 fn stairs_up_to_a_floor_without_an_edge_lead_nowhere() {
+  let log = crate::core::testing::capture_log();
   // Floor 1 only an object layer, 32 px up: no tile layer, so no footprint
   // and no edge
   let (ground, _) = hall_with(&[(6, 4), (7, 4)]);
@@ -991,7 +991,10 @@ fn stairs_up_to_a_floor_without_an_edge_lead_nowhere() {
   let mut maps = MapWorld::new();
   let map = land(&mut maps, objects);
   assert!(runs(&maps.world, map).is_empty());
-  assert_eq!(warned(&["ground-q2m", "lead nowhere", "no tile layer"]), 1);
+  assert_eq!(
+    warned(&log, &["ground-q2m", "lead nowhere", "no tile layer"]),
+    1
+  );
 
   // Floor 1's bottom tile layer of hexagons too big to trace, its next a
   // plain layer standing where the ground does: the floor has no edge (its
@@ -1019,7 +1022,7 @@ fn stairs_up_to_a_floor_without_an_edge_lead_nowhere() {
     .count();
   assert_eq!(edges, 0, "no edge on floor 1");
   assert!(runs(&maps.world, map).is_empty());
-  assert_eq!(warned(&["ground-k8v", "lead nowhere", "hexagons"]), 1);
+  assert_eq!(warned(&log, &["ground-k8v", "lead nowhere", "hexagons"]), 1);
   // A climber on them keeps the ground floor
   let hero = climber_at(&mut maps, Vec2::new(120.0, 72.0));
   for _ in 0..3 {

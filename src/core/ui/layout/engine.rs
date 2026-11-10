@@ -1311,6 +1311,7 @@ mod tests {
 
   #[test]
   fn degenerate_styles_lay_out_finite_rects() {
+    let log = crate::core::testing::capture_log();
     let bad = UiStyle {
       width: Length::Px(f32::NAN),
       height: Length::Pct(-1.0),
@@ -1345,10 +1346,7 @@ mod tests {
       }
       engine.end_frame();
     }
-    let warnings = crate::core::dev_log::get_entries()
-      .iter()
-      .filter(|e| e.message.contains("non-finite or negative"))
-      .count();
+    let warnings = log.containing("non-finite or negative");
     assert!(
       (1..=7).contains(&warnings),
       "each bad field warned once, got {warnings}"

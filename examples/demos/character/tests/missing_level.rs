@@ -1,14 +1,13 @@
 //! A platformer page whose level file is missing says so: the load error is
-//! in the dev log. Its own test binary, as the dev log is the process's and
-//! `pages.rs` expects it to hold no warning
+//! logged
 
 use character_demo::{EMBEDDED, demo};
-use ryo2d::core::dev_log::{self, LogLevel};
 use ryo2d::prelude::*;
 use ryo2d::testing::HeadlessEngine;
 
 #[test]
 fn a_page_without_its_level_file_logs_why() {
+  let log = ryo2d::testing::capture_log();
   let files = MemorySource::new();
   for (path, bytes) in EMBEDDED {
     if *path != "ldtk/platformer.ldtk" {
@@ -23,11 +22,7 @@ fn a_page_without_its_level_file_logs_why() {
     return;
   };
   engine.step_frames(10).unwrap();
-  let logged: Vec<String> = dev_log::get_entries()
-    .into_iter()
-    .filter(|entry| entry.level >= LogLevel::Warn)
-    .map(|entry| entry.message)
-    .collect();
+  let logged = log.warnings_and_errors();
   assert!(
     logged
       .iter()

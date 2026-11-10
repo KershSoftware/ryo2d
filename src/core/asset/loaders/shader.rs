@@ -52,7 +52,6 @@ mod tests {
   use crate::core::asset::{
     AssetEvent, AssetServer, Assets, AssetsView, LoadState, MemorySource, insert_registry, pump,
   };
-  use crate::core::dev_log::{self, LogLevel};
   use crate::core::ecs::kernel::{Messages, World};
 
   const GLOW: &str =
@@ -129,7 +128,7 @@ mod tests {
 
   #[test]
   fn a_save_that_does_not_compile_fails_its_reload_and_keeps_the_last_good_shader() {
-    crate::core::logging::ensure();
+    let log = crate::core::testing::capture_log();
     let files = MemorySource::new();
     files.insert("shaders/kept.wgsl", GLOW);
     let mut world = registry_over(files.clone());
@@ -166,16 +165,20 @@ mod tests {
       .get(&handle)
       .map(Shader::source);
     assert_eq!(kept, Some(GLOW), "the last good shader stays");
-    let warned: Vec<_> = dev_log::get_entries()
+    let warned: Vec<_> = log
+      .records()
       .into_iter()
       .filter(|entry| entry.message.contains("shaders/kept.wgsl"))
-      .map(|entry| (entry.level, entry.module, entry.message))
+      .map(|entry| {
+        let from_assets = entry.target.starts_with("ryo2d::core::asset::");
+        (entry.level, from_assets, entry.message)
+      })
       .collect();
     assert_eq!(
       warned,
       [(
-        LogLevel::Warn,
-        Some("Asset".to_string()),
+        log::Level::Warn,
+        true,
         "could not load \"shaders/kept.wgsl\": 2:29: expected `)`, found \"0.0\"".to_string()
       )]
     );

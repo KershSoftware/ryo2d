@@ -425,12 +425,8 @@ mod tests {
 
   #[test]
   fn a_window_past_four_million_cells_shrinks_and_warns_once() {
-    let warnings = || {
-      crate::core::dev_log::get_entries()
-        .iter()
-        .filter(|e| e.message.contains("4,194,304 cells"))
-        .count()
-    };
+    let log = crate::core::testing::capture_log();
+    let warnings = || log.containing("4,194,304 cells");
     let before = warnings();
     let layer = LayerGrid {
       grid: MapGrid::new(GridShape::Orthogonal, UVec2::splat(16)),

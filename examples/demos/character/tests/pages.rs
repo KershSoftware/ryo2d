@@ -4,9 +4,8 @@
 //! platformer's LDtk level collides exactly as the ASCII level it replaced
 //! did (kept below as the reference)
 
-use ryo2d::core::dev_log::{self, LogLevel};
 use ryo2d::prelude::*;
-use ryo2d::testing::HeadlessEngine;
+use ryo2d::testing::{HeadlessEngine, LogCapture};
 
 use character_demo::{ORIGIN, TILE, demo, embedded};
 
@@ -30,14 +29,9 @@ fn engine_over(page: usize, files: MemorySource) -> Option<HeadlessEngine> {
   HeadlessEngine::new_or_skip(builder)
 }
 
-/// Every warning in the dev log. It is the process's, so the other tests'
-/// land in it too; none of them expects a warning either
-fn warnings() -> Vec<String> {
-  dev_log::get_entries()
-    .into_iter()
-    .filter(|entry| entry.level >= LogLevel::Warn)
-    .map(|entry| entry.message)
-    .collect()
+/// Every warning and error `log` captured
+fn warnings(log: &LogCapture) -> Vec<String> {
+  log.warnings_and_errors()
 }
 
 /// The map events sent since `cursor` last read
@@ -119,6 +113,8 @@ fn level(rows: &[&str]) -> TileColliders {
 /// Step every page for two seconds, checking none warns and no map fails
 fn every_page_plays(mut engine_on: impl FnMut(usize) -> Option<HeadlessEngine>) {
   for page in 0..PAGES {
+    // A capture for each page, opened before its engine
+    let log = ryo2d::testing::capture_log();
     let Some(mut engine) = engine_on(page) else {
       return;
     };
@@ -141,7 +137,7 @@ fn every_page_plays(mut engine_on: impl FnMut(usize) -> Option<HeadlessEngine>) 
       "page {}",
       page + 1
     );
-    let warned = warnings();
+    let warned = warnings(&log);
     assert!(warned.is_empty(), "page {}: {warned:#?}", page + 1);
   }
 }

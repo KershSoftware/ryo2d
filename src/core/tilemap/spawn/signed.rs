@@ -397,6 +397,7 @@ fn writing_a_tile_far_away_on_an_unbounded_layer_collides_and_casts_shadows() {
 #[test]
 fn a_fill_making_more_chunks_than_a_map_holds_is_refused_and_warns_once() {
   use crate::core::tilemap::grid::{FILL_CAP, MAX_FILL_CHUNKS};
+  let log = crate::core::testing::capture_log();
   // The cap lowered to 4 chunks for the test (131,072 in a game), so were
   // the guard gone the refused fills would make a few chunks, not gigabytes
   FILL_CAP.with(|cap| cap.set(4));
@@ -420,10 +421,7 @@ fn a_fill_making_more_chunks_than_a_map_holds_is_refused_and_warns_once() {
     .map_or(usize::MAX, |data| data.tiles.chunk_coords().count());
   assert_eq!(chunks, 0, "nothing was made");
   assert_eq!(maps.world.query::<&MapTile>().iter(&maps.world).count(), 0);
-  let warned = crate::core::dev_log::get_entries()
-    .iter()
-    .filter(|e| e.message.contains(layer) && e.message.contains("fill"))
-    .count();
+  let warned = log.containing_all(&[layer, "fill"]);
   assert_eq!(warned, 1, "warned once, naming the layer");
   // A fill within the cap writes; clearing every cell reads the chunks
   // there are

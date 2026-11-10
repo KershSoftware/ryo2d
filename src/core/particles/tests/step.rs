@@ -229,9 +229,9 @@ fn max_particles_caps_the_live_count() {
 
 #[test]
 fn the_budget_drops_spawns_and_warns_once() {
-  let _log = testing::log_lock();
+  let log = crate::core::testing::capture_log();
   let warned = || {
-    particle_warnings()
+    particle_warnings(&log)
       .iter()
       .filter(|message| message.contains("budget of 50"))
       .count()
@@ -252,7 +252,7 @@ fn the_budget_drops_spawns_and_warns_once() {
   assert_eq!(live(&world), 50);
   assert_eq!(count(&world, a) + count(&world, b), 50);
   assert_eq!(warned(), 2, "one warning per effect");
-  let budget = particle_warnings()
+  let budget = particle_warnings(&log)
     .into_iter()
     .find(|message| message.contains("budget of 50"))
     .unwrap_or_default();
@@ -801,8 +801,8 @@ fn a_plain_emitter_teleported_between_steps_does_not_streak() {
 
 #[test]
 fn an_effect_still_loading_emits_nothing_until_it_lands() {
-  let _log = testing::log_lock();
-  let warnings = particle_warnings().len();
+  let log = crate::core::testing::capture_log();
+  let warnings = particle_warnings(&log).len();
   let mut world = testing::world();
   // A handle to a slot with no value yet, as a queued load hands out
   let effect: Handle<ParticleEffect> = world
@@ -820,7 +820,11 @@ fn an_effect_still_loading_emits_nothing_until_it_lands() {
       .compiled(effect.id())
       .is_none()
   );
-  assert_eq!(particle_warnings().len(), warnings, "nothing to warn about");
+  assert_eq!(
+    particle_warnings(&log).len(),
+    warnings,
+    "nothing to warn about"
+  );
 
   // It lands: its first cycle starts in that step
   let landed = still(&mut world, 10.0)
@@ -837,7 +841,7 @@ fn an_effect_still_loading_emits_nothing_until_it_lands() {
   assert_eq!(count(&world, emitter), 5);
   step(&mut world);
   assert_eq!(count(&world, emitter), 8, "0.5 s after it landed");
-  assert_eq!(particle_warnings().len(), warnings);
+  assert_eq!(particle_warnings(&log).len(), warnings);
 }
 
 // Determinism

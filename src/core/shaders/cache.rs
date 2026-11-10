@@ -642,9 +642,9 @@ fn warn_failed(name: &str, failure: &ShaderError) {
 mod tests {
   use super::*;
   use crate::core::asset::{Assets, Handle};
-  use crate::core::dev_log;
   use crate::core::ecs::Shader;
   use crate::core::shaders::custom::ShaderKind;
+  use crate::core::testing::LogCapture;
 
   /// A sprite shader returning `colour`
   fn sprite(colour: &str) -> String {
@@ -664,18 +664,14 @@ mod tests {
     compiled.shader.is_ok().then_some(key)
   }
 
-  /// How many warnings the log has about `name`, as the asset server
+  /// How many warnings `log` captured about `name`, as the asset server
   /// warns about a file that does not load
-  fn errors_for(name: &str) -> usize {
-    crate::core::logging::ensure();
+  fn errors_for(log: &LogCapture, name: &str) -> usize {
     let warned = format!("could not load \"{name}\": ");
-    dev_log::get_entries()
+    log
+      .from_target("ryo2d::core::shaders")
       .iter()
-      .filter(|entry| {
-        entry.level == dev_log::LogLevel::Warn
-          && entry.module.as_deref() == Some("Shaders")
-          && entry.message.starts_with(&warned)
-      })
+      .filter(|entry| entry.level == log::Level::Warn && entry.message.starts_with(&warned))
       .count()
   }
 
@@ -807,6 +803,7 @@ mod tests {
 
   #[test]
   fn a_compile_error_is_reported_once_per_shader_version() {
+    let log = crate::core::testing::capture_log();
     let mut shaders = Assets::<Shader>::new();
     let mut cache = ShaderCache::<()>::new(ShaderKind::Sprite);
     let broken = "fn sprite(in: SpriteIn, params: Params) -> vec4<f32> { return nope_t9; }";
@@ -820,7 +817,7 @@ mod tests {
         "it draws plain"
       );
     }
-    assert_eq!(errors_for(name), 1, "once for its version");
+    assert_eq!(errors_for(&log, name), 1, "once for its version");
     // Another version, then back to the first text: each is told
     for source in [other, broken] {
       if let Some(shader) = shaders.get_mut(&handle) {
@@ -828,17 +825,18 @@ mod tests {
       }
       key_of(&mut cache, &handle, &shaders);
     }
-    assert_eq!(errors_for(name), 3);
+    assert_eq!(errors_for(&log, name), 3);
     // Another shader of the same text is told under its own name
     let twin = "t9-report-b.wgsl";
     let second = shaders.add(Shader::from_wgsl(twin, broken));
     key_of(&mut cache, &second, &shaders);
-    assert_eq!(errors_for(twin), 1);
-    assert_eq!(errors_for(name), 3);
+    assert_eq!(errors_for(&log, twin), 1);
+    assert_eq!(errors_for(&log, name), 3);
   }
 
   #[test]
   fn a_version_that_does_not_compile_draws_the_last_one_the_gpu_accepted() {
+    let log = crate::core::testing::capture_log();
     let name = "t33-cache-fallback.wgsl";
     let mut shaders = Assets::<Shader>::new();
     // Compiled at once, as on the web
@@ -859,7 +857,7 @@ mod tests {
       );
     }
     assert!(cache.in_use(good));
-    assert_eq!(errors_for(name), 1, "warned once for the version");
+    assert_eq!(errors_for(&log, name), 1, "warned once for the version");
   }
 
   #[test]
@@ -904,6 +902,7 @@ mod tests {
 
   #[test]
   fn a_version_the_gpu_rejects_draws_the_last_good_one() {
+    let log = crate::core::testing::capture_log();
     let name = "t33-cache-rejected.wgsl";
     let mut shaders = Assets::<Shader>::new();
     // Compiled at once, as on the web
@@ -923,7 +922,8 @@ mod tests {
     for _ in 0..3 {
       assert_eq!(key_of(&mut cache, &handle, &shaders), Some(good));
     }
-    let warned: Vec<_> = dev_log::get_entries()
+    let warned: Vec<_> = log
+      .records()
       .into_iter()
       .filter(|entry| entry.message.contains(name))
       .map(|entry| entry.message)
@@ -1035,6 +1035,7 @@ mod tests {
 
   #[test]
   fn a_new_version_that_does_not_compile_keeps_the_old_one_and_is_warned_about_once() {
+    let log = crate::core::testing::capture_log();
     let name = "t14c-broken-next.wgsl";
     let broken = "fn sprite(in: SpriteIn, params: Params) -> vec4<f32> { return nope_t14c; }";
     let (mut cache, shaders, handle, good) = changed(name, broken);
@@ -1048,11 +1049,12 @@ mod tests {
       assert_eq!(key_of(&mut cache, &handle, &shaders), Some(good));
     }
     assert!(!cache.waiting());
-    assert_eq!(errors_for(name), 1);
+    assert_eq!(errors_for(&log, name), 1);
   }
 
   #[test]
   fn a_new_version_the_gpu_rejects_keeps_the_old_one() {
+    let log = crate::core::testing::capture_log();
     let name = "t14c-rejected-next.wgsl";
     let blue = sprite("vec4<f32>(0.0, 0.0, 1.0, 1.0)");
     let (mut cache, shaders, handle, good) = changed(name, &blue);
@@ -1069,7 +1071,8 @@ mod tests {
     cache.advance(|_, _, _| false);
     assert_eq!(key_of(&mut cache, &handle, &shaders), Some(good));
     assert_eq!(key_of(&mut cache, &handle, &shaders), Some(good));
-    let warned: Vec<_> = dev_log::get_entries()
+    let warned: Vec<_> = log
+      .records()
       .into_iter()
       .filter(|entry| entry.message.contains(name))
       .map(|entry| entry.message)
@@ -1082,6 +1085,7 @@ mod tests {
 
   #[test]
   fn a_compile_that_panicked_fails_its_version_and_the_old_one_draws() {
+    let log = crate::core::testing::capture_log();
     let name = "t14c-panicked.wgsl";
     let blue = sprite("vec4<f32>(0.0, 0.0, 1.0, 1.0)");
     let (mut cache, shaders, handle, good) = changed(name, &blue);
@@ -1094,7 +1098,8 @@ mod tests {
     );
     assert_eq!(key_of(&mut cache, &handle, &shaders), Some(good));
     assert_eq!(key_of(&mut cache, &handle, &shaders), Some(good));
-    let warned: Vec<_> = dev_log::get_entries()
+    let warned: Vec<_> = log
+      .records()
       .into_iter()
       .filter(|entry| entry.message.contains(name))
       .map(|entry| entry.message)
@@ -1107,6 +1112,7 @@ mod tests {
 
   #[test]
   fn a_compile_that_panicked_on_a_text_still_held_drops_the_version_and_is_not_sent_again() {
+    let log = crate::core::testing::capture_log();
     let name = "t14c-panicked-held.wgsl";
     let blue = sprite("vec4<f32>(0.0, 0.0, 1.0, 1.0)");
     let (mut cache, mut shaders, handle, good) = changed(name, &blue);
@@ -1139,7 +1145,8 @@ mod tests {
       !cache.pending(handle.id(), &shaders),
       "a failed version counts as drawn"
     );
-    let warned: Vec<_> = dev_log::get_entries()
+    let warned: Vec<_> = log
+      .records()
       .into_iter()
       .filter(|entry| entry.message.contains(name))
       .map(|entry| entry.message)

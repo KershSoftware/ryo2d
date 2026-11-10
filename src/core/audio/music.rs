@@ -304,7 +304,6 @@ mod tests {
   use crate::core::audio::{
     AudioEngine, AudioLogEntry, AudioLogKind, AudioView, ClipBytes, EncodedClip, MusicJoinError,
   };
-  use crate::core::dev_log::{self, LogLevel};
   use crate::core::ecs::World;
   use crate::core::testing::{audio_step, audio_world, audio_world_over};
 
@@ -662,6 +661,7 @@ mod tests {
   /// on
   #[test]
   fn a_track_that_failed_warns_once_and_leaves_the_music_alone() {
+    let captured = crate::core::testing::capture_log();
     let mut world = world_with(&[
       ("music/a.music.ron", r#"(clip: "music/tone.wav")"#),
       (
@@ -691,10 +691,11 @@ mod tests {
     }
     assert_eq!(current(&mut world), Some(a.id()));
     assert_eq!(entries(&world, "music/a.music.ron").len(), 1);
-    let warned = dev_log::get_entries()
+    let warned = captured
+      .records()
       .iter()
       .filter(|entry| {
-        entry.level == LogLevel::Warn
+        entry.level == log::Level::Warn
           && entry.message.starts_with("music/broken-track.music.ron:")
           && entry.message.contains("did not load")
       })

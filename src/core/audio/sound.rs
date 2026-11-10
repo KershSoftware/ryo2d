@@ -332,8 +332,8 @@ mod tests {
     AudioEngine, AudioListener, AudioLogEntry, AudioLogKind, AudioView, PlayOptions, Voice,
     VoicePick,
   };
-  use crate::core::dev_log::{self, LogLevel};
   use crate::core::ecs::{Vec2, World};
+  use crate::core::testing::LogCapture;
   use crate::core::testing::{audio_step, audio_world, audio_world_over};
 
   const FRAME: Duration = Duration::from_nanos(16_666_667);
@@ -409,10 +409,11 @@ mod tests {
       .collect()
   }
 
-  fn warnings(matching: impl Fn(&str) -> bool) -> usize {
-    dev_log::get_entries()
+  fn warnings(captured: &LogCapture, matching: impl Fn(&str) -> bool) -> usize {
+    captured
+      .records()
       .iter()
-      .filter(|entry| entry.level == LogLevel::Warn && matching(&entry.message))
+      .filter(|r| r.level == log::Level::Warn && matching(&r.message))
       .count()
   }
 
@@ -1074,10 +1075,10 @@ mod tests {
   }
 
   /// When voices fading out hold all of kira's room on a bus, the plays it
-  /// refuses warn once, naming the bus, not only in the audio log. The bus
-  /// is this test's alone, so the process's log holds its warning only
+  /// refuses warn once, naming the bus, not only in the audio log
   #[test]
   fn a_full_track_warns_once_naming_its_bus() {
+    let captured = crate::core::testing::capture_log();
     let mut world = audio_world();
     AudioView::new(&mut world).set_mixer(crate::core::audio::Mixer {
       buses: vec![crate::core::audio::BusDef::new("ambience/full-track")],
@@ -1103,7 +1104,7 @@ mod tests {
       }
     }
     assert_eq!(stolen(&world).len(), 64);
-    let about_it = warnings(|message| {
+    let about_it = warnings(&captured, |message| {
       message.contains("\"ambience/full-track\" bus is full") && message.contains("fading")
     });
     assert_eq!(about_it, 1);
@@ -1456,6 +1457,7 @@ mod tests {
   /// after does not repeat
   #[test]
   fn a_loop_whose_load_fails_ends_with_one_warning() {
+    let captured = crate::core::testing::capture_log();
     let files = MemorySource::new();
     files.insert(
       "sfx/never-waits.sound.ron",
@@ -1474,7 +1476,9 @@ mod tests {
     audio_step(&mut world, FRAME);
     assert!(of_kind(&world, AudioLogKind::Start).is_empty());
     // The registry's, saying why: the engine adds none
-    let about_it = warnings(|message| message.contains("sfx/never-waits.sound.ron"));
+    let about_it = warnings(&captured, |message| {
+      message.contains("sfx/never-waits.sound.ron")
+    });
     assert_eq!(about_it, 1);
   }
 
@@ -1516,6 +1520,7 @@ mod tests {
   /// one-shot), logged with why, and warned about once per sound
   #[test]
   fn a_one_shot_played_while_loading_is_refused_and_logged() {
+    let captured = crate::core::testing::capture_log();
     let files = MemorySource::new();
     files.insert(
       "sfx/later.sound.ron",
@@ -1553,7 +1558,9 @@ mod tests {
     assert!(of_kind(&world, AudioLogKind::Start).is_empty());
     let warned = |path: &str| {
       let named = format!("{path}:");
-      warnings(|message| message.starts_with(&named) && message.contains("still loading"))
+      warnings(&captured, |message| {
+        message.starts_with(&named) && message.contains("still loading")
+      })
     };
     let once = usize::from(cfg!(debug_assertions));
     assert_eq!(warned("sfx/later-bare.wav"), once);
@@ -1569,6 +1576,7 @@ mod tests {
 
   #[test]
   fn a_failed_sound_warns_once() {
+    let captured = crate::core::testing::capture_log();
     let files = MemorySource::new();
     files.insert(
       "sfx/broken-for-warning.sound.ron",
@@ -1588,7 +1596,7 @@ mod tests {
       assert!(play(&mut world, &sound).is_stopped());
       audio_step(&mut world, FRAME);
     }
-    let about_it = warnings(|message| {
+    let about_it = warnings(&captured, |message| {
       message.starts_with("sfx/broken-for-warning.sound.ron:") && message.contains("plays nothing")
     });
     assert_eq!(about_it, 1);

@@ -786,15 +786,17 @@ mod tests {
 
   #[test]
   fn a_store_that_does_not_open_leaves_saves_unavailable() {
+    let log = crate::core::testing::capture_log();
     let saves = SaveService::new(VersionRegistry::default());
     let refused = SaveError::Io {
       path: "refused-browser-db".into(),
       source: io::Error::other("blocked"),
     };
     assert!(!install(&saves, Err(refused)));
-    let warned = crate::core::dev_log::get_entries()
+    let warned = log
+      .records()
       .iter()
-      .filter(|entry| entry.level == crate::core::dev_log::LogLevel::Warn)
+      .filter(|entry| entry.level == log::Level::Warn)
       .filter(|entry| entry.message.contains("refused-browser-db"))
       .count();
     assert_eq!(warned, 1);

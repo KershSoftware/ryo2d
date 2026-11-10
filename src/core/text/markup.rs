@@ -445,13 +445,11 @@ mod tests {
 
   #[test]
   fn each_bad_markup_string_warns_once() {
+    let log = crate::core::testing::capture_log();
     let source = "[color=red]warn me once";
     let _ = RichText::markup(source);
     let _ = RichText::markup(source);
-    let count = crate::core::dev_log::get_entries()
-      .iter()
-      .filter(|e| e.message.contains("warn me once"))
-      .count();
+    let count = log.containing("warn me once");
     assert_eq!(count, 1);
   }
 }

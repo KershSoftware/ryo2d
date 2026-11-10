@@ -410,16 +410,14 @@ mod tests {
 
   #[test]
   fn a_duplicate_key_is_suffixed_and_warned_once() {
+    let log = crate::core::testing::capture_log();
     let site = here();
     let mut s = scopes();
     let a = s.make(site, Some(7));
     let b = s.make(site, Some(7));
     let c = s.make(site, Some(7));
     assert!(a != b && b != c && a != c);
-    let warnings = crate::core::dev_log::get_entries()
-      .iter()
-      .filter(|e| e.message.contains("share the id key"))
-      .count();
+    let warnings = log.containing("share the id key");
     assert_eq!(warnings, 1);
   }
 

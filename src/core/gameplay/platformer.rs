@@ -1126,6 +1126,7 @@ mod tests {
 
   #[test]
   fn a_non_finite_velocity_is_read_as_zero_and_warned_once() {
+    let log = crate::core::testing::capture_log();
     let (mut world, mut s) = world(60);
     floor(&mut world, 100.0);
     let e = runner(&mut world, PlatformerMovement::default());
@@ -1143,7 +1144,8 @@ mod tests {
     assert!(world.get::<Velocity>(e).unwrap().as_vec2().is_finite());
     assert!(at(&world, e).translation.x > x + 20.0, "runs");
     let prefix = format!("{e}: PlatformerMovement read a non-finite Velocity");
-    let warnings = crate::core::dev_log::get_entries()
+    let warnings = log
+      .records()
       .iter()
       .filter(|entry| entry.message.starts_with(&prefix))
       .count();

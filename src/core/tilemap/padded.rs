@@ -1704,6 +1704,7 @@ pub(crate) mod tests {
 
   #[test]
   fn a_padded_image_past_the_device_s_texture_side_is_too_big() {
+    let log = crate::core::testing::capture_log();
     // 16,900 tiles of 64 px: 64 px cells, at most 128 a side within the
     // 8,192 texels a texture may span under the limits the engine asks for,
     // so 16,384 of them at most; the atlas would refuse the image and the
@@ -1726,10 +1727,7 @@ pub(crate) mod tests {
     padded.begin_round();
     assert!(padded.get(&source, &tilesets, &mut images).is_none());
     padded.end_round();
-    let warned = crate::core::dev_log::get_entries()
-      .iter()
-      .filter(|e| e.message.contains("past-the-texture-3b9e"))
-      .count();
+    let warned = log.containing("past-the-texture-3b9e");
     assert_eq!(warned, 1, "warned, naming the tileset");
     assert_eq!(images.len(), 1, "no padded image made");
     // A device whose textures span more pads it: 130 cells a side
@@ -1745,6 +1743,7 @@ pub(crate) mod tests {
 
   #[test]
   fn a_tileset_too_big_to_pad_draws_nothing_and_warns_once() {
+    let log = crate::core::testing::capture_log();
     // 16,900 tiles of 64 px: 64 px cells, more than the 128 a side that fit
     // the 8,192 texels a padded image may span. The atlas image itself is
     // small: nothing is padded, so nothing reads past it
@@ -1768,10 +1767,7 @@ pub(crate) mod tests {
       assert!(padded.get(&source, &tilesets, &mut images).is_none());
       padded.end_round();
     }
-    let warned = crate::core::dev_log::get_entries()
-      .iter()
-      .filter(|e| e.message.contains("too-big-5d2a"))
-      .count();
+    let warned = log.containing("too-big-5d2a");
     assert_eq!(warned, 1, "warned once, naming the tileset");
     // One tile too large for any cell says so, not a size of 2^64 texels
     let image = images.add(Image::solid_rect(4, 4, 0, 0, 0, 255));
@@ -1789,7 +1785,8 @@ pub(crate) mod tests {
     padded.begin_round();
     assert!(padded.get(&source, &tilesets, &mut images).is_none());
     padded.end_round();
-    let said: Vec<String> = crate::core::dev_log::get_entries()
+    let said: Vec<String> = log
+      .records()
       .into_iter()
       .filter(|e| e.message.contains("huge-tile-71c0"))
       .map(|e| e.message)

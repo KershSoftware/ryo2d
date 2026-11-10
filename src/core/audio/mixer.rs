@@ -2211,6 +2211,7 @@ mod tests {
 
   #[test]
   fn a_sound_on_a_send_bus_plays_on_its_parent_with_one_warning() {
+    let captured = crate::core::testing::capture_log();
     let text = r#"(buses: {
       "ambience/caves": (sends: { "ambience/cave-echo-unique": -6.0 }),
       "ambience/cave-echo-unique": (effects: [Delay(seconds: 0.3)]),
@@ -2226,13 +2227,15 @@ mod tests {
       assert_eq!(start.map(|entry| entry.bus).as_deref(), Some("ambience"));
       audio_step(&mut world, FRAME);
     }
-    let warned =
-      warnings(|message| message.contains("\"ambience/cave-echo-unique\" is a send bus"));
+    let warned = warnings(&captured, |message| {
+      message.contains("\"ambience/cave-echo-unique\" is a send bus")
+    });
     assert_eq!(warned, 1);
   }
 
   #[test]
   fn a_bus_the_mixer_adds_is_not_warned_about_before_it_lands() {
+    let captured = crate::core::testing::capture_log();
     let files = MemorySource::new();
     files.insert(
       MIXER_PATH,
@@ -2272,7 +2275,7 @@ mod tests {
     );
     assert_eq!(bus_of(&late), ["sfx/landing-unique"]);
     assert_eq!(
-      warnings(|message| message.contains("landing-unique")),
+      warnings(&captured, |message| message.contains("landing-unique")),
       0,
       "nothing was warned about"
     );
@@ -2336,6 +2339,7 @@ mod tests {
   /// Review M5: a mixer made in code, for a game with no file (the web)
   #[test]
   fn a_mixer_made_in_code_rebuilds_the_buses_as_a_reload_would() {
+    let captured = crate::core::testing::capture_log();
     let mut world = audio_world();
     let long = clip(&mut world, 2.0);
     let sound = looping(&mut world, long, "sfx");
@@ -2388,7 +2392,8 @@ mod tests {
     audio_step(&mut world, FRAME);
     assert_eq!(bus(&world, "sfx/coded").base_db, -4.0);
     assert_eq!(
-      warnings(|message| message.contains("\"sfx/coded-twice-unique\" twice")),
+      warnings(&captured, |message| message
+        .contains("\"sfx/coded-twice-unique\" twice")),
       1
     );
   }
@@ -2399,6 +2404,7 @@ mod tests {
   /// rebuilds that follow have nothing left to move, and say nothing more
   #[test]
   fn a_loop_whose_clip_goes_bad_ends_warned_once_and_rebuilds_leave_it() {
+    let captured = crate::core::testing::capture_log();
     let tone = match std::fs::read(concat!(
       env!("CARGO_MANIFEST_DIR"),
       "/tests/fixtures/audio/tone.wav"
@@ -2449,7 +2455,9 @@ mod tests {
     }
     assert!(voice.is_stopped(), "{voice:?}");
     let named = |what: &str| {
-      warnings(|message| message.starts_with("stuck-loop-unique.wav:") && message.contains(what))
+      warnings(&captured, |message| {
+        message.starts_with("stuck-loop-unique.wav:") && message.contains(what)
+      })
     };
     assert_eq!(named("could not be decoded"), 1);
     assert_eq!(named("rebuilt buses"), 0);
@@ -2755,6 +2763,7 @@ mod tests {
 
   #[test]
   fn a_snapshot_the_reload_drops_blends_back_to_open() {
+    let captured = crate::core::testing::capture_log();
     let (mut world, _files) = world_with_mixer(SNAPSHOTS);
     AudioView::new(&mut world).snapshot("pause");
     run(&mut world, 0.4);
@@ -2770,7 +2779,8 @@ mod tests {
     assert_eq!(music.cutoff_hz, Some(20_000.0));
     assert!(bus(&world, "sfx").snapshot_db.abs() < 0.01);
     assert_eq!(
-      warnings(|message| message.contains("\"pause\" is not in the reloaded mixer")),
+      warnings(&captured, |message| message
+        .contains("\"pause\" is not in the reloaded mixer")),
       1
     );
   }
@@ -2955,6 +2965,7 @@ mod tests {
   /// warned about once, by name: it can never apply
   #[test]
   fn a_snapshot_waiting_for_a_mixer_that_fails_warns_once() {
+    let captured = crate::core::testing::capture_log();
     let files = MemorySource::new();
     files.insert(MIXER_PATH, "(buses: { \"sfx\": (volume: oops) })");
     let mut world = audio_world_over(files);
@@ -2974,13 +2985,14 @@ mod tests {
     }
     run(&mut world, 0.1);
     assert_eq!(
-      warnings(|message| message.contains("\"stranded-unique\"")),
+      warnings(&captured, |message| message.contains("\"stranded-unique\"")),
       1
     );
   }
 
   #[test]
   fn an_unknown_snapshot_warns_once_and_changes_nothing() {
+    let captured = crate::core::testing::capture_log();
     let (mut world, _files) = world_with_mixer(SNAPSHOTS);
     for _ in 0..3 {
       AudioView::new(&mut world).snapshot("no-such-snapshot-unique");
@@ -2988,7 +3000,8 @@ mod tests {
     run(&mut world, 0.1);
     assert_eq!(bus(&world, "music").snapshot_db, 0.0);
     assert_eq!(
-      warnings(|message| message.contains("no-such-snapshot-unique")),
+      warnings(&captured, |message| message
+        .contains("no-such-snapshot-unique")),
       1
     );
   }
@@ -3408,8 +3421,12 @@ mod tests {
   /// the tree's fade
   #[test]
   fn every_rebuild_has_room_for_its_send_tracks() {
-    let room_warnings =
-      || warnings(|message| message.contains("kira has no room for the \"sfx/send-room-"));
+    let captured = crate::core::testing::capture_log();
+    let room_warnings = || {
+      warnings(&captured, |message| {
+        message.contains("kira has no room for the \"sfx/send-room-")
+      })
+    };
     let warned = room_warnings();
     let (mut world, _files) = world_with_mixer(&sixteen_sends(1));
     let long = clip(&mut world, 20.0);
@@ -3443,12 +3460,14 @@ mod tests {
     assert_eq!(room_warnings(), warned, "no send bus without a track");
   }
 
-  fn warnings(matching: impl Fn(&str) -> bool) -> usize {
-    crate::core::dev_log::get_entries()
+  fn warnings(
+    captured: &crate::core::testing::LogCapture,
+    matching: impl Fn(&str) -> bool,
+  ) -> usize {
+    captured
+      .records()
       .iter()
-      .filter(|entry| {
-        entry.level == crate::core::dev_log::LogLevel::Warn && matching(&entry.message)
-      })
+      .filter(|r| r.level == log::Level::Warn && matching(&r.message))
       .count()
   }
 }

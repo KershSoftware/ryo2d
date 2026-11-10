@@ -319,14 +319,9 @@ mod tests {
     );
   }
 
-  /// How many warnings in the dev log name `path` (the log is the
-  /// process's: each test names files of its own)
-  fn warnings_naming(path: &str) -> usize {
-    crate::core::logging::ensure();
-    crate::core::dev_log::get_entries()
-      .iter()
-      .filter(|entry| entry.message.contains(path))
-      .count()
+  /// How many records `log` captured name `path`
+  fn warnings_naming(log: &crate::core::testing::LogCapture, path: &str) -> usize {
+    log.containing(path)
   }
 
   /// A UI sound that does not load leaves its theme loaded and that sound
@@ -336,6 +331,7 @@ mod tests {
   fn a_ui_sound_that_does_not_load_is_silent_with_one_warning() {
     use crate::core::audio::AudioClip;
     use crate::core::ui::ThemeSoundSource;
+    let log = crate::core::testing::capture_log();
     let files = MemorySource::new();
     files.insert(
       "ui/quiet.theme.ron",
@@ -376,8 +372,8 @@ mod tests {
       }
     });
     assert!(server.is_ready(&queued));
-    assert_eq!(warnings_naming("ui/gone-now.wav"), 1);
-    assert_eq!(warnings_naming("ui/gone-queued.wav"), 1);
+    assert_eq!(warnings_naming(&log, "ui/gone-now.wav"), 1);
+    assert_eq!(warnings_naming(&log, "ui/gone-queued.wav"), 1);
   }
 
   /// Files whose skin image is not read until the test lets it go

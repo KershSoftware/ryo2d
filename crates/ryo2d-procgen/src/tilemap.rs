@@ -249,7 +249,6 @@ fn empty_map(
 #[cfg(test)]
 mod tests {
   use crate::prelude::*;
-  use ryo2d::core::dev_log::LogLevel;
   use ryo2d::prelude::*;
   use std::sync::Arc;
 
@@ -559,16 +558,16 @@ mod tests {
 
   #[test]
   fn a_colour_the_set_lacks_warns_once_per_conversion() {
-    ryo2d::logging::ensure();
+    let log = ryo2d::testing::capture_log();
     let set = corner_set(&["floor"]);
     let grid = GenerationGrid::filled(3, 3, TileType::Floor);
     let warnings = || {
-      ryo2d::core::dev_log::get_entries()
+      log
+        .warnings()
         .iter()
-        .filter(|e| e.level == LogLevel::Warn && e.message.contains("lava-warn-once"))
+        .filter(|message| message.contains("lava-warn-once"))
         .count()
     };
-    let before = warnings();
     grid.to_terrain_map(
       GridShape::Orthogonal,
       UVec2::splat(16),
@@ -576,7 +575,7 @@ mod tests {
       &set,
       |_| Some("lava-warn-once"),
     );
-    assert_eq!(warnings(), before + 1, "nine cells, one warning");
+    assert_eq!(warnings(), 1, "nine cells, one warning");
     grid.to_terrain_map(
       GridShape::Orthogonal,
       UVec2::splat(16),
@@ -584,7 +583,7 @@ mod tests {
       &set,
       |_| Some("lava-warn-once"),
     );
-    assert_eq!(warnings(), before + 2, "another conversion warns again");
+    assert_eq!(warnings(), 2, "another conversion warns again");
   }
 
   /// The map cell each cell of a `w` x `h` grid goes to on a map of

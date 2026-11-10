@@ -1245,6 +1245,7 @@ mod tests {
 
   #[test]
   fn hostile_sizes_warn_and_draw_nothing() {
+    let log = crate::core::testing::capture_log();
     let mut h = UiHarness::new(640.0, 480.0);
     for height in [0.0, -5.0, f32::NAN, f32::INFINITY] {
       let r = h.frame(|ui| {
@@ -1265,7 +1266,7 @@ mod tests {
     });
     assert_eq!(r.range, 0..0);
     assert_eq!(
-      crate::core::ui::test_util::warnings_containing("row height"),
+      crate::core::ui::test_util::warnings_containing(&log, "row height"),
       1
     );
     let huge = |h: &mut UiHarness| {
@@ -1565,6 +1566,7 @@ mod tests {
 
   #[test]
   fn a_list_given_no_height_builds_only_what_shows_and_warns_once() {
+    let log = crate::core::testing::capture_log();
     let mut h = UiHarness::new(640.0, 480.0);
     // Grown to its whole length in a column, then inside a 300-unit scroll
     // area scrolled down
@@ -1597,9 +1599,15 @@ mod tests {
     }
     assert_eq!(h.scroll_content(first.id).y, 10_000.0 * 28.0);
     let needle = format!("the list {:?}: give the list a height", first.id);
-    assert_eq!(crate::core::ui::test_util::warnings_containing(&needle), 1);
     assert_eq!(
-      crate::core::ui::test_util::warnings_containing(&format!("the list {:?} would", first.id)),
+      crate::core::ui::test_util::warnings_containing(&log, &needle),
+      1
+    );
+    assert_eq!(
+      crate::core::ui::test_util::warnings_containing(
+        &log,
+        &format!("the list {:?} would", first.id)
+      ),
       0
     );
     // 3,000 down an outer area of 300: rows 107 to 117 show
@@ -1612,6 +1620,7 @@ mod tests {
 
   #[test]
   fn hostile_sizes_build_at_most_the_cap_and_warn_once() {
+    let log = crate::core::testing::capture_log();
     let mut h = UiHarness::new(640.0, 480.0);
     let tiny = |h: &mut UiHarness| {
       h.frame(|ui| {
@@ -1628,7 +1637,10 @@ mod tests {
       assert_eq!(r.range.len(), BUILT_ITEMS, "{:?}", r.range);
     }
     let needle = format!("the list {:?} would build more than 4096", first.id);
-    assert_eq!(crate::core::ui::test_util::warnings_containing(&needle), 1);
+    assert_eq!(
+      crate::core::ui::test_util::warnings_containing(&log, &needle),
+      1
+    );
     // 256 columns at most: 1,000,000 items are 3,907 rows
     let wide = |h: &mut UiHarness| {
       h.frame(|ui| {

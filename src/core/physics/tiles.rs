@@ -5856,11 +5856,13 @@ mod with_physics {
 
   #[test]
   fn a_floor_on_a_grid_s_entity_unlike_its_own_warns_once_naming_with_floor() {
+    let log = crate::core::testing::capture_log();
     let warnings = |world: &World| world.resource::<Physics>().warnings;
-    // The dev log's warnings naming `with_floor` and saying `floors` (the
-    // grid's and the entity's), which no other test's say
+    // The warnings naming `with_floor` and saying `floors` (the grid's and
+    // the entity's)
     let warned = |map: Entity, floors: &str| {
-      crate::core::dev_log::get_entries()
+      log
+        .records()
         .iter()
         .filter(|entry| {
           let message = &entry.message;
@@ -6163,6 +6165,7 @@ mod with_physics {
 
   #[test]
   fn a_grid_wider_than_8192_cells_collides() {
+    let log = crate::core::testing::capture_log();
     // 6a refused it: past 8192 cells a side
     let (w, h) = (10_000_u32, 64_u32);
     let mut cells = vec![TileCell::Empty; (w * h) as usize];
@@ -6174,10 +6177,7 @@ mod with_physics {
     let (min, max) = union(&part_bounds(&mut world, map));
     assert!(min.abs_diff_eq(Vec2::new(0.0, 1008.0), 1e-3), "{min}");
     assert!(max.abs_diff_eq(Vec2::new(160_000.0, 1024.0), 1e-3), "{max}");
-    let warned = crate::core::dev_log::get_entries()
-      .iter()
-      .filter(|e| e.message.contains("10000 x 64"))
-      .count();
+    let warned = log.containing("10000 x 64");
     assert_eq!(warned, 0, "no warning");
     assert_eq!(world.resource::<Physics>().warnings, 0);
     // A ball dropped near its far end lands on it
@@ -6189,7 +6189,8 @@ mod with_physics {
 
   #[test]
   fn a_cell_past_the_lattice_s_reach_draws_but_does_not_collide() {
-    use crate::core::dev_log::{LogEntry, get_entries};
+    use crate::core::logging::LogRecord;
+    let log = crate::core::testing::capture_log();
     let mut tiles = TileColliders::unbounded(Vec2::splat(16.0));
     let past = IVec2::new(MAX_REACH + 1, 0);
     let others = [IVec2::new(-MAX_REACH - 1, 7), IVec2::new(3, i32::MIN)];
@@ -6200,13 +6201,13 @@ mod with_physics {
     }
     assert_eq!(tiles.get(past), TileCell::Empty);
     assert_eq!(tiles.extent(), CellRect::default(), "no chunk made");
-    let named = |entry: &LogEntry| {
+    let named = |entry: &LogRecord| {
       entry.message.contains("past the reach")
         && [past, others[0], others[1]]
           .iter()
           .any(|c| entry.message.contains(&format!("({}, {})", c.x, c.y)))
     };
-    assert_eq!(get_entries().iter().filter(|e| named(e)).count(), 1);
+    assert_eq!(log.records().iter().filter(|e| named(e)).count(), 1);
     // The farthest cells that collide build, and edit, without overflowing
     let near = IVec2::new(MAX_REACH - 1, 0);
     let corner = IVec2::splat(-MAX_REACH);

@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use super::record::LogRecord;
-use super::scope::{new_scope, replace_scope};
+use super::scope::{current_scope, new_scope, replace_scope};
 
 /// A capture's buffer, which the outputs push into.
 pub(super) struct Sink {
@@ -124,6 +124,22 @@ impl LogCapture {
     self.filtered(|r| r.message.contains(needle)).len()
   }
 
+  /// How many records kept have every one of `needles` in their message.
+  pub fn containing_all(&self, needles: &[&str]) -> usize {
+    self
+      .filtered(|r| needles.iter().all(|needle| r.message.contains(needle)))
+      .len()
+  }
+
+  /// The messages of the warnings and errors kept, oldest first.
+  pub fn warnings_and_errors(&self) -> Vec<String> {
+    self
+      .filtered(|r| r.level <= log::Level::Warn)
+      .into_iter()
+      .map(|r| r.message)
+      .collect()
+  }
+
   /// The records kept whose target starts with `prefix`.
   pub fn from_target(&self, prefix: &str) -> Vec<LogRecord> {
     self.filtered(|r| r.target.starts_with(prefix))
@@ -151,7 +167,11 @@ impl LogCapture {
 
 impl Drop for LogCapture {
   fn drop(&mut self) {
-    replace_scope(self.previous);
+    // Dropped out of order, an inner capture still holds the thread: leave
+    // its scope alone rather than put back one that is about to close
+    if current_scope() == self.sink.scope {
+      replace_scope(self.previous);
+    }
     let mut open = OPEN.write().unwrap_or_else(PoisonError::into_inner);
     open.retain(|sink| !Arc::ptr_eq(sink, &self.sink));
     OPEN_COUNT.fetch_sub(1, Ordering::Release);
@@ -161,7 +181,7 @@ impl Drop for LogCapture {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::core::logging::scope::{current_scope, in_scope};
+  use crate::core::logging::scope::in_scope;
 
   #[test]
   fn capture_collects_its_own_scope_only() {
@@ -172,12 +192,16 @@ mod tests {
           for i in 0..100 {
             log::warn!(target: "ryo2d::core::logging::capture_test", "thread {t} line {i}");
           }
+          log::error!(target: "ryo2d::core::logging::capture_test", "thread {t} error");
+          log::info!(target: "ryo2d::core::logging::capture_test", "thread {t} note");
           (
             capture.scope(),
             capture.records(),
             capture.count(log::Level::Warn),
             capture.warnings().len(),
             capture.from_target("ryo2d::core::logging").len(),
+            capture.warnings_and_errors().len(),
+            capture.containing_all(&[&format!("thread {t} "), "line 7"]),
           )
         })
       })
@@ -185,9 +209,12 @@ mod tests {
 
     let mut scopes = Vec::new();
     for (t, thread) in threads.into_iter().enumerate() {
-      let (scope, records, warns, warnings, from_target) = thread.join().expect("a capture thread");
-      assert_eq!(records.len(), 100);
-      assert_eq!((warns, warnings, from_target), (100, 100, 100));
+      let (scope, records, warns, warnings, from_target, problems, line_7) =
+        thread.join().expect("a capture thread");
+      assert_eq!(records.len(), 102);
+      assert_eq!((warns, warnings, from_target), (100, 100, 102));
+      assert_eq!(problems, 101, "the warnings and the error, not the note");
+      assert_eq!(line_7, 11, "line 7 and lines 70 to 79, of this thread only");
       let prefix = format!("thread {t} ");
       assert!(
         records
@@ -230,6 +257,20 @@ mod tests {
       assert_eq!(current_scope(), outer.scope());
     }
     assert_eq!(current_scope(), before);
+  }
+
+  #[test]
+  fn an_outer_capture_dropped_first_leaves_the_inner_s_scope() {
+    let outer = capture_log();
+    let outer_scope = outer.scope();
+    let inner = capture_log();
+    drop(outer);
+    assert_eq!(current_scope(), inner.scope());
+    log::warn!(target: "game::nested", "still the inner's");
+    assert_eq!(inner.containing("still the inner's"), 1);
+    // The inner gives back the scope it found
+    drop(inner);
+    assert_eq!(current_scope(), outer_scope);
   }
 
   #[test]

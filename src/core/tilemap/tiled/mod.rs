@@ -1028,7 +1028,6 @@ mod tests {
       warned[0].contains("render order \"left-up\""),
       "{warned:#?}"
     );
-    assert!(log.records().iter().all(|r| r.scope == log.scope()));
   }
 
   #[test]

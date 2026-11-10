@@ -302,6 +302,7 @@ mod tests {
 
   #[test]
   fn a_registered_effect_runs_and_an_unknown_one_warns_once() {
+    let log = crate::core::testing::capture_log();
     let mut effects = TextEffects::default();
     effects.register("lift", |ctx: &GlyphContext| GlyphMod {
       offset: glam::Vec2::new(0.0, -(ctx.cluster as f32)),
@@ -313,10 +314,7 @@ mod tests {
     );
     assert!(effects.apply("nope-effect", &mut ctx(0, 0.0)).is_none());
     assert!(effects.apply("nope-effect", &mut ctx(0, 0.0)).is_none());
-    let warned = crate::core::dev_log::get_entries()
-      .iter()
-      .filter(|e| e.message.contains("nope-effect"))
-      .count();
+    let warned = log.containing("nope-effect");
     assert_eq!(warned, 1);
   }
 

@@ -1363,6 +1363,7 @@ mod tests {
 
   #[test]
   fn hostile_sizes_and_a_missing_shape_build_no_rows() {
+    let log = crate::core::testing::capture_log();
     let mut h = UiHarness::new(640.0, 480.0);
     let bad = h.spawn_ui(UiNode::list(10, f32::NAN).row_shape(row));
     let shapeless = h.spawn_ui(UiNode::list(10, 20.0));
@@ -1370,7 +1371,7 @@ mod tests {
     assert!(rows(&h, bad).is_empty());
     assert!(rows(&h, shapeless).is_empty());
     assert_eq!(
-      crate::core::ui::test_util::warnings_containing("row shape"),
+      crate::core::ui::test_util::warnings_containing(&log, "row shape"),
       1
     );
   }
@@ -1617,6 +1618,7 @@ mod tests {
 
   #[test]
   fn rows_are_scopes_of_their_own_for_bindings_and_names() {
+    let log = crate::core::testing::capture_log();
     let mut h = UiHarness::new(640.0, 480.0);
     let root = h.spawn_ui(
       UiNode::column()
@@ -1644,7 +1646,7 @@ mod tests {
     // Names too: a row's nodes are found from the row
     assert_eq!(h.find_ui("line"), None);
     assert_eq!(
-      crate::core::ui::test_util::warnings_containing("named \"line\""),
+      crate::core::ui::test_util::warnings_containing(&log, "named \"line\""),
       0
     );
   }
@@ -2398,11 +2400,12 @@ mod api_tests {
 
   #[test]
   fn list_calls_on_a_plain_node_warn_once() {
+    let log = crate::core::testing::capture_log();
     let mut h = UiHarness::new(640.0, 480.0);
     let plain = h.spawn_ui(UiNode::column());
     h.ui_list_count(plain, 3);
     h.ui_list_scroll_to(plain, 3);
-    assert_eq!(warnings_containing("is not a list"), 1);
+    assert_eq!(warnings_containing(&log, "is not a list"), 1);
   }
 
   /// The row holding item `index`, if pooled
@@ -2659,6 +2662,7 @@ mod api_tests {
 
   #[test]
   fn a_row_the_game_despawned_is_skipped_and_its_item_given_a_new_row() {
+    let log = crate::core::testing::capture_log();
     let mut h = UiHarness::new(640.0, 480.0);
     let list = setup(&mut h, 100);
     for _ in 0..3 {
@@ -2683,10 +2687,10 @@ mod api_tests {
     let row = row_of(&h, list, index).expect("pooled");
     assert!(row != dead && h.world().get_entity(row).is_ok());
     assert!(has_focus(&h, list, index), "the focus lands on the new row");
-    // The log is shared by the tests running alongside, whose entities may
-    // have the dead row's index: count only the cached-node warning, the one
-    // that names a UI entity (cache.rs, `spot_compare`)
-    let about_a_row = crate::core::dev_log::get_entries()
+    // The cached-node warning, the one that names a UI entity (cache.rs,
+    // `spot_compare`)
+    let about_a_row = log
+      .records()
       .iter()
       .filter(|w| {
         w.message.starts_with("the cached UI node") && w.message.contains(&format!("{dead:?}"))
@@ -2775,6 +2779,7 @@ mod api_tests {
 
   #[test]
   fn a_list_given_no_height_pools_only_what_shows_and_warns_once() {
+    let log = crate::core::testing::capture_log();
     let mut h = UiHarness::new(640.0, 480.0);
     // In a 300-wide, 400-tall panel: it grows to its whole length
     h.spawn_ui(
@@ -2793,17 +2798,18 @@ mod api_tests {
     let id = h.ui_id(list).unwrap();
     assert_eq!(h.scroll_content(id).y, 10_000.0 * 28.0);
     assert_eq!(
-      warnings_containing("the list node \"grown\": give the list a height"),
+      warnings_containing(&log, "the list node \"grown\": give the list a height"),
       1
     );
     assert_eq!(
-      warnings_containing("the list node \"grown\" would build"),
+      warnings_containing(&log, "the list node \"grown\" would build"),
       0
     );
   }
 
   #[test]
   fn hostile_sizes_build_at_most_the_cap_and_warn_once() {
+    let log = crate::core::testing::capture_log();
     let mut h = UiHarness::new(640.0, 480.0);
     let tiny = h.spawn_ui(
       UiNode::list(1_000_000, 0.001)
@@ -2833,7 +2839,7 @@ mod api_tests {
     // 1,000,000 items in rows of 256 are 3,907 rows
     assert_eq!(h.scroll_content(id).y, 3907.0 * 20.0);
     assert_eq!(
-      warnings_containing("the list node \"tiny\" would build more than 4096"),
+      warnings_containing(&log, "the list node \"tiny\" would build more than 4096"),
       1
     );
   }
@@ -2986,6 +2992,7 @@ mod file_tests {
 
   #[test]
   fn a_row_template_whose_file_fails_to_parse_keeps_the_rows_drawing_and_warns_once() {
+    let log = crate::core::testing::capture_log();
     let template = r#"(templates: { "LeaderRow": (node: Row(children: [Button(label: "{rank}. {name}", name: "line")])) })"#;
     let board = r#"(imports: ["parse-rows.ui.ron"], root: Column(focus_scope: true, children: [
       List(count: 1000, row_height: 20, height: 100, width: 200, name: "board", row_shape: LeaderRow),
@@ -3008,7 +3015,7 @@ mod file_tests {
       assert!(step(&mut h).is_empty(), "nothing bound again");
     }
     assert_eq!(
-      warnings_containing("could not load \"parse-rows.ui.ron\""),
+      warnings_containing(&log, "could not load \"parse-rows.ui.ron\""),
       1
     );
     assert_eq!(rows(&h, list), pool, "the same rows");
@@ -3035,6 +3042,7 @@ mod file_tests {
 
   #[test]
   fn a_row_template_that_cannot_build_keeps_the_rows_and_warns_once() {
+    let log = crate::core::testing::capture_log();
     let name = "lost-image-board.ui.ron";
     let (dir, mut h) = harness(&[(name, BOARD)]);
     h.spawn_ui_file(name).unwrap();
@@ -3059,7 +3067,7 @@ mod file_tests {
       assert_eq!(line_of(&h, row), format!("{}. P{index}", index + 1));
     }
     assert_eq!(
-      warnings_containing("cannot load the image \"gone-leader.png\""),
+      warnings_containing(&log, "cannot load the image \"gone-leader.png\""),
       1
     );
     rewrite(
@@ -3174,6 +3182,7 @@ mod file_tests {
 
   #[test]
   fn a_row_of_another_top_kind_takes_each_pooled_row_s_place() {
+    let log = crate::core::testing::capture_log();
     let mut h = UiHarness::new(640.0, 480.0);
     let tree = |column: bool| {
       UiNode::list(100, 20.0)
@@ -3217,7 +3226,10 @@ mod file_tests {
       assert!(drawn_now(&h, row));
       assert_eq!(line_of(&h, row), format!("P{index}"));
     }
-    assert_eq!(warnings_containing("two UI nodes are named \"line\""), 0);
+    assert_eq!(
+      warnings_containing(&log, "two UI nodes are named \"line\""),
+      0
+    );
   }
 
   #[test]
@@ -3340,6 +3352,7 @@ mod file_tests {
 
   #[test]
   fn a_row_shape_that_cannot_build_where_the_list_is_keeps_its_rows_and_warns_once() {
+    let log = crate::core::testing::capture_log();
     let mut h = UiHarness::new(640.0, 480.0);
     let list = h.spawn_ui(
       UiNode::list(100, 20.0)
@@ -3365,7 +3378,7 @@ mod file_tests {
     assert_eq!(rows(&h, list), pool, "the rows it had");
     assert!(pool.iter().all(|&(_, row)| drawn_now(&h, row)));
     assert_eq!(
-      warnings_containing("cannot load the image \"lost-row.png\""),
+      warnings_containing(&log, "cannot load the image \"lost-row.png\""),
       1
     );
     // A new list of that shape builds no row, warned once
@@ -3375,7 +3388,7 @@ mod file_tests {
     }
     assert!(rows(&h, other).is_empty());
     assert_eq!(
-      warnings_containing("cannot load the image \"lost-row.png\""),
+      warnings_containing(&log, "cannot load the image \"lost-row.png\""),
       2,
       "once for each list"
     );
@@ -3383,6 +3396,7 @@ mod file_tests {
 
   #[test]
   fn a_row_shape_that_cannot_build_warns_again_after_one_that_builds() {
+    let log = crate::core::testing::capture_log();
     let mut h = UiHarness::new(640.0, 480.0);
     let good = || {
       UiNode::list(100, 20.0)
@@ -3406,7 +3420,7 @@ mod file_tests {
       step(&mut h);
     }
     assert_eq!(
-      warnings_containing("cannot load the image \"lost-again.png\""),
+      warnings_containing(&log, "cannot load the image \"lost-again.png\""),
       1
     );
     // Fixed, then made again: it warns again
@@ -3417,7 +3431,7 @@ mod file_tests {
     h.update_ui(list, lost());
     step(&mut h);
     assert_eq!(
-      warnings_containing("cannot load the image \"lost-again.png\""),
+      warnings_containing(&log, "cannot load the image \"lost-again.png\""),
       2
     );
   }

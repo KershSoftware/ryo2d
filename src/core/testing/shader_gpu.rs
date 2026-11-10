@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 
 use super::HeadlessEngine;
 use crate::core::asset::AssetsView;
-use crate::core::dev_log;
 use crate::core::engine::EngineBuilder;
+use crate::core::logging::LogCapture;
 use crate::prelude::*;
 
 /// The sprites' own colour: what a sprite drawn plain shows
@@ -156,12 +156,12 @@ fn step_until(
   }
 }
 
-/// The warnings in the dev log naming `name`
-fn warnings(name: &str) -> usize {
-  crate::core::logging::ensure();
-  dev_log::get_entries()
+/// The warnings `log` captured naming `name`
+fn warnings(log: &LogCapture, name: &str) -> usize {
+  log
+    .warnings()
     .iter()
-    .filter(|entry| entry.level == dev_log::LogLevel::Warn && entry.message.contains(name))
+    .filter(|message| message.contains(name))
     .count()
 }
 
@@ -528,7 +528,7 @@ fn a_blend_mode_first_drawn_while_the_new_version_compiles_is_compiled_too() {
 }
 
 #[test]
-fn a_shader_compile_warning_is_captured() {
+fn the_shader_compiler_thread_logs_into_its_engine_s_scope() {
   const COMPILER: &str = "ryo2d::core::shaders::compile";
   // Opened before the engine, so its compile thread logs into this scope
   let log = crate::core::testing::capture_log();
@@ -543,14 +543,9 @@ fn a_shader_compile_warning_is_captured() {
   step_until(
     &mut engine,
     |_, _| {},
-    |_| {
-      let warned = log
-        .records()
-        .iter()
-        .any(|r| r.level == log::Level::Warn && r.message.contains(name));
-      warned && !log.from_target(COMPILER).is_empty()
-    },
+    |_| warnings(&log, name) > 0 && !log.from_target(COMPILER).is_empty(),
   );
+  assert_eq!(warnings(&log, name), 1, "warned once for the version");
   let said = log.from_target(COMPILER);
   assert!(
     said
@@ -558,12 +553,12 @@ fn a_shader_compile_warning_is_captured() {
       .any(|r| r.message.contains("shader compiler thread started")),
     "{said:?}"
   );
-  assert!(said.iter().all(|r| r.scope == log.scope()));
   assert_eq!(pixel(&engine, 12, 12), GREEN, "the last good version draws");
 }
 
 #[test]
 fn a_change_the_gpu_rejects_draws_the_last_good_shader_in_every_frame() {
+  let log = crate::core::testing::capture_log();
   let name = "t14c-rejected.wgsl";
   let Some((mut engine, shader)) = shaded(name, fill(GREEN)) else {
     return;
@@ -572,17 +567,18 @@ fn a_change_the_gpu_rejects_draws_the_last_good_shader_in_every_frame() {
   step_until(
     &mut engine,
     |engine, frame| assert_eq!(pixel(engine, 12, 12), GREEN, "frame {frame}: never plain"),
-    |_| warnings(name) > 0,
+    |_| warnings(&log, name) > 0,
   );
   for _ in 0..3 {
     assert_eq!(pixel(&engine, 12, 12), GREEN);
     engine.step().expect("a frame");
   }
-  assert_eq!(warnings(name), 1, "warned once for the version");
+  assert_eq!(warnings(&log, name), 1, "warned once for the version");
 }
 
 #[test]
 fn an_effect_change_the_gpu_rejects_runs_the_last_good_effect_in_every_frame() {
+  let log = crate::core::testing::capture_log();
   let name = "t14c-rejected-effect.wgsl";
   let slot: Slot<Handle<Shader>> = Slot::default();
   let held = slot.clone();
@@ -602,13 +598,13 @@ fn an_effect_change_the_gpu_rejects_runs_the_last_good_effect_in_every_frame() {
   step_until(
     &mut engine,
     |engine, frame| assert_eq!(pixel(engine, 32, 16), GREEN, "frame {frame}: never skipped"),
-    |_| warnings(name) > 0,
+    |_| warnings(&log, name) > 0,
   );
   for _ in 0..3 {
     assert_eq!(pixel(&engine, 32, 16), GREEN);
     engine.step().expect("a frame");
   }
-  assert_eq!(warnings(name), 1, "warned once for the version");
+  assert_eq!(warnings(&log, name), 1, "warned once for the version");
 }
 
 #[test]

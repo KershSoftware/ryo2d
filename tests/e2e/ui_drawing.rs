@@ -292,7 +292,7 @@ fn ui_units_and_mouse_hits_hold_at_scale_factor_two() {
 
 #[test]
 fn ui_text_far_larger_than_a_glyph_page_draws_and_warns_once() {
-  use ryo2d::core::dev_log;
+  let log = ryo2d::testing::capture_log();
   // An 'I' 3000 px tall, centred: its stem covers the frame
   let scene = Ui {
     draw: |ui: &mut UiContext| {
@@ -314,10 +314,7 @@ fn ui_text_far_larger_than_a_glyph_page_draws_and_warns_once() {
     lit > 128 * 96 * 9 / 10,
     "the huge glyph draws, scaled up: {lit} lit pixels"
   );
-  let warnings = dev_log::get_entries()
-    .iter()
-    .filter(|e| e.message.contains("larger than 512 px") && e.message.contains("Inter"))
-    .count();
+  let warnings = log.containing_all(&["larger than 512 px", "Inter"]);
   assert_eq!(warnings, 1, "warned once over four frames");
 }
 

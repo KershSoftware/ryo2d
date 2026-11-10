@@ -209,12 +209,20 @@ pub(crate) fn set_frame(frame: u64) {
 
 /// Sets `target`'s level for a test, putting the one before back when the
 /// guard drops (on a panic too). Tests share the logger, so a test that
-/// changes a level holds one of these.
+/// changes a level holds one of these, and the guard holds a process-wide
+/// lock for its lifetime: no two level-changing tests overlap. One guard per
+/// test (a second on the same thread would wait on the first).
 #[cfg(test)]
 pub(crate) fn level_for_test(target: &'static str, level: LevelFilter) -> TestLevel {
+  static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+  let turn = TURN.lock().unwrap_or_else(PoisonError::into_inner);
   let before = self::level(target);
   set_level(target, level);
-  TestLevel { target, before }
+  TestLevel {
+    target,
+    before,
+    _turn: turn,
+  }
 }
 
 /// Puts a target's level back when dropped; see [`level_for_test`].
@@ -222,6 +230,8 @@ pub(crate) fn level_for_test(target: &'static str, level: LevelFilter) -> TestLe
 pub(crate) struct TestLevel {
   target: &'static str,
   before: LevelFilter,
+  /// Released after the level is put back (fields drop after `drop`)
+  _turn: std::sync::MutexGuard<'static, ()>,
 }
 
 #[cfg(test)]

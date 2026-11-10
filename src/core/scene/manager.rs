@@ -840,6 +840,7 @@ mod tests {
 
   #[test]
   fn a_lower_scene_s_dropped_action_is_warned_about_once() {
+    let captured = crate::core::testing::capture_log();
     let log: Shared = Arc::default();
     let mut world = world();
     let mut m = SceneManager::with_scene(Box::new(DroppedQuitter));
@@ -854,10 +855,7 @@ mod tests {
         "only the top's action applies"
       );
     }
-    let warnings = crate::core::dev_log::get_entries()
-      .iter()
-      .filter(|entry| entry.message.contains("DroppedQuitter"))
-      .count();
+    let warnings = captured.containing("DroppedQuitter");
     assert_eq!(warnings, 1);
   }
 
@@ -879,6 +877,7 @@ mod tests {
 
   #[test]
   fn a_lower_scene_s_dropped_ui_action_is_warned_about_once() {
+    let log = crate::core::testing::capture_log();
     let mut world = world();
     let mut m = SceneManager::with_scene(Box::new(UiQuitter));
     m.enter_initial(&mut world);
@@ -892,10 +891,7 @@ mod tests {
       let action = m.ui_pass(&mut world, &mut ui);
       assert!(matches!(action, SceneAction::Continue));
     }
-    let warnings = crate::core::dev_log::get_entries()
-      .iter()
-      .filter(|entry| entry.message.contains("UiQuitter"))
-      .count();
+    let warnings = log.containing("UiQuitter");
     assert_eq!(warnings, 1);
   }
 

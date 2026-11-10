@@ -4,9 +4,9 @@
 
 use std::sync::{Arc, Mutex};
 
-use ryo2d::core::dev_log::{self, LogLevel};
 use ryo2d::prelude::*;
 use ryo2d::testing::HeadlessEngine;
+use ryo2d::testing::LogCapture;
 
 const RED: [u8; 4] = [220, 30, 40, 255];
 const GREEN: [u8; 4] = [30, 200, 60, 255];
@@ -358,6 +358,7 @@ fn render_gpu_sprites_can_use_custom_shaders() {
 
 #[test]
 fn broken_sprite_shader_falls_back() {
+  let log = ryo2d::testing::capture_log();
   let id = "t2-broken-sprite.wgsl";
   let source = "fn sprite(in: SpriteIn, params: Params) -> vec4<f32> {
   return vec4<f32>(1.0, 0.0 0.0, 1.0);
@@ -381,10 +382,10 @@ fn broken_sprite_shader_falls_back() {
 
   assert_eq!(frame.get_pixel(15, 15).0, RED, "drawn as a plain sprite");
   assert_eq!(
-    logged(id),
+    logged(&log, id),
     [(
-      LogLevel::Warn,
-      Some("Shaders".to_string()),
+      log::Level::Warn,
+      Some("shaders".to_string()),
       format!("could not load \"{id}\": 2:29: expected `)`, found \"0.0\"")
     )],
     "warned once, as a file that does not load is"
@@ -637,6 +638,7 @@ fn duplicate_custom_effect_names_are_rejected() {
 
 #[test]
 fn broken_effect_is_skipped() {
+  let log = ryo2d::testing::capture_log();
   let id = "t3-broken-effect.wgsl";
   let source = "fn effect(in: EffectIn, params: Params) -> vec4<f32> {
   return vec4<f32>(1.0, 0.0 0.0, 1.0);
@@ -661,10 +663,10 @@ fn broken_effect_is_skipped() {
     "frame without the effect"
   );
   assert_eq!(
-    logged(id),
+    logged(&log, id),
     [(
-      LogLevel::Warn,
-      Some("Shaders".to_string()),
+      log::Level::Warn,
+      Some("shaders".to_string()),
       format!("could not load \"{id}\": 2:29: expected `)`, found \"0.0\"")
     )],
     "warned once, as a file that does not load is"
@@ -975,12 +977,21 @@ const BROKEN_EFFECT: &str = "fn effect(in: EffectIn, params: Params) -> vec4<f32
 }
 ";
 
-/// The dev log's entries naming `name`: their level, module and message
-fn logged(name: &str) -> Vec<(LogLevel, Option<String>, String)> {
-  dev_log::get_entries()
+/// The records `log` captured naming `name`: their level, engine module
+/// (`shaders` for `ryo2d::core::shaders::…`) and message
+fn logged(log: &LogCapture, name: &str) -> Vec<(log::Level, Option<String>, String)> {
+  log
+    .records()
     .into_iter()
-    .filter(|entry| entry.message.contains(name))
-    .map(|entry| (entry.level, entry.module, entry.message))
+    .filter(|record| record.message.contains(name))
+    .map(|record| {
+      let module = record
+        .target
+        .strip_prefix("ryo2d::core::")
+        .and_then(|rest| rest.split("::").next())
+        .map(str::to_string);
+      (record.level, module, record.message)
+    })
     .collect()
 }
 
@@ -1018,6 +1029,7 @@ fn save_until_it_fails(
 
 #[test]
 fn a_broken_shader_save_keeps_the_last_good_shader() {
+  let log = ryo2d::testing::capture_log();
   let path = "shaders/t33-saved.wgsl";
   let files = MemorySource::new();
   files.insert(path, INVERT);
@@ -1051,10 +1063,10 @@ fn a_broken_shader_save_keeps_the_last_good_shader() {
     );
   }
   assert_eq!(
-    logged(path),
+    logged(&log, path),
     [(
-      LogLevel::Warn,
-      Some("Asset".to_string()),
+      log::Level::Warn,
+      Some("asset".to_string()),
       format!("could not load \"{path}\": 2:29: expected `)`, found \"0.0\"")
     )]
   );
@@ -1086,6 +1098,7 @@ fn grey(frame: &image::RgbaImage) -> bool {
 
 #[test]
 fn a_broken_effect_save_keeps_the_last_good_effect() {
+  let log = ryo2d::testing::capture_log();
   let path = "shaders/t33-effect.wgsl";
   let files = MemorySource::new();
   files.insert(path, FLAT_GREY);
@@ -1100,10 +1113,10 @@ fn a_broken_effect_save_keeps_the_last_good_effect() {
     assert!(grey(&engine.frame().unwrap()), "the last good effect runs");
   }
   assert_eq!(
-    logged(path),
+    logged(&log, path),
     [(
-      LogLevel::Warn,
-      Some("Asset".to_string()),
+      log::Level::Warn,
+      Some("asset".to_string()),
       format!("could not load \"{path}\": 2:29: expected `)`, found \"0.0\"")
     )]
   );
@@ -1145,6 +1158,7 @@ fn shaded(name: &'static str, source: &'static str) -> Option<(HeadlessEngine, S
 
 #[test]
 fn a_shader_changed_in_code_that_does_not_compile_draws_its_last_good_version() {
+  let log = ryo2d::testing::capture_log();
   let name = "t33-changed.wgsl";
   let Some((mut engine, slot)) = shaded(name, INVERT) else {
     return;
@@ -1162,7 +1176,7 @@ fn a_shader_changed_in_code_that_does_not_compile_draws_its_last_good_version() 
         "its last good version draws"
       )
     },
-    |_| !logged(name).is_empty(),
+    |_| !logged(&log, name).is_empty(),
   );
   for _ in 0..3 {
     engine.step().unwrap();
@@ -1173,10 +1187,10 @@ fn a_shader_changed_in_code_that_does_not_compile_draws_its_last_good_version() 
     );
   }
   assert_eq!(
-    logged(name),
+    logged(&log, name),
     [(
-      LogLevel::Warn,
-      Some("Shaders".to_string()),
+      log::Level::Warn,
+      Some("shaders".to_string()),
       format!("could not load \"{name}\": 2:29: expected `)`, found \"0.0\"")
     )],
     "once for the version"
@@ -1185,6 +1199,7 @@ fn a_shader_changed_in_code_that_does_not_compile_draws_its_last_good_version() 
 
 #[test]
 fn a_shader_the_gpu_rejects_draws_its_last_good_version() {
+  let log = ryo2d::testing::capture_log();
   let name = "t33-rejected.wgsl";
   let Some((mut engine, slot)) = shaded(name, INVERT) else {
     return;
@@ -1202,7 +1217,7 @@ fn a_shader_the_gpu_rejects_draws_its_last_good_version() {
         "its last good version draws"
       )
     },
-    |_| !logged(name).is_empty(),
+    |_| !logged(&log, name).is_empty(),
   );
   for _ in 0..3 {
     engine.step().unwrap();
@@ -1212,12 +1227,12 @@ fn a_shader_the_gpu_rejects_draws_its_last_good_version() {
       "its last good version draws"
     );
   }
-  let logged = logged(name);
+  let logged = logged(&log, name);
   assert!(
     matches!(
       logged.as_slice(),
-      [(LogLevel::Warn, Some(module), message)]
-        if module == "Shaders" && message.starts_with(&format!("could not load \"{name}\": "))
+      [(log::Level::Warn, Some(module), message)]
+        if module == "shaders" && message.starts_with(&format!("could not load \"{name}\": "))
     ),
     "once for the version: {logged:?}"
   );
@@ -1225,6 +1240,7 @@ fn a_shader_the_gpu_rejects_draws_its_last_good_version() {
 
 #[test]
 fn an_effect_the_gpu_rejects_runs_its_last_good_version() {
+  let log = ryo2d::testing::capture_log();
   let name = "t33-rejected-effect.wgsl";
   let slot = ShaderSlot::default();
   let added = slot.clone();
@@ -1241,18 +1257,18 @@ fn an_effect_the_gpu_rejects_runs_its_last_good_version() {
   step_until(
     &mut engine,
     |frame| assert!(grey(frame), "its last good version runs"),
-    |_| !logged(name).is_empty(),
+    |_| !logged(&log, name).is_empty(),
   );
   for _ in 0..3 {
     engine.step().unwrap();
     assert!(grey(&engine.frame().unwrap()), "its last good version runs");
   }
-  let logged = logged(name);
+  let logged = logged(&log, name);
   assert!(
     matches!(
       logged.as_slice(),
-      [(LogLevel::Warn, Some(module), message)]
-        if module == "Shaders" && message.starts_with(&format!("could not load \"{name}\": "))
+      [(log::Level::Warn, Some(module), message)]
+        if module == "shaders" && message.starts_with(&format!("could not load \"{name}\": "))
     ),
     "once for the version: {logged:?}"
   );

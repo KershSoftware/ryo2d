@@ -7,6 +7,7 @@ use glam::Vec2;
 use winit::keyboard::KeyCode;
 
 use crate::core::input::{Binding, Direction, GamepadButton, InputDevice};
+use crate::core::logging::LogCapture;
 use crate::core::render::UiSpace;
 use crate::core::testing::UiHarness;
 use crate::core::testing::ui::direction_index;
@@ -19,13 +20,9 @@ use crate::core::ui::memory::{UiMemory, UiSound};
 use crate::core::ui::nav::NavOutcome;
 use crate::core::ui::theme::Theme;
 
-/// How many captured warnings contain `needle`
-pub(crate) fn warnings_containing(needle: &str) -> usize {
-  crate::core::logging::ensure();
-  crate::core::dev_log::get_entries()
-    .iter()
-    .filter(|w| w.message.contains(needle))
-    .count()
+/// How many records `log` captured contain `needle`
+pub(crate) fn warnings_containing(log: &LogCapture, needle: &str) -> usize {
+  log.containing(needle)
 }
 
 /// A text engine over the built-in fonts

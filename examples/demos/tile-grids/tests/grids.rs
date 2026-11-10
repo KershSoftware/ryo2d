@@ -34,7 +34,7 @@ use common::{
 };
 use image::RgbaImage;
 use ryo2d::prelude::*;
-use ryo2d::testing::HeadlessEngine;
+use ryo2d::testing::{HeadlessEngine, LogCapture};
 
 /// The pages, in the demo's order
 const TOWN: usize = 3;
@@ -57,14 +57,14 @@ fn walker(engine: &mut HeadlessEngine) -> Option<Entity> {
 }
 
 /// Steps until the page's character has spawned
-fn wait_for_walker(engine: &mut HeadlessEngine) -> Entity {
+fn wait_for_walker(log: &LogCapture, engine: &mut HeadlessEngine) -> Entity {
   for _ in 0..600 {
     engine.step().unwrap();
     if let Some(walker) = walker(engine) {
       return walker;
     }
   }
-  panic!("the character never spawned: {:#?}", warnings());
+  panic!("the character never spawned: {:#?}", warnings(log));
 }
 
 /// The character's sprite: its y-sorted child
@@ -325,11 +325,12 @@ fn drawn_behind_and_in_front(
 
 #[test]
 fn the_town_character_draws_behind_a_wall_and_in_front_of_it() {
+  let log = ryo2d::testing::capture_log();
   let Some(mut engine) = engine_on(TOWN) else {
     return;
   };
-  let map = spawned_map(&mut engine);
-  let walker = wait_for_walker(&mut engine);
+  let map = spawned_map(&log, &mut engine);
+  let walker = wait_for_walker(&log, &mut engine);
   let sprite = walker_sprite(&mut engine, walker);
   // The Zoom row has the panel's focus: in to a half, so the knight's
   // pixels are two a texel; and the pointer over the panel, clear of the
@@ -359,7 +360,7 @@ fn the_town_character_draws_behind_a_wall_and_in_front_of_it() {
       MapsView::new(engine.world_mut()).set_tile(map, "props", wall, None);
     },
   );
-  assert!(warnings().is_empty(), "{:#?}", warnings());
+  assert!(warnings(&log).is_empty(), "{:#?}", warnings(&log));
 }
 
 /// The cells within two steps of `cell` whose tiles collide: the town's
@@ -417,11 +418,12 @@ fn pushed_into(
 
 #[test]
 fn the_town_walls_stop_the_character() {
+  let log = ryo2d::testing::capture_log();
   let Some(mut engine) = engine_on(TOWN) else {
     return;
   };
-  let map = spawned_map(&mut engine);
-  let walker = wait_for_walker(&mut engine);
+  let map = spawned_map(&log, &mut engine);
+  let walker = wait_for_walker(&log, &mut engine);
   engine.mouse_move(900.0, 100.0);
   // A run of walls along x (a band down and right on screen), with open
   // ground down and left of its second wall, where the character starts
@@ -453,7 +455,7 @@ fn the_town_walls_stop_the_character() {
     (gap - (radius + skin)).abs() < 2.0,
     "the character stops at the walls' diamonds: {gap} from them, its radius {radius} and skin {skin}"
   );
-  assert!(warnings().is_empty(), "{:#?}", warnings());
+  assert!(warnings(&log).is_empty(), "{:#?}", warnings(&log));
 }
 
 /// The cells of `layer` holding a tile, within the map's bounds
@@ -480,10 +482,11 @@ fn on_board(engine: &mut HeadlessEngine, map: Entity, cells: Vec<IVec2>) -> BTre
 
 #[test]
 fn the_hex_board_picks_the_hex_under_the_pointer_and_shows_its_range() {
+  let log = ryo2d::testing::capture_log();
   let Some(mut engine) = engine_on(HEX) else {
     return;
   };
-  let map = spawned_map(&mut engine);
+  let map = spawned_map(&log, &mut engine);
   engine.step_frames(3).unwrap();
   let layer = grid_of(&mut engine, map, "board");
   let world_at = |engine: &mut HeadlessEngine, screen: Vec2| {
@@ -556,7 +559,7 @@ fn the_hex_board_picks_the_hex_under_the_pointer_and_shows_its_range() {
   engine.tap_key(KeyCode::ArrowRight);
   engine.step_frames(3).unwrap();
   check(&mut engine, 3);
-  assert!(warnings().is_empty(), "{:#?}", warnings());
+  assert!(warnings(&log).is_empty(), "{:#?}", warnings(&log));
 }
 
 /// The id of the board's tile at `cell`
@@ -611,11 +614,12 @@ fn hovering(engine: &mut HeadlessEngine, layer: &LayerGrid, cell: IVec2) -> Stri
 
 #[test]
 fn the_hex_board_s_walker_paths_around_the_rocks() {
+  let log = ryo2d::testing::capture_log();
   let Some(mut engine) = engine_on(HEX) else {
     return;
   };
-  let map = spawned_map(&mut engine);
-  let walker = wait_for_walker(&mut engine);
+  let map = spawned_map(&log, &mut engine);
+  let walker = wait_for_walker(&log, &mut engine);
   engine.step_frames(3).unwrap();
   let layer = grid_of(&mut engine, map, "board");
   let start = layer.cell_at_world(walker_at(&engine, walker));
@@ -731,16 +735,17 @@ fn the_hex_board_s_walker_paths_around_the_rocks() {
     !shown.contains("Path:") && !shown.contains("No path"),
     "{shown}"
   );
-  assert!(warnings().is_empty(), "{:#?}", warnings());
+  assert!(warnings(&log).is_empty(), "{:#?}", warnings(&log));
 }
 
 #[test]
 fn the_hex_board_s_walker_sets_off_forward() {
+  let log = ryo2d::testing::capture_log();
   let Some(mut engine) = engine_on(HEX) else {
     return;
   };
-  let map = spawned_map(&mut engine);
-  let walker = wait_for_walker(&mut engine);
+  let map = spawned_map(&log, &mut engine);
+  let walker = wait_for_walker(&log, &mut engine);
   engine.step_frames(3).unwrap();
   let layer = grid_of(&mut engine, map, "board");
   // The walker a little past its hex's middle toward the next hex on its
@@ -772,16 +777,17 @@ fn the_hex_board_s_walker_sets_off_forward() {
     );
     nearest = away;
   }
-  assert!(warnings().is_empty(), "{:#?}", warnings());
+  assert!(warnings(&log).is_empty(), "{:#?}", warnings(&log));
 }
 
 #[test]
 fn the_hex_board_s_rocks_stop_the_walker() {
+  let log = ryo2d::testing::capture_log();
   let Some(mut engine) = engine_on(HEX) else {
     return;
   };
-  let map = spawned_map(&mut engine);
-  let walker = wait_for_walker(&mut engine);
+  let map = spawned_map(&log, &mut engine);
+  let walker = wait_for_walker(&log, &mut engine);
   engine.mouse_move(900.0, 100.0);
   engine.step_frames(3).unwrap();
   let layer = grid_of(&mut engine, map, "board");
@@ -820,16 +826,17 @@ fn the_hex_board_s_rocks_stop_the_walker() {
   let world = engine.world_mut();
   let mut chains = world.query_filtered::<(), (With<MapOccluder>, With<LightOccluder2D>)>();
   assert!(chains.iter(world).count() > 0, "the board's shadow chains");
-  assert!(warnings().is_empty(), "{:#?}", warnings());
+  assert!(warnings(&log).is_empty(), "{:#?}", warnings(&log));
 }
 
 #[test]
 fn the_hex_board_s_edge_stops_the_walker() {
+  let log = ryo2d::testing::capture_log();
   let Some(mut engine) = engine_on(HEX) else {
     return;
   };
-  let map = spawned_map(&mut engine);
-  let walker = wait_for_walker(&mut engine);
+  let map = spawned_map(&log, &mut engine);
+  let walker = wait_for_walker(&log, &mut engine);
   engine.mouse_move(900.0, 100.0);
   engine.step_frames(3).unwrap();
   let layer = grid_of(&mut engine, map, "board");
@@ -882,7 +889,7 @@ fn the_hex_board_s_edge_stops_the_walker() {
     (gap - (radius + skin)).abs() < 2.0,
     "the walker stops at the board's edge: {gap} from it, its radius {radius} and skin {skin}"
   );
-  assert!(warnings().is_empty(), "{:#?}", warnings());
+  assert!(warnings(&log).is_empty(), "{:#?}", warnings(&log));
 }
 
 /// The scene's lighting settings, all of them (the latch that keeps
@@ -904,10 +911,11 @@ fn lights(engine: &mut HeadlessEngine) -> Vec<(Entity, Light2D)> {
 
 #[test]
 fn the_hex_board_s_walker_carries_a_light_and_leaving_puts_the_lighting_back() {
+  let log = ryo2d::testing::capture_log();
   let Some(mut engine) = engine_on(STAGGERED) else {
     return;
   };
-  spawned_map(&mut engine);
+  spawned_map(&log, &mut engine);
   engine.step_frames(10).unwrap();
   let before = lighting_state(&engine);
   assert!(lights(&mut engine).is_empty(), "the island has no light");
@@ -916,8 +924,8 @@ fn the_hex_board_s_walker_carries_a_light_and_leaving_puts_the_lighting_back() {
   // component or on a child, and the page lowers the ambient
   engine.tap_key(KeyCode::BracketRight);
   engine.step_frames(2).unwrap();
-  let map = spawned_map(&mut engine);
-  let walker = wait_for_walker(&mut engine);
+  let map = spawned_map(&log, &mut engine);
+  let walker = wait_for_walker(&log, &mut engine);
   engine.step_frames(10).unwrap();
   let children: Vec<Entity> = engine
     .world()
@@ -954,7 +962,7 @@ fn the_hex_board_s_walker_carries_a_light_and_leaving_puts_the_lighting_back() {
   // Paging back, the lighting is as it was before the board was entered
   engine.tap_key(KeyCode::BracketLeft);
   engine.step_frames(2).unwrap();
-  spawned_map(&mut engine);
+  spawned_map(&log, &mut engine);
   engine.step_frames(10).unwrap();
   assert!(
     lights(&mut engine).is_empty(),
@@ -965,11 +973,12 @@ fn the_hex_board_s_walker_carries_a_light_and_leaving_puts_the_lighting_back() {
     before,
     "the lighting is put back on leaving"
   );
-  assert!(warnings().is_empty(), "{:#?}", warnings());
+  assert!(warnings(&log).is_empty(), "{:#?}", warnings(&log));
 }
 
 #[test]
 fn the_oblique_character_collides_with_a_skewed_wall() {
+  let log = ryo2d::testing::capture_log();
   let Some(mut engine) = engine_on(OBLIQUE) else {
     return;
   };
@@ -979,8 +988,8 @@ fn the_oblique_character_collides_with_a_skewed_wall() {
     if mirror {
       engine.tap_key(KeyCode::ArrowRight);
     }
-    let map = spawned_map(&mut engine);
-    let walker = wait_for_walker(&mut engine);
+    let map = spawned_map(&log, &mut engine);
+    let walker = wait_for_walker(&log, &mut engine);
     engine.mouse_move(900.0, 100.0);
     let skew = MapsView::new(engine.world_mut())
       .grid(map, "walls")
@@ -1035,18 +1044,19 @@ fn the_oblique_character_collides_with_a_skewed_wall() {
       "the wall's left edge leans by the skew, its bottom further right: {left:?}"
     );
   }
-  assert!(warnings().is_empty(), "{:#?}", warnings());
+  assert!(warnings(&log).is_empty(), "{:#?}", warnings(&log));
 }
 
 #[test]
 fn the_staggered_and_speed_pages_land_their_maps() {
+  let log = ryo2d::testing::capture_log();
   // The island's setting switches it to its staggered-X copy, a map of its
   // own; the speed page's choice builds the chosen grid's map, and only it
   for (page, layer) in [(STAGGERED, "props"), (SPEED, "ground")] {
     let Some(mut engine) = engine_on(page) else {
       return;
     };
-    let first = spawned_map(&mut engine);
+    let first = spawned_map(&log, &mut engine);
     let shape = |engine: &mut HeadlessEngine, map: Entity| grid_of(engine, map, layer).grid.shape;
     let before = shape(&mut engine, first);
     engine.tap_key(KeyCode::ArrowRight);
@@ -1068,15 +1078,16 @@ fn the_staggered_and_speed_pages_land_their_maps() {
     let after = after.expect("the setting spawned another map");
     assert_ne!(before, after, "page {}: another grid", page + 1);
   }
-  assert!(warnings().is_empty(), "{:#?}", warnings());
+  assert!(warnings(&log).is_empty(), "{:#?}", warnings(&log));
 }
 
 #[test]
 fn the_speed_page_s_hexagonal_rock_collides_and_casts_shadows_as_whole_hexagons() {
+  let log = ryo2d::testing::capture_log();
   let Some(mut engine) = engine_on(SPEED) else {
     return;
   };
-  spawned_map(&mut engine);
+  spawned_map(&log, &mut engine);
   // The Grid setting's fourth choice
   for _ in 0..3 {
     engine.tap_key(KeyCode::ArrowRight);
@@ -1112,16 +1123,17 @@ fn the_speed_page_s_hexagonal_rock_collides_and_casts_shadows_as_whole_hexagons(
   );
   let chains = world.query::<&MapOccluder>().iter(world).count();
   assert!(chains > 0, "the hexagonal map casts shadows");
-  assert!(warnings().is_empty(), "{:#?}", warnings());
+  assert!(warnings(&log).is_empty(), "{:#?}", warnings(&log));
 }
 
 #[test]
 fn painting_water_never_walls_the_town_s_knight_in() {
+  let log = ryo2d::testing::capture_log();
   let Some(mut engine) = engine_on(TOWN) else {
     return;
   };
-  let map = spawned_map(&mut engine);
-  let walker = wait_for_walker(&mut engine);
+  let map = spawned_map(&log, &mut engine);
+  let walker = wait_for_walker(&log, &mut engine);
   // Open ground two cells deep all round, the knight in the middle; the
   // pointer then paints water on every one of those cells
   let dry = |engine: &mut HeadlessEngine, cell: IVec2| {
@@ -1170,16 +1182,17 @@ fn painting_water_never_walls_the_town_s_knight_in() {
   engine.release_key(KeyCode::KeyD);
   let moved = walker_at(&engine, walker).distance(feet);
   assert!(moved > 20.0, "the knight walks on: it moved {moved} px");
-  assert!(warnings().is_empty(), "{:#?}", warnings());
+  assert!(warnings(&log).is_empty(), "{:#?}", warnings(&log));
 }
 
 #[test]
 fn the_town_knight_walks_a_path_around_the_walls() {
+  let log = ryo2d::testing::capture_log();
   let Some(mut engine) = engine_on(TOWN) else {
     return;
   };
-  let map = spawned_map(&mut engine);
-  let walker = wait_for_walker(&mut engine);
+  let map = spawned_map(&log, &mut engine);
+  let walker = wait_for_walker(&log, &mut engine);
   engine.step_frames(3).unwrap();
   let layer = grid_of(&mut engine, map, "props");
   let home = layer.cell_at_world(walker_at(&engine, walker));
@@ -1227,7 +1240,7 @@ fn the_town_knight_walks_a_path_around_the_walls() {
   );
   let off = feet.distance(layer.cell_center_world(inside));
   assert!(off < 6.0, "it stops on the cell's middle: {off} px off");
-  assert!(warnings().is_empty(), "{:#?}", warnings());
+  assert!(warnings(&log).is_empty(), "{:#?}", warnings(&log));
 }
 
 /// The first of five cells in a row (along x) of the town's open ground,
@@ -1251,11 +1264,12 @@ fn point_at(engine: &mut HeadlessEngine, layer: &LayerGrid, cell: IVec2) -> Vec2
 
 #[test]
 fn the_town_knight_s_path_reads_water_painted_since_it_last_walked() {
+  let log = ryo2d::testing::capture_log();
   let Some(mut engine) = engine_on(TOWN) else {
     return;
   };
-  let map = spawned_map(&mut engine);
-  let walker = wait_for_walker(&mut engine);
+  let map = spawned_map(&log, &mut engine);
+  let walker = wait_for_walker(&log, &mut engine);
   // The knight at the start of a row of open ground
   let home = open_row(&mut engine, map);
   let layer = grid_of(&mut engine, map, "props");
@@ -1290,16 +1304,17 @@ fn the_town_knight_s_path_reads_water_painted_since_it_last_walked() {
     goal,
     "the knight walked round it"
   );
-  assert!(warnings().is_empty(), "{:#?}", warnings());
+  assert!(warnings(&log).is_empty(), "{:#?}", warnings(&log));
 }
 
 #[test]
 fn the_town_knight_finds_its_way_round_water_painted_ahead_of_it() {
+  let log = ryo2d::testing::capture_log();
   let Some(mut engine) = engine_on(TOWN) else {
     return;
   };
-  let map = spawned_map(&mut engine);
-  let walker = wait_for_walker(&mut engine);
+  let map = spawned_map(&log, &mut engine);
+  let walker = wait_for_walker(&log, &mut engine);
   let home = open_row(&mut engine, map);
   let layer = grid_of(&mut engine, map, "props");
   teleport(&mut engine, walker, layer.cell_center_world(home));
@@ -1329,16 +1344,17 @@ fn the_town_knight_finds_its_way_round_water_painted_ahead_of_it() {
   }
   let feet = walker_at(&engine, walker);
   assert_eq!(layer.cell_at_world(feet), goal, "the knight went round it");
-  assert!(warnings().is_empty(), "{:#?}", warnings());
+  assert!(warnings(&log).is_empty(), "{:#?}", warnings(&log));
 }
 
 #[test]
 fn the_town_knight_s_walk_stops_when_held_up_or_steered() {
+  let log = ryo2d::testing::capture_log();
   let Some(mut engine) = engine_on(TOWN) else {
     return;
   };
-  let map = spawned_map(&mut engine);
-  let walker = wait_for_walker(&mut engine);
+  let map = spawned_map(&log, &mut engine);
+  let walker = wait_for_walker(&log, &mut engine);
   let home = open_row(&mut engine, map);
   let layer = grid_of(&mut engine, map, "props");
   teleport(&mut engine, walker, layer.cell_center_world(home));
@@ -1386,7 +1402,7 @@ fn the_town_knight_s_walk_stops_when_held_up_or_steered() {
     walker_at(&engine, walker).y > before.y + 20.0,
     "and S walks it down"
   );
-  assert!(warnings().is_empty(), "{:#?}", warnings());
+  assert!(warnings(&log).is_empty(), "{:#?}", warnings(&log));
 }
 
 /// The town's raised ground, on floor 1
@@ -1489,11 +1505,12 @@ fn walk_straight(engine: &mut HeadlessEngine, walker: Entity, to: Vec2) -> Vec<(
 
 #[test]
 fn the_town_character_climbs_the_stairs_onto_the_raised_floor_and_back() {
+  let log = ryo2d::testing::capture_log();
   let Some(mut engine) = engine_on(TOWN) else {
     return;
   };
-  let map = spawned_map(&mut engine);
-  let walker = wait_for_walker(&mut engine);
+  let map = spawned_map(&log, &mut engine);
+  let walker = wait_for_walker(&log, &mut engine);
   engine.mouse_move(900.0, 100.0);
   let (_, top, foot) = town_ramp(&mut engine, map);
   let layer = grid_of(&mut engine, map, RAISED);
@@ -1537,16 +1554,17 @@ fn the_town_character_climbs_the_stairs_onto_the_raised_floor_and_back() {
   );
   let drawn = MapsView::new(engine.world_mut()).drawn_lift(walker);
   assert_eq!(drawn, Vec2::ZERO, "drawn where it stands");
-  assert!(warnings().is_empty(), "{:#?}", warnings());
+  assert!(warnings(&log).is_empty(), "{:#?}", warnings(&log));
 }
 
 #[test]
 fn the_town_character_draws_behind_and_in_front_of_the_raised_floor() {
+  let log = ryo2d::testing::capture_log();
   let Some(mut engine) = engine_on(TOWN) else {
     return;
   };
-  let map = spawned_map(&mut engine);
-  let walker = wait_for_walker(&mut engine);
+  let map = spawned_map(&log, &mut engine);
+  let walker = wait_for_walker(&log, &mut engine);
   let sprite = walker_sprite(&mut engine, walker);
   engine.tap_key(KeyCode::ArrowRight);
   engine.mouse_move(900.0, 100.0);
@@ -1587,16 +1605,17 @@ fn the_town_character_draws_behind_and_in_front_of_the_raised_floor() {
     },
   );
   assert_eq!(floor_of(&engine, walker), Floor::GROUND, "on the ground");
-  assert!(warnings().is_empty(), "{:#?}", warnings());
+  assert!(warnings(&log).is_empty(), "{:#?}", warnings(&log));
 }
 
 #[test]
 fn the_town_knight_on_a_raised_cell_s_back_half_draws_over_its_block() {
+  let log = ryo2d::testing::capture_log();
   let Some(mut engine) = engine_on(TOWN) else {
     return;
   };
-  let map = spawned_map(&mut engine);
-  let walker = wait_for_walker(&mut engine);
+  let map = spawned_map(&log, &mut engine);
+  let walker = wait_for_walker(&log, &mut engine);
   let sprite = walker_sprite(&mut engine, walker);
   engine.tap_key(KeyCode::ArrowRight);
   engine.mouse_move(900.0, 100.0);
@@ -1684,16 +1703,17 @@ fn the_town_knight_on_a_raised_cell_s_back_half_draws_over_its_block() {
     lower(&in_front, front_feet)
   );
   assert_eq!(floor_of(&engine, walker), Floor::On(1));
-  assert!(warnings().is_empty(), "{:#?}", warnings());
+  assert!(warnings(&log).is_empty(), "{:#?}", warnings(&log));
 }
 
 #[test]
 fn the_town_picks_cells_on_the_raised_floor() {
+  let log = ryo2d::testing::capture_log();
   let Some(mut engine) = engine_on(TOWN) else {
     return;
   };
-  let map = spawned_map(&mut engine);
-  let walker = wait_for_walker(&mut engine);
+  let map = spawned_map(&log, &mut engine);
+  let walker = wait_for_walker(&log, &mut engine);
   // The knight by the ramp, the view on it
   let (_, _, foot) = town_ramp(&mut engine, map);
   let layer = grid_of(&mut engine, map, RAISED);
@@ -1732,16 +1752,17 @@ fn the_town_picks_cells_on_the_raised_floor() {
   let shown = engine.ui_snapshot();
   let line = format!("Pointer: cell {}, {} on the ground", foot.x, foot.y);
   assert!(shown.contains(&line), "{line:?} in {shown}");
-  assert!(warnings().is_empty(), "{:#?}", warnings());
+  assert!(warnings(&log).is_empty(), "{:#?}", warnings(&log));
 }
 
 #[test]
 fn the_town_walks_a_path_up_the_stairs() {
+  let log = ryo2d::testing::capture_log();
   let Some(mut engine) = engine_on(TOWN) else {
     return;
   };
-  let map = spawned_map(&mut engine);
-  let walker = wait_for_walker(&mut engine);
+  let map = spawned_map(&log, &mut engine);
+  let walker = wait_for_walker(&log, &mut engine);
   let (ramp, top, foot) = town_ramp(&mut engine, map);
   let layer = grid_of(&mut engine, map, RAISED);
   let lift = MapsView::new(engine.world_mut())
@@ -1797,5 +1818,5 @@ fn the_town_walks_a_path_up_the_stairs() {
     [(Floor::GROUND, Floor::On(1))],
     "up the ramp, once"
   );
-  assert!(warnings().is_empty(), "{:#?}", warnings());
+  assert!(warnings(&log).is_empty(), "{:#?}", warnings(&log));
 }

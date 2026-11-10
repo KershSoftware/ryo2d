@@ -43,9 +43,9 @@ mod tests {
     AudioClip, AudioEngine, AudioLogEntry, AudioLogKind, AudioView, BusDef, ClipData, DuckDef,
     EncodedClip, FocusLoss, Mixer, Music, PlayOptions, Sound, SoundClip, Voice,
   };
-  use crate::core::dev_log::{self, LogLevel};
   use crate::core::ecs::World;
   use crate::core::ecs::kernel::Messages;
+  use crate::core::testing::LogCapture;
   use crate::core::testing::{audio_step, audio_world, audio_world_over, wav};
   use crate::core::time::Time;
 
@@ -976,6 +976,7 @@ mod tests {
   /// A streamed loop switches to its reloaded clip as a decoded one does
   #[test]
   fn a_reloaded_clip_switches_a_streamed_loop() {
+    let captured = crate::core::testing::capture_log();
     let drone = wav_of(1.0, 3_000);
     let (mut world, files) = world_over(&[
       ("sfx/drone.wav", &drone),
@@ -1000,10 +1001,7 @@ mod tests {
     );
     steps(&mut world, 3);
     assert!(voice.is_playing(), "{voice:?}");
-    let about_it = dev_log::get_entries()
-      .iter()
-      .filter(|entry| entry.level == LogLevel::Warn && entry.message.starts_with("sfx/drone"))
-      .count();
+    let about_it = warnings(&captured, |message| message.starts_with("sfx/drone"));
     assert_eq!(about_it, 0, "it opened and switched");
   }
 
@@ -1430,6 +1428,7 @@ mod tests {
   /// room while they fade) give one warning with the count, not one each
   #[test]
   fn many_loops_that_cannot_switch_warn_once_with_the_count() {
+    let captured = crate::core::testing::capture_log();
     let files = MemorySource::new();
     files.insert("sfx/crowd-unique.wav", wav_of(2.0, 3_000));
     let mut world = audio_world_over(files);
@@ -1454,7 +1453,7 @@ mod tests {
     let refused = 96 - switched;
     assert!(refused > 1, "{switched} switched");
     let about = |count: Option<usize>| {
-      warnings(|message| {
+      warnings(&captured, |message| {
         message.starts_with("sfx/crowd-unique.wav:")
           && message.contains("could not switch")
           && count.is_none_or(|count| message.contains(&format!("{count} loops")))
@@ -1470,6 +1469,7 @@ mod tests {
   /// move
   #[test]
   fn a_track_that_cannot_switch_at_a_rebuild_moves_as_it_was() {
+    let captured = crate::core::testing::capture_log();
     let theme = wav_of(2.0, 2_000);
     let (mut world, _files) = world_over(&[
       ("music/rebuilt.wav", &theme),
@@ -1497,7 +1497,9 @@ mod tests {
       log(&world)
     );
     let named = |what: &str| {
-      warnings(|message| message.starts_with("music/rebuilt.music.ron:") && message.contains(what))
+      warnings(&captured, |message| {
+        message.starts_with("music/rebuilt.music.ron:") && message.contains(what)
+      })
     };
     assert_eq!(named("could not switch"), 1);
     assert_eq!(named("rebuilt buses"), 0);
@@ -1509,6 +1511,7 @@ mod tests {
   /// file or made in code. Its file saved warns again
   #[test]
   fn a_definition_changed_in_code_every_frame_warns_once() {
+    let captured = crate::core::testing::capture_log();
     let (mut world, files) = world_over(&[
       ("sfx/ramped-in-code.wav", &wav_of(0.5, 3_000)),
       (
@@ -1525,7 +1528,7 @@ mod tests {
       })
     };
     let flat = || {
-      warnings(|message| {
+      warnings(&captured, |message| {
         message.starts_with("sfx/ramped-in-code.sound.ron:")
           && message.contains("no spatial settings")
       })
@@ -1646,10 +1649,11 @@ mod tests {
     assert!(AudioView::new(&mut world).play(&clip).is_playing());
   }
 
-  fn warnings(matching: impl Fn(&str) -> bool) -> usize {
-    dev_log::get_entries()
+  fn warnings(captured: &LogCapture, matching: impl Fn(&str) -> bool) -> usize {
+    captured
+      .records()
       .iter()
-      .filter(|entry| entry.level == LogLevel::Warn && matching(&entry.message))
+      .filter(|r| r.level == log::Level::Warn && matching(&r.message))
       .count()
   }
 }

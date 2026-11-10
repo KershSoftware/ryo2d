@@ -2481,6 +2481,7 @@ mod tests {
   #[test]
   fn a_ui_sound_that_cannot_load_warns_once_and_the_frames_run() {
     use crate::core::ui::theme::{Theme, UiTheme};
+    let log = crate::core::testing::capture_log();
     let mut e = engine();
     let mut theme = Theme::dark();
     theme.sounds.confirm = crate::core::ui::ThemeSound::from_path("sounds/missing-confirm.ogg");
@@ -2488,10 +2489,7 @@ mod tests {
     for _ in 0..3 {
       e.frame(Some(Duration::from_millis(16)));
     }
-    let warnings = crate::core::dev_log::get_entries()
-      .iter()
-      .filter(|w| w.message.contains("missing-confirm.ogg"))
-      .count();
+    let warnings = log.containing("missing-confirm.ogg");
     assert_eq!(warnings, 1, "a warning naming the sound, once");
   }
 

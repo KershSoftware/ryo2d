@@ -1,24 +1,18 @@
-//! What the page tests share: an engine on a page, the dev log's warnings,
+//! What the page tests share: an engine on a page, a capture's warnings,
 //! the maps that have landed and waiting for one, a layer's tiles, and a
 //! click
 
-use ryo2d::core::dev_log::{self, LogLevel};
 use ryo2d::prelude::*;
-use ryo2d::testing::HeadlessEngine;
+use ryo2d::testing::{HeadlessEngine, LogCapture};
 use tile_grids_demo::demo;
 
 pub fn engine_on(page: usize) -> Option<HeadlessEngine> {
   HeadlessEngine::new_or_skip(demo().start_page(page).engine_builder())
 }
 
-/// Every warning in the dev log. It is the process's, so the other tests'
-/// land in it too; none of them expects a warning either
-pub fn warnings() -> Vec<String> {
-  dev_log::get_entries()
-    .into_iter()
-    .filter(|entry| entry.level >= LogLevel::Warn)
-    .map(|entry| entry.message)
-    .collect()
+/// Every warning and error `log` captured
+pub fn warnings(log: &LogCapture) -> Vec<String> {
+  log.warnings_and_errors()
 }
 
 /// The layer names of each map that has landed, bottom first, and how many
@@ -60,7 +54,7 @@ pub fn step_resting(engine: &mut HeadlessEngine) {
 pub const LANDING: u32 = 15_000;
 
 /// The root of the page's one map, once it has landed
-pub fn spawned_map(engine: &mut HeadlessEngine) -> Entity {
+pub fn spawned_map(log: &LogCapture, engine: &mut HeadlessEngine) -> Entity {
   for _ in 0..LANDING {
     step_resting(engine);
     let world = engine.world_mut();
@@ -69,7 +63,7 @@ pub fn spawned_map(engine: &mut HeadlessEngine) -> Entity {
       return root;
     }
   }
-  panic!("the page's map never landed: {:#?}", warnings());
+  panic!("the page's map never landed: {:#?}", warnings(log));
 }
 
 /// A copy of the spawned layer `name`'s grid

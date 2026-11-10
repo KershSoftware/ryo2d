@@ -1,12 +1,11 @@
 //! The demo's pages without a window: each runs for 120 frames with
-//! particles alive and no warning in the dev log, and a click on the
+//! particles alive and no warning logged, and a click on the
 //! Explosions page plays an explosion whose emitter despawns itself once
 //! its last particle dies, and the Files page plays the effects of its files
 
 use particles_demo::{demo, embedded};
-use ryo2d::core::dev_log::{self, LogLevel};
 use ryo2d::prelude::*;
-use ryo2d::testing::HeadlessEngine;
+use ryo2d::testing::{HeadlessEngine, LogCapture};
 
 const EXPLOSIONS: usize = 2;
 const PAGES: usize = 14;
@@ -19,14 +18,9 @@ fn engine_on(page: usize) -> Option<HeadlessEngine> {
   HeadlessEngine::new_or_skip(demo().start_page(page).engine_builder())
 }
 
-/// Every warning in the dev log. The log is the process's, so the tests
-/// share it
-fn warnings() -> Vec<String> {
-  dev_log::get_entries()
-    .into_iter()
-    .filter(|entry| entry.level >= LogLevel::Warn)
-    .map(|entry| format!("{}: {}", entry.module.unwrap_or_default(), entry.message))
-    .collect()
+/// Every warning and error `log` captured
+fn warnings(log: &LogCapture) -> Vec<String> {
+  log.warnings_and_errors()
 }
 
 /// The emitter entities in the engine's world
@@ -37,6 +31,7 @@ fn emitters(engine: &mut HeadlessEngine) -> usize {
 
 #[test]
 fn every_page_runs_with_particles_and_without_a_warning() {
+  let log = ryo2d::testing::capture_log();
   for page in 0..PAGES {
     let Some(mut engine) = engine_on(page) else {
       return;
@@ -44,7 +39,7 @@ fn every_page_runs_with_particles_and_without_a_warning() {
     engine.step_frames(FRAMES).unwrap();
     let live = ParticlesView::new(engine.world_mut()).count();
     assert!(live > 0, "page {}: no particles alive", page + 1);
-    let warned = warnings();
+    let warned = warnings(&log);
     assert!(warned.is_empty(), "page {}: {warned:#?}", page + 1);
   }
 }
@@ -88,12 +83,13 @@ fn the_files_page_plays_the_effects_of_its_files() {
 
 #[test]
 fn the_embedded_files_play_the_files_page_as_the_web_does() {
+  let log = ryo2d::testing::capture_log();
   let builder = demo().start_page(FILES).engine_builder();
   let Some(mut engine) = HeadlessEngine::new_or_skip(builder.asset_source(embedded())) else {
     return;
   };
   engine.step_frames(FRAMES).unwrap();
   assert!(ParticlesView::new(engine.world_mut()).count() > 0);
-  let warned = warnings();
+  let warned = warnings(&log);
   assert!(warned.is_empty(), "{warned:#?}");
 }

@@ -141,6 +141,7 @@ fn saving_the_rain_retunes_its_loop() {
 
 #[test]
 fn rain_that_does_not_load_is_warned_about_once() {
+  let log = ryo2d::testing::capture_log();
   // No rain files at all: each entry of the menu asks for the rain
   let Some(mut engine) = HeadlessEngine::new_or_skip(
     EngineBuilder::new()
@@ -151,11 +152,10 @@ fn rain_that_does_not_load_is_warned_about_once() {
     return;
   };
   engine.step_frames(120).unwrap();
-  let warned = ryo2d::core::dev_log::get_entries()
-    .into_iter()
-    .filter(|entry| {
-      entry.level >= ryo2d::core::dev_log::LogLevel::Warn && entry.message.contains(RAIN)
-    })
+  let warned = log
+    .warnings_and_errors()
+    .iter()
+    .filter(|message| message.contains(RAIN))
     .count();
   assert_eq!(warned, 1, "one warning naming the rain");
   assert!(rain_starts(&engine).is_empty());

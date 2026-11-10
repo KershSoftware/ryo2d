@@ -1405,6 +1405,7 @@ fn navigation_on_a_map_without_floors_is_unchanged() {
 fn a_map_s_floor_navigation_joins_its_floors_at_its_stairs() {
   use crate::core::ecs::Floor;
   use crate::core::navigation::StairLink;
+  let log = crate::core::testing::capture_log();
   // `hall`, with a floor 2 standing 5 px right of the ground's cells,
   // which the floors' grids leave out
   let mut map = hall();
@@ -1456,12 +1457,7 @@ fn a_map_s_floor_navigation_joins_its_floors_at_its_stairs() {
     assert_eq!(blocked(grid), blocked(&alone), "{floor:?}");
   }
   // The floor left out warns once a map
-  let warned = || {
-    crate::core::dev_log::get_entries()
-      .iter()
-      .filter(|e| e.message.contains("loft-left-out") && e.message.contains("navigation"))
-      .count()
-  };
+  let warned = || log.containing_all(&["loft-left-out", "navigation"]);
   assert_eq!(warned(), 1);
   assert!(
     MapsView::new(&mut maps.world)

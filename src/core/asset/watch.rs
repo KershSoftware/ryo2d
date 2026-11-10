@@ -238,11 +238,6 @@ mod tests {
   };
   use crate::core::ecs::kernel::{MessageCursor, Messages, World};
   use crate::core::graphics::Image;
-  use std::sync::{Mutex, PoisonError};
-
-  /// Tests that turn the watcher's level to debug take turns, so one's
-  /// guard cannot put the level back under the other
-  static DEBUG_LEVEL: Mutex<()> = Mutex::new(());
 
   #[derive(Debug)]
   struct Text(String);
@@ -590,7 +585,6 @@ mod tests {
 
   #[test]
   fn a_missing_root_is_not_watched() {
-    let _turn = DEBUG_LEVEL.lock().unwrap_or_else(PoisonError::into_inner);
     let log = crate::core::testing::capture_log();
     let _debug =
       crate::core::logging::level_for_test("ryo2d::core::asset::watch", log::LevelFilter::Debug);
@@ -623,7 +617,6 @@ mod tests {
 
   #[test]
   fn the_file_watcher_logs_into_its_engine_s_scope() {
-    let _turn = DEBUG_LEVEL.lock().unwrap_or_else(PoisonError::into_inner);
     // Opened before the server starts watching, so its threads join it
     let log = crate::core::testing::capture_log();
     let _debug =
@@ -645,11 +638,7 @@ mod tests {
         .any(|r| r.message.contains("watching the asset folder")),
       "{said:?}"
     );
-    assert!(
-      said
-        .iter()
-        .all(|r| r.scope == log.scope() && r.frame.is_none())
-    );
+    assert!(said.iter().all(|r| r.frame.is_none()));
   }
 
   #[test]

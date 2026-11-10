@@ -10,12 +10,16 @@ use super::Theme;
 use crate::core::ui::{Color, Edges};
 
 /// Names already warned about, so a bad name warns once however often a
-/// frame asks for it
-static WARNED: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+/// frame asks for it. Kept per log scope: a game has the one (0), and each
+/// test's capture its own, so a test sees its own first warning
+static WARNED: Mutex<BTreeSet<(u64, String)>> = Mutex::new(BTreeSet::new());
 
 /// Warn about `key` once; `message` is built only the first time
 pub(crate) fn warn_once(key: String, message: impl FnOnce() -> String) {
-  let first = WARNED.lock().is_ok_and(|mut warned| warned.insert(key));
+  let scope = crate::core::logging::current_scope();
+  let first = WARNED
+    .lock()
+    .is_ok_and(|mut warned| warned.insert((scope, key)));
   if first {
     log::warn!("{}", message());
   }
@@ -432,6 +436,7 @@ mod tests {
 
   #[test]
   fn an_unknown_variant_warns_once_and_uses_the_plain_look() {
+    let log = crate::core::testing::capture_log();
     let theme = Theme::dark();
     let plain = theme.look(WidgetKind::Button, None, WidgetState::Normal);
     for _ in 0..3 {
@@ -444,10 +449,7 @@ mod tests {
         plain
       );
     }
-    let warnings = crate::core::dev_log::get_entries()
-      .iter()
-      .filter(|e| e.message.contains("nope-variant"))
-      .count();
+    let warnings = log.containing("nope-variant");
     assert_eq!(warnings, 1);
   }
 }

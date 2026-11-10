@@ -2891,9 +2891,10 @@ mod tests {
 
   #[test]
   fn a_real_read_failure_warns_at_warn_level() {
-    crate::core::logging::ensure();
+    let log = crate::core::testing::capture_log();
     let entries = |needle: &str| {
-      crate::core::dev_log::get_entries()
+      log
+        .records()
         .into_iter()
         .filter(|entry| entry.message.contains(needle))
         .map(|entry| entry.level)
@@ -2904,7 +2905,7 @@ mod tests {
     pump_until(&mut world, |_| server.state(&missing).is_failed());
     assert_eq!(
       entries("missing-warns-at-warn.txt"),
-      [crate::core::dev_log::LogLevel::Warn],
+      [log::Level::Warn],
       "a missing file warns, and only at Warn"
     );
   }
@@ -2912,7 +2913,8 @@ mod tests {
   #[test]
   fn a_broken_reload_warns_once_per_error() {
     use crate::core::ui::test_util::warnings_containing;
-    let warned = || warnings_containing("warn-once.txt");
+    let log = crate::core::testing::capture_log();
+    let warned = || warnings_containing(&log, "warn-once.txt");
     let source = MemorySource::new();
     source.insert("warn-once.txt", "one");
     let (mut world, server) = world_with(source.clone());
@@ -3686,7 +3688,8 @@ mod tests {
   #[test]
   fn a_dependents_error_repeated_after_a_fix_warns_again() {
     use crate::core::ui::test_util::warnings_containing;
-    let warned = || warnings_containing("warn-dependent.bundle");
+    let log = crate::core::testing::capture_log();
+    let warned = || warnings_containing(&log, "warn-dependent.bundle");
     let source = MemorySource::new();
     source.insert("warn-dependent.bundle", "warn-dependency.txt");
     source.insert("warn-dependency.txt", "a");

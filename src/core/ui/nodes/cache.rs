@@ -2344,6 +2344,7 @@ mod edge_tests {
   #[test]
   #[cfg(debug_assertions)]
   fn the_spot_check_catches_a_bypassed_write() {
+    let log = crate::core::testing::capture_log();
     let tree = || UiNode::column().child(UiNode::text("One").name("bypassed"));
     let mut h = UiHarness::new(640.0, 480.0);
     h.set_ui_spot_check(true);
@@ -2371,8 +2372,10 @@ mod edge_tests {
       found += differed(&h);
     }
     assert_eq!(found, 1, "found once, then the new build is the record");
-    // The log is the process's: the needle names this test's node
-    assert_eq!(warnings_containing("cached UI node text \"bypassed\""), 1);
+    assert_eq!(
+      warnings_containing(&log, "cached UI node text \"bypassed\""),
+      1
+    );
     assert_eq!(
       h.frame_snapshot(),
       off.frame_snapshot(),
@@ -2969,6 +2972,7 @@ mod fragment_tests {
   #[test]
   #[cfg(debug_assertions)]
   fn the_spot_check_finds_a_kept_fragment_that_differs_from_its_resolve() {
+    let log = crate::core::testing::capture_log();
     let mut h = UiHarness::new(640.0, 480.0);
     h.spawn_ui(settings_tree());
     for _ in 0..3 {
@@ -2991,7 +2995,7 @@ mod fragment_tests {
     assert!(stats.spot_fragment.is_some(), "a fragment was checked");
     assert_eq!(stats.spot_fragment_differed, 1, "and found to differ");
     let needle = "a kept UI fragment differs from its node's resolve";
-    assert!(crate::core::ui::test_util::warnings_containing(needle) >= 1);
+    assert!(crate::core::ui::test_util::warnings_containing(&log, needle) >= 1);
   }
 
   #[test]

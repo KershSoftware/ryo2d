@@ -13,9 +13,8 @@ use std::time::{Duration, Instant};
 
 use audio_demo::{Reloads, demo, embedded, limits, virtuals};
 use ryo2d::core::audio::AudioLogKind;
-use ryo2d::core::dev_log::{self, LogLevel};
 use ryo2d::prelude::*;
-use ryo2d::testing::HeadlessEngine;
+use ryo2d::testing::{HeadlessEngine, LogCapture};
 
 /// The pages, in the demo's order
 const BUSES: usize = 0;
@@ -47,14 +46,9 @@ fn audio(engine: &mut HeadlessEngine) -> AudioView<'_> {
   AudioView::new(engine.world_mut())
 }
 
-/// Every warning in the dev log. It is the process's, so the other tests'
-/// land in it too; none of them expects a warning either
-fn warnings() -> Vec<String> {
-  dev_log::get_entries()
-    .into_iter()
-    .filter(|entry| entry.level >= LogLevel::Warn)
-    .map(|entry| entry.message)
-    .collect()
+/// Every warning and error `log` captured
+fn warnings(log: &LogCapture) -> Vec<String> {
+  log.warnings_and_errors()
 }
 
 /// The text of the demo's file `path`, as the web build embeds it
@@ -70,6 +64,8 @@ fn text_of(path: &str) -> String {
 /// frame and none warns
 fn every_page_plays(mut engine_on: impl FnMut(usize) -> Option<HeadlessEngine>) {
   for page in 0..PAGES {
+    // A capture for each page, opened before its engine
+    let log = ryo2d::testing::capture_log();
     let Some(mut engine) = engine_on(page) else {
       return;
     };
@@ -79,7 +75,7 @@ fn every_page_plays(mut engine_on: impl FnMut(usize) -> Option<HeadlessEngine>) 
       most = most.max(audio(&mut engine).voices_on("master"));
     }
     assert!(most > 0, "page {} plays nothing", page + 1);
-    let warned = warnings();
+    let warned = warnings(&log);
     assert!(warned.is_empty(), "page {}: {warned:#?}", page + 1);
   }
 }
@@ -281,6 +277,7 @@ fn space_crossfades_to_the_other_track() {
 
 #[test]
 fn the_variations_page_takes_a_saved_fifth_take() {
+  let log = ryo2d::testing::capture_log();
   const FOOTSTEP: &str = "sounds/footstep.sound.ron";
   let files = embedded();
   let Some(mut engine) = engine_over(VARIATIONS, files.clone()) else {
@@ -307,7 +304,7 @@ fn the_variations_page_takes_a_saved_fifth_take() {
     .filter(|entry| entry.kind == AudioLogKind::Start && entry.source == "sounds/tick.wav")
     .count();
   assert!(fifth > 0, "the fifth take plays");
-  assert!(warnings().is_empty(), "{:#?}", warnings());
+  assert!(warnings(&log).is_empty(), "{:#?}", warnings(&log));
 }
 
 /// The hot reload page's count of `path`'s `AssetEvent::Modified`
@@ -317,6 +314,7 @@ fn modified(engine: &HeadlessEngine, path: &str) -> Option<u32> {
 
 #[test]
 fn the_hot_reload_page_counts_a_saved_definition() {
+  let log = ryo2d::testing::capture_log();
   const DRONE: &str = "hot/drone.sound.ron";
   let files = embedded();
   let Some(mut engine) = engine_over(HOT_RELOAD, files.clone()) else {
@@ -340,7 +338,7 @@ fn the_hot_reload_page_counts_a_saved_definition() {
     engine.step().unwrap();
   }
   assert_eq!(modified(&engine, "sounds/drone.wav"), Some(0));
-  assert!(warnings().is_empty(), "{:#?}", warnings());
+  assert!(warnings(&log).is_empty(), "{:#?}", warnings(&log));
 }
 
 /// The Spatial page's hint and marks give the ping's `pan_width` as the
@@ -373,6 +371,7 @@ fn the_spatial_page_s_hint_follows_the_ping_s_pan_width() {
 /// some back in place of others
 #[test]
 fn the_virtual_voices_page_hears_six_and_keeps_the_rest() {
+  let captured = ryo2d::testing::capture_log();
   let Some(mut engine) = engine_on(VIRTUAL) else {
     return;
   };
@@ -395,7 +394,7 @@ fn the_virtual_voices_page_hears_six_and_keeps_the_rest() {
   let moved = |kind: AudioLogKind| log.iter().filter(|entry| entry.kind == kind).count();
   assert!(moved(AudioLogKind::Real) > 0, "a bird came back");
   assert!(moved(AudioLogKind::Virtual) > virtuals::BIRDS - virtuals::HEARD);
-  assert!(warnings().is_empty(), "{:#?}", warnings());
+  assert!(warnings(&captured).is_empty(), "{:#?}", warnings(&captured));
 }
 
 /// The Virtual voices page's birds sing six calls, five birds each, so the

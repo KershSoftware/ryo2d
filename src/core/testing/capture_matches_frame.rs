@@ -81,6 +81,5 @@ fn the_capture_writer_logs_into_its_engine_s_scope() {
   let said = log.from_target(WRITER);
   assert_eq!(said.len(), 1, "{said:?}");
   assert!(said[0].message.contains("t5-writer.png"), "{said:?}");
-  assert_eq!(said[0].scope, log.scope());
   assert_eq!(said[0].frame, None, "a worker's record carries no frame");
 }

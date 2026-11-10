@@ -1439,11 +1439,12 @@ mod tree_tests {
 
   #[test]
   fn update_ui_on_a_plain_entity_warns_and_returns_it() {
+    let log = crate::core::testing::capture_log();
     let mut h = UiHarness::new(400.0, 300.0);
     let plain = h.world_mut().spawn_empty().id();
     assert_eq!(h.update_ui(plain, UiNode::column()), plain);
     assert_eq!(
-      crate::core::ui::test_util::warnings_containing("update_ui needs a node"),
+      crate::core::ui::test_util::warnings_containing(&log, "update_ui needs a node"),
       1
     );
   }
@@ -1604,6 +1605,7 @@ mod reload_tests {
 
   #[test]
   fn a_placeholder_rebuilt_with_update_ui_stays_the_files_through_a_reload() {
+    let log = crate::core::testing::capture_log();
     let file = r#"(root: Column(children: [
       Text(text: "a", name: "line"),
       Column(focus_scope: true, name: "choices-f1"),
@@ -1636,7 +1638,10 @@ mod reload_tests {
       "the code child stays"
     );
     assert_eq!(
-      crate::core::ui::test_util::warnings_containing("two UI nodes are named \"choices-f1\""),
+      crate::core::ui::test_util::warnings_containing(
+        &log,
+        "two UI nodes are named \"choices-f1\""
+      ),
       0
     );
   }
@@ -1701,6 +1706,7 @@ mod reload_tests {
 
   #[test]
   fn code_built_instances_reload_from_their_template_and_a_removed_template_keeps_them() {
+    let log = crate::core::testing::capture_log();
     let file = r#"(templates: {"Item": (params: ["name"], node: Button(label: "{name}"))}, root: Column(name: "list"))"#;
     let (dir, mut h) = harness(&[("inv.ui.ron", file)]);
     h.spawn_ui_file("inv.ui.ron").unwrap();
@@ -1737,15 +1743,18 @@ mod reload_tests {
       "<Sword>",
       "kept as it was"
     );
-    // The file's name keeps the count apart from the other tests' warnings
     assert_eq!(
-      crate::core::ui::test_util::warnings_containing("could not rebuild a tree from inv.ui.ron"),
+      crate::core::ui::test_util::warnings_containing(
+        &log,
+        "could not rebuild a tree from inv.ui.ron"
+      ),
       1
     );
   }
 
   #[test]
   fn a_reload_that_cannot_load_keeps_the_tree_and_warns_once() {
+    let log = crate::core::testing::capture_log();
     let (dir, mut h) = harness(&[("img.ui.ron", r#"(root: Column(children: [Text("a")]))"#)]);
     let root = h.spawn_ui_file("img.ui.ron").unwrap();
     std::fs::write(
@@ -1761,6 +1770,7 @@ mod reload_tests {
     assert_eq!(h.world().get::<UiNodeKind>(child).unwrap().name(), "text");
     assert_eq!(
       crate::core::ui::test_util::warnings_containing(
+        &log,
         "could not load \"img.ui.ron\": 1:32: cannot load the image \"missing.png\""
       ),
       1
@@ -1769,6 +1779,7 @@ mod reload_tests {
 
   #[test]
   fn an_import_reload_rebuilds_its_importers_trees_and_one_that_fails_keeps_them() {
+    let log = crate::core::testing::capture_log();
     let common = r#"(templates: {"Title": (node: Text(text: "a", name: "title"))})"#;
     let (dir, mut h) = harness(&[
       ("imported.ui.ron", common),
@@ -1806,7 +1817,7 @@ mod reload_tests {
     h.frame(|_| {});
     assert_eq!(h.world().get::<UiLabel>(title).unwrap().0, "b", "kept");
     assert_eq!(
-      crate::core::ui::test_util::warnings_containing("importer.ui.ron"),
+      crate::core::ui::test_util::warnings_containing(&log, "importer.ui.ron"),
       1,
       "the importer's check warned; its trees add nothing"
     );

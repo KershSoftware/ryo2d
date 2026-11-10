@@ -918,6 +918,7 @@ mod tests {
 
   #[test]
   fn a_wrong_type_warns_once_and_writes_nothing() {
+    let log = crate::core::testing::capture_log();
     let mut h = UiHarness::new(400.0, 300.0);
     let root =
       h.spawn_ui(UiNode::column().child(UiNode::slider(0.0..=1.0, 0.5).bind("level").name("s")));
@@ -928,7 +929,7 @@ mod tests {
       0.5
     );
     assert_eq!(
-      crate::core::ui::test_util::warnings_containing("\"level\""),
+      crate::core::ui::test_util::warnings_containing(&log, "\"level\""),
       1
     );
   }
@@ -975,10 +976,14 @@ mod tests {
 
   #[test]
   fn bind_on_a_kind_without_a_value_warns() {
+    let log = crate::core::testing::capture_log();
     let mut h = UiHarness::new(400.0, 300.0);
     h.spawn_ui(UiNode::column().child(UiNode::button("Go").bind("x")));
     assert_eq!(
-      crate::core::ui::test_util::warnings_containing("UiNode::bind does nothing on a button node"),
+      crate::core::ui::test_util::warnings_containing(
+        &log,
+        "UiNode::bind does nothing on a button node"
+      ),
       1
     );
   }
@@ -1078,6 +1083,7 @@ mod tests {
 
   #[test]
   fn an_unset_name_warns_when_first_drawn_not_at_spawn() {
+    let log = crate::core::testing::capture_log();
     let mut h = UiHarness::new(400.0, 300.0);
     let root = h.spawn_ui(
       UiNode::column()
@@ -1086,17 +1092,17 @@ mod tests {
     );
     h.ui_set(root, "late", 1);
     assert_eq!(
-      crate::core::ui::test_util::warnings_containing("\"never\""),
+      crate::core::ui::test_util::warnings_containing(&log, "\"never\""),
       0
     );
     h.frame(|_| {});
     h.frame(|_| {});
     assert_eq!(
-      crate::core::ui::test_util::warnings_containing("\"late\""),
+      crate::core::ui::test_util::warnings_containing(&log, "\"late\""),
       0
     );
     assert_eq!(
-      crate::core::ui::test_util::warnings_containing("\"never\""),
+      crate::core::ui::test_util::warnings_containing(&log, "\"never\""),
       1
     );
   }

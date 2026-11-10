@@ -885,6 +885,7 @@ mod tests {
 
   #[test]
   fn a_glyph_larger_than_a_page_is_refused_once() {
+    let log = crate::core::testing::capture_log();
     let mut shelves = GlyphShelves::new(64, 2);
     assert!(matches!(
       shelves.place(&key(9), GlyphFormat::Mask, (100, 10), 0),
@@ -894,10 +895,7 @@ mod tests {
       shelves.place(&key(9), GlyphFormat::Mask, (100, 10), 1),
       Placement::TooBig
     ));
-    let warnings = crate::core::dev_log::get_entries()
-      .iter()
-      .filter(|e| e.message.contains("glyph") && e.message.contains("100x10"))
-      .count();
+    let warnings = log.containing_all(&["glyph", "100x10"]);
     assert_eq!(warnings, 1);
   }
 
@@ -932,6 +930,7 @@ mod tests {
 
   #[test]
   fn a_sustained_overflow_warns_once() {
+    let log = crate::core::testing::capture_log();
     // One page of four glyphs, and every frame draws six: each frame clears
     // the page, fills it and runs out again
     let mut shelves = GlyphShelves::new(32, 1);
@@ -946,10 +945,7 @@ mod tests {
         );
       }
     }
-    let warnings = crate::core::dev_log::get_entries()
-      .iter()
-      .filter(|e| e.message.contains("Msdf glyph pages are full"))
-      .count();
+    let warnings = log.containing("Msdf glyph pages are full");
     assert_eq!(warnings, 1, "warned once, not once a frame");
   }
 

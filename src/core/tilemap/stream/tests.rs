@@ -280,12 +280,9 @@ fn class_tiles_at(world: &mut World, cell: IVec2) -> Vec<Entity> {
     .collect()
 }
 
-/// The warnings in the dev log holding every one of `words`
-fn warnings(words: &[&str]) -> usize {
-  crate::core::dev_log::get_entries()
-    .iter()
-    .filter(|entry| words.iter().all(|word| entry.message.contains(word)))
-    .count()
+/// How many records `log` captured hold every one of `words`
+fn warnings(log: &crate::core::testing::LogCapture, words: &[&str]) -> usize {
+  log.containing_all(words)
 }
 
 /// The cells of the class tiles in the world, by row
@@ -419,7 +416,6 @@ fn a_tile_map_job_s_warning_is_captured() {
   anchor_at(&mut maps, IVec2::ZERO);
   until_idle(&mut maps, map);
   assert_eq!(log.containing("t5 chunk generated"), 9, "a warning a chunk");
-  assert!(log.records().iter().all(|r| r.scope == log.scope()));
 }
 
 #[test]
@@ -901,6 +897,7 @@ fn a_despawned_streamed_map_takes_no_late_chunks() {
 
 #[test]
 fn a_panicking_generator_leaves_one_empty_chunk_and_one_warning() {
+  let log = crate::core::testing::capture_log();
   let calls = Arc::new(AtomicUsize::new(0));
   let counted = Arc::clone(&calls);
   let broken = IVec2::new(3, 0);
@@ -936,7 +933,7 @@ fn a_panicking_generator_leaves_one_empty_chunk_and_one_warning() {
   assert_eq!(resident(&mut maps.world, map), [broken]);
   assert_eq!(calls.load(Ordering::SeqCst), 1, "asked once");
   let named = format!("map {map}");
-  assert_eq!(warnings(&[&named, "chunk (3, 0)", "panicked"]), 1);
+  assert_eq!(warnings(&log, &[&named, "chunk (3, 0)", "panicked"]), 1);
 }
 
 #[test]
@@ -1072,6 +1069,7 @@ fn a_class_tile_edited_into_a_layer_the_generator_left_empty_goes_with_its_chunk
 
 #[test]
 fn an_unload_distance_below_the_load_distance_is_raised_to_it_with_one_warning() {
+  let log = crate::core::testing::capture_log();
   let mut maps = MapWorld::new();
   let stream = MapStream {
     load_distance: 512.0,
@@ -1093,11 +1091,12 @@ fn an_unload_distance_below_the_load_distance_is_raised_to_it_with_one_warning()
   }
   assert!(events(&maps.world, &mut cursor).is_empty(), "settled");
   let named = format!("map {map}");
-  assert_eq!(warnings(&[&named, "unload_distance"]), 1);
+  assert_eq!(warnings(&log, &[&named, "unload_distance"]), 1);
 }
 
 #[test]
 fn a_layer_the_map_lacks_is_warned_once_and_ignored() {
+  let log = crate::core::testing::capture_log();
   let generator = |request| {
     let mut tiles = floors(request);
     tiles.set("lava-5e2b", UVec2::ZERO, Some(BLOCK));
@@ -1118,11 +1117,12 @@ fn a_layer_the_map_lacks_is_warned_once_and_ignored() {
     Some(BLOCK)
   );
   let named = format!("map {map}");
-  assert_eq!(warnings(&[&named, "lava-5e2b"]), 1);
+  assert_eq!(warnings(&log, &[&named, "lava-5e2b"]), 1);
 }
 
 #[test]
 fn an_anchor_s_load_area_is_capped_at_a_span_of_chunks_with_one_warning() {
+  let log = crate::core::testing::capture_log();
   // The cap lowered to 3 chunks a side, where 2,048 px asks for 9
   SPAN_CAP.with(|cap| cap.set(3));
   let mut maps = MapWorld::new();
@@ -1137,7 +1137,7 @@ fn an_anchor_s_load_area_is_capped_at_a_span_of_chunks_with_one_warning() {
   SPAN_CAP.with(|cap| cap.set(super::MAX_SPAN));
   assert_eq!(resident(&mut maps.world, map), around(IVec2::ZERO, 1));
   let named = format!("map {map}");
-  assert_eq!(warnings(&[&named, "chunks a side"]), 1);
+  assert_eq!(warnings(&log, &[&named, "chunks a side"]), 1);
 }
 
 #[test]
@@ -1226,6 +1226,7 @@ fn a_streamed_class_tile_on_a_higher_floor_is_on_that_floor() {
 
 #[test]
 fn a_bounded_map_given_a_stream_streams_nothing_and_warns_once() {
+  let log = crate::core::testing::capture_log();
   let calls = Arc::new(AtomicUsize::new(0));
   let counted = Arc::clone(&calls);
   let generator = move |request| {
@@ -1243,7 +1244,7 @@ fn a_bounded_map_given_a_stream_streams_nothing_and_warns_once() {
   }
   assert_eq!(calls.load(Ordering::SeqCst), 0);
   let named = format!("map {map}");
-  assert_eq!(warnings(&[&named, "streams nothing"]), 1);
+  assert_eq!(warnings(&log, &[&named, "streams nothing"]), 1);
   // Its own cells still take edits
   assert!(MapsView::new(&mut maps.world).set_tile(map, "ground", IVec2::new(2, 2), Some(BLOCK)));
 }
@@ -3342,6 +3343,7 @@ fn a_turned_camera_over_an_isometric_stream_shows_no_unfilled_chunk() {
 
 #[test]
 fn a_map_whose_streamed_layers_differ_in_grid_streams_by_the_first_and_warns_once() {
+  let log = crate::core::testing::capture_log();
   let seen: Arc<Mutex<Vec<ChunkRequest>>> = Arc::default();
   let record = Arc::clone(&seen);
   let generator = move |request: ChunkRequest| {
@@ -3360,7 +3362,7 @@ fn a_map_whose_streamed_layers_differ_in_grid_streams_by_the_first_and_warns_onc
     unload_distance: 200.0,
     ..MapStream::new(generator)
   };
-  let before = warnings(&["different grids"]);
+  let before = warnings(&log, &["different grids"]);
   let map = spawn(&mut maps, map, stream, |r| r);
   let anchor = maps
     .world
@@ -3372,7 +3374,11 @@ fn a_map_whose_streamed_layers_differ_in_grid_streams_by_the_first_and_warns_onc
   for _ in 0..5 {
     maps.frame();
   }
-  assert_eq!(warnings(&["different grids"]), before + 1, "warned once");
+  assert_eq!(
+    warnings(&log, &["different grids"]),
+    before + 1,
+    "warned once"
+  );
   // The first streamed layer's grid lays the chunks out
   holds_the_box(
     &mut maps,

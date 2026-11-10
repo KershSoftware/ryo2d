@@ -372,39 +372,27 @@ mod tests {
       store_name(None, Some("Star Hopper"), "Title", true),
       "Star Hopper"
     );
-    assert_eq!(store_name(None, Some("  "), "Title", true), "Title");
-    assert_eq!(store_name(None, None, "Other", true), "Other");
-    // Warned once a process, however many games fall back
-    let warned = crate::core::dev_log::get_entries()
-      .iter()
-      .filter(|entry| {
-        entry
-          .message
-          .contains("web saves are named after the window title")
-      })
-      .count();
-    assert_eq!(warned, 1);
+    // Not warned here: the warning is once a process, and the test below
+    // asks for it
+    assert_eq!(store_name(None, Some("  "), "Title", false), "Title");
+    assert_eq!(store_name(None, None, "Other", false), "Other");
   }
 
-  fn title_warnings() -> usize {
-    crate::core::dev_log::get_entries()
-      .iter()
-      .filter(|entry| {
-        entry
-          .message
-          .contains("web saves are named after the window title")
-      })
-      .count()
-  }
-
+  /// The one test that falls back to the title with the warning asked for:
+  /// it is warned once a process
   #[test]
   fn a_title_fallback_warns_only_when_asked() {
-    let before = title_warnings();
+    let log = crate::core::testing::capture_log();
+    let title_warnings = || log.containing("web saves are named after the window title");
     assert_eq!(store_name(None, None, "Quiet", false), "Quiet");
-    assert_eq!(title_warnings(), before);
+    assert_eq!(title_warnings(), 0);
     assert_eq!(store_name(None, None, "Loud", true), "Loud");
     assert_eq!(store_name(None, None, "Loud", true), "Loud");
-    assert_eq!(title_warnings(), 1);
+    assert_eq!(
+      title_warnings(),
+      1,
+      "warned once, however many games fall back"
+    );
   }
 
   #[test]

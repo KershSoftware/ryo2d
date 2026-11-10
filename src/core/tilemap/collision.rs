@@ -1660,6 +1660,7 @@ mod tests {
 
   #[test]
   fn an_int_grid_shape_override_collides_as_nothing_and_warns_once() {
+    let log = crate::core::testing::capture_log();
     let mut map = code_map(UVec2::new(4, 1), &[("collision", &[])]);
     if let LayerKind::Tiles { intgrid, .. } = &mut map.layers[0].kind {
       *intgrid = Some(IntGrid {
@@ -1683,10 +1684,7 @@ mod tests {
     let row: Vec<TileCell> = (0..4).map(|x| tiles.get(IVec2::new(x, 0))).collect();
     use TileCell::{Empty, Solid};
     assert_eq!(row, [Empty, Empty, Solid, Empty]);
-    let warned = crate::core::dev_log::get_entries()
-      .iter()
-      .filter(|e| e.message.contains("lava-7c1e") && e.message.contains("Shape"))
-      .count();
+    let warned = log.containing_all(&["lava-7c1e", "Shape"]);
     assert_eq!(warned, 1, "warned once, naming the value");
   }
 
@@ -2017,6 +2015,7 @@ mod tests {
 
   #[test]
   fn a_colliding_layer_wider_than_8192_cells_collides() {
+    let log = crate::core::testing::capture_log();
     // 6a capped a group at 8,192 cells a side; the colliders hold the
     // chunks their layers have, so a long level collides end to end
     let far = IVec2::new(9999, 0);
@@ -2047,10 +2046,7 @@ mod tests {
     );
     assert_eq!(tiles.get(IVec2::ZERO), TileCell::Solid);
     assert_eq!(tiles.get(far), TileCell::Solid);
-    let warned = crate::core::dev_log::get_entries()
-      .iter()
-      .filter(|e| e.message.contains("long-7c1e"))
-      .count();
+    let warned = log.containing("long-7c1e");
     assert_eq!(warned, 0, "no warning names the layer");
     // A part at the far end, at its chunk's top-left
     let parts = parts_of(&mut maps.world, map);
@@ -2068,6 +2064,7 @@ mod tests {
 
   #[test]
   fn a_colliding_layer_with_parallax_collides_where_it_is_and_warns_once() {
+    let log = crate::core::testing::capture_log();
     let mut map = code_map(
       UVec2::new(4, 1),
       &[
@@ -2088,12 +2085,7 @@ mod tests {
     let tiles = colliders(&maps.world, map);
     assert_eq!(tiles.get(IVec2::new(0, 0)), TileCell::Solid);
     assert_eq!(tiles.get(IVec2::new(2, 0)), TileCell::Empty);
-    let warned = |name: &str| {
-      crate::core::dev_log::get_entries()
-        .iter()
-        .filter(|e| e.message.contains(name) && e.message.contains("parallax"))
-        .count()
-    };
+    let warned = |name: &str| log.containing_all(&[name, "parallax"]);
     assert_eq!(warned("far-hills-91b3"), 1, "warned once, naming the layer");
     assert_eq!(
       warned("far-clouds-91b3"),
@@ -2104,6 +2096,7 @@ mod tests {
 
   #[test]
   fn map_properties_set_the_material_and_a_wrong_type_warns_once() {
+    let log = crate::core::testing::capture_log();
     let mut map = code_map(UVec2::new(2, 1), &[("ground", &[(IVec2::ZERO, SOLID)])]);
     map
       .properties
@@ -2124,10 +2117,7 @@ mod tests {
     let tiles = colliders(&maps.world, map);
     assert_eq!((tiles.layer, tiles.mask), (4, u32::MAX));
     assert_eq!((tiles.friction, tiles.restitution), (1.0, 0.0));
-    let warned = crate::core::dev_log::get_entries()
-      .iter()
-      .filter(|e| e.message.contains("restitution") && e.message.contains("bouncy-3f9a"))
-      .count();
+    let warned = log.containing_all(&["restitution", "bouncy-3f9a"]);
     assert_eq!(warned, 1, "a wrong type warns once");
     let parts = parts_of(&mut maps.world, map);
     assert!(parts.iter().all(|(_, c)| c.layer == 4 && c.friction == 1.0));
@@ -3278,6 +3268,7 @@ mod tests {
 
   #[test]
   fn a_one_way_tile_off_an_orthogonal_map_collides_both_ways_and_warns_once() {
+    let log = crate::core::testing::capture_log();
     let cases = [
       (GridShape::Isometric, UVec2::new(64, 32), ONE_WAY_DIAMOND),
       (
@@ -3297,12 +3288,7 @@ mod tests {
       ),
     ];
     // Only this test warns of one-way tiles; its maps may share an entity
-    let warnings = || {
-      crate::core::dev_log::get_entries()
-        .iter()
-        .filter(|e| e.message.contains("one-way tiles collide both ways"))
-        .count()
-    };
+    let warnings = || log.containing("one-way tiles collide both ways");
     for (shape, cell, platform) in cases {
       let before = warnings();
       let ledges = [(IVec2::new(1, 1), platform), (IVec2::new(2, 1), platform)];
@@ -4009,6 +3995,7 @@ mod tests {
   #[test]
   fn a_code_built_hex_layer_collides_and_casts_shadows() {
     use crate::core::tilemap::MapOccluder;
+    let log = crate::core::testing::capture_log();
     // A layer added while the map was orthogonal keeps colliding when the
     // map moves onto a hexagonal grid; one added after collides too, as on
     // any grid
@@ -4091,16 +4078,14 @@ mod tests {
       occluders.len()
     );
     for layer in ["honeycomb-5d07", "hexfloor-5d07"] {
-      let warned = crate::core::dev_log::get_entries()
-        .iter()
-        .filter(|e| e.message.contains(&format!("\"{layer}\"")))
-        .count();
+      let warned = log.containing(&format!("\"{layer}\""));
       assert_eq!(warned, 0, "{layer}");
     }
   }
 
   #[test]
   fn a_hex_grid_too_big_to_trace_warns_once_and_builds_nothing() {
+    let log = crate::core::testing::capture_log();
     // Hexagons 16,385 px across: three tiles of a colliding layer
     let cell = UVec2::new(16_385, 16_000);
     let mut map = TileMap::new(UVec2::new(4, 2), cell).with_shape(GridShape::Hexagonal {
@@ -4135,7 +4120,8 @@ mod tests {
     }
     assert_eq!(count_parts(&mut maps.world), 0);
     let warned = |what: &str| {
-      crate::core::dev_log::get_entries()
+      log
+        .records()
         .iter()
         .filter(|e| {
           e.message
@@ -4299,12 +4285,9 @@ mod tests {
     border
   }
 
-  /// The warnings in the dev log holding every one of `words`
-  fn warned(words: &[&str]) -> usize {
-    crate::core::dev_log::get_entries()
-      .iter()
-      .filter(|entry| words.iter().all(|word| entry.message.contains(word)))
-      .count()
+  /// How many records `log` captured hold every one of `words`
+  fn warned(log: &crate::core::testing::LogCapture, words: &[&str]) -> usize {
+    log.containing_all(words)
   }
 
   /// An engine with `map` spawned and landed, and the map's entity
@@ -4510,6 +4493,7 @@ mod tests {
 
   #[test]
   fn stairs_join_the_upper_floor_s_footprint() {
+    let log = crate::core::testing::capture_log();
     // Floor 1 over (4, 3) to (8, 6), with stairs up to it on the ground at
     // (3, 4) and (3, 5); floor 2 over (5, 4) to (6, 5), with stairs up to it
     // from floor 1 at (8, 6) and from the ground at (10, 4)
@@ -4566,7 +4550,7 @@ mod tests {
     let mut want = cells_of(&roof);
     want.extend([IVec2::new(8, 6), IVec2::new(10, 4)]);
     assert_eq!(solid_cells(&second), by_row(want));
-    assert_eq!(warned(&["\"awning-3f1\"", "floor 1"]), 1);
+    assert_eq!(warned(&log, &["\"awning-3f1\"", "floor 1"]), 1);
 
     // Stairs painted on the ground beside floor 1 join its edge, and stairs
     // painted over leave it, in that step

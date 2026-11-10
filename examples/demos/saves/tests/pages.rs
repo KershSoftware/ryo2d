@@ -7,9 +7,8 @@
 
 use std::time::{Duration, Instant};
 
-use ryo2d::core::dev_log::{self, LogLevel};
 use ryo2d::prelude::*;
-use ryo2d::testing::HeadlessEngine;
+use ryo2d::testing::{HeadlessEngine, LogCapture};
 use saves_demo::{DemoOptions, HeroV3, OLD_SLOT, SLOTS, demo};
 
 const SLOTS_PAGE: usize = 0;
@@ -25,15 +24,10 @@ fn engine_on(page: usize) -> Option<HeadlessEngine> {
   HeadlessEngine::new_or_skip(demo().start_page(page).engine_builder())
 }
 
-/// Every warning in the dev log except the backup warning the Recovery test
-/// causes on purpose. The log is the process's, so the tests share it
-fn warnings() -> Vec<String> {
-  dev_log::get_entries()
-    .into_iter()
-    .filter(|entry| entry.level >= LogLevel::Warn)
-    .filter(|entry| !entry.message.contains("its backup"))
-    .map(|entry| entry.message)
-    .collect()
+/// Every warning and error `log` captured (the Recovery test's backup
+/// warning, given on purpose, is its own)
+fn warnings(log: &LogCapture) -> Vec<String> {
+  log.warnings_and_errors()
 }
 
 /// Steps until `done`, giving the save writer's thread up to five seconds
@@ -56,18 +50,20 @@ fn load(engine: &HeadlessEngine, slot: &str) -> Result<Loaded<HeroV3>, SaveError
 
 #[test]
 fn every_page_runs_two_seconds_without_a_warning() {
+  let log = ryo2d::testing::capture_log();
   for page in 0..PAGES {
     let Some(mut engine) = engine_on(page) else {
       return;
     };
     engine.step_frames(FRAMES).unwrap();
-    let warned = warnings();
+    let warned = warnings(&log);
     assert!(warned.is_empty(), "page {}: {warned:#?}", page + 1);
   }
 }
 
 #[test]
 fn the_slots_page_saves_lists_and_deletes() {
+  let log = ryo2d::testing::capture_log();
   let Some(mut engine) = engine_on(SLOTS_PAGE) else {
     return;
   };
@@ -89,7 +85,7 @@ fn the_slots_page_saves_lists_and_deletes() {
   engine.tap_key(KeyCode::KeyX);
   step_until(&mut engine, |e| !has_file(e, "slot-b.ryo-save"));
   assert!(has_file(&engine, "slot-a.ryo-save"));
-  assert!(warnings().is_empty(), "{:#?}", warnings());
+  assert!(warnings(&log).is_empty(), "{:#?}", warnings(&log));
 }
 
 #[test]

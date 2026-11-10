@@ -452,10 +452,10 @@ fn particles_after_a_step(engine: &mut Engine) -> Vec<(f32, f32)> {
 /// every run
 #[test]
 fn engines_step_particles_within_the_builder_s_budget() {
-  use crate::core::particles::{DEFAULT_PARTICLE_BUDGET, ParticleStore, testing};
+  use crate::core::particles::{DEFAULT_PARTICLE_BUDGET, ParticleStore};
 
-  // The budget of 5 drops spawns, which warns
-  let _log = testing::log_lock();
+  // The budget of 5 drops spawns, which warns (into this test's capture)
+  let _log = crate::core::testing::capture_log();
   let headless = || {
     EngineBuilder::new()
       .start_scene(EmptyScene)
@@ -1818,11 +1818,12 @@ fn quitting_writes_a_pending_change_at_once() {
   );
 }
 
-fn settings_warnings(needle: &str) -> usize {
-  crate::core::dev_log::get_entries()
+/// How many warnings `log` captured contain `needle`
+fn settings_warnings(log: &crate::core::testing::LogCapture, needle: &str) -> usize {
+  log
+    .warnings()
     .iter()
-    .filter(|entry| entry.level == crate::core::dev_log::LogLevel::Warn)
-    .filter(|entry| entry.message.contains(needle))
+    .filter(|message| message.contains(needle))
     .count()
 }
 
@@ -1832,6 +1833,7 @@ fn a_failed_settings_write_warns_once_and_sends_settings_save_failed() {
   use crate::core::saves::SaveError;
   use crate::core::saves::memory::FaultOp;
 
+  let log = crate::core::testing::capture_log();
   let store = MemorySaves::new();
   store.fail_from(FaultOp::Write, 0);
   let mut engine = keeping_all(&store);
@@ -1854,7 +1856,7 @@ fn a_failed_settings_write_warns_once_and_sends_settings_save_failed() {
       failed[0].error
     );
   }
-  assert_eq!(settings_warnings("could not save the settings"), 1);
+  assert_eq!(settings_warnings(&log, "could not save the settings"), 1);
   assert_eq!(store.get("system.json"), None);
   // The game keeps running, at the player's setting
   assert_eq!(
@@ -1870,6 +1872,7 @@ fn a_failed_settings_write_warns_once_and_sends_settings_save_failed() {
 fn a_newer_settings_file_is_never_overwritten() {
   use crate::core::saves::memory::FaultOp;
 
+  let log = crate::core::testing::capture_log();
   let newer = r#"{"format_version": 4, "music_volume": 0.2, "shiny": true}"#;
   let store = MemorySaves::new();
   store.put("system.json", newer);
@@ -1906,7 +1909,7 @@ fn a_newer_settings_file_is_never_overwritten() {
   assert_eq!(store.get("system.json"), Some(b"not json".to_vec()));
   assert_eq!(store.writes(), 0);
   assert_eq!(
-    settings_warnings("so the settings changed this session are not saved"),
+    settings_warnings(&log, "so the settings changed this session are not saved"),
     2,
     "once a run"
   );
@@ -2009,6 +2012,7 @@ fn a_damaged_settings_file_in_the_browser_is_written_only_once_its_set_aside_lan
   use crate::core::saves::browser::IdbFailure;
   use crate::core::saves::browser::fake::FakeIdb;
 
+  let log = crate::core::testing::capture_log();
   let damaged: &[(&str, &[u8])] = &[
     ("system.json", b"not json"),
     (
@@ -2057,7 +2061,7 @@ fn a_damaged_settings_file_in_the_browser_is_written_only_once_its_set_aside_lan
   drop(engine);
   assert!(browser.waiting().is_empty());
   assert_eq!(browser.db()["system.json"], b"not json");
-  assert_eq!(settings_warnings("set-aside-refused-in-test"), 1);
+  assert_eq!(settings_warnings(&log, "set-aside-refused-in-test"), 1);
 
   // It lands: the change waiting for it is written
   let (browser, storage) = FakeIdb::opened(damaged);
@@ -2135,7 +2139,6 @@ fn two_engines_stamp_their_own_frames() {
         .into_iter()
         .filter(|r| r.message == "t5 tick")
         .collect();
-      assert!(ticks.iter().all(|r| r.scope == log.scope()));
       (
         ticks.len() as u64,
         ticks.last().and_then(|r| r.frame),

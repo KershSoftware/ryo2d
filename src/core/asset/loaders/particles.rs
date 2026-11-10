@@ -599,7 +599,6 @@ mod tests {
   use crate::core::asset::{
     AssetEvent, AssetServer, AssetSource, Assets, AssetsView, MemorySource, insert_registry, pump,
   };
-  use crate::core::dev_log;
   use crate::core::ecs::kernel::World;
   use crate::core::ecs::{Ease, Messages, SpriteEffect, Vec2};
   use crate::core::graphics::Image;
@@ -1085,7 +1084,7 @@ mod tests {
 
   #[test]
   fn a_broken_reload_keeps_the_last_good_effect() {
-    crate::core::logging::ensure();
+    let log = crate::core::testing::capture_log();
     let path = "fx/kept.particles.ron";
     let good = r#"(image: "fx/spark.png", rate: 25)"#;
     let source = files(&[(path, good)]);
@@ -1130,10 +1129,7 @@ mod tests {
       assert_eq!(kept.map(|effect| effect.rate), Some(25.0), "{broken}");
     }
     // Each distinct failure is warned about once, and a good save carries on
-    let warned = dev_log::get_entries()
-      .into_iter()
-      .filter(|entry| entry.message.contains(path))
-      .count();
+    let warned = log.containing(path);
     assert_eq!(warned, 2, "one warning per broken save");
     source.insert(path, r#"(image: "fx/spark.png", rate: 90)"#);
     pump_until(&mut world, |world| version(world) != before);

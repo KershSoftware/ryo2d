@@ -539,6 +539,7 @@ mod tests {
 
   #[test]
   fn a_rebind_row_for_an_unknown_action_warns_once_and_never_captures() {
+    let log = crate::core::testing::capture_log();
     let mut d = driver();
     let unknown = |ui: &mut UiContext<'_>| {
       let mut changed = false;
@@ -560,10 +561,7 @@ mod tests {
     d.key(KeyCode::KeyJ);
     assert!(!d.frame(unknown));
     assert!(d.pending_rebinds().is_empty());
-    let warnings = crate::core::dev_log::get_entries()
-      .iter()
-      .filter(|e| e.message.contains("t14_unknown_rebind_action"))
-      .count();
+    let warnings = log.containing("t14_unknown_rebind_action");
     assert_eq!(warnings, 1);
   }
 }

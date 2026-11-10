@@ -291,7 +291,8 @@ fn a_change_of_space_keeps_particles_where_they_are() {
 
 #[test]
 fn a_local_effect_does_not_collide() {
-  let _log = testing::log_lock();
+  // Its warnings stay in its own capture
+  let _log = crate::core::testing::capture_log();
   let mut world = testing::world();
   let colliding = plain(&mut world).with_collision(CollisionConfig::die_on_hit(2.0));
   assert!(!has_problem(&colliding, "collision:"), "a world effect may");
@@ -383,7 +384,8 @@ fn prewarm_starts_full() {
 
 #[test]
 fn prewarm_needs_a_looping_effect() {
-  let _log = testing::log_lock();
+  // Its warnings stay in its own capture
+  let _log = crate::core::testing::capture_log();
   let mut world = testing::world();
   let warm = plain(&mut world)
     .with_rate(100.0)

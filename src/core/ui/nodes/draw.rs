@@ -2042,6 +2042,7 @@ mod tests {
 
   #[test]
   fn a_node_missing_its_state_is_skipped_and_the_rest_draws() {
+    let log = crate::core::testing::capture_log();
     let mut h = UiHarness::new(300.0, 300.0);
     let root = h.spawn_ui(
       UiNode::column()
@@ -2054,7 +2055,7 @@ mod tests {
     h.frame(|_| {});
     h.frame(|_| {});
     assert_eq!(targets(&h).len(), 1);
-    assert_eq!(warnings("a button node has no UiLabel"), 1);
+    assert_eq!(warnings(&log, "a button node has no UiLabel"), 1);
   }
 
   #[test]
@@ -3100,6 +3101,7 @@ mod embedding {
 
   #[test]
   fn drawing_an_embedded_tree_twice_warns_once_and_draws_it_once() {
+    let log = crate::core::testing::capture_log();
     let mut d = UiDriver::new((400.0, 400.0));
     let root = d.spawn_ui(grid());
     for _ in 0..3 {
@@ -3111,10 +3113,7 @@ mod embedding {
       });
     }
     assert_eq!(rects(&d).len(), 4, "four cells, not eight");
-    let warned = crate::core::dev_log::get_entries()
-      .iter()
-      .filter(|w| w.message.contains("drawn twice in one frame"))
-      .count();
+    let warned = log.containing("drawn twice in one frame");
     assert_eq!(warned, 1);
   }
 

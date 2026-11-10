@@ -7,9 +7,8 @@
 //! 2 as the player walks toward it; and the hot reload page counts a saved
 //! map
 
-use ryo2d::core::dev_log::{self, LogLevel};
 use ryo2d::prelude::*;
-use ryo2d::testing::HeadlessEngine;
+use ryo2d::testing::{HeadlessEngine, LogCapture};
 use tilemap_demo::{Coins, MapReloads, Player, demo, embedded};
 
 /// The pages, in the demo's order
@@ -54,14 +53,9 @@ fn engine_over(page: usize, files: MemorySource) -> Option<HeadlessEngine> {
   HeadlessEngine::new_or_skip(builder)
 }
 
-/// Every warning in the dev log. It is the process's, so the other tests'
-/// land in it too; none of them expects a warning either
-fn warnings() -> Vec<String> {
-  dev_log::get_entries()
-    .into_iter()
-    .filter(|entry| entry.level >= LogLevel::Warn)
-    .map(|entry| entry.message)
-    .collect()
+/// Every warning and error `log` captured
+fn warnings(log: &LogCapture) -> Vec<String> {
+  log.warnings_and_errors()
 }
 
 /// The map events sent since `cursor` last read
@@ -100,6 +94,8 @@ fn landed_maps(engine: &mut HeadlessEngine) -> (Vec<Vec<String>>, usize) {
 /// and only those, none fails and none warns
 fn every_page_plays(mut engine_on: impl FnMut(usize) -> Option<HeadlessEngine>) {
   for (page, expected) in LANDS.iter().enumerate() {
+    // A capture for each page, opened before its engine
+    let log = ryo2d::testing::capture_log();
     let Some(mut engine) = engine_on(page) else {
       return;
     };
@@ -132,7 +128,7 @@ fn every_page_plays(mut engine_on: impl FnMut(usize) -> Option<HeadlessEngine>) 
       );
     }
     assert_eq!(spawned, expected.len(), "page {}: Spawned events", page + 1);
-    let warned = warnings();
+    let warned = warnings(&log);
     assert!(warned.is_empty(), "page {}: {warned:#?}", page + 1);
   }
 }
@@ -197,14 +193,14 @@ fn player(engine: &mut HeadlessEngine) -> Option<(Entity, Vec2)> {
 }
 
 /// Steps until the page has its player
-fn wait_for_player(engine: &mut HeadlessEngine) -> (Entity, Vec2) {
+fn wait_for_player(log: &LogCapture, engine: &mut HeadlessEngine) -> (Entity, Vec2) {
   for _ in 0..600 {
     engine.step().unwrap();
     if let Some(found) = player(engine) {
       return found;
     }
   }
-  panic!("the page never spawned its player: {:#?}", warnings());
+  panic!("the page never spawned its player: {:#?}", warnings(log));
 }
 
 /// The coins of the platformer map still in the world, with their `value`
@@ -220,10 +216,11 @@ fn coins(engine: &mut HeadlessEngine) -> Vec<(Entity, Option<i64>)> {
 
 #[test]
 fn the_objects_page_collects_a_coin() {
+  let log = ryo2d::testing::capture_log();
   let Some(mut engine) = engine_on(OBJECTS) else {
     return;
   };
-  wait_for_player(&mut engine);
+  wait_for_player(&log, &mut engine);
   let before = coins(&mut engine);
   // Twelve take the class default their tile carries, one is worth 10
   let mut values: Vec<Option<i64>> = before.iter().map(|(_, value)| *value).collect();
@@ -272,7 +269,7 @@ fn the_objects_page_collects_a_coin() {
     gone.iter().sum::<i64>(),
     "the score is the gone coins' values"
   );
-  assert!(warnings().is_empty(), "{:#?}", warnings());
+  assert!(warnings(&log).is_empty(), "{:#?}", warnings(&log));
 }
 
 /// A tile's corner colours in `set` (top-left, top-right, bottom-right,
@@ -293,7 +290,7 @@ fn corners(set: &WangSet, tile: Option<Tile>, cell: IVec2) -> [u8; 4] {
 }
 
 /// The root of the page's one map, once it has spawned
-fn spawned_map(engine: &mut HeadlessEngine) -> Entity {
+fn spawned_map(log: &LogCapture, engine: &mut HeadlessEngine) -> Entity {
   for _ in 0..600 {
     engine.step().unwrap();
     let world = engine.world_mut();
@@ -302,15 +299,16 @@ fn spawned_map(engine: &mut HeadlessEngine) -> Entity {
       return root;
     }
   }
-  panic!("the page's map never spawned: {:#?}", warnings());
+  panic!("the page's map never spawned: {:#?}", warnings(log));
 }
 
 #[test]
 fn the_editing_page_paints_terrain() {
+  let log = ryo2d::testing::capture_log();
   let Some(mut engine) = engine_on(EDITING) else {
     return;
   };
-  let map = spawned_map(&mut engine);
+  let map = spawned_map(&log, &mut engine);
   engine.step_frames(3).unwrap();
   let set = {
     let handle = engine
@@ -381,7 +379,7 @@ fn the_editing_page_paints_terrain() {
       }
     }
   }
-  assert!(warnings().is_empty(), "{:#?}", warnings());
+  assert!(warnings(&log).is_empty(), "{:#?}", warnings(&log));
 }
 
 /// Where cell `cell` of the editing page's ground layer is on screen; a
@@ -398,10 +396,11 @@ fn cell_on_screen(engine: &mut HeadlessEngine, map: Entity, cell: IVec2) -> Vec2
 
 #[test]
 fn the_editing_page_fills_a_drag_begun_off_the_map_and_reads_only_its_cells() {
+  let log = ryo2d::testing::capture_log();
   let Some(mut engine) = engine_on(EDITING) else {
     return;
   };
-  let map = spawned_map(&mut engine);
+  let map = spawned_map(&log, &mut engine);
   engine.step_frames(3).unwrap();
 
   // Off the map the readout names no cell
@@ -435,7 +434,7 @@ fn the_editing_page_fills_a_drag_begun_off_the_map_and_reads_only_its_cells() {
       );
     }
   }
-  assert!(warnings().is_empty(), "{:#?}", warnings());
+  assert!(warnings(&log).is_empty(), "{:#?}", warnings(&log));
 }
 
 /// Every cell of the editing page's ground layer (48 x 16)
@@ -456,10 +455,11 @@ fn point_at(engine: &mut HeadlessEngine, map: Entity, cell: IVec2) {
 
 #[test]
 fn shift_held_paints_no_single_cells_and_a_drag_off_the_sky_fills_only_the_sky() {
+  let log = ryo2d::testing::capture_log();
   let Some(mut engine) = engine_on(EDITING) else {
     return;
   };
-  let map = spawned_map(&mut engine);
+  let map = spawned_map(&log, &mut engine);
   engine.step_frames(3).unwrap();
   let before = ground_cells(&mut engine, map);
 
@@ -525,7 +525,7 @@ fn shift_held_paints_no_single_cells_and_a_drag_off_the_sky_fills_only_the_sky()
       .contains("painted 1, erased 0, rectangles 1"),
     "the one cell painted before Shift"
   );
-  assert!(warnings().is_empty(), "{:#?}", warnings());
+  assert!(warnings(&log).is_empty(), "{:#?}", warnings(&log));
 }
 
 /// The world levels spawned now, by their index in the world
@@ -539,10 +539,11 @@ fn rooms(engine: &mut HeadlessEngine) -> Vec<usize> {
 
 #[test]
 fn the_world_page_spawns_the_next_room() {
+  let log = ryo2d::testing::capture_log();
   let Some(mut engine) = engine_on(WORLD) else {
     return;
   };
-  let (_, start) = wait_for_player(&mut engine);
+  let (_, start) = wait_for_player(&log, &mut engine);
   engine.step_frames(10).unwrap();
   assert_eq!(
     rooms(&mut engine),
@@ -566,7 +567,7 @@ fn the_world_page_spawns_the_next_room() {
     now.x > start.x + 100.0,
     "walked right from {start} to {now}"
   );
-  assert!(warnings().is_empty(), "{:#?}", warnings());
+  assert!(warnings(&log).is_empty(), "{:#?}", warnings(&log));
 }
 
 /// The hot reload page's count of `MapEvent::Reloaded`
@@ -579,12 +580,13 @@ fn reloads(engine: &HeadlessEngine) -> Option<u32> {
 
 #[test]
 fn the_hot_reload_page_counts_a_saved_map() {
+  let log = ryo2d::testing::capture_log();
   const MAP: &str = "maps/platformer.tmx";
   let files = embedded();
   let Some(mut engine) = engine_over(HOT_RELOAD, files.clone()) else {
     return;
   };
-  spawned_map(&mut engine);
+  spawned_map(&log, &mut engine);
   assert_eq!(reloads(&engine), Some(0));
 
   // As a save in the folder does, with hot reload on: the background a
@@ -609,7 +611,7 @@ fn the_hot_reload_page_counts_a_saved_map() {
     }
   }
   assert_eq!(reloads(&engine), Some(1), "the reload was counted");
-  assert!(warnings().is_empty(), "{:#?}", warnings());
+  assert!(warnings(&log).is_empty(), "{:#?}", warnings(&log));
 }
 
 /// The number after `label` in the page's UI, up to " ms"
@@ -621,6 +623,7 @@ fn ms_after(snapshot: &str, label: &str) -> Option<f64> {
 
 #[test]
 fn the_big_map_page_shows_what_a_frame_costs_with_the_map_on_and_off() {
+  let log = ryo2d::testing::capture_log();
   let Some(mut engine) = engine_on(BIG_MAP) else {
     return;
   };
@@ -648,5 +651,5 @@ fn the_big_map_page_shows_what_a_frame_costs_with_the_map_on_and_off() {
     ms_after(&shown, "Map on: total").is_some(),
     "the map on's numbers stay"
   );
-  assert!(warnings().is_empty(), "{:#?}", warnings());
+  assert!(warnings(&log).is_empty(), "{:#?}", warnings(&log));
 }

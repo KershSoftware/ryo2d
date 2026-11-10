@@ -322,6 +322,7 @@ mod tests {
 
   #[test]
   fn a_non_finite_velocity_is_read_as_zero_and_warned_once() {
+    let log = crate::core::testing::capture_log();
     let (mut world, mut s) = world(60);
     let e = walker(&mut world);
     for _ in 0..3 {
@@ -331,7 +332,8 @@ mod tests {
     }
     assert!(world.get::<Velocity>(e).unwrap().as_vec2().is_finite());
     let prefix = format!("{e}: TopDownMovement read a non-finite Velocity");
-    let warnings = crate::core::dev_log::get_entries()
+    let warnings = log
+      .records()
       .iter()
       .filter(|entry| entry.message.starts_with(&prefix))
       .count();
@@ -340,6 +342,7 @@ mod tests {
 
   #[test]
   fn a_platformer_controller_is_warned_once_and_left_alone() {
+    let log = crate::core::testing::capture_log();
     let (mut world, mut s) = world(60);
     let e = world
       .spawn((
@@ -355,7 +358,8 @@ mod tests {
     }
     assert_eq!(world.get::<Velocity>(e).unwrap().as_vec2(), Vec2::ZERO);
     let prefix = format!("{e}: TopDownMovement needs");
-    let warnings = crate::core::dev_log::get_entries()
+    let warnings = log
+      .records()
       .iter()
       .filter(|entry| entry.message.starts_with(&prefix))
       .count();

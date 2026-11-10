@@ -1753,6 +1753,7 @@ mod tests {
 
     #[test]
     fn msdf_text_asking_for_italic_draws_upright_and_warns_once() {
+      let log = crate::core::testing::capture_log();
       let mut fonts = Fonts::with_builtins();
       let ui = fonts.role(FontRole::Ui).unwrap();
       fonts.set_render(ui, FontRender::msdf());
@@ -1775,7 +1776,8 @@ mod tests {
       for glyph in &layout.glyphs {
         warn_msdf_synthesis(&sources, &mut warned, glyph);
       }
-      let warnings = crate::core::dev_log::get_entries()
+      let warnings = log
+        .records()
         .iter()
         .filter(|e| {
           e.message
@@ -1787,6 +1789,7 @@ mod tests {
 
     #[test]
     fn an_msdf_effect_past_the_range_warns_once_per_font() {
+      let log = crate::core::testing::capture_log();
       let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
         eprintln!("skipping: no GPU available");
         return;
@@ -1831,7 +1834,8 @@ mod tests {
       for _ in 0..2 {
         emit_text(&sources, &mut targets, &layout, &placement(None));
       }
-      let warnings = crate::core::dev_log::get_entries()
+      let warnings = log
+        .records()
         .iter()
         .filter(|e| {
           e.message

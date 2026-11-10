@@ -2456,28 +2456,27 @@ mod tests {
 
   #[test]
   fn a_character_no_font_has_lays_out_as_tofu_and_warns_once() {
+    let log = crate::core::testing::capture_log();
     let (mut engine, _) = engine();
     let style = TextStyle::default();
     let laid = layout(&mut engine, "a\u{6F22}b", &style);
     assert_eq!(laid.glyphs.len(), 3);
     assert_eq!(laid.glyphs[1].glyph, 0, "the .notdef (tofu) glyph");
     let _ = layout(&mut engine, "x\u{6F22}y", &style);
-    let warnings = crate::core::dev_log::get_entries()
-      .iter()
-      .filter(|e| e.message.contains("U+6F22") && e.message.contains("Inter"))
-      .count();
+    let warnings = log.containing_all(&["U+6F22", "Inter"]);
     assert_eq!(warnings, 1);
   }
 
   #[test]
   fn missing_characters_warn_once_per_font_naming_the_first_few() {
+    let log = crate::core::testing::capture_log();
     let (mut engine, _) = engine();
     let style = TextStyle::default();
     // A pasted Korean line, then Thai: no font has any of it
     let korean = "\u{D55C}\u{AE00} \u{C548}\u{B155}\u{D558}\u{C138}\u{C694}";
     let _ = layout(&mut engine, korean, &style);
     let _ = layout(&mut engine, "\u{0E01}\u{0E02}", &style);
-    let entries = crate::core::dev_log::get_entries();
+    let entries = log.records();
     let naming = |c: u32| {
       let code = format!("U+{c:04X}");
       entries
@@ -2501,6 +2500,7 @@ mod tests {
 
   #[test]
   fn degenerate_sizes_lay_out_nothing() {
+    let log = crate::core::testing::capture_log();
     let (mut engine, _) = engine();
     for size in [0.0, -4.0, f32::NAN, f32::INFINITY] {
       let style = TextStyle::default().size(size);
@@ -2545,17 +2545,11 @@ mod tests {
     }
     let _ = engine.layout(&"y".into(), &TextStyle::default(), &bad_wrap, 1.0);
     assert_eq!(engine.warned.len(), 6);
-    assert!(crate::core::dev_log::get_entries().iter().any(|e| {
-      e.message
-        .contains("text style with size -4 cannot be laid out")
-    }));
+    assert!(log.containing("text style with size -4 cannot be laid out") > 0);
     // The warning names the field that is wrong
     let tall = TextStyle::default().line_height(-2.5);
     let _ = engine.layout(&"y".into(), &tall, &TextLayoutOptions::default(), 1.0);
-    assert!(crate::core::dev_log::get_entries().iter().any(|e| {
-      e.message
-        .contains("text style with line height -2.5 cannot be laid out")
-    }));
+    assert!(log.containing("text style with line height -2.5 cannot be laid out") > 0);
   }
 
   #[test]
@@ -3262,16 +3256,14 @@ mod tests {
 
   #[test]
   fn an_unknown_family_warns_once() {
+    let log = crate::core::testing::capture_log();
     let (mut engine, _) = engine();
     let style = TextStyle::default().family("No Such Family Q7");
     for text in ["abc", "abd", "abe"] {
       let _ = layout(&mut engine, text, &style);
     }
     let _ = engine.caret_x("xyz", &style, 1, 1.0);
-    let warnings = crate::core::dev_log::get_entries()
-      .iter()
-      .filter(|e| e.message.contains("No Such Family Q7"))
-      .count();
+    let warnings = log.containing("No Such Family Q7");
     assert_eq!(warnings, 1);
   }
 

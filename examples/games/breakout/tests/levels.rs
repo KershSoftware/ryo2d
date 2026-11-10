@@ -7,9 +7,8 @@ use std::path::PathBuf;
 
 use breakout::prelude::*;
 use breakout::{EMBEDDED, embedded};
-use ryo2d::core::dev_log::{self, LogLevel};
 use ryo2d::prelude::*;
-use ryo2d::testing::HeadlessEngine;
+use ryo2d::testing::{HeadlessEngine, LogCapture};
 
 /// What each letter of the table is: colour, hits and points
 const LETTERS: [(char, &str, u32, u32); 8] = [
@@ -34,22 +33,17 @@ fn engine_on(level: u32) -> Option<HeadlessEngine> {
   )
 }
 
-/// Every warning or error about the levels in the dev log (it is the
-/// process's, so other tests' land in it; the sounds are not embedded, and
-/// their warnings are not the levels')
-fn level_problems() -> Vec<String> {
-  dev_log::get_entries()
+/// Every warning or error about the levels `log` captured (the sounds are
+/// not embedded, and their warnings are not the levels')
+fn level_problems(log: &LogCapture) -> Vec<String> {
+  log
+    .warnings_and_errors()
     .into_iter()
-    .filter(|entry| entry.level >= LogLevel::Warn)
-    .map(|entry| entry.message)
     .filter(|message| {
       let message = message.to_lowercase();
-      // (the broken maps of the fallback tests warn on purpose)
-      !message.contains("nothere")
-        && !message.contains("broken")
-        && ["level", "brick", "tiled", "tmx", "tsx", "map"]
-          .iter()
-          .any(|word| message.contains(word))
+      ["level", "brick", "tiled", "tmx", "tsx", "map"]
+        .iter()
+        .any(|word| message.contains(word))
     })
     .collect()
 }
@@ -157,6 +151,7 @@ fn a_brick_is_a_fixed_bouncing_rectangle_drawn_over_the_background() {
 
 #[test]
 fn levels_load_on_the_web_from_embedded_files() {
+  let log = ryo2d::testing::capture_log();
   // The embedded files are the files in assets/ the levels read, no more
   // and no fewer
   let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
@@ -186,7 +181,11 @@ fn levels_load_on_the_web_from_embedded_files() {
       "level {level}"
     );
   }
-  assert!(level_problems().is_empty(), "{:#?}", level_problems());
+  assert!(
+    level_problems(&log).is_empty(),
+    "{:#?}",
+    level_problems(&log)
+  );
 }
 
 /// A game on `level` over `files`

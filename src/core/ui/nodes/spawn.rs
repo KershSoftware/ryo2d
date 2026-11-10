@@ -690,22 +690,24 @@ mod tests {
 
   #[test]
   fn unknown_neighbour_names_warn_once() {
+    let log = crate::core::testing::capture_log();
     let mut h = UiHarness::new(320.0, 240.0);
     for _ in 0..2 {
       h.spawn_ui(UiNode::column().child(UiNode::button("Play").nav_down("nobody-4c-test")));
     }
-    assert_eq!(warnings("nobody-4c-test"), 1);
+    assert_eq!(warnings(&log, "nobody-4c-test"), 1);
   }
 
   #[test]
   fn a_name_used_twice_warns_once() {
+    let log = crate::core::testing::capture_log();
     let mut h = UiHarness::new(320.0, 240.0);
     let root = h.spawn_ui(
       UiNode::column()
         .child(UiNode::button("A").name("twice-4c"))
         .child(UiNode::button("B").name("twice-4c")),
     );
-    assert_eq!(warnings("two UI nodes are named \"twice-4c\""), 1);
+    assert_eq!(warnings(&log, "two UI nodes are named \"twice-4c\""), 1);
     assert_eq!(
       h.find_ui("twice-4c"),
       Some(children(h.world(), root)[0]),
@@ -715,12 +717,13 @@ mod tests {
 
   #[test]
   fn an_option_the_kind_ignores_warns_once() {
+    let log = crate::core::testing::capture_log();
     let mut h = UiHarness::new(320.0, 240.0);
     for _ in 0..2 {
       h.spawn_ui(UiNode::progress(0.5).password());
     }
     assert_eq!(
-      warnings("UiNode::password does nothing on a progress node"),
+      warnings(&log, "UiNode::password does nothing on a progress node"),
       1
     );
   }
@@ -779,6 +782,7 @@ mod tests {
 
   #[test]
   fn siblings_keyed_the_same_warn_once() {
+    let log = crate::core::testing::capture_log();
     let mut h = UiHarness::new(320.0, 240.0);
     for _ in 0..2 {
       h.spawn_ui(
@@ -788,7 +792,7 @@ mod tests {
           .child(UiNode::button("C").key("twice-4d")),
       );
     }
-    assert_eq!(warnings("keyed \"twice-4d\""), 1);
+    assert_eq!(warnings(&log, "keyed \"twice-4d\""), 1);
   }
 
   #[test]

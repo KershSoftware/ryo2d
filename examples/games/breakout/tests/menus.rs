@@ -1,5 +1,4 @@
 use breakout::scenes::{GameScene, PauseScene};
-use ryo2d::core::dev_log::LogLevel;
 use ryo2d::prelude::*;
 use ryo2d::testing::HeadlessEngine;
 
@@ -54,6 +53,7 @@ impl AssetSource for NoFolder {
 
 #[test]
 fn the_hud_shows_where_there_is_no_folder_to_read_as_on_the_web() {
+  let log = ryo2d::testing::capture_log();
   let Some(mut engine) = HeadlessEngine::new_or_skip(
     EngineBuilder::new()
       .resolution(800, 600)
@@ -71,11 +71,11 @@ fn the_hud_shows_where_there_is_no_folder_to_read_as_on_the_web() {
     .count();
   assert_eq!(hud, 1, "the embedded HUD");
   // The web has no files: a read it refuses is no warning, as the embedded
-  // copy is used (only this test's source refuses reads)
-  let warned: Vec<String> = ryo2d::core::dev_log::get_entries()
+  // copy is used
+  let warned: Vec<String> = log
+    .warnings_and_errors()
     .into_iter()
-    .filter(|entry| entry.level >= LogLevel::Warn && entry.message.contains("could not read"))
-    .map(|entry| entry.message)
+    .filter(|message| message.contains("could not read"))
     .collect();
   assert!(warned.is_empty(), "{warned:#?}");
 }

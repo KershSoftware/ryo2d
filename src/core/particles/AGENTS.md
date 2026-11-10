@@ -78,7 +78,7 @@ Reloads need nothing in the step: compiled effects follow versions, so over-life
 
 `tests/particles_alloc.rs` is the allocation guard: 20 steady emitters (two colliding over a tile map's parts, with `on_death` and `on_collision` sub-effects) and a burst played with `play_at` every 10 frames make no allocation of the engine's own beyond an empty frame's, site by site, with the ECS's spawn and despawn sites printed, not asserted. `benches/particles.rs` measures the frame targets, reading the frame's `cpu:particles` and `render:particles` times from `ParticleTimes` (the store's field `times`, written by the systems and around the drawer's `collect`) through `HeadlessEngine::particle_systems_time`, and runs the no-emitters guard through `run_particle_step` and `run_unscaled_step`, the systems' bodies, outside a frame (`HeadlessEngine::idle_particle_systems`, so the frame's timers are not in the idle figure).
 
-Particle warnings go to the dev log under the module "Particles", which every test in the process shares: any test that writes one (a clamped effect, a full budget, a nested sub-effect) or counts them, expecting some or none, holds `testing::log_lock`.
+Particle warnings are logged under the target `ryo2d::core::particles` (the file loader's under `ryo2d::core::asset`). A test that writes one (a clamped effect, a full budget, a nested sub-effect) or counts them, expecting some or none, opens its own capture first (`crate::core::testing::capture_log()`) and asks it through `testing::particle_warnings(&log)` or `particle_loader_warnings(&log)`, so no other test's warnings reach it.
 
 ## On a floor
 

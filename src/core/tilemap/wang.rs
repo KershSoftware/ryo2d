@@ -1325,16 +1325,12 @@ mod tests {
 
   #[test]
   fn an_unmatched_pattern_keeps_the_tile_and_warns_once() {
+    let log = crate::core::testing::capture_log();
     let mut mw = MapWorld::new();
     let handle = load_map(&mut mw.world, "tiled/maps/wang-dirt.tmj");
     let map = mw.spawn(MapRoot::new(handle));
     let before = layer(&mut mw.world, map, IVec2::splat(5));
-    let warnings = || {
-      crate::core::dev_log::get_entries()
-        .iter()
-        .filter(|e| e.message.contains("Wang set \"mix\"") && e.message.contains("Some(\"c\")"))
-        .count()
-    };
+    let warnings = || log.containing_all(&["Wang set \"mix\"", "Some(\"c\")"]);
     let mut maps = MapsView::new(&mut mw.world);
     // color c has no tile in the mixed set
     assert!(!maps.set_terrain(map, "ground", IVec2::new(2, 2), "mix", Some("c")));
@@ -1415,13 +1411,15 @@ mod tests {
 
   #[test]
   fn hex_terrain_is_refused_with_one_warning() {
+    let log = crate::core::testing::capture_log();
     let mut mw = MapWorld::new();
     let handle = load_map(&mut mw.world, "tiled/maps/wang-hex-dirt.tmj");
     let map = mw.spawn(MapRoot::new(handle));
     let size = IVec2::splat(9);
     let before = layer(&mut mw.world, map, size);
     let warnings = || {
-      crate::core::dev_log::get_entries()
+      log
+        .records()
         .iter()
         .filter(|e| {
           e.message

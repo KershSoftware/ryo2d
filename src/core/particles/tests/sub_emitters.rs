@@ -215,9 +215,9 @@ fn a_die_on_hit_plays_both_its_death_and_its_collision_effects() {
 #[test]
 fn sub_effects_go_one_level_deep() {
   const NESTED: &str = "on_death: a sub-effect's own sub-emitters are ignored";
-  let _log = testing::log_lock();
+  let log = crate::core::testing::capture_log();
   let warned = || {
-    particle_warnings()
+    particle_warnings(&log)
       .iter()
       .filter(|message| message.contains(NESTED))
       .count()
@@ -291,7 +291,7 @@ fn sub_particles_vanish_with_the_emitter() {
 
 #[test]
 fn sub_particles_count_against_the_budget() {
-  let _log = testing::log_lock();
+  let log = crate::core::testing::capture_log();
   // The sub-effect's own cap: two deaths of ten particles each, at most
   // three alive
   let mut world = testing::world();
@@ -307,7 +307,7 @@ fn sub_particles_count_against_the_budget() {
 
   // The engine's budget, over every pool
   let warned = || {
-    particle_warnings()
+    particle_warnings(&log)
       .iter()
       .filter(|message| message.contains("budget of 8"))
       .count()
@@ -356,8 +356,8 @@ fn finished_waits_for_sub_particles() {
 
 #[test]
 fn a_sub_effect_not_yet_loaded_spawns_nothing() {
-  let _log = testing::log_lock();
-  let warnings = particle_warnings().len();
+  let log = crate::core::testing::capture_log();
+  let warnings = particle_warnings(&log).len();
   let mut world = testing::world();
   // A handle to a slot with no value yet, as a queued load hands out
   let loading: Handle<ParticleEffect> = world
@@ -374,7 +374,11 @@ fn a_sub_effect_not_yet_loaded_spawns_nothing() {
   steps(&mut world, 30);
   assert!(death_particles(&world, emitter).is_empty());
   assert_eq!(live(&world) as usize, count(&world, emitter));
-  assert_eq!(particle_warnings().len(), warnings, "nothing to warn about");
+  assert_eq!(
+    particle_warnings(&log).len(),
+    warnings,
+    "nothing to warn about"
+  );
 
   // It lands: the deaths after play it
   let landed = still(&mut world, 100.0);
@@ -385,7 +389,7 @@ fn a_sub_effect_not_yet_loaded_spawns_nothing() {
   );
   steps(&mut world, 12);
   assert!(!death_particles(&world, emitter).is_empty());
-  assert_eq!(particle_warnings().len(), warnings);
+  assert_eq!(particle_warnings(&log).len(), warnings);
 }
 
 #[test]

@@ -30,7 +30,7 @@ use common::{
 };
 use ryo2d::core::tilemap::padded::{PaddedSize, padded_sizes};
 use ryo2d::prelude::*;
-use ryo2d::testing::HeadlessEngine;
+use ryo2d::testing::{HeadlessEngine, LogCapture};
 use tile_grids_demo::{Ball, ChunkLabel, Digger, Runner, demo};
 
 /// The pages this file tests, in the demo's order, and how many there are
@@ -102,6 +102,8 @@ fn has_landed(engine: &mut HeadlessEngine) -> bool {
 #[test]
 fn every_page_plays_for_five_seconds_without_a_warning() {
   for (page, expected) in LANDS.iter().enumerate() {
+    // A capture for each page, opened before its engine
+    let log = ryo2d::testing::capture_log();
     let Some(mut engine) = engine_on(page) else {
       return;
     };
@@ -137,17 +139,18 @@ fn every_page_plays_for_five_seconds_without_a_warning() {
     names.retain(|name| !name.starts_with("objects"));
     assert_eq!(names, *expected, "page {}: the map's tile layers", page + 1);
     assert_eq!(spawned, 1, "page {}: Spawned events", page + 1);
-    let warned = warnings();
+    let warned = warnings(&log);
     assert!(warned.is_empty(), "page {}: {warned:#?}", page + 1);
   }
 }
 
 #[test]
 fn the_speed_page_plays_for_five_seconds_on_its_hexagonal_grid_without_a_warning() {
+  let log = ryo2d::testing::capture_log();
   let Some(mut engine) = engine_on(SPEED) else {
     return;
   };
-  spawned_map(&mut engine);
+  spawned_map(&log, &mut engine);
   // The Grid setting's fourth choice
   for _ in 0..3 {
     engine.tap_key(KeyCode::ArrowRight);
@@ -157,7 +160,7 @@ fn the_speed_page_plays_for_five_seconds_on_its_hexagonal_grid_without_a_warning
   loop {
     let (landed, roots) = landed_maps(&mut engine);
     if landed.len() == 1 && roots == 1 {
-      let map = spawned_map(&mut engine);
+      let map = spawned_map(&log, &mut engine);
       let grid = MapsView::new(engine.world_mut()).grid(map, "ground");
       if grid.is_some_and(|grid| matches!(grid.grid.shape, GridShape::Hexagonal { .. })) {
         break;
@@ -175,7 +178,7 @@ fn the_speed_page_plays_for_five_seconds_on_its_hexagonal_grid_without_a_warning
     (1, 1),
     "maps landed {landed:?} of {roots} roots"
   );
-  let warned = warnings();
+  let warned = warnings(&log);
   assert!(warned.is_empty(), "{warned:#?}");
 }
 
@@ -225,10 +228,11 @@ const TOWN_TILESETS: [&str; 3] = [
 
 #[test]
 fn the_town_draws_kenney_s_pictures_at_their_own_size() {
+  let log = ryo2d::testing::capture_log();
   let Some(mut engine) = engine_on(TOWN) else {
     return;
   };
-  spawned_map(&mut engine);
+  spawned_map(&log, &mut engine);
   engine.step_frames(3).unwrap();
   // The pack's pictures cut to their bottom 256 rows, not halved
   for name in TOWN_TILESETS {
@@ -255,7 +259,7 @@ fn the_town_draws_kenney_s_pictures_at_their_own_size() {
     total <= 20 * 1024 * 1024,
     "the town's tilesets pad to {total} bytes"
   );
-  assert!(warnings().is_empty(), "{:#?}", warnings());
+  assert!(warnings(&log).is_empty(), "{:#?}", warnings(&log));
 }
 
 /// Each tile layer of the page's map, by name, with how it is sampled
@@ -276,6 +280,7 @@ fn tile_layer_filters(engine: &mut HeadlessEngine, map: Entity) -> Vec<(String, 
 
 #[test]
 fn the_town_island_and_hex_board_sample_their_painted_art_smoothly() {
+  let log = ryo2d::testing::capture_log();
   // The demo is pixel art, which samples tiles nearest: Kenney's painted
   // pictures, drawn at a half and a quarter, ask their layers for linear
   // sampling, so they read the smaller copies
@@ -283,22 +288,23 @@ fn the_town_island_and_hex_board_sample_their_painted_art_smoothly() {
     let Some(mut engine) = engine_on(page) else {
       return;
     };
-    let map = spawned_map(&mut engine);
+    let map = spawned_map(&log, &mut engine);
     let layers = tile_layer_filters(&mut engine, map);
     assert!(!layers.is_empty(), "page {}: tile layers", page + 1);
     for (name, filter) in layers {
       assert_eq!(filter, Filter::Linear, "page {}: layer {name:?}", page + 1);
     }
   }
-  assert!(warnings().is_empty(), "{:#?}", warnings());
+  assert!(warnings(&log).is_empty(), "{:#?}", warnings(&log));
 }
 
 #[test]
 fn the_hex_board_draws_its_hexagons_at_their_own_size() {
+  let log = ryo2d::testing::capture_log();
   let Some(mut engine) = engine_on(HEX) else {
     return;
   };
-  spawned_map(&mut engine);
+  spawned_map(&log, &mut engine);
   engine.step_frames(3).unwrap();
   // The terrain sheet's hexagons as the pack draws them
   assert_eq!(
@@ -313,7 +319,7 @@ fn the_hex_board_draws_its_hexagons_at_their_own_size() {
     size.bytes,
     size.art_bytes
   );
-  assert!(warnings().is_empty(), "{:#?}", warnings());
+  assert!(warnings(&log).is_empty(), "{:#?}", warnings(&log));
 }
 
 /// The chunks resident on `map`: those its tile layers have, each once
@@ -462,23 +468,24 @@ fn runner(engine: &mut HeadlessEngine) -> Option<Vec2> {
 }
 
 /// Steps until the meadow's runner has spawned
-fn wait_for_runner(engine: &mut HeadlessEngine) -> Vec2 {
+fn wait_for_runner(log: &LogCapture, engine: &mut HeadlessEngine) -> Vec2 {
   for _ in 0..600 {
     engine.step().unwrap();
     if let Some(at) = runner(engine) {
       return at;
     }
   }
-  panic!("the runner never spawned: {:#?}", warnings());
+  panic!("the runner never spawned: {:#?}", warnings(log));
 }
 
 #[test]
 fn the_meadow_s_hand_made_chunks_lie_at_negative_cells_and_the_hud_tells_them_from_generated() {
+  let log = ryo2d::testing::capture_log();
   let Some(mut engine) = engine_on(MEADOW) else {
     return;
   };
-  let map = spawned_map(&mut engine);
-  wait_for_runner(&mut engine);
+  let map = spawned_map(&log, &mut engine);
+  wait_for_runner(&log, &mut engine);
   // Space takes the runner over (it jumps once and stands), so the view
   // and the chunks round it stay put
   engine.tap_key(KeyCode::Space);
@@ -552,7 +559,7 @@ fn the_meadow_s_hand_made_chunks_lie_at_negative_cells_and_the_hud_tells_them_fr
   ] {
     assert!(shown.contains(&line), "{line:?} in the HUD");
   }
-  assert!(warnings().is_empty(), "{:#?}", warnings());
+  assert!(warnings(&log).is_empty(), "{:#?}", warnings(&log));
 }
 
 /// The demo's assets folder, read into memory: a test saves over a file
@@ -576,6 +583,7 @@ fn assets_in_memory() -> MemorySource {
 
 #[test]
 fn a_save_of_the_meadow_adds_a_hand_made_chunk_and_the_hud_follows() {
+  let log = ryo2d::testing::capture_log();
   let files = assets_in_memory();
   let builder = demo()
     .start_page(MEADOW)
@@ -587,7 +595,7 @@ fn a_save_of_the_meadow_adds_a_hand_made_chunk_and_the_hud_follows() {
   let Some(mut engine) = HeadlessEngine::new_or_skip(builder) else {
     return;
   };
-  let map = spawned_map(&mut engine);
+  let map = spawned_map(&log, &mut engine);
   engine.step_frames(3).unwrap();
   let hand_made = |engine: &mut HeadlessEngine| {
     number_after(&engine.ui_snapshot(), "Hand-made: ").expect("the hand-made line")
@@ -627,7 +635,11 @@ fn a_save_of_the_meadow_adds_a_hand_made_chunk_and_the_hud_follows() {
       break;
     }
   }
-  assert!(reloaded, "the save reloaded the meadow: {:#?}", warnings());
+  assert!(
+    reloaded,
+    "the save reloaded the meadow: {:#?}",
+    warnings(&log)
+  );
   engine.step_frames(2).unwrap();
   assert_eq!(
     hand_made(&mut engine),
@@ -657,7 +669,7 @@ fn a_save_of_the_meadow_adds_a_hand_made_chunk_and_the_hud_follows() {
     bounds.min.x, bounds.min.y, last.x, last.y
   );
   assert!(shown.contains(&line), "{line:?} in the HUD");
-  assert!(warnings().is_empty(), "{:#?}", warnings());
+  assert!(warnings(&log).is_empty(), "{:#?}", warnings(&log));
 }
 
 /// The chunk labels there are, each with its place in the world and text
@@ -678,10 +690,11 @@ fn chunk_labels(engine: &mut HeadlessEngine) -> Vec<(IVec2, Vec2, String)> {
 
 #[test]
 fn the_chunk_labels_are_world_text_on_the_chunks_in_view_on_whole_pixels() {
+  let log = ryo2d::testing::capture_log();
   let Some(mut engine) = engine_on(MEADOW) else {
     return;
   };
-  let map = spawned_map(&mut engine);
+  let map = spawned_map(&log, &mut engine);
   engine.step_frames(10).unwrap();
   let chunks = resident(&mut engine, map);
   let file = file_chunks(&meadow_asset(&mut engine));
@@ -727,7 +740,7 @@ fn the_chunk_labels_are_world_text_on_the_chunks_in_view_on_whole_pixels() {
     chunk_labels(&mut engine).is_empty(),
     "no labels with the overlay off"
   );
-  assert!(warnings().is_empty(), "{:#?}", warnings());
+  assert!(warnings(&log).is_empty(), "{:#?}", warnings(&log));
 }
 
 /// The topmost ground cell in the column under `at` (world pixels), from a
@@ -750,11 +763,12 @@ fn on_screen(engine: &mut HeadlessEngine, at: Vec2) -> Option<Vec2> {
 
 #[test]
 fn the_runner_runs_on_past_the_meadow_s_left_end_onto_generated_ground() {
+  let log = ryo2d::testing::capture_log();
   let Some(mut engine) = engine_on(MEADOW) else {
     return;
   };
-  let map = spawned_map(&mut engine);
-  let start = wait_for_runner(&mut engine);
+  let map = spawned_map(&log, &mut engine);
+  let start = wait_for_runner(&log, &mut engine);
   let meadow = meadow_asset(&mut engine);
   let file = file_chunks(&meadow);
   let (left_end, _) = meadow_ends(&file);
@@ -812,16 +826,17 @@ fn the_runner_runs_on_past_the_meadow_s_left_end_onto_generated_ground() {
     "a generated chunk's label is in view: {labels:?}"
   );
   assert_file_chunks_unchanged(&mut engine, map, &meadow);
-  assert!(warnings().is_empty(), "{:#?}", warnings());
+  assert!(warnings(&log).is_empty(), "{:#?}", warnings(&log));
 }
 
 #[test]
 fn a_player_runs_the_runner_past_the_meadow_s_right_end_and_the_file_s_chunks_stay_as_saved() {
+  let log = ryo2d::testing::capture_log();
   let Some(mut engine) = engine_on(MEADOW) else {
     return;
   };
-  let map = spawned_map(&mut engine);
-  wait_for_runner(&mut engine);
+  let map = spawned_map(&log, &mut engine);
+  wait_for_runner(&log, &mut engine);
   let meadow = meadow_asset(&mut engine);
   let file = file_chunks(&meadow);
   let (_, right_end) = meadow_ends(&file);
@@ -874,7 +889,7 @@ fn a_player_runs_the_runner_past_the_meadow_s_right_end_and_the_file_s_chunks_st
     "the runner runs on generated ground: {under} is in chunk {chunk}"
   );
   assert_file_chunks_unchanged(&mut engine, map, &meadow);
-  assert!(warnings().is_empty(), "{:#?}", warnings());
+  assert!(warnings(&log).is_empty(), "{:#?}", warnings(&log));
 }
 
 /// The paint page's layer
@@ -907,10 +922,11 @@ fn cell_at(engine: &mut HeadlessEngine, map: Entity, at: Vec2) -> IVec2 {
 
 #[test]
 fn a_click_paints_the_cell_under_the_pointer_at_negative_cells() {
+  let log = ryo2d::testing::capture_log();
   let Some(mut engine) = engine_on(PAINT) else {
     return;
   };
-  let map = spawned_map(&mut engine);
+  let map = spawned_map(&log, &mut engine);
   engine.step_frames(3).unwrap();
 
   // A point up and left of the view's middle: a cell at negative
@@ -943,15 +959,16 @@ fn a_click_paints_the_cell_under_the_pointer_at_negative_cells() {
   let erased = layer_grid(&mut engine, map, LAYER);
   assert!(erased.get(cell).is_none(), "the right click erased {cell}");
   assert!(erased.chunk_coords().any(|c| c == chunk), "a chunk stays");
-  assert!(warnings().is_empty(), "{:#?}", warnings());
+  assert!(warnings(&log).is_empty(), "{:#?}", warnings(&log));
 }
 
 #[test]
 fn the_ball_comes_to_rest_on_painted_ground() {
+  let log = ryo2d::testing::capture_log();
   let Some(mut engine) = engine_on(PAINT) else {
     return;
   };
-  let map = spawned_map(&mut engine);
+  let map = spawned_map(&log, &mut engine);
   engine.step_frames(3).unwrap();
 
   // Drag a floor of nine cells at negative cells, left of the view's middle
@@ -1011,7 +1028,7 @@ fn the_ball_comes_to_rest_on_painted_ground() {
     row.contains(&below),
     "the ball rests on the painted floor: {at} is over {below}, the floor is {row:?}"
   );
-  assert!(warnings().is_empty(), "{:#?}", warnings());
+  assert!(warnings(&log).is_empty(), "{:#?}", warnings(&log));
 }
 
 /// The endless page's digger, once it has one
@@ -1040,10 +1057,11 @@ fn saved_chunks(engine: &HeadlessEngine, map: Entity) -> SavedChunks {
 
 #[test]
 fn the_endless_world_keeps_what_you_dig_and_build_when_you_leave_and_come_back() {
+  let log = ryo2d::testing::capture_log();
   let Some(mut engine) = engine_on(ENDLESS) else {
     return;
   };
-  let map = spawned_map(&mut engine);
+  let map = spawned_map(&log, &mut engine);
   for _ in 0..600 {
     if digger(&mut engine).is_some() {
       break;
@@ -1200,5 +1218,5 @@ fn the_endless_world_keeps_what_you_dig_and_build_when_you_leave_and_come_back()
     ground_at(&mut engine, map, build).is_some(),
     "{build} is still built"
   );
-  assert!(warnings().is_empty(), "{:#?}", warnings());
+  assert!(warnings(&log).is_empty(), "{:#?}", warnings(&log));
 }

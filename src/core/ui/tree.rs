@@ -2811,6 +2811,7 @@ mod tests {
 
   #[test]
   fn a_container_left_open_is_laid_out_when_the_scene_ends() {
+    let log = crate::core::testing::capture_log();
     let (mut commands, mut text) = (UiCommands::default(), text_engine());
     let mut ui = context(&mut commands, &mut text, (400.0, 300.0));
     let style = UiStyle {
@@ -2828,10 +2829,7 @@ mod tests {
     assert_eq!(next.rect, Rect::new(0.0, 0.0, 20.0, 20.0));
     drop(ui);
     assert_eq!(rects(&commands).len(), 2);
-    let warnings = crate::core::dev_log::get_entries()
-      .iter()
-      .filter(|e| e.message.contains("still open when the scene's ui ended"))
-      .count();
+    let warnings = log.containing("still open when the scene's ui ended");
     assert_eq!(warnings, 1);
   }
 

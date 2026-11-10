@@ -470,9 +470,9 @@ mod tests {
     AudioClip, AudioEngine, AudioLogEntry, AudioLogKind, AudioView, LimitRule, Mixer, SoundClip,
     Voice, VoiceLimit,
   };
-  use crate::core::dev_log::{self, LogLevel};
   use crate::core::ecs::{Entity, Pool, PoolConfig, PoolExhaustedPolicy, World};
   use crate::core::graphics::{Camera2d, MainCamera};
+  use crate::core::testing::LogCapture;
   use crate::core::testing::{audio_step, audio_world, audio_world_over};
   use crate::core::time::Time;
 
@@ -589,10 +589,11 @@ mod tests {
     world.resource::<AudioEngine>().voice_cutoff(voice.id())
   }
 
-  fn warnings(matching: impl Fn(&str) -> bool) -> usize {
-    dev_log::get_entries()
+  fn warnings(captured: &LogCapture, matching: impl Fn(&str) -> bool) -> usize {
+    captured
+      .records()
       .iter()
-      .filter(|entry| entry.level == LogLevel::Warn && matching(&entry.message))
+      .filter(|r| r.level == log::Level::Warn && matching(&r.message))
       .count()
   }
 
@@ -1356,6 +1357,7 @@ mod tests {
   /// the listener, with a warning once
   #[test]
   fn a_sound_without_spatial_settings_played_at_a_place_warns_once() {
+    let captured = crate::core::testing::capture_log();
     let files = MemorySource::new();
     files.insert(
       "sfx/flat-at-a-place.sound.ron",
@@ -1382,7 +1384,7 @@ mod tests {
     let named = |message: &str| {
       message.starts_with("sfx/flat-at-a-place.sound.ron:") && message.contains("no spatial")
     };
-    assert_eq!(warnings(named), 1);
+    assert_eq!(warnings(&captured, named), 1);
   }
 
   /// A spatial voice holds with its bus while the game is paused, and its

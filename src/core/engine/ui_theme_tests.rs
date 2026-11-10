@@ -123,6 +123,7 @@ fn a_followed_theme_reloads_when_its_file_changes() {
 
 #[test]
 fn a_broken_theme_save_keeps_the_theme() {
+  let log = crate::core::testing::capture_log();
   let path = "ui/broken-save.theme.ron";
   let files = MemorySource::new();
   files.insert(path, "(name: \"kept\")");
@@ -148,10 +149,7 @@ fn a_broken_theme_save_keeps_the_theme() {
     before,
     "the same theme, at the same generation"
   );
-  let warnings = crate::core::dev_log::get_entries()
-    .iter()
-    .filter(|entry| entry.message.contains(path))
-    .count();
+  let warnings = log.containing(path);
   assert_eq!(warnings, 1, "warned once for the one mistake");
 }
 

@@ -703,6 +703,7 @@ mod tests {
   #[test]
   fn a_layer_needing_more_sub_layers_than_it_may_have_puts_the_rest_in_the_nearest_and_warns_once()
   {
+    let log = crate::core::testing::capture_log();
     // Twenty tiles in a row of cells, each a pixel further into its cell:
     // twenty sub-layers asked for, sixteen made, four tiles snapped
     let project = load_json(|v| {
@@ -731,7 +732,8 @@ mod tests {
       .filter(|l| l.info.name.starts_with("Decor-9f4a"))
       .count();
     assert_eq!(decor, 16);
-    let warned: Vec<String> = crate::core::dev_log::get_entries()
+    let warned: Vec<String> = log
+      .records()
       .into_iter()
       .filter(|e| e.message.contains("Decor-9f4a"))
       .map(|e| e.message)

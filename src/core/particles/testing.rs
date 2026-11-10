@@ -1,6 +1,5 @@
 //! Test worlds for the particle step.
 
-use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use glam::Vec2;
@@ -24,6 +23,7 @@ use crate::core::ecs::{
   PreviousGlobalTransform, QueryState, Resource, Schedule, Transform, World,
 };
 use crate::core::graphics::Image;
+use crate::core::logging::LogCapture;
 use crate::core::messages::register_engine_messages;
 use crate::core::physics::{Collider, SlopeCorner, TileCell, TileColliders, TilePart};
 use crate::core::time::Time;
@@ -275,31 +275,22 @@ pub(crate) fn finished(world: &World) -> Vec<Entity> {
     })
 }
 
-/// The dev log's particle warnings are shared by every test in the
-/// process: a test that writes one (a clamped effect, a full budget, a
-/// nested sub-effect) or counts them, expecting some or none, holds this
-pub(crate) fn log_lock() -> MutexGuard<'static, ()> {
-  static LOCK: Mutex<()> = Mutex::new(());
-  LOCK.lock().unwrap_or_else(PoisonError::into_inner)
+/// The particle module's records `log` captured, as messages
+pub(crate) fn particle_warnings(log: &LogCapture) -> Vec<String> {
+  messages_from(log, "ryo2d::core::particles")
 }
 
-/// The particle warnings in the dev log (which keeps its last 10,000
-/// entries, from every test in the process)
-pub(crate) fn particle_warnings() -> Vec<String> {
-  crate::core::dev_log::get_entries()
-    .into_iter()
-    .filter(|entry| entry.module.as_deref() == Some("Particles"))
-    .map(|entry| entry.message)
-    .collect()
+/// The records `log` captured from the asset module, where the particle
+/// file loader warns, as messages
+pub(crate) fn particle_loader_warnings(log: &LogCapture) -> Vec<String> {
+  messages_from(log, "ryo2d::core::asset")
 }
 
-/// The warnings the particle file loader gives (its target is the asset
-/// module's, so the old log labels them `Asset`)
-pub(crate) fn particle_loader_warnings() -> Vec<String> {
-  crate::core::dev_log::get_entries()
+fn messages_from(log: &LogCapture, target: &str) -> Vec<String> {
+  log
+    .from_target(target)
     .into_iter()
-    .filter(|entry| entry.module.as_deref() == Some("Asset"))
-    .map(|entry| entry.message)
+    .map(|record| record.message)
     .collect()
 }
 
