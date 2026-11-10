@@ -54,6 +54,7 @@ pub mod profiler;
 pub mod capture;
 pub mod console;
 pub mod dev_log;
+pub mod logging;
 pub mod windows;
 
 // Frame structure, clocks and test support

@@ -70,6 +70,7 @@ pub(crate) use ui::reload_and_wait;
 pub use ui::{UiCacheStats, UiHarness};
 
 pub use crate::core::error::HeadlessError;
+pub use crate::core::logging::{LogCapture, capture_log, capture_log_bounded};
 pub use crate::core::render::UiRenderStats;
 pub use crate::core::saves::MemorySaves;
 pub use gpu::shared_gpu;

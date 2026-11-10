@@ -51,6 +51,7 @@
 pub mod cli;
 pub mod core;
 pub use core::ecs;
+pub use core::logging;
 #[cfg(not(target_arch = "wasm32"))]
 pub use core::testing;
 /// Compiles the game's Ryo.toml into the binary: `ryo2d::project!()`, for
@@ -342,7 +343,10 @@ pub mod prelude {
     CommandContext, CommandRegistry, CommandResult, ConsoleCommandBuilder, ConsoleState,
   };
 
-  // Logging macros for game code
+  // The log's macros for game code, under the `game` target
+  pub use crate::{debug, error, info, trace, warn, warn_once};
+
+  // The old log's macros for game code
   pub use crate::game_debug;
   pub use crate::game_error;
   pub use crate::game_info;

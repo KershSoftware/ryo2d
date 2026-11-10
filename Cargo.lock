@@ -5682,6 +5682,7 @@ dependencies = [
  "image",
  "js-sys",
  "kira",
+ "log",
  "matchbox_socket",
  "naga",
  "notify",

@@ -67,6 +67,8 @@ fdsm = "0.8"
 ryo2d-derive = { path = "crates/ryo2d-derive" }
 
 web-time = "1.1"
+# The log's front: engine code and libraries log through its macros
+log = "0.4"
 
 # Native only: the desktop's clipboard, file system, threads, sockets and
 # dev tooling, all compiled out of the web build

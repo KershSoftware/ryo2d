@@ -123,6 +123,7 @@ impl GlobalLogBuffer {
     context: LogContext,
     module: Option<String>,
     message: String,
+    print: bool,
   ) {
     if level < self.min_level {
       return;
@@ -132,7 +133,7 @@ impl GlobalLogBuffer {
     let iso_timestamp = Self::format_iso_timestamp();
 
     // Also print to stdout if enabled
-    if self.stdout_enabled {
+    if print && self.stdout_enabled {
       let module_str = module
         .as_ref()
         .map(|m| format!("[{}] ", m))
@@ -216,7 +217,20 @@ pub fn set_frame(frame: u64) {
 /// Log a message to the global buffer.
 pub fn log(level: LogLevel, context: LogContext, module: Option<&str>, message: String) {
   if let Ok(mut buffer) = get_buffer().lock() {
-    buffer.push(level, context, module.map(|s| s.to_string()), message);
+    buffer.push(level, context, module.map(|s| s.to_string()), message, true);
+  }
+}
+
+/// Keeps an entry from the new log (`core::logging`), which prints its own
+/// lines, without printing it.
+pub(crate) fn push_quiet(
+  level: LogLevel,
+  context: LogContext,
+  module: Option<String>,
+  message: String,
+) {
+  if let Ok(mut buffer) = get_buffer().lock() {
+    buffer.push(level, context, module, message, false);
   }
 }
 
