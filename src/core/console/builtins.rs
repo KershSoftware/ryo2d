@@ -1,777 +1,672 @@
-//! Built-in console commands
-//!
-//! Commands use a category:command format (e.g., `debug:fps`, `system:timescale`).
-//! Root-level commands (help, clear, quit, exit) don't require a category.
+//! The engine's own commands. Each runs with the world and the engine's
+//! hooks ([`EngineHooks`]): the debug flags, the overlay mode F1 cycles,
+//! the frame capture and the quit request. Names use a `category:command`
+//! form (`debug:fps`); `help`, `clear`, `quit` and `exit` have none.
 
-use std::net::UdpSocket;
 use std::path::PathBuf;
+use std::sync::Arc;
 
-use super::commands::{CommandRegistry, CommandResult};
+use log::LevelFilter;
+
+use super::Console;
+use super::colors;
+use super::command::{Command, CommandSpec};
+use super::registry::{ConsoleCommands, EngineHooks, Handler};
+use crate::core::asset::AssetServer;
 use crate::core::capture::CaptureTarget;
+use crate::core::diagnostics::{DebugConfig, OverlayMode};
+use crate::core::ecs::World;
+use crate::core::engine::SceneHost;
+use crate::core::settings::Settings;
+use crate::core::time::{GameClock, Time};
 
-/// Register all built-in commands with the registry
-pub fn register_builtins(registry: &mut CommandRegistry) {
-  // ═══════════════════════════════════════════════════════════════════════════
-  // Root-level commands (no category required)
-  // ═══════════════════════════════════════════════════════════════════════════
+/// Add the built-in commands to `commands`.
+pub(crate) fn add_builtins(commands: &mut ConsoleCommands) {
+  let mut add =
+    |spec: CommandSpec,
+     run: fn(&mut World, &mut EngineHooks<'_>, &mut Command<'_>) -> Result<(), String>| {
+      commands.add(spec, Handler::Builtin(Arc::new(run)));
+    };
 
-  // Helper function to list commands by category
-  fn list_category_commands(ctx: &mut super::commands::CommandContext, prefix: &str) {
-    let mut commands: Vec<_> = ctx
-      .commands
-      .iter()
-      .filter(|cmd| cmd.name.starts_with(prefix))
-      .collect();
-
-    if commands.is_empty() {
-      ctx.console.print_system(format!(
-        "No {} commands available",
-        prefix.trim_end_matches(':')
-      ));
-      return;
-    }
-
-    commands.sort_by(|a, b| a.name.cmp(&b.name));
-    ctx
-      .console
-      .print_system(format!("{} commands:", prefix.trim_end_matches(':')));
-    ctx.console.print_system("");
-    for cmd in commands {
-      let padded_name = format!("{:<20}", cmd.name);
-      // Show inactive status for game commands
-      let status = if !cmd.is_active { " (inactive)" } else { "" };
-      ctx
-        .console
-        .print(format!("  {} - {}{}", padded_name, cmd.description, status));
-    }
-  }
-
-  // Help command
-  registry.register(
-    "help",
-    "List available commands or show help for a specific command",
-    |args, ctx| {
-      if let Some(cmd_name) = args.first() {
-        // Look up specific command
-        if let Some(cmd) = ctx.commands.iter().find(|c| c.name == *cmd_name) {
-          ctx.console.print_system(format!("Command: {}", cmd.name));
-          // Show verbose description if available, otherwise show regular description
-          if let Some(verbose) = &cmd.verbose_description {
-            ctx.console.print(format!("  {}", verbose));
-          } else {
-            ctx.console.print(format!("  {}", cmd.description));
-          }
-          // Show active/inactive status for game commands
-          if cmd.name.starts_with("game:") {
-            if cmd.is_active {
-              ctx.console.print_system("  Status: Active");
-            } else {
-              ctx
-                .console
-                .print_system("  Status: Inactive (no effect in current context)");
-            }
-          }
-        } else {
-          ctx
-            .console
-            .print_error(format!("Unknown command: '{}'", cmd_name));
-          ctx
-            .console
-            .print_system("Type 'help' for available commands");
-        }
-      } else {
-        ctx.console.print_system("Available commands:");
-        ctx.console.print_system("");
-        ctx
-          .console
-          .print("  help [cmd]          - List commands or show specific help");
-        ctx
-          .console
-          .print("  clear               - Clear console output");
-        ctx.console.print("  quit / exit         - Exit the game");
-        ctx.console.print_system("");
-        ctx.console.print_system("debug:");
-        ctx
-          .console
-          .print("  debug:fps           - Toggle FPS display (F1)");
-        ctx
-          .console
-          .print("  debug:stats         - Toggle debug statistics overlay (F1)");
-        ctx
-          .console
-          .print("  debug:timing        - Toggle frame timing breakdown (F1)");
-        ctx
-          .console
-          .print("  debug:colliders     - Toggle collision visualization (F2)");
-        ctx
-          .console
-          .print("  debug:velocities    - Toggle velocity vectors (F3)");
-        ctx
-          .console
-          .print("  debug:origins       - Toggle entity origin points (F4)");
-        ctx
-          .console
-          .print("  debug:ui            - Toggle the UI widget rect and id overlay");
-        ctx.console.print(
-          "  debug:ui-rebuilds   - Toggle the overlay outlining UI nodes rebuilt this frame",
-        );
-        ctx
-          .console
-          .print("  ui:cache [on|off]   - Show or set UI node tree caching");
-        ctx
-          .console
-          .print("  ui:retain [on|off]  - Show or set UI render retention");
-        ctx.console.print_system("");
-        ctx.console.print_system("system:");
-        ctx
-          .console
-          .print("  system:timescale <n> - Set game time scale (1.0 = normal)");
-        ctx
-          .console
-          .print("  system:version       - Show engine version information");
-        ctx
-          .console
-          .print("  system:ip:lan        - Show local LAN IP address");
-        ctx
-          .console
-          .print("  system:ip:wan        - Show public WAN IP address");
-
-        // Dynamically list game: commands
-        let mut game_commands: Vec<_> = ctx
-          .commands
-          .iter()
-          .filter(|cmd| cmd.name.starts_with("game:"))
-          .collect();
-
-        if !game_commands.is_empty() {
-          game_commands.sort_by(|a, b| a.name.cmp(&b.name));
-          ctx.console.print_system("");
-          ctx.console.print_system("game:");
-          for cmd in game_commands {
-            // Format: pad name to 18 chars, then description, with inactive indicator
-            let padded_name = format!("{:<18}", cmd.name);
-            let status = if cmd.is_active { "" } else { " (inactive)" };
-            ctx
-              .console
-              .print(format!("  {} - {}{}", padded_name, cmd.description, status));
-          }
-        }
-
-        ctx.console.print_system("");
-        ctx
-          .console
-          .print_system("Type 'debug', 'system', or 'game' to list category commands");
-        ctx
-          .console
-          .print_system("Press ~ (tilde) to toggle console");
-        ctx
-          .console
-          .print_system("Press Escape or X to close console");
-        ctx
-          .console
-          .print_system("Use mouse wheel or Page Up/Down to scroll");
+  add(
+    CommandSpec::new("help", "List the commands, or show one's usage and help")
+      .usage("help [command]"),
+    help,
+  );
+  add(
+    CommandSpec::new("clear", "Clear the console's output"),
+    |world, _, _| {
+      if let Some(mut console) = world.get_resource_mut::<Console>() {
+        console.clear();
       }
-      CommandResult::Ok
+      Ok(())
     },
   );
+  add(CommandSpec::new("quit", "Exit the game"), quit);
+  add(CommandSpec::new("exit", "Exit the game (as quit)"), quit);
 
-  // Category listing commands
-  registry.register("debug", "List all debug commands", |_args, ctx| {
-    list_category_commands(ctx, "debug:");
-    CommandResult::Ok
-  });
-
-  registry.register("system", "List all system commands", |_args, ctx| {
-    list_category_commands(ctx, "system:");
-    CommandResult::Ok
-  });
-
-  registry.register("game", "List all game-specific commands", |_args, ctx| {
-    list_category_commands(ctx, "game:");
-    CommandResult::Ok
-  });
-
-  // Clear command
-  registry.register("clear", "Clear console output", |_args, ctx| {
-    ctx.console.clear();
-    CommandResult::Ok
-  });
-
-  // Quit commands
-  registry.register("quit", "Exit the game", |_args, ctx| {
-    ctx.quit_requested = true;
-    ctx.console.print_system("Shutting down...");
-    CommandResult::Quit
-  });
-
-  registry.register("exit", "Exit the game (alias for quit)", |_args, ctx| {
-    ctx.quit_requested = true;
-    ctx.console.print_system("Shutting down...");
-    CommandResult::Quit
-  });
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // debug: category - Debug visualization commands
-  // ═══════════════════════════════════════════════════════════════════════════
-
-  // FPS toggle (F1 cycles through overlays)
-  registry.register("debug:fps", "Toggle FPS display", |_args, ctx| {
-    ctx.debug_config.show_fps = !ctx.debug_config.show_fps;
-    if ctx.debug_config.show_fps {
-      ctx.console.print("FPS display enabled");
-    } else {
-      ctx.console.print("FPS display disabled");
-    }
-    CommandResult::Ok
-  });
-
-  // Frame capture (F12 does the same with the default path)
-  registry.register(
-    "debug:capture",
-    "Save the next frame as a PNG (debug:capture [path])",
-    |args, ctx| {
-      let target = if args.is_empty() {
+  add(
+    CommandSpec::new("debug:fps", "Toggle the FPS counter (F1)"),
+    fps,
+  );
+  add(
+    CommandSpec::new("debug:stats", "Toggle the statistics overlay (F1)"),
+    |world, hooks, cmd| toggle_overlay(world, hooks, cmd, OverlayMode::FullStats),
+  );
+  add(
+    CommandSpec::new("debug:timing", "Toggle the frame timing overlay (F1)"),
+    |world, hooks, cmd| toggle_overlay(world, hooks, cmd, OverlayMode::FrameTiming),
+  );
+  add(
+    CommandSpec::new("debug:colliders", "Toggle collision boundaries (F2)"),
+    |_, hooks, cmd| {
+      flip(
+        cmd,
+        &mut hooks.debug.show_colliders,
+        "Collision boundaries",
+        ("visible", "hidden"),
+      );
+      Ok(())
+    },
+  );
+  add(
+    CommandSpec::new("debug:velocities", "Toggle velocity vectors (F3)"),
+    |_, hooks, cmd| {
+      flip(
+        cmd,
+        &mut hooks.debug.show_velocities,
+        "Velocity vectors",
+        ("visible", "hidden"),
+      );
+      Ok(())
+    },
+  );
+  add(
+    CommandSpec::new("debug:origins", "Toggle entity origin points (F4)"),
+    |_, hooks, cmd| {
+      flip(
+        cmd,
+        &mut hooks.debug.show_origins,
+        "Entity origins",
+        ("visible", "hidden"),
+      );
+      Ok(())
+    },
+  );
+  add(
+    CommandSpec::new(
+      "debug:ui",
+      "Toggle the UI debug overlay (widget rects and ids)",
+    ),
+    |_, hooks, cmd| {
+      flip(
+        cmd,
+        &mut hooks.debug.show_ui_debug,
+        "UI debug overlay",
+        ("enabled", "disabled"),
+      );
+      Ok(())
+    },
+  );
+  add(
+    CommandSpec::new(
+      "debug:ui-rebuilds",
+      "Toggle the overlay outlining UI nodes rebuilt this frame",
+    ),
+    |_, hooks, cmd| {
+      flip(
+        cmd,
+        &mut hooks.debug.show_ui_rebuilds,
+        "UI rebuilds overlay",
+        ("enabled", "disabled"),
+      );
+      Ok(())
+    },
+  );
+  add(
+    CommandSpec::new("debug:capture", "Save the next frame as a PNG (F12)")
+      .usage("debug:capture [path]"),
+    |_, hooks, cmd| {
+      let path = cmd.rest(0);
+      *hooks.capture = Some(if path.is_empty() {
         CaptureTarget::Default
       } else {
-        CaptureTarget::Path(PathBuf::from(args.join(" ")))
-      };
-      ctx.capture_requested = Some(target);
-      ctx.console.print("Capturing next frame...");
-      CommandResult::Ok
+        CaptureTarget::Path(PathBuf::from(path))
+      });
+      cmd.print("Capturing next frame...");
+      Ok(())
+    },
+  );
+  add(
+    CommandSpec::new("ui:cache", "Show or set UI node tree caching").usage("ui:cache [on|off]"),
+    |_, hooks, cmd| {
+      let on = switch(cmd, &mut hooks.debug.ui_cache)?;
+      cmd.print(format!("UI caching is {}", on_off(on)));
+      Ok(())
+    },
+  );
+  add(
+    CommandSpec::new("ui:fragments", "Show or set UI fragments").usage("ui:fragments [on|off]"),
+    |_, hooks, cmd| {
+      let on = switch(cmd, &mut hooks.debug.ui_fragments)?;
+      cmd.print(format!("UI fragments are {}", on_off(on)));
+      Ok(())
+    },
+  );
+  add(
+    CommandSpec::new("ui:retain", "Show or set UI render retention").usage("ui:retain [on|off]"),
+    |_, hooks, cmd| {
+      let on = switch(cmd, &mut hooks.debug.ui_retain)?;
+      cmd.print(format!("UI render retention is {}", on_off(on)));
+      Ok(())
     },
   );
 
-  // Stats command - show current debug stats (F1 cycles through overlays)
-  registry.register(
-    "debug:stats",
-    "Toggle debug statistics overlay",
-    |_args, ctx| {
-      ctx.debug_config.show_stats = !ctx.debug_config.show_stats;
-      if ctx.debug_config.show_stats {
-        ctx.console.print("Debug statistics visible");
-      } else {
-        ctx.console.print("Debug statistics hidden");
-      }
-      CommandResult::Ok
-    },
+  add(
+    CommandSpec::new(
+      "system:timescale",
+      "Show or set the game clock's speed (1 = normal)",
+    )
+    .usage("system:timescale [0..100]"),
+    timescale,
   );
-
-  // Timing command - toggle frame timing breakdown (F1 cycles through overlays)
-  registry.register(
-    "debug:timing",
-    "Toggle frame timing breakdown overlay",
-    |_args, ctx| {
-      ctx.debug_config.show_frame_timing = !ctx.debug_config.show_frame_timing;
-      if ctx.debug_config.show_frame_timing {
-        ctx.console.print("Frame timing breakdown visible");
-      } else {
-        ctx.console.print("Frame timing breakdown hidden");
-      }
-      CommandResult::Ok
-    },
+  add(
+    CommandSpec::new(
+      "system:version",
+      "Show the game's and the engine's versions",
+    ),
+    version,
   );
-
-  // Colliders toggle (F2)
-  registry.register(
-    "debug:colliders",
-    "Toggle collision boundary visualization",
-    |_args, ctx| {
-      ctx.debug_config.show_colliders = !ctx.debug_config.show_colliders;
-      if ctx.debug_config.show_colliders {
-        ctx.console.print("Collision boundaries visible");
-      } else {
-        ctx.console.print("Collision boundaries hidden");
-      }
-      CommandResult::Ok
-    },
+  add(
+    CommandSpec::new("system:scenes", "Show the scene stack, top first"),
+    scenes,
   );
-
-  // Velocities toggle (F3)
-  registry.register(
-    "debug:velocities",
-    "Toggle velocity vector visualization",
-    |_args, ctx| {
-      ctx.debug_config.show_velocities = !ctx.debug_config.show_velocities;
-      if ctx.debug_config.show_velocities {
-        ctx.console.print("Velocity vectors visible");
-      } else {
-        ctx.console.print("Velocity vectors hidden");
-      }
-      CommandResult::Ok
-    },
-  );
-
-  // Origins toggle (F4)
-  registry.register(
-    "debug:origins",
-    "Toggle entity origin point visualization",
-    |_args, ctx| {
-      ctx.debug_config.show_origins = !ctx.debug_config.show_origins;
-      if ctx.debug_config.show_origins {
-        ctx.console.print("Entity origins visible");
-      } else {
-        ctx.console.print("Entity origins hidden");
-      }
-      CommandResult::Ok
-    },
-  );
-
-  // UI debug overlay
-  registry.register(
-    "debug:ui",
-    "Toggle the UI debug overlay (widget rects and ids)",
-    |_args, ctx| {
-      ctx.debug_config.show_ui_debug = !ctx.debug_config.show_ui_debug;
-      if ctx.debug_config.show_ui_debug {
-        ctx.console.print("UI debug overlay enabled");
-      } else {
-        ctx.console.print("UI debug overlay disabled");
-      }
-      CommandResult::Ok
-    },
-  );
-
-  // UI rebuilds overlay
-  registry.register(
-    "debug:ui-rebuilds",
-    "Toggle the overlay outlining UI nodes rebuilt this frame",
-    |_args, ctx| {
-      ctx.debug_config.show_ui_rebuilds = !ctx.debug_config.show_ui_rebuilds;
-      if ctx.debug_config.show_ui_rebuilds {
-        ctx.console.print("UI rebuilds overlay enabled");
-      } else {
-        ctx.console.print("UI rebuilds overlay disabled");
-      }
-      CommandResult::Ok
-    },
-  );
-
-  // UI node tree caching
-  registry.register(
-    "ui:cache",
-    "Show or set UI node tree caching: ui:cache [on|off]",
-    |args, ctx| {
-      match args.first().map(|arg| arg.to_ascii_lowercase()).as_deref() {
-        None => {}
-        Some("on") => ctx.debug_config.ui_cache = true,
-        Some("off") => ctx.debug_config.ui_cache = false,
-        Some(_) => return CommandResult::Error("Usage: ui:cache [on|off]".to_string()),
-      }
-      let state = if ctx.debug_config.ui_cache {
-        "on"
-      } else {
-        "off"
-      };
-      ctx.console.print(format!("UI caching is {state}"));
-      CommandResult::Ok
-    },
-  );
-
-  // UI fragments
-  registry.register(
-    "ui:fragments",
-    "Show or set UI fragments: ui:fragments [on|off]",
-    |args, ctx| {
-      match args.first().map(|arg| arg.to_ascii_lowercase()).as_deref() {
-        None => {}
-        Some("on") => ctx.debug_config.ui_fragments = true,
-        Some("off") => ctx.debug_config.ui_fragments = false,
-        Some(_) => return CommandResult::Error("Usage: ui:fragments [on|off]".to_string()),
-      }
-      let state = if ctx.debug_config.ui_fragments {
-        "on"
-      } else {
-        "off"
-      };
-      ctx.console.print(format!("UI fragments are {state}"));
-      CommandResult::Ok
-    },
-  );
-
-  // UI render retention
-  registry.register(
-    "ui:retain",
-    "Show or set UI render retention: ui:retain [on|off]",
-    |args, ctx| {
-      match args.first().map(|arg| arg.to_ascii_lowercase()).as_deref() {
-        None => {}
-        Some("on") => ctx.debug_config.ui_retain = true,
-        Some("off") => ctx.debug_config.ui_retain = false,
-        Some(_) => return CommandResult::Error("Usage: ui:retain [on|off]".to_string()),
-      }
-      let state = if ctx.debug_config.ui_retain {
-        "on"
-      } else {
-        "off"
-      };
-      ctx.console.print(format!("UI render retention is {state}"));
-      CommandResult::Ok
-    },
-  );
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // system: category - System/engine commands
-  // ═══════════════════════════════════════════════════════════════════════════
-
-  // Time scale command
-  registry.register(
-    "system:timescale",
-    "Set game time scale (1.0 = normal speed)",
-    |args, ctx| {
-      if args.is_empty() {
-        ctx
-          .console
-          .print(format!("Current time scale: {:.2}", *ctx.time_scale));
-        return CommandResult::Ok;
-      }
-
-      match args[0].parse::<f32>() {
-        Ok(scale) => {
-          if scale < 0.0 {
-            ctx.console.print_error("Time scale cannot be negative");
-            return CommandResult::Error("Invalid time scale".to_string());
-          }
-          if scale > 10.0 {
-            ctx.console.print_error("Time scale cannot exceed 10.0");
-            return CommandResult::Error("Invalid time scale".to_string());
-          }
-          *ctx.time_scale = scale;
-          ctx.console.print(format!("Time scale set to {:.2}", scale));
-          CommandResult::Ok
-        }
-        Err(_) => {
-          ctx
-            .console
-            .print_error(format!("Invalid number: '{}'", args[0]));
-          ctx.console.print_system("Usage: system:timescale <number>");
-          CommandResult::Error("Invalid argument".to_string())
-        }
-      }
-    },
-  );
-
-  // Version/info command
-  registry.register(
-    "system:version",
-    "Show engine and game version information",
-    |_args, ctx| {
-      // Show game info if available
-      if let Some(name) = &ctx.game_name {
-        ctx.console.print(name.to_string());
-        if let Some(version) = &ctx.game_version {
-          ctx.console.print(format!("  Version: {}", version));
-        }
-        ctx.console.print("");
-      }
-      ctx.console.print("Ryo2D Game Engine");
-      ctx
-        .console
-        .print(format!("  Engine: {}", env!("CARGO_PKG_VERSION")));
-      ctx.console.print(format!(
-        "  Build:  {}",
-        if cfg!(debug_assertions) {
-          "Dev"
-        } else {
-          "Release"
-        }
+  add(
+    CommandSpec::new("system:entities", "Count the game's entities"),
+    |world, _, cmd| {
+      cmd.print(format!(
+        "Entities: {}",
+        crate::core::engine::game_entity_count(world)
       ));
-      CommandResult::Ok
+      Ok(())
     },
   );
-
-  // LAN IP command
-  registry.register(
-    "system:ip:lan",
-    "Show local LAN IP address",
-    |_args, ctx| {
-      match get_lan_ip() {
-        Some(ip) => ctx.console.print(format!("LAN IP: {}", ip)),
-        None => ctx.console.print_error("Could not determine LAN IP"),
-      }
-      CommandResult::Ok
-    },
+  add(
+    CommandSpec::new("system:assets", "Show the asset registry's counts per type"),
+    assets,
   );
-
-  // WAN IP command
-  registry.register(
-    "system:ip:wan",
-    "Show public WAN IP address",
-    |_args, ctx| {
-      ctx.console.print_system("Fetching WAN IP...");
-      match get_wan_ip() {
-        Some(ip) => ctx.console.print(format!("WAN IP: {}", ip)),
-        None => ctx
-          .console
-          .print_error("Could not determine WAN IP (no internet?)"),
-      }
-      CommandResult::Ok
-    },
+  add(
+    CommandSpec::new("log:level", "Show or set the log's levels")
+      .usage("log:level [target] [level]")
+      .help(
+        "With no argument, the defaults for the game, the engine and libraries, and each \
+         target's own level. With a target, its level; with a level too, sets it (off, \
+         error, warn, info, debug, trace). A target covers the targets under it.",
+      ),
+    log_level,
+  );
+  add(
+    CommandSpec::new(
+      "log:show",
+      "Show or set the lowest log level the console shows",
+    )
+    .usage("log:show [level|off]"),
+    log_show,
   );
 }
 
-/// Get the local LAN IP by connecting a UDP socket to a public address
-fn get_lan_ip() -> Option<String> {
-  let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
-  socket.connect("8.8.8.8:80").ok()?;
-  let local_addr = socket.local_addr().ok()?;
-  Some(local_addr.ip().to_string())
+fn quit(_: &mut World, _: &mut EngineHooks<'_>, cmd: &mut Command<'_>) -> Result<(), String> {
+  cmd.print_colored("Shutting down...", colors::SYSTEM);
+  cmd.quit();
+  Ok(())
 }
 
-/// Get the public WAN IP via a plain HTTP request to api.ipify.org
-fn get_wan_ip() -> Option<String> {
-  use std::io::{Read, Write};
-  use std::net::{TcpStream, ToSocketAddrs};
-  use std::time::Duration;
-
-  let timeout = Duration::from_secs(5);
-
-  // Resolve via DNS then connect with timeout
-  let addr = "api.ipify.org:80".to_socket_addrs().ok()?.next()?;
-  let mut stream = TcpStream::connect_timeout(&addr, timeout).ok()?;
-  stream.set_read_timeout(Some(timeout)).ok()?;
-
-  let request = "GET / HTTP/1.1\r\nHost: api.ipify.org\r\nConnection: close\r\n\r\n";
-  stream.write_all(request.as_bytes()).ok()?;
-
-  let mut response = String::new();
-  stream.read_to_string(&mut response).ok()?;
-
-  // Parse IP from HTTP response body (after headers)
-  let body = response.split("\r\n\r\n").nth(1)?;
-  let ip = body.trim().to_string();
-
-  // Basic validation: should look like an IP address
-  if !ip.is_empty() && ip.len() <= 45 {
-    Some(ip)
-  } else {
-    None
+/// `help`: every command grouped by the text before its first `:` (those
+/// without one first), or one command's description, usage and help
+fn help(world: &mut World, _: &mut EngineHooks<'_>, cmd: &mut Command<'_>) -> Result<(), String> {
+  let Some(commands) = world.get_resource::<ConsoleCommands>() else {
+    return Err("No commands".to_string());
+  };
+  if let Some(name) = cmd.args().first().cloned() {
+    let Some((spec, _)) = commands.find(&name) else {
+      return Err(format!("Unknown command: '{name}'. Type 'help'."));
+    };
+    cmd.print_colored(format!("Command: {}", spec.name), colors::SYSTEM);
+    cmd.print(format!("  {}", spec.description));
+    if let Some(usage) = &spec.usage {
+      cmd.print(format!("  Usage: {usage}"));
+    }
+    if let Some(help) = &spec.help {
+      for line in help.lines() {
+        cmd.print(format!("  {line}"));
+      }
+    }
+    return Ok(());
   }
+
+  let list = commands.list();
+  let group = |name: &str| name.split_once(':').map(|(group, _)| group.to_string());
+  let width = list
+    .iter()
+    .map(|spec| spec.name.len())
+    .max()
+    .unwrap_or(0)
+    .max(16);
+  cmd.print_colored("Available commands:", colors::SYSTEM);
+  // Sorted by name, so each group's commands are together; no group first
+  let (plain, grouped): (Vec<_>, Vec<_>) =
+    list.iter().partition(|spec| group(&spec.name).is_none());
+  let mut last_group = None;
+  for spec in plain.into_iter().chain(grouped) {
+    let this = group(&spec.name);
+    if this.is_some() && this != last_group {
+      cmd.print_colored("", colors::SYSTEM);
+      cmd.print_colored(
+        format!("{}:", this.as_deref().unwrap_or_default()),
+        colors::SYSTEM,
+      );
+    }
+    cmd.print(format!("  {:<width$} - {}", spec.name, spec.description));
+    last_group = this;
+  }
+  cmd.print_colored("", colors::SYSTEM);
+  cmd.print_colored("Type 'help <command>' for its usage", colors::SYSTEM);
+  cmd.print_colored(
+    "Press ` to toggle the console, Escape or X to close it",
+    colors::SYSTEM,
+  );
+  cmd.print_colored(
+    "Use the mouse wheel or Page Up/Down to scroll",
+    colors::SYSTEM,
+  );
+  Ok(())
+}
+
+/// `debug:fps`: the FPS counter is the player's setting, so it goes into
+/// `Settings` too, and the overlay mode F1 cycles follows it
+fn fps(
+  world: &mut World,
+  hooks: &mut EngineHooks<'_>,
+  cmd: &mut Command<'_>,
+) -> Result<(), String> {
+  let show = !hooks.debug.show_fps;
+  hooks.debug.show_fps = show;
+  if let Some(mut settings) = world.get_resource_mut::<Settings>()
+    && settings.show_fps() != show
+  {
+    settings.set_show_fps(show);
+  }
+  let debug = &hooks.debug;
+  *hooks.overlay = OverlayMode::from_flags(show, debug.show_frame_timing, debug.show_stats);
+  cmd.print(if show {
+    "FPS display enabled"
+  } else {
+    "FPS display disabled"
+  });
+  Ok(())
+}
+
+/// `debug:stats` and `debug:timing`: the overlay mode F1 would reach for
+/// `mode`, or no overlay when it is shown already, so F1 carries on from it
+fn toggle_overlay(
+  world: &mut World,
+  hooks: &mut EngineHooks<'_>,
+  cmd: &mut Command<'_>,
+  mode: OverlayMode,
+) -> Result<(), String> {
+  let next = if *hooks.overlay == mode {
+    OverlayMode::Off
+  } else {
+    mode
+  };
+  set_overlay(world, hooks.debug, hooks.overlay, next);
+  let what = match mode {
+    OverlayMode::FullStats => "Debug statistics",
+    _ => "Frame timing breakdown",
+  };
+  cmd.print(format!(
+    "{what} {}",
+    if next == mode { "visible" } else { "hidden" }
+  ));
+  Ok(())
+}
+
+/// The overlay mode and its flags, as F1 sets them, with the FPS counter in
+/// the player's settings
+fn set_overlay(
+  world: &mut World,
+  debug: &mut DebugConfig,
+  overlay: &mut OverlayMode,
+  mode: OverlayMode,
+) {
+  *overlay = mode;
+  let (show_fps, show_frame_timing, show_stats) = mode.to_flags();
+  debug.show_fps = show_fps;
+  debug.show_frame_timing = show_frame_timing;
+  debug.show_stats = show_stats;
+  if let Some(mut settings) = world.get_resource_mut::<Settings>()
+    && settings.show_fps() != show_fps
+  {
+    settings.set_show_fps(show_fps);
+  }
+}
+
+/// Flip `flag` and say so: `<what> visible` or `<what> hidden`
+fn flip(cmd: &mut Command<'_>, flag: &mut bool, what: &str, (on, off): (&str, &str)) {
+  *flag = !*flag;
+  cmd.print(format!("{what} {}", if *flag { on } else { off }));
+}
+
+/// Set `flag` from an `on` or `off` argument (none leaves it); its value
+fn switch(cmd: &Command<'_>, flag: &mut bool) -> Result<bool, String> {
+  match cmd
+    .args()
+    .first()
+    .map(|arg| arg.to_ascii_lowercase())
+    .as_deref()
+  {
+    None => {}
+    Some("on") => *flag = true,
+    Some("off") => *flag = false,
+    Some(_) => return Err(format!("Usage: {} [on|off]", cmd.name())),
+  }
+  Ok(*flag)
+}
+
+fn on_off(on: bool) -> &'static str {
+  if on { "on" } else { "off" }
+}
+
+/// `system:timescale`: the game clock's speed, within the clock's own range
+fn timescale(
+  world: &mut World,
+  _: &mut EngineHooks<'_>,
+  cmd: &mut Command<'_>,
+) -> Result<(), String> {
+  let Some(mut time) = world.get_resource_mut::<Time>() else {
+    return Err("No game clock".to_string());
+  };
+  if cmd.args().is_empty() {
+    cmd.print(format!("Current time scale: {:.2}", time.game.speed()));
+    return Ok(());
+  }
+  let scale: f32 = cmd.arg(0)?;
+  // NaN is in no range
+  if !(0.0..=GameClock::MAX_SPEED).contains(&scale) {
+    return Err(format!(
+      "Time scale must be from 0 to {}, not {scale}",
+      GameClock::MAX_SPEED
+    ));
+  }
+  time.game.set_speed(scale);
+  cmd.print(format!("Time scale set to {scale:.2}"));
+  Ok(())
+}
+
+fn version(
+  _: &mut World,
+  hooks: &mut EngineHooks<'_>,
+  cmd: &mut Command<'_>,
+) -> Result<(), String> {
+  if let Some(name) = hooks.game_name {
+    cmd.print(name);
+    if let Some(version) = hooks.game_version {
+      cmd.print(format!("  Version: {version}"));
+    }
+    cmd.print("");
+  }
+  cmd.print("Ryo2D Game Engine");
+  cmd.print(format!("  Engine: {}", env!("CARGO_PKG_VERSION")));
+  cmd.print(format!(
+    "  Build:  {}",
+    if cfg!(debug_assertions) {
+      "Dev"
+    } else {
+      "Release"
+    }
+  ));
+  Ok(())
+}
+
+fn scenes(world: &mut World, _: &mut EngineHooks<'_>, cmd: &mut Command<'_>) -> Result<(), String> {
+  let Some(host) = world.get_non_send::<SceneHost>() else {
+    return Err("No scene stack".to_string());
+  };
+  let stack = host.scenes.stack_report();
+  cmd.print_colored("Scenes, top first:", colors::SYSTEM);
+  for (name, updates) in stack {
+    let state = if updates { "updates" } else { "stopped" };
+    cmd.print(format!("  {name} ({state})"));
+  }
+  Ok(())
+}
+
+fn assets(world: &mut World, _: &mut EngineHooks<'_>, cmd: &mut Command<'_>) -> Result<(), String> {
+  let Some(server) = world.get_resource::<AssetServer>() else {
+    return Err("No asset registry".to_string());
+  };
+  let stats = server.stats();
+  cmd.print_colored("Assets (loaded by path):", colors::SYSTEM);
+  for kind in stats.types {
+    cmd.print(format!(
+      "  {}: {} loaded, {} loading, {} failed",
+      kind.name, kind.loaded, kind.loading, kind.failed
+    ));
+  }
+  Ok(())
+}
+
+/// A level's name, as `RYO_LOG` takes it
+fn parse_level(cmd: &Command<'_>, index: usize) -> Result<LevelFilter, String> {
+  let text = cmd
+    .args()
+    .get(index)
+    .map(String::as_str)
+    .unwrap_or_default();
+  crate::core::logging::parse_level(text).ok_or_else(|| {
+    format!(
+      "{text:?} is not a level (off, error, warn, info, debug, trace); usage: {}",
+      cmd.name()
+    )
+  })
+}
+
+fn level_name(level: LevelFilter) -> String {
+  level.as_str().to_ascii_lowercase()
+}
+
+fn log_level(_: &mut World, _: &mut EngineHooks<'_>, cmd: &mut Command<'_>) -> Result<(), String> {
+  match cmd.args().len() {
+    0 => {
+      let levels = crate::core::logging::level_report();
+      cmd.print_colored("Log levels:", colors::SYSTEM);
+      for (target, level) in levels {
+        cmd.print(format!("  {target}: {}", level_name(level)));
+      }
+    }
+    1 => {
+      let target = &cmd.args()[0];
+      let level = crate::core::logging::level(target);
+      cmd.print(format!("{target}: {}", level_name(level)));
+    }
+    _ => {
+      let level = parse_level(cmd, 1)?;
+      let target = cmd.args()[0].clone();
+      crate::core::logging::set_level(&target, level);
+      cmd.print(format!("{target}: {}", level_name(level)));
+    }
+  }
+  Ok(())
+}
+
+fn log_show(
+  world: &mut World,
+  _: &mut EngineHooks<'_>,
+  cmd: &mut Command<'_>,
+) -> Result<(), String> {
+  let level = match cmd.args().is_empty() {
+    true => None,
+    false => Some(parse_level(cmd, 0)?),
+  };
+  let Some(mut console) = world.get_resource_mut::<Console>() else {
+    return Err("No console".to_string());
+  };
+  if let Some(level) = level {
+    console.log_show = level;
+  }
+  let shown = console.log_show;
+  cmd.print(if shown == LevelFilter::Off {
+    "The console shows no log records".to_string()
+  } else {
+    format!(
+      "The console shows log records at {} and above",
+      level_name(shown)
+    )
+  });
+  Ok(())
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::core::diagnostics::DebugConfig;
+  use crate::core::console::dispatch::run_line;
 
-  fn make_test_context<'a>(
-    console: &'a mut super::super::ConsoleState,
-    debug_config: &'a mut DebugConfig,
-    time_scale: &'a mut f32,
-  ) -> super::super::commands::CommandContext<'a> {
-    super::super::commands::CommandContext {
-      console,
-      debug_config,
-      quit_requested: false,
-      capture_requested: None,
-      time_scale,
-      commands: Vec::new(),
-      game_name: None,
-      game_version: None,
+  /// A world with the console, its commands and a clock, the hooks' state,
+  /// and what the last line asked to capture
+  struct Rig {
+    world: World,
+    debug: DebugConfig,
+    overlay: OverlayMode,
+    capture: Option<CaptureTarget>,
+    quit: bool,
+  }
+
+  impl Rig {
+    fn new() -> Self {
+      let mut world = World::new();
+      let mut commands = ConsoleCommands::default();
+      add_builtins(&mut commands);
+      world.insert_resource(commands);
+      world.insert_resource(Console::new());
+      world.insert_resource(Time::new(60));
+      Self {
+        world,
+        debug: DebugConfig::default(),
+        overlay: OverlayMode::Off,
+        capture: None,
+        quit: false,
+      }
+    }
+
+    fn run(&mut self, line: &str) -> Vec<String> {
+      self.world.resource_mut::<Console>().capture();
+      let mut hooks = EngineHooks {
+        debug: &mut self.debug,
+        overlay: &mut self.overlay,
+        capture: &mut self.capture,
+        quit: &mut self.quit,
+        game_name: Some("Test Game"),
+        game_version: Some("1.2.3"),
+      };
+      run_line(&mut self.world, &mut hooks, line);
+      self.world.resource_mut::<Console>().take_captured()
     }
   }
 
   #[test]
-  fn test_capture_command_uses_default_target() {
-    let mut registry = CommandRegistry::new();
-    register_builtins(&mut registry);
-    let mut console = super::super::ConsoleState::new();
-    let mut debug_config = DebugConfig::default();
-    let mut time_scale = 1.0;
-    let mut ctx = make_test_context(&mut console, &mut debug_config, &mut time_scale);
-
-    let result = registry.execute("debug:capture", &mut ctx);
-
-    assert_eq!(result, CommandResult::Ok);
-    assert_eq!(ctx.capture_requested, Some(CaptureTarget::Default));
-  }
-
-  #[test]
-  fn test_capture_command_accepts_path_with_spaces() {
-    let mut registry = CommandRegistry::new();
-    register_builtins(&mut registry);
-    let mut console = super::super::ConsoleState::new();
-    let mut debug_config = DebugConfig::default();
-    let mut time_scale = 1.0;
-    let mut ctx = make_test_context(&mut console, &mut debug_config, &mut time_scale);
-
-    registry.execute("debug:capture shots/my shot.png", &mut ctx);
-
+  fn capture_takes_the_default_target_or_a_path_with_spaces() {
+    let mut rig = Rig::new();
+    rig.run("debug:capture");
+    assert_eq!(rig.capture.take(), Some(CaptureTarget::Default));
+    rig.run("debug:capture shots/my shot.png");
     assert_eq!(
-      ctx.capture_requested,
+      rig.capture,
       Some(CaptureTarget::Path(PathBuf::from("shots/my shot.png")))
     );
   }
 
   #[test]
-  fn test_builtins_register_ip_commands() {
-    let mut registry = CommandRegistry::new();
-    register_builtins(&mut registry);
-
-    assert!(registry.has_command("system:ip:lan"));
-    assert!(registry.has_command("system:ip:wan"));
+  fn the_debug_overlays_toggle() {
+    let mut rig = Rig::new();
+    assert_eq!(rig.run("debug:ui"), ["UI debug overlay enabled"]);
+    assert!(rig.debug.show_ui_debug);
+    rig.run("debug:ui");
+    assert!(!rig.debug.show_ui_debug);
+    rig.run("debug:ui-rebuilds");
+    assert!(rig.debug.show_ui_rebuilds);
+    assert_eq!(rig.run("debug:colliders"), ["Collision boundaries visible"]);
+    assert!(rig.debug.show_colliders);
+    rig.run("debug:velocities");
+    rig.run("debug:origins");
+    assert!(rig.debug.show_velocities && rig.debug.show_origins);
   }
 
   #[test]
-  fn test_ip_lan_command_executes() {
-    let mut registry = CommandRegistry::new();
-    register_builtins(&mut registry);
-
-    let mut console = super::super::ConsoleState::new();
-    let mut debug_config = DebugConfig::default();
-    let mut time_scale = 1.0;
-    let mut ctx = make_test_context(&mut console, &mut debug_config, &mut time_scale);
-
-    // Should always return Ok (prints error message on failure, doesn't return Error)
-    let result = registry.execute("system:ip:lan", &mut ctx);
-    assert_eq!(result, super::super::commands::CommandResult::Ok);
-  }
-
-  #[test]
-  fn test_ip_wan_command_executes() {
-    let mut registry = CommandRegistry::new();
-    register_builtins(&mut registry);
-
-    let mut console = super::super::ConsoleState::new();
-    let mut debug_config = DebugConfig::default();
-    let mut time_scale = 1.0;
-    let mut ctx = make_test_context(&mut console, &mut debug_config, &mut time_scale);
-
-    // Should always return Ok regardless of network availability
-    let result = registry.execute("system:ip:wan", &mut ctx);
-    assert_eq!(result, super::super::commands::CommandResult::Ok);
-  }
-
-  #[test]
-  fn test_get_lan_ip_returns_valid_format() {
-    // This test requires network access but should work in most environments
-    if let Some(ip) = get_lan_ip() {
-      // Should be a valid IPv4 address
-      assert!(ip.contains('.'));
-      assert!(ip.len() <= 15);
-      // Should not be 0.0.0.0 or empty
-      assert_ne!(ip, "0.0.0.0");
-      assert!(!ip.is_empty());
+  fn the_ui_switches_turn_off_and_on() {
+    let mut rig = Rig::new();
+    for (name, flag) in [
+      (
+        "ui:cache",
+        (|d: &DebugConfig| d.ui_cache) as fn(&DebugConfig) -> bool,
+      ),
+      ("ui:fragments", |d: &DebugConfig| d.ui_fragments),
+      ("ui:retain", |d: &DebugConfig| d.ui_retain),
+    ] {
+      assert!(flag(&rig.debug), "{name} on by default");
+      rig.run(&format!("{name} off"));
+      assert!(!flag(&rig.debug));
+      rig.run(name);
+      assert!(!flag(&rig.debug), "{name} alone only prints");
+      rig.run(&format!("{name} ON"));
+      assert!(flag(&rig.debug));
+      let said = rig.run(&format!("{name} maybe"));
+      assert_eq!(said, [format!("Usage: {name} [on|off]")]);
+      assert!(flag(&rig.debug));
     }
-    // If None, it just means no network — that's fine for CI
   }
 
   #[test]
-  fn test_ip_commands_can_be_removed() {
-    let mut registry = CommandRegistry::new();
-    register_builtins(&mut registry);
-
-    assert!(registry.has_command("system:ip:lan"));
-    assert!(registry.remove_builtin("system:ip:lan"));
-    assert!(!registry.has_command("system:ip:lan"));
-
-    assert!(registry.has_command("system:ip:wan"));
-    assert!(registry.remove_builtin("system:ip:wan"));
-    assert!(!registry.has_command("system:ip:wan"));
+  fn version_names_the_game_and_the_engine() {
+    let mut rig = Rig::new();
+    let said = rig.run("system:version");
+    assert_eq!(said[0], "Test Game");
+    assert_eq!(said[1], "  Version: 1.2.3");
+    assert!(said.contains(&"Ryo2D Game Engine".to_string()));
   }
 
   #[test]
-  fn debug_ui_toggles_the_overlay() {
-    let mut registry = CommandRegistry::new();
-    register_builtins(&mut registry);
-    let mut console = super::super::ConsoleState::new();
-    let mut debug_config = DebugConfig::default();
-    let mut time_scale = 1.0;
-    let mut ctx = make_test_context(&mut console, &mut debug_config, &mut time_scale);
-    assert_eq!(registry.execute("debug:ui", &mut ctx), CommandResult::Ok);
-    assert!(ctx.debug_config.show_ui_debug);
-    registry.execute("debug:ui", &mut ctx);
-    assert!(!ctx.debug_config.show_ui_debug);
-  }
-
-  #[test]
-  fn debug_ui_rebuilds_toggles_the_overlay() {
-    let mut registry = CommandRegistry::new();
-    register_builtins(&mut registry);
-    let mut console = super::super::ConsoleState::new();
-    let mut debug_config = DebugConfig::default();
-    let mut time_scale = 1.0;
-    let mut ctx = make_test_context(&mut console, &mut debug_config, &mut time_scale);
+  fn log_show_keeps_the_console_s_level() {
+    let mut rig = Rig::new();
+    assert_eq!(rig.world.resource::<Console>().log_show, LevelFilter::Warn);
     assert_eq!(
-      registry.execute("debug:ui-rebuilds", &mut ctx),
-      CommandResult::Ok
+      rig.run("log:show"),
+      ["The console shows log records at warn and above"]
     );
-    assert!(ctx.debug_config.show_ui_rebuilds);
-    registry.execute("debug:ui-rebuilds", &mut ctx);
-    assert!(!ctx.debug_config.show_ui_rebuilds);
+    rig.run("log:show error");
+    assert_eq!(rig.world.resource::<Console>().log_show, LevelFilter::Error);
+    assert_eq!(
+      rig.run("log:show off"),
+      ["The console shows no log records"]
+    );
+    assert_eq!(rig.world.resource::<Console>().log_show, LevelFilter::Off);
+    assert_eq!(rig.run("log:show loud").len(), 1);
+    assert_eq!(rig.world.resource::<Console>().log_show, LevelFilter::Off);
   }
 
   #[test]
-  fn ui_cache_turns_caching_off_and_on() {
-    let mut registry = CommandRegistry::new();
-    register_builtins(&mut registry);
-    let mut console = super::super::ConsoleState::new();
-    let mut debug_config = DebugConfig::default();
-    let mut time_scale = 1.0;
-    let mut ctx = make_test_context(&mut console, &mut debug_config, &mut time_scale);
-    assert!(ctx.debug_config.ui_cache, "on by default");
-    assert_eq!(
-      registry.execute("ui:cache off", &mut ctx),
-      CommandResult::Ok
-    );
-    assert!(!ctx.debug_config.ui_cache);
-    assert_eq!(registry.execute("ui:cache", &mut ctx), CommandResult::Ok);
-    assert!(!ctx.debug_config.ui_cache, "alone it only prints");
-    registry.execute("ui:cache on", &mut ctx);
-    assert!(ctx.debug_config.ui_cache);
-    assert!(matches!(
-      registry.execute("ui:cache maybe", &mut ctx),
-      CommandResult::Error(_)
-    ));
+  fn quit_and_exit_ask_to_quit() {
+    for name in ["quit", "exit"] {
+      let mut rig = Rig::new();
+      assert_eq!(rig.run(name), ["Shutting down..."]);
+      assert!(rig.quit, "{name}");
+    }
   }
 
   #[test]
-  fn ui_fragments_turns_fragments_off_and_on() {
-    let mut registry = CommandRegistry::new();
-    register_builtins(&mut registry);
-    let mut console = super::super::ConsoleState::new();
-    let mut debug_config = DebugConfig::default();
-    let mut time_scale = 1.0;
-    let mut ctx = make_test_context(&mut console, &mut debug_config, &mut time_scale);
-    assert!(ctx.debug_config.ui_fragments, "on by default");
-    assert_eq!(
-      registry.execute("ui:fragments off", &mut ctx),
-      CommandResult::Ok
-    );
-    assert!(!ctx.debug_config.ui_fragments);
-    assert_eq!(
-      registry.execute("ui:fragments", &mut ctx),
-      CommandResult::Ok
-    );
-    assert!(!ctx.debug_config.ui_fragments, "alone it only prints");
-    registry.execute("ui:fragments on", &mut ctx);
-    assert!(ctx.debug_config.ui_fragments);
-    assert!(matches!(
-      registry.execute("ui:fragments maybe", &mut ctx),
-      CommandResult::Error(_)
-    ));
-  }
-
-  #[test]
-  fn ui_retain_turns_retention_off_and_on() {
-    let mut registry = CommandRegistry::new();
-    register_builtins(&mut registry);
-    let mut console = super::super::ConsoleState::new();
-    let mut debug_config = DebugConfig::default();
-    let mut time_scale = 1.0;
-    let mut ctx = make_test_context(&mut console, &mut debug_config, &mut time_scale);
-    assert!(ctx.debug_config.ui_retain, "on by default");
-    assert_eq!(
-      registry.execute("ui:retain off", &mut ctx),
-      CommandResult::Ok
-    );
-    assert!(!ctx.debug_config.ui_retain);
-    assert_eq!(registry.execute("ui:retain", &mut ctx), CommandResult::Ok);
-    assert!(!ctx.debug_config.ui_retain, "alone it only prints");
-    registry.execute("ui:retain on", &mut ctx);
-    assert!(ctx.debug_config.ui_retain);
-    assert!(matches!(
-      registry.execute("ui:retain maybe", &mut ctx),
-      CommandResult::Error(_)
-    ));
+  fn clear_empties_the_console() {
+    let mut rig = Rig::new();
+    rig.run("help");
+    rig.run("clear");
+    assert_eq!(rig.world.resource::<Console>().lines().count(), 0);
   }
 }

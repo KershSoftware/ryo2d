@@ -97,6 +97,21 @@ impl Levels {
     }
   }
 
+  /// The defaults (`game`, `engine`, `library`), then each target's own
+  /// level, in the order they were set
+  #[cfg(dev_tools)]
+  pub(crate) fn report(&self) -> Vec<(String, LevelFilter)> {
+    [
+      ("game", self.game),
+      ("engine", self.engine),
+      ("library", self.library),
+    ]
+    .into_iter()
+    .map(|(name, level)| (name.to_owned(), level))
+    .chain(self.overrides.iter().cloned())
+    .collect()
+  }
+
   /// The most verbose level any target logs at: `log`'s global maximum.
   pub(crate) fn most_verbose(&self) -> LevelFilter {
     self
@@ -107,7 +122,8 @@ impl Levels {
   }
 }
 
-fn parse_level(text: &str) -> Option<LevelFilter> {
+/// A level by its name, in any case (`off` to `trace`)
+pub(crate) fn parse_level(text: &str) -> Option<LevelFilter> {
   [
     LevelFilter::Off,
     LevelFilter::Error,

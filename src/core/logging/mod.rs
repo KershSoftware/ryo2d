@@ -32,6 +32,8 @@ use web_time::Instant;
 
 pub use capture::{LogCapture, capture_log, capture_log_bounded};
 use levels::Levels;
+#[cfg(dev_tools)]
+pub(crate) use levels::parse_level;
 pub use record::{LogRecord, Origin};
 pub(crate) use scope::{current_scope, in_scope, scoped};
 
@@ -161,6 +163,16 @@ pub fn level(target: &str) -> LevelFilter {
   LOGGER
     .get()
     .map_or(LevelFilter::Off, |logger| logger.levels().of(target))
+}
+
+/// The defaults (`game`, `engine`, `library`) and each target's own level,
+/// for the console's `log:level`
+#[cfg(dev_tools)]
+pub(crate) fn level_report() -> Vec<(String, LevelFilter)> {
+  ensure();
+  LOGGER
+    .get()
+    .map_or_else(Vec::new, |logger| logger.levels().report())
 }
 
 /// Opens the log file in `folder` (`<folder>/logs/latest.log`) and installs

@@ -12,11 +12,12 @@ use crate::{Control, Settings};
 /// every entity is despawned, and the camera, post-processing effects,
 /// lighting settings (forced state, ambient, atmosphere), game clock (speed,
 /// pause, hitstop), music and pending messages are reset. Systems and console
-/// handlers the page added go with its scene. Anything else a page changes
+/// commands the page added (see [`page_command`](crate::page_command)) go
+/// with its scene. Anything else a page changes
 /// (the cursor, UI scale, render pipeline passes, sound effects, tilemap
 /// registrations, resources it inserted) carries over unless the page undoes
 /// it in `exit`.
-pub trait DemoPage: 'static {
+pub trait DemoPage: std::any::Any {
   /// Shown in the top bar, e.g. `Glow`
   fn name(&self) -> &str;
 

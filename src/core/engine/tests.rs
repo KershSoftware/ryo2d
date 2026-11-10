@@ -1036,103 +1036,6 @@ fn overlay_mode_from_debug_config_flags() {
   );
 }
 
-// ===========================================================================
-// Console Command Declaration Tests
-// ===========================================================================
-
-#[test]
-fn engine_builder_console_commands_none_by_default() {
-  let builder = EngineBuilder::new();
-  assert!(builder.console_builder.is_none());
-}
-
-#[test]
-fn engine_builder_with_console_commands_declares_simple() {
-  let builder = EngineBuilder::new().with_console_commands(|cmd| {
-    cmd.declare("game:reset", "Reset the game");
-  });
-  let cb = builder.console_builder.as_ref().unwrap();
-  assert_eq!(cb.declarations.len(), 1);
-  assert_eq!(cb.declarations[0].0, "game:reset");
-  assert_eq!(cb.declarations[0].1, "Reset the game");
-  assert!(cb.declarations[0].2.is_none());
-}
-
-#[test]
-fn engine_builder_with_console_commands_declares_verbose() {
-  let builder = EngineBuilder::new().with_console_commands(|cmd| {
-    cmd.declare_verbose(
-      "game:spawn",
-      "Spawn an entity",
-      "Usage: game:spawn <type> [x] [y]",
-    );
-  });
-  let cb = builder.console_builder.as_ref().unwrap();
-  assert_eq!(cb.declarations.len(), 1);
-  assert_eq!(cb.declarations[0].0, "game:spawn");
-  assert_eq!(cb.declarations[0].1, "Spawn an entity");
-  assert_eq!(
-    cb.declarations[0].2.as_deref(),
-    Some("Usage: game:spawn <type> [x] [y]")
-  );
-}
-
-#[test]
-fn engine_builder_with_console_commands_multiple() {
-  let builder = EngineBuilder::new().with_console_commands(|cmd| {
-    cmd.declare("game:reset", "Reset the game");
-    cmd.declare("game:godmode", "Toggle invincibility");
-    cmd.declare_verbose("game:spawn", "Spawn an entity", "Usage: game:spawn <type>");
-  });
-  let cb = builder.console_builder.as_ref().unwrap();
-  assert_eq!(cb.declarations.len(), 3);
-  assert_eq!(cb.declarations[0].0, "game:reset");
-  assert_eq!(cb.declarations[1].0, "game:godmode");
-  assert_eq!(cb.declarations[2].0, "game:spawn");
-}
-
-#[test]
-fn engine_builder_with_console_commands_remove_builtin() {
-  let builder = EngineBuilder::new().with_console_commands(|cmd| {
-    cmd.remove_builtin("system:ip:wan");
-    cmd.remove_builtin("system:version");
-  });
-  let cb = builder.console_builder.as_ref().unwrap();
-  assert_eq!(cb.removals.len(), 2);
-  assert_eq!(cb.removals[0], "system:ip:wan");
-  assert_eq!(cb.removals[1], "system:version");
-}
-
-#[test]
-fn engine_builder_with_console_commands_mixed() {
-  let builder = EngineBuilder::new().with_console_commands(|cmd| {
-    cmd.remove_builtin("system:version");
-    cmd.declare("game:reset", "Reset the game");
-    cmd.declare_verbose("game:spawn", "Spawn an entity", "Usage: game:spawn <type>");
-  });
-  let cb = builder.console_builder.as_ref().unwrap();
-  assert_eq!(cb.removals.len(), 1);
-  assert_eq!(cb.declarations.len(), 2);
-}
-
-#[test]
-fn engine_builder_with_console_commands_chains_with_other_builder_methods() {
-  let builder = EngineBuilder::new()
-    .title("Test Game")
-    .resolution(800, 600)
-    .with_console_commands(|cmd| {
-      cmd.declare("game:reset", "Reset");
-    })
-    .target_fps(60);
-  assert_eq!(builder.overrides.title.as_deref(), Some("Test Game"));
-  assert_eq!(builder.overrides.resolution, Some((800, 600)));
-  assert_eq!(
-    builder.console_builder.as_ref().unwrap().declarations.len(),
-    1
-  );
-  assert_eq!(builder.config.target_fps, 60);
-}
-
 #[test]
 fn headless_build_has_no_audio_gamepads_or_wall_clock_overlays() {
   let engine = EngineBuilder::new()
@@ -2151,4 +2054,235 @@ fn two_engines_stamp_their_own_frames() {
   let five = five.join().expect("the second engine's thread");
   assert_eq!(three, (3, Some(3), 3));
   assert_eq!(five, (5, Some(5), 5));
+}
+
+// ===========================================================================
+// The console's commands, with the engine's own state
+// ===========================================================================
+
+#[cfg(dev_tools)]
+mod console {
+  use std::time::Duration;
+
+  use super::*;
+  use crate::core::console::{Command, CommandSpec, Console, ConsoleCommands, colors};
+  use crate::core::ecs::Entity;
+  use crate::core::graphics::{Image, WgpuRenderer};
+  use crate::core::particles::{ParticleEffect, ParticleEmitter};
+
+  /// An engine with a GPU and its first scene entered, or `None` (the test
+  /// passes) on a machine without one
+  fn engine(builder: EngineBuilder) -> Option<Engine> {
+    let (device, queue) = crate::core::testing::shared_gpu().ok()?;
+    let mut e = builder.resolution(64, 64).build_headless();
+    e.init_gpu(WgpuRenderer::new_offscreen(device, queue, 64, 64), 1.0);
+    Some(e)
+  }
+
+  fn step(e: &mut Engine) {
+    e.frame(Some(Duration::from_micros(16_667)));
+  }
+
+  #[test]
+  fn debug_fps_and_f1_agree() {
+    let Some(mut e) = engine(EngineBuilder::new().start_scene(EmptyScene)) else {
+      return;
+    };
+    assert_eq!(e.overlay_mode, OverlayMode::Off);
+    e.console_run("debug:fps");
+    assert!(
+      e.world.resource::<Settings>().show_fps(),
+      "the player's setting"
+    );
+    assert!(e.config.debug.show_fps);
+    assert_eq!(e.overlay_mode, OverlayMode::FpsOnly);
+    step(&mut e);
+    e.next_overlay();
+    assert_eq!(
+      e.overlay_mode,
+      OverlayMode::FrameTiming,
+      "F1 carries on from the FPS counter, not from the first mode"
+    );
+    assert_eq!(
+      e.world.resource::<Settings>().show_fps(),
+      e.config.debug.show_fps,
+      "the setting follows F1 too"
+    );
+  }
+
+  #[test]
+  fn debug_stats_and_timing_set_the_overlay_mode() {
+    let Some(mut e) = engine(EngineBuilder::new().start_scene(EmptyScene)) else {
+      return;
+    };
+    e.console_run("debug:stats");
+    assert_eq!(e.overlay_mode, OverlayMode::FullStats);
+    assert!(e.config.debug.show_stats && e.config.debug.show_frame_timing);
+    e.next_overlay();
+    assert_eq!(e.overlay_mode, OverlayMode::Off, "F1 after the last mode");
+
+    e.console_run("debug:timing");
+    assert_eq!(e.overlay_mode, OverlayMode::FrameTiming);
+    assert!(e.config.debug.show_frame_timing && !e.config.debug.show_stats);
+    e.next_overlay();
+    assert_eq!(e.overlay_mode, OverlayMode::FullStats);
+
+    e.console_run("debug:stats");
+    assert_eq!(e.overlay_mode, OverlayMode::Off, "a shown overlay goes");
+    assert!(!e.config.debug.show_stats && !e.config.debug.show_frame_timing);
+  }
+
+  #[test]
+  fn a_handler_s_error_prints_in_red() {
+    let Some(mut e) = engine(
+      EngineBuilder::new()
+        .console_command(("game:fail", "Fail"), |_, cmd: &mut Command<'_>| {
+          cmd.print("before");
+          Err("it broke".to_string())
+        })
+        .start_scene(EmptyScene),
+    ) else {
+      return;
+    };
+    assert_eq!(e.console_run("game:fail"), ["before", "it broke"]);
+    let console = e.world.resource::<Console>();
+    let tail: Vec<_> = console
+      .lines()
+      .rev()
+      .take(3)
+      .map(|line| (line.text.clone(), line.color))
+      .collect();
+    assert_eq!(
+      tail,
+      [
+        ("it broke".to_string(), colors::ERROR),
+        ("before".to_string(), colors::TEXT),
+        ("> game:fail".to_string(), colors::COMMAND),
+      ],
+      "the echo, the printed line, then the error in red"
+    );
+  }
+
+  #[test]
+  fn help_lists_every_command_and_only_those() {
+    let Some(mut e) = engine(
+      EngineBuilder::new()
+        .console_command(
+          CommandSpec::new("game:spawn", "Spawn things")
+            .usage("game:spawn <kind> [count]")
+            .help("Spawns at the player."),
+          |_, _| Ok(()),
+        )
+        .remove_console_command("debug:origins")
+        .start_scene(EmptyScene),
+    ) else {
+      return;
+    };
+    let names: Vec<String> = e
+      .world
+      .resource::<ConsoleCommands>()
+      .list()
+      .into_iter()
+      .map(|spec| spec.name)
+      .collect();
+    assert!(names.len() > 20, "{names:?}");
+    assert!(!names.iter().any(|name| name == "debug:origins"));
+    let help = e.console_run("help");
+    let listed: Vec<&str> = help
+      .iter()
+      .filter_map(|line| line.strip_prefix("  "))
+      .filter_map(|line| line.split_whitespace().next())
+      .collect();
+    let mut sorted_listed: Vec<&str> = listed.clone();
+    sorted_listed.sort_unstable();
+    let mut sorted_names: Vec<&str> = names.iter().map(String::as_str).collect();
+    sorted_names.sort_unstable();
+    assert_eq!(sorted_listed, sorted_names, "{help:#?}");
+    assert!(
+      help.iter().position(|l| l.starts_with("  clear"))
+        < help.iter().position(|l| l.starts_with("  debug:fps")),
+      "commands with no prefix first: {help:#?}"
+    );
+
+    let one = e.console_run("help game:spawn").join("\n");
+    for part in [
+      "game:spawn",
+      "Spawn things",
+      "game:spawn <kind> [count]",
+      "Spawns at the player.",
+    ] {
+      assert!(one.contains(part), "{part} in {one}");
+    }
+    let unknown = e.console_run("help debug:origins").join("\n");
+    assert!(unknown.contains("Unknown command"), "{unknown}");
+  }
+
+  /// The emitter `game:burst` played last
+  #[derive(Resource)]
+  struct Burst(Entity);
+
+  #[derive(Default)]
+  struct Bursts {
+    fx: Option<crate::core::asset::Handle<ParticleEffect>>,
+  }
+
+  impl Scene for Bursts {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
+      let image = ctx
+        .assets()
+        .add(Image::solid_rect(8, 8, 255, 255, 255, 255));
+      self.fx = Some(ctx.assets().add(ParticleEffect::new(image)));
+      ctx.console().command(
+        ("game:burst", "Play a burst"),
+        |scene: &mut Bursts, ctx, _| {
+          let fx = scene.fx.clone().ok_or("no effect")?;
+          let burst = ctx.particles().play_at(&fx, glam::Vec2::ZERO);
+          ctx.world.insert_resource(Burst(burst));
+          Ok(())
+        },
+      );
+    }
+  }
+
+  #[test]
+  fn a_command_s_sound_and_particles_belong_to_its_scene() {
+    use crate::core::particles::ParticleStore;
+    let Some(mut e) = engine(
+      EngineBuilder::new()
+        .console_command(("test:push", "Push a scene over"), |_, cmd| {
+          cmd.act(SceneAction::Push(Box::new(EmptyScene)));
+          Ok(())
+        })
+        .console_command(("test:pop", "Pop"), |_, cmd| {
+          cmd.act(SceneAction::Pop);
+          Ok(())
+        })
+        .start_scene(Bursts::default()),
+    ) else {
+      return;
+    };
+    step(&mut e);
+    let scope = frame::with_host(&mut e.world, |_, host| host.scenes.top_scope());
+    assert!(e.console_run("game:burst").is_empty());
+    let burst = e.world.resource::<Burst>().0;
+    let held = |e: &Engine| {
+      let slot = e
+        .world
+        .get::<ParticleEmitter>(burst)
+        .map(|emitter| emitter.slot);
+      let store = e.world.resource::<ParticleStore>();
+      let pool = slot.and_then(|slot| store.pool(slot));
+      (
+        pool.and_then(|pool| pool.scope),
+        pool.is_some_and(|pool| store.holds(pool.scope)),
+      )
+    };
+    assert_eq!(held(&e), (scope, false), "the scene's own emitter");
+    e.console_run("test:push");
+    step(&mut e);
+    assert_eq!(held(&e), (scope, true), "held while its scene is");
+    e.console_run("test:pop");
+    step(&mut e);
+    assert_eq!(held(&e), (scope, false));
+  }
 }

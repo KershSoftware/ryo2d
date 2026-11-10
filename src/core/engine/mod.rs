@@ -27,9 +27,7 @@ use crate::core::asset::{AssetLoader, AssetServer, AssetSource, DiskSource, inse
 use crate::core::audio::{AudioEngine, VolumeKind, audio_system, default_mixer};
 use crate::core::capture::{AutoCaptureConfig, CaptureReport, CaptureState};
 use crate::core::config::{DisplayMode, ProjectFile, UserPreference};
-use crate::core::console::{
-  CommandRegistry, ConsoleCommandBuilder, ConsoleState, register_builtins,
-};
+use crate::core::console::{Command, CommandSpec, Console};
 use crate::core::cursor::CursorRequest;
 use crate::core::diagnostics::{
   DebugConfig, DebugStats, FrameTimings, OverlayMode, SmoothedDebugStats, SmoothedFrameTimings,
@@ -85,6 +83,8 @@ use crate::core::ui::layout::engine::LayoutEngine;
 use crate::core::ui::memory::UiMemory;
 use crate::core::window::{WindowInfo, WindowRequest};
 
+#[cfg(dev_tools)]
+pub(crate) use extract::game_entity_count;
 use frame::{
   advance_clock_system, asset_registry_system, clear_trackers_system, publish_input_system,
   scene_fixed_systems, scene_transition_system, scene_update_system, scene_update_systems,
@@ -307,8 +307,7 @@ pub struct Engine {
   /// What the frame's UI pass did besides drawing, for headless snapshots
   #[cfg(not(target_arch = "wasm32"))]
   ui_pass_log: frame::UiPassLog,
-  // Developer tools
-  pub(crate) console_state: ConsoleState,
+  // Developer tools (the console is the world's `Console`)
   console_quit_requested: bool,
   /// The console's cursor override this frame (`None` = no opinion)
   console_cursor: Option<crate::core::cursor::CursorStyle>,
@@ -387,7 +386,16 @@ pub struct Engine {
   offscreen_run: bool,
   offscreen_refused: bool,
   offscreen_pace: Option<std::time::Duration>,
+  /// The game's name and version, for the console's `system:version`
+  #[cfg_attr(
+    not(dev_tools),
+    expect(dead_code, reason = "only the console reads them")
+  )]
   game_name: Option<String>,
+  #[cfg_attr(
+    not(dev_tools),
+    expect(dead_code, reason = "only the console reads them")
+  )]
   game_version: Option<String>,
   /// The name the browser keeps the saves under
   #[cfg(target_arch = "wasm32")]
@@ -462,7 +470,6 @@ pub(crate) fn init_world_resources(
   world: &mut World,
   config: &EngineConfig,
   registry: AssetServer,
-  commands: CommandRegistry,
   audio: AudioEngine,
   particle_seed: u64,
 ) {
@@ -498,7 +505,7 @@ pub(crate) fn init_world_resources(
   world.add_observer(frame::record_tick_check);
   world.insert_resource(config.physics.clone());
   world.insert_resource(Physics::new());
-  world.insert_resource(commands);
+  world.insert_resource(Console::new());
   world.insert_resource(FallbackErrorHandler(handle_system_error));
   register_engine_messages(world);
 }
@@ -612,7 +619,8 @@ impl Engine {
       store_name,
       #[cfg(not(target_arch = "wasm32"))]
         store_name: _,
-      console_builder,
+      #[cfg(dev_tools)]
+      console_setup,
       pending_resources,
       mut schedules,
       saved_bindings,
@@ -694,16 +702,23 @@ impl Engine {
       config.ui_resolution,
     );
 
-    let mut command_registry = CommandRegistry::new();
-    register_builtins(&mut command_registry);
-    if let Some(builder) = console_builder {
-      for name in &builder.removals {
-        command_registry.remove_builtin(name);
+    // The built-ins, then the builder's console calls in the order made: a
+    // builder command named like a built-in replaces it
+    #[cfg(dev_tools)]
+    let console_commands = {
+      use crate::core::console::{ConsoleCommands, Handler, add_builtins};
+      let mut commands = ConsoleCommands::default();
+      add_builtins(&mut commands);
+      for setup in console_setup {
+        match setup {
+          ConsoleSetup::Add(spec, handler) => commands.add(spec, Handler::World(handler)),
+          ConsoleSetup::Remove(name) => {
+            commands.remove(&name);
+          }
+        }
       }
-      for (name, description, verbose) in builder.declarations {
-        command_registry.declare(&name, &description, verbose.as_deref());
-      }
-    }
+      commands
+    };
 
     let (capture_config, input_script) = if headless {
       (AutoCaptureConfig::default(), InputScript::default())
@@ -732,14 +747,9 @@ impl Engine {
     }
     let vsync = settings.vsync();
     let applied_settings = AppliedSettings::new(*settings.values());
-    init_world_resources(
-      &mut world,
-      &config,
-      registry,
-      command_registry,
-      audio_engine,
-      particle_seed,
-    );
+    init_world_resources(&mut world, &config, registry, audio_engine, particle_seed);
+    #[cfg(dev_tools)]
+    world.insert_resource(console_commands);
     world.insert_resource(saves);
     world.insert_resource(settings);
     if let Some(writer) = settings_writer {
@@ -831,7 +841,6 @@ impl Engine {
       ui_pass_index: 0,
       #[cfg(not(target_arch = "wasm32"))]
       ui_pass_log: frame::UiPassLog::default(),
-      console_state: ConsoleState::new(),
       console_quit_requested: false,
       console_cursor: None,
       cursor_resolver: crate::core::cursor::CursorResolver::default(),
@@ -1536,14 +1545,16 @@ impl Engine {
         CaptureReport::Written { frame, path } => {
           let message = format!("frame {frame} → {}", path.display());
           log::info!("{}", message);
-          self
-            .console_state
-            .print_system(format!("Captured {message}"));
+          if let Some(mut console) = self.world.get_resource_mut::<Console>() {
+            console.print_system(format!("Captured {message}"));
+          }
         }
         CaptureReport::Failed { frame, error } => {
           let message = format!("FAILED frame {frame}: {error}");
           log::warn!("{}", message);
-          self.console_state.print_error(format!("Capture {message}"));
+          if let Some(mut console) = self.world.get_resource_mut::<Console>() {
+            console.print_error(format!("Capture {message}"));
+          }
         }
       }
     }
@@ -1593,8 +1604,9 @@ pub struct EngineBuilder {
   /// Settings set by builder calls, layered over project values in `resolve`
   overrides: crate::core::config::resolve::BuilderOverrides,
   initial_scene: Option<Box<dyn Scene>>,
-  /// Console command configuration (declarations and removals)
-  console_builder: Option<ConsoleCommandBuilder>,
+  /// The console calls made on the builder, in order
+  #[cfg(dev_tools)]
+  console_setup: Vec<ConsoleSetup>,
   /// Filters passed to `with_user_preferences`, combined when the engine is built
   user_preferences: Vec<crate::core::config::UserPreferenceFilter>,
   /// Resources, message types and asset loaders the game registers,
@@ -1622,7 +1634,8 @@ impl EngineBuilder {
       config: EngineConfig::default(),
       overrides: Default::default(),
       initial_scene: None,
-      console_builder: None,
+      #[cfg(dev_tools)]
+      console_setup: Vec::new(),
       user_preferences: Vec::new(),
       pending_resources: Vec::new(),
       schedules: EngineSchedules::new(),
@@ -2023,14 +2036,69 @@ impl EngineBuilder {
     self
   }
 
-  /// Declare game console commands and/or remove built-in ones before the
-  /// engine starts. Declared commands do nothing until a scene registers a
-  /// handler with `ctx.console().register(..)`.
-  pub fn with_console_commands(mut self, f: impl FnOnce(&mut ConsoleCommandBuilder)) -> Self {
-    let mut builder = self.console_builder.take().unwrap_or_default();
-    f(&mut builder);
-    self.console_builder = Some(builder);
-    self
+  /// Register a console command for the whole run; its handler is called
+  /// with the world and the command. A command named like a built-in
+  /// replaces it, and a later call of the same name replaces an earlier one.
+  /// A scene's commands (`ctx.console().command`) answer over these. A name
+  /// that is empty or has a space is refused with a warning. Does nothing
+  /// in a build without the developer tools.
+  ///
+  /// ```
+  /// use ryo2d::prelude::*;
+  ///
+  /// #[derive(Resource, Default)]
+  /// struct Gold(u32);
+  ///
+  /// let builder = EngineBuilder::new()
+  ///   .insert_resource(Gold::default())
+  ///   .console_command(
+  ///     CommandSpec::new("game:gold", "Add gold").usage("game:gold <amount>"),
+  ///     |world, cmd| {
+  ///       let amount: u32 = cmd.arg(0)?;
+  ///       world.resource_mut::<Gold>().0 += amount;
+  ///       Ok(())
+  ///     },
+  ///   );
+  /// # let _ = builder;
+  /// ```
+  pub fn console_command(
+    self,
+    spec: impl Into<CommandSpec>,
+    handler: impl Fn(&mut World, &mut Command<'_>) -> Result<(), String> + Send + Sync + 'static,
+  ) -> Self {
+    #[cfg(dev_tools)]
+    {
+      let mut this = self;
+      let spec = spec.into();
+      if crate::core::console::valid_name(&spec.name) {
+        this
+          .console_setup
+          .push(ConsoleSetup::Add(spec, Arc::new(handler)));
+      }
+      this
+    }
+    #[cfg(not(dev_tools))]
+    {
+      let _ = (spec, handler);
+      self
+    }
+  }
+
+  /// Remove the console command `name`, a built-in included, before the
+  /// engine starts (after the calls made before this one). Does nothing in
+  /// a build without the developer tools.
+  pub fn remove_console_command(self, name: impl Into<String>) -> Self {
+    #[cfg(dev_tools)]
+    {
+      let mut this = self;
+      this.console_setup.push(ConsoleSetup::Remove(name.into()));
+      this
+    }
+    #[cfg(not(dev_tools))]
+    {
+      let _ = name;
+      self
+    }
   }
 
   /// Build the engine (consumes the builder).
@@ -2218,7 +2286,8 @@ impl EngineBuilder {
       game_name,
       game_version,
       store_name,
-      console_builder: self.console_builder,
+      #[cfg(dev_tools)]
+      console_setup: self.console_setup,
       pending_resources: self.pending_resources,
       schedules: self.schedules,
       saved_bindings,
@@ -2231,6 +2300,13 @@ impl EngineBuilder {
       memory_saves,
     }
   }
+}
+
+/// A console call made on the builder, applied over the built-ins in order
+#[cfg(dev_tools)]
+enum ConsoleSetup {
+  Add(CommandSpec, Arc<crate::core::console::WorldHandler>),
+  Remove(String),
 }
 
 /// Engine settings after every configuration source has been applied.
@@ -2255,7 +2331,8 @@ struct ResolvedBuild {
     expect(dead_code, reason = "only the web names a store; tests check the name")
   )]
   store_name: String,
-  console_builder: Option<ConsoleCommandBuilder>,
+  #[cfg(dev_tools)]
+  console_setup: Vec<ConsoleSetup>,
   pending_resources: Vec<WorldSetup>,
   schedules: EngineSchedules,
   /// The player's saved input bindings, when bindings are a user preference

@@ -68,15 +68,19 @@ Declare game-wide commands on the engine builder (recommended):
 ```rust
 EngineBuilder::new()
   .title("My Game")
-  .with_console_commands(|cmd| {
-    cmd.declare("game:reset", "Reset the game to initial state");
-    cmd.declare_verbose(
-      "game:godmode",
-      "Toggle invincibility",
-      "Makes the player immune to all damage until toggled off.",
-    );
-    cmd.remove_builtin("system:ip:wan"); // drop a built-in the game does not want
+  .console_command(("game:reset", "Reset the game to initial state"), |_world, cmd| {
+    cmd.act(SceneAction::Switch(Box::new(MenuScene::new())));
+    Ok(())
   })
+  .console_command(
+    CommandSpec::new("game:godmode", "Toggle invincibility")
+      .help("Makes the player immune to all damage until toggled off."),
+    |_world, cmd| {
+      cmd.print("God mode toggled");
+      Ok(())
+    },
+  )
+  .remove_console_command("system:version") // drop a built-in the game does not want
   .start_scene(MenuScene::new())
   .build()
   .run()?;
@@ -93,15 +97,14 @@ Parameters:
 
 Register handlers where they make sense (e.g., in GameScene). `ctx.console()` returns a `ConsoleScope` tied to the calling scene; `register` returns `false` if the command was never declared:
 
-<!-- with: mod shared { pub fn request_reset() {} } -->
+<!-- with: struct GameScene; impl GameScene { fn new() -> Self { Self } } impl Scene for GameScene {} -->
 ```rust
 fn on_enter(&mut self, ctx: &mut SceneContext) {
-  // Register handler - command becomes active
-  ctx.console().register("game:reset", |_args, cmd_ctx| {
-    cmd_ctx.console.print_system("Resetting game...");
-    // Trigger reset logic
-    shared::request_reset();
-    CommandResult::Ok
+  // Register the command; it leaves with this scene
+  ctx.console().command(("game:reset", "Reset the game"), |_game: &mut GameScene, _ctx, cmd| {
+    cmd.print("Resetting game...");
+    cmd.act(SceneAction::Switch(Box::new(GameScene::new())));
+    Ok(())
   });
 }
 ```
@@ -120,95 +123,68 @@ Command 'game:reset' has no effect in the current context
 ## Command Handler Signature
 
 ```rust,ignore
-// The engine's type
-type CommandFn = Box<dyn Fn(&[&str], &mut CommandContext) -> CommandResult + Send + Sync>;
+// The engine's registrations
+impl ConsoleScope<'_> {
+  pub fn command<S: Scene>(&mut self, spec: impl Into<CommandSpec>,
+    handler: impl Fn(&mut S, &mut SceneContext<'_>, &mut Command<'_>) -> Result<(), String> + Send + Sync + 'static);
+}
+impl EngineBuilder {
+  pub fn console_command(self, spec: impl Into<CommandSpec>,
+    handler: impl Fn(&mut World, &mut Command<'_>) -> Result<(), String> + Send + Sync + 'static) -> Self;
+}
 ```
 
-### Arguments
+### What a handler receives
 
-- `args: &[&str]` - Command arguments (excludes command name)
-- `ctx: &mut CommandContext` - Access to console and debug config
+- `cmd: &mut Command` - the arguments (`args()`, typed `arg::<T>(i)` and `arg_or`, `rest(i)`), printing (`print`, `print_colored`), `act(SceneAction)` and `quit()`
+- a scene's handler: its scene (`&mut S`) and the `SceneContext`; a builder's handler: the `World`
 
-### CommandContext Fields
-
-| Field | Type | Purpose |
-|-------|------|---------|
-| `console` | `&mut ConsoleState` | Print output to console |
-| `debug_config` | `&mut DebugConfig` | Toggle debug flags |
-| `quit_requested` | `bool` | Set to request game exit |
-| `capture_requested` | `Option<CaptureTarget>` | Set to request a frame capture |
-| `time_scale` | `&mut f32` | The game clock's speed; written back after the command |
-| `commands` | `Vec<CommandInfo>` | List of all commands |
-| `game_name` | `Option<String>` | Game name from Ryo.toml |
-| `game_version` | `Option<String>` | Game version from Ryo.toml |
-
-### CommandResult
+### Results
 
 ```rust,ignore
-// The engine's definition
-pub enum CommandResult {
-  Ok,            // Command succeeded
-  Error(String), // Command failed with message
-  Quit,          // Request game exit
-}
+// A handler returns Result<(), String>
+Ok(())                             // Command succeeded
+Err("No player to heal".into())    // Command failed: printed in red
+// cmd.quit() asks the game to exit; cmd.act(action) changes scenes
 ```
 
 ### Console Output Methods
 
-<!-- given: cmd_ctx: &mut CommandContext -->
+<!-- given: cmd: &mut Command<'_> -->
 ```rust
-cmd_ctx.console.print("Normal text");           // White
-cmd_ctx.console.print_command("> echoed cmd");  // Light blue
-cmd_ctx.console.print_error("Error message");   // Red
-cmd_ctx.console.print_system("System info");    // Gray
+cmd.print("Normal text");                                    // White
+cmd.print_colored("System info", Color::rgb(150, 150, 150)); // Gray
+ctx.console().print("From anywhere in a scene");             // White
 ```
 
 ## Complete Example
 
 ```rust,ignore
-// Three files: shared.rs, main.rs and game.rs
-// shared.rs - Cross-scene communication
-use std::sync::atomic::{AtomicBool, Ordering};
-static RESET_REQUESTED: AtomicBool = AtomicBool::new(false);
-
-pub fn request_reset() {
-  RESET_REQUESTED.store(true, Ordering::SeqCst);
-}
-
-pub fn take_reset_request() -> bool {
-  RESET_REQUESTED.swap(false, Ordering::SeqCst)
-}
-
-// main.rs - Declare command at engine level
+// Two files: main.rs and game.rs
+// main.rs - a command for the whole run, with the world
 EngineBuilder::new()
-  .with_console_commands(|cmd| {
-    cmd.declare("game:reset", "Reset the game to initial state");
+  .console_command(("game:gold", "Add 100 gold"), |world, cmd| {
+    world.resource_mut::<Gold>().0 += 100;
+    cmd.print("100 gold added");
+    Ok(())
   })
   .start_scene(MenuScene::new())
   .build()
   .run()?;
 
-// game.rs - Register handler
+// game.rs - a scene's command, with the scene itself
 impl Scene for GameScene {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
-    ctx.console().register("game:reset", |_args, cmd_ctx| {
-      cmd_ctx.console.print_system("Resetting game...");
-      shared::request_reset();
-      CommandResult::Ok
+    ctx.console().command(("game:reset", "Reset the game"), |_game: &mut GameScene, _ctx, cmd| {
+      cmd.print("Resetting game...");
+      cmd.act(SceneAction::Switch(Box::new(GameScene::new())));
+      Ok(())
     });
-  }
-
-  fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
-    // Check for reset request
-    if shared::take_reset_request() {
-      return SceneAction::Switch(Box::new(GameScene::new()));
-    }
-    SceneAction::Continue
   }
 }
 ```
 
-Handlers are `Fn(&[&str], &mut CommandContext) -> CommandResult + Send + Sync + 'static` and cannot reach the world, which is why the example passes the request through an atomic.
+A scene's handler is called with its scene and the scene context `update` gets; a builder's handler with the world.
 
 ## Console UI Features
 
@@ -260,37 +236,26 @@ Ryo2D Game Engine
 
 ```
 src/core/console/
-  mod.rs           - ConsoleState, rendering, input handling
-  commands.rs      - CommandRegistry, two-phase system
+  mod.rs           - Console (a world resource), rendering, input handling
+  command.rs       - CommandSpec, Command, splitting a line
+  registry.rs      - ConsoleCommands: per name, a stack of entries by scope
+  dispatch.rs      - running a line
+  scope.rs         - ConsoleScope (ctx.console())
   builtins.rs      - Built-in debug/system commands
 ```
 
 ### Key Types
 
-**ConsoleState** - UI state and rendering:
+**Console** - UI state and rendering, a world resource:
 - Window position/size, drag state
 - Input buffer, cursor position
 - Output lines (max 1000)
 - Command history (max 100)
 - Scroll offset, word wrapping
 
-**CommandRegistry** - Command management, a resource in the world:
-- `builtins: HashMap<&'static str, BuiltinCommand>` - Engine commands
-- `declared: HashMap<String, DeclaredCommand>` - Game commands
-- Scope-based handler cleanup (the scene manager calls `clear_scope` when a scene leaves the stack)
+**ConsoleCommands** - the commands, a world resource in a build with the tools: per name, the run-long entry (a built-in or a builder command) and the scenes' entries by scope; the uppermost scene's answers, and the scene manager calls `clear_scope` when a scene leaves the stack
 
-**ConsoleScope** - what `ctx.console()` returns: `declare`, `register` and `remove_builtin` against the registry, with the calling scene's scope id
-
-**DeclaredCommand** - Game command with optional handler:
-```rust,ignore
-// The engine's definition
-pub struct DeclaredCommand {
-  pub name: String,
-  pub description: String,
-  pub verbose_description: Option<String>,
-  pub handler: Option<(u64, CommandFn)>, // (scope_id, handler)
-}
-```
+**ConsoleScope** - what `ctx.console()` returns: `command`, `remove`, `print` and `print_colored`, with the calling scene's scope id
 
 ## Testing Commands
 

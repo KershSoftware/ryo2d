@@ -229,13 +229,16 @@ impl Scene for GameScene {
     self.screen_width = DESIGN_WIDTH;
     self.screen_height = DESIGN_HEIGHT;
 
-    // Register handler for game:reset command (declared in MenuScene)
-    // Handler is auto-cleaned when this scene exits
-    ctx.console().register("game:reset", |_args, cmd_ctx| {
-      cmd_ctx.console.print_system("Resetting game...");
-      shared::request_reset();
-      CommandResult::Ok
-    });
+    // The console's game:reset starts a fresh game; it leaves with this scene
+    ctx.console().command(
+      CommandSpec::new("game:reset", "Reset the game to initial state")
+        .help("Restarts the run: score, player position and enemies. Only while playing."),
+      |_: &mut GameScene, _ctx, cmd| {
+        cmd.print("Resetting game...");
+        cmd.act(SceneAction::Switch(Box::new(GameScene::new())));
+        Ok(())
+      },
+    );
 
     self.sounds = Some(Sounds::load(ctx));
 
@@ -305,11 +308,6 @@ impl Scene for GameScene {
   }
 
   fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
-    // Check for reset request from console command
-    if shared::take_reset_request() {
-      return SceneAction::Switch(Box::new(GameScene::new()));
-    }
-
     // Pause: push overlay scene
     if ctx.input.key_pressed_and_consume(KeyCode::Escape)
       || ctx

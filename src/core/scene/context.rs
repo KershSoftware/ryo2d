@@ -2,7 +2,7 @@
 
 use crate::core::asset::{Assets, AssetsView, Handle};
 use crate::core::audio::AudioView;
-use crate::core::console::{CommandContext, CommandRegistry, CommandResult};
+use crate::core::console::ConsoleScope;
 use crate::core::cursor::{CursorRequest, CursorStyle, CustomCursorData};
 use crate::core::ecs::{
   Bundle, Entity, IntoScheduleConfigs, Message, Messages, Mut, Mutable, Resource, ScheduleSystem,
@@ -357,12 +357,11 @@ impl SceneContext<'_> {
     self.world.resource_mut::<CursorRequest>()
   }
 
-  /// Console commands; handlers registered here go away with the scene.
+  /// The developer console: register this scene's commands, which leave
+  /// with it, and print to the console. Does nothing in a build without
+  /// the developer tools.
   pub fn console(&mut self) -> ConsoleScope<'_> {
-    ConsoleScope {
-      registry: self.world.resource_mut::<CommandRegistry>().into_inner(),
-      scope_id: self.scope_id,
-    }
+    ConsoleScope::new(self.world, self.scope_id)
   }
 
   // --- UI nodes ---
@@ -734,38 +733,5 @@ impl SceneContext<'_> {
     let hotspot_x = (size.0 / 2) as u16;
     let hotspot_y = (size.1 / 2) as u16;
     self.set_custom_cursor(image, hotspot_x, hotspot_y);
-  }
-}
-
-/// Scene-scoped console command registration.
-pub struct ConsoleScope<'a> {
-  registry: &'a mut CommandRegistry,
-  scope_id: u64,
-}
-
-impl ConsoleScope<'_> {
-  /// Declare a game command: it appears in help at once and does nothing
-  /// until a handler is registered. Declarations are global and idempotent.
-  pub fn declare(
-    &mut self,
-    name: impl Into<String>,
-    description: impl Into<String>,
-    verbose: Option<impl Into<String>>,
-  ) {
-    self.registry.declare(name, description, verbose);
-  }
-
-  /// Attach a handler to a declared command; it is removed when the scene
-  /// leaves the stack. Returns `false` if the command was not declared.
-  pub fn register<F>(&mut self, name: &str, handler: F) -> bool
-  where
-    F: Fn(&[&str], &mut CommandContext) -> CommandResult + Send + Sync + 'static,
-  {
-    self.registry.register_handler(name, self.scope_id, handler)
-  }
-
-  /// Remove a built-in engine command; returns `true` if it existed.
-  pub fn remove_builtin(&mut self, name: &str) -> bool {
-    self.registry.remove_builtin(name)
   }
 }

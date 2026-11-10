@@ -710,7 +710,7 @@ fn image_changes(
 /// The entities the game made: every entity but bevy's resources, observers
 /// and registered systems. Counted per archetype, so the cost does not grow
 /// with the entity count.
-fn game_entity_count(world: &World) -> u32 {
+pub(crate) fn game_entity_count(world: &World) -> u32 {
   let internal: Vec<_> = [
     world.component_id::<IsResource>(),
     world.component_id::<Observer>(),

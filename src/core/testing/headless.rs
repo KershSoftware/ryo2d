@@ -11,6 +11,7 @@ use super::ui::{UiCacheStats, UiSnapshot, runs_snapshot, ui_snapshot};
 use super::{HeadlessError, shared_gpu};
 use crate::core::asset::AssetsView;
 use crate::core::audio::{AudioEngine, AudioLogEntry};
+use crate::core::console::Console;
 use crate::core::ecs::kernel::Messages;
 use crate::core::ecs::{Entity, World};
 use crate::core::engine::{Engine, EngineBuilder, FrameOutcome};
@@ -770,8 +771,10 @@ impl HeadlessEngine {
   #[doc(hidden)]
   pub fn console_fill(&mut self, lines: usize) {
     let text = "x".repeat(80);
-    for _ in 0..lines {
-      self.engine.console_state.print(text.as_str());
+    if let Some(mut console) = self.world_mut().get_resource_mut::<Console>() {
+      for _ in 0..lines {
+        console.print(text.as_str());
+      }
     }
   }
 
@@ -779,7 +782,19 @@ impl HeadlessEngine {
   /// `benches/dev_tools.rs`)
   #[doc(hidden)]
   pub fn console_open(&mut self, open: bool) {
-    self.engine.console_state.visible = open;
+    if let Some(mut console) = self.world_mut().get_resource_mut::<Console>() {
+      console.visible = open;
+    }
+  }
+
+  /// Run `line` in the console as if typed (it is echoed, then run), and
+  /// give the lines it printed after the echo: the command's own, then its
+  /// error. A scene change it asks for happens at once; a quit ends the next
+  /// step.
+  #[doc(hidden)]
+  #[cfg(dev_tools)]
+  pub fn console_run(&mut self, line: &str) -> Vec<String> {
+    self.engine.console_run(line)
   }
 
   /// The last frame's render step on the CPU (building, uploading and

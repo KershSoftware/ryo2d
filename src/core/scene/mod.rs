@@ -33,7 +33,7 @@ use crate::core::ecs::Resource;
 use crate::core::graphics::GpuRenderContext;
 use crate::core::ui::UiContext;
 
-pub use context::{ConsoleScope, SceneContext};
+pub use context::SceneContext;
 pub use manager::SceneManager;
 #[cfg(test)]
 pub(crate) use manager::SceneSlot;
@@ -443,7 +443,6 @@ pub struct PhysicsPaused(pub bool);
 #[cfg(test)]
 pub(crate) fn init_world_resources_for_tests(world: &mut crate::core::ecs::World) {
   use crate::core::asset::{AssetServer, MemorySource};
-  use crate::core::console::{CommandRegistry, register_builtins};
   use crate::core::cursor::CursorRequest;
   use crate::core::graphics::{Presentation, ScreenMapping, camera_mut::spawn_main_camera};
   use crate::core::input::Input;
@@ -473,9 +472,13 @@ pub(crate) fn init_world_resources_for_tests(world: &mut crate::core::ecs::World
   world.insert_resource(WindowInfo::default());
   world.insert_resource(CursorRequest::default());
   world.insert_resource(RenderPipeline::default_2d());
-  let mut commands = CommandRegistry::new();
-  register_builtins(&mut commands);
-  world.insert_resource(commands);
+  world.insert_resource(crate::core::console::Console::new());
+  #[cfg(dev_tools)]
+  {
+    let mut commands = crate::core::console::ConsoleCommands::default();
+    crate::core::console::add_builtins(&mut commands);
+    world.insert_resource(commands);
+  }
   world.insert_resource(PhysicsPaused(false));
   world.insert_resource(crate::core::particles::ParticleStore::new(
     crate::core::particles::DEFAULT_PARTICLE_BUDGET,

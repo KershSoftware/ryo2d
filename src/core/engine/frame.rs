@@ -13,12 +13,12 @@ use crate::core::asset::AssetsView;
 use crate::core::audio::AudioEngine;
 use crate::core::capture::CaptureTarget;
 use crate::core::config::DisplayMode;
-use crate::core::console::{CommandContext, CommandRegistry, CommandResult};
+use crate::core::console::Console;
 use crate::core::diagnostics as overlays;
 use crate::core::diagnostics::FrameCost;
 use crate::core::diagnostics::OverlayMode;
 use crate::core::ecs::kernel::{CheckChangeTicks, DetectChanges};
-use crate::core::ecs::{On, Res, ResMut, Resource, World};
+use crate::core::ecs::{Mut, On, Res, ResMut, Resource, World};
 use crate::core::input::{Binding, Input, InputEvent};
 use crate::core::messages::update_messages;
 use crate::core::scene::SceneAction;
@@ -332,9 +332,7 @@ impl Engine {
       }
     }
 
-    if self.config.debug.dev_console && pressed(KeyCode::Backquote) {
-      self.console_state.toggle();
-    }
+    let toggle_console = self.config.debug.dev_console && pressed(KeyCode::Backquote);
 
     if self.config.debug.dev_window_keys {
       if pressed(KeyCode::F9) {
@@ -356,6 +354,9 @@ impl Engine {
       if pressed(KeyCode::F12) {
         self.capture.request(CaptureTarget::Default);
       }
+    }
+    if toggle_console && let Some(mut console) = self.world.get_resource_mut::<Console>() {
+      console.toggle();
     }
     if next_overlay {
       self.next_overlay();
@@ -380,61 +381,87 @@ impl Engine {
     self.applied_settings.values.show_fps = show_fps;
   }
 
-  /// The developer console: animation, input while open, commands.
+  /// The developer console: animation, input while open, and the line
+  /// typed, run as a command.
   fn console_tick(&mut self) {
     let real_dt = self.world.resource::<Time>().real.delta();
-    self.console_state.update(real_dt);
-
-    if self.console_state.visible {
-      // A trackpad moves the console as far as the pointer would, converted
-      // as the UI converts the pointer
-      let to_screen = self.console_pixel_scale();
-      self.console_state.set_pixel_scale(to_screen);
-      let command = self
-        .console_state
-        .handle_input(&mut self.world.resource_mut::<Input>());
-      if let Some(command) = command {
-        let mut speed = self.world.resource::<Time>().game.speed();
-        let (quit, capture) = {
-          let registry = self.world.resource::<CommandRegistry>();
-          let mut cmd_ctx = CommandContext {
-            console: &mut self.console_state,
-            debug_config: &mut self.config.debug,
-            quit_requested: false,
-            capture_requested: None,
-            time_scale: &mut speed,
-            commands: registry.command_info_list(),
-            game_name: self.game_name.clone(),
-            game_version: self.game_version.clone(),
-          };
-          let result = registry.execute(&command, &mut cmd_ctx);
-          (
-            matches!(result, CommandResult::Quit) || cmd_ctx.quit_requested,
-            cmd_ctx.capture_requested.take(),
-          )
-        };
-        if quit {
-          self.console_quit_requested = true;
-        }
-        if let Some(target) = capture {
-          self.capture.request(target);
-        }
-        let mut time = self.world.resource_mut::<Time>();
-        if time.game.speed() != speed {
-          time.game.set_speed(speed);
-        }
-      }
-
-      // A focused console keeps the keyboard from the game; an unfocused one
-      // can stay open while playing
-      if self.console_state.is_focused() {
-        self.world.resource_mut::<Input>().clear_keyboard_state();
-      }
+    let to_screen = self.console_pixel_scale();
+    if !self.world.contains_resource::<Console>() {
+      return;
     }
+    let submitted = self
+      .world
+      .resource_scope(|world, mut console: Mut<Console>| {
+        console.update(real_dt);
+        if !console.visible {
+          return None;
+        }
+        // A trackpad moves the console as far as the pointer would, converted
+        // as the UI converts the pointer
+        console.set_pixel_scale(to_screen);
+        let mut input = world.resource_mut::<Input>();
+        let line = console.handle_input(&mut input);
+        // A focused console keeps the keyboard from the game; an unfocused
+        // one can stay open while playing
+        if console.is_focused() {
+          input.clear_keyboard_state();
+        }
+        line
+      });
+    #[cfg(dev_tools)]
+    if let Some(line) = submitted {
+      self.run_console_line(&line);
+    }
+    // A build without tools has no commands to run
+    #[cfg(not(dev_tools))]
+    let _ = submitted;
 
     // Runs while closed too, so the override ends with the console
     let (mouse_x, mouse_y) = self.world.resource::<Input>().mouse_position();
-    self.console_cursor = self.console_state.desired_cursor(mouse_x, mouse_y);
+    self.console_cursor = self
+      .world
+      .get_resource::<Console>()
+      .and_then(|console| console.desired_cursor(mouse_x, mouse_y));
+  }
+
+  /// Run `line` as a console command, with the engine's own state for the
+  /// built-ins (the debug flags, the overlay mode, capture and quit)
+  #[cfg(dev_tools)]
+  pub(crate) fn run_console_line(&mut self, line: &str) {
+    let mut capture = None;
+    let mut quit = false;
+    let mut hooks = crate::core::console::EngineHooks {
+      debug: &mut self.config.debug,
+      overlay: &mut self.overlay_mode,
+      capture: &mut capture,
+      quit: &mut quit,
+      game_name: self.game_name.as_deref(),
+      game_version: self.game_version.as_deref(),
+    };
+    crate::core::console::run_line(&mut self.world, &mut hooks, line);
+    if quit {
+      self.console_quit_requested = true;
+    }
+    if let Some(target) = capture {
+      self.capture.request(target);
+    }
+  }
+
+  /// Run `line` as if typed into the console (echoed, then run), and give
+  /// the lines it printed after the echo
+  #[cfg(all(dev_tools, not(target_arch = "wasm32")))]
+  pub(crate) fn console_run(&mut self, line: &str) -> Vec<String> {
+    let Some(mut console) = self.world.get_resource_mut::<Console>() else {
+      return Vec::new();
+    };
+    console.print_command(format!("> {line}"));
+    console.capture();
+    self.run_console_line(line);
+    self
+      .world
+      .get_resource_mut::<Console>()
+      .map(|mut console| console.take_captured())
+      .unwrap_or_default()
   }
 
   /// The UI pass: the scenes' `ui` (visible scenes, bottom-up), then the
@@ -510,9 +537,10 @@ impl Engine {
     };
     let top = with_host(&mut self.world, |_, host| host.scenes.top_scope());
     let console = self
-      .console_state
-      .visible
-      .then(|| self.console_state.window_rect());
+      .world
+      .get_resource::<Console>()
+      .filter(|console| console.visible)
+      .map(Console::window_rect);
     let outcome = resolve_pointer(
       &mut self.ui_memory,
       &pointer,
@@ -743,9 +771,11 @@ impl Engine {
     }
     self.ui_pass_index += 1;
     // A click on the console is the console's: gameplay never sees it
-    if self.console_state.visible {
+    if let Some(console) = self.world.get_resource::<Console>()
+      && console.visible
+    {
       let (mouse_x, mouse_y) = snapshot.mouse_position();
-      if self.console_state.window_rect().contains(mouse_x, mouse_y) {
+      if console.window_rect().contains(mouse_x, mouse_y) {
         snapshot.consume_mouse(MouseButton::Left);
       }
     }
@@ -810,7 +840,9 @@ impl Engine {
           .draw(&mut ui, &self.world, dt, self.ui_retain.stats, top);
       }
       // The console over everything
-      self.console_state.render(&mut ui, width, height);
+      if let Some(mut console) = self.world.get_resource_mut::<Console>() {
+        console.render(&mut ui, width, height);
+      }
       ui.end_scene();
       let rebinds = ui.take_rebinds();
       (action, ui.into_input(), rebinds)
@@ -2058,7 +2090,7 @@ mod tests {
       .start_scene(OpenList)
       .build_headless();
     e.init_gpu(WgpuRenderer::new_offscreen(device, queue, 320, 240), 1.0);
-    e.console_state.toggle();
+    e.world.resource_mut::<Console>().toggle();
     e.frame(Some(Duration::from_millis(16)));
     // Layers sort before submission: every console command must be on a
     // layer above the open list's
@@ -2712,12 +2744,12 @@ mod tests {
       .start_scene(UnderConsole)
       .build_headless();
     e.init_gpu(WgpuRenderer::new_offscreen(device, queue, 320, 240), 1.0);
-    e.console_state.toggle();
+    e.world.resource_mut::<Console>().toggle();
     // Let the console finish opening, then put the button under its window
     for _ in 0..60 {
       e.frame(Some(Duration::from_micros(16_667)));
     }
-    let window = e.console_state.window_rect();
+    let window = e.world.resource::<Console>().window_rect();
     let at = Rect::new(window.x + 20.0, window.y + 40.0, 60.0, 20.0);
     e.world_mut().resource_mut::<Seen>().at = at;
     e.frame(Some(Duration::from_micros(16_667)));
@@ -2729,7 +2761,7 @@ mod tests {
       "the console took the click"
     );
     // With the console closed, the same click is the button's
-    e.console_state.toggle();
+    e.world.resource_mut::<Console>().toggle();
     for _ in 0..60 {
       e.frame(Some(Duration::from_micros(16_667)));
     }
@@ -2762,11 +2794,11 @@ mod tests {
       pressed,
     };
     assert_eq!(frame(&mut e, vec![mouse(300.0, 200.0)]), None, "closed");
-    e.console_state.toggle();
+    e.world.resource_mut::<Console>().toggle();
     for _ in 0..60 {
       frame(&mut e, vec![]);
     }
-    let rect = e.console_state.window_rect();
+    let rect = e.world.resource::<Console>().window_rect();
     let (hx, hy) = (rect.x + rect.width - 4.0, rect.y + rect.height - 4.0);
     assert_eq!(
       frame(&mut e, vec![mouse(hx, hy)]),
@@ -2783,7 +2815,7 @@ mod tests {
       None,
       "the game's cursor is back the frame the drag ends"
     );
-    let rect = e.console_state.window_rect();
+    let rect = e.world.resource::<Console>().window_rect();
     assert_eq!(
       frame(&mut e, vec![mouse(rect.x + 20.0, rect.y + 20.0)]),
       Some(CursorStyle::Default),

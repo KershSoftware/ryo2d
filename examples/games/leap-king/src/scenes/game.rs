@@ -4,10 +4,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-
-static CONSOLE_RESPAWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 use ryo2d::core::network::NetworkError;
 use ryo2d::prelude::*;
@@ -3217,12 +3214,15 @@ impl Scene for GameScene {
 
     // Rain audio is already playing from menu scene (persists between scenes)
 
-    // Register console command handler (auto-cleaned on scene exit)
-    ctx.console().register("game:respawn", |_args, cmd_ctx| {
-      CONSOLE_RESPAWN_REQUESTED.store(true, Ordering::SeqCst);
-      cmd_ctx.console.print_system("Respawning at checkpoint...");
-      CommandResult::Ok
-    });
+    // The console's game:respawn (it leaves with this scene)
+    ctx.console().command(
+      ("game:respawn", "Respawn the player at the last checkpoint."),
+      |game: &mut GameScene, ctx, cmd| {
+        cmd.print("Respawning at checkpoint...");
+        game.execute_respawn(ctx);
+        Ok(())
+      },
+    );
 
     let assets = ctx.assets();
     self.sounds = Some(Sounds {
@@ -3280,10 +3280,9 @@ impl Scene for GameScene {
       return SceneAction::Continue;
     }
 
-    // R or Y/Triangle (North button) or console command to respawn
+    // R or Y/Triangle (North button) to respawn
     if ctx.input.key_pressed(KeyCode::KeyR)
       || ctx.input.gamepad_button_pressed(GamepadButton::North)
-      || CONSOLE_RESPAWN_REQUESTED.swap(false, Ordering::SeqCst)
     {
       self.execute_respawn(ctx);
     }

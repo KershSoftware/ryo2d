@@ -4,7 +4,6 @@ use std::any::Any;
 use std::time::Duration;
 
 use crate::core::audio;
-use crate::core::console::CommandRegistry;
 use crate::core::ecs::World;
 use crate::core::ecs::kernel::CheckChangeTicks;
 use crate::core::graphics::GpuRenderContext;
@@ -140,14 +139,15 @@ enum TransitionPhase {
   In,
 }
 
-/// Drop what a scene that exited owned in the world: the console handlers
+/// Drop what a scene that exited owned in the world: the console commands
 /// it registered, and the voices it played: its loops, its paused or held
 /// one-shots and its one-shots with more than 2 s left (but on `ui`) stop
 /// with their fades, and the rest of its playing one-shots play to their
 /// end. The particle emitters it added that outlive it belong to no scene.
 fn release_scope(world: &mut World, scope_id: u64) {
-  if let Some(mut registry) = world.get_resource_mut::<CommandRegistry>() {
-    registry.clear_scope(scope_id);
+  #[cfg(dev_tools)]
+  if let Some(mut commands) = world.get_resource_mut::<crate::core::console::ConsoleCommands>() {
+    commands.clear_scope(scope_id);
   }
   audio::release_scene(world, scope_id);
   particles::release_scene(world, scope_id);
@@ -608,6 +608,36 @@ impl SceneManager {
     }
   }
 
+  /// Run `f` with the scene of `scope` and a context built for it, as
+  /// `update` runs it (inside its scope: what it plays is that scene's).
+  /// The result, and whether that scene is the top; `None` when no scene on
+  /// the stack has the scope. A console command reaches its scene this way.
+  #[cfg(dev_tools)]
+  pub(crate) fn call_scope<R>(
+    &mut self,
+    scope: u64,
+    world: &mut World,
+    f: impl FnOnce(&mut dyn Scene, &mut SceneContext<'_>) -> R,
+  ) -> Option<(R, bool)> {
+    let top = self.scenes.len().checked_sub(1)?;
+    let at = self.scenes.iter().position(|slot| slot.scope_id == scope)?;
+    let result = self.scenes[at].call(world, f);
+    Some((result, at == top))
+  }
+
+  /// Each scene's name and whether it updates, top first
+  #[cfg(dev_tools)]
+  pub(crate) fn stack_report(&self) -> Vec<(&str, bool)> {
+    let from = self.update_from();
+    self
+      .scenes
+      .iter()
+      .enumerate()
+      .rev()
+      .map(|(i, slot)| (slot.scene.name(), i >= from))
+      .collect()
+  }
+
   /// Check if the scene stack is empty.
   pub fn is_empty(&self) -> bool {
     self.scenes.is_empty()
@@ -707,7 +737,6 @@ impl Default for SceneManager {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::core::console::CommandResult;
   use crate::core::ecs::kernel::{IntoScheduleConfigs, ScheduleSystem};
   use crate::core::ecs::{Allow, Component, Disabled, ResMut, Resource, Transform, World};
   use crate::core::messages::{register_message, update_messages};
@@ -1260,32 +1289,44 @@ mod tests {
     assert!(m.is_physics_paused());
   }
 
-  struct Commander;
-
-  impl Scene for Commander {
-    fn on_enter(&mut self, ctx: &mut SceneContext) {
-      let mut console = ctx.console();
-      console.declare("game:jump", "Jump", None::<String>);
-      assert!(console.register("game:jump", |_, _| CommandResult::Ok));
-    }
-  }
-
+  #[cfg(dev_tools)]
   #[test]
-  fn a_scene_s_console_handlers_leave_with_it() {
+  fn a_scene_s_console_commands_leave_with_it() {
+    use crate::core::console::ConsoleCommands;
+
+    struct Commander;
+    impl Scene for Commander {
+      fn on_enter(&mut self, ctx: &mut SceneContext) {
+        ctx
+          .console()
+          .command(("game:jump", "Jump"), |_: &mut Commander, _, _| Ok(()));
+      }
+    }
+
     let log: Shared = Arc::default();
     let mut world = world();
     let mut m = SceneManager::with_scene(rec(&log, "a"));
     m.enter_initial(&mut world);
-    let active = |world: &World| {
+    let known = |world: &World| {
       world
-        .resource::<CommandRegistry>()
-        .get_command_info("game:jump")
-        .is_some_and(|info| info.is_active)
+        .resource::<ConsoleCommands>()
+        .find("game:jump")
+        .is_some()
     };
+    for leave in [
+      SceneAction::Pop,
+      SceneAction::Switch(rec(&log, "b")),
+      SceneAction::Reset(rec(&log, "c")),
+    ] {
+      m.handle_action(SceneAction::Push(Box::new(Commander)), &mut world);
+      assert!(known(&world));
+      let kind = leave.kind();
+      m.handle_action(leave, &mut world);
+      assert!(!known(&world), "the command went with the scene on {kind}");
+    }
     m.handle_action(SceneAction::Push(Box::new(Commander)), &mut world);
-    assert!(active(&world));
-    m.handle_action(SceneAction::Pop, &mut world);
-    assert!(!active(&world), "the handler went with the scene");
+    m.clear(&mut world);
+    assert!(!known(&world), "and on clear");
   }
 
   #[test]

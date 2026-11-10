@@ -7,7 +7,7 @@
 use std::str::FromStr;
 
 use crate::core::ecs::World;
-use crate::core::scene::{SceneAction, SceneContext};
+use crate::core::scene::SceneAction;
 use crate::core::ui::Color;
 
 /// A console command's name and help: a one-line description, and
@@ -81,8 +81,8 @@ pub struct Command<'a> {
 impl<'a> Command<'a> {
   /// A command called `name` with its split arguments and usage line.
   #[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the console does not run these commands yet")
+    all(not(dev_tools), not(test)),
+    expect(dead_code, reason = "a build without tools runs no commands")
   )]
   pub(crate) fn new(name: &'a str, args: &'a [String], usage: Option<&'a str>) -> Self {
     Self {
@@ -169,8 +169,8 @@ impl Command<'_> {
   /// The lines printed so far, in order, with their colours (`None` for the
   /// console's text colour); the command keeps none.
   #[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the console does not run these commands yet")
+    all(not(dev_tools), not(test)),
+    expect(dead_code, reason = "a build without tools runs no commands")
   )]
   pub(crate) fn take_lines(&mut self) -> Vec<(String, Option<Color>)> {
     std::mem::take(&mut self.lines)
@@ -178,8 +178,8 @@ impl Command<'_> {
 
   /// The requested scene action (`Continue` when none), leaving `Continue`.
   #[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the console does not run these commands yet")
+    all(not(dev_tools), not(test)),
+    expect(dead_code, reason = "a build without tools runs no commands")
   )]
   pub(crate) fn take_action(&mut self) -> SceneAction {
     std::mem::take(&mut self.action)
@@ -187,8 +187,8 @@ impl Command<'_> {
 
   /// Whether the handler asked to quit.
   #[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the console does not run these commands yet")
+    all(not(dev_tools), not(test)),
+    expect(dead_code, reason = "a build without tools runs no commands")
   )]
   pub(crate) fn quit_requested(&self) -> bool {
     self.quit
@@ -228,8 +228,8 @@ fn is_number<T>() -> bool {
 /// keep a phrase (spaces and all) in one word, and `""` is an empty word; a
 /// quote left open runs to the end of the line.
 #[cfg_attr(
-  not(test),
-  expect(dead_code, reason = "the console does not split lines this way yet")
+  all(not(dev_tools), not(test)),
+  expect(dead_code, reason = "a build without tools runs no commands")
 )]
 pub(crate) fn split(line: &str) -> Vec<String> {
   let mut words = Vec::new();
@@ -259,12 +259,6 @@ pub(crate) fn split(line: &str) -> Vec<String> {
   }
   words
 }
-
-/// A scene's command handler: called with the scene that registered it, the
-/// scene context `update` gets, and the command.
-#[expect(dead_code, reason = "scenes cannot register commands yet")]
-pub type SceneHandler<S> =
-  dyn Fn(&mut S, &mut SceneContext<'_>, &mut Command<'_>) -> Result<(), String> + Send + Sync;
 
 /// A command handler registered on the engine builder: called with the
 /// world, for the whole run.

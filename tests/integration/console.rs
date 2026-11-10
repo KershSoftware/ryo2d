@@ -1,188 +1,512 @@
-//! Console command integration tests
-//!
-//! Tests for console command registration, removal, and override flows.
-//! These verify that built-in commands can be removed and replaced at
-//! the engine, game, and scene levels.
+//! The console runs commands in the game: a scene's command gets its scene,
+//! a builder's command gets the world, and the built-ins use the engine's
+//! own state. Driven through `HeadlessEngine::console_run`, which runs a
+//! line as if typed and returns what it printed.
+#![cfg(dev_tools)]
 
 use ryo2d::prelude::*;
+use ryo2d::testing::{HeadlessEngine, StepOutcome};
 
-// ============================================================================
-// Helper
-// ============================================================================
-
-fn make_registry_with_builtins() -> CommandRegistry {
-  let mut registry = CommandRegistry::new();
-  ryo2d::core::console::register_builtins(&mut registry);
-  registry
+fn engine(builder: EngineBuilder) -> Option<HeadlessEngine> {
+  HeadlessEngine::new_or_skip(builder.resolution(64, 64))
 }
 
-fn make_context<'a>(console: &'a mut ConsoleState, time_scale: &'a mut f32) -> CommandContext<'a> {
-  use ryo2d::core::diagnostics::DebugConfig;
-  CommandContext {
-    console,
-    debug_config: Box::leak(Box::new(DebugConfig::default())),
-    quit_requested: false,
-    capture_requested: None,
-    time_scale,
-    commands: Vec::new(),
-    game_name: None,
-    game_version: None,
+/// The commands that change the stack, for the tests that push and pop
+fn stack_commands(builder: EngineBuilder) -> EngineBuilder {
+  builder
+    .console_command(("test:push-upper", "Push Upper"), |_, cmd| {
+      cmd.act(SceneAction::Push(Box::new(Upper)));
+      Ok(())
+    })
+    .console_command(("test:push-pause", "Push Pause"), |_, cmd| {
+      cmd.act(SceneAction::Push(Box::new(Pause)));
+      Ok(())
+    })
+    .console_command(("test:push-busy", "Push Busy"), |_, cmd| {
+      cmd.act(SceneAction::Push(Box::new(Busy)));
+      Ok(())
+    })
+    .console_command(("test:pop", "Pop the top scene"), |_, cmd| {
+      cmd.act(SceneAction::Pop);
+      Ok(())
+    })
+    .console_command(("test:switch", "Switch to Plain"), |_, cmd| {
+      cmd.act(SceneAction::Switch(Box::new(Plain)));
+      Ok(())
+    })
+}
+
+fn unknown(name: &str) -> Vec<String> {
+  vec![format!("Unknown command: {name}. Type 'help'.")]
+}
+
+/// A scene with nothing of its own
+struct Plain;
+impl Scene for Plain {}
+
+#[derive(Component)]
+struct Spawned;
+
+/// A scene whose command bumps its own count and spawns an entity
+#[derive(Default)]
+struct Counter {
+  count: u32,
+}
+
+impl Scene for Counter {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    ctx.console().command(
+      ("game:bump", "Bump the count"),
+      |scene: &mut Counter, ctx, cmd| {
+        scene.count += 1;
+        ctx.world.spawn(Spawned);
+        cmd.print(format!("count {}", scene.count));
+        Ok(())
+      },
+    );
   }
 }
 
-// ============================================================================
-// Engine-level: with_console_commands on EngineBuilder
-// ============================================================================
-
-/// Verifies that builtins exist after standard registration.
-#[test]
-fn test_builtins_include_ip_commands() {
-  let registry = make_registry_with_builtins();
-  assert!(registry.has_command("system:ip:lan"));
-  assert!(registry.has_command("system:ip:wan"));
-  assert!(registry.has_command("system:version"));
-  assert!(registry.has_command("system:timescale"));
+fn spawned(engine: &mut HeadlessEngine) -> usize {
+  let world = engine.world_mut();
+  world.query::<&Spawned>().iter(world).count()
 }
 
-/// Simulates the EngineBuilder flow: register builtins then remove specific ones.
 #[test]
-fn test_engine_builder_remove_builtin_flow() {
-  let mut registry = CommandRegistry::new();
-  ryo2d::core::console::register_builtins(&mut registry);
+fn a_scene_s_command_calls_its_scene_and_changes_the_world() {
+  let Some(mut e) = engine(EngineBuilder::new().start_scene(Counter::default())) else {
+    return;
+  };
+  e.step().unwrap();
+  assert_eq!(e.console_run("game:bump"), ["count 1"]);
+  assert_eq!(e.console_run("game:bump"), ["count 2"], "the same scene");
+  assert_eq!(spawned(&mut e), 2);
+}
 
-  // Simulate EngineBuilder.with_console_commands(|cmd| cmd.remove_builtin("system:ip:wan"))
-  let commands_to_remove = vec!["system:ip:wan", "system:version"];
-  for name in &commands_to_remove {
-    registry.remove_builtin(name);
+#[test]
+fn a_name_typed_with_capitals_runs() {
+  let Some(mut e) = engine(EngineBuilder::new().start_scene(Counter::default())) else {
+    return;
+  };
+  assert_eq!(e.console_run("GAME:Bump"), ["count 1"]);
+}
+
+#[derive(Resource, Default)]
+struct ArrivedUpdates(u32);
+
+struct Leaving;
+impl Scene for Leaving {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    ctx.console().command(
+      ("game:leave", "Switch to Arrived"),
+      |_: &mut Leaving, _, cmd| {
+        cmd.act(SceneAction::Switch(Box::new(Arrived)));
+        Ok(())
+      },
+    );
   }
-
-  // Removed commands are gone
-  assert!(!registry.has_command("system:ip:wan"));
-  assert!(!registry.has_command("system:version"));
-
-  // Other commands still work
-  assert!(registry.has_command("system:ip:lan"));
-  assert!(registry.has_command("system:timescale"));
-  assert!(registry.has_command("help"));
-  assert!(registry.has_command("debug:fps"));
 }
 
-/// Executing a removed builtin returns an error (unknown command).
-#[test]
-fn test_removed_builtin_is_unknown() {
-  let mut registry = make_registry_with_builtins();
-  registry.remove_builtin("system:ip:lan");
-
-  let mut console = ConsoleState::new();
-  let mut time_scale = 1.0;
-  let mut ctx = make_context(&mut console, &mut time_scale);
-
-  let result = registry.execute("system:ip:lan", &mut ctx);
-  assert!(matches!(result, CommandResult::Error(_)));
+struct Arrived;
+impl Scene for Arrived {
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    ctx.world.resource_mut::<ArrivedUpdates>().0 += 1;
+    SceneAction::Continue
+  }
 }
 
-// ============================================================================
-// Game/Scene-level: remove_builtin then re-declare as game command
-// ============================================================================
-
-/// Simulates a game removing a builtin in init() and replacing it with
-/// a custom game command.
 #[test]
-fn test_game_context_remove_and_override_builtin() {
-  let mut registry = make_registry_with_builtins();
+fn a_scene_s_command_can_switch_scene() {
+  let Some(mut e) = engine(
+    EngineBuilder::new()
+      .insert_resource(ArrivedUpdates::default())
+      .start_scene(Leaving),
+  ) else {
+    return;
+  };
+  e.step().unwrap();
+  assert!(e.console_run("game:leave").is_empty());
+  e.step().unwrap();
+  assert!(
+    e.world().resource::<ArrivedUpdates>().0 > 0,
+    "the next frame runs the new scene"
+  );
+  assert_eq!(e.console_run("game:leave"), unknown("game:leave"));
+}
 
-  // Phase 1: Game init — remove builtin, re-declare as game command
-  // (GameContext.remove_builtin_console_command delegates to this)
-  assert!(registry.remove_builtin("system:version"));
-  registry.declare(
-    "system:version",
-    "Custom version info",
-    Some("Shows custom game version information"),
+/// Prints the type of the scene it was called with
+fn who<S: Scene>(
+  scene: &mut S,
+  _ctx: &mut SceneContext<'_>,
+  cmd: &mut Command<'_>,
+) -> Result<(), String> {
+  cmd.print(scene.name().to_string());
+  Ok(())
+}
+
+struct Lower;
+impl Scene for Lower {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    ctx
+      .console()
+      .command(("game:who", "Who answers"), who::<Lower>);
+  }
+}
+
+struct Upper;
+impl Scene for Upper {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    ctx
+      .console()
+      .command(("game:who", "Who answers"), who::<Upper>);
+  }
+  fn updates_below(&self) -> bool {
+    true
+  }
+}
+
+struct Pause;
+impl Scene for Pause {}
+
+#[test]
+fn the_upper_scene_answers_and_the_lower_one_returns() {
+  let Some(mut e) = engine(stack_commands(EngineBuilder::new()).start_scene(Lower)) else {
+    return;
+  };
+  assert_eq!(e.console_run("game:who"), ["Lower"]);
+  e.console_run("test:push-upper");
+  assert_eq!(e.console_run("game:who"), ["Upper"]);
+  e.console_run("test:push-pause");
+  e.step().unwrap();
+  assert_eq!(
+    e.console_run("game:who"),
+    ["Upper"],
+    "a pause over them changes nothing"
+  );
+  e.console_run("test:pop");
+  assert_eq!(e.console_run("game:who"), ["Upper"]);
+  e.console_run("test:pop");
+  e.step().unwrap();
+  assert_eq!(
+    e.console_run("game:who"),
+    ["Lower"],
+    "the lower one returns"
+  );
+}
+
+/// A scene whose commands change the console and pop it while they run
+struct Busy;
+impl Scene for Busy {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    let mut console = ctx.console();
+    console.command(("game:other", "Another"), |_: &mut Busy, _, cmd| {
+      cmd.print("other");
+      Ok(())
+    });
+    console.command(
+      ("game:add", "Add a command while running"),
+      |_: &mut Busy, ctx, _| {
+        ctx.console().command(
+          ("game:late", "Added while running"),
+          |_: &mut Busy, _, cmd| {
+            cmd.print("late");
+            Ok(())
+          },
+        );
+        Ok(())
+      },
+    );
+    console.command(
+      ("game:busy", "Change the console and leave"),
+      |_: &mut Busy, ctx, cmd| {
+        let removed = ctx.console().remove("game:other");
+        ctx.console().command(
+          ("game:later", "Added while leaving"),
+          |_: &mut Busy, _, _| Ok(()),
+        );
+        cmd.print(format!("removed {removed}"));
+        cmd.act(SceneAction::Pop);
+        Ok(())
+      },
+    );
+  }
+}
+
+#[test]
+fn a_handler_can_change_the_console_and_pop_its_scene() {
+  let Some(mut e) = engine(stack_commands(EngineBuilder::new()).start_scene(Plain)) else {
+    return;
+  };
+  e.console_run("test:push-busy");
+  assert!(e.console_run("game:add").is_empty());
+  assert_eq!(e.console_run("game:late"), ["late"], "added while it ran");
+  assert_eq!(e.console_run("game:busy"), ["removed true"]);
+  e.step().unwrap();
+  for name in [
+    "game:other",
+    "game:add",
+    "game:late",
+    "game:busy",
+    "game:later",
+  ] {
+    assert_eq!(
+      e.console_run(name),
+      unknown(name),
+      "{name} left with its scene"
+    );
+  }
+  let scenes = e.console_run("system:scenes").join("\n");
+  assert!(
+    scenes.contains("Plain") && !scenes.contains("Busy"),
+    "{scenes}"
+  );
+}
+
+#[derive(Resource, Default)]
+struct Score(u32);
+
+fn scoring(builder: EngineBuilder) -> EngineBuilder {
+  builder.insert_resource(Score::default()).console_command(
+    CommandSpec::new("game:score", "Add to the score").usage("game:score <points>"),
+    |world, cmd| {
+      let points: u32 = cmd.arg(0)?;
+      world.resource_mut::<Score>().0 += points;
+      cmd.print(format!("score {}", world.resource::<Score>().0));
+      Ok(())
+    },
+  )
+}
+
+#[test]
+fn a_builder_command_changes_the_world_and_outlives_scenes() {
+  let Some(mut e) =
+    engine(scoring(stack_commands(EngineBuilder::new())).start_scene(Counter::default()))
+  else {
+    return;
+  };
+  assert_eq!(e.console_run("game:score 5"), ["score 5"]);
+  e.console_run("test:switch");
+  e.step().unwrap();
+  assert_eq!(e.console_run("game:score 2"), ["score 7"]);
+  assert_eq!(e.world().resource::<Score>().0, 7);
+}
+
+#[test]
+fn a_bad_argument_prints_the_usage() {
+  let Some(mut e) = engine(scoring(EngineBuilder::new()).start_scene(Plain)) else {
+    return;
+  };
+  assert_eq!(
+    e.console_run("game:score abc"),
+    ["argument 1 (\"abc\") is not a number; usage: game:score <points>"]
+  );
+  assert_eq!(e.world().resource::<Score>().0, 0);
+}
+
+#[test]
+fn a_builder_command_replaces_a_built_in_of_its_name() {
+  let Some(mut e) = engine(
+    EngineBuilder::new()
+      .console_command(("help", "The game's help"), |_, cmd| {
+        cmd.print("the game's help");
+        Ok(())
+      })
+      .start_scene(Plain),
+  ) else {
+    return;
+  };
+  assert_eq!(e.console_run("help"), ["the game's help"]);
+}
+
+#[test]
+fn removing_a_built_in_takes_it_from_help_too() {
+  let Some(mut e) = engine(
+    EngineBuilder::new()
+      .remove_console_command("system:version")
+      .start_scene(Plain),
+  ) else {
+    return;
+  };
+  let help = e.console_run("help").join("\n");
+  assert!(help.contains("system:timescale"), "{help}");
+  assert!(!help.contains("system:version"), "{help}");
+  assert_eq!(e.console_run("system:version"), unknown("system:version"));
+}
+
+/// Registers names no command may have
+struct BadNames;
+impl Scene for BadNames {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    ctx
+      .console()
+      .command(("game:bad name", "Spaced"), |_: &mut BadNames, _, _| Ok(()));
+  }
+}
+
+#[test]
+fn a_name_that_is_empty_or_has_spaces_is_refused() {
+  let log = ryo2d::testing::capture_log();
+  let Some(mut e) = engine(
+    EngineBuilder::new()
+      .console_command(("game:two words", "Spaced"), |_, _| Ok(()))
+      .console_command(("", "Unnamed"), |_, _| Ok(()))
+      .start_scene(BadNames),
+  ) else {
+    return;
+  };
+  let warnings = log.warnings();
+  for name in ["\"game:two words\"", "\"\"", "\"game:bad name\""] {
+    assert_eq!(
+      warnings.iter().filter(|w| w.contains(name)).count(),
+      1,
+      "one warning names {name}: {warnings:?}"
+    );
+  }
+  let help = e.console_run("help").join("\n");
+  assert!(
+    !help.contains("words") && !help.contains("bad name"),
+    "{help}"
+  );
+  assert_eq!(e.console_run("game:two"), unknown("game:two"));
+}
+
+#[test]
+fn an_empty_line_does_nothing() {
+  let Some(mut e) = engine(EngineBuilder::new().start_scene(Plain)) else {
+    return;
+  };
+  assert!(e.console_run("").is_empty());
+  assert!(e.console_run("   ").is_empty());
+  assert!(e.console_run("\"\"").is_empty());
+}
+
+#[test]
+fn quit_asks_the_engine_to_quit() {
+  let Some(mut e) = engine(EngineBuilder::new().start_scene(Plain)) else {
+    return;
+  };
+  assert_eq!(e.step().unwrap(), StepOutcome::Running);
+  assert_eq!(e.console_run("quit"), ["Shutting down..."]);
+  assert_eq!(e.step().unwrap(), StepOutcome::Quit);
+}
+
+#[test]
+fn an_unknown_command_says_so() {
+  let Some(mut e) = engine(EngineBuilder::new().start_scene(Plain)) else {
+    return;
+  };
+  assert_eq!(e.console_run("nope"), unknown("nope"));
+  assert_eq!(e.console_run("NoPe now"), unknown("nope"));
+}
+
+#[test]
+fn timescale_sets_the_clock_and_refuses_nan() {
+  let Some(mut e) = engine(EngineBuilder::new().start_scene(Plain)) else {
+    return;
+  };
+  let speed = |e: &HeadlessEngine| e.world().resource::<Time>().game.speed();
+  assert_eq!(
+    e.console_run("system:timescale"),
+    ["Current time scale: 1.00"]
+  );
+  assert_eq!(
+    e.console_run("system:timescale 0.5"),
+    ["Time scale set to 0.50"]
+  );
+  assert_eq!(speed(&e), 0.5);
+  for bad in ["nan", "NaN", "-1", "101", "inf"] {
+    let said = e.console_run(&format!("system:timescale {bad}"));
+    assert_eq!(said.len(), 1, "{bad}: {said:?}");
+    assert_eq!(speed(&e), 0.5, "{bad} is refused");
+  }
+  assert_eq!(
+    e.console_run("system:timescale 100"),
+    ["Time scale set to 100.00"]
+  );
+  assert_eq!(speed(&e), 100.0);
+}
+
+#[test]
+fn log_level_shows_and_sets() {
+  use ryo2d::core::logging::{level, set_level};
+  // A target nothing else logs to: levels are process-wide
+  let target = "game::console_level_test";
+  let before = level(target);
+  let Some(mut e) = engine(EngineBuilder::new().start_scene(Plain)) else {
+    return;
+  };
+  assert_eq!(
+    e.console_run(&format!("log:level {target} debug")),
+    [format!("{target}: debug")]
+  );
+  assert_eq!(level(target), log::LevelFilter::Debug);
+  assert_eq!(
+    e.console_run(&format!("log:level {target}")),
+    [format!("{target}: debug")]
+  );
+  let all = e.console_run("log:level").join("\n");
+  for part in ["game", "engine", "library", target] {
+    assert!(all.contains(part), "{part} in {all}");
+  }
+  let bad = e.console_run(&format!("log:level {target} loud"));
+  assert_eq!(bad.len(), 1, "{bad:?}");
+  assert_eq!(
+    level(target),
+    log::LevelFilter::Debug,
+    "a bad level changes nothing"
+  );
+  set_level(target, before);
+}
+
+#[test]
+fn scenes_entities_and_assets_report() {
+  let Some(mut e) = engine(stack_commands(EngineBuilder::new()).start_scene(Counter::default()))
+  else {
+    return;
+  };
+  e.console_run("test:push-pause");
+  let scenes = e.console_run("system:scenes");
+  assert_eq!(
+    scenes.len(),
+    3,
+    "a heading and a line per scene: {scenes:?}"
+  );
+  assert!(scenes[1].contains("Pause"), "top first: {scenes:?}");
+  assert!(scenes[2].contains("Counter"), "{scenes:?}");
+  assert!(
+    scenes[1].contains("updates") && scenes[2].contains("stopped"),
+    "{scenes:?}"
   );
 
-  // Should exist but be inactive (no handler yet)
-  let info = registry.get_command_info("system:version").unwrap();
-  assert_eq!(info.description, "Custom version info");
-  assert!(!info.is_active);
+  let count = |e: &mut HeadlessEngine| -> usize {
+    let said = e.console_run("system:entities");
+    said[0]
+      .rsplit(' ')
+      .next()
+      .and_then(|n| n.parse().ok())
+      .unwrap_or_else(|| panic!("{said:?}"))
+  };
+  let before = count(&mut e);
+  e.console_run("test:pop");
+  e.console_run("game:bump");
+  e.console_run("game:bump");
+  assert_eq!(count(&mut e), before + 2);
 
-  // Phase 2: Register custom handler (scope_id 0 = game-level, permanent)
-  registry.register_handler("system:version", 0, |_args, ctx| {
-    ctx.console.print("MyGame v2.0");
-    CommandResult::Ok
-  });
-
-  let info = registry.get_command_info("system:version").unwrap();
-  assert!(info.is_active);
-
-  // Phase 3: Execute — should use custom handler
-  let mut console = ConsoleState::new();
-  let mut time_scale = 1.0;
-  let mut ctx = make_context(&mut console, &mut time_scale);
-
-  let result = registry.execute("system:version", &mut ctx);
-  assert_eq!(result, CommandResult::Ok);
+  let assets = e.console_run("system:assets");
+  assert!(assets[0].starts_with("Assets"), "{assets:?}");
+  assert!(
+    assets.iter().any(|line| line.contains("Image")),
+    "{assets:?}"
+  );
 }
 
-/// Simulates a scene removing a builtin and providing a scene-scoped override.
 #[test]
-fn test_scene_context_remove_and_override_builtin() {
-  let mut registry = make_registry_with_builtins();
-
-  // Scene removes the builtin and declares a replacement
-  // (SceneContext.remove_builtin_console_command delegates to this)
-  assert!(registry.remove_builtin("debug:fps"));
-  registry.declare("debug:fps", "Custom FPS toggle", None::<&str>);
-
-  let scene_scope = 42u64;
-  registry.register_handler("debug:fps", scene_scope, |_args, ctx| {
-    ctx.console.print("Custom FPS handler active");
-    CommandResult::Ok
-  });
-
-  // Execute the custom handler
-  let mut console = ConsoleState::new();
-  let mut time_scale = 1.0;
-  let mut ctx = make_context(&mut console, &mut time_scale);
-
-  let result = registry.execute("debug:fps", &mut ctx);
-  assert_eq!(result, CommandResult::Ok);
-
-  // When scene exits, handler is cleaned up
-  registry.clear_scope(scene_scope);
-  let info = registry.get_command_info("debug:fps").unwrap();
-  assert!(!info.is_active);
-
-  // Executing now gives noop message (declared but inactive)
-  let result = registry.execute("debug:fps", &mut ctx);
-  assert_eq!(result, CommandResult::Ok); // noop returns Ok
-}
-
-/// Removing multiple builtins at once (simulating EngineBuilder with chained calls).
-#[test]
-fn test_remove_multiple_builtins_chained() {
-  let mut registry = make_registry_with_builtins();
-
-  let to_remove = ["system:ip:lan", "system:ip:wan", "system:timescale"];
-  for name in &to_remove {
-    assert!(registry.remove_builtin(name));
-  }
-
-  for name in &to_remove {
-    assert!(!registry.has_command(name));
-  }
-
-  // Core commands still intact
-  assert!(registry.has_command("help"));
-  assert!(registry.has_command("quit"));
-  assert!(registry.has_command("clear"));
-  assert!(registry.has_command("system:version"));
-}
-
-/// Removing a builtin twice returns false the second time.
-#[test]
-fn test_remove_builtin_idempotent() {
-  let mut registry = make_registry_with_builtins();
-
-  assert!(registry.remove_builtin("system:ip:lan"));
-  assert!(!registry.remove_builtin("system:ip:lan"));
+fn no_command_names_an_ip() {
+  let Some(mut e) = engine(EngineBuilder::new().start_scene(Plain)) else {
+    return;
+  };
+  let help = e.console_run("help");
+  assert!(help.len() > 10, "{help:?}");
+  assert!(help.iter().all(|line| !line.contains(":ip")), "{help:?}");
+  assert_eq!(e.console_run("system:ip:lan"), unknown("system:ip:lan"));
 }

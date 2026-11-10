@@ -1,9 +1,11 @@
-//! The console's commands: per name, a stack of entries, the newest last.
+//! The console's commands: per name, a stack of entries in scope order.
 //!
-//! A scene's entries carry its scope, so a scene that leaves takes only its
-//! own (`clear_scope`), and an earlier scene's entry of the same name answers
-//! again. Handlers are `Arc`s, cloned out by `find`, so a handler runs with
-//! the registry free to change under it.
+//! A name has at most one run-long entry (a built-in or a builder command)
+//! at the bottom, and above it the entries of the scenes that registered it,
+//! by scope id: the uppermost scene's answers. A scene's entries carry its
+//! scope, so a scene that leaves takes only its own (`clear_scope`), and the
+//! entry below answers again. Handlers are `Arc`s, cloned out by `find`, so
+//! a handler runs with the registry free to change under it.
 
 use std::any::Any;
 use std::collections::BTreeMap;
@@ -28,19 +30,10 @@ pub(crate) type ErasedSceneHandler = dyn Fn(&mut dyn Scene, &mut SceneContext<'_
 #[derive(Clone)]
 pub(crate) enum Handler {
   /// An engine command, with the engine's hooks
-  #[expect(dead_code, reason = "the built-ins are not moved over yet")]
   Builtin(Arc<BuiltinHandler>),
   /// A command registered on the builder, for the whole run
-  #[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the builder cannot register commands yet")
-  )]
   World(Arc<WorldHandler>),
   /// A scene's command, leaving with the scene of `scope`
-  #[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "scenes cannot register commands yet")
-  )]
   Scene {
     scope: u64,
     call: Arc<ErasedSceneHandler>,
@@ -60,10 +53,6 @@ impl Handler {
 /// Wrap a handler for scenes of type `S` so it can be called with any
 /// scene; called with a scene of another type it refuses, with
 /// `"<name> was registered for another scene type"`.
-#[cfg_attr(
-  not(test),
-  expect(dead_code, reason = "scenes cannot register commands yet")
-)]
 pub(crate) fn erase<S: Scene>(
   handler: impl Fn(&mut S, &mut SceneContext<'_>, &mut Command<'_>) -> Result<(), String>
   + Send
@@ -92,7 +81,8 @@ struct Entry {
 /// Every console command, by lower-case name.
 #[derive(Resource, Default)]
 pub(crate) struct ConsoleCommands {
-  /// Per name, the entries that registered it, the newest (answering) last
+  /// Per name, its entries in scope order: the run-long one first, then
+  /// the scenes' by scope id; the last (the uppermost scene's) answers
   by_name: BTreeMap<String, Vec<Entry>>,
 }
 
@@ -103,10 +93,6 @@ impl ConsoleCommands {
   /// higher on the stack answers over one below it whichever registered
   /// first. An entry of a scope the name already has (one run-long entry
   /// per name) replaces it.
-  #[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "commands are not registered yet")
-  )]
   pub(crate) fn add(&mut self, mut spec: CommandSpec, handler: Handler) {
     spec.name = spec.name.to_lowercase();
     let scope = handler.scope();
@@ -120,17 +106,12 @@ impl ConsoleCommands {
   }
 
   /// Remove every entry of `name`; whether there was one.
-  #[cfg_attr(not(test), expect(dead_code, reason = "commands are not removed yet"))]
   pub(crate) fn remove(&mut self, name: &str) -> bool {
     self.by_name.remove(&name.to_lowercase()).is_some()
   }
 
   /// Remove the entries of scene `scope`; the names it covered answer to
   /// the entries below, or go.
-  #[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "scenes cannot register commands yet")
-  )]
   pub(crate) fn clear_scope(&mut self, scope: u64) {
     self.by_name.retain(|_, entries| {
       entries.retain(|e| e.handler.scope() != Some(scope));
@@ -138,21 +119,14 @@ impl ConsoleCommands {
     });
   }
 
-  /// The answering (newest) entry of `name`, cloned out.
-  #[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the console does not run these commands yet")
-  )]
+  /// The answering entry of `name`, cloned out: the uppermost scene's, else
+  /// the run-long one.
   pub(crate) fn find(&self, name: &str) -> Option<(CommandSpec, Handler)> {
     let entry = self.by_name.get(&name.to_lowercase())?.last()?;
     Some((entry.spec.clone(), entry.handler.clone()))
   }
 
   /// The answering entry's spec of each name, sorted by name.
-  #[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "help does not list these commands yet")
-  )]
   pub(crate) fn list(&self) -> Vec<CommandSpec> {
     self
       .by_name
@@ -180,12 +154,24 @@ impl ConsoleCommands {
 
 /// The engine's own state a built-in command may change; game commands
 /// never see it.
-#[expect(dead_code, reason = "the built-ins are not moved over yet")]
 pub(crate) struct EngineHooks<'a> {
   pub(crate) debug: &'a mut DebugConfig,
   pub(crate) overlay: &'a mut OverlayMode,
   pub(crate) capture: &'a mut Option<CaptureTarget>,
   pub(crate) quit: &'a mut bool,
+  /// The game's name and version (Ryo.toml's `[project]`), for `system:version`
+  pub(crate) game_name: Option<&'a str>,
+  pub(crate) game_version: Option<&'a str>,
+}
+
+/// Whether `name` can name a command: not empty, and no whitespace (the
+/// console splits a line on it). A refused name is logged once, naming it.
+pub(crate) fn valid_name(name: &str) -> bool {
+  let valid = !name.is_empty() && !name.chars().any(char::is_whitespace);
+  if !valid {
+    log::warn!("console command {name:?} not added: a name needs a character and no spaces");
+  }
+  valid
 }
 
 #[cfg(test)]

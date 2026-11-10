@@ -224,3 +224,35 @@ impl Scene for PageScene {
     self.page.render(gpu);
   }
 }
+
+/// Register a console command for the page `P` from its `enter`: the
+/// handler is called with the page itself, the scene context and the
+/// command, and the command goes when the page is left.
+///
+/// ```ignore
+/// fn enter(&mut self, ctx: &mut SceneContext) {
+///   page_command(ctx, ("game:paint", "Paint the page"), |page: &mut Workshop, _ctx, cmd| {
+///     page.color = Color::rgb(140, 40, 40);
+///     cmd.print("Painted");
+///     Ok(())
+///   });
+/// }
+/// ```
+pub fn page_command<P: DemoPage>(
+  ctx: &mut SceneContext,
+  spec: impl Into<CommandSpec>,
+  handler: impl Fn(&mut P, &mut SceneContext<'_>, &mut Command<'_>) -> Result<(), String>
+  + Send
+  + Sync
+  + 'static,
+) {
+  ctx
+    .console()
+    .command(spec, move |scene: &mut PageScene, ctx, cmd| {
+      let page: &mut dyn std::any::Any = scene.page.as_mut();
+      match page.downcast_mut::<P>() {
+        Some(page) => handler(page, ctx, cmd),
+        None => Err(format!("{} belongs to another page", cmd.name())),
+      }
+    });
+}

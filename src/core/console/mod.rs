@@ -1,56 +1,46 @@
-//! In-game developer console for Ryo2D
+//! The in-game developer console: a moveable, resizable window toggled with
+//! the backquote key, and the commands typed into it.
 //!
-//! A moveable, resizable developer console window, toggled with the tilde (~) key.
-//! Provides runtime debugging, configuration, and command execution.
-//!
-//! # Features
-//!
-//! - Toggle visibility with tilde key
-//! - Draggable title bar, resizable window
-//! - Command history with up/down arrows
-//! - Built-in commands (help, clear, quit, fps, etc.)
-//! - Custom command registration via game API
-//!
-//! # Configuration
-//!
-//! Enable in `Ryo.toml`:
-//! ```toml
-//! [system]
-//! console = true  # Works in both debug and release builds
-//! ```
-//!
-//! # Example
+//! A scene registers commands through `ctx.console()` ([`ConsoleScope`]);
+//! they run with that scene and leave with it. The builder registers
+//! commands for the whole run (`EngineBuilder::console_command`). The
+//! module notes (`AGENTS.md`) have how a line runs.
 //!
 //! ```ignore
-//! // Declare the command once (here, or with `EngineBuilder::with_console_commands`)
-//! // and attach a handler from a scene; the handler goes away with the scene.
 //! fn on_enter(&mut self, ctx: &mut SceneContext) {
-//!     let mut console = ctx.console();
-//!     console.declare("game:spawn_enemy", "Spawn an enemy at the player's position", None::<&str>);
-//!     console.register("game:spawn_enemy", |_args, cmd_ctx| {
-//!         cmd_ctx.console.print("Spawning enemy...");
-//!         SPAWN_REQUESTED.store(true, Ordering::Relaxed); // read in update
-//!         CommandResult::Ok
-//!     });
+//!   ctx.console().command(("game:heal", "Heal the player"), |game: &mut Game, _ctx, cmd| {
+//!     game.health = game.max_health;
+//!     cmd.print("Healed");
+//!     Ok(())
+//!   });
 //! }
 //! ```
 
+#[cfg(dev_tools)]
 mod builtins;
 mod command;
-mod commands;
+#[cfg(dev_tools)]
+mod dispatch;
 #[cfg(dev_tools)]
 mod registry;
+mod scope;
 
-pub use builtins::register_builtins;
 pub use command::{Command, CommandSpec};
-pub use commands::{
-  CommandContext, CommandFn, CommandInfo, CommandRegistry, CommandResult, ConsoleCommandBuilder,
-};
+pub use scope::ConsoleScope;
 
-use std::cell::Cell;
+#[cfg(dev_tools)]
+pub(crate) use builtins::add_builtins;
+#[cfg(dev_tools)]
+pub(crate) use command::WorldHandler;
+#[cfg(dev_tools)]
+pub(crate) use dispatch::run_line;
+#[cfg(dev_tools)]
+pub(crate) use registry::{ConsoleCommands, EngineHooks, Handler, valid_name};
+
 use std::collections::VecDeque;
 
 use super::cursor::CursorStyle;
+use super::ecs::Resource;
 use super::input::Input;
 use super::text::{FontRole, TextStyle};
 use super::ui::{Color, Rect, UiContext};
@@ -113,7 +103,7 @@ const BOTTOM_SNAP: f32 = 0.5;
 const SCROLL_SNAP: f32 = 0.02;
 
 /// Console visual colors
-mod colors {
+pub(crate) mod colors {
   use super::Color;
 
   /// Console background when focused (dark, mostly opaque)
@@ -158,12 +148,16 @@ mod colors {
 
 /// A single line of console output
 #[derive(Debug, Clone)]
-pub struct ConsoleLine {
+pub(crate) struct ConsoleLine {
   /// The text content of the line
   pub text: String,
   /// The color to render this line
   pub color: Color,
   /// Timestamp when this line was added (in seconds since console was created)
+  #[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "nothing shows a line's time yet")
+  )]
   pub timestamp: f32,
 }
 
@@ -198,9 +192,10 @@ enum DragState {
   },
 }
 
-/// Console state and rendering
-#[derive(Debug)]
-pub struct ConsoleState {
+/// The console: its window, its input line and its output. A world
+/// resource; the engine ticks it, draws it, and runs what is typed into it.
+#[derive(Resource, Debug)]
+pub(crate) struct Console {
   /// Whether the console is currently visible
   pub visible: bool,
   /// Whether the console is currently focused (receives input)
@@ -231,7 +226,7 @@ pub struct ConsoleState {
   /// Logical pixels to the console's units (the pointer's conversion)
   pixel_scale: f32,
   /// Wrapped rows as last drawn (0 before the first render)
-  wrapped_rows: Cell<usize>,
+  wrapped_rows: usize,
   /// Lines printed since the last render while the reader was scrolled up
   unseen_lines: usize,
   /// Timer for cursor blink animation
@@ -243,16 +238,25 @@ pub struct ConsoleState {
   /// Skip text input this frame (to avoid inserting toggle key)
   skip_text_input: bool,
   /// The console font's line height as last measured by `render`
-  line_height: Cell<f32>,
+  line_height: f32,
+  /// The lowest level of log record the console shows (`log:show`;
+  /// `Off` shows none)
+  #[cfg_attr(
+    not(dev_tools),
+    expect(dead_code, reason = "only `log:show` sets it so far")
+  )]
+  pub(crate) log_show: log::LevelFilter,
+  /// The text of each line printed while set (`HeadlessEngine::console_run`)
+  captured: Option<Vec<String>>,
 }
 
-impl Default for ConsoleState {
+impl Default for Console {
   fn default() -> Self {
     Self::new()
   }
 }
 
-impl ConsoleState {
+impl Console {
   /// Create a new console state
   pub fn new() -> Self {
     let mut console = Self {
@@ -271,13 +275,15 @@ impl ConsoleState {
       scroll_offset: 0.0,
       scroll_target: 0.0,
       pixel_scale: 1.0,
-      wrapped_rows: Cell::new(0),
+      wrapped_rows: 0,
       unseen_lines: 0,
       cursor_blink_timer: 0.0,
       total_time: 0.0,
       drag_state: DragState::None,
       skip_text_input: false,
-      line_height: Cell::new(DEFAULT_LINE_HEIGHT),
+      line_height: DEFAULT_LINE_HEIGHT,
+      log_show: log::LevelFilter::Warn,
+      captured: None,
     };
 
     // Print welcome message
@@ -289,6 +295,9 @@ impl ConsoleState {
   /// Print a line to the console with a specific color
   pub fn print_colored(&mut self, text: impl Into<String>, color: Color) {
     let line = ConsoleLine::new(text, color, self.total_time);
+    if let Some(captured) = &mut self.captured {
+      captured.push(line.text.clone());
+    }
     self.output_lines.push_back(line);
 
     // Trim old lines if we exceed the maximum
@@ -304,6 +313,10 @@ impl ConsoleState {
   }
 
   /// Print a normal text line
+  #[cfg_attr(
+    all(target_arch = "wasm32", not(test)),
+    expect(dead_code, reason = "only the headless harness prints plain lines")
+  )]
   pub fn print(&mut self, text: impl Into<String>) {
     self.print_colored(text, colors::TEXT);
   }
@@ -323,7 +336,29 @@ impl ConsoleState {
     self.print_colored(text, colors::SYSTEM);
   }
 
+  /// Keep the text of every line printed from now until `take_captured`
+  #[cfg(all(dev_tools, not(target_arch = "wasm32")))]
+  pub(crate) fn capture(&mut self) {
+    self.captured = Some(Vec::new());
+  }
+
+  /// The lines printed since `capture`, ending the capture
+  #[cfg(all(dev_tools, not(target_arch = "wasm32")))]
+  pub(crate) fn take_captured(&mut self) -> Vec<String> {
+    self.captured.take().unwrap_or_default()
+  }
+
+  /// The output lines, oldest first
+  #[cfg(all(test, dev_tools))]
+  pub(crate) fn lines(&self) -> impl DoubleEndedIterator<Item = &ConsoleLine> {
+    self.output_lines.iter()
+  }
+
   /// Clear all output lines
+  #[cfg_attr(
+    all(not(dev_tools), not(test)),
+    expect(dead_code, reason = "only the `clear` command clears")
+  )]
   pub fn clear(&mut self) {
     self.output_lines.clear();
     self.scroll_offset = 0.0;
@@ -383,13 +418,13 @@ impl ConsoleState {
   fn max_scroll_lines(&self) -> f32 {
     let rows = self.total_rows();
     let (_, _, output_height, _) = self.output_area();
-    (rows as f32 - output_height / self.line_height.get()).max(0.0)
+    (rows as f32 - output_height / self.line_height).max(0.0)
   }
 
   /// A distance from the bottom, with less than half a unit counting as
   /// the bottom itself
   fn snap_to_bottom(&self, lines: f32) -> f32 {
-    if lines * self.line_height.get() < BOTTOM_SNAP {
+    if lines * self.line_height < BOTTOM_SNAP {
       0.0
     } else {
       lines
@@ -398,7 +433,7 @@ impl ConsoleState {
 
   /// The wrapped rows as last drawn (the lines before the first render)
   fn total_rows(&self) -> usize {
-    match self.wrapped_rows.get() {
+    match self.wrapped_rows {
       0 => self.output_lines.len(),
       wrapped => wrapped,
     }
@@ -417,12 +452,12 @@ impl ConsoleState {
 
   /// The title bar's height: one line of the console font plus padding
   fn title_bar_height(&self) -> f32 {
-    TITLE_BAR_HEIGHT.max(self.line_height.get() + BAR_PADDING)
+    TITLE_BAR_HEIGHT.max(self.line_height + BAR_PADDING)
   }
 
   /// The input line's height
   fn input_height(&self) -> f32 {
-    INPUT_HEIGHT.max(self.line_height.get() + BAR_PADDING)
+    INPUT_HEIGHT.max(self.line_height + BAR_PADDING)
   }
 
   /// Get the title bar bounds
@@ -519,7 +554,7 @@ impl ConsoleState {
     let visible_ratio = visible_lines as f32 / total_lines as f32;
     let thumb_height = (output_height * visible_ratio).max(SCROLLBAR_MIN_THUMB);
 
-    let max_scroll = total_lines as f32 - output_height / self.line_height.get();
+    let max_scroll = total_lines as f32 - output_height / self.line_height;
     let scroll_ratio = if max_scroll > 0.0 {
       (self.scroll_offset / max_scroll).min(1.0)
     } else {
@@ -566,7 +601,7 @@ impl ConsoleState {
     let window_rect = self.window_rect();
 
     // Calculate scrollbar info for interactions
-    let line_height = self.line_height.get();
+    let line_height = self.line_height;
     let (_, _, output_height, _) = self.output_area();
     let visible_lines = (output_height / line_height) as usize;
     let total_lines = self.total_rows();
@@ -882,7 +917,7 @@ impl ConsoleState {
     let padding = 8.0;
     let style = console_style();
     let line_height = ui.line_height(&style).ceil();
-    self.line_height.set(line_height);
+    self.line_height = line_height;
     let title_height = self.title_bar_height();
     let input_height = self.input_height();
 
@@ -1059,7 +1094,7 @@ impl ConsoleState {
     }
 
     let total_lines = wrapped_lines.len();
-    self.wrapped_rows.set(total_lines);
+    self.wrapped_rows = total_lines;
     let has_scrollbar = total_lines > visible_line_count;
     let max_scroll = (total_lines as f32 - output_height / line_height).max(0.0);
     let scroll_offset = self.scroll_offset.clamp(0.0, max_scroll);
@@ -1135,15 +1170,32 @@ fn draw_line(ui: &mut UiContext, text: &str, x: f32, y: f32, color: Color) {
 mod tests {
   use super::*;
 
+  #[test]
+  fn the_console_names_no_network_code() {
+    // Built here, so this file's own text does not match
+    let needle = ["std", "net"].join("::");
+    let sources = [
+      ("mod.rs", include_str!("mod.rs")),
+      ("command.rs", include_str!("command.rs")),
+      ("registry.rs", include_str!("registry.rs")),
+      ("builtins.rs", include_str!("builtins.rs")),
+      ("dispatch.rs", include_str!("dispatch.rs")),
+      ("scope.rs", include_str!("scope.rs")),
+    ];
+    for (name, text) in sources {
+      assert!(!text.contains(&needle), "{name} names {needle}");
+    }
+  }
+
   // ============================================================================
-  // ConsoleState Basic Operations
+  // Console Basic Operations
   // ============================================================================
 
   #[cfg(feature = "default-fonts")]
   #[test]
   fn long_output_lines_wrap_to_the_console_width() {
     use crate::core::ui::immediate::{UiCommand, UiCommands};
-    let mut console = ConsoleState::new();
+    let mut console = Console::new();
     console.toggle();
     console.print("word ".repeat(400));
     let (mut commands, mut text) = (
@@ -1172,7 +1224,7 @@ mod tests {
   #[test]
   fn the_console_draws_in_monospace_and_sizes_rows_by_the_font() {
     use crate::core::ui::immediate::{UiCommand, UiCommands};
-    let mut console = ConsoleState::new();
+    let mut console = Console::new();
     console.toggle();
     console.clear();
     console.print("iiiiiiiiii");
@@ -1196,13 +1248,13 @@ mod tests {
       .collect();
     assert_eq!(widths.len(), 2, "{widths:?}");
     assert!((widths[0] - widths[1]).abs() < 0.5, "monospace: {widths:?}");
-    assert_eq!(console.line_height.get(), expected);
+    assert_eq!(console.line_height, expected);
     assert!(console.title_bar_height() >= expected + 10.0);
   }
 
   #[test]
   fn test_console_new_initial_state() {
-    let console = ConsoleState::new();
+    let console = Console::new();
     assert!(!console.visible);
     assert!(console.focused);
     assert!(console.input_buffer.is_empty());
@@ -1214,7 +1266,7 @@ mod tests {
 
   #[test]
   fn the_wheel_over_the_console_scrolls_it_and_not_the_game() {
-    let mut console = ConsoleState::new();
+    let mut console = Console::new();
     console.toggle();
     let rect = console.window_rect();
     let mut input = Input::new();
@@ -1228,8 +1280,8 @@ mod tests {
   }
 
   /// A console of `lines` short lines with the pointer over its output
-  fn scrolling_console(lines: usize) -> (ConsoleState, Input) {
-    let mut console = ConsoleState::new();
+  fn scrolling_console(lines: usize) -> (Console, Input) {
+    let mut console = Console::new();
     console.toggle();
     console.clear();
     for i in 0..lines {
@@ -1246,7 +1298,7 @@ mod tests {
 
   /// One frame as the engine runs it: ease, then read the input; `scroll`
   /// is a trackpad's logical pixels and `lines` a wheel's
-  fn console_frame(console: &mut ConsoleState, input: &mut Input, lines: f32, scroll: f32) {
+  fn console_frame(console: &mut Console, input: &mut Input, lines: f32, scroll: f32) {
     input.begin_frame();
     if lines != 0.0 {
       input.handle_scroll(winit::event::MouseScrollDelta::LineDelta(0.0, lines));
@@ -1259,8 +1311,8 @@ mod tests {
   }
 
   /// How far the view is scrolled, in the console's drawing units
-  fn scrolled_units(console: &ConsoleState) -> f32 {
-    console.scroll_offset * console.line_height.get()
+  fn scrolled_units(console: &Console) -> f32 {
+    console.scroll_offset * console.line_height
   }
 
   #[test]
@@ -1294,7 +1346,7 @@ mod tests {
   #[test]
   fn a_wheel_line_eases_toward_three_lines() {
     let (mut console, mut input) = scrolling_console(50);
-    let line = console.line_height.get();
+    let line = console.line_height;
     console_frame(&mut console, &mut input, 1.0, 0.0);
     console_frame(&mut console, &mut input, 0.0, 0.0);
     let early = scrolled_units(&console);
@@ -1310,7 +1362,7 @@ mod tests {
   fn the_console_scroll_stops_at_the_top_and_the_bottom() {
     let (mut console, mut input) = scrolling_console(50);
     let (_, _, view, _) = console.output_area();
-    let max = 50.0 * console.line_height.get() - view;
+    let max = 50.0 * console.line_height - view;
     console_frame(&mut console, &mut input, 0.0, 100000.0);
     assert!((scrolled_units(&console) - max).abs() < 0.01, "the top");
     console_frame(&mut console, &mut input, 0.0, -100000.0);
@@ -1324,7 +1376,7 @@ mod tests {
 
   /// Render the console and give each drawn row's y by its text's seed
   #[cfg(feature = "default-fonts")]
-  fn drawn_rows(console: &mut ConsoleState) -> std::collections::HashMap<u64, f32> {
+  fn drawn_rows(console: &mut Console) -> std::collections::HashMap<u64, f32> {
     use crate::core::ui::immediate::{UiCommand, UiCommands};
     let (mut commands, mut text) = (
       UiCommands::default(),
@@ -1394,7 +1446,7 @@ mod tests {
   fn an_offset_beyond_the_end_is_brought_back_before_scrolling() {
     let (mut console, mut input) = scrolling_console(50);
     let (_, _, view, _) = console.output_area();
-    let line = console.line_height.get();
+    let line = console.line_height;
     let max = 50.0 * line - view;
     console.scroll_offset = 500.0;
     console.scroll_target = 500.0;
@@ -1437,8 +1489,8 @@ mod tests {
     }
     drawn_rows(&mut console);
     let (_, _, view, _) = console.output_area();
-    assert!(console.output_lines.len() as f32 * console.line_height.get() < view);
-    assert!(console.wrapped_rows.get() as f32 * console.line_height.get() > view);
+    assert!(console.output_lines.len() as f32 * console.line_height < view);
+    assert!(console.wrapped_rows as f32 * console.line_height > view);
     // Click the track near its top: the view jumps up
     let track = console.scrollbar_track_rect();
     input.handle_mouse_move(f64::from(track.x + 2.0), f64::from(track.y + 2.0));
@@ -1476,7 +1528,7 @@ mod tests {
           _ => None,
         })
         .collect();
-      (ys, console.line_height.get())
+      (ys, console.line_height)
     };
     let (still, line) = rows_at(0.0);
     let (moved, _) = rows_at(0.5);
@@ -1493,7 +1545,7 @@ mod tests {
 
   #[test]
   fn test_console_toggle() {
-    let mut console = ConsoleState::new();
+    let mut console = Console::new();
     assert!(!console.visible);
 
     console.toggle();
@@ -1506,7 +1558,7 @@ mod tests {
 
   #[test]
   fn test_console_print() {
-    let mut console = ConsoleState::new();
+    let mut console = Console::new();
     let initial_lines = console.output_lines.len();
 
     console.print("Hello, World!");
@@ -1519,7 +1571,7 @@ mod tests {
 
   #[test]
   fn test_console_print_colored() {
-    let mut console = ConsoleState::new();
+    let mut console = Console::new();
     let custom_color = Color::rgb(255, 128, 0);
 
     console.print_colored("Orange text", custom_color);
@@ -1531,7 +1583,7 @@ mod tests {
 
   #[test]
   fn test_console_print_command() {
-    let mut console = ConsoleState::new();
+    let mut console = Console::new();
     console.print_command("> test command");
 
     let last_line = console.output_lines.back().unwrap();
@@ -1540,7 +1592,7 @@ mod tests {
 
   #[test]
   fn test_console_print_error() {
-    let mut console = ConsoleState::new();
+    let mut console = Console::new();
     console.print_error("Something went wrong");
 
     let last_line = console.output_lines.back().unwrap();
@@ -1549,7 +1601,7 @@ mod tests {
 
   #[test]
   fn test_console_print_system() {
-    let mut console = ConsoleState::new();
+    let mut console = Console::new();
     console.print_system("System message");
 
     let last_line = console.output_lines.back().unwrap();
@@ -1558,7 +1610,7 @@ mod tests {
 
   #[test]
   fn test_console_clear() {
-    let mut console = ConsoleState::new();
+    let mut console = Console::new();
     console.print("Line 1");
     console.print("Line 2");
     console.scroll_offset = 5.0;
@@ -1571,7 +1623,7 @@ mod tests {
 
   #[test]
   fn test_console_max_output_lines() {
-    let mut console = ConsoleState::new();
+    let mut console = Console::new();
     console.clear();
 
     // Add more than MAX_OUTPUT_LINES
@@ -1587,7 +1639,7 @@ mod tests {
 
   #[test]
   fn test_console_update_increments_time() {
-    let mut console = ConsoleState::new();
+    let mut console = Console::new();
     let initial_time = console.total_time;
 
     console.update(0.016); // ~60fps frame
@@ -1597,7 +1649,7 @@ mod tests {
 
   #[test]
   fn test_console_cursor_blink_timer_wraps() {
-    let mut console = ConsoleState::new();
+    let mut console = Console::new();
     console.visible = true;
     console.cursor_blink_timer = 0.9;
 
@@ -1612,7 +1664,7 @@ mod tests {
 
   #[test]
   fn test_window_rect() {
-    let mut console = ConsoleState::new();
+    let mut console = Console::new();
     console.x = 100.0;
     console.y = 50.0;
     console.width = 400.0;
@@ -1627,7 +1679,7 @@ mod tests {
 
   #[test]
   fn test_title_bar_rect() {
-    let mut console = ConsoleState::new();
+    let mut console = Console::new();
     console.x = 100.0;
     console.y = 50.0;
     console.width = 400.0;
@@ -1641,7 +1693,7 @@ mod tests {
 
   #[test]
   fn test_close_button_rect_position() {
-    let mut console = ConsoleState::new();
+    let mut console = Console::new();
     console.x = 100.0;
     console.y = 50.0;
     console.width = 400.0;
@@ -1658,7 +1710,7 @@ mod tests {
 
   #[test]
   fn test_resize_handle_rect_position() {
-    let mut console = ConsoleState::new();
+    let mut console = Console::new();
     console.x = 100.0;
     console.y = 50.0;
     console.width = 400.0;
@@ -1675,7 +1727,7 @@ mod tests {
 
   #[test]
   fn test_output_area_calculation() {
-    let mut console = ConsoleState::new();
+    let mut console = Console::new();
     console.x = 0.0;
     console.y = 0.0;
     console.width = 600.0;
@@ -1693,7 +1745,7 @@ mod tests {
 
   #[test]
   fn test_scrollbar_track_rect() {
-    let mut console = ConsoleState::new();
+    let mut console = Console::new();
     console.x = 0.0;
     console.y = 0.0;
     console.width = 600.0;
@@ -1712,7 +1764,7 @@ mod tests {
 
   #[test]
   fn test_scrollbar_thumb_rect_no_scrollbar_needed() {
-    let mut console = ConsoleState::new();
+    let mut console = Console::new();
     console.clear();
     console.x = 0.0;
     console.y = 0.0;
@@ -1730,7 +1782,7 @@ mod tests {
 
   #[test]
   fn test_scrollbar_thumb_rect_with_scrollbar() {
-    let mut console = ConsoleState::new();
+    let mut console = Console::new();
     console.x = 0.0;
     console.y = 0.0;
     console.width = 600.0;
@@ -1747,7 +1799,7 @@ mod tests {
 
   #[test]
   fn test_scrollbar_thumb_position_at_bottom() {
-    let mut console = ConsoleState::new();
+    let mut console = Console::new();
     console.x = 0.0;
     console.y = 0.0;
     console.width = 600.0;
@@ -1765,7 +1817,7 @@ mod tests {
 
   #[test]
   fn test_scrollbar_thumb_position_at_top() {
-    let mut console = ConsoleState::new();
+    let mut console = Console::new();
     console.x = 0.0;
     console.y = 0.0;
     console.width = 600.0;
@@ -1781,7 +1833,7 @@ mod tests {
 
   #[test]
   fn test_max_text_width_with_scrollbar() {
-    let mut console = ConsoleState::new();
+    let mut console = Console::new();
     console.width = 600.0;
 
     let width_with_scrollbar = console.max_text_width(true);
@@ -1863,14 +1915,14 @@ mod tests {
 
   #[test]
   fn test_desired_cursor_when_not_visible() {
-    let console = ConsoleState::new();
+    let console = Console::new();
     // Console not visible, should return None
     assert!(console.desired_cursor(100.0, 100.0).is_none());
   }
 
   #[test]
   fn test_desired_cursor_during_resize() {
-    let mut console = ConsoleState::new();
+    let mut console = Console::new();
     console.visible = true;
     console.drag_state = DragState::Resizing {
       start_w: 600.0,
@@ -1885,7 +1937,7 @@ mod tests {
 
   #[test]
   fn test_desired_cursor_during_drag() {
-    let mut console = ConsoleState::new();
+    let mut console = Console::new();
     console.visible = true;
     console.drag_state = DragState::Dragging {
       offset_x: 10.0,
@@ -1898,7 +1950,7 @@ mod tests {
 
   #[test]
   fn test_desired_cursor_over_resize_handle() {
-    let mut console = ConsoleState::new();
+    let mut console = Console::new();
     console.visible = true;
     console.x = 100.0;
     console.y = 100.0;
@@ -1916,7 +1968,7 @@ mod tests {
   #[test]
   fn the_console_asks_for_no_cursor_once_a_resize_drag_ends_outside_it() {
     use crate::core::input::InputEvent;
-    let mut console = ConsoleState::new();
+    let mut console = Console::new();
     console.toggle();
     let handle = console.resize_handle_rect();
     let (hx, hy) = (
@@ -1924,7 +1976,7 @@ mod tests {
       handle.y + handle.height / 2.0,
     );
     let mut input = Input::new();
-    let mut frame = |console: &mut ConsoleState, events: Vec<InputEvent>| {
+    let mut frame = |console: &mut Console, events: Vec<InputEvent>| {
       for event in events {
         input.queue(event);
       }
@@ -1981,7 +2033,7 @@ mod tests {
 
   #[test]
   fn test_is_focused() {
-    let mut console = ConsoleState::new();
+    let mut console = Console::new();
     assert!(console.is_focused());
 
     console.focused = false;
@@ -2028,7 +2080,7 @@ mod tests {
   #[test]
   fn test_window_rect_is_public() {
     // window_rect() must be public so the engine can check mouse-in-console
-    let console = ConsoleState::new();
+    let console = Console::new();
     let rect = console.window_rect();
     assert_eq!(rect.x, console.x);
     assert_eq!(rect.y, console.y);
@@ -2038,7 +2090,7 @@ mod tests {
 
   #[test]
   fn test_window_rect_contains_point_inside() {
-    let mut console = ConsoleState::new();
+    let mut console = Console::new();
     console.x = 50.0;
     console.y = 50.0;
     console.width = 200.0;
@@ -2093,7 +2145,7 @@ mod tests {
   #[test]
   fn test_focus_state_unfocused_after_outside_click() {
     // Verify that focused starts true but can be set to false
-    let mut console = ConsoleState::new();
+    let mut console = Console::new();
     console.toggle(); // make visible
     assert!(console.is_focused());
 

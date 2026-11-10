@@ -94,8 +94,7 @@ pub mod prelude {
 
   // Scenes
   pub use crate::core::scene::{
-    ConsoleScope, Scene, SceneAction, SceneCleanup, SceneContext, SlideDirection, Transition,
-    downcast_return,
+    Scene, SceneAction, SceneCleanup, SceneContext, SlideDirection, Transition, downcast_return,
   };
 
   // Engine builder
@@ -338,10 +337,8 @@ pub mod prelude {
   // Profiling (macros are no-ops without the `profiler` feature)
   pub use crate::core::profiler::{profile_function, profile_scope};
 
-  // Developer console
-  pub use crate::core::console::{
-    CommandContext, CommandRegistry, CommandResult, ConsoleCommandBuilder, ConsoleState,
-  };
+  // Developer console commands (they do nothing in a build without the tools)
+  pub use crate::core::console::{Command, CommandSpec, ConsoleScope};
 
   // The log's macros for game code, under the `game` target
   pub use crate::{debug, error, info, trace, warn, warn_once};

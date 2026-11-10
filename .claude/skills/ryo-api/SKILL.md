@@ -450,7 +450,7 @@ pub struct SceneContext<'a> {
 
 Helpers that return `Mut<..>` borrow the context: chain one call (`ctx.effects().set_bloom(0.6)`) or bind `let mut fx = ctx.effects();` for several.
 
-`ConsoleScope`: `declare(name, description, verbose: Option<impl Into<String>>)`, `register(name, Fn(&[&str], &mut CommandContext) -> CommandResult) -> bool` (removed when the scene leaves the stack), `remove_builtin(name) -> bool`.
+`ConsoleScope`: `command::<S>(spec: impl Into<CommandSpec>, Fn(&mut S, &mut SceneContext, &mut Command) -> Result<(), String>)` (removed when the scene leaves the stack), `remove(name) -> bool`, `print(text)`, `print_colored(text, color)`.
 
 A complete scene:
 
@@ -546,7 +546,7 @@ EngineBuilder::new()
 | `insert_resource(impl Resource)` | resource for every scene and system |
 | `add_systems<M>(Phase, impl IntoScheduleConfigs<ScheduleSystem, M>)` | game-wide systems |
 | `add_message::<T: Message>()` | register a message type up front |
-| `with_console_commands(impl FnOnce(&mut ConsoleCommandBuilder))` | declare/remove console commands |
+| `console_command(spec, Fn(&mut World, &mut Command) -> Result<(), String>)` / `remove_console_command(name)` | add a console command for the run / remove one |
 | `start_scene(impl Scene + 'static)` | first scene |
 | `build(self) -> Engine`, then `Engine::run(self) -> EngineResult<()>` | |
 
@@ -1624,7 +1624,7 @@ Families (see `ryo-network`):
 - `profile_function!()` and `profile_scope!("name")`: puffin scopes with the `profiler` feature, nothing without. See `ryo-profiler`.
 - `FrameCost` (resource the engine writes at the end of every frame, windowed or headless; read it with `ctx.resource::<FrameCost>()`, never write it): what recent frames cost the CPU, smoothed over about 50 frames, as the F1 frame timing overlay shows it. `update_ms()` (the UI pass and the fixed steps: scenes, systems, physics; the other phases, such as the asset pump, map spawning and transform propagation, count only in the total), `render_ms()` (gathering, building and uploading the frame), `present_ms()` (running the render passes and presenting, without the wait for the window's next image), `total_ms()` (the frame's work, the vsync wait and the sleep between frames left out), `fps()` (from wall-clock time, waits included; 0 until the second frame), `frames()` (frames measured). For a game's own performance readout.
 - `game_trace!`, `game_debug!`, `game_info!`, `game_warn!`, `game_error!`: `format!`-style game logging (`game_info!("score {}", s)`; `game_info!(module: "ai", "..")` tags a module), shown in the logger window and the terminal.
-- Console (backtick key): `ConsoleCommandBuilder` (from `EngineBuilder::with_console_commands`): `declare(name, description)`, `declare_verbose(name, description, verbose)`, `remove_builtin(name)`. Handlers: `ctx.console().register(name, |args: &[&str], cmd: &mut CommandContext| -> CommandResult)`. `CommandContext { console: &mut ConsoleState, debug_config, quit_requested, capture_requested, time_scale, commands, game_name, game_version }`; `ConsoleState` prints with `print`, `print_colored`, `print_error`, `print_system`; `enum CommandResult { Ok, Error(String), Quit }`; `CommandRegistry` is the engine's registry. See `ryo-console`.
+- Console (backtick key): `EngineBuilder::console_command(spec, |world, cmd| ..)` and `remove_console_command(name)`; a scene's `ctx.console().command(spec, |scene: &mut S, ctx, cmd| ..)`. `CommandSpec::new(name, description).usage(..).help(..)` (or a `(name, description)` pair); `Command`: `name`, `args`, `arg::<T>`, `arg_or`, `rest`, `print`, `print_colored`, `act(SceneAction)`, `quit()`; a handler returns `Result<(), String>` (the error prints in red). See `ryo-console`.
 - `rand` and `rand::Rng` are re-exported (`rand::thread_rng().gen_range(0.0..1.0)`).
 
 ---
