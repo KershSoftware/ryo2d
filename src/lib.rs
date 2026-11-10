@@ -71,6 +71,10 @@ pub use wgpu;
 #[doc(hidden)]
 pub use bevy_ecs;
 
+/// Whether this build has the developer tools: on with debug assertions or the
+/// `dev-tools` feature, off in a shipped game.
+pub const DEV_TOOLS: bool = cfg!(dev_tools);
+
 /// The prelude module - import everything you need with `use ryo2d::prelude::*`
 pub mod prelude {
   // The ECS derives expand to paths rooted at the kernel crate's own name;
@@ -345,7 +349,18 @@ pub mod prelude {
   pub use crate::game_trace;
   pub use crate::game_warn;
 
+  pub use crate::DEV_TOOLS;
+
   // Common utilities re-exported for convenience
   pub use rand;
   pub use rand::Rng;
+}
+
+#[cfg(test)]
+mod tests {
+  #[test]
+  #[allow(clippy::assertions_on_constants)]
+  fn dev_tools_are_on_in_a_test_build() {
+    assert!(crate::DEV_TOOLS);
+  }
 }

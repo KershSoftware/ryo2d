@@ -38,6 +38,18 @@ fn main() {
     }
   }
   list_skills();
+  dev_tools_cfg();
+}
+
+/// The `dev_tools` cfg: on when debug assertions are on or the `dev-tools`
+/// feature is set, so a release build without the feature carries no dev tools.
+fn dev_tools_cfg() {
+  println!("cargo::rustc-check-cfg=cfg(dev_tools)");
+  if std::env::var_os("CARGO_CFG_DEBUG_ASSERTIONS").is_some()
+    || std::env::var_os("CARGO_FEATURE_DEV_TOOLS").is_some()
+  {
+    println!("cargo::rustc-cfg=dev_tools");
+  }
 }
 
 /// Write `embedded_skills.rs` to `OUT_DIR`: every `.claude/skills/<name>/SKILL.md`

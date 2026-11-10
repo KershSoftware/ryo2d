@@ -491,10 +491,14 @@ case "$COMMAND" in
     check)
         cargo check --workspace
         cargo check -p ryo2d --lib --target wasm32-unknown-unknown
+        cargo check -p ryo2d --lib --release
+        cargo check -p console-demo --release
         ;;
     lint)
         cargo clippy --workspace --all-targets
         cargo clippy -p ryo2d --lib --target wasm32-unknown-unknown
+        cargo clippy -p ryo2d --lib --release
+        cargo clippy -p console-demo --release
         ;;
     test)
         # Default: run unit tests + integration tests

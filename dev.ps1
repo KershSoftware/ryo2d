@@ -441,11 +441,19 @@ switch ($ExampleName.ToLower()) {
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         cargo check -p ryo2d --lib --target wasm32-unknown-unknown
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        cargo check -p ryo2d --lib --release
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        cargo check -p console-demo --release
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     }
     "lint" {
         cargo clippy --workspace --all-targets
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         cargo clippy -p ryo2d --lib --target wasm32-unknown-unknown
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        cargo clippy -p ryo2d --lib --release
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        cargo clippy -p console-demo --release
     }
     "test" {
         # Default: run unit tests + integration tests
