@@ -90,8 +90,7 @@ fn clamped(width: u32, height: u32) -> (u32, u32) {
     height.clamp(1, MAX_TARGET_SIDE),
   );
   if size != (width, height) {
-    crate::engine_warn!(
-      module: "Render",
+    log::warn!(
       "Render target size {width}x{height} is out of range; using {}x{}",
       size.0,
       size.1

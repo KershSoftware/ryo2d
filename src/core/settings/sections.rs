@@ -201,8 +201,7 @@ impl SectionRegistry {
         }
         (Err(error), _) | (_, Err(error)) => {
           if !section.warned.swap(true, Ordering::Relaxed) {
-            crate::engine_warn!(
-              module: "settings",
+            log::warn!(
               "the settings section `{}` does not serialize as JSON ({error}); the file keeps what it held",
               section.key
             );

@@ -84,8 +84,7 @@ impl Compiled {
   pub(crate) fn new(effect: &ParticleEffect, version: u64, name: impl FnOnce() -> String) -> Self {
     let problems = effect.problems();
     if !problems.is_empty() {
-      crate::engine_warn!(
-        module: "Particles",
+      log::warn!(
         "Clamped the values not allowed in {}: {}",
         name(),
         problems.join("; ")

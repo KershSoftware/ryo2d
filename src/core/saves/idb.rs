@@ -122,8 +122,7 @@ async fn open_database(name: &str) -> Result<IdbDatabase, SaveError> {
       .and_then(JsCast::dyn_into::<IdbDatabase>)
       .and_then(|database| database.create_object_store(FILES));
     if let Err(error) = made {
-      crate::engine_warn!(
-        module: "Saves",
+      log::warn!(
         "could not make the browser's save store: {:?}",
         failure(&error)
       );

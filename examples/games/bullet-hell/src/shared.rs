@@ -56,7 +56,7 @@ pub fn spawn_background(ctx: &mut SceneContext) {
   ];
   for (name, z, speed) in layers {
     let Ok(sprite) = ctx.assets().load_now::<Image>(&format!("{name}.png")) else {
-      ryo2d::game_warn!("assets/{name}.png could not be loaded");
+      ryo2d::warn!("assets/{name}.png could not be loaded");
       continue;
     };
     let auto_scroll = Vec2::new(speed, 0.0);

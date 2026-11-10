@@ -8,7 +8,6 @@ use winit::event::MouseButton;
 use winit::keyboard::KeyCode;
 
 use super::{GamepadButton, Stick};
-use crate::engine_warn;
 
 macro_rules! key_table {
   ($($key:ident),* $(,)?) => {
@@ -589,10 +588,7 @@ impl Actions {
       for text in texts {
         match Binding::parse(text) {
           Some(binding) => bindings.push(binding),
-          None => engine_warn!(
-            module: "input",
-            "saved binding {text:?} for {name:?} is not a binding; skipped"
-          ),
+          None => log::warn!("saved binding {text:?} for {name:?} is not a binding; skipped"),
         }
       }
       if bindings.is_empty() && !texts.is_empty() {

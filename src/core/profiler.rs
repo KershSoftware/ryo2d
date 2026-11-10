@@ -37,7 +37,6 @@
 //! real-time flamegraphs. No external tools required!
 
 #[cfg(feature = "profiler")]
-use crate::engine_info;
 
 /// Profile an entire function (adds scope with function name).
 ///
@@ -118,7 +117,7 @@ pub fn init(enabled: bool) {
   }
 
   puffin::set_scopes_on(true);
-  engine_info!(module: "Profiler", "Profiling enabled - profiler window will open");
+  log::info!("Profiling enabled - profiler window will open");
 }
 
 #[cfg(not(feature = "profiler"))]

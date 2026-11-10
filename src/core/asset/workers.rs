@@ -73,7 +73,7 @@ impl Workers {
       match thread {
         Ok(_) => started += 1,
         Err(error) => {
-          crate::engine_warn!(module: "asset", "could not start an asset worker: {error}")
+          log::warn!("could not start an asset worker: {error}")
         }
       }
     }

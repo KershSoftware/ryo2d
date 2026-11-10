@@ -197,7 +197,7 @@ impl MemorySource {
     let path = match AssetPath::parse(path) {
       Ok(path) => path,
       Err(error) => {
-        crate::engine_warn!(module: "asset", "MemorySource::insert: {error}");
+        log::warn!("MemorySource::insert: {error}");
         return;
       }
     };

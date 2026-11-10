@@ -251,8 +251,7 @@ pub(super) fn capped(window: CellRect) -> CellRect {
     return window;
   }
   if !WINDOW_WARNED.swap(true, Ordering::Relaxed) {
-    crate::engine_warn!(
-      module: "Navigation",
+    log::warn!(
       "a navigation window of {} x {} cells is over the 4,194,304 cells a grid holds: it keeps the middle {} x {} (logged once)",
       size.x,
       size.y,

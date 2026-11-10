@@ -161,8 +161,7 @@ impl<T: Send + 'static> Writer<T> {
         Ok(_) => state.jobs = Some(jobs),
         // Expected on the web, so not a warning
         Err(error) => {
-          crate::engine_debug!(
-            module: "Saves",
+          log::debug!(
             "no thread for the {} ({error}); saves are written on the main thread",
             self.name
           );

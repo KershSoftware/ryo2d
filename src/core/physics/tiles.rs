@@ -963,8 +963,7 @@ impl TileColliders {
     if std::mem::replace(&mut self.warned_reach, true) {
       return;
     }
-    crate::engine_warn!(
-      module: "Physics",
+    log::warn!(
       "a TileColliders cell at ({x}, {y}) is past the reach of tile collision, {MAX_REACH} cells from (0, 0) on either axis, so it does not collide (logged once a grid)"
     );
   }
@@ -997,10 +996,7 @@ impl TileColliders {
   pub fn add_shape(&mut self, shape: CellShape) -> u16 {
     let index = self.shapes.len();
     if index >= usize::from(u16::MAX) {
-      crate::engine_warn!(
-        module: "Physics",
-        "a TileColliders holds at most 65,535 shapes; this one is dropped"
-      );
+      log::warn!("a TileColliders holds at most 65,535 shapes; this one is dropped");
       return u16::MAX;
     }
     let build = ShapeBuild::of(&shape);
@@ -2044,10 +2040,7 @@ impl Boundary {
   pub(crate) fn add_shape(&mut self, shape: CellShape) -> u16 {
     let index = self.shapes.len();
     if index >= usize::from(u16::MAX) {
-      crate::engine_warn!(
-        module: "Physics",
-        "a tile boundary holds at most 65,535 shapes; this one is dropped"
-      );
+      log::warn!("a tile boundary holds at most 65,535 shapes; this one is dropped");
       return u16::MAX;
     }
     let build = ShapeBuild::of(&shape);

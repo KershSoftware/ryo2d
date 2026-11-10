@@ -78,7 +78,7 @@ pub fn spawn_ui_file(ctx: &mut SceneContext, path: &str, embedded: &str) -> Opti
   match tree {
     Ok(tree) => Some(ctx.spawn_ui(tree)),
     Err(error) => {
-      game_error!("{path}: {error}");
+      error!("{path}: {error}");
       None
     }
   }

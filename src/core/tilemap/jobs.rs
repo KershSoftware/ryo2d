@@ -106,8 +106,7 @@ impl<T: Send + 'static> Worker<T> {
         Ok(_) => self.jobs = Some(jobs),
         // Expected on the web, so not a warning
         Err(error) => {
-          crate::engine_debug!(
-            module: "Tilemap",
+          log::debug!(
             "no thread for the {} ({error}); its jobs run on the main thread",
             self.name
           );

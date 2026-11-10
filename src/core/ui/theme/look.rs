@@ -17,7 +17,7 @@ static WARNED: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
 pub(crate) fn warn_once(key: String, message: impl FnOnce() -> String) {
   let first = WARNED.lock().is_ok_and(|mut warned| warned.insert(key));
   if first {
-    crate::engine_warn!(module: "ui", "{}", message());
+    log::warn!("{}", message());
   }
 }
 

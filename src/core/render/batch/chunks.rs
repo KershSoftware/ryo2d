@@ -524,8 +524,7 @@ impl ChunkStore {
     if !self.warned {
       self.warned = true;
       let size = std::mem::size_of::<SpriteInstance>();
-      crate::engine_warn!(
-        module: "Tilemap",
+      log::warn!(
         "the tile chunk arena is full: the chunks in view, and those drawn in the last {KEEP_FRAMES} frames, need more than the {} tile instances ({} MiB) the GPU's largest buffer holds, so the chunks past that draw nothing until there is room (every camera's chunks share this arena: zoom in or show a smaller view, show fewer tile layers to the wide camera with RenderLayers, or draw an overview from a picture of the map)",
         self.cap.0,
         self.cap.0 * size / (1024 * 1024)

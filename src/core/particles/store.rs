@@ -230,8 +230,7 @@ impl Budget<'_> {
     let free = self.budget.saturating_sub(*self.live) as usize;
     let granted = wanted.min(free);
     if granted < wanted && self.warned.insert(id) {
-      crate::engine_warn!(
-        module: "Particles",
+      log::warn!(
         "The particle budget of {} is full: spawns of {} are dropped until particles die (raise it with EngineBuilder::particle_budget)",
         self.budget,
         effect_name(self.server, id)

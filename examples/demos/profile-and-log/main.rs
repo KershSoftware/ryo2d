@@ -30,7 +30,7 @@ const WORK_VALUES: [f32; 6] = [0.25, 0.5, 1.0, 2.0, 4.0, 8.0];
 const WORK_DEFAULT: usize = 2;
 
 fn main() {
-  game_info!(module: "Main", "Starting Profile and Log Demo");
+  ryo2d::info!("Starting Profile and Log Demo");
 
   Demo::new("Profile and Log")
     .resolution(SCREEN_WIDTH, SCREEN_HEIGHT)
@@ -122,7 +122,7 @@ impl DemoScene {
       ));
     }
 
-    game_info!(module: "Spawner", "Spawned {} CPU-heavy entities", count);
+    ryo2d::info!("Spawned {} CPU-heavy entities", count);
   }
 
   fn despawn_cpu(&mut self, ctx: &mut SceneContext, count: usize) {
@@ -136,7 +136,7 @@ impl DemoScene {
     }
 
     if actual > 0 {
-      game_info!(module: "Spawner", "Despawned {} CPU-heavy entities", actual);
+      ryo2d::info!("Despawned {} CPU-heavy entities", actual);
     }
   }
 
@@ -161,7 +161,7 @@ impl DemoScene {
       ));
     }
 
-    game_info!(module: "Spawner", "Spawned {} GPU-heavy entities", count);
+    ryo2d::info!("Spawned {} GPU-heavy entities", count);
   }
 
   fn despawn_gpu(&mut self, ctx: &mut SceneContext, count: usize) {
@@ -175,7 +175,7 @@ impl DemoScene {
     }
 
     if actual > 0 {
-      game_info!(module: "Spawner", "Despawned {} GPU-heavy entities", actual);
+      ryo2d::info!("Despawned {} GPU-heavy entities", actual);
     }
   }
 
@@ -202,7 +202,7 @@ impl DemoScene {
       ));
     }
 
-    game_debug!(module: "Spawner", "Spawned {} mixed entities", count);
+    ryo2d::debug!("Spawned {} mixed entities", count);
   }
 
   fn despawn_mixed(&mut self, ctx: &mut SceneContext, count: usize) {
@@ -216,7 +216,7 @@ impl DemoScene {
     }
 
     if actual > 0 {
-      game_debug!(module: "Spawner", "Despawned {} mixed entities", actual);
+      ryo2d::debug!("Despawned {} mixed entities", actual);
     }
   }
 
@@ -360,8 +360,8 @@ impl DemoPage for DemoScene {
   }
 
   fn enter(&mut self, _ctx: &mut SceneContext) {
-    game_info!(module: "Demo", "Scene entered - press 1-6 to spawn/despawn entities");
-    game_debug!(module: "Demo", "F9 opens logger, F10 opens profiler");
+    ryo2d::info!("Scene entered - press 1-6 to spawn/despawn entities");
+    ryo2d::debug!("F9 opens logger, F10 opens profiler");
   }
 
   fn update(&mut self, ctx: &mut SceneContext, dt: f32) {

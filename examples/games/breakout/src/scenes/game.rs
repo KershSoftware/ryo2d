@@ -673,7 +673,7 @@ impl GameScene {
       if let MapEvent::Failed { map, error } = event
         && map == root
       {
-        game_error!("level {}: {error}", self.level);
+        error!("level {}: {error}", self.level);
         ctx.world.despawn(root);
         self.level_map = None;
         self.map_failed(ctx);
@@ -696,14 +696,14 @@ impl GameScene {
       let at = ctx.maps().cell_to_world(root, tile.layer, tile.cell);
       match (at, read_brick(&tile)) {
         (Some(at), Ok((color, hits, points))) => self.spawn_block(ctx, at, color, hits, points),
-        (_, Err(e)) => game_error!("level {}: brick at {}: {e}", self.level, tile.cell),
-        (None, _) => game_error!("level {}: brick at {} has no place", self.level, tile.cell),
+        (_, Err(e)) => error!("level {}: brick at {}: {e}", self.level, tile.cell),
+        (None, _) => error!("level {}: brick at {} has no place", self.level, tile.cell),
       }
     }
     ctx.world.despawn(root);
     self.blocks_remaining = self.blocks.len() as u32;
     if self.blocks.is_empty() {
-      game_error!("level {}: its map holds no bricks", self.level);
+      error!("level {}: its map holds no bricks", self.level);
       self.level_failed = true;
     }
   }

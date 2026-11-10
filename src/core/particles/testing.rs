@@ -293,6 +293,16 @@ pub(crate) fn particle_warnings() -> Vec<String> {
     .collect()
 }
 
+/// The warnings the particle file loader gives (its target is the asset
+/// module's, so the old log labels them `Asset`)
+pub(crate) fn particle_loader_warnings() -> Vec<String> {
+  crate::core::dev_log::get_entries()
+    .into_iter()
+    .filter(|entry| entry.module.as_deref() == Some("Asset"))
+    .map(|entry| entry.message)
+    .collect()
+}
+
 /// Spawns a busy level's colliders, for comparing ways of meeting them, and
 /// propagates their transforms: a tile map's parts (64 x 48 cells of 16
 /// px from (40, 24), its bottom rows ground with holes and the rest a

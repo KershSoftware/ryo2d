@@ -789,13 +789,16 @@ fn build_planned(defs: &Defs<'_>, planned: PlannedLayer<'_>) -> Result<Vec<Layer
     }]);
   }
   if plan.snapped > 0 {
-    crate::engine_warn!(
-      module: "LDtk",
+    log::warn!(
       "{}: {place}: its stacked, offset and translucent tiles ask for {} layers, past the {MAX_SUBLAYERS} a layer splits into, so {} {} in the nearest of them",
       defs.path,
       plan.needed,
       plan.snapped,
-      if plan.snapped == 1 { "tile draws" } else { "tiles draw" }
+      if plan.snapped == 1 {
+        "tile draws"
+      } else {
+        "tiles draw"
+      }
     );
   }
   if raw.ty == "IntGrid" {

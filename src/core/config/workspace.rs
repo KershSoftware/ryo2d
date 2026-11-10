@@ -605,7 +605,7 @@ fn warn_once(message: String) {
     .map(|mut warned| warned.insert(message.clone()))
     .unwrap_or(true);
   if first {
-    crate::engine_warn!("{message}");
+    log::warn!("{message}");
   }
 }
 
@@ -615,7 +615,7 @@ fn embedded_env(raw: Option<&str>) -> HashMap<String, serde_json::Value> {
     return HashMap::new();
   };
   serde_json::from_str(raw).unwrap_or_else(|e| {
-    eprintln!("[ryo2d] Warning: Malformed embedded [env] ({e}), ignoring it");
+    log::warn!("Malformed embedded [env] ({e}), ignoring it");
     HashMap::new()
   })
 }

@@ -11,7 +11,6 @@ use winit::event_loop::ActiveEventLoop;
 use winit::window::WindowId;
 
 use super::dev_window::{DevWindowConfig, DevWindowRenderer, colors};
-use crate::engine_info;
 
 /// Colors for the profiler UI
 mod profiler_colors {
@@ -124,7 +123,7 @@ impl ProfilerWindow {
       sink_id
     };
 
-    engine_info!(module: "Profiler", "Window opened");
+    log::info!("Window opened");
 
     Some(Self {
       renderer,

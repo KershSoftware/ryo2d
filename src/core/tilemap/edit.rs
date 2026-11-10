@@ -429,8 +429,7 @@ fn refused_fill(world: &mut World, layer: Entity, lo: IVec2, hi: IVec2) -> bool 
     let name = world
       .get::<LayerInfo>(layer)
       .map_or("?", |info| info.name.as_str());
-    crate::engine_warn!(
-      module: "Tilemap",
+    log::warn!(
       "layer {name:?}: a fill from {lo} to {hi} would make {missing} chunks, past the {cap} a map holds, so it changed nothing (this layer warns once)"
     );
   }

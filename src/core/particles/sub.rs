@@ -129,8 +129,7 @@ pub(super) fn compile_subs(
       .map(|(field, _)| format!("{field}: a sub-effect's own sub-emitters are ignored"))
       .collect::<Vec<_>>()
       .join("; ");
-    crate::engine_warn!(
-      module: "Particles",
+    log::warn!(
       "Played {} as a sub-effect: {ignored}",
       effect_name(server, sub)
     );

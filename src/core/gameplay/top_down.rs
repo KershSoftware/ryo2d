@@ -133,10 +133,7 @@ pub fn top_down_movement(
   {
     if controller.mode != CharacterMode::TopDown {
       if warned.mode.insert(entity) {
-        crate::engine_warn!(
-          module: "Gameplay",
-          "{entity}: TopDownMovement needs CharacterController::top_down()"
-        );
+        log::warn!("{entity}: TopDownMovement needs CharacterController::top_down()");
       }
       continue;
     }
@@ -144,10 +141,7 @@ pub fn top_down_movement(
     let mut v = velocity.as_vec2();
     if !v.is_finite() {
       if warned.velocity.insert(entity) {
-        crate::engine_warn!(
-          module: "Gameplay",
-          "{entity}: TopDownMovement read a non-finite Velocity as zero"
-        );
+        log::warn!("{entity}: TopDownMovement read a non-finite Velocity as zero");
       }
       v = Vec2::ZERO;
     }

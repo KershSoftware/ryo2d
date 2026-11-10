@@ -1366,8 +1366,7 @@ fn plan<'a>(
       let hex = layer.data.grid.hex_cells();
       if hex.is_some_and(|hex| !hex.traceable()) {
         if warned.insert(layer.index) {
-          crate::engine_warn!(
-            module: "Tilemap",
+          log::warn!(
             "map {map}: layer \"{}\" has hexagonal cells over 16,384 px or under 2 px, which cast no shadows",
             layer.info.name
           );

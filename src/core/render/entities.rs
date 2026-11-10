@@ -279,8 +279,7 @@ impl EntityDrawer {
         && cameras.iter().any(|camera| camera.target == Some(target))
         && self.warned.insert(drawable.entity)
       {
-        crate::engine_warn!(
-          module: "Render",
+        log::warn!(
           "{:?} shows the render target its camera draws into; that camera skips it",
           drawable.entity
         );

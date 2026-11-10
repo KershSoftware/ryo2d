@@ -585,8 +585,7 @@ impl SaveService {
       (start + warn_after, start + give_up)
     };
     if !self.writer.wait_idle(warn_at) && !gave_up {
-      crate::engine_warn!(
-        module: "Saves",
+      log::warn!(
         "still writing {} after {warn_after:?}; waiting up to {give_up:?}",
         self.writer.unfinished().join(", ")
       );
@@ -613,8 +612,7 @@ impl SaveService {
       }
     }
     if !unfinished.is_empty() && !self.gave_up.swap(true, Ordering::Relaxed) {
-      crate::engine_warn!(
-        module: "Saves",
+      log::warn!(
         "gave up after {give_up:?} waiting to write {}: those writes may be lost",
         unfinished.join(", ")
       );
@@ -707,8 +705,7 @@ impl SaveService {
 
   fn warn_backup(&self, slot: &str) {
     if lock(&self.backup_warned).insert(slot.to_string()) {
-      crate::engine_warn!(
-        module: "Saves",
+      log::warn!(
         "save \"{slot}\" is damaged, so its backup (the save before it) was loaded; this warns once per slot"
       );
     }

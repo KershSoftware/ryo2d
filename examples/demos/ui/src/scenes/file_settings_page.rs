@@ -83,7 +83,7 @@ impl DemoPage for FileSettingsPage {
     match ctx.spawn_ui_file(SETTINGS) {
       Ok(root) => self.find_tabs(ctx, root),
       Err(error) => {
-        game_error!("{error}");
+        ryo2d::error!("{error}");
         self.error = Some(error.to_string());
       }
     }

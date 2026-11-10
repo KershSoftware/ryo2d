@@ -1599,8 +1599,7 @@ fn image_layer(
       continue;
     };
     if (cut_x || cut_y) && warned.insert(picture.layer) {
-      crate::engine_warn!(
-        module: "Tilemap",
+      log::warn!(
         "image layer {name:?} repeats a {}x{} px image, too small to cover a camera's view in {} copies; it covers the middle of the view",
         size.x,
         size.y,

@@ -365,7 +365,7 @@ impl DemoPage for InfinitePage {
     };
     clear_to(ctx, background.unwrap_or(SKY));
     let Some(world) = world else {
-      game_warn!("the meadow has no ground to go on from");
+      ryo2d::warn!("the meadow has no ground to go on from");
       return;
     };
     let stream = MapStream::new(move |request: ChunkRequest| world.chunk(request));

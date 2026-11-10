@@ -416,7 +416,7 @@ impl<'a> UiContext<'a> {
     }
     if !offset.is_finite() {
       if !BAD_OFFSET_WARNED.swap(true, Ordering::Relaxed) {
-        crate::engine_warn!(module: "ui", "set_scroll_offset got a scroll offset that is not finite; ignored");
+        log::warn!("set_scroll_offset got a scroll offset that is not finite; ignored");
       }
       return;
     }

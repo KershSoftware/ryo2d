@@ -121,10 +121,7 @@ impl<D: Send + 'static> Compiler<D> {
       match spawned {
         Ok(_) => self.jobs = Some(jobs),
         Err(error) => {
-          crate::engine_warn!(
-            module: "Shaders",
-            "no thread to compile shaders on ({error}); they compile on the main thread"
-          );
+          log::warn!("no thread to compile shaders on ({error}); they compile on the main thread");
           return None;
         }
       }

@@ -163,7 +163,7 @@ impl ObjectsPage {
 /// worth nothing, warned
 fn coin_value(coin: &MapObject) -> i64 {
   coin.properties.int("value").unwrap_or_else(|| {
-    game_warn!(
+    ryo2d::warn!(
       "coin {} has no value: is project.tiled-project loaded?",
       coin.id
     );

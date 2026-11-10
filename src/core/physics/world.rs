@@ -519,7 +519,7 @@ impl Physics {
       {
         self.warnings += 1;
       }
-      crate::engine_warn!(module: "Physics", "{entity}: {what}");
+      log::warn!("{entity}: {what}");
     }
   }
 

@@ -182,8 +182,7 @@ pub(crate) fn warn_untriggered(
 ) {
   for (entity, collider) in &added {
     if !collider.is_some_and(|collider| collider.is_trigger) && warned.insert(entity) {
-      crate::engine_warn!(
-        module: "Gameplay",
+      log::warn!(
         "{entity}: Pickup, KillZone and Checkpoint need a trigger collider (Collider::as_trigger) on the same entity"
       );
     }

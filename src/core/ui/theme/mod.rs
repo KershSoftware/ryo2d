@@ -669,11 +669,7 @@ pub(crate) fn load_skin(
     SkinSource::Path(path) => match assets.load_now::<Image>(path) {
       Ok(image) => Some(image),
       Err(error) => {
-        crate::engine_warn!(
-          module: "ui",
-          "could not load the UI skin {path:?}: {}",
-          error.report()
-        );
+        log::warn!("could not load the UI skin {path:?}: {}", error.report());
         None
       }
     },

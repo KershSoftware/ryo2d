@@ -61,8 +61,7 @@ impl LutTexture {
             self.source = Some(key);
           }
           None => {
-            crate::engine_warn!(
-              module: "Render",
+            log::warn!(
               "{} is {}x{}, not a strip; keeping the last good LUT",
               lut_name(id, server),
               image.width(),

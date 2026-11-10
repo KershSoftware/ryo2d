@@ -281,8 +281,7 @@ type Warned = FastSet<(Option<usize>, &'static str)>;
 /// collision tracer takes (over 16,384 px, or under 2 px)
 fn warn_untraceable(map: Entity, layer: &LayerView<'_>, warned: &mut Warned) {
   if warned.insert((Some(layer.index), "hexagonal")) {
-    crate::engine_warn!(
-      module: "Tilemap",
+    log::warn!(
       "map {map}: layer \"{}\" has hexagonal cells over 16,384 px or under 2 px, which don't collide",
       layer.info.name
     );
@@ -315,8 +314,7 @@ fn plan<'a>(
   let is_shape = |(_, cell): &&(IntGridKey, TileCell)| matches!(cell, TileCell::Shape(_));
   if overrides.iter().any(|o| is_shape(&o)) && warned.insert((None, "with_intgrid_collision")) {
     let shapes: Vec<&IntGridKey> = overrides.iter().filter(is_shape).map(|(k, _)| k).collect();
-    crate::engine_warn!(
-      module: "Tilemap",
+    log::warn!(
       "map {map}: with_intgrid_collision gives the IntGrid values {shapes:?} a TileCell::Shape, which names no shape, so their cells collide as nothing; give them Solid, OneWay or a Slope"
     );
   }
@@ -330,8 +328,7 @@ fn plan<'a>(
         Some((_, layer)) => format!("layer \"{layer}\""),
         None => "the map".to_string(),
       };
-      crate::engine_warn!(
-        module: "Tilemap",
+      log::warn!(
         "map {map}: {whose}'s property {name} is {value:?}, not {wanted}; its colliders take what is under it (the map's, else the default)"
       );
     }
@@ -359,8 +356,7 @@ fn plan<'a>(
     );
     let parallax = layer.info.parallax;
     if parallax != Vec2::ONE && warned.insert((Some(layer.index), "parallax")) {
-      crate::engine_warn!(
-        module: "Tilemap",
+      log::warn!(
         "map {map}: layer \"{}\" collides and has parallax {}, {}: collision ignores parallax, so it collides where it would draw with parallax 1, not where it draws",
         layer.info.name,
         parallax.x,
@@ -496,8 +492,7 @@ fn plan_edge<'a>(
   for layer in layers {
     let Some(footing) = rule.footing(layer.info.floor, &layer.data.grid, stands(&layer)) else {
       if layer.info.floor == floor && warned.insert((None, "floor edge")) {
-        crate::engine_warn!(
-          module: "Tilemap",
+        log::warn!(
           "map {map}: layer \"{}\" on floor {floor} stands elsewhere than the floor's bottom tile layer \"{}\" (another grid or offset), so the floor's edge leaves its cells out",
           layer.info.name,
           bottom.info.name
@@ -644,8 +639,7 @@ impl<'w> Footprint<'w> {
 /// orthogonal grid, which collided both ways
 fn warn_both_ways(map: Entity, context: &Context<'_>, warned: &mut Warned) {
   if context.both_ways.get() && warned.insert((None, "one_way")) {
-    crate::engine_warn!(
-      module: "Tilemap",
+    log::warn!(
       "map {map}: its one-way tiles collide both ways: one-way platforms are for orthogonal maps"
     );
   }

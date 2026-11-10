@@ -99,7 +99,7 @@ impl FileInventoryPage {
   fn fail(&mut self, error: UiFileError) {
     let text = error.to_string();
     if self.error.as_deref() != Some(text.as_str()) {
-      game_error!("{error}");
+      ryo2d::error!("{error}");
       self.error = Some(text);
     }
   }

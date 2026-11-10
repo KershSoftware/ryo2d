@@ -5741,6 +5741,7 @@ dependencies = [
 name = "ryo2d-procgen"
 version = "0.0.1"
 dependencies = [
+ "log",
  "noise",
  "rand 0.8.5",
  "ryo2d",

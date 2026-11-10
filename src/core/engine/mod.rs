@@ -84,7 +84,6 @@ use crate::core::ui::immediate::UiCommands;
 use crate::core::ui::layout::engine::LayoutEngine;
 use crate::core::ui::memory::UiMemory;
 use crate::core::window::{WindowInfo, WindowRequest};
-use crate::{engine_info, engine_warn};
 
 use frame::{
   advance_clock_system, asset_registry_system, clear_trackers_system, publish_input_system,
@@ -426,14 +425,12 @@ pub(crate) enum FrameOutcome {
 fn scripted_run_from_env() -> (AutoCaptureConfig, InputScript, bool) {
   let (capture, warnings) = AutoCaptureConfig::from_env();
   for warning in &warnings {
-    eprintln!("[capture] {warning}");
-    engine_warn!(module: "Capture", "{}", warning);
+    log::warn!("{}", warning);
   }
   let (script, warning) = InputScript::from_env();
   let invalid = !warnings.is_empty() || warning.is_some();
   if let Some(warning) = warning {
-    eprintln!("[input] {warning}");
-    engine_warn!(module: "Input", "{}", warning);
+    log::warn!("{}", warning);
   }
   (capture, script, invalid)
 }
@@ -444,8 +441,7 @@ fn scripted_run_from_env() -> (AutoCaptureConfig, InputScript, bool) {
 fn headless_pace_from_env() -> (Option<std::time::Duration>, bool) {
   let (pace, warning) = crate::core::capture::headless_pace_from_env();
   if let Some(warning) = &warning {
-    eprintln!("[headless] {warning}");
-    engine_warn!(module: "Capture", "{}", warning);
+    log::warn!("{}", warning);
   }
   (pace, warning.is_some())
 }
@@ -455,7 +451,7 @@ fn handle_system_error(error: crate::core::ecs::SystemError, ctx: crate::core::e
   if cfg!(debug_assertions) {
     crate::core::ecs::kernel::panic_on_error(error, ctx);
   } else {
-    crate::engine_error!(module: "Systems", "{ctx}: {error}");
+    log::error!("{ctx}: {error}");
   }
 }
 
@@ -642,7 +638,7 @@ impl Engine {
 
     // Tell players and developers where settings and saves are kept
     if !headless && let Some(workspace) = &workspace {
-      engine_info!(module: "Save", "Save data: {}", workspace.save_location().display());
+      log::info!("Save data: {}", workspace.save_location().display());
     }
 
     // Assets load from the project's asset folder unless the game gave a source
@@ -664,12 +660,11 @@ impl Engine {
     } else {
       match Gilrs::new() {
         Ok(g) => {
-          engine_info!(module: "Gamepad", "Initialized successfully");
+          log::info!("Initialized successfully");
           Some(g)
         }
         Err(e) => {
-          engine_warn!(
-            module: "Gamepad",
+          log::warn!(
             "Could not initialize gamepad support: {}. Continuing without gamepads.",
             e
           );
@@ -914,12 +909,12 @@ impl Engine {
     #[cfg(not(target_arch = "wasm32"))]
     self.open_log_file();
 
-    Self::print_startup_banner(&self.config, self.vsync);
+    #[cfg(dev_tools)]
+    Self::print_startup_banner(&self.config, self.vsync, self.debug_keys_enabled);
 
-    engine_info!(module: "Init", "Initializing {}...", self.config.title);
-    engine_info!(module: "Init", "Resolution: {}x{}", self.config.width, self.config.height);
-    engine_info!(
-      module: "Init",
+    log::info!("Initializing {}...", self.config.title);
+    log::info!("Resolution: {}x{}", self.config.width, self.config.height);
+    log::info!(
       "Frame rate: {}",
       frame_rate_summary(self.vsync, self.config.target_fps)
     );
@@ -977,21 +972,21 @@ impl Engine {
   fn run_offscreen(mut self) -> EngineResult<()> {
     // A scripted run with a typo would capture the wrong thing or never end
     if self.offscreen_refused {
-      eprintln!("[headless] not running: fix the invalid RYO_* values above");
+      log::error!("not running: fix the invalid RYO_* values above");
       std::process::exit(2);
     }
-    println!(
-      "[headless] {} at {}x{}, no window",
-      self.config.title, self.config.width, self.config.height
+    log::info!(
+      "{} at {}x{}, no window",
+      self.config.title,
+      self.config.width,
+      self.config.height
     );
     if !self.capture.exits_after_last() {
-      println!(
-        "[headless] no RYO_CAPTURE_EXIT=1 with RYO_CAPTURE_FRAMES: running until the scene quits"
-      );
+      log::info!("no RYO_CAPTURE_EXIT=1 with RYO_CAPTURE_FRAMES: running until the scene quits");
     }
     if let Some(pace) = self.offscreen_pace {
-      println!(
-        "[headless] paced: each step takes at least {:.2} ms of wall time",
+      log::info!(
+        "paced: each step takes at least {:.2} ms of wall time",
         pace.as_secs_f64() * 1000.0
       );
     }
@@ -1063,7 +1058,9 @@ impl Engine {
   }
 
   /// Print startup banner to console with useful info.
-  fn print_startup_banner(config: &EngineConfig, vsync: bool) {
+  #[cfg(dev_tools)]
+  fn print_startup_banner(config: &EngineConfig, vsync: bool, debug_keys: bool) {
+    let debug = &config.debug;
     let version = env!("CARGO_PKG_VERSION");
 
     println!();
@@ -1075,13 +1072,19 @@ impl Engine {
       frame_rate_summary(vsync, config.target_fps)
     );
     println!();
-    println!("  `      Developer console");
-    println!("  F1-F4  Debug overlays");
-    println!("  F5     Toggle borderless");
-    println!("  F9     Logger");
-    #[cfg(feature = "profiler")]
-    println!("  F10    Profiler");
-    println!("  F12    Capture frame");
+    if debug.dev_console {
+      println!("  `      Developer console");
+    }
+    if debug_keys {
+      println!("  F1-F4  Debug overlays");
+      println!("  F5     Toggle borderless");
+    }
+    if debug.dev_window_keys {
+      println!("  F9     Logger");
+      #[cfg(feature = "profiler")]
+      println!("  F10    Profiler");
+      println!("  F12    Capture frame");
+    }
     println!();
   }
 
@@ -1509,9 +1512,8 @@ impl Engine {
       host.scenes.sync_pauses(world);
     });
 
-    engine_info!(module: "Init", "Engine initialized successfully!");
-    engine_info!(
-      module: "Init",
+    log::info!("Engine initialized successfully!");
+    log::info!(
       "Game loop using fixed timestep: {}Hz updates",
       self.config.fixed_hz
     );
@@ -1533,16 +1535,14 @@ impl Engine {
       match report {
         CaptureReport::Written { frame, path } => {
           let message = format!("frame {frame} → {}", path.display());
-          println!("[capture] {message}");
-          engine_info!(module: "Capture", "{}", message);
+          log::info!("{}", message);
           self
             .console_state
             .print_system(format!("Captured {message}"));
         }
         CaptureReport::Failed { frame, error } => {
           let message = format!("FAILED frame {frame}: {error}");
-          eprintln!("[capture] {message}");
-          engine_warn!(module: "Capture", "{}", message);
+          log::warn!("{}", message);
           self.console_state.print_error(format!("Capture {message}"));
         }
       }
@@ -2048,7 +2048,7 @@ impl EngineBuilder {
   pub fn build(self) -> Engine {
     let (offscreen, warning) = crate::core::capture::headless_run_from_env();
     if let Some(warning) = warning {
-      eprintln!("[headless] {warning}");
+      log::warn!("{warning}");
     }
     if !offscreen {
       return self.build_engine(false);
@@ -2317,8 +2317,7 @@ fn save_storage(
     match FileStorage::new(folder.clone()) {
       Ok(storage) => Some(Arc::new(storage)),
       Err(error) => {
-        engine_warn!(
-          module: "Saves",
+        log::warn!(
           "saves are unavailable: could not create the save folder {} ({error})",
           folder.display()
         );
@@ -2391,7 +2390,7 @@ fn apply_settings_file(
   let mut warnings = Vec::new();
   settings.apply_file(&file, &mut warnings);
   for warning in warnings {
-    engine_warn!(module: "Settings", "{warning}");
+    log::warn!("{warning}");
   }
   let bindings = if settings.is_kept(UserPreference::Bindings) {
     file.bindings.clone()
@@ -2424,7 +2423,7 @@ fn read_settings_file(
     Ok(Recovery::Damaged) => None,
     Ok(Recovery::Found { bytes, from }) => Some((bytes, from)),
     Err(error) => {
-      engine_warn!(module: "Settings", "could not read {FILE_NAME} ({error}); using the defaults");
+      log::warn!("could not read {FILE_NAME} ({error}); using the defaults");
       read.unread = true;
       return read;
     }
@@ -2442,25 +2441,19 @@ fn read_settings_file(
     match saves.set_aside_named(FILE_NAME, DAMAGED_NAME).poll() {
       Ok(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => {
         if found.is_none() {
-          engine_warn!(module: "Settings", "the backup of {FILE_NAME} is damaged; {then}");
+          log::warn!("the backup of {FILE_NAME} is damaged; {then}");
         }
       }
       Ok(Err(error)) => {
         read.unread = true;
-        engine_warn!(
-          module: "Settings",
-          "{FILE_NAME} is damaged and could not be set aside ({error}); {then}"
-        );
+        log::warn!("{FILE_NAME} is damaged and could not be set aside ({error}); {then}");
       }
       result => {
         // Renaming in a store that commits later: the writer waits for it
         if let Err(pending) = result {
           read.aside = Some(pending);
         }
-        engine_warn!(
-          module: "Settings",
-          "{FILE_NAME} is damaged: set aside as {DAMAGED_NAME}; {then}"
-        );
+        log::warn!("{FILE_NAME} is damaged: set aside as {DAMAGED_NAME}; {then}");
       }
     }
   }
@@ -2470,13 +2463,13 @@ fn read_settings_file(
   match file::parse(&bytes, project_env) {
     Parsed::Read { file, warnings } | Parsed::Newer { file, warnings } => {
       for warning in warnings {
-        engine_warn!(module: "Settings", "{warning}");
+        log::warn!("{warning}");
       }
       read.file = Some(file);
     }
     // Not met: a copy that verified is a JSON object
     Parsed::Damaged(reason) => {
-      engine_warn!(module: "Settings", "could not read {FILE_NAME} ({reason}); using the defaults");
+      log::warn!("could not read {FILE_NAME} ({reason}); using the defaults");
       read.unread = true;
     }
   }

@@ -11,7 +11,6 @@ use winit::window::WindowId;
 
 use super::dev_window::{CHAR_HEIGHT, CHAR_WIDTH, DevWindowConfig, DevWindowRenderer, colors};
 use crate::core::dev_log::{LogContext, LogEntry, LogLevel, entry_count, get_entries_since};
-use crate::engine_info;
 
 /// Filter settings for the logger.
 #[derive(Clone)]
@@ -164,7 +163,7 @@ impl LoggerWindow {
     let existing_entries = crate::core::dev_log::get_entries();
     let processed_count = existing_entries.len();
 
-    engine_info!(module: "Logger", "Window opened ({} existing entries)", processed_count);
+    log::info!("Window opened ({} existing entries)", processed_count);
 
     Some(Self {
       renderer,
@@ -683,7 +682,7 @@ impl LoggerWindow {
         .draw_text("No log entries", padding, y, colors::TEXT_DIM);
       if self.cached_entries.is_empty() {
         self.renderer.draw_text(
-          "Use engine_info!() or game_info!() to log messages",
+          "Use log::info!() or ryo2d::info!() to log messages",
           padding,
           y + line_height,
           colors::TEXT_DIM,

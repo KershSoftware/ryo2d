@@ -350,11 +350,11 @@ impl Manager {
         match AudioManager::<CpalBackend>::new(fixed) {
           Ok(manager) => return Some(Manager::Device(manager)),
           Err(error) => {
-            crate::engine_warn!(module: "Audio", "{}", buffer_refused(frames, &error))
+            log::warn!("{}", buffer_refused(frames, &error))
           }
         }
       }
-      Some(Err(message)) => crate::engine_warn!(module: "Audio", "{message}"),
+      Some(Err(message)) => log::warn!("{message}"),
       // No device: the open below warns about that
       Some(Ok(None)) | None => {}
     }
@@ -366,8 +366,7 @@ impl Manager {
 
   /// The mock backend for the session, after the device failed to open
   fn fallback(error: &dyn Display) -> Option<Manager> {
-    crate::engine_warn!(
-      module: "Audio",
+    log::warn!(
       "the audio device could not be opened ({error}); sound plays silently on the mock backend for this session"
     );
     Manager::mock()
@@ -2323,10 +2322,7 @@ impl EngineState {
       return;
     }
     self.warned_volumes.insert(bus.to_string());
-    crate::engine_warn!(
-      module: "Audio",
-      "set_bus_volume: there is no bus {bus:?}; its volume applies if the mixer adds it"
-    );
+    log::warn!("set_bus_volume: there is no bus {bus:?}; its volume applies if the mixer adds it");
   }
 
   /// Give each bus's kira track the volume its gain layers add up to, and
@@ -2428,10 +2424,7 @@ impl EngineState {
     if !self.warned_snapshots.insert(name.to_string()) {
       return;
     }
-    crate::engine_warn!(
-      module: "Audio",
-      "snapshot: the mixer has no snapshot {name:?}; the mix stays as it is"
-    );
+    log::warn!("snapshot: the mixer has no snapshot {name:?}; the mix stays as it is");
   }
 
   /// Move the snapshot's blend on by `delta` and put its levels on the
@@ -2636,8 +2629,7 @@ impl EngineState {
       if self.mixer_pending && server.is_some_and(|server| server.state(id).is_failed()) {
         self.mixer_pending = false;
         if let Some(Some(name)) = self.pending_snapshot.take() {
-          crate::engine_warn!(
-            module: "Audio",
+          log::warn!(
             "snapshot {name:?} was asked for before the mixer loaded, and the mixer did not load (the asset warning for it says why); the mix stays as it is"
           );
         }
@@ -2653,10 +2645,7 @@ impl EngineState {
       let name = server
         .and_then(|server| server.path(id))
         .map_or_else(|| format!("{id:?}"), |path| path.to_string());
-      crate::engine_warn!(
-        module: "Audio",
-        "{name}: the mixer is not used ({error}); the buses stay as they were"
-      );
+      log::warn!("{name}: the mixer is not used ({error}); the buses stay as they were");
       // A snapshot that waited for it applies to the buses as they are, or
       // is warned about by name if they have no such snapshot
       if let Some(pending) = self.pending_snapshot.take() {
@@ -2804,10 +2793,7 @@ impl EngineState {
       } else {
         // Back to open over the whole blend, whatever was left of the blend
         // toward it
-        crate::engine_warn!(
-          module: "Audio",
-          "snapshot {active:?} is not in the reloaded mixer; the mix blends back to open"
-        );
+        log::warn!("snapshot {active:?} is not in the reloaded mixer; the mix blends back to open");
         self.activate(None);
       }
     }
@@ -3121,10 +3107,7 @@ impl EngineState {
     let mut entry = self.entry(AudioLogKind::Refused, 0, &live.subject(), server);
     entry.reason = REFUSED_UNLOCK;
     let name = voice_name(live, server);
-    crate::engine_warn!(
-      module: "Audio",
-      "{name}: the loop played before the audio started could not start with it ({why})"
-    );
+    log::warn!("{name}: the loop played before the audio started could not start with it ({why})");
     self.log.push(entry);
     let live = &mut self.voices.live[index];
     live.playback.stop(MIN_FADE);
@@ -3145,8 +3128,7 @@ impl EngineState {
       return;
     }
     let name = voice_name(live, server);
-    crate::engine_warn!(
-      module: "Audio",
+    log::warn!(
       "{name}: the loop could not move to the rebuilt buses ({why}); it plays on as it was, at the old buses' volumes, until it stops"
     );
   }
@@ -3507,13 +3489,11 @@ impl EngineState {
         name, count, why, ..
       } = failure;
       if *count == 1 {
-        crate::engine_warn!(
-          module: "Audio",
+        log::warn!(
           "{name}: the loop could not switch to what was reloaded ({why}); it plays on as it was"
         );
       } else {
-        crate::engine_warn!(
-          module: "Audio",
+        log::warn!(
           "{name}: {count} loops could not switch to what was reloaded ({why}); they play on as they were"
         );
       }
@@ -3677,8 +3657,7 @@ impl EngineState {
   fn refuse_emitter(&mut self, entity: Entity) -> Voice {
     if cfg!(debug_assertions) && !self.warned_no_emitter {
       self.warned_no_emitter = true;
-      crate::engine_warn!(
-        module: "Audio",
+      log::warn!(
         "a system's play_emitter({entity}) found no emitter there by the next audio update (the entity was never spawned, was despawned or disabled, or has no AudioEmitter), so it plays nothing (warned once)"
       );
     }
@@ -3793,8 +3772,7 @@ impl EngineState {
             && self.failed_sounds.insert(id)
           {
             let name = sound_name(id, server);
-            crate::engine_warn!(
-              module: "Audio",
+            log::warn!(
               "{name}: it did not load, so it plays nothing (the asset warning for it says why)"
             );
           }
@@ -4052,8 +4030,7 @@ impl EngineState {
   #[cfg(debug_assertions)]
   fn warn_loading(&mut self, id: UntypedAssetId, name: impl FnOnce() -> String) {
     if self.warned_loading.insert(id) {
-      crate::engine_warn!(
-        module: "Audio",
+      log::warn!(
         "{}: a one-shot was played while it was still loading, so it plays nothing (a loop waits for its sound; load a one-shot ahead with load_now, or play it once is_ready says so)",
         name()
       );
@@ -4296,8 +4273,7 @@ impl EngineState {
   fn warn_music(&mut self, music: AssetId<Music>, server: Option<&AssetServer>) {
     if self.music.warned.insert(music) {
       let name = music_name(music, server);
-      crate::engine_warn!(
-        module: "Audio",
+      log::warn!(
         "{name}: the music did not load, so it does not play (the asset warning for it says why)"
       );
     }
@@ -4323,8 +4299,7 @@ impl EngineState {
   fn warn_music_bus(&mut self, music: AssetId<Music>, bus: &str, server: Option<&AssetServer>) {
     if self.music.warned_buses.insert(music) {
       let name = music_name(music, server);
-      crate::engine_warn!(
-        module: "Audio",
+      log::warn!(
         "{name}: music plays on the music bus or one under it, not {bus:?}, so it plays on \"music\""
       );
     }
@@ -4716,8 +4691,7 @@ impl EngineState {
       || request.source.name(server),
       |sound| sound_name(sound, server),
     );
-    crate::engine_warn!(
-      module: "Audio",
+    log::warn!(
       "{name}: it is played at a place, but has no spatial settings, so it is heard as if at the listener (a sound definition's `spatial` sets how it falls off with distance)"
     );
   }
@@ -4827,8 +4801,7 @@ impl EngineState {
     if !has_track || std::mem::replace(&mut this.full_warned, true) {
       return;
     }
-    crate::engine_warn!(
-      module: "Audio",
+    log::warn!(
       "the {:?} bus is full: voices still fading out hold all of kira's room on its track, so plays on it are refused until they end (shorter fade_outs on the sounds stopped there keep room free)",
       this.name
     );
@@ -4904,13 +4877,11 @@ impl EngineState {
     let who = who();
     let on = self.buses.name(bus);
     if self.buses.find(name).is_some() {
-      crate::engine_warn!(
-        module: "Audio",
+      log::warn!(
         "{who}: the bus {name:?} is a send bus, which plays no voices of its own, so it plays on {on:?}"
       );
     } else {
-      crate::engine_warn!(
-        module: "Audio",
+      log::warn!(
         "{who}: there is no bus {name:?}, so it plays on {on:?} (a game's own buses are added in the mixer)"
       );
     }
@@ -4921,7 +4892,7 @@ impl EngineState {
   fn warn_sound(&mut self, id: AssetId<Sound>, why: &str, server: Option<&AssetServer>) {
     if self.warned_sounds.insert(id) {
       let name = sound_name(id, server);
-      crate::engine_warn!(module: "Audio", "{name}: {why}");
+      log::warn!("{name}: {why}");
     }
   }
 
@@ -5574,8 +5545,7 @@ impl EngineState {
   ) {
     if self.undecodable.insert(clip.id(), version) != Some(version) {
       let name = source_name(clip, server);
-      crate::engine_warn!(
-        module: "Audio",
+      log::warn!(
         "{name}: the clip's stream could not be decoded ({error}); it is not played again until it reloads"
       );
     }
@@ -6380,8 +6350,7 @@ fn warn_stream_error(warned: &mut bool, error: &dyn Display) {
   if std::mem::replace(warned, true) {
     return;
   }
-  crate::engine_warn!(
-    module: "Audio",
+  log::warn!(
     "the audio output stream reported an error ({error}); sound may have stopped: restart the game if it is silent (later stream errors are not reported)"
   );
 }

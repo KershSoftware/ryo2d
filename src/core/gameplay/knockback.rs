@@ -76,8 +76,7 @@ pub fn update_knockback(
       }
       Some(BodyKind::Kinematic | BodyKind::Fixed) => {
         if warned.insert(entity) {
-          crate::engine_warn!(
-            module: "Gameplay",
+          log::warn!(
             "{entity}: Knockback on a kinematic body without a CharacterController, or on a fixed body, does nothing"
           );
         }

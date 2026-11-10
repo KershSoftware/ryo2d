@@ -157,8 +157,7 @@ impl SettingsWriter {
       }
       Err(error) => {
         if !std::mem::replace(&mut self.warned, true) {
-          crate::engine_warn!(
-            module: "Settings",
+          log::warn!(
             "could not save the settings ({}); they apply, and saving is tried again at the next change and at quit. This warns once",
             error_chain(error.as_ref())
           );
@@ -185,14 +184,16 @@ impl SettingsWriter {
     let text = self.render(settings);
     self.noted.clone_from(&text);
     self.seen = Some(*settings.values());
-    let latest = self.queued.as_ref().map_or(&self.stored, |queued| &queued.text);
+    let latest = self
+      .queued
+      .as_ref()
+      .map_or(&self.stored, |queued| &queued.text);
     if text == *latest {
       return false;
     }
     if self.read_only {
       if !std::mem::replace(&mut self.warned, true) {
-        crate::engine_warn!(
-          module: "Settings",
+        log::warn!(
           "{FILE_NAME} was not fully read at start-up (it is newer, damaged or unreadable), so the settings changed this session are not saved"
         );
       }
@@ -214,8 +215,7 @@ impl SettingsWriter {
       Ok(Err(error)) => {
         self.read_only = true;
         if !std::mem::replace(&mut self.warned, true) {
-          crate::engine_warn!(
-            module: "Settings",
+          log::warn!(
             "the damaged {FILE_NAME} could not be set aside ({error}); it is left as it is, and no setting changed this session is saved"
           );
         }
@@ -348,7 +348,10 @@ mod tests {
     let mut writer = SettingsWriter::new(SettingsFile::default(), false, &settings);
     let start = Instant::now();
     writer.observe(start, &settings);
-    assert!(!writer.tick(start + DEBOUNCE, &settings, &saves), "unchanged");
+    assert!(
+      !writer.tick(start + DEBOUNCE, &settings, &saves),
+      "unchanged"
+    );
     settings.game_mut::<Video>().subtitles = true;
     writer.observe(start + DEBOUNCE, &settings);
     assert!(writer.tick(start + DEBOUNCE * 2, &settings, &saves));

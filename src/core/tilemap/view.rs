@@ -912,8 +912,7 @@ fn warn_left_out(world: &mut World, map: Entity, number: u8, bottom: Entity) {
     let name = world
       .get::<LayerInfo>(bottom)
       .map_or("?", |info| info.name.as_str());
-    crate::engine_warn!(
-      module: "Tilemap",
+    log::warn!(
       "map {map}: floor {number}'s bottom tile layer {name:?} stands elsewhere than the ground floor's (another grid or offset), so the floors' navigation leaves floor {number} out (this map warns once)"
     );
   }

@@ -325,10 +325,7 @@ pub fn platformer_movement(
   {
     if controller.mode != CharacterMode::Platformer {
       if warned.mode.insert(entity) {
-        crate::engine_warn!(
-          module: "Gameplay",
-          "{entity}: PlatformerMovement needs CharacterController::platformer()"
-        );
+        log::warn!("{entity}: PlatformerMovement needs CharacterController::platformer()");
       }
       continue;
     }
@@ -338,10 +335,7 @@ pub fn platformer_movement(
     let mut v = velocity.as_vec2();
     if !v.is_finite() {
       if warned.velocity.insert(entity) {
-        crate::engine_warn!(
-          module: "Gameplay",
-          "{entity}: PlatformerMovement read a non-finite Velocity as zero"
-        );
+        log::warn!("{entity}: PlatformerMovement read a non-finite Velocity as zero");
       }
       v = Vec2::ZERO;
     }

@@ -59,8 +59,7 @@ impl Watching {
       given: root.to_path_buf(),
     };
     if !roots.canonical.is_dir() {
-      crate::engine_debug!(
-        module: "asset",
+      log::debug!(
         "the asset folder {} is missing: changed files will not reload",
         root.display()
       );
@@ -82,8 +81,7 @@ impl Watching {
     let watcher = match watcher {
       Ok(watcher) => watcher,
       Err(error) => {
-        crate::engine_warn!(
-          module: "asset",
+        log::warn!(
           "cannot watch the asset folder {}: {error}; changed files will not reload",
           root.display()
         );
@@ -104,8 +102,7 @@ impl Watching {
         debounce: Some(thread),
       }),
       Err(error) => {
-        crate::engine_warn!(
-          module: "asset",
+        log::warn!(
           "could not start the asset folder's watch: {error}; changed files will not reload"
         );
         None
@@ -155,7 +152,7 @@ fn note_changes(result: notify::Result<Event>, roots: &Roots, notes: &Sender<Not
   let event = match result {
     Ok(event) => event,
     Err(error) => {
-      crate::engine_warn!(module: "asset", "watching the asset folder: {error}");
+      log::warn!("watching the asset folder: {error}");
       return;
     }
   };
@@ -239,9 +236,13 @@ mod tests {
     Asset, AssetChanges, AssetError, AssetEvent, AssetLoader, AssetServer, AssetSource, Assets,
     DiskSource, Handle, LoadContext, insert_registry, pump,
   };
-  use crate::core::dev_log::LogLevel;
   use crate::core::ecs::kernel::{MessageCursor, Messages, World};
   use crate::core::graphics::Image;
+  use std::sync::{Mutex, PoisonError};
+
+  /// Tests that turn the watcher's level to debug take turns, so one's
+  /// guard cannot put the level back under the other
+  static DEBUG_LEVEL: Mutex<()> = Mutex::new(());
 
   #[derive(Debug)]
   struct Text(String);
@@ -589,6 +590,10 @@ mod tests {
 
   #[test]
   fn a_missing_root_is_not_watched() {
+    let _turn = DEBUG_LEVEL.lock().unwrap_or_else(PoisonError::into_inner);
+    let log = crate::core::testing::capture_log();
+    let _debug =
+      crate::core::logging::level_for_test("ryo2d::core::asset::watch", log::LevelFilter::Debug);
     let dir = temp_dir();
     let missing = dir.path().join("missing");
     let source = DiskSource::new(&missing);
@@ -605,18 +610,20 @@ mod tests {
     );
     // A game with no assets has no folder: that is normal, and no warning
     let named = missing.display().to_string();
-    let said = |level: LogLevel| {
-      crate::core::dev_log::get_entries()
+    let said = |level: log::Level| {
+      log
+        .records()
         .iter()
-        .filter(|entry| entry.level == level && entry.message.contains(&named))
+        .filter(|r| r.level == level && r.message.contains(&named))
         .count()
     };
-    assert_eq!(said(LogLevel::Warn), 0);
-    assert_eq!(said(LogLevel::Debug), 1);
+    assert_eq!(said(log::Level::Warn), 0);
+    assert_eq!(said(log::Level::Debug), 1);
   }
 
   #[test]
   fn the_file_watcher_logs_into_its_engine_s_scope() {
+    let _turn = DEBUG_LEVEL.lock().unwrap_or_else(PoisonError::into_inner);
     // Opened before the server starts watching, so its threads join it
     let log = crate::core::testing::capture_log();
     let _debug =

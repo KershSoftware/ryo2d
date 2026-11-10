@@ -167,7 +167,7 @@ fn build(dungeon: Handle<Tileset>, terrain: Handle<Tileset>, set: &WangSet) -> T
         }
       }
     }
-    None => game_warn!(
+    None => ryo2d::warn!(
       "the Wang set \"{}\" has no wall or no floor colour: the big map has no walls",
       set.name()
     ),

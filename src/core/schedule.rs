@@ -455,7 +455,7 @@ impl SceneSchedules {
       if let Err(removal) =
         schedule.remove_systems_in_set(group, world, ScheduleCleanupPolicy::RemoveSetAndSystems)
       {
-        crate::engine_warn!("a refused scene add_systems call could not be taken out: {removal}");
+        log::warn!("a refused scene add_systems call could not be taken out: {removal}");
       }
       return Err(error);
     }

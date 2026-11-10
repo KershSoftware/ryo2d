@@ -549,8 +549,7 @@ pub(crate) fn spawn_maps(
       }
       Some(landed) => Some(landed),
       None => {
-        crate::engine_warn!(
-          module: "Tilemap",
+        log::warn!(
           "map {map}: its landing could not be worked out off the main thread; worked out here"
         );
         landing_job(world, map).and_then(|job| {
@@ -599,7 +598,7 @@ fn landing_failed(world: &mut World, map: Entity) {
     &path,
     "its landing panicked; it is tried again once the map or a tileset it uses changes",
   ));
-  crate::engine_warn!(module: "Tilemap", "map {map}: {}", error.report());
+  log::warn!("map {map}: {}", error.report());
   world.entity_mut(map).insert(MapFailed {
     error: Arc::clone(&error),
     version: None,

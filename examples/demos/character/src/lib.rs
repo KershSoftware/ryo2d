@@ -346,7 +346,7 @@ impl PlatformerPage {
 impl PlatformerPage {
   /// Logs why the level is missing and shows it in the readout
   fn report(&mut self, problem: String) {
-    game_warn!("{problem}");
+    ryo2d::warn!("{problem}");
     self.problem = Some(problem);
   }
 

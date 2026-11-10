@@ -1090,8 +1090,7 @@ impl PaddedTilesets {
         let refused = match why {
           Unpadded::Nothing => false,
           Unpadded::TooBig { cells, size } => {
-            crate::engine_warn!(
-              module: "Tilemap",
+            log::warn!(
               "tileset \"{}\" is too big to pad: its {cells} cells need a padded image of {} x {} texels, over the {} a side it may span (the GPU's largest texture side), so its tiles draw nothing (a tile's cell is the tile with each side rounded up to a multiple of a power of two, by at most a quarter)",
               tileset.name,
               size.0,
@@ -1101,8 +1100,7 @@ impl PaddedTilesets {
             true
           }
           Unpadded::TileTooBig { size } => {
-            crate::engine_warn!(
-              module: "Tilemap",
+            log::warn!(
               "tileset \"{}\" is too big to pad: its tile of {} x {} texels needs a padded cell over the {} texels a side it may span (the GPU's largest texture side), so its tiles draw nothing",
               tileset.name,
               size.x,

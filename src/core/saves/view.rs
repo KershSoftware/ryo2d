@@ -130,7 +130,7 @@ pub struct SaveFinished {
 ///
 /// fn save_progress(ctx: &mut SceneContext<'_>, level: u32) {
 ///   if let Err(error) = ctx.saves().save("slot1", Progress { level }) {
-///     game_warn!("could not save: {error}");
+///     warn!("could not save: {error}");
 ///   }
 /// }
 ///

@@ -96,8 +96,7 @@ impl ShapeBuild {
       ..Self::default()
     };
     if tangled {
-      crate::engine_warn!(
-        module: "Physics",
+      log::warn!(
         "a CellShape polygon touches or crosses itself or another of its polygons: on a square grid the shape collides as the convex hull of them all; on a hexagonal grid each polygon is a ring of its own, one that touches or crosses itself its convex hull"
       );
     }
@@ -146,8 +145,7 @@ impl ShapeBuild {
       }
     }
     if large {
-      crate::engine_warn!(
-        module: "Physics",
+      log::warn!(
         "a concave CellShape polygon has over {MOST_SPLIT} corners; in solid_rects mode it collides as its convex hull"
       );
     }

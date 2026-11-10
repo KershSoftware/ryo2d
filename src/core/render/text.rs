@@ -42,7 +42,6 @@ use crate::core::text::{
 use crate::core::ui::immediate::PromptContext;
 use crate::core::ui::widgets::prompt::resolve_prompts;
 use crate::core::ui::{Color, Palette, Rect, UiTheme};
-use crate::engine_warn;
 
 /// The largest raster or pixel glyph image world text makes, in render
 /// pixels: text seen larger draws this image scaled up. A quarter of a glyph
@@ -400,7 +399,7 @@ fn warn_glow(warned: &mut HashSet<u64>, style: &GlyphStyle) {
     return;
   };
   if warned.insert(hash_of(&("glow", glow.radius.to_bits(), glow.color))) {
-    engine_warn!(module: "text", "glow needs an MSDF font (FontRender::Msdf); drawn without it");
+    log::warn!("glow needs an MSDF font (FontRender::Msdf); drawn without it");
   }
 }
 
@@ -479,7 +478,9 @@ fn emit_raster(
 fn warn_capped(sources: &TextSources<'_>, warned: &mut HashSet<u64>, font: FontId, cap: f32) {
   if warned.insert(hash_of(&("glyph cap", font, cap.to_bits()))) {
     let family = sources.engine.face_family(font).unwrap_or_default();
-    engine_warn!(module: "text", "text in {family:?} larger than {cap} px is drawn from a {cap} px glyph, scaled up; use an MSDF font (FontRender::Msdf) for very large text");
+    log::warn!(
+      "text in {family:?} larger than {cap} px is drawn from a {cap} px glyph, scaled up; use an MSDF font (FontRender::Msdf) for very large text"
+    );
   }
 }
 
@@ -685,7 +686,9 @@ fn narrowed(asked: f32, got: f32) -> bool {
 fn warn_msdf_reach(sources: &TextSources<'_>, warned: &mut HashSet<u64>, font: FontId, range: f32) {
   if warned.insert(hash_of(&("msdf reach", font))) {
     let family = sources.engine.face_family(font).unwrap_or_default();
-    engine_warn!(module: "text", "MSDF font {family:?} (range {range} px) holds outlines, shadows and glow only to half its range; a wider one is drawn narrower (give the font a larger range: FontRender::Msdf {{ base, range }})");
+    log::warn!(
+      "MSDF font {family:?} (range {range} px) holds outlines, shadows and glow only to half its range; a wider one is drawn narrower (give the font a larger range: FontRender::Msdf {{ base, range }})"
+    );
   }
 }
 
@@ -706,7 +709,9 @@ fn msdf_base(sources: &TextSources<'_>, warned: &mut HashSet<u64>, font: FontId,
   }
   if warned.insert(hash_of(&("msdf base", font))) {
     let family = sources.engine.face_family(font).unwrap_or_default();
-    engine_warn!(module: "text", "MSDF font {family:?} has a base of {base} px; its glyphs are made at {MSDF_MAX_BASE} px (a distance field scales freely)");
+    log::warn!(
+      "MSDF font {family:?} has a base of {base} px; its glyphs are made at {MSDF_MAX_BASE} px (a distance field scales freely)"
+    );
   }
   capped_msdf_base(base)
 }
@@ -725,7 +730,9 @@ fn capped_msdf_base(base: f32) -> f32 {
 fn warn_msdf_synthesis(sources: &TextSources<'_>, warned: &mut HashSet<u64>, glyph: &PlacedGlyph) {
   if (glyph.skew || glyph.embolden) && warned.insert(hash_of(&("msdf synthesis", glyph.font))) {
     let family = sources.engine.face_family(glyph.font).unwrap_or_default();
-    engine_warn!(module: "text", "MSDF font {family:?} has no italic or bold face of its own; its text draws upright and regular (add the real face)");
+    log::warn!(
+      "MSDF font {family:?} has no italic or bold face of its own; its text draws upright and regular (add the real face)"
+    );
   }
 }
 
@@ -1122,7 +1129,7 @@ fn emit_icon(block: &mut Block<'_, '_, '_>, icon: &PlacedIcon) {
     Icon::Named { name, .. } => {
       let Some(source) = block.sources.icons.get(name) else {
         if block.targets.warned.insert(hash_of(&("icon", name))) {
-          engine_warn!(module: "text", "no text icon named {name:?}; leaving its space empty");
+          log::warn!("no text icon named {name:?}; leaving its space empty");
         }
         return;
       };
@@ -1331,7 +1338,7 @@ pub(crate) fn emit_world_text(
     let (axis_x, axis_y, position) = (matrix.x_axis, matrix.y_axis, drawn.translation() + lift);
     if !(axis_x.is_finite() && axis_y.is_finite() && position.is_finite()) {
       if targets.warned.insert(hash_of(&("non-finite", entity))) {
-        engine_warn!(module: "text", "{entity:?}: Text2d has a non-finite position, scale or rotation; not drawn");
+        log::warn!("{entity:?}: Text2d has a non-finite position, scale or rotation; not drawn");
       }
       continue;
     }

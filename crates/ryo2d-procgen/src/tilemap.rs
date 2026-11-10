@@ -3,7 +3,6 @@
 
 use std::collections::HashSet;
 
-use ryo2d::core::dev_log::{self, LogContext, LogLevel};
 use ryo2d::prelude::*;
 
 use crate::config::TileType;
@@ -102,12 +101,7 @@ impl Placement {
 }
 
 fn warn_missing_color(name: &str, set: &str) {
-  dev_log::log(
-    LogLevel::Warn,
-    LogContext::Game,
-    Some("procgen"),
-    format!("Wang set \"{set}\" has no colour \"{name}\"; its cells stay empty"),
-  );
+  log::warn!("Wang set \"{set}\" has no colour \"{name}\"; its cells stay empty");
 }
 
 impl GenerationGrid {
@@ -565,6 +559,7 @@ mod tests {
 
   #[test]
   fn a_colour_the_set_lacks_warns_once_per_conversion() {
+    ryo2d::logging::ensure();
     let set = corner_set(&["floor"]);
     let grid = GenerationGrid::filled(3, 3, TileType::Floor);
     let warnings = || {

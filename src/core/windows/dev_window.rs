@@ -114,7 +114,7 @@ impl DevWindowRenderer {
     let window = match event_loop.create_window(window_attrs) {
       Ok(w) => Arc::new(w),
       Err(e) => {
-        eprintln!("[DevWindow] Failed to create window: {}", e);
+        log::error!("Failed to create window: {}", e);
         return None;
       }
     };
@@ -123,7 +123,7 @@ impl DevWindowRenderer {
     let surface = match instance.create_surface(Arc::clone(&window)) {
       Ok(s) => s,
       Err(e) => {
-        eprintln!("[DevWindow] Failed to create surface: {}", e);
+        log::error!("Failed to create surface: {}", e);
         return None;
       }
     };
@@ -535,7 +535,7 @@ impl DevWindowRenderer {
         return;
       }
       wgpu::CurrentSurfaceTexture::Validation => {
-        eprintln!("[DevWindow] Surface validation error");
+        log::error!("Surface validation error");
         return;
       }
       wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => return,

@@ -48,7 +48,7 @@ impl SceneSlot {
       return;
     }
     self.warned_dropped_action = true;
-    crate::engine_warn!(
+    log::warn!(
       "scene {} returned {} from {hook} below the top scene; only the top scene's action is applied (logged once)",
       self.scene.name(),
       action.kind()
@@ -226,7 +226,7 @@ impl SceneManager {
     {
       let elapsed = start.elapsed();
       if elapsed.as_millis() > 5 {
-        crate::engine_debug!("scene {} on_enter took {:?}", top.scene.name(), elapsed);
+        log::debug!("scene {} on_enter took {:?}", top.scene.name(), elapsed);
       }
     }
   }

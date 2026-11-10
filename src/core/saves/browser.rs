@@ -285,8 +285,7 @@ pub(crate) fn install(saves: &SaveService, store: Result<Arc<dyn Storage>, SaveE
         Some(cause) => format!("{error}: {cause}"),
         None => error.to_string(),
       };
-      crate::engine_warn!(
-        module: "Saves",
+      log::warn!(
         "the browser's storage did not open ({reason}): saves are unavailable, and settings last only for this session"
       );
       false

@@ -146,7 +146,7 @@ fn clean_at(rect: Rect) -> Rect {
     return rect;
   }
   if !BAD_AT_WARNED.swap(true, Ordering::Relaxed) {
-    crate::engine_warn!(module: "ui", "a UI container's at rect is not finite or has a negative size; using 0 there");
+    log::warn!("a UI container's at rect is not finite or has a negative size; using 0 there");
   }
   let finite = |v: f32| if v.is_finite() { v } else { 0.0 };
   Rect::new(
@@ -653,7 +653,7 @@ impl<'a> UiContext<'a> {
       self.finish_subtree(subtree);
     }
     if left_open && !LEFT_OPEN_WARNED.swap(true, Ordering::Relaxed) {
-      crate::engine_warn!(module: "ui", "a UI container was still open when the scene's ui ended; laid out as it was");
+      log::warn!("a UI container was still open when the scene's ui ended; laid out as it was");
     }
     self.flush_popups();
     self.flush_tooltip();
@@ -1578,7 +1578,7 @@ impl<'a> UiContext<'a> {
   pub fn pop_clip(&mut self) {
     if self.clip_stack.pop().is_none() {
       if !EMPTY_POP_WARNED.swap(true, Ordering::Relaxed) {
-        crate::engine_warn!(module: "ui", "pop_clip with no clip to pop; ignored");
+        log::warn!("pop_clip with no clip to pop; ignored");
       }
       return;
     }

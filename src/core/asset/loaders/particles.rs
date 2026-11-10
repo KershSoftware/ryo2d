@@ -160,8 +160,7 @@ impl AssetLoader for ParticleEffectLoader {
         continue;
       };
       if played.on_death.is_some() || played.on_collision.is_some() {
-        crate::engine_warn!(
-          module: "Particles",
+        log::warn!(
           "{}: {field} plays \"{}\", which has sub-emitters of its own: those are ignored (sub-effects go one level deep)",
           cx.path(),
           named(sub)
@@ -1086,6 +1085,7 @@ mod tests {
 
   #[test]
   fn a_broken_reload_keeps_the_last_good_effect() {
+    crate::core::logging::ensure();
     let path = "fx/kept.particles.ron";
     let good = r#"(image: "fx/spark.png", rate: 25)"#;
     let source = files(&[(path, good)]);

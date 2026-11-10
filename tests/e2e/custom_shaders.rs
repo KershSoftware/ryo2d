@@ -384,7 +384,7 @@ fn broken_sprite_shader_falls_back() {
     logged(id),
     [(
       LogLevel::Warn,
-      Some("asset".to_string()),
+      Some("Shaders".to_string()),
       format!("could not load \"{id}\": 2:29: expected `)`, found \"0.0\"")
     )],
     "warned once, as a file that does not load is"
@@ -664,7 +664,7 @@ fn broken_effect_is_skipped() {
     logged(id),
     [(
       LogLevel::Warn,
-      Some("asset".to_string()),
+      Some("Shaders".to_string()),
       format!("could not load \"{id}\": 2:29: expected `)`, found \"0.0\"")
     )],
     "warned once, as a file that does not load is"
@@ -1054,7 +1054,7 @@ fn a_broken_shader_save_keeps_the_last_good_shader() {
     logged(path),
     [(
       LogLevel::Warn,
-      Some("asset".to_string()),
+      Some("Asset".to_string()),
       format!("could not load \"{path}\": 2:29: expected `)`, found \"0.0\"")
     )]
   );
@@ -1103,7 +1103,7 @@ fn a_broken_effect_save_keeps_the_last_good_effect() {
     logged(path),
     [(
       LogLevel::Warn,
-      Some("asset".to_string()),
+      Some("Asset".to_string()),
       format!("could not load \"{path}\": 2:29: expected `)`, found \"0.0\"")
     )]
   );
@@ -1176,7 +1176,7 @@ fn a_shader_changed_in_code_that_does_not_compile_draws_its_last_good_version() 
     logged(name),
     [(
       LogLevel::Warn,
-      Some("asset".to_string()),
+      Some("Shaders".to_string()),
       format!("could not load \"{name}\": 2:29: expected `)`, found \"0.0\"")
     )],
     "once for the version"
@@ -1217,7 +1217,7 @@ fn a_shader_the_gpu_rejects_draws_its_last_good_version() {
     matches!(
       logged.as_slice(),
       [(LogLevel::Warn, Some(module), message)]
-        if module == "asset" && message.starts_with(&format!("could not load \"{name}\": "))
+        if module == "Shaders" && message.starts_with(&format!("could not load \"{name}\": "))
     ),
     "once for the version: {logged:?}"
   );
@@ -1252,7 +1252,7 @@ fn an_effect_the_gpu_rejects_runs_its_last_good_version() {
     matches!(
       logged.as_slice(),
       [(LogLevel::Warn, Some(module), message)]
-        if module == "asset" && message.starts_with(&format!("could not load \"{name}\": "))
+        if module == "Shaders" && message.starts_with(&format!("could not load \"{name}\": "))
     ),
     "once for the version: {logged:?}"
   );

@@ -25,7 +25,6 @@ use crate::core::text::rich::{Icon, RichText};
 use crate::core::text::style::{TextAlign, TextFont, TextLayoutOptions, TextOverflow, TextStyle};
 use crate::core::text::{BitmapFace, FaceSource, Font, FontId, FontRender, FontRole, Fonts};
 use crate::core::ui::Rect;
-use crate::engine_warn;
 
 /// Cached layouts unused for this many frames are dropped
 const CACHE_FRAMES: u64 = 120;
@@ -185,7 +184,10 @@ impl TextEngine {
             .is_empty()
           {
             if self.first_warning(hash_of(&("unreadable", id))) {
-              engine_warn!(module: "text", "font {:?} could not be read for layout; text falls back", face.family);
+              log::warn!(
+                "font {:?} could not be read for layout; text falls back",
+                face.family
+              );
             }
           } else {
             self.by_blob.insert((blob_id, *index), id);
@@ -255,14 +257,18 @@ impl TextEngine {
       let mut h = DefaultHasher::new();
       style.hash_into(&mut h);
       if self.first_warning(h.finish()) {
-        engine_warn!(module: "text", "text style with {field} {value} cannot be laid out; nothing is drawn");
+        log::warn!("text style with {field} {value} cannot be laid out; nothing is drawn");
       }
       return None;
     }
     if !options.is_valid() || !valid_scale(scale) {
       let key = hash_of(&("layout", options.wrap.map(f32::to_bits), scale.to_bits()));
       if self.first_warning(key) {
-        engine_warn!(module: "text", "text with wrap width {:?} at scale {} cannot be laid out; nothing is drawn", options.wrap, scale);
+        log::warn!(
+          "text with wrap width {:?} at scale {} cannot be laid out; nothing is drawn",
+          options.wrap,
+          scale
+        );
       }
       return None;
     }
@@ -686,7 +692,7 @@ impl TextEngine {
     }
     for name in unknown {
       if self.first_warning(hash_of(&("family", &name))) {
-        engine_warn!(module: "text", "no font family named {name:?}; using the fallbacks");
+        log::warn!("no font family named {name:?}; using the fallbacks");
       }
     }
     // A font still loading falls back quietly until it is registered, as
@@ -701,7 +707,7 @@ impl TextEngine {
         )
       });
       if !quiet && self.first_warning(hash_of(&("face", font))) {
-        engine_warn!(module: "text", "font {font:?} is not loaded; using the fallbacks");
+        log::warn!("font {font:?} is not loaded; using the fallbacks");
       }
     }
     names
@@ -714,7 +720,9 @@ impl TextEngine {
       && self.bitmap(id).is_some()
     {
       if self.first_warning(hash_of(&("span bitmap", font))) {
-        engine_warn!(module: "text", "a bitmap font cannot style part of outline text; the span {font:?} keeps the base font");
+        log::warn!(
+          "a bitmap font cannot style part of outline text; the span {font:?} keeps the base font"
+        );
       }
       return None;
     }
@@ -732,7 +740,10 @@ impl TextEngine {
     let stack = self.stack(style, None);
     let Some(family) = stack.first().cloned() else {
       if self.first_warning(hash_of(&("no font", &style.font))) {
-        engine_warn!(module: "text", "no font for text in {:?}, and no UI or mono font to fall back on; nothing is drawn", style.font);
+        log::warn!(
+          "no font for text in {:?}, and no UI or mono font to fall back on; nothing is drawn",
+          style.font
+        );
       }
       return TextLayout {
         scale,
@@ -859,7 +870,7 @@ impl TextEngine {
         && size.is_none()
         && self.first_warning(hash_of(&("span size", bad.to_bits())))
       {
-        engine_warn!(module: "text", "text span with size {bad} cannot be laid out; it keeps the base size");
+        log::warn!("text span with size {bad} cannot be laid out; it keeps the base size");
       }
       let stack = match &mark.span.font {
         Some(font) => self.span_stack(style, font),
@@ -941,7 +952,9 @@ impl TextEngine {
             let Some(&font) = self.by_blob.get(&(data.data.id(), data.index)) else {
               next += glyph_run.positioned_glyphs().count();
               if self.first_warning(hash_of(&("unknown font", data.data.id(), data.index))) {
-                engine_warn!(module: "text", "text laid out with a font face the registry does not have; its glyphs are skipped");
+                log::warn!(
+                  "text laid out with a font face the registry does not have; its glyphs are skipped"
+                );
               }
               continue;
             };
@@ -1033,7 +1046,10 @@ impl TextEngine {
       0 => String::new(),
       rest => format!(" and {rest} more"),
     };
-    engine_warn!(module: "text", "no font has {}{more}; drawn as {family}'s box (warned once per font: add a font that has them, e.g. as a fallback)", named.join(", "));
+    log::warn!(
+      "no font has {}{more}; drawn as {family}'s box (warned once per font: add a font that has them, e.g. as a fallback)",
+      named.join(", ")
+    );
   }
 
   /// A monospace grid layout for a bitmap font: every character advances
@@ -1062,7 +1078,9 @@ impl TextEngine {
         && self.resolve(span_font) != Some(font)
         && self.first_warning(hash_of(&("bitmap span", span_font)))
       {
-        engine_warn!(module: "text", "text in bitmap font {family:?} uses only that font; the span {span_font:?} is ignored");
+        log::warn!(
+          "text in bitmap font {family:?} uses only that font; the span {span_font:?} is ignored"
+        );
       }
     }
     let (items, count, missing) = grid_cells(&grid, text, style.size, scale);
@@ -1073,7 +1091,10 @@ impl TextEngine {
         } else {
           "skipped"
         };
-        engine_warn!(module: "text", "bitmap font {family:?} has no {c:?} (U+{:04X}); {instead}", c as u32);
+        log::warn!(
+          "bitmap font {family:?} has no {c:?} (U+{:04X}); {instead}",
+          c as u32
+        );
       }
     }
 

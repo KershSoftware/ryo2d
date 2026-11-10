@@ -4,7 +4,6 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta};
 use winit::keyboard::KeyCode;
 
 use crate::core::ecs::kernel::Resource;
-use crate::engine_info;
 
 pub(crate) mod actions;
 mod labels;
@@ -1242,13 +1241,13 @@ impl Input {
       self.gamepad_connected = true;
       self.gamepad_id = Some(id);
       self.gamepad_name = name;
-      engine_info!(module: "Gamepad", "Connected: {}", self.gamepad_name);
+      log::info!("Connected: {}", self.gamepad_name);
     }
   }
 
   pub(crate) fn handle_gamepad_disconnected(&mut self, id: gilrs::GamepadId) {
     if self.gamepad_id == Some(id) {
-      engine_info!(module: "Gamepad", "Disconnected: {}", self.gamepad_name);
+      log::info!("Disconnected: {}", self.gamepad_name);
       self.gamepad_connected = false;
       self.gamepad_id = None;
       self.gamepad_name.clear();

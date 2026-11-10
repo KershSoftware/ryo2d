@@ -343,7 +343,7 @@ fn warn_once(source: &str, problem: &str) {
     .map(|mut set| set.insert(key))
     .unwrap_or(false);
   if first {
-    crate::engine_warn!(module: "text", "markup {source:?}: {problem}; drawn as written");
+    log::warn!("markup {source:?}: {problem}; drawn as written");
   }
 }
 

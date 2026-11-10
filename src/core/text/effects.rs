@@ -137,7 +137,7 @@ impl TextEffects {
         .map(|mut set| !set.contains(name) && set.insert(name.to_string()))
         .unwrap_or(false);
       if first {
-        crate::engine_warn!(module: "text", "no text effect named {name:?}; the text draws without it");
+        log::warn!("no text effect named {name:?}; the text draws without it");
       }
       return None;
     };

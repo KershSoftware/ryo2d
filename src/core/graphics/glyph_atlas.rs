@@ -15,7 +15,6 @@ use crate::core::graphics::atlas::PageBindGroups;
 use crate::core::hash::{FastMap, FastSet};
 use crate::core::render::batch::Sampling;
 use crate::core::text::{FontId, Fonts, GlyphFormat, GlyphImage, GlyphKey};
-use crate::engine_warn;
 
 /// Page edge in texels
 pub(crate) const GLYPH_PAGE_SIZE: u32 = 1024;
@@ -280,7 +279,7 @@ impl GlyphShelves {
     let (pw, ph) = (w + 2 * PADDING, h + 2 * PADDING);
     if pw > self.size || ph > self.size {
       if self.warned.insert((w, h)) {
-        engine_warn!(module: "text", "a {w}x{h} glyph is larger than a glyph page; it is not drawn");
+        log::warn!("a {w}x{h} glyph is larger than a glyph page; it is not drawn");
       }
       return Placement::TooBig;
     }
@@ -311,7 +310,9 @@ impl GlyphShelves {
       .min();
     let Some((_, index)) = victim else {
       if self.warned_full.insert(format) {
-        engine_warn!(module: "text", "the {format:?} glyph pages are full of glyphs drawn this frame; some text is not drawn");
+        log::warn!(
+          "the {format:?} glyph pages are full of glyphs drawn this frame; some text is not drawn"
+        );
       }
       self.refused += 1;
       return Placement::Full;

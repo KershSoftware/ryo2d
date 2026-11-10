@@ -46,7 +46,7 @@ impl ProjectFile {
     let workspace = match Workspace::from_toml_str(text, PathBuf::new()) {
       Ok(workspace) => workspace,
       Err(error) => {
-        crate::engine_warn!("{error}; the project file is ignored");
+        log::warn!("{error}; the project file is ignored");
         return None;
       }
     };

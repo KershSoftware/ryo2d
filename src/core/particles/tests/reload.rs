@@ -256,7 +256,7 @@ fn a_sub_effect_with_sub_emitters_of_its_own_loads_with_a_warning() {
   let parent = "fx/warn-parent.particles.ron";
   let nested = "fx/warn-nested.particles.ron";
   let warned = || {
-    testing::particle_warnings()
+    testing::particle_loader_warnings()
       .iter()
       .filter(|message| {
         message.contains(parent) && message.contains(nested) && message.contains("own")

@@ -324,7 +324,7 @@ fn embedded_value<'a, T: TableValue>(
   let key = embed.first()?;
   let raw = lookup(key)?;
   T::from_embedded(raw).or_else(|| {
-    eprintln!("[ryo2d] Warning: Malformed embedded value {key}='{raw}', using the default");
+    log::warn!("Malformed embedded value {key}='{raw}', using the default");
     None
   })
 }

@@ -76,7 +76,7 @@ impl Engine {
 
   fn frame_in_scope(&mut self, real_delta: Option<Duration>) -> FrameOutcome {
     if let Some(message) = self.renderer.as_ref().and_then(|r| r.take_fault()) {
-      crate::engine_error!(module: "Render", "{}", message);
+      log::error!("{}", message);
       return FrameOutcome::Fatal(message);
     }
     let frame_start = Instant::now();

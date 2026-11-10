@@ -182,8 +182,7 @@ fn sync_or_warn(ops: &dyn FileOps, name: &str) {
   if let Err(error) = ops.sync_dir()
     && !SYNC_WARNED.swap(true, Ordering::Relaxed)
   {
-    crate::engine_warn!(
-      module: "Saves",
+    log::warn!(
       "could not sync the save folder after changing \"{name}\" ({error}); the change is in place, but a power cut may undo it (this warns once)"
     );
   }

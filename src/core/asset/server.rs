@@ -296,7 +296,7 @@ impl AssetServer {
     if let Some(changes) = changes
       && let Err(error) = self.inner.source.watch(AssetChanges::new(changes))
     {
-      crate::engine_warn!(module: "asset", "the asset source cannot watch: {}", error.report());
+      log::warn!("the asset source cannot watch: {}", error.report());
     }
   }
 
@@ -1182,9 +1182,9 @@ impl AssetServer {
     }
     match error {
       AssetError::Io { source, .. } if source.kind() == std::io::ErrorKind::Unsupported => {
-        crate::engine_debug!(module: "asset", "{report}");
+        log::debug!("{report}");
       }
-      _ => crate::engine_warn!(module: "asset", "{report}"),
+      _ => log::warn!("{report}"),
     }
   }
 
@@ -1603,7 +1603,7 @@ fn remove_key<K: Borrow<str> + Hash + Eq>(
 /// `T` was never registered, so there is nowhere to keep the asset or its
 /// state: say why now, and hand out a handle that finds nothing
 fn unregistered<T: Asset>(error: AssetError) -> Handle<T> {
-  crate::engine_warn!(module: "asset", "{}", error.report());
+  log::warn!("{}", error.report());
   Handle::detached()
 }
 
@@ -2891,6 +2891,7 @@ mod tests {
 
   #[test]
   fn a_real_read_failure_warns_at_warn_level() {
+    crate::core::logging::ensure();
     let entries = |needle: &str| {
       crate::core::dev_log::get_entries()
         .into_iter()

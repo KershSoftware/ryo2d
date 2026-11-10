@@ -354,8 +354,7 @@ pub(crate) fn apply_reload(world: &mut World, map: Entity) {
     {
       applied.stamp = stamp;
       if let MapSource::Ldtk { level, .. } = &root.source {
-        crate::engine_warn!(
-          module: "Tilemap",
+        log::warn!(
           "map {map}: its LDtk project was saved without level {level:?}; the map stays as it was"
         );
       }

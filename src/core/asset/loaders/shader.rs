@@ -129,6 +129,7 @@ mod tests {
 
   #[test]
   fn a_save_that_does_not_compile_fails_its_reload_and_keeps_the_last_good_shader() {
+    crate::core::logging::ensure();
     let files = MemorySource::new();
     files.insert("shaders/kept.wgsl", GLOW);
     let mut world = registry_over(files.clone());
@@ -174,7 +175,7 @@ mod tests {
       warned,
       [(
         LogLevel::Warn,
-        Some("asset".to_string()),
+        Some("Asset".to_string()),
         "could not load \"shaders/kept.wgsl\": 2:29: expected `)`, found \"0.0\"".to_string()
       )]
     );

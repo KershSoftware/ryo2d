@@ -1154,10 +1154,7 @@ fn snapshot_filter() -> FilterBuilder {
 /// sets and a mixer's limits on buses leave room, so this is only a
 /// safeguard
 fn warn_no_room(bus: &str) {
-  crate::engine_warn!(
-    module: "Audio",
-    "kira has no room for the {bus:?} bus's track: plays and sends to it are dropped"
-  );
+  log::warn!("kira has no room for the {bus:?} bus's track: plays and sends to it are dropped");
 }
 
 /// Two gains in dB added; silence if either is silent

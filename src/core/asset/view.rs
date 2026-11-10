@@ -39,10 +39,7 @@ impl<'w> AssetsView<'w> {
       Some(server) => server.clone(),
       None => {
         // Once per world: the next view finds this server
-        crate::engine_warn!(
-          module: "asset",
-          "this world has no asset server; it gets one over an empty memory source"
-        );
+        log::warn!("this world has no asset server; it gets one over an empty memory source");
         let server = AssetServer::new(MemorySource::new());
         world.insert_resource(server.clone());
         server

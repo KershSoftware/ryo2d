@@ -84,7 +84,7 @@ impl UiSpace {
       Some(scale) if scale.is_finite() && scale > 0.0 => scale,
       Some(scale) => {
         if !BAD_SCALE_WARNED.swap(true, Ordering::Relaxed) {
-          crate::engine_warn!(module: "ui", "UI scale {scale} is not a positive number; using the automatic scale");
+          log::warn!("UI scale {scale} is not a positive number; using the automatic scale");
         }
         automatic
       }

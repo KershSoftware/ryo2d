@@ -319,7 +319,7 @@ impl IdScopes {
     }
     // Only repeated explicit keys collide; never share their state
     if self.warned.insert(id) {
-      crate::engine_warn!(module: "ui", "two widgets share the id key in one scope; use distinct .id() keys");
+      log::warn!("two widgets share the id key in one scope; use distinct .id() keys");
     }
     let mut n = 1;
     loop {

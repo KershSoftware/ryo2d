@@ -66,8 +66,8 @@ pub(crate) fn release_save_dir<'a>(
   }
   let Some(folder) = lookup("RYO_EMBED_SAVE_FOLDER").filter(|folder| valid_save_folder(folder))
   else {
-    eprintln!(
-      "[ryo2d] Warning: No valid save folder was embedded, saving to {}",
+    log::warn!(
+      "No valid save folder was embedded, saving to {}",
       beside_game.display()
     );
     return Some(beside_game);
@@ -75,8 +75,8 @@ pub(crate) fn release_save_dir<'a>(
   match user_data_dir {
     Some(base) => Some(base.join(folder)),
     None => {
-      eprintln!(
-        "[ryo2d] Warning: No user data folder on this system, saving to {}",
+      log::warn!(
+        "No user data folder on this system, saving to {}",
         beside_game.display()
       );
       Some(beside_game)
@@ -94,10 +94,7 @@ pub(crate) fn compiled_release_save_dir() -> Option<PathBuf> {
         .and_then(|exe| exe.parent().map(Path::to_path_buf))
         .or_else(|| {
           let cwd = std::env::current_dir().ok()?;
-          eprintln!(
-            "[ryo2d] Warning: Couldn't find the game's folder, using {}",
-            cwd.display()
-          );
+          log::warn!("Couldn't find the game's folder, using {}", cwd.display());
           Some(cwd)
         })?;
       #[cfg(not(target_arch = "wasm32"))]
@@ -143,10 +140,7 @@ pub(crate) fn enter_bundle_dir() {
   if let Some(dir) = bundle_dir_to_enter(is_release, exe_dir, &cwd)
     && let Err(e) = std::env::set_current_dir(&dir)
   {
-    eprintln!(
-      "[ryo2d] Warning: Couldn't run from the game folder {} ({e})",
-      dir.display()
-    );
+    log::warn!("Couldn't run from the game folder {} ({e})", dir.display());
   }
 }
 
@@ -188,7 +182,7 @@ pub(crate) fn store_name(
   if warn_on_title {
     static WARNED: std::sync::Once = std::sync::Once::new();
     WARNED.call_once(|| {
-      crate::engine_warn!(
+      log::warn!(
         "web saves are named after the window title; set [project] name so other games on the same site don't share them"
       );
     });

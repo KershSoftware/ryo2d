@@ -322,6 +322,7 @@ mod tests {
   /// How many warnings in the dev log name `path` (the log is the
   /// process's: each test names files of its own)
   fn warnings_naming(path: &str) -> usize {
+    crate::core::logging::ensure();
     crate::core::dev_log::get_entries()
       .iter()
       .filter(|entry| entry.message.contains(path))

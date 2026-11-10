@@ -21,7 +21,6 @@ use crate::core::asset::{Asset, AssetId, Assets, Handle};
 use crate::core::ecs::Resource;
 use crate::core::ecs::kernel::{DetectChangesMut, World};
 use crate::core::graphics::Image;
-use crate::engine_warn;
 
 /// One registered font face: a font asset's face, a bitmap font's, or a
 /// built-in one. Ids are never reused, so one names a single face for the
@@ -680,7 +679,7 @@ impl Fonts {
       return Some(id);
     }
     let Some((weight, italic)) = attributes(font) else {
-      engine_warn!(module: "text", "font {:?} could not be read; text falls back", font.family);
+      log::warn!("font {:?} could not be read; text falls back", font.family);
       return None;
     };
     let id = self.push(Face {
@@ -716,7 +715,7 @@ impl Fonts {
       return self.hold_font(font, render);
     }
     let Some((weight, italic)) = attributes(font) else {
-      engine_warn!(module: "text", "font {:?} could not be read; text falls back", font.family);
+      log::warn!("font {:?} could not be read; text falls back", font.family);
       self.release(face);
       return None;
     };
@@ -771,7 +770,10 @@ impl Fonts {
   /// one with nothing to draw (warned)
   fn hold_bitmap(&mut self, font: &BitmapFont) -> Option<FontId> {
     if !font.is_drawable() {
-      engine_warn!(module: "text", "bitmap font {:?} has an empty cell or no characters; it is not registered", font.family);
+      log::warn!(
+        "bitmap font {:?} has an empty cell or no characters; it is not registered",
+        font.family
+      );
       return None;
     }
     let bitmap = bitmap_face(font);

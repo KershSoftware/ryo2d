@@ -23,7 +23,6 @@ use crate::core::input::{Input, InputEvent};
 use crate::core::render::RenderPipeline;
 use crate::core::settings::Settings;
 use crate::core::window::{WindowInfo, WindowRequest};
-use crate::{engine_debug, engine_info, engine_warn};
 
 /// Cursor grab mode and visibility for a focus change, or `None` when the
 /// cursor isn't locked and nothing changes.
@@ -222,7 +221,7 @@ impl Engine {
         }
       }
       Err(error) => {
-        crate::engine_error!(module: "Render", "{}", error);
+        log::error!("{}", error);
         self.startup_error = Some(error);
         event_loop.exit();
       }
@@ -375,7 +374,7 @@ impl Engine {
                 .insert(custom_data.id.clone(), cursor);
             }
             Err(e) => {
-              engine_warn!(module: "Cursor", "Failed to create custom cursor: {:?}", e);
+              log::warn!("Failed to create custom cursor: {:?}", e);
               // Not the console's icon left behind: the default, once
               window.set_cursor(winit::window::Cursor::Icon(
                 crate::core::cursor::CursorStyle::Default.to_winit(),
@@ -426,7 +425,7 @@ impl Engine {
     }
     let _ = window.set_cursor_grab(CursorGrabMode::None);
     if confined && !CONFINE_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-      engine_warn!(module: "Cursor", "This platform cannot confine the cursor; it stays free");
+      log::warn!("This platform cannot confine the cursor; it stays free");
     }
   }
 
@@ -438,11 +437,7 @@ impl Engine {
         let (width, height) = rgba.dimensions();
         return winit::window::Icon::from_rgba(rgba.into_raw(), width, height).ok();
       }
-      engine_warn!(
-        module: "Icon",
-        "Failed to load custom icon from {:?}, using default",
-        path
-      );
+      log::warn!("Failed to load custom icon from {:?}, using default", path);
     }
 
     let logo_bytes = include_bytes!("../../assets/logo.png");
@@ -476,7 +471,7 @@ impl Engine {
     {
       let now = Instant::now();
       if let Some(warning) = self.slow_frame.due(now) {
-        engine_warn!(module: "Perf", "{warning}");
+        log::warn!("{warning}");
       }
       let total_ms = elapsed.as_secs_f64() * 1000.0;
       if total_ms > 33.0 {
@@ -491,14 +486,14 @@ impl Engine {
               self.frame_timings.present.as_secs_f64() * 1000.0,
             );
             if let Some(earlier) = self.slow_frame.hold(now, warning) {
-              engine_warn!(module: "Perf", "{earlier}");
+              log::warn!("{earlier}");
             }
           }
           FrameKind::Startup => {
-            engine_debug!(module: "Perf", "Startup frame took {:.1}ms", total_ms)
+            log::debug!("Startup frame took {:.1}ms", total_ms)
           }
           FrameKind::SceneLoad => {
-            engine_debug!(module: "Perf", "Scene load frame took {:.1}ms", total_ms)
+            log::debug!("Scene load frame took {:.1}ms", total_ms)
           }
           FrameKind::Background => {}
         }
@@ -510,8 +505,7 @@ impl Engine {
     if self.last_fps_log.elapsed() >= Duration::from_secs(1) {
       self.last_fps_log = Instant::now();
       if self.config.debug.show_frame_timing {
-        engine_debug!(
-          module: "FrameTiming",
+        log::debug!(
           "FPS: {:.0} | Update: {:.2}ms | Render: {:.2}ms | Present: {:.2}ms | Total: {:.2}ms",
           self.smoothed_timings.fps,
           self.frame_timings.update.as_secs_f64() * 1000.0,
@@ -527,7 +521,7 @@ impl Engine {
   /// system holding the window's last frame, not the game
   fn drop_hidden_slow_frame(&mut self) {
     if self.slow_frame.window_hidden() {
-      engine_debug!(module: "Perf", "A slow frame was the window being hidden");
+      log::debug!("A slow frame was the window being hidden");
     }
   }
 
@@ -616,7 +610,7 @@ impl ApplicationHandler<EngineEvent> for Engine {
     let window = match event_loop.create_window(window_attrs) {
       Ok(window) => Arc::new(window),
       Err(e) => {
-        crate::engine_error!(module: "Window", "Failed to create window: {}", e);
+        log::error!("Failed to create window: {}", e);
         event_loop.exit();
         return;
       }
@@ -643,7 +637,7 @@ impl ApplicationHandler<EngineEvent> for Engine {
       .current_monitor()
       .and_then(|monitor| monitor.refresh_rate_millihertz())
     {
-      engine_info!(module: "Init", "Display refresh: {:.0} Hz", f64::from(refresh) / 1000.0);
+      log::info!("Display refresh: {:.0} Hz", f64::from(refresh) / 1000.0);
     }
 
     window.set_ime_allowed(true);
@@ -656,7 +650,7 @@ impl ApplicationHandler<EngineEvent> for Engine {
     match pollster::block_on(WgpuRenderer::new(Arc::clone(&window), settings)) {
       Ok(renderer) => self.finish_gpu_setup(event_loop, window, renderer),
       Err(error) => {
-        crate::engine_error!(module: "Render", "{}", error);
+        log::error!("{}", error);
         self.startup_error = Some(error);
         event_loop.exit();
       }
@@ -828,7 +822,7 @@ impl ApplicationHandler<EngineEvent> for Engine {
         // Hidden: frames run but are not drawn, so presenting cannot wait
         // on a drawable the system will not give
         self.window_occluded = *occluded;
-        engine_debug!(module: "Window", "Occluded: {}", occluded);
+        log::debug!("Occluded: {}", occluded);
         if *occluded {
           self.drop_hidden_slow_frame();
           // The web's page hidden, which may be the last the game hears
@@ -869,7 +863,7 @@ impl ApplicationHandler<EngineEvent> for Engine {
 
     match event {
       WindowEvent::CloseRequested => {
-        engine_info!(module: "Engine", "Close requested, exiting...");
+        log::info!("Close requested, exiting...");
         event_loop.exit();
       }
       // Nothing to draw until the GPU is ready (the web sets it up late)
@@ -1057,13 +1051,13 @@ impl ApplicationHandler<EngineEvent> for Engine {
           window.set_maximized(false);
           window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
           self.set_display_mode(DisplayMode::BorderlessFullscreen);
-          engine_info!(module: "Window", "Switched to borderless fullscreen");
+          log::info!("Switched to borderless fullscreen");
         }
         DisplayMode::BorderlessFullscreen | DisplayMode::ExclusiveFullscreen => {
           window.set_fullscreen(None);
           window.set_decorations(true);
           self.set_display_mode(DisplayMode::Windowed);
-          engine_info!(module: "Window", "Switched to windowed mode");
+          log::info!("Switched to windowed mode");
         }
       }
       self.surface_needs_reconfigure = true;

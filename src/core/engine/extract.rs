@@ -195,8 +195,7 @@ impl Engine {
       );
       for &camera in &self.targetless_cameras {
         if self.warned_targetless.insert(camera) {
-          crate::engine_warn!(
-            module: "Render",
+          log::warn!(
             "{camera:?} renders into a render target that does not exist; it draws nothing"
           );
         }
@@ -643,7 +642,7 @@ impl Engine {
         PresentOutcome::Skipped
       }
       Err(FrameError::Fatal(message)) => {
-        crate::engine_error!(module: "Render", "{}", message);
+        log::error!("{}", message);
         PresentOutcome::Fatal(message)
       }
     };

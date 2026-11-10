@@ -494,8 +494,7 @@ fn runs_of(
     for &(cell, to) in layer.cells.values().flatten() {
       if to <= from || floors.lift(Floor::On(to)).is_none() {
         if warned.insert("plain") {
-          crate::engine_warn!(
-            module: "Tilemap",
+          log::warn!(
             "map {map}: stairs on layer \"{}\" lead to floor {to}, which is not a floor of the map above the layer's floor {from}, so they are plain tiles",
             name(layer)
           );
@@ -578,8 +577,7 @@ fn warn_nowhere(
   why: &str,
 ) {
   if warned.insert("nowhere") {
-    crate::engine_warn!(
-      module: "Tilemap",
+    log::warn!(
       "map {map}: stairs on layer \"{}\" up to floor {to} lead nowhere ({why}), so they change no climber's floor",
       layer()
     );

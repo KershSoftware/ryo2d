@@ -578,14 +578,12 @@ impl<P> ShaderCache<P> {
       warned.entry(seen).or_default().insert(name.to_string());
       let shader = shaders.get(id).map_or(compiled.name.as_str(), Shader::name);
       match expected {
-        None => crate::engine_warn!(
-          module: "Shaders",
+        None => log::warn!(
           "{}: parameter `{}` is not a field of Params and is ignored",
           shader,
           name
         ),
-        Some(kind) => crate::engine_warn!(
-          module: "Shaders",
+        Some(kind) => log::warn!(
           "{}: parameter `{}` has the wrong type (Params expects {:?}) and is ignored",
           shader,
           name,
@@ -637,11 +635,7 @@ fn release_entry<P>(
 /// Warns that shader `name` failed, as the asset server warns about a file
 /// that does not load: its name once, then where in its source
 fn warn_failed(name: &str, failure: &ShaderError) {
-  crate::engine_warn!(
-    module: "asset",
-    "could not load \"{name}\": {}",
-    failure.located()
-  );
+  log::warn!("could not load \"{name}\": {}", failure.located());
 }
 
 #[cfg(test)]
@@ -673,12 +667,13 @@ mod tests {
   /// How many warnings the log has about `name`, as the asset server
   /// warns about a file that does not load
   fn errors_for(name: &str) -> usize {
+    crate::core::logging::ensure();
     let warned = format!("could not load \"{name}\": ");
     dev_log::get_entries()
       .iter()
       .filter(|entry| {
         entry.level == dev_log::LogLevel::Warn
-          && entry.module.as_deref() == Some("asset")
+          && entry.module.as_deref() == Some("Shaders")
           && entry.message.starts_with(&warned)
       })
       .count()

@@ -21,6 +21,7 @@ use crate::core::ui::theme::Theme;
 
 /// How many captured warnings contain `needle`
 pub(crate) fn warnings_containing(needle: &str) -> usize {
+  crate::core::logging::ensure();
   crate::core::dev_log::get_entries()
     .iter()
     .filter(|w| w.message.contains(needle))

@@ -768,8 +768,7 @@ pub(crate) fn set_terrain(
       .get_resource_mut::<WangWarned>()
       .is_some_and(|mut warned| warn_first(&mut warned, (String::new(), String::new()), 0));
     if first {
-      crate::engine_warn!(
-        module: "Tilemap",
+      log::warn!(
         "map {map}: terrain painting on hexagonal maps isn't supported, so set_terrain paints nothing (this warns once)"
       );
     }
@@ -812,8 +811,7 @@ pub(crate) fn set_terrain(
       .get_resource_mut::<WangWarned>()
       .is_some_and(|mut warned| warn_first(&mut warned, (tileset, set), version));
     if first {
-      crate::engine_warn!(
-        module: "Tilemap",
+      log::warn!(
         "map {map}: the Wang set {wang_set:?} has no tile to fit what painting {color:?} at {cell} asks of a cell, so that cell keeps its tile (this set warns once)"
       );
     }

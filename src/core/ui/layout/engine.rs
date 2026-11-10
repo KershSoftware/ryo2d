@@ -303,7 +303,7 @@ impl LayoutEngine {
       && let Err(e) = self.try_layout(nodes, available, count, measure, &mut buffers)
     {
       if self.warned.insert("layout failed") {
-        crate::engine_warn!(module: "ui", "layout failed: {e}");
+        log::warn!("layout failed: {e}");
       }
       // Start over rather than trust a tree that failed half way
       self.taffy.clear();
@@ -397,10 +397,7 @@ impl LayoutEngine {
       // A kept node without an entry is a caller's mistake: it is a leaf
       let kept = desc.kept && entry.is_some();
       if desc.kept && !kept && warned.insert("kept node unknown") {
-        crate::engine_warn!(
-          module: "ui",
-          "a kept UI node was not laid out before; drawn without its contents"
-        );
+        log::warn!("a kept UI node was not laid out before; drawn without its contents");
       }
       // Each node's subtree, counted only where a node will be kept: a
       // count left from before is read only by a node kept since
@@ -632,10 +629,7 @@ fn warn_field(warned: &mut HashSet<&'static str>, field: &'static str) {
 }
 
 fn warn_bad(field: &str) {
-  crate::engine_warn!(
-    module: "ui",
-    "a UI style has a non-finite or negative {field}; ignored"
-  );
+  log::warn!("a UI style has a non-finite or negative {field}; ignored");
 }
 
 /// One hash of everything `to_taffy` reads: the raw style (`desc`'s shape

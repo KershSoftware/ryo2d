@@ -158,6 +158,7 @@ fn step_until(
 
 /// The warnings in the dev log naming `name`
 fn warnings(name: &str) -> usize {
+  crate::core::logging::ensure();
   dev_log::get_entries()
     .iter()
     .filter(|entry| entry.level == dev_log::LogLevel::Warn && entry.message.contains(name))
@@ -542,7 +543,13 @@ fn a_shader_compile_warning_is_captured() {
   step_until(
     &mut engine,
     |_, _| {},
-    |_| warnings(name) > 0 && !log.from_target(COMPILER).is_empty(),
+    |_| {
+      let warned = log
+        .records()
+        .iter()
+        .any(|r| r.level == log::Level::Warn && r.message.contains(name));
+      warned && !log.from_target(COMPILER).is_empty()
+    },
   );
   let said = log.from_target(COMPILER);
   assert!(

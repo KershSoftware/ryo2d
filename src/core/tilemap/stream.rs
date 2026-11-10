@@ -859,8 +859,7 @@ impl StreamWork {
       if let Some(mut state) = world.get_mut::<StreamState>(map)
         && !std::mem::replace(&mut state.warned.unbounded, true)
       {
-        crate::engine_warn!(
-          module: "Tilemap",
+        log::warn!(
           "map {map}: a MapStream streams the unbounded tile layers of an infinite map (TileMap::infinite, or a Tiled infinite map), and this map has none, so it streams nothing (this map warns once)"
         );
       }
@@ -880,8 +879,7 @@ impl StreamWork {
       && let Some(mut state) = world.get_mut::<StreamState>(map)
       && !std::mem::replace(&mut state.warned.grids, true)
     {
-      crate::engine_warn!(
-        module: "Tilemap",
+      log::warn!(
         "map {map}: its streamed tile layers (its unbounded ones) lie on different grids (shape, cell size or origin), so the chunks they load are those the first one's grid ({:?}, cells of {}) takes round the anchors (this map warns once)",
         grid.shape,
         grid.cell
@@ -894,8 +892,7 @@ impl StreamWork {
       if let Some(mut state) = world.get_mut::<StreamState>(map)
         && !std::mem::replace(&mut state.warned.distances, true)
       {
-        crate::engine_warn!(
-          module: "Tilemap",
+        log::warn!(
           "map {map}: its MapStream's unload_distance ({unload_px}) is below its load_distance ({load_px}), so chunks would unload as they land; it is raised to the load distance (this map warns once)"
         );
       }
@@ -934,8 +931,7 @@ impl StreamWork {
       && let Some(mut state) = world.get_mut::<StreamState>(map)
       && !std::mem::replace(&mut state.warned.span, true)
     {
-      crate::engine_warn!(
-        module: "Tilemap",
+      log::warn!(
         "map {map}: an anchor's load area spans more than {cap} chunks a side (its stream's load_distance, or a camera zoomed far out), so only the middle {cap} x {cap} load (this map warns once)"
       );
     }
@@ -1287,8 +1283,7 @@ impl StreamWork {
           state.panicked.insert(chunk);
           state.ready.push((chunk, ChunkTiles::default()));
           if !std::mem::replace(&mut state.warned.panic, true) {
-            crate::engine_warn!(
-              module: "Tilemap",
+            log::warn!(
               "map {map}: its stream's generator panicked at chunk ({}, {}), which lands empty and is not asked for again (this map warns once)",
               chunk.x,
               chunk.y
@@ -1373,8 +1368,7 @@ impl StreamWork {
     for (name, cells) in &tiles.layers {
       if !empty(cells) && !state.warned.layers.contains(name) {
         state.warned.layers.insert(name.clone());
-        crate::engine_warn!(
-          module: "Tilemap",
+        log::warn!(
           "map {map}: its stream's generator gave tiles for the layer {name:?}, which is not one of the map's tile layers, so they are left out (this layer warns once)"
         );
       }
