@@ -4,6 +4,77 @@ Small issues found while building each sub-project and left for later: deferred 
 
 Items from 4f on were copied from their execution records. Items from earlier sub-projects come from notes kept at the time, and some may have been fixed since: check before working on one.
 
+## Particles
+
+- Owner decisions (2026-11-09):
+  - The design was left to the planner ("skip" the questions; spec `docs/specs/2026-11-08-particles-design.md`). The spec and plan were approved together, and the plan ran subagent-driven.
+  - Merged after the scripted tour (133 pages; every non-particles page matches main but the four that already differ run to run; all 14 particles pages identical between two runs). The owner ran `./dev.sh web particles` and said "all looks good".
+  - The owner approved, one-time, deleting `target/debug` mid-branch when the disk neared the 40 GiB floor.
+- Rulings the owner may revisit (the spec's "Details settled at planning" records the design ones):
+  - **Particles freeze only when their scene is not updating**, whatever the audio flag says, and keep moving through scene fades, as physics, tweens, trails and audio do: a leaving scene's particles keep moving under its fade. Freezing through fades is a small change back in `SceneManager::sync_audio_holds`.
+  - **`skip_interpolation` also marks a particle emitter**, so a teleport never streaks, interpolated or not; `ecs/world_ext.rs` depends on `particles::emitter` for it.
+  - **A particle reaching its lifetime dies where it stood** at the step's start, as the old system did, so a death effect can't appear past a wall.
+  - **The bench fails if any frame figure is slower than the scene-driven system's** (669.3, 704.8 and 285.3 µs, this machine's same-session medians), besides the spec's ceilings. A slower machine can fail them.
+  - **`explosion` and `dust` drag at 1.0**, what they effectively did (the old `with_drag` clamped to 1). Effect drag itself is unbounded.
+  - **The demo's repeating bursts fire at once**, not one interval in (`with_start_delay` gives the old timing).
+  - **Prewarm** skips the start delay, runs on first play and for a new effect (not after `restart`), plays sub-effects without messages, and past 600 steps takes 600 longer steps.
+  - **The particle `Align` is `ParticleAlign` in the prelude**, since the UI's `Align` holds the name.
+  - **A reload away from `Stick` releases stuck particles**, and a reload never changes spawn values of live particles.
+  - **The collision grid** adds a small query margin (0.5 plus 1/65,536 of the coordinates' size), doubles its cell past 256 once it would exceed 65,536 cells, and finds huge or non-finite items from every query, all to stay bit-identical to testing everything.
+  - **A collision's sub-effect plays on the surface** (radius out) with the velocity before the response, and a `Die` contact plays both `on_death` and `on_collision`.
+  - **A `stopped()` emitter driven only by `burst` never reports `EmitterFinished` nor despawns** (only `play` and `restart` arm it; documented on `burst`). Letting `burst` arm it is a small change.
+  - Sequencing and test calls: draw order arrived with the sheet frames, a 1e-4 s tolerance makes burst and rate counts exact on step boundaries, and the before/after benches ran old and new alternately from a `git archive` export under the scratchpad (not a worktree), deleted after.
+- Limits recorded (`docs/backlog/particles.md`, Limits):
+  - CPU simulation on the main thread, bounded by the 20,000 budget; collisions in ground space on storeys; `Local` effects don't collide or feel attractors; sub-emitters go one level deep.
+  - Whole runs are culled, not particles; the cull box ignores glow and outline padding, particles spawned larger under an earlier version, and a fast stretched (`Align::Velocity`) quad's length.
+  - A `Local` emitter not stepped (held, or speed 0) whose entity moves can be culled on screen. A mirrored emitter that turns or scales between steps draws its `Local` particles unmirrored between steps.
+  - Prewarm is paid at once in the emitter's first step. Web effect files must be embedded by a hand-kept list. One distant or huge collider coarsens the grid.
+  - An unscaled emitter over several steps in one frame gets lumpy inherited velocity, can finish and despawn in one frame before any scene reads `EmitterFinished`, and its turbulence attractor time stops while the game is paused or no game-time emitter steps.
+  - A `speed_over_life` curve starting at 0 leaves particles no speed of their own for life. A `play_at` whose effect never loads (a typo'd path) leaves its entity waiting, a slow leak in a game that plays it on every hit: finish an emitter whose handle's `LoadState` is `Failed`, or warn once. `alive` goes stale on held emitters after `ParticlesView::clear`, and `PreviousGlobalTransform.skip` on unscaled interpolated emitters while paused.
+  - The Before figures and every After round ran at a load of 4 to 10: measure again on a quiet machine.
+- Deferred findings:
+  - **Numbers and safety.**
+    - `ParticleRng::range` (`rng.rs` ~36-40): finite extremes overflow `max - min` to infinity and a 0.0 draw gives a NaN particle, reachable from a file; return `min` when `max - min` is not finite.
+    - The step's finiteness guard checks the translation only (`step.rs` ~235): a NaN rotation or scale gives NaN positions.
+    - A file's `SpriteEffect` skips its constructors' clamps (NaN intensity, `Pixelate` block size 0 load silently; no panic): add `effect:` to `problems()`.
+    - `sanitized` leaves a lifetime max below a raised min (harmless). A negative burst count is neither reported nor refused (it spawns nothing). `problems` reports two entries for a sheet with no columns.
+  - **The step and module shape.**
+    - `step.rs` is about 1,100 lines: an `emit.rs` and a `compiled.rs` when it is next touched. The two passes repeat their setup; `unit_axes` and `rigid_axes` (`space.rs`) near-duplicate; `Own { centre, noise_seed }` is built twice (`step.rs`, `sub.rs`); `store.rs` has a local `count` shadowing the imported function.
+    - `forces.rs` `gather` repeats the step's skip rules: a shared `frozen()` would keep them in step. `meets_colliders` counts a sub pool's effect after its particles are gone, so colliders can be gathered every step for nothing: count only non-empty pools.
+    - `is_physics_paused`, audio holds and particle holds could share one "scenes not updating" computation.
+    - `StepState`'s kept `EcsSystemState` carries a change tick `clamp_schedule_ticks` never clamps (harmless until a `Changed` filter reads through it).
+    - `noise_seed` is taken at the first seeded step, so a later effect version changing `seed` keeps it (as `pool.rng` does).
+  - **Drawing.**
+    - The atlas slot lookup is repeated between the run and sprite arms (`render/batch/gpu.rs` ~461 and ~601).
+    - Sub runs fall back to their own z when the main effect is no longer compiled.
+    - Aligned `Local` particles take their heading through `frame.world_rotation`, which may ignore a mirrored emitter: check and test.
+    - `draw.rs` `collect`'s doc comment has one over-long line.
+  - **Speed.**
+    - Criterion's GPU-paced `particles_10k` reads about 4% over the old system (~1,037 against 995 µs), unexplained; one `--profile-time` run would settle it.
+    - The per-particle loop jumps from about 3 ns to 36 ns at 4,000 to 20,000 particles (fourteen equal-length arrays possibly aliasing in L1): look before more pool work. `pool.rs`'s comment ("a few microseconds at most" below 4,096) is contradicted by the 73 µs measured at 4,000. One `retain` losing a large share at 6,000 particles is slower than the old loop (33% scattered, 14 to 26 µs).
+    - A finite but huge move or radius walks up to 65,536 grid cells with repeats (`grid.rs` ~394): fall back to all items past the item count.
+  - **Files and reloads.**
+    - The loader turns `AssetError::Cycle` into `Decode` (`loaders/particles.rs` ~186; an effect's `on_death` can name itself): pass it through and add a self-reference test.
+    - A sub pool keeps old particles through a switch to a loading sub-effect only while something else owns the old one (`AssetId`, not `Handle`): hold a `Handle`, or record it.
+    - A nested sub-effect in a file warns at load and again at play. Malformed-range errors give line and column but not the field. The `ColorRange` visitor is unused in production and duplicates the loader's pair parsing.
+    - `CurveKey` writes a 2- or 3-tuple and reads `deserialize_tuple(3)`, so it round-trips in RON only.
+  - **Tests missing or loose.**
+    - Presets: three are spot-checked; nothing asserts the converted size ratios, circle thickness, `Line.length` or angular velocity degrees.
+    - Forces and space: `Local` forces with an emitter away from the world origin; one burst's particles getting different radial values; the drawn `Local` frame at alpha below 1 and with a `DrawLift`; attractors on the unscaled pass; a mask-0 attractor on a layer-0 effect; turbulence time on the engine step. Noise and turbulence smoothness tolerances are loose, and one noise test compares a single point.
+    - Sub-effects: `sub_spawns_repeat_with_the_seed` doesn't prove the parent pool's stream; a sub-effect's reload changing its look; an unscaled emitter's sub-effects.
+    - Drawing: half of `render_layers_choose_the_cameras` can't fail (the white emitter draws on top at equal z); the order test's ±3 red tolerance couples it to whole-frame birth ages; unscaled and held pools' fractions are unit-tested only; `draw.rs` ~299 asserts a Flash id that equals the emission.
+    - Grid: the radius never decides the query in the differential test (reach 8 exceeds radii 2 and 6).
+    - Files: the NaN `on_death` case fails on its `.png` path before the NaN check.
+    - Warning counts: two tests compare dev-log totals, which the 10,000-entry log can drop in a long run.
+    - The allocation test's `ours` matches `ryo2d::` in generic arguments, so it fails closed (same matcher in `tests/tilemap_alloc.rs`).
+    - Demo: only the Explosions left click is covered; Impacts clicks, right-click debris and the Trails comet are not; the Files page test's assertions are weak; `EMBEDDED` is hand-kept, and `smoke_sheet.png` is never loaded from it in a test.
+  - **Demo and docs.**
+    - The demo's rain draws under the top bar and over the count label on pages 13 and 14; the sparks' bounce is weakly shown on page 13; `main.rs`'s doc comment is stale.
+    - "A random pick between two" (`ryo-particles` ~252, the loader's rustdoc) is a random mix. The skill's cost figures come from flagged runs. `docs/backlog/particles.md` ~23 gives a stale reason for the Before table's load.
+- Breaking changes: `ParticleSystem`, the public `Particle`, `EmissionMode` and the old `EmissionShape` are gone, and `ParticleEmitter` takes a `Handle<ParticleEffect>`; its look and emission moved to the effect. The presets are on `ParticleEffect`. `ParticleCollision` is written in the particle step.
+- Pre-existing bugs:
+  - The `Vortex` attractor's tangent turns clockwise on screen while its doc says counter-clockwise.
+
 ## Saves and settings
 
 - Owner decisions (2026-11-08):
@@ -496,10 +567,9 @@ Items from 4f on were copied from their execution records. Items from earlier su
     - No direct test pins how `chains()` (`occluders.rs:170`) partitions edges into chains; the edge multiset and the open chains are pinned. The spliced loop's start corner is tested by one case, and the random walks compare edge sets only.
     - The character controller's floor tie (`physics/character.rs:556`): when the tie winner fails the rise filter the result is `None` instead of falling back to the fixed floor (one step, a vertical platform passing exactly flush). Apply the filter to the alternative first. A steep fixed first hit with a moving floor within 1e-3 px that holds yields the moving floor, with no visible effect.
   - **Particles.**
-    - Particles test every edge of a tile part their move reaches, with no per-edge index; fine for hundreds of particles.
     - Particles more than half a cell deep in thick tile ground stay put, and air under half a cell thick beside a wall can be misjudged (the local test is bounded at half a cell; documented).
     - An authored-shape wall under half a cell thick that encloses a room can let nearby particles be pushed through it. It is in the module notes; the `ryo-particles` skill should say it too.
-    - A particle wider than half a cell that starts inside ground is pushed further in (`particles/mod.rs` ~521-533). Use `reach.max(radius)` as the in-ground bound.
+    - A particle wider than half a cell that starts inside ground is pushed further in (`particles/contact.rs`, `solid_contact`). Use `reach.max(radius)` as the in-ground bound.
   - **Demos and games.**
     - Tilemap demo, `make-maps`: it exits 0 without Tiled, leaving tilesets stale against changed art (fail, or require a flag), and never checks Tiled's version (the README requires 1.12.2). `check()` reads only Tiled's exit status, not its export output.
     - The sheet layouts live in `art.rs`, `make-maps.js` and `ldtk.rs` (`TERRAIN_COLUMNS`, the (128, 80) size, the rule ids) with nothing tying them together. `PLATFORMER_LEVEL` is copied in `ldtk.rs:15`, `tests/assets.rs:18` and the character demo, and nothing compares the copies. `json.rs:77,84`: `escape_slash` is always false, a dead branch. `ldtk.rs` is 1,532 lines; split the rules and resolver out.
