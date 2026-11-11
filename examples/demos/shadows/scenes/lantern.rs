@@ -37,6 +37,8 @@ pub struct LanternPage {
   position: Vec2,
   radius: f32,
   flame: f32,
+  /// The (radius, flame) the lantern was last given
+  applied: Option<(f32, f32)>,
 }
 
 impl LanternPage {
@@ -46,6 +48,7 @@ impl LanternPage {
       position: Vec2::new(240.0, 440.0),
       radius: 260.0,
       flame: 4.0,
+      applied: None,
     }
   }
 
@@ -174,10 +177,13 @@ A light inside a closed occluder is not shadowed by it."
     {
       transform.translation = self.position;
     }
-    let light = self.lantern_light();
-    let mut lanterns = ctx.world.query_filtered::<&mut Light2D, With<Lantern>>();
-    for mut lantern in lanterns.iter_mut(ctx.world) {
-      *lantern = light.clone();
+    if self.applied != Some((self.radius, self.flame)) {
+      self.applied = Some((self.radius, self.flame));
+      let light = self.lantern_light();
+      let mut lanterns = ctx.world.query_filtered::<&mut Light2D, With<Lantern>>();
+      for mut lantern in lanterns.iter_mut(ctx.world) {
+        *lantern = light.clone();
+      }
     }
   }
 }

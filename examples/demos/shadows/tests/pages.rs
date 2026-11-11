@@ -109,6 +109,12 @@ fn the_many_lights_page_has_sixty_four_shadowed_torches_and_q_cycles_quality() {
     .collect();
   assert_eq!(torches.len(), 64);
   assert!(torches.iter().all(|&shadowed| shadowed));
+  let world = engine.world_mut();
+  let chains = world
+    .query_filtered::<(), (With<MapOccluder>, With<LightOccluder2D>)>()
+    .iter(world)
+    .count();
+  assert!(chains > 0, "the maze's walls are map occluder chains");
 
   let quality = |engine: &HeadlessEngine| {
     engine
@@ -118,7 +124,14 @@ fn the_many_lights_page_has_sixty_four_shadowed_torches_and_q_cycles_quality() {
   };
   let start = quality(&engine);
   tap(&mut engine, KeyCode::KeyQ);
-  assert_ne!(quality(&engine), start);
+  let picked = quality(&engine);
+  assert_ne!(picked, start);
+  // The choice is the player's: a page change and a reset keep it
+  tap(&mut engine, KeyCode::BracketRight);
+  assert_eq!(quality(&engine), picked, "kept after a page change");
+  tap(&mut engine, KeyCode::BracketLeft);
+  tap(&mut engine, KeyCode::KeyR);
+  assert_eq!(quality(&engine), picked, "kept after a reset");
   for _ in 0..3 {
     tap(&mut engine, KeyCode::KeyQ);
   }

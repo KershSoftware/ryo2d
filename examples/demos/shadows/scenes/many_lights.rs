@@ -2,7 +2,8 @@
 //!
 //! Sixty-four shadowed torches over a maze built as a tile map in code. The
 //! walls are the map's occluder chains; every torch reads only the walls
-//! near it. `Q` cycles the player's shadow quality.
+//! near it. `Q` cycles the player's shadow quality, which stays changed (and
+//! is saved with the player's settings) like an options screen's choice.
 
 use std::sync::Arc;
 
@@ -146,9 +147,9 @@ pub struct ManyLightsPage {
   /// Torch source size in pixels (0 = hard shadows)
   size: f32,
   radius: f32,
-  /// The player's quality when the page opened, put back when it closes
-  restore: ShadowQuality,
   quality: ShadowQuality,
+  /// The (size, radius) the torches were last given
+  applied: Option<(f32, f32)>,
   torches: usize,
 }
 
@@ -157,8 +158,8 @@ impl ManyLightsPage {
     Self {
       size: 2.0,
       radius: 130.0,
-      restore: ShadowQuality::default(),
       quality: ShadowQuality::default(),
+      applied: None,
       torches: 0,
     }
   }
@@ -196,8 +197,7 @@ Lower qualities draw coarser shadow maps and cost less."
   }
 
   fn enter(&mut self, ctx: &mut SceneContext) {
-    self.restore = ctx.settings().shadow_quality();
-    self.quality = self.restore;
+    self.quality = ctx.settings().shadow_quality();
     ctx
       .lighting()
       .set_ambient(AmbientLight::new(Color::new(79, 75, 96, 255), 0.03));
@@ -236,18 +236,17 @@ Lower qualities draw coarser shadow maps and cost less."
     }
   }
 
-  fn exit(&mut self, ctx: &mut SceneContext) {
-    ctx.settings().set_shadow_quality(self.restore);
-  }
-
   fn update(&mut self, ctx: &mut SceneContext, _dt: f32) {
     if ctx.input.key_pressed(KeyCode::KeyQ) {
       self.quality = next_quality(self.quality);
       ctx.settings().set_shadow_quality(self.quality);
     }
-    let mut torches = ctx.world.query_filtered::<&mut Light2D, With<Torch>>();
-    for (n, mut light) in torches.iter_mut(ctx.world).enumerate() {
-      *light = self.torch_light(n);
+    if self.applied != Some((self.size, self.radius)) {
+      self.applied = Some((self.size, self.radius));
+      let mut torches = ctx.world.query_filtered::<&mut Light2D, With<Torch>>();
+      for (n, mut light) in torches.iter_mut(ctx.world).enumerate() {
+        *light = self.torch_light(n);
+      }
     }
   }
 
@@ -255,7 +254,7 @@ Lower qualities draw coarser shadow maps and cost less."
     let area = content_area(ui);
     ui.label(
       &format!(
-        "{} shadowed torches | shadow quality: {}",
+        "{} shadowed torches | shadow quality: {} (Q, saved with your settings)",
         self.torches,
         quality_name(self.quality)
       ),
