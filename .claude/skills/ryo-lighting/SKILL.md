@@ -88,6 +88,12 @@ Light2D::point(color, radius).with_shadows().with_shadow_color(Color::new(50, 30
 - **The edge envelope:** a shadow map's resolution is per angle, so a texel covers more of the screen farther from the light and at a higher zoom. At `High` and zoom 1, a texel is about 0.6 px wide 300 px from the light and 2 px 1,000 px from it; edges stay crisp for lights up to 512 px in radius at zoom 1 at `High` (256 at `Medium`, 1,024 at `Ultra`). Past that they soften and step by up to a texel; a larger light or a zoomed-in camera calls for a higher quality.
 - **At most 512 shadowed lights a frame.** Past that the lights nearest a lit camera's centre keep their shadows, the rest draw unshadowed, and the log warns once a run with the count.
 - **Soft shadows' limits:** at `Low` a wide penumbra shows faint bands and a thin post's soft edge can end in a step that changes as the light moves; a near occluder's penumbra narrows where a farther occluder (still nearer than the lit point) lies just beside it.
+- **Other limits:**
+  - A frame's casting edges are at most what the device's largest buffer holds (about 8.4 million under WebGPU's default limits): past that the farthest lights' edges are dropped whole, those lights draw unshadowed, and the log warns once a run with the count.
+  - A side facing away from the light, tilted more than about 56 degrees from the light's rays, can darken itself slightly through the soft filter.
+  - A keyhole polygon's slit (two edges running both ways along one line) casts, as do sides two occluders share only in part.
+  - An edge too small to cover one texel of its light's map, such as a tiny occluder far from the light, casts nothing.
+  - There is no sun or moon light casting parallel shadows across the view, and no per-light map resolution: every shadowed light's map has the quality's width.
 
 ## Occluders
 

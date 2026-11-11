@@ -203,9 +203,9 @@ impl LightOccluder2D {
     &self.vertices
   }
 
-  /// The farthest any vertex lies from the entity's origin: a light skips
-  /// an occluder whose entity is farther from it than twice its radius plus
-  /// this (infinite when a vertex is not finite)
+  /// The farthest any vertex lies from the entity's origin, which pads an
+  /// interpolated occluder's bounds in the occluder index (infinite when a
+  /// vertex is not finite)
   pub(crate) fn extent(&self) -> f32 {
     self.extent
   }
