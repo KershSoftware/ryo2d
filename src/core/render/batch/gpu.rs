@@ -773,7 +773,10 @@ impl Batch2D {
 
   /// `draw`, binding a page of `textures` for a textured draw or `shadows`
   /// for a light
-  #[allow(clippy::too_many_arguments)]
+  #[expect(
+    clippy::too_many_arguments,
+    reason = "a draw's pass, state and the two kinds of group it may bind"
+  )]
   fn draw_with<'a>(
     &'a self,
     pass: &mut wgpu::RenderPass<'a>,

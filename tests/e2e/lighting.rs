@@ -696,3 +696,74 @@ fn an_overflowed_scene_texel_in_the_dark_stays_black() {
     assert!(pixel.0[..3].iter().all(|&c| c < 4), "({x}, {y}): {pixel:?}");
   }
 }
+
+/// A 320 x 240 white floor lit only by a 400 px light at (10, 10), at the
+/// `Low` shadow quality (256 texels a view), past `wall`
+fn low_quality(wall: Option<LightOccluder2D>) -> Option<image::RgbaImage> {
+  let scene = Lit(Box::new(move |ctx| {
+    let floor = ctx
+      .assets()
+      .add(Image::solid_rect(320, 240, 255, 255, 255, 255));
+    ctx.world.spawn((
+      Transform::from_xy(0.0, 0.0),
+      Renderable::image(floor).with_anchor(Anchor::TopLeft),
+    ));
+    ctx.settings().set_shadow_quality(ShadowQuality::Low);
+    ctx
+      .lighting()
+      .set_ambient(AmbientLight::with_intensity(0.0));
+    ctx.world.spawn((
+      Transform::from_xy(10.0, 10.0),
+      Light2D::point(Color::WHITE, 400.0)
+        .with_intensity(0.5)
+        .with_shadows(),
+    ));
+    if let Some(wall) = &wall {
+      ctx.world.spawn((Transform::IDENTITY, wall.clone()));
+    }
+  }));
+  let builder = EngineBuilder::new().resolution(320, 240).start_scene(scene);
+  let mut engine = HeadlessEngine::new_or_skip(builder)?;
+  engine.step_frames(2).unwrap();
+  Some(engine.frame().unwrap())
+}
+
+#[test]
+fn a_shadow_starts_at_its_occluder_near_a_view_s_diagonal() {
+  // A wall 2 px thick across the ray at 40° from the light, its back face
+  // 250 px away: near the right view's end, where its texels cover the
+  // least angle
+  let light = Vec2::new(10.0, 10.0);
+  let ray = Vec2::from_angle(40f32.to_radians());
+  let across = ray.perp();
+  let centre = light + ray * 249.0;
+  let wall = LightOccluder2D::line(centre - across * 30.0, centre + across * 30.0, 2.0);
+  let (Some(shadowed), Some(open)) = (low_quality(Some(wall)), low_quality(None)) else {
+    return;
+  };
+  let mut checked = 0;
+  for y in 0..240 {
+    for x in 0..320 {
+      let offset = Vec2::new(x as f32 + 0.5, y as f32 + 0.5) - light;
+      let (along, off) = (offset.dot(ray), offset.dot(across).abs());
+      if off > 0.75 {
+        continue;
+      }
+      let (shown, unshadowed) = (linear(red(&shadowed, x, y)), linear(red(&open, x, y)));
+      if (252.0..262.0).contains(&along) {
+        // Within 2 px behind the back face it is in shadow
+        assert!(
+          shown < unshadowed * 0.5,
+          "{along} px along: {shown} against {unshadowed}"
+        );
+        checked += 1;
+      } else if (230.0..247.0).contains(&along) {
+        assert!(
+          shown > unshadowed * 0.9,
+          "{along} px along, in front: {shown} against {unshadowed}"
+        );
+      }
+    }
+  }
+  assert!(checked >= 10, "{checked} pixels behind the wall");
+}

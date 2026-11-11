@@ -21,8 +21,11 @@ pub(crate) const MAX_SHADOWED_LIGHTS: u32 = 512;
 const VIEWS: u32 = 4;
 
 /// A light this near a closed occluder's boundary (px) stands on it: it is
-/// outside the occluder, and the edges it stands on cast nothing for it
+/// outside the occluder, and the edges it stands on cast nothing for it.
+/// Far from the origin f32 steps pass it, so it grows with the coordinates
+/// (`ON_EDGE_SCALE` of the largest)
 const ON_EDGE: f32 = 1e-4;
+const ON_EDGE_SCALE: f32 = 1e-6;
 
 /// One casting edge in one view of one light, as the atlas's draw reads
 /// it: its end points and the light's position where they stand (ground
@@ -220,15 +223,18 @@ fn plan_occluder(
   }
 }
 
-/// Whether `point` is farther than `ON_EDGE` from the segment `a`-`b`
+/// Whether `point` is farther than `ON_EDGE` from the segment `a`-`b`, or
+/// `ON_EDGE_SCALE` of the largest coordinate among them where that is more
 fn off_edge(a: Vec2, b: Vec2, point: Vec2) -> bool {
   let along = b - a;
   let t = ((point - a).dot(along) / along.length_squared().max(f32::MIN_POSITIVE)).clamp(0.0, 1.0);
-  point.distance(a + along * t) > ON_EDGE
+  let scale = a.abs().max(b.abs()).max(point.abs()).max_element();
+  point.distance(a + along * t) > ON_EDGE.max(scale * ON_EDGE_SCALE)
 }
 
 /// Whether the closed polygon of `edges` holds `point` (even-odd). A point
-/// on its boundary (within `ON_EDGE` of an edge) is outside: a light on an
+/// on its boundary (within `ON_EDGE`, or its scaled tolerance, of an edge)
+/// is outside: a light on an
 /// occluder's edge or corner lights the side it faces and is shadowed by
 /// the rest
 fn contains(edges: impl Iterator<Item = (Vec2, Vec2)> + Clone, point: Vec2) -> bool {
@@ -616,6 +622,29 @@ mod tests {
     stage.wall(0.0, 0.0, LightOccluder2D::rect(100.0, 100.0));
     stage.plan(&[lamp(Vec2::new(-49.9, 10.0), 300.0)], &[wide()]);
     assert!(stage.plan.edges.is_empty());
+    // Far from the origin, turned, where f32 spacing (about 5e-4 px) passes
+    // 1e-4 px: a light at each edge's middle, moved in by less than one
+    // step, stands on it all the same
+    let block = LightOccluder2D::rect(100.0, 100.0);
+    let turn = 0.5f32;
+    let corners: Vec<Vec2> = block.placed(5000.0, 5000.0, turn).collect();
+    let far = view(Vec2::splat(4000.0), Vec2::splat(6000.0));
+    for i in 0..corners.len() {
+      let (a, b) = (corners[i], corners[(i + 1) % corners.len()]);
+      let middle = (a + b) * 0.5;
+      let at = middle + (Vec2::splat(5000.0) - middle).normalize() * 3e-4;
+      let mut stage = Stage::new();
+      stage.world.spawn((
+        Transform::from_xy(5000.0, 5000.0).with_rotation(turn),
+        block.clone(),
+      ));
+      stage.plan(&[lamp(at, 300.0)], &[far]);
+      assert!(!stage.plan.edges.is_empty(), "a light at {at} casts it");
+      for edge in &stage.plan.edges {
+        let (p, q) = (Vec2::from(edge.a), Vec2::from(edge.b));
+        assert!((q - p).perp_dot(at - p).abs() > 1.0, "{at}: {p} to {q}");
+      }
+    }
   }
 
   #[test]

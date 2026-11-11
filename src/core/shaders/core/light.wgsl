@@ -127,10 +127,11 @@ fn shadowed(offset: vec2<f32>, shadow: vec3<f32>) -> f32 {
     let size = vec2<f32>(textureDimensions(shadow_atlas));
     let row = u32(shadow.x) * 4u + view;
     let uv = vec2<f32>((tangent + 1.0) * 0.5, (f32(row) + 0.5) / size.y);
-    // A texel's world width here, from the tangent's derivative (an upper
-    // bound: the angle a texel covers shrinks towards the view's ends),
-    // keeps a surface from shadowing itself
-    let texel = dist * (2.0 / size.x) * (1.0 + tangent * tangent);
+    // A texel's world width here: the tangent maps to the row linearly, so
+    // a texel covers (2 / width) / (1 + t²) of angle, less towards the
+    // view's ends. A bias of 1.5 of them keeps a surface from shadowing
+    // itself, and the shadow starts at its occluder
+    let texel = dist * (2.0 / size.x) / (1.0 + tangent * tangent);
     let bias = 1.5 * texel / radius;
     return 1.0 - textureSampleCompareLevel(shadow_atlas, shadow_compare, uv, dist / radius - bias);
 }

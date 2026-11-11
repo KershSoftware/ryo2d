@@ -147,8 +147,8 @@ impl Engine {
         rend.request_capture(path);
       }
 
-      // Lights at their world position (occluders are gathered with the
-      // frame's triangles, for their shadow volumes)
+      // Lights at their world position (occluders are read from the
+      // occluder index as the shadows are planned, below)
       let mut lights = std::mem::take(&mut self.lights);
       lights_to_draw(&mut self.world, alpha, &mut lights);
       if let Some(lighting) = lighting.as_mut() {
