@@ -4,6 +4,58 @@ Small issues found while building each sub-project and left for later: deferred 
 
 Items from 4f on were copied from their execution records. Items from earlier sub-projects come from notes kept at the time, and some may have been fixed since: check before working on one.
 
+## Dev tools
+
+- Owner decisions (2026-11-09 to 2026-11-11):
+  - The design was left to the planner ("continue"; spec `docs/specs/2026-11-09-dev-tools-design.md`). The spec and plan were approved together, and the plan ran subagent-driven.
+  - Hand-play found that the console could not paste (it never had clipboard editing, on main either); asked for cut, copy and paste generally. Added before the merge: the console's input line edits like the UI's text field (Cmd or Ctrl with A, C, X, V; Shift selection; a paste made one line), the console reads keys held from earlier frames, held keys are forgotten on a focus loss, and the logger window copies with Cmd+C.
+  - Merged after the scripted tour (134 pages; every page matches main but the four that already differ run to run and the rebuilt console demo) and a windowed run of the log file. The owner approved, one-time each, deleting `target/debug` twice mid-branch when the disk neared the 40 GiB floor.
+- Not hand-checked at merge (headless tests and reading only):
+  - On Windows: the log file code was compiled only as copied functions (a full `cargo check --target x86_64-pc-windows-msvc` fails on this Mac at the bzip2, xz and zstd C dependencies); run two copies of a game and confirm the second writes `latest-<pid>.log`.
+  - The logger window's drawing, its filters and scrolling up while rows arrive; the profiler window opened and closed several times under `ryo2d dev -p`; the console in a web build; `ryo2d build` then `ryo2d run` (nothing on the terminal, the debug keys reaching the game).
+  - `cargo bench --bench dev_tools --features dev-tools` on a quiet machine: `log_call_warn` with the tools met its guard by less than the earlier log's own run-to-run spread, and every After run was at a load above 3.
+- Rulings the owner may revisit:
+  - **The console key always opens and closes the console**; a backquote cannot be typed into it (the plan had it typable once open).
+  - **The log file's buffer is 64 KiB** (was 8 KiB) for its speed in a flood: a hard crash during a flood can lose up to 64 KiB of the newest lines (a panic still flushes).
+  - **`game`, `engine` and `library` name the three default levels** in `RYO_LOG`, `log:level` and `set_level`, in any order: a crate whose target is exactly `engine` or `library` cannot be set at its root.
+  - **A command's name is answered by the scene nearest the top** of the stack (ordered by scope id), and a builder command replaces a built-in of the same name.
+  - **A run that would show its log nowhere prints it to stderr in every build**: the CLI, headless runs, runs with a scripting variable, and a windowed game with no writable log folder.
+  - **A closed console does no per-frame work**; the warnings logged meanwhile appear when it opens.
+  - **No test lowers a shared log level**; raising one is allowed under the levels guard. A failing test prints its captured log in its own failure block.
+  - **The engine crate's tests build and pass in a release-profile run**, with every test of a tool gated `#[cfg(dev_tools)]`; `./dev test:all` also runs `cargo test --release --test no_tools`.
+  - **The console's shortcut key is Super, or Control without Alt** (Control with Alt is AltGr and types characters).
+  - Stand as they are (the final review set them aside): `RYO_CAPTURE_*` works in a shipped game, as on main; `RYO_HEADLESS` and `RYO_INPUT` follow `debug_assertions`, so a `--dev-tools` release build cannot be scripted; a handler returns `Result<(), String>`; `ctx.console().remove` is global; a system cannot print to the console except through the log; `debug:fps` and F1 write the player's settings; the log lives in the save folder (a synced save folder carries the user's paths); F10 without the profiler feature reaches the game; a flood wraps up to 1,000 console lines a frame; asset hot reload follows debug builds.
+- Limits recorded (`docs/backlog/dev-tools.md`, Limits): the dev windows are native only; winit's `tracing` output is not read; a game calling `log::info!` directly is a library record; records from a library's own thread carry no engine scope; the per-system "warn once" sets are not shared; `ryo2d dev -p` fails for a game that renames its `ryo2d` dependency; a game's own command names stay in a shipped binary; an open console costs about 27 UI allocations a frame.
+- Deferred findings:
+  - **The log.**
+    - `warn_once!` runs a full level check on every call even after it has warned (`logging/macros.rs` ~71): put `!WARNED.load(Relaxed) &&` first.
+    - The file output holds its lock across the buffered write and the flush, so a stalled disk blocks every logging thread and a crashing one (the panic hook's comment overstates "does not wait").
+    - The panic line goes through level filtering: `RYO_LOG=off` drops it from the file.
+    - No test covers production's "a record from any thread reaches the file" (a `cfg(test)` owner filter hides it), nor that an earlier panic hook still runs.
+    - `level()` reports the engine's levels when another logger was installed first; `set_level` accepts targets that can never match (`""`, a trailing `::`); `RYO_LOG` problem lines for bare entries come before named ones.
+    - The thread's frame number stays set after a frame; `asset/watch.rs` ~75 formats the root path before the level is known; LDtk's shared "drawn otherwise" warning lost its `LDtk` label.
+    - The ring's per-scope dropped-warning map never removes entries; its "no longer shown" count is of warnings and errors whatever `log:show` says.
+    - `logging::scoped` and `in_scope` are crate-internal, so a game's own worker thread logs outside its test's capture.
+    - Two copies of a game started in the same instant can share `latest.log` or lose `previous.log` (treat `try_lock`'s `WouldBlock` in `create_held` as held); on a filesystem without locks a start can delete a running copy's pid file; on Windows a reader holding `latest.log` without delete sharing is reported as "another copy of the game".
+  - **Tests.**
+    - Several logging tests assume `RYO_LOG` is unset; the panic hook stays installed in the lib test binary (a caught panic adds an error record).
+    - `level_for_test` restores by writing an override (pinning that target), and taken twice on one thread it blocks forever; a nested capture dropped last hands back the outer's closed scope.
+    - Once-a-process warning flags stay process-wide (`navigation/layer.rs` `WINDOW_WARNED`, `ui/widgets/scroll.rs` `BAD_OFFSET_WARNED`, `immediate/context.rs`, `save_location.rs`'s title fallback): key them by log scope as `ui/theme/look.rs` does.
+    - `cargo test --release -p console-demo` builds and then fails (its tests assert on console output a build without tools lacks): a helper returning `None` when `!ryo2d::DEV_TOOLS`.
+    - `dev_tools_alloc` asserts only what is attributable by stack (about 174 of an open frame's extra 2,674 allocations sit in neither bucket); the paint test compares two f32 shares exactly; the profiler X-button test stops at the close helpers; the logger window's Cmd+C test covers the helper; nested `FakeClipboard` guards are not stacked; `page_command`'s doctest is `ignore`.
+  - **The console.**
+    - `Command::arg` drops a type's own parse error ("is not valid" only).
+    - The wrap cache and the marks cache ignore a font change (hot reload) until the next resize.
+    - If the console key's release is never delivered, its next press is swallowed once; a V released and pressed again within one frame skips the second paste; a very large clipboard is read and scanned once before the 4,096-character cap.
+    - `Engine::game_focus_changed` uses `resource_mut::<Input>()` (always present, but `get_resource_mut` matches the no-panic rule); `Input::handle_ime_commit` still reads `keys_down` for Ctrl and Cmd, which a focused console wipes each frame; `console/mod.rs` ~968 keeps a guarded `unwrap()` (on main too).
+    - The console demo: `game:spawn slime 3 extra` ignores the extra argument; its pages use a four-line description where the demo standard says one.
+  - **Build and records.**
+    - `dev_tools` rests on `CARGO_CFG_DEBUG_ASSERTIONS`, which older cargo did not set for build scripts (it fails safe); `Cargo.toml` states no `rust-version`.
+    - `docs/backlog/dev-tools.md` names the machine without chip or core count.
+- Pre-existing bugs seen along the way:
+  - A game's `keys_down` are not released when the window loses focus: a key held across Alt+Tab or Cmd+Tab stays down until pressed again.
+  - The window's typed-text rule withholds text while Ctrl or Alt is held, so on Windows AltGr characters (`@ { [ \ ~` on German or French layouts) cannot be typed into the UI's text fields.
+
 ## Particles
 
 - Owner decisions (2026-11-09):

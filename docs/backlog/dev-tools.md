@@ -65,7 +65,7 @@ the first set of runs.
 | `console_open_idle`, 95th percentile (us) | 233.1 (225.0 to 275.5) | no console | 58.2 (58.1 to 73.9) | none | recorded | as above |
 | `tools_closed` (ns a frame, the tools' own time, closed) | not measured | no tools | 0 to 41 (every run's median was 0 or one clock tick, 41 ns; 95th percentile 42) | 1 us | met | 7.1 |
 
-After the final fixes (the panic hook's record kept from stderr, the file
+After the later changes to the log (the panic hook's record kept from stderr, the file
 written before stderr, the file's open, the early buffer's note of what
 stderr took), the log benches were run once each way, with the new
 `log_call_quiet_prelude` (one `ryo2d::debug!`, the prelude's macro a game
@@ -75,7 +75,7 @@ running a virtual machine throughout, which a few minutes of checks did not
 avoid: the run without the tools started at a load of 5.9 (3.6 just before
 its build), the run with them at 3.4, both flagged. Every guard was met:
 
-| Bench (final fixes, one run each) | Without tools | With tools | Target or guard | Verdict |
+| Bench (latest run, one each way) | Without tools | With tools | Target or guard | Verdict |
 |-------|---------------|------------|-----------------|---------|
 | `log_call_quiet` (ns a call) | 1.2 | 0.6 | 5 ns | met |
 | `log_call_quiet_prelude` (ns a call) | 1.7 | 1.4 | 5 ns | met |
@@ -88,8 +88,9 @@ Notes on the figures:
 
 - `log_call_quiet` is not the same work as Before's: the earlier log stored
   its debug lines, and this one cuts the record at the level check, so
-  After's figure is what a game pays for a silenced line (one atomic read in
-  the macro and a call).
+  After's figure is what engine code pays for a silenced `log::debug!` (one
+  atomic read in the macro and a call); `log_call_quiet_prelude` is what a
+  game pays through the prelude's `debug!`.
 - `log_call_warn` is measured with a log file open in a temp folder (opened
   and closed through `ryo2d::testing::open_log_file` and `close_log_file`, a
   fresh file each run, so no run reaches the 8 MiB cap), as a running game
