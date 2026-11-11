@@ -7,8 +7,8 @@ use super::{Engine, PresentOutcome, SceneHost};
 use crate::core::asset::{Asset, AssetEvent, AssetId};
 use crate::core::diagnostics::{DebugStats, OverlayFlags, overlay_shapes};
 use crate::core::ecs::interpolate::render_global;
-use crate::core::ecs::kernel::SystemIdMarker;
 use crate::core::ecs::kernel::{MessageCursor, Messages};
+use crate::core::ecs::kernel::{QueryState, SystemIdMarker};
 use crate::core::ecs::{
   DetectChangesMut, DrawLift, Entity, Floor, GlobalTransform, IsResource, Mut, Observer,
   PreviousGlobalTransform, Vec2, World, shaders_of,
@@ -150,7 +150,11 @@ impl Engine {
       // Lights at their world position (occluders are read from the
       // occluder index as the shadows are planned, below)
       let mut lights = std::mem::take(&mut self.lights);
-      lights_to_draw(&mut self.world, alpha, &mut lights);
+      // Kept, so a frame makes no query state
+      let light_query = self
+        .light_query
+        .get_or_insert_with(|| self.world.query::<LightItem>());
+      lights_to_draw(&self.world, light_query, alpha, &mut lights);
       if let Some(lighting) = lighting.as_mut() {
         let mut settings = self.world.resource_mut::<LightingSettings>();
         lighting.set_enabled(
@@ -344,7 +348,8 @@ impl Engine {
       if lit {
         let mut slots: &[Option<u32>] = &[];
         if let Some(lighting) = lighting.as_mut() {
-          // Kept, so a frame makes no query state
+          // Kept, so a frame makes no query state: the planner reads only
+          // the occluders the index finds, one by one, through it
           let query = self
             .occluder_query
             .get_or_insert_with(|| self.world.query::<OccluderItem>());
@@ -352,8 +357,8 @@ impl Engine {
           let quality = world
             .get_resource::<Settings>()
             .map_or_else(ShadowQuality::default, Settings::shadow_quality);
-          // Lights past the cap draw unshadowed
-          let _dropped = lighting.plan_shadows(
+          // Lights past the cap draw unshadowed (warned once a run)
+          lighting.plan_shadows(
             rend.device(),
             quality,
             &lights,
@@ -762,18 +767,15 @@ fn floor_and_lift(drawn: Option<&DrawLift>, floor: Option<&Floor>) -> (Floor, Ve
 /// The lights to draw this frame, where they stand (blended for
 /// interpolated entities, like their sprites), with the layers that see
 /// them and their floors and lifts.
-fn lights_to_draw(world: &mut World, alpha: f32, out: &mut Vec<FrameLight>) {
+fn lights_to_draw(
+  world: &World,
+  query: &mut QueryState<LightItem>,
+  alpha: f32,
+  out: &mut Vec<FrameLight>,
+) {
   out.clear();
   out.extend(
-    world
-      .query::<(
-        &GlobalTransform,
-        Option<&PreviousGlobalTransform>,
-        &Light2D,
-        Option<&RenderLayers>,
-        Option<&DrawLift>,
-        Option<&Floor>,
-      )>()
+    query
       .iter(world)
       .map(|(global, previous, light, layers, drawn, floor)| {
         let (floor, lift) = floor_and_lift(drawn, floor);
@@ -787,6 +789,15 @@ fn lights_to_draw(world: &mut World, alpha: f32, out: &mut Vec<FrameLight>) {
       }),
   );
 }
+
+pub(super) type LightItem = (
+  &'static GlobalTransform,
+  Option<&'static PreviousGlobalTransform>,
+  &'static Light2D,
+  Option<&'static RenderLayers>,
+  Option<&'static DrawLift>,
+  Option<&'static Floor>,
+);
 
 pub(super) type OccluderItem = (
   &'static GlobalTransform,
@@ -838,7 +849,8 @@ mod tests {
     moved(&mut world, Light2D::point(Color::WHITE, 5.0));
     moved(&mut world, LightOccluder2D::rect(4.0, 4.0));
     let mut lights = Vec::new();
-    lights_to_draw(&mut world, 0.5, &mut lights);
+    let mut light_query = world.query();
+    lights_to_draw(&world, &mut light_query, 0.5, &mut lights);
     assert_eq!(lights[0].position, Vec2::new(5.0, 0.0));
     let mut query = world.query::<OccluderItem>();
     let occluders: Vec<_> = query
@@ -881,7 +893,8 @@ mod tests {
     maps.frame();
 
     let mut lights = Vec::new();
-    lights_to_draw(&mut maps.world, 1.0, &mut lights);
+    let mut light_query = maps.world.query();
+    lights_to_draw(&maps.world, &mut light_query, 1.0, &mut lights);
     let [torch] = lights.as_slice() else {
       panic!("one light: {lights:?}");
     };
@@ -1008,7 +1021,8 @@ mod tests {
     assert_eq!(floors, [None, Some(Floor::On(1))]);
     // The lights, each on its floor, then the occluders, each on its own
     let mut lights = Vec::new();
-    lights_to_draw(&mut maps.world, 1.0, &mut lights);
+    let mut light_query = maps.world.query();
+    lights_to_draw(&maps.world, &mut light_query, 1.0, &mut lights);
     let mut lit: Vec<Floor> = lights.iter().map(|light| light.floor).collect();
     lit.sort_by_key(|floor| floor.number());
     assert_eq!(lit, [Floor::GROUND, Floor::On(1)]);

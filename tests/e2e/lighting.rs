@@ -1347,3 +1347,158 @@ fn the_atlas_grows_and_changes_quality_between_frames() {
     "a settled frame built"
   );
 }
+
+/// The 128 x 64 floor with no ambient light, a hard shadowed light at
+/// (16, 16) and a 4 x 8 wall at (40, 16); once `go` is set, its next
+/// `update` moves both 32 px down
+struct MovedInUpdate(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl Scene for MovedInUpdate {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    let floor = ctx
+      .assets()
+      .add(Image::solid_rect(128, 64, 255, 255, 255, 255));
+    ctx.world.spawn((
+      Transform::from_xy(0.0, 0.0),
+      Renderable::image(floor).with_anchor(Anchor::TopLeft),
+    ));
+    ctx
+      .lighting()
+      .set_ambient(AmbientLight::with_intensity(0.0));
+    ctx.world.spawn((
+      Transform::from_xy(16.0, 16.0),
+      Light2D::point(Color::WHITE, 256.0)
+        .with_intensity(0.5)
+        .with_shadows(),
+    ));
+    ctx.world.spawn((
+      Transform::from_xy(40.0, 16.0),
+      LightOccluder2D::rect(4.0, 8.0),
+    ));
+  }
+
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    if self.0.swap(false, std::sync::atomic::Ordering::Relaxed) {
+      let world = &mut *ctx.world;
+      let mut moved =
+        world.query_filtered::<&mut Transform, Or<(With<Light2D>, With<LightOccluder2D>)>>();
+      for mut transform in moved.iter_mut(world) {
+        transform.translation.y += 32.0;
+      }
+    }
+    SceneAction::Continue
+  }
+}
+
+#[test]
+fn an_occluder_moved_this_frame_casts_where_it_now_is() {
+  let go = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+  let builder = EngineBuilder::new()
+    .resolution(128, 64)
+    .start_scene(MovedInUpdate(go.clone()));
+  let Some(mut engine) = HeadlessEngine::new_or_skip(builder) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  let before = engine.frame().unwrap();
+  // Behind the wall at y 16 is dark, y 48 lit
+  assert!(
+    red(&before, 70, 16) < 3 && red(&before, 70, 48) > 40,
+    "before: {} at y 16, {} at y 48",
+    red(&before, 70, 16),
+    red(&before, 70, 48)
+  );
+  // Moved in this frame's update: the index updates after propagation and
+  // the plan reads it as the frame is drawn
+  go.store(true, std::sync::atomic::Ordering::Relaxed);
+  engine.step_frames(1).unwrap();
+  let after = engine.frame().unwrap();
+  assert!(
+    red(&after, 70, 48) < 3 && red(&after, 70, 16) > 40,
+    "the same frame: {} behind the wall at y 48, {} where it was",
+    red(&after, 70, 48),
+    red(&after, 70, 16)
+  );
+}
+
+#[test]
+fn past_512_shadowed_lights_the_nearest_keep_their_shadows() {
+  let log = ryo2d::testing::capture_log();
+  // A 320 x 240 white floor with no ambient light, its camera centred at
+  // (160, 120). 600 shadowed lights in view: 510 faint 1 px ones at the
+  // centre; two test lights 60 px out (ranks 510 and 511, the last kept)
+  // and two 120 px out (512 and 513, the first dropped), each 30 px in
+  // radius with a wall 10 px to its right and the point 22 px to its
+  // right behind it, which no other light reaches; and 86 faint ones at
+  // the corners, about 195 px out
+  let near = [Vec2::new(100.0, 120.0), Vec2::new(220.0, 120.0)];
+  let far = [Vec2::new(40.0, 120.0), Vec2::new(280.0, 120.0)];
+  let scene = Lit(Box::new(move |ctx: &mut SceneContext| {
+    let floor = ctx
+      .assets()
+      .add(Image::solid_rect(320, 240, 255, 255, 255, 255));
+    ctx.world.spawn((
+      Transform::from_xy(0.0, 0.0),
+      Renderable::image(floor).with_anchor(Anchor::TopLeft),
+    ));
+    ctx
+      .lighting()
+      .set_ambient(AmbientLight::with_intensity(0.0));
+    let faint = || {
+      Light2D::point(Color::WHITE, 1.0)
+        .with_intensity(0.001)
+        .with_shadows()
+    };
+    for _ in 0..510 {
+      ctx.world.spawn((Transform::from_xy(160.0, 120.0), faint()));
+    }
+    for at in near.iter().chain(&far) {
+      ctx.world.spawn((
+        Transform::from_xy(at.x, at.y),
+        Light2D::point(Color::WHITE, 30.0).with_shadows(),
+      ));
+      ctx.world.spawn((
+        Transform::from_xy(at.x + 10.0, at.y),
+        LightOccluder2D::rect(4.0, 12.0),
+      ));
+    }
+    let corners = [(4.0, 4.0), (316.0, 4.0), (4.0, 236.0), (316.0, 236.0)];
+    for i in 0..86 {
+      let (x, y) = corners[i % 4];
+      ctx.world.spawn((Transform::from_xy(x, y), faint()));
+    }
+  }));
+  let builder = EngineBuilder::new().resolution(320, 240).start_scene(scene);
+  let Some(mut engine) = HeadlessEngine::new_or_skip(builder) else {
+    return;
+  };
+  for frame in 0..10 {
+    engine.step_frames(1).unwrap();
+    let image = engine.frame().unwrap();
+    // The pixels whose centres lie 22.5 px either side of a light
+    let at = |p: Vec2, dx: f32| red(&image, (p.x + dx) as u32, p.y as u32);
+    for light in near {
+      // Lit on its open side, shadowed behind its wall
+      assert!(
+        at(light, -23.0) > 20 && at(light, 22.0) < 3,
+        "frame {frame}: the light at {light} kept its shadow: {} open, {} behind its wall",
+        at(light, -23.0),
+        at(light, 22.0)
+      );
+    }
+    for light in far {
+      assert!(
+        at(light, -23.0) > 20 && at(light, 22.0).abs_diff(at(light, -23.0)) <= 2,
+        "frame {frame}: the light at {light} draws unshadowed: {} open, {} behind its wall",
+        at(light, -23.0),
+        at(light, 22.0)
+      );
+    }
+  }
+  let warnings = log.warnings();
+  assert_eq!(warnings.len(), 1, "one warning in 10 frames: {warnings:?}");
+  assert!(
+    warnings[0].contains("88"),
+    "it names the count: {warnings:?}"
+  );
+}

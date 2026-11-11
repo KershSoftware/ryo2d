@@ -131,6 +131,10 @@ pub(crate) struct LightingRenderer {
   /// The run's warning that a frame's edges passed the largest buffer
   /// was logged
   warned_edges: bool,
+
+  /// The run's warning that a frame's shadowed lights passed the cap was
+  /// logged
+  warned_cap: bool,
 }
 
 impl LightingRenderer {
@@ -259,6 +263,7 @@ impl LightingRenderer {
       shadow_views: Vec::new(),
       atlas: ShadowAtlas::new(device),
       warned_edges: false,
+      warned_cap: false,
     }
   }
 
@@ -319,9 +324,8 @@ impl LightingRenderer {
   /// Plans the frame's shadows for the lit `cameras` (`plan::plan_shadows`,
   /// reading occluders from `index` through `occluder`), at most as many
   /// lights as the atlas's largest height holds and as many edges as the
-  /// largest buffer holds (warned once a run past it), and makes the atlas
-  /// fit them at `quality`. Returns how many lights the cap left
-  /// unshadowed.
+  /// largest buffer holds (each warned once a run past it: the lights past
+  /// the cap draw unshadowed), and makes the atlas fit them at `quality`.
   pub(crate) fn plan_shadows<'w>(
     &mut self,
     device: &wgpu::Device,
@@ -330,10 +334,10 @@ impl LightingRenderer {
     cameras: &[CameraDraw],
     index: Option<&OccluderIndex>,
     occluder: impl FnMut(Entity) -> Option<PlannedOccluder<'w>>,
-  ) -> u32 {
+  ) {
     let Some(index) = index else {
       self.shadow_plan.clear();
-      return 0;
+      return;
     };
     self.shadow_views.clear();
     self
@@ -358,6 +362,12 @@ impl LightingRenderer {
       cap,
       self.atlas.max_edges(),
     );
+    if dropped > 0 && !self.warned_cap {
+      self.warned_cap = true;
+      log::warn!(
+        "{dropped} shadowed lights past the cap of {cap} a frame: the farthest from the cameras draw unshadowed"
+      );
+    }
     let past = self.shadow_plan.dropped_edges;
     if past > 0 && !self.warned_edges {
       self.warned_edges = true;
@@ -368,7 +378,6 @@ impl LightingRenderer {
     if self.shadow_plan.rows > 0 {
       self.atlas.ensure(device, quality, self.shadow_plan.rows);
     }
-    dropped
   }
 
   /// Draws the planned shadow maps into the atlas in the frame's

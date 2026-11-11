@@ -170,9 +170,9 @@ fn turned_by(v: vec2<f32>, angle: f32) -> vec2<f32> {
 // A light of size 0 takes one comparison against its view's row of the
 // atlas. A light whose source is `size` pixels in radius first searches
 // `min(6 x size / dist, MAX_ARC)` radians round the pixel's angle with
-// `taps / 2 + 1` raw distances, the middle one at the pixel's own angle,
-// for the farthest thing nearer than the pixel (`blocker`); with none the
-// pixel is lit. The search reaches the whole penumbra of every blocker at
+// `taps / 2` raw distances, made odd (`| 1`), the middle one at the
+// pixel's own angle, for the farthest thing nearer than the pixel
+// (`blocker`); with none the pixel is lit. The search reaches the whole penumbra of every blocker at
 // least a quarter of the way from the light to the pixel. Then it filters
 // the penumbra of a source that size, `min(2 x size x (dist - blocker) /
 // (blocker x dist), MAX_ARC)` radians, with `taps` comparisons spread
@@ -206,11 +206,14 @@ fn shadowed(offset: vec2<f32>, shadow: vec3<f32>) -> f32 {
     // shadows, and they would read lit. (A side two closed occluders share
     // casts nothing, `lighting/plan.rs`, so it never hides a wall's far
     // face from the middle look-up.)
-    let searches = taps / 2u + 1u;
+    // An odd count for any `taps` (3, 5, 7, 9 at the qualities' 4 to 16),
+    // so one look-up lies on the pixel's own ray; a single one looks only
+    // there
+    let searches = (taps / 2u) | 1u;
     let search_arc = min(6.0 * source / dist, MAX_ARC);
-    let search_step = search_arc / f32(searches - 1u);
+    let search_step = search_arc / f32(max(searches - 1u, 1u));
     let search_turn = vec2<f32>(cos(search_step), sin(search_step));
-    var look = turned_by(dir, -0.5 * search_arc);
+    var look = turned_by(dir, -0.5 * search_step * f32(searches - 1u));
     let last_texel = i32(size.x) - 1;
     var farthest = 0.0;
     var found = false;

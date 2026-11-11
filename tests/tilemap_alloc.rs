@@ -4,8 +4,9 @@
 //! drawn) on every grid, its layers colliding and casting shadows (the
 //! hexagonal map's too), and the same map with a storey under a second
 //! light on that storey; an idle frame of a streamed map whose chunks have
-//! landed, on orthogonal and on isometric cells; and a frame of characters
-//! walking on a map's storeys, drawn lifted.
+//! landed, on orthogonal and on isometric cells; a frame of characters
+//! walking on a map's storeys, drawn lifted; and a lit frame of 64
+//! shadowed lights, hard and soft, against the same lights unshadowed.
 //!
 //! A frame's allocations are told apart by their stacks: those made inside
 //! the GPU API (wgpu, naga and the Metal bindings, which allocate as they
@@ -1107,6 +1108,118 @@ fn a_frame_with_entities_moving_on_floors_allocates_nothing() {
       moving.map_gpu.is_empty(),
       "frame {frame}: the map's path made GPU allocations: {:#?}",
       moving.map_gpu
+    );
+  }
+}
+
+/// 64 lights over 640 x 360 px in an 8 x 8 grid, and (`shadowed`) each
+/// casting shadows, every other one soft, of a wall beside each: closed
+/// blocks, two of them touching (a shared side), and an open chain
+struct LitRoom {
+  shadowed: bool,
+}
+
+impl Scene for LitRoom {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    let floor = ctx
+      .assets()
+      .add(Image::solid_rect(640, 360, 255, 255, 255, 255));
+    ctx.world.spawn((
+      Transform::from_xy(0.0, 0.0),
+      Renderable::image(floor).with_anchor(Anchor::TopLeft),
+    ));
+    ctx
+      .lighting()
+      .set_ambient(AmbientLight::with_intensity(0.1));
+    ctx.lighting().set_enabled(true);
+    for i in 0..64 {
+      let at = Vec2::new(40.0 + (i % 8) as f32 * 80.0, 20.0 + (i / 8) as f32 * 45.0);
+      let light = Light2D::point(Color::WHITE, 120.0).with_intensity(0.3);
+      let light = match (self.shadowed, i % 2) {
+        (false, _) => light,
+        (true, 0) => light.with_shadows(),
+        (true, _) => light.with_soft_shadows(6.0),
+      };
+      ctx.world.spawn((Transform::from_translation(at), light));
+    }
+    if !self.shadowed {
+      return;
+    }
+    for i in 0..24 {
+      let at = Vec2::new(70.0 + (i % 6) as f32 * 100.0, 40.0 + (i / 6) as f32 * 90.0);
+      ctx.world.spawn((
+        Transform::from_translation(at),
+        LightOccluder2D::rect(12.0, 24.0),
+      ));
+    }
+    ctx.world.spawn((
+      Transform::from_xy(82.0, 40.0),
+      LightOccluder2D::rect(12.0, 24.0),
+    ));
+    ctx.world.spawn((
+      Transform::from_xy(320.0, 300.0),
+      LightOccluder2D::chain(vec![
+        Vec2::new(-100.0, 0.0),
+        Vec2::new(0.0, -30.0),
+        Vec2::new(100.0, 0.0),
+      ]),
+    ));
+  }
+
+  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    SceneAction::Continue
+  }
+}
+
+#[test]
+fn a_lit_frame_with_64_shadowed_lights_allocates_nothing() {
+  let start = |shadowed| {
+    let builder = EngineBuilder::new()
+      .resolution(640, 360)
+      .start_scene(LitRoom { shadowed });
+    let mut engine = HeadlessEngine::new_or_skip(builder)?;
+    engine.step_frames(30).expect("the warm-up frames");
+    Some(engine)
+  };
+  let (Some(mut shadowed), Some(mut plain)) = (start(true), start(false)) else {
+    return;
+  };
+  // The shadows' atlas was made in the warm-up, and no frame makes it again
+  let builds = shadowed.shadow_atlas_builds();
+  assert!(builds > 0, "the shadowed lights have an atlas");
+  // The same lights, unshadowed and with nothing to cast, are the
+  // baseline: any allocation the shadowed frame makes and that one does
+  // not is the shadows' (the plan, the atlas and its soft filter's uniform)
+  for frame in 0..6 {
+    let (cast, open) = (traced(&mut shadowed), traced(&mut plain));
+    let own = |frame: &Frame| frame.own.values().sum::<usize>();
+    println!(
+      "frame {frame}: 64 shadowed lights {} allocations ({} the engine's own), unshadowed {} \
+       ({} its own)",
+      cast.count,
+      own(&cast),
+      open.count,
+      own(&open),
+    );
+    let more = more(&cast, &open);
+    assert!(
+      more.is_empty(),
+      "frame {frame}: the shadowed frame made allocations of the engine's own the unshadowed one \
+       did not: {more:#?}"
+    );
+    let lighting: Vec<&String> = cast
+      .own
+      .keys()
+      .filter(|site| site.contains("lighting::"))
+      .collect();
+    assert!(
+      lighting.is_empty(),
+      "frame {frame}: the lighting allocated: {lighting:#?}"
+    );
+    assert_eq!(
+      shadowed.shadow_atlas_builds(),
+      builds,
+      "frame {frame}: the atlas was made again"
     );
   }
 }
