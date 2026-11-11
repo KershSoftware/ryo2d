@@ -155,6 +155,20 @@ fn frame_kind(frame: u64, scene_entered: bool, visible_and_focused: bool) -> Fra
 }
 
 impl Engine {
+  /// Closes the profiler window (its X button, through `CloseRequested`) and
+  /// clears its focus flag; the window's drop removes its sink.
+  #[cfg(feature = "profiler")]
+  pub(super) fn close_profiler_window(&mut self) {
+    self.profiler_window = None;
+    self.profiler_window_focused = false;
+  }
+
+  /// Closes the logger window and clears its focus flag.
+  pub(super) fn close_logger_window(&mut self) {
+    self.logger_window = None;
+    self.logger_window_focused = false;
+  }
+
   /// Show the window and start the engine on its new renderer (native at
   /// once, the web when its async GPU setup arrives).
   fn finish_gpu_setup(
@@ -184,6 +198,7 @@ impl Engine {
         renderer.queue_arc(),
         instance,
         adapter,
+        self.config.debug.enable_profiler,
       );
     }
 
@@ -717,7 +732,7 @@ impl ApplicationHandler<EngineEvent> for Engine {
       && window_id == profiler.window_id()
     {
       match &event {
-        WindowEvent::CloseRequested => self.profiler_window = None,
+        WindowEvent::CloseRequested => self.close_profiler_window(),
         WindowEvent::RedrawRequested => profiler.render(),
         WindowEvent::Focused(focused) => self.profiler_window_focused = *focused,
         _ => {
@@ -731,7 +746,7 @@ impl ApplicationHandler<EngineEvent> for Engine {
       && window_id == logger.window_id()
     {
       match &event {
-        WindowEvent::CloseRequested => self.logger_window = None,
+        WindowEvent::CloseRequested => self.close_logger_window(),
         WindowEvent::RedrawRequested => logger.render(),
         WindowEvent::Focused(focused) => self.logger_window_focused = *focused,
         _ => {
@@ -1010,18 +1025,19 @@ impl ApplicationHandler<EngineEvent> for Engine {
     // open, so they are not retried every frame
     #[cfg(feature = "profiler")]
     if std::mem::take(&mut self.pending_open_profiler)
+      && !cfg!(target_arch = "wasm32")
       && self.profiler_window.is_none()
       && let Some(renderer) = &self.renderer
       && let (Some(instance), Some(adapter)) = (renderer.instance(), renderer.adapter())
     {
-      // Collect scopes even when enable_profiler wasn't set
-      puffin::set_scopes_on(true);
+      // Opening turns scopes on, even when enable_profiler wasn't set
       self.profiler_window = crate::core::windows::profiler_window::ProfilerWindow::new(
         event_loop,
         renderer.device_arc(),
         renderer.queue_arc(),
         instance,
         adapter,
+        self.config.debug.enable_profiler,
       );
     }
 

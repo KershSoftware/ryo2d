@@ -432,7 +432,7 @@ impl Spread {
       return Some(0);
     }
     if self.texture.is_none() {
-      crate::profile_scope!("atlas:spread texture");
+      crate::profile_scope!("cpu:atlas:spread texture");
       let (bw, bh) = (width + 2 * border, height + 2 * border);
       self.texture = Some(new_texture(make, (bw, bh), self.levels, "Atlas Standalone"));
     }
@@ -504,7 +504,7 @@ impl Spread {
         };
         if first {
           // wgpu clears the level before its first write
-          crate::profile_scope!("atlas:spread first band");
+          crate::profile_scope!("cpu:atlas:spread first band");
           write();
         } else {
           write();

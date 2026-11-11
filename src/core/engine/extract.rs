@@ -223,7 +223,7 @@ impl Engine {
       );
       // The engine's particles: one run per emitter the cameras see
       let particles_drawn = {
-        profile_scope!("render:particles");
+        profile_scope!("cpu:render:particles");
         let start = Instant::now();
         let drawn = self.particle_drawer.collect(
           &mut self.world,

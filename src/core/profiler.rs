@@ -36,8 +36,6 @@
 //! When profiling is enabled, a second window opens automatically showing
 //! real-time flamegraphs. No external tools required!
 
-#[cfg(feature = "profiler")]
-
 /// Profile an entire function (adds scope with function name).
 ///
 /// When `profiler` feature is enabled, creates a puffin scope using the
@@ -117,7 +115,7 @@ pub fn init(enabled: bool) {
   }
 
   puffin::set_scopes_on(true);
-  log::info!("Profiling enabled - profiler window will open");
+  log::info!("profiling scopes are on");
 }
 
 #[cfg(not(feature = "profiler"))]

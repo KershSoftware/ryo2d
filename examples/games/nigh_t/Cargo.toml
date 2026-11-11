@@ -11,5 +11,3 @@ path = "main.rs"
 # Ryo2D engine dependency
 ryo2d = { path = "../../.." }
 
-[features]
-profiler = ["ryo2d/profiler"]

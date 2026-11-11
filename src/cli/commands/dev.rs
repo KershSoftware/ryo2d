@@ -61,9 +61,9 @@ pub fn execute(args: &[String]) -> CliResult<()> {
   let mut cmd = Command::new("cargo");
   cmd.arg("run");
 
-  // Add profiler feature flag if requested (via -p flag or Ryo.toml config)
+  // The engine's own profiler feature, so the game needs none of its own
   if enable_profiler_feature {
-    cmd.arg("--features").arg("profiler");
+    cmd.arg("--features").arg("ryo2d/profiler");
   }
 
   // Set auto-open env var only when -p flag is explicitly used
@@ -85,10 +85,6 @@ pub fn execute(args: &[String]) -> CliResult<()> {
   if !status.success() {
     let code = status.code().unwrap_or(-1);
     if code != 0 {
-      // Check if the failure was due to missing profiler feature
-      if enable_profiler_feature {
-        print_profiler_feature_help(&workspace);
-      }
       return Err(CliError::BuildFailed(format!(
         "Development build failed with exit code {}",
         code
@@ -97,30 +93,6 @@ pub fn execute(args: &[String]) -> CliResult<()> {
   }
 
   Ok(())
-}
-
-/// Print help for adding the profiler feature if it's missing
-fn print_profiler_feature_help(workspace: &crate::core::config::Workspace) {
-  let cargo_toml_path = workspace.root().join("Cargo.toml");
-
-  // Check if Cargo.toml has the profiler feature defined
-  if let Ok(contents) = fs::read_to_string(&cargo_toml_path) {
-    let has_profiler_feature = contents.contains("profiler")
-      && (contents.contains("[features]") || contents.contains("features ="));
-
-    if !has_profiler_feature {
-      println!();
-      Output::warning("The 'profiler' feature may not be configured in your project.");
-      println!();
-      println!("  Add this to your Cargo.toml to enable profiling:");
-      println!();
-      println!("      [features]");
-      println!("      profiler = [\"ryo2d/profiler\"]");
-      println!();
-      println!("  This forwards the profiler feature to the ryo2d dependency.");
-      println!();
-    }
-  }
 }
 
 /// Check if the project has dev profile optimization configured
@@ -220,7 +192,7 @@ USAGE:
 
 OPTIONS:
     -h, --help          Show this help message
-    -p, --profiler      Enable puffin hierarchical profiler (HTTP server on port 8585)
+    -p, --profiler      Open the profiler window (builds the engine's profiler feature)
     --skip-opt-check    Skip the dev profile optimization check
 
 DESCRIPTION:

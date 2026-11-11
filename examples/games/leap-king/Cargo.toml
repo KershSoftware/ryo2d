@@ -11,9 +11,6 @@ path = "main.rs"
 name = "leap_king"
 path = "src/lib.rs"
 
-[features]
-profiler = ["ryo2d/profiler"]
-
 [dependencies]
 ryo2d = { path = "../../..", features = ["matchbox"] }
 ryo2d-procgen = { path = "../../../crates/ryo2d-procgen" }

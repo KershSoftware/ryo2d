@@ -1,6 +1,6 @@
 //! Profile and Log Demo - Showcases the Ryo2D profiler and logger windows
 //!
-//! Run with: cargo run -p profile-and-log --features profiler
+//! Run with: ryo2d dev -p (from this folder)
 //!
 //! Runs on the demo-kit shell; the work multiplier and auto-spawn are settings.
 
@@ -99,7 +99,6 @@ impl DemoScene {
   }
 
   fn spawn_cpu(&mut self, ctx: &mut SceneContext, count: usize) {
-    #[cfg(feature = "profiler")]
     profile_scope!("spawn_cpu");
 
     let mut rng = rand::thread_rng();
@@ -126,7 +125,6 @@ impl DemoScene {
   }
 
   fn despawn_cpu(&mut self, ctx: &mut SceneContext, count: usize) {
-    #[cfg(feature = "profiler")]
     profile_scope!("despawn_cpu");
 
     let entities = entities_with::<CpuHeavy>(ctx.world);
@@ -141,7 +139,6 @@ impl DemoScene {
   }
 
   fn spawn_gpu(&mut self, ctx: &mut SceneContext, count: usize) {
-    #[cfg(feature = "profiler")]
     profile_scope!("spawn_gpu");
 
     let mut rng = rand::thread_rng();
@@ -165,7 +162,6 @@ impl DemoScene {
   }
 
   fn despawn_gpu(&mut self, ctx: &mut SceneContext, count: usize) {
-    #[cfg(feature = "profiler")]
     profile_scope!("despawn_gpu");
 
     let entities = entities_with::<GpuHeavy>(ctx.world);
@@ -180,7 +176,6 @@ impl DemoScene {
   }
 
   fn spawn_mixed(&mut self, ctx: &mut SceneContext, count: usize) {
-    #[cfg(feature = "profiler")]
     profile_scope!("spawn_mixed");
 
     let mut rng = rand::thread_rng();
@@ -206,7 +201,6 @@ impl DemoScene {
   }
 
   fn despawn_mixed(&mut self, ctx: &mut SceneContext, count: usize) {
-    #[cfg(feature = "profiler")]
     profile_scope!("despawn_mixed");
 
     let entities = entities_with::<MixedLoad>(ctx.world);
@@ -221,7 +215,6 @@ impl DemoScene {
   }
 
   fn update_cpu_entities(&mut self, ctx: &mut SceneContext, dt: f32) {
-    #[cfg(feature = "profiler")]
     profile_scope!("physics_sim");
 
     // Expensive physics simulation - lots of trig and calculations
@@ -252,7 +245,6 @@ impl DemoScene {
   }
 
   fn update_gpu_entities(&mut self, ctx: &mut SceneContext, dt: f32) {
-    #[cfg(feature = "profiler")]
     profile_scope!("gpu_drift");
 
     // Minimal CPU work - just drift
@@ -280,7 +272,6 @@ impl DemoScene {
   }
 
   fn update_mixed_entities(&mut self, ctx: &mut SceneContext, dt: f32) {
-    #[cfg(feature = "profiler")]
     profile_scope!("ai_pathfinding");
 
     // Simulated AI/pathfinding - moderate CPU work
@@ -365,7 +356,6 @@ impl DemoPage for DemoScene {
   }
 
   fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
-    #[cfg(feature = "profiler")]
     profile_scope!("demo_update");
 
     // Handle input
@@ -412,7 +402,6 @@ impl DemoPage for DemoScene {
   }
 
   fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
-    #[cfg(feature = "profiler")]
     profile_scope!("demo_ui");
 
     let line_height = 18.0;

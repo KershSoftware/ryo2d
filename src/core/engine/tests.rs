@@ -2837,3 +2837,23 @@ mod console {
     assert_eq!(lines(&e), before + 1, "the second lists");
   }
 }
+
+#[cfg(feature = "profiler")]
+#[test]
+fn closing_with_the_x_button_clears_the_focus_flag() {
+  let resolved = EngineBuilder::new()
+    .start_scene(EmptyScene)
+    .resolve_in(None, true);
+  let mut engine = Engine::new(resolved, true);
+  engine.profiler_window_focused = true;
+  engine.logger_window_focused = true;
+
+  // The handler's CloseRequested arms call these
+  engine.close_profiler_window();
+  assert!(!engine.profiler_window_focused);
+  assert!(engine.profiler_window.is_none());
+  assert!(engine.logger_window_focused);
+
+  engine.close_logger_window();
+  assert!(!engine.logger_window_focused);
+}

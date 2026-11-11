@@ -60,13 +60,64 @@ struct ScopeEntry {
   depth: usize,
 }
 
+/// The window's hold on puffin: a sink that collects the frames, and the
+/// scopes-on flag. Opening registers the sink and turns scopes on; dropping
+/// removes the sink, and turns scopes off unless the project asked for them
+/// (`[debug] enable_profiler`). Needs no window, so it is tested headless.
+pub(crate) struct ProfilerSink {
+  id: puffin::FrameSinkId,
+  frame_view: Arc<std::sync::Mutex<puffin::FrameView>>,
+  scopes_stay_on: bool,
+}
+
+/// How many `ProfilerSink`s are alive: counts only this type's sinks, not
+/// the ones other tests register with puffin.
+#[cfg(test)]
+static LIVE_SINKS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+impl ProfilerSink {
+  pub(crate) fn open(scopes_stay_on: bool) -> Self {
+    let frame_view = Arc::new(std::sync::Mutex::new(puffin::FrameView::default()));
+    let frame_view_clone = Arc::clone(&frame_view);
+    puffin::set_scopes_on(true);
+    let id = {
+      let mut profiler = puffin::GlobalProfiler::lock();
+      let id = profiler.add_sink(Box::new(move |frame| {
+        if let Ok(mut fv) = frame_view_clone.lock() {
+          fv.add_frame(frame);
+        }
+      }));
+      // Scopes registered before the window opened would otherwise reach
+      // the view without their names
+      profiler.emit_scope_snapshot();
+      id
+    };
+    #[cfg(test)]
+    LIVE_SINKS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    Self {
+      id,
+      frame_view,
+      scopes_stay_on,
+    }
+  }
+}
+
+impl Drop for ProfilerSink {
+  fn drop(&mut self) {
+    puffin::GlobalProfiler::lock().remove_sink(self.id);
+    if !self.scopes_stay_on {
+      puffin::set_scopes_on(false);
+    }
+    #[cfg(test)]
+    LIVE_SINKS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+  }
+}
+
 /// Manages the profiler window and its rendering.
 pub struct ProfilerWindow {
   renderer: DevWindowRenderer,
-  // Puffin frame view for collecting profiling data
-  frame_view: Arc<std::sync::Mutex<puffin::FrameView>>,
-  // Sink ID for cleanup
-  _sink_id: puffin::FrameSinkId,
+  // The puffin sink and the frames it collects; removed when the window drops
+  sink: ProfilerSink,
   // Cached scope data from last frame
   last_frame_scopes: Vec<ScopeEntry>,
   last_frame_duration_ns: u64,
@@ -89,13 +140,15 @@ pub struct ProfilerWindow {
 }
 
 impl ProfilerWindow {
-  /// Create a new profiler window.
+  /// Create a new profiler window. `scopes_stay_on` (the project's
+  /// `[debug] enable_profiler`) keeps scopes on after the window closes.
   pub fn new(
     event_loop: &ActiveEventLoop,
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
     instance: &wgpu::Instance,
     adapter: &wgpu::Adapter,
+    scopes_stay_on: bool,
   ) -> Option<Self> {
     let config = DevWindowConfig {
       title: "Ryo2D Profiler".to_string(),
@@ -106,29 +159,13 @@ impl ProfilerWindow {
 
     let renderer = DevWindowRenderer::new(event_loop, device, queue, instance, adapter, config)?;
 
-    // Create FrameView and register as a sink to receive frame data
-    let frame_view = Arc::new(std::sync::Mutex::new(puffin::FrameView::default()));
-    let frame_view_clone = Arc::clone(&frame_view);
-    let sink_id = {
-      let mut profiler = puffin::GlobalProfiler::lock();
-      let sink_id = profiler.add_sink(Box::new(move |frame| {
-        if let Ok(mut fv) = frame_view_clone.lock() {
-          fv.add_frame(frame);
-        }
-      }));
-      // Request all existing scope details to be sent to our sink.
-      // This is needed because scopes registered before the window opened
-      // won't have their names in our FrameView's scope_collection otherwise.
-      profiler.emit_scope_snapshot();
-      sink_id
-    };
+    let sink = ProfilerSink::open(scopes_stay_on);
 
     log::info!("Window opened");
 
     Some(Self {
       renderer,
-      frame_view,
-      _sink_id: sink_id,
+      sink,
       last_frame_scopes: Vec::new(),
       last_frame_duration_ns: 0,
       hovered_scope: None,
@@ -235,7 +272,7 @@ impl ProfilerWindow {
 
     // Get data from the frame view while holding the lock, then release it
     let (frame, scope_collection) = {
-      let frame_view = match self.frame_view.lock() {
+      let frame_view = match self.sink.frame_view.lock() {
         Ok(fv) => fv,
         Err(_) => {
           self.frames_without_data += 1;
@@ -802,5 +839,46 @@ impl ProfilerWindow {
     }
 
     max_y
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use std::sync::atomic::Ordering;
+
+  /// puffin's sinks and scopes flag are process-wide; every test that reads
+  /// or changes them holds this for its whole body
+  static PUFFIN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+  fn lock() -> std::sync::MutexGuard<'static, ()> {
+    PUFFIN
+      .lock()
+      .unwrap_or_else(std::sync::PoisonError::into_inner)
+  }
+
+  #[test]
+  fn opening_and_closing_five_times_leaves_no_sink_and_scopes_off() {
+    let _guard = lock();
+    let before = puffin::are_scopes_on();
+    for _ in 0..5 {
+      let sink = ProfilerSink::open(false);
+      assert_eq!(LIVE_SINKS.load(Ordering::SeqCst), 1);
+      assert!(puffin::are_scopes_on());
+      drop(sink);
+      assert_eq!(LIVE_SINKS.load(Ordering::SeqCst), 0);
+      assert!(!puffin::are_scopes_on());
+    }
+    puffin::set_scopes_on(before);
+  }
+
+  #[test]
+  fn scopes_stay_on_when_the_project_asked_for_them() {
+    let _guard = lock();
+    let before = puffin::are_scopes_on();
+    drop(ProfilerSink::open(true));
+    assert_eq!(LIVE_SINKS.load(Ordering::SeqCst), 0);
+    assert!(puffin::are_scopes_on());
+    puffin::set_scopes_on(before);
   }
 }

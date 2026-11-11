@@ -895,7 +895,7 @@ impl WgpuRenderer {
     self.ui_drawn = ui_drawn;
     {
       // The frame's writes (a spread's bands among them) go with it
-      crate::profile_scope!("render:submit");
+      crate::profile_scope!("cpu:render:submit");
       self.queue.submit(std::iter::once(encoder.finish()));
     }
     if let Some(output) = output {

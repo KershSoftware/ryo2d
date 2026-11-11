@@ -8,9 +8,6 @@ description = "Profiler and logger demo for Ryo2D engine"
 name = "profile-and-log"
 path = "main.rs"
 
-[features]
-profiler = ["ryo2d/profiler"]
-
 [dependencies]
 ryo2d = { path = "../../.." }
 demo-kit = { path = "../../demo-kit" }
