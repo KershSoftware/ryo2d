@@ -490,6 +490,7 @@ pub(crate) fn init_world_resources(
   world.insert_resource(EffectsManager::new());
   world.insert_resource(crate::core::render::Look::default());
   world.insert_resource(LightingSettings::default());
+  crate::core::lighting::insert_occluder_index(world);
   world.insert_resource(crate::core::graphics::RenderTargets::default());
   world.insert_resource(crate::core::render::DebugDraw::default());
   world.insert_resource(WindowRequest::default());
@@ -584,6 +585,9 @@ fn register_engine_systems(schedules: &mut EngineSchedules) {
     Phase::PostUpdate,
     (
       propagate_transforms.in_set(PostUpdateSet::Transforms),
+      // After propagation, so the tile maps' occluders (built before it)
+      // and every move of the frame are in the index
+      crate::core::lighting::update_occluder_index.after(PostUpdateSet::Transforms),
       (camera_shake_system, camera_view_system)
         .chain()
         .in_set(PostUpdateSet::Camera),

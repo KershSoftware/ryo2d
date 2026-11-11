@@ -27,6 +27,7 @@
 //! ```
 
 use crate::core::ecs::Component;
+use crate::core::ecs::GlobalTransform;
 use crate::core::ecs::Vec2;
 
 /// A light occluder component that blocks light and creates shadows.
@@ -264,6 +265,23 @@ impl LightOccluder2D {
       let ry = v.x * sin_r + v.y * cos_r;
       Vec2::new(rx + x, ry + y)
     })
+  }
+
+  /// The box of the vertices placed by `transform`'s translation and
+  /// rotation (as drawn: its scale is not read), as (min, max); `None` when
+  /// a placed vertex is not finite
+  pub(crate) fn placed_bounds(&self, transform: &GlobalTransform) -> Option<(Vec2, Vec2)> {
+    let at = transform.translation();
+    let mut min = Vec2::INFINITY;
+    let mut max = Vec2::NEG_INFINITY;
+    for v in self.placed(at.x, at.y, transform.rotation()) {
+      if !v.is_finite() {
+        return None;
+      }
+      min = min.min(v);
+      max = max.max(v);
+    }
+    Some((min, max))
   }
 }
 
