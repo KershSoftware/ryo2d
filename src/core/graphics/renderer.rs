@@ -816,7 +816,7 @@ impl WgpuRenderer {
   pub(crate) fn render_frame(
     &mut self,
     pipeline: &mut RenderPipeline,
-    scene: FrameScene<'_>,
+    mut scene: FrameScene<'_>,
   ) -> Result<(), FrameError> {
     self.ui_drawn = false;
     let ui_kept = scene.ui_kept;
@@ -858,6 +858,11 @@ impl WgpuRenderer {
       .create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("Frame Encoder"),
       });
+    // The shadowed lights' maps, once a frame, before any camera pass reads
+    // them (internal work, not a pass of the pipeline)
+    if let Some(lighting) = scene.lighting.as_mut() {
+      lighting.renderer.encode_shadows(&mut encoder, &self.queue);
+    }
     let captured;
     let ui_drawn;
     {

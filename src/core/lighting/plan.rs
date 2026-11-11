@@ -8,17 +8,13 @@ use std::f32::consts::{FRAC_PI_2, FRAC_PI_4};
 use glam::Vec2;
 
 use super::LightOccluder2D;
-use super::batch::{FrameLight, light_instance};
+use super::batch::{FrameLight, drawn_cone, light_instance};
 use super::index::{IndexScratch, OccluderIndex};
 use crate::core::ecs::{Entity, Floor, GlobalTransform};
 use crate::core::graphics::RenderLayers;
 
 /// The most lights a frame shadows; past it, those nearest a lit camera's
 /// centre keep their shadows
-#[cfg_attr(
-  not(test),
-  expect(dead_code, reason = "the frame does not plan shadows yet")
-)]
 pub(crate) const MAX_SHADOWED_LIGHTS: u32 = 512;
 
 /// Atlas rows a shadowed light takes: its right, down, left and up views
@@ -49,10 +45,6 @@ pub(crate) type PlannedOccluder<'w> = (GlobalTransform, &'w LightOccluder2D, Flo
 
 /// The frame's shadow plan, kept and reused frame to frame
 #[derive(Default)]
-#[cfg_attr(
-  not(test),
-  expect(dead_code, reason = "the frame does not plan shadows yet")
-)]
 pub(crate) struct ShadowPlan {
   /// Each light's slot (by its index in the frame's lights), if it has one
   pub(crate) slots: Vec<Option<u32>>,
@@ -67,8 +59,15 @@ pub(crate) struct ShadowPlan {
   scratch: IndexScratch,
 }
 
-#[cfg(test)]
 impl ShadowPlan {
+  /// No slots and no edges: a frame with no shadow work
+  pub(crate) fn clear(&mut self) {
+    self.slots.clear();
+    self.edges.clear();
+    self.rows = 0;
+  }
+
+  #[cfg(test)]
   fn scratch_capacity(&self) -> usize {
     self.scratch.capacity()
   }
@@ -84,10 +83,6 @@ impl ShadowPlan {
 /// enabled and finite, not a closed one holding the light, whose edges
 /// face away from it (and lie near a spot's cone) and are longer than
 /// 1e-4. Returns how many lights the cap left without a slot.
-#[cfg_attr(
-  not(test),
-  expect(dead_code, reason = "the frame does not plan shadows yet")
-)]
 pub(crate) fn plan_shadows<'w>(
   plan: &mut ShadowPlan,
   lights: &[FrameLight],
@@ -167,11 +162,6 @@ fn nearest_view(frame: &FrameLight, views: &[ShadowView]) -> Option<f32> {
     .min_by(f32::total_cmp)
 }
 
-/// `v` if finite, else `default`
-fn or(v: f32, default: f32) -> f32 {
-  if v.is_finite() { v } else { default }
-}
-
 /// Pushes the edges of `placed` that cast `frame`'s light's shadow, per
 /// view each crosses, for the light's `slot`
 fn plan_occluder(
@@ -184,11 +174,7 @@ fn plan_occluder(
     return;
   }
   let light = frame.position;
-  // As the light draws a spot whose shape is not finite
-  let spot = frame
-    .light
-    .cone()
-    .map(|(angle, direction)| (or(angle, 45.0), or(direction, 0.0)));
+  let spot = drawn_cone(&frame.light);
   let at = transform.translation();
   let corners = occluder.placed(at.x, at.y, transform.rotation());
   let closed = occluder.is_closed();
@@ -240,19 +226,19 @@ fn push_views(a: Vec2, b: Vec2, frame: &FrameLight, slot: u32, edges: &mut Vec<S
     (d.y.atan2(d.x) + FRAC_PI_4) / FRAC_PI_2
   };
   let (at_a, at_b) = (quarters(a), quarters(b));
-  let mut turn = at_b - at_a;
-  if turn > 2.0 {
-    turn -= 4.0;
-  } else if turn < -2.0 {
-    turn += 4.0;
-  }
-  let (low, mut high) = if turn >= 0.0 {
+  // The way round from a to b is the side of the light b lies on, not the
+  // rounded angles' difference: angles increase with a positive cross
+  // product
+  let (low, high) = if (a - light).perp_dot(b - light) >= 0.0 {
     (at_a, at_b)
   } else {
     (at_b, at_a)
   };
-  if high < low {
-    high += 4.0;
+  let mut high = if high < low { high + 4.0 } else { high };
+  // No casting edge spans half a turn round the light: past three
+  // quarters, its ends' angles rounded past each other along a ray
+  if high - low >= 3.0 {
+    high = low;
   }
   let first = low.ceil() as i32 - 1;
   let last = (high.floor() as i32).min(first + VIEWS as i32 - 1);
@@ -560,6 +546,17 @@ mod tests {
     );
     // Wound towards the light, it casts in no view
     assert!(cast(Vec2::new(-50.0, -100.0), Vec2::new(200.0, -100.0)).is_empty());
+    // A wall below the light, from 166° (left) round through down to 14°
+    // (right): three views
+    assert_eq!(
+      cast(Vec2::new(-200.0, 50.0), Vec2::new(200.0, 50.0)),
+      [4, 5, 6]
+    );
+    // One passing a thousandth of a pixel from the light keeps them
+    assert_eq!(
+      cast(Vec2::new(-390.0, 0.001), Vec2::new(390.0, 0.001)),
+      [4, 5, 6]
+    );
   }
 
   #[test]

@@ -1,10 +1,16 @@
 //! The lighting renderer: each lit camera's light buffer and the compose
-//! pass that lights the scene with it.
+//! pass that lights the scene with it, and the frame's shadow plan and the
+//! atlas its maps are drawn into.
 //!
 //! Lights and their shadow volumes are batch draws (`lighting::batch`),
 //! drawn into the light buffers by the `lighting` pass.
 
-use super::{AmbientLight, Atmosphere};
+use glam::Vec2;
+
+use super::atlas::ShadowAtlas;
+use super::index::OccluderIndex;
+use super::plan::{MAX_SHADOWED_LIGHTS, PlannedOccluder, ShadowPlan, ShadowView, plan_shadows};
+use super::{AmbientLight, Atmosphere, FrameLight, ShadowQuality};
 use crate::core::ecs::Entity;
 use crate::core::graphics::bind_groups::{BindGroupCache, Bound};
 use crate::core::render::CameraDraw;
@@ -112,6 +118,15 @@ pub(crate) struct LightingRenderer {
 
   /// Whether lighting is enabled
   enabled: bool,
+
+  /// The frame's shadowed lights and their casting edges
+  shadow_plan: ShadowPlan,
+
+  /// The lit cameras' views the plan reads, kept
+  shadow_views: Vec<ShadowView>,
+
+  /// The shadowed lights' maps
+  atlas: ShadowAtlas,
 }
 
 impl LightingRenderer {
@@ -236,6 +251,9 @@ impl LightingRenderer {
       ambient: AmbientLight::default(),
       atmosphere: Atmosphere::default(),
       enabled: false, // Disabled by default, enabled when Light2D entities exist
+      shadow_plan: ShadowPlan::default(),
+      shadow_views: Vec::new(),
+      atlas: ShadowAtlas::new(device),
     }
   }
 
@@ -291,6 +309,71 @@ impl LightingRenderer {
     if changed {
       self.bind_groups.clear();
     }
+  }
+
+  /// Plans the frame's shadows for the lit `cameras` (`plan::plan_shadows`,
+  /// reading occluders from `index` through `occluder`), at most as many
+  /// lights as the atlas's largest height holds, and makes the atlas fit
+  /// them at `quality`. Returns how many lights the cap left unshadowed.
+  pub(crate) fn plan_shadows<'w>(
+    &mut self,
+    device: &wgpu::Device,
+    quality: ShadowQuality,
+    lights: &[FrameLight],
+    cameras: &[CameraDraw],
+    index: Option<&OccluderIndex>,
+    occluder: impl FnMut(Entity) -> Option<PlannedOccluder<'w>>,
+  ) -> u32 {
+    let Some(index) = index else {
+      self.shadow_plan.clear();
+      return 0;
+    };
+    self.shadow_views.clear();
+    self
+      .shadow_views
+      .extend(cameras.iter().filter(|camera| camera.lit).map(|camera| {
+        let bounds = camera.view.bounds;
+        (
+          camera.layers,
+          Vec2::new(bounds.left, bounds.top),
+          Vec2::new(bounds.right, bounds.bottom),
+          camera.view.center,
+        )
+      }));
+    // Four rows a light, within the device's tallest texture
+    let cap = MAX_SHADOWED_LIGHTS.min(device.limits().max_texture_dimension_2d / 4);
+    let dropped = plan_shadows(
+      &mut self.shadow_plan,
+      lights,
+      &self.shadow_views,
+      index,
+      occluder,
+      cap,
+    );
+    if self.shadow_plan.rows > 0 {
+      self.atlas.ensure(device, quality, self.shadow_plan.rows);
+    }
+    dropped
+  }
+
+  /// Draws the planned shadow maps into the atlas in the frame's
+  /// `encoder`, before any camera pass; nothing when no light has a slot.
+  pub(crate) fn encode_shadows(&mut self, encoder: &mut wgpu::CommandEncoder, queue: &wgpu::Queue) {
+    if self.shadow_plan.rows > 0 {
+      self.atlas.encode(encoder, queue, &self.shadow_plan.edges);
+    }
+  }
+
+  /// The frame's shadow plan (tests)
+  #[cfg(test)]
+  pub(crate) fn shadow_plan(&self) -> &ShadowPlan {
+    &self.shadow_plan
+  }
+
+  /// The shadow atlas (tests)
+  #[cfg(test)]
+  pub(crate) fn shadow_atlas(&self) -> &ShadowAtlas {
+    &self.atlas
   }
 
   /// `camera`'s light buffer, which the batch draws its lights into.

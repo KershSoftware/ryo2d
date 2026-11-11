@@ -71,6 +71,9 @@ pub(crate) const SHADOW: &str = concat!(
   include_str!("core/shadow.wgsl"),
 );
 
+/// Shadowed lights' maps, drawn into the shadow atlas
+pub(crate) const SHADOW_MAP: &str = include_str!("core/shadow_map.wgsl");
+
 /// Trails and lines (plain and textured)
 pub(crate) const LINE: &str = concat!(
   include_str!("include/camera.wgsl"),
@@ -206,6 +209,7 @@ pub(crate) fn built_in() -> Vec<(&'static str, String)> {
     ("ui", UI),
     ("light", LIGHT),
     ("shadow", SHADOW),
+    ("shadow_map", SHADOW_MAP),
     ("line", LINE),
     ("lighting_compose", LIGHTING_COMPOSE),
     ("transition", TRANSITION),

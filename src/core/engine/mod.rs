@@ -1641,6 +1641,12 @@ impl Engine {
     self.ui_renderer.as_ref()
   }
 
+  /// The lighting renderer, once the renderers exist (tests)
+  #[cfg(test)]
+  pub(crate) fn lighting(&self) -> Option<&LightingRenderer> {
+    self.lighting.as_ref()
+  }
+
   /// Per-camera GPU state: the uniform buffers, the camera images and the
   /// cameras' light targets.
   #[cfg(test)]

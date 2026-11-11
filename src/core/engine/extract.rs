@@ -21,7 +21,9 @@ use crate::core::graphics::{
   ScreenMapping, images_of,
 };
 use crate::core::graphics::{ParallaxLayer, parallax};
-use crate::core::lighting::{FrameLight, Light2D, LightOccluder2D, LightingSettings};
+use crate::core::lighting::{
+  FrameLight, Light2D, LightOccluder2D, LightingSettings, OccluderIndex, ShadowQuality,
+};
 use crate::core::particles::{DEFAULT_PARTICLE_BUDGET, ParticleStore};
 use crate::core::render::batch::{Filter, LineLook, line_points, push_polyline, trail_points};
 use crate::core::render::scratch::recycle;
@@ -35,6 +37,7 @@ use crate::core::render::{
   DebugDraw, DrawKind, FrameScene, LightingFrame, RenderPipeline, SpriteLook, SpriteShading,
   UiRenderStats, plan_cameras,
 };
+use crate::core::settings::Settings;
 use crate::core::shaders::EffectsManager;
 use crate::core::text::{Fonts, TextEffects, TextIcons};
 use crate::core::time::Time;
@@ -347,6 +350,28 @@ impl Engine {
           if let Some(item) = crate::core::lighting::light_item(light, &occluders, triangles) {
             self.draw_list.push_light(item);
           }
+        }
+        // The shadowed lights the lit cameras see, each with its casting
+        // edges from the occluder index, read where they are drawn and on
+        // their floors; the atlas is drawn before the camera passes
+        if let Some(lighting) = lighting.as_mut() {
+          let world = &self.world;
+          let quality = world
+            .get_resource::<Settings>()
+            .map_or_else(ShadowQuality::default, Settings::shadow_quality);
+          // Lights past the cap draw unshadowed
+          let _dropped = lighting.plan_shadows(
+            rend.device(),
+            quality,
+            &lights,
+            &self.camera_draws,
+            world.get_resource::<OccluderIndex>(),
+            |entity| {
+              let (global, previous, occluder, drawn, floor) = query.get(world, entity).ok()?;
+              let (floor, _) = floor_and_lift(drawn, floor);
+              Some((render_global(global, previous, alpha), occluder, floor))
+            },
+          );
         }
       }
       self.occluders = recycle(occluders);

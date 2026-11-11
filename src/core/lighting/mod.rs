@@ -198,6 +198,7 @@
 //! - Shadow casting adds additional cost; disable for lights that don't need it
 
 mod ambient;
+mod atlas;
 mod atmosphere;
 mod batch;
 mod god_rays;
@@ -214,7 +215,7 @@ pub use ambient::AmbientLight;
 pub use atmosphere::{Atmosphere, GodRaysQuality};
 pub(crate) use batch::{FrameLight, light_item};
 pub(crate) use god_rays::update_god_rays;
-pub(crate) use index::{insert_occluder_index, update_occluder_index};
+pub(crate) use index::{OccluderIndex, insert_occluder_index, update_occluder_index};
 pub use light::Light2D;
 pub use occluder::LightOccluder2D;
 pub(crate) use renderer::LightingRenderer;

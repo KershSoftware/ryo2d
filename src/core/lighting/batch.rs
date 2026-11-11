@@ -26,6 +26,15 @@ fn or(v: f32, default: f32) -> f32 {
   if v.is_finite() { v } else { default }
 }
 
+/// A spot's cone as it draws, (full angle, direction) in degrees, a shape
+/// that is not finite taking the defaults (45° and 0°); `None` for a point
+/// light. Shadow planning reads the same cone.
+pub(crate) fn drawn_cone(light: &Light2D) -> Option<(f32, f32)> {
+  light
+    .cone()
+    .map(|(angle, direction)| (or(angle, 45.0), or(direction, 0.0)))
+}
+
 /// `light` at `position` as a quad instance for `light.wgsl`, or `None`
 /// when it cannot light anything: a radius or intensity that is not
 /// positive and finite, or a position that is not finite. Shape parameters
@@ -38,23 +47,20 @@ pub(crate) fn light_instance(position: Vec2, light: &Light2D) -> Option<SpriteIn
     return None;
   }
   let [r, g, b, _] = light.color().to_linear();
-  let (kind, params) = match light {
-    Light2D::Point { falloff, .. } => (0.0, [or(*falloff, 2.0).max(0.0), 0.0, 0.0, 0.0]),
-    Light2D::Spot {
-      falloff,
-      angle,
-      direction,
-      softness,
-      ..
-    } => (
+  let falloff = match light {
+    Light2D::Point { falloff, .. } | Light2D::Spot { falloff, .. } => or(*falloff, 2.0).max(0.0),
+  };
+  let (kind, params) = match (drawn_cone(light), light) {
+    (Some((angle, direction)), Light2D::Spot { softness, .. }) => (
       1.0,
       [
-        or(*falloff, 2.0).max(0.0),
-        or(*angle, 45.0),
-        or(*direction, 0.0),
+        falloff,
+        angle,
+        direction,
         or(*softness, 0.2).clamp(0.0, 1.0),
       ],
     ),
+    _ => (0.0, [falloff, 0.0, 0.0, 0.0]),
   };
   let volumetric = light
     .volumetric()

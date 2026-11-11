@@ -1481,3 +1481,66 @@ fn a_tiny_image_too_small_to_repeat_warns_once() {
   // Down, the view is 6,400 px: covered whole
   assert!((0..64).all(|y| frame.get_pixel(512, y).0 == RED));
 }
+
+/// A shadowed light of radius 100 at (60, 45), a 10 x 20 wall 40 px to its
+/// right, and an unshadowed light
+struct ShadowedWall;
+
+impl Scene for ShadowedWall {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    ctx.world.spawn((
+      Transform::from_xy(60.0, 45.0),
+      Light2D::point(Color::WHITE, 100.0).with_shadows(),
+    ));
+    ctx.world.spawn((
+      Transform::from_xy(20.0, 20.0),
+      Light2D::point(Color::WHITE, 50.0),
+    ));
+    ctx.world.spawn((
+      Transform::from_xy(105.0, 45.0),
+      LightOccluder2D::rect(10.0, 20.0),
+    ));
+  }
+}
+
+#[test]
+fn a_shadowed_light_s_map_is_drawn_once_a_frame() {
+  let Some(mut engine) = engine(
+    EngineBuilder::new()
+      .resolution(120, 90)
+      .start_scene(ShadowedWall),
+  ) else {
+    return;
+  };
+  engine.step_frames(1).unwrap();
+  let encodes = |engine: &HeadlessEngine| {
+    let lighting = engine.engine.lighting().unwrap();
+    (
+      lighting.shadow_plan().rows,
+      lighting.shadow_atlas().encodes(),
+    )
+  };
+  // One slot, for the shadowed light alone
+  assert_eq!(encodes(&engine), (4, 1));
+  engine.step_frames(2).unwrap();
+  assert_eq!(encodes(&engine), (4, 3), "once a frame");
+  let lighting = engine.engine.lighting().unwrap();
+  assert_eq!(lighting.shadow_plan().slots.iter().flatten().count(), 1);
+  // Its right view sees the wall's far side 50 px away, at its default
+  // quality (High: 1,024 texels a view)
+  let (device, queue) = crate::core::testing::shared_gpu().unwrap();
+  let atlas = lighting.shadow_atlas();
+  assert_eq!(atlas.width(), 1024);
+  let values = atlas.read_rows(&device, &queue, 0..4);
+  assert!((values[512] - 0.5).abs() < 0.005, "{}", values[512]);
+  assert!(values[1024..].iter().all(|&v| v == 1.0), "the other views");
+
+  // With its shadows off, no light has a slot: the atlas is not drawn
+  let world = engine.world_mut();
+  let mut lights = world.query::<&mut Light2D>();
+  for mut light in lights.iter_mut(world) {
+    light.set_cast_shadows(false);
+  }
+  engine.step_frames(2).unwrap();
+  assert_eq!(encodes(&engine), (0, 3));
+}
