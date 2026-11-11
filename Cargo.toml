@@ -167,6 +167,10 @@ name = "particles"
 harness = false
 
 [[bench]]
+name = "lighting"
+harness = false
+
+[[bench]]
 name = "dev_tools"
 harness = false
 
