@@ -1605,3 +1605,158 @@ fn a_wide_volumetric_spot_s_scatter_is_shadowed_behind_a_wall() {
     red(&open, x, y)
   );
 }
+
+/// Where a ray from `from` along `dir` (unit) leaves the box `min` to
+/// `max` it starts outside of, as a distance along it (the slab method)
+fn exit_distance(from: Vec2, dir: Vec2, min: Vec2, max: Vec2) -> f32 {
+  let far = |o: f32, d: f32, low: f32, high: f32| {
+    if d.abs() < 1e-9 {
+      f32::INFINITY
+    } else {
+      ((low - o) / d).max((high - o) / d)
+    }
+  };
+  far(from.x, dir.x, min.x, max.x).min(far(from.y, dir.y, min.y, max.y))
+}
+
+#[test]
+fn a_large_light_casts_at_every_quality() {
+  // A 2,000 px light with no falloff (so its light is even out to its
+  // edge) at (-1000, 0), seen by a camera at zoom 1/8 (each pixel 8 world
+  // px) over a floor from (-1280, -960) to (1280, 960): a 20 px block 72
+  // px from the light, below its right, and an 80 px block about 1,870 px
+  // out to its right, near the edge of its reach, each clear of the
+  // other's shadow
+  let light = Vec2::new(-1000.0, 0.0);
+  let blocks = [
+    (Vec2::new(-960.0, 60.0), 20.0),
+    (Vec2::new(850.0, -300.0), 80.0),
+  ];
+  let pixel =
+    |x: u32, y: u32| Vec2::new(x as f32 + 0.5, y as f32 + 0.5) * 8.0 - Vec2::new(1280.0, 960.0);
+  for quality in [
+    ShadowQuality::Low,
+    ShadowQuality::Medium,
+    ShadowQuality::High,
+    ShadowQuality::Ultra,
+  ] {
+    let scene = move |with_blocks: bool| {
+      let scene = Lit(Box::new(move |ctx: &mut SceneContext| {
+        ctx.camera().set_position(0.0, 0.0);
+        ctx.camera().set_zoom(0.125);
+        let floor = ctx
+          .assets()
+          .add(Image::solid_rect(32, 32, 255, 255, 255, 255));
+        ctx.world.spawn((
+          Transform::from_xy(0.0, 0.0).with_scale(Vec2::new(80.0, 60.0)),
+          Renderable::image(floor),
+        ));
+        ctx.settings().set_shadow_quality(quality);
+        ctx
+          .lighting()
+          .set_ambient(AmbientLight::with_intensity(0.0));
+        ctx.world.spawn((
+          Transform::from_xy(light.x, light.y),
+          Light2D::point(Color::WHITE, 2000.0)
+            .with_intensity(0.5)
+            .with_falloff(0.0)
+            .with_shadows(),
+        ));
+        if with_blocks {
+          for (at, size) in blocks {
+            ctx.world.spawn((
+              Transform::from_xy(at.x, at.y),
+              LightOccluder2D::rect(size, size),
+            ));
+          }
+        }
+      }));
+      let builder = EngineBuilder::new().resolution(320, 240).start_scene(scene);
+      let mut engine = HeadlessEngine::new_or_skip(builder)?;
+      engine.step_frames(2).unwrap();
+      Some(engine.frame().unwrap())
+    };
+    let (Some(blocked), Some(open)) = (scene(true), scene(false)) else {
+      return;
+    };
+    // Behind each block, on the ray through its centre, 30 and 60 world
+    // px past its back face (within the radius): in shadow
+    for (at, size) in blocks {
+      let dir = (at - light).normalize();
+      let back = exit_distance(light, dir, at - size / 2.0, at + size / 2.0);
+      for past in [30.0, 60.0] {
+        let p = light + dir * (back + past);
+        let (x, y) = (((p.x + 1280.0) / 8.0) as u32, ((p.y + 960.0) / 8.0) as u32);
+        assert!(red(&open, x, y) > 20, "{quality:?}: the light reaches {p}");
+        assert!(
+          share(&blocked, &open, x, y) < 0.03,
+          "{quality:?}: {past} px behind the block at {at}: {} against {}",
+          red(&blocked, x, y),
+          red(&open, x, y)
+        );
+      }
+    }
+    // No acne: the lit ground (beside each block's shadow by three texels'
+    // angle, the most a texel spans being 2 / width radians, and in front
+    // of each block and inside it up to half a pixel before where the ray
+    // leaves it, three texels' angle inside its sides, as an edge blends
+    // over a texel and a texel here is up to 15 px wide) reads as with no
+    // blocks, by the acne test's measure
+    let margin = 3.0 * 2.0 / quality.texels() as f32;
+    let (mut beside, mut within) = (0, 0);
+    for y in 0..240 {
+      for x in 0..320 {
+        let p = pixel(x, y);
+        let offset = p - light;
+        let (dist, angle) = (offset.length(), offset.to_angle());
+        if dist > 1990.0 || red(&open, x, y) < 20 {
+          continue;
+        }
+        let mut lit = true;
+        let mut inside = false;
+        for (at, size) in blocks {
+          let half = Vec2::splat(size / 2.0);
+          let corners = [
+            at - half,
+            at + half,
+            at + Vec2::new(half.x, -half.y),
+            at + Vec2::new(-half.x, half.y),
+          ];
+          let centre = (at - light).to_angle();
+          let spread = corners
+            .iter()
+            .map(|&c| ((c - light).to_angle() - centre).abs())
+            .fold(0.0f32, f32::max);
+          let off = (angle - centre).abs();
+          if off > spread + margin {
+            continue;
+          }
+          let leaves = exit_distance(light, offset / dist, at - half, at + half);
+          if off <= spread - margin && dist < leaves - 0.5 * 8.0 {
+            inside = true;
+          } else {
+            lit = false;
+          }
+        }
+        if !lit {
+          continue;
+        }
+        let (shown, unshadowed) = (red(&blocked, x, y), red(&open, x, y));
+        let ratio = linear(shown) / linear(unshadowed);
+        assert!(
+          shown.abs_diff(unshadowed) <= 1 || (ratio - 1.0).abs() <= 0.02,
+          "{quality:?}: ({x}, {y}) at {p}: {shown} against {unshadowed}"
+        );
+        if inside {
+          within += 1;
+        } else {
+          beside += 1;
+        }
+      }
+    }
+    assert!(
+      beside > 20_000 && within > 40,
+      "{quality:?}: {beside} beside, {within} in front of and in the blocks"
+    );
+  }
+}

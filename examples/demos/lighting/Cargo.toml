@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 description = "A game built with Ryo2D engine"
 
+[lib]
+name = "lighting_demo"
+path = "lib.rs"
+
 [[bin]]
 name = "lighting"
 path = "main.rs"
