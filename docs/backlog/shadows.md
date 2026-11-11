@@ -73,7 +73,16 @@ Three runs of `cargo bench --bench lighting` after the changes, each log opening
 | `one_light_over_cave` | 203.2 (slowest 211.2) | 84.1 | 87.3 | 82.5 | 84.1 (4.8, 5.7%) | at most 211.2 | met in every run |
 | `two_hundred_fifty_six_lights_in_view` | 2,664.6 (slowest 2,684.2) | 1,055.5 | 1,078.1 | 1,058.7 | 1,058.7 (22.6, 2.1%) | under 16,600 and 2,684.2 | met in every run |
 
-The 64 lights' whole frames read 685.0, 680.9 and 684.6 µs over still empty frames of 534.3, 530.8 and 533.3; the flying unlit cave read 527.3, 531.8 and 531.1, with one light 611.4, 619.2 and 613.6. Verdict: the lights cost 4.75x less than Before (716.0 to 150.7 µs), so the spec's 4x target is met, with 28 µs to spare. The floor under it is lighting itself: the same lights with no shadows would cost about 125 µs (lighting on and their drawing), so shadows are now about a sixth of the lights' cost in this scene.
+The 64 lights' whole frames read 685.0, 680.9 and 684.6 µs over still empty frames of 534.3, 530.8 and 533.3; the flying unlit cave read 527.3, 531.8 and 531.1, with one light 611.4, 619.2 and 613.6. Verdict: the lights cost 4.75x less than Before (716.0 to 150.7 µs), so the spec's 4x target is met, with 28 µs to spare, for an unchanged plan: the scene is static, so its measured frames keep the atlas and never redraw it. The floor under it is lighting itself: the same lights with no shadows would cost about 125 µs (lighting on and their drawing), so shadows are now about a sixth of the lights' cost in this scene.
+
+A frame whose plan changes redraws every visible light's map. `sixty_four_lights_quarter_visible_moving` measures it: the same scene with one light the camera sees swaying 3 px each frame, so every frame redraws the atlas (recorded, not guarded: the spec's target is the static scene). Three more runs of `cargo bench --bench lighting`, each log opening with its `uptime`; the one-minute load read 2.55, 2.58 and 2.58 (under 3, not flagged; the 5- and 15-minute loads 4.58 and 5.88, 4.56 and 5.87, 4.56 and 5.87, still falling from earlier builds):
+
+| Bench | Before | Run 1 | Run 2 | Run 3 | After median (spread) | Against Before |
+|-------|--------|-------|-------|-------|-----------------------|----------------|
+| `sixty_four_lights_quarter_visible_moving_lights` | 716.0 | 206.7 | 176.1 | 212.8 | 206.7 (36.7, 17.8%) | 3.46x |
+| `sixty_four_lights_quarter_visible_lights` (same runs) | 716.0 | 150.4 | 167.6 | 154.8 | 154.8 (17.2, 11.1%) | 4.63x |
+
+Both against still empty frames of 550.1, 554.0 and 546.6 µs; the other guards were met in all three runs (one light 89.0, 91.8 and 77.9; 256 lights 1,110.8, 1,112.4 and 1,104.8). A frame in which a shadowed light or an occluder in view moves costs about 50 µs more than a still one here (the plan's whole atlas drawn again: the edge upload, the pass and its draw), so the lights cost 3.5x less than Before in such frames, not 4x; the redraw is whole-atlas, not per changed slot.
 
 ## Limits
 

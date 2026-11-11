@@ -15,8 +15,15 @@
 //!   scene with no lights, printed as `cave_still_unlit`): 64 shadowed
 //!   lights of 200 px on a fixed grid of 8 x 8 (480 x 270 px apart) over
 //!   the middle of the map, the still camera seeing 16 of them;
+//! - `sixty_four_lights_quarter_visible_moving` (recorded, not guarded;
+//!   `_lights` against the same empty frame): the same scene with one
+//!   light the camera sees swaying 3 px each frame;
 //! - `two_hundred_fifty_six_lights_in_view`: 256 shadowed lights of 120 px
 //!   on a grid of 16 x 16 inside the still camera's view.
+//!
+//! The shadow atlas is drawn only when the frame's shadow plan changes, so
+//! the static cases run on a kept atlas, while the moving case changes the
+//! plan, and redraws every visible light's map, every frame.
 //!
 //! All the bench lights are hard (no `with_soft_shadows`), as they were when
 //! the Before figures were taken, so the guards compare like with like.
@@ -68,6 +75,8 @@ enum Case {
   Empty,
   One,
   Sixty4,
+  /// `Sixty4` with one seen light swaying each frame
+  Moving,
   Many,
 }
 
@@ -82,24 +91,37 @@ impl Case {
 #[derive(Component)]
 struct Torch;
 
+/// The light `Case::Moving` sways, by its place on the grid
+#[derive(Component)]
+struct Sway(Vec2);
+
 struct CaveScene {
   case: Case,
 }
 
 /// `columns` x `rows` shadowed lights of `radius` px, `step` apart, centred
 /// on the map's middle
-fn light_grid(ctx: &mut SceneContext, columns: u32, rows: u32, step: Vec2, radius: f32) {
+fn light_grid(
+  ctx: &mut SceneContext,
+  columns: u32,
+  rows: u32,
+  step: Vec2,
+  radius: f32,
+) -> Vec<Entity> {
   let middle = Vec2::splat((SIDE * TILE) as f32 / 2.0);
   let first = middle - Vec2::new((columns - 1) as f32 * step.x, (rows - 1) as f32 * step.y) / 2.0;
+  let mut lights = Vec::new();
   for row in 0..rows {
     for column in 0..columns {
       let at = first + Vec2::new(column as f32 * step.x, row as f32 * step.y);
-      ctx.world.spawn((
+      let light = ctx.world.spawn((
         Transform::from_xy(at.x, at.y),
         Light2D::point(Color::WHITE, radius).with_shadows(),
       ));
+      lights.push(light.id());
     }
   }
+  lights
 }
 
 impl Scene for CaveScene {
@@ -114,8 +136,20 @@ impl Scene for CaveScene {
           Torch,
         ));
       }
-      Case::Sixty4 => light_grid(ctx, 8, 8, Vec2::new(480.0, 270.0), 200.0),
-      Case::Many => light_grid(ctx, 16, 16, Vec2::new(120.0, 67.5), 120.0),
+      Case::Sixty4 => {
+        light_grid(ctx, 8, 8, Vec2::new(480.0, 270.0), 200.0);
+      }
+      Case::Moving => {
+        let lights = light_grid(ctx, 8, 8, Vec2::new(480.0, 270.0), 200.0);
+        // Row 3, column 3: 240 x 135 px up and left of the camera's centre
+        let swaying = lights[3 * 8 + 3];
+        if let Some(at) = ctx.world.get::<Transform>(swaying).map(|t| t.translation) {
+          ctx.world.entity_mut(swaying).insert(Sway(at));
+        }
+      }
+      Case::Many => {
+        light_grid(ctx, 16, 16, Vec2::new(120.0, 67.5), 120.0);
+      }
     }
     let tile = UVec2::splat(TILE);
     let size = tile * COLUMNS;
@@ -157,6 +191,15 @@ fn flown(frame: usize) -> Vec2 {
     middle + REACH * path.sin(),
     middle + REACH * (path * 1.37 + 1.0).sin(),
   )
+}
+
+/// Moves the swaying light to one of its two places by `frame`'s parity
+fn sway(engine: &mut HeadlessEngine, frame: usize) {
+  let world = engine.world_mut();
+  let mut swaying = world.query::<(&mut Transform, &Sway)>();
+  for (mut transform, sway) in swaying.iter_mut(world) {
+    transform.translation = sway.0 + Vec2::new((frame % 2) as f32 * 3.0, 0.0);
+  }
 }
 
 fn place_camera(engine: &mut HeadlessEngine, at: Vec2) {
@@ -212,11 +255,13 @@ fn measure(case: Case) -> Option<f64> {
   }
   for i in 0..WARMUP {
     place_camera(&mut engine, at(i));
+    sway(&mut engine, i);
     frame(&mut engine, &device);
   }
   let mut times: Vec<Duration> = (0..FRAMES)
     .map(|i| {
       place_camera(&mut engine, at(WARMUP + i));
+      sway(&mut engine, WARMUP + i);
       frame(&mut engine, &device)
     })
     .collect();
@@ -256,6 +301,12 @@ fn main() {
       lights,
       &[SIXTY_FOUR_MAX],
     );
+    // Recorded, not guarded: every frame redraws the shadow maps
+    if let Some(moving) = measure(Case::Moving) {
+      println!("sixty_four_lights_quarter_visible_moving: {moving:.1} µs");
+      let lights = moving - empty;
+      println!("sixty_four_lights_quarter_visible_moving_lights: {lights:.1} µs");
+    }
   }
   if let Some(time) = measure(Case::Many) {
     let name = "two_hundred_fifty_six_lights_in_view";
