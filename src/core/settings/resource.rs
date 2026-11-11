@@ -9,6 +9,7 @@ use super::sections::SectionRegistry;
 use crate::core::audio::VolumeKind;
 use crate::core::config::{DisplayMode, UserPreference, UserPreferenceFilter};
 use crate::core::ecs::Resource;
+use crate::core::lighting::ShadowQuality;
 
 /// The preference that keeps each volume, in [`VolumeKind::ALL`] order
 const VOLUME_PREFERENCES: [UserPreference; 6] = [
@@ -97,6 +98,16 @@ impl Settings {
     self.values.show_fps = show;
   }
 
+  /// How finely lights' shadows are drawn
+  pub fn shadow_quality(&self) -> ShadowQuality {
+    self.values.shadow_quality
+  }
+
+  /// Sets how finely lights' shadows are drawn
+  pub fn set_shadow_quality(&mut self, quality: ShadowQuality) {
+    self.values.shadow_quality = quality;
+  }
+
   /// Puts one setting back to the game's default. Bindings live with the
   /// actions: `ctx.actions().reset_defaults()` resets them, and
   /// `reset(UserPreference::Bindings)` does nothing.
@@ -107,6 +118,7 @@ impl Settings {
       UserPreference::DisplayMode => self.values.display_mode = defaults.display_mode,
       UserPreference::Vsync => self.values.vsync = defaults.vsync,
       UserPreference::ShowFps => self.values.show_fps = defaults.show_fps,
+      UserPreference::ShadowQuality => self.values.shadow_quality = defaults.shadow_quality,
       UserPreference::Bindings => {}
       volume @ (UserPreference::MasterVolume
       | UserPreference::MusicVolume
@@ -226,6 +238,11 @@ impl Settings {
     {
       self.values.show_fps = show;
     }
+    if let Some(quality) = values.shadow_quality
+      && self.is_kept(UserPreference::ShadowQuality)
+    {
+      self.values.shadow_quality = quality;
+    }
     self.sections.apply(&file.sections, warnings);
   }
 
@@ -251,6 +268,9 @@ impl Settings {
     values.vsync = kept(UserPreference::Vsync, now.vsync != defaults.vsync).then_some(now.vsync);
     let differs = now.show_fps != defaults.show_fps;
     values.show_fps = kept(UserPreference::ShowFps, differs).then_some(now.show_fps);
+    let differs = now.shadow_quality != defaults.shadow_quality;
+    values.shadow_quality =
+      kept(UserPreference::ShadowQuality, differs).then_some(now.shadow_quality);
 
     SettingsFile {
       format: FORMAT,
@@ -827,6 +847,7 @@ mod tests {
       display_mode: DisplayMode::BorderlessFullscreen,
       vsync: false,
       show_fps: true,
+      shadow_quality: ShadowQuality::Medium,
     };
     let mut settings = with_video(defaults);
     for kind in VolumeKind::ALL {
@@ -836,6 +857,7 @@ mod tests {
     settings.set_display_mode(DisplayMode::Windowed);
     settings.set_vsync(true);
     settings.set_show_fps(false);
+    settings.set_shadow_quality(ShadowQuality::Ultra);
     settings.game_mut::<Video>().language = "fr".into();
 
     settings.reset(UserPreference::MusicVolume);
@@ -851,7 +873,52 @@ mod tests {
     assert_eq!(settings.display_mode(), DisplayMode::BorderlessFullscreen);
     assert!(!settings.vsync());
     assert!(settings.show_fps());
+    assert_eq!(settings.shadow_quality(), ShadowQuality::Medium);
     assert_eq!(settings.game::<Video>(), &Video::default());
+    assert_eq!(
+      written(&settings, &SettingsFile::default()),
+      json!({"format_version": 3})
+    );
+  }
+
+  #[test]
+  fn shadow_quality_defaults_to_high() {
+    assert_eq!(EngineValues::default().shadow_quality, ShadowQuality::High);
+    assert_eq!(
+      settings(EngineValues::default()).shadow_quality(),
+      ShadowQuality::High
+    );
+  }
+
+  #[test]
+  fn shadow_quality_round_trips_through_system_json() {
+    let mut settings = settings(EngineValues::default());
+    settings.set_shadow_quality(ShadowQuality::Ultra);
+    let bytes = file::render(&settings.to_file(&SettingsFile::default()));
+    assert_eq!(
+      serde_json::from_slice::<Value>(&bytes).unwrap(),
+      json!({"format_version": 3, "shadow_quality": "ultra"})
+    );
+
+    let mut again = self::settings(EngineValues::default());
+    again.apply_file(&read(&bytes, &Map::new()), &mut Vec::new());
+    assert_eq!(again.shadow_quality(), ShadowQuality::Ultra);
+  }
+
+  #[test]
+  fn resetting_shadow_quality_restores_the_game_s_default() {
+    let defaults = EngineValues {
+      shadow_quality: ShadowQuality::Low,
+      ..EngineValues::default()
+    };
+    let mut settings = settings(defaults);
+    settings.set_shadow_quality(ShadowQuality::Medium);
+    assert_eq!(
+      written(&settings, &SettingsFile::default()),
+      json!({"format_version": 3, "shadow_quality": "medium"})
+    );
+    settings.reset(UserPreference::ShadowQuality);
+    assert_eq!(settings.shadow_quality(), ShadowQuality::Low);
     assert_eq!(
       written(&settings, &SettingsFile::default()),
       json!({"format_version": 3})

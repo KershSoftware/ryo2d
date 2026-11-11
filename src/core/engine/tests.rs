@@ -1823,6 +1823,27 @@ fn a_newer_settings_file_is_never_overwritten() {
 }
 
 #[test]
+fn an_unknown_shadow_quality_warns_and_keeps_the_default() {
+  use crate::core::lighting::ShadowQuality;
+
+  let log = crate::core::testing::capture_log();
+  let store = MemorySaves::new();
+  store.put(
+    "system.json",
+    r#"{"format_version": 3, "shadow_quality": "extreme"}"#,
+  );
+  let engine = keeping_all(&store);
+  assert_eq!(
+    engine.world.resource::<Settings>().shadow_quality(),
+    ShadowQuality::High
+  );
+  assert_eq!(
+    settings_warnings(&log, "`shadow_quality` has a bad value"),
+    1
+  );
+}
+
+#[test]
 fn a_build_that_keeps_nothing_never_writes_settings() {
   let store = MemorySaves::new();
   let mut engine = EngineBuilder::new()

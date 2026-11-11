@@ -35,6 +35,8 @@ pub enum UserPreference {
   Vsync,
   /// Show FPS counter
   ShowFps,
+  /// Shadow quality
+  ShadowQuality,
   /// Input action bindings the player changed
   Bindings,
 }
@@ -53,6 +55,7 @@ impl UserPreference {
       UserPreference::DisplayMode,
       UserPreference::Vsync,
       UserPreference::ShowFps,
+      UserPreference::ShadowQuality,
       UserPreference::Bindings,
     ]
   }
@@ -327,7 +330,7 @@ mod tests {
     assert!(filter.contains(UserPreference::Vsync));
     assert!(filter.contains(UserPreference::ShowFps));
     assert!(filter.contains(UserPreference::Bindings));
-    assert_eq!(filter.len(), 11);
+    assert_eq!(filter.len(), 12);
     assert!(!filter.is_empty());
   }
 
@@ -390,7 +393,7 @@ mod tests {
   fn user_preference_filter_default_is_all() {
     let filter = UserPreferenceFilter::default();
 
-    assert_eq!(filter.len(), 11);
+    assert_eq!(filter.len(), 12);
     assert!(filter.contains(UserPreference::MasterVolume));
     assert!(filter.contains(UserPreference::Resolution));
   }
@@ -399,7 +402,7 @@ mod tests {
   fn user_preference_all_returns_all_variants() {
     let all = UserPreference::all();
 
-    assert_eq!(all.len(), 11);
+    assert_eq!(all.len(), 12);
     assert!(all.contains(&UserPreference::MasterVolume));
     assert!(all.contains(&UserPreference::MusicVolume));
     assert!(all.contains(&UserPreference::SfxVolume));
@@ -410,5 +413,6 @@ mod tests {
     assert!(all.contains(&UserPreference::DisplayMode));
     assert!(all.contains(&UserPreference::Vsync));
     assert!(all.contains(&UserPreference::ShowFps));
+    assert!(all.contains(&UserPreference::ShadowQuality));
   }
 }

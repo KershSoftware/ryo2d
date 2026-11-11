@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use serde_json::{Map, Value};
 
 use crate::core::config::DisplayMode;
+use crate::core::lighting::ShadowQuality;
 
 /// The format this engine writes
 pub(crate) const FORMAT: u32 = 3;
@@ -30,6 +31,7 @@ pub(crate) struct FileValues {
   pub(crate) display_mode: Option<DisplayMode>,
   pub(crate) vsync: Option<bool>,
   pub(crate) show_fps: Option<bool>,
+  pub(crate) shadow_quality: Option<ShadowQuality>,
 }
 
 /// A game section as the file stores it
@@ -112,6 +114,7 @@ pub(crate) fn parse(bytes: &[u8], project_env: &Map<String, Value>) -> Parsed {
   values.display_mode = take(&mut object, "", "display_mode", w, read_display_mode);
   values.vsync = take(&mut object, "", "vsync", w, read_bool);
   values.show_fps = take(&mut object, "", "show_fps", w, read_bool);
+  values.shadow_quality = take(&mut object, "", "shadow_quality", w, read_shadow_quality);
   let bindings = match object.remove("bindings") {
     None | Some(Value::Null) => None,
     Some(value) => read_bindings(value, w),
@@ -205,6 +208,9 @@ pub(crate) fn render(file: &SettingsFile) -> Vec<u8> {
   }
   if let Some(show_fps) = values.show_fps {
     add("show_fps", Value::from(show_fps));
+  }
+  if let Some(quality) = values.shadow_quality {
+    add("shadow_quality", Value::from(quality.config_name()));
   }
   if let Some(bindings) = file
     .bindings
@@ -333,6 +339,13 @@ fn read_display_mode(value: &Value) -> Result<DisplayMode, String> {
         shown(value)
       )
     })
+}
+
+fn read_shadow_quality(value: &Value) -> Result<ShadowQuality, String> {
+  value
+    .as_str()
+    .and_then(ShadowQuality::from_config_name)
+    .ok_or_else(|| format!("{} is not low, medium, high or ultra", shown(value)))
 }
 
 fn read_bool(value: &Value) -> Result<bool, String> {

@@ -218,3 +218,62 @@ pub(crate) use renderer::LightingRenderer;
 pub use settings::LightingSettings;
 pub(crate) use shadow::push_shadow_volumes;
 pub use volumetric::VolumetricSettings;
+
+/// How finely lights' shadows are drawn: the player's graphics setting
+/// (`Settings::set_shadow_quality`). Higher is sharper and costs more.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum ShadowQuality {
+  /// 256 texels across a light's shadow map
+  Low,
+  /// 512 texels
+  Medium,
+  /// 1,024 texels
+  #[default]
+  High,
+  /// 2,048 texels
+  Ultra,
+}
+
+impl ShadowQuality {
+  /// Texels across one light's shadow map
+  pub const fn texels(self) -> u32 {
+    match self {
+      Self::Low => 256,
+      Self::Medium => 512,
+      Self::High => 1024,
+      Self::Ultra => 2048,
+    }
+  }
+
+  /// Look-ups the shadow filter makes
+  #[expect(dead_code, reason = "a later shadow map's filter reads it")]
+  pub(crate) const fn taps(self) -> u32 {
+    match self {
+      Self::Low => 4,
+      Self::Medium => 8,
+      Self::High => 12,
+      Self::Ultra => 16,
+    }
+  }
+
+  /// Parses a config-file name (case-insensitive); `None` if unrecognized.
+  pub(crate) fn from_config_name(name: &str) -> Option<ShadowQuality> {
+    match name.to_lowercase().as_str() {
+      "low" => Some(Self::Low),
+      "medium" => Some(Self::Medium),
+      "high" => Some(Self::High),
+      "ultra" => Some(Self::Ultra),
+      _ => None,
+    }
+  }
+
+  /// The name a config file gives this quality (the one `from_config_name` reads).
+  pub(crate) const fn config_name(self) -> &'static str {
+    match self {
+      Self::Low => "low",
+      Self::Medium => "medium",
+      Self::High => "high",
+      Self::Ultra => "ultra",
+    }
+  }
+}

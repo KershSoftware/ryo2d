@@ -18,6 +18,7 @@ pub use resource::Settings;
 use crate::core::audio::VolumeKind;
 use crate::core::config::DisplayMode;
 use crate::core::config::resolve::DEFAULT_RESOLUTION;
+use crate::core::lighting::ShadowQuality;
 
 /// The engine's settings, as [`Settings`] holds them and its defaults
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -29,6 +30,7 @@ pub(crate) struct EngineValues {
   pub(crate) display_mode: DisplayMode,
   pub(crate) vsync: bool,
   pub(crate) show_fps: bool,
+  pub(crate) shadow_quality: ShadowQuality,
 }
 
 impl Default for EngineValues {
@@ -39,6 +41,7 @@ impl Default for EngineValues {
       display_mode: DisplayMode::Windowed,
       vsync: true,
       show_fps: false,
+      shadow_quality: ShadowQuality::default(),
     }
   }
 }

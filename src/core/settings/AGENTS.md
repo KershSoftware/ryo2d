@@ -1,6 +1,6 @@
 # AGENTS.md - Settings Module
 
-The player's settings: the `Settings` resource and its file, `system.json`. The resource holds the engine's settings (the six volumes, the window size, the display mode, vsync and the FPS counter) and the game's own typed sections. The file keeps only the kept settings that differ from the game's defaults, so a default changed later in Ryo.toml or on the builder reaches every setting the player never touched. Files from older engines (formats 1 and 2) convert as they load, and the file saves itself a second after the last change to what it keeps. Nothing here touches the engine, a world or the disk: the settings writer (`persist.rs`) queues its writes on the save service, and the engine (`engine/`) reads the file through that service, applies what changes and drives the writer (In the engine, below). The design is `docs/specs/2026-11-07-saves-and-settings-design.md` (where it and the code differ, the code is current).
+The player's settings: the `Settings` resource and its file, `system.json`. The resource holds the engine's settings (the six volumes, the window size, the display mode, vsync, the FPS counter and the shadow quality) and the game's own typed sections. The file keeps only the kept settings that differ from the game's defaults, so a default changed later in Ryo.toml or on the builder reaches every setting the player never touched. Files from older engines (formats 1 and 2) convert as they load, and the file saves itself a second after the last change to what it keeps. Nothing here touches the engine, a world or the disk: the settings writer (`persist.rs`) queues its writes on the save service, and the engine (`engine/`) reads the file through that service, applies what changes and drives the writer (In the engine, below). The design is `docs/specs/2026-11-07-saves-and-settings-design.md` (where it and the code differ, the code is current).
 
 | File | What |
 |------|------|
@@ -49,6 +49,7 @@ The keys:
 | `resolution` | the window size, `"WxH"`, each side at least 1 |
 | `display_mode` | `windowed`, `exclusive_fullscreen` or `borderless_fullscreen` (read case-insensitively) |
 | `vsync`, `show_fps` | `true` or `false` |
+| `shadow_quality` | `low`, `medium`, `high` or `ultra` (read case-insensitively; `high` is the engine's default). `ShadowQuality::texels` gives the shadow map's width (256 to 2,048) |
 | `bindings` | action name to a list of binding texts (`"Key:Space"`) |
 | `game` | the sections, above |
 

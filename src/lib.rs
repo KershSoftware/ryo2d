@@ -179,7 +179,7 @@ pub mod prelude {
   // 2D lighting
   pub use crate::core::lighting::{
     AmbientLight, Atmosphere, GodRaysQuality, Light2D, LightOccluder2D, LightingSettings,
-    VolumetricSettings,
+    ShadowQuality, VolumetricSettings,
   };
 
   // Assets

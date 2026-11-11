@@ -2558,6 +2558,7 @@ fn player_defaults(settings: &crate::core::config::resolve::ResolvedSettings) ->
     display_mode: settings.display_mode,
     vsync: settings.vsync,
     show_fps: settings.show_fps,
+    shadow_quality: crate::core::lighting::ShadowQuality::default(),
   }
 }
 
