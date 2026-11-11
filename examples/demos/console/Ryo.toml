@@ -1,6 +1,12 @@
+# Console Demo - Ryo2D Engine Project Configuration
+# Commands that act on the game, and the log in the console
+
 [project]
-name = "Console Demo"
+name = "Ryo2D Console Demo"
 version = "0.1.0"
+
+[paths]
+entry_point = "src/main.rs"
 
 [debug]
 console = true

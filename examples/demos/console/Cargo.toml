@@ -2,11 +2,17 @@
 name = "console-demo"
 version = "0.1.0"
 edition = "2024"
+description = "Console demo - commands that act on the game, a command only one page has, and the log in the console"
+
+[lib]
+name = "console_demo"
+path = "src/lib.rs"
+
+[[bin]]
+name = "console-demo"
+path = "src/main.rs"
 
 [dependencies]
 ryo2d = { path = "../../.." }
 demo-kit = { path = "../../demo-kit" }
-
-[[bin]]
-name = "console-demo"
-path = "main.rs"
+log = "0.4"

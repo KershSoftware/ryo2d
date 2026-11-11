@@ -11,3 +11,4 @@ path = "main.rs"
 [dependencies]
 ryo2d = { path = "../../.." }
 demo-kit = { path = "../../demo-kit" }
+log = "0.4"

@@ -1271,6 +1271,7 @@ name = "console-demo"
 version = "0.1.0"
 dependencies = [
  "demo-kit",
+ "log",
  "ryo2d",
 ]
 
@@ -4982,6 +4983,7 @@ name = "profile-and-log"
 version = "0.1.0"
 dependencies = [
  "demo-kit",
+ "log",
  "ryo2d",
 ]
 

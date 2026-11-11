@@ -197,7 +197,7 @@ impl DemoScene {
       ));
     }
 
-    ryo2d::debug!("Spawned {} mixed entities", count);
+    ryo2d::trace!("Spawned {} mixed entities", count);
   }
 
   fn despawn_mixed(&mut self, ctx: &mut SceneContext, count: usize) {
@@ -353,6 +353,10 @@ impl DemoPage for DemoScene {
   fn enter(&mut self, _ctx: &mut SceneContext) {
     ryo2d::info!("Scene entered - press 1-6 to spawn/despawn entities");
     ryo2d::debug!("F9 opens logger, F10 opens profiler");
+    ryo2d::trace!("trace records show once log:level game trace is set");
+    ryo2d::warn!("warnings and errors reach the console and the logger window");
+    ryo2d::error!("an error looks like this");
+    log::warn!(target: "some_library", "a library's warning, from another target");
   }
 
   fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
