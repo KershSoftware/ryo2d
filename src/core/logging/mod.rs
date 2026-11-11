@@ -35,6 +35,10 @@ use levels::Levels;
 #[cfg(dev_tools)]
 pub(crate) use levels::parse_level;
 pub use record::{LogRecord, Origin};
+#[cfg(all(test, dev_tools))]
+pub(crate) use ring::ring_turn;
+#[cfg(dev_tools)]
+pub(crate) use ring::{mirror as mirror_records, newest as newest_record};
 pub(crate) use scope::{current_scope, in_scope, scoped};
 
 /// The `log` crate, for the prelude's macros in a game crate.

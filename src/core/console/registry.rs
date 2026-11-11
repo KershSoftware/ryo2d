@@ -135,11 +135,7 @@ impl ConsoleCommands {
       .collect()
   }
 
-  /// The names starting with `prefix` (in any case), sorted.
-  #[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the console does not complete names yet")
-  )]
+  /// The names starting with `prefix` (in any case), sorted (Tab).
   pub(crate) fn completions(&self, prefix: &str) -> Vec<String> {
     let prefix = prefix.to_lowercase();
     self

@@ -33,7 +33,7 @@ pub(super) fn push(record: &mut LogRecord) {
   not(test),
   expect(
     dead_code,
-    reason = "the logger window and the console read it when they move to this log"
+    reason = "the logger window reads it when it moves to this log"
   )
 )]
 pub(crate) fn after(seq: u64, scope: Option<u64>, out: &mut Vec<LogRecord>) -> u64 {
@@ -48,19 +48,68 @@ pub(crate) fn after(seq: u64, scope: Option<u64>, out: &mut Vec<LogRecord>) -> u
   records.back().map_or(seq, |r| r.seq.max(seq))
 }
 
+/// What [`mirror`] found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Mirrored {
+  /// The newest sequence number in the ring (the one asked after when
+  /// there is none newer): the next read starts after it
+  pub(crate) newest: u64,
+  /// Records after the one asked after that are no longer in the ring, of
+  /// any scope (it keeps the newest `RING`)
+  pub(crate) lost: u64,
+}
+
+/// Appends to `out`, oldest first, the newest `limit` records after `seq`
+/// of `scope` at or above `level` (the console's mirror), cloning only those.
+pub(crate) fn mirror(
+  seq: u64,
+  scope: u64,
+  level: log::LevelFilter,
+  limit: usize,
+  out: &mut Vec<LogRecord>,
+) -> Mirrored {
+  let records = RECORDS.lock().unwrap_or_else(PoisonError::into_inner);
+  let lost = records
+    .front()
+    .map_or(0, |first| first.seq.saturating_sub(seq.saturating_add(1)));
+  let start = records.partition_point(|r| r.seq <= seq);
+  let from = out.len();
+  out.extend(
+    records
+      .range(start..)
+      .rev()
+      .filter(|r| r.scope == scope && r.level <= level)
+      .take(limit)
+      .cloned(),
+  );
+  out[from..].reverse();
+  Mirrored {
+    newest: records.back().map_or(seq, |r| r.seq.max(seq)),
+    lost,
+  }
+}
+
+/// The newest sequence number given so far (0 before the first record)
+pub(crate) fn newest() -> u64 {
+  let records = RECORDS.lock().unwrap_or_else(PoisonError::into_inner);
+  records.back().map_or(0, |r| r.seq)
+}
+
+// The tests that fill the ring take turns, so none pushes another's records
+// out before it reads them
+#[cfg(test)]
+static RING_TESTS: Mutex<()> = Mutex::new(());
+
+/// A turn at filling the ring (tests that log past its size hold one)
+#[cfg(test)]
+pub(crate) fn ring_turn() -> std::sync::MutexGuard<'static, ()> {
+  RING_TESTS.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
   use crate::core::logging::capture::{capture_log, capture_log_bounded};
-  use std::sync::{Mutex, MutexGuard, PoisonError};
-
-  // The two tests that fill the ring take turns, so neither pushes the
-  // other's records out before it reads them
-  static RING_TESTS: Mutex<()> = Mutex::new(());
-
-  fn ring_turn() -> MutexGuard<'static, ()> {
-    RING_TESTS.lock().unwrap_or_else(PoisonError::into_inner)
-  }
 
   #[test]
   fn sequence_numbers_never_repeat_and_the_ring_answers_after_n_past_its_size() {
@@ -94,6 +143,39 @@ mod tests {
     let all = capture.records();
     assert_eq!(all.len(), 25_000);
     assert!(all.windows(2).all(|w| w[0].seq < w[1].seq));
+  }
+
+  #[test]
+  fn the_mirror_reads_its_scope_s_newest_at_its_level() {
+    let _turn = ring_turn();
+    let capture = capture_log();
+    let target = "ryo2d::core::logging::mirror_test";
+    let start = newest();
+    log::info!(target: target, "info");
+    for i in 0..5 {
+      log::warn!(target: target, "warn {i}");
+    }
+    log::error!(target: target, "error");
+    let mut out = Vec::new();
+    let found = mirror(start, capture.scope(), log::LevelFilter::Warn, 3, &mut out);
+    let messages: Vec<_> = out.iter().map(|r| r.message.as_str()).collect();
+    assert_eq!(
+      messages,
+      ["warn 3", "warn 4", "error"],
+      "the newest, oldest first"
+    );
+    assert!(found.newest >= out[2].seq);
+    out.clear();
+    mirror(
+      found.newest,
+      capture.scope(),
+      log::LevelFilter::Warn,
+      3,
+      &mut out,
+    );
+    assert!(out.is_empty(), "nothing after the newest");
+    mirror(start, capture.scope(), log::LevelFilter::Off, 3, &mut out);
+    assert!(out.is_empty(), "off takes none");
   }
 
   #[test]

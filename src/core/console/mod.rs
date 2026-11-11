@@ -24,6 +24,7 @@ mod dispatch;
 #[cfg(dev_tools)]
 mod registry;
 mod scope;
+mod view;
 
 pub use command::{Command, CommandSpec};
 pub use scope::ConsoleScope;
@@ -45,7 +46,7 @@ use super::cursor::CursorStyle;
 use super::ecs::Resource;
 use super::input::Input;
 use super::text::{FontRole, TextStyle};
-use super::ui::{Color, Rect, UiContext};
+use super::ui::{Color, Rect};
 use winit::event::MouseButton;
 use winit::keyboard::KeyCode;
 
@@ -130,6 +131,9 @@ pub(crate) mod colors {
   pub const COMMAND: Color = Color::new(100, 180, 255, 255);
   /// Error message color
   pub const ERROR: Color = Color::new(255, 100, 100, 255);
+  /// A mirrored warning's color (yellow)
+  #[cfg(dev_tools)]
+  pub const WARNING: Color = Color::new(255, 210, 90, 255);
   /// System message color (gray)
   pub const SYSTEM: Color = Color::new(150, 150, 150, 255);
   /// Cursor color
@@ -161,6 +165,8 @@ pub(crate) struct ConsoleLine {
     expect(dead_code, reason = "nothing shows a line's time yet")
   )]
   pub timestamp: f32,
+  /// Its rows, wrapped at the console's `wrap_width` (empty until then)
+  rows: Vec<String>,
 }
 
 impl ConsoleLine {
@@ -170,6 +176,7 @@ impl ConsoleLine {
       text: text.into(),
       color,
       timestamp,
+      rows: Vec::new(),
     }
   }
 }
@@ -227,8 +234,17 @@ pub(crate) struct Console {
   scroll_target: f32,
   /// Logical pixels to the console's units (the pointer's conversion)
   pixel_scale: f32,
-  /// Wrapped rows as last drawn (0 before the first render)
-  wrapped_rows: usize,
+  /// UI units per screen unit: the pointer's position in the console's
+  /// units, as the UI pass converts it
+  mouse_scale: f32,
+  /// The text width (and UI scale) the first `wrapped_lines` lines are
+  /// wrapped at; a line is wrapped once while these hold
+  wrap_width: f32,
+  wrap_scale: f32,
+  /// The lines, from the oldest, whose `rows` are wrapped at `wrap_width`
+  wrapped_lines: usize,
+  /// Their rows altogether
+  wrapped_row_count: usize,
   /// Lines printed since the last render while the reader was scrolled up
   unseen_lines: usize,
   /// Timer for cursor blink animation
@@ -237,8 +253,16 @@ pub(crate) struct Console {
   total_time: f32,
   /// Current drag state
   drag_state: DragState,
-  /// Skip text input this frame (to avoid inserting toggle key)
-  skip_text_input: bool,
+  /// Drop the toggle key's character from this frame's text (the press
+  /// that opened the console)
+  swallow_toggle: bool,
+  /// Tab was pressed this frame (the engine completes with its commands)
+  #[cfg(dev_tools)]
+  tab_pressed: bool,
+  /// The input line as the last Tab with several matches left it: a Tab
+  /// on the same line lists them
+  #[cfg(dev_tools)]
+  tab_line: Option<String>,
   /// The console font's line height as last measured by `render`
   line_height: f32,
   /// The lowest level of log record the console shows (`log:show`;
@@ -250,6 +274,15 @@ pub(crate) struct Console {
   pub(crate) log_show: log::LevelFilter,
   /// The text of each line printed while set (`HeadlessEngine::console_run`)
   captured: Option<Vec<String>>,
+  /// The last log sequence number the mirror read
+  #[cfg(dev_tools)]
+  log_seq: u64,
+  /// The mirror's records, kept for their room
+  #[cfg(dev_tools)]
+  log_records: Vec<crate::core::logging::LogRecord>,
+  /// Lines wrapped so far (a test's count)
+  #[cfg(test)]
+  wrap_calls: usize,
 }
 
 impl Default for Console {
@@ -277,15 +310,29 @@ impl Console {
       scroll_offset: 0.0,
       scroll_target: 0.0,
       pixel_scale: 1.0,
-      wrapped_rows: 0,
+      mouse_scale: 1.0,
+      wrap_width: f32::NAN,
+      wrap_scale: f32::NAN,
+      wrapped_lines: 0,
+      wrapped_row_count: 0,
       unseen_lines: 0,
       cursor_blink_timer: 0.0,
       total_time: 0.0,
       drag_state: DragState::None,
-      skip_text_input: false,
+      swallow_toggle: false,
+      #[cfg(dev_tools)]
+      tab_pressed: false,
+      #[cfg(dev_tools)]
+      tab_line: None,
       line_height: DEFAULT_LINE_HEIGHT,
       log_show: log::LevelFilter::Warn,
       captured: None,
+      #[cfg(dev_tools)]
+      log_seq: 0,
+      #[cfg(dev_tools)]
+      log_records: Vec::new(),
+      #[cfg(test)]
+      wrap_calls: 0,
     };
 
     // Print welcome message
@@ -304,7 +351,12 @@ impl Console {
 
     // Trim old lines if we exceed the maximum
     while self.output_lines.len() > MAX_OUTPUT_LINES {
-      self.output_lines.pop_front();
+      if let Some(oldest) = self.output_lines.pop_front()
+        && self.wrapped_lines > 0
+      {
+        self.wrapped_lines -= 1;
+        self.wrapped_row_count -= oldest.rows.len();
+      }
     }
 
     // At the bottom the view follows the output; a reader scrolled up keeps
@@ -350,6 +402,12 @@ impl Console {
     self.captured.take().unwrap_or_default()
   }
 
+  /// The input line as typed so far
+  #[cfg(all(test, dev_tools))]
+  pub(crate) fn input_line(&self) -> &str {
+    &self.input_buffer
+  }
+
   /// The output lines, oldest first
   #[cfg(all(test, dev_tools))]
   pub(crate) fn lines(&self) -> impl DoubleEndedIterator<Item = &ConsoleLine> {
@@ -363,6 +421,8 @@ impl Console {
   )]
   pub fn clear(&mut self) {
     self.output_lines.clear();
+    self.wrapped_lines = 0;
+    self.wrapped_row_count = 0;
     self.scroll_offset = 0.0;
     self.scroll_target = 0.0;
     self.unseen_lines = 0;
@@ -374,8 +434,8 @@ impl Console {
     if self.visible {
       self.focused = true;
       self.cursor_blink_timer = 0.0;
-      // Skip text input this frame to avoid inserting the toggle key
-      self.skip_text_input = true;
+      // The press that opened it typed its character too
+      self.swallow_toggle = true;
     }
   }
 
@@ -385,6 +445,20 @@ impl Console {
     if scale.is_finite() && scale > 0.0 {
       self.pixel_scale = scale;
     }
+  }
+
+  /// Set the UI units per screen unit, so the pointer is hit-tested in the
+  /// units the console is drawn in (the UI pass's conversion)
+  pub(crate) fn set_mouse_scale(&mut self, scale: f32) {
+    if scale.is_finite() && scale > 0.0 {
+      self.mouse_scale = scale;
+    }
+  }
+
+  /// The pointer in the console's units
+  fn pointer(&self, input: &Input) -> (f32, f32) {
+    let (x, y) = input.mouse_position();
+    (x * self.mouse_scale, y * self.mouse_scale)
   }
 
   /// Update cursor blink and timers
@@ -433,12 +507,10 @@ impl Console {
     }
   }
 
-  /// The wrapped rows as last drawn (the lines before the first render)
+  /// The rows of every line: those wrapped, and one for each line not yet
+  /// wrapped (printed since the last render)
   fn total_rows(&self) -> usize {
-    match self.wrapped_rows {
-      0 => self.output_lines.len(),
-      wrapped => wrapped,
-    }
+    self.wrapped_row_count + (self.output_lines.len() - self.wrapped_lines)
   }
 
   /// Put the view at `lines` (clamped), stopping any ease; a move that ends
@@ -478,7 +550,7 @@ impl Console {
   }
 
   /// Get the close button bounds (top-right corner of title bar)
-  fn close_button_rect(&self) -> Rect {
+  pub(crate) fn close_button_rect(&self) -> Rect {
     let padding = (self.title_bar_height() - CLOSE_BUTTON_SIZE) / 2.0;
     Rect::new(
       self.x + self.width - CLOSE_BUTTON_SIZE - padding,
@@ -599,7 +671,9 @@ impl Console {
       return None;
     }
 
-    let (mouse_x, mouse_y) = input.mouse_position();
+    // Only this frame's text can hold the opening press's character
+    let swallow_toggle = std::mem::take(&mut self.swallow_toggle);
+    let (mouse_x, mouse_y) = self.pointer(input);
     let window_rect = self.window_rect();
 
     // Calculate scrollbar info for interactions
@@ -751,12 +825,22 @@ impl Console {
 
     let mut submitted_command = None;
 
-    // Handle text input (from IME or keyboard)
-    // Skip on the frame console was opened to avoid inserting toggle key
-    if !self.skip_text_input && input.has_text_input() {
-      let text = input.text_input();
-      // Filter out backtick/tilde characters (the toggle key)
-      let filtered: String = text.chars().filter(|&c| c != '`' && c != '~').collect();
+    // Handle text input (from IME or keyboard). The press that opened the
+    // console typed its character too: that one is dropped, and once open
+    // the backquote and tilde type as any key does
+    if input.has_text_input() {
+      let mut swallow = swallow_toggle;
+      let filtered: String = input
+        .text_input()
+        .chars()
+        .filter(|&c| {
+          if swallow && (c == '`' || c == '~') {
+            swallow = false;
+            return false;
+          }
+          !c.is_control()
+        })
+        .collect();
       if !filtered.is_empty() {
         self.input_buffer.insert_str(self.cursor_pos, &filtered);
         self.cursor_pos += filtered.len();
@@ -765,7 +849,12 @@ impl Console {
       // Consume text so game widgets don't also process it
       input.consume_text_input();
     }
-    self.skip_text_input = false;
+
+    // Tab completes the command name; the engine has the commands
+    #[cfg(dev_tools)]
+    if input.key_pressed(KeyCode::Tab) {
+      self.tab_pressed = true;
+    }
 
     // Handle special keys
     if input.key_repeat(KeyCode::Backspace) && self.cursor_pos > 0 {
@@ -910,262 +999,116 @@ impl Console {
     submitted_command
   }
 
-  /// Render the console window
-  pub fn render(&mut self, ui: &mut UiContext, frame_width: u32, frame_height: u32) {
-    if !self.visible {
+  /// Whether Tab was pressed since the last call
+  #[cfg(dev_tools)]
+  pub(crate) fn take_tab(&mut self) -> bool {
+    std::mem::take(&mut self.tab_pressed)
+  }
+
+  /// Tab: complete the first word from `names` (the command names starting
+  /// with a prefix). One match is completed with a space after it, so a
+  /// second Tab does nothing; several are completed as far as they agree,
+  /// and a Tab that finds the line as the last one left it lists them on
+  /// one line. After the first word, Tab does nothing.
+  #[cfg(dev_tools)]
+  pub(crate) fn complete(&mut self, names: impl FnOnce(&str) -> Vec<String>) {
+    let word = self.input_buffer.as_str();
+    if word.is_empty() || word.chars().any(char::is_whitespace) {
       return;
     }
-
-    let padding = 8.0;
-    let style = console_style();
-    let line_height = ui.line_height(&style).ceil();
-    self.line_height = line_height;
-    let title_height = self.title_bar_height();
-    let input_height = self.input_height();
-
-    // Choose colors based on focus state
-    let bg_color = if self.focused {
-      colors::BACKGROUND_FOCUSED
-    } else {
-      colors::BACKGROUND_UNFOCUSED
-    };
-    let border_color = if self.focused {
-      colors::BORDER
-    } else {
-      colors::BORDER_UNFOCUSED
-    };
-    let title_bar_color = if matches!(self.drag_state, DragState::Dragging { .. }) {
-      colors::TITLE_BAR_ACTIVE
-    } else if self.focused {
-      colors::TITLE_BAR
-    } else {
-      colors::TITLE_BAR_UNFOCUSED
-    };
-    let input_bg_color = if self.focused {
-      colors::INPUT_BG
-    } else {
-      colors::INPUT_BG_UNFOCUSED
-    };
-    let text_color = if self.focused {
-      colors::TEXT
-    } else {
-      colors::TEXT_UNFOCUSED
-    };
-
-    // Clamp window position to screen bounds
-    let x = self
-      .x
-      .max(0.0)
-      .min((frame_width as f32 - self.width).max(0.0));
-    let y = self
-      .y
-      .max(0.0)
-      .min((frame_height as f32 - self.height).max(0.0));
-
-    // Draw window background
-    let bg_rect = Rect::new(x, y, self.width, self.height);
-    ui.draw_rect(bg_rect, bg_color);
-
-    // Draw border
-    ui.draw_rect_outline(bg_rect, border_color, 1.0);
-
-    // Draw title bar
-    let title_rect = Rect::new(x, y, self.width, title_height);
-    ui.draw_rect(title_rect, title_bar_color);
-    draw_line(
-      ui,
-      "Developer Console",
-      x + padding,
-      y + (title_height - line_height) / 2.0,
-      text_color,
-    );
-
-    // Draw close button (X) in top-right corner
-    let close_padding = (title_height - CLOSE_BUTTON_SIZE) / 2.0;
-    let close_x = x + self.width - CLOSE_BUTTON_SIZE - close_padding;
-    let close_y = y + close_padding;
-    let close_rect = Rect::new(close_x, close_y, CLOSE_BUTTON_SIZE, CLOSE_BUTTON_SIZE);
-    let (mouse_x, mouse_y) = ui.input().mouse_position();
-    let close_hovered = close_rect.contains(mouse_x, mouse_y);
-    let close_btn_color = if close_hovered && self.focused {
-      Color::new(140, 50, 50, 255)
-    } else if self.focused {
-      Color::new(80, 40, 40, 255)
-    } else {
-      Color::new(80, 40, 40, 160)
-    };
-    ui.draw_rect(close_rect, close_btn_color);
-    // Draw X centered in the button
-    let x_size = ui.measure_text("X", &style);
-    let x_text_x = close_x + (CLOSE_BUTTON_SIZE - x_size.x) / 2.0;
-    let x_text_y = close_y + (CLOSE_BUTTON_SIZE - x_size.y) / 2.0;
-    let close_text_color = if close_hovered && self.focused {
-      Color::WHITE
-    } else {
-      text_color
-    };
-    draw_line(ui, "X", x_text_x, x_text_y, close_text_color);
-
-    // Draw input line background
-    let input_y = y + self.height - input_height;
-    let input_rect = Rect::new(x, input_y, self.width, input_height);
-    ui.draw_rect(input_rect, input_bg_color);
-
-    // Draw input prompt and text
-    let prompt = "> ";
-    let prompt_x = x + padding;
-    let input_text_y = input_y + (input_height - line_height) / 2.0;
-    let prompt_color = if self.focused {
-      colors::SYSTEM
-    } else {
-      Color::new(colors::SYSTEM.r, colors::SYSTEM.g, colors::SYSTEM.b, 160)
-    };
-    draw_line(ui, prompt, prompt_x, input_text_y, prompt_color);
-
-    let text_x = prompt_x + ui.measure_text(prompt, &style).x;
-    draw_line(ui, &self.input_buffer, text_x, input_text_y, text_color);
-
-    // Draw cursor (blinking) - only when focused
-    if self.focused && self.cursor_blink_timer < 0.5 {
-      let cursor_text = &self.input_buffer[..self.cursor_pos];
-      let cursor_x = text_x + ui.measure_text(cursor_text, &style).x;
-      let cursor_rect = Rect::new(cursor_x, input_y + 4.0, 2.0, input_height - 8.0);
-      ui.draw_rect(cursor_rect, colors::CURSOR);
-    }
-
-    // Draw resize handle (bottom-right corner)
-    let resize_rect = Rect::new(
-      x + self.width - RESIZE_HANDLE_SIZE,
-      y + self.height - RESIZE_HANDLE_SIZE,
-      RESIZE_HANDLE_SIZE,
-      RESIZE_HANDLE_SIZE,
-    );
-    // Draw diagonal lines to indicate resize handle
-    for i in 0..3 {
-      let offset = (i as f32) * 4.0 + 2.0;
-      let line_rect = Rect::new(
-        resize_rect.x + offset,
-        resize_rect.y + RESIZE_HANDLE_SIZE - 2.0,
-        RESIZE_HANDLE_SIZE - offset,
-        1.0,
-      );
-      ui.draw_rect(line_rect, colors::RESIZE_HANDLE);
-    }
-
-    // Calculate visible output area (leave room for scrollbar on right)
-    let output_top = y + title_height + padding;
-    let output_bottom = input_y - padding;
-    let output_height = output_bottom - output_top;
-    let visible_line_count = (output_height / line_height) as usize;
-
-    // Wrap to the full width first; the scrollbar takes room from the text
-    // only when the wrapped rows overflow, so wrap again narrower then
-    let wrap_all = |width: f32| -> Vec<(String, Color)> {
-      let mut rows = Vec::new();
-      for line in &self.output_lines {
-        for part in ui.wrap_text_styled(&line.text, width, &style) {
-          rows.push((part, line.color));
+    let names = names(word);
+    match names.as_slice() {
+      [] => {}
+      [name] => {
+        self.set_input(format!("{name} "));
+        self.tab_line = None;
+      }
+      [first, rest @ ..] => {
+        let common = common_prefix(first, rest);
+        if common.len() > word.len() {
+          self.set_input(common.to_string());
+        } else if self.tab_line.as_deref() == Some(word) {
+          self.print_system(names.join("  "));
         }
+        self.tab_line = Some(self.input_buffer.clone());
       }
-      rows
-    };
-    let mut text_width = self.max_text_width(false);
-    let mut wrapped_lines = wrap_all(text_width);
-    if wrapped_lines.len() > visible_line_count {
-      text_width = self.max_text_width(true);
-      wrapped_lines = wrap_all(text_width);
     }
+  }
 
-    // Lines printed while the reader was scrolled up push the rows they
-    // wrap to under the view: move the view by those, so what is read stays
-    let unseen = std::mem::take(&mut self.unseen_lines).min(self.output_lines.len());
-    if unseen > 0 && self.scroll_target > 0.0 {
-      let rows: usize = self
-        .output_lines
-        .iter()
-        .rev()
-        .take(unseen)
-        .map(|line| {
-          ui.wrap_text_styled(&line.text, text_width, &style)
-            .len()
-            .max(1)
-        })
-        .sum();
-      self.scroll_offset += rows as f32;
-      self.scroll_target += rows as f32;
+  /// Replace the input line, the cursor at its end
+  #[cfg(dev_tools)]
+  fn set_input(&mut self, line: String) {
+    self.input_buffer = line;
+    self.cursor_pos = self.input_buffer.len();
+    self.cursor_blink_timer = 0.0;
+  }
+
+  /// Mirror the log from the record after `seq` on (the newest when the
+  /// engine was built)
+  #[cfg(dev_tools)]
+  pub(crate) fn start_log_at(&mut self, seq: u64) {
+    self.log_seq = seq;
+  }
+
+  /// Append the log's records since the last read, of the engine's log
+  /// `scope`, at or above `log_show`: warnings in yellow, errors in red, as
+  /// `target: message`. Run when the console opens and each frame while it
+  /// is open, so what was logged while it was closed is there when it
+  /// opens; the newest `MAX_OUTPUT_LINES` win, and records the ring has
+  /// dropped since are counted in one grey line.
+  ///
+  /// Printing logs nothing (a line is pushed, and wrapped when drawn), so
+  /// the mirror never shows a record of its own making.
+  #[cfg(dev_tools)]
+  pub(crate) fn mirror_log(&mut self, scope: u64) {
+    let mut records = std::mem::take(&mut self.log_records);
+    let found = crate::core::logging::mirror_records(
+      self.log_seq,
+      scope,
+      self.log_show,
+      MAX_OUTPUT_LINES,
+      &mut records,
+    );
+    self.log_seq = found.newest;
+    if self.log_show != log::LevelFilter::Off && found.lost > 0 {
+      self.print_system(format!(
+        "{} earlier records are no longer in the log",
+        found.lost
+      ));
+      // The count stays in view
+      if records.len() == MAX_OUTPUT_LINES {
+        records.remove(0);
+      }
     }
-
-    let total_lines = wrapped_lines.len();
-    self.wrapped_rows = total_lines;
-    let has_scrollbar = total_lines > visible_line_count;
-    let max_scroll = (total_lines as f32 - output_height / line_height).max(0.0);
-    let scroll_offset = self.scroll_offset.clamp(0.0, max_scroll);
-    self.scroll_target = self.scroll_target.clamp(0.0, max_scroll);
-    self.scroll_offset = scroll_offset;
-
-    // Draw scrollbar if there's more content than visible
-    let scrollbar_x = x + self.width - SCROLLBAR_WIDTH - 4.0;
-    if has_scrollbar {
-      // Draw scrollbar track
-      let track_rect = Rect::new(scrollbar_x, output_top, SCROLLBAR_WIDTH, output_height);
-      ui.draw_rect(track_rect, colors::SCROLLBAR_TRACK);
-
-      // Calculate thumb size and position
-      let visible_ratio = visible_line_count as f32 / total_lines as f32;
-      let thumb_height = (output_height * visible_ratio).max(SCROLLBAR_MIN_THUMB);
-
-      // scroll_offset=0 means at bottom, max scroll_offset means at top
-      let scroll_ratio = if max_scroll > 0.0 {
-        (scroll_offset / max_scroll).min(1.0)
-      } else {
-        0.0
+    for record in records.drain(..) {
+      let color = match record.level {
+        log::Level::Error => colors::ERROR,
+        log::Level::Warn => colors::WARNING,
+        log::Level::Info => colors::TEXT,
+        log::Level::Debug | log::Level::Trace => colors::SYSTEM,
       };
-
-      // Thumb position: at bottom when scroll_offset=0, at top when scroll_offset=max
-      let thumb_travel = output_height - thumb_height;
-      let thumb_y = output_top + thumb_travel * (1.0 - scroll_ratio);
-
-      // Draw thumb
-      let thumb_rect = Rect::new(scrollbar_x, thumb_y, SCROLLBAR_WIDTH, thumb_height);
-      ui.draw_rect(thumb_rect, colors::SCROLLBAR_THUMB);
+      self.print_colored(format!("{}: {}", record.target, record.message), color);
     }
-
-    // Draw the output at the fractional position, bottom-aligned: the view
-    // is `scroll_offset` lines above the newest row, and the lines cut by
-    // the output area's edges are clipped, not skipped
-    let first = (total_lines as f32 - scroll_offset - output_height / line_height)
-      .floor()
-      .max(0.0) as usize;
-    let last = ((total_lines as f32 - scroll_offset).ceil().max(0.0) as usize).min(total_lines);
-    ui.push_clip(Rect::new(x, output_top, self.width, output_height));
-    for i in first..last {
-      let text_y = output_bottom + (scroll_offset - (total_lines - i) as f32) * line_height;
-      if let Some((text, color)) = wrapped_lines.get(i) {
-        let line_color = if self.focused {
-          *color
-        } else {
-          Color::new(
-            color.r,
-            color.g,
-            color.b,
-            (color.a as u16 * 160 / 255) as u8,
-          )
-        };
-        draw_line(ui, text, x + padding, text_y, line_color);
-      }
-    }
-    ui.pop_clip();
+    self.log_records = records;
   }
 }
 
-/// One line of console text; `color`'s alpha fades it (layouts are cached
-/// per colour, so alpha rides as opacity)
-fn draw_line(ui: &mut UiContext, text: &str, x: f32, y: f32, color: Color) {
-  ui.text(text)
-    .style(&console_style().color(color.with_alpha(255)))
-    .at(x, y)
-    .opacity(f32::from(color.a) / 255.0)
-    .draw();
+/// The longest start `first` shares with every name of `rest`
+#[cfg(dev_tools)]
+fn common_prefix<'a>(first: &'a str, rest: &[String]) -> &'a str {
+  let mut end = first.len();
+  for name in rest {
+    end = first
+      .bytes()
+      .zip(name.bytes())
+      .take(end)
+      .take_while(|(a, b)| a == b)
+      .count();
+  }
+  while !first.is_char_boundary(end) {
+    end -= 1;
+  }
+  &first[..end]
 }
 
 #[cfg(test)]
@@ -1183,6 +1126,7 @@ mod tests {
       ("builtins.rs", include_str!("builtins.rs")),
       ("dispatch.rs", include_str!("dispatch.rs")),
       ("scope.rs", include_str!("scope.rs")),
+      ("view.rs", include_str!("view.rs")),
     ];
     for (name, text) in sources {
       assert!(!text.contains(&needle), "{name} names {needle}");
@@ -1192,67 +1136,6 @@ mod tests {
   // ============================================================================
   // Console Basic Operations
   // ============================================================================
-
-  #[cfg(feature = "default-fonts")]
-  #[test]
-  fn long_output_lines_wrap_to_the_console_width() {
-    use crate::core::ui::immediate::{UiCommand, UiCommands};
-    let mut console = Console::new();
-    console.toggle();
-    console.print("word ".repeat(400));
-    let (mut commands, mut text) = (
-      UiCommands::default(),
-      crate::core::ui::test_util::text_engine(),
-    );
-    let mut ui = crate::core::ui::test_util::context(&mut commands, &mut text, (1280.0, 720.0));
-    console.render(&mut ui, 1280, 720);
-    drop(ui);
-    let output_width = console.max_text_width(true);
-    let widths: Vec<f32> = commands
-      .commands()
-      .filter_map(|c| match c {
-        UiCommand::Text { layout, .. } => Some(layout.size.x / layout.scale),
-        _ => None,
-      })
-      .collect();
-    assert!(widths.len() > 3, "the long line became several rows");
-    assert!(
-      widths.iter().all(|&w| w <= output_width + 0.5),
-      "{widths:?} within {output_width}"
-    );
-  }
-
-  #[cfg(feature = "default-fonts")]
-  #[test]
-  fn the_console_draws_in_monospace_and_sizes_rows_by_the_font() {
-    use crate::core::ui::immediate::{UiCommand, UiCommands};
-    let mut console = Console::new();
-    console.toggle();
-    console.clear();
-    console.print("iiiiiiiiii");
-    console.print("MMMMMMMMMM");
-    let (mut commands, mut text) = (
-      UiCommands::default(),
-      crate::core::ui::test_util::text_engine(),
-    );
-    let mut ui = crate::core::ui::test_util::context(&mut commands, &mut text, (1280.0, 720.0));
-    console.render(&mut ui, 1280, 720);
-    let expected = ui.line_height(&console_style()).ceil();
-    drop(ui);
-    let widths: Vec<f32> = commands
-      .commands()
-      .filter_map(|c| match c {
-        UiCommand::Text { layout, .. } if layout.size.x > 60.0 && layout.size.x < 100.0 => {
-          Some(layout.size.x)
-        }
-        _ => None,
-      })
-      .collect();
-    assert_eq!(widths.len(), 2, "{widths:?}");
-    assert!((widths[0] - widths[1]).abs() < 0.5, "monospace: {widths:?}");
-    assert_eq!(console.line_height, expected);
-    assert!(console.title_bar_height() >= expected + 10.0);
-  }
 
   #[test]
   fn test_console_new_initial_state() {
@@ -1282,7 +1165,7 @@ mod tests {
   }
 
   /// A console of `lines` short lines with the pointer over its output
-  fn scrolling_console(lines: usize) -> (Console, Input) {
+  pub(super) fn scrolling_console(lines: usize) -> (Console, Input) {
     let mut console = Console::new();
     console.toggle();
     console.clear();
@@ -1300,7 +1183,7 @@ mod tests {
 
   /// One frame as the engine runs it: ease, then read the input; `scroll`
   /// is a trackpad's logical pixels and `lines` a wheel's
-  fn console_frame(console: &mut Console, input: &mut Input, lines: f32, scroll: f32) {
+  pub(super) fn console_frame(console: &mut Console, input: &mut Input, lines: f32, scroll: f32) {
     input.begin_frame();
     if lines != 0.0 {
       input.handle_scroll(winit::event::MouseScrollDelta::LineDelta(0.0, lines));
@@ -1313,7 +1196,7 @@ mod tests {
   }
 
   /// How far the view is scrolled, in the console's drawing units
-  fn scrolled_units(console: &Console) -> f32 {
+  pub(super) fn scrolled_units(console: &Console) -> f32 {
     console.scroll_offset * console.line_height
   }
 
@@ -1376,52 +1259,6 @@ mod tests {
     assert!((scrolled_units(&console) - max).abs() < 0.01, "a wheel too");
   }
 
-  /// Render the console and give each drawn row's y by its text's seed
-  #[cfg(feature = "default-fonts")]
-  fn drawn_rows(console: &mut Console) -> std::collections::HashMap<u64, f32> {
-    use crate::core::ui::immediate::{UiCommand, UiCommands};
-    let (mut commands, mut text) = (
-      UiCommands::default(),
-      crate::core::ui::test_util::text_engine(),
-    );
-    let mut ui = crate::core::ui::test_util::context(&mut commands, &mut text, (1280.0, 720.0));
-    console.render(&mut ui, 1280, 720);
-    drop(ui);
-    let (top, bottom, _, _) = console.output_area();
-    commands
-      .commands()
-      .filter_map(|c| match c {
-        UiCommand::Text { origin, seed, .. } if origin.y > top - 20.0 && origin.y < bottom => {
-          Some((*seed, origin.y))
-        }
-        _ => None,
-      })
-      .collect()
-  }
-
-  #[cfg(feature = "default-fonts")]
-  #[test]
-  fn new_output_keeps_a_console_at_the_bottom_and_a_reader_in_place() {
-    let (mut console, mut input) = scrolling_console(50);
-    console.print("more");
-    assert_eq!(scrolled_units(&console), 0.0, "at the bottom it stays");
-
-    drawn_rows(&mut console);
-    console_frame(&mut console, &mut input, 0.0, 30.0);
-    let before = drawn_rows(&mut console);
-    // A line that wraps to several rows must not move what is being read
-    console.print("word ".repeat(300));
-    let after = drawn_rows(&mut console);
-    let kept: Vec<_> = before
-      .iter()
-      .filter_map(|(seed, y)| after.get(seed).map(|y2| (*y, *y2)))
-      .collect();
-    assert!(kept.len() > 5, "the rows being read are still drawn");
-    for (y, y2) in kept {
-      assert!((y - y2).abs() < 0.01, "a row moved from {y} to {y2}");
-    }
-  }
-
   #[test]
   fn submitting_a_command_jumps_to_the_bottom_but_other_output_does_not() {
     let (mut console, mut input) = scrolling_console(50);
@@ -1480,69 +1317,6 @@ mod tests {
     console_frame(&mut console, &mut input, 1.0, 0.0);
     console.update(0.0);
     assert_eq!(console.scroll_offset, 0.0);
-  }
-
-  #[cfg(feature = "default-fonts")]
-  #[test]
-  fn the_scrollbar_answers_to_the_wrapped_rows_it_draws() {
-    let (mut console, mut input) = scrolling_console(0);
-    for _ in 0..8 {
-      console.print("word ".repeat(120));
-    }
-    drawn_rows(&mut console);
-    let (_, _, view, _) = console.output_area();
-    assert!(console.output_lines.len() as f32 * console.line_height < view);
-    assert!(console.wrapped_rows as f32 * console.line_height > view);
-    // Click the track near its top: the view jumps up
-    let track = console.scrollbar_track_rect();
-    input.handle_mouse_move(f64::from(track.x + 2.0), f64::from(track.y + 2.0));
-    input.queue(crate::core::input::InputEvent::MouseButton {
-      button: MouseButton::Left,
-      pressed: true,
-    });
-    input.begin_frame();
-    console.handle_input(&mut input);
-    assert!(console.scroll_offset > 0.0, "the click found the scrollbar");
-  }
-
-  #[cfg(feature = "default-fonts")]
-  #[test]
-  fn a_fractional_scroll_draws_the_cut_lines_clipped() {
-    use crate::core::ui::immediate::{UiCommand, UiCommands};
-    let rows_at = |lines: f32| {
-      let (mut console, _) = scrolling_console(60);
-      console.scroll_offset = lines;
-      let (mut commands, mut text) = (
-        UiCommands::default(),
-        crate::core::ui::test_util::text_engine(),
-      );
-      let mut ui = crate::core::ui::test_util::context(&mut commands, &mut text, (1280.0, 720.0));
-      console.render(&mut ui, 1280, 720);
-      drop(ui);
-      let (top, bottom, _, _) = console.output_area();
-      let ys: Vec<f32> = commands
-        .commands()
-        .filter_map(|c| match c {
-          UiCommand::Text { origin, clip, .. } if origin.y > top - 20.0 && origin.y < bottom => {
-            assert_eq!(clip.map(|c| (c.y, c.height)), Some((top, bottom - top)));
-            Some(origin.y)
-          }
-          _ => None,
-        })
-        .collect();
-      (ys, console.line_height)
-    };
-    let (still, line) = rows_at(0.0);
-    let (moved, _) = rows_at(0.5);
-    let last = |ys: &[f32]| ys.iter().copied().fold(f32::MIN, f32::max);
-    assert!(
-      (last(&moved) - last(&still) - 0.5 * line).abs() < 0.01,
-      "rows move by half a line: {still:?} {moved:?}"
-    );
-    assert!(
-      moved.len() > still.len(),
-      "a cut row at the top is drawn too"
-    );
   }
 
   #[test]

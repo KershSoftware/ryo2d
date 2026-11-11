@@ -8,7 +8,7 @@ The engine's log: the `log` crate's macros in front, one `log::Log` (the engine'
 | `levels.rs` | `Levels`: a default per origin, overrides by target prefix, `RYO_LOG`'s parser |
 | `record.rs` | `LogRecord`, `Origin` (read from the target) and `under` (whole-segment prefix match) |
 | `outputs.rs` | `emit`: the outputs in turn, the sequence counter, the bridge into the old buffer |
-| `ring.rs` | The ring (`#[cfg(dev_tools)]`): the last `RING` (10,000) records, read with `after(seq, scope, out)` |
+| `ring.rs` | The ring (`#[cfg(dev_tools)]`): the last `RING` (10,000) records, read with `after(seq, scope, out)`; `mirror` (the console's: the newest `limit` of a scope at a level after `seq`, and how many records after `seq` the ring has dropped) and `newest` |
 | `scope.rs` | Log scopes: the thread's scope, `in_scope`, `scoped` (a spawned thread's body), `new_scope` |
 | `capture.rs` | `capture_log`, `capture_log_bounded`, `LogCapture` (re-exported by `ryo2d::testing`) |
 | `file.rs` | The log file (native): `open`, `write`, `tick`, `flush`; `logs/latest.log` in the save folder |

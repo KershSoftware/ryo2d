@@ -306,6 +306,12 @@ impl Engine {
   /// F1-F5 overlays and borderless, F9/F10 dev windows, F12 capture, and the
   /// console key. Each consumes its key so the game never sees it.
   fn handle_debug_keys(&mut self) {
+    // Once the console is open and focused the backquote types into it;
+    // only the press that opens it is the console key
+    let console_typing = self
+      .world
+      .get_resource::<Console>()
+      .is_some_and(|console| console.visible && console.focused);
     let mut input = self.world.resource_mut::<Input>();
     let mut pressed = |key: KeyCode| {
       let hit = input.key_pressed(key);
@@ -332,7 +338,8 @@ impl Engine {
       }
     }
 
-    let toggle_console = self.config.debug.dev_console && pressed(KeyCode::Backquote);
+    let toggle_console =
+      self.config.debug.dev_console && !console_typing && pressed(KeyCode::Backquote);
 
     if self.config.debug.dev_window_keys {
       if pressed(KeyCode::F9) {
@@ -396,19 +403,34 @@ impl Engine {
     }
     let real_dt = self.world.resource::<Time>().real.delta();
     let to_screen = self.console_pixel_scale();
+    let to_ui = self.ui_space.mouse_scale;
+    #[cfg(dev_tools)]
+    let log_scope = self.log_scope;
     let submitted = self
       .world
       .resource_scope(|world, mut console: Mut<Console>| {
+        // The log's records since it last looked (all of them since it
+        // closed, when it has just opened)
+        #[cfg(dev_tools)]
+        console.mirror_log(log_scope);
         console.update(real_dt);
-        // A trackpad moves the console as far as the pointer would, converted
-        // as the UI converts the pointer
+        // A trackpad moves the console as far as the pointer would, and the
+        // pointer is hit-tested in UI units, both converted as the UI pass
+        // converts the pointer
         console.set_pixel_scale(to_screen);
+        console.set_mouse_scale(to_ui);
         let mut input = world.resource_mut::<Input>();
         let line = console.handle_input(&mut input);
         // A focused console keeps the keyboard from the game; an unfocused
         // one can stay open while playing
         if console.is_focused() {
           input.clear_keyboard_state();
+        }
+        #[cfg(dev_tools)]
+        if console.take_tab()
+          && let Some(commands) = world.get_resource::<crate::core::console::ConsoleCommands>()
+        {
+          console.complete(|prefix| commands.completions(prefix));
         }
         line
       });
@@ -420,12 +442,12 @@ impl Engine {
     #[cfg(not(dev_tools))]
     let _ = submitted;
 
-    // Runs while closed too, so the override ends with the console
+    // The console closed this frame ends its override here too
     let (mouse_x, mouse_y) = self.world.resource::<Input>().mouse_position();
     self.console_cursor = self
       .world
       .get_resource::<Console>()
-      .and_then(|console| console.desired_cursor(mouse_x, mouse_y));
+      .and_then(|console| console.desired_cursor(mouse_x * to_ui, mouse_y * to_ui));
   }
 
   /// Run `line` as a console command, with the engine's own state for the
@@ -774,13 +796,15 @@ impl Engine {
       self.ui_memory.restart_pass();
     }
     self.ui_pass_index += 1;
-    // A click on the console is the console's: gameplay never sees it
+    // A click on the console is the console's, whatever the button:
+    // neither the scenes' widgets nor gameplay see it, and a press taken
+    // here stays hidden until its release (`ui_mouse_capture`)
     if let Some(console) = self.world.get_resource::<Console>()
       && console.visible
     {
       let (mouse_x, mouse_y) = snapshot.mouse_position();
       if console.window_rect().contains(mouse_x, mouse_y) {
-        snapshot.consume_mouse(MouseButton::Left);
+        snapshot.consume_every_mouse_button();
       }
     }
     let real_dt = self.world.resource::<Time>().real.delta();
@@ -2776,6 +2800,132 @@ mod tests {
     }
     click(&mut e, at.x + 10.0, at.y + 10.0);
     assert_eq!(e.world().resource::<Seen>().button, 1);
+  }
+
+  #[test]
+  fn every_mouse_button_over_the_console_stays_out_of_the_game() {
+    use crate::core::input::{Input, InputEvent};
+    use winit::event::MouseButton;
+
+    const BUTTONS: [MouseButton; 6] = [
+      MouseButton::Left,
+      MouseButton::Right,
+      MouseButton::Middle,
+      MouseButton::Back,
+      MouseButton::Forward,
+      MouseButton::Other(7),
+    ];
+    /// What gameplay saw of any button: presses, holds and releases
+    #[derive(Resource, Default)]
+    struct Seen(u32);
+    struct Watching;
+    impl Scene for Watching {
+      fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+        let input = &ctx.input;
+        let seen = BUTTONS
+          .iter()
+          .filter(|&&b| input.mouse_pressed(b) || input.mouse_down(b) || input.mouse_released(b))
+          .count() as u32;
+        ctx.world.resource_mut::<Seen>().0 += seen;
+        SceneAction::Continue
+      }
+    }
+    fn frame_with(e: &mut Engine, events: Vec<InputEvent>) {
+      for event in events {
+        e.world_mut().resource_mut::<Input>().queue(event);
+      }
+      e.frame(Some(Duration::from_micros(16_667)));
+    }
+    let mouse = |x: f32, y: f32| InputEvent::MouseMove {
+      x: f64::from(x),
+      y: f64::from(y),
+    };
+    let button = |button, pressed| InputEvent::MouseButton { button, pressed };
+
+    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+      return;
+    };
+    let mut e = EngineBuilder::new()
+      .resolution(800, 600)
+      .fixed_hz(60)
+      .insert_resource(Seen::default())
+      .start_scene(Watching)
+      .build_headless();
+    e.init_gpu(WgpuRenderer::new_offscreen(device, queue, 800, 600), 1.0);
+    e.world.resource_mut::<Console>().toggle();
+    for _ in 0..10 {
+      frame_with(&mut e, vec![]);
+    }
+    let window = e.world.resource::<Console>().window_rect();
+    let (x, y) = (window.x + 100.0, window.y + 100.0);
+    for b in BUTTONS {
+      // Pressed over the console, held, dragged out and let go outside
+      frame_with(&mut e, vec![mouse(x, y)]);
+      frame_with(&mut e, vec![button(b, true)]);
+      frame_with(&mut e, vec![]);
+      frame_with(&mut e, vec![mouse(790.0, 590.0)]);
+      frame_with(&mut e, vec![button(b, false)]);
+      frame_with(&mut e, vec![]);
+      assert_eq!(e.world().resource::<Seen>().0, 0, "{b:?} reached the game");
+    }
+    // With the console closed, a press there is the game's
+    e.world.resource_mut::<Console>().toggle();
+    frame_with(&mut e, vec![mouse(x, y)]);
+    frame_with(&mut e, vec![button(MouseButton::Middle, true)]);
+    frame_with(&mut e, vec![button(MouseButton::Middle, false)]);
+    assert!(e.world().resource::<Seen>().0 > 0);
+  }
+
+  #[test]
+  fn hit_tests_match_the_drawing_under_a_ui_scale() {
+    use crate::core::input::{Input, InputEvent};
+    use winit::event::MouseButton;
+    struct Idle;
+    impl Scene for Idle {}
+    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+      return;
+    };
+    // Two render pixels a UI unit: a 700 x 500 UI over 1400 x 1000 screen units
+    let mut e = EngineBuilder::new()
+      .resolution(1400, 1000)
+      .ui_scale(Some(2.0))
+      .start_scene(Idle)
+      .build_headless();
+    e.init_gpu(WgpuRenderer::new_offscreen(device, queue, 1400, 1000), 1.0);
+    assert_eq!(e.ui_space.mouse_scale, 0.5);
+    e.world.resource_mut::<Console>().toggle();
+    for _ in 0..10 {
+      e.frame(Some(Duration::from_micros(16_667)));
+    }
+    // The close button as drawn, in UI units, and where the pointer is then
+    let close = e.world.resource::<Console>().close_button_rect();
+    let (x, y) = (
+      (close.x + close.width / 2.0) / 0.5,
+      (close.y + close.height / 2.0) / 0.5,
+    );
+    for events in [
+      vec![InputEvent::MouseMove {
+        x: f64::from(x),
+        y: f64::from(y),
+      }],
+      vec![InputEvent::MouseButton {
+        button: MouseButton::Left,
+        pressed: true,
+      }],
+      vec![InputEvent::MouseButton {
+        button: MouseButton::Left,
+        pressed: false,
+      }],
+    ] {
+      for event in events {
+        e.world_mut().resource_mut::<Input>().queue(event);
+      }
+      e.frame(Some(Duration::from_micros(16_667)));
+    }
+    assert!(
+      !e.world.resource::<Console>().visible,
+      "the click on the close button drawn closed it"
+    );
   }
 
   #[test]

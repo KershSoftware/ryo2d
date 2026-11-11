@@ -636,6 +636,9 @@ impl Engine {
     // first is kept, and said once on stderr
     crate::core::logging::ensure();
     let log_scope = crate::core::logging::current_scope();
+    // The console mirrors what is logged from here on
+    #[cfg(dev_tools)]
+    let log_start = crate::core::logging::newest_record();
 
     let initial_size = (config.width, config.height);
     #[cfg(not(target_arch = "wasm32"))]
@@ -749,7 +752,10 @@ impl Engine {
     let applied_settings = AppliedSettings::new(*settings.values());
     init_world_resources(&mut world, &config, registry, audio_engine, particle_seed);
     #[cfg(dev_tools)]
-    world.insert_resource(console_commands);
+    {
+      world.insert_resource(console_commands);
+      world.resource_mut::<Console>().start_log_at(log_start);
+    }
     world.insert_resource(saves);
     world.insert_resource(settings);
     if let Some(writer) = settings_writer {

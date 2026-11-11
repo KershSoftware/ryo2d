@@ -2375,4 +2375,278 @@ mod console {
       ["Unknown command: game:orphan. Type 'help'."]
     );
   }
+
+  // --- The console's window: typing, completion and the log ---
+
+  use crate::core::input::{Input, InputEvent};
+  use crate::core::ui::Color;
+
+  /// A headless engine with no GPU (the console's input and its mirror
+  /// need none), built in the caller's log scope
+  fn plain() -> Engine {
+    EngineBuilder::new()
+      .resolution(320, 240)
+      .start_scene(EmptyScene)
+      .build_headless()
+  }
+
+  /// One frame with `events` queued
+  fn frame_with(e: &mut Engine, events: Vec<InputEvent>) {
+    for event in events {
+      e.world.resource_mut::<Input>().queue(event);
+    }
+    step(e);
+  }
+
+  /// A key pressed one frame and released the next
+  fn tap(e: &mut Engine, key: KeyCode) {
+    frame_with(e, vec![InputEvent::Key { key, pressed: true }]);
+    frame_with(
+      e,
+      vec![InputEvent::Key {
+        key,
+        pressed: false,
+      }],
+    );
+  }
+
+  /// A key pressed with the text it types, then released
+  fn type_key(e: &mut Engine, code: KeyCode, text: &str) {
+    frame_with(
+      e,
+      vec![
+        InputEvent::Key {
+          key: code,
+          pressed: true,
+        },
+        InputEvent::Text(text.to_string()),
+      ],
+    );
+    frame_with(
+      e,
+      vec![InputEvent::Key {
+        key: code,
+        pressed: false,
+      }],
+    );
+  }
+
+  fn typed(e: &Engine) -> String {
+    e.world.resource::<Console>().input_line().to_string()
+  }
+
+  /// The console's lines that start with `target`, with their colours
+  fn shown(e: &Engine, target: &str) -> Vec<(String, Color)> {
+    e.world
+      .resource::<Console>()
+      .lines()
+      .filter(|line| line.text.starts_with(target))
+      .map(|line| (line.text.clone(), line.color))
+      .collect()
+  }
+
+  #[test]
+  fn a_backquote_can_be_typed_into_a_command() {
+    let mut e = plain();
+    e.config.debug.dev_console = true;
+    step(&mut e);
+    // The press that opens the console is swallowed, key and character
+    type_key(&mut e, KeyCode::Backquote, "`");
+    assert!(e.world.resource::<Console>().visible);
+    assert_eq!(typed(&e), "");
+    frame_with(&mut e, vec![InputEvent::Text("a".into())]);
+    type_key(&mut e, KeyCode::Backquote, "`");
+    type_key(&mut e, KeyCode::Backquote, "~");
+    assert!(e.world.resource::<Console>().visible, "still open");
+    assert_eq!(typed(&e), "a`~");
+  }
+
+  #[test]
+  fn tab_completes_a_command_name_and_lists_several() {
+    let mut e = plain();
+    e.world.resource_mut::<Console>().toggle();
+    step(&mut e);
+    let lines = |e: &Engine| e.world.resource::<Console>().lines().count();
+
+    // One match: the name, and a space for its arguments
+    frame_with(&mut e, vec![InputEvent::Text("system:ver".into())]);
+    tap(&mut e, KeyCode::Tab);
+    assert_eq!(typed(&e), "system:version ");
+    // After the first word, Tab does nothing
+    let before = lines(&e);
+    tap(&mut e, KeyCode::Tab);
+    assert_eq!(typed(&e), "system:version ");
+    assert_eq!(lines(&e), before);
+    tap(&mut e, KeyCode::Enter);
+    assert_eq!(typed(&e), "");
+
+    // Several: their common start, then a second Tab lists them on one line
+    frame_with(&mut e, vec![InputEvent::Text("sys".into())]);
+    tap(&mut e, KeyCode::Tab);
+    assert_eq!(typed(&e), "system:");
+    let before = lines(&e);
+    tap(&mut e, KeyCode::Tab);
+    assert_eq!(typed(&e), "system:");
+    assert_eq!(lines(&e), before + 1, "one line");
+    let listed = e
+      .world
+      .resource::<Console>()
+      .lines()
+      .last()
+      .map(|line| line.text.clone())
+      .unwrap_or_default();
+    for name in [
+      "system:assets",
+      "system:entities",
+      "system:scenes",
+      "system:timescale",
+      "system:version",
+    ] {
+      assert!(listed.contains(name), "{name} in {listed:?}");
+    }
+
+    // A first Tab that adds nothing waits for the second
+    for _ in 0.."system:".len() {
+      tap(&mut e, KeyCode::Backspace);
+    }
+    frame_with(&mut e, vec![InputEvent::Text("debug:c".into())]);
+    let before = lines(&e);
+    tap(&mut e, KeyCode::Tab);
+    assert_eq!((typed(&e), lines(&e)), ("debug:c".to_string(), before));
+    tap(&mut e, KeyCode::Tab);
+    let listed = e
+      .world
+      .resource::<Console>()
+      .lines()
+      .last()
+      .map(|line| line.text.clone())
+      .unwrap_or_default();
+    assert_eq!(listed, "debug:capture  debug:colliders");
+  }
+
+  #[test]
+  fn warnings_and_errors_appear_in_the_console_and_info_does_not() {
+    let _log = crate::core::testing::capture_log();
+    let mut e = plain();
+    e.world.resource_mut::<Console>().toggle();
+    step(&mut e);
+    log::warn!(target: "game::mirror_test", "a warning");
+    log::error!(target: "game::mirror_test", "an error");
+    log::info!(target: "game::mirror_test", "some info");
+    for _ in 0..10 {
+      step(&mut e);
+    }
+    assert_eq!(
+      shown(&e, "game::mirror_test"),
+      [
+        ("game::mirror_test: a warning".to_string(), colors::WARNING),
+        ("game::mirror_test: an error".to_string(), colors::ERROR),
+      ],
+      "each once, in yellow and red"
+    );
+  }
+
+  #[test]
+  fn log_show_off_stops_the_mirror() {
+    let _log = crate::core::testing::capture_log();
+    let mut e = plain();
+    e.world.resource_mut::<Console>().toggle();
+    step(&mut e);
+    e.console_run("log:show off");
+    log::warn!(target: "game::mirror_off", "while off");
+    for _ in 0..3 {
+      step(&mut e);
+    }
+    assert!(shown(&e, "game::mirror_off").is_empty());
+    e.console_run("log:show warn");
+    log::warn!(target: "game::mirror_off", "back on");
+    step(&mut e);
+    assert_eq!(
+      shown(&e, "game::mirror_off"),
+      [("game::mirror_off: back on".to_string(), colors::WARNING)]
+    );
+  }
+
+  #[test]
+  fn two_engines_mirror_only_their_own_warnings() {
+    use std::sync::{Arc, Barrier};
+    let both_logged = Arc::new(Barrier::new(2));
+    let run = |name: &'static str| {
+      let both_logged = Arc::clone(&both_logged);
+      std::thread::spawn(move || {
+        let log = crate::core::testing::capture_log();
+        let mut e = plain();
+        e.world.resource_mut::<Console>().toggle();
+        log::warn!(target: "game::two_engines", "{name}'s warning");
+        both_logged.wait();
+        step(&mut e);
+        assert_eq!(log.warnings(), [format!("{name}'s warning")]);
+        shown(&e, "game::two_engines")
+          .into_iter()
+          .map(|(text, _)| text)
+          .collect::<Vec<_>>()
+      })
+    };
+    let (a, b) = (run("a"), run("b"));
+    let a = a.join().expect("the first engine's thread");
+    let b = b.join().expect("the second engine's thread");
+    assert_eq!(a, ["game::two_engines: a's warning"]);
+    assert_eq!(b, ["game::two_engines: b's warning"]);
+  }
+
+  #[test]
+  fn warnings_logged_while_closed_are_there_when_it_opens() {
+    // This test fills the ring past its size
+    let _turn = crate::core::logging::ring_turn();
+    let _log = crate::core::testing::capture_log_bounded(16);
+    let mut e = plain();
+    step(&mut e);
+    log::warn!(target: "game::closed", "while closed");
+    for _ in 0..5 {
+      step(&mut e);
+    }
+    assert!(
+      shown(&e, "game::closed").is_empty(),
+      "a closed console waits"
+    );
+    e.world.resource_mut::<Console>().toggle();
+    step(&mut e);
+    assert_eq!(
+      shown(&e, "game::closed"),
+      [("game::closed: while closed".to_string(), colors::WARNING)]
+    );
+
+    // A flood while closed: the newest lines win, and one grey line counts
+    // the records the ring no longer holds
+    e.world.resource_mut::<Console>().toggle();
+    step(&mut e);
+    for i in 0..10_050 {
+      log::warn!(target: "game::flood", "flood {i}");
+    }
+    e.world.resource_mut::<Console>().toggle();
+    step(&mut e);
+    let console = e.world.resource::<Console>();
+    let lines: Vec<_> = console.lines().collect();
+    assert!(lines.len() <= 1000, "{}", lines.len());
+    assert_eq!(
+      lines.last().map(|line| line.text.as_str()),
+      Some("game::flood: flood 10049")
+    );
+    let lost = lines
+      .iter()
+      .find(|line| {
+        line
+          .text
+          .ends_with("earlier records are no longer in the log")
+      })
+      .expect("a line counting the lost records");
+    assert_eq!(lost.color, colors::SYSTEM);
+    let count: u64 = lost
+      .text
+      .split_whitespace()
+      .next()
+      .and_then(|n| n.parse().ok())
+      .unwrap_or(0);
+    assert!(count >= 50, "{}", lost.text);
+  }
 }
