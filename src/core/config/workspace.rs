@@ -35,6 +35,7 @@
 //! resolution = "1920x1080"
 //! vsync = true
 //! display_mode = "windowed"
+//! # shadow_quality = "high"  # low, medium, high or ultra
 //! master_volume = 1.0
 //! music_volume = 0.89
 //! sfx_volume = 1.0

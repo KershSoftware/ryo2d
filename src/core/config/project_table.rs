@@ -17,6 +17,7 @@ project_settings! {
     pixel_art: bool = system.pixel_art, embed "RYO_EMBED_PIXEL_ART", sample true;
     display_mode: DisplayMode = system.display_mode, embed "RYO_EMBED_DISPLAY_MODE", sample "borderless_fullscreen";
     vsync: bool = system.vsync, embed "RYO_EMBED_VSYNC", sample false;
+    shadow_quality: ShadowQuality = system.shadow_quality, embed "RYO_EMBED_SHADOW_QUALITY", sample "ultra";
     master_volume: f32 = system.master_volume, embed "RYO_EMBED_MASTER_VOLUME", sample 0.3;
     music_volume: f32 = system.music_volume, embed "RYO_EMBED_MUSIC_VOLUME", sample 0.4;
     sfx_volume: f32 = system.sfx_volume, embed "RYO_EMBED_SFX_VOLUME", sample 0.5;

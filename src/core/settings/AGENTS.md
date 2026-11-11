@@ -49,7 +49,7 @@ The keys:
 | `resolution` | the window size, `"WxH"`, each side at least 1 |
 | `display_mode` | `windowed`, `exclusive_fullscreen` or `borderless_fullscreen` (read case-insensitively) |
 | `vsync`, `show_fps` | `true` or `false` |
-| `shadow_quality` | `low`, `medium`, `high` or `ultra` (read case-insensitively; `high` is the engine's default). `ShadowQuality::texels` gives the shadow map's width (256 to 2,048) |
+| `shadow_quality` | `low`, `medium`, `high` or `ultra` (read case-insensitively). The game's default is `[system] shadow_quality` in Ryo.toml (embedded in a release build), over which `EngineBuilder::shadow_quality` wins, else `high`; `ShadowQuality::texels` gives the shadow map's width (256 to 2,048) |
 | `bindings` | action name to a list of binding texts (`"Key:Space"`) |
 | `game` | the sections, above |
 

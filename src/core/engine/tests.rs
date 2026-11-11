@@ -1844,6 +1844,57 @@ fn an_unknown_shadow_quality_warns_and_keeps_the_default() {
 }
 
 #[test]
+fn a_game_s_ryo_toml_sets_the_default_shadow_quality() {
+  use crate::core::config::{UserPreference, UserPreferenceFilter};
+  use crate::core::lighting::ShadowQuality;
+
+  let (_dir, ws) = temp_workspace("[system]\nshadow_quality = \"low\"\n", None);
+  let resolve = |store: &MemorySaves| {
+    EngineBuilder::new()
+      .memory_saves(store.clone())
+      .with_user_preferences(UserPreferenceFilter::only([UserPreference::ShadowQuality]))
+      .start_scene(EmptyScene)
+      .resolve_in(Some(&ws), false)
+  };
+
+  let r = resolve(&MemorySaves::new());
+  assert_eq!(r.settings.shadow_quality(), ShadowQuality::Low);
+
+  // The player's saved choice wins, and a reset returns to the game's
+  let store = MemorySaves::new();
+  store.put(
+    "system.json",
+    r#"{"format_version": 3, "shadow_quality": "ultra"}"#,
+  );
+  let mut r = resolve(&store);
+  assert_eq!(r.settings.shadow_quality(), ShadowQuality::Ultra);
+  r.settings.reset(UserPreference::ShadowQuality);
+  assert_eq!(r.settings.shadow_quality(), ShadowQuality::Low);
+
+  // The builder's default overrides Ryo.toml's
+  let r = EngineBuilder::new()
+    .shadow_quality(ShadowQuality::Medium)
+    .memory_saves(MemorySaves::new())
+    .start_scene(EmptyScene)
+    .resolve_in(Some(&ws), false);
+  assert_eq!(r.settings.shadow_quality(), ShadowQuality::Medium);
+}
+
+#[test]
+fn a_bad_shadow_quality_in_ryo_toml_warns_and_keeps_high() {
+  use crate::core::lighting::ShadowQuality;
+
+  let log = crate::core::testing::capture_log();
+  let (_dir, ws) = temp_workspace("[system]\nshadow_quality = \"extreme\"\n", None);
+  let r = EngineBuilder::new()
+    .memory_saves(MemorySaves::new())
+    .start_scene(EmptyScene)
+    .resolve_in(Some(&ws), false);
+  assert_eq!(r.settings.shadow_quality(), ShadowQuality::High);
+  assert_eq!(settings_warnings(&log, "shadow_quality"), 1);
+}
+
+#[test]
 fn a_build_that_keeps_nothing_never_writes_settings() {
   let store = MemorySaves::new();
   let mut engine = EngineBuilder::new()

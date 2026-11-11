@@ -11,6 +11,7 @@ use std::path::PathBuf;
 
 use super::preferences::{DisplayMode, parse_resolution};
 use super::workspace::Workspace;
+use crate::core::lighting::ShadowQuality;
 use crate::core::ui::file::vocab::edit_distance;
 
 /// The key `ryo2d build` always embeds, which marks a binary it built
@@ -272,6 +273,20 @@ impl TableValue for DisplayMode {
 
   fn from_embedded(text: &str) -> Option<Self> {
     DisplayMode::from_config_name(text)
+  }
+
+  fn to_embedded(&self) -> String {
+    self.config_name().to_string()
+  }
+}
+
+impl TableValue for ShadowQuality {
+  fn from_toml(value: &toml::Value) -> Option<Self> {
+    value.as_str().and_then(ShadowQuality::from_config_name)
+  }
+
+  fn from_embedded(text: &str) -> Option<Self> {
+    ShadowQuality::from_config_name(text)
   }
 
   fn to_embedded(&self) -> String {
@@ -571,7 +586,7 @@ mod tests {
   #[test]
   fn the_embed_keys_are_unique() {
     let unique: std::collections::HashSet<&str> = EMBED_KEYS.iter().copied().collect();
-    assert_eq!(EMBED_KEYS.len(), 28);
+    assert_eq!(EMBED_KEYS.len(), 29);
     assert_eq!(unique.len(), EMBED_KEYS.len());
     assert!(EMBED_KEYS.iter().all(|key| key.starts_with("RYO_EMBED_")));
     assert_eq!(compiled_embedded_value("RYO_EMBED_NOT_A_KEY"), None);

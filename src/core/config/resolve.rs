@@ -18,6 +18,7 @@ use crate::core::diagnostics::DebugConfig;
 use super::preferences::DisplayMode;
 use super::project::ProjectLayer;
 use crate::core::graphics::screen::Presentation;
+use crate::core::lighting::ShadowQuality;
 
 /// Engine default resolution.
 pub(crate) const DEFAULT_RESOLUTION: (u32, u32) = (1280, 720);
@@ -45,6 +46,7 @@ pub(crate) struct BuilderOverrides {
   pub window_size: Option<(u32, u32)>,
   pub display_mode: Option<DisplayMode>,
   pub vsync: Option<bool>,
+  pub shadow_quality: Option<ShadowQuality>,
   pub show_fps: Option<bool>,
   pub show_colliders: Option<bool>,
   pub show_velocities: Option<bool>,
@@ -70,6 +72,7 @@ pub(crate) struct ResolvedSettings {
   pub window_size: Option<(u32, u32)>,
   pub display_mode: DisplayMode,
   pub vsync: bool,
+  pub shadow_quality: ShadowQuality,
   pub master_volume: f32,
   pub music_volume: f32,
   pub sfx_volume: f32,
@@ -107,6 +110,7 @@ impl ResolvedSettings {
       window_size: None,
       display_mode: DisplayMode::Windowed,
       vsync: true,
+      shadow_quality: ShadowQuality::default(),
       master_volume: DEFAULT_MASTER_VOLUME,
       music_volume: DEFAULT_MUSIC_VOLUME,
       sfx_volume: DEFAULT_SFX_VOLUME,
@@ -157,6 +161,7 @@ pub(crate) fn resolve_settings(
   set(&mut s.pixel_art, project.pixel_art);
   set(&mut s.display_mode, project.display_mode);
   set(&mut s.vsync, project.vsync);
+  set(&mut s.shadow_quality, project.shadow_quality);
   set(&mut s.master_volume, project.master_volume);
   set(&mut s.music_volume, project.music_volume);
   set(&mut s.sfx_volume, project.sfx_volume);
@@ -194,6 +199,7 @@ pub(crate) fn resolve_settings(
   }
   set(&mut s.display_mode, builder.display_mode);
   set(&mut s.vsync, builder.vsync);
+  set(&mut s.shadow_quality, builder.shadow_quality);
   set(&mut s.show_fps, builder.show_fps);
   set(&mut s.show_colliders, builder.show_colliders);
   set(&mut s.show_velocities, builder.show_velocities);
@@ -269,6 +275,7 @@ mod tests {
       window_size: None,
       display_mode: Some(DisplayMode::ExclusiveFullscreen),
       vsync: Some(false),
+      shadow_quality: Some(ShadowQuality::Low),
       show_fps: Some(true),
       show_colliders: Some(true),
       show_velocities: Some(true),
@@ -287,6 +294,7 @@ mod tests {
       pixel_art: Some(true),
       display_mode: Some(DisplayMode::BorderlessFullscreen),
       vsync: Some(true),
+      shadow_quality: Some(ShadowQuality::Medium),
       master_volume: Some(0.3),
       music_volume: Some(0.4),
       sfx_volume: Some(0.5),
@@ -490,6 +498,7 @@ tiled_project = "maps/game.tiled-project"
       window_size,
       display_mode,
       vsync,
+      shadow_quality,
       show_fps,
       show_colliders,
       show_velocities,
@@ -505,6 +514,7 @@ tiled_project = "maps/game.tiled-project"
       window_size: Some((1024, 768)),
       display_mode: Some(DisplayMode::ExclusiveFullscreen),
       vsync: Some(false),
+      shadow_quality: Some(ShadowQuality::Low),
       show_fps: Some(true),
       show_colliders: Some(true),
       show_velocities: Some(true),
@@ -546,6 +556,13 @@ tiled_project = "maps/game.tiled-project"
         },
       ),
       ("vsync", BuilderOverrides { vsync, ..none() }),
+      (
+        "shadow_quality",
+        BuilderOverrides {
+          shadow_quality,
+          ..none()
+        },
+      ),
       ("show_fps", BuilderOverrides { show_fps, ..none() }),
       (
         "show_colliders",

@@ -23,6 +23,7 @@ The project's configuration, and the types that say which of the player's saved 
 Those are the game's defaults. `resolve_in` makes the player's `Settings` from them and applies `system.json` over the settings the (combined) `with_user_preferences` filter keeps, only keys present in the file (`settings/AGENTS.md`, In the engine).
 
 - A missing system.json key is "no preference", not a default: the setting keeps the game's value, and the window size and an absent vsync or show_fps are never filled from the project. The file's format, its older formats (the version 1 volume conversion among them) and its writing are in `settings/AGENTS.md`
+- `[system] shadow_quality` (`low`, `medium`, `high`, `ultra`) is the game's default shadow quality, and `EngineBuilder::shadow_quality` overrides it; a bad value warns and leaves `high`
 - The engine never seeds `system.json`: the file keeps what the player changed, so a later builder or `[system]` change reaches every setting the player never touched. Headless builds read it from their memory store, never the disk
 - Filter with `UserPreference` / `UserPreferenceFilter` (`all()`, `none()`, or an array of fields):
   - `Resolution` is the player's window size; the game's resolution (the pixel-art target or design area) always comes from the project and builder layers. Leave it out to keep the window the game picks

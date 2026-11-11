@@ -1767,6 +1767,16 @@ impl EngineBuilder {
     self
   }
 
+  /// The game's default shadow quality (default: `ShadowQuality::High`).
+  ///
+  /// Overrides Ryo.toml; a saved `shadow_quality` in system.json overrides this when the
+  /// [`with_user_preferences`](Self::with_user_preferences) filter includes
+  /// `UserPreference::ShadowQuality`.
+  pub fn shadow_quality(mut self, quality: crate::core::lighting::ShadowQuality) -> Self {
+    self.overrides.shadow_quality = Some(quality);
+    self
+  }
+
   /// Fixed updates per second (default 60): `Scene::update`, physics and
   /// every `FixedUpdate` system run at this rate. Clamped to at least 1.
   pub fn fixed_hz(mut self, hz: u32) -> Self {
@@ -2558,7 +2568,7 @@ fn player_defaults(settings: &crate::core::config::resolve::ResolvedSettings) ->
     display_mode: settings.display_mode,
     vsync: settings.vsync,
     show_fps: settings.show_fps,
-    shadow_quality: crate::core::lighting::ShadowQuality::default(),
+    shadow_quality: settings.shadow_quality,
   }
 }
 
