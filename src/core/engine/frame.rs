@@ -306,13 +306,40 @@ impl Engine {
   /// F1-F5 overlays and borderless, F9/F10 dev windows, F12 capture, and the
   /// console key. Each consumes its key so the game never sees it.
   fn handle_debug_keys(&mut self) {
-    // Once the console is open and focused the backquote types into it;
-    // only the press that opens it is the console key
-    let console_typing = self
-      .world
-      .get_resource::<Console>()
-      .is_some_and(|console| console.visible && console.focused);
+    // The console key opens the console, and closes it while its line is
+    // empty; with text in a focused console's line it types instead. The
+    // press that toggled it, held, neither types nor toggles again, its
+    // auto-repeats included, whatever character the layout gives it
+    let console = self.world.get_resource::<Console>().map(|console| {
+      (
+        console.visible && console.focused && console.has_input(),
+        console.key_held(),
+      )
+    });
     let mut input = self.world.resource_mut::<Input>();
+    let mut toggle_console = false;
+    let mut console_key_held = None;
+    if self.config.debug.dev_console
+      && let Some((typing, held)) = console
+    {
+      let key = KeyCode::Backquote;
+      let released = input.key_released(key);
+      if held {
+        if input.key_repeat(key) {
+          input.consume_key(key);
+          input.consume_text();
+        }
+        if released {
+          console_key_held = Some(false);
+        }
+      } else if !typing && input.key_pressed(key) {
+        input.consume_key(key);
+        input.consume_text();
+        toggle_console = true;
+        // Pressed and let go within the frame, it is not held
+        console_key_held = Some(!released);
+      }
+    }
     let mut pressed = |key: KeyCode| {
       let hit = input.key_pressed(key);
       if hit {
@@ -338,9 +365,6 @@ impl Engine {
       }
     }
 
-    let toggle_console =
-      self.config.debug.dev_console && !console_typing && pressed(KeyCode::Backquote);
-
     if self.config.debug.dev_window_keys {
       if pressed(KeyCode::F9) {
         if self.logger_window.take().is_some() {
@@ -362,8 +386,16 @@ impl Engine {
         self.capture.request(CaptureTarget::Default);
       }
     }
-    if toggle_console && let Some(mut console) = self.world.get_resource_mut::<Console>() {
-      console.toggle();
+    // A closed console is touched only when its key does something
+    if (toggle_console || console_key_held.is_some())
+      && let Some(mut console) = self.world.get_resource_mut::<Console>()
+    {
+      if toggle_console {
+        console.toggle();
+      }
+      if let Some(held) = console_key_held {
+        console.set_key_held(held);
+      }
     }
     if next_overlay {
       self.next_overlay();
@@ -796,15 +828,16 @@ impl Engine {
       self.ui_memory.restart_pass();
     }
     self.ui_pass_index += 1;
-    // A click on the console is the console's, whatever the button:
-    // neither the scenes' widgets nor gameplay see it, and a press taken
-    // here stays hidden until its release (`ui_mouse_capture`)
+    // A press on the console is the console's, whatever the button:
+    // neither the scenes' widgets nor gameplay see it, and it stays hidden
+    // through its holds and release (`ui_mouse_capture`). A drag begun in
+    // the game keeps its holds and release over the console
     if let Some(console) = self.world.get_resource::<Console>()
       && console.visible
     {
       let (mouse_x, mouse_y) = snapshot.mouse_position();
       if console.window_rect().contains(mouse_x, mouse_y) {
-        snapshot.consume_every_mouse_button();
+        snapshot.consume_mouse_presses();
       }
     }
     let real_dt = self.world.resource::<Time>().real.delta();
@@ -2874,6 +2907,89 @@ mod tests {
     frame_with(&mut e, vec![button(MouseButton::Middle, true)]);
     frame_with(&mut e, vec![button(MouseButton::Middle, false)]);
     assert!(e.world().resource::<Seen>().0 > 0);
+  }
+
+  /// A GPU engine at 800 x 600 with the console open, whose scene counts
+  /// what gameplay sees of the left button; `None` without a GPU
+  fn left_button_watcher() -> Option<Engine> {
+    struct Watching;
+    impl Scene for Watching {
+      fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+        use winit::event::MouseButton;
+        let left = MouseButton::Left;
+        let (pressed, down, released) = (
+          ctx.input.mouse_pressed(left),
+          ctx.input.mouse_down(left),
+          ctx.input.mouse_released(left),
+        );
+        let mut seen = ctx.world.resource_mut::<LeftSeen>();
+        seen.pressed += u32::from(pressed);
+        seen.down += u32::from(down);
+        seen.released += u32::from(released);
+        SceneAction::Continue
+      }
+    }
+    let (device, queue) = crate::core::testing::shared_gpu().ok()?;
+    let mut e = EngineBuilder::new()
+      .resolution(800, 600)
+      .fixed_hz(60)
+      .insert_resource(LeftSeen::default())
+      .start_scene(Watching)
+      .build_headless();
+    e.init_gpu(WgpuRenderer::new_offscreen(device, queue, 800, 600), 1.0);
+    e.world.resource_mut::<Console>().toggle();
+    for _ in 0..10 {
+      e.frame(Some(Duration::from_micros(16_667)));
+    }
+    Some(e)
+  }
+
+  #[derive(Resource, Default, Debug, PartialEq)]
+  struct LeftSeen {
+    pressed: u32,
+    down: u32,
+    released: u32,
+  }
+
+  /// One frame each: move to `from`, press, move to `to`, release
+  fn drag(e: &mut Engine, from: (f32, f32), to: (f32, f32)) {
+    use crate::core::input::{Input, InputEvent};
+    use winit::event::MouseButton;
+    let mouse = |(x, y): (f32, f32)| InputEvent::MouseMove {
+      x: f64::from(x),
+      y: f64::from(y),
+    };
+    let button = |pressed| InputEvent::MouseButton {
+      button: MouseButton::Left,
+      pressed,
+    };
+    for event in [mouse(from), button(true), mouse(to), button(false)] {
+      e.world_mut().resource_mut::<Input>().queue(event);
+      e.frame(Some(Duration::from_micros(16_667)));
+    }
+    e.frame(Some(Duration::from_micros(16_667)));
+  }
+
+  #[test]
+  fn a_drag_begun_in_the_game_keeps_its_release_over_the_console() {
+    let Some(mut e) = left_button_watcher() else {
+      return;
+    };
+    let window = e.world.resource::<Console>().window_rect();
+    drag(&mut e, (790.0, 590.0), (window.x + 100.0, window.y + 100.0));
+    let seen = e.world().resource::<LeftSeen>();
+    assert_eq!((seen.pressed, seen.released), (1, 1), "{seen:?}");
+    assert!(seen.down >= 2, "held over the console too: {seen:?}");
+  }
+
+  #[test]
+  fn a_press_on_the_console_released_in_the_game_reaches_neither() {
+    let Some(mut e) = left_button_watcher() else {
+      return;
+    };
+    let window = e.world.resource::<Console>().window_rect();
+    drag(&mut e, (window.x + 100.0, window.y + 100.0), (790.0, 590.0));
+    assert_eq!(*e.world().resource::<LeftSeen>(), LeftSeen::default());
   }
 
   #[test]

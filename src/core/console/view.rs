@@ -309,7 +309,6 @@ mod tests {
   use crate::core::input::Input;
   use winit::event::MouseButton;
 
-  #[cfg(feature = "default-fonts")]
   #[test]
   fn long_output_lines_wrap_to_the_console_width() {
     use crate::core::ui::immediate::{UiCommand, UiCommands};
@@ -338,7 +337,6 @@ mod tests {
     );
   }
 
-  #[cfg(feature = "default-fonts")]
   #[test]
   fn the_console_draws_in_monospace_and_sizes_rows_by_the_font() {
     use crate::core::ui::immediate::{UiCommand, UiCommands};
@@ -371,7 +369,6 @@ mod tests {
   }
 
   /// Draw `console` once into a `width` x `height` UI
-  #[cfg(feature = "default-fonts")]
   fn render_once(
     console: &mut Console,
     text: &mut crate::core::text::TextEngine,
@@ -383,7 +380,6 @@ mod tests {
     console.render(&mut ui, size.0, size.1);
   }
 
-  #[cfg(feature = "default-fonts")]
   #[test]
   fn a_held_open_console_wraps_each_line_once() {
     let mut console = Console::new();
@@ -404,7 +400,6 @@ mod tests {
     );
   }
 
-  #[cfg(feature = "default-fonts")]
   #[test]
   fn a_resize_wraps_again_and_new_lines_wrap_alone() {
     let mut console = Console::new();
@@ -427,7 +422,6 @@ mod tests {
     assert_eq!(console.total_rows(), 7);
   }
 
-  #[cfg(feature = "default-fonts")]
   #[test]
   fn a_console_past_a_shrunk_window_is_hit_where_it_is_drawn() {
     let mut console = Console::new();
@@ -458,7 +452,6 @@ mod tests {
   }
 
   /// Render the console and give each drawn row's y by its text's seed
-  #[cfg(feature = "default-fonts")]
   fn drawn_rows(console: &mut Console) -> std::collections::HashMap<u64, f32> {
     use crate::core::ui::immediate::{UiCommand, UiCommands};
     let (mut commands, mut text) = (
@@ -480,7 +473,6 @@ mod tests {
       .collect()
   }
 
-  #[cfg(feature = "default-fonts")]
   #[test]
   fn new_output_keeps_a_console_at_the_bottom_and_a_reader_in_place() {
     let (mut console, mut input) = scrolling_console(50);
@@ -503,7 +495,6 @@ mod tests {
     }
   }
 
-  #[cfg(feature = "default-fonts")]
   #[test]
   fn the_scrollbar_answers_to_the_wrapped_rows_it_draws() {
     let (mut console, mut input) = scrolling_console(0);
@@ -526,7 +517,6 @@ mod tests {
     assert!(console.scroll_offset > 0.0, "the click found the scrollbar");
   }
 
-  #[cfg(feature = "default-fonts")]
   #[test]
   fn a_fractional_scroll_draws_the_cut_lines_clipped() {
     use crate::core::ui::immediate::{UiCommand, UiCommands};

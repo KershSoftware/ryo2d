@@ -2632,21 +2632,208 @@ mod console {
       lines.last().map(|line| line.text.as_str()),
       Some("game::flood: flood 10049")
     );
-    let lost = lines
+    let hidden = lines
       .iter()
       .find(|line| {
         line
           .text
-          .ends_with("earlier records are no longer in the log")
+          .ends_with("earlier warnings and errors are no longer shown")
       })
-      .expect("a line counting the lost records");
-    assert_eq!(lost.color, colors::SYSTEM);
-    let count: u64 = lost
+      .expect("a line counting the warnings not shown");
+    assert_eq!(hidden.color, colors::SYSTEM);
+    let count: u64 = hidden
       .text
       .split_whitespace()
       .next()
       .and_then(|n| n.parse().ok())
       .unwrap_or(0);
-    assert!(count >= 50, "{}", lost.text);
+    // Every flood warning but the 999 shown beside the count: those the ring
+    // dropped and those past the cap, of this engine's scope alone
+    assert_eq!(count, 10_050 - 999, "{}", hidden.text);
+  }
+
+  #[test]
+  fn warnings_past_the_cap_are_counted_and_none_when_all_are_shown() {
+    // A flood elsewhere could push these out of the ring before they are read
+    let _turn = crate::core::logging::ring_turn();
+    let _log = crate::core::testing::capture_log();
+    let mut e = plain();
+    step(&mut e);
+    for i in 0..1_500 {
+      log::warn!(target: "game::capped", "capped {i}");
+    }
+    e.world.resource_mut::<Console>().toggle();
+    step(&mut e);
+    let counts = |e: &Engine| -> Vec<String> {
+      e.world
+        .resource::<Console>()
+        .lines()
+        .filter(|line| line.text.ends_with("are no longer shown"))
+        .map(|line| line.text.clone())
+        .collect()
+    };
+    assert_eq!(
+      counts(&e),
+      ["501 earlier warnings and errors are no longer shown"]
+    );
+    // A few more, all shown: no new count
+    for i in 0..3 {
+      log::warn!(target: "game::capped", "more {i}");
+    }
+    step(&mut e);
+    let tail: Vec<String> = e
+      .world
+      .resource::<Console>()
+      .lines()
+      .rev()
+      .take(4)
+      .map(|line| line.text.clone())
+      .collect();
+    assert_eq!(
+      tail,
+      [
+        "game::capped: more 2",
+        "game::capped: more 1",
+        "game::capped: more 0",
+        "game::capped: capped 1499",
+      ],
+      "no count before them"
+    );
+  }
+
+  #[test]
+  fn a_few_warnings_all_shown_are_not_counted() {
+    let _log = crate::core::testing::capture_log();
+    let mut e = plain();
+    for i in 0..3 {
+      log::warn!(target: "game::few", "few {i}");
+    }
+    e.world.resource_mut::<Console>().toggle();
+    step(&mut e);
+    let console = e.world.resource::<Console>();
+    assert!(
+      !console
+        .lines()
+        .any(|line| line.text.ends_with("are no longer shown"))
+    );
+    assert_eq!(shown(&e, "game::few").len(), 3);
+  }
+
+  #[test]
+  fn an_open_console_with_nothing_new_takes_no_lock() {
+    let mut e = plain();
+    e.world.resource_mut::<Console>().toggle();
+    step(&mut e);
+    let reads = |e: &Engine| e.world.resource::<Console>().mirror_reads;
+    let before = reads(&e);
+    // Other tests log meanwhile, so only frames in which nothing was logged
+    // anywhere are held to no read
+    let mut logged = 0;
+    let mut last = crate::core::logging::next_record_seq();
+    for _ in 0..60 {
+      step(&mut e);
+      let now = crate::core::logging::next_record_seq();
+      logged += usize::from(now != last);
+      last = now;
+    }
+    let taken = reads(&e) - before;
+    assert!(taken <= logged, "{taken} reads, {logged} frames logged");
+  }
+
+  #[test]
+  fn the_builder_s_warnings_are_in_the_console() {
+    let _log = crate::core::testing::capture_log();
+    // A Ryo.toml that is not TOML: the builder warns as it resolves
+    let resolved = EngineBuilder::new()
+      .resolution(64, 64)
+      .project(crate::core::config::ProjectFile::from_toml("not [ toml"))
+      .start_scene(EmptyScene)
+      .resolve_in(None, true);
+    let mut e = Engine::new(resolved, true);
+    e.world.resource_mut::<Console>().toggle();
+    step(&mut e);
+    let console = e.world.resource::<Console>();
+    assert!(
+      console.lines().any(|line| {
+        line.text.contains("the project file is ignored") && line.color == colors::WARNING
+      }),
+      "{:#?}",
+      console.lines().map(|line| &line.text).collect::<Vec<_>>()
+    );
+  }
+
+  #[test]
+  fn the_console_key_closes_an_empty_line_and_types_into_a_command() {
+    let mut e = plain();
+    e.config.debug.dev_console = true;
+    step(&mut e);
+    let open = |e: &Engine| e.world.resource::<Console>().visible;
+    type_key(&mut e, KeyCode::Backquote, "`");
+    assert!(open(&e));
+    type_key(&mut e, KeyCode::Backquote, "`");
+    assert!(!open(&e), "an empty line: the key closes it");
+    type_key(&mut e, KeyCode::Backquote, "`");
+    frame_with(&mut e, vec![InputEvent::Text("say ".into())]);
+    type_key(&mut e, KeyCode::Backquote, "`");
+    assert!(open(&e), "a line with text: the key types");
+    assert_eq!(typed(&e), "say `");
+  }
+
+  #[test]
+  fn the_opening_key_types_nothing_until_it_is_released() {
+    let mut e = plain();
+    e.config.debug.dev_console = true;
+    step(&mut e);
+    let open = |e: &Engine| e.world.resource::<Console>().visible;
+    let press = |text: &str| {
+      vec![
+        InputEvent::Key {
+          key: KeyCode::Backquote,
+          pressed: true,
+        },
+        InputEvent::Text(text.to_string()),
+      ]
+    };
+    // A layout whose key gives another character, then two auto-repeats
+    frame_with(&mut e, press("²"));
+    assert!(open(&e));
+    frame_with(&mut e, press("²"));
+    frame_with(&mut e, vec![]);
+    frame_with(&mut e, press("²"));
+    assert!(open(&e), "a repeat does not close it");
+    assert_eq!(typed(&e), "");
+    frame_with(
+      &mut e,
+      vec![InputEvent::Key {
+        key: KeyCode::Backquote,
+        pressed: false,
+      }],
+    );
+    frame_with(&mut e, vec![InputEvent::Text("a".into())]);
+    assert_eq!(typed(&e), "a");
+    // Released, the key types into a line with text
+    type_key(&mut e, KeyCode::Backquote, "²");
+    assert_eq!(typed(&e), "a²");
+  }
+
+  #[test]
+  fn a_tab_after_an_edit_starts_afresh() {
+    let mut e = plain();
+    e.world.resource_mut::<Console>().toggle();
+    step(&mut e);
+    let lines = |e: &Engine| e.world.resource::<Console>().lines().count();
+    frame_with(&mut e, vec![InputEvent::Text("sys".into())]);
+    tap(&mut e, KeyCode::Tab);
+    assert_eq!(typed(&e), "system:");
+    // Edited away and typed back: the next Tab is a first Tab
+    for _ in 0.."system:".len() {
+      tap(&mut e, KeyCode::Backspace);
+    }
+    frame_with(&mut e, vec![InputEvent::Text("system:".into())]);
+    let before = lines(&e);
+    tap(&mut e, KeyCode::Tab);
+    assert_eq!(lines(&e), before, "no listing on a first Tab");
+    tap(&mut e, KeyCode::Tab);
+    assert_eq!(lines(&e), before + 1, "the second lists");
   }
 }

@@ -636,9 +636,6 @@ impl Engine {
     // first is kept, and said once on stderr
     crate::core::logging::ensure();
     let log_scope = crate::core::logging::current_scope();
-    // The console mirrors what is logged from here on
-    #[cfg(dev_tools)]
-    let log_start = crate::core::logging::newest_record();
 
     let initial_size = (config.width, config.height);
     #[cfg(not(target_arch = "wasm32"))]
@@ -754,7 +751,10 @@ impl Engine {
     #[cfg(dev_tools)]
     {
       world.insert_resource(console_commands);
-      world.resource_mut::<Console>().start_log_at(log_start);
+      // Everything the ring holds of this engine's scope: the builder's
+      // warnings, and those of the game's `main`
+      let (seq, mark) = crate::core::logging::mirror_start(log_scope);
+      world.resource_mut::<Console>().start_log(seq, mark);
     }
     world.insert_resource(saves);
     world.insert_resource(settings);
@@ -1635,7 +1635,11 @@ pub struct EngineBuilder {
 }
 
 impl EngineBuilder {
+  /// A builder with the engine's defaults. It installs the engine's log
+  /// first, so what the build logs (Ryo.toml, the save folder, the settings
+  /// file) reaches every output, even before the game logs anything.
   pub fn new() -> Self {
+    crate::core::logging::ensure();
     EngineBuilder {
       config: EngineConfig::default(),
       overrides: Default::default(),

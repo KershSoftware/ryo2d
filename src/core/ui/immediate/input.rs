@@ -225,18 +225,13 @@ impl UiInput {
     self.consumed_mouse.insert(button);
   }
 
-  /// Take every mouse button pressed, held or released this frame, from the
-  /// UI and from gameplay (the console does over its window).
-  pub(crate) fn consume_every_mouse_button(&mut self) {
-    let view = &self.view;
-    self.consumed_mouse.extend(
-      view
-        .mouse_down
-        .iter()
-        .chain(&view.mouse_pressed)
-        .chain(&view.mouse_released)
-        .copied(),
-    );
+  /// Take every mouse button pressed this frame, from the UI and from
+  /// gameplay (the console does over its window). The engine keeps a taken
+  /// press's holds and release hidden too (`mouse_presses_taken`).
+  pub(crate) fn consume_mouse_presses(&mut self) {
+    self
+      .consumed_mouse
+      .extend(self.view.mouse_pressed.iter().copied());
   }
 
   /// Take a pad `button` for the rest of the frame, from the UI and from

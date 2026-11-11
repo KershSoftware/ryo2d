@@ -8,7 +8,7 @@ The engine's log: the `log` crate's macros in front, one `log::Log` (the engine'
 | `levels.rs` | `Levels`: a default per origin, overrides by target prefix, `RYO_LOG`'s parser |
 | `record.rs` | `LogRecord`, `Origin` (read from the target) and `under` (whole-segment prefix match) |
 | `outputs.rs` | `emit`: the outputs in turn, the sequence counter, the bridge into the old buffer |
-| `ring.rs` | The ring (`#[cfg(dev_tools)]`): the last `RING` (10,000) records, read with `after(seq, scope, out)`; `mirror` (the console's: the newest `limit` of a scope at a level after `seq`, and how many records after `seq` the ring has dropped) and `newest` |
+| `ring.rs` | The ring (`#[cfg(dev_tools)]`): the last `RING` (10,000) records, read with `after(seq, scope, out)`; per scope, the warnings and errors given and dropped; `mirror` (the console's: the newest `limit` of a scope at a level after `seq`, and how many of the scope's warnings and errors it will not show, dropped or past `limit`), `start` (just before the oldest record) and `may_have_after` (an atomic load, no lock) |
 | `scope.rs` | Log scopes: the thread's scope, `in_scope`, `scoped` (a spawned thread's body), `new_scope` |
 | `capture.rs` | `capture_log`, `capture_log_bounded`, `LogCapture` (re-exported by `ryo2d::testing`) |
 | `file.rs` | The log file (native): `open`, `write`, `tick`, `flush`; `logs/latest.log` in the save folder |
@@ -32,7 +32,7 @@ The engine's log: the `log` crate's macros in front, one `log::Log` (the engine'
 
 ## Installing
 
-`ensure()` installs once per process (a `OnceLock`, safe from any thread; later calls are one atomic read). `Engine::new` (first thing), the prelude's macros and `capture_log` call it. If another `log` logger was set first, it is kept: the engine's outputs stay off, one line says so on stderr, `installed_by_engine()` is false (`set_level` then leaves `log`'s maximum alone), and no log file is opened (it would empty `latest.log` and push the last run's to `previous.log` for nothing). The decision is the pure `outcome`, unit-tested, since a test process can only install once.
+`ensure()` installs once per process (a `OnceLock`, safe from any thread; later calls are one atomic read). `EngineBuilder::new` (so the build's warnings reach every output, `tests/builder_log.rs`), `Workspace::discover`, `discover_from` and `from_path` (Ryo.toml's warnings), `Engine::new` (first thing), the prelude's macros and `capture_log` call it. If another `log` logger was set first, it is kept: the engine's outputs stay off, one line says so on stderr, `installed_by_engine()` is false (`set_level` then leaves `log`'s maximum alone), and no log file is opened (it would empty `latest.log` and push the last run's to `previous.log` for nothing). The decision is the pure `outcome`, unit-tested, since a test process can only install once.
 
 ## Outputs
 

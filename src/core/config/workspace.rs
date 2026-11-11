@@ -167,6 +167,8 @@ impl Workspace {
   ///
   /// Returns an error if the current directory cannot be determined.
   pub fn discover() -> Result<Self, EngineError> {
+    // What reading Ryo.toml logs reaches the engine's outputs
+    crate::core::logging::ensure();
     let cwd = std::env::current_dir().map_err(|e| EngineError::WorkspaceError(e.to_string()))?;
     let mut workspace = match Self::from_embedded(&cwd, super::project::compiled_embedded_value) {
       Some(release) => release,
@@ -247,6 +249,8 @@ impl Workspace {
   /// Searches the given directory and up to 3 parent directories
   /// for `Ryo.toml` (case-insensitive).
   pub fn discover_from(start: &Path) -> Result<Self, EngineError> {
+    // What reading Ryo.toml logs reaches the engine's outputs
+    crate::core::logging::ensure();
     let mut current = start.to_path_buf();
 
     for _ in 0..MAX_SEARCH_DEPTH {
@@ -295,6 +299,8 @@ impl Workspace {
   /// If `Ryo.toml` exists in the directory (case-insensitive), it will be parsed.
   /// Otherwise, default settings are used.
   pub fn from_path(root: impl AsRef<Path>) -> Result<Self, EngineError> {
+    // What reading Ryo.toml logs reaches the engine's outputs
+    crate::core::logging::ensure();
     let root = root.as_ref().to_path_buf();
 
     // Check for config file (case-insensitive)
