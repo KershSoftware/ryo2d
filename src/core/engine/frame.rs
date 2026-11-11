@@ -94,7 +94,11 @@ impl Engine {
     self.handle_debug_keys();
     self.schedules.run(Phase::PreUpdate, &mut self.world);
     #[cfg(dev_tools)]
-    self.console_tick();
+    {
+      let tools_start = Instant::now();
+      self.console_tick();
+      self.tools_time = tools_start.elapsed();
+    }
 
     let update_start = Instant::now();
     {

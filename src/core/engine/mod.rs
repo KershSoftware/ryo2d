@@ -311,6 +311,11 @@ pub struct Engine {
   /// console itself is the world's `Console`
   #[cfg(dev_tools)]
   console_cursor: Option<crate::core::cursor::CursorStyle>,
+  /// The last frame's console tick on the CPU (a closed console's check
+  /// included); the dev windows are drawn by the window loop, outside a frame
+  #[cfg(dev_tools)]
+  #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+  tools_time: std::time::Duration,
   /// Which cursor the window shows: the console's override, else the game's
   cursor_resolver: crate::core::cursor::CursorResolver,
   /// The left button was released: show the cursor again (macOS applies a
@@ -856,6 +861,8 @@ impl Engine {
       ui_pass_log: frame::UiPassLog::default(),
       #[cfg(dev_tools)]
       console_cursor: None,
+      #[cfg(dev_tools)]
+      tools_time: std::time::Duration::ZERO,
       cursor_resolver: crate::core::cursor::CursorResolver::default(),
       cursor_refresh: false,
       capture: CaptureState::new(capture_config),
@@ -1423,6 +1430,13 @@ impl Engine {
   #[cfg(not(target_arch = "wasm32"))]
   pub(crate) fn render_time(&self) -> std::time::Duration {
     self.frame_timings.render + self.frame_timings.present
+  }
+
+  /// The last frame's console tick on the CPU, the developer tools' own
+  /// per-frame time
+  #[cfg(all(dev_tools, not(target_arch = "wasm32")))]
+  pub(crate) fn tools_time(&self) -> std::time::Duration {
+    self.tools_time
   }
 
   /// The last frame's UI pass: recording the scenes' UI, the node walk,

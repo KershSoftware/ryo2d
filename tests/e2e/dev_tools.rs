@@ -133,3 +133,33 @@ fn a_long_session_keeps_every_tool_working() {
   let answer = engine.console_run("help");
   assert!(!answer.is_empty(), "help answers after the session");
 }
+
+#[test]
+fn the_tools_time_is_near_zero_closed_and_more_open() {
+  let builder = EngineBuilder::new().resolution(64, 64).start_scene(Quiet);
+  let Some(mut engine) = HeadlessEngine::new_or_skip(builder) else {
+    return;
+  };
+  engine.console_fill(200);
+  for _ in 0..30 {
+    engine.step().expect("a warm-up frame");
+  }
+  let median = |engine: &mut HeadlessEngine| {
+    let mut times: Vec<_> = (0..101)
+      .map(|_| {
+        engine.step().expect("a frame");
+        engine.tools_time()
+      })
+      .collect();
+    times.sort_unstable();
+    times[times.len() / 2]
+  };
+  let closed = median(&mut engine);
+  engine.console_open(true);
+  let open = median(&mut engine);
+  assert!(
+    closed < std::time::Duration::from_micros(20),
+    "closed: {closed:?}"
+  );
+  assert!(open > closed, "open {open:?} over closed {closed:?}");
+}

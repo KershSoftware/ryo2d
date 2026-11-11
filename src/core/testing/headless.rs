@@ -836,6 +836,15 @@ impl HeadlessEngine {
     ))
   }
 
+  /// The developer tools' own time in the last frame: the console's tick,
+  /// a closed console's check included (the dev windows are drawn by the
+  /// window loop, outside a frame) (for `benches/dev_tools.rs`)
+  #[doc(hidden)]
+  #[cfg(dev_tools)]
+  pub fn tools_time(&self) -> Duration {
+    self.engine.tools_time()
+  }
+
   /// The last frame's render step on the CPU (building, uploading and
   /// encoding the frame; not the UI pass)
   #[doc(hidden)]
