@@ -31,9 +31,17 @@ use log::LevelFilter;
 use web_time::Instant;
 
 pub use capture::{LogCapture, capture_log, capture_log_bounded};
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) use file::{
+  early_kept as early_records_kept, keep_early_records, test_turn as file_test_turn,
+};
 use levels::Levels;
 #[cfg(dev_tools)]
 pub(crate) use levels::parse_level;
+pub(crate) use outputs::set_stderr;
+#[cfg(test)]
+pub(crate) use outputs::stderr_on;
+pub(crate) use record::clock;
 pub use record::{LogRecord, Origin};
 #[cfg(dev_tools)]
 pub(crate) use ring::{
@@ -200,6 +208,7 @@ pub(crate) fn open_log_file(folder: &std::path::Path) -> Option<std::path::PathB
       Some(path)
     }
     Err(error) => {
+      file::drop_early();
       report(&format!(
         "no log file in {} ({error}); the game runs without one",
         folder.display()
@@ -207,6 +216,14 @@ pub(crate) fn open_log_file(folder: &std::path::Path) -> Option<std::path::PathB
       None
     }
   }
+}
+
+/// A headless run: it is never a player's, so its log goes to stderr in
+/// every build, and it opens no file, so nothing is kept for one.
+pub(crate) fn headless_run() {
+  set_stderr(true);
+  #[cfg(not(target_arch = "wasm32"))]
+  file::drop_early();
 }
 
 /// Once a frame: the file's waiting lines go to disk when it is time.

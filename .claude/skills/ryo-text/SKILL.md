@@ -313,7 +313,7 @@ ctx.world.spawn((
 ));
 
 for done in ctx.messages::<TextRevealed>() {
-  game_info!("{:?} finished", done.entity);
+  info!("{:?} finished", done.entity);
 }
 ```
 

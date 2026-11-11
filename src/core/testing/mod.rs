@@ -86,6 +86,13 @@ use crate::core::particles::ParticleEmitter;
 use crate::core::particles::ParticleStore;
 use crate::core::time::Time;
 
+/// Turns the log's stderr output on or off (for `benches/dev_tools.rs`,
+/// which prints its own results there)
+#[doc(hidden)]
+pub fn set_log_stderr(on: bool) {
+  crate::core::logging::set_stderr(on);
+}
+
 /// Where the particles of `emitter` (an entity with an engine particle
 /// emitter) are in the world, as its last step left them, oldest first (a
 /// `Local` effect's through the emitter's frame in that step): its effect's

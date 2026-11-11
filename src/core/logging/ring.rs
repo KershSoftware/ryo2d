@@ -1,5 +1,5 @@
 //! The ring: the last [`RING`] records, which the dev tools read by sequence
-//! number. Tests never read it (they capture their own scope).
+//! number. A test reads it only in its own capture's scope.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::Ordering;
@@ -63,13 +63,8 @@ pub(super) fn push(record: &mut LogRecord) {
 /// Appends the kept records with a sequence number above `seq` (of `scope`
 /// only, when given) to `out`, oldest first, and returns the newest sequence
 /// number kept (`seq` when there is none newer).
-#[cfg_attr(
-  not(test),
-  expect(
-    dead_code,
-    reason = "the logger window reads it when it moves to this log"
-  )
-)]
+/// (The ring's own tests' reader; the dev tools read with [`mirror`].)
+#[cfg(test)]
 pub(crate) fn after(seq: u64, scope: Option<u64>, out: &mut Vec<LogRecord>) -> u64 {
   let ring = ring();
   let records = &ring.records;

@@ -297,6 +297,11 @@ impl DevWindowRenderer {
     self.height
   }
 
+  /// The window's scale factor: physical pixels a logical pixel.
+  pub fn scale_factor(&self) -> f64 {
+    self.window.scale_factor()
+  }
+
   /// Get current mouse X position.
   pub fn mouse_x(&self) -> f32 {
     self.mouse_x

@@ -343,13 +343,6 @@ pub mod prelude {
   // The log's macros for game code, under the `game` target
   pub use crate::{debug, error, info, trace, warn, warn_once};
 
-  // The old log's macros for game code
-  pub use crate::game_debug;
-  pub use crate::game_error;
-  pub use crate::game_info;
-  pub use crate::game_trace;
-  pub use crate::game_warn;
-
   pub use crate::DEV_TOOLS;
 
   // Common utilities re-exported for convenience

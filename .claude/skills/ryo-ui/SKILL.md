@@ -2127,7 +2127,7 @@ struct MainMenu {
 impl Scene for MainMenu {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
     if let Err(error) = ctx.spawn_ui_file(MENU) {
-      game_error!("{error}");
+      error!("{error}");
     }
   }
 
@@ -2142,7 +2142,7 @@ impl Scene for MainMenu {
           // Build, then spawn: nothing half-open if the template is broken
           match ctx.ui_template(MENU, "QuitConfirm", &UiArgs::new()) {
             Ok(dialog) => self.quit_dialog = Some(ctx.spawn_ui(dialog)),
-            Err(error) => game_error!("{error}"),
+            Err(error) => error!("{error}"),
           }
         }
         // The confirm's buttons; Back on it is a "no" click
@@ -2275,7 +2275,7 @@ fn show_choices(ctx: &mut SceneContext, column: Entity, labels: Vec<String>) -> 
     // Only the differences are applied; focus and scroll survive
     Ok(tree) => ctx.update_ui(column, tree),
     Err(error) => {
-      game_error!("{error}");
+      error!("{error}");
       column
     }
   }
@@ -2312,7 +2312,7 @@ pub fn spawn_ui_file(ctx: &mut SceneContext, path: &str, embedded: &str) -> Opti
   match tree {
     Ok(tree) => Some(ctx.spawn_ui(tree)),
     Err(error) => {
-      game_error!("{path}: {error}");
+      error!("{path}: {error}");
       None
     }
   }
@@ -2605,7 +2605,7 @@ impl Scene for NodeLeaderboard {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
     match ctx.spawn_ui_file(LEADERBOARD) {
       Ok(root) => self.hold(ctx, root),
-      Err(error) => game_error!("{error}"),
+      Err(error) => error!("{error}"),
     }
     if let Some(list) = self.list {
       // A node list's rows show from its second frame: start on rank 1

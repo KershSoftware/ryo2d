@@ -21,7 +21,16 @@ The windows draw JetBrains Mono through `text::CpuText`: swash rasterizes the gl
 - **Logger**: `[debug] logger_window = true` opens it at startup. F9 toggles it.
 - **Profiler**: requires the `profiler` cargo feature. `[debug] enable_profiler = true` only enables puffin collection and does NOT auto-open the window. F10 toggles it. `ryo2d dev -p` sets `RYO_PROFILER_AUTO_OPEN` to open it at startup.
 - F9/F10 only work when `[debug] dev_window_keys` is true (default in debug builds only).
-- Usage and scopes are covered by the `ryo-profiler` skill. Logging macros are in `core/dev_log.rs`.
+- Usage and scopes are covered by the `ryo-profiler` skill. The log itself is `core/logging/` (its own module notes).
+
+## Logger Window
+
+- **Reading**: the window owns a `LogFeed` (`log_feed.rs`), its reading and filtering with no window, which the tests drive. The feed keeps the last sequence number it read and asks the ring for what came after (`logging::mirror_records` at `Trace`, the console mirror's reader), in its engine's log scope (`Engine::log_scope`, passed to `LoggerWindow::new`); it never reads by index or length, so it follows the log for a whole session. A poll with nothing new is one atomic read (`records_may_follow`). It starts from the oldest record the ring holds for the scope.
+- **Its list** is bounded at `FEED_ROWS` (10,000, the ring's size: a feed that has fallen behind can take all the ring still has, and no more; a few megabytes). The oldest rows go first. Warnings and errors the ring dropped before the feed read them are counted (`missed`) and shown in the footer.
+- **Rows**: `HH:MM:SS.mmm` (the record's time since the logger started), the frame (blank when none), the level letter, the origin letter (`E`ngine, `G`ame, `L`ibrary, from `logging::Origin`) and `target: message` (`row_text`, which a right-click or a selection copies).
+- **Buttons**: the five levels (Trace off by default), `ENG`, `GAME`, `LIB` (libraries, off by default), `CLR` (empties the feed's list, not the ring, and the feed carries on after the newest record logged so far) and `BTM` (back to the newest row, following again). The filter applies to the rows kept, so turning a button on shows the earlier rows too.
+- **Scrolling**: a wheel notch scrolls three rows; a trackpad's pixel delta is divided by the window's scale factor, then by the row pitch (`scroll_rows`), the part of a row kept for the next delta. A scrolled-up view stays on its rows as new ones arrive; scrolling back to the bottom follows again.
+- In a build without tools there is no ring and the feed reads nothing.
 
 ## Adding a New Dev Window
 

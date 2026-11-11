@@ -3,7 +3,13 @@
 //! The output is process-wide, like the logger. It has its own mutex, held
 //! only for its own write and flush, so no other output waits on it. Native
 //! only: the browser has its console.
+//!
+//! Until a file opens it keeps the newest [`EARLY`] records, and writes them
+//! first when one does, so a warning from before the engine is built (a bad
+//! Ryo.toml, the builder) still reaches the file. A run that will open no
+//! file (headless) drops them.
 
+use std::collections::VecDeque;
 use std::fs::{self, File};
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -38,6 +44,22 @@ struct FileOutput {
 static STATE: Mutex<Option<FileOutput>> = Mutex::new(None);
 /// Whether a file is attached, so a record costs one atomic read without one.
 static OPEN: AtomicBool = AtomicBool::new(false);
+
+/// The records kept for a file not yet open.
+pub(crate) const EARLY: usize = 256;
+/// The newest [`EARLY`] records logged before a file opened; `None` once a
+/// file has opened or the run has said it will open none.
+static EARLY_RECORDS: Mutex<Option<VecDeque<LogRecord>>> = Mutex::new(Some(VecDeque::new()));
+/// Whether [`EARLY_RECORDS`] still keeps records, so a run that dropped them
+/// costs one atomic read a record.
+static EARLY_ON: AtomicBool = AtomicBool::new(true);
+
+#[cfg(test)]
+thread_local! {
+  /// Tests share the process: only a thread that asked keeps its records
+  /// for a file, and only it can drop them
+  static KEEPS_EARLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 
 #[cfg(test)]
 static FLUSHES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -88,6 +110,42 @@ fn lock() -> Option<Held> {
 /// output. Returns the path used: `logs/latest.log`, or `logs/latest-<pid>.log`
 /// when that cannot be had (a second copy of the game holds it).
 pub(crate) fn open(folder: &Path) -> io::Result<PathBuf> {
+  let (file, path) = create(folder)?;
+  let mut output = FileOutput {
+    writer: BufWriter::with_capacity(BUFFER, file),
+    written: 0,
+    full: false,
+    unflushed: false,
+    last_flush: None,
+    #[cfg(test)]
+    owner: std::thread::current().id(),
+  };
+  let mut state = STATE.lock().unwrap_or_else(PoisonError::into_inner);
+  // The records kept go first; a record logged meanwhile waits for the
+  // file's lock, so none comes between them
+  let mut early = early_records();
+  let kept = early.take();
+  EARLY_ON.store(false, Ordering::Release);
+  let written = kept.map_or(Ok(()), |kept| {
+    kept
+      .iter()
+      .try_for_each(|record| output.write_line(record, false))
+  });
+  *state = Some(output);
+  OPEN.store(true, Ordering::Release);
+  drop(early);
+  drop(state);
+  if let Err(error) = written {
+    if let Some(held) = lock() {
+      held.detach(&error);
+    }
+    return Err(error);
+  }
+  Ok(path)
+}
+
+/// Rotates the last run's file and creates this run's.
+fn create(folder: &Path) -> io::Result<(File, PathBuf)> {
   let logs = folder.join("logs");
   fs::create_dir_all(&logs)?;
   let latest = logs.join("latest.log");
@@ -97,31 +155,95 @@ pub(crate) fn open(folder: &Path) -> io::Result<PathBuf> {
     Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
     Err(error) => Err(error),
   };
-  let (file, path) = match rotated.and_then(|()| File::create(&latest)) {
-    Ok(file) => (file, latest),
+  match rotated.and_then(|()| File::create(&latest)) {
+    Ok(file) => Ok((file, latest)),
     Err(_) => {
       let fallback = logs.join(format!("latest-{}.log", std::process::id()));
-      (File::create(&fallback)?, fallback)
+      Ok((File::create(&fallback)?, fallback))
     }
-  };
-  let output = FileOutput {
-    writer: BufWriter::with_capacity(BUFFER, file),
-    written: 0,
-    full: false,
-    unflushed: false,
-    last_flush: None,
-    #[cfg(test)]
-    owner: std::thread::current().id(),
-  };
-  *STATE.lock().unwrap_or_else(PoisonError::into_inner) = Some(output);
-  OPEN.store(true, Ordering::Release);
-  Ok(path)
+  }
+}
+
+fn early_records() -> MutexGuard<'static, Option<VecDeque<LogRecord>>> {
+  EARLY_RECORDS.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Keeps `record` for a file not yet open. False when a file opened since
+/// the caller looked, so the record is the file's to write.
+fn keep_early(record: &LogRecord) -> bool {
+  if !EARLY_ON.load(Ordering::Acquire) {
+    return !OPEN.load(Ordering::Acquire);
+  }
+  #[cfg(test)]
+  if !KEEPS_EARLY.with(std::cell::Cell::get) {
+    return true;
+  }
+  let copy = record.clone();
+  let mut early = early_records();
+  if OPEN.load(Ordering::Acquire) {
+    return false;
+  }
+  if let Some(kept) = early.as_mut() {
+    if kept.len() >= EARLY {
+      kept.pop_front();
+    }
+    kept.push_back(copy);
+  }
+  true
+}
+
+/// The run will open no file (a headless engine, or one that could not be
+/// had): the records kept for one go, and no more are kept.
+pub(crate) fn drop_early() {
+  #[cfg(test)]
+  if !KEEPS_EARLY.with(std::cell::Cell::get) {
+    return;
+  }
+  let mut early = early_records();
+  EARLY_ON.store(false, Ordering::Release);
+  *early = None;
+}
+
+/// Whether records are still kept for a file not yet open
+#[cfg(test)]
+pub(crate) fn early_kept() -> bool {
+  EARLY_ON.load(Ordering::Acquire)
+}
+
+/// For a test: this thread's records are kept for a file again, from none,
+/// until the guard drops.
+#[cfg(test)]
+pub(crate) fn keep_early_records() -> KeepEarly {
+  let mut early = early_records();
+  *early = Some(VecDeque::new());
+  EARLY_ON.store(true, Ordering::Release);
+  KEEPS_EARLY.with(|flag| flag.set(true));
+  KeepEarly
+}
+
+/// Ends [`keep_early_records`] for its thread.
+#[cfg(test)]
+pub(crate) struct KeepEarly;
+
+#[cfg(test)]
+impl Drop for KeepEarly {
+  fn drop(&mut self) {
+    KEEPS_EARLY.with(|flag| flag.set(false));
+  }
+}
+
+/// The file tests' turn: they share the process-wide output (and the records
+/// kept for it), so they run one at a time
+#[cfg(test)]
+pub(crate) fn test_turn() -> MutexGuard<'static, ()> {
+  static TURN: Mutex<()> = Mutex::new(());
+  TURN.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Writes the record's line. A failed write detaches the file, says so once
 /// on stderr, and the game goes on without it.
 pub(super) fn write(record: &LogRecord) {
-  if !OPEN.load(Ordering::Acquire) {
+  if !OPEN.load(Ordering::Acquire) && keep_early(record) {
     return;
   }
   let Some(mut held) = lock() else { return };
@@ -175,14 +297,9 @@ impl FileOutput {
 
 /// `HH:MM:SS.mmm LEVEL target: message`, the time since the logger started.
 fn format_line(record: &LogRecord) -> String {
-  let time = record.time;
-  let secs = time.as_secs();
   format!(
-    "{:02}:{:02}:{:02}.{:03} {} {}: {}\n",
-    secs / 3600,
-    secs / 60 % 60,
-    secs % 60,
-    time.subsec_millis(),
+    "{} {} {}: {}\n",
+    super::record::clock(record.time),
     record.level,
     record.target,
     record.message
@@ -240,17 +357,15 @@ mod tests {
   use super::*;
   use crate::core::logging::LogRecord;
   use crate::core::logging::Origin;
-  use std::sync::{Mutex, MutexGuard, PoisonError};
+  use std::sync::MutexGuard;
   use std::time::Duration;
-
-  static LOCK: Mutex<()> = Mutex::new(());
 
   /// The tests share the process-wide file output: one at a time, and each
   /// closes the output before it lets go
   struct Guard(#[allow(dead_code)] MutexGuard<'static, ()>);
 
   fn exclusive() -> Guard {
-    let guard = Guard(LOCK.lock().unwrap_or_else(PoisonError::into_inner));
+    let guard = Guard(test_turn());
     close();
     guard
   }
@@ -371,6 +486,33 @@ mod tests {
     // The game goes on logging
     write(&record(log::Level::Warn, "nowhere to go"));
     flush();
+  }
+
+  #[test]
+  fn records_logged_before_the_file_opens_are_written_first() {
+    let _guard = exclusive();
+    let _early = keep_early_records();
+    let dir = tempfile::tempdir().unwrap();
+    for i in 0..300 {
+      write(&record(log::Level::Info, &format!("early {i}")));
+    }
+    let path = open(dir.path()).unwrap();
+    write(&record(log::Level::Warn, "after"));
+    flush();
+
+    let text = read(&path);
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), EARLY + 1, "the newest {EARLY}, then the rest");
+    assert!(
+      lines[0].ends_with("INFO game::test: early 44"),
+      "{}",
+      lines[0]
+    );
+    for (n, line) in lines[..EARLY].iter().enumerate() {
+      assert!(line.ends_with(&format!(": early {}", 44 + n)), "{line}");
+    }
+    assert!(lines[EARLY].ends_with("WARN game::test: after"));
+    assert!(!early_kept(), "an open file keeps no buffer");
   }
 
   #[test]

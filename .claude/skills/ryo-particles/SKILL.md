@@ -32,7 +32,7 @@ impl Scene for Level {
         // For the bursts played later
         self.boom = Some(ctx.assets().add(ParticleEffect::explosion(spark, 50)));
       }
-      Err(error) => game_warn!("no particle sprite: {error}"),
+      Err(error) => warn!("no particle sprite: {error}"),
     }
   }
 

@@ -14,7 +14,7 @@
 //! # Available Windows
 //!
 //! - **Profiler** (`profiler_window`) - Real-time flamegraph showing CPU/GPU timing
-//! - **Logger** (`logger_window`) - Live log viewer with filtering by level/context
+//! - **Logger** (`logger_window`) - The log as it is written, filtered by level and origin
 //!
 //! # Enabling Windows
 //!
@@ -30,7 +30,6 @@
 //!
 //! ```bash
 //! ryo2d dev --profiler    # Run with profiler
-//! ryo2d dev --logger      # Run with logger (planned)
 //! ```
 //!
 //! # Creating Custom Windows
@@ -67,7 +66,8 @@ pub mod dev_window;
 #[cfg(feature = "profiler")]
 pub mod profiler_window;
 
-// Logger window
+// The logger window, and its reading of the log
+pub(crate) mod log_feed;
 pub mod logger_window;
 
 // Re-export common types for convenience

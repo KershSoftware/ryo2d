@@ -19,7 +19,7 @@ fn on_enter(&mut self, ctx: &mut SceneContext) {
     Ok(image) => {
       ctx.world.spawn((Transform::from_xy(320.0, 180.0), Renderable::image(image)));
     }
-    Err(error) => game_warn!("no player: {}", error.report()),
+    Err(error) => warn!("no player: {}", error.report()),
   }
   // On a worker thread: a handle at once, the image a few frames later
   self.backdrop = Some(ctx.assets().load::<Image>("level2/backdrop.png"));
@@ -77,7 +77,7 @@ let assets = ctx.assets();
 if let Some(backdrop) = &self.backdrop
   && let Some(image) = assets.get(backdrop)
 {
-  game_info!("the backdrop is {}x{}", image.width(), image.height());
+  info!("the backdrop is {}x{}", image.width(), image.height());
 }
 ```
 
@@ -245,11 +245,11 @@ Every asset type has a message, `AssetEvent<T>`:
 fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
   for event in ctx.messages::<AssetEvent<Image>>() {
     match event {
-      AssetEvent::Added { id } => game_info!("{id:?} is loaded (or was added in code)"),
-      AssetEvent::Modified { id } => game_info!("{id:?} changed: reloaded, a dependency reloaded, or get_mut"),
-      AssetEvent::Removed { id } => game_info!("{id:?} was freed: its last handle dropped"),
-      AssetEvent::Failed { id, error } => game_warn!("{id:?} will not load: {}", error.report()),
-      AssetEvent::ReloadFailed { id, error } => game_warn!("{id:?} kept its last good value: {}", error.report()),
+      AssetEvent::Added { id } => info!("{id:?} is loaded (or was added in code)"),
+      AssetEvent::Modified { id } => info!("{id:?} changed: reloaded, a dependency reloaded, or get_mut"),
+      AssetEvent::Removed { id } => info!("{id:?} was freed: its last handle dropped"),
+      AssetEvent::Failed { id, error } => warn!("{id:?} will not load: {}", error.report()),
+      AssetEvent::ReloadFailed { id, error } => warn!("{id:?} kept its last good value: {}", error.report()),
     }
   }
   SceneAction::Continue

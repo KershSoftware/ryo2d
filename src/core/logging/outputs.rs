@@ -4,16 +4,33 @@
 //! have their own mutex, held only for their push, the file has its own, held
 //! only for its write and flush, and stderr's is std's own.
 
-use std::sync::atomic::AtomicU64;
-#[cfg(not(dev_tools))]
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use super::capture::sink_for;
-use super::record::{LogRecord, Origin};
-use crate::core::dev_log::{self, LogContext, LogLevel};
+use super::record::LogRecord;
 
 /// The next sequence number. With the ring, it is taken under the ring's lock.
 pub(super) static NEXT_SEQ: AtomicU64 = AtomicU64::new(1);
+
+/// Whether records go to stderr (native): on in a build with tools, and in a
+/// headless run in any build
+static STDERR: AtomicBool = AtomicBool::new(cfg!(dev_tools));
+
+/// Turns the stderr output on or off (native; the browser has its console).
+pub(crate) fn set_stderr(on: bool) {
+  STDERR.store(on, Ordering::Relaxed);
+}
+
+/// Whether the stderr output is on
+#[cfg(test)]
+pub(crate) fn stderr_on() -> bool {
+  STDERR.load(Ordering::Relaxed)
+}
+
+/// A record's line on stderr: `LEVEL target: message`.
+pub(super) fn stderr_line(record: &LogRecord) -> String {
+  format!("{} {}: {}", record.level, record.target, record.message)
+}
 
 /// Writes `record` (its `seq` not yet set) to every output.
 pub(super) fn emit(mut record: LogRecord) {
@@ -26,10 +43,11 @@ pub(super) fn emit(mut record: LogRecord) {
 
   let sink = sink_for(record.scope);
 
-  // A captured record is the test's to read, not the terminal's
-  #[cfg(all(dev_tools, not(target_arch = "wasm32")))]
-  if sink.is_none() {
-    eprintln!("{} {}: {}", record.level, record.target, record.message);
+  // A captured record is the test's to read, not the terminal's (a failing
+  // test's capture prints its records as it drops)
+  #[cfg(not(target_arch = "wasm32"))]
+  if sink.is_none() && STDERR.load(Ordering::Relaxed) {
+    eprintln!("{}", stderr_line(&record));
   }
 
   #[cfg(target_arch = "wasm32")]
@@ -39,64 +57,19 @@ pub(super) fn emit(mut record: LogRecord) {
   #[cfg(not(target_arch = "wasm32"))]
   super::file::write(&record);
 
-  match sink {
-    Some(sink) => sink.push(record),
-    // A captured record skips the old buffer too: no one reads it there, and
-    // a test's flood would push other tests' lines out of it
-    None => bridge(record),
+  if let Some(sink) = sink {
+    sink.push(record);
   }
 }
 
 #[cfg(target_arch = "wasm32")]
 fn browser_console(record: &LogRecord) {
   use log::Level;
-  let line = format!("{} {}: {}", record.level, record.target, record.message).into();
+  let line = stderr_line(record).into();
   match record.level {
     Level::Error => web_sys::console::error_1(&line),
     Level::Warn => web_sys::console::warn_1(&line),
     Level::Info => web_sys::console::info_1(&line),
     Level::Debug | Level::Trace => web_sys::console::debug_1(&line),
-  }
-}
-
-/// Into the old log's buffer, which the logger window still reads.
-fn bridge(record: LogRecord) {
-  let level = match record.level {
-    log::Level::Error => LogLevel::Error,
-    log::Level::Warn => LogLevel::Warn,
-    log::Level::Info => LogLevel::Info,
-    log::Level::Debug => LogLevel::Debug,
-    log::Level::Trace => LogLevel::Trace,
-  };
-  let context = match record.origin {
-    Origin::Engine => LogContext::Engine,
-    Origin::Game => LogContext::Game,
-    Origin::Library => LogContext::External,
-  };
-  dev_log::push_quiet(level, context, old_module(&record.target), record.message);
-}
-
-/// The old log's module label: `ryo2d::core::particles::step` is `Particles`.
-fn old_module(target: &str) -> Option<String> {
-  let segment = target.strip_prefix("ryo2d::core::")?.split("::").next()?;
-  let mut chars = segment.chars();
-  let first = chars.next()?;
-  Some(first.to_uppercase().chain(chars).collect())
-}
-
-#[cfg(test)]
-mod tests {
-  use super::*;
-
-  #[test]
-  fn the_old_module_label_is_the_core_segment() {
-    assert_eq!(
-      old_module("ryo2d::core::particles::step").as_deref(),
-      Some("Particles")
-    );
-    assert_eq!(old_module("ryo2d::core::audio").as_deref(), Some("Audio"));
-    assert_eq!(old_module("ryo2d::cli"), None);
-    assert_eq!(old_module("game::menu"), None);
-    assert_eq!(old_module("ryo2d::core::"), None);
   }
 }

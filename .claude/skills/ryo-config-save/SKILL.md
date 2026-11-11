@@ -499,7 +499,7 @@ fn save_score(saves: Saves, score: Res<Score>) {
 // Each save and delete reports once, in a later frame
 for done in ctx.messages::<SaveFinished>() {
   if let Err(error) = &done.result {
-    game_warn!("saving {} failed: {error}", done.slot);
+    warn!("saving {} failed: {error}", done.slot);
   } else if done.op == SaveOp::Save {
     self.saved_toast = 2.0; // "Saved" on screen for two seconds
   }

@@ -2857,3 +2857,25 @@ fn closing_with_the_x_button_clears_the_focus_flag() {
   engine.close_logger_window();
   assert!(!engine.logger_window_focused);
 }
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn a_headless_engine_logs_to_stderr_in_every_build() {
+  let _log = crate::core::testing::capture_log();
+  // The file tests' turn: the buffer of records waiting for a file is theirs too
+  let _file = crate::core::logging::file_test_turn();
+  let _early = crate::core::logging::keep_early_records();
+  // As a build without tools starts
+  crate::core::logging::set_stderr(false);
+  let _engine = EngineBuilder::new()
+    .start_scene(EmptyScene)
+    .build_headless();
+  assert!(
+    crate::core::logging::stderr_on(),
+    "a headless run is never a player's"
+  );
+  assert!(
+    !crate::core::logging::early_records_kept(),
+    "a headless run opens no file, so keeps nothing for one"
+  );
+}

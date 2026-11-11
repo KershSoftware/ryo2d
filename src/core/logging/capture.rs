@@ -5,8 +5,15 @@ use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
+use super::outputs::stderr_line;
 use super::record::LogRecord;
 use super::scope::{current_scope, new_scope, replace_scope};
+
+#[cfg(test)]
+thread_local! {
+  /// The lines this thread's captures printed as they dropped in a panic
+  static PRINTED: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
 
 /// A capture's buffer, which the outputs push into.
 pub(super) struct Sink {
@@ -43,7 +50,9 @@ pub(super) fn sink_for(scope: u64) -> Option<Arc<Sink>> {
 
 /// Collects the records logged in a fresh scope: the test thread's own, and
 /// those of every thread given its scope (an engine's workers) while it is
-/// open. Its records skip stderr.
+/// open. Its records skip stderr, unless it drops while its thread panics (a
+/// failing test): then it prints them there, so the warnings that explain
+/// the failure are shown.
 ///
 /// It sets the scope of the thread that opens it, until it drops, so it stays
 /// on that thread.
@@ -155,6 +164,16 @@ impl LogCapture {
     self.sink.seen.load(Ordering::Relaxed)
   }
 
+  /// What a drop during a panic prints: a line a record, as stderr has it.
+  fn panic_report(&self) -> Vec<String> {
+    let records = self
+      .sink
+      .records
+      .lock()
+      .unwrap_or_else(PoisonError::into_inner);
+    records.iter().map(stderr_line).collect()
+  }
+
   fn filtered(&self, keep: impl Fn(&LogRecord) -> bool) -> Vec<LogRecord> {
     let records = self
       .sink
@@ -167,6 +186,17 @@ impl LogCapture {
 
 impl Drop for LogCapture {
   fn drop(&mut self) {
+    // A failing test shows its log
+    if std::thread::panicking() {
+      for line in self.panic_report() {
+        #[cfg(not(target_arch = "wasm32"))]
+        eprintln!("{line}");
+        #[cfg(target_arch = "wasm32")]
+        web_sys::console::error_1(&line.as_str().into());
+        #[cfg(test)]
+        PRINTED.with(|printed| printed.borrow_mut().push(line));
+      }
+    }
     // Dropped out of order, an inner capture still holds the thread: leave
     // its scope alone rather than put back one that is about to close
     if current_scope() == self.sink.scope {
@@ -271,6 +301,41 @@ mod tests {
     // The inner gives back the scope it found
     drop(inner);
     assert_eq!(current_scope(), outer_scope);
+  }
+
+  #[test]
+  fn the_panic_report_is_one_stderr_line_a_record() {
+    let capture = capture_log();
+    log::warn!(target: "game::report", "the reason");
+    log::info!(target: "game::report", "a note");
+    assert_eq!(
+      capture.panic_report(),
+      ["WARN game::report: the reason", "INFO game::report: a note"]
+    );
+  }
+
+  #[test]
+  fn a_capture_dropped_in_a_panic_prints_its_records() {
+    let result = std::panic::catch_unwind(|| {
+      let _capture = capture_log();
+      log::warn!(target: "game::report", "why it failed");
+      panic!("a failing test");
+    });
+    assert!(result.is_err());
+    let printed = PRINTED.with(|printed| printed.take());
+    assert!(
+      printed
+        .iter()
+        .any(|line| line == "WARN game::report: why it failed"),
+      "{printed:?}"
+    );
+
+    // Dropped without a panic, it prints nothing
+    {
+      let _capture = capture_log();
+      log::warn!(target: "game::report", "a passing test's");
+    }
+    assert!(PRINTED.with(|printed| printed.take()).is_empty());
   }
 
   #[test]

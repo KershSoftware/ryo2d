@@ -183,9 +183,9 @@ Callbacks receive the eased progress and must be `Send + Sync`:
 
 ```rust
 Tween::to_position(100.0, 100.0, 1.0)
-  .on_start(|_| game_info!("started"))
-  .on_update(|t| game_trace!("at {t}"))
-  .on_complete(|_| game_info!("done"));
+  .on_start(|_| info!("started"))
+  .on_update(|t| trace!("at {t}"))
+  .on_complete(|_| info!("done"));
 ```
 
 ### Completion

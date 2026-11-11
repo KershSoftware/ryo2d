@@ -214,6 +214,7 @@ impl Engine {
         renderer.queue_arc(),
         instance,
         adapter,
+        self.log_scope,
       );
     }
   }
@@ -1053,6 +1054,7 @@ impl ApplicationHandler<EngineEvent> for Engine {
         renderer.queue_arc(),
         instance,
         adapter,
+        self.log_scope,
       );
     }
 

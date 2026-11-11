@@ -194,7 +194,7 @@ The ECS's immediate events are available too: a `#[derive(Event)]` type, `ctx.wo
 fn on_enter(&mut self, ctx: &mut SceneContext) {
   let observer = ctx
     .world
-    .add_observer(|explode: On<Explode>| game_info!("boom, radius {}", explode.radius))
+    .add_observer(|explode: On<Explode>| info!("boom, radius {}", explode.radius))
     .id();
   self.observer = Some(observer);
 }

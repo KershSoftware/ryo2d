@@ -28,7 +28,7 @@ pub fn execute(args: &[String]) -> CliResult<()> {
 
   // The registry warns about each file that does not load; the command
   // prints those mistakes itself, once each
-  crate::core::dev_log::set_stdout_enabled(false);
+  crate::core::logging::set_stderr(false);
   let issues = check_files(&assets, &files);
   for issue in &issues {
     eprintln!("{issue}");

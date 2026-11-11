@@ -1,7 +1,8 @@
-//! Logger window - A dedicated window showing runtime logs.
+//! Logger window: a second OS window showing the log as it is written.
 //!
-//! This module provides a separate window that displays real-time log messages
-//! from both engine and game code. Built on the generic dev_window framework.
+//! It follows the log's ring by sequence number in its engine's log scope
+//! (through a [`LogFeed`], which does the reading and filtering) for as long
+//! as it is open, and draws what the feed holds.
 
 use std::sync::Arc;
 
@@ -10,64 +11,95 @@ use winit::event_loop::ActiveEventLoop;
 use winit::window::WindowId;
 
 use super::dev_window::{CHAR_HEIGHT, CHAR_WIDTH, DevWindowConfig, DevWindowRenderer, colors};
-use crate::core::dev_log::{LogContext, LogEntry, LogLevel, entry_count, get_entries_since};
+use super::log_feed::{LogFeed, Toggle, level_letter, origin_letter, row_text};
+use crate::core::logging::{LogRecord, Origin, clock};
 
-/// Filter settings for the logger.
-#[derive(Clone)]
-struct LogFilter {
-  show_trace: bool,
-  show_debug: bool,
-  show_info: bool,
-  show_warn: bool,
-  show_error: bool,
-  show_engine: bool,
-  show_game: bool,
-  show_external: bool,
-  search_text: String,
-}
+/// The height of a row, in the window's pixels.
+const ROW_PITCH: i32 = CHAR_HEIGHT + 2;
+const HEADER_HEIGHT: i32 = 30;
+const FOOTER_HEIGHT: i32 = 24;
+const PADDING: i32 = 8;
+/// Rows a wheel's notch scrolls.
+const ROWS_A_NOTCH: f32 = 3.0;
 
-impl Default for LogFilter {
-  fn default() -> Self {
-    Self {
-      show_trace: false,
-      show_debug: true,
-      show_info: true,
-      show_warn: true,
-      show_error: true,
-      show_engine: true,
-      show_game: true,
-      show_external: true,
-      search_text: String::new(),
+/// The rows a scroll moves, positive toward older rows: three a wheel notch;
+/// a trackpad's pixel delta divided by the window's scale factor (logical
+/// pixels), then by the row pitch. The part of a row left over is kept in
+/// `carry` for the next delta.
+fn scroll_rows(delta: MouseScrollDelta, scale_factor: f64, carry: &mut f64) -> i32 {
+  match delta {
+    MouseScrollDelta::LineDelta(_, y) => (y * ROWS_A_NOTCH).round() as i32,
+    MouseScrollDelta::PixelDelta(position) => {
+      let scale = if scale_factor > 0.0 {
+        scale_factor
+      } else {
+        1.0
+      };
+      *carry += position.y / scale / f64::from(ROW_PITCH);
+      let rows = carry.trunc();
+      *carry -= rows;
+      rows as i32
     }
   }
 }
 
-impl LogFilter {
-  fn matches(&self, entry: &LogEntry) -> bool {
-    // Level filter
-    let level_ok = match entry.level {
-      LogLevel::Trace => self.show_trace,
-      LogLevel::Debug => self.show_debug,
-      LogLevel::Info => self.show_info,
-      LogLevel::Warn => self.show_warn,
-      LogLevel::Error => self.show_error,
-    };
+/// A header button.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Button {
+  Filter(Toggle),
+  /// Empties the window's list (not the log)
+  Clear,
+  /// Back to the newest row, following again
+  Bottom,
+}
 
-    // Context filter
-    let context_ok = match entry.context {
-      LogContext::Engine => self.show_engine,
-      LogContext::Game => self.show_game,
-      LogContext::External => self.show_external,
-    };
+impl Button {
+  const ALL: [Button; 10] = [
+    Button::Filter(Toggle::ALL[0]),
+    Button::Filter(Toggle::ALL[1]),
+    Button::Filter(Toggle::ALL[2]),
+    Button::Filter(Toggle::ALL[3]),
+    Button::Filter(Toggle::ALL[4]),
+    Button::Filter(Toggle::ALL[5]),
+    Button::Filter(Toggle::ALL[6]),
+    Button::Filter(Toggle::ALL[7]),
+    Button::Clear,
+    Button::Bottom,
+  ];
 
-    // Search filter
-    let search_ok = self.search_text.is_empty()
-      || entry
-        .message
-        .to_lowercase()
-        .contains(&self.search_text.to_lowercase());
+  fn label(self) -> &'static str {
+    match self {
+      Button::Filter(toggle) => toggle.label(),
+      Button::Clear => "CLR",
+      Button::Bottom => "BTM",
+    }
+  }
 
-    level_ok && context_ok && search_ok
+  fn color(self) -> [u8; 4] {
+    match self {
+      Button::Filter(Toggle::Level(level)) => level_color(level),
+      Button::Filter(Toggle::Engine) => colors::ENGINE_CONTEXT,
+      Button::Filter(Toggle::Game) => colors::GAME_CONTEXT,
+      Button::Filter(Toggle::Library) | Button::Clear | Button::Bottom => colors::TEXT_DIM,
+    }
+  }
+}
+
+fn level_color(level: log::Level) -> [u8; 4] {
+  match level {
+    log::Level::Trace => colors::LOG_TRACE,
+    log::Level::Debug => colors::LOG_DEBUG,
+    log::Level::Info => colors::LOG_INFO,
+    log::Level::Warn => colors::LOG_WARN,
+    log::Level::Error => colors::LOG_ERROR,
+  }
+}
+
+fn origin_color(origin: Origin) -> [u8; 4] {
+  match origin {
+    Origin::Engine => colors::ENGINE_CONTEXT,
+    Origin::Game => colors::GAME_CONTEXT,
+    Origin::Library => colors::TEXT_DIM,
   }
 }
 
@@ -113,42 +145,39 @@ impl TextSelection {
 /// Manages the logger window and its rendering.
 pub struct LoggerWindow {
   renderer: DevWindowRenderer,
-  // Cached log entries for display
-  cached_entries: Vec<LogEntry>,
-  // Number of entries we've processed
-  processed_count: usize,
-  // Scroll position (0 = bottom, positive = scrolled up)
+  /// The log as this window reads it
+  feed: LogFeed,
+  /// Rows scrolled up from the newest (0 follows the log)
   scroll_offset: usize,
-  // Auto-scroll when new entries arrive
+  /// Follows new rows while at the bottom
   auto_scroll: bool,
-  // Filter settings
-  filter: LogFilter,
-  // Hovered entry index for details
-  hovered_entry: Option<usize>,
-  // Selected filter button for toggle
-  hovered_button: Option<usize>,
-  // Scrollbar dragging state
+  /// A trackpad's part of a row, kept for its next delta
+  scroll_carry: f64,
+  /// The hovered row, an index into `visible_rows`
+  hovered_row: Option<usize>,
+  hovered_button: Option<Button>,
   dragging_scrollbar: bool,
-  // Track filtered entry count for stable scrolling when paused
-  last_filtered_count: usize,
-  // Store the currently visible entries for copy functionality
-  visible_entries: Vec<LogEntry>,
-  // Store rendered text for each visible line (for selection/copy)
+  /// The rows the filter showed at the last render (for the scrollbar)
+  last_shown_count: usize,
+  /// The rows on screen at the last render, for copying
+  visible_rows: Vec<LogRecord>,
+  /// The text of each row on screen, for selecting and copying
   rendered_lines: Vec<String>,
-  // Copy feedback message and timer
+  /// Copy feedback message and timer
   copy_feedback: Option<(String, web_time::Instant)>,
-  // Text selection state
   selection: TextSelection,
 }
 
 impl LoggerWindow {
-  /// Create a new logger window.
+  /// Opens the window on the records of the log scope `scope` (its engine's),
+  /// from the oldest the log still holds.
   pub fn new(
     event_loop: &ActiveEventLoop,
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
     instance: &wgpu::Instance,
     adapter: &wgpu::Adapter,
+    scope: u64,
   ) -> Option<Self> {
     let config = DevWindowConfig {
       title: "Ryo2D Logger".to_string(),
@@ -158,25 +187,19 @@ impl LoggerWindow {
     };
 
     let renderer = DevWindowRenderer::new(event_loop, device, queue, instance, adapter, config)?;
-
-    // Fetch all existing log entries immediately so we don't miss logs from before window opened
-    let existing_entries = crate::core::dev_log::get_entries();
-    let processed_count = existing_entries.len();
-
-    log::info!("Window opened ({} existing entries)", processed_count);
+    log::info!("Logger window opened");
 
     Some(Self {
       renderer,
-      cached_entries: existing_entries,
-      processed_count,
+      feed: LogFeed::new(scope),
       scroll_offset: 0,
       auto_scroll: true,
-      filter: LogFilter::default(),
-      hovered_entry: None,
+      scroll_carry: 0.0,
+      hovered_row: None,
       hovered_button: None,
       dragging_scrollbar: false,
-      last_filtered_count: 0,
-      visible_entries: Vec::new(),
+      last_shown_count: 0,
+      visible_rows: Vec::new(),
       rendered_lines: Vec::new(),
       copy_feedback: None,
       selection: TextSelection::default(),
@@ -205,25 +228,18 @@ impl LoggerWindow {
       }
     }
 
-    // Handle scroll events
     if let WindowEvent::MouseWheel { delta, .. } = event {
-      let scroll_amount = match delta {
-        MouseScrollDelta::LineDelta(_, y) => (*y * 3.0) as i32,
-        MouseScrollDelta::PixelDelta(pos) => (pos.y / 10.0) as i32,
-      };
-
-      if scroll_amount > 0 {
-        // Scroll up (show older entries)
+      let rows = scroll_rows(*delta, self.renderer.scale_factor(), &mut self.scroll_carry);
+      if rows > 0 {
+        // Up, toward older rows
         self.scroll_offset = self
           .scroll_offset
-          .saturating_add(scroll_amount.unsigned_abs() as usize);
+          .saturating_add(rows.unsigned_abs() as usize);
         self.auto_scroll = false;
-      } else if scroll_amount < 0 {
-        // Scroll down (show newer entries)
+      } else if rows < 0 {
         self.scroll_offset = self
           .scroll_offset
-          .saturating_sub(scroll_amount.unsigned_abs() as usize);
-        // Re-enable auto-scroll if at bottom
+          .saturating_sub(rows.unsigned_abs() as usize);
         if self.scroll_offset == 0 {
           self.auto_scroll = true;
         }
@@ -239,16 +255,13 @@ impl LoggerWindow {
           let mouse_x = self.renderer.mouse_x();
           let mouse_y = self.renderer.mouse_y();
           let width = self.renderer.width() as i32;
-          let header_height = 30;
-          let footer_height = 24;
           let height = self.renderer.height() as i32;
           let scrollbar_x = width - 14;
+          let in_content =
+            mouse_y >= HEADER_HEIGHT as f32 && mouse_y <= (height - FOOTER_HEIGHT) as f32;
 
           // Check if clicking on scrollbar
-          if mouse_x >= scrollbar_x as f32
-            && mouse_y >= header_height as f32
-            && mouse_y <= (height - footer_height) as f32
-          {
+          if mouse_x >= scrollbar_x as f32 && in_content {
             self.dragging_scrollbar = true;
             self.selection.clear();
             self.update_scroll_from_mouse(mouse_y);
@@ -256,16 +269,15 @@ impl LoggerWindow {
             return true;
           }
 
-          // Check filter buttons
-          if let Some(button_idx) = self.hovered_button {
-            self.toggle_filter(button_idx);
+          if let Some(button) = self.hovered_button {
+            self.press(button);
             self.selection.clear();
             self.renderer.request_redraw();
             return true;
           }
 
           // Start text selection in content area
-          if mouse_y >= header_height as f32 && mouse_y <= (height - footer_height) as f32 {
+          if in_content {
             let pos = self.mouse_to_text_position(mouse_x, mouse_y);
             self.selection.clear();
             self.selection.active = true;
@@ -286,13 +298,9 @@ impl LoggerWindow {
         && *state == winit::event::ElementState::Pressed
       {
         if self.selection.has_selection() {
-          // Copy selection instead
           self.copy_selection();
-        } else if let Some(entry_idx) = self.hovered_entry
-          && entry_idx < self.visible_entries.len()
-        {
-          let entry = &self.visible_entries[entry_idx];
-          let text = self.format_entry_for_copy(entry);
+        } else if let Some(record) = self.hovered_row.and_then(|row| self.visible_rows.get(row)) {
+          let text = row_text(record);
           self.copy_to_clipboard(&text);
         }
         return true;
@@ -316,28 +324,19 @@ impl LoggerWindow {
 
   /// Convert mouse position to text position (line index, char index).
   fn mouse_to_text_position(&self, mouse_x: f32, mouse_y: f32) -> (usize, usize) {
-    let header_height = 30;
-    let line_height = CHAR_HEIGHT + 2;
-    let padding = 8;
-
-    // Calculate line index
-    let relative_y = (mouse_y - header_height as f32).max(0.0);
-    let line_idx = (relative_y / line_height as f32) as usize;
+    let relative_y = (mouse_y - HEADER_HEIGHT as f32).max(0.0);
+    let line_idx = (relative_y / ROW_PITCH as f32) as usize;
     let line_idx = line_idx.min(self.rendered_lines.len().saturating_sub(1));
 
-    // Calculate char index
-    let relative_x = (mouse_x - padding as f32).max(0.0);
+    let relative_x = (mouse_x - PADDING as f32).max(0.0);
     let char_idx = (relative_x / CHAR_WIDTH as f32) as usize;
 
-    // Clamp to line length
+    // Clamp to the line's length in characters
     let max_chars = self
       .rendered_lines
       .get(line_idx)
-      .map(|s| s.len())
-      .unwrap_or(0);
-    let char_idx = char_idx.min(max_chars);
-
-    (line_idx, char_idx)
+      .map_or(0, |s| s.chars().count());
+    (line_idx, char_idx.min(max_chars))
   }
 
   /// Copy the current text selection to clipboard.
@@ -356,29 +355,25 @@ impl LoggerWindow {
       if line_idx < start_line || line_idx > end_line {
         continue;
       }
-
+      let chars: Vec<char> = line.chars().collect();
       let line_start = if line_idx == start_line {
         start_char
       } else {
         0
-      };
+      }
+      .min(chars.len());
       let line_end = if line_idx == end_line {
         end_char
       } else {
-        line.len()
-      };
-
-      // Safe substring extraction
-      let chars: Vec<char> = line.chars().collect();
-      let line_start = line_start.min(chars.len());
-      let line_end = line_end.min(chars.len());
+        chars.len()
+      }
+      .min(chars.len());
 
       if line_start < line_end {
-        let selected: String = chars[line_start..line_end].iter().collect();
         if !text.is_empty() {
           text.push('\n');
         }
-        text.push_str(&selected);
+        text.extend(&chars[line_start..line_end]);
       }
     }
 
@@ -389,76 +384,35 @@ impl LoggerWindow {
 
   /// Update scroll position based on mouse Y position on scrollbar.
   fn update_scroll_from_mouse(&mut self, mouse_y: f32) {
-    let header_height = 30;
-    let footer_height = 24;
     let height = self.renderer.height() as i32;
-    let content_height = height - header_height - footer_height;
-    let scrollbar_y = header_height + 2;
+    let content_height = height - HEADER_HEIGHT - FOOTER_HEIGHT;
+    let scrollbar_y = HEADER_HEIGHT + 2;
     let scrollbar_height = content_height - 4;
 
     // Calculate scroll ratio from mouse position (inverted: top = max scroll, bottom = 0)
     let relative_y = mouse_y - scrollbar_y as f32;
     let scroll_ratio = 1.0 - (relative_y / scrollbar_height as f32).clamp(0.0, 1.0);
 
-    // Apply to scroll offset
     let max_scroll = self
-      .last_filtered_count
-      .saturating_sub((content_height / (CHAR_HEIGHT + 2)) as usize);
+      .last_shown_count
+      .saturating_sub((content_height / ROW_PITCH).max(0) as usize);
     self.scroll_offset = (scroll_ratio * max_scroll as f32) as usize;
     self.auto_scroll = self.scroll_offset == 0;
   }
 
-  /// Toggle a filter button by index.
-  fn toggle_filter(&mut self, idx: usize) {
-    match idx {
-      0 => self.filter.show_trace = !self.filter.show_trace,
-      1 => self.filter.show_debug = !self.filter.show_debug,
-      2 => self.filter.show_info = !self.filter.show_info,
-      3 => self.filter.show_warn = !self.filter.show_warn,
-      4 => self.filter.show_error = !self.filter.show_error,
-      5 => self.filter.show_engine = !self.filter.show_engine,
-      6 => self.filter.show_game = !self.filter.show_game,
-      7 => {
-        // Clear button
-        crate::core::dev_log::clear();
-        self.cached_entries.clear();
-        self.processed_count = 0;
-        self.scroll_offset = 0;
-      }
-      8 => {
-        // Scroll to bottom
+  fn press(&mut self, button: Button) {
+    match button {
+      Button::Filter(toggle) => self.feed.toggle(toggle),
+      Button::Clear => {
+        self.feed.clear();
         self.scroll_offset = 0;
         self.auto_scroll = true;
       }
-      _ => {}
+      Button::Bottom => {
+        self.scroll_offset = 0;
+        self.auto_scroll = true;
+      }
     }
-    // Refilter entries
-    self.update_filtered_entries();
-  }
-
-  /// Update filtered entries from cache.
-  fn update_filtered_entries(&mut self) {
-    // We'll refilter on render
-  }
-
-  /// Format a log entry for copying to clipboard.
-  fn format_entry_for_copy(&self, entry: &LogEntry) -> String {
-    let elapsed = format!("{:.2}", entry.timestamp_ms as f64 / 1000.0);
-    let level = entry.level.short_name();
-    let context = match entry.context {
-      LogContext::Engine => "E",
-      LogContext::Game => "G",
-      LogContext::External => "X",
-    };
-    let module = entry
-      .module
-      .as_ref()
-      .map(|m| format!("[{}] ", m))
-      .unwrap_or_default();
-    format!(
-      "{} {} {} {} {}{}",
-      entry.iso_timestamp, elapsed, level, context, module, entry.message
-    )
   }
 
   /// Copy text to system clipboard.
@@ -478,25 +432,20 @@ impl LoggerWindow {
 
   /// Render the logger window.
   pub fn render(&mut self) {
-    // Check throttling
     if !self.renderer.should_render() {
       return;
     }
     self.renderer.mark_rendered();
 
-    // Fetch new log entries
-    self.fetch_new_entries();
+    // A scrolled-up view stays on the rows it shows
+    let shown = self.feed.poll();
+    if !self.auto_scroll {
+      self.scroll_offset += shown;
+    }
 
-    // Clear pixel buffer
     self.renderer.clear(colors::BACKGROUND);
-
-    // Draw header with filters
     self.draw_header();
-
-    // Draw log entries
-    self.draw_entries();
-
-    // Draw footer with stats
+    self.draw_rows();
     self.draw_footer();
 
     // Draw copy feedback tooltip if recent
@@ -521,94 +470,42 @@ impl LoggerWindow {
       }
     }
 
-    // Upload and present
     self.renderer.present();
-  }
-
-  /// Fetch new log entries from the global buffer.
-  fn fetch_new_entries(&mut self) {
-    let total = entry_count();
-    if total > self.processed_count {
-      let new_entries = get_entries_since(self.processed_count);
-      let new_count = new_entries.len();
-
-      // Count how many of the new entries pass the filter
-      let new_filtered_count = new_entries
-        .iter()
-        .filter(|e| self.filter.matches(e))
-        .count();
-
-      self.cached_entries.extend(new_entries);
-      self.processed_count = total;
-
-      // If NOT auto-scrolling, increase scroll_offset to keep view stable
-      if !self.auto_scroll && new_filtered_count > 0 {
-        self.scroll_offset += new_filtered_count;
-      }
-
-      // Limit cache size
-      if self.cached_entries.len() > 10000 {
-        let drain_count = 1000;
-        // Adjust scroll offset if we're removing entries
-        let removed_filtered = self.cached_entries[0..drain_count]
-          .iter()
-          .filter(|e| self.filter.matches(e))
-          .count();
-        self.scroll_offset = self.scroll_offset.saturating_sub(removed_filtered);
-        self.cached_entries.drain(0..drain_count);
-      }
-
-      // Suppress unused variable warning
-      let _ = new_count;
-    }
   }
 
   /// Draw the header with filter buttons.
   fn draw_header(&mut self) {
-    let header_height = 30;
     let width = self.renderer.width() as i32;
-    let padding = 8;
     let mouse_x = self.renderer.mouse_x();
     let mouse_y = self.renderer.mouse_y();
 
-    // Draw header background
     self
       .renderer
-      .fill_rect(0, 0, width, header_height, colors::HEADER_BG);
+      .fill_rect(0, 0, width, HEADER_HEIGHT, colors::HEADER_BG);
 
-    // Draw filter buttons
-    let buttons = [
-      ("T", self.filter.show_trace, colors::LOG_TRACE),
-      ("D", self.filter.show_debug, colors::LOG_DEBUG),
-      ("I", self.filter.show_info, colors::LOG_INFO),
-      ("W", self.filter.show_warn, colors::LOG_WARN),
-      ("E", self.filter.show_error, colors::LOG_ERROR),
-      ("ENG", self.filter.show_engine, colors::ENGINE_CONTEXT),
-      ("GAME", self.filter.show_game, colors::GAME_CONTEXT),
-      ("CLR", true, colors::TEXT_DIM),
-      ("BTM", true, colors::TEXT_DIM),
-    ];
-
-    let mut x = padding;
+    let mut x = PADDING;
     self.hovered_button = None;
 
-    for (idx, (label, active, color)) in buttons.iter().enumerate() {
+    for button in Button::ALL {
+      let label = button.label();
+      let color = button.color();
+      let active = match button {
+        Button::Filter(toggle) => self.feed.is_on(toggle),
+        Button::Clear | Button::Bottom => true,
+      };
       let btn_width = self.renderer.measure_text(label) + 8;
       let btn_height = 18;
       let btn_y = 6;
 
-      // Check hover
       let hovered = mouse_x >= x as f32
         && mouse_x <= (x + btn_width) as f32
         && mouse_y >= btn_y as f32
         && mouse_y <= (btn_y + btn_height) as f32;
-
       if hovered {
-        self.hovered_button = Some(idx);
+        self.hovered_button = Some(button);
       }
 
-      // Draw button background
-      let bg_color = if *active {
+      let bg_color = if active {
         if hovered {
           [
             color[0].saturating_sub(20),
@@ -628,143 +525,76 @@ impl LoggerWindow {
       self
         .renderer
         .fill_rect(x, btn_y, btn_width, btn_height, bg_color);
-
-      // Draw button border if active
-      if *active {
+      if active {
         self
           .renderer
-          .draw_rect_outline(x, btn_y, btn_width, btn_height, *color);
+          .draw_rect_outline(x, btn_y, btn_width, btn_height, color);
       }
-
-      // Draw button text
-      let text_color = if *active { *color } else { colors::TEXT_DIM };
+      let text_color = if active { color } else { colors::TEXT_DIM };
       self.renderer.draw_text(label, x + 4, btn_y + 3, text_color);
 
       x += btn_width + 4;
     }
 
-    // Draw divider
     self
       .renderer
-      .fill_rect(0, header_height - 1, width, 1, colors::DIVIDER);
+      .fill_rect(0, HEADER_HEIGHT - 1, width, 1, colors::DIVIDER);
   }
 
-  /// Draw log entries.
-  fn draw_entries(&mut self) {
-    let header_height = 30;
-    let footer_height = 24;
-    let padding = 8;
-    let line_height = CHAR_HEIGHT + 2;
+  /// Draw the rows the filter shows, scrolled.
+  fn draw_rows(&mut self) {
     let width = self.renderer.width() as i32;
     let height = self.renderer.height() as i32;
-    let content_height = height - header_height - footer_height;
-    let visible_lines = (content_height / line_height) as usize;
-    let _mouse_x = self.renderer.mouse_x();
+    let content_height = height - HEADER_HEIGHT - FOOTER_HEIGHT;
+    let visible_lines = (content_height / ROW_PITCH).max(0) as usize;
     let mouse_y = self.renderer.mouse_y();
 
-    // Filter entries
-    let filtered: Vec<&LogEntry> = self
-      .cached_entries
-      .iter()
-      .filter(|e| self.filter.matches(e))
-      .collect();
-
-    // Track filtered count for scrollbar calculations
-    self.last_filtered_count = filtered.len();
-
-    // Clear rendered lines for selection
+    let shown = self.feed.visible().count();
+    self.last_shown_count = shown;
     self.rendered_lines.clear();
+    self.visible_rows.clear();
+    self.hovered_row = None;
 
-    if filtered.is_empty() {
-      let y = header_height + padding;
+    if shown == 0 {
+      let y = HEADER_HEIGHT + PADDING;
       self
         .renderer
-        .draw_text("No log entries", padding, y, colors::TEXT_DIM);
-      if self.cached_entries.is_empty() {
+        .draw_text("No log entries", PADDING, y, colors::TEXT_DIM);
+      if self.feed.rows().is_empty() {
         self.renderer.draw_text(
           "Use log::info!() or ryo2d::info!() to log messages",
-          padding,
-          y + line_height,
+          PADDING,
+          y + ROW_PITCH,
           colors::TEXT_DIM,
         );
       }
       return;
     }
 
-    // Clamp scroll offset
-    let max_scroll = filtered.len().saturating_sub(visible_lines);
+    let max_scroll = shown.saturating_sub(visible_lines);
     self.scroll_offset = self.scroll_offset.min(max_scroll);
+    let start = shown.saturating_sub(visible_lines + self.scroll_offset);
+    let end = shown.saturating_sub(self.scroll_offset);
+    self
+      .visible_rows
+      .extend(self.feed.visible().skip(start).take(end - start).cloned());
 
-    // Calculate which entries to show
-    let start_idx = filtered
-      .len()
-      .saturating_sub(visible_lines + self.scroll_offset);
-    let end_idx = filtered.len().saturating_sub(self.scroll_offset);
-
-    // Store visible entries for copy functionality
-    self.visible_entries.clear();
-    for entry in filtered.iter().skip(start_idx).take(end_idx - start_idx) {
-      self.visible_entries.push((*entry).clone());
-    }
-
-    self.hovered_entry = None;
-
-    // Get normalized selection for highlighting
     let selection_range = self.selection.normalized();
+    let rows = std::mem::take(&mut self.visible_rows);
+    for (display_idx, record) in rows.iter().enumerate() {
+      let y = HEADER_HEIGHT + (display_idx as i32 * ROW_PITCH);
 
-    for (display_idx, entry) in self.visible_entries.iter().enumerate() {
-      let y = header_height + (display_idx as i32 * line_height);
-
-      // Check hover - display_idx is now the index into visible_entries
-      let hovered = mouse_y >= y as f32 && mouse_y < (y + line_height) as f32;
+      let hovered = mouse_y >= y as f32 && mouse_y < (y + ROW_PITCH) as f32;
       if hovered && !self.selection.active {
-        self.hovered_entry = Some(display_idx);
-        // Draw hover highlight
+        self.hovered_row = Some(display_idx);
         self
           .renderer
-          .fill_rect(0, y, width, line_height, [40, 40, 40, 255]);
+          .fill_rect(0, y, width, ROW_PITCH, [40, 40, 40, 255]);
       }
 
-      // Build the full rendered line text for selection
-      let mut line_text = String::new();
+      let line_text = row_text(record);
+      let line_chars = line_text.chars().count();
 
-      // ISO timestamp first (HH:MM:SS.mmm)
-      let iso_ts = &entry.iso_timestamp;
-      line_text.push_str(iso_ts);
-      line_text.push(' ');
-
-      // Time since start
-      let elapsed = format!("{:>8.2}", entry.timestamp_ms as f64 / 1000.0);
-      line_text.push_str(&elapsed);
-      line_text.push(' ');
-
-      // Level
-      line_text.push_str(entry.level.short_name());
-      line_text.push(' ');
-
-      // Context
-      let context_label = match entry.context {
-        LogContext::Engine => "E",
-        LogContext::Game => "G",
-        LogContext::External => "X",
-      };
-      line_text.push_str(context_label);
-      line_text.push(' ');
-
-      // Module
-      if let Some(ref module) = entry.module {
-        line_text.push('[');
-        line_text.push_str(module);
-        line_text.push_str("] ");
-      }
-
-      // Message
-      line_text.push_str(&entry.message);
-
-      // Store for selection
-      self.rendered_lines.push(line_text.clone());
-
-      // Draw selection highlight if this line is in the selection range
       if let Some(((start_line, start_char), (end_line, end_char))) = selection_range
         && display_idx >= start_line
         && display_idx <= end_line
@@ -777,197 +607,166 @@ impl LoggerWindow {
         let line_end = if display_idx == end_line {
           end_char
         } else {
-          line_text.len()
+          line_chars
         };
-
         if line_start < line_end {
-          let sel_x = padding + (line_start as i32 * CHAR_WIDTH);
+          let sel_x = PADDING + (line_start as i32 * CHAR_WIDTH);
           let sel_width = ((line_end - line_start) as i32 * CHAR_WIDTH).min(width - sel_x);
           self
             .renderer
-            .fill_rect(sel_x, y, sel_width, line_height, [60, 80, 120, 255]);
+            .fill_rect(sel_x, y, sel_width, ROW_PITCH, [60, 80, 120, 255]);
         }
       }
+      self.rendered_lines.push(line_text);
 
-      let mut x = padding;
-
-      // Draw ISO timestamp (HH:MM:SS.mmm) - dimmer
-      self
-        .renderer
-        .draw_text(iso_ts, x, y + 1, [100, 100, 100, 255]);
-      x += (iso_ts.len() as i32 + 1) * CHAR_WIDTH;
-
-      // Draw elapsed timestamp
-      self
-        .renderer
-        .draw_text(&elapsed, x, y + 1, colors::TEXT_DIM);
-      x += (elapsed.len() as i32 + 1) * CHAR_WIDTH;
-
-      // Draw level indicator
-      let level_color = match entry.level {
-        LogLevel::Trace => colors::LOG_TRACE,
-        LogLevel::Debug => colors::LOG_DEBUG,
-        LogLevel::Info => colors::LOG_INFO,
-        LogLevel::Warn => colors::LOG_WARN,
-        LogLevel::Error => colors::LOG_ERROR,
-      };
-      self
-        .renderer
-        .draw_text(entry.level.short_name(), x, y + 1, level_color);
-      x += 2 * CHAR_WIDTH;
-
-      // Draw context indicator
-      let context_color = match entry.context {
-        LogContext::Engine => colors::ENGINE_CONTEXT,
-        LogContext::Game => colors::GAME_CONTEXT,
-        LogContext::External => colors::TEXT_DIM,
-      };
-      self
-        .renderer
-        .draw_text(context_label, x, y + 1, context_color);
-      x += 2 * CHAR_WIDTH;
-
-      // Draw module if present
-      if let Some(ref module) = entry.module {
-        let module_text = format!("[{}]", module);
-        self
-          .renderer
-          .draw_text(&module_text, x, y + 1, colors::TEXT_DIM);
-        x += (module_text.len() as i32 + 1) * CHAR_WIDTH;
-      }
-
-      // Draw message (truncate if needed)
-      let available_width = width - x - padding;
-      let max_chars = (available_width / CHAR_WIDTH) as usize;
-      let message = if entry.message.chars().count() > max_chars {
-        let kept: String = entry
-          .message
-          .chars()
-          .take(max_chars.saturating_sub(3))
-          .collect();
-        format!("{kept}...")
-      } else {
-        entry.message.clone()
-      };
-      self.renderer.draw_text(&message, x, y + 1, colors::TEXT);
+      self.draw_row(record, y, width);
     }
+    self.visible_rows = rows;
 
-    // Draw scroll indicator if needed
     if max_scroll > 0 {
-      let scrollbar_height = content_height - 4;
-      let scrollbar_x = width - 10;
-      let scrollbar_y = header_height + 2;
-      let scrollbar_width = 8;
-
-      // Check if mouse is hovering over scrollbar area
-      let mouse_x = self.renderer.mouse_x();
-      let mouse_y = self.renderer.mouse_y();
-      let hovering_scrollbar = mouse_x >= (scrollbar_x - 2) as f32
-        && mouse_y >= scrollbar_y as f32
-        && mouse_y <= (scrollbar_y + scrollbar_height) as f32;
-
-      // Draw scrollbar track
-      let track_color = if hovering_scrollbar || self.dragging_scrollbar {
-        [50, 50, 50, 255]
-      } else {
-        colors::SCROLLBAR_BG
-      };
-      self.renderer.fill_rect(
-        scrollbar_x,
-        scrollbar_y,
-        scrollbar_width,
-        scrollbar_height,
-        track_color,
-      );
-
-      // Draw scrollbar thumb
-      let thumb_height =
-        ((visible_lines as f32 / filtered.len() as f32) * scrollbar_height as f32).max(20.0) as i32;
-      let scroll_ratio = if max_scroll > 0 {
-        self.scroll_offset as f32 / max_scroll as f32
-      } else {
-        0.0
-      };
-      let thumb_y =
-        scrollbar_y + ((1.0 - scroll_ratio) * (scrollbar_height - thumb_height) as f32) as i32;
-
-      // Thumb color: highlight when dragging or hovering, dim when auto-scrolling
-      let thumb_color = if self.dragging_scrollbar {
-        [140, 140, 160, 255]
-      } else if hovering_scrollbar || self.auto_scroll {
-        colors::SCROLLBAR_THUMB_HOVER
-      } else {
-        colors::SCROLLBAR_THUMB
-      };
-      self.renderer.fill_rect(
-        scrollbar_x,
-        thumb_y,
-        scrollbar_width,
-        thumb_height,
-        thumb_color,
-      );
+      self.draw_scrollbar(shown, visible_lines, max_scroll, content_height);
     }
+  }
+
+  /// One row: the time, the frame, the level and origin letters, then
+  /// `target: message`, in the columns of [`row_text`].
+  fn draw_row(&mut self, record: &LogRecord, y: i32, width: i32) {
+    let mut x = PADDING;
+    let mut column = |renderer: &mut DevWindowRenderer, text: &str, color: [u8; 4]| {
+      renderer.draw_text(text, x, y + 1, color);
+      x += (text.chars().count() as i32 + 1) * CHAR_WIDTH;
+    };
+    let time = clock(record.time);
+    column(&mut self.renderer, &time, [100, 100, 100, 255]);
+    let frame = record
+      .frame
+      .map_or_else(|| " ".repeat(7), |frame| format!("{frame:>7}"));
+    column(&mut self.renderer, &frame, colors::TEXT_DIM);
+    column(
+      &mut self.renderer,
+      level_letter(record.level),
+      level_color(record.level),
+    );
+    column(
+      &mut self.renderer,
+      origin_letter(record.origin),
+      origin_color(record.origin),
+    );
+    let target = format!("{}:", record.target);
+    column(&mut self.renderer, &target, colors::TEXT_DIM);
+
+    // The message, cut to fit
+    let max_chars = ((width - x - PADDING) / CHAR_WIDTH).max(0) as usize;
+    let message = if record.message.chars().count() > max_chars {
+      let kept: String = record
+        .message
+        .chars()
+        .take(max_chars.saturating_sub(3))
+        .collect();
+      format!("{kept}...")
+    } else {
+      record.message.clone()
+    };
+    self.renderer.draw_text(&message, x, y + 1, colors::TEXT);
+  }
+
+  fn draw_scrollbar(
+    &mut self,
+    shown: usize,
+    visible_lines: usize,
+    max_scroll: usize,
+    content_height: i32,
+  ) {
+    let width = self.renderer.width() as i32;
+    let scrollbar_height = content_height - 4;
+    let scrollbar_x = width - 10;
+    let scrollbar_y = HEADER_HEIGHT + 2;
+    let scrollbar_width = 8;
+
+    let mouse_x = self.renderer.mouse_x();
+    let mouse_y = self.renderer.mouse_y();
+    let hovering_scrollbar = mouse_x >= (scrollbar_x - 2) as f32
+      && mouse_y >= scrollbar_y as f32
+      && mouse_y <= (scrollbar_y + scrollbar_height) as f32;
+
+    let track_color = if hovering_scrollbar || self.dragging_scrollbar {
+      [50, 50, 50, 255]
+    } else {
+      colors::SCROLLBAR_BG
+    };
+    self.renderer.fill_rect(
+      scrollbar_x,
+      scrollbar_y,
+      scrollbar_width,
+      scrollbar_height,
+      track_color,
+    );
+
+    let thumb_height =
+      ((visible_lines as f32 / shown as f32) * scrollbar_height as f32).max(20.0) as i32;
+    let scroll_ratio = self.scroll_offset as f32 / max_scroll as f32;
+    let thumb_y =
+      scrollbar_y + ((1.0 - scroll_ratio) * (scrollbar_height - thumb_height) as f32) as i32;
+
+    // Highlight when dragging or hovering, dim when following
+    let thumb_color = if self.dragging_scrollbar {
+      [140, 140, 160, 255]
+    } else if hovering_scrollbar || self.auto_scroll {
+      colors::SCROLLBAR_THUMB_HOVER
+    } else {
+      colors::SCROLLBAR_THUMB
+    };
+    self.renderer.fill_rect(
+      scrollbar_x,
+      thumb_y,
+      scrollbar_width,
+      thumb_height,
+      thumb_color,
+    );
   }
 
   /// Draw the footer with stats.
   fn draw_footer(&mut self) {
-    let footer_height = 24;
-    let footer_y = self.renderer.height() as i32 - footer_height;
-    let padding = 8;
+    let footer_y = self.renderer.height() as i32 - FOOTER_HEIGHT;
     let width = self.renderer.width() as i32;
 
     self
       .renderer
-      .fill_rect(0, footer_y, width, footer_height, colors::HEADER_BG);
+      .fill_rect(0, footer_y, width, FOOTER_HEIGHT, colors::HEADER_BG);
     self
       .renderer
       .fill_rect(0, footer_y, width, 1, colors::DIVIDER);
 
-    // Count by level
-    let (trace, debug, info, warn, error) =
-      self
-        .cached_entries
-        .iter()
-        .fold((0, 0, 0, 0, 0), |(t, d, i, w, e), entry| {
-          match entry.level {
-            LogLevel::Trace => (t + 1, d, i, w, e),
-            LogLevel::Debug => (t, d + 1, i, w, e),
-            LogLevel::Info => (t, d, i + 1, w, e),
-            LogLevel::Warn => (t, d, i, w + 1, e),
-            LogLevel::Error => (t, d, i, w, e + 1),
-          }
-        });
-
-    // Show stats or hint based on state
     let (footer_text, text_color) = if self.selection.has_selection() {
       (
         "Ctrl+C to copy selection | Right-click to copy".to_string(),
         [180, 220, 180, 255],
       )
-    } else if self.hovered_entry.is_some() {
+    } else if self.hovered_row.is_some() {
       (
         "Drag to select | Right-click to copy line".to_string(),
         [180, 180, 220, 255],
       )
     } else {
-      (
-        format!(
-          "Total: {} | T:{} D:{} I:{} W:{} E:{}",
-          self.cached_entries.len(),
-          trace,
-          debug,
-          info,
-          warn,
-          error
-        ),
-        colors::TEXT_DIM,
-      )
+      // Rows by level: Error is 1 and Trace 5
+      let mut counts = [0usize; 5];
+      for record in self.feed.rows() {
+        counts[record.level as usize - 1] += 1;
+      }
+      let [error, warn, info, debug, trace] = counts;
+      let mut text = format!(
+        "Total: {} | T:{trace} D:{debug} I:{info} W:{warn} E:{error}",
+        self.feed.rows().len()
+      );
+      if self.feed.missed() > 0 {
+        text.push_str(&format!(" | {} W/E missed", self.feed.missed()));
+      }
+      (text, colors::TEXT_DIM)
     };
     self
       .renderer
-      .draw_text(&footer_text, padding, footer_y + 6, text_color);
+      .draw_text(&footer_text, PADDING, footer_y + 6, text_color);
 
-    // Show scroll status
     if self.auto_scroll {
       self
         .renderer
@@ -977,5 +776,35 @@ impl LoggerWindow {
         .renderer
         .draw_text("PAUSED", width - 50, footer_y + 6, colors::LOG_WARN);
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use winit::dpi::PhysicalPosition;
+
+  #[test]
+  fn a_trackpad_delta_scrolls_by_logical_pixels() {
+    assert_eq!(ROW_PITCH, 14);
+    let mut carry = 0.0;
+    let delta = MouseScrollDelta::PixelDelta(PhysicalPosition::new(0.0, 28.0));
+    assert_eq!(scroll_rows(delta, 2.0, &mut carry), 1, "28 / 2 / 14");
+    // At scale 1 the same delta is two rows
+    assert_eq!(scroll_rows(delta, 1.0, &mut 0.0), 2);
+    // A part of a row waits for the next
+    let half = MouseScrollDelta::PixelDelta(PhysicalPosition::new(0.0, -14.0));
+    let mut carry = 0.0;
+    assert_eq!(scroll_rows(half, 2.0, &mut carry), 0);
+    assert_eq!(scroll_rows(half, 2.0, &mut carry), -1);
+    // A wheel notch is three rows
+    assert_eq!(
+      scroll_rows(MouseScrollDelta::LineDelta(0.0, 1.0), 2.0, &mut 0.0),
+      3
+    );
+    assert_eq!(
+      scroll_rows(MouseScrollDelta::LineDelta(0.0, -2.0), 1.0, &mut 0.0),
+      -6
+    );
   }
 }

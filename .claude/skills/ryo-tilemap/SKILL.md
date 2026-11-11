@@ -51,7 +51,7 @@ impl Scene for Level {
     for event in ctx.messages::<MapEvent>() {
       match event {
         MapEvent::Spawned { map } if Some(map) == self.map => self.landed(ctx, map),
-        MapEvent::Failed { error, .. } => game_warn!("the level did not load: {}", error.report()),
+        MapEvent::Failed { error, .. } => warn!("the level did not load: {}", error.report()),
         _ => {}
       }
     }
@@ -141,7 +141,7 @@ What lands, all of it children of the map entity:
 let maps = ctx.maps();
 let storeys = maps.floors(map).map_or(1, |floors| floors.floors().count());
 if let Some(up) = maps.lift(map, Floor::On(1)) {
-  game_info!("{storeys} storeys, the first {} px up", up.length());
+  info!("{storeys} storeys, the first {} px up", up.length());
 }
 ```
 
@@ -375,7 +375,7 @@ if let Some(layer) = maps.grid(self.board, "ground") {
 let (x, y) = ctx.input.mouse_position();
 let pointer = ctx.camera().screen_to_world(Vec2::new(x, y));
 if let Some((floor, cell)) = ctx.maps().floor_cell_at_world(self.map, pointer) {
-  game_info!("cell {cell} on {floor:?}");
+  info!("cell {cell} on {floor:?}");
 }
 ```
 - **Edits change the spawned map, not its asset:** two maps from one file keep their own tiles, and a reload of the file brings dug tiles back (section 14).
@@ -474,7 +474,7 @@ let kind: Option<TileCell> = lattice.and_then(|lattice| {
 let world = &*ctx.world;
 let holder = world.get::<ChildOf>(part).map(ChildOf::parent);
 if let Some(edge) = holder.and_then(|holder| world.get::<MapFloor>(holder)) {
-  game_info!("the rim of storey {}", edge.floor);
+  info!("the rim of storey {}", edge.floor);
 }
 ```
 
@@ -820,7 +820,7 @@ if self.loading {
 }
 for event in ctx.messages::<ChunkEvent>() {
   if let ChunkEvent::Loaded { chunk, .. } = event {
-    game_info!("chunk {chunk} landed: its class tiles are in");
+    info!("chunk {chunk} landed: its class tiles are in");
   }
 }
 ```
@@ -892,7 +892,7 @@ self.world = ctx.world.spawn((MapRoot::new(map), stream)).id();
 ctx.maps().save_changed_chunks(self.world);
 let save = WorldSave { chunks: self.chunks.clone() };
 if let Err(error) = ctx.saves().save("world", save) {
-  game_warn!("the world was not saved: {error}");
+  warn!("the world was not saved: {error}");
 }
 ```
 
@@ -908,7 +908,7 @@ let Some(at) = ctx.world.get::<Transform>(self.player).map(|t| t.translation) el
 };
 let near = Rect::new(at.x - 64.0, at.y - 64.0, 128.0, 128.0);
 for room in ctx.maps().spawn_levels_in(&self.world, near) {
-  game_info!("room {room} is on its way");
+  info!("room {room} is on its way");
 }
 ```
 

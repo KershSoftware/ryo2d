@@ -35,6 +35,19 @@ pub(crate) fn under(target: &str, path: &str) -> bool {
   }
 }
 
+/// A record's time as `HH:MM:SS.mmm` (the log file's and the logger
+/// window's).
+pub(crate) fn clock(time: Duration) -> String {
+  let secs = time.as_secs();
+  format!(
+    "{:02}:{:02}:{:02}.{:03}",
+    secs / 3600,
+    secs / 60 % 60,
+    secs % 60,
+    time.subsec_millis()
+  )
+}
+
 /// One line of the log.
 #[derive(Debug, Clone)]
 pub struct LogRecord {

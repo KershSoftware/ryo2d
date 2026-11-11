@@ -283,7 +283,7 @@ if let Some(state) = ctx.world.get::<CharacterState>(self.player)
     }
   });
   if on_a_map {
-    game_info!("on map {map:?}, one-way: {}", state.floor_one_way);
+    info!("on map {map:?}, one-way: {}", state.floor_one_way);
   }
 }
 ```
@@ -706,7 +706,7 @@ impl Scene for Level {
       }
     }
     for reached in ctx.messages::<CheckpointReached>() {
-      game_info!("checkpoint {} reached", reached.checkpoint);
+      info!("checkpoint {} reached", reached.checkpoint);
     }
     if let Some(at) = self
       .player

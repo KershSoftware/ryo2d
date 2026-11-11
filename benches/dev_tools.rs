@@ -2,14 +2,15 @@
 //! console costs a frame. Recorded, with no targets; the figures are the
 //! "before" of `docs/backlog/dev-tools.md`.
 //!
-//! - `log_call_quiet`: one `engine_debug!("value {}", n)` with the log's
-//!   terminal output off (`dev_log::set_stdout_enabled(false)`), nanoseconds a
-//!   call over 1,000,000 calls;
-//! - `log_call_warn`: one `engine_warn!("value {}", n)`, nanoseconds a call
-//!   over 100,000 calls. The log's terminal output is switched OFF here too
+//! - `log_call_quiet`: one `log::debug!("value {}", n)` (below the default
+//!   level) with the log's stderr output off
+//!   (`testing::set_log_stderr(false)`), nanoseconds a call over 1,000,000
+//!   calls;
+//! - `log_call_warn`: one `log::warn!("value {}", n)`, nanoseconds a call
+//!   over 100,000 calls. The log's stderr output is switched OFF here too
 //!   (not redirected to the null device), because the bench prints its own
-//!   results on the terminal, so this figure holds the formatting, the lock
-//!   and the buffer, and not the terminal's write;
+//!   results on the terminal, so this figure holds the formatting and the
+//!   outputs (the ring, in a build with tools), and not the terminal's write;
 //! - `console_open_idle`: a `HeadlessEngine` (1920 x 1080, with a GPU) with
 //!   the console open and 1,000 lines of 80 characters printed, against the
 //!   same engine with the console closed, stepped in turn (an engine stepping
@@ -22,10 +23,8 @@ mod guards;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use ryo2d::core::dev_log;
 use ryo2d::prelude::*;
-use ryo2d::testing::{HeadlessEngine, shared_gpu};
-use ryo2d::{engine_debug, engine_warn};
+use ryo2d::testing::{HeadlessEngine, set_log_stderr, shared_gpu};
 
 const RESOLUTION: (u32, u32) = (1920, 1080);
 const QUIET_CALLS: u32 = 1_000_000;
@@ -48,19 +47,21 @@ fn ns_per_call(calls: u32, mut call: impl FnMut(u32)) -> f64 {
 }
 
 fn log_calls() {
-  dev_log::set_stdout_enabled(false);
+  // The logger installs with the first engine or log line; installed here,
+  // its set-up is not in the first call's time
+  ryo2d::logging::ensure();
+  set_log_stderr(false);
   if guards::runs(&["log_call_quiet"]) {
-    let ns = ns_per_call(QUIET_CALLS, |n| engine_debug!("value {}", n));
+    let ns = ns_per_call(QUIET_CALLS, |n| log::debug!("value {}", n));
     println!("log_call_quiet: {ns:.1} ns a call over {QUIET_CALLS} calls (terminal output off)");
   }
   if guards::runs(&["log_call_warn"]) {
-    let ns = ns_per_call(WARN_CALLS, |n| engine_warn!("value {}", n));
+    let ns = ns_per_call(WARN_CALLS, |n| log::warn!("value {}", n));
     println!(
       "log_call_warn: {ns:.1} ns a call over {WARN_CALLS} calls (terminal output off, not \
        redirected)"
     );
   }
-  dev_log::clear();
 }
 
 fn engine(open: bool) -> Option<HeadlessEngine> {
