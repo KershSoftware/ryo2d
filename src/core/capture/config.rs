@@ -83,6 +83,26 @@ impl AutoCaptureConfig {
   }
 }
 
+/// The variables a scripted run reads (`RYO_HEADLESS`, its pace, the
+/// captures and the input script)
+pub(crate) const SCRIPT_VARS: [&str; 6] = [
+  "RYO_HEADLESS",
+  "RYO_HEADLESS_HZ",
+  "RYO_CAPTURE_FRAMES",
+  "RYO_CAPTURE_DIR",
+  "RYO_CAPTURE_EXIT",
+  "RYO_INPUT",
+];
+
+/// A run started with any of [`SCRIPT_VARS`] set (`is_set` says whether a
+/// variable is) shows its log on stderr in every build, so `ryo2d run` with
+/// `RYO_CAPTURE_FRAMES` says what it wrote and what it could not use.
+pub(crate) fn start_log_for_script(is_set: impl Fn(&str) -> bool) {
+  if SCRIPT_VARS.into_iter().any(is_set) {
+    crate::core::logging::set_stderr(true);
+  }
+}
+
 /// Read `RYO_HEADLESS`, returning whether to run without a window and a
 /// warning for a value that was not used.
 pub(crate) fn headless_run_from_env() -> (bool, Option<String>) {
@@ -181,6 +201,19 @@ fn parse_frames(raw: &str) -> Option<Vec<u64>> {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn any_scripting_variable_turns_the_log_s_stderr_on() {
+    for name in SCRIPT_VARS {
+      // As a build without tools starts
+      let _watch = crate::core::logging::watch_stderr(false);
+      start_log_for_script(|var| var == name);
+      assert!(crate::core::logging::stderr_on(), "{name}");
+    }
+    let _watch = crate::core::logging::watch_stderr(false);
+    start_log_for_script(|var| var == "RYO_LOG");
+    assert!(!crate::core::logging::stderr_on(), "a player's run");
+  }
 
   #[test]
   fn unset_is_disabled() {

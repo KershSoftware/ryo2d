@@ -161,3 +161,14 @@ fn the_fps_counter_still_follows_its_setting() {
   e.step_frames(2).unwrap();
   assert_eq!(e.ui_draw_count(), 0, "and goes with the setting");
 }
+
+#[test]
+fn a_scripted_run_shows_its_log() {
+  // A shipped game's log is off stderr until a scripting variable is set
+  ryo2d::testing::set_log_stderr(false);
+  ryo2d::testing::start_log_for_script(&["RYO_CAPTURE_FRAMES"]);
+  assert!(
+    ryo2d::testing::log_stderr_on(),
+    "a run with RYO_CAPTURE_FRAMES says what it captured"
+  );
+}

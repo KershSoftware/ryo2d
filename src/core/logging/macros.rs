@@ -59,14 +59,21 @@ macro_rules! error {
   }};
 }
 
-/// Logs a warning the first time this call site is reached, and never again:
-/// for a warning in code that runs every frame.
+/// Logs a warning the first time this call site is reached with its level
+/// letting warnings through, and never again: for a warning in code that
+/// runs every frame. A site reached while its target is silenced keeps its
+/// one line for when the level is raised.
 #[macro_export]
 macro_rules! warn_once {
   ($($arg:tt)+) => {{
     static WARNED: ::core::sync::atomic::AtomicBool = ::core::sync::atomic::AtomicBool::new(false);
-    if !WARNED.swap(true, ::core::sync::atomic::Ordering::Relaxed) {
-      $crate::warn!($($arg)+);
+    $crate::logging::ensure();
+    if $crate::logging::log::log_enabled!(
+      target: ::core::concat!("game::", ::core::module_path!()),
+      $crate::logging::log::Level::Warn
+    ) && !WARNED.swap(true, ::core::sync::atomic::Ordering::Relaxed)
+    {
+      $crate::logging::log::warn!(target: ::core::concat!("game::", ::core::module_path!()), $($arg)+);
     }
   }};
 }
@@ -97,5 +104,28 @@ mod tests {
     }
     assert_eq!(capture.containing("two sites"), 2);
     assert_eq!(capture.count(log::Level::Warn), 3);
+  }
+
+  /// A call site of its own, so its target is too
+  mod silenced_site {
+    pub(super) const TARGET: &str = concat!("game::", module_path!());
+
+    pub(super) fn reach() {
+      crate::warn_once!("from a silenced site");
+    }
+  }
+
+  #[test]
+  fn warn_once_keeps_its_one_line_for_when_its_level_lets_it_through() {
+    let capture = capture_log();
+    {
+      let _silenced =
+        crate::core::logging::level_for_test(silenced_site::TARGET, log::LevelFilter::Error);
+      silenced_site::reach();
+    }
+    assert_eq!(capture.containing("from a silenced site"), 0);
+    silenced_site::reach();
+    silenced_site::reach();
+    assert_eq!(capture.containing("from a silenced site"), 1);
   }
 }

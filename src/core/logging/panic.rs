@@ -1,5 +1,6 @@
-//! The panic hook: a panic is written to the log, and the file flushed, before
-//! the hook that was there runs.
+//! The panic hook: a panic is written to the log (all but its stderr output,
+//! where the hook that was there prints it), and the file flushed, before the
+//! hook that was there runs.
 
 use std::panic::{self, PanicHookInfo};
 use std::sync::Once;
@@ -14,8 +15,9 @@ pub(crate) fn install_hook() {
     let earlier = panic::take_hook();
     panic::set_hook(Box::new(move |info| {
       // A panic that came with this thread holding the file's lock writes
-      // nothing to the file, and does not wait for the lock
-      log::error!(target: "ryo2d::panic", "{}", describe(info));
+      // nothing to the file, and does not wait for the lock. Not to stderr:
+      // the earlier hook prints the panic there
+      super::log_panic(describe(info));
       file::flush();
       earlier(info);
     }));

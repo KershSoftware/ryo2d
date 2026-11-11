@@ -5,16 +5,23 @@
 //! tools has no ring and no console). Both runs are recorded in
 //! `docs/backlog/dev-tools.md`.
 //!
-//! Every log call here is made with an engine target (`ryo2d::bench`), as
-//! the engine's own calls are, so the figures compare with the earlier log's,
-//! which measured engine records.
+//! Every log call here but `log_call_quiet_prelude`'s is made with the `log`
+//! crate's macro and an engine target (`ryo2d::bench`), as the engine's own
+//! calls are, so the figures compare with the earlier log's, which measured
+//! engine records.
 //!
 //! - `log_call_quiet`: one `log::debug!(target: "ryo2d::bench", "value {}",
 //!   n)` at the default levels (`info`), nanoseconds a call, the median of
 //!   `REPEATS` runs of 1,000,000 calls; held to `QUIET_TARGET_NS`. The
 //!   level check cuts the record before it is formatted or stored: this is
-//!   what a game pays for a silenced line. (The earlier log kept its debug
-//!   lines, so its figure was a different piece of work.);
+//!   what the engine pays for a silenced line. (The earlier log kept its
+//!   debug lines, so its figure was a different piece of work.);
+//! - `log_call_quiet_prelude`: one `ryo2d::debug!("value {}", n)`, the
+//!   prelude's macro a game calls (its target `game::dev_tools`, at the
+//!   default `info`), which also calls `logging::ensure()` (one atomic read,
+//!   not inlined) before `log`'s level check: what a game pays for a
+//!   silenced line. The same count and median, held to the same
+//!   `QUIET_TARGET_NS`;
 //! - `log_call_warn`: one `log::warn!(target: "ryo2d::bench", "value {}",
 //!   n)` with a log file open in a temp folder, as a running game has (opened
 //!   and closed through `testing::open_log_file` and `close_log_file`, a
@@ -120,6 +127,11 @@ fn quiet_call(n: u32) {
 }
 
 #[inline(never)]
+fn quiet_prelude_call(n: u32) {
+  ryo2d::debug!("value {}", n);
+}
+
+#[inline(never)]
 fn warn_call(n: u32) {
   log::warn!(target: "ryo2d::bench", "value {}", n);
 }
@@ -145,6 +157,18 @@ fn log_calls() {
     if ns > QUIET_TARGET_NS {
       guards::miss(format!(
         "log_call_quiet {ns:.1} ns over its {QUIET_TARGET_NS} ns target"
+      ));
+    }
+  }
+  if guards::runs(&["log_call_quiet_prelude"]) {
+    let ns = median_ns(QUIET_CALLS, quiet_prelude_call);
+    println!(
+      "log_call_quiet_prelude: {ns:.1} ns a call, median of {REPEATS} runs of {QUIET_CALLS} \
+       calls (the prelude's debug!, terminal output off; target {QUIET_TARGET_NS} ns)"
+    );
+    if ns > QUIET_TARGET_NS {
+      guards::miss(format!(
+        "log_call_quiet_prelude {ns:.1} ns over its {QUIET_TARGET_NS} ns target"
       ));
     }
   }

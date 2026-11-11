@@ -822,14 +822,15 @@ info!("level loaded, score {score}");
 debug!("spawn timer at {dt:.3}"); // hidden at the default levels
 warn!("no save in slot {}", 2);
 error!("could not read {path}");
-// In code that runs every frame: logged the first time this line is reached, never again
+// In code that runs every frame: logged the first time this line is reached
+// with warnings let through, never again
 warn_once!("the boss has no path and will stand still");
 ```
 
 - **Levels.** The game's and the engine's `info!` and above show by default; `debug!` and `trace!` are hidden until a level lets them through: `RYO_LOG=game=debug` at launch (`ryo-cli`, The Log), or `log:level game debug` in the console while the game runs (`ryo-console`). Other crates show only warnings and errors.
 - **Use the prelude's macros**, not the `log` crate's: a game calling `log::info!` itself logs as a library, hidden at the default levels.
 - A line logged in `main`, before the engine is built, is kept: the first call installs the logger.
-- **Where the lines go.** In development: the terminal (`INFO game::my_game::level: level loaded, score 0`), the logger window (F9, filtered by level and by game, engine or library), and the console's warnings and errors. Every windowed run, a shipped game's too, writes the log file `logs/latest.log` in the save folder (`data/logs/latest.log` in development, the OS user data folder in a release; the run before is kept as `previous.log`), each line `HH:MM:SS.mmm LEVEL target: message`. A panic is written there as `panic at file:line: message`. The file stops at 8 MiB with a `log full` line. A shipped game writes nothing to the terminal, so the log file is what a player can send you. A headless run logs to the terminal and writes no file; the web logs to the browser console.
+- **Where the lines go.** In development: the terminal (`INFO game::my_game::level: level loaded, score 0`), the logger window (F9, filtered by level and by game, engine or library), and the console's warnings and errors. Every windowed run, a shipped game's too, writes the log file `logs/latest.log` in the save folder (`data/logs/latest.log` in development, the OS user data folder in a release; the run before is kept as `previous.log`), each line `HH:MM:SS.mmm LEVEL target: message`. A panic is written there as `panic at file:line: message`. The file stops at 8 MiB with a `log full` line. A shipped game writes nothing to the terminal (unless it has no log file, or was started with `RYO_CAPTURE_*`, `RYO_INPUT` or `RYO_HEADLESS`), so the log file is what a player can send you; a second copy run beside the first writes `logs/latest-<pid>.log`. A headless run logs to the terminal and writes no file; the web logs to the browser console.
 - In a test, `ryo2d::testing::capture_log()` collects what is logged (Visual Tests, below).
 
 ## Console Commands

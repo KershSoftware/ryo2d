@@ -15,12 +15,14 @@
 #     ./dev.sh demos:kill-all          - Kill all running demos
 #     ./dev.sh demos:tour [demo...]    - Capture every page of every demo headlessly (target/demo-tour)
 #     ./dev.sh web <demo>              - Serve a demo in the browser (WebGPU, needs trunk)
-#     ./dev.sh check                   - Compilation check (engine + all examples, engine for wasm)
+#     ./dev.sh check                   - Compilation check (engine + all examples, engine for wasm,
+#                                        the build without tools and its tests, tests/no_tools.rs)
 #     ./dev.sh lint                    - Linting with clippy (engine + all examples, incl. tests; engine for wasm)
 #     ./dev.sh test                    - Run unit + integration tests
 #     ./dev.sh test:unit               - Run unit tests only
 #     ./dev.sh test:integration        - Run integration tests only
 #     ./dev.sh test:e2e                - Run e2e tests (requires GPU)
+#     ./dev.sh test:all                - Run ALL tests (with the build without tools' tests/no_tools.rs)
 #     ./dev.sh coverage                - Unit test coverage (default)
 #     ./dev.sh coverage:unit           - Unit test coverage
 #     ./dev.sh coverage:integration    - Integration test coverage
@@ -493,6 +495,7 @@ case "$COMMAND" in
         cargo check -p ryo2d --lib --target wasm32-unknown-unknown
         cargo check -p ryo2d --lib --release
         cargo check -p console-demo --release
+        cargo check -p ryo2d --release --test no_tools
         ;;
     lint)
         cargo clippy --workspace --all-targets
@@ -520,6 +523,8 @@ case "$COMMAND" in
     test:all)
         echo -e "${CYAN}Running ALL tests (unit + integration + e2e)...${NC}"
         cargo test --lib --test integration --test e2e -- --include-ignored
+        # The build without tools: tests/no_tools.rs is empty in a debug build
+        cargo test -p ryo2d --release --test no_tools
         ;;
     coverage|coverage:unit)
         echo -e "${CYAN}Generating unit test coverage report...${NC}"
@@ -606,13 +611,14 @@ case "$COMMAND" in
         echo "    ./dev.sh demos:kill-all          - Kill all running demos"
         echo "    ./dev.sh demos:tour [demo...]    - Capture every page of every demo headlessly (target/demo-tour)"
         echo "    ./dev.sh web <demo>              - Serve a demo in the browser (WebGPU, needs trunk)"
-        echo "    ./dev.sh check                   - Compilation check (engine + all examples, engine for wasm)"
+        echo "    ./dev.sh check                   - Compilation check (engine + all examples, engine for wasm,"
+        echo "                                       the build without tools and its tests, tests/no_tools.rs)"
         echo "    ./dev.sh lint                    - Linting with clippy (engine + all examples, incl. tests; engine for wasm)"
         echo "    ./dev.sh test                    - Run unit + integration tests (default)"
         echo "    ./dev.sh test:unit               - Run unit tests only"
         echo "    ./dev.sh test:integration        - Run integration tests only"
         echo "    ./dev.sh test:e2e                - Run e2e tests (requires GPU)"
-        echo "    ./dev.sh test:all                - Run ALL tests"
+        echo "    ./dev.sh test:all                - Run ALL tests (with the build without tools' tests/no_tools.rs)"
         echo "    ./dev.sh coverage                - Unit test coverage (default)"
         echo "    ./dev.sh coverage:unit           - Unit test coverage"
         echo "    ./dev.sh coverage:integration    - Integration test coverage"

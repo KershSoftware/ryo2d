@@ -1,6 +1,6 @@
 //! Check-ui command - checks UI files without running the game
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::{CliError, CliResult, Output, discover_workspace};
 use crate::core::ui::file::check::{check_files, ui_files_under};
@@ -25,11 +25,15 @@ pub fn execute(args: &[String]) -> CliResult<()> {
     Output::warning(&format!("no *.ui.ron files under {}", assets.display()));
     return Ok(());
   }
+  check(&assets, files)
+}
 
+/// Checks `files` against the assets directory, printing each problem.
+pub(super) fn check(assets: &Path, files: Vec<PathBuf>) -> CliResult<()> {
   // The registry warns about each file that does not load; the command
   // prints those mistakes itself, once each
   crate::core::logging::set_stderr(false);
-  let issues = check_files(&assets, &files);
+  let issues = check_files(assets, &files);
   for issue in &issues {
     eprintln!("{issue}");
   }

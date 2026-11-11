@@ -96,6 +96,20 @@ pub fn set_log_stderr(on: bool) {
   crate::core::logging::set_stderr(on);
 }
 
+/// Whether the log's stderr output is on (for `tests/no_tools.rs`)
+#[doc(hidden)]
+pub fn log_stderr_on() -> bool {
+  crate::core::logging::stderr_on()
+}
+
+/// What `EngineBuilder::build` does first, with the scripting variables
+/// (`RYO_CAPTURE_FRAMES`, `RYO_INPUT`, ...) in `set` set: any one turns the
+/// log's stderr output on (for `tests/no_tools.rs`)
+#[doc(hidden)]
+pub fn start_log_for_script(set: &[&str]) {
+  crate::core::capture::start_log_for_script(|name| set.contains(&name));
+}
+
 /// Opens the log file in `folder` (`<folder>/logs/latest.log`, the last
 /// one moved to `previous.log`) as a windowed game does, through the same
 /// path; the path used, or `None` when it cannot be had (for

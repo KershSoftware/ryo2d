@@ -58,9 +58,18 @@ static OPEN: AtomicBool = AtomicBool::new(false);
 
 /// The records kept for a file not yet open.
 pub(crate) const EARLY: usize = 256;
+
+/// A record kept for a file not yet open.
+struct EarlyRecord {
+  record: LogRecord,
+  /// stderr was to take it but was off: should the run end with no file, it
+  /// is printed then
+  owed: bool,
+}
+
 /// The newest [`EARLY`] records logged before a file opened; `None` once a
 /// file has opened or the run has said it will open none.
-static EARLY_RECORDS: Mutex<Option<VecDeque<LogRecord>>> = Mutex::new(Some(VecDeque::new()));
+static EARLY_RECORDS: Mutex<Option<VecDeque<EarlyRecord>>> = Mutex::new(Some(VecDeque::new()));
 /// Whether [`EARLY_RECORDS`] still keeps records, so a run that dropped them
 /// costs one atomic read a record.
 static EARLY_ON: AtomicBool = AtomicBool::new(true);
@@ -119,9 +128,10 @@ fn lock() -> Option<Held> {
 
 /// Rotates the last run's file, opens this run's and makes it the file
 /// output. Returns the path used: `logs/latest.log`, or `logs/latest-<pid>.log`
-/// when that cannot be had (a second copy of the game holds it).
+/// when another copy of the game holds that or it cannot be had (said in
+/// one info line).
 pub(crate) fn open(folder: &Path) -> io::Result<PathBuf> {
-  let (file, path) = create(folder)?;
+  let (file, path, why) = create(folder)?;
   let mut output = FileOutput {
     writer: BufWriter::with_capacity(BUFFER, file),
     written: 0,
@@ -133,19 +143,22 @@ pub(crate) fn open(folder: &Path) -> io::Result<PathBuf> {
     #[cfg(test)]
     owner: std::thread::current().id(),
   };
+  // The file's lock, then the early buffer's (the documented order). The
+  // records kept go first; a record logged meanwhile is kept (the buffer's
+  // lock is ours, so it waits and then finds the file open) or finds the
+  // file open and waits for the file's lock: `OPEN` is set before the
+  // buffer is said to be gone, so no record is dropped between them
   let mut state = STATE.lock().unwrap_or_else(PoisonError::into_inner);
-  // The records kept go first; a record logged meanwhile waits for the
-  // file's lock, so none comes between them
   let mut early = early_records();
   let kept = early.take();
-  EARLY_ON.store(false, Ordering::Release);
   let written = kept.map_or(Ok(()), |kept| {
     kept
       .iter()
-      .try_for_each(|record| output.write_line(record, false))
+      .try_for_each(|early| output.write_line(&early.record, false))
   });
   *state = Some(output);
   OPEN.store(true, Ordering::Release);
+  EARLY_ON.store(false, Ordering::Release);
   drop(early);
   drop(state);
   if let Err(error) = written {
@@ -154,55 +167,166 @@ pub(crate) fn open(folder: &Path) -> io::Result<PathBuf> {
     }
     return Err(error);
   }
+  if let Some(why) = why {
+    log::info!("{why}; this run writes {}", path.display());
+  }
   Ok(path)
 }
 
-/// Rotates the last run's file and creates this run's.
-fn create(folder: &Path) -> io::Result<(File, PathBuf)> {
+/// Rotates the last run's file and creates this run's: the file, its path,
+/// and why it is not `latest.log` when it is not. A copy of the game that
+/// finds `latest.log` held by another (two local copies, as netplay is
+/// tested) leaves it and the previous run alone and writes
+/// `latest-<pid>.log`; a copy that has `latest.log` removes the pid files no
+/// running copy holds.
+fn create(folder: &Path) -> io::Result<(File, PathBuf, Option<String>)> {
   let logs = folder.join("logs");
   fs::create_dir_all(&logs)?;
   let latest = logs.join("latest.log");
+  let fallback = logs.join(format!("latest-{}.log", std::process::id()));
+  if held_by_another(&latest) {
+    let file = create_held(&fallback)?;
+    let why = "another copy of the game is writing logs/latest.log".to_owned();
+    return Ok((file, fallback, Some(why)));
+  }
   let rotated = match fs::rename(&latest, logs.join("previous.log")) {
     Ok(()) => Ok(()),
     // The first run has nothing to rotate
     Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
     Err(error) => Err(error),
   };
-  match rotated.and_then(|()| File::create(&latest)) {
-    Ok(file) => Ok((file, latest)),
-    Err(_) => {
-      let fallback = logs.join(format!("latest-{}.log", std::process::id()));
-      Ok((File::create(&fallback)?, fallback))
+  match rotated.and_then(|()| create_held(&latest)) {
+    Ok(file) => {
+      remove_unheld_pid_files(&logs);
+      Ok((file, latest, None))
+    }
+    Err(error) => {
+      let file = create_held(&fallback)?;
+      let why = format!("logs/latest.log could not be had ({error})");
+      Ok((file, fallback, Some(why)))
     }
   }
 }
 
-fn early_records() -> MutexGuard<'static, Option<VecDeque<LogRecord>>> {
+/// Creates (or empties) a log file, held for as long as it is open, so a
+/// copy of the game starting meanwhile sees it is in use
+/// ([`held_by_another`]). On Unix an advisory lock, which keeps no reader
+/// out. On Windows a lock would (its locks are mandatory: the file could
+/// not be read while the game runs), so the file is opened without
+/// `FILE_SHARE_DELETE` instead: it can be read, but no other process can
+/// move or remove it while it is open.
+fn create_held(path: &Path) -> io::Result<File> {
+  #[cfg(windows)]
+  let file = {
+    use std::os::windows::fs::OpenOptionsExt;
+    const FILE_SHARE_READ: u32 = 0x1;
+    const FILE_SHARE_WRITE: u32 = 0x2;
+    fs::OpenOptions::new()
+      .write(true)
+      .create(true)
+      .truncate(true)
+      .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+      .open(path)?
+  };
+  #[cfg(not(windows))]
+  let file = File::create(path)?;
+  // A file system with no locks still gets the file, held or not
+  #[cfg(unix)]
+  let _ = file.try_lock();
+  Ok(file)
+}
+
+/// Whether another process holds the log file at `path` ([`create_held`]).
+fn held_by_another(path: &Path) -> bool {
+  #[cfg(unix)]
+  {
+    File::open(path).is_ok_and(|file| matches!(file.try_lock(), Err(fs::TryLockError::WouldBlock)))
+  }
+  #[cfg(windows)]
+  {
+    use std::os::windows::fs::OpenOptionsExt;
+    // Asking for the right to delete it, as a move does, is refused while
+    // its holder shares no deletion
+    const DELETE: u32 = 0x0001_0000;
+    const ERROR_SHARING_VIOLATION: i32 = 32;
+    fs::OpenOptions::new()
+      .access_mode(DELETE)
+      .open(path)
+      .is_err_and(|error| error.raw_os_error() == Some(ERROR_SHARING_VIOLATION))
+  }
+  #[cfg(not(any(unix, windows)))]
+  {
+    let _ = path;
+    false
+  }
+}
+
+/// Removes the `latest-<pid>.log` files in `logs` that no running copy of
+/// the game holds: each was a copy's while `latest.log` was another's.
+fn remove_unheld_pid_files(logs: &Path) {
+  let Ok(entries) = fs::read_dir(logs) else {
+    return;
+  };
+  for entry in entries.flatten() {
+    let name = entry.file_name();
+    let is_pid_file = name
+      .to_str()
+      .and_then(|name| name.strip_prefix("latest-")?.strip_suffix(".log"))
+      .is_some_and(|pid| !pid.is_empty() && pid.bytes().all(|b| b.is_ascii_digit()));
+    let path = entry.path();
+    if is_pid_file && !held_by_another(&path) {
+      let _ = fs::remove_file(&path);
+    }
+  }
+}
+
+fn early_records() -> MutexGuard<'static, Option<VecDeque<EarlyRecord>>> {
   EARLY_RECORDS.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Keeps `record` for a file not yet open. False when a file opened since
-/// the caller looked, so the record is the file's to write.
-fn keep_early(record: &LogRecord) -> bool {
+/// What [`keep_early`] did with a record.
+enum Early {
+  /// Kept for the file; `shown` is whether stderr takes it now (else it is
+  /// owed to stderr, should the run end with no file)
+  Kept { shown: bool },
+  /// Not kept: no file will open
+  Dropped,
+  /// A file opened since the caller looked: the record is the file's
+  ForFile,
+}
+
+/// Keeps `record` for a file not yet open. `may_show` is whether stderr
+/// may take it (it is not captured); whether it does is read here, under
+/// the buffer's lock, so a record is never both owed to stderr and printed.
+fn keep_early(record: &LogRecord, may_show: bool) -> Early {
   if !EARLY_ON.load(Ordering::Acquire) {
-    return !OPEN.load(Ordering::Acquire);
+    return if OPEN.load(Ordering::Acquire) {
+      Early::ForFile
+    } else {
+      Early::Dropped
+    };
   }
   #[cfg(test)]
   if !KEEPS_EARLY.with(std::cell::Cell::get) {
-    return true;
+    return Early::Dropped;
   }
   let copy = record.clone();
   let mut early = early_records();
   if OPEN.load(Ordering::Acquire) {
-    return false;
+    return Early::ForFile;
   }
-  if let Some(kept) = early.as_mut() {
-    if kept.len() >= EARLY {
-      kept.pop_front();
-    }
-    kept.push_back(copy);
+  let Some(kept) = early.as_mut() else {
+    return Early::Dropped;
+  };
+  let shown = may_show && super::outputs::stderr_enabled();
+  if kept.len() >= EARLY {
+    kept.pop_front();
   }
-  true
+  kept.push_back(EarlyRecord {
+    record: copy,
+    owed: may_show && !shown,
+  });
+  Early::Kept { shown }
 }
 
 /// The run will open no file (a headless engine, or one that could not be
@@ -215,6 +339,29 @@ pub(crate) fn drop_early() {
   let mut early = early_records();
   EARLY_ON.store(false, Ordering::Release);
   *early = None;
+}
+
+/// The run ends its start-up with no file of its own (no save folder, or one
+/// that cannot be written): stderr is turned on, in every build, and the
+/// records kept for a file that stderr did not take go to it first, in
+/// order; then the buffer goes and no more are kept.
+pub(crate) fn early_to_stderr() {
+  #[cfg(test)]
+  if !KEEPS_EARLY.with(std::cell::Cell::get) {
+    super::outputs::set_stderr(true);
+    return;
+  }
+  // Under the buffer's lock, so a record is either kept (and owed to stderr
+  // while it was off) or, after, printed as it is logged
+  let kept = {
+    let mut early = early_records();
+    super::outputs::set_stderr(true);
+    EARLY_ON.store(false, Ordering::Release);
+    early.take()
+  };
+  for early in kept.iter().flatten().filter(|early| early.owed) {
+    super::outputs::print(&early.record);
+  }
 }
 
 /// Whether records are still kept for a file not yet open
@@ -230,6 +377,14 @@ pub(crate) fn keep_early_records() -> KeepEarly {
   let mut early = early_records();
   *early = Some(VecDeque::new());
   EARLY_ON.store(true, Ordering::Release);
+  KEEPS_EARLY.with(|flag| flag.set(true));
+  KeepEarly
+}
+
+/// For a test: this thread keeps its records for a file too, adding to
+/// those kept, until the guard drops.
+#[cfg(test)]
+pub(crate) fn keep_early_records_here() -> KeepEarly {
   KEEPS_EARLY.with(|flag| flag.set(true));
   KeepEarly
 }
@@ -254,24 +409,38 @@ pub(crate) fn test_turn() -> MutexGuard<'static, ()> {
 }
 
 /// Writes the record's line. A failed write detaches the file, says so once
-/// on stderr, and the game goes on without it.
-pub(super) fn write(record: &LogRecord) {
-  if !OPEN.load(Ordering::Acquire) && keep_early(record) {
-    return;
+/// on stderr, and the game goes on without it. Before a file opens the
+/// record is kept for one instead: then it gives back whether stderr takes
+/// it (`may_show` is whether it may), read as the record was kept.
+pub(super) fn write(record: &LogRecord, may_show: bool) -> Option<bool> {
+  if !OPEN.load(Ordering::Acquire) {
+    match keep_early(record, may_show) {
+      Early::Kept { shown } => return Some(shown),
+      Early::Dropped => return None,
+      Early::ForFile => {}
+    }
   }
-  let Some(mut held) = lock() else { return };
-  let Some(output) = held.output() else { return };
+  let mut held = lock()?;
+  let output = held.output()?;
   #[cfg(test)]
-  if output.owner != std::thread::current().id() {
-    return;
+  if !output.takes_this_thread() {
+    return None;
   }
   let urgent = record.level <= log::Level::Warn;
   if let Err(error) = output.write_line(record, urgent) {
     held.detach(&error);
   }
+  None
 }
 
 impl FileOutput {
+  /// Tests share the process: a test's file takes its own thread's records,
+  /// and those of a thread that keeps records for a file (a file test's)
+  #[cfg(test)]
+  fn takes_this_thread(&self) -> bool {
+    self.owner == std::thread::current().id() || KEEPS_EARLY.with(std::cell::Cell::get)
+  }
+
   fn write_line(&mut self, record: &LogRecord, urgent: bool) -> io::Result<()> {
     if self.full {
       return Ok(());
@@ -448,12 +617,12 @@ mod tests {
 
     let first = open(dir.path()).unwrap();
     assert_eq!(first, dir.path().join("logs/latest.log"));
-    write(&record(log::Level::Warn, "from the first run"));
+    write(&record(log::Level::Warn, "from the first run"), false);
     close();
 
     let second = open(dir.path()).unwrap();
     assert_eq!(second, first);
-    write(&record(log::Level::Warn, "from the second run"));
+    write(&record(log::Level::Warn, "from the second run"), false);
     flush();
     close();
 
@@ -477,7 +646,7 @@ mod tests {
     let dir = tempfile::tempdir().unwrap();
     let path = open(dir.path()).unwrap();
 
-    write(&record(log::Level::Info, "a note"));
+    write(&record(log::Level::Info, "a note"), false);
     assert!(
       !read(&path).contains("a note"),
       "an info line waits in the buffer"
@@ -487,9 +656,9 @@ mod tests {
     assert!(read(&path).contains("a note"));
 
     std::thread::sleep(FLUSH_GAP * 2);
-    write(&record(log::Level::Warn, "a problem"));
+    write(&record(log::Level::Warn, "a problem"), false);
     assert!(read(&path).contains("a problem"), "on disk at once");
-    write(&record(log::Level::Error, "an error right after"));
+    write(&record(log::Level::Error, "an error right after"), false);
     // Within the gap of the last flush: left for the tick
     std::thread::sleep(FLUSH_GAP * 2);
     tick();
@@ -505,7 +674,7 @@ mod tests {
     FLUSHES.store(0, std::sync::atomic::Ordering::Relaxed);
 
     for _ in 0..100_000 {
-      write(&record(log::Level::Warn, &message));
+      write(&record(log::Level::Warn, &message), false);
     }
 
     let flushes = FLUSHES.load(std::sync::atomic::Ordering::Relaxed);
@@ -527,8 +696,8 @@ mod tests {
     let dir = tempfile::tempdir().unwrap();
     let path = open(dir.path()).unwrap();
     let long = "y".repeat(LINE_KEEP * 4);
-    write(&record(log::Level::Info, &long));
-    write(&record(log::Level::Info, "short"));
+    write(&record(log::Level::Info, &long), false);
+    write(&record(log::Level::Info, "short"), false);
     let kept = STATE
       .lock()
       .unwrap()
@@ -555,7 +724,7 @@ mod tests {
     assert!(result.is_err());
     assert!(!is_open(), "no file output");
     // The game goes on logging
-    write(&record(log::Level::Warn, "nowhere to go"));
+    write(&record(log::Level::Warn, "nowhere to go"), false);
     flush();
   }
 
@@ -565,10 +734,10 @@ mod tests {
     let _early = keep_early_records();
     let dir = tempfile::tempdir().unwrap();
     for i in 0..300 {
-      write(&record(log::Level::Info, &format!("early {i}")));
+      write(&record(log::Level::Info, &format!("early {i}")), false);
     }
     let path = open(dir.path()).unwrap();
-    write(&record(log::Level::Warn, "after"));
+    write(&record(log::Level::Warn, "after"), false);
     flush();
 
     let text = read(&path);
@@ -587,8 +756,119 @@ mod tests {
   }
 
   #[test]
+  fn no_record_is_lost_while_the_file_opens() {
+    let _guard = exclusive();
+    // Many kept records make the open's own work long
+    const KEPT: usize = EARLY - 1;
+    for round in 0..50 {
+      let dir = tempfile::tempdir().unwrap();
+      let ready = std::sync::Arc::new(std::sync::Barrier::new(2));
+      // Another thread logs while this one opens the file, until it sees
+      // the file open and a few lines after (it keeps records for a file,
+      // so a test's file takes its records too)
+      let writer = std::thread::spawn({
+        let ready = ready.clone();
+        move || {
+          let _early = keep_early_records();
+          ready.wait();
+          ready.wait();
+          let mut written = 0;
+          let mut after = 0;
+          while after < 10 && written < 1_000_000 {
+            if is_open() {
+              after += 1;
+            }
+            write(
+              &record(log::Level::Info, &format!("racing {written}")),
+              false,
+            );
+            written += 1;
+          }
+          written
+        }
+      });
+      ready.wait();
+      let _early = keep_early_records_here();
+      for i in 0..KEPT {
+        write(&record(log::Level::Info, &format!("kept {i}")), false);
+      }
+      ready.wait();
+      let path = open(dir.path()).unwrap();
+      let written = writer.join().unwrap();
+      flush();
+      close();
+      // The early buffer drops its oldest when full, so the racing lines in
+      // the file are a run that ends with the last one written: a gap is a
+      // lost record
+      let text = read(&path);
+      let racing: Vec<usize> = text
+        .lines()
+        .filter_map(|line| line.rsplit_once("racing ")?.1.parse().ok())
+        .collect();
+      let first = racing.first().copied().unwrap_or(written);
+      let expected: Vec<usize> = (first..written).collect();
+      assert_eq!(racing, expected, "round {round}: {written} written");
+    }
+  }
+
+  #[test]
+  fn a_second_copy_writes_its_own_file_and_leaves_the_first_s_alone() {
+    let _guard = exclusive();
+    let dir = tempfile::tempdir().unwrap();
+    let logs = dir.path().join("logs");
+    // The first copy runs, writing latest.log
+    let first = open(dir.path()).unwrap();
+    assert_eq!(first, logs.join("latest.log"));
+    write(&record(log::Level::Warn, "from the first copy"), false);
+    flush();
+    std::fs::write(logs.join("previous.log"), "an earlier run\n").unwrap();
+
+    // A second copy starts while it runs
+    let (second_file, second, why) = create(dir.path()).unwrap();
+    assert!(why.is_some_and(|why| why.contains("another copy")));
+    assert_eq!(
+      second,
+      logs.join(format!("latest-{}.log", std::process::id()))
+    );
+    assert!(read(&first).contains("from the first copy"));
+    assert_eq!(read(&logs.join("previous.log")), "an earlier run\n");
+
+    // Both end; the next start rotates as ever, and the pid file no copy
+    // holds goes
+    drop(second_file);
+    close();
+    let third = open(dir.path()).unwrap();
+    assert_eq!(third, first);
+    assert!(read(&logs.join("previous.log")).contains("from the first copy"));
+    assert!(!second.exists(), "a pid file no copy holds is removed");
+  }
+
+  #[test]
+  fn a_start_removes_the_pid_files_no_running_copy_holds() {
+    let _guard = exclusive();
+    let dir = tempfile::tempdir().unwrap();
+    let logs = dir.path().join("logs");
+    std::fs::create_dir_all(&logs).unwrap();
+    // A copy still running that writes a pid file, and one long gone
+    let live = logs.join("latest-1.log");
+    let _running = create_held(&live).unwrap();
+    let stale = logs.join("latest-2.log");
+    std::fs::write(&stale, "an old copy's run\n").unwrap();
+    let other = logs.join("latest-notes.log");
+    std::fs::write(&other, "not a pid file\n").unwrap();
+
+    let (_file, path, why) = create(dir.path()).unwrap();
+    assert_eq!(path, logs.join("latest.log"));
+    assert!(why.is_none());
+    assert!(live.exists(), "a pid file a running copy holds is kept");
+    assert!(!stale.exists(), "a pid file no copy holds is removed");
+    assert!(other.exists(), "only pid files are removed");
+  }
+
+  #[test]
   fn a_held_latest_log_falls_back_to_a_pid_name() {
     let _guard = exclusive();
+    let capture = crate::core::logging::capture_log();
     let dir = tempfile::tempdir().unwrap();
     let logs = dir.path().join("logs");
     // `latest.log` cannot be moved or opened as a file
@@ -600,9 +880,13 @@ mod tests {
       path,
       logs.join(format!("latest-{}.log", std::process::id()))
     );
-    write(&record(log::Level::Warn, "in the fallback"));
+    write(&record(log::Level::Warn, "in the fallback"), false);
     flush();
     assert!(read(&path).contains("in the fallback"));
+    assert_eq!(
+      capture.containing_all(&["logs/latest.log could not be had", "this run writes"]),
+      1
+    );
   }
 
   #[test]
@@ -621,6 +905,38 @@ mod tests {
     assert!(text.contains("file.rs:"), "{text}");
     assert!(text.contains("the sky fell"), "{text}");
     drop(capture);
+  }
+
+  #[test]
+  fn the_panic_hook_s_record_goes_to_the_file_and_not_to_stderr() {
+    let _guard = exclusive();
+    let dir = tempfile::tempdir().unwrap();
+    let path = open(dir.path()).unwrap();
+    super::super::panic::install_hook();
+    // Rust's own hook prints the panic on stderr right after: the log's
+    // record of it goes to the file alone (a scope with no capture, which
+    // stderr would take)
+    let watch = crate::core::logging::watch_stderr(true);
+    let scope = crate::core::logging::scope::new_scope();
+    crate::core::logging::in_scope(scope, || {
+      let result = std::panic::catch_unwind(|| panic!("a hook's record"));
+      assert!(result.is_err());
+    });
+
+    let text = read(&path);
+    assert!(
+      text.contains("ERROR ryo2d::panic: panic at ") && text.contains("a hook's record"),
+      "{text}"
+    );
+    assert!(
+      watch
+        .lines()
+        .iter()
+        .all(|line| !line.contains("a hook's record")),
+      "{:?}",
+      watch.lines()
+    );
+    assert!(watch.outputs().contains(&crate::core::logging::Taken::File));
   }
 
   #[test]

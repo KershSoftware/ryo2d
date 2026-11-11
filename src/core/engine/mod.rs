@@ -2181,8 +2181,12 @@ impl EngineBuilder {
   /// seeded so runs repeat; saves and settings in memory; no gamepads or
   /// wall-clock overlays) but keeps `RYO_CAPTURE_*` and `RYO_INPUT`, and `run` renders
   /// offscreen, each step taking at least its share of a second when
-  /// `RYO_HEADLESS_HZ` is set.
+  /// `RYO_HEADLESS_HZ` is set. With any of those variables set, the log
+  /// goes to stderr in every build.
   pub fn build(self) -> Engine {
+    // A scripted run shows its log in every build, before it says anything
+    // about its variables
+    crate::core::capture::start_log_for_script(|name| std::env::var_os(name).is_some());
     let (offscreen, warning) = crate::core::capture::headless_run_from_env();
     if let Some(warning) = warning {
       log::warn!("{warning}");

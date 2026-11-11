@@ -14,12 +14,14 @@
 #   .\dev demos:kill-all          - Kill all running demos
 #   .\dev demos:tour [demo...]    - Capture every page of every demo headlessly (target/demo-tour)
 #   .\dev web <demo>              - Serve a demo in the browser (WebGPU, needs trunk)
-#   .\dev check                   - Compilation check (engine + all examples, engine for wasm)
+#   .\dev check                   - Compilation check (engine + all examples, engine for wasm,
+#                                   the build without tools and its tests, tests/no_tools.rs)
 #   .\dev lint                    - Linting with clippy (engine + all examples, incl. tests; engine for wasm)
 #   .\dev test                    - Run unit + integration tests
 #   .\dev test:unit               - Run unit tests only
 #   .\dev test:integration        - Run integration tests only
 #   .\dev test:e2e                - Run e2e tests (requires GPU)
+#   .\dev test:all                - Run ALL tests (with the build without tools' tests/no_tools.rs)
 #   .\dev coverage                - Unit test coverage (default)
 #   .\dev coverage:unit           - Unit test coverage
 #   .\dev coverage:integration    - Integration test coverage
@@ -445,6 +447,8 @@ switch ($ExampleName.ToLower()) {
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         cargo check -p console-demo --release
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        cargo check -p ryo2d --release --test no_tools
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     }
     "lint" {
         cargo clippy --workspace --all-targets
@@ -475,6 +479,9 @@ switch ($ExampleName.ToLower()) {
     "test:all" {
         Write-Host "Running ALL tests (unit + integration + e2e)..." -ForegroundColor Cyan
         cargo test --lib --test integration --test e2e -- --include-ignored
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        # The build without tools: tests/no_tools.rs is empty in a debug build
+        cargo test -p ryo2d --release --test no_tools
     }
     { $_ -in "coverage", "coverage:unit" } {
         Write-Host "Generating unit test coverage report..." -ForegroundColor Cyan
@@ -575,13 +582,14 @@ switch ($ExampleName.ToLower()) {
         Write-Host "  ./dev demos:kill-all          - Kill all running demos"
         Write-Host "  ./dev demos:tour [demo...]    - Capture every page of every demo headlessly"
         Write-Host "  ./dev web <demo>              - Serve a demo in the browser (WebGPU, needs trunk)"
-        Write-Host "  ./dev check                   - Compilation check (engine + all examples, engine for wasm)"
+        Write-Host "  ./dev check                   - Compilation check (engine + all examples, engine for wasm,"
+        Write-Host "                                  the build without tools and its tests, tests/no_tools.rs)"
         Write-Host "  ./dev lint                    - Linting with clippy (engine + all examples, incl. tests; engine for wasm)"
         Write-Host "  ./dev test                    - Run unit + integration tests (default)"
         Write-Host "  ./dev test:unit               - Run unit tests only"
         Write-Host "  ./dev test:integration        - Run integration tests only"
         Write-Host "  ./dev test:e2e                - Run e2e tests (requires GPU)"
-        Write-Host "  ./dev test:all                - Run ALL tests"
+        Write-Host "  ./dev test:all                - Run ALL tests (with the build without tools' tests/no_tools.rs)"
         Write-Host "  ./dev coverage                - Unit test coverage (default)"
         Write-Host "  ./dev coverage:unit           - Unit test coverage"
         Write-Host "  ./dev coverage:integration    - Integration test coverage"

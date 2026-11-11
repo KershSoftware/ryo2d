@@ -58,11 +58,31 @@ the first set of runs.
 | Bench | Before | After, without tools | After, with tools | Target or guard | Verdict | Load at each |
 |-------|--------|----------------------|-------------------|-----------------|---------|--------------|
 | `log_call_quiet` (ns a call) | 103.2 (102.6 to 116.7) | 0.7 (0.6 to 0.9) | 0.9 (0.6 to 1.2) | 5 ns | met | Before 5.6 to 6.0; after 7.3 (no tools), 7.1 (tools) |
-| `log_call_warn` (ns a call, a log file open) | 99.9 (98.3 to 105.0) | 76.2 (67.7 to 76.6) | 91.4 (89.2 to 93.4) | no slower than Before's median, 99.9 ns | met in all six runs (worst 94.8 ns); with the tools by 5 to 10 ns, which is less than Before's own run-to-run spread: re-check on a quiet machine | Before 5.6 to 6.0; after 7.0 (no tools), 7.5 (tools) |
+| `log_call_warn` (ns a call, a log file open) | 99.9 (98.3 to 105.0) | 76.2 (67.7 to 76.6) | 91.4 (89.2 to 93.4) | no slower than Before's median, 99.9 ns | met in all six runs (worst 94.8 ns, in an earlier set's runs with the tools: 91.7 to 94.8 ns at a load of 4.4 to 4.8); with the tools by 5 to 10 ns, which is less than Before's own run-to-run spread: re-check on a quiet machine | Before 5.6 to 6.0; after 7.0 (no tools), 7.5 (tools) |
+| `log_call_quiet_prelude` (ns a call, the prelude's `debug!`) | not measured | 1.7 | 1.4 | 5 ns | met | 5.9 (no tools), 3.4 (tools) |
 | `log_call_warn_no_file` (ns a call, no file open yet) | 99.9 (Before wrote no file, so this row is the like-for-like comparison) | 61.4 (58.2 to 65.7) | 69.3 (68.3 to 78.7) | none | recorded | after 7.0 (no tools), 7.5 (tools) |
 | `console_open_idle` (us over the closed frame) | 187.6 (184.1 to 188.9) | no console | 4.6 (4.0 to 4.7) | under a quarter of Before: 46.9 us | met | Before 5.6 to 6.0; after 7.1 |
 | `console_open_idle`, 95th percentile (us) | 233.1 (225.0 to 275.5) | no console | 58.2 (58.1 to 73.9) | none | recorded | as above |
 | `tools_closed` (ns a frame, the tools' own time, closed) | not measured | no tools | 0 to 41 (every run's median was 0 or one clock tick, 41 ns; 95th percentile 42) | 1 us | met | 7.1 |
+
+After the final fixes (the panic hook's record kept from stderr, the file
+written before stderr, the file's open, the early buffer's note of what
+stderr took), the log benches were run once each way, with the new
+`log_call_quiet_prelude` (one `ryo2d::debug!`, the prelude's macro a game
+calls, which also calls `logging::ensure()` before `log`'s level check; the
+other rows time `log`'s macros with an engine target). The machine was
+running a virtual machine throughout, which a few minutes of checks did not
+avoid: the run without the tools started at a load of 5.9 (3.6 just before
+its build), the run with them at 3.4, both flagged. Every guard was met:
+
+| Bench (final fixes, one run each) | Without tools | With tools | Target or guard | Verdict |
+|-------|---------------|------------|-----------------|---------|
+| `log_call_quiet` (ns a call) | 1.2 | 0.6 | 5 ns | met |
+| `log_call_quiet_prelude` (ns a call) | 1.7 | 1.4 | 5 ns | met |
+| `log_call_warn` (ns a call, a log file open) | 67.4 | 86.9 | no slower than Before's median, 99.9 ns | met |
+| `log_call_warn_no_file` (ns a call) | 60.4 | 69.2 | none | recorded |
+| `console_open_idle` (us over the closed frame) | no console | 4.6 (95th percentile 65.9) | under 46.9 us | met |
+| `tools_closed` (ns a frame) | no tools | 0 (95th percentile 42) | 1 us | met |
 
 Notes on the figures:
 
@@ -149,9 +169,13 @@ the tools add about 430 kB.
   its `ryo2d` dependency cannot use `-p`.
 - A game's own command names and descriptions stay in a shipped binary (the
   engine's do not).
-- On macOS and Linux a second copy of a running game takes over `latest.log`
-  (the first copy's file is renamed to `previous.log` under it); the
-  per-process fallback name (`latest-<pid>.log`) only triggers on Windows.
+- Each copy of a running game writes its own log file: the first holds
+  `latest.log` (an advisory lock on macOS and Linux; on Windows, opened
+  without sharing deletion, so it stays readable), and a second copy started
+  meanwhile leaves it and `previous.log` alone and writes
+  `latest-<pid>.log`; a later start removes the pid files no running copy
+  holds. Two copies started in the same instant can still race for
+  `latest.log`.
 - A builder command replaces a built-in of the same name for the whole run.
 - The console's count of warnings no longer shown is of warnings and errors,
   whatever `log:show` is set to.

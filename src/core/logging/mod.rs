@@ -40,8 +40,10 @@ use levels::Levels;
 #[cfg(dev_tools)]
 pub(crate) use levels::parse_level;
 pub(crate) use outputs::set_stderr;
-#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use outputs::stderr_on;
+#[cfg(test)]
+pub(crate) use outputs::{Taken, watch_stderr};
 #[cfg(all(dev_tools, not(target_arch = "wasm32")))]
 pub(crate) use record::clock;
 pub use record::{LogRecord, Origin};
@@ -95,16 +97,19 @@ impl log::Log for Logger {
     }
     let target = record.target();
     target_text.push_str(target);
-    let spare = outputs::emit(LogRecord {
-      seq: 0,
-      level: record.level(),
-      target: target_text,
-      origin: Origin::of(target),
-      message,
-      time: self.start.elapsed(),
-      frame: FRAME.with(Cell::get),
-      scope: scope::current_scope(),
-    });
+    let spare = outputs::emit(
+      LogRecord {
+        seq: 0,
+        level: record.level(),
+        target: target_text,
+        origin: Origin::of(target),
+        message,
+        time: self.start.elapsed(),
+        frame: FRAME.with(Cell::get),
+        scope: scope::current_scope(),
+      },
+      true,
+    );
     recycle(spare);
   }
 
@@ -161,6 +166,31 @@ fn now() -> std::time::Duration {
     .map_or(std::time::Duration::ZERO, |logger| logger.start.elapsed())
 }
 
+/// The panic hook's record, to every output but stderr: Rust's own hook
+/// prints the panic there right after.
+#[cfg(not(target_arch = "wasm32"))]
+fn log_panic(message: String) {
+  const TARGET: &str = "ryo2d::panic";
+  let Some(logger) = LOGGER.get() else { return };
+  if !installed_by_engine() || log::Level::Error > logger.levels().of(TARGET) {
+    return;
+  }
+  let spare = outputs::emit(
+    LogRecord {
+      seq: 0,
+      level: log::Level::Error,
+      target: TARGET.to_owned(),
+      origin: Origin::of(TARGET),
+      message,
+      time: logger.start.elapsed(),
+      frame: FRAME.try_with(Cell::get).ok().flatten(),
+      scope: scope::current_scope(),
+    },
+    false,
+  );
+  recycle(spare);
+}
+
 /// Installs the engine's logger, once per process; later calls cost one
 /// atomic read. Safe from any thread.
 pub fn ensure() {
@@ -207,8 +237,15 @@ fn outcome(result: Result<(), log::SetLoggerError>) -> Outcome {
 
 /// A line about the log itself, which has nowhere else to go.
 fn report(line: &str) {
+  // A panicking print in a panicking thread (a write failing in the panic
+  // hook) would abort
   #[cfg(not(target_arch = "wasm32"))]
-  eprintln!("ryo2d: {line}");
+  if std::thread::panicking() {
+    use std::io::Write as _;
+    let _ = writeln!(std::io::stderr(), "ryo2d: {line}");
+  } else {
+    eprintln!("ryo2d: {line}");
+  }
   #[cfg(target_arch = "wasm32")]
   web_sys::console::warn_1(&format!("ryo2d: {line}").into());
 }
@@ -249,7 +286,8 @@ pub(crate) fn level_report() -> Option<levels::LevelReport> {
 
 /// Opens the log file in `folder` (`<folder>/logs/latest.log`) and installs
 /// the panic hook that writes a panic to it. Returns the path used. A file
-/// that cannot be had is said once on stderr, and the game runs without it.
+/// that cannot be had is said once on stderr, and the game runs without it,
+/// its log on stderr (the records kept for the file first) in every build.
 /// With another `log` logger in first there is none: the engine's outputs
 /// are off, and opening would only empty `latest.log` and push the last
 /// run's out.
@@ -267,11 +305,11 @@ pub(crate) fn open_log_file(folder: &std::path::Path) -> Option<std::path::PathB
       Some(path)
     }
     Err(error) => {
-      file::drop_early();
       report(&format!(
         "no log file in {} ({error}); the game runs without one",
         folder.display()
       ));
+      file::early_to_stderr();
       None
     }
   }
@@ -285,11 +323,11 @@ pub(crate) fn headless_run() {
   file::drop_early();
 }
 
-/// The run opens no log file (a windowed engine with no save folder): the
-/// records kept for one go, and no more are kept.
+/// The run opens no log file (a windowed engine with no save folder): its
+/// log goes to stderr in every build, the records kept for a file first.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn no_log_file() {
-  file::drop_early();
+  file::early_to_stderr();
 }
 
 /// Flushes the log file and detaches it (benches and tests: a game's file
@@ -573,6 +611,62 @@ mod tests {
     assert_eq!(records[0].message, "new 1");
     assert_eq!(records[1].target, "game::reused::again");
     assert_eq!(records[1].message, "plain");
+  }
+
+  fn early_record(message: &str) -> LogRecord {
+    LogRecord {
+      level: Level::Warn,
+      target: "game::early".to_owned(),
+      ..spare_record(message.to_owned())
+    }
+  }
+
+  /// A run with no log file of its own shows on stderr what it kept for one
+  fn ends_with_no_file(end: impl FnOnce()) {
+    let _turn = file_test_turn();
+    file::close();
+    // As a build without tools starts: stderr off
+    let watch = outputs::watch_stderr(false);
+    let _early = keep_early_records();
+    file::write(&early_record("saves are unavailable"), true);
+    file::write(&early_record("a second warning"), true);
+    // A captured record is the test's, not the terminal's
+    file::write(&early_record("captured"), false);
+    end();
+    assert!(stderr_on(), "the rest of the run's log goes to stderr");
+    assert_eq!(
+      watch.lines(),
+      [
+        "WARN game::early: saves are unavailable",
+        "WARN game::early: a second warning"
+      ],
+      "the records kept for a file, in order"
+    );
+    assert!(!early_records_kept());
+  }
+
+  #[test]
+  fn a_run_whose_log_folder_cannot_be_written_shows_its_log_on_stderr() {
+    let dir = tempfile::tempdir().unwrap();
+    let blocker = dir.path().join("a-regular-file");
+    std::fs::write(&blocker, "").unwrap();
+    ends_with_no_file(|| assert!(open_log_file(&blocker.join("saves")).is_none()));
+  }
+
+  #[test]
+  fn a_run_with_no_log_folder_shows_its_log_on_stderr() {
+    ends_with_no_file(no_log_file);
+  }
+
+  #[test]
+  fn records_already_on_stderr_are_not_shown_twice() {
+    let _turn = file_test_turn();
+    file::close();
+    let watch = outputs::watch_stderr(true);
+    let _early = keep_early_records();
+    file::write(&early_record("shown as it was logged"), true);
+    no_log_file();
+    assert!(watch.lines().is_empty(), "{:?}", watch.lines());
   }
 
   #[test]

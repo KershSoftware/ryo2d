@@ -2871,13 +2871,19 @@ fn a_windowed_engine_that_opens_no_log_file_keeps_no_records_for_one() {
     .start_scene(EmptyScene)
     .resolve_in(None, true);
   let engine = Engine::new(resolved, true);
-  // As a windowed engine with no save folder starts its run
+  // As a windowed engine with no save folder starts its run, in a build
+  // without tools
+  let _watch = crate::core::logging::watch_stderr(false);
   let _early = crate::core::logging::keep_early_records();
   assert!(engine.log_folder.is_none());
   engine.open_log_file();
   assert!(
     !crate::core::logging::early_records_kept(),
     "no file will open, so nothing is kept for one"
+  );
+  assert!(
+    crate::core::logging::stderr_on(),
+    "its log goes to stderr instead"
   );
 }
 
@@ -2888,8 +2894,9 @@ fn a_headless_engine_logs_to_stderr_in_every_build() {
   // The file tests' turn: the buffer of records waiting for a file is theirs too
   let _file = crate::core::logging::file_test_turn();
   let _early = crate::core::logging::keep_early_records();
-  // As a build without tools starts
-  crate::core::logging::set_stderr(false);
+  // As a build without tools starts (the thread's own switch: other tests'
+  // engines turn the process's on)
+  let _watch = crate::core::logging::watch_stderr(false);
   let _engine = EngineBuilder::new()
     .start_scene(EmptyScene)
     .build_headless();
