@@ -11,10 +11,10 @@
 //!   following the camera as it flies a loop over the map, minus the same
 //!   frame with no light (both are printed, as `cave_unlit` and
 //!   `cave_one_light`);
-//! - `sixty_four_lights_quarter_visible` (and `_lights`, minus the same scene
-//!   with no lights, printed as `cave_still_unlit`): 64 shadowed lights of 200 px on a
-//!   fixed grid of 8 x 8 (480 x 270 px apart) over the middle of the map,
-//!   the still camera seeing 16 of them;
+//! - `sixty_four_lights_quarter_visible` (and `_lights`, minus the same
+//!   scene with no lights, printed as `cave_still_unlit`): 64 shadowed
+//!   lights of 200 px on a fixed grid of 8 x 8 (480 x 270 px apart) over
+//!   the middle of the map, the still camera seeing 16 of them;
 //! - `two_hundred_fifty_six_lights_in_view`: 256 shadowed lights of 120 px
 //!   on a grid of 16 x 16 inside the still camera's view.
 //!

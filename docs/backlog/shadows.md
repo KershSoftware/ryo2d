@@ -39,18 +39,41 @@ Medians in microseconds:
 | Bench | Before median | Before slowest | Run 1 | Run 2 | Run 3 | After median | Guard | Verdict | Load (runs 1, 2, 3) |
 |-------|---------------|----------------|-------|-------|-------|--------------|-------|---------|---------------------|
 | `one_light_over_cave` | 203.2 | 211.2 | 158.0 | 167.2 | 219.3 | 167.2 | no slower than Before's slowest, 211.2 | met in runs 1 and 2, missed in run 3 (219.3) | 6.76, 6.76, 6.54 (flagged) |
-| `sixty_four_lights_quarter_visible` | 1,306.9 | 1,363.1 | 922.2 | 905.4 | 915.2 | 915.2 | at most 326.7 (4x faster than Before's median) | missed in every run | 6.76, 6.76, 6.54 (flagged) |
+| `sixty_four_lights_quarter_visible` | 1,306.9 | 1,363.1 | 922.2 | 905.4 | 915.2 | 915.2 | at most 326.7 (4x faster than Before's median; superseded by the lights' own guard below) | missed in every run (superseded) | 6.76, 6.76, 6.54 (flagged) |
 | `two_hundred_fifty_six_lights_in_view` | 2,664.6 | 2,684.2 | 1,420.0 | 1,477.0 | 1,410.5 | 1,420.0 | under 16,600, and no slower than Before's slowest, 2,684.2 | met in every run | 6.76, 6.76, 6.54 (flagged) |
 
 `one_light_over_cave` is the difference of two frames: the cave with no light, 615.2, 615.5 and 594.5 µs, and with the one light, 773.2, 782.7 and 813.8 µs.
 
-`sixty_four_lights_quarter_visible` is also measured as the lights' own cost: the frame with the 64 lights over the same still camera's frame with none (`cave_still_unlit`), as `sixty_four_lights_quarter_visible_lights`. The 4x target is held to that, since the cave's own drawing (about 540 µs) is in both frames and is not shadow work: Before it was 1,306.9 less 590.9 = 716.0 µs, so the guard is at most 179.0 µs. A second set of three runs, loads 3.74, 3.68 and 3.68 (flagged, above 3):
+`sixty_four_lights_quarter_visible` is also measured as the lights' own cost: the frame with the 64 lights over the same still camera's frame with none (`cave_still_unlit`), as `sixty_four_lights_quarter_visible_lights`. The 4x target is held to that, since the cave's own drawing (about 540 µs) is in both frames and is not shadow work: Before it was 1,306.9 less 590.9 = 716.0 µs, so the guard is at most 179.0 µs. Before's baseline (590.9) was the flying camera's unlit cave (`cave_unlit`, the only empty frame Before measured), while After subtracts the still camera's empty frame (`cave_still_unlit`); the two read within about 10 µs of each other (the performance round's runs below read them side by side: 527.3, 531.8 and 531.1 flying against 534.3, 530.8 and 533.3 still), so the choice moves the guard by under 3 µs. A second set of three runs, loads 3.74, 3.68 and 3.68 (flagged, above 3):
 
 | Bench | Before | Run 1 | Run 2 | Run 3 | After median | Guard | Verdict |
 |-------|--------|-------|-------|-------|--------------|-------|---------|
-| `sixty_four_lights_quarter_visible_lights` | 716.0 | 273.6 | 363.5 | 261.8 | 273.6 | at most 179.0 | missed in every run |
+| `sixty_four_lights_quarter_visible_lights` | 716.0 | 273.6 | 363.5 | 261.8 | 273.6 (spread 101.7, 37.2%) | at most 179.0 | missed in every run |
 
-The whole frames read 814.6, 914.8 and 806.0 µs (median 814.6, not guarded) over empty frames of 541.0, 551.3 and 544.3 µs. In that set `one_light_over_cave` read 160.5, 163.9 and 170.3 and `two_hundred_fifty_six_lights_in_view` 1,276.6, 1,234.3 and 1,255.8, both met. The spec's 4x target for 64 lights is not met: the lights cost 2.6x less than before (716.0 to 273.6 µs), not 4x. Where the rest goes was not measured (no per-phase timings were taken, so the split between the CPU planner and the GPU passes is unknown).
+The whole frames read 814.6, 914.8 and 806.0 µs (median 814.6, not guarded) over empty frames of 541.0, 551.3 and 544.3 µs. In that set `one_light_over_cave` read 160.5, 163.9 and 170.3 and `two_hundred_fifty_six_lights_in_view` 1,276.6, 1,234.3 and 1,255.8, both met. Before the performance round below, the spec's 4x target for 64 lights was not met: the lights cost 2.6x less than before (716.0 to 273.6 µs), not 4x; after it, 4.75x. Where the rest went is measured in the performance round below.
+
+#### Performance round
+
+Where the lights' cost went, measured before changing anything with temporary, uncommitted timing (the shadow planner's and the atlas draw's CPU time on the clock, and the frame with and without each part: the same still scene lit with no lights, with the 64 lights unshadowed, with only the lights that reach the view, and with the atlas pass skipped), loads 4.7 to 6.9 (flagged; each comparison is within one run). Of the 64 lights, 24 reach the view (a 200 px light reaches past the 16 whose centres it shows) and get slots (96 rows) and 673 edge-views, about 28 a light; the other 40 cost nothing (no slot, no edges, no instance drawn: the scene with only the 24 measured the same). Most of the cost was not shadow work: turning lighting on at all (clearing the light buffer, copying the 1920 x 1080 scene image for the compose pass, composing) cost 114 µs with no light, the 24 lights' own drawing 60 to 77 µs, and the shadows 40 to 55 µs, of which the planner was 10 µs of CPU, the atlas pass about 35 µs (7 µs of CPU recording it, the rest the GPU's pass) and the shadow look-ups the rest. Nothing else was redone per frame: the index does no work in a static frame, and the plan's vectors, the uniforms and the bind groups are kept.
+
+Three changes removed the waste. A camera drawing straight into the scene image is composed from the scene image itself into the lit image (it never wrote over what it read, so its copy was waste; a camera lit in place keeps its copy): lighting on fell from 114 to 54 µs. The atlas is drawn only when the plan's edges differ from those it holds (compared byte for byte, or when its texture is new), so a static scene's frame records no atlas pass: the shadows fell from 40 to 55 µs to 21 to 28 µs. A light pixel the light does not reach (its quad's corners) no longer reads the atlas (no measurable change in this scene; it keeps soft lights' look-ups off pixels they cannot light). The planner still runs every frame (10 µs here), which is what lets any change to a light, an occluder, a floor or a camera redraw the atlas without a change list; caching it would need floors and lifts tracked too, for 10 µs.
+
+| Lights' cost over the empty frame (µs, one run each) | Before the round | After |
+|---|---|---|
+| Lighting on, no light (light buffer, scene copy, compose) | 114 | 54 |
+| 64 lights drawn, unshadowed (24 reach the view) | 60 to 77 | 69 to 72 |
+| Shadows (planner 10 µs CPU, atlas pass, look-ups) | 40 to 55 | 21 to 28 |
+| Total, same runs | about 230 | about 152 |
+
+Three runs of `cargo bench --bench lighting` after the changes, each log opening with its `uptime`; the one-minute load read 2.64, 2.38 and 2.27, under 3, so none is flagged (the load was checked for about four minutes after the builds before the first run):
+
+| Bench | Before | Run 1 | Run 2 | Run 3 | After median (spread) | Guard | Verdict |
+|-------|--------|-------|-------|-------|-----------------------|-------|---------|
+| `sixty_four_lights_quarter_visible_lights` | 716.0 | 150.7 | 150.1 | 151.2 | 150.7 (1.1, 0.7%) | at most 179.0 | met in every run |
+| `one_light_over_cave` | 203.2 (slowest 211.2) | 84.1 | 87.3 | 82.5 | 84.1 (4.8, 5.7%) | at most 211.2 | met in every run |
+| `two_hundred_fifty_six_lights_in_view` | 2,664.6 (slowest 2,684.2) | 1,055.5 | 1,078.1 | 1,058.7 | 1,058.7 (22.6, 2.1%) | under 16,600 and 2,684.2 | met in every run |
+
+The 64 lights' whole frames read 685.0, 680.9 and 684.6 µs over still empty frames of 534.3, 530.8 and 533.3; the flying unlit cave read 527.3, 531.8 and 531.1, with one light 611.4, 619.2 and 613.6. Verdict: the lights cost 4.75x less than Before (716.0 to 150.7 µs), so the spec's 4x target is met, with 28 µs to spare. The floor under it is lighting itself: the same lights with no shadows would cost about 125 µs (lighting on and their drawing), so shadows are now about a sixth of the lights' cost in this scene.
 
 ## Limits
 

@@ -1499,7 +1499,7 @@ impl Scene for ShadowedWall {
 }
 
 #[test]
-fn a_shadowed_light_s_map_is_drawn_once_a_frame() {
+fn a_shadowed_light_s_map_is_drawn_when_its_plan_changes() {
   let Some(mut engine) = engine(
     EngineBuilder::new()
       .resolution(120, 90)
@@ -1518,9 +1518,12 @@ fn a_shadowed_light_s_map_is_drawn_once_a_frame() {
   // One slot, for the shadowed light alone
   assert_eq!(encodes(&engine), (4, 1));
   engine.step_frames(2).unwrap();
-  assert_eq!(encodes(&engine), (4, 3), "once a frame");
+  assert_eq!(encodes(&engine), (4, 1), "kept while nothing changes");
   let lighting = engine.engine.lighting().unwrap();
   assert_eq!(lighting.shadow_plan().slots.iter().flatten().count(), 1);
+  // The main camera draws straight into the scene image, which the compose
+  // pass reads as it is: no copy
+  assert_eq!(lighting.scene_copies(), 0);
   // Its right view sees the wall's far side 50 px away, at its default
   // quality (High: 1,024 texels a view)
   let (device, queue) = crate::core::testing::shared_gpu().unwrap();
@@ -1530,6 +1533,20 @@ fn a_shadowed_light_s_map_is_drawn_once_a_frame() {
   assert!((values[512] - 0.5).abs() < 0.005, "{}", values[512]);
   assert!(values[1024..].iter().all(|&v| v == 1.0), "the other views");
 
+  // The wall moved 10 px nearer: drawn again that frame, then kept
+  let world = engine.world_mut();
+  let mut walls = world.query_filtered::<&mut Transform, With<LightOccluder2D>>();
+  for mut transform in walls.iter_mut(world) {
+    transform.translation.x -= 10.0;
+  }
+  engine.step_frames(1).unwrap();
+  assert_eq!(encodes(&engine), (4, 2), "drawn as the wall moves");
+  let atlas = engine.engine.lighting().unwrap().shadow_atlas();
+  let values = atlas.read_rows(&device, &queue, 0..1);
+  assert!((values[512] - 0.4).abs() < 0.005, "{}", values[512]);
+  engine.step_frames(1).unwrap();
+  assert_eq!(encodes(&engine), (4, 2), "kept once it stands");
+
   // With its shadows off, no light has a slot: the atlas is not drawn
   let world = engine.world_mut();
   let mut lights = world.query::<&mut Light2D>();
@@ -1537,7 +1554,133 @@ fn a_shadowed_light_s_map_is_drawn_once_a_frame() {
     light.set_cast_shadows(false);
   }
   engine.step_frames(2).unwrap();
-  assert_eq!(encodes(&engine), (0, 3));
+  assert_eq!(encodes(&engine), (0, 2));
+}
+
+/// Two shadowed lights of radius 100 either side of a 10 x 20 wall at
+/// (50, 45): one at (20, 45), the wall's far side 35 px to its right, and
+/// one at (100, 45), the far side 55 px to its left
+struct TwoLightsOneWall;
+
+impl Scene for TwoLightsOneWall {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    for x in [20.0, 100.0] {
+      ctx.world.spawn((
+        Transform::from_xy(x, 45.0),
+        Light2D::point(Color::WHITE, 100.0).with_shadows(),
+      ));
+    }
+    ctx.world.spawn((
+      Transform::from_xy(50.0, 45.0),
+      LightOccluder2D::rect(10.0, 20.0),
+    ));
+  }
+}
+
+#[test]
+fn a_kept_atlas_is_drawn_again_when_its_slots_move_or_it_is_made_again() {
+  let Some(mut engine) = engine(
+    EngineBuilder::new()
+      .resolution(120, 90)
+      .start_scene(TwoLightsOneWall),
+  ) else {
+    return;
+  };
+  let (device, queue) = crate::core::testing::shared_gpu().unwrap();
+  let encodes = |engine: &HeadlessEngine| {
+    let lighting = engine.engine.lighting().unwrap();
+    (
+      lighting.shadow_plan().rows,
+      lighting.shadow_atlas().encodes(),
+    )
+  };
+  // The value the atlas holds in the middle of each slot's right (0) and
+  // left (2) views, by slot
+  let middles = |engine: &HeadlessEngine| {
+    let lighting = engine.engine.lighting().unwrap();
+    let atlas = lighting.shadow_atlas();
+    let width = atlas.width() as usize;
+    let rows = lighting.shadow_plan().rows;
+    let values = atlas.read_rows(&device, &queue, 0..rows);
+    (0..rows as usize / 4)
+      .map(|slot| {
+        let at = |view: usize| values[(slot * 4 + view) * width + width / 2];
+        (at(0), at(2))
+      })
+      .collect::<Vec<_>>()
+  };
+  let near = |value: f32, expected: f32| (value - expected).abs() < 0.005;
+  // The left light's right view holds the far side at 0.35, the right
+  // light's left view at 0.55, each light in its own slot
+  let both = |engine: &HeadlessEngine, phase: &str| {
+    let found = middles(engine);
+    assert_eq!(found.len(), 2, "{phase}: two slots");
+    assert!(
+      found.iter().any(|&(right, _)| near(right, 0.35))
+        && found.iter().any(|&(_, left)| near(left, 0.55)),
+      "{phase}: {found:?}"
+    );
+  };
+  let set_shadows = |engine: &mut HeadlessEngine, left: bool, right: bool| {
+    let world = engine.world_mut();
+    let mut lights = world.query::<(&Transform, &mut Light2D)>();
+    for (transform, mut light) in lights.iter_mut(world) {
+      light.set_cast_shadows(if transform.translation.x < 50.0 {
+        left
+      } else {
+        right
+      });
+    }
+  };
+  engine.step_frames(2).unwrap();
+  assert_eq!(encodes(&engine), (8, 1));
+  both(&engine, "first");
+
+  // The left light's shadows off: the right light alone, now in slot 0,
+  // so its rows moved and the atlas is drawn again
+  set_shadows(&mut engine, false, true);
+  engine.step_frames(1).unwrap();
+  assert_eq!(encodes(&engine), (4, 2), "drawn as the slots move");
+  let found = middles(&engine);
+  assert!(
+    near(found[0].1, 0.55),
+    "slot 0 is the right light's: {found:?}"
+  );
+  assert!(near(found[0].0, 1.0), "nothing to its right: {found:?}");
+  engine.step_frames(1).unwrap();
+  assert_eq!(encodes(&engine), (4, 2), "kept");
+
+  // Back on: two slots again, drawn again
+  set_shadows(&mut engine, true, true);
+  engine.step_frames(1).unwrap();
+  assert_eq!(encodes(&engine), (8, 3));
+  both(&engine, "back on");
+
+  // Another quality makes a new texture, which is drawn at its width,
+  // then kept
+  engine
+    .world_mut()
+    .resource_mut::<Settings>()
+    .set_shadow_quality(ShadowQuality::Low);
+  engine.step_frames(1).unwrap();
+  assert_eq!(encodes(&engine), (8, 4), "a new texture is drawn");
+  assert_eq!(
+    engine.engine.lighting().unwrap().shadow_atlas().width(),
+    256
+  );
+  both(&engine, "low");
+  engine.step_frames(1).unwrap();
+  assert_eq!(encodes(&engine), (8, 4), "kept at its new width");
+
+  // A frame without shadows draws nothing, so the atlas still holds the
+  // same plan's maps when the shadows come back with nothing moved
+  set_shadows(&mut engine, false, false);
+  engine.step_frames(1).unwrap();
+  assert_eq!(encodes(&engine), (0, 4));
+  set_shadows(&mut engine, true, true);
+  engine.step_frames(1).unwrap();
+  assert_eq!(encodes(&engine), (8, 4), "the same maps, kept");
+  both(&engine, "kept across a frame without shadows");
 }
 
 /// A white floor, a shadowed light at (40, 45) and a wall at (55, 45),
@@ -1593,6 +1736,12 @@ fn two_cameras_share_one_atlas() {
   let encodes =
     |engine: &HeadlessEngine| engine.engine.lighting().unwrap().shadow_atlas().encodes();
   let before = encodes(&engine);
+  // A quarter pixel's move changes its plan, so the frame draws the atlas
+  let world = engine.world_mut();
+  let mut lights = world.query_filtered::<&mut Transform, With<Light2D>>();
+  for mut transform in lights.iter_mut(world) {
+    transform.translation.x += 0.25;
+  }
   engine.step_frames(1).unwrap();
   assert_eq!(
     encodes(&engine),
@@ -1601,6 +1750,8 @@ fn two_cameras_share_one_atlas() {
   );
   let lighting = engine.engine.lighting().unwrap();
   assert_eq!(lighting.shadow_plan().slots, vec![Some(0)]);
+  // Each half is lit in place, from a copy of its own image
+  assert_eq!(lighting.scene_copies(), 2);
   // Each half shows world x 30 to 90: (50, 45) lit between the light and
   // the wall, (75, 45) in its shadow
   let frame = engine.frame().unwrap();

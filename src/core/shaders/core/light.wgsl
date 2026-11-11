@@ -251,6 +251,11 @@ fn shadowed(offset: vec2<f32>, shadow: vec3<f32>) -> f32 {
 @fragment
 fn fs_light(in: VertexOutput) -> @location(0) vec4<f32> {
     let light = light_at(in);
+    // Past the radius (the quad's corners) or outside a spot's reach no
+    // light arrives, so there is no shadow to read
+    if all(light == vec3<f32>(0.0)) {
+        return vec4<f32>(0.0);
+    }
     let held = in.shadow_color.a * shadowed(in.offset, in.shadow);
     return vec4<f32>(light * (1.0 - held) + in.shadow_color.rgb * light * held, 0.0);
 }

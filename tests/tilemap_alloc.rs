@@ -1135,7 +1135,8 @@ fn a_frame_with_entities_moving_on_floors_allocates_nothing() {
 
 /// 64 lights over 640 x 360 px in an 8 x 8 grid, and (`shadowed`) each
 /// casting shadows, every other one soft, of a wall beside each: closed
-/// blocks, two of them touching (a shared side), and an open chain
+/// blocks, two of them touching (a shared side), and an open chain. The
+/// first light is `Swaying`, so a frame can change the plan
 struct LitRoom {
   shadowed: bool,
 }
@@ -1161,7 +1162,13 @@ impl Scene for LitRoom {
         (true, 0) => light.with_shadows(),
         (true, _) => light.with_soft_shadows(6.0),
       };
-      ctx.world.spawn((Transform::from_translation(at), light));
+      let light = ctx
+        .world
+        .spawn((Transform::from_translation(at), light))
+        .id();
+      if i == 0 {
+        ctx.world.entity_mut(light).insert(Swaying);
+      }
     }
     if !self.shadowed {
       return;
@@ -1192,6 +1199,22 @@ impl Scene for LitRoom {
   }
 }
 
+/// The light a `LitRoom` frame moves
+#[derive(Component)]
+struct Swaying;
+
+/// Moves the swaying light to one of its two places by `frame`'s parity:
+/// the shadow plan changes each frame, so each frame draws the atlas (a
+/// frame whose plan did not change keeps it), and the warm-up has seen
+/// both plans
+fn sway(engine: &mut HeadlessEngine, frame: usize) {
+  let world = engine.world_mut();
+  let mut lights = world.query_filtered::<&mut Transform, With<Swaying>>();
+  for mut transform in lights.iter_mut(world) {
+    transform.translation.x = 40.0 + (frame % 2) as f32 * 3.0;
+  }
+}
+
 #[test]
 fn a_lit_frame_with_64_shadowed_lights_allocates_nothing() {
   let start = |shadowed| {
@@ -1199,7 +1222,10 @@ fn a_lit_frame_with_64_shadowed_lights_allocates_nothing() {
       .resolution(640, 360)
       .start_scene(LitRoom { shadowed });
     let mut engine = HeadlessEngine::new_or_skip(builder)?;
-    engine.step_frames(30).expect("the warm-up frames");
+    for frame in 0..30 {
+      sway(&mut engine, frame);
+      engine.step().expect("a warm-up frame");
+    }
     Some(engine)
   };
   let (Some(mut shadowed), Some(mut plain)) = (start(true), start(false)) else {
@@ -1213,6 +1239,8 @@ fn a_lit_frame_with_64_shadowed_lights_allocates_nothing() {
   // not is the shadows' (the plan, the atlas and its soft filter's uniform)
   let mut extra_first = None;
   for frame in 0..7 {
+    sway(&mut shadowed, frame);
+    sway(&mut plain, frame);
     let (cast, open) = (traced(&mut shadowed), traced(&mut plain));
     let own = |frame: &Frame| frame.own.values().sum::<usize>();
     println!(

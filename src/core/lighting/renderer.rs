@@ -31,19 +31,26 @@ pub(crate) struct LightingParams {
 }
 
 /// The textures one image is lit with, at its size: the light
-/// accumulation buffer, the copy of the scene the compose pass reads, and
-/// the compose pass's uniforms.
+/// accumulation buffer, the compose pass's uniforms and, for a camera lit
+/// in place (one with an image of its own), the copy of its image the
+/// compose pass reads. A camera drawing straight into the scene image is
+/// composed from the scene image into the lit image, so it has no copy.
 struct LightTargets {
   light_view: wgpu::TextureView,
-  scene_copy_texture: wgpu::Texture,
-  scene_copy_view: wgpu::TextureView,
+  scene_copy: Option<(wgpu::Texture, wgpu::TextureView)>,
   compose_uniforms: wgpu::Buffer,
   width: u32,
   height: u32,
 }
 
 impl LightTargets {
-  fn new(device: &wgpu::Device, width: u32, height: u32, format: wgpu::TextureFormat) -> Self {
+  fn new(
+    device: &wgpu::Device,
+    width: u32,
+    height: u32,
+    format: wgpu::TextureFormat,
+    in_place: bool,
+  ) -> Self {
     let size = wgpu::Extent3d {
       width,
       height,
@@ -61,17 +68,21 @@ impl LightTargets {
       usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
       view_formats: &[],
     });
-    // The compose pass reads a copy of the scene, so it can write the lit
-    // scene over the original
-    let scene_copy_texture = device.create_texture(&wgpu::TextureDescriptor {
-      label: Some("Scene Copy Texture"),
-      size,
-      mip_level_count: 1,
-      sample_count: 1,
-      dimension: wgpu::TextureDimension::D2,
-      format,
-      usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-      view_formats: &[],
+    // Lit in place, the compose pass reads a copy of the image, so it can
+    // write the lit image over the original
+    let scene_copy = in_place.then(|| {
+      let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Scene Copy Texture"),
+        size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+      });
+      let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+      (texture, view)
     });
     let compose_uniforms = device.create_buffer(&wgpu::BufferDescriptor {
       label: Some("Lighting Compose Uniform Buffer"),
@@ -81,8 +92,7 @@ impl LightTargets {
     });
     Self {
       light_view: light_texture.create_view(&wgpu::TextureViewDescriptor::default()),
-      scene_copy_view: scene_copy_texture.create_view(&wgpu::TextureViewDescriptor::default()),
-      scene_copy_texture,
+      scene_copy,
       compose_uniforms,
       width,
       height,
@@ -296,7 +306,7 @@ impl LightingRenderer {
   }
 
   /// Keep light targets for every lit camera of `cameras`, sized to its
-  /// image; drop the others.
+  /// image (with a scene copy when it is lit in place); drop the others.
   pub(crate) fn sync_cameras(&mut self, device: &wgpu::Device, cameras: &[CameraDraw]) {
     let before = self.cameras.len();
     self.cameras.retain(|entity, targets| {
@@ -304,6 +314,7 @@ impl LightingRenderer {
         camera.entity == *entity
           && camera.lit
           && (targets.width, targets.height) == camera.rect.size()
+          && targets.scene_copy.is_some() != camera.direct
       })
     });
     let format = self.format;
@@ -312,7 +323,7 @@ impl LightingRenderer {
       self.cameras.entry(camera.entity).or_insert_with(|| {
         changed = true;
         let (width, height) = camera.rect.size();
-        LightTargets::new(device, width, height, format)
+        LightTargets::new(device, width, height, format, !camera.direct)
       });
     }
     // Bind groups of dropped or recreated targets would keep them alive
@@ -423,6 +434,16 @@ impl LightingRenderer {
     self.cameras.get(&camera).map(|targets| &targets.light_view)
   }
 
+  /// How many lit cameras keep a scene copy: those lit in place (tests)
+  #[cfg(test)]
+  pub(crate) fn scene_copies(&self) -> usize {
+    self
+      .cameras
+      .values()
+      .filter(|targets| targets.scene_copy.is_some())
+      .count()
+  }
+
   /// How many cameras have light targets.
   #[cfg(test)]
   pub(crate) fn camera_count(&self) -> usize {
@@ -430,8 +451,11 @@ impl LightingRenderer {
   }
 
   /// Compose `camera`'s lit image into `output_view` from its scene image
-  /// `scene_texture` (which may be the one behind `output_view`: the scene
-  /// is copied first) and its light buffer.
+  /// (`scene_texture`, viewed by `scene_view`) and its light buffer. A
+  /// camera lit in place (`scene_texture` the one behind `output_view`) has
+  /// its image copied first and the copy read; a camera drawing straight
+  /// into the scene image reads the scene image itself, `output_view`
+  /// being the lit image.
   #[allow(clippy::too_many_arguments)]
   pub(crate) fn compose_for_camera(
     &self,
@@ -440,6 +464,7 @@ impl LightingRenderer {
     encoder: &mut wgpu::CommandEncoder,
     camera: Entity,
     scene_texture: &wgpu::Texture,
+    scene_view: &wgpu::TextureView,
     output_view: &wgpu::TextureView,
     time: f32,
   ) {
@@ -450,18 +475,26 @@ impl LightingRenderer {
     {
       return;
     }
-    copy_scene(encoder, scene_texture, targets);
-    self.compose_targets(device, queue, encoder, targets, output_view, time);
+    let source = match &targets.scene_copy {
+      Some((copy, view)) => {
+        copy_scene(encoder, scene_texture, copy, targets);
+        view
+      }
+      None => scene_view,
+    };
+    self.compose_targets(device, queue, encoder, targets, source, output_view, time);
   }
 
-  /// The compose pass: the scene copy in `targets` lit by its light buffer
+  /// The compose pass: `scene_view` lit by the light buffer in `targets`
   /// (plus ambient and atmosphere), into `output_view`.
+  #[allow(clippy::too_many_arguments)]
   fn compose_targets(
     &self,
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     encoder: &mut wgpu::CommandEncoder,
     targets: &LightTargets,
+    scene_view: &wgpu::TextureView,
     output_view: &wgpu::TextureView,
     time: f32,
   ) {
@@ -488,7 +521,7 @@ impl LightingRenderer {
       "Lighting Compose Bind Group",
       &self.compose_bind_group_layout,
       &[
-        Bound::View(targets.scene_copy_view.clone()),
+        Bound::View(scene_view.clone()),
         Bound::View(targets.light_view.clone()),
         Bound::Sampler(self.sampler.clone()),
         Bound::Buffer(targets.compose_uniforms.clone()),
@@ -516,10 +549,12 @@ impl LightingRenderer {
   }
 }
 
-/// Copy `scene_texture` into the scene copy of `targets` (the same size).
+/// Copy `scene_texture` into `copy`, the scene copy of `targets` (the same
+/// size).
 fn copy_scene(
   encoder: &mut wgpu::CommandEncoder,
   scene_texture: &wgpu::Texture,
+  copy: &wgpu::Texture,
   targets: &LightTargets,
 ) {
   encoder.copy_texture_to_texture(
@@ -530,7 +565,7 @@ fn copy_scene(
       aspect: wgpu::TextureAspect::All,
     },
     wgpu::TexelCopyTextureInfo {
-      texture: &targets.scene_copy_texture,
+      texture: copy,
       mip_level: 0,
       origin: wgpu::Origin3d::ZERO,
       aspect: wgpu::TextureAspect::All,

@@ -67,14 +67,14 @@ impl RenderPass for Lighting {
     }
     // The camera drawing straight into the scene image is lit into the lit
     // image; a camera with an image of its own is lit in place
-    let (scene_texture, output) = if camera.direct {
-      (targets.game, targets.lit_view)
+    let (scene_texture, scene_view, output) = if camera.direct {
+      (targets.game, targets.game_view, targets.lit_view)
     } else {
       let images = targets.camera_images;
       let (Some(texture), Some(view)) = (images.texture(entity), images.view(entity)) else {
         return;
       };
-      (texture, view)
+      (texture, view, view)
     };
     renderer.compose_for_camera(
       device,
@@ -82,6 +82,7 @@ impl RenderPass for Lighting {
       encoder,
       entity,
       scene_texture,
+      scene_view,
       output,
       scene.time,
     );

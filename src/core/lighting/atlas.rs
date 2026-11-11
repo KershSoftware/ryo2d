@@ -1,7 +1,8 @@
 //! The shadow atlas: a depth texture of four rows per shadowed light, one
 //! per 90° view around it (right, down, left, up), each texel the nearest
-//! occluder's distance over the light's radius at that angle. Drawn once a
-//! frame from the plan's edges, before any camera pass.
+//! occluder's distance over the light's radius at that angle. Drawn from
+//! the plan's edges before any camera pass, in a frame whose edges differ
+//! from those it holds; otherwise kept as it is.
 
 use super::ShadowQuality;
 use super::plan::ShadowEdge;
@@ -63,6 +64,11 @@ pub(crate) struct ShadowAtlas {
   /// which the web has not
   #[cfg(not(target_arch = "wasm32"))]
   builds: u64,
+  /// The edges last drawn, a copy kept to compare the next frame's with
+  /// (what the texture holds while `holds`)
+  held: Vec<ShadowEdge>,
+  /// The texture holds `held` (false until drawn, and once recreated)
+  holds: bool,
   /// Times it was drawn (tests)
   #[cfg(test)]
   encodes: u64,
@@ -151,6 +157,8 @@ impl ShadowAtlas {
       light_group,
       #[cfg(not(target_arch = "wasm32"))]
       builds: 0,
+      held: Vec::new(),
+      holds: false,
       #[cfg(test)]
       encodes: 0,
     }
@@ -182,6 +190,8 @@ impl ShadowAtlas {
       return;
     }
     self.built();
+    // A new texture holds nothing yet: the next encode draws it
+    self.holds = false;
     self.texture = atlas_texture(device, width, height);
     self.view = self
       .texture
@@ -199,13 +209,33 @@ impl ShadowAtlas {
 
   /// Clears the atlas to 1 (nothing nearer than the radius) and draws
   /// `edges` into it, the nearest kept, in `encoder`, before any pass that
-  /// reads it.
+  /// reads it; nothing when the texture already holds exactly `edges` (a
+  /// frame whose plan did not change), as the edges and the texture's size
+  /// are all a draw reads.
   pub(crate) fn encode(
     &mut self,
     encoder: &mut wgpu::CommandEncoder,
     queue: &wgpu::Queue,
     edges: &[ShadowEdge],
   ) {
+    if self.filter_stale {
+      let filter = FilterUniform {
+        taps: [self.quality.taps(), 0, 0, 0],
+      };
+      queue.write_buffer(&self.filter_uniform, 0, bytemuck::bytes_of(&filter));
+      self.filter_stale = false;
+    }
+    // The plan keeps no more edges than the largest buffer holds
+    let edges = &edges[..edges.len().min(self.max_edges)];
+    // Compared as bytes: exact, and an edge differing only in a zero's
+    // sign is drawn again, harmlessly
+    let same: &[u8] = bytemuck::cast_slice(edges);
+    if self.holds && same == bytemuck::cast_slice::<ShadowEdge, u8>(&self.held) {
+      return;
+    }
+    self.held.clear();
+    self.held.extend_from_slice(edges);
+    self.holds = true;
     #[cfg(test)]
     {
       self.encodes += 1;
@@ -217,15 +247,6 @@ impl ShadowAtlas {
       queue.write_buffer(&self.size_uniform, 0, bytemuck::bytes_of(&size));
       self.size_stale = false;
     }
-    if self.filter_stale {
-      let filter = FilterUniform {
-        taps: [self.quality.taps(), 0, 0, 0],
-      };
-      queue.write_buffer(&self.filter_uniform, 0, bytemuck::bytes_of(&filter));
-      self.filter_stale = false;
-    }
-    // The plan keeps no more edges than the largest buffer holds
-    let edges = &edges[..edges.len().min(self.max_edges)];
     if edges.len() > self.capacity {
       self.built();
       self.capacity = edges.len().next_power_of_two().min(self.max_edges);
@@ -294,7 +315,7 @@ impl ShadowAtlas {
     self.width
   }
 
-  /// Times the atlas was drawn (tests)
+  /// Times the atlas was drawn, leaving out the frames it was kept (tests)
   #[cfg(test)]
   pub(crate) fn encodes(&self) -> u64 {
     self.encodes
