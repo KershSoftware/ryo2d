@@ -447,6 +447,12 @@ impl Console {
     self.captured.take().unwrap_or_default()
   }
 
+  /// The last ring sequence the mirror read
+  #[cfg(test)]
+  pub(crate) fn log_seq(&self) -> u64 {
+    self.log_seq
+  }
+
   /// The input line as typed so far
   #[cfg(test)]
   pub(crate) fn input_line(&self) -> &str {

@@ -674,6 +674,16 @@ impl Engine {
     }
   }
 
+  /// The game window gained or lost focus
+  pub(crate) fn game_focus_changed(&mut self, focused: bool) {
+    self.game_window_focused = focused;
+    if !focused {
+      self.drop_hidden_slow_frame();
+      // Cmd+Tab or Alt+Tab press a modifier here and release it elsewhere
+      self.world.resource_mut::<Input>().forget_held_keys();
+    }
+  }
+
   /// The window just hid or lost focus: a slow frame still held was the
   /// system holding the window's last frame, not the game
   fn drop_hidden_slow_frame(&mut self) {
@@ -953,10 +963,7 @@ impl ApplicationHandler<EngineEvent> for Engine {
         }
       }
       WindowEvent::Focused(focused) => {
-        self.game_window_focused = *focused;
-        if !*focused {
-          self.drop_hidden_slow_frame();
-        }
+        self.game_focus_changed(*focused);
         // The mix follows the mixer's `on_focus_loss`
         if let Some(mut audio) = self.world.get_resource_mut::<AudioEngine>() {
           audio.set_focused(*focused);

@@ -189,12 +189,6 @@ pub(crate) fn len() -> usize {
   ring().records.len()
 }
 
-/// The next sequence number to be given (tests: whether anything was logged)
-#[cfg(test)]
-pub(crate) fn next_seq() -> u64 {
-  NEXT_SEQ.load(Ordering::Relaxed)
-}
-
 // The tests that fill the ring take turns, so none pushes another's records
 // out before it reads them
 #[cfg(test)]

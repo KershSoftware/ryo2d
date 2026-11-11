@@ -53,7 +53,7 @@ pub(crate) use ring::{
   may_have_after as records_may_follow, mirror as mirror_records, start as mirror_start,
 };
 #[cfg(all(test, dev_tools))]
-pub(crate) use ring::{next_seq as next_record_seq, ring_turn};
+pub(crate) use ring::ring_turn;
 pub(crate) use scope::{current_scope, in_scope, scoped};
 
 /// The `log` crate, for the prelude's macros in a game crate.

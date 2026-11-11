@@ -2713,16 +2713,17 @@ mod console {
     e.world.resource_mut::<Console>().toggle();
     step(&mut e);
     let reads = |e: &Engine| e.world.resource::<Console>().mirror_reads;
+    let seen = |e: &Engine| e.world.resource::<Console>().log_seq();
     let before = reads(&e);
-    // Other tests log meanwhile, so only frames in which nothing was logged
-    // anywhere are held to no read
+    // Other tests log meanwhile. A frame may read the ring only if a record
+    // came after what the console had read at the end of the frame before:
+    // checked after the frame, so a line logged at any moment is charged to
+    // the first frame that can read it, and records never go away
     let mut logged = 0;
-    let mut last = crate::core::logging::next_record_seq();
     for _ in 0..60 {
+      let had_read = seen(&e);
       step(&mut e);
-      let now = crate::core::logging::next_record_seq();
-      logged += usize::from(now != last);
-      last = now;
+      logged += usize::from(crate::core::logging::records_may_follow(had_read));
     }
     let taken = reads(&e) - before;
     assert!(taken <= logged, "{taken} reads, {logged} frames logged");
@@ -2807,6 +2808,32 @@ mod console {
     key(&mut e, KeyCode::KeyV, false);
     key(&mut e, KeyCode::KeyV, true);
     assert_eq!(typed(&e), "pp");
+  }
+
+  #[test]
+  fn a_modifier_stranded_by_a_focus_loss_is_forgotten() {
+    let _clipboard = crate::core::clipboard::FakeClipboard::holding(Some("clip"));
+    let mut e = open_console();
+    // Cmd+Tab: Cmd goes down in the game and up in the other application
+    key(&mut e, KeyCode::SuperLeft, true);
+    idle(&mut e, 2);
+    e.game_focus_changed(false);
+    idle(&mut e, 2);
+    e.game_focus_changed(true);
+    frame_with(
+      &mut e,
+      vec![
+        InputEvent::Key {
+          key: KeyCode::KeyA,
+          pressed: true,
+        },
+        InputEvent::Text("a".into()),
+      ],
+    );
+    assert_eq!(typed(&e), "a", "typed, and A selected nothing");
+    assert_eq!(e.world.resource::<Console>().input_line(), "a");
+    key(&mut e, KeyCode::KeyV, true);
+    assert_eq!(typed(&e), "a", "a bare V pastes nothing");
   }
 
   #[test]

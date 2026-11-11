@@ -766,6 +766,13 @@ impl Input {
     self.keys_held.contains(&key)
   }
 
+  /// Forget the keys physically held: the window lost focus, and their
+  /// releases may go to another application. A release that comes later
+  /// for a key no longer held changes nothing.
+  pub(crate) fn forget_held_keys(&mut self) {
+    self.keys_held.clear();
+  }
+
   /// Handle a keyboard event (applied at once)
   pub(crate) fn handle_keyboard(&mut self, key: KeyCode, state: ElementState) {
     match state {
@@ -1489,6 +1496,26 @@ impl Input {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn forgetting_held_keys_leaves_what_a_game_reads_and_tolerates_late_releases() {
+    let mut input = Input::new();
+    input.handle_keyboard(KeyCode::SuperLeft, ElementState::Pressed);
+    assert!(input.key_physically_held(KeyCode::SuperLeft));
+    input.forget_held_keys();
+    assert!(!input.key_physically_held(KeyCode::SuperLeft));
+    assert!(
+      input.key_down(KeyCode::SuperLeft),
+      "a game's keys are as they were"
+    );
+    input.handle_keyboard(KeyCode::SuperLeft, ElementState::Released);
+    assert!(!input.key_physically_held(KeyCode::SuperLeft));
+    input.handle_keyboard(KeyCode::KeyA, ElementState::Pressed);
+    assert!(
+      input.key_physically_held(KeyCode::KeyA),
+      "later presses count"
+    );
+  }
 
   #[test]
   fn key_down_tracks_held_keys() {
