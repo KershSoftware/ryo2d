@@ -2,7 +2,7 @@
 name: ryo-renderer
 description: Working on the wgpu renderer, shaders, and GPU batching.
 metadata:
-  version: 2.3.0
+  version: 2.4.0
 ---
 
 # Ryo2D Renderer Specialist
@@ -323,7 +323,7 @@ Custom effects run after the built-in effects of their stage, in insertion order
 
 ### Hot reload and errors
 
-In debug builds with a window the engine watches the game's `assets/` folder, with nothing to call (`EngineBuilder::hot_reload` turns it on or off): saving a `.wgsl` file reloads the shader under the same handle about 100 ms after the last write; the old version draws while the new one compiles off the main thread, and the new one draws from the frame after it is made, so a save brings no hitch: frames cost about 0.1 ms more while it compiles (a shader not drawn before the save compiles in its first frame, on the main thread). A save that does not compile keeps the last good shader (`AssetEvent::ReloadFailed`), warned once in the dev log as `could not load "<path>": <line>:<column>: <message>`, with the line and column in your own file; fix it and save again. A save that compiles but whose pipeline the GPU rejects (a binding the pipeline has no place for) loads (`AssetEvent::Modified`), and the shader keeps drawing its last version the GPU accepted, in every frame, warned once for that version in the same words; so does a shader made or changed in code that does not compile. With no version the GPU accepted, a sprite draws plain and an effect is skipped, as they are while the shader is not loaded. Nothing panics.
+In debug builds with a window the engine watches the game's `assets/` folder, with nothing to call (`EngineBuilder::hot_reload` turns it on or off): saving a `.wgsl` file reloads the shader under the same handle about 100 ms after the last write; the old version draws while the new one compiles off the main thread, and the new one draws from the frame after it is made, so a save brings no hitch: frames cost about 0.1 ms more while it compiles (a shader not drawn before the save compiles in its first frame, on the main thread). A save that does not compile keeps the last good shader (`AssetEvent::ReloadFailed`), warned once in the log as `could not load "<path>": <line>:<column>: <message>`, with the line and column in your own file; fix it and save again. A save that compiles but whose pipeline the GPU rejects (a binding the pipeline has no place for) loads (`AssetEvent::Modified`), and the shader keeps drawing its last version the GPU accepted, in every frame, warned once for that version in the same words; so does a shader made or changed in code that does not compile. With no version the GPU accepted, a sprite draws plain and an effect is skipped, as they are while the shader is not loaded. Nothing panics.
 
 ## Post-Processing
 

@@ -28,7 +28,9 @@ pub struct DebugConfig {
   /// second, in the bottom-left stack above the other overlays
   /// (`debug:ui-rebuilds`; runtime only)
   pub show_ui_rebuilds: bool,
-  /// Whether to open the flamegraph profiler window (requires --features profiler or `ryo2d dev --profiler`)
+  /// Whether profiler scopes are on for the whole run (`[debug] enable_profiler`;
+  /// needs the engine's `profiler` feature, which `ryo2d dev` then adds). F10
+  /// opens the window
   pub enable_profiler: bool,
   /// Whether to open the logger dev window at startup (shows engine/game logs in real-time)
   pub logger_window: bool,

@@ -30,9 +30,9 @@ Each cell is the step's median and 95th percentile over its own engine's empty f
 | `particles_100x100` | 690.8 / 779.5, 704.8 / 796.8, 722.2 / 873.9 | 373.8 / 587.5, 357.4 / 443.1, 365.0 / 457.2 | 704.8 to 365.0 (-339.8, -48.2%) |
 | `particles_collide_2k` | 283.7 / 335.6, 285.3 / 339.2, 290.6 / 389.1 | 215.8 / 368.2, 208.9 / 263.5, 215.1 / 283.8 | 285.3 to 215.1 (-70.2, -24.6%) |
 
-The spec's targets, on the medians of the three rounds, and the same frames against the scene-driven system's. Beside them, with no target, the particle systems' own time in the frame (`HeadlessEngine::particle_systems_time`: the profiler's `cpu:particles`, the fixed step and the unscaled pass, and `render:particles`, the drawer's `collect`) and the frame's render step over the empty frame's (medians of the round medians):
+The spec's targets, on the medians of the three rounds, and the same frames against the scene-driven system's. Beside them, with no target, the particle systems' own time in the frame (`HeadlessEngine::particle_systems_time`: the profiler's `cpu:particles`, the fixed step and the unscaled pass, and `cpu:render:particles`, the drawer's `collect`) and the frame's render step over the empty frame's (medians of the round medians):
 
-| Bench | Target | After | Spec's target | Against the scene-driven system | `cpu:particles` | `render:particles` | Render step over empty |
+| Bench | Target | After | Spec's target | Against the scene-driven system | `cpu:particles` | `cpu:render:particles` | Render step over empty |
 |-------|--------|-------|----------------|----------------------------------|-----------------|---------------------|------------------------|
 | `particles_10k` | 1,000 µs | 411.3 µs | met | met (-38.5%) | 151.6 µs | 97.5 µs | +259.9 µs |
 | `particles_100x100` | 1,200 µs | 365.0 µs | met | met (-48.2%) | 106.2 µs | 101.2 µs | +264.7 µs |
@@ -57,7 +57,7 @@ Each guard prints its verdict and fails the run on a miss (`guards::miss`, `guar
 
 ### Changes the bench made to the engine
 
-Two hooks, `#[doc(hidden)]` in `src/core/testing/headless.rs`: `HeadlessEngine::particle_systems_time` (the last frame's `cpu:particles` and `render:particles`, from `ParticleTimes` in the store, written by the two systems and around the drawer's `collect`) and `HeadlessEngine::idle_particle_systems(calls)`, which runs the systems' bodies (`run_particle_step`, `run_unscaled_step`, split out of `step_particles` and `step_unscaled_particles`) and the drawer's `collect` outside a frame.
+Two hooks, `#[doc(hidden)]` in `src/core/testing/headless.rs`: `HeadlessEngine::particle_systems_time` (the last frame's `cpu:particles` and `cpu:render:particles`, from `ParticleTimes` in the store, written by the two systems and around the drawer's `collect`) and `HeadlessEngine::idle_particle_systems(calls)`, which runs the systems' bodies (`run_particle_step`, `run_unscaled_step`, split out of `step_particles` and `step_unscaled_particles`) and the drawer's `collect` outside a frame.
 
 The timers cost the frame two clock reads around each of the two systems and around the drawer, and a store write for each; they are the only cost the systems and the drawer carry for this, and the frame's figures above include it.
 

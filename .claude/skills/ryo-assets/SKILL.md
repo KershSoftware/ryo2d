@@ -2,7 +2,7 @@
 name: ryo-assets
 description: "Assets - loading images, SVG, shaders, fonts, UI files, themes, audio (clips, sound and music definitions, the mixer), particle effects and tile maps (Tiled maps, tilesets and worlds, LDtk projects) through the registry (load_now and load), asset paths, handles and what keeps an asset alive, load states and loading screens, embedded assets with add, hot reload and AssetEvent, custom asset types and loaders, and the debug checker."
 metadata:
-  version: 1.6.0
+  version: 1.7.0
 ---
 
 # Ryo2D Assets
@@ -148,7 +148,7 @@ impl Scene for Loading {
 - To load a group again from its files, drop its handles and load it after the next pump (the frame after): the pump frees what nothing else holds, so those files are read again, and an asset something else still holds is found loaded at once. Count the new handles; waiting for every old one to be freed waits for good if another holder keeps one.
 - `stats() -> AssetStats` counts loaded, loading and failed assets per type (`types: Vec<TypeStats { name, loaded, loading, failed }>`), for a debug overlay.
 - Loads land in the pump at the start of the frame (`PreUpdate`), before `ui` and `update`: a `load` asked for in `on_enter` usually lands a few frames later. When a transition entered the scene, the pump runs right after it in the same frame, so a small file can land in that frame (on the web, where the pump runs the loads itself, it often does).
-- `AssetError` (`#[non_exhaustive]`): `NotFound { path }`, `Io { path, source }`, `Decode { path, source }`, `NoLoader { path, extension }`, `Dependency { path, dependency, error }`, `Cycle { path, chain }`, `InvalidPath { path, reason }`. `Display` is one line naming the path (`could not load "level.ron"`) and the causes are its `source()` chain: `error.report()` is the error with every cause on one line, as the engine's warnings print it. The engine warns once about every failure in the dev log, so a game only handles what it can do something about.
+- `AssetError` (`#[non_exhaustive]`): `NotFound { path }`, `Io { path, source }`, `Decode { path, source }`, `NoLoader { path, extension }`, `Dependency { path, dependency, error }`, `Cycle { path, chain }`, `InvalidPath { path, reason }`. `Display` is one line naming the path (`could not load "level.ron"`) and the causes are its `source()` chain: `error.report()` is the error with every cause on one line, as the engine's warnings print it. The engine warns once about every failure in the log, so a game only handles what it can do something about.
 
 ## 5. Made in code, and embedded
 
@@ -175,7 +175,7 @@ fn embed(ctx: &mut SceneContext) -> Result<(), Box<dyn std::error::Error>> {
 
 - `Image::from_rgba(pixels, width, height)`, `solid_rect`, `solid_circle` and `solid_ellipse` make images; `Image::decode(bytes)` decodes any raster format the loader reads whose bytes name it: all but TGA (it has no signature; give a TGA its file and `load` it) and SVG. `Font::from_bytes` takes `impl Into<Arc<[u8]>>`, so give it a `&[u8]` (a `const` as above, or `include_bytes!(..).as_slice()`).
 - A `UiFile::parse` text's imports are asset paths, loaded when it is first built. A type of your own needs nothing registered to `add` it (section 8).
-- **The web build has no files.** `load` and `load_now` fail there (`AssetError::Io` with `ErrorKind::Unsupported`, noted in the dev log at debug level rather than warned about), so embed what a web build needs. To read the file from `assets/` where there is one (debug builds reload it when saved) and fall back to the embedded copy:
+- **The web build has no files.** `load` and `load_now` fail there (`AssetError::Io` with `ErrorKind::Unsupported`, noted in the log at debug level rather than warned about), so embed what a web build needs. To read the file from `assets/` where there is one (debug builds reload it when saved) and fall back to the embedded copy:
 
   ```rust
   fn ui_file(ctx: &mut SceneContext, path: &str, embedded: &str) -> Result<Handle<UiFile>, UiFileError> {

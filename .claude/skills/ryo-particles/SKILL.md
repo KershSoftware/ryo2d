@@ -2,7 +2,7 @@
 name: ryo-particles
 description: Particles - ParticleEffect assets built in code or read from hot-reloading .particles.ron files (emission, shapes, curves and gradients, sprite sheets, forces, sub-emitters), ParticleEmitter entities the engine runs and draws, one-shots with ctx.particles().play_at, attractors, collisions, presets, pause and time, the budget.
 metadata:
-  version: 2.3.0
+  version: 2.4.0
 ---
 
 # Ryo2D Particles
@@ -405,7 +405,7 @@ A `Disabled` emitter is frozen and hidden: its particles neither move, age nor d
 - **`unscaled()`** runs an emitter on real time through all of that, for menu effects: it steps once a frame in fixed steps of the game's step length, at most 8 a frame (a longer frame's time beyond them is dropped).
 - **The budget.** At most `DEFAULT_PARTICLE_BUDGET` (20,000) particles live at once, over every emitter; `EngineBuilder::particle_budget(n)` sets another. It is a safety cap, not a quality setting: a spawn past it is dropped, with one warning naming the effect, and live particles are never cut short. Each emitter also keeps its effect's `max_particles`. F1 shows `Particles: live / budget`.
 - **Seeds.** Each emitter has its own random stream, seeded by `with_seed`, else the effect's `seed`, else the engine (fixed in a headless run, so a headless scene repeats without seeding). Adding or removing another emitter, entity or resource never changes a seeded emitter's particles.
-- **Cost.** A CPU simulation on the main thread, drawn through the sprite batch. On an Apple M5 Pro 10,000 particles from one emitter cost about 0.4 ms of a frame, and 2,000 colliding over a 64 x 64 tile map about 0.2 ms; a steady frame allocates nothing. The profiler's scopes are `cpu:particles` and `render:particles`.
+- **Cost.** A CPU simulation on the main thread, drawn through the sprite batch. On an Apple M5 Pro 10,000 particles from one emitter cost about 0.4 ms of a frame, and 2,000 colliding over a 64 x 64 tile map about 0.2 ms; a steady frame allocates nothing. The profiler's scopes are `cpu:particles` and `cpu:render:particles`.
 
 ## Sub-emitters
 

@@ -2,7 +2,7 @@
 name: ryo-ui
 description: Build game UI - widgets as builders in the Scene::ui hook, or node trees (UiNode) spawned once as entities - laid out in rows, columns and grids, with focus scopes for keyboard and gamepad navigation, scroll areas, popups and modals, drag and drop, themes, UI events and the input the UI consumes. Use when creating HUDs, menus, settings screens, inventories, dialogue or any in-game interface.
 metadata:
-  version: 4.9.0
+  version: 4.10.0
 ---
 
 # Ryo2D UI Specialist
@@ -2027,7 +2027,7 @@ An empty named container, `Column(name: "extras")`, is where code adds nodes wit
 - A file's images load with it, as its dependencies; a missing one is an error at its `sprite` or `icon` value. An image passed in from code (a template argument) loads when the tree is built.
 - **The tree holds the file**, and the file holds its imports and images, so they stay loaded while any tree built from them lives.
 - A `load_now` that fails gives an `Arc<AssetError>`; `UiFileError` converts from it (`?`), and the file's own mistakes come back as its `issues`.
-- `UiFileError` lists every mistake, each with `path`, `line`, `column` and `message`; `Display` prints one per line. Log it with `game_error!("{error}")`. A game that cannot load a file should show something, not panic.
+- `UiFileError` lists every mistake, each with `path`, `line`, `column` and `message`; `Display` prints one per line. Log it with `error!("{error}")`. A game that cannot load a file should show something, not panic.
 - The warning for a file that fails to load or reload names the file once, then each mistake in it at its line and column: `could not load "ui/pause.ui.ron": 12:5: Button has no option "fil_width"; did you mean "fill_width"?` (a mistake in an imported file keeps that file's path).
 - **Build every tree before spawning any.** A template that fails to build then leaves nothing half on screen: build the root and every template instance first, then `spawn_ui` and `spawn_ui_in`.
 

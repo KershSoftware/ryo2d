@@ -495,6 +495,24 @@ mod tests {
     assert_eq!(capture.containing("counted"), 1);
   }
 
+  /// Writes some text, then fails
+  struct Failing;
+  impl fmt::Display for Failing {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+      f.write_str("half")?;
+      Err(fmt::Error)
+    }
+  }
+
+  #[test]
+  fn a_failing_display_leaves_the_partial_text() {
+    let capture = capture_log();
+    log::warn!(target: "game::logging::failing", "before {} after", Failing);
+    let records = capture.records();
+    assert_eq!(records.len(), 1, "the record is still logged");
+    assert_eq!(records[0].message, "before half");
+  }
+
   #[test]
   fn the_frame_is_the_logging_thread_s() {
     let capture = capture_log();

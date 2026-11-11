@@ -1,8 +1,8 @@
 ---
 name: ryo-game-dev
-description: Building games with Ryo2D - scenes, entities, queries, systems, resources, messages, time and input.
+description: Building games with Ryo2D - scenes, entities, queries, systems, resources, messages, time and input, logging (info!, warn!, warn_once! and the log file), a scene's console commands, and headless tests.
 metadata:
-  version: 2.11.0
+  version: 2.12.0
 ---
 
 # Ryo2D Game Developer
@@ -812,6 +812,48 @@ The grids must cover the same cells, as a map's storeys do: the search measures 
 
 `NavAgent::new(speed).with_smoothing(PathSmoothing::LineOfSight)`, `NavTarget::position(x, y)` / `NavTarget::follow(entity)`, and `steering::{separation, seek, flee, arrive, cohesion, alignment}`. See `src/core/navigation/AGENTS.md` and `ryo-api`.
 
+## Logging
+
+The prelude's `trace!`, `debug!`, `info!`, `warn!` and `error!` take `format!` arguments and log under the target `game::` and the module path (`game::my_game::level`):
+
+<!-- given: score: u32, path: &str -->
+```rust
+info!("level loaded, score {score}");
+debug!("spawn timer at {dt:.3}"); // hidden at the default levels
+warn!("no save in slot {}", 2);
+error!("could not read {path}");
+// In code that runs every frame: logged the first time this line is reached, never again
+warn_once!("the boss has no path and will stand still");
+```
+
+- **Levels.** The game's and the engine's `info!` and above show by default; `debug!` and `trace!` are hidden until a level lets them through: `RYO_LOG=game=debug` at launch (`ryo-cli`, The Log), or `log:level game debug` in the console while the game runs (`ryo-console`). Other crates show only warnings and errors.
+- **Use the prelude's macros**, not the `log` crate's: a game calling `log::info!` itself logs as a library, hidden at the default levels.
+- A line logged in `main`, before the engine is built, is kept: the first call installs the logger.
+- **Where the lines go.** In development: the terminal (`INFO game::my_game::level: level loaded, score 0`), the logger window (F9, filtered by level and by game, engine or library), and the console's warnings and errors. Every windowed run, a shipped game's too, writes the log file `logs/latest.log` in the save folder (`data/logs/latest.log` in development, the OS user data folder in a release; the run before is kept as `previous.log`), each line `HH:MM:SS.mmm LEVEL target: message`. A panic is written there as `panic at file:line: message`. The file stops at 8 MiB with a `log full` line. A shipped game writes nothing to the terminal, so the log file is what a player can send you. A headless run logs to the terminal and writes no file; the web logs to the browser console.
+- In a test, `ryo2d::testing::capture_log()` collects what is logged (Visual Tests, below).
+
+## Console Commands
+
+In a development build the backquote key opens the developer console. A scene can add commands to it that run with the scene itself, and leave with it:
+
+<!-- with: struct Level { lives: u32 } -->
+```rust
+impl Scene for Level {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    ctx.console().command(
+      CommandSpec::new("game:lives", "Set the lives left").usage("game:lives <count>"),
+      |level: &mut Level, _ctx, cmd| {
+        level.lives = cmd.arg(0)?;
+        cmd.print(format!("{} lives", level.lives));
+        Ok(())
+      },
+    );
+  }
+}
+```
+
+`EngineBuilder::console_command` adds one for the whole run, with the world. A game built with `ryo2d build` has no console: the calls compile and do nothing. Built-ins, arguments, scene changes from a command: `ryo-console`.
+
 ## Visual Tests
 
 `ryo2d::testing::HeadlessEngine` runs a scene without a window, one fixed step and one render per `step`, and returns frames as pixels:
@@ -841,6 +883,23 @@ fn player_is_drawn_at_spawn() {
 - Same scene, steps and input give identical frames: seed your RNG. Particles repeat with no seeding in a headless run; `ParticleEmitter::with_seed(n)` fixes one emitter's stream whatever else the scene adds.
 - Pads and menus: `tap_pad(GamepadButton::DPadDown)`, `press_pad`, `set_stick(Stick::Left, x, y)`, `wheel(dx, dy)`, `trackpad(dx, dy)` (logical pixels); `ui_focused()`, `ui_focusables()` and `focus_ui(id)` check pad navigation. `ryo2d::testing::UiHarness` tests a UI function without a GPU (`ryo-ui`, Testing UI).
 - Headless runs play sound silently on kira's mock backend (everything works; `ryo-audio`, Testing), and have no real gamepads (the pad methods drive a virtual one); saves and `system.json` stay in a memory store, never on disk (`engine.saves()` plants and reads them); `Ryo.toml` is honoured. `engine.world()` / `world_mut()` reach the world between steps.
+- Count a scene's entities with a query for its own marker component (`world.query_filtered::<Entity, With<Enemy>>()`), not `world.entities().len()`, which counts reserved slots too.
+- Assert on the log with `ryo2d::testing::capture_log()`, opened before the engine is built (its threads take the capture's scope when they start). It collects what the test thread and that engine log, and nothing from other tests running at the same time; if the test fails, its records are printed with the failure.
+
+```rust
+use ryo2d::prelude::*;
+use ryo2d::testing::capture_log;
+
+#[test]
+fn a_missing_save_is_a_warning() {
+  let log = capture_log();
+  warn!("no save in slot 2"); // the game's code, run here or in an engine's steps
+  assert_eq!(log.warnings(), ["no save in slot 2"]);
+  assert_eq!(log.count(ryo2d::logging::log::Level::Error), 0);
+}
+```
+
+`LogCapture` also has `records()`, `warnings_and_errors()`, `containing(text)`, `containing_all(&[..])` and `from_target(prefix)`.
 
 ## Pitfalls
 

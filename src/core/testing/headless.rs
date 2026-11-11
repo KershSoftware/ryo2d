@@ -854,7 +854,7 @@ impl HeadlessEngine {
 
   /// The particle systems' time on the CPU when they last ran: the fixed
   /// step and the unscaled pass together (the profiler's `cpu:particles`),
-  /// and the drawer (its `render:particles`) (`benches/particles.rs`)
+  /// and the drawer (its `cpu:render:particles`) (`benches/particles.rs`)
   #[doc(hidden)]
   pub fn particle_systems_time(&self) -> (Duration, Duration) {
     self.engine.particle_times()

@@ -6,13 +6,16 @@
 //!
 //! ## Usage
 //!
-//! Enable profiling with the CLI:
+//! Enable profiling with the CLI, which builds the engine with its
+//! `profiler` feature (`--features ryo2d/profiler`) and opens the window:
 //!
 //! ```bash
 //! ryo2d dev --profiler
 //! ```
 //!
-//! Or set `enable_profiler = true` in your Ryo.toml `[debug]` section.
+//! Or set `enable_profiler = true` in your Ryo.toml `[debug]` section: `ryo2d
+//! dev` builds with the feature and scopes are on for the run; F10 opens the
+//! window.
 //!
 //! In code, use the macros to instrument functions and scopes:
 //!
@@ -33,8 +36,9 @@
 //!
 //! ## Viewing Profile Data
 //!
-//! When profiling is enabled, a second window opens automatically showing
-//! real-time flamegraphs. No external tools required!
+//! The profiler window shows real-time flamegraphs. Scopes are recorded only
+//! while they are on: while the window is open, or for the whole run with
+//! `enable_profiler`.
 
 /// Profile an entire function (adds scope with function name).
 ///

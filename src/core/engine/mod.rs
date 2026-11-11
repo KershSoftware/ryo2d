@@ -312,7 +312,9 @@ pub struct Engine {
   #[cfg(dev_tools)]
   console_cursor: Option<crate::core::cursor::CursorStyle>,
   /// The last frame's console tick on the CPU (a closed console's check
-  /// included); the dev windows are drawn by the window loop, outside a frame
+  /// included); the dev windows are drawn by the window loop, outside a frame.
+  /// The timer reads the clock twice a frame in every build with the tools,
+  /// whether or not anything reads it
   #[cfg(dev_tools)]
   #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
   tools_time: std::time::Duration,
@@ -1448,7 +1450,7 @@ impl Engine {
 
   /// What the particle systems took when they last ran, on the CPU: the
   /// fixed step and the unscaled pass together, and the drawer (the
-  /// `cpu:particles` and `render:particles` scopes)
+  /// `cpu:particles` and `cpu:render:particles` scopes)
   #[cfg(not(target_arch = "wasm32"))]
   pub(crate) fn particle_times(&self) -> (std::time::Duration, std::time::Duration) {
     self

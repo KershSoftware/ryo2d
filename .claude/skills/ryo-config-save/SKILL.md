@@ -2,7 +2,7 @@
 name: ryo-config-save
 description: Project configuration (Ryo.toml, and ryo2d::project!() for the web), the player's settings (ctx.settings(), the game's own sections, system.json) and game saves (ctx.saves(), slots, versions and upgrades, SaveFinished), with their limits.
 metadata:
-  version: 2.5.0
+  version: 2.6.0
 ---
 
 # Ryo2D Configuration, Settings and Saves
@@ -72,22 +72,22 @@ voice_volume = 1.0          # dialogue
 ambience_volume = 1.0
 # audio_buffer_frames = 256 # the audio device's buffer: smaller is lower latency, larger safer
 show_fps = false
-console = false             # developer console (backtick), debug and release
 target_background_fps = 0   # unfocused frame rate, 0 = target_fps
 background_rendering = true # keep presenting while unfocused
 
 [tilemap]
 # tiled_project = "tiled/game.tiled-project"  # class and enum types of Tiled maps (default: project.tiled-project at the asset root)
 
-[debug]                     # developer only, never in system.json
+[debug]                     # developer tools: never in system.json, ignored by a build without the tools
+# console = true            # the backquote key opens the developer console (default: true with the tools)
 show_colliders = false
 show_velocities = false
 show_origins = false
 show_frame_timing = false
-disable_debug_keys = false
-enable_profiler = false
-logger_window = false
-# dev_window_keys = true
+disable_debug_keys = false  # true: F1-F5 do nothing (F5, borderless, is the one a shipped game keeps)
+enable_profiler = false     # profiler scopes on from the start; ryo2d dev builds the profiler in (F10 opens it)
+logger_window = false       # open the logger window at start (F9 toggles it)
+# dev_window_keys = true    # F9, F10 and F12 (default: true with the tools)
 
 [release]                   # read by `ryo2d build`, and by the web build for its save store
 # logo = "assets/icon.png"
@@ -101,14 +101,15 @@ difficulty = "normal"
 | Section | In system.json | Read through |
 |---------|----------------|--------------|
 | `[project]`, `[paths]` | No | `workspace.config().name`, `.title`, `.assets`, ... |
-| `[system]` | Its volumes, `display_mode`, `vsync` and `show_fps` are the defaults the player's values are kept against | `ctx.settings()` (the player's settings start from them); `show_fps` and `console` also in `workspace.config().debug` |
+| `[system]` | Its volumes, `display_mode`, `vsync` and `show_fps` are the defaults the player's values are kept against | `ctx.settings()` (the player's settings start from them); `show_fps` also in `workspace.config().debug` |
 | `[tilemap]` | No | `workspace.config().tiled_project` |
 | `[debug]` | No | `workspace.config().debug` |
 | `[release]` | No | `workspace.config().release` |
 | `[env]` | No | `config.env_str/env_bool/env_int/env_float(key)`, `has_env` |
 
 - A key that a known section (`[project]`, `[paths]`, `[system]`, `[debug]`, `[release]`, `[tilemap]`) does not have warns once at startup, naming the nearest known key. A value of the wrong type warns and is ignored. `[env]` and the game's own sections are free-form.
-- `audio_buffer_frames`, `resolution`, `pixel_art`, `console` and the background settings are the project's only: the player does not keep them.
+- `audio_buffer_frames`, `resolution`, `pixel_art` and the background settings are the project's only: the player does not keep them.
+- `[debug]` holds the developer tools' switches, for a build with the tools (`cargo run`, `ryo2d dev`, `ryo2d build --dev-tools`). Unset, `console` and `dev_window_keys` are on and the rest off. A game built with plain `ryo2d build` has no tools and ignores the section (without a warning), but for `disable_debug_keys`, which still turns F5 off.
 
 ## The Web: `ryo2d::project!()`
 

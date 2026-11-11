@@ -1,8 +1,8 @@
 ---
 name: ryo-profiler
-description: Profiling Ryo2D games and engine - puffin integration, profiler window, performance analysis.
+description: Profiling Ryo2D games and the engine - profile_scope! and profile_function! (puffin, with the engine's profiler feature, recorded while scopes are on), ryo2d dev -p and the profiler window (F10), the engine's own scopes, the frame timing overlay and FrameCost, and performance analysis.
 metadata:
-  version: 1.2.0
+  version: 1.3.0
 ---
 
 # Ryo2D Profiler Specialist
@@ -18,7 +18,7 @@ ryo2d dev --profiler
 ryo2d dev -p
 ```
 
-A second window opens showing real-time flamegraphs.
+A second window opens showing real-time flamegraphs. `-p` builds the engine with its `profiler` feature (`cargo run --features ryo2d/profiler`), so the game needs no feature of its own. The profiler is a developer tool: a game built with `ryo2d build` has none (see A shipped build, below).
 
 ## Profiler Window Features
 
@@ -80,17 +80,26 @@ fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
 }
 ```
 
-When `profiler` feature is disabled (default), macros compile to nothing.
+A scope is recorded only when both hold:
 
-## Pre-Instrumented Engine Scopes
+- the build has the engine's `profiler` feature (`ryo2d dev -p`, `ryo2d dev` with `[debug] enable_profiler = true`, or `cargo run --features ryo2d/profiler`). Without it the macros compile to nothing, in the game and in the engine;
+- scopes are on: while the profiler window is open, or for the whole run with `[debug] enable_profiler = true`. Closing the window turns them off again unless `enable_profiler` is set.
 
-These engine scopes are always recorded:
+So with the feature built in and the window closed, a scope costs a check and records nothing.
+
+## Engine Scopes
+
+The engine's own scopes, recorded under the same conditions. The `cpu:` and `gpu:` prefixes colour the bars; a game's scopes have no prefix.
 
 | Scope | What it measures |
 |-------|-----------------|
 | `cpu:update` | The UI pass and every fixed step of the frame (`Scene::update`, juice, scene systems, physics, propagation) |
 | `cpu:physics` | One Rapier step (`step_physics`) |
-| `cpu:render` | `Scene::render` hooks and collecting the world (entities, trails, lights) into the GPU draw list |
+| `cpu:particles` | One step of the engine's particle emitters (the game-time step, and the real-time step of unscaled emitters) |
+| `cpu:render` | `Scene::render` hooks and collecting the world (entities, trails, lights, particles) into the GPU draw list |
+| `cpu:render:particles` | Inside `cpu:render`: collecting the particles the cameras see |
+| `cpu:render:submit` | Submitting the frame's GPU work |
+| `cpu:atlas:spread texture`, `cpu:atlas:spread first band` | Making an image's own texture, and writing its first band, when a big image is spread over frames |
 | `gpu:present` | Running the render pipeline and presenting |
 | `cpu:scene_push` | Scene push transitions |
 | `cpu:scene_switch` | Scene switch transitions |
@@ -104,7 +113,7 @@ ryo2d dev --profiler
 ryo2d dev -p
 ```
 
-This compiles with the profiler feature and auto-opens the profiler window on launch.
+This builds the engine with its `profiler` feature (`--features ryo2d/profiler`) and opens the profiler window at launch (`RYO_PROFILER_AUTO_OPEN=1`). It names the engine's package, `ryo2d`: a game that renames its `ryo2d` dependency in `Cargo.toml` cannot use `-p`, and runs `cargo run --features <its name>/profiler` instead.
 
 ### Via Ryo.toml (recommended for regular development)
 ```toml
@@ -112,7 +121,11 @@ This compiles with the profiler feature and auto-opens the profiler window on la
 enable_profiler = true
 ```
 
-This compiles with the profiler feature but doesn't auto-open. Press **F10** to open the profiler window when needed (F10 requires `dev_window_keys`, which defaults to on in debug builds only). This is ideal for development where you only occasionally need the profiler.
+`ryo2d dev` then builds with the `profiler` feature too, and scopes are on from the start, but the window does not open by itself. Press **F10** to open it when needed (F10 works while `[debug] dev_window_keys` is on, its default in a build with the tools). `cargo run` alone does not add the feature: pass `--features ryo2d/profiler`.
+
+### A shipped build
+
+The `profiler` feature brings the developer tools with it. `ryo2d build` adds neither, so a shipped game records no scopes, has no profiler window and no F10, whatever Ryo.toml says; the macros compile to nothing.
 
 ## Architecture (for engine devs)
 
@@ -146,7 +159,7 @@ This compiles with the profiler feature but doesn't auto-open. Press **F10** to 
 
 | File | Purpose |
 |------|---------|
-| `src/core/profiler.rs` | Macros, init, new_frame |
+| `src/core/profiler.rs` | Macros, `init` (scopes on for `enable_profiler`), `new_frame` |
 | `src/core/windows/profiler_window.rs` | Windowed flamegraph viewer |
 | `src/core/diagnostics/flags.rs` | `DebugConfig::enable_profiler`, the runtime switch (set from `[debug] enable_profiler` in Ryo.toml) |
 | `src/cli/commands/dev.rs` | `--profiler` CLI flag handling |
@@ -154,7 +167,7 @@ This compiles with the profiler feature but doesn't auto-open. Press **F10** to 
 ### How Data Flows
 
 1. Game code calls `profile_function!()` / `profile_scope!("name")`
-2. Puffin records scope enter/exit times in thread-local storage
+2. While scopes are on (the window holds them on while open; `enable_profiler` for the whole run), puffin records scope enter/exit times in thread-local storage
 3. Engine calls `profiler::new_frame()` at frame start
 4. ProfilerWindow's `FrameView` sink receives completed frame data
 5. `render()` collects scopes and draws CPU-rendered bars
@@ -171,14 +184,13 @@ pub fn my_system(time: Res<Time>, mut query: Query<&mut Transform>) {
 ```
 
 The `cpu:` / `gpu:` prefix picks the bar colour in the profiler window.
-
 ## Troubleshooting
 
 ### "No profiling data detected"
 
 1. Ensure `--profiler` flag is used or `enable_profiler = true` in Ryo.toml
 2. Add `profile_function!()` to your update/render functions
-3. The profiler compiles to no-op without the profiler feature
+3. The profiler compiles to no-op without the engine's `profiler` feature
 
 ### Profiler window doesn't auto-open
 
@@ -188,9 +200,10 @@ For auto-open behavior, use `ryo2d dev --profiler` instead.
 
 ### Profiler window doesn't open at all
 
-1. Check console for `[Profiler] Window opened` message
-2. If using Ryo.toml config, ensure the project has the profiler feature in Cargo.toml
-3. Window may be behind main game window
+1. Look in the terminal or the log for `ryo2d::core::windows::profiler_window: Window opened`
+2. F10 does nothing without the engine's `profiler` feature: run through `ryo2d dev` (with `-p` or `enable_profiler = true`), or `cargo run --features ryo2d/profiler`
+3. F10 needs `[debug] dev_window_keys` on (its default in a build with the tools)
+4. Window may be behind main game window
 
 ### Bars are flickering
 

@@ -1,8 +1,8 @@
 ---
 name: ryo-cli
-description: Using the ryo2d CLI for building, running, and developing games.
+description: Using the ryo2d CLI for building, running and developing games - init, dev (and -p for the profiler), build (a release without developer tools; --dev-tools keeps them), run, export, check-ui, netplay, the release bundle, RYO_LOG, frame capture and scripted headless runs (RYO_CAPTURE_*, RYO_INPUT, RYO_HEADLESS).
 metadata:
-  version: 1.4.0
+  version: 1.5.0
 ---
 
 # Ryo2D CLI Specialist
@@ -15,7 +15,8 @@ Run from a game project directory (containing `Ryo.toml`):
 
 ```bash
 ryo2d init <name>      # Create new project
-ryo2d build            # Production build (cargo build --release)
+ryo2d build            # Production build (cargo build --release), without developer tools
+ryo2d build --dev-tools  # The same, keeping the developer tools (for testing, not for players)
 ryo2d run              # Run production build
 ryo2d dev              # Development mode (debug build, asset hot reload)
 ryo2d export           # Package release into distributable zip
@@ -72,6 +73,9 @@ show_colliders = false
 `ryo2d build` writes `release/` with the game binary, `assets/`, `levels/`, `icon.png` and `licenses/` (plus `data/` when `[release] portable = true`). The game runs from that folder wherever it's launched from, and saves to the OS user data folder unless portable - see the `ryo-config-save` skill.
 
 - **`licenses/` holds the licences of the fonts the engine builds into every game** (feature `default-fonts`): Inter and JetBrains Mono (SIL Open Font License 1.1, which asks that every copy of the fonts carries its notice and licence) and m5x7 (CC0), with a README naming them. Ship the folder with the game; `ryo2d export` always puts it in the zip. Add your own fonts' and assets' licences beside it.
+- **A release has no developer tools**: no console, no logger or profiler window, no debug keys (F1-F4, F9, F10, F12 and the backquote key reach the game; F5's borderless toggle stays) and no debug overlays, whatever Ryo.toml's `[debug]` section says; a plain build ignores those settings without a word. The FPS counter stays, as the player's setting. `ryo2d::DEV_TOOLS` is `false` in it.
+- **`ryo2d build --dev-tools`** keeps the tools (it builds with `--features ryo2d/dev-tools`), to test a release build with the console and the dev windows. It prints `this build includes developer tools: do not ship it`.
+- `ryo2d build` takes no other argument: an unknown one (a misspelt `--dev-tool`) is an error naming it and the valid flags, and nothing is built.
 - The `ryo2d` command has no web build: a game you build for the web yourself must ship the same licence files (copy `release/licenses/` from a `ryo2d build`), and hands the engine its Ryo.toml with `EngineBuilder::project(ryo2d::project!())`, since the browser has none to read (`ryo-config-save`).
 
 ## Development Workflow
@@ -94,9 +98,11 @@ ryo2d run
 
 `ryo2d dev --profiler` (or `-p`) enables the built-in profiler:
 
-1. Compiles with `--features profiler`
+1. Compiles with the engine's profiler feature (`--features ryo2d/profiler`), so the game needs no feature of its own
 2. Sets `RYO_PROFILER_AUTO_OPEN=1` so the profiler window opens at startup
 3. Shows a second window with real-time flamegraphs
+
+It names the engine's package, `ryo2d`: a game that renames its `ryo2d` dependency in `Cargo.toml` cannot use `-p` (run `cargo run --features <its name>/profiler` instead). `[debug] enable_profiler = true` makes plain `ryo2d dev` build with the feature too, with the window closed until F10. See `ryo-profiler`.
 
 Add `profile_function!()` to your update/render to see data:
 
@@ -160,6 +166,22 @@ This optimizes **dependencies** (physics, rendering) while keeping game code uno
 - New projects (`ryo2d init`) include this automatically
 - `ryo2d dev` warns and offers to add it if missing
 - First build after adding is slower (recompiling deps), then fast
+
+## The Log: `RYO_LOG`
+
+`RYO_LOG` sets the log's levels for a run, in every build (`ryo2d dev`, `ryo2d run`, `cargo run`: the game inherits the environment):
+
+```bash
+RYO_LOG=debug ryo2d dev                        # everything at debug
+RYO_LOG=game=debug ryo2d dev                   # the game's debug! lines too
+RYO_LOG=warn,game::my_game::ai=trace ryo2d dev # warnings only, but every line of the game's ai module
+```
+
+- Comma-separated entries, each a level (`off`, `error`, `warn`, `info`, `debug`, `trace`, in any case), which sets all three defaults, or `target=level`. `game`, `engine` and `library` name the defaults: the game's lines (logged with the prelude's `info!` and the rest, under `game::` and the module path), the engine's, and every other crate's. Any other target covers the targets under it (`game::my_game::ai` covers `game::my_game::ai::path`), and the nearest one set wins. The order of the entries does not matter: a bare level applies first.
+- Unset, the game and the engine log at `info` and other crates at `warn`.
+- A bad entry is reported once on stderr (`ryo2d: RYO_LOG: ...`) and skipped; the rest applies.
+- Where the lines go: the terminal in a development build (and in every headless run), and the log file, `logs/latest.log` in the save folder (`data/logs/` during development; the last run's is `previous.log`), for every windowed run, shipped games included. A shipped game writes nothing to the terminal.
+- The console's `log:level` changes the levels while the game runs (`ryo-console`). Logging from game code is in `ryo-game-dev`.
 
 ## Netplay Testing
 

@@ -65,7 +65,6 @@ Items from 4f on were copied from their execution records. Items from earlier su
     - Drawing: half of `render_layers_choose_the_cameras` can't fail (the white emitter draws on top at equal z); the order test's ±3 red tolerance couples it to whole-frame birth ages; unscaled and held pools' fractions are unit-tested only; `draw.rs` ~299 asserts a Flash id that equals the emission.
     - Grid: the radius never decides the query in the differential test (reach 8 exceeds radii 2 and 6).
     - Files: the NaN `on_death` case fails on its `.png` path before the NaN check.
-    - Warning counts: two tests compare dev-log totals, which the 10,000-entry log can drop in a long run.
     - The allocation test's `ours` matches `ryo2d::` in generic arguments, so it fails closed (same matcher in `tests/tilemap_alloc.rs`).
     - Demo: only the Explosions left click is covered; Impacts clicks, right-click debris and the Trails comet are not; the Files page test's assertions are weak; `EMBEDDED` is hand-kept, and `smoke_sheet.png` is never loaded from it in a test.
   - **Demo and docs.**
@@ -122,7 +121,6 @@ Items from 4f on were copied from their execution records. Items from earlier su
     - `FaultKind` (`memory.rs`) keeps an item-level `allow(dead_code)`.
     - `EngineBuilder::memory_saves` is replaced by the browser store on the web.
   - **Settings.**
-    - The console's `debug:fps` changes the FPS overlay without updating `Settings::show_fps` (F1 does update it).
     - A window size a game sets while fullscreen, or in a late system, can be replaced by an OS resize before the next apply.
     - A first run can write `resolution` when the OS adjusts the window before the first frame: treat the OS size before the first frame as the default, or say so in the settings notes.
     - An unread raw section comes back after the player changes that section and changes it back: clear `unread` in `get_mut` and `reset_all`.
@@ -149,7 +147,6 @@ Items from 4f on were copied from their execution records. Items from earlier su
     - Settings cases untested: format 1's rounding of a non-square value, `register(None)` replacing a versioned chain, a format-1 volume above 1, `#[serde(flatten)]` sections, and the branch storing an object whole over a non-object default.
     - Pixel-art coverage shrank: the old test of the project picking the art and the player the window is ported for `Fit` only.
     - No fake browser store calls `done` synchronously inside a commit, so deadlock-freedom and a synchronous failure's rollback are untested; `store_arrived(Err)` is untested through the engine.
-    - Exact `dev_log` warning counts across tests are fragile, and the saves demo's page tests read the shared dev log (a flake risk in parallel runs).
     - Breakout's restart test checks only the high score, not a volume surviving the restart; bullet-hell's game over relies on reading its own queued save, untested.
     - The demo's Recovery test checks the engine's backup, not the page's load path, and its D and Y keys' `std::fs` paths are untested.
     - The filter tests moved from `config_resolution.rs` into `preferences.rs` unit tests (coverage intact).
@@ -825,13 +822,11 @@ Items from 4f on were copied from their execution records. Items from earlier su
 - The stats and FPS overlay panels overlap by 8 px when stats, FPS and frame timing all show (pre-existing).
 - `logical_to_screen`'s doc merged into `console_pixel_scale`'s (`engine/frame.rs` ~366); `logical_to_screen` is undocumented.
 - A console scrollbar drag during new output overrides the unseen-lines adjustment; the 1,000-line cap with unseen lines is untested.
-- The console's pointer ignores `mouse_scale` under an explicit `ui_scale`: its hit tests compare a screen-unit pointer with UI-unit rects (pre-existing).
 - A game re-requesting a custom cursor that fails to create retries (and warns) every frame.
 - The cursor block in `about_to_wait` could become an `Engine` method so a headless test covers its wiring; the release re-apply is checked only by hand on macOS.
 
 ## Input and scrolling (4g hand-play)
 
-- The dev logger window reads winit's physical `PixelDelta` / 10, so it scrolls twice as fast on a Retina trackpad (pre-existing).
 - On the web, browsers report mouse wheels as pixel deltas: a notch moves at once with no list look-ahead, so a node list can show blank leading rows for one frame per notch (`.overscan(n)` hides it).
 - The node-list look-ahead does not decay while the offset moves (a slow tail keeps the largest step, bounded by a view); a 4:1 event cadence (240 Hz display, 60 Hz pad) still rebuilds a row per event; a step bigger than any before it has one uncovered frame.
 - The `ScaleFactorChanged` path for physical scroll deltas is not covered by a headless test; a scale-factor change also applies to scroll events already queued.
@@ -849,7 +844,7 @@ Items from 4f on were copied from their execution records. Items from earlier su
 - 4d: `reload_trees` makes a `QueryState` every frame (~427 ns); `TreeSource` has no build generation; the placeholder rule needs the same kind and name.
 - 4b: a dialog that removes its own opener leaves no focus; `ui.popup` lists are not capped; `ui.input().scroll_delta()` reads zero over UI; centre-anchored columns jump when a line appears; the networking and asset-loading hints still say mouse-only; `UiHarness` rewinds frames that draw nothing (the engine doesn't); `context.rs` (~4.5k lines) and `input/mod.rs` (~2.8k lines) want splitting.
 - 4b rulings the owner may revisit: the wheel is consumed whenever the pointer is over top-scene UI; dialogs are opaque; `ui` scene changes are ignored during transitions except Quit.
-- 4a: colour is in the text layout cache key, so a hue animation lays text out again (fades go through opacity); `draw_text_anchored` and `label` lay out twice; the console re-wraps every line each frame; `.ttc` collections with several faces lose glyphs; binary size could be trimmed (parley features, ICU data, a second nalgebra from fdsm); the dev windows and IME preedit were never checked by eye natively.
+- 4a: colour is in the text layout cache key, so a hue animation lays text out again (fades go through opacity); `draw_text_anchored` and `label` lay out twice; `.ttc` collections with several faces lose glyphs; binary size could be trimmed (parley features, ICU data, a second nalgebra from fdsm); the dev windows and IME preedit were never checked by eye natively.
 - Real pixel-art projects still draw the engine's overlays at low resolution.
 - Assets: a sprite density (@2x) option, so a high-resolution raster draws at its logical size without a scaled child entity.
 

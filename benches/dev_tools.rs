@@ -31,7 +31,8 @@
 //! - `log_call_warn_no_file`: the same call before any file has opened, so
 //!   the file output keeps a copy of each record in its 256-record early
 //!   buffer under a mutex (what a game pays before its engine opens the
-//!   file). Recorded, with no guard. It runs first: once a file has opened,
+//!   file); with `--features dev-tools` the record also goes to the ring.
+//!   Recorded, with no guard. It runs first: once a file has opened,
 //!   the early buffer is gone for the process;
 //! - `console_open_idle`: a `HeadlessEngine` (1920 x 1080, with a GPU) with
 //!   the console open and 1,000 lines of 80 characters printed, against the

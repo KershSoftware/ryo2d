@@ -60,7 +60,7 @@ pub(crate) struct ParticleStore {
 
 /// How long the particle systems took when they last ran: `step` the
 /// fixed step, `unscaled` the unscaled pass and `draw` the drawer, the
-/// work of the `cpu:particles` and `render:particles` scopes, for
+/// work of the `cpu:particles` and `cpu:render:particles` scopes, for
 /// `HeadlessEngine::particle_systems_time` (`benches/particles.rs`)
 // Read only by the native test harness
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]

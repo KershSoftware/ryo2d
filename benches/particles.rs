@@ -16,7 +16,7 @@
 //!   the run. Beside each it prints the 95th percentile and, with no
 //!   target, the frame's particle systems' own time
 //!   (`HeadlessEngine::particle_systems_time`, the profiler's
-//!   `cpu:particles` and `render:particles` scopes) and its render step over
+//!   `cpu:particles` and `cpu:render:particles` scopes) and its render step over
 //!   the empty frame's;
 //! - `particles_idle`: the particle systems' own work with no emitters
 //!   (`step_particles`, `step_unscaled_particles` and the drawer, run outside
@@ -283,7 +283,7 @@ struct Probe {
   engine: HeadlessEngine,
   live: Arc<AtomicUsize>,
   /// Each frame's step, the particle systems' CPU time in it (the
-  /// `cpu:particles` and `render:particles` scopes), and its render step
+  /// `cpu:particles` and `cpu:render:particles` scopes), and its render step
   steps: Vec<Duration>,
   cpu: Vec<Duration>,
   draw: Vec<Duration>,
@@ -421,7 +421,7 @@ fn guard() {
     let line = format!(
       "{}, {} particles live: the step over the empty frame's median, median {:.1} µs, 95th \
        percentile {:.1}, target {} µs: {}, the scene-driven system's {:.1} µs: {}; \
-       cpu:particles median {:.1} µs, render:particles median {:.1} µs, the render step over \
+       cpu:particles median {:.1} µs, cpu:render:particles median {:.1} µs, the render step over \
        the empty frame's {:+.1} µs",
       probe.show.name(),
       probe.live.load(Ordering::Relaxed),

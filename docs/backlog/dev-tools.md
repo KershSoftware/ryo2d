@@ -6,7 +6,7 @@
 
 Machine: the owner's Mac (Darwin, shared), `benches/dev_tools.rs`, run with
 `cargo bench --bench dev_tools`. `log_call_warn` is measured with the log's
-terminal output switched off (`dev_log::set_stdout_enabled(false)`), not
+terminal output switched off (the earlier log's own stdout switch), not
 redirected to the null device, because the bench prints its own results on the
 terminal; so it holds the formatting, the lock and the buffer, not a terminal
 write. `log_call_quiet` is measured the same way.
@@ -58,8 +58,8 @@ the first set of runs.
 | Bench | Before | After, without tools | After, with tools | Target or guard | Verdict | Load at each |
 |-------|--------|----------------------|-------------------|-----------------|---------|--------------|
 | `log_call_quiet` (ns a call) | 103.2 (102.6 to 116.7) | 0.7 (0.6 to 0.9) | 0.9 (0.6 to 1.2) | 5 ns | met | Before 5.6 to 6.0; after 7.3 (no tools), 7.1 (tools) |
-| `log_call_warn` (ns a call, a log file open) | 99.9 (98.3 to 105.0) | 76.2 (67.7 to 76.6) | 91.4 (89.2 to 93.4) | no slower than Before's median, 99.9 ns | met | Before 5.6 to 6.0; after 7.0 (no tools), 7.5 (tools) |
-| `log_call_warn_no_file` (ns a call, no file open yet) | none apart (Before's figure wrote no file) | 61.4 (58.2 to 65.7) | 69.3 (68.3 to 78.7) | none | recorded | after 7.0 (no tools), 7.5 (tools) |
+| `log_call_warn` (ns a call, a log file open) | 99.9 (98.3 to 105.0) | 76.2 (67.7 to 76.6) | 91.4 (89.2 to 93.4) | no slower than Before's median, 99.9 ns | met in all six runs (worst 94.8 ns); with the tools by 5 to 10 ns, which is less than Before's own run-to-run spread: re-check on a quiet machine | Before 5.6 to 6.0; after 7.0 (no tools), 7.5 (tools) |
+| `log_call_warn_no_file` (ns a call, no file open yet) | 99.9 (Before wrote no file, so this row is the like-for-like comparison) | 61.4 (58.2 to 65.7) | 69.3 (68.3 to 78.7) | none | recorded | after 7.0 (no tools), 7.5 (tools) |
 | `console_open_idle` (us over the closed frame) | 187.6 (184.1 to 188.9) | no console | 4.6 (4.0 to 4.7) | under a quarter of Before: 46.9 us | met | Before 5.6 to 6.0; after 7.1 |
 | `console_open_idle`, 95th percentile (us) | 233.1 (225.0 to 275.5) | no console | 58.2 (58.1 to 73.9) | none | recorded | as above |
 | `tools_closed` (ns a frame, the tools' own time, closed) | not measured | no tools | 0 to 41 (every run's median was 0 or one clock tick, 41 ns; 95th percentile 42) | 1 us | met | 7.1 |
@@ -90,8 +90,10 @@ Notes on the figures:
   set's miss). The waste was the file line written with the formatter (140
   ns, now 16), a second clock read for the file's 50 ms flush gap (it now
   reads the record's own time), an 8 KiB file buffer that paid a write call
-  every couple of hundred lines (now 64 KiB; the flushes still bound what
-  waits), and a copy of the record for each output that kept it, freed again
+  every couple of hundred lines (now 64 KiB: the flushes bound how long a
+  line waits while frames run, 50 ms; in a flood the buffer bounds how much
+  waits, 64 KiB; if the game hangs, everything since the last flush waits),
+  and a copy of the record for each output that kept it, freed again
   later. Now one record moves into the ring, and the one the full ring drops
   lends its buffers to the thread's next record, so a steady stream of
   warnings allocates and frees nothing.
@@ -133,8 +135,9 @@ the tools add about 430 kB.
   installed the logger is lost.
 - The per-system "warn once" sets are not shared: each system warns once on
   its own.
-- The log file is flushed at most every 50 ms, so up to 50 ms of warnings can
-  be lost in a hard crash that skips the panic hook.
+- Lines not yet flushed to the log file are lost in a hard crash or kill that
+  skips the panic hook: while frames run, at most the last 50 ms (and at most
+  64 KiB during a flood); if the game hangs, everything since the last flush.
 - A scene's command cannot be typed while its scene is off the stack.
 - Records logged on a library's own thread (the audio and gamepad libraries')
   carry no engine scope, so a test's capture and a second engine's console do

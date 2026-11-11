@@ -2,7 +2,7 @@
 name: ryo-animation
 description: Sprite animations (Animator, AnimationController), tweens, knockback and squash/stretch.
 metadata:
-  version: 2.1.1
+  version: 2.2.0
 ---
 
 # Ryo2D Animation Specialist

@@ -2,7 +2,7 @@
 name: ryo-text
 description: "Text: fonts, styles, rich text and markup, inline icons, typewriter reveal and glyph effects, world text (Text2d) and the damage-number recipe."
 metadata:
-  version: 1.3.1
+  version: 1.4.0
 ---
 
 # Ryo2D Text Specialist

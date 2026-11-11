@@ -10,7 +10,7 @@
 //! | `show_colliders` | Draw the simulation's colliders, joints and contacts, coloured by body kind |
 //! | `show_velocities` | Draw velocity vectors on physics entities |
 //! | `show_origins` | Draw entity origin points (transform position) |
-//! | `enable_profiler` | Open flamegraph profiler window |
+//! | `enable_profiler` | Profiler scopes on for the run (F10 opens the window; needs the `profiler` feature) |
 //! | `ui_cache` | Replay UI node trees' unchanged subtrees (on by default; `EngineBuilder::ui_cache`) |
 //! | `ui_fragments` | Keep the layout and resolved output of UI node trees' unchanged subtrees between frames (on by default; `EngineBuilder::ui_fragments`) |
 //! | `ui_retain` | Keep the UI image while the UI is unchanged; reuse unchanged texts' glyphs (on by default; `EngineBuilder::ui_retain`) |
@@ -74,7 +74,7 @@
 //! show_velocities = false
 //! show_origins = false
 //! disable_debug_keys = false
-//! enable_profiler = true   # Open flamegraph profiler window
+//! enable_profiler = true   # Profiler scopes on for the run
 //!
 //! [system]
 //! show_fps = true

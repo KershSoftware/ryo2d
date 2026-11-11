@@ -16,21 +16,24 @@
 //! - **Profiler** (`profiler_window`) - Real-time flamegraph showing CPU/GPU timing
 //! - **Logger** (`logger_window`) - The log as it is written, filtered by level and origin
 //!
-//! # Enabling Windows
+//! # Opening Windows
 //!
-//! Configure in `Ryo.toml`:
+//! F9 toggles the logger and F10 the profiler. In `Ryo.toml`:
 //!
 //! ```toml
 //! [debug]
-//! enable_profiler = true  # Enable profiler window (requires --features profiler)
-//! logger_window = true    # Enable logger window
+//! logger_window = true    # open the logger window at start
+//! enable_profiler = true  # profiler scopes on for the run; F10 opens the window
 //! ```
 //!
-//! Or via CLI:
+//! The profiler needs the engine's `profiler` feature, which `ryo2d dev`
+//! adds when asked (no game feature needed):
 //!
 //! ```bash
-//! ryo2d dev --profiler    # Run with profiler
+//! ryo2d dev --profiler    # build with the profiler and open its window
 //! ```
+//!
+//! The windows are developer tools: a build without the tools has none.
 //!
 //! # Creating Custom Windows
 //!

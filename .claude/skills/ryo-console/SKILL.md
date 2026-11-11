@@ -1,274 +1,234 @@
 ---
 name: ryo-console
-description: Developer console system - commands, registration, debugging overlays.
+description: Developer console - registering commands for a scene (ctx.console().command) or the whole run (EngineBuilder::console_command), Command's arguments and printing, scene changes from a command, the built-in commands (debug overlays, time scale, log levels), help and Tab completion, the log's warnings in the console, and what a shipped build has (none of it).
 metadata:
-  version: 1.3.7
+  version: 1.4.0
 ---
 
 # Ryo2D Developer Console
 
-You help users work with the Valve-style developer console system, including registering custom commands, understanding the two-phase command pattern, and debugging games at runtime.
+You help users add commands to the developer console and use it to debug a game while it runs.
+
+**For complete API signatures, see the `ryo-api` skill.**
 
 ## Overview
 
-The developer console is a draggable, resizable overlay toggled with the backtick key (`KeyCode::Backquote`, the `~` key on US layouts). It provides:
-- Runtime command execution
-- Debug toggles (FPS, colliders, timing stats)
-- Custom game commands with scoped handlers
-- Scrollable output with word wrapping
+The console is a moveable, resizable window over the game, opened with the backquote key (`` ` ``, `KeyCode::Backquote`: the key left of `1` on a US keyboard, found by its place whatever character the layout gives it). Type a command and press Enter; its lines print below. It holds:
 
-While it is open and focused it takes the keyboard (the game sees no keys); an unfocused console stays open while the game plays. The mouse over its window never reaches the game or the scene UI. Commands run once per frame before the scene UI and the fixed steps, on real time, so they work while the game is paused.
+- the engine's built-in commands (overlays, time scale, the scene stack, log levels, ...);
+- the game's own commands, registered by a scene or for the whole run;
+- the log's warnings and errors, as they are logged.
 
-## Enabling the Console
+The console is a developer tool. It is in every development build (`cargo run`, `ryo2d dev`) and in `ryo2d build --dev-tools`; a game built with plain `ryo2d build` has no console at all (see A shipped build, below). `ryo2d::DEV_TOOLS` (in the prelude) says which build is running.
 
-In `Ryo.toml`:
+Commands run once a frame before the scene UI and the fixed steps, on real time, so they work while the game is paused.
 
-```toml
-[system]
-console = true  # Works in both debug and release builds
+## A scene's command
+
+A scene registers commands with `ctx.console().command`, usually in `on_enter`. The handler is called with the scene itself, the scene context `update` gets, and the running `Command`. It returns `Result<(), String>`: an `Err` prints in red.
+
+```rust
+struct Level {
+  lives: u32,
+}
+
+impl Scene for Level {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    ctx.console().command(
+      CommandSpec::new("game:lives", "Set the lives left").usage("game:lives <count>"),
+      |level: &mut Level, _ctx, cmd| {
+        level.lives = cmd.arg(0)?;
+        cmd.print(format!("{} lives", level.lives));
+        Ok(())
+      },
+    );
+  }
+}
 ```
 
-## Built-in Commands
+- The command leaves with its scene: when the scene is popped, switched or reset away, its commands go too.
+- Write the scene's type on the handler's first argument (`level: &mut Level`): that is the type the command is registered for.
+- A `(name, description)` pair works wherever a `CommandSpec` does: `ctx.console().command(("game:heal", "Heal the player"), ...)`.
+- What the handler does through `ctx` is its scene's, as in `update`: the sounds it plays and the particle effects it starts belong to that scene (held and stopped with it), and it can spawn and change entities and resources.
+- Registering a name this scene registered already replaces its handler.
+- When two scenes on the stack register the same name, the scene nearer the top answers; when it leaves, the one below answers again. So a pause menu pushed over a level can register its own `game:reset` without touching the level's.
+- `ctx.console().remove(name)` removes a command, whoever registered it (a built-in too), and says whether there was one.
+- `ctx.console().print(text)` and `print_colored(text, color)` print a line to the console at once, from anywhere in a scene.
 
-| Command | Shortcut | Description |
-|---------|----------|-------------|
-| `help [cmd]` | | List commands or show detailed help |
-| `clear` | | Clear console output |
-| `quit` / `exit` | | Exit game |
-| `debug:fps` | F1 (cycles overlays) | Toggle FPS counter |
-| `debug:stats` | F1 (cycles overlays) | Toggle detailed stats overlay |
-| `debug:timing` | F1 (cycles overlays) | Toggle frame timing breakdown |
-| `debug:colliders` | F2 | Toggle collision shape visualization |
-| `debug:velocities` | F3 | Toggle velocity vectors |
-| `debug:origins` | F4 | Toggle entity origin points |
-| `debug:ui` | | Outline every UI widget with its id: hot yellow, active orange, focused green |
-| `debug:ui-rebuilds` | | Outline the UI nodes rebuilt each frame in orange, fading over 0.5 s, with a "rebuilt N / replayed M nodes" counter in the bottom-left stack with the other overlays ("(spot check K)" in debug builds), a "fragments: N kept, M resolved again, K captured" line below it (unchanged subtrees copied, laid out again from what they kept, and kept for the next frame) and a render line below that: the frames the UI image was kept, and the texts built and reused. The lines update once a second, so the overlay does not keep the UI redrawing; the outlines show rebuilds as they happen |
-| `ui:cache [on\|off]` | | Show or set UI node tree caching; off builds every node every frame (the same UI, slower), to rule caching in or out when chasing a UI bug |
-| `ui:fragments [on\|off]` | | Show or set UI fragments; off replays and lays out every unchanged node subtree each frame instead of copying it (the same UI, slower), to rule the copies in or out when chasing a UI bug; it needs `ui:cache on` |
-| `ui:retain [on\|off]` | | Show or set UI render retention; off draws the whole UI every frame (the same pixels, slower), to rule retention in or out when chasing a rendering bug |
-| `debug:capture [path]` | F12 | Save the next frame as a PNG |
-| `system:version` | | Show engine and game version |
-| `system:timescale <n>` | | Set the game clock's speed (`ctx.time.game.speed()`, 0.0-10.0) |
-| `system:ip:lan` / `system:ip:wan` | | Show local / public IP address |
+## A command for the whole run
 
-Category commands list related commands:
-- `debug` - List all debug commands
-- `system` - List all system commands
-- `game` - List all game-specific commands
+`EngineBuilder::console_command` registers a command that lasts for the whole run. Its handler gets the `World` and the `Command`:
 
-## Two-Phase Command System
-
-Game commands use a declare-then-register pattern for clean lifecycle management:
-
-### Phase 1: Declaration (Startup)
-
-Declare game-wide commands on the engine builder (recommended):
-
-<!-- with: struct MenuScene; impl MenuScene { fn new() -> Self { Self } } impl Scene for MenuScene {} -->
+<!-- with: #[derive(Resource, Default)] struct Gold(u32); struct Menu; impl Scene for Menu {} -->
 ```rust
 EngineBuilder::new()
-  .title("My Game")
-  .console_command(("game:reset", "Reset the game to initial state"), |_world, cmd| {
-    cmd.act(SceneAction::Switch(Box::new(MenuScene::new())));
-    Ok(())
-  })
+  .insert_resource(Gold::default())
   .console_command(
-    CommandSpec::new("game:godmode", "Toggle invincibility")
-      .help("Makes the player immune to all damage until toggled off."),
-    |_world, cmd| {
-      cmd.print("God mode toggled");
+    CommandSpec::new("game:gold", "Add gold").usage("game:gold <amount>"),
+    |world, cmd| {
+      let amount: u32 = cmd.arg(0)?;
+      world.resource_mut::<Gold>().0 += amount;
+      cmd.print(format!("{amount} gold added"));
       Ok(())
     },
   )
-  .remove_console_command("system:version") // drop a built-in the game does not want
-  .start_scene(MenuScene::new())
+  .remove_console_command("system:version") // a built-in the game does not want
+  .start_scene(Menu)
   .build()
   .run()?;
 ```
 
-Scene-specific commands can also be declared in `on_enter` with `ctx.console().declare(name, description, verbose)` (`verbose` is an `Option`, e.g. `None::<&str>`). Declarations are global and idempotent.
+- A builder command named like a built-in replaces the built-in, and a later `console_command` of the same name replaces an earlier one.
+- A scene's command of the same name answers over a builder command while the scene is on the stack.
+- `remove_console_command(name)` removes a command (a built-in included) before the engine starts, after the calls made before it.
 
-Parameters:
-- `name` - Command name (use `game:` prefix for game commands)
-- `description` - Brief description shown in command listings
-- `verbose_description` - Optional detailed help (shown with `help game:reset`)
+## Names
 
-### Phase 2: Registration (Scoped)
+- Names are lower-cased when registered and when typed, so `Game:Gold` and `game:gold` are the same command.
+- Use a `category:command` form; the game's commands go under `game:`. `help` groups commands by the text before the first `:`.
+- A name that is empty or has a space in it is refused, with a warning in the log naming it.
 
-Register handlers where they make sense (e.g., in GameScene). `ctx.console()` returns a `ConsoleScope` tied to the calling scene; `register` returns `false` if the command was never declared:
+## The running `Command`
 
-<!-- with: struct GameScene; impl GameScene { fn new() -> Self { Self } } impl Scene for GameScene {} -->
+The arguments are the words typed after the name. Double quotes keep a phrase together as one argument (`game:say "hello there"`), and `""` is an empty argument. Indexes count from 0.
+
+| Call | Gives |
+|------|-------|
+| `cmd.name()` | the command's name, lower case |
+| `cmd.args()` | `&[String]`, the arguments |
+| `cmd.arg::<T>(i)` | argument `i` parsed as any `FromStr` type; the error is ready to print: `argument 2 ("abc") is not a number; usage: game:spawn <kind> [count]` (counted from 1, with the usage line when the spec has one) |
+| `cmd.arg_or::<T>(i, default)` | as `arg`, or `default` when there are fewer arguments; an argument that is there but does not parse is still an error |
+| `cmd.rest(i)` | the arguments from `i` on, joined by spaces (empty when there are none), for a message or a path |
+| `cmd.print(text)`, `cmd.print_colored(text, color)` | a line of output |
+| `cmd.act(action)` | a `SceneAction` applied when the handler returns (the last one asked for wins) |
+| `cmd.quit()` | quit the game when the handler returns |
+
+<!-- with: struct Spawner { count: u32 } impl Scene for Spawner {} -->
 ```rust
-fn on_enter(&mut self, ctx: &mut SceneContext) {
-  // Register the command; it leaves with this scene
-  ctx.console().command(("game:reset", "Reset the game"), |_game: &mut GameScene, _ctx, cmd| {
-    cmd.print("Resetting game...");
-    cmd.act(SceneAction::Switch(Box::new(GameScene::new())));
+fn register(ctx: &mut SceneContext) {
+  ctx.console().command(
+    CommandSpec::new("game:spawn", "Spawn enemies")
+      .usage("game:spawn <kind> [count]")
+      .help("Kinds: orc, bat. Count defaults to 1."),
+    |spawner: &mut Spawner, _ctx, cmd| {
+      let kind: String = cmd.arg(0)?;
+      let count: u32 = cmd.arg_or(1, 1)?;
+      if kind != "orc" && kind != "bat" {
+        return Err(format!("no enemy called {kind}"));
+      }
+      spawner.count += count;
+      cmd.print(format!("spawned {count} {kind}"));
+      cmd.print_colored("(they spawn next step)", Color::rgb(150, 150, 150));
+      Ok(())
+    },
+  );
+}
+```
+
+The lines a handler prints through `cmd` go to the console when it returns, then its error. A line it prints through `ctx.console().print` goes in at once, so it comes before the command's own lines.
+
+### Changing scenes
+
+`cmd.act(SceneAction::...)` changes the stack as an `update` returning that action would:
+
+<!-- with: struct Title; impl Scene for Title {} struct Game; impl Scene for Game {} -->
+```rust
+fn register(ctx: &mut SceneContext) {
+  ctx.console().command(("game:title", "Back to the title screen"), |_game: &mut Game, _ctx, cmd| {
+    cmd.act(SceneAction::Switch(Box::new(Title)));
     Ok(())
   });
 }
 ```
 
-`ctx.console().remove_builtin(name)` removes a built-in command at runtime.
+- A builder command's action always applies. A scene's applies only when that scene is the top one: a scene lower on the stack (under a pause menu, say) cannot change scenes, and its action is dropped with a red line saying so, as a lower scene's `update` action is.
+- While a scene transition runs, only `SceneAction::Quit` (and `cmd.quit()`) applies; any other change is dropped with a red line.
+- A handler may register or remove commands, or pop its own scene: nothing of the console is borrowed while it runs. The popped scene's commands are gone afterwards.
+- A stack left empty quits the game, as it does from `update`.
 
-### Automatic Cleanup
+## Built-in commands
 
-When a scene leaves the stack, every handler it registered is removed (each scene instance has its own scope, so a pushed overlay's handlers go with the overlay). The command reverts to "noop" state - it still appears in help but prints:
+| Command | Shortcut | Does |
+|---------|----------|------|
+| `help [command]` | | List every command, grouped by category; with a name, its description, usage and help |
+| `clear` | | Clear the console's output |
+| `quit`, `exit` | | Quit the game |
+| `debug:fps` | F1 cycles | Toggle the FPS counter (the player's setting: `ctx.settings()` follows it) |
+| `debug:stats` | F1 cycles | Toggle the statistics overlay |
+| `debug:timing` | F1 cycles | Toggle the frame timing overlay |
+| `debug:colliders` | F2 | Toggle collision shapes |
+| `debug:velocities` | F3 | Toggle velocity vectors |
+| `debug:origins` | F4 | Toggle entity origin points |
+| `debug:ui` | | Outline every UI widget with its id: hot yellow, active orange, focused green |
+| `debug:ui-rebuilds` | | Outline the UI nodes rebuilt each frame (fading orange), with counters of nodes rebuilt and replayed, fragments kept and the render line, updated once a second (`ryo-ui`) |
+| `debug:capture [path]` | F12 | Save the next frame as a PNG (default `captures/`, or `RYO_CAPTURE_DIR`) |
+| `ui:cache [on\|off]` | | Show or set UI node tree caching; off builds every node every frame (the same UI, slower), to rule caching in or out of a UI bug |
+| `ui:fragments [on\|off]` | | Show or set UI fragments; off replays and lays out every unchanged subtree each frame (needs `ui:cache on`) |
+| `ui:retain [on\|off]` | | Show or set UI render retention; off draws the whole UI every frame (the same pixels, slower) |
+| `system:timescale [n]` | | Show or set the game clock's speed, 0 to 100 (1 is normal) |
+| `system:version` | | The game's name and version (`[project] version` in Ryo.toml), the engine's version and the build |
+| `system:scenes` | | The scene stack, top first, each marked `updates` or `stopped` |
+| `system:entities` | | Count the game's entities |
+| `system:assets` | | The asset registry's counts per type: loaded, loading, failed |
+| `log:level [target] [level]` | | Show or set the log's levels (below) |
+| `log:show [level\|off]` | | Show or set the lowest level of log record the console shows (default `warn`) |
 
-```
-Command 'game:reset' has no effect in the current context
-  Reset the game to initial state
-```
+A game's builder command of the same name replaces a built-in; `remove_console_command` or `ctx.console().remove` removes one.
 
-## Command Handler Signature
+## Help and Tab
 
-```rust,ignore
-// The engine's registrations
-impl ConsoleScope<'_> {
-  pub fn command<S: Scene>(&mut self, spec: impl Into<CommandSpec>,
-    handler: impl Fn(&mut S, &mut SceneContext<'_>, &mut Command<'_>) -> Result<(), String> + Send + Sync + 'static);
-}
-impl EngineBuilder {
-  pub fn console_command(self, spec: impl Into<CommandSpec>,
-    handler: impl Fn(&mut World, &mut Command<'_>) -> Result<(), String> + Send + Sync + 'static) -> Self;
-}
-```
+- `help` lists every command with its one-line description, those without a category first, then each category under its name. `help game:spawn` shows the description, the `Usage:` line and the help text.
+- Tab on the first word completes the command's name: one match becomes the name and a space; several are completed to their longest common start, and a second Tab lists them.
+- Up and Down walk the last 100 commands.
 
-### What a handler receives
+## The log in the console
 
-- `cmd: &mut Command` - the arguments (`args()`, typed `arg::<T>(i)` and `arg_or`, `rest(i)`), printing (`print`, `print_colored`), `act(SceneAction)` and `quit()`
-- a scene's handler: its scene (`&mut S`) and the `SceneContext`; a builder's handler: the `World`
+The console shows the log's warnings and errors as `target: message`: warnings in yellow, errors in red. It catches up whenever it opens: what was logged while it was closed is there, the warnings from start-up (a misspelt Ryo.toml key, a save folder that cannot be written) included. It keeps its last 1,000 lines; the warnings and errors it can no longer show are counted in one grey line, `N earlier warnings and errors are no longer shown`.
 
-### Results
+- `log:show info` shows info lines too (white), `log:show debug` and `trace` the quieter ones (grey); `log:show off` shows none; `log:show warn` is the default.
+- `log:level` with nothing lists the three default levels and every target's own level. `log:level game debug` lets the game's `debug!` lines through; `log:level engine warn` quietens the engine; `log:level library info` covers every other crate; any other word is a target, which covers the targets under it (`log:level game::my_game::ai trace`: a game's targets are `game::`, its crate and the module path). A level is one of `off`, `error`, `warn`, `info`, `debug`, `trace`. The levels are the log's own (the file and the terminal follow them too; see `ryo-game-dev`, Logging), and last for the run.
 
-```rust,ignore
-// A handler returns Result<(), String>
-Ok(())                             // Command succeeded
-Err("No player to heal".into())    // Command failed: printed in red
-// cmd.quit() asks the game to exit; cmd.act(action) changes scenes
-```
+So to watch a part of the game closely: `log:level game::my_game::ai debug`, then `log:show debug`.
 
-### Console Output Methods
+## The window
 
-<!-- given: cmd: &mut Command<'_> -->
-```rust
-cmd.print("Normal text");                                    // White
-cmd.print_colored("System info", Color::rgb(150, 150, 150)); // Gray
-ctx.console().print("From anywhere in a scene");             // White
-```
+- **Open and close:** the backquote key opens it. Pressed again it closes it while the input line is empty, and types its character when the focused line has text. Escape and the window's X always close it.
+- **Keyboard:** while it is open and focused it takes the keyboard (the game sees no keys). Click outside it to unfocus it and play with it open; click inside to focus it again.
+- **Mouse:** any mouse button pressed over the window stays away from the game and the scene UI, through its release. A drag the game started outside the window keeps its holds and release when the pointer crosses it.
+- **Editing:** Left, Right, Home, End, Backspace, Delete; Enter runs the line.
+- **Moving and sizing:** drag the title bar to move it, the bottom-right corner to resize it.
+- **Scrolling:** the mouse wheel (three lines a notch), a trackpad (it follows the fingers), Page Up and Page Down, or the scrollbar. New output keeps the view at the bottom; scrolled up, the lines being read stay in place until a command is run, which jumps to the bottom.
+- The text is JetBrains Mono (the `FontRole::Mono` font: a game that points that role at its own font changes the console too), wrapped to the window in any script the fonts have (`ryo-text`). Over the window the pointer is the default arrow, whatever cursor the game set.
 
-## Complete Example
-
-```rust,ignore
-// Two files: main.rs and game.rs
-// main.rs - a command for the whole run, with the world
-EngineBuilder::new()
-  .console_command(("game:gold", "Add 100 gold"), |world, cmd| {
-    world.resource_mut::<Gold>().0 += 100;
-    cmd.print("100 gold added");
-    Ok(())
-  })
-  .start_scene(MenuScene::new())
-  .build()
-  .run()?;
-
-// game.rs - a scene's command, with the scene itself
-impl Scene for GameScene {
-  fn on_enter(&mut self, ctx: &mut SceneContext) {
-    ctx.console().command(("game:reset", "Reset the game"), |_game: &mut GameScene, _ctx, cmd| {
-      cmd.print("Resetting game...");
-      cmd.act(SceneAction::Switch(Box::new(GameScene::new())));
-      Ok(())
-    });
-  }
-}
-```
-
-A scene's handler is called with its scene and the scene context `update` gets; a builder's handler with the world.
-
-## Console UI Features
-
-### Window Controls
-- **Drag** title bar to move
-- **Drag** bottom-right corner to resize
-- **Click** X button or press Escape to close
-- **Click** outside to unfocus (game receives input)
-- **Click** inside to refocus
-
-### Input
-- **Up/Down arrows** - Navigate command history
-- **Page Up/Down** - Scroll output
-- **Mouse wheel** - Scroll output; a wheel notch eases three lines, a trackpad follows the fingers at once (as far as the pointer would move)
-- New output keeps the view at the bottom; scrolled up, the lines being read stay in place (wrapped lines included), until you submit a command, which jumps to the bottom as a terminal does
-- **Scrollbar** - Click and drag to scroll
-
-### Visual Style
-- Semi-transparent dark background
-- Color-coded output (white, blue, red, gray)
-- Blinking cursor
-- Over the console window the mouse cursor is the default arrow (a resize arrow on the corner handle, a move cursor while dragging), whatever the game set; the game's cursor returns when the pointer leaves or the drag ends
-- JetBrains Mono (the `FontRole::Mono` font), so a game that points that role at its own font changes the console too
-- Rows are sized by the font's real line height, not a fixed cell
-- Word wrapping for long lines, in any script (the fonts must have the characters; see `ryo-text`)
-
-## Game Version in Console
-
-Add version to `Ryo.toml`:
+## Ryo.toml
 
 ```toml
-[project]
-name = "My Game"
-version = "1.0.0"
+[debug]
+console = false   # the backquote key does not open the console (default: true in a build with the tools)
 ```
 
-The `system:version` command will show:
+With `console = false` the key is the game's and the console never opens; registered commands are kept but cannot be typed.
 
-```
-My Game
-  Version: 1.0.0
+## A shipped build
 
-Ryo2D Game Engine
-  Engine: 0.0.1
-  Build:  Dev
-```
+A game built with `ryo2d build` has no developer tools, whatever Ryo.toml says: no console window, no built-in commands, no backquote key (it reaches the game like any other key), and none of the engine's command names in the binary.
 
-## Architecture
+The game's code compiles unchanged: `ctx.console().command`, `remove`, `print`, `EngineBuilder::console_command` and `remove_console_command` exist in every build and do nothing without the tools. The handlers are never called. A game's own `CommandSpec` text (its names and descriptions) stays in the binary, so keep nothing secret in it. To leave a command's code out of a shipped build, put it behind `#[cfg(debug_assertions)]` or check `DEV_TOOLS`.
 
-```
-src/core/console/
-  mod.rs           - Console (a world resource), rendering, input handling
-  command.rs       - CommandSpec, Command, splitting a line
-  registry.rs      - ConsoleCommands: per name, a stack of entries by scope
-  dispatch.rs      - running a line
-  scope.rs         - ConsoleScope (ctx.console())
-  builtins.rs      - Built-in debug/system commands
-```
+`ryo2d build --dev-tools` keeps the console in a release build, for testing one; it prints `this build includes developer tools: do not ship it`.
 
-### Key Types
+## Testing commands
 
-**Console** - UI state and rendering, a world resource:
-- Window position/size, drag state
-- Input buffer, cursor position
-- Output lines (max 1000)
-- Command history (max 100)
-- Scroll offset, word wrapping
+A headless test can type a line: `HeadlessEngine::console_run(line) -> Vec<String>` (doc-hidden, in a build with the tools) runs it as if typed and returns the lines it printed after the echo, its error last. A scene change it asks for happens at once; a quit ends the next step.
 
-**ConsoleCommands** - the commands, a world resource in a build with the tools: per name, the run-long entry (a built-in or a builder command) and the scenes' entries by scope; the uppermost scene's answers, and the scene manager calls `clear_scope` when a scene leaves the stack
-
-**ConsoleScope** - what `ctx.console()` returns: `command`, `remove`, `print` and `print_colored`, with the calling scene's scope id
-
-## Testing Commands
-
-The console module has comprehensive tests:
-
-```bash
-cargo test --lib console::
+```rust,ignore
+let mut engine = HeadlessEngine::new(EngineBuilder::new().start_scene(Level { lives: 3 }))?;
+engine.step()?; // the start scene entered as the engine was built, registering the command
+assert_eq!(engine.console_run("game:lives 5"), ["5 lives"]);
+assert_eq!(
+  engine.console_run("game:lives many"),
+  [r#"argument 1 ("many") is not a number; usage: game:lives <count>"#]
+);
 ```
 
-Tests cover:
-- Command declaration and registration
-- Handler lifecycle (register, execute, clear_scope)
-- Noop behavior for inactive commands
-- Scrollbar calculations
-- Word wrapping
-- Console state operations
+Such a test belongs behind `#[cfg(debug_assertions)]` if the game's tests also run in release.

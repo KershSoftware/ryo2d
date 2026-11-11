@@ -334,7 +334,7 @@ pub(crate) fn compiled_embedded_value(name: &str) -> Option<&'static str> {
 
 /// Warn of each key in a known section (one the table lists keys of) that
 /// the table doesn't list, suggesting the key of that name in another
-/// section (`[system] console` is `debug.console`), else the nearest known
+/// section (`console` under `[system]` is `debug.console`), else the nearest known
 /// key of that section. `[env]` and the game's own sections are free-form.
 pub(crate) fn warn_unknown_keys(table: &toml::Table, warn: &mut dyn FnMut(String)) {
   for (section, keys) in table {

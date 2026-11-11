@@ -426,6 +426,22 @@ mod tests {
   }
 
   #[test]
+  fn a_file_line_is_the_clock_and_the_stderr_line() {
+    for message in ["", "first line\nsecond line", "café ünïcode ✓ 日本"] {
+      let record = record(log::Level::Warn, message);
+      let mut line = String::new();
+      format_line(&mut line, &record);
+      let mut clock = String::new();
+      crate::core::logging::record::push_clock(&mut clock, record.time);
+      let shared = format!(
+        "{clock} {}\n",
+        crate::core::logging::outputs::stderr_line(&record)
+      );
+      assert_eq!(line, shared, "{message:?}");
+    }
+  }
+
+  #[test]
   fn the_previous_run_is_kept_beside_the_new_one() {
     let _guard = exclusive();
     let dir = tempfile::tempdir().unwrap();

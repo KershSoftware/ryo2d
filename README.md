@@ -117,7 +117,7 @@ fn main() -> EngineResult<()> {
 | Command | Description |
 |---------|-------------|
 | `ryo2d init <name>` | Create a new game project |
-| `ryo2d build` | Build production release |
+| `ryo2d build` | Build production release (no developer tools; `--dev-tools` keeps them for testing) |
 | `ryo2d run` | Run the production build |
 | `ryo2d dev` | Development mode with hot-reload |
 | `ryo2d export` | Package release into distributable zip |
@@ -206,10 +206,12 @@ fn main() -> EngineResult<()> {
 ### Development Tools
 - **Hot Reload** — A saved asset reloads in place while the game runs (debug builds)
 - **Debug Visualization** — Colliders, velocities, origins, FPS overlay
-- **Developer Console** — Built-in and game commands
+- **Developer Console** — Built-in and game commands, registered per scene or for the whole run, with the log's warnings shown
+- **Logging** — `info!`, `warn!` and friends for game code, levels per target (`RYO_LOG`), a log file in every windowed build, log capture for tests
 - **Headless Runs** — Scripted input and frame capture without a window, for tests and agents
-- **Profiler Window** — Real-time flamegraph with CPU/GPU timing (requires `--features profiler`)
-- **Logger Window** — Live log viewer with level/context filtering
+- **Profiler Window** — Real-time flamegraph with CPU/GPU timing (`ryo2d dev -p`)
+- **Logger Window** — Live log viewer with level and origin filtering
+- **Shipped builds without tools** — `ryo2d build` leaves out the console, the dev windows and the debug keys
 
 ## Key Dependencies
 

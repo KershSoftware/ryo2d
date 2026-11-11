@@ -1,8 +1,8 @@
 ---
 name: ryo-engine-dev
-description: Working on the Ryo2D engine - the frame's phases, module map, resources, public API, crates and testing.
+description: Working on the Ryo2D engine - the frame's phases, module map, resources, public API, crates, the dev_tools build condition, logging in engine code, profiling scopes and testing (the build without tools included).
 metadata:
-  version: 2.7.0
+  version: 2.8.0
 ---
 
 # Ryo2D Engine Developer
@@ -42,8 +42,8 @@ Engine::frame
 │                     those back, nearest first, ChunkEvent) and follow_chunk_swaps (class
 │                     tiles follow the chunks loaded and unloaded whole); beside them
 │                     drain_save_results (finished saves as SaveFinished, the settings
-│                     file's results to its writer, SettingsSaveFailed); then the console
-│                     (animation, input, commands)
+│                     file's results to its writer, SettingsSaveFailed); then the console (a dev
+│                     tool; while open: the log's new records, animation, input, commands)
 ├─ UI pass            resolve first, once a frame, against last frame's UI records: the
 │                     pointer, the wheel, then focus and navigation from the ui.* actions;
 │                     then each visible scene bottom-up: its node trees (unchanged subtrees
@@ -98,7 +98,7 @@ Engine::frame
 
 | In the world (resources) | Engine-owned (fields of `Engine`) |
 |--------------------------|-----------------------------------|
-| `Time`, `Input`, `ScreenMapping`, `AssetServer` and one `Assets<T>` per asset type, `AudioEngine` (kira's manager, the buses and the voices; `ctx.audio()`), `ParticleStore` (the emitters' pools, the live count and the budget; `ctx.particles()`), `SaveService` (the storage, the version chains and the save thread; `ctx.saves()`), `Settings` (the player's settings; `ctx.settings()`), `SettingsWriter` (when the game keeps settings), `EffectsManager`, `LightingSettings`, `Look`, `WindowRequest`, `CursorRequest`, `WindowInfo`, `RenderPipeline`, `RenderTargets`, `Fonts`, `TextIcons`, `TextEffects`, `Gpu` (after GPU init), `PhysicsPaused`, `PhysicsConfig`, `Physics`, `Console`, `ConsoleCommands` (with the dev tools), `FallbackErrorHandler`, `Messages<T>` per type | The window, the wgpu renderer (with the camera images), the sprite textures, the 2D batch and the lighting renderer, the camera uniforms, the draw list, the particle drawer, the tile drawer (`render/tiles.rs`; the padded tilesets it shares with map landings are the crate's `PaddedCache` resource), the text engine (layout cache), the UI's image sizes (`ImageSizes`, the image store's follower) and the frame's UI commands, console state, debug config and overlays, dev windows, gilrs, capture state |
+| `Time`, `Input`, `ScreenMapping`, `AssetServer` and one `Assets<T>` per asset type, `AudioEngine` (kira's manager, the buses and the voices; `ctx.audio()`), `ParticleStore` (the emitters' pools, the live count and the budget; `ctx.particles()`), `SaveService` (the storage, the version chains and the save thread; `ctx.saves()`), `Settings` (the player's settings; `ctx.settings()`), `SettingsWriter` (when the game keeps settings), `EffectsManager`, `LightingSettings`, `Look`, `WindowRequest`, `CursorRequest`, `WindowInfo`, `RenderPipeline`, `RenderTargets`, `Fonts`, `TextIcons`, `TextEffects`, `Gpu` (after GPU init), `PhysicsPaused`, `PhysicsConfig`, `Physics`, `Console`, `ConsoleCommands` (with the dev tools), `FallbackErrorHandler`, `Messages<T>` per type | The window, the wgpu renderer (with the camera images), the sprite textures, the 2D batch and the lighting renderer, the camera uniforms, the draw list, the particle drawer, the tile drawer (`render/tiles.rs`; the padded tilesets it shares with map landings are the crate's `PaddedCache` resource), the text engine (layout cache), the UI's image sizes (`ImageSizes`, the image store's follower) and the frame's UI commands, the console's cursor override, debug config and overlays, dev windows, gilrs, capture state |
 | Non-send `SceneHost` (the scene stack), taken out by the scene systems while they run | |
 
 - `init_world_resources` (`engine/mod.rs`) inserts the resources when the engine is built, windowed or headless; `Gpu` follows in `init_gpu`.
@@ -134,13 +134,14 @@ Engine::frame
 | `saves/` | Game saves: `SavesView` / `Saves`, the save service and its writer thread, the checksummed save file, `SaveVersions`, the crash-safe replace and recover, the folder, browser (IndexedDB) and memory stores; `src/core/saves/AGENTS.md` |
 | `settings/` | The player's settings: `Settings` and its game sections, `system.json` (format 3, older formats converted), the debounced `SettingsWriter`; `src/core/settings/AGENTS.md` |
 | `diagnostics/` | The runtime `DebugConfig`, frame timings (`FrameCost`) and the F1 overlays' drawing; `src/core/diagnostics/AGENTS.md` |
-| `console/` | Developer console and commands |
+| `console/` | Developer console and commands (a dev tool but `Command`, `CommandSpec` and `ConsoleScope`); `src/core/console/AGENTS.md` |
 | `capture/` | Frame capture to PNG (`RYO_CAPTURE_*`) |
 | `testing/` | `HeadlessEngine` (pad, wheel, trackpad and UI-focus helpers, its in-memory saves), `UiHarness` (UI frames without a GPU), `shared_gpu`, `MemorySaves` |
 | `network/` | Client/server, replication, RPC (`ryo-network`) |
-| `windows/` | Dev tool windows (profiler, logger); they draw `CpuText` (JetBrains Mono through the text module), with no hand-made font |
+| `windows/` | Dev tool windows (profiler, logger; native dev tools); they draw `CpuText` (JetBrains Mono through the text module), with no hand-made font; `src/core/windows/AGENTS.md` |
+| `logging/` | The log: the engine's `log::Log`, levels per target (`RYO_LOG`), stderr, the browser console, the log file and panic hook, the ring the dev tools read, `capture_log` for tests, the prelude's macros; `src/core/logging/AGENTS.md` |
 | `window.rs`, `cursor.rs` | Window modes and requests, cursor requests |
-| `profiler.rs`, `dev_log.rs`, `error.rs` | Puffin macros, logging, error types |
+| `profiler.rs`, `error.rs` | Puffin macros, error types |
 
 ## Workspace
 
@@ -196,11 +197,27 @@ See `ryo-ecs-internals` and `src/core/systems/AGENTS.md`. In short: derive `Comp
 
 `./dev.ps1` is the Windows twin. Before finishing: `cargo check`, `cargo clippy`, `cargo test`, and the e2e suite for rendering changes.
 
+## Developer Tools: the `dev_tools` Condition
+
+The developer tools (the console, the dev windows, the debug keys and overlays, the log's ring) are in a build only under the cfg `dev_tools`, which `src/build.rs` sets when debug assertions are on or the `dev-tools` feature is (`ryo2d build --dev-tools`; the `profiler` feature brings it too). `ryo2d::DEV_TOOLS` reads it. A game built with plain `ryo2d build` holds none of their code or strings.
+
+- Gate a tool with `#[cfg(dev_tools)]` on items and fields, never `if cfg!(..)` around live code. Where both builds call into a tool, write a pair of small `cfg`ed functions (`Engine::console_rect`, `console_cursor`). Game-facing calls (`ctx.console()`, `Command`, `CommandSpec`, the builder's console calls, the log macros) exist in both builds and do nothing without the tools.
+- `[debug]` switches resolve off in a build without the tools, whatever the project or the builder set (`DebugConfig::switch_tools_off`; `src/core/config/AGENTS.md`).
+- The engine's tests also run in a release build, without the tools (`cargo test --release -p ryo2d`): a test of a tool is gated `#[cfg(dev_tools)]`. `cargo test --release --test no_tools` runs `tests/no_tools.rs`, what a shipped build leaves out (empty in a development run), and `cargo check -p ryo2d --lib --release` and `cargo check -p console-demo --release` keep that build warning-free. Details: `src/core/AGENTS.md`, A build without the tools.
+
+## Logging
+
+- Engine code logs with `log::trace!` to `log::error!` (the `log` crate; the target is the module path, so engine records are under `ryo2d::`). No `println!` or `eprintln!` in engine library code outside `src/cli/`, `src/core/network/` and the logging module's own stderr output.
+- A log call must not format before its level is known (`log`'s macros check first), and an output never holds a lock another output waits on.
+- Games log with the prelude's `info!` and the rest, under `game::`; a crate calling `log` directly is a library to the log (default level `warn`).
+- **A thread the engine spawns** runs its body through `logging::scoped(..)`, read on the spawning thread, so its records carry its engine's log scope and reach that engine's console and a test's capture; a new spawn site must do the same (`src/core/logging/AGENTS.md`, Scopes and the frame).
+- **Tests** open `capture_log()` before building any engine, world or asset server, and assert on it; they never read stderr and never lower a level default (raising one only under the levels guard).
+
 ## Profiling
 
-- `profile_scope!("name")` / `profile_function!()` (`profiler.rs`, `use crate::profile_scope;` inside the engine); no-ops without the `profiler` feature.
-- The frame records `cpu:update`, `cpu:render` and `gpu:present`; add scopes inside systems that may be slow.
-- `windows/profiler_window.rs` is a separate CPU-drawn flamegraph window (a puffin sink, throttled to 10 FPS, bars fade instead of flickering). Run with `./dev.sh <example> -p` or `ryo2d dev --profiler`. More in `ryo-profiler`.
+- `profile_scope!("name")` / `profile_function!()` (`profiler.rs`, `use crate::profile_scope;` inside the engine); no-ops without the `profiler` feature, and recorded only while scopes are on (the profiler window open, or `[debug] enable_profiler`).
+- The engine's scopes are named `cpu:…` or `gpu:…` (the prefix colours the bar): `cpu:update`, `cpu:physics`, `cpu:particles`, `cpu:render`, `cpu:render:particles`, `cpu:render:submit`, `cpu:atlas:spread texture`, `cpu:atlas:spread first band`, `gpu:present`, `cpu:scene_push`, `cpu:scene_switch`; add scopes inside systems that may be slow.
+- `windows/profiler_window.rs` is a separate CPU-drawn flamegraph window (a puffin sink, throttled to 10 FPS, bars fade instead of flickering); it turns scopes on while open. Run with `./dev.sh <example> -p` or `ryo2d dev --profiler`, which build with `--features ryo2d/profiler` (no game feature needed). More in `ryo-profiler`.
 
 ## Documentation Homes
 

@@ -2,7 +2,7 @@
 name: ryo-messages
 description: Messages - typed, buffered notifications between scenes and systems; the engine's message types and how to define, write and read your own.
 metadata:
-  version: 2.9.0
+  version: 2.10.0
 ---
 
 # Ryo2D Messages

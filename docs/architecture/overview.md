@@ -32,7 +32,7 @@ The world is Ryo2D's ECS: `bevy_ecs` 0.20, exposed through `ryo2d::ecs` and the 
 
 | Resources (in the world) | Engine-owned |
 |---|---|
-| `Time`, `Input`, `ScreenMapping`, `AssetServer` and one `Assets<T>` per asset type, `AudioEngine`, `ParticleStore` (`ctx.particles()`), `SaveService` (`ctx.saves()`), `Settings` (`ctx.settings()`) and its `SettingsWriter`, `EffectsManager`, `LightingSettings`, `Look`, `WindowRequest`, `CursorRequest`, `WindowInfo`, `RenderPipeline`, `RenderTargets`, `Gpu` (once the GPU is up), `Physics`, `PhysicsConfig`, `PhysicsPaused`, the console's `CommandRegistry`, one `Messages<T>` per message type, and the game's own resources | the window, the renderers (sprite, lighting, trail, compositor, post-process, the tile and particle drawers), gilrs, the dev windows, frame capture, the console overlay and the debug flags; the scene stack sits in the world as a non-send value that only the scene systems take out |
+| `Time`, `Input`, `ScreenMapping`, `AssetServer` and one `Assets<T>` per asset type, `AudioEngine`, `ParticleStore` (`ctx.particles()`), `SaveService` (`ctx.saves()`), `Settings` (`ctx.settings()`) and its `SettingsWriter`, `EffectsManager`, `LightingSettings`, `Look`, `WindowRequest`, `CursorRequest`, `WindowInfo`, `RenderPipeline`, `RenderTargets`, `Gpu` (once the GPU is up), `Physics`, `PhysicsConfig`, `PhysicsPaused`, the console's `Console` and `ConsoleCommands` (with the developer tools), one `Messages<T>` per message type, and the game's own resources | the window, the renderers (sprite, lighting, trail, compositor, post-process, the tile and particle drawers), gilrs, the dev windows, frame capture, the console's cursor override and the debug flags; the scene stack sits in the world as a non-send value that only the scene systems take out |
 
 In 0.20 a resource is a component on a hidden entity marked `IsResource`, so engine sweeps over "every entity" filter it out. Cameras are entities too (`Camera2d` + `Transform`); the main one (`MainCamera`) is spawned with the world and survives world cleanup.
 
@@ -391,14 +391,17 @@ Details: `src/core/saves/AGENTS.md`, `src/core/settings/AGENTS.md`, `src/core/co
 | F1 | Cycle overlay: off, FPS, frame timing, full stats |
 | F2 / F3 / F4 | Collider outlines / velocity vectors / origin points |
 | F5 | Toggle borderless fullscreen |
-| `` ` `` | Developer console (`[system] console`) |
+| `` ` `` | Developer console (`[debug] console`) |
 | F9 | Logger window |
-| F10 | Profiler window (the `profiler` feature) |
+| F10 | Profiler window (the engine's `profiler` feature) |
 | F12 | Capture a frame |
 
-- **Profiler (F10):** a puffin flamegraph with game, CPU and GPU scopes; `profile_scope!` / `profile_function!` are no-ops without the feature.
-- **Logger (F9):** live log with level and source filters, timestamps, selection and copy; `game_info!`, `game_warn!` and friends write to it.
-- **Console:** built-in commands plus game commands declared and registered per scene (`ctx.console()`).
+The tools are in a build only under the cfg `dev_tools` (debug assertions, or the `dev-tools` feature; `ryo2d::DEV_TOOLS`). A game built with `ryo2d build` has none of them: no console, dev windows, overlays or debug keys but F5, whatever Ryo.toml says; `ryo2d build --dev-tools` keeps them for testing. The game's calls into them (`ctx.console()`, the builder's console commands) compile in both builds.
+
+- **The log:** engine code logs with the `log` crate's macros, a game with the prelude's `info!`, `warn!`, `warn_once!` and the rest (under `game::`). Levels are per target (`info` for the game and the engine, `warn` for other crates), set by `RYO_LOG` and the console's `log:level`. It goes to the terminal in a development build, the browser console on the web and, for every windowed native run, `logs/latest.log` in the save folder (a panic is written there too); with the tools, to a ring of the last 10,000 records that the console and the logger window read. Tests read it through `ryo2d::testing::capture_log()`.
+- **Profiler (F10):** a puffin flamegraph with game, CPU and GPU scopes; `profile_scope!` / `profile_function!` record only with the engine's `profiler` feature (`ryo2d dev -p`) and while scopes are on (the window open, or `[debug] enable_profiler`).
+- **Logger (F9):** the log as it is written, with level and origin (engine, game, library) filters, timestamps, selection and copy.
+- **Console:** built-in commands (overlays, time scale, the scene stack, log levels) plus the game's: a scene's (`ctx.console().command`, leaving with the scene; the uppermost scene's answers) and the run's (`EngineBuilder::console_command`). It shows the log's warnings and errors.
 - **Scripting:** `RYO_HEADLESS`, `RYO_INPUT` and `RYO_CAPTURE_*` drive a game without a window; see the `ryo-cli` skill.
 
 ## CLI
@@ -407,7 +410,7 @@ Details: `src/core/saves/AGENTS.md`, `src/core/settings/AGENTS.md`, `src/core/co
 |---------|------|
 | `ryo2d init [name]` | Create a project (Ryo.toml, entry point, assets, optional skills) |
 | `ryo2d dev [-p]` | Development run with file watching (`-p`: profiler) |
-| `ryo2d build` / `ryo2d run` | Optimised release build / run it |
+| `ryo2d build [--dev-tools]` / `ryo2d run` | Optimised release build, without the developer tools unless `--dev-tools` / run it |
 | `ryo2d export` | Package the release into a zip |
 | `ryo2d install-skills` | Install the agent skills to `.claude/skills/` or `.github/skills/` |
 | `ryo2d check-ui [files]` | Check UI files (`*.ui.ron`) without running the game |
@@ -421,9 +424,9 @@ The CLI finds the workspace by searching up for `Ryo.toml` and embeds its config
 |---------|-------|------|
 | `[project]` | name, title, version, description | build time |
 | `[paths]` | entry point, assets, save data | build time |
-| `[system]` | the game's settings: resolution, vsync, display mode, volumes, FPS, console; the player's settings start from them | every run: the player's file keeps only what the player changed |
+| `[system]` | the game's settings: resolution, vsync, display mode, volumes, FPS; the player's settings start from them | every run: the player's file keeps only what the player changed |
 | `[tilemap]` | the Tiled project | load time |
-| `[debug]` | overlay flags, debug keys, profiler, logger, dev window keys | development |
+| `[debug]` | the console, overlay flags, debug keys, profiler, logger, dev window keys | a build with the developer tools |
 | `[release]` | logo, portable saves, save folder | build time |
 | `[env]` | game-specific values | game code |
 
@@ -479,7 +482,8 @@ Client-server multiplayer with listen-server support. See [the network architect
 | `saves/` | Game saves: the save service and thread, the save file, versions and upgrades, the folder, browser and memory stores |
 | `settings/` | The player's settings (`Settings`), `system.json` and its writer |
 | `diagnostics/` | The runtime debug flags, frame timings (`FrameCost`) and the overlays' drawing |
-| `console/`, `windows/`, `capture/`, `dev_log.rs`, `profiler.rs` | Developer tools |
+| `console/`, `windows/`, `capture/`, `profiler.rs` | Developer tools |
+| `logging/` | The log: levels, outputs (stderr, the browser console, the log file, the tools' ring), log capture for tests, the prelude's macros |
 | `window.rs`, `cursor.rs` | Window and cursor requests |
 | `network/` | Networking |
 | `testing/` | `HeadlessEngine`, `UiHarness` and the shared GPU for tests |
