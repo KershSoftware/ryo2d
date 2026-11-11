@@ -33,22 +33,23 @@ pub(crate) fn blend_state(mode: BlendMode) -> wgpu::BlendState {
 
 /// The blend state and colour writes of a draw into a light buffer.
 pub(crate) fn light_blend(step: LightStep) -> (wgpu::BlendState, wgpu::ColorWrites) {
-  use wgpu::BlendFactor::{DstAlpha, One, OneMinusDstAlpha, OneMinusSrcAlpha, Zero};
+  use wgpu::BlendFactor::{One, Zero};
   let add = |src_factor, dst_factor| wgpu::BlendComponent {
     src_factor,
     dst_factor,
     operation: wgpu::BlendOperation::Add,
   };
-  let keep = add(Zero, One);
-  let (color, alpha, writes) = match step {
-    // Light adds up; the alpha, a shadowed light's mask, is left alone
-    LightStep::Add => (add(One, One), keep, wgpu::ColorWrites::COLOR),
-    LightStep::ResetMask => (keep, add(One, Zero), wgpu::ColorWrites::ALPHA),
-    LightStep::Shadow => (keep, add(Zero, OneMinusSrcAlpha), wgpu::ColorWrites::ALPHA),
-    LightStep::Masked => (add(DstAlpha, One), keep, wgpu::ColorWrites::COLOR),
-    LightStep::Coloured => (add(OneMinusDstAlpha, One), keep, wgpu::ColorWrites::COLOR),
-  };
-  (wgpu::BlendState { color, alpha }, writes)
+  match step {
+    // Light adds up (each light holds its own shadow back); the alpha is
+    // left alone
+    LightStep::Add => (
+      wgpu::BlendState {
+        color: add(One, One),
+        alpha: add(Zero, One),
+      },
+      wgpu::ColorWrites::COLOR,
+    ),
+  }
 }
 
 /// What a pipeline is made for: two draws with equal keys share one.
@@ -97,7 +98,6 @@ enum Module {
   Sprite,
   Line,
   Light,
-  Shadow,
 }
 
 /// The bind groups a built-in pipeline takes
@@ -107,8 +107,10 @@ enum Groups {
   Textured,
   /// Camera, texture, then the tile slot (tile chunks)
   Tile,
-  /// Camera only (untextured lines, lights and shadows)
+  /// Camera only (untextured lines)
   Camera,
+  /// Camera, then the shadow atlas (lights)
+  Light,
 }
 
 /// The module, bind groups and fragment entry of a built-in shader's
@@ -157,10 +159,7 @@ fn built_in(key: &PipelineKey) -> Option<(Module, Groups, &'static str)> {
     (BatchShader::TextMask, Stream::Quads) => textured("fs_text_mask"),
     (BatchShader::TextColor, Stream::Quads) => textured("fs_text_color"),
     (BatchShader::TextMsdf, Stream::Quads) => textured("fs_text_msdf"),
-    (BatchShader::Light(LightStep::Shadow), Stream::Triangles) => {
-      (Module::Shadow, Groups::Camera, "fs_shadow")
-    }
-    (BatchShader::Light(step), Stream::Quads) => (Module::Light, Groups::Camera, step.fragment()),
+    (BatchShader::Light(step), Stream::Quads) => (Module::Light, Groups::Light, step.fragment()),
     _ => return None,
   })
 }
@@ -185,6 +184,34 @@ pub(crate) fn texture_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
         binding: 1,
         visibility: wgpu::ShaderStages::FRAGMENT,
         ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+        count: None,
+      },
+    ],
+  })
+}
+
+/// The layout the shadow atlas is bound with for the light shader (group
+/// 1): the atlas's depth texture and its comparison sampler. The atlas
+/// makes its bind group with a layout of its own from this, which WebGPU
+/// takes as the same.
+pub(crate) fn shadow_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+  device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+    label: Some("Shadow Atlas Layout"),
+    entries: &[
+      wgpu::BindGroupLayoutEntry {
+        binding: 0,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Texture {
+          multisampled: false,
+          view_dimension: wgpu::TextureViewDimension::D2,
+          sample_type: wgpu::TextureSampleType::Depth,
+        },
+        count: None,
+      },
+      wgpu::BindGroupLayoutEntry {
+        binding: 1,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
         count: None,
       },
     ],
@@ -259,12 +286,13 @@ pub(crate) struct Pipelines {
   layout: wgpu::PipelineLayout,
   /// Camera, texture, then the tile slot (tile chunks)
   tile_layout: wgpu::PipelineLayout,
-  /// Camera only (untextured lines, lights and shadows)
+  /// Camera only (untextured lines)
   camera_only: wgpu::PipelineLayout,
+  /// Camera, then the shadow atlas (lights)
+  light_layout: wgpu::PipelineLayout,
   sprite: wgpu::ShaderModule,
   line: wgpu::ShaderModule,
   light: wgpu::ShaderModule,
-  shadow: wgpu::ShaderModule,
   built: HashMap<PipelineKey, Built>,
 }
 
@@ -290,6 +318,12 @@ impl Pipelines {
       bind_group_layouts: &[Some(camera)],
       immediate_size: 0,
     });
+    let shadow = shadow_layout(device);
+    let light_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+      label: Some("Batch Light Pipeline Layout"),
+      bind_group_layouts: &[Some(camera), Some(&shadow)],
+      immediate_size: 0,
+    });
     let module = |label, source: &'static str| {
       device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some(label),
@@ -300,10 +334,10 @@ impl Pipelines {
       layout,
       tile_layout,
       camera_only,
+      light_layout,
       sprite: module("Sprite Shader", crate::core::shaders::compose::SPRITE),
       line: module("Line Shader", crate::core::shaders::compose::LINE),
       light: module("Light Shader", crate::core::shaders::compose::LIGHT),
-      shadow: module("Shadow Shader", crate::core::shaders::compose::SHADOW),
       built: HashMap::new(),
     }
   }
@@ -341,12 +375,12 @@ impl Pipelines {
       Module::Sprite => &self.sprite,
       Module::Line => &self.line,
       Module::Light => &self.light,
-      Module::Shadow => &self.shadow,
     };
     let layout = match groups {
       Groups::Textured => &self.layout,
       Groups::Tile => &self.tile_layout,
       Groups::Camera => &self.camera_only,
+      Groups::Light => &self.light_layout,
     };
     let pipeline = batch_pipeline(device, layout, fragment, module, fragment, key);
     slot.insert(Built {
@@ -586,38 +620,10 @@ mod tests {
   }
 
   #[test]
-  fn lights_add_up_and_leave_the_mask_alone() {
+  fn lights_add_up_and_leave_the_alpha_alone() {
     let (blend, writes) = light_blend(LightStep::Add);
     assert_eq!(blend.color.src_factor, wgpu::BlendFactor::One);
     assert_eq!(blend.color.dst_factor, wgpu::BlendFactor::One);
-    assert_eq!(writes, wgpu::ColorWrites::COLOR);
-  }
-
-  #[test]
-  fn shadowed_lights_mask_their_own_light() {
-    use wgpu::BlendFactor as F;
-    let (reset, reset_writes) = light_blend(LightStep::ResetMask);
-    assert_eq!(
-      (reset.alpha.src_factor, reset.alpha.dst_factor),
-      (F::One, F::Zero)
-    );
-    assert_eq!(reset_writes, wgpu::ColorWrites::ALPHA);
-    let (shadow, shadow_writes) = light_blend(LightStep::Shadow);
-    assert_eq!(
-      (shadow.alpha.src_factor, shadow.alpha.dst_factor),
-      (F::Zero, F::OneMinusSrcAlpha)
-    );
-    assert_eq!(shadow_writes, wgpu::ColorWrites::ALPHA);
-    let (masked, _) = light_blend(LightStep::Masked);
-    assert_eq!(
-      (masked.color.src_factor, masked.color.dst_factor),
-      (F::DstAlpha, F::One)
-    );
-    let (coloured, writes) = light_blend(LightStep::Coloured);
-    assert_eq!(
-      (coloured.color.src_factor, coloured.color.dst_factor),
-      (F::OneMinusDstAlpha, F::One)
-    );
     assert_eq!(writes, wgpu::ColorWrites::COLOR);
   }
 

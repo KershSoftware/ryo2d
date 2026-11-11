@@ -7,8 +7,8 @@ use super::{Engine, PresentOutcome, SceneHost};
 use crate::core::asset::{Asset, AssetEvent, AssetId};
 use crate::core::diagnostics::{DebugStats, OverlayFlags, overlay_shapes};
 use crate::core::ecs::interpolate::render_global;
+use crate::core::ecs::kernel::SystemIdMarker;
 use crate::core::ecs::kernel::{MessageCursor, Messages};
-use crate::core::ecs::kernel::{QueryState, SystemIdMarker};
 use crate::core::ecs::{
   DetectChangesMut, DrawLift, Entity, Floor, GlobalTransform, IsResource, Mut, Observer,
   PreviousGlobalTransform, Vec2, World, shaders_of,
@@ -26,7 +26,6 @@ use crate::core::lighting::{
 };
 use crate::core::particles::{DEFAULT_PARTICLE_BUDGET, ParticleStore};
 use crate::core::render::batch::{Filter, LineLook, line_points, push_polyline, trail_points};
-use crate::core::render::scratch::recycle;
 use crate::core::render::text::{
   TextSources, TextTargets, WorldTextFrame, emit_world_text, layout_world_text, prewarm,
 };
@@ -337,24 +336,18 @@ impl Engine {
       // overlays become triangles, one draw-list item each
       let triangles = batch.triangles();
       triangles.clear();
-      // Lights, each with its shadow volumes, for the lit cameras whose
-      // layers and view reach them
-      let mut occluders = recycle(std::mem::take(&mut self.occluders));
+      // The shadowed lights the lit cameras see, each with its casting edges
+      // from the occluder index, read where they are drawn and on their
+      // floors (the atlas is drawn before the camera passes); then every
+      // light, reading its slot of the atlas, for the lit cameras whose
+      // layers and view reach it
       if lit {
-        // Kept, so a frame makes no query state
-        let query = self
-          .occluder_query
-          .get_or_insert_with(|| self.world.query::<OccluderItem>());
-        occluders_to_draw(&self.world, query, alpha, &mut occluders);
-        for light in &lights {
-          if let Some(item) = crate::core::lighting::light_item(light, &occluders, triangles) {
-            self.draw_list.push_light(item);
-          }
-        }
-        // The shadowed lights the lit cameras see, each with its casting
-        // edges from the occluder index, read where they are drawn and on
-        // their floors; the atlas is drawn before the camera passes
+        let mut slots: &[Option<u32>] = &[];
         if let Some(lighting) = lighting.as_mut() {
+          // Kept, so a frame makes no query state
+          let query = self
+            .occluder_query
+            .get_or_insert_with(|| self.world.query::<OccluderItem>());
           let world = &self.world;
           let quality = world
             .get_resource::<Settings>()
@@ -366,15 +359,17 @@ impl Engine {
             &lights,
             &self.camera_draws,
             world.get_resource::<OccluderIndex>(),
-            |entity| {
-              let (global, previous, occluder, drawn, floor) = query.get(world, entity).ok()?;
-              let (floor, _) = floor_and_lift(drawn, floor);
-              Some((render_global(global, previous, alpha), occluder, floor))
-            },
+            |entity| Some(planned_occluder(query.get(world, entity).ok()?, alpha)),
           );
+          slots = lighting.shadow_slots();
+        }
+        for (i, light) in lights.iter().enumerate() {
+          let slot = slots.get(i).copied().flatten();
+          if let Some(item) = crate::core::lighting::light_item(light, slot) {
+            self.draw_list.push_light(item);
+          }
         }
       }
-      self.occluders = recycle(occluders);
       let mut points = std::mem::take(&mut self.poly_points);
       let mut trails = self.world.query::<(&Trail2D, Option<&RenderLayers>)>();
       let images = images_of(&self.world);
@@ -801,25 +796,22 @@ pub(super) type OccluderItem = (
   Option<&'static Floor>,
 );
 
-/// Every occluder where it stands (blended for interpolated entities, its
+/// An occluder where it stands (blended for interpolated entities, its
 /// rotation kept) and on its floor, borrowed from the world rather than
 /// copied. Shadows are cast where occluders stand, so their lift is not
 /// needed: a light's shadows draw by its own.
-fn occluders_to_draw<'w>(
-  world: &'w World,
-  query: &mut QueryState<OccluderItem>,
+fn planned_occluder<'w>(
+  (global, previous, occluder, drawn, floor): (
+    &GlobalTransform,
+    Option<&PreviousGlobalTransform>,
+    &'w LightOccluder2D,
+    Option<&DrawLift>,
+    Option<&Floor>,
+  ),
   alpha: f32,
-  out: &mut Vec<(GlobalTransform, &'w LightOccluder2D, Floor)>,
-) {
-  out.clear();
-  out.extend(
-    query
-      .iter(world)
-      .map(|(global, previous, occluder, drawn, floor)| {
-        let (floor, _) = floor_and_lift(drawn, floor);
-        (render_global(global, previous, alpha), occluder, floor)
-      }),
-  );
+) -> (GlobalTransform, &'w LightOccluder2D, Floor) {
+  let (floor, _) = floor_and_lift(drawn, floor);
+  (render_global(global, previous, alpha), occluder, floor)
 }
 
 #[cfg(test)]
@@ -849,8 +841,10 @@ mod tests {
     lights_to_draw(&mut world, 0.5, &mut lights);
     assert_eq!(lights[0].position, Vec2::new(5.0, 0.0));
     let mut query = world.query::<OccluderItem>();
-    let mut occluders = Vec::new();
-    occluders_to_draw(&world, &mut query, 0.5, &mut occluders);
+    let occluders: Vec<_> = query
+      .iter(&world)
+      .map(|item| planned_occluder(item, 0.5))
+      .collect();
     assert_eq!(occluders[0].0.translation(), Vec2::new(5.0, 0.0));
   }
 
@@ -858,8 +852,7 @@ mod tests {
   fn a_held_light_on_a_floor_casts_that_floor_s_shadows_drawn_lifted() {
     use crate::core::asset::Assets;
     use crate::core::ecs::ChildOf;
-    use crate::core::lighting::{light_item, push_shadow_volumes};
-    use crate::core::render::batch::Triangles;
+    use crate::core::lighting::{casting_edges, light_item};
     use crate::core::tilemap::test_util::MapWorld;
     use crate::core::tilemap::{MapRoot, TileMap};
 
@@ -896,8 +889,10 @@ mod tests {
     assert_eq!(torch.position, Vec2::new(64.0, 40.0), "where it stands");
     assert_eq!((torch.floor, torch.lift), (Floor::On(1), lift));
     let mut query = maps.world.query::<OccluderItem>();
-    let mut occluders = Vec::new();
-    occluders_to_draw(&maps.world, &mut query, 1.0, &mut occluders);
+    let occluders: Vec<_> = query
+      .iter(&maps.world)
+      .map(|item| planned_occluder(item, 1.0))
+      .collect();
     let mut floors: Vec<(i32, Floor)> = occluders
       .iter()
       .map(|(at, _, floor)| (at.translation().x as i32, *floor))
@@ -908,36 +903,33 @@ mod tests {
       [(20, Floor::GROUND), (64, Floor::Every), (100, Floor::On(1))]
     );
 
-    // It casts from floor 1's wall and every floor's, where it stands, and
-    // draws them and itself lifted
-    let mut drawn = Triangles::default();
-    let Some(item) = light_item(torch, &occluders, &mut drawn) else {
-      panic!("a usable light");
-    };
+    // It casts from floor 1's wall and every floor's, where it stands (the
+    // atlas is in ground space), and draws itself lifted, where the light
+    // shader reads its shadows from the atlas
+    let cast = casting_edges(torch, &occluders);
     let theirs: Vec<_> = occluders
       .iter()
       .filter(|(.., floor)| *floor != Floor::GROUND)
       .cloned()
       .collect();
-    let mut standing = Triangles::default();
-    let (light, at) = (&torch.light, torch.position);
-    push_shadow_volumes(at, Vec2::ZERO, light, Floor::Every, &theirs, &mut standing);
-    assert!(!standing.indices.is_empty());
-    assert_eq!(item.shadows.len(), standing.indices.len());
-    assert_eq!(drawn.vertices.len(), standing.vertices.len());
-    for (up, there) in drawn.vertices.iter().zip(&standing.vertices) {
-      assert_eq!(Vec2::from(up.position), Vec2::from(there.position) + lift);
-      assert_eq!(Vec2::from(up.uv), at + lift);
-    }
+    let mut on_every = torch.clone();
+    on_every.floor = Floor::Every;
+    assert!(!cast.is_empty());
+    assert_eq!(cast, casting_edges(&on_every, &theirs));
+    assert!(cast.iter().all(|edge| edge.light == [64.0, 40.0]));
     // The ground floor's wall casts for a light on the ground
     let ground: Vec<_> = occluders
       .iter()
       .filter(|(.., floor)| *floor == Floor::GROUND)
       .cloned()
       .collect();
-    let mut grounded = Triangles::default();
-    push_shadow_volumes(at, Vec2::ZERO, light, Floor::GROUND, &ground, &mut grounded);
-    assert!(!grounded.indices.is_empty());
+    let mut grounded = torch.clone();
+    grounded.floor = Floor::GROUND;
+    assert!(!casting_edges(&grounded, &ground).is_empty());
+    let Some(item) = light_item(torch, None) else {
+      panic!("a usable light");
+    };
+    let at = torch.position;
     assert_eq!(item.instance.transform[2][..2], [64.0, 8.0]);
     let reach = Vec2::splat(100.0);
     assert_eq!((item.min, item.max), (at + lift - reach, at + lift + reach));
@@ -951,8 +943,7 @@ mod tests {
 
     use crate::core::asset::Assets;
     use crate::core::ecs::{Has, With};
-    use crate::core::lighting::{light_item, push_shadow_volumes};
-    use crate::core::render::batch::Triangles;
+    use crate::core::lighting::casting_edges;
     use crate::core::tilemap::test_util::MapWorld;
     use crate::core::tilemap::{
       MapOccluder, MapRoot, Tile, TileData, TileMap, TileShape, Tileset, TilesetImage,
@@ -1022,36 +1013,37 @@ mod tests {
     lit.sort_by_key(|floor| floor.number());
     assert_eq!(lit, [Floor::GROUND, Floor::On(1)]);
     let mut query = maps.world.query::<OccluderItem>();
-    let mut occluders = Vec::new();
-    occluders_to_draw(&maps.world, &mut query, 1.0, &mut occluders);
+    let occluders: Vec<_> = query
+      .iter(&maps.world)
+      .map(|item| planned_occluder(item, 1.0))
+      .collect();
     let mut drawn: Vec<Floor> = occluders.iter().map(|(.., floor)| *floor).collect();
     drawn.sort_by_key(|floor| floor.number());
     assert_eq!(drawn, [Floor::GROUND, Floor::On(1)]);
 
     // Each light casts from its own floor's chain alone
     for light in &lights {
-      let mut cast = Triangles::default();
-      let Some(item) = light_item(light, &occluders, &mut cast) else {
-        panic!("a usable light: {light:?}");
-      };
-      let volumes = |floor: Floor| {
+      let edges = |floor: Floor| {
         let theirs: Vec<_> = occluders
           .iter()
           .filter(|(.., on)| *on == floor)
           .cloned()
           .collect();
-        let mut standing = Triangles::default();
-        let (at, light) = (light.position, &light.light);
-        push_shadow_volumes(at, Vec2::ZERO, light, Floor::Every, &theirs, &mut standing);
-        standing.indices.len()
+        let mut on_every = light.clone();
+        on_every.floor = Floor::Every;
+        casting_edges(&on_every, &theirs)
       };
       let other = if light.floor == Floor::GROUND {
         Floor::On(1)
       } else {
         Floor::GROUND
       };
-      assert!(volumes(light.floor) > 0 && volumes(other) > 0);
-      assert_eq!(item.shadows.len(), volumes(light.floor), "{light:?}");
+      assert!(!edges(light.floor).is_empty() && !edges(other).is_empty());
+      assert_eq!(
+        casting_edges(light, &occluders),
+        edges(light.floor),
+        "{light:?}"
+      );
     }
   }
 }

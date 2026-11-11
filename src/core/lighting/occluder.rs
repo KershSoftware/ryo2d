@@ -240,17 +240,7 @@ impl LightOccluder2D {
     self
   }
 
-  /// Transform vertices by a position and rotation.
-  ///
-  /// Returns the vertices in world space.
-  pub fn transform_vertices(&self, x: f32, y: f32, rotation: f32) -> Vec<Vec2> {
-    self.placed(x, y, rotation).collect()
-  }
-
-  /// The vertices in world space, as [`transform_vertices`] gives them,
-  /// one by one rather than collected
-  ///
-  /// [`transform_vertices`]: Self::transform_vertices
+  /// The vertices in world space, at `(x, y)` turned by `rotation`
   pub(crate) fn placed(
     &self,
     x: f32,
@@ -346,9 +336,9 @@ mod tests {
   }
 
   #[test]
-  fn transform_vertices_no_rotation() {
+  fn placed_vertices_without_rotation() {
     let occluder = LightOccluder2D::rect(10.0, 10.0);
-    let transformed = occluder.transform_vertices(100.0, 50.0, 0.0);
+    let transformed: Vec<Vec2> = occluder.placed(100.0, 50.0, 0.0).collect();
 
     // Center should be at (100, 50), so corners should be offset by +-5
     assert!((transformed[0].x - 95.0).abs() < 0.001);

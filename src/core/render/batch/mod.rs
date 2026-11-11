@@ -16,6 +16,6 @@ pub(crate) use gpu::{Batch2D, Bound, unit_quad};
 pub(crate) use key::{BatchShader, DrawState, LightStep, PageKind, Sampling, Stream};
 pub use key::{BlendMode, Filter};
 pub(crate) use lines::{LineLook, line_color, line_points, push_polyline, trail_points};
-pub(crate) use pipelines::{QUAD_LAYOUT, texture_layout};
+pub(crate) use pipelines::{QUAD_LAYOUT, shadow_layout, texture_layout};
 pub(crate) use plan::{Draw, DrawSource, Placed, plan_draws};
-pub(crate) use polyline::{PolyPoint, PolyStyle, Triangles, Vertex2D};
+pub(crate) use polyline::{PolyPoint, PolyStyle, Triangles};

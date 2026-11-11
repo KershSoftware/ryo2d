@@ -6,6 +6,7 @@
 // +x once turned into its frame: a point's place along the row is the
 // tangent of its angle within the view (clip x = local y, w = local x), so
 // the GPU's clipping trims the edge to the view's two 45 degree ends.
+// Composed after `include/shadow_view.wgsl` (`in_view`).
 
 struct Atlas {
     // Width and height in texels
@@ -38,16 +39,6 @@ const NEAR: f32 = 0.5;
 // How far each end of an edge reaches past itself along the row, in texels,
 // so the joints of touching edges leave no gap
 const END_PAD: f32 = 0.25;
-
-// `p` (relative to the light) turned into view `view`'s frame
-fn in_view(p: vec2<f32>, view: u32) -> vec2<f32> {
-    switch view {
-        case 1u: { return vec2<f32>(p.y, -p.x); }
-        case 2u: { return vec2<f32>(-p.x, -p.y); }
-        case 3u: { return vec2<f32>(-p.y, p.x); }
-        default: { return p; }
-    }
-}
 
 // Six vertices an instance: two triangles, (a below, b below, a above) and
 // (b below, b above, a above), half a texel above and below the row's centre

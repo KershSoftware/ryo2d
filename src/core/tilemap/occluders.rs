@@ -1694,9 +1694,8 @@ mod tests {
   use crate::core::ecs::{
     ChildOf, Disabled, Entity, GlobalTransform, Has, Or, Transform, With, Without, World,
   };
-  use crate::core::lighting::{Light2D, LightOccluder2D, push_shadow_volumes};
+  use crate::core::lighting::{FrameLight, Light2D, LightOccluder2D};
   use crate::core::physics::{Collider, Physics, TileCell, TilePart};
-  use crate::core::render::batch::Triangles;
   use crate::core::tilemap::test_util::{MapWorld, layers_of, load_map as load};
   use crate::core::tilemap::{
     IntGrid, LayerKind, MapRoot, MapsView, Tile, TileData, TileMap, TileShape, Tileset,
@@ -2099,16 +2098,14 @@ mod tests {
         (at, &f.occluder, Floor::GROUND)
       })
       .collect();
-    let mut triangles = Triangles::default();
-    let ground = Floor::GROUND;
-    push_shadow_volumes(from, Vec2::ZERO, &light, ground, &placed, &mut triangles);
-    triangles.indices.chunks(3).any(|t| {
-      let corner = |i: u32| Vec2::from(triangles.vertices[i as usize].position);
-      let (a, b, c) = (corner(t[0]), corner(t[1]), corner(t[2]));
-      let side = |p: Vec2, q: Vec2| (q - p).perp_dot(point - p);
-      let (s1, s2, s3) = (side(a, b), side(b, c), side(c, a));
-      (s1 > 1e-3 && s2 > 1e-3 && s3 > 1e-3) || (s1 < -1e-3 && s2 < -1e-3 && s3 < -1e-3)
-    })
+    let light = FrameLight {
+      position: from,
+      light,
+      layers: crate::core::graphics::RenderLayers::default(),
+      floor: Floor::GROUND,
+      lift: Vec2::ZERO,
+    };
+    crate::core::lighting::shadowed(point, &light, &placed)
   }
 
   #[test]

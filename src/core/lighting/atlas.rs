@@ -37,7 +37,13 @@ pub(crate) struct ShadowAtlas {
   edges: wgpu::Buffer,
   /// In edges
   capacity: usize,
+  /// The most edges a buffer the device allows holds
+  max_edges: usize,
   compare_sampler: wgpu::Sampler,
+  /// The atlas and its comparison sampler as the light shader binds them
+  /// (`batch::shadow_layout`), made again with the texture
+  light_layout: wgpu::BindGroupLayout,
+  light_group: wgpu::BindGroup,
   /// Times it was drawn (tests)
   #[cfg(test)]
   encodes: u64,
@@ -91,6 +97,8 @@ impl ShadowAtlas {
       compare: Some(wgpu::CompareFunction::LessEqual),
       ..Default::default()
     });
+    let light_layout = crate::core::render::batch::shadow_layout(device);
+    let light_group = light_group(device, &light_layout, &view, &compare_sampler);
     Self {
       device: device.clone(),
       texture,
@@ -103,7 +111,10 @@ impl ShadowAtlas {
       bind_group,
       edges: edge_buffer(device, FIRST_EDGES),
       capacity: FIRST_EDGES,
+      max_edges: max_edges(device),
       compare_sampler,
+      light_layout,
+      light_group,
       #[cfg(test)]
       encodes: 0,
     }
@@ -136,6 +147,12 @@ impl ShadowAtlas {
       .create_view(&wgpu::TextureViewDescriptor::default());
     (self.width, self.height) = (width, height);
     self.size_stale = true;
+    self.light_group = light_group(
+      device,
+      &self.light_layout,
+      &self.view,
+      &self.compare_sampler,
+    );
   }
 
   /// Clears the atlas to 1 (nothing nearer than the radius) and draws
@@ -158,8 +175,10 @@ impl ShadowAtlas {
       queue.write_buffer(&self.size_uniform, 0, bytemuck::bytes_of(&size));
       self.size_stale = false;
     }
+    // The plan keeps no more edges than the largest buffer holds
+    let edges = &edges[..edges.len().min(self.max_edges)];
     if edges.len() > self.capacity {
-      self.capacity = edges.len().next_power_of_two();
+      self.capacity = edges.len().next_power_of_two().min(self.max_edges);
       self.edges = edge_buffer(&self.device, self.capacity);
     }
     if !edges.is_empty() {
@@ -191,24 +210,21 @@ impl ShadowAtlas {
     pass.draw(0..6, 0..count);
   }
 
-  /// The atlas, for the light pass to sample
-  #[expect(dead_code, reason = "the light pass samples the atlas next")]
-  pub(crate) fn view(&self) -> &wgpu::TextureView {
-    &self.view
+  /// The atlas and its comparison sampler (1 where the distance compared
+  /// is at most the stored one, filtered along a row), bound for the light
+  /// shader (group 1)
+  pub(crate) fn light_group(&self) -> &wgpu::BindGroup {
+    &self.light_group
   }
 
-  /// The comparison sampler the light pass reads the atlas with: 1 where
-  /// the distance compared is at most the stored one, filtered along a row
-  #[expect(dead_code, reason = "the light pass samples the atlas next")]
-  pub(crate) fn compare_sampler(&self) -> &wgpu::Sampler {
-    &self.compare_sampler
+  /// The most edges one frame's draw holds: the device's largest buffer
+  pub(crate) fn max_edges(&self) -> usize {
+    self.max_edges
   }
 
-  /// Texels across a view
-  #[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the light pass samples the atlas next")
-  )]
+  /// Texels across a view (tests; the light shader reads the texture's
+  /// size)
+  #[cfg(test)]
   pub(crate) fn width(&self) -> u32 {
     self.width
   }
@@ -305,6 +321,38 @@ fn atlas_texture(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Textur
     usage,
     view_formats: &[],
   })
+}
+
+/// The light shader's bind group of `view` and `sampler`
+fn light_group(
+  device: &wgpu::Device,
+  layout: &wgpu::BindGroupLayout,
+  view: &wgpu::TextureView,
+  sampler: &wgpu::Sampler,
+) -> wgpu::BindGroup {
+  crate::core::graphics::bind_groups::create(
+    device,
+    &wgpu::BindGroupDescriptor {
+      label: Some("Shadow Atlas Light Bind Group"),
+      layout,
+      entries: &[
+        wgpu::BindGroupEntry {
+          binding: 0,
+          resource: wgpu::BindingResource::TextureView(view),
+        },
+        wgpu::BindGroupEntry {
+          binding: 1,
+          resource: wgpu::BindingResource::Sampler(sampler),
+        },
+      ],
+    },
+  )
+}
+
+/// The most edges a buffer `device` allows holds
+fn max_edges(device: &wgpu::Device) -> usize {
+  let largest = usize::try_from(device.limits().max_buffer_size).unwrap_or(usize::MAX);
+  largest / std::mem::size_of::<ShadowEdge>()
 }
 
 /// A buffer of `capacity` edges, read as instances
@@ -448,6 +496,37 @@ mod tests {
     for view in 1..4 {
       assert!(row(&values, view).iter().all(|&v| v == 1.0), "view {view}");
     }
+  }
+
+  #[test]
+  fn an_oblique_edge_writes_its_true_distance_at_each_texel() {
+    // From (30, -30) at -45° to (80, 30) at 20.6°: its distance changes
+    // along the row as no linear interpolation of it would
+    let (a, b) = (glam::Vec2::new(30.0, -30.0), glam::Vec2::new(80.0, 30.0));
+    let Some((_, values)) = draw(4, &[edge(a.into(), b.into(), 0)]) else {
+      return;
+    };
+    let right = row(&values, 0);
+    let mut checked = 0;
+    for (i, &value) in right.iter().enumerate() {
+      let tangent = (i as f32 + 0.5) / 128.0 - 1.0;
+      // Where the ray at this texel's angle meets the edge's line
+      let ray = glam::Vec2::new(1.0, tangent);
+      let along = (b - a).perp_dot(a) / (b - a).perp_dot(ray);
+      let hit = ray * along;
+      let t = (hit - a).dot(b - a) / (b - a).length_squared();
+      // Clear of the ends, where padding reaches past them
+      if !(0.01..=0.99).contains(&t) {
+        continue;
+      }
+      let expected = hit.length() / 100.0;
+      assert!(
+        (value - expected).abs() < 0.005,
+        "texel {i}: {value} against {expected}"
+      );
+      checked += 1;
+    }
+    assert!(checked > 150, "{checked} texels");
   }
 
   #[test]

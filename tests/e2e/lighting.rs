@@ -371,23 +371,26 @@ fn behind(occluders: usize) -> Option<u8> {
   Some(frame.get_pixel(80, 32).0[0])
 }
 
+/// `byte` (sRGB) as linear light
+fn linear(byte: u8) -> f32 {
+  let c = f32::from(byte) / 255.0;
+  if c <= 0.04045 {
+    c / 12.92
+  } else {
+    ((c + 0.055) / 1.055).powf(2.4)
+  }
+}
+
 #[test]
-fn overlapping_shadows_combine_instead_of_cutting_twice() {
+fn strength_applies_once() {
   let (Some(open), Some(one), Some(two)) = (behind(0), behind(1), behind(2)) else {
     return;
   };
-  let linear = |byte: u8| {
-    let c = f32::from(byte) / 255.0;
-    if c <= 0.04045 {
-      c / 12.92
-    } else {
-      ((c + 0.055) / 1.055).powf(2.4)
-    }
-  };
   let (open, one, two) = (linear(open), linear(one), linear(two));
-  // Alpha 128 keeps about half the light behind one occluder, a quarter behind two
+  // Alpha 128 keeps about half the light behind one occluder, and behind
+  // two: the nearest occluder decides, the strength applies once
   assert!((one / open - 0.5).abs() < 0.06, "one {one} of {open}");
-  assert!((two / open - 0.25).abs() < 0.06, "two {two} of {open}");
+  assert!((two / open - 0.5).abs() < 0.06, "two {two} of {open}");
 }
 
 #[test]
@@ -410,6 +413,213 @@ fn a_coloured_shadow_lets_its_colour_through() {
   };
   let pixel = frame.get_pixel(80, 32).0;
   assert!(pixel[0] > 40 && pixel[1] < 10 && pixel[2] < 10, "{pixel:?}");
+  // A full-strength red shadow lets all of the light's red through: the
+  // red is the open floor's
+  let Some(open) = behind(0) else {
+    return;
+  };
+  assert!(pixel[0].abs_diff(open) <= 2, "{pixel:?} against {open}");
+}
+
+/// The floor under `ambient` white ambient light, lit by `lights` (each at
+/// its point), past `occluders` (each at its point)
+fn scene(
+  ambient: f32,
+  lights: Vec<(Vec2, Light2D)>,
+  occluders: Vec<(Vec2, LightOccluder2D)>,
+) -> Option<image::RgbaImage> {
+  lit(move |ctx| {
+    ctx
+      .lighting()
+      .set_ambient(AmbientLight::with_intensity(ambient));
+    ctx.lighting().set_enabled(true);
+    for (at, light) in &lights {
+      ctx
+        .world
+        .spawn((Transform::from_xy(at.x, at.y), light.clone()));
+    }
+    for (at, occluder) in &occluders {
+      ctx
+        .world
+        .spawn((Transform::from_xy(at.x, at.y), occluder.clone()));
+    }
+  })
+}
+
+fn red(frame: &image::RgbaImage, x: u32, y: u32) -> u8 {
+  frame.get_pixel(x, y).0[0]
+}
+
+#[test]
+fn a_hard_shadow_falls_behind_an_occluder() {
+  // A 256 px light at (16, 32), at zoom 1 and the default quality (High),
+  // and a 4 x 8 wall at (40, 32): its shadow at x 100 spans y 16.7 to 47.3
+  let light = || {
+    vec![(
+      Vec2::new(16.0, 32.0),
+      Light2D::point(Color::WHITE, 256.0)
+        .with_intensity(0.5)
+        .with_shadows(),
+    )]
+  };
+  let wall = || vec![(Vec2::new(40.0, 32.0), LightOccluder2D::rect(4.0, 8.0))];
+  let (Some(shadowed), Some(open), Some(ambient)) = (
+    scene(0.1, light(), wall()),
+    scene(0.1, light(), Vec::new()),
+    scene(0.1, Vec::new(), Vec::new()),
+  ) else {
+    return;
+  };
+  // Behind it: the ambient light alone
+  let (behind, alone) = (
+    linear(red(&shadowed, 100, 32)),
+    linear(red(&ambient, 100, 32)),
+  );
+  assert!(
+    (behind - alone).abs() < 0.05,
+    "behind {behind}, ambient {alone}"
+  );
+  assert!(
+    linear(red(&open, 100, 32)) > alone + 0.1,
+    "the light reaches it"
+  );
+  // Beside the shadow: unchanged
+  for (x, y) in [(100, 6), (100, 58), (30, 32), (60, 10)] {
+    let (beside, unshadowed) = (red(&shadowed, x, y), red(&open, x, y));
+    assert!(
+      beside.abs_diff(unshadowed) <= 1,
+      "({x}, {y}): {beside} against {unshadowed}"
+    );
+  }
+  // Its edge, down the column at x 100, is at most 2 px wide
+  let fraction = |y: u32| {
+    let (lit, dark) = (linear(red(&open, 100, y)), linear(red(&ambient, 100, y)));
+    (linear(red(&shadowed, 100, y)) - dark) / (lit - dark)
+  };
+  let fractions: Vec<f32> = (0..32).map(fraction).collect();
+  let partial = fractions.iter().filter(|&&f| f > 0.1 && f < 0.9).count();
+  assert!(partial <= 2, "{fractions:?}");
+  assert!(fractions[..10].iter().all(|&f| f > 0.9), "{fractions:?}");
+  assert!(fractions[24..].iter().all(|&f| f < 0.1), "{fractions:?}");
+}
+
+#[test]
+fn a_carried_light_lights_round_its_bearer() {
+  // A red light inside a closed 32 px occluder (its bearer), and a green
+  // light out to the left whose shadow of it falls to the right
+  let bearer = || vec![(Vec2::new(64.0, 32.0), LightOccluder2D::rect(32.0, 32.0))];
+  let lights = || {
+    vec![
+      (
+        Vec2::new(64.0, 32.0),
+        Light2D::point(Color::rgb(255, 0, 0), 60.0)
+          .with_intensity(0.5)
+          .with_shadows(),
+      ),
+      (
+        Vec2::new(8.0, 32.0),
+        Light2D::point(Color::rgb(0, 255, 0), 160.0)
+          .with_intensity(0.5)
+          .with_shadows(),
+      ),
+    ]
+  };
+  let (Some(carried), Some(open)) = (
+    scene(0.0, lights(), bearer()),
+    scene(0.0, lights(), Vec::new()),
+  ) else {
+    return;
+  };
+  // Lit all round at 40 px, as with no occluder
+  for (x, y) in [(24, 32), (104, 32), (36, 4), (92, 4), (36, 60), (92, 60)] {
+    let (shown, unshadowed) = (red(&carried, x, y), red(&open, x, y));
+    assert!(
+      unshadowed > 20 && shown.abs_diff(unshadowed) <= 2,
+      "({x}, {y}): {shown} against {unshadowed}"
+    );
+  }
+  // The green light's shadow of it still falls
+  let green = |frame: &image::RgbaImage| frame.get_pixel(110, 32).0[1];
+  assert!(
+    green(&open) > 40 && green(&carried) < 3,
+    "{} against {}",
+    green(&carried),
+    green(&open)
+  );
+}
+
+#[test]
+fn a_light_on_an_occluder_s_edge_lights_the_side_it_faces() {
+  // A 32 px block spanning x 48 to 80 and y 16 to 48
+  let block = || vec![(Vec2::new(64.0, 32.0), LightOccluder2D::rect(32.0, 32.0))];
+  let at = |x: f32, y: f32| {
+    vec![(
+      Vec2::new(x, y),
+      Light2D::point(Color::WHITE, 100.0)
+        .with_intensity(0.5)
+        .with_shadows(),
+    )]
+  };
+  // On its right edge, its left edge and its top right corner: (x, y) of a
+  // point on the side it faces, then of one behind the block
+  for (light, faced, behind) in [
+    ((80.0, 32.0), (110, 32), (20, 32)),
+    ((48.0, 32.0), (18, 32), (110, 32)),
+    ((80.0, 16.0), (110, 40), (30, 60)),
+  ] {
+    let (Some(edge), Some(open)) = (
+      scene(0.0, at(light.0, light.1), block()),
+      scene(0.0, at(light.0, light.1), Vec::new()),
+    ) else {
+      return;
+    };
+    let (shown, unshadowed) = (red(&edge, faced.0, faced.1), red(&open, faced.0, faced.1));
+    assert!(
+      unshadowed > 20 && shown.abs_diff(unshadowed) <= 2,
+      "{light:?}, faced: {shown} against {unshadowed}"
+    );
+    let (shown, unshadowed) = (
+      red(&edge, behind.0, behind.1),
+      red(&open, behind.0, behind.1),
+    );
+    assert!(
+      unshadowed > 20 && shown < 3,
+      "{light:?}, behind: {shown} against {unshadowed}"
+    );
+  }
+}
+
+#[test]
+fn a_wall_across_two_views_casts_without_a_gap() {
+  // A light at (64, 8) over a wall from x 14 to 114 at y 22 to 26: its
+  // shadow crosses the right, down and left views, meeting at 45° at
+  // (96.5, 40.5) and (31.5, 40.5)
+  let light = || {
+    vec![(
+      Vec2::new(64.0, 8.0),
+      Light2D::point(Color::WHITE, 100.0)
+        .with_intensity(0.5)
+        .with_shadows(),
+    )]
+  };
+  let wall = || vec![(Vec2::new(64.0, 24.0), LightOccluder2D::rect(100.0, 4.0))];
+  let (Some(shadowed), Some(open)) = (scene(0.0, light(), wall()), scene(0.0, light(), Vec::new()))
+  else {
+    return;
+  };
+  assert!(red(&open, 96, 40) > 20 && red(&open, 31, 40) > 20);
+  for y in 28..64 {
+    for x in 0..128 {
+      let d = Vec2::new(x as f32 + 0.5, y as f32 + 0.5).distance(Vec2::new(64.0, 8.0));
+      if d < 90.0 {
+        assert!(
+          red(&shadowed, x, y) < 3,
+          "({x}, {y}): {}",
+          red(&shadowed, x, y)
+        );
+      }
+    }
+  }
 }
 
 /// Two lights of intensity 60000 on the edge of a black patch over the left

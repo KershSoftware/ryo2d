@@ -3,11 +3,10 @@
 
 use glam::Vec2;
 
-use super::{Light2D, LightOccluder2D};
-use crate::core::ecs::{Floor, GlobalTransform};
+use super::Light2D;
+use crate::core::ecs::Floor;
 use crate::core::graphics::{RenderLayers, SpriteInstance};
 use crate::core::render::DrawLight;
-use crate::core::render::batch::Triangles;
 
 /// A light where it stands this frame, the layers that see it, and its
 /// floor and lift: it casts shadows where it stands, from the occluders on
@@ -35,11 +34,11 @@ pub(crate) fn drawn_cone(light: &Light2D) -> Option<(f32, f32)> {
     .map(|(angle, direction)| (or(angle, 45.0), or(direction, 0.0)))
 }
 
-/// `light` at `position` as a quad instance for `light.wgsl`, or `None`
-/// when it cannot light anything: a radius or intensity that is not
-/// positive and finite, or a position that is not finite. Shape parameters
-/// that are not finite take usable defaults, and the intensity is at most
-/// 65504 (the largest half float).
+/// `light` at `position` as a quad instance for `light.wgsl`, unshadowed
+/// (no atlas slot), or `None` when it cannot light anything: a radius or
+/// intensity that is not positive and finite, or a position that is not
+/// finite. Shape parameters that are not finite take usable defaults, and
+/// the intensity is at most 65504 (the largest half float).
 pub(crate) fn light_instance(position: Vec2, light: &Light2D) -> Option<SpriteInstance> {
   let usable = |v: f32| v.is_finite() && v > 0.0;
   let (radius, intensity) = (light.radius(), light.intensity());
@@ -68,7 +67,9 @@ pub(crate) fn light_instance(position: Vec2, light: &Light2D) -> Option<SpriteIn
     .unwrap_or([0.0; 4]);
   let mut instance =
     SpriteInstance::new().with_transform(position.x, position.y, 0.0, radius * 2.0, radius * 2.0);
-  instance.uv_rect = [kind, 0.0, 0.0, 0.0];
+  // The shadow's slot (none), the source's size and the radius
+  let size = or(light.shadow_softness(), 0.0).max(0.0);
+  instance.uv_rect = [kind, -1.0, size, radius];
   // Within what the light buffer's half floats hold (more is infinite)
   instance.tint = [r, g, b, intensity.min(65504.0)];
   instance.effect_params = params;
@@ -77,33 +78,20 @@ pub(crate) fn light_instance(position: Vec2, light: &Light2D) -> Option<SpriteIn
   Some(instance)
 }
 
-/// `light`'s draw-list item with its shadow volumes from `occluders` (each
-/// on its floor) in `triangles`, all drawn lifted, if it can light
-/// anything.
-pub(crate) fn light_item(
-  light: &FrameLight,
-  occluders: &[(GlobalTransform, &LightOccluder2D, Floor)],
-  triangles: &mut Triangles,
-) -> Option<DrawLight> {
+/// `light`'s draw-list item, drawn lifted, reading its shadow from atlas
+/// slot `slot` (`None`: unshadowed), if it can light anything.
+pub(crate) fn light_item(light: &FrameLight, slot: Option<u32>) -> Option<DrawLight> {
   let drawn = light.position + light.lift;
-  let instance = light_instance(drawn, &light.light)?;
+  let mut instance = light_instance(drawn, &light.light)?;
+  if let Some(slot) = slot {
+    instance.uv_rect[1] = slot as f32;
+  }
   let reach = Vec2::splat(light.light.radius());
-  let shadows = super::push_shadow_volumes(
-    light.position,
-    light.lift,
-    &light.light,
-    light.floor,
-    occluders,
-    triangles,
-  );
-  let [r, g, b, _] = light.light.shadow_color().to_linear();
   Some(DrawLight {
     instance,
     layers: light.layers,
     min: drawn - reach,
     max: drawn + reach,
-    shadows,
-    coloured: r + g + b > 0.0,
   })
 }
 
@@ -139,47 +127,38 @@ mod tests {
     assert_eq!(instance.tint[3], 65504.0);
   }
 
-  /// A shadow-casting light at the origin as a frame light, with an
-  /// occluder 40 to its right.
-  fn shadowed(light: Light2D) -> (Option<DrawLight>, Triangles) {
-    use crate::core::ecs::Transform;
+  #[test]
+  fn a_light_carries_its_slot_size_and_radius() {
     let frame = FrameLight {
-      position: Vec2::ZERO,
-      light: light.with_shadows(),
+      position: Vec2::new(5.0, 3.0),
+      light: Light2D::point(Color::WHITE, 100.0)
+        .with_shadows()
+        .with_soft_shadows(0.5),
       layers: RenderLayers::default(),
-      floor: Floor::GROUND,
-      lift: Vec2::ZERO,
+      floor: Floor::On(1),
+      lift: Vec2::new(0.0, -32.0),
     };
-    let occluder = LightOccluder2D::rect(4.0, 16.0);
-    let at = GlobalTransform::from_transform(&Transform::from_xy(40.0, 0.0));
-    let mut triangles = Triangles::default();
-    let item = light_item(&frame, &[(at, &occluder, Floor::GROUND)], &mut triangles);
-    (item, triangles)
-  }
-
-  #[test]
-  fn a_shadowed_light_carries_its_shadow_volumes() {
-    let (Some(black), _) = shadowed(Light2D::point(Color::WHITE, 100.0)) else {
+    let Some(item) = light_item(&frame, Some(3)) else {
       panic!("a usable light");
     };
-    assert!(!black.shadows.is_empty());
-    assert!(!black.coloured, "a black shadow lets nothing through");
-    let red = Light2D::point(Color::WHITE, 100.0).with_shadow_color(Color::rgb(255, 0, 0));
-    let (Some(red), _) = shadowed(red) else {
+    assert_eq!(item.instance.uv_rect, [0.0, 3.0, 0.5, 100.0]);
+    // Drawn lifted
+    assert_eq!(item.instance.transform[2][..2], [5.0, -29.0]);
+    let reach = Vec2::splat(100.0);
+    let drawn = Vec2::new(5.0, -29.0);
+    assert_eq!((item.min, item.max), (drawn - reach, drawn + reach));
+    // Without a slot it reads no shadow
+    let Some(unshadowed) = light_item(&frame, None) else {
       panic!("a usable light");
     };
-    assert!(red.coloured);
-  }
-
-  #[test]
-  fn a_light_that_draws_nothing_casts_no_shadows() {
-    let mut light = Light2D::point(Color::WHITE, 100.0);
-    if let Light2D::Point { intensity, .. } = &mut light {
-      *intensity = f32::NAN;
-    }
-    let (item, triangles) = shadowed(light);
-    assert!(item.is_none());
-    assert!(triangles.indices.is_empty() && triangles.vertices.is_empty());
+    assert_eq!(unshadowed.instance.uv_rect[1], -1.0);
+    // Its shadow colour and strength
+    let red = Light2D::point(Color::WHITE, 100.0).with_shadow_color(Color::new(255, 0, 0, 128));
+    let Some(instance) = light_instance(Vec2::ZERO, &red) else {
+      panic!("a usable light");
+    };
+    assert_eq!(instance.uv_bounds[..3], [1.0, 0.0, 0.0]);
+    assert!((instance.uv_bounds[3] - 128.0 / 255.0).abs() < 1e-3);
   }
 
   #[test]

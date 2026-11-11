@@ -20,6 +20,10 @@ pub(crate) const MAX_SHADOWED_LIGHTS: u32 = 512;
 /// Atlas rows a shadowed light takes: its right, down, left and up views
 const VIEWS: u32 = 4;
 
+/// A light this near a closed occluder's boundary (px) stands on it: it is
+/// outside the occluder, and the edges it stands on cast nothing for it
+const ON_EDGE: f32 = 1e-4;
+
 /// One casting edge in one view of one light, as the atlas's draw reads
 /// it: its end points and the light's position where they stand (ground
 /// space, world units), the light's radius in world units, and the atlas
@@ -52,6 +56,8 @@ pub(crate) struct ShadowPlan {
   pub(crate) edges: Vec<ShadowEdge>,
   /// Atlas rows the slots take: four a slot
   pub(crate) rows: u32,
+  /// Edges left out for want of room (the farthest lights' first)
+  pub(crate) dropped_edges: usize,
   /// The lights that may have a slot, as (distance to the nearest view's
   /// centre, light index)
   candidates: Vec<(f32, u32)>,
@@ -65,6 +71,7 @@ impl ShadowPlan {
     self.slots.clear();
     self.edges.clear();
     self.rows = 0;
+    self.dropped_edges = 0;
   }
 
   #[cfg(test)]
@@ -82,7 +89,9 @@ impl ShadowPlan {
 /// space), read through `occluder`: those on a floor meeting its own,
 /// enabled and finite, not a closed one holding the light, whose edges
 /// face away from it (and lie near a spot's cone) and are longer than
-/// 1e-4. Returns how many lights the cap left without a slot.
+/// 1e-4. At most `max_edges` edges are kept: the nearest lights' whole,
+/// the rest counted in `dropped_edges` (their lights draw unshadowed).
+/// Returns how many lights the cap left without a slot.
 pub(crate) fn plan_shadows<'w>(
   plan: &mut ShadowPlan,
   lights: &[FrameLight],
@@ -90,15 +99,18 @@ pub(crate) fn plan_shadows<'w>(
   index: &OccluderIndex,
   mut occluder: impl FnMut(Entity) -> Option<PlannedOccluder<'w>>,
   cap: u32,
+  max_edges: usize,
 ) -> u32 {
   let ShadowPlan {
     slots,
     edges,
     rows,
+    dropped_edges,
     candidates,
     found,
     scratch,
   } = plan;
+  *dropped_edges = 0;
   slots.clear();
   slots.resize(lights.len(), None);
   edges.clear();
@@ -119,9 +131,18 @@ pub(crate) fn plan_shadows<'w>(
     candidates.sort_unstable_by_key(|&(_, i)| i);
   }
   for (slot, &(_, i)) in candidates.iter().enumerate() {
-    let slot = slot as u32;
-    slots[i as usize] = Some(slot);
+    slots[i as usize] = Some(slot as u32);
+  }
+  *rows = candidates.len() as u32 * VIEWS;
+  // Edges nearest light first, so a frame past the edge limit keeps the
+  // nearest lights' shadows whole
+  candidates.sort_unstable_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+  for &(_, i) in candidates.iter() {
+    let Some(slot) = slots[i as usize] else {
+      continue;
+    };
     let light = &lights[i as usize];
+    let kept = edges.len();
     index.query_into(
       light.position - light.light.radius(),
       light.position + light.light.radius(),
@@ -133,8 +154,11 @@ pub(crate) fn plan_shadows<'w>(
         plan_occluder(light, slot, placed, edges);
       }
     }
+    if *dropped_edges > 0 || edges.len() > max_edges {
+      *dropped_edges += edges.len() - kept;
+      edges.truncate(kept);
+    }
   }
-  *rows = candidates.len() as u32 * VIEWS;
   dropped as u32
 }
 
@@ -182,26 +206,37 @@ fn plan_occluder(
   if corners.len() < least || !corners.clone().all(|corner| corner.is_finite()) {
     return;
   }
-  if closed && contains(corners.clone(), light) {
-    return;
-  }
   // A polygon's last edge returns to its first vertex; a chain's does not
   let closing = if closed { corners.clone().next() } else { None };
   let ends = corners.clone().skip(1).chain(closing);
+  if closed && contains(corners.clone().zip(ends.clone()), light) {
+    return;
+  }
   for (a, b) in corners.zip(ends) {
-    if casts(a, b, light, spot) && a.distance(b) > 1e-4 {
+    // An edge the light stands on covers no angle round it
+    if casts(a, b, light, spot) && a.distance(b) > 1e-4 && off_edge(a, b, light) {
       push_views(a, b, frame, slot, edges);
     }
   }
 }
 
-/// Whether the polygon of `corners` holds `point` (even-odd)
-fn contains(corners: impl ExactSizeIterator<Item = Vec2> + Clone, point: Vec2) -> bool {
-  let Some(mut previous) = corners.clone().last() else {
+/// Whether `point` is farther than `ON_EDGE` from the segment `a`-`b`
+fn off_edge(a: Vec2, b: Vec2, point: Vec2) -> bool {
+  let along = b - a;
+  let t = ((point - a).dot(along) / along.length_squared().max(f32::MIN_POSITIVE)).clamp(0.0, 1.0);
+  point.distance(a + along * t) > ON_EDGE
+}
+
+/// Whether the closed polygon of `edges` holds `point` (even-odd). A point
+/// on its boundary (within `ON_EDGE` of an edge) is outside: a light on an
+/// occluder's edge or corner lights the side it faces and is shadowed by
+/// the rest
+fn contains(edges: impl Iterator<Item = (Vec2, Vec2)> + Clone, point: Vec2) -> bool {
+  if edges.clone().any(|(a, b)| !off_edge(a, b, point)) {
     return false;
-  };
+  }
   let mut inside = false;
-  for corner in corners {
+  for (previous, corner) in edges {
     if (corner.y > point.y) != (previous.y > point.y) {
       let x =
         previous.x + (point.y - previous.y) * (corner.x - previous.x) / (corner.y - previous.y);
@@ -209,7 +244,6 @@ fn contains(corners: impl ExactSizeIterator<Item = Vec2> + Clone, point: Vec2) -
         inside = !inside;
       }
     }
-    previous = corner;
   }
   inside
 }
@@ -275,6 +309,36 @@ pub(super) fn casts(v0: Vec2, v1: Vec2, light: Vec2, spot: Option<(f32, f32)>) -
   off_axis <= (angle / 2.0).to_radians() + 0.2
 }
 
+/// The edges `occluders` cast for `light` (slot 0), as the planner reads
+/// them (tests that place occluders without an index)
+#[cfg(test)]
+pub(crate) fn casting_edges(light: &FrameLight, occluders: &[PlannedOccluder]) -> Vec<ShadowEdge> {
+  let mut edges = Vec::new();
+  for &placed in occluders {
+    plan_occluder(light, 0, placed, &mut edges);
+  }
+  edges
+}
+
+/// Whether `point` (ground space) lies in `light`'s shadow of `occluders`:
+/// within its radius, past an edge they cast for it, as the atlas and the
+/// light shader find it (tests)
+#[cfg(test)]
+pub(crate) fn shadowed(point: Vec2, light: &FrameLight, occluders: &[PlannedOccluder]) -> bool {
+  let from = light.position;
+  if from.distance(point) > light.light.radius() {
+    return false;
+  }
+  casting_edges(light, occluders).iter().any(|edge| {
+    let (a, b) = (Vec2::from(edge.a), Vec2::from(edge.b));
+    // The segment from the light to the point crosses the edge
+    let side = |p: Vec2, q: Vec2, r: Vec2| (q - p).perp_dot(r - p);
+    let (d1, d2) = (side(a, b, from), side(a, b, point));
+    let (d3, d4) = (side(from, point, a), side(from, point, b));
+    d1 * d2 < 0.0 && d3 * d4 < 0.0
+  })
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -314,6 +378,21 @@ mod tests {
 
     /// Updates the index, then plans `lights` for `views` under `cap`
     fn plan_capped(&mut self, lights: &[FrameLight], views: &[ShadowView], cap: u32) -> u32 {
+      self.plan_with(lights, views, cap, usize::MAX)
+    }
+
+    /// `plan` with room for `max_edges` edges
+    fn plan_limited(&mut self, lights: &[FrameLight], views: &[ShadowView], max_edges: usize) {
+      self.plan_with(lights, views, MAX_SHADOWED_LIGHTS, max_edges);
+    }
+
+    fn plan_with(
+      &mut self,
+      lights: &[FrameLight],
+      views: &[ShadowView],
+      cap: u32,
+      max_edges: usize,
+    ) -> u32 {
       if let Err(error) = self.world.run_system_cached(update_occluder_index) {
         panic!("the index updates: {error}");
       }
@@ -330,6 +409,7 @@ mod tests {
           Some((*global, occluder, floor.copied().unwrap_or(Floor::GROUND)))
         },
         cap,
+        max_edges,
       )
     }
 
@@ -503,6 +583,63 @@ mod tests {
     let views: std::collections::BTreeSet<u32> =
       chain.plan.edges.iter().map(|edge| edge.row).collect();
     assert_eq!(views.len(), 4, "all round it: {views:?}");
+  }
+
+  #[test]
+  fn a_light_on_a_closed_occluder_s_boundary_stands_outside_it() {
+    // A block from (-50, -50) to (50, 50): a light on any edge or corner is
+    // outside it, so its far edges cast and it lights the side it faces
+    for at in [
+      Vec2::new(50.0, 0.0),
+      Vec2::new(-50.0, 0.0),
+      Vec2::new(0.0, 50.0),
+      Vec2::new(0.0, -50.0),
+      Vec2::new(50.0, 50.0),
+      Vec2::new(-50.0, -50.0),
+      Vec2::new(-50.0, 50.0),
+      Vec2::new(50.0, -50.0),
+      // Off the edge by less than its tolerance
+      Vec2::new(-50.0 + 5e-5, 10.0),
+    ] {
+      let mut stage = Stage::new();
+      stage.wall(0.0, 0.0, LightOccluder2D::rect(100.0, 100.0));
+      stage.plan(&[lamp(at, 300.0)], &[wide()]);
+      assert!(!stage.plan.edges.is_empty(), "a light at {at} casts it");
+      // The far edges cast, never the one it stands on
+      for edge in &stage.plan.edges {
+        let (a, b) = (Vec2::from(edge.a), Vec2::from(edge.b));
+        assert!((b - a).perp_dot(at - a).abs() > 1.0, "{at}: {a} to {b}");
+      }
+    }
+    // Just inside, it holds the light
+    let mut stage = Stage::new();
+    stage.wall(0.0, 0.0, LightOccluder2D::rect(100.0, 100.0));
+    stage.plan(&[lamp(Vec2::new(-49.9, 10.0), 300.0)], &[wide()]);
+    assert!(stage.plan.edges.is_empty());
+  }
+
+  #[test]
+  fn past_the_edge_limit_the_nearest_lights_keep_their_edges() {
+    // Three lights at 0, 300 and 600 px from the view's centre, each with
+    // a wall to its right casting 3 edges in its right view
+    let mut stage = Stage::new();
+    let lights: Vec<FrameLight> = [600.0, 0.0, 300.0]
+      .into_iter()
+      .map(|x| {
+        stage.wall(x + 50.0, 0.0, LightOccluder2D::rect(20.0, 20.0));
+        lamp(Vec2::new(x, 0.0), 100.0)
+      })
+      .collect();
+    stage.plan(&lights, &[wide()]);
+    assert_eq!(stage.plan.edges.len(), 9);
+    assert_eq!(stage.plan.dropped_edges, 0);
+    // Room for 7: the two nearest lights' 6 edges, not part of the third's
+    stage.plan_limited(&lights, &[wide()], 7);
+    assert_eq!(stage.plan.slots, vec![Some(0), Some(1), Some(2)]);
+    let mut slots: Vec<u32> = stage.plan.edges.iter().map(|e| e.row / 4).collect();
+    slots.sort_unstable();
+    assert_eq!(slots, [1, 1, 1, 2, 2, 2]);
+    assert_eq!(stage.plan.dropped_edges, 3);
   }
 
   #[test]

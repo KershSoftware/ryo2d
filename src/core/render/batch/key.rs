@@ -92,7 +92,7 @@ pub(crate) enum BatchShader {
   Line,
   /// Line geometry with a texture along it
   LineTextured,
-  /// A light (or its shadow) into a light buffer
+  /// A light into a light buffer
   Light(LightStep),
   /// A raster glyph: its coverage times the tint
   TextMask,
@@ -111,39 +111,19 @@ pub(crate) enum BatchShader {
   TileObject,
 }
 
-/// One draw of a light into a light buffer. A shadowed light draws, inside
-/// its quad: `ResetMask`, its `Shadow` volumes, `Masked`, and `Coloured` if
-/// its shadow is coloured.
+/// One draw of a light into a light buffer: every light a lit camera sees
+/// adds up in one instanced draw, each holding its own shadow back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum LightStep {
-  /// Light added up (lights without shadow volumes)
+  /// Light added up
   Add,
-  /// The light buffer's alpha set to 1 in the light's quad
-  ResetMask,
-  /// Each shadow volume keeps 1 - strength of the alpha
-  Shadow,
-  /// The light added where the alpha lets it through
-  Masked,
-  /// The light, tinted by its shadow colour, where the alpha held it back
-  Coloured,
 }
 
 impl LightStep {
   /// The entry point that draws it.
   pub(crate) fn fragment(self) -> &'static str {
     match self {
-      LightStep::Add | LightStep::Masked => "fs_light",
-      LightStep::ResetMask => "fs_mask_reset",
-      LightStep::Shadow => "fs_shadow",
-      LightStep::Coloured => "fs_light_coloured",
-    }
-  }
-
-  /// The stream it draws from: shadow volumes are triangles, the rest quads.
-  pub(crate) fn stream(self) -> Stream {
-    match self {
-      LightStep::Shadow => Stream::Triangles,
-      _ => Stream::Quads,
+      LightStep::Add => "fs_light",
     }
   }
 }

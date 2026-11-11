@@ -208,7 +208,6 @@ mod occluder;
 mod plan;
 mod renderer;
 mod settings;
-mod shadow;
 mod volumetric;
 
 pub use ambient::AmbientLight;
@@ -218,9 +217,10 @@ pub(crate) use god_rays::update_god_rays;
 pub(crate) use index::{OccluderIndex, insert_occluder_index, update_occluder_index};
 pub use light::Light2D;
 pub use occluder::LightOccluder2D;
+#[cfg(test)]
+pub(crate) use plan::{casting_edges, shadowed};
 pub(crate) use renderer::LightingRenderer;
 pub use settings::LightingSettings;
-pub(crate) use shadow::push_shadow_volumes;
 pub use volumetric::VolumetricSettings;
 
 /// How finely lights' shadows are drawn: the player's graphics setting

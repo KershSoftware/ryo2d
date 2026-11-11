@@ -852,11 +852,6 @@ fn the_batch_pipelines_build_in_both_formats() {
     (BatchShader::Repeat, linear, Stream::Quads),
     (BatchShader::Line, linear, Stream::Triangles),
     (BatchShader::Light(LightStep::Add), linear, Stream::Quads),
-    (
-      BatchShader::Light(LightStep::Shadow),
-      linear,
-      Stream::Triangles,
-    ),
   ];
   for (shader, sampling, stream) in shaders {
     for blend in [BlendMode::Alpha, BlendMode::Premultiplied] {
@@ -1543,4 +1538,78 @@ fn a_shadowed_light_s_map_is_drawn_once_a_frame() {
   }
   engine.step_frames(2).unwrap();
   assert_eq!(encodes(&engine), (0, 3));
+}
+
+/// A white floor, a shadowed light at (40, 45) and a wall at (55, 45),
+/// seen whole by two lit cameras, each half the window, both centred on
+/// (60, 45)
+struct TwoCamerasOneWall;
+
+impl Scene for TwoCamerasOneWall {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    let floor = ctx
+      .assets()
+      .add(Image::solid_rect(200, 200, 255, 255, 255, 255));
+    ctx.world.spawn((
+      Transform::from_xy(-40.0, -40.0),
+      Renderable::image(floor).with_anchor(Anchor::TopLeft),
+    ));
+    ctx
+      .lighting()
+      .set_ambient(AmbientLight::with_intensity(0.0));
+    ctx.world.spawn((
+      Transform::from_xy(40.0, 45.0),
+      Light2D::point(Color::WHITE, 100.0)
+        .with_intensity(0.5)
+        .with_shadows(),
+    ));
+    ctx.world.spawn((
+      Transform::from_xy(55.0, 45.0),
+      LightOccluder2D::rect(4.0, 20.0),
+    ));
+    ctx.camera().set_position(60.0, 45.0);
+    ctx.camera().set_viewport(Viewport::new(0.0, 0.0, 0.5, 1.0));
+    ctx.world.spawn((
+      Transform::from_xy(60.0, 45.0),
+      Camera2d {
+        viewport: Viewport::new(0.5, 0.0, 0.5, 1.0),
+        order: 1,
+        ..Default::default()
+      },
+    ));
+  }
+}
+
+#[test]
+fn two_cameras_share_one_atlas() {
+  let Some(mut engine) = engine(
+    EngineBuilder::new()
+      .resolution(120, 90)
+      .start_scene(TwoCamerasOneWall),
+  ) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  let encodes =
+    |engine: &HeadlessEngine| engine.engine.lighting().unwrap().shadow_atlas().encodes();
+  let before = encodes(&engine);
+  engine.step_frames(1).unwrap();
+  assert_eq!(
+    encodes(&engine),
+    before + 1,
+    "one atlas draw for both cameras"
+  );
+  let lighting = engine.engine.lighting().unwrap();
+  assert_eq!(lighting.shadow_plan().slots, vec![Some(0)]);
+  // Each half shows world x 30 to 90: (50, 45) lit between the light and
+  // the wall, (75, 45) in its shadow
+  let frame = engine.frame().unwrap();
+  for left in [0, 60] {
+    let lit = frame.get_pixel(left + 20, 45).0[0];
+    let shadowed = frame.get_pixel(left + 45, 45).0[0];
+    assert!(
+      lit > 20 && shadowed < 3,
+      "camera at {left}: lit {lit}, shadowed {shadowed}"
+    );
+  }
 }

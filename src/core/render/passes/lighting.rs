@@ -1,10 +1,11 @@
-//! 2D lighting: lights (each masked by its own shadows), then the lit scene
+//! 2D lighting: lights (each holding its own shadow back), then the lit
+//! scene
 
-use crate::core::render::batch::Bound;
 use crate::core::render::{FrameImage, FrameInfo, PassScope, RenderContext, RenderPass, pass_ids};
 
-/// Draws the camera's lights and their shadows from the batch into its
-/// light buffer, then composes the camera's image with it.
+/// Draws the camera's lights from the batch into its light buffer, each
+/// reading its shadow from the frame's shadow atlas, then composes the
+/// camera's image with it.
 pub(super) struct Lighting;
 
 impl RenderPass for Lighting {
@@ -41,7 +42,7 @@ impl RenderPass for Lighting {
       return;
     };
     // The frame's lights, through the batch, into the camera's light
-    // buffer; a shadowed light masks itself in the buffer's alpha
+    // buffer, in one draw
     {
       let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("Light Pass"),
@@ -60,11 +61,8 @@ impl RenderPass for Lighting {
         multiview_mask: None,
       });
       if let Some(batch) = scene.batch {
-        let mut bound = Bound::default();
-        for draw in batch.light_draws(entity) {
-          let size = camera.rect.size();
-          batch.draw(&mut pass, draw, entity, scene.sprites, size, &mut bound);
-        }
+        let shadows = renderer.shadow_group();
+        batch.draw_lights(&mut pass, entity, shadows, camera.rect.size());
       }
     }
     // The camera drawing straight into the scene image is lit into the lit

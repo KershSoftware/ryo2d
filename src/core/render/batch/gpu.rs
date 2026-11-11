@@ -674,50 +674,16 @@ impl Batch2D {
         next,
         &mut place,
       );
-      // A lit camera's lights, into its light buffer
+      // A lit camera's lights, into its light buffer, in one draw: each
+      // reads its own shadow from the atlas
       drawn.lights.clear();
       if camera.lit {
-        for step in [
-          LightStep::Add,
-          LightStep::ResetMask,
-          LightStep::Shadow,
-          LightStep::Masked,
-          LightStep::Coloured,
-        ] {
-          pipelines.ensure(device, light_key(step, format), None);
-        }
-        // Lights without shadow volumes add up in one draw
+        pipelines.ensure(device, light_key(format), None);
         let start = placed.len() as u32;
-        placed.extend(
-          list
-            .lights_for(camera)
-            .filter(|light| light.shadows.is_empty())
-            .map(|light| light.instance),
-        );
+        placed.extend(list.lights_for(camera).map(|light| light.instance));
         let end = placed.len() as u32;
         if end > start {
-          drawn.lights.push(light_draw(LightStep::Add, start..end));
-        }
-        // Each shadowed light masks itself: full in its quad, cut by its
-        // shadows, then let through (and through a coloured shadow, tinted)
-        for light in list
-          .lights_for(camera)
-          .filter(|light| !light.shadows.is_empty())
-        {
-          let at = placed.len() as u32;
-          placed.push(light.instance);
-          drawn
-            .lights
-            .push(light_draw(LightStep::ResetMask, at..at + 1));
-          drawn
-            .lights
-            .push(light_draw(LightStep::Shadow, light.shadows.clone()));
-          drawn.lights.push(light_draw(LightStep::Masked, at..at + 1));
-          if light.coloured {
-            drawn
-              .lights
-              .push(light_draw(LightStep::Coloured, at..at + 1));
-          }
+          drawn.lights.push(light_draw(start..end));
         }
       }
     }
@@ -786,6 +752,38 @@ impl Batch2D {
     image: (u32, u32),
     bound: &mut Bound<'a>,
   ) {
+    self.draw_with(pass, draw, camera, Some(textures), None, image, bound);
+  }
+
+  /// Issue `camera`'s light draws inside a render pass into its light
+  /// buffer, reading the shadow atlas through `shadows` (the atlas's light
+  /// bind group)
+  pub(crate) fn draw_lights<'a>(
+    &'a self,
+    pass: &mut wgpu::RenderPass<'a>,
+    camera: Entity,
+    shadows: &'a wgpu::BindGroup,
+    image: (u32, u32),
+  ) {
+    let mut bound = Bound::default();
+    for draw in self.light_draws(camera) {
+      self.draw_with(pass, draw, camera, None, Some(shadows), image, &mut bound);
+    }
+  }
+
+  /// `draw`, binding a page of `textures` for a textured draw or `shadows`
+  /// for a light
+  #[allow(clippy::too_many_arguments)]
+  fn draw_with<'a>(
+    &'a self,
+    pass: &mut wgpu::RenderPass<'a>,
+    draw: &Draw,
+    camera: Entity,
+    textures: Option<&'a SpriteGpuRenderer>,
+    shadows: Option<&'a wgpu::BindGroup>,
+    image: (u32, u32),
+    bound: &mut Bound<'a>,
+  ) {
     let page = match draw.stream {
       Stream::Quads => PageKind::of(draw.state.page),
       Stream::Triangles => PageKind::Srgb8,
@@ -816,19 +814,21 @@ impl Batch2D {
         (instances, Some((group, slot * SLOT_STRIDE)))
       }
     };
-    // Untextured lines and lights bind no texture; everything else samples
-    // a page
-    let texture_group = match draw.state.page {
-      Some(page) => match textures.page_bind_group(page, draw.state.sampling) {
+    // Untextured lines bind nothing more; lights bind the shadow atlas;
+    // everything else samples a page
+    let texture_group = match (draw.state.shader, draw.state.page) {
+      (BatchShader::Light(_), _) => match shadows {
         Some(group) => Some(group),
         None => return,
       },
-      None
-        if draw.stream == Stream::Quads && !matches!(draw.state.shader, BatchShader::Light(_)) =>
-      {
-        return;
+      (_, Some(page)) => {
+        match textures.and_then(|t| t.page_bind_group(page, draw.state.sampling)) {
+          Some(group) => Some(group),
+          None => return,
+        }
       }
-      None => None,
+      (_, None) if draw.stream == Stream::Quads => return,
+      (_, None) => None,
     };
     // Every draw covers the whole image
     if bound.scissor != Some(image) {
@@ -927,25 +927,25 @@ fn in_slot([u0, v0, u1, v1]: [f32; 4], slot: &AtlasSlot) -> [f32; 4] {
 }
 
 /// The pipeline key of a light-buffer draw.
-fn light_key(step: LightStep, format: wgpu::TextureFormat) -> PipelineKey {
+fn light_key(format: wgpu::TextureFormat) -> PipelineKey {
   PipelineKey::new(
-    BatchShader::Light(step),
+    BatchShader::Light(LightStep::Add),
     BlendMode::Additive,
-    step.stream(),
+    Stream::Quads,
     PageKind::Srgb8,
     Sampling::Nearest,
     format,
   )
 }
 
-/// A light-buffer draw of `range` (instances or indices, by the step's stream).
-fn light_draw(step: LightStep, range: std::ops::Range<u32>) -> Draw {
+/// A light-buffer draw of the light instances in `range`.
+fn light_draw(range: std::ops::Range<u32>) -> Draw {
   Draw {
     source: DrawSource::Frame,
-    stream: step.stream(),
+    stream: Stream::Quads,
     state: DrawState {
       page: None,
-      shader: BatchShader::Light(step),
+      shader: BatchShader::Light(LightStep::Add),
       blend: BlendMode::Additive,
       sampling: Sampling::Nearest,
     },

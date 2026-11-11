@@ -215,7 +215,7 @@ Located in `src/core/shaders/`:
 | `core/sprite.wgsl` | Sprites (batch quads), including per-sprite effects and premultiplied entries |
 | `core/line.wgsl` | Trails, lines and debug shapes (batch triangles) |
 | `core/ui.wgsl` | The UI renderer's one pipeline: `vs_ui` (quads through `quad_corner`, as `sprite.wgsl` places them, line triangles by their corners, each moved by its scroll slot's offset and collapsed when wholly outside its clip) and `fs_ui` (a switch over the instance's kind running the shared bodies, then the clip test as a scissor) |
-| `core/light.wgsl`, `shadow.wgsl` | Lights (batch quads) and shadow volumes (batch triangles) |
+| `core/light.wgsl`, `shadow_map.wgsl` | Lights (batch quads, each reading its shadow from the atlas) and shadow maps (the atlas's edges) |
 | `core/tonemap.wgsl`, `exposure.wgsl` | The look, and auto-exposure's compute passes |
 | `core/text.wgsl` | World glyphs: `fs_text_mask` (raster coverage times tint), `fs_text_color` (colour glyphs), `fs_text_msdf` (distance field: fill, outline, soft shadow and glow lanes) |
 | `core/camera_image.wgsl` | A window camera's own image placed in its viewport |

@@ -12,7 +12,7 @@ You help developers light scenes and cast shadows. Complete signatures are in `r
 ## Resources
 
 - **Lighting**: `src/core/lighting/` (`settings.rs` is what scenes control)
-- **Shaders**: `src/core/shaders/core/light.wgsl` (lights, batch quads), `shadow.wgsl` (shadow volumes, batch triangles); `post-process/lighting.wgsl` (compose), `god_rays.wgsl`, `ambient_occlusion.wgsl`
+- **Shaders**: `src/core/shaders/core/light.wgsl` (lights, batch quads), `shadow_map.wgsl` (shadow maps drawn into the atlas); `post-process/lighting.wgsl` (compose), `god_rays.wgsl`, `ambient_occlusion.wgsl`
 - **Demos**: `examples/demos/lighting/`, `lighting-volumetric/`, `shadows/`
 
 ## The Model

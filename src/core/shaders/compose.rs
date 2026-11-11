@@ -57,22 +57,21 @@ pub(crate) const UI: &str = concat!(
   include_str!("core/ui.wgsl"),
 );
 
-/// Light accumulation
+/// Light accumulation, each light reading its shadow from the atlas
 pub(crate) const LIGHT: &str = concat!(
   include_str!("include/camera.wgsl"),
+  "\n",
+  include_str!("include/shadow_view.wgsl"),
   "\n",
   include_str!("core/light.wgsl"),
 );
 
-/// Shadow geometry
-pub(crate) const SHADOW: &str = concat!(
-  include_str!("include/camera.wgsl"),
-  "\n",
-  include_str!("core/shadow.wgsl"),
-);
-
 /// Shadowed lights' maps, drawn into the shadow atlas
-pub(crate) const SHADOW_MAP: &str = include_str!("core/shadow_map.wgsl");
+pub(crate) const SHADOW_MAP: &str = concat!(
+  include_str!("include/shadow_view.wgsl"),
+  "\n",
+  include_str!("core/shadow_map.wgsl"),
+);
 
 /// Trails and lines (plain and textured)
 pub(crate) const LINE: &str = concat!(
@@ -208,7 +207,6 @@ pub(crate) fn built_in() -> Vec<(&'static str, String)> {
     ("sprite", SPRITE),
     ("ui", UI),
     ("light", LIGHT),
-    ("shadow", SHADOW),
     ("shadow_map", SHADOW_MAP),
     ("line", LINE),
     ("lighting_compose", LIGHTING_COMPOSE),
@@ -268,6 +266,20 @@ mod tests {
       assert!(body.contains("quad_corner("), "{name} places quads itself");
       assert!(!body.contains("to_pixel("), "{name} repeats the snap");
     }
+  }
+
+  #[test]
+  fn the_light_and_the_shadow_map_find_views_with_one_function() {
+    let bodies = [
+      ("light", include_str!("core/light.wgsl")),
+      ("shadow_map", include_str!("core/shadow_map.wgsl")),
+    ];
+    for (name, body) in bodies {
+      assert!(body.contains("in_view("), "{name} turns into views itself");
+      assert!(!body.contains("fn in_view"), "{name} repeats in_view");
+      assert!(!body.contains("fn view_of"), "{name} repeats view_of");
+    }
+    assert!(include_str!("core/light.wgsl").contains("view_of("));
   }
 
   #[test]
