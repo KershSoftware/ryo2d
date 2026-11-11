@@ -388,13 +388,18 @@ type OccluderData<'a> = (
   bool,
 );
 
-/// Where an occluder is to be found: none while it is disabled, or placed
-/// where a vertex is not finite. An interpolated one between two
+/// Where an occluder is to be found: none while it is disabled, scaled to
+/// nothing (a zero or not finite axis: occluders ignore scale, but one
+/// scaled away is hidden), or placed where a vertex is not finite. A scale
+/// change is a `GlobalTransform` change, so it is placed again when scaled
+/// back. An interpolated one between two
 /// placements holds both, padded by the most a turn's arc bows out from
 /// the line between a vertex's two places (the extent times 1 - cos of
 /// half the turn), so every blend `render_global` draws lies inside
 fn placement((global, previous, occluder, disabled): OccluderData) -> Option<Placement> {
-  if disabled || !occluder.is_enabled() {
+  let scale = global.scale();
+  let scaled_away = !(scale.is_finite() && scale.x > 0.0 && scale.y > 0.0);
+  if disabled || !occluder.is_enabled() || scaled_away {
     return None;
   }
   let (mut min, mut max) = occluder.placed_bounds(global)?;
@@ -743,6 +748,49 @@ mod tests {
     lit.frame();
     assert_eq!(lit.index().bounds(pooled), None);
     assert_eq!(lit.found_at(at), vec![wall]);
+  }
+
+  #[test]
+  fn an_occluder_scaled_to_zero_leaves_the_index_until_scaled_back() {
+    let mut lit = Lit::new();
+    let wall = lit.spawn(100.0, 100.0, LightOccluder2D::rect(40.0, 40.0));
+    lit.frame();
+    let at = Vec2::new(100.0, 100.0);
+    assert_eq!(lit.found_at(at), vec![wall]);
+    let set_scale = |lit: &mut Lit, scale: Vec2| {
+      if let Some(mut transform) = lit.world.get_mut::<Transform>(wall) {
+        transform.scale = scale;
+      }
+    };
+    set_scale(&mut lit, Vec2::new(1.0, 0.0));
+    lit.frame();
+    assert!(lit.found_at(at).is_empty(), "hidden by a zero scale");
+    assert_eq!(lit.index().bounds(wall), None);
+    set_scale(&mut lit, Vec2::ONE);
+    lit.frame();
+    assert_eq!(lit.found_at(at), vec![wall], "back the next frame");
+    // A parent scaled to nothing hides it too
+    let parent = lit.world.spawn(Transform::from_xy(0.0, 0.0)).id();
+    let child = lit
+      .world
+      .spawn((
+        Transform::from_xy(-300.0, 0.0),
+        LightOccluder2D::rect(4.0, 4.0),
+        crate::core::ecs::ChildOf(parent),
+      ))
+      .id();
+    lit.frame();
+    assert_eq!(lit.found_at(Vec2::new(-300.0, 0.0)), vec![child]);
+    if let Some(mut transform) = lit.world.get_mut::<Transform>(parent) {
+      transform.scale = Vec2::ZERO;
+    }
+    lit.frame();
+    assert_eq!(lit.index().bounds(child), None);
+    if let Some(mut transform) = lit.world.get_mut::<Transform>(parent) {
+      transform.scale = Vec2::ONE;
+    }
+    lit.frame();
+    assert_eq!(lit.found_at(Vec2::new(-300.0, 0.0)), vec![child]);
   }
 
   #[test]

@@ -107,7 +107,7 @@ LightOccluder2D::polygon(vec![Vec2::ZERO, Vec2::new(64.0, 0.0), Vec2::new(32.0, 
 LightOccluder2D::chain(vec![Vec2::new(0.0, 32.0), Vec2::ZERO, Vec2::new(64.0, 0.0)]);       // open: no edge back to the start
 ```
 
-Vertices are local to the entity and follow its `GlobalTransform` (rotation included). `with_enabled(false)` / `set_enabled(..)` turns one off without removing it.
+Vertices are local to the entity and follow its `GlobalTransform` (rotation included). Occluders ignore scale, so one casts at its own size however its entity is scaled, but one scaled to zero on an axis (a door or crate scaled away to hide it) casts nothing. `with_enabled(false)` / `set_enabled(..)` turns one off without removing it.
 
 - **Chains** are open runs of edges: no edge joins the last vertex back to the first (`is_closed()` is false; true for every other kind). Wind a chain as the polygon whose boundary it is a stretch of (counter-clockwise on screen): each edge casts exactly as it would as that polygon's edge, so chains that together close a ring cast as the polygon does. Use them for a boundary built in pieces.
 - **Touching occluders:** a side two closed occluders share exactly (the same two end points) casts for neither, so a wall of touching blocks casts as one solid. Sides that overlap only in part (blocks of different sizes side by side, or offset along their shared line) still cast their shadows through each other's lit art; the chains of one boundary have no shared sides at all.

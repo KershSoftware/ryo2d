@@ -1290,6 +1290,47 @@ mod tests {
   }
 
   #[test]
+  fn an_occluder_scaled_to_zero_casts_nothing() {
+    // Occluders ignore scale, but one scaled to nothing on an axis (or by
+    // a scale that is not finite) is hidden: it casts nothing
+    for scale in [
+      Vec2::ZERO,
+      Vec2::new(0.0, 1.0),
+      Vec2::new(1.0, 0.0),
+      Vec2::new(f32::NAN, 1.0),
+      Vec2::new(1.0, f32::INFINITY),
+    ] {
+      let mut stage = Stage::new();
+      stage.world.spawn((
+        Transform::from_xy(50.0, 0.0).with_scale(scale),
+        LightOccluder2D::rect(20.0, 20.0),
+      ));
+      stage.plan(&[lamp(Vec2::ZERO, 200.0)], &[wide()]);
+      assert!(
+        stage.plan.edges.is_empty(),
+        "scaled by {scale}: {:?}",
+        stage.plan.edges
+      );
+    }
+    // Scaled down but not to nothing, it casts at its full size
+    let mut stage = Stage::new();
+    stage.world.spawn((
+      Transform::from_xy(50.0, 0.0).with_scale(Vec2::splat(0.01)),
+      LightOccluder2D::rect(20.0, 20.0),
+    ));
+    stage.plan(&[lamp(Vec2::ZERO, 200.0)], &[wide()]);
+    assert!(
+      stage
+        .plan
+        .edges
+        .iter()
+        .any(|e| e.a[0] == 60.0 && e.b[0] == 60.0),
+      "{:?}",
+      stage.plan.edges
+    );
+  }
+
+  #[test]
   fn planning_a_static_frame_allocates_nothing() {
     let mut stage = Stage::new();
     for i in 0..40 {
