@@ -35,18 +35,45 @@ pub(crate) fn under(target: &str, path: &str) -> bool {
   }
 }
 
-/// A record's time as `HH:MM:SS.mmm` (the log file's and the logger
-/// window's, both native).
-#[cfg(not(target_arch = "wasm32"))]
+/// A record's time as `HH:MM:SS.mmm` (the logger window's; the file writes
+/// it with [`push_clock`]).
+#[cfg(all(dev_tools, not(target_arch = "wasm32")))]
 pub(crate) fn clock(time: Duration) -> String {
+  let mut text = String::with_capacity(12);
+  push_clock(&mut text, time);
+  text
+}
+
+/// Appends a record's time as `HH:MM:SS.mmm` to `out`, written by hand (the
+/// file writes one a line, and the formatter costs several times this).
+/// Past 99 hours the hours take as many digits as they need.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn push_clock(out: &mut String, time: Duration) {
+  fn digits(out: &mut String, value: u64, width: usize) {
+    let mut buffer = [b'0'; 20];
+    let mut at = buffer.len();
+    let mut rest = value;
+    loop {
+      at -= 1;
+      buffer[at] = b'0' + (rest % 10) as u8;
+      rest /= 10;
+      if rest == 0 {
+        break;
+      }
+    }
+    at = at.min(buffer.len() - width);
+    for &digit in &buffer[at..] {
+      out.push(char::from(digit));
+    }
+  }
   let secs = time.as_secs();
-  format!(
-    "{:02}:{:02}:{:02}.{:03}",
-    secs / 3600,
-    secs / 60 % 60,
-    secs % 60,
-    time.subsec_millis()
-  )
+  digits(out, secs / 3600, 2);
+  out.push(':');
+  digits(out, secs / 60 % 60, 2);
+  out.push(':');
+  digits(out, secs % 60, 2);
+  out.push('.');
+  digits(out, u64::from(time.subsec_millis()), 3);
 }
 
 /// One line of the log.
@@ -82,5 +109,35 @@ mod tests {
     assert_eq!(Origin::of("gamepad"), Origin::Library);
     assert_eq!(Origin::of("ryo2dx"), Origin::Library);
     assert_eq!(Origin::of(""), Origin::Library);
+  }
+
+  #[cfg(not(target_arch = "wasm32"))]
+  #[test]
+  fn the_clock_reads_as_the_formatter_would_write_it() {
+    for millis in [
+      0,
+      7,
+      999,
+      1_000,
+      59_999,
+      3_723_045,
+      86_399_999,
+      359_999_999,
+      360_000_000,
+      123_456_789_012,
+    ] {
+      let time = Duration::from_millis(millis);
+      let secs = time.as_secs();
+      let expected = format!(
+        "{:02}:{:02}:{:02}.{:03}",
+        secs / 3600,
+        secs / 60 % 60,
+        secs % 60,
+        time.subsec_millis()
+      );
+      let mut written = String::new();
+      push_clock(&mut written, time);
+      assert_eq!(written, expected);
+    }
   }
 }

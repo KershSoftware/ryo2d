@@ -23,10 +23,15 @@ use super::record::LogRecord;
 pub(crate) const CAP: u64 = 8 * 1024 * 1024;
 /// A warning or an error flushes at once unless the last flush was this recent.
 pub(crate) const FLUSH_GAP: Duration = Duration::from_millis(50);
-/// The buffer between the lines and the disk.
-const BUFFER: usize = 8 * 1024;
+/// The buffer between the lines and the disk. The flushes bound how long a
+/// line waits; the size only sets how often a flood pays for a write call
+/// (with 8 KiB, every couple of hundred lines: a third of a line's cost).
+const BUFFER: usize = 64 * 1024;
 /// The last line of a full file.
 const FULL_LINE: &str = "log full: no more is written this run\n";
+/// The most the reused line buffer keeps between lines: a longer line's
+/// buffer is let go after it is written
+const LINE_KEEP: usize = 4 * 1024;
 
 struct FileOutput {
   writer: BufWriter<File>,
@@ -34,7 +39,13 @@ struct FileOutput {
   written: u64,
   full: bool,
   unflushed: bool,
+  /// When the last flush was, by the clock (`tick`'s gap)
   last_flush: Option<Instant>,
+  /// When the last flush was, in the log's time (a record's): a warning's
+  /// gap is read from its own time, so a line reads no clock of its own
+  last_flush_at: Option<Duration>,
+  /// The line being written, reused from line to line
+  line: String,
   /// Tests share the process, and other tests' records would land in a test's
   /// file: it takes only its own thread's
   #[cfg(test)]
@@ -117,6 +128,8 @@ pub(crate) fn open(folder: &Path) -> io::Result<PathBuf> {
     full: false,
     unflushed: false,
     last_flush: None,
+    last_flush_at: None,
+    line: String::new(),
     #[cfg(test)]
     owner: std::thread::current().id(),
   };
@@ -263,19 +276,34 @@ impl FileOutput {
     if self.full {
       return Ok(());
     }
-    let line = format_line(record);
+    let mut line = std::mem::take(&mut self.line);
+    format_line(&mut line, record);
+    let written = self.write_formatted(&line, record, urgent);
+    line.clear();
+    if line.capacity() <= LINE_KEEP {
+      self.line = line;
+    }
+    written
+  }
+
+  fn write_formatted(&mut self, line: &str, record: &LogRecord, urgent: bool) -> io::Result<()> {
     if self.written + line.len() as u64 > CAP {
       self.full = true;
       self.writer.write_all(FULL_LINE.as_bytes())?;
       self.written += FULL_LINE.len() as u64;
       self.unflushed = true;
-      return self.flush_now();
+      return self.flush_now(record.time);
     }
     self.writer.write_all(line.as_bytes())?;
     self.written += line.len() as u64;
     self.unflushed = true;
-    if urgent && self.gap_has_passed() {
-      self.flush_now()?;
+    // The gap from the record's own time: no clock is read for a line
+    if urgent
+      && self
+        .last_flush_at
+        .is_none_or(|last| record.time.saturating_sub(last) >= FLUSH_GAP)
+    {
+      self.flush_now(record.time)?;
     }
     Ok(())
   }
@@ -286,24 +314,28 @@ impl FileOutput {
       .is_none_or(|last| last.elapsed() >= FLUSH_GAP)
   }
 
-  fn flush_now(&mut self) -> io::Result<()> {
+  /// Flushes; `at` is the log's time now (the record's, for a line's flush).
+  fn flush_now(&mut self, at: Duration) -> io::Result<()> {
     #[cfg(test)]
     FLUSHES.fetch_add(1, Ordering::Relaxed);
     self.last_flush = Some(Instant::now());
+    self.last_flush_at = Some(at);
     self.unflushed = false;
     self.writer.flush()
   }
 }
 
-/// `HH:MM:SS.mmm LEVEL target: message`, the time since the logger started.
-fn format_line(record: &LogRecord) -> String {
-  format!(
-    "{} {} {}: {}\n",
-    super::record::clock(record.time),
-    record.level,
-    record.target,
-    record.message
-  )
+/// Appends `HH:MM:SS.mmm LEVEL target: message` and a newline to `line`, the
+/// time since the logger started.
+fn format_line(line: &mut String, record: &LogRecord) {
+  super::record::push_clock(line, record.time);
+  line.push(' ');
+  line.push_str(record.level.as_str());
+  line.push(' ');
+  line.push_str(&record.target);
+  line.push_str(": ");
+  line.push_str(&record.message);
+  line.push('\n');
 }
 
 /// Once a frame: flushes what is waiting once the gap since the last flush has
@@ -316,7 +348,7 @@ pub(crate) fn tick() {
   let Some(output) = held.output() else { return };
   if output.unflushed
     && output.gap_has_passed()
-    && let Err(error) = output.flush_now()
+    && let Err(error) = output.flush_now(super::now())
   {
     held.detach(&error);
   }
@@ -330,14 +362,14 @@ pub(crate) fn flush() {
   let Some(mut held) = lock() else { return };
   let Some(output) = held.output() else { return };
   if output.unflushed
-    && let Err(error) = output.flush_now()
+    && let Err(error) = output.flush_now(super::now())
   {
     held.detach(&error);
   }
 }
 
-/// Flushes and detaches the output.
-#[cfg(test)]
+/// Flushes and detaches the output (a failed flush is let go: the file is
+/// being closed).
 pub(crate) fn close() {
   let mut state = STATE.lock().unwrap_or_else(PoisonError::into_inner);
   if let Some(output) = state.as_mut() {
@@ -471,6 +503,29 @@ mod tests {
       &text[text.len().saturating_sub(200)..]
     );
     assert_eq!(text.matches("log full").count(), 1);
+  }
+
+  #[test]
+  fn a_long_line_is_written_whole_and_its_buffer_is_not_kept() {
+    let _guard = exclusive();
+    let dir = tempfile::tempdir().unwrap();
+    let path = open(dir.path()).unwrap();
+    let long = "y".repeat(LINE_KEEP * 4);
+    write(&record(log::Level::Info, &long));
+    write(&record(log::Level::Info, "short"));
+    let kept = STATE
+      .lock()
+      .unwrap()
+      .as_ref()
+      .map(|output| output.line.capacity());
+    assert!(kept.is_some_and(|kept| kept <= LINE_KEEP), "{kept:?}");
+    flush();
+    let text = read(&path);
+    assert!(
+      text.contains(&format!("01:02:03.045 INFO game::test: {long}\n")),
+      "the long line whole"
+    );
+    assert!(text.contains("01:02:03.045 INFO game::test: short\n"));
   }
 
   #[test]

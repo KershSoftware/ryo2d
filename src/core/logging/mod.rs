@@ -25,6 +25,7 @@ mod ring;
 mod scope;
 
 use std::cell::Cell;
+use std::fmt::Write as _;
 use std::sync::{OnceLock, PoisonError, RwLock, RwLockReadGuard};
 
 use log::LevelFilter;
@@ -78,22 +79,33 @@ impl log::Log for Logger {
     if !self.enabled(record.metadata()) {
       return;
     }
+    // A record the outputs let go of lends its buffers to the next
+    let (mut target_text, mut message) = SPARE
+      .try_with(Cell::take)
+      .ok()
+      .flatten()
+      .unwrap_or_default();
     // The one format: every output takes this string
-    let message = match record.args().as_str() {
-      Some(text) => text.to_owned(),
-      None => record.args().to_string(),
-    };
+    match record.args().as_str() {
+      Some(text) => message.push_str(text),
+      // A `Display` that fails leaves what it wrote
+      None => {
+        let _ = message.write_fmt(*record.args());
+      }
+    }
     let target = record.target();
-    outputs::emit(LogRecord {
+    target_text.push_str(target);
+    let spare = outputs::emit(LogRecord {
       seq: 0,
       level: record.level(),
-      target: target.to_owned(),
+      target: target_text,
       origin: Origin::of(target),
       message,
       time: self.start.elapsed(),
       frame: FRAME.with(Cell::get),
       scope: scope::current_scope(),
     });
+    recycle(spare);
   }
 
   fn flush(&self) {}
@@ -105,6 +117,48 @@ static INSTALLED: OnceLock<bool> = OnceLock::new();
 
 thread_local! {
   static FRAME: Cell<Option<u64>> = const { Cell::new(None) };
+  /// The buffers (target, message) of a record the outputs let go of (the
+  /// one the ring dropped for it, or the record itself when nothing kept
+  /// it), which the thread's next record is written into: a steady stream of
+  /// lines allocates and frees nothing
+  static SPARE: Cell<Option<(String, String)>> = const { Cell::new(None) };
+}
+
+/// The most either buffer of a spare record may hold to be reused: a longer
+/// one is freed, so one huge message cannot go round the ring's slots and
+/// keep its memory in each
+const SPARE_KEEP: usize = 256;
+
+/// `record`'s buffers, emptied, if they are small enough to reuse.
+fn reusable(record: LogRecord) -> Option<(String, String)> {
+  let LogRecord {
+    mut target,
+    mut message,
+    ..
+  } = record;
+  if target.capacity() > SPARE_KEEP || message.capacity() > SPARE_KEEP {
+    return None;
+  }
+  target.clear();
+  message.clear();
+  Some((target, message))
+}
+
+/// Keeps `record`'s buffers for this thread's next record, when they are
+/// small enough.
+fn recycle(record: Option<LogRecord>) {
+  if let Some(buffers) = record.and_then(reusable) {
+    // A thread that is ending has no next record
+    let _ = SPARE.try_with(|cell| cell.set(Some(buffers)));
+  }
+}
+
+/// The log's time now: since the logger started (zero before it has).
+#[cfg(not(target_arch = "wasm32"))]
+fn now() -> std::time::Duration {
+  LOGGER
+    .get()
+    .map_or(std::time::Duration::ZERO, |logger| logger.start.elapsed())
 }
 
 /// Installs the engine's logger, once per process; later calls cost one
@@ -236,6 +290,13 @@ pub(crate) fn headless_run() {
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn no_log_file() {
   file::drop_early();
+}
+
+/// Flushes the log file and detaches it (benches and tests: a game's file
+/// stays open for the run).
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn close_log_file() {
+  file::close();
 }
 
 /// Once a frame: the file's waiting lines go to disk when it is time.
@@ -450,6 +511,50 @@ mod tests {
     assert_eq!(records.len(), 2);
     assert_eq!(records[0].frame, Some(7));
     assert_eq!(records[1].frame, None);
+  }
+
+  fn spare_record(message: String) -> LogRecord {
+    LogRecord {
+      seq: 1,
+      level: Level::Info,
+      target: "game::old::target".to_owned(),
+      origin: Origin::Game,
+      message,
+      time: std::time::Duration::ZERO,
+      frame: None,
+      scope: 0,
+    }
+  }
+
+  #[test]
+  fn a_reused_record_keeps_no_more_than_its_bound() {
+    SPARE.with(Cell::take);
+    recycle(Some(spare_record("x".repeat(SPARE_KEEP + 1))));
+    assert!(
+      SPARE.with(Cell::take).is_none(),
+      "a buffer over the bound is freed, not kept"
+    );
+
+    let mut small = spare_record(String::with_capacity(SPARE_KEEP));
+    small.message.push_str("an old message");
+    recycle(Some(small));
+    let (target, message) = SPARE.with(Cell::take).expect("a small record is kept");
+    assert!(target.is_empty() && message.is_empty(), "kept empty");
+    assert!(target.capacity() <= SPARE_KEEP && message.capacity() <= SPARE_KEEP);
+  }
+
+  #[test]
+  fn a_record_written_into_reused_buffers_holds_only_its_own_text() {
+    let capture = capture_log();
+    recycle(Some(spare_record("an old, longer message".to_owned())));
+    log::warn!(target: "game::reused", "new {}", 1);
+    log::warn!(target: "game::reused::again", "plain");
+    let records = capture.records();
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0].target, "game::reused");
+    assert_eq!(records[0].message, "new 1");
+    assert_eq!(records[1].target, "game::reused::again");
+    assert_eq!(records[1].message, "plain");
   }
 
   #[test]

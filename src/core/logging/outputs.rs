@@ -32,15 +32,15 @@ pub(super) fn stderr_line(record: &LogRecord) -> String {
   format!("{} {}: {}", record.level, record.target, record.message)
 }
 
-/// Writes `record` (its `seq` not yet set) to every output.
-pub(super) fn emit(mut record: LogRecord) {
-  #[cfg(dev_tools)]
-  super::ring::push(&mut record);
-  #[cfg(not(dev_tools))]
-  {
-    record.seq = NEXT_SEQ.fetch_add(1, Ordering::Relaxed);
-  }
-
+/// Writes `record` (its `seq` not yet set) to every output, and gives back
+/// a record whose buffers no output keeps (the one the ring dropped for it,
+/// or the record itself when nothing kept it), for the next record to reuse.
+///
+/// One record is shared: stderr, the browser console and the file read it,
+/// the file's early buffer copies it, and it moves into the last output that
+/// keeps it (the ring, else a capture). With a capture and the ring both,
+/// the ring takes a copy.
+pub(super) fn emit(mut record: LogRecord) -> Option<LogRecord> {
   let sink = sink_for(record.scope);
 
   // A captured record is the test's to read, not the terminal's (a failing
@@ -57,8 +57,29 @@ pub(super) fn emit(mut record: LogRecord) {
   #[cfg(not(target_arch = "wasm32"))]
   super::file::write(&record);
 
-  if let Some(sink) = sink {
-    sink.push(record);
+  // The ring gives the number, under its lock, so it stays in order
+  #[cfg(dev_tools)]
+  {
+    match sink {
+      Some(sink) => {
+        let (seq, dropped) = super::ring::push(record.clone());
+        record.seq = seq;
+        sink.push(record);
+        dropped
+      }
+      None => super::ring::push(record).1,
+    }
+  }
+  #[cfg(not(dev_tools))]
+  {
+    record.seq = NEXT_SEQ.fetch_add(1, Ordering::Relaxed);
+    match sink {
+      Some(sink) => {
+        sink.push(record);
+        None
+      }
+      None => Some(record),
+    }
   }
 }
 

@@ -96,6 +96,25 @@ pub fn set_log_stderr(on: bool) {
   crate::core::logging::set_stderr(on);
 }
 
+/// Opens the log file in `folder` (`<folder>/logs/latest.log`, the last
+/// one moved to `previous.log`) as a windowed game does, through the same
+/// path; the path used, or `None` when it cannot be had (for
+/// `benches/dev_tools.rs`, which measures a warning with a file open). Pair
+/// it with [`close_log_file`].
+#[doc(hidden)]
+#[cfg(not(target_arch = "wasm32"))]
+pub fn open_log_file(folder: &std::path::Path) -> Option<std::path::PathBuf> {
+  crate::core::logging::open_log_file(folder)
+}
+
+/// Flushes the log file [`open_log_file`] opened and detaches it; the log
+/// goes on without a file.
+#[doc(hidden)]
+#[cfg(not(target_arch = "wasm32"))]
+pub fn close_log_file() {
+  crate::core::logging::close_log_file();
+}
+
 /// How many records the log's ring holds, of every scope (for
 /// `tests/e2e/dev_tools.rs`)
 #[doc(hidden)]

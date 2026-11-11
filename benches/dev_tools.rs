@@ -1,7 +1,7 @@
 //! The log and the console, measured and held to their targets. The tools'
 //! benches need the tools, and `cargo bench` builds without them: run this
 //! with `cargo bench --bench dev_tools --features dev-tools` for every bench,
-//! and without the feature for the two log calls alone (a build without the
+//! and without the feature for the log calls alone (a build without the
 //! tools has no ring and no console). Both runs are recorded in
 //! `docs/backlog/dev-tools.md`.
 //!
@@ -16,15 +16,23 @@
 //!   what a game pays for a silenced line. (The earlier log kept its debug
 //!   lines, so its figure was a different piece of work.);
 //! - `log_call_warn`: one `log::warn!(target: "ryo2d::bench", "value {}",
-//!   n)`, the median of `REPEATS` runs of 100,000 calls; held to no slower
-//!   than the earlier log's median (`WARN_BEFORE_NS`). The log's stderr
-//!   output is switched off (not redirected to the null device: the bench
-//!   prints its own results on the terminal), so the figure holds the
-//!   formatting and the outputs but not the terminal's write. No log file is
-//!   open in a bench (opening one is crate-internal), so the file output
-//!   takes its early path: each record is cloned into its 256-record buffer
-//!   under a mutex. With `--features dev-tools` the record also goes to the
-//!   ring (and its lock); without the tools there is no ring;
+//!   n)` with a log file open in a temp folder, as a running game has (opened
+//!   and closed through `testing::open_log_file` and `close_log_file`, a
+//!   fresh file each run, so no run reaches the file's cap); the median of
+//!   `REPEATS` runs of 100,000 calls; held to no slower than the earlier
+//!   log's median (`WARN_BEFORE_NS`). The log's stderr output is switched off
+//!   (not redirected to the null device: the bench prints its own results on
+//!   the terminal), so the figure holds the formatting and the outputs but
+//!   not the terminal's write. With `--features dev-tools` the record goes to
+//!   the file and the ring; without the tools, to the file alone. Each
+//!   record is written into the buffers of one let go of before it (the one
+//!   the full ring dropped, or without the tools the last record itself), so
+//!   a steady stream of warnings allocates nothing;
+//! - `log_call_warn_no_file`: the same call before any file has opened, so
+//!   the file output keeps a copy of each record in its 256-record early
+//!   buffer under a mutex (what a game pays before its engine opens the
+//!   file). Recorded, with no guard. It runs first: once a file has opened,
+//!   the early buffer is gone for the process;
 //! - `console_open_idle`: a `HeadlessEngine` (1920 x 1080, with a GPU) with
 //!   the console open and 1,000 lines of 80 characters printed, against the
 //!   same engine with the console closed, stepped in turn (an engine stepping
@@ -64,7 +72,9 @@ const QUIET_TARGET_NS: f64 = 5.0;
 /// The earlier log's `log_call_warn` median, nanoseconds a call: the median
 /// of the three runs in `docs/backlog/dev-tools.md` ("Before": 98.3, 99.9,
 /// 105.0, terminal output off), taken at the commit before the logger was
-/// replaced. A warning may cost no more.
+/// replaced. The earlier log kept each line in one buffer under a lock and
+/// wrote no file; a warning with the file open (and the ring, with the
+/// tools) may cost no more.
 const WARN_BEFORE_NS: f64 = 99.9;
 /// The earlier console's `console_open_idle` median over the closed frame,
 /// microseconds: the median of the three runs in the same record (187.6,
@@ -137,11 +147,20 @@ fn log_calls() {
       ));
     }
   }
-  if guards::runs(&["log_call_warn"]) {
+  // Before any file opens: the file output's early buffer is on until one
+  // does, and stays off after
+  if guards::runs(&["log_call_warn_no_file"]) {
     let ns = median_ns(WARN_CALLS, warn_call);
     println!(
+      "log_call_warn_no_file: {ns:.1} ns a call, median of {REPEATS} runs of {WARN_CALLS} calls \
+       (no file open: the early buffer; terminal output off; recorded, no guard)"
+    );
+  }
+  if guards::runs(&["log_call_warn"]) {
+    let ns = warn_with_file();
+    println!(
       "log_call_warn: {ns:.1} ns a call, median of {REPEATS} runs of {WARN_CALLS} calls \
-       (terminal output off, not redirected; earlier log {WARN_BEFORE_NS} ns)"
+       (a log file open in a temp folder, terminal output off; earlier log {WARN_BEFORE_NS} ns)"
     );
     if ns > WARN_BEFORE_NS {
       guards::miss(format!(
@@ -149,6 +168,23 @@ fn log_calls() {
       ));
     }
   }
+}
+
+/// `log_call_warn` with a log file open in a temp folder, as a running game
+/// has: each run opens a fresh file (the last one rotated to `previous.log`),
+/// so no run reaches the file's cap, and closes it after
+fn warn_with_file() -> f64 {
+  let folder = tempfile::tempdir().expect("a temp folder for the log file");
+  let mut runs: Vec<f64> = (0..REPEATS)
+    .map(|_| {
+      ryo2d::testing::open_log_file(folder.path()).expect("a log file in the temp folder");
+      let ns = ns_per_call(WARN_CALLS, warn_call);
+      ryo2d::testing::close_log_file();
+      ns
+    })
+    .collect();
+  runs.sort_by(f64::total_cmp);
+  runs[runs.len() / 2]
 }
 
 #[cfg(dev_tools)]

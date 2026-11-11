@@ -15,7 +15,29 @@ pub(crate) const RING: usize = 10_000;
 /// evicted (the console counts those it can no longer show)
 struct Ring {
   records: VecDeque<LogRecord>,
+  /// Scope 0's counts (a game's only scope), kept out of the map, so a
+  /// game's push looks nothing up
+  game: WarnCounts,
+  /// Every other scope's (tests, and engines built with a capture open)
   warnings: BTreeMap<u64, WarnCounts>,
+}
+
+impl Ring {
+  fn counts_mut(&mut self, scope: u64) -> &mut WarnCounts {
+    if scope == 0 {
+      &mut self.game
+    } else {
+      self.warnings.entry(scope).or_default()
+    }
+  }
+
+  fn counts(&self, scope: u64) -> WarnCounts {
+    if scope == 0 {
+      self.game
+    } else {
+      self.warnings.get(&scope).copied().unwrap_or_default()
+    }
+  }
 }
 
 /// A scope's records at `Warn` or above: how many the ring was given, and
@@ -29,6 +51,10 @@ struct WarnCounts {
 
 static RING_STATE: Mutex<Ring> = Mutex::new(Ring {
   records: VecDeque::new(),
+  game: WarnCounts {
+    pushed: 0,
+    evicted: 0,
+  },
   warnings: BTreeMap::new(),
 });
 
@@ -40,24 +66,30 @@ fn is_warning(record: &LogRecord) -> bool {
   record.level <= log::Level::Warn
 }
 
-/// Gives `record` its sequence number and keeps a copy. The number is taken
-/// under the ring's lock, so the ring is in sequence order.
-pub(super) fn push(record: &mut LogRecord) {
+/// Gives `record` its sequence number and keeps it; returns the number and,
+/// once the ring is full, the oldest record it dropped for it (freed by the
+/// caller, outside the lock, or reused). The number is taken under the
+/// ring's lock, so the ring is in sequence order.
+pub(super) fn push(mut record: LogRecord) -> (u64, Option<LogRecord>) {
   let mut ring = ring();
-  record.seq = NEXT_SEQ.fetch_add(1, Ordering::Relaxed);
+  let seq = NEXT_SEQ.fetch_add(1, Ordering::Relaxed);
+  record.seq = seq;
+  let mut dropped = None;
   if ring.records.len() >= RING {
-    if let Some(oldest) = ring.records.pop_front()
-      && is_warning(&oldest)
+    dropped = ring.records.pop_front();
+    if let Some(oldest) = &dropped
+      && is_warning(oldest)
     {
-      ring.warnings.entry(oldest.scope).or_default().evicted += 1;
+      ring.counts_mut(oldest.scope).evicted += 1;
     }
   } else if ring.records.capacity() == 0 {
     ring.records.reserve_exact(RING);
   }
-  if is_warning(record) {
-    ring.warnings.entry(record.scope).or_default().pushed += 1;
+  if is_warning(&record) {
+    ring.counts_mut(record.scope).pushed += 1;
   }
-  ring.records.push_back(record.clone());
+  ring.records.push_back(record);
+  (seq, dropped)
 }
 
 /// Appends the kept records with a sequence number above `seq` (of `scope`
@@ -87,7 +119,7 @@ pub(crate) fn start(scope: u64) -> (u64, u64) {
     || NEXT_SEQ.load(Ordering::Relaxed).saturating_sub(1),
     |oldest| oldest.seq - 1,
   );
-  let mark = ring.warnings.get(&scope).map_or(0, |counts| counts.evicted);
+  let mark = ring.counts(scope).evicted;
   (seq, mark)
 }
 
@@ -124,7 +156,7 @@ pub(crate) fn mirror(
 ) -> Mirrored {
   let ring = ring();
   let records = &ring.records;
-  let counts = ring.warnings.get(&scope).copied().unwrap_or_default();
+  let counts = ring.counts(scope);
   // Everything of the scope up to the last read gone, what it dropped
   // since is past `mark`; while some of it is kept, nothing newer is gone
   let dropped = counts.evicted.saturating_sub(mark);
@@ -281,6 +313,57 @@ mod tests {
       &mut out,
     );
     assert_eq!((out.len(), again.hidden), (0, 0));
+  }
+
+  #[test]
+  fn a_full_ring_gives_back_the_oldest_record_it_drops() {
+    let _turn = ring_turn();
+    let capture = capture_log();
+    let record = |message: &str| LogRecord {
+      seq: 0,
+      level: log::Level::Info,
+      target: "ryo2d::core::logging::give_back_test".to_owned(),
+      origin: crate::core::logging::Origin::Engine,
+      message: message.to_owned(),
+      time: std::time::Duration::ZERO,
+      frame: None,
+      scope: capture.scope(),
+    };
+    let (first, _) = push(record("first"));
+    for _ in 1..RING {
+      push(record("filler"));
+    }
+    let (seq, dropped) = push(record("one more"));
+    let dropped = dropped.expect("a full ring drops its oldest");
+    // Other tests log meanwhile, so the oldest may be newer than `first`
+    assert!(
+      dropped.seq >= first && dropped.seq < seq,
+      "{} {seq}",
+      dropped.seq
+    );
+    assert!(
+      start(capture.scope()).0 >= dropped.seq,
+      "nothing older is kept"
+    );
+    assert_eq!(len(), RING);
+  }
+
+  #[test]
+  fn scope_zero_is_counted_apart_from_the_map_and_exactly() {
+    // A ring of its own: a test cannot log in scope 0 (a game's), which
+    // every test's capture leaves
+    let mut ring = Ring {
+      records: VecDeque::new(),
+      game: WarnCounts::default(),
+      warnings: BTreeMap::new(),
+    };
+    ring.counts_mut(0).pushed += 3;
+    ring.counts_mut(0).evicted += 1;
+    ring.counts_mut(7).pushed += 2;
+    assert_eq!((ring.counts(0).pushed, ring.counts(0).evicted), (3, 1));
+    assert_eq!((ring.counts(7).pushed, ring.counts(7).evicted), (2, 0));
+    assert_eq!(ring.counts(8).pushed, 0, "a scope never given counts none");
+    assert!(!ring.warnings.contains_key(&0), "scope 0 is not in the map");
   }
 
   #[test]
