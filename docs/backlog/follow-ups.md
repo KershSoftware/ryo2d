@@ -319,7 +319,6 @@ Items from 4f on were copied from their execution records. Items from earlier su
     - A self-crossing polygon collides as its hull.
     - A polygon collides as authored wherever it lies relative to its box. Square grids clip it.
     - A polygon whose cleaned corners match the cell's hexagon within 0.5 px collides as the whole cell.
-  - **The doubled shadow.** A shape tile's outline lying on a neighbour's side casts twice, darkening shadows with partial alpha. This is a recorded Limit.
   - **Step costs.** Navigation off the square grid costs a step by its world distance over the shortest step. The same measure feeds the heuristic and the tie-break.
   - **The tie-break.** It is added to the cost estimate, so a path can come out up to 0.27% dearer than the cheapest, on every grid kind. Square grids behaved the same before this stage. This is a recorded Limit.
   - **Window cap.** A navigation window is capped at 4,194,304 cells, shrinking to 2048 x 2048, with a warning once per process.
@@ -360,7 +359,6 @@ Items from 4f on were copied from their execution records. Items from earlier su
   - **Demo polish.** The walker's light spreads past the hex board onto the background. On the top row the walker's head tucks under the description bar.
 - Pre-existing bugs seen:
   - The ignored square timing test `one_tile_edit_timing` fails: its grid makes more than 65,536 changes, so `take_changes()` returns `None`. One `take_changes()` at the top of `time_edit` fixes it.
-  - The ryo-lighting skill (~:23) and the lighting module notes (~:14) say lighting stays on across scene changes after `SceneCleanup::LIGHTING`. The cleanup resets `LightingSettings` whole, its automatic-on switch included, so lighting is off after a scene change until a light exists again.
   - `cargo test --release -p ryo2d --lib` warns of a dead `kept_in_mut` (`src/core/ui/fragment.rs`) in release builds only.
 
 ## Big tiles at their own size (tile padding)
@@ -906,13 +904,13 @@ Items from 4f on were copied from their execution records. Items from earlier su
 - 3b: the resting push-out costs 13-18% of a 100-character frame (it also carries floor detection); re-check `make_queryable` (`BroadPhaseBvh::set_aabb`) on any Rapier upgrade.
 - 3a: game systems ordered with `.after(other)` can land inside `FixedSet::Physics`, where the write-back overwrites their position and velocity writes; the engine never calls `check_change_ticks` (change detection degrades after days); optional levers not taken: an opt-in CCD-off switch (~20 µs per 1,000 bodies), a `read_back` restructure (~5 µs).
 - 3a minors: thin 1 px debug lines break at scaled resolutions; particle circle colliders approximate under shear; forces queued while paused accumulate; joint warnings once per entity; a remade joint re-anchors at current poses; waiting joints are rescanned each step; disabled colliders' contact pairs are one step stale; overlapping triggers can report the same collider twice; the physics `recheck` set grows while paused; `propagate_transforms` skips disabled entities.
-- Never checked by eye: leap-king's lamp shadows (softness 0.4) and its networked level under the new physics.
+- Never checked by eye: leap-king's networked level under the new physics.
 
 ## Renderer (2a-2c)
 
 - 2a: device loss exits with Ok; a parented main camera converts in parent space.
 - 2b: the polyline builder allocates per trail per frame; `mip_chain` copies level 0; trails ignore `BlendMode::Premultiplied`; `BindGroupCache` resets past 64 entries; `Line2D` with a negative end width draws inverted; screen-fixed parallax shakes.
-- 2c: soft shadows fade with distance and keep a hard outline (true penumbrae wait for the shadow rewrite); the engine's light, ambient and atmosphere presets read warmer and darker; auto-exposure snaps on resize; ambient occlusion's edge bias sees light above 1; `VolumetricSettings` is not range-clamped; shadow colour is decoded per vertex; custom effect shaders get sRGB `Color` params.
+- 2c: the engine's light, ambient and atmosphere presets read warmer and darker; auto-exposure snaps on resize; ambient occlusion's edge bias sees light above 1; `VolumetricSettings` is not range-clamped; custom effect shaders get sRGB `Color` params.
 
 ## Engine-wide
 

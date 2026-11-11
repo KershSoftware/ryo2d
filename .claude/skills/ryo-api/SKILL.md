@@ -2,7 +2,7 @@
 name: ryo-api
 description: Complete API reference for ryo2d::prelude - every exported type with its signatures and use, organised by area.
 metadata:
-  version: 2.26.0
+  version: 2.27.0
 ---
 
 # Ryo2D API Reference
@@ -405,7 +405,7 @@ pub struct SceneContext<'a> {
 | `assets(&mut self) -> AssetsView<'_>` | the asset registry: load, add and read assets (see [Assets](#assets)); it borrows the world, so take it, use it and let it go |
 | `audio(&mut self) -> AudioView<'_>` | the audio engine: play sounds and music, snapshots, bus volumes (see [Audio](#audio)); it borrows the world like `assets()` |
 | `saves(&self) -> SavesView<'_>` | the game's saves: save, load, list and delete slots (see [Config, settings and saves](#config-settings-and-saves)); it borrows the context, so take it for each use |
-| `settings(&mut self) -> Mut<'_, Settings>` | the player's settings: volumes, window size, display mode, vsync, the FPS counter and the game's sections; a change applies that frame and saves itself |
+| `settings(&mut self) -> Mut<'_, Settings>` | the player's settings: volumes, window size, display mode, vsync, the FPS counter, shadow quality and the game's sections; a change applies that frame and saves itself |
 | `particles(&mut self) -> ParticlesView<'_>` | the engine's particles: play an effect once, read the live count against the budget, clear them (see [Particles](#particles)); it borrows the world like `assets()` |
 | `maps(&mut self) -> MapsView<'_>` | spawned tile maps: read and edit tiles, Wang terrain, cell conversions, world levels (see [Tilemaps](#tilemaps)); it borrows the world like `assets()` |
 | `add_systems<M>(&mut self, phase: Phase, systems: impl IntoScheduleConfigs<ScheduleSystem, M>) -> Result<(), SceneScheduleError>` | scene-owned systems, run in `FixedSet::Game` / `UpdateSet::Game`; add them once, in `on_enter`. Refused, adding nothing: other phases (`SceneScheduleError::UnsupportedPhase`), a place they never run, such as `.after(FixedSet::Physics)` (`EngineSet`, naming the set), and the same line adding the same systems in a later callback (`AlreadyAdded`, with its location). `SceneScheduleError` is in the prelude |
@@ -526,6 +526,7 @@ EngineBuilder::new()
 | `fixed_hz(u32)` | fixed steps per second (default 60, min 1) |
 | `target_fps(u32)` | cap when vsync is off |
 | `vsync(bool)` | default `true` |
+| `shadow_quality(ShadowQuality)` | the game's default shadow quality (default `ShadowQuality::High`; over Ryo.toml's `[system] shadow_quality`); the player's saved choice wins when kept |
 | `background_fps(u32)`, `background_rendering(bool)` | unfocused behaviour |
 | `pixel_art(w: u32, h: u32)`, `window_size(w: u32, h: u32)`, `resizable(bool)`, `display_mode(DisplayMode)`, `ui_scale(Option<f32>)`, `ui_resolution(UiResolution)` | presentation; `ui_scale(None)` (default) keeps UI units equal to screen units, `Some(s)` is `s` render pixels per UI unit; `UiResolution::Render` (default) or `Window` |
 | `ui_theme(Theme)` | the starting UI theme (default `Theme::dark()`) |
@@ -895,14 +896,15 @@ Lighting turns on once any `Light2D` exists (or when forced) and lights the worl
 | Type | API |
 |---|---|
 | `LightingSettings` (resource; `ctx.lighting()`) | `set_enabled(bool)` (force on, e.g. a dark scene before any light, or off), `enabled() -> Option<bool>`, `ambient() -> &AmbientLight`, `set_ambient(AmbientLight)`, `atmosphere() -> &Atmosphere`, `set_atmosphere(Atmosphere)` |
-| `Light2D` (component) | `point(Color, radius)`, `point_with_intensity(..)`, `point_full(..)`, `spot(Color, radius, angle_deg, direction_deg)`, `spot_with_intensity(..)`, `spot_full(..)`; presets `torch(r)`, `moonlight(r)`, `lamp(r)`, `flashlight(r, dir_deg)`, `warning(r)`, `magic(r, Color)`; builders `with_shadows()`, `with_soft_shadows(f32)`, `with_shadow_color(Color)`, `with_intensity`, `with_falloff`, `with_volumetric()`, `with_god_rays()`, `with_volumetric_and_god_rays()`, `with_volumetric_settings(VolumetricSettings)`; getters/setters for color, radius, intensity, direction, angle, shadows, softness, volumetric |
+| `Light2D` (component) | `point(Color, radius)`, `point_with_intensity(..)`, `point_full(..)`, `spot(Color, radius, angle_deg, direction_deg)`, `spot_with_intensity(..)`, `spot_full(..)`; presets `torch(r)`, `moonlight(r)`, `lamp(r)`, `flashlight(r, dir_deg)`, `warning(r)`, `magic(r, Color)`; builders `with_shadows()`, `with_soft_shadows(size_px: f32)` (casts shadows; `size_px` the radius of the light's source in pixels, 0 a hard edge, edges widening with distance from their occluder), `with_shadow_color(Color)` (its alpha the shadow's strength, applied once however many occluders cover a point), `with_intensity`, `with_falloff`, `with_volumetric()`, `with_god_rays()`, `with_volumetric_and_god_rays()`, `with_volumetric_settings(VolumetricSettings)`; getters/setters for color, radius, intensity, direction, angle, shadows (`casts_shadows`, `set_cast_shadows`), softness (`shadow_softness() -> f32`, `set_shadow_softness(size_px: f32)`, in pixels as `with_soft_shadows`), volumetric |
 | `LightOccluder2D` (component) | `polygon(Vec<Vec2>)` (≥ 3 vertices, CCW), `chain(Vec<Vec2>)` (≥ 2 vertices: an open run of edges, wound as the polygon it is part of, each edge casting as it would there; chains that close a ring cast as that polygon), `rect(w, h)` (centred), `rect_offset(x, y, w, h)`, `circle(r, segments)`, `line(start, end, thickness)`, `vertices()`, `edges()`, `is_closed()` (false for a chain), `is_enabled()`, `set_enabled(bool)`, `with_enabled(bool)`. A tile map's are chains marked `MapOccluder` ([Tilemaps](#tilemaps)) |
 | `AmbientLight { color, intensity }` | `new(Color, f32)`, `with_intensity(f32)`, presets `dark()`, `night()`, `moonlit()`, `indoor()`, `daylight()`, `sunset()`, `set_intensity`, `set_color`, `with_custom_intensity`, `effective_color()` |
 | `Atmosphere { density, color, scattering, god_rays_* }` | `new(density, Color)`, presets `clear()`, `hazy()`, `dusty()`, `foggy()`, `smoky()`, `underwater()`, `with_god_rays()`, `with_god_rays_config(..)`, `with_god_rays_quality(GodRaysQuality)`, `with_density`, `with_color`, `with_scattering` |
 | `GodRaysQuality { Low, Medium, High }` | `samples()`, `decay()` |
+| `ShadowQuality { Low, Medium, High, Ultra }` (`Default` `High`) | `texels() -> u32` (256, 512, 1,024, 2,048: across each quarter of a light's shadow map); the player's setting, `Settings::shadow_quality` ([Config, settings and saves](#config-settings-and-saves)) |
 | `VolumetricSettings { enabled, intensity, density, scattering, god_rays }` (per light) | `new(intensity, density, scattering)`, `enabled()`, `god_rays_only()`, `subtle_beam()`, `strong_beam()`, `flashlight()`, `with_god_rays`, `with_intensity`, `with_density`, `with_scattering` |
 
-Lights and occluders sit at their entity's `GlobalTransform`. A light with a `RenderLayers` component on its entity (default `layer(0)`) lights only the cameras on those layers. Lights are batch quads with no cap; each lit camera has its own light buffers, so lights turn, zoom and shake with the camera, and each shadow darkens only its own light. Colours are sRGB: `Color::to_linear() -> [f32; 4]` is the linear-light, straight-alpha form the GPU gets. Light `intensity` above 1 shows (the look rolls it off); `Atmosphere::god_rays_threshold` is linear luminance (default 1.0). Removed: `with_raymarched_shadows` (use `with_soft_shadows`), and the engine-internal `LightingRenderer`, `LightingParams`, `MAX_LIGHTS` and the shadow geometry exports. See `ryo-lighting`.
+Lights and occluders sit at their entity's `GlobalTransform`. A light with a `RenderLayers` component on its entity (default `layer(0)`) lights only the cameras on those layers. Lights are batch quads with no cap; each lit camera has its own light buffers, so lights turn, zoom and shake with the camera, and each shadow darkens only its own light. Shadows come from per-light shadow maps in a shared atlas, drawn once a frame for the shadowed lights a lit camera sees and only when what they cast changed; a light inside a closed occluder is not shadowed by it; at most 512 lights a frame are shadowed (the nearest a lit camera's centre; one warning). Colours are sRGB: `Color::to_linear() -> [f32; 4]` is the linear-light, straight-alpha form the GPU gets. Light `intensity` above 1 shows (the look rolls it off); `Atmosphere::god_rays_threshold` is linear luminance (default 1.0). Removed: `with_raymarched_shadows` (use `with_soft_shadows`), and the engine-internal `LightingRenderer`, `LightingParams`, `MAX_LIGHTS` and the shadow geometry exports. See `ryo-lighting`.
 
 ---
 
@@ -1286,13 +1288,14 @@ Three homes: the project's `Ryo.toml` (`Workspace`), the player's settings (`Set
 | `display_mode(&self) -> DisplayMode`, `set_display_mode(&mut self, mode: DisplayMode)` | |
 | `vsync(&self) -> bool`, `set_vsync(&mut self, vsync: bool)` | reconfigures the surface (nothing on the web) |
 | `show_fps(&self) -> bool`, `set_show_fps(&mut self, show: bool)` | the FPS counter |
+| `shadow_quality(&self) -> ShadowQuality`, `set_shadow_quality(&mut self, quality: ShadowQuality)` | how finely lights' shadows are drawn (default `High`, or the game's: `[system] shadow_quality`, `EngineBuilder::shadow_quality`) |
 | `reset(&mut self, preference: UserPreference)`, `reset_all(&mut self)` | back to the game's defaults (`reset_all` also puts each section to its `Default`); bindings reset with `ctx.actions().reset_defaults()` |
 | `is_kept(&self, preference: UserPreference) -> bool` | whether `system.json` keeps it (`with_user_preferences`) |
 | `game<T: 'static>(&self) -> &T`, `game_mut<T: 'static>(&mut self) -> &mut T` | the game's section of type `T`; panics for a type not registered with `game_settings` |
 
 - A change applies the same frame, after the fixed steps (the window's after the frame), and is written a second after the last change to what the file keeps, and at once when the game quits or is hidden. The player's resizes and fullscreen toggles (the OS, F5) update `Settings` too.
 - `system.json` (format 3) keeps the kept settings that differ from the game's defaults, the bindings that differ from theirs, and the sections' changed fields; formats 1 and 2 convert as they load. `SettingsSaveFailed { error: Arc<SaveError> }` (message) reports a failed write.
-- `enum UserPreference { MasterVolume, MusicVolume, SfxVolume, UiVolume, VoiceVolume, AmbienceVolume, Resolution, DisplayMode, Vsync, ShowFps, Bindings }` (`all()`; `Resolution` is the player's window size); `UserPreferenceFilter`: `all()` (also `Default`), `none()`, `only(iter)`, `contains`, `is_empty`, `len`, and `From` an array, `Vec` or slice of `UserPreference`.
+- `enum UserPreference { MasterVolume, MusicVolume, SfxVolume, UiVolume, VoiceVolume, AmbienceVolume, Resolution, DisplayMode, Vsync, ShowFps, ShadowQuality, Bindings }` (`all()`; `Resolution` is the player's window size); `UserPreferenceFilter`: `all()` (also `Default`), `none()`, `only(iter)`, `contains`, `is_empty`, `len`, and `From` an array, `Vec` or slice of `UserPreference`.
 - `enum DisplayMode { Windowed, ExclusiveFullscreen, BorderlessFullscreen }` (`all()`, `display_name()`); `Resolution { width, height }` (`new`, `common()`, `display_name()`); `parse_resolution("1280x720") -> Option<(u32, u32)>`.
 - `Workspace` (`Ryo.toml` project; native only, `discover()` fails on the web): `discover()`, `discover_from(dir)`, `from_path(root)`, `root()`, `name()`, `config() -> &WorkspaceConfig`, `entry_point()`, `assets_dir()`, `save_location()`, `save_data_dir()`, `set_save_data_path(p)`, `has_config_file()`.
 - `WorkspaceConfig { name, title, description, version, entry_point, save_data, assets, debug: DebugConfig, release: ReleaseConfig, tiled_project: Option<String>, env }`: `env_str/env_bool/env_int/env_float(key)`, `has_env(key)`; `ReleaseConfig { logo, portable, save_folder }` (`ryo2d::core::config`).

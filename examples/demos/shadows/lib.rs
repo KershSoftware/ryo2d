@@ -1,6 +1,6 @@
 //! Shadow Demo
 //!
-//! Ten shadow pages on the demo-kit shell, one each: hard (shadow volumes),
+//! Ten shadow pages on the demo-kit shell, one each: hard (shadow maps),
 //! drop, blob, soft, colored, contact, ambient occlusion, occluders placed
 //! around a light, a lantern carried among pillars and sixty-four shadowed
 //! torches over a tile-map maze. A library, so its tests drive the pages

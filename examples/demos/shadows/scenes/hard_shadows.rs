@@ -1,6 +1,6 @@
 //! Hard Shadows page
 //!
-//! Demonstrates 2D hard shadows from light occluders using shadow volumes.
+//! Demonstrates 2D hard shadows from light occluders, drawn from each light's shadow map.
 
 use demo_kit::prelude::*;
 

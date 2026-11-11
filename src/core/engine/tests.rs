@@ -1891,7 +1891,14 @@ fn a_bad_shadow_quality_in_ryo_toml_warns_and_keeps_high() {
     .start_scene(EmptyScene)
     .resolve_in(Some(&ws), false);
   assert_eq!(r.settings.shadow_quality(), ShadowQuality::High);
-  assert_eq!(settings_warnings(&log, "shadow_quality"), 1);
+  let warned = log
+    .warnings()
+    .iter()
+    .filter(|message| {
+      message.contains("[system] shadow_quality") && message.contains("is not valid")
+    })
+    .count();
+  assert_eq!(warned, 1);
 }
 
 #[test]

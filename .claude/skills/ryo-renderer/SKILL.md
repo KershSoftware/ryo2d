@@ -2,7 +2,7 @@
 name: ryo-renderer
 description: Working on the wgpu renderer, shaders, and GPU batching.
 metadata:
-  version: 2.4.0
+  version: 2.5.0
 ---
 
 # Ryo2D Renderer Specialist
@@ -30,9 +30,9 @@ You help developers work on the rendering system.
 
 The world is read fresh every frame; there is no render cache to invalidate. Everything is gathered once, in world space, and sorted once; each camera then keeps what it sees. `present_frame` (after `PostUpdate`) does:
 
-1. Scenes' `Scene::render(gpu)` hooks fill the `BatchCollector` (many-sprite effects), in world space; lights are gathered at their positions.
+1. Scenes' `Scene::render(gpu)` hooks fill the `BatchCollector` (many-sprite effects), in world space; lights are gathered at their positions, and in a lit frame the shadowed lights the lit cameras see are planned (their atlas slots and casting edges; the atlas is drawn before the first camera pass, only when the plan changed).
 2. The render targets' GPU textures follow `RenderTargets`; the cameras are planned (`plan_cameras`): texture cameras, then window cameras, each by `order`. The first window camera draws straight into the scene image when it covers the window and clears; every other window camera gets an image of its own, sized to its viewport (`CameraImages`); a texture camera draws straight into its target, or, when its viewport covers only part of it, into an image of its own placed in that part after its passes.
-3. Each camera gets a uniform buffer (`CameraUniforms`, one `CameraGlobals` each: `view_proj`, `resolution` = its image size, `game_time`, `real_time`, `snap`), bound as group 0 by the batch, lights and shadows alike.
+3. Each camera gets a uniform buffer (`CameraUniforms`, one `CameraGlobals` each: `view_proj`, `resolution` = its image size, `game_time`, `real_time`, `snap`), bound as group 0 by the batch and the lights alike (the lights bind the shadow atlas as group 1).
 4. The `Scene::render` sprites join the frame's `DrawList`, then the engine's particles (`ParticleDrawer`: one run item per emitter a camera on its `RenderLayers` sees, its particles blended between their last two steps); each `ParallaxLayer` is laid out for every camera on its layers from that camera's view (items for that camera alone, `only_camera`).
 5. One query over the renderables (plus `CompositeTile`) adds the entities, skipping quads no camera on the entity's layers can see. `Disabled` entities are skipped by the query itself.
 6. World text: `Text2d`s whose text, style or fonts changed are laid out again, and each camera that sees a block gets its glyphs (made at the size that camera sees) as glyph items for that camera alone.

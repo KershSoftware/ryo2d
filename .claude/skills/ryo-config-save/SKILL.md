@@ -2,7 +2,7 @@
 name: ryo-config-save
 description: Project configuration (Ryo.toml, and ryo2d::project!() for the web), the player's settings (ctx.settings(), the game's own sections, system.json) and game saves (ctx.saves(), slots, versions and upgrades, SaveFinished), with their limits.
 metadata:
-  version: 2.6.0
+  version: 2.7.0
 ---
 
 # Ryo2D Configuration, Settings and Saves
@@ -25,7 +25,7 @@ Each layer overrides only what it sets, lowest first:
 
 1. Engine defaults
 2. The project: `Ryo.toml` (dev), the values `ryo2d build` embedded from it (release), or the Ryo.toml compiled in with `ryo2d::project!()` (the web, below)
-3. `EngineBuilder` calls (`.resolution(..)`, `.vsync(..)`, `.display_mode(..)`, `.show_fps(..)`, ...)
+3. `EngineBuilder` calls (`.resolution(..)`, `.vsync(..)`, `.shadow_quality(..)`, `.display_mode(..)`, `.show_fps(..)`, ...)
 4. `system.json`: the player's values, for the settings the game keeps (`.with_user_preferences(filter)`), only those the file holds
 
 Layers 1-3 are the game's defaults. The player's file keeps only what the player changed, so a default changed later in `Ryo.toml` or on the builder reaches every setting the player never touched. Without a filter and without a game settings section, `system.json` is never read or written. Headless builds keep it in memory, never on disk.
@@ -42,7 +42,7 @@ EngineBuilder::new()
   .run()
 ```
 
-`UserPreferenceFilter::all()`, `none()`, `only(..)`, or an array, `Vec` or slice of `UserPreference` (`MasterVolume`, `MusicVolume`, `SfxVolume`, `UiVolume`, `VoiceVolume`, `AmbienceVolume`, `Resolution`, `DisplayMode`, `Vsync`, `ShowFps`, `Bindings`). Repeated calls combine. `Resolution` is the player's window size; the game's own resolution (the pixel-art target or design area) always comes from `Ryo.toml` and the builder. A setting the game does not keep still changes for the session.
+`UserPreferenceFilter::all()`, `none()`, `only(..)`, or an array, `Vec` or slice of `UserPreference` (`MasterVolume`, `MusicVolume`, `SfxVolume`, `UiVolume`, `VoiceVolume`, `AmbienceVolume`, `Resolution`, `DisplayMode`, `Vsync`, `ShowFps`, `ShadowQuality`, `Bindings`). Repeated calls combine. `Resolution` is the player's window size; the game's own resolution (the pixel-art target or design area) always comes from `Ryo.toml` and the builder. A setting the game does not keep still changes for the session.
 
 The fixed update rate is builder-only: `EngineBuilder::fixed_hz(hz)` (default 60). There is no Ryo.toml key for it.
 
@@ -63,6 +63,7 @@ assets = "assets"
 resolution = "1280x720"    # the game's canvas, scaled to fit the window
 pixel_art = false           # true: resolution is a pixel-art target, scaled by whole numbers
 vsync = true
+shadow_quality = "high"     # low | medium | high | ultra: how finely lights' shadows are drawn
 display_mode = "windowed"   # windowed | exclusive_fullscreen | borderless_fullscreen
 master_volume = 1.0         # the player's volume settings, 0 to 1 on the audio curve (1: the mix as designed)
 music_volume = 1.0
@@ -101,7 +102,7 @@ difficulty = "normal"
 | Section | In system.json | Read through |
 |---------|----------------|--------------|
 | `[project]`, `[paths]` | No | `workspace.config().name`, `.title`, `.assets`, ... |
-| `[system]` | Its volumes, `display_mode`, `vsync` and `show_fps` are the defaults the player's values are kept against | `ctx.settings()` (the player's settings start from them); `show_fps` also in `workspace.config().debug` |
+| `[system]` | Its volumes, `display_mode`, `vsync`, `shadow_quality` and `show_fps` are the defaults the player's values are kept against | `ctx.settings()` (the player's settings start from them); `show_fps` also in `workspace.config().debug` |
 | `[tilemap]` | No | `workspace.config().tiled_project` |
 | `[debug]` | No | `workspace.config().debug` |
 | `[release]` | No | `workspace.config().release` |
@@ -162,6 +163,7 @@ let mut settings = ctx.settings();
 settings.set_volume(VolumeKind::Music, 0.5);                   // playing music follows this frame
 settings.set_display_mode(DisplayMode::BorderlessFullscreen); // the window changes after the frame
 let vsync = settings.vsync();
+settings.set_shadow_quality(ShadowQuality::Medium);           // the shadow atlas follows next frame
 ```
 
 | Setting | Get | Set |
@@ -170,9 +172,10 @@ let vsync = settings.vsync();
 | The window's size (windowed, logical pixels) | `window_size()` | `set_window_size(w, h)`: each side at least 1 |
 | Display mode | `display_mode()` | `set_display_mode(DisplayMode)` |
 | Vsync | `vsync()` | `set_vsync(bool)` |
+| Shadow quality | `shadow_quality()` | `set_shadow_quality(ShadowQuality)`: `Low`, `Medium`, `High` (default) or `Ultra`, 256 to 2,048 texels across each quarter of a light's shadow map (`ryo-lighting`, Shadows) |
 | The FPS counter | `show_fps()` | `set_show_fps(bool)` |
 
-- **A change applies the same frame**, after the fixed steps: the volumes reach the mixer at once, the window size and display mode go to the window after the frame, vsync reconfigures the surface, and the FPS counter shows or hides. A change made in a scene's `update` or `ui` applies that frame; one from an `Update` or `PostUpdate` system, the next.
+- **A change applies the same frame**, after the fixed steps: the volumes reach the mixer at once, the window size and display mode go to the window after the frame, vsync reconfigures the surface, the shadow quality reaches the next lit frame's shadow maps, and the FPS counter shows or hides. A change made in a scene's `update` or `ui` applies that frame; one from an `Update` or `PostUpdate` system, the next.
 - **It saves itself** a second after the last change to a setting the game keeps, and at once when the game quits or its window is hidden or minimised (on the web, when the page is hidden). A slider dragged over 60 frames writes the file once. A setting set back to the game's default leaves the file.
 - **The window follows the player too:** a resize and a fullscreen toggle from the OS or F5 update `Settings`, so it always matches the window, and with `UserPreference::Resolution` kept the size the player drags the window to is saved.
 - `reset(UserPreference::MusicVolume)` puts one setting back to the game's default and `reset_all()` every one (and every game section to its `Default`); bindings reset with `ctx.actions().reset_defaults()`. `is_kept(preference)` says whether the game keeps it.
@@ -271,7 +274,7 @@ EngineBuilder::new()
 }
 ```
 
-- The keys: `format_version` (3), the six volumes (`master_volume` .. `ambience_volume`, to two decimals), `resolution` (the window size, `"1280x720"`), `display_mode`, `vsync`, `show_fps`, `bindings` and `game`. Only the kept settings that differ from the game's defaults are there; a first run writes no file until the player changes something.
+- The keys: `format_version` (3), the six volumes (`master_volume` .. `ambience_volume`, to two decimals), `resolution` (the window size, `"1280x720"`), `display_mode`, `vsync`, `show_fps`, `shadow_quality` (`"low"` .. `"ultra"`), `bindings` and `game`. Only the kept settings that differ from the game's defaults are there; a first run writes no file until the player changes something.
 - Keys the engine does not know (a newer build's, or added by hand) are kept as they are when it writes.
 - A bad value (the wrong type, a volume outside 0 to 1) falls back to the default with a warning, and the rest of the file applies.
 - A damaged file is set aside as `system.json.damaged` and the backup is used if it is whole, else the defaults, with a warning. A file from a newer engine is read for the keys this one knows and never overwritten in that run.
