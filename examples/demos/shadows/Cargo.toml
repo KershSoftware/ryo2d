@@ -2,7 +2,11 @@
 name = "shadows"
 version = "0.1.0"
 edition = "2024"
-description = "2D shadow techniques: hard, drop, blob, soft, colored, contact, ambient occlusion and placed occluders"
+description = "2D shadow techniques: hard, drop, blob, soft, colored, contact, ambient occlusion and placed occluders, a carried lantern and many shadowed lights"
+
+[lib]
+name = "shadows_demo"
+path = "lib.rs"
 
 [[bin]]
 name = "shadows"

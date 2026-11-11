@@ -28,7 +28,7 @@ pub struct SoftShadowsPage {
 }
 
 impl SoftShadowsPage {
-  pub fn new() -> Self {
+  pub(crate) fn new() -> Self {
     Self {
       light_entity: None,
       light_visual: None,
@@ -107,7 +107,8 @@ impl DemoPage for SoftShadowsPage {
   }
 
   fn description(&self) -> &str {
-    "Soft shadows: the light's source size widens each shadow's edge away from its occluder."
+    "Contact hardening: the shadow is sharp where it meets its block and widens further away.\n\
+The source size is the light's radius in pixels; 0 gives hard shadows."
   }
 
   fn settings(&mut self, s: &mut Settings) {

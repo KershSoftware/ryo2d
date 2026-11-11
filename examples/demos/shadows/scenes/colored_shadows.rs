@@ -73,7 +73,7 @@ pub struct ColoredShadowsPage {
 }
 
 impl ColoredShadowsPage {
-  pub fn new() -> Self {
+  pub(crate) fn new() -> Self {
     Self {
       light_entity: None,
       light_visual: None,
@@ -81,7 +81,7 @@ impl ColoredShadowsPage {
       light_y: 360.0,
       mouse_at_open: None,
 
-      preset: 0,
+      preset: 3,
       custom_rgb: [100, 100, 100],
 
       static_occluders: Vec::new(),
@@ -159,7 +159,8 @@ impl DemoPage for ColoredShadowsPage {
   }
 
   fn description(&self) -> &str {
-    "Tinted shadows for stained glass, atmosphere and stylization."
+    "Look behind each block: its shadow takes the chosen colour instead of going black.\n\
+Tinted shadows for stained glass, atmosphere and stylization."
   }
 
   fn settings(&mut self, s: &mut Settings) {

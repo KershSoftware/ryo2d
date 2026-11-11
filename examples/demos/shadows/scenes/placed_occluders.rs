@@ -28,7 +28,7 @@ pub struct PlacedOccludersPage {
 }
 
 impl PlacedOccludersPage {
-  pub fn new() -> Self {
+  pub(crate) fn new() -> Self {
     Self {
       light_entity: None,
       light_visual: None,
@@ -136,7 +136,8 @@ impl DemoPage for PlacedOccludersPage {
   }
 
   fn description(&self) -> &str {
-    "Place boxes around a light that casts soft shadows."
+    "Place boxes around the light: each shadow is sharp at its box and soft further away.\n\
+The light casts soft shadows."
   }
 
   fn settings(&mut self, s: &mut Settings) {

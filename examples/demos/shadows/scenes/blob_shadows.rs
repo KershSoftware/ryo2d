@@ -26,7 +26,7 @@ pub struct BlobShadowsPage {
 }
 
 impl BlobShadowsPage {
-  pub fn new() -> Self {
+  pub(crate) fn new() -> Self {
     Self {
       characters: Vec::new(),
       static_objects: Vec::new(),

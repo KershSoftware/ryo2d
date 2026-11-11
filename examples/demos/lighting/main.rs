@@ -32,7 +32,9 @@ const BULB_RADIUS: f32 = 12.0; // half the bulb diameter, for centering
 /// was tuned when they were read as linear, so the warm white of
 /// `Light2D::torch`, (255, 200, 100), is encoded to sRGB to keep its look.
 fn lamp_light(radius: f32, intensity: f32) -> Light2D {
-  Light2D::point(Color::new(255, 229, 168, 255), radius).with_intensity(intensity)
+  Light2D::point(Color::new(255, 229, 168, 255), radius)
+    .with_intensity(intensity)
+    .with_shadows()
 }
 
 /// Pendulum state for physics simulation

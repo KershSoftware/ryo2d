@@ -589,6 +589,13 @@ impl GameScene {
         Collider::rect(width, PLATFORM_HEIGHT)
           .with_offset(width / 2.0, PLATFORM_HEIGHT / 2.0)
           .one_way(),
+        // The occluder hangs from the platform's top edge
+        LightOccluder2D::rect_offset(
+          width / 2.0,
+          PLATFORM_OCCLUDER_HEIGHT / 2.0,
+          width,
+          PLATFORM_OCCLUDER_HEIGHT,
+        ),
         platform,
       ))
       .id();

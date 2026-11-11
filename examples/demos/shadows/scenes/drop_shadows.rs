@@ -76,7 +76,7 @@ pub struct DropShadowsPage {
 }
 
 impl DropShadowsPage {
-  pub fn new() -> Self {
+  pub(crate) fn new() -> Self {
     Self {
       sprites: Vec::new(),
       preset: 0,

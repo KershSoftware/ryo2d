@@ -18,7 +18,7 @@ pub struct AmbientOcclusionPage {
 }
 
 impl AmbientOcclusionPage {
-  pub fn new() -> Self {
+  pub(crate) fn new() -> Self {
     Self {
       ao_intensity: 0.5,
       ao_radius: 16.0,

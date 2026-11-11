@@ -18,7 +18,7 @@ pub struct ContactShadowsPage {
 }
 
 impl ContactShadowsPage {
-  pub fn new() -> Self {
+  pub(crate) fn new() -> Self {
     Self {
       objects: Vec::new(),
       radius: 8.0,

@@ -28,7 +28,7 @@ pub struct HardShadowsPage {
 }
 
 impl HardShadowsPage {
-  pub fn new() -> Self {
+  pub(crate) fn new() -> Self {
     Self {
       light_entity: None,
       light_visual: None,
@@ -147,7 +147,8 @@ impl DemoPage for HardShadowsPage {
   }
 
   fn description(&self) -> &str {
-    "Real-time hard shadows from LightOccluder2D shadow volumes."
+    "Every shadow edge is sharp, however far from its block: move the light and place boxes.\n\
+Hard shadows from LightOccluder2D shapes."
   }
 
   fn settings(&mut self, s: &mut Settings) {
