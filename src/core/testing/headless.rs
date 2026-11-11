@@ -708,6 +708,18 @@ impl HeadlessEngine {
       .map_or(0, |gpu| gpu.atlas_rects())
   }
 
+  /// How many GPU resources the shadow atlas has made since the engine
+  /// started (its texture, bind groups and edge buffer, each time it grew
+  /// or changed quality): tests that watch a settled frame make none
+  #[doc(hidden)]
+  pub fn shadow_atlas_builds(&self) -> u64 {
+    self
+      .engine
+      .lighting
+      .as_ref()
+      .map_or(0, |lighting| lighting.shadow_atlas_builds())
+  }
+
   /// The tile chunks the batch holds built, each as its layer entity and
   /// chunk, sorted (tests that watch what a view built and culled)
   #[doc(hidden)]

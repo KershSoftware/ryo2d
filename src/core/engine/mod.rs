@@ -211,7 +211,7 @@ pub struct Engine {
   /// The UI's own renderer (beside the batch, which it shares the UI
   /// camera's bind group with)
   ui_renderer: Option<UiRenderer>,
-  lighting: Option<LightingRenderer>,
+  pub(crate) lighting: Option<LightingRenderer>,
   entity_drawer: EntityDrawer,
   pub(crate) tile_drawer: crate::core::render::tiles::TileDrawer,
   /// The engine's particles, one run per emitter (its query kept)

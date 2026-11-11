@@ -133,7 +133,7 @@ mod tests {
       position: Vec2::new(5.0, 3.0),
       light: Light2D::point(Color::WHITE, 100.0)
         .with_shadows()
-        .with_soft_shadows(0.5),
+        .with_soft_shadows(6.0),
       layers: RenderLayers::default(),
       floor: Floor::On(1),
       lift: Vec2::new(0.0, -32.0),
@@ -141,7 +141,7 @@ mod tests {
     let Some(item) = light_item(&frame, Some(3)) else {
       panic!("a usable light");
     };
-    assert_eq!(item.instance.uv_rect, [0.0, 3.0, 0.5, 100.0]);
+    assert_eq!(item.instance.uv_rect, [0.0, 3.0, 6.0, 100.0]);
     // Drawn lifted
     assert_eq!(item.instance.transform[2][..2], [5.0, -29.0]);
     let reach = Vec2::splat(100.0);

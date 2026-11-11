@@ -1,7 +1,7 @@
 //! Soft Shadows page
 //!
-//! Demonstrates soft shadows with configurable softness: a soft shadow fades
-//! with distance from its light and lets part of the light through.
+//! Demonstrates soft shadows: the light's source size in pixels gives a
+//! shadow's edge a penumbra that widens with distance from its occluder.
 
 use demo_kit::prelude::*;
 
@@ -17,7 +17,7 @@ pub struct SoftShadowsPage {
   /// until the mouse first moves away from it
   mouse_at_open: Option<(f32, f32)>,
 
-  // Shadow softness (0.0 = hard, 1.0 = fades out)
+  // The light's source radius in pixels (0 = hard shadows)
   softness: f32,
 
   // Light radius
@@ -36,7 +36,7 @@ impl SoftShadowsPage {
       light_y: 330.0,
       mouse_at_open: None,
 
-      softness: 0.25,
+      softness: 8.0,
       light_radius: 400.0,
 
       static_occluders: Vec::new(),
@@ -107,11 +107,11 @@ impl DemoPage for SoftShadowsPage {
   }
 
   fn description(&self) -> &str {
-    "Shadows that fade with distance from the light: softness is how much light they let through."
+    "Soft shadows: the light's source size widens each shadow's edge away from its occluder."
   }
 
   fn settings(&mut self, s: &mut Settings) {
-    s.float("Softness", &mut self.softness, 0.0..=1.0, 0.05);
+    s.float("Source size", &mut self.softness, 0.0..=32.0, 1.0);
     s.float("Light radius", &mut self.light_radius, 150.0..=600.0, 10.0);
   }
 

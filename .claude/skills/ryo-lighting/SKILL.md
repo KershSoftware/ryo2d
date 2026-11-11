@@ -75,7 +75,7 @@ Lights are placed at their entity's `GlobalTransform` translation (a child entit
 <!-- given: color: Color, radius: f32 -->
 ```rust
 Light2D::point(color, radius).with_shadows();                 // hard (shadow volumes)
-Light2D::point(color, radius).with_soft_shadows(0.5);         // fades with distance, 0.0-1.0
+Light2D::point(color, radius).with_soft_shadows(8.0);         // source radius in px, 0 = hard
 Light2D::point(color, radius).with_shadows().with_shadow_color(Color::new(50, 30, 80, 255));
 ```
 

@@ -21,6 +21,14 @@ struct AtlasSize {
   size: [f32; 4],
 }
 
+/// The soft filter's settings as the light shader reads them
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct FilterUniform {
+  /// The filter's look-ups (the blocker search takes half), then unused
+  taps: [u32; 4],
+}
+
 /// The frame's shadow maps and what draws them.
 pub(crate) struct ShadowAtlas {
   /// Kept to grow the edge buffer while encoding
@@ -29,6 +37,11 @@ pub(crate) struct ShadowAtlas {
   view: wgpu::TextureView,
   width: u32,
   height: u32,
+  /// The quality the soft filter's look-ups follow
+  quality: ShadowQuality,
+  /// The filter uniform needs writing (the quality changed)
+  filter_stale: bool,
+  filter_uniform: wgpu::Buffer,
   /// The size uniform needs writing (the texture was recreated)
   size_stale: bool,
   size_uniform: wgpu::Buffer,
@@ -40,10 +53,16 @@ pub(crate) struct ShadowAtlas {
   /// The most edges a buffer the device allows holds
   max_edges: usize,
   compare_sampler: wgpu::Sampler,
-  /// The atlas and its comparison sampler as the light shader binds them
-  /// (`batch::shadow_layout`), made again with the texture
+  /// The atlas, its comparison sampler and the filter uniform as the light
+  /// shader binds them (`batch::shadow_layout`), made again with the
+  /// texture
   light_layout: wgpu::BindGroupLayout,
   light_group: wgpu::BindGroup,
+  /// GPU resources made after the first ones (a texture and its bind group
+  /// count once, as does a new edge buffer); the headless engine reads it,
+  /// which the web has not
+  #[cfg(not(target_arch = "wasm32"))]
+  builds: u64,
   /// Times it was drawn (tests)
   #[cfg(test)]
   encodes: u64,
@@ -97,14 +116,29 @@ impl ShadowAtlas {
       compare: Some(wgpu::CompareFunction::LessEqual),
       ..Default::default()
     });
+    let filter_uniform = device.create_buffer(&wgpu::BufferDescriptor {
+      label: Some("Shadow Filter"),
+      size: std::mem::size_of::<FilterUniform>() as u64,
+      usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+      mapped_at_creation: false,
+    });
     let light_layout = crate::core::render::batch::shadow_layout(device);
-    let light_group = light_group(device, &light_layout, &view, &compare_sampler);
+    let light_group = light_group(
+      device,
+      &light_layout,
+      &view,
+      &compare_sampler,
+      &filter_uniform,
+    );
     Self {
       device: device.clone(),
       texture,
       view,
       width,
       height,
+      quality: ShadowQuality::default(),
+      filter_stale: true,
+      filter_uniform,
       size_stale: true,
       size_uniform,
       pipeline: pipeline(device, &layout),
@@ -115,6 +149,8 @@ impl ShadowAtlas {
       compare_sampler,
       light_layout,
       light_group,
+      #[cfg(not(target_arch = "wasm32"))]
+      builds: 0,
       #[cfg(test)]
       encodes: 0,
     }
@@ -122,10 +158,14 @@ impl ShadowAtlas {
 
   /// Makes the atlas `quality`'s width and at least `rows` rows tall
   /// (rounded up to a multiple of 64, within the device's largest texture),
-  /// recreating it when its width changes or it needs more rows. It never
-  /// shrinks for fewer rows, so a light count going up and down makes no
-  /// texture each time.
+  /// recreating it when its width changes or it needs more rows, and gives
+  /// the soft filter `quality`'s look-ups. It never shrinks for fewer rows,
+  /// so a light count going up and down makes no texture each time.
   pub(crate) fn ensure(&mut self, device: &wgpu::Device, quality: ShadowQuality, rows: u32) {
+    if quality != self.quality {
+      self.quality = quality;
+      self.filter_stale = true;
+    }
     let largest = device.limits().max_texture_dimension_2d;
     let width = quality.texels().min(largest);
     let needed = rows
@@ -141,6 +181,7 @@ impl ShadowAtlas {
     if (width, height) == (self.width, self.height) {
       return;
     }
+    self.built();
     self.texture = atlas_texture(device, width, height);
     self.view = self
       .texture
@@ -152,6 +193,7 @@ impl ShadowAtlas {
       &self.light_layout,
       &self.view,
       &self.compare_sampler,
+      &self.filter_uniform,
     );
   }
 
@@ -175,9 +217,17 @@ impl ShadowAtlas {
       queue.write_buffer(&self.size_uniform, 0, bytemuck::bytes_of(&size));
       self.size_stale = false;
     }
+    if self.filter_stale {
+      let filter = FilterUniform {
+        taps: [self.quality.taps(), 0, 0, 0],
+      };
+      queue.write_buffer(&self.filter_uniform, 0, bytemuck::bytes_of(&filter));
+      self.filter_stale = false;
+    }
     // The plan keeps no more edges than the largest buffer holds
     let edges = &edges[..edges.len().min(self.max_edges)];
     if edges.len() > self.capacity {
+      self.built();
       self.capacity = edges.len().next_power_of_two().min(self.max_edges);
       self.edges = edge_buffer(&self.device, self.capacity);
     }
@@ -220,6 +270,21 @@ impl ShadowAtlas {
   /// The most edges one frame's draw holds: the device's largest buffer
   pub(crate) fn max_edges(&self) -> usize {
     self.max_edges
+  }
+
+  /// Counts a GPU resource made after the first ones
+  fn built(&mut self) {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+      self.builds += 1;
+    }
+  }
+
+  /// GPU resources made since it was created: a texture (with its bind
+  /// group) or an edge buffer, each once
+  #[cfg(not(target_arch = "wasm32"))]
+  pub(crate) fn builds(&self) -> u64 {
+    self.builds
   }
 
   /// Texels across a view (tests; the light shader reads the texture's
@@ -323,12 +388,13 @@ fn atlas_texture(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Textur
   })
 }
 
-/// The light shader's bind group of `view` and `sampler`
+/// The light shader's bind group of `view`, `sampler` and `filter`
 fn light_group(
   device: &wgpu::Device,
   layout: &wgpu::BindGroupLayout,
   view: &wgpu::TextureView,
   sampler: &wgpu::Sampler,
+  filter: &wgpu::Buffer,
 ) -> wgpu::BindGroup {
   crate::core::graphics::bind_groups::create(
     device,
@@ -343,6 +409,10 @@ fn light_group(
         wgpu::BindGroupEntry {
           binding: 1,
           resource: wgpu::BindingResource::Sampler(sampler),
+        },
+        wgpu::BindGroupEntry {
+          binding: 2,
+          resource: filter.as_entire_binding(),
         },
       ],
     },

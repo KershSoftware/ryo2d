@@ -396,6 +396,13 @@ impl LightingRenderer {
     self.atlas.light_group()
   }
 
+  /// How many GPU resources the shadow atlas has made (tests that watch a
+  /// settled frame make none; the headless engine, which the web has not)
+  #[cfg(not(target_arch = "wasm32"))]
+  pub(crate) fn shadow_atlas_builds(&self) -> u64 {
+    self.atlas.builds()
+  }
+
   /// The shadow atlas (tests)
   #[cfg(test)]
   pub(crate) fn shadow_atlas(&self) -> &ShadowAtlas {

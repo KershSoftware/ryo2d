@@ -5,7 +5,8 @@
 // A light's instance (`lighting::light_instance`) carries:
 // - the transform rows: its quad, centred on it, two radii wide
 // - uv_rect: 0 for a point light, 1 for a spot; its atlas slot (-1 for
-//   none: it is unshadowed); its source's size in pixels; its radius
+//   none: it is unshadowed); its source's radius in pixels (0: hard
+//   shadows); its radius
 // - tint: its linear colour (rgb) and intensity (a)
 // - effect_params: falloff, cone angle and direction (degrees), cone softness
 // - effect_extra: volumetric intensity, density, scattering, god rays
@@ -17,6 +18,17 @@
 // 1 where the distance compared is at most the stored one, filtered along
 // a row
 @group(1) @binding(1) var shadow_compare: sampler_comparison;
+
+struct ShadowFilter {
+    // x: the soft filter's look-ups (`ShadowQuality::taps`); the blocker
+    // search takes half as many
+    taps: vec4<u32>,
+}
+@group(1) @binding(2) var<uniform> shadow_filter: ShadowFilter;
+
+// The widest arc, in radians, a soft shadow's blocker search or filter
+// reads round a pixel's angle, so a huge source cannot read a whole view
+const MAX_ARC: f32 = 0.35;
 
 struct VertexInput {
     @location(0) position: vec2<f32>,
@@ -111,29 +123,117 @@ fn light_at(in: VertexOutput) -> vec3<f32> {
     return color;
 }
 
+// Where the ray from a light along `dir` (any length) meets the atlas: the
+// row of the view it lies in (slot x 4 + view), its place along the row in
+// texels, and the bias (in stored units) for a surface `dist` away on it
+struct AtlasPoint {
+    texel: f32,
+    row: u32,
+    bias: f32,
+}
+
+fn atlas_point(dir: vec2<f32>, dist: f32, slot: u32, size: vec2<f32>, radius: f32) -> AtlasPoint {
+    let view = view_of(dir);
+    let local = in_view(dir, view);
+    let tangent = local.y / local.x;
+    // A texel's world width here: the tangent maps to the row linearly, so
+    // a texel covers (2 / width) / (1 + t²) of angle, less towards the
+    // view's ends. A bias of 1.5 of them keeps a surface from shadowing
+    // itself, and the shadow starts at its occluder
+    let texel = dist * (2.0 / size.x) / (1.0 + tangent * tangent);
+    return AtlasPoint((tangent + 1.0) * 0.5 * size.x, slot * 4u + view, 1.5 * texel / radius);
+}
+
+// 1 where `point`'s row holds nothing nearer than `depth` less its bias,
+// filtered along the row, read at the row's centre (never across rows)
+fn lit_at(point: AtlasPoint, depth: f32, size: vec2<f32>) -> f32 {
+    let uv = vec2<f32>(point.texel / size.x, (f32(point.row) + 0.5) / size.y);
+    return textureSampleCompareLevel(shadow_atlas, shadow_compare, uv, depth - point.bias);
+}
+
+// `v` turned by the angle whose cosine and sine are `by`
+fn turned(v: vec2<f32>, by: vec2<f32>) -> vec2<f32> {
+    return vec2<f32>(v.x * by.x - v.y * by.y, v.x * by.y + v.y * by.x);
+}
+
+// The directions `count` look-ups take, spread evenly over `arc` radians
+// centred on `dir`: the first, and the turn from one to the next
+fn first_of(dir: vec2<f32>, arc: f32, count: u32) -> vec2<f32> {
+    let step = arc / f32(count);
+    let first = step * 0.5 - arc * 0.5;
+    return turned(dir, vec2<f32>(cos(first), sin(first)));
+}
+
+fn step_of(arc: f32, count: u32) -> vec2<f32> {
+    let step = arc / f32(count);
+    return vec2<f32>(cos(step), sin(step));
+}
+
 // How much of the light at `offset` from it (ground space: the light and the
-// pixel are lifted alike on a storey) its occluders hold back, 0 to 1: one
-// comparison against its view's row of the atlas, at the row's centre
+// pixel are lifted alike on a storey) its occluders hold back, 0 to 1.
+//
+// A light of size 0 takes one comparison against its view's row of the
+// atlas. A light with a source `size` pixels in radius searches an arc of
+// `size / dist` radians for what blocks it (raw distances), and with none
+// is lit; else it filters an arc of `size x (dist - blocker) / blocker /
+// dist` radians, `blocker` the farthest found (the penumbra: narrow where the occluder meets its shadow,
+// wider away from it), both capped at `MAX_ARC`. Each look-up finds its
+// own view and row from its own angle, so an arc crossing a view's end
+// carries on in the next view's row (view 3 wraps to view 0).
 fn shadowed(offset: vec2<f32>, shadow: vec3<f32>) -> f32 {
     let dist = length(offset);
     // No slot, or nearer than the map's near plane (0.5 px): unshadowed
     if shadow.x < 0.0 || dist < 0.5 {
         return 0.0;
     }
+    let slot = u32(shadow.x);
+    let source = shadow.y;
     let radius = shadow.z;
-    let view = view_of(offset);
-    let local = in_view(offset, view);
-    let tangent = local.y / local.x;
     let size = vec2<f32>(textureDimensions(shadow_atlas));
-    let row = u32(shadow.x) * 4u + view;
-    let uv = vec2<f32>((tangent + 1.0) * 0.5, (f32(row) + 0.5) / size.y);
-    // A texel's world width here: the tangent maps to the row linearly, so
-    // a texel covers (2 / width) / (1 + t²) of angle, less towards the
-    // view's ends. A bias of 1.5 of them keeps a surface from shadowing
-    // itself, and the shadow starts at its occluder
-    let texel = dist * (2.0 / size.x) / (1.0 + tangent * tangent);
-    let bias = 1.5 * texel / radius;
-    return 1.0 - textureSampleCompareLevel(shadow_atlas, shadow_compare, uv, dist / radius - bias);
+    let depth = dist / radius;
+    if !(source > 0.0) {
+        return 1.0 - lit_at(atlas_point(offset, dist, slot, size, radius), depth, size);
+    }
+    let dir = offset / dist;
+    let taps = max(shadow_filter.taps.x, 1u);
+
+    // The blocker search: the farthest of what is nearer than the pixel
+    // round its angle. Not the average: behind a wall of touching closed
+    // occluders their shared sides block nearer than the wall's far face,
+    // and the wider arc an average gives turns look-ups into the wall's
+    // body, which only its far face (beyond the pixel) shadows: light leaks
+    let searches = max(taps / 2u, 1u);
+    let search_arc = min(source / dist, MAX_ARC);
+    let search_step = step_of(search_arc, searches);
+    var look = first_of(dir, search_arc, searches);
+    let last_texel = i32(size.x) - 1;
+    var farthest = 0.0;
+    var found = false;
+    for (var i = 0u; i < searches; i++) {
+        let point = atlas_point(look, dist, slot, size, radius);
+        let column = clamp(i32(floor(point.texel)), 0, last_texel);
+        let stored = textureLoad(shadow_atlas, vec2<i32>(column, i32(point.row)), 0);
+        if stored < depth - point.bias {
+            farthest = max(farthest, stored);
+            found = true;
+        }
+        look = turned(look, search_step);
+    }
+    if !found {
+        return 0.0;
+    }
+    let blocker = max(farthest * radius, 0.5);
+
+    // The filter: comparisons spread evenly over the penumbra's arc
+    let arc = min(source * max(dist - blocker, 0.0) / (blocker * dist), MAX_ARC);
+    let filter_step = step_of(arc, taps);
+    look = first_of(dir, arc, taps);
+    var lit = 0.0;
+    for (var i = 0u; i < taps; i++) {
+        lit += lit_at(atlas_point(look, dist, slot, size, radius), depth, size);
+        look = turned(look, filter_step);
+    }
+    return 1.0 - lit / f32(taps);
 }
 
 // The light, held back where it is shadowed by its shadow's strength (the

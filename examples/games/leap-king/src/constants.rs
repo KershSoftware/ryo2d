@@ -131,7 +131,8 @@ pub const AMBIENT_BRIGHT_INTENSITY: f32 = 0.12;
 pub const HEIGHT_FOR_MAX_AMBIENT: f32 = 300.0; // Height units for full transition
 
 // Shadow settings
-pub const LAMP_SHADOW_SOFTNESS: f32 = 0.4;
+/// The lamps' source radius in pixels (soft shadow edges)
+pub const LAMP_SHADOW_SOFTNESS: f32 = 6.0;
 pub const PLAYER_BLOB_SHADOW_WIDTH: f32 = 20.0;
 pub const PLAYER_BLOB_SHADOW_HEIGHT: f32 = 6.0;
 

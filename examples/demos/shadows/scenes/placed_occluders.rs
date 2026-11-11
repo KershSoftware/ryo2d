@@ -1,6 +1,6 @@
 //! Placed occluders page
 //!
-//! Place and remove occluders around a light that casts soft shadow volumes.
+//! Place and remove occluders around a light that casts soft shadows.
 
 use demo_kit::prelude::*;
 
@@ -17,7 +17,7 @@ pub struct PlacedOccludersPage {
   mouse_at_open: Option<(f32, f32)>,
   light_color: Color,
 
-  // Shadow softness: how much light the shadows let through (0 = hard)
+  // The light's source radius in pixels (0 = hard shadows)
   softness: f32,
 
   // Placed occluders (by player)
@@ -38,7 +38,7 @@ impl PlacedOccludersPage {
       // Warm light: (255, 220, 180) read as linear, as when the page was tuned
       light_color: Color::new(255, 239, 219, 255),
 
-      softness: 0.2,
+      softness: 6.0,
 
       placed_occluders: Vec::new(),
       static_occluders: Vec::new(),
@@ -136,11 +136,11 @@ impl DemoPage for PlacedOccludersPage {
   }
 
   fn description(&self) -> &str {
-    "Place boxes around a light that casts soft shadow volumes."
+    "Place boxes around a light that casts soft shadows."
   }
 
   fn settings(&mut self, s: &mut Settings) {
-    s.float("Softness", &mut self.softness, 0.0..=1.0, 0.05);
+    s.float("Source size", &mut self.softness, 0.0..=32.0, 1.0);
   }
 
   fn controls(&self) -> Vec<Control> {
@@ -181,7 +181,7 @@ impl DemoPage for PlacedOccludersPage {
       self.static_occluders.push(entity);
     }
 
-    // Create the player light with soft shadow volumes
+    // Create the player light with soft shadows
     self.light_entity = Some(
       ctx
         .world

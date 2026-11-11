@@ -191,7 +191,8 @@ pub(crate) fn texture_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
 }
 
 /// The layout the shadow atlas is bound with for the light shader (group
-/// 1): the atlas's depth texture and its comparison sampler. The atlas
+/// 1): the atlas's depth texture, its comparison sampler and the soft
+/// filter's look-up count (a uniform, set by the shadow quality). The atlas
 /// makes its bind group with a layout of its own from this, which WebGPU
 /// takes as the same.
 pub(crate) fn shadow_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
@@ -212,6 +213,16 @@ pub(crate) fn shadow_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
         binding: 1,
         visibility: wgpu::ShaderStages::FRAGMENT,
         ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+        count: None,
+      },
+      wgpu::BindGroupLayoutEntry {
+        binding: 2,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Buffer {
+          ty: wgpu::BufferBindingType::Uniform,
+          has_dynamic_offset: false,
+          min_binding_size: None,
+        },
         count: None,
       },
     ],

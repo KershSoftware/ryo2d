@@ -2564,7 +2564,7 @@ mod tests {
     // In the wall where the seam's wedge would fall, in the wall away from
     // it, and under the wall behind the seam and beside it
     let pixels = [(250, 172), (220, 172), (226, 196), (200, 196)];
-    for (alpha, softness) in [(255, None), (128, None), (255, Some(0.6)), (128, Some(0.6))] {
+    for (alpha, softness) in [(255, None), (128, None), (255, Some(8.0)), (128, Some(8.0))] {
       let (Some(one), Some(map)) = (
         wall_frame(false, alpha, softness, &pixels),
         wall_frame(true, alpha, softness, &pixels),

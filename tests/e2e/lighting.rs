@@ -767,3 +767,393 @@ fn a_shadow_starts_at_its_occluder_near_a_view_s_diagonal() {
   }
   assert!(checked >= 10, "{checked} pixels behind the wall");
 }
+
+/// A 320 x 160 white floor with no ambient light, then `setup`, after two
+/// frames
+fn wide(mut setup: impl FnMut(&mut SceneContext) + Send + 'static) -> Option<HeadlessEngine> {
+  let scene = Lit(Box::new(move |ctx| {
+    let floor = ctx
+      .assets()
+      .add(Image::solid_rect(320, 160, 255, 255, 255, 255));
+    ctx.world.spawn((
+      Transform::from_xy(0.0, 0.0),
+      Renderable::image(floor).with_anchor(Anchor::TopLeft),
+    ));
+    ctx
+      .lighting()
+      .set_ambient(AmbientLight::with_intensity(0.0));
+    ctx.lighting().set_enabled(true);
+    setup(ctx);
+  }));
+  let builder = EngineBuilder::new().resolution(320, 160).start_scene(scene);
+  let mut engine = HeadlessEngine::new_or_skip(builder)?;
+  engine.step_frames(2).unwrap();
+  Some(engine)
+}
+
+/// Moves every light to `to`, then draws two frames
+fn move_lights(engine: &mut HeadlessEngine, to: Vec2) -> image::RgbaImage {
+  let world = engine.world_mut();
+  let mut lights = world.query_filtered::<&mut Transform, With<Light2D>>();
+  for mut transform in lights.iter_mut(world) {
+    transform.translation = to;
+  }
+  engine.step_frames(2).unwrap();
+  engine.frame().unwrap()
+}
+
+/// The share of the open floor's light that reaches (x, y) in `shadowed`
+/// (no ambient light, so 0 is fully shadowed)
+fn share(shadowed: &image::RgbaImage, open: &image::RgbaImage, x: u32, y: u32) -> f32 {
+  let lit = linear(red(open, x, y));
+  if lit <= 0.0 {
+    return 0.0;
+  }
+  linear(red(shadowed, x, y)) / lit
+}
+
+/// The shares down column `x` over `ys`, lit at the top and dark at the
+/// bottom
+fn column(
+  shadowed: &image::RgbaImage,
+  open: &image::RgbaImage,
+  x: u32,
+  ys: std::ops::Range<u32>,
+) -> Vec<f32> {
+  ys.map(|y| share(shadowed, open, x, y)).collect()
+}
+
+/// Where the shares first fall below `level`, between pixel centres, from
+/// the column's first
+fn crossing(shares: &[f32], level: f32) -> f32 {
+  for i in 1..shares.len() {
+    if shares[i] < level {
+      let t = (shares[i - 1] - level) / (shares[i - 1] - shares[i]);
+      return (i - 1) as f32 + t;
+    }
+  }
+  panic!("the shares never fall below {level}: {shares:?}");
+}
+
+/// The 10%-90% width of the shadow edge down a column of shares
+fn penumbra(shares: &[f32]) -> f32 {
+  crossing(shares, 0.1) - crossing(shares, 0.9)
+}
+
+/// Where the edge down a column of shares lies from its first pixel, by
+/// the shadow it holds: a step there holds as much (so it moves as
+/// smoothly as the shadow does, whatever the profile)
+fn edge_at(shares: &[f32]) -> f32 {
+  assert!(
+    shares[0] > 0.97 && shares[shares.len() - 1] < 0.03,
+    "the column spans the edge: {shares:?}"
+  );
+  shares.len() as f32 - shares.iter().map(|s| 1.0 - s).sum::<f32>()
+}
+
+/// A 256 px light of source `size` at `at`, and (with `wall`) a 4 x 120
+/// block from (60, 80) to (64, 200): the shadow's upper edge runs from the
+/// block's top right corner away from the light
+fn hardening(size: f32, at: Vec2, wall: bool) -> Option<HeadlessEngine> {
+  wide(move |ctx| {
+    ctx.world.spawn((
+      Transform::from_xy(at.x, at.y),
+      Light2D::point(Color::WHITE, 256.0).with_soft_shadows(size),
+    ));
+    if wall {
+      ctx.world.spawn((
+        Transform::from_xy(62.0, 140.0),
+        LightOccluder2D::rect(4.0, 120.0),
+      ));
+    }
+  })
+}
+
+#[test]
+fn a_soft_shadow_hardens_where_it_meets_its_occluder() {
+  // The light at (20, 70): the edge crosses x 84 (20 px behind the block's
+  // back face) at y 84.5, and x 184 (120 px behind) at y 107.3
+  let at = Vec2::new(20.0, 70.0);
+  let widths = |size: f32| {
+    let (Some(shadowed), Some(open)) = (hardening(size, at, true), hardening(size, at, false))
+    else {
+      return None;
+    };
+    let (shadowed, open) = (shadowed.frame().unwrap(), open.frame().unwrap());
+    Some((
+      penumbra(&column(&shadowed, &open, 84, 70..100)),
+      penumbra(&column(&shadowed, &open, 184, 70..150)),
+    ))
+  };
+  let (Some((hard_near, hard_far)), Some((near, far))) = (widths(0.0), widths(12.0)) else {
+    return;
+  };
+  println!("hard {hard_near} px near, {hard_far} px far; size 12: {near} near, {far} far");
+  assert!(
+    hard_near <= 2.0 && hard_far <= 2.0,
+    "hard: {hard_near} near, {hard_far} far"
+  );
+  assert!(near > hard_near, "near: {near} against hard {hard_near}");
+  assert!(near < far, "near {near}, far {far}");
+}
+
+#[test]
+fn a_soft_edge_moves_smoothly_with_its_light() {
+  // The light moves down from (20, 70) a quarter pixel at a time: the edge
+  // through the block's corner rises 0.32 px a step at x 120 and 0.68 px
+  // at x 184
+  let start = Vec2::new(20.0, 70.0);
+  let (Some(mut shadowed), Some(mut open)) =
+    (hardening(12.0, start, true), hardening(12.0, start, false))
+  else {
+    return;
+  };
+  let mut frames = Vec::new();
+  for step in 0..=8 {
+    let at = start + Vec2::new(0.0, step as f32 * 0.25);
+    frames.push((move_lights(&mut shadowed, at), move_lights(&mut open, at)));
+  }
+  for x in [120, 184] {
+    let edges: Vec<f32> = frames
+      .iter()
+      .map(|(s, o)| edge_at(&column(s, o, x, 60..150)))
+      .collect();
+    for pair in edges.windows(2) {
+      let moved = pair[1] - pair[0];
+      assert!(
+        moved < -0.05 && moved > -1.0,
+        "x {x}: the edge moves {moved} px in a step: {edges:?}"
+      );
+    }
+  }
+  // No pixel goes back towards the light once the edge passes it
+  for x in 70..200 {
+    for y in 60..150 {
+      if red(&frames[0].1, x, y) < 80 {
+        continue;
+      }
+      let mut darkest = f32::MAX;
+      for (s, o) in &frames {
+        let now = share(s, o, x, y);
+        assert!(
+          now <= darkest + 0.05,
+          "({x}, {y}) went dark and lit again: {now} after {darkest}"
+        );
+        darkest = darkest.min(now);
+      }
+    }
+  }
+}
+
+/// A wall from x -96 to 416 at y 50 to 58 in 32 px chunks: as a map's
+/// chunks build it (each chunk an open chain along its top and one along
+/// its bottom, the chunks' borders casting nothing), or as closed 32 x 8
+/// rectangles side by side
+fn chunked_wall(chains: bool) -> Vec<(Vec2, LightOccluder2D)> {
+  (0..16)
+    .map(|i| {
+      let centre = Vec2::new(-80.0 + i as f32 * 32.0, 54.0);
+      let occluder = if chains {
+        LightOccluder2D::chain(vec![Vec2::new(16.0, -4.0), Vec2::new(-16.0, -4.0)])
+      } else {
+        LightOccluder2D::rect(32.0, 8.0)
+      };
+      (centre, occluder)
+    })
+    .chain((0..16).filter(|_| chains).map(|i| {
+      let centre = Vec2::new(-80.0 + i as f32 * 32.0, 54.0);
+      (
+        centre,
+        LightOccluder2D::chain(vec![Vec2::new(-16.0, 4.0), Vec2::new(16.0, 4.0)]),
+      )
+    }))
+    .collect()
+}
+
+#[test]
+fn no_light_leaks_through_a_map_wall() {
+  // A 120 px light 30 px above the wall's top, over a joint (x 128, 160),
+  // a quarter pixel from one (191.75) and between them
+  let positions = [
+    Vec2::new(160.0, 20.0),
+    Vec2::new(128.0, 20.0),
+    Vec2::new(191.75, 20.0),
+    Vec2::new(145.3, 20.0),
+    Vec2::new(176.0, 20.0),
+  ];
+  let light = |size: f32| {
+    move |ctx: &mut SceneContext| {
+      ctx.world.spawn((
+        Transform::from_xy(160.0, 20.0),
+        Light2D::point(Color::WHITE, 120.0).with_soft_shadows(size),
+      ));
+    }
+  };
+  for size in [0.0, 12.0] {
+    let Some(mut open) = wide(light(size)) else {
+      return;
+    };
+    for chains in [true, false] {
+      let add = light(size);
+      let Some(mut walled) = wide(move |ctx| {
+        add(ctx);
+        for (at, occluder) in chunked_wall(chains) {
+          ctx.world.spawn((Transform::from_xy(at.x, at.y), occluder));
+        }
+      }) else {
+        return;
+      };
+      for at in positions {
+        let (shadowed, unshadowed) = (move_lights(&mut walled, at), move_lights(&mut open, at));
+        let mut checked = 0;
+        for y in 59..160 {
+          for x in 0..320 {
+            let d = Vec2::new(x as f32 + 0.5, y as f32 + 0.5).distance(at);
+            if d > 110.0 || red(&unshadowed, x, y) < 20 {
+              continue;
+            }
+            let (shown, lit) = (linear(red(&shadowed, x, y)), linear(red(&unshadowed, x, y)));
+            assert!(
+              shown <= 0.03 * lit,
+              "size {size}, chains {chains}, light at {at}: ({x}, {y}) {shown} of {lit}"
+            );
+            checked += 1;
+          }
+        }
+        assert!(checked > 1000, "{checked} pixels behind the wall");
+      }
+    }
+  }
+}
+
+#[test]
+fn no_acne_on_lit_ground() {
+  // A 256 px light at (20, 80) and an 8 px block at (100, 80): the ground
+  // in front of the block, and beside its shadow past where any look-up
+  // reaches (0.35 rad of filter and of search), is lit as with no block
+  let at = Vec2::new(20.0, 80.0);
+  for size in [0.0, 12.0] {
+    let scene = move |block: bool| {
+      wide(move |ctx| {
+        ctx.world.spawn((
+          Transform::from_xy(at.x, at.y),
+          Light2D::point(Color::WHITE, 256.0).with_soft_shadows(size),
+        ));
+        if block {
+          ctx.world.spawn((
+            Transform::from_xy(100.0, 80.0),
+            LightOccluder2D::rect(8.0, 8.0),
+          ));
+        }
+      })
+    };
+    let (Some(blocked), Some(open)) = (scene(true), scene(false)) else {
+      return;
+    };
+    let (blocked, open) = (blocked.frame().unwrap(), open.frame().unwrap());
+    let mut checked = 0;
+    for y in 0..160 {
+      for x in 0..320 {
+        let offset = Vec2::new(x as f32 + 0.5, y as f32 + 0.5) - at;
+        let off_axis = offset.y.atan2(offset.x).abs();
+        let in_front = offset.length() < 74.0;
+        if !(in_front || off_axis > 0.06 + 0.35) || red(&open, x, y) < 20 {
+          continue;
+        }
+        let (shown, lit) = (red(&blocked, x, y), red(&open, x, y));
+        let ratio = linear(shown) / linear(lit);
+        assert!(
+          shown.abs_diff(lit) <= 1 || (ratio - 1.0).abs() <= 0.02,
+          "size {size}: ({x}, {y}) {shown} against {lit}"
+        );
+        checked += 1;
+      }
+    }
+    assert!(checked > 5000, "{checked} pixels");
+  }
+}
+
+#[test]
+fn the_atlas_grows_and_changes_quality_between_frames() {
+  // A soft 256 px light at (16, 32) and a 4 x 8 wall above its row or
+  // below it: 30 px behind the wall its shadow is about 16 px across,
+  // centred at (70, 15) or (70, 49)
+  let scene = Lit(Box::new(|ctx: &mut SceneContext| {
+    ctx
+      .lighting()
+      .set_ambient(AmbientLight::with_intensity(0.0));
+    ctx.world.spawn((
+      Transform::from_xy(16.0, 32.0),
+      Light2D::point(Color::WHITE, 256.0)
+        .with_intensity(0.5)
+        .with_soft_shadows(4.0),
+    ));
+    ctx.world.spawn((
+      Transform::from_xy(40.0, 24.0),
+      LightOccluder2D::rect(4.0, 8.0),
+    ));
+  }));
+  let builder = EngineBuilder::new().resolution(128, 64).start_scene(scene);
+  let Some(mut engine) = HeadlessEngine::new_or_skip(builder) else {
+    return;
+  };
+  let move_wall = |engine: &mut HeadlessEngine, above: bool| {
+    let world = engine.world_mut();
+    let mut walls = world.query_filtered::<&mut Transform, With<LightOccluder2D>>();
+    for mut transform in walls.iter_mut(world) {
+      transform.translation = Vec2::new(40.0, if above { 24.0 } else { 40.0 });
+    }
+  };
+  let set_quality = |engine: &mut HeadlessEngine, quality: ShadowQuality| {
+    engine
+      .world_mut()
+      .resource_mut::<Settings>()
+      .set_shadow_quality(quality);
+  };
+  // The frame's shadow falls behind the wall where it is now, and only there
+  let check = |engine: &mut HeadlessEngine, above: bool, phase: &str| {
+    engine.step_frames(1).unwrap();
+    let frame = engine.frame().unwrap();
+    let (dark, lit) = if above {
+      ((70, 15), (70, 49))
+    } else {
+      ((70, 49), (70, 15))
+    };
+    assert!(
+      red(&frame, dark.0, dark.1) < 3 && red(&frame, lit.0, lit.1) > 40,
+      "{phase}: behind the wall {}, where it was {}",
+      red(&frame, dark.0, dark.1),
+      red(&frame, lit.0, lit.1)
+    );
+  };
+  check(&mut engine, true, "one light");
+  // 299 more shadowed lights, faint and far from the pixels read
+  for _ in 0..299 {
+    engine.world_mut().spawn((
+      Transform::from_xy(120.0, 4.0),
+      Light2D::point(Color::WHITE, 4.0)
+        .with_intensity(0.001)
+        .with_shadows(),
+    ));
+  }
+  move_wall(&mut engine, false);
+  check(&mut engine, false, "300 lights");
+  check(&mut engine, false, "300 lights, the next frame");
+  set_quality(&mut engine, ShadowQuality::Low);
+  move_wall(&mut engine, true);
+  check(&mut engine, true, "low");
+  set_quality(&mut engine, ShadowQuality::Ultra);
+  move_wall(&mut engine, false);
+  check(&mut engine, false, "ultra");
+  // Settled: the frames after make no GPU resource
+  let builds = engine.shadow_atlas_builds();
+  assert!(builds >= 3, "the atlas grew and changed twice: {builds}");
+  for _ in 0..3 {
+    check(&mut engine, false, "settled");
+  }
+  assert_eq!(
+    engine.shadow_atlas_builds(),
+    builds,
+    "a settled frame built"
+  );
+}

@@ -249,8 +249,8 @@ impl ShadowQuality {
     }
   }
 
-  /// Look-ups the shadow filter makes
-  #[expect(dead_code, reason = "a later shadow map's filter reads it")]
+  /// Look-ups a soft shadow's filter makes (its blocker search half as
+  /// many)
   pub(crate) const fn taps(self) -> u32 {
     match self {
       Self::Low => 4,

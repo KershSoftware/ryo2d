@@ -57,8 +57,8 @@ pub enum Light2D {
     falloff: f32,
     /// Whether this light casts shadows
     cast_shadows: bool,
-    /// How much light shadows let through away from the light (0.0 = hard;
-    /// see [`Light2D::with_soft_shadows`])
+    /// The radius of the light's source in pixels, which softens its
+    /// shadows' edges (0.0 = hard; see [`Light2D::with_soft_shadows`])
     shadow_softness: f32,
     /// Shadow color (default black, can be tinted for colored shadows)
     shadow_color: Color,
@@ -84,8 +84,8 @@ pub enum Light2D {
     softness: f32,
     /// Whether this light casts shadows
     cast_shadows: bool,
-    /// How much light shadows let through away from the light (0.0 = hard;
-    /// see [`Light2D::with_soft_shadows`])
+    /// The radius of the light's source in pixels, which softens its
+    /// shadows' edges (0.0 = hard; see [`Light2D::with_soft_shadows`])
     shadow_softness: f32,
     /// Shadow color (default black, can be tinted for colored shadows)
     shadow_color: Color,
@@ -328,22 +328,25 @@ impl Light2D {
     self
   }
 
-  /// Builder method to enable shadows that fade with distance from the light
+  /// Builder method to enable soft shadows, from a light whose source is
+  /// `size_px` pixels in radius
   ///
-  /// A shadow starts whole at the light and fades over the first
-  /// `softness / 2` of the light's radius, beyond which it lets `softness`
-  /// of the light through: 0.5 keeps half the light past a quarter of the
-  /// radius. The shadow's outline stays sharp.
+  /// A shadow's edge is a penumbra that widens with distance from its
+  /// occluder: sharp where the occluder meets its shadow, softer farther
+  /// away, and softer for a bigger source. 0 is a hard edge (as
+  /// [`with_shadows`](Self::with_shadows)). A size that is not finite or is
+  /// below 0 is 0.
   ///
   /// # Arguments
-  /// * `softness` - How much light the shadow lets through (0.0 = hard, 1.0 = fades out)
-  pub fn with_soft_shadows(mut self, softness: f32) -> Self {
+  /// * `size_px` - The radius of the light's source in pixels (0.0 = hard)
+  pub fn with_soft_shadows(mut self, size_px: f32) -> Self {
     self.set_cast_shadows(true);
-    self.set_shadow_softness(softness);
+    self.set_shadow_softness(size_px);
     self
   }
 
-  /// Get the shadow softness of this light
+  /// The radius of the light's source in pixels, which softens its
+  /// shadows' edges (0.0 = hard; see [`Light2D::with_soft_shadows`])
   pub fn shadow_softness(&self) -> f32 {
     match self {
       Self::Point {
@@ -355,10 +358,16 @@ impl Light2D {
     }
   }
 
-  /// Set how much light the light's shadows let through away from the light
-  /// (0.0 = hard, 1.0 = fades out; see [`Light2D::with_soft_shadows`])
-  pub fn set_shadow_softness(&mut self, softness: f32) {
-    let s = softness.clamp(0.0, 1.0);
+  /// Set the radius of the light's source in pixels: 0 is a hard edge, and
+  /// a shadow's edge widens with distance from its occluder (see
+  /// [`Light2D::with_soft_shadows`]). A size that is not finite or is below
+  /// 0 is 0.
+  pub fn set_shadow_softness(&mut self, size_px: f32) {
+    let s = if size_px.is_finite() {
+      size_px.max(0.0)
+    } else {
+      0.0
+    };
     match self {
       Self::Point {
         shadow_softness, ..
@@ -534,6 +543,18 @@ mod tests {
     assert_eq!(light.intensity(), 1.0);
     assert!(!light.casts_shadows());
     assert!(light.volumetric().is_none());
+  }
+
+  #[test]
+  fn a_soft_shadow_s_size_is_pixels_and_never_below_zero() {
+    let light = Light2D::point(Color::WHITE, 100.0).with_soft_shadows(12.0);
+    assert!(light.casts_shadows());
+    assert_eq!(light.shadow_softness(), 12.0, "pixels, not clamped to 1");
+    for size in [-3.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+      let mut light = light.clone();
+      light.set_shadow_softness(size);
+      assert_eq!(light.shadow_softness(), 0.0, "{size}");
+    }
   }
 
   #[test]
