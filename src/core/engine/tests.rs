@@ -2750,6 +2750,94 @@ mod console {
     );
   }
 
+  /// A console open and focused, in the engine's real frame
+  fn open_console() -> Engine {
+    let mut e = plain();
+    e.config.debug.dev_console = true;
+    step(&mut e);
+    type_key(&mut e, KeyCode::Backquote, "`");
+    assert!(e.world.resource::<Console>().visible);
+    e
+  }
+
+  fn key(e: &mut Engine, key: KeyCode, pressed: bool) {
+    frame_with(e, vec![InputEvent::Key { key, pressed }]);
+  }
+
+  fn idle(e: &mut Engine, frames: usize) {
+    for _ in 0..frames {
+      step(e);
+    }
+  }
+
+  #[test]
+  fn a_modifier_held_from_an_earlier_frame_still_pastes() {
+    let _clipboard = crate::core::clipboard::FakeClipboard::holding(Some("pasted"));
+    for modifier in [KeyCode::SuperLeft, KeyCode::ControlLeft] {
+      let mut e = open_console();
+      key(&mut e, modifier, true);
+      idle(&mut e, 3);
+      key(&mut e, KeyCode::KeyV, true);
+      assert_eq!(typed(&e), "pasted", "{modifier:?}");
+    }
+  }
+
+  #[test]
+  fn shift_held_from_an_earlier_frame_selects() {
+    let mut e = open_console();
+    frame_with(&mut e, vec![InputEvent::Text("abc".into())]);
+    key(&mut e, KeyCode::ShiftLeft, true);
+    idle(&mut e, 3);
+    tap(&mut e, KeyCode::ArrowLeft);
+    tap(&mut e, KeyCode::ArrowLeft);
+    frame_with(&mut e, vec![InputEvent::Text("x".into())]);
+    assert_eq!(typed(&e), "ax");
+  }
+
+  #[test]
+  fn a_held_v_pastes_once_through_key_repeats() {
+    let _clipboard = crate::core::clipboard::FakeClipboard::holding(Some("p"));
+    let mut e = open_console();
+    key(&mut e, KeyCode::SuperLeft, true);
+    key(&mut e, KeyCode::KeyV, true);
+    for _ in 0..4 {
+      key(&mut e, KeyCode::KeyV, true);
+    }
+    assert_eq!(typed(&e), "p", "one paste for the press and its repeats");
+    key(&mut e, KeyCode::KeyV, false);
+    key(&mut e, KeyCode::KeyV, true);
+    assert_eq!(typed(&e), "pp");
+  }
+
+  #[test]
+  fn cmd_held_types_nothing() {
+    let _clipboard = crate::core::clipboard::FakeClipboard::holding(Some("clip"));
+    let mut e = open_console();
+    key(&mut e, KeyCode::SuperLeft, true);
+    idle(&mut e, 2);
+    frame_with(
+      &mut e,
+      vec![
+        InputEvent::Key {
+          key: KeyCode::KeyV,
+          pressed: true,
+        },
+        InputEvent::Text("v".into()),
+      ],
+    );
+    assert_eq!(typed(&e), "clip");
+  }
+
+  #[test]
+  fn altgr_text_is_typed() {
+    let mut e = open_console();
+    key(&mut e, KeyCode::ControlLeft, true);
+    key(&mut e, KeyCode::AltRight, true);
+    idle(&mut e, 2);
+    frame_with(&mut e, vec![InputEvent::Text("{".into())]);
+    assert_eq!(typed(&e), "{");
+  }
+
   #[test]
   fn the_console_key_closes_the_console_whatever_its_line_holds() {
     let mut e = plain();

@@ -845,7 +845,12 @@ fn frame(
   if !text.is_empty() {
     input.handle_text_input(text);
   }
-  console.handle_input(input)
+  let line = console.handle_input(input);
+  // As `console_tick` does: a focused console keeps the keyboard from the game
+  if console.is_focused() {
+    input.clear_keyboard_state();
+  }
+  line
 }
 
 /// An open console whose line is `line`, the cursor at byte `cursor`

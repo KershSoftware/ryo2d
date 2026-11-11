@@ -420,7 +420,7 @@ mod tests {
       let drawn: Vec<UiCommand> = commands.commands().cloned().collect();
       drawn
     };
-    let drawn = draw(1..3);
+    let drawn = draw(1..7);
     let rect_at = drawn
       .iter()
       .position(|c| matches!(c, UiCommand::Rect { fill, .. } if *fill == colors::SELECTION));
@@ -438,7 +438,23 @@ mod tests {
     let UiCommand::Text { origin, .. } = &drawn[text_at] else {
       unreachable!()
     };
-    assert!(rect.x > origin.x, "it starts after the `a`");
+    let style = console_style();
+    let measure = |part: &str| {
+      let (mut commands, mut text) = (
+        UiCommands::default(),
+        crate::core::ui::test_util::text_engine(),
+      );
+      let ui = crate::core::ui::test_util::context(&mut commands, &mut text, (1280.0, 720.0));
+      ui.measure_text(part, &style).x
+    };
+    assert!(
+      (rect.x - origin.x - measure("a")).abs() < 0.01,
+      "after the `a`"
+    );
+    assert!(
+      (rect.width - measure("\u{e9}\u{1F600}")).abs() < 0.01,
+      "as wide as the selected text measures"
+    );
     assert!(rect.width > 0.0);
     // Nothing is drawn for no selection
     let none = draw(2..2);

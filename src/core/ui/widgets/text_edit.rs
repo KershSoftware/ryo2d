@@ -16,6 +16,7 @@ const CARET_MARGIN: f32 = 2.0;
 /// What `TextEdit::handle_input` reads of a frame's input: the UI's snapshot
 /// (`UiInput`) for a text field, the engine's `Input` for the console
 pub(crate) trait EditInput {
+  /// Held now (across frames)
   fn key_down(&self, key: KeyCode) -> bool;
   fn key_pressed(&self, key: KeyCode) -> bool;
   /// Pressed this frame, or auto-repeating
@@ -40,8 +41,10 @@ impl EditInput for UiInput {
 }
 
 impl EditInput for crate::core::input::Input {
+  // The console clears the keyboard's state each frame to keep it from the
+  // game, so the keys it holds come from the physical set
   fn key_down(&self, key: KeyCode) -> bool {
-    crate::core::input::Input::key_down(self, key)
+    self.key_physically_held(key)
   }
   fn key_pressed(&self, key: KeyCode) -> bool {
     crate::core::input::Input::key_pressed(self, key)
@@ -355,11 +358,7 @@ impl TextEdit {
     self.clamp_to(text);
     let mut out = EditOutcome::default();
     let shift = input.key_down(KeyCode::ShiftLeft) || input.key_down(KeyCode::ShiftRight);
-    // Ctrl on Windows and Linux, Cmd on macOS
-    let ctrl = input.key_down(KeyCode::ControlLeft)
-      || input.key_down(KeyCode::ControlRight)
-      || input.key_down(KeyCode::SuperLeft)
-      || input.key_down(KeyCode::SuperRight);
+    let ctrl = shortcut_held(input);
 
     // One paste per press of V
     if !input.key_down(KeyCode::KeyV) {
@@ -417,23 +416,41 @@ impl TextEdit {
   }
 }
 
+/// Whether a shortcut key is held: Cmd on macOS, Ctrl on Windows and Linux.
+/// Ctrl with Alt is AltGr on many layouts and types characters (`@`, `{`),
+/// so it is no shortcut.
+fn shortcut_held(input: &impl EditInput) -> bool {
+  let held = |a, b| input.key_down(a) || input.key_down(b);
+  held(KeyCode::SuperLeft, KeyCode::SuperRight)
+    || (held(KeyCode::ControlLeft, KeyCode::ControlRight)
+      && !held(KeyCode::AltLeft, KeyCode::AltRight))
+}
+
 /// `text` as one line: each line break (`\r\n` counts once) and tab is a
-/// space, other control characters are dropped, and trailing spaces go
+/// space, other control characters are dropped, and the spaces the breaks
+/// at the end left are trimmed
 fn one_line(text: &str) -> String {
   let mut chars = text.chars().peekable();
   let mut line = String::with_capacity(text.len());
+  // Spaces at the end of `line` that came from line breaks
+  let mut break_spaces = 0;
   while let Some(c) = chars.next() {
     match c {
-      '\r' => {
-        chars.next_if_eq(&'\n');
+      '\r' | '\n' => {
+        if c == '\r' {
+          chars.next_if_eq(&'\n');
+        }
         line.push(' ');
+        break_spaces += 1;
+        continue;
       }
-      '\n' | '\t' => line.push(' '),
-      c if c.is_control() => {}
+      '\t' => line.push(' '),
+      c if c.is_control() => continue,
       c => line.push(c),
     }
+    break_spaces = 0;
   }
-  line.truncate(line.trim_end_matches(' ').len());
+  line.truncate(line.len() - break_spaces);
   line
 }
 
@@ -464,6 +481,51 @@ fn next_boundary(text: &str, pos: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
+  /// Keys held and text typed, for the shortcut rule
+  struct Held(Vec<KeyCode>, &'static str);
+
+  impl EditInput for Held {
+    fn key_down(&self, key: KeyCode) -> bool {
+      self.0.contains(&key)
+    }
+    fn key_pressed(&self, _: KeyCode) -> bool {
+      false
+    }
+    fn key_repeat(&self, _: KeyCode) -> bool {
+      false
+    }
+    fn text_input(&self) -> &str {
+      self.1
+    }
+  }
+
+  #[test]
+  fn ctrl_with_alt_is_altgr_and_no_shortcut() {
+    use KeyCode::*;
+    assert!(shortcut_held(&Held(vec![ControlLeft], "")));
+    assert!(shortcut_held(&Held(vec![SuperRight], "")));
+    assert!(shortcut_held(&Held(vec![SuperLeft, AltLeft], "")));
+    assert!(!shortcut_held(&Held(vec![ControlLeft, AltRight], "")));
+    assert!(!shortcut_held(&Held(vec![AltLeft], "")));
+    // AltGr's text is typed
+    let (mut text, mut edit) = (String::new(), TextEdit::default());
+    edit.handle_input(&mut text, &Held(vec![ControlLeft, AltRight], "{"), None);
+    assert_eq!(text, "{");
+    let mut text = String::new();
+    edit.handle_input(&mut text, &Held(vec![ControlLeft], "v"), None);
+    assert_eq!(text, "", "a shortcut types nothing");
+  }
+
+  #[test]
+  fn one_line_trims_only_the_spaces_the_final_breaks_left() {
+    assert_eq!(one_line("ab  "), "ab  ");
+    assert_eq!(one_line("ab\n"), "ab");
+    assert_eq!(one_line("ab\r\n\n"), "ab");
+    assert_eq!(one_line("a\nb\t"), "a b ");
+    assert_eq!(one_line("a\r\nb"), "a b");
+    assert_eq!(one_line("a \n"), "a ");
+  }
+
   use super::*;
   use arboard::Clipboard;
   use serial_test::serial;

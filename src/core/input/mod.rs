@@ -206,6 +206,10 @@ pub struct Input {
 
   // Keyboard state
   keys_down: HashSet<KeyCode>,
+  /// The keys physically held: set on a press, removed on a release, and
+  /// left alone by `clear_keyboard_state`, so the developer console still
+  /// sees a modifier pressed on an earlier frame
+  keys_held: HashSet<KeyCode>,
   keys_pressed: HashSet<KeyCode>,
   keys_released: HashSet<KeyCode>,
   keys_pressed_fixed: HashSet<KeyCode>,
@@ -756,6 +760,12 @@ impl Input {
     self.keys_repeated.contains(&key)
   }
 
+  /// Whether `key` is physically held: pressed and not yet released, even
+  /// when the keyboard's state was cleared since (`clear_keyboard_state`)
+  pub(crate) fn key_physically_held(&self, key: KeyCode) -> bool {
+    self.keys_held.contains(&key)
+  }
+
   /// Handle a keyboard event (applied at once)
   pub(crate) fn handle_keyboard(&mut self, key: KeyCode, state: ElementState) {
     match state {
@@ -767,11 +777,13 @@ impl Input {
           self.last_device = InputDevice::Keyboard;
         }
         self.keys_down.insert(key);
+        self.keys_held.insert(key);
         // Always register in keys_repeated (includes initial press and repeats)
         self.keys_repeated.insert(key);
       }
       ElementState::Released => {
         self.keys_down.remove(&key);
+        self.keys_held.remove(&key);
         self.keys_released.insert(key);
         self.keys_released_fixed.insert(key);
       }
