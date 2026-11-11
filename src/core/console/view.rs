@@ -129,11 +129,24 @@ impl Console {
     draw_line(ui, prompt, prompt_x, input_text_y, prompt_color);
 
     let text_x = prompt_x + prompt_width;
+    // The selection, behind the text; its edges are measured as the text is
+    if self.focused
+      && let Some(range) = self.edit.selection()
+      && let (Some(before), Some(selected)) = (
+        self.input_buffer.get(..range.start),
+        self.input_buffer.get(range),
+      )
+    {
+      let start_x = text_x + ui.measure_text(before, &style).x;
+      let width = ui.measure_text(selected, &style).x;
+      let rect = Rect::new(start_x, input_y + 4.0, width, input_height - 8.0);
+      ui.draw_rect(rect, colors::SELECTION);
+    }
     draw_line(ui, &self.input_buffer, text_x, input_text_y, text_color);
 
     // Draw cursor (blinking) - only when focused
-    if self.focused && self.cursor_blink_timer < 0.5 {
-      let cursor_text = &self.input_buffer[..self.cursor_pos];
+    if self.focused && self.edit.caret_shown() {
+      let cursor_text = self.input_buffer.get(..self.edit.cursor()).unwrap_or("");
       let cursor_x = text_x + ui.measure_text(cursor_text, &style).x;
       let cursor_rect = Rect::new(cursor_x, input_y + 4.0, 2.0, input_height - 8.0);
       ui.draw_rect(cursor_rect, colors::CURSOR);
@@ -385,6 +398,55 @@ mod tests {
     assert!((widths[0] - widths[1]).abs() < 0.5, "monospace: {widths:?}");
     assert_eq!(console.line_height, expected);
     assert!(console.title_bar_height() >= expected + 10.0);
+  }
+
+  #[test]
+  fn the_selection_is_drawn_behind_its_text() {
+    use crate::core::ui::immediate::{UiCommand, UiCommands};
+    let line = "a\u{e9}\u{1F600}b";
+    let draw = |selected: std::ops::Range<usize>| {
+      let mut console = Console::new();
+      console.toggle();
+      console.input_buffer = line.to_string();
+      console.edit.set_cursor(line, selected.start, false);
+      console.edit.set_cursor(line, selected.end, true);
+      let (mut commands, mut text) = (
+        UiCommands::default(),
+        crate::core::ui::test_util::text_engine(),
+      );
+      let mut ui = crate::core::ui::test_util::context(&mut commands, &mut text, (1280.0, 720.0));
+      console.render(&mut ui, 1280, 720);
+      drop(ui);
+      let drawn: Vec<UiCommand> = commands.commands().cloned().collect();
+      drawn
+    };
+    let drawn = draw(1..3);
+    let rect_at = drawn
+      .iter()
+      .position(|c| matches!(c, UiCommand::Rect { fill, .. } if *fill == colors::SELECTION));
+    let text_at = drawn
+      .iter()
+      .position(|c| matches!(c, UiCommand::Text { layout, .. } if layout.text() == line));
+    let (Some(rect_at), Some(text_at)) = (rect_at, text_at) else {
+      panic!("a selection rectangle and the line's text are drawn");
+    };
+    assert!(rect_at < text_at, "behind the text");
+    // `\u{e9}` is two bytes but one monospace cell, as wide as `a`
+    let UiCommand::Rect { rect, .. } = &drawn[rect_at] else {
+      unreachable!()
+    };
+    let UiCommand::Text { origin, .. } = &drawn[text_at] else {
+      unreachable!()
+    };
+    assert!(rect.x > origin.x, "it starts after the `a`");
+    assert!(rect.width > 0.0);
+    // Nothing is drawn for no selection
+    let none = draw(2..2);
+    assert!(
+      !none
+        .iter()
+        .any(|c| { matches!(c, UiCommand::Rect { fill, .. } if *fill == colors::SELECTION) })
+    );
   }
 
   /// Draw `console` once into a `width` x `height` UI

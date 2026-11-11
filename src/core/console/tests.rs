@@ -1,6 +1,8 @@
 //! The console's own tests (its drawing's are in `view.rs`).
 
 use super::*;
+use crate::core::clipboard::FakeClipboard;
+use winit::event::ElementState;
 
 #[test]
 fn the_console_names_no_network_code() {
@@ -31,7 +33,7 @@ fn test_console_new_initial_state() {
   assert!(!console.visible);
   assert!(console.focused);
   assert!(console.input_buffer.is_empty());
-  assert_eq!(console.cursor_pos, 0);
+  assert_eq!(console.edit.cursor(), 0);
   assert_eq!(console.scroll_offset, 0.0);
   // Welcome message adds lines
   assert!(!console.output_lines.is_empty());
@@ -158,7 +160,7 @@ fn submitting_a_command_jumps_to_the_bottom_but_other_output_does_not() {
   );
   assert_eq!(console.unseen_lines, 1);
   console.input_buffer = "help".to_string();
-  console.cursor_pos = 4;
+  console.edit.set_cursor("help", 4, false);
   input.queue(crate::core::input::InputEvent::Key {
     key: KeyCode::Enter,
     pressed: true,
@@ -312,14 +314,15 @@ fn test_console_update_increments_time() {
 }
 
 #[test]
-fn test_console_cursor_blink_timer_wraps() {
+fn test_console_cursor_blink_wraps() {
   let mut console = Console::new();
   console.visible = true;
-  console.cursor_blink_timer = 0.9;
+  console.edit.tick(0.9);
+  assert!(!console.edit.caret_shown());
 
   console.update(0.2); // Push past 1.0
 
-  assert!(console.cursor_blink_timer < 0.2); // Should wrap around
+  assert!(console.edit.caret_shown()); // Wrapped around
 }
 
 // ============================================================================
@@ -815,4 +818,265 @@ fn test_focus_state_unfocused_after_outside_click() {
 
   console.focused = false;
   assert!(!console.is_focused());
+}
+
+// ============================================================================
+// Editing the input line
+// ============================================================================
+
+const SHIFT: KeyCode = KeyCode::ShiftLeft;
+const CMD: KeyCode = KeyCode::SuperLeft;
+const CTRL: KeyCode = KeyCode::ControlLeft;
+
+use ElementState::{Pressed, Released};
+
+/// One frame as the engine runs it: keys change, `text` is typed, then the
+/// console reads. Returns a submitted command.
+fn frame(
+  console: &mut Console,
+  input: &mut Input,
+  keys: &[(KeyCode, ElementState)],
+  text: &str,
+) -> Option<String> {
+  input.begin_frame();
+  for &(key, state) in keys {
+    input.handle_keyboard(key, state);
+  }
+  if !text.is_empty() {
+    input.handle_text_input(text);
+  }
+  console.handle_input(input)
+}
+
+/// An open console whose line is `line`, the cursor at byte `cursor`
+fn console_with(line: &str, cursor: usize) -> (Console, Input) {
+  let mut console = Console::new();
+  console.toggle();
+  console.input_buffer = line.to_string();
+  console.edit.set_cursor(line, cursor, false);
+  console.tab_line = Some("stale".to_string());
+  (console, Input::new())
+}
+
+/// Hold `modifier`, tap `key`, release both
+fn chord(console: &mut Console, input: &mut Input, modifier: KeyCode, key: KeyCode) {
+  frame(console, input, &[(modifier, Pressed), (key, Pressed)], "");
+  frame(console, input, &[(key, Released), (modifier, Released)], "");
+}
+
+fn tap(console: &mut Console, input: &mut Input, key: KeyCode) {
+  frame(console, input, &[(key, Pressed)], "");
+  frame(console, input, &[(key, Released)], "");
+}
+
+#[test]
+fn cmd_v_pastes_the_clipboard_at_the_cursor() {
+  let _clipboard = FakeClipboard::holding(Some("MID"));
+  let (mut console, mut input) = console_with("abcd", 2);
+  console.edit.tick(0.7);
+  frame(
+    &mut console,
+    &mut input,
+    &[(CMD, Pressed), (KeyCode::KeyV, Pressed)],
+    "",
+  );
+  assert_eq!(console.input_buffer, "abMIDcd");
+  assert_eq!(console.edit.cursor(), 5);
+  assert!(console.edit.caret_shown(), "the blink restarts");
+  assert!(console.tab_line.is_none(), "Tab completion starts afresh");
+}
+
+#[test]
+fn ctrl_v_pastes_too() {
+  let _clipboard = FakeClipboard::holding(Some("pasted"));
+  let (mut console, mut input) = console_with("", 0);
+  chord(&mut console, &mut input, CTRL, KeyCode::KeyV);
+  assert_eq!(console.input_buffer, "pasted");
+  assert_eq!(console.edit.cursor(), 6);
+}
+
+#[test]
+fn a_paste_is_made_one_line() {
+  let _clipboard = FakeClipboard::holding(Some("say \"hi\"\r\nnext\tline\u{7}\n"));
+  let (mut console, mut input) = console_with("", 0);
+  chord(&mut console, &mut input, CMD, KeyCode::KeyV);
+  assert_eq!(console.input_buffer, "say \"hi\" next line");
+}
+
+#[test]
+fn a_paste_is_cut_at_the_line_limit() {
+  let _clipboard = FakeClipboard::holding(Some(&"a".repeat(MAX_INPUT_CHARS + 50)));
+  let (mut console, mut input) = console_with("", 0);
+  chord(&mut console, &mut input, CMD, KeyCode::KeyV);
+  assert_eq!(console.input_buffer.chars().count(), MAX_INPUT_CHARS);
+}
+
+#[test]
+fn one_press_of_v_pastes_once() {
+  let _clipboard = FakeClipboard::holding(Some("x"));
+  let (mut console, mut input) = console_with("", 0);
+  frame(
+    &mut console,
+    &mut input,
+    &[(CTRL, Pressed), (KeyCode::KeyV, Pressed)],
+    "",
+  );
+  for _ in 0..3 {
+    frame(&mut console, &mut input, &[], "");
+  }
+  assert_eq!(console.input_buffer, "x");
+  frame(&mut console, &mut input, &[(KeyCode::KeyV, Released)], "");
+  frame(&mut console, &mut input, &[(KeyCode::KeyV, Pressed)], "");
+  assert_eq!(console.input_buffer, "xx");
+}
+
+#[test]
+fn a_shortcut_types_nothing() {
+  let _clipboard = FakeClipboard::holding(None);
+  let (mut console, mut input) = console_with("", 0);
+  frame(&mut console, &mut input, &[(CMD, Pressed)], "v");
+  assert_eq!(console.input_buffer, "");
+  assert!(!input.has_text_input(), "the text is taken all the same");
+  frame(&mut console, &mut input, &[(CMD, Released)], "v");
+  assert_eq!(console.input_buffer, "v");
+}
+
+#[test]
+fn a_failed_clipboard_read_changes_nothing() {
+  let _clipboard = FakeClipboard::holding(None);
+  let (mut console, mut input) = console_with("abcd", 2);
+  chord(&mut console, &mut input, CMD, KeyCode::KeyV);
+  assert_eq!(console.input_buffer, "abcd");
+  assert_eq!(console.edit.cursor(), 2);
+  assert!(console.tab_line.is_some());
+}
+
+#[test]
+fn select_all_then_copy_puts_the_line_on_the_clipboard() {
+  let clipboard = FakeClipboard::holding(Some("old"));
+  for modifier in [CMD, CTRL] {
+    clipboard.set(Some("old"));
+    let (mut console, mut input) = console_with("help me", 2);
+    chord(&mut console, &mut input, modifier, KeyCode::KeyA);
+    assert_eq!(console.edit.selection(), Some(0..7));
+    chord(&mut console, &mut input, modifier, KeyCode::KeyC);
+    assert_eq!(clipboard.text().as_deref(), Some("help me"));
+    assert_eq!(console.input_buffer, "help me", "a copy leaves the line");
+  }
+}
+
+#[test]
+fn cut_takes_the_selection_and_leaves_the_rest() {
+  let clipboard = FakeClipboard::holding(None);
+  let (mut console, mut input) = console_with("hello world", 0);
+  frame(&mut console, &mut input, &[(SHIFT, Pressed)], "");
+  for _ in 0..5 {
+    tap(&mut console, &mut input, KeyCode::ArrowRight);
+  }
+  frame(&mut console, &mut input, &[(SHIFT, Released)], "");
+  chord(&mut console, &mut input, CMD, KeyCode::KeyX);
+  assert_eq!(clipboard.text().as_deref(), Some("hello"));
+  assert_eq!(console.input_buffer, " world");
+  assert_eq!(console.edit.cursor(), 0);
+  assert!(console.tab_line.is_none());
+}
+
+#[test]
+fn a_paste_replaces_the_selection() {
+  let _clipboard = FakeClipboard::holding(Some("X"));
+  let (mut console, mut input) = console_with("abcd", 0);
+  chord(&mut console, &mut input, CMD, KeyCode::KeyA);
+  chord(&mut console, &mut input, CMD, KeyCode::KeyV);
+  assert_eq!(console.input_buffer, "X");
+  assert_eq!(console.edit.selection(), None);
+}
+
+#[test]
+fn shift_arrows_select_and_typing_replaces_the_selection() {
+  let (mut console, mut input) = console_with("abcd", 4);
+  frame(&mut console, &mut input, &[(SHIFT, Pressed)], "");
+  tap(&mut console, &mut input, KeyCode::ArrowLeft);
+  tap(&mut console, &mut input, KeyCode::ArrowLeft);
+  assert_eq!(console.edit.selection(), Some(2..4));
+  tap(&mut console, &mut input, KeyCode::Home);
+  assert_eq!(
+    console.edit.selection(),
+    Some(0..4),
+    "Shift+Home reaches the start"
+  );
+  frame(&mut console, &mut input, &[(SHIFT, Released)], "");
+  tap(&mut console, &mut input, KeyCode::End);
+  assert_eq!(console.edit.selection(), None);
+  frame(&mut console, &mut input, &[(SHIFT, Pressed)], "");
+  tap(&mut console, &mut input, KeyCode::ArrowLeft);
+  tap(&mut console, &mut input, KeyCode::ArrowLeft);
+  frame(&mut console, &mut input, &[(SHIFT, Released)], "");
+  frame(&mut console, &mut input, &[], "Z");
+  assert_eq!(console.input_buffer, "abZ");
+  assert_eq!(console.edit.cursor(), 3);
+}
+
+#[test]
+fn copy_with_nothing_selected_leaves_the_clipboard_alone() {
+  let clipboard = FakeClipboard::holding(Some("keep"));
+  let (mut console, mut input) = console_with("abcd", 2);
+  chord(&mut console, &mut input, CMD, KeyCode::KeyC);
+  assert_eq!(clipboard.text().as_deref(), Some("keep"));
+  chord(&mut console, &mut input, CMD, KeyCode::KeyX);
+  assert_eq!(clipboard.text().as_deref(), Some("keep"));
+  assert_eq!(console.input_buffer, "abcd");
+}
+
+#[test]
+fn history_and_completion_put_the_cursor_at_the_end_with_no_selection() {
+  let (mut console, mut input) = console_with("", 0);
+  console.command_history = vec!["first one".to_string()];
+  frame(&mut console, &mut input, &[], "x");
+  chord(&mut console, &mut input, CMD, KeyCode::KeyA);
+  assert!(console.edit.selection().is_some());
+  tap(&mut console, &mut input, KeyCode::ArrowUp);
+  assert_eq!(console.input_buffer, "first one");
+  assert_eq!(console.edit.cursor(), 9);
+  assert_eq!(console.edit.selection(), None);
+
+  chord(&mut console, &mut input, CMD, KeyCode::KeyA);
+  tap(&mut console, &mut input, KeyCode::ArrowDown);
+  assert_eq!(console.input_buffer, "x");
+  assert_eq!(console.edit.cursor(), 1);
+  assert_eq!(console.edit.selection(), None);
+
+  console.input_buffer = "he".to_string();
+  console.edit.select_all("he");
+  console.complete(|_| vec!["help".to_string()]);
+  assert_eq!(console.input_buffer, "help ");
+  assert_eq!(console.edit.cursor(), 5);
+  assert_eq!(console.edit.selection(), None);
+}
+
+#[test]
+fn the_cursor_and_selection_respect_character_boundaries() {
+  let line = "a\u{e9}\u{1F600}b";
+  let (mut console, mut input) = console_with(line, line.len());
+  for expected in [7, 3, 1, 0] {
+    tap(&mut console, &mut input, KeyCode::ArrowLeft);
+    assert_eq!(console.edit.cursor(), expected);
+  }
+  tap(&mut console, &mut input, KeyCode::End);
+  tap(&mut console, &mut input, KeyCode::Backspace);
+  assert_eq!(console.input_buffer, "a\u{e9}\u{1F600}");
+  tap(&mut console, &mut input, KeyCode::Backspace);
+  assert_eq!(console.input_buffer, "a\u{e9}");
+  frame(&mut console, &mut input, &[(SHIFT, Pressed)], "");
+  tap(&mut console, &mut input, KeyCode::ArrowLeft);
+  frame(&mut console, &mut input, &[(SHIFT, Released)], "");
+  assert_eq!(console.edit.selection(), Some(1..3));
+  tap(&mut console, &mut input, KeyCode::Delete);
+  assert_eq!(console.input_buffer, "a");
+}
+
+#[test]
+fn a_typed_tab_is_not_typed() {
+  let (mut console, mut input) = console_with("", 0);
+  frame(&mut console, &mut input, &[], "a\tb");
+  assert_eq!(console.input_buffer, "ab");
 }

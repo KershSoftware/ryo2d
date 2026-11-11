@@ -22,6 +22,12 @@ const PADDING: i32 = 8;
 /// Rows a wheel's notch scrolls.
 const ROWS_A_NOTCH: f32 = 3.0;
 
+/// Whether the key with these modifiers copies: C with Ctrl (Windows and
+/// Linux) or Cmd (macOS)
+fn is_copy_shortcut(key: winit::keyboard::KeyCode, control: bool, super_key: bool) -> bool {
+  key == winit::keyboard::KeyCode::KeyC && (control || super_key)
+}
+
 /// The rows a scroll moves, positive toward older rows: three a wheel notch
 /// (a high-resolution wheel's fraction of one too); a trackpad's pixel delta
 /// divided by the window's scale factor (logical pixels), then by the row
@@ -218,16 +224,15 @@ impl LoggerWindow {
 
   /// Handle a window event.
   pub fn handle_event(&mut self, event: &WindowEvent) -> bool {
-    // Handle keyboard events (Ctrl+C for copy)
+    // Handle keyboard events (Ctrl+C or Cmd+C for copy)
     if let WindowEvent::KeyboardInput {
       event: key_event, ..
     } = event
       && key_event.state == winit::event::ElementState::Pressed
       && let winit::keyboard::PhysicalKey::Code(keycode) = key_event.physical_key
-      && keycode == winit::keyboard::KeyCode::KeyC
     {
       let modifiers = self.renderer.modifiers();
-      if modifiers.control_key() {
+      if is_copy_shortcut(keycode, modifiers.control_key(), modifiers.super_key()) {
         self.copy_selection();
         return true;
       }
@@ -788,6 +793,16 @@ impl LoggerWindow {
 mod tests {
   use super::*;
   use winit::dpi::PhysicalPosition;
+  use winit::keyboard::KeyCode;
+
+  #[test]
+  fn the_logger_window_copies_with_cmd_c_as_well_as_ctrl_c() {
+    assert!(is_copy_shortcut(KeyCode::KeyC, true, false));
+    assert!(is_copy_shortcut(KeyCode::KeyC, false, true));
+    assert!(!is_copy_shortcut(KeyCode::KeyC, false, false));
+    assert!(!is_copy_shortcut(KeyCode::KeyV, true, false));
+    assert!(!is_copy_shortcut(KeyCode::KeyV, false, true));
+  }
 
   #[test]
   fn a_trackpad_delta_scrolls_by_logical_pixels() {

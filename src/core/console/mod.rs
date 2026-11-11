@@ -56,6 +56,8 @@ use super::input::Input;
 #[cfg(dev_tools)]
 use super::text::{FontRole, TextStyle};
 #[cfg(dev_tools)]
+use super::ui::widgets::text_edit::TextEdit;
+#[cfg(dev_tools)]
 use super::ui::{Color, Rect};
 #[cfg(dev_tools)]
 use winit::event::MouseButton;
@@ -69,6 +71,11 @@ const MAX_OUTPUT_LINES: usize = 1000;
 /// Maximum number of commands to keep in history
 #[cfg(dev_tools)]
 const MAX_COMMAND_HISTORY: usize = 100;
+
+/// The most characters the input line holds; the line has no other limit,
+/// and a huge paste must not stall a frame
+#[cfg(dev_tools)]
+const MAX_INPUT_CHARS: usize = 4096;
 
 /// Minimum console window dimensions
 #[cfg(dev_tools)]
@@ -167,6 +174,8 @@ pub(crate) mod colors {
   pub const WARNING: Color = Color::new(255, 210, 90, 255);
   /// System message color (gray)
   pub const SYSTEM: Color = Color::new(150, 150, 150, 255);
+  /// The selected part of the input line
+  pub const SELECTION: Color = Color::new(60, 90, 150, 255);
   /// Cursor color
   pub const CURSOR: Color = Color::new(200, 200, 200, 255);
   /// Border color
@@ -252,8 +261,9 @@ pub(crate) struct Console {
   height: f32,
   /// Current input buffer
   input_buffer: String,
-  /// Cursor position in the input buffer (byte offset)
-  cursor_pos: usize,
+  /// The input line's cursor, selection, blink and paste guard (the text
+  /// field's editing state, over `input_buffer`)
+  edit: TextEdit,
   /// Output lines (newest at the end)
   output_lines: VecDeque<ConsoleLine>,
   /// Command history (newest at the end)
@@ -285,8 +295,6 @@ pub(crate) struct Console {
   wrapped_row_count: usize,
   /// Lines printed since the last render while the reader was scrolled up
   unseen_lines: usize,
-  /// Timer for cursor blink animation
-  cursor_blink_timer: f32,
   /// Total time elapsed (for timestamps)
   total_time: f32,
   /// Current drag state
@@ -340,7 +348,7 @@ impl Console {
       width: DEFAULT_WIDTH,
       height: DEFAULT_HEIGHT,
       input_buffer: String::new(),
-      cursor_pos: 0,
+      edit: TextEdit::single_line(),
       output_lines: VecDeque::with_capacity(MAX_OUTPUT_LINES),
       command_history: Vec::with_capacity(MAX_COMMAND_HISTORY),
       history_index: None,
@@ -355,7 +363,6 @@ impl Console {
       wrapped_lines: 0,
       wrapped_row_count: 0,
       unseen_lines: 0,
-      cursor_blink_timer: 0.0,
       total_time: 0.0,
       drag_state: DragState::None,
       key_held: false,
@@ -467,7 +474,7 @@ impl Console {
     self.visible = !self.visible;
     if self.visible {
       self.focused = true;
-      self.cursor_blink_timer = 0.0;
+      self.edit.reset_blink();
     }
   }
 
@@ -512,10 +519,7 @@ impl Console {
     self.total_time += dt;
     self.ease_scroll(dt);
     if self.visible {
-      self.cursor_blink_timer += dt;
-      if self.cursor_blink_timer > 1.0 {
-        self.cursor_blink_timer -= 1.0;
-      }
+      self.edit.tick(dt);
     }
   }
 
@@ -869,87 +873,24 @@ impl Console {
 
     let mut submitted_command = None;
 
-    // Handle text input (from IME or keyboard). The console key's own text
-    // never gets here when it toggles (`handle_debug_keys` takes it)
-    if input.has_text_input() {
-      let filtered: String = input
-        .text_input()
-        .chars()
-        .filter(|c| !c.is_control())
-        .collect();
-      if !filtered.is_empty() {
-        self.input_buffer.insert_str(self.cursor_pos, &filtered);
-        self.cursor_pos += filtered.len();
-        self.cursor_blink_timer = 0.0;
-        self.line_edited();
-      }
-      // Consume text so game widgets don't also process it
+    // The input line edits like a text field: typing, the cursor and
+    // selection keys, and Cmd or Ctrl with A, C, X and V. The console key's
+    // own text never gets here when it toggles (`handle_debug_keys` takes
+    // it). The text is taken either way, so game widgets do not get it
+    let had_text = input.has_text_input();
+    let edited = self
+      .edit
+      .handle_input(&mut self.input_buffer, input, Some(MAX_INPUT_CHARS));
+    if had_text {
       input.consume_text_input();
+    }
+    if edited.changed {
+      self.line_edited();
     }
 
     // Tab completes the command name; the engine has the commands
     if input.key_pressed(KeyCode::Tab) {
       self.tab_pressed = true;
-    }
-
-    // Handle special keys
-    if input.key_repeat(KeyCode::Backspace) && self.cursor_pos > 0 {
-      // Find the byte position of the previous character
-      let prev_char_boundary = self.input_buffer[..self.cursor_pos]
-        .char_indices()
-        .last()
-        .map(|(i, _)| i)
-        .unwrap_or(0);
-      self.input_buffer.drain(prev_char_boundary..self.cursor_pos);
-      self.cursor_pos = prev_char_boundary;
-      self.cursor_blink_timer = 0.0;
-      self.line_edited();
-    }
-
-    if input.key_repeat(KeyCode::Delete) && self.cursor_pos < self.input_buffer.len() {
-      // Find the byte position of the next character
-      let next_char_boundary = self.input_buffer[self.cursor_pos..]
-        .char_indices()
-        .nth(1)
-        .map(|(i, _)| self.cursor_pos + i)
-        .unwrap_or(self.input_buffer.len());
-      self.input_buffer.drain(self.cursor_pos..next_char_boundary);
-      self.cursor_blink_timer = 0.0;
-      self.line_edited();
-    }
-
-    // Left/Right arrow keys for cursor movement
-    if input.key_repeat(KeyCode::ArrowLeft) && self.cursor_pos > 0 {
-      // Find previous character boundary
-      let prev_char_boundary = self.input_buffer[..self.cursor_pos]
-        .char_indices()
-        .last()
-        .map(|(i, _)| i)
-        .unwrap_or(0);
-      self.cursor_pos = prev_char_boundary;
-      self.cursor_blink_timer = 0.0;
-    }
-
-    if input.key_repeat(KeyCode::ArrowRight) && self.cursor_pos < self.input_buffer.len() {
-      // Find next character boundary
-      let next_char_boundary = self.input_buffer[self.cursor_pos..]
-        .char_indices()
-        .nth(1)
-        .map(|(i, _)| self.cursor_pos + i)
-        .unwrap_or(self.input_buffer.len());
-      self.cursor_pos = next_char_boundary;
-      self.cursor_blink_timer = 0.0;
-    }
-
-    // Home/End keys
-    if input.key_pressed(KeyCode::Home) {
-      self.cursor_pos = 0;
-      self.cursor_blink_timer = 0.0;
-    }
-
-    if input.key_pressed(KeyCode::End) {
-      self.cursor_pos = self.input_buffer.len();
-      self.cursor_blink_timer = 0.0;
     }
 
     // Up/Down arrows for command history
@@ -968,8 +909,7 @@ impl Console {
         }
         _ => {}
       }
-      self.cursor_pos = self.input_buffer.len();
-      self.cursor_blink_timer = 0.0;
+      self.cursor_to_end();
       self.line_edited();
     }
 
@@ -985,8 +925,7 @@ impl Console {
         self.history_index = None;
         self.input_buffer = std::mem::take(&mut self.saved_input);
       }
-      self.cursor_pos = self.input_buffer.len();
-      self.cursor_blink_timer = 0.0;
+      self.cursor_to_end();
       self.line_edited();
     }
 
@@ -1024,7 +963,7 @@ impl Console {
 
       // Clear input state
       self.input_buffer.clear();
-      self.cursor_pos = 0;
+      self.edit.set_cursor(&self.input_buffer, 0, false);
       self.history_index = None;
       self.saved_input.clear();
       self.line_edited();
@@ -1077,8 +1016,14 @@ impl Console {
   /// Replace the input line, the cursor at its end
   fn set_input(&mut self, line: String) {
     self.input_buffer = line;
-    self.cursor_pos = self.input_buffer.len();
-    self.cursor_blink_timer = 0.0;
+    self.cursor_to_end();
+  }
+
+  /// The cursor after the line's last character, nothing selected
+  fn cursor_to_end(&mut self) {
+    self
+      .edit
+      .set_cursor(&self.input_buffer, self.input_buffer.len(), false);
   }
 
   /// Mirror the log from the record after `seq` on, with the ring's

@@ -13,6 +13,47 @@ pub(crate) const CARET_BLINK: f32 = 0.5;
 /// Room kept between the caret and the field's right edge when it scrolls
 const CARET_MARGIN: f32 = 2.0;
 
+/// What `TextEdit::handle_input` reads of a frame's input: the UI's snapshot
+/// (`UiInput`) for a text field, the engine's `Input` for the console
+pub(crate) trait EditInput {
+  fn key_down(&self, key: KeyCode) -> bool;
+  fn key_pressed(&self, key: KeyCode) -> bool;
+  /// Pressed this frame, or auto-repeating
+  fn key_repeat(&self, key: KeyCode) -> bool;
+  /// The frame's typed and committed text (reading it may consume it)
+  fn text_input(&self) -> &str;
+}
+
+impl EditInput for UiInput {
+  fn key_down(&self, key: KeyCode) -> bool {
+    UiInput::key_down(self, key)
+  }
+  fn key_pressed(&self, key: KeyCode) -> bool {
+    UiInput::key_pressed(self, key)
+  }
+  fn key_repeat(&self, key: KeyCode) -> bool {
+    UiInput::key_repeat(self, key)
+  }
+  fn text_input(&self) -> &str {
+    UiInput::text_input(self)
+  }
+}
+
+impl EditInput for crate::core::input::Input {
+  fn key_down(&self, key: KeyCode) -> bool {
+    crate::core::input::Input::key_down(self, key)
+  }
+  fn key_pressed(&self, key: KeyCode) -> bool {
+    crate::core::input::Input::key_pressed(self, key)
+  }
+  fn key_repeat(&self, key: KeyCode) -> bool {
+    crate::core::input::Input::key_repeat(self, key)
+  }
+  fn text_input(&self) -> &str {
+    crate::core::input::Input::text_input(self)
+  }
+}
+
 /// What one frame of keys did to the text
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) struct EditOutcome {
@@ -41,9 +82,22 @@ pub(crate) struct TextEdit {
   /// happens once per press. It also blocks typed text while set: on
   /// Windows an IME may commit the clipboard's text alongside Ctrl+V.
   paste_guard: bool,
+  /// The text is one line (the console's input line): typed text drops its
+  /// control characters, and a paste makes line breaks and tabs spaces and
+  /// trims the spaces a final line break leaves
+  single_line: bool,
 }
 
 impl TextEdit {
+  /// An edit over a single line of text (see `single_line`)
+  #[cfg(dev_tools)]
+  pub(crate) fn single_line() -> Self {
+    Self {
+      single_line: true,
+      ..Self::default()
+    }
+  }
+
   /// The caret (byte index)
   pub(crate) fn cursor(&self) -> usize {
     self.cursor
@@ -119,7 +173,7 @@ impl TextEdit {
   }
 
   /// Show the caret from now (it moved or the text changed)
-  fn reset_blink(&mut self) {
+  pub(crate) fn reset_blink(&mut self) {
     self.blink = 0.0;
   }
 
@@ -274,6 +328,9 @@ impl TextEdit {
     let Ok(pasted) = crate::core::clipboard::get_text() else {
       return false;
     };
+    if self.single_line {
+      return self.insert(text, &one_line(&pasted), max_len);
+    }
     let clean: String = pasted
       .chars()
       .filter_map(|c| match c {
@@ -292,7 +349,7 @@ impl TextEdit {
   pub(crate) fn handle_input(
     &mut self,
     text: &mut String,
-    input: &UiInput,
+    input: &impl EditInput,
     max_len: Option<usize>,
   ) -> EditOutcome {
     self.clamp_to(text);
@@ -313,7 +370,12 @@ impl TextEdit {
     // IME's copy of a paste
     let typed = input.text_input();
     if !typed.is_empty() && !ctrl && !self.paste_guard {
-      out.changed |= self.insert(text, typed, max_len);
+      out.changed |= if self.single_line {
+        let typed: String = typed.chars().filter(|c| !c.is_control()).collect();
+        self.insert(text, &typed, max_len)
+      } else {
+        self.insert(text, typed, max_len)
+      };
     }
 
     // Held arrows, Backspace and Delete repeat
@@ -353,6 +415,26 @@ impl TextEdit {
     out.submitted = input.key_pressed(KeyCode::Enter) || input.key_pressed(KeyCode::NumpadEnter);
     out
   }
+}
+
+/// `text` as one line: each line break (`\r\n` counts once) and tab is a
+/// space, other control characters are dropped, and trailing spaces go
+fn one_line(text: &str) -> String {
+  let mut chars = text.chars().peekable();
+  let mut line = String::with_capacity(text.len());
+  while let Some(c) = chars.next() {
+    match c {
+      '\r' => {
+        chars.next_if_eq(&'\n');
+        line.push(' ');
+      }
+      '\n' | '\t' => line.push(' '),
+      c if c.is_control() => {}
+      c => line.push(c),
+    }
+  }
+  line.truncate(line.trim_end_matches(' ').len());
+  line
 }
 
 /// `byte` moved back to a character boundary of `text`, at most its length
