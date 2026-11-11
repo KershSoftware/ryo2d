@@ -15,6 +15,7 @@ pub fn execute(args: &[String]) -> CliResult<()> {
     return Ok(());
   }
 
+  let options = BuildOptions::from_args(args)?;
   let workspace = discover_workspace()?;
   let project_name = workspace.name();
   let package_name = get_cargo_package_name(&workspace)?;
@@ -35,7 +36,6 @@ pub fn execute(args: &[String]) -> CliResult<()> {
   // This allows all examples to share compiled dependencies
   let target_dir = find_workspace_target_dir(workspace.root());
 
-  let options = BuildOptions::from_args(args);
   for warning in build_warnings(options) {
     Output::warning(warning);
   }
@@ -101,10 +101,23 @@ struct BuildOptions {
 }
 
 impl BuildOptions {
-  fn from_args(args: &[String]) -> Self {
-    Self {
-      dev_tools: args.iter().any(|arg| arg == "--dev-tools"),
+  /// The options in `args` (after `build`). An argument it does not know is
+  /// an error naming it, so a misspelt `--dev-tool` cannot quietly make a
+  /// plain build.
+  fn from_args(args: &[String]) -> CliResult<Self> {
+    let mut options = Self { dev_tools: false };
+    for arg in args {
+      match arg.as_str() {
+        "--dev-tools" => options.dev_tools = true,
+        "--help" | "-h" => {}
+        other => {
+          return Err(CliError::Other(format!(
+            "unknown argument `{other}` for `ryo2d build`; valid flags: --dev-tools, --help (-h)"
+          )));
+        }
+      }
     }
+    Ok(options)
   }
 }
 
@@ -441,6 +454,8 @@ OPTIONS:
                   release build. Not for players
     -h, --help    Show this help message
 
+    Any other argument is an error.
+
 DESCRIPTION:
     Builds a production-optimized release of your game and creates
     a distributable bundle in the 'release/' directory. The build has
@@ -713,6 +728,17 @@ mod tests {
   }
 
   #[test]
+  fn an_unknown_flag_is_an_error_that_names_it_and_the_valid_flags() {
+    let Err(CliError::Other(message)) = BuildOptions::from_args(&["--dev-tool".to_string()]) else {
+      panic!("a misspelt flag must not build");
+    };
+    assert!(message.contains("`--dev-tool`"), "{message}");
+    assert!(message.contains("--dev-tools"), "{message}");
+    assert!(message.contains("--help"), "{message}");
+    assert!(BuildOptions::from_args(&["release".to_string()]).is_err());
+  }
+
+  #[test]
   fn dev_tools_adds_the_feature_and_one_warning() {
     let ws = workspace("[project]\nname = \"g\"\n");
     let args = |options: BuildOptions| -> Vec<String> {
@@ -727,8 +753,8 @@ mod tests {
       .map(|arg| arg.to_string_lossy().into_owned())
       .collect()
     };
-    let plain = BuildOptions::from_args(&[]);
-    let tools = BuildOptions::from_args(&["--dev-tools".to_string()]);
+    let plain = BuildOptions::from_args(&[]).unwrap();
+    let tools = BuildOptions::from_args(&["--dev-tools".to_string()]).unwrap();
     assert_eq!(args(plain), ["build", "--release"]);
     assert_eq!(
       args(tools),
@@ -796,7 +822,7 @@ mod tests {
       std::path::Path::new("target"),
       &embedded,
       std::path::Path::new("icon.png"),
-      BuildOptions::from_args(&[]),
+      BuildOptions::from_args(&[]).unwrap(),
     );
 
     let envs: std::collections::HashMap<OsString, Option<OsString>> = command

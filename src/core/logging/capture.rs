@@ -189,13 +189,11 @@ impl Drop for LogCapture {
     // A failing test shows its log
     if std::thread::panicking() {
       for line in self.panic_report() {
-        // `eprintln!` panics if stderr fails, and a panic in a drop while
-        // unwinding aborts the process
+        // Through the macro, so libtest puts the line in the failing test's
+        // own block; `eprintln!` panics if stderr fails, and since Rust 1.71
+        // a panic caught inside a drop while unwinding does not abort
         #[cfg(not(target_arch = "wasm32"))]
-        {
-          use std::io::Write as _;
-          let _ = writeln!(std::io::stderr(), "{line}");
-        }
+        let _ = std::panic::catch_unwind(|| eprintln!("{line}"));
         #[cfg(target_arch = "wasm32")]
         web_sys::console::error_1(&line.as_str().into());
         #[cfg(test)]

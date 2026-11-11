@@ -2168,6 +2168,7 @@ mod tests {
     );
   }
 
+  #[cfg(dev_tools)]
   #[test]
   fn the_console_draws_above_the_top_scenes_open_lists() {
     use crate::core::ui::immediate::UiCommand;
@@ -2785,6 +2786,7 @@ mod tests {
     assert_eq!(played, ["ui/click.wav", "ui/clack.wav"]);
   }
 
+  #[cfg(dev_tools)]
   #[test]
   fn a_click_on_the_console_reaches_neither_widgets_nor_gameplay() {
     use crate::core::input::{Input, InputEvent};
@@ -2871,6 +2873,7 @@ mod tests {
     assert_eq!(e.world().resource::<Seen>().button, 1);
   }
 
+  #[cfg(dev_tools)]
   #[test]
   fn every_mouse_button_over_the_console_stays_out_of_the_game() {
     use crate::core::input::{Input, InputEvent};
@@ -2945,6 +2948,7 @@ mod tests {
     assert!(e.world().resource::<Seen>().0 > 0);
   }
 
+  #[cfg(dev_tools)]
   /// A GPU engine at 800 x 600 with the console open, whose scene counts
   /// what gameplay sees of the left button; `None` without a GPU
   fn left_button_watcher() -> Option<Engine> {
@@ -2980,6 +2984,7 @@ mod tests {
     Some(e)
   }
 
+  #[cfg(dev_tools)]
   #[derive(Resource, Default, Debug, PartialEq)]
   struct LeftSeen {
     pressed: u32,
@@ -2987,6 +2992,7 @@ mod tests {
     released: u32,
   }
 
+  #[cfg(dev_tools)]
   /// One frame each: move to `from`, press, move to `to`, release
   fn drag(e: &mut Engine, from: (f32, f32), to: (f32, f32)) {
     use crate::core::input::{Input, InputEvent};
@@ -3006,6 +3012,7 @@ mod tests {
     e.frame(Some(Duration::from_micros(16_667)));
   }
 
+  #[cfg(dev_tools)]
   #[test]
   fn a_drag_begun_in_the_game_keeps_its_release_over_the_console() {
     let Some(mut e) = left_button_watcher() else {
@@ -3018,6 +3025,7 @@ mod tests {
     assert!(seen.down >= 2, "held over the console too: {seen:?}");
   }
 
+  #[cfg(dev_tools)]
   #[test]
   fn a_press_on_the_console_released_in_the_game_reaches_neither() {
     let Some(mut e) = left_button_watcher() else {
@@ -3028,6 +3036,7 @@ mod tests {
     assert_eq!(*e.world().resource::<LeftSeen>(), LeftSeen::default());
   }
 
+  #[cfg(dev_tools)]
   #[test]
   fn hit_tests_match_the_drawing_under_a_ui_scale() {
     use crate::core::input::{Input, InputEvent};
@@ -3080,6 +3089,7 @@ mod tests {
     );
   }
 
+  #[cfg(dev_tools)]
   #[test]
   fn the_console_overrides_the_cursor_only_while_it_is_the_one_under_it() {
     use crate::core::cursor::CursorStyle;
@@ -3135,6 +3145,7 @@ mod tests {
     assert_eq!(frame(&mut e, vec![mouse(319.0, 239.0)]), None, "away");
   }
 
+  #[cfg(dev_tools)]
   #[test]
   fn the_console_moves_by_the_trackpad_as_far_as_the_pointer_would() {
     struct Idle;

@@ -2347,25 +2347,26 @@ impl EngineBuilder {
 
 impl EngineBuilder {
   /// The debug switches a project with this Ryo.toml resolves to, with the
-  /// builder's calls over it (`testing::resolved_debug`). Text that is not
-  /// TOML is no project.
+  /// builder's calls over it and the launch's overrides
+  /// (`testing::resolved_debug`). Text that is not TOML is no project.
   #[cfg(not(target_arch = "wasm32"))]
-  pub(crate) fn resolved_debug(self, ryo_toml: &str) -> DebugConfig {
+  pub(crate) fn resolved_debug(self, ryo_toml: &str, profiler_requested: bool) -> DebugConfig {
     use crate::core::config::project::ProjectLayer;
     use crate::core::config::resolve::resolve_settings;
     let project = crate::core::config::Workspace::from_toml_str(ryo_toml, "game".into())
       .map(|workspace| ProjectLayer::from_workspace(&workspace))
       .unwrap_or_default();
     let settings = resolve_settings(&project, &self.overrides);
-    let mut debug = self.config.debug;
-    apply_debug_settings(&mut debug, &settings, settings.show_fps);
-    debug
+    let mut config = self.config;
+    apply_debug_settings(&mut config.debug, &settings, settings.show_fps);
+    apply_launch_overrides(&mut config, profiler_requested, None);
+    config.debug
   }
 }
 
 /// The engine's debug switches from the resolved settings, the FPS counter
 /// from the player's settings. A build without the developer tools turns
-/// every switch that shows one off, whatever the project or the builder set.
+/// them off afterwards, in [`apply_launch_overrides`], the last word.
 fn apply_debug_settings(
   debug: &mut DebugConfig,
   settings: &crate::core::config::resolve::ResolvedSettings,
@@ -2381,8 +2382,6 @@ fn apply_debug_settings(
   debug.logger_window = settings.logger_window;
   debug.dev_window_keys = settings.dev_window_keys;
   debug.dev_console = settings.dev_console;
-  #[cfg(not(dev_tools))]
-  debug.switch_tools_off();
 }
 
 /// A console call made on the builder, applied over the built-ins in order
@@ -2448,6 +2447,9 @@ impl Default for EngineBuilder {
 ///   turns the profiler on so puffin scopes are collected.
 /// - With no icon configured, an `icon.png` beside the executable (put there by
 ///   `ryo2d build`) is used; otherwise the embedded Ryo2D logo is.
+///
+/// Last, a build without the developer tools turns every switch that shows
+/// one off, whatever the project, the builder or the launch set.
 fn apply_launch_overrides(
   config: &mut EngineConfig,
   profiler_requested: bool,
@@ -2462,6 +2464,8 @@ fn apply_launch_overrides(
   {
     config.icon_path = Some(icon_path);
   }
+  #[cfg(not(dev_tools))]
+  config.debug.switch_tools_off();
 }
 
 /// Where the saves are kept: `memory` when given, else the project's save

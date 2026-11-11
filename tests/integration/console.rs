@@ -390,6 +390,40 @@ fn quit_asks_the_engine_to_quit() {
   assert_eq!(e.step().unwrap(), StepOutcome::Quit);
 }
 
+/// Counts its fixed steps
+#[derive(Default)]
+struct Steps {
+  count: u32,
+}
+
+#[derive(Resource, Default)]
+struct StepCount(u32);
+
+impl Scene for Steps {
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    self.count += 1;
+    ctx.world.insert_resource(StepCount(self.count));
+    SceneAction::Continue
+  }
+}
+
+#[test]
+fn the_frame_that_runs_quit_runs_no_fixed_step() {
+  let Some(mut e) = engine(EngineBuilder::new().start_scene(Steps::default())) else {
+    return;
+  };
+  let steps = |e: &HeadlessEngine| e.world().get_resource::<StepCount>().map_or(0, |s| s.0);
+  e.tap_key(KeyCode::Backquote);
+  assert_eq!(e.step().unwrap(), StepOutcome::Running);
+  let before = steps(&e);
+  assert!(before > 0, "the scene steps while the console is open");
+  // Typed and submitted: the frame that runs it quits, as a scene's quit does
+  e.type_text("quit");
+  e.tap_key(KeyCode::Enter);
+  assert_eq!(e.step().unwrap(), StepOutcome::Quit);
+  assert_eq!(steps(&e), before, "the quitting frame ran no fixed step");
+}
+
 #[test]
 fn an_unknown_command_says_so() {
   let Some(mut e) = engine(EngineBuilder::new().start_scene(Plain)) else {

@@ -471,8 +471,9 @@ impl Fragments {
     })
   }
 
-  /// [`kept_in`](Self::kept_in), to change
-  #[cfg(test)]
+  /// [`kept_in`](Self::kept_in), to change (the spot check's tests, which
+  /// need debug assertions)
+  #[cfg(all(test, debug_assertions))]
   pub(crate) fn kept_in_mut(&mut self, frame: u64) -> impl Iterator<Item = &mut Fragment> {
     self.slots.iter_mut().filter_map(move |at| {
       let kept = at.root != UiId::NONE && at.kept == frame;

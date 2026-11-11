@@ -412,7 +412,9 @@ fn blob_shadow_under_its_entity() {
   assert_ne!(background, [0, 0, 0, 255]);
 }
 
+/// The outlines are a developer tool: a build without them resolves them off
 #[test]
+#[cfg(dev_tools)]
 fn debug_colliders_draw() {
   let scene = Fixture::new(|ctx| {
     ctx

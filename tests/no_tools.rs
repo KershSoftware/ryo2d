@@ -119,6 +119,7 @@ fn a_project_cannot_switch_tools_on() {
     "[debug]\nconsole = true\ndev_window_keys = true\nlogger_window = true\n\
      enable_profiler = true\nshow_colliders = true\nshow_velocities = true\n\
      show_origins = true\nshow_frame_timing = true\n",
+    false,
   );
   assert!(!debug.dev_console, "console");
   assert!(!debug.dev_window_keys, "dev window keys");
@@ -131,6 +132,16 @@ fn a_project_cannot_switch_tools_on() {
   assert!(
     !debug.show_ui_debug && !debug.show_ui_rebuilds,
     "UI overlays"
+  );
+}
+
+#[test]
+fn a_launch_cannot_switch_the_profiler_on() {
+  // As `ryo2d dev --profiler` launches a game (`RYO_PROFILER_AUTO_OPEN`)
+  let debug = ryo2d::testing::resolved_debug("[debug]\nenable_profiler = true\n", true);
+  assert!(
+    !debug.enable_profiler,
+    "the launch has the last word only with tools"
   );
 }
 

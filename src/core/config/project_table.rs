@@ -1,9 +1,9 @@
 // The project settings: each Ryo.toml key that becomes an engine setting,
 // declared once. An entry gives its `ProjectLayer` field and type, its
 // section and key, the `RYO_EMBED_*` key `ryo2d build` ships it as (if any)
-// and a sample unlike the default (in the build under test, which has the
-// developer tools: the console and the dev window keys default on), for the
-// tests that check every entry.
+// and a sample unlike the default (in the build under test: the console and
+// the dev window keys default on with the developer tools, off without), for
+// the tests that check every entry.
 // `workspace_keys` are the other keys of the known sections, which the
 // workspace reads itself, and `env` is `[env]` shipped as JSON.
 //
@@ -36,8 +36,8 @@ project_settings! {
     disable_debug_keys: bool = debug.disable_debug_keys, embed "RYO_EMBED_DISABLE_DEBUG_KEYS", sample true;
     enable_profiler: bool = debug.enable_profiler, embed "RYO_EMBED_ENABLE_PROFILER", sample true;
     logger_window: bool = debug.logger_window, embed "RYO_EMBED_LOGGER_WINDOW", sample true;
-    dev_window_keys: bool = debug.dev_window_keys, embed "RYO_EMBED_DEV_WINDOW_KEYS", sample false;
-    dev_console: bool = debug.console, embed "RYO_EMBED_CONSOLE", sample false;
+    dev_window_keys: bool = debug.dev_window_keys, embed "RYO_EMBED_DEV_WINDOW_KEYS", sample !cfg!(dev_tools);
+    dev_console: bool = debug.console, embed "RYO_EMBED_CONSOLE", sample !cfg!(dev_tools);
 
     // Not embedded: a release finds icon.png beside the game
     icon: PathBuf = release.logo, sample "art/logo.png";

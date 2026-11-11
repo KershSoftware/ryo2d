@@ -94,11 +94,15 @@ pub fn set_log_stderr(on: bool) {
 }
 
 /// The engine's debug switches as a project with this Ryo.toml resolves
-/// them, over the engine's defaults (for `tests/no_tools.rs`: a build
-/// without tools turns every tool off)
+/// them, over the engine's defaults, launched with the profiler asked for
+/// (`ryo2d dev --profiler`) or not (for `tests/no_tools.rs`: a build without
+/// tools turns every tool off)
 #[doc(hidden)]
-pub fn resolved_debug(ryo_toml: &str) -> crate::core::diagnostics::DebugConfig {
-  crate::core::engine::EngineBuilder::new().resolved_debug(ryo_toml)
+pub fn resolved_debug(
+  ryo_toml: &str,
+  profiler_requested: bool,
+) -> crate::core::diagnostics::DebugConfig {
+  crate::core::engine::EngineBuilder::new().resolved_debug(ryo_toml, profiler_requested)
 }
 
 /// Where the particles of `emitter` (an entity with an engine particle

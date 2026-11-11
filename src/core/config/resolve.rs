@@ -329,6 +329,7 @@ mod tests {
   }
 
   #[test]
+  #[cfg(dev_tools)]
   fn the_console_and_dev_keys_default_on_with_tools() {
     let s = resolve_settings(&ProjectLayer::default(), &BuilderOverrides::default());
     assert!(s.dev_console, "the console is on by default");

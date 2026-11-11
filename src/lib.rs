@@ -352,7 +352,9 @@ pub mod prelude {
 
 #[cfg(test)]
 mod tests {
+  /// A debug test build (a release one is `tests/no_tools.rs`'s)
   #[test]
+  #[cfg(dev_tools)]
   #[allow(clippy::assertions_on_constants)]
   fn dev_tools_are_on_in_a_test_build() {
     assert!(crate::DEV_TOOLS);

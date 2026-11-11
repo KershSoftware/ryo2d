@@ -50,7 +50,8 @@ fn builder_only_fields_survive_resolve() {
 fn profiler_flag_turns_the_profiler_on() {
   let mut config = EngineConfig::default();
   apply_launch_overrides(&mut config, true, None);
-  assert!(config.debug.enable_profiler);
+  // Without the tools there is no profiler to turn on
+  assert_eq!(config.debug.enable_profiler, crate::DEV_TOOLS);
 
   let mut config = EngineConfig::default();
   apply_launch_overrides(&mut config, false, None);
@@ -566,9 +567,10 @@ fn builder_debug_and_background_settings_survive_ryo_toml() {
     .background_rendering(false)
     .start_scene(EmptyScene)
     .resolve_in(Some(&ws), false);
-  assert!(r.config.debug.show_colliders);
-  assert!(r.config.debug.show_velocities);
-  assert!(r.config.debug.show_origins);
+  // The outlines stay on only with the tools; without them they resolve off
+  assert_eq!(r.config.debug.show_colliders, crate::DEV_TOOLS);
+  assert_eq!(r.config.debug.show_velocities, crate::DEV_TOOLS);
+  assert_eq!(r.config.debug.show_origins, crate::DEV_TOOLS);
   assert_eq!(r.config.target_background_fps, 30);
   assert!(!r.config.background_rendering);
 }
@@ -584,7 +586,8 @@ fn ryo_toml_settings_apply_without_builder_calls() {
     .start_scene(EmptyScene)
     .resolve_in(Some(&ws), false);
   assert_eq!(r.config.title, "From Toml");
-  assert!(r.config.debug.show_colliders);
+  // A tool's switch, on only with the tools
+  assert_eq!(r.config.debug.show_colliders, crate::DEV_TOOLS);
   assert!(r.config.debug.show_fps);
   assert!(r.config.debug.disable_debug_keys);
   assert_eq!(r.config.target_background_fps, 5);
@@ -1447,6 +1450,7 @@ fn settings_changes_become_window_and_renderer_requests() {
 }
 
 #[test]
+#[cfg(dev_tools)]
 fn f1_keeps_the_fps_setting_in_step_with_the_overlay() {
   use crate::core::config::UserPreferenceFilter;
 
