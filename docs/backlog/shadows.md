@@ -44,7 +44,13 @@ Medians in microseconds:
 
 `one_light_over_cave` is the difference of two frames: the cave with no light, 615.2, 615.5 and 594.5 µs, and with the one light, 773.2, 782.7 and 813.8 µs.
 
-The 4x target for `sixty_four_lights_quarter_visible` cannot be met by this bench: its 326.7 µs is below the frame with no light at all (595 to 615 µs, `cave_unlit`). Against that floor the 64 lights cost about 300 µs a frame now (915.2 less 615), against about 716 before (1,306.9 less 590.9): 2.4x less, 1.4x faster as a whole frame. The guard stays as set and the bench exits non-zero.
+`sixty_four_lights_quarter_visible` is also measured as the lights' own cost: the frame with the 64 lights over the same still camera's frame with none (`cave_still_unlit`), as `sixty_four_lights_quarter_visible_lights`. The 4x target is held to that, since the cave's own drawing (about 540 µs) is in both frames and is not shadow work: Before it was 1,306.9 less 590.9 = 716.0 µs, so the guard is at most 179.0 µs. A second set of three runs, loads 3.74, 3.68 and 3.68 (flagged, above 3):
+
+| Bench | Before | Run 1 | Run 2 | Run 3 | After median | Guard | Verdict |
+|-------|--------|-------|-------|-------|--------------|-------|---------|
+| `sixty_four_lights_quarter_visible_lights` | 716.0 | 273.6 | 363.5 | 261.8 | 273.6 | at most 179.0 | missed in every run |
+
+The whole frames read 814.6, 914.8 and 806.0 µs (median 814.6, not guarded) over empty frames of 541.0, 551.3 and 544.3 µs. In that set `one_light_over_cave` read 160.5, 163.9 and 170.3 and `two_hundred_fifty_six_lights_in_view` 1,276.6, 1,234.3 and 1,255.8, both met. The spec's 4x target for 64 lights is not met: the lights cost 2.6x less than before (716.0 to 273.6 µs), not 4x. Where the rest goes was not measured (no per-phase timings were taken, so the split between the CPU planner and the GPU passes is unknown).
 
 ## Limits
 

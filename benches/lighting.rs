@@ -11,7 +11,8 @@
 //!   following the camera as it flies a loop over the map, minus the same
 //!   frame with no light (both are printed, as `cave_unlit` and
 //!   `cave_one_light`);
-//! - `sixty_four_lights_quarter_visible`: 64 shadowed lights of 200 px on a
+//! - `sixty_four_lights_quarter_visible` (and `_lights`, minus the same scene
+//!   with no lights, printed as `cave_still_unlit`): 64 shadowed lights of 200 px on a
 //!   fixed grid of 8 x 8 (480 x 270 px apart) over the middle of the map,
 //!   the still camera seeing 16 of them;
 //! - `two_hundred_fifty_six_lights_in_view`: 256 shadowed lights of 120 px
@@ -49,9 +50,11 @@ const ARC: f32 = 0.005;
 // (the CPU shadow volumes; three runs at a one-minute load of 3.74, flagged).
 /// `one_light_over_cave` is no slower than Before's slowest run (211.2 µs)
 const ONE_LIGHT_MAX: f64 = 211.2;
-/// `sixty_four_lights_quarter_visible` is at least 4x faster than Before's
-/// median of runs (1,306.9 µs): at most 326.7 µs
-const SIXTY_FOUR_MAX: f64 = 1306.9 / 4.0;
+/// `sixty_four_lights_quarter_visible_lights`, the frame with the lights over
+/// the same frame without them, is at least 4x cheaper than Before's: Before's
+/// median of runs less its no-light cave's median (1,306.9 - 590.9 = 716.0
+/// µs), a quarter of it
+const SIXTY_FOUR_MAX: f64 = (1306.9 - 590.9) / 4.0;
 /// `two_hundred_fifty_six_lights_in_view` is under the spec's 16,600 µs
 const MANY_MAX: f64 = 16_600.0;
 /// ... and no slower than Before's slowest run (2,684.2 µs, same table)
@@ -61,6 +64,8 @@ const MANY_BEFORE_MAX: f64 = 2684.2;
 #[derive(Clone, Copy)]
 enum Case {
   Unlit,
+  /// No lights, the camera standing still as in `Sixty4`
+  Empty,
   One,
   Sixty4,
   Many,
@@ -101,7 +106,7 @@ impl Scene for CaveScene {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
     ctx.lighting().set_ambient(AmbientLight::night());
     match self.case {
-      Case::Unlit => {}
+      Case::Unlit | Case::Empty => {}
       Case::One => {
         ctx.world.spawn((
           Transform::IDENTITY,
@@ -241,22 +246,21 @@ fn main() {
   let one_light = one - unlit;
   println!("one_light_over_cave: {one_light:.1} µs");
   held("one_light_over_cave", one_light, &[ONE_LIGHT_MAX]);
-  for (name, case, limits) in [
-    (
-      "sixty_four_lights_quarter_visible",
-      Case::Sixty4,
-      &[SIXTY_FOUR_MAX][..],
-    ),
-    (
-      "two_hundred_fifty_six_lights_in_view",
-      Case::Many,
-      &[MANY_MAX, MANY_BEFORE_MAX][..],
-    ),
-  ] {
-    if let Some(time) = measure(case) {
-      println!("{name}: {time:.1} µs");
-      held(name, time, limits);
-    }
+  if let (Some(empty), Some(lit)) = (measure(Case::Empty), measure(Case::Sixty4)) {
+    println!("cave_still_unlit: {empty:.1} µs");
+    println!("sixty_four_lights_quarter_visible: {lit:.1} µs");
+    let lights = lit - empty;
+    println!("sixty_four_lights_quarter_visible_lights: {lights:.1} µs");
+    held(
+      "sixty_four_lights_quarter_visible_lights",
+      lights,
+      &[SIXTY_FOUR_MAX],
+    );
+  }
+  if let Some(time) = measure(Case::Many) {
+    let name = "two_hundred_fifty_six_lights_in_view";
+    println!("{name}: {time:.1} µs");
+    held(name, time, &[MANY_MAX, MANY_BEFORE_MAX]);
   }
   guards::verdict(
     "lighting",
