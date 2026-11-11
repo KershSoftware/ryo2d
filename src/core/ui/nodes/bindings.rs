@@ -1081,6 +1081,8 @@ mod tests {
     assert_eq!(value, 0.7);
   }
 
+  // The warning is a debug-build aid (`warn_unset`)
+  #[cfg(debug_assertions)]
   #[test]
   fn an_unset_name_warns_when_first_drawn_not_at_spawn() {
     let log = crate::core::testing::capture_log();

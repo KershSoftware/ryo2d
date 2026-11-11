@@ -5,7 +5,7 @@ The engine's own debug overlays and frame timings. Not configuration: the Ryo.to
 | File | What |
 |------|------|
 | `mod.rs` | Module docs (debug options, F-keys, profiling workflow) and the re-exports |
-| `flags.rs` | The runtime `DebugConfig` (the switches the engine reads each frame; its dev defaults depend on `debug_assertions`) |
+| `flags.rs` | The runtime `DebugConfig` (the switches the engine reads each frame; its console and dev window keys default on in a build with the tools, `dev_tools`, and `switch_tools_off` turns every tool off in one without) |
 | `timing.rs` | `FrameTimings` (per-phase measurements), `SmoothedFrameTimings` (a plain mean until 50 frames, then an exponential average), `FrameCost` (prelude; the world resource `publish_frame_cost` writes each frame) and `time_block` |
 | `overlays.rs` | `OverlayMode` (F1 cycle), `DebugStats` and `SmoothedDebugStats`, `colors`, the collider, velocity and origin shapes (`overlay_shapes`) and the text rows (`render_fps_counter`, `render_frame_timing`, `render_stats`) |
 

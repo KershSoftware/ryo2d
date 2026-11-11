@@ -1,7 +1,7 @@
 //! Logger window: a second OS window showing the log as it is written.
 //!
 //! It follows the log's ring by sequence number in its engine's log scope
-//! (through a [`LogFeed`], which does the reading and filtering) for as long
+//! (through a `LogFeed`, `log_feed.rs`, which does the reading and filtering) for as long
 //! as it is open, and draws what the feed holds.
 
 use std::sync::Arc;

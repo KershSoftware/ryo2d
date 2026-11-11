@@ -1,7 +1,7 @@
 //! The demo's pages without a window: each runs two seconds without a
 //! warning; `game:spawn` and `game:clear` change the world, refuse a bad
 //! argument and a count over the cap; `game:say` shows a phrase;
-//! `game:paint` exists on one page only; and the Log page's keys log at their
+//! `game:paint` exists on one page only and paints its background; and the Log page's keys log at their
 //! levels, from the game and from a library target
 
 use console_demo::{LIBRARY_TARGET, MAX_SPAWN, Spawned, demo};
@@ -123,17 +123,41 @@ fn paint_exists_on_the_workshop_page_only() {
     return;
   };
   engine.step_frames(3).unwrap();
+  let painted = [10, 20, 30];
+  assert!(background_share(&engine, painted) < 0.01, "not painted yet");
   let lines = said(&engine.console_run("game:paint 10 20 30"));
   assert!(!lines.contains("Unknown command"), "{lines}");
   assert!(lines.contains("10"), "{lines}");
   // The other page's commands are not here
   let lines = said(&engine.console_run("game:spawn slime"));
   assert!(lines.contains("Unknown command"), "{lines}");
+  // The page's background takes the colour painted
+  engine.step_frames(2).unwrap();
+  let share = background_share(&engine, painted);
+  assert!(share > 0.25, "{share} of the frame is the painted colour");
   let lines = said(&engine.console_run("game:paint 10 20 999"));
   assert!(
-    lines.contains("usage") || lines.contains("number"),
+    lines.contains(r#"argument 3 ("999") is not a number; usage: game:paint <r> <g> <b>"#),
     "{lines}"
   );
+  // A refused paint leaves the background as it was
+  engine.step_frames(2).unwrap();
+  assert_eq!(background_share(&engine, painted), share);
+}
+
+/// The part of the last frame within 2 of `rgb` in each channel
+fn background_share(engine: &HeadlessEngine, rgb: [u8; 3]) -> f32 {
+  let frame = engine.frame().unwrap();
+  let near = frame
+    .pixels()
+    .filter(|pixel| {
+      pixel.0[..3]
+        .iter()
+        .zip(rgb)
+        .all(|(&got, want)| got.abs_diff(want) <= 2)
+    })
+    .count();
+  near as f32 / (frame.width() * frame.height()) as f32
 }
 
 #[test]

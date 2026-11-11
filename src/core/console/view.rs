@@ -7,6 +7,10 @@ use super::{
 };
 use crate::core::text::TextStyle;
 use crate::core::ui::{Color, Rect, UiContext};
+use glam::Vec2;
+
+/// The input line's prompt
+const PROMPT: &str = "> ";
 
 impl Console {
   /// Render the console window
@@ -98,7 +102,7 @@ impl Console {
     };
     ui.draw_rect(close_rect, close_btn_color);
     // Draw X centered in the button
-    let x_size = ui.measure_text("X", &style);
+    let (x_size, prompt_width) = self.marks(ui, &style);
     let x_text_x = close_x + (CLOSE_BUTTON_SIZE - x_size.x) / 2.0;
     let x_text_y = close_y + (CLOSE_BUTTON_SIZE - x_size.y) / 2.0;
     let close_text_color = if close_hovered && self.focused {
@@ -114,7 +118,7 @@ impl Console {
     ui.draw_rect(input_rect, input_bg_color);
 
     // Draw input prompt and text
-    let prompt = "> ";
+    let prompt = PROMPT;
     let prompt_x = x + padding;
     let input_text_y = input_y + (input_height - line_height) / 2.0;
     let prompt_color = if self.focused {
@@ -124,7 +128,7 @@ impl Console {
     };
     draw_line(ui, prompt, prompt_x, input_text_y, prompt_color);
 
-    let text_x = prompt_x + ui.measure_text(prompt, &style).x;
+    let text_x = prompt_x + prompt_width;
     draw_line(ui, &self.input_buffer, text_x, input_text_y, text_color);
 
     // Draw cursor (blinking) - only when focused
@@ -264,6 +268,21 @@ impl Console {
       end = start;
     }
     ui.pop_clip();
+  }
+
+  /// The close button's `X` and the input prompt's width, measured again
+  /// only when the UI scale changes
+  fn marks(&mut self, ui: &UiContext, style: &TextStyle) -> (Vec2, f32) {
+    let scale = ui.ui_scale();
+    if let Some((at, x, prompt)) = self.marks
+      && at == scale
+    {
+      return (x, prompt);
+    }
+    let x = ui.measure_text("X", style);
+    let prompt = ui.measure_text(PROMPT, style).x;
+    self.marks = Some((scale, x, prompt));
+    (x, prompt)
   }
 
   /// Wrap the lines not yet wrapped at `width` (every line when the width

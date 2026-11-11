@@ -814,6 +814,28 @@ impl HeadlessEngine {
     self.engine.console_run(line)
   }
 
+  /// The console's lines, oldest first (for `tests/e2e/dev_tools.rs`)
+  #[doc(hidden)]
+  #[cfg(dev_tools)]
+  pub fn console_lines(&self) -> Vec<String> {
+    self
+      .world()
+      .get_resource::<Console>()
+      .map(|console| console.lines().map(|line| line.text.clone()).collect())
+      .unwrap_or_default()
+  }
+
+  /// A logger window's reading of this engine's log, with no window: a
+  /// `LogFeed` of its log scope, from the oldest record the ring holds (for
+  /// `tests/e2e/dev_tools.rs`)
+  #[doc(hidden)]
+  #[cfg(dev_tools)]
+  pub fn log_feed(&self) -> HeadlessLogFeed {
+    HeadlessLogFeed(crate::core::windows::log_feed::LogFeed::new(
+      self.engine.log_scope(),
+    ))
+  }
+
   /// The last frame's render step on the CPU (building, uploading and
   /// encoding the frame; not the UI pass)
   #[doc(hidden)]
@@ -849,5 +871,46 @@ impl HeadlessEngine {
   #[doc(hidden)]
   pub fn ui_pass_time(&self) -> Duration {
     self.engine.ui_pass_time()
+  }
+}
+
+/// A logger window's `LogFeed` with no window, from
+/// [`HeadlessEngine::log_feed`] (for `tests/e2e/dev_tools.rs`)
+#[doc(hidden)]
+#[cfg(dev_tools)]
+pub struct HeadlessLogFeed(crate::core::windows::log_feed::LogFeed);
+
+#[cfg(dev_tools)]
+impl HeadlessLogFeed {
+  /// Takes the records logged since the last poll, as the window does each
+  /// time it draws; returns how many the filter shows
+  pub fn poll(&mut self) -> usize {
+    self.0.poll()
+  }
+
+  /// Every row kept, oldest first, as the window shows it (`target: message`
+  /// after the time, frame, level and origin)
+  pub fn rows(&self) -> Vec<String> {
+    self
+      .0
+      .rows()
+      .iter()
+      .map(crate::core::windows::log_feed::row_text)
+      .collect()
+  }
+
+  /// How many rows it keeps
+  pub fn len(&self) -> usize {
+    self.0.rows().len()
+  }
+
+  /// Whether it keeps no row
+  pub fn is_empty(&self) -> bool {
+    self.0.rows().is_empty()
+  }
+
+  /// The warnings and errors the ring dropped before the feed read them
+  pub fn missed(&self) -> u64 {
+    self.0.missed()
   }
 }

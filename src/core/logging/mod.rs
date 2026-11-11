@@ -44,6 +44,8 @@ pub(crate) use outputs::stderr_on;
 #[cfg(all(dev_tools, not(target_arch = "wasm32")))]
 pub(crate) use record::clock;
 pub use record::{LogRecord, Origin};
+#[cfg(all(dev_tools, not(target_arch = "wasm32")))]
+pub(crate) use ring::len as ring_len;
 #[cfg(dev_tools)]
 pub(crate) use ring::{
   may_have_after as records_may_follow, mirror as mirror_records, start as mirror_start,

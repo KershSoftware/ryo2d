@@ -9,7 +9,7 @@ use crate::shared::{DIM, GOOD, HOT, OPEN_LINE, draw_footer};
 /// The target of the library records the page logs
 pub const LIBRARY_TARGET: &str = "some_library";
 
-/// Key, what it logs, and the colour of its row
+/// Each row's key, the key's label and what it logs
 const ROWS: [(KeyCode, &str, &str); 7] = [
   (KeyCode::Digit1, "1", "game trace"),
   (KeyCode::Digit2, "2", "game debug"),

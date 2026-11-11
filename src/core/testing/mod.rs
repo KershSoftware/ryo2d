@@ -63,6 +63,9 @@ mod shader_gpu;
 mod tile_bleeding;
 pub(crate) mod ui;
 
+#[cfg(dev_tools)]
+#[doc(hidden)]
+pub use headless::HeadlessLogFeed;
 pub use headless::{HeadlessEngine, OffscreenOptions, StepOutcome, offscreen_with_format};
 pub use retain::PixelPair;
 #[cfg(test)]
@@ -91,6 +94,14 @@ use crate::core::time::Time;
 #[doc(hidden)]
 pub fn set_log_stderr(on: bool) {
   crate::core::logging::set_stderr(on);
+}
+
+/// How many records the log's ring holds, of every scope (for
+/// `tests/e2e/dev_tools.rs`)
+#[doc(hidden)]
+#[cfg(dev_tools)]
+pub fn log_ring_len() -> usize {
+  crate::core::logging::ring_len()
 }
 
 /// The engine's debug switches as a project with this Ryo.toml resolves

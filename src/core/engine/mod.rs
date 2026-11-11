@@ -1609,6 +1609,12 @@ impl Engine {
     &self.debug_stats
   }
 
+  /// The log scope its frames log in (the headless engine's log feed)
+  #[cfg(all(dev_tools, not(target_arch = "wasm32")))]
+  pub(crate) fn log_scope(&self) -> u64 {
+    self.log_scope
+  }
+
   /// The UI renderer, between frames (tests)
   #[cfg(test)]
   pub(crate) fn ui_renderer(&self) -> Option<&UiRenderer> {

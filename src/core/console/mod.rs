@@ -276,6 +276,9 @@ pub(crate) struct Console {
   /// wrapped at; a line is wrapped once while these hold
   wrap_width: f32,
   wrap_scale: f32,
+  /// The close button's `X` and the input prompt as measured, and the UI
+  /// scale they were measured at: measured once, not every frame
+  marks: Option<(f32, glam::Vec2, f32)>,
   /// The lines, from the oldest, whose `rows` are wrapped at `wrap_width`
   wrapped_lines: usize,
   /// Their rows altogether
@@ -348,6 +351,7 @@ impl Console {
       mouse_scale: 1.0,
       wrap_width: f32::NAN,
       wrap_scale: f32::NAN,
+      marks: None,
       wrapped_lines: 0,
       wrapped_row_count: 0,
       unseen_lines: 0,
@@ -443,7 +447,7 @@ impl Console {
   }
 
   /// The output lines, oldest first
-  #[cfg(test)]
+  #[cfg(any(test, not(target_arch = "wasm32")))]
   pub(crate) fn lines(&self) -> impl DoubleEndedIterator<Item = &ConsoleLine> {
     self.output_lines.iter()
   }

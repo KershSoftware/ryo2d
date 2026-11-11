@@ -150,6 +150,13 @@ pub(crate) fn mirror(
   }
 }
 
+/// How many records the ring holds, of every scope (the headless engine's
+/// tests)
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn len() -> usize {
+  ring().records.len()
+}
+
 /// The next sequence number to be given (tests: whether anything was logged)
 #[cfg(test)]
 pub(crate) fn next_seq() -> u64 {
