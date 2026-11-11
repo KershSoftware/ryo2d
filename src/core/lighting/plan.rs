@@ -3,6 +3,7 @@
 //! around the light), and each edge that casts their shadows is written
 //! once per view it crosses, for the atlas's draw.
 
+use std::collections::HashMap;
 use std::f32::consts::{FRAC_PI_2, FRAC_PI_4};
 
 use glam::Vec2;
@@ -19,6 +20,12 @@ pub(crate) const MAX_SHADOWED_LIGHTS: u32 = 512;
 
 /// Atlas rows a shadowed light takes: its right, down, left and up views
 const VIEWS: u32 = 4;
+
+/// How far past a spot's cone (radians) its edges still cast, so a soft
+/// edge's look-ups near the cone find them: the light shader's widest arc
+/// (`MAX_ARC` in `light.wgsl`) reaches half itself either side of a pixel,
+/// which must stay inside this
+const SPOT_CONE_MARGIN: f32 = 0.2;
 
 /// A light this near a closed occluder's boundary (px) stands on it: it is
 /// outside the occluder, and the edges it stands on cast nothing for it.
@@ -66,6 +73,78 @@ pub(crate) struct ShadowPlan {
   candidates: Vec<(f32, u32)>,
   found: Vec<Entity>,
   scratch: IndexScratch,
+  /// The edges of the closed occluders the light being planned reads
+  closed: ClosedEdges,
+}
+
+/// The edges of the closed occluders a light reads, keyed by the cells
+/// their end points fall in, to find the sides two of them share: an edge
+/// two closed occluders share exactly (one's a to b, the other's b to a)
+/// is inside what they make together, and casts for no light. Cleared and
+/// reused light to light, so a warm plan allocates nothing.
+#[derive(Default)]
+struct ClosedEdges {
+  edges: HashMap<[i64; 4], (Vec2, Vec2)>,
+  /// The cells' size: a power of two at least four tolerances of the
+  /// light's coordinates, so end points within a tolerance of each other
+  /// fall in the same or neighbouring cells
+  cell: f32,
+}
+
+impl ClosedEdges {
+  /// Empties it for a light whose box reaches `scale` along an axis
+  fn begin(&mut self, scale: f32) {
+    self.edges.clear();
+    let tolerance = ON_EDGE.max(scale * ON_EDGE_SCALE);
+    self.cell = ON_EDGE * 4.0;
+    while self.cell < tolerance * 4.0 {
+      self.cell *= 2.0;
+    }
+  }
+
+  fn cell_of(&self, v: f32) -> i64 {
+    (v / self.cell).floor() as i64
+  }
+
+  fn add(&mut self, a: Vec2, b: Vec2) {
+    let key = [a.x, a.y, b.x, b.y].map(|v| self.cell_of(v));
+    self.edges.insert(key, (a, b));
+  }
+
+  /// Whether a closed occluder added has the edge `b` to `a`, its end
+  /// points within the boundary rule's tolerance (`ON_EDGE`, or a
+  /// millionth of the largest coordinate where that is more) of these
+  fn has_reverse(&self, a: Vec2, b: Vec2) -> bool {
+    let scale = a.abs().max(b.abs()).max_element();
+    let tolerance = ON_EDGE.max(scale * ON_EDGE_SCALE);
+    // The one or two cells each coordinate within the tolerance meets
+    let cells = |v: f32| {
+      let (low, high) = (self.cell_of(v - tolerance), self.cell_of(v + tolerance));
+      [low, high]
+    };
+    let [bx, by, ax, ay] = [b.x, b.y, a.x, a.y].map(cells);
+    let near = |p: Vec2, q: Vec2| p.distance(q) <= tolerance;
+    for x0 in bx {
+      for y0 in by {
+        for x1 in ax {
+          for y1 in ay {
+            if let Some(&(start, end)) = self.edges.get(&[x0, y0, x1, y1])
+              && near(start, b)
+              && near(end, a)
+            {
+              return true;
+            }
+          }
+        }
+      }
+    }
+    false
+  }
+
+  #[cfg(test)]
+  fn capacity(&self) -> usize {
+    self.edges.capacity()
+  }
 }
 
 impl ShadowPlan {
@@ -112,6 +191,7 @@ pub(crate) fn plan_shadows<'w>(
     candidates,
     found,
     scratch,
+    closed,
   } = plan;
   *dropped_edges = 0;
   slots.clear();
@@ -152,9 +232,15 @@ pub(crate) fn plan_shadows<'w>(
       scratch,
       found,
     );
+    closed.begin((light.position.abs() + light.light.radius()).max_element());
     for &entity in found.iter() {
       if let Some(placed) = occluder(entity) {
-        plan_occluder(light, slot, placed, edges);
+        add_closed(light, placed, closed);
+      }
+    }
+    for &entity in found.iter() {
+      if let Some(placed) = occluder(entity) {
+        plan_occluder(light, slot, placed, closed, edges);
       }
     }
     if *dropped_edges > 0 || edges.len() > max_edges {
@@ -189,12 +275,35 @@ fn nearest_view(frame: &FrameLight, views: &[ShadowView]) -> Option<f32> {
     .min_by(f32::total_cmp)
 }
 
+/// Adds the edges of `placed` to `closed` if it is a closed occluder
+/// `frame`'s light reads (on a floor meeting its own, enabled and finite)
+fn add_closed(
+  frame: &FrameLight,
+  (transform, occluder, floor): PlannedOccluder,
+  closed: &mut ClosedEdges,
+) {
+  if !occluder.is_closed() || !frame.floor.meets(floor) || !occluder.is_enabled() {
+    return;
+  }
+  let at = transform.translation();
+  let corners = occluder.placed(at.x, at.y, transform.rotation());
+  if corners.len() < 3 || !corners.clone().all(|corner| corner.is_finite()) {
+    return;
+  }
+  let ends = corners.clone().skip(1).chain(corners.clone().next());
+  for (a, b) in corners.zip(ends) {
+    closed.add(a, b);
+  }
+}
+
 /// Pushes the edges of `placed` that cast `frame`'s light's shadow, per
-/// view each crosses, for the light's `slot`
+/// view each crosses, for the light's `slot`: not a closed occluder's edge
+/// that another closed occluder in `closed` shares
 fn plan_occluder(
   frame: &FrameLight,
   slot: u32,
   (transform, occluder, floor): PlannedOccluder,
+  closed_edges: &ClosedEdges,
   edges: &mut Vec<ShadowEdge>,
 ) {
   if !frame.floor.meets(floor) || !occluder.is_enabled() {
@@ -217,7 +326,11 @@ fn plan_occluder(
   }
   for (a, b) in corners.zip(ends) {
     // An edge the light stands on covers no angle round it
-    if casts(a, b, light, spot) && a.distance(b) > 1e-4 && off_edge(a, b, light) {
+    if casts(a, b, light, spot)
+      && a.distance(b) > 1e-4
+      && off_edge(a, b, light)
+      && !(closed && closed_edges.has_reverse(a, b))
+    {
       push_views(a, b, frame, slot, edges);
     }
   }
@@ -312,16 +425,21 @@ pub(super) fn casts(v0: Vec2, v1: Vec2, light: Vec2, spot: Option<(f32, f32)>) -
   let facing = Vec2::from_angle(direction.to_radians());
   let off_axis = facing.dot(to_edge / length).clamp(-1.0, 1.0).acos();
   // A margin past the cone keeps soft edges shadowed
-  off_axis <= (angle / 2.0).to_radians() + 0.2
+  off_axis <= (angle / 2.0).to_radians() + SPOT_CONE_MARGIN
 }
 
 /// The edges `occluders` cast for `light` (slot 0), as the planner reads
 /// them (tests that place occluders without an index)
 #[cfg(test)]
 pub(crate) fn casting_edges(light: &FrameLight, occluders: &[PlannedOccluder]) -> Vec<ShadowEdge> {
+  let mut closed = ClosedEdges::default();
+  closed.begin((light.position.abs() + light.light.radius()).max_element());
+  for &placed in occluders {
+    add_closed(light, placed, &mut closed);
+  }
   let mut edges = Vec::new();
   for &placed in occluders {
-    plan_occluder(light, 0, placed, &mut edges);
+    plan_occluder(light, 0, placed, &closed, &mut edges);
   }
   edges
 }
@@ -352,6 +470,22 @@ mod tests {
   use crate::core::ecs::{Transform, World};
   use crate::core::lighting::{Light2D, insert_occluder_index, update_occluder_index};
   use crate::core::ui::Color;
+
+  #[test]
+  fn a_soft_edge_s_widest_reach_stays_inside_the_spot_margin() {
+    let source = include_str!("../shaders/core/light.wgsl");
+    let Some(max_arc) = source
+      .lines()
+      .find_map(|line| line.trim().strip_prefix("const MAX_ARC: f32 = "))
+      .and_then(|rest| rest.trim_end_matches(';').trim().parse::<f32>().ok())
+    else {
+      panic!("light.wgsl defines MAX_ARC");
+    };
+    assert!(
+      max_arc / 2.0 < SPOT_CONE_MARGIN,
+      "MAX_ARC {max_arc}: half of it reaches past the spot margin {SPOT_CONE_MARGIN}"
+    );
+  }
 
   type OccluderQuery = QueryState<(
     &'static GlobalTransform,
@@ -525,6 +659,41 @@ mod tests {
     for edge in &stage.plan.edges {
       assert_eq!((edge.light, edge.radius, edge.row), ([0.0, 0.0], 200.0, 0));
     }
+  }
+
+  #[test]
+  fn a_side_two_closed_occluders_share_casts_for_neither() {
+    // Two 20 px squares side by side, sharing the side at x 60 (each has
+    // it, the other way round), and a light to their left: the right
+    // square's far side and both squares' top and bottom cast, the shared
+    // side does not. Two px apart, each casts its own far side as before
+    let side_at = |stage: &Stage, x: f32| {
+      stage
+        .plan
+        .edges
+        .iter()
+        .filter(|e| e.a[0] == x && e.b[0] == x)
+        .count()
+    };
+    let mut stage = Stage::new();
+    stage.wall(50.0, 0.0, LightOccluder2D::rect(20.0, 20.0));
+    stage.wall(70.0, 0.0, LightOccluder2D::rect(20.0, 20.0));
+    stage.plan(&[lamp(Vec2::ZERO, 200.0)], &[wide()]);
+    assert_eq!(side_at(&stage, 60.0), 0, "the shared side casts");
+    assert_eq!(side_at(&stage, 80.0), 1, "the far side casts");
+    assert_eq!(stage.plan.edges.len(), 5, "{:?}", stage.plan.edges);
+
+    let mut stage = Stage::new();
+    stage.wall(50.0, 0.0, LightOccluder2D::rect(20.0, 20.0));
+    stage.wall(72.0, 0.0, LightOccluder2D::rect(20.0, 20.0));
+    stage.plan(&[lamp(Vec2::ZERO, 200.0)], &[wide()]);
+    assert_eq!(
+      side_at(&stage, 60.0),
+      1,
+      "2 px apart, the left one's side casts"
+    );
+    assert_eq!(side_at(&stage, 82.0), 1);
+    assert_eq!(stage.plan.edges.len(), 6, "{:?}", stage.plan.edges);
   }
 
   #[test]
@@ -944,6 +1113,7 @@ mod tests {
         plan.candidates.capacity(),
         plan.found.capacity(),
         plan.scratch_capacity(),
+        plan.closed.capacity(),
       )
     };
     stage.plan(&lights, &[wide()]);

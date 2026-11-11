@@ -872,7 +872,9 @@ fn hardening(size: f32, at: Vec2, wall: bool) -> Option<HeadlessEngine> {
 #[test]
 fn a_soft_shadow_hardens_where_it_meets_its_occluder() {
   // The light at (20, 70): the edge crosses x 84 (20 px behind the block's
-  // back face) at y 84.5, and x 184 (120 px behind) at y 107.3
+  // back face) at y 84.5, and x 184 (120 px behind) at y 107.3. A source
+  // 12 px in radius gives a penumbra 2 x 12 x 20 / 44 = 10.9 px wide near,
+  // and far 65 px, capped at 0.35 rad (57 px at 164 px from the light)
   let at = Vec2::new(20.0, 70.0);
   let widths = |size: f32| {
     let (Some(shadowed), Some(open)) = (hardening(size, at, true), hardening(size, at, false))
@@ -880,10 +882,26 @@ fn a_soft_shadow_hardens_where_it_meets_its_occluder() {
       return None;
     };
     let (shadowed, open) = (shadowed.frame().unwrap(), open.frame().unwrap());
-    Some((
-      penumbra(&column(&shadowed, &open, 84, 70..100)),
-      penumbra(&column(&shadowed, &open, 184, 70..150)),
-    ))
+    let (near, far) = (
+      column(&shadowed, &open, 84, 70..100),
+      column(&shadowed, &open, 184, 70..150),
+    );
+    if size > 0.0 {
+      // No step inside a soft edge. Near, the 12 look-ups (High) are less
+      // than a pixel apart across the 10.9 px penumbra, so two may change
+      // within one pixel (2 / 12): 0.2 there
+      for (name, shares, most) in [("near", &near, 0.2), ("far", &far, 0.15)] {
+        for (i, pair) in shares.windows(2).enumerate() {
+          assert!(
+            (pair[0] - pair[1]).abs() <= most,
+            "{name}: a jump of {} at y {}: {shares:?}",
+            pair[0] - pair[1],
+            70 + i
+          );
+        }
+      }
+    }
+    Some((penumbra(&near), penumbra(&far)))
   };
   let (Some((hard_near, hard_far)), Some((near, far))) = (widths(0.0), widths(12.0)) else {
     return;
@@ -981,20 +999,27 @@ fn no_light_leaks_through_a_map_wall() {
     Vec2::new(145.3, 20.0),
     Vec2::new(176.0, 20.0),
   ];
-  let light = |size: f32| {
+  let light = |size: f32, quality: ShadowQuality| {
     move |ctx: &mut SceneContext| {
+      ctx.settings().set_shadow_quality(quality);
       ctx.world.spawn((
         Transform::from_xy(160.0, 20.0),
         Light2D::point(Color::WHITE, 120.0).with_soft_shadows(size),
       ));
     }
   };
-  for size in [0.0, 12.0] {
-    let Some(mut open) = wide(light(size)) else {
+  for (size, quality) in [
+    (0.0, ShadowQuality::Low),
+    (12.0, ShadowQuality::Low),
+    (0.0, ShadowQuality::High),
+    (12.0, ShadowQuality::High),
+  ] {
+    let Some(mut open) = wide(light(size, quality)) else {
       return;
     };
+    let mut worst = 0.0f32;
     for chains in [true, false] {
-      let add = light(size);
+      let add = light(size, quality);
       let Some(mut walled) = wide(move |ctx| {
         add(ctx);
         for (at, occluder) in chunked_wall(chains) {
@@ -1015,23 +1040,32 @@ fn no_light_leaks_through_a_map_wall() {
             let (shown, lit) = (linear(red(&shadowed, x, y)), linear(red(&unshadowed, x, y)));
             assert!(
               shown <= 0.03 * lit,
-              "size {size}, chains {chains}, light at {at}: ({x}, {y}) {shown} of {lit}"
+              "size {size}, {quality:?}, chains {chains}, light at {at}: ({x}, {y}) {shown} of {lit}"
             );
+            worst = worst.max(shown / lit);
             checked += 1;
           }
         }
         assert!(checked > 1000, "{checked} pixels behind the wall");
       }
     }
+    println!("size {size}, {quality:?}: the worst share behind the wall is {worst}");
   }
 }
 
 #[test]
 fn no_acne_on_lit_ground() {
-  // A 256 px light at (20, 80) and an 8 px block at (100, 80): the ground
-  // in front of the block, and beside its shadow past where any look-up
-  // reaches (0.35 rad of filter and of search), is lit as with no block
+  // A 256 px light at (20, 80) and an 8 px block at (100, 80), spanning
+  // 0.0526 rad either side of the axis, its back face at x 104. Checked:
+  // the ground beside the soft path's farthest reach (the block's half
+  // width, half the widest filter arc and one search look-up's spacing at
+  // High, 0.35 / 6), and the ground in front of the block and inside it up
+  // to half a pixel before its back face (from 0.5 to 2 px before it, a
+  // receiver within a few texels of the face the map holds): lit as with
+  // no block
   let at = Vec2::new(20.0, 80.0);
+  let half_block = (4.0f32 / 76.0).atan();
+  let beside = half_block + 0.35 / 2.0 + 0.35 / 6.0;
   for size in [0.0, 12.0] {
     let scene = move |block: bool| {
       wide(move |ctx| {
@@ -1051,13 +1085,17 @@ fn no_acne_on_lit_ground() {
       return;
     };
     let (blocked, open) = (blocked.frame().unwrap(), open.frame().unwrap());
-    let mut checked = 0;
+    let (mut beside_checked, mut within_checked) = (0, 0);
     for y in 0..160 {
       for x in 0..320 {
         let offset = Vec2::new(x as f32 + 0.5, y as f32 + 0.5) - at;
-        let off_axis = offset.y.atan2(offset.x).abs();
-        let in_front = offset.length() < 74.0;
-        if !(in_front || off_axis > 0.06 + 0.35) || red(&open, x, y) < 20 {
+        let angle = offset.y.atan2(offset.x).abs();
+        // Where the pixel's ray leaves the block: its back face, or its
+        // top or bottom face near the corners
+        let back = (84.0 / angle.cos()).min(4.0 / angle.sin().max(1e-6));
+        let is_beside = angle > beside;
+        let within = angle <= half_block && offset.length() < back - 0.5;
+        if !(is_beside || within) || red(&open, x, y) < 20 {
           continue;
         }
         let (shown, lit) = (red(&blocked, x, y), red(&open, x, y));
@@ -1066,11 +1104,163 @@ fn no_acne_on_lit_ground() {
           shown.abs_diff(lit) <= 1 || (ratio - 1.0).abs() <= 0.02,
           "size {size}: ({x}, {y}) {shown} against {lit}"
         );
-        checked += 1;
+        if is_beside {
+          beside_checked += 1;
+        } else {
+          within_checked += 1;
+        }
       }
     }
-    assert!(checked > 5000, "{checked} pixels");
+    assert!(
+      beside_checked > 5000 && within_checked > 300,
+      "{beside_checked} beside, {within_checked} in front of and in the block"
+    );
   }
+}
+
+/// The share of the open light at `p` (between pixel centres, blended
+/// from the four round it)
+fn share_at(shadowed: &image::RgbaImage, open: &image::RgbaImage, p: Vec2) -> f32 {
+  let q = p - Vec2::splat(0.5);
+  let (x0, y0) = (q.x.floor(), q.y.floor());
+  let (tx, ty) = (q.x - x0, q.y - y0);
+  let at = |dx: f32, dy: f32| share(shadowed, open, (x0 + dx) as u32, (y0 + dy) as u32);
+  let top = at(0.0, 0.0) * (1.0 - tx) + at(1.0, 0.0) * tx;
+  let bottom = at(0.0, 1.0) * (1.0 - tx) + at(1.0, 1.0) * tx;
+  top * (1.0 - ty) + bottom * ty
+}
+
+#[test]
+fn a_soft_edge_crosses_a_view_boundary_smoothly() {
+  // A 256 px light of size 12 at (40, 20), and a slab 6 px deep and 30
+  // across whose far corner stands 56 px from the light at `angle`, the
+  // slab on the side of larger angles: its shadow's edge is the ray at
+  // `angle`, on the right and down views' boundary at 45°, inside the down
+  // view at 50°
+  let light = Vec2::new(40.0, 20.0);
+  let scene = move |angle: f32, slab: bool| {
+    wide(move |ctx| {
+      ctx.world.spawn((
+        Transform::from_xy(light.x, light.y),
+        Light2D::point(Color::WHITE, 256.0).with_soft_shadows(12.0),
+      ));
+      if slab {
+        let along = Vec2::from_angle(angle.to_radians());
+        let across = along.perp();
+        let corner = light + along * 50.0;
+        ctx.world.spawn((
+          Transform::IDENTITY,
+          LightOccluder2D::polygon(vec![
+            corner,
+            corner + across * 30.0,
+            corner + across * 30.0 + along * 6.0,
+            corner + along * 6.0,
+          ]),
+        ));
+      }
+    })
+  };
+  // The edge's place across the ray, 110 px from the light, from 20 px on
+  // its lit side, by the shadow held over 40 px
+  let edge = |angle: f32| {
+    let (Some(shadowed), Some(open)) = (scene(angle, true), scene(angle, false)) else {
+      return None;
+    };
+    let (shadowed, open) = (shadowed.frame().unwrap(), open.frame().unwrap());
+    let along = Vec2::from_angle(angle.to_radians());
+    let shares: Vec<f32> = (-20..=20)
+      .map(|s| {
+        share_at(
+          &shadowed,
+          &open,
+          light + along * 110.0 + along.perp() * s as f32,
+        )
+      })
+      .collect();
+    Some((edge_at(&shares), shadowed, open))
+  };
+  let (Some((diagonal, shadowed, open)), Some((off, _, _))) = (edge(45.0), edge(50.0)) else {
+    return;
+  };
+  println!("the edge {diagonal} px along on the diagonal, {off} px at 50°");
+  assert!(
+    (diagonal - off).abs() <= 1.0,
+    "on the diagonal {diagonal}, off it {off}"
+  );
+  // No step between neighbouring pixels across the penumbra, where it
+  // crosses from the right view into the down view: from 100 px out, where
+  // the penumbra is 19 px or more (nearer, it is narrow enough that its
+  // true slope passes 0.15 a pixel)
+  for y in 0..159 {
+    for x in 0..319 {
+      let offset = Vec2::new(x as f32 + 0.5, y as f32 + 0.5) - light;
+      let d = offset.length();
+      if !(100.0..150.0).contains(&d) || red(&open, x, y) < 60 {
+        continue;
+      }
+      let here = share(&shadowed, &open, x, y);
+      for (nx, ny) in [(x + 1, y), (x, y + 1)] {
+        if red(&open, nx, ny) < 60 {
+          continue;
+        }
+        let there = share(&shadowed, &open, nx, ny);
+        assert!(
+          (here - there).abs() <= 0.15,
+          "({x}, {y}) {here} beside ({nx}, {ny}) {there}"
+        );
+      }
+    }
+  }
+}
+
+#[test]
+fn a_soft_edge_over_a_far_blocker_moves_smoothly_with_its_light() {
+  // A 256 px light of size 12 at (20, 80), a 4 px post 30 px from it, and
+  // a wall from x 120 to 124 whose end (y 71) lies 0.09 rad off the axis,
+  // just past the post's upper edge (0.071 rad): the search finds the wall
+  // (the farthest blocker) for some pixels of the post's penumbra and not
+  // others. The light steps a quarter pixel towards the post eight times;
+  // the shadow held down x 160 (140 px out) may move by less than a pixel
+  // a step (the post's edge itself moves about 0.07 px)
+  let start = Vec2::new(20.0, 80.0);
+  let scene = move |occluders: bool| {
+    wide(move |ctx| {
+      ctx.world.spawn((
+        Transform::from_xy(start.x, start.y),
+        Light2D::point(Color::WHITE, 256.0).with_soft_shadows(12.0),
+      ));
+      if occluders {
+        ctx.world.spawn((
+          Transform::from_xy(50.0, 80.0),
+          LightOccluder2D::rect(4.0, 4.0),
+        ));
+        ctx.world.spawn((
+          Transform::from_xy(122.0, 15.5),
+          LightOccluder2D::rect(4.0, 111.0),
+        ));
+      }
+    })
+  };
+  let (Some(mut shadowed), Some(mut open)) = (scene(true), scene(false)) else {
+    return;
+  };
+  let mut held = Vec::new();
+  for step in 0..=8 {
+    let at = start + Vec2::new(step as f32 * 0.25, 0.0);
+    let (s, o) = (move_lights(&mut shadowed, at), move_lights(&mut open, at));
+    held.push(
+      column(&s, &o, 160, 30..110)
+        .iter()
+        .map(|f| 1.0 - f)
+        .sum::<f32>(),
+    );
+  }
+  let worst = held
+    .windows(2)
+    .map(|pair| (pair[1] - pair[0]).abs())
+    .fold(0.0f32, f32::max);
+  println!("the shadow held moves at most {worst} px a step: {held:?}");
+  assert!(worst < 1.0, "{held:?}");
 }
 
 #[test]

@@ -27,7 +27,10 @@ struct ShadowFilter {
 @group(1) @binding(2) var<uniform> shadow_filter: ShadowFilter;
 
 // The widest arc, in radians, a soft shadow's blocker search or filter
-// reads round a pixel's angle, so a huge source cannot read a whole view
+// reads round a pixel's angle, so a huge source cannot read a whole view.
+// MAX_ARC / 2 must stay below the planner's spot cone margin (0.2 rad,
+// `SPOT_CONE_MARGIN` in `lighting/plan.rs`, which asserts it), or a soft
+// spot's look-ups near its cone would miss edges the plan left out
 const MAX_ARC: f32 = 0.35;
 
 struct VertexInput {
@@ -156,30 +159,27 @@ fn turned(v: vec2<f32>, by: vec2<f32>) -> vec2<f32> {
     return vec2<f32>(v.x * by.x - v.y * by.y, v.x * by.y + v.y * by.x);
 }
 
-// The directions `count` look-ups take, spread evenly over `arc` radians
-// centred on `dir`: the first, and the turn from one to the next
-fn first_of(dir: vec2<f32>, arc: f32, count: u32) -> vec2<f32> {
-    let step = arc / f32(count);
-    let first = step * 0.5 - arc * 0.5;
-    return turned(dir, vec2<f32>(cos(first), sin(first)));
-}
-
-fn step_of(arc: f32, count: u32) -> vec2<f32> {
-    let step = arc / f32(count);
-    return vec2<f32>(cos(step), sin(step));
+// `v` turned by `angle` radians
+fn turned_by(v: vec2<f32>, angle: f32) -> vec2<f32> {
+    return turned(v, vec2<f32>(cos(angle), sin(angle)));
 }
 
 // How much of the light at `offset` from it (ground space: the light and the
 // pixel are lifted alike on a storey) its occluders hold back, 0 to 1.
 //
 // A light of size 0 takes one comparison against its view's row of the
-// atlas. A light with a source `size` pixels in radius searches an arc of
-// `size / dist` radians for what blocks it (raw distances), and with none
-// is lit; else it filters an arc of `size x (dist - blocker) / blocker /
-// dist` radians, `blocker` the farthest found (the penumbra: narrow where the occluder meets its shadow,
-// wider away from it), both capped at `MAX_ARC`. Each look-up finds its
-// own view and row from its own angle, so an arc crossing a view's end
-// carries on in the next view's row (view 3 wraps to view 0).
+// atlas. A light whose source is `size` pixels in radius first searches
+// `min(6 x size / dist, MAX_ARC)` radians round the pixel's angle with
+// `taps / 2 + 1` raw distances, the middle one at the pixel's own angle,
+// for the farthest thing nearer than the pixel (`blocker`); with none the
+// pixel is lit. The search reaches the whole penumbra of every blocker at
+// least a quarter of the way from the light to the pixel. Then it filters
+// the penumbra of a source that size, `min(2 x size x (dist - blocker) /
+// (blocker x dist), MAX_ARC)` radians, with `taps` comparisons spread
+// evenly over it: narrow where an occluder meets its shadow, wider away
+// from it. Each look-up finds its own view and row from its own angle, so
+// an arc crossing a view's end carries on in the next view's row (view 3
+// wraps to view 0).
 fn shadowed(offset: vec2<f32>, shadow: vec3<f32>) -> f32 {
     let dist = length(offset);
     // No slot, or nearer than the map's near plane (0.5 px): unshadowed
@@ -198,14 +198,19 @@ fn shadowed(offset: vec2<f32>, shadow: vec3<f32>) -> f32 {
     let taps = max(shadow_filter.taps.x, 1u);
 
     // The blocker search: the farthest of what is nearer than the pixel
-    // round its angle. Not the average: behind a wall of touching closed
-    // occluders their shared sides block nearer than the wall's far face,
-    // and the wider arc an average gives turns look-ups into the wall's
-    // body, which only its far face (beyond the pixel) shadows: light leaks
-    let searches = max(taps / 2u, 1u);
-    let search_arc = min(source / dist, MAX_ARC);
-    let search_step = step_of(search_arc, searches);
-    var look = first_of(dir, search_arc, searches);
+    // round its angle, the middle look-up on the pixel's own ray. Behind a
+    // thick occluder the middle look-up finds the face just in front of the
+    // pixel, so the filter's arc shrinks to nothing there however the
+    // others fall; a wider arc (from an average, or a nearer blocker alone)
+    // would turn look-ups into the occluder's body, which only its far face
+    // shadows, and they would read lit. (A side two closed occluders share
+    // casts nothing, `lighting/plan.rs`, so it never hides a wall's far
+    // face from the middle look-up.)
+    let searches = taps / 2u + 1u;
+    let search_arc = min(6.0 * source / dist, MAX_ARC);
+    let search_step = search_arc / f32(searches - 1u);
+    let search_turn = vec2<f32>(cos(search_step), sin(search_step));
+    var look = turned_by(dir, -0.5 * search_arc);
     let last_texel = i32(size.x) - 1;
     var farthest = 0.0;
     var found = false;
@@ -217,7 +222,7 @@ fn shadowed(offset: vec2<f32>, shadow: vec3<f32>) -> f32 {
             farthest = max(farthest, stored);
             found = true;
         }
-        look = turned(look, search_step);
+        look = turned(look, search_turn);
     }
     if !found {
         return 0.0;
@@ -225,13 +230,14 @@ fn shadowed(offset: vec2<f32>, shadow: vec3<f32>) -> f32 {
     let blocker = max(farthest * radius, 0.5);
 
     // The filter: comparisons spread evenly over the penumbra's arc
-    let arc = min(source * max(dist - blocker, 0.0) / (blocker * dist), MAX_ARC);
-    let filter_step = step_of(arc, taps);
-    look = first_of(dir, arc, taps);
+    let arc = min(2.0 * source * max(dist - blocker, 0.0) / (blocker * dist), MAX_ARC);
+    let filter_step = arc / f32(taps);
+    let filter_turn = vec2<f32>(cos(filter_step), sin(filter_step));
+    look = turned_by(dir, 0.5 * filter_step - 0.5 * arc);
     var lit = 0.0;
     for (var i = 0u; i < taps; i++) {
         lit += lit_at(atlas_point(look, dist, slot, size, radius), depth, size);
-        look = turned(look, filter_step);
+        look = turned(look, filter_turn);
     }
     return 1.0 - lit / f32(taps);
 }
