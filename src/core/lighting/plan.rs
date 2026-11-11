@@ -364,22 +364,29 @@ fn plan_closed(frame: &FrameLight, slot: u32, closed: &ClosedEdges, edges: &mut 
     if contains(points.clone().zip(ends.clone()), frame.position) {
       continue;
     }
+    // The shared side's look-up last, so an edge facing the light does none
     for (a, b) in points.zip(ends) {
-      if !closed.has_reverse(a, b, run) {
-        cast_edge(a, b, frame, slot, edges);
+      if casting(a, b, frame) && !closed.has_reverse(a, b, run) {
+        push_views(a, b, frame, slot, edges);
       }
     }
   }
 }
 
 /// Pushes the edge `a`-`b` per view it crosses if it casts `frame`'s
-/// light's shadow: facing away (near a spot's cone), longer than 1e-4,
-/// and the light not on it (it covers no angle round it)
+/// light's shadow (`casting`)
 fn cast_edge(a: Vec2, b: Vec2, frame: &FrameLight, slot: u32, edges: &mut Vec<ShadowEdge>) {
-  let light = frame.position;
-  if casts(a, b, light, drawn_cone(&frame.light)) && a.distance(b) > 1e-4 && off_edge(a, b, light) {
+  if casting(a, b, frame) {
     push_views(a, b, frame, slot, edges);
   }
+}
+
+/// Whether the edge `a`-`b` casts `frame`'s light's shadow: facing away
+/// (near a spot's cone), longer than 1e-4, and the light not on it (it
+/// covers no angle round it)
+fn casting(a: Vec2, b: Vec2, frame: &FrameLight) -> bool {
+  let light = frame.position;
+  casts(a, b, light, drawn_cone(&frame.light)) && a.distance(b) > 1e-4 && off_edge(a, b, light)
 }
 
 /// Whether `point` is farther than `ON_EDGE` from the segment `a`-`b`, or

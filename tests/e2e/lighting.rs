@@ -1430,7 +1430,10 @@ fn past_512_shadowed_lights_the_nearest_keep_their_shadows() {
   // and two 120 px out (512 and 513, the first dropped), each 30 px in
   // radius with a wall 10 px to its right and the point 22 px to its
   // right behind it, which no other light reaches; and 86 faint ones at
-  // the corners, about 195 px out
+  // the corners, about 195 px out. Spawned out of distance order (the
+  // corners, the far test lights, the centre, the near test lights), so
+  // the nearest 512 are not the first 512 in light order: a cut by light
+  // index would shadow the far ones and leave the near ones unshadowed
   let near = [Vec2::new(100.0, 120.0), Vec2::new(220.0, 120.0)];
   let far = [Vec2::new(40.0, 120.0), Vec2::new(280.0, 120.0)];
   let scene = Lit(Box::new(move |ctx: &mut SceneContext| {
@@ -1449,10 +1452,12 @@ fn past_512_shadowed_lights_the_nearest_keep_their_shadows() {
         .with_intensity(0.001)
         .with_shadows()
     };
-    for _ in 0..510 {
-      ctx.world.spawn((Transform::from_xy(160.0, 120.0), faint()));
+    let corners = [(4.0, 4.0), (316.0, 4.0), (4.0, 236.0), (316.0, 236.0)];
+    for i in 0..86 {
+      let (x, y) = corners[i % 4];
+      ctx.world.spawn((Transform::from_xy(x, y), faint()));
     }
-    for at in near.iter().chain(&far) {
+    let tested = |ctx: &mut SceneContext, at: Vec2| {
       ctx.world.spawn((
         Transform::from_xy(at.x, at.y),
         Light2D::point(Color::WHITE, 30.0).with_shadows(),
@@ -1461,11 +1466,15 @@ fn past_512_shadowed_lights_the_nearest_keep_their_shadows() {
         Transform::from_xy(at.x + 10.0, at.y),
         LightOccluder2D::rect(4.0, 12.0),
       ));
+    };
+    for at in far {
+      tested(ctx, at);
     }
-    let corners = [(4.0, 4.0), (316.0, 4.0), (4.0, 236.0), (316.0, 236.0)];
-    for i in 0..86 {
-      let (x, y) = corners[i % 4];
-      ctx.world.spawn((Transform::from_xy(x, y), faint()));
+    for _ in 0..510 {
+      ctx.world.spawn((Transform::from_xy(160.0, 120.0), faint()));
+    }
+    for at in near {
+      tested(ctx, at);
     }
   }));
   let builder = EngineBuilder::new().resolution(320, 240).start_scene(scene);
@@ -1475,7 +1484,10 @@ fn past_512_shadowed_lights_the_nearest_keep_their_shadows() {
   for frame in 0..10 {
     engine.step_frames(1).unwrap();
     let image = engine.frame().unwrap();
-    // The pixels whose centres lie 22.5 px either side of a light
+    // A pixel x covers x to x + 1, its centre at x + 0.5, so the pixels
+    // at -23 and +22 have their centres 22.5 px either side of the light:
+    // the same distance, so an unshadowed light lights them alike (-22
+    // and +22 would read 21.5 and 22.5 px out, about 10 bytes apart)
     let at = |p: Vec2, dx: f32| red(&image, (p.x + dx) as u32, p.y as u32);
     for light in near {
       // Lit on its open side, shadowed behind its wall

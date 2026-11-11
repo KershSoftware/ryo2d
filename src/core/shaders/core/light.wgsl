@@ -172,8 +172,9 @@ fn turned_by(v: vec2<f32>, angle: f32) -> vec2<f32> {
 // `min(6 x size / dist, MAX_ARC)` radians round the pixel's angle with
 // `taps / 2` raw distances, made odd (`| 1`), the middle one at the
 // pixel's own angle, for the farthest thing nearer than the pixel
-// (`blocker`); with none the pixel is lit. The search reaches the whole penumbra of every blocker at
-// least a quarter of the way from the light to the pixel. Then it filters
+// (`blocker`); with none the pixel is lit. The search reaches the whole
+// penumbra of every blocker at least a quarter of the way from the light
+// to the pixel. Then it filters
 // the penumbra of a source that size, `min(2 x size x (dist - blocker) /
 // (blocker x dist), MAX_ARC)` radians, with `taps` comparisons spread
 // evenly over it: narrow where an occluder meets its shadow, wider away

@@ -430,6 +430,15 @@ struct Frame {
   count: usize,
   own: BTreeMap<String, usize>,
   map_gpu: Vec<String>,
+  /// Those made inside the GPU API from the lighting's own path (its
+  /// nearest engine function in `lighting::`), by that function and the
+  /// GPU API's one it called
+  lighting_gpu: BTreeMap<String, usize>,
+  /// Those made inside `Queue::write_buffer` or `Queue::submit`: wgpu's
+  /// staging for a write reuses a buffer, and a submission reclaims what
+  /// earlier ones held, only once the GPU is done with them, so their
+  /// count moves with the GPU's timing
+  timed: usize,
 }
 
 /// A stack's function names, leaf first
@@ -451,16 +460,26 @@ fn traced(engine: &mut HeadlessEngine) -> Frame {
   TRACING.with(|c| c.set(false));
   let count = allocations() - before;
   let traces = TRACES.with(|t| std::mem::take(&mut *t.borrow_mut()));
-  let (mut own, mut map_gpu) = (BTreeMap::new(), Vec::new());
+  let (mut own, mut map_gpu, mut lighting_gpu) = (BTreeMap::new(), Vec::new(), BTreeMap::new());
+  let mut timed = 0;
   for trace in traces {
     let text = trace.to_string();
     let frames = functions(&text);
     let ours = frames.iter().position(|f| f.contains("ryo2d::"));
     if GPU.iter().any(|gpu| text.contains(gpu)) {
+      if text.contains("Queue>::write_buffer") || text.contains("Queue>::submit") {
+        timed += 1;
+      }
       if let Some(at) = ours
         && (frames[at].contains("tilemap::") || frames[at].contains("render::tiles"))
       {
         map_gpu.push(frames[at].to_string());
+      }
+      if let Some(at) = ours
+        && frames[at].contains("ryo2d::core::lighting::")
+      {
+        let site = format!("{} <- {}", frames[at.saturating_sub(1)], frames[at]);
+        *lighting_gpu.entry(site).or_insert(0) += 1;
       }
       continue;
     }
@@ -474,6 +493,8 @@ fn traced(engine: &mut HeadlessEngine) -> Frame {
     count,
     own,
     map_gpu,
+    lighting_gpu,
+    timed,
   }
 }
 
@@ -1190,16 +1211,20 @@ fn a_lit_frame_with_64_shadowed_lights_allocates_nothing() {
   // The same lights, unshadowed and with nothing to cast, are the
   // baseline: any allocation the shadowed frame makes and that one does
   // not is the shadows' (the plan, the atlas and its soft filter's uniform)
-  for frame in 0..6 {
+  let mut extra_first = None;
+  for frame in 0..7 {
     let (cast, open) = (traced(&mut shadowed), traced(&mut plain));
     let own = |frame: &Frame| frame.own.values().sum::<usize>();
     println!(
       "frame {frame}: 64 shadowed lights {} allocations ({} the engine's own), unshadowed {} \
-       ({} its own)",
+       ({} its own); {} and {} of them wgpu's staging and submission; the lighting's inside the GPU API {:#?}",
       cast.count,
       own(&cast),
       open.count,
       own(&open),
+      cast.timed,
+      open.timed,
+      cast.lighting_gpu,
     );
     let more = more(&cast, &open);
     assert!(
@@ -1221,5 +1246,59 @@ fn a_lit_frame_with_64_shadowed_lights_allocates_nothing() {
       builds,
       "frame {frame}: the atlas was made again"
     );
+    // The lighting's GPU allocations come from recording its passes: the
+    // atlas's (its edges written, its pass begun, drawn and ended) and the
+    // compose pass both frames make (where wgpu's own vectors grow inside
+    // it moves with what was recorded before it). None from a GPU
+    // resource or bind group made
+    let unexpected: Vec<&String> = cast
+      .lighting_gpu
+      .keys()
+      .filter(|site| {
+        let atlas = site.ends_with("ShadowAtlas>::encode")
+          && ATLAS_CALLS.iter().any(|call| site.starts_with(call));
+        let compose = site.ends_with("LightingRenderer>::compose_targets")
+          || site.ends_with("lighting::renderer::copy_scene");
+        !atlas && !compose
+      })
+      .collect();
+    assert!(
+      unexpected.is_empty(),
+      "frame {frame}: the lighting made GPU allocations elsewhere: {unexpected:#?}"
+    );
+    assert!(
+      cast
+        .lighting_gpu
+        .keys()
+        .any(|site| site.ends_with("ShadowAtlas>::encode")),
+      "frame {frame}: the atlas was drawn: {:#?}",
+      cast.lighting_gpu
+    );
+    // The same work every frame: the shadowed frame's extra allocations
+    // (the atlas's pass, and wgpu tracking it as the frame's commands
+    // finish) do not grow or vary, leaving out wgpu's staging for writes
+    // and its submissions, which follow the GPU's timing. From the second
+    // traced frame: the first's command finish now and then makes 3 or 4
+    // more of wgpu's own (seen in 5 of 10 runs, never on a later frame)
+    let settled = |frame: &Frame| (frame.count - frame.timed) as isize;
+    let extra = settled(&cast) - settled(&open);
+    println!("frame {frame}: {extra} more of the GPU API's than the unshadowed frame, untimed");
+    if frame > 0 {
+      match extra_first {
+        None => extra_first = Some(extra),
+        Some(first) => assert_eq!(extra, first, "frame {frame}: the extra allocations changed"),
+      }
+    }
   }
 }
+
+/// The GPU API's calls the atlas's draw may allocate inside
+const ATLAS_CALLS: [&str; 7] = [
+  "<wgpu::api::queue::Queue>::write_buffer",
+  "<wgpu::api::command_encoder::CommandEncoder>::begin_render_pass",
+  "<wgpu::api::render_pass::RenderPass>::set_pipeline",
+  "<wgpu::api::render_pass::RenderPass>::set_bind_group",
+  "<wgpu::api::render_pass::RenderPass>::set_vertex_buffer",
+  "<wgpu::api::render_pass::RenderPass>::draw",
+  "core::ptr::drop_glue::<wgpu::api::render_pass::RenderPass>",
+];
