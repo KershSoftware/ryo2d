@@ -4,7 +4,7 @@
 //! once per view it crosses, for the atlas's draw.
 
 use std::collections::HashMap;
-use std::f32::consts::{FRAC_PI_2, FRAC_PI_4};
+use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU};
 
 use glam::Vec2;
 
@@ -21,11 +21,17 @@ pub(crate) const MAX_SHADOWED_LIGHTS: u32 = 512;
 /// Atlas rows a shadowed light takes: its right, down, left and up views
 const VIEWS: u32 = 4;
 
-/// How far past a spot's cone (radians) its edges still cast, so a soft
+/// How far past a spot's lit reach (its cone, or its scatter's) its edges
+/// still cast (radians, `spot_reach`), so a soft
 /// edge's look-ups near the cone find them: the light shader's widest arc
 /// (`MAX_ARC` in `light.wgsl`) reaches half itself either side of a pixel,
 /// which must stay inside this
 const SPOT_CONE_MARGIN: f32 = 0.2;
+
+/// How far a spot's volumetric scatter reaches, in its half angles: the
+/// light shader's `SPOT_SCATTER` (`light.wgsl`, the `scatter_cone` line of
+/// `light_at`) lights out to it, so its edges cast there too
+const SPOT_SCATTER: f32 = 1.2;
 
 /// A light this near a closed occluder's boundary (px) stands on it: it is
 /// outside the occluder, and the edges it stands on cast nothing for it.
@@ -460,7 +466,8 @@ fn push_views(a: Vec2, b: Vec2, frame: &FrameLight, slot: u32, edges: &mut Vec<S
 }
 
 /// Whether the edge `v0`-`v1` faces away from a light at `light` (and, for
-/// a spot of `(angle, direction)` in degrees, lies near its cone).
+/// a spot of `(angle, direction)` in degrees, some of it lies within the
+/// spot's reach round its direction, `spot_reach`).
 pub(super) fn casts(v0: Vec2, v1: Vec2, light: Vec2, spot: Option<(f32, f32)>) -> bool {
   let to_edge = (v0 + v1) * 0.5 - light;
   let edge = v1 - v0;
@@ -471,14 +478,49 @@ pub(super) fn casts(v0: Vec2, v1: Vec2, light: Vec2, spot: Option<(f32, f32)>) -
   let Some((angle, direction)) = spot else {
     return true;
   };
-  let length = to_edge.length();
-  if length <= 0.001 {
+  let reach = spot_reach(angle);
+  if reach >= PI || to_edge.length() <= 0.001 {
     return true;
   }
-  let facing = Vec2::from_angle(direction.to_radians());
-  let off_axis = facing.dot(to_edge / length).clamp(-1.0, 1.0).acos();
-  // A margin past the cone keeps soft edges shadowed
-  off_axis <= (angle / 2.0).to_radians() + SPOT_CONE_MARGIN
+  let direction = direction.to_radians();
+  let (d0, d1) = (v0 - light, v1 - light);
+  let cross = d0.perp_dot(d1);
+  if cross == 0.0 {
+    // In line with the light: its middle's direction
+    return off_axis(to_edge.to_angle() - direction) <= reach;
+  }
+  // The edge's angles round the light, from the end the other lies
+  // counter-clockwise of (as `push_views` reads them), the short way round
+  let (start, end) = if cross > 0.0 { (d0, d1) } else { (d1, d0) };
+  let span = start.perp_dot(end).atan2(start.dot(end));
+  // Its start relative to the direction, in (-π, π]; it runs to `from +
+  // span`, so it meets [-reach, reach] there, or a turn lower (across the
+  // wrap behind the light)
+  let from = wrap(start.to_angle() - direction);
+  (from <= reach && from + span >= -reach) || from + span - TAU >= -reach
+}
+
+/// How far round its direction (radians) a spot of `angle` degrees has
+/// edges cast: out to where the light shader lights (its volumetric
+/// scatter, `SPOT_SCATTER` half angles, past its cone), and a margin past
+/// that, which keeps soft edges shadowed
+fn spot_reach(angle: f32) -> f32 {
+  (angle / 2.0).to_radians() * SPOT_SCATTER + SPOT_CONE_MARGIN
+}
+
+/// `angle` (radians) brought into (-π, π]
+fn wrap(angle: f32) -> f32 {
+  let wrapped = (angle + PI).rem_euclid(TAU) - PI;
+  if wrapped <= -PI {
+    wrapped + TAU
+  } else {
+    wrapped
+  }
+}
+
+/// How far `angle` (radians) lies from 0 either way round
+fn off_axis(angle: f32) -> f32 {
+  wrap(angle).abs()
 }
 
 /// The edges `occluders` cast for `light` (slot 0), as the planner reads
@@ -1000,6 +1042,95 @@ mod tests {
         .iter()
         .all(|e| near(e, ahead) || near(e, edge)),
       "none from the walls outside it"
+    );
+  }
+
+  #[test]
+  fn a_spot_casts_a_long_wall_that_crosses_its_cone() {
+    // A 30° spot at the origin pointing right, and a wall from x 100 to 110
+    // and y -20 to 400: its far face (x 110) runs from -10° to 75° round
+    // the light, across the beam, though its middle is 60° off the axis
+    let mut stage = Stage::new();
+    stage.wall(105.0, 190.0, LightOccluder2D::rect(10.0, 420.0));
+    let spot = FrameLight {
+      light: Light2D::spot(Color::WHITE, 500.0, 30.0, 0.0).with_shadows(),
+      ..lamp(Vec2::ZERO, 500.0)
+    };
+    stage.plan(&[spot], &[wide()]);
+    assert!(
+      stage
+        .plan
+        .edges
+        .iter()
+        .any(|e| e.a[0] == 110.0 && e.b[0] == 110.0),
+      "the far face casts: {:?}",
+      stage.plan.edges
+    );
+    // A wall below the beam, from 32° to 94° round the light (past the
+    // reach, 1.2 x 15° + 0.2 rad, 29.5°), casts nothing; nor does one
+    // behind the light, across the ±180° wrap
+    for (at, size) in [
+      (Vec2::new(190.0, 255.0), Vec2::new(420.0, 10.0)),
+      (Vec2::new(-105.0, 0.0), Vec2::new(10.0, 100.0)),
+    ] {
+      let mut stage = Stage::new();
+      stage.wall(at.x, at.y, LightOccluder2D::rect(size.x, size.y));
+      let spot = FrameLight {
+        light: Light2D::spot(Color::WHITE, 500.0, 30.0, 0.0).with_shadows(),
+        ..lamp(Vec2::ZERO, 500.0)
+      };
+      stage.plan(&[spot], &[wide()]);
+      assert!(stage.plan.edges.is_empty(), "{at}: {:?}", stage.plan.edges);
+    }
+    // A spot pointing left (180°) casts a wall behind it across the wrap
+    let mut stage = Stage::new();
+    stage.wall(-105.0, 190.0, LightOccluder2D::rect(10.0, 420.0));
+    let spot = FrameLight {
+      light: Light2D::spot(Color::WHITE, 500.0, 30.0, 180.0).with_shadows(),
+      ..lamp(Vec2::ZERO, 500.0)
+    };
+    stage.plan(&[spot], &[wide()]);
+    assert!(
+      stage
+        .plan
+        .edges
+        .iter()
+        .any(|e| e.a[0] == -110.0 && e.b[0] == -110.0),
+      "the far face casts: {:?}",
+      stage.plan.edges
+    );
+  }
+
+  #[test]
+  fn a_wide_spot_casts_where_its_scatter_reaches() {
+    // The shader scatters a volumetric spot's light out to `SPOT_SCATTER`
+    // times its half angle: the planner reads the same constant
+    let source = include_str!("../shaders/core/light.wgsl");
+    let Some(scatter) = source
+      .lines()
+      .find_map(|line| line.trim().strip_prefix("const SPOT_SCATTER: f32 = "))
+      .and_then(|rest| rest.trim_end_matches(';').trim().parse::<f32>().ok())
+    else {
+      panic!("light.wgsl defines SPOT_SCATTER");
+    };
+    assert_eq!(scatter, SPOT_SCATTER);
+    // A 150° spot pointing right scatters out to 90° off its axis; a small
+    // block 95° round (past the cone and its old margin, 86.5°) casts
+    let mut stage = Stage::new();
+    let turn = 95f32.to_radians();
+    stage.wall(
+      100.0 * turn.cos(),
+      100.0 * turn.sin(),
+      LightOccluder2D::rect(4.0, 4.0),
+    );
+    let spot = FrameLight {
+      light: Light2D::spot(Color::WHITE, 300.0, 150.0, 0.0).with_shadows(),
+      ..lamp(Vec2::ZERO, 300.0)
+    };
+    stage.plan(&[spot], &[wide()]);
+    assert!(
+      !stage.plan.edges.is_empty(),
+      "the block in its scatter casts"
     );
   }
 

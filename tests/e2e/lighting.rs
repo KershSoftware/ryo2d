@@ -1514,3 +1514,94 @@ fn past_512_shadowed_lights_the_nearest_keep_their_shadows() {
     "it names the count: {warnings:?}"
   );
 }
+
+#[test]
+fn a_long_wall_partly_in_a_spot_s_cone_casts() {
+  // A 30° spot at (10, 80) pointing right, and a wall from x 100 to 110
+  // and y 60 to 480: its far face crosses the beam (from -10° to 75°
+  // round the light) though its middle is 60° off the axis
+  let spot = |wall: bool| {
+    wide(move |ctx| {
+      ctx.world.spawn((
+        Transform::from_xy(10.0, 80.0),
+        Light2D::spot(Color::WHITE, 300.0, 30.0, 0.0).with_shadows(),
+      ));
+      if wall {
+        ctx.world.spawn((
+          Transform::from_xy(105.0, 270.0),
+          LightOccluder2D::rect(10.0, 420.0),
+        ));
+      }
+    })
+  };
+  let (Some(walled), Some(open)) = (spot(true), spot(false)) else {
+    return;
+  };
+  let (walled, open) = (walled.frame().unwrap(), open.frame().unwrap());
+  for (x, y) in [(150, 80), (250, 80), (200, 70)] {
+    assert!(red(&open, x, y) > 20, "the beam reaches ({x}, {y})");
+    assert!(
+      share(&walled, &open, x, y) < 0.03,
+      "behind the wall ({x}, {y}): {} against {}",
+      red(&walled, x, y),
+      red(&open, x, y)
+    );
+  }
+  // In the beam in front of the wall: lit as with no wall
+  assert!(red(&open, 60, 80) > 20);
+  assert!(
+    share(&walled, &open, 60, 80) > 0.97,
+    "in front: {} against {}",
+    red(&walled, 60, 80),
+    red(&open, 60, 80)
+  );
+}
+
+#[test]
+fn a_wide_volumetric_spot_s_scatter_is_shadowed_behind_a_wall() {
+  // A 300° volumetric spot at (250, 80) pointing right: past its 150° half
+  // angle its scatter alone reaches on, out to 1.2 times it. A pixel 165°
+  // off its axis, 150 px out, and an 8 px block halfway to it (162° to
+  // 168° round), where only the scatter reaches
+  let at = Vec2::new(250.0, 80.0);
+  let ray = Vec2::from_angle(165f32.to_radians());
+  let (block, pixel) = (at + ray * 75.0, at + ray * 150.0);
+  let spot = move |wall: bool| {
+    wide(move |ctx| {
+      ctx.world.spawn((
+        Transform::from_xy(at.x, at.y),
+        Light2D::spot(Color::WHITE, 300.0, 300.0, 0.0)
+          .with_volumetric_settings(VolumetricSettings {
+            enabled: true,
+            intensity: 0.01,
+            density: 0.5,
+            scattering: 1.0,
+            god_rays: false,
+          })
+          .with_shadows(),
+      ));
+      if wall {
+        ctx.world.spawn((
+          Transform::from_xy(block.x, block.y),
+          LightOccluder2D::rect(8.0, 8.0),
+        ));
+      }
+    })
+  };
+  let (Some(walled), Some(open)) = (spot(true), spot(false)) else {
+    return;
+  };
+  let (walled, open) = (walled.frame().unwrap(), open.frame().unwrap());
+  let (x, y) = (pixel.x as u32, pixel.y as u32);
+  assert!(
+    red(&open, x, y) > 20,
+    "the scatter reaches ({x}, {y}): {}",
+    red(&open, x, y)
+  );
+  assert!(
+    share(&walled, &open, x, y) < 0.03,
+    "behind the block ({x}, {y}): {} against {}",
+    red(&walled, x, y),
+    red(&open, x, y)
+  );
+}

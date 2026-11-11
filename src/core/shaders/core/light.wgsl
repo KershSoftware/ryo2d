@@ -33,6 +33,11 @@ struct ShadowFilter {
 // spot's look-ups near its cone would miss edges the plan left out
 const MAX_ARC: f32 = 0.35;
 
+// How far a volumetric spot's scatter reaches past its axis, in its half
+// angles. The planner reads its edges out to this (`SPOT_SCATTER` in
+// `lighting/plan.rs`, which asserts the two agree) plus its cone margin
+const SPOT_SCATTER: f32 = 1.2;
+
 struct VertexInput {
     @location(0) position: vec2<f32>,
     @location(1) uv: vec2<f32>,
@@ -112,7 +117,7 @@ fn light_at(in: VertexOutput) -> vec3<f32> {
             // A visible beam in dusty air, with a soft scatter past the cone
             let beam_falloff = 1.0 - pow(normalized_dist, 2.0 + vol_density);
             let beam_core = vol_intensity * vol_density * cone * beam_falloff;
-            let scatter_cone = 1.0 - smoothstep(half_angle * 0.7, half_angle * 1.2, pixel_angle);
+            let scatter_cone = 1.0 - smoothstep(half_angle * 0.7, half_angle * SPOT_SCATTER, pixel_angle);
             let edge_scatter = vol_scattering * scatter_cone * beam_falloff * 0.5;
             color += in.color.rgb * (beam_core + edge_scatter);
         }
