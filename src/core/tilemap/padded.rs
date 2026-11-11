@@ -805,7 +805,7 @@ static SERIALS: AtomicU64 = AtomicU64::new(1);
 /// rounds after a map last asked for it: a level despawned and another of
 /// the same tileset spawned soon after (a level restarted or changed) draws
 /// with it, rather than padding again, and making its texture again, in its
-/// landing frame. A tileset too big to pad draws nothing, and the dev log
+/// landing frame. A tileset too big to pad draws nothing, and the log
 /// warns once for each version of it a map draws.
 ///
 /// Shared through the world ([`PaddedCache`]): a map's landing job pads the

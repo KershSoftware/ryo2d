@@ -28,7 +28,6 @@ use std::cell::Cell;
 use std::fmt::Write as _;
 use std::sync::{OnceLock, PoisonError, RwLock, RwLockReadGuard};
 
-use log::LevelFilter;
 use web_time::Instant;
 
 pub use capture::{LogCapture, capture_log, capture_log_bounded};
@@ -60,6 +59,12 @@ pub(crate) use scope::{current_scope, in_scope, scoped};
 /// The `log` crate, for the prelude's macros in a game crate.
 #[doc(hidden)]
 pub use log;
+/// A record's level ([`LogRecord::level`], [`LogCapture::count`]): `Error`,
+/// `Warn`, `Info`, `Debug`, `Trace` (the `log` crate's).
+pub use log::Level;
+/// A target's level ([`set_level`], [`level`]): a [`Level`] or `Off` (the
+/// `log` crate's).
+pub use log::LevelFilter;
 
 struct Logger {
   start: Instant,

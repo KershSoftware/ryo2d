@@ -252,7 +252,7 @@ impl<'w> MapsView<'w> {
   /// changed redraw, collide and cast shadows again. On an unbounded layer
   /// a tile fill that would make more than 131,072 chunks (the 2^27 cells
   /// a map may hold; a region such as `IVec2::MIN` to `IVec2::MAX`) is
-  /// refused before anything is made: it returns 0 and the dev log warns
+  /// refused before anything is made: it returns 0 and the log warns
   /// once a layer. Clearing (`None`) any region reads only the chunks
   /// there are
   pub fn fill<'a>(
@@ -618,7 +618,7 @@ impl<'w> MapsView<'w> {
   /// colliders, and on a floor above its footprint, less its own
   /// colliders. A floor whose bottom tile layer stands elsewhere than the
   /// ground floor's (another grid, or another offset in ground space) is
-  /// left out, and the dev log warns once a map. Each cell of a run of
+  /// left out, and the log warns once a map. Each cell of a run of
   /// stairs is a [`StairLink`](crate::core::navigation::StairLink) between
   /// the floor its layer is on and the floor it leads up to, a step for
   /// next to nothing, since it is the same ground. A map without floors

@@ -173,7 +173,7 @@ impl MapRoot {
   /// they say and every other value as nothing; names compare ignoring ASCII
   /// case (LDtk capitalises identifiers), and a value's own override wins
   /// over its name's. A `TileCell::Shape` here names no shape: its cells
-  /// collide as nothing, and the map warns once in the dev log
+  /// collide as nothing, and the map warns once in the log
   pub fn with_intgrid_collision(mut self, key: impl Into<IntGridKey>, cell: TileCell) -> MapRoot {
     let key = key.into();
     match self.intgrid_collision.iter_mut().find(|(k, _)| *k == key) {

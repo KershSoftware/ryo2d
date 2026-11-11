@@ -47,7 +47,7 @@ impl Scene for Level {
 ```
 
 - The command leaves with its scene: when the scene is popped, switched or reset away, its commands go too.
-- Write the scene's type on the handler's first argument (`level: &mut Level`): that is the type the command is registered for.
+- Write the scene's type on the handler's first argument (`level: &mut Level`): that is the type the command is registered for. The handler is called with the scene that registered it, so the two must be the same type: a handler typed for another scene compiles, but typed in the console it runs nothing and prints `<name> was registered for another scene type` in red. A game that wraps its scenes (a scene that holds the level and forwards to it) meets this: register from the wrapper with the wrapper's type, and reach the inner scene through it.
 - A `(name, description)` pair works wherever a `CommandSpec` does: `ctx.console().command(("game:heal", "Heal the player"), ...)`.
 - What the handler does through `ctx` is its scene's, as in `update`: the sounds it plays and the particle effects it starts belong to that scene (held and stopped with it), and it can spawn and change entities and resources.
 - Registering a name this scene registered already replaces its handler.
@@ -192,7 +192,7 @@ So to watch a part of the game closely: `log:level game::my_game::ai debug`, the
 
 ## The window
 
-- **Open and close:** the backquote key opens it. Pressed again it closes it while the input line is empty, and types its character when the focused line has text. Escape and the window's X always close it.
+- **Open and close:** the backquote key opens it and, pressed again, closes it, whatever the input line holds; its own character is never typed. A half-typed line is kept and is there when the console opens again. Escape and the window's X close it too.
 - **Keyboard:** while it is open and focused it takes the keyboard (the game sees no keys). Click outside it to unfocus it and play with it open; click inside to focus it again.
 - **Mouse:** any mouse button pressed over the window stays away from the game and the scene UI, through its release. A drag the game started outside the window keeps its holds and release when the pointer crosses it.
 - **Editing:** Left, Right, Home, End, Backspace, Delete; Enter runs the line.
@@ -219,7 +219,7 @@ The game's code compiles unchanged: `ctx.console().command`, `remove`, `print`, 
 
 ## Testing commands
 
-A headless test can type a line: `HeadlessEngine::console_run(line) -> Vec<String>` (doc-hidden, in a build with the tools) runs it as if typed and returns the lines it printed after the echo, its error last. A scene change it asks for happens at once; a quit ends the next step.
+A headless test can type a line: `HeadlessEngine::console_run(line) -> Vec<String>` runs it as if typed and returns the lines it printed after the echo, its error last. It is in every build, so a game's command test compiles in a release test run (`cargo test --release`) too, but there, with no tools, it runs nothing and returns an empty `Vec`: a release test run sees no output. A scene change it asks for happens at once; a quit ends the next step.
 
 ```rust,ignore
 let mut engine = HeadlessEngine::new(EngineBuilder::new().start_scene(Level { lives: 3 }))?;
@@ -231,4 +231,4 @@ assert_eq!(
 );
 ```
 
-Such a test belongs behind `#[cfg(debug_assertions)]` if the game's tests also run in release.
+If the game's tests also run in release, assert on the lines only where the tools are in (`if ryo2d::DEV_TOOLS { ... }`).

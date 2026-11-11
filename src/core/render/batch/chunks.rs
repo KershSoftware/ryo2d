@@ -225,7 +225,7 @@ struct Built {
 /// fits (its cap: about two million under the engine's limits). A chunk
 /// that would take it past that frees the chunks drawn least recently
 /// (none drawn this frame); when that is not enough it is not built, and
-/// draws nothing until there is room, and the dev log warns once
+/// draws nothing until there is room, and the log warns once
 #[derive(Default)]
 pub(crate) struct ChunkStore {
   layers: FastMap<Entity, FastMap<IVec2, Built>>,
@@ -250,7 +250,7 @@ pub(crate) struct ChunkStore {
   /// `(last drawn, layer, chunk)`
   evictable: Vec<(u64, Entity, IVec2)>,
   evictable_frame: u64,
-  /// Whether the dev log was told the arena is full
+  /// Whether the log was told the arena is full
   warned: bool,
 }
 
@@ -626,7 +626,7 @@ impl ChunkStore {
     self.cap = Cap(instances);
   }
 
-  /// How many times the dev log was told the arena is full (tests)
+  /// How many times the log was told the arena is full (tests)
   #[cfg(test)]
   pub(crate) fn full_warnings(&self) -> usize {
     usize::from(self.warned)

@@ -2450,22 +2450,6 @@ mod console {
   }
 
   #[test]
-  fn a_backquote_can_be_typed_into_a_command() {
-    let mut e = plain();
-    e.config.debug.dev_console = true;
-    step(&mut e);
-    // The press that opens the console is swallowed, key and character
-    type_key(&mut e, KeyCode::Backquote, "`");
-    assert!(e.world.resource::<Console>().visible);
-    assert_eq!(typed(&e), "");
-    frame_with(&mut e, vec![InputEvent::Text("a".into())]);
-    type_key(&mut e, KeyCode::Backquote, "`");
-    type_key(&mut e, KeyCode::Backquote, "~");
-    assert!(e.world.resource::<Console>().visible, "still open");
-    assert_eq!(typed(&e), "a`~");
-  }
-
-  #[test]
   fn tab_completes_a_command_name_and_lists_several() {
     let mut e = plain();
     e.world.resource_mut::<Console>().toggle();
@@ -2767,20 +2751,25 @@ mod console {
   }
 
   #[test]
-  fn the_console_key_closes_an_empty_line_and_types_into_a_command() {
+  fn the_console_key_closes_the_console_whatever_its_line_holds() {
     let mut e = plain();
     e.config.debug.dev_console = true;
     step(&mut e);
     let open = |e: &Engine| e.world.resource::<Console>().visible;
+    // The press that opens the console is swallowed, key and character
     type_key(&mut e, KeyCode::Backquote, "`");
     assert!(open(&e));
+    assert_eq!(typed(&e), "");
     type_key(&mut e, KeyCode::Backquote, "`");
     assert!(!open(&e), "an empty line: the key closes it");
     type_key(&mut e, KeyCode::Backquote, "`");
     frame_with(&mut e, vec![InputEvent::Text("say ".into())]);
     type_key(&mut e, KeyCode::Backquote, "`");
-    assert!(open(&e), "a line with text: the key types");
-    assert_eq!(typed(&e), "say `");
+    assert!(!open(&e), "a line with text: the key closes it too");
+    assert_eq!(typed(&e), "say ", "nothing typed");
+    type_key(&mut e, KeyCode::Backquote, "`");
+    assert!(open(&e));
+    assert_eq!(typed(&e), "say ", "the half-typed line is kept");
   }
 
   #[test]
@@ -2815,9 +2804,10 @@ mod console {
     );
     frame_with(&mut e, vec![InputEvent::Text("a".into())]);
     assert_eq!(typed(&e), "a");
-    // Released, the key types into a line with text
+    // Released, the key closes it, typing nothing
     type_key(&mut e, KeyCode::Backquote, "²");
-    assert_eq!(typed(&e), "a²");
+    assert!(!open(&e));
+    assert_eq!(typed(&e), "a");
   }
 
   #[test]

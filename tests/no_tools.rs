@@ -73,6 +73,9 @@ fn console_calls_compile_and_do_nothing() {
   };
   e.step_frames(3).unwrap();
   assert_eq!(e.frame_count(), 3);
+  // A game's command test compiles here too, and sees no output
+  assert!(e.console_run("game:gold").is_empty());
+  assert!(e.console_run("game:win").is_empty());
 }
 
 #[test]

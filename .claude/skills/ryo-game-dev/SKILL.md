@@ -853,7 +853,7 @@ impl Scene for Level {
 }
 ```
 
-`EngineBuilder::console_command` adds one for the whole run, with the world. A game built with `ryo2d build` has no console: the calls compile and do nothing. Built-ins, arguments, scene changes from a command: `ryo-console`.
+`EngineBuilder::console_command` adds one for the whole run, with the world. A game built with `ryo2d build` has no console: the calls compile and do nothing. A test types a command with `HeadlessEngine::console_run("game:lives 5")`, which returns the lines it printed; it compiles in every build, but a release test run (`cargo test --release`) has no console and sees no output (an empty `Vec`). Built-ins, arguments, scene changes from a command, testing: `ryo-console`.
 
 ## Visual Tests
 
@@ -896,7 +896,7 @@ fn a_missing_save_is_a_warning() {
   let log = capture_log();
   warn!("no save in slot 2"); // the game's code, run here or in an engine's steps
   assert_eq!(log.warnings(), ["no save in slot 2"]);
-  assert_eq!(log.count(ryo2d::logging::log::Level::Error), 0);
+  assert_eq!(log.count(ryo2d::logging::Level::Error), 0);
 }
 ```
 

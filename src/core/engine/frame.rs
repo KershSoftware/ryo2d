@@ -328,21 +328,16 @@ impl Engine {
   /// The developer tools' keys: the console key, F1-F4, F9, F10 and F12
   #[cfg(dev_tools)]
   fn handle_tool_keys(&mut self) {
-    // The console key opens the console, and closes it while its line is
-    // empty; with text in a focused console's line it types instead. The
-    // press that toggled it, held, neither types nor toggles again, its
-    // auto-repeats included, whatever character the layout gives it
-    let console = self.world.get_resource::<Console>().map(|console| {
-      (
-        console.visible && console.focused && console.has_input(),
-        console.key_held(),
-      )
-    });
+    // The console key always opens and closes the console, whatever its
+    // line holds (a half-typed line is kept), and its character is never
+    // typed. The press that toggled it, held, neither types nor toggles
+    // again, its auto-repeats included, whatever character the layout gives it
+    let console_key_was_held = self.world.get_resource::<Console>().map(Console::key_held);
     let mut input = self.world.resource_mut::<Input>();
     let mut toggle_console = false;
     let mut console_key_held = None;
     if self.config.debug.dev_console
-      && let Some((typing, held)) = console
+      && let Some(held) = console_key_was_held
     {
       let key = KeyCode::Backquote;
       let released = input.key_released(key);
@@ -354,7 +349,7 @@ impl Engine {
         if released {
           console_key_held = Some(false);
         }
-      } else if !typing && input.key_pressed(key) {
+      } else if input.key_pressed(key) {
         input.consume_key(key);
         input.consume_text();
         toggle_console = true;

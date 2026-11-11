@@ -149,9 +149,11 @@ impl LogCapture {
       .collect()
   }
 
-  /// The records kept whose target starts with `prefix`.
+  /// The records kept whose target is `prefix` or under it, by whole path
+  /// segments, as the levels match: `game` takes `game::menu`, not
+  /// `gamepad`.
   pub fn from_target(&self, prefix: &str) -> Vec<LogRecord> {
-    self.filtered(|r| r.target.starts_with(prefix))
+    self.filtered(|r| super::record::under(&r.target, prefix))
   }
 
   /// The scope it collects, which every record it keeps carries.
@@ -339,6 +341,26 @@ mod tests {
       log::warn!(target: "game::report", "a passing test's");
     }
     assert!(PRINTED.with(|printed| printed.take()).is_empty());
+  }
+
+  #[test]
+  fn from_target_matches_whole_path_segments() {
+    let capture = capture_log();
+    log::warn!(target: "game", "the game's root");
+    log::warn!(target: "game::menu", "the menu");
+    log::warn!(target: "gamepad", "a library");
+    log::warn!(target: "game_extra::x", "another library");
+    let messages = |prefix: &str| -> Vec<String> {
+      capture
+        .from_target(prefix)
+        .into_iter()
+        .map(|r| r.message)
+        .collect()
+    };
+    assert_eq!(messages("game"), ["the game's root", "the menu"]);
+    assert_eq!(messages("game::menu"), ["the menu"]);
+    assert_eq!(messages("gamepad"), ["a library"]);
+    assert!(messages("game::me").is_empty());
   }
 
   #[test]

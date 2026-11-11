@@ -20,8 +20,7 @@ pub const MAX_SPAWN: usize = 500;
 pub struct Spawned;
 
 /// The first line of every page: how to open the console
-pub(crate) const OPEN_LINE: &str =
-  "Backquote (`) opens the console, and closes it while its line is empty; Esc always closes it";
+pub(crate) const OPEN_LINE: &str = "Backquote (`) opens and closes the console; Esc closes it too";
 
 /// Drawn on every page: what a shipped game has
 pub(crate) const SHIPPED_LINE: &str = "The console is a development tool: a shipped build has none, and these commands do nothing there";
@@ -29,4 +28,20 @@ pub(crate) const SHIPPED_LINE: &str = "The console is a development tool: a ship
 /// The line every page ends with
 pub(crate) fn draw_footer(ui: &mut UiContext, x: f32, y: f32) {
   ui.draw_text(SHIPPED_LINE, x, y, DIM);
+}
+
+#[cfg(test)]
+mod tests {
+  use super::OPEN_LINE;
+
+  #[test]
+  fn the_open_line_says_the_key_always_opens_and_closes_the_console() {
+    assert!(OPEN_LINE.starts_with("Backquote (`)"), "{OPEN_LINE}");
+    assert!(
+      OPEN_LINE.contains("opens and closes the console"),
+      "{OPEN_LINE}"
+    );
+    assert!(OPEN_LINE.contains("Esc closes it too"), "{OPEN_LINE}");
+    assert!(!OPEN_LINE.contains("line is empty"), "{OPEN_LINE}");
+  }
 }

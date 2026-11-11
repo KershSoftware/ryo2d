@@ -76,8 +76,24 @@ pub(crate) fn push_clock(out: &mut String, time: Duration) {
   digits(out, u64::from(time.subsec_millis()), 3);
 }
 
-/// One line of the log.
+/// One line of the log, as a test's [`capture_log`](crate::testing::capture_log)
+/// gives it. The log makes them: a field may be added later, so outside the
+/// engine one is read, never built.
+///
+/// ```compile_fail
+/// let record = ryo2d::logging::LogRecord {
+///   seq: 1,
+///   level: ryo2d::logging::Level::Warn,
+///   target: "game::x".to_owned(),
+///   origin: ryo2d::logging::Origin::Game,
+///   message: String::new(),
+///   time: std::time::Duration::ZERO,
+///   frame: None,
+///   scope: 0,
+/// };
+/// ```
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct LogRecord {
   /// Its place in the log: every record's is greater than the one before
   pub seq: u64,

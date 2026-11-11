@@ -15,8 +15,20 @@ use crate::core::ui::Color;
 /// optionally a usage line and longer help text (`help <name>` shows both).
 ///
 /// The name is lower-cased when the command is registered, so any spelling
-/// runs it. A `(name, description)` pair converts into a spec.
+/// runs it. A `(name, description)` pair converts into a spec. A field may
+/// be added later, so a spec is made with [`new`](Self::new) (or the pair),
+/// not written out field by field:
+///
+/// ```compile_fail
+/// let spec = ryo2d::prelude::CommandSpec {
+///   name: "game:x".to_owned(),
+///   description: "X".to_owned(),
+///   usage: None,
+///   help: None,
+/// };
+/// ```
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct CommandSpec {
   /// The name typed to run it, such as `game:spawn`
   pub name: String,

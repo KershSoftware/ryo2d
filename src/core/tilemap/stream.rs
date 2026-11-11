@@ -459,7 +459,7 @@ pub struct ChunkRequest {
 /// streams them again.
 ///
 /// On native platforms a generator that panics on a chunk is caught: the
-/// chunk lands empty, it is not asked for again, and the dev log warns once
+/// chunk lands empty, it is not asked for again, and the log warns once
 /// a map. A web build aborts on a panic, so there it ends the game: keep
 /// the generator from panicking. Where there are no threads (the web) the
 /// generator runs on the main thread, `web_budget` of each frame.

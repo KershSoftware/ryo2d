@@ -808,10 +808,22 @@ impl HeadlessEngine {
   /// give the lines it printed after the echo: the command's own, then its
   /// error. A scene change it asks for happens at once; a quit ends the next
   /// step.
-  #[doc(hidden)]
-  #[cfg(dev_tools)]
+  ///
+  /// In every build, so a game's command test compiles in a release test run
+  /// too. A build without the developer tools (`cargo test --release`) has
+  /// no console: there it runs nothing and returns an empty `Vec`, so a
+  /// release test run sees no output (check [`DEV_TOOLS`](crate::DEV_TOOLS)
+  /// before asserting on the lines).
   pub fn console_run(&mut self, line: &str) -> Vec<String> {
-    self.engine.console_run(line)
+    #[cfg(dev_tools)]
+    {
+      self.engine.console_run(line)
+    }
+    #[cfg(not(dev_tools))]
+    {
+      let _ = line;
+      Vec::new()
+    }
   }
 
   /// The console's lines, oldest first (for `tests/e2e/dev_tools.rs`)

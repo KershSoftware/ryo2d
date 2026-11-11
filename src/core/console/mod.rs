@@ -471,12 +471,6 @@ impl Console {
     }
   }
 
-  /// Whether the input line has text (the console key types then, and
-  /// closes the console otherwise)
-  pub(crate) fn has_input(&self) -> bool {
-    !self.input_buffer.is_empty()
-  }
-
   /// Whether the console key that last toggled the console is still down
   pub(crate) fn key_held(&self) -> bool {
     self.key_held

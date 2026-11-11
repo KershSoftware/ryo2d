@@ -680,7 +680,7 @@ impl Engine {
     } else {
       match Gilrs::new() {
         Ok(g) => {
-          log::info!("Initialized successfully");
+          log::info!("Gamepad support initialized");
           Some(g)
         }
         Err(e) => {
@@ -1589,13 +1589,13 @@ impl Engine {
     self.report_captures(reports);
   }
 
-  /// Log capture outcomes to stdout/stderr, the dev log and the console.
+  /// Log capture outcomes to the log and the console.
   fn report_captures(&mut self, reports: Vec<CaptureReport>) {
     for report in reports {
       match report {
         CaptureReport::Written { frame, path } => {
           let message = format!("frame {frame} → {}", path.display());
-          log::info!("{}", message);
+          log::info!("captured {message}");
           #[cfg(dev_tools)]
           if let Some(mut console) = self
             .world
@@ -1606,7 +1606,7 @@ impl Engine {
         }
         CaptureReport::Failed { frame, error } => {
           let message = format!("FAILED frame {frame}: {error}");
-          log::warn!("{}", message);
+          log::warn!("capture {message}");
           #[cfg(dev_tools)]
           if let Some(mut console) = self
             .world
