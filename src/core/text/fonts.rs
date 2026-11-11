@@ -391,8 +391,10 @@ impl Fonts {
   }
 
   /// A registry of the built-in fonts (feature `default-fonts`) in a store
-  /// of its own, for text that has no world (the dev windows, tests). It
-  /// must not follow a world's stores: their ids are another store's
+  /// of its own, for text that has no world (the dev windows, the UI
+  /// harness, tests). It must not follow a world's stores: their ids are
+  /// another store's
+  #[cfg(not(target_arch = "wasm32"))]
   pub(crate) fn with_builtins() -> Self {
     let mut fonts = Self::new();
     let mut store = Assets::<Font>::new();

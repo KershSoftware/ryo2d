@@ -4,8 +4,8 @@ The console window (`mod.rs`, the `Console` world resource) and the commands typ
 
 | File | What |
 |------|------|
-| `mod.rs` | `Console`: the window, input line, history, output (1,000 lines), scrolling, mouse, Tab completion and the log mirror; `log_show`, the lowest log level the console shows (`log:show`, default `warn`) |
-| `view.rs` | Drawing: the window, the input line and the output, each line wrapped once for its width |
+| `mod.rs` | `Console` (dev tools only): the window, input line, history, output (1,000 lines), scrolling, mouse, Tab completion and the log mirror; `log_show`, the lowest log level the console shows (`log:show`, default `warn`) |
+| `view.rs` | Drawing (dev tools only): the window, the input line and the output, each line wrapped once for its width |
 | `tests.rs` | The console's own tests (the view's are in `view.rs`, and use its `scrolling_console`, `console_frame` and `scrolled_units`) |
 | `command.rs` | `CommandSpec` (name, description, usage, help) and `Command` (what a handler gets: arguments, typed `arg`, printing, `act`, `quit`); `split`, the line's words (double quotes keep a phrase) |
 | `scope.rs` | `ConsoleScope`, what `ctx.console()` returns: `command`, `remove`, `print`, `print_colored` |
@@ -32,7 +32,7 @@ A scene's entries go when its slot leaves the stack (pop, switch, reset, clear):
 3. `find` clones the spec and the handler (`Arc`s) out, so nothing of the registry is borrowed while the handler runs: a handler may add or remove commands, or pop its own scene.
 4. The handler runs (above). A scene entry whose scope has no slot prints an error and its scope's entries are removed.
 5. Its printed lines go to the console, then an `Err` text in red. A line the handler prints through `ctx.console().print` goes in at once, so it comes before the command's own lines, which are buffered in `Command` until the handler returns.
-6. A scene action it asked for goes through `SceneManager::handle_action` and `sync_pauses`, as `update`'s does: a builder's or a built-in's always, a scene's only from the top scene (a lower scene's is dropped with a red line, as `update` drops one). During a transition only `Quit` applies; a scene change asked for then is dropped with a red line. A stack left empty, or `cmd.quit()`, asks the engine to quit (`console_quit_requested`).
+6. A scene action it asked for goes through `SceneManager::handle_action` and `sync_pauses`, as `update`'s does: a builder's or a built-in's always, a scene's only from the top scene (a lower scene's is dropped with a red line, as `update` drops one). During a transition only `Quit` applies; a scene change asked for then is dropped with a red line. A stack left empty, or `cmd.quit()`, asks the engine to quit (`run_console_line` inserts `QuitRequested`, as a scene's quit does).
 
 The console runs once a frame in `console_tick`, after `PreUpdate` and before the UI pass, on real time, so commands work while the game is paused. A closed console does no work a frame: `console_tick` and the UI pass only read it, so the resource is neither changed nor taken out of the world (`a_closed_console_does_no_per_frame_work`); its clock and scroll ease stand still until it opens.
 
@@ -46,10 +46,10 @@ The console runs once a frame in `console_tick`, after `PreUpdate` and before th
 - **The mouse.** The pointer is converted to UI units (`set_mouse_scale`, the UI pass's `UiSpace::mouse_scale`) before every hit test and the cursor check, so they match the drawing under an explicit `ui_scale`. `render` writes its clamped position back, so after the game window shrinks the window is hit where it is drawn. In the UI pass, every mouse button pressed over the window is consumed before the scenes' UI (`UiInput::consume_mouse_presses`), and a press taken there stays hidden from gameplay through its holds and release, wherever the pointer goes (`ui_mouse_capture`). Only presses: a drag the game began keeps its holds and release over the console.
 - **Typing.** The console key (`KeyCode::Backquote`, the physical key, whatever character the layout gives it) opens the console, and closes it while the input line is empty; with text in a focused console's line it types its character (`handle_debug_keys`). The press that toggled it is the console's until that key is released (`Console::key_held`): its text and its auto-repeats' are taken (`Input::consume_text`), so a held key neither types nor toggles again. Escape and the close button always close it. Control characters (a Tab's) are not typed.
 
-Tests drive it through `HeadlessEngine::console_run` (doc-hidden, dev tools): the line is echoed, run, and the lines printed after the echo are returned (`Console::capture`/`take_captured`).
+Tests drive it through `HeadlessEngine::console_run` (doc-hidden, dev tools): the line is echoed, run, and the lines printed after the echo are returned (`Console::capture`/`take_captured`). `console_fill` and `console_open` (doc-hidden, dev tools) are the bench's.
 
 ## A build without the tools
 
-`registry.rs`, `dispatch.rs` and `builtins.rs` are compiled only with `dev_tools`. `ctx.console()`, `ConsoleScope`'s calls, `Command`, `CommandSpec` and the builder's two calls compile in every build and do nothing. The `Console` resource and window still exist there for now (a submitted line runs nothing).
+The console is a developer tool: everything here but `command.rs` and the `ConsoleScope` front is `#[cfg(dev_tools)]` (the `Console` resource and its window, `view.rs`, `registry.rs`, `dispatch.rs`, `builtins.rs`, the tests). A build without the tools has no `Console` or `ConsoleCommands` resource, no dispatch and no built-ins, so its binary holds none of their names (`system:timescale`, `log:level`). What a game writes still compiles there: `ctx.console()` gives a `ConsoleScope` that holds no world (`command` and `print` drop their arguments, `remove` returns false), `Command` and `CommandSpec` exist (their crate-internal constructor and readers only with the tools, or in tests), and `EngineBuilder::console_command` and `remove_console_command` drop their arguments. The engine's own call sites have a counterpart without the tools where both builds need one (`Engine::console_rect`, `Engine::console_cursor`: none), and gate the rest (`console_tick`, the console key, the console's UI pass, the capture lines it prints).
 
 No file here names `std::net` (`the_console_names_no_network_code`).

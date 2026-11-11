@@ -35,12 +35,13 @@ pub fn execute(args: &[String]) -> CliResult<()> {
   // This allows all examples to share compiled dependencies
   let target_dir = find_workspace_target_dir(workspace.root());
 
-  let embedded = embedded_config_env(&workspace);
-  for warning in release_tool_warnings(&embedded) {
-    Output::warning(&warning);
+  let options = BuildOptions::from_args(args);
+  for warning in build_warnings(options) {
+    Output::warning(warning);
   }
+  let embedded = embedded_config_env(&workspace);
 
-  let status = release_build_command(&workspace, &target_dir, &embedded, &icon_path)
+  let status = release_build_command(&workspace, &target_dir, &embedded, &icon_path, options)
     .status()
     .map_err(|e| CliError::CommandFailed {
       command: "cargo build".to_string(),
@@ -62,20 +63,24 @@ pub fn execute(args: &[String]) -> CliResult<()> {
 }
 
 /// The `cargo build --release` that compiles the game with the `embedded`
-/// Ryo.toml values baked in. Every embed key it doesn't set is removed, so a
-/// `RYO_EMBED_*` variable left in the shell never reaches the shipped game.
+/// Ryo.toml values baked in, without the developer tools unless asked for
+/// (`--features ryo2d/dev-tools`). Every embed key it doesn't set is
+/// removed, so a `RYO_EMBED_*` variable left in the shell never reaches the
+/// shipped game.
 fn release_build_command(
   workspace: &crate::core::config::Workspace,
   target_dir: &Path,
   embedded: &[(&'static str, String)],
   icon_path: &Path,
+  options: BuildOptions,
 ) -> Command {
   let mut command = Command::new("cargo");
-  command
-    .arg("build")
-    .arg("--release")
-    // Use shared target directory for dependency caching
-    .env("CARGO_TARGET_DIR", target_dir);
+  command.arg("build").arg("--release");
+  if options.dev_tools {
+    command.arg("--features").arg("ryo2d/dev-tools");
+  }
+  // Use shared target directory for dependency caching
+  command.env("CARGO_TARGET_DIR", target_dir);
   for key in crate::core::config::project::EMBED_KEYS {
     command.env_remove(key);
   }
@@ -87,34 +92,30 @@ fn release_build_command(
   command
 }
 
-/// Warnings for developer tools the embedded config would ship to players.
-fn release_tool_warnings(env: &[(&'static str, String)]) -> Vec<String> {
-  const TOOLS: [(&str, &str, &str); 3] = [
-    (
-      "RYO_EMBED_DEV_WINDOW_KEYS",
-      "[debug] dev_window_keys = true",
-      "F9/F10/F12 developer windows will work in this release build",
-    ),
-    (
-      "RYO_EMBED_LOGGER_WINDOW",
-      "[debug] logger_window = true",
-      "the logger window will open in this release build",
-    ),
-    (
-      "RYO_EMBED_ENABLE_PROFILER",
-      "[debug] enable_profiler = true",
-      "the profiler window will open in this release build",
-    ),
-  ];
-  TOOLS
-    .iter()
-    .filter(|(name, _, _)| {
-      env
-        .iter()
-        .any(|(key, value)| key == name && value == "true")
-    })
-    .map(|(_, setting, effect)| format!("{setting}: {effect}"))
-    .collect()
+/// What `ryo2d build` was asked for on its command line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BuildOptions {
+  /// `--dev-tools`: keep the developer tools (the console, the dev windows,
+  /// the debug keys) in the release build
+  dev_tools: bool,
+}
+
+impl BuildOptions {
+  fn from_args(args: &[String]) -> Self {
+    Self {
+      dev_tools: args.iter().any(|arg| arg == "--dev-tools"),
+    }
+  }
+}
+
+/// The warnings printed before the build: one for a build with the tools,
+/// which is not for players.
+fn build_warnings(options: BuildOptions) -> Vec<&'static str> {
+  if options.dev_tools {
+    vec!["this build includes developer tools: do not ship it"]
+  } else {
+    Vec::new()
+  }
 }
 
 /// The per-game save folder name: `[release] save_folder` as written, else
@@ -147,12 +148,12 @@ fn checked_save_folder(config: &crate::core::config::WorkspaceConfig) -> CliResu
 
 /// Ryo.toml values passed to the release build; the engine reads them with
 /// `option_env!` (`core::config::project`). Each setting the project sets
-/// ships as its table entry's embed key, the title as the workspace resolves
-/// it and the console off unless Ryo.toml turns it on (as in dev), and also:
+/// ships as its table entry's embed key (a `[debug]` value only when the
+/// project sets it: a build with the tools then takes the engine's own
+/// defaults, as in dev, and one without ignores them), the title as the
+/// workspace resolves it, and also:
 /// - `RYO_EMBED_RESOLUTION` always (the engine's default when unset), as it
 ///   marks a binary `ryo2d build` made;
-/// - `RYO_EMBED_DEV_WINDOW_KEYS` only from an explicit Ryo.toml value, else
-///   `false`, so a release never takes a dev build's default;
 /// - `RYO_EMBED_PORTABLE`, `RYO_EMBED_SAVE_FOLDER` (the folder name, from
 ///   [`release_save_folder`]) and `RYO_EMBED_ENV` (`[env]` as JSON).
 pub(crate) fn embedded_config_env(
@@ -435,11 +436,16 @@ USAGE:
     ryo2d build [OPTIONS]
 
 OPTIONS:
+    --dev-tools   Keep the developer tools (the console, the dev windows,
+                  the debug keys and overlays) in the build, for testing a
+                  release build. Not for players
     -h, --help    Show this help message
 
 DESCRIPTION:
     Builds a production-optimized release of your game and creates
-    a distributable bundle in the 'release/' directory.
+    a distributable bundle in the 'release/' directory. The build has
+    no developer tools: no console, dev windows or debug keys (F5 and
+    the FPS counter setting stay). --dev-tools keeps them.
 
     The bundle includes:
     - Executable binary (with config baked in at compile time)
@@ -510,7 +516,7 @@ mod tests {
     // Nothing set but the name: the unset values resolve alike too
     web_and_release_resolve("[project]\nname = \"Bare\"\n");
     web_and_release_resolve(
-      "[project]\nname = \"Titled\"\ntitle = \"The Title\"\n[system]\nconsole = true\n[debug]\ndev_window_keys = true\n",
+      "[project]\nname = \"Titled\"\ntitle = \"The Title\"\n[debug]\nconsole = true\ndev_window_keys = true\n",
     );
   }
 
@@ -599,8 +605,6 @@ mod tests {
     let env = embedded_config_env(&workspace(""));
     let value = |key| embedded_value(&env, key);
     assert_eq!(value("RYO_EMBED_RESOLUTION").as_deref(), Some("1280x720"));
-    assert_eq!(value("RYO_EMBED_DEV_WINDOW_KEYS").as_deref(), Some("false"));
-    assert_eq!(value("RYO_EMBED_CONSOLE").as_deref(), Some("false"));
     assert_eq!(value("RYO_EMBED_TITLE").as_deref(), Some("game"));
     assert_eq!(value("RYO_EMBED_ENV").as_deref(), Some("{}"));
     assert_eq!(value("RYO_EMBED_SAVE_FOLDER").as_deref(), Some("game"));
@@ -687,45 +691,54 @@ mod tests {
     assert_eq!(layer.background_rendering, Some(false));
   }
 
-  fn embedded_dev_window_keys(toml: &str) -> Option<String> {
-    embedded_value(
-      &embedded_config_env(&workspace(toml)),
+  #[test]
+  fn a_release_build_embeds_only_what_the_project_set() {
+    let env = embedded_config_env(&workspace("[project]\nname = \"g\"\n"));
+    for key in [
+      "RYO_EMBED_CONSOLE",
       "RYO_EMBED_DEV_WINDOW_KEYS",
-    )
+      "RYO_EMBED_LOGGER_WINDOW",
+      "RYO_EMBED_ENABLE_PROFILER",
+      "RYO_EMBED_SHOW_COLLIDERS",
+    ] {
+      assert_eq!(embedded_value(&env, key), None, "{key} was not set");
+    }
+    let env = embedded_config_env(&workspace(
+      "[project]\nname = \"g\"\n\n[debug]\nconsole = false\nlogger_window = true\n",
+    ));
+    let value = |key| embedded_value(&env, key);
+    assert_eq!(value("RYO_EMBED_CONSOLE").as_deref(), Some("false"));
+    assert_eq!(value("RYO_EMBED_LOGGER_WINDOW").as_deref(), Some("true"));
+    assert_eq!(value("RYO_EMBED_DEV_WINDOW_KEYS"), None);
   }
 
   #[test]
-  fn absent_dev_window_keys_embeds_false() {
-    assert_eq!(
-      embedded_dev_window_keys("[project]\nname = \"g\"\n\n[debug]\nshow_colliders = true\n")
-        .as_deref(),
-      Some("false")
-    );
-  }
-
-  #[test]
-  fn explicit_dev_window_keys_is_embedded() {
-    assert_eq!(
-      embedded_dev_window_keys("[project]\nname = \"g\"\n\n[debug]\ndev_window_keys = true\n")
-        .as_deref(),
-      Some("true")
-    );
-  }
-
-  #[test]
-  fn release_tool_warnings_name_each_enabled_key() {
-    let env = |v: &str| {
-      vec![
-        ("RYO_EMBED_DEV_WINDOW_KEYS", v.to_string()),
-        ("RYO_EMBED_LOGGER_WINDOW", v.to_string()),
-        ("RYO_EMBED_ENABLE_PROFILER", v.to_string()),
-        ("RYO_EMBED_VSYNC", "true".to_string()),
-      ]
+  fn dev_tools_adds_the_feature_and_one_warning() {
+    let ws = workspace("[project]\nname = \"g\"\n");
+    let args = |options: BuildOptions| -> Vec<String> {
+      release_build_command(
+        &ws,
+        Path::new("target"),
+        &[],
+        Path::new("icon.png"),
+        options,
+      )
+      .get_args()
+      .map(|arg| arg.to_string_lossy().into_owned())
+      .collect()
     };
-    let warnings = release_tool_warnings(&env("true"));
-    assert_eq!(warnings.len(), 3);
-    assert!(warnings[0].contains("dev_window_keys"));
-    assert!(release_tool_warnings(&env("false")).is_empty());
+    let plain = BuildOptions::from_args(&[]);
+    let tools = BuildOptions::from_args(&["--dev-tools".to_string()]);
+    assert_eq!(args(plain), ["build", "--release"]);
+    assert_eq!(
+      args(tools),
+      ["build", "--release", "--features", "ryo2d/dev-tools"]
+    );
+    assert!(build_warnings(plain).is_empty());
+    assert_eq!(
+      build_warnings(tools),
+      ["this build includes developer tools: do not ship it"]
+    );
   }
 
   #[test]
@@ -783,6 +796,7 @@ mod tests {
       std::path::Path::new("target"),
       &embedded,
       std::path::Path::new("icon.png"),
+      BuildOptions::from_args(&[]),
     );
 
     let envs: std::collections::HashMap<OsString, Option<OsString>> = command

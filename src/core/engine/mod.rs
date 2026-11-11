@@ -27,7 +27,7 @@ use crate::core::asset::{AssetLoader, AssetServer, AssetSource, DiskSource, inse
 use crate::core::audio::{AudioEngine, VolumeKind, audio_system, default_mixer};
 use crate::core::capture::{AutoCaptureConfig, CaptureReport, CaptureState};
 use crate::core::config::{DisplayMode, ProjectFile, UserPreference};
-use crate::core::console::{Command, CommandSpec, Console};
+use crate::core::console::{Command, CommandSpec};
 use crate::core::cursor::CursorRequest;
 use crate::core::diagnostics::{
   DebugConfig, DebugStats, FrameTimings, OverlayMode, SmoothedDebugStats, SmoothedFrameTimings,
@@ -307,9 +307,9 @@ pub struct Engine {
   /// What the frame's UI pass did besides drawing, for headless snapshots
   #[cfg(not(target_arch = "wasm32"))]
   ui_pass_log: frame::UiPassLog,
-  // Developer tools (the console is the world's `Console`)
-  console_quit_requested: bool,
-  /// The console's cursor override this frame (`None` = no opinion)
+  /// The console's cursor override this frame (`None` = no opinion); the
+  /// console itself is the world's `Console`
+  #[cfg(dev_tools)]
   console_cursor: Option<crate::core::cursor::CursorStyle>,
   /// Which cursor the window shows: the console's override, else the game's
   cursor_resolver: crate::core::cursor::CursorResolver,
@@ -328,15 +328,20 @@ pub struct Engine {
   smoothed_stats: SmoothedDebugStats,
   debug_keys_enabled: bool,
   last_fps_log: Instant,
-  #[cfg(feature = "profiler")]
+  // The dev windows (native, a build with the tools; the profiler's with
+  // its feature)
+  #[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
   profiler_window: Option<crate::core::windows::profiler_window::ProfilerWindow>,
+  #[cfg(all(dev_tools, not(target_arch = "wasm32")))]
   logger_window: Option<crate::core::windows::logger_window::LoggerWindow>,
   game_window_focused: bool,
-  #[cfg(feature = "profiler")]
+  #[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
   profiler_window_focused: bool,
+  #[cfg(all(dev_tools, not(target_arch = "wasm32")))]
   logger_window_focused: bool,
-  #[cfg(feature = "profiler")]
+  #[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
   pending_open_profiler: bool,
+  #[cfg(all(dev_tools, not(target_arch = "wasm32")))]
   pending_open_logger: bool,
   pending_toggle_borderless: bool,
   // Window and input plumbing
@@ -387,15 +392,9 @@ pub struct Engine {
   offscreen_refused: bool,
   offscreen_pace: Option<std::time::Duration>,
   /// The game's name and version, for the console's `system:version`
-  #[cfg_attr(
-    not(dev_tools),
-    expect(dead_code, reason = "only the console reads them")
-  )]
+  #[cfg(dev_tools)]
   game_name: Option<String>,
-  #[cfg_attr(
-    not(dev_tools),
-    expect(dead_code, reason = "only the console reads them")
-  )]
+  #[cfg(dev_tools)]
   game_version: Option<String>,
   /// The name the browser keeps the saves under
   #[cfg(target_arch = "wasm32")]
@@ -505,7 +504,8 @@ pub(crate) fn init_world_resources(
   world.add_observer(frame::record_tick_check);
   world.insert_resource(config.physics.clone());
   world.insert_resource(Physics::new());
-  world.insert_resource(Console::new());
+  #[cfg(dev_tools)]
+  world.insert_resource(crate::core::console::Console::new());
   world.insert_resource(FallbackErrorHandler(handle_system_error));
   register_engine_messages(world);
 }
@@ -613,7 +613,9 @@ impl Engine {
       settings,
       audio_buffer_frames,
       tiled_project,
+      #[cfg(dev_tools)]
       game_name,
+      #[cfg(dev_tools)]
       game_version,
       #[cfg(target_arch = "wasm32")]
       store_name,
@@ -757,7 +759,9 @@ impl Engine {
       // Everything the ring holds of this engine's scope: the builder's
       // warnings, and those of the game's `main`
       let (seq, mark) = crate::core::logging::mirror_start(log_scope);
-      world.resource_mut::<Console>().start_log(seq, mark);
+      world
+        .resource_mut::<crate::core::console::Console>()
+        .start_log(seq, mark);
     }
     world.insert_resource(saves);
     world.insert_resource(settings);
@@ -850,7 +854,7 @@ impl Engine {
       ui_pass_index: 0,
       #[cfg(not(target_arch = "wasm32"))]
       ui_pass_log: frame::UiPassLog::default(),
-      console_quit_requested: false,
+      #[cfg(dev_tools)]
       console_cursor: None,
       cursor_resolver: crate::core::cursor::CursorResolver::default(),
       cursor_refresh: false,
@@ -864,15 +868,18 @@ impl Engine {
       smoothed_stats: SmoothedDebugStats::default(),
       debug_keys_enabled,
       last_fps_log: Instant::now(),
-      #[cfg(feature = "profiler")]
+      #[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
       profiler_window: None,
+      #[cfg(all(dev_tools, not(target_arch = "wasm32")))]
       logger_window: None,
       game_window_focused: true,
-      #[cfg(feature = "profiler")]
+      #[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
       profiler_window_focused: false,
+      #[cfg(all(dev_tools, not(target_arch = "wasm32")))]
       logger_window_focused: false,
-      #[cfg(feature = "profiler")]
+      #[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
       pending_open_profiler: false,
+      #[cfg(all(dev_tools, not(target_arch = "wasm32")))]
       pending_open_logger: false,
       pending_toggle_borderless: false,
       gilrs,
@@ -902,7 +909,9 @@ impl Engine {
       offscreen_run: false,
       offscreen_refused: false,
       offscreen_pace: None,
+      #[cfg(dev_tools)]
       game_name,
+      #[cfg(dev_tools)]
       game_version,
       #[cfg(target_arch = "wasm32")]
       store_name,
@@ -971,6 +980,7 @@ impl Engine {
   #[cfg(not(target_arch = "wasm32"))]
   fn open_log_file(&self) {
     let Some(folder) = &self.log_folder else {
+      crate::core::logging::no_log_file();
       return;
     };
     if let Some(path) = crate::core::logging::open_log_file(folder) {
@@ -1320,6 +1330,22 @@ impl Engine {
     self.ui_draw_count
   }
 
+  /// Take the debug keys and follow the FPS setting as a windowed engine
+  /// does, every tool key on (`HeadlessEngine::windowed_debug_keys`)
+  #[cfg(not(target_arch = "wasm32"))]
+  pub(crate) fn windowed_debug_keys(&mut self) {
+    self.headless = false;
+    self.debug_keys_enabled = !self.config.debug.disable_debug_keys;
+    self.config.debug.dev_window_keys = true;
+    self.config.debug.dev_console = true;
+  }
+
+  /// Whether F5 asked for borderless fullscreen (applied with a window)
+  #[cfg(not(target_arch = "wasm32"))]
+  pub(crate) fn borderless_toggle_pending(&self) -> bool {
+    self.pending_toggle_borderless
+  }
+
   /// The debug switches, for a test to turn an overlay on
   #[cfg(all(test, not(target_arch = "wasm32")))]
   pub(crate) fn debug_config_mut(&mut self) -> &mut DebugConfig {
@@ -1554,14 +1580,22 @@ impl Engine {
         CaptureReport::Written { frame, path } => {
           let message = format!("frame {frame} → {}", path.display());
           log::info!("{}", message);
-          if let Some(mut console) = self.world.get_resource_mut::<Console>() {
+          #[cfg(dev_tools)]
+          if let Some(mut console) = self
+            .world
+            .get_resource_mut::<crate::core::console::Console>()
+          {
             console.print_system(format!("Captured {message}"));
           }
         }
         CaptureReport::Failed { frame, error } => {
           let message = format!("FAILED frame {frame}: {error}");
           log::warn!("{}", message);
-          if let Some(mut console) = self.world.get_resource_mut::<Console>() {
+          #[cfg(dev_tools)]
+          if let Some(mut console) = self
+            .world
+            .get_resource_mut::<crate::core::console::Console>()
+          {
             console.print_error(format!("Capture {message}"));
           }
         }
@@ -2224,6 +2258,9 @@ impl EngineBuilder {
     };
 
     let settings = resolve_settings(&project, &self.overrides);
+    // Only the console names the game
+    #[cfg(not(dev_tools))]
+    let _ = (game_name, game_version);
 
     let (folder, name) = names;
     let store_name = store_name(
@@ -2262,6 +2299,7 @@ impl EngineBuilder {
     });
 
     let mut config = self.config;
+    apply_debug_settings(&mut config.debug, &settings, player.show_fps());
     config.presentation = settings.presentation();
     config.window_size = Some(player.window_size());
     config.title = settings.title;
@@ -2271,16 +2309,6 @@ impl EngineBuilder {
     config.target_background_fps = settings.background_fps;
     config.background_rendering = settings.background_rendering;
     config.icon_path = settings.icon;
-    config.debug.show_fps = player.show_fps();
-    config.debug.show_colliders = settings.show_colliders;
-    config.debug.show_velocities = settings.show_velocities;
-    config.debug.show_origins = settings.show_origins;
-    config.debug.disable_debug_keys = settings.disable_debug_keys;
-    config.debug.show_frame_timing = settings.show_frame_timing;
-    config.debug.enable_profiler = settings.enable_profiler;
-    config.debug.logger_window = settings.logger_window;
-    config.debug.dev_window_keys = settings.dev_window_keys;
-    config.debug.dev_console = settings.dev_console;
 
     let exe = std::env::current_exe().ok();
     apply_launch_overrides(
@@ -2296,7 +2324,9 @@ impl EngineBuilder {
       settings_writer,
       audio_buffer_frames: settings.audio_buffer_frames,
       tiled_project: settings.tiled_project,
+      #[cfg(dev_tools)]
       game_name,
+      #[cfg(dev_tools)]
       game_version,
       store_name,
       #[cfg(dev_tools)]
@@ -2313,6 +2343,46 @@ impl EngineBuilder {
       memory_saves,
     }
   }
+}
+
+impl EngineBuilder {
+  /// The debug switches a project with this Ryo.toml resolves to, with the
+  /// builder's calls over it (`testing::resolved_debug`). Text that is not
+  /// TOML is no project.
+  #[cfg(not(target_arch = "wasm32"))]
+  pub(crate) fn resolved_debug(self, ryo_toml: &str) -> DebugConfig {
+    use crate::core::config::project::ProjectLayer;
+    use crate::core::config::resolve::resolve_settings;
+    let project = crate::core::config::Workspace::from_toml_str(ryo_toml, "game".into())
+      .map(|workspace| ProjectLayer::from_workspace(&workspace))
+      .unwrap_or_default();
+    let settings = resolve_settings(&project, &self.overrides);
+    let mut debug = self.config.debug;
+    apply_debug_settings(&mut debug, &settings, settings.show_fps);
+    debug
+  }
+}
+
+/// The engine's debug switches from the resolved settings, the FPS counter
+/// from the player's settings. A build without the developer tools turns
+/// every switch that shows one off, whatever the project or the builder set.
+fn apply_debug_settings(
+  debug: &mut DebugConfig,
+  settings: &crate::core::config::resolve::ResolvedSettings,
+  show_fps: bool,
+) {
+  debug.show_fps = show_fps;
+  debug.show_colliders = settings.show_colliders;
+  debug.show_velocities = settings.show_velocities;
+  debug.show_origins = settings.show_origins;
+  debug.disable_debug_keys = settings.disable_debug_keys;
+  debug.show_frame_timing = settings.show_frame_timing;
+  debug.enable_profiler = settings.enable_profiler;
+  debug.logger_window = settings.logger_window;
+  debug.dev_window_keys = settings.dev_window_keys;
+  debug.dev_console = settings.dev_console;
+  #[cfg(not(dev_tools))]
+  debug.switch_tools_off();
 }
 
 /// A console call made on the builder, applied over the built-ins in order
@@ -2336,7 +2406,10 @@ struct ResolvedBuild {
   audio_buffer_frames: Option<u32>,
   /// The Tiled project's asset path (`None`: the default)
   tiled_project: Option<String>,
+  /// The game's name and version, for the console
+  #[cfg(dev_tools)]
   game_name: Option<String>,
+  #[cfg(dev_tools)]
   game_version: Option<String>,
   /// The name the browser keeps the saves under
   #[cfg_attr(

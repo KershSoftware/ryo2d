@@ -12,22 +12,28 @@ use crate::core::ui::Color;
 /// In a build without the developer tools there is no console: every call
 /// compiles and does nothing.
 pub struct ConsoleScope<'a> {
-  #[cfg_attr(
-    not(dev_tools),
-    expect(dead_code, reason = "a build without tools has no console to reach")
-  )]
+  #[cfg(dev_tools)]
   world: &'a mut World,
-  #[cfg_attr(
-    not(dev_tools),
-    expect(dead_code, reason = "a build without tools has no console to reach")
-  )]
+  #[cfg(dev_tools)]
   scope: u64,
+  /// A build without tools has no console to reach
+  #[cfg(not(dev_tools))]
+  world: std::marker::PhantomData<&'a mut World>,
 }
 
 impl<'a> ConsoleScope<'a> {
   /// The console as seen by the scene of `scope`
+  #[cfg(dev_tools)]
   pub(crate) fn new(world: &'a mut World, scope: u64) -> Self {
     Self { world, scope }
+  }
+
+  /// No console: a build without tools
+  #[cfg(not(dev_tools))]
+  pub(crate) fn new(_world: &'a mut World, _scope: u64) -> Self {
+    Self {
+      world: std::marker::PhantomData,
+    }
   }
 }
 
@@ -111,7 +117,10 @@ impl ConsoleScope<'_> {
   /// it lands before the lines the handler prints through its `Command`,
   /// which go to the console when the handler returns.
   pub fn print(&mut self, text: impl Into<String>) {
+    #[cfg(dev_tools)]
     self.print_colored(text, super::colors::TEXT);
+    #[cfg(not(dev_tools))]
+    let _ = text;
   }
 
   /// Print a line to the console in `color`, at once (as [`print`](Self::print)).

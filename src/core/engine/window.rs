@@ -154,6 +154,10 @@ fn frame_kind(frame: u64, scene_entered: bool, visible_and_focused: bool) -> Fra
   }
 }
 
+/// The dev windows: standalone native windows of a build with the tools
+/// (the logger's, and the profiler's with its feature). Each call has a
+/// counterpart below that does nothing, for a build without them and the web.
+#[cfg(all(dev_tools, not(target_arch = "wasm32")))]
 impl Engine {
   /// Closes the profiler window (its X button, through `CloseRequested`) and
   /// clears its focus flag; the window's drop removes its sink.
@@ -169,6 +173,174 @@ impl Engine {
     self.logger_window_focused = false;
   }
 
+  /// The dev windows the run opens at start: the profiler for `ryo2d dev
+  /// --profiler`, the logger for `[debug] logger_window`
+  fn open_dev_windows_at_start(&mut self, event_loop: &ActiveEventLoop) {
+    let Some(renderer) = &self.renderer else {
+      return;
+    };
+    let (Some(instance), Some(adapter)) = (renderer.instance(), renderer.adapter()) else {
+      return;
+    };
+    #[cfg(feature = "profiler")]
+    if std::env::var("RYO_PROFILER_AUTO_OPEN").is_ok() {
+      self.profiler_window = crate::core::windows::profiler_window::ProfilerWindow::new(
+        event_loop,
+        renderer.device_arc(),
+        renderer.queue_arc(),
+        instance,
+        adapter,
+        self.config.debug.enable_profiler,
+      );
+    }
+    if self.config.debug.logger_window {
+      self.logger_window = crate::core::windows::logger_window::LoggerWindow::new(
+        event_loop,
+        renderer.device_arc(),
+        renderer.queue_arc(),
+        instance,
+        adapter,
+        self.log_scope,
+      );
+    }
+  }
+
+  /// Opens the windows F9 and F10 asked for. The requests are used up
+  /// whether or not a window can open, so they are not retried every frame
+  fn open_pending_dev_windows(&mut self, event_loop: &ActiveEventLoop) {
+    #[cfg(feature = "profiler")]
+    let profiler = std::mem::take(&mut self.pending_open_profiler);
+    let logger = std::mem::take(&mut self.pending_open_logger);
+    let Some(renderer) = &self.renderer else {
+      return;
+    };
+    let (Some(instance), Some(adapter)) = (renderer.instance(), renderer.adapter()) else {
+      return;
+    };
+    #[cfg(feature = "profiler")]
+    if profiler && self.profiler_window.is_none() {
+      // Opening turns scopes on, even when enable_profiler wasn't set
+      self.profiler_window = crate::core::windows::profiler_window::ProfilerWindow::new(
+        event_loop,
+        renderer.device_arc(),
+        renderer.queue_arc(),
+        instance,
+        adapter,
+        self.config.debug.enable_profiler,
+      );
+    }
+    if logger && self.logger_window.is_none() {
+      self.logger_window = crate::core::windows::logger_window::LoggerWindow::new(
+        event_loop,
+        renderer.device_arc(),
+        renderer.queue_arc(),
+        instance,
+        adapter,
+        self.log_scope,
+      );
+    }
+  }
+
+  /// Handles `event` when it is a dev window's: whether it was
+  fn dev_window_event(&mut self, window_id: WindowId, event: &WindowEvent) -> bool {
+    #[cfg(feature = "profiler")]
+    if let Some(profiler) = &mut self.profiler_window
+      && window_id == profiler.window_id()
+    {
+      match event {
+        WindowEvent::CloseRequested => self.close_profiler_window(),
+        WindowEvent::RedrawRequested => profiler.render(),
+        WindowEvent::Focused(focused) => self.profiler_window_focused = *focused,
+        _ => {
+          profiler.handle_event(event);
+        }
+      }
+      return true;
+    }
+
+    if let Some(logger) = &mut self.logger_window
+      && window_id == logger.window_id()
+    {
+      match event {
+        WindowEvent::CloseRequested => self.close_logger_window(),
+        WindowEvent::RedrawRequested => logger.render(),
+        WindowEvent::Focused(focused) => self.logger_window_focused = *focused,
+        _ => {
+          logger.handle_event(event);
+        }
+      }
+      return true;
+    }
+    false
+  }
+
+  /// A game frame begins: the profiler window counts its time
+  fn dev_windows_frame_start(&mut self) {
+    #[cfg(feature = "profiler")]
+    if let Some(profiler) = &mut self.profiler_window {
+      profiler.track_frame_time();
+    }
+  }
+
+  /// Draws the open dev windows (each throttles itself)
+  fn render_dev_windows(&mut self) {
+    #[cfg(feature = "profiler")]
+    if let Some(profiler) = &mut self.profiler_window {
+      profiler.render();
+    }
+    if let Some(logger) = &mut self.logger_window {
+      logger.render();
+    }
+  }
+
+  /// Whether a dev window has the focus
+  fn dev_window_focused(&self) -> bool {
+    #[cfg(feature = "profiler")]
+    if self.profiler_window_focused {
+      return true;
+    }
+    self.logger_window_focused
+  }
+
+  /// A focused dev window gets no redraw events of its own: ask for one
+  fn redraw_focused_dev_windows(&self) {
+    #[cfg(feature = "profiler")]
+    if self.profiler_window_focused
+      && let Some(profiler) = &self.profiler_window
+    {
+      profiler.request_redraw();
+    }
+    if self.logger_window_focused
+      && let Some(logger) = &self.logger_window
+    {
+      logger.request_redraw();
+    }
+  }
+}
+
+/// No dev windows: a build without the tools, or the web
+#[cfg(not(all(dev_tools, not(target_arch = "wasm32"))))]
+impl Engine {
+  fn open_dev_windows_at_start(&mut self, _event_loop: &ActiveEventLoop) {}
+
+  fn open_pending_dev_windows(&mut self, _event_loop: &ActiveEventLoop) {}
+
+  fn dev_window_event(&mut self, _window_id: WindowId, _event: &WindowEvent) -> bool {
+    false
+  }
+
+  fn dev_windows_frame_start(&mut self) {}
+
+  fn render_dev_windows(&mut self) {}
+
+  fn dev_window_focused(&self) -> bool {
+    false
+  }
+
+  fn redraw_focused_dev_windows(&self) {}
+}
+
+impl Engine {
   /// Show the window and start the engine on its new renderer (native at
   /// once, the web when its async GPU setup arrives).
   fn finish_gpu_setup(
@@ -185,38 +357,7 @@ impl Engine {
     self.window = Some(window);
     self.cursor_resolver.window_reset();
     self.init_gpu(renderer, scale_factor);
-
-    // The profiler opens on its own only for `ryo2d dev --profiler`
-    #[cfg(feature = "profiler")]
-    if std::env::var("RYO_PROFILER_AUTO_OPEN").is_ok()
-      && let Some(renderer) = &self.renderer
-      && let (Some(instance), Some(adapter)) = (renderer.instance(), renderer.adapter())
-    {
-      self.profiler_window = crate::core::windows::profiler_window::ProfilerWindow::new(
-        event_loop,
-        renderer.device_arc(),
-        renderer.queue_arc(),
-        instance,
-        adapter,
-        self.config.debug.enable_profiler,
-      );
-    }
-
-    // A dev window on the web would be a second canvas on the page
-    if self.config.debug.logger_window
-      && !cfg!(target_arch = "wasm32")
-      && let Some(renderer) = &self.renderer
-      && let (Some(instance), Some(adapter)) = (renderer.instance(), renderer.adapter())
-    {
-      self.logger_window = crate::core::windows::logger_window::LoggerWindow::new(
-        event_loop,
-        renderer.device_arc(),
-        renderer.queue_arc(),
-        instance,
-        adapter,
-        self.log_scope,
-      );
-    }
+    self.open_dev_windows_at_start(event_loop);
   }
 
   /// The web's GPU set-up arrived: start the engine on it, or stop
@@ -548,11 +689,9 @@ impl Engine {
   /// has focus: draw at full rate and refresh the dev windows.
   fn unfocused_tick(&mut self, event_loop: &ActiveEventLoop, throttle: bool) {
     let frame_start = Instant::now();
-    #[cfg(feature = "profiler")]
     if !throttle {
-      if let Some(profiler) = &mut self.profiler_window {
-        profiler.track_frame_time();
-      }
+      self.dev_windows_frame_start();
+      #[cfg(feature = "profiler")]
       crate::core::profiler::new_frame();
     }
 
@@ -583,13 +722,7 @@ impl Engine {
 
     if !throttle {
       // After the sleep, so the profiler reads the whole frame's duration
-      #[cfg(feature = "profiler")]
-      if let Some(profiler) = &mut self.profiler_window {
-        profiler.render();
-      }
-      if let Some(logger) = &mut self.logger_window {
-        logger.render();
-      }
+      self.render_dev_windows();
     }
   }
 }
@@ -721,39 +854,13 @@ impl ApplicationHandler<EngineEvent> for Engine {
     }
   }
 
-  #[allow(unused_variables)] // window_id used only when profiler feature is enabled
   fn window_event(
     &mut self,
     event_loop: &ActiveEventLoop,
     window_id: WindowId,
     event: WindowEvent,
   ) {
-    #[cfg(feature = "profiler")]
-    if let Some(profiler) = &mut self.profiler_window
-      && window_id == profiler.window_id()
-    {
-      match &event {
-        WindowEvent::CloseRequested => self.close_profiler_window(),
-        WindowEvent::RedrawRequested => profiler.render(),
-        WindowEvent::Focused(focused) => self.profiler_window_focused = *focused,
-        _ => {
-          profiler.handle_event(&event);
-        }
-      }
-      return;
-    }
-
-    if let Some(logger) = &mut self.logger_window
-      && window_id == logger.window_id()
-    {
-      match &event {
-        WindowEvent::CloseRequested => self.close_logger_window(),
-        WindowEvent::RedrawRequested => logger.render(),
-        WindowEvent::Focused(focused) => self.logger_window_focused = *focused,
-        _ => {
-          logger.handle_event(&event);
-        }
-      }
+    if self.dev_window_event(window_id, &event) {
       return;
     }
 
@@ -884,10 +991,7 @@ impl ApplicationHandler<EngineEvent> for Engine {
       }
       // Nothing to draw until the GPU is ready (the web sets it up late)
       WindowEvent::RedrawRequested if self.renderer.is_some() => {
-        #[cfg(feature = "profiler")]
-        if let Some(profiler) = &mut self.profiler_window {
-          profiler.track_frame_time();
-        }
+        self.dev_windows_frame_start();
         crate::core::profiler::new_frame();
 
         if self.surface_needs_reconfigure {
@@ -911,16 +1015,8 @@ impl ApplicationHandler<EngineEvent> for Engine {
 
         // Dev windows draw from here while the game has focus (unfocused
         // windows get no redraw events on Windows)
-        #[cfg(feature = "profiler")]
-        if self.game_window_focused
-          && let Some(profiler) = &mut self.profiler_window
-        {
-          profiler.render();
-        }
-        if self.game_window_focused
-          && let Some(logger) = &mut self.logger_window
-        {
-          logger.render();
+        if self.game_window_focused {
+          self.render_dev_windows();
         }
 
         self.after_frame(frame_start);
@@ -1011,7 +1107,7 @@ impl ApplicationHandler<EngineEvent> for Engine {
       let shape = self.cursor_resolver.resolve(
         request.cursor.take(),
         request.custom_cursor.take(),
-        self.console_cursor,
+        self.console_cursor(),
         refresh,
       );
       if let Some(shape) = shape {
@@ -1022,41 +1118,8 @@ impl ApplicationHandler<EngineEvent> for Engine {
       }
     }
 
-    // Dev window requests (F9/F10) are used up whether or not a window can
-    // open, so they are not retried every frame
-    #[cfg(feature = "profiler")]
-    if std::mem::take(&mut self.pending_open_profiler)
-      && !cfg!(target_arch = "wasm32")
-      && self.profiler_window.is_none()
-      && let Some(renderer) = &self.renderer
-      && let (Some(instance), Some(adapter)) = (renderer.instance(), renderer.adapter())
-    {
-      // Opening turns scopes on, even when enable_profiler wasn't set
-      self.profiler_window = crate::core::windows::profiler_window::ProfilerWindow::new(
-        event_loop,
-        renderer.device_arc(),
-        renderer.queue_arc(),
-        instance,
-        adapter,
-        self.config.debug.enable_profiler,
-      );
-    }
-
-    if std::mem::take(&mut self.pending_open_logger)
-      && !cfg!(target_arch = "wasm32")
-      && self.logger_window.is_none()
-      && let Some(renderer) = &self.renderer
-      && let (Some(instance), Some(adapter)) = (renderer.instance(), renderer.adapter())
-    {
-      self.logger_window = crate::core::windows::logger_window::LoggerWindow::new(
-        event_loop,
-        renderer.device_arc(),
-        renderer.queue_arc(),
-        instance,
-        adapter,
-        self.log_scope,
-      );
-    }
+    // Dev window requests (F9/F10)
+    self.open_pending_dev_windows(event_loop);
 
     // F5: toggle borderless
     if std::mem::take(&mut self.pending_toggle_borderless)
@@ -1085,26 +1148,12 @@ impl ApplicationHandler<EngineEvent> for Engine {
     // here, throttled unless a dev window has focus. The browser paces the
     // web's frames, focused or not.
     if !self.game_window_focused && !cfg!(target_arch = "wasm32") {
-      #[cfg(feature = "profiler")]
-      let throttle = !self.profiler_window_focused && !self.logger_window_focused;
-      #[cfg(not(feature = "profiler"))]
-      let throttle = !self.logger_window_focused;
+      let throttle = !self.dev_window_focused();
       self.unfocused_tick(event_loop, throttle);
     } else if let Some(window) = &self.window {
       window.request_redraw();
     }
-
-    #[cfg(feature = "profiler")]
-    if self.profiler_window_focused
-      && let Some(profiler) = &self.profiler_window
-    {
-      profiler.request_redraw();
-    }
-    if self.logger_window_focused
-      && let Some(logger) = &self.logger_window
-    {
-      logger.request_redraw();
-    }
+    self.redraw_focused_dev_windows();
   }
 }
 

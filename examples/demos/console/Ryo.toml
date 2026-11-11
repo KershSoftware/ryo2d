@@ -2,5 +2,5 @@
 name = "Console Demo"
 version = "0.1.0"
 
-[system]
+[debug]
 console = true

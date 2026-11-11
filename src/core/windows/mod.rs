@@ -59,6 +59,9 @@
 //! }
 //! ```
 
+// The whole module is a developer tool, native only (it is declared under
+// `cfg(all(dev_tools, not(target_arch = "wasm32")))` in `core/mod.rs`)
+
 // Generic dev window framework
 pub mod dev_window;
 

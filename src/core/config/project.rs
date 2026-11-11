@@ -147,13 +147,11 @@ include!("project_table.rs");
 impl ProjectLayer {
   /// A workspace's project values (dev builds): what its Ryo.toml sets, with
   /// the title it falls back to (`[project] name`, then the folder's name),
-  /// no console unless `[system] console` turns it on, and the logo as a path
-  /// from the workspace's root.
+  /// and the logo as a path from the workspace's root.
   pub(crate) fn from_workspace(workspace: &Workspace) -> Self {
     let config = workspace.config();
     ProjectLayer {
       title: Some(config.title.clone()),
-      dev_console: Some(config.debug.dev_console),
       icon: config
         .release
         .logo
@@ -166,16 +164,15 @@ impl ProjectLayer {
 
 impl ProjectLayer {
   /// A workspace's project values as a release build has them (what
-  /// `ryo2d build` embeds): the resolution is always set, the dev window keys
-  /// are off unless Ryo.toml turns them on, and the icon is not a value (a
-  /// release finds icon.png beside the game).
+  /// `ryo2d build` embeds): the resolution is always set, and the icon is
+  /// not a value (a release finds icon.png beside the game). The `[debug]`
+  /// values are only those Ryo.toml sets.
   pub(crate) fn for_release(workspace: &Workspace) -> Self {
     let mut layer = Self::from_workspace(workspace);
     layer.icon = None;
     layer
       .resolution
       .get_or_insert(super::resolve::DEFAULT_RESOLUTION);
-    layer.dev_window_keys.get_or_insert(false);
     layer
   }
 }
@@ -336,8 +333,9 @@ pub(crate) fn compiled_embedded_value(name: &str) -> Option<&'static str> {
 }
 
 /// Warn of each key in a known section (one the table lists keys of) that
-/// the table doesn't list, suggesting the nearest known key of that section.
-/// `[env]` and the game's own sections are free-form.
+/// the table doesn't list, suggesting the key of that name in another
+/// section (`[system] console` is `debug.console`), else the nearest known
+/// key of that section. `[env]` and the game's own sections are free-form.
 pub(crate) fn warn_unknown_keys(table: &toml::Table, warn: &mut dyn FnMut(String)) {
   for (section, keys) in table {
     let known = KNOWN_KEYS
@@ -357,7 +355,12 @@ pub(crate) fn warn_unknown_keys(table: &toml::Table, warn: &mut dyn FnMut(String
       if known.clone().any(|known| known == key) {
         continue;
       }
-      let guess = nearest_key(key, known.clone())
+      let moved = KNOWN_KEYS
+        .iter()
+        .find(|(other, name)| other != section && name == key)
+        .map(|(other, name)| format!("{other}.{name}"));
+      let guess = moved
+        .or_else(|| nearest_key(key, known.clone()).map(str::to_string))
         .map(|nearest| format!(" (did you mean `{nearest}`?)"))
         .unwrap_or_default();
       warn(format!(
@@ -549,7 +552,7 @@ mod tests {
   }
 
   #[test]
-  fn a_dev_workspace_fills_in_the_title_the_console_and_the_logo_path() {
+  fn a_dev_workspace_fills_in_the_title_and_the_logo_path() {
     let ws = Workspace::from_toml_str(
       "[project]\nname = \"Hopper\"\n\n[release]\nlogo = \"art/logo.png\"\n",
       PathBuf::from("game"),
@@ -559,8 +562,8 @@ mod tests {
     let layer = ProjectLayer::from_workspace(&ws);
 
     assert_eq!(layer.title.as_deref(), Some("Hopper"));
-    assert_eq!(layer.dev_console, Some(false), "no console unless asked");
     assert_eq!(layer.icon, Some(PathBuf::from("game/art/logo.png")));
+    assert_eq!(layer.dev_console, None, "the build's own default");
     assert_eq!(layer.dev_window_keys, None, "the build's own default");
     assert_eq!(layer.vsync, None);
   }

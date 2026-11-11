@@ -2,5 +2,5 @@
 name = "UI Demo"
 title = "Ryo2D UI Demo"
 
-[system]
+[debug]
 console = true

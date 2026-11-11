@@ -270,11 +270,11 @@ voice_volume = 1.0
 ambience_volume = 1.0
 # audio_buffer_frames = 256   # the audio device's buffer: smaller is lower latency, larger safer
 show_fps = false
-console = false
 
 # =============================================================================
 # DEVELOPER-ONLY SETTINGS
-# These are NOT written to system.json. `ryo2d build` embeds them into release builds too.
+# These are NOT written to system.json. A release from `ryo2d build` has no
+# developer tools and ignores them; `ryo2d build --dev-tools` keeps them.
 # =============================================================================
 
 [debug]
@@ -285,7 +285,8 @@ show_frame_timing = false
 disable_debug_keys = false
 enable_profiler = false
 logger_window = false
-# dev_window_keys = true  # F9/F10/F12 dev windows; also enables them in release builds
+# console = false  # the developer console (backquote key; on by default)
+# dev_window_keys = false  # F9/F10/F12 dev windows (on by default)
 
 # =============================================================================
 # RELEASE/DISTRIBUTION SETTINGS

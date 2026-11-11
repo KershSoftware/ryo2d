@@ -22,26 +22,31 @@ const PADDING: i32 = 8;
 /// Rows a wheel's notch scrolls.
 const ROWS_A_NOTCH: f32 = 3.0;
 
-/// The rows a scroll moves, positive toward older rows: three a wheel notch;
-/// a trackpad's pixel delta divided by the window's scale factor (logical
-/// pixels), then by the row pitch. The part of a row left over is kept in
-/// `carry` for the next delta.
+/// The rows a scroll moves, positive toward older rows: three a wheel notch
+/// (a high-resolution wheel's fraction of one too); a trackpad's pixel delta
+/// divided by the window's scale factor (logical pixels), then by the row
+/// pitch. The part of a row left over is kept in `carry` for the next delta.
 fn scroll_rows(delta: MouseScrollDelta, scale_factor: f64, carry: &mut f64) -> i32 {
-  match delta {
-    MouseScrollDelta::LineDelta(_, y) => (y * ROWS_A_NOTCH).round() as i32,
+  *carry += match delta {
+    MouseScrollDelta::LineDelta(_, y) => f64::from(y * ROWS_A_NOTCH),
     MouseScrollDelta::PixelDelta(position) => {
       let scale = if scale_factor > 0.0 {
         scale_factor
       } else {
         1.0
       };
-      *carry += position.y / scale / f64::from(ROW_PITCH);
-      let rows = carry.trunc();
-      *carry -= rows;
-      rows as i32
+      position.y / scale / f64::from(ROW_PITCH)
     }
-  }
+  };
+  // A part of a row a hair short of whole (tenths of a notch add up so) is
+  // a row
+  let rows = (*carry + ROW_EPSILON * carry.signum()).trunc();
+  *carry -= rows;
+  rows as i32
 }
+
+/// How far short of a whole row a carry still counts as one
+const ROW_EPSILON: f64 = 1e-6;
 
 /// A header button.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -562,7 +567,7 @@ impl LoggerWindow {
         .draw_text("No log entries", PADDING, y, colors::TEXT_DIM);
       if self.feed.rows().is_empty() {
         self.renderer.draw_text(
-          "Use log::info!() or ryo2d::info!() to log messages",
+          "Use the prelude's info!() to log messages",
           PADDING,
           y + ROW_PITCH,
           colors::TEXT_DIM,
@@ -806,5 +811,17 @@ mod tests {
       scroll_rows(MouseScrollDelta::LineDelta(0.0, -2.0), 1.0, &mut 0.0),
       -6
     );
+  }
+
+  #[test]
+  fn a_fractional_wheel_notch_adds_up() {
+    // A high-resolution wheel sends tenths of a line: ten of them are a notch
+    let tenth = MouseScrollDelta::LineDelta(0.0, 0.1);
+    let mut carry = 0.0;
+    let rows: i32 = (0..10).map(|_| scroll_rows(tenth, 1.0, &mut carry)).sum();
+    assert_eq!(rows, 3);
+    let back = MouseScrollDelta::LineDelta(0.0, -0.1);
+    let rows: i32 = (0..10).map(|_| scroll_rows(back, 2.0, &mut carry)).sum();
+    assert_eq!(rows, -3);
   }
 }

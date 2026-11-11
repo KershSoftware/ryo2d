@@ -329,6 +329,31 @@ mod tests {
   }
 
   #[test]
+  fn the_console_and_dev_keys_default_on_with_tools() {
+    let s = resolve_settings(&ProjectLayer::default(), &BuilderOverrides::default());
+    assert!(s.dev_console, "the console is on by default");
+    assert!(s.dev_window_keys, "the dev window keys are on by default");
+    // Ryo.toml's `[debug]` turns each off
+    let ws = Workspace::from_toml_str(
+      "[debug]\nconsole = false\ndev_window_keys = false\n",
+      PathBuf::from("game"),
+    )
+    .unwrap();
+    let s = resolve_settings(
+      &ProjectLayer::from_workspace(&ws),
+      &BuilderOverrides::default(),
+    );
+    assert!(!s.dev_console && !s.dev_window_keys);
+    // A project that sets neither keeps them on
+    let ws = Workspace::from_toml_str("[project]\nname = \"g\"\n", PathBuf::from("game")).unwrap();
+    let s = resolve_settings(
+      &ProjectLayer::from_workspace(&ws),
+      &BuilderOverrides::default(),
+    );
+    assert!(s.dev_console && s.dev_window_keys);
+  }
+
+  #[test]
   fn project_overrides_defaults() {
     let s = resolve_settings(&project_with_everything(), &BuilderOverrides::default());
     assert_eq!(s.title, "Project");
@@ -386,11 +411,11 @@ voice_volume = 0.7
 ambience_volume = 0.8
 audio_buffer_frames = 512
 show_fps = true
-console = true
 target_background_fps = 15
 background_rendering = false
 
 [debug]
+console = true
 show_colliders = true
 show_velocities = true
 show_origins = true

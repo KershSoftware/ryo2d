@@ -16,26 +16,38 @@
 //!   same engine with the console closed, stepped in turn (an engine stepping
 //!   evicts the others' data) with the GPU drained outside the measure;
 //!   the median and 95th percentile of each open frame over the closed
-//!   frames' median.
+//!   frames' median. Only in a build with the tools (`--features dev-tools`):
+//!   a build without them has no console.
 
 mod guards;
 
 use std::process::Command;
-use std::time::{Duration, Instant};
+#[cfg(dev_tools)]
+use std::time::Duration;
+use std::time::Instant;
 
+#[cfg(dev_tools)]
 use ryo2d::prelude::*;
-use ryo2d::testing::{HeadlessEngine, set_log_stderr, shared_gpu};
+use ryo2d::testing::set_log_stderr;
+#[cfg(dev_tools)]
+use ryo2d::testing::{HeadlessEngine, shared_gpu};
 
-const RESOLUTION: (u32, u32) = (1920, 1080);
 const QUIET_CALLS: u32 = 1_000_000;
 const WARN_CALLS: u32 = 100_000;
+#[cfg(dev_tools)]
+const RESOLUTION: (u32, u32) = (1920, 1080);
+#[cfg(dev_tools)]
 const LINES: usize = 1_000;
 /// Frames stepped before measuring, and measured frames of each engine
+#[cfg(dev_tools)]
 const WARM: usize = 60;
+#[cfg(dev_tools)]
 const ROUNDS: usize = 1000;
 
+#[cfg(dev_tools)]
 struct Empty;
 
+#[cfg(dev_tools)]
 impl Scene for Empty {}
 
 fn ns_per_call(calls: u32, mut call: impl FnMut(u32)) -> f64 {
@@ -64,6 +76,7 @@ fn log_calls() {
   }
 }
 
+#[cfg(dev_tools)]
 fn engine(open: bool) -> Option<HeadlessEngine> {
   let builder = EngineBuilder::new()
     .resolution(RESOLUTION.0, RESOLUTION.1)
@@ -79,6 +92,7 @@ fn engine(open: bool) -> Option<HeadlessEngine> {
   Some(engine)
 }
 
+#[cfg(dev_tools)]
 fn settle_gpu() {
   if let Ok((device, _)) = shared_gpu() {
     device
@@ -87,10 +101,12 @@ fn settle_gpu() {
   }
 }
 
+#[cfg(dev_tools)]
 fn us(time: Duration) -> f64 {
   time.as_secs_f64() * 1e6
 }
 
+#[cfg(dev_tools)]
 fn console_open_idle() {
   let (Some(mut closed), Some(mut open)) = (engine(false), engine(true)) else {
     return;
@@ -134,6 +150,7 @@ fn main() {
   println!("machine: {load}");
   println!("dev tools bench: a log call, a warning, an open console's frame (no targets)");
   log_calls();
+  #[cfg(dev_tools)]
   if guards::runs(&["console_open_idle"]) {
     console_open_idle();
   }

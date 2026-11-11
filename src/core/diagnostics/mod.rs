@@ -25,7 +25,11 @@
 //!
 //! # Runtime Debug Key Toggles
 //!
-//! **Game Debug Keys (F1-F5)** - Available to players unless `disable_debug_keys = true`:
+//! The keys below are developer tools, in a build with them (debug builds,
+//! or the `dev-tools` feature); a build without them leaves every key to the
+//! game but F5, and keeps the FPS counter as the player's setting.
+//!
+//! **Game Debug Keys (F1-F5)** - On unless `disable_debug_keys = true`:
 //!
 //! | Key | Action |
 //! |-----|--------|
@@ -35,7 +39,7 @@
 //! | F4 | Toggle origin points |
 //! | F5 | Toggle borderless fullscreen |
 //!
-//! **Dev Keys (F9, F10, F12)** - Dev-only by default, requires `dev_window_keys = true` in release:
+//! **Dev Keys (F9, F10, F12)** - On unless `dev_window_keys = false`:
 //!
 //! | Key | Action |
 //! |-----|--------|
@@ -43,8 +47,8 @@
 //! | F10 | Toggle profiler window (requires `profiler` feature) |
 //! | F12 | Capture the next frame to `captures/` (or `RYO_CAPTURE_DIR`) |
 //!
-//! Set `disable_debug_keys = true` in `[debug]` to disable the F1-F5 toggles.
-//! Set `dev_window_keys = true` in `[debug]` to enable F9, F10 and F12 in release builds.
+//! Set `disable_debug_keys = true` in `[debug]` to disable the F1-F5 toggles,
+//! and `dev_window_keys = false` to disable F9, F10 and F12.
 //!
 //! # Profiling Workflow
 //!

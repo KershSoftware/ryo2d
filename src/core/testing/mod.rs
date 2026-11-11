@@ -93,6 +93,14 @@ pub fn set_log_stderr(on: bool) {
   crate::core::logging::set_stderr(on);
 }
 
+/// The engine's debug switches as a project with this Ryo.toml resolves
+/// them, over the engine's defaults (for `tests/no_tools.rs`: a build
+/// without tools turns every tool off)
+#[doc(hidden)]
+pub fn resolved_debug(ryo_toml: &str) -> crate::core::diagnostics::DebugConfig {
+  crate::core::engine::EngineBuilder::new().resolved_debug(ryo_toml)
+}
+
 /// Where the particles of `emitter` (an entity with an engine particle
 /// emitter) are in the world, as its last step left them, oldest first (a
 /// `Local` effect's through the emitter's frame in that step): its effect's

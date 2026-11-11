@@ -11,6 +11,7 @@ use super::ui::{UiCacheStats, UiSnapshot, runs_snapshot, ui_snapshot};
 use super::{HeadlessError, shared_gpu};
 use crate::core::asset::AssetsView;
 use crate::core::audio::{AudioEngine, AudioLogEntry};
+#[cfg(dev_tools)]
 use crate::core::console::Console;
 use crate::core::ecs::kernel::Messages;
 use crate::core::ecs::{Entity, World};
@@ -509,6 +510,20 @@ impl HeadlessEngine {
     self.engine.ui_draw_count()
   }
 
+  /// Take the debug keys and follow the FPS counter's setting as a windowed
+  /// engine does, with every tool key switched on (a headless engine leaves
+  /// both alone): for tests of the keys a shipped game takes
+  #[doc(hidden)]
+  pub fn windowed_debug_keys(&mut self) {
+    self.engine.windowed_debug_keys();
+  }
+
+  /// Whether F5 asked for borderless fullscreen, which a window would apply
+  #[doc(hidden)]
+  pub fn borderless_toggle_pending(&self) -> bool {
+    self.engine.borderless_toggle_pending()
+  }
+
   /// The engine's debug switches, for a test to turn an overlay on
   #[cfg(test)]
   pub(crate) fn debug_config_mut(&mut self) -> &mut crate::core::diagnostics::DebugConfig {
@@ -769,6 +784,7 @@ impl HeadlessEngine {
   /// Print `lines` lines of 80 characters to the console (for
   /// `benches/dev_tools.rs`)
   #[doc(hidden)]
+  #[cfg(dev_tools)]
   pub fn console_fill(&mut self, lines: usize) {
     let text = "x".repeat(80);
     if let Some(mut console) = self.world_mut().get_resource_mut::<Console>() {
@@ -781,6 +797,7 @@ impl HeadlessEngine {
   /// Open or close the console without its toggle key (for
   /// `benches/dev_tools.rs`)
   #[doc(hidden)]
+  #[cfg(dev_tools)]
   pub fn console_open(&mut self, open: bool) {
     if let Some(mut console) = self.world_mut().get_resource_mut::<Console>() {
       console.visible = open;

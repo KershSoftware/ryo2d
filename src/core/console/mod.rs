@@ -15,6 +15,9 @@
 //!   });
 //! }
 //! ```
+//!
+//! The console is a developer tool: a build without the tools compiles only
+//! `ConsoleScope`, `Command` and `CommandSpec`, whose calls do nothing.
 
 #[cfg(dev_tools)]
 mod builtins;
@@ -24,6 +27,7 @@ mod dispatch;
 #[cfg(dev_tools)]
 mod registry;
 mod scope;
+#[cfg(dev_tools)]
 mod view;
 
 pub use command::{Command, CommandSpec};
@@ -40,72 +44,100 @@ pub(crate) use registry::erase;
 #[cfg(dev_tools)]
 pub(crate) use registry::{ConsoleCommands, EngineHooks, Handler, valid_name};
 
+#[cfg(dev_tools)]
 use std::collections::VecDeque;
 
+#[cfg(dev_tools)]
 use super::cursor::CursorStyle;
+#[cfg(dev_tools)]
 use super::ecs::Resource;
+#[cfg(dev_tools)]
 use super::input::Input;
+#[cfg(dev_tools)]
 use super::text::{FontRole, TextStyle};
+#[cfg(dev_tools)]
 use super::ui::{Color, Rect};
+#[cfg(dev_tools)]
 use winit::event::MouseButton;
+#[cfg(dev_tools)]
 use winit::keyboard::KeyCode;
 
 /// Maximum number of output lines to keep in history
+#[cfg(dev_tools)]
 const MAX_OUTPUT_LINES: usize = 1000;
 
 /// Maximum number of commands to keep in history
+#[cfg(dev_tools)]
 const MAX_COMMAND_HISTORY: usize = 100;
 
 /// Minimum console window dimensions
+#[cfg(dev_tools)]
 const MIN_WIDTH: f32 = 300.0;
+#[cfg(dev_tools)]
 const MIN_HEIGHT: f32 = 150.0;
 
 /// Default console window dimensions
+#[cfg(dev_tools)]
 const DEFAULT_WIDTH: f32 = 600.0;
+#[cfg(dev_tools)]
 const DEFAULT_HEIGHT: f32 = 400.0;
 
 /// Title bar height, at least (it grows with the console font)
+#[cfg(dev_tools)]
 const TITLE_BAR_HEIGHT: f32 = 24.0;
 
 /// Close button size
+#[cfg(dev_tools)]
 const CLOSE_BUTTON_SIZE: f32 = 16.0;
 
 /// Input line height, at least (it grows with the console font)
+#[cfg(dev_tools)]
 const INPUT_HEIGHT: f32 = 24.0;
 
 /// Room around a line of text in the title bar and input line
+#[cfg(dev_tools)]
 const BAR_PADDING: f32 = 10.0;
 
 /// The line height assumed before the first render measures the font
+#[cfg(dev_tools)]
 const DEFAULT_LINE_HEIGHT: f32 = 12.0;
 
 /// The console's text: JetBrains Mono, 13 px
+#[cfg(dev_tools)]
 pub(crate) fn console_style() -> TextStyle {
   TextStyle::new().role(FontRole::Mono).size(13.0)
 }
 
 /// Resize handle size (corner)
+#[cfg(dev_tools)]
 const RESIZE_HANDLE_SIZE: f32 = 12.0;
 
 /// Scrollbar width
+#[cfg(dev_tools)]
 const SCROLLBAR_WIDTH: f32 = 8.0;
 
 /// Minimum scrollbar thumb height
+#[cfg(dev_tools)]
 const SCROLLBAR_MIN_THUMB: f32 = 20.0;
 
 /// Lines a wheel notch scrolls
+#[cfg(dev_tools)]
 const WHEEL_LINES: f32 = 3.0;
 
 /// Time constant (seconds) of the wheel's ease, as the UI's scroll areas
+#[cfg(dev_tools)]
 const SCROLL_SMOOTHING: f32 = 0.08;
 
 /// Less than this far (in units) from the bottom counts as the bottom
+#[cfg(dev_tools)]
 const BOTTOM_SNAP: f32 = 0.5;
 
 /// Closer than this to its target (in lines) the view settles
+#[cfg(dev_tools)]
 const SCROLL_SNAP: f32 = 0.02;
 
 /// Console visual colors
+#[cfg(dev_tools)]
 pub(crate) mod colors {
   use super::Color;
 
@@ -132,7 +164,6 @@ pub(crate) mod colors {
   /// Error message color
   pub const ERROR: Color = Color::new(255, 100, 100, 255);
   /// A mirrored warning's color (yellow)
-  #[cfg(dev_tools)]
   pub const WARNING: Color = Color::new(255, 210, 90, 255);
   /// System message color (gray)
   pub const SYSTEM: Color = Color::new(150, 150, 150, 255);
@@ -153,6 +184,7 @@ pub(crate) mod colors {
 }
 
 /// A single line of console output
+#[cfg(dev_tools)]
 #[derive(Debug, Clone)]
 pub(crate) struct ConsoleLine {
   /// The text content of the line
@@ -169,6 +201,7 @@ pub(crate) struct ConsoleLine {
   rows: Vec<String>,
 }
 
+#[cfg(dev_tools)]
 impl ConsoleLine {
   /// Create a new console line
   pub fn new(text: impl Into<String>, color: Color, timestamp: f32) -> Self {
@@ -182,6 +215,7 @@ impl ConsoleLine {
 }
 
 /// Drag state for window movement
+#[cfg(dev_tools)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum DragState {
   None,
@@ -203,6 +237,7 @@ enum DragState {
 
 /// The console: its window, its input line and its output. A world
 /// resource; the engine ticks it, draws it, and runs what is typed into it.
+#[cfg(dev_tools)]
 #[derive(Resource, Debug)]
 pub(crate) struct Console {
   /// Whether the console is currently visible
@@ -257,47 +292,40 @@ pub(crate) struct Console {
   /// down: its auto-repeats neither type nor toggle (`handle_debug_keys`)
   key_held: bool,
   /// Tab was pressed this frame (the engine completes with its commands)
-  #[cfg(dev_tools)]
   tab_pressed: bool,
   /// The input line as the last Tab with several matches left it: a Tab
   /// on the same line lists them
-  #[cfg(dev_tools)]
   tab_line: Option<String>,
   /// The console font's line height as last measured by `render`
   line_height: f32,
   /// The lowest level of log record the console shows (`log:show`;
   /// `Off` shows none)
-  #[cfg_attr(
-    not(dev_tools),
-    expect(dead_code, reason = "only `log:show` sets it so far")
-  )]
   pub(crate) log_show: log::LevelFilter,
   /// The text of each line printed while set (`HeadlessEngine::console_run`)
   captured: Option<Vec<String>>,
   /// The last log sequence number the mirror read
-  #[cfg(dev_tools)]
   log_seq: u64,
   /// The engine scope's warnings and errors the ring had been given at the
   /// last read (the ring counts those it drops past it)
-  #[cfg(dev_tools)]
   log_mark: u64,
   /// Times the mirror read the ring (a test's count)
-  #[cfg(all(test, dev_tools))]
+  #[cfg(test)]
   pub(crate) mirror_reads: usize,
   /// The mirror's records, kept for their room
-  #[cfg(dev_tools)]
   log_records: Vec<crate::core::logging::LogRecord>,
   /// Lines wrapped so far (a test's count)
   #[cfg(test)]
   wrap_calls: usize,
 }
 
+#[cfg(dev_tools)]
 impl Default for Console {
   fn default() -> Self {
     Self::new()
   }
 }
 
+#[cfg(dev_tools)]
 impl Console {
   /// Create a new console state
   pub fn new() -> Self {
@@ -327,20 +355,15 @@ impl Console {
       total_time: 0.0,
       drag_state: DragState::None,
       key_held: false,
-      #[cfg(dev_tools)]
       tab_pressed: false,
-      #[cfg(dev_tools)]
       tab_line: None,
       line_height: DEFAULT_LINE_HEIGHT,
       log_show: log::LevelFilter::Warn,
       captured: None,
-      #[cfg(dev_tools)]
       log_seq: 0,
-      #[cfg(dev_tools)]
       log_mark: 0,
-      #[cfg(all(test, dev_tools))]
+      #[cfg(test)]
       mirror_reads: 0,
-      #[cfg(dev_tools)]
       log_records: Vec::new(),
       #[cfg(test)]
       wrap_calls: 0,
@@ -402,34 +425,30 @@ impl Console {
   }
 
   /// Keep the text of every line printed from now until `take_captured`
-  #[cfg(all(dev_tools, not(target_arch = "wasm32")))]
+  #[cfg(not(target_arch = "wasm32"))]
   pub(crate) fn capture(&mut self) {
     self.captured = Some(Vec::new());
   }
 
   /// The lines printed since `capture`, ending the capture
-  #[cfg(all(dev_tools, not(target_arch = "wasm32")))]
+  #[cfg(not(target_arch = "wasm32"))]
   pub(crate) fn take_captured(&mut self) -> Vec<String> {
     self.captured.take().unwrap_or_default()
   }
 
   /// The input line as typed so far
-  #[cfg(all(test, dev_tools))]
+  #[cfg(test)]
   pub(crate) fn input_line(&self) -> &str {
     &self.input_buffer
   }
 
   /// The output lines, oldest first
-  #[cfg(all(test, dev_tools))]
+  #[cfg(test)]
   pub(crate) fn lines(&self) -> impl DoubleEndedIterator<Item = &ConsoleLine> {
     self.output_lines.iter()
   }
 
   /// Clear all output lines
-  #[cfg_attr(
-    all(not(dev_tools), not(test)),
-    expect(dead_code, reason = "only the `clear` command clears")
-  )]
   pub fn clear(&mut self) {
     self.output_lines.clear();
     self.wrapped_lines = 0;
@@ -465,10 +484,7 @@ impl Console {
 
   /// The input line changed other than by Tab: the next Tab starts afresh
   fn line_edited(&mut self) {
-    #[cfg(dev_tools)]
-    {
-      self.tab_line = None;
-    }
+    self.tab_line = None;
   }
 
   /// Set the conversion from logical pixels (a trackpad's) to the console's
@@ -874,7 +890,6 @@ impl Console {
     }
 
     // Tab completes the command name; the engine has the commands
-    #[cfg(dev_tools)]
     if input.key_pressed(KeyCode::Tab) {
       self.tab_pressed = true;
     }
@@ -1028,7 +1043,6 @@ impl Console {
   }
 
   /// Whether Tab was pressed since the last call
-  #[cfg(dev_tools)]
   pub(crate) fn take_tab(&mut self) -> bool {
     std::mem::take(&mut self.tab_pressed)
   }
@@ -1038,7 +1052,6 @@ impl Console {
   /// second Tab does nothing; several are completed as far as they agree,
   /// and a Tab that finds the line as the last one left it lists them on
   /// one line. After the first word, Tab does nothing.
-  #[cfg(dev_tools)]
   pub(crate) fn complete(&mut self, names: impl FnOnce(&str) -> Vec<String>) {
     let word = self.input_buffer.as_str();
     if word.is_empty() || word.chars().any(char::is_whitespace) {
@@ -1064,7 +1077,6 @@ impl Console {
   }
 
   /// Replace the input line, the cursor at its end
-  #[cfg(dev_tools)]
   fn set_input(&mut self, line: String) {
     self.input_buffer = line;
     self.cursor_pos = self.input_buffer.len();
@@ -1075,7 +1087,6 @@ impl Console {
   /// warning `mark` for the engine's scope (`logging::mirror_start`: just
   /// before the ring's oldest record when the engine is built, so the
   /// warnings of its build and of the game's `main` are shown)
-  #[cfg(dev_tools)]
   pub(crate) fn start_log(&mut self, seq: u64, mark: u64) {
     self.log_seq = seq;
     self.log_mark = mark;
@@ -1091,7 +1102,6 @@ impl Console {
   ///
   /// Printing logs nothing (a line is pushed, and wrapped when drawn), so
   /// the mirror never shows a record of its own making.
-  #[cfg(dev_tools)]
   pub(crate) fn mirror_log(&mut self, scope: u64) {
     if !crate::core::logging::records_may_follow(self.log_seq) {
       return;
@@ -1153,5 +1163,5 @@ fn common_prefix<'a>(first: &'a str, rest: &[String]) -> &'a str {
   &first[..end]
 }
 
-#[cfg(test)]
+#[cfg(all(test, dev_tools))]
 mod tests;

@@ -21,7 +21,6 @@ vsync = false
 display_mode = "borderless_fullscreen"
 master_volume = 0.89
 show_fps = false
-console = true
 target_background_fps = 0
 background_rendering = true
 
@@ -31,6 +30,7 @@ background_rendering = true
 # =============================================================================
 
 [debug]
+console = true
 show_colliders = false
 show_velocities = false
 show_origins = false

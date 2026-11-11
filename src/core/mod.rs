@@ -54,6 +54,7 @@ pub mod profiler;
 pub mod capture;
 pub mod console;
 pub mod logging;
+#[cfg(all(dev_tools, not(target_arch = "wasm32")))]
 pub mod windows;
 
 // Frame structure, clocks and test support

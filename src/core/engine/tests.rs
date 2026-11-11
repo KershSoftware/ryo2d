@@ -1302,9 +1302,9 @@ fn a_project_file_gives_the_project_values_where_there_is_no_ryo_toml() {
   assert_eq!((r.config.width, r.config.height), (1600, 900));
   assert_eq!(r.config.title, "File Game");
   assert_eq!(r.store_name, "File Game");
-  // The default dev window keys are for dev builds; a project file resolves
-  // as a release build does
-  assert!(!r.config.debug.dev_window_keys);
+  // The dev window keys follow the build's tools, as they do in a release
+  // of the same Ryo.toml
+  assert_eq!(r.config.debug.dev_window_keys, crate::DEV_TOOLS);
 }
 
 #[test]
@@ -2856,6 +2856,25 @@ fn closing_with_the_x_button_clears_the_focus_flag() {
 
   engine.close_logger_window();
   assert!(!engine.logger_window_focused);
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn a_windowed_engine_that_opens_no_log_file_keeps_no_records_for_one() {
+  let _log = crate::core::testing::capture_log();
+  let _file = crate::core::logging::file_test_turn();
+  let resolved = EngineBuilder::new()
+    .start_scene(EmptyScene)
+    .resolve_in(None, true);
+  let engine = Engine::new(resolved, true);
+  // As a windowed engine with no save folder starts its run
+  let _early = crate::core::logging::keep_early_records();
+  assert!(engine.log_folder.is_none());
+  engine.open_log_file();
+  assert!(
+    !crate::core::logging::early_records_kept(),
+    "no file will open, so nothing is kept for one"
+  );
 }
 
 #[test]

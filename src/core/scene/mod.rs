@@ -472,9 +472,9 @@ pub(crate) fn init_world_resources_for_tests(world: &mut crate::core::ecs::World
   world.insert_resource(WindowInfo::default());
   world.insert_resource(CursorRequest::default());
   world.insert_resource(RenderPipeline::default_2d());
-  world.insert_resource(crate::core::console::Console::new());
   #[cfg(dev_tools)]
   {
+    world.insert_resource(crate::core::console::Console::new());
     let mut commands = crate::core::console::ConsoleCommands::default();
     crate::core::console::add_builtins(&mut commands);
     world.insert_resource(commands);

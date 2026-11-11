@@ -36,7 +36,8 @@ pub(crate) fn under(target: &str, path: &str) -> bool {
 }
 
 /// A record's time as `HH:MM:SS.mmm` (the log file's and the logger
-/// window's).
+/// window's, both native).
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn clock(time: Duration) -> String {
   let secs = time.as_secs();
   format!(

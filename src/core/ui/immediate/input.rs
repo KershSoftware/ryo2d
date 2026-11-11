@@ -228,6 +228,7 @@ impl UiInput {
   /// Take every mouse button pressed this frame, from the UI and from
   /// gameplay (the console does over its window). The engine keeps a taken
   /// press's holds and release hidden too (`mouse_presses_taken`).
+  #[cfg(dev_tools)]
   pub(crate) fn consume_mouse_presses(&mut self) {
     self
       .consumed_mouse

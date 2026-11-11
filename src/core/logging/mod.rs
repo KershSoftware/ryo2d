@@ -41,6 +41,7 @@ pub(crate) use levels::parse_level;
 pub(crate) use outputs::set_stderr;
 #[cfg(test)]
 pub(crate) use outputs::stderr_on;
+#[cfg(all(dev_tools, not(target_arch = "wasm32")))]
 pub(crate) use record::clock;
 pub use record::{LogRecord, Origin};
 #[cfg(dev_tools)]
@@ -200,6 +201,8 @@ pub(crate) fn level_report() -> Option<levels::LevelReport> {
 pub(crate) fn open_log_file(folder: &std::path::Path) -> Option<std::path::PathBuf> {
   ensure();
   if !installed_by_engine() {
+    // Another logger has the records: none is kept for a file
+    file::drop_early();
     return None;
   }
   match file::open(folder) {
@@ -223,6 +226,13 @@ pub(crate) fn open_log_file(folder: &std::path::Path) -> Option<std::path::PathB
 pub(crate) fn headless_run() {
   set_stderr(true);
   #[cfg(not(target_arch = "wasm32"))]
+  file::drop_early();
+}
+
+/// The run opens no log file (a windowed engine with no save folder): the
+/// records kept for one go, and no more are kept.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn no_log_file() {
   file::drop_early();
 }
 

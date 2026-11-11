@@ -2,6 +2,8 @@
 
 Development tool windows (profiler, logger) and guidance for adding new ones.
 
+The whole module is a developer tool and native only: it is declared under `cfg(all(dev_tools, not(target_arch = "wasm32")))` (`core/mod.rs`), with the engine's dev window fields, and its windows' text (`text::CpuText`). A build without the tools, and the web, has none of it.
+
 ## Architecture Overview
 
 Dev windows are standalone winit windows that share GPU resources with the main game renderer:
@@ -20,7 +22,7 @@ The windows draw JetBrains Mono through `text::CpuText`: swash rasterizes the gl
 
 - **Logger**: `[debug] logger_window = true` opens it at startup. F9 toggles it.
 - **Profiler**: requires the `profiler` cargo feature. `[debug] enable_profiler = true` only enables puffin collection and does NOT auto-open the window. F10 toggles it. `ryo2d dev -p` sets `RYO_PROFILER_AUTO_OPEN` to open it at startup.
-- F9/F10 only work when `[debug] dev_window_keys` is true (default in debug builds only).
+- F9/F10 work while `[debug] dev_window_keys` is true, its default in a build with the tools (a build without them has no such keys: they are the game's).
 - Usage and scopes are covered by the `ryo-profiler` skill. The log itself is `core/logging/` (its own module notes).
 
 ## Logger Window
@@ -29,17 +31,16 @@ The windows draw JetBrains Mono through `text::CpuText`: swash rasterizes the gl
 - **Its list** is bounded at `FEED_ROWS` (10,000, the ring's size: a feed that has fallen behind can take all the ring still has, and no more; a few megabytes). The oldest rows go first. Warnings and errors the ring dropped before the feed read them are counted (`missed`) and shown in the footer.
 - **Rows**: `HH:MM:SS.mmm` (the record's time since the logger started), the frame (blank when none), the level letter, the origin letter (`E`ngine, `G`ame, `L`ibrary, from `logging::Origin`) and `target: message` (`row_text`, which a right-click or a selection copies).
 - **Buttons**: the five levels (Trace off by default), `ENG`, `GAME`, `LIB` (libraries, off by default), `CLR` (empties the feed's list, not the ring, and the feed carries on after the newest record logged so far) and `BTM` (back to the newest row, following again). The filter applies to the rows kept, so turning a button on shows the earlier rows too.
-- **Scrolling**: a wheel notch scrolls three rows; a trackpad's pixel delta is divided by the window's scale factor, then by the row pitch (`scroll_rows`), the part of a row kept for the next delta. A scrolled-up view stays on its rows as new ones arrive; scrolling back to the bottom follows again.
-- In a build without tools there is no ring and the feed reads nothing.
+- **Scrolling**: a wheel notch scrolls three rows; a trackpad's pixel delta is divided by the window's scale factor, then by the row pitch (`scroll_rows`). Both add to one carry, and the part of a row left is kept for the next delta, so a high-resolution wheel's tenths of a notch add up (`a_fractional_wheel_notch_adds_up`). A scrolled-up view stays on its rows as new ones arrive; scrolling back to the bottom follows again.
 
 ## Adding a New Dev Window
 
 Use `logger_window.rs` as the template (`DevWindowRenderer` + `DevWindowConfig`). Gate `render()` on `should_render()` and call `mark_rendered()`, so the throttle is respected. Finish with `present()`.
 
-Wire it into the engine (mirror `logger_window` at each site):
+Wire it into the engine (mirror `logger_window` at each site), every piece under `cfg(all(dev_tools, not(target_arch = "wasm32")))`:
 
 1. `Engine` fields (`engine/mod.rs`): `Option<MyWindow>`, a `my_window_focused` flag, and a `pending_open_*` flag if it has a hotkey.
-2. The hotkey in `handle_debug_keys` (`engine/frame.rs`), which consumes the press. Creation needs the `ActiveEventLoop`, so the key handler only sets the pending flag.
-3. Create it in `resumed()` (config-driven) and/or `about_to_wait()` (pending hotkey requests) in `engine/window.rs`.
-4. `window_event()`: route by `window_id()`. Handle `CloseRequested` (drop the window, don't exit), `RedrawRequested` → `render()`, and `Focused` → update the focus flag. Forward the rest to `handle_event()`.
-5. Include the focus flag in the throttle check and the focused-window `request_redraw()` at the end of `about_to_wait()`, and render it in `unfocused_tick` when not throttled.
+2. The hotkey in `handle_tool_keys` (`engine/frame.rs`), which consumes the press. Creation needs the `ActiveEventLoop`, so the key handler only sets the pending flag.
+3. The dev window `impl Engine` block of `engine/window.rs` (its counterpart below it does nothing, for a build without the tools and the web): create the window in `open_dev_windows_at_start` (config-driven, from `finish_gpu_setup`) and/or `open_pending_dev_windows` (hotkey requests, from `about_to_wait`).
+4. `dev_window_event` (first thing in `window_event()`): route by `window_id()`. Handle `CloseRequested` (drop the window, don't exit), `RedrawRequested` → `render()`, and `Focused` → update the focus flag. Forward the rest to `handle_event()`.
+5. Its focus flag in `dev_window_focused` (the throttle check) and `redraw_focused_dev_windows`, and its `render()` in `render_dev_windows` (drawn while the game has focus, and from `unfocused_tick` when not throttled).

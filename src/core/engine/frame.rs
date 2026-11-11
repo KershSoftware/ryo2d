@@ -11,14 +11,14 @@ use winit::keyboard::KeyCode;
 use super::{Engine, FrameOutcome, PresentOutcome, QuitRequested, SceneHost};
 use crate::core::asset::AssetsView;
 use crate::core::audio::AudioEngine;
-use crate::core::capture::CaptureTarget;
 use crate::core::config::DisplayMode;
+#[cfg(dev_tools)]
 use crate::core::console::Console;
 use crate::core::diagnostics as overlays;
 use crate::core::diagnostics::FrameCost;
 use crate::core::diagnostics::OverlayMode;
 use crate::core::ecs::kernel::{CheckChangeTicks, DetectChanges};
-use crate::core::ecs::{Mut, On, Res, ResMut, Resource, World};
+use crate::core::ecs::{On, Res, ResMut, Resource, World};
 use crate::core::input::{Binding, Input, InputEvent};
 use crate::core::messages::update_messages;
 use crate::core::scene::SceneAction;
@@ -93,6 +93,7 @@ impl Engine {
     self.schedules.run(Phase::First, &mut self.world);
     self.handle_debug_keys();
     self.schedules.run(Phase::PreUpdate, &mut self.world);
+    #[cfg(dev_tools)]
     self.console_tick();
 
     let update_start = Instant::now();
@@ -125,7 +126,7 @@ impl Engine {
     }
     self.frame_timings.update = update_start.elapsed();
 
-    if self.world.remove_resource::<QuitRequested>().is_some() || self.console_quit_requested {
+    if self.world.remove_resource::<QuitRequested>().is_some() {
       return FrameOutcome::Quit;
     }
 
@@ -303,9 +304,26 @@ impl Engine {
     }
   }
 
-  /// F1-F5 overlays and borderless, F9/F10 dev windows, F12 capture, and the
-  /// console key. Each consumes its key so the game never sees it.
+  /// The engine's keys, each consumed so the game never sees it: F5
+  /// (borderless) in every build, under `disable_debug_keys`; with the
+  /// developer tools also the console key, F1-F4 (overlays), F9 and F10 (dev
+  /// windows) and F12 (capture). Without them every other key is the game's.
   fn handle_debug_keys(&mut self) {
+    #[cfg(dev_tools)]
+    self.handle_tool_keys();
+    if self.debug_keys_enabled
+      && self
+        .world
+        .resource_mut::<Input>()
+        .key_pressed_and_consume(KeyCode::F5)
+    {
+      self.pending_toggle_borderless = true;
+    }
+  }
+
+  /// The developer tools' keys: the console key, F1-F4, F9, F10 and F12
+  #[cfg(dev_tools)]
+  fn handle_tool_keys(&mut self) {
     // The console key opens the console, and closes it while its line is
     // empty; with text in a focused console's line it types instead. The
     // press that toggled it, held, neither types nor toggles again, its
@@ -340,13 +358,7 @@ impl Engine {
         console_key_held = Some(!released);
       }
     }
-    let mut pressed = |key: KeyCode| {
-      let hit = input.key_pressed(key);
-      if hit {
-        input.consume_key(key);
-      }
-      hit
-    };
+    let mut pressed = |key: KeyCode| input.key_pressed_and_consume(key);
 
     let mut next_overlay = false;
     if self.debug_keys_enabled {
@@ -360,12 +372,11 @@ impl Engine {
       if pressed(KeyCode::F4) {
         self.config.debug.show_origins = !self.config.debug.show_origins;
       }
-      if pressed(KeyCode::F5) {
-        self.pending_toggle_borderless = true;
-      }
     }
 
     if self.config.debug.dev_window_keys {
+      // The dev windows are native only
+      #[cfg(not(target_arch = "wasm32"))]
       if pressed(KeyCode::F9) {
         if self.logger_window.take().is_some() {
           self.logger_window_focused = false;
@@ -374,7 +385,7 @@ impl Engine {
           self.pending_open_logger = true;
         }
       }
-      #[cfg(feature = "profiler")]
+      #[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
       if pressed(KeyCode::F10) {
         if self.profiler_window.take().is_some() {
           self.profiler_window_focused = false;
@@ -383,7 +394,9 @@ impl Engine {
         }
       }
       if pressed(KeyCode::F12) {
-        self.capture.request(CaptureTarget::Default);
+        self
+          .capture
+          .request(crate::core::capture::CaptureTarget::Default);
       }
     }
     // A closed console is touched only when its key does something
@@ -405,6 +418,7 @@ impl Engine {
   /// F1: the next overlay mode. The FPS counter is the player's setting, so
   /// a change to it goes into `Settings` and the applied values together, as
   /// F5's display mode does, and is not applied again
+  #[cfg(dev_tools)]
   pub(super) fn next_overlay(&mut self) {
     self.overlay_mode = self.overlay_mode.next();
     let (show_fps, show_frame_timing, show_stats) = self.overlay_mode.to_flags();
@@ -422,6 +436,7 @@ impl Engine {
 
   /// The developer console: animation, input while open, and the line
   /// typed, run as a command.
+  #[cfg(dev_tools)]
   fn console_tick(&mut self) {
     // A closed console does nothing a frame: it is neither touched nor
     // taken out of the world (its clock and scroll ease wait for it)
@@ -436,43 +451,37 @@ impl Engine {
     let real_dt = self.world.resource::<Time>().real.delta();
     let to_screen = self.console_pixel_scale();
     let to_ui = self.ui_space.mouse_scale;
-    #[cfg(dev_tools)]
     let log_scope = self.log_scope;
-    let submitted = self
-      .world
-      .resource_scope(|world, mut console: Mut<Console>| {
-        // The log's records since it last looked (all of them since it
-        // closed, when it has just opened)
-        #[cfg(dev_tools)]
-        console.mirror_log(log_scope);
-        console.update(real_dt);
-        // A trackpad moves the console as far as the pointer would, and the
-        // pointer is hit-tested in UI units, both converted as the UI pass
-        // converts the pointer
-        console.set_pixel_scale(to_screen);
-        console.set_mouse_scale(to_ui);
-        let mut input = world.resource_mut::<Input>();
-        let line = console.handle_input(&mut input);
-        // A focused console keeps the keyboard from the game; an unfocused
-        // one can stay open while playing
-        if console.is_focused() {
-          input.clear_keyboard_state();
-        }
-        #[cfg(dev_tools)]
-        if console.take_tab()
-          && let Some(commands) = world.get_resource::<crate::core::console::ConsoleCommands>()
-        {
-          console.complete(|prefix| commands.completions(prefix));
-        }
-        line
-      });
-    #[cfg(dev_tools)]
+    let submitted =
+      self
+        .world
+        .resource_scope(|world, mut console: crate::core::ecs::Mut<Console>| {
+          // The log's records since it last looked (all of them since it
+          // closed, when it has just opened)
+          console.mirror_log(log_scope);
+          console.update(real_dt);
+          // A trackpad moves the console as far as the pointer would, and the
+          // pointer is hit-tested in UI units, both converted as the UI pass
+          // converts the pointer
+          console.set_pixel_scale(to_screen);
+          console.set_mouse_scale(to_ui);
+          let mut input = world.resource_mut::<Input>();
+          let line = console.handle_input(&mut input);
+          // A focused console keeps the keyboard from the game; an unfocused
+          // one can stay open while playing
+          if console.is_focused() {
+            input.clear_keyboard_state();
+          }
+          if console.take_tab()
+            && let Some(commands) = world.get_resource::<crate::core::console::ConsoleCommands>()
+          {
+            console.complete(|prefix| commands.completions(prefix));
+          }
+          line
+        });
     if let Some(line) = submitted {
       self.run_console_line(&line);
     }
-    // A build without tools has no commands to run
-    #[cfg(not(dev_tools))]
-    let _ = submitted;
 
     // The console closed this frame ends its override here too
     let (mouse_x, mouse_y) = self.world.resource::<Input>().mouse_position();
@@ -498,7 +507,7 @@ impl Engine {
     };
     crate::core::console::run_line(&mut self.world, &mut hooks, line);
     if quit {
-      self.console_quit_requested = true;
+      self.world.insert_resource(QuitRequested);
     }
     if let Some(target) = capture {
       self.capture.request(target);
@@ -562,13 +571,14 @@ impl Engine {
     }
   }
 
-  /// Screen units per logical window pixel (1 without a renderer, where
-  /// the pointer is not mapped either)
   /// A trackpad's logical pixels in the console's units
+  #[cfg(dev_tools)]
   fn console_pixel_scale(&self) -> f32 {
     self.ui_space.mouse_scale * self.logical_to_screen()
   }
 
+  /// Screen units per logical window pixel (1 without a renderer, where
+  /// the pointer is not mapped either)
   fn logical_to_screen(&self) -> f32 {
     self.renderer.as_ref().map_or(1.0, |renderer| {
       let scale = renderer.mapping().scale();
@@ -594,11 +604,7 @@ impl Engine {
       double_click: f64::from(theme.metrics.double_click),
     };
     let top = with_host(&mut self.world, |_, host| host.scenes.top_scope());
-    let console = self
-      .world
-      .get_resource::<Console>()
-      .filter(|console| console.visible)
-      .map(Console::window_rect);
+    let console = self.console_rect();
     let outcome = resolve_pointer(
       &mut self.ui_memory,
       &pointer,
@@ -632,6 +638,34 @@ impl Engine {
       consume_wheel: outcome.consume_wheel || taken,
       ..outcome
     }
+  }
+
+  /// Where the open console is, which takes the pointer from the UI
+  #[cfg(dev_tools)]
+  fn console_rect(&self) -> Option<crate::core::ui::Rect> {
+    self
+      .world
+      .get_resource::<Console>()
+      .filter(|console| console.visible)
+      .map(Console::window_rect)
+  }
+
+  /// No console: a build without tools
+  #[cfg(not(dev_tools))]
+  fn console_rect(&self) -> Option<crate::core::ui::Rect> {
+    None
+  }
+
+  /// The console's cursor over the game's this frame (`None`: no opinion)
+  #[cfg(dev_tools)]
+  pub(super) fn console_cursor(&self) -> Option<crate::core::cursor::CursorStyle> {
+    self.console_cursor
+  }
+
+  /// No console: a build without tools
+  #[cfg(not(dev_tools))]
+  pub(super) fn console_cursor(&self) -> Option<crate::core::cursor::CursorStyle> {
+    None
   }
 
   /// Resolve the keyboard and gamepad focus from the UI actions, after the
@@ -832,6 +866,7 @@ impl Engine {
     // neither the scenes' widgets nor gameplay see it, and it stays hidden
     // through its holds and release (`ui_mouse_capture`). A drag begun in
     // the game keeps its holds and release over the console
+    #[cfg(dev_tools)]
     if let Some(console) = self.world.get_resource::<Console>()
       && console.visible
     {
@@ -842,7 +877,7 @@ impl Engine {
     }
     let real_dt = self.world.resource::<Time>().real.delta();
     // Overlays and the console still lay out in whole UI units
-    let (width, height) = (space.size.x.ceil() as u32, space.size.y.ceil() as u32);
+    let height = space.size.y.ceil() as u32;
     // The UI sizes images as the store holds them now
     self.ui_images.refresh(&mut self.world);
     let (action, consumed, rebinds) = {
@@ -901,13 +936,14 @@ impl Engine {
           .draw(&mut ui, &self.world, dt, self.ui_retain.stats, top);
       }
       // The console over everything
+      #[cfg(dev_tools)]
       if self
         .world
         .get_resource::<Console>()
         .is_some_and(|c| c.visible)
         && let Some(mut console) = self.world.get_resource_mut::<Console>()
       {
-        console.render(&mut ui, width, height);
+        console.render(&mut ui, space.size.x.ceil() as u32, height);
       }
       ui.end_scene();
       let rebinds = ui.take_rebinds();

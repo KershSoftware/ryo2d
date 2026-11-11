@@ -10,7 +10,6 @@ use crate::core::logging::{LogRecord, Origin};
 /// The rows the feed keeps: as many as the ring holds, so a feed that has
 /// fallen behind can take everything the ring still has, and no more (a few
 /// megabytes at most).
-#[cfg_attr(not(dev_tools), allow(dead_code))]
 pub(crate) const FEED_ROWS: usize = 10_000;
 
 /// A filter button: a level, or an origin.
@@ -100,10 +99,6 @@ pub(crate) fn row_text(record: &LogRecord) -> String {
 
 /// The log as the logger window shows it: the records of one scope, read
 /// after the last sequence number taken, never by index.
-#[cfg_attr(
-  not(dev_tools),
-  allow(dead_code, reason = "a build without tools has no ring to read")
-)]
 pub(crate) struct LogFeed {
   scope: u64,
   /// The last sequence number read: the next poll asks after it
@@ -122,10 +117,7 @@ pub(crate) struct LogFeed {
 impl LogFeed {
   /// A feed of `scope`'s records, from the oldest the ring still holds.
   pub(crate) fn new(scope: u64) -> Self {
-    #[cfg(dev_tools)]
     let (seq, mark) = crate::core::logging::mirror_start(scope);
-    #[cfg(not(dev_tools))]
-    let (seq, mark) = (0, 0);
     Self {
       scope,
       seq,
@@ -142,39 +134,32 @@ impl LogFeed {
   /// them the filter shows (a scrolled view keeps still by them). Costs one
   /// atomic read when there are none.
   pub(crate) fn poll(&mut self) -> usize {
-    #[cfg(not(dev_tools))]
-    {
-      0
+    use crate::core::logging::{mirror_records, records_may_follow};
+    if !records_may_follow(self.seq) {
+      return 0;
     }
-    #[cfg(dev_tools)]
-    {
-      use crate::core::logging::{mirror_records, records_may_follow};
-      if !records_may_follow(self.seq) {
-        return 0;
+    let mut incoming = std::mem::take(&mut self.incoming);
+    let found = mirror_records(
+      self.seq,
+      self.mark,
+      self.scope,
+      log::LevelFilter::Trace,
+      FEED_ROWS,
+      &mut incoming,
+    );
+    self.seq = found.newest;
+    self.mark = found.mark;
+    self.missed += found.hidden;
+    let mut shown = 0;
+    for record in incoming.drain(..) {
+      shown += usize::from(self.shows(&record));
+      if self.rows.len() >= FEED_ROWS {
+        self.rows.pop_front();
       }
-      let mut incoming = std::mem::take(&mut self.incoming);
-      let found = mirror_records(
-        self.seq,
-        self.mark,
-        self.scope,
-        log::LevelFilter::Trace,
-        FEED_ROWS,
-        &mut incoming,
-      );
-      self.seq = found.newest;
-      self.mark = found.mark;
-      self.missed += found.hidden;
-      let mut shown = 0;
-      for record in incoming.drain(..) {
-        shown += usize::from(self.shows(&record));
-        if self.rows.len() >= FEED_ROWS {
-          self.rows.pop_front();
-        }
-        self.rows.push_back(record);
-      }
-      self.incoming = incoming;
-      shown
+      self.rows.push_back(record);
     }
+    self.incoming = incoming;
+    shown
   }
 
   /// Empties the feed's list (not the ring's); it carries on after the
@@ -182,19 +167,16 @@ impl LogFeed {
   pub(crate) fn clear(&mut self) {
     self.rows.clear();
     self.missed = 0;
-    #[cfg(dev_tools)]
-    {
-      let found = crate::core::logging::mirror_records(
-        self.seq,
-        self.mark,
-        self.scope,
-        log::LevelFilter::Off,
-        0,
-        &mut self.incoming,
-      );
-      self.seq = found.newest;
-      self.mark = found.mark;
-    }
+    let found = crate::core::logging::mirror_records(
+      self.seq,
+      self.mark,
+      self.scope,
+      log::LevelFilter::Off,
+      0,
+      &mut self.incoming,
+    );
+    self.seq = found.newest;
+    self.mark = found.mark;
   }
 
   /// Every row kept, oldest first, shown or not.
@@ -240,7 +222,7 @@ impl LogFeed {
   }
 }
 
-#[cfg(all(test, dev_tools))]
+#[cfg(test)]
 mod tests {
   use super::*;
   use crate::core::logging::{capture_log, capture_log_bounded, ring_turn};

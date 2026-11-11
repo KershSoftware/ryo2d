@@ -43,12 +43,12 @@
 //! ambience_volume = 1.0
 //! # audio_buffer_frames = 256  # the audio device's buffer (default: the device's)
 //! show_fps = false
-//! console = true  # Enable developer console (works in debug and release)
 //!
 //! [tilemap]
 //! # tiled_project = "tiled/game.tiled-project"  # class and enum types for Tiled maps (default: project.tiled-project at the asset root)
 //!
-//! [debug]  # Developer debug flags (NOT in system.json)
+//! [debug]  # Developer debug flags (NOT in system.json; a build without the tools ignores them)
+//! console = true  # the developer console (default: on in a build with the tools)
 //! show_colliders = false
 //! show_velocities = false
 //! show_origins = false
@@ -126,8 +126,8 @@ pub struct WorkspaceConfig {
   pub save_data: PathBuf,
   /// Path to assets directory relative to workspace root
   pub assets: PathBuf,
-  /// The debug switches the project sets (`[debug]`, plus `[system] show_fps`
-  /// and `console`), over the engine's defaults
+  /// The debug switches the project sets (`[debug]`, plus `[system]
+  /// show_fps`), over the engine's defaults
   pub debug: DebugConfig,
   /// Release/distribution configuration (from the `[release]` section)
   pub release: ReleaseConfig,
@@ -494,11 +494,7 @@ impl Default for WorkspaceConfig {
       entry_point: PathBuf::from("src/main.rs"),
       save_data: PathBuf::from("data"),
       assets: PathBuf::from("assets"),
-      // A project's console is off unless `[system] console` turns it on
-      debug: DebugConfig {
-        dev_console: false,
-        ..DebugConfig::default()
-      },
+      debug: DebugConfig::default(),
       release: ReleaseConfig::default(),
       tiled_project: None,
       env: std::collections::HashMap::new(),
@@ -857,18 +853,32 @@ mod tests {
 
   #[test]
   fn system_show_fps_also_shows_the_fps_counter() {
-    let (ws, _) = read("[system]\nshow_fps = true\nconsole = true\n");
+    let (ws, _) = read("[system]\nshow_fps = true\n");
     assert_eq!(ws.project.show_fps, Some(true));
     assert!(ws.config().debug.show_fps);
-    assert_eq!(ws.project.dev_console, Some(true));
-    assert!(ws.config().debug.dev_console);
+  }
+
+  #[test]
+  fn debug_console_is_the_key_and_system_console_warns() {
+    let (ws, warnings) = read("[debug]\nconsole = false\n");
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(ws.project.dev_console, Some(false));
+    assert!(!ws.config().debug.dev_console);
+
+    let (ws, warnings) = read("[system]\nconsole = true\n");
+    assert_eq!(
+      warnings,
+      ["Ryo.toml: unknown key `console` in [system] (did you mean `debug.console`?)"]
+    );
+    assert_eq!(ws.project.dev_console, None, "the old key sets nothing");
   }
 
   #[test]
   fn a_project_without_a_console_setting_has_none() {
     let (ws, _) = read("");
     assert_eq!(ws.project.dev_console, None);
-    assert!(!ws.config().debug.dev_console);
+    // The build's own default: on with the tools
+    assert_eq!(ws.config().debug.dev_console, crate::DEV_TOOLS);
   }
 
   #[test]

@@ -189,8 +189,13 @@ impl Drop for LogCapture {
     // A failing test shows its log
     if std::thread::panicking() {
       for line in self.panic_report() {
+        // `eprintln!` panics if stderr fails, and a panic in a drop while
+        // unwinding aborts the process
         #[cfg(not(target_arch = "wasm32"))]
-        eprintln!("{line}");
+        {
+          use std::io::Write as _;
+          let _ = writeln!(std::io::stderr(), "{line}");
+        }
         #[cfg(target_arch = "wasm32")]
         web_sys::console::error_1(&line.as_str().into());
         #[cfg(test)]

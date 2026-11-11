@@ -33,11 +33,12 @@ pub struct DebugConfig {
   /// Whether to open the logger dev window at startup (shows engine/game logs in real-time)
   pub logger_window: bool,
   /// Whether to enable dev hotkeys (F9=logger, F10=profiler, F12=frame capture).
-  /// Defaults to true in debug builds, false in release builds.
-  /// Set to true in release builds to enable dev tools for testing.
+  /// On by default in a build with the developer tools; a build without
+  /// them has no such keys, and this stays off.
   pub dev_window_keys: bool,
-  /// Whether to enable the developer console (toggled with backtick key).
-  /// Defaults to true in debug builds, false in release builds.
+  /// Whether the developer console opens with the backquote key
+  /// (`[debug] console`). On by default in a build with the developer
+  /// tools; a build without them has no console, and this stays off.
   pub dev_console: bool,
   /// Whether UI node trees replay their unchanged subtrees from the last
   /// frame instead of building them (default true). Off, every node is
@@ -69,20 +70,33 @@ impl Default for DebugConfig {
       show_ui_rebuilds: false,
       enable_profiler: false, // Disabled by default (opt-in)
       logger_window: false,   // Disabled by default (opt-in)
-      // Dev window keys (F9/F10/F12) enabled by default in debug builds only
-      #[cfg(debug_assertions)]
-      dev_window_keys: true,
-      #[cfg(not(debug_assertions))]
-      dev_window_keys: false,
-      // Dev console enabled by default in debug builds only
-      #[cfg(debug_assertions)]
-      dev_console: true,
-      #[cfg(not(debug_assertions))]
-      dev_console: false,
+      // The console and the dev window keys follow the build's tools
+      dev_window_keys: cfg!(dev_tools),
+      dev_console: cfg!(dev_tools),
       ui_cache: true,
       ui_fragments: true,
       ui_retain: true,
     }
+  }
+}
+
+impl DebugConfig {
+  /// Turn off every switch that shows a developer tool or overlay: a build
+  /// without the tools has none, whatever the project or the builder set.
+  /// The FPS counter is the player's setting and stays.
+  #[cfg(not(dev_tools))]
+  pub(crate) fn switch_tools_off(&mut self) {
+    self.dev_console = false;
+    self.dev_window_keys = false;
+    self.logger_window = false;
+    self.enable_profiler = false;
+    self.show_colliders = false;
+    self.show_velocities = false;
+    self.show_origins = false;
+    self.show_frame_timing = false;
+    self.show_stats = false;
+    self.show_ui_debug = false;
+    self.show_ui_rebuilds = false;
   }
 }
 
