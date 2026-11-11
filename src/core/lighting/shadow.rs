@@ -5,6 +5,7 @@ use std::ops::Range;
 
 use glam::Vec2;
 
+use super::plan::casts;
 use super::{Light2D, LightOccluder2D};
 use crate::core::ecs::{Floor, GlobalTransform};
 use crate::core::render::batch::{Triangles, Vertex2D};
@@ -32,12 +33,7 @@ pub(crate) fn push_shadow_volumes(
     return start..start;
   }
   let radius = light.radius();
-  let spot = match light {
-    Light2D::Point { .. } => None,
-    Light2D::Spot {
-      angle, direction, ..
-    } => Some((*angle, *direction)),
-  };
+  let spot = light.cone();
   // A softness that is not finite draws hard shadows
   let softness = light.shadow_softness();
   let softness = if softness.is_finite() { softness } else { 0.0 };
@@ -91,28 +87,6 @@ pub(crate) fn push_shadow_volumes(
     }
   }
   start..triangles.indices.len() as u32
-}
-
-/// Whether the edge `v0`-`v1` faces away from a light at `light` (and, for
-/// a spot of `(angle, direction)` in degrees, lies near its cone).
-fn casts(v0: Vec2, v1: Vec2, light: Vec2, spot: Option<(f32, f32)>) -> bool {
-  let to_edge = (v0 + v1) * 0.5 - light;
-  let edge = v1 - v0;
-  // Edge normal for counter-clockwise winding: positive means it faces away
-  if to_edge.dot(Vec2::new(-edge.y, edge.x)) <= 0.0 {
-    return false;
-  }
-  let Some((angle, direction)) = spot else {
-    return true;
-  };
-  let length = to_edge.length();
-  if length <= 0.001 {
-    return true;
-  }
-  let facing = Vec2::from_angle(direction.to_radians());
-  let off_axis = facing.dot(to_edge / length).clamp(-1.0, 1.0).acos();
-  // A margin past the cone keeps soft edges shadowed
-  off_axis <= (angle / 2.0).to_radians() + 0.2
 }
 
 /// Project a vertex away from a light source to the light's radius.

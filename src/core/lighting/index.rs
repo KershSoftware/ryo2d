@@ -15,7 +15,6 @@
 //! placement catches up with its current one, when its bounds shrink back.
 
 use std::f32::consts::{PI, TAU};
-use std::sync::{Mutex, MutexGuard, TryLockError};
 
 use glam::{IVec2, Vec2};
 
@@ -91,13 +90,20 @@ struct Entry {
   moving: bool,
 }
 
-/// What a query keeps between calls, so it allocates nothing once warm: the
-/// entities found, and a mark per entry of the last query that found it
+/// What a query keeps between calls, owned by its caller so a query
+/// allocates nothing once warm: a mark per entry of the last query that
+/// found it
 #[derive(Default)]
-struct Scratch {
-  found: Vec<Entity>,
+pub(crate) struct IndexScratch {
   marks: Vec<u32>,
   generation: u32,
+}
+
+#[cfg(test)]
+impl IndexScratch {
+  pub(crate) fn capacity(&self) -> usize {
+    self.marks.capacity()
+  }
 }
 
 /// Every enabled occluder's world bounds, by entity and by the cells they
@@ -120,92 +126,45 @@ pub(crate) struct OccluderIndex {
   recheck: Vec<Entity>,
   /// Entities disabled or enabled since the last update
   toggled: Vec<Entity>,
-  scratch: Mutex<Scratch>,
   #[cfg(test)]
   updates: u64,
 }
 
-/// What a query found, held while it is walked
-enum Held<'a> {
-  Shared(MutexGuard<'a, Scratch>),
-  /// Found while another query held the scratch
-  Owned(Vec<Entity>),
-}
-
-struct Found<'a> {
-  held: Held<'a>,
-  next: usize,
-}
-
-impl Iterator for Found<'_> {
-  type Item = Entity;
-
-  fn next(&mut self) -> Option<Entity> {
-    let found = match &self.held {
-      Held::Shared(scratch) => &scratch.found,
-      Held::Owned(found) => found,
-    };
-    let entity = found.get(self.next).copied();
-    self.next += 1;
-    entity
-  }
-}
-
 impl OccluderIndex {
   /// The occluders whose bounds meet the box from `min` to `max`, each
-  /// once, in entity order (`entity_order`); none for a box that is not
-  /// finite. Allocates nothing once warm, unless called while another
-  /// query's result is still being walked
-  #[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "shadow planning will read the index")
-  )]
-  pub(crate) fn query(&self, min: Vec2, max: Vec2) -> impl Iterator<Item = Entity> + '_ {
-    let mut held = match self.scratch.try_lock() {
-      Ok(scratch) => Held::Shared(scratch),
-      Err(TryLockError::Poisoned(poisoned)) => Held::Shared(poisoned.into_inner()),
-      Err(TryLockError::WouldBlock) => Held::Owned(Vec::new()),
-    };
-    match &mut held {
-      Held::Shared(scratch) => {
-        let Scratch {
-          found,
-          marks,
-          generation,
-        } = &mut **scratch;
-        found.clear();
-        if marks.len() < self.entries.len() {
-          marks.resize(self.entries.len(), 0);
-        }
-        *generation = generation.wrapping_add(1);
-        if *generation == 0 {
-          marks.fill(0);
-          *generation = 1;
-        }
-        let generation = *generation;
-        self.gather(min, max, |slot, entity| {
-          if marks[slot] != generation {
-            marks[slot] = generation;
-            found.push(entity);
-          }
-        });
-        found.sort_unstable_by_key(entity_order);
-      }
-      Held::Owned(found) => {
-        self.gather(min, max, |_, entity| found.push(entity));
-        found.sort_unstable_by_key(entity_order);
-        found.dedup();
-      }
+  /// once, in entity order (`entity_order`), into `out` (cleared first);
+  /// none for a box that is not finite. Allocates nothing once `scratch`
+  /// and `out` are warm
+  pub(crate) fn query_into(
+    &self,
+    min: Vec2,
+    max: Vec2,
+    scratch: &mut IndexScratch,
+    out: &mut Vec<Entity>,
+  ) {
+    out.clear();
+    let IndexScratch { marks, generation } = scratch;
+    if marks.len() < self.entries.len() {
+      marks.resize(self.entries.len(), 0);
     }
-    Found { held, next: 0 }
+    *generation = generation.wrapping_add(1);
+    if *generation == 0 {
+      marks.fill(0);
+      *generation = 1;
+    }
+    let generation = *generation;
+    self.gather(min, max, |slot, entity| {
+      if marks[slot] != generation {
+        marks[slot] = generation;
+        out.push(entity);
+      }
+    });
+    out.sort_unstable_by_key(entity_order);
   }
 
   /// The bounds the index keeps for `entity`, as (min, max); `None` for an
   /// entity it does not hold
-  #[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "shadow planning will read the index")
-  )]
+  #[cfg(test)]
   pub(crate) fn bounds(&self, entity: Entity) -> Option<(Vec2, Vec2)> {
     self.entry(entity).map(|entry| (entry.min, entry.max))
   }
@@ -223,6 +182,7 @@ impl OccluderIndex {
     }
   }
 
+  #[cfg(test)]
   fn entry(&self, entity: Entity) -> Option<&Entry> {
     let slot = *self.slot_of.get(&entity)?;
     self.entries.get(slot as usize)?.as_ref()
@@ -516,8 +476,11 @@ pub(crate) fn update_occluder_index(
   for entity in removed.read() {
     refresh(index, entity);
   }
+  // Only an entity with an entry can lose it: other despawns cost no lookup
   for entity in unplaced.read() {
-    refresh(index, entity);
+    if index.slot_of.contains_key(&entity) {
+      refresh(index, entity);
+    }
   }
   let mut toggled = std::mem::take(&mut index.toggled);
   for entity in toggled.drain(..) {
@@ -531,12 +494,6 @@ pub(crate) fn update_occluder_index(
     refresh(index, entity);
   }
   index.recheck = recheck;
-  let entries = index.entries.len();
-  if let Ok(scratch) = index.scratch.get_mut()
-    && scratch.marks.len() < entries
-  {
-    scratch.marks.resize(entries, 0);
-  }
 }
 
 #[cfg(test)]
@@ -603,7 +560,7 @@ mod tests {
     }
 
     fn found(&self, min: Vec2, max: Vec2) -> Vec<Entity> {
-      self.index().query(min, max).collect()
+      query(self.index(), min, max)
     }
 
     /// The occluders found in a 2 px box around `at`
@@ -628,6 +585,13 @@ mod tests {
       Phase::PostUpdate,
       update_occluder_index.after(PostUpdateSet::Transforms),
     );
+  }
+
+  /// The occluders `index` finds in the box, with a scratch of their own
+  fn query(index: &OccluderIndex, min: Vec2, max: Vec2) -> Vec<Entity> {
+    let mut found = Vec::new();
+    index.query_into(min, max, &mut IndexScratch::default(), &mut found);
+    found
   }
 
   /// How many entries a cell holds (0 for one the index does not keep)
@@ -858,14 +822,19 @@ mod tests {
         spawned
       );
     }
-    // Nested queries agree
+    // One scratch reused for queries of other boxes agrees with a fresh one
     let index = lit.index();
-    for outer in index.query(Vec2::splat(-100.0), Vec2::splat(100.0)) {
-      let inner: Vec<Entity> = index
-        .query(Vec2::splat(-5000.0), Vec2::splat(5000.0))
-        .collect();
-      assert_eq!(inner, spawned, "inside {outer}");
+    let (mut scratch, mut found) = (IndexScratch::default(), Vec::new());
+    for size in [100.0, 5000.0, 700.0, 5000.0] {
+      index.query_into(
+        Vec2::splat(-size),
+        Vec2::splat(size),
+        &mut scratch,
+        &mut found,
+      );
+      assert_eq!(found, query(index, Vec2::splat(-size), Vec2::splat(size)));
     }
+    assert_eq!(found, spawned);
   }
 
   #[test]
@@ -896,11 +865,16 @@ mod tests {
     lit.step();
     let settled = lit.index().updates();
     assert!(settled > 0);
+    assert!(
+      lit.index().moving.is_empty(),
+      "settled, nothing is rechecked"
+    );
     for _ in 0..10 {
       lit.step();
       lit.frame();
     }
     assert_eq!(lit.index().updates(), settled);
+    assert!(lit.index().moving.is_empty());
   }
 
   #[test]
@@ -1005,10 +979,8 @@ mod tests {
     let before = map_occluders(&mut maps.world);
     assert!(!before.is_empty());
     let index = maps.world.resource::<OccluderIndex>();
-    assert_eq!(index.query(whole.0, whole.1).collect::<Vec<_>>(), before);
-    let floor: Vec<Entity> = index
-      .query(Vec2::new(100.0, 500.0), Vec2::new(102.0, 502.0))
-      .collect();
+    assert_eq!(query(index, whole.0, whole.1), before);
+    let floor = query(index, Vec2::new(100.0, 500.0), Vec2::new(102.0, 502.0));
     assert_eq!(floor.len(), 1, "the near chunk's floor");
     // A block in the air: its chunk is built again, and found in that frame
     assert!(MapsView::new(&mut maps.world).set_tile(
@@ -1020,10 +992,8 @@ mod tests {
     maps.post_update();
     let after = map_occluders(&mut maps.world);
     let index = maps.world.resource::<OccluderIndex>();
-    assert_eq!(index.query(whole.0, whole.1).collect::<Vec<_>>(), after);
-    let block: Vec<Entity> = index
-      .query(Vec2::new(86.0, 166.0), Vec2::new(90.0, 170.0))
-      .collect();
+    assert_eq!(query(index, whole.0, whole.1), after);
+    let block = query(index, Vec2::new(86.0, 166.0), Vec2::new(90.0, 170.0));
     assert_eq!(block.len(), 1, "the block's chain");
     assert!(after.contains(&block[0]) && !before.contains(&block[0]));
     let Some((min, max)) = index.bounds(block[0]) else {

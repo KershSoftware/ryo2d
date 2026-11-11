@@ -311,6 +311,17 @@ impl Light2D {
     }
   }
 
+  /// A spot's cone as (full angle, direction) in degrees; `None` for a
+  /// point light
+  pub(crate) fn cone(&self) -> Option<(f32, f32)> {
+    match self {
+      Self::Point { .. } => None,
+      Self::Spot {
+        angle, direction, ..
+      } => Some((*angle, *direction)),
+    }
+  }
+
   /// Builder method to enable shadow casting
   pub fn with_shadows(mut self) -> Self {
     self.set_cast_shadows(true);

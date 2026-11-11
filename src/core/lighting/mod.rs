@@ -204,6 +204,7 @@ mod god_rays;
 mod index;
 mod light;
 mod occluder;
+mod plan;
 mod renderer;
 mod settings;
 mod shadow;
