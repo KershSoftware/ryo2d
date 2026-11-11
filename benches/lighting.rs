@@ -17,10 +17,17 @@
 //! - `two_hundred_fifty_six_lights_in_view`: 256 shadowed lights of 120 px
 //!   on a grid of 16 x 16 inside the still camera's view.
 //!
+//! All the bench lights are hard (no `with_soft_shadows`), as they were when
+//! the Before figures were taken, so the guards compare like with like.
+//!
+//! The cases are guarded (see the constants): a miss prints its figures and
+//! the run exits non-zero once every case has run.
+//!
 //! Measure on a quiet machine and record `uptime` with every run: the
 //! figures move with the load.
 
 mod common;
+mod guards;
 
 use std::time::{Duration, Instant};
 
@@ -37,6 +44,18 @@ const FRAMES: usize = 120;
 /// The camera's loop over the map: its radius and its step in radians a frame
 const REACH: f32 = 1500.0;
 const ARC: f32 = 0.005;
+
+// The guards' constants come from the Before table in `docs/backlog/shadows.md`
+// (the CPU shadow volumes; three runs at a one-minute load of 3.74, flagged).
+/// `one_light_over_cave` is no slower than Before's slowest run (211.2 µs)
+const ONE_LIGHT_MAX: f64 = 211.2;
+/// `sixty_four_lights_quarter_visible` is at least 4x faster than Before's
+/// median of runs (1,306.9 µs): at most 326.7 µs
+const SIXTY_FOUR_MAX: f64 = 1306.9 / 4.0;
+/// `two_hundred_fifty_six_lights_in_view` is under the spec's 16,600 µs
+const MANY_MAX: f64 = 16_600.0;
+/// ... and no slower than Before's slowest run (2,684.2 µs, same table)
+const MANY_BEFORE_MAX: f64 = 2684.2;
 
 /// What a case's scene holds
 #[derive(Clone, Copy)]
@@ -202,8 +221,12 @@ fn measure(case: Case) -> Option<f64> {
 
 fn main() {
   // Criterion's runner passes flags (`--bench`) that this has no use for;
-  // `--list` and `--test` run nothing
-  if std::env::args().any(|arg| arg == "--list" || arg == "--test") {
+  // `--list` and `--test` run nothing, and a filter names the cases to run
+  if !guards::runs(&[
+    "one_light_over_cave",
+    "sixty_four_lights_quarter_visible",
+    "two_hundred_fifty_six_lights_in_view",
+  ]) {
     return;
   }
   let Some(unlit) = measure(Case::Unlit) else {
@@ -215,13 +238,38 @@ fn main() {
   };
   println!("cave_unlit: {unlit:.1} µs");
   println!("cave_one_light: {one:.1} µs");
-  println!("one_light_over_cave: {:.1} µs", one - unlit);
-  for (name, case) in [
-    ("sixty_four_lights_quarter_visible", Case::Sixty4),
-    ("two_hundred_fifty_six_lights_in_view", Case::Many),
+  let one_light = one - unlit;
+  println!("one_light_over_cave: {one_light:.1} µs");
+  held("one_light_over_cave", one_light, &[ONE_LIGHT_MAX]);
+  for (name, case, limits) in [
+    (
+      "sixty_four_lights_quarter_visible",
+      Case::Sixty4,
+      &[SIXTY_FOUR_MAX][..],
+    ),
+    (
+      "two_hundred_fifty_six_lights_in_view",
+      Case::Many,
+      &[MANY_MAX, MANY_BEFORE_MAX][..],
+    ),
   ] {
     if let Some(time) = measure(case) {
       println!("{name}: {time:.1} µs");
+      held(name, time, limits);
+    }
+  }
+  guards::verdict(
+    "lighting",
+    "Profile a miss with the bench binary `cargo bench --bench lighting --no-run` names.",
+  );
+  eprintln!("lighting guards: every guard met its target");
+}
+
+/// Note a miss when `time` is over any of `limits`
+fn held(name: &str, time: f64, limits: &[f64]) {
+  for limit in limits {
+    if time > *limit {
+      guards::miss(format!("{name} {time:.1} µs over {limit:.1} µs"));
     }
   }
 }

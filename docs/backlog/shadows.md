@@ -29,3 +29,31 @@ An earlier set of runs of the same bench read, in the same order, 194.5, 149.2 a
 ### Why this is not the 30 µs figure
 
 `docs/backlog/tilemap.md` and the tilemap spec speak of about 30 µs for a shadowed light. That is a different measure. `benches/tilemap.rs` takes the lit map's frame over an empty lit frame, so the light is in both frames and only the map's occluder cost is left, with a 500 px light and a camera flying at about 560 px/s. `one_light_over_cave` subtracts the unlit map: it holds the whole lighting pass (the light buffer, the compose, the light itself and its shadow volumes), with a 300 px light on another path. Side by side, from one run of `cargo bench --bench tilemap -- static_frame` (load 3.50, flagged): the lit map over the empty lit frame, median 75.0 µs (95th percentile 195.2), an empty lit frame 151.3 µs against an empty frame 106.2 µs. The guards of the shadow rewrite compare against the Before figures above, not against the 30 µs.
+
+### After
+
+The per-light GPU shadow maps (one light draw per camera, the occluder index). The same bench, the same scenes, light sizes and counts as Before; every bench light is hard, as the Before lights were. Three runs of `cargo bench --bench lighting`, each log opening with its `uptime`; the one-minute load read 6.76, 6.76 and 6.54 (the runs came within the same few seconds), above 3 and so flagged on every run. The busiest processes at the check before the runs were other work on the machine (two scripted game runs and a Python script at about 50% of a core each, WindowServer at 47%). Nothing waited for a quiet machine.
+
+Medians in microseconds:
+
+| Bench | Before median | Before slowest | Run 1 | Run 2 | Run 3 | After median | Guard | Verdict | Load (runs 1, 2, 3) |
+|-------|---------------|----------------|-------|-------|-------|--------------|-------|---------|---------------------|
+| `one_light_over_cave` | 203.2 | 211.2 | 158.0 | 167.2 | 219.3 | 167.2 | no slower than Before's slowest, 211.2 | met in runs 1 and 2, missed in run 3 (219.3) | 6.76, 6.76, 6.54 (flagged) |
+| `sixty_four_lights_quarter_visible` | 1,306.9 | 1,363.1 | 922.2 | 905.4 | 915.2 | 915.2 | at most 326.7 (4x faster than Before's median) | missed in every run | 6.76, 6.76, 6.54 (flagged) |
+| `two_hundred_fifty_six_lights_in_view` | 2,664.6 | 2,684.2 | 1,420.0 | 1,477.0 | 1,410.5 | 1,420.0 | under 16,600, and no slower than Before's slowest, 2,684.2 | met in every run | 6.76, 6.76, 6.54 (flagged) |
+
+`one_light_over_cave` is the difference of two frames: the cave with no light, 615.2, 615.5 and 594.5 µs, and with the one light, 773.2, 782.7 and 813.8 µs.
+
+The 4x target for `sixty_four_lights_quarter_visible` cannot be met by this bench: its 326.7 µs is below the frame with no light at all (595 to 615 µs, `cave_unlit`). Against that floor the 64 lights cost about 300 µs a frame now (915.2 less 615), against about 716 before (1,306.9 less 590.9): 2.4x less, 1.4x faster as a whole frame. The guard stays as set and the bench exits non-zero.
+
+## Limits
+
+- Edge quality: edges are crisp for lights up to 512 px radius at zoom 1 at High (half that at Medium, twice at Ultra); beyond, edges soften and step.
+- At most 512 shadowed lights a frame: the nearest are kept, with one warning.
+- A light inside a tile map's wall lights nothing outside it (map walls are open chains): put wall lights at the wall's face.
+- One light image per camera: a light brightens every storey under it.
+- No directional (sun) light and no adaptive per-light resolution.
+- Soft shadows: at Low, wide penumbrae show faint stair-step bands, and a thin post's soft edge can end in a step that changes as the light moves; a near occluder's penumbra narrows when a farther occluder (still nearer than the pixel) is in its search arc.
+- Only exactly shared sides of closed occluders are cancelled: partly overlapping sides still cast, and a keyhole polygon's slit edges cast.
+- A back face tilted more than about 56 degrees from the light's ray can darken itself slightly through the filter.
+- An edge too small to cover a texel centre writes nothing (tiny far occluders).
