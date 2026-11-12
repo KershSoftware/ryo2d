@@ -1914,3 +1914,87 @@ fn turning_self_shadow_on_darkens_the_next_frame() {
     "lit again: {off} against {before}"
   );
 }
+
+#[test]
+fn a_light_on_a_self_shadowing_wall_s_face_is_still_blocked_by_it() {
+  // Two touching self-shadowing 32 px cells, x 80 to 112 and 112 to 144, y
+  // 64 to 96, and a light on their top face where they meet: below the
+  // wall is dark and above it is lit. (The face it stands on covers no
+  // angle, so the wall's own area lights out to its far sides: a wall
+  // light belongs just off the face)
+  let scene = |wall: bool| {
+    wide(move |ctx| {
+      ctx.world.spawn((
+        Transform::from_xy(112.0, 64.0),
+        Light2D::point(Color::WHITE, 200.0).with_shadows(),
+      ));
+      if wall {
+        for x in [96.0, 128.0] {
+          ctx.world.spawn((
+            Transform::from_xy(x, 80.0),
+            LightOccluder2D::rect(32.0, 32.0).with_self_shadow(true),
+          ));
+        }
+      }
+    })
+  };
+  let (Some(walled), Some(open)) = (scene(true), scene(false)) else {
+    return;
+  };
+  let (walled, open) = (walled.frame().unwrap(), open.frame().unwrap());
+  for (x, y) in [(100, 130), (125, 130), (113, 150), (70, 110), (160, 120)] {
+    assert!(
+      red(&open, x, y) > 40 && share(&walled, &open, x, y) < 0.02,
+      "({x}, {y}) holds {} of its light",
+      share(&walled, &open, x, y)
+    );
+  }
+  for (x, y) in [(112, 30), (60, 60), (170, 50)] {
+    assert!(
+      share(&walled, &open, x, y) > 0.98,
+      "({x}, {y}) above holds {} of its light",
+      share(&walled, &open, x, y)
+    );
+  }
+}
+
+#[test]
+fn the_floor_before_an_oblique_self_shadowing_face_stays_lit_under_a_soft_light() {
+  // A self-shadowing 16 x 48 block at (110, 80) turned 30°, and a soft
+  // light (size 8) at (30, 80): the floor 2 and 4 px before its near face
+  // (its local left side) is lit as with no block, along the face
+  let turn = 30f32.to_radians();
+  let centre = Vec2::new(110.0, 80.0);
+  let scene = move |block: bool| {
+    wide(move |ctx| {
+      ctx.world.spawn((
+        Transform::from_xy(30.0, 80.0),
+        Light2D::point(Color::WHITE, 256.0).with_soft_shadows(8.0),
+      ));
+      if block {
+        ctx.world.spawn((
+          Transform::from_xy(centre.x, centre.y).with_rotation(turn),
+          LightOccluder2D::rect(16.0, 48.0).with_self_shadow(true),
+        ));
+      }
+    })
+  };
+  let (Some(blocked), Some(open)) = (scene(true), scene(false)) else {
+    return;
+  };
+  let (blocked, open) = (blocked.frame().unwrap(), open.frame().unwrap());
+  let place = |v: Vec2| centre + Vec2::from_angle(turn).rotate(v);
+  let mut worst = 1.0f32;
+  for off in [2.0, 4.0] {
+    for t in (-20..=20).step_by(4) {
+      let p = place(Vec2::new(-8.0 - off, t as f32));
+      let held = share_at(&blocked, &open, p);
+      worst = worst.min(held);
+      assert!(held > 0.97, "{off} px before the face at {p}: {held}");
+    }
+  }
+  println!("the least share before the face: {worst}");
+  // and the block's own area beyond the face is dark
+  let inside = place(Vec2::new(0.0, 0.0));
+  assert!(share_at(&blocked, &open, inside) < 0.02);
+}

@@ -103,6 +103,9 @@ struct ClosedEdges {
   runs: Vec<usize>,
   /// Whether each closed occluder shadows itself
   own: Vec<bool>,
+  /// Whether each closed occluder holds the light being planned
+  /// (`plan_closed`)
+  holding: Vec<bool>,
   /// The cells' size: a power of two at least four tolerances of the
   /// light's coordinates, so end points within a tolerance of each other
   /// fall in the same or neighbouring cells
@@ -119,6 +122,7 @@ impl ClosedEdges {
     self.corners.clear();
     self.runs.clear();
     self.own.clear();
+    self.holding.clear();
     let tolerance = ON_EDGE.max(scale * ON_EDGE_SCALE);
     self.cell = ON_EDGE * 4.0;
     while self.cell < tolerance * 4.0 {
@@ -170,7 +174,7 @@ impl ClosedEdges {
   }
 
   /// Whether a closed occluder other than `run`, shadowing itself as `run`
-  /// does, has the edge `b` to `a`, its end points within the boundary
+  /// does and not holding the light (`holding`), has the edge `b` to `a`, its end points within the boundary
   /// rule's tolerance (`ON_EDGE`, or a millionth of the largest coordinate
   /// where that is more) of these. Where one shadows itself and the other
   /// does not, the side casts by each one's rule: for a light on the plain
@@ -192,7 +196,9 @@ impl ClosedEdges {
           for y1 in ay {
             if let Some(&(start, end, owner)) = self.edges.get(&[x0, y0, x1, y1])
               && owner != run
-              && (owner == SHARED || self.own.get(owner as usize) == self.own.get(run as usize))
+              && (owner == SHARED
+                || (self.own.get(owner as usize) == self.own.get(run as usize)
+                  && !self.holding.get(owner as usize).copied().unwrap_or(false)))
               && near(start, b)
               && near(end, a)
             {
@@ -206,12 +212,13 @@ impl ClosedEdges {
   }
 
   #[cfg(test)]
-  fn capacity(&self) -> (usize, usize, usize, usize) {
+  fn capacity(&self) -> (usize, usize, usize, usize, usize) {
     (
       self.edges.capacity(),
       self.corners.capacity(),
       self.runs.capacity(),
       self.own.capacity(),
+      self.holding.capacity(),
     )
   }
 }
@@ -378,15 +385,32 @@ fn plan_occluder(
 
 /// Pushes the edges of the closed occluders in `closed` that cast
 /// `frame`'s light's shadow, per view each crosses, for the light's
-/// `slot`: none of one holding the light, nor a side another shares
-fn plan_closed(frame: &FrameLight, slot: u32, closed: &ClosedEdges, edges: &mut Vec<ShadowEdge>) {
+/// `slot`: none of one holding the light, nor a side another shares (one
+/// holding the light shares none: a block touching the light's bearer
+/// casts the side they share)
+fn plan_closed(
+  frame: &FrameLight,
+  slot: u32,
+  closed: &mut ClosedEdges,
+  edges: &mut Vec<ShadowEdge>,
+) {
+  // Which runs hold the light, once each, into the reused vector
+  let mut holding = std::mem::take(&mut closed.holding);
+  holding.clear();
+  holding.extend(closed.runs().map(|(_, corners, _)| {
+    let points = corners.iter().copied();
+    let ends = points.clone().skip(1).chain(corners.first().copied());
+    contains(points.zip(ends), frame.position)
+  }));
+  closed.holding = holding;
+  let closed = &*closed;
   for (run, corners, own) in closed.runs() {
+    if closed.holding.get(run as usize).copied().unwrap_or(false) {
+      continue;
+    }
     // A polygon's last edge returns to its first vertex
     let points = corners.iter().copied();
     let ends = points.clone().skip(1).chain(corners.first().copied());
-    if contains(points.clone().zip(ends.clone()), frame.position) {
-      continue;
-    }
     // The shared side's look-up last, so an edge facing the light does none
     for (a, b) in points.zip(ends) {
       if casting(a, b, frame, own) && !closed.has_reverse(a, b, run) {
@@ -397,7 +421,7 @@ fn plan_closed(frame: &FrameLight, slot: u32, closed: &ClosedEdges, edges: &mut 
 }
 
 /// Whether the edge `a`-`b` casts `frame`'s light's shadow: facing away,
-/// or toward it for an occluder shadowing itself (`own`), near a spot's
+/// or either way for an occluder shadowing itself (`own`), near a spot's
 /// cone, longer than 1e-4, and the light not on it (it covers no angle
 /// round it)
 fn casting(a: Vec2, b: Vec2, frame: &FrameLight, own: bool) -> bool {
@@ -476,16 +500,18 @@ fn push_views(a: Vec2, b: Vec2, frame: &FrameLight, slot: u32, edges: &mut Vec<S
 }
 
 /// Whether the edge `v0`-`v1` faces away from a light at `light`, or with
-/// `toward` faces it (an occluder shadowing itself), and, for a spot of
-/// `(angle, direction)` in degrees, some of it lies within the spot's reach
-/// round its direction (`spot_reach`). An edge in line with the light
-/// faces neither way.
-fn casts(v0: Vec2, v1: Vec2, light: Vec2, spot: Option<(f32, f32)>, toward: bool) -> bool {
+/// `every` faces either way (an occluder shadowing itself casts every
+/// side: the map keeps the nearest, its near face, and a light on or in it
+/// is still blocked by its far sides), and, for a spot of `(angle,
+/// direction)` in degrees, some of it lies within the spot's reach round
+/// its direction (`spot_reach`). An edge in line with the light faces
+/// neither way.
+fn casts(v0: Vec2, v1: Vec2, light: Vec2, spot: Option<(f32, f32)>, every: bool) -> bool {
   let to_edge = (v0 + v1) * 0.5 - light;
   let edge = v1 - v0;
   // Edge normal for counter-clockwise winding: positive means it faces away
   let facing = to_edge.dot(Vec2::new(-edge.y, edge.x));
-  if (!toward && facing <= 0.0) || (toward && facing >= 0.0) {
+  if (!every && facing <= 0.0) || (every && facing == 0.0) {
     return false;
   }
   let Some((angle, direction)) = spot else {
@@ -546,7 +572,7 @@ pub(crate) fn casting_edges(light: &FrameLight, occluders: &[PlannedOccluder]) -
   for &placed in occluders {
     plan_occluder(light, 0, placed, &mut closed, &mut edges);
   }
-  plan_closed(light, 0, &closed, &mut edges);
+  plan_closed(light, 0, &mut closed, &mut edges);
   edges
 }
 
@@ -809,11 +835,25 @@ mod tests {
     cast
   }
 
+  /// The four sides of the 20 px block at (50, 0), sorted
+  fn every_side() -> Vec<([f32; 2], [f32; 2])> {
+    let mut all = vec![
+      (v(40.0, -10.0), v(40.0, 10.0)),
+      (v(40.0, 10.0), v(60.0, 10.0)),
+      (v(60.0, 10.0), v(60.0, -10.0)),
+      (v(60.0, -10.0), v(40.0, -10.0)),
+    ];
+    all.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
+    all
+  }
+
   #[test]
-  fn a_self_shadowing_rectangle_casts_its_near_faces() {
+  fn a_self_shadowing_rectangle_casts_every_side() {
     // The 20 px block of `only_edges_facing_away_cast`, corners (40, -10),
     // (40, 10), (60, 10), (60, -10), a light at the origin: shadowing
-    // itself, its near side casts and its far side and ends do not
+    // itself, its near side casts as well as its far side and ends. The
+    // map keeps the nearest depth, so the near side governs where the
+    // shadow starts, and its own area is in it
     let mut stage = Stage::new();
     stage.wall(
       50.0,
@@ -821,7 +861,7 @@ mod tests {
       LightOccluder2D::rect(20.0, 20.0).with_self_shadow(true),
     );
     stage.plan(&[lamp(Vec2::ZERO, 200.0)], &[wide()]);
-    assert_eq!(cast_pairs(&stage), vec![(v(40.0, -10.0), v(40.0, 10.0))]);
+    assert_eq!(cast_pairs(&stage), every_side());
     // Plain, its far side and ends, as ever
     let mut stage = Stage::new();
     stage.wall(50.0, 0.0, LightOccluder2D::rect(20.0, 20.0));
@@ -833,7 +873,8 @@ mod tests {
     ];
     far.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
     assert_eq!(cast_pairs(&stage), far);
-    // From above left, both faces it sees cast
+    // From above left, the faces it sees and those away from it all cast;
+    // the two it sees are nearest, so they govern
     let mut stage = Stage::new();
     stage.wall(
       50.0,
@@ -841,16 +882,95 @@ mod tests {
       LightOccluder2D::rect(20.0, 20.0).with_self_shadow(true),
     );
     stage.plan(&[lamp(Vec2::new(0.0, -50.0), 200.0)], &[wide()]);
-    // Each in the two views it crosses
+    // Each in every view it crosses
     let mut seen = cast_pairs(&stage);
     seen.dedup();
-    assert_eq!(
-      seen,
-      vec![
-        (v(40.0, -10.0), v(40.0, 10.0)),
-        (v(60.0, -10.0), v(40.0, -10.0)),
-      ]
+    assert_eq!(seen, every_side());
+  }
+
+  /// `occluder` placed at `at`, as the planner reads it
+  fn placed(at: Vec2, occluder: &LightOccluder2D) -> PlannedOccluder<'_> {
+    (
+      GlobalTransform::from_transform(&Transform::from_xy(at.x, at.y)),
+      occluder,
+      Floor::GROUND,
+    )
+  }
+
+  #[test]
+  fn a_light_on_a_self_shadowing_wall_s_face_is_still_blocked_by_it() {
+    // Two touching self-shadowing cells, x 40 to 60 and 60 to 80, y -10 to
+    // 10, and a light on their top face where they meet: the face it is on
+    // covers no angle, but the wall still blocks it, so below the wall is
+    // in its shadow and above it is lit
+    let cell = LightOccluder2D::rect(20.0, 20.0).with_self_shadow(true);
+    let occluders = [
+      placed(Vec2::new(50.0, 0.0), &cell),
+      placed(Vec2::new(70.0, 0.0), &cell),
+    ];
+    let light = lamp(Vec2::new(60.0, -10.0), 200.0);
+    // (Straight down through the cells' shared corner the test's crossing
+    // is exact at the bottoms' meeting point, so a pixel beside it)
+    for below in [
+      Vec2::new(61.0, 40.0),
+      Vec2::new(45.0, 30.0),
+      Vec2::new(78.0, 60.0),
+    ] {
+      assert!(shadowed(below, &light, &occluders), "below at {below}");
+    }
+    for above in [Vec2::new(60.0, -40.0), Vec2::new(20.0, -12.0)] {
+      assert!(!shadowed(above, &light, &occluders), "above at {above}");
+    }
+    // As a map's chain of the same boundary, on it and just inside it
+    let ring = LightOccluder2D::chain(vec![
+      Vec2::new(40.0, -10.0),
+      Vec2::new(40.0, 10.0),
+      Vec2::new(80.0, 10.0),
+      Vec2::new(80.0, -10.0),
+      Vec2::new(40.0, -10.0),
+    ])
+    .with_self_shadow(true);
+    let chain = [placed(Vec2::ZERO, &ring)];
+    for at in [Vec2::new(60.0, -10.0), Vec2::new(60.0, -9.5)] {
+      let light = lamp(at, 200.0);
+      assert!(
+        shadowed(Vec2::new(60.0, 40.0), &light, &chain),
+        "a light at {at}"
+      );
+    }
+  }
+
+  #[test]
+  fn a_self_shadowing_block_beside_one_holding_the_light_casts_every_side() {
+    // A light inside the self-shadowing block x 40 to 60 (carried), and a
+    // self-shadowing block touching it, x 60 to 80: the first casts nothing
+    // for the light, the second casts its sides, the one it shares with
+    // the first (nearest, so its own area is dark) and its far side too
+    let side_at = |stage: &Stage, x: f32| {
+      stage
+        .plan
+        .edges
+        .iter()
+        .filter(|e| e.a[0] == x && e.b[0] == x)
+        .count()
+    };
+    let mut stage = Stage::new();
+    for x in [50.0, 70.0] {
+      stage.wall(
+        x,
+        0.0,
+        LightOccluder2D::rect(20.0, 20.0).with_self_shadow(true),
+      );
+    }
+    stage.plan(&[lamp(Vec2::new(50.0, 0.0), 300.0)], &[wide()]);
+    // (Each once per view it crosses)
+    assert!(
+      side_at(&stage, 60.0) > 0,
+      "the shared side: {:?}",
+      stage.plan.edges
     );
+    assert!(side_at(&stage, 80.0) > 0, "the far side");
+    assert_eq!(side_at(&stage, 40.0), 0, "nothing of the light's own block");
   }
 
   #[test]
@@ -885,9 +1005,9 @@ mod tests {
   #[test]
   fn a_side_two_self_shadowing_rectangles_share_casts_for_neither() {
     // Two touching 20 px squares sharing the side at x 60, a light right of
-    // them: shadowing themselves, the right one's near side (x 80) casts,
-    // the shared side does not (its face toward the light is the left
-    // square's), and the far side (x 40) does not
+    // them: shadowing themselves, every outer side casts (the near side,
+    // x 80, nearest, governs where the shadow starts) and the shared side
+    // does not
     let side_at = |stage: &Stage, x: f32| {
       stage
         .plan
@@ -917,8 +1037,9 @@ mod tests {
         0,
         "from {from}: the shared side casts"
       );
-      assert_eq!(side_at(&stage, far), 0, "from {from}: the far side casts");
-      assert_eq!(stage.plan.edges.len(), 1, "{:?}", stage.plan.edges);
+      assert_eq!(side_at(&stage, far), 1, "from {from}: the far side casts");
+      // and the two tops and two bottoms
+      assert_eq!(stage.plan.edges.len(), 6, "{:?}", stage.plan.edges);
     }
     // One shadowing itself and one not: the shared side casts for a light
     // on the plain one's side (its far face, the other's near face), so no
@@ -932,6 +1053,25 @@ mod tests {
     stage.wall(70.0, 0.0, LightOccluder2D::rect(20.0, 20.0));
     stage.plan(&[lamp(Vec2::new(200.0, 0.0), 300.0)], &[wide()]);
     assert!(side_at(&stage, 60.0) >= 1, "{:?}", stage.plan.edges);
+    // With the light on the self-shadowing one's side, its near side (x 40)
+    // governs, and the plain one's far side (x 80) casts behind: the pair
+    // is dark from x 40 on
+    stage.plan(&[lamp(Vec2::new(-100.0, 0.0), 300.0)], &[wide()]);
+    assert_eq!(side_at(&stage, 40.0), 1, "{:?}", stage.plan.edges);
+    assert_eq!(side_at(&stage, 80.0), 1, "{:?}", stage.plan.edges);
+    let (own, plain) = (
+      LightOccluder2D::rect(20.0, 20.0).with_self_shadow(true),
+      LightOccluder2D::rect(20.0, 20.0),
+    );
+    let occluders = [
+      placed(Vec2::new(50.0, 0.0), &own),
+      placed(Vec2::new(70.0, 0.0), &plain),
+    ];
+    let light = lamp(Vec2::new(-100.0, 0.0), 300.0);
+    for x in [45.0, 65.0, 120.0] {
+      assert!(shadowed(Vec2::new(x, 1.0), &light, &occluders), "x {x}");
+    }
+    assert!(!shadowed(Vec2::new(30.0, 1.0), &light, &occluders));
   }
 
   #[test]
@@ -1015,7 +1155,16 @@ mod tests {
       LightOccluder2D::rect(4.0, 4.0).with_self_shadow(true),
     );
     stage.plan(std::slice::from_ref(&spot), &[wide()]);
-    assert_eq!(cast_pairs(&stage), vec![(v(98.0, -2.0), v(98.0, 2.0))]);
+    // Every side of the block ahead (its near side nearest, governing),
+    // none of the one behind
+    let mut ahead = vec![
+      (v(98.0, -2.0), v(98.0, 2.0)),
+      (v(98.0, 2.0), v(102.0, 2.0)),
+      (v(102.0, 2.0), v(102.0, -2.0)),
+      (v(102.0, -2.0), v(98.0, -2.0)),
+    ];
+    ahead.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
+    assert_eq!(cast_pairs(&stage), ahead);
     let mut stage = Stage::new();
     stage.wall(
       0.0,

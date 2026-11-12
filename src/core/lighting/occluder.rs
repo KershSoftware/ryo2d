@@ -256,14 +256,14 @@ impl LightOccluder2D {
   }
 
   /// Builder method: whether it shadows itself (off by default). A
-  /// self-shadowing occluder casts from its faces toward each light rather
-  /// than those away from it, so the shadow starts at its near face and its
-  /// own area lies in it: a top-down wall seen from above stays dark
-  /// rather than lit on top. Leave it off for a pillar or crate whose top
-  /// should catch the light. A chain's edges cast as the self-shadowing
-  /// polygon they bound would; a chain has no inside, so a light within the
-  /// polygon it bounds is not known to be inside (a closed occluder holding
-  /// a light casts nothing for it, either way)
+  /// self-shadowing occluder casts from every side, toward each light and
+  /// away from it; the shadow keeps the nearest, so it starts at the near
+  /// face and the occluder's own area lies in it (a top-down wall seen from
+  /// above stays dark rather than lit on top), and a light on its face is
+  /// still blocked by its far sides. Leave it off for a pillar or crate
+  /// whose top should catch the light. A closed occluder holding a light
+  /// casts nothing for it, either way; a chain has no inside, so a light
+  /// within the region it bounds is boxed in by it
   pub fn with_self_shadow(mut self, on: bool) -> Self {
     self.self_shadow = on;
     self
