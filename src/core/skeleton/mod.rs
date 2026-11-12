@@ -9,6 +9,7 @@ mod attachment;
 mod builder;
 mod curve;
 mod data;
+mod pose;
 mod skin;
 mod validate;
 
@@ -20,5 +21,6 @@ pub use data::{
   BoneData, BoneId, EventAudio, EventData, Inherit, Region, SkeletonData, SlotBlend, SlotData,
   SlotId,
 };
+pub use pose::BonePose;
 pub use skin::Skin;
 pub use validate::SkeletonError;
