@@ -19,6 +19,9 @@ const ROWS: i32 = 22;
 const CELL: u32 = 32;
 const TOP: f32 = 8.0;
 const TORCHES: usize = 64;
+/// Each torch's source size in pixels: soft shadows at every quality (the
+/// soft shadows page is where the size is played with)
+const TORCH_SIZE: f32 = 6.0;
 
 /// A torch of the maze
 #[derive(Component)]
@@ -152,12 +155,10 @@ fn next_quality(quality: ShadowQuality) -> ShadowQuality {
 
 /// Many lights page state
 pub struct ManyLightsPage {
-  /// Torch source size in pixels (0 = hard shadows)
-  size: f32,
   radius: f32,
   quality: ShadowQuality,
-  /// The (size, radius) the torches were last given
-  applied: Option<(f32, f32)>,
+  /// The radius the torches were last given
+  applied: Option<f32>,
   /// Whether the walls shadow themselves, and what the wall layer was
   /// last given
   walls_dark: bool,
@@ -168,7 +169,6 @@ pub struct ManyLightsPage {
 impl ManyLightsPage {
   pub(crate) fn new() -> Self {
     Self {
-      size: 6.0,
       radius: 130.0,
       quality: ShadowQuality::default(),
       applied: None,
@@ -187,7 +187,7 @@ impl ManyLightsPage {
     ][n % 3];
     Light2D::point(colour, self.radius)
       .with_intensity(1.2)
-      .with_soft_shadows(self.size)
+      .with_soft_shadows(TORCH_SIZE)
   }
 }
 
@@ -202,7 +202,6 @@ Lower qualities draw coarser shadow maps and cost less; walls that stay dark sha
   }
 
   fn settings(&mut self, s: &mut Settings) {
-    s.float("Source size", &mut self.size, 0.0..=24.0, 1.0);
     s.float("Torch radius", &mut self.radius, 60.0..=260.0, 10.0);
     s.toggle("Walls stay dark", &mut self.walls_dark);
   }
@@ -257,8 +256,8 @@ Lower qualities draw coarser shadow maps and cost less; walls that stay dark sha
       self.quality = next_quality(self.quality);
       ctx.settings().set_shadow_quality(self.quality);
     }
-    if self.applied != Some((self.size, self.radius)) {
-      self.applied = Some((self.size, self.radius));
+    if self.applied != Some(self.radius) {
+      self.applied = Some(self.radius);
       let mut torches = ctx.world.query_filtered::<&mut Light2D, With<Torch>>();
       for (n, mut light) in torches.iter_mut(ctx.world).enumerate() {
         *light = self.torch_light(n);
