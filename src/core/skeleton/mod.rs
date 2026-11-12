@@ -5,13 +5,6 @@
 //! Spine's model. Build one in code with [`SkeletonData::builder`].
 
 mod animation;
-#[cfg_attr(
-  not(test),
-  expect(
-    dead_code,
-    reason = "the animation state applies animations and finds their events"
-  )
-)]
 mod apply;
 mod attachment;
 mod builder;
@@ -19,6 +12,7 @@ mod curve;
 mod data;
 mod pose;
 mod skin;
+mod state;
 mod validate;
 
 pub use animation::{Animation, EventValues, Frame, Timeline};
@@ -32,4 +26,5 @@ pub use data::{
 };
 pub use pose::BonePose;
 pub use skin::Skin;
+pub use state::{SkeletonAnimation, TrackEntry, TrackEntryId, TrackEventKind};
 pub use validate::SkeletonError;

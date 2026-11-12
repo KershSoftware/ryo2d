@@ -61,13 +61,6 @@ impl BonePose {
 
 /// One skeleton's current pose, indexed like the data's bones and slots
 #[derive(Debug, Clone)]
-#[cfg_attr(
-  not(test),
-  expect(
-    dead_code,
-    reason = "the animation state and the ECS step read and write the pose"
-  )
-)]
 pub(crate) struct Pose {
   /// Local transforms
   pub(crate) bones: Vec<BonePose>,
@@ -82,15 +75,12 @@ pub(crate) struct Pose {
   pub(crate) draw_order: Vec<SlotId>,
 }
 
-#[cfg_attr(
-  not(test),
-  expect(
-    dead_code,
-    reason = "the animation state and the ECS step read and write the pose"
-  )
-)]
 impl Pose {
   /// The setup pose, with world transforms not yet computed (identity)
+  #[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the skeleton step builds and places the pose")
+  )]
   pub(crate) fn setup(data: &SkeletonData) -> Self {
     let slots = data.slots();
     Self {
@@ -104,10 +94,33 @@ impl Pose {
     }
   }
 
+  /// Puts the pose back to the setup pose without allocating: the bones'
+  /// local transforms, the slots' colours and attachments and the draw
+  /// order (world transforms are left as they are)
+  pub(crate) fn reset(&mut self, data: &SkeletonData) {
+    for (pose, bone) in self.bones.iter_mut().zip(data.bones()) {
+      *pose = BonePose::setup(bone);
+    }
+    for (color, slot) in self.slot_colors.iter_mut().zip(data.slots()) {
+      *color = srgb(slot.color);
+    }
+    for (attachment, slot) in self.slot_attachments.iter_mut().zip(data.slots()) {
+      attachment.clone_from(&slot.attachment);
+    }
+    self.draw_order.clear();
+    self
+      .draw_order
+      .extend((0..data.slots().len()).filter_map(|index| u8::try_from(index).ok().map(SlotId)));
+  }
+
   /// Computes every bone's world transform from the local poses. `root`
   /// places the whole skeleton (the entity's transform). The inherit modes
   /// act in skeleton space, so `root` applies to every bone, whatever its
   /// mode (the module notes have the formulas)
+  #[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the skeleton step builds and places the pose")
+  )]
   pub(crate) fn compute_world(&mut self, data: &SkeletonData, root: Affine2) {
     // Bones are parent-first, so one pass sees each parent's skeleton-space
     // transform before its children; a second applies the root.
@@ -611,5 +624,40 @@ mod tests {
     assert_eq!(pose.slot_attachments, vec![None, Some(Arc::from("hat"))]);
     assert_eq!(pose.draw_order, vec![SlotId(0), SlotId(1)]);
     assert_eq!(pose.bones, vec![BonePose::setup(&data.bones()[0])]);
+  }
+
+  #[test]
+  fn reset_puts_a_changed_pose_back_to_setup() {
+    let data = SkeletonData::builder()
+      .bone("root", None, turned_parent())
+      .slot("back", "root", SlotSetup::default())
+      .slot(
+        "front",
+        "root",
+        SlotSetup {
+          color: Color::new(255, 0, 0, 128),
+          attachment: Some(Arc::from("hat")),
+          ..SlotSetup::default()
+        },
+      )
+      .build()
+      .expect("a valid skeleton");
+    let setup = Pose::setup(&data);
+    let mut pose = setup.clone();
+    pose.bones[0].x = -3.0;
+    pose.bones[0].rotation += 1.0;
+    pose.slot_colors[1] = Vec4::splat(0.5);
+    pose.slot_attachments[0] = Some(Arc::from("cap"));
+    pose.slot_attachments[1] = None;
+    pose.draw_order.reverse();
+    let placed = affine((0.0, 2.0), (-1.0, 0.0), (10.0, 20.0));
+    pose.world[0] = placed;
+    pose.reset(&data);
+    assert_eq!(pose.bones, setup.bones);
+    assert_eq!(pose.slot_colors, setup.slot_colors);
+    assert_eq!(pose.slot_attachments, setup.slot_attachments);
+    assert_eq!(pose.draw_order, setup.draw_order);
+    // The world transforms are the last ones computed, until the next
+    assert_affine(pose.world[0], placed);
   }
 }

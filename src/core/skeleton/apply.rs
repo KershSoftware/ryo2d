@@ -34,6 +34,7 @@ pub(crate) enum MixDirection {
 /// 1 takes them fully) and `blend`. Before a timeline's first key it leaves
 /// the pose; after its last key the last value holds. Event timelines do
 /// nothing here (see [`events_between`])
+#[cfg(test)]
 pub(crate) fn apply(
   animation: &Animation,
   data: &SkeletonData,
@@ -43,7 +44,55 @@ pub(crate) fn apply(
   blend: MixBlend,
   direction: MixDirection,
 ) {
-  for timeline in &animation.timelines {
+  apply_layer(
+    animation,
+    data,
+    pose,
+    Layer {
+      time,
+      alpha,
+      fades: &[],
+      blend,
+      direction,
+    },
+    &mut [],
+  );
+}
+
+/// How one entry applies in a step: its animation time, its alpha, each
+/// timeline's fade (a factor on the alpha, by timeline index; missing ones
+/// are 1), its blend and its direction
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Layer<'a> {
+  pub(crate) time: f32,
+  pub(crate) alpha: f32,
+  pub(crate) fades: &'a [f32],
+  pub(crate) blend: MixBlend,
+  pub(crate) direction: MixDirection,
+}
+
+/// As [`apply`], with a fade per timeline, and `turns` to remember which
+/// way each rotate timeline (by index) blends toward the pose: given one,
+/// the blend takes the turn nearest the one it took last step (the short
+/// way on the first, while it is NaN) and records it, so a turn that would
+/// cross half a circle mid-mix keeps going the way it started. Timelines
+/// past the end of `turns` blend the short way every step
+pub(crate) fn apply_layer(
+  animation: &Animation,
+  data: &SkeletonData,
+  pose: &mut Pose,
+  layer: Layer<'_>,
+  turns: &mut [f32],
+) {
+  let Layer {
+    time,
+    alpha: base,
+    fades,
+    blend,
+    direction,
+  } = layer;
+  for (index, timeline) in animation.timelines.iter().enumerate() {
+    let alpha = base * fades.get(index).copied().unwrap_or(1.0);
     match timeline {
       Timeline::Rotate { bone, frames } => {
         if let (Some(value), Some((setup, local))) =
@@ -51,7 +100,19 @@ pub(crate) fn apply(
         {
           let target = setup.rotation + value;
           local.rotation += match blend {
-            MixBlend::Replace => shortest(target - local.rotation) * alpha,
+            MixBlend::Replace => {
+              let difference = target - local.rotation;
+              let turn = match turns.get_mut(index) {
+                Some(last) if !last.is_nan() => {
+                  difference - TAU * ((difference - *last) / TAU).round()
+                }
+                _ => shortest(difference),
+              };
+              if let Some(last) = turns.get_mut(index) {
+                *last = turn;
+              }
+              turn * alpha
+            }
             MixBlend::Add => value * alpha,
           };
         }
@@ -208,19 +269,38 @@ pub(crate) fn apply(
 /// The most loops one span visits. A step over more loops than this fires
 /// only the keys of the last [`MAX_LOOPS`] loops, those ending at the one
 /// holding `now`
-const MAX_LOOPS: i64 = 1000;
+pub(super) const MAX_LOOPS: i64 = 1000;
+
+/// An event key crossed: its time unwrapped (in the same time as the span),
+/// the event's index, the key's values and the key's own time in the
+/// animation
+pub(crate) type CrossedKey = (f32, usize, EventValues, f32);
 
 /// Pushes onto `out` the event keys in (`last`, `now`], in time order, with
 /// their times unwrapped (in the same time as `last` and `now`). A looping
 /// animation's keys repeat every duration, from time 0; a zero-length one
 /// fires its keys once, as if not looping. The first step passes a negative
 /// `last`, so a key at 0 fires on it. Nothing fires if `now <= last`
+#[cfg(test)]
 pub(crate) fn events_between(
   animation: &Animation,
   last: f32,
   now: f32,
   looping: bool,
-  out: &mut Vec<(f32, usize, EventValues)>,
+  out: &mut Vec<CrossedKey>,
+) {
+  events_crossed(animation, last, now, looping, false, out);
+}
+
+/// As [`events_between`], playing the animation backward when `reverse`:
+/// a key at `k` is crossed at `duration - k` into each loop
+pub(crate) fn events_crossed(
+  animation: &Animation,
+  last: f32,
+  now: f32,
+  looping: bool,
+  reverse: bool,
+  out: &mut Vec<CrossedKey>,
 ) {
   if now.is_nan() || last.is_nan() || now <= last {
     return;
@@ -239,36 +319,38 @@ pub(crate) fn events_between(
   let start = out.len();
   let fire = |offset: f32, out: &mut Vec<_>| {
     for (time, event, values) in frames {
-      let at = offset + time;
+      let into = if reverse { duration - time } else { *time };
+      let at = offset + into;
       if at > last && at <= now {
-        out.push((at, *event, values.clone()));
+        out.push((at, *event, values.clone(), *time));
       }
     }
   };
   // Durations are checked finite and not negative
   if !looping || duration <= 0.0 {
     fire(0.0, out);
-    return;
-  }
-  // Loops start at multiples of the duration. Division can round the loop
-  // holding `last` or `now` across a boundary (2.7 / 0.9 is just under 3 in
-  // f32), so one more loop is visited on each side; the (last, now] test
-  // drops what they do not hold. Each key's unwrapped time is computed the
-  // same way every step, so contiguous steps fire it exactly once
-  let first = (last.max(0.0) / duration).floor() as i64;
-  let end = (now / duration).floor() as i64;
-  let capped = end - first >= MAX_LOOPS;
-  let first = if capped {
-    end - (MAX_LOOPS - 1)
   } else {
-    (first - 1).max(0)
-  };
-  for index in first..=end + 1 {
-    fire(index as f32 * duration, out);
+    // Loops start at multiples of the duration. Division can round the
+    // loop holding `last` or `now` across a boundary (2.7 / 0.9 is just
+    // under 3 in f32), so one more loop is visited on each side; the
+    // (last, now] test drops what they do not hold. Each key's unwrapped
+    // time is computed the same way every step, so contiguous steps fire
+    // it exactly once. Float-to-int casts saturate, and the sums saturate,
+    // so an infinite or huge `now` cannot overflow
+    let first = (last.max(0.0) / duration).floor() as i64;
+    let end = (now / duration).floor() as i64;
+    let first = if end.saturating_sub(first) >= MAX_LOOPS {
+      end - (MAX_LOOPS - 1)
+    } else {
+      first.saturating_sub(1).max(0)
+    };
+    for index in first..=end.saturating_add(1) {
+      fire(index as f32 * duration, out);
+    }
   }
   // A key at the duration and the next loop's key at 0 can come out one ulp
-  // apart in either order; a stable insertion pass puts them in time order
-  // without allocating (anything else is already in order)
+  // apart in either order (and reversed keys come in reverse); a stable
+  // insertion pass puts them in time order without allocating
   let pushed = &mut out[start..];
   for index in 1..pushed.len() {
     let mut at = index;
@@ -961,7 +1043,7 @@ mod tests {
     // Values and indices come with the times
     let mut out = Vec::new();
     events_between(&clip, 0.0, 0.5, true, &mut out);
-    assert_eq!(out, vec![(0.25, 0, EventValues::default())]);
+    assert_eq!(out, vec![(0.25, 0, EventValues::default(), 0.25)]);
     // A step that goes nowhere fires nothing
     close_all(events(&clip, 0.25, 0.25, true), &[]);
   }
@@ -1068,5 +1150,16 @@ mod tests {
     assert_eq!(fired.last(), Some(&5000.5));
     // A span of exactly the cap fires every loop
     assert_eq!(events(&clip, 0.0, 999.75, true).len(), 1000);
+  }
+
+  #[test]
+  fn an_infinite_or_huge_span_neither_overflows_nor_runs_long() {
+    let clip = animation(1.0, vec![event_keys(&[0.5])]);
+    for now in [f32::INFINITY, f32::MAX, 1e30] {
+      let fired = events(&clip, 0.0, now, true);
+      assert!(fired.len() <= 1000, "{now}: {}", fired.len());
+    }
+    let tiny = animation(1e-30, vec![event_keys(&[0.0])]);
+    assert!(events(&tiny, 0.0, 1.0, true).len() <= 1001);
   }
 }

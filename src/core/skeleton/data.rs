@@ -161,10 +161,44 @@ pub struct SkeletonData {
   pub(super) bone_names: HashMap<Arc<str>, BoneId>,
   pub(super) slot_names: HashMap<Arc<str>, SlotId>,
   pub(super) skin_names: HashMap<Arc<str>, usize>,
-  pub(super) animation_names: HashMap<Arc<str>, usize>,
+  /// The animations' names, durations and mixes, shared with every
+  /// animation state that plays this data
+  pub(super) catalogue: Arc<AnimationCatalogue>,
+}
+
+/// What an animation state needs to know of a skeleton's animations when a
+/// call names one: each name's index and duration, and the mixes. Shared, so
+/// a state keeps it without borrowing the data, and a reload (new data) is a
+/// new catalogue
+#[derive(Debug)]
+pub(crate) struct AnimationCatalogue {
+  pub(super) names: HashMap<Arc<str>, usize>,
+  pub(super) durations: Vec<f32>,
   /// Mix durations by (from, to) animation index
   pub(super) mixes: HashMap<(usize, usize), f32>,
   pub(super) default_mix: f32,
+}
+
+impl AnimationCatalogue {
+  /// The animation called `name`, as an index
+  pub(crate) fn index(&self, name: &str) -> Option<usize> {
+    self.names.get(name).copied()
+  }
+
+  /// The animation's duration (0 for an index out of range)
+  pub(crate) fn duration(&self, index: usize) -> f32 {
+    self.durations.get(index).copied().unwrap_or(0.0)
+  }
+
+  /// The mix from one animation to another by index: the pair's own, else
+  /// the default. `None` (no animation, or the empty animation) takes the
+  /// default
+  pub(crate) fn mix(&self, from: Option<usize>, to: Option<usize>) -> f32 {
+    from
+      .zip(to)
+      .and_then(|pair| self.mixes.get(&pair).copied())
+      .unwrap_or(self.default_mix)
+  }
 }
 
 impl Asset for SkeletonData {}
@@ -232,25 +266,28 @@ impl SkeletonData {
   /// The animation called `name`
   pub fn animation(&self, name: &str) -> Option<&Animation> {
     self
-      .animation_names
-      .get(name)
-      .map(|&index| &self.animations[index])
+      .catalogue
+      .index(name)
+      .and_then(|index| self.animations.get(index))
   }
 
   /// The mix duration, in seconds, from animation `from` to `to`: the pair's
   /// own, else the default mix
   pub fn mix(&self, from: &str, to: &str) -> f32 {
-    let pair = self
-      .animation_names
-      .get(from)
-      .zip(self.animation_names.get(to));
-    pair
-      .and_then(|(&from, &to)| self.mixes.get(&(from, to)).copied())
-      .unwrap_or(self.default_mix)
+    let catalogue = &self.catalogue;
+    match (catalogue.index(from), catalogue.index(to)) {
+      (Some(from), Some(to)) => catalogue.mix(Some(from), Some(to)),
+      _ => catalogue.default_mix,
+    }
   }
 
   /// The mix used between animations with no mix of their own
   pub fn default_mix(&self) -> f32 {
-    self.default_mix
+    self.catalogue.default_mix
+  }
+
+  /// The animations' names, durations and mixes, shared
+  pub(crate) fn catalogue(&self) -> &Arc<AnimationCatalogue> {
+    &self.catalogue
   }
 }

@@ -8,7 +8,7 @@ use super::animation::{Target, Timeline};
 use super::attachment::Attachment;
 use super::builder::SkeletonDataBuilder;
 use super::curve::Curve;
-use super::data::{BoneData, BoneId, SkeletonData, SlotData, SlotId};
+use super::data::{AnimationCatalogue, BoneData, BoneId, SkeletonData, SlotData, SlotId};
 use super::skin::Skin;
 use crate::core::ecs::Vec2;
 
@@ -369,6 +369,15 @@ pub(super) fn build(builder: SkeletonDataBuilder) -> Result<SkeletonData, Skelet
   }
   mix_duration(|| "default mix".to_owned(), default_mix)?;
 
+  let catalogue = Arc::new(AnimationCatalogue {
+    names: animation_names,
+    durations: animations
+      .iter()
+      .map(|animation| animation.duration)
+      .collect(),
+    mixes,
+    default_mix,
+  });
   Ok(SkeletonData {
     bones,
     slots,
@@ -379,9 +388,7 @@ pub(super) fn build(builder: SkeletonDataBuilder) -> Result<SkeletonData, Skelet
     bone_names,
     slot_names,
     skin_names,
-    animation_names,
-    mixes,
-    default_mix,
+    catalogue,
   })
 }
 
