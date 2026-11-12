@@ -2,6 +2,7 @@
 //! computed from them with Spine's inherit modes, plus each slot's colour and
 //! attachment and the draw order.
 
+use std::f32::consts::FRAC_PI_2;
 use std::sync::Arc;
 
 use glam::{Affine2, Mat2, Vec2};
@@ -44,8 +45,13 @@ impl BonePose {
   /// scaled by `scale_x`, the y axis turned by `rotation + shear_y` and
   /// scaled by `scale_y`
   fn linear(&self) -> Mat2 {
-    let (sin_x, cos_x) = (self.rotation + self.shear_x).sin_cos();
-    let (sin_y, cos_y) = (self.rotation + self.shear_y).sin_cos();
+    self.linear_turned(self.rotation)
+  }
+
+  /// The local linear part as if the bone were turned by `rotation`
+  fn linear_turned(&self, rotation: f32) -> Mat2 {
+    let (sin_x, cos_x) = (rotation + self.shear_x).sin_cos();
+    let (sin_y, cos_y) = (rotation + self.shear_y).sin_cos();
     Mat2::from_cols(
       Vec2::new(cos_x, sin_x) * self.scale_x,
       Vec2::new(-sin_y, cos_y) * self.scale_y,
@@ -102,23 +108,32 @@ impl Pose {
   pub(crate) fn compute_world(&mut self, data: &SkeletonData, root: Affine2) {
     // Bones are parent-first, so one pass sees each parent's skeleton-space
     // transform before its children; a second applies the root.
+    debug_assert_eq!(
+      self.bones.len(),
+      data.bones().len(),
+      "a pose of another skeleton"
+    );
+    debug_assert_eq!(
+      self.world.len(),
+      data.bones().len(),
+      "a pose of another skeleton"
+    );
     for (index, bone) in data.bones().iter().enumerate() {
       let local = &self.bones[index];
-      let linear = local.linear();
       let position = Vec2::new(local.x, local.y);
       self.world[index] = match bone.parent {
-        None => Affine2::from_mat2_translation(linear, position),
+        None => Affine2::from_mat2_translation(local.linear(), position),
         Some(parent) => {
           let parent = self.world[parent.index()];
           let translation = parent.transform_point2(position);
-          let parent_linear = match bone.inherit {
-            Inherit::Normal => parent.matrix2,
-            Inherit::OnlyTranslation => Mat2::IDENTITY,
-            Inherit::NoRotationOrReflection => without_rotation_or_reflection(parent.matrix2),
-            Inherit::NoScale => without_scale(parent.matrix2, false),
-            Inherit::NoScaleOrReflection => without_scale(parent.matrix2, true),
+          let linear = match bone.inherit {
+            Inherit::Normal => parent.matrix2 * local.linear(),
+            Inherit::OnlyTranslation => local.linear(),
+            Inherit::NoRotationOrReflection => stretch_along_bone(parent.matrix2) * local.linear(),
+            Inherit::NoScale => rigid(parent.matrix2, local, true),
+            Inherit::NoScaleOrReflection => rigid(parent.matrix2, local, false),
           };
-          Affine2::from_mat2_translation(parent_linear * linear, translation)
+          Affine2::from_mat2_translation(linear, translation)
         }
       };
     }
@@ -131,38 +146,61 @@ impl Pose {
 /// Below this, an axis counts as collapsed (a zero scale)
 const COLLAPSED: f32 = 1e-6;
 
-/// The parent's linear part with its rotation and reflection taken out:
-/// writing it as a rotation (its x axis's angle) times an upper-triangular
-/// `[[s, t], [0, u]]`, the triangular part with `u` made positive. It keeps
-/// the parent's scale and shear
-fn without_rotation_or_reflection(parent: Mat2) -> Mat2 {
+/// The parent's stretch without its rotation, shear or reflection: its
+/// length along the parent bone's direction (its x axis), and its area per
+/// unit length across it, as a symmetric matrix along those axes,
+/// `R(θ) * diag(s, u) * R(-θ)`
+fn stretch_along_bone(parent: Mat2) -> Mat2 {
   let s = parent.x_axis.length();
-  if s < COLLAPSED {
-    // No x axis to take a rotation from: keep only the y axis's length
-    return Mat2::from_cols(Vec2::ZERO, Vec2::new(0.0, parent.y_axis.length()));
-  }
-  let t = parent.x_axis.dot(parent.y_axis) / s;
-  let u = parent.determinant().abs() / s;
-  Mat2::from_cols(Vec2::new(s, 0.0), Vec2::new(t, u))
+  let (along, across, u) = if s >= COLLAPSED {
+    let along = parent.x_axis / s;
+    (along, along.perp(), parent.determinant().abs() / s)
+  } else {
+    // No x axis: the bone's direction is a quarter turn back from its y axis
+    let u = parent.y_axis.length();
+    if u < COLLAPSED {
+      return Mat2::ZERO;
+    }
+    let across = parent.y_axis / u;
+    (-across.perp(), across, u)
+  };
+  let along_part = Mat2::from_cols(along * along.x, along * along.y) * s;
+  let across_part = Mat2::from_cols(across * across.x, across * across.y) * u;
+  along_part + across_part
 }
 
-/// The parent's linear part with each axis made unit length, which keeps its
-/// rotation, shear (the angle between the axes) and reflection. Without
-/// reflection, a mirrored parent's y axis is turned back, so the bone
-/// follows the parent's x axis unmirrored
-fn without_scale(parent: Mat2, remove_reflection: bool) -> Mat2 {
-  let x_axis = parent.x_axis.normalize_or_zero();
-  let mut y_axis = parent.y_axis.normalize_or_zero();
-  if remove_reflection && parent.determinant() < 0.0 {
+/// A rigid world linear part for a no-scale bone: its x axis points where
+/// normal inheritance would point it (the parent's linear part applied to
+/// the bone's own direction), its y axis is perpendicular, a quarter turn
+/// clockwise from it or, keeping a mirrored parent's reflection, the other
+/// way; then the bone's own scale and shear apply in that frame
+fn rigid(parent: Mat2, local: &BonePose, keep_reflection: bool) -> Mat2 {
+  let (sin, cos) = (local.rotation + local.shear_x).sin_cos();
+  let own = Vec2::new(cos, sin);
+  let mut direction = parent * own;
+  if direction.length() < COLLAPSED {
+    // The parent squashes this direction flat: turn the bone by the parent's
+    // rotation instead, from whichever of its axes is left (none: unturned)
+    let parent_angle = if parent.x_axis.length() >= COLLAPSED {
+      parent.x_axis.to_angle()
+    } else if parent.y_axis.length() >= COLLAPSED {
+      parent.y_axis.to_angle() - FRAC_PI_2
+    } else {
+      0.0
+    };
+    direction = Vec2::from_angle(parent_angle).rotate(own);
+  }
+  let x_axis = direction.normalize_or_zero();
+  let mut y_axis = x_axis.perp();
+  if keep_reflection && parent.determinant() < 0.0 {
     y_axis = -y_axis;
   }
-  Mat2::from_cols(x_axis, y_axis)
+  // The bone's own scale and shear, measured from its own x axis
+  Mat2::from_cols(x_axis, y_axis) * local.linear_turned(-local.shear_x)
 }
 
 #[cfg(test)]
 mod tests {
-  use std::f32::consts::FRAC_PI_2;
-
   use super::*;
   use crate::core::skeleton::{BoneSetup, SlotSetup};
 
@@ -275,15 +313,36 @@ mod tests {
       &[("parent", None, parent), ("child", Some("parent"), child)],
       Affine2::IDENTITY,
     );
-    // Parent with rotation and reflection removed: s = |x axis| = 2,
-    // t = x.y / s = 0, u = |det| / s = 4 / 2 = 2, so [[2, 0], [0, 2]].
-    // axes = 2 * child's own: x 2 * (cos 30, sin 30), y 2 * (-sin 30, cos 30)
+    // The parent bone points up (its x axis is (0, -2)) and is stretched 2
+    // along itself and 2 across: a uniform 2, mirrored. Without its rotation
+    // and mirroring, the child keeps its own 30 degrees, scaled 2:
+    // axes x 2 * (cos 30, sin 30), y 2 * (-sin 30, cos 30)
     // origin = P * (4, 0) = 4 * (0, -2) = (0, -8)
-    // The child's world angle stays 30 degrees
     assert_affine(
       world[1],
       affine((2.0 * COS_30, 1.0), (-1.0, 2.0 * COS_30), (0.0, -8.0)),
     );
+  }
+
+  #[test]
+  fn no_rotation_or_reflection_stretches_along_the_parent_bone() {
+    let child = BoneSetup {
+      inherit: Inherit::NoRotationOrReflection,
+      ..BoneSetup::default()
+    };
+    let world = world(
+      &[
+        ("parent", None, turned_parent()),
+        ("child", Some("parent"), child),
+      ],
+      Affine2::IDENTITY,
+    );
+    // The parent bone points down (turned 90 degrees) and is stretched 2
+    // along itself, 1 across. The unturned child keeps its world angle: its
+    // x axis (1, 0) lies across the parent bone, so stays (1, 0); its y axis
+    // (0, 1) lies along it, so is stretched to (0, 2).
+    // origin = the parent's, (10, 20)
+    assert_affine(world[1], affine((1.0, 0.0), (0.0, 2.0), (10.0, 20.0)));
   }
 
   #[test]
@@ -306,8 +365,9 @@ mod tests {
       &[("parent", None, parent), ("child", Some("parent"), child)],
       Affine2::IDENTITY,
     );
-    // Parent axes normalised: x (0, 1), y (-1, 0); the child is unturned, so
-    // its axes are those, unit length.
+    // Normal inheritance would point the unturned child along the parent
+    // bone, which points down: x axis (0, 1), unit length, and y axis
+    // perpendicular, a quarter turn clockwise from it: (-1, 0).
     // origin = P * (5, 0) + (10, 0) = (0, 10) + (10, 0) = (10, 10)
     assert_affine(world[1], affine((0.0, 1.0), (-1.0, 0.0), (10.0, 10.0)));
   }
@@ -325,18 +385,109 @@ mod tests {
       inherit: Inherit::NoScaleOrReflection,
       ..BoneSetup::default()
     };
+    let mirrored = BoneSetup {
+      inherit: Inherit::NoScale,
+      ..child
+    };
     let world = world(
-      &[("parent", None, parent), ("child", Some("parent"), child)],
+      &[
+        ("parent", None, parent),
+        ("child", Some("parent"), child),
+        ("mirrored", Some("parent"), mirrored),
+      ],
       Affine2::IDENTITY,
     );
-    // Parent axes normalised: x (-1, 0), y (0, 1); the determinant is
-    // negative, so the y axis flips to (0, -1): N = [[-1, 0], [0, -1]], a
-    // half turn following the parent's x axis.
-    // Child local: x (0, 1), y (-1, 0). x axis = N * (0, 1) = (0, -1),
-    // y axis = N * (-1, 0) = (1, 0); determinant 0 * 0 - 1 * (-1) = 1, not
-    // mirrored.
+    // Normal inheritance points the child (turned 90 degrees) straight down:
+    // the parent's mirroring is across the vertical, which leaves down alone.
+    // So the x axis is (0, 1), unit. Without reflection the y axis is a
+    // quarter turn clockwise from it, (-1, 0), as unmirrored axes are.
     // origin = P * (3, 0) = (-6, 0)
-    assert_affine(world[1], affine((0.0, -1.0), (1.0, 0.0), (-6.0, 0.0)));
+    assert_affine(world[1], affine((0.0, 1.0), (-1.0, 0.0), (-6.0, 0.0)));
+    // No scale keeps the mirroring: the y axis is the other perpendicular,
+    // (1, 0), where normal inheritance puts it (P * (-1, 0) = (2, 0)) at unit
+    // length.
+    assert_affine(world[2], affine((0.0, 1.0), (1.0, 0.0), (-6.0, 0.0)));
+  }
+
+  #[test]
+  fn no_scale_stays_rigid_under_a_chain_with_non_uniform_scale() {
+    // A body scaled (2, 1) and an arm turned 45 degrees under it: the arm's
+    // world axes are skewed, 2 * cos 45 = (1.414, 0.707) and (-1.414, 0.707).
+    let body = BoneSetup {
+      scale_x: 2.0,
+      ..BoneSetup::default()
+    };
+    let arm = BoneSetup {
+      rotation: DEG_45,
+      ..BoneSetup::default()
+    };
+    let hand = BoneSetup {
+      rotation: DEG_30,
+      inherit: Inherit::NoScale,
+      ..BoneSetup::default()
+    };
+    let normal_hand = BoneSetup {
+      inherit: Inherit::Normal,
+      ..hand
+    };
+    let world = world(
+      &[
+        ("body", None, body),
+        ("arm", Some("body"), arm),
+        ("hand", Some("arm"), hand),
+        ("normal hand", Some("arm"), normal_hand),
+      ],
+      Affine2::IDENTITY,
+    );
+    let hand = world[2].matrix2;
+    let normal = world[3].matrix2;
+    // Unit length and perpendicular, whatever the chain's skew
+    assert!((hand.x_axis.length() - 1.0).abs() < 1e-4, "{hand:?}");
+    assert!((hand.y_axis.length() - 1.0).abs() < 1e-4, "{hand:?}");
+    assert!(hand.x_axis.dot(hand.y_axis).abs() < 1e-4, "{hand:?}");
+    // Pointing where normal inheritance points it, unmirrored (the arm's
+    // determinant is positive)
+    let direction = normal.x_axis.normalize();
+    assert!(
+      hand.x_axis.abs_diff_eq(direction, 1e-4),
+      "{hand:?} vs {normal:?}"
+    );
+    assert!(hand.y_axis.abs_diff_eq(direction.perp(), 1e-4), "{hand:?}");
+  }
+
+  #[test]
+  fn no_scale_keeps_full_size_under_a_parent_scaled_to_zero_on_one_axis() {
+    // Parent turned 90 degrees, scaled (0, 2): no x axis, y axis (-2, 0)
+    let parent = BoneSetup {
+      rotation: FRAC_PI_2,
+      scale_x: 0.0,
+      scale_y: 2.0,
+      ..BoneSetup::default()
+    };
+    let child = BoneSetup {
+      inherit: Inherit::NoScale,
+      ..BoneSetup::default()
+    };
+    let collapsed = BoneSetup {
+      scale_y: 0.0,
+      ..parent
+    };
+    let world = world(
+      &[
+        ("parent", None, parent),
+        ("child", Some("parent"), child),
+        ("collapsed", None, collapsed),
+        ("orphan", Some("collapsed"), child),
+      ],
+      Affine2::IDENTITY,
+    );
+    // The parent is still turned 90 degrees (its y axis points left, a
+    // quarter turn clockwise from down), so the unturned child points down
+    // at full size: x axis (0, 1), y axis (-1, 0).
+    assert_affine(world[1], affine((0.0, 1.0), (-1.0, 0.0), (0.0, 0.0)));
+    // With both parent axes zero there is no direction left: the child keeps
+    // its own axes, unturned and unit.
+    assert_affine(world[3], affine((1.0, 0.0), (0.0, 1.0), (0.0, 0.0)));
   }
 
   #[test]
@@ -377,16 +528,20 @@ mod tests {
       world[1],
       affine((-SIN_45, SIN_45), (-COS_30, -0.5), (2.0 * COS_30, 1.0)),
     );
-    // Without rotation or reflection the parent keeps its shear:
-    // s = |x axis| = 1
-    // t = x.y / s = -cos 30 sin 45 + sin 30 cos 45 = sin 45 (0.5 - cos 30)
-    //   = -0.258819 (-sin 15)
-    // u = det / s = cos 30 cos 45 + sin 30 sin 45 = cos 15 = 0.965926
-    // so x axis (1, 0) and y axis (t, u): still 105 degrees apart, as the
-    // parent's axes are (45 + 90 - 30)
+    // Without rotation or reflection the child stretches along the parent
+    // bone, which points at 30 degrees: by its length, 1, along it, and
+    // across it by the parent's area per unit length,
+    // |x axis x y axis| = cos 30 cos 45 + sin 30 sin 45 = cos 15 = 0.965926.
+    // Along d = (cos 30, sin 30), across n = (-sin 30, cos 30):
+    // (1, 0) = cos 30 d - sin 30 n -> cos 30 d - 0.965926 sin 30 n
+    //   = (0.75 + 0.25 * 0.965926, cos 30 (0.5 - 0.5 * 0.965926))
+    //   = (0.991481, 0.014755)
+    // (0, 1) = sin 30 d + cos 30 n -> sin 30 d + 0.965926 cos 30 n
+    //   = (cos 30 (0.5 - 0.5 * 0.965926), 0.25 + 0.75 * 0.965926)
+    //   = (0.014755, 0.974444)
     assert_affine(
       world[2],
-      affine((1.0, 0.0), (-0.258_819, 0.965_926), (0.0, 0.0)),
+      affine((0.991_481, 0.014_755), (0.014_755, 0.974_444), (0.0, 0.0)),
     );
   }
 
