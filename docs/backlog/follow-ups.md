@@ -4,6 +4,50 @@ Small issues found while building each sub-project and left for later: deferred 
 
 Items from 4f on were copied from their execution records. Items from earlier sub-projects come from notes kept at the time, and some may have been fixed since: check before working on one.
 
+## Shadows
+
+- Owner decisions (2026-11-11 to 2026-11-12):
+  - The design was left to the planner ("continue"; spec `docs/specs/2026-11-11-shadows-design.md`). The spec and plan were approved together, and the plan ran subagent-driven.
+  - Hand-play found the lantern's flame size and the maze's source size changed nothing visible (the ranges were too small to read): the sliders were widened, and later the maze's row was dropped (its torches keep a 6 px source; the soft shadows page is where size is played with).
+  - Hand-play asked for the maze's light to stay off its walls: self-shadowing occluders were added before the merge (`LightOccluder2D::with_self_shadow`, the tile layer property `self_shadow`, the maze's "Walls stay dark" toggle).
+  - Merged after the scripted tour (136 pages; every page matches main but the four that already differ run to run, the lighting demo, the shadows pages and the hex board's rock shadows) and the owner's windowed hand-play. The owner approved, one-time, deleting `target/debug` mid-branch when the disk neared the 40 GiB floor.
+- Not hand-checked at merge (headless tests and reading only):
+  - The web build in a browser: the spec asked for the lighting demo in Chrome, Safari and Firefox before merge.
+  - Shadows at HiDPI on a real display (render size in physical pixels against the edge envelope); any GPU backend but Metal (Vulkan, DX12), including the atlas's and the light pipeline's separately made bind group layouts being compatible.
+  - Banding of moving penumbrae at Low and Medium, and a thin post's soft edge stepping at Low (stills only).
+  - Soft lights' GPU cost: every bench light is hard (at Ultra a soft pixel makes 9 loads and 16 comparisons a light); add a recorded soft-light case to `benches/lighting.rs`.
+- Rulings the owner may revisit:
+  - **The 64-light target is met on a static scene** (4.63x cheaper); a frame where a shadowed light or occluder in view moves redraws the whole atlas and is 3.46x (recorded, not guarded). Redrawing only the changed slots is the next lever.
+  - **The target compares the lights' added cost** (the lit frame minus the same scene's empty frame), not the whole frame, which drawing the map dominates.
+  - **The blocker search keeps the farthest blocker** with a centre tap: a near occluder's penumbra narrows when a farther one is also in its search arc.
+  - **Penumbrae use the physical width** of a source of radius `size` (`2·size·(d−b)/(b·d)`, capped at 0.35 rad), so `with_soft_shadows(size)` is the radius; soft shadows are twice the plan's width.
+  - **Sides two closed occluders share exactly cast nothing**; sides that only partly overlap still cast, and a keyhole polygon's slit edges cast.
+  - **A self-shadowing occluder casts every side** (the nearest wins, so its near face keeps its top dark, and a light inside it is boxed in): about twice the atlas edges for such occluders. A chain takes the flag as the polygon it bounds, so a lone open segment with it casts for lights on its other side.
+  - **The shadow quality is saved as a flat `shadow_quality` key** in system.json, and the many-lights page's Q saves it like a game's option.
+  - **Nothing guards the shadow bias from below**: a bias of zero passes every test (the acne and large-light tests are guards on lit receivers).
+  - Stand as they are (the final review set them aside): the whole atlas redraws when any of its plan changes; the planner and its index queries run every frame in a still scene (about 10 µs); the change scan visits every occluder's ticks each frame; the atlas never shrinks; `UserPreference` gains a variant; `transform_vertices` is removed and `with_soft_shadows` changed units.
+- Limits recorded (`docs/backlog/shadows.md`, Limits, and the lighting skill): at most 512 shadowed lights a frame (nearest kept, one warning); at most about 8.4 million edges a frame (farthest lights drawn unshadowed, one warning); a light inside a map wall lights nothing outside it; one light image per camera across storeys; no sun light and no per-light map resolution; an edge too small to cover a texel centre writes nothing; a back face tilted beyond about 56° from the ray can darken itself slightly; the precision tolerance reaches 1 px near coordinates of a million; a self-shadowing wall's top lets light in about 1.5 texels at Low; a light exactly on a self-shadowing face lights the wall's own area out to its far sides.
+- Deferred findings:
+  - **The planner and index.**
+    - `ClosedEdges` uses std's SipHash `HashMap`, rebuilt per light per frame: the crate's `FastMap` would be cheaper on scenes of many rectangle occluders.
+    - A spot's planner reach is widened to its volumetric scatter (`1.2·half + 0.2`) for spots without a beam too, so wide plain spots plan a few extra edges; no test of the reach ≥ π branch.
+    - The `Disabled` observers are unmeasured under mass pooling; removing an index entry is linear in a crowded cell; no test moves a `MapRoot` and queries its chains.
+    - `has_reverse`'s doc comment has a line past the wrap width.
+    - A wrong-typed `self_shadow` layer property warns once a file, while `collides`, `occludes`, `y_sort` and `lit` ignore a wrong type silently: make every reserved bool warn alike.
+  - **Tests.**
+    - No test that `ShadowQuality` is kept out of a game's own settings on read and write, nor that an old system.json without the key loads silently.
+    - Two redundant lines in `each_light_writes_only_its_own_rows`.
+    - The allocation test lets the compose pass make any wgpu call and checks the extra count for stability only; its first traced frame is skipped.
+    - The acne test does not check the near penumbra band (0.16 to 0.29 rad); the oblique soft near-face test and the bias strip at Low are guards, not failing-first tests.
+  - **Code and docs.**
+    - Two leftover `#[allow(clippy::too_many_arguments)]` in `lighting/renderer.rs` where `draw_with` uses `expect`.
+    - The atlas's draw counter is compiled into release library builds (one u64).
+    - The shadows demo's pages are `pub(crate) fn new()` where other demos use `impl Default`; the demo shell shows only a description's first line, so the maze page's second line is hidden.
+    - `docs/backlog/shadows.md` still says "shadow volumes" describing the earlier bench; the record's first set of figures has unlogged notes, and its three runs' `uptime` lines are identical.
+    - Check that the lighting skill's Floors section says "one light image per camera" (the tile-map skill does).
+- Pre-existing bugs seen along the way:
+  - `a_waiting_loop_leaves_with_its_scene` (audio) flakes in release-profile runs.
+
 ## Dev tools
 
 - Owner decisions (2026-11-09 to 2026-11-11):
