@@ -2,7 +2,7 @@
 name: ryo-renderer
 description: Working on the wgpu renderer, shaders, and GPU batching.
 metadata:
-  version: 2.5.0
+  version: 2.6.0
 ---
 
 # Ryo2D Renderer Specialist
@@ -134,7 +134,7 @@ For screen-wide effects written in WGSL, use a custom post-process effect (see C
 
 Everything in the world draws on the GPU in one z-sorted list, which each camera filters by `RenderLayers` and its view: entities (`Renderable`, `CompositeTile`, shadows), world text (`Text2d`), `Scene::render` sprites, particle runs, parallax layers and `Trail2D`/`Line2D` all sort by `z_order`. Equal z draws entity, then world text, then sprite (`Scene::render`, particle runs, parallax), then trail/line. Within a kind, entities tie by entity index (`ecs::entity_order`), never by query order, which changes whenever an archetype is made; the other kinds go in submission order. To keep one sprite in front of another, give it a higher `z_order`. Consecutive drawables with equal draw states merge into one draw call, so 10,000 sprites cost a handful of draws. The UI is a separate layer on top: its own camera, image and composite step (below).
 
-Particles (the effect's `z`, or the emitter's `with_z`), parallax and trails default to z 0: give them an explicit z to sit behind or in front of entities; `Scene::render` sprites do not sit behind entities automatically. `z_order` picks the layer; `YSort` orders entities by y within their layer, after the layer's plain sprites; world text, sprites, particles and trails at the same z draw after the layer's entities. Debug shapes (`DebugDraw`, the overlays, `draw_skeleton`) are unlit on top at `i32::MAX`; the transition fade covers the world but not the UI. Nothing in the frame is drawn on the CPU (`Image::draw` is a CPU blit the dev windows use for their own pixel buffers).
+Particles (the effect's `z`, or the emitter's `with_z`), parallax and trails default to z 0: give them an explicit z to sit behind or in front of entities; `Scene::render` sprites do not sit behind entities automatically. `z_order` picks the layer; `YSort` orders entities by y within their layer, after the layer's plain sprites; world text, sprites, particles and trails at the same z draw after the layer's entities. Debug shapes (`DebugDraw`, the overlays) are unlit on top at `i32::MAX`; the transition fade covers the world but not the UI. Nothing in the frame is drawn on the CPU (`Image::draw` is a CPU blit the dev windows use for their own pixel buffers).
 
 ## The 2D Batch
 

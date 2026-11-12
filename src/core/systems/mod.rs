@@ -1,13 +1,11 @@
 //! The engine's built-in systems.
 
 mod animation;
-mod skeleton;
 mod squash_stretch;
 mod trail;
 mod tween;
 
 pub use animation::animate_sprites;
-pub use skeleton::update_skeletons;
 pub use squash_stretch::update_squash_stretch;
 pub(crate) use trail::record_trail_points;
 pub use tween::{update_property_tweens, update_tween_sequences, update_tweens};
@@ -26,7 +24,6 @@ pub fn register_juice_systems(schedules: &mut EngineSchedules) {
       update_tween_sequences,
       update_property_tweens,
       update_squash_stretch,
-      update_skeletons,
     )
       .chain()
       .in_set(FixedSet::Juice),
@@ -100,27 +97,5 @@ mod tests {
       test_util::messages::<TweenStarted>(&world),
       [TweenStarted { entity }]
     );
-  }
-
-  #[test]
-  fn the_juice_systems_place_skeletons() {
-    use crate::core::skeleton::{Skeleton, SkeletonDef};
-    use glam::Vec2;
-    use std::sync::Arc;
-
-    let def = Arc::new(
-      SkeletonDef::builder()
-        .bone("root", None, Vec2::ZERO, 0.0, 10.0)
-        .build(),
-    );
-    let mut world = test_util::world(10);
-    let entity = world
-      .spawn((Transform::from_xy(12.0, 34.0), Skeleton::new(def)))
-      .id();
-    let mut schedules = EngineSchedules::new();
-    register_juice_systems(&mut schedules);
-    schedules.run(Phase::FixedUpdate, &mut world);
-    let skeleton = world.get::<Skeleton>(entity).unwrap();
-    assert_eq!(skeleton.world_transforms[0].position, Vec2::new(12.0, 34.0));
   }
 }

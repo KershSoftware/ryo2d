@@ -270,60 +270,6 @@ fn a_higher_layer_beats_a_far_down_ysort_entity() {
   assert_eq!(frame.get_pixel(25, 30).0, RED);
 }
 
-/// A two-bone skeleton drawn with `draw_skeleton` over a z-10 sprite.
-struct Skeletal;
-
-impl Scene for Skeletal {
-  fn on_enter(&mut self, ctx: &mut SceneContext) {
-    spawn_entity(ctx, 20.0, 22.0, RED, 10);
-  }
-
-  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
-    let def = SkeletonDef::builder()
-      .bone("root", None, Vec2::new(0.0, 32.0), 0.0, 10.0)
-      .bone("tip", Some("root"), Vec2::new(64.0, 0.0), 0.0, 10.0)
-      .build();
-    let transforms = [
-      BoneWorldTransform {
-        position: Vec2::new(0.0, 32.0),
-        rotation: 0.0,
-      },
-      BoneWorldTransform {
-        position: Vec2::new(64.0, 32.0),
-        rotation: 0.0,
-      },
-    ];
-    let green = Color::new(0, 255, 0, 255);
-    draw_skeleton(
-      &mut ctx.debug_draw(),
-      &def,
-      &transforms,
-      green,
-      green,
-      4.0,
-      1.0,
-    );
-    SceneAction::Continue
-  }
-}
-
-#[test]
-fn draw_skeleton_draws_on_top() {
-  let Some(mut engine) = start(
-    EngineBuilder::new()
-      .resolution(64, 64)
-      .start_scene(Skeletal),
-  ) else {
-    return;
-  };
-  engine.step_frames(2).unwrap();
-  let frame = engine.frame().unwrap();
-  assert!(
-    is_line(frame.get_pixel(30, 32).0),
-    "debug line over the z-10 sprite"
-  );
-}
-
 #[test]
 fn composite_tile_honours_z() {
   // Entity z 1 over a composite z 0 (overlap x 50..60); then the composite

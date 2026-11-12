@@ -8,8 +8,8 @@ use ryo2d::core::systems::register_juice_systems;
 use ryo2d::prelude::*;
 
 /// A world with a `hz` fixed clock and the engine messages, plus the juice
-/// systems (animation, tweens, squash and stretch, skeletons) in
-/// the fixed update, as the engine registers them.
+/// systems (animation, tweens, squash and stretch) in the fixed update, as
+/// the engine registers them.
 pub fn juice_world(hz: u32) -> (World, EngineSchedules) {
   let mut world = World::new();
   world.insert_resource(Time::new(hz));

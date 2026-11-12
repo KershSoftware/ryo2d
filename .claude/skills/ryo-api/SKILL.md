@@ -2,7 +2,7 @@
 name: ryo-api
 description: Complete API reference for ryo2d::prelude - every exported type with its signatures and use, organised by area.
 metadata:
-  version: 2.27.0
+  version: 2.28.0
 ---
 
 # Ryo2D API Reference
@@ -15,7 +15,7 @@ Conventions: 2D with +Y down, units are pixels, rotation is radians unless a nam
 use ryo2d::prelude::*;
 ```
 
-Contents: [ECS kernel](#ecs-kernel) · [Transform and hierarchy](#transform-and-hierarchy) · [Engine components](#engine-components) · [Juice](#juice-tweens-knockback-squash) · [Pooling](#pooling) · [Time](#time) · [Phases](#phases-and-sets) · [Scenes](#scenes) · [SceneContext](#scenecontext) · [EngineBuilder](#enginebuilder) · [Messages](#messages) · [Input](#input) · [Audio](#audio) · [Cameras](#cameras) · [Images](#images) · [Sprite animation](#sprite-animation) · [GPU sprites and parallax](#gpu-sprites-and-parallax) · [Composite tiles](#composite-tiles) · [Physics](#physics) · [Characters and gameplay](#characters-and-gameplay) · [Lighting](#lighting) · [Assets](#assets) · [Window and cursor](#window-and-cursor) · [Post-processing](#post-processing) · [Trails and lines](#trails-and-lines) · [Debug drawing](#debug-drawing) · [Skeletons](#skeletal-animation) · [Particles](#particles) · [Tilemaps](#tilemaps) · [Render pipeline](#render-pipeline) · [Config, settings and saves](#config-settings-and-saves) · [Text](#text) · [UI](#ui) · [Errors](#errors) · [Navigation](#navigation) · [State machines](#state-machines) · [Networking](#networking) · [Profiling, console, logging](#profiling-console-logging) · [Optional crates](#optional-crates) · [Testing](#testing-ryo2dtesting)
+Contents: [ECS kernel](#ecs-kernel) · [Transform and hierarchy](#transform-and-hierarchy) · [Engine components](#engine-components) · [Juice](#juice-tweens-knockback-squash) · [Pooling](#pooling) · [Time](#time) · [Phases](#phases-and-sets) · [Scenes](#scenes) · [SceneContext](#scenecontext) · [EngineBuilder](#enginebuilder) · [Messages](#messages) · [Input](#input) · [Audio](#audio) · [Cameras](#cameras) · [Images](#images) · [Sprite animation](#sprite-animation) · [GPU sprites and parallax](#gpu-sprites-and-parallax) · [Composite tiles](#composite-tiles) · [Physics](#physics) · [Characters and gameplay](#characters-and-gameplay) · [Lighting](#lighting) · [Assets](#assets) · [Window and cursor](#window-and-cursor) · [Post-processing](#post-processing) · [Trails and lines](#trails-and-lines) · [Debug drawing](#debug-drawing) · [Particles](#particles) · [Tilemaps](#tilemaps) · [Render pipeline](#render-pipeline) · [Config, settings and saves](#config-settings-and-saves) · [Text](#text) · [UI](#ui) · [Errors](#errors) · [Navigation](#navigation) · [State machines](#state-machines) · [Networking](#networking) · [Profiling, console, logging](#profiling-console-logging) · [Optional crates](#optional-crates) · [Testing](#testing-ryo2dtesting)
 
 ---
 
@@ -337,7 +337,7 @@ pub struct Time { pub real: RealClock, pub game: GameClock, pub fixed: FixedCloc
 | render | draw list from the world, `Scene::render`, the engine's particles, render pipeline |
 | `Last` | tracker clearing |
 
-- `enum FixedSet { Snapshot, Juice, Scene, Game, Movement, Physics, Transforms, Particles, Trails }`, `enum UpdateSet { Game }`, `enum PostUpdateSet { Transforms, Camera, Extract }`: order your systems with `.in_set(..)`, `.before(..)`, `.after(..)`.
+- `enum FixedSet { Snapshot, Juice, Scene, Game, Movement, Physics, Transforms, Skeletons, Particles, Trails }`, `enum UpdateSet { Game }`, `enum PostUpdateSet { Transforms, Camera, Extract }`: order your systems with `.in_set(..)`, `.before(..)`, `.after(..)`.
 - Game-wide systems: `EngineBuilder::add_systems(phase, systems)` (any phase; in `FixedUpdate`/`Update`, a call whose systems are not ordered against anything outside it runs in its `Game` set; one that names a set or another call's system (`.in_set`, `.before`, `.after`) keeps exactly that order). Scene-owned systems: `ctx.add_systems(Phase::FixedUpdate | Phase::Update, systems)`, dropped when the scene leaves the stack.
 - Every schedule is single-threaded.
 
@@ -1037,26 +1037,6 @@ Bloom's `threshold` is linear luminance, 0 or more and unbounded above (default 
 | `width(pixels) -> DebugPen`, `layers(RenderLayers) -> DebugPen` | a pen with the same methods, chainable: `debug.width(3.0).layers(RenderLayers::layer(1)).circle(..)` |
 
 Shapes added in a fixed step (`update`, fixed systems) are drawn until the next step begins; shapes added elsewhere for one frame. The engine's collider, velocity and origin overlays use it.
-
----
-
-## Skeletal animation
-
-| Type | API |
-|---|---|
-| `SkeletonDef { bones: Vec<BoneDef>, bone_indices }` | `SkeletonDef::builder().bone(name, parent: Option<&str>, position: Vec2, rotation, length).build()` |
-| `BoneDef { name, parent: Option<usize>, rest_transform: BoneTransform, length }` | |
-| `BoneTransform { position: Vec2, rotation, scale: Vec2 }` | `IDENTITY`, `new(position, rotation)`, `rotation(r)`, `position(p)`, `lerp(&other, t)` |
-| `Pose { transforms: Vec<BoneTransform> }` | `from_rest(&SkeletonDef)`, `lerp(&other, t)` |
-| `Skeleton` (component) `{ def: Arc<SkeletonDef>, pose: Pose, world_transforms: Vec<BoneWorldTransform> }` | `new(Arc<SkeletonDef>)`, `update_world_transforms(pos, rot)` |
-| `BoneWorldTransform { position: Vec2, rotation }` | |
-| `SkeletalAnimation { name, tracks, duration, loop_mode }` | `SkeletalAnimation::builder(name, duration, Arc<SkeletonDef>).loop_mode(LoopMode).track(bone, \|t\| t.at(time, BoneTransform, Ease)).build()`, `sample(time, &base_pose) -> Pose` |
-| `SkeletalAnimator` (component) `{ animation, time, speed, playing, just_finished }` | `new(Arc<SkeletalAnimation>)`, `play`, `pause`, `reset`, `update(dt)`, `sample(&base) -> Pose` |
-| `SkeletalController` (component) | `new(Arc<SkeletalAnimation>, id, Arc<SkeletonDef>)`, `with_animation(anim, id)`, `with_transition(from, to)`, `with_bidirectional`, `with_transition_from_any`, `with_blend_duration(from, to, secs)`, `with_default_blend_duration`, `set_state(id) -> bool`, `set_state_then(id, next) -> bool`, `force_state`, `current()`, `is_blending()`, `blend_progress()`, `update(dt)`, `sample() -> Pose` |
-| `SkeletalBlender` | `new()`, `start_blend(from: Pose, duration)`, `update(dt)`, `apply(&target) -> Pose`, `is_blending()`, `blend_progress()` |
-| `draw_skeleton(&mut DebugDraw, def: &SkeletonDef, world: &[BoneWorldTransform], bone_color, joint_color, width_px, joint_radius)` | debug drawing (call every update) |
-
-The engine advances each `Skeleton`'s controller (or standalone animator) every fixed step and places the bones at the entity's `GlobalTransform`.
 
 ---
 

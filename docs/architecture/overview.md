@@ -61,7 +61,7 @@ Engine::frame()
  ├─ while fixed.accumulator >= timestep            (0..N times; a quit ends the loop)
  │   └─ FixedUpdate
  │        Snapshot ..... GlobalTransform -> PreviousGlobalTransform
- │        Juice ........ animation, tweens, squash/stretch, skeletons
+ │        Juice ........ animation, tweens, squash/stretch
  │        Scene ........ Scene::update(ctx, timestep) unless a transition runs, its SceneAction
  │        Game ......... the scenes' own FixedUpdate systems; builder systems by default
  │        Movement ..... trigger behaviours, tile maps' collision sync, tile collider rebuilds,
@@ -70,6 +70,7 @@ Engine::frame()
  │                       sync colliders, push changes, move characters, sync joints, step,
  │                       read back, messages, trigger contents
  │        Transforms ... propagate GlobalTransform, then the tile maps' floor lift
+ │        Skeletons ..... empty: skeletal animation is being rebuilt
  │        Particles .... game-time emitters spawn, their particles move and die
  │        Trails ....... record trail points
  ├─ settings ..... a changed Settings applies (volumes to the mixer, the window's size and mode
@@ -116,7 +117,7 @@ Engine::frame()
 |------|------------|
 | Placement | `Transform`, `GlobalTransform`, `ChildOf`, `Children`, `Interpolated`, `PreviousGlobalTransform` |
 | Drawing | `Renderable` (sprite or tiled run, `Anchor` default `Center`, z order, tint, shadows, sprite shader), `Material`, `YSort`, `CompositeTile` |
-| Animation | `Animator`, `AnimationController`, `ValidatedAnimator`, `Skeleton`, `SkeletalAnimator`, `SkeletalController` |
+| Animation | `Animator`, `AnimationController`, `ValidatedAnimator` |
 | Juice | `Tween`, `TweenSequence`, `PropertyTween<T>`, `Knockback`, `SquashStretch` |
 | Physics | `RigidBody`, `Collider`, `Joint`, `Velocity`, `AngularVelocity`, `CharacterController` (and the engine-written `CharacterState`), `TileColliders`, `TriggerContents` (engine-written) |
 | Gameplay | `MoveIntent`, `MoveBindings`, `PlatformerMovement`, `TopDownMovement` (and the engine-written `PlatformerState`, `TopDownState`), `Pickup`, `KillZone`, `Checkpoint`, `Respawn` |
@@ -221,7 +222,7 @@ Games reach the pipeline through `ctx.render_pipeline()` to toggle built-in pass
 - **Blend and filter modes:** `BlendMode::{Alpha, Premultiplied, Additive, Multiply, Screen}` and `Filter::{Default, Nearest, Linear}` on sprites, particles, batch sprites, parallax layers, trails and lines. Every batch shader writes premultiplied colour, so each mode is one fixed blend state; `Filter::Default` is nearest for pixel art and linear otherwise.
 - **World text** draws are batch items too: glyphs from the glyph pages (`TextMask`, `TextColor`, `TextMsdf`) share the batch's streams, sorting and merging. The UI has a renderer of its own: one instance format for rects, glyphs, sprites and line triangles, one pipeline that clips in the shader, and a draw only where a bound texture changes. See [Text and UI](#text-and-ui).
 - **Bind groups** are made with the resources they bind (per camera, per texture page and sampler, or cached by the frame resources a pass binds), never per frame; tests count them.
-- **Debug drawing:** `ctx.debug_draw()` (`DebugDraw`) draws world-space lines, rectangles, circles, arrows and crosses one screen pixel wide in every camera, for a fixed step or a frame; the engine's overlays and `draw_skeleton` use it.
+- **Debug drawing:** `ctx.debug_draw()` (`DebugDraw`) draws world-space lines, rectangles, circles, arrows and crosses one screen pixel wide in every camera, for a fixed step or a frame; the engine's overlays use it.
 - **Time in shaders:** sprite effects and custom sprite shaders animate on game elapsed time, so they stop with the game clock; post-process effects (built-in and custom), lighting, trail effects and transitions animate on real time. Parallax auto-scroll runs on game time. Custom shader errors are collected asynchronously and never block a frame.
 - **Sprite effects** (`SpriteEffect`, 11 built in; they work in sRGB): Outline, Glow, Flash, ColorShift, Silhouette, Pixelate, Wave, Dissolve, Invert, Grayscale, DirectionalOutline. Custom sprite shaders through `Material`.
 - **Post-processing** (`EffectsManager`, `ctx.effects()`): Fade, ColorTint, Vignette, ScreenFlash, CRT, ChromaticAberration (display stage) and GodRays, AmbientOcclusion, Bloom (HDR stage). Once per frame, not per camera.
@@ -467,7 +468,7 @@ Client-server multiplayer with listen-server support. See [the network architect
 | `graphics/` | Images and sprites, animation, cameras and shake, render targets, render layers, the screen mapping, parallax, tiled and composite rendering, the texture registry and atlas, the sprite renderer |
 | `render/` | The render pipeline, passes, the draw list, the frame's camera plan, the 2D batch (`batch/`: keys, planning, pipelines, polylines) and debug drawing |
 | `shaders/` | The engine's WGSL and its shared includes, post-process effects and custom shaders |
-| `lighting/`, `trail/`, `skeleton/` | Feature renderers (lighting) and components (trails and lines, skeletons) |
+| `lighting/`, `trail/` | Feature renderers (lighting) and components (trails and lines) |
 | `particles/` | Particle effects (assets), emitters, the fixed step and the unscaled pass, collisions and attractors, sub-emitters, the drawer |
 | `tilemap/` | Tile maps: the data model, the Tiled and LDtk readers, maps spawned as entities and landed off the main thread, reads and edits with Wang terrain, collision and occluders kept in step with the tiles, worlds, hot reload; drawn by `render/tiles.rs` |
 | `physics/` | Rapier integration, colliders, bodies, joints, the character controller, one-way colliders, triggers, tile colliders |

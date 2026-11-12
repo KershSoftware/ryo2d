@@ -55,7 +55,7 @@ impl Phase {
 pub enum FixedSet {
   /// Remember where everything was, for interpolation
   Snapshot,
-  /// Animation, tweens, squash, skeletons
+  /// Animation, tweens, squash and stretch
   Juice,
   /// The scene's `update`
   Scene,
@@ -68,6 +68,9 @@ pub enum FixedSet {
   Physics,
   /// Transform propagation
   Transforms,
+  /// Skeleton animation and pose (after propagation, so a skeleton stands
+  /// where its entity does)
+  Skeletons,
   /// The particle step: emitters spawn, and their particles move and die
   /// (after propagation and floors, so an emitter spawned this step emits
   /// from where it stands)
@@ -133,6 +136,7 @@ impl EngineSchedules {
         FixedSet::Movement,
         FixedSet::Physics,
         FixedSet::Transforms,
+        FixedSet::Skeletons,
         FixedSet::Particles,
         FixedSet::Trails,
       )
@@ -516,6 +520,23 @@ mod tests {
         push("transforms").in_set(FixedSet::Transforms),
       ),
     );
+  }
+
+  #[test]
+  fn the_skeleton_set_runs_after_transforms_and_before_particles() {
+    let mut world = World::new();
+    world.init_resource::<Log>();
+    let mut s = EngineSchedules::new();
+    s.add_systems(
+      Phase::FixedUpdate,
+      (
+        push("particles").in_set(FixedSet::Particles),
+        push("skeletons").in_set(FixedSet::Skeletons),
+        push("transforms").in_set(FixedSet::Transforms),
+      ),
+    );
+    s.run(Phase::FixedUpdate, &mut world);
+    assert_eq!(log(&world), ["transforms", "skeletons", "particles"]);
   }
 
   #[test]

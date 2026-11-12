@@ -2,7 +2,7 @@
 name: ryo-engine-dev
 description: Working on the Ryo2D engine - the frame's phases, module map, resources, public API, crates, the dev_tools build condition, logging in engine code, profiling scopes and testing (the build without tools included).
 metadata:
-  version: 2.8.0
+  version: 2.9.0
 ---
 
 # Ryo2D Engine Developer
@@ -53,7 +53,7 @@ Engine::frame
 │                     a SceneAction applies at once (a scene change redraws the UI once)
 ├─ FixedUpdate × N    while the fixed clock holds a step; a quit ends the steps
 │   ├─ Snapshot       debug shapes of the last step cleared; GlobalTransform → PreviousGlobalTransform
-│   ├─ Juice          animation, tweens, sequences, property tweens, squash, skeletons
+│   ├─ Juice          animation, tweens, sequences, property tweens, squash
 │   ├─ Scene          transitions, Scene::update (active scene and those under updates_below), action
 │   ├─ Game           the scenes' own FixedUpdate schedules; builder systems by default
 │   ├─ Movement       trigger behaviours, tile maps' collision sync, tile collider rebuilds, movement input,
@@ -62,6 +62,7 @@ Engine::frame
 │   │                 sync colliders, push, move characters, sync joints, step, read back, messages,
 │   │                 trigger contents
 │   ├─ Transforms     propagation, then the tile maps' floor lift
+│   ├─ Skeletons      no systems yet
 │   ├─ Particles      step_particles: game-time emitters spawn, their particles move and die
 │   └─ Trails         trail point recording; later debug shapes last one frame
 ├─ settings           Engine::apply_settings: a changed Settings goes to the mixer, the window
@@ -124,7 +125,7 @@ Engine::frame
 | `physics/` | Rapier integration, `RigidBody`, `Collider`, `Physics`, the character controller, one-way colliders, triggers, tile colliders |
 | `gameplay/` | On top of physics: `MoveIntent` and bindings, the platformer and top-down presets, knockback, trigger behaviours (`Pickup`, `KillZone`, `Checkpoint`, `Respawn`) |
 | `tilemap/` | Tile maps: the data model, the Tiled and LDtk readers (registry loaders), `MapRoot` and the landing on the map builder thread, `MapsView` (`ctx.maps()`) with edits and Wang terrain, map collision and occluders kept in step with the tiles, worlds, hot reload, padded tilesets; drawn by `render/tiles.rs`; `src/core/tilemap/AGENTS.md` |
-| `particles/`, `trail/`, `skeleton/`, `navigation/`, `state_machine/` | Feature modules |
+| `particles/`, `trail/`, `navigation/`, `state_machine/` | Feature modules |
 | `text/` | Fonts (`Fonts`), `TextStyle`, rich text and markup, layout (Parley), glyph rasterization (swash, fdsm), effects, reveal, `Text2d` and `CpuText` for the dev windows; GPU-free |
 | `ui/` | `UiContext` and absolute drawing (`immediate/`); ids (`id.rs`), `UiMemory` (records, widget state, focus memory), layout over Taffy (`layout/`, the only Taffy code), the subtree and its resolution (`tree.rs`), containers, widgets (`widgets/`), popups and modals, the pointer and wheel resolve (`interact.rs`), focus and navigation (`nav.rs`), the theme (`theme/`), node trees (`nodes/`) and their cache (`nodes/cache.rs`, the records and the dirty set; `tape.rs`, what a build pushed and its replay; `fragment.rs`, the unchanged subtrees kept and copied), UI files (`file/`), virtual lists (`widgets/list.rs`, `nodes/list.rs`), the `debug:ui` and `debug:ui-rebuilds` overlays (`debug.rs`) |
 | `hash.rs` | The engine's fast hasher (`FastHasher`, `FastMap`, `FastSet`, `fast_hash`) for keys it makes itself: ids, the UI's memory and layout maps, the text caches; never SipHash, never saved |
