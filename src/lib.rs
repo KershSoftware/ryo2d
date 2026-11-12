@@ -213,6 +213,15 @@ pub mod prelude {
     SubEmitter, ValueRange,
   };
 
+  // Skeletons (the curve, skin and animation types are renamed: the
+  // prelude has particles' Curve, the UI's Skin and sprites' Animation)
+  pub use crate::core::skeleton::{
+    Animation as SkeletonClip, Attachment, BoneData, BoneId, BoneSetup, BoundingBoxAttachment,
+    Curve as SkeletonCurve, EventAudio, EventData, EventValues, Inherit, PointAttachment, Region,
+    RegionAttachment, SkeletonData, SkeletonDataBuilder, SkeletonError, Skin as SkeletonSkin,
+    SlotBlend, SlotData, SlotId, SlotSetup, Timeline,
+  };
+
   // Tilemaps
   pub use crate::core::tilemap::{
     CHUNK_SIZE, CellOutline, ChunkEvent, ChunkOwned, ChunkRequest, ChunkTiles, Climber,
