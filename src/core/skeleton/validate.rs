@@ -1,11 +1,10 @@
 //! Checking a skeleton as it is built.
 
-use std::fmt;
-
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::sync::Arc;
 
-use super::animation::Timeline;
+use super::animation::{Target, Timeline};
 use super::attachment::Attachment;
 use super::builder::SkeletonDataBuilder;
 use super::curve::Curve;
@@ -31,8 +30,8 @@ impl std::error::Error for SkeletonError {}
 
 /// Bones and slots are indexed by a `u8`, so a skeleton has at most this
 /// many of each
-const MAX_BONES: usize = 255;
-const MAX_SLOTS: usize = 255;
+pub(super) const MAX_BONES: usize = 255;
+pub(super) const MAX_SLOTS: usize = 255;
 
 fn error(item: impl Into<String>, problem: impl Into<String>) -> SkeletonError {
   SkeletonError {
@@ -58,7 +57,7 @@ fn finite_vec(item: impl Fn() -> String, name: &str, value: Vec2) -> Result<(), 
 
 fn curve(item: impl Fn() -> String, frame: usize, curve: &Curve) -> Result<(), SkeletonError> {
   if let Curve::Bezier { cx1, cy1, cx2, cy2 } = *curve {
-    let name = format!("frame {frame} curve");
+    let name = format!("key {frame}'s curve");
     finite(
       &item,
       &[(&name, cx1), (&name, cy1), (&name, cx2), (&name, cy2)],
@@ -66,7 +65,7 @@ fn curve(item: impl Fn() -> String, frame: usize, curve: &Curve) -> Result<(), S
     if !(0.0..=1.0).contains(&cx1) || !(0.0..=1.0).contains(&cx2) {
       return Err(error(
         item(),
-        format!("frame {frame} curve has x controls {cx1} and {cx2}; both must be within 0 to 1"),
+        format!("key {frame}'s curve has x controls {cx1} and {cx2}; both must be within 0 to 1"),
       ));
     }
   }
@@ -327,6 +326,7 @@ pub(super) fn build(builder: SkeletonDataBuilder) -> Result<SkeletonData, Skelet
     if animation.duration < 0.0 {
       return Err(error(item(), "its duration is negative"));
     }
+    let mut keyed: HashSet<(Target, &'static str)> = HashSet::new();
     for (number, timeline) in animation.timelines.iter().enumerate() {
       let item = || {
         format!(
@@ -335,7 +335,12 @@ pub(super) fn build(builder: SkeletonDataBuilder) -> Result<SkeletonData, Skelet
           timeline.kind()
         )
       };
-      timeline_ok(item, timeline, bones.len(), slots.len(), events.len())?;
+      let counts = Counts {
+        bones: &bones,
+        slots: &slots,
+        events: events.len(),
+      };
+      timeline_ok(item, timeline, animation.duration, counts, &mut keyed)?;
     }
     animation_names.insert(animation.name.clone(), index);
   }
@@ -388,19 +393,76 @@ fn mix_duration(item: impl Fn() -> String, duration: f32) -> Result<(), Skeleton
   Ok(())
 }
 
-/// Checks one timeline: it has keys, at finite times from 0 in order
-/// (strictly, but event keys may share a time), with finite values, good
-/// curves, and bones, slots and events that exist
+/// The bones and slots a timeline may refer to, and how many events
+#[derive(Clone, Copy)]
+struct Counts<'a> {
+  bones: &'a [BoneData],
+  slots: &'a [SlotData],
+  events: usize,
+}
+
+/// Checks one timeline: its bone, slot or events exist; no earlier timeline
+/// of the animation keys the same property of the same target (`keyed`
+/// collects them); it has keys, at finite times from 0 to the animation's
+/// duration, in order (strictly, but event keys may share a time); and its
+/// values and curves are good
 fn timeline_ok(
   item: impl Fn() -> String,
   timeline: &Timeline,
-  bone_count: usize,
-  slot_count: usize,
-  event_count: usize,
+  duration: f32,
+  counts: Counts<'_>,
+  keyed: &mut HashSet<(Target, &'static str)>,
 ) -> Result<(), SkeletonError> {
+  let target = timeline.target();
+  match target {
+    Target::Bone(bone) if bone.index() >= counts.bones.len() => {
+      return Err(error(
+        item(),
+        format!(
+          "bone {} is out of range; there are {} bones",
+          bone.0,
+          counts.bones.len()
+        ),
+      ));
+    }
+    Target::Slot(slot) if slot.index() >= counts.slots.len() => {
+      return Err(error(
+        item(),
+        format!(
+          "slot {} is out of range; there are {} slots",
+          slot.0,
+          counts.slots.len()
+        ),
+      ));
+    }
+    _ => {}
+  }
+  for &property in timeline.properties() {
+    if !keyed.insert((target, property)) {
+      let whose = match target {
+        Target::Bone(bone) => format!("bone {:?}'s", &*counts.bones[bone.index()].name),
+        Target::Slot(slot) => format!("slot {:?}'s", &*counts.slots[slot.index()].name),
+        Target::Skeleton => "the skeleton's".to_owned(),
+      };
+      return Err(error(
+        item(),
+        format!("another timeline already keys {whose} {property}"),
+      ));
+    }
+  }
+
   let times = timeline.times();
   if times.is_empty() {
     return Err(error(item(), "it has no keys"));
+  }
+  for (frame, &time) in times.iter().enumerate() {
+    finite(&item, &[(&format!("key {frame}'s time"), time)])?;
+    if time < 0.0 {
+      return Err(error(
+        item(),
+        format!("key {frame} is at {time}s, before 0"),
+      ));
+    }
   }
   let shared_times = matches!(timeline, Timeline::Event { .. });
   for (frame, pair) in times.windows(2).enumerate() {
@@ -409,7 +471,7 @@ fn timeline_ok(
     } else {
       pair[0] < pair[1]
     };
-    if pair[1].is_finite() && pair[0].is_finite() && !ordered {
+    if !ordered {
       return Err(error(
         item(),
         format!(
@@ -422,71 +484,46 @@ fn timeline_ok(
     }
   }
   for (frame, &time) in times.iter().enumerate() {
-    finite(&item, &[(&format!("key {frame}'s time"), time)])?;
-    if time < 0.0 {
+    if time > duration {
       return Err(error(
         item(),
-        format!("key {frame} is at {time}s, before 0"),
+        format!("key {frame} at {time}s is past the animation's duration of {duration}s"),
       ));
     }
   }
 
-  let bone_ok = |bone: BoneId| {
-    if bone.index() < bone_count {
-      Ok(())
-    } else {
-      Err(error(
-        item(),
-        format!(
-          "bone {} is out of range; there are {bone_count} bones",
-          bone.0
-        ),
-      ))
-    }
-  };
-  let slot_ok = |slot: SlotId| {
-    if slot.index() < slot_count {
-      Ok(())
-    } else {
-      Err(error(
-        item(),
-        format!(
-          "slot {} is out of range; there are {slot_count} slots",
-          slot.0
-        ),
-      ))
-    }
-  };
-
   match timeline {
-    Timeline::Rotate { bone, frames } => {
-      bone_ok(*bone)?;
+    Timeline::Rotate { frames, .. }
+    | Timeline::TranslateX { frames, .. }
+    | Timeline::TranslateY { frames, .. }
+    | Timeline::ScaleX { frames, .. }
+    | Timeline::ScaleY { frames, .. }
+    | Timeline::ShearX { frames, .. }
+    | Timeline::ShearY { frames, .. } => {
       for (frame, (_, value, key_curve)) in frames.iter().enumerate() {
         finite(&item, &[(&format!("key {frame}'s value"), *value)])?;
         curve(&item, frame, key_curve)?;
       }
     }
-    Timeline::Translate { bone, frames }
-    | Timeline::Scale { bone, frames }
-    | Timeline::Shear { bone, frames } => {
-      bone_ok(*bone)?;
+    Timeline::Translate { frames, .. }
+    | Timeline::Scale { frames, .. }
+    | Timeline::Shear { frames, .. } => {
       for (frame, (_, value, key_curve)) in frames.iter().enumerate() {
         finite_vec(&item, &format!("key {frame}'s value"), *value)?;
         curve(&item, frame, key_curve)?;
       }
     }
-    Timeline::Color { slot, frames } => {
-      slot_ok(*slot)?;
+    Timeline::Color { frames, .. } => {
       for (frame, (_, _, key_curve)) in frames.iter().enumerate() {
         curve(&item, frame, key_curve)?;
       }
     }
-    Timeline::Attachment { slot, .. } => slot_ok(*slot)?,
+    Timeline::Attachment { .. } => {}
     Timeline::DrawOrder { frames } => {
       for (frame, (_, order)) in frames.iter().enumerate() {
         let Some(order) = order else { continue };
-        let mut seen = vec![false; slot_count];
-        let complete = order.len() == slot_count
+        let mut seen = vec![false; counts.slots.len()];
+        let complete = order.len() == counts.slots.len()
           && order.iter().all(|slot| {
             seen
               .get_mut(slot.index())
@@ -495,17 +532,23 @@ fn timeline_ok(
         if !complete {
           return Err(error(
             item(),
-            format!("key {frame} must list each of the {slot_count} slots once"),
+            format!(
+              "key {frame} must list each of the {} slots once",
+              counts.slots.len()
+            ),
           ));
         }
       }
     }
     Timeline::Event { frames } => {
       for (frame, (_, event, values)) in frames.iter().enumerate() {
-        if *event >= event_count {
+        if *event >= counts.events {
           return Err(error(
             item(),
-            format!("key {frame}'s event {event} is out of range; there are {event_count} events"),
+            format!(
+              "key {frame}'s event {event} is out of range; there are {} events",
+              counts.events
+            ),
           ));
         }
         let overrides = [
@@ -528,42 +571,108 @@ fn timeline_ok(
 mod tests {
   use std::sync::Arc;
 
-  use super::super::animation::{Animation, Timeline};
-  use super::super::builder::{BoneSetup, SlotSetup};
+  use super::super::animation::{Animation, EventValues, Timeline};
+  use super::super::attachment::{
+    Attachment, BoundingBoxAttachment, PointAttachment, RegionAttachment,
+  };
+  use super::super::builder::{BoneSetup, SkeletonDataBuilder, SlotSetup};
   use super::super::curve::Curve;
-  use super::super::data::{BoneId, SkeletonData};
+  use super::super::data::{BoneId, EventData, Region, SkeletonData, SlotId};
+  use crate::core::asset::Handle;
+  use crate::core::ecs::Vec2;
 
-  fn rotate(times: &[f32]) -> Animation {
+  const WAVE_0: &str = r#"animation "wave" timeline 0 (rotate)"#;
+
+  /// Builds `builder`, expecting it to fail on `item` for a reason that
+  /// mentions `reason`
+  fn fails(builder: SkeletonDataBuilder, item: &str, reason: &str) {
+    let error = builder.build().expect_err(item);
+    assert_eq!(error.item, item, "{error}");
+    assert!(
+      error.problem.contains(reason),
+      "expected {reason:?} in: {error}"
+    );
+  }
+
+  fn animation(name: &str, duration: f32, timelines: Vec<Timeline>) -> Animation {
     Animation {
-      name: Arc::from("wave"),
-      duration: 1.0,
-      timelines: vec![Timeline::Rotate {
-        bone: BoneId(1),
-        frames: times.iter().map(|&t| (t, 0.5, Curve::Linear)).collect(),
-      }],
+      name: Arc::from(name),
+      duration,
+      timelines,
     }
   }
 
-  fn arm() -> super::SkeletonDataBuilder {
+  fn rotate_keys(times: &[f32]) -> Timeline {
+    Timeline::Rotate {
+      bone: BoneId(1),
+      frames: times.iter().map(|&t| (t, 0.5, Curve::Linear)).collect(),
+    }
+  }
+
+  /// "wave": one rotate timeline on the arm, keyed at `times`, 1 s long
+  fn rotate(times: &[f32]) -> Animation {
+    animation("wave", 1.0, vec![rotate_keys(times)])
+  }
+
+  fn wave(timelines: Vec<Timeline>) -> Animation {
+    animation("wave", 1.0, timelines)
+  }
+
+  fn arm() -> SkeletonDataBuilder {
     SkeletonData::builder()
       .bone("root", None, BoneSetup::default())
       .bone("arm", Some("root"), BoneSetup::default())
   }
 
+  /// The arm with two slots, "hand" and "hat", and a "footstep" event
+  fn rig() -> SkeletonDataBuilder {
+    arm()
+      .slot("hand", "arm", SlotSetup::default())
+      .slot("hat", "root", SlotSetup::default())
+      .event(EventData::new("footstep"))
+  }
+
+  fn region(name: &str, width: u32, height: u32) -> Region {
+    Region {
+      name: Arc::from(name),
+      image: Handle::detached(),
+      x: 0,
+      y: 0,
+      width,
+      height,
+    }
+  }
+
+  fn point(x: f32) -> Attachment {
+    Attachment::Point(PointAttachment {
+      x,
+      ..PointAttachment::default()
+    })
+  }
+
+  fn idle_and_run() -> SkeletonDataBuilder {
+    arm()
+      .animation(animation("idle", 1.0, Vec::new()))
+      .animation(animation("run", 1.0, Vec::new()))
+  }
+
+  fn event_keys(times: &[f32]) -> Timeline {
+    Timeline::Event {
+      frames: times
+        .iter()
+        .map(|&t| (t, 0, EventValues::default()))
+        .collect(),
+    }
+  }
+
+  // Building and resolving
+
   #[test]
   fn a_built_skeleton_resolves_names() {
     let data = arm()
       .slot("hand", "arm", SlotSetup::default())
-      .animation(Animation {
-        name: Arc::from("idle"),
-        duration: 1.0,
-        timelines: Vec::new(),
-      })
-      .animation(Animation {
-        name: Arc::from("run"),
-        duration: 1.0,
-        timelines: Vec::new(),
-      })
+      .animation(animation("idle", 1.0, Vec::new()))
+      .animation(animation("run", 1.0, Vec::new()))
       .mix("idle", "run", 0.3)
       .default_mix(0.1)
       .build()
@@ -571,7 +680,7 @@ mod tests {
 
     assert_eq!(data.bone("arm"), Some(BoneId(1)));
     assert_eq!(data.bones()[1].parent, Some(BoneId(0)));
-    assert_eq!(data.slot("hand").map(|slot| slot.0), Some(0));
+    assert_eq!(data.slot("hand"), Some(SlotId(0)));
     assert!(data.animation("run").is_some());
     assert_eq!(data.mix("idle", "run"), 0.3);
     assert_eq!(data.mix("run", "idle"), 0.1);
@@ -580,60 +689,249 @@ mod tests {
   }
 
   #[test]
-  fn a_duplicate_bone_name_fails() {
-    let error = arm()
-      .bone("arm", Some("root"), BoneSetup::default())
+  fn attachments_resolve_through_their_skin() {
+    let data = arm()
+      .slot("hand", "arm", SlotSetup::default())
+      .skin(SkeletonData::DEFAULT_SKIN)
+      .skin("red")
+      .attachment("default", "hand", "muzzle", point(4.0))
       .build()
-      .expect_err("duplicate bone");
-    assert_eq!(error.item, r#"bone "arm""#);
+      .expect("valid skeleton");
+    let hand = data.slot("hand").expect("slot");
+    assert_eq!(
+      data.default_skin().attachment(hand, "muzzle"),
+      Some(&point(4.0))
+    );
+    assert_eq!(data.skins().len(), 2);
+    assert_eq!(
+      data
+        .skin("red")
+        .and_then(|skin| skin.attachment(hand, "muzzle")),
+      None
+    );
   }
 
   #[test]
+  fn per_axis_and_combined_timelines_on_different_properties_build() {
+    let timelines = vec![
+      Timeline::TranslateX {
+        bone: BoneId(1),
+        frames: vec![(0.0, 2.0, Curve::Linear)],
+      },
+      Timeline::TranslateY {
+        bone: BoneId(1),
+        frames: vec![(0.0, 3.0, Curve::Stepped)],
+      },
+      Timeline::Scale {
+        bone: BoneId(1),
+        frames: vec![(0.0, Vec2::ONE, Curve::Linear)],
+      },
+      Timeline::ShearX {
+        bone: BoneId(1),
+        frames: vec![(0.0, 0.1, Curve::Linear)],
+      },
+      Timeline::Rotate {
+        bone: BoneId(0),
+        frames: vec![(0.0, 0.1, Curve::Linear)],
+      },
+      rotate_keys(&[0.0]),
+    ];
+    assert!(arm().animation(wave(timelines)).build().is_ok());
+  }
+
+  // Unique names
+
+  #[test]
+  fn a_duplicate_bone_name_fails() {
+    fails(
+      arm().bone("arm", Some("root"), BoneSetup::default()),
+      r#"bone "arm""#,
+      "same name",
+    );
+  }
+
+  #[test]
+  fn a_duplicate_slot_name_fails() {
+    fails(
+      rig().slot("hand", "root", SlotSetup::default()),
+      r#"slot "hand""#,
+      "same name",
+    );
+  }
+
+  #[test]
+  fn a_duplicate_region_name_fails() {
+    fails(
+      arm()
+        .region(region("torso", 8, 8))
+        .region(region("torso", 4, 4)),
+      r#"region "torso""#,
+      "same name",
+    );
+  }
+
+  #[test]
+  fn a_duplicate_event_name_fails() {
+    fails(
+      rig().event(EventData::new("footstep")),
+      r#"event "footstep""#,
+      "same name",
+    );
+  }
+
+  #[test]
+  fn a_duplicate_skin_name_fails() {
+    fails(arm().skin("red").skin("red"), r#"skin "red""#, "same name");
+    fails(
+      arm().skin("default").skin("default"),
+      r#"skin "default""#,
+      "same name",
+    );
+  }
+
+  #[test]
+  fn a_duplicate_animation_name_fails() {
+    fails(
+      idle_and_run().animation(animation("run", 2.0, Vec::new())),
+      r#"animation "run""#,
+      "same name",
+    );
+  }
+
+  #[test]
+  fn a_duplicate_attachment_name_in_a_slot_fails() {
+    fails(
+      rig()
+        .attachment("default", "hand", "muzzle", point(1.0))
+        .attachment("default", "hand", "muzzle", point(2.0)),
+      r#"skin "default" slot "hand" attachment "muzzle""#,
+      "already has an attachment of that name",
+    );
+  }
+
+  #[test]
+  fn a_duplicated_mix_pair_fails() {
+    fails(
+      idle_and_run()
+        .mix("idle", "run", 0.2)
+        .mix("idle", "run", 0.4),
+      r#"mix "idle" to "run""#,
+      "another mix",
+    );
+  }
+
+  // Order and references
+
+  #[test]
   fn a_child_before_its_parent_fails() {
-    let error = SkeletonData::builder()
-      .bone("root", None, BoneSetup::default())
-      .bone("hand", Some("arm"), BoneSetup::default())
-      .bone("arm", Some("root"), BoneSetup::default())
-      .build()
-      .expect_err("child before parent");
-    assert_eq!(error.item, r#"bone "hand""#);
+    fails(
+      SkeletonData::builder()
+        .bone("root", None, BoneSetup::default())
+        .bone("hand", Some("arm"), BoneSetup::default())
+        .bone("arm", Some("root"), BoneSetup::default()),
+      r#"bone "hand""#,
+      "parents must come first",
+    );
+  }
+
+  #[test]
+  fn an_unknown_parent_fails() {
+    fails(
+      arm().bone("leg", Some("hip"), BoneSetup::default()),
+      r#"bone "leg""#,
+      r#"parent "hip" is not a bone"#,
+    );
   }
 
   #[test]
   fn an_unknown_slot_bone_fails() {
-    let error = arm()
-      .slot("hat", "head", SlotSetup::default())
-      .build()
-      .expect_err("unknown bone");
-    assert_eq!(error.item, r#"slot "hat""#);
-    assert!(error.problem.contains("head"), "{error}");
+    fails(
+      arm().slot("hat", "head", SlotSetup::default()),
+      r#"slot "hat""#,
+      r#"bone "head" is not a bone"#,
+    );
   }
 
   #[test]
-  fn frames_out_of_order_fail() {
-    let error = arm()
-      .animation(rotate(&[0.0, 0.5, 0.25]))
-      .build()
-      .expect_err("frames out of order");
-    assert!(error.item.starts_with(r#"animation "wave""#), "{error}");
+  fn an_attachment_in_an_unknown_skin_fails() {
+    fails(
+      rig().attachment("blue", "hand", "muzzle", point(0.0)),
+      r#"skin "blue" slot "hand" attachment "muzzle""#,
+      r#""blue" is not a skin"#,
+    );
   }
 
   #[test]
-  fn a_non_finite_value_fails() {
-    let error = arm()
-      .bone(
-        "leg",
-        Some("root"),
-        BoneSetup {
-          rotation: f32::NAN,
-          ..BoneSetup::default()
-        },
-      )
-      .build()
-      .expect_err("non-finite rotation");
-    assert_eq!(error.item, r#"bone "leg""#);
-    assert!(error.problem.contains("rotation"), "{error}");
+  fn an_attachment_in_an_unknown_slot_fails() {
+    fails(
+      rig().attachment("default", "foot", "muzzle", point(0.0)),
+      r#"skin "default" slot "foot" attachment "muzzle""#,
+      r#""foot" is not a slot"#,
+    );
   }
+
+  #[test]
+  fn a_region_attachment_outside_the_regions_fails() {
+    fails(
+      rig().region(region("torso", 8, 8)).skin("red").attachment(
+        "red",
+        "hat",
+        "cap",
+        Attachment::Region(RegionAttachment::new(1, 8.0, 8.0)),
+      ),
+      r#"skin "red" slot "hat" attachment "cap""#,
+      "region 1 is out of range",
+    );
+  }
+
+  #[test]
+  fn a_timeline_on_an_unknown_bone_fails() {
+    let timeline = Timeline::Rotate {
+      bone: BoneId(9),
+      frames: vec![(0.0, 1.0, Curve::Linear)],
+    };
+    fails(
+      arm().animation(wave(vec![timeline])),
+      WAVE_0,
+      "bone 9 is out of range",
+    );
+  }
+
+  #[test]
+  fn a_timeline_on_an_unknown_slot_fails() {
+    let timeline = Timeline::Attachment {
+      slot: SlotId(2),
+      frames: vec![(0.0, None)],
+    };
+    fails(
+      rig().animation(wave(vec![timeline])),
+      r#"animation "wave" timeline 0 (attachment)"#,
+      "slot 2 is out of range",
+    );
+  }
+
+  #[test]
+  fn an_event_key_for_an_unknown_event_fails() {
+    let timeline = Timeline::Event {
+      frames: vec![(0.0, 1, EventValues::default())],
+    };
+    fails(
+      rig().animation(wave(vec![timeline])),
+      r#"animation "wave" timeline 0 (event)"#,
+      "event 1 is out of range",
+    );
+  }
+
+  #[test]
+  fn a_mix_naming_an_unknown_animation_fails() {
+    fails(
+      idle_and_run().mix("idle", "walk", 0.2),
+      r#"mix "idle" to "walk""#,
+      r#""walk" is not an animation"#,
+    );
+  }
+
+  // Limits
 
   #[test]
   fn two_hundred_fifty_six_bones_fail() {
@@ -642,55 +940,103 @@ mod tests {
       builder = builder.bone(format!("b{index}"), Some("b0"), BoneSetup::default());
     }
     assert!(builder.clone().build().is_ok(), "255 bones are allowed");
+    assert_eq!(builder.bone_id("b254"), Some(BoneId(254)));
 
-    let error = builder
-      .bone("b255", Some("b0"), BoneSetup::default())
-      .build()
-      .expect_err("256 bones");
-    assert_eq!(error.item, r#"bone "b255""#);
+    let builder = builder.bone("b255", Some("b0"), BoneSetup::default());
+    assert_eq!(builder.bone_id("b255"), None);
+    fails(builder, r#"bone "b255""#, "at most 255 bones");
   }
 
   #[test]
-  fn an_attachment_error_names_its_skin_slot_and_name() {
-    use super::super::attachment::{Attachment, RegionAttachment};
+  fn two_hundred_fifty_six_slots_fail() {
+    let mut builder = arm();
+    for index in 0..255 {
+      builder = builder.slot(format!("s{index}"), "arm", SlotSetup::default());
+    }
+    assert!(builder.clone().build().is_ok(), "255 slots are allowed");
+    assert_eq!(builder.slot_id("s254"), Some(SlotId(254)));
 
-    let builder = arm()
-      .slot("head", "arm", SlotSetup::default())
-      .skin("red")
-      .attachment(
-        "red",
-        "head",
-        "hat",
-        Attachment::Region(RegionAttachment::new(3, 8.0, 8.0)),
-      );
-    let error = builder.build().expect_err("no regions");
-    assert_eq!(error.item, r#"skin "red" slot "head" attachment "hat""#);
-    assert!(error.problem.contains("region 3"), "{error}");
+    let builder = builder.slot("s255", "arm", SlotSetup::default());
+    assert_eq!(builder.slot_id("s255"), None);
+    fails(builder, r#"slot "s255""#, "at most 255 slots");
   }
 
   #[test]
-  fn attachments_resolve_through_their_skin() {
-    use super::super::attachment::{Attachment, PointAttachment};
+  fn an_empty_region_fails() {
+    fails(
+      arm().region(region("torso", 0, 8)),
+      r#"region "torso""#,
+      "must not be empty",
+    );
+  }
 
-    let point = Attachment::Point(PointAttachment {
-      x: 4.0,
-      ..PointAttachment::default()
+  #[test]
+  fn a_bounding_box_with_two_vertices_fails() {
+    let bounds = Attachment::BoundingBox(BoundingBoxAttachment {
+      vertices: vec![Vec2::ZERO, Vec2::X],
     });
-    let data = arm()
-      .slot("hand", "arm", SlotSetup::default())
-      .skin(SkeletonData::DEFAULT_SKIN)
-      .skin("red")
-      .attachment("default", "hand", "muzzle", point.clone())
-      .build()
-      .expect("valid skeleton");
-    let hand = data.slot("hand").expect("slot");
-    assert_eq!(data.default_skin().attachment(hand, "muzzle"), Some(&point));
-    assert_eq!(data.skins().len(), 2);
-    assert_eq!(
-      data
-        .skin("red")
-        .and_then(|skin| skin.attachment(hand, "muzzle")),
-      None
+    fails(
+      rig().attachment("default", "hand", "hitbox", bounds),
+      r#"skin "default" slot "hand" attachment "hitbox""#,
+      "at least 3",
+    );
+  }
+
+  // Keys
+
+  #[test]
+  fn a_timeline_with_no_keys_fails() {
+    fails(arm().animation(rotate(&[])), WAVE_0, "no keys");
+  }
+
+  #[test]
+  fn frames_out_of_order_fail() {
+    fails(
+      arm().animation(rotate(&[0.0, 0.5, 0.25])),
+      WAVE_0,
+      "time order",
+    );
+  }
+
+  #[test]
+  fn a_per_axis_frame_out_of_order_fails() {
+    let timeline = Timeline::ScaleY {
+      bone: BoneId(1),
+      frames: vec![(0.5, 1.0, Curve::Linear), (0.25, 2.0, Curve::Linear)],
+    };
+    fails(
+      arm().animation(wave(vec![timeline])),
+      r#"animation "wave" timeline 0 (scale y)"#,
+      "time order",
+    );
+  }
+
+  #[test]
+  fn event_keys_may_share_a_time_but_not_run_backwards() {
+    assert!(
+      rig()
+        .animation(wave(vec![event_keys(&[0.5, 0.5])]))
+        .build()
+        .is_ok()
+    );
+    fails(
+      rig().animation(wave(vec![event_keys(&[0.5, 0.25])])),
+      r#"animation "wave" timeline 0 (event)"#,
+      "time order",
+    );
+  }
+
+  #[test]
+  fn a_key_before_zero_fails() {
+    fails(arm().animation(rotate(&[-0.5, 0.5])), WAVE_0, "before 0");
+  }
+
+  #[test]
+  fn a_key_past_the_duration_fails() {
+    fails(
+      arm().animation(rotate(&[0.0, 1.5])),
+      WAVE_0,
+      "past the animation's duration",
     );
   }
 
@@ -705,36 +1051,210 @@ mod tests {
         cy2: 1.0,
       };
     }
-    let error = arm()
-      .animation(animation)
-      .build()
-      .expect_err("bezier x past 1");
-    assert_eq!(error.item, r#"animation "wave" timeline 0 (rotate)"#);
+    fails(arm().animation(animation), WAVE_0, "within 0 to 1");
   }
 
   #[test]
-  fn event_keys_may_share_a_time_but_not_run_backwards() {
-    use super::super::animation::EventValues;
-    use super::super::data::EventData;
-
-    let events = |times: &[f32]| Animation {
-      name: Arc::from("step"),
-      duration: 1.0,
-      timelines: vec![Timeline::Event {
-        frames: times
-          .iter()
-          .map(|&t| (t, 0, EventValues::default()))
-          .collect(),
-      }],
+  fn a_draw_order_key_missing_a_slot_fails() {
+    let timeline = Timeline::DrawOrder {
+      frames: vec![
+        (0.0, None),
+        (0.5, Some(vec![SlotId(1), SlotId(0)])),
+        (1.0, Some(vec![SlotId(1), SlotId(1)])),
+      ],
     };
-    let builder = arm().event(EventData::new("footstep"));
-    assert!(
-      builder
-        .clone()
-        .animation(events(&[0.5, 0.5]))
-        .build()
-        .is_ok()
+    fails(
+      rig().animation(wave(vec![timeline])),
+      r#"animation "wave" timeline 0 (draw order)"#,
+      "key 2 must list each of the 2 slots once",
     );
-    assert!(builder.animation(events(&[0.5, 0.25])).build().is_err());
+  }
+
+  // One timeline per property
+
+  #[test]
+  fn two_timelines_of_one_kind_on_one_bone_or_slot_fail() {
+    fails(
+      arm().animation(wave(vec![rotate_keys(&[0.0]), rotate_keys(&[0.5])])),
+      r#"animation "wave" timeline 1 (rotate)"#,
+      "another timeline already keys bone \"arm\"'s rotate",
+    );
+    let color = || Timeline::Color {
+      slot: SlotId(1),
+      frames: vec![(0.0, crate::core::ui::Color::WHITE, Curve::Linear)],
+    };
+    fails(
+      rig().animation(wave(vec![color(), color()])),
+      r#"animation "wave" timeline 1 (color)"#,
+      "another timeline already keys slot \"hat\"'s color",
+    );
+  }
+
+  #[test]
+  fn a_combined_and_a_per_axis_timeline_on_one_bone_fail() {
+    let timelines = vec![
+      Timeline::TranslateY {
+        bone: BoneId(1),
+        frames: vec![(0.0, 1.0, Curve::Linear)],
+      },
+      Timeline::Translate {
+        bone: BoneId(1),
+        frames: vec![(0.0, Vec2::ONE, Curve::Linear)],
+      },
+    ];
+    fails(
+      arm().animation(wave(timelines)),
+      r#"animation "wave" timeline 1 (translate)"#,
+      "another timeline already keys bone \"arm\"'s translate y",
+    );
+  }
+
+  #[test]
+  fn two_draw_order_or_event_timelines_fail() {
+    let order = || Timeline::DrawOrder {
+      frames: vec![(0.0, None)],
+    };
+    fails(
+      rig().animation(wave(vec![order(), order()])),
+      r#"animation "wave" timeline 1 (draw order)"#,
+      "another timeline already keys the skeleton's draw order",
+    );
+    fails(
+      rig().animation(wave(vec![event_keys(&[0.0]), event_keys(&[0.5])])),
+      r#"animation "wave" timeline 1 (event)"#,
+      "another timeline already keys the skeleton's event",
+    );
+  }
+
+  // Durations and mixes
+
+  #[test]
+  fn a_negative_duration_fails() {
+    fails(
+      arm().animation(animation("wave", -1.0, Vec::new())),
+      r#"animation "wave""#,
+      "duration is negative",
+    );
+  }
+
+  #[test]
+  fn a_negative_mix_fails() {
+    fails(
+      idle_and_run().mix("idle", "run", -0.2),
+      r#"mix "idle" to "run""#,
+      "duration is negative",
+    );
+    fails(
+      arm().default_mix(-0.2),
+      "default mix",
+      "duration is negative",
+    );
+  }
+
+  // Non-finite values
+
+  #[test]
+  fn a_non_finite_bone_value_fails() {
+    fails(
+      arm().bone(
+        "leg",
+        Some("root"),
+        BoneSetup {
+          rotation: f32::NAN,
+          ..BoneSetup::default()
+        },
+      ),
+      r#"bone "leg""#,
+      "rotation is NaN, not a finite number",
+    );
+  }
+
+  #[test]
+  fn a_non_finite_attachment_field_fails() {
+    fails(
+      rig().attachment("default", "hand", "muzzle", point(f32::INFINITY)),
+      r#"skin "default" slot "hand" attachment "muzzle""#,
+      "x is inf, not a finite number",
+    );
+  }
+
+  #[test]
+  fn a_non_finite_key_value_fails() {
+    let timeline = Timeline::Rotate {
+      bone: BoneId(1),
+      frames: vec![(0.0, 0.0, Curve::Linear), (0.5, f32::NAN, Curve::Linear)],
+    };
+    fails(
+      arm().animation(wave(vec![timeline])),
+      WAVE_0,
+      "key 1's value is NaN",
+    );
+  }
+
+  #[test]
+  fn a_non_finite_key_time_fails() {
+    fails(
+      arm().animation(rotate(&[0.0, f32::NAN])),
+      WAVE_0,
+      "key 1's time is NaN",
+    );
+  }
+
+  #[test]
+  fn a_non_finite_curve_control_fails() {
+    let mut animation = rotate(&[0.0, 1.0]);
+    if let Timeline::Rotate { frames, .. } = &mut animation.timelines[0] {
+      frames[0].2 = Curve::Bezier {
+        cx1: 0.25,
+        cy1: f32::NAN,
+        cx2: 0.75,
+        cy2: 1.0,
+      };
+    }
+    fails(arm().animation(animation), WAVE_0, "key 0's curve is NaN");
+  }
+
+  #[test]
+  fn a_non_finite_event_override_fails() {
+    let timeline = Timeline::Event {
+      frames: vec![(
+        0.0,
+        0,
+        EventValues {
+          volume: Some(f32::NAN),
+          ..EventValues::default()
+        },
+      )],
+    };
+    fails(
+      rig().animation(wave(vec![timeline])),
+      r#"animation "wave" timeline 0 (event)"#,
+      "key 0's volume is NaN",
+    );
+  }
+
+  #[test]
+  fn a_non_finite_event_default_fails() {
+    let mut event = EventData::new("splash");
+    event.float = f32::NEG_INFINITY;
+    fails(rig().event(event), r#"event "splash""#, "float is -inf");
+  }
+
+  #[test]
+  fn a_non_finite_duration_fails() {
+    fails(
+      arm().animation(animation("wave", f32::INFINITY, Vec::new())),
+      r#"animation "wave""#,
+      "duration is inf",
+    );
+  }
+
+  #[test]
+  fn a_non_finite_mix_fails() {
+    fails(
+      idle_and_run().mix("idle", "run", f32::NAN),
+      r#"mix "idle" to "run""#,
+      "duration is NaN",
+    );
   }
 }

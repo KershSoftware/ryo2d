@@ -46,6 +46,36 @@ pub enum Timeline {
     bone: BoneId,
     frames: Vec<Frame<Vec2>>,
   },
+  /// A bone's x translation alone, relative to its setup x
+  TranslateX {
+    bone: BoneId,
+    frames: Vec<Frame<f32>>,
+  },
+  /// A bone's y translation alone, relative to its setup y
+  TranslateY {
+    bone: BoneId,
+    frames: Vec<Frame<f32>>,
+  },
+  /// A bone's x scale alone, as a factor of its setup x scale
+  ScaleX {
+    bone: BoneId,
+    frames: Vec<Frame<f32>>,
+  },
+  /// A bone's y scale alone, as a factor of its setup y scale
+  ScaleY {
+    bone: BoneId,
+    frames: Vec<Frame<f32>>,
+  },
+  /// A bone's x shear alone, in radians, relative to its setup x shear
+  ShearX {
+    bone: BoneId,
+    frames: Vec<Frame<f32>>,
+  },
+  /// A bone's y shear alone, in radians, relative to its setup y shear
+  ShearY {
+    bone: BoneId,
+    frames: Vec<Frame<f32>>,
+  },
   /// A slot's attachment by name (`None` hides it); keys are stepped
   Attachment {
     slot: SlotId,
@@ -69,6 +99,14 @@ pub enum Timeline {
   },
 }
 
+/// What a timeline keys, for finding two timelines that key the same thing
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) enum Target {
+  Bone(BoneId),
+  Slot(SlotId),
+  Skeleton,
+}
+
 impl Timeline {
   /// The kind's name, for messages
   pub fn kind(&self) -> &'static str {
@@ -77,10 +115,55 @@ impl Timeline {
       Self::Translate { .. } => "translate",
       Self::Scale { .. } => "scale",
       Self::Shear { .. } => "shear",
+      Self::TranslateX { .. } => "translate x",
+      Self::TranslateY { .. } => "translate y",
+      Self::ScaleX { .. } => "scale x",
+      Self::ScaleY { .. } => "scale y",
+      Self::ShearX { .. } => "shear x",
+      Self::ShearY { .. } => "shear y",
       Self::Attachment { .. } => "attachment",
       Self::Color { .. } => "color",
       Self::DrawOrder { .. } => "draw order",
       Self::Event { .. } => "event",
+    }
+  }
+
+  /// The bone, slot or (for draw order and events) whole skeleton it keys
+  pub(super) fn target(&self) -> Target {
+    match self {
+      Self::Rotate { bone, .. }
+      | Self::Translate { bone, .. }
+      | Self::Scale { bone, .. }
+      | Self::Shear { bone, .. }
+      | Self::TranslateX { bone, .. }
+      | Self::TranslateY { bone, .. }
+      | Self::ScaleX { bone, .. }
+      | Self::ScaleY { bone, .. }
+      | Self::ShearX { bone, .. }
+      | Self::ShearY { bone, .. } => Target::Bone(*bone),
+      Self::Attachment { slot, .. } | Self::Color { slot, .. } => Target::Slot(*slot),
+      Self::DrawOrder { .. } | Self::Event { .. } => Target::Skeleton,
+    }
+  }
+
+  /// The properties of its target it keys: a combined timeline keys both
+  /// axes, so it clashes with a per-axis timeline of either
+  pub(super) fn properties(&self) -> &'static [&'static str] {
+    match self {
+      Self::Translate { .. } => &["translate x", "translate y"],
+      Self::Scale { .. } => &["scale x", "scale y"],
+      Self::Shear { .. } => &["shear x", "shear y"],
+      Self::TranslateX { .. } => &["translate x"],
+      Self::TranslateY { .. } => &["translate y"],
+      Self::ScaleX { .. } => &["scale x"],
+      Self::ScaleY { .. } => &["scale y"],
+      Self::ShearX { .. } => &["shear x"],
+      Self::ShearY { .. } => &["shear y"],
+      Self::Rotate { .. } => &["rotate"],
+      Self::Attachment { .. } => &["attachment"],
+      Self::Color { .. } => &["color"],
+      Self::DrawOrder { .. } => &["draw order"],
+      Self::Event { .. } => &["event"],
     }
   }
 
@@ -90,7 +173,13 @@ impl Timeline {
       frames.iter().map(|frame| frame.0).collect()
     }
     match self {
-      Self::Rotate { frames, .. } => of(frames),
+      Self::Rotate { frames, .. }
+      | Self::TranslateX { frames, .. }
+      | Self::TranslateY { frames, .. }
+      | Self::ScaleX { frames, .. }
+      | Self::ScaleY { frames, .. }
+      | Self::ShearX { frames, .. }
+      | Self::ShearY { frames, .. } => of(frames),
       Self::Translate { frames, .. } | Self::Scale { frames, .. } | Self::Shear { frames, .. } => {
         of(frames)
       }

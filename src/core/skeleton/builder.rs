@@ -5,7 +5,7 @@ use std::sync::Arc;
 use super::animation::Animation;
 use super::attachment::Attachment;
 use super::data::{BoneId, EventData, Inherit, Region, SkeletonData, SlotBlend, SlotId};
-use super::validate::{self, SkeletonError};
+use super::validate::{self, MAX_BONES, MAX_SLOTS, SkeletonError};
 use crate::core::ui::Color;
 
 /// A bone's setup pose, for [`SkeletonDataBuilder::bone`]. The default is
@@ -183,15 +183,23 @@ impl SkeletonDataBuilder {
     self
   }
 
-  /// The id the first bone called `name` will have
+  /// The id the first bone called `name` will have, or `None` past the
+  /// 255th bone (which `build` refuses)
   pub fn bone_id(&self, name: &str) -> Option<BoneId> {
     let index = self.bones.iter().position(|bone| &*bone.name == name)?;
+    if index >= MAX_BONES {
+      return None;
+    }
     u8::try_from(index).ok().map(BoneId)
   }
 
-  /// The id the first slot called `name` will have
+  /// The id the first slot called `name` will have, or `None` past the
+  /// 255th slot (which `build` refuses)
   pub fn slot_id(&self, name: &str) -> Option<SlotId> {
     let index = self.slots.iter().position(|slot| &*slot.name == name)?;
+    if index >= MAX_SLOTS {
+      return None;
+    }
     u8::try_from(index).ok().map(SlotId)
   }
 
