@@ -9,7 +9,7 @@ Skeletal animation is being rebuilt from scratch. The design and its decisions a
 - `SkeletonError { item, problem }` names the item as `bone "arm"`, `slot "head"`, `region "torso"`, `event "step"`, `skin "red"`, `skin "red" slot "head" attachment "hat"`, `animation "walk"`, `animation "walk" timeline 2 (rotate)`, `mix "idle" to "run"` or `default mix`. The first problem found is reported.
 - In the prelude, the module's generic names are prefixed (aliases; the types keep their short names in `ryo2d::core::skeleton`): `SkeletonClip` (`Animation`), `SkeletonCurve`, `SkeletonSkin`, `SkeletonTimeline`, `SkeletonAttachment`, `SkeletonRegion`, `SkeletonEventData`, `SkeletonEventValues`, `SkeletonEventAudio` and `BoneInherit` (`Inherit`).
 - Bone timelines key rotate, and translate, scale and shear either combined (`Vec2` keys) or per axis (`TranslateX` … `ShearY`, `f32` keys).
-- Colours (`SlotData::color`, `RegionAttachment::color`, colour keys) are 8-bit sRGB `Color`s. Applying a colour timeline interpolates each component in float, in sRGB, as Spine does, and rounds only when the pose's colour is stored.
+- Colours (`SlotData::color`, `RegionAttachment::color`, colour keys) are 8-bit sRGB `Color`s. The pose keeps each slot's colour in float (`Vec4`, sRGB with alpha, 0 to 1), so blends never round; drawing clamps it and converts it to 8 bits.
 
 ## Validation rules
 
@@ -30,7 +30,7 @@ Every rule below has its own test in `validate.rs`, which asserts the error's fu
 
 ## Pose and world transforms (`pose.rs`)
 
-- `BonePose` is a bone's local transform (setup, or as animations leave it); the crate-internal `Pose` holds one per bone, the world transforms, and each slot's colour and attachment and the draw order, all set from the setup by `Pose::setup`.
+- `BonePose` is a bone's local transform (setup, or as animations leave it); the crate-internal `Pose` holds one per bone, the world transforms, and each slot's colour (float sRGB, `pose::srgb` of the setup colour) and attachment and the draw order, all set from the setup by `Pose::setup`.
 - A bone's local linear part: x axis `scale_x * (cos(rotation + shear_x), sin(rotation + shear_x))`, y axis `scale_y * (-sin(rotation + shear_y), cos(rotation + shear_y))`. With y down this turns clockwise, as the engine does.
 - `compute_world` is one pass over the parent-first bones. A child's origin is always its parent's full world transform applied to `(x, y)`: translation is inherited in every mode. Its linear part is `M * L`, where `L` is its local linear part and `M` comes from the parent's world linear part `P` (axes `p_x`, `p_y`) by mode:
   - Normal: `M = P`.
@@ -42,17 +42,19 @@ Every rule below has its own test in `validate.rs`, which asserts the error's fu
 
 ## Curves, applying an animation and events (`curve.rs`, `apply.rs`)
 
-- `Curve::value(t)` eases a fraction of the span between two keys. The ends are exact (0 gives 0, 1 gives 1), so every key's value is hit exactly. Stepped gives 0 until 1. A bezier is solved for the parameter whose x is `t` (Newton's method kept inside a shrinking bracket, bisecting where a step would leave it or the slope is flat), then its y is taken; the x controls lie in 0..=1, so x is monotonic and the answer unique.
+- `Curve::value(t)` eases a fraction of the span between two keys. The ends are exact (0 gives 0, 1 gives 1), so every key's value is hit exactly. Stepped gives 0 until 1. A bezier is solved for the parameter whose x is `t` (Newton's method kept inside a shrinking bracket, bisecting where a step would leave it or the slope is flat; it stops at an x error under 2e-7 or a bracket under 1e-7 wide), then its y is taken; the x controls lie in 0..=1, so x is monotonic and the answer unique.
 - `apply(animation, data, pose, time, alpha, blend, direction)` blends one animation into the pose. `time` is the animation's own time; the caller wraps a looping track. Rules we chose where Spine's docs are silent or where we keep only part of Spine's model:
   - Before a timeline's first key it leaves the pose alone, whatever the blend; after its last key the last value holds. Between keys the value is the first key's plus the change times the first key's curve value.
   - Bone keys are relative to the setup pose: rotate, translate and shear add to the setup value, scale multiplies it. Call that the target.
   - Replace moves each bone property toward the target by alpha (`value += (target - value) * alpha`). Rotation goes the short way round: the difference is wrapped to -180..=180 degrees first. Keys themselves interpolate as written, so keys 0 and 360 make a full turn; the wrap applies only to blending toward the pose. Shear blends without wrapping.
   - Add adds the target's change from setup times alpha (`value += (target - setup) * alpha`): the key for rotate, translate and shear, and `setup * (key - 1)` for scale.
-  - Colour keys are absolute. Components are interpolated in float, in sRGB (not linear light), and both blends move the slot's colour toward the key by alpha: colours do not add. The result is clamped and rounded (half away from zero) when stored.
+  - Colour keys are absolute. Components are interpolated in float, in sRGB (not linear light), and both blends move the slot's colour toward the key by alpha: colours do not add. Nothing is clamped or rounded in the pose (a bezier can overshoot); drawing clamps.
   - Attachment and draw-order keys are stepped and apply only when `direction` is `In`, whatever the alpha or blend: a step cannot be part-applied, and an animation mixing out leaves them to the one mixing in. A `None` attachment key hides the slot; a `None` draw-order key restores the setup order. Bone and colour timelines ignore the direction.
   - Event timelines do nothing in `apply`.
 - `MixBlend` (`Replace`, `Add`) is public, for tracks. `MixDirection` (`In`, `Out`) is crate-internal.
 - `events_between(animation, last, now, looping, out)` pushes the event keys in (`last`, `now`] onto `out`, in time order, as (unwrapped time, event index, values). Times are the track's unwrapped time: a looping animation's keys repeat every duration from 0, so a span over several loops fires each loop's keys once, and contiguous spans never fire a key twice. Rules we chose:
   - The first step passes a negative `last`, so a key at 0 fires on it, and on each later loop (at 1 x duration, 2 x duration, ...).
   - Not looping, only the animation's own keys fire. A zero-length looping animation fires its keys once, as if not looping.
-  - Nothing fires when `now <= last`.
+  - Nothing fires when `now <= last` (or either is NaN). Reverse playback is the animation state's to mirror into forward times.
+  - A loop boundary is never missed: dividing a time by the duration can round across a boundary in f32 (2.7 / 0.9 is just under 3), so the search visits one loop more on each side than division gives, and the (last, now] test drops the extras. Each key's unwrapped time (`loop * duration + key`) is computed the same way every step, so contiguous steps fire it exactly once. A key at the duration and the next loop's key at 0 can come out one ulp apart in either order; a stable insertion pass keeps the output in time order without allocating.
+  - One span visits at most 1,000 loops (`MAX_LOOPS`): a longer step fires only the keys of the 1,000 loops ending at the one holding `now`, and the skipped loops' keys are not fired.

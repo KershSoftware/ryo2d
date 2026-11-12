@@ -54,7 +54,9 @@ fn solve_x(cx1: f32, cx2: f32, x: f32) -> f32 {
   let mut s = x;
   for _ in 0..32 {
     let error = cubic(cx1, cx2, s) - x;
-    if error.abs() < 1e-7 {
+    // Near x = 1 an f32 error cannot get much under 1e-7, so stop at 2e-7
+    // or once the bracket is that narrow
+    if error.abs() < 2e-7 || high - low < 1e-7 {
       break;
     }
     if error > 0.0 {

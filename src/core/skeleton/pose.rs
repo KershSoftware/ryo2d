@@ -5,7 +5,7 @@
 use std::f32::consts::FRAC_PI_2;
 use std::sync::Arc;
 
-use glam::{Affine2, Mat2, Vec2};
+use glam::{Affine2, Mat2, Vec2, Vec4};
 
 use super::data::{BoneData, Inherit, SkeletonData, SlotId};
 use crate::core::ui::Color;
@@ -73,7 +73,10 @@ pub(crate) struct Pose {
   pub(crate) bones: Vec<BonePose>,
   /// World transforms from [`Pose::compute_world`], the root affine applied
   pub(crate) world: Vec<Affine2>,
-  pub(crate) slot_colors: Vec<Color>,
+  /// Each slot's colour, sRGB with alpha, 0 to 1 per component (a curve
+  /// can overshoot). Kept in float so blends and slow fades never round;
+  /// drawing clamps and converts it to 8 bits
+  pub(crate) slot_colors: Vec<Vec4>,
   pub(crate) slot_attachments: Vec<Option<Arc<str>>>,
   /// Slots, back to front
   pub(crate) draw_order: Vec<SlotId>,
@@ -93,7 +96,7 @@ impl Pose {
     Self {
       bones: data.bones().iter().map(BonePose::setup).collect(),
       world: vec![Affine2::IDENTITY; data.bones().len()],
-      slot_colors: slots.iter().map(|slot| slot.color).collect(),
+      slot_colors: slots.iter().map(|slot| srgb(slot.color)).collect(),
       slot_attachments: slots.iter().map(|slot| slot.attachment.clone()).collect(),
       draw_order: (0..slots.len())
         .filter_map(|index| u8::try_from(index).ok().map(SlotId))
@@ -141,6 +144,16 @@ impl Pose {
       *world = root * *world;
     }
   }
+}
+
+/// An 8-bit sRGB colour as floats, 0 to 1 per component, still sRGB
+pub(crate) fn srgb(color: Color) -> Vec4 {
+  Vec4::new(
+    f32::from(color.r),
+    f32::from(color.g),
+    f32::from(color.b),
+    f32::from(color.a),
+  ) / 255.0
 }
 
 /// Below this, an axis counts as collapsed (a zero scale)
@@ -591,7 +604,10 @@ mod tests {
       .build()
       .expect("a valid skeleton");
     let pose = Pose::setup(&data);
-    assert_eq!(pose.slot_colors, vec![Color::WHITE, red]);
+    assert_eq!(
+      pose.slot_colors,
+      vec![Vec4::ONE, Vec4::new(1.0, 0.0, 0.0, 128.0 / 255.0)]
+    );
     assert_eq!(pose.slot_attachments, vec![None, Some(Arc::from("hat"))]);
     assert_eq!(pose.draw_order, vec![SlotId(0), SlotId(1)]);
     assert_eq!(pose.bones, vec![BonePose::setup(&data.bones()[0])]);

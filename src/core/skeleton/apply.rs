@@ -8,7 +8,7 @@ use glam::{Vec2, Vec4};
 
 use super::animation::{Animation, EventValues, Frame, Timeline};
 use super::data::{BoneData, BoneId, SkeletonData, SlotId};
-use super::pose::{BonePose, Pose};
+use super::pose::{BonePose, Pose, srgb};
 use crate::core::ui::Color;
 
 /// How an animation's values combine with the pose under it
@@ -176,13 +176,12 @@ pub(crate) fn apply(
           pose.slot_colors.get_mut(slot.index()),
         ) {
           // Colours do not add: both blends move toward the key by alpha
-          let current = to_vec4(*color);
-          *color = from_vec4(current + (target - current) * alpha);
+          *color += (target - *color) * alpha;
         }
       }
       Timeline::Attachment { slot, frames } => {
         if direction == MixDirection::In
-          && let Some(index) = stepped_key(frames.iter().map(|frame| frame.0), time)
+          && let Some(index) = stepped_key(frames, time)
           && let Some(attachment) = pose.slot_attachments.get_mut(slot.index())
         {
           attachment.clone_from(&frames[index].1);
@@ -190,7 +189,7 @@ pub(crate) fn apply(
       }
       Timeline::DrawOrder { frames } => {
         if direction == MixDirection::In
-          && let Some(index) = stepped_key(frames.iter().map(|frame| frame.0), time)
+          && let Some(index) = stepped_key(frames, time)
         {
           pose.draw_order.clear();
           match &frames[index].1 {
@@ -205,6 +204,11 @@ pub(crate) fn apply(
     }
   }
 }
+
+/// The most loops one span visits. A step over more loops than this fires
+/// only the keys of the last [`MAX_LOOPS`] loops, those ending at the one
+/// holding `now`
+const MAX_LOOPS: i64 = 1000;
 
 /// Pushes onto `out` the event keys in (`last`, `now`], in time order, with
 /// their times unwrapped (in the same time as `last` and `now`). A looping
@@ -232,7 +236,8 @@ pub(crate) fn events_between(
     return;
   };
   let duration = animation.duration;
-  let mut fire = |offset: f32| {
+  let start = out.len();
+  let fire = |offset: f32, out: &mut Vec<_>| {
     for (time, event, values) in frames {
       let at = offset + time;
       if at > last && at <= now {
@@ -242,17 +247,35 @@ pub(crate) fn events_between(
   };
   // Durations are checked finite and not negative
   if !looping || duration <= 0.0 {
-    fire(0.0);
+    fire(0.0, out);
     return;
   }
-  // Loops start at multiples of the duration; the ones that can hold a key
-  // in (last, now] run from the loop holding `last` (or the first) to the
-  // one holding `now`
-  let first = (last.max(0.0) / duration).floor();
-  // A float-to-int cast saturates, so a wild span cannot wrap the count
-  let loops = ((now / duration).floor() - first) as u64;
-  for index in 0..=loops {
-    fire((first + index as f32) * duration);
+  // Loops start at multiples of the duration. Division can round the loop
+  // holding `last` or `now` across a boundary (2.7 / 0.9 is just under 3 in
+  // f32), so one more loop is visited on each side; the (last, now] test
+  // drops what they do not hold. Each key's unwrapped time is computed the
+  // same way every step, so contiguous steps fire it exactly once
+  let first = (last.max(0.0) / duration).floor() as i64;
+  let end = (now / duration).floor() as i64;
+  let capped = end - first >= MAX_LOOPS;
+  let first = if capped {
+    end - (MAX_LOOPS - 1)
+  } else {
+    (first - 1).max(0)
+  };
+  for index in first..=end + 1 {
+    fire(index as f32 * duration, out);
+  }
+  // A key at the duration and the next loop's key at 0 can come out one ulp
+  // apart in either order; a stable insertion pass puts them in time order
+  // without allocating (anything else is already in order)
+  let pushed = &mut out[start..];
+  for index in 1..pushed.len() {
+    let mut at = index;
+    while at > 0 && pushed[at - 1].0 > pushed[at].0 {
+      pushed.swap(at - 1, at);
+      at -= 1;
+    }
   }
 }
 
@@ -317,39 +340,19 @@ fn sample_vec2(frames: &[Frame<Vec2>], time: f32) -> Option<Vec2> {
   })
 }
 
-/// A colour key's value, 0 to 255 per component, interpolated in sRGB
+/// A colour key's value, 0 to 1 per component, interpolated in sRGB
 fn sample_color(frames: &[Frame<Color>], time: f32) -> Option<Vec4> {
   Some(match locate(frames, time)? {
-    Sample::Hold(index) => to_vec4(frames[index].1),
-    Sample::Between(index, eased) => {
-      to_vec4(frames[index].1).lerp(to_vec4(frames[index + 1].1), eased)
-    }
+    Sample::Hold(index) => srgb(frames[index].1),
+    Sample::Between(index, eased) => srgb(frames[index].1).lerp(srgb(frames[index + 1].1), eased),
   })
 }
 
 /// The last stepped key at or before `time`, or `None` before the first
-fn stepped_key(times: impl Iterator<Item = f32>, time: f32) -> Option<usize> {
-  times.take_while(|&key| key <= time).count().checked_sub(1)
-}
-
-fn to_vec4(color: Color) -> Vec4 {
-  Vec4::new(
-    f32::from(color.r),
-    f32::from(color.g),
-    f32::from(color.b),
-    f32::from(color.a),
-  )
-}
-
-fn from_vec4(color: Vec4) -> Color {
-  // Clamped and rounded, so the cast cannot truncate or wrap
-  let channel = |value: f32| value.clamp(0.0, 255.0).round() as u8;
-  Color::new(
-    channel(color.x),
-    channel(color.y),
-    channel(color.z),
-    channel(color.w),
-  )
+fn stepped_key<T>(frames: &[(f32, T)], time: f32) -> Option<usize> {
+  frames
+    .partition_point(|frame| frame.0 <= time)
+    .checked_sub(1)
 }
 
 #[cfg(test)]
@@ -425,6 +428,13 @@ mod tests {
   fn close(actual: f32, expected: f32) {
     assert!(
       (actual - expected).abs() < 1e-5,
+      "expected {expected}, got {actual}"
+    );
+  }
+
+  fn close_colour(actual: Vec4, expected: Vec4) {
+    assert!(
+      actual.abs_diff_eq(expected, 1e-5),
       "expected {expected}, got {actual}"
     );
   }
@@ -736,7 +746,7 @@ mod tests {
       MixDirection::In,
     );
     close(pose.bones[0].rotation, 5.0);
-    assert_eq!(pose.slot_colors[1], Color::WHITE);
+    assert_eq!(pose.slot_colors[1], Vec4::ONE);
     run(
       &late,
       &mut pose,
@@ -746,7 +756,7 @@ mod tests {
       MixDirection::In,
     );
     close(pose.bones[0].rotation, 2.1);
-    assert_eq!(pose.slot_colors[1], Color::RED);
+    assert_eq!(pose.slot_colors[1], srgb(Color::RED));
   }
 
   #[test]
@@ -774,7 +784,7 @@ mod tests {
       MixDirection::Out,
     );
     close(pose.bones[0].rotation, 1.1);
-    assert_eq!(pose.slot_colors[0], Color::BLACK);
+    assert_eq!(pose.slot_colors[0], srgb(Color::BLACK));
   }
 
   #[test]
@@ -886,8 +896,8 @@ mod tests {
         ]),
       }],
     );
-    // Half way, each component interpolated in sRGB (not linear light) and
-    // rounded when stored: 127.5 rounds to 128
+    // Half way, each component interpolated in sRGB (not linear light),
+    // kept in float
     let mut pose = Pose::setup(&data());
     run(
       &clip,
@@ -897,7 +907,7 @@ mod tests {
       MixBlend::Replace,
       MixDirection::In,
     );
-    assert_eq!(pose.slot_colors[0], Color::new(128, 0, 128, 128));
+    close_colour(pose.slot_colors[0], Vec4::new(0.5, 0.0, 0.5, 0.5));
     // Alpha blends from the pose's colour (white) toward red
     let mut pose = Pose::setup(&data());
     run(
@@ -908,11 +918,28 @@ mod tests {
       MixBlend::Replace,
       MixDirection::In,
     );
-    assert_eq!(pose.slot_colors[0], Color::new(255, 128, 128, 255));
+    close_colour(pose.slot_colors[0], Vec4::new(1.0, 0.5, 0.5, 1.0));
     // Colours do not add: an add blend blends as replace does
     let mut pose = Pose::setup(&data());
     run(&clip, &mut pose, 0.0, 0.5, MixBlend::Add, MixDirection::In);
-    assert_eq!(pose.slot_colors[0], Color::new(255, 128, 128, 255));
+    close_colour(pose.slot_colors[0], Vec4::new(1.0, 0.5, 0.5, 1.0));
+    // Nothing rounds between layers: ten tiny blends toward red move the
+    // green from 1 to 0.999^10, which 8-bit storage would stall at 255
+    let mut pose = Pose::setup(&data());
+    for _ in 0..10 {
+      run(
+        &clip,
+        &mut pose,
+        0.0,
+        0.001,
+        MixBlend::Replace,
+        MixDirection::In,
+      );
+    }
+    close_colour(
+      pose.slot_colors[0],
+      Vec4::new(1.0, 0.999_f32.powi(10), 0.999_f32.powi(10), 1.0),
+    );
   }
 
   #[test]
@@ -953,5 +980,93 @@ mod tests {
     // A zero-length looping animation fires its key once, not forever
     let instant = animation(0.0, vec![event_keys(&[0.0])]);
     assert_eq!(events(&instant, -1.0, 5.0, true), vec![0.0]);
+  }
+
+  /// The float one ulp below `value` (a positive float)
+  fn ulp_below(value: f32) -> f32 {
+    f32::from_bits(value.to_bits() - 1)
+  }
+
+  #[test]
+  fn a_step_ending_exactly_on_a_loop_boundary_fires_its_key() {
+    // 2.7 / 0.9 rounds to just under 3 in f32, so the loop holding `now`
+    // must not be found by division alone
+    let clip = animation(0.9, vec![event_keys(&[0.0])]);
+    let now = 3.0 * 0.9;
+    assert_eq!(events(&clip, 2.0, now, true), vec![now]);
+    assert_eq!(events(&clip, now, now + 0.1, true), Vec::<f32>::new());
+  }
+
+  #[test]
+  fn a_step_starting_just_below_a_loop_boundary_keeps_the_key_at_the_duration() {
+    // A key at the duration, ending loop 8 at 9 x 0.1. `last` one ulp below
+    // that rounds up to loop 9 by division; across the two steps the key
+    // fires once
+    let duration = 0.1;
+    let clip = animation(duration, vec![event_keys(&[duration])]);
+    let last = ulp_below(9.0 * duration);
+    let mut fired = events(&clip, 0.75, last, true);
+    fired.extend(events(&clip, last, 1.0, true));
+    let near_nine_tenths = fired
+      .iter()
+      .filter(|&&time| (time - 0.9).abs() < 1e-4)
+      .count();
+    assert_eq!(near_nine_tenths, 1, "{fired:?}");
+  }
+
+  #[test]
+  fn small_steps_across_twenty_loops_fire_every_key_once() {
+    for duration in [0.1_f32, 0.3, 0.7, 0.9] {
+      let keys = [0.0, duration * 0.5, duration];
+      let clip = animation(duration, vec![event_keys(&keys)]);
+      // Steps landing exactly on loop boundaries, and steps that never do
+      let on_boundaries: Vec<f32> = (0..=80).map(|i| i as f32 * duration / 4.0).collect();
+      let mut drifting = vec![0.0_f32];
+      while *drifting.last().unwrap_or(&0.0) < 20.0 * duration {
+        let next = drifting.last().unwrap_or(&0.0) + duration / 7.0;
+        drifting.push(next);
+      }
+      for nows in [on_boundaries, drifting] {
+        let mut fired = Vec::new();
+        let mut last = -1.0;
+        for &now in &nows {
+          events_between(&clip, last, now, true, &mut fired);
+          last = now;
+        }
+        let end = last;
+        // Every (loop, key) at or before the end, each once
+        for repeat in 0..=21 {
+          for (key, &time) in keys.iter().enumerate() {
+            let at = repeat as f32 * duration + time;
+            let count = fired.iter().filter(|event| event.0 == at).count();
+            let expected = usize::from(at <= end);
+            // A key at the duration and the next loop's key at 0 may land
+            // on one float; count both there
+            let twin = (key == 2 && (repeat + 1) as f32 * duration == at)
+              || (key == 0 && repeat > 0 && (repeat - 1) as f32 * duration + duration == at);
+            let expected = if twin { expected * 2 } else { expected };
+            assert_eq!(
+              count, expected,
+              "duration {duration} loop {repeat} key {key} at {at}"
+            );
+          }
+        }
+        assert!(
+          fired.windows(2).all(|pair| pair[0].0 <= pair[1].0),
+          "{duration}: out of order"
+        );
+      }
+    }
+  }
+
+  #[test]
+  fn a_span_past_the_loop_cap_fires_only_its_last_thousand_loops() {
+    let clip = animation(1.0, vec![event_keys(&[0.5])]);
+    let fired = events(&clip, 0.0, 5000.75, true);
+    assert_eq!(fired.len(), 1000);
+    assert_eq!(fired.first(), Some(&4001.5));
+    assert_eq!(fired.last(), Some(&5000.5));
+    // A span of exactly the cap fires every loop
+    assert_eq!(events(&clip, 0.0, 999.75, true).len(), 1000);
   }
 }
