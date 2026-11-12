@@ -11,6 +11,13 @@ Skeletal animation is being rebuilt from scratch. The design and its decisions a
 - Bone timelines key rotate, and translate, scale and shear either combined (`Vec2` keys) or per axis (`TranslateX` … `ShearY`, `f32` keys).
 - Colours (`SlotData::color`, `RegionAttachment::color`, colour keys) are 8-bit sRGB `Color`s. The pose keeps each slot's colour in float (`Vec4`, sRGB with alpha, 0 to 1), so blends never round; drawing clamps it and converts it to 8 bits.
 
+## The file (`src/core/asset/loaders/skeleton.rs`)
+
+- `SkeletonLoader` reads `.skeleton.ron`; its rustdoc holds the whole format as a commented example, which a test loads (`the_documented_example_loads`). Everything the data holds is expressible: every bone field and inherit mode, slot colour and blend, regions on several images, region, point and bounding-box attachments, several skins, events with default values and audio, combined and per-axis bone timelines, attachment, colour, draw-order and event keys (with value overrides), a curve on every value key, and the mixes.
+- Choices where the brief was silent: images are named in `images` and regions refer to them by name; paths are relative to the file's folder; a region attachment's size is its region's unless written; a key is `(time, value)` or `(time, value, curve)`, the curve `Linear` when left out; a draw-order key lists every slot by name (`(0.25, ["head", "torso"])`, or `None` for the setup order); an event key is `(time, "event")` or `(time, "event", (int: 9, volume: 0.3))`; the mixes are a map, `{ default: 0.1, pairs: [("a", "b", 0.2)] }`.
+- Timelines come out in a fixed order: each bone in file order (rotate, translate, scale, shear, then translate x, translate y, scale x, scale y, shear x, shear y), each slot (attachment, colour), then draw order and events, so a validation error's `timeline N` follows the file.
+- Names the file uses that nothing declares (an animation's bone, slot or event, a region's image, an attachment's region) fail as a `SkeletonError` naming the animation, region or `skin .. slot .. attachment ..` and the name.
+
 ## Validation rules
 
 Every rule below has its own test in `validate.rs`, which asserts the error's full item and that the problem names the reason.

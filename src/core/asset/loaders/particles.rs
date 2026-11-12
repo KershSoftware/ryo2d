@@ -172,7 +172,7 @@ impl AssetLoader for ParticleEffectLoader {
 }
 
 /// The dependency at `file`, which the effect at `path` names in `field`
-fn dependency<T: Asset>(
+pub(super) fn dependency<T: Asset>(
   cx: &mut LoadContext<'_>,
   path: &AssetPath,
   field: &str,
@@ -481,7 +481,7 @@ fn check_keys(field: &str, ts: impl Iterator<Item = f32>) -> Vec<String> {
 /// A colour as a file writes it: `"#rrggbb"`, `"#rrggbbaa"` or
 /// `(r:, g:, b:, a:)`, its `a` 255 when left out
 #[derive(Clone, Copy)]
-struct ColorFile(Color);
+pub(super) struct ColorFile(pub(super) Color);
 
 const COLOR_FORMS: &str = "a colour (\"#rrggbb\", \"#rrggbbaa\" or (r:, g:, b:, a:))";
 

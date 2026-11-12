@@ -35,7 +35,7 @@ pub use loader::{AssetLoader, AssetSettings, CheckContext, LoadContext};
 pub use loaders::{
   AudioClipLoader, AudioClipSettings, BitmapFontLoader, ClipMode, FontLoader, FontSettings,
   ImageLoader, ImageSettings, MixerLoader, MusicLoader, ParticleEffectLoader, ShaderLoader,
-  SoundLoader, SvgSize, ThemeLoader, UiFileLoader,
+  SkeletonLoader, SoundLoader, SvgSize, ThemeLoader, UiFileLoader,
 };
 pub use path::AssetPath;
 #[doc(hidden)]
@@ -68,7 +68,8 @@ pub trait Asset: Send + Sync + 'static {}
 /// [`crate::core::tilemap::LdtkProject`] with
 /// [`crate::core::tilemap::LdtkLoader`], and [`crate::core::tilemap::TileWorld`]
 /// with [`crate::core::tilemap::TileWorldLoader`], are registered too, and
-/// [`crate::core::particles::ParticleEffect`] with [`ParticleEffectLoader`].
+/// [`crate::core::particles::ParticleEffect`] with [`ParticleEffectLoader`], and
+/// [`crate::core::skeleton::SkeletonData`] with [`SkeletonLoader`].
 /// A game's loaders are added after, so for an extension both take, the
 /// game's wins
 pub(crate) fn insert_registry(world: &mut crate::core::ecs::World, server: AssetServer) {
@@ -102,5 +103,7 @@ pub(crate) fn insert_registry(world: &mut crate::core::ecs::World, server: Asset
   server.register_loader(crate::core::tilemap::LdtkLoader);
   server.register_asset::<crate::core::particles::ParticleEffect>(world);
   server.register_loader(ParticleEffectLoader);
+  server.register_asset::<crate::core::skeleton::SkeletonData>(world);
+  server.register_loader(SkeletonLoader);
   world.insert_resource(server);
 }
