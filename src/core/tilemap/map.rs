@@ -79,6 +79,11 @@ pub struct LayerInfo {
   pub collides: bool,
   /// Whether its tiles' shapes block light; `None` means as `collides`
   pub occludes: Option<bool>,
+  /// Whether the shadows it casts shadow their own area: each wall's
+  /// faces toward a light cast, so a wall's top stays dark beyond its near
+  /// face (Tiled's reserved `self_shadow` property; off by default). Layers
+  /// that occlude together shadow themselves if any of them does
+  pub self_shadow: bool,
   /// Whether its tiles sort among the entities by their y
   pub y_sorted: bool,
   /// Whether lights shade it
@@ -113,6 +118,7 @@ impl LayerInfo {
       filter: Filter::Default,
       collides: true,
       occludes: None,
+      self_shadow: false,
       y_sorted: false,
       lit: true,
       part_of: None,

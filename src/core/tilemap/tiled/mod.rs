@@ -577,6 +577,48 @@ mod tests {
   }
 
   #[test]
+  fn a_layer_s_self_shadow_property_is_read_and_a_wrong_type_warns() {
+    let log = capture_log();
+    let with = |file: &str, property: &str| {
+      let layer = tile_layer(&format!(r#","properties":[{property}]"#));
+      load_text(file, &map_json("", &layer, "")).unwrap_or_else(|e| panic!("{e}"))
+    };
+    let on = with(
+      "shadow-on-5c1a.tmj",
+      r#"{"name":"self_shadow","type":"bool","value":true}"#,
+    );
+    assert!(info(&on, "ground").self_shadow);
+    let off = with(
+      "shadow-off-5c1a.tmj",
+      r#"{"name":"self_shadow","type":"bool","value":false}"#,
+    );
+    assert!(!info(&off, "ground").self_shadow);
+    let left_out = load_text("shadow-none-5c1a.tmj", &map_json("", &tile_layer(""), ""))
+      .unwrap_or_else(|e| panic!("{e}"));
+    assert!(!info(&left_out, "ground").self_shadow);
+    for file in [
+      "shadow-on-5c1a.tmj",
+      "shadow-off-5c1a.tmj",
+      "shadow-none-5c1a.tmj",
+    ] {
+      assert_eq!(warnings_about(&log, file), Vec::<String>::new(), "{file}");
+    }
+    // Of another type it is left out, and warned about naming the layer
+    let wrong = with(
+      "shadow-wrong-5c1a.tmj",
+      r#"{"name":"self_shadow","type":"string","value":"yes"}"#,
+    );
+    assert!(!info(&wrong, "ground").self_shadow);
+    let warned = warnings_about(&log, "shadow-wrong-5c1a.tmj");
+    assert!(
+      warned.len() == 1
+        && warned[0].contains("self_shadow")
+        && warned[0].contains("layer \"ground\""),
+      "{warned:?}"
+    );
+  }
+
+  #[test]
   fn a_group_class_s_floor_default_puts_its_layers_on_that_floor() {
     let floor_of = |fields: &str| {
       load_storeys("m.tmj", &group_json(fields)).map(|map| info(&map, "ground").floor)

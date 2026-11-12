@@ -106,6 +106,8 @@ pub(crate) struct Lit {
   /// Its grid's bounds; `None` for an unbounded grid
   bounds: Option<CellRect>,
   intgrid: bool,
+  /// Whether its shadows shadow themselves (`LayerInfo::self_shadow`)
+  self_shadow: bool,
 }
 
 /// What a chunk's cells along its right and bottom sides were when it was
@@ -304,6 +306,8 @@ struct Group {
   /// Its layers' floor: its chains are on it (`Floor::On`, none on the
   /// ground floor)
   floor: u8,
+  /// Whether its chains shadow themselves: any of its layers does
+  self_shadow: bool,
   /// Where its layers stand: their ground offset, by its bits
   offset: [u32; 2],
   /// Its occluders' parent: its first layer
@@ -352,6 +356,7 @@ impl Group {
     Group {
       grid: lit.grid,
       floor: lit.floor,
+      self_shadow: lit.self_shadow,
       offset: lit.offset,
       parent: lit.entity,
       parent_layer: lit.index,
@@ -1260,7 +1265,7 @@ fn place(
   for (slot, (centre, vertices)) in chains {
     let chain = (
       Transform::from_translation(centre),
-      LightOccluder2D::chain(vertices),
+      LightOccluder2D::chain(vertices).with_self_shadow(group.self_shadow),
       MapOccluder { chunk },
       ParentPlaced,
       ChildOf(group.parent),
@@ -1382,6 +1387,7 @@ fn plan<'a>(
         offset: [stands.x.to_bits(), stands.y.to_bits()],
         bounds: layer.data.tiles.bounds(),
         intgrid: layer.data.intgrid.is_some(),
+        self_shadow: layer.info.self_shadow,
       });
     }
   }
@@ -1410,6 +1416,7 @@ fn build(
       Some(group) => {
         // The largest bounds, or none with an unbounded layer
         group.bounds = group.bounds.zip(lit.bounds).map(|(a, b)| a.union(b));
+        group.self_shadow |= lit.self_shadow;
         group.layers.push(tracked);
       }
       None => {
@@ -1500,6 +1507,7 @@ pub(crate) fn land(world: &mut World, map: Entity, layers: &[Entity], prepared: 
       tracked.relink(layers);
     }
     let pending = std::mem::take(&mut group.pending);
+    let own = group.self_shadow;
     let counts: Vec<(IVec2, usize)> = pending
       .iter()
       .map(|(chunk, chains)| (*chunk, chains.len()))
@@ -1516,7 +1524,7 @@ pub(crate) fn land(world: &mut World, map: Entity, layers: &[Entity], prepared: 
       chains.into_iter().map(move |(_, (centre, vertices))| {
         (
           Transform::from_translation(centre),
-          LightOccluder2D::chain(vertices),
+          LightOccluder2D::chain(vertices).with_self_shadow(own),
           MapOccluder { chunk },
           ParentPlaced,
           ChildOf(parent),
@@ -1698,7 +1706,7 @@ mod tests {
   use crate::core::physics::{Collider, Physics, TileCell, TilePart};
   use crate::core::tilemap::test_util::{MapWorld, layers_of, load_map as load};
   use crate::core::tilemap::{
-    IntGrid, LayerKind, MapRoot, MapsView, Tile, TileData, TileMap, TileShape, Tileset,
+    IntGrid, LayerInfo, LayerKind, MapRoot, MapsView, Tile, TileData, TileMap, TileShape, Tileset,
     TilesetImage, TilesetSource,
   };
 
@@ -2580,6 +2588,110 @@ mod tests {
         );
       }
     }
+  }
+
+  /// The linear red of each of `pixels` in a frame of a block of 4 x 4
+  /// cells of 16 px (x 160 to 224, y 80 to 144) on a layer shadowing itself
+  /// with `self_shadow`, lit by a hard light at (100, 112)
+  fn self_shadow_frame(self_shadow: bool, pixels: &[(u32, u32)]) -> Option<Vec<f32>> {
+    use crate::core::engine::EngineBuilder;
+    use crate::core::testing::HeadlessEngine;
+    use crate::core::ui::Color;
+    let setup = move |ctx: &mut crate::core::scene::SceneContext| {
+      let light = Light2D::point(Color::WHITE, 300.0)
+        .with_intensity(0.5)
+        .with_shadows();
+      ctx.world.spawn((Transform::from_xy(100.0, 112.0), light));
+      let mut map = TileMap::new(UVec2::new(32, 16), UVec2::splat(16));
+      let set = map.add_tileset(TilesetSource::Embedded(Arc::new(blocks())));
+      let layer = map.add_tile_layer("wall");
+      map.layers[layer].info.self_shadow = self_shadow;
+      if let Some(grid) = map.tiles_mut(layer) {
+        grid.fill(
+          IVec2::new(10, 5),
+          IVec2::new(13, 8),
+          Some(Tile::new(set, 0)),
+        );
+      }
+      let handle = ctx.assets().add(map);
+      ctx.world.spawn(MapRoot::new(handle));
+    };
+    let scene = Lit {
+      size: (512, 256),
+      setup: Box::new(setup),
+    };
+    let builder = EngineBuilder::new().resolution(512, 256).start_scene(scene);
+    let mut engine = HeadlessEngine::new_or_skip(builder)?;
+    engine.step_frames(2).expect("frames");
+    crate::core::tilemap::test_util::step_until_maps_land(&mut engine);
+    engine.step_frames(3).expect("frames");
+    let frame = engine.frame().expect("a frame");
+    let linear = |byte: u8| {
+      let c = f32::from(byte) / 255.0;
+      if c <= 0.04045 {
+        c / 12.92
+      } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+      }
+    };
+    Some(
+      pixels
+        .iter()
+        .map(|&(x, y)| linear(frame.get_pixel(x, y).0[0]))
+        .collect(),
+    )
+  }
+
+  #[test]
+  fn a_self_shadowing_map_wall_stays_dark_across_its_tiles() {
+    // In front of the block's near face; inside it, across its cells (the
+    // first, a middle one, the last); behind it
+    let pixels = [(150, 112), (162, 112), (190, 100), (220, 140), (300, 112)];
+    let (Some(own), Some(plain)) = (
+      self_shadow_frame(true, &pixels),
+      self_shadow_frame(false, &pixels),
+    ) else {
+      return;
+    };
+    assert!(
+      own[0] > 0.1 && (own[0] - plain[0]).abs() < 0.01,
+      "lit in front: {own:?}"
+    );
+    for (i, &inside) in own[1..4].iter().enumerate() {
+      assert!(
+        inside < 0.002,
+        "dark inside at {:?}: {own:?}",
+        pixels[i + 1]
+      );
+      assert!(plain[i + 1] > 0.1, "plain, lit inside: {plain:?}");
+    }
+    assert!(own[4] < 0.002 && plain[4] < 0.002, "{own:?} {plain:?}");
+  }
+
+  #[test]
+  fn map_shadow_chains_carry_their_layer_s_self_shadow() {
+    let mut maps = MapWorld::new();
+    let mut tile_map = TileMap::new(UVec2::new(8, 8), UVec2::splat(16));
+    let set = tile_map.add_tileset(TilesetSource::Embedded(Arc::new(blocks())));
+    let layer = tile_map.add_tile_layer("walls");
+    tile_map.layers[layer].info.self_shadow = true;
+    if let Some(grid) = tile_map.tiles_mut(layer) {
+      grid.fill(IVec2::new(2, 2), IVec2::new(4, 3), Some(Tile::new(set, 0)));
+    }
+    let handle = maps.world.resource_mut::<Assets<TileMap>>().add(tile_map);
+    let map = maps.spawn(MapRoot::new(handle));
+    let layers = layers_of(&mut maps.world, map);
+    let found = occluders_of(&mut maps.world, layers[0]);
+    assert!(!found.is_empty());
+    assert!(found.iter().all(|f| f.occluder.self_shadow()));
+    // Turned off on the layer, its chains are built again without it
+    if let Some(mut info) = maps.world.get_mut::<LayerInfo>(layers[0]) {
+      info.self_shadow = false;
+    }
+    maps.frame();
+    let found = occluders_of(&mut maps.world, layers[0]);
+    assert!(!found.is_empty());
+    assert!(found.iter().all(|f| !f.occluder.self_shadow()));
   }
 
   // ---- grids of a square lattice ------------------------------------------

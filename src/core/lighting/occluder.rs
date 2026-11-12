@@ -48,6 +48,9 @@ pub struct LightOccluder2D {
   closed: bool,
   /// Whether this occluder is currently active
   enabled: bool,
+  /// Whether it shadows itself: its faces toward a light cast, not those
+  /// away from it, so its own area is in its shadow
+  self_shadow: bool,
   /// The farthest any vertex lies from the entity, kept from construction
   /// (the vertices never change)
   extent: f32,
@@ -84,6 +87,7 @@ impl LightOccluder2D {
       vertices,
       closed: true,
       enabled: true,
+      self_shadow: false,
     }
   }
 
@@ -107,6 +111,7 @@ impl LightOccluder2D {
       vertices,
       closed: false,
       enabled: true,
+      self_shadow: false,
     }
   }
 
@@ -237,6 +242,30 @@ impl LightOccluder2D {
   /// Builder method to set enabled state.
   pub fn with_enabled(mut self, enabled: bool) -> Self {
     self.enabled = enabled;
+    self
+  }
+
+  /// Whether it shadows itself (`with_self_shadow`)
+  pub fn self_shadow(&self) -> bool {
+    self.self_shadow
+  }
+
+  /// Make it shadow itself, or not (`with_self_shadow`)
+  pub fn set_self_shadow(&mut self, on: bool) {
+    self.self_shadow = on;
+  }
+
+  /// Builder method: whether it shadows itself (off by default). A
+  /// self-shadowing occluder casts from its faces toward each light rather
+  /// than those away from it, so the shadow starts at its near face and its
+  /// own area lies in it: a top-down wall seen from above stays dark
+  /// rather than lit on top. Leave it off for a pillar or crate whose top
+  /// should catch the light. A chain's edges cast as the self-shadowing
+  /// polygon they bound would; a chain has no inside, so a light within the
+  /// polygon it bounds is not known to be inside (a closed occluder holding
+  /// a light casts nothing for it, either way)
+  pub fn with_self_shadow(mut self, on: bool) -> Self {
+    self.self_shadow = on;
     self
   }
 

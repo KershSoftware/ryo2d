@@ -1760,3 +1760,157 @@ fn a_large_light_casts_at_every_quality() {
     );
   }
 }
+
+/// A 256 px light at (16, 32), hard or of source `size`, and (with
+/// `block`) a 16 px block at (64, 32), x 56 to 72 and y 24 to 40, shadowing
+/// itself with `own`, under 0.1 ambient light
+fn self_shadow_scene(size: f32, block: bool, own: bool) -> Option<image::RgbaImage> {
+  let light = Light2D::point(Color::WHITE, 256.0).with_intensity(0.5);
+  let light = if size > 0.0 {
+    light.with_soft_shadows(size)
+  } else {
+    light.with_shadows()
+  };
+  let occluders = if block {
+    vec![(
+      Vec2::new(64.0, 32.0),
+      LightOccluder2D::rect(16.0, 16.0).with_self_shadow(own),
+    )]
+  } else {
+    Vec::new()
+  };
+  scene(0.1, vec![(Vec2::new(16.0, 32.0), light)], occluders)
+}
+
+#[test]
+fn a_self_shadowing_wall_s_top_stays_dark() {
+  for size in [0.0, 6.0] {
+    let (Some(own), Some(plain), Some(open), Some(ambient)) = (
+      self_shadow_scene(size, true, true),
+      self_shadow_scene(size, true, false),
+      self_shadow_scene(size, false, false),
+      scene(0.1, Vec::new(), Vec::new()),
+    ) else {
+      return;
+    };
+    let dark = |frame: &image::RgbaImage, x: u32, y: u32| {
+      let (shown, alone) = (linear(red(frame, x, y)), linear(red(&ambient, x, y)));
+      (shown - alone).abs() < 0.02
+    };
+    let lit = |frame: &image::RgbaImage, x: u32, y: u32| {
+      red(frame, x, y).abs_diff(red(&open, x, y)) <= 2 && linear(red(&open, x, y)) > 0.2
+    };
+    // Inside the block, past its near face: the ambient light alone
+    for (x, y) in [(58, 32), (64, 32), (70, 26), (66, 38)] {
+      assert!(
+        dark(&own, x, y),
+        "size {size}: inside at ({x}, {y}): {} against ambient {}",
+        red(&own, x, y),
+        red(&ambient, x, y)
+      );
+    }
+    // In front of its near face, lit as with no block, up to the face's
+    // own line (the pixel at x 55 is centred half a pixel before it)
+    for (x, y) in [(40, 32), (50, 32), (53, 32), (55, 26), (55, 32), (55, 38)] {
+      assert!(
+        lit(&own, x, y),
+        "size {size}: in front at ({x}, {y}): {} against {}",
+        red(&own, x, y),
+        red(&open, x, y)
+      );
+    }
+    // Behind it: dark
+    assert!(dark(&own, 100, 32), "size {size}: behind");
+    // Without the flag, its inside is lit as today, and behind it is dark
+    for (x, y) in [(58, 32), (64, 32)] {
+      assert!(
+        lit(&plain, x, y),
+        "size {size}: plain, inside at ({x}, {y}): {} against {}",
+        red(&plain, x, y),
+        red(&open, x, y)
+      );
+    }
+    assert!(dark(&plain, 100, 32), "size {size}: plain, behind");
+  }
+}
+
+#[test]
+fn a_self_shadowing_wall_s_near_face_holds_still_as_its_light_moves() {
+  // A 256 px hard light moving down a quarter pixel at a time from (16,
+  // 72), and a self-shadowing 16 px block at (64, 80), x 56 to 72: the
+  // column of pixels half a pixel before its near face stays lit, the
+  // column half a pixel past it stays dark
+  let scene = |block: bool| {
+    wide(move |ctx| {
+      ctx.world.spawn((
+        Transform::from_xy(16.0, 72.0),
+        Light2D::point(Color::WHITE, 256.0).with_shadows(),
+      ));
+      if block {
+        ctx.world.spawn((
+          Transform::from_xy(64.0, 80.0),
+          LightOccluder2D::rect(16.0, 16.0).with_self_shadow(true),
+        ));
+      }
+    })
+  };
+  let (Some(mut own), Some(mut open)) = (scene(true), scene(false)) else {
+    return;
+  };
+  for step in 0..=8 {
+    let at = Vec2::new(16.0, 72.0 + step as f32 * 0.25);
+    let (shadowed, unshadowed) = (move_lights(&mut own, at), move_lights(&mut open, at));
+    for y in 73..87 {
+      let before = share(&shadowed, &unshadowed, 55, y);
+      let past = share(&shadowed, &unshadowed, 56, y);
+      assert!(
+        before > 0.98,
+        "light at {at}: (55, {y}) before the face holds {before} of its light"
+      );
+      assert!(
+        past < 0.02,
+        "light at {at}: (56, {y}) past the face holds {past} of its light"
+      );
+    }
+  }
+}
+
+#[test]
+fn turning_self_shadow_on_darkens_the_next_frame() {
+  // A plain block whose inside is lit; set to shadow itself between frames,
+  // the next frame's pixel inside it is dark, and turned off, lit again
+  let Some(mut engine) = wide(|ctx| {
+    ctx.world.spawn((
+      Transform::from_xy(16.0, 80.0),
+      Light2D::point(Color::WHITE, 256.0).with_shadows(),
+    ));
+    ctx.world.spawn((
+      Transform::from_xy(64.0, 80.0),
+      LightOccluder2D::rect(16.0, 16.0),
+    ));
+  }) else {
+    return;
+  };
+  let inside = |engine: &mut HeadlessEngine| {
+    engine.step_frames(1).unwrap();
+    red(&engine.frame().unwrap(), 64, 80)
+  };
+  let set = |engine: &mut HeadlessEngine, on: bool| {
+    let world = engine.world_mut();
+    let mut occluders = world.query::<&mut LightOccluder2D>();
+    for mut occluder in occluders.iter_mut(world) {
+      occluder.set_self_shadow(on);
+    }
+  };
+  let before = inside(&mut engine);
+  assert!(before > 100, "lit inside before: {before}");
+  set(&mut engine, true);
+  let on = inside(&mut engine);
+  assert!(on < 3, "dark inside the next frame: {on}");
+  set(&mut engine, false);
+  let off = inside(&mut engine);
+  assert!(
+    off.abs_diff(before) <= 1,
+    "lit again: {off} against {before}"
+  );
+}

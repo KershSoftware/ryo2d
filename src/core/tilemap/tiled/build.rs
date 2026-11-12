@@ -1018,6 +1018,17 @@ impl Builder<'_, '_> {
     }
     info.collides = props.bool("collides").unwrap_or(is_tiles);
     info.occludes = props.bool("occludes");
+    info.self_shadow = match props.get("self_shadow") {
+      Some(PropertyValue::Bool(on)) => *on,
+      Some(_) => {
+        self.px.unread.note(
+          "the reserved layer property \"self_shadow\" is not a bool, so the layer's shadows do not shadow themselves",
+          &place,
+        );
+        false
+      }
+      None => false,
+    };
     info.y_sorted = props.bool("y_sort").unwrap_or(false);
     info.lit = props.bool("lit").unwrap_or(true);
     info.properties = props;

@@ -137,3 +137,32 @@ fn the_many_lights_page_has_sixty_four_shadowed_torches_and_q_cycles_quality() {
   }
   assert_eq!(quality(&engine), start, "four presses go round");
 }
+
+#[test]
+fn the_many_lights_page_s_walls_stay_dark_until_turned_off() {
+  let Some(mut engine) = start(MANY_LIGHTS) else {
+    return;
+  };
+  engine.step_frames(4).unwrap();
+  let own = |engine: &mut HeadlessEngine| {
+    let world = engine.world_mut();
+    let chains: Vec<bool> = world
+      .query_filtered::<&LightOccluder2D, With<MapOccluder>>()
+      .iter(world)
+      .map(LightOccluder2D::self_shadow)
+      .collect();
+    assert!(
+      !chains.is_empty(),
+      "the maze's walls are map occluder chains"
+    );
+    chains
+  };
+  assert!(own(&mut engine).iter().all(|&on| on), "dark by default");
+  // The third row, "Walls stay dark", turned off
+  tap(&mut engine, KeyCode::ArrowDown);
+  tap(&mut engine, KeyCode::ArrowDown);
+  tap(&mut engine, KeyCode::ArrowRight);
+  assert!(own(&mut engine).iter().all(|&on| !on), "turned off");
+  tap(&mut engine, KeyCode::ArrowLeft);
+  assert!(own(&mut engine).iter().all(|&on| on), "back on");
+}

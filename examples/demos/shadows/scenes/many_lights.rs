@@ -4,6 +4,9 @@
 //! walls are the map's occluder chains; every torch reads only the walls
 //! near it. `Q` cycles the player's shadow quality, which stays changed (and
 //! is saved with the player's settings) like an options screen's choice.
+//! The walls shadow themselves ("Walls stay dark"), so a torch lights a
+//! wall's face and not its top; turned off, the setting changes the wall
+//! layer's `self_shadow` and the map builds its chains again.
 
 use std::sync::Arc;
 
@@ -75,9 +78,13 @@ fn maze(rng: &mut Rng) -> (Vec<bool>, Vec<IVec2>) {
   (wall, rooms)
 }
 
+/// The maze's wall layer
+const WALLS: &str = "walls";
+
 /// A map of one solid tile whose shape blocks light, laid where `wall`
-/// says; the layer blocks light and does not collide
-fn build_map(ctx: &mut SceneContext, wall: &[bool]) -> TileMap {
+/// says; the layer blocks light, shadowing itself with `dark`, and does not
+/// collide
+fn build_map(ctx: &mut SceneContext, wall: &[bool], dark: bool) -> TileMap {
   let side = CELL;
   let image = ctx
     .assets()
@@ -111,9 +118,10 @@ fn build_map(ctx: &mut SceneContext, wall: &[bool]) -> TileMap {
   );
   let mut map = TileMap::new(UVec2::new(COLS as u32, ROWS as u32), UVec2::splat(CELL));
   let set = map.add_tileset(TilesetSource::Embedded(Arc::new(tiles)));
-  let layer = map.add_tile_layer("walls");
+  let layer = map.add_tile_layer(WALLS);
   map.layers[layer].info.collides = false;
   map.layers[layer].info.occludes = Some(true);
+  map.layers[layer].info.self_shadow = dark;
   if let Some(grid) = map.tiles_mut(layer) {
     for (i, _) in wall.iter().enumerate().filter(|(_, w)| **w) {
       let cell = IVec2::new(i as i32 % COLS, i as i32 / COLS);
@@ -150,6 +158,10 @@ pub struct ManyLightsPage {
   quality: ShadowQuality,
   /// The (size, radius) the torches were last given
   applied: Option<(f32, f32)>,
+  /// Whether the walls shadow themselves, and what the wall layer was
+  /// last given
+  walls_dark: bool,
+  walls_applied: bool,
   torches: usize,
 }
 
@@ -160,6 +172,8 @@ impl ManyLightsPage {
       radius: 130.0,
       quality: ShadowQuality::default(),
       applied: None,
+      walls_dark: true,
+      walls_applied: true,
       torches: 0,
     }
   }
@@ -184,12 +198,13 @@ impl DemoPage for ManyLightsPage {
 
   fn description(&self) -> &str {
     "Sixty-four torches each cast their own shadows off the maze's walls; Q changes the shadow quality.\n\
-Lower qualities draw coarser shadow maps and cost less."
+Lower qualities draw coarser shadow maps and cost less; walls that stay dark shadow themselves."
   }
 
   fn settings(&mut self, s: &mut Settings) {
     s.float("Source size", &mut self.size, 0.0..=24.0, 1.0);
     s.float("Torch radius", &mut self.radius, 60.0..=260.0, 10.0);
+    s.toggle("Walls stay dark", &mut self.walls_dark);
   }
 
   fn controls(&self) -> Vec<Control> {
@@ -211,7 +226,8 @@ Lower qualities draw coarser shadow maps and cost less."
     ));
 
     let (wall, mut rooms) = maze(&mut Rng(0x9E37_79B9_7F4A_7C15));
-    let map = build_map(ctx, &wall);
+    let map = build_map(ctx, &wall, self.walls_dark);
+    self.walls_applied = self.walls_dark;
     let handle = ctx.assets().add(map);
     ctx
       .world
@@ -246,6 +262,17 @@ Lower qualities draw coarser shadow maps and cost less."
       let mut torches = ctx.world.query_filtered::<&mut Light2D, With<Torch>>();
       for (n, mut light) in torches.iter_mut(ctx.world).enumerate() {
         *light = self.torch_light(n);
+      }
+    }
+    if self.walls_applied != self.walls_dark {
+      // The landed wall layer's flag: the map builds its chains again with
+      // it. Until the map lands there is no layer, and this waits for it
+      let mut layers = ctx.world.query::<&mut LayerInfo>();
+      for mut info in layers.iter_mut(ctx.world) {
+        if info.name == WALLS {
+          info.self_shadow = self.walls_dark;
+          self.walls_applied = self.walls_dark;
+        }
       }
     }
   }
