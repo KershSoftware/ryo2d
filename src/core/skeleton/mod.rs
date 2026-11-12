@@ -5,6 +5,14 @@
 //! Spine's model. Build one in code with [`SkeletonData::builder`].
 
 mod animation;
+#[cfg_attr(
+  not(test),
+  expect(
+    dead_code,
+    reason = "the animation state applies animations and finds their events"
+  )
+)]
+mod apply;
 mod attachment;
 mod builder;
 mod curve;
@@ -14,6 +22,7 @@ mod skin;
 mod validate;
 
 pub use animation::{Animation, EventValues, Frame, Timeline};
+pub use apply::MixBlend;
 pub use attachment::{Attachment, BoundingBoxAttachment, PointAttachment, RegionAttachment};
 pub use builder::{BoneSetup, SkeletonDataBuilder, SlotSetup};
 pub use curve::Curve;
