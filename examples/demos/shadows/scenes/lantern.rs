@@ -46,7 +46,7 @@ impl LanternPage {
     Self {
       bearer: None,
       position: Vec2::new(240.0, 440.0),
-      radius: 260.0,
+      radius: 420.0,
       flame: 12.0,
       applied: None,
     }
@@ -105,7 +105,7 @@ A light inside a closed occluder is not shadowed by it."
 
     let floor = ctx
       .assets()
-      .add(Image::solid_rect(1280, 720, 70, 64, 80, 255));
+      .add(Image::solid_rect(1280, 720, 150, 140, 160, 255));
     ctx.world.spawn((
       Transform::from_xy(640.0, 360.0),
       Renderable::image(floor).with_z_order(0),
