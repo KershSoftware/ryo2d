@@ -47,7 +47,7 @@ impl LanternPage {
       bearer: None,
       position: Vec2::new(240.0, 440.0),
       radius: 260.0,
-      flame: 4.0,
+      flame: 12.0,
       applied: None,
     }
   }
@@ -87,7 +87,7 @@ A light inside a closed occluder is not shadowed by it."
 
   fn settings(&mut self, s: &mut Settings) {
     s.float("Lantern radius", &mut self.radius, 100.0..=500.0, 10.0);
-    s.float("Flame size", &mut self.flame, 0.0..=16.0, 1.0);
+    s.float("Flame size", &mut self.flame, 0.0..=24.0, 2.0);
   }
 
   fn controls(&self) -> Vec<Control> {

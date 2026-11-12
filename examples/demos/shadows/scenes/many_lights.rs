@@ -156,7 +156,7 @@ pub struct ManyLightsPage {
 impl ManyLightsPage {
   pub(crate) fn new() -> Self {
     Self {
-      size: 2.0,
+      size: 6.0,
       radius: 130.0,
       quality: ShadowQuality::default(),
       applied: None,
@@ -188,7 +188,7 @@ Lower qualities draw coarser shadow maps and cost less."
   }
 
   fn settings(&mut self, s: &mut Settings) {
-    s.float("Source size", &mut self.size, 0.0..=8.0, 0.5);
+    s.float("Source size", &mut self.size, 0.0..=24.0, 1.0);
     s.float("Torch radius", &mut self.radius, 60.0..=260.0, 10.0);
   }
 
