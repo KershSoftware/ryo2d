@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
 
-use super::animation::{Target, Timeline};
+use super::animation::{EMPTY_NAME, Target, Timeline};
 use super::attachment::Attachment;
 use super::builder::SkeletonDataBuilder;
 use super::curve::Curve;
@@ -321,6 +321,12 @@ pub(super) fn build(builder: SkeletonDataBuilder) -> Result<SkeletonData, Skelet
     let item = || format!("animation {:?}", &*animation.name);
     if animation_names.contains_key(&animation.name) {
       return Err(error(item(), "another animation has the same name"));
+    }
+    if &*animation.name == EMPTY_NAME {
+      return Err(error(
+        item(),
+        "the name is reserved for the animation state's empty animation",
+      ));
     }
     finite(item, &[("duration", animation.duration)])?;
     if animation.duration < 0.0 {
@@ -802,6 +808,15 @@ mod tests {
       idle_and_run().animation(animation("run", 2.0, Vec::new())),
       r#"animation "run""#,
       "same name",
+    );
+  }
+
+  #[test]
+  fn an_animation_named_as_the_empty_animation_fails() {
+    fails(
+      idle_and_run().animation(animation("<empty>", 1.0, Vec::new())),
+      r#"animation "<empty>""#,
+      "reserved",
     );
   }
 

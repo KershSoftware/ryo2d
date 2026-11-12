@@ -8,6 +8,10 @@ use super::data::{BoneId, SlotId};
 use crate::core::ecs::Vec2;
 use crate::core::ui::Color;
 
+/// The name of the empty animation an animation state plays to fade a track
+/// out: no animation in a skeleton's data may take it
+pub(super) const EMPTY_NAME: &str = "<empty>";
+
 /// A key of a value timeline: its time in seconds, its value, and the curve
 /// that eases from it to the next key
 pub type Frame<T> = (f32, T, Curve);
@@ -164,6 +168,26 @@ impl Timeline {
       Self::Color { .. } => &["color"],
       Self::DrawOrder { .. } => &["draw order"],
       Self::Event { .. } => &["event"],
+    }
+  }
+
+  /// The first key's time (every timeline of built data has a key)
+  pub(super) fn first_time(&self) -> Option<f32> {
+    match self {
+      Self::Rotate { frames, .. }
+      | Self::TranslateX { frames, .. }
+      | Self::TranslateY { frames, .. }
+      | Self::ScaleX { frames, .. }
+      | Self::ScaleY { frames, .. }
+      | Self::ShearX { frames, .. }
+      | Self::ShearY { frames, .. } => frames.first().map(|frame| frame.0),
+      Self::Translate { frames, .. } | Self::Scale { frames, .. } | Self::Shear { frames, .. } => {
+        frames.first().map(|frame| frame.0)
+      }
+      Self::Color { frames, .. } => frames.first().map(|frame| frame.0),
+      Self::Attachment { frames, .. } => frames.first().map(|frame| frame.0),
+      Self::DrawOrder { frames } => frames.first().map(|frame| frame.0),
+      Self::Event { frames } => frames.first().map(|frame| frame.0),
     }
   }
 

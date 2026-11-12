@@ -59,6 +59,11 @@ impl BonePose {
   }
 }
 
+/// The setup draw order: every slot, in the data's order
+pub(super) fn setup_order(data: &SkeletonData) -> impl Iterator<Item = SlotId> {
+  (0..data.slots().len()).filter_map(|index| u8::try_from(index).ok().map(SlotId))
+}
+
 /// One skeleton's current pose, indexed like the data's bones and slots
 #[derive(Debug, Clone)]
 pub(crate) struct Pose {
@@ -88,9 +93,7 @@ impl Pose {
       world: vec![Affine2::IDENTITY; data.bones().len()],
       slot_colors: slots.iter().map(|slot| srgb(slot.color)).collect(),
       slot_attachments: slots.iter().map(|slot| slot.attachment.clone()).collect(),
-      draw_order: (0..slots.len())
-        .filter_map(|index| u8::try_from(index).ok().map(SlotId))
-        .collect(),
+      draw_order: setup_order(data).collect(),
     }
   }
 
@@ -108,9 +111,7 @@ impl Pose {
       attachment.clone_from(&slot.attachment);
     }
     self.draw_order.clear();
-    self
-      .draw_order
-      .extend((0..data.slots().len()).filter_map(|index| u8::try_from(index).ok().map(SlotId)));
+    self.draw_order.extend(setup_order(data));
   }
 
   /// Computes every bone's world transform from the local poses. `root`

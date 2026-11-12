@@ -5,7 +5,7 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use super::animation::{Animation, EventValues, Timeline};
+use super::animation::{Animation, EMPTY_NAME, EventValues, Timeline};
 use super::apply::{
   CrossedKey, Layer, MAX_LOOPS, MixBlend, MixDirection, apply_layer, events_crossed,
 };
@@ -13,9 +13,23 @@ use super::data::{AnimationCatalogue, SkeletonData};
 use super::pose::Pose;
 use crate::core::ecs::Component;
 
-/// The name of the animation an entry from [`SkeletonAnimation::set_empty`]
-/// plays: it keys nothing
-const EMPTY: &str = "<empty>";
+/// The most entries a track holds in its chain: its current entry and the
+/// seven it is mixing from. Past it the oldest ends. A chain this long in
+/// ordinary play means the entry that replaced the oldest has all but
+/// finished mixing in, so the oldest has almost no weight left; the cap
+/// bounds a step's work, and a chain whose mixes cannot finish (a stopped
+/// clock)
+const MAX_CHAIN: usize = 8;
+
+/// The most calls kept until the data lands: room for a `set_empty`, a
+/// `set_animation` and two queued entries on every track
+const MAX_KEPT: usize = 4 * SkeletonAnimation::MAX_TRACKS;
+
+/// The most track events from calls kept until the next step
+const MAX_TOLD: usize = 1024;
+
+/// The most spare sets of per-timeline buffers a state keeps
+const MAX_SPARE: usize = 16;
 
 /// A track entry's handle, from [`SkeletonAnimation::set_animation`] and
 /// [`SkeletonAnimation::add_animation`]. It finds the entry until the entry
@@ -101,7 +115,8 @@ pub struct TrackEntry {
   /// Per timeline: the factor on its alpha while it mixes out
   fades: Vec<f32>,
   /// Per timeline: the turn each rotate timeline blended by last step,
-  /// while in a mix
+  /// while the entry remembers it (in a mix, or applied at less than full
+  /// strength)
   turns: Vec<f32>,
   // This step: the track time at the step's start (or at its start within
   // the step), that start as a fraction of the step, the track time one
@@ -125,9 +140,11 @@ impl TrackEntry {
     self.track_time
   }
 
-  /// Whether the entry has played its animation through at least once. An
-  /// entry that has not started (queued, or kept until the data lands) has
-  /// not
+  /// Whether the entry's time has reached its animation's end at least
+  /// once. An entry that has not started (queued, or kept until the data
+  /// lands) has not. This reads the entry's time alone, so it also turns
+  /// true for an entry that passes its end while mixing out, which sends no
+  /// [`TrackEventKind::Complete`]
   pub fn is_complete(&self) -> bool {
     self.advanced && self.track_time >= self.duration
   }
@@ -249,6 +266,50 @@ pub(crate) struct FiredTrackEvent {
   pub(crate) kind: TrackEventKind,
 }
 
+/// Where track events are told: a step's list, or the state's bounded list
+/// of the events its calls cause
+trait Tell {
+  fn tell(&mut self, event: FiredTrackEvent);
+}
+
+impl Tell for Vec<FiredTrackEvent> {
+  fn tell(&mut self, event: FiredTrackEvent) {
+    self.push(event);
+  }
+}
+
+/// The track events calls cause, kept for the next step: the newest
+/// [`MAX_TOLD`]. Past that the oldest are dropped, with one warning
+#[derive(Debug, Clone, Default)]
+struct Told {
+  events: VecDeque<FiredTrackEvent>,
+  warned: bool,
+}
+
+impl Tell for Told {
+  fn tell(&mut self, event: FiredTrackEvent) {
+    if self.events.len() >= MAX_TOLD {
+      self.events.pop_front();
+      if !self.warned {
+        self.warned = true;
+        log::warn!(
+          "skeleton has over {MAX_TOLD} track events waiting for its next step; the oldest are dropped"
+        );
+      }
+    }
+    self.events.push_back(event);
+  }
+}
+
+/// An entry's per-timeline buffers. A finished entry leaves them with the
+/// state for a later one, so that starting a mix allocates nothing
+#[derive(Debug, Clone, Default)]
+struct Buffers {
+  cover: Vec<Option<usize>>,
+  fades: Vec<f32>,
+  turns: Vec<f32>,
+}
+
 /// One track: the current entry last, after the entries it is mixing from
 /// (oldest first), and the entries queued after it
 #[derive(Debug, Clone, Default)]
@@ -299,13 +360,17 @@ pub struct SkeletonAnimation {
   tracks: Vec<Track>,
   /// The data's animations, once a step has seen the data
   catalogue: Option<Arc<AnimationCatalogue>>,
-  /// Calls made before the data landed, in order
+  /// Calls made before the data landed, in order (at most [`MAX_KEPT`])
   kept: Vec<Kept>,
   /// Track events from calls, sent with the next step's
-  told: Vec<FiredTrackEvent>,
+  told: Told,
+  /// Buffers finished entries left, for the entries made next (at most
+  /// [`MAX_SPARE`] sets)
+  spare: Vec<Buffers>,
   /// Names already warned about
   warned: Vec<Arc<str>>,
   warned_track: bool,
+  warned_kept: bool,
   next_id: u32,
   empty_name: Arc<str>,
   crossed: Vec<CrossedKey>,
@@ -321,6 +386,11 @@ impl SkeletonAnimation {
   /// The most tracks a skeleton has: tracks 0 to 63
   pub const MAX_TRACKS: usize = 64;
 
+  /// The name of the empty animation that [`set_empty`](Self::set_empty)
+  /// plays, as its track events carry it. No animation in a skeleton's
+  /// data can have this name
+  pub const EMPTY: &'static str = EMPTY_NAME;
+
   /// A state with no tracks playing
   pub fn new() -> Self {
     Self {
@@ -328,11 +398,13 @@ impl SkeletonAnimation {
       tracks: Vec::new(),
       catalogue: None,
       kept: Vec::new(),
-      told: Vec::new(),
+      told: Told::default(),
+      spare: Vec::new(),
       warned: Vec::new(),
       warned_track: false,
+      warned_kept: false,
       next_id: 0,
-      empty_name: Arc::from(EMPTY),
+      empty_name: Arc::from(Self::EMPTY),
       crossed: Vec::new(),
     }
   }
@@ -341,23 +413,26 @@ impl SkeletonAnimation {
   /// mixes in over its `mix_duration`, the old one mixing out, and the
   /// track's queue is dropped. A name the data lacks warns once per
   /// skeleton per name and returns `None`. Before the data lands the call is
-  /// kept, and made when it lands
+  /// kept, and made when it lands (`None` if too many are kept already)
   pub fn set_animation(&mut self, track: usize, name: &str, looping: bool) -> Option<TrackEntryId> {
     if !self.track_ok(track) {
       return None;
     }
     let Some(catalogue) = self.catalogue.clone() else {
+      self.drop_kept(track, true);
+      if !self.can_keep() {
+        return None;
+      }
       let entry = self.make_entry(Arc::from(name), looping);
       let id = entry.id;
-      self.drop_kept(track, true);
       self.kept.push(Kept::Set(track, entry));
       return Some(id);
     };
-    let Some(index) = catalogue.index(name) else {
+    let Some((index, name)) = catalogue.find(name) else {
       self.warn_unknown(name);
       return None;
     };
-    let mut entry = self.make_entry(Arc::from(name), looping);
+    let mut entry = self.make_entry(name.clone(), looping);
     entry.animation = Some(index);
     entry.duration = catalogue.duration(index);
     Some(self.install(track, entry, &catalogue))
@@ -381,17 +456,20 @@ impl SkeletonAnimation {
       return None;
     }
     let Some(catalogue) = self.catalogue.clone() else {
+      if !self.can_keep() {
+        return None;
+      }
       let mut entry = self.make_entry(Arc::from(name), looping);
       entry.delay = delay;
       let id = entry.id;
       self.kept.push(Kept::Add(track, entry));
       return Some(id);
     };
-    let Some(index) = catalogue.index(name) else {
+    let Some((index, name)) = catalogue.find(name) else {
       self.warn_unknown(name);
       return None;
     };
-    let mut entry = self.make_entry(Arc::from(name), looping);
+    let mut entry = self.make_entry(name.clone(), looping);
     entry.animation = Some(index);
     entry.duration = catalogue.duration(index);
     Some(self.enqueue(track, entry, delay, &catalogue))
@@ -407,7 +485,9 @@ impl SkeletonAnimation {
     }
     let Some(catalogue) = self.catalogue.clone() else {
       self.drop_kept(track, false);
-      self.kept.push(Kept::Empty(track, mix));
+      if self.can_keep() {
+        self.kept.push(Kept::Empty(track, mix));
+      }
       return;
     };
     let mut entry = self.make_entry(self.empty_name.clone(), false);
@@ -427,11 +507,10 @@ impl SkeletonAnimation {
       return;
     };
     for entry in lane.chain.drain(..).rev() {
-      tell(&mut self.told, track, &entry, TrackEventKind::End);
-      tell(&mut self.told, track, &entry, TrackEventKind::Dispose);
+      retire(entry, track, true, &mut self.told, &mut self.spare);
     }
     for entry in lane.queue.drain(..) {
-      tell(&mut self.told, track, &entry, TrackEventKind::Dispose);
+      retire(entry, track, false, &mut self.told, &mut self.spare);
     }
   }
 
@@ -491,14 +570,14 @@ impl SkeletonAnimation {
     track_events: &mut Vec<FiredTrackEvent>,
   ) {
     self.see(data);
-    track_events.append(&mut self.told);
+    track_events.extend(self.told.events.drain(..));
     let step = non_negative(non_negative(dt) * non_negative(self.time_scale));
     let first_event = events.len();
     let mut crossed = std::mem::take(&mut self.crossed);
     for (index, track) in self.tracks.iter_mut().enumerate() {
-      advance(track, index, step, track_events);
+      advance(track, index, step, track_events, &mut self.spare);
       fire(track, index, data, events, &mut crossed);
-      end_mixes(track, index, track_events);
+      end_mixes(track, index, track_events, &mut self.spare);
     }
     self.crossed = crossed;
     // Each entry's keys are in time order; across entries and tracks,
@@ -539,28 +618,54 @@ impl SkeletonAnimation {
     }
   }
 
-  /// Drops the calls kept for `track`, which a new call replaces. With
-  /// `keep_empty`, a `set_empty` stays if nothing but queued entries came
-  /// after it: the empty animation stays on a track for the next entry to
-  /// mix in from, and what was queued after it is dropped
+  /// Drops the calls kept for `track`, which a new call replaces, and
+  /// disposes their entries. With `keep_empty`, a `set_empty` stays if
+  /// nothing but queued entries came after it: the empty animation stays on
+  /// a track for the next entry to mix in from, and what was queued after
+  /// it is dropped
   fn drop_kept(&mut self, track: usize, keep_empty: bool) {
     let stays = self
       .kept
       .iter()
       .rposition(|kept| kept.track() == track && !matches!(kept, Kept::Add(..)))
       .filter(|&at| keep_empty && matches!(self.kept.get(at), Some(Kept::Empty(..))));
+    let told = &mut self.told;
     let mut at = 0;
     self.kept.retain(|kept| {
       let keep = kept.track() != track || stays == Some(at);
       at += 1;
+      if !keep && let Some(entry) = kept.entry() {
+        tell(told, track, entry, TrackEventKind::Dispose);
+      }
       keep
     });
   }
 
+  /// Whether one more call can be kept until the data lands. Past
+  /// [`MAX_KEPT`] a call is ignored, with one warning
+  fn can_keep(&mut self) -> bool {
+    if self.kept.len() < MAX_KEPT {
+      return true;
+    }
+    if !self.warned_kept {
+      self.warned_kept = true;
+      log::warn!("skeleton has {MAX_KEPT} animation calls waiting for its data; more are ignored");
+    }
+    false
+  }
+
+  /// A new entry, with a finished entry's buffers if any are spare
   fn make_entry(&mut self, name: Arc<str>, looping: bool) -> TrackEntry {
     let id = TrackEntryId(self.next_id);
     self.next_id = self.next_id.wrapping_add(1);
-    TrackEntry::new(id, name, looping)
+    let mut entry = TrackEntry::new(id, name, looping);
+    if let Some(buffers) = self.spare.pop() {
+      entry.cover = buffers.cover;
+      entry.fades = buffers.fades;
+      entry.turns = buffers.turns;
+      entry.forget_timelines();
+    }
+    entry
   }
 
   /// Makes `entry` the track's current entry now, mixing from the current
@@ -576,7 +681,7 @@ impl SkeletonAnimation {
     }
     let lane = &mut self.tracks[track];
     for queued in lane.queue.drain(..) {
-      tell(&mut self.told, track, &queued, TrackEventKind::Dispose);
+      retire(queued, track, false, &mut self.told, &mut self.spare);
     }
     let mut dropped = None;
     if let Some(current) = lane.chain.last_mut() {
@@ -589,19 +694,19 @@ impl SkeletonAnimation {
       }
     }
     let id = entry.id;
-    let from = lane.chain.last();
-    if entry.mix_from_data {
-      if entry.mix_duration == 0.0 {
-        entry.mix_duration = catalogue.mix(from.and_then(|from| from.animation), entry.animation);
-      }
-      entry.mix_from_data = false;
-    }
+    let from = lane.chain.last().and_then(|from| from.animation);
+    mix_from_data(&mut entry, from, catalogue);
     tell(&mut self.told, track, &entry, TrackEventKind::Start);
     if let Some(dropped) = dropped {
-      tell(&mut self.told, track, &dropped, TrackEventKind::End);
-      tell(&mut self.told, track, &dropped, TrackEventKind::Dispose);
+      retire(dropped, track, true, &mut self.told, &mut self.spare);
     }
-    join_mix(&mut lane.chain, entry);
+    join_mix(
+      &mut lane.chain,
+      entry,
+      track,
+      &mut self.told,
+      &mut self.spare,
+    );
     id
   }
 
@@ -623,10 +728,7 @@ impl SkeletonAnimation {
         return self.install(track, entry, catalogue);
       }
       entry.delay = delay;
-      if entry.mix_from_data && entry.mix_duration == 0.0 {
-        entry.mix_duration = catalogue.mix(None, entry.animation);
-      }
-      entry.mix_from_data = false;
+      mix_from_data(&mut entry, None, catalogue);
       let id = entry.id;
       if self.tracks.len() <= track {
         self.tracks.resize_with(track + 1, Track::default);
@@ -639,10 +741,7 @@ impl SkeletonAnimation {
     } else {
       delay
     };
-    if entry.mix_from_data && entry.mix_duration == 0.0 {
-      entry.mix_duration = catalogue.mix(previous.animation, entry.animation);
-    }
-    entry.mix_from_data = false;
+    mix_from_data(&mut entry, previous.animation, catalogue);
     let id = entry.id;
     self.tracks[track].queue.push_back(entry);
     id
@@ -667,12 +766,12 @@ impl SkeletonAnimation {
     for kept in std::mem::take(&mut self.kept) {
       match kept {
         Kept::Set(track, entry) => {
-          if let Some(entry) = self.resolve(entry, catalogue) {
+          if let Some(entry) = self.resolve(track, entry, catalogue) {
             self.install(track, entry, catalogue);
           }
         }
         Kept::Add(track, entry) => {
-          if let Some(entry) = self.resolve(entry, catalogue) {
+          if let Some(entry) = self.resolve(track, entry, catalogue) {
             let delay = entry.delay;
             self.enqueue(track, entry, delay, catalogue);
           }
@@ -682,15 +781,20 @@ impl SkeletonAnimation {
     }
   }
 
+  /// Finds a kept entry's animation now that the data has landed. A name
+  /// the data lacks warns, and the entry is disposed
   fn resolve(
     &mut self,
+    track: usize,
     mut entry: TrackEntry,
     catalogue: &AnimationCatalogue,
   ) -> Option<TrackEntry> {
-    let Some(index) = catalogue.index(&entry.name) else {
+    let Some((index, name)) = catalogue.find(&entry.name) else {
       self.warn_unknown(&entry.name);
+      tell(&mut self.told, track, &entry, TrackEventKind::Dispose);
       return None;
     };
+    entry.name = name.clone();
     entry.animation = Some(index);
     entry.duration = catalogue.duration(index);
     Some(entry)
@@ -719,24 +823,24 @@ impl SkeletonAnimation {
         continue;
       }
       let lane = &mut self.tracks[index];
-      let told = &mut self.told;
-      lane.chain.retain(|entry| {
-        let keep = !gone(entry);
-        if !keep {
-          tell(told, index, entry, TrackEventKind::End);
-          tell(told, index, entry, TrackEventKind::Dispose);
+      for at in (0..lane.chain.len()).rev() {
+        if gone(&lane.chain[at]) {
+          let entry = lane.chain.remove(at);
+          retire(entry, index, true, &mut self.told, &mut self.spare);
         }
-        keep
-      });
-      lane.queue.retain(|entry| {
-        let keep = !gone(entry);
-        if !keep {
-          tell(told, index, entry, TrackEventKind::Dispose);
+      }
+      for at in (0..lane.queue.len()).rev() {
+        if lane.queue.get(at).is_some_and(gone)
+          && let Some(entry) = lane.queue.remove(at)
+        {
+          retire(entry, index, false, &mut self.told, &mut self.spare);
         }
-        keep
-      });
+      }
       for entry in lane.chain.iter_mut().chain(lane.queue.iter_mut()) {
-        if let Some(found) = catalogue.index(&entry.name).filter(|_| !entry.empty) {
+        if !entry.empty
+          && let Some((found, name)) = catalogue.find(&entry.name)
+        {
+          entry.name = name.clone();
           entry.animation = Some(found);
           entry.duration = catalogue.duration(found);
         }
@@ -746,8 +850,8 @@ impl SkeletonAnimation {
   }
 }
 
-fn tell(told: &mut Vec<FiredTrackEvent>, track: usize, entry: &TrackEntry, kind: TrackEventKind) {
-  told.push(FiredTrackEvent {
+fn tell(told: &mut impl Tell, track: usize, entry: &TrackEntry, kind: TrackEventKind) {
+  told.tell(FiredTrackEvent {
     track,
     entry: entry.id,
     animation: entry.name.clone(),
@@ -755,24 +859,64 @@ fn tell(told: &mut Vec<FiredTrackEvent>, track: usize, entry: &TrackEntry, kind:
   });
 }
 
-/// Puts `entry` at the end of the chain, mixing from what was current. A
-/// mix starts both entries' turn memories afresh (one already mixing keeps
-/// its own)
-fn join_mix(chain: &mut Vec<TrackEntry>, mut entry: TrackEntry) {
-  entry.fades.clear();
-  entry.turns.clear();
-  if chain.len() == 1
-    && let Some(from) = chain.last_mut()
-  {
-    from.turns.clear();
+/// An entry is gone: tells its `End` (if it ever started) and its
+/// `Dispose`, and keeps its buffers, if it has any, for a later entry
+fn retire(
+  mut entry: TrackEntry,
+  track: usize,
+  started: bool,
+  told: &mut impl Tell,
+  spare: &mut Vec<Buffers>,
+) {
+  if started {
+    tell(told, track, &entry, TrackEventKind::End);
   }
+  tell(told, track, &entry, TrackEventKind::Dispose);
+  let buffers = Buffers {
+    cover: std::mem::take(&mut entry.cover),
+    fades: std::mem::take(&mut entry.fades),
+    turns: std::mem::take(&mut entry.turns),
+  };
+  let allocated = buffers.cover.capacity() + buffers.fades.capacity() + buffers.turns.capacity();
+  if allocated > 0 && spare.len() < MAX_SPARE {
+    spare.push(buffers);
+  }
+}
+
+/// Gives an entry whose mix was not set the data's mix from the animation
+/// `from` (or from nothing)
+fn mix_from_data(entry: &mut TrackEntry, from: Option<usize>, catalogue: &AnimationCatalogue) {
+  if entry.mix_from_data && entry.mix_duration == 0.0 {
+    entry.mix_duration = catalogue.mix(from, entry.animation);
+  }
+  entry.mix_from_data = false;
+}
+
+/// Puts `entry` at the end of the chain, mixing from what was current. A
+/// chain past [`MAX_CHAIN`] ends its oldest entries
+fn join_mix(
+  chain: &mut Vec<TrackEntry>,
+  entry: TrackEntry,
+  track: usize,
+  told: &mut impl Tell,
+  spare: &mut Vec<Buffers>,
+) {
   chain.push(entry);
+  while chain.len() > MAX_CHAIN {
+    retire(chain.remove(0), track, true, told, spare);
+  }
 }
 
 /// Advances a track's entries by `step` seconds of skeleton time, starts
 /// queued entries that are due, and tells the starts, interrupts and
 /// completions
-fn advance(track: &mut Track, index: usize, step: f32, told: &mut Vec<FiredTrackEvent>) {
+fn advance(
+  track: &mut Track,
+  index: usize,
+  step: f32,
+  told: &mut Vec<FiredTrackEvent>,
+  spare: &mut Vec<Buffers>,
+) {
   let count = track.chain.len();
   for position in 0..count {
     let held = track
@@ -849,7 +993,7 @@ fn advance(track: &mut Track, index: usize, step: f32, told: &mut Vec<FiredTrack
     entry.mix_time = over;
     entry.advanced = true;
     tell(told, index, &entry, TrackEventKind::Start);
-    join_mix(&mut track.chain, entry);
+    join_mix(&mut track.chain, entry, index, told, spare);
     current_from = Some(-1.0);
   }
   if let (Some(from), Some(current)) = (current_from, track.chain.last()) {
@@ -861,14 +1005,9 @@ fn advance(track: &mut Track, index: usize, step: f32, told: &mut Vec<FiredTrack
 /// (`last`, `until`] of its track time: each loop when looping (at most
 /// [`MAX_LOOPS`] in one step), once otherwise and for a zero-length
 /// animation
-fn complete(
-  entry: &TrackEntry,
-  index: usize,
-  last: f32,
-  until: f32,
-  told: &mut Vec<FiredTrackEvent>,
-) {
-  if until <= last {
+fn complete(entry: &TrackEntry, index: usize, last: f32, until: f32, told: &mut impl Tell) {
+  // The empty animation has nothing to complete
+  if until <= last || entry.empty {
     return;
   }
   let duration = entry.duration;
@@ -878,17 +1017,21 @@ fn complete(
     }
     return;
   }
-  // Loop ends at k x duration, k from 1; one more each side than division
-  // gives, as for events, so f32 rounding misses none
+  // Loops end at k x duration, k from 1. Division can round the loop
+  // holding `until` under a boundary, so the walk starts one loop above
+  // what it gives, and goes down to the first end at or before `last`.
+  // Every Complete is alike, so their order does not matter. The walk is
+  // bounded whatever the arithmetic gives, and tells at most MAX_LOOPS
   let high = ((until / duration).floor() as i64).saturating_add(1);
-  let low = ((last.max(0.0) / duration).floor() as i64)
-    .saturating_sub(1)
-    .max(1)
-    .max(high.saturating_sub(MAX_LOOPS));
-  for loops in low..=high {
+  let mut completed = 0;
+  for loops in (1..=high).rev().take(MAX_LOOPS as usize + 2) {
     let end = loops as f32 * duration;
-    if end > last && end <= until {
+    if end <= last {
+      break;
+    }
+    if end <= until && completed < MAX_LOOPS {
       tell(told, index, entry, TrackEventKind::Complete);
+      completed += 1;
     }
   }
 }
@@ -948,14 +1091,18 @@ fn fire(
 /// Ends the entries whose mix-out is over: everything older than the
 /// newest entry that has finished mixing in. Then an empty animation that
 /// has finished its mix, with nothing queued after it, clears the track
-fn end_mixes(track: &mut Track, index: usize, told: &mut Vec<FiredTrackEvent>) {
+fn end_mixes(
+  track: &mut Track,
+  index: usize,
+  told: &mut Vec<FiredTrackEvent>,
+  spare: &mut Vec<Buffers>,
+) {
   let done = (1..track.chain.len())
     .rev()
     .find(|&position| track.chain[position].mix_done());
   if let Some(done) = done {
     for entry in track.chain.drain(..done) {
-      tell(told, index, &entry, TrackEventKind::End);
-      tell(told, index, &entry, TrackEventKind::Dispose);
+      retire(entry, index, true, told, spare);
     }
   }
   let finished = track.chain.len() == 1
@@ -966,8 +1113,7 @@ fn end_mixes(track: &mut Track, index: usize, told: &mut Vec<FiredTrackEvent>) {
       .is_some_and(|entry| entry.empty && entry.mix_done());
   if finished {
     for entry in track.chain.drain(..) {
-      tell(told, index, &entry, TrackEventKind::End);
-      tell(told, index, &entry, TrackEventKind::Dispose);
+      retire(entry, index, true, told, spare);
     }
   }
 }
@@ -987,6 +1133,27 @@ fn animation_of<'a>(entry: &TrackEntry, data: &'a SkeletonData) -> Option<&'a An
     .and_then(|found| data.animations().get(found))
 }
 
+/// Whether the animation's timeline has reached its first key at `time`.
+/// Before that a timeline applies nothing
+fn started(animation: Option<&Animation>, timeline: usize, time: f32) -> bool {
+  animation
+    .and_then(|animation| animation.timelines.get(timeline))
+    .and_then(Timeline::first_time)
+    .is_some_and(|first| first <= time)
+}
+
+/// The alpha an entry applies at, before its timelines' fades: its own,
+/// times how far it has mixed in (the oldest entry of a chain has nothing
+/// left to mix in from)
+fn applied_alpha(entry: &TrackEntry, position: usize) -> f32 {
+  let mix = if position == 0 {
+    1.0
+  } else {
+    entry.mix_fraction()
+  };
+  entry.alpha() * mix
+}
+
 /// Applies one track: the entries it is mixing from, oldest first, then
 /// the current one. Each entry mixing out takes, per timeline, the alpha
 /// that makes its weight in the result fall from its own to 0 in step with
@@ -997,12 +1164,27 @@ fn apply_track(track: &mut Track, data: &SkeletonData, pose: &mut Pose) {
     return;
   }
   let mixing = count > 1;
+  // Stepped keys belong to the newest entry with any weight: an entry
+  // mixing out keeps them until the one replacing it has some
+  let mut owner = None;
   for position in 0..count {
     let entry = &mut track.chain[position];
-    let timelines = animation_of(entry, data).map_or(0, |animation| animation.timelines.len());
-    if mixing && entry.turns.len() != timelines {
+    let alpha = applied_alpha(entry, position);
+    if alpha > 0.0 {
+      owner = Some(position);
+    }
+    // An entry remembers which way its rotations turn while it is in a mix
+    // or applies at less than full strength: at full strength alone, the
+    // way round makes no difference to where the bone ends up. One that
+    // stops remembering starts afresh the next time
+    if mixing || alpha < 1.0 {
+      let timelines = animation_of(entry, data).map_or(0, |animation| animation.timelines.len());
+      if entry.turns.len() != timelines {
+        entry.turns.clear();
+        entry.turns.resize(timelines, f32::NAN);
+      }
+    } else {
       entry.turns.clear();
-      entry.turns.resize(timelines, f32::NAN);
     }
   }
   // Fades, newest to oldest. `plain` is the product of (1 - mix) over the
@@ -1033,14 +1215,19 @@ fn apply_track(track: &mut Track, data: &SkeletonData, pose: &mut Pose) {
     }
     let next_mix = next.mix_fraction();
     let next_alpha = next.alpha() * next_mix;
+    let next_animation = animation_of(next, data);
+    let next_time = next.animation_time();
     entry.fades.clear();
     for timeline in 0..entry.cover.len() {
+      // The newer entry's timeline replaces this one's values only if it
+      // replaces at all, and only once it has reached its first key
       let covering = entry
         .cover
         .get(timeline)
         .copied()
         .flatten()
-        .filter(|_| next.mix_blend == MixBlend::Replace);
+        .filter(|_| next.mix_blend == MixBlend::Replace)
+        .filter(|&theirs| started(next_animation, theirs, next_time));
       let (applied, beyond) = match covering {
         Some(theirs) => {
           let fade = if next_is_current {
@@ -1068,28 +1255,19 @@ fn apply_track(track: &mut Track, data: &SkeletonData, pose: &mut Pose) {
       entry.applied = true;
       continue;
     };
-    let mix = if position == 0 {
-      1.0
-    } else {
-      entry.mix_fraction()
-    };
-    let alpha = entry.alpha() * mix;
-    // Stepped keys belong to the entry mixing in, and only once it has
-    // weight: a layer at alpha 0 does not force them
-    let direction = if current && alpha > 0.0 {
+    let direction = if owner == Some(position) {
       MixDirection::In
     } else {
       MixDirection::Out
     };
     let layer = Layer {
       time: entry.animation_time(),
-      alpha,
+      alpha: applied_alpha(entry, position),
       fades: if current { &[] } else { &entry.fades },
       blend: entry.mix_blend,
       direction,
     };
-    let turns: &mut [f32] = if mixing { &mut entry.turns } else { &mut [] };
-    apply_layer(animation, data, pose, layer, turns);
+    apply_layer(animation, data, pose, layer, &mut entry.turns);
     entry.applied = true;
   }
 }
@@ -1150,6 +1328,19 @@ mod tests {
     }
   }
 
+  /// Timelines keying the body's attachment and the draw order from time 0
+  fn stepped(attachment: &str, order: [u8; 3]) -> Vec<Timeline> {
+    vec![
+      Timeline::Attachment {
+        slot: SlotId(0),
+        frames: vec![(0.0, Some(Arc::from(attachment)))],
+      },
+      Timeline::DrawOrder {
+        frames: vec![(0.0, Some(order.map(SlotId).to_vec()))],
+      },
+    ]
+  }
+
   fn clip(name: &str, duration: f32, timelines: Vec<Timeline>) -> Animation {
     Animation {
       name: Arc::from(name),
@@ -1158,9 +1349,9 @@ mod tests {
     }
   }
 
-  /// One root bone, a slot "body" showing "torso", an event "tick", and
-  /// animations named for what they do. The default mix is 0.2 s; "slide"
-  /// to "thirty" has its own, 0.5 s
+  /// One root bone, a slot "body" showing "torso" and two bare slots after
+  /// it, an event "tick", and animations named for what they do. The
+  /// default mix is 0.2 s; "slide" to "thirty" has its own, 0.5 s
   fn data() -> SkeletonData {
     let tenths: Vec<f32> = (0..10).map(|i| i as f32 * 0.1).collect();
     SkeletonData::builder()
@@ -1173,6 +1364,8 @@ mod tests {
           ..SlotSetup::default()
         },
       )
+      .slot("front", "root", SlotSetup::default())
+      .slot("back", "root", SlotSetup::default())
       .event(EventData::new("tick"))
       .animation(clip("zero", 1.0, vec![rotate(0.0)]))
       .animation(clip("ninety", 1.0, vec![rotate(90.0)]))
@@ -1215,6 +1408,16 @@ mod tests {
         vec![Timeline::Translate {
           bone: ROOT,
           frames: vec![(0.0, Vec2::new(10.0, 10.0), Curve::Linear)],
+        }],
+      ))
+      .animation(clip("grab", 1.0, stepped("fist", [2, 1, 0])))
+      .animation(clip("wave", 1.0, stepped("palm", [1, 0, 2])))
+      .animation(clip(
+        "late",
+        1.0,
+        vec![Timeline::Rotate {
+          bone: ROOT,
+          frames: vec![(0.5, 30.0_f32.to_radians(), Curve::Linear)],
         }],
       ))
       .mix("slide", "thirty", 0.5)
@@ -1307,6 +1510,12 @@ mod tests {
       .all(f32::is_finite)
     }
 
+    /// The body's attachment and the draw order, as slot indices
+    fn shown(&self) -> (Option<&str>, Vec<u8>) {
+      let order = self.pose.draw_order.iter().map(|slot| slot.0).collect();
+      (self.pose.slot_attachments[0].as_deref(), order)
+    }
+
     /// The root bone's rotation, in degrees
     fn degrees(&self) -> f32 {
       self.pose.bones[0].rotation.to_degrees()
@@ -1385,7 +1594,7 @@ mod tests {
     rig.step(0.1);
     close(rig.degrees(), 90.0);
     rig.state.set_empty(1, 0.2);
-    rig.step(0.1);
+    let first = rig.step(0.1);
     // Half way back to what track 0 leaves; the empty animation playing
     // meanwhile is not reported as the track's current entry
     close(rig.degrees(), 60.0);
@@ -1393,12 +1602,22 @@ mod tests {
     let fired = rig.step(0.1);
     close(rig.degrees(), 30.0);
     assert_eq!(rig.state.current(1), None);
-    assert!(
-      fired
-        .kinds()
-        .contains(&("<empty>", TrackEventKind::Dispose)),
-      "{:?}",
-      fired.kinds()
+    // The empty animation's entry starts, ends and is disposed, and never
+    // completes. Its events carry the public name
+    let empty: Vec<TrackEventKind> = first
+      .track
+      .iter()
+      .chain(&fired.track)
+      .filter(|event| &*event.animation == SkeletonAnimation::EMPTY)
+      .map(|event| event.kind)
+      .collect();
+    assert_eq!(
+      empty,
+      vec![
+        TrackEventKind::Start,
+        TrackEventKind::End,
+        TrackEventKind::Dispose
+      ]
     );
     // On track 0 it fades to the setup pose
     rig.state.set_empty(0, 0.2);
@@ -1639,6 +1858,8 @@ mod tests {
       rig.step(2.0).kinds(),
       vec![("ninety", Complete), ("ninety", Complete)]
     );
+    // And none again for the loops already passed
+    assert_eq!(rig.step(0.3).kinds(), vec![]);
     // A queued entry that never starts is only disposed
     rig
       .state
@@ -1789,8 +2010,8 @@ mod tests {
 
   #[test]
   fn attachments_belong_to_the_entry_mixing_in() {
-    // "swap" keys the body's attachment, "zero" does not: from the step the
-    // mix begins, the slot shows what the incoming entry (or the tracks
+    // "swap" keys the body's attachment, "zero" does not: once the
+    // incoming entry has weight, the slot shows what it (or the tracks
     // below, or the setup pose) gives it
     let mut rig = Rig::new();
     rig.set(0, "swap", true);
@@ -1798,9 +2019,9 @@ mod tests {
     assert_eq!(rig.pose.slot_attachments[0].as_deref(), Some("fist"));
     rig.set(0, "zero", true);
     rig.step(0.0);
-    // At 0% of the mix the incoming entry has no weight yet: nothing sets
-    // the slot, so it shows its setup attachment
-    assert_eq!(rig.pose.slot_attachments[0].as_deref(), Some("torso"));
+    // At 0% of the mix the incoming entry has no weight yet, so the
+    // outgoing one still sets the slot
+    assert_eq!(rig.pose.slot_attachments[0].as_deref(), Some("fist"));
     rig.step(0.1);
     assert_eq!(rig.pose.slot_attachments[0].as_deref(), Some("torso"));
     rig.step(0.2);
@@ -1833,6 +2054,11 @@ mod tests {
     }
     // At the end it rests at 180
     close((last + 360.0).rem_euclid(360.0), 180.0);
+    // Alone at full strength it keeps no memory of the turn, so its next
+    // mix starts afresh
+    rig.step(0.05);
+    assert_eq!(rig.state.tracks[0].chain.len(), 1);
+    assert!(rig.entry(turn).turns.is_empty());
   }
 
   #[test]
@@ -1903,9 +2129,12 @@ mod tests {
     close(rig.degrees(), 45.0);
     assert_eq!(rig.state.current(1), Some(layer));
     assert!(fired.kinds().contains(&("ninety", TrackEventKind::Start)));
-    // The unknown name warns when the data lands, and does nothing
+    // The unknown name warns when the data lands, and does nothing but
+    // dispose its entry
     assert_eq!(rig.state.current(2), None);
     assert_eq!(capture.containing("dance"), 1);
+    assert!(fired.kinds().contains(&("dance", TrackEventKind::Dispose)));
+    assert!(unknown.is_some_and(|id| rig.state.entry(id).is_none()));
     // A kept entry's mix comes from the data when it lands, unless it was
     // set meanwhile
     let mut state = SkeletonAnimation::new();
@@ -2289,8 +2518,8 @@ mod tests {
     state.clear(2);
     assert!(state.entry(cleared).is_none());
     assert_eq!(state.current(2), None);
-    // Only what is left is made when the data lands. The empty animation
-    // is zero-length, so it completes at once
+    // Each dropped entry is disposed, in the order dropped, and only what
+    // is left is made when the data lands
     let mut rig = Rig::new();
     rig.state = state;
     let fired = rig.step(0.1);
@@ -2298,13 +2527,24 @@ mod tests {
     assert_eq!(
       fired.kinds(),
       vec![
+        ("ninety", Dispose),
+        ("zero", Dispose),
+        ("ninety", Dispose),
+        ("ninety", Dispose),
         ("thirty", Start),
         ("<empty>", Start),
-        ("<empty>", Complete),
         ("<empty>", End),
         ("<empty>", Dispose),
       ]
     );
+    let disposed: Vec<TrackEntryId> = fired
+      .track
+      .iter()
+      .filter(|event| event.kind == Dispose)
+      .map(|event| event.entry)
+      .take(4)
+      .collect();
+    assert_eq!(disposed, vec![first, queued, faded, cleared]);
   }
 
   #[test]
@@ -2330,5 +2570,305 @@ mod tests {
     assert!(rig.state.set_animation(past - 1, "ninety", true).is_some());
     rig.step(0.1);
     close(rig.degrees(), 90.0);
+  }
+
+  #[test]
+  fn stepped_keys_stay_with_the_outgoing_entry_until_the_incoming_has_weight() {
+    // "grab" and "wave" both key the body's attachment and the draw order.
+    // A queued entry that starts exactly on its delay has mixed in 0%: on
+    // that step the outgoing entry still sets them, and from the next the
+    // incoming one does
+    let mut rig = Rig::new();
+    rig.set(0, "grab", false);
+    let wave = rig.add(0, "wave", false, 0.5);
+    rig.step(0.25);
+    assert_eq!(rig.shown(), (Some("fist"), vec![2, 1, 0]));
+    rig.step(0.25);
+    assert_eq!(rig.state.current(0), Some(wave));
+    assert_eq!(rig.entry(wave).mix_time, 0.0);
+    assert_eq!(rig.shown(), (Some("fist"), vec![2, 1, 0]));
+    rig.step(0.05);
+    assert_eq!(rig.shown(), (Some("palm"), vec![1, 0, 2]));
+    // The same while the skeleton's clock is stopped after a set_animation,
+    // for as long as it is
+    let mut rig = Rig::new();
+    rig.set(0, "grab", true);
+    rig.step(0.1);
+    rig.state.time_scale = 0.0;
+    rig.set(0, "wave", true);
+    for _ in 0..3 {
+      rig.step(0.1);
+      assert_eq!(rig.shown(), (Some("fist"), vec![2, 1, 0]));
+    }
+    rig.state.time_scale = 1.0;
+    rig.step(0.05);
+    assert_eq!(rig.shown(), (Some("palm"), vec![1, 0, 2]));
+    // An incoming entry whose own alpha is 0 never has weight: the outgoing
+    // one sets them while it lasts, and then nothing does
+    let mut rig = Rig::new();
+    rig.set(0, "grab", true);
+    rig.step(0.1);
+    let wave = rig.set(0, "wave", true);
+    rig.entry(wave).alpha = 0.0;
+    rig.step(0.1);
+    assert_eq!(rig.shown(), (Some("fist"), vec![2, 1, 0]));
+    rig.step(0.1);
+    assert_eq!(rig.state.tracks[0].chain.len(), 1);
+    assert_eq!(rig.shown(), (Some("torso"), vec![0, 1, 2]));
+  }
+
+  #[test]
+  fn a_timeline_before_its_first_key_does_not_hold_the_outgoing_entry_up() {
+    // "late" keys the rotation from 0.5 s only. Mixing into it over 0.2 s,
+    // nothing replaces the outgoing 90 degrees, so it fades to the setup
+    // pose in step with the mix (90, 45, 0) and nothing pops when the mix
+    // ends
+    let mut rig = Rig::new();
+    rig.set(0, "ninety", true);
+    rig.step(0.1);
+    rig.set(0, "late", false);
+    rig.step(0.0);
+    close(rig.degrees(), 90.0);
+    rig.step(0.1);
+    close(rig.degrees(), 45.0);
+    rig.step(0.1);
+    close(rig.degrees(), 0.0);
+    rig.step(0.1);
+    close(rig.degrees(), 0.0);
+    // The key itself, 0.55 s in
+    rig.step(0.25);
+    close(rig.degrees(), 30.0);
+    // Reached mid-mix: over a 1 s mix the key at 0.5 s comes at half the
+    // mix. The step before, the outgoing entry is fading alone (90 x 0.75);
+    // on it, the key's 30 degrees takes the incoming entry's share (90 x
+    // 0.5 + 30 x 0.5), the animation's own step weighted by the mix
+    let mut rig = Rig::new();
+    rig.set(0, "ninety", true);
+    rig.step(0.1);
+    let late = rig.set(0, "late", false);
+    rig.entry(late).mix_duration = 1.0;
+    rig.step(0.25);
+    close(rig.degrees(), 67.5);
+    rig.step(0.25);
+    close(rig.degrees(), 60.0);
+    rig.step(0.25);
+    close(rig.degrees(), 45.0);
+    rig.step(0.25);
+    close(rig.degrees(), 30.0);
+  }
+
+  #[test]
+  fn a_track_mixes_from_at_most_seven_entries() {
+    use TrackEventKind::*;
+    // With the clock stopped no mix finishes, so every set_animation adds
+    // to the chain
+    let names = ["zero", "ninety", "thirty", "half_turn"];
+    let mut rig = Rig::new();
+    rig.state.time_scale = 0.0;
+    let mut ids = Vec::new();
+    for round in 0..MAX_CHAIN {
+      ids.push(rig.set(0, names[round % names.len()], true));
+      rig.step(0.1);
+    }
+    assert_eq!(rig.state.tracks[0].chain.len(), MAX_CHAIN);
+    // One more, and the oldest ends
+    rig.set(0, "slide", true);
+    let fired = rig.step(0.1);
+    assert_eq!(rig.state.tracks[0].chain.len(), MAX_CHAIN);
+    assert!(rig.state.entry(ids[0]).is_none());
+    assert!(rig.state.entry(ids[1]).is_some());
+    assert_eq!(
+      fired.kinds(),
+      vec![
+        ("half_turn", Interrupt),
+        ("slide", Start),
+        ("zero", End),
+        ("zero", Dispose),
+      ]
+    );
+    // However many more
+    let mut last = None;
+    for round in 0..40 {
+      last = Some(rig.set(0, names[round % names.len()], true));
+      rig.step(0.1);
+      assert_eq!(rig.state.tracks[0].chain.len(), MAX_CHAIN);
+    }
+    assert_eq!(rig.state.current(0), last);
+  }
+
+  #[test]
+  fn kept_calls_are_capped_with_one_warning() {
+    let capture = capture_log();
+    let mut state = SkeletonAnimation::new();
+    let mut made = 0;
+    for _ in 0..MAX_KEPT + 50 {
+      if state.add_animation(0, "ninety", true, 0.0).is_some() {
+        made += 1;
+      }
+    }
+    assert_eq!(made, MAX_KEPT);
+    assert_eq!(state.kept.len(), MAX_KEPT);
+    assert_eq!(capture.containing("waiting for its data"), 1);
+    // A call on another track is refused too; one that replaces its track's
+    // kept calls makes room for itself
+    assert_eq!(state.set_animation(1, "ninety", true), None);
+    state.set_empty(1, 0.0);
+    assert_eq!(state.kept.len(), MAX_KEPT);
+    assert!(state.set_animation(0, "ninety", true).is_some());
+    assert_eq!(state.kept.len(), 1);
+    assert_eq!(capture.containing("waiting for its data"), 1);
+  }
+
+  #[test]
+  fn track_events_from_calls_are_bounded_between_steps() {
+    let capture = capture_log();
+    let mut rig = Rig::new();
+    rig.set(0, "zero", true);
+    rig.step(0.1);
+    // Not stepped, each set_animation tells an Interrupt and a Start, and
+    // an End and a Dispose for the entry it dropped: far more than are kept
+    let mut last = None;
+    for _ in 0..MAX_TOLD {
+      last = Some(rig.set(0, "ninety", true));
+    }
+    let fired = rig.step(0.1);
+    assert_eq!(fired.track.len(), MAX_TOLD);
+    assert_eq!(capture.containing("track events"), 1);
+    // The newest are the ones kept
+    assert!(
+      fired
+        .track
+        .iter()
+        .any(|event| Some(event.entry) == last && event.kind == TrackEventKind::Start)
+    );
+    close(rig.degrees(), 45.0);
+  }
+
+  #[test]
+  fn a_layer_at_partial_alpha_keeps_turning_one_way_after_its_mix() {
+    // Track 0 sweeps from -30 to 30 degrees; a layer at half alpha mixes
+    // from 0 to 180 degrees over 0.2 s, starting at 0.4 s. The short way
+    // from under the layer to 180 flips at 0.5 s; the layer keeps the way
+    // it started through the mix and after it ends at 0.6 s
+    let mut rig = Rig::new();
+    rig.set(0, "sweep", false);
+    let zero = rig.set(1, "zero", true);
+    rig.entry(zero).alpha = 0.5;
+    rig.step(0.4);
+    let turn = rig.set(1, "half_turn", true);
+    rig.entry(turn).alpha = 0.5;
+    let mut last = rig.degrees();
+    let mut seen = Vec::new();
+    for _ in 0..8 {
+      rig.step(0.05);
+      let now = rig.degrees();
+      let change = (now - last + 540.0).rem_euclid(360.0) - 180.0;
+      assert!(change.abs() < 30.0, "{last} to {now}");
+      seen.push(now);
+      last = now;
+    }
+    assert_eq!(rig.state.tracks[1].chain.len(), 1);
+    // The values worked by hand: the mix's four steps, then the layer alone
+    for (now, expected) in seen.iter().zip([-24.0, -45.0, -66.0, -87.0, -85.5]) {
+      close(*now, expected);
+    }
+  }
+
+  #[test]
+  fn a_call_after_the_data_lands_takes_the_data_s_name_and_spare_buffers() {
+    let mut rig = Rig::new();
+    rig.step(0.1);
+    // The entry's name is the data's own string, not a copy
+    let zero = rig.set(0, "zero", true);
+    let name = rig
+      .data
+      .catalogue()
+      .names
+      .get_key_value("zero")
+      .map(|(name, _)| name.clone())
+      .expect("in the data");
+    assert!(Arc::ptr_eq(&rig.entry(zero).name, &name));
+    // After a few crossfades, each new entry starts with the per-timeline
+    // buffers a finished one left, so starting a mix allocates nothing
+    for name in ["ninety", "zero", "ninety", "zero"] {
+      rig.set(0, name, true);
+      for _ in 0..3 {
+        rig.step(0.1);
+      }
+    }
+    for name in ["ninety", "zero", "ninety", "zero", "ninety", "zero"] {
+      let id = rig.set(0, name, true);
+      let entry = rig.entry(id);
+      let spare = [
+        entry.cover.capacity(),
+        entry.fades.capacity(),
+        entry.turns.capacity(),
+      ];
+      assert!(spare.iter().all(|&capacity| capacity > 0), "{spare:?}");
+      for _ in 0..3 {
+        rig.step(0.1);
+      }
+    }
+  }
+
+  #[test]
+  fn spare_buffers_are_bounded() {
+    // Three tracks' full chains (24 entries, each with buffers from its
+    // mix) ended at once leave more sets than the state keeps
+    let names = ["zero", "ninety", "thirty", "half_turn"];
+    let mut rig = Rig::new();
+    rig.state.time_scale = 0.0;
+    for round in 0..MAX_CHAIN {
+      for track in 0..3 {
+        rig.set(track, names[round % names.len()], true);
+      }
+      rig.step(0.1);
+    }
+    for track in 0..3 {
+      rig.state.clear(track);
+    }
+    assert_eq!(rig.state.spare.len(), MAX_SPARE);
+    // The next entry made takes a set
+    rig.set(0, "zero", true);
+    assert_eq!(rig.state.spare.len(), MAX_SPARE - 1);
+  }
+
+  #[test]
+  fn complete_tells_at_most_a_thousand_whatever_the_rounding() {
+    // A loop boundary that division rounds under: k x 0.9 / 0.9 floors to
+    // k - 1, so the search starts one loop further up than division gives
+    let k = (1100..4000_i64)
+      .find(|&k| ((k as f32 * 0.9) / 0.9).floor() as i64 == k - 1)
+      .expect("a boundary that rounds under");
+    let mut entry = TrackEntry::new(TrackEntryId(0), Arc::from("loop"), true);
+    entry.duration = 0.9;
+    let mut told = Vec::new();
+    complete(&entry, 0, 0.5, k as f32 * 0.9, &mut told);
+    assert_eq!(told.len(), 1000);
+    // And none at all for a span that passes no loop's end
+    told.clear();
+    complete(&entry, 0, 0.95, 1.7, &mut told);
+    assert_eq!(told.len(), 0);
+    complete(&entry, 0, 0.95, 1.8, &mut told);
+    assert_eq!(told.len(), 1);
+  }
+
+  #[test]
+  fn a_looping_entry_s_time_steps_coarser_after_days() {
+    // The limit the notes record. Track time is an f32 counting every loop
+    let mut rig = Rig::new();
+    let zero = rig.set(0, "zero", true);
+    rig.step(0.0);
+    let step = 1.0 / 60.0;
+    // From 2^18 s (three days) it moves in steps of 1/32 s, and a 60 Hz
+    // step rounds up to one
+    rig.entry(zero).track_time = 262_144.0;
+    rig.step(step);
+    assert_eq!(rig.entry(zero).track_time(), 262_144.0 + 1.0 / 32.0);
+    // From 2^19 s (six days) a 60 Hz step is under half of the 1/16 s it
+    // moves in, and the entry stops
+    rig.entry(zero).track_time = 524_288.0;
+    rig.step(step);
+    assert_eq!(rig.entry(zero).track_time(), 524_288.0);
   }
 }

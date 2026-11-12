@@ -7,8 +7,8 @@ use std::f32::consts::TAU;
 use glam::{Vec2, Vec4};
 
 use super::animation::{Animation, EventValues, Frame, Timeline};
-use super::data::{BoneData, BoneId, SkeletonData, SlotId};
-use super::pose::{BonePose, Pose, srgb};
+use super::data::{BoneData, BoneId, SkeletonData};
+use super::pose::{BonePose, Pose, setup_order, srgb};
 use crate::core::ui::Color;
 
 /// How an animation's values combine with the pose under it
@@ -21,8 +21,9 @@ pub enum MixBlend {
   Add,
 }
 
-/// Whether an animation is mixing in or out. Attachment and draw-order keys
-/// apply only when mixing in
+/// Whether an animation's stepped keys apply. Attachment and draw-order
+/// keys apply only under `In`, which the animation state gives to the one
+/// entry of a track that owns them; the others get `Out`
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum MixDirection {
   In,
@@ -255,9 +256,7 @@ pub(crate) fn apply_layer(
           pose.draw_order.clear();
           match &frames[index].1 {
             Some(order) => pose.draw_order.extend_from_slice(order),
-            None => pose.draw_order.extend(
-              (0..data.slots().len()).filter_map(|index| u8::try_from(index).ok().map(SlotId)),
-            ),
+            None => pose.draw_order.extend(setup_order(data)),
           }
         }
       }
@@ -344,7 +343,9 @@ pub(crate) fn events_crossed(
     } else {
       first.saturating_sub(1).max(0)
     };
-    for index in first..=end.saturating_add(1) {
+    // The range is at most MAX_LOOPS + 2 long; the bound holds it there
+    // whatever the arithmetic above gives
+    for index in (first..=end.saturating_add(1)).take(MAX_LOOPS as usize + 2) {
       fire(index as f32 * duration, out);
     }
   }

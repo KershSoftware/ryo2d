@@ -185,6 +185,15 @@ impl AnimationCatalogue {
     self.names.get(name).copied()
   }
 
+  /// The animation called `name`: its index, and the data's own copy of
+  /// the name, to share
+  pub(crate) fn find(&self, name: &str) -> Option<(usize, &Arc<str>)> {
+    self
+      .names
+      .get_key_value(name)
+      .map(|(name, &index)| (index, name))
+  }
+
   /// The animation's duration (0 for an index out of range)
   pub(crate) fn duration(&self, index: usize) -> f32 {
     self.durations.get(index).copied().unwrap_or(0.0)
