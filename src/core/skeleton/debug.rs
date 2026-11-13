@@ -102,7 +102,7 @@ pub(crate) fn draw(world: &mut World, alpha: f32, pixel: f32, debug: &mut DebugD
         continue;
       };
       let placed = drawn.root * space;
-      match skeleton.attachment(SlotId(slot), name) {
+      match skeleton.skin_attachment(SlotId(slot), name) {
         Some(Attachment::BoundingBox(bounds)) => {
           corners.clear();
           let vertices = bounds.vertices.iter();

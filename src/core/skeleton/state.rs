@@ -87,6 +87,20 @@ pub struct TrackEntry {
   /// For a queued entry: seconds of the previous entry's time after which
   /// it starts (on an empty track, seconds from the call)
   pub delay: f32,
+  /// Seconds into the animation at which the entry starts (0): its first
+  /// pose is the animation there, and its time moves on from there. The
+  /// event keys at or before a start past 0 do not fire, as if they had
+  /// passed; at 0 a key at 0 fires as the entry starts. Past the
+  /// animation's end, a looping entry's start wraps round, and any other
+  /// entry holds its last frame, complete, with no
+  /// [`Complete`](TrackEventKind::Complete) sent. A `reverse` entry's start
+  /// is measured back from the animation's end. A negative or non-finite
+  /// start counts as 0, with one warning per skeleton. It is read when the
+  /// entry takes its first step, so set it before then (as the entry is
+  /// set or queued, while it waits in the queue, or while it is kept until
+  /// the data lands): setting it after that step does nothing. To restore
+  /// a saved time, give it what [`track_time`](Self::track_time) gave
+  pub start: f32,
   id: TrackEntryId,
   name: Arc<str>,
   /// The animation's index in the data; `None` for the empty animation (or
@@ -94,11 +108,13 @@ pub struct TrackEntry {
   animation: Option<usize>,
   duration: f32,
   empty: bool,
-  /// Seconds since it started, times its speed: the animation's unwrapped
-  /// time
+  /// Its start plus the seconds since it started, times its speed: the
+  /// animation's unwrapped time. Read it through `time`: before the first
+  /// step it is still 0, whatever the start
   track_time: f32,
-  /// Whether it has advanced once: its first step's events span from
-  /// before 0
+  /// Whether it has advanced once: its first step puts it at its start,
+  /// and that step's events span from there (from before 0 at a start of
+  /// 0)
   advanced: bool,
   /// Whether it has been applied once
   applied: bool,
@@ -137,10 +153,13 @@ impl TrackEntry {
     &self.name
   }
 
-  /// Seconds since the entry started, times its speed: how far into its
-  /// animation it is, counting every loop
+  /// How far into its animation the entry is, in seconds, counting every
+  /// loop: where it started (its `start`) plus the seconds since, times its
+  /// speed. Before its first step it is where the entry will start: its
+  /// `start`, wrapped or held within the animation once the skeleton's
+  /// data is known
   pub fn track_time(&self) -> f32 {
-    self.track_time
+    self.time()
   }
 
   /// Whether the entry's time has reached its animation's end at least
@@ -163,6 +182,7 @@ impl TrackEntry {
       hold_previous: false,
       looping,
       delay: 0.0,
+      start: 0.0,
       id,
       name,
       animation: None,
@@ -186,16 +206,68 @@ impl TrackEntry {
     }
   }
 
+  /// Its track time: as its steps left it, or, before its first step,
+  /// where it will start
+  fn time(&self) -> f32 {
+    if self.advanced {
+      self.track_time
+    } else {
+      self.origin()
+    }
+  }
+
+  /// The track time its first step starts from: its `start` (0 if negative
+  /// or not finite), wrapped into the animation when looping and held at
+  /// the animation's end otherwise. An entry kept until the data lands has
+  /// no duration to wrap by yet, and gives its start as it is
+  fn origin(&self) -> f32 {
+    let start = non_negative(self.start);
+    let duration = self.duration;
+    if self.animation.is_none() && !self.empty {
+      start
+    } else if duration <= 0.0 {
+      0.0
+    } else if self.looping {
+      start.rem_euclid(duration)
+    } else {
+      start.min(duration)
+    }
+  }
+
+  /// Puts the entry at its start, for its first step. The step's event
+  /// span begins before 0 at a start of 0, so that a key at 0 fires, and at
+  /// the start otherwise, so that the keys at or before it do not: a start
+  /// of whole loops wraps to 0 with the key at 0 passed. A start that is
+  /// negative or not finite warns, once a skeleton (`warned`)
+  fn begin(&mut self, warned: &mut bool) {
+    if !(self.start.is_finite() && self.start >= 0.0) && !*warned {
+      *warned = true;
+      log::warn!(
+        "skeleton animation {:?} has a start of {}, which is negative or not finite; it starts at 0",
+        self.name,
+        self.start
+      );
+    }
+    let origin = self.origin();
+    self.track_time = origin;
+    self.span_start = if non_negative(self.start) > 0.0 {
+      origin
+    } else {
+      -1.0
+    };
+  }
+
   /// The animation's time this step: wrapped when looping, held at the end
   /// otherwise, and mirrored when reversed
   fn animation_time(&self) -> f32 {
     let duration = self.duration;
+    let track_time = self.time();
     let time = if duration <= 0.0 {
       0.0
     } else if self.looping {
-      self.track_time.rem_euclid(duration)
+      track_time.rem_euclid(duration)
     } else {
-      self.track_time.min(duration)
+      track_time.min(duration)
     };
     if self.reverse { duration - time } else { time }
   }
@@ -205,7 +277,7 @@ impl TrackEntry {
   fn next_end(&self) -> f32 {
     let duration = self.duration;
     if self.looping && duration > 0.0 {
-      finite_time(((self.track_time / duration).floor() + 1.0) * duration)
+      finite_time(((self.time() / duration).floor() + 1.0) * duration)
     } else {
       duration
     }
@@ -374,6 +446,7 @@ pub struct SkeletonAnimation {
   warned: Vec<Arc<str>>,
   warned_track: bool,
   warned_kept: bool,
+  warned_start: bool,
   next_id: u32,
   empty_name: Arc<str>,
   crossed: Vec<CrossedKey>,
@@ -408,6 +481,7 @@ impl SkeletonAnimation {
       warned: Vec::new(),
       warned_track: false,
       warned_kept: false,
+      warned_start: false,
       next_id: 0,
       empty_name: Arc::from(Self::EMPTY),
       crossed: Vec::new(),
@@ -416,9 +490,13 @@ impl SkeletonAnimation {
 
   /// Plays `name` on `track` now, replacing what plays there: the new entry
   /// mixes in over its `mix_duration`, the old one mixing out, and the
-  /// track's queue is dropped. A name the data lacks warns once per
-  /// skeleton per name and returns `None`. Before the data lands the call is
-  /// kept, and made when it lands (`None` if too many are kept already).
+  /// track's queue is dropped. On an empty track there is nothing to mix
+  /// from and the entry shows at once: to fade a layer in, call
+  /// [`set_empty`](Self::set_empty) and queue the animation after it with
+  /// [`add_animation`](Self::add_animation). A name the data lacks warns
+  /// once per skeleton per name and returns `None`. Before the data lands
+  /// the call is kept, and made when it lands (`None` if too many are kept
+  /// already).
   /// The handle of a kept call can end with a
   /// [`Dispose`](TrackEventKind::Dispose) alone, its entry never having
   /// started: when a later call on the track drops it before the data
@@ -549,15 +627,45 @@ impl SkeletonAnimation {
   /// The entry playing on `track` (the one mixing in, during a mix). Before
   /// the data lands, the entry a kept call will play
   pub fn current(&self, track: usize) -> Option<TrackEntryId> {
+    self.current_entry(track).map(|entry| entry.id)
+  }
+
+  /// The name of the animation playing on `track`: its current entry's
+  /// (the one mixing in, during a mix), as [`current`](Self::current) finds
+  /// it. `None` for a track playing nothing, and for one that
+  /// [`set_empty`](Self::set_empty) is fading out or has left empty: the
+  /// empty animation does not read as a name. It is as of the skeleton's
+  /// last step, with the calls made since: an animation set reads here at
+  /// once, a queued one from the step that starts it. So a state machine
+  /// can ask before it sets:
+  /// `if state.animation(0) != Some("run") { state.set_animation(0, "run", true); }`
+  pub fn animation(&self, track: usize) -> Option<&str> {
+    self.current_entry(track).map(TrackEntry::animation)
+  }
+
+  /// How far `track`'s current entry has mixed in from the entry it
+  /// replaced, from 0 up to 1, as of the skeleton's last step; `None` when
+  /// the track is not mixing (or plays nothing). A mix reads 0 from the call
+  /// that starts it until the next step. A fade-out started by
+  /// [`set_empty`](Self::set_empty) is a mix too, and reads here while
+  /// [`animation`](Self::animation) gives `None`
+  pub fn mix_progress(&self, track: usize) -> Option<f32> {
+    let chain = &self.tracks.get(track)?.chain;
+    let entry = chain.last()?;
+    (chain.len() > 1 && !entry.mix_done()).then(|| entry.mix_fraction())
+  }
+
+  /// The entry [`current`](Self::current) reports
+  fn current_entry(&self, track: usize) -> Option<&TrackEntry> {
     if self.catalogue.is_none() {
       let mut kept = self.kept.iter().filter(|kept| kept.track() == track);
       return match kept.next()? {
-        Kept::Set(_, entry) | Kept::Add(_, entry) => Some(entry.id),
-        Kept::Empty(..) => kept.next().and_then(Kept::entry).map(|entry| entry.id),
+        Kept::Set(_, entry) | Kept::Add(_, entry) => Some(entry),
+        Kept::Empty(..) => kept.next().and_then(Kept::entry),
       };
     }
     let entry = self.tracks.get(track)?.chain.last()?;
-    (!entry.empty).then_some(entry.id)
+    (!entry.empty).then_some(entry)
   }
 
   /// One step: advances every track by `dt` seconds times
@@ -582,7 +690,7 @@ impl SkeletonAnimation {
     let first_event = events.len();
     let mut crossed = std::mem::take(&mut self.crossed);
     for (index, track) in self.tracks.iter_mut().enumerate() {
-      advance(track, index, step, track_events);
+      advance(track, index, step, track_events, &mut self.warned_start);
       fire(track, index, data, events, &mut crossed);
       end_mixes(track, index, track_events, &mut self.spare);
     }
@@ -609,8 +717,9 @@ impl SkeletonAnimation {
   /// resets `pose` to the setup pose and applies the tracks where they
   /// stand. Nothing advances and no event key fires, and the track events
   /// that calls caused stay for the next step, so an entry that has yet to
-  /// start is shown at its first moment and its first step is still its
-  /// first: its `Start` and the keys at its time 0 go out then
+  /// start is shown at its first moment (its `start`) and its first step
+  /// is still its first: its `Start` and the keys at its time 0 go out
+  /// then, or with a start past 0 the keys after it
   pub(crate) fn apply_unadvanced(&mut self, data: &SkeletonData, pose: &mut Pose) {
     self.see(data);
     pose.reset(data);
@@ -708,7 +817,7 @@ impl SkeletonAnimation {
     let mut dropped = None;
     if let Some(current) = lane.chain.last_mut() {
       tell(&mut self.told, track, current, TrackEventKind::Interrupt);
-      current.out_at = Some(current.track_time);
+      current.out_at = Some(current.time());
       // An entry replaced before it was ever shown is dropped, not mixed
       // from; the empty animation stays, to mix in from nothing
       if !current.applied && !current.empty {
@@ -933,7 +1042,13 @@ fn join_mix(
 /// queued entries that are due, and tells the starts, interrupts and
 /// completions. The chain can come out longer than [`MAX_CHAIN`]:
 /// [`end_mixes`] cuts it, once the step's event keys have fired
-fn advance(track: &mut Track, index: usize, step: f32, told: &mut Vec<FiredTrackEvent>) {
+fn advance(
+  track: &mut Track,
+  index: usize,
+  step: f32,
+  told: &mut Vec<FiredTrackEvent>,
+  warned_start: &mut bool,
+) {
   let count = track.chain.len();
   for position in 0..count {
     let held = track
@@ -946,11 +1061,11 @@ fn advance(track: &mut Track, index: usize, step: f32, told: &mut Vec<FiredTrack
     } else {
       finite_time(step * entry.speed())
     };
-    entry.span_start = if entry.advanced {
-      entry.track_time
+    if entry.advanced {
+      entry.span_start = entry.track_time;
     } else {
-      -1.0
-    };
+      entry.begin(warned_start);
+    }
     entry.step_origin = entry.track_time;
     entry.step_start = 0.0;
     entry.step_rate = delta;
@@ -1003,17 +1118,17 @@ fn advance(track: &mut Track, index: usize, step: f32, told: &mut Vec<FiredTrack
     } else {
       0.0
     };
-    entry.step_origin = 0.0;
+    entry.begin(warned_start);
+    entry.step_origin = entry.track_time;
     entry.step_rate = finite_time(step * speed);
-    entry.span_start = -1.0;
-    entry.track_time = finite_time(over * speed);
+    entry.track_time = finite_time(entry.track_time + over * speed);
     entry.mix_time = over;
     entry.advanced = true;
     tell(told, index, &entry, TrackEventKind::Start);
+    current_from = Some(entry.span_start);
     // Past the cap for now: the oldest entries still fire this step's keys
     // before `end_mixes` ends them
     track.chain.push(entry);
-    current_from = Some(-1.0);
   }
   if let (Some(from), Some(current)) = (current_from, track.chain.last()) {
     complete(current, index, from, current.track_time, told);
@@ -3037,5 +3152,520 @@ mod tests {
     rig.entry(zero).track_time = 524_288.0;
     rig.step(step);
     assert_eq!(rig.entry(zero).track_time(), 524_288.0);
+  }
+
+  /// Poses the rig without a step, as the frame a skeleton appears in does
+  fn pose_unadvanced(rig: &mut Rig) {
+    rig.state.apply_unadvanced(&rig.data, &mut rig.pose);
+  }
+
+  #[test]
+  fn an_entry_starts_at_its_start() {
+    // Posed before its first step, it shows the animation at its start:
+    // the sweep from -30 to 30 degrees is at 0 half way
+    let mut rig = Rig::new();
+    let sweep = rig.set(0, "sweep", false);
+    rig.entry(sweep).start = 0.5;
+    pose_unadvanced(&mut rig);
+    close(rig.degrees(), 0.0);
+    close(rig.entry(sweep).track_time(), 0.5);
+    // Until its first step the start can still be changed
+    rig.entry(sweep).start = 0.75;
+    pose_unadvanced(&mut rig);
+    close(rig.degrees(), 15.0);
+    // Its first step moves on from there
+    let fired = rig.step(0.125);
+    close(rig.entry(sweep).track_time(), 0.875);
+    close(rig.degrees(), 22.5);
+    assert_eq!(fired.kinds(), vec![("sweep", TrackEventKind::Start)]);
+    // A first step of no length (a stopped clock) leaves it at its start
+    let mut rig = Rig::new();
+    rig.state.time_scale = 0.0;
+    let sweep = rig.set(0, "sweep", true);
+    rig.entry(sweep).start = 0.25;
+    rig.step(0.1);
+    close(rig.degrees(), -15.0);
+    close(rig.entry(sweep).track_time(), 0.25);
+    // A queued entry starts at its start too, and the rest of the step
+    // that starts it carries on from there
+    let mut rig = Rig::new();
+    rig.step(0.0);
+    rig.set(0, "zero", false);
+    let queued = rig.add(0, "sweep", false, 0.5);
+    rig.entry(queued).start = 0.25;
+    rig.entry(queued).mix_duration = 0.0;
+    close(rig.entry(queued).track_time(), 0.25);
+    rig.step(0.625);
+    close(rig.entry(queued).track_time(), 0.375);
+    close(rig.degrees(), -7.5);
+    // An entry mixing in starts there as any other
+    let mut rig = Rig::new();
+    rig.set(0, "zero", true);
+    rig.step(0.1);
+    let sweep = rig.set(0, "sweep", false);
+    rig.entry(sweep).start = 1.0;
+    rig.step(0.1);
+    close(rig.degrees(), 15.0);
+    rig.step(0.1);
+    close(rig.degrees(), 30.0);
+  }
+
+  #[test]
+  fn an_entry_started_part_way_fires_only_the_keys_after_its_start() {
+    use TrackEventKind::*;
+    // Keys at 0 and 0.5. Started at 0.25 the key at 0 has passed: the first
+    // loop fires the key at 0.5 alone, and each later loop both, whatever
+    // the steps
+    for steps in [vec![0.25; 8], vec![2.0], vec![0.1; 20]] {
+      let mut rig = Rig::new();
+      let halves = rig.set(0, "halves", true);
+      rig.entry(halves).start = 0.25;
+      let mut times = Vec::new();
+      for &dt in &steps {
+        times.extend(rig.step(dt).times());
+      }
+      assert_eq!(times, vec![0.5, 0.0, 0.5, 0.0], "steps {steps:?}");
+    }
+    // A key at the start itself has passed too
+    let mut rig = Rig::new();
+    let halves = rig.set(0, "halves", true);
+    rig.entry(halves).start = 0.5;
+    assert_eq!(rig.step(0.25).times(), Vec::<f32>::new());
+    assert_eq!(rig.step(0.5).times(), vec![0.0]);
+    assert_eq!(rig.step(0.5).times(), vec![0.5]);
+    // Not looping, the keys after the start fire once and no more
+    let mut rig = Rig::new();
+    let halves = rig.set(0, "halves", false);
+    rig.entry(halves).start = 0.25;
+    let mut times = Vec::new();
+    for _ in 0..8 {
+      times.extend(rig.step(0.25).times());
+    }
+    assert_eq!(times, vec![0.5]);
+    // At a start of 0 nothing changes: the key at 0 fires with the entry's
+    // Start, even on a stopped clock
+    let mut rig = Rig::new();
+    rig.state.time_scale = 0.0;
+    let halves = rig.set(0, "halves", true);
+    rig.entry(halves).start = 0.0;
+    let fired = rig.step(0.1);
+    assert_eq!(fired.times(), vec![0.0]);
+    assert_eq!(fired.kinds(), vec![("halves", Start)]);
+    // Past 0 that key is behind it: a stopped clock fires nothing
+    let mut rig = Rig::new();
+    rig.state.time_scale = 0.0;
+    let halves = rig.set(0, "halves", true);
+    rig.entry(halves).start = 0.25;
+    let fired = rig.step(0.1);
+    assert_eq!(fired.times(), Vec::<f32>::new());
+    assert_eq!(fired.kinds(), vec![("halves", Start)]);
+    rig.state.time_scale = 1.0;
+    assert_eq!(rig.step(0.5).times(), vec![0.5]);
+    // A queued entry's keys at or before its start do not fire as it
+    // starts
+    let mut rig = Rig::new();
+    rig.set(0, "zero", false);
+    let queued = rig.add(0, "halves", true, 0.5);
+    rig.entry(queued).start = 0.25;
+    assert_eq!(rig.step(0.625).times(), Vec::<f32>::new());
+    assert_eq!(rig.step(0.25).times(), vec![0.5]);
+    // An entry posed and then replaced before its first step takes that
+    // step mixing out: it fires from its start up to its event threshold,
+    // here (0.45, 0.65]
+    let mut rig = Rig::new();
+    let ticks = rig.set(0, "ticks", true);
+    rig.entry(ticks).start = 0.45;
+    rig.entry(ticks).event_threshold = 1.0;
+    pose_unadvanced(&mut rig);
+    rig.set(0, "zero", true);
+    let mut times = Vec::new();
+    for _ in 0..5 {
+      times.extend(rig.step(0.1).times());
+    }
+    assert_eq!(times.len(), 2, "{times:?}");
+    close(times[0], 0.5);
+    close(times[1], 0.6);
+  }
+
+  #[test]
+  fn a_started_entry_completes_when_its_animation_ends() {
+    use TrackEventKind::*;
+    // A looping entry started three quarters in completes a quarter of its
+    // duration later, and every duration after that
+    let mut rig = Rig::new();
+    let ninety = rig.set(0, "ninety", true);
+    rig.entry(ninety).start = 0.75;
+    assert_eq!(rig.step(0.125).kinds(), vec![("ninety", Start)]);
+    assert!(!rig.entry(ninety).is_complete());
+    assert_eq!(rig.step(0.25).kinds(), vec![("ninety", Complete)]);
+    assert!(rig.entry(ninety).is_complete());
+    assert_eq!(rig.step(0.5).kinds(), vec![]);
+    assert_eq!(rig.step(0.5).kinds(), vec![("ninety", Complete)]);
+    // The queue counts the entry's time from its start: "short" (0.5 s)
+    // started at 0.25 ends a quarter of a second on, and the entry queued
+    // at its end starts then
+    let mut rig = Rig::new();
+    let short = rig.set(0, "short", false);
+    rig.entry(short).start = 0.25;
+    let next = rig.add(0, "ninety", false, 0.0);
+    rig.entry(next).mix_duration = 0.0;
+    rig.step(0.125);
+    assert_eq!(rig.state.current(0), Some(short));
+    let fired = rig.step(0.25);
+    assert_eq!(rig.state.current(0), Some(next));
+    close(rig.entry(next).track_time(), 0.125);
+    assert!(fired.kinds().contains(&("short", Complete)));
+  }
+
+  #[test]
+  fn a_start_past_the_end_wraps_when_looping_and_holds_at_the_end_otherwise() {
+    use TrackEventKind::*;
+    // Looping, 2.25 s into a 1 s sweep is a quarter in
+    let mut rig = Rig::new();
+    let sweep = rig.set(0, "sweep", true);
+    rig.entry(sweep).start = 2.25;
+    pose_unadvanced(&mut rig);
+    close(rig.degrees(), -15.0);
+    close(rig.entry(sweep).track_time(), 0.25);
+    let fired = rig.step(0.0);
+    close(rig.degrees(), -15.0);
+    close(rig.entry(sweep).track_time(), 0.25);
+    // The loops it skipped are not completed: its next Complete is at the
+    // end of the loop it is in
+    assert_eq!(fired.kinds(), vec![("sweep", Start)]);
+    assert_eq!(rig.step(0.5).kinds(), vec![]);
+    assert_eq!(rig.step(0.5).kinds(), vec![("sweep", Complete)]);
+    // Nor are their keys fired: only those after a quarter in
+    let mut rig = Rig::new();
+    let halves = rig.set(0, "halves", true);
+    rig.entry(halves).start = 2.25;
+    assert_eq!(rig.step(1.0).times(), vec![0.5, 0.0]);
+    // A start on a loop's end shows the animation at 0 with the key at 0
+    // passed, as the keys at or before any start past 0 are
+    let mut rig = Rig::new();
+    let halves = rig.set(0, "halves", true);
+    rig.entry(halves).start = 3.0;
+    assert_eq!(rig.step(0.25).times(), Vec::<f32>::new());
+    close(rig.entry(halves).track_time(), 0.25);
+    assert_eq!(rig.step(0.5).times(), vec![0.5]);
+    assert_eq!(rig.step(0.5).times(), vec![0.0]);
+    // Not looping, it holds at the end: the last frame, complete from its
+    // first step, with nothing fired and no Complete, since its end has
+    // passed
+    let mut rig = Rig::new();
+    let sweep = rig.set(0, "sweep", false);
+    rig.entry(sweep).start = 5.0;
+    pose_unadvanced(&mut rig);
+    close(rig.degrees(), 30.0);
+    close(rig.entry(sweep).track_time(), 1.0);
+    assert!(!rig.entry(sweep).is_complete());
+    let fired = rig.step(0.25);
+    close(rig.degrees(), 30.0);
+    close(rig.entry(sweep).track_time(), 1.25);
+    assert_eq!(fired.kinds(), vec![("sweep", Start)]);
+    assert!(rig.entry(sweep).is_complete());
+    assert_eq!(rig.step(0.25).kinds(), vec![]);
+    // The same for a queued entry, in the step that starts it
+    let mut rig = Rig::new();
+    rig.set(0, "short", false);
+    let queued = rig.add(0, "sweep", false, 0.25);
+    rig.entry(queued).start = 5.0;
+    let fired = rig.step(0.5);
+    assert_eq!(rig.state.current(0), Some(queued));
+    assert!(
+      !fired.kinds().contains(&("sweep", Complete)),
+      "{:?}",
+      fired.kinds()
+    );
+    assert!(rig.entry(queued).is_complete());
+    let mut rig = Rig::new();
+    let halves = rig.set(0, "halves", false);
+    rig.entry(halves).start = 5.0;
+    assert_eq!(rig.step(0.25).times(), Vec::<f32>::new());
+    assert_eq!(rig.step(0.25).times(), Vec::<f32>::new());
+    // A start exactly at the end is the end too
+    let mut rig = Rig::new();
+    let sweep = rig.set(0, "sweep", false);
+    rig.entry(sweep).start = 1.0;
+    assert_eq!(rig.step(0.25).kinds(), vec![("sweep", Start)]);
+    close(rig.degrees(), 30.0);
+    // A zero-length animation is all at 0: started past it, its key and its
+    // end have passed
+    for looping in [false, true] {
+      let mut rig = Rig::new();
+      let instant = rig.set(0, "instant", looping);
+      rig.entry(instant).start = 2.0;
+      let fired = rig.step(0.1);
+      assert_eq!(fired.times(), Vec::<f32>::new());
+      assert_eq!(fired.kinds(), vec![("instant", Start)]);
+      close(rig.degrees(), 45.0);
+      assert!(rig.entry(instant).is_complete());
+    }
+  }
+
+  #[test]
+  fn a_start_that_is_negative_or_not_finite_counts_as_zero_with_one_warning() {
+    let capture = capture_log();
+    let mut rig = Rig::new();
+    let bad = [f32::NAN, -0.5, f32::INFINITY, f32::NEG_INFINITY];
+    let mut entries = Vec::new();
+    for (track, start) in bad.into_iter().enumerate() {
+      let entry = rig.set(track, "halves", true);
+      rig.entry(entry).start = start;
+      entries.push(entry);
+    }
+    // Posed before its first step, each is at 0, and nothing is said until
+    // an entry takes its first step
+    pose_unadvanced(&mut rig);
+    for &entry in &entries {
+      assert_eq!(rig.entry(entry).track_time(), 0.0);
+    }
+    assert_eq!(capture.containing("has a start of"), 0);
+    // Each starts at 0: its key at 0 fires and its time is the step's
+    let fired = rig.step(0.25);
+    assert_eq!(fired.times(), vec![0.0; 4]);
+    for &entry in &entries {
+      close(rig.entry(entry).track_time(), 0.25);
+    }
+    // One warning a skeleton, however many entries
+    assert_eq!(
+      capture.containing("has a start of"),
+      1,
+      "{:?}",
+      capture.warnings()
+    );
+    let again = rig.set(0, "halves", true);
+    rig.entry(again).start = f32::NAN;
+    rig.step(0.25);
+    assert_eq!(capture.containing("has a start of"), 1);
+    // Another skeleton warns again, and its pose is the animation's at 0
+    let mut other = Rig::new();
+    let sweep = other.set(0, "sweep", false);
+    other.entry(sweep).start = f32::NAN;
+    other.step(0.25);
+    close(other.degrees(), -15.0);
+    assert_eq!(capture.containing("has a start of"), 2);
+    // A good start says nothing
+    let mut quiet = Rig::new();
+    let sweep = quiet.set(0, "sweep", false);
+    quiet.entry(sweep).start = 0.5;
+    quiet.step(0.25);
+    assert_eq!(capture.containing("has a start of"), 2);
+  }
+
+  #[test]
+  fn a_start_set_after_the_first_step_does_nothing() {
+    let mut rig = Rig::new();
+    let halves = rig.set(0, "halves", true);
+    assert_eq!(rig.step(0.125).times(), vec![0.0]);
+    // Its time carries on from where it is, and no key is skipped or fired
+    // again
+    rig.entry(halves).start = 0.75;
+    assert_eq!(rig.step(0.125).times(), Vec::<f32>::new());
+    close(rig.entry(halves).track_time(), 0.25);
+    assert_eq!(rig.step(0.5).times(), vec![0.5]);
+    assert_eq!(rig.step(0.5).times(), vec![0.0]);
+    // The pose too
+    let mut rig = Rig::new();
+    let sweep = rig.set(0, "sweep", false);
+    rig.step(0.25);
+    rig.entry(sweep).start = 0.75;
+    rig.step(0.25);
+    close(rig.degrees(), 0.0);
+    // An entry mixing out is past its first step as well
+    let other = rig.set(0, "zero", true);
+    rig.entry(other).mix_duration = 1.0;
+    rig.entry(sweep).start = 0.0;
+    rig.step(0.25);
+    close(rig.entry(sweep).track_time(), 0.75);
+  }
+
+  #[test]
+  fn a_reverse_entry_s_start_is_measured_from_the_animation_s_end() {
+    // A reverse entry plays from its animation's end, and its start is how
+    // far into that it begins: a quarter in is the animation's 0.75
+    let mut rig = Rig::new();
+    let sweep = rig.set(0, "sweep", false);
+    rig.entry(sweep).reverse = true;
+    rig.entry(sweep).start = 0.25;
+    pose_unadvanced(&mut rig);
+    close(rig.degrees(), 15.0);
+    close(rig.entry(sweep).track_time(), 0.25);
+    rig.step(0.25);
+    close(rig.degrees(), 0.0);
+    // Its keys are crossed backward: the key at 0.5 half way in, the key at
+    // 0 at the end. Started a quarter in, both are still to come
+    let crossed = |start: f32, looping: bool, steps: usize| {
+      let mut rig = Rig::new();
+      let halves = rig.set(0, "halves", looping);
+      rig.entry(halves).reverse = true;
+      rig.entry(halves).start = start;
+      let mut times = Vec::new();
+      for _ in 0..steps {
+        times.extend(rig.step(0.125).times());
+      }
+      times
+    };
+    assert_eq!(crossed(0.25, false, 8), vec![0.5, 0.0]);
+    // Started half way in, the key at 0.5 is the one at the start: passed
+    assert_eq!(crossed(0.5, false, 8), vec![0.0]);
+    assert_eq!(crossed(0.75, false, 8), vec![0.0]);
+    // Looping, the first loop fires what is left of it, and later loops
+    // every key: from 0.75 for a second and a half, the keys crossed at
+    // 1.0 (0), 1.5 (0.5) and 2.0 (0)
+    assert_eq!(crossed(0.75, true, 12), vec![0.0, 0.5, 0.0]);
+    // Past the end it wraps as a forward entry's does
+    assert_eq!(crossed(2.75, true, 12), vec![0.0, 0.5, 0.0]);
+  }
+
+  #[test]
+  fn a_start_set_before_the_data_lands_is_honoured_when_it_lands() {
+    // A fresh state has seen no data: its calls are kept, and a kept
+    // entry's start with them
+    let mut state = SkeletonAnimation::new();
+    let sweep = state
+      .set_animation(0, "sweep", true)
+      .expect("kept until the data lands");
+    let halves = state
+      .set_animation(1, "halves", true)
+      .expect("kept until the data lands");
+    let queued = state
+      .add_animation(1, "halves", true, 0.5)
+      .expect("kept until the data lands");
+    for (entry, start) in [(sweep, 2.5), (halves, 0.25), (queued, 0.75)] {
+      state.entry_mut(entry).expect("a kept entry").start = start;
+    }
+    // Until the data lands the animation's length is not known, so the
+    // entry's time reads as the start given
+    assert_eq!(state.entry(sweep).map(TrackEntry::track_time), Some(2.5));
+    let mut rig = Rig::new();
+    rig.state = state;
+    // The data lands: posed before a step, the sweep is at its start,
+    // wrapped into its second and a half
+    pose_unadvanced(&mut rig);
+    close(rig.degrees(), 0.0);
+    close(rig.entry(sweep).track_time(), 0.5);
+    // And the first step fires only what is after each start: the key at
+    // 0.5 of the entry started at 0.25, and nothing yet of the queued one,
+    // which starts 0.5 s into that entry's time (a quarter second on) at
+    // 0.75
+    let fired = rig.step(0.375);
+    close(rig.degrees(), 22.5);
+    assert_eq!(fired.times(), vec![0.5]);
+    assert_eq!(rig.state.current(1), Some(queued));
+    close(rig.entry(queued).track_time(), 0.875);
+    assert_eq!(rig.step(0.25).times(), vec![0.0]);
+  }
+
+  #[test]
+  fn two_skeletons_started_half_a_cycle_apart_stay_half_a_cycle_apart() {
+    // A crowd: the same looping animation on two skeletons, one started at
+    // 0 and one half way through. Stepped together they stay half a cycle
+    // apart, and each fires its keys in its own phase
+    let mut first = Rig::new();
+    let mut second = Rig::new();
+    let lead = first.set(0, "sweep", true);
+    let follow = second.set(0, "sweep", true);
+    second.entry(follow).start = 0.5;
+    first.set(1, "halves", true);
+    let halves = second.set(1, "halves", true);
+    second.entry(halves).start = 0.5;
+    // The sweep runs -30 to 30 degrees over its second, so the angle gives
+    // the time within the loop
+    let phase = |rig: &Rig| (rig.degrees() + 30.0) / 60.0;
+    // Each key fired, with the step it fired in
+    let (mut ahead, mut behind) = (Vec::new(), Vec::new());
+    let step = 1.0 / 60.0;
+    // Not quite ten loops, so neither ends on a key
+    for index in 0..590_i32 {
+      let times = first.step(step).times();
+      ahead.extend(times.into_iter().map(|time| (index, time)));
+      let times = second.step(step).times();
+      behind.extend(times.into_iter().map(|time| (index, time)));
+      let apart = (phase(&second) - phase(&first)).rem_euclid(1.0);
+      close(apart, 0.5);
+      let times = second.entry(follow).track_time() - first.entry(lead).track_time();
+      close(times, 0.5);
+    }
+    // The first fires its key at 0 as it starts, then twenty keys in ten
+    // loops. The second's key at 0.5 had passed as it started; from then
+    // on, whenever the first crosses one key the second crosses the other,
+    // in the same step (or the next, where rounding parts them)
+    assert_eq!(ahead.len(), 20, "{ahead:?}");
+    assert_eq!(behind.len(), 19, "{behind:?}");
+    assert_eq!(ahead[0], (0, 0.0));
+    for (&(at, key), &(other_at, other_key)) in ahead[1..].iter().zip(&behind) {
+      assert_eq!(key + other_key, 0.5, "{ahead:?} {behind:?}");
+      assert!((at - other_at).abs() <= 1, "{ahead:?} {behind:?}");
+    }
+  }
+
+  #[test]
+  fn a_state_says_what_each_track_plays_and_how_far_it_has_mixed() {
+    // Before the data lands: nothing set, nothing playing, and a track
+    // past the last is no different
+    let mut state = SkeletonAnimation::new();
+    assert_eq!(state.animation(0), None);
+    assert_eq!(state.mix_progress(0), None);
+    assert_eq!(state.animation(SkeletonAnimation::MAX_TRACKS + 5), None);
+    assert_eq!(state.mix_progress(SkeletonAnimation::MAX_TRACKS + 5), None);
+    // A call kept until the data lands reads back at once, as `current`
+    // does; nothing mixes before a step
+    state.set_animation(0, "zero", true);
+    assert_eq!(state.animation(0), Some("zero"));
+    assert_eq!(state.mix_progress(0), None);
+    let mut rig = Rig::new();
+    rig.state = state;
+    rig.step(0.1);
+    assert_eq!(rig.state.animation(0), Some("zero"));
+    assert_eq!(rig.state.animation(1), None);
+    // A first entry on an empty track has nothing to mix from
+    assert_eq!(rig.state.mix_progress(0), None);
+    // An animation set is the track's at once, and its mix runs from 0 with
+    // each step (the default mix is 0.2 s)
+    rig.set(0, "ninety", true);
+    assert_eq!(rig.state.animation(0), Some("ninety"));
+    assert_eq!(rig.state.mix_progress(0), Some(0.0));
+    rig.step(0.05);
+    close(rig.state.mix_progress(0).expect("a mix"), 0.25);
+    rig.step(0.1);
+    close(rig.state.mix_progress(0).expect("a mix"), 0.75);
+    rig.step(0.1);
+    assert_eq!(rig.state.mix_progress(0), None);
+    assert_eq!(rig.state.animation(0), Some("ninety"));
+    // A queued entry is the track's from the step that starts it: half a
+    // second into "ninety", which is a quarter second in
+    rig.add(0, "thirty", true, 0.5);
+    rig.step(0.2);
+    assert_eq!(rig.state.animation(0), Some("ninety"));
+    assert_eq!(rig.state.mix_progress(0), None);
+    rig.step(0.1);
+    assert_eq!(rig.state.animation(0), Some("thirty"));
+    close(rig.state.mix_progress(0).expect("a mix"), 0.25);
+    // The empty animation reads as nothing playing, and its fade as a mix
+    rig.state.set_empty(0, 0.2);
+    assert_eq!(rig.state.animation(0), None);
+    assert_eq!(rig.state.mix_progress(0), Some(0.0));
+    rig.step(0.1);
+    assert_eq!(rig.state.animation(0), None);
+    close(rig.state.mix_progress(0).expect("a fade"), 0.5);
+    rig.step(0.1);
+    assert_eq!(rig.state.animation(0), None);
+    assert_eq!(rig.state.mix_progress(0), None);
+    // A mix of no length is never part-way, even before its step
+    rig.set(0, "zero", true);
+    rig.step(0.1);
+    let cut = rig.set(0, "ninety", true);
+    rig.entry(cut).mix_duration = 0.0;
+    assert_eq!(rig.state.mix_progress(0), None);
+    assert_eq!(rig.state.animation(0), Some("ninety"));
+    // A cleared track plays nothing
+    rig.state.clear(0);
+    assert_eq!(rig.state.animation(0), None);
+    assert_eq!(rig.state.mix_progress(0), None);
+    // The name is always that of the entry `current` reports
+    rig.set(2, "thirty", true);
+    let current = rig.state.current(2).and_then(|id| rig.state.entry(id));
+    assert_eq!(rig.state.animation(2), current.map(TrackEntry::animation));
   }
 }

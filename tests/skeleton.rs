@@ -1392,6 +1392,124 @@ fn a_game_set_attachment_beats_animation_until_it_is_handed_back() {
 }
 
 #[test]
+fn an_animation_started_part_way_poses_and_fires_from_there() {
+  let Some(mut engine) = engine() else {
+    return;
+  };
+  let data = engine.assets().add(rig());
+  let mut events = Inbox::<SkeletonEvent>::new(&engine);
+  // Two skeletons swing an arm a quarter turn each second, the second
+  // started half way through; a third plays the burst (keys at 0, 0.005
+  // and 0.010 s) from its second key
+  let lead = spawn(&mut engine, &data, Transform::IDENTITY);
+  let follow = spawn(&mut engine, &data, Transform::from_xy(100.0, 0.0));
+  let late = spawn(&mut engine, &data, Transform::from_xy(200.0, 0.0));
+  let first = play(&mut engine, lead, 0, "swing", true);
+  let second = play(&mut engine, follow, 0, "swing", true);
+  let burst = play(&mut engine, late, 0, "burst", true);
+  let set_start = |engine: &mut HeadlessEngine, entity, entry, start| {
+    let mut state = animation_mut(engine, entity);
+    state.entry_mut(entry).expect("a live entry").start = start;
+  };
+  set_start(&mut engine, follow, second, 0.5);
+  set_start(&mut engine, late, burst, 0.005);
+
+  // In the frame they appear, with no step run, each shows its animation
+  // at its start, and nothing is said
+  time(&mut engine).game.pause();
+  engine.step().expect("a frame");
+  close(heading(bone(&engine, lead, "arm")), 0.0);
+  close(heading(bone(&engine, follow, "arm")), FRAC_PI_2 * 0.5);
+  close(track_time(&engine, follow, second), 0.5);
+  assert!(events.take(&engine).is_empty());
+  time(&mut engine).game.resume();
+
+  // Stepped together, the two stay half a cycle apart
+  let mut sent = Vec::new();
+  for _ in 0..90 {
+    engine.step().expect("a frame");
+    sent.extend(events.take(&engine));
+    let apart = track_time(&engine, follow, second) - track_time(&engine, lead, first);
+    close(apart, 0.5);
+    let turn = |entity| heading(bone(&engine, entity, "arm")) / FRAC_PI_2;
+    close((turn(follow) - turn(lead)).rem_euclid(1.0), 0.5);
+  }
+  // The burst's keys at or before its start had passed: its first loop
+  // sends the third key alone, and its second loop, a second later, all
+  // three
+  let ints: Vec<i32> = sent
+    .iter()
+    .filter(|event| event.entity == late)
+    .map(|event| event.int)
+    .collect();
+  assert_eq!(ints, vec![3, 1, 2, 3]);
+}
+
+#[test]
+fn a_skeleton_says_what_it_plays_wears_and_shows() {
+  let Some(mut engine) = engine() else {
+    return;
+  };
+  let data = engine.assets().add(rig());
+  let body = spawn(&mut engine, &data, Transform::IDENTITY);
+  fn worn(engine: &HeadlessEngine, entity: Entity) -> Vec<&str> {
+    skeleton(engine, entity).skins().collect()
+  }
+  // Before its first frame: what was asked for reads back as kept, and no
+  // slot shows anything yet
+  assert_eq!(animation(&engine, body).animation(0), None);
+  assert!(worn(&engine, body).is_empty());
+  play(&mut engine, body, 0, "idle", true);
+  skeleton_mut(&mut engine, body).set_skins(&["long", "wide"]);
+  assert_eq!(animation(&engine, body).animation(0), Some("idle"));
+  assert_eq!(animation(&engine, body).mix_progress(0), None);
+  assert_eq!(worn(&engine, body), ["long", "wide"]);
+  assert_eq!(skeleton(&engine, body).attachment("weapon"), None);
+  engine.step_frames(2).expect("frames");
+  assert_eq!(animation(&engine, body).animation(0), Some("idle"));
+  assert_eq!(worn(&engine, body), ["long", "wide"]);
+  assert_eq!(skeleton(&engine, body).attachment("weapon"), Some("open"));
+  assert_eq!(skeleton(&engine, body).attachment("body"), Some("hit"));
+  assert_eq!(skeleton(&engine, body).attachment("tail"), None);
+
+  // Another animation is the track's at once; its mix reads from 0 to 1
+  // as the steps run, and the slot it keys shows the key's attachment
+  let grip = play(&mut engine, body, 0, "grip", true);
+  animation_mut(&mut engine, body)
+    .entry_mut(grip)
+    .expect("a live entry")
+    .mix_duration = 0.5;
+  assert_eq!(animation(&engine, body).animation(0), Some("grip"));
+  assert_eq!(animation(&engine, body).mix_progress(0), Some(0.0));
+  engine.step_frames(15).expect("frames");
+  let mixed = animation(&engine, body).mix_progress(0).expect("a mix");
+  close(mixed, 15.0 * timestep(&engine) / 0.5);
+  assert_eq!(skeleton(&engine, body).attachment("weapon"), Some("closed"));
+  engine.step_frames(20).expect("frames");
+  assert_eq!(animation(&engine, body).mix_progress(0), None);
+
+  // What the game sets on a slot reads back after the next step
+  skeleton_mut(&mut engine, body).set_attachment("weapon", Some("open"));
+  assert_eq!(skeleton(&engine, body).attachment("weapon"), Some("closed"));
+  engine.step().expect("a frame");
+  assert_eq!(skeleton(&engine, body).attachment("weapon"), Some("open"));
+  skeleton_mut(&mut engine, body).set_attachment("weapon", None);
+  engine.step().expect("a frame");
+  assert_eq!(skeleton(&engine, body).attachment("weapon"), None);
+
+  // A fade-out reads as a mix with nothing playing, then as nothing
+  animation_mut(&mut engine, body).set_empty(0, 0.25);
+  assert_eq!(animation(&engine, body).animation(0), None);
+  assert_eq!(animation(&engine, body).mix_progress(0), Some(0.0));
+  engine.step_frames(3).expect("frames");
+  assert!(animation(&engine, body).mix_progress(0).is_some());
+  engine.step_frames(30).expect("frames");
+  assert_eq!(animation(&engine, body).mix_progress(0), None);
+  skeleton_mut(&mut engine, body).set_skin("wide");
+  assert_eq!(worn(&engine, body), ["wide"]);
+}
+
+#[test]
 fn a_despawned_skeleton_sends_nothing_more() {
   let Some(mut engine) = engine() else {
     return;

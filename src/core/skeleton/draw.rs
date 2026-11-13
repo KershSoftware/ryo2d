@@ -117,7 +117,7 @@ impl Skeleton {
       let Some(name) = shown.and_then(Option::as_deref) else {
         continue;
       };
-      let Some(Attachment::Region(shown)) = self.attachment(slot, name) else {
+      let Some(Attachment::Region(shown)) = self.skin_attachment(slot, name) else {
         continue;
       };
       let (Some(region), Some(slot_data)) = (

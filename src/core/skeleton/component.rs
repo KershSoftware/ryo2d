@@ -246,8 +246,9 @@ impl From<Affine2> for Stand {
 ///
 /// What a game sets on it (skins, attachments, bone overrides) is its own,
 /// not the data's, is kept by name, and shows from the skeleton's next
-/// step; what it answers (`bone_world`, `point`, `bounding_box`) is as its
-/// last step left it.
+/// step; what it answers (`bone_world`, `point`, `bounding_box`,
+/// `attachment`) is as its last step left it, and `skins` gives what it
+/// wears.
 ///
 /// It is drawn when its entity has a [`Renderable::skeleton`]: its regions
 /// where its bones are, sorted, lit, shadowed and lifted as a sprite is,
@@ -330,7 +331,14 @@ impl Skeleton {
   /// The world transform of the bone called `name`, as the skeleton's last
   /// step left it: its origin, and its x and y axes with the scale and
   /// shear its parents and the entity give it. `None` for a name the
-  /// skeleton lacks, and until the data has loaded and a step has run
+  /// skeleton lacks, and until the data has loaded and a step has run.
+  ///
+  /// Read from a scene's `update`, it is one step behind that step's
+  /// motion: the skeleton's step runs after the scene's `update` in each
+  /// fixed step (and its `SkeletonEvent`s likewise arrive in the next
+  /// step's `update`). For the bone in the same step, use a
+  /// [`BoneSocket`](super::BoneSocket) or a system ordered after
+  /// `FixedSet::Skeletons`
   pub fn bone_world(&self, name: &str) -> Option<Affine2> {
     let bone = self.index.as_ref()?.bone_names.get(name)?;
     self.pose.world.get(bone.index()).copied()
@@ -387,6 +395,22 @@ impl Skeleton {
     }
   }
 
+  /// The names of the skins worn, in the order they were put on (the later
+  /// over the earlier); the default skin, under them all, is not among
+  /// them. It is as of the skeleton's last step, with the calls made
+  /// since: [`set_skin`](Self::set_skin) and
+  /// [`set_skins`](Self::set_skins) read back at once. Until the data has
+  /// loaded it gives the names kept for it, which cannot be checked yet;
+  /// from then on, only the skins the data has. Nothing is allocated
+  pub fn skins(&self) -> impl Iterator<Item = &str> {
+    let landed = self.index.is_some();
+    self
+      .skins
+      .iter()
+      .filter(move |worn| !landed || worn.skin.is_some())
+      .map(|worn| &*worn.name)
+  }
+
   /// Shows the attachment called `attachment` in the slot called `slot`
   /// (`None` hides the slot), whatever animations key there, until
   /// [`clear_attachment`](Self::clear_attachment) hands the slot back. The
@@ -427,6 +451,19 @@ impl Skeleton {
   /// shows what the animations key there, else its setup attachment
   pub fn clear_attachment(&mut self, slot: &str) {
     self.attachments.retain(|set| &*set.slot != slot);
+  }
+
+  /// The name of the attachment the slot called `slot` shows, as of the
+  /// skeleton's last step: what the game set there, else what its
+  /// animations keyed, else its setup attachment. So an attachment set
+  /// with [`set_attachment`](Self::set_attachment) reads back here after
+  /// the skeleton's next step. `None` when the slot shows nothing (it is
+  /// hidden, or no skin worn has an attachment of that name for it), for a
+  /// slot the skeleton lacks, and until the data has loaded
+  pub fn attachment(&self, slot: &str) -> Option<&str> {
+    let slot = *self.index.as_ref()?.slot_names.get(slot)?;
+    let name = self.pose.slot_attachments.get(slot.index())?.as_deref()?;
+    self.skin_attachment(slot, name).map(|_| name)
   }
 
   /// Sets the bone called `bone` after animation, every step until
@@ -479,7 +516,12 @@ impl Skeleton {
   /// The point attachment called `name` that one of the skeleton's slots
   /// shows (the first such slot in setup order), in the world: where it is
   /// and the way it points, in radians. `None` when no slot shows a point
-  /// of that name: a point an animation or the game has hidden is not found
+  /// of that name: a point an animation or the game has hidden is not
+  /// found. Read from a scene's `update`, it is as the skeleton's last step
+  /// left it, one step behind that step's motion (see
+  /// [`bone_world`](Self::bone_world)); for the same step, use a
+  /// [`BoneSocket`](super::BoneSocket) or a system ordered after
+  /// `FixedSet::Skeletons`
   pub fn point(&self, name: &str) -> Option<(Vec2, f32)> {
     self.shown(name).find_map(|(world, attachment)| {
       let Attachment::Point(point) = attachment else {
@@ -495,7 +537,11 @@ impl Skeleton {
   /// called `name` that one of the skeleton's slots shows (the first such
   /// slot in setup order), replacing what `out` held. False, leaving `out`
   /// empty, when no slot shows a bounding box of that name: an animation
-  /// can so turn a hit box on and off by keying its slot's attachment
+  /// can so turn a hit box on and off by keying its slot's attachment.
+  /// Read from a scene's `update`, the corners are as the skeleton's last
+  /// step left them, one step behind that step's motion (see
+  /// [`bone_world`](Self::bone_world)); for the same step, read them in a
+  /// system ordered after `FixedSet::Skeletons`
   pub fn bounding_box(&self, name: &str, out: &mut Vec<Vec2>) -> bool {
     out.clear();
     let found = self
@@ -518,7 +564,7 @@ impl Skeleton {
 
   /// The attachment called `name` in `slot`: the last skin worn that has
   /// one there, else the default skin's
-  pub(crate) fn attachment(&self, slot: SlotId, name: &str) -> Option<&Attachment> {
+  pub(crate) fn skin_attachment(&self, slot: SlotId, name: &str) -> Option<&Attachment> {
     let index = self.index.as_ref()?;
     self
       .skins
@@ -657,11 +703,12 @@ impl Skeleton {
   /// A pose outside a step, for a skeleton that has none for `data` as it
   /// now is (just added, or its data just landed or reloaded): the pose is
   /// made anew and the animation state poses it where its tracks stand,
-  /// an entry that has yet to start at its first moment. Nothing advances
-  /// and nothing is fired: an entry's `Start` and the keys at its start
-  /// go out with its first step, which advances it from 0 as if this had
-  /// not run. With no state it is the setup pose. No step made it, so it
-  /// is drawn as it is, not between it and the pose before
+  /// an entry that has yet to start at its first moment (its `start`).
+  /// Nothing advances and nothing is fired: an entry's `Start` and the keys
+  /// at its time 0 go out with its first step, which advances it from its
+  /// start as if this had not run. With no state it is the setup pose. No
+  /// step made it, so it is drawn as it is, not between it and the pose
+  /// before
   pub(crate) fn appear(
     &mut self,
     data: &SkeletonData,
@@ -839,7 +886,7 @@ impl Skeleton {
       let bone = self.index.as_ref()?.slot_bones.get(slot)?;
       let world = self.pose.world.get(bone.index())?;
       let slot = u8::try_from(slot).ok().map(SlotId)?;
-      Some((*world, self.attachment(slot, name)?))
+      Some((*world, self.skin_attachment(slot, name)?))
     })
   }
 
@@ -965,7 +1012,9 @@ mod tests {
   use super::*;
   use crate::core::asset::Assets;
   use crate::core::ecs::World;
-  use crate::core::skeleton::{BoneSetup, Inherit};
+  use crate::core::skeleton::{
+    Animation, BoneSetup, Inherit, PointAttachment, SlotSetup, Timeline,
+  };
   use crate::testing::{asset_world, capture_log};
 
   /// A skeleton of `data`, stepped once under `root` with `set` applied
@@ -1471,5 +1520,110 @@ mod tests {
     skeleton.clear_override("part 1");
     skeleton.override_bone("another", turned);
     assert_eq!(skeleton.overrides.len(), MAX_BONES);
+  }
+
+  /// A root with a slot "hand" showing "open" and a bare slot "hat". The
+  /// default skin has "open" for the hand; the skin "gloves" has its own
+  /// "open" there and alone has "fist"; the skin "hats" has "cap" for the
+  /// hat. The animation "grip" keys the hand to "fist"
+  fn dressed() -> SkeletonData {
+    let point = || Attachment::Point(PointAttachment::default());
+    let open = SlotSetup {
+      attachment: Some(Arc::from("open")),
+      ..SlotSetup::default()
+    };
+    SkeletonData::builder()
+      .bone("root", None, BoneSetup::default())
+      .slot("hand", "root", open)
+      .slot("hat", "root", SlotSetup::default())
+      .skin("gloves")
+      .skin("hats")
+      .attachment("default", "hand", "open", point())
+      .attachment("gloves", "hand", "open", point())
+      .attachment("gloves", "hand", "fist", point())
+      .attachment("hats", "hat", "cap", point())
+      .animation(Animation {
+        name: Arc::from("grip"),
+        duration: 1.0,
+        timelines: vec![Timeline::Attachment {
+          slot: SlotId(0),
+          frames: vec![(0.0, Some(Arc::from("fist")))],
+        }],
+      })
+      .build()
+      .expect("a valid skeleton")
+  }
+
+  #[test]
+  fn a_skeleton_says_what_it_wears_and_what_each_slot_shows() {
+    let mut world = asset_world();
+    let handle = world.resource_mut::<Assets<SkeletonData>>().add(dressed());
+    let assets = world.resource::<Assets<SkeletonData>>();
+    let data = assets.get(&handle).expect("the data");
+    let seen = (handle.id(), assets.version(&handle).expect("a version"));
+    let mut skeleton = Skeleton::new(handle.clone());
+    let step = |skeleton: &mut Skeleton, animation: Option<&mut SkeletonAnimation>| {
+      let fired = &mut Fired::default();
+      let stand = Affine2::IDENTITY.into();
+      skeleton.step(data, seen, animation, 1.0 / 60.0, stand, fired);
+    };
+    fn worn(skeleton: &Skeleton) -> Vec<&str> {
+      skeleton.skins().collect()
+    }
+    // Before the data lands it wears nothing, and no slot shows anything
+    assert!(worn(&skeleton).is_empty());
+    assert_eq!(skeleton.attachment("hand"), None);
+    // The skins a call asks for meanwhile are kept by name, unchecked, and
+    // read back as kept
+    skeleton.set_skins(&["gloves", "gold"]);
+    assert_eq!(worn(&skeleton), ["gloves", "gold"]);
+    assert_eq!(skeleton.attachment("hand"), None);
+    // The data lands: the skin it lacks is not worn, and each slot shows
+    // its setup attachment (a bare slot nothing, as a slot it lacks)
+    step(&mut skeleton, None);
+    assert_eq!(worn(&skeleton), ["gloves"]);
+    assert_eq!(skeleton.attachment("hand"), Some("open"));
+    assert_eq!(skeleton.attachment("hat"), None);
+    assert_eq!(skeleton.attachment("tail"), None);
+    // What the game sets on a slot reads back from the skeleton's next
+    // step: until then the answer is the last step's
+    skeleton.set_attachment("hand", Some("fist"));
+    assert_eq!(skeleton.attachment("hand"), Some("open"));
+    step(&mut skeleton, None);
+    assert_eq!(skeleton.attachment("hand"), Some("fist"));
+    skeleton.set_attachment("hand", None);
+    step(&mut skeleton, None);
+    assert_eq!(skeleton.attachment("hand"), None);
+    // Handed back, the slot shows what an animation keys there, and with
+    // no animation its setup attachment again
+    skeleton.clear_attachment("hand");
+    let mut animation = SkeletonAnimation::new();
+    animation.set_animation(0, "grip", true);
+    step(&mut skeleton, Some(&mut animation));
+    assert_eq!(skeleton.attachment("hand"), Some("fist"));
+    step(&mut skeleton, None);
+    assert_eq!(skeleton.attachment("hand"), Some("open"));
+    // Skins read back at once, in the order worn
+    skeleton.set_skins(&["hats", "gloves"]);
+    assert_eq!(worn(&skeleton), ["hats", "gloves"]);
+    skeleton.set_attachment("hat", Some("cap"));
+    step(&mut skeleton, None);
+    assert_eq!(skeleton.attachment("hat"), Some("cap"));
+    // A name no skin worn has in the slot shows nothing: the cap is the
+    // hats' own, and the fist the gloves'
+    skeleton.set_skin("gloves");
+    assert_eq!(worn(&skeleton), ["gloves"]);
+    step(&mut skeleton, None);
+    assert_eq!(skeleton.attachment("hat"), None);
+    skeleton.set_attachment("hand", Some("fist"));
+    step(&mut skeleton, None);
+    assert_eq!(skeleton.attachment("hand"), Some("fist"));
+    skeleton.set_skins(&[]);
+    assert!(worn(&skeleton).is_empty());
+    step(&mut skeleton, None);
+    assert_eq!(skeleton.attachment("hand"), None);
+    // Once the data is known, a skin it lacks is left out of what is worn
+    skeleton.set_skins(&["hats", "gold"]);
+    assert_eq!(worn(&skeleton), ["hats"]);
   }
 }
