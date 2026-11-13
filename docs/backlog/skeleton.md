@@ -47,6 +47,30 @@ The update's step of the other cases (shadow, offscreen, images) read 494 to 503
 
 Every guard in the bench (`skeletons_update`, the five extract cases, the two socket cases, `one_skeleton_update`) is met in every run, and the bench exits non-zero on a miss (`guards::miss`, `guards::verdict`). No guard was loosened; no optimisation was needed.
 
+### A second record, on a quiet machine
+
+Three more runs, on the same machine with the branch complete (`cargo bench --bench skeleton`, release). One-minute load before each run: 1.83, 2.02 and 2.10, none above 3, so none is flagged. Medians in microseconds:
+
+| Bench | Run 1 | Run 2 | Run 3 | Median of runs | Target |
+|-------|-------|-------|-------|----------------|--------|
+| `skeletons_update` | 490.1 | 481.4 | 479.8 | 481.4 | 1,000 |
+| `skeletons_extract` | 162.8 | 150.3 | 150.3 | 150.3 | 600 |
+| `skeletons_render` (context) | 365.2 | 316.4 | 318.0 | 318.0 | |
+| `skeletons_extract_shadow` | 185.8 | 176.3 | 175.0 | 176.3 | 600 |
+| `skeletons_extract_offscreen` | 155.5 | 145.8 | 145.6 | 145.8 | 600 |
+| `skeletons_extract_images` | 282.9 | 262.9 | 279.7 | 279.7 | 600 |
+| `skeletons_extract_plain` (no `Interpolated`) | 101.5 | 92.5 | 99.0 | 99.0 | |
+| `one_skeleton_update` | 3.7 | 3.8 | 3.5 | 3.7 | 5 |
+| `no_skeleton_update` (the floor) | 0.3 | 0.3 | 0.2 | 0.3 | |
+| `skeletons_update_sockets` | 496.5 | 492.9 | 524.2 | 496.5 | 1,000 |
+| `skeletons_extract_sockets` | 151.4 | 150.5 | 160.4 | 151.4 | 600 |
+| `skeleton_pass_200` | 0.07 | 0.07 | 0.07 | 0.07 | |
+| `skeleton_pass_2000` | 0.48 | 0.47 | 0.50 | 0.48 | |
+| `skeleton_pass_socket_spawn` | 2.7 | 2.6 | 2.5 | 2.6 | |
+| `skeleton_pass_socket_spawn_sockets` | 7.5 | 8.2 | 7.9 | 7.9 | |
+
+Every guard is met in every run. Against the first record, the crowd's update and extract read a little lower, and `one_skeleton_update` reads 3.7 µs where it read 3.0: the code changed between the two records (queue and warning bounds in the animation state, a start offset, readbacks), and which change accounts for the 0.7 µs was not measured. `skeletons_extract_plain` is the figure the first record lacked: without `Interpolated` the drawing work is about 99 µs against 150 µs with it, so the bone blend costs about 51 µs of a frame for 200 skeletons.
+
 ### Reading the figures
 
 - **Update:** 2.5 µs a skeleton (500 / 200), half of the 5 µs target; one skeleton alone is 3.0 µs, of which 0.2 is the probes. A socket with a child on each skeleton adds 8.6 µs to the 200 (1.7%).
