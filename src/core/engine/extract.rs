@@ -292,6 +292,7 @@ impl Engine {
         batch.chunks_mut(),
         &mut self.draw_list,
       );
+      let entity_start = Instant::now();
       let entity_sprites = self.entity_drawer.collect(
         &mut self.world,
         &self.camera_draws,
@@ -302,6 +303,7 @@ impl Engine {
         &mut self.draw_list,
         self.tile_drawer.ordered(),
       );
+      self.entity_draw_time = entity_start.elapsed();
       self.parallax = quads;
       // World text: lay out what changed, build the glyphs asked for ahead,
       // then each camera's glyph quads (none if the game removed `Fonts`)

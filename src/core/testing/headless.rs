@@ -13,7 +13,7 @@ use crate::core::asset::AssetsView;
 use crate::core::audio::{AudioEngine, AudioLogEntry};
 #[cfg(dev_tools)]
 use crate::core::console::Console;
-use crate::core::ecs::kernel::Messages;
+use crate::core::ecs::kernel::{IntoSystem, Messages, ScheduleSystem};
 use crate::core::ecs::{Entity, World};
 use crate::core::engine::{Engine, EngineBuilder, FrameOutcome};
 use crate::core::graphics::{ScreenMapping, WgpuRenderer};
@@ -71,6 +71,8 @@ pub struct HeadlessEngine {
   /// (`idle_particle_systems`), so only their first run makes them
   idle_step: StepState,
   idle_unscaled: StepState,
+  /// The skeletons' frame pass, initialised once, for `skeleton_pass_time`
+  idle_pose: Option<ScheduleSystem>,
 }
 
 impl HeadlessEngine {
@@ -141,6 +143,7 @@ impl HeadlessEngine {
       ui_spot_check: None,
       idle_step: StepState::default(),
       idle_unscaled: StepState::default(),
+      idle_pose: None,
     })
   }
 
@@ -897,6 +900,36 @@ impl HeadlessEngine {
         .run_particle_systems(&mut self.idle_step, &mut self.idle_unscaled);
     }
     start.elapsed()
+  }
+
+  /// The last frame's entity drawer on the CPU: the sprites' and skeletons'
+  /// draw items, built from the world (`benches/skeleton.rs`)
+  #[doc(hidden)]
+  pub fn entity_draw_time(&self) -> Duration {
+    self.engine.entity_draw_time()
+  }
+
+  /// `calls` runs of the skeletons' frame pass (`pose_new_skeletons`) outside
+  /// a frame, on a system initialised once: their time, altogether. A call
+  /// looks through the skeletons only if one was added since the last (as a
+  /// frame does), so a steady call is the pass's cost with nothing new
+  /// (`benches/skeleton.rs`)
+  #[doc(hidden)]
+  pub fn skeleton_pass_time(&mut self, calls: u32) -> Duration {
+    let mut system = self.idle_pose.take().unwrap_or_else(|| {
+      let mut system: ScheduleSystem = Box::new(IntoSystem::into_system(
+        crate::core::skeleton::pose_new_skeletons,
+      ));
+      system.initialize(self.engine.world_mut());
+      system
+    });
+    let start = web_time::Instant::now();
+    for _ in 0..calls {
+      let _ = system.run((), self.engine.world_mut());
+    }
+    let took = start.elapsed();
+    self.idle_pose = Some(system);
+    took
   }
 
   /// The last frame's UI pass on the CPU: the scenes' UI, the node walk,

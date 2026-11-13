@@ -6,7 +6,10 @@
 //! light on that storey; an idle frame of a streamed map whose chunks have
 //! landed, on orthogonal and on isometric cells; a frame of characters
 //! walking on a map's storeys, drawn lifted; and a lit frame of 64
-//! shadowed lights, hard and soft, against the same lights unshadowed.
+//! shadowed lights, hard and soft, against the same lights unshadowed; and
+//! a lit frame of 50 animated skeletons (two tracks, events firing, a
+//! socket each, a mix started on some every frame) against the same entities
+//! as sprites.
 //!
 //! A frame's allocations are told apart by their stacks: those made inside
 //! the GPU API (wgpu, naga and the Metal bindings, which allocate as they
@@ -430,6 +433,11 @@ struct Frame {
   count: usize,
   own: BTreeMap<String, usize>,
   map_gpu: Vec<String>,
+  /// The same for the skeletons' own path (the skeleton module)
+  skeleton_gpu: Vec<String>,
+  /// Those not made inside the GPU API with a function of the skeleton
+  /// module on their stack, by the function nearest the allocation
+  in_skeleton: Vec<String>,
   /// Those made inside the GPU API from the lighting's own path (its
   /// nearest engine function in `lighting::`), by that function and the
   /// GPU API's one it called
@@ -453,14 +461,27 @@ fn functions(text: &str) -> Vec<&str> {
 
 /// A step of `engine`, its allocations traced
 fn traced(engine: &mut HeadlessEngine) -> Frame {
+  traced_after(engine, |_| {})
+}
+
+/// A step of `engine` after `calls` made on it, the allocations of both
+/// traced
+fn traced_after(engine: &mut HeadlessEngine, calls: impl FnOnce(&mut HeadlessEngine)) -> Frame {
   TRACES.with(|t| t.borrow_mut().clear());
   let before = allocations();
   TRACING.with(|c| c.set(true));
+  calls(engine);
   engine.step().expect("a frame");
   TRACING.with(|c| c.set(false));
   let count = allocations() - before;
   let traces = TRACES.with(|t| std::mem::take(&mut *t.borrow_mut()));
   let (mut own, mut map_gpu, mut lighting_gpu) = (BTreeMap::new(), Vec::new(), BTreeMap::new());
+  let (mut skeleton_gpu, mut in_skeleton) = (Vec::new(), Vec::new());
+  // A function of the skeleton module (a type that names it in its
+  // parameters is not one)
+  let skeleton_fn = |name: &&&str| {
+    name.starts_with("ryo2d::core::skeleton::") || name.starts_with("<ryo2d::core::skeleton::")
+  };
   let mut timed = 0;
   for trace in traces {
     let text = trace.to_string();
@@ -475,6 +496,9 @@ fn traced(engine: &mut HeadlessEngine) -> Frame {
       {
         map_gpu.push(frames[at].to_string());
       }
+      if let Some(name) = frames.iter().find(skeleton_fn) {
+        skeleton_gpu.push((*name).to_string());
+      }
       if let Some(at) = ours
         && frames[at].contains("ryo2d::core::lighting::")
       {
@@ -482,6 +506,9 @@ fn traced(engine: &mut HeadlessEngine) -> Frame {
         *lighting_gpu.entry(site).or_insert(0) += 1;
       }
       continue;
+    }
+    if let Some(name) = frames.iter().find(skeleton_fn) {
+      in_skeleton.push((*name).to_string());
     }
     let site = match ours {
       Some(at) => format!("{} <- {}", frames[at.saturating_sub(1)], frames[at]),
@@ -493,6 +520,8 @@ fn traced(engine: &mut HeadlessEngine) -> Frame {
     count,
     own,
     map_gpu,
+    skeleton_gpu,
+    in_skeleton,
     lighting_gpu,
     timed,
   }
@@ -1330,3 +1359,221 @@ const ATLAS_CALLS: [&str; 7] = [
   "<wgpu::api::render_pass::RenderPass>::draw",
   "core::ptr::drop_glue::<wgpu::api::render_pass::RenderPass>",
 ];
+
+/// A rig of 12 bones in a chain and 10 region slots, a step event, and
+/// the animations the crowd mixes between
+fn crowd_rig(image: Handle<Image>) -> SkeletonData {
+  let turn = |bone: u8, keys: &[(f32, f32)]| SkeletonTimeline::Rotate {
+    bone: BoneId(bone),
+    frames: keys
+      .iter()
+      .map(|&(time, radians)| (time, radians, SkeletonCurve::Linear))
+      .collect(),
+  };
+  let clip = |name: &str, bones: u8, swing: f32, events: &[f32]| {
+    let mut timelines: Vec<SkeletonTimeline> = (0..bones)
+      .map(|bone| turn(bone, &[(0.0, -swing), (0.25, swing), (0.5, -swing)]))
+      .collect();
+    if !events.is_empty() {
+      timelines.push(SkeletonTimeline::Event {
+        frames: events
+          .iter()
+          .map(|&time| (time, 0, SkeletonEventValues::default()))
+          .collect(),
+      });
+    }
+    SkeletonClip {
+      name: Arc::from(name),
+      duration: 0.5,
+      timelines,
+    }
+  };
+  let mut builder = SkeletonData::builder().bone("b0", None, BoneSetup::default());
+  for bone in 1..12 {
+    let setup = BoneSetup {
+      x: 5.0,
+      length: 5.0,
+      ..BoneSetup::default()
+    };
+    builder = builder.bone(format!("b{bone}"), Some(&format!("b{}", bone - 1)), setup);
+  }
+  for part in 0..10usize {
+    let (slot, name) = (format!("s{part}"), format!("p{part}"));
+    let setup = SlotSetup {
+      attachment: Some(Arc::from(name.as_str())),
+      ..SlotSetup::default()
+    };
+    builder = builder
+      .slot(slot.as_str(), &format!("b{part}"), setup)
+      .region(SkeletonRegion {
+        name: Arc::from(name.as_str()),
+        image: image.clone(),
+        x: part as u32 * 8,
+        y: 0,
+        width: 8,
+        height: 8,
+      })
+      .attachment(
+        SkeletonData::DEFAULT_SKIN,
+        &slot,
+        name.as_str(),
+        SkeletonAttachment::Region(RegionAttachment::new(part, 8.0, 8.0)),
+      );
+  }
+  builder
+    .event(SkeletonEventData::new("step"))
+    .animation(clip("idle", 12, 0.2, &[0.0, 0.2, 0.4]))
+    .animation(clip("walk", 12, 0.4, &[0.1, 0.3]))
+    .animation(clip("wave", 4, 0.6, &[0.25]))
+    .default_mix(0.4)
+    .build()
+    .expect("a valid rig")
+}
+
+/// `count` skeletons in a lit room, each with a socket that has a child; or
+/// (`skeletons` false) the same entities as plain sprites, each with a
+/// child that has a child: the baseline, which makes the allocations the
+/// entity drawer and the engine's queries make for any entities
+struct Crowd {
+  count: usize,
+  skeletons: bool,
+}
+
+impl Scene for Crowd {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    ctx.camera().set_position(320.0, 180.0);
+    ctx
+      .lighting()
+      .set_ambient(AmbientLight::with_intensity(0.2));
+    ctx.lighting().set_enabled(true);
+    ctx.world.spawn((
+      Transform::from_xy(320.0, 180.0),
+      Light2D::point(Color::WHITE, 500.0),
+    ));
+    let atlas = ctx
+      .assets()
+      .add(Image::solid_rect(80, 8, 255, 255, 255, 255));
+    let data = ctx.assets().add(crowd_rig(atlas.clone()));
+    for i in 0..self.count {
+      let at = Vec2::new(40.0 + (i % 10) as f32 * 60.0, 40.0 + (i / 10) as f32 * 60.0);
+      let carrier = ctx
+        .world
+        .spawn((Transform::from_translation(at), Interpolated))
+        .id();
+      let socket = ctx
+        .world
+        .spawn((Transform::IDENTITY, ChildOf(carrier)))
+        .id();
+      if self.skeletons {
+        ctx.world.entity_mut(carrier).insert((
+          Skeleton::new(data.clone()),
+          SkeletonAnimation::new(),
+          Renderable::skeleton(),
+        ));
+        ctx.world.entity_mut(socket).insert(BoneSocket::new("b11"));
+      } else {
+        ctx
+          .world
+          .entity_mut(carrier)
+          .insert(Renderable::image(atlas.clone()));
+      }
+      ctx
+        .world
+        .spawn((Transform::from_xy(3.0, 0.0), ChildOf(socket)));
+    }
+  }
+}
+
+/// Starts a mix on the skeleton `index` in frame `frame`: each skeleton makes
+/// a call every third frame, and each of the four kinds (a track's
+/// animation set, one queued, the second track's layer set, and that layer
+/// faded out) every twelfth
+fn mix(animation: &mut SkeletonAnimation, index: usize, frame: usize) {
+  let k = (frame + index) % 12;
+  if !k.is_multiple_of(3) {
+    return;
+  }
+  let round = (frame + index) / 12;
+  let name = ["idle", "walk"][round % 2];
+  match k / 3 {
+    0 => {
+      animation.set_animation(0, name, true);
+    }
+    1 => {
+      animation.add_animation(0, ["walk", "idle"][round % 2], true, 0.0);
+    }
+    2 => {
+      animation.set_animation(1, "wave", true);
+    }
+    _ => animation.set_empty(1, 0.3),
+  }
+}
+
+#[test]
+fn fifty_animated_skeletons_allocate_nothing_per_frame() {
+  let start = |skeletons| {
+    let builder = EngineBuilder::new()
+      .resolution(640, 360)
+      .start_scene(Crowd {
+        count: 50,
+        skeletons,
+      });
+    HeadlessEngine::new_or_skip(builder)
+  };
+  let (Some(mut crowd), Some(mut empty)) = (start(true), start(false)) else {
+    return;
+  };
+  let mut animations = crowd.world_mut().query::<&mut SkeletonAnimation>();
+  let mut steady = |engine: &mut HeadlessEngine, frame: usize| {
+    let world = engine.world_mut();
+    for (index, mut animation) in animations.iter_mut(world).enumerate() {
+      mix(&mut animation, index, frame);
+    }
+  };
+  // Warm: every kind of call has run on every skeleton, the data has
+  // landed, and the buffers have the sizes a mix needs
+  let warm = 240;
+  for frame in 0..warm {
+    steady(&mut crowd, frame);
+    crowd.step().expect("a warm-up frame");
+    empty.step().expect("a warm-up frame");
+  }
+  assert!(
+    crowd
+      .world_mut()
+      .query::<&Skeleton>()
+      .iter(crowd.world())
+      .all(|skeleton| skeleton.bone_world("b11").is_some()),
+    "every skeleton has its pose"
+  );
+  for frame in warm..warm + 12 {
+    let drawn = traced_after(&mut crowd, |engine| steady(engine, frame));
+    let nothing = traced(&mut empty);
+    let own = |frame: &Frame| frame.own.values().sum::<usize>();
+    println!(
+      "frame {frame}: 50 skeletons {} allocations ({} the engine's own), as sprites {} ({} its own); the \
+       skeletons' own path made {} inside the GPU API",
+      drawn.count,
+      own(&drawn),
+      nothing.count,
+      own(&nothing),
+      drawn.skeleton_gpu.len(),
+    );
+    let more = more(&drawn, &nothing);
+    assert!(
+      more.is_empty(),
+      "frame {frame}: the skeletons' frame made allocations of the engine's own the sprites' \
+       frame does not: {more:#?}"
+    );
+    assert!(
+      drawn.in_skeleton.is_empty(),
+      "frame {frame}: the skeleton code allocated: {:#?}",
+      drawn.in_skeleton
+    );
+    assert!(
+      drawn.skeleton_gpu.is_empty(),
+      "frame {frame}: the skeleton path made GPU allocations: {:#?}",
+      drawn.skeleton_gpu
+    );
+  }
+}

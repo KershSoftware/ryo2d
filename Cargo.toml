@@ -171,6 +171,10 @@ name = "lighting"
 harness = false
 
 [[bench]]
+name = "skeleton"
+harness = false
+
+[[bench]]
 name = "dev_tools"
 harness = false
 

@@ -326,6 +326,9 @@ pub struct Engine {
   /// The last frame's UI pass on the CPU, its rerun passes included
   #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
   ui_pass_time: std::time::Duration,
+  /// The last frame's entity drawer (`EntityDrawer::collect`) on the CPU
+  #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+  entity_draw_time: std::time::Duration,
   smoothed_timings: SmoothedFrameTimings,
   overlay_mode: OverlayMode,
   debug_stats: DebugStats,
@@ -884,6 +887,7 @@ impl Engine {
       input_script,
       frame_timings: FrameTimings::default(),
       ui_pass_time: std::time::Duration::ZERO,
+      entity_draw_time: std::time::Duration::ZERO,
       smoothed_timings: SmoothedFrameTimings::default(),
       overlay_mode: initial_overlay_mode,
       debug_stats: DebugStats::default(),
@@ -1459,6 +1463,13 @@ impl Engine {
   #[cfg(not(target_arch = "wasm32"))]
   pub(crate) fn ui_pass_time(&self) -> std::time::Duration {
     self.ui_pass_time
+  }
+
+  /// The last frame's entity drawer on the CPU: the entities' sprites and
+  /// skeletons turned into draw items (`benches/skeleton.rs`)
+  #[cfg(not(target_arch = "wasm32"))]
+  pub(crate) fn entity_draw_time(&self) -> std::time::Duration {
+    self.entity_draw_time
   }
 
   /// What the particle systems took when they last ran, on the CPU: the
