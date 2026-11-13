@@ -337,9 +337,9 @@ if let Some(mut state) = ctx.world.get_mut::<SkeletonAnimation>(hero) {
 | Call | What |
 |------|------|
 | `set_animation(track, name, looping) -> Option<SkeletonTrackEntryId>` | Plays `name` at once. The entry it replaces mixes out over the new entry's `mix_duration`; the track's queue is dropped. On an empty track it shows at once, with nothing to mix from |
-| `add_animation(track, name, looping, delay) -> Option<SkeletonTrackEntryId>` | Queues `name` after what plays or is queued. It starts `delay` seconds into the entry before it; with `delay <= 0`, at that entry's end plus `delay` (a looping entry's end is the end of the loop it is in). On an empty track it starts after `delay` seconds |
-| `set_empty(track, mix)` | Fades the track out over `mix` seconds, to the setup pose on track 0 or to the tracks below, then clears it |
-| `clear(track)` | Stops the track at once, with no fade, and drops its queue |
+| `add_animation(track, name, looping, delay) -> Option<SkeletonTrackEntryId>` | Queues `name` after what plays or is queued. It starts `delay` seconds into the entry before it; with `delay <= 0`, at that entry's end plus `delay` (a looping entry's end is the end of the loop it is in). On an empty track it starts after `delay` seconds. A track queues at most 64 entries: one more is refused (`None`) |
+| `set_empty(track, mix)` | Fades the track out over `mix` seconds, to the setup pose on track 0 or to the tracks below, then clears it. Called again while the track is fading out, it does nothing |
+| `clear(track)`, `clear_all()` | Stops the track, or every track, at once, with no fade, and drops what is queued |
 | `entry(id)`, `entry_mut(id)` | The entry a handle names: playing, mixing out, or queued |
 | `current(track)`, `animation(track)`, `mix_progress(track)` | What plays (below) |
 | `time_scale` (field, 1) | Multiplies every track's time. A negative or non-finite scale holds the skeleton still |
@@ -371,6 +371,8 @@ An entry reads back with `animation()` (its name), `track_time()` (seconds playe
 - **Nothing lingers.** A property no playing entry keys is at its setup value, so when an animation that showed an attachment is replaced by one that does not key the slot, the slot goes back to what the tracks below key there, else its setup attachment.
 - **A queued entry mixes in from the moment it starts.** Queued with a delay of 0 it starts at the end of the entry before it, so a one-shot holds its last frame while the next mixes in. For a mix that ends as the one-shot does, queue with a delay of minus the mix (`add_animation(0, "idle", true, -0.2)`).
 - **Two calls in one frame:** an entry replaced before it was ever applied is dropped, not mixed from; the new entry mixes from the one before.
+- **Queue once, not every step.** A track's queue holds at most 64 entries: `add_animation` past that does nothing and returns `None`, with one warning per skeleton. Ask before queueing (`state.animation(track)`, or keep the handle).
+- **`set_empty` may be called every step.** While the empty animation is the track's current entry with nothing queued after it, another `set_empty` changes nothing, whatever its `mix`: the fade keeps the timing it started with. To cut a fade short, call `clear`. Once the fade is over the track is clear, and a `set_empty` then starts a new fade of nothing, with its own `Start`, `End` and `Dispose`.
 - **A name the data lacks** warns once per skeleton per name, does nothing and returns `None`. Before the data has loaded no name can be checked: the call is kept and returns a handle, and a name the data turns out to lack warns when it lands.
 - **Time** is the fixed timestep times `time_scale` times the entry's `speed`. A mix runs on the timestep times `time_scale` alone.
 - **A track holds at most 16 entries at once:** the one playing and the 15 it is mixing from. One more ends the oldest, whatever weight it has left. It takes a new animation every step for a quarter of a second to get there: the entry ended then weighs under 1% for mixes up to half a second, and about 11% under a 1 s mix.
@@ -449,6 +451,23 @@ if let Some(state) = ctx.world.get::<SkeletonAnimation>(hero) {
 - `animation(track)` is the name of the entry playing (the one mixing in, during a mix). It is `None` for an empty track and for one `set_empty` is fading out. An animation set reads back at once, and a queued one from the step that starts it, so a state machine asks before it sets (`if state.animation(0) != Some("run")`), also while the data loads.
 - `mix_progress(track)` is how far the playing entry has mixed in, and `None` when the track is not mixing: a first entry on an empty track, a mix of no length, and before the data has loaded. A fade-out by `set_empty` reads here while `animation` gives `None`.
 
+### From a pool
+
+**A pooled skeleton keeps its tracks.** A released entity is `Disabled`, not stepped, so acquired again it still plays what its last life played, and a `set_animation` crossfades from that life's pose. As it is acquired, stop every track, or put a new state on the entity:
+
+<!-- given: hero: Entity -->
+```rust
+if let Some(mut state) = ctx.world.get_mut::<SkeletonAnimation>(hero) {
+  state.clear_all(); // every track stops at once, with no fade
+  state.set_animation(0, "idle", true); // nothing to mix from: it shows at once
+}
+// Or a new state over the old, which says nothing of the old entries
+ctx.world.entity_mut(hero).insert(SkeletonAnimation::new());
+```
+
+- `clear_all()` ends each entry as `clear` does: their `End` and `Dispose` are sent with the skeleton's next step. A state inserted over the old one sends nothing for the old entries.
+- The skins, attachments and bone overrides set on the `Skeleton` are kept too: set those the new life relies on, as for any pooled component.
+
 ## Events
 
 An event key reaches the game as a `SkeletonEvent` message when its animation's time crosses it.
@@ -467,10 +486,11 @@ for event in ctx.messages::<SkeletonEvent>() {
 
 - **Each key fires exactly once each time it is crossed**, whatever the step size or `time_scale`: a looping animation's keys once a loop, and several keys crossed in one step all in that step. A key at 0 fires as its entry starts and at the start of each loop.
 - A step's events come in the order they happened, across tracks. Several skeletons' events come in entity order.
-- **An entry that is mixing out fires nothing** unless its `event_threshold` is above 0.
-- Nothing fires while no fixed step runs (the game clock paused, hitstop), and nothing is lost.
+- **An entry that is mixing out fires nothing** unless its `event_threshold` is above 0. One exception: an entry that a frame showed while no step ran (the clock paused, a display faster than the step) and that was replaced before its first step still takes that step, mixing out, and its key at 0 fires then.
+- Nothing fires while no fixed step runs (the game clock paused, hitstop): no key is skipped, and each fires when the clock runs again.
 - With `time_scale` at 0 an entry set then still starts: its key at 0 fires once.
 - **The messages are written in the skeletons' step, after `Scene::update`**, so a scene reads an event in the next step's `update` (One step behind, below).
+- **A scene's `update` does not run during a scene transition**, while skeletons keep animating: what one sends meanwhile is not seen by `update` (Scene transitions, below).
 
 ### Playing an event's sound
 
@@ -548,8 +568,62 @@ for event in ctx.messages::<SkeletonTrackEvent>() {
 ```
 
 - What a call causes (`set_animation`'s `Interrupt` and `Start`) is sent with the skeleton's next step.
+- **A handle is unique within its own skeleton only.** Every `SkeletonAnimation` numbers its entries from the same start, so two skeletons' handles can be equal: match an event's `entity` as well as its `entry`, as above.
 - **An entry that is mixing out completes no more**, and a non-looping entry replaced before its end never sends `Complete`: end a state on `Complete`, `Interrupt` or `End`, or poll `state.entry(id).is_none_or(|entry| entry.is_complete())` (`is_complete` reads the entry's time alone, so it also turns true for an entry that passes its end while mixing out).
 - **The empty animation's entries** (`set_empty`) carry the name `SkeletonAnimation::EMPTY` (`<empty>`) and send `Start`, `Interrupt`, `End` and `Dispose`, never `Complete`: "the fade is over" is its `End`. The constant is for reading events: `set_animation(track, SkeletonAnimation::EMPTY, ..)` is an unknown name.
+- A track event sent during a scene transition is not seen by `update` either (next).
+
+### Scene transitions
+
+**A skeleton keeps animating through a scene transition** (`SwitchWith`, `PushWith`, `PopWith` and the rest), as particles and physics do, so a character does not stand frozen under a fade. **A scene's `update` does not run while a transition does**, and a message lasts two fixed steps. So what a skeleton sends during a transition (an event key crossed, an entry's `Start` or `Complete`) is never seen by `ctx.messages` in `update`: by the time `update` runs again it has gone.
+
+A scene coming back from under a pause menu meets this too. Its skeletons are held under the menu, with nothing lost. If the menu pops with a fade, they are released at the fade's midpoint: what waited is sent in their next step, while the scene is still fading in, and `update` sees none of what is sent from then until the fade ends.
+
+Three ways to write a game that does not depend on hearing a message in `update`:
+
+**Read them in a system of the scene's own.** A scene's systems (`ctx.add_systems`) do not wait for a transition: they run in every fixed step while the scene is not stopped under another, as its skeletons do.
+
+<!-- with: #[derive(Resource, Default)] struct Dust(Vec<Entity>); -->
+```rust
+fn footsteps(mut events: MessageReader<SkeletonEvent>, mut dust: ResMut<Dust>) {
+  for event in events.read() {
+    if &*event.name == "footstep" {
+      dust.0.push(event.entity); // heard in every step, a fade's too
+    }
+  }
+}
+
+// In on_enter
+ctx.world.init_resource::<Dust>();
+ctx.add_systems(Phase::FixedUpdate, footsteps).expect("FixedUpdate takes scene systems");
+```
+
+**Queue what follows.** An animation queued behind another starts by itself, so nothing waits to hear a `Complete`:
+
+<!-- given: hero: Entity -->
+```rust
+if let Some(mut state) = ctx.world.get_mut::<SkeletonAnimation>(hero) {
+  state.set_animation(0, "attack", false);
+  state.add_animation(0, "idle", true, 0.0); // as the attack ends
+}
+```
+
+**Ask the state.** It knows what has happened whatever was heard: an entry's `is_complete()`, and the animation a track plays.
+
+<!-- self: hero: Entity, attack: Option<SkeletonTrackEntryId> -->
+```rust
+// Each step, in update
+if let Some(state) = ctx.world.get::<SkeletonAnimation>(self.hero) {
+  // Over when the entry has reached its end, or has gone (replaced and mixed out)
+  if let Some(attack) = self.attack
+    && state.entry(attack).is_none_or(|entry| entry.is_complete())
+  {
+    self.attack = None;
+  }
+  // Or by what the track plays now
+  let idling = state.animation(0) == Some("idle");
+}
+```
 
 ## Sockets
 
@@ -635,7 +709,8 @@ if let Some(mut skeleton) = ctx.world.get_mut::<Skeleton>(hero) {
 - **A skin adds or replaces attachments; it cannot hide one.** A hat's skin cannot take away the hair the default skin shows: draw the hat to cover it, keep the hair out of the default skin, or hide the slot with `set_attachment(slot, None)`.
 - A skin name the data lacks warns once per skeleton per name and is left out; if the data has none of the names given, the call changes nothing.
 - `set_attachment` beats animation for as long as it is set. Its name is looked up in the skins like a key's, so one no skin has in the slot shows nothing, with no warning. A slot the data lacks warns once per skeleton per name.
-- Skins, attachments and overrides are the entity's own, not the data's: skeletons sharing data share none of them. Each shows from the skeleton's next step.
+- Skins, attachments and overrides are the entity's own, not the data's: skeletons sharing data share none of them.
+- **A skin shows at once; an attachment or an override from the skeleton's next step.** The skins worn are looked up whenever something asks: the next frame draws the new skin, with the game clock paused too, and `point`, `bounding_box` and `attachment` answer by it at once. Which name each slot shows, and where the bones are, stay as the last step left them: `set_attachment` and `override_bone` are written in the skeleton's step, so they wait for one.
 - `skins()` gives the skins worn, in order, without the default; `set_skin` and `set_skins` read back at once.
 - `attachment(slot)` is the name the slot shows as the last step left it (the game's, else the animations' key, else the setup attachment), so a `set_attachment` reads back after the next step, while a `set_skins` changes its answer at once. **It is `None` for a name no skin worn has in the slot**, since that shows nothing, and for a hidden slot, a slot the data lacks, and before the data has loaded.
 
@@ -715,7 +790,7 @@ An entity with a `Skeleton` and `Renderable::skeleton()` draws the regions its s
 - **A negative scale mirrors**, on a skeleton as on a sprite: a `Transform` scaled by -1 on one axis (on the entity or above it) draws what is under it mirrored, and both axes negative is a half turn. A scale that changes sign in a step is drawn through between steps (it closes to nothing and opens the other way); `flip_x` lands at once, which is what a character turning round wants.
 - **Use one atlas.** A skeleton whose regions share an image and blend is one draw item, whatever its slot count; each change of image or blend along the draw order starts another. A game shader on the entity makes each region an item of its own.
 - A skeleton's parts are culled together, for each camera, by the box round them. Off screen it keeps animating, so nothing pops when it comes back into view.
-- A skeleton moved while no step runs (a teleport, a paused clock) draws at its new place in that frame.
+- A skeleton moved while no step runs (a paused clock) is drawn where its entity is drawn in that frame, as a sprite is: its bones follow the entity with no step to pose them. After a teleport, `ctx.skip_interpolation(entity)` draws it at its new place at once, as for any interpolated entity.
 
 <!-- given: hero: Entity -->
 ```rust
@@ -729,8 +804,9 @@ ctx.world.entity_mut(hero).remove::<Interpolated>();
 - **The step.** In each fixed step, after `Scene::update`, physics and transform propagation and before particles (`FixedSet::Skeletons`), every skeleton whose data has loaded, in entity order: advances its animation and applies it over the setup pose, writes the game's attachments and bone overrides over that, places its bones under its entity's transform, places its sockets and what is below them, and sends its `SkeletonEvent`s and `SkeletonTrackEvent`s.
 - **A pose in the frame it appears.** A skeleton added, or whose data landed or reloaded, in a frame that runs no fixed step (the clock paused, hitstop, slow motion, a display faster than the step) still has its pose and its sockets their places by the end of that frame. The pose is its animation's first moment, not the setup pose, when an animation is set. Nothing advances and no message is sent until a step runs, and none is lost.
 - **Game time.** Skeletons advance in fixed steps: a paused clock and hitstop freeze them, slow motion slows them, and the animation is the same at any frame rate.
-- **They freeze with their scene.** A skeleton belongs to the scene whose code or systems added it, and animates while that scene updates: under a scene that stops it (a pause menu pushed over the game) it neither advances nor sends anything, and carries on where it was, nothing lost, when its scene updates again. A scene transition does not stop it. A skeleton added outside every scene is held while any scene is.
-- **Disabled.** A `Disabled` skeleton is not stepped or drawn.
+- **They freeze with their scene.** A skeleton belongs to the scene whose code or systems added it, and animates while that scene updates: under a scene that stops it (a pause menu pushed over the game) it neither advances nor sends anything, and carries on where it was when its scene updates again. Nothing is lost to the hold: what its calls caused meanwhile is sent in its first step after. A skeleton added outside every scene is held while any scene is.
+- **A scene transition does not stop them.** Skeletons keep animating through a fade or a slide, as particles and physics do, while every scene's `update` waits for the transition to end. What a skeleton sends meanwhile is not seen by `update`, and that includes a scene released from under a menu that pops with a fade, from the fade's midpoint to its end (Events, Scene transitions).
+- **Disabled.** A `Disabled` skeleton is not stepped or drawn. Enabled again it carries on where it stopped, which is what a pool hands out (Playing animations, From a pool).
 - **Hot reload.** A saved file reloads into every skeleton showing it at their next step. Entries are kept by their animation's name, with their times; skins, attachments, overrides and sockets are found again by name. An animation the save removed clears the track it was playing on, with one warning; a queued or fading entry of it is dropped and the track plays on. A name the new data lacks warns once and stays kept, so a later save that has it brings it back. A broken save keeps the last good skeleton, with one warning. Data changed in code (`ctx.assets().get_mut`) is followed the same way.
 - **Cost.** A CPU pose on the main thread, drawn through the sprite batch. On an Apple M5 Pro, 200 skeletons of 30 bones and 25 parts each, two tracks playing with a crossfade always in progress, cost about 0.5 ms of a fixed step and 0.16 ms of a frame's drawing from one atlas (0.28 ms with an image for each part); a steady step and frame allocate nothing. A crowd wholly off screen still costs its step and nearly all of its drawing work.
 
@@ -744,13 +820,15 @@ In a development build, the console command `debug:skeletons` (`ryo-console`) dr
 - **Size:** at most 255 bones and 255 slots a skeleton, and tracks 0 to 63 (a higher track warns once per skeleton and does nothing).
 - **Game time only:** there is no unscaled mode. A menu's skeleton stands still while the game clock is paused.
 - **One step behind** in a scene's `update` (above), and a collider on a socket one physics step late.
+- **Scene transitions:** a scene's `update` does not run during one, and does not see what a skeleton sends meanwhile (Events, Scene transitions).
+- **A queue of 64:** `add_animation` on a track with 64 entries queued is refused, with one warning per skeleton.
 - **Sockets:** a skew is dropped; a socket's sprite is wholly in front of or behind the skeleton; an ordinary child of the skeleton's entity (not a socket, nor below one) does not jump with `skip_interpolation`.
 - **Mixing:** a crossfade dips a little where the incoming animation keys a property in another form (a `translate_x` over a combined `translate`), and, in a chain of three or more entries, past an entry that does not key the property. With `time_scale` at 0 no mix advances, so a track given 17 animations meanwhile jumps as its oldest entry ends.
 - **Drawing:** a drop shadow is darker where parts overlap; blob and contact shadows stand under the entity and do not follow the pose (while an animation jumps, set a blob shadow's height from a bone, as the demo's `lift_shadow` does); sprite shaders, outlines and glows apply part by part; `YSort::foot_offset` is not used; there is no culling of single parts, and a skeleton off screen still builds its quads.
 - **Skins** cannot hide an attachment.
 - **Event audio** is the game's to play, and `balance` has nowhere to go in `PlayOptions`.
 - **Before the data has loaded:** at most 256 animation calls are kept (one more is ignored and returns `None`, with one warning), and at most 255 attachments and 255 overrides; a `mix_duration` set to 0 on a kept entry counts as unset and takes the data's mix.
-- **Warnings are bounded:** a skeleton remembers 64 names it has warned about; past that a missing name is ignored in silence.
+- **Warnings are bounded:** a skeleton remembers 64 names it has warned about, and its animation state 64 more; past that a missing name is ignored in silence.
 - **Track events from calls** wait for the next step in a list of 1,024; a skeleton that is not stepped while a game keeps calling it drops the oldest, with one warning.
 - **A despawned skeleton** sends nothing more: what its last calls caused goes untold.
 - **Long runs:** an entry's time is an `f32` that counts every loop. A looping entry left playing moves in steps of 2 ms after 4.6 hours and 8 ms after 18 hours, runs near twice as fast after 3 days and stops after 6. A layer at partial alpha whose bone keeps turning remembers its turns: after 4.5 hours of a turn a second its rotation moves in steps of 0.45 degrees times its alpha, and where it rests depends on how far it has wound. Setting the animation again starts both afresh. One step fires the event keys of at most the last 1,000 loops it crossed, and sends at most 1,000 `Complete`s.

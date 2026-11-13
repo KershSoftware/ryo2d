@@ -245,10 +245,13 @@ impl From<Affine2> for Stand {
 /// stopped under another, when it also sends nothing.
 ///
 /// What a game sets on it (skins, attachments, bone overrides) is its own,
-/// not the data's, is kept by name, and shows from the skeleton's next
-/// step; what it answers (`bone_world`, `point`, `bounding_box`,
-/// `attachment`) is as its last step left it, and `skins` gives what it
-/// wears.
+/// not the data's, and is kept by name. An attachment or an override
+/// shows from the skeleton's next step, and what it answers of its bones
+/// and slots (`bone_world`, `point`, `bounding_box`, `attachment`) is as
+/// its last step left it. A skin shows at once: the skins worn are looked
+/// up when the skeleton is drawn and when it is asked, so the next frame
+/// draws a skin just put on, with the game clock paused too, and `skins`
+/// gives what it wears.
 ///
 /// It is drawn when its entity has a [`Renderable::skeleton`]: its regions
 /// where its bones are, sorted, lit, shadowed and lifted as a sprite is,
@@ -362,7 +365,8 @@ impl Skeleton {
   /// them that has it, then in the default skin. An empty list leaves the
   /// default skin alone. A name the data lacks warns once per skeleton per
   /// name and is left out; if the data has none of the names, nothing
-  /// changes
+  /// changes. The skins show at once, in the next frame drawn and in what
+  /// the skeleton answers, without waiting for a fixed step
   pub fn set_skins(&mut self, names: &[&str]) {
     let Some(index) = self.index.clone() else {
       // Kept by name until the data lands
@@ -1624,9 +1628,14 @@ mod tests {
     step(&mut skeleton, None);
     assert_eq!(skeleton.attachment("hat"), Some("cap"));
     // A name no skin worn has in the slot shows nothing: the cap is the
-    // hats' own, and the fist the gloves'
+    // hats' own, and the fist the gloves'. The skins are looked up when
+    // the skeleton is asked, so the answer changes at once, with no step
     skeleton.set_skin("gloves");
     assert_eq!(worn(&skeleton), ["gloves"]);
+    assert_eq!(skeleton.attachment("hat"), None);
+    skeleton.set_skin("hats");
+    assert_eq!(skeleton.attachment("hat"), Some("cap"));
+    skeleton.set_skin("gloves");
     step(&mut skeleton, None);
     assert_eq!(skeleton.attachment("hat"), None);
     skeleton.set_attachment("hand", Some("fist"));

@@ -10,7 +10,12 @@ use crate::core::ecs::{Entity, Message};
 /// An event key that a skeleton's animation crossed in a fixed step. A
 /// step's events are written in the order they happened, whatever tracks
 /// they are on; a looping animation's keys come once a loop. The values
-/// are the key's own where it gives them, else the event's
+/// are the key's own where it gives them, else the event's.
+///
+/// A skeleton keeps animating through a scene transition, during which a
+/// scene's `update` does not run: an event sent then is not seen by
+/// `update` (messages last two fixed steps). A system the scene added
+/// (`SceneContext::add_systems`) keeps running, and sees it
 #[derive(Message, Debug, Clone, PartialEq)]
 pub struct SkeletonEvent {
   /// The skeleton's entity
@@ -59,7 +64,12 @@ impl SkeletonEvent {
 /// Something that happened to one of a skeleton's track entries in a fixed
 /// step (what a call such as `set_animation` causes is told in the
 /// skeleton's next step). The empty animation's entries carry the name
-/// [`SkeletonAnimation::EMPTY`](super::SkeletonAnimation::EMPTY)
+/// [`SkeletonAnimation::EMPTY`](super::SkeletonAnimation::EMPTY).
+///
+/// As with a [`SkeletonEvent`], one sent during a scene transition is not
+/// seen by a scene's `update`, which does not run then: a game that must
+/// not miss a `Complete` reads these in a scene system, queues what
+/// follows with `add_animation`, or asks the entry (`is_complete`)
 #[derive(Message, Debug, Clone, PartialEq)]
 pub struct SkeletonTrackEvent {
   /// The skeleton's entity

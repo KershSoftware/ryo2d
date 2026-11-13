@@ -1043,6 +1043,53 @@ fn a_skeleton_spawned_while_the_clock_is_paused_draws_that_frame() {
 }
 
 #[test]
+fn a_skin_shows_in_the_next_frame_and_a_set_attachment_from_the_next_step() {
+  let Some(mut engine) = engine() else {
+    return;
+  };
+  // A red body 8 px square, which the skin "gold" shows as a yellow one
+  let world = engine.world_mut();
+  let yellow = solid(world, (8, 8), YELLOW);
+  let parts = [part("body", RED, (8, 8))];
+  let data = rig_with(world, &parts, Images::Each, |builder| {
+    let gold = SkeletonRegion {
+      name: Arc::from("gold"),
+      image: yellow,
+      x: 0,
+      y: 0,
+      width: 8,
+      height: 8,
+    };
+    let shown = SkeletonAttachment::Region(RegionAttachment::new(1, 8.0, 8.0));
+    builder
+      .region(gold)
+      .skin("gold")
+      .attachment("gold", "body", "body", shown)
+  });
+  let hero = stand(world, data, (32.0, 32.0), Renderable::skeleton());
+  let body = (28, 28, 8, 8);
+  assert_boxes(&stepped(&mut engine), &[(body, RED)], "the default skin");
+
+  // With the clock paused no step runs. The drawer looks the skins up as
+  // it draws, so a skin put on shows in the next frame all the same
+  time(&mut engine).game.pause();
+  let steps = engine.world().resource::<Time>().fixed.step_count();
+  let mut skeleton = engine.world_mut().get_mut::<Skeleton>(hero).unwrap();
+  skeleton.set_skin("gold");
+  assert_boxes(&stepped(&mut engine), &[(body, YELLOW)], "the skin, paused");
+  // An attachment the game sets is written in the skeleton's step: it
+  // waits for one
+  let mut skeleton = engine.world_mut().get_mut::<Skeleton>(hero).unwrap();
+  skeleton.set_attachment("body", None);
+  assert_boxes(&stepped(&mut engine), &[(body, YELLOW)], "not yet hidden");
+  assert_eq!(engine.world().resource::<Time>().fixed.step_count(), steps);
+  time(&mut engine).game.resume();
+  let drawn = stepped(&mut engine);
+  let background = drawn.get_pixel(SIZE - 1, SIZE - 1).0;
+  assert_eq!(drawn.get_pixel(32, 32).0, background, "hidden by the step");
+}
+
+#[test]
 fn a_skeleton_moved_between_steps_draws_at_its_new_place_that_frame() {
   let Some(mut engine) = engine() else {
     return;

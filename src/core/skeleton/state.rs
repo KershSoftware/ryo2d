@@ -2073,6 +2073,22 @@ mod tests {
     let before = rig.state.entry(ticks).map(TrackEntry::track_time);
     assert_eq!(rig.step(0.1).events.len(), 0);
     assert_eq!(rig.state.entry(ticks).map(TrackEntry::track_time), before);
+    // One exception at the default threshold: an entry a frame showed
+    // (posed with no step) and replaced before its first step still takes
+    // that step, mixing out. It starts there as any entry does, so its key
+    // at 0 fires, and nothing after it
+    let mut rig = Rig::new();
+    rig.set(0, "halves", true);
+    pose_unadvanced(&mut rig);
+    rig.set(0, "zero", true);
+    assert_eq!(rig.step(0.1).times(), vec![0.0]);
+    assert_eq!(rig.step(0.5).times(), Vec::<f32>::new());
+    // Replaced before any frame showed it, it is dropped and fires nothing
+    let mut rig = Rig::new();
+    rig.step(0.0);
+    rig.set(0, "halves", true);
+    rig.set(0, "zero", true);
+    assert_eq!(rig.step(0.1).times(), Vec::<f32>::new());
   }
 
   #[test]
