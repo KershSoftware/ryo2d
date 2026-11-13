@@ -8,11 +8,11 @@ use glam::{Affine2, Mat2, Vec2};
 
 use super::apply::shortest;
 use super::attachment::Attachment;
-use super::data::{BoneId, SkeletonData, SkeletonIndex, SlotId};
+use super::data::{BoneId, DataVersion, SkeletonData, SkeletonIndex, SlotId};
 use super::pose::{BonePose, Pose};
 use super::state::{FiredEvent, FiredTrackEvent, SkeletonAnimation};
 use super::validate::{MAX_BONES, MAX_SLOTS};
-use crate::core::asset::{AssetId, Handle};
+use crate::core::asset::Handle;
 use crate::core::ecs::{Component, Transform};
 
 /// The most names a skeleton remembers having warned about. Past it, a
@@ -176,7 +176,7 @@ pub struct Skeleton {
   overrides: Vec<SetOverride>,
   /// The data's id and version that the pose and the names' places were
   /// made from
-  seen: Option<(AssetId<SkeletonData>, u64)>,
+  seen: Option<DataVersion>,
   index: Option<Arc<SkeletonIndex>>,
   /// The pose as the last step left it; nothing in it until the data lands
   pub(crate) pose: Pose,
@@ -416,17 +416,22 @@ impl Skeleton {
       .find_map(|skin| index.skins.get(skin)?.attachment(slot, name))
   }
 
-  /// The transform of the bone called `name` in the skeleton's own space
-  /// (before the entity's transform), as the last step left it: what a
-  /// socket on the bone is placed by
-  pub(crate) fn bone_in_skeleton(&self, name: &str) -> Option<Affine2> {
-    let bone = self.index.as_ref()?.bone_names.get(name)?;
+  /// The place of the bone called `name` in the data the pose was made
+  /// from
+  pub(crate) fn bone_id(&self, name: &str) -> Option<BoneId> {
+    self.index.as_ref()?.bone_names.get(name).copied()
+  }
+
+  /// A bone's transform in the skeleton's own space (before the entity's
+  /// transform), as the last step left it: what a socket on the bone is
+  /// placed by
+  pub(crate) fn bone_space(&self, bone: BoneId) -> Option<Affine2> {
     self.pose.skeleton_space.get(bone.index()).copied()
   }
 
   /// The data's id and version its pose was made from, once a step has
   /// seen the data
-  pub(crate) fn seen(&self) -> Option<(AssetId<SkeletonData>, u64)> {
+  pub(crate) fn seen(&self) -> Option<DataVersion> {
     self.seen
   }
 
@@ -446,7 +451,7 @@ impl Skeleton {
   pub(crate) fn step(
     &mut self,
     data: &SkeletonData,
-    seen: (AssetId<SkeletonData>, u64),
+    seen: DataVersion,
     animation: Option<&mut SkeletonAnimation>,
     dt: f32,
     root: Affine2,

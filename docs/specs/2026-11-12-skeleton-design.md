@@ -160,10 +160,10 @@ Each stage gets its own plan, reviews and hand-play. The old module and its demo
 
 ### Sockets
 
-- **`BoneSocket { bone, offset: Transform, inherit_scale }`** on a child entity of a skeleton entity. In `FixedSet::Skeletons`, after world transforms are computed, the system writes the child's local `Transform` (relative to the skeleton entity) and its `GlobalTransform`, so it is where the bone is in the same step, with no lag. It also brings the child's descendants up to date in the same step: the builder chooses how, and must keep propagation's change tracking correct.
+- **`BoneSocket { bone, offset: Transform, inherit_scale }`** on a child entity of a skeleton entity. In `FixedSet::Skeletons`, after world transforms are computed, the system writes the child's local `Transform` (relative to the skeleton entity) and its `GlobalTransform`, so it is where the bone is in the same step, with no lag. Its `GlobalTransform` equals the bone's world matrix × the offset for an unskewed bone. Where the bone's transform in the skeleton's space is skewed (a sheared bone, or a turned bone under an unevenly scaled one), the skew is dropped: the socket keeps the bone's place and direction, its length along the bone and its height across it. The reason is that the socket's local `Transform` is the truth and holds no skew: propagation re-places a child from its `Transform` whenever its parent moves, so an exact matrix written to `GlobalTransform` alone would be overwritten in every frame the skeleton's entity moved. It also brings the child's descendants up to date in the same step: the builder chooses how, and must keep propagation's change tracking correct.
 - **Interpolation:** a socket entity follows the skeleton's interpolation, through `Interpolated` as children already do.
 - **Physics:** colliders on a socket entity follow the bone one physics step later, because physics runs before transforms. This is a documented limit. A kinematic body on a socket is moved by the physics write-back next step.
-- **A missing bone name** warns once per entity and leaves the entity where it was.
+- **A missing bone name** warns once for that name and leaves the entity where it was.
 
 ### Drawing
 
@@ -216,7 +216,7 @@ Each stage gets its own plan, reviews and hand-play. The old module and its demo
   - every key fires exactly once across loops, a step larger than the animation, time scale 0 and 3, and a pause;
   - none fires after a mix-out passes its event threshold;
   - order within a step is by time.
-- **Sockets:** a child on a bone is where the bone is in the same step: its `GlobalTransform` equals the bone's world matrix × the offset. It follows interpolation. A missing bone warns once.
+- **Sockets:** a child on a bone is where the bone is in the same step: its `GlobalTransform` equals the bone's world matrix × the offset for an unskewed bone (under a skewed bone the skew is dropped, and the socket keeps the bone's place and direction). It follows interpolation. A missing bone warns once.
 - **Hot reload:** a playing skeleton keeps its animation and time after a reload that adds a bone. A reload that removes the playing animation clears that track with one warning. A broken file keeps the last good data.
 - **Drawing (e2e, pixels):**
   - a region on a rotated bone draws where expected;

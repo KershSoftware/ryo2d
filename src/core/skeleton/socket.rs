@@ -2,7 +2,8 @@
 
 use glam::{Affine2, Vec2};
 
-use crate::core::ecs::{Component, Transform};
+use super::data::{BoneId, DataVersion};
+use crate::core::ecs::{Component, Entity, Transform};
 
 /// Puts a child entity of a skeleton entity on one of the skeleton's
 /// bones: a weapon in a hand, a light on a head, an emitter at a muzzle.
@@ -13,11 +14,17 @@ use crate::core::ecs::{Component, Transform};
 /// nothing on the socket trails the bone.
 ///
 /// The entity's `Transform` is the engine's while the socket is on it:
-/// position it with `offset`. A bone the skeleton lacks warns once per
-/// entity and leaves the entity where it is. A socket whose parent is not
-/// a skeleton does nothing
+/// position it with `offset`. A bone the skeleton lacks warns once for
+/// that name and leaves the entity where it is. A socket whose parent is
+/// not a skeleton does nothing.
+///
+/// Under an interpolated skeleton the entity is drawn between steps as
+/// the skeleton is. The step that first puts it on a bone (a new socket,
+/// its skeleton's first pose, a bone found again) draws it there at once,
+/// with everything below it, and so does a step in which the skeleton's
+/// entity skips interpolation (a teleport)
 #[derive(Component, Debug, Clone, PartialEq)]
-#[require(Transform)]
+#[require(Transform, SocketState)]
 pub struct BoneSocket {
   /// The bone's name
   pub bone: String,
@@ -82,10 +89,20 @@ impl BoneSocket {
   }
 }
 
-/// Marks a socket that has been told its skeleton lacks its bone, so it is
-/// told once
-#[derive(Component, Debug, Clone, Copy, Default)]
-pub(crate) struct MissingBone;
+/// What the engine keeps of a socket between steps, beside it on its
+/// entity
+#[derive(Component, Debug, Clone, Default)]
+pub(crate) struct SocketState {
+  /// The data its bone's name was last looked up in (id and version), and
+  /// the bone's place there, if that data has it: the name is looked up
+  /// again only when the data or the socket changes
+  pub(crate) found: Option<(DataVersion, Option<BoneId>)>,
+  /// The skeleton entity whose bone it stands on; `None` while it is not
+  /// placed
+  pub(crate) on: Option<Entity>,
+  /// The name of a missing bone it has been told about
+  pub(crate) told: Option<Box<str>>,
+}
 
 #[cfg(test)]
 mod tests {

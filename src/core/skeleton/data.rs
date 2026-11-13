@@ -7,7 +7,7 @@ use std::sync::Arc;
 use super::animation::Animation;
 use super::builder::SkeletonDataBuilder;
 use super::skin::Skin;
-use crate::core::asset::{Asset, Handle};
+use crate::core::asset::{Asset, AssetId, Handle};
 use crate::core::graphics::Image;
 use crate::core::ui::Color;
 
@@ -224,6 +224,11 @@ impl AnimationCatalogue {
 }
 
 impl Asset for SkeletonData {}
+
+/// One version of a skeleton's data in the store: its id and the store's
+/// version of it. A reload keeps the id and moves the version on, so what
+/// is made from the data is made again when this changes
+pub(crate) type DataVersion = (AssetId<SkeletonData>, u64);
 
 impl SkeletonData {
   /// The name of the skin every skeleton has, which attachments go into

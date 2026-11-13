@@ -3,14 +3,14 @@
 //! give the order and the rules.
 
 use super::component::{Fired, Skeleton};
-use super::data::SkeletonData;
+use super::data::{DataVersion, SkeletonData};
 use super::event::{SkeletonEvent, SkeletonTrackEvent};
-use super::socket::{BoneSocket, MissingBone};
+use super::socket::{BoneSocket, SocketState};
 use super::state::SkeletonAnimation;
 use crate::core::asset::Assets;
 use crate::core::ecs::{
-  Children, Commands, DetectChangesMut, Entity, GlobalTransform, Has, Local, MessageWriter, Mut,
-  Query, Res, Transform, entity_order,
+  Children, DetectChanges, DetectChangesMut, Entity, GlobalTransform, Has, Local, MessageWriter,
+  Mut, PreviousGlobalTransform, Query, Ref, Res, Transform, entity_order,
 };
 use crate::core::time::Time;
 
@@ -33,12 +33,19 @@ type Placed<'w, 's> = Query<
   (
     &'static mut Transform,
     &'static mut GlobalTransform,
+    Option<&'static mut PreviousGlobalTransform>,
     Option<&'static Children>,
-    Option<&'static BoneSocket>,
-    Has<MissingBone>,
+    Option<(Ref<'static, BoneSocket>, &'static mut SocketState)>,
     Has<Skeleton>,
   ),
 >;
+
+/// Where a skeleton's entity stands, and whether it is drawn there at once
+/// (a teleport: its `PreviousGlobalTransform` skips)
+fn standing(placed: &Placed, entity: Entity) -> Option<(GlobalTransform, bool)> {
+  let (_, global, previous, ..) = placed.get(entity).ok()?;
+  Some((*global, previous.is_some_and(|previous| previous.skip)))
+}
 
 /// What the step keeps between runs, so a steady step allocates nothing:
 /// the skeletons in entity order, what the one being stepped fired, the
@@ -59,7 +66,6 @@ pub(crate) struct StepState {
 /// world transforms are computed under its entity's, its sockets (and what
 /// is below them) are placed on their bones, and its events and track
 /// events are written. One whose data is still loading waits, silently
-#[allow(clippy::too_many_arguments)] // a resource, query or writer per input
 pub(crate) fn update_skeletons(
   time: Option<Res<Time>>,
   data: Option<Res<Assets<SkeletonData>>>,
@@ -67,7 +73,6 @@ pub(crate) fn update_skeletons(
   mut placed: Placed,
   mut events: MessageWriter<SkeletonEvent>,
   mut track_events: MessageWriter<SkeletonTrackEvent>,
-  mut commands: Commands,
   mut state: Local<StepState>,
 ) {
   crate::profile_scope!("cpu:skeletons");
@@ -96,7 +101,7 @@ pub(crate) fn update_skeletons(
     let (Some(version), Some(rig)) = (data.version(id), data.get(id)) else {
       continue;
     };
-    let Ok(root) = placed.get(entity).map(|(_, global, ..)| *global) else {
+    let Some((root, teleported)) = standing(&placed, entity) else {
       continue;
     };
     fired.events.clear();
@@ -105,12 +110,15 @@ pub(crate) fn update_skeletons(
     skeleton.step(rig, (id, version), animation, dt, root.affine(), fired);
     let mut sockets = Sockets {
       placed: &mut placed,
-      commands: &mut commands,
       walk,
       moved,
+      entity,
+      seen: (id, version),
+      root,
+      teleported,
       warn: true,
     };
-    sockets.place_all(&skeleton, children, root);
+    sockets.place_all(&skeleton, children);
     events.write_batch(
       fired
         .events
@@ -140,7 +148,7 @@ pub(crate) fn update_skeletons(
     let (Some(version), Some(rig)) = (data.version(id), data.get(id)) else {
       continue;
     };
-    let Ok(root) = placed.get(entity).map(|(_, global, ..)| *global) else {
+    let Some((root, teleported)) = standing(&placed, entity) else {
       continue;
     };
     // Only one this step posed, standing elsewhere than it was posed for
@@ -150,67 +158,101 @@ pub(crate) fn update_skeletons(
     skeleton.place_again(rig, root.affine());
     let mut sockets = Sockets {
       placed: &mut placed,
-      commands: &mut commands,
       walk,
       moved,
+      entity,
+      seen: (id, version),
+      root,
+      teleported,
       warn: false,
     };
-    sockets.place_all(&skeleton, children, root);
+    sockets.place_all(&skeleton, children);
   }
 }
 
 /// Placing one skeleton's sockets
-struct Sockets<'a, 'w, 's, 'cw, 'cs> {
+struct Sockets<'a, 'w, 's> {
   placed: &'a mut Placed<'w, 's>,
-  commands: &'a mut Commands<'cw, 'cs>,
   walk: &'a mut Vec<(Entity, GlobalTransform)>,
   moved: &'a mut Vec<Entity>,
+  /// The skeleton's entity
+  entity: Entity,
+  /// The data's id and version its pose was made from
+  seen: DataVersion,
+  /// The skeleton's entity's transform
+  root: GlobalTransform,
+  /// Whether the skeleton's entity is drawn where it stands at once: its
+  /// sockets, and what is below them, are then too
+  teleported: bool,
   /// Whether a socket whose bone is missing is told: not when its
   /// skeleton is placed a second time in a step
   warn: bool,
 }
 
-impl Sockets<'_, '_, '_, '_, '_> {
-  /// Puts each of `skeleton`'s children that is a socket on its bone,
-  /// under `root`, the skeleton's entity's transform
-  fn place_all(&mut self, skeleton: &Skeleton, children: Option<&Children>, root: GlobalTransform) {
+impl Sockets<'_, '_, '_> {
+  /// Puts each of `skeleton`'s children that is a socket on its bone
+  fn place_all(&mut self, skeleton: &Skeleton, children: Option<&Children>) {
     for child in children.into_iter().flatten().copied() {
-      self.place(skeleton, child, root);
+      self.place(skeleton, child);
     }
   }
 
   /// Puts the socket `child` on its bone: its `Transform` is the bone's in
   /// the skeleton's space with the socket's offset, and its
-  /// `GlobalTransform` is `root` times that, which is what propagation
-  /// makes of the two, so whichever writes it last writes the same. Then
-  /// everything below it is placed, as propagation would place it
-  fn place(&mut self, skeleton: &Skeleton, child: Entity, root: GlobalTransform) {
-    let Ok((mut transform, mut global, children, socket, told, is_skeleton)) =
+  /// `GlobalTransform` is the skeleton's entity's times that, which is
+  /// what propagation makes of the two, so whichever writes it last writes
+  /// the same. Then everything below it is placed, as propagation would
+  /// place it. A socket put on a bone after not standing on one (a new
+  /// socket, its skeleton's first pose, a bone found again), or whose
+  /// skeleton teleported, is drawn there at once, with all below it
+  fn place(&mut self, skeleton: &Skeleton, child: Entity) {
+    let Ok((mut transform, mut global, previous, children, socket, is_skeleton)) =
       self.placed.get_mut(child)
     else {
       return;
     };
-    let Some(socket) = socket else {
+    let Some((socket, mut state)) = socket else {
       return;
     };
-    let Some(bone) = skeleton.bone_in_skeleton(&socket.bone) else {
-      if self.warn && !told {
+    // The bone's name is looked up once a version of the data, and again
+    // when the game changes the socket
+    let known = !socket.is_changed() && state.found.is_some_and(|(seen, _)| seen == self.seen);
+    if !known {
+      state.found = Some((self.seen, skeleton.bone_id(&socket.bone)));
+    }
+    let bone = state.found.and_then(|(_, bone)| bone);
+    let Some(bone) = bone.and_then(|bone| skeleton.bone_space(bone)) else {
+      if state.on.is_some() {
+        state.on = None;
+      }
+      // Told once for a name: another name it lacks is another mistake
+      if self.warn && state.told.as_deref() != Some(socket.bone.as_str()) {
         log::warn!(
           "bone socket {child} names the bone {:?}, which its skeleton lacks; it stays where it is",
           socket.bone
         );
-        self.commands.entity(child).try_insert(MissingBone);
+        state.told = Some(socket.bone.as_str().into());
       }
       return;
     };
+    if state.told.is_some() {
+      state.told = None;
+    }
+    let first = state.on != Some(self.entity);
+    if first {
+      state.on = Some(self.entity);
+    }
+    let skip = first || self.teleported;
     let local = socket.local(bone);
     transform.set_if_neq(local);
-    if !global.set_if_neq(root.mul_transform(&local)) {
+    let moved = global.set_if_neq(self.root.mul_transform(&local));
+    skip_interpolation(previous, skip);
+    if !moved && !skip {
       // It stands where it stood, and so does everything below it:
       // propagation has placed that already this step
       return;
     }
-    if is_skeleton {
+    if moved && is_skeleton {
       self.moved.push(child);
     }
     let here = *global;
@@ -221,14 +263,17 @@ impl Sockets<'_, '_, '_, '_, '_> {
     while let Some((entity, parent)) = self.walk.pop() {
       // One without a `Transform` (or disabled) is not placed, and what is
       // below it does not follow the socket: as in propagation
-      let Ok((transform, mut global, children, _, _, is_skeleton)) = self.placed.get_mut(entity)
+      let Ok((transform, mut global, previous, children, _, is_skeleton)) =
+        self.placed.get_mut(entity)
       else {
         continue;
       };
-      if !global.set_if_neq(parent.mul_transform(&transform)) {
+      let moved = global.set_if_neq(parent.mul_transform(&transform));
+      skip_interpolation(previous, skip);
+      if !moved && !skip {
         continue;
       }
-      if is_skeleton {
+      if moved && is_skeleton {
         self.moved.push(entity);
       }
       let here = *global;
@@ -239,6 +284,17 @@ impl Sockets<'_, '_, '_, '_, '_> {
   }
 }
 
+/// Draws an interpolated entity where it stands until the next step, when
+/// `skip` asks for it
+fn skip_interpolation(previous: Option<Mut<PreviousGlobalTransform>>, skip: bool) {
+  if skip
+    && let Some(mut previous) = previous
+    && !previous.skip
+  {
+    previous.skip = true;
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use std::sync::Arc;
@@ -246,17 +302,19 @@ mod tests {
   use glam::{Affine2, Vec2};
 
   use super::*;
-  use crate::core::asset::Handle;
+  use crate::core::asset::{AssetServer, Handle, MemorySource, pump};
+  use crate::core::ecs::interpolate::{render_global, snapshot_previous_transforms};
   use crate::core::ecs::propagate::propagate_transforms;
   use crate::core::ecs::test_util::{MAX_UNRELATED, Other, insert_unrelated};
   use crate::core::ecs::{
-    Changed, ChildOf, IntoScheduleConfigs, Messages, Schedule, ScheduleLabel, World,
+    Changed, ChildOf, Interpolated, IntoScheduleConfigs, Messages, PreviousGlobalTransform,
+    Schedule, ScheduleLabel, World, WorldExt,
   };
   use crate::core::messages::register_message;
   use crate::core::skeleton::{
     Animation, BoneId, BoneSetup, Curve, EventData, EventValues, Timeline,
   };
-  use crate::testing::asset_world;
+  use crate::testing::{asset_world, asset_world_over, capture_log};
 
   #[derive(ScheduleLabel, Debug, Clone, Copy, PartialEq, Eq, Hash)]
   struct Step;
@@ -264,11 +322,17 @@ mod tests {
   #[derive(ScheduleLabel, Debug, Clone, Copy, PartialEq, Eq, Hash)]
   struct Frame;
 
+  #[derive(ScheduleLabel, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+  struct Snapshot;
+
   /// A world with the asset stores, a 60 Hz clock and the skeleton
   /// messages; the fixed step's propagation then skeletons; and a frame's
   /// propagation, as `PostUpdate` runs it
   fn world() -> (World, Schedule, Schedule) {
-    let mut world = asset_world();
+    world_over(asset_world())
+  }
+
+  fn world_over(mut world: World) -> (World, Schedule, Schedule) {
     world.insert_resource(Time::new(60));
     register_message::<SkeletonEvent>(&mut world);
     register_message::<SkeletonTrackEvent>(&mut world);
@@ -307,6 +371,51 @@ mod tests {
       .build()
       .expect("a valid skeleton");
     world.resource_mut::<Assets<SkeletonData>>().add(data)
+  }
+
+  /// The start of a fixed step: where everything is drawn from is where
+  /// it stands now
+  fn snapshot(world: &mut World) {
+    let mut schedule = Schedule::new(Snapshot);
+    schedule.add_systems(snapshot_previous_transforms);
+    schedule.run(world);
+  }
+
+  /// Whether `entity`, under something interpolated, is drawn where it
+  /// stands half way to the next step, not on its way there from where it
+  /// stood before
+  fn drawn_where_it_stands(world: &World, entity: Entity) -> bool {
+    let global = world
+      .get::<GlobalTransform>(entity)
+      .expect("a placed entity");
+    let previous = world.get::<PreviousGlobalTransform>(entity);
+    assert!(previous.is_some(), "under an interpolated entity");
+    render_global(global, previous, 0.5) == *global
+  }
+
+  /// An interpolated skeleton at (50, 20), a socket on its hand that
+  /// waits at (500, 0) on it until it is placed, and a child 3 along the
+  /// socket
+  fn socketed(world: &mut World, data: Handle<SkeletonData>, bone: &str) -> [Entity; 3] {
+    let body = world
+      .spawn((
+        Transform::from_xy(50.0, 20.0),
+        Interpolated,
+        Skeleton::new(data),
+        turning(),
+      ))
+      .id();
+    let socket = world
+      .spawn((
+        Transform::from_xy(500.0, 0.0),
+        BoneSocket::new(bone),
+        ChildOf(body),
+      ))
+      .id();
+    let held = world
+      .spawn((Transform::from_xy(3.0, 0.0), ChildOf(socket)))
+      .id();
+    [body, socket, held]
   }
 
   fn turning() -> SkeletonAnimation {
@@ -502,5 +611,192 @@ mod tests {
         .collect();
       assert_eq!(order, vec![first, second], "with {unrelated} resources");
     }
+  }
+
+  #[test]
+  fn a_socket_first_placed_does_not_slide_from_where_it_waited() {
+    let (mut world, mut step, mut frame) = world();
+    let data = rig(&mut world);
+    let [body, socket, held] = socketed(&mut world, data, "hand");
+    // A frame that runs no fixed step: propagation places the socket where
+    // its own transform has it, and gives it a previous transform
+    frame.run(&mut world);
+    assert_eq!(global(&world, socket).translation, Vec2::new(550.0, 20.0));
+    // The first step: its snapshot takes that place as where the socket
+    // was, and then the socket is put on its bone. It is drawn there, and
+    // so is what is below it, not on the way from where they waited
+    snapshot(&mut world);
+    step.run(&mut world);
+    same(global(&world, socket), bone(&world, body, "hand"));
+    assert!(drawn_where_it_stands(&world, socket));
+    assert!(drawn_where_it_stands(&world, held));
+    // From the next step it is drawn between the steps' places, like
+    // anything under an interpolated entity
+    let before = global(&world, socket);
+    snapshot(&mut world);
+    step.run(&mut world);
+    let previous = world
+      .get::<PreviousGlobalTransform>(socket)
+      .expect("under an interpolated entity");
+    assert!(!previous.skip);
+    assert_eq!(previous.global.affine(), before);
+    assert_ne!(global(&world, socket), before);
+  }
+
+  #[test]
+  fn a_socket_whose_skeleton_s_data_lands_later_does_not_slide() {
+    const PATH: &str = "rigs/late.skeleton.ron";
+    let files = MemorySource::new();
+    files.insert(
+      PATH,
+      r#"(bones: [(name: "root"), (name: "hand", parent: "root", x: 10)])"#,
+    );
+    let (mut world, mut step, mut frame) = world_over(asset_world_over(files));
+    // Asked for, and on its way for as long as nothing pumps the registry
+    let data = world.resource::<AssetServer>().load::<SkeletonData>(PATH);
+    let [body, socket, held] = socketed(&mut world, data.clone(), "hand");
+    for _ in 0..3 {
+      snapshot(&mut world);
+      step.run(&mut world);
+      frame.run(&mut world);
+      assert_eq!(global(&world, socket).translation, Vec2::new(550.0, 20.0));
+    }
+    let start = std::time::Instant::now();
+    while world
+      .resource::<Assets<SkeletonData>>()
+      .get(&data)
+      .is_none()
+    {
+      assert!(start.elapsed().as_secs() < 5, "timed out waiting");
+      std::thread::sleep(std::time::Duration::from_millis(1));
+      pump(&mut world);
+    }
+    // The step that first poses the skeleton puts the socket on its bone,
+    // drawn there at once
+    snapshot(&mut world);
+    step.run(&mut world);
+    same(global(&world, socket), bone(&world, body, "hand"));
+    assert!(drawn_where_it_stands(&world, socket));
+    assert!(drawn_where_it_stands(&world, held));
+  }
+
+  #[test]
+  fn a_teleported_skeleton_s_sockets_skip_with_it() {
+    let (mut world, mut step, mut frame) = world();
+    let data = rig(&mut world);
+    let [body, socket, held] = socketed(&mut world, data, "hand");
+    frame.run(&mut world);
+    for _ in 0..2 {
+      snapshot(&mut world);
+      step.run(&mut world);
+    }
+    assert!(!drawn_where_it_stands(&world, socket), "between steps");
+    // In a step, after its snapshot, the game moves the skeleton far off
+    // and says it is a jump: the skeleton is drawn where it lands, and so
+    // are its socket and what the socket holds
+    snapshot(&mut world);
+    world
+      .get_mut::<Transform>(body)
+      .expect("the skeleton's transform")
+      .translation = Vec2::new(900.0, 900.0);
+    world.skip_interpolation(body);
+    step.run(&mut world);
+    same(global(&world, socket), bone(&world, body, "hand"));
+    for entity in [body, socket, held] {
+      assert!(drawn_where_it_stands(&world, entity));
+    }
+    // The step after, all three are drawn between steps again
+    snapshot(&mut world);
+    step.run(&mut world);
+    for entity in [socket, held] {
+      let previous = world
+        .get::<PreviousGlobalTransform>(entity)
+        .expect("under an interpolated entity");
+      assert!(!previous.skip);
+    }
+  }
+
+  #[test]
+  fn a_missing_bone_is_told_once_a_name_and_a_bone_found_again_is_not_slid_to() {
+    let log = capture_log();
+    let (mut world, mut step, mut frame) = world();
+    let data = rig(&mut world);
+    let [body, socket, held] = socketed(&mut world, data, "wing");
+    let mut steps = |world: &mut World, step: &mut Schedule| {
+      for _ in 0..3 {
+        snapshot(world);
+        step.run(world);
+        frame.run(world);
+      }
+    };
+    let rename = |world: &mut World, bone: &str| {
+      world
+        .get_mut::<BoneSocket>(socket)
+        .expect("the socket")
+        .bone = bone.to_owned();
+    };
+    // A bone the skeleton lacks: told once, and the socket waits
+    steps(&mut world, &mut step);
+    assert_eq!(log.containing("\"wing\""), 1);
+    assert_eq!(global(&world, socket).translation, Vec2::new(550.0, 20.0));
+    // Another name it lacks is another mistake, told once too
+    rename(&mut world, "tail");
+    steps(&mut world, &mut step);
+    assert_eq!(log.containing("\"tail\""), 1);
+    assert_eq!(log.containing("\"wing\""), 1);
+    // A bone it has: the socket goes to it in the next step, drawn there
+    // at once with what it holds
+    rename(&mut world, "hand");
+    snapshot(&mut world);
+    step.run(&mut world);
+    same(global(&world, socket), bone(&world, body, "hand"));
+    assert!(drawn_where_it_stands(&world, socket));
+    assert!(drawn_where_it_stands(&world, held));
+    // And from then on between steps
+    steps(&mut world, &mut step);
+    assert!(!drawn_where_it_stands(&world, socket));
+    // Named wrongly again, it is told again: the first telling was for a
+    // mistake since put right
+    rename(&mut world, "wing");
+    steps(&mut world, &mut step);
+    assert_eq!(log.containing("\"wing\""), 2);
+    assert_eq!(log.containing("\"tail\""), 1);
+  }
+
+  #[test]
+  fn a_socket_follows_its_bone_s_name_and_its_data_as_they_change() {
+    let (mut world, mut step, _) = world();
+    let data = rig(&mut world);
+    let [body, socket, _] = socketed(&mut world, data.clone(), "hand");
+    step.run(&mut world);
+    same(global(&world, socket), bone(&world, body, "hand"));
+    // The game names another bone: the next step finds it
+    world
+      .get_mut::<BoneSocket>(socket)
+      .expect("the socket")
+      .bone = "root".to_owned();
+    step.run(&mut world);
+    same(global(&world, socket), bone(&world, body, "root"));
+    // New data with the bones in other places in the list: the name is
+    // found again where it now is
+    let longer = SkeletonData::builder()
+      .bone("tail", None, BoneSetup::default())
+      .bone(
+        "root",
+        None,
+        BoneSetup {
+          x: 7.0,
+          ..BoneSetup::default()
+        },
+      )
+      .build()
+      .expect("a valid skeleton");
+    *world
+      .resource_mut::<Assets<SkeletonData>>()
+      .get_mut(&data)
+      .expect("the data") = longer;
+    step.run(&mut world);
+    same(global(&world, socket), bone(&world, body, "root"));
+    assert_eq!(global(&world, socket).translation, Vec2::new(57.0, 20.0));
   }
 }
