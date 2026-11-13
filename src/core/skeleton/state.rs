@@ -604,6 +604,21 @@ impl SkeletonAnimation {
     }
   }
 
+  /// Poses without a step: takes up `data` as a step does (the calls kept
+  /// until it landed are made, a reload keeps each entry by name), then
+  /// resets `pose` to the setup pose and applies the tracks where they
+  /// stand. Nothing advances and no event key fires, and the track events
+  /// that calls caused stay for the next step, so an entry that has yet to
+  /// start is shown at its first moment and its first step is still its
+  /// first: its `Start` and the keys at its time 0 go out then
+  pub(crate) fn apply_unadvanced(&mut self, data: &SkeletonData, pose: &mut Pose) {
+    self.see(data);
+    pose.reset(data);
+    for track in &mut self.tracks {
+      apply_track(track, data, pose);
+    }
+  }
+
   fn track_ok(&mut self, track: usize) -> bool {
     if track < Self::MAX_TRACKS {
       return true;

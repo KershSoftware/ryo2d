@@ -163,6 +163,12 @@ impl Carried {
 /// (`FixedSet::Skeletons`); until its data has loaded it has no bones and
 /// waits.
 ///
+/// It has a pose from the frame it is added in, or its data lands in,
+/// whether or not a fixed step runs that frame: its animation's first
+/// pose when one is set. It advances only in fixed steps, so not while
+/// the game clock is paused, and not while the scene that added it is
+/// stopped under another, when it also sends nothing.
+///
 /// What a game sets on it (skins, attachments, bone overrides) is its own,
 /// not the data's, is kept by name, and shows from the skeleton's next
 /// step; what it answers (`bone_world`, `point`, `bounding_box`) is as its
@@ -493,8 +499,39 @@ impl Skeleton {
       ),
       None => self.pose.reset(data),
     }
-    // The animation state starts each step from the setup pose, so what the
-    // game set is put over its result every step
+    self.finish(data, root, carried);
+  }
+
+  /// A pose outside a step, for a skeleton that has none for `data` as it
+  /// now is (just added, or its data just landed or reloaded): the pose is
+  /// made anew and the animation state poses it where its tracks stand,
+  /// an entry that has yet to start at its first moment. Nothing advances
+  /// and nothing is fired: an entry's `Start` and the keys at its start
+  /// go out with its first step, which advances it from 0 as if this had
+  /// not run. With no state it is the setup pose
+  pub(crate) fn appear(
+    &mut self,
+    data: &SkeletonData,
+    seen: DataVersion,
+    animation: Option<&mut SkeletonAnimation>,
+    root: Affine2,
+  ) {
+    let carried = self.rebuild(data);
+    self.seen = Some(seen);
+    match animation {
+      Some(animation) => animation.apply_unadvanced(data, &mut self.pose),
+      None => self.pose.reset(data),
+    }
+    self.finish(data, root, Some(carried));
+  }
+
+  /// The end of a step and of a pose outside one: what the game set is put
+  /// over the animation's result, and the bones are placed under `root`.
+  /// After new data (`carried`), a bone with no transform from the pose
+  /// before takes its current one as its previous one
+  fn finish(&mut self, data: &SkeletonData, root: Affine2, carried: Option<Carried>) {
+    // The animation state starts each pose from the setup pose, so what
+    // the game set is put over its result every time
     for set in &self.attachments {
       if let Some(shown) = set
         .id
@@ -684,11 +721,12 @@ impl Skeleton {
 }
 
 /// A skeleton was added, or put over another: it belongs to the scene
-/// whose code runs now, and is held with it. Nothing without a store
+/// whose code runs now, and is held with it; and the store counts it, so
+/// the frame's pass looks for it. Nothing without a store
 fn skeleton_inserted(mut world: DeferredWorld, context: HookContext) {
   let Some(scope) = world
-    .get_resource::<SkeletonStore>()
-    .map(SkeletonStore::scope)
+    .get_resource_mut::<SkeletonStore>()
+    .map(|mut store| store.add())
   else {
     return;
   };

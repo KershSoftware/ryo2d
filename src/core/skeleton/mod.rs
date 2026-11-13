@@ -41,6 +41,7 @@ pub use pose::BonePose;
 pub(crate) use scope::{SkeletonStore, hold_scenes, in_scene, release_scene};
 pub use skin::Skin;
 pub use socket::BoneSocket;
+pub(crate) use socket::skip_sockets;
 pub use state::{SkeletonAnimation, TrackEntry, TrackEntryId, TrackEventKind};
-pub(crate) use system::update_skeletons;
+pub(crate) use system::{pose_new_skeletons, update_skeletons};
 pub use validate::SkeletonError;

@@ -6,6 +6,7 @@ use super::kernel::{
 use super::transform::{GlobalTransform, PreviousGlobalTransform};
 use crate::core::graphics::MainCamera;
 use crate::core::particles::ParticleEmitter;
+use crate::core::skeleton::{Skeleton, skip_sockets};
 
 pub trait WorldExt {
   /// Spawn `bundle` as a child of `parent`.
@@ -14,7 +15,8 @@ pub trait WorldExt {
   fn detach_keep_world(&mut self, entity: Entity);
   /// Draw the entity at its new transform on the next frame instead of sliding there.
   /// A particle emitter on it spawns only at its new place in its next step,
-  /// leaving no streak along the jump.
+  /// leaving no streak along the jump, and a skeleton on it takes its bone
+  /// sockets, and what they hold, with it.
   fn skip_interpolation(&mut self, entity: Entity);
 }
 
@@ -45,6 +47,10 @@ impl WorldExt for World {
     // step's snapshot clears `skip` before particles run)
     if let Some(mut emitter) = self.get_mut::<ParticleEmitter>(entity) {
       emitter.teleported = true;
+    }
+    // A skeleton's sockets ride its bones, so they jump with it
+    if self.get::<Skeleton>(entity).is_some() {
+      skip_sockets(self, entity);
     }
   }
 }

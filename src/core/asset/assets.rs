@@ -311,6 +311,13 @@ impl<T: Asset> Assets<T> {
     self.entry(id.into()).map(|e| e.version)
   }
 
+  /// How many versions the store has given out: it moves whenever any
+  /// asset lands, reloads or is changed in code, so what follows the store
+  /// by versions knows in one comparison that none of them moved
+  pub(crate) fn versions_given(&self) -> u64 {
+    self.next_version
+  }
+
   /// The number of loaded assets, the engine's own among them: the image
   /// store holds the checker it draws for a missing image (and the pixel
   /// theme's skin images while that theme is used), and the font store the

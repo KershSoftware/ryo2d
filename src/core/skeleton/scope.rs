@@ -7,19 +7,43 @@ use super::component::Skeleton;
 use crate::core::ecs::{Allow, Disabled, Resource, World};
 
 /// What the world keeps of its skeletons as a whole: the scene whose code
-/// runs, which a skeleton added now belongs to, and the scenes held
+/// runs, which a skeleton added now belongs to, the scenes held, and how
+/// many skeletons have been added, which tells the frame's pass when there
+/// may be one without a pose
 #[derive(Resource, Debug, Default)]
 pub(crate) struct SkeletonStore {
   /// The scene whose code runs now; `None` is the engine's own code
   scope: Option<u64>,
   /// The scenes a scene above stops
   held: Vec<u64>,
+  /// How many times a `Skeleton` has been put on an entity
+  added: u64,
+  /// How many times the frame's pass has looked through the skeletons
+  looks: u64,
 }
 
 impl SkeletonStore {
-  /// The scene whose code runs now
-  pub(crate) fn scope(&self) -> Option<u64> {
+  /// A skeleton was put on an entity: it belongs to the scene whose code
+  /// runs, which is returned
+  pub(crate) fn add(&mut self) -> Option<u64> {
+    self.added += 1;
     self.scope
+  }
+
+  /// How many skeletons have been added
+  pub(crate) fn additions(&self) -> u64 {
+    self.added
+  }
+
+  /// The frame's pass looked through the skeletons for one without a pose
+  pub(crate) fn looked(&mut self) {
+    self.looks += 1;
+  }
+
+  /// How many times it has
+  #[cfg(test)]
+  pub(crate) fn looks(&self) -> u64 {
+    self.looks
   }
 
   /// Whether a skeleton of `scope` is held: its scene's skeletons while the

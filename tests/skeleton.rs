@@ -285,14 +285,14 @@ fn play(
   track: usize,
   name: &str,
   looping: bool,
-) -> TrackEntryId {
+) -> SkeletonTrackEntryId {
   animation_mut(engine, entity)
     .set_animation(track, name, looping)
     .expect("an animation of the rig")
 }
 
 /// The entry's track time
-fn track_time(engine: &HeadlessEngine, entity: Entity, entry: TrackEntryId) -> f32 {
+fn track_time(engine: &HeadlessEngine, entity: Entity, entry: SkeletonTrackEntryId) -> f32 {
   animation(engine, entity)
     .entry(entry)
     .expect("a live entry")
@@ -597,7 +597,7 @@ fn events_reach_the_game_as_messages_in_time_order() {
 
 #[test]
 fn track_events_reach_the_game() {
-  use TrackEventKind::*;
+  use SkeletonTrackEventKind::*;
   let Some(mut engine) = engine() else {
     return;
   };
@@ -617,7 +617,7 @@ fn track_events_reach_the_game() {
   sent.extend(inbox.steps(&mut engine, 2));
   let swing = play(&mut engine, body, 0, "swing", true);
   sent.extend(inbox.steps(&mut engine, 2));
-  let told: Vec<(&str, TrackEventKind)> = sent
+  let told: Vec<(&str, SkeletonTrackEventKind)> = sent
     .iter()
     .map(|event| (&*event.animation, event.kind))
     .collect();
@@ -813,7 +813,7 @@ fn a_paused_clock_freezes_animation_and_events() {
   assert_eq!(started.len(), 1, "{started:?}");
   assert_eq!(
     (started[0].entry, started[0].kind),
-    (burst, TrackEventKind::Start)
+    (burst, SkeletonTrackEventKind::Start)
   );
 
   // Hitstop is a pause too
@@ -837,12 +837,12 @@ fn a_paused_clock_freezes_animation_and_events() {
   }
   let ints: Vec<i32> = sent.iter().map(|event| event.int).collect();
   assert_eq!(ints, vec![1], "{sent:?}");
-  let told: Vec<TrackEventKind> = told
+  let told: Vec<SkeletonTrackEventKind> = told
     .iter()
     .filter(|event| event.entry == again)
     .map(|event| event.kind)
     .collect();
-  assert_eq!(told, vec![TrackEventKind::Start]);
+  assert_eq!(told, vec![SkeletonTrackEventKind::Start]);
   assert_eq!(track_time(&engine, body, again), 0.0);
   assert_eq!(track_time(&engine, body, swing), at);
 }
@@ -918,12 +918,24 @@ fn save(
   data: &Handle<SkeletonData>,
   text: String,
 ) {
+  save_paused(engine, files, data, text);
+  time(engine).game.resume();
+}
+
+/// Pauses the game clock, saves `text` over the skeleton's file and runs
+/// frames until the reload lands, leaving the clock paused: the last frame
+/// run is the one the reload landed in
+fn save_paused(
+  engine: &mut HeadlessEngine,
+  files: &MemorySource,
+  data: &Handle<SkeletonData>,
+  text: String,
+) {
   let before = version(engine, data);
   time(engine).game.pause();
   files.insert(PATH, text);
   engine.world().resource::<AssetServer>().reload(PATH);
   frames_until(engine, |engine| version(engine, data) != before);
-  time(engine).game.resume();
 }
 
 #[test]
@@ -1018,15 +1030,15 @@ fn a_reload_that_removes_the_playing_animation_clears_the_track_with_one_warning
   assert_eq!(state.current(0), None);
   assert!(state.entry(walk).is_none());
   assert_eq!(state.current(1), Some(idle));
-  let told: Vec<(&str, TrackEventKind)> = sent
+  let told: Vec<(&str, SkeletonTrackEventKind)> = sent
     .iter()
     .map(|event| (&*event.animation, event.kind))
     .collect();
   assert_eq!(
     told,
     vec![
-      ("walk", TrackEventKind::End),
-      ("walk", TrackEventKind::Dispose)
+      ("walk", SkeletonTrackEventKind::End),
+      ("walk", SkeletonTrackEventKind::Dispose)
     ]
   );
   // The arm is back in its setup pose
@@ -1193,11 +1205,21 @@ fn a_skeleton_waits_for_its_data_and_keeps_the_animation_set_meanwhile() {
     log.warnings()
   );
 
-  // The file arrives (with the clock paused, so the step it starts in is
-  // the next one)
+  // The file arrives with the clock paused. In the frame it lands, with
+  // no step run, the skeleton has its pose: the animation's first, the
+  // override on it, the socket on its bone. Nothing is said yet
   time(&mut engine).game.pause();
   gate.open();
   frames_until(&mut engine, |engine| version(engine, &data).is_some());
+  let arm = bone(&engine, body, "arm");
+  near(arm.translation, Vec2::new(18.0, 4.0));
+  close(arm.matrix2.x_axis.length(), 2.0);
+  close(heading(arm), 0.0);
+  same(global(&engine, socket), bone(&engine, body, "hand"));
+  assert_eq!(animation(&engine, body).current(0), Some(walk));
+  assert_eq!(track_time(&engine, body, walk), 0.0);
+  assert!(events.take(&engine).is_empty());
+  assert!(track_events.take(&engine).is_empty());
   time(&mut engine).game.resume();
   engine.step().expect("a frame");
   // The animation set meanwhile starts: its Start, and its key at time 0
@@ -1205,7 +1227,7 @@ fn a_skeleton_waits_for_its_data_and_keeps_the_animation_set_meanwhile() {
   assert_eq!(started.len(), 1, "{started:?}");
   assert_eq!(
     (started[0].entry, &*started[0].animation, started[0].kind),
-    (walk, "walk", TrackEventKind::Start)
+    (walk, "walk", SkeletonTrackEventKind::Start)
   );
   let sent = events.take(&engine);
   assert_eq!(sent.len(), 1, "{sent:?}");
@@ -1521,7 +1543,7 @@ fn ask(board: &Shared, what: impl Fn(&mut Board)) {
 }
 
 /// The entry playing on `entity`'s track 0
-fn playing(engine: &HeadlessEngine, entity: Entity) -> TrackEntryId {
+fn playing(engine: &HeadlessEngine, entity: Entity) -> SkeletonTrackEntryId {
   animation(engine, entity)
     .current(0)
     .expect("an entry on track 0")
@@ -1608,12 +1630,12 @@ fn a_skeleton_freezes_under_a_scene_that_stops_its_own_and_resumes_with_nothing_
   let dt = timestep(&engine);
   close(track_time(&engine, body, entry), at + dt);
   close(track_time(&engine, loose, loose_entry), loose_at + dt);
-  let started: Vec<(TrackEntryId, TrackEventKind)> = told
+  let started: Vec<(SkeletonTrackEntryId, SkeletonTrackEventKind)> = told
     .iter()
     .filter(|event| event.entity == body)
     .map(|event| (event.entry, event.kind))
     .collect();
-  assert_eq!(started, vec![(burst, TrackEventKind::Start)]);
+  assert_eq!(started, vec![(burst, SkeletonTrackEventKind::Start)]);
   let burst_keys = |sent: &[SkeletonEvent]| -> Vec<i32> {
     sent
       .iter()
@@ -1658,4 +1680,127 @@ fn a_skeleton_under_a_scene_that_keeps_its_own_updating_keeps_animating() {
   let dt = timestep(&engine);
   close(track_time(&engine, body, entry), at + 30.0 * dt);
   assert!(sent.iter().any(|event| event.entity == body));
+}
+
+#[test]
+fn a_skeleton_has_its_starting_pose_in_the_frame_it_appears_and_says_nothing_until_a_step() {
+  let Some(mut engine) = engine() else {
+    return;
+  };
+  let data = engine.assets().add(rig());
+  let mut events = Inbox::<SkeletonEvent>::new(&engine);
+  let mut track_events = Inbox::<SkeletonTrackEvent>::new(&engine);
+  engine.step().expect("a frame");
+  // With the clock paused no fixed step runs
+  time(&mut engine).game.pause();
+  let steps = fixed_steps(&engine);
+  let body = spawn(&mut engine, &data, Transform::from_xy(20.0, 10.0));
+  engine.world_mut().entity_mut(body).insert(Interpolated);
+  // "short" holds the arm turned half a radian from its first moment, and
+  // "burst" has a key at its start
+  let short = play(&mut engine, body, 0, "short", true);
+  let burst = play(&mut engine, body, 1, "burst", false);
+  let socket = engine
+    .world_mut()
+    .spawn((
+      Transform::from_xy(300.0, 0.0),
+      BoneSocket::new("hand"),
+      ChildOf(body),
+    ))
+    .id();
+  let (sent, told) = steps_taking(&mut engine, &mut events, &mut track_events, 1);
+  assert_eq!(fixed_steps(&engine), steps);
+  // That frame it has its animation's first pose, not its setup pose, and
+  // its socket is on its hand, drawn there at once
+  let arm = bone(&engine, body, "arm");
+  near(arm.translation, Vec2::new(30.0, 10.0));
+  close(heading(arm), 0.5);
+  let hand = bone(&engine, body, "hand");
+  same(global(&engine, socket), hand);
+  let previous = engine.world().get::<PreviousGlobalTransform>(socket);
+  assert!(previous.is_some_and(|previous| previous.skip));
+  // Nothing has been sent, and nothing has advanced
+  assert!(sent.is_empty() && told.is_empty(), "{sent:?} {told:?}");
+  assert_eq!(track_time(&engine, body, short), 0.0);
+  // What the game sets while it waits shows in no frame until a step, as
+  // ever; the pose stays, and still nothing is sent
+  let (sent, told) = steps_taking(&mut engine, &mut events, &mut track_events, 5);
+  assert!(sent.is_empty() && told.is_empty(), "{sent:?} {told:?}");
+  assert_eq!(bone(&engine, body, "hand"), hand);
+
+  // Unpaused, the first step tells each entry's Start and the keys at its
+  // start, once, and time moves on from 0 by one step
+  time(&mut engine).game.resume();
+  let (sent, told) = steps_taking(&mut engine, &mut events, &mut track_events, 1);
+  let started: Vec<(SkeletonTrackEntryId, SkeletonTrackEventKind)> =
+    told.iter().map(|event| (event.entry, event.kind)).collect();
+  assert_eq!(
+    started,
+    vec![
+      (short, SkeletonTrackEventKind::Start),
+      (burst, SkeletonTrackEventKind::Start)
+    ]
+  );
+  let ints: Vec<i32> = sent.iter().map(|event| event.int).collect();
+  assert_eq!(ints, vec![1, 2, 3], "{sent:?}");
+  let dt = timestep(&engine);
+  close(track_time(&engine, body, short), dt);
+  close(track_time(&engine, body, burst), dt);
+  // Nothing is told a second time
+  let (sent, told) = steps_taking(&mut engine, &mut events, &mut track_events, 2);
+  assert!(sent.is_empty(), "{sent:?}");
+  assert!(
+    told
+      .iter()
+      .all(|event| event.kind == SkeletonTrackEventKind::Complete),
+    "{told:?}"
+  );
+}
+
+#[test]
+fn a_reload_landing_while_the_clock_is_paused_rebuilds_the_pose_that_frame() {
+  let files = MemorySource::new();
+  files.insert(PATH, first_file());
+  let Some((mut engine, data)) = engine_over(&files) else {
+    return;
+  };
+  let mut events = Inbox::<SkeletonEvent>::new(&engine);
+  let body = spawn(&mut engine, &data, Transform::from_xy(8.0, 4.0));
+  let walk = play(&mut engine, body, 0, "walk", true);
+  let socket = engine
+    .world_mut()
+    .spawn((BoneSocket::new("hand"), ChildOf(body)))
+    .id();
+  events.steps(&mut engine, 12);
+  let at = track_time(&engine, body, walk);
+  let turned = heading(bone(&engine, body, "arm"));
+  near(bone(&engine, body, "arm").translation, Vec2::new(18.0, 4.0));
+
+  // The saved file sets the arm further out and adds a bone. It lands
+  // while the clock is paused: in that frame, with no step, the pose is
+  // the new skeleton's where the animation stands, and the socket follows
+  let bones = r#"(name: "root"), (name: "tail", parent: "root", x: -6),
+    (name: "arm", parent: "root", x: 14), (name: "hand", parent: "arm", x: 20)"#;
+  let steps = fixed_steps(&engine);
+  save_paused(
+    &mut engine,
+    &files,
+    &data,
+    rig_file(bones, "hand", &format!("{WALK}, {IDLE}")),
+  );
+  assert_eq!(fixed_steps(&engine), steps);
+  let arm = bone(&engine, body, "arm");
+  near(arm.translation, Vec2::new(22.0, 4.0));
+  close(heading(arm), turned);
+  near(bone(&engine, body, "tail").translation, Vec2::new(2.0, 4.0));
+  same(global(&engine, socket), bone(&engine, body, "hand"));
+  assert_eq!(track_time(&engine, body, walk), at);
+  assert!(events.take(&engine).is_empty());
+  // Resumed, the entry plays on by one step from where it was
+  time(&mut engine).game.resume();
+  engine.step().expect("a frame");
+  let dt = timestep(&engine);
+  assert_eq!(animation(&engine, body).current(0), Some(walk));
+  close(track_time(&engine, body, walk), at + dt);
+  assert!(heading(bone(&engine, body, "arm")) > turned);
 }

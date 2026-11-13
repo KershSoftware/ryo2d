@@ -3,7 +3,7 @@
 use glam::{Affine2, Vec2};
 
 use super::data::{BoneId, DataVersion};
-use crate::core::ecs::{Component, Entity, Transform};
+use crate::core::ecs::{Children, Component, Entity, PreviousGlobalTransform, Transform, World};
 
 /// Puts a child entity of a skeleton entity on one of the skeleton's
 /// bones: a weapon in a hand, a light on a head, an emitter at a muzzle.
@@ -102,6 +102,26 @@ pub(crate) struct SocketState {
   pub(crate) on: Option<Entity>,
   /// The name of a missing bone it has been told about
   pub(crate) told: Option<Box<str>>,
+}
+
+/// A skeleton's entity jumped (`skip_interpolation`): its sockets, and
+/// everything below them, are drawn where they stand until the next step,
+/// as it is. They ride its bones, so they jump with it
+pub(crate) fn skip_sockets(world: &mut World, skeleton: Entity) {
+  let below = |world: &World, entity: Entity| -> Vec<Entity> {
+    world
+      .get::<Children>(entity)
+      .map(|children| children.iter().copied().collect())
+      .unwrap_or_default()
+  };
+  let mut walk = below(world, skeleton);
+  walk.retain(|&child| world.get::<BoneSocket>(child).is_some());
+  while let Some(entity) = walk.pop() {
+    if let Some(mut previous) = world.get_mut::<PreviousGlobalTransform>(entity) {
+      previous.skip = true;
+    }
+    walk.extend(below(world, entity));
+  }
 }
 
 #[cfg(test)]

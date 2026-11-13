@@ -1,6 +1,7 @@
 //! The skeletons' part of the fixed step: every skeleton poses its bones,
-//! its sockets are put on them, and its events are sent. The module notes
-//! give the order and the rules.
+//! its sockets are put on them, and its events are sent; and their part of
+//! each frame: a skeleton with no pose yet gets one. The module notes give
+//! the order and the rules.
 
 use super::component::{Fired, Skeleton};
 use super::data::{DataVersion, SkeletonData};
@@ -11,7 +12,7 @@ use super::state::SkeletonAnimation;
 use crate::core::asset::Assets;
 use crate::core::ecs::{
   Children, DetectChanges, DetectChangesMut, Entity, GlobalTransform, Has, Local, MessageWriter,
-  Mut, PreviousGlobalTransform, Query, Ref, Res, Transform, entity_order,
+  Mut, PreviousGlobalTransform, Query, Ref, Res, ResMut, Transform, entity_order,
 };
 use crate::core::time::Time;
 
@@ -144,12 +145,106 @@ pub(crate) fn update_skeletons(
         .map(|event| SkeletonTrackEvent::new(entity, event)),
     );
   }
-  // A skeleton on another's socket was posed where it stood before the
-  // socket moved it, if its turn came first: its bones are computed again
-  // where it now stands, and its own sockets follow. One so moved may move
-  // another in turn. A hierarchy has no cycles, so the list ends; the bound
-  // is against one that has
-  let most = order.len().saturating_mul(order.len()).saturating_add(1);
+  place_moved(&mut skeletons, &mut placed, &data, walk, moved);
+}
+
+/// What the frame's pass keeps between runs: what it last looked at (how
+/// many skeletons had been added, and how many versions their data's store
+/// had given), and the buffers of the sockets' placing
+#[derive(Default)]
+pub(crate) struct AppearState {
+  looked_at: Option<(u64, u64)>,
+  walk: Vec<(Entity, GlobalTransform)>,
+  moved: Vec<Entity>,
+}
+
+/// Each frame (`PostUpdate`, after its propagation and before the cameras
+/// and the draw): a skeleton with no pose for its data as it now is gets
+/// one where it stands, with its sockets placed. That is one added, or
+/// whose data landed or reloaded, since its last step: in a frame that
+/// runs no fixed step after it (the clock paused, hitstop, slow motion, a
+/// fast display), it would otherwise have nothing to draw, or the old
+/// data's pose, until the next step. The pose is where its animation
+/// stands, an entry yet to start at its first moment; nothing advances,
+/// and nothing is sent before a step runs ([`Skeleton::appear`]). A held
+/// skeleton gets its pose too.
+///
+/// The pass looks through the skeletons only in a frame since whose last
+/// look one was added or the store of their data gave a version: any
+/// other frame it compares two counts and returns
+pub(crate) fn pose_new_skeletons(
+  data: Option<Res<Assets<SkeletonData>>>,
+  store: Option<ResMut<SkeletonStore>>,
+  mut skeletons: Skeletons,
+  mut placed: Placed,
+  mut state: Local<AppearState>,
+) {
+  let Some(data) = data else {
+    return;
+  };
+  // A world with no store counts no additions, so every frame looks
+  let now = store
+    .as_ref()
+    .map(|store| (store.additions(), data.versions_given()));
+  if now.is_some() && state.looked_at == now {
+    return;
+  }
+  crate::profile_scope!("cpu:skeletons");
+  let AppearState {
+    looked_at,
+    walk,
+    moved,
+  } = &mut *state;
+  *looked_at = now;
+  if let Some(mut store) = store {
+    store.looked();
+  }
+  moved.clear();
+  for (entity, mut skeleton, animation, children) in &mut skeletons {
+    let id = skeleton.data().id();
+    let (Some(version), Some(rig)) = (data.version(id), data.get(id)) else {
+      continue;
+    };
+    if skeleton.seen() == Some((id, version)) {
+      continue;
+    }
+    let Some((root, teleported)) = standing(&placed, entity) else {
+      continue;
+    };
+    let animation = animation.map(Mut::into_inner);
+    skeleton.appear(rig, (id, version), animation, root.affine());
+    let mut sockets = Sockets {
+      placed: &mut placed,
+      walk,
+      moved,
+      entity,
+      seen: (id, version),
+      root,
+      teleported,
+      warn: true,
+    };
+    sockets.place_all(&skeleton, children);
+  }
+  place_moved(&mut skeletons, &mut placed, &data, walk, moved);
+}
+
+/// A skeleton on another's socket was posed where it stood before the
+/// socket moved it, if its turn came first: the bones of each skeleton in
+/// `moved` are computed again where it now stands, and its own sockets
+/// follow. One so moved may move another in turn. A hierarchy has no
+/// cycles, so the list ends; the bound is against one that has
+fn place_moved(
+  skeletons: &mut Skeletons,
+  placed: &mut Placed,
+  data: &Assets<SkeletonData>,
+  walk: &mut Vec<(Entity, GlobalTransform)>,
+  moved: &mut Vec<Entity>,
+) {
+  if moved.is_empty() {
+    return;
+  }
+  let count = skeletons.iter().len();
+  let most = count.saturating_mul(count).saturating_add(1);
   let mut next = 0;
   while let Some(&entity) = moved.get(next).filter(|_| next < most) {
     next += 1;
@@ -160,18 +255,18 @@ pub(crate) fn update_skeletons(
     let (Some(version), Some(rig)) = (data.version(id), data.get(id)) else {
       continue;
     };
-    let Some((root, teleported)) = standing(&placed, entity) else {
+    let Some((root, teleported)) = standing(placed, entity) else {
       continue;
     };
-    // Only one this step posed, standing elsewhere than it was posed for
+    // Only one that has a pose, standing elsewhere than it was posed for
     if skeleton.seen() != Some((id, version)) || skeleton.root() == root.affine() {
       continue;
     }
     skeleton.place_again(rig, root.affine());
     let mut sockets = Sockets {
-      placed: &mut placed,
-      walk,
-      moved,
+      placed: &mut *placed,
+      walk: &mut *walk,
+      moved: &mut *moved,
       entity,
       seen: (id, version),
       root,
@@ -344,7 +439,23 @@ mod tests {
     world_over(asset_world())
   }
 
+  #[derive(ScheduleLabel, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+  struct Appear;
+
+  /// A frame's propagation and then its pass for skeletons without a
+  /// pose, as `PostUpdate` runs them
+  fn appearing() -> Schedule {
+    let mut frame = Schedule::new(Appear);
+    frame.add_systems((propagate_transforms, pose_new_skeletons).chain());
+    frame
+  }
+
+  fn looks(world: &World) -> u64 {
+    world.resource::<SkeletonStore>().looks()
+  }
+
   fn world_over(mut world: World) -> (World, Schedule, Schedule) {
+    world.insert_resource(SkeletonStore::default());
     world.insert_resource(Time::new(60));
     register_message::<SkeletonEvent>(&mut world);
     register_message::<SkeletonTrackEvent>(&mut world);
@@ -726,6 +837,19 @@ mod tests {
         .expect("under an interpolated entity");
       assert!(!previous.skip);
     }
+    // A jump made outside a step (the clock paused, say) reaches them as
+    // it is made: the frame's propagation carries them with the skeleton,
+    // and they are drawn where it puts them
+    world
+      .get_mut::<Transform>(body)
+      .expect("the skeleton's transform")
+      .translation = Vec2::new(-400.0, 100.0);
+    world.skip_interpolation(body);
+    frame.run(&mut world);
+    assert_eq!(global(&world, body).translation, Vec2::new(-400.0, 100.0));
+    for entity in [body, socket, held] {
+      assert!(drawn_where_it_stands(&world, entity));
+    }
   }
 
   #[test]
@@ -810,5 +934,151 @@ mod tests {
     step.run(&mut world);
     same(global(&world, socket), bone(&world, body, "root"));
     assert_eq!(global(&world, socket).translation, Vec2::new(57.0, 20.0));
+  }
+
+  #[test]
+  fn a_skeleton_posed_in_a_frame_starts_its_animation_in_its_first_step() {
+    let (mut world, mut step, _) = world();
+    let mut frame = appearing();
+    let data = rig(&mut world);
+    let [body, socket, held] = socketed(&mut world, data, "hand");
+    // A frame with no fixed step: the skeleton has its pose, the root not
+    // yet turned, and its socket is on its hand, drawn there at once with
+    // what it holds
+    frame.run(&mut world);
+    same(bone(&world, body, "root"), global(&world, body));
+    same(global(&world, socket), bone(&world, body, "hand"));
+    assert!(drawn_where_it_stands(&world, socket));
+    assert!(drawn_where_it_stands(&world, held));
+    // Nothing is sent before a step runs, however many frames pass
+    for _ in 0..3 {
+      frame.run(&mut world);
+    }
+    assert_eq!(world.resource::<Messages<SkeletonEvent>>().len(), 0);
+    assert_eq!(world.resource::<Messages<SkeletonTrackEvent>>().len(), 0);
+    // The first step is the animation's first: its Start and the key at
+    // its start, once, and one step's turn from where the frame showed it
+    snapshot(&mut world);
+    step.run(&mut world);
+    assert_eq!(world.resource::<Messages<SkeletonEvent>>().len(), 1);
+    assert_eq!(world.resource::<Messages<SkeletonTrackEvent>>().len(), 1);
+    let turned = Affine2::from_angle(1.0 / 60.0);
+    same(bone(&world, body, "root"), global(&world, body) * turned);
+    // The socket is drawn from where the frame put it to where the step
+    // does: it was on its bone already
+    let previous = world
+      .get::<PreviousGlobalTransform>(socket)
+      .expect("under an interpolated entity");
+    assert!(!previous.skip);
+    step.run(&mut world);
+    assert_eq!(world.resource::<Messages<SkeletonEvent>>().len(), 1);
+    assert_eq!(world.resource::<Messages<SkeletonTrackEvent>>().len(), 1);
+  }
+
+  #[test]
+  fn a_steady_frame_does_not_look_through_the_skeletons() {
+    let (mut world, mut step, _) = world();
+    let mut frame = appearing();
+    let data = rig(&mut world);
+    let bodies: Vec<Entity> = (0..3)
+      .map(|_| socketed(&mut world, data.clone(), "hand")[0])
+      .collect();
+    // The frame they appear in looks once, and poses them
+    frame.run(&mut world);
+    assert_eq!(looks(&world), 1);
+    for &body in &bodies {
+      assert!(
+        world
+          .get::<Skeleton>(body)
+          .is_some_and(|skeleton| skeleton.seen().is_some())
+      );
+    }
+    // After that a frame compares two counts and goes: no look, and no
+    // skeleton touched
+    world.clear_trackers();
+    for _ in 0..10 {
+      frame.run(&mut world);
+    }
+    assert_eq!(looks(&world), 1);
+    let mut touched = world.query_filtered::<Entity, Changed<Skeleton>>();
+    assert_eq!(touched.iter(&world).count(), 0);
+    // Steps do not make it look either
+    for _ in 0..3 {
+      step.run(&mut world);
+      frame.run(&mut world);
+    }
+    assert_eq!(looks(&world), 1);
+    // A skeleton added makes it look once: only the new one is posed
+    world.clear_trackers();
+    let added = socketed(&mut world, data.clone(), "hand")[0];
+    frame.run(&mut world);
+    frame.run(&mut world);
+    assert_eq!(looks(&world), 2);
+    let posed: Vec<Entity> = touched.iter(&world).collect();
+    assert_eq!(posed, vec![added]);
+    // New data makes it look once more, and pose those that use it
+    let again = SkeletonData::builder()
+      .bone("root", None, BoneSetup::default())
+      .bone(
+        "hand",
+        Some("root"),
+        BoneSetup {
+          x: 30.0,
+          ..BoneSetup::default()
+        },
+      )
+      .build()
+      .expect("a valid skeleton");
+    *world
+      .resource_mut::<Assets<SkeletonData>>()
+      .get_mut(&data)
+      .expect("the data") = again;
+    frame.run(&mut world);
+    frame.run(&mut world);
+    assert_eq!(looks(&world), 3);
+    for &body in &bodies {
+      let hand = bone(&world, body, "hand").translation - global(&world, body).translation;
+      assert!((hand.length() - 30.0).abs() < 1e-3, "{hand}");
+    }
+    // A step that has seen the new data first leaves the frame nothing to
+    // pose: it looks, as the store moved, and touches none
+    let other = rig(&mut world);
+    let late = socketed(&mut world, other, "hand")[0];
+    step.run(&mut world);
+    world.clear_trackers();
+    frame.run(&mut world);
+    assert_eq!(looks(&world), 4);
+    assert_eq!(touched.iter(&world).count(), 0);
+    assert!(
+      world
+        .get::<Skeleton>(late)
+        .is_some_and(|skeleton| skeleton.seen().is_some())
+    );
+  }
+
+  #[test]
+  fn a_held_skeleton_gets_its_pose_and_then_waits() {
+    let (mut world, mut step, _) = world();
+    let mut frame = appearing();
+    let data = rig(&mut world);
+    // Added by scene 4's code, which a scene above then stops
+    let [body, socket, _] =
+      crate::core::skeleton::in_scene(&mut world, 4, |world| socketed(world, data, "hand"));
+    crate::core::skeleton::hold_scenes(&mut world, [4].into_iter());
+    frame.run(&mut world);
+    same(bone(&world, body, "root"), global(&world, body));
+    same(global(&world, socket), bone(&world, body, "hand"));
+    // Steps pass it by: it stays at its first moment and says nothing
+    for _ in 0..5 {
+      step.run(&mut world);
+    }
+    same(bone(&world, body, "root"), global(&world, body));
+    assert_eq!(world.resource::<Messages<SkeletonEvent>>().len(), 0);
+    assert_eq!(world.resource::<Messages<SkeletonTrackEvent>>().len(), 0);
+    // Let go, it starts
+    crate::core::skeleton::hold_scenes(&mut world, std::iter::empty());
+    step.run(&mut world);
+    assert_eq!(world.resource::<Messages<SkeletonEvent>>().len(), 1);
+    assert_eq!(world.resource::<Messages<SkeletonTrackEvent>>().len(), 1);
   }
 }

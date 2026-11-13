@@ -587,6 +587,13 @@ fn register_engine_systems(schedules: &mut EngineSchedules) {
     Phase::PostUpdate,
     (
       propagate_transforms.in_set(PostUpdateSet::Transforms),
+      // A skeleton added, or whose data landed or reloaded, since its last
+      // step gets its pose and its sockets their places in this frame,
+      // before anything reads where they are
+      crate::core::skeleton::pose_new_skeletons
+        .after(PostUpdateSet::Transforms)
+        .before(crate::core::lighting::update_occluder_index)
+        .before(PostUpdateSet::Camera),
       // After propagation, so the tile maps' occluders (built before it)
       // and every move of the frame are in the index
       crate::core::lighting::update_occluder_index.after(PostUpdateSet::Transforms),

@@ -220,11 +220,12 @@ pub mod prelude {
     Animation as SkeletonClip, Attachment as SkeletonAttachment, BoneData, BoneId, BoneOverride,
     BoneSetup, BoneSocket, BoundingBoxAttachment, Curve as SkeletonCurve,
     EventAudio as SkeletonEventAudio, EventData as SkeletonEventData,
-    EventValues as SkeletonEventValues, Inherit as BoneInherit, MixBlend, PointAttachment,
-    Region as SkeletonRegion, RegionAttachment, Skeleton, SkeletonAnimation, SkeletonData,
-    SkeletonDataBuilder, SkeletonError, SkeletonEvent, SkeletonTrackEvent, Skin as SkeletonSkin,
-    SlotBlend, SlotData, SlotId, SlotSetup, Space as BoneSpace, Timeline as SkeletonTimeline,
-    TrackEntry, TrackEntryId, TrackEventKind,
+    EventValues as SkeletonEventValues, Inherit as BoneInherit, MixBlend as SkeletonMixBlend,
+    PointAttachment, Region as SkeletonRegion, RegionAttachment, Skeleton, SkeletonAnimation,
+    SkeletonData, SkeletonDataBuilder, SkeletonError, SkeletonEvent, SkeletonTrackEvent,
+    Skin as SkeletonSkin, SlotBlend, SlotData, SlotId, SlotSetup, Space as BoneSpace,
+    Timeline as SkeletonTimeline, TrackEntry as SkeletonTrackEntry,
+    TrackEntryId as SkeletonTrackEntryId, TrackEventKind as SkeletonTrackEventKind,
   };
 
   // Tilemaps
