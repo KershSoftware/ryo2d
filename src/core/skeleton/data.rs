@@ -154,16 +154,29 @@ pub struct SkeletonData {
   pub(super) bones: Vec<BoneData>,
   pub(super) slots: Vec<SlotData>,
   pub(super) regions: Vec<Region>,
-  /// The default skin is always first
-  pub(super) skins: Vec<Skin>,
   pub(super) animations: Vec<Animation>,
   pub(super) events: Vec<EventData>,
-  pub(super) bone_names: HashMap<Arc<str>, BoneId>,
-  pub(super) slot_names: HashMap<Arc<str>, SlotId>,
-  pub(super) skin_names: HashMap<Arc<str>, usize>,
+  /// The names and the skins, shared with every skeleton entity that uses
+  /// this data
+  pub(super) index: Arc<SkeletonIndex>,
   /// The animations' names, durations and mixes, shared with every
   /// animation state that plays this data
   pub(super) catalogue: Arc<AnimationCatalogue>,
+}
+
+/// What a skeleton entity needs of its data when a game asks it for a bone,
+/// a point or a bounding box by name, or names a skin: the names, each
+/// slot's bone, and the skins. Shared, so a skeleton keeps it without
+/// borrowing the data, and a reload (new data) is a new index
+#[derive(Debug)]
+pub(crate) struct SkeletonIndex {
+  pub(super) bone_names: HashMap<Arc<str>, BoneId>,
+  pub(super) slot_names: HashMap<Arc<str>, SlotId>,
+  pub(super) skin_names: HashMap<Arc<str>, usize>,
+  /// The default skin is always first
+  pub(super) skins: Vec<Skin>,
+  /// Each slot's bone, by slot index
+  pub(super) slot_bones: Vec<BoneId>,
 }
 
 /// What an animation state needs to know of a skeleton's animations when a
@@ -239,18 +252,19 @@ impl SkeletonData {
 
   /// Every skin, the default skin first
   pub fn skins(&self) -> &[Skin] {
-    &self.skins
+    &self.index.skins
   }
 
   /// The skin named [`SkeletonData::DEFAULT_SKIN`], which every skeleton has
   /// (it may be empty)
   pub fn default_skin(&self) -> &Skin {
-    &self.skins[0]
+    &self.index.skins[0]
   }
 
   /// The skin called `name`
   pub fn skin(&self, name: &str) -> Option<&Skin> {
-    self.skin_names.get(name).map(|&index| &self.skins[index])
+    let index = &self.index;
+    index.skin_names.get(name).map(|&skin| &index.skins[skin])
   }
 
   pub fn animations(&self) -> &[Animation] {
@@ -264,12 +278,12 @@ impl SkeletonData {
 
   /// The bone called `name`
   pub fn bone(&self, name: &str) -> Option<BoneId> {
-    self.bone_names.get(name).copied()
+    self.index.bone_names.get(name).copied()
   }
 
   /// The slot called `name`
   pub fn slot(&self, name: &str) -> Option<SlotId> {
-    self.slot_names.get(name).copied()
+    self.index.slot_names.get(name).copied()
   }
 
   /// The animation called `name`
@@ -298,5 +312,10 @@ impl SkeletonData {
   /// The animations' names, durations and mixes, shared
   pub(crate) fn catalogue(&self) -> &Arc<AnimationCatalogue> {
     &self.catalogue
+  }
+
+  /// The names and the skins, shared
+  pub(crate) fn index(&self) -> &Arc<SkeletonIndex> {
+    &self.index
   }
 }

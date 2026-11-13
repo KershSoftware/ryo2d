@@ -217,12 +217,14 @@ pub mod prelude {
   // stay distinct from particles' Curve, the UI's Skin, sprites' Animation
   // and any other part of the prelude)
   pub use crate::core::skeleton::{
-    Animation as SkeletonClip, Attachment as SkeletonAttachment, BoneData, BoneId, BoneSetup,
-    BoundingBoxAttachment, Curve as SkeletonCurve, EventAudio as SkeletonEventAudio,
-    EventData as SkeletonEventData, EventValues as SkeletonEventValues, Inherit as BoneInherit,
-    PointAttachment, Region as SkeletonRegion, RegionAttachment, SkeletonData, SkeletonDataBuilder,
-    SkeletonError, Skin as SkeletonSkin, SlotBlend, SlotData, SlotId, SlotSetup,
-    Timeline as SkeletonTimeline,
+    Animation as SkeletonClip, Attachment as SkeletonAttachment, BoneData, BoneId, BoneOverride,
+    BoneSetup, BoneSocket, BoundingBoxAttachment, Curve as SkeletonCurve,
+    EventAudio as SkeletonEventAudio, EventData as SkeletonEventData,
+    EventValues as SkeletonEventValues, Inherit as BoneInherit, MixBlend, PointAttachment,
+    Region as SkeletonRegion, RegionAttachment, Skeleton, SkeletonAnimation, SkeletonData,
+    SkeletonDataBuilder, SkeletonError, SkeletonEvent, SkeletonTrackEvent, Skin as SkeletonSkin,
+    SlotBlend, SlotData, SlotId, SlotSetup, Space as BoneSpace, Timeline as SkeletonTimeline,
+    TrackEntry, TrackEntryId, TrackEventKind,
   };
 
   // Tilemaps

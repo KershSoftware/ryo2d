@@ -8,7 +8,9 @@ use super::animation::{EMPTY_NAME, Target, Timeline};
 use super::attachment::Attachment;
 use super::builder::SkeletonDataBuilder;
 use super::curve::Curve;
-use super::data::{AnimationCatalogue, BoneData, BoneId, SkeletonData, SlotData, SlotId};
+use super::data::{
+  AnimationCatalogue, BoneData, BoneId, SkeletonData, SkeletonIndex, SlotData, SlotId,
+};
 use super::skin::Skin;
 use crate::core::ecs::Vec2;
 
@@ -384,16 +386,20 @@ pub(super) fn build(builder: SkeletonDataBuilder) -> Result<SkeletonData, Skelet
     mixes,
     default_mix,
   });
+  let index = Arc::new(SkeletonIndex {
+    bone_names,
+    slot_names,
+    skin_names,
+    skins,
+    slot_bones: slots.iter().map(|slot| slot.bone).collect(),
+  });
   Ok(SkeletonData {
     bones,
     slots,
     regions,
-    skins,
     animations,
     events,
-    bone_names,
-    slot_names,
-    skin_names,
+    index,
     catalogue,
   })
 }

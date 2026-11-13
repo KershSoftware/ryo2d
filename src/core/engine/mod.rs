@@ -569,6 +569,10 @@ fn register_engine_systems(schedules: &mut EngineSchedules) {
   );
   schedules.add_systems(
     Phase::FixedUpdate,
+    crate::core::skeleton::update_skeletons.in_set(FixedSet::Skeletons),
+  );
+  schedules.add_systems(
+    Phase::FixedUpdate,
     step_particles.in_set(FixedSet::Particles),
   );
   schedules.add_systems(

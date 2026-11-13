@@ -112,6 +112,8 @@ pub fn register_engine_messages(world: &mut World) {
   register_message::<SquashStretchFinished>(world);
   register_message::<crate::core::particles::ParticleCollision>(world);
   register_message::<crate::core::particles::EmitterFinished>(world);
+  register_message::<crate::core::skeleton::SkeletonEvent>(world);
+  register_message::<crate::core::skeleton::SkeletonTrackEvent>(world);
   register_message::<crate::core::gameplay::MovementEvent>(world);
   register_message::<crate::core::gameplay::PickedUp>(world);
   register_message::<crate::core::gameplay::Killed>(world);

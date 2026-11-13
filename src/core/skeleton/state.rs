@@ -568,10 +568,6 @@ impl SkeletonAnimation {
   /// until then; a step with new data (a reload) keeps each entry by its
   /// animation's name, and clears a track whose animation is gone, with one
   /// warning
-  #[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the skeleton step calls it each fixed step")
-  )]
   pub(crate) fn advance_and_apply(
     &mut self,
     data: &SkeletonData,
@@ -1486,6 +1482,13 @@ mod tests {
       }
     }
 
+    /// New data, as a reload gives it, with the pose made anew for it as
+    /// the skeleton's step makes it
+    fn reload(&mut self, data: SkeletonData) {
+      self.pose = Pose::setup(&data);
+      self.data = data;
+    }
+
     fn step(&mut self, dt: f32) -> Fired {
       let mut fired = Fired::default();
       self.state.advance_and_apply(
@@ -2196,7 +2199,7 @@ mod tests {
     rig.set(0, "ninety", true);
     rig.set(1, "slide", true);
     rig.step(0.3);
-    rig.data = reloaded(&rig.data);
+    rig.reload(reloaded(&rig.data));
     let capture = capture_log();
     let fired = rig.step(0.1);
     close(rig.degrees(), 90.0);
@@ -2214,7 +2217,7 @@ mod tests {
     let thirty = rig.set(0, "thirty", true);
     let queued = rig.add(0, "slide", true, 5.0);
     rig.step(0.1);
-    rig.data = reloaded(&rig.data);
+    rig.reload(reloaded(&rig.data));
     let fired = rig.step(0.1);
     assert_eq!(rig.state.current(0), Some(thirty));
     assert!(rig.state.entry(queued).is_none());
@@ -2232,7 +2235,7 @@ mod tests {
     rig.step(0.1);
     rig.set(0, "slide", true);
     rig.step(0.1);
-    rig.data = reloaded(&rig.data);
+    rig.reload(reloaded(&rig.data));
     let fired = rig.step(0.1);
     assert_eq!(rig.state.current(0), None);
     assert_eq!(

@@ -64,11 +64,15 @@ pub(super) fn setup_order(data: &SkeletonData) -> impl Iterator<Item = SlotId> {
   (0..data.slots().len()).filter_map(|index| u8::try_from(index).ok().map(SlotId))
 }
 
-/// One skeleton's current pose, indexed like the data's bones and slots
-#[derive(Debug, Clone)]
+/// One skeleton's current pose, indexed like the data's bones and slots.
+/// The default is the pose of no skeleton: nothing in it
+#[derive(Debug, Clone, Default)]
 pub(crate) struct Pose {
   /// Local transforms
   pub(crate) bones: Vec<BonePose>,
+  /// The bones' transforms in skeleton space (before the root affine), from
+  /// [`Pose::place_bone`]
+  pub(crate) skeleton_space: Vec<Affine2>,
   /// World transforms from [`Pose::compute_world`], the root affine applied
   pub(crate) world: Vec<Affine2>,
   /// Each slot's colour, sRGB with alpha, 0 to 1 per component (a curve
@@ -82,14 +86,11 @@ pub(crate) struct Pose {
 
 impl Pose {
   /// The setup pose, with world transforms not yet computed (identity)
-  #[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the skeleton step builds and places the pose")
-  )]
   pub(crate) fn setup(data: &SkeletonData) -> Self {
     let slots = data.slots();
     Self {
       bones: data.bones().iter().map(BonePose::setup).collect(),
+      skeleton_space: vec![Affine2::IDENTITY; data.bones().len()],
       world: vec![Affine2::IDENTITY; data.bones().len()],
       slot_colors: slots.iter().map(|slot| srgb(slot.color)).collect(),
       slot_attachments: slots.iter().map(|slot| slot.attachment.clone()).collect(),
@@ -99,8 +100,20 @@ impl Pose {
 
   /// Puts the pose back to the setup pose without allocating: the bones'
   /// local transforms, the slots' colours and attachments and the draw
-  /// order (world transforms are left as they are)
+  /// order (world transforms are left as they are). The pose must be one
+  /// made from `data` ([`Pose::setup`]): the skeleton step makes a new one
+  /// whenever its data changes
   pub(crate) fn reset(&mut self, data: &SkeletonData) {
+    debug_assert_eq!(
+      self.bones.len(),
+      data.bones().len(),
+      "a pose of another skeleton"
+    );
+    debug_assert_eq!(
+      self.slot_attachments.len(),
+      data.slots().len(),
+      "a pose of another skeleton"
+    );
     for (pose, bone) in self.bones.iter_mut().zip(data.bones()) {
       *pose = BonePose::setup(bone);
     }
@@ -118,44 +131,89 @@ impl Pose {
   /// places the whole skeleton (the entity's transform). The inherit modes
   /// act in skeleton space, so `root` applies to every bone, whatever its
   /// mode (the module notes have the formulas)
-  #[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the skeleton step builds and places the pose")
-  )]
   pub(crate) fn compute_world(&mut self, data: &SkeletonData, root: Affine2) {
     // Bones are parent-first, so one pass sees each parent's skeleton-space
     // transform before its children; a second applies the root.
+    for index in 0..data.bones().len() {
+      self.place_bone(data, index);
+    }
+    self.apply_root(root);
+  }
+
+  /// Computes bone `index`'s transform in skeleton space from its local
+  /// pose and its parent's, which must have been placed already (bones are
+  /// parent-first)
+  pub(crate) fn place_bone(&mut self, data: &SkeletonData, index: usize) {
     debug_assert_eq!(
       self.bones.len(),
       data.bones().len(),
       "a pose of another skeleton"
     );
     debug_assert_eq!(
-      self.world.len(),
+      self.skeleton_space.len(),
       data.bones().len(),
       "a pose of another skeleton"
     );
-    for (index, bone) in data.bones().iter().enumerate() {
-      let local = &self.bones[index];
-      let position = Vec2::new(local.x, local.y);
-      self.world[index] = match bone.parent {
-        None => Affine2::from_mat2_translation(local.linear(), position),
-        Some(parent) => {
-          let parent = self.world[parent.index()];
-          let translation = parent.transform_point2(position);
-          let linear = match bone.inherit {
-            Inherit::Normal => parent.matrix2 * local.linear(),
-            Inherit::OnlyTranslation => local.linear(),
-            Inherit::NoRotationOrReflection => stretch_along_bone(parent.matrix2) * local.linear(),
-            Inherit::NoScale => rigid(parent.matrix2, local, true),
-            Inherit::NoScaleOrReflection => rigid(parent.matrix2, local, false),
-          };
-          Affine2::from_mat2_translation(linear, translation)
-        }
-      };
+    let bone = &data.bones()[index];
+    let local = &self.bones[index];
+    let position = Vec2::new(local.x, local.y);
+    self.skeleton_space[index] = match bone.parent {
+      None => Affine2::from_mat2_translation(local.linear(), position),
+      Some(parent) => {
+        let parent = self.skeleton_space[parent.index()];
+        let translation = parent.transform_point2(position);
+        let linear = match bone.inherit {
+          Inherit::Normal => parent.matrix2 * local.linear(),
+          Inherit::OnlyTranslation => local.linear(),
+          Inherit::NoRotationOrReflection => stretch_along_bone(parent.matrix2) * local.linear(),
+          Inherit::NoScale => rigid(parent.matrix2, local, true),
+          Inherit::NoScaleOrReflection => rigid(parent.matrix2, local, false),
+        };
+        Affine2::from_mat2_translation(linear, translation)
+      }
+    };
+  }
+
+  /// Computes every bone's world transform from its skeleton-space one:
+  /// `root` applied to each
+  pub(crate) fn apply_root(&mut self, root: Affine2) {
+    debug_assert_eq!(
+      self.world.len(),
+      self.skeleton_space.len(),
+      "a pose of another skeleton"
+    );
+    for (world, placed) in self.world.iter_mut().zip(&self.skeleton_space) {
+      *world = root * *placed;
     }
-    for world in &mut self.world {
-      *world = root * *world;
+  }
+
+  /// The transform bone `index`'s position is placed through, in skeleton
+  /// space: its parent's (translation is inherited in every mode), or the
+  /// identity for a root. The parent must have been placed already
+  pub(crate) fn parent_space(&self, data: &SkeletonData, index: usize) -> Affine2 {
+    match data.bones()[index].parent {
+      Some(parent) => self.skeleton_space[parent.index()],
+      None => Affine2::IDENTITY,
+    }
+  }
+
+  /// The linear map that takes bone `index`'s own direction (its local
+  /// rotation, as a unit vector) to the way its x axis points in skeleton
+  /// space, by its inherit mode: its parent's linear part under normal
+  /// inheritance and the no-scale modes (which point the bone where normal
+  /// inheritance does), the parent's stretch alone when it inherits no
+  /// rotation, and the identity when it inherits only translation, or has
+  /// no parent. The parent must have been placed already
+  pub(crate) fn direction_space(&self, data: &SkeletonData, index: usize) -> Mat2 {
+    let bone = &data.bones()[index];
+    let Some(parent) = bone.parent else {
+      return Mat2::IDENTITY;
+    };
+    let parent = self.skeleton_space[parent.index()].matrix2;
+    match bone.inherit {
+      Inherit::Normal | Inherit::NoScale | Inherit::NoScaleOrReflection => parent,
+      Inherit::OnlyTranslation => Mat2::IDENTITY,
+      Inherit::NoRotationOrReflection => stretch_along_bone(parent),
     }
   }
 }

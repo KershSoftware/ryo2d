@@ -384,7 +384,7 @@ fn mix(value: &mut f32, setup: f32, target: f32, alpha: f32, blend: MixBlend) {
 }
 
 /// An angle difference wrapped to -pi..=pi: the short way round
-fn shortest(difference: f32) -> f32 {
+pub(super) fn shortest(difference: f32) -> f32 {
   difference - TAU * (difference / TAU).round()
 }
 
