@@ -1846,6 +1846,95 @@ fn a_skeleton_whose_pose_is_stale_draws_nothing_not_even_its_shadows() {
   assert_ne!(drawn.get_pixel(32, 41).0, WHITE, "and its shadow");
 }
 
+/// A game shader that inverts the colours it draws
+const INVERT: &str = "
+fn sprite(in: SpriteIn, params: Params) -> vec4<f32> {
+  let c = sample(in.uv);
+  return vec4<f32>(1.0 - c.rgb, c.a);
+}
+";
+
+/// Steps until `done` holds of a frame (five seconds at most): a game
+/// shader draws plain until it has compiled
+fn step_until(engine: &mut HeadlessEngine, done: impl Fn(&image::RgbaImage) -> bool, what: &str) {
+  let start = std::time::Instant::now();
+  loop {
+    if done(&stepped(engine)) {
+      return;
+    }
+    assert!(start.elapsed().as_secs() < 5, "{what}: it never came");
+    std::thread::sleep(std::time::Duration::from_millis(1));
+  }
+}
+
+#[test]
+fn a_skeleton_s_parts_take_their_entity_s_sprite_shader() {
+  let Some(mut engine) = engine() else {
+    return;
+  };
+  // Two parts of one image, a red one left of the entity and a green one
+  // right of it
+  let world = engine.world_mut();
+  let parts = [
+    part("left", RED, (8, 8)).at(-6.0, 0.0),
+    part("right", GREEN, (8, 8)).at(6.0, 0.0),
+  ];
+  let data = rig_with(world, &parts, Images::Atlas, |builder| builder);
+  let hero = stand(world, data, (32.0, 32.0), Renderable::skeleton());
+  let plain = [((22, 28, 8, 8), RED), ((34, 28, 8, 8), GREEN)];
+  assert_boxes(&stepped(&mut engine), &plain, "plain");
+
+  // A hit flash, the engine's own effect, whitens every part
+  let flash = SpriteShader::flash(Color::WHITE, 1.0);
+  engine
+    .world_mut()
+    .get_mut::<Renderable>(hero)
+    .unwrap()
+    .shader = Some(flash);
+  assert_boxes(
+    &stepped(&mut engine),
+    &[((22, 28, 8, 8), WHITE), ((34, 28, 8, 8), WHITE)],
+    "flashing",
+  );
+
+  // A game's own shader draws each part through it: each its own colours
+  // inverted, in its own place
+  let inverted = |colour: [u8; 4]| [255 - colour[0], 255 - colour[1], 255 - colour[2], 255];
+  let world = engine.world_mut();
+  let invert = world
+    .resource_mut::<Assets<Shader>>()
+    .add(Shader::from_wgsl("skeleton-invert.wgsl", INVERT));
+  world.get_mut::<Renderable>(hero).unwrap().shader = Some(SpriteShader::custom(invert.clone()));
+  step_until(
+    &mut engine,
+    |drawn| drawn.get_pixel(26, 32).0 == inverted(RED),
+    "the left part inverted",
+  );
+  assert_boxes(
+    &frame(&engine),
+    &[
+      ((22, 28, 8, 8), inverted(RED)),
+      ((34, 28, 8, 8), inverted(GREEN)),
+    ],
+    "inverted",
+  );
+
+  // A material's shader wins over the renderable's, as for a sprite
+  let world = engine.world_mut();
+  world.get_mut::<Renderable>(hero).unwrap().shader = Some(SpriteShader::flash(Color::WHITE, 1.0));
+  world
+    .entity_mut(hero)
+    .insert(Material::new(SpriteShader::custom(invert)));
+  assert_boxes(
+    &stepped(&mut engine),
+    &[
+      ((22, 28, 8, 8), inverted(RED)),
+      ((34, 28, 8, 8), inverted(GREEN)),
+    ],
+    "the material's shader",
+  );
+}
+
 /// What the scenes of the hold test tell the test, and what it asks of them
 #[derive(Default)]
 struct Board {

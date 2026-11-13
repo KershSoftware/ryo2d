@@ -229,9 +229,6 @@ pub(crate) struct EntityDrawer {
   items: Vec<(DrawOrder, Drawable<'static>)>,
   /// The regions of the skeleton being drawn (its allocation is reused)
   quads: Vec<RegionQuad>,
-  /// Whether a skeleton drawn with a game shader has been warned about
-  /// (once a run)
-  told_custom: bool,
 }
 
 impl EntityDrawer {
@@ -290,7 +287,6 @@ impl EntityDrawer {
         .get_resource::<SkeletonStore>()
         .map(SkeletonStore::step),
       quads: &mut self.quads,
-      told_custom: &mut self.told_custom,
     };
     let mut ordered = ordered.iter().peekable();
     for (order, drawable) in &items {
@@ -572,8 +568,6 @@ struct Emitter<'a> {
   skeleton_step: Option<u64>,
   /// The regions of the skeleton being drawn (scratch, kept across frames)
   quads: &'a mut Vec<RegionQuad>,
-  /// Whether a skeleton with a game shader has been warned about
-  told_custom: &'a mut bool,
 }
 
 impl<'a> Emitter<'a> {
@@ -711,7 +705,45 @@ struct RunQuad {
 struct RunLook<'a> {
   /// A built-in effect on every quad
   effect: Option<&'a SpriteEffect>,
+  /// A game shader and its parameters on every quad (instead of `effect`)
+  custom: Option<(AssetId<Shader>, &'a ShaderParams)>,
   emission: f32,
+}
+
+impl RunQuad {
+  /// The quad as an instance drawing its rectangle of `shown`, the image
+  /// or what stands in for it, with the box it stays inside
+  fn instance(&self, shown: &ShownImage<'_>, emission: f32) -> (SpriteInstance, Vec2, Vec2) {
+    // Its rectangle of the image as the texture shows it; all of the
+    // checker standing in for an image that is not loaded
+    let uv = if shown.id == self.image {
+      let (width, height) = shown.size();
+      let (width, height) = (width.max(1) as f32, height.max(1) as f32);
+      let [x, y, w, h] = self.rect.map(|texels| texels as f32);
+      [x / width, y / height, (x + w) / width, (y + h) / height]
+    } else {
+      [0.0, 0.0, 1.0, 1.0]
+    };
+    let (x, y, at) = (
+      self.quad.matrix2.x_axis,
+      self.quad.matrix2.y_axis,
+      self.quad.translation,
+    );
+    let mut instance = SpriteInstance::new().with_emission(emission);
+    instance.transform[0][..2].copy_from_slice(&[x.x, x.y]);
+    instance.transform[1][..2].copy_from_slice(&[y.x, y.y]);
+    instance.transform[2][..2].copy_from_slice(&[at.x, at.y]);
+    instance.uv_rect = uv;
+    instance.tint = self.tint;
+    let half = (x.abs() + y.abs()) / 2.0;
+    (instance, at - half, at + half)
+  }
+
+  /// Whether it draws anything: it has some alpha, and is somewhere
+  fn shows(&self) -> bool {
+    let alpha = self.tint[3];
+    !alpha.is_nan() && alpha > 0.0 && self.quad.is_finite()
+  }
 }
 
 /// A stretch of a skeleton's quads of one image and blend, as it is added
@@ -734,7 +766,16 @@ impl<'a> Emitter<'a> {
   /// entity's layers can see is not pushed (and its image never uploaded);
   /// an image that draws nothing (not loaded, in a release build) leaves
   /// its quads out, as does a quad that is not finite or has no alpha.
+  ///
+  /// With a game shader each quad is a sprite item of its own instead, as
+  /// an entity's sprite is: a run is shaded plain or by a built-in effect.
   fn draw_runs(&mut self, z: i32, quads: impl Iterator<Item = RunQuad>, look: RunLook<'_>) {
+    if let Some(custom) = look.custom {
+      for quad in quads {
+        self.draw_shaded(z, &quad, custom, look.emission);
+      }
+      return;
+    }
     let effect = look
       .effect
       .map(|effect| SpriteInstance::new().with_effect(effect));
@@ -744,9 +785,7 @@ impl<'a> Emitter<'a> {
     };
     let mut open: Option<OpenRun<'a>> = None;
     for quad in quads {
-      // No alpha (or one that is not a number) draws nothing
-      let alpha = quad.tint[3];
-      if alpha.is_nan() || alpha <= 0.0 || !quad.quad.is_finite() {
+      if !quad.shows() {
         continue;
       }
       if open
@@ -772,39 +811,68 @@ impl<'a> Emitter<'a> {
           })
         }
       };
-      // Its rectangle of the image as the texture shows it; all of the
-      // checker standing in for an image that is not loaded
-      let uv = if run.shown.id == quad.image {
-        let (width, height) = run.shown.size();
-        let (width, height) = (width.max(1) as f32, height.max(1) as f32);
-        let [x, y, w, h] = quad.rect.map(|texels| texels as f32);
-        [x / width, y / height, (x + w) / width, (y + h) / height]
-      } else {
-        [0.0, 0.0, 1.0, 1.0]
-      };
-      let (x, y, at) = (
-        quad.quad.matrix2.x_axis,
-        quad.quad.matrix2.y_axis,
-        quad.quad.translation,
-      );
-      let mut instance = SpriteInstance::new().with_emission(look.emission);
-      instance.transform[0][..2].copy_from_slice(&[x.x, x.y]);
-      instance.transform[1][..2].copy_from_slice(&[y.x, y.y]);
-      instance.transform[2][..2].copy_from_slice(&[at.x, at.y]);
-      instance.uv_rect = uv;
-      instance.tint = quad.tint;
+      let (mut instance, min, max) = quad.instance(&run.shown, look.emission);
       if let Some(effect) = &effect {
         instance.effect_params = effect.effect_params;
         instance.effect_extra = effect.effect_extra;
       }
-      let half = (x.abs() + y.abs()) / 2.0;
-      run.min = run.min.min(at - half);
-      run.max = run.max.max(at + half);
+      run.min = run.min.min(min);
+      run.max = run.max.max(max);
       self.list.run_instances().push(instance);
     }
     if let Some(run) = open {
       self.push_run(z, run, shading);
     }
+  }
+
+  /// Draw one quad of a skeleton through a game shader, as an entity's
+  /// sprite is drawn through one: a sprite item, its parameters packed in
+  /// the instance, plain while the shader has failed or is not compiled
+  fn draw_shaded(
+    &mut self,
+    z: i32,
+    quad: &RunQuad,
+    (shader, params): (AssetId<Shader>, &ShaderParams),
+    emission: f32,
+  ) {
+    if !quad.shows() {
+      return;
+    }
+    let Some(shown) = self.gpu.shown_image(quad.image, self.images) else {
+      return;
+    };
+    let (mut instance, min, max) = quad.instance(&shown, emission);
+    let seen = self
+      .cameras
+      .iter()
+      .any(|camera| camera.layers.intersects(&self.layers) && camera.view.is_visible(min, max));
+    if !seen {
+      return;
+    }
+    let Some(texture) = self.gpu.upload_entity_image(self.device, self.queue, shown) else {
+      return;
+    };
+    let shading = match self
+      .gpu
+      .shade_custom(shader, self.shaders, params, &mut instance)
+    {
+      Some(key) => SpriteShading::Custom(key),
+      None => SpriteShading::Plain,
+    };
+    let look = SpriteLook {
+      shading,
+      blend: quad.blend,
+      filter: self.filter,
+      lit: self.lit,
+    };
+    self.list.push_sprite_in(
+      DrawKind::Entity,
+      z,
+      texture,
+      look,
+      instance,
+      (self.layers, None, None),
+    );
   }
 
   /// Push `run`, whose instances are the list's run instances from its
@@ -1054,8 +1122,10 @@ fn ground_shadows(renderable: &Renderable, position: Vec2, out: &mut Emitter<'_>
 /// flips. Each region's colour is its slot's times its attachment's times
 /// the renderable's tint, and its alpha those three's times the
 /// renderable's; its blend is its slot's, a slot that blends normally
-/// taking the renderable's. The renderable's emission and built-in effect
-/// apply to every region; a game shader does not (they draw plain).
+/// taking the renderable's. The renderable's emission and sprite shader
+/// (a built-in effect or a game's own, its `Material`'s first) apply to
+/// each region on its own: a flash tints every part, an outline outlines
+/// each part.
 ///
 /// The drop shadow is each region's own silhouette, moved by the shadow's
 /// offset and scaled about where the skeleton stands in its entity's
@@ -1124,6 +1194,7 @@ fn collect_skeleton(frame: &EntityFrame, drawable: &Drawable<'_>, out: &mut Emit
     });
     let plain = RunLook {
       effect: None,
+      custom: None,
       emission: 1.0,
     };
     out.draw_runs(z, shadows, plain);
@@ -1131,21 +1202,13 @@ fn collect_skeleton(frame: &EntityFrame, drawable: &Drawable<'_>, out: &mut Emit
 
   ground_shadows(renderable, drawn.position, out);
 
-  // A Material component wins over the inline shader; only a built-in
-  // effect applies to a skeleton's regions
-  let effect = match effective_shader(material, renderable.shader.as_ref()) {
-    Some(SpriteShader::BuiltIn(effect)) => Some(effect),
-    Some(SpriteShader::Custom { .. }) => {
-      if !std::mem::replace(out.told_custom, true) {
-        log::warn!(
-          "{:?} draws a skeleton with a custom sprite shader, which skeletons do not take; \
-           its regions draw plain",
-          drawable.entity
-        );
-      }
-      None
-    }
-    None => None,
+  // A Material component wins over the inline shader. Either kind is each
+  // region's own: a built-in effect on every quad of a run, a game shader
+  // on a sprite item a quad
+  let (effect, custom) = match effective_shader(material, renderable.shader.as_ref()) {
+    Some(SpriteShader::BuiltIn(effect)) => (Some(effect), None),
+    Some(SpriteShader::Custom { shader, params }) => (None, Some((shader.id(), params))),
+    None => (None, None),
   };
   let tint = renderable.tint;
   let tint = [tint.r, tint.g, tint.b, tint.a].map(|c| c as f32 / 255.0);
@@ -1168,6 +1231,7 @@ fn collect_skeleton(frame: &EntityFrame, drawable: &Drawable<'_>, out: &mut Emit
   });
   let look = RunLook {
     effect,
+    custom,
     emission: renderable.emission,
   };
   out.draw_runs(z, regions, look);

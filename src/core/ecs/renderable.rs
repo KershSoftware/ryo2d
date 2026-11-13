@@ -553,10 +553,9 @@ impl Renderable {
   /// Each region is then drawn as a sprite of its own: with this
   /// renderable's `alpha` and `tint` (times its slot's and its attachment's
   /// colours), its `blend` (a slot with a blend of its own keeps that),
-  /// its `emission`, and its built-in sprite effect (`shader`, or the
-  /// entity's `Material`; a game's own sprite shader is not applied). So a
-  /// flash whitens every part, and an outline outlines each part, not the
-  /// figure. The drop shadow is
+  /// its `emission`, and its sprite `shader` (or the entity's `Material`),
+  /// a built-in effect or a game's own. So a flash whitens every part,
+  /// and an outline outlines each part, not the figure. The drop shadow is
   /// cast part by part too: where parts overlap, a translucent one is
   /// darker than a sprite's. The blob and contact shadows are a sprite's,
   /// under the entity, and suit a character better.
