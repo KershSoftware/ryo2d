@@ -212,6 +212,32 @@ mod tests {
   }
 
   #[test]
+  fn detach_keep_world_keeps_a_mirrored_entity_mirrored() {
+    // A child of a turned parent mirrored left to right: detached, it is
+    // where it was and still mirrored. (It has no turn of its own: under an
+    // uneven scale that would skew it, which no `Transform` holds)
+    let mut world = World::new();
+    let p = world
+      .spawn(
+        Transform::from_xy(100.0, 0.0)
+          .with_rotation(0.4)
+          .with_scale(Vec2::new(-2.0, 1.0)),
+      )
+      .id();
+    let c = world.spawn_child(p, Transform::from_xy(5.0, 3.0));
+    propagate(&mut world);
+    let before = world.get::<GlobalTransform>(c).unwrap().affine();
+    assert!(before.matrix2.determinant() < 0.0);
+    world.detach_keep_world(c);
+    propagate(&mut world);
+    let after = world.get::<GlobalTransform>(c).unwrap().affine();
+    assert!(
+      after.abs_diff_eq(before, 1e-4),
+      "{after:?} is not {before:?}"
+    );
+  }
+
+  #[test]
   fn skip_interpolation_sets_the_flag() {
     let mut world = World::new();
     let e = world.spawn((Transform::IDENTITY, Interpolated)).id();

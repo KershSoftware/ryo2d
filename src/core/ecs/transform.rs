@@ -244,7 +244,9 @@ impl GlobalTransform {
     x.y.atan2(x.x)
   }
 
-  /// Axis lengths; negative scale is not represented (use sprite flips).
+  /// Axis lengths, never negative: a mirrored transform's reflection is
+  /// told by [`is_mirrored`](Self::is_mirrored), and kept by
+  /// [`to_transform`](Self::to_transform) as a negative height.
   pub fn scale(&self) -> Vec2 {
     Vec2::new(
       self.0.matrix2.x_axis.length(),
@@ -252,15 +254,32 @@ impl GlobalTransform {
     )
   }
 
+  /// Whether it mirrors what it places: one of its axes points the other
+  /// way from a turn of the other (a negative scale on one axis, on it or
+  /// above it). Both axes negative is a half turn, not a mirror.
+  pub fn is_mirrored(&self) -> bool {
+    self.0.matrix2.determinant() < 0.0
+  }
+
   pub fn transform_point(&self, point: Vec2) -> Vec2 {
     self.0.transform_point2(point)
   }
 
+  /// The transform that makes this one again: its place, the turn of its
+  /// x axis, and its axis lengths, the height negative when it is mirrored
+  /// (a mirror along x reads as a half turn and a mirror along y). A skew,
+  /// which a `Transform` cannot hold, is dropped.
   pub fn to_transform(&self) -> Transform {
+    let scale = self.scale();
+    let height = if self.is_mirrored() {
+      -scale.y
+    } else {
+      scale.y
+    };
     Transform {
       translation: self.translation(),
       rotation: self.rotation(),
-      scale: self.scale(),
+      scale: Vec2::new(scale.x, height),
     }
   }
 
@@ -274,6 +293,12 @@ impl GlobalTransform {
   /// What is the same in both stays exact (a still entity draws where it is,
   /// a moving one keeps an unchanged axis), so nothing on a pixel boundary
   /// flips between frames that blend and frames that don't.
+  ///
+  /// A mirror is kept: between two mirrored transforms every blend is
+  /// mirrored, never turned over instead. Between one that is mirrored and
+  /// one that is not (a scale that changed sign, as a character turns
+  /// round), each axis goes straight to where it ends: it closes to nothing
+  /// and opens the other way, with no turn.
   pub fn lerp(&self, other: &Self, t: f32) -> Self {
     // `a + (b - a) * t` is exact where a component did not change, where
     // `a * (1 - t) + b * t` can round away from it
@@ -284,6 +309,15 @@ impl GlobalTransform {
         translation: mix(self.0.translation, other.0.translation),
       });
     }
+    if self.is_mirrored() != other.is_mirrored() {
+      let (from, to) = (self.0.matrix2, other.0.matrix2);
+      return Self(Affine2 {
+        matrix2: glam::Mat2::from_cols(mix(from.x_axis, to.x_axis), mix(from.y_axis, to.y_axis)),
+        translation: mix(self.0.translation, other.0.translation),
+      });
+    }
+    // Both mirrored or neither: their heights have one sign, which the
+    // blend keeps
     let (a, b) = (self.to_transform(), other.to_transform());
     let mut delta = b.rotation - a.rotation;
     if delta > std::f32::consts::PI {
@@ -438,6 +472,75 @@ mod tests {
       let blend = a.lerp(&b, t);
       assert_eq!(blend.translation().y, 244.666_67, "at {t}");
       assert_eq!(blend.affine().matrix2, a.affine().matrix2, "at {t}");
+    }
+  }
+
+  #[test]
+  fn a_mirrored_transform_reads_as_its_turn_and_a_negative_height() {
+    // Mirrored along either axis, at an angle: it says so, its lengths
+    // stay lengths, and the transform it gives back makes it again
+    for scale in [Vec2::new(-2.0, 3.0), Vec2::new(2.0, -3.0)] {
+      let t = Transform::from_xy(10.0, -5.0)
+        .with_rotation(0.3)
+        .with_scale(scale);
+      let g = GlobalTransform::from_transform(&t);
+      assert!(g.is_mirrored(), "{scale}");
+      assert!(close(g.scale(), Vec2::new(2.0, 3.0)));
+      let back = g.to_transform();
+      assert!(back.scale.x > 0.0 && back.scale.y < 0.0, "{:?}", back.scale);
+      let again = GlobalTransform::from_transform(&back);
+      assert!(
+        again.affine().abs_diff_eq(g.affine(), 1e-5),
+        "{scale}: {again:?} is not {g:?}"
+      );
+    }
+    // Unmirrored ones do not: as they are, turned half a turn (both axes
+    // negative), or scaled to nothing
+    for scale in [Vec2::new(2.0, 3.0), Vec2::new(-2.0, -3.0), Vec2::ZERO] {
+      let t = Transform::from_xy(1.0, 1.0)
+        .with_rotation(0.3)
+        .with_scale(scale);
+      let g = GlobalTransform::from_transform(&t);
+      assert!(!g.is_mirrored(), "{scale}");
+      assert!(g.to_transform().scale.y >= 0.0, "{scale}");
+    }
+  }
+
+  #[test]
+  fn a_mirrored_transform_keeps_its_mirror_as_it_blends() {
+    // Mirrored left to right, turning and widening: at every fraction it
+    // is still mirrored, as far round and as wide as the fraction says
+    let at = |rotation: f32, width: f32| {
+      let t = Transform::from_xy(4.0, 2.0)
+        .with_rotation(rotation)
+        .with_scale(Vec2::new(-width, 1.0));
+      GlobalTransform::from_transform(&t)
+    };
+    let (a, b) = (at(0.2, 1.0), at(1.0, 3.0));
+    for t in [0.0, 0.25, 0.5, 0.99] {
+      let blend = a.lerp(&b, t);
+      assert!(blend.is_mirrored(), "at {t}: {blend:?}");
+      let expected = at(0.2 + 0.8 * t, 1.0 + 2.0 * t);
+      assert!(
+        blend.affine().abs_diff_eq(expected.affine(), 1e-5),
+        "at {t}: {blend:?} is not {expected:?}"
+      );
+    }
+  }
+
+  #[test]
+  fn a_transform_mirrored_in_a_step_closes_and_opens_without_turning() {
+    // Turned round by its x scale going from 2 to -2: its x axis goes
+    // straight through nothing to the other side, and its y axis stays
+    let at = |x: f32| {
+      GlobalTransform::from_transform(&Transform::from_xy(5.0, 5.0).with_scale(Vec2::new(x, 1.0)))
+    };
+    let (a, b) = (at(2.0), at(-2.0));
+    for (t, x) in [(0.25, 1.0), (0.5, 0.0), (0.75, -1.0)] {
+      let blend = a.lerp(&b, t).affine();
+      assert_eq!(blend.matrix2.x_axis, Vec2::new(x, 0.0), "at {t}");
+      assert_eq!(blend.matrix2.y_axis, Vec2::new(0.0, 1.0), "at {t}");
+      assert_eq!(blend.translation, Vec2::new(5.0, 5.0), "at {t}");
     }
   }
 

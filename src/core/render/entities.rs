@@ -30,8 +30,9 @@
 //! Positions come from `GlobalTransform`, interpolated by the frame's alpha
 //! for entities with `PreviousGlobalTransform`, and lifted by `DrawLift` on
 //! a floor (sorted where they stand). A single sprite is placed by its
-//! `Renderable::anchor`; tiled runs and composite parts are laid out from
-//! the entity's position.
+//! `Renderable::anchor`, and mirrored when its transform is (a negative
+//! scale on one axis, on it or above it); tiled runs and composite parts
+//! are laid out from the entity's position.
 
 use std::collections::HashSet;
 
@@ -873,6 +874,12 @@ fn collect_entity(frame: &EntityFrame, drawable: &Drawable<'_>, out: &mut Emitte
     let (depth_x, depth_y) = y_sort.calculate_depth_scale(ground.y);
     scale *= Vec2::new(depth_x, depth_y);
   }
+  // A mirrored transform mirrors a single sprite. Its turn is read from
+  // its x axis, so the mirror is across that axis: the anchor's offset and
+  // the image flip top to bottom. With the renderable's own flip of that
+  // axis that makes one flip or none
+  let mirrored = drawn.is_mirrored();
+  let mirrored_flip_y = renderable.flip_y != mirrored;
   let (pivot_x, pivot_y) = renderable.anchor.to_pivot();
   let alpha = renderable.alpha;
   let tint = renderable.tint;
@@ -893,7 +900,10 @@ fn collect_entity(frame: &EntityFrame, drawable: &Drawable<'_>, out: &mut Emitte
     RenderStyle::Single => {
       // The anchor point sits on the position; the sprite turns about it
       let size = texels * scale;
-      let pivot_to_center = Vec2::new(0.5 - pivot_x, 0.5 - pivot_y) * size;
+      let mut pivot_to_center = Vec2::new(0.5 - pivot_x, 0.5 - pivot_y) * size;
+      if mirrored {
+        pivot_to_center.y = -pivot_to_center.y;
+      }
       let center = position + Vec2::from_angle(rotation).rotate(pivot_to_center);
       // The unturned box's corner, which shadows are offset from
       let top_left = center - size / 2.0;
@@ -907,7 +917,7 @@ fn collect_entity(frame: &EntityFrame, drawable: &Drawable<'_>, out: &mut Emitte
           &mut source,
           Placement::from_top_left(top_left + shadow.offset, texels, scale * shadow.scale)
             .rotated(rotation)
-            .flipped(renderable.flip_x, renderable.flip_y),
+            .flipped(renderable.flip_x, mirrored_flip_y),
           Shading::tinted(shadow_tint, shadow_alpha),
         );
       }
@@ -921,7 +931,7 @@ fn collect_entity(frame: &EntityFrame, drawable: &Drawable<'_>, out: &mut Emitte
         &mut source,
         Placement::centered(center, scale)
           .rotated(rotation)
-          .flipped(renderable.flip_x, renderable.flip_y),
+          .flipped(renderable.flip_x, mirrored_flip_y),
         Shading::shaded(tint, alpha, shader)
           .blended(renderable.blend)
           .emitting(renderable.emission),
@@ -1252,7 +1262,7 @@ mod draw_order_tests {
   use super::{DrawOrder, DrawableItem, draws_before, in_draw_order, y_sort_key};
   use crate::core::asset::Assets;
   use crate::core::ecs::test_util::{MAX_UNRELATED, Other, insert_unrelated};
-  use crate::core::ecs::{Anchor, Entity, GlobalTransform, Renderable, World, YSort};
+  use crate::core::ecs::{Anchor, Entity, GlobalTransform, Renderable, Vec2, World, YSort};
   use crate::core::graphics::Image;
   use crate::core::graphics::atlas::Showing;
 
@@ -1318,6 +1328,36 @@ mod draw_order_tests {
       y_sort_key(&by_top, &sprite_20_high(Anchor::Center), 100.0),
       90.0
     );
+  }
+
+  #[test]
+  fn a_mirrored_sprite_and_a_skeleton_sort_where_they_stand() {
+    use crate::core::ecs::Transform;
+    let mut images = Assets::<Image>::new();
+    let tall = images.add(Image::solid_rect(10, 20, 255, 255, 255, 255));
+    let mut world = World::new();
+    // Three y-sorted sprites standing on y 100 by their feet: as it is,
+    // mirrored left to right (a character turned round), and mirrored top
+    // to bottom; and a skeleton standing there
+    let at = |scale: Vec2| {
+      GlobalTransform::from_transform(&Transform::from_xy(0.0, 100.0).with_scale(scale))
+    };
+    let sprite = || Renderable::image(tall.clone()).with_anchor(Anchor::BottomCenter);
+    for scale in [Vec2::ONE, Vec2::new(-1.0, 1.0), Vec2::new(1.0, -1.0)] {
+      world.spawn((sprite(), at(scale), YSort::new()));
+    }
+    world.spawn((
+      Renderable::skeleton(),
+      at(Vec2::new(-1.0, 1.0)),
+      YSort::new(),
+    ));
+    let mut drawables = world.query::<DrawableItem>();
+    let mut items = Vec::new();
+    in_draw_order(&mut drawables, &world, (&images, &[]), &mut items);
+    // A mirror moves no sort key: as the key takes no account of a
+    // sprite's turn, it takes none of its mirroring
+    let keys: Vec<Option<f32>> = items.iter().map(|(order, _)| order.sort_y).collect();
+    assert_eq!(keys, [Some(100.0); 4]);
   }
 
   #[test]

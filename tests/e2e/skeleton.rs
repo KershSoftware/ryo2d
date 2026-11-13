@@ -1412,3 +1412,192 @@ fn debug_skeletons_draws_bones_bounding_boxes_and_points_on_top() {
   engine.step_frames(2).unwrap();
   assert_eq!(frame(&engine), dark, "switched off again");
 }
+
+#[test]
+fn an_interpolated_mirrored_skeleton_keeps_its_mirror_between_steps() {
+  let Some(mut engine) = engine() else {
+    return;
+  };
+  // Mirrored by its entity's scale, and interpolated: the arm lies left of
+  // the entity, x 14..22 and y 24..28, the cuff over its near half
+  let world = engine.world_mut();
+  let data = lopsided(world);
+  let hero = stand(world, data, (32.0, 32.0), Renderable::skeleton());
+  world.entity_mut(hero).insert(Interpolated);
+  world.get_mut::<Transform>(hero).unwrap().scale = Vec2::new(-1.0, 1.0);
+  engine.step_frames(2).unwrap();
+  let as_it_was = [((14, 24, 8, 4), RED), ((18, 24, 4, 4), GREEN)];
+  assert_boxes(&frame(&engine), &as_it_was, "mirrored");
+
+  // It grows to twice as wide in one step. The whole step's frame draws it
+  // as it was, and half a step later it is half as wide again, still
+  // mirrored and the right way up: the arm spans x 5..17 (32 - 1.5 x 18 to
+  // 32 - 1.5 x 10) and the cuff x 11..17
+  engine.world_mut().get_mut::<Transform>(hero).unwrap().scale = Vec2::new(-2.0, 1.0);
+  assert_boxes(&stepped(&mut engine), &as_it_was, "the step it grows in");
+  part_step(&mut engine, 5);
+  assert_boxes(
+    &frame(&engine),
+    &[((5, 24, 12, 4), RED), ((11, 24, 6, 4), GREEN)],
+    "half way, still mirrored",
+  );
+}
+
+#[test]
+fn an_item_on_a_flipped_skeleton_s_socket_mirrors_with_it() {
+  let Some(mut engine) = engine() else {
+    return;
+  };
+  // On the tip of the arm, an item whose image is the same neither mirrored
+  // nor turned: 8 x 6 px, a blue top row over a red left half and a green
+  // right half, drawn over the skeleton
+  let world = engine.world_mut();
+  let data = lopsided(world);
+  let hero = stand(world, data, (32.0, 32.0), Renderable::skeleton());
+  let image = two_tone(world);
+  world.spawn((
+    BoneSocket::new("arm").with_offset(Transform::from_xy(8.0, 0.0)),
+    Renderable::image(image).with_z_order(1),
+    ChildOf(hero),
+  ));
+  // The item with its centre on (x, y): its halves as listed left to
+  // right, its blue row at the top or the bottom
+  let item = |x: u32, y: u32, halves: [[u8; 4]; 2], blue_on_top: bool| {
+    let blue_row = if blue_on_top { y - 3 } else { y + 2 };
+    [
+      ((x - 4, y - 3, 4, 6), halves[0]),
+      ((x, y - 3, 4, 6), halves[1]),
+      ((x - 4, blue_row, 8, 1), BLUE),
+    ]
+  };
+  let drawn = |arm: Box4, cuff: Box4, item: [(Box4, [u8; 4]); 3]| {
+    let mut boxes = vec![(arm, RED), (cuff, GREEN)];
+    boxes.extend(item);
+    boxes
+  };
+  assert_boxes(
+    &stepped(&mut engine),
+    &drawn(
+      (42, 24, 8, 4),
+      (42, 24, 4, 4),
+      item(50, 26, [RED, GREEN], true),
+    ),
+    "unflipped",
+  );
+
+  // Flipped left to right, the item mirrors with the character: its halves
+  // swap and its top row stays on top (turned half a turn instead, its top
+  // row would be at the bottom)
+  engine
+    .world_mut()
+    .get_mut::<Renderable>(hero)
+    .unwrap()
+    .flip_x = true;
+  assert_boxes(
+    &stepped(&mut engine),
+    &drawn(
+      (14, 24, 8, 4),
+      (18, 24, 4, 4),
+      item(14, 26, [GREEN, RED], true),
+    ),
+    "flipped left to right",
+  );
+
+  // Flipped both ways it is turned half a turn, as the character is
+  engine
+    .world_mut()
+    .get_mut::<Renderable>(hero)
+    .unwrap()
+    .flip_y = true;
+  assert_boxes(
+    &stepped(&mut engine),
+    &drawn(
+      (14, 36, 8, 4),
+      (18, 36, 4, 4),
+      item(14, 38, [GREEN, RED], false),
+    ),
+    "flipped both ways",
+  );
+}
+
+#[test]
+fn a_skeleton_riding_a_flipped_skeleton_s_socket_keeps_its_mirror_between_steps() {
+  let Some(mut engine) = engine() else {
+    return;
+  };
+  // A mount, flipped left to right and interpolated, whose seat turns 0.3
+  // radians a step; and on a socket on the seat a rider: a skeleton whose
+  // white 6 px square hangs 12 px below its origin
+  let world = engine.world_mut();
+  let parts = [
+    Part {
+      colour: [0, 0, 0, 0],
+      ..part("body", WHITE, (1, 1))
+    },
+    Part {
+      colour: [0, 0, 0, 0],
+      ..part("seat", WHITE, (1, 1)).under("body", 0.0, 0.0)
+    },
+  ];
+  let mount = rig_with(world, &parts, Images::Each, |builder| {
+    builder.animation(SkeletonClip {
+      name: Arc::from("turn"),
+      duration: 10.0,
+      timelines: vec![SkeletonTimeline::Rotate {
+        bone: BoneId(1),
+        frames: vec![
+          (0.0, 0.0, SkeletonCurve::Linear),
+          (10.0, 180.0, SkeletonCurve::Linear),
+        ],
+      }],
+    })
+  });
+  let mount = stand(
+    world,
+    mount,
+    (32.0, 32.0),
+    Renderable::skeleton().with_flip_x(true),
+  );
+  let mut animation = SkeletonAnimation::new();
+  animation.set_animation(0, "turn", false);
+  world.entity_mut(mount).insert((animation, Interpolated));
+  let rider = rig(world, &[part("body", WHITE, (6, 6)).at(0.0, 12.0)]);
+  let rider = world
+    .spawn((
+      BoneSocket::new("seat"),
+      Skeleton::new(rider),
+      Renderable::skeleton(),
+      ChildOf(mount),
+    ))
+    .id();
+  engine.step_frames(3).unwrap();
+  assert!(
+    global(&engine, rider).matrix2.determinant() < 0.0,
+    "the rider is mirrored with its mount"
+  );
+
+  // The seat's turn now, read from its bone: mirrored, its x axis is
+  // (-cos, sin) of it. A step ago it was 18 radians a second less
+  let seat = bone(&engine, mount, "seat").matrix2.x_axis;
+  let now = seat.y.atan2(-seat.x);
+  let a_step = 18.0 * engine.world().resource::<Time>().fixed.timestep();
+  assert!(now > 0.5 && now < 1.2, "three steps of 0.3: {now}");
+  // Where the rider's square is with the seat turned by `turn`: mirrored,
+  // 12 px down the seat's y axis is (12 sin, 12 cos) from the mount. Turned
+  // half a turn instead of mirrored, it would be straight across the mount
+  let centre = |turn: f32| Vec2::new(32.0, 32.0) + Vec2::new(turn.sin(), turn.cos()) * 12.0;
+  let across = |turn: f32| Vec2::new(64.0, 64.0) - centre(turn);
+  let background = frame(&engine).get_pixel(SIZE - 1, SIZE - 1).0;
+  let at = |drawn: &image::RgbaImage, at: Vec2| drawn.get_pixel(at.x as u32, at.y as u32).0;
+
+  // A frame of whole steps draws it where it was a step ago, and half a
+  // step later half way round to where it is, mirrored all the way
+  let drawn = frame(&engine);
+  assert_eq!(at(&drawn, centre(now - a_step)), WHITE, "a step ago");
+  assert_eq!(at(&drawn, across(now - a_step)), background);
+  part_step(&mut engine, 5);
+  let drawn = frame(&engine);
+  let half_way = now - a_step / 2.0;
+  assert_eq!(at(&drawn, centre(half_way)), WHITE, "half way round");
+  assert_eq!(at(&drawn, across(half_way)), background, "not turned over");
+}

@@ -1681,3 +1681,289 @@ fn a_line_shows_the_colour_it_names() {
   // Read as linear (the old rule) it showed about 188
   assert!(pixel[0].abs_diff(128) <= 1, "{pixel:?}");
 }
+
+// ---------------------------------------------------------------------------
+// Mirrored transforms
+// ---------------------------------------------------------------------------
+
+const BLACK: [u8; 4] = [0, 0, 0, 255];
+
+/// An image 8 x 6 px: a blue top row over a red left half and a green right
+/// half, so that a mirror and a half turn show differently
+fn two_tone() -> Image {
+  let data: Vec<u8> = (0..8 * 6)
+    .flat_map(|i| match (i % 8, i / 8) {
+      (_, 0) => BLUE,
+      (x, _) if x < 4 => RED,
+      _ => GREEN,
+    })
+    .collect();
+  Image::from_rgba(data, 8, 6)
+}
+
+/// How a two-tone image is expected to show: its box's left, top and width
+/// (it is 6 px high), whether its halves are swapped, and whether its blue
+/// row is at the top
+#[derive(Clone, Copy)]
+struct TwoTone {
+  left: u32,
+  top: u32,
+  width: u32,
+  mirrored: bool,
+  blue_on_top: bool,
+}
+
+/// Checks every pixel of a 64 px frame: the two-tone image as `shown`, the
+/// black boxes of `under` where it does not cover them, and the background
+/// (the bottom-right pixel) everywhere else
+fn assert_two_tone(
+  frame: &image::RgbaImage,
+  shown: TwoTone,
+  under: &[(u32, u32, u32, u32)],
+  what: &str,
+) {
+  let background = frame.get_pixel(63, 63).0;
+  let blue_row = if shown.blue_on_top {
+    shown.top
+  } else {
+    shown.top + 5
+  };
+  for y in 0..64 {
+    for x in 0..64 {
+      let in_box = (shown.left..shown.left + shown.width).contains(&x)
+        && (shown.top..shown.top + 6).contains(&y);
+      let want = if in_box && y == blue_row {
+        BLUE
+      } else if in_box {
+        let left_half = x < shown.left + shown.width / 2;
+        if left_half != shown.mirrored {
+          RED
+        } else {
+          GREEN
+        }
+      } else if under
+        .iter()
+        .any(|&(x0, y0, w, h)| (x0..x0 + w).contains(&x) && (y0..y0 + h).contains(&y))
+      {
+        BLACK
+      } else {
+        background
+      };
+      assert_eq!(frame.get_pixel(x, y).0, want, "{what}: pixel ({x}, {y})");
+    }
+  }
+}
+
+/// A scene that draws nothing of its own
+struct Bare;
+
+impl Scene for Bare {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    ctx.look().tonemap = Tonemap::Clamp;
+  }
+}
+
+/// A pixel-art engine 64 px square with nothing in it
+fn empty_stage() -> Option<HeadlessEngine> {
+  start(EngineBuilder::new().pixel_art(64, 64).start_scene(Bare))
+}
+
+/// A frame `numerator / denominator` of a fixed step long, which must run
+/// no step: it draws that much further between the last two steps
+fn part_step(engine: &mut HeadlessEngine, numerator: u32, denominator: u32) {
+  let time = engine.world().resource::<Time>();
+  let (timestep, steps) = (time.fixed.timestep_duration(), time.fixed.step_count());
+  engine.step_real(timestep * numerator / denominator);
+  let now = engine.world().resource::<Time>().fixed.step_count();
+  assert_eq!(now, steps, "part of a step runs no step");
+}
+
+#[test]
+fn a_sprite_under_a_mirrored_transform_draws_mirrored() {
+  let Some(mut engine) = empty_stage() else {
+    return;
+  };
+  let image = engine
+    .world_mut()
+    .resource_mut::<Assets<Image>>()
+    .add(two_tone());
+  // One sprite at a time, 8 x 6 px with its centre on (32, 32): it spans
+  // x 28..36 and y 29..35
+  let shown = |engine: &mut HeadlessEngine, transform: Transform, renderable: Renderable| {
+    let entity = engine.world_mut().spawn((transform, renderable)).id();
+    engine.step_frames(2).unwrap();
+    let frame = engine.frame().unwrap();
+    engine.world_mut().despawn(entity);
+    frame
+  };
+  let centred = TwoTone {
+    left: 28,
+    top: 29,
+    width: 8,
+    mirrored: false,
+    blue_on_top: true,
+  };
+  let at = |scale: Vec2| Transform::from_xy(32.0, 32.0).with_scale(scale);
+  let sprite = || Renderable::image(image.clone());
+  assert_two_tone(
+    &shown(&mut engine, at(Vec2::ONE), sprite()),
+    centred,
+    &[],
+    "as it is",
+  );
+
+  // A negative x scale mirrors it left to right: its halves swap, and its
+  // top row stays on top (a half turn would put it at the bottom)
+  let mirrored = TwoTone {
+    mirrored: true,
+    ..centred
+  };
+  let left_to_right = Vec2::new(-1.0, 1.0);
+  assert_two_tone(
+    &shown(&mut engine, at(left_to_right), sprite()),
+    mirrored,
+    &[],
+    "scaled (-1, 1)",
+  );
+  // A negative y scale mirrors it top to bottom
+  let upside_down = TwoTone {
+    blue_on_top: false,
+    ..centred
+  };
+  assert_two_tone(
+    &shown(&mut engine, at(Vec2::new(1.0, -1.0)), sprite()),
+    upside_down,
+    &[],
+    "scaled (1, -1)",
+  );
+  // A mirror and a flip of the same axis undo each other
+  assert_two_tone(
+    &shown(&mut engine, at(left_to_right), sprite().with_flip_x(true)),
+    centred,
+    &[],
+    "scaled (-1, 1) and flipped left to right",
+  );
+  // Both axes negative is a half turn, not a mirror
+  let turned = TwoTone {
+    mirrored: true,
+    blue_on_top: false,
+    ..centred
+  };
+  assert_two_tone(
+    &shown(&mut engine, at(Vec2::new(-1.0, -1.0)), sprite()),
+    turned,
+    &[],
+    "scaled (-1, -1)",
+  );
+
+  // Its anchor mirrors with it: placed by its top-left corner on (32, 32),
+  // the mirrored sprite lies left of that corner, x 24..32 and y 32..38,
+  // and its drop shadow (black, 12 px down) is its own shape there
+  let cornered = sprite().with_anchor(Anchor::TopLeft).with_drop_shadow(
+    DropShadow::new()
+      .offset(0.0, 12.0)
+      .color(Color::new(0, 0, 0, 255)),
+  );
+  let left_of_corner = TwoTone {
+    left: 24,
+    top: 32,
+    ..mirrored
+  };
+  assert_two_tone(
+    &shown(&mut engine, at(left_to_right), cornered),
+    left_of_corner,
+    &[(24, 44, 8, 6)],
+    "mirrored about its top-left corner",
+  );
+
+  // A child of a mirrored parent is mirrored about the parent: 10 px right
+  // and 4 down of a parent on (32, 32) scaled (-1, 1), its centre is on
+  // (22, 36)
+  let parent = engine.world_mut().spawn(at(left_to_right)).id();
+  let child = engine
+    .world_mut()
+    .spawn((Transform::from_xy(10.0, 4.0), sprite(), ChildOf(parent)))
+    .id();
+  engine.step_frames(2).unwrap();
+  let below_parent = TwoTone {
+    left: 18,
+    top: 33,
+    ..mirrored
+  };
+  assert_two_tone(
+    &engine.frame().unwrap(),
+    below_parent,
+    &[],
+    "under a mirrored parent",
+  );
+  engine.world_mut().despawn(child);
+}
+
+/// An engine with an interpolated two-tone sprite centred on (32, 32),
+/// scaled (`x`, 1), after two steps
+fn interpolated_two_tone(x: f32) -> Option<(HeadlessEngine, Entity)> {
+  let mut engine = empty_stage()?;
+  let world = engine.world_mut();
+  let image = world.resource_mut::<Assets<Image>>().add(two_tone());
+  let sprite = world
+    .spawn((
+      Transform::from_xy(32.0, 32.0).with_scale(Vec2::new(x, 1.0)),
+      Renderable::image(image),
+      Interpolated,
+    ))
+    .id();
+  engine.step_frames(2).unwrap();
+  Some((engine, sprite))
+}
+
+/// Scales `sprite` to (`x`, 1) and runs the step that sees it
+fn scale_to(engine: &mut HeadlessEngine, sprite: Entity, x: f32) {
+  let mut transform = engine.world_mut().get_mut::<Transform>(sprite).unwrap();
+  transform.scale = Vec2::new(x, 1.0);
+  engine.step().unwrap();
+}
+
+/// The two-tone image centred on (32, 32), `width` px wide
+fn centred(width: u32, mirrored: bool) -> TwoTone {
+  TwoTone {
+    left: 32 - width / 2,
+    top: 29,
+    width,
+    mirrored,
+    blue_on_top: true,
+  }
+}
+
+#[test]
+fn an_interpolated_mirrored_sprite_keeps_its_mirror_between_steps() {
+  // Mirrored and growing from 8 to 16 px wide in one step: the frame of
+  // the whole step draws it as it was, and half a step later it is 12 px
+  // wide, still mirrored, its top row on top
+  let Some((mut engine, sprite)) = interpolated_two_tone(-1.0) else {
+    return;
+  };
+  scale_to(&mut engine, sprite, -2.0);
+  assert_two_tone(&engine.frame().unwrap(), centred(8, true), &[], "as it was");
+  part_step(&mut engine, 1, 2);
+  let half = engine.frame().unwrap();
+  assert_two_tone(&half, centred(12, true), &[], "half way, still mirrored");
+}
+
+#[test]
+fn a_sprite_mirrored_in_a_step_closes_and_opens_without_turning() {
+  // Turned round in one step, from (2, 1) to (-2, 1), it closes and opens
+  // again the other way: a quarter of the way it is 8 px wide as it was,
+  // three quarters of the way 8 px wide and mirrored, and its top row is
+  // on top all along
+  let Some((mut engine, sprite)) = interpolated_two_tone(2.0) else {
+    return;
+  };
+  scale_to(&mut engine, sprite, -2.0);
+  assert_two_tone(&engine.frame().unwrap(), centred(16, false), &[], "wide");
+  part_step(&mut engine, 1, 4);
+  let closing = engine.frame().unwrap();
+  assert_two_tone(&closing, centred(8, false), &[], "a quarter of the way");
+  part_step(&mut engine, 1, 2);
+  let opening = engine.frame().unwrap();
+  assert_two_tone(&opening, centred(8, true), &[], "three quarters of the way");
+}
