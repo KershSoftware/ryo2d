@@ -564,10 +564,11 @@ impl Renderable {
   /// its entity's position, which is also where a `YSort` sorts it
   /// (`YSort::foot_offset` plays no part).
   ///
-  /// Bones are drawn between fixed steps only when the entity is: put
-  /// [`Interpolated`](crate::core::ecs::Interpolated) on a skeleton's
-  /// entity for smooth bones. Without it the skeleton animates at the step
-  /// rate, as its entity moves and its sockets follow.
+  /// Bones are drawn between fixed steps as the entity is, and a
+  /// skeleton's entity is interpolated: `Skeleton` adds
+  /// [`Interpolated`](crate::core::ecs::Interpolated) to it. Remove
+  /// `Interpolated` for a skeleton that animates at the step rate, as its
+  /// entity then moves and its sockets follow.
   ///
   /// An entity without a `Skeleton`, or whose skeleton's data has not
   /// loaded, draws nothing.

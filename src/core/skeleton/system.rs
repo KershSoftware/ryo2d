@@ -632,14 +632,13 @@ mod tests {
     render_global(global, previous, 0.5) == *global
   }
 
-  /// An interpolated skeleton at (50, 20), a socket on its hand that
-  /// waits at (500, 0) on it until it is placed, and a child 3 along the
-  /// socket
+  /// A skeleton at (50, 20), its entity interpolated as a skeleton's is,
+  /// a socket on its hand that waits at (500, 0) on it until it is
+  /// placed, and a child 3 along the socket
   fn socketed(world: &mut World, data: Handle<SkeletonData>, bone: &str) -> [Entity; 3] {
     let body = world
       .spawn((
         Transform::from_xy(50.0, 20.0),
-        Interpolated,
         Skeleton::new(data),
         turning(),
       ))
@@ -1510,7 +1509,6 @@ mod tests {
     let body = world
       .spawn((
         Transform::from_xy(50.0, 20.0),
-        Interpolated,
         Skeleton::new(data),
         turning(),
       ))
@@ -1543,5 +1541,34 @@ mod tests {
     step.run(&mut world);
     same(global(&world, socket), bone(&world, body, "hand"));
     assert!(!drawn_where_it_stands(&world, socket));
+  }
+
+  #[test]
+  fn a_skeleton_s_entity_is_interpolated_until_the_component_is_taken_off() {
+    let (mut world, mut step, _) = world();
+    let data = rig(&mut world);
+    // A skeleton and nothing else: its entity is interpolated without
+    // asking, so propagation keeps where it stood a step before, which is
+    // what lets the drawer blend its bones between steps
+    let body = world.spawn((Skeleton::new(data.clone()), turning())).id();
+    assert!(world.get::<Interpolated>(body).is_some());
+    for _ in 0..2 {
+      snapshot(&mut world);
+      step.run(&mut world);
+    }
+    let previous = world.get::<PreviousGlobalTransform>(body);
+    assert!(previous.is_some_and(|previous| !previous.skip));
+    // A game takes the component off for step-rate drawing, and it stays
+    // off: the skeleton does not ask again as it steps
+    world.entity_mut(body).remove::<Interpolated>();
+    for _ in 0..2 {
+      snapshot(&mut world);
+      step.run(&mut world);
+    }
+    assert!(world.get::<Interpolated>(body).is_none());
+    assert!(world.get::<PreviousGlobalTransform>(body).is_none());
+    // Putting a skeleton on the entity asks again, as the first did
+    world.entity_mut(body).insert(Skeleton::new(data));
+    assert!(world.get::<Interpolated>(body).is_some());
   }
 }

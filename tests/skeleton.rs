@@ -396,7 +396,6 @@ fn a_socket_is_where_its_bone_is_in_the_same_step() {
     .with_rotation(0.3)
     .with_uniform_scale(1.5);
   let body = spawn(&mut engine, &data, place);
-  engine.world_mut().entity_mut(body).insert(Interpolated);
   play(&mut engine, body, 0, "swing", true);
   let offset = Transform::from_xy(4.0, 2.0).with_rotation(0.5);
   let socket = engine
@@ -438,12 +437,12 @@ fn a_socket_is_where_its_bone_is_in_the_same_step() {
     // After the frame, propagation having run again, it is exactly there
     assert_eq!(global(&engine, socket), at);
     assert_eq!(bone(&engine, body, "hand"), hand);
-    // It is drawn between steps as its skeleton's entity is: under an
-    // interpolated entity, from where the last step's bone put it
+    // It is drawn between steps as its skeleton's entity is, which is
+    // interpolated without asking: from where the last step's bone put it
     let previous = engine
       .world()
       .get::<PreviousGlobalTransform>(socket)
-      .expect("a child of an interpolated entity");
+      .expect("a child of a skeleton's entity, which is interpolated");
     if let Some(before) = last_at {
       assert!(!previous.skip);
       assert_eq!(previous.global.affine(), before);
@@ -1813,7 +1812,6 @@ fn a_skeleton_has_its_starting_pose_in_the_frame_it_appears_and_says_nothing_unt
   time(&mut engine).game.pause();
   let steps = fixed_steps(&engine);
   let body = spawn(&mut engine, &data, Transform::from_xy(20.0, 10.0));
-  engine.world_mut().entity_mut(body).insert(Interpolated);
   // "short" holds the arm turned half a radian from its first moment, and
   // "burst" has a key at its start
   let short = play(&mut engine, body, 0, "short", true);
@@ -2010,7 +2008,6 @@ fn a_socket_added_while_the_clock_is_paused_is_on_its_bone_that_frame() {
   };
   let data = engine.assets().add(rig());
   let body = spawn(&mut engine, &data, Transform::from_xy(20.0, 10.0));
-  engine.world_mut().entity_mut(body).insert(Interpolated);
   play(&mut engine, body, 0, "swing", true);
   engine.step_frames(6).expect("frames");
   // The skeleton has its pose. With the clock paused, the game's frame

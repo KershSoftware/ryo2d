@@ -21,7 +21,7 @@ A skeleton's **data** (`SkeletonData`, an asset) is the rig: its bones, the part
 | `Skeleton::new(data)` | Shows the data there, in its setup pose and default skin; holds the skins, attachments and bone overrides the game sets |
 | `SkeletonAnimation::new()` | Plays the data's animations on tracks. Without one the skeleton holds its setup pose |
 | `Renderable::skeleton()` | Draws it, sorted, lit and shadowed as a sprite is. Without one it is posed and not drawn |
-| `Interpolated` | Draws its bones between fixed steps. **Without it the skeleton animates at the step rate** (60 a second), which shows on a faster display |
+| `Interpolated` | Added by `Skeleton`, so nothing to write: the entity, its bones and its sockets are drawn between fixed steps, smooth on any display. **Remove it for a skeleton that animates at the step rate** (60 a second) |
 
 ```rust
 #[derive(Default)]
@@ -42,7 +42,6 @@ impl Scene for Level {
           Skeleton::new(data),
           state,
           Renderable::skeleton().with_blob_shadow(BlobShadow::ellipse(40.0, 10.0)),
-          Interpolated,
         ));
         self.hero = Some(hero.id());
       }
@@ -574,7 +573,7 @@ ctx.spawn_child(
 
 - **The socket entity's `Transform` is the engine's** while the socket is on it: place the entity with the socket's `offset` (its place, turn and scale in the bone's space), or put what you place on a child of the socket.
 - `bone` is a public `String`: rename it at any time to move the entity to another bone. It lands there at once, not sliding.
-- Under an `Interpolated` skeleton a socket is drawn between steps with its bone. A new socket, and a skeleton that `ctx.skip_interpolation` teleports, are drawn where they land; a particle emitter on a socket leaves no streak along a jump.
+- A socket is drawn between steps with its bone, as the skeleton's entity is (at the step rate if `Interpolated` was taken off that entity). A new socket, and a skeleton that `ctx.skip_interpolation` teleports, are drawn where they land; a particle emitter on a socket leaves no streak along a jump.
 - A flipped or mirrored skeleton mirrors its sockets, and a sprite on one mirrors with it.
 - A socket added while no step runs (the clock paused) is on its bone in that frame.
 - A skeleton can ride another's socket (a rider on a mount).
@@ -705,11 +704,11 @@ An entity with a `Skeleton` and `Renderable::skeleton()` draws the regions its s
 | `YSort` | Sorts it among y-sorted sprites and tile layers by where it stands (below) |
 | `Floor` | Draws it lifted on its storey, as a sprite is (`ryo-tilemap`) |
 | `RenderLayers` | Which cameras draw it |
-| `Interpolated` | Bones, sockets and the entity drawn between fixed steps, together |
+| `Interpolated` (added by `Skeleton`) | Bones, sockets and the entity drawn between fixed steps, together; taken off, all three move at the step rate |
 
 `Renderable`'s `image`, `anchor` and `target` are not used: a skeleton's origin sits on its entity's position.
 
-- **Put `Interpolated` on a skeleton's entity for smooth bones.** Bones are drawn between steps only when the entity is, so that bones, sockets and the entity move as one. `ctx.skip_interpolation(entity)` after a teleport lands the bones and sockets with the entity.
+- **A skeleton's entity is interpolated.** `Skeleton` adds `Interpolated` to its entity, so the entity, its bones and its sockets are drawn between fixed steps and move as one. Remove `Interpolated` for a skeleton drawn at the step rate (below): bones are drawn between steps only when the entity is. `ctx.skip_interpolation(entity)` after a teleport lands the bones and sockets with the entity; without it a skeleton moved a long way in one step is drawn sliding there for that step, as any interpolated entity is.
 - **Y-sorting.** A y-sorted skeleton's sort key is its entity's own y plus `YSort::sort_offset`: where it stands. Put the rig's origin at its feet. `YSort::foot_offset` measures down a sprite's image and plays no part. The key does not move with the pose or a flip.
 - **Shadows.** A blob or contact shadow is a sprite's, under where the entity stands, and suits a character. **A drop shadow is cast part by part, so where parts overlap it is darker than a sprite's even one**: a half-black shadow on a white floor leaves 187 of 255 under one part and 136 where two overlap. A drop shadow's `scale` shrinks the parts' shadows toward where the skeleton stands. A part faded by its slot casts as much less.
 - **A sprite shader applies part by part.** A built-in effect or a game's own shader is run for each region: a flash whitens every part, a dissolve dissolves each, and **an outline or a glow outlines each part, not the figure**. A game shader's `in.uv` runs over the part's own rectangle of its image.
@@ -717,6 +716,13 @@ An entity with a `Skeleton` and `Renderable::skeleton()` draws the regions its s
 - **Use one atlas.** A skeleton whose regions share an image and blend is one draw item, whatever its slot count; each change of image or blend along the draw order starts another. A game shader on the entity makes each region an item of its own.
 - A skeleton's parts are culled together, for each camera, by the box round them. Off screen it keeps animating, so nothing pops when it comes back into view.
 - A skeleton moved while no step runs (a teleport, a paused clock) draws at its new place in that frame.
+
+<!-- given: hero: Entity -->
+```rust
+// Step-rate drawing: take off what `Skeleton` added. A spawn's bundle cannot
+// leave it out, and inserting a `Skeleton` on the entity again adds it again
+ctx.world.entity_mut(hero).remove::<Interpolated>();
+```
 
 ## What the engine does
 

@@ -281,6 +281,15 @@ fn stepped(engine: &mut HeadlessEngine) -> image::RgbaImage {
   frame(engine)
 }
 
+/// Two steps, and the second's frame. A skeleton's entity is interpolated,
+/// so a frame of one whole step draws it where it stood the step before:
+/// when a test moves one by hand between frames, the second step's frame
+/// is the first to draw it where it was put
+fn settled(engine: &mut HeadlessEngine) -> image::RgbaImage {
+  engine.step().expect("a step");
+  stepped(engine)
+}
+
 #[test]
 fn a_region_on_a_rotated_bone_draws_where_expected() {
   let Some(mut engine) = engine() else {
@@ -316,7 +325,7 @@ fn a_region_on_a_rotated_bone_draws_where_expected() {
   *transform = Transform::from_xy(40.0, 20.0)
     .with_rotation(FRAC_PI_2)
     .with_scale(Vec2::splat(2.0));
-  let drawn = stepped(&mut engine);
+  let drawn = settled(&mut engine);
   assert_boxes(
     &drawn,
     &[((32, 12, 16, 16), GREEN), ((16, 36, 24, 8), RED)],
@@ -419,7 +428,7 @@ fn a_y_sorted_skeleton_sorts_among_ysort_sprites_by_its_feet() {
     let mut transform = engine.world_mut().get_mut::<Transform>(hero).unwrap();
     transform.translation.y = feet as f32;
     let what = format!("feet at {feet}");
-    assert_boxes(&stepped(&mut engine), &among_trees(feet), &what);
+    assert_boxes(&settled(&mut engine), &among_trees(feet), &what);
   }
 
   // Upside down its art hangs below its origin (y 40..56), over the yellow
@@ -433,7 +442,7 @@ fn a_y_sorted_skeleton_sorts_among_ysort_sprites_by_its_feet() {
     .unwrap()
     .flip_y = true;
   assert_boxes(
-    &stepped(&mut engine),
+    &settled(&mut engine),
     &[
       ((16, 16, 8, 16), RED),
       ((16, 40, 16, 16), BLUE),
@@ -510,9 +519,8 @@ fn a_y_sorted_skeleton_sorts_within_a_y_sorted_tile_layer() {
   for feet in [40, 30, 52] {
     let mut transform = engine.world_mut().get_mut::<Transform>(hero).unwrap();
     transform.translation.y = feet as f32;
-    engine.step().unwrap();
     let what = format!("feet at {feet}");
-    assert_boxes(&stepped(&mut engine), &among_trees(feet), &what);
+    assert_boxes(&settled(&mut engine), &among_trees(feet), &what);
   }
 }
 
@@ -857,10 +865,12 @@ fn a_flipped_skeleton_mirrors_its_regions_and_sockets() {
   );
   time(&mut engine).game.resume();
 
-  // A negative scale on the entity mirrors it the same way
+  // A negative scale on the entity mirrors it the same way. Unlike a
+  // flip, a scale changing sign is a move like any other, which an
+  // interpolated entity is drawn through: it shows whole a step later
   engine.world_mut().get_mut::<Transform>(hero).unwrap().scale = Vec2::new(-1.0, 1.0);
   assert_boxes(
-    &stepped(&mut engine),
+    &settled(&mut engine),
     &[
       ((14, 24, 8, 4), RED),
       ((18, 24, 4, 4), GREEN),
@@ -942,13 +952,14 @@ fn skeleton_bones_are_interpolated_between_steps() {
   let Some(mut engine) = engine() else {
     return;
   };
-  // Two skeletons whose hands slide 20 px a step: one on an interpolated
-  // entity, with a socket on its hand holding a white square 8 px below
-  // it, and one on a plain entity
+  // Two skeletons whose hands slide 20 px a step. One is spawned as any
+  // skeleton is, which makes its entity interpolated without asking, and
+  // has a socket on its hand holding a white square 8 px below it. The
+  // other has had `Interpolated` taken off it: a plain entity, drawn at
+  // the step rate
   let world = engine.world_mut();
   let data = slider(world);
   let smooth = sliding(world, &data, (4.0, 16.0));
-  world.entity_mut(smooth).insert(Interpolated);
   let image = solid(world, (4, 4), WHITE);
   world.spawn((
     BoneSocket::new("hand").with_offset(Transform::from_xy(0.0, 8.0)),
@@ -956,6 +967,7 @@ fn skeleton_bones_are_interpolated_between_steps() {
     ChildOf(smooth),
   ));
   let plain = sliding(world, &data, (4.0, 48.0));
+  world.entity_mut(plain).remove::<Interpolated>();
   engine.step_frames(2).unwrap();
   let drawn = frame(&engine);
   let now = bone(&engine, smooth, "hand").translation.x;
@@ -1008,7 +1020,6 @@ fn a_skeleton_spawned_while_the_clock_is_paused_draws_that_frame() {
   let world = engine.world_mut();
   let data = slider(world);
   let hero = sliding(world, &data, (4.0, 16.0));
-  world.entity_mut(hero).insert(Interpolated);
   let steps = engine.world().resource::<Time>().fixed.step_count();
   let drawn = stepped(&mut engine);
   assert_eq!(engine.world().resource::<Time>().fixed.step_count(), steps);
@@ -1036,12 +1047,15 @@ fn a_skeleton_moved_between_steps_draws_at_its_new_place_that_frame() {
   let Some(mut engine) = engine() else {
     return;
   };
-  // A still skeleton on a plain entity, stepped; then the clock stops and
-  // the entity moves: no step poses its bones again, and the frame draws
-  // it where its entity now is, as it would a sprite
+  // A still skeleton on a plain entity (`Interpolated` taken off it, so
+  // that every frame draws it where it stands), stepped; then the clock
+  // stops and the entity moves: no step poses its bones again, and the
+  // frame draws it where its entity now is, as it would a sprite
   let world = engine.world_mut();
   let data = rig(world, &[part("body", WHITE, (4, 4))]);
   let hero = stand(world, data, (10.0, 10.0), Renderable::skeleton());
+  world.entity_mut(hero).remove::<Interpolated>();
+  engine.step().unwrap();
   let drawn = stepped(&mut engine);
   assert_eq!(square(&drawn, 10.0, 10.0), Some(true));
   time(&mut engine).game.pause();
@@ -1060,12 +1074,12 @@ fn a_skeleton_enabled_again_does_not_blend_from_its_old_pose() {
   let Some(mut engine) = engine() else {
     return;
   };
-  // An interpolated skeleton whose hand slides 20 px a step from x -12:
-  // a frame of whole steps draws it where it was the step before
+  // A skeleton whose hand slides 20 px a step from x -12. Its entity is
+  // interpolated, as a skeleton's is: a frame of whole steps draws it
+  // where it was the step before
   let world = engine.world_mut();
   let data = slider(world);
   let hero = sliding(world, &data, (-12.0, 16.0));
-  world.entity_mut(hero).insert(Interpolated);
   engine.step_frames(2).unwrap();
   let before = bone(&engine, hero, "hand").translation.x;
   assert_eq!(square(&frame(&engine), before - 20.0, 16.0), Some(true));
@@ -1468,12 +1482,12 @@ fn an_interpolated_mirrored_skeleton_keeps_its_mirror_between_steps() {
   let Some(mut engine) = engine() else {
     return;
   };
-  // Mirrored by its entity's scale, and interpolated: the arm lies left of
-  // the entity, x 14..22 and y 24..28, the cuff over its near half
+  // Mirrored by its entity's scale, and interpolated as a skeleton's
+  // entity is: the arm lies left of the entity, x 14..22 and y 24..28, the
+  // cuff over its near half
   let world = engine.world_mut();
   let data = lopsided(world);
   let hero = stand(world, data, (32.0, 32.0), Renderable::skeleton());
-  world.entity_mut(hero).insert(Interpolated);
   world.get_mut::<Transform>(hero).unwrap().scale = Vec2::new(-1.0, 1.0);
   engine.step_frames(2).unwrap();
   let as_it_was = [((14, 24, 8, 4), RED), ((18, 24, 4, 4), GREEN)];
@@ -1575,7 +1589,8 @@ fn a_skeleton_riding_a_flipped_skeleton_s_socket_keeps_its_mirror_between_steps(
   let Some(mut engine) = engine() else {
     return;
   };
-  // A mount, flipped left to right and interpolated, whose seat turns 0.3
+  // A mount, flipped left to right (and interpolated, as a skeleton's
+  // entity is), whose seat turns 0.3
   // radians a step; and on a socket on the seat a rider: a skeleton whose
   // white 6 px square hangs 12 px below its origin
   let world = engine.world_mut();
@@ -1610,7 +1625,7 @@ fn a_skeleton_riding_a_flipped_skeleton_s_socket_keeps_its_mirror_between_steps(
   );
   let mut animation = SkeletonAnimation::new();
   animation.set_animation(0, "turn", false);
-  world.entity_mut(mount).insert((animation, Interpolated));
+  world.entity_mut(mount).insert(animation);
   let rider = rig(world, &[part("body", WHITE, (6, 6)).at(0.0, 12.0)]);
   let rider = world
     .spawn((
@@ -1743,12 +1758,11 @@ fn a_flipped_skeleton_s_bones_and_sockets_jump_together() {
   let Some(mut engine) = engine() else {
     return;
   };
-  // An interpolated skeleton at x 32 whose hand slides 4 px a step, a
-  // white square on a socket 8 px below the hand
+  // A skeleton at x 32 whose hand slides 4 px a step (interpolated, as a
+  // skeleton's entity is), a white square on a socket 8 px below the hand
   let world = engine.world_mut();
   let data = slider_by(world, 4.0);
   let hero = sliding(world, &data, (32.0, 16.0));
-  world.entity_mut(hero).insert(Interpolated);
   let image = solid(world, (4, 4), WHITE);
   world.spawn((
     BoneSocket::new("hand").with_offset(Transform::from_xy(0.0, 8.0)),
@@ -1948,8 +1962,8 @@ struct Board {
 
 type Shared = Arc<std::sync::Mutex<Board>>;
 
-/// A level with an interpolated skeleton whose hand slides 4 px a step
-/// from x 8
+/// A level with a skeleton whose hand slides 4 px a step from x 8 (its
+/// entity interpolated, as a skeleton's is)
 struct Level(Shared);
 
 impl Scene for Level {
@@ -1957,7 +1971,6 @@ impl Scene for Level {
     ctx.look().tonemap = Tonemap::Clamp;
     let data = slider_by(ctx.world, 4.0);
     let hero = sliding(ctx.world, &data, (8.0, 16.0));
-    ctx.world.entity_mut(hero).insert(Interpolated);
     self.0.lock().expect("the board").hero = Some(hero);
   }
 

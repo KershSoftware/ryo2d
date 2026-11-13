@@ -1920,13 +1920,15 @@ fn a_skeleton_s_regions_are_entity_runs_split_where_the_image_or_blend_changes()
   );
 
   // Out of every camera's view it submits nothing, and neither does a
-  // skeleton that is not visible
+  // skeleton that is not visible. A skeleton's entity is interpolated, so
+  // a frame of one whole step still draws it where it stood the step
+  // before: the second is the first to draw it where it went
   engine
     .world_mut()
     .get_mut::<Transform>(hero)
     .unwrap()
     .translation = Vec2::new(5000.0, 5000.0);
-  engine.step_frames(1).unwrap();
+  engine.step_frames(2).unwrap();
   assert_eq!(drawn(&engine), [(entity, None), (entity, None)]);
   let world = engine.world_mut();
   world.get_mut::<Transform>(hero).unwrap().translation = Vec2::new(30.0, 30.0);

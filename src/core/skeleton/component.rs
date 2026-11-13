@@ -15,7 +15,7 @@ use super::state::{FiredEvent, FiredTrackEvent, SkeletonAnimation};
 use super::validate::{MAX_BONES, MAX_SLOTS};
 use crate::core::asset::Handle;
 use crate::core::ecs::kernel::{DeferredWorld, HookContext};
-use crate::core::ecs::{Component, Renderable, Transform};
+use crate::core::ecs::{Component, Interpolated, Renderable, Transform};
 
 /// The most names a skeleton remembers having warned about. Past it, a
 /// name the data lacks is ignored without a warning
@@ -255,12 +255,18 @@ impl From<Affine2> for Stand {
 /// and mirrored about the entity's origin by that renderable's `flip_x`
 /// and `flip_y`, its bones (as `bone_world` answers) and sockets with it.
 ///
+/// Adding a `Skeleton` makes its entity [`Interpolated`], so the entity,
+/// its bones and its sockets are drawn between fixed steps, smooth on any
+/// display. For a skeleton that animates at the step rate, remove
+/// `Interpolated` from the entity once the skeleton is on it (a bundle
+/// cannot leave it out); inserting a `Skeleton` again adds it again.
+///
 /// To give an entity another skeleton, insert the new `Skeleton` over the
 /// old one. Assigning a whole new value through a mutable reference
 /// (`*skeleton = Skeleton::new(..)`) does not count as adding one: no
 /// scene is recorded for it, and it has no pose until its next step
 #[derive(Component, Debug, Clone)]
-#[require(Transform)]
+#[require(Transform, Interpolated)]
 #[component(on_insert = skeleton_inserted)]
 pub struct Skeleton {
   data: Handle<SkeletonData>,

@@ -33,10 +33,11 @@ pub fn load(ctx: &mut SceneContext) -> Option<Handle<SkeletonData>> {
 
 /// A hero of `data` standing at `at`, drawn at `scale` of its art.
 ///
-/// It is a skeleton entity as the engine asks of a character: `Interpolated`,
-/// so its bones move smoothly between fixed steps, and with a blob shadow
-/// under its feet, not a drop shadow (each part of a skeleton casts its own
-/// drop shadow, darker where they overlap)
+/// It is a skeleton entity as a character wants one. Its `Skeleton` makes
+/// the entity `Interpolated`, so its bones move smoothly between fixed
+/// steps with nothing asked for here; and it has a blob shadow under its
+/// feet, not a drop shadow (each part of a skeleton casts its own drop
+/// shadow, darker where they overlap)
 pub fn spawn(ctx: &mut SceneContext, data: &Handle<SkeletonData>, at: Vec2, scale: f32) -> Entity {
   ctx
     .world
@@ -45,7 +46,6 @@ pub fn spawn(ctx: &mut SceneContext, data: &Handle<SkeletonData>, at: Vec2, scal
       Skeleton::new(data.clone()),
       SkeletonAnimation::new(),
       Renderable::skeleton().with_blob_shadow(shadow(scale)),
-      Interpolated,
     ))
     .id()
 }

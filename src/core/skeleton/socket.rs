@@ -21,8 +21,9 @@ use crate::core::particles::ParticleEmitter;
 /// that name and leaves the entity where it is. A socket whose parent is
 /// not a skeleton does nothing.
 ///
-/// Under an interpolated skeleton the entity is drawn between steps as
-/// the skeleton is. When it arrives on a bone, not having moved there with
+/// The entity is drawn between steps as the skeleton is (a skeleton's
+/// entity is interpolated unless `Interpolated` is taken off it). When it
+/// arrives on a bone, not having moved there with
 /// it (a new socket, its skeleton's first pose, a bone found again or
 /// another bone named, a socket dropped and picked up again), it is drawn
 /// there at once with everything below it, and a particle emitter on any

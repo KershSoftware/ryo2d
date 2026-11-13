@@ -1,8 +1,9 @@
 //! Skeletons against the spec's targets, with a GPU (`HeadlessEngine`, 1920 x
 //! 1080, ambient 0.3 under one light): 200 skeletons of 30 bones and 25
-//! region slots, each on an `Interpolated` entity playing two tracks (a base
-//! of 30 moving bones, a layer of 12) with a crossfade always in progress,
-//! lit, events firing, in a grid that fills the view.
+//! region slots, each on an interpolated entity (a skeleton makes its own
+//! `Interpolated`) playing two tracks (a base of 30 moving bones, a layer
+//! of 12) with a crossfade always in progress, lit, events firing, in a
+//! grid that fills the view.
 //!
 //! A run of a case warms its engine up, then steps frames of 1.3 fixed steps
 //! (so a frame draws between two steps, never on one), and in every frame a
@@ -21,6 +22,9 @@
 //!   the view;
 //! - `skeletons_extract_images`: an image for each of the 25 parts, where
 //!   the others draw from one atlas;
+//! - `skeletons_extract_plain`: the same with `Interpolated` taken off every
+//!   skeleton's entity, so nothing is drawn between steps: what the bone
+//!   blend costs is the crowd's figure less this one;
 //! - `one_skeleton_update`: the step's work for one skeleton, and
 //!   `no_skeleton_update`, the probes round nothing, which is the floor
 //!   the first has in it;
@@ -74,6 +78,9 @@ struct Case {
   shadow: bool,
   offscreen: bool,
   sockets: bool,
+  /// `Interpolated` taken off every skeleton's entity: drawn at the step
+  /// rate
+  plain: bool,
 }
 
 impl Case {
@@ -84,6 +91,7 @@ impl Case {
       shadow: false,
       offscreen: false,
       sockets: false,
+      plain: false,
     }
   }
 }
@@ -275,12 +283,16 @@ impl Scene for Crowd {
         .world
         .spawn((
           Transform::from_translation(at),
-          Interpolated,
           Skeleton::new(data.clone()),
           SkeletonAnimation::new(),
           renderable,
         ))
         .id();
+      // A skeleton makes its entity interpolated: the plain case takes
+      // that off again
+      if case.plain {
+        ctx.world.entity_mut(skeleton).remove::<Interpolated>();
+      }
       if case.sockets {
         let socket = ctx
           .world
@@ -475,6 +487,13 @@ fn main() {
       "skeletons_extract_images",
       Case {
         atlas: false,
+        ..Case::crowd()
+      },
+    ),
+    (
+      "skeletons_extract_plain",
+      Case {
+        plain: true,
         ..Case::crowd()
       },
     ),
