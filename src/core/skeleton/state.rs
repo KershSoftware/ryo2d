@@ -14,12 +14,12 @@ use super::pose::Pose;
 use crate::core::ecs::Component;
 
 /// The most entries a track holds in its chain: its current entry and the
-/// seven it is mixing from. Past it the oldest ends. A chain this long in
-/// ordinary play means the entry that replaced the oldest has all but
-/// finished mixing in, so the oldest has almost no weight left; the cap
-/// bounds a step's work, and a chain whose mixes cannot finish (a stopped
-/// clock)
-const MAX_CHAIN: usize = 8;
+/// fifteen it is mixing from. Past it the oldest ends. A chain fills only
+/// when a new entry joins every few steps: with one every step at 60 Hz
+/// the oldest then weighs under 1% for mixes up to half a second (about
+/// 11% at a second), so little shows. The cap bounds a step's work, and a
+/// chain whose mixes cannot finish (a stopped clock)
+const MAX_CHAIN: usize = 16;
 
 /// The most calls kept until the data lands: room for a `set_empty`, a
 /// `set_animation` and two queued entries on every track
@@ -50,8 +50,11 @@ pub enum TrackEventKind {
   /// It passed its duration while current: each loop when looping, once
   /// otherwise
   Complete,
-  /// It is gone, after its `End` (or, queued and never started, without
-  /// one); its handle no longer finds it
+  /// It is gone, and its handle no longer finds it. It comes after the
+  /// entry's `End`, or alone for an entry that never started: one queued
+  /// and dropped, or one from a call made before the skeleton's data
+  /// landed, which a later call on its track dropped or whose name the data
+  /// turned out to lack
   Dispose,
 }
 
@@ -387,8 +390,10 @@ impl SkeletonAnimation {
   pub const MAX_TRACKS: usize = 64;
 
   /// The name of the empty animation that [`set_empty`](Self::set_empty)
-  /// plays, as its track events carry it. No animation in a skeleton's
-  /// data can have this name
+  /// plays, as its track events carry it, for telling them apart. No
+  /// animation in a skeleton's data can have this name, so it cannot be
+  /// played by name: to fade a track out, call `set_empty`, not
+  /// `set_animation(track, EMPTY, ..)`, which is an unknown name
   pub const EMPTY: &'static str = EMPTY_NAME;
 
   /// A state with no tracks playing
@@ -413,7 +418,11 @@ impl SkeletonAnimation {
   /// mixes in over its `mix_duration`, the old one mixing out, and the
   /// track's queue is dropped. A name the data lacks warns once per
   /// skeleton per name and returns `None`. Before the data lands the call is
-  /// kept, and made when it lands (`None` if too many are kept already)
+  /// kept, and made when it lands (`None` if too many are kept already).
+  /// The handle of a kept call can end with a
+  /// [`Dispose`](TrackEventKind::Dispose) alone, its entry never having
+  /// started: when a later call on the track drops it before the data
+  /// lands, or when the data lands without its name (which warns then)
   pub fn set_animation(&mut self, track: usize, name: &str, looping: bool) -> Option<TrackEntryId> {
     if !self.track_ok(track) {
       return None;
@@ -444,7 +453,9 @@ impl SkeletonAnimation {
   /// holds the result); a looping entry's end is the end of the loop it is
   /// in. On an empty track it starts after `delay` seconds, at once for
   /// `delay <= 0`. Unknown names and calls before the data lands are
-  /// handled as [`set_animation`](Self::set_animation) handles them
+  /// handled as [`set_animation`](Self::set_animation) handles them, so a
+  /// kept call's handle can likewise end with a lone
+  /// [`Dispose`](TrackEventKind::Dispose)
   pub fn add_animation(
     &mut self,
     track: usize,
@@ -575,7 +586,7 @@ impl SkeletonAnimation {
     let first_event = events.len();
     let mut crossed = std::mem::take(&mut self.crossed);
     for (index, track) in self.tracks.iter_mut().enumerate() {
-      advance(track, index, step, track_events, &mut self.spare);
+      advance(track, index, step, track_events);
       fire(track, index, data, events, &mut crossed);
       end_mixes(track, index, track_events, &mut self.spare);
     }
@@ -892,8 +903,8 @@ fn mix_from_data(entry: &mut TrackEntry, from: Option<usize>, catalogue: &Animat
   entry.mix_from_data = false;
 }
 
-/// Puts `entry` at the end of the chain, mixing from what was current. A
-/// chain past [`MAX_CHAIN`] ends its oldest entries
+/// Puts `entry` at the end of the chain, mixing from what was current, for
+/// a call. A chain past [`MAX_CHAIN`] ends its oldest entries at once
 fn join_mix(
   chain: &mut Vec<TrackEntry>,
   entry: TrackEntry,
@@ -909,14 +920,9 @@ fn join_mix(
 
 /// Advances a track's entries by `step` seconds of skeleton time, starts
 /// queued entries that are due, and tells the starts, interrupts and
-/// completions
-fn advance(
-  track: &mut Track,
-  index: usize,
-  step: f32,
-  told: &mut Vec<FiredTrackEvent>,
-  spare: &mut Vec<Buffers>,
-) {
+/// completions. The chain can come out longer than [`MAX_CHAIN`]:
+/// [`end_mixes`] cuts it, once the step's event keys have fired
+fn advance(track: &mut Track, index: usize, step: f32, told: &mut Vec<FiredTrackEvent>) {
   let count = track.chain.len();
   for position in 0..count {
     let held = track
@@ -993,7 +999,9 @@ fn advance(
     entry.mix_time = over;
     entry.advanced = true;
     tell(told, index, &entry, TrackEventKind::Start);
-    join_mix(&mut track.chain, entry, index, told, spare);
+    // Past the cap for now: the oldest entries still fire this step's keys
+    // before `end_mixes` ends them
+    track.chain.push(entry);
     current_from = Some(-1.0);
   }
   if let (Some(from), Some(current)) = (current_from, track.chain.last()) {
@@ -1088,15 +1096,21 @@ fn fire(
   }
 }
 
-/// Ends the entries whose mix-out is over: everything older than the
-/// newest entry that has finished mixing in. Then an empty animation that
-/// has finished its mix, with nothing queued after it, clears the track
+/// Ends the oldest entries of a chain that queued entries starting this
+/// step took past [`MAX_CHAIN`], then the entries whose mix-out is over:
+/// everything older than the newest entry that has finished mixing in.
+/// Then an empty animation that has finished its mix, with nothing queued
+/// after it, clears the track
 fn end_mixes(
   track: &mut Track,
   index: usize,
   told: &mut Vec<FiredTrackEvent>,
   spare: &mut Vec<Buffers>,
 ) {
+  let over = track.chain.len().saturating_sub(MAX_CHAIN);
+  for entry in track.chain.drain(..over) {
+    retire(entry, index, true, told, spare);
+  }
   let done = (1..track.chain.len())
     .rev()
     .find(|&position| track.chain[position].mix_done());
@@ -1220,14 +1234,13 @@ fn apply_track(track: &mut Track, data: &SkeletonData, pose: &mut Pose) {
     entry.fades.clear();
     for timeline in 0..entry.cover.len() {
       // The newer entry's timeline replaces this one's values only if it
-      // replaces at all, and only once it has reached its first key
+      // replaces at all
       let covering = entry
         .cover
         .get(timeline)
         .copied()
         .flatten()
-        .filter(|_| next.mix_blend == MixBlend::Replace)
-        .filter(|&theirs| started(next_animation, theirs, next_time));
+        .filter(|_| next.mix_blend == MixBlend::Replace);
       let (applied, beyond) = match covering {
         Some(theirs) => {
           let fade = if next_is_current {
@@ -1235,7 +1248,15 @@ fn apply_track(track: &mut Track, data: &SkeletonData, pose: &mut Pose) {
           } else {
             next.fades.get(theirs).copied().unwrap_or(plain)
           };
-          (next_alpha * fade, fade)
+          // Before its first key the newer timeline applies nothing, so
+          // nothing of this one is replaced yet; but what is beyond it
+          // fades this one as it will fade the newer one's key, so this
+          // one's weight is the same on both sides of that key
+          if started(next_animation, theirs, next_time) {
+            (next_alpha * fade, fade)
+          } else {
+            (0.0, fade)
+          }
         }
         None => (0.0, plain),
       };
@@ -1420,6 +1441,7 @@ mod tests {
           frames: vec![(0.5, 30.0_f32.to_radians(), Curve::Linear)],
         }],
       ))
+      .animation(clip("minus_sixty", 1.0, vec![rotate(-60.0)]))
       .mix("slide", "thirty", 0.5)
       .default_mix(0.2)
       .build()
@@ -2658,7 +2680,7 @@ mod tests {
   }
 
   #[test]
-  fn a_track_mixes_from_at_most_seven_entries() {
+  fn a_track_mixes_from_at_most_fifteen_entries() {
     use TrackEventKind::*;
     // With the clock stopped no mix finishes, so every set_animation adds
     // to the chain
@@ -2694,6 +2716,133 @@ mod tests {
       assert_eq!(rig.state.tracks[0].chain.len(), MAX_CHAIN);
     }
     assert_eq!(rig.state.current(0), last);
+  }
+
+  /// The weight the oldest entry of a full chain has on the last step it is
+  /// applied, when a new entry joins every step of `dt` with a mix of `mix`
+  /// seconds: the root's rotation with the oldest at 90 degrees, less the
+  /// same with it at 0, over 90
+  fn weight_the_cap_ends(mix: f32, dt: f32) -> f32 {
+    let run = |oldest: &str| {
+      let mut rig = Rig::new();
+      for round in 0..MAX_CHAIN {
+        let name = if round == 0 { oldest } else { "thirty" };
+        let id = rig.set(0, name, true);
+        rig.entry(id).mix_duration = mix;
+        rig.step(dt);
+      }
+      assert_eq!(rig.state.tracks[0].chain.len(), MAX_CHAIN);
+      rig.degrees()
+    };
+    (run("ninety") - run("zero")) / 90.0
+  }
+
+  #[test]
+  fn the_entry_the_cap_ends_has_little_weight_left() {
+    // The worst ordinary case: a state machine that flickers, setting a new
+    // animation every step at 60 Hz. The oldest of a full chain then has 15
+    // newer entries, 1 to 15 steps into their mixes, and weighs the product
+    // of what each has left to mix
+    let dt = 1.0 / 60.0;
+    let expected = |mix: f32| -> f32 {
+      (1..MAX_CHAIN)
+        .map(|steps| 1.0 - steps as f32 * dt / mix)
+        .product()
+    };
+    // Under 1% for mixes up to half a second (a mix shorter than a quarter
+    // second is over before the chain fills)
+    let half_second = weight_the_cap_ends(0.5, dt);
+    assert!((half_second - expected(0.5)).abs() < 1e-4, "{half_second}");
+    assert!(half_second < 0.01, "{half_second}");
+    assert!(weight_the_cap_ends(0.3, dt) < half_second);
+    // And about 11% at a second
+    let second = weight_the_cap_ends(1.0, dt);
+    assert!((second - expected(1.0)).abs() < 1e-4, "{second}");
+    assert!((0.10..0.12).contains(&second), "{second}");
+  }
+
+  #[test]
+  fn an_entry_the_cap_ends_in_a_step_still_fires_that_step_s_keys() {
+    use TrackEventKind::*;
+    // "ticks" keys an event every 0.1 s, and fires through its whole
+    // mix-out (threshold 1). Fifteen entries replace it, 0.012 s apart, with
+    // mixes too long to finish; then a queued entry starts inside a step
+    let dt = 0.012;
+    let mut rig = Rig::new();
+    let ticks = rig.set(0, "ticks", true);
+    rig.entry(ticks).event_threshold = 1.0;
+    let mut times = rig.step(dt).times();
+    for _ in 1..MAX_CHAIN {
+      let zero = rig.set(0, "zero", true);
+      rig.entry(zero).mix_duration = 100.0;
+      times.extend(rig.step(dt).times());
+    }
+    assert_eq!(rig.state.tracks[0].chain.len(), MAX_CHAIN);
+    // 16 steps: 0.192 s, past the keys at 0 and 0.1
+    assert_eq!(times.len(), 2, "{times:?}");
+    let queued = rig.add(0, "ninety", true, 0.0);
+    rig.entry(queued).delay = 0.018;
+    rig.entry(queued).mix_duration = 100.0;
+    // This step takes "ticks" from 0.192 s to 0.204 s, over its key at
+    // 0.2 s, and starts the queued entry, which ends "ticks" as the
+    // seventeenth of the chain: the key still fires
+    let fired = rig.step(dt);
+    assert_eq!(rig.state.current(0), Some(queued));
+    assert_eq!(rig.state.tracks[0].chain.len(), MAX_CHAIN);
+    assert!(rig.state.entry(ticks).is_none());
+    assert_eq!(fired.events.len(), 1, "{:?}", fired.events);
+    assert_eq!(&*fired.events[0].animation, "ticks");
+    close(fired.events[0].time, 0.2);
+    assert_eq!(
+      fired.kinds(),
+      vec![
+        ("zero", Interrupt),
+        ("ninety", Start),
+        ("ticks", End),
+        ("ticks", Dispose),
+      ]
+    );
+  }
+
+  #[test]
+  fn an_outgoing_weight_holds_when_a_middle_entry_reaches_its_first_key() {
+    // A chain of three, all keying the root's rotation: the oldest (90 or 0
+    // degrees), "late" (30 degrees, from its key at 0.5 s only) and -60
+    // degrees, each mix held at half. Returns the rotation before "late"
+    // reaches its key, and after
+    let run = |oldest: &str| {
+      let mut rig = Rig::new();
+      rig.set(0, oldest, true);
+      rig.step(0.1);
+      let late = rig.set(0, "late", false);
+      rig.entry(late).mix_duration = 0.4;
+      rig.step(0.1);
+      let newest = rig.set(0, "minus_sixty", true);
+      rig.entry(newest).mix_duration = 0.2;
+      rig.step(0.1);
+      // "late" is 0.2 s in, before its key, and both mixes are half done
+      let before = rig.degrees();
+      // Four times the speed takes "late" to 0.6 s, past its key, while
+      // longer mixes hold both at half
+      rig.entry(late).speed = 4.0;
+      rig.entry(late).mix_duration = 0.6;
+      rig.entry(newest).mix_duration = 0.4;
+      rig.step(0.1);
+      assert_eq!(rig.state.tracks[0].chain.len(), 3);
+      close(rig.entry(late).track_time(), 0.6);
+      (before, rig.degrees())
+    };
+    let (before, after) = run("ninety");
+    let (before_without, after_without) = run("zero");
+    // The oldest weighs (1 - 0.5) x (1 - 0.5) on both sides of the key: it
+    // does not step up when the entry that replaced it starts to key
+    close((before - before_without) / 90.0, 0.25);
+    close((after - after_without) / 90.0, 0.25);
+    // Before: 0.25 x 90 + 0.5 x -60. After, "late" has its share too:
+    // 0.25 x 90 + 0.25 x 30 + 0.5 x -60. The pose moves by the key's own
+    // 30 degrees at that share, and nothing else
+    close(before, -7.5);
+    close(after, 0.0);
   }
 
   #[test]
@@ -2813,7 +2962,7 @@ mod tests {
 
   #[test]
   fn spare_buffers_are_bounded() {
-    // Three tracks' full chains (24 entries, each with buffers from its
+    // Three tracks' full chains (48 entries, each with buffers from its
     // mix) ended at once leave more sets than the state keeps
     let names = ["zero", "ninety", "thirty", "half_turn"];
     let mut rig = Rig::new();
